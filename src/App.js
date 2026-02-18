@@ -438,7 +438,7 @@ export default function App() {
               {isAdmin&&<button className="btn btn-sm btn-secondary" style={{marginLeft:8,padding:'1px 6px',fontSize:10}}><Icon name="edit" size={10}/> Edit</button>}
             </div>
             <div style={{display:'flex',gap:2,marginTop:8,flexWrap:'wrap',alignItems:'center'}}>
-              {p.available_sizes.map(s=>{const q=p._inv?.[s]||0;const al=p._alerts?.[s];const below=al&&q<al;return(<div key={s} className={`size-cell ${q>10?'in-stock':q>0?(below?'alert-stock':'low-stock'):'no-stock'}`}><div className="size-label">{s}</div><div className="size-qty">{q}</div>{below&&<div style={{fontSize:7,color:'#dc2626'}}>min:{al}</div>}</div>)})}
+              {p.available_sizes.filter(s=>{const q=p._inv?.[s]||0;const core=['S','M','L','XL','2XL'];if(core.includes(s))return true;return q>0||!['XS','3XL','4XL'].includes(s)}).map(s=>{const q=p._inv?.[s]||0;const al=p._alerts?.[s];const below=al&&q<al;return(<div key={s} className={`size-cell ${q>10?'in-stock':q>0?(below?'alert-stock':'low-stock'):'no-stock'}`}><div className="size-label">{s}</div><div className="size-qty">{q}</div>{below&&<div style={{fontSize:7,color:'#dc2626'}}>min:{al}</div>}</div>)})}
               <div className="size-cell total"><div className="size-label">TOTAL</div><div className="size-qty">{nsaTotal}</div></div>
               {hasExt&&<span style={{fontSize:10,color:'#2563eb',marginLeft:6}}>+ {v?.click_automation?'CLICK':v?.api_provider==='sanmar'?'SanMar':'Vendor'}</span>}
             </div>
@@ -477,7 +477,7 @@ export default function App() {
       <td><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{p.sku}</span></td>
       <td style={{fontSize:12}}>{p.name}<br/><span style={{color:'#94a3b8'}}>{p.color}</span></td>
       <td><span className="badge badge-gray">{p.category}</span></td>
-      <td><div style={{display:'flex',gap:2,flexWrap:'wrap'}}>{p.available_sizes.map(s=>{const q=p._inv?.[s]||0;const al=p._alerts?.[s];const below=al&&q<al;return q>0?<div key={s} className={`size-cell ${below?'alert-stock':q>10?'in-stock':'low-stock'}`} style={{minWidth:32,padding:'1px 4px'}}><div className="size-label" style={{fontSize:8}}>{s}</div><div className="size-qty" style={{fontSize:12}}>{q}</div></div>:null})}</div></td>
+      <td><div style={{display:'flex',gap:2,flexWrap:'wrap'}}>{p.available_sizes.filter(s=>{const q=p._inv?.[s]||0;const core=['S','M','L','XL','2XL'];if(core.includes(s))return true;return q>0||!['XS','3XL','4XL'].includes(s)}).map(s=>{const q=p._inv?.[s]||0;const al=p._alerts?.[s];const below=al&&q<al;return<div key={s} className={`size-cell ${q>10?'in-stock':q>0?(below?'alert-stock':'low-stock'):'no-stock'}`} style={{minWidth:32,padding:'1px 4px'}}><div className="size-label" style={{fontSize:8}}>{s}</div><div className="size-qty" style={{fontSize:12}}>{q}</div></div>})}</div></td>
       <td style={{fontWeight:800,fontSize:16,color:p._totalQty<=10?'#d97706':'#166534'}}>{p._totalQty}</td>
       <td style={{fontWeight:700}}>${p._totalValue.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
       <td><div style={{display:'flex',gap:4}}>
@@ -500,7 +500,7 @@ export default function App() {
       <div className="sidebar-user"><div style={{fontWeight:600,color:'#e2e8f0'}}>{currentUser.name}</div><div>{currentUser.role}</div></div>
     </div>
     <div className="main">
-      <div className="topbar"><h1>{selectedCustomer?selectedCustomer.name:selectedVendor?selectedVendor.name:(titles[page]||'Dashboard')}</h1><div style={{fontSize:12,color:'#94a3b8'}}>Phase 1 v2.2</div></div>
+      <div className="topbar"><h1>{selectedCustomer?selectedCustomer.name:selectedVendor?selectedVendor.name:(titles[page]||'Dashboard')}</h1><div style={{fontSize:12,color:'#94a3b8'}}>Phase 1 v2.3</div></div>
       <div className="content">
         {page==='dashboard'&&renderDashboard()}
         {page==='customers'&&renderCustomers()}
