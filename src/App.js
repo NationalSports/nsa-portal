@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useCallback } from 'react';
-import './styles/portal.css';
+import './portal.css';
 
 const Icon = ({ name, size = 18 }) => {
   const p = {
