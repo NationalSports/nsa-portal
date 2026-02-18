@@ -1,4 +1,4 @@
-/* NSA Portal — Global Styles */
+/* NSA Portal â€” Global Styles */
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
 body {
@@ -223,3 +223,15 @@ tbody tr { cursor: pointer; }
 .btn-sm { padding: 4px 10px; font-size: 11px; gap: 4px; }
 
 .form-row-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+
+/* V2.1 additions */
+.tabs{display:flex;gap:2px;margin-bottom:16px;border-bottom:2px solid #e2e8f0}
+.tab{padding:8px 16px;font-size:13px;font-weight:600;background:none;border:none;color:#64748b;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-2px}
+.tab.active{color:#1e40af;border-bottom-color:#1e40af}
+.tab:hover:not(.active){color:#334155}
+.badge-red{background:#fee2e2;color:#dc2626}
+.badge-amber{background:#fef3c7;color:#d97706}
+.badge-purple{background:#ede9fe;color:#7c3aed}
+.btn-sm{padding:4px 10px;font-size:11px;gap:4px}
+.size-cell.alert-stock{background:#fef3c7;border-color:#f59e0b;color:#92400e}
+.size-cell.alert-stock .size-label{color:#d97706}
