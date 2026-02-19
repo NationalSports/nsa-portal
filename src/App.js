@@ -246,7 +246,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
               </div></div>
             <div style={{textAlign:'right',fontSize:12,minWidth:120}}>
               <div>Qty: <strong style={{fontSize:16}}>{qty}</strong></div>
-              <div>Rev: <strong style={{color:'#166534'}}>${iR.toFixed(0)}</strong></div>
+              <div style={{fontSize:16,fontWeight:800,color:'#166534'}}>Rev: ${iR.toFixed(0)}</div>
               <div>Margin: <strong style={{color:mg>=0?'#1e40af':'#dc2626'}}>${mg.toFixed(0)} ({iR>0?(mg/iR*100).toFixed(0):0}%)</strong></div>
             </div>
             <button onClick={()=>rmI(idx)} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:4}}><Icon name="trash" size={16}/></button>
@@ -529,32 +529,49 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         <div className="modal-footer"><button className="btn btn-secondary" onClick={()=>setShowPO('select')}>← Back</button><button className="btn btn-secondary" onClick={()=>setShowPO(null)}>Cancel</button><button className="btn btn-primary" onClick={()=>{setShowPO(null);nf('PO created (Phase 4 will save to DB)')}}><Icon name="cart" size={14}/> Create PO</button></div>
       </div></div>})()}
 
-        {showPick&&<div className="modal-overlay" onClick={()=>setShowPick(false)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:800,maxHeight:'90vh',overflow:'auto'}}>
-      <div className="modal-header"><h2>Pick Ticket — {pickId}</h2><button className="modal-close" onClick={()=>setShowPick(false)}>x</button></div>
-      <div className="modal-body" id="pick-ticket-content">
-        <div style={{display:'flex',justifyContent:'space-between',marginBottom:16,paddingBottom:12,borderBottom:'2px solid #0f172a'}}>
-          <div><div style={{fontSize:20,fontWeight:800}}>NATIONAL SPORTS APPAREL</div><div style={{fontSize:12,color:'#64748b'}}>Pick Ticket</div></div>
-          <div style={{textAlign:'right'}}><div style={{fontSize:18,fontWeight:800,color:'#1e40af'}}>{pickId}</div>
-          <div style={{textAlign:'right'}}><div style={{fontSize:18,fontWeight:800,color:'#1e40af'}}>{o.id}</div><div style={{fontSize:12}}>{new Date().toLocaleDateString()}</div></div></div>
-        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
-          <div><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase'}}>Customer</div><div style={{fontSize:14,fontWeight:700}}>{cust?.name}</div><div style={{fontSize:12,color:'#64748b'}}>{cust?.alpha_tag}</div></div>
-          <div><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase'}}>Ship To</div><div style={{fontSize:12}}>{addrs.find(a=>a.id===(o.ship_to_id||'default'))?.addr||o.ship_to_custom||'—'}</div></div></div>
-        {o.production_notes&&<div style={{padding:8,background:'#fef3c7',borderRadius:4,marginBottom:12,fontSize:12}}><strong>Notes:</strong> {o.production_notes}</div>}
-        {o.items.map((it,i)=>{const q=Object.values(it.sizes).reduce((a,v)=>a+v,0);const szList=Object.entries(it.sizes).filter(([,v])=>v>0);
-          return<div key={i} style={{marginBottom:16,padding:12,border:'1px solid #e2e8f0',borderRadius:6}}>
-            <div style={{display:'flex',justifyContent:'space-between',marginBottom:8}}><div><span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',marginRight:8}}>{it.sku}</span><strong>{it.name}</strong> — {it.color}</div><div style={{fontWeight:800}}>Qty: {q}</div></div>
-            <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}><thead><tr style={{borderBottom:'2px solid #0f172a'}}>{szList.map(([sz])=><th key={sz} style={{padding:'4px 8px',textAlign:'center',minWidth:40}}>{sz}</th>)}<th style={{padding:'4px 8px'}}>Total</th></tr></thead>
-            <tbody><tr style={{fontSize:10,color:'#64748b'}}>{szList.map(([sz,v])=>{const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);const inv=p?._inv?.[sz]||0;const alreadyPicked=(item.pick_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const alreadyPO=(item.po_lines||[]).reduce((a,po)=>a+(po[sz]||0),0);const open=Math.max(0,v-alreadyPicked-alreadyPO);return<td key={sz} style={{padding:'2px 8px',textAlign:'center'}}>open: {open}</td>})}<td/></tr>
-            <tr>{szList.map(([sz,v])=>{const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);const inv=p?._inv?.[sz]||0;const alreadyPicked=(item.pick_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const alreadyPO=(item.po_lines||[]).reduce((a,po)=>a+(po[sz]||0),0);const open=Math.max(0,v-alreadyPicked-alreadyPO);const pick=Math.min(open,inv);return<td key={sz} style={{padding:'4px 8px',textAlign:'center'}}><input style={{width:36,textAlign:'center',border:pick<open?'2px solid #f59e0b':'1px solid #d1d5db',borderRadius:3,padding:'3px',fontSize:14,fontWeight:700,background:pick<open?'#fef3c7':'white'}} defaultValue={pick}/></td>})}<td style={{padding:'4px 8px',textAlign:'center',fontWeight:800,fontSize:14}}>{q}</td></tr>
-            {it.decorations.some(d=>d.kind==='numbers')&&<tr style={{borderTop:'1px solid #e2e8f0'}}>{szList.map(([sz])=>{const nums=it.decorations.find(d=>d.kind==='numbers');const r=nums?.roster?.[sz]||[];return<td key={sz} style={{padding:'4px 8px',textAlign:'center',fontSize:10,color:'#7c3aed'}}>{r.filter(Boolean).join(', ')}</td>})}<td/></tr>}
-            </tbody></table>
-            {it.decorations.map((d,di)=>{const artF=d.kind==='art'?af.find(f=>f.id===d.art_file_id):null;
-              return<div key={di} style={{fontSize:11,color:'#64748b',marginTop:4,padding:'4px 8px',background:'#f8fafc',borderRadius:4}}>
-                {d.kind==='art'&&artF?<span>📎 <strong>{artF.name}</strong> — {artF.deco_type?.replace('_',' ')} @ {d.position} {d.underbase&&'(UB)'} {artF.ink_colors&&`[${artF.ink_colors.split('\n').filter(l=>l.trim()).join(', ')}]`}{artF.thread_colors&&`[${artF.thread_colors}]`}</span>
-                :<span>#️⃣ Numbers — {d.num_method?.replace('_',' ')} {d.num_size} @ {d.position} {d.two_color&&'(2-clr)'}</span>}</div>})}
-          </div>})}
+        {showPick&&<div className="modal-overlay" onClick={()=>setShowPick(false)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:700,maxHeight:'90vh',overflow:'auto'}}>
+      <div className="modal-header"><h2>{typeof showPick==='object'?'Pick Ticket — '+pickId:'Create Pick Ticket — Select Items'}</h2><button className="modal-close" onClick={()=>setShowPick(false)}>x</button></div>
+      {typeof showPick!=='object'?<div className="modal-body">
+        <p style={{fontSize:13,color:'#64748b',marginBottom:12}}>Select items to include on this pick ticket:</p>
+        {o.items.map((item,idx)=>{const q=Object.values(item.sizes).reduce((a,v)=>a+v,0);const szList=Object.entries(item.sizes).filter(([,v])=>v>0).sort((a,b)=>{const ord=SZ_ORD;return(ord.indexOf(a[0])===-1?99:ord.indexOf(a[0]))-(ord.indexOf(b[0])===-1?99:ord.indexOf(b[0]))});
+          const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);
+          const hasOpen=szList.some(([sz,v])=>{const picked=(item.pick_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const po=(item.po_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);return v-picked-po>0});
+          if(!hasOpen)return<div key={idx} style={{padding:10,border:'1px solid #e2e8f0',borderRadius:6,marginBottom:6,opacity:0.5}}><span style={{fontWeight:700}}>{item.sku}</span> {item.name} — <span style={{color:'#166534',fontWeight:600}}>Fully assigned</span></div>;
+          return<div key={idx} style={{padding:10,border:'1px solid #e2e8f0',borderRadius:6,marginBottom:6,cursor:'pointer',display:'flex',alignItems:'center',gap:10}} onClick={()=>{
+            const pickItems=o.items.map((it,i)=>{if(i!==idx)return null;const szs2=Object.entries(it.sizes).filter(([,v])=>v>0).sort((a,b)=>(SZ_ORD.indexOf(a[0])===-1?99:SZ_ORD.indexOf(a[0]))-(SZ_ORD.indexOf(b[0])===-1?99:SZ_ORD.indexOf(b[0])));
+              const pp=products.find(pp2=>pp2.id===it.product_id||pp2.sku===it.sku);
+              return{...it,_idx:i,_pick:Object.fromEntries(szs2.map(([sz,v])=>{const inv=pp?._inv?.[sz]||0;const picked=(it.pick_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const po=(it.po_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const open=Math.max(0,v-picked-po);return[sz,Math.min(open,inv)]}))}}).filter(Boolean);
+            setShowPick(pickItems)}}>
+            <input type="checkbox" checked={false} readOnly style={{width:18,height:18}}/>
+            <div style={{flex:1}}><span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',marginRight:6}}>{item.sku}</span><strong>{item.name}</strong> — {item.color}
+            <div style={{fontSize:11,color:'#64748b',marginTop:2}}>{szList.map(([sz,v])=>{const inv=p?._inv?.[sz]||0;const picked=(item.pick_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const po=(item.po_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const open=Math.max(0,v-picked-po);return open>0?sz+': '+open+' open ('+inv+' inv) ':'';}).filter(Boolean).join(' | ')}</div></div></div>})}
+        <div style={{fontSize:11,color:'#94a3b8',marginTop:8}}>Click an item to create a pick ticket for it. Multiple picks per order are supported.</div>
       </div>
-      <div className="modal-footer"><button className="btn btn-secondary" onClick={()=>setShowPick(false)}>Close</button><button className="btn btn-secondary" onClick={()=>{window.print()}}>🖨️ Print</button><button className="btn btn-primary" onClick={()=>{setShowPick(false);nf(pickId+' sent to warehouse')}} style={{padding:'8px 20px',fontWeight:700}}>📦 Send to Warehouse</button></div>
+      :<div className="modal-body">
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:16}}>
+          <div><div style={{fontSize:20,fontWeight:800}}>NATIONAL SPORTS APPAREL</div><div style={{fontSize:12,color:'#64748b'}}>Pick Ticket</div></div>
+          <div style={{textAlign:'right'}}><div style={{fontSize:18,fontWeight:800,color:'#1e40af'}}>{pickId}</div><div style={{fontSize:14,fontWeight:700,color:'#475569'}}>{o.id}</div><div style={{fontSize:12,color:'#64748b'}}>{new Date().toLocaleDateString()}</div></div></div>
+        <hr style={{border:'2px solid #0f172a',marginBottom:12}}/>
+        <div style={{display:'flex',gap:40,marginBottom:12}}><div><div style={{fontSize:10,fontWeight:700,color:'#64748b'}}>CUSTOMER</div><div style={{fontWeight:700}}>{cust?.name}</div><div style={{fontSize:12,color:'#64748b'}}>{cust?.alpha_tag}</div></div>
+          <div><div style={{fontSize:10,fontWeight:700,color:'#64748b'}}>SHIP TO</div><div style={{fontSize:12}}>{addrs.find(a=>a.id===o.ship_to_id)?.label||'—'}</div></div></div>
+        {o.prod_notes&&<div style={{padding:'8px 12px',background:'#fef9c3',borderRadius:4,marginBottom:12,fontSize:13}}><strong>Notes:</strong> {o.prod_notes}</div>}
+        {showPick.map((item,vi)=>{const szList=Object.entries(item._pick).filter(([,v])=>true);const q=szList.reduce((a,[,v])=>a+v,0);const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);
+          return<div key={vi} style={{padding:12,border:'1px solid #e2e8f0',borderRadius:6,marginBottom:12}}>
+            <div style={{display:'flex',justifyContent:'space-between',marginBottom:8}}><div><span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',marginRight:8}}>{item.sku}</span><strong>{item.name}</strong> — {item.color}</div><div style={{fontWeight:700}}>Pick Qty: {q}</div></div>
+            <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}><thead><tr style={{borderBottom:'2px solid #0f172a'}}>{szList.map(([sz])=><th key={sz} style={{padding:'4px 8px',textAlign:'center',minWidth:50}}>{sz}</th>)}<th style={{padding:'4px 8px'}}>TOTAL</th></tr></thead>
+            <tbody><tr style={{fontSize:10,color:'#64748b'}}>{szList.map(([sz])=>{const need=item.sizes[sz]||0;const inv=p?._inv?.[sz]||0;const picked=(item.pick_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const po=(item.po_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const open=Math.max(0,need-picked-po);return<td key={sz} style={{padding:'2px 8px',textAlign:'center'}}>open: {open} | inv: {inv}</td>})}<td/></tr>
+            <tr>{szList.map(([sz,v])=>{const need=item.sizes[sz]||0;const inv=p?._inv?.[sz]||0;const picked=(item.pick_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const po=(item.po_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const open=Math.max(0,need-picked-po);return<td key={sz} style={{padding:'4px 8px',textAlign:'center'}}><input style={{width:42,textAlign:'center',border:v<open?'2px solid #f59e0b':'1px solid #10b981',borderRadius:3,padding:'3px',fontSize:14,fontWeight:700,background:v<open?'#fef3c7':'#dcfce7'}} defaultValue={v}/></td>})}<td style={{padding:'4px 8px',textAlign:'center',fontWeight:800,fontSize:14}}>{q}</td></tr></tbody></table>
+            {item.decorations.filter(d=>d.kind==='art').map((d,di)=>{const art=af.find(a=>a.id===d.art_file_id);return art?<div key={di} style={{fontSize:12,marginTop:6,padding:'4px 8px',background:'#f0fdf4',borderRadius:4}}>🎨 {art.name} — {art.deco_type} @ {d.position}{d.underbase?' [Underbase]':''}</div>:null})}
+            {item.decorations.filter(d=>d.kind==='numbers').map((d,di)=><div key={di} style={{fontSize:12,marginTop:4,padding:'4px 8px',background:'#f0f9ff',borderRadius:4}}>#️⃣ Numbers — {d.num_method} {d.num_size} @ {d.position}</div>)}
+          </div>})}
+      </div>}
+      <div className="modal-footer">
+        {typeof showPick==='object'?<>
+          <button className="btn btn-secondary" onClick={()=>setShowPick(true)}>← Back</button>
+          <button className="btn btn-secondary" onClick={()=>window.print()}>🖨️ Print</button>
+          <button className="btn btn-primary" onClick={()=>{setShowPick(false);nf(pickId+' sent to warehouse')}} style={{padding:'8px 20px',fontWeight:700}}>📦 Send to Warehouse</button>
+        </>:<button className="btn btn-secondary" onClick={()=>setShowPick(false)}>Cancel</button>}
+      </div>
     </div></div>}
   </div>);
 }
