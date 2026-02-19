@@ -284,7 +284,7 @@ function calcSOStatus(ord){
 function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack,onConvertSO,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders}){
   const isE=mode==='estimate';const isSO=mode==='so';
   const[o,setO]=useState(order);const[cust,setCust]=useState(ic);const[pS,setPS]=useState('');const[showAdd,setShowAdd]=useState(false);
-  const[tab,setTab]=useState('items');const[dirty,setDirty]=useState(false);
+  const[tab,setTab]=useState('items');const[dirty,setDirty]=useState(false);const[selJob,setSelJob]=useState(null);const[jobNote,setJobNote]=useState('');
     const origRef=React.useRef(JSON.stringify(o));
     const markDirty=()=>setDirty(true);const[saved,setSaved]=useState(!!order.customer_id);const[showSend,setShowSend]=useState(false);const[showPick,setShowPick]=useState(false);const[pickId,setPickId]=useState(()=>'IF-'+String(4000+Math.floor(Math.random()*1000)));const[showPO,setShowPO]=useState(null);const[poCounter,setPOCounter]=useState(()=>3001+Math.floor(Math.random()*100));
   const[showFirmReq,setShowFirmReq]=useState(false);const[firmReqDate,setFirmReqDate]=useState('');const[firmReqNote,setFirmReqNote]=useState('');
@@ -1021,6 +1021,189 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       const artLabels={needs_art:'Needs Art',waiting_approval:'Waiting Approval',art_complete:'Art Complete'};
       const itemLabels={need_to_order:'Need to Order',partially_received:'Partially Received',items_received:'Items Received'};
 
+      // Job detail view
+      if(selJob!=null){
+        const ji=selJob;const j=jobs[ji];
+        if(!j)return<div className="card"><div className="card-body"><button className="btn btn-sm btn-secondary" onClick={()=>setSelJob(null)}><Icon name="back" size={12}/> Back to Jobs</button><div style={{padding:20,color:'#94a3b8'}}>Job not found</div></div></div>;
+        const canProduce=j.item_status==='items_received'&&j.art_status==='art_complete';
+        const pct=j.total_units>0?Math.round(j.fulfilled_units/j.total_units*100):0;
+        const artF=safeArt(o).find(a=>a.id===j.art_file_id);
+        // Get full size breakdowns per item
+        const itemDetails=(j.items||[]).map(gi=>{
+          const it=safeItems(o)[gi.item_idx];if(!it)return{...gi,sizes:{},fulSizes:{}};
+          const sizes=safeSizes(it);const fulSizes={};
+          Object.entries(sizes).filter(([,v])=>safeNum(v)>0).forEach(([sz,v])=>{
+            const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
+            const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
+            fulSizes[sz]=Math.min(v,pQ+rQ);
+          });
+          return{...gi,sizes,fulSizes,color:safeStr(it.color),brand:safeStr(it.brand)};
+        });
+        const allSizes=[...new Set(itemDetails.flatMap(gi=>Object.keys(gi.sizes||{})))];
+        const sizeOrder=['YXS','YS','YM','YL','YXL','XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL'];
+        allSizes.sort((a,b)=>(sizeOrder.indexOf(a)===-1?99:sizeOrder.indexOf(a))-(sizeOrder.indexOf(b)===-1?99:sizeOrder.indexOf(b)));
+
+        return<div>
+          <button className="btn btn-sm btn-secondary" onClick={()=>setSelJob(null)} style={{marginBottom:12}}><Icon name="back" size={12}/> All Jobs</button>
+          {/* Job header */}
+          <div className="card" style={{marginBottom:12}}>
+            <div style={{padding:'16px 20px',display:'flex',gap:16,alignItems:'flex-start'}}>
+              <div style={{width:48,height:48,borderRadius:10,background:SC[j.prod_status]?.bg||'#f1f5f9',display:'flex',alignItems:'center',justifyContent:'center',fontSize:22,flexShrink:0}}>🎨</div>
+              <div style={{flex:1}}>
+                <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+                  <span style={{fontSize:18,fontWeight:800,color:'#1e40af'}}>{j.id}</span>
+                  <span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:SC[j.art_status]?.bg,color:SC[j.art_status]?.c}}>{artLabels[j.art_status]}</span>
+                  <span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:SC[j.item_status]?.bg,color:SC[j.item_status]?.c}}>{itemLabels[j.item_status]}</span>
+                  <span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:SC[j.prod_status]?.bg||'#f1f5f9',color:SC[j.prod_status]?.c||'#475569'}}>{prodLabels[j.prod_status]}</span>
+                </div>
+                <div style={{fontSize:15,fontWeight:700,marginTop:4}}>{j.art_name}</div>
+                <div style={{fontSize:12,color:'#64748b'}}>{j.deco_type?.replace(/_/g,' ')} · {j.positions} · {(j.items||[]).length} garment{(j.items||[]).length!==1?'s':''}</div>
+                {j.split_from&&<div style={{fontSize:11,color:'#7c3aed',marginTop:2}}>✂️ Split from {j.split_from}</div>}
+              </div>
+              <div style={{textAlign:'right'}}>
+                <div style={{fontSize:24,fontWeight:800,color:pct>=100?'#166534':'#1e40af'}}>{j.fulfilled_units}/{j.total_units}</div>
+                <div style={{width:80,background:'#e2e8f0',borderRadius:4,height:6,marginTop:4}}><div style={{height:6,borderRadius:4,background:pct>=100?'#22c55e':pct>0?'#f59e0b':'#e2e8f0',width:pct+'%'}}/></div>
+                <div style={{fontSize:10,color:'#64748b',marginTop:2}}>{pct}% fulfilled</div>
+              </div>
+            </div>
+            {/* Status controls */}
+            <div style={{padding:'10px 20px',borderTop:'1px solid #f1f5f9',display:'flex',gap:12,alignItems:'center',flexWrap:'wrap'}}>
+              <div style={{fontSize:11,fontWeight:600,color:'#64748b'}}>Art:</div>
+              <select className="form-select" style={{width:150,fontSize:11}} value={j.art_status} onChange={e=>updJob(ji,'art_status',e.target.value)}>
+                {Object.entries(artLabels).map(([k,v])=><option key={k} value={k}>{v}</option>)}</select>
+              <div style={{fontSize:11,fontWeight:600,color:'#64748b',marginLeft:8}}>Production:</div>
+              {j.prod_status==='hold'&&!canProduce?<span style={{fontSize:11,color:'#94a3b8'}}>Waiting items/art</span>
+              :<select className="form-select" style={{width:150,fontSize:11}} value={j.prod_status} onChange={e=>updJob(ji,'prod_status',e.target.value)}>
+                {prodStatuses.map(ps=><option key={ps} value={ps}>{prodLabels[ps]}</option>)}</select>}
+              <div style={{marginLeft:'auto'}}>
+                <button className="btn btn-sm btn-secondary" onClick={()=>{
+                  const w=window.open('','_blank','width=700,height=900');
+                  w.document.write('<html><head><title>'+j.id+' — '+j.art_name+'</title><style>body{font-family:sans-serif;padding:24px;font-size:13px}h1{font-size:20px;margin:0 0 4px}h2{font-size:14px;margin:16px 0 8px;border-bottom:1px solid #ccc;padding-bottom:4px}table{width:100%;border-collapse:collapse;margin:8px 0}th,td{border:1px solid #ddd;padding:6px 8px;text-align:center;font-size:12px}th{background:#f0f0f0;font-weight:700}.badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700}.info{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:8px 0}.info div{padding:8px;background:#f8f8f8;border-radius:4px}.label{font-size:10px;color:#666;font-weight:600;text-transform:uppercase}@media print{body{padding:12px}}</style></head><body>');
+                  w.document.write('<h1>'+j.id+' — '+j.art_name+'</h1>');
+                  w.document.write('<p>'+j.deco_type?.replace(/_/g,' ')+' · '+j.positions+' · '+j.total_units+' total units</p>');
+                  w.document.write('<p>SO: '+o.id+' — '+(o.memo||'')+'</p>');
+                  w.document.write('<div class="info"><div><div class="label">Art Status</div>'+artLabels[j.art_status]+'</div><div><div class="label">Item Status</div>'+itemLabels[j.item_status]+'</div><div><div class="label">Production</div>'+prodLabels[j.prod_status]+'</div><div><div class="label">Fulfilled</div>'+j.fulfilled_units+'/'+j.total_units+' ('+pct+'%)</div></div>');
+                  if(artF){w.document.write('<h2>Art Details</h2><div class="info"><div><div class="label">Deco Type</div>'+(artF.deco_type||'—')+'</div><div><div class="label">Art Size</div>'+(artF.art_size||'—')+'</div><div><div class="label">Ink Colors</div>'+(artF.ink_colors||'—')+'</div><div><div class="label">Thread Colors</div>'+(artF.thread_colors||'—')+'</div></div>')}
+                  w.document.write('<h2>Items & Sizes</h2>');
+                  itemDetails.forEach(gi=>{
+                    w.document.write('<p style="margin:12px 0 4px;font-weight:700">'+gi.sku+' — '+(gi.name||'Unknown')+' ('+gi.color+')</p>');
+                    w.document.write('<table><thead><tr><th></th>');
+                    allSizes.forEach(sz=>{w.document.write('<th>'+sz+'</th>')});
+                    w.document.write('<th>Total</th></tr></thead><tbody>');
+                    w.document.write('<tr><td style="font-weight:700;text-align:left">Ordered</td>');
+                    let rowT=0;allSizes.forEach(sz=>{const v=gi.sizes[sz]||0;rowT+=v;w.document.write('<td>'+(v||'')+'</td>')});
+                    w.document.write('<td style="font-weight:700">'+rowT+'</td></tr>');
+                    w.document.write('<tr><td style="font-weight:700;text-align:left">In Hand</td>');
+                    let fulT=0;allSizes.forEach(sz=>{const v=gi.fulSizes[sz]||0;fulT+=v;w.document.write('<td style="color:'+(v>0?'green':'#ccc')+'">'+(v||'—')+'</td>')});
+                    w.document.write('<td style="font-weight:700;color:'+(fulT>=rowT?'green':'orange')+'">'+fulT+'</td></tr>');
+                    w.document.write('</tbody></table>');
+                  });
+                  if(j.notes){w.document.write('<h2>Notes</h2><p>'+j.notes+'</p>')}
+                  w.document.write('<div style="margin-top:24px;padding-top:12px;border-top:1px solid #ccc;font-size:10px;color:#999">Printed '+new Date().toLocaleString()+' · NSA Portal</div>');
+                  w.document.write('</body></html>');w.document.close();w.print();
+                }}>🖨️ Print Job Sheet</button>
+              </div>
+            </div>
+          </div>
+
+          {/* Mockup / Art preview */}
+          <div className="card" style={{marginBottom:12}}>
+            <div className="card-header"><h2>🎨 Artwork</h2></div>
+            <div className="card-body">
+              <div style={{display:'flex',gap:16,flexWrap:'wrap'}}>
+                <div style={{flex:'0 0 200px',background:'#f8fafc',border:'2px dashed #d1d5db',borderRadius:10,padding:30,textAlign:'center'}}>
+                  <div style={{fontSize:36,marginBottom:6}}>🖼️</div>
+                  <div style={{fontSize:12,fontWeight:600,color:'#64748b'}}>Mockup Preview</div>
+                  <div style={{fontSize:10,color:'#94a3b8',marginTop:4}}>Upload art files to see preview</div>
+                  {artF?.files?.length>0&&<div style={{fontSize:10,color:'#2563eb',marginTop:6}}>{artF.files.join(', ')}</div>}
+                </div>
+                <div style={{flex:1,minWidth:200}}>
+                  {artF?<>
+                    <div className="form-row form-row-2">
+                      <div><div className="form-label">Art File</div><div style={{fontSize:13,fontWeight:600}}>{artF.name}</div></div>
+                      <div><div className="form-label">Deco Method</div><div style={{fontSize:13}}>{artF.deco_type?.replace(/_/g,' ')||'—'}</div></div>
+                      <div><div className="form-label">Art Size</div><div style={{fontSize:13}}>{artF.art_size||'—'}</div></div>
+                      <div><div className="form-label">Status</div><div style={{fontSize:13}}><span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:SC[j.art_status]?.bg,color:SC[j.art_status]?.c}}>{artLabels[j.art_status]}</span></div></div>
+                    </div>
+                    {artF.ink_colors&&<div style={{marginTop:10}}><div className="form-label">Ink Colors</div><div style={{fontSize:13}}>{artF.ink_colors}</div></div>}
+                    {artF.thread_colors&&<div style={{marginTop:6}}><div className="form-label">Thread Colors</div><div style={{fontSize:13}}>{artF.thread_colors}</div></div>}
+                    {artF.notes&&<div style={{marginTop:6}}><div className="form-label">Art Notes</div><div style={{fontSize:13,color:'#64748b'}}>{artF.notes}</div></div>}
+                    {artF.files?.length>0&&<div style={{marginTop:6}}><div className="form-label">Files</div><div style={{fontSize:12}}>{artF.files.map((f,i)=><span key={i} className="badge badge-blue" style={{marginRight:4}}>{f}</span>)}</div></div>}
+                  </>:<div style={{padding:12,background:'#fef2f2',borderRadius:6,fontSize:12,color:'#dc2626'}}>
+                    {j.art_file_id?'Art file reference not found':'No art file assigned to this job'}
+                  </div>}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Items & Size Matrix */}
+          <div className="card" style={{marginBottom:12}}>
+            <div className="card-header"><h2>📦 Items & Sizes</h2></div>
+            <div className="card-body" style={{padding:0}}>
+              {itemDetails.map((gi,gii)=>{
+                const rowTotal=Object.values(gi.sizes||{}).reduce((a,v)=>a+safeNum(v),0);
+                const fulTotal=Object.values(gi.fulSizes||{}).reduce((a,v)=>a+safeNum(v),0);
+                return<div key={gii} style={{padding:'12px 16px',borderBottom:gii<itemDetails.length-1?'1px solid #f1f5f9':'none'}}>
+                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
+                    <div><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',background:'#dbeafe',padding:'2px 6px',borderRadius:3,marginRight:6}}>{gi.sku}</span>
+                      <span style={{fontWeight:600}}>{gi.name||'Unknown'}</span>
+                      <span style={{color:'#94a3b8',marginLeft:6}}>({gi.color||'—'})</span>
+                      {gi.brand&&<span className="badge badge-gray" style={{marginLeft:6}}>{gi.brand}</span>}</div>
+                    <div style={{fontWeight:700,color:fulTotal>=rowTotal&&rowTotal>0?'#166534':'#64748b'}}>{fulTotal}/{rowTotal} units</div>
+                  </div>
+                  {/* Size grid */}
+                  <div style={{overflowX:'auto'}}>
+                    <table style={{fontSize:11,minWidth:300}}><thead><tr><th style={{textAlign:'left',width:80}}></th>
+                      {allSizes.map(sz=><th key={sz} style={{minWidth:40,textAlign:'center'}}>{sz}</th>)}
+                      <th style={{minWidth:50,textAlign:'center',fontWeight:800}}>Total</th></tr></thead><tbody>
+                      <tr><td style={{fontWeight:600}}>Ordered</td>
+                        {allSizes.map(sz=><td key={sz} style={{textAlign:'center',fontWeight:gi.sizes[sz]?700:400,color:gi.sizes[sz]?'#0f172a':'#cbd5e1'}}>{gi.sizes[sz]||'—'}</td>)}
+                        <td style={{textAlign:'center',fontWeight:800,background:'#f1f5f9'}}>{rowTotal}</td></tr>
+                      <tr><td style={{fontWeight:600,color:'#166534'}}>In Hand</td>
+                        {allSizes.map(sz=>{const v=gi.fulSizes[sz]||0;const ord=gi.sizes[sz]||0;return<td key={sz} style={{textAlign:'center',fontWeight:600,color:v>=ord&&ord>0?'#166534':v>0?'#d97706':'#cbd5e1'}}>{v||'—'}</td>})}
+                        <td style={{textAlign:'center',fontWeight:800,background:fulTotal>=rowTotal&&rowTotal>0?'#dcfce7':'#fef3c7',color:fulTotal>=rowTotal&&rowTotal>0?'#166534':'#92400e'}}>{fulTotal}</td></tr>
+                      <tr><td style={{fontWeight:600,color:'#dc2626'}}>Need</td>
+                        {allSizes.map(sz=>{const need=Math.max(0,(gi.sizes[sz]||0)-(gi.fulSizes[sz]||0));return<td key={sz} style={{textAlign:'center',fontWeight:need>0?700:400,color:need>0?'#dc2626':'#cbd5e1'}}>{need||'—'}</td>})}
+                        <td style={{textAlign:'center',fontWeight:800,background:rowTotal-fulTotal>0?'#fee2e2':'#dcfce7',color:rowTotal-fulTotal>0?'#dc2626':'#166534'}}>{Math.max(0,rowTotal-fulTotal)}</td></tr>
+                    </tbody></table>
+                  </div>
+                </div>})}
+            </div>
+          </div>
+
+          {/* Count-in & Notes */}
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
+            <div className="card">
+              <div className="card-header"><h2>📋 Count-In at Decoration</h2></div>
+              <div className="card-body">
+                {j.counted_at?<div style={{padding:10,background:'#f0fdf4',borderRadius:6}}>
+                  <div style={{fontSize:12,fontWeight:700,color:'#166534'}}>✅ Counted In</div>
+                  <div style={{fontSize:11,color:'#64748b'}}>{j.counted_by||'—'} · {j.counted_at}</div>
+                  {j.count_discrepancy&&<div style={{fontSize:11,color:'#dc2626',marginTop:4}}>⚠️ {j.count_discrepancy}</div>}
+                </div>:<>
+                  <div style={{fontSize:12,color:'#64748b',marginBottom:8}}>Confirm inventory received at decoration station</div>
+                  <div style={{marginBottom:8}}><input className="form-input" placeholder="Discrepancy notes (if any)" style={{fontSize:12}} value={jobNote} onChange={e=>setJobNote(e.target.value)}/></div>
+                  <button className="btn btn-sm btn-primary" onClick={()=>{
+                    updJob(ji,'counted_at',new Date().toLocaleString());
+                    updJob(ji,'counted_by',cu?.name||'Unknown');
+                    if(jobNote)updJob(ji,'count_discrepancy',jobNote);
+                    setJobNote('');nf('✅ Count-in recorded');
+                  }}>✅ Confirm Count-In</button>
+                </>}
+              </div>
+            </div>
+            <div className="card">
+              <div className="card-header"><h2>📝 Job Notes</h2></div>
+              <div className="card-body">
+                <textarea className="form-input" rows={3} placeholder="Production notes for this job..." style={{fontSize:12}} value={j.notes||''} onChange={e=>updJob(ji,'notes',e.target.value)}/>
+                <div style={{fontSize:10,color:'#94a3b8',marginTop:4}}>Visible to decoration team & printed on job sheet</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      }
+
       return<div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
         <h2>Production Jobs ({jobs.length})</h2>
         <div style={{display:'flex',gap:6}}>
@@ -1034,24 +1217,25 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
             const canSplit=j.item_status==='partially_received'&&!j.split_from;
             const pct=j.total_units>0?Math.round(j.fulfilled_units/j.total_units*100):0;
             return<React.Fragment key={j.id}>
-              <tr style={{background:j.prod_status==='completed'||j.prod_status==='shipped'?'#f0fdf4':undefined}}>
+              <tr style={{background:j.prod_status==='completed'||j.prod_status==='shipped'?'#f0fdf4':undefined,cursor:'pointer'}} onClick={()=>setSelJob(ji)}>
               <td><span style={{fontWeight:700,color:'#1e40af'}}>{j.id}</span>
-                {j.split_from&&<div style={{fontSize:9,color:'#7c3aed'}}>split from {j.split_from}</div>}</td>
+                {j.split_from&&<div style={{fontSize:9,color:'#7c3aed'}}>split from {j.split_from}</div>}
+                {j.counted_at&&<div style={{fontSize:9,color:'#166534'}}>✅ counted</div>}</td>
               <td><div style={{fontWeight:600}}>{j.art_name}</div>
                 <div style={{fontSize:10,color:'#64748b'}}>{j.deco_type?.replace(/_/g,' ')} · {j.positions}</div></td>
               <td style={{fontSize:11}}>{(j.items||[]).length} garment{(j.items||[]).length!==1?'s':''}</td>
               <td style={{fontWeight:700}}>{j.fulfilled_units}/{j.total_units}
                 <div style={{width:50,background:'#e2e8f0',borderRadius:3,height:4,marginTop:2}}><div style={{height:4,borderRadius:3,background:pct>=100?'#22c55e':pct>0?'#f59e0b':'#e2e8f0',width:pct+'%'}}/></div></td>
               <td><span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:SC[j.item_status]?.bg,color:SC[j.item_status]?.c}}>{itemLabels[j.item_status]}</span></td>
-              <td><select style={{fontSize:10,padding:'2px 4px',borderRadius:4,border:'1px solid #e2e8f0',fontWeight:600,background:SC[j.art_status]?.bg,color:SC[j.art_status]?.c}} value={j.art_status} onChange={e=>updJob(ji,'art_status',e.target.value)}>
+              <td><select style={{fontSize:10,padding:'2px 4px',borderRadius:4,border:'1px solid #e2e8f0',fontWeight:600,background:SC[j.art_status]?.bg,color:SC[j.art_status]?.c}} value={j.art_status} onChange={e=>{e.stopPropagation();updJob(ji,'art_status',e.target.value)}}>
                 {Object.entries(artLabels).map(([k,v])=><option key={k} value={k}>{v}</option>)}</select></td>
               <td>{j.prod_status==='hold'&&!canProduce?<span style={{fontSize:10,color:'#94a3b8',fontStyle:'italic'}}>Waiting items/art</span>
-                :<select style={{fontSize:10,padding:'2px 4px',borderRadius:4,border:'1px solid #e2e8f0',fontWeight:600,background:SC[j.prod_status]?.bg||'#f1f5f9',color:SC[j.prod_status]?.c||'#475569'}} value={j.prod_status} onChange={e=>updJob(ji,'prod_status',e.target.value)}>
+                :<select style={{fontSize:10,padding:'2px 4px',borderRadius:4,border:'1px solid #e2e8f0',fontWeight:600,background:SC[j.prod_status]?.bg||'#f1f5f9',color:SC[j.prod_status]?.c||'#475569'}} value={j.prod_status} onChange={e=>{e.stopPropagation();updJob(ji,'prod_status',e.target.value)}}>
                   {prodStatuses.map(ps=><option key={ps} value={ps}>{prodLabels[ps]}</option>)}</select>}</td>
-              <td>{canSplit&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#7c3aed',color:'white',borderRadius:4}} onClick={()=>splitJob(ji)} title="Split job to start production on received items">✂️ Split</button>}</td>
+              <td>{canSplit&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#7c3aed',color:'white',borderRadius:4}} onClick={e=>{e.stopPropagation();splitJob(ji)}} title="Split job">✂️</button>}</td>
             </tr>
             {/* Grouped items under this job */}
-            {(j.items||[]).map((gi,gii)=><tr key={gii} style={{background:'#fafbfc'}}>
+            {(j.items||[]).map((gi,gii)=><tr key={gii} style={{background:'#fafbfc',cursor:'pointer'}} onClick={()=>setSelJob(ji)}>
               <td style={{paddingLeft:24,color:'#94a3b8',fontSize:10}}>↳</td>
               <td colSpan={2} style={{fontSize:11,color:'#475569'}}><span style={{fontWeight:600}}>{gi.sku}</span> {gi.name} <span style={{color:'#94a3b8'}}>({gi.color||'—'})</span></td>
               <td style={{fontSize:11}}>{gi.fulfilled}/{gi.units}</td>
@@ -1421,6 +1605,10 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   const[editContact,setEditContact]=useState(null);const[custLocal,setCustLocal]=useState(initCust);
   const[showInvEmail,setShowInvEmail]=useState(false);const[invEmailMsg,setInvEmailMsg]=useState('');const[showPortal,setShowPortal]=useState(false);
   const[subsCollapsed,setSubsCollapsed]=useState(false);
+  const[portalJobView,setPortalJobView]=useState(null);// {job,so} when viewing a job mockup
+  const[portalComment,setPortalComment]=useState('');
+  const[portalContactEdit,setPortalContactEdit]=useState(null);// editing contact in portal sends to rep for approval
+  const[portalContactMsg,setPortalContactMsg]=useState('');
   React.useEffect(()=>setCustLocal(initCust),[initCust]);
   const customer=custLocal;
   const isP=!customer.parent_id;const subs=isP?allCustomers.filter(c=>c.parent_id===customer.id):[];
@@ -1511,7 +1699,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
               <span style={{fontSize:10}}>{j.fulfilled_units}/{j.total_units}</span></div></td>
             <td><span style={{padding:'1px 5px',borderRadius:8,fontSize:9,fontWeight:600,background:SC[j.prod_status]?.bg||'#f1f5f9',color:SC[j.prod_status]?.c||'#64748b'}}>{jobProdLabels[j.prod_status]||j.prod_status}</span></td>
           </tr>)}
-          {jobs.length===0&&<tr style={{background:'#f8fafc'}}><td colSpan={isP?8:6} style={{paddingLeft:28,fontSize:10,color:'#94a3b8',fontStyle:'italic'}}>No jobs generated yet — open SO to generate</td></tr>}
+          {jobs.length===0&&<tr style={{background:'#f8fafc'}}><td colSpan={isP?8:6} style={{paddingLeft:28,fontSize:10,color:'#94a3b8',fontStyle:'italic'}}>No decorations assigned yet</td></tr>}
         </React.Fragment>})}
       </tbody></table>
     </div></div>}
@@ -1670,16 +1858,74 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     const completedSOs=custSOs.filter(s=>calcSOStatus(s)==='complete');
     const openInvs=allOrders.filter(oo=>ids.includes(oo.customer_id)&&oo.type==='invoice'&&oo.status==='open');
     const totalDue=openInvs.reduce((a,inv)=>a+(inv.total||0)-(inv.paid||0),0);
-    const stLabels={need_order:'In Progress',waiting_receive:'In Progress',complete:'Complete'};
+    const rep=REPS.find(r=>r.id===customer.primary_rep_id);
+    // Collect all jobs across customer's SOs
+    const allPortalJobs=[];activeSOs.forEach(so=>{safeJobs(so).forEach(j=>{allPortalJobs.push({...j,so,soMemo:so.memo})})});
+    const artLabelsP={needs_art:'Art Needed',waiting_approval:'Awaiting Your Approval',art_complete:'Approved'};
+    const prodLabelsP={hold:'Queued',staging:'Ready for Production',in_process:'In Production',completed:'Done',shipped:'Shipped'};
+
+    // Job detail view inside portal
+    if(portalJobView){
+      const j=portalJobView.job;const so=portalJobView.so;
+      return<div className="modal-overlay" onClick={()=>setShowPortal(false)}><div className="modal" style={{maxWidth:600,maxHeight:'90vh',overflow:'auto'}} onClick={e=>e.stopPropagation()}>
+        <div style={{background:'linear-gradient(135deg,#1e3a5f,#2563eb)',color:'white',padding:'20px 24px',borderRadius:'12px 12px 0 0',position:'relative'}}>
+          <button style={{position:'absolute',top:8,left:12,background:'rgba(255,255,255,0.15)',border:'none',color:'white',borderRadius:6,padding:'4px 10px',fontSize:12,cursor:'pointer'}} onClick={()=>setPortalJobView(null)}>← Back</button>
+          <button style={{position:'absolute',top:8,right:12,background:'none',border:'none',color:'white',fontSize:18,cursor:'pointer',opacity:0.7}} onClick={()=>{setPortalJobView(null);setShowPortal(false)}}>×</button>
+          <div style={{textAlign:'center',paddingTop:16}}>
+            <div style={{fontSize:10,opacity:0.6}}>ARTWORK PROOF</div>
+            <div style={{fontSize:18,fontWeight:800}}>{j.art_name}</div>
+            <div style={{fontSize:12,opacity:0.7}}>{so.memo} · {j.deco_type?.replace(/_/g,' ')}</div>
+          </div>
+        </div>
+        <div style={{padding:'20px 24px'}}>
+          {/* Mockup placeholder */}
+          <div style={{background:'#f8fafc',border:'2px dashed #d1d5db',borderRadius:10,padding:40,textAlign:'center',marginBottom:16}}>
+            <div style={{fontSize:40,marginBottom:8}}>🎨</div>
+            <div style={{fontSize:14,fontWeight:600,color:'#64748b'}}>Artwork Mockup</div>
+            <div style={{fontSize:11,color:'#94a3b8',marginTop:4}}>{j.deco_type?.replace(/_/g,' ')} · {j.positions}</div>
+            <div style={{fontSize:10,color:'#94a3b8',marginTop:8}}>Mockup image will display here when art files are uploaded</div>
+          </div>
+          {/* Job details */}
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:16}}>
+            <div style={{padding:10,background:'#f8fafc',borderRadius:6}}><div style={{fontSize:10,color:'#64748b',fontWeight:600}}>GARMENTS</div>
+              {(j.items||[]).map((gi,i)=><div key={i} style={{fontSize:12,marginTop:4}}>{gi.name} <span style={{color:'#94a3b8'}}>({gi.color||'—'})</span></div>)}</div>
+            <div style={{padding:10,background:'#f8fafc',borderRadius:6}}><div style={{fontSize:10,color:'#64748b',fontWeight:600}}>DETAILS</div>
+              <div style={{fontSize:12,marginTop:4}}>Position: {j.positions}</div>
+              <div style={{fontSize:12}}>Units: {j.total_units}</div>
+              <div style={{fontSize:12}}>Status: <span style={{fontWeight:600,color:j.art_status==='art_complete'?'#166534':j.art_status==='waiting_approval'?'#d97706':'#dc2626'}}>{artLabelsP[j.art_status]}</span></div></div>
+          </div>
+          {/* Approve / Reject */}
+          {j.art_status==='waiting_approval'&&<div style={{border:'2px solid #f59e0b',background:'#fffbeb',borderRadius:10,padding:16,marginBottom:16}}>
+            <div style={{fontWeight:700,color:'#92400e',marginBottom:8}}>⏳ This artwork needs your approval</div>
+            <div style={{display:'flex',gap:8}}>
+              <button className="btn btn-sm" style={{background:'#22c55e',color:'white',flex:1,justifyContent:'center'}} onClick={()=>{alert('✅ Art approved! (demo) — Your rep will be notified.');setPortalJobView(null)}}>✅ Approve</button>
+              <button className="btn btn-sm" style={{background:'#dc2626',color:'white',flex:1,justifyContent:'center'}} onClick={()=>{if(portalComment.trim()){alert('❌ Art rejected with feedback. Your rep will revise. (demo)');setPortalComment('');setPortalJobView(null)}else{alert('Please add a comment explaining what needs to change.')}}}>❌ Request Changes</button>
+            </div>
+          </div>}
+          {j.art_status==='art_complete'&&<div style={{background:'#f0fdf4',borderRadius:8,padding:10,marginBottom:16,fontSize:12,color:'#166534',fontWeight:600}}>✅ You approved this artwork</div>}
+          {/* Comments */}
+          <div>
+            <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:6}}>💬 Comments</div>
+            <div style={{border:'1px solid #e2e8f0',borderRadius:8,padding:8,marginBottom:8,minHeight:60}}>
+              <div style={{fontSize:11,color:'#94a3b8',fontStyle:'italic'}}>No comments yet on this artwork</div>
+            </div>
+            <div style={{display:'flex',gap:6}}>
+              <input className="form-input" placeholder="Add a comment about this artwork..." value={portalComment} onChange={e=>setPortalComment(e.target.value)} style={{flex:1,fontSize:12}}/>
+              <button className="btn btn-sm btn-primary" onClick={()=>{if(portalComment.trim()){alert('Comment sent to your rep! (demo)');setPortalComment('')}}}>Send</button>
+            </div>
+          </div>
+        </div>
+      </div></div>
+    }
 
     return<div className="modal-overlay" onClick={()=>setShowPortal(false)}><div className="modal" style={{maxWidth:700,maxHeight:'90vh',overflow:'auto'}} onClick={e=>e.stopPropagation()}>
-      {/* Portal header — customer-facing branding */}
-      <div style={{background:'linear-gradient(135deg,#1e3a5f,#2563eb)',color:'white',padding:'24px 28px',borderRadius:'12px 12px 0 0'}}>
+      {/* Portal header */}
+      <div style={{background:'linear-gradient(135deg,#1e3a5f,#2563eb)',color:'white',padding:'24px 28px',borderRadius:'12px 12px 0 0',position:'relative'}}>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
           <div>
             <div style={{fontSize:11,opacity:0.7,letterSpacing:1,marginBottom:4}}>NATIONAL SPORTS APPAREL</div>
             <div style={{fontSize:22,fontWeight:800}}>{customer.name}</div>
-            <div style={{fontSize:13,opacity:0.8,marginTop:2}}>{customer.alpha_tag} · Customer Portal</div>
+            <div style={{fontSize:13,opacity:0.8,marginTop:2}}>Customer Portal</div>
           </div>
           <div style={{textAlign:'right'}}>
             {totalDue>0&&<><div style={{fontSize:10,opacity:0.7}}>BALANCE DUE</div><div style={{fontSize:24,fontWeight:800}}>${totalDue.toLocaleString()}</div></>}
@@ -1688,14 +1934,28 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         <button style={{position:'absolute',top:12,right:16,background:'none',border:'none',color:'white',fontSize:20,cursor:'pointer',opacity:0.7}} onClick={()=>setShowPortal(false)}>×</button>
       </div>
       <div style={{padding:'20px 28px'}}>
-        {/* Active orders */}
+
+        {/* Pay Now button */}
+        {totalDue>0&&<div style={{marginBottom:16}}>
+          <button style={{width:'100%',padding:'14px 20px',background:'#22c55e',color:'white',border:'none',borderRadius:10,fontSize:16,fontWeight:800,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:10}} onClick={()=>alert('Payment portal opening... (demo)\n\nThis would connect to Stripe for CC + Apple Pay processing.\nAmount: $'+totalDue.toLocaleString())}>
+            💳 Pay Now — ${totalDue.toLocaleString()}
+          </button>
+          <div style={{display:'flex',justifyContent:'center',gap:12,marginTop:6}}>
+            <span style={{fontSize:10,color:'#94a3b8'}}>💳 Credit Card</span>
+            <span style={{fontSize:10,color:'#94a3b8'}}> Apple Pay</span>
+            <span style={{fontSize:10,color:'#94a3b8'}}>🏦 ACH/Bank</span>
+          </div>
+        </div>}
+
+        {/* Active orders with clickable jobs */}
         {activeSOs.length>0&&<>
           <div style={{fontSize:13,fontWeight:800,color:'#1e3a5f',marginBottom:10}}>📦 Active Orders</div>
           {activeSOs.map(so=>{
             let totalU=0,fulU=0;
-            safeItems(so).forEach(it=>{Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{totalU+=v;const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+(pk[sz]||0),0);const rQ=safePOs(it).reduce((a,pk)=>a+((pk.received||{})[sz]||0),0);fulU+=Math.min(v,pQ+rQ)})});
+            safeItems(so).forEach(it=>{Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{totalU+=v;const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);fulU+=Math.min(v,pQ+rQ)})});
             const pct=totalU>0?Math.round(fulU/totalU*100):0;
             const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
+            const soJobs=safeJobs(so);
             return<div key={so.id} style={{border:'1px solid #e2e8f0',borderRadius:10,padding:16,marginBottom:12}}>
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:8}}>
                 <div>
@@ -1705,32 +1965,43 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
                 {so.expected_date&&<div style={{textAlign:'right'}}>
                   <div style={{fontSize:10,color:'#64748b'}}>EXPECTED</div>
                   <div style={{fontSize:14,fontWeight:700,color:daysOut!=null&&daysOut<=7?'#dc2626':'#1e3a5f'}}>{so.expected_date}</div>
-                  {daysOut!=null&&daysOut>=0&&<div style={{fontSize:10,color:'#64748b'}}>{daysOut} days</div>}
                 </div>}
               </div>
-              {/* Progress bar */}
+              {/* Progress */}
               <div style={{marginBottom:10}}>
                 <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
                   <span style={{fontSize:11,fontWeight:600,color:'#64748b'}}>Order Progress</span>
                   <span style={{fontSize:11,fontWeight:700,color:pct>=100?'#166534':'#1e3a5f'}}>{pct}%</span>
                 </div>
                 <div style={{background:'#e2e8f0',borderRadius:6,height:8,overflow:'hidden'}}>
-                  <div style={{height:8,borderRadius:6,background:pct>=100?'#22c55e':pct>50?'#3b82f6':'#f59e0b',width:pct+'%',transition:'width 0.3s'}}/>
-                </div>
+                  <div style={{height:8,borderRadius:6,background:pct>=100?'#22c55e':pct>50?'#3b82f6':'#f59e0b',width:pct+'%',transition:'width 0.3s'}}/></div>
               </div>
-              {/* Items list — customer-friendly */}
-              <div style={{fontSize:12}}>
-                {safeItems(so).map((it,ii)=>{
-                  const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+v,0);
+              {/* Items */}
+              <div style={{fontSize:12,marginBottom:soJobs.length>0?10:0}}>
+                {safeItems(so).map((it,ii)=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
                   return<div key={ii} style={{display:'flex',justifyContent:'space-between',padding:'4px 0',borderBottom:'1px solid #f8fafc'}}>
-                    <span style={{color:'#374151'}}>{it.name} <span style={{color:'#94a3b8'}}>({it.color})</span></span>
-                    <span style={{fontWeight:600,color:'#64748b'}}>{qty} units</span>
-                  </div>})}
+                    <span>{safeStr(it.name)||'Item'} <span style={{color:'#94a3b8'}}>({safeStr(it.color)||'—'})</span></span>
+                    <span style={{fontWeight:600,color:'#64748b'}}>{qty} units</span></div>})}
               </div>
-              {/* Firm dates */}
-              {(so.firm_dates||[]).filter(f=>f.approved).length>0&&<div style={{marginTop:8,padding:'6px 10px',background:'#f0fdf4',borderRadius:6,fontSize:11,color:'#166534'}}>
-                📌 Firm date: {(safeFirm(so).filter(f=>f.approved)[0]||{}).date||"TBD"}
-              </div>}
+              {/* Clickable jobs — artwork proofs */}
+              {soJobs.length>0&&<>
+                <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:6}}>🎨 Artwork & Decoration</div>
+                {soJobs.map(j=><div key={j.id} style={{display:'flex',alignItems:'center',gap:10,padding:'8px 10px',border:'1px solid '+(j.art_status==='waiting_approval'?'#f59e0b':'#e2e8f0'),background:j.art_status==='waiting_approval'?'#fffbeb':'#fafbfc',borderRadius:8,marginBottom:6,cursor:'pointer'}} onClick={()=>{setPortalJobView({job:j,so});setPortalComment('')}}>
+                  <div style={{width:36,height:36,borderRadius:6,background:j.art_status==='art_complete'?'#dcfce7':j.art_status==='waiting_approval'?'#fef3c7':'#fee2e2',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0}}>
+                    {j.art_status==='art_complete'?'✅':j.art_status==='waiting_approval'?'⏳':'🎨'}</div>
+                  <div style={{flex:1}}>
+                    <div style={{fontWeight:600,fontSize:12}}>{j.art_name}</div>
+                    <div style={{fontSize:10,color:'#64748b'}}>{j.deco_type?.replace(/_/g,' ')} · {j.positions} · {(j.items||[]).length} garment{(j.items||[]).length!==1?'s':''}</div>
+                  </div>
+                  <div style={{textAlign:'right'}}>
+                    <span style={{padding:'2px 8px',borderRadius:10,fontSize:9,fontWeight:700,background:j.art_status==='art_complete'?'#dcfce7':j.art_status==='waiting_approval'?'#fef3c7':'#fee2e2',color:j.art_status==='art_complete'?'#166534':j.art_status==='waiting_approval'?'#92400e':'#dc2626'}}>{artLabelsP[j.art_status]}</span>
+                    {j.prod_status!=='hold'&&<div style={{fontSize:9,color:'#64748b',marginTop:2}}>{prodLabelsP[j.prod_status]}</div>}
+                  </div>
+                  <span style={{color:'#94a3b8',fontSize:14}}>›</span>
+                </div>)}
+              </>}
+              {safeFirm(so).filter(f=>f.approved).length>0&&<div style={{marginTop:8,padding:'6px 10px',background:'#f0fdf4',borderRadius:6,fontSize:11,color:'#166534'}}>
+                📌 Firm date: {(safeFirm(so).filter(f=>f.approved)[0]||{}).date||"TBD"}</div>}
             </div>})}
         </>}
 
@@ -1739,11 +2010,10 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
           <div style={{fontSize:13,fontWeight:800,color:'#166534',marginBottom:10,marginTop:16}}>✅ Completed Orders</div>
           {completedSOs.slice(0,3).map(so=><div key={so.id} style={{padding:'10px 14px',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:8,display:'flex',justifyContent:'space-between'}}>
             <div><span style={{fontWeight:600}}>{so.memo||so.id}</span><span style={{fontSize:11,color:'#94a3b8',marginLeft:8}}>{so.id}</span></div>
-            <span className="badge badge-green">Complete</span>
-          </div>)}
+            <span className="badge badge-green">Complete</span></div>)}
         </>}
 
-        {/* Open invoices */}
+        {/* Open invoices with pay buttons */}
         {openInvs.length>0&&<>
           <div style={{fontSize:13,fontWeight:800,color:'#dc2626',marginBottom:10,marginTop:16}}>💰 Open Invoices</div>
           <div style={{border:'1px solid #fecaca',borderRadius:10,overflow:'hidden'}}>
@@ -1753,7 +2023,10 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
                   <div style={{fontWeight:700}}>{inv.id} <span style={{fontSize:11,color:'#64748b'}}>{inv.memo}</span></div>
                   <div style={{fontSize:11,color:age>30?'#dc2626':'#64748b'}}>{inv.date} · {age>0?age+' days ago':'Current'}</div>
                 </div>
-                <div style={{fontWeight:800,fontSize:16,color:'#dc2626'}}>${bal.toLocaleString()}</div>
+                <div style={{display:'flex',alignItems:'center',gap:8}}>
+                  <span style={{fontWeight:800,fontSize:16,color:'#dc2626'}}>${bal.toLocaleString()}</span>
+                  <button className="btn btn-sm" style={{background:'#22c55e',color:'white',fontSize:10}} onClick={e=>{e.stopPropagation();alert('Pay $'+bal.toLocaleString()+' for '+inv.id+' (demo)')}}>Pay</button>
+                </div>
               </div>})}
             <div style={{padding:'12px 16px',background:'#fef2f2',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
               <span style={{fontWeight:800,color:'#dc2626'}}>Total Balance Due</span>
@@ -1762,17 +2035,32 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
           </div>
         </>}
 
-        {/* Contact info */}
+        {/* Your rep */}
         <div style={{marginTop:20,padding:14,background:'#f8fafc',borderRadius:10}}>
           <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:6}}>YOUR NSA REP</div>
-          <div style={{fontSize:14,fontWeight:600}}>{REPS.find(r=>r.id===customer.primary_rep_id)?.name||'NSA Team'}</div>
+          <div style={{fontSize:14,fontWeight:600}}>{rep?.name||'NSA Team'}</div>
           <div style={{fontSize:12,color:'#64748b'}}>National Sports Apparel · team@nsa-teamwear.com</div>
+          <button className="btn btn-sm btn-secondary" style={{marginTop:8,fontSize:11}} onClick={()=>alert('Message to '+rep?.name+' (demo)')}>💬 Message Your Rep</button>
         </div>
 
-        {/* Contact update request */}
-        <div style={{marginTop:14,padding:14,border:'1px dashed #d1d5db',borderRadius:10,textAlign:'center'}}>
-          <div style={{fontSize:12,color:'#64748b'}}>Need to update your contact info or shipping address?</div>
-          <button className="btn btn-sm btn-secondary" style={{marginTop:6}} onClick={()=>{setShowPortal(false);setTab('contacts')}}>✏️ Update Contact Info</button>
+        {/* Contact update — sends to rep for approval */}
+        <div style={{marginTop:14,padding:14,border:'1px dashed #d1d5db',borderRadius:10}}>
+          <div style={{fontSize:12,fontWeight:600,color:'#374151',marginBottom:6}}>📋 Update Contact / Shipping Info</div>
+          {!portalContactEdit?<>
+            <div style={{fontSize:11,color:'#64748b',marginBottom:6}}>Current: {(customer.contacts||[])[0]?.name} · {(customer.contacts||[])[0]?.email}{customer.shipping_city&&' · '+customer.shipping_city+', '+customer.shipping_state}</div>
+            <button className="btn btn-sm btn-secondary" onClick={()=>setPortalContactEdit({name:(customer.contacts||[])[0]?.name||'',email:(customer.contacts||[])[0]?.email||'',phone:(customer.contacts||[])[0]?.phone||'',shipping:safeStr(customer.shipping_address_line1)})}>✏️ Request Update</button>
+          </>:<>
+            <div style={{display:'flex',flexDirection:'column',gap:6,marginBottom:8}}>
+              <div style={{display:'flex',gap:6}}><input className="form-input" placeholder="Name" style={{flex:1,fontSize:12}} value={portalContactEdit.name} onChange={e=>setPortalContactEdit(p=>({...p,name:e.target.value}))}/><input className="form-input" placeholder="Email" style={{flex:1,fontSize:12}} value={portalContactEdit.email} onChange={e=>setPortalContactEdit(p=>({...p,email:e.target.value}))}/></div>
+              <div style={{display:'flex',gap:6}}><input className="form-input" placeholder="Phone" style={{flex:1,fontSize:12}} value={portalContactEdit.phone} onChange={e=>setPortalContactEdit(p=>({...p,phone:e.target.value}))}/><input className="form-input" placeholder="Shipping Address" style={{flex:1,fontSize:12}} value={portalContactEdit.shipping} onChange={e=>setPortalContactEdit(p=>({...p,shipping:e.target.value}))}/></div>
+              <textarea className="form-input" placeholder="Notes for your rep (optional)" rows={2} style={{fontSize:12}} value={portalContactMsg} onChange={e=>setPortalContactMsg(e.target.value)}/>
+            </div>
+            <div style={{display:'flex',gap:6}}>
+              <button className="btn btn-sm btn-primary" onClick={()=>{alert('📩 Update request sent to '+rep?.name+' for approval! (demo)\n\nYour rep will review and update your info.');setPortalContactEdit(null);setPortalContactMsg('')}}>Send Request</button>
+              <button className="btn btn-sm btn-secondary" onClick={()=>{setPortalContactEdit(null);setPortalContactMsg('')}}>Cancel</button>
+            </div>
+            <div style={{fontSize:10,color:'#94a3b8',marginTop:6}}>Changes will be reviewed by your rep before updating</div>
+          </>}
         </div>
       </div>
     </div></div>})()}
