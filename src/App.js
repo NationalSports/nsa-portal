@@ -194,7 +194,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         {isE&&o.status==='approved'&&<button className="btn btn-primary" style={{background:'#7c3aed'}} onClick={()=>onConvertSO(o)}><Icon name="box" size={14}/> Convert to SO</button>}
       </div>
       {isSO&&<div style={{display:'flex',gap:6,marginTop:8}}>
-        <button className="btn btn-secondary" onClick={()=>setShowPick(true)}><Icon name="grid" size={14}/> Pick Ticket</button>
         <button className="btn btn-secondary" onClick={()=>setShowPO('select')}><Icon name="cart" size={14}/> Create PO</button>
       </div>}
       {/* SHIPPING */}
@@ -255,29 +254,33 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
               <div style={{fontSize:11,color:'#64748b',marginBottom:1}}>Qty: <strong style={{fontSize:14,color:'#0f172a'}}>{qty}</strong></div>
               <table style={{marginLeft:'auto',fontSize:11,borderCollapse:'collapse',lineHeight:'1.4'}}>
                 <thead><tr style={{fontSize:9,color:'#94a3b8',textTransform:'uppercase'}}>
-                  <td style={{padding:'0 8px 2px 0',textAlign:'left'}}></td>
-                  <td style={{padding:'0 8px 2px',textAlign:'right'}}>Cost</td>
-                  <td style={{padding:'0 8px 2px',textAlign:'right'}}>Margin</td>
-                  <td style={{padding:'0 0 2px 8px',textAlign:'right'}}>Rev</td>
+                  <td style={{padding:'0 6px 2px 0',textAlign:'left'}}></td>
+                  <td style={{padding:'0 6px 2px',textAlign:'right'}}>/ea</td>
+                  <td style={{padding:'0 6px 2px',textAlign:'right'}}>Cost</td>
+                  <td style={{padding:'0 6px 2px',textAlign:'right'}}>Margin</td>
+                  <td style={{padding:'0 0 2px 6px',textAlign:'right'}}>Rev</td>
                 </tr></thead>
                 <tbody>
                   <tr style={{color:'#374151'}}>
-                    <td style={{padding:'1px 8px 1px 0',textAlign:'left',color:'#64748b',fontSize:10}}>Item</td>
-                    <td style={{padding:'1px 8px',textAlign:'right',color:'#64748b'}}>${pCost.toFixed(0)}</td>
-                    <td style={{padding:'1px 8px',textAlign:'right',fontWeight:600,color:pMg>=0?'#166534':'#dc2626'}}>${pMg.toFixed(0)} <span style={{fontSize:9,color:'#94a3b8'}}>({pRev>0?(pMg/pRev*100).toFixed(0):0}%)</span></td>
-                    <td style={{padding:'1px 0 1px 8px',textAlign:'right',fontWeight:600}}>${pRev.toFixed(0)}</td>
+                    <td style={{padding:'1px 6px 1px 0',textAlign:'left',color:'#64748b',fontSize:10}}>Item</td>
+                    <td style={{padding:'1px 6px',textAlign:'right',color:'#64748b',fontSize:10}}>${item.unit_sell.toFixed(2)}</td>
+                    <td style={{padding:'1px 6px',textAlign:'right',color:'#64748b'}}>${pCost.toFixed(0)}</td>
+                    <td style={{padding:'1px 6px',textAlign:'right',fontWeight:600,color:pMg>=0?'#166534':'#dc2626'}}>${pMg.toFixed(0)} <span style={{fontSize:9,color:'#94a3b8'}}>({pRev>0?(pMg/pRev*100).toFixed(0):0}%)</span></td>
+                    <td style={{padding:'1px 0 1px 6px',textAlign:'right',fontWeight:600}}>${pRev.toFixed(0)}</td>
                   </tr>
                   {decoBreak.length>0&&<tr style={{color:'#374151'}}>
-                    <td style={{padding:'1px 8px 1px 0',textAlign:'left',color:'#64748b',fontSize:10}}>Deco{decoBreak.length>1?` (${decoBreak.length})`:''}</td>
-                    <td style={{padding:'1px 8px',textAlign:'right',color:'#64748b'}}>${dC.toFixed(0)}</td>
-                    <td style={{padding:'1px 8px',textAlign:'right',fontWeight:600,color:(dR-dC)>=0?'#166534':'#dc2626'}}>${(dR-dC).toFixed(0)} <span style={{fontSize:9,color:'#94a3b8'}}>({dR>0?((dR-dC)/dR*100).toFixed(0):0}%)</span></td>
-                    <td style={{padding:'1px 0 1px 8px',textAlign:'right',fontWeight:600}}>${dR.toFixed(0)}</td>
+                    <td style={{padding:'1px 6px 1px 0',textAlign:'left',color:'#64748b',fontSize:10}}>Deco{decoBreak.length>1?` (${decoBreak.length})`:''}</td>
+                    <td style={{padding:'1px 6px',textAlign:'right',color:'#64748b',fontSize:10}}>${qty>0?(dR/qty).toFixed(2):'—'}</td>
+                    <td style={{padding:'1px 6px',textAlign:'right',color:'#64748b'}}>${dC.toFixed(0)}</td>
+                    <td style={{padding:'1px 6px',textAlign:'right',fontWeight:600,color:(dR-dC)>=0?'#166534':'#dc2626'}}>${(dR-dC).toFixed(0)} <span style={{fontSize:9,color:'#94a3b8'}}>({dR>0?((dR-dC)/dR*100).toFixed(0):0}%)</span></td>
+                    <td style={{padding:'1px 0 1px 6px',textAlign:'right',fontWeight:600}}>${dR.toFixed(0)}</td>
                   </tr>}
                   <tr style={{borderTop:'2px solid #0f172a'}}>
-                    <td style={{padding:'4px 8px 0 0',textAlign:'left',fontWeight:800,fontSize:12}}>Total</td>
-                    <td style={{padding:'4px 8px 0',textAlign:'right',fontWeight:700,fontSize:12,color:'#64748b'}}>${iC.toFixed(0)}</td>
-                    <td style={{padding:'4px 8px 0',textAlign:'right',fontWeight:800,fontSize:12,color:mg>=0?'#1e40af':'#dc2626'}}>${mg.toFixed(0)} <span style={{fontSize:10}}>({iR>0?(mg/iR*100).toFixed(0):0}%)</span></td>
-                    <td style={{padding:'4px 0 0 8px',textAlign:'right',fontWeight:900,fontSize:20,color:'#166534'}}>${iR.toFixed(0)}</td>
+                    <td style={{padding:'4px 6px 0 0',textAlign:'left',fontWeight:800,fontSize:12}}>Total</td>
+                    <td style={{padding:'4px 6px 0',textAlign:'right',fontWeight:700,fontSize:11,color:'#475569'}}>${qty>0?(iR/qty).toFixed(2):'—'}</td>
+                    <td style={{padding:'4px 6px 0',textAlign:'right',fontWeight:700,fontSize:12,color:'#64748b'}}>${iC.toFixed(0)}</td>
+                    <td style={{padding:'4px 6px 0',textAlign:'right',fontWeight:800,fontSize:12,color:mg>=0?'#1e40af':'#dc2626'}}>${mg.toFixed(0)} <span style={{fontSize:10}}>({iR>0?(mg/iR*100).toFixed(0):0}%)</span></td>
+                    <td style={{padding:'4px 0 0 6px',textAlign:'right',fontWeight:900,fontSize:20,color:'#166534'}}>${iR.toFixed(0)}</td>
                   </tr>
                 </tbody>
               </table>
@@ -408,12 +411,21 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                   <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{uD(idx,di,'roster',{});nf('Roster cleared')}}>Clear All</button>
                 </div></div>
             </div>)}})}
-          <div style={{display:'flex',gap:6,marginTop:8,alignItems:'center'}}>
+          <div style={{display:'flex',gap:6,marginTop:8,alignItems:'center',flexWrap:'wrap'}}>
             <button className="btn btn-sm btn-secondary" onClick={()=>addArtDeco(idx)}><Icon name="image" size={12}/> + Add Art</button>
             <button className="btn btn-sm btn-secondary" onClick={()=>addNumDeco(idx)}>#️⃣ + Add Numbers</button>
             {item.decorations.length===0&&!item.no_deco&&<button className="btn btn-sm" style={{background:'#fef3c7',color:'#92400e',border:'1px solid #f59e0b',fontSize:10}} onClick={()=>uI(idx,'no_deco',true)}>✓ No Deco (Blank)</button>}
             {item.no_deco&&<span style={{fontSize:10,padding:'3px 8px',borderRadius:4,background:'#f1f5f9',color:'#64748b',fontWeight:600,display:'flex',alignItems:'center',gap:4}}>🚫 No Decoration <button onClick={()=>uI(idx,'no_deco',false)} style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',fontSize:12,padding:0,marginLeft:2}}>✕</button></span>}
             {item.decorations.length===0&&!item.no_deco&&<span style={{fontSize:10,color:'#dc2626',fontWeight:600}}>⚠️ No deco assigned</span>}
+            {isSO&&(()=>{const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);
+              const szList=Object.entries(item.sizes).filter(([,v])=>v>0).sort((a,b)=>(SZ_ORD.indexOf(a[0])===-1?99:SZ_ORD.indexOf(a[0]))-(SZ_ORD.indexOf(b[0])===-1?99:SZ_ORD.indexOf(b[0])));
+              const hasOpen=szList.some(([sz,v])=>{const picked=(item.pick_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const po=poCommitted(item.po_lines,sz);const inv=p?._inv?.[sz]||0;return v-picked-po>0&&inv>0});
+              if(!hasOpen)return null;
+              return<button className="btn btn-sm" style={{background:'#dbeafe',color:'#1e40af',border:'1px solid #93c5fd',fontSize:10,marginLeft:'auto'}} onClick={()=>{
+                const szs2=szList;const pp=p;
+                const pickItem={...item,_idx:idx,_pick:Object.fromEntries(szs2.map(([sz,v])=>{const inv=pp?._inv?.[sz]||0;const picked=(item.pick_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const po=poCommitted(item.po_lines,sz);const open=Math.max(0,v-picked-po);return[sz,inv>0?Math.min(open,inv):0]}))};
+                setShowPick([pickItem]);
+              }}><Icon name="grid" size={10}/> Create IF</button>})()}
           </div>
         </div>
       </div>)})}
@@ -564,7 +576,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       return<div className="modal-overlay" onClick={()=>setShowPO(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:800,maxHeight:'90vh',overflow:'auto'}}>
         <div className="modal-header"><h2>New PO — {vn}</h2><button className="modal-close" onClick={()=>setShowPO(null)}>x</button></div>
         <div className="modal-body">
-          {poItems.length===0?<div style={{padding:24,textAlign:'center',color:'#64748b'}}><div style={{fontSize:32,marginBottom:8}}>✅</div><div style={{fontWeight:700,fontSize:16,marginBottom:4}}>All items fully covered</div><div style={{fontSize:13}}>Every size has been assigned via pick tickets or existing POs.</div></div>:<>
+          {poItems.length===0?<div style={{padding:24,textAlign:'center',color:'#64748b'}}><div style={{fontSize:32,marginBottom:8}}>✅</div><div style={{fontWeight:700,fontSize:16,marginBottom:4}}>All items fully covered</div><div style={{fontSize:13}}>Every size has been assigned via IFs or existing POs.</div></div>:<>
           <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:12,marginBottom:16}}>
             <div><label className="form-label">PO Number</label><input className="form-input" value={poId} readOnly style={{color:'#1e40af',fontWeight:700}}/></div>
             <div><label className="form-label">Ship To</label><select className="form-select">{addrs.map(a=><option key={a.id}>{a.label}</option>)}</select></div>
@@ -602,9 +614,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       </div></div>})()}
 
         {showPick&&<div className="modal-overlay" onClick={()=>setShowPick(false)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:700,maxHeight:'90vh',overflow:'auto'}}>
-      <div className="modal-header"><h2>{typeof showPick==='object'?'Pick Ticket — '+pickId:'Create Pick Ticket — Select Items'}</h2><button className="modal-close" onClick={()=>setShowPick(false)}>x</button></div>
+      <div className="modal-header"><h2>{typeof showPick==='object'?'IF — '+pickId:'Create IF — Select Items'}</h2><button className="modal-close" onClick={()=>setShowPick(false)}>x</button></div>
       {typeof showPick!=='object'?<div className="modal-body">
-        <p style={{fontSize:13,color:'#64748b',marginBottom:12}}>Select items to include on this pick ticket:</p>
+        <p style={{fontSize:13,color:'#64748b',marginBottom:12}}>Select items to include on this IF:</p>
         {o.items.map((item,idx)=>{const q=Object.values(item.sizes).reduce((a,v)=>a+v,0);const szList=Object.entries(item.sizes).filter(([,v])=>v>0).sort((a,b)=>{const ord=SZ_ORD;return(ord.indexOf(a[0])===-1?99:ord.indexOf(a[0]))-(ord.indexOf(b[0])===-1?99:ord.indexOf(b[0]))});
           const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);
           const hasOpen=szList.some(([sz,v])=>{const picked=(item.pick_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const po=poCommitted(item.po_lines,sz);const inv=p?._inv?.[sz]||0;return v-picked-po>0&&inv>0});
@@ -617,11 +629,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
             <input type="checkbox" checked={false} readOnly style={{width:18,height:18}}/>
             <div style={{flex:1}}><span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',marginRight:6}}>{item.sku}</span><strong>{item.name}</strong> — {item.color}
             <div style={{fontSize:11,color:'#64748b',marginTop:2}}>{szList.map(([sz,v])=>{const inv=p?._inv?.[sz]||0;const picked=(item.pick_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const po=poCommitted(item.po_lines,sz);const open=Math.max(0,v-picked-po);return open>0?sz+': '+open+' open ('+inv+' inv) ':'';}).filter(Boolean).join(' | ')}</div></div></div>})}
-        <div style={{fontSize:11,color:'#94a3b8',marginTop:8}}>Click an item to create a pick ticket for it. Multiple picks per order are supported.</div>
+        <div style={{fontSize:11,color:'#94a3b8',marginTop:8}}>Click an item to create a IF for it. Multiple picks per order are supported.</div>
       </div>
       :<div className="modal-body">
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:16}}>
-          <div><div style={{fontSize:20,fontWeight:800}}>NATIONAL SPORTS APPAREL</div><div style={{fontSize:12,color:'#64748b'}}>Pick Ticket</div></div>
+          <div><div style={{fontSize:20,fontWeight:800}}>NATIONAL SPORTS APPAREL</div><div style={{fontSize:12,color:'#64748b'}}>Item Fulfillment</div></div>
           <div style={{textAlign:'right'}}><div style={{fontSize:18,fontWeight:800,color:'#1e40af'}}>{pickId}</div><div style={{fontSize:14,fontWeight:700,color:'#475569'}}>{o.id}</div><div style={{fontSize:12,color:'#64748b'}}>{new Date().toLocaleDateString()}</div></div></div>
         <hr style={{border:'2px solid #0f172a',marginBottom:12}}/>
         <div style={{display:'flex',gap:40,marginBottom:12}}><div><div style={{fontSize:10,fontWeight:700,color:'#64748b'}}>CUSTOMER</div><div style={{fontWeight:700}}>{cust?.name}</div><div style={{fontSize:12,color:'#64748b'}}>{cust?.alpha_tag}</div></div>
@@ -629,7 +641,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         {o.prod_notes&&<div style={{padding:'8px 12px',background:'#fef9c3',borderRadius:4,marginBottom:12,fontSize:13}}><strong>Notes:</strong> {o.prod_notes}</div>}
         {showPick.map((item,vi)=>{const szList=Object.entries(item._pick).filter(([,v])=>v>0);const q=szList.reduce((a,[,v])=>a+v,0);const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);
           return<div key={vi} style={{padding:12,border:'1px solid #e2e8f0',borderRadius:6,marginBottom:12}}>
-            <div style={{display:'flex',justifyContent:'space-between',marginBottom:8}}><div><span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',marginRight:8}}>{item.sku}</span><strong>{item.name}</strong> — {item.color}</div><div style={{fontWeight:700}}>Pick Qty: {q}</div></div>
+            <div style={{display:'flex',justifyContent:'space-between',marginBottom:8}}><div><span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',marginRight:8}}>{item.sku}</span><strong>{item.name}</strong> — {item.color}</div><div style={{fontWeight:700}}>IF Qty: {q}</div></div>
             <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}><thead><tr style={{borderBottom:'2px solid #0f172a'}}>{szList.map(([sz])=><th key={sz} style={{padding:'4px 8px',textAlign:'center',minWidth:50}}>{sz}</th>)}<th style={{padding:'4px 8px'}}>TOTAL</th></tr></thead>
             <tbody><tr style={{fontSize:10,color:'#64748b'}}>{szList.map(([sz])=>{const need=item.sizes[sz]||0;const inv=p?._inv?.[sz]||0;const picked=(item.pick_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const po=poCommitted(item.po_lines,sz);const open=Math.max(0,need-picked-po);return<td key={sz} style={{padding:'2px 8px',textAlign:'center'}}>open: {open} | inv: {inv}</td>})}<td/></tr>
             <tr>{szList.map(([sz,v])=>{const need=item.sizes[sz]||0;const inv=p?._inv?.[sz]||0;const picked=(item.pick_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const po=poCommitted(item.po_lines,sz);const open=Math.max(0,need-picked-po);return<td key={sz} style={{padding:'4px 8px',textAlign:'center'}}><input style={{width:42,textAlign:'center',border:v<open?'2px solid #f59e0b':'1px solid #10b981',borderRadius:3,padding:'3px',fontSize:14,fontWeight:700,background:v<open?'#fef3c7':'#dcfce7'}} defaultValue={v}/></td>})}<td style={{padding:'4px 8px',textAlign:'center',fontWeight:800,fontSize:14}}>{q}</td></tr></tbody></table>
@@ -662,7 +674,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       </div>
     </div></div>}
 
-    {/* LINKED DOCUMENTS: Pick Tickets & Purchase Orders */}
+    {/* LINKED DOCUMENTS: Item Fulfillments & Purchase Orders */}
     {isSO&&(()=>{
       const allPickIds=[];const allPoIds=[];
       o.items.forEach((it,i)=>{
@@ -671,7 +683,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       });
       if(allPickIds.length===0&&allPoIds.length===0)return null;
       return<div className="card" style={{marginTop:16}}><div className="card-header"><h2>Linked Documents</h2></div><div className="card-body">
-        {allPickIds.length>0&&<><div style={{fontSize:11,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6}}>Pick Tickets</div>
+        {allPickIds.length>0&&<><div style={{fontSize:11,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6}}>Item Fulfillments</div>
           <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:allPoIds.length>0?16:0}}>
             {allPickIds.map(pk=><div key={pk.id} style={{padding:'8px 14px',border:'1px solid #e2e8f0',borderRadius:8,cursor:'pointer',display:'flex',alignItems:'center',gap:8,background:pk.status==='pulled'?'#f0fdf4':'#fffbeb'}} onClick={()=>{const pickData=o.items[pk.lineIdx]?.pick_lines?.[pk.pickIdx];if(pickData)setEditPick({lineIdx:pk.lineIdx,pickIdx:pk.pickIdx,pick:pickData})}}>
               <Icon name="grid" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{pk.id}</span>
@@ -1275,7 +1287,7 @@ export default function App(){
             const re=ests.filter(e=>(e.id+' '+e.memo).toLowerCase().includes(s)).slice(0,4);
             const rs=sos.filter(so=>(so.id+' '+so.memo).toLowerCase().includes(s)).slice(0,4);
             const rp=prod.filter(p=>(p.sku+' '+p.name+' '+p.brand).toLowerCase().includes(s)).slice(0,4);
-            // Build pick ticket index from all SOs
+            // Build IF index from all SOs
             const allPicks=[];sos.forEach(so=>{(so.items||[]).forEach(it=>{(it.pick_lines||[]).forEach(pk=>{if(pk.pick_id&&pk.pick_id.toLowerCase().includes(s)&&!allPicks.find(x=>x.pick_id===pk.pick_id)){allPicks.push({pick_id:pk.pick_id,so_id:so.id,so,status:pk.status||'pick'})}})})});
             const rpk=allPicks.slice(0,4);
             const tot=rc.length+re.length+rs.length+rp.length+rpk.length;
@@ -1288,7 +1300,7 @@ export default function App(){
                 {rs.map(so=>{const cc=cust.find(x=>x.id===so.customer_id);return<div key={so.id} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>{setESO(so);setESOC(cc);setPg('orders');setGQ('');setGOpen(false)}}><Icon name="box" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{so.id}</span><span>{so.memo}</span></div>})}</>}
               {rp.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Products</div>
                 {rp.map(p=><div key={p.id} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>{setPg('products');setQ(p.sku);setGQ('');setGOpen(false)}}><Icon name="package" size={14}/><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{p.sku}</span><span>{p.name}</span></div>)}</>}
-              {rpk.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Pick Tickets</div>
+              {rpk.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Item Fulfillments</div>
                 {rpk.map(pk=>{const cc=cust.find(x=>x.id===pk.so?.customer_id);return<div key={pk.pick_id} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>{setESO(pk.so);setESOC(cc);setPg('orders');setGQ('');setGOpen(false)}}><Icon name="grid" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{pk.pick_id}</span><span>→ {pk.so_id}</span><span className={`badge ${pk.status==='pulled'?'badge-green':'badge-amber'}`}>{pk.status}</span></div>})}</>}
             </div>})()}
           {gOpen&&<div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:59}} onClick={()=>setGOpen(false)}/>}
