@@ -2,7 +2,7 @@
 import React, { useState, useMemo, useCallback } from 'react';
 import './portal.css';
 const Icon=({name,size=18})=>{const p={home:<path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>,users:<><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></>,building:<><path d="M6 22V4a2 2 0 012-2h8a2 2 0 012 2v18z"/><path d="M6 12H4a2 2 0 00-2 2v6a2 2 0 002 2h2"/><path d="M18 9h2a2 2 0 012 2v9a2 2 0 01-2 2h-2"/><path d="M10 6h4M10 10h4M10 14h4M10 18h4"/></>,package:<><path d="M16.5 9.4l-9-5.19M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/><path d="M3.27 6.96L12 12.01l8.73-5.05M12 22.08V12"/></>,box:<path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/>,search:<><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></>,plus:<path d="M12 5v14M5 12h14"/>,edit:<><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></>,upload:<><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></>,back:<polyline points="15 18 9 12 15 6"/>,mail:<><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></>,file:<><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></>,sortUp:<path d="M7 14l5-5 5 5"/>,sort:<><path d="M7 15l5 5 5-5"/><path d="M7 9l5-5 5 5"/></>,image:<><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></>,cart:<><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 002 1.61h9.72a2 2 0 002-1.61L23 6H6"/></>,dollar:<><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></>,grid:<><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></>,warehouse:<><path d="M22 8.35V20a2 2 0 01-2 2H4a2 2 0 01-2-2V8.35A2 2 0 013.26 6.5l8-3.2a2 2 0 011.48 0l8 3.2A2 2 0 0122 8.35z"/><path d="M6 18h12M6 14h12"/></>,trash:<><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></>,eye:<><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></>,alert:<><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></>,x:<><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>,check:<polyline points="20 6 9 17 4 12"/>,send:<><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></>};return<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{p[name]}</svg>};
-const REPS=[{id:'r1',name:'Steve Peterson',role:'admin'},{id:'r2',name:'Laura Chen',role:'rep'},{id:'r3',name:'Mike Torres',role:'rep'}];
+const REPS=[{id:'r1',name:'Steve Peterson',role:'admin'},{id:'r2',name:'Denis',role:'gm'},{id:'r3',name:'Liliana',role:'production'},{id:'r4',name:'Laura Chen',role:'rep'},{id:'r5',name:'Mike Torres',role:'rep'}];
 const CATEGORIES=['Tees','Hoodies','Polos','Shorts','1/4 Zips','Hats','Footwear','Jersey Tops','Jersey Bottoms','Balls'];
 const CONTACT_ROLES=['Head Coach','Assistant','Accounting','Athletic Director','Primary','Other'];
 const POSITIONS=['Front Center','Back Center','Left Chest','Right Chest','Left Sleeve','Right Sleeve','Left Leg','Right Leg','Nape','Other'];
@@ -39,10 +39,10 @@ const D_C=[
 {id:'c1a',parent_id:'c1',name:'OLu Baseball',alpha_tag:'OLuB',contacts:[{name:'Coach Martinez',email:'martinez@orangelutheran.org',phone:'',role:'Head Coach'}],shipping_address_line1:'2222 N Santiago Blvd - Field House',shipping_city:'Orange',shipping_state:'CA',adidas_ua_tier:'A',catalog_markup:1.65,payment_terms:'net30',primary_rep_id:'r1',is_active:true,_oe:0,_os:1,_oi:1,_ob:4200},
 {id:'c1b',parent_id:'c1',name:'OLu Football',alpha_tag:'OLuF',contacts:[{name:'Coach Davis',email:'davis@orangelutheran.org',phone:'',role:'Head Coach'}],shipping_address_line1:'2222 N Santiago Blvd - Athletics',shipping_city:'Orange',shipping_state:'CA',adidas_ua_tier:'A',catalog_markup:1.65,payment_terms:'net30',primary_rep_id:'r1',is_active:true,_oe:1,_os:1,_oi:0,_ob:0},
 {id:'c1c',parent_id:'c1',name:'OLu Track & Field',alpha_tag:'OLuT',contacts:[{name:'Coach Chen',email:'chen@orangelutheran.org',phone:'',role:'Head Coach'}],shipping_city:'Orange',shipping_state:'CA',adidas_ua_tier:'A',catalog_markup:1.65,payment_terms:'net30',primary_rep_id:'r1',is_active:true,_oe:0,_os:0,_oi:0,_ob:0},
-{id:'c2',parent_id:null,name:'St. Francis High School',alpha_tag:'SF',contacts:[{name:'AD Office',email:'ad@stfrancis.edu',phone:'818-555-0200',role:'Athletic Director'}],billing_city:'La Canada',billing_state:'CA',shipping_city:'La Canada',shipping_state:'CA',adidas_ua_tier:'B',catalog_markup:1.65,payment_terms:'net30',tax_rate:0.095,primary_rep_id:'r2',is_active:true,_oe:0,_os:1,_oi:2,_ob:6800},
-{id:'c2a',parent_id:'c2',name:'St. Francis Lacrosse',alpha_tag:'SFL',contacts:[{name:'Coach Resch',email:'resch@stfrancis.edu',phone:'',role:'Head Coach'}],shipping_city:'La Canada',shipping_state:'CA',adidas_ua_tier:'B',catalog_markup:1.65,payment_terms:'net30',primary_rep_id:'r2',is_active:true,_oe:0,_os:1,_oi:2,_ob:6800},
-{id:'c3',parent_id:null,name:'Clovis Unified School District',alpha_tag:'CUSD',contacts:[{name:'District Office',email:'purchasing@clovisusd.k12.ca.us',phone:'559-555-0300',role:'Primary'}],billing_city:'Clovis',billing_state:'CA',shipping_city:'Clovis',shipping_state:'CA',adidas_ua_tier:'B',catalog_markup:1.65,payment_terms:'prepay',tax_rate:0.0863,primary_rep_id:'r3',is_active:true,_oe:2,_os:0,_oi:0,_ob:0},
-{id:'c3a',parent_id:'c3',name:'Clovis High Badminton',alpha_tag:'CHBad',contacts:[{name:'Coach Kim',email:'kim@clovisusd.k12.ca.us',phone:'',role:'Head Coach'}],shipping_city:'Clovis',shipping_state:'CA',adidas_ua_tier:'B',catalog_markup:1.65,payment_terms:'prepay',primary_rep_id:'r3',is_active:true,_oe:2,_os:0,_oi:0,_ob:0},
+{id:'c2',parent_id:null,name:'St. Francis High School',alpha_tag:'SF',contacts:[{name:'AD Office',email:'ad@stfrancis.edu',phone:'818-555-0200',role:'Athletic Director'}],billing_city:'La Canada',billing_state:'CA',shipping_city:'La Canada',shipping_state:'CA',adidas_ua_tier:'B',catalog_markup:1.65,payment_terms:'net30',tax_rate:0.095,primary_rep_id:'r4',is_active:true,_oe:0,_os:1,_oi:2,_ob:6800},
+{id:'c2a',parent_id:'c2',name:'St. Francis Lacrosse',alpha_tag:'SFL',contacts:[{name:'Coach Resch',email:'resch@stfrancis.edu',phone:'',role:'Head Coach'}],shipping_city:'La Canada',shipping_state:'CA',adidas_ua_tier:'B',catalog_markup:1.65,payment_terms:'net30',primary_rep_id:'r4',is_active:true,_oe:0,_os:1,_oi:2,_ob:6800},
+{id:'c3',parent_id:null,name:'Clovis Unified School District',alpha_tag:'CUSD',contacts:[{name:'District Office',email:'purchasing@clovisusd.k12.ca.us',phone:'559-555-0300',role:'Primary'}],billing_city:'Clovis',billing_state:'CA',shipping_city:'Clovis',shipping_state:'CA',adidas_ua_tier:'B',catalog_markup:1.65,payment_terms:'prepay',tax_rate:0.0863,primary_rep_id:'r5',is_active:true,_oe:2,_os:0,_oi:0,_ob:0},
+{id:'c3a',parent_id:'c3',name:'Clovis High Badminton',alpha_tag:'CHBad',contacts:[{name:'Coach Kim',email:'kim@clovisusd.k12.ca.us',phone:'',role:'Head Coach'}],shipping_city:'Clovis',shipping_state:'CA',adidas_ua_tier:'B',catalog_markup:1.65,payment_terms:'prepay',primary_rep_id:'r5',is_active:true,_oe:2,_os:0,_oi:0,_ob:0},
 ];
 const D_V=[
 {id:'v1',name:'Adidas',vendor_type:'upload',nsa_carries_inventory:true,click_automation:true,is_active:true,contact_email:'teamorders@adidas.com',contact_phone:'800-448-1796',rep_name:'Sarah Johnson',payment_terms:'net60',notes:'Team dealer program.',_oi:3,_it:12450,_ac:4200,_a3:5250,_a6:3000,_a9:0},
@@ -66,10 +66,10 @@ const D_P=[
 const D_E=[
 {id:'EST-2089',customer_id:'c1b',memo:'Spring 2026 Football Camp Tees',status:'sent',created_by:'r1',created_at:'02/10/26 9:15 AM',updated_at:'02/10/26 2:30 PM',default_markup:1.65,shipping_type:'pct',shipping_value:8,ship_to_id:'default',email_status:'opened',email_opened_at:'02/10/26 3:45 PM',art_files:[],items:[{product_id:'p5',sku:'PC61',name:'Port & Company Essential Tee',brand:'Port & Company',color:'Jet Black',nsa_cost:2.85,retail_price:8.98,unit_sell:4.75,sizes:{S:8,M:15,L:20,XL:12,'2XL':5},available_sizes:['S','M','L','XL','2XL','3XL'],_colors:['Jet Black','Navy','Red','White'],decorations:[{kind:'art',position:'Front Center',art_file_id:null,sell_override:null},{kind:'art',position:'Back Center',art_file_id:null,sell_override:null}]}]},
 {id:'EST-2094',customer_id:'c1b',memo:'Football Coaches Polos',status:'approved',created_by:'r1',created_at:'02/16/26 10:00 AM',updated_at:'02/16/26 10:00 AM',default_markup:1.65,shipping_type:'flat',shipping_value:25,ship_to_id:'default',email_status:'viewed',email_opened_at:'02/16/26 11:30 AM',email_viewed_at:'02/16/26 11:32 AM',art_files:[],items:[{product_id:'p4',sku:'1370399',name:'Under Armour Team Polo',brand:'Under Armour',color:'Cardinal/White',nsa_cost:22,retail_price:65,unit_sell:39,sizes:{M:2,L:3,XL:2,'2XL':1},available_sizes:['S','M','L','XL','2XL'],decorations:[{kind:'art',position:'Left Chest',art_file_id:null,sell_override:null}]}]},
-{id:'EST-2101',customer_id:'c3a',memo:'Badminton Team Uniforms',status:'draft',created_by:'r3',created_at:'02/12/26 3:00 PM',updated_at:'02/12/26 3:00 PM',default_markup:1.65,shipping_type:'pct',shipping_value:0,ship_to_id:'default',email_status:null,art_files:[],items:[]},
+{id:'EST-2101',customer_id:'c3a',memo:'Badminton Team Uniforms',status:'draft',created_by:'r5',created_at:'02/12/26 3:00 PM',updated_at:'02/12/26 3:00 PM',default_markup:1.65,shipping_type:'pct',shipping_value:0,ship_to_id:'default',email_status:null,art_files:[],items:[]},
 ];
 const D_SO=[
-{id:'SO-1042',customer_id:'c1a',estimate_id:'EST-2088',memo:'Baseball Spring Season Full Package',status:'in_production',created_by:'r1',created_at:'02/10/26 11:00 AM',updated_at:'02/14/26',expected_date:'03/15/26',production_notes:'Rush - coach needs by spring break',shipping_type:'flat',shipping_value:45,ship_to_id:'default',firm_dates:[{item_desc:'JX4453 - Adidas Pregame Tee',date:'03/01/26',approved:true}],
+{id:'SO-1042',customer_id:'c1a',estimate_id:'EST-2088',memo:'Baseball Spring Season Full Package',status:'in_production',created_by:'r1',created_at:'02/10/26 11:00 AM',updated_at:'02/14/26',expected_date:'2026-03-15',production_notes:'Rush - coach needs by spring break',shipping_type:'flat',shipping_value:45,ship_to_id:'default',firm_dates:[{item_desc:'JX4453 - Adidas Pregame Tee',date:'03/01/26',approved:true}],
   art_files:[{id:'af1',name:'OLu Baseball Front Logo',deco_type:'screen_print',ink_colors:'Navy, Gold, White',thread_colors:'',art_size:'12" x 4"',files:['OLu_Baseball_Logo_v3.ai','OLu_Baseball_Logo_v3.pdf'],notes:'Final approved - navy/gold',status:'approved',uploaded:'02/10/26'},
     {id:'af2',name:'Sleeve Logo Small',deco_type:'embroidery',ink_colors:'',thread_colors:'Navy 2767, Gold',art_size:'2" wide',files:['OLu_Sleeve_Logo.ai'],notes:'Small sleeve crest',status:'approved',uploaded:'02/11/26'}],
   items:[
@@ -98,7 +98,7 @@ const D_SO=[
       pick_lines:[],po_lines:[],
       decorations:[{kind:'art',position:'Front Center',art_file_id:'af1',sell_override:3.25}]}
   ]},
-{id:'SO-1045',customer_id:'c1b',memo:'Football Spring Practice Gear',status:'in_production',created_by:'r1',created_at:'02/12/26 2:00 PM',updated_at:'02/12/26',expected_date:'03/20/26',production_notes:'Need sizes confirmed by coach',shipping_type:'pct',shipping_value:8,ship_to_id:'default',firm_dates:[],
+{id:'SO-1045',customer_id:'c1b',memo:'Football Spring Practice Gear',status:'in_production',created_by:'r1',created_at:'02/12/26 2:00 PM',updated_at:'02/12/26',expected_date:'2026-03-20',production_notes:'Need sizes confirmed by coach',shipping_type:'pct',shipping_value:8,ship_to_id:'default',firm_dates:[],
   art_files:[{id:'af4',name:'OLu Football Helmet Logo',deco_type:'screen_print',ink_colors:'Red, White',thread_colors:'',art_size:'10" x 8"',files:['OLu_Football.ai'],notes:'Waiting coach approval',status:'uploaded',uploaded:'02/13/26'}],
   items:[
     // Item 1: JX4453 — SAME product as SO-1042! Open IF will conflict when SO-1042 pulls
@@ -124,7 +124,7 @@ const D_SO=[
       po_lines:[],no_deco:true,
       decorations:[]}
   ]},
-{id:'SO-1051',customer_id:'c2a',memo:'Lacrosse Team Store',status:'in_production',created_by:'r2',created_at:'02/14/26 10:30 AM',updated_at:'02/15/26',expected_date:'03/10/26',production_notes:'Coach wants navy/silver colorway',shipping_type:'flat',shipping_value:0,ship_to_id:'default',firm_dates:[],
+{id:'SO-1051',customer_id:'c2a',memo:'Lacrosse Team Store',status:'in_production',created_by:'r4',created_at:'02/14/26 10:30 AM',updated_at:'02/15/26',expected_date:'2026-03-10',production_notes:'Coach wants navy/silver colorway',shipping_type:'flat',shipping_value:0,ship_to_id:'default',firm_dates:[],
   art_files:[{id:'af3',name:'SFL Lacrosse Crest',deco_type:'embroidery',ink_colors:'',thread_colors:'Navy 2767, White, Silver 877',art_size:'3.5" wide',files:['SFL_Crest.eps','SFL_Crest_preview.png'],notes:'',status:'uploaded',uploaded:'02/15/26'}],
   items:[
     // Item 1: UA Polo — has inventory, ready for IF
@@ -141,12 +141,12 @@ const D_SO=[
 ];
 const D_MSG=[
 {id:'m1',so_id:'SO-1042',author_id:'r1',text:'Coach Martinez confirmed navy/gold for front logo. Approved the proof.',ts:'02/10/26 11:30 AM',read_by:['r1','r2']},
-{id:'m2',so_id:'SO-1042',author_id:'r3',text:'Warehouse: we have 30 of JX4453 in stock, rest need to be ordered from Adidas.',ts:'02/11/26 9:15 AM',read_by:['r3']},
+{id:'m2',so_id:'SO-1042',author_id:'r5',text:'Warehouse: we have 30 of JX4453 in stock, rest need to be ordered from Adidas.',ts:'02/11/26 9:15 AM',read_by:['r5']},
 {id:'m3',so_id:'SO-1042',author_id:'r1',text:'PO placed with Adidas for remaining sizes. Expected 02/20.',ts:'02/11/26 2:00 PM',read_by:['r1']},
-{id:'m4',so_id:'SO-1042',author_id:'r2',text:'@Steve - coach called, needs jerseys by 3/10 not 3/15. Can we rush?',ts:'02/14/26 10:00 AM',read_by:['r2']},
+{id:'m4',so_id:'SO-1042',author_id:'r4',text:'@Steve - coach called, needs jerseys by 3/10 not 3/15. Can we rush?',ts:'02/14/26 10:00 AM',read_by:['r4']},
 {id:'m5',so_id:'SO-1042',author_id:'r1',text:'Updated expected date. Adidas confirmed they can expedite.',ts:'02/14/26 11:30 AM',read_by:['r1']},
 {id:'m6',so_id:'SO-1045',author_id:'r1',text:'Waiting on Coach Davis for logo approval. Sent follow-up email.',ts:'02/13/26 3:00 PM',read_by:['r1']},
-{id:'m7',so_id:'SO-1051',author_id:'r2',text:'Crest file from coach is low-res. Need vector version.',ts:'02/15/26 11:00 AM',read_by:['r2']},
+{id:'m7',so_id:'SO-1051',author_id:'r4',text:'Crest file from coach is low-res. Need vector version.',ts:'02/15/26 11:00 AM',read_by:['r4']},
 ];
 const D_INV=[{id:'INV-1042',type:'invoice',customer_id:'c1a',date:'02/10/26',total:4200,paid:0,memo:'Baseball Deposit',status:'open'},{id:'INV-1038',type:'invoice',customer_id:'c2a',date:'01/28/26',total:3400,paid:0,memo:'Lacrosse Preseason',status:'open'},{id:'INV-1039',type:'invoice',customer_id:'c2a',date:'02/01/26',total:3400,paid:3400,memo:'Lacrosse Batch 1',status:'paid'}];
 
@@ -291,7 +291,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         {isSO&&<div style={{width:140}}>
           <label className="form-label">Expected</label>
           <input className="form-input" type="date" value={o.expected_date||''} onChange={e=>sv('expected_date',e.target.value)}/>
-          <button style={{fontSize:10,color:'#7c3aed',background:'none',border:'none',cursor:'pointer',padding:'4px 0',textDecoration:'underline',fontWeight:600}} onClick={()=>{setFirmReqDate(o.expected_date||'');setFirmReqNote('');setShowFirmReq(true)}}>📌 Request Firm Date</button>
+          <button style={{fontSize:10,marginTop:4,padding:'3px 8px',borderRadius:4,background:'#f5f3ff',border:'1px solid #ddd6fe',color:'#7c3aed',cursor:'pointer',fontWeight:600,display:'flex',alignItems:'center',gap:3}} onClick={()=>{setFirmReqDate(o.expected_date||'');setFirmReqNote('');setShowFirmReq(true)}}>📌 Request Firm Date</button>
         </div>}
         <button className="btn btn-primary" onClick={()=>{onSave(o);setSaved(true);setDirty(false);nf(`${isE?'Estimate':'SO'} saved`)}} style={{padding:'10px 28px',fontSize:16,fontWeight:800}}><Icon name="check" size={16}/> Save</button>
         {isE&&saved&&o.status!=='approved'&&o.status!=='converted'&&<button className="btn btn-secondary" onClick={()=>setShowSend(true)}><Icon name="send" size={14}/> Send</button>}
@@ -363,7 +363,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
             {szs.map(sz=><div key={sz} style={{textAlign:'center',width:48}}><div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
               <input value={item.sizes[sz]||''} onChange={e=>uSz(idx,sz,e.target.value)} placeholder="0"
                 style={{width:42,textAlign:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'5px 2px',fontSize:15,fontWeight:700,color:(item.sizes[sz]||0)>0?'#0f172a':'#cbd5e1'}}/>
-              {(()=>{const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);const stk=p?._inv?.[sz];const need=item.sizes[sz]||0;return stk!=null?<div style={{fontSize:9,fontWeight:600,color:stk<=0?'#dc2626':stk<need?'#ca8a04':'#166534'}}>{stk} inv</div>:null})()}</div>)}
+              {(()=>{const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);const stk=p?._inv?.[sz];const need=item.sizes[sz]||0;return<div style={{fontSize:9,fontWeight:600,minHeight:13,color:stk==null?'transparent':stk<=0?'#dc2626':stk<need?'#ca8a04':'#166534'}}>{stk!=null?stk+' inv':'\u00A0'}</div>})()}</div>)}
             <div style={{textAlign:'center',marginLeft:4,padding:'0 10px',borderLeft:'2px solid #e2e8f0'}}><div style={{fontSize:10,fontWeight:700,color:'#1e40af'}}>TOT</div><div style={{fontSize:20,fontWeight:800,color:'#1e40af'}}>{qty}</div></div>
             <div style={{position:'relative',marginLeft:4}}><button className="btn btn-sm btn-secondary" onClick={()=>setShowSzPicker(showSzPicker===idx?null:idx)} style={{fontSize:10}}>+ Size</button>
               {showSzPicker===idx&&addable.length>0&&<><div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:39}} onClick={()=>setShowSzPicker(null)}/><div style={{position:'absolute',top:'100%',left:0,background:'white',border:'1px solid #e2e8f0',borderRadius:6,boxShadow:'0 4px 12px rgba(0,0,0,0.1)',zIndex:40,padding:6,display:'flex',gap:3,flexWrap:'wrap',width:180}}>
@@ -1463,6 +1463,231 @@ export default function App(){
       {isA&&<button className="btn btn-sm btn-secondary" onClick={()=>setAM({open:true,p})}>INV</button>}</div></td>
   </tr>)}</tbody></table></div></div></>);
 
+  // PRODUCTION BOARD
+  const[prodView,setProdView]=useState('board');const[prodFilter,setProdFilter]=useState('all');
+  const[prodSort,setProdSort]=useState({f:'expected',d:'asc'});const[prodStatF,setProdStatF]=useState('active');
+  const[showColPicker,setShowColPicker]=useState(false);
+  const ALL_PROD_COLS=[
+    {id:'so',label:'SO',default:true},
+    {id:'customer',label:'Customer',default:true},
+    {id:'memo',label:'Memo',default:true},
+    {id:'rep',label:'Rep',default:true},
+    {id:'units',label:'Units',default:true},
+    {id:'fulfilled',label:'Fulfilled',default:true},
+    {id:'art',label:'Art',default:true},
+    {id:'expected',label:'Expected',default:true},
+    {id:'rev',label:'Revenue',default:true},
+    {id:'status',label:'Status',default:true},
+    {id:'msgs',label:'Messages',default:true},
+    {id:'flags',label:'Flags',default:true},
+    {id:'items',label:'# Items',default:false},
+    {id:'created',label:'Created',default:false},
+    {id:'notes',label:'Prod Notes',default:false},
+  ];
+  const defaultCols=ALL_PROD_COLS.filter(c=>c.default).map(c=>c.id);
+  const[prodCols,setProdCols]=useState(()=>{try{const s=localStorage.getItem('nsa_prod_cols');return s?JSON.parse(s):defaultCols}catch{return defaultCols}});
+  const toggleCol=id=>{setProdCols(prev=>{const n=prev.includes(id)?prev.filter(c=>c!==id):[...prev,id];try{localStorage.setItem('nsa_prod_cols',JSON.stringify(n))}catch{}return n})};
+  const resetCols=()=>{setProdCols(defaultCols);try{localStorage.setItem('nsa_prod_cols',JSON.stringify(defaultCols))}catch{}};
+  const rProd2=()=>{
+    const cols=[
+      {id:'waiting_art',label:'Waiting Art',color:'#d97706',bg:'#fffbeb'},
+      {id:'in_production',label:'In Production',color:'#2563eb',bg:'#eff6ff'},
+      {id:'ready_ship',label:'Ready to Ship',color:'#166534',bg:'#f0fdf4'},
+      {id:'shipped',label:'Shipped',color:'#7c3aed',bg:'#f5f3ff'},
+      {id:'completed',label:'Completed',color:'#64748b',bg:'#f8fafc'}
+    ];
+    const preFilter=prodFilter==='all'?sos:sos.filter(s=>s.created_by===prodFilter);
+    const filtered=prodStatF==='active'?preFilter.filter(s=>s.status!=='completed'&&s.status!=='shipped'):prodStatF==='all'?preFilter:preFilter.filter(s=>s.status===prodStatF);
+    // Compute stats per SO
+    const soStats=filtered.map(so=>{
+      const c=cust.find(x=>x.id===so.customer_id);
+      let totalUnits=0,pulledUnits=0,poUnits=0,rcvdUnits=0,openUnits=0,totalRev=0;
+      let artTotal=0,artApproved=0,hasUnpulledIF=false,hasWaitingPO=false,needsDeco=false;
+      artTotal=(so.art_files||[]).length;artApproved=(so.art_files||[]).filter(f=>f.status==='approved').length;
+      (so.items||[]).forEach(it=>{
+        const qty=Object.values(it.sizes||{}).reduce((a,v)=>a+v,0);totalUnits+=qty;totalRev+=qty*(it.unit_sell||0);
+        if(it.decorations?.length===0&&!it.no_deco)needsDeco=true;
+        Object.entries(it.sizes||{}).filter(([,v])=>v>0).forEach(([sz,v])=>{
+          const picked=(it.pick_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);
+          const poPending=(it.po_lines||[]).reduce((a,pk)=>{const ord=pk[sz]||0;const rcv=(pk.received||{})[sz]||0;return a+(ord-rcv)},0);
+          const poRcvd=(it.po_lines||[]).reduce((a,pk)=>a+((pk.received||{})[sz]||0),0);
+          pulledUnits+=(it.pick_lines||[]).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+(pk[sz]||0),0);
+          poUnits+=poPending;rcvdUnits+=poRcvd;
+          if((it.pick_lines||[]).some(pk=>pk.status!=='pulled'&&(pk[sz]||0)>0))hasUnpulledIF=true;
+          if((it.po_lines||[]).some(pk=>{const ord=pk[sz]||0;const rcv=(pk.received||{})[sz]||0;return ord-rcv>0}))hasWaitingPO=true;
+        });
+      });
+      openUnits=totalUnits-pulledUnits-rcvdUnits;
+      const firmDates=(so.firm_dates||[]).filter(f=>!f.approved);
+      const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
+      const unreadMsgs=msgs.filter(m=>m.so_id===so.id&&!(m.read_by||[]).includes(cu.id)).length;
+      return{...so,c,totalUnits,pulledUnits,poUnits,rcvdUnits,openUnits,totalRev,artTotal,artApproved,hasUnpulledIF,hasWaitingPO,needsDeco,firmDates,daysOut,unreadMsgs};
+    });
+    // Sort
+    soStats.sort((a,b)=>{const f=prodSort.f;let va,vb;
+      if(f==='expected'){va=a.expected_date||'9999';vb=b.expected_date||'9999'}
+      else if(f==='customer'){va=a.c?.name||'';vb=b.c?.name||''}
+      else if(f==='rep'){va=REPS.find(r=>r.id===a.created_by)?.name||'';vb=REPS.find(r=>r.id===b.created_by)?.name||''}
+      else if(f==='units'){va=a.totalUnits;vb=b.totalUnits}
+      else if(f==='fulfilled'){va=a.totalUnits>0?(a.pulledUnits+a.rcvdUnits)/a.totalUnits:0;vb=b.totalUnits>0?(b.pulledUnits+b.rcvdUnits)/b.totalUnits:0}
+      else if(f==='rev'){va=a.totalRev;vb=b.totalRev}
+      else{va=a.id;vb=b.id}
+      if(typeof va==='string')return prodSort.d==='asc'?va.localeCompare(vb):vb.localeCompare(va);
+      return prodSort.d==='asc'?va-vb:vb-va;
+    });
+
+    return(<>
+      {/* Stats bar */}
+      <div className="stats-row">
+        <div className="stat-card"><div className="stat-label">Active Orders</div><div className="stat-value">{filtered.length}</div></div>
+        <div className="stat-card"><div className="stat-label">Total Units</div><div className="stat-value">{soStats.reduce((a,s)=>a+s.totalUnits,0)}</div></div>
+        <div className="stat-card"><div className="stat-label">Units Fulfilled</div><div className="stat-value" style={{color:'#166534'}}>{soStats.reduce((a,s)=>a+s.pulledUnits+s.rcvdUnits,0)}</div></div>
+        <div className="stat-card"><div className="stat-label">Awaiting POs</div><div className="stat-value" style={{color:'#d97706'}}>{soStats.reduce((a,s)=>a+s.poUnits,0)}</div></div>
+        <div className="stat-card" style={{borderColor:'#7c3aed'}}><div className="stat-label">Pipeline Rev</div><div className="stat-value" style={{color:'#7c3aed'}}>${soStats.reduce((a,s)=>a+s.totalRev,0).toLocaleString(undefined,{maximumFractionDigits:0})}</div></div>
+      </div>
+      {/* Filter bar */}
+      <div style={{display:'flex',gap:8,marginBottom:16,alignItems:'center',flexWrap:'wrap'}}>
+        <div style={{display:'flex',gap:4}}>{[['board','Board'],['list','List']].map(([v,l])=><button key={v} className={`btn btn-sm ${prodView===v?'btn-primary':'btn-secondary'}`} onClick={()=>setProdView(v)}>{l}</button>)}</div>
+        <select className="form-select" style={{width:130,fontSize:12}} value={prodFilter} onChange={e=>setProdFilter(e.target.value)}>
+          <option value="all">All Reps</option>{REPS.filter(r=>r.role==='rep'||r.role==='admin').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
+        </select>
+        <select className="form-select" style={{width:130,fontSize:12}} value={prodStatF} onChange={e=>setProdStatF(e.target.value)}>
+          <option value="active">Active Only</option><option value="all">All Statuses</option>
+          <option value="waiting_art">Waiting Art</option><option value="in_production">In Production</option>
+          <option value="ready_ship">Ready to Ship</option><option value="shipped">Shipped</option><option value="completed">Completed</option>
+        </select>
+        <select className="form-select" style={{width:130,fontSize:12}} value={prodSort.f} onChange={e=>setProdSort(s=>({...s,f:e.target.value}))}>
+          <option value="expected">Sort: Due Date</option><option value="customer">Sort: Customer</option>
+          <option value="rep">Sort: Rep</option><option value="units">Sort: Units</option>
+          <option value="fulfilled">Sort: % Fulfilled</option><option value="rev">Sort: Revenue</option>
+        </select>
+        <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'4px 8px'}} onClick={()=>setProdSort(s=>({...s,d:s.d==='asc'?'desc':'asc'}))}>{prodSort.d==='asc'?'↑ Asc':'↓ Desc'}</button>
+        {prodView==='list'&&<div style={{position:'relative'}}><button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'4px 8px'}} onClick={()=>setShowColPicker(!showColPicker)}>⚙️ Columns</button>
+          {showColPicker&&<><div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:49}} onClick={()=>setShowColPicker(false)}/><div style={{position:'absolute',top:'100%',right:0,background:'white',border:'1px solid #e2e8f0',borderRadius:8,boxShadow:'0 8px 24px rgba(0,0,0,0.12)',zIndex:50,padding:12,width:200}}>
+            <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:8}}>Show/Hide Columns</div>
+            {ALL_PROD_COLS.map(col=><label key={col.id} style={{display:'flex',alignItems:'center',gap:6,padding:'3px 0',cursor:'pointer',fontSize:12}}>
+              <input type="checkbox" checked={prodCols.includes(col.id)} onChange={()=>toggleCol(col.id)}/>{col.label}
+            </label>)}
+            <div style={{borderTop:'1px solid #f1f5f9',marginTop:6,paddingTop:6}}><button className="btn btn-sm btn-secondary" style={{fontSize:10,width:'100%'}} onClick={resetCols}>Reset to Default</button></div>
+          </div></>}</div>}
+        <div style={{marginLeft:'auto',fontSize:11,color:'#64748b'}}>Showing {soStats.length} orders</div>
+      </div>
+
+      {/* Action items / alerts */}
+      {(()=>{
+        const alerts=[];
+        soStats.forEach(s=>{
+          if(s.firmDates.length>0)alerts.push({so:s,type:'firm',msg:'📌 Firm date request pending',color:'#7c3aed'});
+          if(s.hasUnpulledIF)alerts.push({so:s,type:'pull',msg:'📦 IFs need pulling',color:'#d97706'});
+          if(s.hasWaitingPO)alerts.push({so:s,type:'po',msg:'🚚 POs awaiting delivery',color:'#2563eb'});
+          if(s.needsDeco)alerts.push({so:s,type:'deco',msg:'🎨 Items missing decoration',color:'#dc2626'});
+          if(s.daysOut!=null&&s.daysOut<=7&&s.daysOut>=0&&s.status!=='completed'&&s.status!=='shipped')alerts.push({so:s,type:'due',msg:'⏰ Due in '+s.daysOut+' days',color:'#dc2626'});
+        });
+        if(alerts.length===0)return null;
+        return<div className="card" style={{marginBottom:16,borderLeft:'4px solid #dc2626'}}><div className="card-header"><h2>⚡ Action Items ({alerts.length})</h2></div><div className="card-body" style={{padding:0}}>
+          <table style={{fontSize:12}}><tbody>{alerts.map((a,i)=><tr key={i} style={{cursor:'pointer'}} onClick={()=>{setESO(a.so);setESOC(a.so.c);setPg('orders')}}>
+            <td style={{fontWeight:700,color:'#1e40af',width:80}}>{a.so.id}</td>
+            <td>{a.so.c?.name} <span className="badge badge-gray">{a.so.c?.alpha_tag}</span></td>
+            <td style={{color:a.color,fontWeight:600}}>{a.msg}</td>
+            <td style={{color:'#64748b',fontSize:11}}>{a.so.expected_date||'—'}</td>
+          </tr>)}</tbody></table>
+        </div></div>})()}
+
+      {/* Board view */}
+      {prodView==='board'&&<div style={{display:'flex',gap:12,overflowX:'auto',paddingBottom:12}}>
+        {cols.map(col=>{const items=soStats.filter(s=>s.status===col.id);
+          return<div key={col.id} style={{minWidth:260,flex:1,background:col.bg,borderRadius:8,padding:10}}>
+            <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:10}}>
+              <div style={{width:10,height:10,borderRadius:10,background:col.color}}/>
+              <span style={{fontSize:12,fontWeight:700,color:col.color,textTransform:'uppercase'}}>{col.label}</span>
+              <span style={{fontSize:11,color:'#94a3b8',marginLeft:'auto'}}>{items.length}</span>
+            </div>
+            {items.length===0&&<div style={{padding:20,textAlign:'center',color:'#cbd5e1',fontSize:12}}>No orders</div>}
+            {items.map(s=>{
+              const pct=s.totalUnits>0?Math.round((s.pulledUnits+s.rcvdUnits)/s.totalUnits*100):0;
+              return<div key={s.id} className="card" style={{marginBottom:8,cursor:'pointer',border:s.daysOut!=null&&s.daysOut<=3&&s.status!=='completed'&&s.status!=='shipped'?'2px solid #dc2626':undefined}} onClick={()=>{setESO(s);setESOC(s.c);setPg('orders')}}>
+                <div style={{padding:'10px 12px'}}>
+                  <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:4}}>
+                    <span style={{fontWeight:800,color:'#1e40af',fontSize:13}}>{s.id}</span>
+                    <span style={{fontSize:11,color:'#64748b',flex:1}}>{s.c?.alpha_tag}</span>
+                    {s.unreadMsgs>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:9,fontWeight:700}}>{s.unreadMsgs} msg</span>}
+                    <span style={{fontSize:12,fontWeight:700,color:'#166534'}}>${s.totalRev.toLocaleString(undefined,{maximumFractionDigits:0})}</span>
+                  </div>
+                  <div style={{fontSize:11,color:'#475569',marginBottom:6}}>{s.memo}
+                    <span style={{fontSize:10,color:'#94a3b8',marginLeft:6}}>— {REPS.find(r=>r.id===s.created_by)?.name?.split(' ')[0]||'—'}</span></div>
+                  {/* Progress bar */}
+                  <div style={{background:'#e2e8f0',borderRadius:4,height:6,marginBottom:4,overflow:'hidden'}}>
+                    <div style={{height:6,borderRadius:4,background:pct>=100?'#22c55e':pct>50?'#3b82f6':'#f59e0b',width:pct+'%',transition:'width 0.3s'}}/>
+                  </div>
+                  <div style={{display:'flex',gap:6,fontSize:10,color:'#64748b',flexWrap:'wrap'}}>
+                    <span>{pct}% fulfilled</span>
+                    <span>·</span>
+                    <span>{s.totalUnits} units</span>
+                    {s.artTotal>0&&<><span>·</span><span style={{color:s.artApproved===s.artTotal?'#166534':'#d97706'}}>Art {s.artApproved}/{s.artTotal}</span></>}
+                    {s.expected_date&&<><span>·</span><span style={{color:s.daysOut!=null&&s.daysOut<=7?'#dc2626':'#64748b'}}>📅 {s.expected_date}</span></>}
+                  </div>
+                  {/* Flags */}
+                  <div style={{display:'flex',gap:4,marginTop:4,flexWrap:'wrap'}}>
+                    {s.firmDates.length>0&&<span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:'#f5f3ff',color:'#7c3aed',fontWeight:600}}>📌 Firm req</span>}
+                    {s.hasUnpulledIF&&<span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:'#fef3c7',color:'#92400e',fontWeight:600}}>📦 Needs pull</span>}
+                    {s.hasWaitingPO&&<span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:'#dbeafe',color:'#1e40af',fontWeight:600}}>🚚 PO waiting</span>}
+                    {s.needsDeco&&<span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:'#fef2f2',color:'#dc2626',fontWeight:600}}>🎨 No deco</span>}
+                  </div>
+                </div>
+              </div>})}
+          </div>})}
+      </div>}
+
+      {/* List view */}
+      {prodView==='list'&&<div className="card"><div className="card-body" style={{padding:0}}>
+        <table><thead><tr>
+          {prodCols.includes('so')&&<th>SO</th>}
+          {prodCols.includes('customer')&&<th>Customer</th>}
+          {prodCols.includes('memo')&&<th>Memo</th>}
+          {prodCols.includes('rep')&&<th>Rep</th>}
+          {prodCols.includes('units')&&<th>Units</th>}
+          {prodCols.includes('fulfilled')&&<th>Fulfilled</th>}
+          {prodCols.includes('art')&&<th>Art</th>}
+          {prodCols.includes('expected')&&<th>Expected</th>}
+          {prodCols.includes('rev')&&<th>Rev</th>}
+          {prodCols.includes('status')&&<th>Status</th>}
+          {prodCols.includes('msgs')&&<th>Msgs</th>}
+          {prodCols.includes('flags')&&<th>Flags</th>}
+          {prodCols.includes('items')&&<th># Items</th>}
+          {prodCols.includes('created')&&<th>Created</th>}
+          {prodCols.includes('notes')&&<th>Notes</th>}
+        </tr></thead><tbody>
+        {soStats.map(s=>{const pct=s.totalUnits>0?Math.round((s.pulledUnits+s.rcvdUnits)/s.totalUnits*100):0;
+          return<tr key={s.id} style={{cursor:'pointer'}} onClick={()=>{setESO(s);setESOC(s.c);setPg('orders')}}>
+            {prodCols.includes('so')&&<td style={{fontWeight:700,color:'#1e40af'}}>{s.id}</td>}
+            {prodCols.includes('customer')&&<td>{s.c?.name} <span className="badge badge-gray">{s.c?.alpha_tag}</span></td>}
+            {prodCols.includes('memo')&&<td style={{fontSize:12}}>{s.memo}</td>}
+            {prodCols.includes('rep')&&<td style={{fontSize:11,color:'#64748b'}}>{REPS.find(r=>r.id===s.created_by)?.name?.split(' ')[0]||'—'}</td>}
+            {prodCols.includes('units')&&<td style={{fontWeight:700}}>{s.totalUnits}</td>}
+            {prodCols.includes('fulfilled')&&<td><div style={{display:'flex',alignItems:'center',gap:6}}>
+              <div style={{width:50,background:'#e2e8f0',borderRadius:3,height:5,overflow:'hidden'}}><div style={{height:5,borderRadius:3,background:pct>=100?'#22c55e':pct>50?'#3b82f6':'#f59e0b',width:pct+'%'}}/></div>
+              <span style={{fontSize:11,fontWeight:600}}>{pct}%</span></div></td>}
+            {prodCols.includes('art')&&<td>{s.artTotal>0?<span style={{fontSize:11,color:s.artApproved===s.artTotal?'#166534':'#d97706'}}>{s.artApproved}/{s.artTotal} ✓</span>:<span style={{fontSize:11,color:'#94a3b8'}}>—</span>}</td>}
+            {prodCols.includes('expected')&&<td style={{fontSize:12,color:s.daysOut!=null&&s.daysOut<=7?'#dc2626':'#64748b',fontWeight:s.daysOut!=null&&s.daysOut<=7?700:400}}>{s.expected_date||'—'}</td>}
+            {prodCols.includes('rev')&&<td style={{fontWeight:700,color:'#166534'}}>${s.totalRev.toLocaleString(undefined,{maximumFractionDigits:0})}</td>}
+            {prodCols.includes('status')&&<td><span style={{padding:'3px 8px',borderRadius:12,fontSize:10,fontWeight:700,background:SC[s.status]?.bg||'#f1f5f9',color:SC[s.status]?.c||'#475569'}}>{s.status?.replace(/_/g,' ')}</span></td>}
+            {prodCols.includes('msgs')&&<td>{s.unreadMsgs>0?<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'2px 7px',fontSize:10,fontWeight:700}}>{s.unreadMsgs}</span>:
+              <span style={{fontSize:11,color:'#94a3b8'}}>{msgs.filter(m=>m.so_id===s.id).length||'—'}</span>}</td>}
+            {prodCols.includes('flags')&&<td><div style={{display:'flex',gap:3,flexWrap:'wrap'}}>
+              {s.firmDates.length>0&&<span style={{fontSize:9,padding:'1px 4px',borderRadius:3,background:'#f5f3ff',color:'#7c3aed'}}>📌</span>}
+              {s.hasUnpulledIF&&<span style={{fontSize:9,padding:'1px 4px',borderRadius:3,background:'#fef3c7',color:'#92400e'}}>📦</span>}
+              {s.hasWaitingPO&&<span style={{fontSize:9,padding:'1px 4px',borderRadius:3,background:'#dbeafe',color:'#1e40af'}}>🚚</span>}
+              {s.needsDeco&&<span style={{fontSize:9,padding:'1px 4px',borderRadius:3,background:'#fef2f2',color:'#dc2626'}}>🎨</span>}
+            </div></td>}
+            {prodCols.includes('items')&&<td style={{fontSize:12}}>{(s.items||[]).length}</td>}
+            {prodCols.includes('created')&&<td style={{fontSize:11,color:'#64748b'}}>{s.created_at?.split(' ')[0]||'—'}</td>}
+            {prodCols.includes('notes')&&<td style={{fontSize:11,color:'#64748b',maxWidth:120,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{s.production_notes||'—'}</td>}
+          </tr>})}
+        </tbody></table>
+      </div></div>}
+    </>);
+  };
+
   // MESSAGES PAGE
   const rMsg=()=>{const allM=[...msgs].sort((a,b)=>(b.ts||'').localeCompare(a.ts));
     const unread=allM.filter(m=>!(m.read_by||[]).includes(cu.id));
@@ -1490,8 +1715,8 @@ export default function App(){
           </div></div>})}</div></div></>)};
 
     // NAV
-  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{section:'Comms'},{id:'messages',label:'Messages',icon:'mail'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'}];
-  const titles={dashboard:'Dashboard',estimates:'Estimates',orders:'Sales Orders',customers:'Customers',vendors:'Vendors',products:'Products',inventory:'Inventory',messages:'Messages'};
+  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{section:'Production'},{id:'production',label:'Production Board',icon:'grid'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{section:'Comms'},{id:'messages',label:'Messages',icon:'mail'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'}];
+  const titles={dashboard:'Dashboard',estimates:'Estimates',orders:'Sales Orders',production:'Production Board',customers:'Customers',vendors:'Vendors',products:'Products',inventory:'Inventory',messages:'Messages'};
   return(<div className="app"><Toast msg={toast?.msg} type={toast?.type}/>
     <div className="sidebar"><div className="sidebar-logo">NSA<span>Portal</span></div>
       <nav className="sidebar-nav">{nav.map((item,i)=>{if(item.section)return<div key={i} className="sidebar-section">{item.section}</div>;
@@ -1526,7 +1751,7 @@ export default function App(){
           {gOpen&&<div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:59}} onClick={()=>setGOpen(false)}/>}
         </div>
         <div style={{display:'flex',gap:6,alignItems:'center'}}><button className="btn btn-sm btn-primary" onClick={()=>newE(null)} style={{fontSize:11}}><Icon name="plus" size={12}/> Estimate</button><button className="btn btn-sm btn-secondary" onClick={()=>setCM({open:true,c:null})} style={{fontSize:11}}><Icon name="plus" size={12}/> Customer</button></div></div>
-      <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}</div></div>
+      <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='production'&&rProd2()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}</div></div>
     <CustModal isOpen={cM.open} onClose={()=>setCM({open:false,c:null})} onSave={savC} customer={cM.c} parents={pars}/>
     <AdjModal isOpen={aM.open} onClose={()=>setAM({open:false,p:null})} product={aM.p} onSave={savI}/>
   </div>);
