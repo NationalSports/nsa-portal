@@ -414,6 +414,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
   // Helper: effective PO committed qty for a size (ordered minus cancelled)
   const poCommitted=(poLines,sz)=>(poLines||[]).reduce((a,pk)=>{const ordered=pk[sz]||0;const cancelled=(pk.cancelled||{})[sz]||0;return a+(ordered-cancelled)},0);
   const[newAddr,setNewAddr]=useState('');const[showNA,setShowNA]=useState(false);const[showSzPicker,setShowSzPicker]=useState(null);const[showCustom,setShowCustom]=useState(false);const[custItem,setCustItem]=useState({vendor_id:'',name:'',sku:'CUSTOM',nsa_cost:0,unit_sell:0,retail_price:0,color:'',brand:''});
+  const[nsImport,setNsImport]=useState(null);// {step:'paste'|'review'|'confirm', raw:'', parsed:[], decoMap:[], issues:[]}
   const sv=(k,v)=>{setO(e=>({...e,[k]:v,updated_at:new Date().toLocaleString()}));setDirty(true)};
   const isAU=b=>b==='Adidas'||b==='Under Armour'||b==='New Balance';const tD={A:0.4,B:0.35,C:0.3};
   const selC=id=>{const c=allCustomers.find(x=>x.id===id);if(c){setCust(c);sv('customer_id',id);sv('default_markup',c.catalog_markup||1.65)}};
@@ -817,7 +818,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
     {/* ADD PRODUCT */}
     <div className="card"><div style={{padding:'14px 18px'}}>
       {!showAdd?<div style={{display:'flex',gap:6}}><button className="btn btn-primary" onClick={()=>setShowAdd(true)} disabled={!cust}><Icon name="plus" size={14}/> Add Product</button>
-      <button className="btn btn-secondary" onClick={()=>setShowCustom(!showCustom)} disabled={!cust}><Icon name="plus" size={14}/> Custom Item</button></div>
+      <button className="btn btn-secondary" onClick={()=>setShowCustom(!showCustom)} disabled={!cust}><Icon name="plus" size={14}/> Custom Item</button>
+      <button className="btn btn-secondary" style={{marginLeft:'auto'}} onClick={()=>setNsImport({step:'paste',raw:'',parsed:[],decoLines:[],issues:[]})} disabled={!cust}>📥 Import from NetSuite</button></div>
       :<div><div className="search-bar" style={{marginBottom:8}}><Icon name="search"/><input placeholder="Search SKU, name, brand..." value={pS} onChange={e=>setPS(e.target.value)} autoFocus/></div>
         <div style={{maxHeight:250,overflow:'auto'}}>{fp.slice(0,12).map(p=><div key={p.id} style={{padding:'10px 12px',borderBottom:'1px solid #f8fafc',cursor:'pointer',display:'flex',alignItems:'center',gap:10}} onClick={()=>addP(p)}>
           <span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',background:'#dbeafe',padding:'2px 6px',borderRadius:3}}>{p.sku}</span><span style={{fontWeight:600}}>{p.name}</span><span className="badge badge-blue">{p.brand}</span>
@@ -857,6 +859,185 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           sv('items',[...o.items,{product_id:null,sku:custItem.sku||'CUSTOM',name:custItem.name,brand:brandName,vendor_id:custItem.vendor_id,color:custItem.color,nsa_cost:custItem.nsa_cost,retail_price:custItem.retail_price||0,unit_sell:custItem.unit_sell,available_sizes:['S','M','L','XL','2XL'],sizes:{},decorations:[],is_custom:true}]);
           setShowCustom(false);setCustItem({vendor_id:'',name:'',sku:'CUSTOM',nsa_cost:0,unit_sell:0,retail_price:0,color:'',brand:''})}}>Add Item</button>
         <button className="btn btn-secondary" onClick={()=>setShowCustom(false)}>Cancel</button></div>
+    </div></div>}
+
+    {/* NETSUITE IMPORT WIZARD */}
+    {nsImport&&<div className="modal-overlay" onClick={()=>setNsImport(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:900,maxHeight:'90vh',overflow:'auto'}}>
+      <div className="modal-header" style={{background:'#eff6ff'}}><h2>📥 Import from NetSuite</h2><button className="modal-close" onClick={()=>setNsImport(null)}>×</button></div>
+      <div className="modal-body">
+
+      {/* STEP 1: Paste data */}
+      {nsImport.step==='paste'&&<>
+        <div style={{fontSize:12,color:'#64748b',marginBottom:8}}>
+          Copy the line items from your NetSuite Sales Order (ITEM through INVOICED columns) and paste below. The parser handles:
+        </div>
+        <div style={{display:'flex',gap:8,marginBottom:8,flexWrap:'wrap'}}>
+          {['Size-split lines (JJ0605-M, JJ0605-L → one item)','Custom/misc lines with sizes in description','Decoration lines (Screen Print, Embroidery)','PO references and fulfillment data','Shipping lines'].map(t=>
+            <span key={t} style={{fontSize:10,padding:'2px 8px',background:'#f0fdf4',borderRadius:8,color:'#166534'}}>✓ {t}</span>)}
+        </div>
+        <textarea className="form-input" rows={14} value={nsImport.raw} onChange={e=>setNsImport(x=>({...x,raw:e.target.value}))}
+          placeholder={"Paste NetSuite lines here...\n\nExample:\nJJ0605 : JJ0605-M\tAdidas PRACTICE 2.0J - Power Red - M\t30\tAdidas Contract\t21.00\t630.00\tPO4133 OLuF\n..."} style={{fontFamily:'monospace',fontSize:11,whiteSpace:'pre'}}/>
+        <div style={{marginTop:8,display:'flex',gap:8}}>
+          <button className="btn btn-primary" disabled={!nsImport.raw.trim()} onClick={()=>{
+            // PARSE NETSUITE DATA
+            const lines=nsImport.raw.trim().split('\n').filter(l=>l.trim());
+            const items={};const decoLines=[];const issues=[];const shipping=[];
+            const SZ_RE=/[-\s](XXS|XS|S|M|L|XL|2XL|3XL|4XL|5XL|YXS|YS|YM|YL|YXL|OSFA)$/i;
+            const SZ_DESC=/\b(\d+)\s*\/\s*(S|M|L|XL|2XL|3XL|4XL|XXS|XS|YS|YM|YL|YXL)\b/gi;
+            const DECO_RE=/^(screen\s*print|embroidery|dtf|heat\s*transfer|vinyl|sublimation)/i;
+
+            lines.forEach((line,li)=>{
+              const cols=line.split('\t').map(c=>c.trim());
+              if(cols.length<4){issues.push({line:li+1,msg:'Too few columns: "'+line.slice(0,60)+'"'});return}
+              const rawItem=cols[0]||'';const desc=cols[1]||'';const qty=parseInt(cols[2])||0;
+              const priceLevel=cols[3]||'';const rate=parseFloat(cols[4])||0;const amount=parseFloat(cols[5])||0;
+              const poRef=cols[6]||'';
+
+              // Skip header rows
+              if(rawItem.toUpperCase()==='ITEM'||desc.toUpperCase()==='DESCRIPTION')return;
+
+              // Shipping line
+              if(rawItem.toLowerCase().includes('shipping')||desc.toLowerCase().includes('shipping')){
+                shipping.push({desc,amount});return}
+
+              // Decoration line
+              if(DECO_RE.test(desc)||rawItem.toLowerCase().includes('screen')||rawItem.toLowerCase().includes('embroid')){
+                decoLines.push({rawItem,desc,qty,rate,amount,poRef});return}
+
+              // Check if this is a size-suffixed SKU (JJ0605-M, IT0266-XL, JX4452-2XL)
+              const skuParts=rawItem.split(/\s*:\s*/);const itemCode=skuParts[0]||rawItem;
+              const sizeMatch=(skuParts[1]||itemCode).match(SZ_RE);
+              let baseSku,size;
+              if(sizeMatch){
+                size=sizeMatch[1].toUpperCase();
+                baseSku=(skuParts[1]||itemCode).replace(SZ_RE,'').replace(/-$/,'').trim();
+                if(!baseSku)baseSku=itemCode.replace(SZ_RE,'').replace(/-$/,'').trim();
+              } else {
+                // Try extracting from description (Misc Adi lines with sizes in desc)
+                baseSku=itemCode;size=null;
+              }
+
+              // Extract color from description
+              let color='';const colorMatch=desc.match(/[-–]\s*([A-Za-z\s\/]+?)(?:\s*[-–]\s*(?:XXS|XS|S|M|L|XL|2XL|3XL|4XL))?$/);
+              if(colorMatch&&size)color=desc.replace(colorMatch[0],'').replace(/^.*?[-–]\s*/,'').replace(/^.*?[-–]\s*/,'').trim();
+              if(!color){const cM=desc.match(/[-–]\s*([A-Za-z\s\/]+?)(?:\s*[-–]|$)/);if(cM)color=cM[1].trim()}
+
+              // Determine brand from price level or description
+              let brand='';
+              if(priceLevel.toLowerCase().includes('adidas'))brand='Adidas';
+              else if(priceLevel.toLowerCase().includes('under armour')||priceLevel.toLowerCase().includes('ua'))brand='Under Armour';
+              else if(priceLevel.toLowerCase().includes('nike'))brand='Nike';
+              else if(desc.toLowerCase().includes('adidas'))brand='Adidas';
+              else if(desc.toLowerCase().includes('under armour'))brand='Under Armour';
+
+              if(size&&baseSku){
+                // Size-split line — collapse into parent item
+                if(!items[baseSku])items[baseSku]={sku:baseSku,name:desc.replace(/\s*[-–]\s*(XXS|XS|S|M|L|XL|2XL|3XL|4XL|5XL)$/i,'').replace(/\s*[-–]\s*[A-Za-z\s\/]+?\s*[-–]\s*(XXS|XS|S|M|L|XL|2XL|3XL|4XL|5XL)$/i,'').trim(),brand,color,rate,sizes:{},totalQty:0,totalAmt:0,poRef,priceLevel,issues:[]};
+                items[baseSku].sizes[size]=(items[baseSku].sizes[size]||0)+qty;
+                items[baseSku].totalQty+=qty;items[baseSku].totalAmt+=amount;
+                if(color&&!items[baseSku].color)items[baseSku].color=color;
+              } else {
+                // Single-line item — try to parse sizes from description
+                const embeddedSizes={};let match;const sizeRe2=/(\d+)\s*\/\s*(S|M|L|XL|2XL|3XL|4XL|XXS|XS|YS|YM|YL|YXL)/gi;
+                while((match=sizeRe2.exec(desc))!==null){embeddedSizes[match[2].toUpperCase()]=parseInt(match[1])}
+                const hasSizes=Object.keys(embeddedSizes).length>0;
+                const key=baseSku+'_'+li;
+                items[key]={sku:baseSku==='Misc Adi'?'CUSTOM':baseSku,name:desc,brand,color,rate,
+                  sizes:hasSizes?embeddedSizes:{OSFA:qty},totalQty:qty,totalAmt:amount,poRef,priceLevel,
+                  is_custom:baseSku.toLowerCase().includes('misc')||priceLevel.toLowerCase()==='custom',
+                  issues:hasSizes?[]:['Sizes parsed from description — verify']};
+                if(!hasSizes&&qty>1)items[key].issues.push('Single quantity line — may need size breakdown');
+              }
+            });
+
+            const parsed=Object.values(items);
+            setNsImport(x=>({...x,step:'review',parsed,decoLines,issues,shipping}));
+          }}>🔍 Parse Data</button>
+          <button className="btn btn-secondary" onClick={()=>setNsImport(null)}>Cancel</button>
+        </div>
+      </>}
+
+      {/* STEP 2: Review parsed items */}
+      {nsImport.step==='review'&&<>
+        <div style={{display:'flex',gap:8,marginBottom:12}}>
+          <div style={{padding:8,background:'#f0fdf4',borderRadius:6,flex:1,textAlign:'center'}}>
+            <div style={{fontSize:18,fontWeight:800,color:'#166534'}}>{nsImport.parsed.length}</div><div style={{fontSize:10,color:'#64748b'}}>Items Found</div></div>
+          <div style={{padding:8,background:'#ede9fe',borderRadius:6,flex:1,textAlign:'center'}}>
+            <div style={{fontSize:18,fontWeight:800,color:'#6d28d9'}}>{nsImport.decoLines.length}</div><div style={{fontSize:10,color:'#64748b'}}>Deco Lines</div></div>
+          <div style={{padding:8,background:nsImport.issues.length?'#fef2f2':'#f8fafc',borderRadius:6,flex:1,textAlign:'center'}}>
+            <div style={{fontSize:18,fontWeight:800,color:nsImport.issues.length?'#dc2626':'#94a3b8'}}>{nsImport.issues.length}</div><div style={{fontSize:10,color:'#64748b'}}>Issues</div></div>
+        </div>
+
+        {nsImport.issues.length>0&&<div style={{marginBottom:8,padding:8,background:'#fef2f2',borderRadius:6}}>
+          <div style={{fontSize:11,fontWeight:700,color:'#dc2626',marginBottom:4}}>⚠️ Parser Issues</div>
+          {nsImport.issues.map((is,i)=><div key={i} style={{fontSize:10,color:'#991b1b'}}>Line {is.line}: {is.msg}</div>)}
+        </div>}
+
+        <div style={{fontSize:12,fontWeight:700,color:'#1e40af',marginBottom:6}}>📦 Parsed Items — Review & Edit</div>
+        <div style={{maxHeight:350,overflow:'auto',border:'1px solid #e2e8f0',borderRadius:6}}>
+          <table style={{fontSize:11}}><thead><tr><th style={{width:30}}>✓</th><th>SKU</th><th>Name</th><th>Brand</th><th>Color</th><th>Rate</th><th>Sizes</th><th>Qty</th><th>Amount</th><th>Notes</th></tr></thead>
+          <tbody>{nsImport.parsed.map((it,i)=>{
+            const toggle=()=>setNsImport(x=>({...x,parsed:x.parsed.map((p,pi)=>pi===i?{...p,_skip:!p._skip}:p)}));
+            const upd=(k,v)=>setNsImport(x=>({...x,parsed:x.parsed.map((p,pi)=>pi===i?{...p,[k]:v}:p)}));
+            return<tr key={i} style={{opacity:it._skip?0.4:1,background:it.issues?.length?'#fffbeb':'white'}}>
+              <td><input type="checkbox" checked={!it._skip} onChange={toggle}/></td>
+              <td><input className="form-input" value={it.sku} onChange={e=>upd('sku',e.target.value)} style={{width:80,fontSize:10,fontFamily:'monospace'}}/></td>
+              <td style={{maxWidth:180}}><input className="form-input" value={it.name} onChange={e=>upd('name',e.target.value)} style={{width:'100%',fontSize:10}}/></td>
+              <td><input className="form-input" value={it.brand} onChange={e=>upd('brand',e.target.value)} style={{width:70,fontSize:10}}/></td>
+              <td><input className="form-input" value={it.color} onChange={e=>upd('color',e.target.value)} style={{width:70,fontSize:10}}/></td>
+              <td style={{textAlign:'right',fontWeight:600}}>${it.rate?.toFixed(2)}</td>
+              <td style={{fontSize:9}}>{Object.entries(it.sizes||{}).map(([s,q])=>s+':'+q).join(', ')}</td>
+              <td style={{textAlign:'center',fontWeight:700}}>{it.totalQty}</td>
+              <td style={{textAlign:'right'}}>${it.totalAmt?.toFixed(2)}</td>
+              <td>{it.is_custom&&<span style={{fontSize:8,background:'#fef3c7',padding:'1px 4px',borderRadius:3,color:'#92400e'}}>Custom</span>}
+                {(it.issues||[]).map((iss,ii)=><div key={ii} style={{fontSize:8,color:'#d97706'}}>⚠ {iss}</div>)}</td>
+            </tr>})}</tbody></table>
+        </div>
+
+        {nsImport.decoLines.length>0&&<>
+          <div style={{fontSize:12,fontWeight:700,color:'#7c3aed',marginTop:12,marginBottom:6}}>🎨 Decoration Lines — Assign to Items</div>
+          {nsImport.decoLines.map((d,di)=><div key={di} style={{padding:8,background:'#f8fafc',borderRadius:6,marginBottom:4,display:'flex',gap:8,alignItems:'center',fontSize:11}}>
+            <span style={{fontWeight:700}}>{d.desc}</span>
+            <span style={{color:'#64748b'}}>Qty: {d.qty} · ${d.rate?.toFixed(2)}/ea</span>
+            <select className="form-select" style={{width:200,fontSize:10}} value={d._assignTo||'all'} onChange={e=>{
+              const v=e.target.value;setNsImport(x=>({...x,decoLines:x.decoLines.map((dl,dli)=>dli===di?{...dl,_assignTo:v}:dl)}))}}>
+              <option value="all">Apply to all items</option>
+              {nsImport.parsed.filter(p=>!p._skip).map((p,pi)=><option key={pi} value={pi}>{p.sku} — {p.name?.slice(0,30)}</option>)}
+            </select>
+          </div>)}
+        </>}
+
+        {(nsImport.shipping||[]).length>0&&<div style={{marginTop:8,fontSize:11,color:'#64748b'}}>📦 Shipping: {nsImport.shipping.map(s=>s.desc+' $'+s.amount?.toFixed(2)).join(', ')}</div>}
+
+        <div style={{marginTop:12,display:'flex',gap:8}}>
+          <button className="btn btn-secondary" onClick={()=>setNsImport(x=>({...x,step:'paste'}))}>← Back</button>
+          <button className="btn btn-primary" onClick={()=>{
+            // Convert parsed items to SO line items
+            const keeping=nsImport.parsed.filter(p=>!p._skip);
+            const newItems=keeping.map(p=>{
+              const au=isAU(p.brand);
+              const sell=p.rate||0;const cost=au?rQ(sell):rQ(sell/(o.default_markup||1.65));
+              const retail=au?rQ(sell/(1-(tD[cust?.adidas_ua_tier||'B']||0.35))):0;
+              const szKeys=Object.keys(p.sizes||{});
+              return{product_id:null,sku:p.sku,name:p.name,brand:p.brand,color:p.color,nsa_cost:cost,retail_price:retail,unit_sell:sell,
+                available_sizes:szKeys.length>0?szKeys:['S','M','L','XL','2XL'],sizes:p.sizes||{},decorations:[],
+                is_custom:p.is_custom||false,pick_lines:[],po_lines:[]};
+            });
+            // Apply deco lines
+            nsImport.decoLines.forEach(d=>{
+              const decoType=d.desc.toLowerCase().includes('embroid')?'embroidery':d.desc.toLowerCase().includes('dtf')?'dtf':'screen_print';
+              const deco={kind:'art',position:'Front Center',art_file_id:null,sell_override:d.rate||0,_imported_desc:d.desc};
+              if(d._assignTo==='all'||!d._assignTo){newItems.forEach(it=>{if(!it.decorations)it.decorations=[];it.decorations.push({...deco})})}
+              else{const idx=parseInt(d._assignTo);if(newItems[idx]){if(!newItems[idx].decorations)newItems[idx].decorations=[];newItems[idx].decorations.push({...deco})}}
+            });
+            sv('items',[...o.items,...newItems]);
+            if(nsImport.shipping?.length){const shipAmt=nsImport.shipping.reduce((a,s)=>a+s.amount,0);if(shipAmt>0){sv('shipping_type','flat');sv('shipping_value',shipAmt)}}
+            setNsImport(null);
+            nf('📥 Imported '+newItems.length+' items from NetSuite');
+          }}>✅ Import {nsImport.parsed.filter(p=>!p._skip).length} Items</button>
+        </div>
+      </>}
+      </div>
     </div></div>}
     </>}
 
@@ -4252,6 +4433,374 @@ export default function App(){
     </>);
   };
 
+  // NETSUITE IMPORT PAGE
+  const[imp,setImp]=useState({step:'upload',raw:'',docType:'so',custId:'',parsed:[],decoLines:[],issues:[],questions:[],shipping:[],memo:'',poRef:''});
+  const SZ_ORD_I=['XXS','XS','YXS','YS','YM','YL','YXL','S','M','L','XL','2XL','3XL','4XL','5XL','OSFA'];
+
+  const parseNSData=(raw)=>{
+    const lines=raw.trim().split('\n').filter(l=>l.trim());
+    const items={};const decoLines=[];const issues=[];const shipping=[];const questions=[];
+    const SZ_RE=/[-\s](XXS|XS|S|M|L|XL|2XL|3XL|4XL|5XL|YXS|YS|YM|YL|YXL|OSFA)$/i;
+
+    lines.forEach((line,li)=>{
+      const cols=line.split('\t').map(c=>c.trim());
+      if(cols.length<3){if(line.trim().length>5)issues.push({line:li+1,msg:'Could not parse: "'+line.slice(0,80)+'"'});return}
+      const rawItem=cols[0]||'';const desc=cols[1]||'';const qty=parseInt(cols[2])||0;
+      const priceLevel=cols[3]||'';const rate=parseFloat(cols[4])||0;const amount=parseFloat(cols[5])||0;
+      const poRef=cols[6]||'';const onHand=cols[7]!==undefined?parseInt(cols[7]):null;
+
+      if(rawItem.toUpperCase()==='ITEM'||desc.toUpperCase()==='DESCRIPTION')return;
+      if(rawItem.toLowerCase().includes('shipping')||desc.toLowerCase().includes('shipping')){shipping.push({desc,amount,rate});return}
+      if(/^(screen\s*print|embroid|dtf|heat\s*trans|vinyl|sublim)/i.test(desc)||rawItem.toLowerCase().includes('screen')||rawItem.toLowerCase().includes('embroid')){
+        decoLines.push({rawItem,desc,qty,rate,amount,poRef,_assignTo:'all'});return}
+
+      const skuParts=rawItem.split(/\s*:\s*/);const itemCode=skuParts[0]||rawItem;
+      const fullSku=skuParts[1]||itemCode;
+      const sizeMatch=fullSku.match(SZ_RE);
+      let baseSku,size;
+      if(sizeMatch){
+        size=sizeMatch[1].toUpperCase();
+        baseSku=fullSku.replace(SZ_RE,'').replace(/-$/,'').trim();
+        if(!baseSku)baseSku=itemCode.replace(SZ_RE,'').replace(/-$/,'').trim();
+      } else {baseSku=itemCode;size=null}
+
+      let color='';
+      if(size){const cM=desc.match(/[-–]\s*([A-Za-z\s\/]+?)\s*[-–]\s*(?:XXS|XS|S|M|L|XL|2XL|3XL|4XL)/i);if(cM)color=cM[1].trim()}
+      if(!color){const cM2=desc.match(/[-–]\s*([A-Za-z\s\/,]+?)$/);if(cM2&&!sizeMatch)color=cM2[1].trim()}
+
+      let brand='';
+      if(priceLevel.toLowerCase().includes('adidas'))brand='Adidas';
+      else if(priceLevel.toLowerCase().includes('under armour')||priceLevel.toLowerCase().includes('ua'))brand='Under Armour';
+      else if(priceLevel.toLowerCase().includes('nike'))brand='Nike';
+      else if(priceLevel.toLowerCase().includes('richardson'))brand='Richardson';
+      else if(desc.toLowerCase().includes('adidas'))brand='Adidas';
+      else if(desc.toLowerCase().includes('under armour'))brand='Under Armour';
+
+      // Try to match to existing product catalog
+      const catMatch=prod.find(p=>p.sku===baseSku)||(baseSku.length>3?prod.find(p=>p.sku.toLowerCase()===baseSku.toLowerCase()):null);
+
+      if(size&&baseSku){
+        if(!items[baseSku])items[baseSku]={sku:baseSku,name:catMatch?.name||desc.replace(/\s*[-–]\s*[A-Za-z\s\/]+?\s*[-–]\s*\w+$/,'').trim(),
+          brand:catMatch?.brand||brand,color:color||catMatch?.color||'',rate,sizes:{},totalQty:0,totalAmt:0,poRef,priceLevel,
+          catMatch:catMatch||null,is_custom:!catMatch&&(baseSku.toLowerCase().includes('misc')||priceLevel.toLowerCase()==='custom'),issues:[],onHand:null};
+        items[baseSku].sizes[size]=(items[baseSku].sizes[size]||0)+qty;
+        items[baseSku].totalQty+=qty;items[baseSku].totalAmt+=amount;
+        if(onHand!==null)items[baseSku].onHand=onHand;
+        if(color&&!items[baseSku].color)items[baseSku].color=color;
+      } else {
+        const embSizes={};let m;const sr=/(\d+)\s*\/\s*(S|M|L|XL|2XL|3XL|4XL|XXS|XS|YS|YM|YL|YXL)/gi;
+        while((m=sr.exec(desc))!==null)embSizes[m[2].toUpperCase()]=parseInt(m[1]);
+        const hasSz=Object.keys(embSizes).length>0;
+        const key=baseSku+'_'+li;
+        items[key]={sku:catMatch?.sku||baseSku,name:catMatch?.name||desc,brand:catMatch?.brand||brand,color,rate,
+          sizes:hasSz?embSizes:{OSFA:qty},totalQty:qty,totalAmt:amount,poRef,priceLevel,
+          catMatch:catMatch||null,is_custom:!catMatch,
+          issues:hasSz?['Sizes parsed from description — verify']:['Could not detect sizes — entered as bulk qty']};
+      }
+    });
+
+    const parsed=Object.values(items);
+
+    // Generate questions for ambiguous items
+    parsed.forEach((it,i)=>{
+      if(!it.catMatch&&!it.is_custom)questions.push({idx:i,type:'match',msg:`"${it.sku}" not found in catalog. Is this a known product or a custom/special order?`,options:['match_catalog','custom','skip'],answer:null});
+      if(it.is_custom&&it.sku==='Misc Adi')questions.push({idx:i,type:'sku',msg:`Custom item "${it.name.slice(0,50)}..." — do you know the real SKU?`,answer:''});
+      if(!it.color)questions.push({idx:i,type:'color',msg:`What color is "${it.sku} — ${it.name.slice(0,40)}"?`,answer:''});
+    });
+
+    return{parsed,decoLines,issues,questions,shipping};
+  };
+
+  // Customer detection from text
+  const detectCustomer=(text)=>{
+    const lower=text.toLowerCase();
+    return cust.find(c=>{
+      if(c.alpha_tag&&lower.includes(c.alpha_tag.toLowerCase()))return true;
+      if(c.name&&lower.includes(c.name.toLowerCase()))return true;
+      return c.contacts?.some(ct=>ct.name&&lower.includes(ct.name.toLowerCase()));
+    });
+  };
+
+  const rImport=()=>{
+
+    const applyAnswer=(qi,val)=>setImp(x=>({...x,questions:x.questions.map((q,i)=>i===qi?{...q,answer:val}:q)}));
+    const updItem=(pi,k,v)=>setImp(x=>({...x,parsed:x.parsed.map((p,i)=>i===pi?{...p,[k]:v}:p)}));
+
+    return(<>
+      {/* Step indicators */}
+      <div style={{display:'flex',gap:4,marginBottom:16}}>
+        {[['upload','1. Upload / Paste'],['review','2. Review Items'],['questions','3. Answer Questions'],['confirm','4. Confirm & Create']].map(([id,label])=>
+          <div key={id} style={{flex:1,padding:'8px 12px',borderRadius:6,textAlign:'center',fontSize:11,fontWeight:700,
+            background:imp.step===id?'#1e40af':'#f1f5f9',color:imp.step===id?'white':'#64748b'}}>{label}</div>)}
+      </div>
+
+      {/* STEP 1: Upload */}
+      {imp.step==='upload'&&<>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}}>
+          {/* Left: upload area */}
+          <div className="card"><div className="card-header"><h2>📄 Upload PDF or Paste Data</h2></div>
+            <div className="card-body">
+              <div style={{marginBottom:12}}>
+                <label className="form-label">Document Type</label>
+                <div style={{display:'flex',gap:4}}>
+                  {[['so','Sales Order'],['est','Estimate'],['po','Purchase Order']].map(([v,l])=>
+                    <button key={v} className={`btn btn-sm ${imp.docType===v?'btn-primary':'btn-secondary'}`} onClick={()=>setImp(x=>({...x,docType:v}))}>{l}</button>)}
+                </div>
+              </div>
+              <div style={{marginBottom:12}}>
+                <label className="form-label">Upload PDF <span style={{fontSize:10,color:'#94a3b8'}}>(coming soon — use paste for now)</span></label>
+                <div style={{padding:24,border:'2px dashed #d1d5db',borderRadius:8,textAlign:'center',color:'#94a3b8',fontSize:12}}>
+                  📎 Drag & drop PDF here or click to browse<br/>
+                  <span style={{fontSize:10}}>NetSuite PDF export or printed SO/Estimate</span>
+                </div>
+              </div>
+              <div>
+                <label className="form-label">Or paste tab-separated data from NetSuite</label>
+                <textarea className="form-input" rows={10} value={imp.raw} onChange={e=>{
+                  const v=e.target.value;setImp(x=>({...x,raw:v}));
+                  // Auto-detect customer
+                  if(v.length>20&&!imp.custId){const det=detectCustomer(v);if(det)setImp(x=>({...x,custId:det.id}))}
+                }} placeholder="Copy lines from NetSuite (ITEM → INVOICED columns) and paste here..." style={{fontFamily:'monospace',fontSize:10,whiteSpace:'pre'}}/>
+              </div>
+            </div>
+          </div>
+
+          {/* Right: customer + settings */}
+          <div className="card"><div className="card-header"><h2>👤 Customer & Settings</h2></div>
+            <div className="card-body">
+              <div style={{marginBottom:12}}>
+                <label className="form-label">Customer {imp.custId&&<span style={{color:'#22c55e',fontSize:10}}>✓ Detected</span>}</label>
+                <select className="form-select" value={imp.custId} onChange={e=>setImp(x=>({...x,custId:e.target.value}))}>
+                  <option value="">Select customer...</option>
+                  {cust.filter(c=>c.is_active!==false).map(c=><option key={c.id} value={c.id}>{c.name} ({c.alpha_tag})</option>)}
+                </select>
+              </div>
+              {imp.custId&&(()=>{const c=cust.find(x=>x.id===imp.custId);if(!c)return null;
+                return<div style={{padding:10,background:'#f0fdf4',borderRadius:6,marginBottom:12}}>
+                  <div style={{fontWeight:700}}>{c.name} <span className="badge badge-gray">{c.alpha_tag}</span></div>
+                  <div style={{fontSize:11,color:'#64748b',marginTop:2}}>
+                    Tier {c.adidas_ua_tier} · {c.catalog_markup}x markup · {c.payment_terms}
+                    {c.primary_rep_id&&<> · Rep: {REPS.find(r=>r.id===c.primary_rep_id)?.name}</>}
+                  </div>
+                </div>})()}
+              <div style={{marginBottom:12}}>
+                <label className="form-label">Order Memo / Description</label>
+                <input className="form-input" value={imp.memo} onChange={e=>setImp(x=>({...x,memo:e.target.value}))} placeholder="e.g. Spring Football 2026 — from NS SO#12345"/>
+              </div>
+              <div style={{marginBottom:12}}>
+                <label className="form-label">NetSuite Reference # (optional)</label>
+                <input className="form-input" value={imp.poRef} onChange={e=>setImp(x=>({...x,poRef:e.target.value}))} placeholder="NS SO# or PO#"/>
+              </div>
+              <div style={{padding:10,background:'#eff6ff',borderRadius:6,fontSize:11,color:'#1e40af'}}>
+                <strong>How this works:</strong> Paste your NetSuite data → we parse and collapse size-split lines → match items to the NSA catalog → you review and answer questions → create as Estimate or SO.
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div style={{marginTop:12,display:'flex',gap:8}}>
+          <button className="btn btn-primary" disabled={!imp.raw.trim()||!imp.custId} onClick={()=>{
+            const result=parseNSData(imp.raw);
+            setImp(x=>({...x,step:result.questions.length>0?'review':'review',...result}));
+          }}>🔍 Parse & Review →</button>
+        </div>
+      </>}
+
+      {/* STEP 2: Review Items */}
+      {imp.step==='review'&&<>
+        <div style={{display:'flex',gap:8,marginBottom:12}}>
+          <div style={{padding:8,background:'#f0fdf4',borderRadius:6,flex:1,textAlign:'center'}}>
+            <div style={{fontSize:22,fontWeight:800,color:'#166534'}}>{imp.parsed.length}</div><div style={{fontSize:10}}>Items Parsed</div></div>
+          <div style={{padding:8,background:'#dbeafe',borderRadius:6,flex:1,textAlign:'center'}}>
+            <div style={{fontSize:22,fontWeight:800,color:'#1e40af'}}>{imp.parsed.filter(p=>p.catMatch).length}</div><div style={{fontSize:10}}>Catalog Matches</div></div>
+          <div style={{padding:8,background:'#fef3c7',borderRadius:6,flex:1,textAlign:'center'}}>
+            <div style={{fontSize:22,fontWeight:800,color:'#92400e'}}>{imp.parsed.filter(p=>!p.catMatch).length}</div><div style={{fontSize:10}}>Custom / Unmatched</div></div>
+          <div style={{padding:8,background:'#ede9fe',borderRadius:6,flex:1,textAlign:'center'}}>
+            <div style={{fontSize:22,fontWeight:800,color:'#6d28d9'}}>{imp.decoLines.length}</div><div style={{fontSize:10}}>Decorations</div></div>
+          <div style={{padding:8,background:imp.issues.length?'#fecaca':'#f8fafc',borderRadius:6,flex:1,textAlign:'center'}}>
+            <div style={{fontSize:22,fontWeight:800,color:imp.issues.length?'#dc2626':'#94a3b8'}}>{imp.issues.length}</div><div style={{fontSize:10}}>Issues</div></div>
+        </div>
+
+        {imp.issues.length>0&&<div style={{marginBottom:8,padding:8,background:'#fef2f2',borderRadius:6}}>
+          <div style={{fontSize:11,fontWeight:700,color:'#dc2626'}}>⚠️ Parser Issues</div>
+          {imp.issues.map((is,i)=><div key={i} style={{fontSize:10,color:'#991b1b'}}>Line {is.line}: {is.msg}</div>)}
+        </div>}
+
+        <div className="card" style={{marginBottom:12}}><div className="card-header"><h2>📦 Parsed Items</h2></div>
+          <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
+            <table style={{fontSize:11}}><thead><tr><th style={{width:28}}>✓</th><th>SKU</th><th>Name</th><th>Brand</th><th>Color</th><th>Rate</th><th>Sizes</th><th>Qty</th><th>$</th><th>Match</th></tr></thead>
+            <tbody>{imp.parsed.map((it,i)=>{
+              return<tr key={i} style={{opacity:it._skip?0.3:1,background:it.catMatch?'#f0fdf4':it.is_custom?'#fffbeb':'#fef2f2'}}>
+                <td><input type="checkbox" checked={!it._skip} onChange={()=>updItem(i,'_skip',!it._skip)}/></td>
+                <td><input className="form-input" value={it.sku} onChange={e=>updItem(i,'sku',e.target.value)} style={{width:80,fontSize:10,fontFamily:'monospace',fontWeight:700}}/></td>
+                <td><input className="form-input" value={it.name} onChange={e=>updItem(i,'name',e.target.value)} style={{width:'100%',fontSize:10}}/></td>
+                <td><input className="form-input" value={it.brand} onChange={e=>updItem(i,'brand',e.target.value)} style={{width:70,fontSize:10}}/></td>
+                <td><input className="form-input" value={it.color} onChange={e=>updItem(i,'color',e.target.value)} style={{width:70,fontSize:10}}/></td>
+                <td style={{textAlign:'right'}}>${it.rate?.toFixed(2)}</td>
+                <td style={{fontSize:9,maxWidth:120}}>{Object.entries(it.sizes).sort(([a],[b])=>SZ_ORD_I.indexOf(a)-SZ_ORD_I.indexOf(b)).map(([s,q])=>s+':'+q).join(' ')}</td>
+                <td style={{fontWeight:700,textAlign:'center'}}>{it.totalQty}</td>
+                <td style={{textAlign:'right'}}>${it.totalAmt?.toFixed(0)}</td>
+                <td>{it.catMatch?<span style={{fontSize:9,background:'#dcfce7',padding:'1px 5px',borderRadius:4,color:'#166534',fontWeight:600}}>✅ {it.catMatch.sku}</span>
+                  :<div><select className="form-select" style={{fontSize:9,width:120}} value={it._manualMatch||''} onChange={e=>{
+                    const pId=e.target.value;const pm=prod.find(p=>p.id===pId);
+                    if(pm)updItem(i,'catMatch',pm);updItem(i,'_manualMatch',pId)}}>
+                    <option value="">No match — custom</option>
+                    {prod.filter(p=>p.sku.toLowerCase().includes(it.sku.toLowerCase().slice(0,3))||p.name.toLowerCase().includes(it.name.toLowerCase().split(' ')[0])).slice(0,8).map(p=>
+                      <option key={p.id} value={p.id}>{p.sku} — {p.name.slice(0,25)}</option>)}
+                    <option disabled>──────</option>
+                    {prod.map(p=><option key={p.id} value={p.id}>{p.sku} — {p.name.slice(0,25)}</option>)}
+                  </select></div>}</td>
+              </tr>})}</tbody></table>
+          </div>
+        </div>
+
+        {imp.decoLines.length>0&&<div className="card" style={{marginBottom:12}}><div className="card-header"><h2>🎨 Decorations</h2></div>
+          <div className="card-body">{imp.decoLines.map((d,di)=>
+            <div key={di} style={{padding:8,background:'#f8fafc',borderRadius:6,marginBottom:4,display:'flex',gap:8,alignItems:'center',fontSize:11}}>
+              <span style={{fontWeight:700,flex:1}}>{d.desc}</span>
+              <span style={{color:'#64748b'}}>Qty:{d.qty} · ${d.rate}/ea</span>
+              <select className="form-select" style={{width:200,fontSize:10}} value={d._assignTo||'all'} onChange={e=>setImp(x=>({...x,decoLines:x.decoLines.map((dl,dli)=>dli===di?{...dl,_assignTo:e.target.value}:dl)}))}>
+                <option value="all">Apply to all items</option>
+                {imp.parsed.filter(p=>!p._skip).map((p,pi)=><option key={pi} value={String(pi)}>{p.sku} — {p.name?.slice(0,30)}</option>)}
+              </select>
+            </div>)}</div>
+        </div>}
+
+        <div style={{display:'flex',gap:8}}>
+          <button className="btn btn-secondary" onClick={()=>setImp(x=>({...x,step:'upload'}))}>← Back</button>
+          <button className="btn btn-primary" onClick={()=>setImp(x=>({...x,step:x.questions.filter(q=>!q.answer).length>0?'questions':'confirm'}))}>{imp.questions.filter(q=>!q.answer).length>0?'Answer Questions →':'Confirm →'}</button>
+        </div>
+      </>}
+
+      {/* STEP 3: Questions */}
+      {imp.step==='questions'&&<>
+        <div style={{fontSize:14,fontWeight:700,marginBottom:12}}>🤔 A few questions about your import</div>
+        <div style={{fontSize:12,color:'#64748b',marginBottom:16}}>Some items need your input to import correctly. Answer these and we'll finalize everything.</div>
+
+        {imp.questions.map((q,qi)=>{const it=imp.parsed[q.idx];
+          return<div key={qi} className="card" style={{marginBottom:8,borderLeft:q.answer?'3px solid #22c55e':'3px solid #d97706'}}>
+            <div style={{padding:'12px 16px'}}>
+              <div style={{fontSize:12,fontWeight:700,marginBottom:4}}>{q.msg}</div>
+              <div style={{fontSize:10,color:'#64748b',marginBottom:8}}>
+                Item: {it?.sku} — {it?.name?.slice(0,50)} · Qty: {it?.totalQty} · ${it?.rate}/ea
+              </div>
+
+              {q.type==='match'&&<div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                <button className={`btn btn-sm ${q.answer==='custom'?'btn-primary':'btn-secondary'}`} onClick={()=>applyAnswer(qi,'custom')}>📝 Custom / Special Order</button>
+                <button className={`btn btn-sm ${q.answer==='skip'?'btn-primary':'btn-secondary'}`} style={{color:q.answer==='skip'?'white':'#dc2626'}} onClick={()=>applyAnswer(qi,'skip')}>⏭ Skip This Item</button>
+                <div style={{display:'flex',gap:4,alignItems:'center'}}>
+                  <span style={{fontSize:10}}>Or match to:</span>
+                  <select className="form-select" style={{fontSize:10,width:200}} value={q.answer?.startsWith?.('match_')?q.answer:''} onChange={e=>{applyAnswer(qi,e.target.value);
+                    if(e.target.value){const pm=prod.find(p=>p.id===e.target.value.replace('match_',''));if(pm)updItem(q.idx,'catMatch',pm)}}}>
+                    <option value="">Search catalog...</option>
+                    {prod.map(p=><option key={p.id} value={'match_'+p.id}>{p.sku} — {p.name.slice(0,30)} ({p.brand})</option>)}
+                  </select>
+                </div>
+              </div>}
+
+              {q.type==='sku'&&<div style={{display:'flex',gap:6,alignItems:'center'}}>
+                <input className="form-input" value={q.answer||''} onChange={e=>applyAnswer(qi,e.target.value)} placeholder="Enter real SKU..." style={{width:120,fontSize:11}}/>
+                <select className="form-select" style={{fontSize:10,width:200}} onChange={e=>{if(e.target.value){applyAnswer(qi,e.target.value);const pm=prod.find(p=>p.sku===e.target.value);if(pm)updItem(q.idx,'catMatch',pm)}}}>
+                  <option value="">Or pick from catalog...</option>
+                  {prod.map(p=><option key={p.id} value={p.sku}>{p.sku} — {p.name.slice(0,30)}</option>)}
+                </select>
+                <button className={`btn btn-sm ${q.answer==='keep_custom'?'btn-primary':'btn-secondary'}`} onClick={()=>applyAnswer(qi,'keep_custom')}>Keep as Custom</button>
+              </div>}
+
+              {q.type==='color'&&<input className="form-input" value={q.answer||''} onChange={e=>applyAnswer(qi,e.target.value)} placeholder="Enter color..." style={{width:200,fontSize:11}}/>}
+            </div>
+          </div>})}
+
+        <div style={{display:'flex',gap:8,marginTop:12}}>
+          <button className="btn btn-secondary" onClick={()=>setImp(x=>({...x,step:'review'}))}>← Back</button>
+          <button className="btn btn-primary" onClick={()=>setImp(x=>({...x,step:'confirm'}))}>Review Final →</button>
+        </div>
+      </>}
+
+      {/* STEP 4: Confirm & Create */}
+      {imp.step==='confirm'&&<>
+        {(()=>{
+          const c=cust.find(x=>x.id===imp.custId);
+          const keeping=imp.parsed.filter(p=>!p._skip&&!imp.questions.find(q=>q.idx===imp.parsed.indexOf(p)&&q.answer==='skip'));
+          const isAUi=b=>b==='Adidas'||b==='Under Armour'||b==='New Balance';
+          const mk=c?.catalog_markup||1.65;const tier=c?.adidas_ua_tier||'B';const disc=tD[tier]||0.35;
+          const totalRev=keeping.reduce((a,it)=>a+it.totalAmt,0);
+          const shipAmt=imp.shipping.reduce((a,s)=>a+s.amount,0);
+
+          return<>
+            <div className="card" style={{marginBottom:12}}><div className="card-body" style={{padding:16}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                <div><div style={{fontSize:18,fontWeight:800}}>{imp.docType==='so'?'New Sales Order':'New Estimate'}</div>
+                  <div style={{fontSize:12,color:'#64748b'}}>{c?.name} ({c?.alpha_tag}) · {keeping.length} items · {imp.memo||'Imported from NetSuite'}</div></div>
+                <div style={{textAlign:'right'}}>
+                  <div style={{fontSize:24,fontWeight:800,color:'#1e40af'}}>${totalRev.toLocaleString()}</div>
+                  {shipAmt>0&&<div style={{fontSize:11,color:'#64748b'}}>+ ${shipAmt.toFixed(2)} shipping</div>}
+                </div>
+              </div>
+            </div></div>
+
+            <div className="card" style={{marginBottom:12}}><div className="card-body" style={{padding:0}}>
+              <table style={{fontSize:11}}><thead><tr><th>SKU</th><th>Name</th><th>Brand</th><th>Color</th><th>Cost</th><th>Sell</th><th>Sizes</th><th>Qty</th><th>Total</th></tr></thead>
+              <tbody>{keeping.map((it,i)=>{
+                const au=isAUi(it.brand);
+                const sell=it.rate;const cost=au?rQ(sell):rQ(sell/mk);
+                return<tr key={i}>
+                  <td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{it.sku}</td>
+                  <td>{it.catMatch?<span style={{color:'#166534'}}>✅ {it.name.slice(0,35)}</span>:it.name.slice(0,35)}</td>
+                  <td style={{fontSize:10}}>{it.brand}</td>
+                  <td style={{fontSize:10}}>{it.color}</td>
+                  <td style={{textAlign:'right'}}>${cost.toFixed(2)}</td>
+                  <td style={{textAlign:'right',fontWeight:600}}>${sell.toFixed(2)}</td>
+                  <td style={{fontSize:9}}>{Object.entries(it.sizes).sort(([a],[b])=>SZ_ORD_I.indexOf(a)-SZ_ORD_I.indexOf(b)).map(([s,q])=>s+':'+q).join(' ')}</td>
+                  <td style={{fontWeight:700,textAlign:'center'}}>{it.totalQty}</td>
+                  <td style={{textAlign:'right'}}>${it.totalAmt.toFixed(0)}</td>
+                </tr>})}</tbody></table>
+            </div></div>
+
+            <div style={{display:'flex',gap:8}}>
+              <button className="btn btn-secondary" onClick={()=>setImp(x=>({...x,step:'questions'}))}>← Back</button>
+              <button className="btn btn-primary" style={{background:'#166534'}} onClick={()=>{
+                const newItems=keeping.map(it=>{
+                  const au=isAUi(it.brand);const sell=it.rate;const cost=au?rQ(sell):rQ(sell/mk);
+                  const retail=au?rQ(sell/(1-disc)):0;const szKeys=Object.keys(it.sizes);
+                  return{product_id:it.catMatch?.id||null,sku:it.sku,name:it.catMatch?.name||it.name,brand:it.catMatch?.brand||it.brand,
+                    color:it.color||it.catMatch?.color||'',nsa_cost:cost,retail_price:retail,unit_sell:sell,
+                    available_sizes:szKeys.length>0?szKeys.sort((a,b)=>SZ_ORD_I.indexOf(a)-SZ_ORD_I.indexOf(b)):['S','M','L','XL','2XL'],
+                    sizes:it.sizes,decorations:[],is_custom:it.is_custom||false,pick_lines:[],po_lines:[]};
+                });
+                // Apply decos
+                imp.decoLines.forEach(d=>{
+                  const dt=d.desc.toLowerCase().includes('embroid')?'embroidery':d.desc.toLowerCase().includes('dtf')?'dtf':'screen_print';
+                  const deco={kind:'art',position:'Front Center',art_file_id:null,sell_override:d.rate||0};
+                  if(d._assignTo==='all')newItems.forEach(it=>it.decorations.push({...deco}));
+                  else{const idx=parseInt(d._assignTo);if(newItems[idx])newItems[idx].decorations.push({...deco})}
+                });
+                // Create the SO or Estimate
+                if(imp.docType==='so'){
+                  const newSO={id:'SO-'+(1100+sos.length),customer_id:imp.custId,memo:imp.memo||'Imported from NetSuite',status:'need_order',
+                    created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),
+                    expected_date:'',production_notes:imp.poRef?'NS Ref: '+imp.poRef:'',shipping_type:shipAmt>0?'flat':'pct',shipping_value:shipAmt||0,
+                    ship_to_id:'default',firm_dates:[],art_files:[],items:newItems};
+                  setSOs(prev=>[newSO,...prev]);
+                  setESO(newSO);setESOC(c);setPg('orders');
+                  nf('📥 Imported SO with '+newItems.length+' items from NetSuite');
+                } else {
+                  const newEst={id:'EST-'+(2200+ests.length),customer_id:imp.custId,memo:imp.memo||'Imported from NetSuite',status:'draft',
+                    created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),
+                    default_markup:mk,shipping_type:shipAmt>0?'flat':'pct',shipping_value:shipAmt||0,
+                    ship_to_id:'default',email_status:null,art_files:[],items:newItems};
+                  setEsts(prev=>[newEst,...prev]);
+                  setEEst(newEst);setEEstC(c);setPg('estimates');
+                  nf('📥 Imported Estimate with '+newItems.length+' items from NetSuite');
+                }
+                setImp({step:'upload',raw:'',docType:'so',custId:'',parsed:[],decoLines:[],issues:[],questions:[],shipping:[],memo:'',poRef:''});
+              }}>🚀 Create {imp.docType==='so'?'Sales Order':'Estimate'} ({keeping.length} items)</button>
+            </div>
+          </>})()}
+      </>}
+    </>);
+  };
+
   const rBackup=()=>{
     const stateSize=JSON.stringify({customers:cust,estimates:ests,sales_orders:sos,products:prod,messages:msgs,invoices:invs}).length;
     const sizeMB=(stateSize/1024/1024).toFixed(2);
@@ -4434,8 +4983,8 @@ export default function App(){
           </div></div>})}</div></div></>)};
 
     // NAV
-  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'reports',label:'Reports',icon:'dollar'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'production',label:'Prod Board',icon:'package'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{section:'Comms'},{id:'messages',label:'Messages',icon:'mail'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'System'},{id:'backup',label:'Backup & Data',icon:'save'}];
-  const titles={dashboard:'Dashboard',reports:'Reports & Analytics',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',jobs:'Jobs',production:'Production Board',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',products:'Products',inventory:'Inventory',messages:'Messages',backup:'Backup & Data'};
+  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'reports',label:'Reports',icon:'dollar'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'production',label:'Prod Board',icon:'package'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{section:'Comms'},{id:'messages',label:'Messages',icon:'mail'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'System'},{id:'import',label:'NetSuite Import',icon:'save'},{id:'backup',label:'Backup & Data',icon:'save'}];
+  const titles={dashboard:'Dashboard',reports:'Reports & Analytics',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',jobs:'Jobs',production:'Production Board',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',products:'Products',inventory:'Inventory',messages:'Messages',import:'NetSuite Import',backup:'Backup & Data'};
   return(<div className="app"><Toast msg={toast?.msg} type={toast?.type}/>
     <div className="sidebar"><div className="sidebar-logo">NSA<span>Portal</span></div>
       <nav className="sidebar-nav">{nav.map((item,i)=>{if(item.section)return<div key={i} className="sidebar-section">{item.section}</div>;
@@ -4470,7 +5019,7 @@ export default function App(){
           {gOpen&&<div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:59}} onClick={()=>setGOpen(false)}/>}
         </div>
         <div style={{display:'flex',gap:6,alignItems:'center'}}><button className="btn btn-sm btn-primary" onClick={()=>newE(null)} style={{fontSize:11}}><Icon name="plus" size={12}/> Estimate</button><button className="btn btn-sm btn-secondary" onClick={()=>setCM({open:true,c:null})} style={{fontSize:11}}><Icon name="plus" size={12}/> Customer</button></div></div>
-      <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='production'&&rProd2()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='reports'&&rReports()}{pg==='backup'&&rBackup()}</div></div>
+      <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='production'&&rProd2()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='reports'&&rReports()}{pg==='import'&&rImport()}{pg==='backup'&&rBackup()}</div></div>
     <CustModal isOpen={cM.open} onClose={()=>setCM({open:false,c:null})} onSave={savC} customer={cM.c} parents={pars}/>
     <AdjModal isOpen={aM.open} onClose={()=>setAM({open:false,p:null})} product={aM.p} onSave={savI}/>
   </div>);
