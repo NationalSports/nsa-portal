@@ -1026,7 +1026,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
 
     {/* JOBS TAB */}
     {isSO&&tab==='jobs'&&(()=>{
-      const jobs=o.jobs||[];
       // AUTO-SYNC JOBS from decorations — one job per unique artwork across entire SO
       // Jobs sync automatically when decorations change, no manual "Generate" needed
       const syncJobs=useCallback(()=>{
