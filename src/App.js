@@ -2711,6 +2711,93 @@ export default function App(){
     {isA&&al.length>0&&<div className="card" style={{marginBottom:16,borderLeft:'4px solid #d97706'}}><div className="card-header"><h2 style={{color:'#d97706'}}>Stock Alerts</h2></div>
       <div className="card-body" style={{padding:0}}><table><thead><tr><th>SKU</th><th>Product</th><th>Size</th><th>Curr</th><th>Min</th><th>Need</th></tr></thead><tbody>
       {al.slice(0,6).map((a,i)=><tr key={i}><td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{a.p.sku}</td><td style={{fontSize:12}}>{a.p.name}</td><td><span className="badge badge-amber">{a.sz}</span></td><td style={{fontWeight:700,color:'#dc2626'}}>{a.c}</td><td>{a.min}</td><td style={{fontWeight:700}}>{a.need}</td></tr>)}</tbody></table></div></div>}
+
+    {/* SALES INTELLIGENCE PANEL — customizable per rep */}
+    {(()=>{
+      // Build sales metrics from SOs and invoices
+      const soCalc=(so)=>{let rev=0,cost=0;safeItems(so).forEach(it=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);rev+=qty*safeNum(it.unit_sell);cost+=qty*safeNum(it.nsa_cost);(it.decorations||[]).forEach(d=>{rev+=qty*safeNum(d.sell_override||0)})});return{rev,cost,margin:rev-cost,pct:rev>0?Math.round((rev-cost)/rev*100):0}};
+      const mySOs=cu.role==='admin'?sos:sos.filter(s=>s.created_by===cu.id);
+      const myInvs=cu.role==='admin'?invs:invs.filter(i=>{const so=sos.find(s=>s.id===i.so_id);return so?.created_by===cu.id||!so});
+      const totalRev=mySOs.reduce((a,so)=>a+soCalc(so).rev,0);
+      const totalMargin=mySOs.reduce((a,so)=>a+soCalc(so).margin,0);
+      const avgMarginPct=totalRev>0?Math.round(totalMargin/totalRev*100):0;
+      const openInvBal=myInvs.filter(i=>i.status!=='paid').reduce((a,i)=>a+(i.total-i.paid),0);
+      const paidTotal=myInvs.filter(i=>i.status==='paid').reduce((a,i)=>a+i.paid,0);
+      const convRate=ests.length>0?Math.round(mySOs.filter(s=>s.estimate_id).length/ests.length*100):0;
+
+      // Customers needing attention — no activity in 30+ days or no open SO
+      const custActivity=cust.filter(c=>c.id!=='c_deleted').map(c=>{
+        const cSOs=sos.filter(s=>s.customer_id===c.id);const cInvs=invs.filter(i=>i.customer_id===c.id);
+        const lastSO=cSOs.length>0?cSOs.sort((a,b)=>(b.created_at||'').localeCompare(a.created_at))[0]:null;
+        const openBal=cInvs.filter(i=>i.status!=='paid').reduce((a,i)=>a+(i.total-i.paid),0);
+        const totalSpend=cInvs.reduce((a,i)=>a+i.total,0);
+        const daysSince=lastSO?.created_at?Math.floor((new Date()-new Date(lastSO.created_at.replace(/(\d{2})\/(\d{2})\/(\d{2})/,'20$3-$1-$2')))/(86400000)):999;
+        const hasOpenSO=cSOs.some(s=>calcSOStatus(s)!=='complete');
+        return{...c,soCount:cSOs.length,totalSpend,openBal,daysSince,hasOpenSO,lastMemo:lastSO?.memo};
+      });
+      const atRisk=custActivity.filter(c=>c.daysSince>30&&c.soCount>0&&!c.hasOpenSO).sort((a,b)=>b.daysSince-a.daysSince);
+      const topCustomers=custActivity.filter(c=>c.totalSpend>0).sort((a,b)=>b.totalSpend-a.totalSpend).slice(0,5);
+
+      return<>
+        <div className="card" style={{marginBottom:16,borderLeft:'4px solid #2563eb'}}>
+          <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+            <h2>📊 {cu.role==='admin'?'Company':'My'} Sales Snapshot</h2>
+            <button className="btn btn-sm btn-secondary" onClick={()=>setPg('reports')}>Full Reports →</button>
+          </div>
+          <div className="card-body">
+            <div style={{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:10,marginBottom:16}}>
+              <div style={{padding:12,background:'#eff6ff',borderRadius:8,textAlign:'center'}}>
+                <div style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Pipeline Revenue</div>
+                <div style={{fontSize:20,fontWeight:800,color:'#1e40af'}}>${(totalRev/1000).toFixed(1)}k</div>
+              </div>
+              <div style={{padding:12,background:'#f0fdf4',borderRadius:8,textAlign:'center'}}>
+                <div style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Total Margin</div>
+                <div style={{fontSize:20,fontWeight:800,color:'#166534'}}>${(totalMargin/1000).toFixed(1)}k</div>
+                <div style={{fontSize:10,color:avgMarginPct>=40?'#166534':'#d97706',fontWeight:700}}>{avgMarginPct}%</div>
+              </div>
+              <div style={{padding:12,background:'#fef3c7',borderRadius:8,textAlign:'center'}}>
+                <div style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Open A/R</div>
+                <div style={{fontSize:20,fontWeight:800,color:'#92400e'}}>${(openInvBal/1000).toFixed(1)}k</div>
+              </div>
+              <div style={{padding:12,background:'#dcfce7',borderRadius:8,textAlign:'center'}}>
+                <div style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Collected</div>
+                <div style={{fontSize:20,fontWeight:800,color:'#166534'}}>${(paidTotal/1000).toFixed(1)}k</div>
+              </div>
+              <div style={{padding:12,background:'#ede9fe',borderRadius:8,textAlign:'center'}}>
+                <div style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Est→SO Rate</div>
+                <div style={{fontSize:20,fontWeight:800,color:'#6d28d9'}}>{convRate}%</div>
+              </div>
+            </div>
+
+            {/* Two columns: At-Risk + Top Customers */}
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
+              <div>
+                <div style={{fontSize:12,fontWeight:700,color:'#dc2626',marginBottom:6}}>⚠️ Customers Needing Attention</div>
+                {atRisk.length===0?<div style={{fontSize:11,color:'#94a3b8',padding:8}}>All customers active — great job!</div>:
+                atRisk.slice(0,5).map(c=><div key={c.id} style={{padding:'6px 10px',borderLeft:'3px solid #fca5a5',background:'#fef2f2',borderRadius:4,marginBottom:4,cursor:'pointer'}}
+                  onClick={()=>{setSelC(c);setPg('customers')}}>
+                  <div style={{display:'flex',justifyContent:'space-between'}}>
+                    <span style={{fontSize:12,fontWeight:700}}>{c.name}</span>
+                    <span style={{fontSize:10,color:'#dc2626',fontWeight:700}}>{c.daysSince}d ago</span>
+                  </div>
+                  <div style={{fontSize:10,color:'#64748b'}}>Last: {c.lastMemo||'—'} · ${c.totalSpend.toLocaleString()} lifetime</div>
+                </div>)}
+              </div>
+              <div>
+                <div style={{fontSize:12,fontWeight:700,color:'#1e40af',marginBottom:6}}>🏆 Top Customers by Revenue</div>
+                {topCustomers.map((c,i)=><div key={c.id} style={{padding:'6px 10px',borderLeft:`3px solid ${i===0?'#fbbf24':i===1?'#94a3b8':'#cd7c32'}`,background:'#f8fafc',borderRadius:4,marginBottom:4,cursor:'pointer'}}
+                  onClick={()=>{setSelC(cust.find(cc=>cc.id===c.id));setPg('customers')}}>
+                  <div style={{display:'flex',justifyContent:'space-between'}}>
+                    <span style={{fontSize:12,fontWeight:700}}>{i+1}. {c.name}</span>
+                    <span style={{fontSize:12,fontWeight:800,color:'#1e40af'}}>${c.totalSpend.toLocaleString()}</span>
+                  </div>
+                  <div style={{fontSize:10,color:'#64748b'}}>{c.soCount} orders · {c.openBal>0?'$'+c.openBal.toLocaleString()+' open':'Paid up'}</div>
+                </div>)}
+              </div>
+            </div>
+          </div>
+        </div>
+      </>})()}
     <div className="card" style={{marginBottom:16}}><div className="card-header"><h2>Quick Actions</h2></div><div className="card-body" style={{display:'flex',gap:8,flexWrap:'wrap'}}>
       <button className="btn btn-primary" onClick={()=>newE(null)}><Icon name="file" size={14}/> New Estimate</button>
       <button className="btn btn-secondary" onClick={()=>{setPg('customers');setCM({open:true,c:null})}}><Icon name="plus" size={14}/> New Customer</button>
@@ -3134,17 +3221,23 @@ export default function App(){
               const urgent=j.daysOut!=null&&j.daysOut<=3;
 
               return<div key={j.id+j.soId} className="card" style={{marginBottom:4,border:urgent?'2px solid #dc2626':'1px solid #e2e8f0',transition:'all 0.15s'}}>
-                {/* COMPACT ROW — always visible */}
-                <div style={{padding:'6px 10px',cursor:'pointer',display:'flex',alignItems:'center',gap:6}} onClick={()=>setExpandedJob(isExp?null:j.id+j.soId)}>
-                  <span style={{fontSize:10,fontWeight:800,color:'#1e40af',minWidth:68}}>{j.id}</span>
-                  <span style={{fontSize:11,fontWeight:700,color:'#334155',flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{j.customer}</span>
-                  <span style={{fontSize:11,fontWeight:800,color:pct>=100?'#166534':'#475569',minWidth:42,textAlign:'right'}}>{j.total_units}<span style={{fontSize:9,fontWeight:400,color:'#94a3b8'}}> u</span></span>
-                  <span style={{fontSize:9,color:'#64748b',minWidth:36,textAlign:'right'}}>{j.rep}</span>
-                  {urgent&&<span style={{fontSize:9}}>🔥</span>}
-                  <span style={{fontSize:10,color:'#94a3b8',transition:'transform 0.15s',transform:isExp?'rotate(180deg)':'rotate(0deg)'}}>▾</span>
+                {/* COMPACT ROW — key info visible at a glance */}
+                <div style={{padding:'6px 10px',cursor:'pointer'}} onClick={()=>setExpandedJob(isExp?null:j.id+j.soId)}>
+                  <div style={{display:'flex',alignItems:'center',gap:6}}>
+                    <span style={{fontSize:12,fontWeight:800,color:'#334155',flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{j.customer}</span>
+                    <span style={{fontSize:11,fontWeight:800,color:pct>=100?'#166534':'#1e40af'}}>{j.total_units}<span style={{fontSize:9,fontWeight:400,color:'#94a3b8'}}> u</span></span>
+                    {urgent&&<span style={{fontSize:9}}>🔥</span>}
+                    <span style={{fontSize:10,color:'#94a3b8',transition:'transform 0.15s',transform:isExp?'rotate(180deg)':'rotate(0deg)'}}>▾</span>
+                  </div>
+                  <div style={{display:'flex',alignItems:'center',gap:4,marginTop:2}}>
+                    <span style={{fontSize:9,padding:'1px 5px',borderRadius:4,background:'#f1f5f9',color:'#475569',fontWeight:600}}>{j.deco_type?.replace(/_/g,' ')||'—'}</span>
+                    <span style={{fontSize:9,color:'#64748b',flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{gCount} garment{gCount!==1?'s':''} · {j.art_name}</span>
+                    <span style={{fontSize:9,color:'#94a3b8'}}>{j.rep}</span>
+                  </div>
+                  {j.so?.memo&&<div style={{fontSize:9,color:'#94a3b8',marginTop:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{j.so.memo}</div>}
                 </div>
                 {/* Thin progress bar under compact row */}
-                {!isExp&&<div style={{height:2,background:'#e2e8f0'}}><div style={{height:2,background:pct>=100?'#22c55e':pct>50?'#3b82f6':'#f59e0b',width:pct+'%',transition:'width 0.3s'}}/></div>}
+                {!isExp&&<div style={{height:3,background:'#e2e8f0'}}><div style={{height:3,background:pct>=100?'#22c55e':pct>50?'#3b82f6':'#f59e0b',width:pct+'%',transition:'width 0.3s'}}/></div>}
 
                 {/* EXPANDED — full details + actions */}
                 {isExp&&<div style={{padding:'6px 10px 10px',borderTop:'1px solid #e2e8f0'}}>
@@ -3905,6 +3998,226 @@ export default function App(){
     </>);
   };
 
+  // REPORTS & ANALYTICS PAGE
+  const[rptTab,setRptTab]=useState('overview');
+  const[rptRep,setRptRep]=useState('all');
+  const[rptWidgets,setRptWidgets]=useState({pipeline:true,repLeaderboard:true,custHealth:true,productMix:true,convFunnel:true,margins:true,seasonality:true,retention:true});
+  const toggleWidget=(k)=>setRptWidgets(w=>({...w,[k]:!w[k]}));
+
+  const rReports=()=>{
+    const soCalc=(so)=>{let rev=0,cost=0,units=0;safeItems(so).forEach(it=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);units+=qty;rev+=qty*safeNum(it.unit_sell);cost+=qty*safeNum(it.nsa_cost);(it.decorations||[]).forEach(d=>{rev+=qty*safeNum(d.sell_override||0)})});return{rev,cost,margin:rev-cost,pct:rev>0?Math.round((rev-cost)/rev*100):0,units}};
+
+    const filtSOs=rptRep==='all'?sos:sos.filter(s=>s.created_by===rptRep);
+    const filtInvs=rptRep==='all'?invs:invs.filter(i=>{const so=sos.find(s=>s.id===i.so_id);return so?.created_by===rptRep});
+
+    // Pipeline data
+    const pipeline=filtSOs.map(so=>{const m=soCalc(so);const c=cust.find(x=>x.id===so.customer_id);const st=calcSOStatus(so);
+      return{...so,_rev:m.rev,_cost:m.cost,_margin:m.margin,_pct:m.pct,_units:m.units,_cname:c?.name||'Unknown',_status:st}});
+    const totalRev=pipeline.reduce((a,s)=>a+s._rev,0);
+    const totalMargin=pipeline.reduce((a,s)=>a+s._margin,0);
+    const totalUnits=pipeline.reduce((a,s)=>a+s._units,0);
+    const avgMarginPct=totalRev>0?Math.round(totalMargin/totalRev*100):0;
+    const avgOrderSize=pipeline.length>0?Math.round(totalRev/pipeline.length):0;
+
+    // Rep leaderboard
+    const repData=REPS.filter(r=>r.role==='rep').map(r=>{
+      const rSOs=sos.filter(s=>s.created_by===r.id);const rEsts=ests.filter(e=>e.created_by===r.id);
+      const rev=rSOs.reduce((a,s)=>a+soCalc(s).rev,0);const margin=rSOs.reduce((a,s)=>a+soCalc(s).margin,0);
+      const rInv=invs.filter(i=>{const so=sos.find(s=>s.id===i.so_id);return so?.created_by===r.id});
+      const collected=rInv.filter(i=>i.status==='paid').reduce((a,i)=>a+i.paid,0);
+      const openAR=rInv.filter(i=>i.status!=='paid').reduce((a,i)=>a+(i.total-i.paid),0);
+      const uniqueCusts=[...new Set(rSOs.map(s=>s.customer_id))].length;
+      const convRate=rEsts.length>0?Math.round(rSOs.filter(s=>s.estimate_id).length/Math.max(1,rEsts.filter(e=>e.status!=='draft').length)*100):0;
+      return{...r,rev,margin,soCount:rSOs.length,estCount:rEsts.length,collected,openAR,uniqueCusts,convRate,pct:rev>0?Math.round(margin/rev*100):0};
+    }).sort((a,b)=>b.rev-a.rev);
+
+    // Customer health
+    const custHealth=cust.filter(c=>c.id!=='c_deleted').map(c=>{
+      const cSOs=sos.filter(s=>s.customer_id===c.id);const cInvs=invs.filter(i=>i.customer_id===c.id);
+      const rev=cSOs.reduce((a,s)=>a+soCalc(s).rev,0);
+      const lastSO=cSOs.sort((a,b)=>(b.created_at||'').localeCompare(a.created_at))[0];
+      const daysSince=lastSO?.created_at?Math.floor((new Date()-new Date(lastSO.created_at.replace(/(\d{2})\/(\d{2})\/(\d{2})/,'20$3-$1-$2')))/(86400000)):999;
+      const openBal=cInvs.filter(i=>i.status!=='paid').reduce((a,i)=>a+(i.total-i.paid),0);
+      const paidBal=cInvs.filter(i=>i.status==='paid').reduce((a,i)=>a+i.paid,0);
+      const hasOpen=cSOs.some(s=>calcSOStatus(s)!=='complete');
+      const health=daysSince<=14?'active':daysSince<=30?'warm':daysSince<=60?'cooling':'at_risk';
+      return{...c,rev,soCount:cSOs.length,daysSince,openBal,paidBal,hasOpen,health,lastMemo:lastSO?.memo};
+    }).sort((a,b)=>b.rev-a.rev);
+
+    // Product mix
+    const productMix={};
+    filtSOs.forEach(so=>{safeItems(so).forEach(it=>{const k=it.sku||'Unknown';const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
+      if(!productMix[k])productMix[k]={sku:k,name:it.name||k,brand:it.brand||'',rev:0,cost:0,units:0,soCount:0};
+      productMix[k].rev+=qty*safeNum(it.unit_sell);productMix[k].cost+=qty*safeNum(it.nsa_cost);productMix[k].units+=qty;productMix[k].soCount++})});
+    const topProducts=Object.values(productMix).sort((a,b)=>b.rev-a.rev).slice(0,10);
+
+    // Conversion funnel
+    const funnelEsts=rptRep==='all'?ests:ests.filter(e=>e.created_by===rptRep);
+    const fDraft=funnelEsts.filter(e=>e.status==='draft').length;const fSent=funnelEsts.filter(e=>e.status==='sent').length;
+    const fApproved=funnelEsts.filter(e=>e.status==='approved').length;const fConverted=filtSOs.filter(s=>s.estimate_id).length;
+
+    const WH=({id,title,icon})=><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'10px 16px'}}>
+      <h2 style={{margin:0,fontSize:14}}>{icon} {title}</h2>
+      <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px'}} onClick={()=>toggleWidget(id)}>{rptWidgets[id]?'▼':'▶'}</button></div>;
+
+    const Bar=({val,max,color})=><div style={{flex:1,background:'#e2e8f0',borderRadius:3,height:14,overflow:'hidden'}}>
+      <div style={{height:14,borderRadius:3,background:color||'#3b82f6',width:max>0?(val/max*100)+'%':'0%',transition:'width 0.3s',display:'flex',alignItems:'center',justifyContent:'center'}}>
+        {val/max>0.15&&<span style={{fontSize:8,color:'white',fontWeight:700}}>${(val/1000).toFixed(1)}k</span>}
+      </div></div>;
+
+    const healthColor={active:'#166534',warm:'#d97706',cooling:'#ea580c',at_risk:'#dc2626'};
+    const healthBg={active:'#dcfce7',warm:'#fef3c7',cooling:'#ffedd5',at_risk:'#fecaca'};
+    const healthLabel={active:'Active',warm:'Warm',cooling:'Cooling',at_risk:'At Risk'};
+
+    return(<>
+      {/* Report controls */}
+      <div style={{display:'flex',gap:8,marginBottom:12,alignItems:'center',flexWrap:'wrap'}}>
+        <div style={{display:'flex',gap:4}}>
+          {[['overview','📊 Overview'],['pipeline','💰 Pipeline'],['customers','👥 Customers'],['products','📦 Products'],['reps','🏆 Reps']].map(([v,l])=>
+            <button key={v} className={`btn btn-sm ${rptTab===v?'btn-primary':'btn-secondary'}`} onClick={()=>setRptTab(v)}>{l}</button>)}
+        </div>
+        <select className="form-select" style={{width:140,fontSize:11}} value={rptRep} onChange={e=>setRptRep(e.target.value)}>
+          <option value="all">All Reps</option>{REPS.filter(r=>r.role==='rep').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
+        <div style={{marginLeft:'auto',fontSize:10,color:'#64748b'}}>Toggle widgets to customize your view</div>
+      </div>
+
+      {/* KPI Bar */}
+      <div className="stats-row" style={{marginBottom:16}}>
+        <div className="stat-card"><div className="stat-label">Pipeline Revenue</div><div className="stat-value" style={{color:'#1e40af'}}>${(totalRev/1000).toFixed(1)}k</div></div>
+        <div className="stat-card"><div className="stat-label">Total Margin</div><div className="stat-value" style={{color:'#166534'}}>${(totalMargin/1000).toFixed(1)}k <span style={{fontSize:12,color:avgMarginPct>=40?'#166534':'#d97706'}}>({avgMarginPct}%)</span></div></div>
+        <div className="stat-card"><div className="stat-label">Active SOs</div><div className="stat-value" style={{color:'#7c3aed'}}>{pipeline.filter(s=>s._status!=='complete').length}</div></div>
+        <div className="stat-card"><div className="stat-label">Total Units</div><div className="stat-value">{totalUnits.toLocaleString()}</div></div>
+        <div className="stat-card"><div className="stat-label">Avg Order</div><div className="stat-value" style={{color:'#d97706'}}>${avgOrderSize.toLocaleString()}</div></div>
+      </div>
+
+      {/* OVERVIEW / PIPELINE TAB */}
+      {(rptTab==='overview'||rptTab==='pipeline')&&<>
+        {/* Conversion Funnel */}
+        <div className="card" style={{marginBottom:12}}>
+          <WH id="convFunnel" title="Estimate → SO Conversion Funnel" icon="🔄"/>
+          {rptWidgets.convFunnel&&<div className="card-body">
+            <div style={{display:'flex',gap:8,alignItems:'center'}}>
+              {[['Draft',fDraft,'#94a3b8'],['Sent',fSent,'#d97706'],['Approved',fApproved,'#22c55e'],['→ SO',fConverted,'#2563eb']].map(([label,val,color],i)=>
+                <div key={i} style={{flex:1,textAlign:'center'}}>
+                  <div style={{height:60,background:color+'20',borderRadius:8,display:'flex',alignItems:'center',justifyContent:'center',marginBottom:4,
+                    clipPath:i===0?'polygon(0 0,90% 0,100% 50%,90% 100%,0 100%)':i===3?'polygon(0 0,100% 0,100% 100%,0 100%,10% 50%)':'polygon(0 0,90% 0,100% 50%,90% 100%,0 100%,10% 50%)'}}>
+                    <span style={{fontSize:24,fontWeight:900,color}}>{val}</span>
+                  </div>
+                  <div style={{fontSize:11,fontWeight:700,color}}>{label}</div>
+                </div>)}
+            </div>
+            {funnelEsts.length>0&&<div style={{textAlign:'center',marginTop:8,fontSize:12,color:'#64748b'}}>
+              Conversion rate: <strong style={{color:'#2563eb'}}>{Math.round(fConverted/Math.max(1,funnelEsts.length)*100)}%</strong> overall · 
+              Sent→Approved: <strong>{fSent>0?Math.round(fApproved/fSent*100):0}%</strong></div>}
+          </div>}
+        </div>
+
+        {/* Pipeline by Status */}
+        <div className="card" style={{marginBottom:12}}>
+          <WH id="pipeline" title="Pipeline by Status" icon="💰"/>
+          {rptWidgets.pipeline&&<div className="card-body" style={{padding:0}}>
+            <table><thead><tr><th>SO</th><th>Customer</th><th>Memo</th><th>Revenue</th><th>Margin</th><th>Units</th><th>Status</th><th></th></tr></thead>
+            <tbody>{pipeline.sort((a,b)=>b._rev-a._rev).map(s=>{
+              const stLabel={need_order:'Need Order',waiting_receive:'Waiting',items_received:'Items In',in_production:'In Prod',ready_to_invoice:'Ready Inv',complete:'Complete'};
+              return<tr key={s.id} style={{cursor:'pointer'}} onClick={()=>{setESO(sos.find(x=>x.id===s.id));setESOC(cust.find(c=>c.id===s.customer_id));setPg('orders')}}>
+                <td style={{fontWeight:700,color:'#1e40af',fontSize:12}}>{s.id}</td>
+                <td style={{fontSize:12}}>{s._cname}</td>
+                <td style={{fontSize:11,color:'#64748b',maxWidth:200,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{s.memo}</td>
+                <td style={{fontWeight:700,textAlign:'right'}}>${s._rev.toLocaleString()}</td>
+                <td style={{textAlign:'right',color:s._pct>=40?'#166534':'#d97706',fontWeight:600}}>${s._margin.toLocaleString()} <span style={{fontSize:9}}>({s._pct}%)</span></td>
+                <td style={{textAlign:'center'}}>{s._units}</td>
+                <td><span style={{padding:'2px 6px',borderRadius:8,fontSize:9,fontWeight:600,background:SC[s._status]?.bg,color:SC[s._status]?.c}}>{stLabel[s._status]||s._status}</span></td>
+                <td style={{width:80}}><Bar val={s._rev} max={Math.max(...pipeline.map(p=>p._rev))} color={s._pct>=40?'#22c55e':'#f59e0b'}/></td>
+              </tr>})}</tbody></table>
+          </div>}
+        </div>
+      </>}
+
+      {/* REP LEADERBOARD */}
+      {(rptTab==='overview'||rptTab==='reps')&&<div className="card" style={{marginBottom:12}}>
+        <WH id="repLeaderboard" title="Rep Leaderboard" icon="🏆"/>
+        {rptWidgets.repLeaderboard&&<div className="card-body" style={{padding:0}}>
+          <table><thead><tr><th>Rank</th><th>Rep</th><th>Revenue</th><th>Margin</th><th>SOs</th><th>Customers</th><th>Conv Rate</th><th>Collected</th><th>Open A/R</th><th></th></tr></thead>
+          <tbody>{repData.map((r,i)=>
+            <tr key={r.id} style={{background:i===0?'#fefce8':undefined}}>
+              <td style={{fontWeight:800,color:i===0?'#d97706':i===1?'#64748b':'#cd7c32',fontSize:16,textAlign:'center'}}>{i===0?'🥇':i===1?'🥈':i===2?'🥉':i+1}</td>
+              <td style={{fontWeight:700}}>{r.name}</td>
+              <td style={{fontWeight:700,color:'#1e40af',textAlign:'right'}}>${(r.rev/1000).toFixed(1)}k</td>
+              <td style={{textAlign:'right',color:r.pct>=40?'#166534':'#d97706'}}>{r.pct}%</td>
+              <td style={{textAlign:'center'}}>{r.soCount}</td>
+              <td style={{textAlign:'center'}}>{r.uniqueCusts}</td>
+              <td style={{textAlign:'center',fontWeight:600,color:r.convRate>=50?'#166534':'#d97706'}}>{r.convRate}%</td>
+              <td style={{textAlign:'right',color:'#166534'}}>${r.collected.toLocaleString()}</td>
+              <td style={{textAlign:'right',color:r.openAR>0?'#dc2626':'#94a3b8'}}>{r.openAR>0?'$'+r.openAR.toLocaleString():'—'}</td>
+              <td style={{width:100}}><Bar val={r.rev} max={repData[0]?.rev||1} color={i===0?'#d97706':i===1?'#94a3b8':'#cd7c32'}/></td>
+            </tr>)}</tbody></table>
+        </div>}
+      </div>}
+
+      {/* CUSTOMER HEALTH */}
+      {(rptTab==='overview'||rptTab==='customers')&&<div className="card" style={{marginBottom:12}}>
+        <WH id="custHealth" title="Customer Health & Retention" icon="❤️"/>
+        {rptWidgets.custHealth&&<div className="card-body">
+          {/* Health summary bar */}
+          <div style={{display:'flex',gap:8,marginBottom:12}}>
+            {['active','warm','cooling','at_risk'].map(h=>{const cnt=custHealth.filter(c=>c.health===h).length;
+              return<div key={h} style={{flex:1,padding:8,background:healthBg[h],borderRadius:6,textAlign:'center'}}>
+                <div style={{fontSize:18,fontWeight:800,color:healthColor[h]}}>{cnt}</div>
+                <div style={{fontSize:10,fontWeight:600,color:healthColor[h]}}>{healthLabel[h]}</div>
+              </div>})}
+          </div>
+          <table><thead><tr><th>Customer</th><th>Health</th><th>Revenue</th><th>Orders</th><th>Last Activity</th><th>Open Balance</th><th>Opportunity</th></tr></thead>
+          <tbody>{custHealth.filter(c=>c.soCount>0||rptTab==='customers').map(c=>{
+            const opp=c.health==='at_risk'?'🔴 Re-engage — '+c.daysSince+' days inactive':c.health==='cooling'?'🟠 Follow up — check on upcoming season':c.openBal>500?'🟡 Collect $'+c.openBal.toLocaleString():c.hasOpen?'🟢 Active order in progress':'🔵 Prospect for next season';
+            return<tr key={c.id} style={{cursor:'pointer'}} onClick={()=>{setSelC(cust.find(cc=>cc.id===c.id));setPg('customers')}}>
+              <td style={{fontWeight:700}}>{c.name} <span style={{fontSize:9,color:'#94a3b8'}}>{c.alpha_tag}</span></td>
+              <td><span style={{padding:'2px 8px',borderRadius:8,fontSize:10,fontWeight:700,background:healthBg[c.health],color:healthColor[c.health]}}>{healthLabel[c.health]}</span></td>
+              <td style={{fontWeight:600,textAlign:'right'}}>${c.rev.toLocaleString()}</td>
+              <td style={{textAlign:'center'}}>{c.soCount}</td>
+              <td style={{fontSize:11,color:c.daysSince>30?'#dc2626':'#64748b'}}>{c.daysSince<999?c.daysSince+'d ago':'Never'}</td>
+              <td style={{textAlign:'right',color:c.openBal>0?'#dc2626':'#94a3b8'}}>{c.openBal>0?'$'+c.openBal.toLocaleString():'—'}</td>
+              <td style={{fontSize:11}}>{opp}</td>
+            </tr>})}</tbody></table>
+        </div>}
+      </div>}
+
+      {/* PRODUCT MIX */}
+      {(rptTab==='overview'||rptTab==='products')&&<div className="card" style={{marginBottom:12}}>
+        <WH id="productMix" title="Product Mix & Popularity" icon="📦"/>
+        {rptWidgets.productMix&&<div className="card-body" style={{padding:0}}>
+          <table><thead><tr><th>SKU</th><th>Product</th><th>Brand</th><th>Revenue</th><th>Cost</th><th>Margin</th><th>Units</th><th>SOs</th><th></th></tr></thead>
+          <tbody>{topProducts.map(p=>{const pct=p.rev>0?Math.round((p.rev-p.cost)/p.rev*100):0;
+            return<tr key={p.sku}>
+              <td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',fontSize:12}}>{p.sku}</td>
+              <td style={{fontSize:12}}>{p.name}</td>
+              <td style={{fontSize:11,color:'#64748b'}}>{p.brand}</td>
+              <td style={{fontWeight:700,textAlign:'right'}}>${p.rev.toLocaleString()}</td>
+              <td style={{textAlign:'right',color:'#64748b'}}>${p.cost.toLocaleString()}</td>
+              <td style={{textAlign:'right',color:pct>=40?'#166534':'#d97706',fontWeight:600}}>{pct}%</td>
+              <td style={{textAlign:'center',fontWeight:600}}>{p.units}</td>
+              <td style={{textAlign:'center'}}>{p.soCount}</td>
+              <td style={{width:100}}><Bar val={p.rev} max={topProducts[0]?.rev||1} color={pct>=40?'#22c55e':'#f59e0b'}/></td>
+            </tr>})}</tbody></table>
+        </div>}
+      </div>}
+
+      {/* MARGIN ANALYSIS */}
+      {(rptTab==='overview'||rptTab==='pipeline')&&<div className="card" style={{marginBottom:12}}>
+        <WH id="margins" title="Margin Analysis — Where to Improve" icon="📈"/>
+        {rptWidgets.margins&&<div className="card-body">
+          <div style={{fontSize:12,color:'#64748b',marginBottom:8}}>Orders sorted by margin % — lowest first. Focus on improving pricing on low-margin orders.</div>
+          {pipeline.filter(s=>s._rev>0).sort((a,b)=>a._pct-b._pct).slice(0,8).map(s=>
+            <div key={s.id} style={{display:'flex',alignItems:'center',gap:8,padding:'6px 0',borderBottom:'1px solid #f1f5f9'}}>
+              <span style={{fontWeight:700,color:'#1e40af',fontSize:11,minWidth:56}}>{s.id}</span>
+              <span style={{fontSize:11,flex:1}}>{s._cname} — {s.memo}</span>
+              <div style={{width:120}}><Bar val={s._pct} max={100} color={s._pct>=40?'#22c55e':s._pct>=25?'#f59e0b':'#dc2626'}/></div>
+              <span style={{fontSize:12,fontWeight:800,minWidth:36,textAlign:'right',color:s._pct>=40?'#166534':s._pct>=25?'#d97706':'#dc2626'}}>{s._pct}%</span>
+            </div>)}
+        </div>}
+      </div>}
+    </>);
+  };
+
   const rBackup=()=>{
     const stateSize=JSON.stringify({customers:cust,estimates:ests,sales_orders:sos,products:prod,messages:msgs,invoices:invs}).length;
     const sizeMB=(stateSize/1024/1024).toFixed(2);
@@ -4087,8 +4400,8 @@ export default function App(){
           </div></div>})}</div></div></>)};
 
     // NAV
-  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'production',label:'Prod Board',icon:'package'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{section:'Comms'},{id:'messages',label:'Messages',icon:'mail'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'System'},{id:'backup',label:'Backup & Data',icon:'save'}];
-  const titles={dashboard:'Dashboard',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',jobs:'Jobs',production:'Production Board',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',products:'Products',inventory:'Inventory',messages:'Messages',backup:'Backup & Data'};
+  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'reports',label:'Reports',icon:'dollar'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'production',label:'Prod Board',icon:'package'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{section:'Comms'},{id:'messages',label:'Messages',icon:'mail'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'System'},{id:'backup',label:'Backup & Data',icon:'save'}];
+  const titles={dashboard:'Dashboard',reports:'Reports & Analytics',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',jobs:'Jobs',production:'Production Board',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',products:'Products',inventory:'Inventory',messages:'Messages',backup:'Backup & Data'};
   return(<div className="app"><Toast msg={toast?.msg} type={toast?.type}/>
     <div className="sidebar"><div className="sidebar-logo">NSA<span>Portal</span></div>
       <nav className="sidebar-nav">{nav.map((item,i)=>{if(item.section)return<div key={i} className="sidebar-section">{item.section}</div>;
@@ -4123,7 +4436,7 @@ export default function App(){
           {gOpen&&<div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:59}} onClick={()=>setGOpen(false)}/>}
         </div>
         <div style={{display:'flex',gap:6,alignItems:'center'}}><button className="btn btn-sm btn-primary" onClick={()=>newE(null)} style={{fontSize:11}}><Icon name="plus" size={12}/> Estimate</button><button className="btn btn-sm btn-secondary" onClick={()=>setCM({open:true,c:null})} style={{fontSize:11}}><Icon name="plus" size={12}/> Customer</button></div></div>
-      <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='production'&&rProd2()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='backup'&&rBackup()}</div></div>
+      <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='production'&&rProd2()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='reports'&&rReports()}{pg==='backup'&&rBackup()}</div></div>
     <CustModal isOpen={cM.open} onClose={()=>setCM({open:false,c:null})} onSave={savC} customer={cM.c} parents={pars}/>
     <AdjModal isOpen={aM.open} onClose={()=>setAM({open:false,p:null})} product={aM.p} onSave={savI}/>
   </div>);
