@@ -249,33 +249,33 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                 {isAU(item.brand)&&<span className="badge badge-blue">Tier {cust?.adidas_ua_tier}</span>}
                 {!isAU(item.brand)&&<span style={{fontSize:12,color:'#64748b'}}>({(item.unit_sell/item.nsa_cost).toFixed(2)}x)</span>}
               </div></div>
-            <div style={{textAlign:'right',minWidth:200}}>
+            <div style={{textAlign:'right',minWidth:220}}>
               <div style={{fontSize:11,color:'#64748b',marginBottom:1}}>Qty: <strong style={{fontSize:14,color:'#0f172a'}}>{qty}</strong></div>
               <table style={{marginLeft:'auto',fontSize:11,borderCollapse:'collapse',lineHeight:'1.4'}}>
                 <thead><tr style={{fontSize:9,color:'#94a3b8',textTransform:'uppercase'}}>
                   <td style={{padding:'0 8px 2px 0',textAlign:'left'}}></td>
-                  <td style={{padding:'0 8px 2px',textAlign:'right'}}>Rev</td>
                   <td style={{padding:'0 8px 2px',textAlign:'right'}}>Cost</td>
-                  <td style={{padding:'0 0 2px 8px',textAlign:'right'}}>Margin</td>
+                  <td style={{padding:'0 8px 2px',textAlign:'right'}}>Margin</td>
+                  <td style={{padding:'0 0 2px 8px',textAlign:'right'}}>Rev</td>
                 </tr></thead>
                 <tbody>
                   <tr style={{color:'#374151'}}>
                     <td style={{padding:'1px 8px 1px 0',textAlign:'left',color:'#64748b',fontSize:10}}>Item</td>
-                    <td style={{padding:'1px 8px',textAlign:'right',fontWeight:600}}>${pRev.toFixed(0)}</td>
                     <td style={{padding:'1px 8px',textAlign:'right',color:'#64748b'}}>${pCost.toFixed(0)}</td>
-                    <td style={{padding:'1px 0 1px 8px',textAlign:'right',fontWeight:600,color:pMg>=0?'#166534':'#dc2626'}}>${pMg.toFixed(0)} <span style={{fontSize:9,color:'#94a3b8'}}>({pRev>0?(pMg/pRev*100).toFixed(0):0}%)</span></td>
+                    <td style={{padding:'1px 8px',textAlign:'right',fontWeight:600,color:pMg>=0?'#166534':'#dc2626'}}>${pMg.toFixed(0)} <span style={{fontSize:9,color:'#94a3b8'}}>({pRev>0?(pMg/pRev*100).toFixed(0):0}%)</span></td>
+                    <td style={{padding:'1px 0 1px 8px',textAlign:'right',fontWeight:600}}>${pRev.toFixed(0)}</td>
                   </tr>
                   {decoBreak.length>0&&<tr style={{color:'#374151'}}>
                     <td style={{padding:'1px 8px 1px 0',textAlign:'left',color:'#64748b',fontSize:10}}>Deco{decoBreak.length>1?` (${decoBreak.length})`:''}</td>
-                    <td style={{padding:'1px 8px',textAlign:'right',fontWeight:600}}>${dR.toFixed(0)}</td>
                     <td style={{padding:'1px 8px',textAlign:'right',color:'#64748b'}}>${dC.toFixed(0)}</td>
-                    <td style={{padding:'1px 0 1px 8px',textAlign:'right',fontWeight:600,color:(dR-dC)>=0?'#166534':'#dc2626'}}>${(dR-dC).toFixed(0)} <span style={{fontSize:9,color:'#94a3b8'}}>({dR>0?((dR-dC)/dR*100).toFixed(0):0}%)</span></td>
+                    <td style={{padding:'1px 8px',textAlign:'right',fontWeight:600,color:(dR-dC)>=0?'#166534':'#dc2626'}}>${(dR-dC).toFixed(0)} <span style={{fontSize:9,color:'#94a3b8'}}>({dR>0?((dR-dC)/dR*100).toFixed(0):0}%)</span></td>
+                    <td style={{padding:'1px 0 1px 8px',textAlign:'right',fontWeight:600}}>${dR.toFixed(0)}</td>
                   </tr>}
                   <tr style={{borderTop:'2px solid #0f172a'}}>
-                    <td style={{padding:'4px 8px 0 0',textAlign:'left',fontWeight:800,fontSize:11}}>Total</td>
-                    <td style={{padding:'4px 8px 0',textAlign:'right',fontWeight:900,fontSize:16,color:'#166534'}}>${iR.toFixed(0)}</td>
+                    <td style={{padding:'4px 8px 0 0',textAlign:'left',fontWeight:800,fontSize:12}}>Total</td>
                     <td style={{padding:'4px 8px 0',textAlign:'right',fontWeight:700,fontSize:12,color:'#64748b'}}>${iC.toFixed(0)}</td>
-                    <td style={{padding:'4px 0 0 8px',textAlign:'right',fontWeight:800,fontSize:12,color:mg>=0?'#1e40af':'#dc2626'}}>${mg.toFixed(0)} <span style={{fontSize:10}}>({iR>0?(mg/iR*100).toFixed(0):0}%)</span></td>
+                    <td style={{padding:'4px 8px 0',textAlign:'right',fontWeight:800,fontSize:12,color:mg>=0?'#1e40af':'#dc2626'}}>${mg.toFixed(0)} <span style={{fontSize:10}}>({iR>0?(mg/iR*100).toFixed(0):0}%)</span></td>
+                    <td style={{padding:'4px 0 0 8px',textAlign:'right',fontWeight:900,fontSize:20,color:'#166534'}}>${iR.toFixed(0)}</td>
                   </tr>
                 </tbody>
               </table>
@@ -309,16 +309,22 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
             </div>})}
         </div>}
         {isSO&&(item.po_lines||[]).length>0&&<div style={{padding:'4px 18px',borderBottom:'1px solid #f1f5f9'}}>
-          {item.po_lines.map((po,pi)=>{const st=po.status||'pending';
+          {item.po_lines.map((po,pi)=>{
+            const rcvd=po.received||{};
+            const szKeysAll=Object.keys(po).filter(k=>k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&typeof po[k]==='number');
+            const totalOrd=szKeysAll.reduce((a,sz)=>a+(po[sz]||0),0);
+            const totalRcvd=szKeysAll.reduce((a,sz)=>a+(rcvd[sz]||0),0);
+            const st=totalRcvd===0?(po.status==='received'?'received':'waiting'):totalRcvd>=totalOrd?'received':'partial';
             return<div key={pi} style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',marginBottom:2}}>
-              <span style={{fontSize:10,fontWeight:700,width:46,color:st==='received'?'#166534':st==='waiting'?'#92400e':'#dc2626',cursor:'pointer',textDecoration:'underline'}} onClick={()=>setEditPO({lineIdx:idx,poIdx:pi,po})} title="Click to edit">{po.po_id||'PO'}:</span>
-              {szs.map(sz=>{const v=po[sz]||0;if(!v)return<div key={sz} style={{width:48,textAlign:'center',fontSize:10,color:'#d1d5db'}}>—</div>;
+              <span style={{fontSize:10,fontWeight:700,width:46,color:st==='received'?'#166534':st==='partial'?'#b45309':'#92400e',cursor:'pointer',textDecoration:'underline'}} onClick={()=>setEditPO({lineIdx:idx,poIdx:pi,po})} title="Click to edit">{po.po_id||'PO'}:</span>
+              {szs.map(sz=>{const v=po[sz]||0;const r=rcvd[sz]||0;if(!v)return<div key={sz} style={{width:48,textAlign:'center',fontSize:10,color:'#d1d5db'}}>—</div>;
+                const szSt=r>=v?'received':r>0?'partial':'waiting';
                 return<div key={sz} style={{width:48,textAlign:'center',fontSize:12,fontWeight:700,padding:'2px 0',borderRadius:3,
-                  background:st==='received'?'#dcfce7':st==='waiting'?'#fef3c7':'#fef2f2',
-                  color:st==='received'?'#166534':st==='waiting'?'#92400e':'#dc2626'}}>{v}</div>})}
+                  background:szSt==='received'?'#dcfce7':szSt==='partial'?'#fef3c7':'#fef3c7',
+                  color:szSt==='received'?'#166534':szSt==='partial'?'#b45309':'#92400e'}}>{szSt==='partial'?r+'/'+v:v}</div>})}
               <span style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:600,marginLeft:4,
-                background:st==='received'?'#dcfce7':st==='waiting'?'#fef3c7':'#fef2f2',
-                color:st==='received'?'#166534':st==='waiting'?'#92400e':'#dc2626'}}>{st==='received'?'✓ Received':st==='waiting'?'Waiting':'Needs PO'}</span>
+                background:st==='received'?'#dcfce7':st==='partial'?'#fff7ed':'#fef3c7',
+                color:st==='received'?'#166534':st==='partial'?'#b45309':'#92400e'}}>{st==='received'?'✓ Received':st==='partial'?totalRcvd+'/'+totalOrd+' Rcvd':'Waiting'}</span>
             </div>})}
         </div>}
         {/* DECORATIONS */}
@@ -654,7 +660,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       const allPickIds=[];const allPoIds=[];
       o.items.forEach((it,i)=>{
         (it.pick_lines||[]).forEach((pk,pi)=>{if(pk.pick_id&&!allPickIds.find(x=>x.id===pk.pick_id)){const qty=Object.entries(pk).reduce((a,[k,v])=>k!=='status'&&k!=='pick_id'&&typeof v==='number'?a+v:a,0);allPickIds.push({id:pk.pick_id,status:pk.status||'pick',qty,lineIdx:i,pickIdx:pi})}});
-        (it.po_lines||[]).forEach((po,pi)=>{if(po.po_id&&!allPoIds.find(x=>x.id===po.po_id)){const qty=Object.entries(po).reduce((a,[k,v])=>k!=='status'&&k!=='po_id'&&typeof v==='number'?a+v:a,0);const vk=it.vendor_id||it.brand;const vn=D_V.find(v=>v.id===vk)?.name||vk;allPoIds.push({id:po.po_id,status:po.status||'waiting',qty,vendor:vn,lineIdx:i,poIdx:pi})}});
+        (it.po_lines||[]).forEach((po,pi)=>{if(po.po_id&&!allPoIds.find(x=>x.id===po.po_id)){const szKeysP=Object.keys(po).filter(k=>k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&typeof po[k]==='number');const qty=szKeysP.reduce((a,sz)=>a+(po[sz]||0),0);const rcvdQty=szKeysP.reduce((a,sz)=>a+((po.received||{})[sz]||0),0);const vk=it.vendor_id||it.brand;const vn=D_V.find(v=>v.id===vk)?.name||vk;const pst=rcvdQty===0?(po.status==='received'?'received':'waiting'):rcvdQty>=qty?'received':'partial';allPoIds.push({id:po.po_id,status:pst,qty,rcvdQty,vendor:vn,lineIdx:i,poIdx:pi})}});
       });
       if(allPickIds.length===0&&allPoIds.length===0)return null;
       return<div className="card" style={{marginTop:16}}><div className="card-header"><h2>Linked Documents</h2></div><div className="card-body">
@@ -668,10 +674,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           </div></>}
         {allPoIds.length>0&&<><div style={{fontSize:11,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6}}>Purchase Orders</div>
           <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-            {allPoIds.map(po=><div key={po.id} style={{padding:'8px 14px',border:'1px solid #e2e8f0',borderRadius:8,cursor:'pointer',display:'flex',alignItems:'center',gap:8,background:po.status==='received'?'#f0fdf4':'#fffbeb'}} onClick={()=>{const poData=o.items[po.lineIdx]?.po_lines?.[po.poIdx];if(poData)setEditPO({lineIdx:po.lineIdx,poIdx:po.poIdx,po:poData})}}>
+            {allPoIds.map(po=><div key={po.id} style={{padding:'8px 14px',border:'1px solid #e2e8f0',borderRadius:8,cursor:'pointer',display:'flex',alignItems:'center',gap:8,background:po.status==='received'?'#f0fdf4':po.status==='partial'?'#fffbeb':'#fffbeb'}} onClick={()=>{const poData=o.items[po.lineIdx]?.po_lines?.[po.poIdx];if(poData)setEditPO({lineIdx:po.lineIdx,poIdx:po.poIdx,po:poData})}}>
               <Icon name="cart" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{po.id}</span>
               <span style={{fontSize:11,color:'#64748b'}}>{po.vendor} — {po.qty} units</span>
-              <span className={`badge ${po.status==='received'?'badge-green':'badge-amber'}`} style={{fontSize:9}}>{po.status==='received'?'Received':'Waiting'}</span>
+              <span className={`badge ${po.status==='received'?'badge-green':'badge-amber'}`} style={{fontSize:9}}>{po.status==='received'?'Received':po.status==='partial'?(po.rcvdQty||0)+'/'+po.qty+' Rcvd':'Waiting'}</span>
             </div>)}
           </div></>}
       </div></div>})()}
@@ -702,31 +708,98 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       </div>
     </div></div>}
 
-    {/* EDIT PO MODAL */}
-    {editPO&&<div className="modal-overlay" onClick={()=>setEditPO(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:600}}>
-      <div className="modal-header"><h2>Edit PO — {editPO.po.po_id||'PO'}</h2><button className="modal-close" onClick={()=>setEditPO(null)}>x</button></div>
-      <div className="modal-body">
-        <div style={{marginBottom:12}}><label className="form-label">Status</label>
-          <div style={{display:'flex',gap:6}}>{['waiting','received'].map(s=><button key={s} className={`btn btn-sm ${editPO.po.status===s?'btn-primary':'btn-secondary'}`} onClick={()=>setEditPO(p=>({...p,po:{...p.po,status:s}}))}>{s==='received'?'✓ Received':'Waiting'}</button>)}</div></div>
-        <div style={{fontSize:12,fontWeight:600,color:'#64748b',marginBottom:6}}>Quantities by size:</div>
-        <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-          {Object.entries(editPO.po).filter(([k])=>k!=='status'&&k!=='po_id').filter(([,v])=>typeof v==='number'&&v>0).map(([sz,v])=><div key={sz} style={{textAlign:'center'}}>
-            <div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
-            <input style={{width:42,textAlign:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700}} defaultValue={v} onChange={e=>setEditPO(p=>({...p,po:{...p.po,[sz]:parseInt(e.target.value)||0}}))}/>
-          </div>)}</div>
-      </div>
-      <div className="modal-footer">
-        <button className="btn btn-secondary" onClick={()=>setEditPO(null)}>Cancel</button>
-        <button className="btn btn-sm" style={{background:'#dc2626',color:'white'}} onClick={()=>{
-          const updatedItems=[...o.items];updatedItems[editPO.lineIdx].po_lines=updatedItems[editPO.lineIdx].po_lines.filter((_,i)=>i!==editPO.poIdx);
-          const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setEditPO(null);nf('PO deleted');
-        }}><Icon name="trash" size={12}/> Delete</button>
-        <button className="btn btn-primary" onClick={()=>{
-          const updatedItems=[...o.items];updatedItems[editPO.lineIdx].po_lines[editPO.poIdx]=editPO.po;
-          const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setEditPO(null);nf('PO updated');
-        }}>Save Changes</button>
-      </div>
-    </div></div>}
+    {/* EDIT PO MODAL — supports partial receiving with shipment log */}
+    {editPO&&(()=>{
+      const po=editPO.po;
+      const szKeys=Object.keys(po).filter(k=>k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&typeof po[k]==='number');
+      const received=po.received||{};
+      const shipments=po.shipments||[];
+      // If legacy PO with status=received but no shipments, migrate it
+      const isLegacyReceived=po.status==='received'&&shipments.length===0;
+      const getRcvd=sz=>(received[sz]||0);
+      const getOpen=sz=>(po[sz]||0)-getRcvd(sz);
+      const totalOrdered=szKeys.reduce((a,sz)=>a+(po[sz]||0),0);
+      const totalReceived=szKeys.reduce((a,sz)=>a+getRcvd(sz),0);
+      const totalOpen=totalOrdered-totalReceived;
+      const hasOpen=szKeys.some(sz=>getOpen(sz)>0);
+      const poStatus=totalReceived===0?'waiting':totalOpen<=0?'received':'partial';
+
+      return<div className="modal-overlay" onClick={()=>setEditPO(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:700,maxHeight:'90vh',overflow:'auto'}}>
+        <div className="modal-header"><h2>PO — {po.po_id||'PO'}</h2>
+          <div style={{display:'flex',gap:6,alignItems:'center'}}>
+            <span className={`badge ${poStatus==='received'?'badge-green':poStatus==='partial'?'badge-amber':'badge-gray'}`}>{poStatus==='received'?'Fully Received':poStatus==='partial'?'Partial — '+totalOpen+' open':'Waiting'}</span>
+            <button className="modal-close" onClick={()=>setEditPO(null)}>x</button>
+          </div>
+        </div>
+        <div className="modal-body">
+          {/* PO Summary */}
+          <div style={{fontSize:12,fontWeight:600,color:'#64748b',marginBottom:6}}>Ordered quantities:</div>
+          <table style={{width:'100%',fontSize:12,borderCollapse:'collapse',marginBottom:16}}>
+            <thead><tr style={{borderBottom:'2px solid #0f172a'}}>{szKeys.map(sz=><th key={sz} style={{padding:'4px 8px',textAlign:'center',minWidth:48}}>{sz}</th>)}<th style={{padding:'4px 8px',textAlign:'center'}}>TOTAL</th></tr></thead>
+            <tbody>
+              <tr style={{fontSize:10,color:'#64748b'}}><td colSpan={szKeys.length+1} style={{padding:'2px 8px'}}>Ordered</td></tr>
+              <tr>{szKeys.map(sz=><td key={sz} style={{padding:'2px 8px',textAlign:'center',fontWeight:700}}>{po[sz]||0}</td>)}<td style={{padding:'2px 8px',textAlign:'center',fontWeight:800}}>{totalOrdered}</td></tr>
+              <tr style={{fontSize:10,color:'#166534'}}><td colSpan={szKeys.length+1} style={{padding:'2px 8px'}}>Received</td></tr>
+              <tr>{szKeys.map(sz=><td key={sz} style={{padding:'2px 8px',textAlign:'center',fontWeight:700,color:getRcvd(sz)>0?'#166534':'#d1d5db'}}>{getRcvd(sz)||'—'}</td>)}<td style={{padding:'2px 8px',textAlign:'center',fontWeight:800,color:'#166534'}}>{totalReceived}</td></tr>
+              {hasOpen&&<><tr style={{fontSize:10,color:'#b45309'}}><td colSpan={szKeys.length+1} style={{padding:'2px 8px'}}>Still open</td></tr>
+              <tr>{szKeys.map(sz=>{const op=getOpen(sz);return<td key={sz} style={{padding:'2px 8px',textAlign:'center',fontWeight:700,color:op>0?'#b45309':'#d1d5db'}}>{op>0?op:'—'}</td>})}<td style={{padding:'2px 8px',textAlign:'center',fontWeight:800,color:'#b45309'}}>{totalOpen}</td></tr></>}
+            </tbody>
+          </table>
+
+          {/* Shipment history */}
+          {shipments.length>0&&<>
+            <div style={{fontSize:12,fontWeight:600,color:'#64748b',marginBottom:6}}>Shipment history:</div>
+            {shipments.map((sh,si)=><div key={si} style={{padding:'6px 10px',background:'#f0fdf4',borderRadius:6,marginBottom:4,fontSize:11,display:'flex',gap:12,alignItems:'center'}}>
+              <span style={{fontWeight:700,color:'#166534'}}>📦 {sh.date}</span>
+              {szKeys.map(sz=>sh[sz]?<span key={sz} style={{color:'#374151'}}>{sz}:<strong>{sh[sz]}</strong></span>:null)}
+            </div>)}
+          </>}
+
+          {/* Receive shipment form */}
+          {hasOpen&&<div style={{marginTop:16,padding:12,border:'2px solid #22c55e',borderRadius:8,background:'#f0fdf4'}}>
+            <div style={{fontSize:12,fontWeight:700,color:'#166534',marginBottom:8}}>Receive Shipment</div>
+            <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:8}}>
+              <span style={{fontSize:11,fontWeight:600,color:'#64748b'}}>Date:</span>
+              <input type="date" id="po-recv-date" className="form-input" style={{width:140,fontSize:12}} defaultValue={new Date().toISOString().split('T')[0]}/>
+            </div>
+            <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:8}}>
+              <span style={{fontSize:11,fontWeight:600,color:'#64748b',width:40}}>Qty:</span>
+              {szKeys.filter(sz=>getOpen(sz)>0).map(sz=><div key={sz} style={{textAlign:'center'}}>
+                <div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
+                <input id={'po-recv-'+sz} style={{width:42,textAlign:'center',border:'1px solid #22c55e',borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700,background:'white'}} defaultValue={getOpen(sz)}/>
+                <div style={{fontSize:9,color:'#64748b'}}>{getOpen(sz)} open</div>
+              </div>)}
+            </div>
+            <button className="btn btn-primary" style={{fontSize:12}} onClick={()=>{
+              const dateEl=document.getElementById('po-recv-date');
+              const date=dateEl?.value||new Date().toLocaleDateString();
+              const shipment={date};
+              const newReceived={...received};
+              szKeys.filter(sz=>getOpen(sz)>0).forEach(sz=>{
+                const el=document.getElementById('po-recv-'+sz);
+                const qty=el?parseInt(el.value)||0:0;
+                if(qty>0){shipment[sz]=qty;newReceived[sz]=(newReceived[sz]||0)+qty}
+              });
+              const hasShipQty=Object.entries(shipment).some(([k,v])=>k!=='date'&&v>0);
+              if(!hasShipQty){nf('Enter quantities to receive','error');return}
+              const newShipments=[...shipments,shipment];
+              const newTotalOpen=szKeys.reduce((a,sz)=>a+(po[sz]||0)-(newReceived[sz]||0),0);
+              const newStatus=newTotalOpen<=0?'received':'partial';
+              const updatedPO={...po,received:newReceived,shipments:newShipments,status:newStatus};
+              const updatedItems=[...o.items];updatedItems[editPO.lineIdx].po_lines[editPO.poIdx]=updatedPO;
+              const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};
+              setO(updated);onSave(updated);setEditPO({...editPO,po:updatedPO});nf('Shipment received on '+po.po_id);
+            }}>✓ Receive These Items</button>
+          </div>}
+        </div>
+        <div className="modal-footer">
+          <button className="btn btn-secondary" onClick={()=>setEditPO(null)}>Close</button>
+          <button className="btn btn-sm" style={{background:'#dc2626',color:'white'}} onClick={()=>{
+            const updatedItems=[...o.items];updatedItems[editPO.lineIdx].po_lines=updatedItems[editPO.lineIdx].po_lines.filter((_,i)=>i!==editPO.poIdx);
+            const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setEditPO(null);nf('PO deleted');
+          }}><Icon name="trash" size={12}/> Delete PO</button>
+        </div>
+      </div></div>})()}
 
   </div>);
 }
