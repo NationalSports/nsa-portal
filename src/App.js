@@ -229,8 +229,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
 
     {/* LINE ITEMS */}
     {tab==='items'&&<>{o.items.map((item,idx)=>{const qty=Object.values(item.sizes).reduce((a,v)=>a+v,0);
-      let dR=0,dC=0;item.decorations.forEach(d=>{const dp=dP(d,qty,af);dR+=qty*dp.sell;dC+=qty*dp.cost});
-      const iR=qty*item.unit_sell+dR;const iC=qty*item.nsa_cost+dC;const mg=iR-iC;
+      let dR=0,dC=0;const decoBreak=[];item.decorations.forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:qty;const dp=dP(d,qty,af,cq);const dr=qty*dp.sell;const dc=qty*dp.cost;dR+=dr;dC+=dc;
+        const artF=d.kind==='art'?af.find(f=>f.id===d.art_file_id):null;const label=d.kind==='art'?(artF?artF.deco_type?.replace('_',' '):d.position):'Numbers @ '+d.position;
+        decoBreak.push({label,sell:dp.sell,cost:dp.cost,rev:dr,costTot:dc,margin:dr-dc,pct:dr>0?((dr-dc)/dr*100):0})});
+      const pRev=qty*item.unit_sell;const pCost=qty*item.nsa_cost;const pMg=pRev-pCost;
+      const iR=pRev+dR;const iC=pCost+dC;const mg=iR-iC;
       const szs=(item.available_sizes||['S','M','L','XL','2XL']).slice().sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
       const addable=EXTRA_SIZES.filter(s=>!(item.available_sizes||[]).includes(s));
       return(<div key={idx} className="card" style={{marginBottom:12}}>
@@ -246,10 +249,23 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                 {isAU(item.brand)&&<span className="badge badge-blue">Tier {cust?.adidas_ua_tier}</span>}
                 {!isAU(item.brand)&&<span style={{fontSize:12,color:'#64748b'}}>({(item.unit_sell/item.nsa_cost).toFixed(2)}x)</span>}
               </div></div>
-            <div style={{textAlign:'right',fontSize:12,minWidth:120}}>
-              <div>Qty: <strong style={{fontSize:16}}>{qty}</strong></div>
-              <div style={{fontSize:16,fontWeight:800,color:'#166534'}}>Rev: ${iR.toFixed(0)}</div>
-              <div>Margin: <strong style={{color:mg>=0?'#1e40af':'#dc2626'}}>${mg.toFixed(0)} ({iR>0?(mg/iR*100).toFixed(0):0}%)</strong></div>
+            <div style={{textAlign:'right',minWidth:180}}>
+              <div style={{fontSize:11,color:'#64748b',marginBottom:2}}>Qty: <strong style={{fontSize:14,color:'#0f172a'}}>{qty}</strong></div>
+              {/* Product line */}
+              <div style={{fontSize:10,color:'#64748b',display:'flex',justifyContent:'flex-end',gap:8}}>
+                <span>Product: <strong style={{color:'#0f172a'}}>${pRev.toFixed(0)}</strong></span>
+                <span style={{color:pMg>=0?'#166534':'#dc2626'}}>{pRev>0?(pMg/pRev*100).toFixed(0):0}%</span>
+              </div>
+              {/* Deco lines */}
+              {decoBreak.map((db,di)=><div key={di} style={{fontSize:10,color:'#64748b',display:'flex',justifyContent:'flex-end',gap:8}}>
+                <span>{db.label}: <strong style={{color:'#0f172a'}}>${db.rev.toFixed(0)}</strong></span>
+                <span style={{color:db.margin>=0?'#166534':'#dc2626'}}>{db.pct.toFixed(0)}%</span>
+              </div>)}
+              {/* Separator */}
+              <div style={{borderTop:'1px solid #e2e8f0',marginTop:4,paddingTop:4}}>
+                <div style={{fontSize:18,fontWeight:900,color:'#166534'}}>${iR.toFixed(0)}</div>
+                <div style={{fontSize:11}}>Margin: <strong style={{color:mg>=0?'#1e40af':'#dc2626'}}>${mg.toFixed(0)} ({iR>0?(mg/iR*100).toFixed(0):0}%)</strong></div>
+              </div>
             </div>
             <button onClick={()=>rmI(idx)} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:4}}><Icon name="trash" size={16}/></button>
           </div></div>
