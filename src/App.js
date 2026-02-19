@@ -30,8 +30,8 @@ function dP(d,q,artFiles,cq){
   if(d.kind==='numbers'||d.type==='number_press'){const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:q;return{sell:d.sell_override||npP(nq||1,d.two_color,true),cost:npP(nq||1,d.two_color,false)}};
   if(d.type==='dtf'){const t=DTF[d.dtf_size||0];return{sell:d.sell_override||t.sell,cost:t.cost}}return{sell:0,cost:0}}
 const SC={
-  // SO statuses (4)
-  need_order:{bg:'#fef3c7',c:'#92400e'},waiting_receive:{bg:'#dbeafe',c:'#1e40af'},complete:{bg:'#dcfce7',c:'#166534'},in_production:{bg:'#ede9fe',c:'#6d28d9'},
+  // SO statuses (5)
+  need_order:{bg:'#fef3c7',c:'#92400e'},waiting_receive:{bg:'#dbeafe',c:'#1e40af'},complete:{bg:'#dcfce7',c:'#166534'},in_production:{bg:'#ede9fe',c:'#6d28d9'},ready_to_invoice:{bg:'#fef0c7',c:'#c2410c'},
   // Job item statuses
   need_to_order:{bg:'#fef3c7',c:'#92400e'},partially_received:{bg:'#fef9c3',c:'#854d0e'},items_received:{bg:'#d1fae5',c:'#065f46'},
   // Job production statuses
@@ -61,12 +61,12 @@ const buildJobs=(o)=>{
   // Auto-generate from art decorations on items
   const artMap={};
   safeItems(o).forEach((it,idx)=>{
+    if(it.no_deco)return;// Skip blank items
     safeDecos(it).forEach((d,di)=>{
       if(d.kind!=='art'||!d.art_file_id)return;
       const key='art_'+d.art_file_id+'_'+d.position;
       if(!artMap[key])artMap[key]={art_file_id:d.art_file_id,position:d.position,deco_type:null,items:[]};
       artMap[key].items.push({item_idx:idx,deco_idx:di,sku:it.sku,name:safeStr(it.name),color:it.color||'',units:Object.values(safeSizes(it)).reduce((a,v)=>a+v,0),fulfilled:0});
-      // Get art file info from SO
       const af=safeArr(o?.art_files).find(f=>f.id===d.art_file_id);
       if(af){artMap[key].deco_type=af.deco_type;artMap[key].art_name=af.name;artMap[key].art_status=af.status==='approved'?'art_complete':af.status==='uploaded'?'waiting_approval':'needs_art'}
     });
@@ -81,6 +81,26 @@ const buildJobs=(o)=>{
       items:v.items,_auto:true};
   });
   return jobs;
+};
+// Check if a job is ready for production: art approved, prod files exist, items received
+const isJobReady=(j,o)=>{
+  // Art must be approved
+  if(j.art_status!=='art_complete')return false;
+  // Check prod files exist for this art
+  const af=safeArr(o?.art_files).find(f=>f.id===j.art_file_id);
+  if(af&&(af.prod_files||[]).length===0)return false;
+  // Check items are received (picked or PO received) for this job's items
+  let totalSz=0,fulfilledSz=0;
+  (j.items||[]).forEach(gi=>{
+    const it=safeItems(o)[gi.item_idx];if(!it)return;
+    Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{
+      totalSz+=v;
+      const picked=safePicks(it).reduce((a,pk)=>a+safeNum(pk[sz]),0);
+      const rcvd=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
+      fulfilledSz+=Math.min(v,picked+rcvd);
+    });
+  });
+  return totalSz>0&&fulfilledSz>=totalSz;
 };
 const safeFirm=(o)=>safeArr(o?.firm_dates);
 
@@ -324,6 +344,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
   const[tab,setTab]=useState('items');const[dirty,setDirty]=useState(false);const[selJob,setSelJob]=useState(null);const[jobNote,setJobNote]=useState('');const[msgDept,setMsgDept]=useState('all');
     const origRef=React.useRef(JSON.stringify(o));
     const markDirty=()=>setDirty(true);const[saved,setSaved]=useState(!!order.customer_id);const[showSend,setShowSend]=useState(false);const[showPick,setShowPick]=useState(false);const[pickId,setPickId]=useState(()=>'IF-'+String(4000+Math.floor(Math.random()*1000)));const[showPO,setShowPO]=useState(null);const[poCounter,setPOCounter]=useState(()=>3001+Math.floor(Math.random()*100));
+    const[pickNotes,setPickNotes]=useState('');const[pickShipDest,setPickShipDest]=useState('in_house');const[pickDecoVendor,setPickDecoVendor]=useState('');const[pickShipAddr,setPickShipAddr]=useState('default');
+    const DECO_VENDORS=['Silver Screen','Olympic Embroidery','WePrintIt','Pacific Screen Print','Other'];
   const[showFirmReq,setShowFirmReq]=useState(false);const[firmReqDate,setFirmReqDate]=useState('');const[firmReqNote,setFirmReqNote]=useState('');
   const[showInvCreate,setShowInvCreate]=useState(false);const[invSelItems,setInvSelItems]=useState([]);const[invMemo,setInvMemo]=useState('');const[invType,setInvType]=useState('deposit');
   // Sync dirty state to parent dirtyRef
@@ -470,7 +492,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
   },[syncJobs]);// eslint-disable-line
 
   const fp=products.filter(p=>{if(!pS)return true;const q=pS.toLowerCase();return p.sku.toLowerCase().includes(q)||p.name.toLowerCase().includes(q)||p.brand?.toLowerCase().includes(q)});
-  const statusFlow=['need_order','waiting_receive','in_production','complete'];
+  const statusFlow=['need_order','waiting_receive','in_production','ready_to_invoice','complete'];
 
   return(<div>
     <button className="btn btn-secondary" onClick={()=>{if(dirty&&!window.confirm('You have unsaved changes. Leave without saving?'))return;onBack()}} style={{marginBottom:12}}><Icon name="back" size={14}/> {isE?'All Estimates':'All Sales Orders'}</button>
@@ -528,7 +550,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       {/* SO STATUS — auto-calculated */}
       {isSO&&(()=>{
         const autoSt=calcSOStatus(o);
-        const stLabels={need_order:'Need to Order',waiting_receive:'Waiting to Receive',in_production:'In Production',complete:'Complete'};
+        const stLabels={need_order:'Need to Order',waiting_receive:'Waiting to Receive',in_production:'In Production',ready_to_invoice:'Ready to Invoice',complete:'Complete'};
         return<div style={{display:'flex',gap:8,marginTop:12,borderTop:'1px solid #f1f5f9',paddingTop:12,alignItems:'center',flexWrap:'wrap'}}>
           <span style={{fontSize:11,color:'#64748b',fontWeight:600}}>Order Status:</span>
           {statusFlow.map((sf)=>{const sc=SC[sf]||{};const cur=o.status===sf;
@@ -620,6 +642,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                   color:st==='pulled'?'#166534':st==='pick'?'#92400e':'#64748b'}}>{v}</div>})}
               <span style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:600,marginLeft:4,
                 background:st==='pulled'?'#dcfce7':'#fef3c7',color:st==='pulled'?'#166534':'#92400e'}}>{st==='pulled'?'✓ Pulled':'Needs Pull'}</span>
+              {pk.ship_dest&&pk.ship_dest!=='in_house'&&<span style={{fontSize:8,padding:'2px 5px',borderRadius:4,fontWeight:700,
+                background:pk.ship_dest==='ship_customer'?'#dbeafe':'#ede9fe',color:pk.ship_dest==='ship_customer'?'#1e40af':'#6d28d9'}}>
+                {pk.ship_dest==='ship_customer'?'📦 → Customer':'🚚 → '+(pk.deco_vendor||'Deco')}</span>}
             </div>})}
         </div>}
         {isSO&&(item.po_lines||[]).length>0&&<div style={{padding:'4px 18px',borderBottom:'1px solid #f1f5f9'}}>
@@ -1159,6 +1184,33 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         <div style={{display:'flex',gap:40,marginBottom:12}}><div><div style={{fontSize:10,fontWeight:700,color:'#64748b'}}>CUSTOMER</div><div style={{fontWeight:700}}>{cust?.name}</div><div style={{fontSize:12,color:'#64748b'}}>{cust?.alpha_tag}</div></div>
           <div><div style={{fontSize:10,fontWeight:700,color:'#64748b'}}>SHIP TO</div><div style={{fontSize:12}}>{addrs.find(a=>a.id===o.ship_to_id)?.label||'—'}</div></div></div>
         {o.prod_notes&&<div style={{padding:'8px 12px',background:'#fef9c3',borderRadius:4,marginBottom:12,fontSize:13}}><strong>Notes:</strong> {o.prod_notes}</div>}
+        {/* Shipping Destination */}
+        <div style={{padding:12,background:'#f8fafc',borderRadius:8,marginBottom:12,border:'1px solid #e2e8f0'}}>
+          <div style={{fontSize:10,fontWeight:700,color:'#64748b',marginBottom:6,textTransform:'uppercase'}}>Shipping Destination</div>
+          <div style={{display:'flex',gap:6,marginBottom:8,flexWrap:'wrap'}}>
+            {[['in_house','🏭 In-House Deco'],['ship_customer','📦 Ship to Customer'],['ship_deco','🚚 Ship to Deco']].map(([v,l])=>
+              <button key={v} className={`btn btn-sm ${pickShipDest===v?'btn-primary':'btn-secondary'}`} style={{fontSize:11}} onClick={()=>setPickShipDest(v)}>{l}</button>)}
+          </div>
+          {pickShipDest==='ship_customer'&&<div style={{marginTop:6}}>
+            <label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Ship To Address</label>
+            <select className="form-select" style={{fontSize:12}} value={pickShipAddr} onChange={e=>setPickShipAddr(e.target.value)}>
+              {addrs.map(a=><option key={a.id} value={a.id}>{a.label}</option>)}
+              {o.ship_to_custom&&<option value="custom">Custom: {o.ship_to_custom}</option>}
+            </select>
+          </div>}
+          {pickShipDest==='ship_deco'&&<div style={{marginTop:6}}>
+            <label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Decoration Vendor</label>
+            <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
+              {DECO_VENDORS.map(dv=><button key={dv} className={`btn btn-sm ${pickDecoVendor===dv?'btn-primary':'btn-secondary'}`} style={{fontSize:11}} onClick={()=>setPickDecoVendor(dv)}>{dv}</button>)}
+            </div>
+            {pickDecoVendor==='Other'&&<input className="form-input" style={{marginTop:6,fontSize:12}} placeholder="Enter vendor name..." onChange={e=>setPickDecoVendor(e.target.value||'Other')}/>}
+          </div>}
+        </div>
+        {/* Warehouse Notes */}
+        <div style={{marginBottom:12}}>
+          <label style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase'}}>Notes for Warehouse</label>
+          <textarea className="form-input" rows={2} value={pickNotes} onChange={e=>setPickNotes(e.target.value)} placeholder="Special instructions for warehouse team..." style={{fontSize:12,resize:'vertical'}}/>
+        </div>
         {showPick.map((item,vi)=>{const szList=Object.entries(item._pick).filter(([,v])=>v>0);const q=szList.reduce((a,[,v])=>a+v,0);const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);
           return<div key={vi} style={{padding:12,border:'1px solid #e2e8f0',borderRadius:6,marginBottom:12}}>
             <div style={{display:'flex',justifyContent:'space-between',marginBottom:8}}><div><span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',marginRight:8}}>{item.sku}</span><strong>{item.name}</strong> — {item.color}</div><div style={{fontWeight:700}}>IF Qty: {q}</div></div>
@@ -1178,7 +1230,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
             const updatedItems=[...o.items];
             showPick.forEach(pk=>{
               const idx=pk._idx;if(idx==null)return;
-              const pickLine={...pk._pick,status:'pick',pick_id:pickId,created_at:new Date().toLocaleDateString(),memo:''};
+              const pickLine={...pk._pick,status:'pick',pick_id:pickId,created_at:new Date().toLocaleDateString(),memo:pickNotes,ship_dest:pickShipDest,ship_addr:pickShipDest==='ship_customer'?pickShipAddr:'',deco_vendor:pickShipDest==='ship_deco'?pickDecoVendor:''};
               // Only add if there's actually qty to pick
               const hasQty=Object.entries(pickLine).some(([k,v])=>k!=='status'&&k!=='pick_id'&&v>0);
               if(hasQty){
@@ -1188,7 +1240,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
             });
             const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};
             setO(updated);onSave(updated);
-            setShowPick(false);setPickId('IF-'+String(4000+Math.floor(Math.random()*1000)));nf(pickId+' sent to warehouse');
+            setShowPick(false);setPickId('IF-'+String(4000+Math.floor(Math.random()*1000)));setPickNotes('');setPickShipDest('in_house');setPickDecoVendor('');setPickShipAddr('default');
+            const destLabel=pickShipDest==='ship_customer'?'→ Ship to Customer':pickShipDest==='ship_deco'?'→ '+pickDecoVendor:'→ In-House Deco';
+            nf(pickId+' sent to warehouse ('+destLabel+')');
           }} style={{padding:'8px 20px',fontWeight:700}}>📦 Send to Warehouse</button>
         </>:<button className="btn btn-secondary" onClick={()=>setShowPick(false)}>Cancel</button>}
       </div>
@@ -1872,7 +1926,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     {custSOs.filter(s=>calcSOStatus(s)!=='complete').length>0&&<div className="card" style={{marginBottom:12}}><div className="card-header"><h2>Active Sales Orders</h2></div><div className="card-body" style={{padding:0}}>
       <table style={{fontSize:12}}><thead><tr><th>SO</th><th>Memo</th>{isP&&<th>Customer</th>}{isP&&<th>Rep</th>}<th>Status</th><th>Items</th><th>Fulfillment</th><th>Expected</th></tr></thead><tbody>
       {custSOs.filter(s=>calcSOStatus(s)!=='complete').map(so=>{
-        const st=calcSOStatus(so);const stL={need_order:'Need to Order',waiting_receive:'Waiting to Receive',in_production:'In Production',complete:'Complete'};
+        const st=calcSOStatus(so);const stL={need_order:'Need to Order',waiting_receive:'Waiting to Receive',in_production:'In Production',ready_to_invoice:'Ready to Invoice',complete:'Complete'};
         let totalU=0,fulU=0;
         safeItems(so).forEach(it=>{Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{totalU+=v;const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+(pk[sz]||0),0);const rQ=safePOs(it).reduce((a,pk)=>a+((pk.received||{})[sz]||0),0);fulU+=Math.min(v,pQ+rQ)})});
         const pct=totalU>0?Math.round(fulU/totalU*100):0;
@@ -2459,7 +2513,8 @@ export default function App(){
       // Art needing approval
       buildJobs(so).forEach(j=>{
         if(j.art_status==='waiting_approval')todos.push({type:'art',priority:2,msg:'⏳ Art awaiting approval: '+j.art_name,detail:tag+' · '+so.id,so,action:'Review art'});
-        if(j.item_status==='items_received'&&j.art_status==='art_complete'&&j.prod_status==='hold')todos.push({type:'schedule',priority:1,msg:'🏭 Ready for production: '+j.art_name,detail:tag+' · '+j.id,so,action:'Schedule job'});
+        const ready=isJobReady(j,so);const onBoard=safeJobs(so).some(ej=>ej.id===j.id);
+        if(ready&&!onBoard)todos.push({type:'schedule',priority:1,msg:'🏭 Ready for production — send to board: '+j.art_name,detail:tag+' · '+j.id,so,action:'Open Jobs'});
         if(j.item_status==='partially_received'&&!j.split_from&&j.fulfilled_units>0)todos.push({type:'split',priority:3,msg:'✂️ Can split: '+j.art_name+' ('+j.fulfilled_units+'/'+j.total_units+')',detail:tag+' · '+j.id,so,action:'Review split'});
       });
       // Firm date requests pending
@@ -2473,7 +2528,7 @@ export default function App(){
     todos.sort((a,b)=>a.priority-b.priority);
 
     return(<>
-    <div className="stats-row"><div className="stat-card"><div className="stat-label">Open Estimates</div><div className="stat-value" style={{color:'#d97706'}}>{ests.filter(e=>e.status==='draft'||e.status==='sent').length}</div></div><div className="stat-card"><div className="stat-label">Active SOs</div><div className="stat-value" style={{color:'#2563eb'}}>{sos.filter(s=>!['completed','shipped'].includes(s.status)).length}</div></div><div className="stat-card"><div className="stat-label">Active Jobs</div><div className="stat-value" style={{color:'#7c3aed'}}>{(()=>{let n=0;sos.forEach(so=>{buildJobs(so).forEach(j=>{if(!['completed','shipped'].includes(j.prod_status))n++})});return n})()}</div></div><div className="stat-card"><div className="stat-label">Unread Msgs</div><div className="stat-value" style={{color:unreadMsgs.length>0?'#dc2626':''}}>{unreadMsgs.length}</div></div>
+    <div className="stats-row"><div className="stat-card"><div className="stat-label">Open Estimates</div><div className="stat-value" style={{color:'#d97706'}}>{ests.filter(e=>e.status==='draft'||e.status==='sent').length}</div></div><div className="stat-card"><div className="stat-label">Active SOs</div><div className="stat-value" style={{color:'#2563eb'}}>{sos.filter(s=>!['completed','shipped'].includes(s.status)).length}</div></div><div className="stat-card"><div className="stat-label">Active Jobs</div><div className="stat-value" style={{color:'#7c3aed'}}>{(()=>{let n=0;sos.forEach(so=>{safeJobs(so).forEach(j=>{if(!['completed','shipped'].includes(j.prod_status))n++})});return n})()}</div></div><div className="stat-card"><div className="stat-label">Unread Msgs</div><div className="stat-value" style={{color:unreadMsgs.length>0?'#dc2626':''}}>{unreadMsgs.length}</div></div>
       {isA&&al.length>0&&<div className="stat-card" style={{borderColor:'#fbbf24'}}><div className="stat-label">Stock Alerts</div><div className="stat-value" style={{color:'#d97706'}}>{al.length}</div></div>}</div>
 
     {/* Two column layout: To-Do + Messages */}
@@ -2560,7 +2615,7 @@ export default function App(){
     else if(soF.sort==='expected')fSOs.sort((a,b)=>(a.expected_date||'9999').localeCompare(b.expected_date||'9999'));
     else if(soF.sort==='customer')fSOs.sort((a,b)=>{const ca=cust.find(x=>x.id===a.customer_id)?.name||'';const cb=cust.find(x=>x.id===b.customer_id)?.name||'';return ca.localeCompare(cb)});
     // Status counts using actual so.status
-    const stCounts={need_order:sos.filter(s=>s.status==='need_order').length,waiting_receive:sos.filter(s=>s.status==='waiting_receive').length,in_production:sos.filter(s=>s.status==='in_production').length,complete:sos.filter(s=>s.status==='complete').length};
+    const stCounts={need_order:sos.filter(s=>s.status==='need_order').length,waiting_receive:sos.filter(s=>s.status==='waiting_receive').length,in_production:sos.filter(s=>s.status==='in_production').length,ready_to_invoice:sos.filter(s=>s.status==='ready_to_invoice').length,complete:sos.filter(s=>s.status==='complete').length};
     const activeFilters=soF.status!=='all'||soF.rep!=='all'||soF.search;
 
     return(<>
@@ -2574,6 +2629,8 @@ export default function App(){
           <div className="stat-label">Waiting</div><div className="stat-value" style={{color:'#2563eb'}}>{stCounts.waiting_receive}</div></div>
         <div className="stat-card" style={{cursor:'pointer',outline:soF.status==='in_production'?'2px solid #7c3aed':'none',borderRadius:8}} onClick={()=>setSOF(f=>({...f,status:f.status==='in_production'?'all':'in_production'}))}>
           <div className="stat-label">In Production</div><div className="stat-value" style={{color:'#7c3aed'}}>{stCounts.in_production}</div></div>
+        <div className="stat-card" style={{cursor:'pointer',outline:soF.status==='ready_to_invoice'?'2px solid #c2410c':'none',borderRadius:8}} onClick={()=>setSOF(f=>({...f,status:f.status==='ready_to_invoice'?'all':'ready_to_invoice'}))}>
+          <div className="stat-label">Ready to Invoice</div><div className="stat-value" style={{color:'#c2410c'}}>{stCounts.ready_to_invoice}</div></div>
         <div className="stat-card" style={{cursor:'pointer',outline:soF.status==='complete'?'2px solid #166534':'none',borderRadius:8}} onClick={()=>setSOF(f=>({...f,status:f.status==='complete'?'all':'complete'}))}>
           <div className="stat-label">Complete</div><div className="stat-value" style={{color:'#166534'}}>{stCounts.complete}</div></div>
       </div>
@@ -2601,7 +2658,7 @@ export default function App(){
       const itemStatus=totalSz===0?null:fulfilledSz>=totalSz?'received':fulfilledSz>0?'partial':poSz>0?'on_order':'needs_items';
       // Status badge uses the actual SO status field (what the user set)
       const displayStatus=so.status||'need_order';
-      const statusLabel={need_order:'Need to Order',waiting_receive:'Waiting to Receive',in_production:'In Production',complete:'Complete'}[displayStatus]||displayStatus.replace(/_/g,' ');
+      const statusLabel={need_order:'Need to Order',waiting_receive:'Waiting to Receive',in_production:'In Production',ready_to_invoice:'Ready to Invoice',complete:'Complete'}[displayStatus]||displayStatus.replace(/_/g,' ');
       return(<tr key={so.id} style={{cursor:'pointer'}} onClick={()=>{setESO(so);setESOC(c)}}>
       <td style={{fontWeight:700,color:'#1e40af'}}>{so.id}</td><td>{c?.name} <span className="badge badge-gray">{c?.alpha_tag}</span></td><td style={{fontSize:12}}>{so.memo}</td><td>{so.expected_date||'--'}</td>
       <td><span style={{fontSize:11,color:'#64748b'}}>{rep?.name?.split(' ')[0]||'\u2014'}</span></td>
@@ -2768,6 +2825,16 @@ export default function App(){
         <div className="stat-card"><div className="stat-label">Needs Art</div><div className="stat-value" style={{color:fj.filter(j=>j.art_status!=='art_complete').length>0?'#d97706':''}}>{fj.filter(j=>j.art_status!=='art_complete').length}</div></div>
       </div>
 
+    // Promote a job to the prod board (saves it to so.jobs[])
+    const promoteJob=(j)=>{
+      const so=sos.find(s=>s.id===j.soId);if(!so)return;
+      const existing=safeJobs(so);
+      if(existing.find(ej=>ej.id===j.id))return nf('Already on prod board','warn');
+      const{so:_s,soId:_i,soMemo:_m,customer:_c,alpha:_a,repId:_ri,rep:_r,expected:_e,daysOut:_d,...cleanJob}=j;
+      savSO({...so,jobs:[...existing,{...cleanJob,_auto:false}]});
+      nf('🏭 '+j.id+' added to Production Board');
+    };
+
       {/* Jobs table */}
       <div className="card"><div className="card-body" style={{padding:0}}>
         {fj.length===0?<div className="empty" style={{padding:30}}>No jobs match filters</div>:
@@ -2777,12 +2844,13 @@ export default function App(){
           <th style={{cursor:'pointer'}} onClick={()=>toggleSort('customer')}>Customer {sortIcon('customer')}</th>
           <th>SO</th><th>Rep</th>
           <th style={{cursor:'pointer'}} onClick={()=>toggleSort('units')}>Units {sortIcon('units')}</th>
-          <th>Art</th><th>Items</th><th>Production</th>
+          <th>Art</th><th>Items</th><th>Ready?</th><th>Board</th>
           <th style={{cursor:'pointer'}} onClick={()=>toggleSort('expected')}>Due {sortIcon('expected')}</th>
-          <th>Counted</th>
         </tr></thead><tbody>
         {fj.map(j=>{const pct=j.total_units>0?Math.round(j.fulfilled_units/j.total_units*100):0;
-          return<tr key={j.id+j.soId} style={{cursor:'pointer',background:j.daysOut!=null&&j.daysOut<=3?'#fef2f2':undefined}} onClick={()=>{setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so.customer_id));setPg('orders')}}>
+          const ready=isJobReady(j,j.so);
+          const onBoard=safeJobs(j.so).some(ej=>ej.id===j.id);
+          return<tr key={j.id+j.soId} style={{cursor:'pointer',background:j.daysOut!=null&&j.daysOut<=3?'#fef2f2':ready&&!onBoard?'#f0fdf4':undefined}} onClick={()=>{setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so.customer_id));setPg('orders')}}>
             <td style={{fontWeight:700,color:'#1e40af',fontSize:12}}>{j.id}</td>
             <td><div style={{fontWeight:600,fontSize:12}}>{j.art_name}</div><div style={{fontSize:10,color:'#64748b'}}>{j.deco_type?.replace(/_/g,' ')} · {j.positions}</div></td>
             <td style={{fontSize:12}}>{j.customer} <span className="badge badge-gray">{j.alpha}</span></td>
@@ -2792,9 +2860,14 @@ export default function App(){
               <div style={{width:40,background:'#e2e8f0',borderRadius:3,height:4,marginTop:2}}><div style={{height:4,borderRadius:3,background:pct>=100?'#22c55e':pct>0?'#f59e0b':'#e2e8f0',width:pct+'%'}}/></div></td>
             <td><span style={{padding:'2px 6px',borderRadius:8,fontSize:9,fontWeight:600,background:SC[j.art_status]?.bg,color:SC[j.art_status]?.c}}>{j.art_status==='art_complete'?'Done':j.art_status==='waiting_approval'?'Waiting':'Need'}</span></td>
             <td style={{fontSize:11}}>{(j.items||[]).length} <span style={{color:'#94a3b8'}}>garment{(j.items||[]).length!==1?'s':''}</span></td>
-            <td><span style={{padding:'2px 8px',borderRadius:8,fontSize:10,fontWeight:600,background:SC[j.prod_status]?.bg||'#f1f5f9',color:SC[j.prod_status]?.c||'#64748b'}}>{j.prod_status?.replace(/_/g,' ')}</span></td>
+            <td>{ready?<span style={{fontSize:10,fontWeight:700,color:'#166534'}}>✅ Ready</span>
+              :<span style={{fontSize:9,color:'#94a3b8'}}>{j.art_status!=='art_complete'?'🎨 Art':
+                (() => {const af2=safeArr(j.so?.art_files).find(f=>f.id===j.art_file_id);return af2&&(af2.prod_files||[]).length===0?'🔧 Files':'📦 Items'})()
+              }</span>}</td>
+            <td onClick={e=>e.stopPropagation()}>{onBoard?<span style={{fontSize:9,fontWeight:700,color:'#2563eb'}}>On Board</span>
+              :<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:ready?'#166534':'#64748b',color:'white',border:'none'}}
+                onClick={()=>promoteJob(j)}>→ Board</button>}</td>
             <td style={{fontSize:11,color:j.daysOut!=null&&j.daysOut<=7?'#dc2626':'#64748b',fontWeight:j.daysOut!=null&&j.daysOut<=3?700:400}}>{j.expected||'—'}{j.daysOut!=null&&j.daysOut<=3?' ⚠️':''}</td>
-            <td>{j.counted_at?<span style={{fontSize:10,color:'#166534'}}>✅ {j.counted_by||''}</span>:<span style={{color:'#cbd5e1'}}>—</span>}</td>
           </tr>})}
         </tbody></table>}
       </div></div>
@@ -2848,11 +2921,11 @@ export default function App(){
   const[roleView,setRoleView]=useState(()=>{try{return localStorage.getItem('nsa_role_view')||'sales'}catch{return'sales'}});
   const changeRoleView=v=>{setRoleView(v);try{localStorage.setItem('nsa_role_view',v)}catch{}};
   const rProd2=()=>{
-    // Build flat list of ALL jobs across all SOs
+    // Build flat list of SAVED jobs only (must be explicitly on SO.jobs[])
     const allJobs=[];
     sos.forEach(so=>{
       const c=cust.find(x=>x.id===so.customer_id);
-      buildJobs(so).forEach(j=>{
+      safeJobs(so).forEach(j=>{
         allJobs.push({...j,so,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',alpha:c?.alpha_tag||'',
           rep:REPS.find(r=>r.id===so.created_by)?.name?.split(' ')[0]||'—',
           expected:so.expected_date,daysOut:so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null,
