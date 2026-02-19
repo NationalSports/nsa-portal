@@ -3,6 +3,7 @@ import React, { useState, useMemo, useCallback } from 'react';
 import './portal.css';
 const Icon=({name,size=18})=>{const p={home:<path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>,users:<><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></>,building:<><path d="M6 22V4a2 2 0 012-2h8a2 2 0 012 2v18z"/><path d="M6 12H4a2 2 0 00-2 2v6a2 2 0 002 2h2"/><path d="M18 9h2a2 2 0 012 2v9a2 2 0 01-2 2h-2"/><path d="M10 6h4M10 10h4M10 14h4M10 18h4"/></>,package:<><path d="M16.5 9.4l-9-5.19M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/><path d="M3.27 6.96L12 12.01l8.73-5.05M12 22.08V12"/></>,box:<path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/>,search:<><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></>,plus:<path d="M12 5v14M5 12h14"/>,edit:<><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></>,upload:<><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></>,back:<polyline points="15 18 9 12 15 6"/>,mail:<><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></>,file:<><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></>,sortUp:<path d="M7 14l5-5 5 5"/>,sort:<><path d="M7 15l5 5 5-5"/><path d="M7 9l5-5 5 5"/></>,image:<><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></>,cart:<><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 002 1.61h9.72a2 2 0 002-1.61L23 6H6"/></>,dollar:<><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></>,grid:<><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></>,warehouse:<><path d="M22 8.35V20a2 2 0 01-2 2H4a2 2 0 01-2-2V8.35A2 2 0 013.26 6.5l8-3.2a2 2 0 011.48 0l8 3.2A2 2 0 0122 8.35z"/><path d="M6 18h12M6 14h12"/></>,trash:<><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></>,eye:<><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></>,alert:<><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></>,x:<><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>,check:<polyline points="20 6 9 17 4 12"/>,save:<><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></>,send:<><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></>};return<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{p[name]}</svg>};
 const REPS=[{id:'r1',name:'Steve Peterson',role:'admin'},{id:'r2',name:'Denis',role:'gm'},{id:'r3',name:'Liliana',role:'production'},{id:'r4',name:'Laura Chen',role:'rep'},{id:'r5',name:'Mike Torres',role:'rep'}];
+let _idSeq=0;const uid=(prefix)=>prefix+Date.now().toString(36).slice(-4)+String(++_idSeq).padStart(2,'0');
 const CATEGORIES=['Tees','Hoodies','Polos','Shorts','1/4 Zips','Hats','Footwear','Jersey Tops','Jersey Bottoms','Balls'];
 const CONTACT_ROLES=['Head Coach','Assistant','Accounting','Athletic Director','Primary','Other'];
 const POSITIONS=['Front Center','Back Center','Left Chest','Right Chest','Left Sleeve','Right Sleeve','Left Leg','Right Leg','Nape','Other'];
@@ -384,8 +385,15 @@ function calcSOStatus(ord){
   // Check jobs on the board
   const boardJobs=safeJobs(ord);
   const hasJobs=boardJobs.length>0;
+  const allJobsShipped=hasJobs&&boardJobs.every(j=>j.prod_status==='shipped');
   const allJobsDone=hasJobs&&boardJobs.every(j=>j.prod_status==='completed'||j.prod_status==='shipped');
   const anyJobActive=hasJobs&&boardJobs.some(j=>j.prod_status==='staging'||j.prod_status==='in_process');
+  // Check if SO has any deco at all
+  const hasAnyDeco=safeItems(ord).some(it=>!it.no_deco&&safeDecos(it).length>0);
+  // If all jobs shipped → complete
+  if(allJobsShipped)return'complete';
+  // No-deco orders: all items fulfilled → ready_to_invoice (or complete if manually set)
+  if(!hasAnyDeco&&!hasJobs&&fulfilledSz>=totalSz)return ord.status==='complete'?'complete':'ready_to_invoice';
   // If all jobs completed → ready to invoice
   if(allJobsDone)return'ready_to_invoice';
   // If any job in staging or in_process → in production
@@ -456,7 +464,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
     sv('items',[...o.items,{product_id:p.id,sku:p.sku,name:p.name,brand:p.brand,color:p.color,nsa_cost:p.nsa_cost,retail_price:p.retail_price,unit_sell:sell,available_sizes:[...p.available_sizes],_colors:p._colors||null,sizes:{},decorations:[]}]);setShowAdd(false);setPS('')};
   const uI=(i,k,v)=>sv('items',safeItems(o).map((it,x)=>x===i?{...it,[k]:v}:it));const rmI=i=>sv('items',safeItems(o).filter((_,x)=>x!==i));
   const copyI=(i)=>{const it=o.items[i];const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];clone.sizes={};sv('items',[...o.items,clone]);nf('📋 Copied '+it.sku+' — adjust sizes on the new item')};
-  const uSz=(i,sz,v)=>{const n=v===''?0:parseInt(v)||0;uI(i,'sizes',{...o.items[i].sizes,[sz]:n})};
+  const uSz=(i,sz,v)=>{
+    const n=v===''?0:parseInt(v)||0;
+    const item=o.items[i];if(!item)return;
+    // Guard: don't allow reducing below committed qty (picks + POs)
+    const pickedQty=safePicks(item).reduce((a,pk)=>a+(pk[sz]||0),0);
+    const poQty=safePOs(item).reduce((a,pk)=>a+(pk[sz]||0),0);
+    const committed=pickedQty+poQty;
+    if(n<committed&&committed>0){
+      nf('Cannot reduce '+sz+' below '+committed+' ('+pickedQty+' picked + '+poQty+' on PO)','error');return;
+    }
+    uI(i,'sizes',{...item.sizes,[sz]:n});
+  };
   const addSzToItem=(i,sz)=>{const it=o.items[i];if(!it.available_sizes.includes(sz))uI(i,'available_sizes',[...it.available_sizes,sz]);setShowSzPicker(null)};
   const NUM_SZ={heat_transfer:['1"','1.5"','2"','3"','4"','5"','6"','8"','10"'],embroidery:['0.5"','0.75"','1"','1.5"','2"'],screen_print:['4"','6"','8"','10"']};
   const addArtDeco=i=>{uI(i,'decorations',[...o.items[i].decorations,{kind:'art',position:'Front Center',art_file_id:null,sell_override:null}])};
@@ -533,9 +552,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         positions:[...j.positions].join(', '),items:j.items,
         art_status:j.art_status,item_status:itemSt,prod_status:prodSt,
         total_units:j.total_units,fulfilled_units:j.fulfilled_units,
+        assigned_machine:existing?.assigned_machine||null,assigned_to:existing?.assigned_to||null,
+        ship_method:existing?.ship_method||null,
         split_from:existing?.split_from||null,created_at:existing?.created_at||new Date().toLocaleDateString(),
         counted_at:existing?.counted_at||null,counted_by:existing?.counted_by||null,
         count_discrepancy:existing?.count_discrepancy||null,notes:existing?.notes||null,
+        _auto:existing?._auto!=null?existing._auto:true,
       };
     });
     return newJobs;
@@ -1373,8 +1395,84 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
             <div style={{width:40,height:40,borderRadius:8,background:'#ede9fe',display:'flex',alignItems:'center',justifyContent:'center'}}><Icon name="package" size={20}/></div>
             <div style={{flex:1}}><div style={{fontWeight:700}}>{vn}</div><div style={{fontSize:12,color:'#64748b'}}>{items.length} item(s) — <span style={{color:'#dc2626',fontWeight:600}}>{openCount} units open</span></div></div>
             <Icon name="back" size={16} style={{transform:'rotate(180deg)'}}/></div>})}
+          {/* Outside Decoration PO section */}
+          <div style={{borderTop:'2px solid #e2e8f0',marginTop:8,paddingTop:8}}>
+            <div style={{fontSize:10,fontWeight:700,color:'#7c3aed',textTransform:'uppercase',marginBottom:6}}>🎨 Outside Decoration</div>
+            {DECO_VENDORS.filter(dv=>dv!=='Other').map(dv=><div key={dv} style={{padding:'12px 16px',border:'1px solid #ede9fe',borderRadius:8,marginBottom:6,cursor:'pointer',display:'flex',alignItems:'center',gap:12,background:'#faf5ff'}}
+              onClick={()=>setShowPO('deco:'+dv)}>
+              <div style={{width:40,height:40,borderRadius:8,background:'#ede9fe',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18}}>🎨</div>
+              <div style={{flex:1}}><div style={{fontWeight:700}}>{dv}</div><div style={{fontSize:12,color:'#7c3aed'}}>Send items for outside decoration</div></div>
+              <Icon name="back" size={16} style={{transform:'rotate(180deg)'}}/></div>)}
+          </div>}
         </div></div></div>;
       // PO form for selected vendor — only show sizes that still need ordering (subtract picks + existing POs)
+      // OUTSIDE DECORATION PO
+      if(typeof showPO==='string'&&showPO.startsWith('deco:')){
+        const decoVendor=showPO.replace('deco:','');
+        const allItems=safeItems(o).map((it,i)=>({...it,_idx:i})).filter(it=>{
+          const q=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return q>0});
+        const poId='DPO-'+poCounter;
+        return<div className="modal-overlay" onClick={()=>setShowPO(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:800,maxHeight:'90vh',overflow:'auto'}}>
+          <div className="modal-header"><h2 style={{color:'#7c3aed'}}>🎨 Deco PO — {decoVendor}</h2><button className="modal-close" onClick={()=>setShowPO(null)}>x</button></div>
+          <div className="modal-body">
+            <div style={{padding:10,background:'#faf5ff',border:'1px solid #ddd6fe',borderRadius:8,marginBottom:12,fontSize:12,color:'#6d28d9'}}>
+              Sending items to <strong>{decoVendor}</strong> for outside decoration. Select which items and quantities to send.
+            </div>
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:12,marginBottom:16}}>
+              <div><label className="form-label">PO Number</label><input className="form-input" value={poId} readOnly style={{color:'#7c3aed',fontWeight:700}}/></div>
+              <div><label className="form-label">Deco Type</label><select className="form-select" id={'dpo-type-'+poId}>
+                <option value="embroidery">Embroidery</option><option value="screen_print">Screen Print</option><option value="dtf">DTF</option><option value="heat_transfer">Heat Transfer</option><option value="sublimation">Sublimation</option></select></div>
+              <div><label className="form-label">Expected Return</label><input className="form-input" type="date" id={'dpo-date-'+poId}/></div>
+            </div>
+            {allItems.map((it,vi)=>{const szList=Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).sort((a,b)=>(SZ_ORD.indexOf(a[0])===-1?99:SZ_ORD.indexOf(a[0]))-(SZ_ORD.indexOf(b[0])===-1?99:SZ_ORD.indexOf(b[0])));
+              const soQ=szList.reduce((a,[,v])=>a+v,0);
+              return<div key={vi} style={{padding:12,border:'1px solid #ede9fe',borderRadius:6,marginBottom:8,background:'#faf5ff'}}>
+                <div style={{display:'flex',justifyContent:'space-between',marginBottom:8}}><div><span style={{fontFamily:'monospace',fontWeight:800,color:'#7c3aed',marginRight:8}}>{it.sku}</span><strong>{it.name}</strong> — {it.color}</div><div style={{fontWeight:700}}>SO Qty: {soQ}</div></div>
+                <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                  <span style={{fontSize:12,fontWeight:600,color:'#64748b'}}>Send Qty:</span>
+                  {szList.map(([sz,v])=><div key={sz} style={{textAlign:'center'}}><div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
+                    <input id={'dpo-qty-'+vi+'-'+sz} style={{width:42,textAlign:'center',border:'1px solid #ddd6fe',borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700}} defaultValue={v}/></div>)}
+                  <div style={{borderLeft:'2px solid #ede9fe',paddingLeft:8,marginLeft:4}}>
+                    <div style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Unit Cost</div>
+                    <input id={'dpo-cost-'+vi} style={{width:60,textAlign:'center',border:'1px solid #ddd6fe',borderRadius:4,padding:'4px 2px',fontSize:13,fontWeight:700}} defaultValue="0.00"/>
+                  </div>
+                </div>
+              </div>})}
+            <div style={{marginTop:8}}><label className="form-label">Notes / Instructions for Decorator</label><textarea className="form-input" rows={2} placeholder="Thread colors, PMS colors, placement notes..." id={'dpo-notes-'+poId} style={{resize:'vertical'}}/></div>
+          </div>
+          <div className="modal-footer">
+            <button className="btn btn-secondary" onClick={()=>setShowPO('select')}>← Back</button>
+            <button className="btn btn-secondary" onClick={()=>setShowPO(null)}>Cancel</button>
+            <button className="btn btn-primary" style={{background:'#7c3aed',borderColor:'#7c3aed'}} onClick={()=>{
+              const updatedItems=o.items.map(it=>({...it,po_lines:[...(it.po_lines||[])]}));
+              const decoType=document.getElementById('dpo-type-'+poId)?.value||'embroidery';
+              const returnDate=document.getElementById('dpo-date-'+poId)?.value||'';
+              const notes=document.getElementById('dpo-notes-'+poId)?.value||'';
+              let totalQty=0,totalCost=0;
+              allItems.forEach((it,vi)=>{
+                const idx=it._idx;const poLine={po_id:poId,status:'waiting',po_type:'outside_deco',deco_vendor:decoVendor,deco_type:decoType,
+                  expected_date:returnDate,created_at:new Date().toLocaleDateString(),memo:notes,received:{},shipments:[]};
+                const szList=Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0);
+                const unitCost=parseFloat(document.getElementById('dpo-cost-'+vi)?.value)||0;
+                let itemQty=0;
+                szList.forEach(([sz])=>{
+                  const el=document.getElementById('dpo-qty-'+vi+'-'+sz);
+                  const qty=el?Math.max(0,parseInt(el.value)||0):0;
+                  if(qty>0){poLine[sz]=qty;itemQty+=qty}
+                });
+                poLine.unit_cost=unitCost;
+                if(itemQty>0){updatedItems[idx].po_lines=[...updatedItems[idx].po_lines,poLine];totalQty+=itemQty;totalCost+=itemQty*unitCost}
+              });
+              if(totalQty===0){nf('No quantities entered','error');return}
+              const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};
+              setO(updated);onSave(updated);
+              setPOCounter(c=>c+1);setShowPO(null);
+              nf('🎨 '+poId+' sent to '+decoVendor+' — '+totalQty+' units ($'+totalCost.toFixed(2)+')');
+            }}>🎨 Send to {decoVendor}</button>
+          </div>
+        </div></div>;
+      }
+
       const vItems=vendorMap[showPO]||[];const vn=D_V.find(v=>v.id===showPO)?.name||showPO;
       const poId='PO-'+poCounter;
       const batchKey=Object.keys(BATCH_VENDORS).find(k=>vn.toLowerCase().includes(k)||showPO.toLowerCase().includes(k));
@@ -1431,8 +1529,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
             setShowPO(null);nf('Added to '+batchConfig.name+' batch queue ($'+totalCost.toFixed(2)+')');
           }}><Icon name="package" size={14}/> Add to Batch</button>}
           {poItems.length>0&&<button className="btn btn-primary" onClick={()=>{
-          // Save PO lines back to order items
-          const updatedItems=[...o.items];
+          // Save PO lines back to order items (immutable)
+          const updatedItems=o.items.map(it=>({...it,pick_lines:[...(it.pick_lines||[])],po_lines:[...(it.po_lines||[])]}));
           poItems.forEach((pit,vi)=>{
             const idx=pit._idx;if(idx==null)return;
             const poLine={po_id:poId,status:'waiting',created_at:new Date().toLocaleDateString(),memo:'',received:{},shipments:[]};
@@ -1442,8 +1540,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
             });
             const hasQty=Object.entries(poLine).some(([k,v])=>k!=='po_id'&&k!=='status'&&typeof v==='number'&&v>0);
             if(hasQty){
-              if(!updatedItems[idx].po_lines)updatedItems[idx].po_lines=[];
-              updatedItems[idx].po_lines.push(poLine);
+              updatedItems[idx].po_lines=[...updatedItems[idx].po_lines,poLine];
             }
           });
           const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};
@@ -1510,7 +1607,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
             <div style={{display:'flex',justifyContent:'space-between',marginBottom:8}}><div><span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',marginRight:8}}>{item.sku}</span><strong>{item.name}</strong> — {item.color}</div><div style={{fontWeight:700}}>IF Qty: {q}</div></div>
             <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}><thead><tr style={{borderBottom:'2px solid #0f172a'}}>{szList.map(([sz])=><th key={sz} style={{padding:'4px 8px',textAlign:'center',minWidth:50}}>{sz}</th>)}<th style={{padding:'4px 8px'}}>TOTAL</th></tr></thead>
             <tbody><tr style={{fontSize:10,color:'#64748b'}}>{szList.map(([sz])=>{const need=item.sizes[sz]||0;const inv=p?._inv?.[sz]||0;const picked=(item.pick_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const po=poCommitted(item.po_lines,sz);const open=Math.max(0,need-picked-po);return<td key={sz} style={{padding:'2px 8px',textAlign:'center'}}>open: {open} | inv: {inv}</td>})}<td/></tr>
-            <tr>{szList.map(([sz,v])=>{const need=item.sizes[sz]||0;const inv=p?._inv?.[sz]||0;const picked=(item.pick_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const po=poCommitted(item.po_lines,sz);const open=Math.max(0,need-picked-po);return<td key={sz} style={{padding:'4px 8px',textAlign:'center'}}><input style={{width:42,textAlign:'center',border:v<open?'2px solid #f59e0b':'1px solid #10b981',borderRadius:3,padding:'3px',fontSize:14,fontWeight:700,background:v<open?'#fef3c7':'#dcfce7'}} defaultValue={v}/></td>})}<td style={{padding:'4px 8px',textAlign:'center',fontWeight:800,fontSize:14}}>{q}</td></tr></tbody></table>
+            <tr>{szList.map(([sz,v])=>{const need=item.sizes[sz]||0;const inv=p?._inv?.[sz]||0;const picked=(item.pick_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const po=poCommitted(item.po_lines,sz);const open=Math.max(0,need-picked-po);return<td key={sz} style={{padding:'4px 8px',textAlign:'center'}}><input id={'pick-qty-'+vi+'-'+sz} style={{width:42,textAlign:'center',border:v<open?'2px solid #f59e0b':'1px solid #10b981',borderRadius:3,padding:'3px',fontSize:14,fontWeight:700,background:v<open?'#fef3c7':'#dcfce7'}} defaultValue={v}/></td>})}<td style={{padding:'4px 8px',textAlign:'center',fontWeight:800,fontSize:14}}>{q}</td></tr></tbody></table>
             {safeDecos(item).filter(d=>d.kind==='art').map((d,di)=>{const art=af.find(a=>a.id===d.art_file_id);return art?<div key={di} style={{fontSize:12,marginTop:6,padding:'4px 8px',background:'#f0fdf4',borderRadius:4}}>🎨 {art.name} — {art.deco_type} @ {d.position}{d.underbase?' [Underbase]':''}</div>:null})}
             {safeDecos(item).filter(d=>d.kind==='numbers').map((d,di)=><div key={di} style={{fontSize:12,marginTop:4,padding:'4px 8px',background:'#f0f9ff',borderRadius:4}}>#️⃣ Numbers — {d.num_method} {d.num_size} @ {d.position}</div>)}
           </div>})}
@@ -1520,20 +1617,28 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           <button className="btn btn-secondary" onClick={()=>setShowPick(true)}>← Back</button>
           <button className="btn btn-secondary" onClick={()=>window.print()}>🖨️ Print</button>
           <button className="btn btn-primary" onClick={()=>{
-            // Save pick lines back to order items
-            const updatedItems=[...o.items];
-            showPick.forEach(pk=>{
+            // Save pick lines back to order items (immutable)
+            const updatedItems=o.items.map(it=>({...it,pick_lines:[...(it.pick_lines||[])],po_lines:[...(it.po_lines||[])]}));
+            showPick.forEach((pk,vi)=>{
               const idx=pk._idx;if(idx==null)return;
-              const pickLine={...pk._pick,status:'pick',pick_id:pickId,created_at:new Date().toLocaleDateString(),memo:pickNotes,ship_dest:pickShipDest,ship_addr:pickShipDest==='ship_customer'?pickShipAddr:'',deco_vendor:pickShipDest==='ship_deco'?pickDecoVendor:''};
+              // Read actual qty values from DOM inputs (user may have edited them)
+              const pickLine={status:'pick',pick_id:pickId,created_at:new Date().toLocaleDateString(),memo:pickNotes,ship_dest:pickShipDest,ship_addr:pickShipDest==='ship_customer'?pickShipAddr:'',deco_vendor:pickShipDest==='ship_deco'?pickDecoVendor:''};
+              Object.entries(pk._pick).forEach(([sz,v])=>{
+                if(typeof v!=='number'||v<=0)return;
+                const el=document.getElementById('pick-qty-'+vi+'-'+sz);
+                pickLine[sz]=el?Math.max(0,parseInt(el.value)||0):v;
+              });
               // Only add if there's actually qty to pick
               const hasQty=Object.entries(pickLine).some(([k,v])=>k!=='status'&&k!=='pick_id'&&v>0);
               if(hasQty){
-                if(!updatedItems[idx].pick_lines)updatedItems[idx].pick_lines=[];
-                updatedItems[idx].pick_lines.push(pickLine);
+                updatedItems[idx].pick_lines=[...updatedItems[idx].pick_lines,pickLine];
               }
             });
             const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};
             setO(updated);onSave(updated);
+            // NOTE: Inventory is NOT decremented on pick creation (status:'pick')
+            // It only decrements when status is changed to 'pulled' via the edit handler
+            // This prevents double-decrement: create → edit to pulled
             setShowPick(false);setPickId('IF-'+String(4000+Math.floor(Math.random()*1000)));setPickNotes('');setPickShipDest('in_house');setPickDecoVendor('');setPickShipAddr('default');
             const destLabel=pickShipDest==='ship_customer'?'→ Ship to Customer':pickShipDest==='ship_deco'?'→ '+pickDecoVendor:'→ In-House Deco';
             nf(pickId+' sent to warehouse ('+destLabel+')');
@@ -2831,6 +2936,7 @@ function AdjModal({isOpen,onClose,product,onSave}){const[a,setA]=useState({});co
 // MAIN APP
 export default function App(){
   const[pg,setPg]=useState('dashboard');const[toast,setToast]=useState(null);
+  const[dashView,setDashView]=useState('admin');// admin|sales|warehouse|decorator|production|csr
   const[cust,setCust]=useState(D_C);const[vend]=useState(D_V);const[prod,setProd]=useState(D_P);
   const[ests,setEsts]=useState(D_E);const[sos,setSOs]=useState(D_SO);const[invs,setInvs]=useState(D_INV);
   // Batch PO system
@@ -2875,8 +2981,8 @@ export default function App(){
   const newE=(c,product)=>{const mk=c?.catalog_markup||1.65;const items=[];
     if(product){const au=product.brand==='Adidas'||product.brand==='Under Armour'||product.brand==='New Balance';const sell=au?rQ(product.retail_price*(1-(({A:0.4,B:0.35,C:0.3})[c?.adidas_ua_tier||'B']||0.35))):rQ(product.nsa_cost*mk);
       items.push({product_id:product.id,sku:product.sku,name:product.name,brand:product.brand,color:product.color,nsa_cost:product.nsa_cost,retail_price:product.retail_price,unit_sell:sell,available_sizes:[...product.available_sizes],_colors:product._colors||null,sizes:{},decorations:[]})}
-    const e={id:'EST-'+(2100+ests.length),customer_id:c?.id||null,memo:'',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:mk,shipping_type:'pct',shipping_value:5,ship_to_id:'default',email_status:null,art_files:[],items};setEEst(e);setEEstC(c||null);setPg('estimates')};
-  const convertSO=est=>{const fourWeeks=new Date();fourWeeks.setDate(fourWeeks.getDate()+28);const defExp=fourWeeks.toISOString().split('T')[0];const so={id:'SO-'+(1052+sos.length),customer_id:est.customer_id,estimate_id:est.id,memo:est.memo,status:'need_order',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:est.default_markup,expected_date:defExp,production_notes:'',shipping_type:est.shipping_type,shipping_value:est.shipping_value,ship_to_id:est.ship_to_id,firm_dates:[],art_files:[...(est.art_files||[])],items:safeItems(est).map(it=>({...it,decorations:safeDecos(it).map(d=>d.kind==='art'?{...d,art_file_id:null}:{...d})}))};
+    const e={id:uid('EST-'),customer_id:c?.id||null,memo:'',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:mk,shipping_type:'pct',shipping_value:5,ship_to_id:'default',email_status:null,art_files:[],items};setEEst(e);setEEstC(c||null);setPg('estimates')};
+  const convertSO=est=>{const fourWeeks=new Date();fourWeeks.setDate(fourWeeks.getDate()+28);const defExp=fourWeeks.toISOString().split('T')[0];const so={id:uid('SO-'),customer_id:est.customer_id,estimate_id:est.id,memo:est.memo,status:'need_order',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:est.default_markup,expected_date:defExp,production_notes:'',shipping_type:est.shipping_type,shipping_value:est.shipping_value,ship_to_id:est.ship_to_id,firm_dates:[],art_files:[...(est.art_files||[])],items:safeItems(est).map(it=>({...it,decorations:safeDecos(it).map(d=>({...d}))}))};
     setSOs(p=>[...p,so]);setEsts(p=>p.map(e=>e.id===est.id?{...e,status:'converted'}:e));setEEst(null);
     const c=cust.find(x=>x.id===so.customer_id);setESO(so);setESOC(c);setPg('orders');nf(`${so.id} created from ${est.id}`)};
   const aO=useMemo(()=>[
@@ -2903,164 +3009,278 @@ export default function App(){
     const todos=[];
     sos.forEach(so=>{
       const c=cust.find(x=>x.id===so.customer_id);const tag=c?.alpha_tag||so.id;
-      // Art needing approval
       buildJobs(so).forEach(j=>{
-        if(j.art_status==='waiting_approval')todos.push({type:'art',priority:2,msg:'⏳ Art awaiting approval: '+j.art_name,detail:tag+' · '+so.id,so,action:'Review art'});
+        if(j.art_status==='waiting_approval')todos.push({type:'art',priority:2,msg:'⏳ Art awaiting approval: '+j.art_name,detail:tag+' · '+so.id,so,action:'Review art',role:'sales'});
         const ready=isJobReady(j,so);const onBoard=safeJobs(so).some(ej=>ej.id===j.id);
-        if(ready&&!onBoard)todos.push({type:'schedule',priority:1,msg:'🏭 Ready for production — send to board: '+j.art_name,detail:tag+' · '+j.id,so,action:'Open Jobs'});
-        if(j.item_status==='partially_received'&&!j.split_from&&j.fulfilled_units>0)todos.push({type:'split',priority:3,msg:'✂️ Can split: '+j.art_name+' ('+j.fulfilled_units+'/'+j.total_units+')',detail:tag+' · '+j.id,so,action:'Review split'});
+        if(ready&&!onBoard)todos.push({type:'schedule',priority:1,msg:'🏭 Ready for production — send to board: '+j.art_name,detail:tag+' · '+j.id,so,action:'Open Jobs',role:'production'});
+        if(j.item_status==='partially_received'&&!j.split_from&&j.fulfilled_units>0)todos.push({type:'split',priority:3,msg:'✂️ Can split: '+j.art_name+' ('+j.fulfilled_units+'/'+j.total_units+')',detail:tag+' · '+j.id,so,action:'Review split',role:'production'});
       });
-      // Firm date requests pending
-      safeFirm(so).filter(f=>!f.approved).forEach(f=>{todos.push({type:'firm',priority:2,msg:'📌 Firm date request: '+(f.item_desc||'Full order'),detail:tag+' · '+so.id+' · '+f.date,so,action:'Approve'})});
-      // Deadline approaching
+      safeFirm(so).filter(f=>!f.approved).forEach(f=>{todos.push({type:'firm',priority:2,msg:'📌 Firm date request: '+(f.item_desc||'Full order'),detail:tag+' · '+so.id+' · '+f.date,so,action:'Approve',role:'sales'})});
       if(so.expected_date){const dOut=Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24));
-        if(dOut<=3&&dOut>=0&&calcSOStatus(so)!=='complete')todos.push({type:'deadline',priority:0,msg:'⚠️ Due in '+dOut+' day'+(dOut!==1?'s':'')+': '+(so.memo||so.id),detail:tag+' · '+so.expected_date,so,action:'Open SO'})};
-      // Items needing order
-      if(calcSOStatus(so)==='need_order')todos.push({type:'order',priority:2,msg:'🛒 Items need ordering: '+(so.memo||so.id),detail:tag,so,action:'Create PO'});
+        if(dOut<=3&&dOut>=0&&calcSOStatus(so)!=='complete')todos.push({type:'deadline',priority:0,msg:'⚠️ Due in '+dOut+' day'+(dOut!==1?'s':'')+': '+(so.memo||so.id),detail:tag+' · '+so.expected_date,so,action:'Open SO',role:'all'})};
+      if(calcSOStatus(so)==='need_order')todos.push({type:'order',priority:2,msg:'🛒 Items need ordering: '+(so.memo||so.id),detail:tag,so,action:'Create PO',role:'sales'});
     });
     todos.sort((a,b)=>a.priority-b.priority);
 
-    return(<>
-    <div className="stats-row"><div className="stat-card"><div className="stat-label">Open Estimates</div><div className="stat-value" style={{color:'#d97706'}}>{ests.filter(e=>e.status==='draft'||e.status==='sent').length}</div></div><div className="stat-card"><div className="stat-label">Active SOs</div><div className="stat-value" style={{color:'#2563eb'}}>{sos.filter(s=>!['completed','shipped'].includes(s.status)).length}</div></div><div className="stat-card"><div className="stat-label">Active Jobs</div><div className="stat-value" style={{color:'#7c3aed'}}>{(()=>{let n=0;sos.forEach(so=>{safeJobs(so).forEach(j=>{if(!['completed','shipped'].includes(j.prod_status))n++})});return n})()}</div></div><div className="stat-card"><div className="stat-label">Unread Msgs</div><div className="stat-value" style={{color:unreadMsgs.length>0?'#dc2626':''}}>{unreadMsgs.length}</div></div>
-      {isA&&al.length>0&&<div className="stat-card" style={{borderColor:'#fbbf24'}}><div className="stat-label">Stock Alerts</div><div className="stat-value" style={{color:'#d97706'}}>{al.length}</div></div>}</div>
+    // Shared data builders
+    const{pullTasks,shipTasks,decoTasks}=buildWarehouseData();
+    const activeJobs=[];sos.forEach(so=>{safeJobs(so).forEach(j=>{if(!['completed','shipped'].includes(j.prod_status))activeJobs.push({...j,so,cName:cust.find(x=>x.id===so.customer_id)?.name})})});
 
-    {/* Two column layout: To-Do + Messages */}
+    const ROLE_TABS=[
+      {id:'admin',label:'🏢 Admin Overview',icon:'home'},
+      {id:'sales',label:'💼 Sales Rep',icon:'dollar'},
+      {id:'warehouse',label:'📦 Warehouse',icon:'warehouse'},
+      {id:'decorator',label:'🎨 Decorator',icon:'image'},
+      {id:'production',label:'🏭 Production Mgr',icon:'grid'},
+      {id:'csr',label:'📞 CSR',icon:'mail'},
+    ];
+
+    return(<>
+    {/* Role Selector */}
+    <div style={{display:'flex',gap:4,marginBottom:14,flexWrap:'wrap',background:'#f8fafc',padding:6,borderRadius:8,border:'1px solid #e2e8f0'}}>
+      {ROLE_TABS.map(r=><button key={r.id} className={`btn btn-sm ${dashView===r.id?'btn-primary':'btn-secondary'}`}
+        style={{fontSize:11,padding:'5px 12px',background:dashView===r.id?'#1e293b':'',borderColor:dashView===r.id?'#1e293b':''}}
+        onClick={()=>setDashView(r.id)}>{r.label}</button>)}
+    </div>
+
+    {/* ═══ ADMIN VIEW ═══ */}
+    {dashView==='admin'&&<>
+    <div className="stats-row"><div className="stat-card"><div className="stat-label">Open Estimates</div><div className="stat-value" style={{color:'#d97706'}}>{ests.filter(e=>e.status==='draft'||e.status==='sent').length}</div></div><div className="stat-card"><div className="stat-label">Active SOs</div><div className="stat-value" style={{color:'#2563eb'}}>{sos.filter(s=>calcSOStatus(s)!=='complete').length}</div></div><div className="stat-card"><div className="stat-label">Active Jobs</div><div className="stat-value" style={{color:'#7c3aed'}}>{activeJobs.length}</div></div><div className="stat-card"><div className="stat-label">Unread Msgs</div><div className="stat-value" style={{color:unreadMsgs.length>0?'#dc2626':''}}>{unreadMsgs.length}</div></div>
+      {isA&&al.length>0&&<div className="stat-card" style={{borderColor:'#fbbf24'}}><div className="stat-label">Stock Alerts</div><div className="stat-value" style={{color:'#d97706'}}>{al.length}</div></div>}</div>
     <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
-      {/* TO-DO LIST */}
-      <div className="card"><div className="card-header"><h2>📋 To-Do ({todos.length})</h2><button className="btn btn-sm btn-secondary" onClick={()=>setPg('jobs')}>All Jobs →</button></div>
+      <div className="card"><div className="card-header"><h2>📋 To-Do ({todos.length})</h2></div>
         <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
-          {todos.length===0?<div className="empty" style={{padding:20}}>All clear — nothing to do right now!</div>:
+          {todos.length===0?<div className="empty" style={{padding:20}}>All clear!</div>:
           todos.slice(0,12).map((t,i)=><div key={i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer'}} onClick={()=>{if(t.so){setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
-            <div style={{flex:1}}>
-              <div style={{fontSize:13,fontWeight:600}}>{t.msg}</div>
-              <div style={{fontSize:11,color:'#64748b'}}>{t.detail}</div>
-            </div>
+            <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}</div></div>
             <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#eff6ff',color:'#2563eb',fontWeight:600,whiteSpace:'nowrap'}}>{t.action}</span>
           </div>)}
-        </div>
-      </div>
-
-      {/* UNREAD MESSAGES */}
-      <div className="card"><div className="card-header"><h2>💬 Unread Messages ({unreadMsgs.length})</h2><button className="btn btn-sm btn-secondary" onClick={()=>setPg('messages')}>All Messages →</button></div>
+        </div></div>
+      <div className="card"><div className="card-header"><h2>💬 Unread ({unreadMsgs.length})</h2></div>
         <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
           {myUnread.length===0?<div className="empty" style={{padding:20}}>No unread messages</div>:
           myUnread.map(m=>{const author=REPS.find(r=>r.id===m.author_id);const so=sos.find(s=>s.id===m.so_id);const c2=cust.find(cc=>cc.id===so?.customer_id);
-            const DEPT_COLORS={art:'#7c3aed',production:'#2563eb',warehouse:'#d97706',sales:'#166534',accounting:'#dc2626'};
-            return<div key={m.id} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',cursor:'pointer'}} onClick={()=>{if(so){setESO(so);setESOC(c2);setPg('orders')}setMsgs(msgs.map(mm=>mm.id===m.id?{...mm,read_by:[...new Set([...(mm.read_by||[]),cu.id])]}:mm))}}>
+            return<div key={m.id} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',cursor:'pointer'}} onClick={()=>{if(so){setESO(so);setESOC(c2);setPg('orders')}}}>
               <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:2}}>
-                <span style={{fontSize:12,fontWeight:700}}>{author?.name?.split(' ')[0]||'?'}</span>
-                <span style={{fontSize:10,color:'#1e40af'}}>{so?.id}</span>
-                {m.dept&&m.dept!=='all'&&<span style={{fontSize:9,padding:'1px 5px',borderRadius:6,background:(DEPT_COLORS[m.dept]||'#64748b')+'20',color:DEPT_COLORS[m.dept]||'#64748b',fontWeight:600}}>@{m.dept}</span>}
-                <span style={{fontSize:10,color:'#94a3b8',marginLeft:'auto'}}>{m.ts}</span>
-              </div>
+                <span style={{fontSize:12,fontWeight:700}}>{author?.name?.split(' ')[0]}</span><span style={{fontSize:10,color:'#1e40af'}}>{so?.id}</span>
+                <span style={{fontSize:10,color:'#94a3b8',marginLeft:'auto'}}>{m.ts}</span></div>
               <div style={{fontSize:12,color:'#475569',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{m.text}</div>
-              {c2&&<div style={{fontSize:10,color:'#94a3b8'}}>{c2.alpha_tag} — {so?.memo}</div>}
             </div>})}
-        </div>
-      </div>
+        </div></div>
     </div>
-
-    {isA&&al.length>0&&<div className="card" style={{marginBottom:16,borderLeft:'4px solid #d97706'}}><div className="card-header"><h2 style={{color:'#d97706'}}>Stock Alerts</h2></div>
-      <div className="card-body" style={{padding:0}}><table><thead><tr><th>SKU</th><th>Product</th><th>Size</th><th>Curr</th><th>Min</th><th>Need</th></tr></thead><tbody>
-      {al.slice(0,6).map((a,i)=><tr key={i}><td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{a.p.sku}</td><td style={{fontSize:12}}>{a.p.name}</td><td><span className="badge badge-amber">{a.sz}</span></td><td style={{fontWeight:700,color:'#dc2626'}}>{a.c}</td><td>{a.min}</td><td style={{fontWeight:700}}>{a.need}</td></tr>)}</tbody></table></div></div>}
-
-    {/* SALES INTELLIGENCE PANEL — customizable per rep */}
-    {(()=>{
-      // Build sales metrics from SOs and invoices
-      const soCalc=(so)=>{let rev=0,cost=0;safeItems(so).forEach(it=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);rev+=qty*safeNum(it.unit_sell);cost+=qty*safeNum(it.nsa_cost);(it.decorations||[]).forEach(d=>{rev+=qty*safeNum(d.sell_override||0)})});return{rev,cost,margin:rev-cost,pct:rev>0?Math.round((rev-cost)/rev*100):0}};
-      const mySOs=cu.role==='admin'?sos:sos.filter(s=>s.created_by===cu.id);
-      const myInvs=cu.role==='admin'?invs:invs.filter(i=>{const so=sos.find(s=>s.id===i.so_id);return so?.created_by===cu.id||!so});
-      const totalRev=mySOs.reduce((a,so)=>a+soCalc(so).rev,0);
-      const totalMargin=mySOs.reduce((a,so)=>a+soCalc(so).margin,0);
-      const avgMarginPct=totalRev>0?Math.round(totalMargin/totalRev*100):0;
-      const openInvBal=myInvs.filter(i=>i.status!=='paid').reduce((a,i)=>a+(i.total-i.paid),0);
-      const paidTotal=myInvs.filter(i=>i.status==='paid').reduce((a,i)=>a+i.paid,0);
-      const convRate=ests.length>0?Math.round(mySOs.filter(s=>s.estimate_id).length/ests.length*100):0;
-
-      // Customers needing attention — no activity in 30+ days or no open SO
-      const custActivity=cust.filter(c=>c.id!=='c_deleted').map(c=>{
-        const cSOs=sos.filter(s=>s.customer_id===c.id);const cInvs=invs.filter(i=>i.customer_id===c.id);
-        const lastSO=cSOs.length>0?cSOs.sort((a,b)=>(b.created_at||'').localeCompare(a.created_at))[0]:null;
-        const openBal=cInvs.filter(i=>i.status!=='paid').reduce((a,i)=>a+(i.total-i.paid),0);
-        const totalSpend=cInvs.reduce((a,i)=>a+i.total,0);
-        const daysSince=lastSO?.created_at?Math.floor((new Date()-new Date(lastSO.created_at.replace(/(\d{2})\/(\d{2})\/(\d{2})/,'20$3-$1-$2')))/(86400000)):999;
-        const hasOpenSO=cSOs.some(s=>calcSOStatus(s)!=='complete');
-        return{...c,soCount:cSOs.length,totalSpend,openBal,daysSince,hasOpenSO,lastMemo:lastSO?.memo};
-      });
-      const atRisk=custActivity.filter(c=>c.daysSince>30&&c.soCount>0&&!c.hasOpenSO).sort((a,b)=>b.daysSince-a.daysSince);
-      const topCustomers=custActivity.filter(c=>c.totalSpend>0).sort((a,b)=>b.totalSpend-a.totalSpend).slice(0,5);
-
-      return<>
-        <div className="card" style={{marginBottom:16,borderLeft:'4px solid #2563eb'}}>
-          <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-            <h2>📊 {cu.role==='admin'?'Company':'My'} Sales Snapshot</h2>
-            <button className="btn btn-sm btn-secondary" onClick={()=>setPg('reports')}>Full Reports →</button>
-          </div>
-          <div className="card-body">
-            <div style={{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:10,marginBottom:16}}>
-              <div style={{padding:12,background:'#eff6ff',borderRadius:8,textAlign:'center'}}>
-                <div style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Pipeline Revenue</div>
-                <div style={{fontSize:20,fontWeight:800,color:'#1e40af'}}>${(totalRev/1000).toFixed(1)}k</div>
-              </div>
-              <div style={{padding:12,background:'#f0fdf4',borderRadius:8,textAlign:'center'}}>
-                <div style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Total Margin</div>
-                <div style={{fontSize:20,fontWeight:800,color:'#166534'}}>${(totalMargin/1000).toFixed(1)}k</div>
-                <div style={{fontSize:10,color:avgMarginPct>=40?'#166534':'#d97706',fontWeight:700}}>{avgMarginPct}%</div>
-              </div>
-              <div style={{padding:12,background:'#fef3c7',borderRadius:8,textAlign:'center'}}>
-                <div style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Open A/R</div>
-                <div style={{fontSize:20,fontWeight:800,color:'#92400e'}}>${(openInvBal/1000).toFixed(1)}k</div>
-              </div>
-              <div style={{padding:12,background:'#dcfce7',borderRadius:8,textAlign:'center'}}>
-                <div style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Collected</div>
-                <div style={{fontSize:20,fontWeight:800,color:'#166534'}}>${(paidTotal/1000).toFixed(1)}k</div>
-              </div>
-              <div style={{padding:12,background:'#ede9fe',borderRadius:8,textAlign:'center'}}>
-                <div style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Est→SO Rate</div>
-                <div style={{fontSize:20,fontWeight:800,color:'#6d28d9'}}>{convRate}%</div>
-              </div>
-            </div>
-
-            {/* Two columns: At-Risk + Top Customers */}
-            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
-              <div>
-                <div style={{fontSize:12,fontWeight:700,color:'#dc2626',marginBottom:6}}>⚠️ Customers Needing Attention</div>
-                {atRisk.length===0?<div style={{fontSize:11,color:'#94a3b8',padding:8}}>All customers active — great job!</div>:
-                atRisk.slice(0,5).map(c=><div key={c.id} style={{padding:'6px 10px',borderLeft:'3px solid #fca5a5',background:'#fef2f2',borderRadius:4,marginBottom:4,cursor:'pointer'}}
-                  onClick={()=>{setSelC(c);setPg('customers')}}>
-                  <div style={{display:'flex',justifyContent:'space-between'}}>
-                    <span style={{fontSize:12,fontWeight:700}}>{c.name}</span>
-                    <span style={{fontSize:10,color:'#dc2626',fontWeight:700}}>{c.daysSince}d ago</span>
-                  </div>
-                  <div style={{fontSize:10,color:'#64748b'}}>Last: {c.lastMemo||'—'} · ${c.totalSpend.toLocaleString()} lifetime</div>
-                </div>)}
-              </div>
-              <div>
-                <div style={{fontSize:12,fontWeight:700,color:'#1e40af',marginBottom:6}}>🏆 Top Customers by Revenue</div>
-                {topCustomers.map((c,i)=><div key={c.id} style={{padding:'6px 10px',borderLeft:`3px solid ${i===0?'#fbbf24':i===1?'#94a3b8':'#cd7c32'}`,background:'#f8fafc',borderRadius:4,marginBottom:4,cursor:'pointer'}}
-                  onClick={()=>{setSelC(cust.find(cc=>cc.id===c.id));setPg('customers')}}>
-                  <div style={{display:'flex',justifyContent:'space-between'}}>
-                    <span style={{fontSize:12,fontWeight:700}}>{i+1}. {c.name}</span>
-                    <span style={{fontSize:12,fontWeight:800,color:'#1e40af'}}>${c.totalSpend.toLocaleString()}</span>
-                  </div>
-                  <div style={{fontSize:10,color:'#64748b'}}>{c.soCount} orders · {c.openBal>0?'$'+c.openBal.toLocaleString()+' open':'Paid up'}</div>
-                </div>)}
-              </div>
-            </div>
-          </div>
-        </div>
-      </>})()}
     <div className="card" style={{marginBottom:16}}><div className="card-header"><h2>Quick Actions</h2></div><div className="card-body" style={{display:'flex',gap:8,flexWrap:'wrap'}}>
       <button className="btn btn-primary" onClick={()=>newE(null)}><Icon name="file" size={14}/> New Estimate</button>
       <button className="btn btn-secondary" onClick={()=>{setPg('customers');setCM({open:true,c:null})}}><Icon name="plus" size={14}/> New Customer</button>
-      <button className="btn btn-secondary" onClick={()=>setPg('jobs')}><Icon name="grid" size={14}/> View Jobs</button>
+      <button className="btn btn-secondary" onClick={()=>setPg('production')}><Icon name="grid" size={14}/> Prod Board</button>
       <button className="btn btn-secondary" onClick={()=>setPg('messages')}><Icon name="mail" size={14}/> Messages</button></div></div>
-    <div className="card"><div className="card-header"><h2>Recent Estimates</h2></div><div className="card-body" style={{padding:0}}><table><thead><tr><th>ID</th><th>Customer</th><th>Memo</th><th>Status</th><th>Email</th></tr></thead><tbody>
-    {ests.slice(0,5).map(e=>{const c=cust.find(x=>x.id===e.customer_id);return(<tr key={e.id} style={{cursor:'pointer'}} onClick={()=>{setEEst(e);setEEstC(c);setPg('estimates')}}>
-      <td style={{fontWeight:700,color:'#1e40af'}}>{e.id}</td><td>{c?.name||'--'} <span className="badge badge-gray">{c?.alpha_tag}</span></td><td style={{fontSize:12}}>{e.memo}</td>
-      <td><span className={`badge ${e.status==='draft'?'badge-gray':e.status==='sent'?'badge-amber':e.status==='approved'?'badge-green':'badge-blue'}`}>{e.status}</span></td>
-      <td><EmailBadge e={e}/></td></tr>)})}
-    </tbody></table></div></div></>)};
+    </>}
+
+    {/* ═══ SALES REP VIEW ═══ */}
+    {dashView==='sales'&&<>
+    <div className="stats-row">
+      <div className="stat-card"><div className="stat-label">My Open Estimates</div><div className="stat-value" style={{color:'#d97706'}}>{ests.filter(e=>(e.status==='draft'||e.status==='sent')&&e.created_by===cu.id).length}</div></div>
+      <div className="stat-card"><div className="stat-label">My Active SOs</div><div className="stat-value" style={{color:'#2563eb'}}>{sos.filter(s=>s.created_by===cu.id&&calcSOStatus(s)!=='complete').length}</div></div>
+      <div className="stat-card"><div className="stat-label">Pending Approvals</div><div className="stat-value" style={{color:'#7c3aed'}}>{todos.filter(t=>t.type==='art').length}</div></div>
+      <div className="stat-card"><div className="stat-label">Due This Week</div><div className="stat-value" style={{color:'#dc2626'}}>{todos.filter(t=>t.type==='deadline').length}</div></div>
+    </div>
+    <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
+      <div className="card"><div className="card-header"><h2>🎯 My Action Items</h2></div>
+        <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
+          {todos.filter(t=>t.role==='sales'||t.role==='all').length===0?<div className="empty" style={{padding:20}}>Nothing pending!</div>:
+          todos.filter(t=>t.role==='sales'||t.role==='all').slice(0,12).map((t,i)=><div key={i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer'}} onClick={()=>{if(t.so){setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
+            <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}</div></div>
+            <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#eff6ff',color:'#2563eb',fontWeight:600}}>{t.action}</span>
+          </div>)}</div></div>
+      <div className="card"><div className="card-header"><h2>📊 My Pipeline</h2></div>
+        <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
+          {sos.filter(s=>s.created_by===cu.id&&calcSOStatus(s)!=='complete').slice(0,10).map(so=>{const c=cust.find(x=>x.id===so.customer_id);const st=calcSOStatus(so);
+            return<div key={so.id} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',cursor:'pointer'}} onClick={()=>{setESO(so);setESOC(c);setPg('orders')}}>
+              <div style={{display:'flex',justifyContent:'space-between'}}>
+                <span style={{fontWeight:700,fontSize:12}}>{c?.alpha_tag||c?.name} — {so.memo||so.id}</span>
+                <span style={{fontSize:9,padding:'2px 6px',borderRadius:8,background:SC[st]?.bg,color:SC[st]?.c,fontWeight:600}}>{st.replace(/_/g,' ')}</span>
+              </div></div>})}
+        </div></div>
+    </div>
+    <div className="card"><div className="card-header"><h2>Quick Actions</h2></div><div className="card-body" style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+      <button className="btn btn-primary" onClick={()=>newE(null)}>📝 New Estimate</button>
+      <button className="btn btn-secondary" onClick={()=>setPg('orders')}>📋 My Orders</button>
+      <button className="btn btn-secondary" onClick={()=>setPg('omg')}>🏪 OMG Stores</button>
+      <button className="btn btn-secondary" onClick={()=>setPg('invoices')}>💰 Invoices</button></div></div>
+    </>}
+
+    {/* ═══ WAREHOUSE VIEW ═══ */}
+    {dashView==='warehouse'&&<>
+    <div className="stats-row">
+      <div className="stat-card" style={{borderLeft:'3px solid #d97706'}}><div className="stat-label">To Pull</div><div className="stat-value" style={{color:'#d97706'}}>{pullTasks.length}</div><div style={{fontSize:10,color:'#94a3b8'}}>{pullTasks.reduce((a,t)=>a+t.needsPull,0)} units</div></div>
+      <div className="stat-card" style={{borderLeft:'3px solid #166534'}}><div className="stat-label">Ship Today</div><div className="stat-value" style={{color:'#166534'}}>{shipTasks.length}</div><div style={{fontSize:10,color:'#94a3b8'}}>{shipTasks.reduce((a,t)=>a+t.units,0)} units</div></div>
+      <div className="stat-card" style={{borderLeft:'3px solid #dc2626'}}><div className="stat-label">Rush Orders</div><div className="stat-value" style={{color:'#dc2626'}}>{pullTasks.filter(t=>t.urgent).length}</div></div>
+      <div className="stat-card" style={{borderLeft:'3px solid #2563eb'}}><div className="stat-label">Active Timers</div><div className="stat-value" style={{color:'#2563eb'}}>{Object.keys(activeTimers).length}</div></div>
+    </div>
+    <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
+      <div className="card" style={{borderLeft:'3px solid #d97706'}}><div className="card-header"><h2>🏗️ Next to Pull</h2><button className="btn btn-sm btn-secondary" onClick={()=>setPg('warehouse')}>Full List →</button></div>
+        <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
+          {pullTasks.slice(0,8).map((t,i)=><div key={i} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',cursor:'pointer',background:t.urgent?'#fef2f2':''}} onClick={()=>{setESO(t.so);setESOC(cust.find(c2=>c2.id===t.so.customer_id));setPg('orders')}}>
+            <div style={{display:'flex',alignItems:'center',gap:6}}>
+              {t.urgent&&<span>🔥</span>}<span style={{fontWeight:700,color:'#1e40af',fontSize:12}}>{t.soId}</span>
+              <span style={{fontWeight:600,fontSize:12}}>{t.cName}</span>
+              <span style={{marginLeft:'auto',fontWeight:800,color:'#d97706'}}>{t.needsPull}</span>
+            </div>
+            <div style={{fontSize:10,color:'#64748b'}}>{t.sku} · {t.name}</div>
+          </div>)}
+        </div></div>
+      <div className="card" style={{borderLeft:'3px solid #166534'}}><div className="card-header"><h2>📦 Ready to Ship</h2><button className="btn btn-sm btn-secondary" onClick={()=>{setPg('warehouse');setWhTab('ship')}}>Full List →</button></div>
+        <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
+          {shipTasks.slice(0,8).map((t,i)=><div key={i} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',cursor:'pointer'}} onClick={()=>{setESO(t.so);setESOC(cust.find(c2=>c2.id===t.so.customer_id));setPg('orders')}}>
+            <div style={{display:'flex',alignItems:'center',gap:6}}>
+              <span style={{fontWeight:700,color:'#1e40af',fontSize:12}}>{t.soId}</span>
+              <span style={{fontWeight:600,fontSize:12}}>{t.cName}</span>
+              <span style={{marginLeft:'auto',fontWeight:700,color:'#166534'}}>{t.units}u</span>
+            </div></div>)}
+        </div></div>
+    </div>
+    <div className="card"><div className="card-header"><h2>Quick Actions</h2></div><div className="card-body" style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+      <button className="btn btn-primary" onClick={()=>setPg('warehouse')}>📦 Warehouse</button>
+      <button className="btn btn-secondary" onClick={()=>setPg('inventory')}>📊 Inventory</button></div></div>
+    </>}
+
+    {/* ═══ DECORATOR VIEW ═══ */}
+    {dashView==='decorator'&&<>
+    {(()=>{
+      const inProcess=activeJobs.filter(j=>j.prod_status==='in_process');
+      const inLine=activeJobs.filter(j=>j.prod_status==='staging');
+      const myTimers=Object.entries(activeTimers);
+      const todayLogs=jobTimeLogs.filter(l=>{try{return new Date(l.clockOut).toDateString()===new Date().toDateString()}catch{return false}});
+      const todayMins=todayLogs.reduce((a,l)=>a+l.minutes,0);
+      return<>
+      <div className="stats-row">
+        <div className="stat-card" style={{borderLeft:'3px solid #2563eb'}}><div className="stat-label">In Process</div><div className="stat-value" style={{color:'#2563eb'}}>{inProcess.length}</div></div>
+        <div className="stat-card" style={{borderLeft:'3px solid #d97706'}}><div className="stat-label">In Line (next)</div><div className="stat-value" style={{color:'#d97706'}}>{inLine.length}</div></div>
+        <div className="stat-card" style={{borderLeft:'3px solid #166534'}}><div className="stat-label">Clocked In</div><div className="stat-value" style={{color:myTimers.length>0?'#166534':'#94a3b8'}}>{myTimers.length}</div></div>
+        <div className="stat-card" style={{borderLeft:'3px solid #7c3aed'}}><div className="stat-label">Today's Time</div><div className="stat-value" style={{color:'#7c3aed'}}>{todayMins}m</div><div style={{fontSize:10,color:'#94a3b8'}}>{(todayMins/60).toFixed(1)} hrs</div></div>
+      </div>
+      {myTimers.length>0&&<div className="card" style={{marginBottom:12,borderLeft:'3px solid #22c55e',background:'#f0fdf4'}}>
+        <div style={{padding:'10px 14px'}}>
+          <div style={{fontSize:12,fontWeight:700,color:'#166534',marginBottom:6}}>⏱️ Active Now</div>
+          {myTimers.map(([key,timer])=>{const[soId,jobId]=key.split('|');const mins=Math.round((Date.now()-timer.clockIn)/60000);
+            return<div key={key} style={{display:'flex',alignItems:'center',gap:8,padding:'4px 0'}}>
+              <span style={{width:8,height:8,borderRadius:4,background:'#22c55e'}}/> 
+              <span style={{fontWeight:700}}>{timer.person}</span>
+              <span style={{color:'#64748b',fontSize:11}}>{jobId} ({soId})</span>
+              <span style={{marginLeft:'auto',fontWeight:800,color:'#d97706',fontSize:14}}>{mins}m</span>
+              <button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#dc2626',color:'white',border:'none'}} onClick={()=>{
+                setJobTimeLogs(prev=>[...prev,{jobId,soId,person:timer.person,clockIn:new Date(timer.clockIn).toLocaleString(),clockOut:new Date().toLocaleString(),minutes:mins}]);
+                setActiveTimers(prev=>{const n={...prev};delete n[key];return n});
+                nf('⏱️ Clocked out — '+mins+'m');
+              }}>Clock Out</button>
+            </div>})}
+        </div></div>}
+      <div className="card" style={{marginBottom:12}}><div className="card-header"><h2>🖨️ My Queue — In Process</h2><button className="btn btn-sm btn-secondary" onClick={()=>setPg('production')}>Prod Board →</button></div>
+        <div className="card-body" style={{padding:0,maxHeight:350,overflow:'auto'}}>
+          {inProcess.length===0?<div className="empty" style={{padding:20}}>Nothing running right now</div>:
+          inProcess.map(j=><div key={j.id+j.so?.id} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',cursor:'pointer'}} onClick={()=>{setESOTab('jobs');setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so?.customer_id));setPg('orders')}}>
+            <div style={{display:'flex',alignItems:'center',gap:8}}>
+              <span style={{fontWeight:800,color:'#7c3aed'}}>{j.art_name}</span>
+              <span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:'#dbeafe',color:'#1e40af',fontWeight:600}}>{j.deco_type?.replace(/_/g,' ')}</span>
+              <span style={{fontSize:10,color:'#64748b',marginLeft:'auto'}}>{j.cName} · {j.so?.id}</span>
+            </div>
+            <div style={{display:'flex',alignItems:'center',gap:6,marginTop:4}}>
+              <span style={{fontSize:12,fontWeight:700}}>{j.fulfilled_units}/{j.total_units}</span>
+              <div style={{flex:1,background:'#e2e8f0',borderRadius:3,height:4}}><div style={{height:4,borderRadius:3,background:'#3b82f6',width:(j.total_units>0?j.fulfilled_units/j.total_units*100:0)+'%'}}/></div>
+              {j.assigned_machine&&<span style={{fontSize:9,color:'#92400e',fontWeight:600}}>🖨️ {MACHINES.find(m=>m.id===j.assigned_machine)?.name}</span>}
+            </div>
+          </div>)}
+        </div></div>
+      <div className="card"><div className="card-header"><h2>📋 Up Next — In Line</h2></div>
+        <div className="card-body" style={{padding:0,maxHeight:300,overflow:'auto'}}>
+          {inLine.length===0?<div className="empty" style={{padding:20}}>Nothing queued</div>:
+          inLine.slice(0,8).map(j=><div key={j.id+j.so?.id} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9'}}>
+            <div style={{display:'flex',alignItems:'center',gap:8}}>
+              <span style={{fontWeight:700,color:'#475569'}}>{j.art_name}</span>
+              <span style={{fontSize:10,color:'#64748b'}}>{j.cName}</span>
+              <span style={{marginLeft:'auto',fontWeight:700,fontSize:11}}>{j.total_units}u</span>
+            </div></div>)}
+        </div></div>
+      </>})()}
+    </>}
+
+    {/* ═══ PRODUCTION MANAGER VIEW ═══ */}
+    {dashView==='production'&&<>
+    {(()=>{
+      const byStatus={hold:0,staging:0,in_process:0,completed:0,shipped:0};
+      activeJobs.forEach(j=>{byStatus[j.prod_status]=(byStatus[j.prod_status]||0)+1});
+      const totalActive=activeJobs.length;
+      const readyForBoard=todos.filter(t=>t.type==='schedule').length;
+      return<>
+      <div className="stats-row">
+        <div className="stat-card" style={{borderLeft:'3px solid #94a3b8'}}><div className="stat-label">Ready (Hold)</div><div className="stat-value">{byStatus.hold}</div></div>
+        <div className="stat-card" style={{borderLeft:'3px solid #f59e0b'}}><div className="stat-label">In Line</div><div className="stat-value" style={{color:'#d97706'}}>{byStatus.staging}</div></div>
+        <div className="stat-card" style={{borderLeft:'3px solid #2563eb'}}><div className="stat-label">In Process</div><div className="stat-value" style={{color:'#2563eb'}}>{byStatus.in_process}</div></div>
+        <div className="stat-card" style={{borderLeft:'3px solid #166534'}}><div className="stat-label">Completed</div><div className="stat-value" style={{color:'#166534'}}>{byStatus.completed}</div></div>
+        <div className="stat-card" style={{borderLeft:'3px solid #7c3aed'}}><div className="stat-label">Not on Board</div><div className="stat-value" style={{color:'#7c3aed'}}>{readyForBoard}</div></div>
+      </div>
+      {readyForBoard>0&&<div className="card" style={{marginBottom:12,borderLeft:'3px solid #7c3aed',background:'#faf5ff'}}>
+        <div style={{padding:'10px 14px',fontSize:12}}><strong>{readyForBoard} job{readyForBoard!==1?'s':''} ready for the production board</strong> — art approved + items received but not yet scheduled.</div></div>}
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
+        <div className="card"><div className="card-header"><h2>🏭 Active Production</h2><button className="btn btn-sm btn-primary" onClick={()=>setPg('production')}>Open Board →</button></div>
+          <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
+            {activeJobs.filter(j=>j.prod_status==='in_process'||j.prod_status==='staging').map(j=><div key={j.id+j.so?.id} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9'}}>
+              <div style={{display:'flex',alignItems:'center',gap:6}}>
+                <span style={{fontSize:9,padding:'1px 5px',borderRadius:4,background:SC[j.prod_status]?.bg,color:SC[j.prod_status]?.c,fontWeight:700}}>{j.prod_status==='in_process'?'RUN':'LINE'}</span>
+                <span style={{fontWeight:700,fontSize:12}}>{j.art_name}</span>
+                <span style={{fontSize:10,color:'#64748b'}}>{j.cName}</span>
+                <span style={{marginLeft:'auto',fontWeight:700,fontSize:11}}>{j.fulfilled_units}/{j.total_units}</span>
+              </div></div>)}
+          </div></div>
+        <div className="card"><div className="card-header"><h2>⏱️ Time Today</h2><button className="btn btn-sm btn-secondary" onClick={()=>setPg('decoration')}>Deco Page →</button></div>
+          <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
+            {Object.entries(activeTimers).length>0?Object.entries(activeTimers).map(([key,timer])=>{const[soId,jobId]=key.split('|');
+              return<div key={key} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:8}}>
+                <span style={{width:8,height:8,borderRadius:4,background:'#22c55e'}}/> 
+                <span style={{fontWeight:700,fontSize:12}}>{timer.person}</span>
+                <span style={{fontSize:11,color:'#64748b'}}>{jobId}</span>
+                <span style={{marginLeft:'auto',fontWeight:700,color:'#d97706'}}>{Math.round((Date.now()-timer.clockIn)/60000)}m</span>
+              </div>}):<div className="empty" style={{padding:20}}>No one clocked in</div>}
+          </div></div>
+      </div>
+      </>})()}
+    </>}
+
+    {/* ═══ CSR VIEW ═══ */}
+    {dashView==='csr'&&<>
+    <div className="stats-row">
+      <div className="stat-card"><div className="stat-label">Unread Msgs</div><div className="stat-value" style={{color:'#dc2626'}}>{unreadMsgs.length}</div></div>
+      <div className="stat-card"><div className="stat-label">Active SOs</div><div className="stat-value" style={{color:'#2563eb'}}>{sos.filter(s=>calcSOStatus(s)!=='complete').length}</div></div>
+      <div className="stat-card"><div className="stat-label">Pending Invoices</div><div className="stat-value" style={{color:'#d97706'}}>{invs.filter(i=>i.status!=='paid').length}</div></div>
+      <div className="stat-card"><div className="stat-label">Due This Week</div><div className="stat-value" style={{color:'#dc2626'}}>{todos.filter(t=>t.type==='deadline').length}</div></div>
+    </div>
+    <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
+      <div className="card"><div className="card-header"><h2>💬 Messages</h2><button className="btn btn-sm btn-secondary" onClick={()=>setPg('messages')}>All →</button></div>
+        <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
+          {myUnread.length===0?<div className="empty" style={{padding:20}}>All caught up!</div>:
+          myUnread.map(m=>{const author=REPS.find(r=>r.id===m.author_id);const so=sos.find(s=>s.id===m.so_id);const c2=cust.find(cc=>cc.id===so?.customer_id);
+            return<div key={m.id} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',cursor:'pointer'}} onClick={()=>{if(so){setESO(so);setESOC(c2);setPg('orders')}}}>
+              <div style={{display:'flex',gap:8,alignItems:'center'}}><span style={{fontWeight:700,fontSize:12}}>{author?.name?.split(' ')[0]}</span><span style={{fontSize:10,color:'#1e40af'}}>{so?.id}</span><span style={{fontSize:10,color:'#94a3b8',marginLeft:'auto'}}>{m.ts}</span></div>
+              <div style={{fontSize:12,color:'#475569'}}>{m.text}</div>
+            </div>})}
+        </div></div>
+      <div className="card"><div className="card-header"><h2>📋 Order Status Lookup</h2></div>
+        <div className="card-body">
+          <input className="form-input" placeholder="Search by SO#, customer, or memo..." style={{marginBottom:8}}
+            onChange={e=>{const q2=e.target.value.toLowerCase();if(!q2)return;
+              const match=sos.find(s=>(s.id+' '+(s.memo||'')+' '+(cust.find(c=>c.id===s.customer_id)?.name||'')).toLowerCase().includes(q2));
+              if(match){setESO(match);setESOC(cust.find(c=>c.id===match.customer_id));setPg('orders')}}}/>
+          <div style={{fontSize:11,color:'#64748b'}}>Type to search and jump to any order — great for when coaches call in asking about their order status.</div>
+        </div></div>
+    </div>
+    <div className="card"><div className="card-header"><h2>Quick Actions</h2></div><div className="card-body" style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+      <button className="btn btn-primary" onClick={()=>setPg('messages')}>💬 Messages</button>
+      <button className="btn btn-secondary" onClick={()=>setPg('orders')}>📋 Orders</button>
+      <button className="btn btn-secondary" onClick={()=>setPg('invoices')}>💰 Invoices</button>
+      <button className="btn btn-secondary" onClick={()=>setPg('customers')}>👥 Customers</button></div></div>
+    </>}
+
+    </>)};
+
 
 
   // ESTIMATES LIST
@@ -3288,7 +3508,7 @@ export default function App(){
         <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center',marginBottom:10}}>
           <div className="search-bar" style={{flex:1,minWidth:200,maxWidth:300}}><Icon name="search"/><input placeholder="Search jobs, SKUs, customers..." value={jf.search} onChange={e=>setJF('search',e.target.value)}/></div>
           <select className="form-select" style={{width:130,fontSize:11}} value={jf.rep} onChange={e=>setJF('rep',e.target.value)}>
-            <option value="all">All Reps</option>{REPS.filter(r=>r.role==='rep').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
+            <option value="all">All Reps</option>{REPS.filter(r=>r.role==='rep'||r.role==='admin').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
           <select className="form-select" style={{width:140,fontSize:11}} value={jf.deco} onChange={e=>setJF('deco',e.target.value)}>
             <option value="all">All Deco Types</option>{decoTypes.map(d=><option key={d} value={d}>{d.replace(/_/g,' ')}</option>)}</select>
           <select className="form-select" style={{width:130,fontSize:11}} value={jf.artSt} onChange={e=>setJF('artSt',e.target.value)}>
@@ -3363,6 +3583,8 @@ export default function App(){
   const[prodView,setProdView]=useState('board');const[prodFilter,setProdFilter]=useState('all');const[expandedJob,setExpandedJob]=useState(null);
   const[prodSort,setProdSort]=useState({f:'expected',d:'asc'});const[prodStatF,setProdStatF]=useState('active');const[prodDecoF,setProdDecoF]=useState('all');
   const[assignModal,setAssignModal]=useState(null);// {job, soId, targetStatus}
+  const[jobTimeLogs,setJobTimeLogs]=useState([]);// [{jobId,soId,person,clockIn,clockOut,minutes}]
+  const[activeTimers,setActiveTimers]=useState({});// {jobId:{person,clockIn,soId}}
   const[assignTo,setAssignTo]=useState({machine:'',person:'',shipMethod:''});
   const moveJobStatus=(j,newStatus)=>{
     // If moving to staging (In Line), prompt for assignment
@@ -3378,6 +3600,16 @@ export default function App(){
     if(!so)return;
     const updatedJobs=safeJobs(so).map(jj=>jj.id===j.id?{...jj,prod_status:newStatus,assigned_machine:machine||jj.assigned_machine,assigned_to:person||jj.assigned_to,ship_method:shipMethod||jj.ship_method}:jj);
     savSO({...so,jobs:updatedJobs});
+    // Auto-clock-out if job moves to completed/shipped
+    if(newStatus==='completed'||newStatus==='shipped'){
+      const timerKey=j.soId+'|'+j.id;
+      const active=activeTimers[timerKey];
+      if(active){
+        const mins=Math.round((Date.now()-active.clockIn)/60000);
+        setJobTimeLogs(prev=>[...prev,{jobId:j.id,soId:j.soId,person:active.person,clockIn:new Date(active.clockIn).toLocaleString(),clockOut:new Date().toLocaleString(),minutes:mins}]);
+        setActiveTimers(prev=>{const n={...prev};delete n[timerKey];return n});
+      }
+    }
     const labels={hold:'Ready for Prod',staging:'In Line',in_process:'In Process',completed:'Completed',shipped:'Shipped'};
     nf('🏭 '+j.id+' → '+labels[newStatus]+(machine?' · '+MACHINES.find(m=>m.id===machine)?.name:'')+(person?' · '+person:''));
   };
@@ -3439,7 +3671,7 @@ export default function App(){
             <button key={v} className={`btn btn-sm ${prodStatF===v?'btn-primary':'btn-secondary'}`} onClick={()=>setProdStatF(v)}>{l}</button>)}
         </div>
         <select className="form-select" style={{width:140,fontSize:11}} value={prodFilter} onChange={e=>setProdFilter(e.target.value)}>
-          <option value="all">All Reps</option>{REPS.filter(r=>r.role==='rep').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
+          <option value="all">All Reps</option>{REPS.filter(r=>r.role==='rep'||r.role==='admin').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
         </select>
         <select className="form-select" style={{width:150,fontSize:11}} value={prodDecoF} onChange={e=>setProdDecoF(e.target.value)}>
           <option value="all">All Deco Types</option>{allDecoTypes.map(d=><option key={d} value={d}>{d.replace(/_/g,' ')}</option>)}
@@ -3525,6 +3757,35 @@ export default function App(){
                     }}>🔍 Open Job Detail</div>
                     <div style={{fontSize:10,color:'#2563eb',cursor:'pointer',textDecoration:'underline'}} onClick={e=>{e.stopPropagation();setESOTab(null);setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so.customer_id));setPg('orders')}}>→ Open {j.soId}</div>
                   </div>
+
+                  {/* Time Tracking — clock in/out for active jobs */}
+                  {(col.id==='in_process'||col.id==='staging')&&(()=>{
+                    const timerKey=j.soId+'|'+j.id;
+                    const active=activeTimers[timerKey];
+                    const logs=jobTimeLogs.filter(l=>l.jobId===j.id&&l.soId===j.soId);
+                    const totalMins=logs.reduce((a,l)=>a+(l.minutes||0),0);
+                    return<div style={{background:active?'#dcfce7':'#f8fafc',border:'1px solid '+(active?'#86efac':'#e2e8f0'),borderRadius:6,padding:'4px 8px',marginBottom:6}}>
+                      <div style={{display:'flex',alignItems:'center',gap:6}}>
+                        {active?<>
+                          <span style={{fontSize:10,fontWeight:700,color:'#166534'}}>⏱️ {active.person} clocked in</span>
+                          <span style={{fontSize:9,color:'#64748b',marginLeft:'auto'}}>{Math.round((Date.now()-active.clockIn)/60000)}m</span>
+                          <button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#dc2626',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();
+                            const mins=Math.round((Date.now()-active.clockIn)/60000);
+                            setJobTimeLogs(prev=>[...prev,{jobId:j.id,soId:j.soId,person:active.person,clockIn:new Date(active.clockIn).toLocaleString(),clockOut:new Date().toLocaleString(),minutes:mins}]);
+                            setActiveTimers(prev=>{const n={...prev};delete n[timerKey];return n});
+                            nf('⏱️ '+active.person+' clocked out — '+mins+' min on '+j.id);
+                          }}>Clock Out</button>
+                        </>:<>
+                          <span style={{fontSize:9,color:'#64748b'}}>⏱️ {totalMins>0?totalMins+'m logged':'No time logged'}</span>
+                          <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px',marginLeft:'auto'}} onClick={e=>{e.stopPropagation();
+                            const person=prompt('Who is working on this?',cu.name);
+                            if(!person)return;
+                            setActiveTimers(prev=>({...prev,[timerKey]:{person,clockIn:Date.now(),soId:j.soId}}));
+                            nf('⏱️ '+person+' clocked in on '+j.id);
+                          }}>Clock In</button>
+                        </>}
+                      </div>
+                    </div>})()}
 
                   {/* Move buttons */}
                   <div style={{display:'flex',gap:4,flexWrap:'wrap',borderTop:'1px solid #e2e8f0',paddingTop:6}}>
@@ -3862,13 +4123,12 @@ export default function App(){
                 setSubmittedBatches(prev=>[sb,...prev]);
                 vg.pos.forEach(bp=>{
                   const so=sos.find(s=>s.id===bp.so_id);if(!so)return;
-                  const updatedItems=[...safeItems(so)];
+                  const updatedItems=safeItems(so).map(it=>({...it,po_lines:[...(it.po_lines||[])]}));
                   bp.items.forEach(bpIt=>{
                     const idx=bpIt.item_idx;if(idx==null||!updatedItems[idx])return;
                     const poLine={po_id:poNum,status:'waiting',created_at:new Date().toLocaleDateString(),memo:'Batch: '+vg.pos.map(b=>b.so_id).join('+'),received:{},shipments:[]};
                     Object.entries(bpIt.sizes).forEach(([sz,v])=>{if(v>0)poLine[sz]=v});
-                    if(!updatedItems[idx].po_lines)updatedItems[idx].po_lines=[];
-                    updatedItems[idx].po_lines.push(poLine);
+                    updatedItems[idx].po_lines=[...updatedItems[idx].po_lines,poLine];
                   });
                   savSO({...so,items:updatedItems,updated_at:new Date().toLocaleString()});
                 });
@@ -4105,7 +4365,7 @@ export default function App(){
       <div style={{display:'flex',gap:8,marginBottom:12,alignItems:'center',flexWrap:'wrap'}}>
         <div className="search-bar" style={{flex:1,minWidth:200,maxWidth:300}}><Icon name="search"/><input placeholder="Search invoices, customers..." value={invF.search} onChange={e=>setInvF(f=>({...f,search:e.target.value}))}/></div>
         <select className="form-select" style={{width:130,fontSize:11}} value={invF.rep} onChange={e=>setInvF(f=>({...f,rep:e.target.value}))}>
-          <option value="all">All Reps</option>{REPS.filter(r=>r.role==='rep').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
+          <option value="all">All Reps</option>{REPS.filter(r=>r.role==='rep'||r.role==='admin').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
         <div style={{display:'flex',gap:4}}>
           {[['list','📋 List'],['customer','👥 By Customer']].map(([v,l])=>
             <button key={v} className={`btn btn-sm ${invF.group===v?'btn-primary':'btn-secondary'}`} onClick={()=>setInvF(f=>({...f,group:v}))}>{l}</button>)}
@@ -4278,7 +4538,7 @@ export default function App(){
     const avgOrderSize=pipeline.length>0?Math.round(totalRev/pipeline.length):0;
 
     // Rep leaderboard
-    const repData=REPS.filter(r=>r.role==='rep').map(r=>{
+    const repData=REPS.filter(r=>r.role==='rep'||r.role==='admin').map(r=>{
       const rSOs=sos.filter(s=>s.created_by===r.id);const rEsts=ests.filter(e=>e.created_by===r.id);
       const rev=rSOs.reduce((a,s)=>a+soCalc(s).rev,0);const margin=rSOs.reduce((a,s)=>a+soCalc(s).margin,0);
       const rInv=invs.filter(i=>{const so=sos.find(s=>s.id===i.so_id);return so?.created_by===r.id});
@@ -4335,7 +4595,7 @@ export default function App(){
             <button key={v} className={`btn btn-sm ${rptTab===v?'btn-primary':'btn-secondary'}`} onClick={()=>setRptTab(v)}>{l}</button>)}
         </div>
         <select className="form-select" style={{width:140,fontSize:11}} value={rptRep} onChange={e=>setRptRep(e.target.value)}>
-          <option value="all">All Reps</option>{REPS.filter(r=>r.role==='rep').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
+          <option value="all">All Reps</option>{REPS.filter(r=>r.role==='rep'||r.role==='admin').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
         <div style={{marginLeft:'auto',fontSize:10,color:'#64748b'}}>Toggle widgets to customize your view</div>
       </div>
 
@@ -4511,26 +4771,26 @@ export default function App(){
                 {s.open_date&&<span style={{marginLeft:8,fontSize:11,color:'#64748b'}}>📅 {s.open_date} → {s.close_date}</span>}
               </div>
             </div>
-            {s.status==='closed'&&<button className="btn btn-primary" style={{background:'#166534'}} onClick={()=>{
+            {s.status==='closed'&&!sos.some(so=>so.omg_store_id===s.id)&&<button className="btn btn-primary" style={{background:'#166534'}} onClick={()=>{
               // PULL FROM OMG → Create SO
-              const isAUb=b=>b==='Adidas'||b==='Under Armour'||b==='New Balance';
-              const mk=c?.catalog_markup||1.65;const tier=c?.adidas_ua_tier||'B';const disc=tD[tier]||0.35;
+              if(sos.some(so=>so.omg_store_id===s.id)){nf('Already pulled — SO exists for this store','error');return}
               const newItems=s.products.map(p=>{
-                const au=isAUb(p.name.includes('Adidas')?'Adidas':p.name.includes('Under Armour')?'Under Armour':'');
                 const catP=prod.find(cp=>cp.sku===p.sku);
                 return{product_id:catP?.id||null,sku:p.sku,name:p.name,brand:catP?.brand||'',color:p.color,
                   nsa_cost:p.cost,retail_price:catP?.retail_price||p.retail,unit_sell:p.retail,
                   available_sizes:Object.keys(p.sizes),sizes:p.sizes,
-                  decorations:[{kind:'art',position:'Front Center',art_file_id:null,sell_override:p.deco_cost}],
+                  decorations:[{kind:'art',position:'Front Center',art_file_id:null,deco_type:p.deco_type,sell_override:null,cost_override:p.deco_cost}],
                   is_custom:false,pick_lines:[],po_lines:[]};
               });
-              const newSO={id:'SO-'+(1100+sos.length),customer_id:s.customer_id,memo:'OMG Store Pull: '+s.store_name,status:'need_order',
+              const newSO={id:uid('SO-'),customer_id:s.customer_id,memo:'OMG Store Pull: '+s.store_name,status:'need_order',
                 created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),
                 expected_date:'',production_notes:'Pulled from OMG store '+s.id+'. Orders: '+s.orders+', Buyers: '+s.unique_buyers,
                 shipping_type:'flat',shipping_value:0,ship_to_id:'default',firm_dates:[],art_files:[],items:newItems,omg_store_id:s.id};
               setSOs(prev=>[newSO,...prev]);setESO(newSO);setESOC(c);setPg('orders');
               nf('🎉 Pulled '+newItems.length+' items from '+s.store_name+' into new SO');
             }}>🔄 Pull to Sales Order</button>}
+            {s.status==='closed'&&sos.some(so=>so.omg_store_id===s.id)&&<div style={{padding:'6px 12px',background:'#f0fdf4',borderRadius:6,fontSize:11,color:'#166534',fontWeight:600}}>
+              ✅ Already pulled → {sos.find(so=>so.omg_store_id===s.id)?.id}</div>}
           </div>
         </div></div>
 
@@ -4588,7 +4848,7 @@ export default function App(){
       <div style={{display:'flex',gap:8,marginBottom:12,flexWrap:'wrap',alignItems:'center'}}>
         <div className="search-bar" style={{flex:1,maxWidth:300}}><Icon name="search"/><input placeholder="Search stores..." value={omgFilter.search} onChange={e=>setOmgFilter(x=>({...x,search:e.target.value}))}/></div>
         <select className="form-select" style={{width:130,fontSize:11}} value={omgFilter.rep} onChange={e=>setOmgFilter(x=>({...x,rep:e.target.value}))}>
-          <option value="all">All Reps</option>{REPS.filter(r=>r.role==='rep').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
+          <option value="all">All Reps</option>{REPS.filter(r=>r.role==='rep'||r.role==='admin').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
         <div style={{display:'flex',gap:4}}>
           {[['all','All'],['open','Open'],['closed','Closed'],['draft','Draft']].map(([v,l])=>
             <button key={v} className={`btn btn-sm ${omgFilter.status===v?'btn-primary':'btn-secondary'}`} onClick={()=>setOmgFilter(x=>({...x,status:v}))}>{l}</button>)}
@@ -4638,137 +4898,93 @@ export default function App(){
     </>);
   };
 
-  // WAREHOUSE & DECORATION DASHBOARD
+  // WAREHOUSE DASHBOARD
   const[whTab,setWhTab]=useState('pull');const[whSearch,setWhSearch]=useState('');const[whRepF,setWhRepF]=useState('all');
+  const[decoSearch,setDecoSearch]=useState('');const[decoRepF,setDecoRepF]=useState('all');const[decoStatF,setDecoStatF]=useState('active');const[decoTypeF,setDecoTypeF]=useState('all');
 
-  const rWarehouse=()=>{
-    // ── Gather ALL actionable data across all SOs ──
-    const pullTasks=[];const receiveTasks=[];const decoTasks=[];const shipTasks=[];
-    sos.forEach(so=>{
+  // Shared data builder for warehouse + deco pages
+  const buildWarehouseData=()=>{
+    const pullTasks=[];const shipTasks=[];const decoTasks=[];
+    sos.filter(so=>{const st=calcSOStatus(so);return st!=='complete'}).forEach(so=>{
       const c=cust.find(x=>x.id===so.customer_id);const cName=c?.name||'Unknown';const alpha=c?.alpha_tag||'';
       const rep=REPS.find(r=>r.id===so.created_by)?.name?.split(' ')[0]||'—';
       const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
       const urgent=daysOut!=null&&daysOut<=3;
 
       safeItems(so).forEach((item,ii)=>{
-        const szKeys=Object.keys(item.sizes||{}).filter(k=>SZ_ORD_I.includes(k)||(item.sizes[k]>0));
+        const szKeys=Object.keys(item.sizes||{}).filter(k=>SZ_ORD.includes(k)||(item.sizes[k]>0));
         const totalOrdered=szKeys.reduce((a,s)=>a+(item.sizes[s]||0),0);
         if(totalOrdered===0)return;
-
-        // Calculate what's been pulled vs ordered
         const pulled={};safePicks(item).forEach(pk=>{szKeys.forEach(s=>{pulled[s]=(pulled[s]||0)+(pk[s]||0)})});
         const totalPulled=Object.values(pulled).reduce((a,v)=>a+v,0);
         const needsPull=totalOrdered-totalPulled;
-
-        // Calculate what's on PO vs received
-        const onPO={};const received={};
-        safePOs(item).forEach(po=>{szKeys.forEach(s=>{onPO[s]=(onPO[s]||0)+(po[s]||0);received[s]=(received[s]||0)+((po.received||{})[s]||0)})});
-        const totalOnPO=Object.values(onPO).reduce((a,v)=>a+v,0);
-        const totalReceived=Object.values(received).reduce((a,v)=>a+v,0);
-        const awaitingReceive=totalOnPO-totalReceived;
-
-        // Items needing pull (have stock or received goods to pull)
         if(needsPull>0){
           pullTasks.push({so,soId:so.id,item,itemIdx:ii,cName,alpha,rep,daysOut,urgent,
             sku:item.sku,name:item.name,brand:item.brand||'',color:item.color||'',
             sizes:item.sizes,pulled,needsPull,totalOrdered,totalPulled,szKeys,
-            noDeco:item.no_deco||item.decorations?.length===0,
+            noDeco:item.no_deco||!item.decorations?.length,
             shipDest:safePicks(item).find(p=>p.ship_dest)?.ship_dest||'in_house'});
         }
-
-        // POs awaiting receiving
-        safePOs(item).forEach(po=>{
-          const poSzKeys=szKeys.filter(s=>(po[s]||0)>0);
-          const poTotal=poSzKeys.reduce((a,s)=>a+(po[s]||0),0);
-          const poReceived=poSzKeys.reduce((a,s)=>a+((po.received||{})[s]||0),0);
-          if(poTotal>poReceived){
-            receiveTasks.push({so,soId:so.id,item,po,cName,alpha,rep,daysOut,urgent,
-              sku:item.sku,name:item.name,poId:po.po_id,
-              poTotal,poReceived,remaining:poTotal-poReceived,
-              memo:po.memo||'',szKeys:poSzKeys,sizes:{}});
-            poSzKeys.forEach(s=>{receiveTasks[receiveTasks.length-1].sizes[s]={ordered:po[s]||0,received:(po.received||{})[s]||0}});
-          }
-        });
+        // No-deco items fully pulled → ready to ship
+        if((!item.decorations?.length||item.no_deco)&&totalPulled>=totalOrdered&&totalOrdered>0){
+          const dest=safePicks(item).find(p=>p.ship_dest)?.ship_dest||'in_house';
+          shipTasks.push({so,soId:so.id,type:'no_deco',cName,alpha,rep,daysOut,urgent,
+            desc:item.sku+' · '+item.name,units:totalOrdered,shipMethod:dest});
+        }
       });
-
-      // Decoration tasks from jobs
-      safeJobs(so).forEach(j=>{
-        if(j.prod_status==='completed'||j.prod_status==='shipped')return;
-        const isReady=j.art_status==='art_complete'&&j.item_status==='items_received';
-        decoTasks.push({so,soId:so.id,job:j,cName:c?.name||'Unknown',alpha,rep,daysOut,urgent:daysOut!=null&&daysOut<=3,
-          artName:j.art_name,decoType:j.deco_type,totalUnits:j.total_units,fulfilledUnits:j.fulfilled_units,
-          prodStatus:j.prod_status,artStatus:j.art_status,itemStatus:j.item_status,isReady,
-          machine:MACHINES.find(m=>m.id===j.assigned_machine)?.name,assignedTo:j.assigned_to});
-      });
-
-      // Ship tasks — completed jobs or no-deco items that have been pulled
+      // Completed deco jobs → ready to ship
       safeJobs(so).forEach(j=>{
         if(j.prod_status==='completed'){
-          shipTasks.push({so,soId:so.id,type:'deco_done',cName:c?.name||'Unknown',alpha,rep,daysOut,urgent:daysOut!=null&&daysOut<=3,
+          shipTasks.push({so,soId:so.id,type:'deco_done',cName,alpha,rep,daysOut,urgent,
             desc:j.art_name+' ('+j.deco_type?.replace(/_/g,' ')+')',units:j.total_units,
             shipMethod:j.ship_method||'pending'});
         }
-      });
-      // No-deco items that are fully pulled → ready to ship
-      safeItems(so).forEach(item=>{
-        if(!item.no_deco&&(item.decorations||[]).length>0)return;
-        const szKeys=Object.keys(item.sizes||{}).filter(k=>SZ_ORD_I.includes(k));
-        const totalOrdered=szKeys.reduce((a,s)=>a+(item.sizes[s]||0),0);
-        const pulled={};safePicks(item).forEach(pk=>{szKeys.forEach(s=>{pulled[s]=(pulled[s]||0)+(pk[s]||0)})});
-        const totalPulled=Object.values(pulled).reduce((a,v)=>a+v,0);
-        if(totalPulled>=totalOrdered&&totalOrdered>0){
-          const dest=safePicks(item).find(p=>p.ship_dest)?.ship_dest||'in_house';
-          if(dest==='ship_customer')shipTasks.push({so,soId:so.id,type:'no_deco',cName:c?.name||'Unknown',alpha,rep,daysOut,urgent:daysOut!=null&&daysOut<=3,
-            desc:item.sku+' — '+item.name+' (no deco)',units:totalOrdered,shipMethod:'ship_customer'});
+        // Deco tasks
+        if(j.prod_status!=='completed'&&j.prod_status!=='shipped'){
+          const isReady=j.art_status==='art_complete'&&j.item_status==='items_received';
+          decoTasks.push({so,soId:so.id,job:j,cName,alpha,rep,daysOut,urgent,
+            artName:j.art_name,decoType:j.deco_type,totalUnits:j.total_units,fulfilledUnits:j.fulfilled_units,
+            prodStatus:j.prod_status,artStatus:j.art_status,itemStatus:j.item_status,isReady,
+            machine:MACHINES.find(m=>m.id===j.assigned_machine)?.name,assignedTo:j.assigned_to});
         }
       });
     });
+    const sortU=(a,b)=>{if(a.urgent&&!b.urgent)return -1;if(!a.urgent&&b.urgent)return 1;return(a.daysOut||999)-(b.daysOut||999)};
+    pullTasks.sort(sortU);shipTasks.sort(sortU);decoTasks.sort(sortU);
+    return{pullTasks,shipTasks,decoTasks};
+  };
 
-    // Sort by urgency
-    const sortByUrgency=(a,b)=>{if(a.urgent&&!b.urgent)return -1;if(!a.urgent&&b.urgent)return 1;return(a.daysOut||999)-(b.daysOut||999)};
-    pullTasks.sort(sortByUrgency);receiveTasks.sort(sortByUrgency);decoTasks.sort(sortByUrgency);shipTasks.sort(sortByUrgency);
-
-    // Filter
+  const rWarehouse=()=>{
+    const{pullTasks,shipTasks}=buildWarehouseData();
     const filt=(arr)=>arr.filter(t=>{
       if(whRepF!=='all'&&t.so?.created_by!==whRepF)return false;
       if(whSearch){const s=whSearch.toLowerCase();
         if(!(t.cName||'').toLowerCase().includes(s)&&!(t.sku||'').toLowerCase().includes(s)&&
-          !(t.soId||'').toLowerCase().includes(s)&&!(t.desc||'').toLowerCase().includes(s)&&
-          !(t.artName||'').toLowerCase().includes(s)&&!(t.poId||'').toLowerCase().includes(s))return false}
+          !(t.soId||'').toLowerCase().includes(s)&&!(t.desc||'').toLowerCase().includes(s))return false}
       return true;
     });
-
-    const fPull=filt(pullTasks);const fReceive=filt(receiveTasks);const fDeco=filt(decoTasks);const fShip=filt(shipTasks);
-
+    const fPull=filt(pullTasks);const fShip=filt(shipTasks);
     const tabs=[
       {id:'pull',label:'🏗️ Pull & Stage',count:fPull.length,color:'#d97706'},
-      {id:'receive',label:'📥 Receive',count:fReceive.length,color:'#2563eb'},
-      {id:'deco',label:'🎨 Decoration',count:fDeco.length,color:'#7c3aed'},
-      {id:'ship',label:'📦 Ship',count:fShip.length,color:'#166534'},
+      {id:'ship',label:'📦 Ready to Ship',count:fShip.length,color:'#166534'},
     ];
 
     return(<>
-      {/* Stats Row */}
+      {/* Stats */}
       <div className="stats-row" style={{marginBottom:12}}>
-        <div className="stat-card" style={{background:'#fffbeb',borderLeft:'3px solid #d97706'}}>
-          <div className="stat-label" style={{color:'#92400e'}}>To Pull</div>
+        <div className="stat-card" style={{borderLeft:'3px solid #d97706'}}>
+          <div className="stat-label">To Pull</div>
           <div className="stat-value" style={{color:'#d97706'}}>{pullTasks.length}</div>
-          <div style={{fontSize:10,color:'#92400e'}}>{pullTasks.reduce((a,t)=>a+t.needsPull,0)} units</div>
+          <div style={{fontSize:10,color:'#94a3b8'}}>{pullTasks.reduce((a,t)=>a+t.needsPull,0)} units</div>
         </div>
-        <div className="stat-card" style={{background:'#eff6ff',borderLeft:'3px solid #2563eb'}}>
-          <div className="stat-label" style={{color:'#1e40af'}}>To Receive</div>
-          <div className="stat-value" style={{color:'#2563eb'}}>{receiveTasks.length}</div>
-          <div style={{fontSize:10,color:'#1e40af'}}>{receiveTasks.reduce((a,t)=>a+t.remaining,0)} units</div>
-        </div>
-        <div className="stat-card" style={{background:'#f5f3ff',borderLeft:'3px solid #7c3aed'}}>
-          <div className="stat-label" style={{color:'#6d28d9'}}>Deco Queue</div>
-          <div className="stat-value" style={{color:'#7c3aed'}}>{decoTasks.length}</div>
-          <div style={{fontSize:10,color:'#6d28d9'}}>{decoTasks.filter(t=>t.isReady).length} ready to go</div>
-        </div>
-        <div className="stat-card" style={{background:'#f0fdf4',borderLeft:'3px solid #166534'}}>
-          <div className="stat-label" style={{color:'#166534'}}>Ready to Ship</div>
+        <div className="stat-card" style={{borderLeft:'3px solid #166534'}}>
+          <div className="stat-label">Ready to Ship</div>
           <div className="stat-value" style={{color:'#166534'}}>{shipTasks.length}</div>
-          <div style={{fontSize:10,color:'#166534'}}>{shipTasks.reduce((a,t)=>a+t.units,0)} units</div>
+          <div style={{fontSize:10,color:'#94a3b8'}}>{shipTasks.reduce((a,t)=>a+t.units,0)} units</div>
+        </div>
+        <div className="stat-card" style={{borderLeft:'3px solid #dc2626'}}>
+          <div className="stat-label">Rush (≤3 days)</div>
+          <div className="stat-value" style={{color:'#dc2626'}}>{pullTasks.filter(t=>t.urgent).length+shipTasks.filter(t=>t.urgent).length}</div>
         </div>
       </div>
 
@@ -4779,182 +4995,238 @@ export default function App(){
         <select className="form-select" style={{width:140,fontSize:11}} value={whRepF} onChange={e=>setWhRepF(e.target.value)}>
           <option value="all">All Reps</option>{REPS.filter(r=>r.role==='rep'||r.role==='admin').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
         </select>
+        <div style={{display:'flex',gap:2,marginLeft:'auto'}}>
+          {tabs.map(t=><button key={t.id} className={`btn btn-sm ${whTab===t.id?'btn-primary':'btn-secondary'}`}
+            style={{background:whTab===t.id?t.color:'',borderColor:whTab===t.id?t.color:''}}
+            onClick={()=>setWhTab(t.id)}>{t.label} ({t.count})</button>)}
+        </div>
       </div>
 
-      {/* Tab Bar */}
-      <div style={{display:'flex',gap:2,marginBottom:12,borderBottom:'2px solid #e2e8f0'}}>
-        {tabs.map(t=><div key={t.id} onClick={()=>setWhTab(t.id)}
-          style={{padding:'10px 16px',cursor:'pointer',fontSize:13,fontWeight:700,
-            borderBottom:whTab===t.id?'3px solid '+t.color:'3px solid transparent',
-            color:whTab===t.id?t.color:'#94a3b8',transition:'all 0.15s'}}>
-          {t.label} <span style={{padding:'2px 6px',borderRadius:10,fontSize:10,fontWeight:700,
-            background:whTab===t.id?t.color+'22':'#f1f5f9',color:whTab===t.id?t.color:'#94a3b8'}}>{t.count}</span>
-        </div>)}
-      </div>
-
-      {/* ── PULL & STAGE TAB ── */}
+      {/* ── PULL & STAGE ── */}
       {whTab==='pull'&&<>
-        <div style={{fontSize:12,color:'#64748b',marginBottom:8}}>Items that need to be pulled from inventory or staged for decoration. Sorted by urgency.</div>
         {fPull.length===0?<div className="empty" style={{padding:32,textAlign:'center'}}>Nothing to pull right now 👍</div>:
-        <div style={{display:'flex',flexDirection:'column',gap:6}}>
-          {fPull.map((t,ti)=><div key={ti} className="card" style={{border:t.urgent?'2px solid #dc2626':'1px solid #e2e8f0'}}>
-            <div style={{padding:'10px 14px'}}>
-              <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
-                {t.urgent&&<span style={{fontSize:10,fontWeight:800,color:'#dc2626',background:'#fef2f2',padding:'1px 6px',borderRadius:4}}>🔥 {t.daysOut}d</span>}
-                <span style={{fontSize:14,fontWeight:800,color:'#1e293b'}}>{t.cName}</span>
-                <span style={{fontSize:10,color:'#94a3b8'}}>{t.soId}</span>
-                <span style={{fontSize:10,color:'#64748b',marginLeft:'auto'}}>{t.rep}</span>
-              </div>
-              <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
-                <span style={{fontFamily:'monospace',fontSize:12,fontWeight:700,color:'#1e40af'}}>{t.sku}</span>
-                <span style={{fontSize:11,color:'#475569'}}>{t.name}</span>
-                {t.color&&<span style={{fontSize:10,color:'#94a3b8'}}>· {t.color}</span>}
-                {t.noDeco&&<span style={{fontSize:9,padding:'1px 5px',borderRadius:4,background:'#f0fdf4',color:'#166534',fontWeight:600}}>No Deco → Ship</span>}
-              </div>
-              {/* Size grid */}
-              <div style={{display:'flex',gap:2,flexWrap:'wrap',marginBottom:6}}>
-                {t.szKeys.map(s=>{const need=(t.sizes[s]||0)-(t.pulled[s]||0);const done=need<=0;
-                  return<div key={s} style={{padding:'3px 8px',borderRadius:4,fontSize:10,fontWeight:700,minWidth:40,textAlign:'center',
-                    background:done?'#f0fdf4':'#fffbeb',color:done?'#166534':'#92400e',border:done?'1px solid #bbf7d0':'1px solid #fde68a'}}>
-                    <div>{s}</div>
-                    <div style={{fontSize:12}}>{done?'✓':need}</div>
-                  </div>})}
-              </div>
-              <div style={{display:'flex',alignItems:'center',gap:8}}>
-                <span style={{fontSize:11,fontWeight:700,color:'#d97706'}}>{t.needsPull} to pull</span>
-                <span style={{fontSize:10,color:'#94a3b8'}}>of {t.totalOrdered} ordered · {t.totalPulled} pulled</span>
-                <button className="btn btn-sm btn-primary" style={{marginLeft:'auto',fontSize:10,padding:'3px 10px'}}
-                  onClick={()=>{setESO(t.so);setESOC(cust.find(c2=>c2.id===t.so.customer_id));setPg('orders')}}>
-                  Open SO →</button>
-              </div>
-            </div>
-          </div>)}
-        </div>}
+        <div className="card"><div className="card-body" style={{padding:0}}>
+          <table style={{fontSize:11}}><thead><tr>
+            <th style={{width:20}}></th><th>SO#</th><th>Customer</th><th>SKU</th><th>Item</th>
+            <th style={{textAlign:'center'}}>Need</th><th style={{textAlign:'center'}}>On Hand</th><th>Sizes to Pull</th><th>Rep</th><th style={{width:60}}></th>
+          </tr></thead><tbody>
+          {fPull.map((t,ti)=><tr key={ti} style={{cursor:'pointer',background:t.urgent?'#fef2f2':'',borderLeft:t.urgent?'3px solid #dc2626':''}}
+            onClick={()=>{setESOTab(null);setESO(t.so);setESOC(cust.find(c2=>c2.id===t.so.customer_id));setPg('orders')}}>
+            <td>{t.urgent&&<span title={'Due in '+t.daysOut+'d'}>🔥</span>}{t.noDeco&&<span title="No decoration">📦</span>}</td>
+            <td style={{fontWeight:700,color:'#1e40af',whiteSpace:'nowrap'}}>{t.soId}</td>
+            <td style={{fontWeight:600,maxWidth:140,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{t.cName}</td>
+            <td style={{fontFamily:'monospace',fontWeight:700,fontSize:10,color:'#475569'}}>{t.sku}</td>
+            <td style={{fontSize:10,color:'#64748b',maxWidth:120,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{t.name}{t.color?' · '+t.color:''}</td>
+            <td style={{textAlign:'center',fontWeight:800,color:'#d97706'}}>{t.needsPull}</td>
+            <td style={{textAlign:'center'}}>{(()=>{const p=prod.find(pp=>pp.sku===t.sku);if(!p||!p._inv)return<span style={{color:'#cbd5e1'}}>—</span>;
+              const total=Object.values(p._inv).reduce((a,v)=>a+(typeof v==='number'?v:0),0);
+              return<span style={{fontWeight:700,color:total>=t.needsPull?'#166534':total>0?'#d97706':'#dc2626'}}>{total}</span>})()}</td>
+            <td><div style={{display:'flex',gap:2,flexWrap:'wrap'}}>
+              {t.szKeys.filter(s=>(t.sizes[s]||0)-(t.pulled[s]||0)>0).map(s=>{const need=(t.sizes[s]||0)-(t.pulled[s]||0);
+                return<span key={s} style={{padding:'1px 4px',borderRadius:3,fontSize:9,fontWeight:700,
+                  background:'#fef3c7',color:'#92400e',whiteSpace:'nowrap'}}>{s}:{need}</span>})}
+            </div></td>
+            <td style={{fontSize:10,color:'#94a3b8'}}>{t.rep}</td>
+            <td><button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px'}}
+              onClick={e=>{e.stopPropagation();setESOTab(null);setESO(t.so);setESOC(cust.find(c2=>c2.id===t.so.customer_id));setPg('orders')}}>
+              Pick →</button></td>
+          </tr>)}
+          </tbody></table>
+        </div></div>}
       </>}
 
-      {/* ── RECEIVE TAB ── */}
-      {whTab==='receive'&&<>
-        <div style={{fontSize:12,color:'#64748b',marginBottom:8}}>Purchase orders with items still to receive. Click to open the SO and log receiving.</div>
-        {fReceive.length===0?<div className="empty" style={{padding:32,textAlign:'center'}}>All POs fully received 👍</div>:
-        <div style={{display:'flex',flexDirection:'column',gap:6}}>
-          {fReceive.map((t,ti)=><div key={ti} className="card" style={{border:t.urgent?'2px solid #dc2626':'1px solid #e2e8f0'}}>
-            <div style={{padding:'10px 14px'}}>
-              <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
-                {t.urgent&&<span style={{fontSize:10,fontWeight:800,color:'#dc2626',background:'#fef2f2',padding:'1px 6px',borderRadius:4}}>🔥 {t.daysOut}d</span>}
-                <span style={{fontSize:12,fontWeight:800,color:'#2563eb',fontFamily:'monospace'}}>{t.poId}</span>
-                <span style={{fontSize:11,fontWeight:600}}>{t.cName}</span>
-                <span style={{fontSize:10,color:'#94a3b8'}}>{t.soId}</span>
-                <span style={{fontSize:10,color:'#64748b',marginLeft:'auto'}}>{t.rep}</span>
-              </div>
-              <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
-                <span style={{fontFamily:'monospace',fontSize:11,fontWeight:700}}>{t.sku}</span>
-                <span style={{fontSize:11,color:'#475569'}}>{t.name}</span>
-                {t.memo&&<span style={{fontSize:10,color:'#94a3b8',fontStyle:'italic'}}>"{t.memo}"</span>}
-              </div>
-              {/* Size receiving grid */}
-              <div style={{display:'flex',gap:2,flexWrap:'wrap',marginBottom:6}}>
-                {t.szKeys.map(s=>{const sz=t.sizes[s]||{ordered:0,received:0};const done=sz.received>=sz.ordered;
-                  return<div key={s} style={{padding:'3px 8px',borderRadius:4,fontSize:10,fontWeight:700,minWidth:40,textAlign:'center',
-                    background:done?'#f0fdf4':'#eff6ff',color:done?'#166534':'#1e40af',border:done?'1px solid #bbf7d0':'1px solid #bfdbfe'}}>
-                    <div>{s}</div>
-                    <div style={{fontSize:12}}>{done?'✓':sz.received+'/'+sz.ordered}</div>
-                  </div>})}
-              </div>
-              <div style={{display:'flex',alignItems:'center',gap:8}}>
-                <span style={{fontSize:11,fontWeight:700,color:'#2563eb'}}>{t.remaining} remaining</span>
-                <span style={{fontSize:10,color:'#94a3b8'}}>of {t.poTotal} ordered · {t.poReceived} received</span>
-                <button className="btn btn-sm btn-primary" style={{marginLeft:'auto',fontSize:10,padding:'3px 10px'}}
-                  onClick={()=>{setESO(t.so);setESOC(cust.find(c2=>c2.id===t.so.customer_id));setPg('orders')}}>
-                  Log Receiving →</button>
-              </div>
-            </div>
-          </div>)}
-        </div>}
-      </>}
-
-      {/* ── DECORATION TAB ── */}
-      {whTab==='deco'&&<>
-        <div style={{fontSize:12,color:'#64748b',marginBottom:8}}>All active decoration jobs. Green = ready to produce (art approved + items in house). Click to open SO or use Prod Board for full control.</div>
-        {fDeco.length===0?<div className="empty" style={{padding:32,textAlign:'center'}}>No active decoration jobs 👍</div>:
-        <div style={{display:'flex',flexDirection:'column',gap:6}}>
-          {fDeco.map((t,ti)=>{
-            const pct=t.totalUnits>0?Math.round(t.fulfilledUnits/t.totalUnits*100):0;
-            return<div key={ti} className="card" style={{border:t.urgent?'2px solid #dc2626':t.isReady?'2px solid #22c55e':'1px solid #e2e8f0',
-              background:t.isReady?'#f0fdf4':'white'}}>
-              <div style={{padding:'10px 14px'}}>
-                <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
-                  {t.urgent&&<span style={{fontSize:10,fontWeight:800,color:'#dc2626',background:'#fef2f2',padding:'1px 6px',borderRadius:4}}>🔥 {t.daysOut}d</span>}
-                  {t.isReady&&<span style={{fontSize:10,fontWeight:800,color:'#166534',background:'#dcfce7',padding:'1px 6px',borderRadius:4}}>✅ READY</span>}
-                  <span style={{fontSize:14,fontWeight:800,color:'#1e293b'}}>{t.cName}</span>
-                  <span style={{fontSize:10,color:'#94a3b8'}}>{t.soId}</span>
-                  <span style={{fontSize:10,color:'#64748b',marginLeft:'auto'}}>{t.rep}</span>
-                </div>
-                <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
-                  <span style={{fontSize:12,fontWeight:700,color:'#7c3aed'}}>{t.artName}</span>
-                  <span style={{fontSize:10,padding:'2px 6px',borderRadius:4,fontWeight:600,
-                    background:t.decoType==='embroidery'?'#f3e8ff':t.decoType==='screen_print'?'#dbeafe':t.decoType==='dtf'?'#fef3c7':'#f1f5f9',
-                    color:t.decoType==='embroidery'?'#6b21a8':t.decoType==='screen_print'?'#1e40af':t.decoType==='dtf'?'#92400e':'#475569'}}>
-                    {t.decoType?.replace(/_/g,' ')}</span>
-                  {t.machine&&<span style={{fontSize:9,padding:'1px 5px',borderRadius:4,background:'#fef3c7',color:'#92400e'}}>🖨️ {t.machine}</span>}
-                  {t.assignedTo&&<span style={{fontSize:9,padding:'1px 5px',borderRadius:4,background:'#ede9fe',color:'#6d28d9'}}>👤 {t.assignedTo}</span>}
-                </div>
-                <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
-                  <div style={{display:'flex',gap:3}}>
-                    <span style={{padding:'1px 5px',borderRadius:6,fontSize:8,fontWeight:700,background:SC[t.artStatus]?.bg,color:SC[t.artStatus]?.c}}>
-                      {t.artStatus==='art_complete'?'✅ Art':'⏳ Art'}</span>
-                    <span style={{padding:'1px 5px',borderRadius:6,fontSize:8,fontWeight:700,background:SC[t.itemStatus]?.bg,color:SC[t.itemStatus]?.c}}>
-                      {t.itemStatus==='items_received'?'✅ Items':'⏳ Items'}</span>
-                    <span style={{padding:'1px 5px',borderRadius:6,fontSize:8,fontWeight:700,background:SC[t.prodStatus]?.bg,color:SC[t.prodStatus]?.c}}>
-                      {t.prodStatus==='hold'?'⏸ Hold':t.prodStatus==='staging'?'📋 In Line':t.prodStatus==='in_process'?'🖨️ In Process':'✓ '+t.prodStatus}</span>
-                  </div>
-                </div>
-                <div style={{display:'flex',alignItems:'center',gap:8}}>
-                  <span style={{fontSize:13,fontWeight:800,color:pct>=100?'#166534':'#7c3aed'}}>{t.fulfilledUnits}/{t.totalUnits}</span>
-                  <div style={{flex:1,background:'#e2e8f0',borderRadius:4,height:5,overflow:'hidden',maxWidth:200}}>
-                    <div style={{height:5,borderRadius:4,background:pct>=100?'#22c55e':pct>50?'#3b82f6':'#f59e0b',width:pct+'%'}}/></div>
-                  <span style={{fontSize:9,color:'#64748b'}}>{pct}%</span>
-                  <div style={{marginLeft:'auto',display:'flex',gap:4}}>
-                    <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'3px 8px'}}
-                      onClick={()=>{setESO(t.so);setESOC(cust.find(c2=>c2.id===t.so.customer_id));setPg('orders')}}>Open SO</button>
-                    <button className="btn btn-sm btn-primary" style={{fontSize:10,padding:'3px 8px',background:'#7c3aed',borderColor:'#7c3aed'}}
-                      onClick={()=>setPg('production')}>Prod Board</button>
-                  </div>
-                </div>
-              </div>
-            </div>})}
-        </div>}
-      </>}
-
-      {/* ── SHIP TAB ── */}
+      {/* ── READY TO SHIP ── */}
       {whTab==='ship'&&<>
-        <div style={{fontSize:12,color:'#64748b',marginBottom:8}}>Items ready to pack and ship — decoration is complete or no deco required.</div>
-        {fShip.length===0?<div className="empty" style={{padding:32,textAlign:'center'}}>Nothing ready to ship right now</div>:
-        <div style={{display:'flex',flexDirection:'column',gap:6}}>
-          {fShip.map((t,ti)=><div key={ti} className="card" style={{border:t.urgent?'2px solid #dc2626':'1px solid #e2e8f0'}}>
-            <div style={{padding:'10px 14px'}}>
-              <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
-                {t.urgent&&<span style={{fontSize:10,fontWeight:800,color:'#dc2626',background:'#fef2f2',padding:'1px 6px',borderRadius:4}}>🔥 {t.daysOut}d</span>}
-                <span style={{fontSize:14,fontWeight:800,color:'#1e293b'}}>{t.cName}</span>
+        {fShip.length===0?<div className="empty" style={{padding:32,textAlign:'center'}}>Nothing ready to ship right now</div>:<>
+        {/* Group by customer for combining boxes */}
+        {(()=>{
+          const byCustomer={};
+          fShip.forEach(t=>{
+            const key=t.cName+'|'+(t.shipMethod||'pending');
+            if(!byCustomer[key])byCustomer[key]={cName:t.cName,shipMethod:t.shipMethod,items:[],totalUnits:0,soIds:new Set()};
+            byCustomer[key].items.push(t);byCustomer[key].totalUnits+=t.units;byCustomer[key].soIds.add(t.soId);
+          });
+          return<div style={{display:'grid',gap:10}}>
+            {Object.values(byCustomer).map((grp,gi)=><div key={gi} className="card" style={{borderLeft:'3px solid #166534'}}>
+              <div style={{padding:'10px 14px'}}>
+                <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}>
+                  <span style={{fontSize:14,fontWeight:800}}>{grp.cName}</span>
+                  <span style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:600,
+                    background:grp.shipMethod==='ship_customer'?'#dbeafe':grp.shipMethod==='rep_delivery'?'#dcfce7':grp.shipMethod==='customer_pickup'?'#fef3c7':'#fef2f2',
+                    color:grp.shipMethod==='ship_customer'?'#1e40af':grp.shipMethod==='rep_delivery'?'#166534':grp.shipMethod==='customer_pickup'?'#92400e':'#dc2626'}}>
+                    {grp.shipMethod==='ship_customer'?'📦 Ship':grp.shipMethod==='rep_delivery'?'🚗 Rep Delivery':grp.shipMethod==='customer_pickup'?'🏫 Pickup':'⚠️ Not set'}</span>
+                  <span style={{fontSize:10,color:'#94a3b8'}}>{[...grp.soIds].join(', ')}</span>
+                  <span style={{marginLeft:'auto',fontSize:12,fontWeight:800,color:'#166534'}}>{grp.totalUnits} units</span>
+                  <span style={{fontSize:10,color:'#64748b'}}>{grp.items.length} item{grp.items.length!==1?'s':''}</span>
+                </div>
+                <table style={{fontSize:11,width:'100%'}}><tbody>
+                  {grp.items.map((t,ti)=><tr key={ti} style={{cursor:'pointer',borderBottom:'1px solid #f1f5f9'}}
+                    onClick={()=>{setESOTab(null);setESO(t.so);setESOC(cust.find(c2=>c2.id===t.so.customer_id));setPg('orders')}}>
+                    <td style={{padding:'4px 0',fontWeight:700,color:'#1e40af',whiteSpace:'nowrap',width:80}}>{t.soId}</td>
+                    <td style={{fontSize:10,color:'#475569'}}>{t.desc}</td>
+                    <td style={{textAlign:'center',fontWeight:700,width:50}}>{t.units}</td>
+                    <td style={{width:40}}>{t.urgent&&<span>🔥</span>}</td>
+                  </tr>)}
+                </tbody></table>
+                <div style={{display:'flex',gap:6,marginTop:8,borderTop:'1px solid #e2e8f0',paddingTop:6}}>
+                  <input className="form-input" placeholder="Scan SKU to verify..." style={{flex:1,fontSize:11,padding:'4px 8px'}}
+                    onKeyDown={e=>{if(e.key==='Enter'){
+                      const sku=e.target.value.trim().toUpperCase();
+                      const match=grp.items.find(t=>(t.desc||'').toUpperCase().includes(sku)||(t.soId||'').toUpperCase().includes(sku));
+                      if(match)nf('✅ Verified: '+sku+' found in '+match.soId);
+                      else nf('❌ '+sku+' not found in this shipment','error');
+                      e.target.value='';
+                    }}}/>
+                  <button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 10px'}}
+                    onClick={()=>{nf('📦 Packing slip printed for '+grp.cName+' ('+grp.totalUnits+' units)')}}>🖨️ Pack Slip</button>
+                  <button className="btn btn-sm" style={{fontSize:10,background:'#1e40af',color:'white',border:'none',padding:'4px 10px'}}
+                    onClick={()=>{nf('📦 Marked shipped for '+grp.cName)}}>✓ Ship</button>
+                </div>
+              </div>
+            </div>)}
+          </div>})()}
+        </>}
+      </>}
+    </>);
+  };
+
+  // DECORATION DASHBOARD (separate from warehouse)
+  const rDeco=()=>{
+    const{decoTasks}=buildWarehouseData();
+    const filt=(arr)=>arr.filter(t=>{
+      if(decoRepF!=='all'&&t.so?.created_by!==decoRepF)return false;
+      if(decoSearch){const s=decoSearch.toLowerCase();
+        if(!(t.cName||'').toLowerCase().includes(s)&&!(t.artName||'').toLowerCase().includes(s)&&
+          !(t.soId||'').toLowerCase().includes(s))return false}
+      return true;
+    });
+    const active=decoTasks.filter(t=>t.prodStatus!=='completed'&&t.prodStatus!=='shipped');
+    const completed=decoTasks.filter(t=>t.prodStatus==='completed');
+    const list=decoStatF==='active'?filt(active):decoStatF==='completed'?filt(completed):filt(decoTasks);
+    const readyCount=active.filter(t=>t.isReady).length;
+    const inProcessCount=active.filter(t=>t.prodStatus==='in_process').length;
+    const waitingCount=active.filter(t=>!t.isReady).length;
+    const allDecoTypes=[...new Set(decoTasks.map(t=>t.decoType).filter(Boolean))];
+    const filtered=decoTypeF==='all'?list:list.filter(t=>t.decoType===decoTypeF);
+
+    return(<>
+      {/* Stats */}
+      <div className="stats-row" style={{marginBottom:12}}>
+        <div className="stat-card" style={{borderLeft:'3px solid #22c55e'}}>
+          <div className="stat-label">Ready to Go</div>
+          <div className="stat-value" style={{color:'#166534'}}>{readyCount}</div>
+        </div>
+        <div className="stat-card" style={{borderLeft:'3px solid #2563eb'}}>
+          <div className="stat-label">In Process</div>
+          <div className="stat-value" style={{color:'#2563eb'}}>{inProcessCount}</div>
+        </div>
+        <div className="stat-card" style={{borderLeft:'3px solid #d97706'}}>
+          <div className="stat-label">Waiting (Art/Items)</div>
+          <div className="stat-value" style={{color:'#d97706'}}>{waitingCount}</div>
+        </div>
+        <div className="stat-card" style={{borderLeft:'3px solid #7c3aed'}}>
+          <div className="stat-label">Total Active</div>
+          <div className="stat-value" style={{color:'#7c3aed'}}>{active.length}</div>
+          <div style={{fontSize:10,color:'#94a3b8'}}>{active.reduce((a,t)=>a+t.totalUnits,0)} units</div>
+        </div>
+      </div>
+
+      {/* Filters */}
+      <div style={{display:'flex',gap:8,marginBottom:12,alignItems:'center',flexWrap:'wrap'}}>
+        <div style={{display:'flex',gap:2}}>
+          {[['active','Active'],['completed','Done'],['all','All']].map(([v,l])=>
+            <button key={v} className={`btn btn-sm ${decoStatF===v?'btn-primary':'btn-secondary'}`}
+              onClick={()=>setDecoStatF(v)}>{l}</button>)}
+        </div>
+        <select className="form-select" style={{width:140,fontSize:11}} value={decoTypeF} onChange={e=>setDecoTypeF(e.target.value)}>
+          <option value="all">All Deco Types</option>{allDecoTypes.map(d=><option key={d} value={d}>{d.replace(/_/g,' ')}</option>)}
+        </select>
+        <select className="form-select" style={{width:140,fontSize:11}} value={decoRepF} onChange={e=>setDecoRepF(e.target.value)}>
+          <option value="all">All Reps</option>{REPS.filter(r=>r.role==='rep'||r.role==='admin').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
+        </select>
+        <input className="form-input" placeholder="Search..." value={decoSearch}
+          onChange={e=>setDecoSearch(e.target.value)} style={{width:180}}/>
+        <button className="btn btn-sm btn-secondary" style={{marginLeft:'auto'}} onClick={()=>setPg('production')}>
+          Full Prod Board →</button>
+      </div>
+
+      {/* Active Timers & Time Log Summary */}
+      {(Object.keys(activeTimers).length>0||jobTimeLogs.length>0)&&<div className="card" style={{marginBottom:12,borderLeft:'3px solid #f59e0b'}}>
+        <div style={{padding:'10px 14px'}}>
+          <div style={{fontSize:12,fontWeight:700,color:'#92400e',marginBottom:6}}>⏱️ Time Tracking</div>
+          {Object.keys(activeTimers).length>0&&<div style={{marginBottom:8}}>
+            <div style={{fontSize:10,fontWeight:600,color:'#166534',marginBottom:4}}>ACTIVE NOW:</div>
+            {Object.entries(activeTimers).map(([key,timer])=>{
+              const[soId,jobId]=key.split('|');const mins=Math.round((Date.now()-timer.clockIn)/60000);
+              return<div key={key} style={{display:'flex',alignItems:'center',gap:8,padding:'3px 0',fontSize:11}}>
+                <span style={{width:8,height:8,borderRadius:4,background:'#22c55e',animation:'pulse 2s infinite'}}/> 
+                <span style={{fontWeight:700}}>{timer.person}</span>
+                <span style={{color:'#64748b'}}>on {jobId} ({soId})</span>
+                <span style={{marginLeft:'auto',fontWeight:700,color:'#d97706'}}>{mins}m</span>
+              </div>})}
+          </div>}
+          {jobTimeLogs.length>0&&<div>
+            <div style={{fontSize:10,fontWeight:600,color:'#64748b',marginBottom:4}}>RECENT LOGS:</div>
+            {jobTimeLogs.slice(-5).reverse().map((log,i)=><div key={i} style={{display:'flex',gap:8,fontSize:10,color:'#475569',padding:'2px 0'}}>
+              <span style={{fontWeight:600}}>{log.person}</span>
+              <span>{log.jobId}</span>
+              <span style={{color:'#94a3b8'}}>{log.clockOut}</span>
+              <span style={{marginLeft:'auto',fontWeight:700,color:'#7c3aed'}}>{log.minutes}m</span>
+            </div>)}
+            <div style={{fontSize:10,color:'#64748b',marginTop:4,borderTop:'1px solid #f1f5f9',paddingTop:4}}>
+              Total logged: <strong>{jobTimeLogs.reduce((a,l)=>a+l.minutes,0)} min</strong> ({(jobTimeLogs.reduce((a,l)=>a+l.minutes,0)/60).toFixed(1)} hrs)
+            </div>
+          </div>}
+        </div>
+      </div>}
+
+      {/* Job Cards */}
+      {filtered.length===0?<div className="empty" style={{padding:32,textAlign:'center'}}>No decoration jobs match your filters</div>:
+      <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(320px,1fr))',gap:8}}>
+        {filtered.map((t,ti)=>{
+          const pct=t.totalUnits>0?Math.round(t.fulfilledUnits/t.totalUnits*100):0;
+          return<div key={ti} className="card" style={{
+            border:t.isReady?'2px solid #22c55e':t.urgent?'2px solid #dc2626':'1px solid #e2e8f0',
+            background:t.isReady?'#f0fdf4':t.prodStatus==='in_process'?'#eff6ff':'white',cursor:'pointer'}}
+            onClick={()=>{setESOTab('jobs');setESO(t.so);setESOC(cust.find(c2=>c2.id===t.so.customer_id));setPg('orders')}}>
+            <div style={{padding:'10px 12px'}}>
+              {/* Header row */}
+              <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:4}}>
+                {t.urgent&&<span style={{fontSize:9,fontWeight:800,color:'#dc2626',background:'#fef2f2',padding:'1px 5px',borderRadius:3}}>🔥 {t.daysOut}d</span>}
+                {t.isReady&&!t.urgent&&<span style={{fontSize:9,fontWeight:800,color:'#166534',background:'#dcfce7',padding:'1px 5px',borderRadius:3}}>✅ READY</span>}
+                <span style={{fontSize:13,fontWeight:800,color:'#1e293b',flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{t.cName}</span>
                 <span style={{fontSize:10,color:'#94a3b8'}}>{t.soId}</span>
-                <span style={{fontSize:10,color:'#64748b',marginLeft:'auto'}}>{t.rep}</span>
               </div>
-              <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
-                <span style={{fontSize:11,fontWeight:600}}>{t.desc}</span>
-                <span style={{fontSize:11,fontWeight:700,color:'#166534'}}>{t.units} units</span>
-                <span style={{fontSize:10,padding:'2px 6px',borderRadius:4,fontWeight:600,
-                  background:t.shipMethod==='ship_customer'?'#dbeafe':t.shipMethod==='rep_delivery'?'#dcfce7':t.shipMethod==='customer_pickup'?'#fef3c7':'#fef2f2',
-                  color:t.shipMethod==='ship_customer'?'#1e40af':t.shipMethod==='rep_delivery'?'#166534':t.shipMethod==='customer_pickup'?'#92400e':'#dc2626'}}>
-                  {t.shipMethod==='ship_customer'?'📦 Ship to Customer':t.shipMethod==='rep_delivery'?'🚗 Rep Delivery':t.shipMethod==='customer_pickup'?'🏫 Pickup':'⚠️ No method set'}</span>
+              {/* Art + deco info */}
+              <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:6}}>
+                <span style={{fontSize:12,fontWeight:700,color:'#7c3aed'}}>{t.artName}</span>
+                <span style={{fontSize:9,padding:'1px 5px',borderRadius:3,fontWeight:600,
+                  background:t.decoType==='embroidery'?'#f3e8ff':t.decoType==='screen_print'?'#dbeafe':t.decoType==='dtf'?'#fef3c7':'#f1f5f9',
+                  color:t.decoType==='embroidery'?'#6b21a8':t.decoType==='screen_print'?'#1e40af':t.decoType==='dtf'?'#92400e':'#475569'}}>
+                  {t.decoType?.replace(/_/g,' ')}</span>
               </div>
-              <div style={{display:'flex',gap:4}}>
-                <button className="btn btn-sm btn-primary" style={{fontSize:10,padding:'3px 10px',background:'#166534',borderColor:'#166534'}}
-                  onClick={()=>{setESO(t.so);setESOC(cust.find(c2=>c2.id===t.so.customer_id));setPg('orders')}}>
-                  Process Shipment →</button>
+              {/* Status badges */}
+              <div style={{display:'flex',gap:3,flexWrap:'wrap',marginBottom:6}}>
+                <span style={{padding:'1px 5px',borderRadius:4,fontSize:8,fontWeight:700,background:SC[t.artStatus]?.bg,color:SC[t.artStatus]?.c}}>
+                  {t.artStatus==='art_complete'?'✅ Art':'⏳ Art'}</span>
+                <span style={{padding:'1px 5px',borderRadius:4,fontSize:8,fontWeight:700,background:SC[t.itemStatus]?.bg,color:SC[t.itemStatus]?.c}}>
+                  {t.itemStatus==='items_received'?'✅ Items':'⏳ Items'}</span>
+                <span style={{padding:'1px 5px',borderRadius:4,fontSize:8,fontWeight:700,background:SC[t.prodStatus]?.bg,color:SC[t.prodStatus]?.c}}>
+                  {t.prodStatus==='hold'?'⏸ Hold':t.prodStatus==='staging'?'📋 In Line':t.prodStatus==='in_process'?'🖨️ Running':'✓ '+t.prodStatus}</span>
+                {t.machine&&<span style={{fontSize:8,fontWeight:700,padding:'1px 5px',borderRadius:4,background:'#fef3c7',color:'#92400e'}}>🖨️ {t.machine}</span>}
+                {t.assignedTo&&<span style={{fontSize:8,fontWeight:700,padding:'1px 5px',borderRadius:4,background:'#ede9fe',color:'#6d28d9'}}>👤 {t.assignedTo}</span>}
+              </div>
+              {/* Progress */}
+              <div style={{display:'flex',alignItems:'center',gap:6}}>
+                <span style={{fontSize:12,fontWeight:800,color:pct>=100?'#166534':'#7c3aed'}}>{t.fulfilledUnits}/{t.totalUnits}</span>
+                <div style={{flex:1,background:'#e2e8f0',borderRadius:3,height:4,overflow:'hidden'}}>
+                  <div style={{height:4,borderRadius:3,background:pct>=100?'#22c55e':pct>50?'#3b82f6':'#f59e0b',width:pct+'%'}}/></div>
+                <span style={{fontSize:9,color:'#64748b'}}>{pct}%</span>
+                <span style={{fontSize:10,color:'#94a3b8',marginLeft:'auto'}}>{t.rep}</span>
               </div>
             </div>
-          </div>)}
-        </div>}
-      </>}
+          </div>})}
+      </div>}
     </>);
   };
 
@@ -5303,7 +5575,7 @@ export default function App(){
                 });
                 // Create the SO or Estimate
                 if(imp.docType==='so'){
-                  const newSO={id:'SO-'+(1100+sos.length),customer_id:imp.custId,memo:imp.memo||'Imported from NetSuite',status:'need_order',
+                  const newSO={id:uid('SO-'),customer_id:imp.custId,memo:imp.memo||'Imported from NetSuite',status:'need_order',
                     created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),
                     expected_date:'',production_notes:imp.poRef?'NS Ref: '+imp.poRef:'',shipping_type:shipAmt>0?'flat':'pct',shipping_value:shipAmt||0,
                     ship_to_id:'default',firm_dates:[],art_files:[],items:newItems};
@@ -5311,7 +5583,7 @@ export default function App(){
                   setESO(newSO);setESOC(c);setPg('orders');
                   nf('?? Imported SO with '+newItems.length+' items from NetSuite');
                 } else {
-                  const newEst={id:'EST-'+(2200+ests.length),customer_id:imp.custId,memo:imp.memo||'Imported from NetSuite',status:'draft',
+                  const newEst={id:uid('EST-'),customer_id:imp.custId,memo:imp.memo||'Imported from NetSuite',status:'draft',
                     created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),
                     default_markup:mk,shipping_type:shipAmt>0?'flat':'pct',shipping_value:shipAmt||0,
                     ship_to_id:'default',email_status:null,art_files:[],items:newItems};
@@ -5511,8 +5783,8 @@ export default function App(){
           </div></div>})}</div></div></>)};
 
     // NAV
-  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'reports',label:'Reports',icon:'dollar'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'production',label:'Prod Board',icon:'package'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{section:'Comms'},{id:'messages',label:'Messages',icon:'mail'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'System'},{id:'import',label:'NetSuite Import',icon:'save'},{id:'backup',label:'Backup & Data',icon:'save'}];
-  const titles={dashboard:'Dashboard',reports:'Reports & Analytics',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',omg:'OMG Team Stores',jobs:'Jobs',production:'Production Board',warehouse:'Warehouse & Deco',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',products:'Products',inventory:'Inventory',messages:'Messages',import:'NetSuite Import',backup:'Backup & Data'};
+  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'reports',label:'Reports',icon:'dollar'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'production',label:'Prod Board',icon:'package'},{id:'decoration',label:'Decoration',icon:'image'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{section:'Comms'},{id:'messages',label:'Messages',icon:'mail'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'System'},{id:'import',label:'NetSuite Import',icon:'save'},{id:'backup',label:'Backup & Data',icon:'save'}];
+  const titles={dashboard:'Dashboard',reports:'Reports & Analytics',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',omg:'OMG Team Stores',jobs:'Jobs',production:'Production Board',decoration:'Decoration',warehouse:'Warehouse',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',products:'Products',inventory:'Inventory',messages:'Messages',import:'NetSuite Import',backup:'Backup & Data'};
   return(<div className="app"><Toast msg={toast?.msg} type={toast?.type}/>
     <div className="sidebar"><div className="sidebar-logo">NSA<span>Portal</span></div>
       <nav className="sidebar-nav">{nav.map((item,i)=>{if(item.section)return<div key={i} className="sidebar-section">{item.section}</div>;
@@ -5547,7 +5819,7 @@ export default function App(){
           {gOpen&&<div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:59}} onClick={()=>setGOpen(false)}/>}
         </div>
         <div style={{display:'flex',gap:6,alignItems:'center'}}><button className="btn btn-sm btn-primary" onClick={()=>newE(null)} style={{fontSize:11}}><Icon name="plus" size={12}/> Estimate</button><button className="btn btn-sm btn-secondary" onClick={()=>setCM({open:true,c:null})} style={{fontSize:11}}><Icon name="plus" size={12}/> Customer</button><button className="btn btn-sm btn-secondary" onClick={()=>setQPC({open:true,mode:'single',items:[{sku:'',name:'',brand:'',color:'',category:'Tees',retail_price:0,nsa_cost:0,available_sizes:['S','M','L','XL','2XL'],vendor_id:''}]})} style={{fontSize:11}}><Icon name="plus" size={12}/> Product</button></div></div>
-      <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='production'&&rProd2()}{pg==='warehouse'&&rWarehouse()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='omg'&&rOMG()}{pg==='reports'&&rReports()}{pg==='import'&&rImport()}{pg==='backup'&&rBackup()}</div></div>
+      <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='production'&&rProd2()}{pg==='decoration'&&rDeco()}{pg==='warehouse'&&rWarehouse()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='omg'&&rOMG()}{pg==='reports'&&rReports()}{pg==='import'&&rImport()}{pg==='backup'&&rBackup()}</div></div>
     <CustModal isOpen={cM.open} onClose={()=>setCM({open:false,c:null})} onSave={savC} customer={cM.c} parents={pars}/>
     <AdjModal isOpen={aM.open} onClose={()=>setAM({open:false,p:null})} product={aM.p} onSave={savI}/>
 
