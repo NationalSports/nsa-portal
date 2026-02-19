@@ -3021,7 +3021,7 @@ export default function App(){
   };
 
   // PRODUCTION BOARD
-  const[prodView,setProdView]=useState('board');const[prodFilter,setProdFilter]=useState('all');
+  const[prodView,setProdView]=useState('board');const[prodFilter,setProdFilter]=useState('all');const[expandedJob,setExpandedJob]=useState(null);
   const[prodSort,setProdSort]=useState({f:'expected',d:'asc'});const[prodStatF,setProdStatF]=useState('active');const[prodDecoF,setProdDecoF]=useState('all');
   const[assignModal,setAssignModal]=useState(null);// {job, soId, targetStatus}
   const[assignTo,setAssignTo]=useState({machine:'',person:'',shipMethod:''});
@@ -3119,52 +3119,62 @@ export default function App(){
       </div>
       {prodView==='board'&&<div style={{display:'flex',gap:12,overflowX:'auto',paddingBottom:12}}>
         {kanbanCols.map(col=>{const colJobs=byStatus.filter(j=>j.prod_status===col.id);
-          return<div key={col.id} style={{minWidth:240,flex:1,background:col.bg,borderRadius:8,padding:10}}>
-            <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:10}}>
-              <div style={{width:10,height:10,borderRadius:10,background:col.color}}/>
-              <span style={{fontSize:12,fontWeight:700,color:col.color,textTransform:'uppercase'}}>{col.label}</span>
-              <span style={{fontSize:11,color:'#94a3b8',marginLeft:'auto'}}>{colJobs.length}</span>
+          return<div key={col.id} style={{minWidth:220,flex:1,background:col.bg,borderRadius:8,padding:8}}>
+            <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:8}}>
+              <div style={{width:8,height:8,borderRadius:8,background:col.color}}/>
+              <span style={{fontSize:11,fontWeight:700,color:col.color,textTransform:'uppercase'}}>{col.label}</span>
+              <span style={{fontSize:10,color:'#94a3b8',marginLeft:'auto'}}>{colJobs.length}</span>
             </div>
-            {colJobs.length===0&&<div style={{padding:16,textAlign:'center',color:'#cbd5e1',fontSize:12}}>No jobs</div>}
+            {colJobs.length===0&&<div style={{padding:12,textAlign:'center',color:'#cbd5e1',fontSize:11}}>No jobs</div>}
             {colJobs.map(j=>{
               const pct=j.total_units>0?Math.round(j.fulfilled_units/j.total_units*100):0;
               const gCount=(j.items||[]).length;
               const machine=MACHINES.find(m=>m.id===j.assigned_machine);
-              return<div key={j.id+j.soId} className="card hover-card" style={{marginBottom:8,border:j.daysOut!=null&&j.daysOut<=3?'2px solid #dc2626':undefined}}>
-                <div style={{padding:'10px 12px'}}>
-                  <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:4,cursor:'pointer'}} onClick={()=>{setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so.customer_id));setPg('orders')}}>
-                    <span style={{fontWeight:800,color:'#1e40af',fontSize:11}}>{j.id}</span>
-                    <span style={{marginLeft:'auto',padding:'1px 6px',borderRadius:8,fontSize:9,fontWeight:700,background:SC[j.art_status]?.bg,color:SC[j.art_status]?.c}}>{j.art_status==='art_complete'?'✅':j.art_status==='waiting_approval'?'⏳':'🎨'}</span>
-                  </div>
-                  <div style={{fontSize:13,fontWeight:700,marginBottom:2,cursor:'pointer'}} onClick={()=>{setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so.customer_id));setPg('orders')}}>{j.customer}</div>
+              const isExp=expandedJob===j.id+j.soId;
+              const urgent=j.daysOut!=null&&j.daysOut<=3;
+
+              return<div key={j.id+j.soId} className="card" style={{marginBottom:4,border:urgent?'2px solid #dc2626':'1px solid #e2e8f0',transition:'all 0.15s'}}>
+                {/* COMPACT ROW — always visible */}
+                <div style={{padding:'6px 10px',cursor:'pointer',display:'flex',alignItems:'center',gap:6}} onClick={()=>setExpandedJob(isExp?null:j.id+j.soId)}>
+                  <span style={{fontSize:10,fontWeight:800,color:'#1e40af',minWidth:68}}>{j.id}</span>
+                  <span style={{fontSize:11,fontWeight:700,color:'#334155',flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{j.customer}</span>
+                  <span style={{fontSize:11,fontWeight:800,color:pct>=100?'#166534':'#475569',minWidth:42,textAlign:'right'}}>{j.total_units}<span style={{fontSize:9,fontWeight:400,color:'#94a3b8'}}> u</span></span>
+                  <span style={{fontSize:9,color:'#64748b',minWidth:36,textAlign:'right'}}>{j.rep}</span>
+                  {urgent&&<span style={{fontSize:9}}>🔥</span>}
+                  <span style={{fontSize:10,color:'#94a3b8',transition:'transform 0.15s',transform:isExp?'rotate(180deg)':'rotate(0deg)'}}>▾</span>
+                </div>
+                {/* Thin progress bar under compact row */}
+                {!isExp&&<div style={{height:2,background:'#e2e8f0'}}><div style={{height:2,background:pct>=100?'#22c55e':pct>50?'#3b82f6':'#f59e0b',width:pct+'%',transition:'width 0.3s'}}/></div>}
+
+                {/* EXPANDED — full details + actions */}
+                {isExp&&<div style={{padding:'6px 10px 10px',borderTop:'1px solid #e2e8f0'}}>
                   <div style={{fontSize:12,fontWeight:600,color:'#475569',marginBottom:2}}>{j.art_name}</div>
-                  <div style={{fontSize:10,color:'#64748b',marginBottom:6}}>{j.deco_type?.replace(/_/g,' ')} · {j.soId}</div>
-                  {/* Assignment + Ship Method badges */}
-                  {(machine||j.assigned_to||j.ship_method)&&<div style={{display:'flex',gap:4,flexWrap:'wrap',marginBottom:6}}>
-                    {machine&&<span style={{fontSize:9,fontWeight:700,padding:'2px 6px',borderRadius:6,background:'#fef3c7',color:'#92400e'}}>🖨️ {machine.name}</span>}
-                    {j.assigned_to&&<span style={{fontSize:9,fontWeight:700,padding:'2px 6px',borderRadius:6,background:'#ede9fe',color:'#6d28d9'}}>👤 {j.assigned_to}</span>}
-                    {j.ship_method&&<span style={{fontSize:9,fontWeight:700,padding:'2px 6px',borderRadius:6,
+                  <div style={{fontSize:10,color:'#64748b',marginBottom:6}}>{j.deco_type?.replace(/_/g,' ')} · {j.soId} · {gCount} garment{gCount!==1?'s':''}</div>
+
+                  {/* Badges */}
+                  <div style={{display:'flex',gap:3,flexWrap:'wrap',marginBottom:6}}>
+                    <span style={{padding:'1px 5px',borderRadius:6,fontSize:8,fontWeight:700,background:SC[j.art_status]?.bg,color:SC[j.art_status]?.c}}>{j.art_status==='art_complete'?'✅ Art':j.art_status==='waiting_approval'?'⏳ Art':'🎨 Art'}</span>
+                    {machine&&<span style={{fontSize:8,fontWeight:700,padding:'1px 5px',borderRadius:6,background:'#fef3c7',color:'#92400e'}}>🖨️ {machine.name}</span>}
+                    {j.assigned_to&&<span style={{fontSize:8,fontWeight:700,padding:'1px 5px',borderRadius:6,background:'#ede9fe',color:'#6d28d9'}}>👤 {j.assigned_to}</span>}
+                    {j.ship_method&&<span style={{fontSize:8,fontWeight:700,padding:'1px 5px',borderRadius:6,
                       background:j.ship_method==='ship_customer'?'#dbeafe':j.ship_method==='rep_delivery'?'#dcfce7':j.ship_method==='customer_pickup'?'#fef3c7':'#f1f5f9',
                       color:j.ship_method==='ship_customer'?'#1e40af':j.ship_method==='rep_delivery'?'#166534':j.ship_method==='customer_pickup'?'#92400e':'#64748b'}}>
-                      {j.ship_method==='ship_customer'?'📦 Ship':j.ship_method==='rep_delivery'?'🚗 Rep Delivery':j.ship_method==='customer_pickup'?'🏫 Pickup':'⏸️ Hold'}</span>}
-                  </div>}
-                  {/* Garment count — prominent */}
-                  <div style={{display:'flex',gap:6,alignItems:'center',marginBottom:6}}>
-                    <div style={{background:'#dbeafe',borderRadius:6,padding:'4px 10px',display:'flex',alignItems:'center',gap:4}}>
-                      <span style={{fontSize:16,fontWeight:900,color:'#1e40af'}}>{gCount}</span>
-                      <span style={{fontSize:9,color:'#2563eb',fontWeight:600}}>garment{gCount!==1?'s':''}</span>
-                    </div>
-                    <div style={{flex:1,textAlign:'right'}}>
-                      <span style={{fontSize:13,fontWeight:800,color:pct>=100?'#166534':'#1e40af'}}>{j.fulfilled_units}/{j.total_units}</span>
-                      <span style={{fontSize:9,color:'#94a3b8',marginLeft:3}}>units</span>
-                    </div>
+                      {j.ship_method==='ship_customer'?'📦 Ship':j.ship_method==='rep_delivery'?'🚗 Rep':j.ship_method==='customer_pickup'?'🏫 Pickup':'⏸️ Hold'}</span>}
                   </div>
-                  <div style={{background:'#e2e8f0',borderRadius:4,height:5,marginBottom:4,overflow:'hidden'}}>
-                    <div style={{height:5,borderRadius:4,background:pct>=100?'#22c55e':pct>50?'#3b82f6':'#f59e0b',width:pct+'%'}}/></div>
-                  <div style={{display:'flex',justifyContent:'space-between',fontSize:10,color:'#64748b',marginBottom:6}}>
-                    <span>{j.rep}</span>
-                    {j.expected&&<span style={{color:j.daysOut!=null&&j.daysOut<=7?'#dc2626':'#64748b'}}>📅 {j.expected}</span>}
+
+                  {/* Units + progress */}
+                  <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
+                    <span style={{fontSize:13,fontWeight:800,color:pct>=100?'#166534':'#1e40af'}}>{j.fulfilled_units}/{j.total_units}</span>
+                    <div style={{flex:1,background:'#e2e8f0',borderRadius:4,height:5,overflow:'hidden'}}>
+                      <div style={{height:5,borderRadius:4,background:pct>=100?'#22c55e':pct>50?'#3b82f6':'#f59e0b',width:pct+'%'}}/></div>
+                    <span style={{fontSize:9,color:'#64748b'}}>{pct}%</span>
                   </div>
+
+                  {j.expected&&<div style={{fontSize:10,color:urgent?'#dc2626':'#64748b',marginBottom:6}}>📅 Due: {j.expected}{urgent?' — RUSH':''}  </div>}
+
+                  {/* Open SO link */}
+                  <div style={{fontSize:10,color:'#7c3aed',cursor:'pointer',marginBottom:6,textDecoration:'underline'}} onClick={e=>{e.stopPropagation();setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so.customer_id));setPg('orders')}}>→ Open {j.soId}</div>
+
                   {/* Move buttons */}
                   <div style={{display:'flex',gap:4,flexWrap:'wrap',borderTop:'1px solid #e2e8f0',paddingTop:6}}>
                     {col.id==='hold'&&<button className="btn btn-sm btn-primary" style={{fontSize:9,padding:'3px 8px'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'staging')}}>→ In Line</button>}
@@ -3173,7 +3183,8 @@ export default function App(){
                     {col.id==='completed'&&<><button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'3px 8px'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'in_process')}}>← Back</button><button className="btn btn-sm btn-primary" style={{fontSize:9,padding:'3px 8px',background:'#6d28d9',borderColor:'#6d28d9'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'shipped')}}>📦 Ship</button></>}
                     {col.id==='shipped'&&<button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'3px 8px'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'completed')}}>← Back</button>}
                   </div>
-                </div></div>})}
+                </div>}
+              </div>})}
           </div>})}
       </div>}
       {prodView==='list'&&<div className="card"><div className="card-body" style={{padding:0}}>
@@ -3624,37 +3635,70 @@ export default function App(){
   // INVOICES PAGE
   const CC_FEE_PCT=0.029;// 2.9% credit card surcharge
   const PAY_METHODS=[{id:'check',label:'Check',icon:'📝'},{id:'ach',label:'ACH/Wire',icon:'🏦'},{id:'venmo',label:'Venmo',icon:'💜'},{id:'zelle',label:'Zelle',icon:'⚡'},{id:'cash',label:'Cash',icon:'💵'},{id:'cc',label:'Credit Card (+2.9%)',icon:'💳'}];
-  const[invF,setInvF]=useState({search:'',status:'all',group:'list'});
-  const[invEdit,setInvEdit]=useState(null);// invoice object being edited
-  const[payModal,setPayModal]=useState(null);// {inv, amount, method, ref}
+  const[invF,setInvF]=useState({search:'',status:'all',group:'list',aging:'all',rep:'all'});
+  const[invSort,setInvSort]=useState({f:'due_date',d:'asc'});
+  const[invEdit,setInvEdit]=useState(null);
+  const[payModal,setPayModal]=useState(null);
 
   const rInvoices=()=>{
     const today=new Date();
-    const agingDays=(dateStr)=>{if(!dateStr)return 0;const d=new Date(dateStr.replace(/(\d{2})\/(\d{2})\/(\d{2})/,'20$3-$1-$2'));return Math.floor((today-d)/(1000*60*60*24))};
-    const dueDays=(dateStr)=>{if(!dateStr)return null;const d=new Date(dateStr.replace(/(\d{2})\/(\d{2})\/(\d{2})/,'20$3-$1-$2'));return Math.floor((d-today)/(1000*60*60*24))};
+    const parseD=(ds)=>{if(!ds)return null;const m=ds.match(/(\d{2})\/(\d{2})\/(\d{2})/);return m?new Date('20'+m[3],m[1]-1,m[2]):new Date(ds)};
+    const agingDays=(dateStr)=>{const d=parseD(dateStr);return d?Math.floor((today-d)/(1000*60*60*24)):0};
+    const dueDays=(dateStr)=>{const d=parseD(dateStr);return d?Math.floor((d-today)/(1000*60*60*24)):null};
+    const invSortFn=(f)=>setInvSort(s=>({f,d:s.f===f&&s.d==='asc'?'desc':'asc'}));
+    const sortIcon=(f)=>invSort.f===f?(invSort.d==='asc'?'▲':'▼'):'⇅';
 
-    let fi=[...invs];
+    // Enrich invoices with computed fields
+    let fi=invs.map(i=>{const age=agingDays(i.date);const dd=dueDays(i.due_date);const bal=i.total-i.paid;
+      const overdue=dd!==null&&dd<0&&i.status!=='paid';
+      const so=sos.find(s=>s.id===i.so_id);const rep=so?so.created_by:null;
+      return{...i,_age:age,_dd:dd,_bal:bal,_overdue:overdue,_rep:rep,_cname:cust.find(c=>c.id===i.customer_id)?.name||'Unknown'}});
+
+    // Filters
     if(invF.status==='open')fi=fi.filter(i=>i.status==='open'||i.status==='partial');
     else if(invF.status==='paid')fi=fi.filter(i=>i.status==='paid');
-    else if(invF.status==='overdue')fi=fi.filter(i=>(i.status==='open'||i.status==='partial')&&dueDays(i.due_date)<0);
-    if(invF.search){const s=invF.search.toLowerCase();fi=fi.filter(i=>(i.id||'').toLowerCase().includes(s)||(i.memo||'').toLowerCase().includes(s)||(cust.find(c=>c.id===i.customer_id)?.name||'').toLowerCase().includes(s))}
+    if(invF.aging==='30')fi=fi.filter(i=>i._age>=1&&i._age<=30&&i.status!=='paid');
+    else if(invF.aging==='60')fi=fi.filter(i=>i._age>=31&&i._age<=60&&i.status!=='paid');
+    else if(invF.aging==='90')fi=fi.filter(i=>i._age>=61&&i._age<=90&&i.status!=='paid');
+    else if(invF.aging==='120')fi=fi.filter(i=>i._age>90&&i.status!=='paid');
+    else if(invF.aging==='overdue')fi=fi.filter(i=>i._overdue);
+    if(invF.rep!=='all')fi=fi.filter(i=>i._rep===invF.rep);
+    if(invF.search){const s=invF.search.toLowerCase();fi=fi.filter(i=>(i.id||'').toLowerCase().includes(s)||(i.memo||'').toLowerCase().includes(s)||i._cname.toLowerCase().includes(s))}
 
-    const totalOpen=invs.filter(i=>i.status==='open'||i.status==='partial').reduce((a,i)=>a+(i.total-i.paid),0);
-    const totalOverdue=invs.filter(i=>(i.status==='open'||i.status==='partial')&&dueDays(i.due_date)<0).reduce((a,i)=>a+(i.total-i.paid),0);
+    // Sort
+    fi.sort((a,b)=>{let va,vb;
+      if(invSort.f==='id'){va=a.id;vb=b.id}
+      else if(invSort.f==='customer'){va=a._cname;vb=b._cname}
+      else if(invSort.f==='date'){va=parseD(a.date);vb=parseD(b.date)}
+      else if(invSort.f==='due_date'){va=parseD(a.due_date);vb=parseD(b.due_date)}
+      else if(invSort.f==='age'){va=a._age;vb=b._age}
+      else if(invSort.f==='total'){va=a.total;vb=b.total}
+      else if(invSort.f==='paid'){va=a.paid;vb=b.paid}
+      else if(invSort.f==='balance'){va=a._bal;vb=b._bal}
+      else if(invSort.f==='status'){va=a.status;vb=b.status}
+      else{va=a.id;vb=b.id}
+      if(va==null)va='';if(vb==null)vb='';
+      const cmp=va<vb?-1:va>vb?1:0;
+      return invSort.d==='asc'?cmp:-cmp;
+    });
+
+    // Stats (from all invs, not filtered)
+    const allOpen=invs.filter(i=>i.status==='open'||i.status==='partial');
+    const totalOpen=allOpen.reduce((a,i)=>a+(i.total-i.paid),0);
+    const totalOverdue=allOpen.filter(i=>dueDays(i.due_date)<0).reduce((a,i)=>a+(i.total-i.paid),0);
     const totalPaid=invs.filter(i=>i.status==='paid').reduce((a,i)=>a+i.paid,0);
-    const agingBuckets={current:0,d30:0,d60:0,d90:0,d90p:0};
-    invs.filter(i=>i.status==='open'||i.status==='partial').forEach(i=>{
-      const dd=dueDays(i.due_date);const bal=i.total-i.paid;
+    const agingBuckets={current:0,d30:0,d60:0,d90:0,d120p:0};
+    allOpen.forEach(i=>{const dd=dueDays(i.due_date);const bal=i.total-i.paid;
       if(dd>=0)agingBuckets.current+=bal;
       else if(dd>=-30)agingBuckets.d30+=bal;
       else if(dd>=-60)agingBuckets.d60+=bal;
       else if(dd>=-90)agingBuckets.d90+=bal;
-      else agingBuckets.d90p+=bal;
+      else agingBuckets.d120p+=bal;
     });
+    const agingCounts={d30:allOpen.filter(i=>agingDays(i.date)>=1&&agingDays(i.date)<=30).length,d60:allOpen.filter(i=>agingDays(i.date)>=31&&agingDays(i.date)<=60).length,d90:allOpen.filter(i=>agingDays(i.date)>=61&&agingDays(i.date)<=90).length,d120p:allOpen.filter(i=>agingDays(i.date)>90).length};
 
     const recordPayment=(inv,amount,method,ref)=>{
       const fee=method==='cc'?Math.round(amount*CC_FEE_PCT*100)/100:0;
-      const totalWithFee=amount+fee;
       const newPaid=inv.paid+amount;
       const newStatus=newPaid>=inv.total?'paid':newPaid>0?'partial':'open';
       const payment={amount,method,ref,date:new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'2-digit'}),cc_fee:fee};
@@ -3668,67 +3712,104 @@ export default function App(){
     const grouped={};
     fi.forEach(i=>{const cid=i.customer_id;if(!grouped[cid])grouped[cid]={customer:cust.find(c=>c.id===cid),invoices:[]};grouped[cid].invoices.push(i)});
 
+    const SH=({label,field,w})=><th style={{cursor:'pointer',userSelect:'none',width:w,whiteSpace:'nowrap'}} onClick={()=>invSortFn(field)}>
+      <span style={{display:'inline-flex',alignItems:'center',gap:3}}>{label}<span style={{fontSize:9,opacity:invSort.f===field?1:0.3}}>{sortIcon(field)}</span></span></th>;
+
+    const ageBadge=(age)=>{
+      if(age<=0)return null;
+      const color=age<=30?'#64748b':age<=60?'#d97706':age<=90?'#ea580c':'#dc2626';
+      const bg=age<=30?'#f1f5f9':age<=60?'#fef3c7':age<=90?'#ffedd5':'#fecaca';
+      return<span style={{padding:'2px 6px',borderRadius:8,fontSize:9,fontWeight:700,background:bg,color}}>{age}d</span>;
+    };
+
     return(<>
       {/* Stats */}
       <div className="stats-row">
-        <div className="stat-card" style={{cursor:'pointer',outline:invF.status==='all'?'2px solid #2563eb':'none',borderRadius:8}} onClick={()=>setInvF(f=>({...f,status:'all'}))}>
-          <div className="stat-label">Total Invoices</div><div className="stat-value">{invs.length}</div></div>
-        <div className="stat-card" style={{cursor:'pointer',outline:invF.status==='open'?'2px solid #d97706':'none',borderRadius:8}} onClick={()=>setInvF(f=>({...f,status:f.status==='open'?'all':'open'}))}>
-          <div className="stat-label">Open Balance</div><div className="stat-value" style={{color:'#d97706'}}>${totalOpen.toLocaleString()}</div></div>
-        <div className="stat-card" style={{cursor:'pointer',outline:invF.status==='overdue'?'2px solid #dc2626':'none',borderRadius:8}} onClick={()=>setInvF(f=>({...f,status:f.status==='overdue'?'all':'overdue'}))}>
+        <div className="stat-card" style={{cursor:'pointer',outline:invF.status==='all'&&invF.aging==='all'?'2px solid #2563eb':'none',borderRadius:8}} onClick={()=>setInvF(f=>({...f,status:'all',aging:'all'}))}>
+          <div className="stat-label">All Invoices</div><div className="stat-value">{invs.length}</div></div>
+        <div className="stat-card" style={{cursor:'pointer',outline:invF.status==='open'&&invF.aging==='all'?'2px solid #d97706':'none',borderRadius:8}} onClick={()=>setInvF(f=>({...f,status:'open',aging:'all'}))}>
+          <div className="stat-label">Open</div><div className="stat-value" style={{color:'#d97706'}}>${totalOpen.toLocaleString()}</div></div>
+        <div className="stat-card" style={{cursor:'pointer',outline:invF.aging==='overdue'?'2px solid #dc2626':'none',borderRadius:8}} onClick={()=>setInvF(f=>({...f,status:'all',aging:f.aging==='overdue'?'all':'overdue'}))}>
           <div className="stat-label">Overdue</div><div className="stat-value" style={{color:'#dc2626'}}>${totalOverdue.toLocaleString()}</div></div>
-        <div className="stat-card" style={{cursor:'pointer',outline:invF.status==='paid'?'2px solid #166534':'none',borderRadius:8}} onClick={()=>setInvF(f=>({...f,status:f.status==='paid'?'all':'paid'}))}>
+        <div className="stat-card" style={{cursor:'pointer',outline:invF.status==='paid'?'2px solid #166534':'none',borderRadius:8}} onClick={()=>setInvF(f=>({...f,status:'paid',aging:'all'}))}>
           <div className="stat-label">Paid</div><div className="stat-value" style={{color:'#166534'}}>${totalPaid.toLocaleString()}</div></div>
       </div>
 
-      {/* Aging Summary */}
+      {/* Aging Summary — clickable to filter */}
       <div className="card" style={{marginBottom:12}}><div className="card-body" style={{padding:'12px 16px'}}>
-        <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:8}}>AGING SUMMARY</div>
+        <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:8}}>AGING SUMMARY <span style={{fontWeight:400,fontSize:10}}>(click to filter)</span></div>
         <div style={{display:'flex',gap:4}}>
-          {[['Current','current','#166534'],['1-30 Days','d30','#d97706'],['31-60 Days','d60','#ea580c'],['61-90 Days','d90','#dc2626'],['90+ Days','d90p','#991b1b']].map(([label,key,color])=>
-            <div key={key} style={{flex:1,padding:'8px 12px',background:agingBuckets[key]>0?color+'10':'#f8fafc',borderRadius:6,border:`1px solid ${agingBuckets[key]>0?color+'40':'#e2e8f0'}`,textAlign:'center'}}>
+          {[['Current','current','#166534','all'],['1-30 Days','d30','#d97706','30'],['31-60 Days','d60','#ea580c','60'],['61-90 Days','d90','#dc2626','90'],['90+ Days','d120p','#991b1b','120']].map(([label,key,color,fKey])=>
+            <div key={key} style={{flex:1,padding:'8px 12px',background:invF.aging===fKey?color+'20':agingBuckets[key]>0?color+'08':'#f8fafc',borderRadius:6,
+              border:invF.aging===fKey?`2px solid ${color}`:`1px solid ${agingBuckets[key]>0?color+'40':'#e2e8f0'}`,textAlign:'center',cursor:'pointer'}}
+              onClick={()=>setInvF(f=>({...f,aging:f.aging===fKey?'all':fKey,status:fKey==='all'?f.status:'all'}))}>
               <div style={{fontSize:10,color:'#64748b',fontWeight:600}}>{label}</div>
               <div style={{fontSize:16,fontWeight:800,color:agingBuckets[key]>0?color:'#94a3b8'}}>${agingBuckets[key].toLocaleString()}</div>
+              {key!=='current'&&<div style={{fontSize:9,color:'#94a3b8'}}>{agingCounts[key]||0} inv</div>}
             </div>)}
         </div>
       </div></div>
 
       {/* Filter bar */}
-      <div style={{display:'flex',gap:8,marginBottom:12,alignItems:'center'}}>
-        <div className="search-bar" style={{flex:1,maxWidth:300}}><Icon name="search"/><input placeholder="Search invoices, customers..." value={invF.search} onChange={e=>setInvF(f=>({...f,search:e.target.value}))}/></div>
+      <div style={{display:'flex',gap:8,marginBottom:12,alignItems:'center',flexWrap:'wrap'}}>
+        <div className="search-bar" style={{flex:1,minWidth:200,maxWidth:300}}><Icon name="search"/><input placeholder="Search invoices, customers..." value={invF.search} onChange={e=>setInvF(f=>({...f,search:e.target.value}))}/></div>
+        <select className="form-select" style={{width:130,fontSize:11}} value={invF.rep} onChange={e=>setInvF(f=>({...f,rep:e.target.value}))}>
+          <option value="all">All Reps</option>{REPS.filter(r=>r.role==='rep').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
         <div style={{display:'flex',gap:4}}>
           {[['list','📋 List'],['customer','👥 By Customer']].map(([v,l])=>
             <button key={v} className={`btn btn-sm ${invF.group===v?'btn-primary':'btn-secondary'}`} onClick={()=>setInvF(f=>({...f,group:v}))}>{l}</button>)}
         </div>
+        {(invF.status!=='all'||invF.aging!=='all'||invF.rep!=='all'||invF.search)&&
+          <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>setInvF({search:'',status:'all',group:invF.group,aging:'all',rep:'all'})}>✕ Clear Filters</button>}
       </div>
+
+      {/* Results count */}
+      <div style={{fontSize:11,color:'#64748b',marginBottom:6}}>{fi.length} invoice{fi.length!==1?'s':''} · Balance: ${fi.reduce((a,i)=>a+i._bal,0).toLocaleString()}</div>
 
       {/* List view */}
       {invF.group==='list'&&<div className="card"><div className="card-body" style={{padding:0}}>
         {fi.length===0?<div className="empty" style={{padding:30}}>No invoices match filters</div>:
-        <table><thead><tr><th>Invoice</th><th>Customer</th><th>SO</th><th>Date</th><th>Due</th><th>Total</th><th>Paid</th><th>Balance</th><th>Status</th><th>Action</th></tr></thead>
-        <tbody>{fi.map(inv=>{const c=cust.find(x=>x.id===inv.customer_id);const bal=inv.total-inv.paid;const dd=dueDays(inv.due_date);const overdue=dd<0&&inv.status!=='paid';
-          return<tr key={inv.id} style={{background:overdue?'#fef2f2':undefined}}>
+        <table><thead><tr>
+          <SH label="Invoice" field="id"/>
+          <SH label="Customer" field="customer"/>
+          <th style={{fontSize:11}}>SO</th>
+          <th style={{fontSize:11}}>Rep</th>
+          <SH label="Date" field="date"/>
+          <SH label="Age" field="age" w={50}/>
+          <SH label="Due" field="due_date"/>
+          <SH label="Total" field="total"/>
+          <SH label="Paid" field="paid"/>
+          <SH label="Balance" field="balance"/>
+          <SH label="Status" field="status"/>
+          <th>Action</th>
+        </tr></thead>
+        <tbody>{fi.map(inv=>{
+          const repObj=REPS.find(r=>r.id===inv._rep);
+          return<tr key={inv.id} style={{background:inv._overdue?'#fef2f2':undefined}}>
             <td style={{fontWeight:700,color:'#1e40af',fontSize:12}}>{inv.id}</td>
-            <td style={{fontSize:12}}>{c?.name||'Unknown'}</td>
-            <td style={{fontSize:11,color:'#64748b'}}>{inv.so_id||'—'}</td>
+            <td style={{fontSize:12}}>{inv._cname}</td>
+            <td style={{fontSize:11,color:'#7c3aed',cursor:inv.so_id?'pointer':'default',textDecoration:inv.so_id?'underline':'none'}}
+              onClick={()=>{if(inv.so_id){const so=sos.find(s=>s.id===inv.so_id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')}}}}>{inv.so_id||'—'}</td>
+            <td style={{fontSize:10,color:'#64748b'}}>{repObj?.name||'—'}</td>
             <td style={{fontSize:11}}>{inv.date}</td>
-            <td style={{fontSize:11,color:overdue?'#dc2626':'#64748b',fontWeight:overdue?700:400}}>{inv.due_date}{overdue?' ⚠️':''}</td>
-            <td style={{fontWeight:600}}>${inv.total.toLocaleString()}</td>
-            <td style={{color:'#166534'}}>${inv.paid.toLocaleString()}{inv.cc_fee>0?<span style={{fontSize:9,color:'#94a3b8'}}> (+${inv.cc_fee.toFixed(2)} fee)</span>:''}</td>
-            <td style={{fontWeight:700,color:bal>0?'#dc2626':'#166534'}}>${bal.toLocaleString()}</td>
+            <td style={{textAlign:'center'}}>{ageBadge(inv._age)}</td>
+            <td style={{fontSize:11,color:inv._overdue?'#dc2626':'#64748b',fontWeight:inv._overdue?700:400}}>{inv.due_date||'—'}{inv._overdue?' ⚠️':''}</td>
+            <td style={{fontWeight:600,textAlign:'right'}}>${inv.total.toLocaleString()}</td>
+            <td style={{color:'#166534',textAlign:'right'}}>${inv.paid.toLocaleString()}{inv.cc_fee>0?<span style={{fontSize:8,color:'#94a3b8'}}> +${inv.cc_fee.toFixed(0)}fee</span>:''}</td>
+            <td style={{fontWeight:700,color:inv._bal>0?'#dc2626':'#166534',textAlign:'right'}}>${inv._bal.toLocaleString()}</td>
             <td><span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,
-              background:inv.status==='paid'?'#dcfce7':inv.status==='partial'?'#fef3c7':overdue?'#fecaca':'#dbeafe',
-              color:inv.status==='paid'?'#166534':inv.status==='partial'?'#92400e':overdue?'#991b1b':'#1e40af'}}>
-              {inv.status==='paid'?'Paid':inv.status==='partial'?'Partial':overdue?'Overdue':'Open'}</span></td>
+              background:inv.status==='paid'?'#dcfce7':inv.status==='partial'?'#fef3c7':inv._overdue?'#fecaca':'#dbeafe',
+              color:inv.status==='paid'?'#166534':inv.status==='partial'?'#92400e':inv._overdue?'#991b1b':'#1e40af'}}>
+              {inv.status==='paid'?'Paid':inv.status==='partial'?'Partial':inv._overdue?'Overdue':'Open'}</span></td>
             <td>{inv.status!=='paid'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#166534',color:'white',border:'none'}}
-              onClick={()=>setPayModal({inv,amount:bal,method:'check',ref:''})}>💰 Record Payment</button>}</td>
+              onClick={()=>setPayModal({inv,amount:inv._bal,method:'check',ref:''})}>💰 Pay</button>}</td>
           </tr>})}</tbody></table>}
       </div></div>}
 
       {/* Customer grouped view */}
       {invF.group==='customer'&&Object.entries(grouped).map(([cid,g])=>{
-        const openBal=g.invoices.filter(i=>i.status!=='paid').reduce((a,i)=>a+(i.total-i.paid),0);
-        const overdueAmt=g.invoices.filter(i=>(i.status==='open'||i.status==='partial')&&dueDays(i.due_date)<0).reduce((a,i)=>a+(i.total-i.paid),0);
+        const openBal=g.invoices.filter(i=>i.status!=='paid').reduce((a,i)=>a+i._bal,0);
+        const overdueAmt=g.invoices.filter(i=>i._overdue).reduce((a,i)=>a+i._bal,0);
         return<div key={cid} className="card" style={{marginBottom:12}}>
           <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
             <div><h2 style={{margin:0}}>{g.customer?.name||'Unknown Customer'}</h2>
@@ -3739,23 +3820,25 @@ export default function App(){
             </div>
           </div>
           <div className="card-body" style={{padding:0}}>
-            <table><thead><tr><th>Invoice</th><th>SO</th><th>Memo</th><th>Date</th><th>Due</th><th>Total</th><th>Balance</th><th>Status</th><th>Action</th></tr></thead>
-            <tbody>{g.invoices.map(inv=>{const bal=inv.total-inv.paid;const dd=dueDays(inv.due_date);const overdue=dd<0&&inv.status!=='paid';
-              return<tr key={inv.id} style={{background:overdue?'#fef2f2':undefined}}>
+            <table><thead><tr><th>Invoice</th><th>SO</th><th>Memo</th><th>Date</th><th>Age</th><th>Due</th><th>Total</th><th>Balance</th><th>Status</th><th></th></tr></thead>
+            <tbody>{g.invoices.map(inv=>
+              <tr key={inv.id} style={{background:inv._overdue?'#fef2f2':undefined}}>
                 <td style={{fontWeight:700,color:'#1e40af',fontSize:12}}>{inv.id}</td>
-                <td style={{fontSize:11,color:'#64748b'}}>{inv.so_id||'—'}</td>
+                <td style={{fontSize:11,color:'#7c3aed',cursor:inv.so_id?'pointer':'default',textDecoration:inv.so_id?'underline':'none'}}
+                  onClick={()=>{if(inv.so_id){const so=sos.find(s=>s.id===inv.so_id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')}}}}>{inv.so_id||'—'}</td>
                 <td style={{fontSize:11}}>{inv.memo}</td>
                 <td style={{fontSize:11}}>{inv.date}</td>
-                <td style={{fontSize:11,color:overdue?'#dc2626':'#64748b',fontWeight:overdue?700:400}}>{inv.due_date}{overdue?' ⚠️':''}</td>
-                <td style={{fontWeight:600}}>${inv.total.toLocaleString()}</td>
-                <td style={{fontWeight:700,color:bal>0?'#dc2626':'#166534'}}>${bal.toLocaleString()}</td>
+                <td style={{textAlign:'center'}}>{ageBadge(inv._age)}</td>
+                <td style={{fontSize:11,color:inv._overdue?'#dc2626':'#64748b',fontWeight:inv._overdue?700:400}}>{inv.due_date||'—'}{inv._overdue?' ⚠️':''}</td>
+                <td style={{fontWeight:600,textAlign:'right'}}>${inv.total.toLocaleString()}</td>
+                <td style={{fontWeight:700,color:inv._bal>0?'#dc2626':'#166534',textAlign:'right'}}>${inv._bal.toLocaleString()}</td>
                 <td><span style={{padding:'2px 6px',borderRadius:8,fontSize:9,fontWeight:600,
-                  background:inv.status==='paid'?'#dcfce7':inv.status==='partial'?'#fef3c7':overdue?'#fecaca':'#dbeafe',
-                  color:inv.status==='paid'?'#166534':inv.status==='partial'?'#92400e':overdue?'#991b1b':'#1e40af'}}>
-                  {inv.status==='paid'?'Paid':inv.status==='partial'?'Partial':overdue?'Overdue':'Open'}</span></td>
+                  background:inv.status==='paid'?'#dcfce7':inv.status==='partial'?'#fef3c7':inv._overdue?'#fecaca':'#dbeafe',
+                  color:inv.status==='paid'?'#166534':inv.status==='partial'?'#92400e':inv._overdue?'#991b1b':'#1e40af'}}>
+                  {inv.status==='paid'?'Paid':inv.status==='partial'?'Partial':inv._overdue?'Overdue':'Open'}</span></td>
                 <td>{inv.status!=='paid'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#166534',color:'white',border:'none'}}
-                  onClick={()=>setPayModal({inv,amount:bal,method:'check',ref:''})}>💰 Pay</button>}</td>
-              </tr>})}</tbody></table>
+                  onClick={()=>setPayModal({inv,amount:inv._bal,method:'check',ref:''})}>💰 Pay</button>}</td>
+              </tr>)}</tbody></table>
             {/* Payment history */}
             {g.invoices.some(i=>(i.payments||[]).length>0)&&<div style={{padding:'8px 16px',borderTop:'1px solid #f1f5f9'}}>
               <div style={{fontSize:10,fontWeight:700,color:'#64748b',marginBottom:4}}>PAYMENT HISTORY</div>
