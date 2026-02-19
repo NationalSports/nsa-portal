@@ -26,10 +26,12 @@ function dP(d,q,artFiles,cq){
   if(d.type==='screen_print'){const u=d.underbase?1+SP.ub:1;return{sell:d.sell_override||rQ(spP(q,d.colors||1,true)*u),cost:rQ(spP(q,d.colors||1,false)*u)}}
   if(d.type==='embroidery')return{sell:d.sell_override||emP(d.stitches||8000,q,true),cost:emP(d.stitches||8000,q,false)};
   // Numbers
-  if(d.kind==='numbers'||d.type==='number_press')return{sell:d.sell_override||npP(q,d.two_color,true),cost:npP(q,d.two_color,false)};
+  if(d.kind==='numbers'||d.type==='number_press'){const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:q;return{sell:d.sell_override||npP(nq||1,d.two_color,true),cost:npP(nq||1,d.two_color,false)}};
   if(d.type==='dtf'){const t=DTF[d.dtf_size||0];return{sell:d.sell_override||t.sell,cost:t.cost}}return{sell:0,cost:0}}
 const SC={waiting_art:{bg:'#fef3c7',c:'#92400e'},in_production:{bg:'#dbeafe',c:'#1e40af'},ready_ship:{bg:'#dcfce7',c:'#166534'},shipped:{bg:'#ede9fe',c:'#6d28d9'},completed:{bg:'#f1f5f9',c:'#475569'}};
 
+// PICKS (demo)
+const D_PICKS=[{id:'IF-4001',so_id:'SO-1042',status:'sent',items:1},{id:'IF-4002',so_id:'SO-1045',status:'pending',items:1}];
 // DATA
 const D_C=[
 {id:'c1',parent_id:null,name:'Orange Lutheran High School',alpha_tag:'OLu',contacts:[{name:'Athletic Director',email:'athletics@orangelutheran.org',phone:'714-555-0100',role:'Athletic Director'},{name:'Janet Wu',email:'jwu@orangelutheran.org',phone:'714-555-0109',role:'Accounting'}],billing_address_line1:'2222 N Santiago Blvd',billing_city:'Orange',billing_state:'CA',billing_zip:'92867',shipping_address_line1:'2222 N Santiago Blvd',shipping_city:'Orange',shipping_state:'CA',shipping_zip:'92867',adidas_ua_tier:'A',catalog_markup:1.65,payment_terms:'net30',tax_rate:0.0775,primary_rep_id:'r1',is_active:true,_oe:1,_os:2,_oi:1,_ob:4200},
@@ -127,7 +129,9 @@ function SendModal({isOpen,onClose,estimate,customer,onSend}){
 function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack,onConvertSO,cu,nf,msgs,onMsg}){
   const isE=mode==='estimate';const isSO=mode==='so';
   const[o,setO]=useState(order);const[cust,setCust]=useState(ic);const[pS,setPS]=useState('');const[showAdd,setShowAdd]=useState(false);
-  const[tab,setTab]=useState('items');const[saved,setSaved]=useState(!!order.customer_id);const[showSend,setShowSend]=useState(false);const[showPick,setShowPick]=useState(false);const[showPO,setShowPO]=useState(null);
+  const[tab,setTab]=useState('items');const[dirty,setDirty]=useState(false);
+    const origRef=React.useRef(JSON.stringify(o));
+    const markDirty=()=>setDirty(true);const[saved,setSaved]=useState(!!order.customer_id);const[showSend,setShowSend]=useState(false);const[showPick,setShowPick]=useState(false);const[pickId]=useState(()=>'IF-'+String(4000+Math.floor(Math.random()*1000)));const[showPO,setShowPO]=useState(null);
   const[newAddr,setNewAddr]=useState('');const[showNA,setShowNA]=useState(false);const[showSzPicker,setShowSzPicker]=useState(null);const[showCustom,setShowCustom]=useState(false);const[custItem,setCustItem]=useState({vendor_id:'',name:'',sku:'CUSTOM',nsa_cost:0,unit_sell:0,color:''});
   const sv=(k,v)=>setO(e=>({...e,[k]:v,updated_at:new Date().toLocaleString()}));
   const isAU=b=>b==='Adidas'||b==='Under Armour'||b==='New Balance';const tD={A:0.4,B:0.35,C:0.3};
@@ -159,7 +163,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
   const statusFlow=['waiting_art','in_production','ready_ship','shipped','completed'];
 
   return(<div>
-    <button className="btn btn-secondary" onClick={onBack} style={{marginBottom:12}}><Icon name="back" size={14}/> {isE?'All Estimates':'All Sales Orders'}</button>
+    <button className="btn btn-secondary" onClick={()=>{if(dirty&&!window.confirm('You have unsaved changes. Leave without saving?'))return;onBack()}} style={{marginBottom:12}}><Icon name="back" size={14}/> {isE?'All Estimates':'All Sales Orders'}</button>
     {/* HEADER */}
     <div className="card" style={{marginBottom:16}}><div style={{padding:'16px 20px'}}>
       <div style={{display:'flex',gap:16,alignItems:'flex-start',flexWrap:'wrap'}}>
@@ -181,7 +185,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         <div style={{flex:1,minWidth:180}}><label className="form-label">Memo</label><input className="form-input" value={o.memo} onChange={e=>sv('memo',e.target.value)} style={{fontSize:14}}/></div>
         {isE&&<div style={{width:70}}><label className="form-label">Markup</label><input className="form-input" type="number" step="0.05" value={o.default_markup} onChange={e=>{const m=parseFloat(e.target.value)||1.65;sv('default_markup',m);sv('items',o.items.map(it=>isAU(it.brand)?it:{...it,unit_sell:rQ(it.nsa_cost*m)}))}}/></div>}
         {isSO&&<div style={{width:120}}><label className="form-label">Expected</label><input className="form-input" type="date" value={o.expected_date||''} onChange={e=>sv('expected_date',e.target.value)}/></div>}
-        <button className="btn btn-primary" onClick={()=>{onSave(o);setSaved(true);nf(`${isE?'Estimate':'SO'} saved`)}}><Icon name="check" size={14}/> Save</button>
+        <button className="btn btn-primary" onClick={()=>{onSave(o);setSaved(true);setDirty(false);nf(`${isE?'Estimate':'SO'} saved`)}} style={{padding:'10px 28px',fontSize:16,fontWeight:800}}><Icon name="check" size={16}/> Save</button>
         {isE&&saved&&o.status!=='approved'&&o.status!=='converted'&&<button className="btn btn-secondary" onClick={()=>setShowSend(true)}><Icon name="send" size={14}/> Send</button>}
         {isE&&o.status==='approved'&&<button className="btn btn-primary" style={{background:'#7c3aed'}} onClick={()=>onConvertSO(o)}><Icon name="box" size={14}/> Convert to SO</button>}
       </div>
@@ -526,10 +530,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       </div></div>})()}
 
         {showPick&&<div className="modal-overlay" onClick={()=>setShowPick(false)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:800,maxHeight:'90vh',overflow:'auto'}}>
-      <div className="modal-header"><h2>Pick Ticket — {o.id}</h2><button className="modal-close" onClick={()=>setShowPick(false)}>x</button></div>
+      <div className="modal-header"><h2>Pick Ticket — {pickId}</h2><button className="modal-close" onClick={()=>setShowPick(false)}>x</button></div>
       <div className="modal-body" id="pick-ticket-content">
         <div style={{display:'flex',justifyContent:'space-between',marginBottom:16,paddingBottom:12,borderBottom:'2px solid #0f172a'}}>
           <div><div style={{fontSize:20,fontWeight:800}}>NATIONAL SPORTS APPAREL</div><div style={{fontSize:12,color:'#64748b'}}>Pick Ticket</div></div>
+          <div style={{textAlign:'right'}}><div style={{fontSize:18,fontWeight:800,color:'#1e40af'}}>{pickId}</div>
           <div style={{textAlign:'right'}}><div style={{fontSize:18,fontWeight:800,color:'#1e40af'}}>{o.id}</div><div style={{fontSize:12}}>{new Date().toLocaleDateString()}</div></div></div>
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
           <div><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase'}}>Customer</div><div style={{fontSize:14,fontWeight:700}}>{cust?.name}</div><div style={{fontSize:12,color:'#64748b'}}>{cust?.alpha_tag}</div></div>
@@ -539,8 +544,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           return<div key={i} style={{marginBottom:16,padding:12,border:'1px solid #e2e8f0',borderRadius:6}}>
             <div style={{display:'flex',justifyContent:'space-between',marginBottom:8}}><div><span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',marginRight:8}}>{it.sku}</span><strong>{it.name}</strong> — {it.color}</div><div style={{fontWeight:800}}>Qty: {q}</div></div>
             <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}><thead><tr style={{borderBottom:'2px solid #0f172a'}}>{szList.map(([sz])=><th key={sz} style={{padding:'4px 8px',textAlign:'center',minWidth:40}}>{sz}</th>)}<th style={{padding:'4px 8px'}}>Total</th></tr></thead>
-            <tbody><tr style={{fontSize:10,color:'#64748b'}}>{szList.map(([sz,v])=><td key={sz} style={{padding:'2px 8px',textAlign:'center'}}>need: {v}</td>)}<td/></tr>
-            <tr>{szList.map(([sz,v])=><td key={sz} style={{padding:'4px 8px',textAlign:'center'}}><input style={{width:36,textAlign:'center',border:'1px solid #d1d5db',borderRadius:3,padding:'3px',fontSize:14,fontWeight:700}} defaultValue={v}/></td>)}<td style={{padding:'4px 8px',textAlign:'center',fontWeight:800,fontSize:14}}>{q}</td></tr>
+            <tbody><tr style={{fontSize:10,color:'#64748b'}}>{szList.map(([sz,v])=>{const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);const inv=p?._inv?.[sz]||0;const alreadyPicked=(item.pick_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const alreadyPO=(item.po_lines||[]).reduce((a,po)=>a+(po[sz]||0),0);const open=Math.max(0,v-alreadyPicked-alreadyPO);return<td key={sz} style={{padding:'2px 8px',textAlign:'center'}}>open: {open}</td>})}<td/></tr>
+            <tr>{szList.map(([sz,v])=>{const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);const inv=p?._inv?.[sz]||0;const alreadyPicked=(item.pick_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const alreadyPO=(item.po_lines||[]).reduce((a,po)=>a+(po[sz]||0),0);const open=Math.max(0,v-alreadyPicked-alreadyPO);const pick=Math.min(open,inv);return<td key={sz} style={{padding:'4px 8px',textAlign:'center'}}><input style={{width:36,textAlign:'center',border:pick<open?'2px solid #f59e0b':'1px solid #d1d5db',borderRadius:3,padding:'3px',fontSize:14,fontWeight:700,background:pick<open?'#fef3c7':'white'}} defaultValue={pick}/></td>})}<td style={{padding:'4px 8px',textAlign:'center',fontWeight:800,fontSize:14}}>{q}</td></tr>
             {it.decorations.some(d=>d.kind==='numbers')&&<tr style={{borderTop:'1px solid #e2e8f0'}}>{szList.map(([sz])=>{const nums=it.decorations.find(d=>d.kind==='numbers');const r=nums?.roster?.[sz]||[];return<td key={sz} style={{padding:'4px 8px',textAlign:'center',fontSize:10,color:'#7c3aed'}}>{r.filter(Boolean).join(', ')}</td>})}<td/></tr>}
             </tbody></table>
             {it.decorations.map((d,di)=>{const artF=d.kind==='art'?af.find(f=>f.id===d.art_file_id):null;
@@ -549,7 +554,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                 :<span>#️⃣ Numbers — {d.num_method?.replace('_',' ')} {d.num_size} @ {d.position} {d.two_color&&'(2-clr)'}</span>}</div>})}
           </div>})}
       </div>
-      <div className="modal-footer"><button className="btn btn-secondary" onClick={()=>setShowPick(false)}>Close</button><button className="btn btn-primary" onClick={()=>{window.print()}}>🖨️ Print</button></div>
+      <div className="modal-footer"><button className="btn btn-secondary" onClick={()=>setShowPick(false)}>Close</button><button className="btn btn-secondary" onClick={()=>{window.print()}}>🖨️ Print</button><button className="btn btn-primary" onClick={()=>{setShowPick(false);nf(pickId+' sent to warehouse')}} style={{padding:'8px 20px',fontWeight:700}}>📦 Send to Warehouse</button></div>
     </div></div>}
   </div>);
 }
