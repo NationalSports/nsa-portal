@@ -281,13 +281,14 @@ function calcSOStatus(ord){
   return'waiting_receive';
 }
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack,onConvertSO,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack,onConvertSO,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv}){
   const isE=mode==='estimate';const isSO=mode==='so';
   const[o,setO]=useState(order);const[cust,setCust]=useState(ic);const[pS,setPS]=useState('');const[showAdd,setShowAdd]=useState(false);
   const[tab,setTab]=useState('items');const[dirty,setDirty]=useState(false);const[selJob,setSelJob]=useState(null);const[jobNote,setJobNote]=useState('');
     const origRef=React.useRef(JSON.stringify(o));
     const markDirty=()=>setDirty(true);const[saved,setSaved]=useState(!!order.customer_id);const[showSend,setShowSend]=useState(false);const[showPick,setShowPick]=useState(false);const[pickId,setPickId]=useState(()=>'IF-'+String(4000+Math.floor(Math.random()*1000)));const[showPO,setShowPO]=useState(null);const[poCounter,setPOCounter]=useState(()=>3001+Math.floor(Math.random()*100));
   const[showFirmReq,setShowFirmReq]=useState(false);const[firmReqDate,setFirmReqDate]=useState('');const[firmReqNote,setFirmReqNote]=useState('');
+  const[showInvCreate,setShowInvCreate]=useState(false);const[invSelItems,setInvSelItems]=useState([]);const[invMemo,setInvMemo]=useState('');const[invType,setInvType]=useState('deposit');
   // Sync dirty state to parent dirtyRef
   React.useEffect(()=>{if(dirtyRef)dirtyRef.current=dirty},[dirty,dirtyRef]);
   // Adjust inventory when pick is pulled or un-pulled
@@ -390,6 +391,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       </div>
       {isSO&&<div style={{display:'flex',gap:6,marginTop:8}}>
         <button className="btn btn-secondary" onClick={()=>setShowPO('select')}><Icon name="cart" size={14}/> Create PO</button>
+        <button className="btn btn-secondary" style={{color:'#dc2626',borderColor:'#fca5a5'}} onClick={()=>{
+          setInvSelItems(safeItems(o).map((_,i)=>i));setInvMemo(o.memo||'');setInvType('deposit');setShowInvCreate(true);
+        }}><Icon name="dollar" size={14}/> Create Invoice</button>
       </div>}
       {/* SHIPPING */}
       <div style={{display:'flex',gap:12,marginTop:12,alignItems:'end',flexWrap:'wrap',borderTop:'1px solid #f1f5f9',paddingTop:12}}>
@@ -777,6 +781,125 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         }}>📌 Send Request to GM</button>
       </div>
     </div></div>}
+
+    {/* CREATE INVOICE MODAL */}
+    {showInvCreate&&(()=>{
+      const items=safeItems(o);
+      const selTotals=invSelItems.reduce((acc,idx)=>{
+        const it=items[idx];if(!it)return acc;
+        const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
+        const rev=qty*safeNum(it.unit_sell);
+        // Deco cost per item
+        let decoRev=0;
+        safeDecos(it).forEach(d=>{
+          if(d.kind==='art'&&d.art_file_id){
+            const artF=safeArt(o).find(a=>a.id===d.art_file_id);
+            const dp=dP(d,qty,artF?[artF]:[],qty);
+            decoRev+=qty*dp.sell;
+          } else if(d.kind==='numbers'){
+            const dp=dP(d,qty,[],qty);
+            decoRev+=qty*dp.sell;
+          }
+        });
+        return{items:acc.items+1,units:acc.units+qty,subtotal:acc.subtotal+rev+decoRev};
+      },{items:0,units:0,subtotal:0});
+      const invShip=invSelItems.length===items.length?totals.ship:0;
+      const invTax=invSelItems.length===items.length?totals.tax:0;
+      const invTotal=selTotals.subtotal+invShip+invTax;
+      const pctOfTotal=totals.rev>0?Math.round(selTotals.subtotal/totals.rev*100):0;
+
+      return<div className="modal-overlay" onClick={()=>setShowInvCreate(false)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:600}}>
+        <div className="modal-header"><h2>💰 Create Invoice — {o.id}</h2><button className="modal-close" onClick={()=>setShowInvCreate(false)}>×</button></div>
+        <div className="modal-body">
+          <div style={{padding:10,background:'#f8fafc',borderRadius:6,marginBottom:12}}>
+            <div style={{fontWeight:700,color:'#1e40af'}}>{o.id}</div>
+            <div style={{fontSize:12,color:'#64748b'}}>{cust?.name} — {o.memo}</div>
+            <div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>Order total: ${totals.total.toLocaleString()}</div>
+          </div>
+
+          {/* Invoice type */}
+          <div style={{marginBottom:12}}>
+            <label className="form-label">Invoice Type</label>
+            <div style={{display:'flex',gap:6}}>
+              {[['deposit','Deposit'],['progress','Progress'],['final','Final'],['custom','Custom']].map(([v,l])=>
+                <button key={v} className={`btn btn-sm ${invType===v?'btn-primary':'btn-secondary'}`} onClick={()=>setInvType(v)}>{l}</button>)}
+            </div>
+          </div>
+
+          {/* Memo */}
+          <div style={{marginBottom:12}}>
+            <label className="form-label">Invoice Memo</label>
+            <input className="form-input" value={invMemo} onChange={e=>setInvMemo(e.target.value)} placeholder="e.g., Baseball Deposit 50%"/>
+          </div>
+
+          {/* Item selection with checkboxes */}
+          <div style={{marginBottom:12}}>
+            <label className="form-label">Items to Invoice</label>
+            <div style={{display:'flex',gap:4,marginBottom:8}}>
+              <button className="btn btn-sm btn-secondary" onClick={()=>setInvSelItems(items.map((_,i)=>i))}>Select All</button>
+              <button className="btn btn-sm btn-secondary" onClick={()=>setInvSelItems([])}>Clear</button>
+            </div>
+            <div style={{border:'1px solid #e2e8f0',borderRadius:8,overflow:'hidden'}}>
+              {items.map((it,idx)=>{
+                const sel=invSelItems.includes(idx);
+                const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
+                const lineRev=qty*safeNum(it.unit_sell);
+                let lineDeco=0;
+                safeDecos(it).forEach(d=>{const dp2=dP(d,qty,safeArt(o),qty);lineDeco+=qty*dp2.sell});
+                const lineTotal=lineRev+lineDeco;
+                return<div key={idx} style={{padding:'10px 14px',borderBottom:idx<items.length-1?'1px solid #f1f5f9':'none',display:'flex',alignItems:'center',gap:10,cursor:'pointer',background:sel?'#eff6ff':'white'}} onClick={()=>setInvSelItems(sel?invSelItems.filter(i=>i!==idx):[...invSelItems,idx])}>
+                  <input type="checkbox" checked={sel} readOnly style={{accentColor:'#2563eb',width:16,height:16}}/>
+                  <div style={{flex:1}}>
+                    <div style={{fontWeight:600,fontSize:13}}><span style={{fontFamily:'monospace',color:'#1e40af'}}>{it.sku||'—'}</span> {safeStr(it.name)||'Item'}</div>
+                    <div style={{fontSize:11,color:'#64748b'}}>{safeStr(it.color)||'—'} · {qty} units · ${safeNum(it.unit_sell).toFixed(2)}/ea{lineDeco>0?' + $'+lineDeco.toFixed(2)+' deco':''}</div>
+                  </div>
+                  <div style={{fontWeight:700,fontSize:13,color:sel?'#1e40af':'#94a3b8'}}>${lineTotal.toFixed(2)}</div>
+                </div>})}
+            </div>
+          </div>
+
+          {/* Summary */}
+          <div style={{background:'#f8fafc',borderRadius:8,padding:14}}>
+            <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
+              <span style={{fontSize:12,color:'#64748b'}}>Selected items</span>
+              <span style={{fontSize:12,fontWeight:600}}>{selTotals.items} items · {selTotals.units} units</span>
+            </div>
+            <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
+              <span style={{fontSize:12,color:'#64748b'}}>Line items subtotal</span>
+              <span style={{fontSize:12,fontWeight:600}}>${selTotals.subtotal.toFixed(2)}</span>
+            </div>
+            {invSelItems.length===items.length&&<>
+              <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
+                <span style={{fontSize:12,color:'#64748b'}}>Shipping</span>
+                <span style={{fontSize:12}}>${invShip.toFixed(2)}</span>
+              </div>
+              <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
+                <span style={{fontSize:12,color:'#64748b'}}>Tax</span>
+                <span style={{fontSize:12}}>${invTax.toFixed(2)}</span>
+              </div>
+            </>}
+            {invSelItems.length!==items.length&&<div style={{fontSize:10,color:'#94a3b8',marginBottom:4}}>Shipping & tax apply when all items selected</div>}
+            <div style={{display:'flex',justifyContent:'space-between',paddingTop:8,borderTop:'2px solid #e2e8f0'}}>
+              <span style={{fontSize:14,fontWeight:800}}>Invoice Total</span>
+              <span style={{fontSize:18,fontWeight:800,color:'#dc2626'}}>${invTotal.toFixed(2)}</span>
+            </div>
+            {pctOfTotal>0&&pctOfTotal<100&&<div style={{fontSize:10,color:'#64748b',textAlign:'right'}}>{pctOfTotal}% of order total</div>}
+          </div>
+        </div>
+        <div className="modal-footer">
+          <button className="btn btn-secondary" onClick={()=>setShowInvCreate(false)}>Cancel</button>
+          <button className="btn btn-primary" style={{background:'#dc2626',borderColor:'#dc2626'}} disabled={invSelItems.length===0} onClick={()=>{
+            const invId='INV-'+o.id.replace('SO-','');
+            const inv={id:invId+'-'+(Date.now()%1000),type:'invoice',customer_id:o.customer_id,so_id:o.id,
+              date:new Date().toLocaleDateString('en-CA'),total:Math.round(invTotal*100)/100,paid:0,
+              memo:invMemo||invType+' — '+o.memo,status:'open',
+              items:invSelItems.map(idx=>{const it=items[idx];return{sku:it.sku,name:it.name,qty:Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0),unit_sell:safeNum(it.unit_sell)}})};
+            onInv(prev=>[...prev,inv]);
+            setShowInvCreate(false);
+            nf('Invoice '+inv.id+' created for $'+invTotal.toFixed(2));
+          }}>💰 Create Invoice — ${invTotal.toFixed(2)}</button>
+        </div>
+      </div></div>})()}
 
     {showPO&&(()=>{
       // Vendor selection or PO form
@@ -2132,7 +2255,7 @@ function AdjModal({isOpen,onClose,product,onSave}){const[a,setA]=useState({});co
 export default function App(){
   const[pg,setPg]=useState('dashboard');const[toast,setToast]=useState(null);
   const[cust,setCust]=useState(D_C);const[vend]=useState(D_V);const[prod,setProd]=useState(D_P);
-  const[ests,setEsts]=useState(D_E);const[sos,setSOs]=useState(D_SO);const[invs]=useState(D_INV);
+  const[ests,setEsts]=useState(D_E);const[sos,setSOs]=useState(D_SO);const[invs,setInvs]=useState(D_INV);
   const[msgs,setMsgs]=useState(D_MSG);const[cM,setCM]=useState({open:false,c:null});const[aM,setAM]=useState({open:false,p:null});
   const[q,setQ]=useState('');const[selC,setSelC]=useState(null);const[selV,setSelV]=useState(null);
   const[eEst,setEEst]=useState(null);const[eEstC,setEEstC]=useState(null);const[eSO,setESO]=useState(null);const[eSOC,setESOC]=useState(null);
@@ -2191,7 +2314,7 @@ export default function App(){
 
   // ESTIMATES LIST
   const rEst=()=>{
-    if(eEst)return<OrderEditor order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} onSave={e=>{savE(e);setEEst(e)}} onBack={()=>setEEst(null)} onConvertSO={convertSO} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos}/>;
+    if(eEst)return<OrderEditor order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} onSave={e=>{savE(e);setEEst(e)}} onBack={()=>setEEst(null)} onConvertSO={convertSO} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs}/>;
     const fe=ests.filter(e=>!q||(e.id+' '+e.memo+' '+(cust.find(c=>c.id===e.customer_id)?.name||'')+' '+(cust.find(c=>c.id===e.customer_id)?.alpha_tag||'')).toLowerCase().includes(q.toLowerCase()));
     return(<><div style={{display:'flex',gap:8,marginBottom:16}}><div className="search-bar" style={{flex:1}}><Icon name="search"/><input placeholder="Search..." value={q} onChange={e=>setQ(e.target.value)}/></div>
       <button className="btn btn-primary" onClick={()=>newE(null)}><Icon name="plus" size={14}/> New Estimate</button></div>
@@ -2208,7 +2331,7 @@ export default function App(){
 
   // SALES ORDERS LIST
   const rSO=()=>{
-    if(eSO)return<OrderEditor order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} onSave={s=>{savSO(s);setESO(s)}} onBack={()=>setESO(null)} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos}/>;
+    if(eSO)return<OrderEditor order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} onSave={s=>{savSO(s);setESO(s)}} onBack={()=>setESO(null)} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs}/>;
     return(<><div className="stats-row"><div className="stat-card"><div className="stat-label">Total</div><div className="stat-value">{sos.length}</div></div><div className="stat-card"><div className="stat-label">Need Order</div><div className="stat-value" style={{color:'#d97706'}}>{sos.filter(s=>calcSOStatus(s)==='need_order').length}</div></div><div className="stat-card"><div className="stat-label">Waiting</div><div className="stat-value" style={{color:'#2563eb'}}>{sos.filter(s=>calcSOStatus(s)==='waiting_receive').length}</div></div><div className="stat-card"><div className="stat-label">Complete</div><div className="stat-value" style={{color:'#166534'}}>{sos.filter(s=>calcSOStatus(s)==='complete').length}</div></div></div>
     <div className="card"><div className="card-body" style={{padding:0}}><table><thead><tr><th>SO</th><th>Customer</th><th>Memo</th><th>Expected</th><th>Rep</th><th>Art</th><th>Items</th><th>Msgs</th><th>Status</th></tr></thead><tbody>
     {sos.map(so=>{const c=cust.find(x=>x.id===so.customer_id);const ac=(so.art_files||[]).length;const aa=(so.art_files||[]).filter(f=>f.status==='approved').length;const rep=REPS.find(r=>r.id===so.created_by);
