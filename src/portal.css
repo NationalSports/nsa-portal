@@ -235,3 +235,7 @@ tbody tr { cursor: pointer; }
 .btn-sm{padding:4px 10px;font-size:11px;gap:4px}
 .size-cell.alert-stock{background:#fef3c7;border-color:#f59e0b;color:#92400e}
 .size-cell.alert-stock .size-label{color:#d97706}
+
+/* V3 additions */
+.hover-card { transition: box-shadow 0.15s; }
+.hover-card:hover { box-shadow: 0 4px 12px #0001; }
