@@ -1,7 +1,7 @@
 /* eslint-disable */
 import React, { useState, useMemo, useCallback } from 'react';
 import './portal.css';
-const Icon=({name,size=18})=>{const p={home:<path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>,users:<><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></>,building:<><path d="M6 22V4a2 2 0 012-2h8a2 2 0 012 2v18z"/><path d="M6 12H4a2 2 0 00-2 2v6a2 2 0 002 2h2"/><path d="M18 9h2a2 2 0 012 2v9a2 2 0 01-2 2h-2"/><path d="M10 6h4M10 10h4M10 14h4M10 18h4"/></>,package:<><path d="M16.5 9.4l-9-5.19M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/><path d="M3.27 6.96L12 12.01l8.73-5.05M12 22.08V12"/></>,box:<path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/>,search:<><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></>,plus:<path d="M12 5v14M5 12h14"/>,edit:<><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></>,upload:<><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></>,back:<polyline points="15 18 9 12 15 6"/>,mail:<><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></>,file:<><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></>,sortUp:<path d="M7 14l5-5 5 5"/>,sort:<><path d="M7 15l5 5 5-5"/><path d="M7 9l5-5 5 5"/></>,image:<><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></>,cart:<><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 002 1.61h9.72a2 2 0 002-1.61L23 6H6"/></>,dollar:<><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></>,grid:<><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></>,warehouse:<><path d="M22 8.35V20a2 2 0 01-2 2H4a2 2 0 01-2-2V8.35A2 2 0 013.26 6.5l8-3.2a2 2 0 011.48 0l8 3.2A2 2 0 0122 8.35z"/><path d="M6 18h12M6 14h12"/></>,trash:<><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></>,eye:<><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></>,alert:<><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></>,x:<><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>,check:<polyline points="20 6 9 17 4 12"/>,send:<><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></>};return<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{p[name]}</svg>};
+const Icon=({name,size=18})=>{const p={home:<path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>,users:<><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></>,building:<><path d="M6 22V4a2 2 0 012-2h8a2 2 0 012 2v18z"/><path d="M6 12H4a2 2 0 00-2 2v6a2 2 0 002 2h2"/><path d="M18 9h2a2 2 0 012 2v9a2 2 0 01-2 2h-2"/><path d="M10 6h4M10 10h4M10 14h4M10 18h4"/></>,package:<><path d="M16.5 9.4l-9-5.19M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/><path d="M3.27 6.96L12 12.01l8.73-5.05M12 22.08V12"/></>,box:<path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/>,search:<><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></>,plus:<path d="M12 5v14M5 12h14"/>,edit:<><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></>,upload:<><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></>,back:<polyline points="15 18 9 12 15 6"/>,mail:<><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></>,file:<><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></>,sortUp:<path d="M7 14l5-5 5 5"/>,sort:<><path d="M7 15l5 5 5-5"/><path d="M7 9l5-5 5 5"/></>,image:<><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></>,cart:<><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 002 1.61h9.72a2 2 0 002-1.61L23 6H6"/></>,dollar:<><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></>,grid:<><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></>,warehouse:<><path d="M22 8.35V20a2 2 0 01-2 2H4a2 2 0 01-2-2V8.35A2 2 0 013.26 6.5l8-3.2a2 2 0 011.48 0l8 3.2A2 2 0 0122 8.35z"/><path d="M6 18h12M6 14h12"/></>,trash:<><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></>,eye:<><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></>,alert:<><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></>,x:<><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>,check:<polyline points="20 6 9 17 4 12"/>,save:<><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></>,send:<><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></>};return<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{p[name]}</svg>};
 const REPS=[{id:'r1',name:'Steve Peterson',role:'admin'},{id:'r2',name:'Denis',role:'gm'},{id:'r3',name:'Liliana',role:'production'},{id:'r4',name:'Laura Chen',role:'rep'},{id:'r5',name:'Mike Torres',role:'rep'}];
 const CATEGORIES=['Tees','Hoodies','Polos','Shorts','1/4 Zips','Hats','Footwear','Jersey Tops','Jersey Bottoms','Balls'];
 const CONTACT_ROLES=['Head Coach','Assistant','Accounting','Athletic Director','Primary','Other'];
@@ -30,12 +30,12 @@ function dP(d,q,artFiles,cq){
   if(d.kind==='numbers'||d.type==='number_press'){const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:q;return{sell:d.sell_override||npP(nq||1,d.two_color,true),cost:npP(nq||1,d.two_color,false)}};
   if(d.type==='dtf'){const t=DTF[d.dtf_size||0];return{sell:d.sell_override||t.sell,cost:t.cost}}return{sell:0,cost:0}}
 const SC={
-  // SO statuses (3)
-  need_order:{bg:'#fef3c7',c:'#92400e'},waiting_receive:{bg:'#dbeafe',c:'#1e40af'},complete:{bg:'#dcfce7',c:'#166534'},
+  // SO statuses (4)
+  need_order:{bg:'#fef3c7',c:'#92400e'},waiting_receive:{bg:'#dbeafe',c:'#1e40af'},complete:{bg:'#dcfce7',c:'#166534'},in_production:{bg:'#ede9fe',c:'#6d28d9'},
   // Job item statuses
   need_to_order:{bg:'#fef3c7',c:'#92400e'},partially_received:{bg:'#fef9c3',c:'#854d0e'},items_received:{bg:'#d1fae5',c:'#065f46'},
   // Job production statuses
-  staging:{bg:'#e0e7ff',c:'#3730a3'},in_process:{bg:'#dbeafe',c:'#1e40af'},completed:{bg:'#dcfce7',c:'#166534'},shipped:{bg:'#ede9fe',c:'#6d28d9'},
+  staging:{bg:'#fef3c7',c:'#92400e'},in_process:{bg:'#dbeafe',c:'#1e40af'},completed:{bg:'#dcfce7',c:'#166534'},shipped:{bg:'#ede9fe',c:'#6d28d9'},
   // Job art statuses
   needs_art:{bg:'#fef2f2',c:'#dc2626'},waiting_approval:{bg:'#fef3c7',c:'#92400e'},art_complete:{bg:'#dcfce7',c:'#166534'},
   // Legacy
@@ -55,6 +55,33 @@ const safeDecos=(it)=>safeArr(it?.decorations);
 const safeItems=(o)=>safeArr(o?.items);
 const safeArt=(o)=>safeArr(o?.art_files);
 const safeJobs=(o)=>safeArr(o?.jobs);
+// Build jobs from SO — uses existing jobs array, or auto-generates from decorations
+const buildJobs=(o)=>{
+  if(o?.jobs&&o.jobs.length>0)return o.jobs;
+  // Auto-generate from art decorations on items
+  const artMap={};
+  safeItems(o).forEach((it,idx)=>{
+    safeDecos(it).forEach((d,di)=>{
+      if(d.kind!=='art'||!d.art_file_id)return;
+      const key='art_'+d.art_file_id+'_'+d.position;
+      if(!artMap[key])artMap[key]={art_file_id:d.art_file_id,position:d.position,deco_type:null,items:[]};
+      artMap[key].items.push({item_idx:idx,deco_idx:di,sku:it.sku,name:safeStr(it.name),color:it.color||'',units:Object.values(safeSizes(it)).reduce((a,v)=>a+v,0),fulfilled:0});
+      // Get art file info from SO
+      const af=safeArr(o?.art_files).find(f=>f.id===d.art_file_id);
+      if(af){artMap[key].deco_type=af.deco_type;artMap[key].art_name=af.name;artMap[key].art_status=af.status==='approved'?'art_complete':af.status==='uploaded'?'waiting_approval':'needs_art'}
+    });
+  });
+  const jobs=Object.entries(artMap).map(([key,v],idx)=>{
+    const totalUnits=v.items.reduce((a,it)=>a+it.units,0);
+    const positions=[...new Set(v.items.map(it=>{const d=safeDecos(safeItems(o)[it.item_idx])?.[it.deco_idx];return d?.position||''}).filter(Boolean))].join(', ');
+    return{id:o.id.replace('SO-','JOB-')+'-'+(idx+1<10?'0':'')+(idx+1),key,art_file_id:v.art_file_id,
+      art_name:v.art_name||'Unnamed',deco_type:v.deco_type||'screen_print',positions,
+      art_status:v.art_status||'needs_art',item_status:'need_to_order',prod_status:'hold',
+      total_units:totalUnits,fulfilled_units:0,split_from:null,created_at:o.created_at?.split(' ')[0]||'',
+      items:v.items,_auto:true};
+  });
+  return jobs;
+};
 const safeFirm=(o)=>safeArr(o?.firm_dates);
 
 // PICKS (demo)
@@ -71,6 +98,15 @@ const D_C=[
 {id:'c3a',parent_id:'c3',name:'Clovis High Badminton',alpha_tag:'CHBad',contacts:[{name:'Coach Kim',email:'kim@clovisusd.k12.ca.us',phone:'',role:'Head Coach'}],shipping_city:'Clovis',shipping_state:'CA',adidas_ua_tier:'B',catalog_markup:1.65,payment_terms:'prepay',primary_rep_id:'r5',is_active:true,_oe:2,_os:0,_oi:0,_ob:0},
 ];
 const BATCH_VENDORS={'sss':{name:'S&S Activewear',threshold:200},'sanmar':{name:'SanMar',threshold:200},'richardson':{name:'Richardson',threshold:200},'momentec':{name:'Momentec',threshold:200},'a4':{name:'A4',threshold:200}};
+const MACHINES=[
+  {id:'auto_press',name:'Auto Press',type:'screen_print'},
+  {id:'manual_press',name:'Manual Press',type:'screen_print'},
+  {id:'dtf_printer',name:'DTF Printer',type:'dtf'},
+  {id:'heat_press_1',name:'Heat Press 1',type:'heat_transfer'},
+  {id:'heat_press_2',name:'Heat Press 2',type:'heat_transfer'},
+  {id:'emb_1',name:'Embroidery Head 1',type:'embroidery'},
+  {id:'emb_2',name:'Embroidery Head 2',type:'embroidery'},
+];
 const D_V=[
 {id:'v1',name:'Adidas',vendor_type:'upload',nsa_carries_inventory:true,click_automation:true,is_active:true,contact_email:'teamorders@adidas.com',contact_phone:'800-448-1796',rep_name:'Sarah Johnson',payment_terms:'net60',notes:'Team dealer program.',_oi:3,_it:12450,_ac:4200,_a3:5250,_a6:3000,_a9:0},
 {id:'v2',name:'Under Armour',vendor_type:'upload',nsa_carries_inventory:true,click_automation:true,is_active:true,contact_email:'teamdealer@underarmour.com',rep_name:'Mike Daniels',payment_terms:'net60',_oi:2,_it:8200,_ac:5200,_a3:3000,_a6:0,_a9:0},
@@ -97,8 +133,8 @@ const D_E=[
 ];
 const D_SO=[
 {id:'SO-1042',customer_id:'c1a',estimate_id:'EST-2088',memo:'Baseball Spring Season Full Package',status:'in_production',created_by:'r1',created_at:'02/10/26 11:00 AM',updated_at:'02/14/26',expected_date:'2026-03-15',production_notes:'Rush - coach needs by spring break',shipping_type:'flat',shipping_value:45,ship_to_id:'default',firm_dates:[{item_desc:'JX4453 - Adidas Pregame Tee',date:'03/01/26',approved:true}],
-  art_files:[{id:'af1',name:'OLu Baseball Front Logo',deco_type:'screen_print',ink_colors:'Navy, Gold, White',thread_colors:'',art_size:'12" x 4"',files:['OLu_Baseball_Logo_v3.ai','OLu_Baseball_Logo_v3.pdf'],notes:'Final approved - navy/gold',status:'approved',uploaded:'02/10/26'},
-    {id:'af2',name:'Sleeve Logo Small',deco_type:'embroidery',ink_colors:'',thread_colors:'Navy 2767, Gold',art_size:'2" wide',files:['OLu_Sleeve_Logo.ai'],notes:'Small sleeve crest',status:'approved',uploaded:'02/11/26'}],
+  art_files:[{id:'af1',name:'OLu Baseball Front Logo',deco_type:'screen_print',ink_colors:'Navy, Gold, White',thread_colors:'',art_size:'12" x 4"',files:[],mockup_files:['OLu_Baseball_Logo_v3.pdf','OLu_Baseball_Mockup_Jersey.png'],prod_files:['OLu_Baseball_Logo_v3.ai','OLu_Baseball_Seps_3color.ai'],notes:'Final approved - navy/gold',status:'approved',uploaded:'02/10/26'},
+    {id:'af2',name:'Sleeve Logo Small',deco_type:'embroidery',ink_colors:'',thread_colors:'Navy 2767, Gold',art_size:'2" wide',files:[],mockup_files:['OLu_Sleeve_Logo.pdf'],prod_files:['OLu_Sleeve_Logo.dst','OLu_Sleeve_ThreadChart.pdf'],notes:'Small sleeve crest',status:'approved',uploaded:'02/11/26'}],
   items:[
     // Item 1: JX4453 — has pulled IF, open IF, PO with partial receive, and a waiting PO
     {sku:'JX4453',name:'Adidas Unisex Pregame Tee',brand:'Adidas',color:'Team Power Red/White',nsa_cost:18.5,retail_price:55.5,unit_sell:33.3,product_id:'p1',
@@ -344,7 +380,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
   const rmD=(ii,di)=>{uI(ii,'decorations',o.items[ii].decorations.filter((_,i)=>i!==di))};
   // Art files (SO)
   const af=o.art_files||[];
-  const addArt=()=>sv('art_files',[...af,{id:'af'+Date.now(),name:'',deco_type:'screen_print',ink_colors:'',thread_colors:'',art_size:'',files:[],notes:'',status:'uploaded',uploaded:new Date().toLocaleDateString()}]);
+  const addArt=()=>sv('art_files',[...af,{id:'af'+Date.now(),name:'',deco_type:'screen_print',ink_colors:'',thread_colors:'',art_size:'',files:[],mockup_files:[],prod_files:[],notes:'',status:'uploaded',uploaded:new Date().toLocaleDateString()}]);
   const uArt=(i,k,v)=>sv('art_files',af.map((f,x)=>x===i?{...f,[k]:v}:f));
   const rmArt=i=>sv('art_files',af.filter((_,x)=>x!==i));
   const addFileToArt=i=>{const a=af[i];uArt(i,'files',[...a.files,'new_file_'+(a.files.length+1)+'.ai'])};
@@ -434,7 +470,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
   },[syncJobs]);// eslint-disable-line
 
   const fp=products.filter(p=>{if(!pS)return true;const q=pS.toLowerCase();return p.sku.toLowerCase().includes(q)||p.name.toLowerCase().includes(q)||p.brand?.toLowerCase().includes(q)});
-  const statusFlow=['need_order','waiting_receive','complete'];
+  const statusFlow=['need_order','waiting_receive','in_production','complete'];
 
   return(<div>
     <button className="btn btn-secondary" onClick={()=>{if(dirty&&!window.confirm('You have unsaved changes. Leave without saving?'))return;onBack()}} style={{marginBottom:12}}><Icon name="back" size={14}/> {isE?'All Estimates':'All Sales Orders'}</button>
@@ -492,11 +528,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       {/* SO STATUS — auto-calculated */}
       {isSO&&(()=>{
         const autoSt=calcSOStatus(o);
-        const stLabels={need_order:'Need to Order',waiting_receive:'Waiting to Receive',complete:'Complete'};
+        const stLabels={need_order:'Need to Order',waiting_receive:'Waiting to Receive',in_production:'In Production',complete:'Complete'};
         return<div style={{display:'flex',gap:8,marginTop:12,borderTop:'1px solid #f1f5f9',paddingTop:12,alignItems:'center',flexWrap:'wrap'}}>
           <span style={{fontSize:11,color:'#64748b',fontWeight:600}}>Order Status:</span>
-          {statusFlow.map((sf,i)=>{const sc=SC[sf]||{};const si=statusFlow.indexOf(autoSt);const active=i<=si;const cur=i===si;
-            return<span key={sf} style={{padding:'4px 12px',borderRadius:12,fontSize:11,fontWeight:cur?800:500,background:active?sc.bg:'#f8fafc',color:active?sc.c:'#94a3b8',border:cur?`2px solid ${sc.c}`:'1px solid #e2e8f0'}}>{stLabels[sf]||sf}</span>})}
+          {statusFlow.map((sf)=>{const sc=SC[sf]||{};const cur=o.status===sf;
+            return<span key={sf} onClick={()=>sv('status',sf)} style={{padding:'4px 12px',borderRadius:12,fontSize:11,fontWeight:cur?800:500,cursor:'pointer',background:cur?sc.bg:'#f8fafc',color:cur?sc.c:'#94a3b8',border:cur?`2px solid ${sc.c}`:'1px solid #e2e8f0'}}>{stLabels[sf]||sf}</span>})}
         </div>})()}
       {isSO&&<div style={{marginTop:8}}><label className="form-label">Production Notes</label><input className="form-input" value={o.production_notes||''} onChange={e=>sv('production_notes',e.target.value)} placeholder="Internal notes..."/></div>}
     </div></div>
@@ -744,13 +780,27 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                     {art.deco_type==='embroidery'&&<div style={{flex:1,minWidth:150}}><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Thread Colors</label><input className="form-input" value={art.thread_colors||''} onChange={e=>uArt(i,'thread_colors',e.target.value)} placeholder="e.g. Navy 2767, White, Silver 877" style={{fontSize:12}}/></div>}
                     <div style={{width:120}}><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Size (optional)</label><input className="form-input" value={art.art_size||''} onChange={e=>uArt(i,'art_size',e.target.value)} placeholder='e.g. 12" x 4"' style={{fontSize:12}}/></div>
                   </div>
-                  {/* FILES */}
+                  {/* MOCKUP FILES — shared with customer */}
                   <div style={{marginBottom:6}}>
-                    <div style={{fontSize:10,fontWeight:600,color:'#64748b',marginBottom:4}}>Files ({art.files.length})</div>
-                    <div style={{display:'flex',gap:4,flexWrap:'wrap',marginBottom:4}}>{art.files.map((fn,fi)=><span key={fi} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'3px 8px',background:'#e0f2fe',borderRadius:4,fontSize:11}}>
-                      <Icon name="file" size={10}/>{fn}<button onClick={()=>uArt(i,'files',art.files.filter((_,x)=>x!==fi))} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:0}}><Icon name="x" size={10}/></button></span>)}</div>
-                    <div style={{border:'2px dashed #d1d5db',borderRadius:6,padding:10,textAlign:'center',cursor:'pointer',background:'white'}} onClick={()=>addFileToArt(i)}>
-                      <div style={{fontSize:11,color:'#64748b'}}><Icon name="upload" size={14}/> Drag & drop or click to add files (AI, EPS, PDF, PNG, JPG)</div></div>
+                    <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:4}}>
+                      <span style={{fontSize:10,fontWeight:700,color:'#2563eb'}}>📎 MOCKUP FILES</span>
+                      <span style={{fontSize:9,color:'#94a3b8'}}>Shared with customer</span>
+                    </div>
+                    <div style={{display:'flex',gap:4,flexWrap:'wrap',marginBottom:4}}>{(art.mockup_files||art.files||[]).map((fn,fi)=><span key={fi} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'3px 8px',background:'#dbeafe',borderRadius:4,fontSize:11}}>
+                      <Icon name="file" size={10}/>{fn}<button onClick={()=>{const mf=[...(art.mockup_files||art.files||[])];mf.splice(fi,1);uArt(i,'mockup_files',mf);if(!art.mockup_files)uArt(i,'files',[])}} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:0}}><Icon name="x" size={10}/></button></span>)}</div>
+                    <div style={{border:'2px dashed #bfdbfe',borderRadius:6,padding:8,textAlign:'center',cursor:'pointer',background:'#eff6ff'}} onClick={()=>{const fn=art.name.replace(/\s+/g,'_')+'_mockup_'+(((art.mockup_files||art.files||[]).length)+1)+'.pdf';const mf=[...(art.mockup_files||art.files||[]),fn];uArt(i,'mockup_files',mf);if(!art.mockup_files)uArt(i,'files',[])}}>
+                      <div style={{fontSize:10,color:'#2563eb'}}><Icon name="upload" size={12}/> Add mockup (PDF, PNG, JPG)</div></div>
+                  </div>
+                  {/* PRODUCTION FILES — internal only */}
+                  <div style={{marginBottom:6}}>
+                    <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:4}}>
+                      <span style={{fontSize:10,fontWeight:700,color:'#d97706'}}>🔧 PRODUCTION FILES</span>
+                      <span style={{fontSize:9,color:'#94a3b8'}}>Internal — not shared with customer</span>
+                    </div>
+                    <div style={{display:'flex',gap:4,flexWrap:'wrap',marginBottom:4}}>{(art.prod_files||[]).map((fn,fi)=><span key={fi} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'3px 8px',background:'#fef3c7',borderRadius:4,fontSize:11}}>
+                      <Icon name="file" size={10}/>{fn}<button onClick={()=>uArt(i,'prod_files',(art.prod_files||[]).filter((_,x)=>x!==fi))} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:0}}><Icon name="x" size={10}/></button></span>)}</div>
+                    <div style={{border:'2px dashed #fde68a',borderRadius:6,padding:8,textAlign:'center',cursor:'pointer',background:'#fffbeb'}} onClick={()=>{const ext=art.deco_type==='embroidery'?'.dst':art.deco_type==='screen_print'?'_seps.ai':'.pdf';const fn=art.name.replace(/\s+/g,'_')+'_prod_'+(((art.prod_files||[]).length)+1)+ext;uArt(i,'prod_files',[...(art.prod_files||[]),fn])}}>
+                      <div style={{fontSize:10,color:'#d97706'}}><Icon name="upload" size={12}/> Add production file (DST, AI seps, PDF)</div></div>
                   </div>
                   {/* Notes */}
                   <input className="form-input" value={art.notes||''} onChange={e=>uArt(i,'notes',e.target.value)} placeholder="Notes..." style={{fontSize:12}}/>
@@ -1176,7 +1226,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       };
       const updJob=(jIdx,k,v)=>{sv('jobs',jobs.map((j,i)=>i===jIdx?{...j,[k]:v}:j))};
       const prodStatuses=['hold','staging','in_process','completed','shipped'];
-      const prodLabels={hold:'On Hold',staging:'Staging',in_process:'In Process',completed:'Completed',shipped:'Shipped'};
+      const prodLabels={hold:'Ready for Prod',staging:'In Line',in_process:'In Process',completed:'Completed',shipped:'Shipped'};
       const artLabels={needs_art:'Needs Art',waiting_approval:'Waiting Approval',art_complete:'Art Complete'};
       const itemLabels={need_to_order:'Need to Order',partially_received:'Partially Received',items_received:'Items Received'};
 
@@ -1185,6 +1235,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         const ji=selJob;const j=jobs[ji];
         if(!j)return<div className="card"><div className="card-body"><button className="btn btn-sm btn-secondary" onClick={()=>setSelJob(null)}><Icon name="back" size={12}/> Back to Jobs</button><div style={{padding:20,color:'#94a3b8'}}>Job not found</div></div></div>;
         const canProduce=j.item_status==='items_received'&&j.art_status==='art_complete';
+        const canOverride=cu.role==="admin"||cu.role==="production"||cu.role==="gm";
         const pct=j.total_units>0?Math.round(j.fulfilled_units/j.total_units*100):0;
         const artF=safeArt(o).find(a=>a.id===j.art_file_id);
         // Get full size breakdowns per item
@@ -1231,9 +1282,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
               <select className="form-select" style={{width:150,fontSize:11}} value={j.art_status} onChange={e=>updJob(ji,'art_status',e.target.value)}>
                 {Object.entries(artLabels).map(([k,v])=><option key={k} value={k}>{v}</option>)}</select>
               <div style={{fontSize:11,fontWeight:600,color:'#64748b',marginLeft:8}}>Production:</div>
-              {j.prod_status==='hold'&&!canProduce?<span style={{fontSize:11,color:'#94a3b8'}}>Waiting items/art</span>
-              :<select className="form-select" style={{width:150,fontSize:11}} value={j.prod_status} onChange={e=>updJob(ji,'prod_status',e.target.value)}>
-                {prodStatuses.map(ps=><option key={ps} value={ps}>{prodLabels[ps]}</option>)}</select>}
+              {j.prod_status==='hold'&&!canProduce&&!canOverride?<span style={{fontSize:11,color:'#94a3b8'}}>Waiting items/art</span>
+              :<><select className="form-select" style={{width:150,fontSize:11}} value={j.prod_status} onChange={e=>updJob(ji,'prod_status',e.target.value)}>
+                {prodStatuses.map(ps=><option key={ps} value={ps}>{prodLabels[ps]}</option>)}</select>
+              {!canProduce&&j.prod_status!=='hold'&&<span style={{fontSize:9,color:'#d97706',marginLeft:4}}>⚠️ Items/art incomplete</span>}</>}
               <div style={{marginLeft:'auto'}}>
                 <button className="btn btn-sm btn-secondary" onClick={()=>{
                   const w=window.open('','_blank','width=700,height=900');
@@ -1372,7 +1424,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         {jobs.length===0&&<div style={{padding:24,textAlign:'center',color:'#94a3b8'}}>No decorations assigned yet. Add artwork or numbers to items and jobs will appear automatically.</div>}
         {jobs.length>0&&<table style={{fontSize:12}}><thead><tr><th>Job ID</th><th>Artwork / Decoration</th><th>Items</th><th>Units</th><th>Items Status</th><th>Art</th><th>Production</th><th></th></tr></thead><tbody>
           {jobs.map((j,ji)=>{
-            const canProduce=j.item_status==='items_received'&&j.art_status==='art_complete';
+            const canProduce=j.item_status==='items_received'&&j.art_status==='art_complete';const canOverride2=cu.role==='admin'||cu.role==='production'||cu.role==='gm';
             const canSplit=j.item_status==='partially_received'&&!j.split_from;
             const pct=j.total_units>0?Math.round(j.fulfilled_units/j.total_units*100):0;
             return<React.Fragment key={j.id}>
@@ -1388,7 +1440,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
               <td><span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:SC[j.item_status]?.bg,color:SC[j.item_status]?.c}}>{itemLabels[j.item_status]}</span></td>
               <td><select style={{fontSize:10,padding:'2px 4px',borderRadius:4,border:'1px solid #e2e8f0',fontWeight:600,background:SC[j.art_status]?.bg,color:SC[j.art_status]?.c}} value={j.art_status} onChange={e=>{e.stopPropagation();updJob(ji,'art_status',e.target.value)}}>
                 {Object.entries(artLabels).map(([k,v])=><option key={k} value={k}>{v}</option>)}</select></td>
-              <td>{j.prod_status==='hold'&&!canProduce?<span style={{fontSize:10,color:'#94a3b8',fontStyle:'italic'}}>Waiting items/art</span>
+              <td>{j.prod_status==='hold'&&!canProduce&&!canOverride2?<span style={{fontSize:10,color:'#94a3b8',fontStyle:'italic'}}>Waiting items/art</span>
                 :<select style={{fontSize:10,padding:'2px 4px',borderRadius:4,border:'1px solid #e2e8f0',fontWeight:600,background:SC[j.prod_status]?.bg||'#f1f5f9',color:SC[j.prod_status]?.c||'#475569'}} value={j.prod_status} onChange={e=>{e.stopPropagation();updJob(ji,'prod_status',e.target.value)}}>
                   {prodStatuses.map(ps=><option key={ps} value={ps}>{prodLabels[ps]}</option>)}</select>}</td>
               <td>{canSplit&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#7c3aed',color:'white',borderRadius:4}} onClick={e=>{e.stopPropagation();splitJob(ji)}} title="Split job">✂️</button>}</td>
@@ -1820,7 +1872,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     {custSOs.filter(s=>calcSOStatus(s)!=='complete').length>0&&<div className="card" style={{marginBottom:12}}><div className="card-header"><h2>Active Sales Orders</h2></div><div className="card-body" style={{padding:0}}>
       <table style={{fontSize:12}}><thead><tr><th>SO</th><th>Memo</th>{isP&&<th>Customer</th>}{isP&&<th>Rep</th>}<th>Status</th><th>Items</th><th>Fulfillment</th><th>Expected</th></tr></thead><tbody>
       {custSOs.filter(s=>calcSOStatus(s)!=='complete').map(so=>{
-        const st=calcSOStatus(so);const stL={need_order:'Need to Order',waiting_receive:'Waiting to Receive',complete:'Complete'};
+        const st=calcSOStatus(so);const stL={need_order:'Need to Order',waiting_receive:'Waiting to Receive',in_production:'In Production',complete:'Complete'};
         let totalU=0,fulU=0;
         safeItems(so).forEach(it=>{Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{totalU+=v;const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+(pk[sz]||0),0);const rQ=safePOs(it).reduce((a,pk)=>a+((pk.received||{})[sz]||0),0);fulU+=Math.min(v,pQ+rQ)})});
         const pct=totalU>0?Math.round(fulU/totalU*100):0;
@@ -1829,7 +1881,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         const subC=allCustomers.find(c=>c.id===so.customer_id);
         const rep=REPS.find(r=>r.id===so.created_by);
         const jobArtLabels={needs_art:'Needs Art',waiting_approval:'Wait Approval',art_complete:'Art ✓'};
-        const jobProdLabels={hold:'Hold',staging:'Staging',in_process:'In Process',completed:'Done',shipped:'Shipped'};
+        const jobProdLabels={hold:'Ready',staging:'In Line',in_process:'In Process',completed:'Done',shipped:'Shipped'};
         const jobItemLabels={need_to_order:'Need Order',partially_received:'Partial',items_received:'Received'};
         return<React.Fragment key={so.id}>
           <tr style={{cursor:'pointer',background:'white'}} onClick={()=>onOpenSO&&onOpenSO(so)}>
@@ -2022,7 +2074,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     // Collect all jobs across customer's SOs
     const allPortalJobs=[];activeSOs.forEach(so=>{safeJobs(so).forEach(j=>{allPortalJobs.push({...j,so,soMemo:so.memo})})});
     const artLabelsP={needs_art:'Art Needed',waiting_approval:'Awaiting Your Approval',art_complete:'Approved'};
-    const prodLabelsP={hold:'Queued',staging:'Ready for Production',in_process:'In Production',completed:'Done',shipped:'Shipped'};
+    const prodLabelsP={hold:'Ready for Production',staging:'In Line',in_process:'In Production',completed:'Done',shipped:'Shipped'};
 
     // Job detail view inside portal
     if(portalJobView){
@@ -2342,10 +2394,18 @@ export default function App(){
   const[submittedBatches,setSubmittedBatches]=useState([]);// submitted batches for scan lookup
   const[batchCounter,setBatchCounter]=useState(4501);// sequential PO numbers: NSA-4501, NSA-4502...
   const[batchScan,setBatchScan]=useState('');// scan/lookup field
+  // Changelog & backup system
+  const[changeLog,setChangeLog]=useState([]);// [{ts,user,action,entity,entityId,detail}]
+  const[lastBackup,setLastBackup]=useState(null);
+  const[autoBackupEnabled,setAutoBackupEnabled]=useState(true);
+  const logChange=(action,entity,entityId,detail)=>{setChangeLog(prev=>[{ts:new Date().toLocaleString(),user:cu.name,action,entity,entityId,detail},...prev].slice(0,500))};
+  // SO version history
+  const[soHistory,setSOHistory]=useState({});// {soId:[{ts,user,snapshot}]}
   const[msgs,setMsgs]=useState(D_MSG);const[cM,setCM]=useState({open:false,c:null});const[aM,setAM]=useState({open:false,p:null});
   const[q,setQ]=useState('');const[selC,setSelC]=useState(null);const[selV,setSelV]=useState(null);
   const[eEst,setEEst]=useState(null);const[eEstC,setEEstC]=useState(null);const[eSO,setESO]=useState(null);const[eSOC,setESOC]=useState(null);
   const[gQ,setGQ]=useState('');const[gOpen,setGOpen]=useState(false);const[mF,setMF]=useState('all');const[rF,setRF]=useState('all');const[pF,setPF]=useState({cat:'all',vnd:'all',stk:'all',clr:'all'});
+  const[soF,setSOF]=useState({status:'all',rep:'all',search:'',sort:'date_desc'});
   const[iS,setIS]=useState({f:'value',d:'desc'});const[iF,setIF]=useState({cat:'all',vnd:'all'});
   const dirtyRef=React.useRef(false);
   const[favSkus,setFavSkus]=useState(()=>{try{return JSON.parse(localStorage.getItem('nsa_fav_skus')||'[]')}catch{return[]}});
@@ -2356,8 +2416,14 @@ export default function App(){
   const pars=useMemo(()=>cust.filter(c=>!c.parent_id),[cust]);const gK=useCallback(pid=>cust.filter(c=>c.parent_id===pid),[cust]);
   const cols=useMemo(()=>[...new Set(prod.map(p=>p.color).filter(Boolean))].sort(),[prod]);
   const savC=c=>{setCust(p=>{const e=p.find(x=>x.id===c.id);return e?p.map(x=>x.id===c.id?c:x):[...p,c]});nf('Saved')};
-  const savE=e=>{setEsts(p=>{const ex=p.find(x=>x.id===e.id);return ex?p.map(x=>x.id===e.id?e:x):[...p,e]})};
-  const savSO=s=>{setSOs(p=>{const ex=p.find(x=>x.id===s.id);return ex?p.map(x=>x.id===s.id?s:x):[...p,s]})};
+  const savE=e=>{setEsts(p=>{const ex=p.find(x=>x.id===e.id);return ex?p.map(x=>x.id===e.id?e:x):[...p,e]});logChange(ests.find(x=>x.id===e.id)?'updated':'created','Estimate',e.id,e.memo||'')};
+  const savSO=s=>{
+    // Save version history before overwriting
+    const prev=sos.find(x=>x.id===s.id);
+    if(prev){setSOHistory(h=>{const existing=h[s.id]||[];return{...h,[s.id]:[{ts:new Date().toLocaleString(),user:cu.name,snapshot:JSON.parse(JSON.stringify(prev))},...existing].slice(0,20)}})}
+    setSOs(p=>{const ex=p.find(x=>x.id===s.id);return ex?p.map(x=>x.id===s.id?s:x):[...p,s]});
+    logChange(prev?'updated':'created','SO',s.id,s.memo||'');
+  };
   const savI=(pid,inv)=>{setProd(p=>p.map(x=>x.id===pid?{...x,_inv:inv}:x));nf('Updated')};
   const newE=(c,product)=>{const mk=c?.catalog_markup||1.65;const items=[];
     if(product){const au=product.brand==='Adidas'||product.brand==='Under Armour'||product.brand==='New Balance';const sell=au?rQ(product.retail_price*(1-(({A:0.4,B:0.35,C:0.3})[c?.adidas_ua_tier||'B']||0.35))):rQ(product.nsa_cost*mk);
@@ -2391,9 +2457,9 @@ export default function App(){
     sos.forEach(so=>{
       const c=cust.find(x=>x.id===so.customer_id);const tag=c?.alpha_tag||so.id;
       // Art needing approval
-      safeJobs(so).forEach(j=>{
+      buildJobs(so).forEach(j=>{
         if(j.art_status==='waiting_approval')todos.push({type:'art',priority:2,msg:'⏳ Art awaiting approval: '+j.art_name,detail:tag+' · '+so.id,so,action:'Review art'});
-        if(j.item_status==='items_received'&&j.art_status==='art_complete'&&j.prod_status==='hold')todos.push({type:'schedule',priority:1,msg:'🏭 Ready to schedule: '+j.art_name,detail:tag+' · '+j.id,so,action:'Schedule job'});
+        if(j.item_status==='items_received'&&j.art_status==='art_complete'&&j.prod_status==='hold')todos.push({type:'schedule',priority:1,msg:'🏭 Ready for production: '+j.art_name,detail:tag+' · '+j.id,so,action:'Schedule job'});
         if(j.item_status==='partially_received'&&!j.split_from&&j.fulfilled_units>0)todos.push({type:'split',priority:3,msg:'✂️ Can split: '+j.art_name+' ('+j.fulfilled_units+'/'+j.total_units+')',detail:tag+' · '+j.id,so,action:'Review split'});
       });
       // Firm date requests pending
@@ -2407,7 +2473,7 @@ export default function App(){
     todos.sort((a,b)=>a.priority-b.priority);
 
     return(<>
-    <div className="stats-row"><div className="stat-card"><div className="stat-label">Open Estimates</div><div className="stat-value" style={{color:'#d97706'}}>{ests.filter(e=>e.status==='draft'||e.status==='sent').length}</div></div><div className="stat-card"><div className="stat-label">Active SOs</div><div className="stat-value" style={{color:'#2563eb'}}>{sos.filter(s=>!['completed','shipped'].includes(s.status)).length}</div></div><div className="stat-card"><div className="stat-label">Active Jobs</div><div className="stat-value" style={{color:'#7c3aed'}}>{(()=>{let n=0;sos.forEach(so=>{safeJobs(so).forEach(j=>{if(!['completed','shipped'].includes(j.prod_status))n++})});return n})()}</div></div><div className="stat-card"><div className="stat-label">Unread Msgs</div><div className="stat-value" style={{color:unreadMsgs.length>0?'#dc2626':''}}>{unreadMsgs.length}</div></div>
+    <div className="stats-row"><div className="stat-card"><div className="stat-label">Open Estimates</div><div className="stat-value" style={{color:'#d97706'}}>{ests.filter(e=>e.status==='draft'||e.status==='sent').length}</div></div><div className="stat-card"><div className="stat-label">Active SOs</div><div className="stat-value" style={{color:'#2563eb'}}>{sos.filter(s=>!['completed','shipped'].includes(s.status)).length}</div></div><div className="stat-card"><div className="stat-label">Active Jobs</div><div className="stat-value" style={{color:'#7c3aed'}}>{(()=>{let n=0;sos.forEach(so=>{buildJobs(so).forEach(j=>{if(!['completed','shipped'].includes(j.prod_status))n++})});return n})()}</div></div><div className="stat-card"><div className="stat-label">Unread Msgs</div><div className="stat-value" style={{color:unreadMsgs.length>0?'#dc2626':''}}>{unreadMsgs.length}</div></div>
       {isA&&al.length>0&&<div className="stat-card" style={{borderColor:'#fbbf24'}}><div className="stat-label">Stock Alerts</div><div className="stat-value" style={{color:'#d97706'}}>{al.length}</div></div>}</div>
 
     {/* Two column layout: To-Do + Messages */}
@@ -2479,13 +2545,53 @@ export default function App(){
         <td onClick={ev=>ev.stopPropagation()}>{e.status==='approved'&&<button className="btn btn-sm btn-primary" style={{background:'#7c3aed'}} onClick={()=>convertSO(e)}>→ SO</button>}</td>
       </tr>)})}</tbody></table></div></div></>);};
 
+
   // SALES ORDERS LIST
   const rSO=()=>{
     if(eSO)return<OrderEditor order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} onSave={s=>{savSO(s);setESO(s)}} onBack={()=>setESO(null)} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} batchPOs={batchPOs} onBatchPO={setBatchPOs}/>;
-    return(<><div className="stats-row"><div className="stat-card"><div className="stat-label">Total</div><div className="stat-value">{sos.length}</div></div><div className="stat-card"><div className="stat-label">Need Order</div><div className="stat-value" style={{color:'#d97706'}}>{sos.filter(s=>calcSOStatus(s)==='need_order').length}</div></div><div className="stat-card"><div className="stat-label">Waiting</div><div className="stat-value" style={{color:'#2563eb'}}>{sos.filter(s=>calcSOStatus(s)==='waiting_receive').length}</div></div><div className="stat-card"><div className="stat-label">Complete</div><div className="stat-value" style={{color:'#166534'}}>{sos.filter(s=>calcSOStatus(s)==='complete').length}</div></div></div>
+    // Filter SOs
+    let fSOs=[...sos];
+    if(soF.status!=='all')fSOs=fSOs.filter(s=>s.status===soF.status);
+    if(soF.rep!=='all')fSOs=fSOs.filter(s=>s.created_by===soF.rep);
+    if(soF.search){const ss=soF.search.toLowerCase();fSOs=fSOs.filter(s=>{const c2=cust.find(x=>x.id===s.customer_id);return s.id.toLowerCase().includes(ss)||(s.memo||'').toLowerCase().includes(ss)||(c2?.name||'').toLowerCase().includes(ss)||(c2?.alpha_tag||'').toLowerCase().includes(ss)||safeItems(s).some(it=>(it.sku||'').toLowerCase().includes(ss)||(it.name||'').toLowerCase().includes(ss))})}
+    // Sort
+    if(soF.sort==='date_desc')fSOs.sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||''));
+    else if(soF.sort==='date_asc')fSOs.sort((a,b)=>(a.created_at||'').localeCompare(b.created_at||''));
+    else if(soF.sort==='expected')fSOs.sort((a,b)=>(a.expected_date||'9999').localeCompare(b.expected_date||'9999'));
+    else if(soF.sort==='customer')fSOs.sort((a,b)=>{const ca=cust.find(x=>x.id===a.customer_id)?.name||'';const cb=cust.find(x=>x.id===b.customer_id)?.name||'';return ca.localeCompare(cb)});
+    // Status counts using actual so.status
+    const stCounts={need_order:sos.filter(s=>s.status==='need_order').length,waiting_receive:sos.filter(s=>s.status==='waiting_receive').length,in_production:sos.filter(s=>s.status==='in_production').length,complete:sos.filter(s=>s.status==='complete').length};
+    const activeFilters=soF.status!=='all'||soF.rep!=='all'||soF.search;
+
+    return(<>
+      {/* Clickable status stat cards */}
+      <div className="stats-row">
+        <div className="stat-card" style={{cursor:'pointer',outline:soF.status==='all'?'2px solid #2563eb':'none',borderRadius:8}} onClick={()=>setSOF(f=>({...f,status:'all'}))}>
+          <div className="stat-label">Total</div><div className="stat-value">{sos.length}</div></div>
+        <div className="stat-card" style={{cursor:'pointer',outline:soF.status==='need_order'?'2px solid #d97706':'none',borderRadius:8}} onClick={()=>setSOF(f=>({...f,status:f.status==='need_order'?'all':'need_order'}))}>
+          <div className="stat-label">Need Order</div><div className="stat-value" style={{color:'#d97706'}}>{stCounts.need_order}</div></div>
+        <div className="stat-card" style={{cursor:'pointer',outline:soF.status==='waiting_receive'?'2px solid #2563eb':'none',borderRadius:8}} onClick={()=>setSOF(f=>({...f,status:f.status==='waiting_receive'?'all':'waiting_receive'}))}>
+          <div className="stat-label">Waiting</div><div className="stat-value" style={{color:'#2563eb'}}>{stCounts.waiting_receive}</div></div>
+        <div className="stat-card" style={{cursor:'pointer',outline:soF.status==='in_production'?'2px solid #7c3aed':'none',borderRadius:8}} onClick={()=>setSOF(f=>({...f,status:f.status==='in_production'?'all':'in_production'}))}>
+          <div className="stat-label">In Production</div><div className="stat-value" style={{color:'#7c3aed'}}>{stCounts.in_production}</div></div>
+        <div className="stat-card" style={{cursor:'pointer',outline:soF.status==='complete'?'2px solid #166534':'none',borderRadius:8}} onClick={()=>setSOF(f=>({...f,status:f.status==='complete'?'all':'complete'}))}>
+          <div className="stat-label">Complete</div><div className="stat-value" style={{color:'#166534'}}>{stCounts.complete}</div></div>
+      </div>
+
+      {/* Filter bar */}
+      <div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap',alignItems:'center'}}>
+        <div className="search-bar" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search SOs, customers, SKUs..." value={soF.search} onChange={e=>setSOF(f=>({...f,search:e.target.value}))}/></div>
+        <select className="form-select" style={{width:140}} value={soF.rep} onChange={e=>setSOF(f=>({...f,rep:e.target.value}))}>
+          <option value="all">All Reps</option>{REPS.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
+        <select className="form-select" style={{width:150}} value={soF.sort} onChange={e=>setSOF(f=>({...f,sort:e.target.value}))}>
+          <option value="date_desc">Newest First</option><option value="date_asc">Oldest First</option><option value="expected">By Expected Date</option><option value="customer">By Customer</option></select>
+        {activeFilters&&<button className="btn btn-sm btn-secondary" onClick={()=>setSOF({status:'all',rep:'all',search:'',sort:'date_desc'})}>\u2715 Clear</button>}
+        <span style={{fontSize:11,color:'#64748b'}}>{fSOs.length}{fSOs.length!==sos.length?' of '+sos.length:''} orders</span>
+      </div>
+
     <div className="card"><div className="card-body" style={{padding:0}}><table><thead><tr><th>SO</th><th>Customer</th><th>Memo</th><th>Expected</th><th>Rep</th><th>Art</th><th>Items</th><th>Msgs</th><th>Status</th></tr></thead><tbody>
-    {sos.map(so=>{const c=cust.find(x=>x.id===so.customer_id);const ac=(so.art_files||[]).length;const aa=(so.art_files||[]).filter(f=>f.status==='approved').length;const rep=REPS.find(r=>r.id===so.created_by);
-      // Calculate fulfillment status
+    {fSOs.map(so=>{const c=cust.find(x=>x.id===so.customer_id);const ac=(so.art_files||[]).length;const aa=(so.art_files||[]).filter(f=>f.status==='approved').length;const rep=REPS.find(r=>r.id===so.created_by);
+      // Item fulfillment progress (for Items column)
       const allItems=so.items||[];let totalSz=0,pickedSz=0,poSz=0,rcvdSz=0;
       allItems.forEach(it=>{Object.entries(it.sizes).filter(([,v])=>v>0).forEach(([sz,v])=>{totalSz+=v;
         pickedSz+=safePicks(it).reduce((a,pk)=>a+(pk[sz]||0),0);
@@ -2493,18 +2599,21 @@ export default function App(){
         rcvdSz+=safePOs(it).reduce((a,pk)=>a+((pk.received||{})[sz]||0),0)})});
       const fulfilledSz=pickedSz+rcvdSz;
       const itemStatus=totalSz===0?null:fulfilledSz>=totalSz?'received':fulfilledSz>0?'partial':poSz>0?'on_order':'needs_items';
+      // Status badge uses the actual SO status field (what the user set)
+      const displayStatus=so.status||'need_order';
+      const statusLabel={need_order:'Need to Order',waiting_receive:'Waiting to Receive',in_production:'In Production',complete:'Complete'}[displayStatus]||displayStatus.replace(/_/g,' ');
       return(<tr key={so.id} style={{cursor:'pointer'}} onClick={()=>{setESO(so);setESOC(c)}}>
       <td style={{fontWeight:700,color:'#1e40af'}}>{so.id}</td><td>{c?.name} <span className="badge badge-gray">{c?.alpha_tag}</span></td><td style={{fontSize:12}}>{so.memo}</td><td>{so.expected_date||'--'}</td>
-      <td><span style={{fontSize:11,color:'#64748b'}}>{rep?.name?.split(' ')[0]||'—'}</span></td>
-      <td>{ac>0?<span style={{fontSize:11}}>{aa}/{ac} ✓</span>:<span style={{fontSize:11,color:'#d97706'}}>—</span>}</td>
+      <td><span style={{fontSize:11,color:'#64748b'}}>{rep?.name?.split(' ')[0]||'\u2014'}</span></td>
+      <td>{ac>0?<span style={{fontSize:11}}>{aa}/{ac} \u2713</span>:<span style={{fontSize:11,color:'#d97706'}}>\u2014</span>}</td>
       <td>{itemStatus&&<span style={{fontSize:10,fontWeight:600,padding:'2px 6px',borderRadius:4,
         background:itemStatus==='received'?'#dcfce7':itemStatus==='partial'?'#fef3c7':itemStatus==='on_order'?'#dbeafe':'#fef2f2',
         color:itemStatus==='received'?'#166534':itemStatus==='partial'?'#92400e':itemStatus==='on_order'?'#1e40af':'#dc2626'}}>
-        {itemStatus==='received'?'✓ All In':itemStatus==='partial'?fulfilledSz+'/'+totalSz:itemStatus==='on_order'?'On Order':'Needs Items'}</span>}</td>
+        {itemStatus==='received'?'\u2713 All In':itemStatus==='partial'?fulfilledSz+'/'+totalSz:itemStatus==='on_order'?'On Order':'Needs Items'}</span>}</td>
       <td>{(()=>{const unread=msgs.filter(m=>m.so_id===so.id&&!(m.read_by||[]).includes(cu.id)).length;const total=msgs.filter(m=>m.so_id===so.id).length;return unread>0?<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'2px 8px',fontSize:10,fontWeight:700}}>{unread} new</span>:total>0?<span style={{fontSize:11,color:'#94a3b8'}}>{total}</span>:null})()}</td>
-      <td><span style={{padding:'3px 10px',borderRadius:12,fontSize:11,fontWeight:700,background:SC[so.status]?.bg||'#f1f5f9',color:SC[so.status]?.c||'#475569'}}>{so.status.replace(/_/g,' ')}</span></td></tr>)})}
-    </tbody></table></div></div></>);};
-
+      <td><span style={{padding:'3px 10px',borderRadius:12,fontSize:11,fontWeight:700,background:SC[displayStatus]?.bg||'#f1f5f9',color:SC[displayStatus]?.c||'#475569'}}>{statusLabel}</span></td></tr>)})}
+    </tbody></table></div></div></>);
+  };
   // CUSTOMERS
   const rCust=()=>{
     if(selC)return<CustDetail customer={selC} allCustomers={cust} allOrders={aO} onBack={()=>setSelC(null)} onEdit={c=>{setCM({open:true,c});setCust(prev=>prev.map(pp=>pp.id===c.id?c:pp))}} onSelCust={c=>setSelC(c)} onNewEst={c=>newE(c)} sos={sos} msgs={msgs} cu={cu} onOpenSO={so=>{const c3=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c3);setPg('orders')}} ests={ests}/>;
@@ -2595,7 +2704,7 @@ export default function App(){
     // Build flat jobs list
     const allJobs=[];
     sos.forEach(so=>{const c=cust.find(x=>x.id===so.customer_id);
-      safeJobs(so).forEach(j=>{allJobs.push({...j,so,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',alpha:c?.alpha_tag||'',
+      buildJobs(so).forEach(j=>{allJobs.push({...j,so,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',alpha:c?.alpha_tag||'',
         repId:so.created_by,rep:REPS.find(r=>r.id===so.created_by)?.name||'—',
         expected:so.expected_date,daysOut:so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null})})});
     // Apply filters
@@ -2616,7 +2725,7 @@ export default function App(){
       else{va=a.id;vb=b.id}
       return jobSortDir==='asc'?(va>vb?1:-1):(va<vb?1:-1)});
     const decoTypes=[...new Set(allJobs.map(j=>j.deco_type).filter(Boolean))];
-    const STATUSES=[['hold','Hold'],['staging','Staging'],['in_process','In Process'],['completed','Completed'],['shipped','Shipped']];
+    const STATUSES=[['hold','Ready for Prod'],['staging','In Line'],['in_process','In Process'],['completed','Completed'],['shipped','Shipped']];
     const toggleStatus=st=>{setJobFilters(prev=>{const ss=prev.statuses.includes(st)?prev.statuses.filter(s=>s!==st):[...prev.statuses,st];return{...prev,statuses:ss}})};
     const setJF=(k,v)=>setJobFilters(prev=>({...prev,[k]:v}));
     const toggleSort=f=>{if(jobSortField===f)setJobSortDir(d=>d==='asc'?'desc':'asc');else{setJobSortField(f);setJobSortDir('asc')}};
@@ -2694,7 +2803,26 @@ export default function App(){
 
   // PRODUCTION BOARD
   const[prodView,setProdView]=useState('board');const[prodFilter,setProdFilter]=useState('all');
-  const[prodSort,setProdSort]=useState({f:'expected',d:'asc'});const[prodStatF,setProdStatF]=useState('active');
+  const[prodSort,setProdSort]=useState({f:'expected',d:'asc'});const[prodStatF,setProdStatF]=useState('active');const[prodDecoF,setProdDecoF]=useState('all');
+  const[assignModal,setAssignModal]=useState(null);// {job, soId, targetStatus}
+  const[assignTo,setAssignTo]=useState({machine:'',person:''});
+  const moveJobStatus=(j,newStatus)=>{
+    // If moving to staging (In Line), prompt for assignment
+    if(newStatus==='staging'&&j.prod_status!=='staging'){
+      setAssignModal({job:j,soId:j.soId,targetStatus:newStatus});
+      setAssignTo({machine:j.assigned_machine||'',person:j.assigned_to||''});
+      return;
+    }
+    applyJobMove(j,newStatus,j.assigned_machine||'',j.assigned_to||'');
+  };
+  const applyJobMove=(j,newStatus,machine,person)=>{
+    const so=sos.find(s=>s.id===j.soId);
+    if(!so)return;
+    const updatedJobs=safeJobs(so).map(jj=>jj.id===j.id?{...jj,prod_status:newStatus,assigned_machine:machine||jj.assigned_machine,assigned_to:person||jj.assigned_to}:jj);
+    savSO({...so,jobs:updatedJobs});
+    const labels={hold:'Ready for Prod',staging:'In Line',in_process:'In Process',completed:'Completed',shipped:'Shipped'};
+    nf('🏭 '+j.id+' → '+labels[newStatus]+(machine?' · '+MACHINES.find(m=>m.id===machine)?.name:'')+(person?' · '+person:''));
+  };
   const[showColPicker,setShowColPicker]=useState(false);
   const ALL_PROD_COLS=[
     {id:'so',label:'SO',default:true},
@@ -2724,7 +2852,7 @@ export default function App(){
     const allJobs=[];
     sos.forEach(so=>{
       const c=cust.find(x=>x.id===so.customer_id);
-      safeJobs(so).forEach(j=>{
+      buildJobs(so).forEach(j=>{
         allJobs.push({...j,so,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',alpha:c?.alpha_tag||'',
           rep:REPS.find(r=>r.id===so.created_by)?.name?.split(' ')[0]||'—',
           expected:so.expected_date,daysOut:so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null,
@@ -2732,14 +2860,16 @@ export default function App(){
       });
     });
     const filtered=prodFilter==='all'?allJobs:allJobs.filter(j=>j.so.created_by===prodFilter);
-    const byStatus=prodStatF==='active'?filtered.filter(j=>j.prod_status!=='completed'&&j.prod_status!=='shipped'):prodStatF==='all'?filtered:filtered.filter(j=>j.prod_status===prodStatF);
+    const byDeco=prodDecoF==='all'?filtered:filtered.filter(j=>j.deco_type===prodDecoF);
+    const byStatus=prodStatF==='active'?byDeco.filter(j=>j.prod_status!=='completed'&&j.prod_status!=='shipped'):prodStatF==='all'?byDeco:byDeco.filter(j=>j.prod_status===prodStatF);
     const totalUnits=byStatus.reduce((a,j)=>a+j.total_units,0);
     const fulfilledUnits=byStatus.reduce((a,j)=>a+j.fulfilled_units,0);
     const needsArt=byStatus.filter(j=>j.art_status!=='art_complete').length;
     const inProcess=byStatus.filter(j=>j.prod_status==='in_process').length;
+    const allDecoTypes=[...new Set(allJobs.map(j=>j.deco_type).filter(Boolean))];
     const kanbanCols=[
-      {id:'hold',label:'On Hold',color:'#94a3b8',bg:'#f8fafc'},
-      {id:'staging',label:'Staging',color:'#d97706',bg:'#fffbeb'},
+      {id:'hold',label:'Ready for Prod',color:'#6366f1',bg:'#eef2ff'},
+      {id:'staging',label:'In Line',color:'#d97706',bg:'#fffbeb'},
       {id:'in_process',label:'In Process',color:'#2563eb',bg:'#eff6ff'},
       {id:'completed',label:'Completed',color:'#166534',bg:'#f0fdf4'},
       {id:'shipped',label:'Shipped',color:'#6b7280',bg:'#f9fafb'},
@@ -2747,11 +2877,14 @@ export default function App(){
     return(<>
       <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:12,flexWrap:'wrap'}}>
         <div style={{display:'flex',gap:4}}>
-          {[['active','Active'],['all','All'],['hold','Hold'],['staging','Staging'],['in_process','In Process'],['completed','Done']].map(([v,l])=>
+          {[['active','Active'],['all','All'],['hold','Ready'],['staging','In Line'],['in_process','In Process'],['completed','Done']].map(([v,l])=>
             <button key={v} className={`btn btn-sm ${prodStatF===v?'btn-primary':'btn-secondary'}`} onClick={()=>setProdStatF(v)}>{l}</button>)}
         </div>
         <select className="form-select" style={{width:140,fontSize:11}} value={prodFilter} onChange={e=>setProdFilter(e.target.value)}>
           <option value="all">All Reps</option>{REPS.filter(r=>r.role==='rep').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
+        </select>
+        <select className="form-select" style={{width:150,fontSize:11}} value={prodDecoF} onChange={e=>setProdDecoF(e.target.value)}>
+          <option value="all">All Deco Types</option>{allDecoTypes.map(d=><option key={d} value={d}>{d.replace(/_/g,' ')}</option>)}
         </select>
         <div style={{marginLeft:'auto',display:'flex',gap:4}}>
           <button className={`btn btn-sm ${prodView==='board'?'btn-primary':'btn-secondary'}`} onClick={()=>setProdView('board')}>Board</button>
@@ -2776,22 +2909,47 @@ export default function App(){
             {colJobs.length===0&&<div style={{padding:16,textAlign:'center',color:'#cbd5e1',fontSize:12}}>No jobs</div>}
             {colJobs.map(j=>{
               const pct=j.total_units>0?Math.round(j.fulfilled_units/j.total_units*100):0;
-              return<div key={j.id+j.soId} className="card hover-card" style={{marginBottom:8,cursor:'pointer',border:j.daysOut!=null&&j.daysOut<=3?'2px solid #dc2626':undefined}} onClick={()=>{setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so.customer_id));setPg('orders')}}>
+              const gCount=(j.items||[]).length;
+              const machine=MACHINES.find(m=>m.id===j.assigned_machine);
+              return<div key={j.id+j.soId} className="card hover-card" style={{marginBottom:8,border:j.daysOut!=null&&j.daysOut<=3?'2px solid #dc2626':undefined}}>
                 <div style={{padding:'10px 12px'}}>
-                  <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:4}}>
-                    <span style={{fontWeight:800,color:'#1e40af',fontSize:12}}>{j.id}</span>
-                    <span style={{fontSize:10,color:'#64748b',flex:1}}>{j.alpha}</span>
-                    <span style={{padding:'1px 6px',borderRadius:8,fontSize:9,fontWeight:700,background:SC[j.art_status]?.bg,color:SC[j.art_status]?.c}}>{j.art_status==='art_complete'?'✅':j.art_status==='waiting_approval'?'⏳':'🎨'}</span>
+                  <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:4,cursor:'pointer'}} onClick={()=>{setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so.customer_id));setPg('orders')}}>
+                    <span style={{fontWeight:800,color:'#1e40af',fontSize:11}}>{j.id}</span>
+                    <span style={{marginLeft:'auto',padding:'1px 6px',borderRadius:8,fontSize:9,fontWeight:700,background:SC[j.art_status]?.bg,color:SC[j.art_status]?.c}}>{j.art_status==='art_complete'?'✅':j.art_status==='waiting_approval'?'⏳':'🎨'}</span>
                   </div>
-                  <div style={{fontSize:12,fontWeight:600,marginBottom:2}}>{j.art_name}</div>
-                  <div style={{fontSize:10,color:'#64748b',marginBottom:4}}>{j.deco_type?.replace(/_/g,' ')} · {(j.items||[]).length} garment{(j.items||[]).length!==1?'s':''} · {j.soId}</div>
+                  <div style={{fontSize:13,fontWeight:700,marginBottom:2,cursor:'pointer'}} onClick={()=>{setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so.customer_id));setPg('orders')}}>{j.customer}</div>
+                  <div style={{fontSize:12,fontWeight:600,color:'#475569',marginBottom:2}}>{j.art_name}</div>
+                  <div style={{fontSize:10,color:'#64748b',marginBottom:6}}>{j.deco_type?.replace(/_/g,' ')} · {j.soId}</div>
+                  {/* Assignment badge */}
+                  {(machine||j.assigned_to)&&<div style={{display:'flex',gap:4,flexWrap:'wrap',marginBottom:6}}>
+                    {machine&&<span style={{fontSize:9,fontWeight:700,padding:'2px 6px',borderRadius:6,background:'#fef3c7',color:'#92400e'}}>🖨️ {machine.name}</span>}
+                    {j.assigned_to&&<span style={{fontSize:9,fontWeight:700,padding:'2px 6px',borderRadius:6,background:'#ede9fe',color:'#6d28d9'}}>👤 {j.assigned_to}</span>}
+                  </div>}
+                  {/* Garment count — prominent */}
+                  <div style={{display:'flex',gap:6,alignItems:'center',marginBottom:6}}>
+                    <div style={{background:'#dbeafe',borderRadius:6,padding:'4px 10px',display:'flex',alignItems:'center',gap:4}}>
+                      <span style={{fontSize:16,fontWeight:900,color:'#1e40af'}}>{gCount}</span>
+                      <span style={{fontSize:9,color:'#2563eb',fontWeight:600}}>garment{gCount!==1?'s':''}</span>
+                    </div>
+                    <div style={{flex:1,textAlign:'right'}}>
+                      <span style={{fontSize:13,fontWeight:800,color:pct>=100?'#166534':'#1e40af'}}>{j.fulfilled_units}/{j.total_units}</span>
+                      <span style={{fontSize:9,color:'#94a3b8',marginLeft:3}}>units</span>
+                    </div>
+                  </div>
                   <div style={{background:'#e2e8f0',borderRadius:4,height:5,marginBottom:4,overflow:'hidden'}}>
                     <div style={{height:5,borderRadius:4,background:pct>=100?'#22c55e':pct>50?'#3b82f6':'#f59e0b',width:pct+'%'}}/></div>
-                  <div style={{display:'flex',justifyContent:'space-between',fontSize:10,color:'#64748b'}}>
-                    <span>{j.fulfilled_units}/{j.total_units} units</span>
+                  <div style={{display:'flex',justifyContent:'space-between',fontSize:10,color:'#64748b',marginBottom:6}}>
+                    <span>{j.rep}</span>
                     {j.expected&&<span style={{color:j.daysOut!=null&&j.daysOut<=7?'#dc2626':'#64748b'}}>📅 {j.expected}</span>}
                   </div>
-                  {j.counted_at&&<div style={{fontSize:9,color:'#166534',marginTop:3}}>✅ Counted</div>}
+                  {/* Move buttons */}
+                  <div style={{display:'flex',gap:4,flexWrap:'wrap',borderTop:'1px solid #e2e8f0',paddingTop:6}}>
+                    {col.id==='hold'&&<button className="btn btn-sm btn-primary" style={{fontSize:9,padding:'3px 8px'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'staging')}}>→ In Line</button>}
+                    {col.id==='staging'&&<><button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'3px 8px'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'hold')}}>← Ready</button><button className="btn btn-sm btn-primary" style={{fontSize:9,padding:'3px 8px'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'in_process')}}>→ In Process</button></>}
+                    {col.id==='in_process'&&<><button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'3px 8px'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'staging')}}>← In Line</button><button className="btn btn-sm btn-primary" style={{fontSize:9,padding:'3px 8px',background:'#166534',borderColor:'#166534'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'completed')}}>✓ Done</button></>}
+                    {col.id==='completed'&&<><button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'3px 8px'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'in_process')}}>← Back</button><button className="btn btn-sm btn-primary" style={{fontSize:9,padding:'3px 8px',background:'#6d28d9',borderColor:'#6d28d9'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'shipped')}}>📦 Ship</button></>}
+                    {col.id==='shipped'&&<button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'3px 8px'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'completed')}}>← Back</button>}
+                  </div>
                 </div></div>})}
           </div>})}
       </div>}
@@ -2813,10 +2971,55 @@ export default function App(){
           </tr>})}
         </tbody></table>
       </div></div>}
+
+      {/* Assignment Modal — appears when moving to In Line */}
+      {assignModal&&<div className="modal-overlay" onClick={()=>setAssignModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:420}}>
+        <div className="modal-header" style={{background:'#fffbeb'}}><h2>📋 Assign to Machine / Person</h2><button className="modal-close" onClick={()=>setAssignModal(null)}>×</button></div>
+        <div className="modal-body">
+          <div style={{padding:10,background:'#f8fafc',borderRadius:8,marginBottom:12}}>
+            <div style={{fontWeight:700,color:'#1e40af'}}>{assignModal.job.id}</div>
+            <div style={{fontSize:13,fontWeight:600}}>{assignModal.job.customer} — {assignModal.job.art_name}</div>
+            <div style={{fontSize:11,color:'#64748b'}}>{assignModal.job.deco_type?.replace(/_/g,' ')} · {(assignModal.job.items||[]).length} garment(s) · {assignModal.job.total_units} units</div>
+          </div>
+          <div style={{marginBottom:12}}>
+            <label className="form-label">Machine / Station</label>
+            <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+              {MACHINES.filter(m=>!assignModal.job.deco_type||m.type===assignModal.job.deco_type||assignTo.machine===m.id).map(m=>
+                <button key={m.id} className={`btn btn-sm ${assignTo.machine===m.id?'btn-primary':'btn-secondary'}`}
+                  onClick={()=>setAssignTo(a=>({...a,machine:a.machine===m.id?'':m.id}))} style={{fontSize:11}}>
+                  🖨️ {m.name}
+                </button>)}
+              {MACHINES.filter(m=>!assignModal.job.deco_type||m.type!==assignModal.job.deco_type).length>0&&
+                <button className="btn btn-sm btn-secondary" style={{fontSize:10,color:'#94a3b8'}}
+                  onClick={()=>setAssignTo(a=>({...a,machine:''}))}
+                  title="Show all machines">Other...</button>}
+            </div>
+            {assignTo.machine===''&&<div style={{marginTop:6}}>
+              <select className="form-select" style={{fontSize:12}} value="" onChange={e=>setAssignTo(a=>({...a,machine:e.target.value}))}>
+                <option value="">All machines...</option>
+                {MACHINES.map(m=><option key={m.id} value={m.id}>{m.name} ({m.type.replace(/_/g,' ')})</option>)}
+              </select>
+            </div>}
+          </div>
+          <div style={{marginBottom:12}}>
+            <label className="form-label">Assign to Person (optional)</label>
+            <input className="form-input" value={assignTo.person} onChange={e=>setAssignTo(a=>({...a,person:e.target.value}))} placeholder="e.g. Mike, Carlos, etc."/>
+          </div>
+        </div>
+        <div className="modal-footer">
+          <button className="btn btn-secondary" onClick={()=>{
+            // Move without assignment
+            applyJobMove(assignModal.job,assignModal.targetStatus,'','');
+            setAssignModal(null);
+          }}>Skip — Move Anyway</button>
+          <button className="btn btn-primary" onClick={()=>{
+            applyJobMove(assignModal.job,assignModal.targetStatus,assignTo.machine,assignTo.person);
+            setAssignModal(null);
+          }}>✓ Assign & Move to In Line</button>
+        </div>
+      </div></div>}
     </>);
   };
-
-  // BATCH PO QUEUE
   const rBatchPOs=()=>{
     const byVendor={};
     batchPOs.forEach(bp=>{if(!byVendor[bp.vendor_key])byVendor[bp.vendor_key]={name:bp.vendor_name,threshold:BATCH_VENDORS[bp.vendor_key]?.threshold||200,pos:[]};byVendor[bp.vendor_key].pos.push(bp)});
@@ -3105,6 +3308,244 @@ export default function App(){
   };
 
 
+  // BACKUP & DATA PAGE
+  const getFullState=()=>({
+    _meta:{version:'1.0',exported_at:new Date().toISOString(),exported_by:cu.name,app:'NSA Portal'},
+    customers:cust,estimates:ests,sales_orders:sos,products:prod,messages:msgs,invoices:invs,
+    batch_queue:batchPOs,submitted_batches:submittedBatches,batch_counter:batchCounter,
+    change_log:changeLog,so_history:soHistory
+  });
+  const exportBackup=()=>{
+    const data=getFullState();
+    const json=JSON.stringify(data,null,2);
+    const blob=new Blob([json],{type:'application/json'});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    const ts=new Date().toISOString().split('T')[0];
+    a.href=url;a.download='NSA-backup-'+ts+'.json';a.click();
+    URL.revokeObjectURL(url);
+    setLastBackup(new Date().toLocaleString());
+    logChange('backup','system','full','Full system backup exported');
+    nf('💾 Backup exported: NSA-backup-'+ts+'.json');
+  };
+  const importBackup=(file)=>{
+    const reader=new FileReader();
+    reader.onload=e=>{
+      try{
+        const data=JSON.parse(e.target.result);
+        if(!data._meta)throw new Error('Not a valid NSA backup file');
+        if(window.confirm('⚠️ This will REPLACE all current data with the backup from '+data._meta.exported_at+' by '+data._meta.exported_by+'. Are you sure?')){
+          if(data.customers)setCust(data.customers);
+          if(data.estimates)setEsts(data.estimates);
+          if(data.sales_orders)setSOs(data.sales_orders);
+          if(data.products)setProd(data.products);
+          if(data.messages)setMsgs(data.messages);
+          if(data.invoices)setInvs(data.invoices);
+          if(data.batch_queue)setBatchPOs(data.batch_queue);
+          if(data.submitted_batches)setSubmittedBatches(data.submitted_batches);
+          if(data.batch_counter)setBatchCounter(data.batch_counter);
+          if(data.change_log)setChangeLog(data.change_log);
+          if(data.so_history)setSOHistory(data.so_history);
+          logChange('restore','system','full','Restored from backup: '+data._meta.exported_at);
+          nf('✅ Data restored from backup ('+data._meta.exported_at+')');
+        }
+      }catch(err){nf('❌ Failed to import: '+err.message)}
+    };
+    reader.readAsText(file);
+  };
+  // Auto-backup to localStorage every 5 minutes
+  React.useEffect(()=>{
+    if(!autoBackupEnabled)return;
+    const interval=setInterval(()=>{
+      try{
+        const data=JSON.stringify({_meta:{version:'1.0',auto_backup:true,saved_at:new Date().toISOString()},
+          customers:cust,estimates:ests,sales_orders:sos,products:prod,messages:msgs,invoices:invs,
+          batch_queue:batchPOs,submitted_batches:submittedBatches,batch_counter:batchCounter,
+          change_log:changeLog,so_history:soHistory});
+        localStorage.setItem('nsa_auto_backup',data);
+        localStorage.setItem('nsa_auto_backup_ts',new Date().toISOString());
+      }catch{}
+    },300000);// 5 min
+    return()=>clearInterval(interval);
+  },[autoBackupEnabled,cust,ests,sos,prod,msgs,invs,batchPOs,submittedBatches,batchCounter,changeLog,soHistory]);
+
+  const restoreAutoBackup=()=>{
+    try{
+      const raw=localStorage.getItem('nsa_auto_backup');
+      if(!raw){nf('No auto-backup found');return}
+      const data=JSON.parse(raw);
+      const ts=localStorage.getItem('nsa_auto_backup_ts')||'unknown';
+      if(window.confirm('Restore auto-backup from '+new Date(ts).toLocaleString()+'?')){
+        if(data.customers)setCust(data.customers);
+        if(data.estimates)setEsts(data.estimates);
+        if(data.sales_orders)setSOs(data.sales_orders);
+        if(data.products)setProd(data.products);
+        if(data.messages)setMsgs(data.messages);
+        if(data.invoices)setInvs(data.invoices);
+        if(data.batch_queue)setBatchPOs(data.batch_queue);
+        if(data.submitted_batches)setSubmittedBatches(data.submitted_batches);
+        if(data.batch_counter)setBatchCounter(data.batch_counter);
+        if(data.change_log)setChangeLog(data.change_log);
+        if(data.so_history)setSOHistory(data.so_history);
+        nf('✅ Restored from auto-backup');
+      }
+    }catch{nf('❌ No valid auto-backup found')}
+  };
+
+  const rBackup=()=>{
+    const stateSize=JSON.stringify({customers:cust,estimates:ests,sales_orders:sos,products:prod,messages:msgs,invoices:invs}).length;
+    const sizeMB=(stateSize/1024/1024).toFixed(2);
+    const autoTs=typeof localStorage!=='undefined'?localStorage.getItem('nsa_auto_backup_ts'):null;
+    const soCount=sos.length;const estCount=ests.length;const custCount=cust.length;const msgCount=msgs.length;
+    let jobCount=0;sos.forEach(so=>{jobCount+=buildJobs(so).length});
+
+    return(<>
+      {/* Backup Actions */}
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
+        <div className="card">
+          <div className="card-header"><h2>💾 Export Backup</h2></div>
+          <div className="card-body">
+            <p style={{fontSize:13,color:'#64748b',marginBottom:12}}>Download a complete snapshot of all NSA data as a JSON file. Keep this somewhere safe — Google Drive, Dropbox, local folder.</p>
+            <div style={{padding:12,background:'#f8fafc',borderRadius:8,marginBottom:12}}>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8,fontSize:12}}>
+                <div><span style={{color:'#64748b'}}>Customers:</span> <strong>{custCount}</strong></div>
+                <div><span style={{color:'#64748b'}}>Estimates:</span> <strong>{estCount}</strong></div>
+                <div><span style={{color:'#64748b'}}>Sales Orders:</span> <strong>{soCount}</strong></div>
+                <div><span style={{color:'#64748b'}}>Jobs:</span> <strong>{jobCount}</strong></div>
+                <div><span style={{color:'#64748b'}}>Messages:</span> <strong>{msgCount}</strong></div>
+                <div><span style={{color:'#64748b'}}>File size:</span> <strong>{sizeMB} MB</strong></div>
+              </div>
+            </div>
+            <button className="btn btn-primary" style={{width:'100%',padding:'12px 20px',fontSize:14}} onClick={exportBackup}>
+              <Icon name="save" size={16}/> Export Full Backup
+            </button>
+            {lastBackup&&<div style={{fontSize:11,color:'#166534',marginTop:8,textAlign:'center'}}>Last manual backup: {lastBackup}</div>}
+          </div>
+        </div>
+
+        <div className="card">
+          <div className="card-header"><h2>📂 Restore from Backup</h2></div>
+          <div className="card-body">
+            <p style={{fontSize:13,color:'#64748b',marginBottom:12}}>Upload a previously exported NSA backup file to restore all data. This will replace everything currently in the system.</p>
+            <div style={{border:'2px dashed #d1d5db',borderRadius:8,padding:24,textAlign:'center',marginBottom:12,cursor:'pointer',position:'relative'}}>
+              <input type="file" accept=".json" style={{position:'absolute',inset:0,opacity:0,cursor:'pointer'}} onChange={e=>{if(e.target.files[0])importBackup(e.target.files[0])}}/>
+              <div style={{fontSize:24,marginBottom:8}}>📁</div>
+              <div style={{fontWeight:600,color:'#64748b'}}>Drop backup file or click to browse</div>
+              <div style={{fontSize:11,color:'#94a3b8',marginTop:4}}>Accepts .json files exported from NSA Portal</div>
+            </div>
+            <div style={{borderTop:'1px solid #e2e8f0',paddingTop:12}}>
+              <div style={{fontSize:12,fontWeight:600,color:'#64748b',marginBottom:6}}>Auto-Backup Recovery</div>
+              {autoTs?<div>
+                <div style={{fontSize:11,color:'#64748b'}}>Last auto-save: {new Date(autoTs).toLocaleString()}</div>
+                <button className="btn btn-sm btn-secondary" style={{marginTop:6}} onClick={restoreAutoBackup}>Restore Auto-Backup</button>
+              </div>:<div style={{fontSize:11,color:'#94a3b8'}}>No auto-backup found in browser storage</div>}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Auto-backup toggle */}
+      <div className="card" style={{marginBottom:16}}>
+        <div className="card-body" style={{padding:'12px 18px',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+          <div>
+            <div style={{fontWeight:700}}>Auto-Backup to Browser</div>
+            <div style={{fontSize:12,color:'#64748b'}}>Saves a snapshot to localStorage every 5 minutes. Survives page refreshes but NOT browser cache clears.</div>
+          </div>
+          <button className={`btn btn-sm ${autoBackupEnabled?'btn-primary':'btn-secondary'}`} onClick={()=>setAutoBackupEnabled(!autoBackupEnabled)}>
+            {autoBackupEnabled?'✅ Enabled':'Disabled'}
+          </button>
+        </div>
+      </div>
+
+      {/* Google Drive Backup */}
+      <div className="card" style={{marginBottom:16,borderLeft:'4px solid #4285f4'}}>
+        <div className="card-header">
+          <h2>☁️ Google Drive Backup</h2>
+        </div>
+        <div className="card-body">
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:12}}>
+            <button className="btn btn-primary" style={{background:'#4285f4',borderColor:'#4285f4',padding:'12px 20px',fontSize:13}} onClick={()=>{
+              const data=getFullState();
+              const json=JSON.stringify(data,null,2);
+              const blob=new Blob([json],{type:'application/json'});
+              const ts=new Date().toISOString().split('T')[0];
+              const fileName='NSA-backup-'+ts+'.json';
+              // Use native share / save-as which on most devices offers Drive
+              if(navigator.share&&navigator.canShare&&navigator.canShare({files:[new File([blob],fileName,{type:'application/json'})]})){
+                navigator.share({files:[new File([blob],fileName,{type:'application/json'})],title:'NSA Portal Backup',text:'Daily backup '+ts}).then(()=>{
+                  setLastBackup(new Date().toLocaleString()+' (Drive)');logChange('backup','system','drive','Shared to Drive: '+fileName);nf('☁️ Shared to Drive');
+                }).catch(()=>{});
+              } else {
+                // Fallback: download + open Drive upload page
+                const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=fileName;a.click();URL.revokeObjectURL(url);
+                window.open('https://drive.google.com/drive/my-drive','_blank');
+                setLastBackup(new Date().toLocaleString()+' (downloaded)');logChange('backup','system','drive-download','Downloaded for Drive: '+fileName);
+                nf('💾 Downloaded — upload to Drive in the tab that opened');
+              }
+            }}>☁️ Save to Google Drive</button>
+            <button className="btn btn-secondary" style={{padding:'12px 20px',fontSize:13}} onClick={()=>{
+              window.open('https://drive.google.com/drive/search?q=NSA-backup','_blank');
+              nf('Opening Drive to find backup files...');
+            }}>📂 Find Backups in Drive</button>
+          </div>
+          <div style={{padding:10,background:'#e8f0fe',borderRadius:6}}>
+            <div style={{fontSize:12,fontWeight:600,color:'#1a73e8',marginBottom:4}}>Daily Backup Recommendation</div>
+            <div style={{fontSize:11,color:'#5f6368'}}>Export a backup at the end of each day. On mobile/tablet, "Save to Drive" uses your device's share sheet to save directly. On desktop, it downloads the file — drag it into the Google Drive tab that opens. Name your backups with the date so you can find them: <strong>NSA-backup-YYYY-MM-DD.json</strong></div>
+          </div>
+        </div>
+      </div>
+
+      {/* SO Version History */}
+      <div className="card" style={{marginBottom:16}}>
+        <div className="card-header"><h2>📜 SO Version History</h2><span style={{fontSize:12,color:'#64748b'}}>{Object.keys(soHistory).length} SOs tracked</span></div>
+        <div className="card-body" style={{padding:0}}>
+          {Object.keys(soHistory).length===0?<div className="empty" style={{padding:20}}>No version history yet. Changes to SOs will be tracked here.</div>:
+          <table><thead><tr><th>SO</th><th>Versions</th><th>Latest Save</th><th>Action</th></tr></thead><tbody>
+          {Object.entries(soHistory).map(([soId,versions])=><tr key={soId}>
+            <td style={{fontWeight:700,color:'#1e40af'}}>{soId}</td>
+            <td>{versions.length} version{versions.length!==1?'s':''}</td>
+            <td style={{fontSize:11,color:'#64748b'}}>{versions[0]?.ts} by {versions[0]?.user?.split(' ')[0]}</td>
+            <td><button className="btn btn-sm btn-secondary" onClick={()=>{
+              const v=versions[0];
+              if(v&&window.confirm('Rollback '+soId+' to version from '+v.ts+'?')){
+                savSO(v.snapshot);nf('⏪ '+soId+' rolled back to '+v.ts);
+              }
+            }}>⏪ Rollback</button></td>
+          </tr>)}
+          </tbody></table>}
+        </div>
+      </div>
+
+      {/* Change Log */}
+      <div className="card">
+        <div className="card-header"><h2>📋 Change Log</h2><span style={{fontSize:12,color:'#64748b'}}>{changeLog.length} entries</span>
+          {changeLog.length>0&&<button className="btn btn-sm btn-secondary" onClick={()=>{
+            const csv='Timestamp,User,Action,Entity,ID,Detail\n'+changeLog.map(c2=>[c2.ts,c2.user,c2.action,c2.entity,c2.entityId,'"'+(c2.detail||'')+'"'].join(',')).join('\n');
+            const blob=new Blob([csv],{type:'text/csv'});const url=URL.createObjectURL(blob);
+            const a=document.createElement('a');a.href=url;a.download='nsa-changelog-'+new Date().toISOString().split('T')[0]+'.csv';a.click();
+            nf('📋 Change log exported');
+          }}>Export CSV</button>}
+        </div>
+        <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
+          {changeLog.length===0?<div className="empty" style={{padding:20}}>No changes logged yet. Activity will appear here as you work.</div>:
+          <table style={{fontSize:12}}><thead><tr><th>Time</th><th>User</th><th>Action</th><th>Entity</th><th>ID</th><th>Detail</th></tr></thead><tbody>
+          {changeLog.slice(0,100).map((c2,i)=><tr key={i}>
+            <td style={{fontSize:10,color:'#64748b',whiteSpace:'nowrap'}}>{c2.ts}</td>
+            <td style={{fontWeight:600}}>{c2.user?.split(' ')[0]}</td>
+            <td><span style={{padding:'1px 6px',borderRadius:6,fontSize:10,fontWeight:600,
+              background:c2.action==='created'?'#dcfce7':c2.action==='updated'?'#dbeafe':c2.action==='backup'?'#f5f3ff':c2.action==='restore'?'#fef3c7':'#f1f5f9',
+              color:c2.action==='created'?'#166534':c2.action==='updated'?'#1e40af':c2.action==='backup'?'#7c3aed':c2.action==='restore'?'#92400e':'#475569'
+            }}>{c2.action}</span></td>
+            <td>{c2.entity}</td>
+            <td style={{fontWeight:600,color:'#1e40af'}}>{c2.entityId}</td>
+            <td style={{color:'#64748b',maxWidth:200,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{c2.detail}</td>
+          </tr>)}
+          </tbody></table>}
+        </div>
+      </div>
+    </>);
+  };
+
   // MESSAGES PAGE
   const rMsg=()=>{const allM=[...msgs].sort((a,b)=>(b.ts||'').localeCompare(a.ts));
     const unread=allM.filter(m=>!(m.read_by||[]).includes(cu.id));
@@ -3133,8 +3574,8 @@ export default function App(){
           </div></div>})}</div></div></>)};
 
     // NAV
-  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'production',label:'Prod Board',icon:'package'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{section:'Comms'},{id:'messages',label:'Messages',icon:'mail'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'}];
-  const titles={dashboard:'Dashboard',estimates:'Estimates',orders:'Sales Orders',jobs:'Jobs',production:'Production Board',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',products:'Products',inventory:'Inventory',messages:'Messages'};
+  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'production',label:'Prod Board',icon:'package'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{section:'Comms'},{id:'messages',label:'Messages',icon:'mail'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'System'},{id:'backup',label:'Backup & Data',icon:'save'}];
+  const titles={dashboard:'Dashboard',estimates:'Estimates',orders:'Sales Orders',jobs:'Jobs',production:'Production Board',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',products:'Products',inventory:'Inventory',messages:'Messages',backup:'Backup & Data'};
   return(<div className="app"><Toast msg={toast?.msg} type={toast?.type}/>
     <div className="sidebar"><div className="sidebar-logo">NSA<span>Portal</span></div>
       <nav className="sidebar-nav">{nav.map((item,i)=>{if(item.section)return<div key={i} className="sidebar-section">{item.section}</div>;
@@ -3169,7 +3610,7 @@ export default function App(){
           {gOpen&&<div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:59}} onClick={()=>setGOpen(false)}/>}
         </div>
         <div style={{display:'flex',gap:6,alignItems:'center'}}><button className="btn btn-sm btn-primary" onClick={()=>newE(null)} style={{fontSize:11}}><Icon name="plus" size={12}/> Estimate</button><button className="btn btn-sm btn-secondary" onClick={()=>setCM({open:true,c:null})} style={{fontSize:11}}><Icon name="plus" size={12}/> Customer</button></div></div>
-      <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='production'&&rProd2()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}</div></div>
+      <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='production'&&rProd2()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='backup'&&rBackup()}</div></div>
     <CustModal isOpen={cM.open} onClose={()=>setCM({open:false,c:null})} onSave={savC} customer={cM.c} parents={pars}/>
     <AdjModal isOpen={aM.open} onClose={()=>setAM({open:false,p:null})} product={aM.p} onSave={savI}/>
   </div>);
