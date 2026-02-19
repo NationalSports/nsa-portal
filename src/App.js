@@ -2787,6 +2787,19 @@ export default function App(){
     const setJF=(k,v)=>setJobFilters(prev=>({...prev,[k]:v}));
     const toggleSort=f=>{if(jobSortField===f)setJobSortDir(d=>d==='asc'?'desc':'asc');else{setJobSortField(f);setJobSortDir('asc')}};
     const sortIcon=f=>jobSortField===f?(jobSortDir==='asc'?'↑':'↓'):'';
+    // Promote a job to the prod board (saves it to so.jobs[])
+    const promoteJob=(j)=>{
+      const jso=sos.find(s=>s.id===j.soId);if(!jso)return;
+      const existing=safeJobs(jso);
+      if(existing.find(ej=>ej.id===j.id)){nf('Already on prod board','warn');return;}
+      const cleanJob={id:j.id,key:j.key,art_file_id:j.art_file_id,art_name:j.art_name,deco_type:j.deco_type,
+        positions:j.positions,art_status:j.art_status,item_status:j.item_status,prod_status:'hold',
+        total_units:j.total_units,fulfilled_units:j.fulfilled_units,split_from:null,
+        created_at:j.created_at,items:j.items,_auto:false};
+      savSO({...jso,jobs:[...existing,cleanJob]});
+      nf('🏭 '+j.id+' added to Production Board');
+    };
+
     return(<>
       {/* Filter bar */}
       <div className="card" style={{marginBottom:12}}><div className="card-body" style={{padding:'12px 16px'}}>
@@ -2824,16 +2837,6 @@ export default function App(){
         <div className="stat-card"><div className="stat-label">Fulfilled</div><div className="stat-value" style={{color:'#166534'}}>{fj.reduce((a,j)=>a+j.fulfilled_units,0)}</div></div>
         <div className="stat-card"><div className="stat-label">Needs Art</div><div className="stat-value" style={{color:fj.filter(j=>j.art_status!=='art_complete').length>0?'#d97706':''}}>{fj.filter(j=>j.art_status!=='art_complete').length}</div></div>
       </div>
-
-    // Promote a job to the prod board (saves it to so.jobs[])
-    const promoteJob=(j)=>{
-      const so=sos.find(s=>s.id===j.soId);if(!so)return;
-      const existing=safeJobs(so);
-      if(existing.find(ej=>ej.id===j.id))return nf('Already on prod board','warn');
-      const{so:_s,soId:_i,soMemo:_m,customer:_c,alpha:_a,repId:_ri,rep:_r,expected:_e,daysOut:_d,...cleanJob}=j;
-      savSO({...so,jobs:[...existing,{...cleanJob,_auto:false}]});
-      nf('🏭 '+j.id+' added to Production Board');
-    };
 
       {/* Jobs table */}
       <div className="card"><div className="card-body" style={{padding:0}}>
