@@ -292,6 +292,39 @@ const D_INV=[
   {id:'INV-1061',type:'invoice',customer_id:'c1b',so_id:'SO-1045',date:'02/12/26',due_date:'03/14/26',total:1890,paid:945,memo:'Football Practice Gear — Partial',status:'partial',payments:[{amount:945,method:'venmo',ref:'@OLu-Athletics',date:'02/20/26'}],cc_fee:0},
 ];
 
+// OMG TEAM STORES DEMO DATA
+const D_OMG=[
+  {id:'OMG-1001',store_name:'OLu Baseball Spring 2026',customer_id:'c1a',rep_id:'r1',status:'closed',open_date:'01/15/26',close_date:'02/10/26',
+    orders:12,total_sales:4250,fundraise_total:425,items_sold:87,unique_buyers:12,
+    products:[
+      {sku:'JX4453',name:'Adidas Pregame Tee',color:'Team Power Red/White',retail:32,cost:18.50,deco_type:'screen_print',deco_cost:3,sizes:{S:3,M:8,L:12,XL:10,'2XL':4}},
+      {sku:'HF7245',name:'Adidas Team Issue Hoodie',color:'Team Power Red/White',retail:65,cost:28.50,deco_type:'screen_print',deco_cost:5,sizes:{S:2,M:5,L:8,XL:6,'2XL':3}},
+      {sku:'112',name:'Richardson Trucker Cap',color:'Red/White',retail:25,cost:4.50,deco_type:'embroidery',deco_cost:6,sizes:{OSFA:26}}
+    ]},
+  {id:'OMG-1002',store_name:'St. Francis Football Fan Shop',customer_id:'c2',rep_id:'r4',status:'open',open_date:'02/01/26',close_date:'03/01/26',
+    orders:8,total_sales:2890,fundraise_total:289,items_sold:54,unique_buyers:8,
+    products:[
+      {sku:'PC61',name:'Port & Company Essential Tee',color:'Navy',retail:18,cost:2.85,deco_type:'screen_print',deco_cost:3,sizes:{S:4,M:10,L:12,XL:8,'2XL':3}},
+      {sku:'K500',name:'Port Authority Silk Touch Polo',color:'Navy',retail:35,cost:8.20,deco_type:'embroidery',deco_cost:8,sizes:{M:2,L:4,XL:3,'2XL':2}},
+      {sku:'112',name:'Richardson Trucker Cap',color:'Navy/White',retail:25,cost:4.50,deco_type:'embroidery',deco_cost:6,sizes:{OSFA:6}}
+    ]},
+  {id:'OMG-1003',store_name:'OLu Football Booster Store',customer_id:'c1b',rep_id:'r1',status:'closed',open_date:'01/20/26',close_date:'02/15/26',
+    orders:18,total_sales:6720,fundraise_total:672,items_sold:142,unique_buyers:18,
+    products:[
+      {sku:'JX4453',name:'Adidas Pregame Tee',color:'Navy/White',retail:32,cost:18.50,deco_type:'screen_print',deco_cost:3,sizes:{S:5,M:15,L:22,XL:18,'2XL':8}},
+      {sku:'EK0100',name:'Adidas Team 1/4 Zip',color:'Team Navy/White',retail:55,cost:25,deco_type:'embroidery',deco_cost:8,sizes:{S:3,M:8,L:12,XL:10,'2XL':5}},
+      {sku:'1376844',name:'Under Armour Tech Short',color:'Navy',retail:32,cost:15.50,deco_type:'screen_print',deco_cost:3,sizes:{S:2,M:6,L:10,XL:8,'2XL':4}},
+      {sku:'112',name:'Richardson Trucker Cap',color:'Navy/White',retail:25,cost:4.50,deco_type:'embroidery',deco_cost:6,sizes:{OSFA:6}}
+    ]},
+  {id:'OMG-1004',store_name:'Clovis Badminton Fundraiser',customer_id:'c3a',rep_id:'r5',status:'open',open_date:'02/10/26',close_date:'03/10/26',
+    orders:3,total_sales:480,fundraise_total:48,items_sold:9,unique_buyers:3,
+    products:[
+      {sku:'PC61',name:'Port & Company Essential Tee',color:'Black',retail:18,cost:2.85,deco_type:'screen_print',deco_cost:3,sizes:{M:3,L:3,XL:3}}
+    ]},
+  {id:'OMG-1005',store_name:'OLu Track & Field Store',customer_id:'c1c',rep_id:'r1',status:'draft',open_date:'',close_date:'',
+    orders:0,total_sales:0,fundraise_total:0,items_sold:0,unique_buyers:0,products:[]},
+];
+
 // SHARED UI
 function Toast({msg,type='success'}){if(!msg)return null;return<div className={`toast toast-${type}`}>{msg}</div>}
 function SortHeader({label,field,sortField,sortDir,onSort}){const a=sortField===field;return<th onClick={()=>onSort(field)} style={{cursor:'pointer',userSelect:'none'}}><span style={{display:'inline-flex',alignItems:'center',gap:4}}>{label}<span style={{opacity:a?1:0.3}}>{a&&sortDir==='asc'?<Icon name="sortUp" size={12}/>:<Icon name="sort" size={12}/>}</span></span></th>}
@@ -2815,6 +2848,9 @@ export default function App(){
   const[q,setQ]=useState('');const[selC,setSelC]=useState(null);const[selV,setSelV]=useState(null);
   const[eEst,setEEst]=useState(null);const[eEstC,setEEstC]=useState(null);const[eSO,setESO]=useState(null);const[eSOC,setESOC]=useState(null);
   const[gQ,setGQ]=useState('');const[gOpen,setGOpen]=useState(false);const[mF,setMF]=useState('all');const[rF,setRF]=useState('all');const[pF,setPF]=useState({cat:'all',vnd:'all',stk:'all',clr:'all'});
+  const[qPC,setQPC]=useState({open:false,mode:'single',items:[],bulkRaw:''});
+  // OMG Team Stores
+  const[omgFilter,setOmgFilter]=useState({rep:'all',status:'all',search:''});const[omgSel,setOmgSel]=useState(null);
   const[soF,setSOF]=useState({status:'all',rep:'all',search:'',sort:'date_desc'});
   const[iS,setIS]=useState({f:'value',d:'desc'});const[iF,setIF]=useState({cat:'all',vnd:'all'});
   const dirtyRef=React.useRef(false);
@@ -4433,8 +4469,170 @@ export default function App(){
     </>);
   };
 
+  // OMG TEAM STORES PAGE
+  const rOMG=()=>{
+    const stores=D_OMG;
+    const filtered=stores.filter(s=>{
+      if(omgFilter.rep!=='all'&&s.rep_id!==omgFilter.rep)return false;
+      if(omgFilter.status!=='all'&&s.status!==omgFilter.status)return false;
+      if(omgFilter.search){const q=omgFilter.search.toLowerCase();const c=cust.find(x=>x.id===s.customer_id);
+        if(!(s.store_name+' '+s.id+' '+(c?.name||'')+' '+(c?.alpha_tag||'')).toLowerCase().includes(q))return false}
+      return true;
+    });
+    const totalSales=filtered.reduce((a,s)=>a+s.total_sales,0);
+    const totalFund=filtered.reduce((a,s)=>a+s.fundraise_total,0);
+    const totalOrders=filtered.reduce((a,s)=>a+s.orders,0);
+
+    // Store detail view
+    if(omgSel){
+      const s=omgSel;const c=cust.find(x=>x.id===s.customer_id);const rep=REPS.find(r=>r.id===s.rep_id);
+      const totalCost=s.products.reduce((a,p)=>{const q=Object.values(p.sizes).reduce((a2,v)=>a2+v,0);return a+q*(p.cost+p.deco_cost)},0);
+      const totalRetail=s.products.reduce((a,p)=>{const q=Object.values(p.sizes).reduce((a2,v)=>a2+v,0);return a+q*p.retail},0);
+      const margin=totalRetail-totalCost;const pct=totalRetail>0?Math.round(margin/totalRetail*100):0;
+
+      return(<>
+        <button className="btn btn-sm btn-secondary" onClick={()=>setOmgSel(null)} style={{marginBottom:12}}>← Back to All Stores</button>
+
+        <div className="card" style={{marginBottom:12}}><div style={{padding:16}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
+            <div>
+              <div style={{fontSize:20,fontWeight:800}}>{s.store_name}</div>
+              <div style={{fontSize:13,color:'#64748b'}}>{c?.name} ({c?.alpha_tag}) · Rep: {rep?.name} · {s.id}</div>
+              <div style={{marginTop:4}}><span style={{padding:'3px 10px',borderRadius:8,fontSize:11,fontWeight:700,
+                background:s.status==='open'?'#dcfce7':s.status==='closed'?'#dbeafe':s.status==='draft'?'#f1f5f9':'#fef3c7',
+                color:s.status==='open'?'#166534':s.status==='closed'?'#1e40af':s.status==='draft'?'#64748b':'#92400e'}}>{s.status.toUpperCase()}</span>
+                {s.open_date&&<span style={{marginLeft:8,fontSize:11,color:'#64748b'}}>📅 {s.open_date} → {s.close_date}</span>}
+              </div>
+            </div>
+            {s.status==='closed'&&<button className="btn btn-primary" style={{background:'#166534'}} onClick={()=>{
+              // PULL FROM OMG → Create SO
+              const isAUb=b=>b==='Adidas'||b==='Under Armour'||b==='New Balance';
+              const mk=c?.catalog_markup||1.65;const tier=c?.adidas_ua_tier||'B';const disc=tD[tier]||0.35;
+              const newItems=s.products.map(p=>{
+                const au=isAUb(p.name.includes('Adidas')?'Adidas':p.name.includes('Under Armour')?'Under Armour':'');
+                const catP=prod.find(cp=>cp.sku===p.sku);
+                return{product_id:catP?.id||null,sku:p.sku,name:p.name,brand:catP?.brand||'',color:p.color,
+                  nsa_cost:p.cost,retail_price:catP?.retail_price||p.retail,unit_sell:p.retail,
+                  available_sizes:Object.keys(p.sizes),sizes:p.sizes,
+                  decorations:[{kind:'art',position:'Front Center',art_file_id:null,sell_override:p.deco_cost}],
+                  is_custom:false,pick_lines:[],po_lines:[]};
+              });
+              const newSO={id:'SO-'+(1100+sos.length),customer_id:s.customer_id,memo:'OMG Store Pull: '+s.store_name,status:'need_order',
+                created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),
+                expected_date:'',production_notes:'Pulled from OMG store '+s.id+'. Orders: '+s.orders+', Buyers: '+s.unique_buyers,
+                shipping_type:'flat',shipping_value:0,ship_to_id:'default',firm_dates:[],art_files:[],items:newItems,omg_store_id:s.id};
+              setSOs(prev=>[newSO,...prev]);setESO(newSO);setESOC(c);setPg('orders');
+              nf('🎉 Pulled '+newItems.length+' items from '+s.store_name+' into new SO');
+            }}>🔄 Pull to Sales Order</button>}
+          </div>
+        </div></div>
+
+        <div className="stats-row" style={{marginBottom:12}}>
+          <div className="stat-card"><div className="stat-label">Orders</div><div className="stat-value">{s.orders}</div></div>
+          <div className="stat-card"><div className="stat-label">Total Sales</div><div className="stat-value" style={{color:'#1e40af'}}>${s.total_sales.toLocaleString()}</div></div>
+          <div className="stat-card"><div className="stat-label">Fundraise</div><div className="stat-value" style={{color:'#166534'}}>${s.fundraise_total.toLocaleString()}</div></div>
+          <div className="stat-card"><div className="stat-label">NSA Cost</div><div className="stat-value" style={{color:'#d97706'}}>${totalCost.toLocaleString()}</div></div>
+          <div className="stat-card"><div className="stat-label">Margin</div><div className="stat-value" style={{color:pct>=30?'#166534':'#dc2626'}}>{pct}%</div></div>
+        </div>
+
+        <div className="card" style={{marginBottom:12}}><div className="card-header"><h2>📦 Store Products</h2></div>
+          <div className="card-body" style={{padding:0}}>
+            <table><thead><tr><th>SKU</th><th>Product</th><th>Color</th><th>Deco</th><th>Retail</th><th>Cost</th><th>Deco $</th><th>Sizes</th><th>Units</th><th>Revenue</th><th>Margin</th></tr></thead>
+            <tbody>{s.products.map((p,i)=>{const q=Object.values(p.sizes).reduce((a,v)=>a+v,0);const rev=q*p.retail;const cost=q*(p.cost+p.deco_cost);const mg=rev-cost;
+              const catP=prod.find(cp=>cp.sku===p.sku);
+              return<tr key={i}>
+                <td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{p.sku} {catP&&<span style={{fontSize:8,color:'#22c55e'}}>✓</span>}</td>
+                <td>{p.name}</td><td style={{fontSize:11}}>{p.color}</td>
+                <td><span style={{fontSize:9,padding:'1px 5px',borderRadius:4,background:p.deco_type==='screen_print'?'#dbeafe':'#ede9fe',
+                  color:p.deco_type==='screen_print'?'#1e40af':'#6d28d9'}}>{p.deco_type.replace(/_/g,' ')}</span></td>
+                <td style={{textAlign:'right'}}>${p.retail}</td><td style={{textAlign:'right'}}>${p.cost}</td><td style={{textAlign:'right'}}>${p.deco_cost}</td>
+                <td style={{fontSize:9}}>{Object.entries(p.sizes).map(([sz,q2])=>sz+':'+q2).join(' ')}</td>
+                <td style={{fontWeight:700,textAlign:'center'}}>{q}</td>
+                <td style={{textAlign:'right',fontWeight:600}}>${rev.toLocaleString()}</td>
+                <td style={{textAlign:'right',color:mg>0?'#166534':'#dc2626'}}>${mg.toLocaleString()} <span style={{fontSize:9}}>({Math.round(mg/rev*100)}%)</span></td>
+              </tr>})}</tbody></table>
+          </div>
+        </div>
+
+        {/* Step-by-step guide */}
+        <div className="card" style={{borderLeft:'3px solid #2563eb'}}><div className="card-header"><h2>📋 OMG Store Pull Process — Step by Step</h2></div>
+          <div className="card-body">
+            <div style={{display:'grid',gap:12}}>
+              {[
+                {n:1,title:'Store Closes in OMG',desc:'Wait for the store close date. All orders are finalized and no more changes can be made.',icon:'🔒'},
+                {n:2,title:'Review Store Data',desc:'Click into the store above to verify all products, sizes, quantities, and pricing. Check that fundraise amounts are correct.',icon:'👀'},
+                {n:3,title:'Pull to Sales Order',desc:'Click "🔄 Pull to Sales Order" button. This creates a new SO with all items, sizes, deco already filled in. Cost and sell prices carry over from the store.',icon:'📋'},
+                {n:4,title:'Review the New SO',desc:'The SO opens automatically. Verify items, update any pricing, add art files, and adjust shipping. Products matched to the catalog show ✓.',icon:'✏️'},
+                {n:5,title:'Create POs for Inventory',desc:'Go to each item and create Purchase Orders for any blanks not in stock. Use Batch PO for efficiency.',icon:'🛒'},
+                {n:6,title:'Production & Decoration',desc:'Once items are received, send jobs to the Production Board. Art should already be assigned from the store setup.',icon:'🏭'},
+                {n:7,title:'Invoice & Ship',desc:'After production is complete, create invoice from the SO and arrange shipping to the customer.',icon:'📦'},
+              ].map(step=><div key={step.n} style={{display:'flex',gap:12,alignItems:'flex-start'}}>
+                <div style={{width:36,height:36,borderRadius:18,background:'#eff6ff',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:800,color:'#1e40af',flexShrink:0,fontSize:14}}>{step.n}</div>
+                <div><div style={{fontWeight:700,fontSize:13}}>{step.icon} {step.title}</div><div style={{fontSize:12,color:'#64748b'}}>{step.desc}</div></div>
+              </div>)}
+            </div>
+          </div>
+        </div>
+      </>);
+    }
+
+    return(<>
+      {/* Filters */}
+      <div style={{display:'flex',gap:8,marginBottom:12,flexWrap:'wrap',alignItems:'center'}}>
+        <div className="search-bar" style={{flex:1,maxWidth:300}}><Icon name="search"/><input placeholder="Search stores..." value={omgFilter.search} onChange={e=>setOmgFilter(x=>({...x,search:e.target.value}))}/></div>
+        <select className="form-select" style={{width:130,fontSize:11}} value={omgFilter.rep} onChange={e=>setOmgFilter(x=>({...x,rep:e.target.value}))}>
+          <option value="all">All Reps</option>{REPS.filter(r=>r.role==='rep').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
+        <div style={{display:'flex',gap:4}}>
+          {[['all','All'],['open','Open'],['closed','Closed'],['draft','Draft']].map(([v,l])=>
+            <button key={v} className={`btn btn-sm ${omgFilter.status===v?'btn-primary':'btn-secondary'}`} onClick={()=>setOmgFilter(x=>({...x,status:v}))}>{l}</button>)}
+        </div>
+      </div>
+
+      {/* Stats */}
+      <div className="stats-row" style={{marginBottom:12}}>
+        <div className="stat-card"><div className="stat-label">Total Stores</div><div className="stat-value">{filtered.length}</div></div>
+        <div className="stat-card"><div className="stat-label">Total Sales</div><div className="stat-value" style={{color:'#1e40af'}}>${(totalSales/1000).toFixed(1)}k</div></div>
+        <div className="stat-card"><div className="stat-label">Fundraised</div><div className="stat-value" style={{color:'#166534'}}>${(totalFund/1000).toFixed(1)}k</div></div>
+        <div className="stat-card"><div className="stat-label">Orders</div><div className="stat-value">{totalOrders}</div></div>
+        <div className="stat-card"><div className="stat-label">Open Now</div><div className="stat-value" style={{color:'#d97706'}}>{filtered.filter(s=>s.status==='open').length}</div></div>
+      </div>
+
+      {/* Store cards */}
+      <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(320px,1fr))',gap:12}}>
+        {filtered.map(s=>{const c=cust.find(x=>x.id===s.customer_id);const rep=REPS.find(r=>r.id===s.rep_id);
+          return<div key={s.id} className="card hover-card" style={{cursor:'pointer',border:s.status==='open'?'2px solid #22c55e':undefined}} onClick={()=>setOmgSel(s)}>
+            <div style={{padding:14}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:6}}>
+                <div>
+                  <div style={{fontSize:14,fontWeight:800}}>{s.store_name}</div>
+                  <div style={{fontSize:11,color:'#64748b'}}>{c?.name} · {rep?.name?.split(' ')[0]}</div>
+                </div>
+                <span style={{padding:'2px 8px',borderRadius:8,fontSize:10,fontWeight:700,
+                  background:s.status==='open'?'#dcfce7':s.status==='closed'?'#dbeafe':'#f1f5f9',
+                  color:s.status==='open'?'#166534':s.status==='closed'?'#1e40af':'#94a3b8'}}>{s.status}</span>
+              </div>
+              {s.open_date&&<div style={{fontSize:10,color:'#94a3b8',marginBottom:8}}>📅 {s.open_date} → {s.close_date}</div>}
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:6}}>
+                <div style={{textAlign:'center',padding:6,background:'#f8fafc',borderRadius:4}}>
+                  <div style={{fontSize:16,fontWeight:800,color:'#1e40af'}}>${s.total_sales.toLocaleString()}</div><div style={{fontSize:9,color:'#64748b'}}>Sales</div></div>
+                <div style={{textAlign:'center',padding:6,background:'#f0fdf4',borderRadius:4}}>
+                  <div style={{fontSize:16,fontWeight:800,color:'#166534'}}>{s.orders}</div><div style={{fontSize:9,color:'#64748b'}}>Orders</div></div>
+                <div style={{textAlign:'center',padding:6,background:'#fef3c7',borderRadius:4}}>
+                  <div style={{fontSize:16,fontWeight:800,color:'#92400e'}}>${s.fundraise_total.toLocaleString()}</div><div style={{fontSize:9,color:'#64748b'}}>Fundraised</div></div>
+              </div>
+              <div style={{marginTop:6,fontSize:10,color:'#64748b'}}>{s.products.length} products · {s.items_sold} items sold · {s.unique_buyers} buyers</div>
+              {s.status==='closed'&&!sos.some(so=>so.omg_store_id===s.id)&&<div style={{marginTop:6,padding:4,background:'#fef3c7',borderRadius:4,fontSize:10,color:'#92400e',fontWeight:600,textAlign:'center'}}>
+                ⚠️ Ready to pull — not yet converted to SO</div>}
+              {sos.some(so=>so.omg_store_id===s.id)&&<div style={{marginTop:6,padding:4,background:'#dcfce7',borderRadius:4,fontSize:10,color:'#166534',fontWeight:600,textAlign:'center'}}>
+                ✅ Pulled → {sos.find(so=>so.omg_store_id===s.id)?.id}</div>}
+            </div>
+          </div>})}
+      </div>
+    </>);
+  };
+
   // NETSUITE IMPORT PAGE
-  const[imp,setImp]=useState({step:'upload',raw:'',docType:'so',custId:'',parsed:[],decoLines:[],issues:[],questions:[],shipping:[],memo:'',poRef:''});
+  const[imp,setImp]=useState({step:'upload',raw:'',docType:'',custId:'',parsed:[],decoLines:[],issues:[],questions:[],shipping:[],memo:'',poRef:'',files:[],processing:false});
   const SZ_ORD_I=['XXS','XS','YXS','YS','YM','YL','YXL','S','M','L','XL','2XL','3XL','4XL','5XL','OSFA'];
 
   const parseNSData=(raw)=>{
@@ -4521,6 +4719,106 @@ export default function App(){
     });
   };
 
+  const detectDocType=(text)=>{
+    const l=text.toLowerCase();
+    if(l.includes('sales order'))return{type:'so',label:'Sales Order'};
+    if(l.includes('estimate')||l.includes('quotation')||l.includes('quote'))return{type:'est',label:'Estimate'};
+    if(l.includes('invoice')||l.includes('credit memo'))return{type:'inv',label:'Invoice'};
+    if(l.includes('purchase order'))return{type:'po',label:'Purchase Order'};
+    return null;
+  };
+
+  // Load PDF.js on demand
+  const loadPdfJs=()=>new Promise((resolve)=>{
+    if(window.pdfjsLib){resolve(window.pdfjsLib);return}
+    const s=document.createElement('script');
+    s.src='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+    s.onload=()=>{window.pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';resolve(window.pdfjsLib)};
+    s.onerror=()=>resolve(null);
+    document.head.appendChild(s);
+  });
+
+  const processFiles=async(fileList)=>{
+    setImp(x=>({...x,processing:true}));
+
+    // Build file entries first
+    const entries=Array.from(fileList).map(file=>({
+      file,name:file.name,type:file.type==='application/pdf'?'pdf':file.type.startsWith('image/')?'image':'unknown',
+      size:file.size,status:'processing',text:'',detectedType:null,detectedCustomer:null,extractedLines:0,error:null,preview:null}));
+
+    // Add them all to state
+    setImp(x=>({...x,files:[...x.files,...entries]}));
+
+    // Process each
+    const results=[];
+    for(const entry of entries){
+      try{
+        let text='';
+        if(entry.type==='pdf'){
+          const pdfLib=await loadPdfJs();
+          const arrayBuf=await entry.file.arrayBuffer();
+          if(pdfLib){
+            const pdf=await pdfLib.getDocument({data:arrayBuf}).promise;
+            const pages=[];
+            for(let p=1;p<=pdf.numPages;p++){
+              const page=await pdf.getPage(p);
+              const content=await page.getTextContent();
+              // Reconstruct lines by grouping items at similar Y positions
+              const items=content.items.filter(i=>i.str.trim());
+              if(items.length>0){
+                items.sort((a,b)=>b.transform[5]-a.transform[5]||a.transform[4]-b.transform[4]);
+                let curY=items[0].transform[5];let line=[];const lines=[];
+                items.forEach(i=>{
+                  if(Math.abs(i.transform[5]-curY)>3){lines.push(line.join('\t'));line=[i.str];curY=i.transform[5]}
+                  else line.push(i.str)});
+                if(line.length)lines.push(line.join('\t'));
+                pages.push(lines.join('\n'));
+              }
+            }
+            text=pages.join('\n\n--- PAGE BREAK ---\n\n');
+          } else {
+            // No PDF.js — try raw extraction
+            const bytes=new Uint8Array(arrayBuf);
+            const readable=[];let chunk='';
+            bytes.forEach(b=>{if(b>=32&&b<=126)chunk+=String.fromCharCode(b);else if(chunk.length>2){readable.push(chunk);chunk=''}else chunk=''});
+            if(chunk.length>2)readable.push(chunk);
+            text=readable.join(' ');
+          }
+        } else if(entry.type==='image'){
+          // Create preview URL for images
+          entry.preview=URL.createObjectURL(entry.file);
+          text='[Image: '+entry.name+' — paste line items manually or use PDF export for best results]';
+        }
+
+        const dtResult=detectDocType(text);
+        const detCust=detectCustomer(text);
+        const lineCount=text.split('\n').filter(l=>l.trim().length>3).length;
+
+        entry.status='ready';entry.text=text;entry.extractedLines=lineCount;
+        entry.detectedType=dtResult?.type||null;
+        entry.detectedCustomer=detCust?.name||null;
+        results.push({entry,dtResult,detCust,text});
+      }catch(err){
+        entry.status='error';entry.error=err.message||'Failed to process';
+        results.push({entry,error:true});
+      }
+    }
+
+    // Update state with all results at once
+    setImp(x=>{
+      const allFiles=[...x.files.filter(f=>!entries.includes(f)),...entries];
+      const readyFiles=allFiles.filter(f=>f.status==='ready'&&f.text&&!f.text.startsWith('['));
+      const allText=readyFiles.map(f=>f.text).join('\n');
+      // Auto-detect from first successful file
+      const firstGood=results.find(r=>!r.error&&r.dtResult);
+      const firstCust=results.find(r=>!r.error&&r.detCust);
+      return{...x,files:allFiles,processing:false,
+        docType:x.docType||(firstGood?.dtResult?.type)||'',
+        custId:x.custId||(firstCust?.detCust?.id)||'',
+        raw:allText||x.raw};
+    });
+  };
+
   const rImport=()=>{
 
     const applyAnswer=(qi,val)=>setImp(x=>({...x,questions:x.questions.map((q,i)=>i===qi?{...q,answer:val}:q)}));
@@ -4538,30 +4836,104 @@ export default function App(){
       {imp.step==='upload'&&<>
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}}>
           {/* Left: upload area */}
-          <div className="card"><div className="card-header"><h2>📄 Upload PDF or Paste Data</h2></div>
+          <div className="card"><div className="card-header"><h2>📄 Upload Files or Paste Data</h2></div>
             <div className="card-body">
+
+              {/* Drag & Drop Zone */}
               <div style={{marginBottom:12}}>
+                <label className="form-label">Upload PDF, PNG, or JPG files</label>
+                <div style={{padding:28,border:'2px dashed #3b82f6',borderRadius:8,textAlign:'center',background:'#eff6ff',cursor:'pointer',transition:'all 0.2s'}}
+                  onDragOver={e=>{e.preventDefault();e.currentTarget.style.background='#dbeafe';e.currentTarget.style.borderColor='#1e40af'}}
+                  onDragLeave={e=>{e.currentTarget.style.background='#eff6ff';e.currentTarget.style.borderColor='#3b82f6'}}
+                  onDrop={e=>{e.preventDefault();e.currentTarget.style.background='#eff6ff';e.currentTarget.style.borderColor='#3b82f6';
+                    const droppedFiles=[...e.dataTransfer.files].filter(f=>f.type==='application/pdf'||f.type.startsWith('image/'));
+                    if(droppedFiles.length===0){nf('Only PDF and image files accepted','error');return}
+                    processFiles(droppedFiles)}}
+                  onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.accept='.pdf,.png,.jpg,.jpeg';
+                    inp.onchange=e=>processFiles([...e.target.files]);inp.click()}}>
+                  <div style={{fontSize:32,marginBottom:4}}>📎</div>
+                  <div style={{fontSize:13,fontWeight:700,color:'#1e40af'}}>Drag & drop files here or click to browse</div>
+                  <div style={{fontSize:11,color:'#64748b',marginTop:4}}>PDF, PNG, JPG — multiple files OK</div>
+                  <div style={{fontSize:10,color:'#94a3b8',marginTop:2}}>We'll auto-detect: Sales Order, Estimate, Invoice, or PO</div>
+                </div>
+              </div>
+
+              {/* Uploaded files list */}
+              {imp.files.length>0&&<div style={{marginBottom:12}}>
+                <label className="form-label">Uploaded Files ({imp.files.length})</label>
+                {imp.files.map((f,fi)=><div key={fi} style={{padding:'8px 12px',background:f.status==='ready'?'#f0fdf4':f.status==='error'?'#fef2f2':'#f8fafc',
+                  borderRadius:6,marginBottom:4,border:'1px solid '+(f.status==='ready'?'#86efac':f.status==='error'?'#fca5a5':'#e2e8f0')}}>
+                  <div style={{display:'flex',alignItems:'center',gap:8}}>
+                    {f.preview?<img src={f.preview} style={{width:40,height:40,objectFit:'cover',borderRadius:4,border:'1px solid #e2e8f0'}}/>
+                      :<span style={{fontSize:20,width:40,textAlign:'center'}}>{f.type==='pdf'?'📄':'🖼️'}</span>}
+                    <div style={{flex:1}}>
+                      <div style={{fontSize:12,fontWeight:600}}>{f.name}</div>
+                      <div style={{fontSize:10,color:'#64748b',display:'flex',gap:4,alignItems:'center',flexWrap:'wrap'}}>
+                        <span>{(f.type||'').toUpperCase()} · {(f.size/1024).toFixed(0)}KB</span>
+                        {f.detectedType&&<span style={{padding:'1px 5px',borderRadius:4,fontSize:9,fontWeight:700,
+                          background:f.detectedType==='so'?'#dbeafe':f.detectedType==='est'?'#fef3c7':f.detectedType==='inv'?'#dcfce7':'#ede9fe',
+                          color:f.detectedType==='so'?'#1e40af':f.detectedType==='est'?'#92400e':f.detectedType==='inv'?'#166534':'#6d28d9'}}>
+                          {f.detectedType==='so'?'📋 Sales Order':f.detectedType==='est'?'📝 Estimate':f.detectedType==='inv'?'💰 Invoice':f.detectedType==='po'?'📦 Purchase Order':'❓ Unknown'}</span>}
+                        {f.detectedCustomer&&<span style={{fontSize:9,color:'#166534',fontWeight:600}}>👤 {f.detectedCustomer}</span>}
+                        {f.extractedLines>0&&<span style={{fontSize:9}}>· {f.extractedLines} lines</span>}
+                      </div>
+                    </div>
+                    {f.status==='processing'&&<span style={{fontSize:10,color:'#d97706',fontWeight:600}}>⏳ Processing...</span>}
+                    {f.status==='ready'&&f.type==='pdf'&&<button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px'}}
+                      onClick={()=>setImp(x=>({...x,files:x.files.map((ff,i)=>i===fi?{...ff,_showText:!ff._showText}:ff)}))}>
+                      {f._showText?'Hide':'View'} Text</button>}
+                    {f.status==='ready'&&<span style={{fontSize:12,color:'#166534'}}>✅</span>}
+                    {f.status==='error'&&<span style={{fontSize:10,color:'#dc2626'}}>❌ {f.error}</span>}
+                    <button style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',fontSize:16,padding:2}} title="Remove file"
+                      onClick={()=>setImp(x=>({...x,files:x.files.filter((_,i)=>i!==fi)}))}>×</button>
+                  </div>
+                  {f._showText&&f.text&&<div style={{marginTop:6,padding:8,background:'#f8fafc',borderRadius:4,maxHeight:200,overflow:'auto'}}>
+                    <pre style={{fontSize:9,fontFamily:'monospace',whiteSpace:'pre-wrap',margin:0,color:'#475569'}}>{f.text}</pre>
+                  </div>}
+                  {f.type==='image'&&f.status==='ready'&&<div style={{marginTop:6,padding:6,background:'#fffbeb',borderRadius:4,fontSize:10,color:'#92400e'}}>
+                    📸 Image uploaded — for best results, paste the line items from NetSuite into the text area below. The image is saved for reference.
+                  </div>}
+                </div>)}
+              </div>}
+
+              {imp.processing&&<div style={{padding:12,background:'#fef3c7',borderRadius:6,marginBottom:12,textAlign:'center'}}>
+                <div style={{fontSize:13,fontWeight:700,color:'#92400e'}}>⏳ Processing files...</div>
+                <div style={{fontSize:11,color:'#92400e'}}>Extracting text and detecting document type</div>
+              </div>}
+
+              {/* Manual doc type override */}
+              {imp.files.length>0&&<div style={{marginBottom:12}}>
+                <label className="form-label">Document Type {imp.docType&&<span style={{color:'#22c55e',fontSize:10}}>✓ {imp.docType==='so'?'Sales Order':imp.docType==='est'?'Estimate':imp.docType==='po'?'PO':'Invoice'}</span>}</label>
+                <div style={{display:'flex',gap:4}}>
+                  {[['','Auto-Detect'],['so','Sales Order'],['est','Estimate'],['inv','Invoice'],['po','Purchase Order']].map(([v,l])=>
+                    <button key={v} className={`btn btn-sm ${imp.docType===v?'btn-primary':'btn-secondary'}`} onClick={()=>setImp(x=>({...x,docType:v}))}>{l}</button>)}
+                </div>
+              </div>}
+
+              {/* Paste option */}
+              <div style={{borderTop:'1px solid #e2e8f0',paddingTop:12}}>
+                <label className="form-label">Or paste tab-separated data from NetSuite</label>
+                <textarea className="form-input" rows={8} value={imp.raw} onChange={e=>{
+                  const v=e.target.value;setImp(x=>({...x,raw:v}));
+                  if(v.length>20&&!imp.custId){const det=detectCustomer(v);if(det)setImp(x=>({...x,custId:det.id}))}
+                  // Auto-detect doc type from pasted text
+                  if(v.length>10&&!imp.docType){
+                    const lower=v.toLowerCase();
+                    if(lower.includes('sales order'))setImp(x=>({...x,docType:'so'}));
+                    else if(lower.includes('estimate')||lower.includes('quote'))setImp(x=>({...x,docType:'est'}));
+                    else if(lower.includes('invoice'))setImp(x=>({...x,docType:'inv'}));
+                    else if(lower.includes('purchase order'))setImp(x=>({...x,docType:'po'}));
+                  }
+                }} placeholder="Copy lines from NetSuite (ITEM → INVOICED columns)..." style={{fontFamily:'monospace',fontSize:10,whiteSpace:'pre'}}/>
+              </div>
+
+              {!imp.docType&&!imp.files.length&&<div style={{marginTop:12}}>
                 <label className="form-label">Document Type</label>
                 <div style={{display:'flex',gap:4}}>
                   {[['so','Sales Order'],['est','Estimate'],['po','Purchase Order']].map(([v,l])=>
                     <button key={v} className={`btn btn-sm ${imp.docType===v?'btn-primary':'btn-secondary'}`} onClick={()=>setImp(x=>({...x,docType:v}))}>{l}</button>)}
                 </div>
-              </div>
-              <div style={{marginBottom:12}}>
-                <label className="form-label">Upload PDF <span style={{fontSize:10,color:'#94a3b8'}}>(coming soon — use paste for now)</span></label>
-                <div style={{padding:24,border:'2px dashed #d1d5db',borderRadius:8,textAlign:'center',color:'#94a3b8',fontSize:12}}>
-                  📎 Drag & drop PDF here or click to browse<br/>
-                  <span style={{fontSize:10}}>NetSuite PDF export or printed SO/Estimate</span>
-                </div>
-              </div>
-              <div>
-                <label className="form-label">Or paste tab-separated data from NetSuite</label>
-                <textarea className="form-input" rows={10} value={imp.raw} onChange={e=>{
-                  const v=e.target.value;setImp(x=>({...x,raw:v}));
-                  // Auto-detect customer
-                  if(v.length>20&&!imp.custId){const det=detectCustomer(v);if(det)setImp(x=>({...x,custId:det.id}))}
-                }} placeholder="Copy lines from NetSuite (ITEM → INVOICED columns) and paste here..." style={{fontFamily:'monospace',fontSize:10,whiteSpace:'pre'}}/>
-              </div>
+              </div>}
             </div>
           </div>
 
@@ -4598,11 +4970,17 @@ export default function App(){
           </div>
         </div>
 
-        <div style={{marginTop:12,display:'flex',gap:8}}>
-          <button className="btn btn-primary" disabled={!imp.raw.trim()||!imp.custId} onClick={()=>{
-            const result=parseNSData(imp.raw);
-            setImp(x=>({...x,step:result.questions.length>0?'review':'review',...result}));
+        <div style={{marginTop:12,display:'flex',gap:8,alignItems:'center'}}>
+          <button className="btn btn-primary" disabled={(!imp.raw.trim()&&!imp.files.some(f=>f.status==='ready'))||!imp.custId||imp.processing} onClick={()=>{
+            // Combine all text sources
+            let allRaw=imp.raw;
+            imp.files.filter(f=>f.status==='ready'&&f.text&&!f.text.startsWith('[')).forEach(f=>{if(!allRaw.includes(f.text))allRaw+='\n'+f.text});
+            const result=parseNSData(allRaw);
+            setImp(x=>({...x,step:'review',...result}));
           }}>🔍 Parse & Review →</button>
+          {!imp.custId&&<span style={{fontSize:11,color:'#d97706'}}>← Select a customer first</span>}
+          {imp.custId&&!imp.raw.trim()&&!imp.files.some(f=>f.status==='ready')&&<span style={{fontSize:11,color:'#d97706'}}>← Upload files or paste data</span>}
+          {imp.files.some(f=>f.type==='image'&&f.status==='ready')&&<span style={{fontSize:11,color:'#64748b'}}>Image files detected — paste the line items manually for best results</span>}
         </div>
       </>}
 
@@ -4793,7 +5171,7 @@ export default function App(){
                   setEEst(newEst);setEEstC(c);setPg('estimates');
                   nf('📥 Imported Estimate with '+newItems.length+' items from NetSuite');
                 }
-                setImp({step:'upload',raw:'',docType:'so',custId:'',parsed:[],decoLines:[],issues:[],questions:[],shipping:[],memo:'',poRef:''});
+                setImp({step:'upload',raw:'',docType:'',custId:'',parsed:[],decoLines:[],issues:[],questions:[],shipping:[],memo:'',poRef:'',files:[],processing:false});
               }}>🚀 Create {imp.docType==='so'?'Sales Order':'Estimate'} ({keeping.length} items)</button>
             </div>
           </>})()}
@@ -4983,8 +5361,8 @@ export default function App(){
           </div></div>})}</div></div></>)};
 
     // NAV
-  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'reports',label:'Reports',icon:'dollar'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'production',label:'Prod Board',icon:'package'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{section:'Comms'},{id:'messages',label:'Messages',icon:'mail'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'System'},{id:'import',label:'NetSuite Import',icon:'save'},{id:'backup',label:'Backup & Data',icon:'save'}];
-  const titles={dashboard:'Dashboard',reports:'Reports & Analytics',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',jobs:'Jobs',production:'Production Board',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',products:'Products',inventory:'Inventory',messages:'Messages',import:'NetSuite Import',backup:'Backup & Data'};
+  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'reports',label:'Reports',icon:'dollar'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'production',label:'Prod Board',icon:'package'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{section:'Comms'},{id:'messages',label:'Messages',icon:'mail'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'System'},{id:'import',label:'NetSuite Import',icon:'save'},{id:'backup',label:'Backup & Data',icon:'save'}];
+  const titles={dashboard:'Dashboard',reports:'Reports & Analytics',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',omg:'OMG Team Stores',jobs:'Jobs',production:'Production Board',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',products:'Products',inventory:'Inventory',messages:'Messages',import:'NetSuite Import',backup:'Backup & Data'};
   return(<div className="app"><Toast msg={toast?.msg} type={toast?.type}/>
     <div className="sidebar"><div className="sidebar-logo">NSA<span>Portal</span></div>
       <nav className="sidebar-nav">{nav.map((item,i)=>{if(item.section)return<div key={i} className="sidebar-section">{item.section}</div>;
@@ -5018,9 +5396,90 @@ export default function App(){
             </div>})()}
           {gOpen&&<div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:59}} onClick={()=>setGOpen(false)}/>}
         </div>
-        <div style={{display:'flex',gap:6,alignItems:'center'}}><button className="btn btn-sm btn-primary" onClick={()=>newE(null)} style={{fontSize:11}}><Icon name="plus" size={12}/> Estimate</button><button className="btn btn-sm btn-secondary" onClick={()=>setCM({open:true,c:null})} style={{fontSize:11}}><Icon name="plus" size={12}/> Customer</button></div></div>
-      <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='production'&&rProd2()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='reports'&&rReports()}{pg==='import'&&rImport()}{pg==='backup'&&rBackup()}</div></div>
+        <div style={{display:'flex',gap:6,alignItems:'center'}}><button className="btn btn-sm btn-primary" onClick={()=>newE(null)} style={{fontSize:11}}><Icon name="plus" size={12}/> Estimate</button><button className="btn btn-sm btn-secondary" onClick={()=>setCM({open:true,c:null})} style={{fontSize:11}}><Icon name="plus" size={12}/> Customer</button><button className="btn btn-sm btn-secondary" onClick={()=>setQPC({open:true,mode:'single',items:[{sku:'',name:'',brand:'',color:'',category:'Tees',retail_price:0,nsa_cost:0,available_sizes:['S','M','L','XL','2XL'],vendor_id:''}]})} style={{fontSize:11}}><Icon name="plus" size={12}/> Product</button></div></div>
+      <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='production'&&rProd2()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='omg'&&rOMG()}{pg==='reports'&&rReports()}{pg==='import'&&rImport()}{pg==='backup'&&rBackup()}</div></div>
     <CustModal isOpen={cM.open} onClose={()=>setCM({open:false,c:null})} onSave={savC} customer={cM.c} parents={pars}/>
     <AdjModal isOpen={aM.open} onClose={()=>setAM({open:false,p:null})} product={aM.p} onSave={savI}/>
+
+    {/* QUICK PRODUCT CREATE MODAL */}
+    {qPC.open&&<div className="modal-overlay" onClick={()=>setQPC(x=>({...x,open:false}))}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:qPC.mode==='bulk'?800:550,maxHeight:'85vh',overflow:'auto'}}>
+      <div className="modal-header" style={{background:'#eff6ff'}}><h2>📦 Quick Add Product{qPC.mode==='bulk'?'s':''}</h2><button className="modal-close" onClick={()=>setQPC(x=>({...x,open:false}))}>×</button></div>
+      <div className="modal-body">
+        <div style={{display:'flex',gap:4,marginBottom:12}}>
+          <button className={`btn btn-sm ${qPC.mode==='single'?'btn-primary':'btn-secondary'}`} onClick={()=>setQPC(x=>({...x,mode:'single'}))}>Single Item</button>
+          <button className={`btn btn-sm ${qPC.mode==='multi'?'btn-primary':'btn-secondary'}`} onClick={()=>setQPC(x=>({...x,mode:'multi'}))}>Multiple Items</button>
+          <button className={`btn btn-sm ${qPC.mode==='bulk'?'btn-primary':'btn-secondary'}`} onClick={()=>setQPC(x=>({...x,mode:'bulk'}))}>📥 Bulk Upload</button>
+        </div>
+
+        {qPC.mode==='single'&&(()=>{const it=qPC.items[0]||{};const up=(k,v)=>setQPC(x=>({...x,items:[{...x.items[0],[k]:v}]}));
+          return<div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
+            <div><label className="form-label">SKU *</label><input className="form-input" value={it.sku} onChange={e=>up('sku',e.target.value)} placeholder="JJ0605"/></div>
+            <div><label className="form-label">Brand</label><select className="form-select" value={it.vendor_id} onChange={e=>{const v=D_V.find(x=>x.id===e.target.value);up('vendor_id',e.target.value);if(v)up('brand',v.name)}}><option value="">Select...</option>{D_V.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}</select></div>
+            <div style={{gridColumn:'1/3'}}><label className="form-label">Product Name *</label><input className="form-input" value={it.name} onChange={e=>up('name',e.target.value)} placeholder="Adidas Practice Jersey 2.0"/></div>
+            <div><label className="form-label">Color</label><input className="form-input" value={it.color} onChange={e=>up('color',e.target.value)} placeholder="Power Red/White"/></div>
+            <div><label className="form-label">Category</label><select className="form-select" value={it.category} onChange={e=>up('category',e.target.value)}>
+              {['Tees','Polos','Hoodies','1/4 Zips','Shorts','Pants','Hats','Bags','Accessories','Jackets','Jerseys','Custom'].map(c=><option key={c}>{c}</option>)}</select></div>
+            <div><label className="form-label">Retail Price</label><$In value={it.retail_price||0} onChange={v=>up('retail_price',v)}/></div>
+            <div><label className="form-label">NSA Cost</label><$In value={it.nsa_cost||0} onChange={v=>up('nsa_cost',v)}/></div>
+            <div style={{gridColumn:'1/3'}}><label className="form-label">Available Sizes</label>
+              <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>{['XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL','OSFA'].map(sz=>
+                <button key={sz} className={`btn btn-sm ${(it.available_sizes||[]).includes(sz)?'btn-primary':'btn-secondary'}`} style={{fontSize:10,padding:'3px 8px'}}
+                  onClick={()=>{const cur=it.available_sizes||[];up('available_sizes',cur.includes(sz)?cur.filter(s=>s!==sz):[...cur,sz])}}>{sz}</button>)}</div>
+            </div>
+          </div>})()}
+
+        {qPC.mode==='multi'&&<>
+          {qPC.items.map((it,i)=><div key={i} style={{padding:8,background:'#f8fafc',borderRadius:6,marginBottom:6}}>
+            <div style={{display:'flex',gap:6,alignItems:'center'}}>
+              <input className="form-input" value={it.sku} onChange={e=>setQPC(x=>({...x,items:x.items.map((ii,ix)=>ix===i?{...ii,sku:e.target.value}:ii)}))} placeholder="SKU" style={{width:90,fontSize:11}}/>
+              <input className="form-input" value={it.name} onChange={e=>setQPC(x=>({...x,items:x.items.map((ii,ix)=>ix===i?{...ii,name:e.target.value}:ii)}))} placeholder="Product name" style={{flex:1,fontSize:11}}/>
+              <select className="form-select" value={it.vendor_id||''} onChange={e=>setQPC(x=>({...x,items:x.items.map((ii,ix)=>ix===i?{...ii,vendor_id:e.target.value,brand:D_V.find(v=>v.id===e.target.value)?.name||''}:ii)}))} style={{width:100,fontSize:10}}>
+                <option value="">Brand</option>{D_V.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}</select>
+              <$In value={it.nsa_cost||0} onChange={v=>setQPC(x=>({...x,items:x.items.map((ii,ix)=>ix===i?{...ii,nsa_cost:v}:ii)}))} w={50}/>
+              <$In value={it.retail_price||0} onChange={v=>setQPC(x=>({...x,items:x.items.map((ii,ix)=>ix===i?{...ii,retail_price:v}:ii)}))} w={50}/>
+              <button style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:2}} onClick={()=>setQPC(x=>({...x,items:x.items.filter((_,ix)=>ix!==i)}))}>×</button>
+            </div>
+          </div>)}
+          <button className="btn btn-sm btn-secondary" onClick={()=>setQPC(x=>({...x,items:[...x.items,{sku:'',name:'',brand:'',color:'',category:'Tees',retail_price:0,nsa_cost:0,available_sizes:['S','M','L','XL','2XL'],vendor_id:''}]}))}>+ Add Row</button>
+        </>}
+
+        {qPC.mode==='bulk'&&<>
+          <div style={{fontSize:11,color:'#64748b',marginBottom:6}}>Paste tab-separated: <strong>SKU, Name, Brand, Color, Cost, Retail, Sizes</strong> (one per line)</div>
+          <textarea className="form-input" rows={8} value={qPC.bulkRaw||''} onChange={e=>setQPC(x=>({...x,bulkRaw:e.target.value}))}
+            placeholder={"JJ0605\tAdidas Practice 2.0\tAdidas\tPower Red\t21.00\t55.50\tS,M,L,XL,2XL\nHF7245\tAdidas Team Hoodie\tAdidas\tNavy\t28.50\t85.00\tS,M,L,XL,2XL"} style={{fontFamily:'monospace',fontSize:10}}/>
+          <div style={{marginTop:6,padding:8,border:'2px dashed #d1d5db',borderRadius:6,textAlign:'center',fontSize:11,color:'#94a3b8',cursor:'pointer'}}
+            onDragOver={e=>e.preventDefault()} onDrop={e=>{e.preventDefault();const f=[...e.dataTransfer.files][0];if(f){const r=new FileReader();r.onload=ev=>setQPC(x=>({...x,bulkRaw:ev.target.result}));r.readAsText(f)}}}
+            onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.csv,.tsv,.txt';inp.onchange=e=>{const f=e.target.files[0];if(f){const r=new FileReader();r.onload=ev=>setQPC(x=>({...x,bulkRaw:ev.target.result}));r.readAsText(f)}};inp.click()}}>
+            📎 Drop CSV/TSV file or click to browse
+          </div>
+        </>}
+
+        <div style={{marginTop:12,display:'flex',gap:8}}>
+          <button className="btn btn-primary" onClick={()=>{
+            let toAdd=[];
+            if(qPC.mode==='single'){const it=qPC.items[0];if(it.sku&&it.name)toAdd=[it]}
+            else if(qPC.mode==='multi'){toAdd=qPC.items.filter(it=>it.sku&&it.name)}
+            else if(qPC.mode==='bulk'&&qPC.bulkRaw){
+              qPC.bulkRaw.trim().split('\n').forEach(line=>{
+                const cols=line.split(/\t|,(?=(?:[^"]*"[^"]*")*[^"]*$)/).map(c=>c.trim().replace(/^"|"$/g,''));
+                if(cols.length>=2&&cols[0]){toAdd.push({sku:cols[0],name:cols[1],brand:cols[2]||'',color:cols[3]||'',
+                  nsa_cost:parseFloat(cols[4])||0,retail_price:parseFloat(cols[5])||0,
+                  available_sizes:cols[6]?cols[6].split(/[,\s]+/).map(s=>s.trim()).filter(Boolean):['S','M','L','XL','2XL'],
+                  category:'Tees',vendor_id:''})}
+              });
+            }
+            if(toAdd.length===0){nf('Enter at least one product with SKU and name');return}
+            const newProds=toAdd.map((it,i)=>({id:'p'+(prod.length+i+1),vendor_id:it.vendor_id||D_V.find(v=>v.name===it.brand)?.id||'',
+              sku:it.sku,name:it.name,brand:it.brand||D_V.find(v=>v.id===it.vendor_id)?.name||'',color:it.color||'',
+              category:it.category||'Tees',retail_price:it.retail_price||0,nsa_cost:it.nsa_cost||0,
+              available_sizes:it.available_sizes||['S','M','L','XL','2XL'],is_active:true,_inv:{}}));
+            setProd(p=>[...p,...newProds]);
+            setQPC({open:false,mode:'single',items:[{sku:'',name:'',brand:'',color:'',category:'Tees',retail_price:0,nsa_cost:0,available_sizes:['S','M','L','XL','2XL'],vendor_id:''}],bulkRaw:''});
+            nf('📦 Added '+newProds.length+' product'+(newProds.length>1?'s':''));
+          }}>{qPC.mode==='bulk'?'📥 Import Products':'💾 Save Product'+(qPC.mode==='multi'?'s':'')}</button>
+          <button className="btn btn-secondary" onClick={()=>setQPC(x=>({...x,open:false}))}>Cancel</button>
+        </div>
+      </div>
+    </div></div>}
   </div>);
 }
