@@ -290,7 +290,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           {szs.map(sz=><div key={sz} style={{textAlign:'center',width:48}}><div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
             <input value={item.sizes[sz]||''} onChange={e=>uSz(idx,sz,e.target.value)} placeholder="0"
               style={{width:42,textAlign:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'5px 2px',fontSize:15,fontWeight:700,color:(item.sizes[sz]||0)>0?'#0f172a':'#cbd5e1'}}/>
-            {(()=>{const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);const stk=p?._inv?.[sz];const need=item.sizes[sz]||0;return stk!=null?<div style={{fontSize:9,fontWeight:600,color:stk<=0?'#dc2626':stk<need?'#b45309':'#166534'}}>{stk} inv</div>:null})()}</div>)}
+            {(()=>{const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);const stk=p?._inv?.[sz];const need=item.sizes[sz]||0;return stk!=null?<div style={{fontSize:9,fontWeight:600,color:stk<=0?'#dc2626':stk<need?'#ca8a04':'#166534'}}>{stk} inv</div>:null})()}</div>)}
           <div style={{textAlign:'center',marginLeft:4,padding:'0 10px',borderLeft:'2px solid #e2e8f0'}}><div style={{fontSize:10,fontWeight:700,color:'#1e40af'}}>TOT</div><div style={{fontSize:20,fontWeight:800,color:'#1e40af'}}>{qty}</div></div>
           <div style={{position:'relative',marginLeft:4}}><button className="btn btn-sm btn-secondary" onClick={()=>setShowSzPicker(showSzPicker===idx?null:idx)} style={{fontSize:10}}>+ Size</button>
             {showSzPicker===idx&&addable.length>0&&<><div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:39}} onClick={()=>setShowSzPicker(null)}/><div style={{position:'absolute',top:'100%',left:0,background:'white',border:'1px solid #e2e8f0',borderRadius:6,boxShadow:'0 4px 12px rgba(0,0,0,0.1)',zIndex:40,padding:6,display:'flex',gap:3,flexWrap:'wrap',width:180}}>
@@ -408,9 +408,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                   <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{uD(idx,di,'roster',{});nf('Roster cleared')}}>Clear All</button>
                 </div></div>
             </div>)}})}
-          <div style={{display:'flex',gap:6,marginTop:8}}>
+          <div style={{display:'flex',gap:6,marginTop:8,alignItems:'center'}}>
             <button className="btn btn-sm btn-secondary" onClick={()=>addArtDeco(idx)}><Icon name="image" size={12}/> + Add Art</button>
             <button className="btn btn-sm btn-secondary" onClick={()=>addNumDeco(idx)}>#️⃣ + Add Numbers</button>
+            {item.decorations.length===0&&!item.no_deco&&<button className="btn btn-sm" style={{background:'#fef3c7',color:'#92400e',border:'1px solid #f59e0b',fontSize:10}} onClick={()=>uI(idx,'no_deco',true)}>✓ No Deco (Blank)</button>}
+            {item.no_deco&&<span style={{fontSize:10,padding:'3px 8px',borderRadius:4,background:'#f1f5f9',color:'#64748b',fontWeight:600,display:'flex',alignItems:'center',gap:4}}>🚫 No Decoration <button onClick={()=>uI(idx,'no_deco',false)} style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',fontSize:12,padding:0,marginLeft:2}}>✕</button></span>}
+            {item.decorations.length===0&&!item.no_deco&&<span style={{fontSize:10,color:'#dc2626',fontWeight:600}}>⚠️ No deco assigned</span>}
           </div>
         </div>
       </div>)})}
@@ -834,17 +837,61 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
             <div style={{fontSize:12,fontWeight:600,color:'#64748b',marginBottom:6}}>Shipment history:</div>
             {shipments.map((sh,si)=>{
               const shQrData=JSON.stringify({type:'PO_RECV',id:po.po_id,shipment:si+1,so:o.id,sku:item?.sku,date:sh.date});
-              return<div key={si} style={{padding:'6px 10px',background:'#f0fdf4',borderRadius:6,marginBottom:4,fontSize:11,display:'flex',gap:12,alignItems:'center'}}>
+              const isEditing=editPO._editShipIdx===si;
+              const shSzKeys=szKeys.filter(sz=>sh[sz]);
+              return<div key={si} style={{marginBottom:4}}>
+              <div style={{padding:'6px 10px',background:isEditing?'#dbeafe':'#f0fdf4',borderRadius:isEditing?'6px 6px 0 0':'6px',fontSize:11,display:'flex',gap:12,alignItems:'center',cursor:'pointer'}} onClick={()=>setEditPO(p=>({...p,_editShipIdx:isEditing?null:si}))}>
               <span style={{fontWeight:700,color:'#166534'}}>📦 {sh.date}</span>
               {szKeys.map(sz=>sh[sz]?<span key={sz} style={{color:'#374151'}}>{sz}:<strong>{sh[sz]}</strong></span>:null)}
-              <button style={{marginLeft:'auto',background:'none',border:'none',cursor:'pointer',fontSize:10,color:'#64748b',textDecoration:'underline'}} onClick={()=>{
+              <span style={{marginLeft:'auto',fontSize:9,color:'#64748b'}}>{isEditing?'▲ close':'✏️ edit'}</span>
+              <button style={{background:'none',border:'none',cursor:'pointer',fontSize:10,color:'#64748b',textDecoration:'underline'}} onClick={e=>{e.stopPropagation();
                 const w=window.open('','_blank','width=400,height=300');
                 w.document.write('<html><head><title>'+po.po_id+' Recv #'+(si+1)+'</title><style>body{font-family:sans-serif;padding:20px}h1{font-size:22px;margin:0}p{margin:4px 0;font-size:13px}.sz{font-size:15px;font-weight:bold}</style></head><body>');
                 w.document.write('<div style="display:flex;gap:20px;align-items:flex-start"><img src="https://api.qrserver.com/v1/create-qr-code/?size=120x120&data='+encodeURIComponent(shQrData)+'" width="120" height="120"/><div>');
                 w.document.write('<h1>'+po.po_id+' — Shipment #'+(si+1)+'</h1><p>Received: '+sh.date+'</p><p>'+o.id+' — '+(cust?.name||'')+'</p><p><strong>'+(item?.sku||'')+' '+(item?.name||'')+'</strong> — '+(item?.color||'')+'</p>');
                 w.document.write('<p class="sz">'+szKeys.filter(sz=>sh[sz]).map(sz=>sz+': '+sh[sz]).join(' &nbsp; ')+'</p>');
                 w.document.write('</div></div></body></html>');w.document.close();w.print();
-              }}>🖨️ Print</button>
+              }}>🖨️</button>
+            </div>
+            {isEditing&&<div style={{padding:10,border:'1px solid #bfdbfe',borderRadius:'0 0 6px 6px',background:'#eff6ff',marginBottom:2}}>
+              <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:8}}>
+                <span style={{fontSize:11,fontWeight:600,color:'#64748b'}}>Date:</span>
+                <input type="date" id={'sh-edit-date-'+si} className="form-input" style={{width:140,fontSize:12}} defaultValue={sh.date}/>
+                <span style={{fontSize:11,fontWeight:600,color:'#64748b',marginLeft:8}}>Quantities:</span>
+                {szKeys.map(sz=>{const v=sh[sz]||0;if(!v&&!shSzKeys.includes(sz))return null;return<div key={sz} style={{textAlign:'center'}}>
+                  <div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
+                  <input id={'sh-edit-'+si+'-'+sz} style={{width:42,textAlign:'center',border:'1px solid #93c5fd',borderRadius:4,padding:'3px 2px',fontSize:13,fontWeight:700,background:'white'}} defaultValue={v}/>
+                </div>})}
+              </div>
+              <div style={{display:'flex',gap:6}}>
+                <button className="btn btn-sm btn-primary" style={{fontSize:11}} onClick={()=>{
+                  const dateEl=document.getElementById('sh-edit-date-'+si);
+                  const updatedSh={date:dateEl?.value||sh.date};
+                  szKeys.forEach(sz=>{const el=document.getElementById('sh-edit-'+si+'-'+sz);if(el){const v=parseInt(el.value)||0;if(v>0)updatedSh[sz]=v}else if(sh[sz])updatedSh[sz]=sh[sz]});
+                  // Recalculate received totals from all shipments
+                  const newShipments=[...shipments];newShipments[si]=updatedSh;
+                  const newReceived={};newShipments.forEach(s=>{szKeys.forEach(sz=>{if(s[sz])newReceived[sz]=(newReceived[sz]||0)+s[sz]})});
+                  const newTotalOpen=szKeys.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-(newReceived[sz]||0)-getCncl(sz)),0);
+                  const newStatus=newTotalOpen<=0&&Object.values(newReceived).some(v=>v>0)?'received':Object.values(newReceived).some(v=>v>0)?'partial':'waiting';
+                  const updatedPO={...po,received:newReceived,shipments:newShipments,status:newStatus};
+                  const updatedItems=[...o.items];updatedItems[editPO.lineIdx].po_lines[editPO.poIdx]=updatedPO;
+                  const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};
+                  setO(updated);onSave(updated);setEditPO({...editPO,po:updatedPO,_editShipIdx:null});nf('Shipment #'+(si+1)+' updated');
+                }}>Save</button>
+                <button className="btn btn-sm" style={{background:'#dc2626',color:'white',fontSize:11}} onClick={()=>{
+                  if(!window.confirm('Delete this shipment receipt? Received quantities will be recalculated.'))return;
+                  const newShipments=shipments.filter((_,i)=>i!==si);
+                  const newReceived={};newShipments.forEach(s=>{szKeys.forEach(sz=>{if(s[sz])newReceived[sz]=(newReceived[sz]||0)+s[sz]})});
+                  const newTotalOpen=szKeys.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-(newReceived[sz]||0)-getCncl(sz)),0);
+                  const newStatus=newTotalOpen<=0&&Object.values(newReceived).some(v=>v>0)?'received':Object.values(newReceived).some(v=>v>0)?'partial':'waiting';
+                  const updatedPO={...po,received:newReceived,shipments:newShipments,status:newStatus};
+                  const updatedItems=[...o.items];updatedItems[editPO.lineIdx].po_lines[editPO.poIdx]=updatedPO;
+                  const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};
+                  setO(updated);onSave(updated);setEditPO({...editPO,po:updatedPO,_editShipIdx:null});nf('Shipment deleted');
+                }}><Icon name="trash" size={10}/> Delete</button>
+                <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>setEditPO(p=>({...p,_editShipIdx:null}))}>Cancel</button>
+              </div>
+            </div>}
             </div>})}
           </>}
 
@@ -893,20 +940,24 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                 <img src={'https://api.qrserver.com/v1/create-qr-code/?size=100x100&data='+encodeURIComponent(qrData)} alt="QR" style={{width:80,height:80,display:'block'}}/>
               </div>
               <div style={{flex:1,fontSize:11}}>
-                <div style={{fontWeight:800,fontSize:14}}>{po.po_id}</div>
+                <div style={{fontWeight:800,fontSize:14}}>{po.po_id} <span style={{fontSize:10,fontWeight:600,color:poStatus==='received'?'#166534':poStatus==='partial'?'#b45309':'#64748b'}}>({poStatus==='received'?'Fully Received':poStatus==='partial'?totalReceived+'/'+totalOrdered+' received':'Waiting'})</span></div>
                 <div style={{color:'#64748b'}}>{o.id} — {cust?.name}</div>
                 <div style={{fontWeight:600}}>{item?.sku} {item?.name}</div>
-                <div>{item?.color} — {totalOrdered} units ordered</div>
-                <div style={{marginTop:4}}>{szKeys.map(sz=>sz+':'+po[sz]).join('  ')}</div>
+                <div>{item?.color} — {totalOrdered} ordered{totalReceived>0?', '+totalReceived+' received':''}</div>
+                <div style={{marginTop:4}}>Ordered: {szKeys.map(sz=>sz+':'+po[sz]).join('  ')}</div>
+                {totalReceived>0&&<div style={{color:'#166534'}}>Received: {szKeys.filter(sz=>getRcvd(sz)>0).map(sz=>sz+':'+getRcvd(sz)).join('  ')}</div>}
+                {totalOpen>0&&<div style={{color:'#b45309'}}>Open: {szKeys.filter(sz=>getOpen(sz)>0).map(sz=>sz+':'+getOpen(sz)).join('  ')}</div>}
               </div>
             </div>
             <button className="btn btn-sm btn-secondary" style={{marginTop:8,fontSize:11}} onClick={()=>{
-              const w=window.open('','_blank','width=400,height=300');
-              w.document.write('<html><head><title>'+po.po_id+'</title><style>body{font-family:sans-serif;padding:20px}h1{font-size:24px;margin:0}p{margin:4px 0;font-size:14px}.sz{font-size:16px;font-weight:bold}</style></head><body>');
+              const w=window.open('','_blank','width=500,height=400');
+              w.document.write('<html><head><title>'+po.po_id+'</title><style>body{font-family:sans-serif;padding:20px}h1{font-size:24px;margin:0}p{margin:4px 0;font-size:14px}.sz{font-size:14px;font-weight:bold}.g{color:#166534}.a{color:#b45309}</style></head><body>');
               w.document.write('<div style="display:flex;gap:20px;align-items:flex-start"><img src="https://api.qrserver.com/v1/create-qr-code/?size=120x120&data='+encodeURIComponent(qrData)+'" width="120" height="120"/><div>');
               w.document.write('<h1>'+po.po_id+'</h1><p>'+o.id+' — '+(cust?.name||'')+'</p><p><strong>'+(item?.sku||'')+' '+(item?.name||'')+'</strong> — '+(item?.color||'')+'</p>');
-              w.document.write('<p>'+totalOrdered+' units ordered</p>');
-              w.document.write('<p class="sz">'+szKeys.map(sz=>sz+': '+po[sz]).join(' &nbsp; ')+'</p>');
+              w.document.write('<p>'+totalOrdered+' ordered'+(totalReceived>0?' · '+totalReceived+' received':'')+'</p>');
+              w.document.write('<p class="sz">Ordered: '+szKeys.map(sz=>sz+': '+po[sz]).join(' &nbsp; ')+'</p>');
+              if(totalReceived>0)w.document.write('<p class="sz g">Received: '+szKeys.filter(sz=>getRcvd(sz)>0).map(sz=>sz+': '+getRcvd(sz)).join(' &nbsp; ')+'</p>');
+              if(totalOpen>0)w.document.write('<p class="sz a">Open: '+szKeys.filter(sz=>getOpen(sz)>0).map(sz=>sz+': '+getOpen(sz)).join(' &nbsp; ')+'</p>');
               w.document.write('</div></div></body></html>');w.document.close();w.print();
             }}>🖨️ Print PO Label</button>
           </div>
