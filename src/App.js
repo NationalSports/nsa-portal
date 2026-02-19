@@ -67,7 +67,7 @@ const D_SO=[
 {id:'SO-1042',customer_id:'c1a',estimate_id:'EST-2088',memo:'Baseball Spring Season Full Package',status:'in_production',created_by:'r1',created_at:'02/10/26 11:00 AM',updated_at:'02/14/26',expected_date:'03/15/26',production_notes:'Rush - coach needs by spring break',shipping_type:'flat',shipping_value:45,ship_to_id:'default',firm_dates:[{item_desc:'JX4453 - Adidas Pregame Tee',date:'03/01/26',approved:true}],
   art_files:[{id:'af1',name:'OLu Baseball Front Logo',deco_type:'screen_print',ink_colors:'Navy, Gold, White',thread_colors:'',art_size:'12" x 4"',files:['OLu_Baseball_Logo_v3.ai','OLu_Baseball_Logo_v3.pdf'],notes:'Final approved - navy/gold',status:'approved',uploaded:'02/10/26'},
     {id:'af2',name:'Sleeve Logo Small',deco_type:'embroidery',ink_colors:'',thread_colors:'Navy 2767, Gold',art_size:'2" wide',files:['OLu_Sleeve_Logo.ai'],notes:'Small sleeve crest',status:'approved',uploaded:'02/11/26'}],
-  items:[{sku:'JX4453',name:'Adidas Unisex Pregame Tee',brand:'Adidas',color:'Team Power Red/White',nsa_cost:18.5,retail_price:55.5,unit_sell:33.3,sizes:{S:5,M:12,L:15,XL:8,'2XL':3},available_sizes:['S','M','L','XL','2XL'],ful:'pick',checked:{S:5,M:10,L:12,XL:6,'2XL':3},decorations:[{kind:'art',position:'Front Center',art_file_id:'af1',sell_override:null},{kind:'numbers',position:'Back Center',num_method:'heat_transfer',num_size:'4"',two_color:false,sell_override:null,roster:[]}]}]},
+  items:[{sku:'JX4453',name:'Adidas Unisex Pregame Tee',brand:'Adidas',color:'Team Power Red/White',nsa_cost:18.5,retail_price:55.5,unit_sell:33.3,sizes:{S:5,M:12,L:15,XL:8,'2XL':3},available_sizes:['S','M','L','XL','2XL'],pick_lines:[{S:5,M:8,L:5,XL:3,'2XL':0,status:'pulled'},{S:0,M:4,L:10,XL:5,'2XL':3,status:'pick'}],po_lines:[{po_id:'PO-3001',S:0,M:0,L:0,XL:0,'2XL':3,status:'received'}],decorations:[{kind:'art',position:'Front Center',art_file_id:'af1',sell_override:null},{kind:'numbers',position:'Back Center',num_method:'heat_transfer',num_size:'4"',two_color:false,sell_override:null,roster:[]}]}]},
 {id:'SO-1045',customer_id:'c1b',memo:'Football Spring Practice Gear',status:'waiting_art',created_by:'r1',created_at:'02/12/26 2:00 PM',updated_at:'02/12/26',expected_date:'03/20/26',production_notes:'',shipping_type:'pct',shipping_value:8,ship_to_id:'default',firm_dates:[],art_files:[],items:[]},
 {id:'SO-1051',customer_id:'c2a',memo:'Lacrosse Team Store',status:'in_production',created_by:'r2',created_at:'02/14/26 10:30 AM',updated_at:'02/15/26',expected_date:'03/10/26',production_notes:'',shipping_type:'flat',shipping_value:0,ship_to_id:'default',firm_dates:[],art_files:[{id:'af3',name:'SFL Lacrosse Crest',deco_type:'embroidery',ink_colors:'',thread_colors:'Navy 2767, White, Silver 877',art_size:'3.5" wide',files:['SFL_Crest.eps','SFL_Crest_preview.png'],notes:'',status:'uploaded',uploaded:'02/15/26'}],items:[]},
 ];
@@ -182,9 +182,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         <button className="btn btn-primary" onClick={()=>{onSave(o);setSaved(true);nf(`${isE?'Estimate':'SO'} saved`)}}><Icon name="check" size={14}/> Save</button>
         {isE&&saved&&o.status!=='approved'&&o.status!=='converted'&&<button className="btn btn-secondary" onClick={()=>setShowSend(true)}><Icon name="send" size={14}/> Send</button>}
         {isE&&o.status==='approved'&&<button className="btn btn-primary" style={{background:'#7c3aed'}} onClick={()=>onConvertSO(o)}><Icon name="box" size={14}/> Convert to SO</button>}
-        {isSO&&<button className="btn btn-secondary" onClick={()=>setShowPick(true)}><Icon name="grid" size={14}/> Pick Ticket</button>}
-        {isSO&&<button className="btn btn-secondary" onClick={()=>setShowPO('select')}><Icon name="cart" size={14}/> Create PO</button>}
       </div>
+      {isSO&&<div style={{display:'flex',gap:6,marginTop:8}}>
+        <button className="btn btn-secondary" onClick={()=>setShowPick(true)}><Icon name="grid" size={14}/> Pick Ticket</button>
+        <button className="btn btn-secondary" onClick={()=>setShowPO('select')}><Icon name="cart" size={14}/> Create PO</button>
+      </div>}
       {/* SHIPPING */}
       <div style={{display:'flex',gap:12,marginTop:12,alignItems:'end',flexWrap:'wrap',borderTop:'1px solid #f1f5f9',paddingTop:12}}>
         <div><label className="form-label">Shipping</label><div style={{display:'flex',gap:4,alignItems:'center'}}>
@@ -240,11 +242,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
               <div>Qty: <strong style={{fontSize:16}}>{qty}</strong></div>
               <div>Rev: <strong style={{color:'#166534'}}>${iR.toFixed(0)}</strong></div>
               <div>Margin: <strong style={{color:mg>=0?'#1e40af':'#dc2626'}}>${mg.toFixed(0)} ({iR>0?(mg/iR*100).toFixed(0):0}%)</strong></div>
-              {isSO&&<div style={{marginTop:4}}><select className="form-select" style={{fontSize:10,padding:'2px 4px',width:'auto',
-                background:item.ful==='pulled'?'#dcfce7':item.ful==='pick'?'#ede9fe':item.ful==='on_order'?'#fef3c7':'#f1f5f9',
-                color:item.ful==='pulled'?'#166534':item.ful==='pick'?'#6d28d9':item.ful==='on_order'?'#92400e':'#64748b',
-                fontWeight:700,borderRadius:10}} value={item.ful||'not_ordered'} onChange={e=>uI(idx,'ful',e.target.value)}>
-                <option value="not_ordered">Not Ordered</option><option value="on_order">On Order</option><option value="pick">Pick</option><option value="pulled">Pulled</option></select></div>}
             </div>
             <button onClick={()=>rmI(idx)} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:4}}><Icon name="trash" size={16}/></button>
           </div></div>
@@ -254,19 +251,39 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           {szs.map(sz=><div key={sz} style={{textAlign:'center',width:48}}><div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
             <input value={item.sizes[sz]||''} onChange={e=>uSz(idx,sz,e.target.value)} placeholder="0"
               style={{width:42,textAlign:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'5px 2px',fontSize:15,fontWeight:700,color:(item.sizes[sz]||0)>0?'#0f172a':'#cbd5e1'}}/>
-            {(()=>{if(isSO&&(item.ful==='on_order'||item.ful==='pick'||item.ful==='pulled')){
-              const ck=item.checked?.[sz]||0;const need=item.sizes[sz]||0;
-              if(item.ful==='pulled')return<div style={{fontSize:9,color:'#166534',fontWeight:600}}>✓ pulled</div>;
-              if(item.ful==='pick')return<div style={{fontSize:9,color:'#6d28d9',fontWeight:600}}>pick</div>;
-              if(item.ful==='on_order')return<div style={{fontSize:9,color:ck>0?'#d97706':'#92400e',fontWeight:600}}>{ck>0?ck+'/'+need+' in':'ordered'}</div>;
-              return null}
-            const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);const stk=p?._inv?.[sz];return stk!=null?<div style={{fontSize:9,color:stk>0?'#166534':'#dc2626',fontWeight:600}}>{stk} inv</div>:null})()}</div>)}
+            {(()=>{const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);const stk=p?._inv?.[sz];return stk!=null?<div style={{fontSize:9,color:stk>0?'#166534':'#dc2626',fontWeight:600}}>{stk} inv</div>:null})()}</div>)}
           <div style={{textAlign:'center',marginLeft:4,padding:'0 10px',borderLeft:'2px solid #e2e8f0'}}><div style={{fontSize:10,fontWeight:700,color:'#1e40af'}}>TOT</div><div style={{fontSize:20,fontWeight:800,color:'#1e40af'}}>{qty}</div></div>
           <div style={{position:'relative',marginLeft:4}}><button className="btn btn-sm btn-secondary" onClick={()=>setShowSzPicker(showSzPicker===idx?null:idx)} style={{fontSize:10}}>+ Size</button>
             {showSzPicker===idx&&addable.length>0&&<><div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:39}} onClick={()=>setShowSzPicker(null)}/><div style={{position:'absolute',top:'100%',left:0,background:'white',border:'1px solid #e2e8f0',borderRadius:6,boxShadow:'0 4px 12px rgba(0,0,0,0.1)',zIndex:40,padding:6,display:'flex',gap:3,flexWrap:'wrap',width:180}}>
               {addable.map(sz=><button key={sz} className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 6px'}} onClick={()=>addSzToItem(idx,sz)}>{sz}</button>)}</div></>}
           </div>
         </div>
+        {/* FULFILLMENT LINES */}
+        {isSO&&(item.pick_lines||[]).length>0&&<div style={{padding:'4px 18px',borderBottom:'1px solid #f1f5f9'}}>
+          {item.pick_lines.map((pk,pi)=>{const st=pk.status||'pick';
+            return<div key={pi} style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',marginBottom:2}}>
+              <span style={{fontSize:10,fontWeight:700,width:46,color:st==='pulled'?'#166534':'#92400e'}}>PICK:</span>
+              {szs.map(sz=>{const v=pk[sz]||0;if(!v)return<div key={sz} style={{width:42,textAlign:'center',fontSize:10,color:'#d1d5db'}}>—</div>;
+                return<div key={sz} style={{width:42,textAlign:'center',fontSize:12,fontWeight:700,padding:'2px 0',borderRadius:3,
+                  background:st==='pulled'?'#dcfce7':st==='pick'?'#fef3c7':'#f1f5f9',
+                  color:st==='pulled'?'#166534':st==='pick'?'#92400e':'#64748b'}}>{v}</div>})}
+              <span style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:600,marginLeft:4,
+                background:st==='pulled'?'#dcfce7':'#fef3c7',color:st==='pulled'?'#166534':'#92400e'}}>{st==='pulled'?'✓ Pulled':'Needs Pull'}</span>
+            </div>})}
+        </div>}
+        {isSO&&(item.po_lines||[]).length>0&&<div style={{padding:'4px 18px',borderBottom:'1px solid #f1f5f9'}}>
+          {item.po_lines.map((po,pi)=>{const st=po.status||'pending';
+            return<div key={pi} style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',marginBottom:2}}>
+              <span style={{fontSize:10,fontWeight:700,width:46,color:st==='received'?'#166534':st==='waiting'?'#92400e':'#dc2626'}}>{po.po_id||'PO'}:</span>
+              {szs.map(sz=>{const v=po[sz]||0;if(!v)return<div key={sz} style={{width:42,textAlign:'center',fontSize:10,color:'#d1d5db'}}>—</div>;
+                return<div key={sz} style={{width:42,textAlign:'center',fontSize:12,fontWeight:700,padding:'2px 0',borderRadius:3,
+                  background:st==='received'?'#dcfce7':st==='waiting'?'#fef3c7':'#fef2f2',
+                  color:st==='received'?'#166534':st==='waiting'?'#92400e':'#dc2626'}}>{v}</div>})}
+              <span style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:600,marginLeft:4,
+                background:st==='received'?'#dcfce7':st==='waiting'?'#fef3c7':'#fef2f2',
+                color:st==='received'?'#166534':st==='waiting'?'#92400e':'#dc2626'}}>{st==='received'?'✓ Received':st==='waiting'?'Waiting':'Needs PO'}</span>
+            </div>})}
+        </div>}
         {/* DECORATIONS */}
         <div style={{padding:'8px 18px 14px'}}>
           {item.decorations.map((deco,di)=>{const cq=deco.kind==='art'&&deco.art_file_id?artQty[deco.art_file_id]:qty;const dp=dP(deco,qty,af,cq);
