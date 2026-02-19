@@ -31,7 +31,7 @@ function dP(d,q,artFiles,cq){
   if(d.type==='dtf'){const t=DTF[d.dtf_size||0];return{sell:d.sell_override||t.sell,cost:t.cost}}return{sell:0,cost:0}}
 const SC={
   // SO statuses (5)
-  need_order:{bg:'#fef3c7',c:'#92400e'},waiting_receive:{bg:'#dbeafe',c:'#1e40af'},complete:{bg:'#dcfce7',c:'#166534'},in_production:{bg:'#ede9fe',c:'#6d28d9'},ready_to_invoice:{bg:'#fef0c7',c:'#c2410c'},
+  need_order:{bg:'#fef3c7',c:'#92400e'},waiting_receive:{bg:'#dbeafe',c:'#1e40af'},items_received:{bg:'#d1fae5',c:'#065f46'},complete:{bg:'#dcfce7',c:'#166534'},in_production:{bg:'#ede9fe',c:'#6d28d9'},ready_to_invoice:{bg:'#fef0c7',c:'#c2410c'},
   // Job item statuses
   need_to_order:{bg:'#fef3c7',c:'#92400e'},partially_received:{bg:'#fef9c3',c:'#854d0e'},items_received:{bg:'#d1fae5',c:'#065f46'},
   // Job production statuses
@@ -152,45 +152,52 @@ const D_E=[
 {id:'EST-2101',customer_id:'c3a',memo:'Badminton Team Uniforms',status:'draft',created_by:'r5',created_at:'02/12/26 3:00 PM',updated_at:'02/12/26 3:00 PM',default_markup:1.65,shipping_type:'pct',shipping_value:0,ship_to_id:'default',email_status:null,art_files:[],items:[]},
 ];
 const D_SO=[
+// SO-1042: Baseball — FULLY IN PRODUCTION. All items ordered/received, art approved, prod files done, jobs on board in process
 {id:'SO-1042',customer_id:'c1a',estimate_id:'EST-2088',memo:'Baseball Spring Season Full Package',status:'in_production',created_by:'r1',created_at:'02/10/26 11:00 AM',updated_at:'02/14/26',expected_date:'2026-03-15',production_notes:'Rush - coach needs by spring break',shipping_type:'flat',shipping_value:45,ship_to_id:'default',firm_dates:[{item_desc:'JX4453 - Adidas Pregame Tee',date:'03/01/26',approved:true}],
   art_files:[{id:'af1',name:'OLu Baseball Front Logo',deco_type:'screen_print',ink_colors:'Navy, Gold, White',thread_colors:'',art_size:'12" x 4"',files:[],mockup_files:['OLu_Baseball_Logo_v3.pdf','OLu_Baseball_Mockup_Jersey.png'],prod_files:['OLu_Baseball_Logo_v3.ai','OLu_Baseball_Seps_3color.ai'],notes:'Final approved - navy/gold',status:'approved',uploaded:'02/10/26'},
     {id:'af2',name:'Sleeve Logo Small',deco_type:'embroidery',ink_colors:'',thread_colors:'Navy 2767, Gold',art_size:'2" wide',files:[],mockup_files:['OLu_Sleeve_Logo.pdf'],prod_files:['OLu_Sleeve_Logo.dst','OLu_Sleeve_ThreadChart.pdf'],notes:'Small sleeve crest',status:'approved',uploaded:'02/11/26'}],
   items:[
-    // Item 1: JX4453 — has pulled IF, open IF, PO with partial receive, and a waiting PO
     {sku:'JX4453',name:'Adidas Unisex Pregame Tee',brand:'Adidas',color:'Team Power Red/White',nsa_cost:18.5,retail_price:55.5,unit_sell:33.3,product_id:'p1',
       sizes:{S:5,M:20,L:15,XL:8,'2XL':3},available_sizes:['S','M','L','XL','2XL'],
       pick_lines:[
-        {pick_id:'IF-4100',S:5,M:8,L:5,XL:3,status:'pulled',created_at:'02/10/26',memo:'First pull — in-stock sizes'},
-        {pick_id:'IF-4192',S:0,M:4,L:10,XL:5,'2XL':0,status:'pick',created_at:'02/14/26',memo:'Remaining stock sizes'}
+        {pick_id:'IF-4100',S:5,M:8,L:5,XL:3,status:'pulled',created_at:'02/10/26',memo:'First pull — in-stock sizes',ship_dest:'in_house'},
+        {pick_id:'IF-4192',S:0,M:4,L:10,XL:5,'2XL':0,status:'pulled',created_at:'02/14/26',memo:'Second pull',ship_dest:'in_house'}
       ],
       po_lines:[
-        {po_id:'PO-3001',S:0,M:0,L:0,XL:0,'2XL':3,
-          received:{'2XL':0},shipments:[],status:'waiting',created_at:'02/11/26',memo:'2XL backorder from Adidas'},
-        {po_id:'PO-3088',S:0,M:8,L:0,XL:0,'2XL':0,
-          received:{M:8},shipments:[{date:'2026-02-18',M:8}],status:'received',created_at:'02/12/26',memo:'Rush restock M sizes'}
+        {po_id:'PO-3001',S:0,M:0,L:0,XL:0,'2XL':3,received:{'2XL':3},shipments:[{date:'2026-02-19','2XL':3}],status:'received',created_at:'02/11/26',memo:'2XL from Adidas'},
+        {po_id:'PO-3088',S:0,M:8,L:0,XL:0,'2XL':0,received:{M:8},shipments:[{date:'2026-02-18',M:8}],status:'received',created_at:'02/12/26',memo:'Rush restock M sizes'}
       ],
       decorations:[{kind:'art',position:'Front Center',art_file_id:'af1',sell_override:null},{kind:'numbers',position:'Back Center',num_method:'heat_transfer',num_size:'4"',two_color:false,sell_override:null,roster:[]}]},
-    // Item 2: HF7245 Hoodie — no picks/POs yet, has inventory, no deco marked
     {sku:'HF7245',name:'Adidas Team Issue Hoodie',brand:'Adidas',color:'Team Power Red/White',nsa_cost:28.5,retail_price:85,unit_sell:51,product_id:'p2',
       sizes:{S:2,M:4,L:3,XL:2},available_sizes:['S','M','L','XL','2XL'],
-      pick_lines:[],po_lines:[],no_deco:true,
+      pick_lines:[{pick_id:'IF-4699',S:2,M:4,L:3,XL:2,status:'pulled',created_at:'02/16/26',memo:'Hoodies — blank ship to customer',ship_dest:'ship_customer',ship_addr:'default'}],
+      po_lines:[],no_deco:true,
       decorations:[]},
-    // Item 3: PC61 Tee — ready to create IF (all inventory available)
     {sku:'PC61',name:'Port & Company Essential Tee',brand:'Port & Company',color:'Jet Black',nsa_cost:2.85,retail_price:8.98,unit_sell:4.75,product_id:'p5',
       sizes:{S:10,M:15,L:10,XL:5},available_sizes:['S','M','L','XL','2XL','3XL'],
-      pick_lines:[],po_lines:[],
+      pick_lines:[{pick_id:'IF-4327',S:10,M:15,L:10,XL:5,status:'pulled',created_at:'02/17/26',memo:'All PC61 in stock',ship_dest:'in_house'}],
+      po_lines:[],
       decorations:[{kind:'art',position:'Front Center',art_file_id:'af1',sell_override:3.25}]}
+  ],
+  jobs:[
+    {id:'JOB-1042-01',key:'art_af1_Front Center',art_file_id:'af1',art_name:'OLu Baseball Front Logo',deco_type:'screen_print',
+      positions:'Front Center',art_status:'art_complete',item_status:'items_received',prod_status:'in_process',
+      total_units:91,fulfilled_units:91,split_from:null,created_at:'02/10/26',
+      assigned_machine:'auto_press',assigned_to:'Carlos',ship_method:'rep_delivery',
+      items:[
+        {item_idx:0,deco_idx:0,sku:'JX4453',name:'Adidas Unisex Pregame Tee',color:'Team Power Red/White',units:51,fulfilled:51},
+        {item_idx:2,deco_idx:0,sku:'PC61',name:'Port & Company Essential Tee',color:'Jet Black',units:40,fulfilled:40},
+      ]},
   ]},
-{id:'SO-1045',customer_id:'c1b',memo:'Football Spring Practice Gear',status:'in_production',created_by:'r1',created_at:'02/12/26 2:00 PM',updated_at:'02/12/26',expected_date:'2026-03-20',production_notes:'Need sizes confirmed by coach',shipping_type:'pct',shipping_value:8,ship_to_id:'default',firm_dates:[],
-  art_files:[{id:'af4',name:'OLu Football Helmet Logo',deco_type:'screen_print',ink_colors:'Red, White',thread_colors:'',art_size:'10" x 8"',files:['OLu_Football.ai'],notes:'Waiting coach approval',status:'uploaded',uploaded:'02/13/26'}],
+// SO-1045: Football — WAITING TO RECEIVE. All items covered by POs/picks but not all received yet. Art not approved.
+{id:'SO-1045',customer_id:'c1b',memo:'Football Spring Practice Gear',status:'waiting_receive',created_by:'r1',created_at:'02/12/26 2:00 PM',updated_at:'02/12/26',expected_date:'2026-03-20',production_notes:'Need sizes confirmed by coach',shipping_type:'pct',shipping_value:8,ship_to_id:'default',firm_dates:[],
+  art_files:[{id:'af4',name:'OLu Football Helmet Logo',deco_type:'screen_print',ink_colors:'Red, White',thread_colors:'',art_size:'10" x 8"',files:['OLu_Football.ai'],mockup_files:['OLu_Football_Mockup.pdf'],prod_files:[],notes:'Waiting coach approval',status:'uploaded',uploaded:'02/13/26'}],
   items:[
-    // Item 1: JX4453 — SAME product as SO-1042! Open IF will conflict when SO-1042 pulls
     {sku:'JX4453',name:'Adidas Unisex Pregame Tee',brand:'Adidas',color:'Team Power Red/White',nsa_cost:18.5,retail_price:55.5,unit_sell:33.3,product_id:'p1',
       sizes:{S:3,M:5,L:4,XL:2},available_sizes:['S','M','L','XL','2XL'],
       pick_lines:[{pick_id:'IF-4200',S:3,M:5,L:4,XL:2,status:'pick',created_at:'02/15/26',memo:'Football pregame tees — stock pull'}],
       po_lines:[],
       decorations:[{kind:'art',position:'Front Center',art_file_id:'af4',sell_override:null}]},
-    // Item 2: EK0100 — partial PO with cancellation scenario
     {sku:'EK0100',name:'Adidas Team 1/4 Zip',brand:'Adidas',color:'Team Navy/White',nsa_cost:25,retail_price:75,unit_sell:45,product_id:'p8',
       sizes:{S:2,M:6,L:8,XL:4,'2XL':2},available_sizes:['S','M','L','XL','2XL'],
       pick_lines:[],
@@ -200,68 +207,67 @@ const D_SO=[
         shipments:[{date:'2026-02-15',S:2,M:6,L:8}],
         status:'partial',created_at:'02/13/26',memo:'1/4 Zips order — Adidas direct'}],
       decorations:[{kind:'art',position:'Left Chest',art_file_id:'af4',sell_override:null}]},
-    // Item 3: Richardson Cap — fully pulled, no issues
     {sku:'112',name:'Richardson Trucker Cap',brand:'Richardson',color:'Black/White',nsa_cost:4.5,retail_price:12,unit_sell:8,product_id:'p7',
       sizes:{OSFA:20},available_sizes:['OSFA'],
       pick_lines:[{pick_id:'IF-4150',OSFA:20,status:'pulled',created_at:'02/14/26',memo:'Trucker caps — blank, no deco'}],
       po_lines:[],no_deco:true,
       decorations:[]}
   ]},
-{id:'SO-1051',customer_id:'c2a',memo:'Lacrosse Team Store',status:'in_production',created_by:'r4',created_at:'02/14/26 10:30 AM',updated_at:'02/15/26',expected_date:'2026-03-10',production_notes:'Coach wants navy/silver colorway',shipping_type:'flat',shipping_value:0,ship_to_id:'default',firm_dates:[],
-  art_files:[{id:'af3',name:'SFL Lacrosse Crest',deco_type:'embroidery',ink_colors:'',thread_colors:'Navy 2767, White, Silver 877',art_size:'3.5" wide',files:['SFL_Crest.eps','SFL_Crest_preview.png'],notes:'',status:'uploaded',uploaded:'02/15/26'}],
+// SO-1051: Lacrosse — NEED TO ORDER. Nothing ordered yet. Art waiting approval.
+{id:'SO-1051',customer_id:'c2a',memo:'Lacrosse Team Store',status:'need_order',created_by:'r4',created_at:'02/14/26 10:30 AM',updated_at:'02/15/26',expected_date:'2026-03-10',production_notes:'Coach wants navy/silver colorway',shipping_type:'flat',shipping_value:0,ship_to_id:'default',firm_dates:[],
+  art_files:[{id:'af3',name:'SFL Lacrosse Crest',deco_type:'embroidery',ink_colors:'',thread_colors:'Navy 2767, White, Silver 877',art_size:'3.5" wide',files:['SFL_Crest.eps','SFL_Crest_preview.png'],mockup_files:['SFL_Crest_Preview.pdf'],prod_files:[],notes:'',status:'uploaded',uploaded:'02/15/26'}],
   items:[
-    // Item 1: UA Polo — has inventory, ready for IF
     {sku:'1370399',name:'Under Armour Team Polo',brand:'Under Armour',color:'Cardinal/White',nsa_cost:22,retail_price:65,unit_sell:39,product_id:'p4',
       sizes:{M:4,L:6,XL:4,'2XL':2},available_sizes:['S','M','L','XL','2XL'],
       pick_lines:[],po_lines:[],
       decorations:[{kind:'art',position:'Left Chest',art_file_id:'af3',sell_override:null},{kind:'numbers',position:'Upper Back',num_method:'heat_transfer',num_size:'3"',two_color:false,sell_override:null,roster:[]}]},
-    // Item 2: UA Tech Short — partial inventory, needs PO for some sizes  
     {sku:'1376844',name:'Under Armour Tech Short',brand:'Under Armour',color:'Black/White',nsa_cost:15.5,retail_price:45,unit_sell:27,product_id:'p9',
       sizes:{S:4,M:6,L:8,XL:4},available_sizes:['S','M','L','XL','2XL'],
       pick_lines:[],po_lines:[],
       decorations:[]}
   ]},
-// STRESS TEST DATA — intentionally messy/incomplete to test defensive coding
-// SO with no items at all
-{id:'SO-1060',customer_id:'c3a',memo:'Badminton Warm-ups',status:'in_production',created_by:'r5',created_at:'02/16/26 9:00 AM',updated_at:'02/16/26',expected_date:null,production_notes:'',shipping_type:'flat',shipping_value:0,ship_to_id:'default',firm_dates:null,
+// SO-1060: Badminton — empty order, NEED TO ORDER
+{id:'SO-1060',customer_id:'c3a',memo:'Badminton Warm-ups',status:'need_order',created_by:'r5',created_at:'02/16/26 9:00 AM',updated_at:'02/16/26',expected_date:null,production_notes:'',shipping_type:'flat',shipping_value:0,ship_to_id:'default',firm_dates:null,
   art_files:null,items:[]},
-// SO with item that has no sizes, no decorations, no picks, no POs
-{id:'SO-1061',customer_id:'c1a',memo:'Rush Order - Coach Martinez',status:'in_production',created_by:'r4',created_at:'02/17/26 8:00 AM',updated_at:null,expected_date:'2026-02-28',production_notes:null,shipping_type:null,shipping_value:null,ship_to_id:null,firm_dates:[],
+// SO-1061: Rush order — stress test, empty sizes
+{id:'SO-1061',customer_id:'c1a',memo:'Rush Order - Coach Martinez',status:'need_order',created_by:'r4',created_at:'02/17/26 8:00 AM',updated_at:null,expected_date:'2026-02-28',production_notes:null,shipping_type:null,shipping_value:null,ship_to_id:null,firm_dates:[],
   art_files:[],items:[
     {sku:'JX4453',name:'Adidas Pregame Tee',brand:'Adidas',color:null,nsa_cost:null,retail_price:null,unit_sell:28,product_id:'p1',
       sizes:{},available_sizes:null,pick_lines:null,po_lines:null,decorations:null},
-    // Item with sizes but missing everything else
     {sku:'UNKNOWN_SKU',name:null,brand:null,color:'Red',nsa_cost:0,retail_price:0,unit_sell:0,product_id:null,
       sizes:{S:3,M:5},available_sizes:['S','M','L'],pick_lines:[],po_lines:[],decorations:[]},
   ]},
-// SO referencing a customer that doesn't exist
-{id:'SO-1062',customer_id:'c_deleted',memo:'Ghost Customer Order',status:'in_production',created_by:'r99',created_at:'',updated_at:'',expected_date:'',production_notes:'',shipping_type:'pct',shipping_value:0,ship_to_id:'default',firm_dates:[],
+// SO-1062: Ghost customer — all items pulled → ITEMS RECEIVED (but no jobs, so will be items_received)
+{id:'SO-1062',customer_id:'c_deleted',memo:'Ghost Customer Order',status:'items_received',created_by:'r99',created_at:'',updated_at:'',expected_date:'',production_notes:'',shipping_type:'pct',shipping_value:0,ship_to_id:'default',firm_dates:[],
   art_files:[],items:[
     {sku:'PC61',name:'Port Company Tee',brand:'Port Company',color:'White',nsa_cost:3.80,retail_price:null,unit_sell:12,product_id:'p3',
       sizes:{S:10,M:10,L:10},available_sizes:['S','M','L','XL'],
-      pick_lines:[{pick_id:'IF-9999',status:'pulled',S:10,M:10,L:10,created_at:null,memo:null}],
+      pick_lines:[{pick_id:'IF-9999',status:'pulled',S:10,M:10,L:10,created_at:'02/17/26',memo:'Pulled all'}],
       po_lines:[],decorations:[{kind:'art',position:'Front Center',art_file_id:'af_missing',sell_override:null}]}
   ]},
-// SO with jobs already generated but some jobs reference bad data  
-{id:'SO-1063',customer_id:'c2',memo:'Track & Field Gear',status:'in_production',created_by:'r1',created_at:'02/15/26 4:00 PM',updated_at:'02/15/26',expected_date:'2026-04-01',production_notes:'Long lead time on custom colors',shipping_type:'flat',shipping_value:25,ship_to_id:'default',firm_dates:[{item_desc:'Full Order',date:'03/20/26',approved:false,requested_by:'r1',requested_at:'02/16/26',note:'Meet is April 5'}],
-  art_files:[{id:'af_tf1',name:'SFL Track Logo',deco_type:'screen_print',ink_colors:'Navy, Gold',thread_colors:'',art_size:'10" wide',files:[],notes:'',status:'approved',uploaded:'02/15/26'}],
+// SO-1063: Track & Field — READY TO INVOICE. Jobs on board all completed. Partially received items but jobs done.
+{id:'SO-1063',customer_id:'c2',memo:'Track & Field Gear',status:'ready_to_invoice',created_by:'r1',created_at:'02/15/26 4:00 PM',updated_at:'02/15/26',expected_date:'2026-04-01',production_notes:'Long lead time on custom colors',shipping_type:'flat',shipping_value:25,ship_to_id:'default',firm_dates:[{item_desc:'Full Order',date:'03/20/26',approved:false,requested_by:'r1',requested_at:'02/16/26',note:'Meet is April 5'}],
+  art_files:[{id:'af_tf1',name:'SFL Track Logo',deco_type:'screen_print',ink_colors:'Navy, Gold',thread_colors:'',art_size:'10" wide',files:[],mockup_files:['SFL_Track_Mockup.pdf'],prod_files:['SFL_Track_Seps.ai'],notes:'',status:'approved',uploaded:'02/15/26'}],
   items:[
     {sku:'1370399',name:'Under Armour Team Polo',brand:'Under Armour',color:'Navy/Gold',nsa_cost:22,retail_price:65,unit_sell:42,product_id:'p4',
       sizes:{S:5,M:8,L:10,XL:6,'2XL':3},available_sizes:['S','M','L','XL','2XL'],
-      pick_lines:[],po_lines:[{po_id:'PO-4001',vendor:'Under Armour',status:'waiting',S:5,M:8,L:10,XL:6,'2XL':3,received:{},ship_dates:[],created_at:'02/16/26',memo:'Custom color order'}],
+      pick_lines:[{pick_id:'IF-4500',S:5,M:8,L:10,XL:6,'2XL':3,status:'pulled',created_at:'02/18/26',memo:'All polos pulled'}],
+      po_lines:[],
       decorations:[{kind:'art',position:'Left Chest',art_file_id:'af_tf1',sell_override:null}]},
     {sku:'1376844',name:'Under Armour Tech Short',brand:'Under Armour',color:'Navy',nsa_cost:15.5,retail_price:45,unit_sell:29,product_id:'p9',
       sizes:{S:5,M:8,L:10,XL:6,'2XL':3},available_sizes:['S','M','L','XL','2XL'],
-      pick_lines:[],po_lines:[{po_id:'PO-4002',vendor:'Under Armour',status:'partial',S:5,M:8,L:10,XL:0,'2XL':0,received:{S:5,M:8,L:10},ship_dates:['02/20/26'],created_at:'02/16/26',memo:'Partial ship — XL/2XL backordered'}],
+      pick_lines:[{pick_id:'IF-4501',S:5,M:8,L:10,XL:6,'2XL':3,status:'pulled',created_at:'02/18/26',memo:'All shorts pulled'}],
+      po_lines:[],
       decorations:[{kind:'art',position:'Left Leg',art_file_id:'af_tf1',sell_override:3}]}
   ],
   jobs:[
     {id:'JOB-1063-01',key:'art_af_tf1',art_file_id:'af_tf1',art_name:'SFL Track Logo',deco_type:'screen_print',
-      positions:'Left Chest, Left Leg',art_status:'art_complete',item_status:'partially_received',prod_status:'hold',
-      total_units:64,fulfilled_units:23,split_from:null,created_at:'02/16/26',
+      positions:'Left Chest, Left Leg',art_status:'art_complete',item_status:'items_received',prod_status:'completed',
+      total_units:64,fulfilled_units:64,split_from:null,created_at:'02/16/26',
+      assigned_machine:'auto_press',assigned_to:'Mike',ship_method:'ship_customer',
       items:[
-        {item_idx:0,deco_idx:0,sku:'1370399',name:'Under Armour Team Polo',color:'Navy/Gold',units:32,fulfilled:0},
-        {item_idx:1,deco_idx:0,sku:'1376844',name:'Under Armour Tech Short',color:'Navy',units:32,fulfilled:23},
+        {item_idx:0,deco_idx:0,sku:'1370399',name:'Under Armour Team Polo',color:'Navy/Gold',units:32,fulfilled:32},
+        {item_idx:1,deco_idx:0,sku:'1376844',name:'Under Armour Tech Short',color:'Navy',units:32,fulfilled:32},
       ]},
   ]},
 ];
@@ -320,6 +326,7 @@ function SendModal({isOpen,onClose,estimate,customer,onSend}){
 // UNIFIED ORDER EDITOR
 // Auto-calculate SO status from items
 function calcSOStatus(ord){
+  // Fully automatic SO status based on item + job state
   let totalSz=0,coveredSz=0,fulfilledSz=0;
   safeItems(ord).forEach(it=>{
     Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).forEach(([sz,v])=>{
@@ -333,9 +340,21 @@ function calcSOStatus(ord){
     });
   });
   if(totalSz===0)return'need_order';
-  if(fulfilledSz>=totalSz)return'complete';
-  if(coveredSz<totalSz)return'need_order';
-  return'waiting_receive';
+  // Check jobs on the board
+  const boardJobs=safeJobs(ord);
+  const hasJobs=boardJobs.length>0;
+  const allJobsDone=hasJobs&&boardJobs.every(j=>j.prod_status==='completed'||j.prod_status==='shipped');
+  const anyJobActive=hasJobs&&boardJobs.some(j=>j.prod_status==='staging'||j.prod_status==='in_process');
+  // If all jobs completed → ready to invoice
+  if(allJobsDone)return'ready_to_invoice';
+  // If any job in staging or in_process → in production
+  if(anyJobActive)return'in_production';
+  // If all items received → items_received
+  if(fulfilledSz>=totalSz)return'items_received';
+  // If all items covered (ordered/picked) but not all received → waiting
+  if(coveredSz>=totalSz)return'waiting_receive';
+  // Otherwise still need to order
+  return'need_order';
 }
 
 function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack,onConvertSO,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,batchPOs,onBatchPO}){
@@ -492,7 +511,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
   },[syncJobs]);// eslint-disable-line
 
   const fp=products.filter(p=>{if(!pS)return true;const q=pS.toLowerCase();return p.sku.toLowerCase().includes(q)||p.name.toLowerCase().includes(q)||p.brand?.toLowerCase().includes(q)});
-  const statusFlow=['need_order','waiting_receive','in_production','ready_to_invoice','complete'];
+  const statusFlow=['need_order','waiting_receive','items_received','in_production','ready_to_invoice','complete'];
 
   return(<div>
     {/* Sticky header — appears when scrolling */}
@@ -556,14 +575,23 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         </div>
         <div style={{fontSize:12,color:'#64748b'}}>Tax: <strong>${totals.tax.toFixed(2)}</strong></div>
       </div>
-      {/* SO STATUS — auto-calculated */}
+      {/* SO STATUS — fully auto-calculated from items/jobs */}
       {isSO&&(()=>{
         const autoSt=calcSOStatus(o);
-        const stLabels={need_order:'Need to Order',waiting_receive:'Waiting to Receive',in_production:'In Production',ready_to_invoice:'Ready to Invoice',complete:'Complete'};
+        // Auto-sync status
+        if(o.status!==autoSt&&o.status!=='complete'){setTimeout(()=>sv('status',autoSt),0)}
+        const stLabels={need_order:'Need to Order',waiting_receive:'Waiting to Receive',items_received:'Items Received',in_production:'In Production',ready_to_invoice:'Ready to Invoice',complete:'Complete'};
+        const displaySt=o.status==='complete'?'complete':autoSt;
         return<div style={{display:'flex',gap:8,marginTop:12,borderTop:'1px solid #f1f5f9',paddingTop:12,alignItems:'center',flexWrap:'wrap'}}>
           <span style={{fontSize:11,color:'#64748b',fontWeight:600}}>Order Status:</span>
-          {statusFlow.map((sf)=>{const sc=SC[sf]||{};const cur=o.status===sf;
-            return<span key={sf} onClick={()=>sv('status',sf)} style={{padding:'4px 12px',borderRadius:12,fontSize:11,fontWeight:cur?800:500,cursor:'pointer',background:cur?sc.bg:'#f8fafc',color:cur?sc.c:'#94a3b8',border:cur?`2px solid ${sc.c}`:'1px solid #e2e8f0'}}>{stLabels[sf]||sf}</span>})}
+          {statusFlow.map((sf)=>{const sc=SC[sf]||{};const cur=sf===displaySt;
+            return<span key={sf} style={{padding:'4px 12px',borderRadius:12,fontSize:11,fontWeight:cur?800:500,
+              background:cur?sc.bg:'#f8fafc',color:cur?sc.c:'#94a3b8',border:cur?`2px solid ${sc.c}`:'1px solid #e2e8f0',
+              cursor:sf==='complete'?'pointer':'default',opacity:cur?1:0.5}}
+              onClick={()=>{if(sf==='complete')sv('status','complete')}}
+              title={sf==='complete'?'Click to manually mark complete':'Auto-calculated'}>
+              {stLabels[sf]||sf}</span>})}
+          {o.status==='complete'&&autoSt!=='complete'&&<button className="btn btn-sm btn-secondary" style={{fontSize:9,marginLeft:4}} onClick={()=>sv('status',autoSt)}>↩️ Reset to Auto</button>}
         </div>})()}
       {isSO&&<div style={{marginTop:8}}><label className="form-label">Production Notes</label><input className="form-input" value={o.production_notes||''} onChange={e=>sv('production_notes',e.target.value)} placeholder="Internal notes..."/></div>}
     </div></div>
@@ -2031,7 +2059,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     {custSOs.filter(s=>calcSOStatus(s)!=='complete').length>0&&<div className="card" style={{marginBottom:12}}><div className="card-header"><h2>Active Sales Orders</h2></div><div className="card-body" style={{padding:0}}>
       <table style={{fontSize:12}}><thead><tr><th>SO</th><th>Memo</th>{isP&&<th>Customer</th>}{isP&&<th>Rep</th>}<th>Status</th><th>Items</th><th>Fulfillment</th><th>Expected</th></tr></thead><tbody>
       {custSOs.filter(s=>calcSOStatus(s)!=='complete').map(so=>{
-        const st=calcSOStatus(so);const stL={need_order:'Need to Order',waiting_receive:'Waiting to Receive',in_production:'In Production',ready_to_invoice:'Ready to Invoice',complete:'Complete'};
+        const st=calcSOStatus(so);const stL={need_order:'Need to Order',waiting_receive:'Waiting to Receive',items_received:'Items Received',in_production:'In Production',ready_to_invoice:'Ready to Invoice',complete:'Complete'};
         let totalU=0,fulU=0;
         safeItems(so).forEach(it=>{Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{totalU+=v;const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+(pk[sz]||0),0);const rQ=safePOs(it).reduce((a,pk)=>a+((pk.received||{})[sz]||0),0);fulU+=Math.min(v,pQ+rQ)})});
         const pct=totalU>0?Math.round(fulU/totalU*100):0;
@@ -2711,7 +2739,7 @@ export default function App(){
     if(eSO)return<OrderEditor order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} onSave={s=>{savSO(s);setESO(s)}} onBack={()=>setESO(null)} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} batchPOs={batchPOs} onBatchPO={setBatchPOs}/>;
     // Filter SOs
     let fSOs=[...sos];
-    if(soF.status!=='all')fSOs=fSOs.filter(s=>s.status===soF.status);
+    if(soF.status!=='all')fSOs=fSOs.filter(s=>calcSOStatus(s)===soF.status);
     if(soF.rep!=='all')fSOs=fSOs.filter(s=>s.created_by===soF.rep);
     if(soF.search){const ss=soF.search.toLowerCase();fSOs=fSOs.filter(s=>{const c2=cust.find(x=>x.id===s.customer_id);return s.id.toLowerCase().includes(ss)||(s.memo||'').toLowerCase().includes(ss)||(c2?.name||'').toLowerCase().includes(ss)||(c2?.alpha_tag||'').toLowerCase().includes(ss)||safeItems(s).some(it=>(it.sku||'').toLowerCase().includes(ss)||(it.name||'').toLowerCase().includes(ss))})}
     // Sort
@@ -2720,7 +2748,7 @@ export default function App(){
     else if(soF.sort==='expected')fSOs.sort((a,b)=>(a.expected_date||'9999').localeCompare(b.expected_date||'9999'));
     else if(soF.sort==='customer')fSOs.sort((a,b)=>{const ca=cust.find(x=>x.id===a.customer_id)?.name||'';const cb=cust.find(x=>x.id===b.customer_id)?.name||'';return ca.localeCompare(cb)});
     // Status counts using actual so.status
-    const stCounts={need_order:sos.filter(s=>s.status==='need_order').length,waiting_receive:sos.filter(s=>s.status==='waiting_receive').length,in_production:sos.filter(s=>s.status==='in_production').length,ready_to_invoice:sos.filter(s=>s.status==='ready_to_invoice').length,complete:sos.filter(s=>s.status==='complete').length};
+    const stCounts={need_order:sos.filter(s=>calcSOStatus(s)==='need_order').length,waiting_receive:sos.filter(s=>calcSOStatus(s)==='waiting_receive').length,items_received:sos.filter(s=>calcSOStatus(s)==='items_received').length,in_production:sos.filter(s=>calcSOStatus(s)==='in_production').length,ready_to_invoice:sos.filter(s=>calcSOStatus(s)==='ready_to_invoice').length,complete:sos.filter(s=>calcSOStatus(s)==='complete').length};
     const activeFilters=soF.status!=='all'||soF.rep!=='all'||soF.search;
 
     return(<>
@@ -2732,6 +2760,8 @@ export default function App(){
           <div className="stat-label">Need Order</div><div className="stat-value" style={{color:'#d97706'}}>{stCounts.need_order}</div></div>
         <div className="stat-card" style={{cursor:'pointer',outline:soF.status==='waiting_receive'?'2px solid #2563eb':'none',borderRadius:8}} onClick={()=>setSOF(f=>({...f,status:f.status==='waiting_receive'?'all':'waiting_receive'}))}>
           <div className="stat-label">Waiting</div><div className="stat-value" style={{color:'#2563eb'}}>{stCounts.waiting_receive}</div></div>
+        <div className="stat-card" style={{cursor:'pointer',outline:soF.status==='items_received'?'2px solid #065f46':'none',borderRadius:8}} onClick={()=>setSOF(f=>({...f,status:f.status==='items_received'?'all':'items_received'}))}>
+          <div className="stat-label">Items In</div><div className="stat-value" style={{color:'#065f46'}}>{stCounts.items_received}</div></div>
         <div className="stat-card" style={{cursor:'pointer',outline:soF.status==='in_production'?'2px solid #7c3aed':'none',borderRadius:8}} onClick={()=>setSOF(f=>({...f,status:f.status==='in_production'?'all':'in_production'}))}>
           <div className="stat-label">In Production</div><div className="stat-value" style={{color:'#7c3aed'}}>{stCounts.in_production}</div></div>
         <div className="stat-card" style={{cursor:'pointer',outline:soF.status==='ready_to_invoice'?'2px solid #c2410c':'none',borderRadius:8}} onClick={()=>setSOF(f=>({...f,status:f.status==='ready_to_invoice'?'all':'ready_to_invoice'}))}>
@@ -2762,8 +2792,8 @@ export default function App(){
       const fulfilledSz=pickedSz+rcvdSz;
       const itemStatus=totalSz===0?null:fulfilledSz>=totalSz?'received':fulfilledSz>0?'partial':poSz>0?'on_order':'needs_items';
       // Status badge uses the actual SO status field (what the user set)
-      const displayStatus=so.status||'need_order';
-      const statusLabel={need_order:'Need to Order',waiting_receive:'Waiting to Receive',in_production:'In Production',ready_to_invoice:'Ready to Invoice',complete:'Complete'}[displayStatus]||displayStatus.replace(/_/g,' ');
+      const displayStatus=calcSOStatus(so);
+      const statusLabel={need_order:'Need to Order',waiting_receive:'Waiting to Receive',items_received:'Items Received',in_production:'In Production',ready_to_invoice:'Ready to Invoice',complete:'Complete'}[displayStatus]||displayStatus.replace(/_/g,' ');
       return(<tr key={so.id} style={{cursor:'pointer'}} onClick={()=>{setESO(so);setESOC(c)}}>
       <td style={{fontWeight:700,color:'#1e40af'}}>{so.id}</td><td>{c?.name} <span className="badge badge-gray">{c?.alpha_tag}</span></td><td style={{fontSize:12}}>{so.memo}</td><td>{so.expected_date||'--'}</td>
       <td><span style={{fontSize:11,color:'#64748b'}}>{rep?.name?.split(' ')[0]||'\u2014'}</span></td>
