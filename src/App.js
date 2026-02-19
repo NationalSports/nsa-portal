@@ -398,16 +398,17 @@ function calcSOStatus(ord){
   return'need_order';
 }
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack,onConvertSO,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,batchPOs,onBatchPO}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack,onConvertSO,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,batchPOs,onBatchPO,initTab}){
   const isE=mode==='estimate';const isSO=mode==='so';
   const[o,setO]=useState(order);const[cust,setCust]=useState(ic);const[pS,setPS]=useState('');const[showAdd,setShowAdd]=useState(false);
-  const[tab,setTab]=useState('items');const[dirty,setDirty]=useState(false);const[selJob,setSelJob]=useState(null);const[jobNote,setJobNote]=useState('');const[msgDept,setMsgDept]=useState('all');
+  const[tab,setTab]=useState(initTab||'items');const[dirty,setDirty]=useState(false);const[selJob,setSelJob]=useState(null);const[jobNote,setJobNote]=useState('');const[msgDept,setMsgDept]=useState('all');
     const origRef=React.useRef(JSON.stringify(o));
     const markDirty=()=>setDirty(true);const[saved,setSaved]=useState(!!order.customer_id);const[showSend,setShowSend]=useState(false);const[showPick,setShowPick]=useState(false);const[pickId,setPickId]=useState(()=>'IF-'+String(4000+Math.floor(Math.random()*1000)));const[showPO,setShowPO]=useState(null);const[poCounter,setPOCounter]=useState(()=>3001+Math.floor(Math.random()*100));
     const[pickNotes,setPickNotes]=useState('');const[pickShipDest,setPickShipDest]=useState('in_house');const[pickDecoVendor,setPickDecoVendor]=useState('');const[pickShipAddr,setPickShipAddr]=useState('default');
     const DECO_VENDORS=['Silver Screen','Olympic Embroidery','WePrintIt','Pacific Screen Print','Other'];
   const[showFirmReq,setShowFirmReq]=useState(false);const[firmReqDate,setFirmReqDate]=useState('');const[firmReqNote,setFirmReqNote]=useState('');
   const[showInvCreate,setShowInvCreate]=useState(false);const[invSelItems,setInvSelItems]=useState([]);const[invMemo,setInvMemo]=useState('');const[invType,setInvType]=useState('deposit');
+  const[splitModal,setSplitModal]=useState(null);// {jIdx, mode:'received'|'sku'|null}
   // Sync dirty state to parent dirtyRef
   React.useEffect(()=>{if(dirtyRef)dirtyRef.current=dirty},[dirty,dirtyRef]);
   // Adjust inventory when pick is pulled or un-pulled
@@ -1549,7 +1550,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       const refreshJobs=()=>{sv('jobs',syncJobs());nf('Jobs synced')};
 
       // Split job modal state
-      const[splitModal,setSplitModal]=useState(null);// {jIdx, mode:'received'|'sku'|null}
+      // Split job modal state is at component level (splitModal/setSplitModal)
 
       // Split job by received — create partial job with received items
       const splitByReceived=(jIdx)=>{
@@ -2846,7 +2847,7 @@ export default function App(){
   const[soHistory,setSOHistory]=useState({});// {soId:[{ts,user,snapshot}]}
   const[msgs,setMsgs]=useState(D_MSG);const[cM,setCM]=useState({open:false,c:null});const[aM,setAM]=useState({open:false,p:null});
   const[q,setQ]=useState('');const[selC,setSelC]=useState(null);const[selV,setSelV]=useState(null);
-  const[eEst,setEEst]=useState(null);const[eEstC,setEEstC]=useState(null);const[eSO,setESO]=useState(null);const[eSOC,setESOC]=useState(null);
+  const[eEst,setEEst]=useState(null);const[eEstC,setEEstC]=useState(null);const[eSO,setESO]=useState(null);const[eSOC,setESOC]=useState(null);const[eSOTab,setESOTab]=useState(null);
   const[gQ,setGQ]=useState('');const[gOpen,setGOpen]=useState(false);const[mF,setMF]=useState('all');const[rF,setRF]=useState('all');const[pF,setPF]=useState({cat:'all',vnd:'all',stk:'all',clr:'all'});
   const[qPC,setQPC]=useState({open:false,mode:'single',items:[],bulkRaw:''});
   // OMG Team Stores
@@ -3082,7 +3083,7 @@ export default function App(){
 
   // SALES ORDERS LIST
   const rSO=()=>{
-    if(eSO)return<OrderEditor order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} onSave={s=>{savSO(s);setESO(s)}} onBack={()=>setESO(null)} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} batchPOs={batchPOs} onBatchPO={setBatchPOs}/>;
+    if(eSO)return<OrderEditor order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} onSave={s=>{savSO(s);setESO(s)}} onBack={()=>{setESO(null);setESOTab(null)}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} batchPOs={batchPOs} onBatchPO={setBatchPOs} initTab={eSOTab}/>;
     // Filter SOs
     let fSOs=[...sos];
     if(soF.status!=='all')fSOs=fSOs.filter(s=>calcSOStatus(s)===soF.status);
@@ -3516,8 +3517,14 @@ export default function App(){
 
                   {j.expected&&<div style={{fontSize:10,color:urgent?'#dc2626':'#64748b',marginBottom:6}}>📅 Due: {j.expected}{urgent?' — RUSH':''}  </div>}
 
-                  {/* Open SO link */}
-                  <div style={{fontSize:10,color:'#7c3aed',cursor:'pointer',marginBottom:6,textDecoration:'underline'}} onClick={e=>{e.stopPropagation();setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so.customer_id));setPg('orders')}}>→ Open {j.soId}</div>
+                  {/* Open SO / Job links */}
+                  <div style={{display:'flex',gap:8,marginBottom:6}}>
+                    <div style={{fontSize:10,color:'#7c3aed',cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={e=>{e.stopPropagation();
+                      const jso=j.so;const jc=cust.find(c2=>c2.id===jso.customer_id);
+                      setESOTab('jobs');setESO(jso);setESOC(jc);setPg('orders');
+                    }}>🔍 Open Job Detail</div>
+                    <div style={{fontSize:10,color:'#2563eb',cursor:'pointer',textDecoration:'underline'}} onClick={e=>{e.stopPropagation();setESOTab(null);setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so.customer_id));setPg('orders')}}>→ Open {j.soId}</div>
+                  </div>
 
                   {/* Move buttons */}
                   <div style={{display:'flex',gap:4,flexWrap:'wrap',borderTop:'1px solid #e2e8f0',paddingTop:6}}>
@@ -3534,7 +3541,7 @@ export default function App(){
       {prodView==='list'&&<div className="card"><div className="card-body" style={{padding:0}}>
         <table><thead><tr><th>Job</th><th>Artwork</th><th>Customer</th><th>SO</th><th>Rep</th><th>Units</th><th>Art</th><th>Items</th><th>Production</th><th>Expected</th></tr></thead><tbody>
         {byStatus.map(j=>{const pct=j.total_units>0?Math.round(j.fulfilled_units/j.total_units*100):0;
-          return<tr key={j.id+j.soId} style={{cursor:'pointer'}} onClick={()=>{setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so.customer_id));setPg('orders')}}>
+          return<tr key={j.id+j.soId} style={{cursor:'pointer'}} onClick={()=>{setESOTab('jobs');setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so.customer_id));setPg('orders')}}>
             <td style={{fontWeight:700,color:'#1e40af'}}>{j.id}</td>
             <td><div style={{fontWeight:600,fontSize:12}}>{j.art_name}</div><div style={{fontSize:10,color:'#64748b'}}>{j.deco_type?.replace(/_/g,' ')}</div></td>
             <td>{j.customer} <span className="badge badge-gray">{j.alpha}</span></td>
@@ -4631,17 +4638,338 @@ export default function App(){
     </>);
   };
 
+  // WAREHOUSE & DECORATION DASHBOARD
+  const[whTab,setWhTab]=useState('pull');const[whSearch,setWhSearch]=useState('');const[whRepF,setWhRepF]=useState('all');
+
+  const rWarehouse=()=>{
+    // ── Gather ALL actionable data across all SOs ──
+    const pullTasks=[];const receiveTasks=[];const decoTasks=[];const shipTasks=[];
+    sos.forEach(so=>{
+      const c=cust.find(x=>x.id===so.customer_id);const cName=c?.name||'Unknown';const alpha=c?.alpha_tag||'';
+      const rep=REPS.find(r=>r.id===so.created_by)?.name?.split(' ')[0]||'—';
+      const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
+      const urgent=daysOut!=null&&daysOut<=3;
+
+      safeItems(so).forEach((item,ii)=>{
+        const szKeys=Object.keys(item.sizes||{}).filter(k=>SZ_ORD_I.includes(k)||(item.sizes[k]>0));
+        const totalOrdered=szKeys.reduce((a,s)=>a+(item.sizes[s]||0),0);
+        if(totalOrdered===0)return;
+
+        // Calculate what's been pulled vs ordered
+        const pulled={};safePicks(item).forEach(pk=>{szKeys.forEach(s=>{pulled[s]=(pulled[s]||0)+(pk[s]||0)})});
+        const totalPulled=Object.values(pulled).reduce((a,v)=>a+v,0);
+        const needsPull=totalOrdered-totalPulled;
+
+        // Calculate what's on PO vs received
+        const onPO={};const received={};
+        safePOs(item).forEach(po=>{szKeys.forEach(s=>{onPO[s]=(onPO[s]||0)+(po[s]||0);received[s]=(received[s]||0)+((po.received||{})[s]||0)})});
+        const totalOnPO=Object.values(onPO).reduce((a,v)=>a+v,0);
+        const totalReceived=Object.values(received).reduce((a,v)=>a+v,0);
+        const awaitingReceive=totalOnPO-totalReceived;
+
+        // Items needing pull (have stock or received goods to pull)
+        if(needsPull>0){
+          pullTasks.push({so,soId:so.id,item,itemIdx:ii,cName,alpha,rep,daysOut,urgent,
+            sku:item.sku,name:item.name,brand:item.brand||'',color:item.color||'',
+            sizes:item.sizes,pulled,needsPull,totalOrdered,totalPulled,szKeys,
+            noDeco:item.no_deco||item.decorations?.length===0,
+            shipDest:safePicks(item).find(p=>p.ship_dest)?.ship_dest||'in_house'});
+        }
+
+        // POs awaiting receiving
+        safePOs(item).forEach(po=>{
+          const poSzKeys=szKeys.filter(s=>(po[s]||0)>0);
+          const poTotal=poSzKeys.reduce((a,s)=>a+(po[s]||0),0);
+          const poReceived=poSzKeys.reduce((a,s)=>a+((po.received||{})[s]||0),0);
+          if(poTotal>poReceived){
+            receiveTasks.push({so,soId:so.id,item,po,cName,alpha,rep,daysOut,urgent,
+              sku:item.sku,name:item.name,poId:po.po_id,
+              poTotal,poReceived,remaining:poTotal-poReceived,
+              memo:po.memo||'',szKeys:poSzKeys,sizes:{}});
+            poSzKeys.forEach(s=>{receiveTasks[receiveTasks.length-1].sizes[s]={ordered:po[s]||0,received:(po.received||{})[s]||0}});
+          }
+        });
+      });
+
+      // Decoration tasks from jobs
+      safeJobs(so).forEach(j=>{
+        if(j.prod_status==='completed'||j.prod_status==='shipped')return;
+        const isReady=j.art_status==='art_complete'&&j.item_status==='items_received';
+        decoTasks.push({so,soId:so.id,job:j,cName:c?.name||'Unknown',alpha,rep,daysOut,urgent:daysOut!=null&&daysOut<=3,
+          artName:j.art_name,decoType:j.deco_type,totalUnits:j.total_units,fulfilledUnits:j.fulfilled_units,
+          prodStatus:j.prod_status,artStatus:j.art_status,itemStatus:j.item_status,isReady,
+          machine:MACHINES.find(m=>m.id===j.assigned_machine)?.name,assignedTo:j.assigned_to});
+      });
+
+      // Ship tasks — completed jobs or no-deco items that have been pulled
+      safeJobs(so).forEach(j=>{
+        if(j.prod_status==='completed'){
+          shipTasks.push({so,soId:so.id,type:'deco_done',cName:c?.name||'Unknown',alpha,rep,daysOut,urgent:daysOut!=null&&daysOut<=3,
+            desc:j.art_name+' ('+j.deco_type?.replace(/_/g,' ')+')',units:j.total_units,
+            shipMethod:j.ship_method||'pending'});
+        }
+      });
+      // No-deco items that are fully pulled → ready to ship
+      safeItems(so).forEach(item=>{
+        if(!item.no_deco&&(item.decorations||[]).length>0)return;
+        const szKeys=Object.keys(item.sizes||{}).filter(k=>SZ_ORD_I.includes(k));
+        const totalOrdered=szKeys.reduce((a,s)=>a+(item.sizes[s]||0),0);
+        const pulled={};safePicks(item).forEach(pk=>{szKeys.forEach(s=>{pulled[s]=(pulled[s]||0)+(pk[s]||0)})});
+        const totalPulled=Object.values(pulled).reduce((a,v)=>a+v,0);
+        if(totalPulled>=totalOrdered&&totalOrdered>0){
+          const dest=safePicks(item).find(p=>p.ship_dest)?.ship_dest||'in_house';
+          if(dest==='ship_customer')shipTasks.push({so,soId:so.id,type:'no_deco',cName:c?.name||'Unknown',alpha,rep,daysOut,urgent:daysOut!=null&&daysOut<=3,
+            desc:item.sku+' — '+item.name+' (no deco)',units:totalOrdered,shipMethod:'ship_customer'});
+        }
+      });
+    });
+
+    // Sort by urgency
+    const sortByUrgency=(a,b)=>{if(a.urgent&&!b.urgent)return -1;if(!a.urgent&&b.urgent)return 1;return(a.daysOut||999)-(b.daysOut||999)};
+    pullTasks.sort(sortByUrgency);receiveTasks.sort(sortByUrgency);decoTasks.sort(sortByUrgency);shipTasks.sort(sortByUrgency);
+
+    // Filter
+    const filt=(arr)=>arr.filter(t=>{
+      if(whRepF!=='all'&&t.so?.created_by!==whRepF)return false;
+      if(whSearch){const s=whSearch.toLowerCase();
+        if(!(t.cName||'').toLowerCase().includes(s)&&!(t.sku||'').toLowerCase().includes(s)&&
+          !(t.soId||'').toLowerCase().includes(s)&&!(t.desc||'').toLowerCase().includes(s)&&
+          !(t.artName||'').toLowerCase().includes(s)&&!(t.poId||'').toLowerCase().includes(s))return false}
+      return true;
+    });
+
+    const fPull=filt(pullTasks);const fReceive=filt(receiveTasks);const fDeco=filt(decoTasks);const fShip=filt(shipTasks);
+
+    const tabs=[
+      {id:'pull',label:'🏗️ Pull & Stage',count:fPull.length,color:'#d97706'},
+      {id:'receive',label:'📥 Receive',count:fReceive.length,color:'#2563eb'},
+      {id:'deco',label:'🎨 Decoration',count:fDeco.length,color:'#7c3aed'},
+      {id:'ship',label:'📦 Ship',count:fShip.length,color:'#166534'},
+    ];
+
+    return(<>
+      {/* Stats Row */}
+      <div className="stats-row" style={{marginBottom:12}}>
+        <div className="stat-card" style={{background:'#fffbeb',borderLeft:'3px solid #d97706'}}>
+          <div className="stat-label" style={{color:'#92400e'}}>To Pull</div>
+          <div className="stat-value" style={{color:'#d97706'}}>{pullTasks.length}</div>
+          <div style={{fontSize:10,color:'#92400e'}}>{pullTasks.reduce((a,t)=>a+t.needsPull,0)} units</div>
+        </div>
+        <div className="stat-card" style={{background:'#eff6ff',borderLeft:'3px solid #2563eb'}}>
+          <div className="stat-label" style={{color:'#1e40af'}}>To Receive</div>
+          <div className="stat-value" style={{color:'#2563eb'}}>{receiveTasks.length}</div>
+          <div style={{fontSize:10,color:'#1e40af'}}>{receiveTasks.reduce((a,t)=>a+t.remaining,0)} units</div>
+        </div>
+        <div className="stat-card" style={{background:'#f5f3ff',borderLeft:'3px solid #7c3aed'}}>
+          <div className="stat-label" style={{color:'#6d28d9'}}>Deco Queue</div>
+          <div className="stat-value" style={{color:'#7c3aed'}}>{decoTasks.length}</div>
+          <div style={{fontSize:10,color:'#6d28d9'}}>{decoTasks.filter(t=>t.isReady).length} ready to go</div>
+        </div>
+        <div className="stat-card" style={{background:'#f0fdf4',borderLeft:'3px solid #166534'}}>
+          <div className="stat-label" style={{color:'#166534'}}>Ready to Ship</div>
+          <div className="stat-value" style={{color:'#166534'}}>{shipTasks.length}</div>
+          <div style={{fontSize:10,color:'#166534'}}>{shipTasks.reduce((a,t)=>a+t.units,0)} units</div>
+        </div>
+      </div>
+
+      {/* Filters */}
+      <div style={{display:'flex',gap:8,marginBottom:12,alignItems:'center',flexWrap:'wrap'}}>
+        <input className="form-input" placeholder="Search SO#, customer, SKU..." value={whSearch}
+          onChange={e=>setWhSearch(e.target.value)} style={{width:220}}/>
+        <select className="form-select" style={{width:140,fontSize:11}} value={whRepF} onChange={e=>setWhRepF(e.target.value)}>
+          <option value="all">All Reps</option>{REPS.filter(r=>r.role==='rep'||r.role==='admin').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
+        </select>
+      </div>
+
+      {/* Tab Bar */}
+      <div style={{display:'flex',gap:2,marginBottom:12,borderBottom:'2px solid #e2e8f0'}}>
+        {tabs.map(t=><div key={t.id} onClick={()=>setWhTab(t.id)}
+          style={{padding:'10px 16px',cursor:'pointer',fontSize:13,fontWeight:700,
+            borderBottom:whTab===t.id?'3px solid '+t.color:'3px solid transparent',
+            color:whTab===t.id?t.color:'#94a3b8',transition:'all 0.15s'}}>
+          {t.label} <span style={{padding:'2px 6px',borderRadius:10,fontSize:10,fontWeight:700,
+            background:whTab===t.id?t.color+'22':'#f1f5f9',color:whTab===t.id?t.color:'#94a3b8'}}>{t.count}</span>
+        </div>)}
+      </div>
+
+      {/* ── PULL & STAGE TAB ── */}
+      {whTab==='pull'&&<>
+        <div style={{fontSize:12,color:'#64748b',marginBottom:8}}>Items that need to be pulled from inventory or staged for decoration. Sorted by urgency.</div>
+        {fPull.length===0?<div className="empty" style={{padding:32,textAlign:'center'}}>Nothing to pull right now 👍</div>:
+        <div style={{display:'flex',flexDirection:'column',gap:6}}>
+          {fPull.map((t,ti)=><div key={ti} className="card" style={{border:t.urgent?'2px solid #dc2626':'1px solid #e2e8f0'}}>
+            <div style={{padding:'10px 14px'}}>
+              <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
+                {t.urgent&&<span style={{fontSize:10,fontWeight:800,color:'#dc2626',background:'#fef2f2',padding:'1px 6px',borderRadius:4}}>🔥 {t.daysOut}d</span>}
+                <span style={{fontSize:14,fontWeight:800,color:'#1e293b'}}>{t.cName}</span>
+                <span style={{fontSize:10,color:'#94a3b8'}}>{t.soId}</span>
+                <span style={{fontSize:10,color:'#64748b',marginLeft:'auto'}}>{t.rep}</span>
+              </div>
+              <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
+                <span style={{fontFamily:'monospace',fontSize:12,fontWeight:700,color:'#1e40af'}}>{t.sku}</span>
+                <span style={{fontSize:11,color:'#475569'}}>{t.name}</span>
+                {t.color&&<span style={{fontSize:10,color:'#94a3b8'}}>· {t.color}</span>}
+                {t.noDeco&&<span style={{fontSize:9,padding:'1px 5px',borderRadius:4,background:'#f0fdf4',color:'#166534',fontWeight:600}}>No Deco → Ship</span>}
+              </div>
+              {/* Size grid */}
+              <div style={{display:'flex',gap:2,flexWrap:'wrap',marginBottom:6}}>
+                {t.szKeys.map(s=>{const need=(t.sizes[s]||0)-(t.pulled[s]||0);const done=need<=0;
+                  return<div key={s} style={{padding:'3px 8px',borderRadius:4,fontSize:10,fontWeight:700,minWidth:40,textAlign:'center',
+                    background:done?'#f0fdf4':'#fffbeb',color:done?'#166534':'#92400e',border:done?'1px solid #bbf7d0':'1px solid #fde68a'}}>
+                    <div>{s}</div>
+                    <div style={{fontSize:12}}>{done?'✓':need}</div>
+                  </div>})}
+              </div>
+              <div style={{display:'flex',alignItems:'center',gap:8}}>
+                <span style={{fontSize:11,fontWeight:700,color:'#d97706'}}>{t.needsPull} to pull</span>
+                <span style={{fontSize:10,color:'#94a3b8'}}>of {t.totalOrdered} ordered · {t.totalPulled} pulled</span>
+                <button className="btn btn-sm btn-primary" style={{marginLeft:'auto',fontSize:10,padding:'3px 10px'}}
+                  onClick={()=>{setESO(t.so);setESOC(cust.find(c2=>c2.id===t.so.customer_id));setPg('orders')}}>
+                  Open SO →</button>
+              </div>
+            </div>
+          </div>)}
+        </div>}
+      </>}
+
+      {/* ── RECEIVE TAB ── */}
+      {whTab==='receive'&&<>
+        <div style={{fontSize:12,color:'#64748b',marginBottom:8}}>Purchase orders with items still to receive. Click to open the SO and log receiving.</div>
+        {fReceive.length===0?<div className="empty" style={{padding:32,textAlign:'center'}}>All POs fully received 👍</div>:
+        <div style={{display:'flex',flexDirection:'column',gap:6}}>
+          {fReceive.map((t,ti)=><div key={ti} className="card" style={{border:t.urgent?'2px solid #dc2626':'1px solid #e2e8f0'}}>
+            <div style={{padding:'10px 14px'}}>
+              <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
+                {t.urgent&&<span style={{fontSize:10,fontWeight:800,color:'#dc2626',background:'#fef2f2',padding:'1px 6px',borderRadius:4}}>🔥 {t.daysOut}d</span>}
+                <span style={{fontSize:12,fontWeight:800,color:'#2563eb',fontFamily:'monospace'}}>{t.poId}</span>
+                <span style={{fontSize:11,fontWeight:600}}>{t.cName}</span>
+                <span style={{fontSize:10,color:'#94a3b8'}}>{t.soId}</span>
+                <span style={{fontSize:10,color:'#64748b',marginLeft:'auto'}}>{t.rep}</span>
+              </div>
+              <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
+                <span style={{fontFamily:'monospace',fontSize:11,fontWeight:700}}>{t.sku}</span>
+                <span style={{fontSize:11,color:'#475569'}}>{t.name}</span>
+                {t.memo&&<span style={{fontSize:10,color:'#94a3b8',fontStyle:'italic'}}>"{t.memo}"</span>}
+              </div>
+              {/* Size receiving grid */}
+              <div style={{display:'flex',gap:2,flexWrap:'wrap',marginBottom:6}}>
+                {t.szKeys.map(s=>{const sz=t.sizes[s]||{ordered:0,received:0};const done=sz.received>=sz.ordered;
+                  return<div key={s} style={{padding:'3px 8px',borderRadius:4,fontSize:10,fontWeight:700,minWidth:40,textAlign:'center',
+                    background:done?'#f0fdf4':'#eff6ff',color:done?'#166534':'#1e40af',border:done?'1px solid #bbf7d0':'1px solid #bfdbfe'}}>
+                    <div>{s}</div>
+                    <div style={{fontSize:12}}>{done?'✓':sz.received+'/'+sz.ordered}</div>
+                  </div>})}
+              </div>
+              <div style={{display:'flex',alignItems:'center',gap:8}}>
+                <span style={{fontSize:11,fontWeight:700,color:'#2563eb'}}>{t.remaining} remaining</span>
+                <span style={{fontSize:10,color:'#94a3b8'}}>of {t.poTotal} ordered · {t.poReceived} received</span>
+                <button className="btn btn-sm btn-primary" style={{marginLeft:'auto',fontSize:10,padding:'3px 10px'}}
+                  onClick={()=>{setESO(t.so);setESOC(cust.find(c2=>c2.id===t.so.customer_id));setPg('orders')}}>
+                  Log Receiving →</button>
+              </div>
+            </div>
+          </div>)}
+        </div>}
+      </>}
+
+      {/* ── DECORATION TAB ── */}
+      {whTab==='deco'&&<>
+        <div style={{fontSize:12,color:'#64748b',marginBottom:8}}>All active decoration jobs. Green = ready to produce (art approved + items in house). Click to open SO or use Prod Board for full control.</div>
+        {fDeco.length===0?<div className="empty" style={{padding:32,textAlign:'center'}}>No active decoration jobs 👍</div>:
+        <div style={{display:'flex',flexDirection:'column',gap:6}}>
+          {fDeco.map((t,ti)=>{
+            const pct=t.totalUnits>0?Math.round(t.fulfilledUnits/t.totalUnits*100):0;
+            return<div key={ti} className="card" style={{border:t.urgent?'2px solid #dc2626':t.isReady?'2px solid #22c55e':'1px solid #e2e8f0',
+              background:t.isReady?'#f0fdf4':'white'}}>
+              <div style={{padding:'10px 14px'}}>
+                <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
+                  {t.urgent&&<span style={{fontSize:10,fontWeight:800,color:'#dc2626',background:'#fef2f2',padding:'1px 6px',borderRadius:4}}>🔥 {t.daysOut}d</span>}
+                  {t.isReady&&<span style={{fontSize:10,fontWeight:800,color:'#166534',background:'#dcfce7',padding:'1px 6px',borderRadius:4}}>✅ READY</span>}
+                  <span style={{fontSize:14,fontWeight:800,color:'#1e293b'}}>{t.cName}</span>
+                  <span style={{fontSize:10,color:'#94a3b8'}}>{t.soId}</span>
+                  <span style={{fontSize:10,color:'#64748b',marginLeft:'auto'}}>{t.rep}</span>
+                </div>
+                <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
+                  <span style={{fontSize:12,fontWeight:700,color:'#7c3aed'}}>{t.artName}</span>
+                  <span style={{fontSize:10,padding:'2px 6px',borderRadius:4,fontWeight:600,
+                    background:t.decoType==='embroidery'?'#f3e8ff':t.decoType==='screen_print'?'#dbeafe':t.decoType==='dtf'?'#fef3c7':'#f1f5f9',
+                    color:t.decoType==='embroidery'?'#6b21a8':t.decoType==='screen_print'?'#1e40af':t.decoType==='dtf'?'#92400e':'#475569'}}>
+                    {t.decoType?.replace(/_/g,' ')}</span>
+                  {t.machine&&<span style={{fontSize:9,padding:'1px 5px',borderRadius:4,background:'#fef3c7',color:'#92400e'}}>🖨️ {t.machine}</span>}
+                  {t.assignedTo&&<span style={{fontSize:9,padding:'1px 5px',borderRadius:4,background:'#ede9fe',color:'#6d28d9'}}>👤 {t.assignedTo}</span>}
+                </div>
+                <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
+                  <div style={{display:'flex',gap:3}}>
+                    <span style={{padding:'1px 5px',borderRadius:6,fontSize:8,fontWeight:700,background:SC[t.artStatus]?.bg,color:SC[t.artStatus]?.c}}>
+                      {t.artStatus==='art_complete'?'✅ Art':'⏳ Art'}</span>
+                    <span style={{padding:'1px 5px',borderRadius:6,fontSize:8,fontWeight:700,background:SC[t.itemStatus]?.bg,color:SC[t.itemStatus]?.c}}>
+                      {t.itemStatus==='items_received'?'✅ Items':'⏳ Items'}</span>
+                    <span style={{padding:'1px 5px',borderRadius:6,fontSize:8,fontWeight:700,background:SC[t.prodStatus]?.bg,color:SC[t.prodStatus]?.c}}>
+                      {t.prodStatus==='hold'?'⏸ Hold':t.prodStatus==='staging'?'📋 In Line':t.prodStatus==='in_process'?'🖨️ In Process':'✓ '+t.prodStatus}</span>
+                  </div>
+                </div>
+                <div style={{display:'flex',alignItems:'center',gap:8}}>
+                  <span style={{fontSize:13,fontWeight:800,color:pct>=100?'#166534':'#7c3aed'}}>{t.fulfilledUnits}/{t.totalUnits}</span>
+                  <div style={{flex:1,background:'#e2e8f0',borderRadius:4,height:5,overflow:'hidden',maxWidth:200}}>
+                    <div style={{height:5,borderRadius:4,background:pct>=100?'#22c55e':pct>50?'#3b82f6':'#f59e0b',width:pct+'%'}}/></div>
+                  <span style={{fontSize:9,color:'#64748b'}}>{pct}%</span>
+                  <div style={{marginLeft:'auto',display:'flex',gap:4}}>
+                    <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'3px 8px'}}
+                      onClick={()=>{setESO(t.so);setESOC(cust.find(c2=>c2.id===t.so.customer_id));setPg('orders')}}>Open SO</button>
+                    <button className="btn btn-sm btn-primary" style={{fontSize:10,padding:'3px 8px',background:'#7c3aed',borderColor:'#7c3aed'}}
+                      onClick={()=>setPg('production')}>Prod Board</button>
+                  </div>
+                </div>
+              </div>
+            </div>})}
+        </div>}
+      </>}
+
+      {/* ── SHIP TAB ── */}
+      {whTab==='ship'&&<>
+        <div style={{fontSize:12,color:'#64748b',marginBottom:8}}>Items ready to pack and ship — decoration is complete or no deco required.</div>
+        {fShip.length===0?<div className="empty" style={{padding:32,textAlign:'center'}}>Nothing ready to ship right now</div>:
+        <div style={{display:'flex',flexDirection:'column',gap:6}}>
+          {fShip.map((t,ti)=><div key={ti} className="card" style={{border:t.urgent?'2px solid #dc2626':'1px solid #e2e8f0'}}>
+            <div style={{padding:'10px 14px'}}>
+              <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
+                {t.urgent&&<span style={{fontSize:10,fontWeight:800,color:'#dc2626',background:'#fef2f2',padding:'1px 6px',borderRadius:4}}>🔥 {t.daysOut}d</span>}
+                <span style={{fontSize:14,fontWeight:800,color:'#1e293b'}}>{t.cName}</span>
+                <span style={{fontSize:10,color:'#94a3b8'}}>{t.soId}</span>
+                <span style={{fontSize:10,color:'#64748b',marginLeft:'auto'}}>{t.rep}</span>
+              </div>
+              <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
+                <span style={{fontSize:11,fontWeight:600}}>{t.desc}</span>
+                <span style={{fontSize:11,fontWeight:700,color:'#166534'}}>{t.units} units</span>
+                <span style={{fontSize:10,padding:'2px 6px',borderRadius:4,fontWeight:600,
+                  background:t.shipMethod==='ship_customer'?'#dbeafe':t.shipMethod==='rep_delivery'?'#dcfce7':t.shipMethod==='customer_pickup'?'#fef3c7':'#fef2f2',
+                  color:t.shipMethod==='ship_customer'?'#1e40af':t.shipMethod==='rep_delivery'?'#166534':t.shipMethod==='customer_pickup'?'#92400e':'#dc2626'}}>
+                  {t.shipMethod==='ship_customer'?'📦 Ship to Customer':t.shipMethod==='rep_delivery'?'🚗 Rep Delivery':t.shipMethod==='customer_pickup'?'🏫 Pickup':'⚠️ No method set'}</span>
+              </div>
+              <div style={{display:'flex',gap:4}}>
+                <button className="btn btn-sm btn-primary" style={{fontSize:10,padding:'3px 10px',background:'#166534',borderColor:'#166534'}}
+                  onClick={()=>{setESO(t.so);setESOC(cust.find(c2=>c2.id===t.so.customer_id));setPg('orders')}}>
+                  Process Shipment →</button>
+              </div>
+            </div>
+          </div>)}
+        </div>}
+      </>}
+    </>);
+  };
+
   // NETSUITE IMPORT PAGE
-  const[imp,setImp]=useState({step:'upload',raw:'',docType:'',custId:'',parsed:[],decoLines:[],issues:[],questions:[],shipping:[],memo:'',poRef:'',files:[],processing:false});
+  const[imp,setImp]=useState({step:'upload',raw:'',docType:'so',custId:'',parsed:[],decoLines:[],issues:[],questions:[],shipping:[],memo:'',poRef:''});
   const SZ_ORD_I=['XXS','XS','YXS','YS','YM','YL','YXL','S','M','L','XL','2XL','3XL','4XL','5XL','OSFA'];
 
   const parseNSData=(raw)=>{
-    const lines=raw.trim().split('\n').filter(l=>l.trim());
+    const lines=raw.trim().split('\
+').filter(l=>l.trim());
     const items={};const decoLines=[];const issues=[];const shipping=[];const questions=[];
     const SZ_RE=/[-\s](XXS|XS|S|M|L|XL|2XL|3XL|4XL|5XL|YXS|YS|YM|YL|YXL|OSFA)$/i;
 
     lines.forEach((line,li)=>{
-      const cols=line.split('\t').map(c=>c.trim());
+      const cols=line.split('\	').map(c=>c.trim());
       if(cols.length<3){if(line.trim().length>5)issues.push({line:li+1,msg:'Could not parse: "'+line.slice(0,80)+'"'});return}
       const rawItem=cols[0]||'';const desc=cols[1]||'';const qty=parseInt(cols[2])||0;
       const priceLevel=cols[3]||'';const rate=parseFloat(cols[4])||0;const amount=parseFloat(cols[5])||0;
@@ -4719,106 +5047,6 @@ export default function App(){
     });
   };
 
-  const detectDocType=(text)=>{
-    const l=text.toLowerCase();
-    if(l.includes('sales order'))return{type:'so',label:'Sales Order'};
-    if(l.includes('estimate')||l.includes('quotation')||l.includes('quote'))return{type:'est',label:'Estimate'};
-    if(l.includes('invoice')||l.includes('credit memo'))return{type:'inv',label:'Invoice'};
-    if(l.includes('purchase order'))return{type:'po',label:'Purchase Order'};
-    return null;
-  };
-
-  // Load PDF.js on demand
-  const loadPdfJs=()=>new Promise((resolve)=>{
-    if(window.pdfjsLib){resolve(window.pdfjsLib);return}
-    const s=document.createElement('script');
-    s.src='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
-    s.onload=()=>{window.pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';resolve(window.pdfjsLib)};
-    s.onerror=()=>resolve(null);
-    document.head.appendChild(s);
-  });
-
-  const processFiles=async(fileList)=>{
-    setImp(x=>({...x,processing:true}));
-
-    // Build file entries first
-    const entries=Array.from(fileList).map(file=>({
-      file,name:file.name,type:file.type==='application/pdf'?'pdf':file.type.startsWith('image/')?'image':'unknown',
-      size:file.size,status:'processing',text:'',detectedType:null,detectedCustomer:null,extractedLines:0,error:null,preview:null}));
-
-    // Add them all to state
-    setImp(x=>({...x,files:[...x.files,...entries]}));
-
-    // Process each
-    const results=[];
-    for(const entry of entries){
-      try{
-        let text='';
-        if(entry.type==='pdf'){
-          const pdfLib=await loadPdfJs();
-          const arrayBuf=await entry.file.arrayBuffer();
-          if(pdfLib){
-            const pdf=await pdfLib.getDocument({data:arrayBuf}).promise;
-            const pages=[];
-            for(let p=1;p<=pdf.numPages;p++){
-              const page=await pdf.getPage(p);
-              const content=await page.getTextContent();
-              // Reconstruct lines by grouping items at similar Y positions
-              const items=content.items.filter(i=>i.str.trim());
-              if(items.length>0){
-                items.sort((a,b)=>b.transform[5]-a.transform[5]||a.transform[4]-b.transform[4]);
-                let curY=items[0].transform[5];let line=[];const lines=[];
-                items.forEach(i=>{
-                  if(Math.abs(i.transform[5]-curY)>3){lines.push(line.join('\t'));line=[i.str];curY=i.transform[5]}
-                  else line.push(i.str)});
-                if(line.length)lines.push(line.join('\t'));
-                pages.push(lines.join('\n'));
-              }
-            }
-            text=pages.join('\n\n--- PAGE BREAK ---\n\n');
-          } else {
-            // No PDF.js — try raw extraction
-            const bytes=new Uint8Array(arrayBuf);
-            const readable=[];let chunk='';
-            bytes.forEach(b=>{if(b>=32&&b<=126)chunk+=String.fromCharCode(b);else if(chunk.length>2){readable.push(chunk);chunk=''}else chunk=''});
-            if(chunk.length>2)readable.push(chunk);
-            text=readable.join(' ');
-          }
-        } else if(entry.type==='image'){
-          // Create preview URL for images
-          entry.preview=URL.createObjectURL(entry.file);
-          text='[Image: '+entry.name+' — paste line items manually or use PDF export for best results]';
-        }
-
-        const dtResult=detectDocType(text);
-        const detCust=detectCustomer(text);
-        const lineCount=text.split('\n').filter(l=>l.trim().length>3).length;
-
-        entry.status='ready';entry.text=text;entry.extractedLines=lineCount;
-        entry.detectedType=dtResult?.type||null;
-        entry.detectedCustomer=detCust?.name||null;
-        results.push({entry,dtResult,detCust,text});
-      }catch(err){
-        entry.status='error';entry.error=err.message||'Failed to process';
-        results.push({entry,error:true});
-      }
-    }
-
-    // Update state with all results at once
-    setImp(x=>{
-      const allFiles=[...x.files.filter(f=>!entries.includes(f)),...entries];
-      const readyFiles=allFiles.filter(f=>f.status==='ready'&&f.text&&!f.text.startsWith('['));
-      const allText=readyFiles.map(f=>f.text).join('\n');
-      // Auto-detect from first successful file
-      const firstGood=results.find(r=>!r.error&&r.dtResult);
-      const firstCust=results.find(r=>!r.error&&r.detCust);
-      return{...x,files:allFiles,processing:false,
-        docType:x.docType||(firstGood?.dtResult?.type)||'',
-        custId:x.custId||(firstCust?.detCust?.id)||'',
-        raw:allText||x.raw};
-    });
-  };
-
   const rImport=()=>{
 
     const applyAnswer=(qi,val)=>setImp(x=>({...x,questions:x.questions.map((q,i)=>i===qi?{...q,answer:val}:q)}));
@@ -4836,109 +5064,35 @@ export default function App(){
       {imp.step==='upload'&&<>
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}}>
           {/* Left: upload area */}
-          <div className="card"><div className="card-header"><h2>📄 Upload Files or Paste Data</h2></div>
+          <div className="card"><div className="card-header"><h2>?? Upload PDF or Paste Data</h2></div>
             <div className="card-body">
-
-              {/* Drag & Drop Zone */}
               <div style={{marginBottom:12}}>
-                <label className="form-label">Upload PDF, PNG, or JPG files</label>
-                <div style={{padding:28,border:'2px dashed #3b82f6',borderRadius:8,textAlign:'center',background:'#eff6ff',cursor:'pointer',transition:'all 0.2s'}}
-                  onDragOver={e=>{e.preventDefault();e.currentTarget.style.background='#dbeafe';e.currentTarget.style.borderColor='#1e40af'}}
-                  onDragLeave={e=>{e.currentTarget.style.background='#eff6ff';e.currentTarget.style.borderColor='#3b82f6'}}
-                  onDrop={e=>{e.preventDefault();e.currentTarget.style.background='#eff6ff';e.currentTarget.style.borderColor='#3b82f6';
-                    const droppedFiles=[...e.dataTransfer.files].filter(f=>f.type==='application/pdf'||f.type.startsWith('image/'));
-                    if(droppedFiles.length===0){nf('Only PDF and image files accepted','error');return}
-                    processFiles(droppedFiles)}}
-                  onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.accept='.pdf,.png,.jpg,.jpeg';
-                    inp.onchange=e=>processFiles([...e.target.files]);inp.click()}}>
-                  <div style={{fontSize:32,marginBottom:4}}>📎</div>
-                  <div style={{fontSize:13,fontWeight:700,color:'#1e40af'}}>Drag & drop files here or click to browse</div>
-                  <div style={{fontSize:11,color:'#64748b',marginTop:4}}>PDF, PNG, JPG — multiple files OK</div>
-                  <div style={{fontSize:10,color:'#94a3b8',marginTop:2}}>We'll auto-detect: Sales Order, Estimate, Invoice, or PO</div>
-                </div>
-              </div>
-
-              {/* Uploaded files list */}
-              {imp.files.length>0&&<div style={{marginBottom:12}}>
-                <label className="form-label">Uploaded Files ({imp.files.length})</label>
-                {imp.files.map((f,fi)=><div key={fi} style={{padding:'8px 12px',background:f.status==='ready'?'#f0fdf4':f.status==='error'?'#fef2f2':'#f8fafc',
-                  borderRadius:6,marginBottom:4,border:'1px solid '+(f.status==='ready'?'#86efac':f.status==='error'?'#fca5a5':'#e2e8f0')}}>
-                  <div style={{display:'flex',alignItems:'center',gap:8}}>
-                    {f.preview?<img src={f.preview} style={{width:40,height:40,objectFit:'cover',borderRadius:4,border:'1px solid #e2e8f0'}}/>
-                      :<span style={{fontSize:20,width:40,textAlign:'center'}}>{f.type==='pdf'?'📄':'🖼️'}</span>}
-                    <div style={{flex:1}}>
-                      <div style={{fontSize:12,fontWeight:600}}>{f.name}</div>
-                      <div style={{fontSize:10,color:'#64748b',display:'flex',gap:4,alignItems:'center',flexWrap:'wrap'}}>
-                        <span>{(f.type||'').toUpperCase()} · {(f.size/1024).toFixed(0)}KB</span>
-                        {f.detectedType&&<span style={{padding:'1px 5px',borderRadius:4,fontSize:9,fontWeight:700,
-                          background:f.detectedType==='so'?'#dbeafe':f.detectedType==='est'?'#fef3c7':f.detectedType==='inv'?'#dcfce7':'#ede9fe',
-                          color:f.detectedType==='so'?'#1e40af':f.detectedType==='est'?'#92400e':f.detectedType==='inv'?'#166534':'#6d28d9'}}>
-                          {f.detectedType==='so'?'📋 Sales Order':f.detectedType==='est'?'📝 Estimate':f.detectedType==='inv'?'💰 Invoice':f.detectedType==='po'?'📦 Purchase Order':'❓ Unknown'}</span>}
-                        {f.detectedCustomer&&<span style={{fontSize:9,color:'#166534',fontWeight:600}}>👤 {f.detectedCustomer}</span>}
-                        {f.extractedLines>0&&<span style={{fontSize:9}}>· {f.extractedLines} lines</span>}
-                      </div>
-                    </div>
-                    {f.status==='processing'&&<span style={{fontSize:10,color:'#d97706',fontWeight:600}}>⏳ Processing...</span>}
-                    {f.status==='ready'&&f.type==='pdf'&&<button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px'}}
-                      onClick={()=>setImp(x=>({...x,files:x.files.map((ff,i)=>i===fi?{...ff,_showText:!ff._showText}:ff)}))}>
-                      {f._showText?'Hide':'View'} Text</button>}
-                    {f.status==='ready'&&<span style={{fontSize:12,color:'#166534'}}>✅</span>}
-                    {f.status==='error'&&<span style={{fontSize:10,color:'#dc2626'}}>❌ {f.error}</span>}
-                    <button style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',fontSize:16,padding:2}} title="Remove file"
-                      onClick={()=>setImp(x=>({...x,files:x.files.filter((_,i)=>i!==fi)}))}>×</button>
-                  </div>
-                  {f._showText&&f.text&&<div style={{marginTop:6,padding:8,background:'#f8fafc',borderRadius:4,maxHeight:200,overflow:'auto'}}>
-                    <pre style={{fontSize:9,fontFamily:'monospace',whiteSpace:'pre-wrap',margin:0,color:'#475569'}}>{f.text}</pre>
-                  </div>}
-                  {f.type==='image'&&f.status==='ready'&&<div style={{marginTop:6,padding:6,background:'#fffbeb',borderRadius:4,fontSize:10,color:'#92400e'}}>
-                    📸 Image uploaded — for best results, paste the line items from NetSuite into the text area below. The image is saved for reference.
-                  </div>}
-                </div>)}
-              </div>}
-
-              {imp.processing&&<div style={{padding:12,background:'#fef3c7',borderRadius:6,marginBottom:12,textAlign:'center'}}>
-                <div style={{fontSize:13,fontWeight:700,color:'#92400e'}}>⏳ Processing files...</div>
-                <div style={{fontSize:11,color:'#92400e'}}>Extracting text and detecting document type</div>
-              </div>}
-
-              {/* Manual doc type override */}
-              {imp.files.length>0&&<div style={{marginBottom:12}}>
-                <label className="form-label">Document Type {imp.docType&&<span style={{color:'#22c55e',fontSize:10}}>✓ {imp.docType==='so'?'Sales Order':imp.docType==='est'?'Estimate':imp.docType==='po'?'PO':'Invoice'}</span>}</label>
-                <div style={{display:'flex',gap:4}}>
-                  {[['','Auto-Detect'],['so','Sales Order'],['est','Estimate'],['inv','Invoice'],['po','Purchase Order']].map(([v,l])=>
-                    <button key={v} className={`btn btn-sm ${imp.docType===v?'btn-primary':'btn-secondary'}`} onClick={()=>setImp(x=>({...x,docType:v}))}>{l}</button>)}
-                </div>
-              </div>}
-
-              {/* Paste option */}
-              <div style={{borderTop:'1px solid #e2e8f0',paddingTop:12}}>
-                <label className="form-label">Or paste tab-separated data from NetSuite</label>
-                <textarea className="form-input" rows={8} value={imp.raw} onChange={e=>{
-                  const v=e.target.value;setImp(x=>({...x,raw:v}));
-                  if(v.length>20&&!imp.custId){const det=detectCustomer(v);if(det)setImp(x=>({...x,custId:det.id}))}
-                  // Auto-detect doc type from pasted text
-                  if(v.length>10&&!imp.docType){
-                    const lower=v.toLowerCase();
-                    if(lower.includes('sales order'))setImp(x=>({...x,docType:'so'}));
-                    else if(lower.includes('estimate')||lower.includes('quote'))setImp(x=>({...x,docType:'est'}));
-                    else if(lower.includes('invoice'))setImp(x=>({...x,docType:'inv'}));
-                    else if(lower.includes('purchase order'))setImp(x=>({...x,docType:'po'}));
-                  }
-                }} placeholder="Copy lines from NetSuite (ITEM → INVOICED columns)..." style={{fontFamily:'monospace',fontSize:10,whiteSpace:'pre'}}/>
-              </div>
-
-              {!imp.docType&&!imp.files.length&&<div style={{marginTop:12}}>
                 <label className="form-label">Document Type</label>
                 <div style={{display:'flex',gap:4}}>
                   {[['so','Sales Order'],['est','Estimate'],['po','Purchase Order']].map(([v,l])=>
                     <button key={v} className={`btn btn-sm ${imp.docType===v?'btn-primary':'btn-secondary'}`} onClick={()=>setImp(x=>({...x,docType:v}))}>{l}</button>)}
                 </div>
-              </div>}
+              </div>
+              <div style={{marginBottom:12}}>
+                <label className="form-label">Upload PDF <span style={{fontSize:10,color:'#94a3b8'}}>(coming soon — use paste for now)</span></label>
+                <div style={{padding:24,border:'2px dashed #d1d5db',borderRadius:8,textAlign:'center',color:'#94a3b8',fontSize:12}}>
+                  ?? Drag & drop PDF here or click to browse<br/>
+                  <span style={{fontSize:10}}>NetSuite PDF export or printed SO/Estimate</span>
+                </div>
+              </div>
+              <div>
+                <label className="form-label">Or paste tab-separated data from NetSuite</label>
+                <textarea className="form-input" rows={10} value={imp.raw} onChange={e=>{
+                  const v=e.target.value;setImp(x=>({...x,raw:v}));
+                  // Auto-detect customer
+                  if(v.length>20&&!imp.custId){const det=detectCustomer(v);if(det)setImp(x=>({...x,custId:det.id}))}
+                }} placeholder="Copy lines from NetSuite (ITEM → INVOICED columns) and paste here..." style={{fontFamily:'monospace',fontSize:10,whiteSpace:'pre'}}/>
+              </div>
             </div>
           </div>
 
           {/* Right: customer + settings */}
-          <div className="card"><div className="card-header"><h2>👤 Customer & Settings</h2></div>
+          <div className="card"><div className="card-header"><h2>?? Customer & Settings</h2></div>
             <div className="card-body">
               <div style={{marginBottom:12}}>
                 <label className="form-label">Customer {imp.custId&&<span style={{color:'#22c55e',fontSize:10}}>✓ Detected</span>}</label>
@@ -4970,17 +5124,11 @@ export default function App(){
           </div>
         </div>
 
-        <div style={{marginTop:12,display:'flex',gap:8,alignItems:'center'}}>
-          <button className="btn btn-primary" disabled={(!imp.raw.trim()&&!imp.files.some(f=>f.status==='ready'))||!imp.custId||imp.processing} onClick={()=>{
-            // Combine all text sources
-            let allRaw=imp.raw;
-            imp.files.filter(f=>f.status==='ready'&&f.text&&!f.text.startsWith('[')).forEach(f=>{if(!allRaw.includes(f.text))allRaw+='\n'+f.text});
-            const result=parseNSData(allRaw);
-            setImp(x=>({...x,step:'review',...result}));
-          }}>🔍 Parse & Review →</button>
-          {!imp.custId&&<span style={{fontSize:11,color:'#d97706'}}>← Select a customer first</span>}
-          {imp.custId&&!imp.raw.trim()&&!imp.files.some(f=>f.status==='ready')&&<span style={{fontSize:11,color:'#d97706'}}>← Upload files or paste data</span>}
-          {imp.files.some(f=>f.type==='image'&&f.status==='ready')&&<span style={{fontSize:11,color:'#64748b'}}>Image files detected — paste the line items manually for best results</span>}
+        <div style={{marginTop:12,display:'flex',gap:8}}>
+          <button className="btn btn-primary" disabled={!imp.raw.trim()||!imp.custId} onClick={()=>{
+            const result=parseNSData(imp.raw);
+            setImp(x=>({...x,step:result.questions.length>0?'review':'review',...result}));
+          }}>?? Parse & Review →</button>
         </div>
       </>}
 
@@ -5004,7 +5152,7 @@ export default function App(){
           {imp.issues.map((is,i)=><div key={i} style={{fontSize:10,color:'#991b1b'}}>Line {is.line}: {is.msg}</div>)}
         </div>}
 
-        <div className="card" style={{marginBottom:12}}><div className="card-header"><h2>📦 Parsed Items</h2></div>
+        <div className="card" style={{marginBottom:12}}><div className="card-header"><h2>?? Parsed Items</h2></div>
           <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
             <table style={{fontSize:11}}><thead><tr><th style={{width:28}}>✓</th><th>SKU</th><th>Name</th><th>Brand</th><th>Color</th><th>Rate</th><th>Sizes</th><th>Qty</th><th>$</th><th>Match</th></tr></thead>
             <tbody>{imp.parsed.map((it,i)=>{
@@ -5032,7 +5180,7 @@ export default function App(){
           </div>
         </div>
 
-        {imp.decoLines.length>0&&<div className="card" style={{marginBottom:12}}><div className="card-header"><h2>🎨 Decorations</h2></div>
+        {imp.decoLines.length>0&&<div className="card" style={{marginBottom:12}}><div className="card-header"><h2>?? Decorations</h2></div>
           <div className="card-body">{imp.decoLines.map((d,di)=>
             <div key={di} style={{padding:8,background:'#f8fafc',borderRadius:6,marginBottom:4,display:'flex',gap:8,alignItems:'center',fontSize:11}}>
               <span style={{fontWeight:700,flex:1}}>{d.desc}</span>
@@ -5052,7 +5200,7 @@ export default function App(){
 
       {/* STEP 3: Questions */}
       {imp.step==='questions'&&<>
-        <div style={{fontSize:14,fontWeight:700,marginBottom:12}}>🤔 A few questions about your import</div>
+        <div style={{fontSize:14,fontWeight:700,marginBottom:12}}>?? A few questions about your import</div>
         <div style={{fontSize:12,color:'#64748b',marginBottom:16}}>Some items need your input to import correctly. Answer these and we'll finalize everything.</div>
 
         {imp.questions.map((q,qi)=>{const it=imp.parsed[q.idx];
@@ -5064,7 +5212,7 @@ export default function App(){
               </div>
 
               {q.type==='match'&&<div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-                <button className={`btn btn-sm ${q.answer==='custom'?'btn-primary':'btn-secondary'}`} onClick={()=>applyAnswer(qi,'custom')}>📝 Custom / Special Order</button>
+                <button className={`btn btn-sm ${q.answer==='custom'?'btn-primary':'btn-secondary'}`} onClick={()=>applyAnswer(qi,'custom')}>?? Custom / Special Order</button>
                 <button className={`btn btn-sm ${q.answer==='skip'?'btn-primary':'btn-secondary'}`} style={{color:q.answer==='skip'?'white':'#dc2626'}} onClick={()=>applyAnswer(qi,'skip')}>⏭ Skip This Item</button>
                 <div style={{display:'flex',gap:4,alignItems:'center'}}>
                   <span style={{fontSize:10}}>Or match to:</span>
@@ -5161,7 +5309,7 @@ export default function App(){
                     ship_to_id:'default',firm_dates:[],art_files:[],items:newItems};
                   setSOs(prev=>[newSO,...prev]);
                   setESO(newSO);setESOC(c);setPg('orders');
-                  nf('📥 Imported SO with '+newItems.length+' items from NetSuite');
+                  nf('?? Imported SO with '+newItems.length+' items from NetSuite');
                 } else {
                   const newEst={id:'EST-'+(2200+ests.length),customer_id:imp.custId,memo:imp.memo||'Imported from NetSuite',status:'draft',
                     created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),
@@ -5169,15 +5317,17 @@ export default function App(){
                     ship_to_id:'default',email_status:null,art_files:[],items:newItems};
                   setEsts(prev=>[newEst,...prev]);
                   setEEst(newEst);setEEstC(c);setPg('estimates');
-                  nf('📥 Imported Estimate with '+newItems.length+' items from NetSuite');
+                  nf('?? Imported Estimate with '+newItems.length+' items from NetSuite');
                 }
-                setImp({step:'upload',raw:'',docType:'',custId:'',parsed:[],decoLines:[],issues:[],questions:[],shipping:[],memo:'',poRef:'',files:[],processing:false});
-              }}>🚀 Create {imp.docType==='so'?'Sales Order':'Estimate'} ({keeping.length} items)</button>
+                setImp({step:'upload',raw:'',docType:'so',custId:'',parsed:[],decoLines:[],issues:[],questions:[],shipping:[],memo:'',poRef:''});
+              }}>?? Create {imp.docType==='so'?'Sales Order':'Estimate'} ({keeping.length} items)</button>
             </div>
           </>})()}
       </>}
     </>);
   };
+
+
 
   const rBackup=()=>{
     const stateSize=JSON.stringify({customers:cust,estimates:ests,sales_orders:sos,products:prod,messages:msgs,invoices:invs}).length;
@@ -5361,8 +5511,8 @@ export default function App(){
           </div></div>})}</div></div></>)};
 
     // NAV
-  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'reports',label:'Reports',icon:'dollar'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'production',label:'Prod Board',icon:'package'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{section:'Comms'},{id:'messages',label:'Messages',icon:'mail'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'System'},{id:'import',label:'NetSuite Import',icon:'save'},{id:'backup',label:'Backup & Data',icon:'save'}];
-  const titles={dashboard:'Dashboard',reports:'Reports & Analytics',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',omg:'OMG Team Stores',jobs:'Jobs',production:'Production Board',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',products:'Products',inventory:'Inventory',messages:'Messages',import:'NetSuite Import',backup:'Backup & Data'};
+  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'reports',label:'Reports',icon:'dollar'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'production',label:'Prod Board',icon:'package'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{section:'Comms'},{id:'messages',label:'Messages',icon:'mail'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'System'},{id:'import',label:'NetSuite Import',icon:'save'},{id:'backup',label:'Backup & Data',icon:'save'}];
+  const titles={dashboard:'Dashboard',reports:'Reports & Analytics',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',omg:'OMG Team Stores',jobs:'Jobs',production:'Production Board',warehouse:'Warehouse & Deco',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',products:'Products',inventory:'Inventory',messages:'Messages',import:'NetSuite Import',backup:'Backup & Data'};
   return(<div className="app"><Toast msg={toast?.msg} type={toast?.type}/>
     <div className="sidebar"><div className="sidebar-logo">NSA<span>Portal</span></div>
       <nav className="sidebar-nav">{nav.map((item,i)=>{if(item.section)return<div key={i} className="sidebar-section">{item.section}</div>;
@@ -5397,7 +5547,7 @@ export default function App(){
           {gOpen&&<div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:59}} onClick={()=>setGOpen(false)}/>}
         </div>
         <div style={{display:'flex',gap:6,alignItems:'center'}}><button className="btn btn-sm btn-primary" onClick={()=>newE(null)} style={{fontSize:11}}><Icon name="plus" size={12}/> Estimate</button><button className="btn btn-sm btn-secondary" onClick={()=>setCM({open:true,c:null})} style={{fontSize:11}}><Icon name="plus" size={12}/> Customer</button><button className="btn btn-sm btn-secondary" onClick={()=>setQPC({open:true,mode:'single',items:[{sku:'',name:'',brand:'',color:'',category:'Tees',retail_price:0,nsa_cost:0,available_sizes:['S','M','L','XL','2XL'],vendor_id:''}]})} style={{fontSize:11}}><Icon name="plus" size={12}/> Product</button></div></div>
-      <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='production'&&rProd2()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='omg'&&rOMG()}{pg==='reports'&&rReports()}{pg==='import'&&rImport()}{pg==='backup'&&rBackup()}</div></div>
+      <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='production'&&rProd2()}{pg==='warehouse'&&rWarehouse()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='omg'&&rOMG()}{pg==='reports'&&rReports()}{pg==='import'&&rImport()}{pg==='backup'&&rBackup()}</div></div>
     <CustModal isOpen={cM.open} onClose={()=>setCM({open:false,c:null})} onSave={savC} customer={cM.c} parents={pars}/>
     <AdjModal isOpen={aM.open} onClose={()=>setAM({open:false,p:null})} product={aM.p} onSave={savI}/>
 
