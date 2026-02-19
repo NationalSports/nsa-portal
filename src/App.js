@@ -134,6 +134,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
     const origRef=React.useRef(JSON.stringify(o));
     const markDirty=()=>setDirty(true);const[saved,setSaved]=useState(!!order.customer_id);const[showSend,setShowSend]=useState(false);const[showPick,setShowPick]=useState(false);const[pickId,setPickId]=useState(()=>'IF-'+String(4000+Math.floor(Math.random()*1000)));const[showPO,setShowPO]=useState(null);const[poCounter,setPOCounter]=useState(()=>3001+Math.floor(Math.random()*100));
   const[editPick,setEditPick]=useState(null);const[editPO,setEditPO]=useState(null);
+  // Helper: effective PO committed qty for a size (ordered minus cancelled)
+  const poCommitted=(poLines,sz)=>(poLines||[]).reduce((a,pk)=>{const ordered=pk[sz]||0;const cancelled=(pk.cancelled||{})[sz]||0;return a+(ordered-cancelled)},0);
   const[newAddr,setNewAddr]=useState('');const[showNA,setShowNA]=useState(false);const[showSzPicker,setShowSzPicker]=useState(null);const[showCustom,setShowCustom]=useState(false);const[custItem,setCustItem]=useState({vendor_id:'',name:'',sku:'CUSTOM',nsa_cost:0,unit_sell:0,color:''});
   const sv=(k,v)=>setO(e=>({...e,[k]:v,updated_at:new Date().toLocaleString()}));
   const isAU=b=>b==='Adidas'||b==='Under Armour'||b==='New Balance';const tD={A:0.4,B:0.35,C:0.3};
@@ -310,21 +312,23 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         </div>}
         {isSO&&(item.po_lines||[]).length>0&&<div style={{padding:'4px 18px',borderBottom:'1px solid #f1f5f9'}}>
           {item.po_lines.map((po,pi)=>{
-            const rcvd=po.received||{};
-            const szKeysAll=Object.keys(po).filter(k=>k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&typeof po[k]==='number');
+            const rcvd=po.received||{};const cncl=po.cancelled||{};
+            const szKeysAll=Object.keys(po).filter(k=>k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&typeof po[k]==='number');
             const totalOrd=szKeysAll.reduce((a,sz)=>a+(po[sz]||0),0);
             const totalRcvd=szKeysAll.reduce((a,sz)=>a+(rcvd[sz]||0),0);
-            const st=totalRcvd===0?(po.status==='received'?'received':'waiting'):totalRcvd>=totalOrd?'received':'partial';
+            const totalCncl=szKeysAll.reduce((a,sz)=>a+(cncl[sz]||0),0);
+            const totalOpen=szKeysAll.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-(rcvd[sz]||0)-(cncl[sz]||0)),0);
+            const st=totalOpen<=0&&totalRcvd>0?'received':totalRcvd>0?'partial':(po.status==='received'?'received':'waiting');
             return<div key={pi} style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',marginBottom:2}}>
               <span style={{fontSize:10,fontWeight:700,width:46,color:st==='received'?'#166534':st==='partial'?'#b45309':'#92400e',cursor:'pointer',textDecoration:'underline'}} onClick={()=>setEditPO({lineIdx:idx,poIdx:pi,po})} title="Click to edit">{po.po_id||'PO'}:</span>
-              {szs.map(sz=>{const v=po[sz]||0;const r=rcvd[sz]||0;if(!v)return<div key={sz} style={{width:48,textAlign:'center',fontSize:10,color:'#d1d5db'}}>—</div>;
-                const szSt=r>=v?'received':r>0?'partial':'waiting';
+              {szs.map(sz=>{const v=po[sz]||0;const r=rcvd[sz]||0;const cn=cncl[sz]||0;if(!v)return<div key={sz} style={{width:48,textAlign:'center',fontSize:10,color:'#d1d5db'}}>—</div>;
+                const szSt=cn>=v?'cancelled':r>=(v-cn)?'received':r>0?'partial':'waiting';
                 return<div key={sz} style={{width:48,textAlign:'center',fontSize:12,fontWeight:700,padding:'2px 0',borderRadius:3,
-                  background:szSt==='received'?'#dcfce7':szSt==='partial'?'#fef3c7':'#fef3c7',
-                  color:szSt==='received'?'#166534':szSt==='partial'?'#b45309':'#92400e'}}>{szSt==='partial'?r+'/'+v:v}</div>})}
+                  background:szSt==='cancelled'?'#fef2f2':szSt==='received'?'#dcfce7':szSt==='partial'?'#fef3c7':'#fef3c7',
+                  color:szSt==='cancelled'?'#dc2626':szSt==='received'?'#166534':szSt==='partial'?'#b45309':'#92400e'}}>{szSt==='cancelled'?'✕':szSt==='partial'?r+'/'+(v-cn):v-cn}</div>})}
               <span style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:600,marginLeft:4,
                 background:st==='received'?'#dcfce7':st==='partial'?'#fff7ed':'#fef3c7',
-                color:st==='received'?'#166534':st==='partial'?'#b45309':'#92400e'}}>{st==='received'?'✓ Received':st==='partial'?totalRcvd+'/'+totalOrd+' Rcvd':'Waiting'}</span>
+                color:st==='received'?'#166534':st==='partial'?'#b45309':'#92400e'}}>{st==='received'?'✓ Received':st==='partial'?totalRcvd+'/'+(totalOrd-totalCncl)+' Rcvd':'Waiting'}</span>
             </div>})}
         </div>}
         {/* DECORATIONS */}
@@ -539,7 +543,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       if(showPO==='select')return<div className="modal-overlay" onClick={()=>setShowPO(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:500}}>
         <div className="modal-header"><h2>Create PO — Select Vendor</h2><button className="modal-close" onClick={()=>setShowPO(null)}>x</button></div>
         <div className="modal-body">{Object.entries(vendorMap).map(([vk,items])=>{const vn=D_V.find(v=>v.id===vk)?.name||vk;
-          const openCount=items.reduce((tot,it)=>{return tot+Object.entries(it.sizes).filter(([,v])=>v>0).reduce((a,[sz,v])=>{const picked=(it.pick_lines||[]).reduce((a2,pk)=>a2+(pk[sz]||0),0);const po=(it.po_lines||[]).reduce((a2,pk)=>a2+(pk[sz]||0),0);return a+Math.max(0,v-picked-po)},0)},0);
+          const openCount=items.reduce((tot,it)=>{return tot+Object.entries(it.sizes).filter(([,v])=>v>0).reduce((a,[sz,v])=>{const picked=(it.pick_lines||[]).reduce((a2,pk)=>a2+(pk[sz]||0),0);const po=poCommitted(it.po_lines,sz);return a+Math.max(0,v-picked-po)},0)},0);
           if(openCount===0)return<div key={vk} style={{padding:'12px 16px',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:8,opacity:0.5,display:'flex',alignItems:'center',gap:12}}>
             <div style={{width:40,height:40,borderRadius:8,background:'#dcfce7',display:'flex',alignItems:'center',justifyContent:'center'}}><Icon name="check" size={20}/></div>
             <div style={{flex:1}}><div style={{fontWeight:700}}>{vn}</div><div style={{fontSize:12,color:'#166534'}}>All items fully covered</div></div></div>;
@@ -552,7 +556,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       const vItems=vendorMap[showPO]||[];const vn=D_V.find(v=>v.id===showPO)?.name||showPO;
       const poId='PO-'+poCounter;
       const poItems=vItems.map(it=>{const szList=Object.entries(it.sizes).filter(([,v])=>v>0).sort((a,b)=>{const ord=['XS','S','M','L','XL','2XL','3XL','4XL'];return(ord.indexOf(a[0])===-1?99:ord.indexOf(a[0]))-(ord.indexOf(b[0])===-1?99:ord.indexOf(b[0]))});
-        const openSizes=szList.map(([sz,v])=>{const picked=(it.pick_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const po=(it.po_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const open=Math.max(0,v-picked-po);return[sz,open]}).filter(([,v])=>v>0);
+        const openSizes=szList.map(([sz,v])=>{const picked=(it.pick_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const po=poCommitted(it.po_lines,sz);const open=Math.max(0,v-picked-po);return[sz,open]}).filter(([,v])=>v>0);
         return{...it,openSizes,totalOpen:openSizes.reduce((a,[,v])=>a+v,0)}}).filter(it=>it.totalOpen>0);
       return<div className="modal-overlay" onClick={()=>setShowPO(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:800,maxHeight:'90vh',overflow:'auto'}}>
         <div className="modal-header"><h2>New PO — {vn}</h2><button className="modal-close" onClick={()=>setShowPO(null)}>x</button></div>
@@ -600,16 +604,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         <p style={{fontSize:13,color:'#64748b',marginBottom:12}}>Select items to include on this pick ticket:</p>
         {o.items.map((item,idx)=>{const q=Object.values(item.sizes).reduce((a,v)=>a+v,0);const szList=Object.entries(item.sizes).filter(([,v])=>v>0).sort((a,b)=>{const ord=SZ_ORD;return(ord.indexOf(a[0])===-1?99:ord.indexOf(a[0]))-(ord.indexOf(b[0])===-1?99:ord.indexOf(b[0]))});
           const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);
-          const hasOpen=szList.some(([sz,v])=>{const picked=(item.pick_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const po=(item.po_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const inv=p?._inv?.[sz]||0;return v-picked-po>0&&inv>0});
+          const hasOpen=szList.some(([sz,v])=>{const picked=(item.pick_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const po=poCommitted(item.po_lines,sz);const inv=p?._inv?.[sz]||0;return v-picked-po>0&&inv>0});
           if(!hasOpen)return<div key={idx} style={{padding:10,border:'1px solid #e2e8f0',borderRadius:6,marginBottom:6,opacity:0.5}}><span style={{fontWeight:700}}>{item.sku}</span> {item.name} — <span style={{color:'#166534',fontWeight:600}}>Fully assigned</span></div>;
           return<div key={idx} style={{padding:10,border:'1px solid #e2e8f0',borderRadius:6,marginBottom:6,cursor:'pointer',display:'flex',alignItems:'center',gap:10}} onClick={()=>{
             const pickItems=o.items.map((it,i)=>{if(i!==idx)return null;const szs2=Object.entries(it.sizes).filter(([,v])=>v>0).sort((a,b)=>(SZ_ORD.indexOf(a[0])===-1?99:SZ_ORD.indexOf(a[0]))-(SZ_ORD.indexOf(b[0])===-1?99:SZ_ORD.indexOf(b[0])));
               const pp=products.find(pp2=>pp2.id===it.product_id||pp2.sku===it.sku);
-              return{...it,_idx:i,_pick:Object.fromEntries(szs2.map(([sz,v])=>{const inv=pp?._inv?.[sz]||0;const picked=(it.pick_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const po=(it.po_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const open=Math.max(0,v-picked-po);return[sz,inv>0?Math.min(open,inv):0]}))}}).filter(Boolean);
+              return{...it,_idx:i,_pick:Object.fromEntries(szs2.map(([sz,v])=>{const inv=pp?._inv?.[sz]||0;const picked=(it.pick_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const po=poCommitted(it.po_lines,sz);const open=Math.max(0,v-picked-po);return[sz,inv>0?Math.min(open,inv):0]}))}}).filter(Boolean);
             setShowPick(pickItems)}}>
             <input type="checkbox" checked={false} readOnly style={{width:18,height:18}}/>
             <div style={{flex:1}}><span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',marginRight:6}}>{item.sku}</span><strong>{item.name}</strong> — {item.color}
-            <div style={{fontSize:11,color:'#64748b',marginTop:2}}>{szList.map(([sz,v])=>{const inv=p?._inv?.[sz]||0;const picked=(item.pick_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const po=(item.po_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const open=Math.max(0,v-picked-po);return open>0?sz+': '+open+' open ('+inv+' inv) ':'';}).filter(Boolean).join(' | ')}</div></div></div>})}
+            <div style={{fontSize:11,color:'#64748b',marginTop:2}}>{szList.map(([sz,v])=>{const inv=p?._inv?.[sz]||0;const picked=(item.pick_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const po=poCommitted(item.po_lines,sz);const open=Math.max(0,v-picked-po);return open>0?sz+': '+open+' open ('+inv+' inv) ':'';}).filter(Boolean).join(' | ')}</div></div></div>})}
         <div style={{fontSize:11,color:'#94a3b8',marginTop:8}}>Click an item to create a pick ticket for it. Multiple picks per order are supported.</div>
       </div>
       :<div className="modal-body">
@@ -624,8 +628,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           return<div key={vi} style={{padding:12,border:'1px solid #e2e8f0',borderRadius:6,marginBottom:12}}>
             <div style={{display:'flex',justifyContent:'space-between',marginBottom:8}}><div><span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',marginRight:8}}>{item.sku}</span><strong>{item.name}</strong> — {item.color}</div><div style={{fontWeight:700}}>Pick Qty: {q}</div></div>
             <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}><thead><tr style={{borderBottom:'2px solid #0f172a'}}>{szList.map(([sz])=><th key={sz} style={{padding:'4px 8px',textAlign:'center',minWidth:50}}>{sz}</th>)}<th style={{padding:'4px 8px'}}>TOTAL</th></tr></thead>
-            <tbody><tr style={{fontSize:10,color:'#64748b'}}>{szList.map(([sz])=>{const need=item.sizes[sz]||0;const inv=p?._inv?.[sz]||0;const picked=(item.pick_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const po=(item.po_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const open=Math.max(0,need-picked-po);return<td key={sz} style={{padding:'2px 8px',textAlign:'center'}}>open: {open} | inv: {inv}</td>})}<td/></tr>
-            <tr>{szList.map(([sz,v])=>{const need=item.sizes[sz]||0;const inv=p?._inv?.[sz]||0;const picked=(item.pick_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const po=(item.po_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const open=Math.max(0,need-picked-po);return<td key={sz} style={{padding:'4px 8px',textAlign:'center'}}><input style={{width:42,textAlign:'center',border:v<open?'2px solid #f59e0b':'1px solid #10b981',borderRadius:3,padding:'3px',fontSize:14,fontWeight:700,background:v<open?'#fef3c7':'#dcfce7'}} defaultValue={v}/></td>})}<td style={{padding:'4px 8px',textAlign:'center',fontWeight:800,fontSize:14}}>{q}</td></tr></tbody></table>
+            <tbody><tr style={{fontSize:10,color:'#64748b'}}>{szList.map(([sz])=>{const need=item.sizes[sz]||0;const inv=p?._inv?.[sz]||0;const picked=(item.pick_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const po=poCommitted(item.po_lines,sz);const open=Math.max(0,need-picked-po);return<td key={sz} style={{padding:'2px 8px',textAlign:'center'}}>open: {open} | inv: {inv}</td>})}<td/></tr>
+            <tr>{szList.map(([sz,v])=>{const need=item.sizes[sz]||0;const inv=p?._inv?.[sz]||0;const picked=(item.pick_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const po=poCommitted(item.po_lines,sz);const open=Math.max(0,need-picked-po);return<td key={sz} style={{padding:'4px 8px',textAlign:'center'}}><input style={{width:42,textAlign:'center',border:v<open?'2px solid #f59e0b':'1px solid #10b981',borderRadius:3,padding:'3px',fontSize:14,fontWeight:700,background:v<open?'#fef3c7':'#dcfce7'}} defaultValue={v}/></td>})}<td style={{padding:'4px 8px',textAlign:'center',fontWeight:800,fontSize:14}}>{q}</td></tr></tbody></table>
             {item.decorations.filter(d=>d.kind==='art').map((d,di)=>{const art=af.find(a=>a.id===d.art_file_id);return art?<div key={di} style={{fontSize:12,marginTop:6,padding:'4px 8px',background:'#f0fdf4',borderRadius:4}}>🎨 {art.name} — {art.deco_type} @ {d.position}{d.underbase?' [Underbase]':''}</div>:null})}
             {item.decorations.filter(d=>d.kind==='numbers').map((d,di)=><div key={di} style={{fontSize:12,marginTop:4,padding:'4px 8px',background:'#f0f9ff',borderRadius:4}}>#️⃣ Numbers — {d.num_method} {d.num_size} @ {d.position}</div>)}
           </div>})}
@@ -660,7 +664,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       const allPickIds=[];const allPoIds=[];
       o.items.forEach((it,i)=>{
         (it.pick_lines||[]).forEach((pk,pi)=>{if(pk.pick_id&&!allPickIds.find(x=>x.id===pk.pick_id)){const qty=Object.entries(pk).reduce((a,[k,v])=>k!=='status'&&k!=='pick_id'&&typeof v==='number'?a+v:a,0);allPickIds.push({id:pk.pick_id,status:pk.status||'pick',qty,lineIdx:i,pickIdx:pi})}});
-        (it.po_lines||[]).forEach((po,pi)=>{if(po.po_id&&!allPoIds.find(x=>x.id===po.po_id)){const szKeysP=Object.keys(po).filter(k=>k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&typeof po[k]==='number');const qty=szKeysP.reduce((a,sz)=>a+(po[sz]||0),0);const rcvdQty=szKeysP.reduce((a,sz)=>a+((po.received||{})[sz]||0),0);const vk=it.vendor_id||it.brand;const vn=D_V.find(v=>v.id===vk)?.name||vk;const pst=rcvdQty===0?(po.status==='received'?'received':'waiting'):rcvdQty>=qty?'received':'partial';allPoIds.push({id:po.po_id,status:pst,qty,rcvdQty,vendor:vn,lineIdx:i,poIdx:pi})}});
+        (it.po_lines||[]).forEach((po,pi)=>{if(po.po_id&&!allPoIds.find(x=>x.id===po.po_id)){const szKeysP=Object.keys(po).filter(k=>k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&typeof po[k]==='number');const qty=szKeysP.reduce((a,sz)=>a+(po[sz]||0),0);const rcvdQty=szKeysP.reduce((a,sz)=>a+((po.received||{})[sz]||0),0);const cnclQty=szKeysP.reduce((a,sz)=>a+((po.cancelled||{})[sz]||0),0);const openQty=szKeysP.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-((po.received||{})[sz]||0)-((po.cancelled||{})[sz]||0)),0);const vk=it.vendor_id||it.brand;const vn=D_V.find(v=>v.id===vk)?.name||vk;const pst=openQty<=0&&rcvdQty>0?'received':rcvdQty>0?'partial':'waiting';allPoIds.push({id:po.po_id,status:pst,qty,rcvdQty,openQty,vendor:vn,lineIdx:i,poIdx:pi})}});
       });
       if(allPickIds.length===0&&allPoIds.length===0)return null;
       return<div className="card" style={{marginTop:16}}><div className="card-header"><h2>Linked Documents</h2></div><div className="card-body">
@@ -683,20 +687,61 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       </div></div>})()}
 
     {/* EDIT PICK MODAL */}
-    {editPick&&<div className="modal-overlay" onClick={()=>setEditPick(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:600}}>
-      <div className="modal-header"><h2>Edit Pick — {editPick.pick.pick_id||'Pick'}</h2><button className="modal-close" onClick={()=>setEditPick(null)}>x</button></div>
+    {editPick&&(()=>{
+      const pk=editPick.pick;const item=o.items[editPick.lineIdx];
+      const pkSzKeys=Object.keys(pk).filter(k=>k!=='status'&&k!=='pick_id'&&typeof pk[k]==='number'&&pk[k]>0);
+      const pkTotal=pkSzKeys.reduce((a,sz)=>a+(pk[sz]||0),0);
+      const qrData=JSON.stringify({type:'PICK',id:pk.pick_id,so:o.id,sku:item?.sku,qty:pkTotal});
+      return<div className="modal-overlay" onClick={()=>setEditPick(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:600}}>
+      <div className="modal-header"><h2>Pick — {pk.pick_id||'Pick'}</h2>
+        <div style={{display:'flex',gap:6,alignItems:'center'}}>
+          <span className={`badge ${pk.status==='pulled'?'badge-green':'badge-amber'}`}>{pk.status==='pulled'?'Pulled':'Needs Pull'}</span>
+          <button className="modal-close" onClick={()=>setEditPick(null)}>x</button>
+        </div></div>
       <div className="modal-body">
+        {/* Product info */}
+        {item&&<div style={{padding:'8px 12px',background:'#f8fafc',borderRadius:6,marginBottom:12,display:'flex',gap:8,alignItems:'center'}}>
+          <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:13}}>{item.sku}</span>
+          <span style={{fontWeight:600,fontSize:13}}>{item.name}</span>
+          <span className="badge badge-gray">{item.color}</span>
+        </div>}
         <div style={{marginBottom:12}}><label className="form-label">Status</label>
-          <div style={{display:'flex',gap:6}}>{['pick','pulled'].map(s=><button key={s} className={`btn btn-sm ${editPick.pick.status===s?'btn-primary':'btn-secondary'}`} onClick={()=>setEditPick(p=>({...p,pick:{...p.pick,status:s}}))}>{s==='pulled'?'✓ Pulled':'Needs Pull'}</button>)}</div></div>
+          <div style={{display:'flex',gap:6}}>{['pick','pulled'].map(s=><button key={s} className={`btn btn-sm ${pk.status===s?'btn-primary':'btn-secondary'}`} onClick={()=>setEditPick(p=>({...p,pick:{...p.pick,status:s}}))}>{s==='pulled'?'✓ Pulled':'Needs Pull'}</button>)}</div></div>
         <div style={{fontSize:12,fontWeight:600,color:'#64748b',marginBottom:6}}>Quantities by size:</div>
-        <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-          {Object.entries(editPick.pick).filter(([k])=>k!=='status'&&k!=='pick_id').filter(([,v])=>typeof v==='number'&&v>0).map(([sz,v])=><div key={sz} style={{textAlign:'center'}}>
+        <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:12}}>
+          {pkSzKeys.map(sz=><div key={sz} style={{textAlign:'center'}}>
             <div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
-            <input style={{width:42,textAlign:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700}} defaultValue={v} onChange={e=>setEditPick(p=>({...p,pick:{...p.pick,[sz]:parseInt(e.target.value)||0}}))}/>
-          </div>)}</div>
+            <input style={{width:42,textAlign:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700}} defaultValue={pk[sz]} onChange={e=>setEditPick(p=>({...p,pick:{...p.pick,[sz]:parseInt(e.target.value)||0}}))}/>
+          </div>)}
+          <div style={{textAlign:'center',borderLeft:'2px solid #e2e8f0',paddingLeft:8}}><div style={{fontSize:10,fontWeight:700,color:'#64748b'}}>TOT</div><div style={{fontSize:18,fontWeight:800}}>{pkTotal}</div></div>
+        </div>
+        {/* QR / Print Label */}
+        <div style={{padding:12,border:'1px dashed #d1d5db',borderRadius:8,background:'#fafafa'}}>
+          <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:8}}>📋 Label / QR Code</div>
+          <div style={{display:'flex',gap:16,alignItems:'flex-start'}}>
+            <div style={{padding:8,background:'white',border:'1px solid #e2e8f0',borderRadius:6}}>
+              <img src={'https://api.qrserver.com/v1/create-qr-code/?size=100x100&data='+encodeURIComponent(qrData)} alt="QR" style={{width:80,height:80,display:'block'}}/>
+            </div>
+            <div style={{flex:1,fontSize:11}}>
+              <div style={{fontWeight:800,fontSize:14}}>{pk.pick_id}</div>
+              <div style={{color:'#64748b'}}>{o.id} — {cust?.name}</div>
+              <div style={{fontWeight:600}}>{item?.sku} {item?.name}</div>
+              <div>{item?.color} — {pkTotal} units</div>
+              <div style={{marginTop:4}}>{pkSzKeys.map(sz=>sz+':'+pk[sz]).join('  ')}</div>
+            </div>
+          </div>
+          <button className="btn btn-sm btn-secondary" style={{marginTop:8,fontSize:11}} onClick={()=>{
+            const w=window.open('','_blank','width=400,height=300');
+            w.document.write('<html><head><title>'+pk.pick_id+'</title><style>body{font-family:sans-serif;padding:20px}h1{font-size:24px;margin:0}p{margin:4px 0;font-size:14px}.sz{font-size:16px;font-weight:bold}</style></head><body>');
+            w.document.write('<div style="display:flex;gap:20px;align-items:flex-start"><img src="https://api.qrserver.com/v1/create-qr-code/?size=120x120&data='+encodeURIComponent(qrData)+'" width="120" height="120"/><div>');
+            w.document.write('<h1>'+pk.pick_id+'</h1><p>'+o.id+' — '+(cust?.name||'')+'</p><p><strong>'+(item?.sku||'')+' '+(item?.name||'')+'</strong></p><p>'+(item?.color||'')+' — '+pkTotal+' units</p>');
+            w.document.write('<p class="sz">'+pkSzKeys.map(sz=>sz+': '+pk[sz]).join(' &nbsp; ')+'</p>');
+            w.document.write('</div></div></body></html>');w.document.close();w.print();
+          }}>🖨️ Print Label</button>
+        </div>
       </div>
       <div className="modal-footer">
-        <button className="btn btn-secondary" onClick={()=>setEditPick(null)}>Cancel</button>
+        <button className="btn btn-secondary" onClick={()=>setEditPick(null)}>Close</button>
         <button className="btn btn-sm" style={{background:'#dc2626',color:'white'}} onClick={()=>{
           const updatedItems=[...o.items];updatedItems[editPick.lineIdx].pick_lines=updatedItems[editPick.lineIdx].pick_lines.filter((_,i)=>i!==editPick.pickIdx);
           const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setEditPick(null);nf('Pick deleted');
@@ -706,25 +751,26 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setEditPick(null);nf('Pick updated');
         }}>Save Changes</button>
       </div>
-    </div></div>}
+    </div></div>})()}
 
     {/* EDIT PO MODAL — supports partial receiving with shipment log */}
     {editPO&&(()=>{
-      const po=editPO.po;
-      const szKeys=Object.keys(po).filter(k=>k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&typeof po[k]==='number');
-      const received=po.received||{};
+      const po=editPO.po;const item=o.items[editPO.lineIdx];
+      const szKeys=Object.keys(po).filter(k=>k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&typeof po[k]==='number');
+      const received=po.received||{};const cancelled=po.cancelled||{};
       const shipments=po.shipments||[];
-      // If legacy PO with status=received but no shipments, migrate it
-      const isLegacyReceived=po.status==='received'&&shipments.length===0;
       const getRcvd=sz=>(received[sz]||0);
-      const getOpen=sz=>(po[sz]||0)-getRcvd(sz);
+      const getCncl=sz=>(cancelled[sz]||0);
+      const getOpen=sz=>Math.max(0,(po[sz]||0)-getRcvd(sz)-getCncl(sz));
       const totalOrdered=szKeys.reduce((a,sz)=>a+(po[sz]||0),0);
       const totalReceived=szKeys.reduce((a,sz)=>a+getRcvd(sz),0);
-      const totalOpen=totalOrdered-totalReceived;
+      const totalCancelled=szKeys.reduce((a,sz)=>a+getCncl(sz),0);
+      const totalOpen=szKeys.reduce((a,sz)=>a+getOpen(sz),0);
       const hasOpen=szKeys.some(sz=>getOpen(sz)>0);
-      const poStatus=totalReceived===0?'waiting':totalOpen<=0?'received':'partial';
+      const poStatus=totalOpen<=0&&totalReceived>0?'received':totalReceived>0?'partial':'waiting';
+      const qrData=JSON.stringify({type:'PO',id:po.po_id,so:o.id,sku:item?.sku,qty:totalOrdered});
 
-      return<div className="modal-overlay" onClick={()=>setEditPO(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:700,maxHeight:'90vh',overflow:'auto'}}>
+      return<div className="modal-overlay" onClick={()=>setEditPO(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:750,maxHeight:'90vh',overflow:'auto'}}>
         <div className="modal-header"><h2>PO — {po.po_id||'PO'}</h2>
           <div style={{display:'flex',gap:6,alignItems:'center'}}>
             <span className={`badge ${poStatus==='received'?'badge-green':poStatus==='partial'?'badge-amber':'badge-gray'}`}>{poStatus==='received'?'Fully Received':poStatus==='partial'?'Partial — '+totalOpen+' open':'Waiting'}</span>
@@ -732,31 +778,78 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           </div>
         </div>
         <div className="modal-body">
-          {/* PO Summary */}
-          <div style={{fontSize:12,fontWeight:600,color:'#64748b',marginBottom:6}}>Ordered quantities:</div>
-          <table style={{width:'100%',fontSize:12,borderCollapse:'collapse',marginBottom:16}}>
-            <thead><tr style={{borderBottom:'2px solid #0f172a'}}>{szKeys.map(sz=><th key={sz} style={{padding:'4px 8px',textAlign:'center',minWidth:48}}>{sz}</th>)}<th style={{padding:'4px 8px',textAlign:'center'}}>TOTAL</th></tr></thead>
+          {/* Product info */}
+          {item&&<div style={{padding:'8px 12px',background:'#f8fafc',borderRadius:6,marginBottom:12,display:'flex',gap:8,alignItems:'center'}}>
+            <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:13}}>{item.sku}</span>
+            <span style={{fontWeight:600,fontSize:13}}>{item.name}</span>
+            <span className="badge badge-gray">{item.color}</span>
+          </div>}
+
+          {/* PO Summary Table */}
+          <table style={{width:'100%',fontSize:12,borderCollapse:'collapse',marginBottom:12}}>
+            <thead><tr style={{borderBottom:'2px solid #0f172a'}}><th style={{padding:'4px 8px',textAlign:'left',fontSize:10,color:'#64748b'}}></th>{szKeys.map(sz=><th key={sz} style={{padding:'4px 8px',textAlign:'center',minWidth:48}}>{sz}</th>)}<th style={{padding:'4px 8px',textAlign:'center'}}>TOTAL</th></tr></thead>
             <tbody>
-              <tr style={{fontSize:10,color:'#64748b'}}><td colSpan={szKeys.length+1} style={{padding:'2px 8px'}}>Ordered</td></tr>
-              <tr>{szKeys.map(sz=><td key={sz} style={{padding:'2px 8px',textAlign:'center',fontWeight:700}}>{po[sz]||0}</td>)}<td style={{padding:'2px 8px',textAlign:'center',fontWeight:800}}>{totalOrdered}</td></tr>
-              <tr style={{fontSize:10,color:'#166534'}}><td colSpan={szKeys.length+1} style={{padding:'2px 8px'}}>Received</td></tr>
-              <tr>{szKeys.map(sz=><td key={sz} style={{padding:'2px 8px',textAlign:'center',fontWeight:700,color:getRcvd(sz)>0?'#166534':'#d1d5db'}}>{getRcvd(sz)||'—'}</td>)}<td style={{padding:'2px 8px',textAlign:'center',fontWeight:800,color:'#166534'}}>{totalReceived}</td></tr>
-              {hasOpen&&<><tr style={{fontSize:10,color:'#b45309'}}><td colSpan={szKeys.length+1} style={{padding:'2px 8px'}}>Still open</td></tr>
-              <tr>{szKeys.map(sz=>{const op=getOpen(sz);return<td key={sz} style={{padding:'2px 8px',textAlign:'center',fontWeight:700,color:op>0?'#b45309':'#d1d5db'}}>{op>0?op:'—'}</td>})}<td style={{padding:'2px 8px',textAlign:'center',fontWeight:800,color:'#b45309'}}>{totalOpen}</td></tr></>}
+              <tr><td style={{padding:'3px 8px',fontSize:10,color:'#64748b'}}>Ordered</td>{szKeys.map(sz=><td key={sz} style={{padding:'3px 8px',textAlign:'center',fontWeight:700}}>{po[sz]||0}</td>)}<td style={{padding:'3px 8px',textAlign:'center',fontWeight:800}}>{totalOrdered}</td></tr>
+              <tr style={{color:'#166534'}}><td style={{padding:'3px 8px',fontSize:10}}>Received</td>{szKeys.map(sz=><td key={sz} style={{padding:'3px 8px',textAlign:'center',fontWeight:700,color:getRcvd(sz)>0?'#166534':'#d1d5db'}}>{getRcvd(sz)||'—'}</td>)}<td style={{padding:'3px 8px',textAlign:'center',fontWeight:800}}>{totalReceived}</td></tr>
+              {totalCancelled>0&&<tr style={{color:'#dc2626'}}><td style={{padding:'3px 8px',fontSize:10}}>Cancelled</td>{szKeys.map(sz=><td key={sz} style={{padding:'3px 8px',textAlign:'center',fontWeight:700,color:getCncl(sz)>0?'#dc2626':'#d1d5db'}}>{getCncl(sz)||'—'}</td>)}<td style={{padding:'3px 8px',textAlign:'center',fontWeight:800}}>{totalCancelled}</td></tr>}
+              {hasOpen&&<tr style={{borderTop:'1px solid #e2e8f0',color:'#b45309'}}><td style={{padding:'3px 8px',fontSize:10,fontWeight:600}}>Open</td>{szKeys.map(sz=>{const op=getOpen(sz);return<td key={sz} style={{padding:'3px 8px',textAlign:'center',fontWeight:700,color:op>0?'#b45309':'#d1d5db'}}>{op>0?op:'—'}</td>})}<td style={{padding:'3px 8px',textAlign:'center',fontWeight:800}}>{totalOpen}</td></tr>}
             </tbody>
           </table>
+
+          {/* Cancel sizes from PO */}
+          {hasOpen&&<div style={{marginBottom:12}}>
+            <div style={{fontSize:11,color:'#64748b',cursor:'pointer',display:'flex',alignItems:'center',gap:4}} onClick={e=>{const el=e.currentTarget.nextSibling;if(el)el.style.display=el.style.display==='none'?'block':'none'}}>
+              ⚠️ <span style={{textDecoration:'underline'}}>Cancel sizes from this PO</span> <span style={{fontSize:9}}>(vendor cancelled / shorted)</span>
+            </div>
+            <div style={{display:'none',marginTop:8,padding:10,border:'1px dashed #f59e0b',borderRadius:6,background:'#fffbeb'}}>
+              <div style={{fontSize:11,color:'#92400e',marginBottom:6}}>Enter quantities to cancel (these sizes will become available for new picks/POs):</div>
+              <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:8}}>
+                {szKeys.filter(sz=>getOpen(sz)>0).map(sz=><div key={sz} style={{textAlign:'center'}}>
+                  <div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
+                  <input id={'po-cancel-'+sz} style={{width:42,textAlign:'center',border:'1px solid #f59e0b',borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700,background:'white'}} defaultValue={0}/>
+                  <div style={{fontSize:9,color:'#64748b'}}>{getOpen(sz)} open</div>
+                </div>)}
+              </div>
+              <button className="btn btn-sm" style={{background:'#f59e0b',color:'white',fontSize:11}} onClick={()=>{
+                const newCancelled={...cancelled};
+                let anyCancelled=false;
+                szKeys.filter(sz=>getOpen(sz)>0).forEach(sz=>{
+                  const el=document.getElementById('po-cancel-'+sz);
+                  const qty=el?Math.min(parseInt(el.value)||0,getOpen(sz)):0;
+                  if(qty>0){newCancelled[sz]=(newCancelled[sz]||0)+qty;anyCancelled=true}
+                });
+                if(!anyCancelled){nf('Enter quantities to cancel','error');return}
+                const newTotalOpen=szKeys.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-(received[sz]||0)-(newCancelled[sz]||0)),0);
+                const newStatus=newTotalOpen<=0&&totalReceived>0?'received':totalReceived>0?'partial':'waiting';
+                const updatedPO={...po,cancelled:newCancelled,status:newStatus};
+                const updatedItems=[...o.items];updatedItems[editPO.lineIdx].po_lines[editPO.poIdx]=updatedPO;
+                const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};
+                setO(updated);onSave(updated);setEditPO({...editPO,po:updatedPO});nf('Sizes cancelled from '+po.po_id);
+              }}>⚠️ Cancel These Sizes</button>
+            </div>
+          </div>}
 
           {/* Shipment history */}
           {shipments.length>0&&<>
             <div style={{fontSize:12,fontWeight:600,color:'#64748b',marginBottom:6}}>Shipment history:</div>
-            {shipments.map((sh,si)=><div key={si} style={{padding:'6px 10px',background:'#f0fdf4',borderRadius:6,marginBottom:4,fontSize:11,display:'flex',gap:12,alignItems:'center'}}>
+            {shipments.map((sh,si)=>{
+              const shQrData=JSON.stringify({type:'PO_RECV',id:po.po_id,shipment:si+1,so:o.id,sku:item?.sku,date:sh.date});
+              return<div key={si} style={{padding:'6px 10px',background:'#f0fdf4',borderRadius:6,marginBottom:4,fontSize:11,display:'flex',gap:12,alignItems:'center'}}>
               <span style={{fontWeight:700,color:'#166534'}}>📦 {sh.date}</span>
               {szKeys.map(sz=>sh[sz]?<span key={sz} style={{color:'#374151'}}>{sz}:<strong>{sh[sz]}</strong></span>:null)}
-            </div>)}
+              <button style={{marginLeft:'auto',background:'none',border:'none',cursor:'pointer',fontSize:10,color:'#64748b',textDecoration:'underline'}} onClick={()=>{
+                const w=window.open('','_blank','width=400,height=300');
+                w.document.write('<html><head><title>'+po.po_id+' Recv #'+(si+1)+'</title><style>body{font-family:sans-serif;padding:20px}h1{font-size:22px;margin:0}p{margin:4px 0;font-size:13px}.sz{font-size:15px;font-weight:bold}</style></head><body>');
+                w.document.write('<div style="display:flex;gap:20px;align-items:flex-start"><img src="https://api.qrserver.com/v1/create-qr-code/?size=120x120&data='+encodeURIComponent(shQrData)+'" width="120" height="120"/><div>');
+                w.document.write('<h1>'+po.po_id+' — Shipment #'+(si+1)+'</h1><p>Received: '+sh.date+'</p><p>'+o.id+' — '+(cust?.name||'')+'</p><p><strong>'+(item?.sku||'')+' '+(item?.name||'')+'</strong> — '+(item?.color||'')+'</p>');
+                w.document.write('<p class="sz">'+szKeys.filter(sz=>sh[sz]).map(sz=>sz+': '+sh[sz]).join(' &nbsp; ')+'</p>');
+                w.document.write('</div></div></body></html>');w.document.close();w.print();
+              }}>🖨️ Print</button>
+            </div>})}
           </>}
 
           {/* Receive shipment form */}
-          {hasOpen&&<div style={{marginTop:16,padding:12,border:'2px solid #22c55e',borderRadius:8,background:'#f0fdf4'}}>
+          {hasOpen&&<div style={{marginTop:12,padding:12,border:'2px solid #22c55e',borderRadius:8,background:'#f0fdf4'}}>
             <div style={{fontSize:12,fontWeight:700,color:'#166534',marginBottom:8}}>Receive Shipment</div>
             <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:8}}>
               <span style={{fontSize:11,fontWeight:600,color:'#64748b'}}>Date:</span>
@@ -783,18 +876,45 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
               const hasShipQty=Object.entries(shipment).some(([k,v])=>k!=='date'&&v>0);
               if(!hasShipQty){nf('Enter quantities to receive','error');return}
               const newShipments=[...shipments,shipment];
-              const newTotalOpen=szKeys.reduce((a,sz)=>a+(po[sz]||0)-(newReceived[sz]||0),0);
-              const newStatus=newTotalOpen<=0?'received':'partial';
+              const newTotalOpen=szKeys.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-(newReceived[sz]||0)-getCncl(sz)),0);
+              const newStatus=newTotalOpen<=0&&(totalReceived+Object.values(newReceived).reduce((a,v)=>a+v,0))>0?'received':newTotalOpen>0?'partial':'waiting';
               const updatedPO={...po,received:newReceived,shipments:newShipments,status:newStatus};
               const updatedItems=[...o.items];updatedItems[editPO.lineIdx].po_lines[editPO.poIdx]=updatedPO;
               const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};
               setO(updated);onSave(updated);setEditPO({...editPO,po:updatedPO});nf('Shipment received on '+po.po_id);
             }}>✓ Receive These Items</button>
           </div>}
+
+          {/* QR / Print Label for full PO */}
+          <div style={{marginTop:16,padding:12,border:'1px dashed #d1d5db',borderRadius:8,background:'#fafafa'}}>
+            <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:8}}>📋 PO Label / QR Code</div>
+            <div style={{display:'flex',gap:16,alignItems:'flex-start'}}>
+              <div style={{padding:8,background:'white',border:'1px solid #e2e8f0',borderRadius:6}}>
+                <img src={'https://api.qrserver.com/v1/create-qr-code/?size=100x100&data='+encodeURIComponent(qrData)} alt="QR" style={{width:80,height:80,display:'block'}}/>
+              </div>
+              <div style={{flex:1,fontSize:11}}>
+                <div style={{fontWeight:800,fontSize:14}}>{po.po_id}</div>
+                <div style={{color:'#64748b'}}>{o.id} — {cust?.name}</div>
+                <div style={{fontWeight:600}}>{item?.sku} {item?.name}</div>
+                <div>{item?.color} — {totalOrdered} units ordered</div>
+                <div style={{marginTop:4}}>{szKeys.map(sz=>sz+':'+po[sz]).join('  ')}</div>
+              </div>
+            </div>
+            <button className="btn btn-sm btn-secondary" style={{marginTop:8,fontSize:11}} onClick={()=>{
+              const w=window.open('','_blank','width=400,height=300');
+              w.document.write('<html><head><title>'+po.po_id+'</title><style>body{font-family:sans-serif;padding:20px}h1{font-size:24px;margin:0}p{margin:4px 0;font-size:14px}.sz{font-size:16px;font-weight:bold}</style></head><body>');
+              w.document.write('<div style="display:flex;gap:20px;align-items:flex-start"><img src="https://api.qrserver.com/v1/create-qr-code/?size=120x120&data='+encodeURIComponent(qrData)+'" width="120" height="120"/><div>');
+              w.document.write('<h1>'+po.po_id+'</h1><p>'+o.id+' — '+(cust?.name||'')+'</p><p><strong>'+(item?.sku||'')+' '+(item?.name||'')+'</strong> — '+(item?.color||'')+'</p>');
+              w.document.write('<p>'+totalOrdered+' units ordered</p>');
+              w.document.write('<p class="sz">'+szKeys.map(sz=>sz+': '+po[sz]).join(' &nbsp; ')+'</p>');
+              w.document.write('</div></div></body></html>');w.document.close();w.print();
+            }}>🖨️ Print PO Label</button>
+          </div>
         </div>
         <div className="modal-footer">
           <button className="btn btn-secondary" onClick={()=>setEditPO(null)}>Close</button>
           <button className="btn btn-sm" style={{background:'#dc2626',color:'white'}} onClick={()=>{
+            if(!window.confirm('Delete entire PO? All sizes will go back to open.'))return;
             const updatedItems=[...o.items];updatedItems[editPO.lineIdx].po_lines=updatedItems[editPO.lineIdx].po_lines.filter((_,i)=>i!==editPO.poIdx);
             const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setEditPO(null);nf('PO deleted');
           }}><Icon name="trash" size={12}/> Delete PO</button>
