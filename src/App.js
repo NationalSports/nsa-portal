@@ -127,17 +127,19 @@ function SendModal({isOpen,onClose,estimate,customer,onSend}){
 }
 
 // UNIFIED ORDER EDITOR
-function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack,onConvertSO,cu,nf,msgs,onMsg}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack,onConvertSO,cu,nf,msgs,onMsg,dirtyRef}){
   const isE=mode==='estimate';const isSO=mode==='so';
   const[o,setO]=useState(order);const[cust,setCust]=useState(ic);const[pS,setPS]=useState('');const[showAdd,setShowAdd]=useState(false);
   const[tab,setTab]=useState('items');const[dirty,setDirty]=useState(false);
     const origRef=React.useRef(JSON.stringify(o));
     const markDirty=()=>setDirty(true);const[saved,setSaved]=useState(!!order.customer_id);const[showSend,setShowSend]=useState(false);const[showPick,setShowPick]=useState(false);const[pickId,setPickId]=useState(()=>'IF-'+String(4000+Math.floor(Math.random()*1000)));const[showPO,setShowPO]=useState(null);const[poCounter,setPOCounter]=useState(()=>3001+Math.floor(Math.random()*100));
+  // Sync dirty state to parent dirtyRef
+  React.useEffect(()=>{if(dirtyRef)dirtyRef.current=dirty},[dirty,dirtyRef]);
   const[editPick,setEditPick]=useState(null);const[editPO,setEditPO]=useState(null);
   // Helper: effective PO committed qty for a size (ordered minus cancelled)
   const poCommitted=(poLines,sz)=>(poLines||[]).reduce((a,pk)=>{const ordered=pk[sz]||0;const cancelled=(pk.cancelled||{})[sz]||0;return a+(ordered-cancelled)},0);
   const[newAddr,setNewAddr]=useState('');const[showNA,setShowNA]=useState(false);const[showSzPicker,setShowSzPicker]=useState(null);const[showCustom,setShowCustom]=useState(false);const[custItem,setCustItem]=useState({vendor_id:'',name:'',sku:'CUSTOM',nsa_cost:0,unit_sell:0,color:''});
-  const sv=(k,v)=>setO(e=>({...e,[k]:v,updated_at:new Date().toLocaleString()}));
+  const sv=(k,v)=>{setO(e=>({...e,[k]:v,updated_at:new Date().toLocaleString()}));setDirty(true)};
   const isAU=b=>b==='Adidas'||b==='Under Armour'||b==='New Balance';const tD={A:0.4,B:0.35,C:0.3};
   const selC=id=>{const c=allCustomers.find(x=>x.id===id);if(c){setCust(c);sv('customer_id',id);sv('default_markup',c.catalog_markup||1.65)}};
   const addP=p=>{const au=isAU(p.brand);const sell=au?rQ(p.retail_price*(1-(tD[cust?.adidas_ua_tier||'B']||0.35))):rQ(p.nsa_cost*(o.default_markup||1.65));
@@ -177,7 +179,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
             {isSO&&<span style={{padding:'3px 10px',borderRadius:12,fontSize:12,fontWeight:700,background:SC[o.status]?.bg||'#f1f5f9',color:SC[o.status]?.c||'#475569'}}>{o.status?.replace(/_/g,' ')}</span>}
             {isE&&<EmailBadge e={o}/>}</div>
           {!cust?<div style={{marginBottom:8}}><label className="form-label">Select Customer *</label><SearchSelect options={allCustomers.map(c=>({value:c.id,label:`${c.name} (${c.alpha_tag})`}))} value={o.customer_id} onChange={selC} placeholder="Search customer..."/></div>
-          :<div><div style={{fontSize:18,fontWeight:800}}>{cust.name} <span style={{fontSize:14,color:'#64748b'}}>({cust.alpha_tag})</span></div>
+          :<div><div style={{display:'flex',alignItems:'center',gap:6}}><span style={{fontSize:18,fontWeight:800}}>{cust.name}</span> <span style={{fontSize:14,color:'#64748b'}}>({cust.alpha_tag})</span>
+            <button style={{background:'none',border:'none',cursor:'pointer',color:'#64748b',fontSize:10,textDecoration:'underline',padding:0}} onClick={()=>{if(window.confirm('Change customer for '+o.id+'? This will update pricing tier.'))selC(null);setCust(null)}}>change</button></div>
             <div style={{fontSize:13,color:'#64748b'}}>Tier {cust.adidas_ua_tier} | {o.default_markup||1.65}x | Tax: {cust.tax_rate?(cust.tax_rate*100).toFixed(2)+'%':'N/A'}</div></div>}
           {isSO&&o.estimate_id&&<div style={{fontSize:11,color:'#7c3aed'}}>🔗 From: {o.estimate_id}</div>}
           <div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>By {REPS.find(r=>r.id===o.created_by)?.name} · {o.created_at}</div></div>
@@ -1076,12 +1079,22 @@ function CustModal({isOpen,onClose,onSave,customer,parents}){
   </div>
   <div className="modal-footer"><button className="btn btn-secondary" onClick={onClose}>Cancel</button><button className="btn btn-primary" onClick={()=>{if(!ok())return;onSave({...f,id:f.id||'c'+Date.now(),parent_id:ct==='sub'?f.parent_id:null,is_active:true,_oe:f._oe||0,_os:f._os||0,_oi:f._oi||0,_ob:f._ob||0});onClose()}}>Save</button></div></div></div>);
 }
-function AdjModal({isOpen,onClose,product,onSave}){const[a,setA]=useState({});React.useEffect(()=>{if(product)setA({...product._inv})},[product,isOpen]);if(!isOpen||!product)return null;
-  return(<div className="modal-overlay" onClick={onClose}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:600}}>
+function AdjModal({isOpen,onClose,product,onSave}){const[a,setA]=useState({});const[d,setD]=useState({});React.useEffect(()=>{if(product){setA({...product._inv});setD({})}},[product,isOpen]);if(!isOpen||!product)return null;
+  const adj=(sz,delta)=>{const cur=product._inv?.[sz]||0;const change=(d[sz]||0)+delta;setD(x=>({...x,[sz]:change}));setA(x=>({...x,[sz]:Math.max(0,cur+change)}))};
+  return(<div className="modal-overlay" onClick={onClose}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:650}}>
     <div className="modal-header"><h2>Adjust Inventory</h2><button className="modal-close" onClick={onClose}>x</button></div>
     <div className="modal-body"><div style={{padding:12,background:'#f8fafc',borderRadius:6,marginBottom:12}}><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{product.sku}</span> {product.name}</div>
-      <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>{product.available_sizes.map(sz=><div key={sz} style={{textAlign:'center'}}><div style={{fontSize:10,fontWeight:700,color:'#64748b',marginBottom:4}}>{sz}</div>
-        <input className="form-input" type="number" min="0" style={{width:60,textAlign:'center'}} value={a[sz]||0} onChange={e=>setA(x=>({...x,[sz]:parseInt(e.target.value)||0}))}/></div>)}</div>
+      <div style={{display:'flex',gap:10,flexWrap:'wrap'}}>{product.available_sizes.map(sz=>{const cur=product._inv?.[sz]||0;const delta=d[sz]||0;const newVal=Math.max(0,cur+delta);
+        return<div key={sz} style={{textAlign:'center',minWidth:60}}>
+          <div style={{fontSize:10,fontWeight:700,color:'#64748b',marginBottom:4}}>{sz}</div>
+          <div style={{fontSize:12,color:'#94a3b8',marginBottom:2}}>was: {cur}</div>
+          <div style={{display:'flex',alignItems:'center',gap:2,justifyContent:'center'}}>
+            <button style={{width:24,height:24,border:'1px solid #d1d5db',borderRadius:4,background:'#fef2f2',cursor:'pointer',fontSize:14,fontWeight:700,color:'#dc2626',display:'flex',alignItems:'center',justifyContent:'center'}} onClick={()=>adj(sz,-1)}>−</button>
+            <div style={{width:36,textAlign:'center',fontSize:16,fontWeight:800,color:delta>0?'#166534':delta<0?'#dc2626':'#0f172a'}}>{newVal}</div>
+            <button style={{width:24,height:24,border:'1px solid #d1d5db',borderRadius:4,background:'#f0fdf4',cursor:'pointer',fontSize:14,fontWeight:700,color:'#166534',display:'flex',alignItems:'center',justifyContent:'center'}} onClick={()=>adj(sz,1)}>+</button>
+          </div>
+          {delta!==0&&<div style={{fontSize:11,fontWeight:700,marginTop:2,color:delta>0?'#166534':'#dc2626'}}>{delta>0?'+':''}{delta}</div>}
+        </div>})}</div>
     </div><div className="modal-footer"><button className="btn btn-secondary" onClick={onClose}>Cancel</button><button className="btn btn-primary" onClick={()=>{onSave(product.id,a);onClose()}}>Save</button></div></div></div>);
 }
 
@@ -1095,6 +1108,10 @@ export default function App(){
   const[eEst,setEEst]=useState(null);const[eEstC,setEEstC]=useState(null);const[eSO,setESO]=useState(null);const[eSOC,setESOC]=useState(null);
   const[gQ,setGQ]=useState('');const[gOpen,setGOpen]=useState(false);const[mF,setMF]=useState('all');const[rF,setRF]=useState('all');const[pF,setPF]=useState({cat:'all',vnd:'all',stk:'all',clr:'all'});
   const[iS,setIS]=useState({f:'value',d:'desc'});const[iF,setIF]=useState({cat:'all',vnd:'all'});
+  const dirtyRef=React.useRef(false);
+  const[favSkus,setFavSkus]=useState(()=>{try{return JSON.parse(localStorage.getItem('nsa_fav_skus')||'[]')}catch{return[]}});
+  const toggleFav=sku=>{setFavSkus(f=>{const n=f.includes(sku)?f.filter(s=>s!==sku):[...f,sku];try{localStorage.setItem('nsa_fav_skus',JSON.stringify(n))}catch{}return n})};
+  const[iShowFav,setIShowFav]=useState(false);
   const cu=REPS[0];const isA=cu.role==='admin';
   const nf=(m,t='success')=>{setToast({msg:m,type:t});setTimeout(()=>setToast(null),3500)};
   const pars=useMemo(()=>cust.filter(c=>!c.parent_id),[cust]);const gK=useCallback(pid=>cust.filter(c=>c.parent_id===pid),[cust]);
@@ -1114,10 +1131,11 @@ export default function App(){
   const fP=useMemo(()=>{let l=prod;if(q&&pg==='products'){const s=q.toLowerCase();l=l.filter(p=>p.sku.toLowerCase().includes(s)||p.name.toLowerCase().includes(s)||p.brand?.toLowerCase().includes(s)||p.color?.toLowerCase().includes(s))}
     if(pF.cat!=='all')l=l.filter(p=>p.category===pF.cat);if(pF.vnd!=='all')l=l.filter(p=>p.vendor_id===pF.vnd);if(pF.stk==='instock')l=l.filter(p=>Object.values(p._inv||{}).some(v=>v>0));if(pF.clr!=='all')l=l.filter(p=>p.color===pF.clr);return l},[prod,q,pF,pg]);
   const iD=useMemo(()=>{let l=prod.filter(p=>Object.values(p._inv||{}).some(v=>v>0));if(iF.cat!=='all')l=l.filter(p=>p.category===iF.cat);if(iF.vnd!=='all')l=l.filter(p=>p.vendor_id===iF.vnd);
+    if(iShowFav&&favSkus.length>0)l=l.filter(p=>favSkus.includes(p.sku));
     if(q&&pg==='inventory'){const s=q.toLowerCase();l=l.filter(p=>p.sku.toLowerCase().includes(s)||p.name.toLowerCase().includes(s))}
     const m=l.map(p=>{const t=Object.values(p._inv||{}).reduce((a,v)=>a+v,0);return{...p,_tQ:t,_tV:t*(p.nsa_cost||0)}});
     m.sort((a,b)=>{const f=iS.f;let va,vb;if(f==='sku'){va=a.sku;vb=b.sku}else if(f==='name'){va=a.name;vb=b.name}else if(f==='qty'){va=a._tQ;vb=b._tQ}else{va=a._tV;vb=b._tV}
-    if(typeof va==='string')return iS.d==='asc'?va.localeCompare(vb):vb.localeCompare(va);return iS.d==='asc'?va-vb:vb-va});return m},[prod,iS,iF,q,pg]);
+    if(typeof va==='string')return iS.d==='asc'?va.localeCompare(vb):vb.localeCompare(va);return iS.d==='asc'?va-vb:vb-va});return m},[prod,iS,iF,q,pg,iShowFav,favSkus]);
   const tV=useMemo(()=>iD.reduce((a,p)=>a+p._tV,0),[iD]);const tU=useMemo(()=>iD.reduce((a,p)=>a+p._tQ,0),[iD]);
   const al=useMemo(()=>{const r=[];prod.forEach(p=>{if(!p._alerts)return;Object.entries(p._alerts).forEach(([sz,min])=>{const c=p._inv?.[sz]||0;if(c<min)r.push({p,sz,c,min,need:min-c})})});return r},[prod]);
 
@@ -1140,7 +1158,7 @@ export default function App(){
 
   // ESTIMATES LIST
   const rEst=()=>{
-    if(eEst)return<OrderEditor order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} onSave={e=>{savE(e);setEEst(e)}} onBack={()=>setEEst(null)} onConvertSO={convertSO} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs}/>;
+    if(eEst)return<OrderEditor order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} onSave={e=>{savE(e);setEEst(e)}} onBack={()=>setEEst(null)} onConvertSO={convertSO} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef}/>;
     const fe=ests.filter(e=>!q||(e.id+' '+e.memo+' '+(cust.find(c=>c.id===e.customer_id)?.name||'')+' '+(cust.find(c=>c.id===e.customer_id)?.alpha_tag||'')).toLowerCase().includes(q.toLowerCase()));
     return(<><div style={{display:'flex',gap:8,marginBottom:16}}><div className="search-bar" style={{flex:1}}><Icon name="search"/><input placeholder="Search..." value={q} onChange={e=>setQ(e.target.value)}/></div>
       <button className="btn btn-primary" onClick={()=>newE(null)}><Icon name="plus" size={14}/> New Estimate</button></div>
@@ -1156,13 +1174,25 @@ export default function App(){
 
   // SALES ORDERS LIST
   const rSO=()=>{
-    if(eSO)return<OrderEditor order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} onSave={s=>{savSO(s);setESO(s)}} onBack={()=>setESO(null)} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs}/>;
+    if(eSO)return<OrderEditor order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} onSave={s=>{savSO(s);setESO(s)}} onBack={()=>setESO(null)} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef}/>;
     return(<><div className="stats-row"><div className="stat-card"><div className="stat-label">Total</div><div className="stat-value">{sos.length}</div></div><div className="stat-card"><div className="stat-label">Wait Art</div><div className="stat-value" style={{color:'#d97706'}}>{sos.filter(s=>s.status==='waiting_art').length}</div></div><div className="stat-card"><div className="stat-label">Production</div><div className="stat-value" style={{color:'#2563eb'}}>{sos.filter(s=>s.status==='in_production').length}</div></div><div className="stat-card"><div className="stat-label">Ready</div><div className="stat-value" style={{color:'#166534'}}>{sos.filter(s=>s.status==='ready_ship').length}</div></div></div>
-    <div className="card"><div className="card-body" style={{padding:0}}><table><thead><tr><th>SO</th><th>Customer</th><th>Memo</th><th>Expected</th><th>Art</th><th>Msgs</th><th>Status</th></tr></thead><tbody>
+    <div className="card"><div className="card-body" style={{padding:0}}><table><thead><tr><th>SO</th><th>Customer</th><th>Memo</th><th>Expected</th><th>Art</th><th>Items</th><th>Msgs</th><th>Status</th></tr></thead><tbody>
     {sos.map(so=>{const c=cust.find(x=>x.id===so.customer_id);const ac=(so.art_files||[]).length;const aa=(so.art_files||[]).filter(f=>f.status==='approved').length;
+      // Calculate fulfillment status
+      const allItems=so.items||[];let totalSz=0,pickedSz=0,poSz=0,rcvdSz=0;
+      allItems.forEach(it=>{Object.entries(it.sizes).filter(([,v])=>v>0).forEach(([sz,v])=>{totalSz+=v;
+        pickedSz+=(it.pick_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);
+        const poQty=(it.po_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);poSz+=poQty;
+        rcvdSz+=(it.po_lines||[]).reduce((a,pk)=>a+((pk.received||{})[sz]||0),0)})});
+      const fulfilledSz=pickedSz+rcvdSz;
+      const itemStatus=totalSz===0?null:fulfilledSz>=totalSz?'received':fulfilledSz>0?'partial':poSz>0?'on_order':'needs_items';
       return(<tr key={so.id} style={{cursor:'pointer'}} onClick={()=>{setESO(so);setESOC(c)}}>
       <td style={{fontWeight:700,color:'#1e40af'}}>{so.id}</td><td>{c?.name} <span className="badge badge-gray">{c?.alpha_tag}</span></td><td style={{fontSize:12}}>{so.memo}</td><td>{so.expected_date||'--'}</td>
       <td>{ac>0?<span style={{fontSize:11}}>{aa}/{ac} ✓</span>:<span style={{fontSize:11,color:'#d97706'}}>—</span>}</td>
+      <td>{itemStatus&&<span style={{fontSize:10,fontWeight:600,padding:'2px 6px',borderRadius:4,
+        background:itemStatus==='received'?'#dcfce7':itemStatus==='partial'?'#fef3c7':itemStatus==='on_order'?'#dbeafe':'#fef2f2',
+        color:itemStatus==='received'?'#166534':itemStatus==='partial'?'#92400e':itemStatus==='on_order'?'#1e40af':'#dc2626'}}>
+        {itemStatus==='received'?'✓ All In':itemStatus==='partial'?fulfilledSz+'/'+totalSz:itemStatus==='on_order'?'On Order':'Needs Items'}</span>}</td>
       <td>{(()=>{const unread=msgs.filter(m=>m.so_id===so.id&&!(m.read_by||[]).includes(cu.id)).length;const total=msgs.filter(m=>m.so_id===so.id).length;return unread>0?<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'2px 8px',fontSize:10,fontWeight:700}}>{unread} new</span>:total>0?<span style={{fontSize:11,color:'#94a3b8'}}>{total}</span>:null})()}</td>
       <td><span style={{padding:'3px 10px',borderRadius:12,fontSize:11,fontWeight:700,background:SC[so.status]?.bg||'#f1f5f9',color:SC[so.status]?.c||'#475569'}}>{so.status.replace(/_/g,' ')}</span></td></tr>)})}
     </tbody></table></div></div></>);};
@@ -1224,6 +1254,7 @@ export default function App(){
   const rInv=()=>(<><div className="stats-row"><div className="stat-card"><div className="stat-label">Units</div><div className="stat-value">{tU}</div></div><div className="stat-card"><div className="stat-label">Value</div><div className="stat-value">${tV.toLocaleString(undefined,{maximumFractionDigits:0})}</div></div><div className="stat-card"><div className="stat-label">Products</div><div className="stat-value">{iD.length}</div></div>
     {isA&&al.length>0&&<div className="stat-card" style={{borderColor:'#fbbf24'}}><div className="stat-label">Alerts</div><div className="stat-value" style={{color:'#d97706'}}>{al.length}</div></div>}</div>
   <div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap'}}><div className="search-bar" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search..." value={q} onChange={e=>setQ(e.target.value)}/></div>
+    <button className={`btn btn-sm ${iShowFav?'btn-primary':'btn-secondary'}`} style={{fontSize:11}} onClick={()=>setIShowFav(f=>!f)}>⭐ Favorites{favSkus.length>0?` (${favSkus.length})`:''}</button>
     <select className="form-select" style={{width:110}} value={iF.cat} onChange={e=>setIF(f=>({...f,cat:e.target.value}))}><option value="all">Category</option>{CATEGORIES.map(c=><option key={c}>{c}</option>)}</select>
     <select className="form-select" style={{width:110}} value={iF.vnd} onChange={e=>setIF(f=>({...f,vnd:e.target.value}))}><option value="all">Vendor</option>{vend.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}</select></div>
   <div className="card"><div className="card-body" style={{padding:0}}><table><thead><tr>
@@ -1234,7 +1265,7 @@ export default function App(){
     <SortHeader label="Value" field="value" sortField={iS.f} sortDir={iS.d} onSort={f=>setIS(s=>({f,d:s.f===f&&s.d==='asc'?'desc':'asc'}))}/>
     <th>Actions</th></tr></thead>
   <tbody>{iD.map(p=><tr key={p.id}>
-    <td><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{p.sku}</span></td>
+    <td><div style={{display:'flex',alignItems:'center',gap:4}}><button style={{background:'none',border:'none',cursor:'pointer',fontSize:14,padding:0,color:favSkus.includes(p.sku)?'#f59e0b':'#d1d5db'}} onClick={()=>toggleFav(p.sku)}>{favSkus.includes(p.sku)?'★':'☆'}</button><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{p.sku}</span></div></td>
     <td style={{fontSize:12}}>{p.name}<br/><span style={{color:'#94a3b8'}}>{p.color}</span></td>
     <td><div style={{display:'flex',gap:2}}>{p.available_sizes.filter(sz=>showSz(sz,p._inv?.[sz])).map(sz=>{const v=p._inv?.[sz]||0;return<div key={sz} className={`size-cell ${v>10?'in-stock':v>0?'low-stock':'no-stock'}`} style={{minWidth:30,padding:'1px 3px'}}><div className="size-label" style={{fontSize:8}}>{sz}</div><div className="size-qty" style={{fontSize:11}}>{v}</div></div>})}</div></td>
     <td style={{fontWeight:800,fontSize:15,color:p._tQ<=10?'#d97706':'#166534'}}>{p._tQ}</td>
@@ -1277,7 +1308,7 @@ export default function App(){
       <nav className="sidebar-nav">{nav.map((item,i)=>{if(item.section)return<div key={i} className="sidebar-section">{item.section}</div>;
         const ubadge=item.id==='messages'?msgs.filter(m=>!(m.read_by||[]).includes(cu.id)).length:0;
         return<button key={item.id} className={`sidebar-link ${pg===item.id?'active':''}`}
-          onClick={()=>{setPg(item.id);setQ('');setSelC(null);setSelV(null);setEEst(null);setESO(null)}}><Icon name={item.icon}/>{item.label}{ubadge>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{ubadge}</span>}</button>})}</nav>
+          onClick={()=>{if(dirtyRef.current&&!window.confirm('You have unsaved changes. Leave without saving?'))return;dirtyRef.current=false;setPg(item.id);setQ('');setSelC(null);setSelV(null);setEEst(null);setESO(null)}}><Icon name={item.icon}/>{item.label}{ubadge>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{ubadge}</span>}</button>})}</nav>
       <div className="sidebar-user"><div style={{fontWeight:600,color:'#e2e8f0'}}>{cu.name}</div><div>{cu.role}</div></div></div>
     <div className="main"><div className="topbar"><h1>{eEst?eEst.id:eSO?eSO.id:selC?selC.name:selV?selV.name:(titles[pg]||'Dashboard')}</h1>
         <div style={{flex:1,maxWidth:400,margin:'0 20px',position:'relative'}}>
