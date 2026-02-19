@@ -249,23 +249,36 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                 {isAU(item.brand)&&<span className="badge badge-blue">Tier {cust?.adidas_ua_tier}</span>}
                 {!isAU(item.brand)&&<span style={{fontSize:12,color:'#64748b'}}>({(item.unit_sell/item.nsa_cost).toFixed(2)}x)</span>}
               </div></div>
-            <div style={{textAlign:'right',minWidth:180}}>
-              <div style={{fontSize:11,color:'#64748b',marginBottom:2}}>Qty: <strong style={{fontSize:14,color:'#0f172a'}}>{qty}</strong></div>
-              {/* Product line */}
-              <div style={{fontSize:10,color:'#64748b',display:'flex',justifyContent:'flex-end',gap:8}}>
-                <span>Product: <strong style={{color:'#0f172a'}}>${pRev.toFixed(0)}</strong></span>
-                <span style={{color:pMg>=0?'#166534':'#dc2626'}}>{pRev>0?(pMg/pRev*100).toFixed(0):0}%</span>
-              </div>
-              {/* Deco lines */}
-              {decoBreak.map((db,di)=><div key={di} style={{fontSize:10,color:'#64748b',display:'flex',justifyContent:'flex-end',gap:8}}>
-                <span>{db.label}: <strong style={{color:'#0f172a'}}>${db.rev.toFixed(0)}</strong></span>
-                <span style={{color:db.margin>=0?'#166534':'#dc2626'}}>{db.pct.toFixed(0)}%</span>
-              </div>)}
-              {/* Separator */}
-              <div style={{borderTop:'1px solid #e2e8f0',marginTop:4,paddingTop:4}}>
-                <div style={{fontSize:18,fontWeight:900,color:'#166534'}}>${iR.toFixed(0)}</div>
-                <div style={{fontSize:11}}>Margin: <strong style={{color:mg>=0?'#1e40af':'#dc2626'}}>${mg.toFixed(0)} ({iR>0?(mg/iR*100).toFixed(0):0}%)</strong></div>
-              </div>
+            <div style={{textAlign:'right',minWidth:200}}>
+              <div style={{fontSize:11,color:'#64748b',marginBottom:1}}>Qty: <strong style={{fontSize:14,color:'#0f172a'}}>{qty}</strong></div>
+              <table style={{marginLeft:'auto',fontSize:11,borderCollapse:'collapse',lineHeight:'1.4'}}>
+                <thead><tr style={{fontSize:9,color:'#94a3b8',textTransform:'uppercase'}}>
+                  <td style={{padding:'0 8px 2px 0',textAlign:'left'}}></td>
+                  <td style={{padding:'0 8px 2px',textAlign:'right'}}>Rev</td>
+                  <td style={{padding:'0 8px 2px',textAlign:'right'}}>Cost</td>
+                  <td style={{padding:'0 0 2px 8px',textAlign:'right'}}>Margin</td>
+                </tr></thead>
+                <tbody>
+                  <tr style={{color:'#374151'}}>
+                    <td style={{padding:'1px 8px 1px 0',textAlign:'left',color:'#64748b',fontSize:10}}>Item</td>
+                    <td style={{padding:'1px 8px',textAlign:'right',fontWeight:600}}>${pRev.toFixed(0)}</td>
+                    <td style={{padding:'1px 8px',textAlign:'right',color:'#64748b'}}>${pCost.toFixed(0)}</td>
+                    <td style={{padding:'1px 0 1px 8px',textAlign:'right',fontWeight:600,color:pMg>=0?'#166534':'#dc2626'}}>${pMg.toFixed(0)} <span style={{fontSize:9,color:'#94a3b8'}}>({pRev>0?(pMg/pRev*100).toFixed(0):0}%)</span></td>
+                  </tr>
+                  {decoBreak.length>0&&<tr style={{color:'#374151'}}>
+                    <td style={{padding:'1px 8px 1px 0',textAlign:'left',color:'#64748b',fontSize:10}}>Deco{decoBreak.length>1?` (${decoBreak.length})`:''}</td>
+                    <td style={{padding:'1px 8px',textAlign:'right',fontWeight:600}}>${dR.toFixed(0)}</td>
+                    <td style={{padding:'1px 8px',textAlign:'right',color:'#64748b'}}>${dC.toFixed(0)}</td>
+                    <td style={{padding:'1px 0 1px 8px',textAlign:'right',fontWeight:600,color:(dR-dC)>=0?'#166534':'#dc2626'}}>${(dR-dC).toFixed(0)} <span style={{fontSize:9,color:'#94a3b8'}}>({dR>0?((dR-dC)/dR*100).toFixed(0):0}%)</span></td>
+                  </tr>}
+                  <tr style={{borderTop:'2px solid #0f172a'}}>
+                    <td style={{padding:'4px 8px 0 0',textAlign:'left',fontWeight:800,fontSize:11}}>Total</td>
+                    <td style={{padding:'4px 8px 0',textAlign:'right',fontWeight:900,fontSize:16,color:'#166534'}}>${iR.toFixed(0)}</td>
+                    <td style={{padding:'4px 8px 0',textAlign:'right',fontWeight:700,fontSize:12,color:'#64748b'}}>${iC.toFixed(0)}</td>
+                    <td style={{padding:'4px 0 0 8px',textAlign:'right',fontWeight:800,fontSize:12,color:mg>=0?'#1e40af':'#dc2626'}}>${mg.toFixed(0)} <span style={{fontSize:10}}>({iR>0?(mg/iR*100).toFixed(0):0}%)</span></td>
+                  </tr>
+                </tbody>
+              </table>
             </div>
             <button onClick={()=>rmI(idx)} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:4}}><Icon name="trash" size={16}/></button>
           </div></div>
