@@ -67,9 +67,18 @@ const D_SO=[
 {id:'SO-1042',customer_id:'c1a',estimate_id:'EST-2088',memo:'Baseball Spring Season Full Package',status:'in_production',created_by:'r1',created_at:'02/10/26 11:00 AM',updated_at:'02/14/26',expected_date:'03/15/26',production_notes:'Rush - coach needs by spring break',shipping_type:'flat',shipping_value:45,ship_to_id:'default',firm_dates:[{item_desc:'JX4453 - Adidas Pregame Tee',date:'03/01/26',approved:true}],
   art_files:[{id:'af1',name:'OLu Baseball Front Logo',deco_type:'screen_print',ink_colors:'Navy, Gold, White',thread_colors:'',art_size:'12" x 4"',files:['OLu_Baseball_Logo_v3.ai','OLu_Baseball_Logo_v3.pdf'],notes:'Final approved - navy/gold',status:'approved',uploaded:'02/10/26'},
     {id:'af2',name:'Sleeve Logo Small',deco_type:'embroidery',ink_colors:'',thread_colors:'Navy 2767, Gold',art_size:'2" wide',files:['OLu_Sleeve_Logo.ai'],notes:'Small sleeve crest',status:'approved',uploaded:'02/11/26'}],
-  items:[{sku:'JX4453',name:'Adidas Unisex Pregame Tee',brand:'Adidas',color:'Team Power Red/White',nsa_cost:18.5,retail_price:55.5,unit_sell:33.3,sizes:{S:5,M:12,L:15,XL:8,'2XL':3},available_sizes:['S','M','L','XL','2XL'],decorations:[{kind:'art',position:'Front Center',art_file_id:'af1',sell_override:null},{kind:'numbers',position:'Back Center',num_method:'heat_transfer',num_size:'4"',two_color:false,sell_override:null,roster:[]}]}]},
+  items:[{sku:'JX4453',name:'Adidas Unisex Pregame Tee',brand:'Adidas',color:'Team Power Red/White',nsa_cost:18.5,retail_price:55.5,unit_sell:33.3,sizes:{S:5,M:12,L:15,XL:8,'2XL':3},available_sizes:['S','M','L','XL','2XL'],ful:'pick',checked:{S:5,M:10,L:12,XL:6,'2XL':3},decorations:[{kind:'art',position:'Front Center',art_file_id:'af1',sell_override:null},{kind:'numbers',position:'Back Center',num_method:'heat_transfer',num_size:'4"',two_color:false,sell_override:null,roster:[]}]}]},
 {id:'SO-1045',customer_id:'c1b',memo:'Football Spring Practice Gear',status:'waiting_art',created_by:'r1',created_at:'02/12/26 2:00 PM',updated_at:'02/12/26',expected_date:'03/20/26',production_notes:'',shipping_type:'pct',shipping_value:8,ship_to_id:'default',firm_dates:[],art_files:[],items:[]},
 {id:'SO-1051',customer_id:'c2a',memo:'Lacrosse Team Store',status:'in_production',created_by:'r2',created_at:'02/14/26 10:30 AM',updated_at:'02/15/26',expected_date:'03/10/26',production_notes:'',shipping_type:'flat',shipping_value:0,ship_to_id:'default',firm_dates:[],art_files:[{id:'af3',name:'SFL Lacrosse Crest',deco_type:'embroidery',ink_colors:'',thread_colors:'Navy 2767, White, Silver 877',art_size:'3.5" wide',files:['SFL_Crest.eps','SFL_Crest_preview.png'],notes:'',status:'uploaded',uploaded:'02/15/26'}],items:[]},
+];
+const D_MSG=[
+{id:'m1',so_id:'SO-1042',author_id:'r1',text:'Coach Martinez confirmed navy/gold for front logo. Approved the proof.',ts:'02/10/26 11:30 AM',read_by:['r1','r2']},
+{id:'m2',so_id:'SO-1042',author_id:'r3',text:'Warehouse: we have 30 of JX4453 in stock, rest need to be ordered from Adidas.',ts:'02/11/26 9:15 AM',read_by:['r3']},
+{id:'m3',so_id:'SO-1042',author_id:'r1',text:'PO placed with Adidas for remaining sizes. Expected 02/20.',ts:'02/11/26 2:00 PM',read_by:['r1']},
+{id:'m4',so_id:'SO-1042',author_id:'r2',text:'@Steve - coach called, needs jerseys by 3/10 not 3/15. Can we rush?',ts:'02/14/26 10:00 AM',read_by:['r2']},
+{id:'m5',so_id:'SO-1042',author_id:'r1',text:'Updated expected date. Adidas confirmed they can expedite.',ts:'02/14/26 11:30 AM',read_by:['r1']},
+{id:'m6',so_id:'SO-1045',author_id:'r1',text:'Waiting on Coach Davis for logo approval. Sent follow-up email.',ts:'02/13/26 3:00 PM',read_by:['r1']},
+{id:'m7',so_id:'SO-1051',author_id:'r2',text:'Crest file from coach is low-res. Need vector version.',ts:'02/15/26 11:00 AM',read_by:['r2']},
 ];
 const D_INV=[{id:'INV-1042',type:'invoice',customer_id:'c1a',date:'02/10/26',total:4200,paid:0,memo:'Baseball Deposit',status:'open'},{id:'INV-1038',type:'invoice',customer_id:'c2a',date:'01/28/26',total:3400,paid:0,memo:'Lacrosse Preseason',status:'open'},{id:'INV-1039',type:'invoice',customer_id:'c2a',date:'02/01/26',total:3400,paid:3400,memo:'Lacrosse Batch 1',status:'paid'}];
 
@@ -113,10 +122,10 @@ function SendModal({isOpen,onClose,estimate,customer,onSend}){
 }
 
 // UNIFIED ORDER EDITOR
-function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack,onConvertSO,cu,nf}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack,onConvertSO,cu,nf,msgs,onMsg}){
   const isE=mode==='estimate';const isSO=mode==='so';
   const[o,setO]=useState(order);const[cust,setCust]=useState(ic);const[pS,setPS]=useState('');const[showAdd,setShowAdd]=useState(false);
-  const[tab,setTab]=useState('items');const[saved,setSaved]=useState(!!order.customer_id);const[showSend,setShowSend]=useState(false);
+  const[tab,setTab]=useState('items');const[saved,setSaved]=useState(!!order.customer_id);const[showSend,setShowSend]=useState(false);const[showPick,setShowPick]=useState(false);
   const[newAddr,setNewAddr]=useState('');const[showNA,setShowNA]=useState(false);const[showSzPicker,setShowSzPicker]=useState(null);
   const sv=(k,v)=>setO(e=>({...e,[k]:v,updated_at:new Date().toLocaleString()}));
   const isAU=b=>b==='Adidas'||b==='Under Armour'||b==='New Balance';const tD={A:0.4,B:0.35,C:0.3};
@@ -126,7 +135,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
   const uI=(i,k,v)=>sv('items',o.items.map((it,x)=>x===i?{...it,[k]:v}:it));const rmI=i=>sv('items',o.items.filter((_,x)=>x!==i));
   const uSz=(i,sz,v)=>{const n=v===''?0:parseInt(v)||0;uI(i,'sizes',{...o.items[i].sizes,[sz]:n})};
   const addSzToItem=(i,sz)=>{const it=o.items[i];if(!it.available_sizes.includes(sz))uI(i,'available_sizes',[...it.available_sizes,sz]);setShowSzPicker(null)};
-  const NUM_SZ={heat_transfer:['0.5"','0.75"','1"','1.5"','2"','3"','4"','5"','6"','8"','10"'],embroidery:['0.5"','0.75"','1"','1.5"','2"'],screen_print:['4"','6"','8"','10"']};
+  const NUM_SZ={heat_transfer:['1"','1.5"','2"','3"','4"','5"','6"','8"','10"'],embroidery:['0.5"','0.75"','1"','1.5"','2"'],screen_print:['4"','6"','8"','10"']};
   const addArtDeco=i=>{uI(i,'decorations',[...o.items[i].decorations,{kind:'art',position:'Front Center',art_file_id:null,sell_override:null}])};
   const addNumDeco=i=>{uI(i,'decorations',[...o.items[i].decorations,{kind:'numbers',position:'Back Center',num_method:'heat_transfer',num_size:'4"',two_color:false,sell_override:null,custom_font_art_id:null,roster:[]}])};
   const uD=(ii,di,k,v)=>{uI(ii,'decorations',o.items[ii].decorations.map((d,i)=>i===di?{...d,[k]:v}:d))};
@@ -173,6 +182,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         <button className="btn btn-primary" onClick={()=>{onSave(o);setSaved(true);nf(`${isE?'Estimate':'SO'} saved`)}}><Icon name="check" size={14}/> Save</button>
         {isE&&saved&&o.status!=='approved'&&o.status!=='converted'&&<button className="btn btn-secondary" onClick={()=>setShowSend(true)}><Icon name="send" size={14}/> Send</button>}
         {isE&&o.status==='approved'&&<button className="btn btn-primary" style={{background:'#7c3aed'}} onClick={()=>onConvertSO(o)}><Icon name="box" size={14}/> Convert to SO</button>}
+        {isSO&&<button className="btn btn-secondary" onClick={()=>setShowPick(true)}><Icon name="grid" size={14}/> Pick Ticket</button>}
       </div>
       {/* SHIPPING */}
       <div style={{display:'flex',gap:12,marginTop:12,alignItems:'end',flexWrap:'wrap',borderTop:'1px solid #f1f5f9',paddingTop:12}}>
@@ -201,6 +211,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
     <div className="tabs" style={{marginBottom:16}}>
       <button className={`tab ${tab==='items'?'active':''}`} onClick={()=>setTab('items')}>Line Items</button>
       <button className={`tab ${tab==='art'?'active':''}`} onClick={()=>setTab('art')}>Art Library ({af.length})</button>
+      {isSO&&<button className={`tab ${tab==='messages'?'active':''}`} onClick={()=>setTab('messages')}>Messages {(()=>{const unread=(msgs||[]).filter(m=>m.so_id===o.id&&!(m.read_by||[]).includes(cu.id)).length;return unread>0?<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:4}}>{unread}</span>:` (${(msgs||[]).filter(m=>m.so_id===o.id).length})`})()}</button>}
       {isSO&&<button className={`tab ${tab==='transactions'?'active':''}`} onClick={()=>setTab('transactions')}>Linked</button>}
       {isSO&&<button className={`tab ${tab==='firm_dates'?'active':''}`} onClick={()=>setTab('firm_dates')}>Firm Dates ({(o.firm_dates||[]).length})</button>}
     </div>
@@ -227,7 +238,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
             <div style={{textAlign:'right',fontSize:12,minWidth:120}}>
               <div>Qty: <strong style={{fontSize:16}}>{qty}</strong></div>
               <div>Rev: <strong style={{color:'#166534'}}>${iR.toFixed(0)}</strong></div>
-              <div>Margin: <strong style={{color:mg>=0?'#1e40af':'#dc2626'}}>${mg.toFixed(0)} ({iR>0?(mg/iR*100).toFixed(0):0}%)</strong></div></div>
+              <div>Margin: <strong style={{color:mg>=0?'#1e40af':'#dc2626'}}>${mg.toFixed(0)} ({iR>0?(mg/iR*100).toFixed(0):0}%)</strong></div>
+              {isSO&&<div style={{marginTop:4}}><select className="form-select" style={{fontSize:10,padding:'2px 4px',width:'auto',
+                background:item.ful==='pulled'?'#dcfce7':item.ful==='pick'?'#ede9fe':item.ful==='on_order'?'#fef3c7':'#f1f5f9',
+                color:item.ful==='pulled'?'#166534':item.ful==='pick'?'#6d28d9':item.ful==='on_order'?'#92400e':'#64748b',
+                fontWeight:700,borderRadius:10}} value={item.ful||'not_ordered'} onChange={e=>uI(idx,'ful',e.target.value)}>
+                <option value="not_ordered">Not Ordered</option><option value="on_order">On Order</option><option value="pick">Pick</option><option value="pulled">Pulled</option></select></div>}
+            </div>
             <button onClick={()=>rmI(idx)} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:4}}><Icon name="trash" size={16}/></button>
           </div></div>
         {/* SIZES with + Size button */}
@@ -236,7 +253,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           {szs.map(sz=><div key={sz} style={{textAlign:'center',width:48}}><div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
             <input value={item.sizes[sz]||''} onChange={e=>uSz(idx,sz,e.target.value)} placeholder="0"
               style={{width:42,textAlign:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'5px 2px',fontSize:15,fontWeight:700,color:(item.sizes[sz]||0)>0?'#0f172a':'#cbd5e1'}}/>
-            {(()=>{const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);const stk=p?._inv?.[sz];return stk!=null?<div style={{fontSize:9,color:stk>0?'#166534':'#dc2626',fontWeight:600}}>{stk} inv</div>:null})()}</div>)}
+            {(()=>{if(isSO&&(item.ful==='on_order'||item.ful==='pick'||item.ful==='pulled')){
+              const ck=item.checked?.[sz]||0;const need=item.sizes[sz]||0;
+              if(item.ful==='pulled')return<div style={{fontSize:9,color:'#166534',fontWeight:600}}>✓ pulled</div>;
+              if(item.ful==='pick')return<div style={{fontSize:9,color:'#6d28d9',fontWeight:600}}>pick</div>;
+              if(item.ful==='on_order')return<div style={{fontSize:9,color:ck>0?'#d97706':'#92400e',fontWeight:600}}>{ck>0?ck+'/'+need+' in':'ordered'}</div>;
+              return null}
+            const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);const stk=p?._inv?.[sz];return stk!=null?<div style={{fontSize:9,color:stk>0?'#166534':'#dc2626',fontWeight:600}}>{stk} inv</div>:null})()}</div>)}
           <div style={{textAlign:'center',marginLeft:4,padding:'0 10px',borderLeft:'2px solid #e2e8f0'}}><div style={{fontSize:10,fontWeight:700,color:'#1e40af'}}>TOT</div><div style={{fontSize:20,fontWeight:800,color:'#1e40af'}}>{qty}</div></div>
           <div style={{position:'relative',marginLeft:4}}><button className="btn btn-sm btn-secondary" onClick={()=>setShowSzPicker(showSzPicker===idx?null:idx)} style={{fontSize:10}}>+ Size</button>
             {showSzPicker===idx&&addable.length>0&&<><div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:39}} onClick={()=>setShowSzPicker(null)}/><div style={{position:'absolute',top:'100%',left:0,background:'white',border:'1px solid #e2e8f0',borderRadius:6,boxShadow:'0 4px 12px rgba(0,0,0,0.1)',zIndex:40,padding:6,display:'flex',gap:3,flexWrap:'wrap',width:180}}>
@@ -383,7 +406,31 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         </div>}
       </div></div>}
 
-    {/* LINKED TRANSACTIONS TAB */}
+    {/* MESSAGES TAB */}
+    {isSO&&tab==='messages'&&(()=>{const soMsgs=(msgs||[]).filter(m=>m.so_id===o.id).sort((a,b)=>(a.ts||'').localeCompare(b.ts));
+      return<div className="card"><div className="card-header"><h2>Messages</h2><span style={{fontSize:12,color:'#64748b'}}>{soMsgs.length} message(s)</span></div>
+        <div className="card-body">
+          <div style={{display:'flex',flexDirection:'column',gap:8,marginBottom:12,maxHeight:400,overflow:'auto'}}>
+            {soMsgs.length===0?<div className="empty">No messages yet. Start the conversation.</div>:
+            soMsgs.map(m=>{const author=REPS.find(r=>r.id===m.author_id);const isMe=m.author_id===cu.id;const unread=!(m.read_by||[]).includes(cu.id);
+              return<div key={m.id} style={{padding:'10px 14px',borderRadius:8,background:isMe?'#dbeafe':'#f8fafc',border:unread?'2px solid #3b82f6':'1px solid #e2e8f0',marginLeft:isMe?40:0,marginRight:isMe?0:40}}
+                onClick={()=>{if(unread&&onMsg){onMsg(msgs.map(mm=>mm.id===m.id?{...mm,read_by:[...(mm.read_by||[]),cu.id]}:mm))}}}>
+                <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
+                  <span style={{fontSize:12,fontWeight:700,color:isMe?'#1e40af':'#475569'}}>{author?.name||'Unknown'}</span>
+                  <span style={{fontSize:10,color:'#94a3b8'}}>{m.ts}</span></div>
+                <div style={{fontSize:13,color:'#0f172a'}}>{m.text}</div>
+                {unread&&<div style={{fontSize:9,color:'#3b82f6',marginTop:2}}>● New</div>}
+              </div>})}
+          </div>
+          <div style={{display:'flex',gap:8}}><input className="form-input" id="msg-input" placeholder="Type a message..." style={{flex:1}} onKeyDown={e=>{if(e.key==='Enter'&&e.target.value.trim()){
+            const nm={id:'m'+Date.now(),so_id:o.id,author_id:cu.id,text:e.target.value.trim(),ts:new Date().toLocaleString(),read_by:[cu.id]};
+            if(onMsg)onMsg([...msgs,nm]);e.target.value='';nf('Message sent')}}}/><button className="btn btn-primary" onClick={()=>{
+            const inp=document.getElementById('msg-input');if(inp&&inp.value.trim()){
+            const nm={id:'m'+Date.now(),so_id:o.id,author_id:cu.id,text:inp.value.trim(),ts:new Date().toLocaleString(),read_by:[cu.id]};
+            if(onMsg)onMsg([...msgs,nm]);inp.value='';nf('Message sent')}}}>Send</button></div>
+        </div></div>})()}
+
+        {/* LINKED TRANSACTIONS TAB */}
     {isSO&&tab==='transactions'&&<div className="card"><div className="card-header"><h2>Linked Transactions</h2></div><div className="card-body">
       <div style={{display:'flex',flexDirection:'column',gap:8}}>
         {o.estimate_id&&<div style={{display:'flex',gap:12,alignItems:'center',padding:12,background:'#faf5ff',borderRadius:8,border:'1px solid #e9d5ff'}}>
@@ -408,6 +455,31 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
             <button className="btn btn-sm btn-secondary" onClick={()=>sv('firm_dates',(o.firm_dates||[]).filter((_,x)=>x!==i))}><Icon name="trash" size={10}/></button></div></td></tr>})}</tbody></table>}</div></div>}
 
     <SendModal isOpen={showSend} onClose={()=>setShowSend(false)} estimate={o} customer={cust} onSend={()=>{sv('status','sent');sv('email_status','sent');onSave({...o,status:'sent',email_status:'sent'});nf('Estimate sent!')}}/>
+    {showPick&&<div className="modal-overlay" onClick={()=>setShowPick(false)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:800,maxHeight:'90vh',overflow:'auto'}}>
+      <div className="modal-header"><h2>Pick Ticket — {o.id}</h2><button className="modal-close" onClick={()=>setShowPick(false)}>x</button></div>
+      <div className="modal-body" id="pick-ticket-content">
+        <div style={{display:'flex',justifyContent:'space-between',marginBottom:16,paddingBottom:12,borderBottom:'2px solid #0f172a'}}>
+          <div><div style={{fontSize:20,fontWeight:800}}>NATIONAL SPORTS APPAREL</div><div style={{fontSize:12,color:'#64748b'}}>Pick Ticket</div></div>
+          <div style={{textAlign:'right'}}><div style={{fontSize:18,fontWeight:800,color:'#1e40af'}}>{o.id}</div><div style={{fontSize:12}}>{new Date().toLocaleDateString()}</div></div></div>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
+          <div><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase'}}>Customer</div><div style={{fontSize:14,fontWeight:700}}>{cust?.name}</div><div style={{fontSize:12,color:'#64748b'}}>{cust?.alpha_tag}</div></div>
+          <div><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase'}}>Ship To</div><div style={{fontSize:12}}>{addrs.find(a=>a.id===(o.ship_to_id||'default'))?.addr||o.ship_to_custom||'—'}</div></div></div>
+        {o.production_notes&&<div style={{padding:8,background:'#fef3c7',borderRadius:4,marginBottom:12,fontSize:12}}><strong>Notes:</strong> {o.production_notes}</div>}
+        {o.items.map((it,i)=>{const q=Object.values(it.sizes).reduce((a,v)=>a+v,0);const szList=Object.entries(it.sizes).filter(([,v])=>v>0);
+          return<div key={i} style={{marginBottom:16,padding:12,border:'1px solid #e2e8f0',borderRadius:6}}>
+            <div style={{display:'flex',justifyContent:'space-between',marginBottom:8}}><div><span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',marginRight:8}}>{it.sku}</span><strong>{it.name}</strong> — {it.color}</div><div style={{fontWeight:800}}>Qty: {q}</div></div>
+            <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}><thead><tr style={{borderBottom:'2px solid #0f172a'}}>{szList.map(([sz])=><th key={sz} style={{padding:'4px 8px',textAlign:'center',minWidth:40}}>{sz}</th>)}<th style={{padding:'4px 8px'}}>Total</th></tr></thead>
+            <tbody><tr>{szList.map(([sz,v])=><td key={sz} style={{padding:'4px 8px',textAlign:'center',fontWeight:700,fontSize:14}}>{v}</td>)}<td style={{padding:'4px 8px',textAlign:'center',fontWeight:800,fontSize:14}}>{q}</td></tr>
+            {it.decorations.some(d=>d.kind==='numbers')&&<tr style={{borderTop:'1px solid #e2e8f0'}}>{szList.map(([sz])=>{const nums=it.decorations.find(d=>d.kind==='numbers');const r=nums?.roster?.[sz]||[];return<td key={sz} style={{padding:'4px 8px',textAlign:'center',fontSize:10,color:'#7c3aed'}}>{r.filter(Boolean).join(', ')}</td>})}<td/></tr>}
+            </tbody></table>
+            {it.decorations.map((d,di)=>{const artF=d.kind==='art'?af.find(f=>f.id===d.art_file_id):null;
+              return<div key={di} style={{fontSize:11,color:'#64748b',marginTop:4,padding:'4px 8px',background:'#f8fafc',borderRadius:4}}>
+                {d.kind==='art'&&artF?<span>📎 <strong>{artF.name}</strong> — {artF.deco_type?.replace('_',' ')} @ {d.position} {d.underbase&&'(UB)'} {artF.ink_colors&&`[${artF.ink_colors.split('\n').filter(l=>l.trim()).join(', ')}]`}{artF.thread_colors&&`[${artF.thread_colors}]`}</span>
+                :<span>#️⃣ Numbers — {d.num_method?.replace('_',' ')} {d.num_size} @ {d.position} {d.two_color&&'(2-clr)'}</span>}</div>})}
+          </div>})}
+      </div>
+      <div className="modal-footer"><button className="btn btn-secondary" onClick={()=>setShowPick(false)}>Close</button><button className="btn btn-primary" onClick={()=>{window.print()}}>🖨️ Print</button></div>
+    </div></div>}
   </div>);
 }
 
@@ -514,10 +586,10 @@ export default function App(){
   const[pg,setPg]=useState('dashboard');const[toast,setToast]=useState(null);
   const[cust,setCust]=useState(D_C);const[vend]=useState(D_V);const[prod,setProd]=useState(D_P);
   const[ests,setEsts]=useState(D_E);const[sos,setSOs]=useState(D_SO);const[invs]=useState(D_INV);
-  const[cM,setCM]=useState({open:false,c:null});const[aM,setAM]=useState({open:false,p:null});
+  const[msgs,setMsgs]=useState(D_MSG);const[cM,setCM]=useState({open:false,c:null});const[aM,setAM]=useState({open:false,p:null});
   const[q,setQ]=useState('');const[selC,setSelC]=useState(null);const[selV,setSelV]=useState(null);
   const[eEst,setEEst]=useState(null);const[eEstC,setEEstC]=useState(null);const[eSO,setESO]=useState(null);const[eSOC,setESOC]=useState(null);
-  const[rF,setRF]=useState('all');const[pF,setPF]=useState({cat:'all',vnd:'all',stk:'all',clr:'all'});
+  const[gQ,setGQ]=useState('');const[gOpen,setGOpen]=useState(false);const[rF,setRF]=useState('all');const[pF,setPF]=useState({cat:'all',vnd:'all',stk:'all',clr:'all'});
   const[iS,setIS]=useState({f:'value',d:'desc'});const[iF,setIF]=useState({cat:'all',vnd:'all'});
   const cu=REPS[0];const isA=cu.role==='admin';
   const nf=(m,t='success')=>{setToast({msg:m,type:t});setTimeout(()=>setToast(null),3500)};
@@ -564,7 +636,7 @@ export default function App(){
 
   // ESTIMATES LIST
   const rEst=()=>{
-    if(eEst)return<OrderEditor order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} onSave={e=>{savE(e);setEEst(e)}} onBack={()=>setEEst(null)} onConvertSO={convertSO} cu={cu} nf={nf}/>;
+    if(eEst)return<OrderEditor order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} onSave={e=>{savE(e);setEEst(e)}} onBack={()=>setEEst(null)} onConvertSO={convertSO} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs}/>;
     const fe=ests.filter(e=>!q||(e.id+' '+e.memo+' '+(cust.find(c=>c.id===e.customer_id)?.name||'')+' '+(cust.find(c=>c.id===e.customer_id)?.alpha_tag||'')).toLowerCase().includes(q.toLowerCase()));
     return(<><div style={{display:'flex',gap:8,marginBottom:16}}><div className="search-bar" style={{flex:1}}><Icon name="search"/><input placeholder="Search..." value={q} onChange={e=>setQ(e.target.value)}/></div>
       <button className="btn btn-primary" onClick={()=>newE(null)}><Icon name="plus" size={14}/> New Estimate</button></div>
@@ -580,13 +652,14 @@ export default function App(){
 
   // SALES ORDERS LIST
   const rSO=()=>{
-    if(eSO)return<OrderEditor order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} onSave={s=>{savSO(s);setESO(s)}} onBack={()=>setESO(null)} cu={cu} nf={nf}/>;
+    if(eSO)return<OrderEditor order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} onSave={s=>{savSO(s);setESO(s)}} onBack={()=>setESO(null)} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs}/>;
     return(<><div className="stats-row"><div className="stat-card"><div className="stat-label">Total</div><div className="stat-value">{sos.length}</div></div><div className="stat-card"><div className="stat-label">Wait Art</div><div className="stat-value" style={{color:'#d97706'}}>{sos.filter(s=>s.status==='waiting_art').length}</div></div><div className="stat-card"><div className="stat-label">Production</div><div className="stat-value" style={{color:'#2563eb'}}>{sos.filter(s=>s.status==='in_production').length}</div></div><div className="stat-card"><div className="stat-label">Ready</div><div className="stat-value" style={{color:'#166534'}}>{sos.filter(s=>s.status==='ready_ship').length}</div></div></div>
-    <div className="card"><div className="card-body" style={{padding:0}}><table><thead><tr><th>SO</th><th>Customer</th><th>Memo</th><th>Expected</th><th>Art</th><th>Status</th></tr></thead><tbody>
+    <div className="card"><div className="card-body" style={{padding:0}}><table><thead><tr><th>SO</th><th>Customer</th><th>Memo</th><th>Expected</th><th>Art</th><th>Msgs</th><th>Status</th></tr></thead><tbody>
     {sos.map(so=>{const c=cust.find(x=>x.id===so.customer_id);const ac=(so.art_files||[]).length;const aa=(so.art_files||[]).filter(f=>f.status==='approved').length;
       return(<tr key={so.id} style={{cursor:'pointer'}} onClick={()=>{setESO(so);setESOC(c)}}>
       <td style={{fontWeight:700,color:'#1e40af'}}>{so.id}</td><td>{c?.name} <span className="badge badge-gray">{c?.alpha_tag}</span></td><td style={{fontSize:12}}>{so.memo}</td><td>{so.expected_date||'--'}</td>
       <td>{ac>0?<span style={{fontSize:11}}>{aa}/{ac} ✓</span>:<span style={{fontSize:11,color:'#d97706'}}>—</span>}</td>
+      <td>{(()=>{const unread=msgs.filter(m=>m.so_id===so.id&&!(m.read_by||[]).includes(cu.id)).length;const total=msgs.filter(m=>m.so_id===so.id).length;return unread>0?<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'2px 8px',fontSize:10,fontWeight:700}}>{unread} new</span>:total>0?<span style={{fontSize:11,color:'#94a3b8'}}>{total}</span>:null})()}</td>
       <td><span style={{padding:'3px 10px',borderRadius:12,fontSize:11,fontWeight:700,background:SC[so.status]?.bg||'#f1f5f9',color:SC[so.status]?.c||'#475569'}}>{so.status.replace(/_/g,' ')}</span></td></tr>)})}
     </tbody></table></div></div></>);};
 
@@ -666,17 +739,66 @@ export default function App(){
       {isA&&<button className="btn btn-sm btn-secondary" onClick={()=>setAM({open:true,p})}>INV</button>}</div></td>
   </tr>)}</tbody></table></div></div></>);
 
-  // NAV
-  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'}];
-  const titles={dashboard:'Dashboard',estimates:'Estimates',orders:'Sales Orders',customers:'Customers',vendors:'Vendors',products:'Products',inventory:'Inventory'};
+  // MESSAGES PAGE
+  const rMsg=()=>{const allM=[...msgs].sort((a,b)=>(b.ts||'').localeCompare(a.ts));
+    const unread=allM.filter(m=>!(m.read_by||[]).includes(cu.id));
+    const[mF,setMF]=useState('all');
+    const filtered=mF==='unread'?unread:mF==='mine'?allM.filter(m=>sos.some(s=>s.id===m.so_id&&s.created_by===cu.id)):allM;
+    return(<><div className="stats-row"><div className="stat-card"><div className="stat-label">Total</div><div className="stat-value">{allM.length}</div></div><div className="stat-card"><div className="stat-label">Unread</div><div className="stat-value" style={{color:unread.length>0?'#dc2626':''}}>{unread.length}</div></div></div>
+    <div style={{display:'flex',gap:4,marginBottom:12}}>{[['all','All'],['unread','Unread'],['mine','My SOs']].map(([v,l])=><button key={v} className={`btn btn-sm ${mF===v?'btn-primary':'btn-secondary'}`} onClick={()=>setMF(v)}>{l}</button>)}
+      <button className="btn btn-sm btn-secondary" style={{marginLeft:'auto'}} onClick={()=>{setMsgs(msgs.map(m=>({...m,read_by:[...new Set([...(m.read_by||[]),cu.id])]})));nf('All marked read')}}>Mark All Read</button></div>
+    <div className="card"><div className="card-body" style={{padding:0}}>
+      {filtered.length===0?<div className="empty" style={{padding:20}}>No messages</div>:
+      filtered.map(m=>{const author=REPS.find(r=>r.id===m.author_id);const so=sos.find(s=>s.id===m.so_id);const c2=cust.find(cc=>cc.id===so?.customer_id);const isUnread=!(m.read_by||[]).includes(cu.id);
+        return<div key={m.id} style={{padding:'12px 18px',borderBottom:'1px solid #f1f5f9',cursor:'pointer',background:isUnread?'#eff6ff':'white'}}
+          onClick={()=>{if(so){const c3=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c3);setPg('orders')}setMsgs(msgs.map(mm=>mm.id===m.id?{...mm,read_by:[...new Set([...(mm.read_by||[]),cu.id])]}:mm))}}>
+          <div style={{display:'flex',gap:12,alignItems:'flex-start'}}>
+            <div style={{width:36,height:36,borderRadius:18,background:isUnread?'#3b82f6':'#e2e8f0',color:isUnread?'white':'#64748b',display:'flex',alignItems:'center',justifyContent:'center',fontSize:13,fontWeight:700,flexShrink:0}}>{(author?.name||'?')[0]}</div>
+            <div style={{flex:1}}>
+              <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:2}}>
+                <span style={{fontWeight:700,fontSize:13}}>{author?.name}</span>
+                <span style={{fontSize:11,color:'#1e40af',fontWeight:600}}>{m.so_id}</span>
+                {c2&&<span style={{fontSize:11,color:'#64748b'}}>{c2.alpha_tag}</span>}
+                <span style={{fontSize:10,color:'#94a3b8',marginLeft:'auto'}}>{m.ts}</span>
+              </div>
+              <div style={{fontSize:13,color:'#374151'}}>{m.text}</div>
+            </div>
+            {isUnread&&<div style={{width:8,height:8,borderRadius:4,background:'#3b82f6',flexShrink:0,marginTop:6}}/>}
+          </div></div>})}</div></div></>)};
+
+    // NAV
+  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{section:'Comms'},{id:'messages',label:'Messages',icon:'mail'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'}];
+  const titles={dashboard:'Dashboard',estimates:'Estimates',orders:'Sales Orders',customers:'Customers',vendors:'Vendors',products:'Products',inventory:'Inventory',messages:'Messages'};
   return(<div className="app"><Toast msg={toast?.msg} type={toast?.type}/>
     <div className="sidebar"><div className="sidebar-logo">NSA<span>Portal</span></div>
       <nav className="sidebar-nav">{nav.map((item,i)=>{if(item.section)return<div key={i} className="sidebar-section">{item.section}</div>;
+        const ubadge=item.id==='messages'?msgs.filter(m=>!(m.read_by||[]).includes(cu.id)).length:0;
         return<button key={item.id} className={`sidebar-link ${pg===item.id?'active':''}`}
-          onClick={()=>{setPg(item.id);setQ('');setSelC(null);setSelV(null);setEEst(null);setESO(null)}}><Icon name={item.icon}/>{item.label}</button>})}</nav>
+          onClick={()=>{setPg(item.id);setQ('');setSelC(null);setSelV(null);setEEst(null);setESO(null)}}><Icon name={item.icon}/>{item.label}{ubadge>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{ubadge}</span>}</button>})}</nav>
       <div className="sidebar-user"><div style={{fontWeight:600,color:'#e2e8f0'}}>{cu.name}</div><div>{cu.role}</div></div></div>
-    <div className="main"><div className="topbar"><h1>{eEst?eEst.id:eSO?eSO.id:selC?selC.name:selV?selV.name:(titles[pg]||'Dashboard')}</h1><div style={{fontSize:12,color:'#94a3b8'}}>Phase 2 v5</div></div>
-      <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}</div></div>
+    <div className="main"><div className="topbar"><h1>{eEst?eEst.id:eSO?eSO.id:selC?selC.name:selV?selV.name:(titles[pg]||'Dashboard')}</h1>
+        <div style={{flex:1,maxWidth:400,margin:'0 20px',position:'relative'}}>
+          <div className="search-bar" style={{margin:0}}><Icon name="search"/><input placeholder="Search everything... (customers, orders, products)" value={gQ} onChange={e=>setGQ(e.target.value)} onFocus={()=>setGOpen(true)}/>{gQ&&<button onClick={()=>{setGQ('');setGOpen(false)}} style={{background:'none',border:'none',cursor:'pointer',padding:2}}><Icon name="x" size={14}/></button>}</div>
+          {gOpen&&gQ.length>=2&&(()=>{const s=gQ.toLowerCase();
+            const rc=cust.filter(cc=>(cc.name+' '+cc.alpha_tag).toLowerCase().includes(s)).slice(0,4);
+            const re=ests.filter(e=>(e.id+' '+e.memo).toLowerCase().includes(s)).slice(0,4);
+            const rs=sos.filter(so=>(so.id+' '+so.memo).toLowerCase().includes(s)).slice(0,4);
+            const rp=prod.filter(p=>(p.sku+' '+p.name+' '+p.brand).toLowerCase().includes(s)).slice(0,4);
+            const tot=rc.length+re.length+rs.length+rp.length;
+            return tot>0&&<div style={{position:'absolute',top:'100%',left:0,right:0,background:'white',border:'1px solid #e2e8f0',borderRadius:8,boxShadow:'0 8px 24px rgba(0,0,0,0.12)',zIndex:60,maxHeight:350,overflow:'auto'}}>
+              {rc.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Customers</div>
+                {rc.map(cc=><div key={cc.id} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>{setSelC(cc);setPg('customers');setGQ('');setGOpen(false)}}><Icon name="users" size={14}/><span style={{fontWeight:600}}>{cc.name}</span><span className="badge badge-gray">{cc.alpha_tag}</span></div>)}</>}
+              {re.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Estimates</div>
+                {re.map(e=>{const cc=cust.find(x=>x.id===e.customer_id);return<div key={e.id} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>{setEEst(e);setEEstC(cc);setPg('estimates');setGQ('');setGOpen(false)}}><Icon name="dollar" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{e.id}</span><span>{e.memo}</span></div>})}</>}
+              {rs.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Sales Orders</div>
+                {rs.map(so=>{const cc=cust.find(x=>x.id===so.customer_id);return<div key={so.id} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>{setESO(so);setESOC(cc);setPg('orders');setGQ('');setGOpen(false)}}><Icon name="box" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{so.id}</span><span>{so.memo}</span></div>})}</>}
+              {rp.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Products</div>
+                {rp.map(p=><div key={p.id} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>{setPg('products');setQ(p.sku);setGQ('');setGOpen(false)}}><Icon name="package" size={14}/><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{p.sku}</span><span>{p.name}</span></div>)}</>}
+            </div>})()}
+          {gOpen&&<div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:59}} onClick={()=>setGOpen(false)}/>}
+        </div>
+        <div style={{fontSize:12,color:'#94a3b8'}}>v5c</div></div>
+      <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}</div></div>
     <CustModal isOpen={cM.open} onClose={()=>setCM({open:false,c:null})} onSave={savC} customer={cM.c} parents={pars}/>
     <AdjModal isOpen={aM.open} onClose={()=>setAM({open:false,p:null})} product={aM.p} onSave={savI}/>
   </div>);
