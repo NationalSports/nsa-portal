@@ -282,7 +282,15 @@ const D_MSG=[
 {id:'m8',so_id:'SO-1063',author_id:'r1',text:'UA says custom navy/gold will ship 3/1. Backordered on XL and 2XL.',ts:'02/16/26 4:30 PM',read_by:['r1']},
 {id:'m9',so_id:'SO-1062',author_id:'r99',text:'This message is from a deleted rep — should still render.',ts:'02/17/26 9:00 AM',read_by:[]},
 ];
-const D_INV=[{id:'INV-1042',type:'invoice',customer_id:'c1a',date:'02/10/26',total:4200,paid:0,memo:'Baseball Deposit',status:'open'},{id:'INV-1038',type:'invoice',customer_id:'c2a',date:'01/28/26',total:3400,paid:0,memo:'Lacrosse Preseason',status:'open'},{id:'INV-1039',type:'invoice',customer_id:'c2a',date:'02/01/26',total:3400,paid:3400,memo:'Lacrosse Batch 1',status:'paid'}];
+const D_INV=[
+  {id:'INV-1042',type:'invoice',customer_id:'c1a',so_id:'SO-1042',date:'02/10/26',due_date:'03/12/26',total:2765,paid:0,memo:'Baseball Spring Season Full Package',status:'open',payments:[],cc_fee:0},
+  {id:'INV-1038',type:'invoice',customer_id:'c2a',so_id:'SO-1051',date:'01/28/26',due_date:'02/27/26',total:3400,paid:0,memo:'Lacrosse Preseason',status:'open',payments:[],cc_fee:0},
+  {id:'INV-1039',type:'invoice',customer_id:'c2a',so_id:null,date:'02/01/26',due_date:'03/03/26',total:3400,paid:3400,memo:'Lacrosse Batch 1',status:'paid',payments:[{amount:3400,method:'check',ref:'Check #4521',date:'02/15/26'}],cc_fee:0},
+  {id:'INV-1050',type:'invoice',customer_id:'c1a',so_id:'SO-1042',date:'01/15/26',due_date:'02/14/26',total:1500,paid:1500,memo:'Baseball Deposit — 50%',status:'paid',payments:[{amount:1500,method:'cc',ref:'Visa ending 4242',date:'01/20/26'}],cc_fee:43.50},
+  {id:'INV-1055',type:'invoice',customer_id:'c2',so_id:'SO-1063',date:'02/15/26',due_date:'03/17/26',total:2856,paid:0,memo:'Track & Field Gear',status:'open',payments:[],cc_fee:0},
+  {id:'INV-1060',type:'invoice',customer_id:'c3a',so_id:null,date:'12/15/25',due_date:'01/14/26',total:980,paid:0,memo:'Badminton Fall Order — OVERDUE',status:'open',payments:[],cc_fee:0},
+  {id:'INV-1061',type:'invoice',customer_id:'c1b',so_id:'SO-1045',date:'02/12/26',due_date:'03/14/26',total:1890,paid:945,memo:'Football Practice Gear — Partial',status:'partial',payments:[{amount:945,method:'venmo',ref:'@OLu-Athletics',date:'02/20/26'}],cc_fee:0},
+];
 
 // SHARED UI
 function Toast({msg,type='success'}){if(!msg)return null;return<div className={`toast toast-${type}`}>{msg}</div>}
@@ -3613,6 +3621,207 @@ export default function App(){
     }catch{nf('❌ No valid auto-backup found')}
   };
 
+  // INVOICES PAGE
+  const CC_FEE_PCT=0.029;// 2.9% credit card surcharge
+  const PAY_METHODS=[{id:'check',label:'Check',icon:'📝'},{id:'ach',label:'ACH/Wire',icon:'🏦'},{id:'venmo',label:'Venmo',icon:'💜'},{id:'zelle',label:'Zelle',icon:'⚡'},{id:'cash',label:'Cash',icon:'💵'},{id:'cc',label:'Credit Card (+2.9%)',icon:'💳'}];
+  const[invF,setInvF]=useState({search:'',status:'all',group:'list'});
+  const[invEdit,setInvEdit]=useState(null);// invoice object being edited
+  const[payModal,setPayModal]=useState(null);// {inv, amount, method, ref}
+
+  const rInvoices=()=>{
+    const today=new Date();
+    const agingDays=(dateStr)=>{if(!dateStr)return 0;const d=new Date(dateStr.replace(/(\d{2})\/(\d{2})\/(\d{2})/,'20$3-$1-$2'));return Math.floor((today-d)/(1000*60*60*24))};
+    const dueDays=(dateStr)=>{if(!dateStr)return null;const d=new Date(dateStr.replace(/(\d{2})\/(\d{2})\/(\d{2})/,'20$3-$1-$2'));return Math.floor((d-today)/(1000*60*60*24))};
+
+    let fi=[...invs];
+    if(invF.status==='open')fi=fi.filter(i=>i.status==='open'||i.status==='partial');
+    else if(invF.status==='paid')fi=fi.filter(i=>i.status==='paid');
+    else if(invF.status==='overdue')fi=fi.filter(i=>(i.status==='open'||i.status==='partial')&&dueDays(i.due_date)<0);
+    if(invF.search){const s=invF.search.toLowerCase();fi=fi.filter(i=>(i.id||'').toLowerCase().includes(s)||(i.memo||'').toLowerCase().includes(s)||(cust.find(c=>c.id===i.customer_id)?.name||'').toLowerCase().includes(s))}
+
+    const totalOpen=invs.filter(i=>i.status==='open'||i.status==='partial').reduce((a,i)=>a+(i.total-i.paid),0);
+    const totalOverdue=invs.filter(i=>(i.status==='open'||i.status==='partial')&&dueDays(i.due_date)<0).reduce((a,i)=>a+(i.total-i.paid),0);
+    const totalPaid=invs.filter(i=>i.status==='paid').reduce((a,i)=>a+i.paid,0);
+    const agingBuckets={current:0,d30:0,d60:0,d90:0,d90p:0};
+    invs.filter(i=>i.status==='open'||i.status==='partial').forEach(i=>{
+      const dd=dueDays(i.due_date);const bal=i.total-i.paid;
+      if(dd>=0)agingBuckets.current+=bal;
+      else if(dd>=-30)agingBuckets.d30+=bal;
+      else if(dd>=-60)agingBuckets.d60+=bal;
+      else if(dd>=-90)agingBuckets.d90+=bal;
+      else agingBuckets.d90p+=bal;
+    });
+
+    const recordPayment=(inv,amount,method,ref)=>{
+      const fee=method==='cc'?Math.round(amount*CC_FEE_PCT*100)/100:0;
+      const totalWithFee=amount+fee;
+      const newPaid=inv.paid+amount;
+      const newStatus=newPaid>=inv.total?'paid':newPaid>0?'partial':'open';
+      const payment={amount,method,ref,date:new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'2-digit'}),cc_fee:fee};
+      const updated={...inv,paid:newPaid,status:newStatus,cc_fee:(inv.cc_fee||0)+fee,payments:[...(inv.payments||[]),payment]};
+      setInvs(prev=>prev.map(i=>i.id===inv.id?updated:i));
+      setPayModal(null);
+      nf('💰 $'+amount.toLocaleString()+' recorded on '+inv.id+(fee>0?' (+$'+fee.toFixed(2)+' CC fee)':''));
+    };
+
+    // Grouped by customer
+    const grouped={};
+    fi.forEach(i=>{const cid=i.customer_id;if(!grouped[cid])grouped[cid]={customer:cust.find(c=>c.id===cid),invoices:[]};grouped[cid].invoices.push(i)});
+
+    return(<>
+      {/* Stats */}
+      <div className="stats-row">
+        <div className="stat-card" style={{cursor:'pointer',outline:invF.status==='all'?'2px solid #2563eb':'none',borderRadius:8}} onClick={()=>setInvF(f=>({...f,status:'all'}))}>
+          <div className="stat-label">Total Invoices</div><div className="stat-value">{invs.length}</div></div>
+        <div className="stat-card" style={{cursor:'pointer',outline:invF.status==='open'?'2px solid #d97706':'none',borderRadius:8}} onClick={()=>setInvF(f=>({...f,status:f.status==='open'?'all':'open'}))}>
+          <div className="stat-label">Open Balance</div><div className="stat-value" style={{color:'#d97706'}}>${totalOpen.toLocaleString()}</div></div>
+        <div className="stat-card" style={{cursor:'pointer',outline:invF.status==='overdue'?'2px solid #dc2626':'none',borderRadius:8}} onClick={()=>setInvF(f=>({...f,status:f.status==='overdue'?'all':'overdue'}))}>
+          <div className="stat-label">Overdue</div><div className="stat-value" style={{color:'#dc2626'}}>${totalOverdue.toLocaleString()}</div></div>
+        <div className="stat-card" style={{cursor:'pointer',outline:invF.status==='paid'?'2px solid #166534':'none',borderRadius:8}} onClick={()=>setInvF(f=>({...f,status:f.status==='paid'?'all':'paid'}))}>
+          <div className="stat-label">Paid</div><div className="stat-value" style={{color:'#166534'}}>${totalPaid.toLocaleString()}</div></div>
+      </div>
+
+      {/* Aging Summary */}
+      <div className="card" style={{marginBottom:12}}><div className="card-body" style={{padding:'12px 16px'}}>
+        <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:8}}>AGING SUMMARY</div>
+        <div style={{display:'flex',gap:4}}>
+          {[['Current','current','#166534'],['1-30 Days','d30','#d97706'],['31-60 Days','d60','#ea580c'],['61-90 Days','d90','#dc2626'],['90+ Days','d90p','#991b1b']].map(([label,key,color])=>
+            <div key={key} style={{flex:1,padding:'8px 12px',background:agingBuckets[key]>0?color+'10':'#f8fafc',borderRadius:6,border:`1px solid ${agingBuckets[key]>0?color+'40':'#e2e8f0'}`,textAlign:'center'}}>
+              <div style={{fontSize:10,color:'#64748b',fontWeight:600}}>{label}</div>
+              <div style={{fontSize:16,fontWeight:800,color:agingBuckets[key]>0?color:'#94a3b8'}}>${agingBuckets[key].toLocaleString()}</div>
+            </div>)}
+        </div>
+      </div></div>
+
+      {/* Filter bar */}
+      <div style={{display:'flex',gap:8,marginBottom:12,alignItems:'center'}}>
+        <div className="search-bar" style={{flex:1,maxWidth:300}}><Icon name="search"/><input placeholder="Search invoices, customers..." value={invF.search} onChange={e=>setInvF(f=>({...f,search:e.target.value}))}/></div>
+        <div style={{display:'flex',gap:4}}>
+          {[['list','📋 List'],['customer','👥 By Customer']].map(([v,l])=>
+            <button key={v} className={`btn btn-sm ${invF.group===v?'btn-primary':'btn-secondary'}`} onClick={()=>setInvF(f=>({...f,group:v}))}>{l}</button>)}
+        </div>
+      </div>
+
+      {/* List view */}
+      {invF.group==='list'&&<div className="card"><div className="card-body" style={{padding:0}}>
+        {fi.length===0?<div className="empty" style={{padding:30}}>No invoices match filters</div>:
+        <table><thead><tr><th>Invoice</th><th>Customer</th><th>SO</th><th>Date</th><th>Due</th><th>Total</th><th>Paid</th><th>Balance</th><th>Status</th><th>Action</th></tr></thead>
+        <tbody>{fi.map(inv=>{const c=cust.find(x=>x.id===inv.customer_id);const bal=inv.total-inv.paid;const dd=dueDays(inv.due_date);const overdue=dd<0&&inv.status!=='paid';
+          return<tr key={inv.id} style={{background:overdue?'#fef2f2':undefined}}>
+            <td style={{fontWeight:700,color:'#1e40af',fontSize:12}}>{inv.id}</td>
+            <td style={{fontSize:12}}>{c?.name||'Unknown'}</td>
+            <td style={{fontSize:11,color:'#64748b'}}>{inv.so_id||'—'}</td>
+            <td style={{fontSize:11}}>{inv.date}</td>
+            <td style={{fontSize:11,color:overdue?'#dc2626':'#64748b',fontWeight:overdue?700:400}}>{inv.due_date}{overdue?' ⚠️':''}</td>
+            <td style={{fontWeight:600}}>${inv.total.toLocaleString()}</td>
+            <td style={{color:'#166534'}}>${inv.paid.toLocaleString()}{inv.cc_fee>0?<span style={{fontSize:9,color:'#94a3b8'}}> (+${inv.cc_fee.toFixed(2)} fee)</span>:''}</td>
+            <td style={{fontWeight:700,color:bal>0?'#dc2626':'#166534'}}>${bal.toLocaleString()}</td>
+            <td><span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,
+              background:inv.status==='paid'?'#dcfce7':inv.status==='partial'?'#fef3c7':overdue?'#fecaca':'#dbeafe',
+              color:inv.status==='paid'?'#166534':inv.status==='partial'?'#92400e':overdue?'#991b1b':'#1e40af'}}>
+              {inv.status==='paid'?'Paid':inv.status==='partial'?'Partial':overdue?'Overdue':'Open'}</span></td>
+            <td>{inv.status!=='paid'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#166534',color:'white',border:'none'}}
+              onClick={()=>setPayModal({inv,amount:bal,method:'check',ref:''})}>💰 Record Payment</button>}</td>
+          </tr>})}</tbody></table>}
+      </div></div>}
+
+      {/* Customer grouped view */}
+      {invF.group==='customer'&&Object.entries(grouped).map(([cid,g])=>{
+        const openBal=g.invoices.filter(i=>i.status!=='paid').reduce((a,i)=>a+(i.total-i.paid),0);
+        const overdueAmt=g.invoices.filter(i=>(i.status==='open'||i.status==='partial')&&dueDays(i.due_date)<0).reduce((a,i)=>a+(i.total-i.paid),0);
+        return<div key={cid} className="card" style={{marginBottom:12}}>
+          <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+            <div><h2 style={{margin:0}}>{g.customer?.name||'Unknown Customer'}</h2>
+              <span style={{fontSize:11,color:'#64748b'}}>{g.customer?.alpha_tag} · {g.invoices.length} invoice{g.invoices.length!==1?'s':''}</span></div>
+            <div style={{textAlign:'right'}}>
+              <div style={{fontSize:18,fontWeight:800,color:openBal>0?'#dc2626':'#166534'}}>${openBal.toLocaleString()} <span style={{fontSize:11,fontWeight:400,color:'#64748b'}}>open</span></div>
+              {overdueAmt>0&&<div style={{fontSize:12,color:'#dc2626',fontWeight:600}}>⚠️ ${overdueAmt.toLocaleString()} overdue</div>}
+            </div>
+          </div>
+          <div className="card-body" style={{padding:0}}>
+            <table><thead><tr><th>Invoice</th><th>SO</th><th>Memo</th><th>Date</th><th>Due</th><th>Total</th><th>Balance</th><th>Status</th><th>Action</th></tr></thead>
+            <tbody>{g.invoices.map(inv=>{const bal=inv.total-inv.paid;const dd=dueDays(inv.due_date);const overdue=dd<0&&inv.status!=='paid';
+              return<tr key={inv.id} style={{background:overdue?'#fef2f2':undefined}}>
+                <td style={{fontWeight:700,color:'#1e40af',fontSize:12}}>{inv.id}</td>
+                <td style={{fontSize:11,color:'#64748b'}}>{inv.so_id||'—'}</td>
+                <td style={{fontSize:11}}>{inv.memo}</td>
+                <td style={{fontSize:11}}>{inv.date}</td>
+                <td style={{fontSize:11,color:overdue?'#dc2626':'#64748b',fontWeight:overdue?700:400}}>{inv.due_date}{overdue?' ⚠️':''}</td>
+                <td style={{fontWeight:600}}>${inv.total.toLocaleString()}</td>
+                <td style={{fontWeight:700,color:bal>0?'#dc2626':'#166534'}}>${bal.toLocaleString()}</td>
+                <td><span style={{padding:'2px 6px',borderRadius:8,fontSize:9,fontWeight:600,
+                  background:inv.status==='paid'?'#dcfce7':inv.status==='partial'?'#fef3c7':overdue?'#fecaca':'#dbeafe',
+                  color:inv.status==='paid'?'#166534':inv.status==='partial'?'#92400e':overdue?'#991b1b':'#1e40af'}}>
+                  {inv.status==='paid'?'Paid':inv.status==='partial'?'Partial':overdue?'Overdue':'Open'}</span></td>
+                <td>{inv.status!=='paid'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#166534',color:'white',border:'none'}}
+                  onClick={()=>setPayModal({inv,amount:bal,method:'check',ref:''})}>💰 Pay</button>}</td>
+              </tr>})}</tbody></table>
+            {/* Payment history */}
+            {g.invoices.some(i=>(i.payments||[]).length>0)&&<div style={{padding:'8px 16px',borderTop:'1px solid #f1f5f9'}}>
+              <div style={{fontSize:10,fontWeight:700,color:'#64748b',marginBottom:4}}>PAYMENT HISTORY</div>
+              {g.invoices.flatMap(i=>(i.payments||[]).map(p=>({...p,inv_id:i.id}))).sort((a,b)=>new Date(b.date)-new Date(a.date)).map((p,pi)=>
+                <div key={pi} style={{fontSize:11,padding:'2px 0',display:'flex',gap:8}}>
+                  <span style={{color:'#94a3b8',width:60}}>{p.date}</span>
+                  <span style={{fontWeight:600,width:70}}>${p.amount.toLocaleString()}</span>
+                  <span>{PAY_METHODS.find(m=>m.id===p.method)?.icon} {PAY_METHODS.find(m=>m.id===p.method)?.label||p.method}</span>
+                  <span style={{color:'#64748b'}}>{p.ref}</span>
+                  <span style={{color:'#94a3b8',marginLeft:'auto'}}>{p.inv_id}</span>
+                  {p.cc_fee>0&&<span style={{fontSize:9,color:'#d97706'}}>+${p.cc_fee.toFixed(2)} CC fee</span>}
+                </div>)}
+            </div>}
+          </div>
+        </div>})}
+
+      {/* Payment Modal */}
+      {payModal&&<div className="modal-overlay" onClick={()=>setPayModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:500}}>
+        <div className="modal-header"><h2>💰 Record Payment — {payModal.inv.id}</h2><button className="modal-close" onClick={()=>setPayModal(null)}>×</button></div>
+        <div className="modal-body">
+          <div style={{padding:10,background:'#f8fafc',borderRadius:8,marginBottom:12}}>
+            <div style={{display:'flex',justifyContent:'space-between'}}><span style={{color:'#64748b'}}>Invoice Total</span><span style={{fontWeight:700}}>${payModal.inv.total.toLocaleString()}</span></div>
+            <div style={{display:'flex',justifyContent:'space-between'}}><span style={{color:'#64748b'}}>Already Paid</span><span style={{color:'#166534'}}>${payModal.inv.paid.toLocaleString()}</span></div>
+            <div style={{display:'flex',justifyContent:'space-between',borderTop:'1px solid #e2e8f0',paddingTop:4,marginTop:4}}><span style={{fontWeight:700}}>Balance Due</span><span style={{fontWeight:800,color:'#dc2626'}}>${(payModal.inv.total-payModal.inv.paid).toLocaleString()}</span></div>
+          </div>
+
+          <div style={{marginBottom:12}}>
+            <label className="form-label">Payment Method</label>
+            <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+              {PAY_METHODS.map(m=><button key={m.id} className={`btn btn-sm ${payModal.method===m.id?'btn-primary':'btn-secondary'}`}
+                style={{fontSize:11}} onClick={()=>setPayModal(p=>({...p,method:m.id}))}>{m.icon} {m.label}</button>)}
+            </div>
+          </div>
+
+          {payModal.method==='cc'&&<div style={{padding:8,background:'#fef3c7',borderRadius:6,marginBottom:12,fontSize:12}}>
+            <strong>💳 Credit Card Surcharge:</strong> 2.9% (${(payModal.amount*CC_FEE_PCT).toFixed(2)}) will be added to the invoice.
+            <div style={{fontSize:11,color:'#92400e',marginTop:2}}>Suggest Venmo, Zelle, ACH, or Check to avoid the fee.</div>
+          </div>}
+
+          <div className="form-row form-row-2">
+            <div><label className="form-label">Amount</label>
+              <input className="form-input" type="number" value={payModal.amount} onChange={e=>setPayModal(p=>({...p,amount:parseFloat(e.target.value)||0}))}/>
+            </div>
+            <div><label className="form-label">Reference / Note</label>
+              <input className="form-input" value={payModal.ref} onChange={e=>setPayModal(p=>({...p,ref:e.target.value}))}
+                placeholder={payModal.method==='check'?'Check #...':payModal.method==='venmo'?'@username':payModal.method==='cc'?'Card ending...':'Reference...'}/>
+            </div>
+          </div>
+
+          {payModal.method==='cc'&&<div style={{marginTop:8,padding:8,background:'#f0fdf4',borderRadius:6,fontSize:12}}>
+            <div style={{display:'flex',justifyContent:'space-between'}}><span>Payment:</span><span>${payModal.amount.toLocaleString()}</span></div>
+            <div style={{display:'flex',justifyContent:'space-between',color:'#d97706'}}><span>CC Fee (2.9%):</span><span>+${(payModal.amount*CC_FEE_PCT).toFixed(2)}</span></div>
+            <div style={{display:'flex',justifyContent:'space-between',fontWeight:700,borderTop:'1px solid #e2e8f0',paddingTop:4,marginTop:4}}><span>Customer Total:</span><span>${(payModal.amount+payModal.amount*CC_FEE_PCT).toFixed(2)}</span></div>
+          </div>}
+        </div>
+        <div className="modal-footer">
+          <button className="btn btn-secondary" onClick={()=>setPayModal(null)}>Cancel</button>
+          <button className="btn btn-primary" style={{background:'#166534'}} onClick={()=>{
+            if(payModal.amount<=0){nf('Enter a valid amount','error');return}
+            recordPayment(payModal.inv,payModal.amount,payModal.method,payModal.ref);
+          }}>💰 Record ${payModal.amount.toLocaleString()}{payModal.method==='cc'?' + $'+(payModal.amount*CC_FEE_PCT).toFixed(2)+' fee':''}</button>
+        </div>
+      </div></div>}
+    </>);
+  };
+
   const rBackup=()=>{
     const stateSize=JSON.stringify({customers:cust,estimates:ests,sales_orders:sos,products:prod,messages:msgs,invoices:invs}).length;
     const sizeMB=(stateSize/1024/1024).toFixed(2);
@@ -3795,8 +4004,8 @@ export default function App(){
           </div></div>})}</div></div></>)};
 
     // NAV
-  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'production',label:'Prod Board',icon:'package'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{section:'Comms'},{id:'messages',label:'Messages',icon:'mail'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'System'},{id:'backup',label:'Backup & Data',icon:'save'}];
-  const titles={dashboard:'Dashboard',estimates:'Estimates',orders:'Sales Orders',jobs:'Jobs',production:'Production Board',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',products:'Products',inventory:'Inventory',messages:'Messages',backup:'Backup & Data'};
+  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'production',label:'Prod Board',icon:'package'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{section:'Comms'},{id:'messages',label:'Messages',icon:'mail'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'System'},{id:'backup',label:'Backup & Data',icon:'save'}];
+  const titles={dashboard:'Dashboard',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',jobs:'Jobs',production:'Production Board',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',products:'Products',inventory:'Inventory',messages:'Messages',backup:'Backup & Data'};
   return(<div className="app"><Toast msg={toast?.msg} type={toast?.type}/>
     <div className="sidebar"><div className="sidebar-logo">NSA<span>Portal</span></div>
       <nav className="sidebar-nav">{nav.map((item,i)=>{if(item.section)return<div key={i} className="sidebar-section">{item.section}</div>;
@@ -3831,7 +4040,7 @@ export default function App(){
           {gOpen&&<div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:59}} onClick={()=>setGOpen(false)}/>}
         </div>
         <div style={{display:'flex',gap:6,alignItems:'center'}}><button className="btn btn-sm btn-primary" onClick={()=>newE(null)} style={{fontSize:11}}><Icon name="plus" size={12}/> Estimate</button><button className="btn btn-sm btn-secondary" onClick={()=>setCM({open:true,c:null})} style={{fontSize:11}}><Icon name="plus" size={12}/> Customer</button></div></div>
-      <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='production'&&rProd2()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='backup'&&rBackup()}</div></div>
+      <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='production'&&rProd2()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='backup'&&rBackup()}</div></div>
     <CustModal isOpen={cM.open} onClose={()=>setCM({open:false,c:null})} onSave={savC} customer={cM.c} parents={pars}/>
     <AdjModal isOpen={aM.open} onClose={()=>setAM({open:false,p:null})} product={aM.p} onSave={savI}/>
   </div>);
