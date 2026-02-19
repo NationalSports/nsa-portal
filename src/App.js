@@ -1316,9 +1316,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
 }
 
 // CUSTOMER DETAIL
-function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,cu}){
+function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,cu,onOpenSO,ests}){
   const[tab,setTab]=useState('activity');const[oF,setOF]=useState('all');const[sF,setSF]=useState('all');const[rR,setRR]=useState('thisyear');
   const[editContact,setEditContact]=useState(null);const[custLocal,setCustLocal]=useState(initCust);
+  const[showInvEmail,setShowInvEmail]=useState(false);const[invEmailMsg,setInvEmailMsg]=useState('');const[showPortal,setShowPortal]=useState(false);
+  const[subsCollapsed,setSubsCollapsed]=useState(false);
   React.useEffect(()=>setCustLocal(initCust),[initCust]);
   const customer=custLocal;
   const isP=!customer.parent_id;const subs=isP?allCustomers.filter(c=>c.parent_id===customer.id):[];
@@ -1350,62 +1352,124 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       <button className="btn btn-sm btn-secondary" onClick={()=>onEdit(customer)}><Icon name="edit" size={12}/> Edit</button>
       {(customer._oi||0)>0&&<>
         <span style={{width:1,background:'#e2e8f0',margin:'0 2px'}}/>
-        <button className="btn btn-sm" style={{background:'#dc2626',color:'white',fontSize:11}} onClick={()=>{
-          const openInvs=allOrders.filter(oo=>ids.includes(oo.customer_id)&&oo.type==='invoice'&&oo.status==='open');
-          if(openInvs.length===0)return;
-          const msg=`Email ${openInvs.length} open invoice${openInvs.length>1?'s':''} totaling $${openInvs.reduce((a,i)=>a+(i.total||0)-(i.paid||0),0).toLocaleString()}?`;
-          if(window.confirm(msg)){alert('Invoice PDFs sent! (demo)')}
-        }}>📄 Email Invoices ({customer._oi})</button>
-        <button className="btn btn-sm" style={{background:'#7c3aed',color:'white',fontSize:11}} onClick={()=>{
-          const portalUrl='https://portal.nsa-teamwear.com/'+customer.alpha_tag.toLowerCase();
-          window.prompt('Customer portal link (copy to send):',portalUrl);
-        }}>🔗 Portal Link</button>
+        <button className="btn btn-sm" style={{background:'#dc2626',color:'white',fontSize:11}} onClick={()=>{setInvEmailMsg('Hi '+(customer.contacts||[])[0]?.name+',\n\nPlease find attached your open invoice(s). Let us know if you have any questions.\n\nThank you,\nNSA Team');setShowInvEmail(true)}}>📄 Email Invoices ({customer._oi})</button>
       </>}
+      <button className="btn btn-sm" style={{background:'#7c3aed',color:'white',fontSize:11}} onClick={()=>setShowPortal(true)}>🔗 Portal</button>
     </div>
   </div>
   {(customer._ob||0)>0&&<div style={{textAlign:'right'}}><div style={{fontSize:11,color:'#dc2626',fontWeight:600}}>BALANCE</div><div style={{fontSize:24,fontWeight:800,color:'#dc2626'}}>${customer._ob.toLocaleString()}</div></div>}</div></div>
   <div className="stats-row"><div className="stat-card"><div className="stat-label">Open Est</div><div className="stat-value">{customer._oe||0}</div></div><div className="stat-card"><div className="stat-label">Open SOs</div><div className="stat-value">{custSOs.filter(s=>calcSOStatus(s)!=='complete').length}</div></div><div className="stat-card"><div className="stat-label">Open Inv</div><div className="stat-value" style={{color:(customer._oi||0)>0?'#dc2626':''}}>{customer._oi||0}</div></div><div className="stat-card"><div className="stat-label">Balance</div><div className="stat-value" style={{color:(customer._ob||0)>0?'#dc2626':''}}>${(customer._ob||0).toLocaleString()}</div></div></div>
-  {isP&&subs.length>0&&<div className="card" style={{marginBottom:16}}><div className="card-header"><h2>Sub-Customers ({subs.length})</h2></div><div className="card-body" style={{padding:0}}>
+  {isP&&subs.length>0&&<div className="card" style={{marginBottom:16}}><div className="card-header" style={{cursor:'pointer'}} onClick={()=>setSubsCollapsed(!subsCollapsed)}><h2>{subsCollapsed?'▶':'▼'} Sub-Customers ({subs.length})</h2></div>
+  {!subsCollapsed&&<div className="card-body" style={{padding:0}}>
   {subs.map(sub=><div key={sub.id} style={{padding:'10px 18px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:8,cursor:'pointer'}} onClick={()=>onSelCust(sub)}>
     <span style={{color:'#cbd5e1'}}>|_</span><span style={{fontWeight:600,color:'#1e40af'}}>{sub.name}</span><span className="badge badge-gray">{sub.alpha_tag}</span><div style={{flex:1}}/>
-    {(sub._ob||0)>0&&<span style={{fontSize:12,fontWeight:700,color:'#dc2626'}}>${sub._ob.toLocaleString()}</span>}</div>)}</div></div>}
+    {(sub._ob||0)>0&&<span style={{fontSize:12,fontWeight:700,color:'#dc2626'}}>${sub._ob.toLocaleString()}</span>}</div>)}</div>}</div>}
   <div className="tabs">{['activity','contacts','overview','artwork','reporting'].map(t=><button key={t} className={`tab ${tab===t?'active':''}`} onClick={()=>setTab(t)}>{t==='activity'?'Orders':t==='contacts'?'Contacts'+(customer.contacts?.length?' ('+customer.contacts.length+')':''):t[0].toUpperCase()+t.slice(1)}</button>)}</div>
 
   {/* ORDERS TAB — with live SO status */}
   {tab==='activity'&&<>
-    {/* Active SOs with fulfillment progress */}
+    {/* Active SOs with fulfillment progress + nested jobs */}
     {custSOs.filter(s=>calcSOStatus(s)!=='complete').length>0&&<div className="card" style={{marginBottom:12}}><div className="card-header"><h2>Active Sales Orders</h2></div><div className="card-body" style={{padding:0}}>
-      <table style={{fontSize:12}}><thead><tr><th>SO</th><th>Memo</th><th>Status</th><th>Items</th><th>Fulfillment</th><th>Expected</th></tr></thead><tbody>
+      <table style={{fontSize:12}}><thead><tr><th>SO</th><th>Memo</th>{isP&&<th>Customer</th>}{isP&&<th>Rep</th>}<th>Status</th><th>Items</th><th>Fulfillment</th><th>Expected</th></tr></thead><tbody>
       {custSOs.filter(s=>calcSOStatus(s)!=='complete').map(so=>{
         const st=calcSOStatus(so);const stL={need_order:'Need to Order',waiting_receive:'Waiting to Receive',complete:'Complete'};
         let totalU=0,fulU=0;
         (so.items||[]).forEach(it=>{Object.entries(it.sizes||{}).filter(([,v])=>v>0).forEach(([sz,v])=>{totalU+=v;const pQ=(it.pick_lines||[]).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+(pk[sz]||0),0);const rQ=(it.po_lines||[]).reduce((a,pk)=>a+((pk.received||{})[sz]||0),0);fulU+=Math.min(v,pQ+rQ)})});
         const pct=totalU>0?Math.round(fulU/totalU*100):0;
         const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
-        return<tr key={so.id}>
-          <td style={{fontWeight:700,color:'#1e40af'}}>{so.id}</td>
-          <td>{so.memo}</td>
-          <td><span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:SC[st]?.bg,color:SC[st]?.c}}>{stL[st]}</span></td>
-          <td>{(so.items||[]).length} items · {totalU} units</td>
-          <td><div style={{display:'flex',alignItems:'center',gap:6}}>
-            <div style={{width:60,background:'#e2e8f0',borderRadius:3,height:5,overflow:'hidden'}}><div style={{height:5,borderRadius:3,background:pct>=100?'#22c55e':pct>50?'#3b82f6':'#f59e0b',width:pct+'%'}}/></div>
-            <span style={{fontSize:11,fontWeight:600}}>{pct}% ({fulU}/{totalU})</span></div></td>
-          <td style={{color:daysOut!=null&&daysOut<=7?'#dc2626':'#64748b',fontWeight:daysOut!=null&&daysOut<=7?700:400}}>{so.expected_date||'—'}{daysOut!=null&&daysOut>=0&&<span style={{fontSize:10,color:'#94a3b8',marginLeft:4}}>({daysOut}d)</span>}</td>
-        </tr>})}
+        const jobs=so.jobs||[];
+        const subC=allCustomers.find(c=>c.id===so.customer_id);
+        const rep=REPS.find(r=>r.id===so.created_by);
+        const jobArtLabels={needs_art:'Needs Art',waiting_approval:'Wait Approval',art_complete:'Art ✓'};
+        const jobProdLabels={hold:'Hold',staging:'Staging',in_process:'In Process',completed:'Done',shipped:'Shipped'};
+        const jobItemLabels={need_to_order:'Need Order',partially_received:'Partial',items_received:'Received'};
+        return<React.Fragment key={so.id}>
+          <tr style={{cursor:'pointer',background:'white'}} onClick={()=>onOpenSO&&onOpenSO(so)}>
+            <td style={{fontWeight:700,color:'#1e40af'}}>{so.id}</td>
+            <td>{so.memo}</td>
+            {isP&&<td><span className="badge badge-gray">{subC?.alpha_tag}</span></td>}
+            {isP&&<td style={{fontSize:11,color:'#64748b'}}>{rep?.name?.split(' ')[0]||'—'}</td>}
+            <td><span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:SC[st]?.bg,color:SC[st]?.c}}>{stL[st]}</span></td>
+            <td>{(so.items||[]).length} items · {totalU} units</td>
+            <td><div style={{display:'flex',alignItems:'center',gap:6}}>
+              <div style={{width:60,background:'#e2e8f0',borderRadius:3,height:5,overflow:'hidden'}}><div style={{height:5,borderRadius:3,background:pct>=100?'#22c55e':pct>50?'#3b82f6':'#f59e0b',width:pct+'%'}}/></div>
+              <span style={{fontSize:11,fontWeight:600}}>{pct}% ({fulU}/{totalU})</span></div></td>
+            <td style={{color:daysOut!=null&&daysOut<=7?'#dc2626':'#64748b',fontWeight:daysOut!=null&&daysOut<=7?700:400}}>{so.expected_date||'—'}{daysOut!=null&&daysOut>=0&&<span style={{fontSize:10,color:'#94a3b8',marginLeft:4}}>({daysOut}d)</span>}</td>
+          </tr>
+          {/* Nested jobs under this SO */}
+          {jobs.length>0&&jobs.map(j=><tr key={j.id} style={{background:'#f8fafc',cursor:'pointer'}} onClick={()=>onOpenSO&&onOpenSO(so)}>
+            <td style={{paddingLeft:28,color:'#64748b',fontSize:11}}>↳ {j.id}</td>
+            <td style={{fontSize:11}}>{j.art_name} <span style={{color:'#94a3b8'}}>({j.deco_type?.replace(/_/g,' ')})</span></td>
+            {isP&&<td/>}{isP&&<td/>}
+            <td><div style={{display:'flex',gap:3,flexWrap:'wrap'}}>
+              <span style={{padding:'1px 5px',borderRadius:8,fontSize:9,fontWeight:600,background:SC[j.item_status]?.bg,color:SC[j.item_status]?.c}}>{jobItemLabels[j.item_status]||j.item_status}</span>
+              <span style={{padding:'1px 5px',borderRadius:8,fontSize:9,fontWeight:600,background:SC[j.art_status]?.bg,color:SC[j.art_status]?.c}}>{jobArtLabels[j.art_status]||j.art_status}</span>
+            </div></td>
+            <td style={{fontSize:11}}>{j.sku} · {j.product_name}</td>
+            <td><div style={{display:'flex',alignItems:'center',gap:4}}>
+              <div style={{width:40,background:'#e2e8f0',borderRadius:3,height:4,overflow:'hidden'}}><div style={{height:4,borderRadius:3,background:j.fulfilled_units>=j.total_units?'#22c55e':j.fulfilled_units>0?'#f59e0b':'#e2e8f0',width:(j.total_units>0?j.fulfilled_units/j.total_units*100:0)+'%'}}/></div>
+              <span style={{fontSize:10}}>{j.fulfilled_units}/{j.total_units}</span></div></td>
+            <td><span style={{padding:'1px 5px',borderRadius:8,fontSize:9,fontWeight:600,background:SC[j.prod_status]?.bg||'#f1f5f9',color:SC[j.prod_status]?.c||'#64748b'}}>{jobProdLabels[j.prod_status]||j.prod_status}</span></td>
+          </tr>)}
+          {jobs.length===0&&<tr style={{background:'#f8fafc'}}><td colSpan={isP?8:6} style={{paddingLeft:28,fontSize:10,color:'#94a3b8',fontStyle:'italic'}}>No jobs generated yet — open SO to generate</td></tr>}
+        </React.Fragment>})}
       </tbody></table>
     </div></div>}
-    {/* All orders/invoices */}
-    <div className="card"><div className="card-header"><h2>All Transactions</h2><div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
-    {[['all','All'],['estimate','Est'],['sales_order','SO'],['invoice','Inv']].map(([v,l])=><button key={v} className={`btn btn-sm ${oF===v?'btn-primary':'btn-secondary'}`} onClick={()=>setOF(v)}>{l}</button>)}
-    <span style={{width:1,background:'#e2e8f0',margin:'0 4px'}}/>
-    {[['all','All'],['open','Open'],['closed','Closed']].map(([v,l])=><button key={v} className={`btn btn-sm ${sF===v?'btn-primary':'btn-secondary'}`} onClick={()=>setSF(v)}>{l}</button>)}
-  </div></div><div className="card-body" style={{padding:0}}><table><thead><tr><th>ID</th><th>Type</th><th>Date</th><th>Memo</th>{isP&&<th>Sub</th>}<th>Total</th><th>Status</th></tr></thead><tbody>
-    {fo.length===0?<tr><td colSpan={7} style={{textAlign:'center',color:'#94a3b8',padding:20}}>No records</td></tr>:
-    fo.sort((a,b)=>(b.date||'').localeCompare(a.date||'')).map(o=><tr key={o.id}><td style={{fontWeight:700,color:'#1e40af'}}>{o.id}</td>
-      <td><span className={`badge ${o.type==='estimate'?'badge-amber':o.type==='sales_order'?'badge-blue':'badge-red'}`}>{o.type==='sales_order'?'SO':o.type==='estimate'?'Est':'Inv'}</span></td>
-      <td>{o.date}</td><td style={{fontSize:12}}>{o.memo}</td>{isP&&<td><span className="badge badge-gray">{gn(o.customer_id)}</span></td>}
-      <td style={{fontWeight:700}}>${o.total?.toLocaleString()}</td>
-      <td><span className={`badge ${o.status==='open'||o.status==='sent'?'badge-amber':o.status==='approved'||o.status==='paid'?'badge-green':o.status==='draft'?'badge-gray':'badge-blue'}`}>{o.status?.replace(/_/g,' ')}</span></td></tr>)}</tbody></table></div></div>
+    {/* All transactions — unified: est, SO, inv, IF, PO, payments */}
+    {(()=>{
+      // Build unified transaction list
+      const txns=[];
+      // Existing orders (est, SO, inv)
+      orders.forEach(o=>{txns.push({id:o.id,type:o.type,date:o.date||o.created_at?.split(' ')[0],memo:o.memo,customer_id:o.customer_id,total:o.total,status:o.status,so_id:o.type==='sales_order'?o.id:null,_src:'order',_o:o})});
+      // IFs and POs from SOs
+      custSOs.forEach(so=>{
+        const subC=allCustomers.find(c=>c.id===so.customer_id);
+        (so.items||[]).forEach(it=>{
+          (it.pick_lines||[]).forEach(pk=>{
+            if(!pk.pick_id)return;
+            const qty=Object.entries(pk).filter(([k,v])=>k!=='status'&&k!=='pick_id'&&k!=='created_at'&&k!=='memo'&&typeof v==='number'&&v>0).reduce((a,[,v])=>a+v,0);
+            txns.push({id:pk.pick_id,type:'if',date:pk.created_at||'',memo:it.name+' ('+it.sku+')'+' — '+so.memo,customer_id:so.customer_id,total:null,status:pk.status,so_id:so.id,_src:'if'});
+          });
+          (it.po_lines||[]).forEach(po=>{
+            if(!po.po_id)return;
+            const qty=Object.entries(po).filter(([k,v])=>k!=='status'&&k!=='po_id'&&k!=='vendor'&&k!=='created_at'&&k!=='memo'&&k!=='received'&&k!=='ship_dates'&&typeof v==='number'&&v>0).reduce((a,[,v])=>a+v,0);
+            const cost=qty*(it.unit_cost||0);
+            txns.push({id:po.po_id,type:'po',date:po.created_at||'',memo:it.name+' ('+it.sku+')'+' — '+(po.vendor||'Vendor'),customer_id:so.customer_id,total:cost>0?cost:null,status:po.status,so_id:so.id,_src:'po'});
+          });
+        });
+      });
+      // Deduplicate IFs and POs by id (same IF can appear on multiple items)
+      const seen=new Set();const deduped=[];
+      txns.forEach(t=>{const key=t.id+t._src;if(!seen.has(key)){seen.add(key);deduped.push(t)}});
+
+      const typeLabels={estimate:'Est',sales_order:'SO',invoice:'Inv',if:'IF',po:'PO',payment:'Pmt'};
+      const typeBadge={estimate:'badge-amber',sales_order:'badge-blue',invoice:'badge-red',if:'badge-green',po:'badge-purple',payment:'badge-green'};
+      const statusBadge=st=>{if(!st)return'badge-gray';if(['open','sent','waiting','needs_pull'].includes(st))return'badge-amber';if(['approved','paid','pulled','received','complete'].includes(st))return'badge-green';if(['draft','cancelled'].includes(st))return'badge-gray';return'badge-blue'};
+
+      // Filter
+      const filt=deduped.filter(t=>{
+        if(oF!=='all'&&t.type!==oF)return false;
+        if(sF==='open')return['sent','draft','open','waiting','needs_pull','in_production','need_order','waiting_receive','partial'].includes(t.status);
+        if(sF==='closed')return['approved','paid','pulled','received','complete','completed','shipped','cancelled'].includes(t.status);
+        return true;
+      }).sort((a,b)=>(b.date||'').localeCompare(a.date||''));
+
+      return<div className="card"><div className="card-header"><h2>All Transactions</h2><div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
+        {[['all','All'],['estimate','Est'],['sales_order','SO'],['invoice','Inv'],['if','IF'],['po','PO']].map(([v,l])=><button key={v} className={`btn btn-sm ${oF===v?'btn-primary':'btn-secondary'}`} onClick={()=>setOF(v)}>{l}</button>)}
+        <span style={{width:1,background:'#e2e8f0',margin:'0 4px'}}/>
+        {[['all','All'],['open','Open'],['closed','Closed']].map(([v,l])=><button key={v} className={`btn btn-sm ${sF===v?'btn-primary':'btn-secondary'}`} onClick={()=>setSF(v)}>{l}</button>)}
+      </div></div><div className="card-body" style={{padding:0}}><table style={{fontSize:12}}><thead><tr><th>ID</th><th>Type</th><th>Date</th><th>SO</th><th>Memo</th>{isP&&<th>Sub</th>}<th>Amount</th><th>Status</th></tr></thead><tbody>
+        {filt.length===0?<tr><td colSpan={8} style={{textAlign:'center',color:'#94a3b8',padding:20}}>No records</td></tr>:
+        filt.map((t,i)=><tr key={t.id+'-'+i} style={{cursor:t._src==='order'?'pointer':undefined}} onClick={()=>{if(t._src==='order'){const so2=(sos||[]).find(s=>s.id===t.id);if(so2&&onOpenSO)onOpenSO(so2)}else if(t.so_id){const so2=(sos||[]).find(s=>s.id===t.so_id);if(so2&&onOpenSO)onOpenSO(so2)}}}>
+          <td style={{fontWeight:700,color:'#1e40af'}}>{t.id}</td>
+          <td><span className={`badge ${typeBadge[t.type]||'badge-gray'}`}>{typeLabels[t.type]||t.type}</span></td>
+          <td style={{fontSize:11,color:'#64748b'}}>{t.date}</td>
+          <td style={{fontSize:11,color:'#94a3b8'}}>{t.so_id&&t._src!=='order'?t.so_id:'—'}</td>
+          <td>{t.memo}</td>
+          {isP&&<td><span className="badge badge-gray">{gn(t.customer_id)}</span></td>}
+          <td style={{fontWeight:t.total?700:400,color:t.type==='invoice'&&t.status==='open'?'#dc2626':t.total?'#374151':'#94a3b8'}}>{t.total?'$'+t.total.toLocaleString():'—'}</td>
+          <td><span className={`badge ${statusBadge(t.status)}`}>{t.status?.replace(/_/g,' ')||'—'}</span></td>
+        </tr>)}</tbody></table></div></div>})()}
   </>}
 
   {/* CONTACTS TAB — editable */}
@@ -1447,6 +1511,172 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   {tab==='artwork'&&<div className="card"><div className="card-body"><div className="empty">Customer art library — aggregates from SOs (Phase 3)</div></div></div>}
   {tab==='reporting'&&<div className="card"><div className="card-header"><h2>Reporting</h2><div style={{display:'flex',gap:4}}>{[['thisyear','This Year'],['lastyear','Last Year'],['rolling','Rolling 12'],['alltime','All']].map(([v,l])=><button key={v} className={`btn btn-sm ${rR===v?'btn-primary':'btn-secondary'}`} onClick={()=>setRR(v)}>{l}</button>)}</div></div>
     <div className="card-body"><div className="stats-row"><div className="stat-card"><div className="stat-label">Revenue</div><div className="stat-value">{rR==='thisyear'?'$15,600':'$32,600'}</div></div><div className="stat-card"><div className="stat-label">Orders</div><div className="stat-value">{rR==='thisyear'?'4':'8'}</div></div><div className="stat-card"><div className="stat-label">Avg Order</div><div className="stat-value">{rR==='thisyear'?'$3,900':'$4,075'}</div></div></div></div></div>}
+
+  {/* EMAIL INVOICE MODAL */}
+  {showInvEmail&&(()=>{
+    const openInvs=allOrders.filter(oo=>ids.includes(oo.customer_id)&&oo.type==='invoice'&&oo.status==='open');
+    const acctContact=(customer.contacts||[]).find(c=>c.role==='Accounting')||(customer.contacts||[])[0];
+    const totalDue=openInvs.reduce((a,inv)=>a+(inv.total||0)-(inv.paid||0),0);
+    return<div className="modal-overlay" onClick={()=>setShowInvEmail(false)}><div className="modal" style={{maxWidth:560}} onClick={e=>e.stopPropagation()}>
+      <div className="modal-header"><h2>📄 Email Invoices</h2><button className="modal-close" onClick={()=>setShowInvEmail(false)}>×</button></div>
+      <div className="modal-body">
+        {/* Sending to */}
+        <div style={{background:'#f8fafc',borderRadius:8,padding:12,marginBottom:14}}>
+          <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:4}}>SENDING TO</div>
+          <div style={{fontSize:14,fontWeight:600}}>{acctContact?.name||'—'} <span style={{fontSize:12,color:'#64748b'}}>({acctContact?.role||'Primary'})</span></div>
+          <div style={{fontSize:13,color:'#2563eb'}}>{acctContact?.email||'No email on file'}</div>
+          {(customer.contacts||[]).length>1&&<div style={{fontSize:10,color:'#94a3b8',marginTop:4}}>Tip: Set a contact's role to "Accounting" to auto-send invoices there</div>}
+        </div>
+        {/* Invoice list */}
+        <div style={{marginBottom:14}}>
+          <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:6}}>INVOICES TO INCLUDE</div>
+          <div style={{border:'1px solid #e2e8f0',borderRadius:8,overflow:'hidden'}}>
+            {openInvs.map((inv,i)=>{const bal=(inv.total||0)-(inv.paid||0);const age=inv.date?Math.ceil((new Date()-new Date(inv.date))/(1000*60*60*24)):0;
+              return<div key={inv.id} style={{padding:'10px 14px',borderBottom:i<openInvs.length-1?'1px solid #f1f5f9':'none',display:'flex',alignItems:'center',gap:10}}>
+                <div style={{flex:1}}>
+                  <div style={{fontWeight:700,color:'#1e40af'}}>{inv.id}</div>
+                  <div style={{fontSize:11,color:'#64748b'}}>{inv.memo||'Invoice'} · {inv.date||'—'}</div>
+                </div>
+                <div style={{textAlign:'right'}}>
+                  <div style={{fontWeight:700,color:'#dc2626'}}>${bal.toLocaleString()}</div>
+                  <div style={{fontSize:10,color:age>30?'#dc2626':age>14?'#d97706':'#64748b'}}>{age>0?age+' days old':'Current'}</div>
+                </div>
+              </div>})}
+            <div style={{padding:'10px 14px',background:'#fef2f2',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+              <span style={{fontWeight:700,color:'#dc2626'}}>Total Due</span>
+              <span style={{fontSize:18,fontWeight:800,color:'#dc2626'}}>${totalDue.toLocaleString()}</span>
+            </div>
+          </div>
+        </div>
+        {/* Message */}
+        <div>
+          <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:4}}>MESSAGE</div>
+          <textarea className="form-input" rows={5} value={invEmailMsg} onChange={e=>setInvEmailMsg(e.target.value)} style={{fontFamily:'inherit',fontSize:13}}/>
+        </div>
+        {/* Preview */}
+        <div style={{background:'#f8fafc',borderRadius:8,padding:12,marginTop:14,fontSize:11,color:'#64748b'}}>
+          <strong>Preview:</strong> Email will include this message + PDF attachment{openInvs.length>1?'s':''} for {openInvs.map(i=>i.id).join(', ')}
+        </div>
+      </div>
+      <div className="modal-footer">
+        <button className="btn btn-secondary" onClick={()=>setShowInvEmail(false)}>Cancel</button>
+        <button className="btn btn-primary" style={{background:'#dc2626'}} onClick={()=>{setShowInvEmail(false);alert('📧 Invoice email sent to '+acctContact?.email+' with '+openInvs.length+' invoice(s)! (demo)')}}>📧 Send {openInvs.length} Invoice{openInvs.length>1?'s':''}</button>
+      </div>
+    </div></div>})()}
+
+  {/* CUSTOMER PORTAL VIEW */}
+  {showPortal&&(()=>{
+    const activeSOs=custSOs.filter(s=>calcSOStatus(s)!=='complete');
+    const completedSOs=custSOs.filter(s=>calcSOStatus(s)==='complete');
+    const openInvs=allOrders.filter(oo=>ids.includes(oo.customer_id)&&oo.type==='invoice'&&oo.status==='open');
+    const totalDue=openInvs.reduce((a,inv)=>a+(inv.total||0)-(inv.paid||0),0);
+    const stLabels={need_order:'In Progress',waiting_receive:'In Progress',complete:'Complete'};
+
+    return<div className="modal-overlay" onClick={()=>setShowPortal(false)}><div className="modal" style={{maxWidth:700,maxHeight:'90vh',overflow:'auto'}} onClick={e=>e.stopPropagation()}>
+      {/* Portal header — customer-facing branding */}
+      <div style={{background:'linear-gradient(135deg,#1e3a5f,#2563eb)',color:'white',padding:'24px 28px',borderRadius:'12px 12px 0 0'}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+          <div>
+            <div style={{fontSize:11,opacity:0.7,letterSpacing:1,marginBottom:4}}>NATIONAL SPORTS APPAREL</div>
+            <div style={{fontSize:22,fontWeight:800}}>{customer.name}</div>
+            <div style={{fontSize:13,opacity:0.8,marginTop:2}}>{customer.alpha_tag} · Customer Portal</div>
+          </div>
+          <div style={{textAlign:'right'}}>
+            {totalDue>0&&<><div style={{fontSize:10,opacity:0.7}}>BALANCE DUE</div><div style={{fontSize:24,fontWeight:800}}>${totalDue.toLocaleString()}</div></>}
+          </div>
+        </div>
+        <button style={{position:'absolute',top:12,right:16,background:'none',border:'none',color:'white',fontSize:20,cursor:'pointer',opacity:0.7}} onClick={()=>setShowPortal(false)}>×</button>
+      </div>
+      <div style={{padding:'20px 28px'}}>
+        {/* Active orders */}
+        {activeSOs.length>0&&<>
+          <div style={{fontSize:13,fontWeight:800,color:'#1e3a5f',marginBottom:10}}>📦 Active Orders</div>
+          {activeSOs.map(so=>{
+            let totalU=0,fulU=0;
+            (so.items||[]).forEach(it=>{Object.entries(it.sizes||{}).filter(([,v])=>v>0).forEach(([sz,v])=>{totalU+=v;const pQ=(it.pick_lines||[]).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+(pk[sz]||0),0);const rQ=(it.po_lines||[]).reduce((a,pk)=>a+((pk.received||{})[sz]||0),0);fulU+=Math.min(v,pQ+rQ)})});
+            const pct=totalU>0?Math.round(fulU/totalU*100):0;
+            const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
+            return<div key={so.id} style={{border:'1px solid #e2e8f0',borderRadius:10,padding:16,marginBottom:12}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:8}}>
+                <div>
+                  <div style={{fontWeight:700,fontSize:15,color:'#1e3a5f'}}>{so.memo||so.id}</div>
+                  <div style={{fontSize:11,color:'#64748b'}}>Order {so.id} · {so.created_at?.split(' ')[0]}</div>
+                </div>
+                {so.expected_date&&<div style={{textAlign:'right'}}>
+                  <div style={{fontSize:10,color:'#64748b'}}>EXPECTED</div>
+                  <div style={{fontSize:14,fontWeight:700,color:daysOut!=null&&daysOut<=7?'#dc2626':'#1e3a5f'}}>{so.expected_date}</div>
+                  {daysOut!=null&&daysOut>=0&&<div style={{fontSize:10,color:'#64748b'}}>{daysOut} days</div>}
+                </div>}
+              </div>
+              {/* Progress bar */}
+              <div style={{marginBottom:10}}>
+                <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
+                  <span style={{fontSize:11,fontWeight:600,color:'#64748b'}}>Order Progress</span>
+                  <span style={{fontSize:11,fontWeight:700,color:pct>=100?'#166534':'#1e3a5f'}}>{pct}%</span>
+                </div>
+                <div style={{background:'#e2e8f0',borderRadius:6,height:8,overflow:'hidden'}}>
+                  <div style={{height:8,borderRadius:6,background:pct>=100?'#22c55e':pct>50?'#3b82f6':'#f59e0b',width:pct+'%',transition:'width 0.3s'}}/>
+                </div>
+              </div>
+              {/* Items list — customer-friendly */}
+              <div style={{fontSize:12}}>
+                {(so.items||[]).map((it,ii)=>{
+                  const qty=Object.values(it.sizes||{}).reduce((a,v)=>a+v,0);
+                  return<div key={ii} style={{display:'flex',justifyContent:'space-between',padding:'4px 0',borderBottom:'1px solid #f8fafc'}}>
+                    <span style={{color:'#374151'}}>{it.name} <span style={{color:'#94a3b8'}}>({it.color})</span></span>
+                    <span style={{fontWeight:600,color:'#64748b'}}>{qty} units</span>
+                  </div>})}
+              </div>
+              {/* Firm dates */}
+              {(so.firm_dates||[]).filter(f=>f.approved).length>0&&<div style={{marginTop:8,padding:'6px 10px',background:'#f0fdf4',borderRadius:6,fontSize:11,color:'#166534'}}>
+                📌 Firm date: {so.firm_dates.filter(f=>f.approved)[0].date}
+              </div>}
+            </div>})}
+        </>}
+
+        {/* Completed orders */}
+        {completedSOs.length>0&&<>
+          <div style={{fontSize:13,fontWeight:800,color:'#166534',marginBottom:10,marginTop:16}}>✅ Completed Orders</div>
+          {completedSOs.slice(0,3).map(so=><div key={so.id} style={{padding:'10px 14px',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:8,display:'flex',justifyContent:'space-between'}}>
+            <div><span style={{fontWeight:600}}>{so.memo||so.id}</span><span style={{fontSize:11,color:'#94a3b8',marginLeft:8}}>{so.id}</span></div>
+            <span className="badge badge-green">Complete</span>
+          </div>)}
+        </>}
+
+        {/* Open invoices */}
+        {openInvs.length>0&&<>
+          <div style={{fontSize:13,fontWeight:800,color:'#dc2626',marginBottom:10,marginTop:16}}>💰 Open Invoices</div>
+          <div style={{border:'1px solid #fecaca',borderRadius:10,overflow:'hidden'}}>
+            {openInvs.map((inv,i)=>{const bal=(inv.total||0)-(inv.paid||0);const age=inv.date?Math.ceil((new Date()-new Date(inv.date))/(1000*60*60*24)):0;
+              return<div key={inv.id} style={{padding:'12px 16px',borderBottom:i<openInvs.length-1?'1px solid #fef2f2':'none',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                <div>
+                  <div style={{fontWeight:700}}>{inv.id} <span style={{fontSize:11,color:'#64748b'}}>{inv.memo}</span></div>
+                  <div style={{fontSize:11,color:age>30?'#dc2626':'#64748b'}}>{inv.date} · {age>0?age+' days ago':'Current'}</div>
+                </div>
+                <div style={{fontWeight:800,fontSize:16,color:'#dc2626'}}>${bal.toLocaleString()}</div>
+              </div>})}
+            <div style={{padding:'12px 16px',background:'#fef2f2',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+              <span style={{fontWeight:800,color:'#dc2626'}}>Total Balance Due</span>
+              <span style={{fontSize:20,fontWeight:800,color:'#dc2626'}}>${totalDue.toLocaleString()}</span>
+            </div>
+          </div>
+        </>}
+
+        {/* Contact info */}
+        <div style={{marginTop:20,padding:14,background:'#f8fafc',borderRadius:10}}>
+          <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:6}}>YOUR NSA REP</div>
+          <div style={{fontSize:14,fontWeight:600}}>{REPS.find(r=>r.id===customer.primary_rep_id)?.name||'NSA Team'}</div>
+          <div style={{fontSize:12,color:'#64748b'}}>National Sports Apparel · team@nsa-teamwear.com</div>
+        </div>
+
+        {/* Contact update request */}
+        <div style={{marginTop:14,padding:14,border:'1px dashed #d1d5db',borderRadius:10,textAlign:'center'}}>
+          <div style={{fontSize:12,color:'#64748b'}}>Need to update your contact info or shipping address?</div>
+          <button className="btn btn-sm btn-secondary" style={{marginTop:6}} onClick={()=>{setShowPortal(false);setTab('contacts')}}>✏️ Update Contact Info</button>
+        </div>
+      </div>
+    </div></div>})()}
+
   </div>)}
 
 // VENDOR DETAIL
@@ -1616,7 +1846,7 @@ export default function App(){
 
   // CUSTOMERS
   const rCust=()=>{
-    if(selC)return<CustDetail customer={selC} allCustomers={cust} allOrders={aO} onBack={()=>setSelC(null)} onEdit={c=>setCM({open:true,c})} onSelCust={c=>setSelC(c)} onNewEst={c=>newE(c)} sos={sos} msgs={msgs} cu={cu}/>;
+    if(selC)return<CustDetail customer={selC} allCustomers={cust} allOrders={aO} onBack={()=>setSelC(null)} onEdit={c=>{setCM({open:true,c});setCust(prev=>prev.map(pp=>pp.id===c.id?c:pp))}} onSelCust={c=>setSelC(c)} onNewEst={c=>newE(c)} sos={sos} msgs={msgs} cu={cu} onOpenSO={so=>{const c3=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c3);setPg('orders')}} ests={ests}/>;
     const f=pars.filter(p=>{if(rF!=='all'&&p.primary_rep_id!==rF)return false;if(q){const s=q.toLowerCase();return p.name.toLowerCase().includes(s)||p.alpha_tag?.toLowerCase().includes(s)||gK(p.id).some(c=>c.name.toLowerCase().includes(s))}return true});
     return(<><div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap'}}><div className="search-bar" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search..." value={q} onChange={e=>setQ(e.target.value)}/></div>
       <select className="form-select" style={{width:150}} value={rF} onChange={e=>setRF(e.target.value)}><option value="all">All Reps</option>{REPS.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
@@ -1716,6 +1946,8 @@ export default function App(){
   const[prodCols,setProdCols]=useState(()=>{try{const s=localStorage.getItem('nsa_prod_cols');return s?JSON.parse(s):defaultCols}catch{return defaultCols}});
   const toggleCol=id=>{setProdCols(prev=>{const n=prev.includes(id)?prev.filter(c=>c!==id):[...prev,id];try{localStorage.setItem('nsa_prod_cols',JSON.stringify(n))}catch{}return n})};
   const resetCols=()=>{setProdCols(defaultCols);try{localStorage.setItem('nsa_prod_cols',JSON.stringify(defaultCols))}catch{}};
+  const[roleView,setRoleView]=useState(()=>{try{return localStorage.getItem('nsa_role_view')||'sales'}catch{return'sales'}});
+  const changeRoleView=v=>{setRoleView(v);try{localStorage.setItem('nsa_role_view',v)}catch{}};
   const rProd2=()=>{
     const cols=[
       {id:'need_order',label:'Need to Order',color:'#d97706',bg:'#fffbeb'},
@@ -1764,6 +1996,11 @@ export default function App(){
     });
 
     return(<>
+      {/* Role selector */}
+      <div style={{display:'flex',gap:4,marginBottom:16,flexWrap:'wrap'}}>
+        {[['sales','🏷️ Sales'],['production','🏭 Production'],['decoration','🎨 Decoration'],['gm','👔 GM Overview']].map(([v,l])=>
+          <button key={v} className={`btn btn-sm ${roleView===v?'btn-primary':'btn-secondary'}`} style={{fontSize:12}} onClick={()=>changeRoleView(v)}>{l}</button>)}
+      </div>
       {/* Stats bar */}
       <div className="stats-row">
         <div className="stat-card"><div className="stat-label">Active Orders</div><div className="stat-value">{filtered.length}</div></div>
@@ -1800,23 +2037,64 @@ export default function App(){
         <div style={{marginLeft:'auto',fontSize:11,color:'#64748b'}}>Showing {soStats.length} orders</div>
       </div>
 
-      {/* Action items / alerts */}
+      {/* Role-specific action items */}
       {(()=>{
         const alerts=[];
-        soStats.forEach(s=>{
-          if(s.firmDates.length>0)alerts.push({so:s,type:'firm',msg:'📌 Firm date request pending',color:'#7c3aed'});
-          if(s.hasUnpulledIF)alerts.push({so:s,type:'pull',msg:'📦 IFs need pulling',color:'#d97706'});
-          if(s.hasWaitingPO)alerts.push({so:s,type:'po',msg:'🚚 POs awaiting delivery',color:'#2563eb'});
-          if(s.needsDeco)alerts.push({so:s,type:'deco',msg:'🎨 Items missing decoration',color:'#dc2626'});
-          if(s.daysOut!=null&&s.daysOut<=7&&s.daysOut>=0&&s.status!=='completed'&&s.status!=='shipped')alerts.push({so:s,type:'due',msg:'⏰ Due in '+s.daysOut+' days',color:'#dc2626'});
-        });
-        if(alerts.length===0)return null;
-        return<div className="card" style={{marginBottom:16,borderLeft:'4px solid #dc2626'}}><div className="card-header"><h2>⚡ Action Items ({alerts.length})</h2></div><div className="card-body" style={{padding:0}}>
-          <table style={{fontSize:12}}><tbody>{alerts.map((a,i)=><tr key={i} style={{cursor:'pointer'}} onClick={()=>{setESO(a.so);setESOC(a.so.c);setPg('orders')}}>
-            <td style={{fontWeight:700,color:'#1e40af',width:80}}>{a.so.id}</td>
-            <td>{a.so.c?.name} <span className="badge badge-gray">{a.so.c?.alpha_tag}</span></td>
+        // Collect all jobs across all SOs
+        const allJobs=[];soStats.forEach(s=>{(s.jobs||[]).forEach(j=>{allJobs.push({...j,so:s,soId:s.id,customer:s.c?.name,alpha:s.c?.alpha_tag})})});
+
+        if(roleView==='sales'){
+          // Sales: orders needing POs, open estimates, unread msgs, IFs needing pull
+          soStats.forEach(s=>{
+            if(s._autoSt==='need_order')alerts.push({so:s,type:'order',msg:'📋 Needs PO or IF created',color:'#d97706'});
+            if(s.hasUnpulledIF)alerts.push({so:s,type:'pull',msg:'📦 IF needs pulling (warehouse)',color:'#2563eb'});
+            if(s.unreadMsgs>0)alerts.push({so:s,type:'msg',msg:'💬 '+s.unreadMsgs+' unread message'+(s.unreadMsgs>1?'s':''),color:'#7c3aed'});
+          });
+          // Open estimates
+          ests.filter(e=>e.status==='sent'||e.status==='approved').forEach(e=>{
+            const c=cust.find(x=>x.id===e.customer_id);
+            alerts.push({so:{...e,c,id:e.id,expected_date:''},type:e.status==='approved'?'convert':'followup',msg:e.status==='approved'?'✅ Approved — ready to convert to SO':'⏳ Sent — awaiting response',color:e.status==='approved'?'#166534':'#d97706'});
+          });
+        } else if(roleView==='production'){
+          // Production mgr: firm date requests, jobs ready for scheduling, items received
+          soStats.forEach(s=>{
+            if(s.firmDates.length>0)alerts.push({so:s,type:'firm',msg:'📌 Firm date request pending',color:'#7c3aed'});
+          });
+          allJobs.filter(j=>j.item_status==='items_received'&&j.art_status==='art_complete'&&(j.prod_status==='hold'||j.prod_status==='staging')).forEach(j=>{
+            alerts.push({so:j.so,type:'schedule',msg:'🏭 '+j.id+' ready to schedule ('+j.art_name+')',color:'#2563eb'});
+          });
+          allJobs.filter(j=>j.item_status==='partially_received'&&!j.split_from).forEach(j=>{
+            alerts.push({so:j.so,type:'split',msg:'✂️ '+j.id+' can be split — '+j.fulfilled_units+'/'+j.total_units+' received',color:'#d97706'});
+          });
+        } else if(roleView==='decoration'){
+          // Decoration: jobs with art complete needing screens/setup, jobs in process
+          allJobs.filter(j=>j.art_status==='art_complete'&&j.prod_status==='staging').forEach(j=>{
+            alerts.push({so:j.so,type:'setup',msg:'🎨 '+j.id+' — '+j.deco_type?.replace(/_/g,' ')+' setup needed ('+j.art_name+')',color:'#2563eb'});
+          });
+          allJobs.filter(j=>j.art_status==='waiting_approval').forEach(j=>{
+            alerts.push({so:j.so,type:'art_wait',msg:'⏳ '+j.id+' — art waiting approval ('+j.art_name+')',color:'#d97706'});
+          });
+          allJobs.filter(j=>j.prod_status==='in_process').forEach(j=>{
+            alerts.push({so:j.so,type:'active',msg:'🔥 '+j.id+' — in process ('+j.deco_type?.replace(/_/g,' ')+')',color:'#166534'});
+          });
+        } else {
+          // GM: everything
+          soStats.forEach(s=>{
+            if(s.firmDates.length>0)alerts.push({so:s,type:'firm',msg:'📌 Firm date request pending',color:'#7c3aed'});
+            if(s.hasUnpulledIF)alerts.push({so:s,type:'pull',msg:'📦 IFs need pulling',color:'#d97706'});
+            if(s.hasWaitingPO)alerts.push({so:s,type:'po',msg:'🚚 POs awaiting delivery',color:'#2563eb'});
+            if(s.needsDeco)alerts.push({so:s,type:'deco',msg:'🎨 Items missing decoration',color:'#dc2626'});
+            if(s.daysOut!=null&&s.daysOut<=7&&s.daysOut>=0&&s._autoSt!=='complete')alerts.push({so:s,type:'due',msg:'⏰ Due in '+s.daysOut+' days',color:'#dc2626'});
+          });
+        }
+        if(alerts.length===0)return<div className="card" style={{marginBottom:16,padding:16,textAlign:'center',color:'#166534',fontWeight:600}}>✅ No action items — all clear!</div>;
+        const roleLabels={sales:'Sales',production:'Production',decoration:'Decoration',gm:'GM'};
+        return<div className="card" style={{marginBottom:16,borderLeft:'4px solid '+(roleView==='sales'?'#2563eb':roleView==='production'?'#7c3aed':roleView==='decoration'?'#d97706':'#dc2626')}}><div className="card-header"><h2>⚡ {roleLabels[roleView]} Action Items ({alerts.length})</h2></div><div className="card-body" style={{padding:0}}>
+          <table style={{fontSize:12}}><tbody>{alerts.map((a,i)=><tr key={i} style={{cursor:'pointer'}} onClick={()=>{const so2=sos.find(s=>s.id===a.so?.id);if(so2){setESO(so2);setESOC(a.so.c);setPg('orders')}}}>
+            <td style={{fontWeight:700,color:'#1e40af',width:80}}>{a.so?.id}</td>
+            <td>{a.so?.c?.name} <span className="badge badge-gray">{a.so?.c?.alpha_tag}</span></td>
             <td style={{color:a.color,fontWeight:600}}>{a.msg}</td>
-            <td style={{color:'#64748b',fontSize:11}}>{a.so.expected_date||'—'}</td>
+            <td style={{color:'#64748b',fontSize:11}}>{a.so?.expected_date||'—'}</td>
           </tr>)}</tbody></table>
         </div></div>})()}
 
