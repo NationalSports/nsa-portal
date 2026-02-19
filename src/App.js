@@ -354,6 +354,84 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
     safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:q;const dp=dP(d,q,af,cq);rev+=q*dp.sell;cost+=q*dp.cost})});
     const ship=o.shipping_type==='pct'?rev*(o.shipping_value||0)/100:(o.shipping_value||0);const tax=rev*(cust?.tax_rate||0);
     return{rev,cost,ship,tax,grand:rev+ship+tax,margin:rev-cost,pct:rev>0?((rev-cost)/rev*100):0}},[o,artQty]); // eslint-disable-line
+
+  // AUTO-SYNC JOBS from decorations — one job per unique artwork across entire SO
+  const syncJobs=useCallback(()=>{
+    const artJobs={};
+    safeItems(o).forEach((it,ii)=>{
+      safeDecos(it).forEach((d,di)=>{
+        let jobKey,artName,artId,decoType,artSt;
+        if(d.kind==='art'){
+          if(!d.art_file_id){
+            jobKey='unassigned_'+safeStr(d.position);
+            artName='Unassigned Art ('+safeStr(d.position)+')';artId=null;
+            decoType=d.deco_type||'screen_print';artSt='needs_art';
+          } else {
+            jobKey='art_'+d.art_file_id;
+            const artF=af.find(a=>a.id===d.art_file_id);
+            artName=artF?.name||'Unknown Art';artId=d.art_file_id;
+            decoType=artF?.deco_type||d.deco_type||'screen_print';
+            artSt=artF?.status==='approved'?'art_complete':'waiting_approval';
+          }
+        } else if(d.kind==='numbers'){
+          jobKey='numbers_'+(d.num_method||'ht')+'_'+safeStr(d.position);
+          artName='Numbers — '+(d.num_method||'heat_transfer').replace(/_/g,' ');
+          artId=null;decoType=d.num_method||'heat_transfer';artSt='art_complete';
+        } else return;
+        if(!artJobs[jobKey]){
+          artJobs[jobKey]={key:jobKey,art_file_id:artId,art_name:artName,deco_type:decoType,
+            positions:new Set(),items:[],art_status:artSt,total_units:0,fulfilled_units:0};
+        }
+        const job=artJobs[jobKey];
+        job.positions.add(safeStr(d.position));
+        const szEntries=Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0);
+        let itemTotal=0,itemFulfilled=0;
+        szEntries.forEach(([sz,v])=>{
+          itemTotal+=v;
+          const pulledQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
+          const rcvdQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
+          itemFulfilled+=Math.min(v,pulledQ+rcvdQ);
+        });
+        job.items.push({item_idx:ii,deco_idx:di,sku:it.sku||'—',name:safeStr(it.name)||'Unknown',color:safeStr(it.color),units:itemTotal,fulfilled:itemFulfilled});
+        job.total_units+=itemTotal;job.fulfilled_units+=itemFulfilled;
+      });
+    });
+    const existingJobMap={};safeJobs(o).forEach(j=>{existingJobMap[j.key||j.id]=j});
+    const soNum=o.id?.replace('SO-','')||'0';
+    let jIdx=1;
+    const newJobs=Object.values(artJobs).map(j=>{
+      const existing=existingJobMap[j.key];
+      const itemSt=j.fulfilled_units>=j.total_units&&j.total_units>0?'items_received':j.fulfilled_units>0?'partially_received':'need_to_order';
+      let prodSt=existing?.prod_status||'hold';
+      if(itemSt==='items_received'&&j.art_status==='art_complete'&&prodSt==='hold')prodSt='staging';
+      const id=existing?.id||('JOB-'+soNum+'-'+String(jIdx).padStart(2,'0'));
+      jIdx++;
+      return{
+        id,key:j.key,art_file_id:j.art_file_id,art_name:j.art_name,deco_type:j.deco_type,
+        positions:[...j.positions].join(', '),items:j.items,
+        art_status:j.art_status,item_status:itemSt,prod_status:prodSt,
+        total_units:j.total_units,fulfilled_units:j.fulfilled_units,
+        split_from:existing?.split_from||null,created_at:existing?.created_at||new Date().toLocaleDateString(),
+        counted_at:existing?.counted_at||null,counted_by:existing?.counted_by||null,
+        count_discrepancy:existing?.count_discrepancy||null,notes:existing?.notes||null,
+      };
+    });
+    return newJobs;
+  },[o,af]);// eslint-disable-line
+
+  // Auto-sync jobs whenever decorations or items change
+  React.useEffect(()=>{
+    if(!isSO)return;
+    const synced=syncJobs();
+    const currentKeys=safeJobs(o).map(j=>j.key).sort().join(',');
+    const newKeys=synced.map(j=>j.key).sort().join(',');
+    const currentUnits=safeJobs(o).map(j=>j.total_units+'-'+j.fulfilled_units).join(',');
+    const newUnits=synced.map(j=>j.total_units+'-'+j.fulfilled_units).join(',');
+    if(currentKeys!==newKeys||currentUnits!==newUnits){
+      sv('jobs',synced);
+    }
+  },[syncJobs]);// eslint-disable-line
+
   const fp=products.filter(p=>{if(!pS)return true;const q=pS.toLowerCase();return p.sku.toLowerCase().includes(q)||p.name.toLowerCase().includes(q)||p.brand?.toLowerCase().includes(q)});
   const statusFlow=['need_order','waiting_receive','complete'];
 
@@ -1026,89 +1104,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
 
     {/* JOBS TAB */}
     {isSO&&tab==='jobs'&&(()=>{
-      // AUTO-SYNC JOBS from decorations — one job per unique artwork across entire SO
-      // Jobs sync automatically when decorations change, no manual "Generate" needed
-      const syncJobs=useCallback(()=>{
-        const artJobs={};// keyed by art_file_id or position+method for numbers
-        safeItems(o).forEach((it,ii)=>{
-          safeDecos(it).forEach((d,di)=>{
-            let jobKey,artName,artId,decoType,artSt;
-            if(d.kind==='art'){
-              if(!d.art_file_id){
-                // Unassigned art — key by position so each position is its own job
-                jobKey='unassigned_'+safeStr(d.position);
-                artName='Unassigned Art ('+safeStr(d.position)+')';artId=null;
-                decoType=d.deco_type||'screen_print';artSt='needs_art';
-              } else {
-                jobKey='art_'+d.art_file_id;
-                const artF=af.find(a=>a.id===d.art_file_id);
-                artName=artF?.name||'Unknown Art';artId=d.art_file_id;
-                decoType=artF?.deco_type||d.deco_type||'screen_print';
-                artSt=artF?.status==='approved'?'art_complete':'waiting_approval';
-              }
-            } else if(d.kind==='numbers'){
-              jobKey='numbers_'+(d.num_method||'ht')+'_'+safeStr(d.position);
-              artName='Numbers — '+(d.num_method||'heat_transfer').replace(/_/g,' ');
-              artId=null;decoType=d.num_method||'heat_transfer';artSt='art_complete';
-            } else return;
-
-            if(!artJobs[jobKey]){
-              artJobs[jobKey]={key:jobKey,art_file_id:artId,art_name:artName,deco_type:decoType,
-                positions:new Set(),items:[],art_status:artSt,total_units:0,fulfilled_units:0};
-            }
-            const job=artJobs[jobKey];
-            job.positions.add(safeStr(d.position));
-            // Add item to this job's item list
-            const szEntries=Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0);
-            let itemTotal=0,itemFulfilled=0;
-            szEntries.forEach(([sz,v])=>{
-              itemTotal+=v;
-              const pulledQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
-              const rcvdQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
-              itemFulfilled+=Math.min(v,pulledQ+rcvdQ);
-            });
-            job.items.push({item_idx:ii,deco_idx:di,sku:it.sku||'—',name:safeStr(it.name)||'Unknown',color:safeStr(it.color),units:itemTotal,fulfilled:itemFulfilled});
-            job.total_units+=itemTotal;job.fulfilled_units+=itemFulfilled;
-          });
-        });
-
-        // Convert to array and merge with existing jobs to preserve prod_status
-        const existingJobMap={};safeJobs(o).forEach(j=>{existingJobMap[j.key||j.id]=j});
-        const soNum=o.id?.replace('SO-','')||'0';
-        let jIdx=1;
-        const newJobs=Object.values(artJobs).map(j=>{
-          const existing=existingJobMap[j.key];
-          const itemSt=j.fulfilled_units>=j.total_units&&j.total_units>0?'items_received':j.fulfilled_units>0?'partially_received':'need_to_order';
-          let prodSt=existing?.prod_status||'hold';
-          // Auto-advance hold→staging when ready
-          if(itemSt==='items_received'&&j.art_status==='art_complete'&&prodSt==='hold')prodSt='staging';
-          // Preserve split info
-          const id=existing?.id||('JOB-'+soNum+'-'+String(jIdx).padStart(2,'0'));
-          jIdx++;
-          return{
-            id,key:j.key,art_file_id:j.art_file_id,art_name:j.art_name,deco_type:j.deco_type,
-            positions:[...j.positions].join(', '),items:j.items,
-            art_status:j.art_status,item_status:itemSt,prod_status:prodSt,
-            total_units:j.total_units,fulfilled_units:j.fulfilled_units,
-            split_from:existing?.split_from||null,created_at:existing?.created_at||new Date().toLocaleDateString(),
-          };
-        });
-        return newJobs;
-      },[o,af]);
-
-      // Auto-sync jobs whenever decorations or items change
-      React.useEffect(()=>{
-        const synced=syncJobs();
-        // Only update if jobs actually changed (prevent infinite loop)
-        const currentKeys=safeJobs(o).map(j=>j.key).sort().join(',');
-        const newKeys=synced.map(j=>j.key).sort().join(',');
-        const currentUnits=safeJobs(o).map(j=>j.total_units+'-'+j.fulfilled_units).join(',');
-        const newUnits=synced.map(j=>j.total_units+'-'+j.fulfilled_units).join(',');
-        if(currentKeys!==newKeys||currentUnits!==newUnits){
-          sv('jobs',synced);
-        }
-      },[syncJobs]);// eslint-disable-line
-
       const jobs=safeJobs(o);
 
       // Manual refresh recalculates everything
