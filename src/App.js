@@ -132,7 +132,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
   const[o,setO]=useState(order);const[cust,setCust]=useState(ic);const[pS,setPS]=useState('');const[showAdd,setShowAdd]=useState(false);
   const[tab,setTab]=useState('items');const[dirty,setDirty]=useState(false);
     const origRef=React.useRef(JSON.stringify(o));
-    const markDirty=()=>setDirty(true);const[saved,setSaved]=useState(!!order.customer_id);const[showSend,setShowSend]=useState(false);const[showPick,setShowPick]=useState(false);const[pickId,setPickId]=useState(()=>'IF-'+String(4000+Math.floor(Math.random()*1000)));const[showPO,setShowPO]=useState(null);
+    const markDirty=()=>setDirty(true);const[saved,setSaved]=useState(!!order.customer_id);const[showSend,setShowSend]=useState(false);const[showPick,setShowPick]=useState(false);const[pickId,setPickId]=useState(()=>'IF-'+String(4000+Math.floor(Math.random()*1000)));const[showPO,setShowPO]=useState(null);const[poCounter,setPOCounter]=useState(()=>3001+Math.floor(Math.random()*100));
+  const[editPick,setEditPick]=useState(null);const[editPO,setEditPO]=useState(null);
   const[newAddr,setNewAddr]=useState('');const[showNA,setShowNA]=useState(false);const[showSzPicker,setShowSzPicker]=useState(null);const[showCustom,setShowCustom]=useState(false);const[custItem,setCustItem]=useState({vendor_id:'',name:'',sku:'CUSTOM',nsa_cost:0,unit_sell:0,color:''});
   const sv=(k,v)=>setO(e=>({...e,[k]:v,updated_at:new Date().toLocaleString()}));
   const isAU=b=>b==='Adidas'||b==='Under Armour'||b==='New Balance';const tD={A:0.4,B:0.35,C:0.3};
@@ -269,7 +270,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         {isSO&&(item.pick_lines||[]).length>0&&<div style={{padding:'4px 18px',borderBottom:'1px solid #f1f5f9'}}>
           {item.pick_lines.map((pk,pi)=>{const st=pk.status||'pick';
             return<div key={pi} style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',marginBottom:2}}>
-              <span style={{fontSize:10,fontWeight:700,width:46,color:st==='pulled'?'#166534':'#92400e'}}>PICK:</span>
+              <span style={{fontSize:10,fontWeight:700,width:56,color:st==='pulled'?'#166534':'#92400e',cursor:'pointer',textDecoration:'underline'}} onClick={()=>setEditPick({lineIdx:idx,pickIdx:pi,pick:pk})} title="Click to edit">{pk.pick_id||'PICK'}:</span>
               {szs.map(sz=>{const v=pk[sz]||0;if(!v)return<div key={sz} style={{width:42,textAlign:'center',fontSize:10,color:'#d1d5db'}}>—</div>;
                 return<div key={sz} style={{width:42,textAlign:'center',fontSize:12,fontWeight:700,padding:'2px 0',borderRadius:3,
                   background:st==='pulled'?'#dcfce7':st==='pick'?'#fef3c7':'#f1f5f9',
@@ -281,7 +282,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         {isSO&&(item.po_lines||[]).length>0&&<div style={{padding:'4px 18px',borderBottom:'1px solid #f1f5f9'}}>
           {item.po_lines.map((po,pi)=>{const st=po.status||'pending';
             return<div key={pi} style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',marginBottom:2}}>
-              <span style={{fontSize:10,fontWeight:700,width:46,color:st==='received'?'#166534':st==='waiting'?'#92400e':'#dc2626'}}>{po.po_id||'PO'}:</span>
+              <span style={{fontSize:10,fontWeight:700,width:56,color:st==='received'?'#166534':st==='waiting'?'#92400e':'#dc2626',cursor:'pointer',textDecoration:'underline'}} onClick={()=>setEditPO({lineIdx:idx,poIdx:pi,po})} title="Click to edit">{po.po_id||'PO'}:</span>
               {szs.map(sz=>{const v=po[sz]||0;if(!v)return<div key={sz} style={{width:42,textAlign:'center',fontSize:10,color:'#d1d5db'}}>—</div>;
                 return<div key={sz} style={{width:42,textAlign:'center',fontSize:12,fontWeight:700,padding:'2px 0',borderRadius:3,
                   background:st==='received'?'#dcfce7':st==='waiting'?'#fef3c7':'#fef2f2',
@@ -514,6 +515,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         </div></div></div>;
       // PO form for selected vendor — only show sizes that still need ordering (subtract picks + existing POs)
       const vItems=vendorMap[showPO]||[];const vn=D_V.find(v=>v.id===showPO)?.name||showPO;
+      const poId='PO-'+poCounter;
       const poItems=vItems.map(it=>{const szList=Object.entries(it.sizes).filter(([,v])=>v>0).sort((a,b)=>{const ord=['XS','S','M','L','XL','2XL','3XL','4XL'];return(ord.indexOf(a[0])===-1?99:ord.indexOf(a[0]))-(ord.indexOf(b[0])===-1?99:ord.indexOf(b[0]))});
         const openSizes=szList.map(([sz,v])=>{const picked=(it.pick_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const po=(it.po_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const open=Math.max(0,v-picked-po);return[sz,open]}).filter(([,v])=>v>0);
         return{...it,openSizes,totalOpen:openSizes.reduce((a,[,v])=>a+v,0)}}).filter(it=>it.totalOpen>0);
@@ -522,20 +524,39 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         <div className="modal-body">
           {poItems.length===0?<div style={{padding:24,textAlign:'center',color:'#64748b'}}><div style={{fontSize:32,marginBottom:8}}>✅</div><div style={{fontWeight:700,fontSize:16,marginBottom:4}}>All items fully covered</div><div style={{fontSize:13}}>Every size has been assigned via pick tickets or existing POs.</div></div>:<>
           <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:12,marginBottom:16}}>
-            <div><label className="form-label">PO Number</label><input className="form-input" value={'PO-'+(3000+Math.floor(Math.random()*100))} readOnly style={{color:'#1e40af',fontWeight:700}}/></div>
+            <div><label className="form-label">PO Number</label><input className="form-input" value={poId} readOnly style={{color:'#1e40af',fontWeight:700}}/></div>
             <div><label className="form-label">Ship To</label><select className="form-select">{addrs.map(a=><option key={a.id}>{a.label}</option>)}</select></div>
-            <div><label className="form-label">Expected Date</label><input className="form-input" type="date"/></div></div>
+            <div><label className="form-label">Expected Date</label><input className="form-input" type="date" id={'po-date-'+poId}/></div></div>
           {poItems.map((it,vi)=>{const soQ=Object.values(it.sizes).reduce((a,v)=>a+v,0);
             return<div key={vi} style={{padding:12,border:'1px solid #e2e8f0',borderRadius:6,marginBottom:8}}>
               <div style={{display:'flex',justifyContent:'space-between',marginBottom:8}}><div><span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',marginRight:8}}>{it.sku}</span><strong>{it.name}</strong> — {it.color}</div><div style={{fontWeight:700}}>SO Qty: {soQ} <span style={{color:'#dc2626',fontSize:12,marginLeft:6}}>Open: {it.totalOpen}</span></div></div>
               <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
                 <span style={{fontSize:12,fontWeight:600,color:'#64748b'}}>PO Qty:</span>
                 {it.openSizes.map(([sz,v])=><div key={sz} style={{textAlign:'center'}}><div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
-                  <input style={{width:42,textAlign:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700}} defaultValue={v}/></div>)}</div>
+                  <input id={'po-qty-'+vi+'-'+sz} style={{width:42,textAlign:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700}} defaultValue={v}/></div>)}</div>
             </div>})}
-          <div style={{marginTop:8}}><label className="form-label">Notes</label><input className="form-input" placeholder="PO notes for vendor..."/></div></>}
+          <div style={{marginTop:8}}><label className="form-label">Notes</label><input className="form-input" placeholder="PO notes for vendor..." id={'po-notes-'+poId}/></div></>}
         </div>
-        <div className="modal-footer"><button className="btn btn-secondary" onClick={()=>setShowPO('select')}>← Back</button><button className="btn btn-secondary" onClick={()=>setShowPO(null)}>Cancel</button>{poItems.length>0&&<button className="btn btn-primary" onClick={()=>{setShowPO(null);nf('PO created (Phase 4 will save to DB)')}}><Icon name="cart" size={14}/> Create PO</button>}</div>
+        <div className="modal-footer"><button className="btn btn-secondary" onClick={()=>setShowPO('select')}>← Back</button><button className="btn btn-secondary" onClick={()=>setShowPO(null)}>Cancel</button>{poItems.length>0&&<button className="btn btn-primary" onClick={()=>{
+          // Save PO lines back to order items
+          const updatedItems=[...o.items];
+          poItems.forEach((pit,vi)=>{
+            const idx=pit._idx;if(idx==null)return;
+            const poLine={po_id:poId,status:'waiting'};
+            pit.openSizes.forEach(([sz,v])=>{
+              const el=document.getElementById('po-qty-'+vi+'-'+sz);
+              poLine[sz]=el?parseInt(el.value)||0:v;
+            });
+            const hasQty=Object.entries(poLine).some(([k,v])=>k!=='po_id'&&k!=='status'&&typeof v==='number'&&v>0);
+            if(hasQty){
+              if(!updatedItems[idx].po_lines)updatedItems[idx].po_lines=[];
+              updatedItems[idx].po_lines.push(poLine);
+            }
+          });
+          const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};
+          setO(updated);onSave(updated);
+          setPOCounter(c=>c+1);setShowPO(null);nf(poId+' created for '+vn);
+        }}><Icon name="cart" size={14}/> Create PO</button>}</div>
       </div></div>})()}
 
         {showPick&&<div className="modal-overlay" onClick={()=>setShowPick(false)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:700,maxHeight:'90vh',overflow:'auto'}}>
@@ -598,6 +619,86 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         </>:<button className="btn btn-secondary" onClick={()=>setShowPick(false)}>Cancel</button>}
       </div>
     </div></div>}
+
+    {/* LINKED DOCUMENTS: Pick Tickets & Purchase Orders */}
+    {isSO&&(()=>{
+      const allPickIds=[];const allPoIds=[];
+      o.items.forEach((it,i)=>{
+        (it.pick_lines||[]).forEach((pk,pi)=>{if(pk.pick_id&&!allPickIds.find(x=>x.id===pk.pick_id)){const qty=Object.entries(pk).reduce((a,[k,v])=>k!=='status'&&k!=='pick_id'&&typeof v==='number'?a+v:a,0);allPickIds.push({id:pk.pick_id,status:pk.status||'pick',qty,lineIdx:i,pickIdx:pi})}});
+        (it.po_lines||[]).forEach((po,pi)=>{if(po.po_id&&!allPoIds.find(x=>x.id===po.po_id)){const qty=Object.entries(po).reduce((a,[k,v])=>k!=='status'&&k!=='po_id'&&typeof v==='number'?a+v:a,0);const vk=it.vendor_id||it.brand;const vn=D_V.find(v=>v.id===vk)?.name||vk;allPoIds.push({id:po.po_id,status:po.status||'waiting',qty,vendor:vn,lineIdx:i,poIdx:pi})}});
+      });
+      if(allPickIds.length===0&&allPoIds.length===0)return null;
+      return<div className="card" style={{marginTop:16}}><div className="card-header"><h2>Linked Documents</h2></div><div className="card-body">
+        {allPickIds.length>0&&<><div style={{fontSize:11,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6}}>Pick Tickets</div>
+          <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:allPoIds.length>0?16:0}}>
+            {allPickIds.map(pk=><div key={pk.id} style={{padding:'8px 14px',border:'1px solid #e2e8f0',borderRadius:8,cursor:'pointer',display:'flex',alignItems:'center',gap:8,background:pk.status==='pulled'?'#f0fdf4':'#fffbeb'}} onClick={()=>{const pickData=o.items[pk.lineIdx]?.pick_lines?.[pk.pickIdx];if(pickData)setEditPick({lineIdx:pk.lineIdx,pickIdx:pk.pickIdx,pick:pickData})}}>
+              <Icon name="grid" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{pk.id}</span>
+              <span style={{fontSize:11,color:'#64748b'}}>{pk.qty} units</span>
+              <span className={`badge ${pk.status==='pulled'?'badge-green':'badge-amber'}`} style={{fontSize:9}}>{pk.status==='pulled'?'Pulled':'Needs Pull'}</span>
+            </div>)}
+          </div></>}
+        {allPoIds.length>0&&<><div style={{fontSize:11,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6}}>Purchase Orders</div>
+          <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+            {allPoIds.map(po=><div key={po.id} style={{padding:'8px 14px',border:'1px solid #e2e8f0',borderRadius:8,cursor:'pointer',display:'flex',alignItems:'center',gap:8,background:po.status==='received'?'#f0fdf4':'#fffbeb'}} onClick={()=>{const poData=o.items[po.lineIdx]?.po_lines?.[po.poIdx];if(poData)setEditPO({lineIdx:po.lineIdx,poIdx:po.poIdx,po:poData})}}>
+              <Icon name="cart" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{po.id}</span>
+              <span style={{fontSize:11,color:'#64748b'}}>{po.vendor} — {po.qty} units</span>
+              <span className={`badge ${po.status==='received'?'badge-green':'badge-amber'}`} style={{fontSize:9}}>{po.status==='received'?'Received':'Waiting'}</span>
+            </div>)}
+          </div></>}
+      </div></div>})()}
+
+    {/* EDIT PICK MODAL */}
+    {editPick&&<div className="modal-overlay" onClick={()=>setEditPick(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:600}}>
+      <div className="modal-header"><h2>Edit Pick — {editPick.pick.pick_id||'Pick'}</h2><button className="modal-close" onClick={()=>setEditPick(null)}>x</button></div>
+      <div className="modal-body">
+        <div style={{marginBottom:12}}><label className="form-label">Status</label>
+          <div style={{display:'flex',gap:6}}>{['pick','pulled'].map(s=><button key={s} className={`btn btn-sm ${editPick.pick.status===s?'btn-primary':'btn-secondary'}`} onClick={()=>setEditPick(p=>({...p,pick:{...p.pick,status:s}}))}>{s==='pulled'?'✓ Pulled':'Needs Pull'}</button>)}</div></div>
+        <div style={{fontSize:12,fontWeight:600,color:'#64748b',marginBottom:6}}>Quantities by size:</div>
+        <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+          {Object.entries(editPick.pick).filter(([k])=>k!=='status'&&k!=='pick_id').filter(([,v])=>typeof v==='number'&&v>0).map(([sz,v])=><div key={sz} style={{textAlign:'center'}}>
+            <div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
+            <input style={{width:42,textAlign:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700}} defaultValue={v} onChange={e=>setEditPick(p=>({...p,pick:{...p.pick,[sz]:parseInt(e.target.value)||0}}))}/>
+          </div>)}</div>
+      </div>
+      <div className="modal-footer">
+        <button className="btn btn-secondary" onClick={()=>setEditPick(null)}>Cancel</button>
+        <button className="btn btn-sm" style={{background:'#dc2626',color:'white'}} onClick={()=>{
+          const updatedItems=[...o.items];updatedItems[editPick.lineIdx].pick_lines=updatedItems[editPick.lineIdx].pick_lines.filter((_,i)=>i!==editPick.pickIdx);
+          const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setEditPick(null);nf('Pick deleted');
+        }}><Icon name="trash" size={12}/> Delete</button>
+        <button className="btn btn-primary" onClick={()=>{
+          const updatedItems=[...o.items];updatedItems[editPick.lineIdx].pick_lines[editPick.pickIdx]=editPick.pick;
+          const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setEditPick(null);nf('Pick updated');
+        }}>Save Changes</button>
+      </div>
+    </div></div>}
+
+    {/* EDIT PO MODAL */}
+    {editPO&&<div className="modal-overlay" onClick={()=>setEditPO(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:600}}>
+      <div className="modal-header"><h2>Edit PO — {editPO.po.po_id||'PO'}</h2><button className="modal-close" onClick={()=>setEditPO(null)}>x</button></div>
+      <div className="modal-body">
+        <div style={{marginBottom:12}}><label className="form-label">Status</label>
+          <div style={{display:'flex',gap:6}}>{['waiting','received'].map(s=><button key={s} className={`btn btn-sm ${editPO.po.status===s?'btn-primary':'btn-secondary'}`} onClick={()=>setEditPO(p=>({...p,po:{...p.po,status:s}}))}>{s==='received'?'✓ Received':'Waiting'}</button>)}</div></div>
+        <div style={{fontSize:12,fontWeight:600,color:'#64748b',marginBottom:6}}>Quantities by size:</div>
+        <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+          {Object.entries(editPO.po).filter(([k])=>k!=='status'&&k!=='po_id').filter(([,v])=>typeof v==='number'&&v>0).map(([sz,v])=><div key={sz} style={{textAlign:'center'}}>
+            <div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
+            <input style={{width:42,textAlign:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700}} defaultValue={v} onChange={e=>setEditPO(p=>({...p,po:{...p.po,[sz]:parseInt(e.target.value)||0}}))}/>
+          </div>)}</div>
+      </div>
+      <div className="modal-footer">
+        <button className="btn btn-secondary" onClick={()=>setEditPO(null)}>Cancel</button>
+        <button className="btn btn-sm" style={{background:'#dc2626',color:'white'}} onClick={()=>{
+          const updatedItems=[...o.items];updatedItems[editPO.lineIdx].po_lines=updatedItems[editPO.lineIdx].po_lines.filter((_,i)=>i!==editPO.poIdx);
+          const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setEditPO(null);nf('PO deleted');
+        }}><Icon name="trash" size={12}/> Delete</button>
+        <button className="btn btn-primary" onClick={()=>{
+          const updatedItems=[...o.items];updatedItems[editPO.lineIdx].po_lines[editPO.poIdx]=editPO.po;
+          const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setEditPO(null);nf('PO updated');
+        }}>Save Changes</button>
+      </div>
+    </div></div>}
+
   </div>);
 }
 
@@ -717,7 +818,7 @@ export default function App(){
   const savE=e=>{setEsts(p=>{const ex=p.find(x=>x.id===e.id);return ex?p.map(x=>x.id===e.id?e:x):[...p,e]})};
   const savSO=s=>{setSOs(p=>{const ex=p.find(x=>x.id===s.id);return ex?p.map(x=>x.id===s.id?s:x):[...p,s]})};
   const savI=(pid,inv)=>{setProd(p=>p.map(x=>x.id===pid?{...x,_inv:inv}:x));nf('Updated')};
-  const newE=c=>{const e={id:'EST-'+(2100+ests.length),customer_id:c?.id||null,memo:'',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:c?.catalog_markup||1.65,shipping_type:'pct',shipping_value:0,ship_to_id:'default',email_status:null,art_files:[],items:[]};setEEst(e);setEEstC(c||null);setPg('estimates')};
+  const newE=c=>{const e={id:'EST-'+(2100+ests.length),customer_id:c?.id||null,memo:'',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:c?.catalog_markup||1.65,shipping_type:'pct',shipping_value:5,ship_to_id:'default',email_status:null,art_files:[],items:[]};setEEst(e);setEEstC(c||null);setPg('estimates')};
   const convertSO=est=>{const so={id:'SO-'+(1052+sos.length),customer_id:est.customer_id,estimate_id:est.id,memo:est.memo,status:'waiting_art',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:est.default_markup,expected_date:'',production_notes:'',shipping_type:est.shipping_type,shipping_value:est.shipping_value,ship_to_id:est.ship_to_id,firm_dates:[],art_files:[...(est.art_files||[])],items:est.items.map(it=>({...it,decorations:it.decorations.map(d=>d.kind==='art'?{...d,art_file_id:null}:{...d})}))};
     setSOs(p=>[...p,so]);setEsts(p=>p.map(e=>e.id===est.id?{...e,status:'converted'}:e));setEEst(null);
     const c=cust.find(x=>x.id===so.customer_id);setESO(so);setESOC(c);setPg('orders');nf(`${so.id} created from ${est.id}`)};
