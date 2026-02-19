@@ -1316,19 +1316,33 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
 }
 
 // CUSTOMER DETAIL
-function CustDetail({customer,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst}){
+function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,cu}){
   const[tab,setTab]=useState('activity');const[oF,setOF]=useState('all');const[sF,setSF]=useState('all');const[rR,setRR]=useState('thisyear');
+  const[editContact,setEditContact]=useState(null);const[custLocal,setCustLocal]=useState(initCust);
+  React.useEffect(()=>setCustLocal(initCust),[initCust]);
+  const customer=custLocal;
   const isP=!customer.parent_id;const subs=isP?allCustomers.filter(c=>c.parent_id===customer.id):[];
   const tl={prepay:'Prepay',net15:'Net 15',net30:'Net 30',net60:'Net 60'};
-  const ids=isP?[customer.id,...subs.map(s=>s.id)]:[customer.id];const orders=allOrders.filter(o=>ids.includes(o.customer_id));
-  const fo=orders.filter(o=>{if(oF!=='all'&&o.type!==oF)return false;if(sF==='open')return['sent','draft','open','in_production','waiting_art'].includes(o.status);if(sF==='closed')return['approved','paid','completed','shipped'].includes(o.status);return true});
+  const ids=isP?[customer.id,...subs.map(s=>s.id)]:[customer.id];
+  const custSOs=(sos||[]).filter(o=>ids.includes(o.customer_id));
+  const orders=allOrders.filter(o=>ids.includes(o.customer_id));
+  const fo=orders.filter(o=>{if(oF!=='all'&&o.type!==oF)return false;if(sF==='open')return['sent','draft','open','need_order','waiting_receive'].includes(o.status)||calcSOStatus(o)!=='complete';if(sF==='closed')return['approved','paid','complete'].includes(o.status)||calcSOStatus(o)==='complete';return true});
   const gn=id=>allCustomers.find(x=>x.id===id)?.alpha_tag||'';
+  // Contact editing
+  const saveContact=(idx,updated)=>{const newContacts=[...(customer.contacts||[])];newContacts[idx]=updated;const newCust={...customer,contacts:newContacts};setCustLocal(newCust);onEdit(newCust);setEditContact(null)};
+  const addContact=()=>{const newContacts=[...(customer.contacts||[]),{name:'',email:'',phone:'',role:''}];setCustLocal({...customer,contacts:newContacts});setEditContact(newContacts.length-1)};
+  const rmContact=(idx)=>{const newContacts=(customer.contacts||[]).filter((_,i)=>i!==idx);const newCust={...customer,contacts:newContacts};setCustLocal(newCust);onEdit(newCust)};
+  // Unread messages for this customer
+  const custUnread=(msgs||[]).filter(m=>custSOs.some(s=>s.id===m.so_id)&&!(m.read_by||[]).includes(cu?.id||'')).length;
+
   return(<div>
   <button className="btn btn-secondary" onClick={onBack} style={{marginBottom:12}}><Icon name="back" size={14}/> All Customers</button>
   <div className="card" style={{marginBottom:16}}><div style={{padding:'20px 24px',display:'flex',gap:16,alignItems:'flex-start'}}>
   <div style={{width:56,height:56,borderRadius:12,background:'#dbeafe',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}><Icon name="building" size={28}/></div>
   <div style={{flex:1}}>
-    <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}><span style={{fontSize:20,fontWeight:800}}>{customer.name}</span><span className="badge badge-blue">{customer.alpha_tag}</span><span className="badge badge-green">Tier {customer.adidas_ua_tier}</span><span className="badge badge-gray">{tl[customer.payment_terms]||'Net 30'}</span></div>
+    <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}><span style={{fontSize:20,fontWeight:800}}>{customer.name}</span><span className="badge badge-blue">{customer.alpha_tag}</span><span className="badge badge-green">Tier {customer.adidas_ua_tier}</span><span className="badge badge-gray">{tl[customer.payment_terms]||'Net 30'}</span>
+      {custUnread>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'2px 8px',fontSize:10,fontWeight:700}}>{custUnread} unread</span>}
+    </div>
     <div style={{fontSize:13,color:'#64748b',marginTop:4}}>{(customer.contacts||[]).map((c,i)=><span key={i}>{c.name} ({c.role}) {c.email}{i<customer.contacts.length-1&&' | '}</span>)}</div>
     <div style={{display:'flex',gap:8,marginTop:10,flexWrap:'wrap'}}>
       <button className="btn btn-sm btn-primary" onClick={()=>onNewEst(customer)}><Icon name="file" size={12}/> Estimate</button>
@@ -1339,7 +1353,7 @@ function CustDetail({customer,allCustomers,allOrders,onBack,onEdit,onSelCust,onN
         <button className="btn btn-sm" style={{background:'#dc2626',color:'white',fontSize:11}} onClick={()=>{
           const openInvs=allOrders.filter(oo=>ids.includes(oo.customer_id)&&oo.type==='invoice'&&oo.status==='open');
           if(openInvs.length===0)return;
-          const msg=`Email ${openInvs.length} open invoice${openInvs.length>1?'s':''} (${openInvs.map(i=>i.id).join(', ')}) totaling $${openInvs.reduce((a,i)=>a+(i.total||0)-(i.paid||0),0).toLocaleString()} to ${(customer.contacts||[]).find(c=>c.role==='Accounting')?.email||(customer.contacts||[])[0]?.email||'customer'}?`;
+          const msg=`Email ${openInvs.length} open invoice${openInvs.length>1?'s':''} totaling $${openInvs.reduce((a,i)=>a+(i.total||0)-(i.paid||0),0).toLocaleString()}?`;
           if(window.confirm(msg)){alert('Invoice PDFs sent! (demo)')}
         }}>📄 Email Invoices ({customer._oi})</button>
         <button className="btn btn-sm" style={{background:'#7c3aed',color:'white',fontSize:11}} onClick={()=>{
@@ -1350,13 +1364,38 @@ function CustDetail({customer,allCustomers,allOrders,onBack,onEdit,onSelCust,onN
     </div>
   </div>
   {(customer._ob||0)>0&&<div style={{textAlign:'right'}}><div style={{fontSize:11,color:'#dc2626',fontWeight:600}}>BALANCE</div><div style={{fontSize:24,fontWeight:800,color:'#dc2626'}}>${customer._ob.toLocaleString()}</div></div>}</div></div>
-  <div className="stats-row"><div className="stat-card"><div className="stat-label">Open Est</div><div className="stat-value">{customer._oe||0}</div></div><div className="stat-card"><div className="stat-label">Open SOs</div><div className="stat-value">{customer._os||0}</div></div><div className="stat-card"><div className="stat-label">Open Inv</div><div className="stat-value" style={{color:(customer._oi||0)>0?'#dc2626':''}}>{customer._oi||0}</div></div><div className="stat-card"><div className="stat-label">Balance</div><div className="stat-value" style={{color:(customer._ob||0)>0?'#dc2626':''}}>${(customer._ob||0).toLocaleString()}</div></div></div>
+  <div className="stats-row"><div className="stat-card"><div className="stat-label">Open Est</div><div className="stat-value">{customer._oe||0}</div></div><div className="stat-card"><div className="stat-label">Open SOs</div><div className="stat-value">{custSOs.filter(s=>calcSOStatus(s)!=='complete').length}</div></div><div className="stat-card"><div className="stat-label">Open Inv</div><div className="stat-value" style={{color:(customer._oi||0)>0?'#dc2626':''}}>{customer._oi||0}</div></div><div className="stat-card"><div className="stat-label">Balance</div><div className="stat-value" style={{color:(customer._ob||0)>0?'#dc2626':''}}>${(customer._ob||0).toLocaleString()}</div></div></div>
   {isP&&subs.length>0&&<div className="card" style={{marginBottom:16}}><div className="card-header"><h2>Sub-Customers ({subs.length})</h2></div><div className="card-body" style={{padding:0}}>
   {subs.map(sub=><div key={sub.id} style={{padding:'10px 18px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:8,cursor:'pointer'}} onClick={()=>onSelCust(sub)}>
     <span style={{color:'#cbd5e1'}}>|_</span><span style={{fontWeight:600,color:'#1e40af'}}>{sub.name}</span><span className="badge badge-gray">{sub.alpha_tag}</span><div style={{flex:1}}/>
     {(sub._ob||0)>0&&<span style={{fontSize:12,fontWeight:700,color:'#dc2626'}}>${sub._ob.toLocaleString()}</span>}</div>)}</div></div>}
-  <div className="tabs">{['activity','overview','artwork','reporting'].map(t=><button key={t} className={`tab ${tab===t?'active':''}`} onClick={()=>setTab(t)}>{t==='activity'?'Orders & Invoices':t[0].toUpperCase()+t.slice(1)}</button>)}</div>
-  {tab==='activity'&&<div className="card"><div className="card-header"><h2>Orders</h2><div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
+  <div className="tabs">{['activity','contacts','overview','artwork','reporting'].map(t=><button key={t} className={`tab ${tab===t?'active':''}`} onClick={()=>setTab(t)}>{t==='activity'?'Orders':t==='contacts'?'Contacts'+(customer.contacts?.length?' ('+customer.contacts.length+')':''):t[0].toUpperCase()+t.slice(1)}</button>)}</div>
+
+  {/* ORDERS TAB — with live SO status */}
+  {tab==='activity'&&<>
+    {/* Active SOs with fulfillment progress */}
+    {custSOs.filter(s=>calcSOStatus(s)!=='complete').length>0&&<div className="card" style={{marginBottom:12}}><div className="card-header"><h2>Active Sales Orders</h2></div><div className="card-body" style={{padding:0}}>
+      <table style={{fontSize:12}}><thead><tr><th>SO</th><th>Memo</th><th>Status</th><th>Items</th><th>Fulfillment</th><th>Expected</th></tr></thead><tbody>
+      {custSOs.filter(s=>calcSOStatus(s)!=='complete').map(so=>{
+        const st=calcSOStatus(so);const stL={need_order:'Need to Order',waiting_receive:'Waiting to Receive',complete:'Complete'};
+        let totalU=0,fulU=0;
+        (so.items||[]).forEach(it=>{Object.entries(it.sizes||{}).filter(([,v])=>v>0).forEach(([sz,v])=>{totalU+=v;const pQ=(it.pick_lines||[]).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+(pk[sz]||0),0);const rQ=(it.po_lines||[]).reduce((a,pk)=>a+((pk.received||{})[sz]||0),0);fulU+=Math.min(v,pQ+rQ)})});
+        const pct=totalU>0?Math.round(fulU/totalU*100):0;
+        const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
+        return<tr key={so.id}>
+          <td style={{fontWeight:700,color:'#1e40af'}}>{so.id}</td>
+          <td>{so.memo}</td>
+          <td><span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:SC[st]?.bg,color:SC[st]?.c}}>{stL[st]}</span></td>
+          <td>{(so.items||[]).length} items · {totalU} units</td>
+          <td><div style={{display:'flex',alignItems:'center',gap:6}}>
+            <div style={{width:60,background:'#e2e8f0',borderRadius:3,height:5,overflow:'hidden'}}><div style={{height:5,borderRadius:3,background:pct>=100?'#22c55e':pct>50?'#3b82f6':'#f59e0b',width:pct+'%'}}/></div>
+            <span style={{fontSize:11,fontWeight:600}}>{pct}% ({fulU}/{totalU})</span></div></td>
+          <td style={{color:daysOut!=null&&daysOut<=7?'#dc2626':'#64748b',fontWeight:daysOut!=null&&daysOut<=7?700:400}}>{so.expected_date||'—'}{daysOut!=null&&daysOut>=0&&<span style={{fontSize:10,color:'#94a3b8',marginLeft:4}}>({daysOut}d)</span>}</td>
+        </tr>})}
+      </tbody></table>
+    </div></div>}
+    {/* All orders/invoices */}
+    <div className="card"><div className="card-header"><h2>All Transactions</h2><div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
     {[['all','All'],['estimate','Est'],['sales_order','SO'],['invoice','Inv']].map(([v,l])=><button key={v} className={`btn btn-sm ${oF===v?'btn-primary':'btn-secondary'}`} onClick={()=>setOF(v)}>{l}</button>)}
     <span style={{width:1,background:'#e2e8f0',margin:'0 4px'}}/>
     {[['all','All'],['open','Open'],['closed','Closed']].map(([v,l])=><button key={v} className={`btn btn-sm ${sF===v?'btn-primary':'btn-secondary'}`} onClick={()=>setSF(v)}>{l}</button>)}
@@ -1366,12 +1405,44 @@ function CustDetail({customer,allCustomers,allOrders,onBack,onEdit,onSelCust,onN
       <td><span className={`badge ${o.type==='estimate'?'badge-amber':o.type==='sales_order'?'badge-blue':'badge-red'}`}>{o.type==='sales_order'?'SO':o.type==='estimate'?'Est':'Inv'}</span></td>
       <td>{o.date}</td><td style={{fontSize:12}}>{o.memo}</td>{isP&&<td><span className="badge badge-gray">{gn(o.customer_id)}</span></td>}
       <td style={{fontWeight:700}}>${o.total?.toLocaleString()}</td>
-      <td><span className={`badge ${o.status==='open'||o.status==='sent'?'badge-amber':o.status==='approved'||o.status==='paid'?'badge-green':o.status==='draft'?'badge-gray':'badge-blue'}`}>{o.status?.replace(/_/g,' ')}</span></td></tr>)}</tbody></table></div></div>}
+      <td><span className={`badge ${o.status==='open'||o.status==='sent'?'badge-amber':o.status==='approved'||o.status==='paid'?'badge-green':o.status==='draft'?'badge-gray':'badge-blue'}`}>{o.status?.replace(/_/g,' ')}</span></td></tr>)}</tbody></table></div></div>
+  </>}
+
+  {/* CONTACTS TAB — editable */}
+  {tab==='contacts'&&<div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+    <h2>Contacts</h2><button className="btn btn-sm btn-primary" onClick={addContact}><Icon name="plus" size={12}/> Add Contact</button>
+  </div><div className="card-body" style={{padding:0}}>
+    {(customer.contacts||[]).length===0&&<div style={{padding:20,textAlign:'center',color:'#94a3b8'}}>No contacts</div>}
+    {(customer.contacts||[]).map((c,i)=>editContact===i?
+      <div key={i} style={{padding:14,borderBottom:'1px solid #f1f5f9',background:'#fffbeb'}}>
+        <div style={{display:'flex',gap:8,marginBottom:8,flexWrap:'wrap'}}>
+          <div style={{flex:1,minWidth:140}}><label className="form-label">Name</label><input className="form-input" value={c.name} onChange={e=>{const nc=[...(customer.contacts||[])];nc[i]={...nc[i],name:e.target.value};setCustLocal({...customer,contacts:nc})}}/></div>
+          <div style={{flex:1,minWidth:140}}><label className="form-label">Role</label><input className="form-input" value={c.role} onChange={e=>{const nc=[...(customer.contacts||[])];nc[i]={...nc[i],role:e.target.value};setCustLocal({...customer,contacts:nc})}}/></div>
+        </div>
+        <div style={{display:'flex',gap:8,marginBottom:8,flexWrap:'wrap'}}>
+          <div style={{flex:1,minWidth:180}}><label className="form-label">Email</label><input className="form-input" type="email" value={c.email} onChange={e=>{const nc=[...(customer.contacts||[])];nc[i]={...nc[i],email:e.target.value};setCustLocal({...customer,contacts:nc})}}/></div>
+          <div style={{flex:1,minWidth:140}}><label className="form-label">Phone</label><input className="form-input" value={c.phone||''} onChange={e=>{const nc=[...(customer.contacts||[])];nc[i]={...nc[i],phone:e.target.value};setCustLocal({...customer,contacts:nc})}}/></div>
+        </div>
+        <div style={{display:'flex',gap:6}}>
+          <button className="btn btn-sm btn-primary" onClick={()=>saveContact(i,customer.contacts[i])}>Save</button>
+          <button className="btn btn-sm btn-secondary" onClick={()=>{setCustLocal(initCust);setEditContact(null)}}>Cancel</button>
+          <button className="btn btn-sm" style={{background:'#dc2626',color:'white',marginLeft:'auto'}} onClick={()=>{if(window.confirm('Delete this contact?'))rmContact(i)}}>Delete</button>
+        </div>
+      </div>
+    :<div key={i} style={{padding:'12px 18px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:12}}>
+        <div style={{width:36,height:36,borderRadius:18,background:'#e0e7ff',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:700,color:'#3730a3',fontSize:14}}>{(c.name||'?')[0]}</div>
+        <div style={{flex:1}}>
+          <div><strong>{c.name}</strong> <span style={{fontSize:11,color:'#64748b'}}>({c.role})</span></div>
+          <div style={{fontSize:12,color:'#64748b'}}>{c.email}{c.phone&&` · ${c.phone}`}</div>
+        </div>
+        <button className="btn btn-sm btn-secondary" onClick={()=>setEditContact(i)}><Icon name="edit" size={12}/></button>
+      </div>)}
+  </div></div>}
+
   {tab==='overview'&&<div className="card"><div className="card-header"><h2>Info</h2></div><div className="card-body">
     <div className="form-row form-row-3"><div><div className="form-label">Billing</div><div style={{fontSize:13}}>{customer.billing_address_line1||'--'}<br/>{customer.billing_city}, {customer.billing_state} {customer.billing_zip}</div></div>
     <div><div className="form-label">Shipping</div><div style={{fontSize:13}}>{customer.shipping_address_line1||'--'}<br/>{customer.shipping_city}, {customer.shipping_state}</div></div>
     <div><div className="form-label">Tax</div><div style={{fontSize:13}}>{customer.tax_rate?(customer.tax_rate*100).toFixed(2)+'%':'Auto'}</div></div></div>
-    <div style={{marginTop:16}}><div className="form-label">Contacts</div>{(customer.contacts||[]).map((c,i)=><div key={i} style={{fontSize:13,padding:'4px 0'}}><strong>{c.name}</strong> ({c.role}) — {c.email} {c.phone&&`| ${c.phone}`}</div>)}</div>
   </div></div>}
   {tab==='artwork'&&<div className="card"><div className="card-body"><div className="empty">Customer art library — aggregates from SOs (Phase 3)</div></div></div>}
   {tab==='reporting'&&<div className="card"><div className="card-header"><h2>Reporting</h2><div style={{display:'flex',gap:4}}>{[['thisyear','This Year'],['lastyear','Last Year'],['rolling','Rolling 12'],['alltime','All']].map(([v,l])=><button key={v} className={`btn btn-sm ${rR===v?'btn-primary':'btn-secondary'}`} onClick={()=>setRR(v)}>{l}</button>)}</div></div>
@@ -1545,7 +1616,7 @@ export default function App(){
 
   // CUSTOMERS
   const rCust=()=>{
-    if(selC)return<CustDetail customer={selC} allCustomers={cust} allOrders={aO} onBack={()=>setSelC(null)} onEdit={c=>setCM({open:true,c})} onSelCust={c=>setSelC(c)} onNewEst={c=>newE(c)}/>;
+    if(selC)return<CustDetail customer={selC} allCustomers={cust} allOrders={aO} onBack={()=>setSelC(null)} onEdit={c=>setCM({open:true,c})} onSelCust={c=>setSelC(c)} onNewEst={c=>newE(c)} sos={sos} msgs={msgs} cu={cu}/>;
     const f=pars.filter(p=>{if(rF!=='all'&&p.primary_rep_id!==rF)return false;if(q){const s=q.toLowerCase();return p.name.toLowerCase().includes(s)||p.alpha_tag?.toLowerCase().includes(s)||gK(p.id).some(c=>c.name.toLowerCase().includes(s))}return true});
     return(<><div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap'}}><div className="search-bar" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search..." value={q} onChange={e=>setQ(e.target.value)}/></div>
       <select className="form-select" style={{width:150}} value={rF} onChange={e=>setRF(e.target.value)}><option value="all">All Reps</option>{REPS.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
