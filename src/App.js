@@ -125,8 +125,8 @@ function SendModal({isOpen,onClose,estimate,customer,onSend}){
 function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack,onConvertSO,cu,nf,msgs,onMsg}){
   const isE=mode==='estimate';const isSO=mode==='so';
   const[o,setO]=useState(order);const[cust,setCust]=useState(ic);const[pS,setPS]=useState('');const[showAdd,setShowAdd]=useState(false);
-  const[tab,setTab]=useState('items');const[saved,setSaved]=useState(!!order.customer_id);const[showSend,setShowSend]=useState(false);const[showPick,setShowPick]=useState(false);
-  const[newAddr,setNewAddr]=useState('');const[showNA,setShowNA]=useState(false);const[showSzPicker,setShowSzPicker]=useState(null);
+  const[tab,setTab]=useState('items');const[saved,setSaved]=useState(!!order.customer_id);const[showSend,setShowSend]=useState(false);const[showPick,setShowPick]=useState(false);const[showPO,setShowPO]=useState(null);
+  const[newAddr,setNewAddr]=useState('');const[showNA,setShowNA]=useState(false);const[showSzPicker,setShowSzPicker]=useState(null);const[showCustom,setShowCustom]=useState(false);const[custItem,setCustItem]=useState({vendor_id:'',name:'',sku:'CUSTOM',nsa_cost:0,unit_sell:0,color:''});
   const sv=(k,v)=>setO(e=>({...e,[k]:v,updated_at:new Date().toLocaleString()}));
   const isAU=b=>b==='Adidas'||b==='Under Armour'||b==='New Balance';const tD={A:0.4,B:0.35,C:0.3};
   const selC=id=>{const c=allCustomers.find(x=>x.id===id);if(c){setCust(c);sv('customer_id',id);sv('default_markup',c.catalog_markup||1.65)}};
@@ -183,6 +183,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         {isE&&saved&&o.status!=='approved'&&o.status!=='converted'&&<button className="btn btn-secondary" onClick={()=>setShowSend(true)}><Icon name="send" size={14}/> Send</button>}
         {isE&&o.status==='approved'&&<button className="btn btn-primary" style={{background:'#7c3aed'}} onClick={()=>onConvertSO(o)}><Icon name="box" size={14}/> Convert to SO</button>}
         {isSO&&<button className="btn btn-secondary" onClick={()=>setShowPick(true)}><Icon name="grid" size={14}/> Pick Ticket</button>}
+        {isSO&&<button className="btn btn-secondary" onClick={()=>setShowPO('select')}><Icon name="cart" size={14}/> Create PO</button>}
       </div>
       {/* SHIPPING */}
       <div style={{display:'flex',gap:12,marginTop:12,alignItems:'end',flexWrap:'wrap',borderTop:'1px solid #f1f5f9',paddingTop:12}}>
@@ -220,7 +221,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
     {tab==='items'&&<>{o.items.map((item,idx)=>{const qty=Object.values(item.sizes).reduce((a,v)=>a+v,0);
       let dR=0,dC=0;item.decorations.forEach(d=>{const dp=dP(d,qty,af);dR+=qty*dp.sell;dC+=qty*dp.cost});
       const iR=qty*item.unit_sell+dR;const iC=qty*item.nsa_cost+dC;const mg=iR-iC;
-      const szs=item.available_sizes||['S','M','L','XL','2XL'];
+      const SZ_ORD=['XS','S','M','L','XL','2XL','3XL','4XL','LT','XLT','2XLT','3XLT','OSFA'];const szs=(item.available_sizes||['S','M','L','XL','2XL']).slice().sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
       const addable=EXTRA_SIZES.filter(s=>!(item.available_sizes||[]).includes(s));
       return(<div key={idx} className="card" style={{marginBottom:12}}>
         <div style={{padding:'14px 18px',borderBottom:'1px solid #f1f5f9'}}>
@@ -352,13 +353,29 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
     {/* ADD PRODUCT */}
     <div className="card"><div style={{padding:'14px 18px'}}>
       {!showAdd?<button className="btn btn-primary" onClick={()=>setShowAdd(true)} disabled={!cust}><Icon name="plus" size={14}/> Add Product</button>
+      <button className="btn btn-secondary" onClick={()=>setShowCustom(!showCustom)} disabled={!cust}><Icon name="plus" size={14}/> Custom Item</button>
       :<div><div className="search-bar" style={{marginBottom:8}}><Icon name="search"/><input placeholder="Search SKU, name, brand..." value={pS} onChange={e=>setPS(e.target.value)} autoFocus/></div>
         <div style={{maxHeight:250,overflow:'auto'}}>{fp.slice(0,12).map(p=><div key={p.id} style={{padding:'10px 12px',borderBottom:'1px solid #f8fafc',cursor:'pointer',display:'flex',alignItems:'center',gap:10}} onClick={()=>addP(p)}>
           <span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',background:'#dbeafe',padding:'2px 6px',borderRadius:3}}>{p.sku}</span><span style={{fontWeight:600}}>{p.name}</span><span className="badge badge-blue">{p.brand}</span>
           {p._colors&&<span style={{fontSize:10,color:'#7c3aed'}}>{p._colors.length} clr</span>}
           <span style={{marginLeft:'auto',fontSize:12,color:'#64748b'}}>${p.nsa_cost?.toFixed(2)}</span></div>)}</div>
-        <button className="btn btn-sm btn-secondary" onClick={()=>{setShowAdd(false);setPS('')}} style={{marginTop:8}}>Cancel</button></div>}
-    </div></div></>}
+        <button className="btn btn-sm btn-secondary" onClick={()=>{setShowAdd(false);setPS('')}} style={{marginTop:8}}>Cancel</button>
+        <button className="btn btn-sm btn-secondary" onClick={()=>{setShowAdd(false);setPS('');setShowCustom(true)}} style={{marginTop:8,marginLeft:4}}>+ Custom Item</button></div>}
+    </div></div>
+    {showCustom&&<div className="card" style={{marginTop:8}}><div style={{padding:'14px 18px'}}>
+      <div style={{fontWeight:700,marginBottom:8}}>Custom Item</div>
+      <div style={{display:'grid',gridTemplateColumns:'120px 1fr 100px',gap:8,marginBottom:8}}>
+        <div><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Vendor</label><select className="form-select" value={custItem.vendor_id} onChange={e=>setCustItem(x=>({...x,vendor_id:e.target.value}))}><option value="">Select...</option>{D_V.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}</select></div>
+        <div><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Item Name</label><input className="form-input" value={custItem.name} onChange={e=>setCustItem(x=>({...x,name:e.target.value}))} placeholder="Custom jersey, special order hat, etc."/></div>
+        <div><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Color</label><input className="form-input" value={custItem.color} onChange={e=>setCustItem(x=>({...x,color:e.target.value}))} placeholder="Navy"/></div></div>
+      <div style={{display:'grid',gridTemplateColumns:'100px 100px 100px 1fr',gap:8,marginBottom:8}}>
+        <div><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>SKU (opt)</label><input className="form-input" value={custItem.sku} onChange={e=>setCustItem(x=>({...x,sku:e.target.value}))}/></div>
+        <div><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Cost</label><$In value={custItem.nsa_cost} onChange={v=>setCustItem(x=>({...x,nsa_cost:v}))}/></div>
+        <div><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Sell</label><$In value={custItem.unit_sell} onChange={v=>setCustItem(x=>({...x,unit_sell:v}))}/></div>
+        <div style={{display:'flex',gap:4,alignItems:'end'}}><button className="btn btn-primary" disabled={!custItem.name} onClick={()=>{sv('items',[...o.items,{product_id:null,sku:custItem.sku||'CUSTOM',name:custItem.name,brand:D_V.find(v=>v.id===custItem.vendor_id)?.name||'Custom',vendor_id:custItem.vendor_id,color:custItem.color,nsa_cost:custItem.nsa_cost,retail_price:0,unit_sell:custItem.unit_sell,available_sizes:['S','M','L','XL','2XL'],sizes:{},decorations:[],is_custom:true}]);setShowCustom(false);setCustItem({vendor_id:'',name:'',sku:'CUSTOM',nsa_cost:0,unit_sell:0,color:''})}}>Add</button>
+          <button className="btn btn-secondary" onClick={()=>setShowCustom(false)}>Cancel</button></div></div>
+    </div></div>}
+    </>}
 
     {/* ART LIBRARY TAB */}
     {tab==='art'&&<div className="card"><div className="card-header"><h2>Art Library</h2><button className="btn btn-sm btn-primary" onClick={addArt}><Icon name="plus" size={12}/> New Art Group</button></div>
@@ -455,7 +472,41 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
             <button className="btn btn-sm btn-secondary" onClick={()=>sv('firm_dates',(o.firm_dates||[]).filter((_,x)=>x!==i))}><Icon name="trash" size={10}/></button></div></td></tr>})}</tbody></table>}</div></div>}
 
     <SendModal isOpen={showSend} onClose={()=>setShowSend(false)} estimate={o} customer={cust} onSend={()=>{sv('status','sent');sv('email_status','sent');onSave({...o,status:'sent',email_status:'sent'});nf('Estimate sent!')}}/>
-    {showPick&&<div className="modal-overlay" onClick={()=>setShowPick(false)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:800,maxHeight:'90vh',overflow:'auto'}}>
+    {showPO&&(()=>{
+      // Vendor selection or PO form
+      const vendors=[...new Set(o.items.map(it=>it.vendor_id||it.brand).filter(Boolean))];
+      const vendorMap={};o.items.forEach((it,i)=>{const vk=it.vendor_id||D_V.find(v=>v.name===it.brand)?.id||it.brand;if(!vendorMap[vk])vendorMap[vk]=[];vendorMap[vk].push({...it,_idx:i})});
+      if(showPO==='select')return<div className="modal-overlay" onClick={()=>setShowPO(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:500}}>
+        <div className="modal-header"><h2>Create PO — Select Vendor</h2><button className="modal-close" onClick={()=>setShowPO(null)}>x</button></div>
+        <div className="modal-body">{Object.entries(vendorMap).map(([vk,items])=>{const vn=D_V.find(v=>v.id===vk)?.name||vk;
+          return<div key={vk} style={{padding:'12px 16px',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:8,cursor:'pointer',display:'flex',alignItems:'center',gap:12}} onClick={()=>setShowPO(vk)}>
+            <div style={{width:40,height:40,borderRadius:8,background:'#ede9fe',display:'flex',alignItems:'center',justifyContent:'center'}}><Icon name="package" size={20}/></div>
+            <div style={{flex:1}}><div style={{fontWeight:700}}>{vn}</div><div style={{fontSize:12,color:'#64748b'}}>{items.length} item(s)</div></div>
+            <Icon name="back" size={16} style={{transform:'rotate(180deg)'}}/></div>})}
+        </div></div></div>;
+      // PO form for selected vendor
+      const vItems=vendorMap[showPO]||[];const vn=D_V.find(v=>v.id===showPO)?.name||showPO;
+      return<div className="modal-overlay" onClick={()=>setShowPO(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:800,maxHeight:'90vh',overflow:'auto'}}>
+        <div className="modal-header"><h2>New PO — {vn}</h2><button className="modal-close" onClick={()=>setShowPO(null)}>x</button></div>
+        <div className="modal-body">
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:12,marginBottom:16}}>
+            <div><label className="form-label">PO Number</label><input className="form-input" value={'PO-'+(3000+Math.floor(Math.random()*100))} readOnly style={{color:'#1e40af',fontWeight:700}}/></div>
+            <div><label className="form-label">Ship To</label><select className="form-select">{addrs.map(a=><option key={a.id}>{a.label}</option>)}</select></div>
+            <div><label className="form-label">Expected Date</label><input className="form-input" type="date"/></div></div>
+          {vItems.map((it,vi)=>{const q=Object.values(it.sizes).reduce((a,v)=>a+v,0);const szList=Object.entries(it.sizes).filter(([,v])=>v>0).sort((a,b)=>{const ord=['XS','S','M','L','XL','2XL','3XL','4XL'];return(ord.indexOf(a[0])===-1?99:ord.indexOf(a[0]))-(ord.indexOf(b[0])===-1?99:ord.indexOf(b[0]))});
+            return<div key={vi} style={{padding:12,border:'1px solid #e2e8f0',borderRadius:6,marginBottom:8}}>
+              <div style={{display:'flex',justifyContent:'space-between',marginBottom:8}}><div><span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',marginRight:8}}>{it.sku}</span><strong>{it.name}</strong> — {it.color}</div><div style={{fontWeight:700}}>SO Qty: {q}</div></div>
+              <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                <span style={{fontSize:12,fontWeight:600,color:'#64748b'}}>PO Qty:</span>
+                {szList.map(([sz,v])=><div key={sz} style={{textAlign:'center'}}><div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
+                  <input style={{width:42,textAlign:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700}} defaultValue={v}/></div>)}</div>
+            </div>})}
+          <div style={{marginTop:8}}><label className="form-label">Notes</label><input className="form-input" placeholder="PO notes for vendor..."/></div>
+        </div>
+        <div className="modal-footer"><button className="btn btn-secondary" onClick={()=>setShowPO('select')}>← Back</button><button className="btn btn-secondary" onClick={()=>setShowPO(null)}>Cancel</button><button className="btn btn-primary" onClick={()=>{setShowPO(null);nf('PO created (Phase 4 will save to DB)')}}><Icon name="cart" size={14}/> Create PO</button></div>
+      </div></div>})()}
+
+        {showPick&&<div className="modal-overlay" onClick={()=>setShowPick(false)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:800,maxHeight:'90vh',overflow:'auto'}}>
       <div className="modal-header"><h2>Pick Ticket — {o.id}</h2><button className="modal-close" onClick={()=>setShowPick(false)}>x</button></div>
       <div className="modal-body" id="pick-ticket-content">
         <div style={{display:'flex',justifyContent:'space-between',marginBottom:16,paddingBottom:12,borderBottom:'2px solid #0f172a'}}>
@@ -469,7 +520,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           return<div key={i} style={{marginBottom:16,padding:12,border:'1px solid #e2e8f0',borderRadius:6}}>
             <div style={{display:'flex',justifyContent:'space-between',marginBottom:8}}><div><span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',marginRight:8}}>{it.sku}</span><strong>{it.name}</strong> — {it.color}</div><div style={{fontWeight:800}}>Qty: {q}</div></div>
             <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}><thead><tr style={{borderBottom:'2px solid #0f172a'}}>{szList.map(([sz])=><th key={sz} style={{padding:'4px 8px',textAlign:'center',minWidth:40}}>{sz}</th>)}<th style={{padding:'4px 8px'}}>Total</th></tr></thead>
-            <tbody><tr>{szList.map(([sz,v])=><td key={sz} style={{padding:'4px 8px',textAlign:'center',fontWeight:700,fontSize:14}}>{v}</td>)}<td style={{padding:'4px 8px',textAlign:'center',fontWeight:800,fontSize:14}}>{q}</td></tr>
+            <tbody><tr style={{fontSize:10,color:'#64748b'}}>{szList.map(([sz,v])=><td key={sz} style={{padding:'2px 8px',textAlign:'center'}}>need: {v}</td>)}<td/></tr>
+            <tr>{szList.map(([sz,v])=><td key={sz} style={{padding:'4px 8px',textAlign:'center'}}><input style={{width:36,textAlign:'center',border:'1px solid #d1d5db',borderRadius:3,padding:'3px',fontSize:14,fontWeight:700}} defaultValue={v}/></td>)}<td style={{padding:'4px 8px',textAlign:'center',fontWeight:800,fontSize:14}}>{q}</td></tr>
             {it.decorations.some(d=>d.kind==='numbers')&&<tr style={{borderTop:'1px solid #e2e8f0'}}>{szList.map(([sz])=>{const nums=it.decorations.find(d=>d.kind==='numbers');const r=nums?.roster?.[sz]||[];return<td key={sz} style={{padding:'4px 8px',textAlign:'center',fontSize:10,color:'#7c3aed'}}>{r.filter(Boolean).join(', ')}</td>})}<td/></tr>}
             </tbody></table>
             {it.decorations.map((d,di)=>{const artF=d.kind==='art'?af.find(f=>f.id===d.art_file_id):null;
@@ -797,7 +849,7 @@ export default function App(){
             </div>})()}
           {gOpen&&<div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:59}} onClick={()=>setGOpen(false)}/>}
         </div>
-        <div style={{fontSize:12,color:'#94a3b8'}}>v5c</div></div>
+        <div style={{display:'flex',gap:6,alignItems:'center'}}><button className="btn btn-sm btn-primary" onClick={()=>newE(null)} style={{fontSize:11}}><Icon name="plus" size={12}/> Estimate</button><button className="btn btn-sm btn-secondary" onClick={()=>setCM({open:true,c:null})} style={{fontSize:11}}><Icon name="plus" size={12}/> Customer</button></div></div>
       <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}</div></div>
     <CustModal isOpen={cM.open} onClose={()=>setCM({open:false,c:null})} onSave={savC} customer={cM.c} parents={pars}/>
     <AdjModal isOpen={aM.open} onClose={()=>setAM({open:false,p:null})} product={aM.p} onSave={savI}/>
