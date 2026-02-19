@@ -70,6 +70,7 @@ const D_C=[
 {id:'c3',parent_id:null,name:'Clovis Unified School District',alpha_tag:'CUSD',contacts:[{name:'District Office',email:'purchasing@clovisusd.k12.ca.us',phone:'559-555-0300',role:'Primary'}],billing_city:'Clovis',billing_state:'CA',shipping_city:'Clovis',shipping_state:'CA',adidas_ua_tier:'B',catalog_markup:1.65,payment_terms:'prepay',tax_rate:0.0863,primary_rep_id:'r5',is_active:true,_oe:2,_os:0,_oi:0,_ob:0},
 {id:'c3a',parent_id:'c3',name:'Clovis High Badminton',alpha_tag:'CHBad',contacts:[{name:'Coach Kim',email:'kim@clovisusd.k12.ca.us',phone:'',role:'Head Coach'}],shipping_city:'Clovis',shipping_state:'CA',adidas_ua_tier:'B',catalog_markup:1.65,payment_terms:'prepay',primary_rep_id:'r5',is_active:true,_oe:2,_os:0,_oi:0,_ob:0},
 ];
+const BATCH_VENDORS={'sss':{name:'S&S Activewear',threshold:200},'sanmar':{name:'SanMar',threshold:200},'richardson':{name:'Richardson',threshold:200},'momentec':{name:'Momentec',threshold:200},'a4':{name:'A4',threshold:200}};
 const D_V=[
 {id:'v1',name:'Adidas',vendor_type:'upload',nsa_carries_inventory:true,click_automation:true,is_active:true,contact_email:'teamorders@adidas.com',contact_phone:'800-448-1796',rep_name:'Sarah Johnson',payment_terms:'net60',notes:'Team dealer program.',_oi:3,_it:12450,_ac:4200,_a3:5250,_a6:3000,_a9:0},
 {id:'v2',name:'Under Armour',vendor_type:'upload',nsa_carries_inventory:true,click_automation:true,is_active:true,contact_email:'teamdealer@underarmour.com',rep_name:'Mike Daniels',payment_terms:'net60',_oi:2,_it:8200,_ac:5200,_a3:3000,_a6:0,_a9:0},
@@ -281,7 +282,7 @@ function calcSOStatus(ord){
   return'waiting_receive';
 }
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack,onConvertSO,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack,onConvertSO,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,batchPOs,onBatchPO}){
   const isE=mode==='estimate';const isSO=mode==='so';
   const[o,setO]=useState(order);const[cust,setCust]=useState(ic);const[pS,setPS]=useState('');const[showAdd,setShowAdd]=useState(false);
   const[tab,setTab]=useState('items');const[dirty,setDirty]=useState(false);const[selJob,setSelJob]=useState(null);const[jobNote,setJobNote]=useState('');const[msgDept,setMsgDept]=useState('all');
@@ -1007,12 +1008,28 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       // PO form for selected vendor — only show sizes that still need ordering (subtract picks + existing POs)
       const vItems=vendorMap[showPO]||[];const vn=D_V.find(v=>v.id===showPO)?.name||showPO;
       const poId='PO-'+poCounter;
+      const batchKey=Object.keys(BATCH_VENDORS).find(k=>vn.toLowerCase().includes(k)||showPO.toLowerCase().includes(k));
+      const isBatchEligible=!!batchKey;
+      const batchConfig=batchKey?BATCH_VENDORS[batchKey]:null;
+      const pendingBatches=(batchPOs||[]).filter(bp=>bp.vendor_key===batchKey);
+      const pendingBatchTotal=pendingBatches.reduce((a,bp)=>a+bp.total_cost,0);
       const poItems=vItems.map(it=>{const szList=Object.entries(it.sizes).filter(([,v])=>v>0).sort((a,b)=>{const ord=['XS','S','M','L','XL','2XL','3XL','4XL'];return(ord.indexOf(a[0])===-1?99:ord.indexOf(a[0]))-(ord.indexOf(b[0])===-1?99:ord.indexOf(b[0]))});
         const openSizes=szList.map(([sz,v])=>{const picked=safePicks(it).reduce((a,pk)=>a+(pk[sz]||0),0);const po=poCommitted(it.po_lines,sz);const open=Math.max(0,v-picked-po);return[sz,open]}).filter(([,v])=>v>0);
         return{...it,openSizes,totalOpen:openSizes.reduce((a,[,v])=>a+v,0)}}).filter(it=>it.totalOpen>0);
       return<div className="modal-overlay" onClick={()=>setShowPO(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:800,maxHeight:'90vh',overflow:'auto'}}>
         <div className="modal-header"><h2>New PO — {vn}</h2><button className="modal-close" onClick={()=>setShowPO(null)}>x</button></div>
         <div className="modal-body">
+          {/* Batch PO banner for eligible vendors */}
+          {isBatchEligible&&<div style={{padding:10,background:'#f5f3ff',border:'1px solid #ddd6fe',borderRadius:8,marginBottom:12}}>
+            <div style={{display:'flex',alignItems:'center',gap:6}}>
+              <span style={{fontSize:14}}>📦</span>
+              <div style={{flex:1}}>
+                <div style={{fontSize:12,fontWeight:700,color:'#7c3aed'}}>Free shipping over ${batchConfig.threshold} — Batch eligible!</div>
+                {pendingBatches.length>0?<div style={{fontSize:11,color:'#6d28d9'}}>{pendingBatches.length} PO{pendingBatches.length!==1?'s':''} in queue · ${pendingBatchTotal.toFixed(2)} total {pendingBatchTotal>=batchConfig.threshold?'✅ Threshold met!':'· $'+(batchConfig.threshold-pendingBatchTotal).toFixed(2)+' more to free ship'}</div>
+                :<div style={{fontSize:11,color:'#94a3b8'}}>No POs queued yet for {batchConfig.name}</div>}
+              </div>
+            </div>
+          </div>}
           {poItems.length===0?<div style={{padding:24,textAlign:'center',color:'#64748b'}}><div style={{fontSize:32,marginBottom:8}}>✅</div><div style={{fontWeight:700,fontSize:16,marginBottom:4}}>All items fully covered</div><div style={{fontSize:13}}>Every size has been assigned via IFs or existing POs.</div></div>:<>
           <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:12,marginBottom:16}}>
             <div><label className="form-label">PO Number</label><input className="form-input" value={poId} readOnly style={{color:'#1e40af',fontWeight:700}}/></div>
@@ -1028,7 +1045,23 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
             </div>})}
           <div style={{marginTop:8}}><label className="form-label">Notes</label><input className="form-input" placeholder="PO notes for vendor..." id={'po-notes-'+poId}/></div></>}
         </div>
-        <div className="modal-footer"><button className="btn btn-secondary" onClick={()=>setShowPO('select')}>← Back</button><button className="btn btn-secondary" onClick={()=>setShowPO(null)}>Cancel</button>{poItems.length>0&&<button className="btn btn-primary" onClick={()=>{
+        <div className="modal-footer"><button className="btn btn-secondary" onClick={()=>setShowPO('select')}>← Back</button><button className="btn btn-secondary" onClick={()=>setShowPO(null)}>Cancel</button>
+          {poItems.length>0&&isBatchEligible&&<button className="btn btn-primary" style={{background:'#7c3aed',borderColor:'#7c3aed'}} onClick={()=>{
+            // Build batch PO entry
+            const batchItems=[];let totalCost=0;
+            poItems.forEach((pit,vi)=>{
+              const sizes={};
+              pit.openSizes.forEach(([sz,v])=>{const el=document.getElementById('po-qty-'+vi+'-'+sz);sizes[sz]=el?parseInt(el.value)||0:v});
+              const qty=Object.values(sizes).reduce((a,v)=>a+v,0);
+              totalCost+=qty*safeNum(pit.nsa_cost);
+              batchItems.push({sku:pit.sku,name:pit.name,color:pit.color,sizes,qty,unit_cost:safeNum(pit.nsa_cost),item_idx:pit._idx});
+            });
+            const bp={id:'BPO-'+Date.now(),vendor_key:batchKey,vendor_name:batchConfig.name,so_id:o.id,so_memo:o.memo||'',customer:cust?.alpha_tag||cust?.name||'',
+              items:batchItems,total_cost:totalCost,created_by:cu.id,created_by_name:cu.name,created_at:new Date().toLocaleString()};
+            if(onBatchPO)onBatchPO(prev=>[...prev,bp]);
+            setShowPO(null);nf('Added to '+batchConfig.name+' batch queue ($'+totalCost.toFixed(2)+')');
+          }}><Icon name="package" size={14}/> Add to Batch</button>}
+          {poItems.length>0&&<button className="btn btn-primary" onClick={()=>{
           // Save PO lines back to order items
           const updatedItems=[...o.items];
           poItems.forEach((pit,vi)=>{
@@ -2304,6 +2337,11 @@ export default function App(){
   const[pg,setPg]=useState('dashboard');const[toast,setToast]=useState(null);
   const[cust,setCust]=useState(D_C);const[vend]=useState(D_V);const[prod,setProd]=useState(D_P);
   const[ests,setEsts]=useState(D_E);const[sos,setSOs]=useState(D_SO);const[invs,setInvs]=useState(D_INV);
+  // Batch PO system
+  const[batchPOs,setBatchPOs]=useState([]);// pending queue
+  const[submittedBatches,setSubmittedBatches]=useState([]);// submitted batches for scan lookup
+  const[batchCounter,setBatchCounter]=useState(4501);// sequential PO numbers: NSA-4501, NSA-4502...
+  const[batchScan,setBatchScan]=useState('');// scan/lookup field
   const[msgs,setMsgs]=useState(D_MSG);const[cM,setCM]=useState({open:false,c:null});const[aM,setAM]=useState({open:false,p:null});
   const[q,setQ]=useState('');const[selC,setSelC]=useState(null);const[selV,setSelV]=useState(null);
   const[eEst,setEEst]=useState(null);const[eEstC,setEEstC]=useState(null);const[eSO,setESO]=useState(null);const[eSOC,setESOC]=useState(null);
@@ -2426,7 +2464,7 @@ export default function App(){
 
   // ESTIMATES LIST
   const rEst=()=>{
-    if(eEst)return<OrderEditor order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} onSave={e=>{savE(e);setEEst(e)}} onBack={()=>setEEst(null)} onConvertSO={convertSO} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs}/>;
+    if(eEst)return<OrderEditor order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} onSave={e=>{savE(e);setEEst(e)}} onBack={()=>setEEst(null)} onConvertSO={convertSO} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} batchPOs={batchPOs} onBatchPO={setBatchPOs}/>;
     const fe=ests.filter(e=>!q||(e.id+' '+e.memo+' '+(cust.find(c=>c.id===e.customer_id)?.name||'')+' '+(cust.find(c=>c.id===e.customer_id)?.alpha_tag||'')).toLowerCase().includes(q.toLowerCase()));
     return(<><div style={{display:'flex',gap:8,marginBottom:16}}><div className="search-bar" style={{flex:1}}><Icon name="search"/><input placeholder="Search..." value={q} onChange={e=>setQ(e.target.value)}/></div>
       <button className="btn btn-primary" onClick={()=>newE(null)}><Icon name="plus" size={14}/> New Estimate</button></div>
@@ -2443,7 +2481,7 @@ export default function App(){
 
   // SALES ORDERS LIST
   const rSO=()=>{
-    if(eSO)return<OrderEditor order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} onSave={s=>{savSO(s);setESO(s)}} onBack={()=>setESO(null)} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs}/>;
+    if(eSO)return<OrderEditor order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} onSave={s=>{savSO(s);setESO(s)}} onBack={()=>setESO(null)} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} batchPOs={batchPOs} onBatchPO={setBatchPOs}/>;
     return(<><div className="stats-row"><div className="stat-card"><div className="stat-label">Total</div><div className="stat-value">{sos.length}</div></div><div className="stat-card"><div className="stat-label">Need Order</div><div className="stat-value" style={{color:'#d97706'}}>{sos.filter(s=>calcSOStatus(s)==='need_order').length}</div></div><div className="stat-card"><div className="stat-label">Waiting</div><div className="stat-value" style={{color:'#2563eb'}}>{sos.filter(s=>calcSOStatus(s)==='waiting_receive').length}</div></div><div className="stat-card"><div className="stat-label">Complete</div><div className="stat-value" style={{color:'#166534'}}>{sos.filter(s=>calcSOStatus(s)==='complete').length}</div></div></div>
     <div className="card"><div className="card-body" style={{padding:0}}><table><thead><tr><th>SO</th><th>Customer</th><th>Memo</th><th>Expected</th><th>Rep</th><th>Art</th><th>Items</th><th>Msgs</th><th>Status</th></tr></thead><tbody>
     {sos.map(so=>{const c=cust.find(x=>x.id===so.customer_id);const ac=(so.art_files||[]).length;const aa=(so.art_files||[]).filter(f=>f.status==='approved').length;const rep=REPS.find(r=>r.id===so.created_by);
@@ -2778,6 +2816,295 @@ export default function App(){
     </>);
   };
 
+  // BATCH PO QUEUE
+  const rBatchPOs=()=>{
+    const byVendor={};
+    batchPOs.forEach(bp=>{if(!byVendor[bp.vendor_key])byVendor[bp.vendor_key]={name:bp.vendor_name,threshold:BATCH_VENDORS[bp.vendor_key]?.threshold||200,pos:[]};byVendor[bp.vendor_key].pos.push(bp)});
+    const vendorGroups=Object.entries(byVendor);
+    // Universal PO lookup — searches submitted batches AND all PO lines across every SO
+    const q2=batchScan.trim().toLowerCase();
+    const batchMatch=q2?submittedBatches.find(sb=>sb.po_number.toLowerCase()===q2):null;
+    // Build flat PO line list across all SOs
+    const allPOLines=[];
+    sos.forEach(so=>{const c2=cust.find(x=>x.id===so.customer_id);
+      safeItems(so).forEach((it,idx)=>{(it.po_lines||[]).forEach((pl,pli)=>{
+        allPOLines.push({so,soId:so.id,customer:c2?.alpha_tag||'',soMemo:so.memo,item:it,itemIdx:idx,poLine:pl,poLineIdx:pli,poId:pl.po_id||''})})})});
+    // Group by PO ID
+    const poGroups={};allPOLines.forEach(pl=>{const k=pl.poId;if(!poGroups[k])poGroups[k]={poId:k,lines:[]};poGroups[k].lines.push(pl)});
+    const matchedPO=q2?poGroups[Object.keys(poGroups).find(k=>k.toLowerCase()===q2)]||null:null;
+    // Label print helper
+    const printLabel=(items,poId,boxLabel)=>{
+      const w=window.open('','_blank','width=400,height=600');if(!w)return;
+      const qrData=encodeURIComponent(poId);
+      const qrUrl='https://api.qrserver.com/v1/create-qr-code/?size=150x150&data='+qrData;
+      w.document.write('<html><head><title>Box Label</title><style>@page{size:4in 6in;margin:0.2in}body{font-family:Arial,sans-serif;margin:0;padding:12px;width:3.6in}');
+      w.document.write('.po{font-size:28px;font-weight:900;font-family:monospace;letter-spacing:2px;text-align:center;margin:8px 0}');
+      w.document.write('.box-label{font-size:14px;font-weight:700;text-align:center;color:#666;margin-bottom:8px}');
+      w.document.write('table{width:100%;border-collapse:collapse;font-size:11px;margin-top:8px}th,td{border:1px solid #ccc;padding:3px 6px;text-align:left}th{background:#f0f0f0;font-weight:700}');
+      w.document.write('.sz{font-weight:700;font-size:10px}.footer{font-size:9px;color:#999;text-align:center;margin-top:8px;border-top:1px solid #ddd;padding-top:4px}');
+      w.document.write('</style></head><body>');
+      w.document.write('<div style="text-align:center"><img src="'+qrUrl+'" width="120" height="120"/></div>');
+      w.document.write('<div class="po">'+poId+'</div>');
+      if(boxLabel)w.document.write('<div class="box-label">'+boxLabel+'</div>');
+      w.document.write('<table><thead><tr><th>SKU</th><th>Product</th><th>Color</th><th>Sizes</th><th>Qty</th></tr></thead><tbody>');
+      items.forEach(it=>{
+        const szStr=Object.entries(it.sizes||{}).filter(([,v])=>v>0).map(([sz,v])=>sz+':'+v).join(' ');
+        const qty=Object.values(it.sizes||{}).reduce((a,v)=>a+v,0);
+        w.document.write('<tr><td style="font-weight:700">'+it.sku+'</td><td>'+it.name+'</td><td>'+(it.color||'—')+'</td><td class="sz">'+szStr+'</td><td style="font-weight:700">'+qty+'</td></tr>');
+      });
+      w.document.write('</tbody></table>');
+      const totalQty=items.reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((a2,v)=>a2+v,0),0);
+      w.document.write('<div style="text-align:right;font-size:14px;font-weight:900;margin-top:6px">TOTAL: '+totalQty+' units</div>');
+      w.document.write('<div class="footer">NSA · '+new Date().toLocaleDateString()+' · Scan QR to look up this PO</div>');
+      w.document.write('</body></html>');w.document.close();
+      setTimeout(()=>w.print(),400);
+    };
+
+    return(<>
+      {/* Scan / Lookup bar */}
+      <div className="card" style={{marginBottom:16}}><div className="card-body" style={{padding:'14px 18px'}}>
+        <div style={{display:'flex',gap:10,alignItems:'center'}}>
+          <span style={{fontSize:20}}>📱</span>
+          <div style={{flex:1}}>
+            <div className="search-bar" style={{maxWidth:400}}><Icon name="search"/><input placeholder="Scan or type PO number (e.g. NSA-4501)..." value={batchScan} onChange={e=>setBatchScan(e.target.value)} style={{fontSize:14,fontWeight:600}}/></div>
+          </div>
+          {batchScan&&<button className="btn btn-sm btn-secondary" onClick={()=>setBatchScan('')}>Clear</button>}
+        </div>
+        {batchScan.trim()&&!batchMatch&&!matchedPO&&<div style={{marginTop:10,padding:10,background:'#fef2f2',borderRadius:6,color:'#dc2626',fontSize:13,fontWeight:600}}>No PO found matching "{batchScan}"</div>}
+      </div></div>
+
+      {/* ===== PO LOOKUP RESULT ===== */}
+      {(batchMatch||matchedPO)&&(()=>{
+        // Build unified flat item list for this PO
+        const poId=batchMatch?batchMatch.po_number:matchedPO.poId;
+        const vendor=batchMatch?batchMatch.vendor_name:'';
+        const isBatch=!!batchMatch;
+        // Flat items: every line item on this PO
+        const poItems=[];
+        if(isBatch){
+          batchMatch.source_pos.forEach(sp=>{sp.items.forEach(it=>{poItems.push({sku:it.sku,name:it.name,color:it.color||'',sizes:it.sizes,qty:it.qty,soId:sp.so_id,customer:sp.customer,soMemo:sp.so_memo})})});
+        } else {
+          matchedPO.lines.forEach(pl=>{
+            const szs={};Object.entries(pl.poLine).forEach(([k,v])=>{if(typeof v==='number'&&v>0&&!['po_id','status'].includes(k))szs[k]=v});
+            poItems.push({sku:pl.item.sku,name:safeStr(pl.item.name),color:pl.item.color||'',sizes:szs,qty:Object.values(szs).reduce((a,v)=>a+v,0),soId:pl.soId,customer:pl.customer,soMemo:pl.soMemo,_pl:pl});
+          });
+        }
+        const totalUnits=poItems.reduce((a,it)=>a+it.qty,0);
+        const submittedInfo=batchMatch;
+        const statusBadge=submittedInfo?.status==='received'?'badge-green':'badge-amber';
+
+        return<div className="card" style={{marginBottom:16,borderLeft:'4px solid #2563eb'}}>
+          {/* PO Header */}
+          <div style={{background:'linear-gradient(135deg,#1e3a5f,#2563eb)',color:'white',padding:'16px 20px',borderRadius:'8px 8px 0 0'}}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+              <div>
+                <div style={{fontSize:10,opacity:0.6,fontWeight:600}}>PURCHASE ORDER</div>
+                <div style={{fontSize:24,fontWeight:900,fontFamily:'monospace',letterSpacing:2}}>{poId}</div>
+                {vendor&&<div style={{fontSize:12,opacity:0.8}}>{vendor}</div>}
+                {submittedInfo&&<div style={{fontSize:11,opacity:0.6}}>Submitted {submittedInfo.submitted_at} by {submittedInfo.submitted_by}</div>}
+              </div>
+              <div style={{textAlign:'right'}}>
+                <div style={{fontSize:24,fontWeight:900}}>{totalUnits}</div>
+                <div style={{fontSize:11,opacity:0.7}}>total units · {poItems.length} line{poItems.length!==1?'s':''}</div>
+                {submittedInfo&&<span className={`badge ${statusBadge}`} style={{marginTop:4}}>{submittedInfo.status||'waiting'}</span>}
+              </div>
+            </div>
+          </div>
+
+          {/* Flat item list — this is what warehouse sees */}
+          <div className="card-body" style={{padding:0}}>
+            <table><thead><tr>
+              <th style={{width:30}}>#</th>
+              <th>SKU</th><th>Product</th><th>Color</th>
+              <th>Sizes Ordered</th><th>Total</th>
+              <th>Receive</th>
+            </tr></thead><tbody>
+            {poItems.map((it,i)=>{
+              const szEntries=Object.entries(it.sizes).filter(([,v])=>v>0);
+              return<tr key={i} id={'po-recv-row-'+i}>
+                <td style={{fontWeight:700,color:'#94a3b8',fontSize:11}}>{i+1}</td>
+                <td style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af'}}>{it.sku}</td>
+                <td style={{fontSize:12}}>{it.name}</td>
+                <td style={{fontSize:12,color:'#64748b'}}>{it.color||'—'}</td>
+                <td><div style={{display:'flex',gap:3,flexWrap:'wrap'}}>{szEntries.map(([sz,v])=><span key={sz} style={{padding:'2px 6px',background:'#f1f5f9',borderRadius:4,fontSize:10,fontWeight:700}}>{sz}: {v}</span>)}</div></td>
+                <td style={{fontWeight:800,fontSize:14}}>{it.qty}</td>
+                <td><div style={{display:'flex',gap:3,flexWrap:'wrap'}}>{szEntries.map(([sz,v])=><div key={sz} style={{textAlign:'center'}}><div style={{fontSize:8,fontWeight:700,color:'#64748b'}}>{sz}</div><input id={'rcv-'+i+'-'+sz} type="number" className="form-input" style={{width:40,padding:'3px 4px',textAlign:'center',fontSize:12,fontWeight:700}} defaultValue={v} min={0}/></div>)}</div></td>
+              </tr>})}
+            </tbody></table>
+            {/* SO reference — small, for back-office context */}
+            <div style={{padding:'8px 16px',background:'#f8fafc',borderTop:'1px solid #e2e8f0'}}>
+              <div style={{fontSize:10,fontWeight:600,color:'#94a3b8',marginBottom:4}}>AFFECTS SALES ORDERS</div>
+              <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                {[...new Set(poItems.map(it=>it.soId))].map(sid=>{const it=poItems.find(p=>p.soId===sid);
+                  return<span key={sid} style={{fontSize:10,padding:'2px 8px',background:'#eff6ff',borderRadius:6,color:'#1e40af',fontWeight:600}}>{sid} <span style={{color:'#64748b',fontWeight:400}}>{it?.customer}</span></span>})}
+              </div>
+            </div>
+          </div>
+
+          {/* Actions */}
+          <div style={{padding:'12px 16px',borderTop:'2px solid #e2e8f0',display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:8}}>
+            <div style={{display:'flex',gap:6}}>
+              <button className="btn btn-sm btn-secondary" onClick={()=>{
+                const labelItems=poItems.map(it=>({sku:it.sku,name:it.name,color:it.color,sizes:it.sizes}));
+                printLabel(labelItems,poId,'RECEIVING — '+new Date().toLocaleDateString());
+                nf('🖨️ Label printed for '+poId);
+              }}>🖨️ Print Box Label (4×6)</button>
+              <button className="btn btn-sm btn-secondary" onClick={()=>{navigator.clipboard?.writeText(poId);nf('Copied '+poId)}}>📋 Copy PO#</button>
+            </div>
+            <div style={{display:'flex',gap:6}}>
+              {submittedInfo?.status==='received'?
+                <span className="badge badge-green" style={{padding:'6px 12px',fontSize:12}}>✅ Received {submittedInfo.received_at||''}</span>:
+                <button className="btn btn-primary" style={{background:'#22c55e',borderColor:'#22c55e',padding:'8px 20px'}} onClick={()=>{
+                  // Update submitted batch status
+                  if(batchMatch)setSubmittedBatches(prev=>prev.map(sb=>sb.po_number===poId?{...sb,status:'received',received_at:new Date().toLocaleString(),received_by:cu.name}:sb));
+                  // Update PO lines on SOs to received
+                  const matchedLines=allPOLines.filter(pl=>pl.poId.toLowerCase()===poId.toLowerCase());
+                  matchedLines.forEach(ml=>{
+                    const so=sos.find(s=>s.id===ml.soId);if(!so)return;
+                    const updItems=[...safeItems(so)];
+                    const it=updItems[ml.itemIdx];if(!it)return;
+                    const pls=[...(it.po_lines||[])];
+                    if(pls[ml.poLineIdx]){
+                      const rcv={};
+                      Object.entries(pls[ml.poLineIdx]).forEach(([k,v])=>{if(typeof v==='number'&&v>0&&!['po_id','status'].includes(k)){
+                        const el=document.getElementById('rcv-'+allPOLines.indexOf(ml)+'-'+k);rcv[k]=el?parseInt(el.value)||0:v}});
+                      pls[ml.poLineIdx]={...pls[ml.poLineIdx],status:'received',received:rcv,received_at:new Date().toLocaleString(),received_by:cu.name};
+                      updItems[ml.itemIdx]={...it,po_lines:pls};
+                    }
+                    savSO({...so,items:updItems,updated_at:new Date().toLocaleString()});
+                  });
+                  nf('✅ '+poId+' received — '+totalUnits+' units. SO items updated.');
+                  // Print label after receiving
+                  const labelItems=poItems.map(it2=>({sku:it2.sku,name:it2.name,color:it2.color,sizes:it2.sizes}));
+                  printLabel(labelItems,poId,'RECEIVED — '+new Date().toLocaleDateString());
+                }}>✅ Confirm Received ({totalUnits} units)</button>}
+            </div>
+          </div>
+        </div>})()}
+
+      {/* Regular (non-batch) PO match — handled above now */}
+
+      {/* Submitted batches history */}
+      {!batchScan.trim()&&submittedBatches.length>0&&<div className="card" style={{marginBottom:16}}>
+        <div className="card-header"><h2>Submitted Batch POs</h2></div>
+        <div className="card-body" style={{padding:0}}>
+          <table><thead><tr><th>PO#</th><th>Vendor</th><th>SOs</th><th>Units</th><th>Total</th><th>Submitted</th><th>By</th><th>Status</th></tr></thead><tbody>
+          {submittedBatches.map(sb=><tr key={sb.po_number} style={{cursor:'pointer'}} onClick={()=>setBatchScan(sb.po_number)}>
+            <td style={{fontWeight:800,color:'#1e40af',fontFamily:'monospace'}}>{sb.po_number}</td>
+            <td>{sb.vendor_name}</td>
+            <td style={{fontSize:11}}>{sb.source_pos.map(sp=>sp.so_id).join(', ')}</td>
+            <td style={{fontWeight:600}}>{sb.total_units}</td>
+            <td style={{fontWeight:700}}>${sb.total_cost.toFixed(2)}</td>
+            <td style={{fontSize:11,color:'#64748b'}}>{sb.submitted_at}</td>
+            <td style={{fontSize:11}}>{sb.submitted_by?.split(' ')[0]}</td>
+            <td><span className={`badge ${sb.status==='received'?'badge-green':'badge-amber'}`}>{sb.status||'waiting'}</span></td>
+          </tr>)}
+          </tbody></table>
+        </div>
+      </div>}
+
+      {/* Pending queue */}
+      {!batchScan.trim()&&<>
+      <div className="stats-row">
+        <div className="stat-card"><div className="stat-label">Queued</div><div className="stat-value">{batchPOs.length}</div></div>
+        <div className="stat-card"><div className="stat-label">Vendors</div><div className="stat-value">{vendorGroups.length}</div></div>
+        <div className="stat-card"><div className="stat-label">Queue Value</div><div className="stat-value">${batchPOs.reduce((a,bp)=>a+bp.total_cost,0).toFixed(2)}</div></div>
+        <div className="stat-card"><div className="stat-label">Submitted</div><div className="stat-value">{submittedBatches.length}</div></div>
+      </div>
+      {vendorGroups.length===0&&submittedBatches.length===0&&<div className="card"><div className="empty" style={{padding:40}}>
+        <div style={{fontSize:32,marginBottom:8}}>📦</div>
+        <div style={{fontWeight:700,fontSize:16,marginBottom:4}}>No batch POs queued</div>
+        <div style={{maxWidth:400,margin:'0 auto'}}>When creating a PO for S&S, SanMar, Richardson, Momentec, or A4 — click "Add to Batch" to queue it. Submit when the batch hits free shipping threshold.</div>
+      </div></div>}
+      {vendorGroups.map(([vk,vg])=>{
+        const total=vg.pos.reduce((a,bp)=>a+bp.total_cost,0);
+        const totalUnits=vg.pos.reduce((a,bp)=>a+bp.items.reduce((a2,it)=>a2+it.qty,0),0);
+        const hitThreshold=total>=vg.threshold;
+        const nextPO='NSA-'+batchCounter;
+        return<div key={vk} className="card" style={{marginBottom:16,borderLeft:hitThreshold?'4px solid #22c55e':'4px solid #d97706'}}>
+          <div className="card-header">
+            <div><h2>{vg.name}</h2><div style={{fontSize:12,color:'#64748b'}}>{vg.pos.length} queued · {totalUnits} units</div></div>
+            <div style={{textAlign:'right'}}>
+              <div style={{fontSize:20,fontWeight:800,color:hitThreshold?'#166534':'#d97706'}}>${total.toFixed(2)}</div>
+              <div style={{fontSize:11,color:hitThreshold?'#166534':'#d97706',fontWeight:600}}>{hitThreshold?'\u2705 Free shipping!':'$'+(vg.threshold-total).toFixed(2)+' to free ship'}</div>
+            </div>
+          </div>
+          <div className="card-body" style={{padding:0}}>
+            {vg.pos.map((bp,bpi)=><div key={bp.id} style={{padding:'12px 16px',borderBottom:bpi<vg.pos.length-1?'1px solid #f1f5f9':'none'}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
+                <div><span style={{fontWeight:700,color:'#1e40af'}}>{bp.so_id}</span><span style={{fontSize:12,color:'#64748b',marginLeft:8}}>{bp.customer} — {bp.so_memo}</span></div>
+                <div style={{display:'flex',alignItems:'center',gap:8}}>
+                  <span style={{fontWeight:700}}>${bp.total_cost.toFixed(2)}</span>
+                  <span style={{fontSize:10,color:'#94a3b8'}}>{bp.created_by_name?.split(' ')[0]}</span>
+                  <button className="btn btn-sm" style={{color:'#dc2626',borderColor:'#fca5a5',padding:'2px 6px'}} onClick={()=>setBatchPOs(prev=>prev.filter(p=>p.id!==bp.id))}>\u2715</button>
+                </div>
+              </div>
+              <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                {bp.items.map((it,i)=><div key={i} style={{fontSize:11,padding:'3px 8px',background:'#f8fafc',borderRadius:4,border:'1px solid #e2e8f0'}}>
+                  <span style={{fontFamily:'monospace',fontWeight:600}}>{it.sku}</span> {it.name} <span style={{color:'#64748b'}}>({it.qty})</span>
+                </div>)}
+              </div>
+            </div>)}
+          </div>
+          <div style={{padding:'14px 16px',background:'#f8fafc',borderTop:'1px solid #e2e8f0'}}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
+              <div>
+                <div style={{fontSize:10,color:'#64748b',fontWeight:600}}>PO NUMBER FOR VENDOR B2B</div>
+                <div style={{fontSize:22,fontWeight:800,fontFamily:'monospace',color:'#1e40af',letterSpacing:2}}>{nextPO}</div>
+                <div style={{fontSize:10,color:'#94a3b8'}}>Enter this exact number in {vg.name}'s B2B. Warehouse scans this barcode on receiving.</div>
+              </div>
+              <div style={{display:'flex',flexDirection:'column',gap:6}}>
+                <button className="btn btn-sm btn-secondary" onClick={()=>{navigator.clipboard?.writeText(nextPO);nf('Copied '+nextPO)}}>\uD83D\uDCCB Copy PO#</button>
+                <button className="btn btn-sm btn-secondary" onClick={()=>{if(window.confirm('Clear all '+vg.pos.length+' POs?'))setBatchPOs(prev=>prev.filter(p=>p.vendor_key!==vk))}}>Clear</button>
+              </div>
+            </div>
+            <button style={{width:'100%',padding:'12px 20px',borderRadius:8,border:'none',cursor:'pointer',fontWeight:800,fontSize:14,
+              background:hitThreshold?'linear-gradient(135deg,#22c55e,#16a34a)':'linear-gradient(135deg,#2563eb,#1d4ed8)',color:'white'}}
+              onClick={()=>{
+                const poNum=nextPO;
+                const sb={po_number:poNum,vendor_key:vk,vendor_name:vg.name,total_cost:total,total_units:totalUnits,
+                  submitted_at:new Date().toLocaleString(),submitted_by:cu.name,status:'waiting',
+                  source_pos:vg.pos.map(bp=>({so_id:bp.so_id,so_memo:bp.so_memo,customer:bp.customer,items:bp.items,total_cost:bp.total_cost}))};
+                setSubmittedBatches(prev=>[sb,...prev]);
+                vg.pos.forEach(bp=>{
+                  const so=sos.find(s=>s.id===bp.so_id);if(!so)return;
+                  const updatedItems=[...safeItems(so)];
+                  bp.items.forEach(bpIt=>{
+                    const idx=bpIt.item_idx;if(idx==null||!updatedItems[idx])return;
+                    const poLine={po_id:poNum,status:'waiting',created_at:new Date().toLocaleDateString(),memo:'Batch: '+vg.pos.map(b=>b.so_id).join('+'),received:{},shipments:[]};
+                    Object.entries(bpIt.sizes).forEach(([sz,v])=>{if(v>0)poLine[sz]=v});
+                    if(!updatedItems[idx].po_lines)updatedItems[idx].po_lines=[];
+                    updatedItems[idx].po_lines.push(poLine);
+                  });
+                  savSO({...so,items:updatedItems,updated_at:new Date().toLocaleString()});
+                });
+                setBatchPOs(prev=>prev.filter(p=>p.vendor_key!==vk));
+                setBatchCounter(ct=>ct+1);
+                nf('\uD83D\uDE80 '+poNum+' submitted to '+vg.name+' ($'+total.toFixed(2)+')');
+              }}>\uD83D\uDE80 Submit {nextPO} to {vg.name}{hitThreshold?' \u2014 FREE SHIP':''} (${total.toFixed(2)})</button>
+            <div style={{fontSize:10,color:'#64748b',marginTop:6,textAlign:'center'}}>
+              Contains: {vg.pos.map(bp=>bp.so_id+' ('+bp.customer+')').join(' \u00B7 ')}
+            </div>
+          </div>
+        </div>})}
+
+      {/* Batch-eligible vendors */}
+      <div className="card"><div className="card-header"><h2>Batch-Eligible Vendors</h2></div><div className="card-body">
+        <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+          {Object.entries(BATCH_VENDORS).map(([k,v])=>{const queued=(batchPOs||[]).filter(bp=>bp.vendor_key===k);const qTotal=queued.reduce((a,bp)=>a+bp.total_cost,0);
+            return<div key={k} style={{padding:'10px 14px',border:'1px solid #e2e8f0',borderRadius:8,minWidth:150}}>
+              <div style={{fontWeight:700,fontSize:13}}>{v.name}</div>
+              <div style={{fontSize:11,color:'#64748b'}}>Free ship: ${v.threshold}+</div>
+              {queued.length>0&&<div style={{fontSize:11,marginTop:4,color:qTotal>=v.threshold?'#166534':'#d97706',fontWeight:600}}>{queued.length} queued \u00B7 ${qTotal.toFixed(2)}</div>}
+            </div>})}
+        </div>
+        <div style={{fontSize:11,color:'#94a3b8',marginTop:10}}>The PO number assigned here (e.g. NSA-4501) goes into the vendor's B2B portal. When the box arrives, scan that PO number to see every SO and item inside.</div>
+      </div></div>
+      </>}
+    </>);
+  };
+
+
   // MESSAGES PAGE
   const rMsg=()=>{const allM=[...msgs].sort((a,b)=>(b.ts||'').localeCompare(a.ts));
     const unread=allM.filter(m=>!(m.read_by||[]).includes(cu.id));
@@ -2806,14 +3133,14 @@ export default function App(){
           </div></div>})}</div></div></>)};
 
     // NAV
-  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'production',label:'Prod Board',icon:'package'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{section:'Comms'},{id:'messages',label:'Messages',icon:'mail'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'}];
-  const titles={dashboard:'Dashboard',estimates:'Estimates',orders:'Sales Orders',jobs:'Jobs',production:'Production Board',customers:'Customers',vendors:'Vendors',products:'Products',inventory:'Inventory',messages:'Messages'};
+  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'production',label:'Prod Board',icon:'package'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{section:'Comms'},{id:'messages',label:'Messages',icon:'mail'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'}];
+  const titles={dashboard:'Dashboard',estimates:'Estimates',orders:'Sales Orders',jobs:'Jobs',production:'Production Board',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',products:'Products',inventory:'Inventory',messages:'Messages'};
   return(<div className="app"><Toast msg={toast?.msg} type={toast?.type}/>
     <div className="sidebar"><div className="sidebar-logo">NSA<span>Portal</span></div>
       <nav className="sidebar-nav">{nav.map((item,i)=>{if(item.section)return<div key={i} className="sidebar-section">{item.section}</div>;
         const ubadge=item.id==='messages'?msgs.filter(m=>!(m.read_by||[]).includes(cu.id)).length:0;
         return<button key={item.id} className={`sidebar-link ${pg===item.id?'active':''}`}
-          onClick={()=>{if(dirtyRef.current&&!window.confirm('You have unsaved changes. Leave without saving?'))return;dirtyRef.current=false;setPg(item.id);setQ('');setSelC(null);setSelV(null);setEEst(null);setESO(null)}}><Icon name={item.icon}/>{item.label}{ubadge>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{ubadge}</span>}</button>})}</nav>
+          onClick={()=>{if(dirtyRef.current&&!window.confirm('You have unsaved changes. Leave without saving?'))return;dirtyRef.current=false;setPg(item.id);setQ('');setSelC(null);setSelV(null);setEEst(null);setESO(null)}}><Icon name={item.icon}/>{item.label}{item.id==='messages'&&ubadge>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{ubadge}</span>}{item.id==='batch_pos'&&batchPOs.length>0&&<span style={{background:'#7c3aed',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{batchPOs.length}</span>}</button>})}</nav>
       <div className="sidebar-user"><div style={{fontWeight:600,color:'#e2e8f0'}}>{cu.name}</div><div>{cu.role}</div></div></div>
     <div className="main"><div className="topbar"><h1>{eEst?eEst.id:eSO?eSO.id:selC?selC.name:selV?selV.name:(titles[pg]||'Dashboard')}</h1>
         <div style={{flex:1,maxWidth:400,margin:'0 20px',position:'relative'}}>
@@ -2842,7 +3169,7 @@ export default function App(){
           {gOpen&&<div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:59}} onClick={()=>setGOpen(false)}/>}
         </div>
         <div style={{display:'flex',gap:6,alignItems:'center'}}><button className="btn btn-sm btn-primary" onClick={()=>newE(null)} style={{fontSize:11}}><Icon name="plus" size={12}/> Estimate</button><button className="btn btn-sm btn-secondary" onClick={()=>setCM({open:true,c:null})} style={{fontSize:11}}><Icon name="plus" size={12}/> Customer</button></div></div>
-      <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='production'&&rProd2()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}</div></div>
+      <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='production'&&rProd2()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}</div></div>
     <CustModal isOpen={cM.open} onClose={()=>setCM({open:false,c:null})} onSave={savC} customer={cM.c} parents={pars}/>
     <AdjModal isOpen={aM.open} onClose={()=>setAM({open:false,p:null})} product={aM.p} onSave={savI}/>
   </div>);
