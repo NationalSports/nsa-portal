@@ -14,9 +14,17 @@ const NP={bk:[10,50,99999],co:[4,3,3],se:[7,6,5],tc:3};const DTF=[{label:'4" Sq 
 function spP(q,c,s=true){const bi=SP.bk.findIndex(b=>q>=b.min&&q<=b.max);if(bi<0||c<1||c>5)return 0;const v=SP.pr[bi]?.[c-1];if(v==null)return 0;return s?v:rQ(v/SP.mk)}
 function emP(st,q,s=true){const si=EM.sb.findIndex(b=>st<=b);const qi=EM.qb.findIndex(b=>q<=b);if(si<0||qi<0)return 0;const v=EM.pr[si][qi];return s?v:rQ(v/EM.mk)}
 function npP(q,tw=false,s=true){const bi=NP.bk.findIndex(b=>q<=b);if(bi<0)return 0;return s?(NP.se[bi]+(tw?rQ(NP.tc*1.65):0)):(NP.co[bi]+(tw?NP.tc:0))}
-function dP(d,q){if(d.type==='screen_print'){const u=d.underbase?1+SP.ub:1;return{sell:d.sell_override||rQ(spP(q,d.colors||1,true)*u),cost:rQ(spP(q,d.colors||1,false)*u)}}
+function dP(d,q,artFiles){
+  // Art-based decoration: get type from art file
+  if(d.kind==='art'&&d.art_file_id&&artFiles){const art=artFiles.find(a=>a.id===d.art_file_id);if(art){
+    if(art.deco_type==='screen_print'){const nc=art.ink_colors?art.ink_colors.split(',').length:1;const u=art.underbase?1+SP.ub:1;return{sell:d.sell_override||rQ(spP(q,nc,true)*u),cost:rQ(spP(q,nc,false)*u)}}
+    if(art.deco_type==='embroidery')return{sell:d.sell_override||emP(art.stitches||8000,q,true),cost:emP(art.stitches||8000,q,false)};
+    if(art.deco_type==='dtf'){const t=DTF[art.dtf_size||0];return{sell:d.sell_override||t.sell,cost:t.cost}}}}
+  // Legacy/fallback type-based
+  if(d.type==='screen_print'){const u=d.underbase?1+SP.ub:1;return{sell:d.sell_override||rQ(spP(q,d.colors||1,true)*u),cost:rQ(spP(q,d.colors||1,false)*u)}}
   if(d.type==='embroidery')return{sell:d.sell_override||emP(d.stitches||8000,q,true),cost:emP(d.stitches||8000,q,false)};
-  if(d.type==='number_press')return{sell:d.sell_override||npP(q,d.two_color,true),cost:npP(q,d.two_color,false)};
+  // Numbers
+  if(d.kind==='numbers'||d.type==='number_press')return{sell:d.sell_override||npP(q,d.two_color,true),cost:npP(q,d.two_color,false)};
   if(d.type==='dtf'){const t=DTF[d.dtf_size||0];return{sell:d.sell_override||t.sell,cost:t.cost}}return{sell:0,cost:0}}
 const SC={waiting_art:{bg:'#fef3c7',c:'#92400e'},in_production:{bg:'#dbeafe',c:'#1e40af'},ready_ship:{bg:'#dcfce7',c:'#166534'},shipped:{bg:'#ede9fe',c:'#6d28d9'},completed:{bg:'#f1f5f9',c:'#475569'}};
 
@@ -51,15 +59,15 @@ const D_P=[
 {id:'p9',vendor_id:'v2',sku:'1376844',name:'Under Armour Tech Short',brand:'Under Armour',color:'Black/White',category:'Shorts',retail_price:45,nsa_cost:15.5,available_sizes:['S','M','L','XL','2XL'],is_active:true,_inv:{S:0,M:4,L:6,XL:3,'2XL':0}},
 ];
 const D_E=[
-{id:'EST-2089',customer_id:'c1b',memo:'Spring 2026 Football Camp Tees',status:'sent',created_by:'r1',created_at:'02/10/26 9:15 AM',updated_at:'02/10/26 2:30 PM',default_markup:1.65,shipping_type:'pct',shipping_value:8,ship_to_id:'default',email_status:'opened',email_opened_at:'02/10/26 3:45 PM',items:[{product_id:'p5',sku:'PC61',name:'Port & Company Essential Tee',brand:'Port & Company',color:'Jet Black',nsa_cost:2.85,retail_price:8.98,unit_sell:4.75,sizes:{S:8,M:15,L:20,XL:12,'2XL':5},available_sizes:['S','M','L','XL','2XL','3XL'],_colors:['Jet Black','Navy','Red','White'],decorations:[{type:'screen_print',position:'Front Center',colors:2,underbase:false,sell_override:null,art_file_id:null},{type:'screen_print',position:'Back Center',colors:1,underbase:false,sell_override:null,art_file_id:null}]}]},
-{id:'EST-2094',customer_id:'c1b',memo:'Football Coaches Polos',status:'approved',created_by:'r1',created_at:'02/16/26 10:00 AM',updated_at:'02/16/26 10:00 AM',default_markup:1.65,shipping_type:'flat',shipping_value:25,ship_to_id:'default',email_status:'viewed',email_opened_at:'02/16/26 11:30 AM',email_viewed_at:'02/16/26 11:32 AM',items:[{product_id:'p4',sku:'1370399',name:'Under Armour Team Polo',brand:'Under Armour',color:'Cardinal/White',nsa_cost:22,retail_price:65,unit_sell:39,sizes:{M:2,L:3,XL:2,'2XL':1},available_sizes:['S','M','L','XL','2XL'],decorations:[{type:'embroidery',position:'Left Chest',stitches:8000,sell_override:null,art_file_id:null}]}]},
+{id:'EST-2089',customer_id:'c1b',memo:'Spring 2026 Football Camp Tees',status:'sent',created_by:'r1',created_at:'02/10/26 9:15 AM',updated_at:'02/10/26 2:30 PM',default_markup:1.65,shipping_type:'pct',shipping_value:8,ship_to_id:'default',email_status:'opened',email_opened_at:'02/10/26 3:45 PM',items:[{product_id:'p5',sku:'PC61',name:'Port & Company Essential Tee',brand:'Port & Company',color:'Jet Black',nsa_cost:2.85,retail_price:8.98,unit_sell:4.75,sizes:{S:8,M:15,L:20,XL:12,'2XL':5},available_sizes:['S','M','L','XL','2XL','3XL'],_colors:['Jet Black','Navy','Red','White'],decorations:[{kind:'art',position:'Front Center',art_file_id:null,sell_override:null},{kind:'art',position:'Back Center',art_file_id:null,sell_override:null}]}]},
+{id:'EST-2094',customer_id:'c1b',memo:'Football Coaches Polos',status:'approved',created_by:'r1',created_at:'02/16/26 10:00 AM',updated_at:'02/16/26 10:00 AM',default_markup:1.65,shipping_type:'flat',shipping_value:25,ship_to_id:'default',email_status:'viewed',email_opened_at:'02/16/26 11:30 AM',email_viewed_at:'02/16/26 11:32 AM',items:[{product_id:'p4',sku:'1370399',name:'Under Armour Team Polo',brand:'Under Armour',color:'Cardinal/White',nsa_cost:22,retail_price:65,unit_sell:39,sizes:{M:2,L:3,XL:2,'2XL':1},available_sizes:['S','M','L','XL','2XL'],decorations:[{kind:'art',position:'Left Chest',art_file_id:null,sell_override:null}]}]},
 {id:'EST-2101',customer_id:'c3a',memo:'Badminton Team Uniforms',status:'draft',created_by:'r3',created_at:'02/12/26 3:00 PM',updated_at:'02/12/26 3:00 PM',default_markup:1.65,shipping_type:'pct',shipping_value:0,ship_to_id:'default',email_status:null,items:[]},
 ];
 const D_SO=[
 {id:'SO-1042',customer_id:'c1a',estimate_id:'EST-2088',memo:'Baseball Spring Season Full Package',status:'in_production',created_by:'r1',created_at:'02/10/26 11:00 AM',updated_at:'02/14/26',expected_date:'03/15/26',production_notes:'Rush - coach needs by spring break',shipping_type:'flat',shipping_value:45,ship_to_id:'default',firm_dates:[{item_desc:'JX4453 - Adidas Pregame Tee',date:'03/01/26',approved:true}],
   art_files:[{id:'af1',name:'OLu Baseball Front Logo',deco_type:'screen_print',ink_colors:'Navy, Gold, White',thread_colors:'',art_size:'12" x 4"',files:['OLu_Baseball_Logo_v3.ai','OLu_Baseball_Logo_v3.pdf'],notes:'Final approved - navy/gold',status:'approved',uploaded:'02/10/26'},
-    {id:'af2',name:'Back Numbers Block',deco_type:'number_press',ink_colors:'',thread_colors:'',art_size:'',files:['Back_Numbers_Template.pdf'],notes:'Standard block numbers',status:'approved',uploaded:'02/10/26'}],
-  items:[{sku:'JX4453',name:'Adidas Unisex Pregame Tee',brand:'Adidas',color:'Team Power Red/White',nsa_cost:18.5,retail_price:55.5,unit_sell:33.3,sizes:{S:5,M:12,L:15,XL:8,'2XL':3},available_sizes:['S','M','L','XL','2XL'],decorations:[{type:'screen_print',position:'Front Center',colors:3,underbase:true,sell_override:null,art_file_id:'af1'},{type:'number_press',position:'Back Center',two_color:false,sell_override:null,art_file_id:'af2'}]}]},
+    {id:'af2',name:'Sleeve Logo Small',deco_type:'embroidery',ink_colors:'',thread_colors:'Navy 2767, Gold',art_size:'2" wide',files:['OLu_Sleeve_Logo.ai'],notes:'Small sleeve crest',status:'approved',uploaded:'02/11/26'}],
+  items:[{sku:'JX4453',name:'Adidas Unisex Pregame Tee',brand:'Adidas',color:'Team Power Red/White',nsa_cost:18.5,retail_price:55.5,unit_sell:33.3,sizes:{S:5,M:12,L:15,XL:8,'2XL':3},available_sizes:['S','M','L','XL','2XL'],decorations:[{kind:'art',position:'Front Center',art_file_id:'af1',sell_override:null},{kind:'numbers',position:'Back Center',num_method:'heat_transfer',num_size:'4"',two_color:false,sell_override:null,roster:[]}]}]},
 {id:'SO-1045',customer_id:'c1b',memo:'Football Spring Practice Gear',status:'waiting_art',created_by:'r1',created_at:'02/12/26 2:00 PM',updated_at:'02/12/26',expected_date:'03/20/26',production_notes:'',shipping_type:'pct',shipping_value:8,ship_to_id:'default',firm_dates:[],art_files:[],items:[]},
 {id:'SO-1051',customer_id:'c2a',memo:'Lacrosse Team Store',status:'in_production',created_by:'r2',created_at:'02/14/26 10:30 AM',updated_at:'02/15/26',expected_date:'03/10/26',production_notes:'',shipping_type:'flat',shipping_value:0,ship_to_id:'default',firm_dates:[],art_files:[{id:'af3',name:'SFL Lacrosse Crest',deco_type:'embroidery',ink_colors:'',thread_colors:'Navy 2767, White, Silver 877',art_size:'3.5" wide',files:['SFL_Crest.eps','SFL_Crest_preview.png'],notes:'',status:'uploaded',uploaded:'02/15/26'}],items:[]},
 ];
@@ -118,9 +126,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
   const uI=(i,k,v)=>sv('items',o.items.map((it,x)=>x===i?{...it,[k]:v}:it));const rmI=i=>sv('items',o.items.filter((_,x)=>x!==i));
   const uSz=(i,sz,v)=>{const n=v===''?0:parseInt(v)||0;uI(i,'sizes',{...o.items[i].sizes,[sz]:n})};
   const addSzToItem=(i,sz)=>{const it=o.items[i];if(!it.available_sizes.includes(sz))uI(i,'available_sizes',[...it.available_sizes,sz]);setShowSzPicker(null)};
-  const addD=i=>{const it=o.items[i];uI(i,'decorations',[...it.decorations,{type:'screen_print',position:'Front Center',colors:1,stitches:8000,underbase:false,two_color:false,dtf_size:0,sell_override:null,art_file_id:null}])};
-  const uD=(ii,di,k,v)=>{const it=o.items[ii];uI(ii,'decorations',it.decorations.map((d,i)=>i===di?{...d,[k]:v}:d))};
-  const rmD=(ii,di)=>{const it=o.items[ii];uI(ii,'decorations',it.decorations.filter((_,i)=>i!==di))};
+  const NUM_SZ={heat_transfer:['0.5"','0.75"','1"','1.5"','2"','3"','4"','5"','6"','8"','10"'],embroidery:['0.5"','0.75"','1"','1.5"','2"'],screen_print:['4"','6"','8"','10"']};
+  const addArtDeco=i=>{uI(i,'decorations',[...o.items[i].decorations,{kind:'art',position:'Front Center',art_file_id:null,sell_override:null}])};
+  const addNumDeco=i=>{uI(i,'decorations',[...o.items[i].decorations,{kind:'numbers',position:'Back Center',num_method:'heat_transfer',num_size:'4"',two_color:false,sell_override:null,custom_font_art_id:null,roster:[]}])};
+  const uD=(ii,di,k,v)=>{uI(ii,'decorations',o.items[ii].decorations.map((d,i)=>i===di?{...d,[k]:v}:d))};
+  const rmD=(ii,di)=>{uI(ii,'decorations',o.items[ii].decorations.filter((_,i)=>i!==di))};
   // Art files (SO)
   const af=o.art_files||[];
   const addArt=()=>sv('art_files',[...af,{id:'af'+Date.now(),name:'',deco_type:'screen_print',ink_colors:'',thread_colors:'',art_size:'',files:[],notes:'',status:'uploaded',uploaded:new Date().toLocaleDateString()}]);
@@ -130,7 +140,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
 
   const addrs=useMemo(()=>getAddrs(cust,allCustomers),[cust,allCustomers]);
   const totals=useMemo(()=>{let rev=0,cost=0;o.items.forEach(it=>{const q=Object.values(it.sizes).reduce((a,v)=>a+v,0);if(!q)return;rev+=q*it.unit_sell;cost+=q*it.nsa_cost;
-    it.decorations.forEach(d=>{const dp=dP(d,q);rev+=q*dp.sell;cost+=q*dp.cost})});
+    it.decorations.forEach(d=>{const dp=dP(d,q,af);rev+=q*dp.sell;cost+=q*dp.cost})});
     const ship=o.shipping_type==='pct'?rev*(o.shipping_value||0)/100:(o.shipping_value||0);const tax=rev*(cust?.tax_rate||0);
     return{rev,cost,ship,tax,grand:rev+ship+tax,margin:rev-cost,pct:rev>0?((rev-cost)/rev*100):0}},[o]); // eslint-disable-line
   const fp=products.filter(p=>{if(!pS)return true;const q=pS.toLowerCase();return p.sku.toLowerCase().includes(q)||p.name.toLowerCase().includes(q)||p.brand?.toLowerCase().includes(q)});
@@ -192,7 +202,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
 
     {/* LINE ITEMS */}
     {(isE||tab==='items')&&<>{o.items.map((item,idx)=>{const qty=Object.values(item.sizes).reduce((a,v)=>a+v,0);
-      let dR=0,dC=0;item.decorations.forEach(d=>{const dp=dP(d,qty);dR+=qty*dp.sell;dC+=qty*dp.cost});
+      let dR=0,dC=0;item.decorations.forEach(d=>{const dp=dP(d,qty,af);dR+=qty*dp.sell;dC+=qty*dp.cost});
       const iR=qty*item.unit_sell+dR;const iC=qty*item.nsa_cost+dC;const mg=iR-iC;
       const szs=item.available_sizes?item.available_sizes.filter(sz=>showSz(sz,item.sizes[sz])):['S','M','L','XL','2XL'];
       const addable=EXTRA_SIZES.filter(s=>!item.available_sizes.includes(s));
@@ -229,27 +239,57 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         </div>
         {/* DECORATIONS */}
         <div style={{padding:'8px 18px 14px'}}>
-          {item.decorations.map((deco,di)=>{const dp=dP(deco,qty);const artF=af.find(f=>f.id===deco.art_file_id);return(<div key={di} style={{padding:'10px 0',borderTop:di>0?'1px solid #f1f5f9':''}}>
-            <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',marginBottom:6}}>
-              <Bg options={[{value:'screen_print',label:'Screen Print'},{value:'embroidery',label:'Embroidery'},{value:'number_press',label:'Numbers'},{value:'dtf',label:'DTF'}]} value={deco.type} onChange={v=>uD(idx,di,'type',v)}/>
-              <select className="form-select" style={{width:120,fontSize:12}} value={deco.position} onChange={e=>uD(idx,di,'position',e.target.value)}>{POSITIONS.map(p=><option key={p}>{p}</option>)}</select>
-              {af.length>0&&<select className="form-select" style={{width:170,fontSize:11,border:!deco.art_file_id?'2px solid #f59e0b':'1px solid #22c55e'}} value={deco.art_file_id||''} onChange={e=>{const fid=e.target.value||null;uD(idx,di,'art_file_id',fid);if(fid){const art=af.find(a=>a.id===fid);if(art)uD(idx,di,'type',art.deco_type)}}}>
-                <option value="">⚠️ Assign art...</option>{af.map(f=><option key={f.id} value={f.id}>{f.name||'Untitled'} ({f.deco_type?.replace('_',' ')})</option>)}</select>}
-              {artF&&<span style={{fontSize:10,padding:'2px 6px',borderRadius:4,background:artF.status==='approved'?'#dcfce7':'#fef3c7',color:artF.status==='approved'?'#166534':'#92400e'}}>📎 {artF.status}</span>}
-              <button onClick={()=>rmD(idx,di)} style={{marginLeft:'auto',background:'none',border:'none',cursor:'pointer',color:'#dc2626'}}><Icon name="x" size={14}/></button>
-            </div>
-            <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
-              {deco.type==='screen_print'&&<><span style={{fontSize:12,fontWeight:600}}>Colors:</span><Bg options={[1,2,3,4,5].map(n=>({value:n,label:String(n)}))} value={deco.colors||1} onChange={v=>uD(idx,di,'colors',v)}/>
-                <label style={{fontSize:12,display:'flex',alignItems:'center',gap:4,marginLeft:8}}><input type="checkbox" checked={deco.underbase||false} onChange={e=>uD(idx,di,'underbase',e.target.checked)}/> Underbase (+15%)</label></>}
-              {deco.type==='embroidery'&&<><span style={{fontSize:12,fontWeight:600}}>Stitches:</span><Bg options={[{value:8000,label:'0-10k'},{value:12000,label:'10-15k'},{value:18000,label:'15-20k'},{value:25000,label:'20k+'}]} value={deco.stitches||8000} onChange={v=>uD(idx,di,'stitches',v)}/></>}
-              {deco.type==='number_press'&&<label style={{fontSize:12,display:'flex',alignItems:'center',gap:4}}><input type="checkbox" checked={deco.two_color||false} onChange={e=>uD(idx,di,'two_color',e.target.checked)}/> 2-Color (+$3)</label>}
-              {deco.type==='dtf'&&<Bg options={DTF.map((d,i)=>({value:i,label:d.label}))} value={deco.dtf_size||0} onChange={v=>uD(idx,di,'dtf_size',v)}/>}
-              <div style={{marginLeft:'auto',display:'flex',gap:10,alignItems:'center'}}>
-                <span style={{fontSize:14}}>Cost: <strong style={{color:'#dc2626'}}>${dp.cost.toFixed(2)}</strong></span>
-                <span style={{fontSize:14}}>Sell: <$In value={deco.sell_override||dp.sell} onChange={v=>uD(idx,di,'sell_override',v)} w={55}/></span>
-              </div></div>
-          </div>)})}
-          <button className="btn btn-sm btn-secondary" onClick={()=>addD(idx)} style={{marginTop:6}}><Icon name="plus" size={12}/> Add Decoration</button>
+          {item.decorations.map((deco,di)=>{const dp=dP(deco,qty,af);
+            if(deco.kind==='art'){const artF=af.find(f=>f.id===deco.art_file_id);const artIcon=artF?(artF.deco_type==='screen_print'?'🎨':artF.deco_type==='embroidery'?'🧵':'🔥'):'';
+              return(<div key={di} style={{padding:'10px 0',borderTop:di>0?'1px solid #f1f5f9':''}}>
+                <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                  {artF&&<div style={{width:36,height:36,borderRadius:6,background:artF.deco_type==='screen_print'?'#dbeafe':artF.deco_type==='embroidery'?'#ede9fe':'#fef3c7',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0}}>{artIcon}</div>}
+                  <select className="form-select" style={{width:200,fontSize:12,border:!deco.art_file_id?'2px solid #f59e0b':'1px solid #22c55e'}} value={deco.art_file_id||''} onChange={e=>uD(idx,di,'art_file_id',e.target.value||null)}>
+                    <option value="">⚠️ Select artwork...</option>{af.map(f=><option key={f.id} value={f.id}>{f.name||'Untitled'}</option>)}</select>
+                  <select className="form-select" style={{width:120,fontSize:12}} value={deco.position} onChange={e=>uD(idx,di,'position',e.target.value)}>{POSITIONS.map(p=><option key={p}>{p}</option>)}</select>
+                  {artF&&<><span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:artF.deco_type==='screen_print'?'#dbeafe':artF.deco_type==='embroidery'?'#ede9fe':'#fef3c7',color:artF.deco_type==='screen_print'?'#1e40af':artF.deco_type==='embroidery'?'#6d28d9':'#92400e'}}>{artF.deco_type.replace('_',' ')}</span>
+                    {artF.ink_colors&&<span style={{fontSize:11,color:'#64748b'}}>Colors: {artF.ink_colors}</span>}
+                    {artF.thread_colors&&<span style={{fontSize:11,color:'#64748b'}}>Thread: {artF.thread_colors}</span>}
+                    {artF.art_size&&<span style={{fontSize:11,color:'#94a3b8'}}>{artF.art_size}</span>}
+                    <span style={{fontSize:10,padding:'2px 6px',borderRadius:4,background:artF.status==='approved'?'#dcfce7':'#fef3c7',color:artF.status==='approved'?'#166534':'#92400e'}}>{artF.status}</span></>}
+                  <div style={{marginLeft:'auto',display:'flex',gap:8,alignItems:'center'}}>
+                    <span style={{fontSize:13}}>Cost: <strong style={{color:'#dc2626'}}>${dp.cost.toFixed(2)}</strong></span>
+                    <span style={{fontSize:13}}>Sell: <$In value={deco.sell_override||dp.sell} onChange={v=>uD(idx,di,'sell_override',v)} w={50}/></span>
+                    <button onClick={()=>rmD(idx,di)} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626'}}><Icon name="x" size={14}/></button>
+                  </div></div></div>)}
+            // NUMBERS decoration
+            return(<div key={di} style={{padding:'10px 0',borderTop:di>0?'1px solid #f1f5f9':''}}>
+              <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:6}}>
+                <div style={{width:36,height:36,borderRadius:6,background:'#f0fdf4',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0}}>#️⃣</div>
+                <span style={{fontWeight:700,fontSize:13}}>Numbers</span>
+                <select className="form-select" style={{width:120,fontSize:12}} value={deco.position} onChange={e=>uD(idx,di,'position',e.target.value)}>{POSITIONS.map(p=><option key={p}>{p}</option>)}</select>
+                <div style={{marginLeft:'auto',display:'flex',gap:8,alignItems:'center'}}>
+                  <span style={{fontSize:13}}>Cost: <strong style={{color:'#dc2626'}}>${dp.cost.toFixed(2)}</strong></span>
+                  <span style={{fontSize:13}}>Sell: <$In value={deco.sell_override||dp.sell} onChange={v=>uD(idx,di,'sell_override',v)} w={50}/></span>
+                  <button onClick={()=>rmD(idx,di)} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626'}}><Icon name="x" size={14}/></button>
+                </div></div>
+              <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:6}}>
+                <span style={{fontSize:12,fontWeight:600,color:'#64748b'}}>Method:</span>
+                <Bg options={[{value:'heat_transfer',label:'Heat Transfer'},{value:'embroidery',label:'Embroidery'},{value:'screen_print',label:'Screen Print'}]} value={deco.num_method||'heat_transfer'} onChange={v=>{uD(idx,di,'num_method',v);uD(idx,di,'num_size',NUM_SZ[v]?.[Math.min(2,NUM_SZ[v].length-1)]||'4"')}}/>
+                <span style={{fontSize:12,fontWeight:600,color:'#64748b',marginLeft:8}}>Size:</span>
+                <Bg options={(NUM_SZ[deco.num_method||'heat_transfer']||[]).map(s=>({value:s,label:s}))} value={deco.num_size||'4"'} onChange={v=>uD(idx,di,'num_size',v)}/>
+                <label style={{fontSize:12,display:'flex',alignItems:'center',gap:4,marginLeft:8}}><input type="checkbox" checked={deco.two_color||false} onChange={e=>uD(idx,di,'two_color',e.target.checked)}/> 2-Color (+$3)</label>
+              </div>
+              {deco.custom_font_art_id?<div style={{fontSize:11,color:'#7c3aed'}}>Custom font art assigned</div>:
+              <div style={{fontSize:11,color:'#64748b',display:'flex',gap:8,alignItems:'center'}}>Standard font | <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>uD(idx,di,'custom_font_art_id','pending')}>Use Custom Font Art</button></div>}
+              <div style={{marginTop:6,padding:8,background:'#f8fafc',borderRadius:6,border:'1px dashed #d1d5db'}}>
+                <div style={{fontSize:11,fontWeight:600,color:'#64748b',marginBottom:4}}>Roster / Number Assignment</div>
+                {(deco.roster||[]).length>0?<div style={{fontSize:11}}>{deco.roster.map((r,ri)=><span key={ri} style={{display:'inline-block',padding:'2px 6px',background:'#dbeafe',borderRadius:3,margin:2}}>#{r.number} {r.size} {r.name&&`(${r.name})`}</span>)}</div>
+                :<div style={{fontSize:11,color:'#94a3b8'}}>No roster uploaded</div>}
+                <div style={{display:'flex',gap:4,marginTop:4}}>
+                  <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{const n=prompt('Enter number:');const sz=prompt('Size (S/M/L/XL/2XL):');if(n)uD(idx,di,'roster',[...(deco.roster||[]),{number:n,size:sz||'',name:''}])}}>+ Add Number</button>
+                  <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>nf('CSV roster upload — Phase 5')}><Icon name="upload" size={10}/> Upload Roster</button>
+                </div></div>
+            </div>)})}
+          <div style={{display:'flex',gap:6,marginTop:8}}>
+            <button className="btn btn-sm btn-secondary" onClick={()=>addArtDeco(idx)}><Icon name="image" size={12}/> + Add Art</button>
+            <button className="btn btn-sm btn-secondary" onClick={()=>addNumDeco(idx)}>#️⃣ + Add Numbers</button>
+          </div>
         </div>
       </div>)})}
     {/* ADD PRODUCT */}
@@ -280,7 +320,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                   </div>
                   {/* Decoration Type */}
                   <div style={{marginBottom:6}}><span style={{fontSize:11,fontWeight:600,color:'#64748b',marginRight:6}}>Type:</span>
-                    <Bg options={[{value:'screen_print',label:'Screen Print'},{value:'embroidery',label:'Embroidery'},{value:'number_press',label:'Numbers'},{value:'dtf',label:'DTF'}]} value={art.deco_type} onChange={v=>uArt(i,'deco_type',v)}/></div>
+                    <Bg options={[{value:'screen_print',label:'Screen Print'},{value:'embroidery',label:'Embroidery'},{value:'dtf',label:'DTF'}]} value={art.deco_type} onChange={v=>uArt(i,'deco_type',v)}/></div>
                   {/* Colors / Thread */}
                   <div style={{display:'flex',gap:8,marginBottom:6,flexWrap:'wrap'}}>
                     {(art.deco_type==='screen_print'||art.deco_type==='dtf')&&<div style={{flex:1,minWidth:150}}><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Ink Colors</label><input className="form-input" value={art.ink_colors||''} onChange={e=>uArt(i,'ink_colors',e.target.value)} placeholder="e.g. Navy, Gold, White" style={{fontSize:12}}/></div>}
@@ -454,11 +494,11 @@ export default function App(){
   const savSO=s=>{setSOs(p=>{const ex=p.find(x=>x.id===s.id);return ex?p.map(x=>x.id===s.id?s:x):[...p,s]})};
   const savI=(pid,inv)=>{setProd(p=>p.map(x=>x.id===pid?{...x,_inv:inv}:x));nf('Updated')};
   const newE=c=>{const e={id:'EST-'+(2100+ests.length),customer_id:c?.id||null,memo:'',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:c?.catalog_markup||1.65,shipping_type:'pct',shipping_value:0,ship_to_id:'default',email_status:null,items:[]};setEEst(e);setEEstC(c||null);setPg('estimates')};
-  const convertSO=est=>{const so={id:'SO-'+(1052+sos.length),customer_id:est.customer_id,estimate_id:est.id,memo:est.memo,status:'waiting_art',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:est.default_markup,expected_date:'',production_notes:'',shipping_type:est.shipping_type,shipping_value:est.shipping_value,ship_to_id:est.ship_to_id,firm_dates:[],art_files:[],items:est.items.map(it=>({...it,decorations:it.decorations.map(d=>({...d,art_file_id:null}))}))};
+  const convertSO=est=>{const so={id:'SO-'+(1052+sos.length),customer_id:est.customer_id,estimate_id:est.id,memo:est.memo,status:'waiting_art',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:est.default_markup,expected_date:'',production_notes:'',shipping_type:est.shipping_type,shipping_value:est.shipping_value,ship_to_id:est.ship_to_id,firm_dates:[],art_files:[],items:est.items.map(it=>({...it,decorations:it.decorations.map(d=>d.kind==='art'?{...d,art_file_id:null}:{...d})}))};
     setSOs(p=>[...p,so]);setEsts(p=>p.map(e=>e.id===est.id?{...e,status:'converted'}:e));setEEst(null);
     const c=cust.find(x=>x.id===so.customer_id);setESO(so);setESOC(c);setPg('orders');nf(`${so.id} created from ${est.id}`)};
   const aO=useMemo(()=>[
-    ...ests.map(e=>{const t=e.items?.reduce((a,it)=>{const qq=Object.values(it.sizes||{}).reduce((s,v)=>s+v,0);let r=qq*it.unit_sell;it.decorations?.forEach(d=>{const dp=dP(d,qq);r+=qq*dp.sell});return a+r},0)||0;return{id:e.id,type:'estimate',customer_id:e.customer_id,date:e.created_at?.split(' ')[0],total:t,memo:e.memo,status:e.status}}),
+    ...ests.map(e=>{const t=e.items?.reduce((a,it)=>{const qq=Object.values(it.sizes||{}).reduce((s,v)=>s+v,0);let r=qq*it.unit_sell;it.decorations?.forEach(d=>{const dp=dP(d,qq,[]);r+=qq*dp.sell});return a+r},0)||0;return{id:e.id,type:'estimate',customer_id:e.customer_id,date:e.created_at?.split(' ')[0],total:t,memo:e.memo,status:e.status}}),
     ...sos.map(s=>{const t=s.items?.reduce((a,it)=>{const qq=Object.values(it.sizes||{}).reduce((ss,v)=>ss+v,0);return a+qq*(it.unit_sell||0)},0)||0;return{id:s.id,type:'sales_order',customer_id:s.customer_id,date:s.created_at?.split(' ')[0],total:t,memo:s.memo,status:s.status}}),
     ...invs.map(i=>({...i,type:'invoice'}))],[ests,sos,invs]);
   const fP=useMemo(()=>{let l=prod;if(q&&pg==='products'){const s=q.toLowerCase();l=l.filter(p=>p.sku.toLowerCase().includes(s)||p.name.toLowerCase().includes(s)||p.brand?.toLowerCase().includes(s)||p.color?.toLowerCase().includes(s))}
