@@ -17,7 +17,7 @@ function npP(q,tw=false,s=true){const bi=NP.bk.findIndex(b=>q<=b);if(bi<0)return
 function dP(d,q,artFiles){
   // Art-based decoration: get type from art file
   if(d.kind==='art'&&d.art_file_id&&artFiles){const art=artFiles.find(a=>a.id===d.art_file_id);if(art){
-    if(art.deco_type==='screen_print'){const nc=art.ink_colors?art.ink_colors.split(',').length:1;const u=art.underbase?1+SP.ub:1;return{sell:d.sell_override||rQ(spP(q,nc,true)*u),cost:rQ(spP(q,nc,false)*u)}}
+    if(art.deco_type==='screen_print'){const nc=art.ink_colors?art.ink_colors.split('\n').filter(l=>l.trim()).length:1;const u=art.underbase?1+SP.ub:1;return{sell:d.sell_override||rQ(spP(q,nc,true)*u),cost:rQ(spP(q,nc,false)*u)}}
     if(art.deco_type==='embroidery')return{sell:d.sell_override||emP(art.stitches||8000,q,true),cost:emP(art.stitches||8000,q,false)};
     if(art.deco_type==='dtf'){const t=DTF[art.dtf_size||0];return{sell:d.sell_override||t.sell,cost:t.cost}}}}
   // Legacy/fallback type-based
@@ -252,7 +252,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                     <option value="">⚠️ Select artwork...</option>{af.map(f=><option key={f.id} value={f.id}>{f.name||'Untitled'}</option>)}</select>
                   <select className="form-select" style={{width:120,fontSize:12}} value={deco.position} onChange={e=>uD(idx,di,'position',e.target.value)}>{POSITIONS.map(p=><option key={p}>{p}</option>)}</select>
                   {artF&&<><span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:artF.deco_type==='screen_print'?'#dbeafe':artF.deco_type==='embroidery'?'#ede9fe':'#fef3c7',color:artF.deco_type==='screen_print'?'#1e40af':artF.deco_type==='embroidery'?'#6d28d9':'#92400e'}}>{artF.deco_type.replace('_',' ')}</span>
-                    {artF.ink_colors&&<span style={{fontSize:11,color:'#64748b'}}>Colors: {artF.ink_colors}</span>}
+                    {artF.ink_colors&&<span style={{fontSize:11,color:'#64748b'}}>{artF.ink_colors.split('\n').filter(l=>l.trim()).length} color(s)</span>}
                     {artF.thread_colors&&<span style={{fontSize:11,color:'#64748b'}}>Thread: {artF.thread_colors}</span>}
                     {artF.art_size&&<span style={{fontSize:11,color:'#94a3b8'}}>{artF.art_size}</span>}
                     <span style={{fontSize:10,padding:'2px 6px',borderRadius:4,background:artF.status==='approved'?'#dcfce7':'#fef3c7',color:artF.status==='approved'?'#166534':'#92400e'}}>{artF.status}</span></>}
@@ -262,6 +262,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                     <button onClick={()=>rmD(idx,di)} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626'}}><Icon name="x" size={14}/></button>
                   </div></div></div>)}
             // NUMBERS decoration
+            {const nm=deco.num_method||'heat_transfer';const szOpts=NUM_SZ[nm]||[];
+            // Build roster grid from parent item sizes
+            const sizedQtys=Object.entries(item.sizes).filter(([,v])=>v>0).sort((a,b)=>{const ord=['XS','S','M','L','XL','2XL','3XL','4XL','LT','XLT','2XLT','3XLT'];return(ord.indexOf(a[0])===-1?99:ord.indexOf(a[0]))-(ord.indexOf(b[0])===-1?99:ord.indexOf(b[0]))});
+            const roster=deco.roster||{};
             return(<div key={di} style={{padding:'10px 0',borderTop:di>0?'1px solid #f1f5f9':''}}>
               <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:6}}>
                 <div style={{width:36,height:36,borderRadius:6,background:'#f0fdf4',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0}}>#️⃣</div>
@@ -274,22 +278,36 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                 </div></div>
               <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:6}}>
                 <span style={{fontSize:12,fontWeight:600,color:'#64748b'}}>Method:</span>
-                <Bg options={[{value:'heat_transfer',label:'Heat Transfer'},{value:'embroidery',label:'Embroidery'},{value:'screen_print',label:'Screen Print'}]} value={deco.num_method||'heat_transfer'} onChange={v=>{uD(idx,di,'num_method',v);uD(idx,di,'num_size',NUM_SZ[v]?.[Math.min(2,NUM_SZ[v].length-1)]||'4"')}}/>
-                <span style={{fontSize:12,fontWeight:600,color:'#64748b',marginLeft:8}}>Size:</span>
-                <Bg options={(NUM_SZ[deco.num_method||'heat_transfer']||[]).map(s=>({value:s,label:s}))} value={deco.num_size||'4"'} onChange={v=>uD(idx,di,'num_size',v)}/>
-                <label style={{fontSize:12,display:'flex',alignItems:'center',gap:4,marginLeft:8}}><input type="checkbox" checked={deco.two_color||false} onChange={e=>uD(idx,di,'two_color',e.target.checked)}/> 2-Color (+$3)</label>
+                <Bg options={[{value:'heat_transfer',label:'Heat Transfer'},{value:'embroidery',label:'Embroidery'},{value:'screen_print',label:'Screen Print'}]} value={nm} onChange={v=>{uD(idx,di,'num_method',v);const ns=NUM_SZ[v]||[];uD(idx,di,'num_size',ns[Math.min(2,ns.length-1)]||ns[0]||'4"');uD(idx,di,'num_font',null);uD(idx,di,'custom_font_art_id',null)}}/>
+                <span style={{fontSize:12,fontWeight:600,color:'#64748b',marginLeft:4}}>Size:</span>
+                <Bg options={szOpts.map(s=>({value:s,label:s}))} value={deco.num_size||szOpts[0]} onChange={v=>uD(idx,di,'num_size',v)}/>
+                <label style={{fontSize:12,display:'flex',alignItems:'center',gap:4,marginLeft:4}}><input type="checkbox" checked={deco.two_color||false} onChange={e=>uD(idx,di,'two_color',e.target.checked)}/> 2-Color (+$3)</label>
               </div>
-              {deco.custom_font_art_id?<div style={{fontSize:11,color:'#7c3aed'}}>Custom font art assigned</div>:
-              <div style={{fontSize:11,color:'#64748b',display:'flex',gap:8,alignItems:'center'}}>Standard font | <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>uD(idx,di,'custom_font_art_id','pending')}>Use Custom Font Art</button></div>}
-              <div style={{marginTop:6,padding:8,background:'#f8fafc',borderRadius:6,border:'1px dashed #d1d5db'}}>
-                <div style={{fontSize:11,fontWeight:600,color:'#64748b',marginBottom:4}}>Roster / Number Assignment</div>
-                {(deco.roster||[]).length>0?<div style={{fontSize:11}}>{deco.roster.map((r,ri)=><span key={ri} style={{display:'inline-block',padding:'2px 6px',background:'#dbeafe',borderRadius:3,margin:2}}>#{r.number} {r.size} {r.name&&`(${r.name})`}</span>)}</div>
-                :<div style={{fontSize:11,color:'#94a3b8'}}>No roster uploaded</div>}
-                <div style={{display:'flex',gap:4,marginTop:4}}>
-                  <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{const n=prompt('Enter number:');const sz=prompt('Size (S/M/L/XL/2XL):');if(n)uD(idx,di,'roster',[...(deco.roster||[]),{number:n,size:sz||'',name:''}])}}>+ Add Number</button>
-                  <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>nf('CSV roster upload — Phase 5')}><Icon name="upload" size={10}/> Upload Roster</button>
+              {/* Font selection */}
+              <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:6}}>
+                <span style={{fontSize:12,fontWeight:600,color:'#64748b'}}>Font:</span>
+                {nm==='embroidery'&&<span style={{fontSize:12,color:'#475569'}}>Block (standard)</span>}
+                {nm==='screen_print'&&<><Bg options={[{value:'block',label:'Block'},{value:'serif',label:'Serif'}]} value={deco.num_font||'block'} onChange={v=>uD(idx,di,'num_font',v)}/>
+                  {!deco.custom_font_art_id&&<button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>uD(idx,di,'custom_font_art_id','pending')}>or Custom Font Art</button>}
+                  {deco.custom_font_art_id&&<><span style={{fontSize:11,color:'#7c3aed'}}>Custom font art</span><button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>uD(idx,di,'custom_font_art_id',null)}>× Clear</button></>}</>}
+                {nm==='heat_transfer'&&<>{!deco.custom_font_art_id?<><span style={{fontSize:12,color:'#475569'}}>Standard</span><button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>uD(idx,di,'custom_font_art_id','pending')}>Use Custom Font Art</button></>
+                  :<><span style={{fontSize:11,color:'#7c3aed'}}>Custom font art</span><button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>uD(idx,di,'custom_font_art_id',null)}>× Clear</button></>}</>}
+              </div>
+              {/* Roster grid by size */}
+              <div style={{marginTop:6,padding:10,background:'#f8fafc',borderRadius:6,border:'1px dashed #d1d5db'}}>
+                <div style={{fontSize:11,fontWeight:600,color:'#64748b',marginBottom:6}}>Roster / Number Assignment</div>
+                {sizedQtys.length===0?<div style={{fontSize:11,color:'#94a3b8'}}>Add sizes above first</div>:
+                <div style={{display:'flex',flexDirection:'column',gap:4}}>
+                  {sizedQtys.map(([sz,sqty])=>{const szRoster=roster[sz]||[];return<div key={sz} style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
+                    <span style={{fontSize:12,fontWeight:700,color:'#1e40af',width:40}}>{sz} ({sqty})</span>
+                    {Array.from({length:sqty}).map((_,si)=><input key={si} style={{width:36,textAlign:'center',border:'1px solid #d1d5db',borderRadius:3,padding:'3px 2px',fontSize:12,fontWeight:600,background:szRoster[si]?'#dbeafe':'white'}} value={szRoster[si]||''} placeholder="—" onChange={e=>{const nr={...roster};const arr=[...(nr[sz]||Array(sqty).fill(''))];arr[si]=e.target.value;nr[sz]=arr;uD(idx,di,'roster',nr)}}/>)}
+                  </div>})}
+                </div>}
+                <div style={{display:'flex',gap:4,marginTop:8}}>
+                  <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{const csv=prompt('Paste roster (one per line: Size,Number,Name):\ne.g.\nM,12,Smith\nL,34,Jones');if(csv){const nr={...roster};csv.split('\n').forEach(line=>{const[sz,num]=line.split(',').map(s=>s.trim());if(sz&&num){if(!nr[sz])nr[sz]=Array(item.sizes[sz]||0).fill('');const ei=nr[sz].findIndex(v=>!v);if(ei>=0)nr[sz][ei]=num}});uD(idx,di,'roster',nr);nf('Roster imported')}}}><Icon name="upload" size={10}/> Paste Roster</button>
+                  <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{uD(idx,di,'roster',{});nf('Roster cleared')}}>Clear All</button>
                 </div></div>
-            </div>)})}
+            </div>)}})}
           <div style={{display:'flex',gap:6,marginTop:8}}>
             <button className="btn btn-sm btn-secondary" onClick={()=>addArtDeco(idx)}><Icon name="image" size={12}/> + Add Art</button>
             <button className="btn btn-sm btn-secondary" onClick={()=>addNumDeco(idx)}>#️⃣ + Add Numbers</button>
@@ -327,7 +345,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                     <Bg options={[{value:'screen_print',label:'Screen Print'},{value:'embroidery',label:'Embroidery'},{value:'dtf',label:'DTF'}]} value={art.deco_type} onChange={v=>uArt(i,'deco_type',v)}/></div>
                   {/* Colors / Thread */}
                   <div style={{display:'flex',gap:8,marginBottom:6,flexWrap:'wrap'}}>
-                    {(art.deco_type==='screen_print'||art.deco_type==='dtf')&&<div style={{flex:1,minWidth:150}}><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Ink Colors</label><input className="form-input" value={art.ink_colors||''} onChange={e=>uArt(i,'ink_colors',e.target.value)} placeholder="e.g. Navy, Gold, White" style={{fontSize:12}}/></div>}
+                    {(art.deco_type==='screen_print'||art.deco_type==='dtf')&&<div style={{flex:1,minWidth:150}}><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Ink Colors (one per line = color count)</label><textarea className="form-input" rows={3} value={art.ink_colors||''} onChange={e=>uArt(i,'ink_colors',e.target.value)} placeholder={"Navy PMS 289\nGold PMS 124\nWhite"} style={{fontSize:12,fontFamily:'inherit',resize:'vertical'}}/>{art.ink_colors&&<div style={{fontSize:10,color:'#1e40af',marginTop:2}}>{art.ink_colors.split('\n').filter(l=>l.trim()).length} color(s)</div>}</div>}
                     {art.deco_type==='embroidery'&&<div style={{flex:1,minWidth:150}}><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Thread Colors</label><input className="form-input" value={art.thread_colors||''} onChange={e=>uArt(i,'thread_colors',e.target.value)} placeholder="e.g. Navy 2767, White, Silver 877" style={{fontSize:12}}/></div>}
                     <div style={{width:120}}><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Size (optional)</label><input className="form-input" value={art.art_size||''} onChange={e=>uArt(i,'art_size',e.target.value)} placeholder='e.g. 12" x 4"' style={{fontSize:12}}/></div>
                   </div>
