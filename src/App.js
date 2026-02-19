@@ -241,66 +241,55 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       const szs=(item.available_sizes||['S','M','L','XL','2XL']).slice().sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
       const addable=EXTRA_SIZES.filter(s=>!(item.available_sizes||[]).includes(s));
       return(<div key={idx} className="card" style={{marginBottom:12}}>
-        <div style={{padding:'14px 18px',borderBottom:'1px solid #f1f5f9'}}>
-          <div style={{display:'flex',gap:12,alignItems:'flex-start'}}>
+        <div style={{padding:'12px 18px',borderBottom:'1px solid #f1f5f9'}}>
+          <div style={{display:'flex',gap:12,alignItems:'center'}}>
             <div style={{flex:1}}>
               <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}><span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'3px 10px',borderRadius:4,fontSize:15}}>{item.sku}</span>
                 <span style={{fontWeight:700,fontSize:15}}>{item.name}</span>
-                {item._colors?<select className="form-select" style={{fontSize:12,width:150}} value={item.color||item._colors[0]} onChange={e=>uI(idx,'color',e.target.value)}>{item._colors.map(c=><option key={c}>{c}</option>)}</select>:<span className="badge badge-gray">{item.color}</span>}</div>
-              <div style={{display:'flex',alignItems:'center',gap:12,marginTop:8}}>
-                <span style={{fontSize:13,color:'#64748b'}}>Cost: <strong>${item.nsa_cost?.toFixed(2)}</strong></span>
-                <span style={{fontSize:14}}>Sell: <$In value={item.unit_sell} onChange={v=>uI(idx,'unit_sell',v)}/>/ea</span>
-                {isAU(item.brand)&&<span className="badge badge-blue">Tier {cust?.adidas_ua_tier}</span>}
-                {!isAU(item.brand)&&<span style={{fontSize:12,color:'#64748b'}}>({(item.unit_sell/item.nsa_cost).toFixed(2)}x)</span>}
+                {item._colors?<select className="form-select" style={{fontSize:12,width:150}} value={item.color||item._colors[0]} onChange={e=>uI(idx,'color',e.target.value)}>{item._colors.map(c=><option key={c}>{c}</option>)}</select>:<span className="badge badge-gray">{item.color}</span>}
+                {isAU(item.brand)&&<span className="badge badge-blue">Tier {cust?.adidas_ua_tier}</span>}</div>
+              <div style={{display:'flex',alignItems:'center',gap:12,marginTop:4}}>
+                <span style={{fontSize:12,color:'#64748b'}}>Cost: <strong>${item.nsa_cost?.toFixed(2)}</strong></span>
+                <span style={{fontSize:13}}>Sell: <$In value={item.unit_sell} onChange={v=>uI(idx,'unit_sell',v)}/>/ea</span>
+                {!isAU(item.brand)&&<span style={{fontSize:11,color:'#64748b'}}>({(item.unit_sell/item.nsa_cost).toFixed(2)}x)</span>}
               </div></div>
-            <div style={{textAlign:'right',minWidth:220}}>
-              <div style={{fontSize:11,color:'#64748b',marginBottom:1}}>Qty: <strong style={{fontSize:14,color:'#0f172a'}}>{qty}</strong></div>
-              <table style={{marginLeft:'auto',fontSize:11,borderCollapse:'collapse',lineHeight:'1.4'}}>
-                <thead><tr style={{fontSize:9,color:'#94a3b8',textTransform:'uppercase'}}>
-                  <td style={{padding:'0 6px 2px 0',textAlign:'left'}}></td>
-                  <td style={{padding:'0 6px 2px',textAlign:'right'}}>/ea</td>
-                  <td style={{padding:'0 6px 2px',textAlign:'right'}}>Cost</td>
-                  <td style={{padding:'0 6px 2px',textAlign:'right'}}>Margin</td>
-                  <td style={{padding:'0 0 2px 6px',textAlign:'right'}}>Rev</td>
-                </tr></thead>
-                <tbody>
-                  <tr style={{color:'#374151'}}>
-                    <td style={{padding:'1px 6px 1px 0',textAlign:'left',color:'#64748b',fontSize:10}}>Item</td>
-                    <td style={{padding:'1px 6px',textAlign:'right',color:'#64748b',fontSize:10}}>${item.unit_sell.toFixed(2)}</td>
-                    <td style={{padding:'1px 6px',textAlign:'right',color:'#64748b'}}>${pCost.toFixed(0)}</td>
-                    <td style={{padding:'1px 6px',textAlign:'right',fontWeight:600,color:pMg>=0?'#166534':'#dc2626'}}>${pMg.toFixed(0)} <span style={{fontSize:9,color:'#94a3b8'}}>({pRev>0?(pMg/pRev*100).toFixed(0):0}%)</span></td>
-                    <td style={{padding:'1px 0 1px 6px',textAlign:'right',fontWeight:600}}>${pRev.toFixed(0)}</td>
-                  </tr>
-                  {decoBreak.length>0&&<tr style={{color:'#374151'}}>
-                    <td style={{padding:'1px 6px 1px 0',textAlign:'left',color:'#64748b',fontSize:10}}>Deco{decoBreak.length>1?` (${decoBreak.length})`:''}</td>
-                    <td style={{padding:'1px 6px',textAlign:'right',color:'#64748b',fontSize:10}}>${qty>0?(dR/qty).toFixed(2):'—'}</td>
-                    <td style={{padding:'1px 6px',textAlign:'right',color:'#64748b'}}>${dC.toFixed(0)}</td>
-                    <td style={{padding:'1px 6px',textAlign:'right',fontWeight:600,color:(dR-dC)>=0?'#166534':'#dc2626'}}>${(dR-dC).toFixed(0)} <span style={{fontSize:9,color:'#94a3b8'}}>({dR>0?((dR-dC)/dR*100).toFixed(0):0}%)</span></td>
-                    <td style={{padding:'1px 0 1px 6px',textAlign:'right',fontWeight:600}}>${dR.toFixed(0)}</td>
-                  </tr>}
-                  <tr style={{borderTop:'2px solid #0f172a'}}>
-                    <td style={{padding:'4px 6px 0 0',textAlign:'left',fontWeight:800,fontSize:12}}>Total</td>
-                    <td style={{padding:'4px 6px 0',textAlign:'right',fontWeight:700,fontSize:11,color:'#475569'}}>${qty>0?(iR/qty).toFixed(2):'—'}</td>
-                    <td style={{padding:'4px 6px 0',textAlign:'right',fontWeight:700,fontSize:12,color:'#64748b'}}>${iC.toFixed(0)}</td>
-                    <td style={{padding:'4px 6px 0',textAlign:'right',fontWeight:800,fontSize:12,color:mg>=0?'#1e40af':'#dc2626'}}>${mg.toFixed(0)} <span style={{fontSize:10}}>({iR>0?(mg/iR*100).toFixed(0):0}%)</span></td>
-                    <td style={{padding:'4px 0 0 6px',textAlign:'right',fontWeight:900,fontSize:20,color:'#166534'}}>${iR.toFixed(0)}</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
             <button onClick={()=>rmI(idx)} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:4}}><Icon name="trash" size={16}/></button>
           </div></div>
-        {/* SIZES with + Size button */}
-        <div style={{padding:'10px 18px',display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',borderBottom:'1px solid #f1f5f9'}}>
-          <span style={{fontSize:12,fontWeight:600,color:'#64748b',width:46}}>Sizes:</span>
-          {szs.map(sz=><div key={sz} style={{textAlign:'center',width:48}}><div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
-            <input value={item.sizes[sz]||''} onChange={e=>uSz(idx,sz,e.target.value)} placeholder="0"
-              style={{width:42,textAlign:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'5px 2px',fontSize:15,fontWeight:700,color:(item.sizes[sz]||0)>0?'#0f172a':'#cbd5e1'}}/>
-            {(()=>{const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);const stk=p?._inv?.[sz];const need=item.sizes[sz]||0;return stk!=null?<div style={{fontSize:9,fontWeight:600,color:stk<=0?'#dc2626':stk<need?'#ca8a04':'#166534'}}>{stk} inv</div>:null})()}</div>)}
-          <div style={{textAlign:'center',marginLeft:4,padding:'0 10px',borderLeft:'2px solid #e2e8f0'}}><div style={{fontSize:10,fontWeight:700,color:'#1e40af'}}>TOT</div><div style={{fontSize:20,fontWeight:800,color:'#1e40af'}}>{qty}</div></div>
-          <div style={{position:'relative',marginLeft:4}}><button className="btn btn-sm btn-secondary" onClick={()=>setShowSzPicker(showSzPicker===idx?null:idx)} style={{fontSize:10}}>+ Size</button>
-            {showSzPicker===idx&&addable.length>0&&<><div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:39}} onClick={()=>setShowSzPicker(null)}/><div style={{position:'absolute',top:'100%',left:0,background:'white',border:'1px solid #e2e8f0',borderRadius:6,boxShadow:'0 4px 12px rgba(0,0,0,0.1)',zIndex:40,padding:6,display:'flex',gap:3,flexWrap:'wrap',width:180}}>
-              {addable.map(sz=><button key={sz} className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 6px'}} onClick={()=>addSzToItem(idx,sz)}>{sz}</button>)}</div></>}
+        {/* SIZES ROW with financials inline */}
+        <div style={{padding:'10px 18px',display:'flex',alignItems:'center',borderBottom:'1px solid #f1f5f9'}}>
+          <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
+            <span style={{fontSize:12,fontWeight:600,color:'#64748b',width:46}}>Sizes:</span>
+            {szs.map(sz=><div key={sz} style={{textAlign:'center',width:48}}><div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
+              <input value={item.sizes[sz]||''} onChange={e=>uSz(idx,sz,e.target.value)} placeholder="0"
+                style={{width:42,textAlign:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'5px 2px',fontSize:15,fontWeight:700,color:(item.sizes[sz]||0)>0?'#0f172a':'#cbd5e1'}}/>
+              {(()=>{const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);const stk=p?._inv?.[sz];const need=item.sizes[sz]||0;return stk!=null?<div style={{fontSize:9,fontWeight:600,color:stk<=0?'#dc2626':stk<need?'#ca8a04':'#166534'}}>{stk} inv</div>:null})()}</div>)}
+            <div style={{textAlign:'center',marginLeft:4,padding:'0 10px',borderLeft:'2px solid #e2e8f0'}}><div style={{fontSize:10,fontWeight:700,color:'#1e40af'}}>TOT</div><div style={{fontSize:20,fontWeight:800,color:'#1e40af'}}>{qty}</div></div>
+            <div style={{position:'relative',marginLeft:4}}><button className="btn btn-sm btn-secondary" onClick={()=>setShowSzPicker(showSzPicker===idx?null:idx)} style={{fontSize:10}}>+ Size</button>
+              {showSzPicker===idx&&addable.length>0&&<><div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:39}} onClick={()=>setShowSzPicker(null)}/><div style={{position:'absolute',top:'100%',left:0,background:'white',border:'1px solid #e2e8f0',borderRadius:6,boxShadow:'0 4px 12px rgba(0,0,0,0.1)',zIndex:40,padding:6,display:'flex',gap:3,flexWrap:'wrap',width:180}}>
+                {addable.map(sz=><button key={sz} className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 6px'}} onClick={()=>addSzToItem(idx,sz)}>{sz}</button>)}</div></>}
+            </div>
+          </div>
+          {/* Financial summary — right side of sizes row */}
+          <div style={{marginLeft:'auto',display:'flex',alignItems:'center',gap:12}}>
+            {isSO&&(()=>{const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);
+              const szList=Object.entries(item.sizes).filter(([,v])=>v>0).sort((a,b)=>(SZ_ORD.indexOf(a[0])===-1?99:SZ_ORD.indexOf(a[0]))-(SZ_ORD.indexOf(b[0])===-1?99:SZ_ORD.indexOf(b[0])));
+              const hasOpen=szList.some(([sz,v])=>{const picked=(item.pick_lines||[]).reduce((a2,pk)=>a2+(pk[sz]||0),0);const po=poCommitted(item.po_lines,sz);const inv=p?._inv?.[sz]||0;return v-picked-po>0&&inv>0});
+              return hasOpen?<button className="btn btn-primary" style={{fontSize:12,padding:'8px 16px',fontWeight:700,whiteSpace:'nowrap'}} onClick={()=>{
+                const szs2=szList;const pp=p;
+                const pickItem={...item,_idx:idx,_pick:Object.fromEntries(szs2.map(([sz,v])=>{const inv=pp?._inv?.[sz]||0;const picked=(item.pick_lines||[]).reduce((a2,pk)=>a2+(pk[sz]||0),0);const po=poCommitted(item.po_lines,sz);const open=Math.max(0,v-picked-po);return[sz,inv>0?Math.min(open,inv):0]}))};
+                setShowPick([pickItem]);
+              }}><Icon name="grid" size={14}/> Create IF</button>
+              :isSO?<span style={{fontSize:10,color:'#94a3b8',fontStyle:'italic'}}>Fully assigned</span>:null})()}
+            <div style={{textAlign:'right',borderLeft:'1px solid #e2e8f0',paddingLeft:12,minWidth:140}}>
+              <div style={{display:'flex',gap:8,justifyContent:'flex-end',alignItems:'baseline',marginBottom:2}}>
+                <span style={{fontSize:10,color:'#64748b'}}>Cost <strong style={{fontSize:12}}>${iC.toLocaleString(undefined,{maximumFractionDigits:0})}</strong></span>
+                <span style={{fontSize:10,color:mg>=0?'#166534':'#dc2626'}}>Margin <strong style={{fontSize:12}}>${mg.toLocaleString(undefined,{maximumFractionDigits:0})}</strong> <span style={{fontSize:9}}>({iR>0?(mg/iR*100).toFixed(0):0}%)</span></span>
+              </div>
+              <div style={{display:'flex',gap:4,justifyContent:'flex-end',alignItems:'baseline'}}>
+                <span style={{fontSize:10,color:'#64748b'}}>${qty>0?(iR/qty).toFixed(2):'-'}/ea</span>
+                <span style={{fontSize:22,fontWeight:900,color:'#166534'}}>${iR.toLocaleString(undefined,{maximumFractionDigits:0})}</span>
+              </div>
+            </div>
           </div>
         </div>
         {/* FULFILLMENT LINES */}
@@ -420,15 +409,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
             {item.decorations.length===0&&!item.no_deco&&<button className="btn btn-sm" style={{background:'#fef3c7',color:'#92400e',border:'1px solid #f59e0b',fontSize:10}} onClick={()=>uI(idx,'no_deco',true)}>✓ No Deco (Blank)</button>}
             {item.no_deco&&<span style={{fontSize:10,padding:'3px 8px',borderRadius:4,background:'#f1f5f9',color:'#64748b',fontWeight:600,display:'flex',alignItems:'center',gap:4}}>🚫 No Decoration <button onClick={()=>uI(idx,'no_deco',false)} style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',fontSize:12,padding:0,marginLeft:2}}>✕</button></span>}
             {item.decorations.length===0&&!item.no_deco&&<span style={{fontSize:10,color:'#dc2626',fontWeight:600}}>⚠️ No deco assigned</span>}
-            {isSO&&(()=>{const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);
-              const szList=Object.entries(item.sizes).filter(([,v])=>v>0).sort((a,b)=>(SZ_ORD.indexOf(a[0])===-1?99:SZ_ORD.indexOf(a[0]))-(SZ_ORD.indexOf(b[0])===-1?99:SZ_ORD.indexOf(b[0])));
-              const hasOpen=szList.some(([sz,v])=>{const picked=(item.pick_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const po=poCommitted(item.po_lines,sz);const inv=p?._inv?.[sz]||0;return v-picked-po>0&&inv>0});
-              if(!hasOpen)return null;
-              return<button className="btn btn-sm" style={{background:'#dbeafe',color:'#1e40af',border:'1px solid #93c5fd',fontSize:10,marginLeft:'auto'}} onClick={()=>{
-                const szs2=szList;const pp=p;
-                const pickItem={...item,_idx:idx,_pick:Object.fromEntries(szs2.map(([sz,v])=>{const inv=pp?._inv?.[sz]||0;const picked=(item.pick_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const po=poCommitted(item.po_lines,sz);const open=Math.max(0,v-picked-po);return[sz,inv>0?Math.min(open,inv):0]}))};
-                setShowPick([pickItem]);
-              }}><Icon name="grid" size={10}/> Create IF</button>})()}
           </div>
         </div>
       </div>)})}
