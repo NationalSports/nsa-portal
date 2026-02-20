@@ -29,7 +29,10 @@ function dP(d,q,artFiles,cq){
   if(d.type==='embroidery')return{sell:d.sell_override||emP(d.stitches||8000,q,true),cost:emP(d.stitches||8000,q,false)};
   // Numbers
   if(d.kind==='numbers'||d.type==='number_press'){const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:q;return{sell:d.sell_override||npP(nq||1,d.two_color,true),cost:npP(nq||1,d.two_color,false)}};
-  if(d.type==='dtf'){const t=DTF[d.dtf_size||0];return{sell:d.sell_override||t.sell,cost:t.cost}}return{sell:0,cost:0}}
+  if(d.type==='dtf'){const t=DTF[d.dtf_size||0];return{sell:d.sell_override||t.sell,cost:t.cost}}
+  // Outside decoration — user-entered cost/sell
+  if(d.kind==='outside_deco')return{sell:d.sell_override||safeNum(d.sell_each),cost:safeNum(d.cost_each)};
+  return{sell:0,cost:0}}
 const SC={
   // SO statuses (5)
   need_order:{bg:'#fef3c7',c:'#92400e'},waiting_receive:{bg:'#dbeafe',c:'#1e40af'},items_received:{bg:'#d1fae5',c:'#065f46'},complete:{bg:'#dcfce7',c:'#166534'},in_production:{bg:'#ede9fe',c:'#6d28d9'},ready_to_invoice:{bg:'#fef0c7',c:'#c2410c'},
@@ -480,6 +483,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
   const NUM_SZ={heat_transfer:['1"','1.5"','2"','3"','4"','5"','6"','8"','10"'],embroidery:['0.5"','0.75"','1"','1.5"','2"'],screen_print:['4"','6"','8"','10"']};
   const addArtDeco=i=>{uI(i,'decorations',[...o.items[i].decorations,{kind:'art',position:'Front Center',art_file_id:null,sell_override:null}])};
   const addNumDeco=i=>{uI(i,'decorations',[...o.items[i].decorations,{kind:'numbers',position:'Back Center',num_method:'heat_transfer',num_size:'4"',two_color:false,sell_override:null,custom_font_art_id:null,roster:[]}])};
+  const addOutsideDeco=i=>{uI(i,'decorations',[...o.items[i].decorations,{kind:'outside_deco',position:'Front Center',vendor:'',deco_type:'embroidery',cost_each:0,sell_each:0,notes:'',sell_override:null}])};
   const uD=(ii,di,k,v)=>{uI(ii,'decorations',o.items[ii].decorations.map((d,i)=>i===di?{...d,[k]:v}:d))};
   const rmD=(ii,di)=>{uI(ii,'decorations',o.items[ii].decorations.filter((_,i)=>i!==di))};
   // Art files (SO)
@@ -492,7 +496,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
   const addrs=useMemo(()=>getAddrs(cust,allCustomers),[cust,allCustomers]);
   const artQty=useMemo(()=>{const m={};safeItems(o).forEach(it=>{const q=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){m[d.art_file_id]=(m[d.art_file_id]||0)+q}})});return m},[o]);
   const totals=useMemo(()=>{let rev=0,cost=0;safeItems(o).forEach(it=>{const q=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);if(!q)return;rev+=q*safeNum(it.unit_sell);cost+=q*safeNum(it.nsa_cost);
-    safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:q;const dp=dP(d,q,af,cq);rev+=q*dp.sell;cost+=q*dp.cost})});
+    safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:q;const dp=dP(d,q,af,cq);rev+=q*dp.sell;cost+=q*dp.cost});
+    (it.po_lines||[]).filter(pl=>pl.po_type==='outside_deco').forEach(pl=>{const poQty=Object.entries(pl).filter(([k,v])=>typeof v==='number'&&!['unit_cost'].includes(k)).reduce((a,[,v])=>a+v,0);cost+=poQty*safeNum(pl.unit_cost)})});
     const ship=o.shipping_type==='pct'?rev*(o.shipping_value||0)/100:(o.shipping_value||0);const tax=rev*(cust?.tax_rate||0);
     return{rev,cost,ship,tax,grand:rev+ship+tax,margin:rev-cost,pct:rev>0?((rev-cost)/rev*100):0}},[o,artQty]); // eslint-disable-line
 
@@ -626,6 +631,118 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           setInvSelItems(safeItems(o).map((_,i)=>i));setInvMemo(o.memo||'');setInvType('deposit');setShowInvCreate(true);
         }}><Icon name="dollar" size={14}/> Create Invoice</button>
       </div>}
+      {/* ALL COSTS — Expected vs Actual for QB */}
+      {isSO&&(()=>{
+        // Build cost lines per item
+        const costLines=[];
+        safeItems(o).forEach((it,ii)=>{
+          const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
+          if(!qty)return;
+          // BLANKS — expected from catalog nsa_cost, actual from PO lines
+          const expectedBlank=qty*safeNum(it.nsa_cost);
+          const blankPOs=(it.po_lines||[]).filter(pl=>pl.po_type!=='outside_deco');
+          const actualBlank=blankPOs.length>0?blankPOs.reduce((a,pl)=>{
+            const poQty=Object.entries(pl).filter(([k,v])=>typeof v==='number'&&safeSizes(it)[k]!==undefined).reduce((a2,[,v])=>a2+v,0);
+            return a+poQty*safeNum(it.nsa_cost)},0):0;
+
+          costLines.push({category:'Blanks',sku:it.sku,name:it.name,vendor:D_V.find(v=>v.id===it.vendor_id)?.name||it.brand||'—',
+            qty,expected:expectedBlank,actual:actualBlank,poCount:blankPOs.length,
+            poIds:blankPOs.map(p=>p.po_id).filter(Boolean).join(', '),
+            allReceived:blankPOs.length>0&&blankPOs.every(p=>p.status==='received')});
+
+          // DECORATIONS — expected from decoration setup, actual from DPOs
+          safeDecos(it).forEach(d=>{
+            const dp=dP(d,qty,af,qty);
+            const expectedDeco=qty*dp.cost;
+            // Find matching DPO lines for outside deco
+            const matchingDPOs=(it.po_lines||[]).filter(pl=>pl.po_type==='outside_deco');
+            const actualDeco=matchingDPOs.reduce((a,pl)=>{
+              const poQty=Object.entries(pl).filter(([k,v])=>typeof v==='number'&&!['unit_cost'].includes(k)&&safeSizes(it)[k]!==undefined).reduce((a2,[,v])=>a2+v,0);
+              return a+poQty*safeNum(pl.unit_cost)},0);
+            const artF=af.find(a=>a.id===d.art_file_id);
+            const isOutside=d.kind==='outside_deco'||matchingDPOs.length>0;
+            if(dp.cost>0||actualDeco>0){
+              costLines.push({category:isOutside?'Outside Deco':'In-House Deco',
+                sku:it.sku,name:artF?.name||d.deco_type?.replace(/_/g,' ')||'Decoration',
+                vendor:isOutside?(matchingDPOs[0]?.deco_vendor||d.vendor||'—'):'NSA In-House',
+                qty,expected:expectedDeco,actual:isOutside?actualDeco:expectedDeco,
+                poCount:matchingDPOs.length,poIds:matchingDPOs.map(p=>p.po_id).filter(Boolean).join(', '),
+                allReceived:matchingDPOs.length>0&&matchingDPOs.every(p=>p.status==='received')});
+            }
+          });
+        });
+
+        if(costLines.length===0)return null;
+        const totalExpected=costLines.reduce((a,l)=>a+l.expected,0);
+        const totalActual=costLines.reduce((a,l)=>a+l.actual,0);
+        const variance=totalActual-totalExpected;
+        const hasActuals=costLines.some(l=>l.poCount>0);
+
+        // Group by category for summary
+        const cats={};costLines.forEach(l=>{if(!cats[l.category])cats[l.category]={expected:0,actual:0};cats[l.category].expected+=l.expected;cats[l.category].actual+=l.actual});
+
+        return<div style={{marginTop:8,padding:'10px 14px',background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0'}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
+            <span style={{fontSize:12,fontWeight:800,color:'#0f172a'}}>💰 Cost Breakdown — Expected vs Actual</span>
+            {hasActuals&&variance!==0&&<span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:6,
+              background:variance>0?'#fef2f2':'#f0fdf4',color:variance>0?'#dc2626':'#166534'}}>
+              {variance>0?'⚠️ Over':'✅ Under'} by ${Math.abs(variance).toFixed(2)}</span>}
+          </div>
+
+          {/* Category summary boxes */}
+          <div style={{display:'flex',gap:6,marginBottom:8,flexWrap:'wrap'}}>
+            {Object.entries(cats).map(([cat,v])=>{const diff=v.actual-v.expected;
+              return<div key={cat} style={{padding:'6px 10px',background:'white',borderRadius:6,border:'1px solid #e2e8f0',minWidth:130}}>
+                <div style={{fontSize:9,fontWeight:700,color:'#64748b',textTransform:'uppercase'}}>{cat}</div>
+                <div style={{display:'flex',gap:12,marginTop:2}}>
+                  <div><div style={{fontSize:8,color:'#94a3b8'}}>Expected</div><div style={{fontSize:13,fontWeight:700,color:'#475569'}}>${v.expected.toFixed(2)}</div></div>
+                  <div><div style={{fontSize:8,color:'#94a3b8'}}>Actual</div><div style={{fontSize:13,fontWeight:700,color:v.actual>0?'#0f172a':'#94a3b8'}}>{v.actual>0?'$'+v.actual.toFixed(2):'—'}</div></div>
+                  {v.actual>0&&diff!==0&&<div><div style={{fontSize:8,color:'#94a3b8'}}>Var</div><div style={{fontSize:13,fontWeight:700,color:diff>0?'#dc2626':'#166534'}}>{diff>0?'+':''}${diff.toFixed(2)}</div></div>}
+                </div>
+              </div>})}
+            <div style={{padding:'6px 10px',background:variance>0?'#fef2f2':'#f0fdf4',borderRadius:6,border:'1px solid '+(variance>0?'#fca5a5':'#86efac'),minWidth:130}}>
+              <div style={{fontSize:9,fontWeight:700,color:'#64748b',textTransform:'uppercase'}}>Total Cost</div>
+              <div style={{display:'flex',gap:12,marginTop:2}}>
+                <div><div style={{fontSize:8,color:'#94a3b8'}}>Expected</div><div style={{fontSize:14,fontWeight:800,color:'#475569'}}>${totalExpected.toFixed(2)}</div></div>
+                <div><div style={{fontSize:8,color:'#94a3b8'}}>Actual</div><div style={{fontSize:14,fontWeight:800,color:totalActual>0?'#0f172a':'#94a3b8'}}>{totalActual>0?'$'+totalActual.toFixed(2):'—'}</div></div>
+              </div>
+            </div>
+          </div>
+
+          {/* Detail table */}
+          <table style={{width:'100%',fontSize:10,borderCollapse:'collapse'}}>
+            <thead><tr style={{borderBottom:'2px solid #cbd5e1'}}>
+              <th style={{textAlign:'left',padding:'3px 4px',color:'#64748b'}}>Category</th>
+              <th style={{textAlign:'left',padding:'3px 4px',color:'#64748b'}}>Item / Service</th>
+              <th style={{textAlign:'left',padding:'3px 4px',color:'#64748b'}}>Vendor</th>
+              <th style={{textAlign:'right',padding:'3px 4px',color:'#64748b'}}>Qty</th>
+              <th style={{textAlign:'right',padding:'3px 4px',color:'#64748b'}}>Expected</th>
+              <th style={{textAlign:'right',padding:'3px 4px',color:'#64748b'}}>Actual</th>
+              <th style={{textAlign:'right',padding:'3px 4px',color:'#64748b'}}>Variance</th>
+              <th style={{textAlign:'left',padding:'3px 4px',color:'#64748b'}}>PO(s)</th>
+            </tr></thead>
+            <tbody>{costLines.map((l,i)=>{const diff=l.actual-l.expected;
+              return<tr key={i} style={{borderBottom:'1px solid #f1f5f9',background:diff>0?'#fef2f210':''}}>
+                <td style={{padding:'3px 4px'}}><span style={{fontSize:8,padding:'1px 5px',borderRadius:3,fontWeight:600,
+                  background:l.category==='Blanks'?'#dbeafe':l.category==='Outside Deco'?'#ede9fe':'#fef3c7',
+                  color:l.category==='Blanks'?'#1e40af':l.category==='Outside Deco'?'#7c3aed':'#92400e'}}>{l.category}</span></td>
+                <td style={{padding:'3px 4px'}}><span style={{fontFamily:'monospace',fontWeight:700,color:'#475569',marginRight:4}}>{l.sku}</span>{l.name}</td>
+                <td style={{padding:'3px 4px',fontSize:9,color:'#64748b'}}>{l.vendor}</td>
+                <td style={{padding:'3px 4px',textAlign:'right',fontWeight:600}}>{l.qty}</td>
+                <td style={{padding:'3px 4px',textAlign:'right',color:'#475569'}}>${l.expected.toFixed(2)}</td>
+                <td style={{padding:'3px 4px',textAlign:'right',fontWeight:700,color:l.actual>0?'#0f172a':'#94a3b8'}}>{l.actual>0?'$'+l.actual.toFixed(2):'—'}</td>
+                <td style={{padding:'3px 4px',textAlign:'right',fontWeight:700,color:diff>0?'#dc2626':diff<0?'#166534':'#94a3b8'}}>{l.poCount>0?(diff>0?'+':diff<0?'-':'')+'$'+Math.abs(diff).toFixed(2):'—'}</td>
+                <td style={{padding:'3px 4px',fontSize:9,color:'#7c3aed',fontWeight:600}}>{l.poIds||<span style={{color:'#94a3b8'}}>No PO</span>}</td>
+              </tr>})}</tbody>
+            <tfoot><tr style={{borderTop:'2px solid #cbd5e1',fontWeight:800}}>
+              <td colSpan={4} style={{padding:'4px',textAlign:'right'}}>TOTALS</td>
+              <td style={{padding:'4px',textAlign:'right',color:'#475569'}}>${totalExpected.toFixed(2)}</td>
+              <td style={{padding:'4px',textAlign:'right',color:totalActual>0?'#0f172a':'#94a3b8'}}>{totalActual>0?'$'+totalActual.toFixed(2):'—'}</td>
+              <td style={{padding:'4px',textAlign:'right',color:variance>0?'#dc2626':variance<0?'#166534':'#94a3b8'}}>{hasActuals?(variance>0?'+':variance<0?'-':'')+'$'+Math.abs(variance).toFixed(2):'—'}</td>
+              <td></td>
+            </tr></tfoot>
+          </table>
+        </div>})()}
       {/* SHIPPING */}
       <div style={{display:'flex',gap:12,marginTop:12,alignItems:'end',flexWrap:'wrap',borderTop:'1px solid #f1f5f9',paddingTop:12}}>
         <div><label className="form-label">Shipping</label><div style={{display:'flex',gap:4,alignItems:'center'}}>
@@ -861,10 +978,50 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                   <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{const csv=prompt('Paste roster (one per line: Size,Number,Name):\ne.g.\nM,12,Smith\nL,34,Jones');if(csv){const nr={...roster};csv.split('\n').forEach(line=>{const[sz,num]=line.split(',').map(s=>s.trim());if(sz&&num){if(!nr[sz])nr[sz]=Array(item.sizes[sz]||0).fill('');const ei=nr[sz].findIndex(v=>!v);if(ei>=0)nr[sz][ei]=num}});uD(idx,di,'roster',nr);nf('Roster imported')}}}><Icon name="upload" size={10}/> Paste Roster</button>
                   <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{uD(idx,di,'roster',{});nf('Roster cleared')}}>Clear All</button>
                 </div></div>
-            </div>)}})}
+            </div>)}}
+            // OUTSIDE DECORATION — no job created, just cost/sell
+            if(deco.kind==='outside_deco'){return(<div key={di} style={{padding:'10px 0',borderTop:di>0?'1px solid #f1f5f9':''}}>
+              <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:6}}>
+                <div style={{width:36,height:36,borderRadius:6,background:'#faf5ff',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0}}>🎨</div>
+                <span style={{fontWeight:700,fontSize:13,color:'#7c3aed'}}>Outside Decoration</span>
+                <select className="form-select" style={{width:120,fontSize:12}} value={deco.position} onChange={e=>uD(idx,di,'position',e.target.value)}>{POSITIONS.map(p=><option key={p}>{p}</option>)}</select>
+                <div style={{marginLeft:'auto',display:'flex',gap:4,alignItems:'center'}}>
+                  <button onClick={()=>rmD(idx,di)} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626'}}><Icon name="x" size={14}/></button>
+                </div></div>
+              <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:6,padding:'8px 10px',background:'#faf5ff',borderRadius:6,border:'1px solid #ede9fe'}}>
+                <div style={{display:'flex',flexDirection:'column',gap:2}}>
+                  <span style={{fontSize:10,fontWeight:600,color:'#7c3aed'}}>Vendor</span>
+                  <select className="form-select" style={{width:160,fontSize:12}} value={deco.vendor||''} onChange={e=>uD(idx,di,'vendor',e.target.value)}>
+                    <option value="">Select vendor...</option>
+                    {DECO_VENDORS.map(dv=><option key={dv} value={dv}>{dv}</option>)}
+                  </select>
+                </div>
+                <div style={{display:'flex',flexDirection:'column',gap:2}}>
+                  <span style={{fontSize:10,fontWeight:600,color:'#7c3aed'}}>Deco Type</span>
+                  <select className="form-select" style={{width:120,fontSize:12}} value={deco.deco_type||'embroidery'} onChange={e=>uD(idx,di,'deco_type',e.target.value)}>
+                    {['embroidery','screen_print','dtf','heat_transfer','sublimation','vinyl'].map(t=><option key={t} value={t}>{t.replace(/_/g,' ')}</option>)}
+                  </select>
+                </div>
+                <div style={{display:'flex',flexDirection:'column',gap:2}}>
+                  <span style={{fontSize:10,fontWeight:600,color:'#dc2626'}}>NSA Cost /ea</span>
+                  <$In value={deco.cost_each||0} onChange={v=>uD(idx,di,'cost_each',v)} w={60}/>
+                </div>
+                <div style={{display:'flex',flexDirection:'column',gap:2}}>
+                  <span style={{fontSize:10,fontWeight:600,color:'#166534'}}>Sell /ea</span>
+                  <$In value={deco.sell_each||0} onChange={v=>{uD(idx,di,'sell_each',v);uD(idx,di,'sell_override',v)}} w={60}/>
+                </div>
+                <div style={{display:'flex',flexDirection:'column',gap:2,flex:1}}>
+                  <span style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Notes</span>
+                  <input className="form-input" style={{fontSize:11,padding:'4px 6px'}} value={deco.notes||''} onChange={e=>uD(idx,di,'notes',e.target.value)} placeholder="Thread colors, instructions..."/>
+                </div>
+              </div>
+              <div style={{fontSize:10,color:'#7c3aed',marginTop:4}}>⚠️ Outside deco — no production job will be created. Decoration handled by external vendor.</div>
+            </div>)}
+            return null})}
           <div style={{display:'flex',gap:6,marginTop:8,alignItems:'center',flexWrap:'wrap'}}>
             <button className="btn btn-sm btn-secondary" onClick={()=>addArtDeco(idx)}><Icon name="image" size={12}/> + Add Art</button>
             <button className="btn btn-sm btn-secondary" onClick={()=>addNumDeco(idx)}>#️⃣ + Add Numbers</button>
+            <button className="btn btn-sm btn-secondary" style={{background:'#faf5ff',borderColor:'#ddd6fe',color:'#7c3aed'}} onClick={()=>addOutsideDeco(idx)}>🎨 + Outside Deco</button>
             {safeDecos(item).length===0&&!item.no_deco&&<button className="btn btn-sm" style={{background:'#fef3c7',color:'#92400e',border:'1px solid #f59e0b',fontSize:10}} onClick={()=>uI(idx,'no_deco',true)}>✓ No Deco (Blank)</button>}
             {item.no_deco&&<span style={{fontSize:10,padding:'3px 8px',borderRadius:4,background:'#f1f5f9',color:'#64748b',fontWeight:600,display:'flex',alignItems:'center',gap:4}}>🚫 No Decoration <button onClick={()=>uI(idx,'no_deco',false)} style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',fontSize:12,padding:0,marginLeft:2}}>✕</button></span>}
             {safeDecos(item).length===0&&!item.no_deco&&<span style={{fontSize:10,color:'#dc2626',fontWeight:600}}>⚠️ No deco assigned</span>}
@@ -1382,8 +1539,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
 
     {showPO&&(()=>{
       // Vendor selection or PO form
-      const vendors=[...new Set(safeItems(o).map(it=>it.vendor_id||it.brand).filter(Boolean))];
-      const vendorMap={};safeItems(o).forEach((it,i)=>{const vk=it.vendor_id||D_V.find(v=>v.name===it.brand)?.id||it.brand;if(!vendorMap[vk])vendorMap[vk]=[];vendorMap[vk].push({...it,_idx:i})});
+      const vendorMap={};safeItems(o).forEach((it,i)=>{const vk=it.vendor_id||D_V.find(v=>v.name===it.brand)?.id;if(!vk)return;if(!vendorMap[vk])vendorMap[vk]=[];vendorMap[vk].push({...it,_idx:i})});
+      const unlinkedItems=safeItems(o).filter(it=>{const vk=it.vendor_id||D_V.find(v=>v.name===it.brand)?.id;return!vk&&Object.values(safeSizes(it)).some(v=>safeNum(v)>0)});
       if(showPO==='select')return<div className="modal-overlay" onClick={()=>setShowPO(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:500}}>
         <div className="modal-header"><h2>Create PO — Select Vendor</h2><button className="modal-close" onClick={()=>setShowPO(null)}>x</button></div>
         <div className="modal-body">{Object.entries(vendorMap).map(([vk,items])=>{const vn=D_V.find(v=>v.id===vk)?.name||vk;
@@ -1395,18 +1552,24 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
             <div style={{width:40,height:40,borderRadius:8,background:'#ede9fe',display:'flex',alignItems:'center',justifyContent:'center'}}><Icon name="package" size={20}/></div>
             <div style={{flex:1}}><div style={{fontWeight:700}}>{vn}</div><div style={{fontSize:12,color:'#64748b'}}>{items.length} item(s) — <span style={{color:'#dc2626',fontWeight:600}}>{openCount} units open</span></div></div>
             <Icon name="back" size={16} style={{transform:'rotate(180deg)'}}/></div>})}
+          {unlinkedItems.length>0&&<div style={{borderTop:'2px solid #fca5a5',marginTop:8,paddingTop:8}}>
+            <div style={{fontSize:10,fontWeight:700,color:'#dc2626',textTransform:'uppercase',marginBottom:6}}>⚠️ Items Without Vendor — Cannot Order</div>
+            {unlinkedItems.map((it,i)=><div key={i} style={{padding:'8px 12px',border:'1px solid #fca5a5',borderRadius:8,marginBottom:4,background:'#fef2f2'}}>
+              <div style={{fontSize:12,fontWeight:700,color:'#dc2626'}}>{it.sku||'No SKU'} — {it.name||'Unnamed'}</div>
+              <div style={{fontSize:10,color:'#92400e'}}>Assign a vendor/brand to this item before creating a PO</div>
+            </div>)}
+          </div>}}
           {/* Outside Decoration PO section */}
           <div style={{borderTop:'2px solid #e2e8f0',marginTop:8,paddingTop:8}}>
-            <div style={{fontSize:10,fontWeight:700,color:'#7c3aed',textTransform:'uppercase',marginBottom:6}}>🎨 Outside Decoration</div>
+            <div style={{fontSize:10,fontWeight:700,color:'#7c3aed',textTransform:'uppercase',marginBottom:6}}>🎨 Outside Decoration PO</div>
             {DECO_VENDORS.filter(dv=>dv!=='Other').map(dv=><div key={dv} style={{padding:'12px 16px',border:'1px solid #ede9fe',borderRadius:8,marginBottom:6,cursor:'pointer',display:'flex',alignItems:'center',gap:12,background:'#faf5ff'}}
               onClick={()=>setShowPO('deco:'+dv)}>
               <div style={{width:40,height:40,borderRadius:8,background:'#ede9fe',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18}}>🎨</div>
               <div style={{flex:1}}><div style={{fontWeight:700}}>{dv}</div><div style={{fontSize:12,color:'#7c3aed'}}>Send items for outside decoration</div></div>
               <Icon name="back" size={16} style={{transform:'rotate(180deg)'}}/></div>)}
-          </div>}
+          </div>
         </div></div></div>;
-      // PO form for selected vendor — only show sizes that still need ordering (subtract picks + existing POs)
-      // OUTSIDE DECORATION PO
+      // OUTSIDE DECORATION PO FORM
       if(typeof showPO==='string'&&showPO.startsWith('deco:')){
         const decoVendor=showPO.replace('deco:','');
         const allItems=safeItems(o).map((it,i)=>({...it,_idx:i})).filter(it=>{
@@ -1416,7 +1579,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           <div className="modal-header"><h2 style={{color:'#7c3aed'}}>🎨 Deco PO — {decoVendor}</h2><button className="modal-close" onClick={()=>setShowPO(null)}>x</button></div>
           <div className="modal-body">
             <div style={{padding:10,background:'#faf5ff',border:'1px solid #ddd6fe',borderRadius:8,marginBottom:12,fontSize:12,color:'#6d28d9'}}>
-              Sending items to <strong>{decoVendor}</strong> for outside decoration. Select which items and quantities to send.
+              Sending items to <strong>{decoVendor}</strong> for outside decoration. PO #{poId} will be saved to this SO for cost tracking and commission calculation.
             </div>
             <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:12,marginBottom:16}}>
               <div><label className="form-label">PO Number</label><input className="form-input" value={poId} readOnly style={{color:'#7c3aed',fontWeight:700}}/></div>
@@ -1468,11 +1631,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
               setO(updated);onSave(updated);
               setPOCounter(c=>c+1);setShowPO(null);
               nf('🎨 '+poId+' sent to '+decoVendor+' — '+totalQty+' units ($'+totalCost.toFixed(2)+')');
-            }}>🎨 Send to {decoVendor}</button>
+            }}>🎨 Create Deco PO — Send to {decoVendor}</button>
           </div>
         </div></div>;
       }
-
+      // PO form for selected vendor — only show sizes that still need ordering (subtract picks + existing POs)
       const vItems=vendorMap[showPO]||[];const vn=D_V.find(v=>v.id===showPO)?.name||showPO;
       const poId='PO-'+poCounter;
       const batchKey=Object.keys(BATCH_VENDORS).find(k=>vn.toLowerCase().includes(k)||showPO.toLowerCase().includes(k));
@@ -2937,6 +3100,9 @@ function AdjModal({isOpen,onClose,product,onSave}){const[a,setA]=useState({});co
 export default function App(){
   const[pg,setPg]=useState('dashboard');const[toast,setToast]=useState(null);
   const[dashView,setDashView]=useState('admin');// admin|sales|warehouse|decorator|production|csr
+  const[qbConfig,setQBConfig]=useState({connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',
+    mapping:{income_account:'Sales',cogs_account:'Cost of Goods Sold',deco_account:'Subcontractor - Decoration',ar_account:'Accounts Receivable',ap_account:'Accounts Payable'},
+    syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}});
   const[cust,setCust]=useState(D_C);const[vend]=useState(D_V);const[prod,setProd]=useState(D_P);
   const[ests,setEsts]=useState(D_E);const[sos,setSOs]=useState(D_SO);const[invs,setInvs]=useState(D_INV);
   // Batch PO system
@@ -4523,7 +4689,7 @@ export default function App(){
   const toggleWidget=(k)=>setRptWidgets(w=>({...w,[k]:!w[k]}));
 
   const rReports=()=>{
-    const soCalc=(so)=>{let rev=0,cost=0,units=0;safeItems(so).forEach(it=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);units+=qty;rev+=qty*safeNum(it.unit_sell);cost+=qty*safeNum(it.nsa_cost);(it.decorations||[]).forEach(d=>{rev+=qty*safeNum(d.sell_override||0)})});return{rev,cost,margin:rev-cost,pct:rev>0?Math.round((rev-cost)/rev*100):0,units}};
+    const soCalc=(so)=>{let rev=0,cost=0,units=0;safeItems(so).forEach(it=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);units+=qty;rev+=qty*safeNum(it.unit_sell);cost+=qty*safeNum(it.nsa_cost);(it.decorations||[]).forEach(d=>{rev+=qty*safeNum(d.sell_override||0);cost+=qty*safeNum(d.cost_override||d.cost_each||0)});(it.po_lines||[]).filter(pl=>pl.po_type==='outside_deco').forEach(pl=>{const poQty=Object.entries(pl).filter(([k,v])=>typeof v==='number'&&k!=='unit_cost').reduce((a,[,v])=>a+v,0);cost+=poQty*safeNum(pl.unit_cost)})});return{rev,cost,margin:rev-cost,pct:rev>0?Math.round((rev-cost)/rev*100):0,units}};
 
     const filtSOs=rptRep==='all'?sos:sos.filter(s=>s.created_by===rptRep);
     const filtInvs=rptRep==='all'?invs:invs.filter(i=>{const so=sos.find(s=>s.id===i.so_id);return so?.created_by===rptRep});
@@ -5757,6 +5923,242 @@ export default function App(){
 
   // MESSAGES PAGE
   const rMsg=()=>{const allM=[...msgs].sort((a,b)=>(b.ts||'').localeCompare(a.ts));
+
+  // QUICKBOOKS ONLINE INTEGRATION
+  const rQB=()=>{
+    // Build sync queue — SOs/POs/Invoices that need pushing to QB
+    const unsyncedSOs=sos.filter(so=>{
+      const hasItems=safeItems(so).some(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
+      return hasItems&&!so._qb_synced;
+    });
+    const unsyncedPOs=[];
+    sos.forEach(so=>{safeItems(so).forEach(it=>{(it.po_lines||[]).forEach(pl=>{if(!pl._qb_synced)unsyncedPOs.push({...pl,soId:so.id,sku:it.sku,itemName:it.name,vendor:pl.deco_vendor||D_V.find(v=>v.id===it.vendor_id)?.name||it.brand})})})});
+    const unsyncedInvs=invs.filter(i=>!i._qb_synced);
+
+    // Build what a QB sync would push
+    const buildQBSalesOrder=(so)=>{
+      const c=cust.find(x=>x.id===so.customer_id);
+      const lines=[];
+      safeItems(so).forEach(it=>{
+        const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
+        if(!qty)return;
+        lines.push({type:'SalesItemLine',desc:it.sku+' '+it.name+(it.color?' - '+it.color:''),qty,rate:it.unit_sell,amount:qty*it.unit_sell,account:qbConfig.mapping.income_account});
+        safeDecos(it).forEach(d=>{
+          const sell=safeNum(d.sell_override||d.sell_each||0);
+          if(sell>0)lines.push({type:'SalesItemLine',desc:'Decoration: '+(d.position||d.deco_type||'Art'),qty,rate:sell,amount:qty*sell,account:qbConfig.mapping.income_account});
+        });
+      });
+      return{docType:'SalesOrder',docNumber:so.id,customerRef:c?.name||'Unknown',date:so.created_at,memo:so.memo,lines,total:lines.reduce((a,l)=>a+l.amount,0)};
+    };
+
+    const buildQBPurchaseOrder=(pl,so,it)=>{
+      const qty=Object.entries(pl).filter(([k,v])=>typeof v==='number'&&!['unit_cost'].includes(k)&&k.match(/^[A-Z0-9]/)).reduce((a,[,v])=>a+v,0);
+      const rate=pl.po_type==='outside_deco'?safeNum(pl.unit_cost):safeNum(it.nsa_cost);
+      return{docType:'PurchaseOrder',docNumber:pl.po_id,vendorRef:pl.deco_vendor||D_V.find(v=>v.id===it.vendor_id)?.name||it.brand,
+        date:pl.created_at,soRef:so.id,lines:[{desc:it.sku+' '+it.name,qty,rate,amount:qty*rate}],
+        account:pl.po_type==='outside_deco'?qbConfig.mapping.deco_account:qbConfig.mapping.cogs_account,
+        total:qty*rate};
+    };
+
+    const buildQBInvoice=(inv)=>{
+      const so=sos.find(s=>s.id===inv.so_id);
+      return{docType:'Invoice',docNumber:inv.id,customerRef:cust.find(c=>c.id===inv.customer_id)?.name,
+        date:inv.created_at,soRef:inv.so_id,amount:inv.total,paid:inv.paid,balance:inv.total-inv.paid,
+        account:qbConfig.mapping.ar_account};
+    };
+
+    // Simulate a sync
+    const runSync=(type)=>{
+      const log={ts:new Date().toLocaleString(),type,status:'success',details:[]};
+      if(type==='all'||type==='sales_orders'){
+        unsyncedSOs.forEach(so=>{
+          const qbSO=buildQBSalesOrder(so);
+          log.details.push('SO: '+so.id+' → QB SalesOrder ($'+qbSO.total.toFixed(2)+')');
+        });
+      }
+      if(type==='all'||type==='purchase_orders'){
+        sos.forEach(so=>{safeItems(so).forEach(it=>{(it.po_lines||[]).filter(pl=>!pl._qb_synced).forEach(pl=>{
+          const qbPO=buildQBPurchaseOrder(pl,so,it);
+          log.details.push('PO: '+pl.po_id+' → QB PurchaseOrder to '+qbPO.vendorRef+' ($'+qbPO.total.toFixed(2)+')');
+        })})});
+      }
+      if(type==='all'||type==='invoices'){
+        unsyncedInvs.forEach(inv=>{
+          const qbInv=buildQBInvoice(inv);
+          log.details.push('INV: '+inv.id+' → QB Invoice ($'+qbInv.amount.toFixed(2)+')');
+        });
+      }
+      if(log.details.length===0){log.details.push('Nothing to sync');log.status='skipped'}
+      setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,50),lastSync:new Date().toLocaleString()}));
+      nf('🔄 QB Sync: '+log.details.length+' items processed');
+    };
+
+    return(<>
+      {/* Connection Status */}
+      <div className="card" style={{marginBottom:16,borderLeft:'4px solid '+(qbConfig.connected?'#22c55e':'#d97706')}}>
+        <div className="card-body">
+          <div style={{display:'flex',alignItems:'center',gap:12}}>
+            <div style={{width:48,height:48,borderRadius:12,background:qbConfig.connected?'#dcfce7':'#fef3c7',display:'flex',alignItems:'center',justifyContent:'center',fontSize:24}}>
+              {qbConfig.connected?'✅':'⚠️'}
+            </div>
+            <div style={{flex:1}}>
+              <div style={{fontSize:16,fontWeight:800,color:qbConfig.connected?'#166534':'#92400e'}}>
+                {qbConfig.connected?'Connected to QuickBooks Online':'QuickBooks Not Connected'}
+              </div>
+              {qbConfig.connected?
+                <div style={{fontSize:12,color:'#64748b'}}>Company: {qbConfig.companyName} · Last sync: {qbConfig.lastSync||'Never'}</div>:
+                <div style={{fontSize:12,color:'#92400e'}}>Connect your QBO account to enable automatic sync of SOs, POs, and Invoices</div>}
+            </div>
+            {qbConfig.connected?
+              <button className="btn btn-secondary" style={{color:'#dc2626'}} onClick={()=>setQBConfig(prev=>({...prev,connected:false,companyId:'',companyName:''}))}>Disconnect</button>:
+              <button className="btn btn-primary" style={{background:'#2CA01C',borderColor:'#2CA01C',padding:'10px 20px',fontSize:14,fontWeight:700}} onClick={()=>{
+                // In production: window.location.href = '/auth/quickbooks' → OAuth2 flow
+                // For demo, simulate connection
+                setQBConfig(prev=>({...prev,connected:true,companyId:'4620816365181050610',companyName:'National Sports Apparel LLC'}));
+                nf('✅ Connected to QuickBooks Online');
+              }}>Connect to QuickBooks</button>}
+          </div>
+        </div>
+      </div>
+
+      {qbConfig.connected&&<>
+      {/* Sync Queue Stats */}
+      <div className="stats-row" style={{marginBottom:16}}>
+        <div className="stat-card" style={{borderLeft:'3px solid #2563eb'}}><div className="stat-label">SOs to Sync</div><div className="stat-value" style={{color:'#2563eb'}}>{unsyncedSOs.length}</div></div>
+        <div className="stat-card" style={{borderLeft:'3px solid #7c3aed'}}><div className="stat-label">POs to Sync</div><div className="stat-value" style={{color:'#7c3aed'}}>{unsyncedPOs.length}</div></div>
+        <div className="stat-card" style={{borderLeft:'3px solid #d97706'}}><div className="stat-label">Invoices to Sync</div><div className="stat-value" style={{color:'#d97706'}}>{unsyncedInvs.length}</div></div>
+        <div className="stat-card" style={{borderLeft:'3px solid #166534'}}><div className="stat-label">Last Sync</div><div className="stat-value" style={{fontSize:12,color:'#166534'}}>{qbConfig.lastSync||'Never'}</div></div>
+      </div>
+
+      {/* Sync Controls */}
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
+        <div className="card">
+          <div className="card-header"><h2>🔄 Sync Controls</h2></div>
+          <div className="card-body">
+            <div style={{marginBottom:12}}>
+              <label className="form-label">Sync Mode</label>
+              <div style={{display:'flex',gap:4}}>
+                {[['manual','Manual'],['hourly','Hourly'],['daily','Daily'],['realtime','Real-time']].map(([v,l])=>
+                  <button key={v} className={`btn btn-sm ${qbConfig.autoSync===v?'btn-primary':'btn-secondary'}`}
+                    onClick={()=>setQBConfig(prev=>({...prev,autoSync:v}))}>{l}</button>)}
+              </div>
+              <div style={{fontSize:10,color:'#64748b',marginTop:4}}>
+                {qbConfig.autoSync==='manual'?'Push changes manually when ready':
+                 qbConfig.autoSync==='hourly'?'Auto-syncs every hour':
+                 qbConfig.autoSync==='daily'?'Auto-syncs once daily at midnight':
+                 'Syncs immediately when changes are saved'}
+              </div>
+            </div>
+            <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+              <button className="btn btn-primary" style={{flex:1}} onClick={()=>runSync('all')}>🔄 Sync Everything</button>
+              <button className="btn btn-secondary" onClick={()=>runSync('sales_orders')}>SOs</button>
+              <button className="btn btn-secondary" onClick={()=>runSync('purchase_orders')}>POs</button>
+              <button className="btn btn-secondary" onClick={()=>runSync('invoices')}>Invoices</button>
+            </div>
+          </div>
+        </div>
+
+        <div className="card">
+          <div className="card-header"><h2>🗂️ Account Mapping</h2></div>
+          <div className="card-body">
+            <div style={{fontSize:11,color:'#64748b',marginBottom:8}}>Map NSA line items to your QB Chart of Accounts</div>
+            {[['income_account','Item Revenue','Sales'],['cogs_account','Blank Goods COGS','Cost of Goods Sold'],['deco_account','Outside Decoration','Subcontractor - Decoration'],['ar_account','Accounts Receivable','Accounts Receivable'],['ap_account','Accounts Payable','Accounts Payable']].map(([key,label,def])=>
+              <div key={key} style={{display:'flex',gap:8,alignItems:'center',marginBottom:4}}>
+                <span style={{fontSize:11,fontWeight:600,color:'#475569',width:140}}>{label}</span>
+                <input className="form-input" style={{flex:1,fontSize:11,padding:'3px 6px'}} value={qbConfig.mapping[key]||def}
+                  onChange={e=>setQBConfig(prev=>({...prev,mapping:{...prev.mapping,[key]:e.target.value}}))}/>
+              </div>)}
+          </div>
+        </div>
+      </div>
+
+      {/* Preview — what would sync */}
+      <div className="card" style={{marginBottom:16}}>
+        <div className="card-header"><h2>📋 Sync Preview — What Will Go to QB</h2></div>
+        <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
+          {unsyncedSOs.length===0&&unsyncedPOs.length===0&&unsyncedInvs.length===0?
+            <div className="empty" style={{padding:20}}>Everything is synced!</div>:
+          <table style={{fontSize:11}}>
+            <thead><tr style={{background:'#f8fafc'}}><th>Type</th><th>Doc #</th><th>Customer/Vendor</th><th>SO Ref</th><th>QB Account</th><th style={{textAlign:'right'}}>Amount</th><th>Status</th></tr></thead>
+            <tbody>
+              {unsyncedSOs.map(so=>{const qb=buildQBSalesOrder(so);
+                return<tr key={so.id} style={{borderBottom:'1px solid #f1f5f9'}}>
+                  <td><span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:'#dbeafe',color:'#1e40af',fontWeight:600}}>Sales Order</span></td>
+                  <td style={{fontWeight:700,color:'#1e40af'}}>{so.id}</td>
+                  <td>{qb.customerRef}</td><td>—</td>
+                  <td style={{fontSize:10,color:'#64748b'}}>{qbConfig.mapping.income_account}</td>
+                  <td style={{textAlign:'right',fontWeight:700,color:'#166534'}}>${qb.total.toFixed(2)}</td>
+                  <td><span style={{fontSize:8,padding:'1px 4px',borderRadius:3,background:'#fef3c7',color:'#92400e',fontWeight:600}}>Pending</span></td>
+                </tr>})}
+              {sos.map(so=>safeItems(so).map(it=>(it.po_lines||[]).filter(pl=>!pl._qb_synced).map((pl,pi)=>{
+                const qb=buildQBPurchaseOrder(pl,so,it);
+                return<tr key={so.id+pl.po_id+pi} style={{borderBottom:'1px solid #f1f5f9'}}>
+                  <td><span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:pl.po_type==='outside_deco'?'#ede9fe':'#fef3c7',
+                    color:pl.po_type==='outside_deco'?'#7c3aed':'#92400e',fontWeight:600}}>{pl.po_type==='outside_deco'?'Deco PO':'Blank PO'}</span></td>
+                  <td style={{fontWeight:700,color:pl.po_id?.startsWith('DPO')?'#7c3aed':'#1e40af'}}>{pl.po_id}</td>
+                  <td>{qb.vendorRef}</td><td style={{fontSize:10,color:'#64748b'}}>{so.id}</td>
+                  <td style={{fontSize:10,color:'#64748b'}}>{qb.account}</td>
+                  <td style={{textAlign:'right',fontWeight:700,color:'#dc2626'}}>${qb.total.toFixed(2)}</td>
+                  <td><span style={{fontSize:8,padding:'1px 4px',borderRadius:3,background:'#fef3c7',color:'#92400e',fontWeight:600}}>Pending</span></td>
+                </tr>}))).flat(2)}
+              {unsyncedInvs.map(inv=>{const qb=buildQBInvoice(inv);
+                return<tr key={inv.id} style={{borderBottom:'1px solid #f1f5f9'}}>
+                  <td><span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:'#dcfce7',color:'#166534',fontWeight:600}}>Invoice</span></td>
+                  <td style={{fontWeight:700,color:'#166534'}}>{inv.id}</td>
+                  <td>{qb.customerRef}</td><td style={{fontSize:10,color:'#64748b'}}>{qb.soRef}</td>
+                  <td style={{fontSize:10,color:'#64748b'}}>{qbConfig.mapping.ar_account}</td>
+                  <td style={{textAlign:'right',fontWeight:700,color:'#166534'}}>${qb.amount.toFixed(2)}</td>
+                  <td><span style={{fontSize:8,padding:'1px 4px',borderRadius:3,background:'#fef3c7',color:'#92400e',fontWeight:600}}>Pending</span></td>
+                </tr>})}
+            </tbody>
+          </table>}
+        </div>
+      </div>
+
+      {/* Sync Log */}
+      <div className="card">
+        <div className="card-header"><h2>📜 Sync History</h2></div>
+        <div className="card-body" style={{padding:0,maxHeight:300,overflow:'auto'}}>
+          {qbConfig.syncLog.length===0?<div className="empty" style={{padding:20}}>No sync history yet</div>:
+          qbConfig.syncLog.map((log,i)=><div key={i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9'}}>
+            <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
+              <span style={{fontSize:9,padding:'1px 5px',borderRadius:3,fontWeight:600,
+                background:log.status==='success'?'#dcfce7':log.status==='skipped'?'#f1f5f9':'#fef2f2',
+                color:log.status==='success'?'#166534':log.status==='skipped'?'#64748b':'#dc2626'}}>{log.status}</span>
+              <span style={{fontSize:11,fontWeight:700}}>{log.type==='all'?'Full Sync':log.type.replace(/_/g,' ')}</span>
+              <span style={{fontSize:10,color:'#94a3b8',marginLeft:'auto'}}>{log.ts}</span>
+            </div>
+            {log.details.map((d,di)=><div key={di} style={{fontSize:10,color:'#64748b',paddingLeft:8}}>• {d}</div>)}
+          </div>)}
+        </div>
+      </div>
+      </>}
+
+      {/* API Documentation for developer */}
+      <div className="card" style={{marginTop:16}}>
+        <div className="card-header"><h2>🔧 Integration Notes</h2></div>
+        <div className="card-body" style={{fontSize:12,color:'#64748b'}}>
+          <div style={{marginBottom:8}}><strong>QB Online API endpoints used:</strong></div>
+          <div style={{fontFamily:'monospace',fontSize:10,background:'#f8fafc',padding:10,borderRadius:6,marginBottom:8}}>
+            POST /v3/company/{'{'}{'{'}companyId{'}'}{'}' }/salesorder — Create/update Sales Orders<br/>
+            POST /v3/company/{'{'}{'{'}companyId{'}'}{'}' }/purchaseorder — Create POs (blanks + deco)<br/>
+            POST /v3/company/{'{'}{'{'}companyId{'}'}{'}' }/invoice — Create Invoices<br/>
+            POST /v3/company/{'{'}{'{'}companyId{'}'}{'}' }/payment — Record payments<br/>
+            GET  /v3/company/{'{'}{'{'}companyId{'}'}{'}' }/query — Sync back QB data
+          </div>
+          <div style={{marginBottom:4}}><strong>What syncs:</strong></div>
+          <div>• <strong>Sales Orders</strong> → QB Sales Order with line items (products + decoration as separate lines)</div>
+          <div>• <strong>Blank POs</strong> → QB Purchase Order to vendor (SanMar, S&S, etc.) linked to SO</div>
+          <div>• <strong>Deco POs</strong> → QB Purchase Order to decorator (Silver Screen, Olympic, etc.) posted to "{qbConfig.mapping.deco_account}" account</div>
+          <div>• <strong>Invoices</strong> → QB Invoice with A/R tracking, payment application</div>
+          <div style={{marginTop:8,padding:8,background:'#fef3c7',borderRadius:6,color:'#92400e'}}>
+            <strong>Setup required:</strong> QBO OAuth2 app credentials (Client ID + Secret) from <a href="https://developer.intuit.com" target="_blank" rel="noreferrer" style={{color:'#1e40af'}}>developer.intuit.com</a>. 
+            Add your redirect URI and scopes: <code>com.intuit.quickbooks.accounting</code>
+          </div>
+        </div>
+      </div>
+    </>);
+  };
     const unread=allM.filter(m=>!(m.read_by||[]).includes(cu.id));
     const filtered=mF==='unread'?unread:mF==='mine'?allM.filter(m=>sos.some(s=>s.id===m.so_id&&s.created_by===cu.id)):allM;
     return(<><div className="stats-row"><div className="stat-card"><div className="stat-label">Total</div><div className="stat-value">{allM.length}</div></div><div className="stat-card"><div className="stat-label">Unread</div><div className="stat-value" style={{color:unread.length>0?'#dc2626':''}}>{unread.length}</div></div></div>
@@ -5783,8 +6185,8 @@ export default function App(){
           </div></div>})}</div></div></>)};
 
     // NAV
-  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'reports',label:'Reports',icon:'dollar'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'production',label:'Prod Board',icon:'package'},{id:'decoration',label:'Decoration',icon:'image'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{section:'Comms'},{id:'messages',label:'Messages',icon:'mail'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'System'},{id:'import',label:'NetSuite Import',icon:'save'},{id:'backup',label:'Backup & Data',icon:'save'}];
-  const titles={dashboard:'Dashboard',reports:'Reports & Analytics',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',omg:'OMG Team Stores',jobs:'Jobs',production:'Production Board',decoration:'Decoration',warehouse:'Warehouse',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',products:'Products',inventory:'Inventory',messages:'Messages',import:'NetSuite Import',backup:'Backup & Data'};
+  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'reports',label:'Reports',icon:'dollar'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'production',label:'Prod Board',icon:'package'},{id:'decoration',label:'Decoration',icon:'image'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{section:'Comms'},{id:'messages',label:'Messages',icon:'mail'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'System'},{id:'import',label:'NetSuite Import',icon:'save'},{id:'qb',label:'QuickBooks Sync',icon:'dollar'},{id:'backup',label:'Backup & Data',icon:'save'}];
+  const titles={dashboard:'Dashboard',reports:'Reports & Analytics',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',omg:'OMG Team Stores',jobs:'Jobs',production:'Production Board',decoration:'Decoration',warehouse:'Warehouse',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',products:'Products',inventory:'Inventory',messages:'Messages',import:'NetSuite Import',qb:'QuickBooks Online',backup:'Backup & Data'};
   return(<div className="app"><Toast msg={toast?.msg} type={toast?.type}/>
     <div className="sidebar"><div className="sidebar-logo">NSA<span>Portal</span></div>
       <nav className="sidebar-nav">{nav.map((item,i)=>{if(item.section)return<div key={i} className="sidebar-section">{item.section}</div>;
@@ -5819,7 +6221,7 @@ export default function App(){
           {gOpen&&<div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:59}} onClick={()=>setGOpen(false)}/>}
         </div>
         <div style={{display:'flex',gap:6,alignItems:'center'}}><button className="btn btn-sm btn-primary" onClick={()=>newE(null)} style={{fontSize:11}}><Icon name="plus" size={12}/> Estimate</button><button className="btn btn-sm btn-secondary" onClick={()=>setCM({open:true,c:null})} style={{fontSize:11}}><Icon name="plus" size={12}/> Customer</button><button className="btn btn-sm btn-secondary" onClick={()=>setQPC({open:true,mode:'single',items:[{sku:'',name:'',brand:'',color:'',category:'Tees',retail_price:0,nsa_cost:0,available_sizes:['S','M','L','XL','2XL'],vendor_id:''}]})} style={{fontSize:11}}><Icon name="plus" size={12}/> Product</button></div></div>
-      <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='production'&&rProd2()}{pg==='decoration'&&rDeco()}{pg==='warehouse'&&rWarehouse()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='omg'&&rOMG()}{pg==='reports'&&rReports()}{pg==='import'&&rImport()}{pg==='backup'&&rBackup()}</div></div>
+      <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='production'&&rProd2()}{pg==='decoration'&&rDeco()}{pg==='warehouse'&&rWarehouse()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='omg'&&rOMG()}{pg==='reports'&&rReports()}{pg==='import'&&rImport()}{pg==='qb'&&rQB()}{pg==='backup'&&rBackup()}</div></div>
     <CustModal isOpen={cM.open} onClose={()=>setCM({open:false,c:null})} onSave={savC} customer={cM.c} parents={pars}/>
     <AdjModal isOpen={aM.open} onClose={()=>setAM({open:false,p:null})} product={aM.p} onSave={savI}/>
 
