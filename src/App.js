@@ -702,6 +702,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
   const[showFirmReq,setShowFirmReq]=useState(false);const[firmReqDate,setFirmReqDate]=useState('');const[firmReqNote,setFirmReqNote]=useState('');
   const[showInvCreate,setShowInvCreate]=useState(false);const[invSelItems,setInvSelItems]=useState([]);const[invMemo,setInvMemo]=useState('');const[invType,setInvType]=useState('deposit');
   const[splitModal,setSplitModal]=useState(null);// {jIdx, mode:'received'|'sku'|null}
+  const[showPastArt,setShowPastArt]=useState(false);const[pastArtFilter,setPastArtFilter]=useState('all');
   // Sync dirty state to parent dirtyRef
   React.useEffect(()=>{if(dirtyRef)dirtyRef.current=dirty},[dirty,dirtyRef]);
   // Adjust inventory when pick is pulled or un-pulled
@@ -1501,7 +1502,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
     </>}
 
     {/* ART LIBRARY TAB */}
-    {tab==='art'&&<div className="card"><div className="card-header"><h2>Art Library</h2><button className="btn btn-sm btn-primary" onClick={addArt}><Icon name="plus" size={12}/> New Art Group</button></div>
+    {tab==='art'&&<div className="card"><div className="card-header"><h2>Art Library</h2><div style={{display:'flex',gap:6}}>
+      {cust&&<button className="btn btn-sm btn-secondary" style={{background:'#faf5ff',border:'1px solid #ddd6fe',color:'#7c3aed'}} onClick={()=>{setShowPastArt(true);setPastArtFilter('all')}}><Icon name="image" size={12}/> Use Past Art</button>}
+      <button className="btn btn-sm btn-primary" onClick={addArt}><Icon name="plus" size={12}/> New Art Group</button></div></div>
       <div className="card-body">{af.length===0?<div className="empty">No art uploaded. Create art groups and add files.</div>:
         <div style={{display:'flex',flexDirection:'column',gap:12}}>
           {af.map((art,i)=>{const usedIn=safeItems(o).reduce((a,it)=>a+safeDecos(it).filter(d=>d.art_file_id===art.id).length,0);
@@ -1559,6 +1562,67 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
             </div>)})}
         </div>}
       </div></div>}
+
+    {/* PAST ART PICKER MODAL */}
+    {showPastArt&&(()=>{
+      const custId=o.customer_id;const custObj=cust||allCustomers.find(c=>c.id===custId);
+      const parentId=custObj?.parent_id;const subIds=allCustomers.filter(c=>c.parent_id===custId).map(c=>c.id);
+      const relatedIds=[custId,...(parentId?[parentId]:[]),...subIds].filter(Boolean);
+      const allSrc=[...(allOrders||[]).filter(s=>relatedIds.includes(s.customer_id))];
+      const pastArt=[];const seen=new Set();const currentIds=new Set(af.map(a=>a.name));
+      allSrc.forEach(order=>{
+        if(order.id===o.id)return;// skip current order
+        safeArr(order.art_files).forEach(a=>{
+          if(!a.name||seen.has(a.name))return;seen.add(a.name);
+          pastArt.push({...a,_src_id:order.id,_src_memo:order.memo||'',_src_date:order.created_at||'',_already:currentIds.has(a.name)});
+        });
+      });
+      const decoLabels={screen_print:'Screen Print',embroidery:'Embroidery',dtf:'Heat Transfer',heat_press:'Heat Press'};
+      const decoColors={screen_print:{bg:'#dbeafe',c:'#1e40af',icon:'🖌'},embroidery:{bg:'#fef3c7',c:'#92400e',icon:'🧵'},dtf:{bg:'#ede9fe',c:'#6d28d9',icon:'🔥'},heat_press:{bg:'#fce7f3',c:'#9d174d',icon:'♨️'}};
+      const decoTypes=[...new Set(pastArt.map(a=>a.deco_type).filter(Boolean))];
+      const filtered=pastArtFilter==='all'?pastArt:pastArt.filter(a=>a.deco_type===pastArtFilter);
+      return<div className="modal-overlay" onClick={()=>setShowPastArt(false)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:700,maxHeight:'80vh',display:'flex',flexDirection:'column'}}>
+        <div className="modal-header"><h2>🎨 Use Past Art — {custObj?.name||'Customer'}</h2><button className="modal-close" onClick={()=>setShowPastArt(false)}>×</button></div>
+        <div style={{padding:'8px 20px',display:'flex',gap:4,borderBottom:'1px solid #e2e8f0',flexWrap:'wrap'}}>
+          <button className={`btn btn-sm ${pastArtFilter==='all'?'btn-primary':'btn-secondary'}`} onClick={()=>setPastArtFilter('all')}>All ({pastArt.length})</button>
+          {decoTypes.map(dt=><button key={dt} className={`btn btn-sm ${pastArtFilter===dt?'btn-primary':'btn-secondary'}`} style={pastArtFilter===dt?{background:(decoColors[dt]||{}).c||'#475569'}:{}} onClick={()=>setPastArtFilter(dt)}>
+            {(decoColors[dt]||{}).icon||'🎨'} {decoLabels[dt]||dt} ({pastArt.filter(a=>a.deco_type===dt).length})</button>)}
+        </div>
+        <div className="modal-body" style={{overflow:'auto',flex:1}}>
+          {pastArt.length===0?<div className="empty" style={{padding:40}}>No past artwork found for this customer. Art from previous estimates and sales orders will appear here.</div>:
+          filtered.length===0?<div className="empty" style={{padding:40}}>No {decoLabels[pastArtFilter]} artwork found.</div>:
+          <div style={{display:'flex',flexDirection:'column',gap:8}}>
+            {filtered.map((a,i)=>{const dc=decoColors[a.deco_type]||{bg:'#f1f5f9',c:'#475569',icon:'🎨'};
+              return<div key={a.id+'-'+i} style={{display:'flex',gap:12,padding:12,borderRadius:8,border:a._already?'2px solid #86efac':'1px solid #e2e8f0',background:a._already?'#f0fdf4':'white',alignItems:'center',cursor:a._already?'default':'pointer',opacity:a._already?0.7:1}} onClick={()=>{
+                if(a._already)return;
+                const newArt={...a,id:'af'+Date.now()+i,_src_id:undefined,_src_memo:undefined,_src_date:undefined,_already:undefined};
+                sv('art_files',[...af,newArt]);
+                setShowPastArt(false);
+                nf('🎨 Added "'+a.name+'" from '+a._src_id)}}>
+                <div style={{width:44,height:44,background:dc.bg,borderRadius:8,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,fontSize:20}}>{dc.icon}</div>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontWeight:700,fontSize:14,color:dc.c}}>{a.name||'Untitled'}</div>
+                  <div style={{fontSize:11,color:'#64748b'}}>
+                    <span style={{padding:'1px 6px',borderRadius:4,background:dc.bg,color:dc.c,fontWeight:600,fontSize:10,marginRight:6}}>{decoLabels[a.deco_type]||a.deco_type}</span>
+                    {a.deco_type==='screen_print'&&a.ink_colors&&<span>🎨 {a.ink_colors}</span>}
+                    {a.deco_type==='embroidery'&&a.thread_colors&&<span>🧵 {a.thread_colors}</span>}
+                    {a.deco_type==='embroidery'&&a.stitches&&<span> · {a.stitches?.toLocaleString()} stitches</span>}
+                    {a.art_size&&<span> · 📏 {a.art_size}</span>}
+                  </div>
+                  <div style={{fontSize:10,color:'#94a3b8',marginTop:2}}>From {a._src_id}: {a._src_memo}
+                    {(a.prod_files||[]).length>0&&<span style={{color:'#166534'}}> · 📁 {a.prod_files.length} prod files</span>}
+                    {(a.mockup_files||[]).length>0&&<span style={{color:'#7c3aed'}}> · 🖼 {a.mockup_files.length} mockups</span>}
+                  </div>
+                </div>
+                {a._already?<span style={{fontSize:11,color:'#166534',fontWeight:600}}>✓ Already added</span>
+                  :<button className="btn btn-sm btn-primary" onClick={e=>{e.stopPropagation();
+                    const newArt={...a,id:'af'+Date.now()+i,_src_id:undefined,_src_memo:undefined,_src_date:undefined,_already:undefined};
+                    sv('art_files',[...af,newArt]);setShowPastArt(false);nf('🎨 Added "'+a.name+'" from '+a._src_id)}}>+ Use This</button>}
+              </div>})}
+          </div>}
+        </div>
+        <div className="modal-footer"><button className="btn btn-secondary" onClick={()=>setShowPastArt(false)}>Close</button></div>
+      </div></div>})()}
 
     {/* MESSAGES TAB */}
     {isSO&&tab==='messages'&&(()=>{const soMsgs=(msgs||[]).filter(m=>m.so_id===o.id).sort((a,b)=>(a.ts||'').localeCompare(b.ts));
@@ -3167,7 +3231,60 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     <div><div className="form-label">Shipping</div><div style={{fontSize:13}}>{customer.shipping_address_line1||'--'}<br/>{customer.shipping_city}, {customer.shipping_state}</div></div>
     <div><div className="form-label">Tax</div><div style={{fontSize:13}}>{customer.tax_rate?(customer.tax_rate*100).toFixed(2)+'%':'Auto'}</div></div></div>
   </div></div>}
-  {tab==='artwork'&&<div className="card"><div className="card-body"><div className="empty">Customer art library — aggregates from SOs (Phase 3)</div></div></div>}
+  {tab==='artwork'&&(()=>{
+    // Aggregate all art from this customer's SOs and estimates
+    const custId=customer.id;const parentId=customer.parent_id;const subIds=allCustomers.filter(c=>c.parent_id===custId).map(c=>c.id);
+    const relatedIds=[custId,...(parentId?[parentId]:[]),...subIds];
+    const allArtSrc=[...safeArr(sos).filter(s=>relatedIds.includes(s.customer_id)),...safeArr(ests).filter(e=>relatedIds.includes(e.customer_id))];
+    const artLib=[];const seen=new Set();
+    allArtSrc.forEach(order=>{
+      safeArr(order.art_files).forEach(a=>{
+        if(!a.name&&!a.id)return;
+        const key=a.name||a.id;
+        if(seen.has(key))return;seen.add(key);
+        artLib.push({...a,_source_id:order.id,_source_type:order.id?.startsWith('EST')?'Estimate':'SO',_source_memo:order.memo||'',_source_date:order.created_at||''});
+      });
+    });
+    const decoTypes=[...new Set(artLib.map(a=>a.deco_type).filter(Boolean))];
+    const[artFilter,setArtFilter]=React.useState('all');
+    const filtered=artFilter==='all'?artLib:artLib.filter(a=>a.deco_type===artFilter);
+    const decoLabels={screen_print:'Screen Print',embroidery:'Embroidery',dtf:'Heat Transfer (DTF)',heat_press:'Heat Press'};
+    const decoColors={screen_print:{bg:'#dbeafe',c:'#1e40af'},embroidery:{bg:'#fef3c7',c:'#92400e'},dtf:{bg:'#ede9fe',c:'#6d28d9'},heat_press:{bg:'#fce7f3',c:'#9d174d'}};
+
+    return<div className="card"><div className="card-header"><h2>🎨 Art Library</h2>
+      <div style={{display:'flex',gap:4}}>
+        <button className={`btn btn-sm ${artFilter==='all'?'btn-primary':'btn-secondary'}`} onClick={()=>setArtFilter('all')}>All ({artLib.length})</button>
+        {decoTypes.map(dt=><button key={dt} className={`btn btn-sm ${artFilter===dt?'btn-primary':'btn-secondary'}`} style={artFilter===dt?{background:decoColors[dt]?.c||'#475569'}:{}} onClick={()=>setArtFilter(dt)}>{decoLabels[dt]||dt} ({artLib.filter(a=>a.deco_type===dt).length})</button>)}
+      </div></div>
+      <div className="card-body">
+      {artLib.length===0?<div className="empty">No artwork found on this customer's orders yet. Art will appear here as it's added to estimates and SOs.</div>:
+      filtered.length===0?<div className="empty">No {decoLabels[artFilter]||artFilter} artwork found.</div>:
+      <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill, minmax(280px, 1fr))',gap:12}}>
+        {filtered.map((a,i)=>{const dc=decoColors[a.deco_type]||{bg:'#f1f5f9',c:'#475569'};
+          return<div key={a.id+'-'+i} style={{border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden',background:'white'}}>
+            <div style={{padding:'10px 14px',background:dc.bg+'40',borderBottom:'1px solid #e2e8f0'}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
+                <div style={{fontWeight:700,fontSize:14,color:dc.c}}>{a.name||'Untitled Art'}</div>
+                <span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:dc.bg,color:dc.c}}>{decoLabels[a.deco_type]||a.deco_type}</span>
+              </div>
+              <div style={{fontSize:11,color:'#64748b',marginTop:2}}>{a._source_type} {a._source_id} — {a._source_memo}</div>
+            </div>
+            <div style={{padding:'10px 14px',fontSize:12}}>
+              {a.deco_type==='screen_print'&&a.ink_colors&&<div style={{marginBottom:4}}>🎨 <strong>Ink Colors:</strong> {a.ink_colors}</div>}
+              {a.deco_type==='embroidery'&&a.thread_colors&&<div style={{marginBottom:4}}>🧵 <strong>Thread Colors:</strong> {a.thread_colors}</div>}
+              {a.deco_type==='embroidery'&&a.stitches&&<div style={{marginBottom:4}}>📐 <strong>Stitches:</strong> {a.stitches?.toLocaleString()}</div>}
+              {a.art_size&&<div style={{marginBottom:4}}>📏 <strong>Size:</strong> {a.art_size}</div>}
+              {a.notes&&<div style={{marginBottom:4,color:'#64748b',fontStyle:'italic'}}>💬 {a.notes}</div>}
+              <div style={{display:'flex',gap:6,flexWrap:'wrap',marginTop:6}}>
+                {a.status&&<span style={{padding:'2px 6px',borderRadius:4,fontSize:10,fontWeight:600,background:a.status==='approved'?'#dcfce7':a.status==='uploaded'?'#fef3c7':'#f1f5f9',color:a.status==='approved'?'#166534':a.status==='uploaded'?'#92400e':'#475569'}}>{a.status}</span>}
+                {(a.mockup_files||[]).length>0&&<span style={{fontSize:10,color:'#7c3aed'}}>🖼 {a.mockup_files.length} mockup{a.mockup_files.length>1?'s':''}</span>}
+                {(a.prod_files||[]).length>0&&<span style={{fontSize:10,color:'#166534'}}>📁 {a.prod_files.length} prod file{a.prod_files.length>1?'s':''}</span>}
+              </div>
+              <div style={{fontSize:10,color:'#94a3b8',marginTop:4}}>Added: {a.uploaded||a._source_date}</div>
+            </div>
+          </div>})}
+      </div>}
+    </div></div>})()}
   {tab==='reporting'&&<div className="card"><div className="card-header"><h2>Reporting</h2><div style={{display:'flex',gap:4}}>{[['thisyear','This Year'],['lastyear','Last Year'],['rolling','Rolling 12'],['alltime','All']].map(([v,l])=><button key={v} className={`btn btn-sm ${rR===v?'btn-primary':'btn-secondary'}`} onClick={()=>setRR(v)}>{l}</button>)}</div></div>
     <div className="card-body"><div className="stats-row"><div className="stat-card"><div className="stat-label">Revenue</div><div className="stat-value">{rR==='thisyear'?'$15,600':'$32,600'}</div></div><div className="stat-card"><div className="stat-label">Orders</div><div className="stat-value">{rR==='thisyear'?'4':'8'}</div></div><div className="stat-card"><div className="stat-label">Avg Order</div><div className="stat-value">{rR==='thisyear'?'$3,900':'$4,075'}</div></div></div></div></div>}
 
@@ -3555,9 +3672,17 @@ export default function App(){
   // Batch PO system
   const[batchPOs,setBatchPOs]=useState([]);// pending queue
   // Supplier Bills system
-  const[bills,setBills]=useState(D_BILLS);
+  const[bills,setBills]=useState(()=>{
+    // Auto-flag bills where freight > threshold on initial load
+    return D_BILLS.map(b=>{
+      if(b.triage===null&&b.merch_total>0&&b.freight/b.merch_total>FREIGHT_WARN_PCT)return{...b,triage:'freight',status:'flagged',notes:b.notes||'Auto-flagged: freight '+(b.freight/b.merch_total*100).toFixed(1)+'% of merchandise'};
+      return b;
+    });
+  });
   const[billFilter,setBillFilter]=useState({status:'all',rep:'all',triage:'all',search:''});
   const[billSel,setBillSel]=useState(null);// selected bill for detail view
+  const[billSort,setBillSort]=useState({key:'date',dir:'desc'});// sort: date, total, freight, merch, po
+  const[billChecked,setBillChecked]=useState([]);// array of checked bill IDs
   const[submittedBatches,setSubmittedBatches]=useState([]);// submitted batches for scan lookup
   const[batchCounter,setBatchCounter]=useState(4501);// sequential PO numbers: NSA-4501, NSA-4502...
   const[batchScan,setBatchScan]=useState('');// scan/lookup field
@@ -4886,11 +5011,24 @@ export default function App(){
     const fb=bills.filter(b=>{
       if(billFilter.status!=='all'&&b.status!==billFilter.status)return false;
       if(billFilter.rep!=='all'&&b.matched_rep_id!==billFilter.rep)return false;
+      if(billFilter.triage==='flagged'&&b.triage==='freight')return true;
       if(billFilter.triage==='flagged'&&b.triage!=='freight')return false;
       if(billFilter.triage==='ok'&&b.triage!=='ok')return false;
       if(billFilter.triage==='new'&&b.triage!==null)return false;
       if(billFilter.search){const s=billFilter.search.toLowerCase();return(b.si_doc||'').includes(s)||(b.po_number||'').toLowerCase().includes(s)||(b.ship_to||'').toLowerCase().includes(s)||(b.items||[]).some(i=>(i.sku||'').toLowerCase().includes(s)||(i.name||'').toLowerCase().includes(s))}
       return true});
+    // Sort
+    const sorted=[...fb].sort((a,b)=>{
+      const d=billSort.dir==='asc'?1:-1;
+      if(billSort.key==='date')return d*((a.si_doc_date||'').localeCompare(b.si_doc_date||''));
+      if(billSort.key==='total')return d*(a.doc_total-b.doc_total);
+      if(billSort.key==='merch')return d*(a.merch_total-b.merch_total);
+      if(billSort.key==='freight')return d*(a.freight-b.freight);
+      if(billSort.key==='freight_pct')return d*((a.merch_total>0?a.freight/a.merch_total:0)-(b.merch_total>0?b.freight/b.merch_total:0));
+      if(billSort.key==='po')return d*((a.po_number||'').localeCompare(b.po_number||''));
+      return 0});
+    const toggleSort=key=>setBillSort(s=>s.key===key?{key,dir:s.dir==='asc'?'desc':'asc'}:{key,dir:'desc'});
+    const sortIcon=key=>billSort.key===key?(billSort.dir==='asc'?'↑':'↓'):'';
     const newCount=bills.filter(b=>b.status==='new').length;
     const flaggedCount=bills.filter(b=>b.triage==='freight').length;
     const totalMerch=bills.reduce((a,b)=>a+b.merch_total,0);
@@ -4951,14 +5089,14 @@ export default function App(){
       </div>}
 
     return<>
-      {/* Stats row */}
+      {/* Stats row — clickable to filter */}
       <div className="stats-row">
-        <div className="stat-card"><div className="stat-label">Total Bills</div><div className="stat-value">{bills.length}</div></div>
-        <div className="stat-card"><div className="stat-label">New</div><div className="stat-value" style={{color:newCount>0?'#dc2626':''}}>{newCount}</div></div>
-        <div className="stat-card"><div className="stat-label">Flagged</div><div className="stat-value" style={{color:flaggedCount>0?'#dc2626':''}}>{flaggedCount}</div></div>
+        <div className="stat-card" style={{cursor:'pointer',border:billFilter.status==='all'&&billFilter.triage==='all'?'2px solid #3b82f6':''}} onClick={()=>setBillFilter(f=>({...f,status:'all',triage:'all'}))}><div className="stat-label">Total Bills</div><div className="stat-value">{bills.length}</div></div>
+        <div className="stat-card" style={{cursor:'pointer',border:billFilter.status==='new'?'2px solid #dc2626':''}} onClick={()=>setBillFilter(f=>({...f,status:f.status==='new'?'all':'new',triage:'all'}))}><div className="stat-label">New</div><div className="stat-value" style={{color:newCount>0?'#dc2626':''}}>{newCount}</div></div>
+        <div className="stat-card" style={{cursor:'pointer',border:billFilter.triage==='flagged'?'2px solid #dc2626':''}} onClick={()=>setBillFilter(f=>({...f,triage:f.triage==='flagged'?'all':'flagged',status:'all'}))}><div className="stat-label">🚩 Flagged</div><div className="stat-value" style={{color:flaggedCount>0?'#dc2626':''}}>{flaggedCount}</div></div>
         <div className="stat-card"><div className="stat-label">Merchandise</div><div className="stat-value">${totalMerch.toLocaleString(undefined,{maximumFractionDigits:0})}</div></div>
-        <div className="stat-card"><div className="stat-label">Freight</div><div className="stat-value">${totalFreight.toFixed(2)}</div></div>
-        <div className="stat-card"><div className="stat-label">Ready for QB</div><div className="stat-value" style={{color:unsyncedCount>0?'#7c3aed':''}}>{unsyncedCount}</div></div>
+        <div className="stat-card" style={{cursor:'pointer'}} onClick={()=>toggleSort('freight_pct')}><div className="stat-label">Freight {sortIcon('freight_pct')}</div><div className="stat-value">${totalFreight.toFixed(2)}</div><div style={{fontSize:10,color:'#94a3b8'}}>{totalMerch>0?(totalFreight/totalMerch*100).toFixed(1)+'% avg':''}</div></div>
+        <div className="stat-card" style={{cursor:'pointer',border:billFilter.triage==='ok'?'2px solid #166534':''}} onClick={()=>setBillFilter(f=>({...f,triage:f.triage==='ok'?'all':'ok',status:'all'}))}><div className="stat-label">Ready for QB</div><div className="stat-value" style={{color:unsyncedCount>0?'#7c3aed':''}}>{unsyncedCount}</div></div>
       </div>
       {/* Filters */}
       <div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap',alignItems:'center'}}>
@@ -4972,6 +5110,14 @@ export default function App(){
         <span style={{fontSize:12,color:'#64748b'}}>{fb.length} bill{fb.length!==1?'s':''}</span>
         {bills.some(b=>b.triage==='ok'&&!b.qb_synced)&&<button className="btn btn-sm btn-primary" style={{marginLeft:'auto'}} onClick={()=>{const count=bills.filter(b=>b.triage==='ok'&&!b.qb_synced).length;setBills(prev=>prev.map(b=>b.triage==='ok'&&!b.qb_synced?{...b,qb_synced:true}:b));nf('📤 '+count+' bill'+(count>1?'s':'')+' queued for QuickBooks')}}>📤 Push All OK to QB ({bills.filter(b=>b.triage==='ok'&&!b.qb_synced).length})</button>}
       </div>
+      {/* Batch actions bar — shows when bills are checked */}
+      {billChecked.length>0&&<div style={{display:'flex',gap:8,marginBottom:12,padding:'10px 14px',background:'#eff6ff',borderRadius:8,border:'1px solid #93c5fd',alignItems:'center',flexWrap:'wrap'}}>
+        <span style={{fontWeight:700,color:'#1e40af',fontSize:13}}>{billChecked.length} selected</span>
+        <button className="btn btn-sm" style={{background:'#166534',color:'white'}} onClick={()=>{setBills(prev=>prev.map(b=>billChecked.includes(b.id)?{...b,triage:'ok',status:'reviewed'}:b));nf('✓ '+billChecked.length+' bill(s) marked OK');setBillChecked([])}}>✓ Mark All OK</button>
+        <button className="btn btn-sm" style={{background:'#dc2626',color:'white'}} onClick={()=>{setBills(prev=>prev.map(b=>billChecked.includes(b.id)?{...b,triage:'freight',status:'flagged'}:b));nf('🚩 '+billChecked.length+' bill(s) flagged');setBillChecked([])}}>🚩 Flag All</button>
+        <button className="btn btn-sm" style={{background:'#7c3aed',color:'white'}} onClick={()=>{const ct=billChecked.filter(id=>bills.find(b=>b.id===id)?.triage==='ok'&&!bills.find(b=>b.id===id)?.qb_synced).length;setBills(prev=>prev.map(b=>billChecked.includes(b.id)&&b.triage==='ok'?{...b,qb_synced:true}:b));nf('📤 '+ct+' bill(s) pushed to QB');setBillChecked([])}}>📤 Push to QB</button>
+        <button className="btn btn-sm btn-secondary" onClick={()=>setBillChecked([])}>Clear</button>
+      </div>}
       {/* Drop zone for PDF upload (demo) */}
       <div style={{border:'2px dashed #d1d5db',borderRadius:12,padding:20,textAlign:'center',marginBottom:16,cursor:'pointer',background:'#fafafa'}}
         onClick={()=>{const newBill={id:'BILL-'+String(bills.length+1).padStart(3,'0'),si_doc:String(23960000+Math.floor(Math.random()*1000)),si_doc_date:new Date().toLocaleDateString('en-CA'),due_date:'',vendor:'Adidas US Team Services',po_number:'PO'+String(7800+Math.floor(Math.random()*200)),ship_to:'NSA Warehouse',ship_to_type:'warehouse',carrier:'FedEx',tracking:String(Math.floor(Math.random()*999999999999)),ship_date:new Date().toLocaleDateString('en-CA'),weight_lb:Math.round(Math.random()*50*100)/100,merch_total:Math.round(Math.random()*2000*100)/100,freight:Math.round(Math.random()*40*100)/100,si_upcharge:Math.round(Math.random()*5*100)/100,doc_total:0,items:[{sku:'DEMO-SKU',name:'Demo Item',color:'Black',sizes:{M:5,L:3},net_price:15}],matched_so_id:null,matched_rep_id:cu.id,status:'new',triage:null,notes:'',qb_synced:false,created_at:new Date().toLocaleString()};newBill.doc_total=newBill.merch_total+newBill.freight+newBill.si_upcharge;setBills(prev=>[newBill,...prev]);nf('📄 Bill parsed: SI #'+newBill.si_doc)}}>
@@ -4980,17 +5126,27 @@ export default function App(){
       </div>
       {/* Bills table */}
       <div className="card"><div className="card-body" style={{padding:0}}>
-        <table style={{fontSize:12}}><thead><tr><th>SI Doc</th><th>PO#</th><th>Ship To</th><th>Items</th><th style={{textAlign:'right'}}>Merch</th><th style={{textAlign:'right'}}>Freight</th><th style={{textAlign:'right'}}>Total</th><th>Triage</th><th>Rep</th><th>QB</th></tr></thead><tbody>
-        {fb.map(b=>{const freightPct=b.merch_total>0?(b.freight/b.merch_total*100):0;const isHigh=freightPct>FREIGHT_WARN_PCT*100;
+        <table style={{fontSize:12}}><thead><tr>
+            <th style={{width:36,textAlign:'center'}}><input type="checkbox" checked={sorted.length>0&&sorted.every(b=>billChecked.includes(b.id))} onChange={e=>{if(e.target.checked){setBillChecked(prev=>[...new Set([...prev,...sorted.map(b=>b.id)])])}else{const ids=new Set(sorted.map(b=>b.id));setBillChecked(prev=>prev.filter(id=>!ids.has(id)))}}}/></th>
+            <th style={{cursor:'pointer',userSelect:'none'}} onClick={()=>toggleSort('date')}>SI Doc {sortIcon('date')}</th>
+            <th style={{cursor:'pointer',userSelect:'none'}} onClick={()=>toggleSort('po')}>PO# {sortIcon('po')}</th>
+            <th>Ship To</th><th>Items</th>
+            <th style={{textAlign:'right',cursor:'pointer',userSelect:'none'}} onClick={()=>toggleSort('merch')}>Merch {sortIcon('merch')}</th>
+            <th style={{textAlign:'right',cursor:'pointer',userSelect:'none'}} onClick={()=>toggleSort('freight')}>Freight {sortIcon('freight')}</th>
+            <th style={{textAlign:'right',cursor:'pointer',userSelect:'none'}} onClick={()=>toggleSort('total')}>Total {sortIcon('total')}</th>
+            <th>Triage</th><th>Rep</th><th>QB</th></tr></thead><tbody>
+        {sorted.map(b=>{const freightPct=b.merch_total>0?(b.freight/b.merch_total*100):0;const isHigh=freightPct>FREIGHT_WARN_PCT*100;
           const itemCount=(b.items||[]).reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((a2,v)=>a2+v,0),0);
-          return<tr key={b.id} style={{cursor:'pointer',background:b.status==='new'?'#fffbeb':b.triage==='freight'?'#fef2f2':''}} onClick={()=>setBillSel(b)}>
-            <td><span style={{fontWeight:700,color:'#1e40af'}}>{b.si_doc}</span><div style={{fontSize:10,color:'#94a3b8'}}>{b.si_doc_date}</div></td>
-            <td style={{fontWeight:600}}>{b.po_number}</td>
-            <td style={{maxWidth:150,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{b.ship_to}<div style={{fontSize:10}}><span className="badge" style={{background:b.ship_to_type==='warehouse'?'#dbeafe':'#fef3c7',color:b.ship_to_type==='warehouse'?'#1e40af':'#92400e',fontSize:9}}>{b.ship_to_type==='warehouse'?'WH':'Drop'}</span></div></td>
-            <td>{itemCount} pcs<div style={{fontSize:10,color:'#94a3b8'}}>{(b.items||[]).length} line{(b.items||[]).length!==1?'s':''}</div></td>
-            <td style={{textAlign:'right'}}>${b.merch_total.toFixed(2)}</td>
-            <td style={{textAlign:'right',color:isHigh?'#dc2626':'',fontWeight:isHigh?700:400}}>${b.freight.toFixed(2)}{isHigh&&<div style={{fontSize:9,color:'#dc2626'}}>{freightPct.toFixed(1)}%</div>}</td>
-            <td style={{textAlign:'right',fontWeight:700}}>${b.doc_total.toFixed(2)}</td>
+          const checked=billChecked.includes(b.id);
+          return<tr key={b.id} style={{cursor:'pointer',background:checked?'#eff6ff':b.status==='new'?'#fffbeb':b.triage==='freight'?'#fef2f2':''}}>
+            <td style={{textAlign:'center'}} onClick={e=>e.stopPropagation()}><input type="checkbox" checked={checked} onChange={()=>setBillChecked(prev=>prev.includes(b.id)?prev.filter(x=>x!==b.id):[...prev,b.id])}/></td>
+            <td onClick={()=>setBillSel(b)}><span style={{fontWeight:700,color:'#1e40af'}}>{b.si_doc}</span><div style={{fontSize:10,color:'#94a3b8'}}>{b.si_doc_date}</div></td>
+            <td onClick={()=>setBillSel(b)} style={{fontWeight:600}}>{b.po_number}</td>
+            <td onClick={()=>setBillSel(b)} style={{maxWidth:150,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{b.ship_to}<div style={{fontSize:10}}><span className="badge" style={{background:b.ship_to_type==='warehouse'?'#dbeafe':'#fef3c7',color:b.ship_to_type==='warehouse'?'#1e40af':'#92400e',fontSize:9}}>{b.ship_to_type==='warehouse'?'WH':'Drop'}</span></div></td>
+            <td onClick={()=>setBillSel(b)}>{itemCount} pcs<div style={{fontSize:10,color:'#94a3b8'}}>{(b.items||[]).length} line{(b.items||[]).length!==1?'s':''}</div></td>
+            <td onClick={()=>setBillSel(b)} style={{textAlign:'right'}}>${b.merch_total.toFixed(2)}</td>
+            <td onClick={()=>setBillSel(b)} style={{textAlign:'right',color:isHigh?'#dc2626':'',fontWeight:isHigh?700:400}}>${b.freight.toFixed(2)}{isHigh&&<div style={{fontSize:9,color:'#dc2626'}}>{freightPct.toFixed(1)}%</div>}</td>
+            <td onClick={()=>setBillSel(b)} style={{textAlign:'right',fontWeight:700}}>${b.doc_total.toFixed(2)}</td>
             <td>{b.triage==='ok'?<span style={{color:'#166534',fontSize:11}}>✓</span>:b.triage==='freight'?<span style={{color:'#dc2626',fontSize:11}}>🚩</span>:<span style={{color:'#94a3b8',fontSize:11}}>—</span>}</td>
             <td style={{fontSize:11}}>{REPS.find(r=>r.id===b.matched_rep_id)?.name?.split(' ')[0]||'—'}</td>
             <td>{b.qb_synced?<span style={{color:'#166534',fontSize:11}}>✓</span>:<span style={{color:'#94a3b8'}}>—</span>}</td>
