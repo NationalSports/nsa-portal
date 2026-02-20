@@ -1,5 +1,5 @@
 /* eslint-disable */
-import React, { useState, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import './portal.css';
 const Icon=({name,size=18})=>{const p={home:<path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>,users:<><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></>,building:<><path d="M6 22V4a2 2 0 012-2h8a2 2 0 012 2v18z"/><path d="M6 12H4a2 2 0 00-2 2v6a2 2 0 002 2h2"/><path d="M18 9h2a2 2 0 012 2v9a2 2 0 01-2 2h-2"/><path d="M10 6h4M10 10h4M10 14h4M10 18h4"/></>,package:<><path d="M16.5 9.4l-9-5.19M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/><path d="M3.27 6.96L12 12.01l8.73-5.05M12 22.08V12"/></>,box:<path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/>,search:<><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></>,plus:<path d="M12 5v14M5 12h14"/>,edit:<><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></>,upload:<><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></>,back:<polyline points="15 18 9 12 15 6"/>,mail:<><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></>,file:<><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></>,sortUp:<path d="M7 14l5-5 5 5"/>,sort:<><path d="M7 15l5 5 5-5"/><path d="M7 9l5-5 5 5"/></>,image:<><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></>,cart:<><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 002 1.61h9.72a2 2 0 002-1.61L23 6H6"/></>,dollar:<><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></>,grid:<><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></>,warehouse:<><path d="M22 8.35V20a2 2 0 01-2 2H4a2 2 0 01-2-2V8.35A2 2 0 013.26 6.5l8-3.2a2 2 0 011.48 0l8 3.2A2 2 0 0122 8.35z"/><path d="M6 18h12M6 14h12"/></>,trash:<><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></>,eye:<><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></>,alert:<><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></>,x:<><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>,check:<polyline points="20 6 9 17 4 12"/>,save:<><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></>,send:<><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></>};return<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{p[name]}</svg>};
 const REPS=[{id:'r1',name:'Steve Peterson',role:'admin',pin:'1234'},{id:'r2',name:'Denis',role:'gm',pin:'2345'},{id:'r3',name:'Liliana',role:'production',pin:'3456'},{id:'r4',name:'Laura Chen',role:'rep',pin:'4567'},{id:'r5',name:'Mike Torres',role:'rep',pin:'5678'}];
@@ -92,6 +92,9 @@ const printDoc=({title,docNum,docType,headerRight,infoBoxes,tables,notes,footer,
   setTimeout(()=>w.print(),350);
 };
 let _idSeq=0;const uid=(prefix)=>prefix+Date.now().toString(36).slice(-4)+String(++_idSeq).padStart(2,'0');
+let _estSeq=2101;let _soSeq=1042;
+const nextEstId=(ests)=>{const nums=(ests||[]).map(e=>{const m=(e.id||'').match(/EST-(\d+)/);return m?parseInt(m[1]):0});const next=Math.max(_estSeq,...nums)+1;_estSeq=next;return'EST-'+next};
+const nextSOId=(sos)=>{const nums=(sos||[]).map(s=>{const m=(s.id||'').match(/SO-(\d+)/);return m?parseInt(m[1]):0});const next=Math.max(_soSeq,...nums)+1;_soSeq=next;return'SO-'+next};
 const CATEGORIES=['Tees','Hoodies','Polos','Shorts','1/4 Zips','Hats','Footwear','Jersey Tops','Jersey Bottoms','Balls'];
 const CONTACT_ROLES=['Head Coach','Assistant','Accounting','Athletic Director','Primary','Other'];
 const POSITIONS=['Front Center','Back Center','Left Chest','Right Chest','Left Sleeve','Right Sleeve','Left Leg','Right Leg','Nape','Other'];
@@ -105,7 +108,43 @@ const NP={bk:[10,50,99999],co:[4,3,3],se:[7,6,5],tc:3};const DTF=[{label:'4" Sq 
 function spP(q,c,s=true){const bi=SP.bk.findIndex(b=>q>=b.min&&q<=b.max);if(bi<0||c<1||c>5)return 0;const v=SP.pr[bi]?.[c-1];if(v==null)return 0;return s?v:rQ(v/SP.mk)}
 function emP(st,q,s=true){const si=EM.sb.findIndex(b=>st<=b);const qi=EM.qb.findIndex(b=>q<=b);if(si<0||qi<0)return 0;const v=EM.pr[si][qi];return s?v:rQ(v/EM.mk)}
 function npP(q,tw=false,s=true){const bi=NP.bk.findIndex(b=>q<=b);if(bi<0)return 0;return s?(NP.se[bi]+(tw?rQ(NP.tc*1.65):0)):(NP.co[bi]+(tw?NP.tc:0))}
-// SAFE ACCESSORS — defensive helpers (must be defined before dP which uses safeNum)
+function dP(d,q,artFiles,cq){
+  const pq=cq||q;
+  // Art-based decoration: get type from art file
+  if(d.kind==='art'&&d.art_file_id&&artFiles){// Art TBD
+    if(d.art_file_id==='__tbd'){const tType=d.art_tbd_type||'screen_print';
+      if(tType==='screen_print'){const nc=d.tbd_colors||1;const u=d.underbase?1+SP.ub:1;return{sell:d.sell_override||rQ(spP(pq,nc,true)*u),cost:rQ(spP(pq,nc,false)*u)}}
+      if(tType==='embroidery')return{sell:d.sell_override||emP(d.tbd_stitches||8000,pq,true),cost:emP(d.tbd_stitches||8000,pq,false)};
+      if(tType==='heat_press'||tType==='dtf'){const t=DTF[d.tbd_dtf_size||0];return{sell:d.sell_override||t.sell,cost:t.cost}};
+      return{sell:d.sell_override||0,cost:0}}
+    const art=artFiles.find(a=>a.id===d.art_file_id);if(art){
+    if(art.deco_type==='screen_print'){const nc=art.ink_colors?art.ink_colors.split('\n').filter(l=>l.trim()).length:1;const u=d.underbase?1+SP.ub:1;return{sell:d.sell_override||rQ(spP(pq,nc,true)*u),cost:rQ(spP(pq,nc,false)*u)}}
+    if(art.deco_type==='embroidery')return{sell:d.sell_override||emP(art.stitches||8000,pq,true),cost:emP(art.stitches||8000,pq,false)};
+    if(art.deco_type==='dtf'){const t=DTF[art.dtf_size||0];return{sell:d.sell_override||t.sell,cost:t.cost}}}}
+  // Legacy/fallback type-based
+  if(d.type==='screen_print'){const u=d.underbase?1+SP.ub:1;return{sell:d.sell_override||rQ(spP(q,d.colors||1,true)*u),cost:rQ(spP(q,d.colors||1,false)*u)}}
+  if(d.type==='embroidery')return{sell:d.sell_override||emP(d.stitches||8000,q,true),cost:emP(d.stitches||8000,q,false)};
+  // Numbers
+  if(d.kind==='numbers'||d.type==='number_press'){const hasRoster=d._showRoster&&d.roster&&Object.values(d.roster).flat().some(v=>v&&v.trim());const nq=hasRoster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:q;return{sell:d.sell_override||npP(nq||1,d.two_color,true),cost:npP(nq||1,d.two_color,false)}};
+  if(d.kind==='names'){const nc=d.names?Object.values(d.names).flat().filter(v=>v&&v.trim()).length:0;const se=safeNum(d.sell_override||d.sell_each||6);const co=safeNum(d.cost_each||3);return{sell:nc>0?rQ(nc*se/q):se,cost:nc>0?rQ(nc*co/q):co}};
+  if(d.type==='dtf'){const t=DTF[d.dtf_size||0];return{sell:d.sell_override||t.sell,cost:t.cost}}
+  // Outside decoration — user-entered cost/sell
+  if(d.kind==='outside_deco')return{sell:d.sell_override||safeNum(d.sell_each),cost:safeNum(d.cost_each)};
+  return{sell:0,cost:0}}
+const SC={
+  // SO statuses (5)
+  need_order:{bg:'#fef3c7',c:'#92400e'},waiting_receive:{bg:'#dbeafe',c:'#1e40af'},items_received:{bg:'#d1fae5',c:'#065f46'},complete:{bg:'#dcfce7',c:'#166534'},in_production:{bg:'#ede9fe',c:'#6d28d9'},ready_to_invoice:{bg:'#fef0c7',c:'#c2410c'},
+  // Job item statuses
+  need_to_order:{bg:'#fef3c7',c:'#92400e'},partially_received:{bg:'#fef9c3',c:'#854d0e'},items_received:{bg:'#d1fae5',c:'#065f46'},
+  // Job production statuses
+  staging:{bg:'#fef3c7',c:'#92400e'},in_process:{bg:'#dbeafe',c:'#1e40af'},completed:{bg:'#dcfce7',c:'#166534'},shipped:{bg:'#ede9fe',c:'#6d28d9'},
+  // Job art statuses
+  needs_art:{bg:'#fef2f2',c:'#dc2626'},waiting_approval:{bg:'#fef3c7',c:'#92400e'},art_complete:{bg:'#dcfce7',c:'#166534'},
+  // Legacy
+  waiting_art:{bg:'#fef3c7',c:'#92400e'},in_production:{bg:'#dbeafe',c:'#1e40af'},ready_ship:{bg:'#dcfce7',c:'#166534'},
+};
+
+// SAFE ACCESSORS — defensive helpers to prevent crashes from missing/null data
 const safe=(v,def)=>v!=null?v:def;
 const safeArr=(v)=>Array.isArray(v)?v:[];
 const safeObj=(v)=>v&&typeof v==='object'&&!Array.isArray(v)?v:{};
@@ -148,8 +187,6 @@ const SC={
   // Legacy (aliases — unique keys only)
   waiting_art:{bg:'#fef3c7',c:'#92400e'},ready_ship:{bg:'#dcfce7',c:'#166534'},
 };
-
-// SAFE ACCESSORS defined above (before dP)
 // Build jobs from SO — uses existing jobs array, or auto-generates from decorations
 const buildJobs=(o)=>{
   if(o?.jobs&&o.jobs.length>0)return o.jobs;
@@ -209,11 +246,6 @@ const D_C=[
 {id:'c2a',parent_id:'c2',name:'St. Francis Lacrosse',alpha_tag:'SFL',contacts:[{name:'Coach Resch',email:'resch@stfrancis.edu',phone:'',role:'Head Coach'}],shipping_city:'La Canada',shipping_state:'CA',adidas_ua_tier:'B',catalog_markup:1.65,payment_terms:'net30',primary_rep_id:'r4',is_active:true,_oe:0,_os:1,_oi:2,_ob:6800},
 {id:'c3',parent_id:null,name:'Clovis Unified School District',alpha_tag:'CUSD',contacts:[{name:'District Office',email:'purchasing@clovisusd.k12.ca.us',phone:'559-555-0300',role:'Primary'}],billing_city:'Clovis',billing_state:'CA',shipping_city:'Clovis',shipping_state:'CA',adidas_ua_tier:'B',catalog_markup:1.65,payment_terms:'prepay',tax_rate:0.0863,primary_rep_id:'r5',is_active:true,_oe:2,_os:0,_oi:0,_ob:0},
 {id:'c3a',parent_id:'c3',name:'Clovis High Badminton',alpha_tag:'CHBad',contacts:[{name:'Coach Kim',email:'kim@clovisusd.k12.ca.us',phone:'',role:'Head Coach'}],shipping_city:'Clovis',shipping_state:'CA',adidas_ua_tier:'B',catalog_markup:1.65,payment_terms:'prepay',primary_rep_id:'r5',is_active:true,_oe:2,_os:0,_oi:0,_ob:0},
-{id:'c4',parent_id:null,name:'Mater Dei High School',alpha_tag:'MDei',contacts:[{name:'Mark Johnson',role:'Athletic Director',email:'mjohnson@materdei.org',phone:'714-555-0199'}],billing_city:'Santa Ana',billing_state:'CA',shipping_city:'Santa Ana',shipping_state:'CA',adidas_ua_tier:'A',catalog_markup:1.65,payment_terms:'net30',tax_rate:0,primary_rep_id:'r1',is_active:true,_oe:0,_os:0,_oi:0,_ob:0},
-{id:'c4a',parent_id:'c4',name:'MD Football',alpha_tag:'MDFb',contacts:[{name:'Coach Rollinson',role:'Head Coach',email:'rollinson@materdei.org',phone:''}],shipping_city:'Santa Ana',shipping_state:'CA',adidas_ua_tier:'A',catalog_markup:1.65,payment_terms:'net30',primary_rep_id:'r1',is_active:true,_oe:0,_os:0,_oi:0,_ob:0},
-{id:'c5',parent_id:null,name:'JSerra Catholic',alpha_tag:'JSerra',contacts:[{name:'Mike Gibbons',role:'Athletic Director',email:'gibbons@jserra.org',phone:'949-555-0177'}],billing_city:'San Juan Capistrano',billing_state:'CA',shipping_city:'San Juan Capistrano',shipping_state:'CA',adidas_ua_tier:'A',catalog_markup:1.65,payment_terms:'net30',tax_rate:0.0775,primary_rep_id:'r4',is_active:true,_oe:0,_os:0,_oi:0,_ob:0},
-{id:'c6',parent_id:null,name:'Servite High School',alpha_tag:'Servite',contacts:[{name:'Tom Martin',role:'AD',email:'tmartin@servitehs.org',phone:'714-555-0133'}],billing_city:'Anaheim',billing_state:'CA',shipping_city:'Anaheim',shipping_state:'CA',adidas_ua_tier:'B',catalog_markup:1.65,payment_terms:'prepay',tax_rate:0.0775,primary_rep_id:'r1',is_active:true,_oe:0,_os:0,_oi:0,_ob:0},
-{id:'c7',parent_id:null,name:'Santa Margarita Catholic',alpha_tag:'SMCHS',contacts:[{name:'Brian Dunn',role:'Athletic Director',email:'bdunn@smchs.org',phone:'949-555-0188'}],billing_city:'Rancho Santa Margarita',billing_state:'CA',shipping_city:'Rancho Santa Margarita',shipping_state:'CA',adidas_ua_tier:'A',catalog_markup:1.65,payment_terms:'net30',tax_rate:0.0775,primary_rep_id:'r4',is_active:true,_oe:0,_os:0,_oi:0,_ob:0},
 ];
 const BATCH_VENDORS={'sss':{name:'S&S Activewear',threshold:200},'sanmar':{name:'SanMar',threshold:200},'richardson':{name:'Richardson',threshold:200},'momentec':{name:'Momentec',threshold:200},'a4':{name:'A4',threshold:200}};
 const MACHINES=[
@@ -243,9 +275,6 @@ const D_P=[
 {id:'p7',vendor_id:'v5',sku:'112',name:'Richardson Trucker Cap',brand:'Richardson',color:'Black/White',category:'Hats',retail_price:12,nsa_cost:4.5,available_sizes:['OSFA'],is_active:true,_inv:{OSFA:30},_colors:['Black/White','Navy/White','Red/White']},
 {id:'p8',vendor_id:'v1',sku:'EK0100',name:'Adidas Team 1/4 Zip',brand:'Adidas',color:'Team Navy/White',category:'1/4 Zips',retail_price:75,nsa_cost:25,available_sizes:['S','M','L','XL','2XL'],is_active:true,_inv:{S:2,M:7,L:9,XL:5,'2XL':1}},
 {id:'p9',vendor_id:'v2',sku:'1376844',name:'Under Armour Tech Short',brand:'Under Armour',color:'Black/White',category:'Shorts',retail_price:45,nsa_cost:15.5,available_sizes:['S','M','L','XL','2XL'],is_active:true,_inv:{S:0,M:4,L:6,XL:3,'2XL':0}},
-{id:'p10',vendor_id:'v5',sku:'112P',name:'Richardson Trucker Cap Embroidered',brand:'Richardson',color:'Navy/White',category:'Hats',retail_price:28,nsa_cost:4.75,available_sizes:['OSFA'],is_active:true,_inv:{OSFA:30},_colors:['Navy/White','Black/White']},
-{id:'p11',vendor_id:'v4',sku:'N3265',name:'A4 Cooling Performance Tee',brand:'A4',color:'White',category:'Tees',retail_price:18,nsa_cost:5.5,available_sizes:['S','M','L','XL','2XL','3XL'],is_active:true,_inv:{S:40,M:50,L:45,XL:30,'2XL':20,'3XL':10},_colors:['White','Black','Navy','Royal','Red','Gold']},
-{id:'p12',vendor_id:'v1',sku:'GB998',name:'Adidas Team Fleece Hoodie',brand:'Adidas',color:'Team Navy',category:'Hoodies',retail_price:85,nsa_cost:32,available_sizes:['S','M','L','XL','2XL'],is_active:true,_inv:{S:6,M:8,L:5,XL:3,'2XL':2},_alerts:{S:8,M:10,L:8,XL:5},_colors:['Team Navy','Black','Team Power Red']},
 ];
 const D_E=[
 {id:'EST-2089',customer_id:'c1b',memo:'Spring 2026 Football Camp Tees',status:'sent',created_by:'r1',created_at:'02/10/26 9:15 AM',updated_at:'02/10/26 2:30 PM',default_markup:1.65,shipping_type:'pct',shipping_value:8,ship_to_id:'default',email_status:'opened',email_opened_at:'02/10/26 3:45 PM',art_files:[],items:[{product_id:'p5',sku:'PC61',name:'Port & Company Essential Tee',brand:'Port & Company',color:'Jet Black',nsa_cost:2.85,retail_price:8.98,unit_sell:4.75,sizes:{S:8,M:15,L:20,XL:12,'2XL':5},available_sizes:['S','M','L','XL','2XL','3XL'],_colors:['Jet Black','Navy','Red','White'],decorations:[{kind:'art',position:'Front Center',art_file_id:null,sell_override:null},{kind:'art',position:'Back Center',art_file_id:null,sell_override:null}]}]},
@@ -393,86 +422,6 @@ const D_INV=[
   {id:'INV-1061',type:'invoice',customer_id:'c1b',so_id:'SO-1045',date:'02/12/26',due_date:'03/14/26',total:1890,paid:945,memo:'Football Practice Gear — Partial',status:'partial',payments:[{amount:945,method:'venmo',ref:'@OLu-Athletics',date:'02/20/26'}],cc_fee:0},
 ];
 
-// OMG TEAM STORES DEMO DATA
-// ═══════════════════════════════════════════════
-// SUPPLIER BILLS — Sports Inc / Adidas invoices parsed from PDF
-// ═══════════════════════════════════════════════
-const FREIGHT_WARN_PCT=0.10;// Flag bills where freight > 10% of merchandise total
-const D_BILLS=[
-  {id:'BILL-001',si_doc:'23958838',si_doc_date:'02/16/26',due_date:'04/10/26',vendor:'Adidas US Team Services',
-    po_number:'PO7607',ship_to:'Mission Viejo (PO7607MISSIONVI)',ship_to_type:'drop_ship',
-    carrier:'FedEx',tracking:'511217414032',ship_date:'02/16/26',weight_lb:8.33,
-    merch_total:112.50,freight:10.02,si_upcharge:0.98,doc_total:123.50,
-    items:[{sku:'JX4247',name:'Adidas Tiro26C AW Jacket',color:'Black/White',sizes:{L:2,'2XL':1},net_price:37.50}],
-    matched_so_id:'SO-1045',matched_rep_id:'r1',status:'reviewed',triage:'ok',notes:'',qb_synced:false,created_at:'02/16/26 4:00 PM'},
-  {id:'BILL-002',si_doc:'23958839',si_doc_date:'02/16/26',due_date:'04/10/26',vendor:'Adidas US Team Services',
-    po_number:'PO7714',ship_to:'Affirmative Athletics, Corona CA',ship_to_type:'drop_ship',
-    carrier:'FedEx',tracking:'513253555210',ship_date:'02/16/26',weight_lb:69.89,
-    merch_total:317.52,freight:37.71,si_upcharge:2.84,doc_total:358.07,
-    items:[{sku:'IE3992',name:'Adizero Impact.2 MD Cleats',color:'Black/White',sizes:{'9':4,'10':4,'10.5':4,'11.5':2},net_price:22.68}],
-    matched_so_id:null,matched_rep_id:'r4',status:'new',triage:null,notes:'',qb_synced:false,created_at:'02/16/26 4:00 PM'},
-  {id:'BILL-003',si_doc:'23959160',si_doc_date:'02/16/26',due_date:'04/10/26',vendor:'Adidas US Team Services',
-    po_number:'PO7710',ship_to:'NSA Warehouse, Orange CA',ship_to_type:'warehouse',
-    carrier:'FedEx',tracking:'511831274087',ship_date:'02/16/26',weight_lb:206.61,
-    merch_total:2532.61,freight:45.26,si_upcharge:20.62,doc_total:2598.49,
-    items:[
-      {sku:'IS1111',name:'Adidas D4T Workout Short',color:'Black/White',sizes:{'XL':3},net_price:20.62},
-      {sku:'JX4455',name:'Adidas SS Pregame Tee',color:'Grey Heather/Black',sizes:{S:10,M:30,L:30,XL:18,'2XL':7,'3XL':5},net_price:11.25},
-      {sku:'JX4464',name:'Adidas SS Pregame Tee',color:'Team Cobalt/White',sizes:{XL:3},net_price:11.25},
-      {sku:'JX4476',name:'Adidas LS Pregame Tee',color:'Black/White',sizes:{S:10,M:30,L:30,XL:18,'2XL':7,'3XL':5},net_price:13.12},
-    ],
-    matched_so_id:'SO-1042',matched_rep_id:'r1',status:'new',triage:null,notes:'',qb_synced:false,created_at:'02/16/26 4:00 PM'},
-  {id:'BILL-004',si_doc:'23959161',si_doc_date:'02/16/26',due_date:'04/10/26',vendor:'Adidas US Team Services',
-    po_number:'PO7307',ship_to:'NSA Warehouse, Orange CA',ship_to_type:'warehouse',
-    carrier:'FedEx',tracking:'511831272420',ship_date:'02/16/26',weight_lb:10.67,
-    merch_total:60.00,freight:6.54,si_upcharge:0.53,doc_total:67.07,
-    items:[{sku:'KV2196',name:'Adidas Fresh SS Tee',color:'Black',sizes:{M:4,XL:1,'2XL':2,'3XL':1},net_price:7.50}],
-    matched_so_id:null,matched_rep_id:'r1',status:'new',triage:null,notes:'Servite order',qb_synced:false,created_at:'02/16/26 4:00 PM'},
-  {id:'BILL-005',si_doc:'23959162',si_doc_date:'02/16/26',due_date:'04/10/26',vendor:'Adidas US Team Services',
-    po_number:'PO7726',ship_to:'NSA Warehouse, Orange CA',ship_to_type:'warehouse',
-    carrier:'FedEx',tracking:'511831383658',ship_date:'02/16/26',weight_lb:10.36,
-    merch_total:90.00,freight:6.54,si_upcharge:0.77,doc_total:97.31,
-    items:[{sku:'JJ1179',name:'Adidas GG SL Hoodie',color:'Medium Grey Heather',sizes:{M:1,L:3},net_price:22.50}],
-    matched_so_id:null,matched_rep_id:'r1',status:'new',triage:null,notes:'Lincoln Basketball',qb_synced:false,created_at:'02/16/26 4:01 PM'},
-  {id:'BILL-006',si_doc:'23959163',si_doc_date:'02/16/26',due_date:'05/10/26',vendor:'Adidas US Team Services',
-    po_number:'PO7508',ship_to:'Encinitas Express Soccer, Encinitas CA',ship_to_type:'drop_ship',
-    carrier:'FedEx',tracking:'478102612276',ship_date:'02/16/26',weight_lb:12.78,
-    merch_total:593.50,freight:0,si_upcharge:4.75,doc_total:598.25,
-    items:[{sku:'JW6705',name:'Adidas Custom ADI25 Sock',color:'Custom',sizes:{M:50},net_price:11.87}],
-    matched_so_id:null,matched_rep_id:'r5',status:'new',triage:null,notes:'Custom socks shipment 1 of 3',qb_synced:false,created_at:'02/16/26 4:01 PM'},
-  {id:'BILL-007',si_doc:'23959533',si_doc_date:'02/16/26',due_date:'05/10/26',vendor:'Adidas US Team Services',
-    po_number:'PO7508',ship_to:'Encinitas Express Soccer, Encinitas CA',ship_to_type:'drop_ship',
-    carrier:'FedEx',tracking:'478102612265',ship_date:'02/16/26',weight_lb:13.33,
-    merch_total:593.50,freight:0,si_upcharge:4.75,doc_total:598.25,
-    items:[{sku:'JW6705',name:'Adidas Custom ADI25 Sock',color:'Custom',sizes:{L:50},net_price:11.87}],
-    matched_so_id:null,matched_rep_id:'r5',status:'new',triage:null,notes:'Custom socks shipment 2 of 3',qb_synced:false,created_at:'02/16/26 4:01 PM'},
-  {id:'BILL-008',si_doc:'23959534',si_doc_date:'02/16/26',due_date:'05/10/26',vendor:'Adidas US Team Services',
-    po_number:'PO7508',ship_to:'Encinitas Express Soccer, Encinitas CA',ship_to_type:'drop_ship',
-    carrier:'FedEx',tracking:'478102612151',ship_date:'02/16/26',weight_lb:7.98,
-    merch_total:356.10,freight:0,si_upcharge:2.85,doc_total:358.95,
-    items:[{sku:'JW6705',name:'Adidas Custom ADI25 Sock',color:'Custom',sizes:{M:30},net_price:11.87}],
-    matched_so_id:null,matched_rep_id:'r5',status:'new',triage:null,notes:'Custom socks shipment 3 of 3',qb_synced:false,created_at:'02/16/26 4:01 PM'},
-  {id:'BILL-009',si_doc:'23959267',si_doc_date:'02/16/26',due_date:'04/10/26',vendor:'Adidas US Team Services',
-    po_number:'PO7724',ship_to:'Landon Miller, Track & Field, Fresno CA',ship_to_type:'drop_ship',
-    carrier:'FedEx',tracking:'513253587421',ship_date:'02/16/26',weight_lb:20.04,
-    merch_total:457.84,freight:20.77,si_upcharge:3.83,doc_total:482.44,
-    items:[
-      {sku:'JP6623',name:'Adizero Adios Pro 4',color:'Solar Yellow/Purple',sizes:{'9.5':1},net_price:105.18},
-      {sku:'JQ1690',name:'Adizero Adios Pro 4',color:'Solar Yellow/Purple',sizes:{'6':1},net_price:105.18},
-      {sku:'JQ5933',name:'Adizero Avanti',color:'Lemon/Black/Silver',sizes:{'7':1,'8':2,'8.5':1},net_price:61.87},
-    ],
-    matched_so_id:null,matched_rep_id:'r4',status:'new',triage:null,notes:'Track spikes - Fresno',qb_synced:false,created_at:'02/16/26 4:02 PM'},
-  {id:'BILL-010',si_doc:'23960051',si_doc_date:'02/16/26',due_date:'04/10/26',vendor:'Adidas US Team Services',
-    po_number:'PO7699',ship_to:'NSA Warehouse, Orange CA',ship_to_type:'warehouse',
-    carrier:'FedEx',tracking:'511217416377',ship_date:'02/13/26',weight_lb:55.09,
-    merch_total:487.50,freight:27.02,si_upcharge:4.12,doc_total:518.64,
-    items:[
-      {sku:'JW6602',name:'Adidas Fleece Hoodie',color:'Black',sizes:{L:2},net_price:18.75},
-      {sku:'JW6604',name:'Adidas Fleece Pant',color:'Black',sizes:{M:6,L:9},net_price:18.75},
-      {sku:'JX4488',name:'Adidas SL Pregame Tee',color:'Black/White',sizes:{M:6,L:9},net_price:11.25},
-    ],
-    matched_so_id:null,matched_rep_id:'r1',status:'flagged',triage:'freight',notes:'Freight seems high for 55lb — $27 on $487 merch = 5.5%',qb_synced:false,created_at:'02/16/26 4:02 PM'},
-];
 // OMG TEAM STORES DEMO DATA
 const D_OMG=[
   {id:'OMG-1001',store_name:'OLu Baseball Spring 2026',customer_id:'c1a',rep_id:'r1',status:'closed',open_date:'01/15/26',close_date:'02/10/26',
@@ -689,7 +638,7 @@ function LoginGate({onLogin}){
   );
 }
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack,onConvertSO,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,batchPOs,onBatchPO,initTab,bills}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack,onConvertSO,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,batchPOs,onBatchPO,initTab,onNavCustomer,onNewEstimate}){
   const isE=mode==='estimate';const isSO=mode==='so';
   const[o,setO]=useState(order);const[cust,setCust]=useState(ic);const[pS,setPS]=useState('');const[showAdd,setShowAdd]=useState(false);
   const[tab,setTab]=useState(initTab||'items');const[dirty,setDirty]=useState(false);const[selJob,setSelJob]=useState(null);const[jobNote,setJobNote]=useState('');const[msgDept,setMsgDept]=useState('all');
@@ -745,7 +694,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
   const isAU=b=>b==='Adidas'||b==='Under Armour'||b==='New Balance';const tD={A:0.4,B:0.35,C:0.3};
   const selC=id=>{const c=allCustomers.find(x=>x.id===id);if(c){setCust(c);sv('customer_id',id);sv('default_markup',c.catalog_markup||1.65)}};
   const addP=p=>{const au=isAU(p.brand);const sell=au?rQ(p.retail_price*(1-(tD[cust?.adidas_ua_tier||'B']||0.35))):rQ(p.nsa_cost*(o.default_markup||1.65));
-    sv('items',[...o.items,{product_id:p.id,sku:p.sku,name:p.name,brand:p.brand,color:p.color,nsa_cost:p.nsa_cost,retail_price:p.retail_price,unit_sell:sell,available_sizes:[...p.available_sizes],_colors:p._colors||null,sizes:{},decorations:[]}]);setShowAdd(false);setPS('')};
+    sv('items',[...o.items,{product_id:p.id,sku:p.sku,name:p.name,brand:p.brand,color:p.color,nsa_cost:p.nsa_cost,retail_price:p.retail_price,unit_sell:sell,available_sizes:[...p.available_sizes],_colors:p._colors||null,sizes:{},decorations:isE?[{kind:'art',art_file_id:'__tbd',art_tbd_type:'screen_print',position:'',sell_override:0}]:[]}]);setShowAdd(false);setPS('')};
   const uI=(i,k,v)=>sv('items',safeItems(o).map((it,x)=>x===i?{...it,[k]:v}:it));const rmI=i=>sv('items',safeItems(o).filter((_,x)=>x!==i));
   const copyI=(i)=>{const it=o.items[i];const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];clone.sizes={};sv('items',[...o.items,clone]);nf('📋 Copied '+it.sku+' — adjust sizes on the new item')};
   const uSz=(i,sz,v)=>{
@@ -763,9 +712,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
   const addSzToItem=(i,sz)=>{const it=o.items[i];if(!it.available_sizes.includes(sz))uI(i,'available_sizes',[...it.available_sizes,sz]);setShowSzPicker(null)};
   const NUM_SZ={heat_transfer:['1"','1.5"','2"','3"','4"','5"','6"','8"','10"'],embroidery:['0.5"','0.75"','1"','1.5"','2"'],screen_print:['4"','6"','8"','10"']};
   const addArtDeco=i=>{uI(i,'decorations',[...o.items[i].decorations,{kind:'art',position:'Front Center',art_file_id:null,sell_override:null}])};
-  const addNumDeco=i=>{uI(i,'decorations',[...o.items[i].decorations,{kind:'numbers',position:'Back Center',num_method:'heat_transfer',num_size:'4"',two_color:false,sell_override:null,custom_font_art_id:null,roster:[]}])};
+  const addNumDeco=i=>{uI(i,'decorations',[...o.items[i].decorations,{kind:'numbers',position:'Back Center',num_method:'heat_transfer',num_size:'4"',two_color:false,sell_override:null,custom_font_art_id:null,roster:{}}])};
+  const addNameDeco=i=>{uI(i,'decorations',[...o.items[i].decorations,{kind:'names',position:'Back Center',sell_override:null,sell_each:6,cost_each:3,names:{}}])};
   const addOutsideDeco=i=>{uI(i,'decorations',[...o.items[i].decorations,{kind:'outside_deco',position:'Front Center',vendor:'',deco_type:'embroidery',cost_each:0,sell_each:0,notes:'',sell_override:null}])};
   const uD=(ii,di,k,v)=>{uI(ii,'decorations',o.items[ii].decorations.map((d,i)=>i===di?{...d,[k]:v}:d))};
+  const uDM=(ii,di,updates)=>{uI(ii,'decorations',o.items[ii].decorations.map((d,i)=>i===di?{...d,...updates}:d))};
   const rmD=(ii,di)=>{uI(ii,'decorations',o.items[ii].decorations.filter((_,i)=>i!==di))};
   // Art files (SO)
   const af=o.art_files||[];
@@ -869,21 +820,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
     {/* Sticky header — appears when scrolling */}
     <div style={{position:'sticky',top:0,zIndex:40,background:'white',borderBottom:'1px solid #e2e8f0',padding:'8px 16px',marginBottom:0,display:'flex',alignItems:'center',gap:12,boxShadow:'0 1px 3px rgba(0,0,0,0.05)',flexWrap:'wrap'}}>
       <button className="btn btn-sm btn-secondary" onClick={()=>{if(dirty&&!window.confirm('You have unsaved changes. Leave without saving?'))return;onBack()}} style={{fontSize:10,padding:'4px 10px'}}><Icon name="back" size={12}/> Back</button>
+      {isE&&onNewEstimate&&<button className="btn btn-sm btn-secondary" onClick={()=>{if(dirty&&!window.confirm('Unsaved changes. Continue?'))return;onNewEstimate()}} style={{fontSize:10,padding:'4px 10px'}}><Icon name="plus" size={12}/> New Est</button>}
       <span style={{fontWeight:800,color:'#1e40af',fontSize:14}}>{o.id}</span>
       {isSO&&<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:SC[o.status]?.bg||'#f1f5f9',color:SC[o.status]?.c||'#475569'}}>{o.status?.replace(/_/g,' ')}</span>}
-      {cust&&<span style={{fontSize:12,fontWeight:600,color:'#475569'}}>{cust.name}</span>}
+      {cust&&<span style={{fontSize:12,fontWeight:600,color:'#1e40af',cursor:'pointer',textDecoration:'underline',textDecorationStyle:'dotted',textUnderlineOffset:2}} onClick={()=>{if(onNavCustomer&&cust)onNavCustomer(cust)}} title={'View '+cust.name}>{cust.name}</span>}
       <span style={{fontSize:11,color:'#94a3b8',flex:1}}>{o.memo||''}</span>
       {dirty&&<span style={{fontSize:10,color:'#d97706',fontWeight:600}}>● Unsaved</span>}
-      <button className="btn btn-sm btn-primary" onClick={()=>{
-        if(!cust){nf('Select a customer first','error');return}
-        if(!o.memo?.trim()){nf('Memo is required','error');return}
-        const validItems=safeItems(o).filter(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
-        if(validItems.length===0){nf('Add at least one item with sizes','error');return}
-        const noSku=validItems.find(it=>!it.sku?.trim()&&!it.is_custom);
-        if(noSku){nf('Item '+(noSku.name||'#?')+' needs a SKU or mark as custom','error');return}
-        const noPrice=validItems.find(it=>safeNum(it.unit_sell)<=0);
-        if(noPrice){nf('Item '+(noPrice.sku||noPrice.name||'#?')+' needs a sell price','error');return}
-        const updated={...o,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setSaved(true);nf('Saved')}} style={{padding:'4px 14px',fontSize:11}}>✓ Save</button>
+      <button className="btn btn-sm btn-primary" onClick={()=>{const updated={...o,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setSaved(true);nf('Saved')}} style={{padding:'4px 14px',fontSize:11}}>✓ Save</button>
     </div>
     {/* HEADER */}
     <div className="card" style={{marginBottom:16,marginTop:8}}><div style={{padding:'16px 20px'}}>
@@ -936,48 +879,63 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         {/* Print Estimate or SO */}
         <button className="btn btn-secondary" style={{fontSize:12}} onClick={()=>{
           const items=safeItems(o).filter(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
-          // Build artQty for shared art combined pricing on print
-          const _pAQ={};items.forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_pAQ[d.art_file_id]=(_pAQ[d.art_file_id]||0)+q2}})});
-          const rows=items.map(it=>{
+          const _pAQ={};items.forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'){_pAQ[d.art_file_id]=(_pAQ[d.art_file_id]||0)+q2}})});
+          const isRolled=(o.pricing_mode||'itemized')==='rolled_up';
+          const taxRate=cust?.tax_rate||0;
+          const rows=[];let subTotal=0;
+          items.forEach(it=>{
             const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
-            const decoSell=safeDecos(it).reduce((a,d)=>{const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:qty;const dp=dP(d,qty,af,cq);return a+dp.sell},0);
-            const unitTotal=safeNum(it.unit_sell)+decoSell;
-            return{cells:[it.sku+' '+(it.name||'')+(it.color?' — '+it.color:''),qty,'$'+unitTotal.toFixed(2),'$'+(qty*unitTotal).toFixed(2)]}});
-          const subTotal=items.reduce((a,it)=>{
-            const qty=Object.values(safeSizes(it)).reduce((acc,v)=>acc+safeNum(v),0);
-            const decoSell=safeDecos(it).reduce((acc,d)=>{const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:qty;const dp=dP(d,qty,af,cq);return acc+dp.sell},0);
-            return a+qty*(safeNum(it.unit_sell)+decoSell)},0);
+            const decos=safeDecos(it);
+            const decoSell=decos.reduce((a,d)=>{const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);return a+dp2.sell},0);
+            const szStr=SZ_ORD.filter(sz=>safeSizes(it)[sz]>0).map(sz=>safeSizes(it)[sz]+' '+sz).join(', ');
+            const unitPrice=isRolled?safeNum(it.unit_sell)+decoSell:safeNum(it.unit_sell);
+            const lineAmt=qty*unitPrice;subTotal+=lineAmt;
+            let itemDesc='<strong>'+it.sku+'</strong><br/>'+(it.name||'')+(it.color?' - '+it.color:'');
+            if(szStr)itemDesc+='<br/><span style="font-size:10px;color:#555">'+szStr+'</span>';
+            rows.push({cells:[{value:itemDesc},{value:qty,style:'text-align:center'},{value:'$'+unitPrice.toFixed(2),style:'text-align:right'},{value:'$'+lineAmt.toFixed(2),style:'text-align:right;font-weight:600'}]});
+            decos.forEach(d=>{
+              const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);
+              const artF=af.find(a2=>a2.id===d.art_file_id);
+              const decoLabel=(d.kind==='art'?(artF?.deco_type||d.art_tbd_type||'decoration'):d.kind==='numbers'?'Numbers ('+(d.num_method||'heat transfer').replace(/_/g,' ')+' '+(d.num_size||'4"')+')':d.kind==='names'?'Names':d.kind==='outside_deco'?(d.deco_type||'Decoration'):'Decoration').replace(/_/g,' ');
+              const posLabel=d.position?' — '+d.position:'';
+              // Build number list for print
+              let numHtml='';
+              if(d.kind==='numbers'&&d.roster){const szOrd2=['XS','S','M','L','XL','2XL','3XL','4XL'];
+                const sorted=Object.entries(d.roster).sort((a,b)=>(szOrd2.indexOf(a[0])===-1?99:szOrd2.indexOf(a[0]))-(szOrd2.indexOf(b[0])===-1?99:szOrd2.indexOf(b[0])));
+                const szRows=sorted.filter(([,arr])=>(arr||[]).some(v=>v)).map(([sz,arr])=>'<tr><td style="font-weight:700;padding:1px 6px;font-size:10px">'+sz+'</td><td style="font-size:10px;padding:1px 4px">'+(arr||[]).filter(v=>v).join(', ')+'</td></tr>');
+                if(szRows.length>0)numHtml='<table style="margin:2px 0 0 20px;border-collapse:collapse">'+szRows.join('')+'</table>'}
+              if(d.kind==='names'&&d.names){const szOrd2=['XS','S','M','L','XL','2XL','3XL','4XL'];
+                const sorted=Object.entries(d.names).sort((a,b)=>(szOrd2.indexOf(a[0])===-1?99:szOrd2.indexOf(a[0]))-(szOrd2.indexOf(b[0])===-1?99:szOrd2.indexOf(b[0])));
+                const szRows=sorted.filter(([,arr])=>(arr||[]).some(v=>v)).map(([sz,arr])=>'<tr><td style="font-weight:700;padding:1px 6px;font-size:10px">'+sz+'</td><td style="font-size:10px;padding:1px 4px">'+(arr||[]).filter(v=>v).join(', ')+'</td></tr>');
+                if(szRows.length>0)numHtml='<table style="margin:2px 0 0 20px;border-collapse:collapse">'+szRows.join('')+'</table>'}
+              if(isRolled){
+                rows.push({cells:[{value:'<span style="padding-left:20px;color:#666;font-size:11px">'+decoLabel+posLabel+'</span>'+numHtml,style:'border-bottom:none'},{value:'',style:'border-bottom:none'},{value:'',style:'border-bottom:none'},{value:'',style:'border-bottom:none'}]});
+              }else{
+                const decoAmt=qty*dp2.sell;subTotal+=decoAmt;
+                rows.push({cells:[{value:'<span style="padding-left:20px;color:#666;font-size:11px">'+decoLabel+posLabel+'</span>'+numHtml},{value:qty,style:'text-align:center;color:#888;font-size:11px'},{value:'$'+dp2.sell.toFixed(2),style:'text-align:right;color:#888;font-size:11px'},{value:'$'+decoAmt.toFixed(2),style:'text-align:right;color:#888;font-size:11px'}]});
+              }
+            });
+          });
           const shipAmt=o.shipping_type==='pct'?subTotal*(o.shipping_value||0)/100:(o.shipping_value||0);
-          const total=subTotal+shipAmt;
+          const taxAmt=subTotal*taxRate;const total=subTotal+shipAmt+taxAmt;
+          if(shipAmt>0)rows.push({cells:[{value:'<strong>Shipping</strong>'},{value:1,style:'text-align:center'},{value:'$'+shipAmt.toFixed(2),style:'text-align:right'},{value:'$'+shipAmt.toFixed(2),style:'text-align:right'}]});
           printDoc({
             title:cust?.name||'Customer',docNum:o.id,docType:isE?'ESTIMATE':'SALES ORDER',
-            headerRight:'<div style="font-size:28px;font-weight:900;color:#1e3a5f">$'+total.toFixed(2)+'</div>',
+            headerRight:'<div style="font-size:32px;font-weight:900;color:#1e3a5f">$'+total.toFixed(2)+'</div>'+(isE?'<div style="font-size:11px;color:#888">Expires: '+new Date(Date.now()+30*86400000).toLocaleDateString()+'</div>':''),
             infoBoxes:[
-              {label:isE?'Prepared For':'Customer',value:cust?.name||'—',sub:cust?.alpha_tag},
-              {label:'Date',value:o.created_at||new Date().toLocaleDateString(),sub:isE?'Valid for 30 days':'Expected: '+(o.expected_date||'TBD')},
+              {label:'Bill To',value:cust?.name||'—',sub:cust?.address||cust?.alpha_tag||''},
+              {label:isE?'Expires':'Expected',value:isE?new Date(Date.now()+30*86400000).toLocaleDateString():(o.expected_date||'TBD'),sub:'Exp. Close: '+new Date().toLocaleDateString()},
+              {label:'Sales Rep',value:REPS.find(r=>r.id===o.created_by)?.name||'—'},
               {label:'Memo',value:o.memo||'—'},
-              {label:'Rep',value:REPS.find(r=>r.id===o.created_by)?.name||'—',sub:NSA.phone},
             ],
-            tables:[
-              {headers:['Item','Qty','Unit Price','Amount'],aligns:['left','center','right','right'],
-                rows:[...rows,
-                  ...(shipAmt>0?[{cells:[{value:'Shipping'+(o.shipping_type==='pct'?' ('+o.shipping_value+'%)':''),style:'font-style:italic'},'','','$'+shipAmt.toFixed(2)]}]:[]),
-                  {_class:'totals-row',cells:['','','Total','$'+total.toFixed(2)]}
-                ]},
-              ...(items.some(it=>safeDecos(it).length>0)?[{title:'Decoration Details',
-                headers:['Item','Position','Type','Per Unit','Extended'],aligns:['left','left','left','right','right'],
-                rows:items.flatMap(it=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
-                  return safeDecos(it).map(d=>{const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:qty;const dp=dP(d,qty,af,cq);const artF=af.find(a=>a.id===d.art_file_id);
-                    return{cells:[it.sku,d.position||'—',artF?.deco_type?.replace(/_/g,' ')||d.kind||'—','$'+dp.sell.toFixed(2),'$'+(qty*dp.sell).toFixed(2)]}})
-                })}]:[]),
-              ...(items.length>0?[{title:'Size Breakdown',className:'sz-table',
-                headers:['Item',...SZ_ORD.filter(sz=>items.some(it=>safeSizes(it)[sz]>0)),'Total'],
-                aligns:['left',...SZ_ORD.filter(sz=>items.some(it=>safeSizes(it)[sz]>0)).map(()=>'center'),'center'],
-                rows:items.map(it=>{const szs=SZ_ORD.filter(sz=>items.some(ii=>safeSizes(ii)[sz]>0));
-                  const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
-                  return{cells:[it.sku,...szs.map(sz=>({value:safeSizes(it)[sz]||'',style:safeSizes(it)[sz]>0?'font-weight:800;color:#1e3a5f;background:#eef2ff':'color:#ccc'})),{value:qty,style:'font-weight:800'}]}})}]:[]),
-            ],
-            footer:isE?'This estimate is valid for 30 days. Prices subject to change. '+NSA.depositTerms:NSA.terms
+            tables:[{headers:['Item','Qty','Rate','Amount'],aligns:['left','center','right','right'],
+              rows:[...rows,
+                {cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Subtotal</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'},{value:'<strong>$'+subTotal.toFixed(2)+'</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'}]},
+                ...(taxAmt>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'Tax ('+(taxRate*100).toFixed(3)+'%)',style:'text-align:right;border:none;font-size:11px'},{value:'$'+taxAmt.toFixed(2),style:'text-align:right;border:none'}]}]:[]),
+                {_class:'totals-row',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Total</strong>',style:'text-align:right'},{value:'<strong style="font-size:14px">$'+total.toFixed(2)+'</strong>',style:'text-align:right'}]},
+              ]}],
+            footer:isE?'This estimate is valid for 30 days. Prices subject to change. '+NSA.depositTerms:NSA.terms,
+            portalLink:cust?.alpha_tag?(window.location.origin+'?portal='+cust.alpha_tag):undefined
           });
         }}>🖨️ Print {isE?'Estimate':'SO'}</button>
       </div>
@@ -1027,7 +985,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       <button className={`tab ${tab==='items'?'active':''}`} onClick={()=>setTab('items')}>Line Items</button>
       <button className={`tab ${tab==='art'?'active':''}`} onClick={()=>setTab('art')}>Art Library ({af.length})</button>
       {isSO&&<button className={`tab ${tab==='messages'?'active':''}`} onClick={()=>setTab('messages')}>Messages {(()=>{const unread=(msgs||[]).filter(m=>m.so_id===o.id&&!(m.read_by||[]).includes(cu.id)).length;return unread>0?<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:4}}>{unread}</span>:` (${(msgs||[]).filter(m=>m.so_id===o.id).length})`})()}</button>}
-      {isSO&&<button className={`tab ${tab==='fulfillment'?'active':''}`} onClick={()=>setTab('fulfillment')} style={tab==='fulfillment'?{background:'#1e40af',color:'white'}:{}}>📦 Fulfillment</button>}
       {isSO&&<button className={`tab ${tab==='transactions'?'active':''}`} onClick={()=>setTab('transactions')}>Linked</button>}
       {isSO&&<button className={`tab ${tab==='jobs'?'active':''}`} onClick={()=>setTab('jobs')}>Jobs {(()=>{const jc=(o.jobs||[]).length;return jc>0?` (${jc})`:''})()}</button>}
       {isSO&&<button className={`tab ${tab==='firm_dates'?'active':''}`} onClick={()=>setTab('firm_dates')}>Firm Dates ({safeFirm(o).length})</button>}
@@ -1065,7 +1022,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                 {(isAU(item.brand)||item.retail_price>0)&&<span style={{fontSize:12,color:'#64748b'}}>Retail: {item.is_custom?<$In value={item.retail_price||0} onChange={v=>{uI(idx,'retail_price',v);if(isAU(item.brand)&&v>0){const tier=tD[cust?.adidas_ua_tier||'B']||0.35;uI(idx,'nsa_cost',rQ(v*(1-tier)));uI(idx,'unit_sell',rQ(v*(1-tier)))}}}/>:<strong>${item.retail_price?.toFixed(2)}</strong>}</span>}
                 <span style={{fontSize:13}}>Sell: <$In value={item.unit_sell} onChange={v=>uI(idx,'unit_sell',v)}/>/ea</span>
                 {!isAU(item.brand)&&item.nsa_cost>0&&<span style={{fontSize:11,color:'#64748b'}}>({(item.unit_sell/item.nsa_cost).toFixed(2)}x)</span>}
-                {isAU(item.brand)&&item.retail_price>0&&<span style={{fontSize:11,color:'#64748b'}}>({Math.round((1-item.nsa_cost/item.retail_price)*100)}% off retail)</span>}
+                {isAU(item.brand)&&item.nsa_cost>0&&<span style={{fontSize:11,color:item.unit_sell>item.nsa_cost?'#166534':'#dc2626'}}>({Math.round((item.unit_sell-item.nsa_cost)/item.unit_sell*100)}% margin)</span>}
               </div></div>
             <div style={{display:'flex',flexDirection:'column',gap:4}}>
               <button title="Copy item" onClick={()=>copyI(idx)} style={{background:'none',border:'none',cursor:'pointer',color:'#2563eb',padding:4}}><Icon name="file" size={14}/></button>
@@ -1100,14 +1057,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
               }}><Icon name="grid" size={14}/> Create IF</button>
               :<span style={{fontSize:10,color:'#d97706',fontStyle:'italic'}}>Need to order</span>})()}
             <div style={{textAlign:'right',borderLeft:'1px solid #e2e8f0',paddingLeft:12,minWidth:140}}>
-              <div style={{display:'flex',gap:8,justifyContent:'flex-end',alignItems:'baseline',marginBottom:2}}>
-                <span style={{fontSize:10,color:'#64748b'}}>Cost <strong style={{fontSize:12}}>${iC.toLocaleString(undefined,{maximumFractionDigits:0})}</strong></span>
-                <span style={{fontSize:10,color:mg>=0?'#166534':'#dc2626'}}>Margin <strong style={{fontSize:12}}>${mg.toLocaleString(undefined,{maximumFractionDigits:0})}</strong> <span style={{fontSize:9}}>({iR>0?(mg/iR*100).toFixed(0):0}%)</span></span>
-              </div>
-              <div style={{display:'flex',gap:4,justifyContent:'flex-end',alignItems:'baseline'}}>
-                <span style={{fontSize:10,color:'#64748b'}}>${qty>0?(iR/qty).toFixed(2):'-'}/ea</span>
-                <span style={{fontSize:22,fontWeight:900,color:'#166534'}}>${iR.toLocaleString(undefined,{maximumFractionDigits:0})}</span>
-              </div>
+              <div style={{fontSize:10,color:'#64748b',marginBottom:2}}>Cost ${iC.toLocaleString(undefined,{maximumFractionDigits:0})}</div>
+              <div style={{fontSize:10,color:'#64748b'}}>${qty>0?(iR/qty).toFixed(2):'-'}/ea</div>
+              <span style={{fontSize:22,fontWeight:900,color:'#166534'}}>${iR.toLocaleString(undefined,{maximumFractionDigits:2})}</span>
             </div>
           </div>
         </div>
@@ -1151,10 +1103,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         {/* DECORATIONS */}
         <div style={{padding:'8px 18px 14px'}}>
           {safeDecos(item).map((deco,di)=>{const cq=deco.kind==='art'&&deco.art_file_id?artQty[deco.art_file_id]:qty;const dp=dP(deco,qty,af,cq);
+            const decoTotal=qty*(deco.sell_override||dp.sell);const decoCostTotal=qty*dp.cost;const decoMargin=decoTotal-decoCostTotal;const decoMPct=decoTotal>0?Math.round(decoMargin/decoTotal*100):0;
+            const decoCardStyle={padding:'10px 12px',marginBottom:4,borderRadius:6,background:di%2===0?'#fafbfc':'#f8f9fb',borderLeft:'3px solid '+(deco.kind==='art'?'#3b82f6':deco.kind==='numbers'?'#22c55e':deco.kind==='names'?'#f59e0b':deco.kind==='outside_deco'?'#7c3aed':'#94a3b8')};
             if(deco.kind==='art'){const artF=af.find(f=>f.id===deco.art_file_id);const artIcon=artF?(artF.deco_type==='screen_print'?'🎨':artF.deco_type==='embroidery'?'🧵':'🔥'):'';
-              return(<div key={di} style={{padding:'10px 0',borderTop:di>0?'1px solid #f1f5f9':''}}>
+              return(<div key={di} style={decoCardStyle}>
                 <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
-                  {artF&&<div style={{position:'relative'}}><div style={{width:36,height:36,borderRadius:6,background:artF.deco_type==='screen_print'?'#dbeafe':artF.deco_type==='embroidery'?'#ede9fe':'#fef3c7',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0,cursor:'pointer',border:'2px solid transparent'}} onClick={e=>{const el=e.currentTarget.nextSibling;if(el)el.style.display=el.style.display==='none'?'block':'none'}} title="Click to expand">{artIcon}</div>
+                  {(!deco.art_file_id||deco.art_file_id==='__tbd')&&<div style={{width:36,height:36,borderRadius:6,background:'#fef3c7',display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,flexShrink:0}}>🎨</div>}
+                  {artF&&deco.art_file_id!=='__tbd'&&<div style={{position:'relative'}}><div style={{width:36,height:36,borderRadius:6,background:artF.deco_type==='screen_print'?'#dbeafe':artF.deco_type==='embroidery'?'#ede9fe':'#fef3c7',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0,cursor:'pointer',border:'2px solid transparent'}} onClick={e=>{const el=e.currentTarget.nextSibling;if(el)el.style.display=el.style.display==='none'?'block':'none'}} title="Click to expand">{artIcon}</div>
                   <div style={{display:'none',position:'absolute',top:40,left:0,width:260,background:'white',border:'1px solid #e2e8f0',borderRadius:8,boxShadow:'0 8px 24px rgba(0,0,0,0.12)',zIndex:50,padding:12}}>
                     <div style={{fontWeight:700,fontSize:13,marginBottom:4}}>{artF.name||'Untitled'}</div>
                     <div style={{fontSize:11,color:'#64748b',marginBottom:4}}>{artF.deco_type?.replace('_',' ')} {artF.art_size&&`· ${artF.art_size}`}</div>
@@ -1164,8 +1119,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                     {artF.notes&&<div style={{fontSize:10,color:'#7c3aed'}}>{artF.notes}</div>}
                     <div style={{fontSize:10,marginTop:4,padding:'2px 6px',display:'inline-block',borderRadius:4,background:artF.status==='approved'?'#dcfce7':'#fef3c7',color:artF.status==='approved'?'#166534':'#92400e'}}>{artF.status}</div>
                   </div></div>}
-                  <select className="form-select" style={{width:200,fontSize:12,border:!deco.art_file_id?'2px solid #f59e0b':'1px solid #22c55e'}} value={deco.art_file_id||''} onChange={e=>uD(idx,di,'art_file_id',e.target.value||null)}>
-                    <option value="">⚠️ Select artwork...</option>{af.map(f=><option key={f.id} value={f.id}>{f.name||'Untitled'}</option>)}</select>
+                  <select className="form-select" style={{width:200,fontSize:12,border:!deco.art_file_id?'2px solid #f59e0b':'1px solid #22c55e'}} value={deco.art_file_id||''} onChange={e=>{const v=e.target.value;if(v==='__tbd'){uDM(idx,di,{art_file_id:'__tbd',art_tbd_type:'screen_print',sell_override:0})}else{uD(idx,di,'art_file_id',v||null)}}}>
+                    <option value="">⚠️ Select artwork...</option>
+                    <option value="__tbd">🎨 Art TBD (pricing only)</option>{af.map(f=><option key={f.id} value={f.id}>{f.name||'Untitled'}</option>)}</select>
+                  {deco.art_file_id==='__tbd'&&<><select className="form-select" style={{width:130,fontSize:11,border:'1px solid #f59e0b'}} value={deco.art_tbd_type||'screen_print'} onChange={e=>uDM(idx,di,{art_tbd_type:e.target.value,sell_override:0})}>
+                    <option value="screen_print">Screen Print</option><option value="embroidery">Embroidery</option><option value="heat_press">Heat Press</option><option value="dtf">DTF</option></select>
+                  {(deco.art_tbd_type||'screen_print')==='screen_print'&&<select className="form-select" style={{width:90,fontSize:10}} value={deco.tbd_colors||1} onChange={e=>uDM(idx,di,{tbd_colors:parseInt(e.target.value),sell_override:0})}>
+                    {[1,2,3,4,5].map(n=><option key={n} value={n}>{n} color{n>1?'s':''}</option>)}</select>}
+                  {(deco.art_tbd_type||'screen_print')==='screen_print'&&<label style={{fontSize:10,display:'flex',alignItems:'center',gap:3,padding:'2px 6px',background:deco.underbase?'#fef3c7':'transparent',borderRadius:4,cursor:'pointer'}}><input type="checkbox" checked={deco.underbase||false} onChange={e=>uDM(idx,di,{underbase:e.target.checked,sell_override:0})}/> Underbase</label>}
+                  {deco.art_tbd_type==='embroidery'&&<select className="form-select" style={{width:110,fontSize:10}} value={deco.tbd_stitches||8000} onChange={e=>uDM(idx,di,{tbd_stitches:parseInt(e.target.value),sell_override:0})}>
+                    <option value={8000}>≤10k st</option><option value={12000}>10k-15k</option><option value={18000}>15k-20k</option><option value={25000}>20k+</option></select>}
+                  <span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:600}}>Art Needed</span></>}
                   <select className="form-select" style={{width:120,fontSize:12}} value={deco.position} onChange={e=>uD(idx,di,'position',e.target.value)}>{POSITIONS.map(p=><option key={p}>{p}</option>)}</select>
                   {artF&&<><span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:artF.deco_type==='screen_print'?'#dbeafe':artF.deco_type==='embroidery'?'#ede9fe':'#fef3c7',color:artF.deco_type==='screen_print'?'#1e40af':artF.deco_type==='embroidery'?'#6d28d9':'#92400e'}}>{artF.deco_type.replace('_',' ')}</span>
                     {artF.ink_colors&&<span style={{fontSize:11,color:'#64748b'}}>{artF.ink_colors.split('\n').filter(l=>l.trim()).length} color(s)</span>}
@@ -1173,24 +1137,38 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                     {artF.art_size&&<span style={{fontSize:11,color:'#94a3b8'}}>{artF.art_size}</span>}
                     {artF.deco_type==='screen_print'&&<label style={{fontSize:11,display:'flex',alignItems:'center',gap:3,padding:'2px 6px',background:deco.underbase?'#fef3c7':'transparent',borderRadius:4}}><input type="checkbox" checked={deco.underbase||false} onChange={e=>uD(idx,di,'underbase',e.target.checked)}/> Underbase</label>}
                     <span style={{fontSize:10,padding:'2px 6px',borderRadius:4,background:artF.status==='approved'?'#dcfce7':'#fef3c7',color:artF.status==='approved'?'#166534':'#92400e'}}>{artF.status}</span></>}
-                  <div style={{marginLeft:'auto',display:'flex',gap:8,alignItems:'center'}}>
-                    <span style={{fontSize:13}}>Cost: <strong style={{color:'#dc2626'}}>${dp.cost.toFixed(2)}</strong></span>
-                    <span style={{fontSize:13}}>Sell: <$In value={deco.sell_override||dp.sell} onChange={v=>uD(idx,di,'sell_override',v)} w={50}/></span>
+                  <div style={{marginLeft:'auto',display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
+                    <span style={{fontSize:11}}>Cost: <strong style={{color:'#dc2626'}}>${dp.cost.toFixed(2)}</strong></span>
+                    <span style={{fontSize:11}}>Sell: <$In value={deco.sell_override||dp.sell} onChange={v=>uD(idx,di,'sell_override',v)} w={50}/></span>
+                    <span style={{fontSize:10,color:decoMPct>0?'#166534':'#dc2626',fontWeight:600}}>{decoMPct}%</span>
+                    <span style={{fontSize:11,color:'#475569',fontWeight:700}}>${decoTotal.toFixed(2)}</span>
                     <button onClick={()=>rmD(idx,di)} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626'}}><Icon name="x" size={14}/></button>
                   </div></div></div>)}
             // NUMBERS decoration
             {const nm=deco.num_method||'heat_transfer';const szOpts=NUM_SZ[nm]||[];
-            // Build roster grid from parent item sizes
             const sizedQtys=Object.entries(item.sizes).filter(([,v])=>v>0).sort((a,b)=>{const ord=['XS','S','M','L','XL','2XL','3XL','4XL','LT','XLT','2XLT','3XLT'];return(ord.indexOf(a[0])===-1?99:ord.indexOf(a[0]))-(ord.indexOf(b[0])===-1?99:ord.indexOf(b[0]))});
             const roster=deco.roster||{};
-            return(<div key={di} style={{padding:'10px 0',borderTop:di>0?'1px solid #f1f5f9':''}}>
+            const filledNums=Object.values(roster).flat().filter(v=>v&&v.trim()).length;
+            const showRoster=deco._showRoster||false;
+            // Bball numbers: 0-5,10-15,20-25,30-35,40-45,50-55
+            const BBALL_NUMS=[0,1,2,3,4,5,10,11,12,13,14,15,20,21,22,23,24,25,30,31,32,33,34,35,40,41,42,43,44,45,50,51,52,53,54,55];
+            const autoFillNums=(mode)=>{const nr={};let numIdx=0;
+              if(mode==='bball'){sizedQtys.forEach(([sz,sq])=>{nr[sz]=Array(sq).fill('');for(let i=0;i<sq;i++){if(numIdx<BBALL_NUMS.length)nr[sz][i]=String(BBALL_NUMS[numIdx++])}});}
+              else{// small-large: 1,2,3... or 0,1,2... if roster has 0
+                const startAt=(roster&&Object.values(roster).flat().find(v=>v==='0')!==undefined)?0:1;
+                sizedQtys.forEach(([sz,sq])=>{nr[sz]=Array(sq).fill('');for(let i=0;i<sq;i++){nr[sz][i]=String(startAt+numIdx);numIdx++}});}
+              uD(idx,di,'roster',nr);nf(mode==='bball'?'BBall numbers assigned':'Sequential numbers assigned')};
+            return(<div key={di} style={decoCardStyle}>
               <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:6}}>
                 <div style={{width:36,height:36,borderRadius:6,background:'#f0fdf4',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0}}>#️⃣</div>
                 <span style={{fontWeight:700,fontSize:13}}>Numbers</span>
                 <select className="form-select" style={{width:120,fontSize:12}} value={deco.position} onChange={e=>uD(idx,di,'position',e.target.value)}>{POSITIONS.map(p=><option key={p}>{p}</option>)}</select>
-                <div style={{marginLeft:'auto',display:'flex',gap:8,alignItems:'center'}}>
-                  <span style={{fontSize:13}}>Cost: <strong style={{color:'#dc2626'}}>${dp.cost.toFixed(2)}</strong></span>
-                  <span style={{fontSize:13}}>Sell: <$In value={deco.sell_override||dp.sell} onChange={v=>uD(idx,di,'sell_override',v)} w={50}/></span>
+                <span style={{fontSize:11,color:'#64748b'}}>{showRoster?filledNums+'/'+qty+' assigned':qty+' pcs'}</span>
+                <div style={{marginLeft:'auto',display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
+                  <span style={{fontSize:11}}>Cost: <strong style={{color:'#dc2626'}}>${dp.cost.toFixed(2)}</strong></span>
+                  <span style={{fontSize:11}}>Sell: <$In value={deco.sell_override||dp.sell} onChange={v=>uD(idx,di,'sell_override',v)} w={50}/></span>
+                  <span style={{fontSize:10,color:decoMPct>0?'#166534':'#dc2626',fontWeight:600}}>{decoMPct}%</span>
+                  <span style={{fontSize:11,color:'#475569',fontWeight:700}}>${decoTotal.toFixed(2)}</span>
                   <button onClick={()=>rmD(idx,di)} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626'}}><Icon name="x" size={14}/></button>
                 </div></div>
               <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:6}}>
@@ -1210,64 +1188,114 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                 {nm==='heat_transfer'&&<>{!deco.custom_font_art_id?<><span style={{fontSize:12,color:'#475569'}}>Standard</span><button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>uD(idx,di,'custom_font_art_id','pending')}>Use Custom Font Art</button></>
                   :<><span style={{fontSize:11,color:'#7c3aed'}}>Custom font art</span><button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>uD(idx,di,'custom_font_art_id',null)}>× Clear</button></>}</>}
               </div>
-              {/* Roster grid by size */}
-              <div style={{marginTop:6,padding:10,background:'#f8fafc',borderRadius:6,border:'1px dashed #d1d5db'}}>
-                <div style={{fontSize:11,fontWeight:600,color:'#64748b',marginBottom:6}}>Roster / Number Assignment</div>
+              {/* Toggle number assignment */}
+              {!showRoster?<button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>uD(idx,di,'_showRoster',true)}>📋 Assign Numbers ({qty} pcs)</button>
+              :<div style={{marginTop:6,padding:10,background:'#f8fafc',borderRadius:6,border:'1px dashed #d1d5db'}}
+                onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#3b82f6';e.currentTarget.style.background='#eff6ff'}}
+                onDragLeave={e=>{e.currentTarget.style.borderColor='#d1d5db';e.currentTarget.style.background='#f8fafc'}}
+                onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor='#d1d5db';e.currentTarget.style.background='#f8fafc';
+                  const f=e.dataTransfer.files[0];if(!f)return;const reader=new FileReader();
+                  reader.onload=ev=>{const lines=ev.target.result.split('\n').filter(l=>l.trim());
+                    const nr={...roster};let ct=0;
+                    lines.forEach(line=>{if(line.toLowerCase().startsWith('size'))return;
+                      const parts=line.split(',').map(s=>s.trim());const[sz,num]=parts;
+                      if(sz&&num&&item.sizes[sz]>0){if(!nr[sz])nr[sz]=Array(item.sizes[sz]||0).fill('');
+                        const ei=nr[sz].findIndex(v=>!v);if(ei>=0){nr[sz][ei]=num;ct++}}});
+                    uD(idx,di,'roster',nr);nf(ct+' numbers imported')};reader.readAsText(f)}}>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
+                  <div style={{fontSize:11,fontWeight:600,color:'#64748b'}}>Number Assignment <span style={{fontWeight:400,fontSize:10}}>(drag CSV here)</span></div>
+                  <div style={{display:'flex',gap:4}}>
+                    <button className="btn btn-sm btn-secondary" style={{fontSize:9,background:'#dbeafe',borderColor:'#93c5fd',color:'#1e40af'}} onClick={()=>autoFillNums('bball')}>🏀 BBall #s</button>
+                    <button className="btn btn-sm btn-secondary" style={{fontSize:9,background:'#dcfce7',borderColor:'#86efac',color:'#166534'}} onClick={()=>autoFillNums('sequential')}>🔢 Small→Large</button>
+                    <button className="btn btn-sm btn-secondary" style={{fontSize:9}} onClick={()=>{
+                      let csv='Size,Number\n';sizedQtys.forEach(([sz,sqty])=>{for(let i=0;i<sqty;i++)csv+=sz+',\n'});
+                      const blob=new Blob([csv],{type:'text/csv'});const url=URL.createObjectURL(blob);
+                      const a=document.createElement('a');a.href=url;a.download='number_template_'+item.sku+'.csv';a.click();URL.revokeObjectURL(url)}}>📥 Template</button>
+                    <button className="btn btn-sm btn-secondary" style={{fontSize:9}} onClick={()=>{
+                      const csv=prompt('Paste (Size,Number per line):\nM,12\nL,34');
+                      if(csv){const nr={...roster};csv.split('\n').forEach(line=>{const[sz,num]=line.split(',').map(s=>s.trim());
+                        if(sz&&num){if(!nr[sz])nr[sz]=Array(item.sizes[sz]||0).fill('');const ei=nr[sz].findIndex(v=>!v);if(ei>=0)nr[sz][ei]=num}});
+                        uD(idx,di,'roster',nr);nf('Imported')}}}>📋 Paste</button>
+                    <button className="btn btn-sm btn-secondary" style={{fontSize:9,color:'#dc2626'}} onClick={()=>{uD(idx,di,'roster',{});nf('Cleared')}}>Clear</button>
+                    <button className="btn btn-sm btn-secondary" style={{fontSize:9}} onClick={()=>uD(idx,di,'_showRoster',false)}>▲ Close</button>
+                  </div></div>
                 {sizedQtys.length===0?<div style={{fontSize:11,color:'#94a3b8'}}>Add sizes above first</div>:
-                <div style={{display:'flex',flexDirection:'column',gap:4}}>
-                  {sizedQtys.map(([sz,sqty])=>{const szRoster=roster[sz]||[];return<div key={sz} style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
-                    <span style={{fontSize:12,fontWeight:700,color:'#1e40af',width:40}}>{sz} ({sqty})</span>
-                    {Array.from({length:sqty}).map((_,si)=><input key={si} style={{width:36,textAlign:'center',border:'1px solid #d1d5db',borderRadius:3,padding:'3px 2px',fontSize:12,fontWeight:600,background:szRoster[si]?'#dbeafe':'white'}} value={szRoster[si]||''} placeholder="—" onChange={e=>{const nr={...roster};const arr=[...(nr[sz]||Array(sqty).fill(''))];arr[si]=e.target.value;nr[sz]=arr;uD(idx,di,'roster',nr)}}/>)}
-                  </div>})}
+                <div style={{display:'flex',flexDirection:'column',gap:2}}>
+                  {sizedQtys.map(([sz,sqty])=>{const szRoster=roster[sz]||[];
+                    return<div key={sz} style={{display:'flex',gap:4,alignItems:'center',flexWrap:'wrap'}}>
+                      <span style={{width:50,fontSize:12,fontWeight:700,color:'#1e40af'}}>{sz} ({sqty})</span>
+                      {Array.from({length:sqty}).map((_,si)=><input key={si} style={{width:38,textAlign:'center',border:'1px solid #d1d5db',borderRadius:3,padding:'3px 2px',fontSize:12,fontWeight:600,background:szRoster[si]?'#dbeafe':'white'}} value={szRoster[si]||''} placeholder="—" onChange={e=>{const nr={...roster};const arr=[...(nr[sz]||Array(sqty).fill(''))];arr[si]=e.target.value;nr[sz]=arr;uD(idx,di,'roster',nr)}}/>)}
+                    </div>})}
                 </div>}
-                <div style={{display:'flex',gap:4,marginTop:8}}>
-                  <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{const csv=prompt('Paste roster (one per line: Size,Number,Name):\ne.g.\nM,12,Smith\nL,34,Jones');if(csv){const nr={...roster};csv.split('\n').forEach(line=>{const[sz,num]=line.split(',').map(s=>s.trim());if(sz&&num){if(!nr[sz])nr[sz]=Array(item.sizes[sz]||0).fill('');const ei=nr[sz].findIndex(v=>!v);if(ei>=0)nr[sz][ei]=num}});uD(idx,di,'roster',nr);nf('Roster imported')}}}><Icon name="upload" size={10}/> Paste Roster</button>
-                  <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{uD(idx,di,'roster',{});nf('Roster cleared')}}>Clear All</button>
-                </div></div>
+                {filledNums>0&&<div style={{fontSize:10,color:'#64748b',marginTop:4}}>{filledNums}/{qty} assigned</div>}
+              </div>}
             </div>)}
-            // OUTSIDE DECORATION — no job created, just cost/sell
-            if(deco.kind==='outside_deco'){return(<div key={di} style={{padding:'10px 0',borderTop:di>0?'1px solid #f1f5f9':''}}>
+            // OUTSIDE DECORATION
+            if(deco.kind==='outside_deco'){return(<div key={di} style={decoCardStyle}>
               <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:6}}>
-                <div style={{width:36,height:36,borderRadius:6,background:'#faf5ff',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0}}>🎨</div>
+                <span style={{fontSize:18}}>🎨</span>
                 <span style={{fontWeight:700,fontSize:13,color:'#7c3aed'}}>Outside Decoration</span>
                 <select className="form-select" style={{width:120,fontSize:12}} value={deco.position} onChange={e=>uD(idx,di,'position',e.target.value)}>{POSITIONS.map(p=><option key={p}>{p}</option>)}</select>
-                <div style={{marginLeft:'auto',display:'flex',gap:4,alignItems:'center'}}>
+                <div style={{marginLeft:'auto'}}><button onClick={()=>rmD(idx,di)} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626'}}><Icon name="x" size={14}/></button></div></div>
+              <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:6,padding:'8px 10px',background:'#faf5ff',borderRadius:6,border:'1px solid #ede9fe'}}>
+                <div style={{display:'flex',flexDirection:'column',gap:2}}><span style={{fontSize:10,fontWeight:600,color:'#7c3aed'}}>Vendor</span>
+                  <select className="form-select" style={{width:160,fontSize:12}} value={deco.vendor||''} onChange={e=>uD(idx,di,'vendor',e.target.value)}>
+                    <option value="">Select vendor...</option>{DECO_VENDORS.map(dv=><option key={dv} value={dv}>{dv}</option>)}</select></div>
+                <div style={{display:'flex',flexDirection:'column',gap:2}}><span style={{fontSize:10,fontWeight:600,color:'#7c3aed'}}>Deco Type</span>
+                  <select className="form-select" style={{width:120,fontSize:12}} value={deco.deco_type||'embroidery'} onChange={e=>uD(idx,di,'deco_type',e.target.value)}>
+                    {['embroidery','screen_print','dtf','heat_transfer','sublimation','vinyl'].map(t=><option key={t} value={t}>{t.replace(/_/g,' ')}</option>)}</select></div>
+                <div style={{display:'flex',flexDirection:'column',gap:2}}><span style={{fontSize:10,fontWeight:600,color:'#dc2626'}}>Cost /ea</span><$In value={deco.cost_each||0} onChange={v=>uD(idx,di,'cost_each',v)} w={60}/></div>
+                <div style={{display:'flex',flexDirection:'column',gap:2}}><span style={{fontSize:10,fontWeight:600,color:'#166534'}}>Sell /ea</span><$In value={deco.sell_each||0} onChange={v=>{uDM(idx,di,{sell_each:v,sell_override:v})}} w={60}/></div>
+                <div style={{display:'flex',flexDirection:'column',gap:2,flex:1}}><span style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Notes</span>
+                  <input className="form-input" style={{fontSize:11,padding:'4px 6px'}} value={deco.notes||''} onChange={e=>uD(idx,di,'notes',e.target.value)} placeholder="Thread colors, instructions..."/></div>
+              </div>
+            </div>)}
+            // NAMES decoration
+            if(deco.kind==='names'){
+              const sQ2=Object.entries(item.sizes).filter(([,v])=>v>0).sort((a,b)=>{const ord=['XS','S','M','L','XL','2XL','3XL','4XL'];return(ord.indexOf(a[0])===-1?99:ord.indexOf(a[0]))-(ord.indexOf(b[0])===-1?99:ord.indexOf(b[0]))});
+              const nd=deco.names||{};const nSell=safeNum(deco.sell_override||deco.sell_each||6);const nCost=safeNum(deco.cost_each||3);
+              const nCt=Object.values(nd).flat().filter(v=>v&&v.trim()).length;
+              return(<div key={di} style={decoCardStyle}>
+              <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:6}}>
+                <span style={{fontSize:18}}>🏷️</span><span style={{fontWeight:700,fontSize:13}}>Names</span>
+                <select className="form-select" style={{width:120,fontSize:12}} value={deco.position} onChange={e=>uD(idx,di,'position',e.target.value)}>{POSITIONS.map(p=><option key={p}>{p}</option>)}</select>
+                <div style={{marginLeft:'auto',display:'flex',gap:8,alignItems:'center'}}>
+                  <span style={{fontSize:12}}>$/ea: <$In value={nSell} onChange={v=>uD(idx,di,'sell_override',v)} w={40}/></span>
+                  <span style={{fontSize:11,color:'#64748b'}}>{nCt} names = ${ (nCt*nSell).toFixed(2)}</span>
                   <button onClick={()=>rmD(idx,di)} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626'}}><Icon name="x" size={14}/></button>
                 </div></div>
-              <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:6,padding:'8px 10px',background:'#faf5ff',borderRadius:6,border:'1px solid #ede9fe'}}>
+              <div style={{padding:10,background:'#fffbeb',borderRadius:6,border:'1px dashed #f59e0b'}}
+                onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#3b82f6'}}
+                onDragLeave={e=>{e.currentTarget.style.borderColor='#f59e0b'}}
+                onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor='#f59e0b';
+                  const f=e.dataTransfer.files[0];if(!f)return;const reader=new FileReader();
+                  reader.onload=ev=>{const lines=ev.target.result.split('\n').filter(l=>l.trim());const nn={...nd};let ct=0;
+                    lines.forEach(line=>{if(line.toLowerCase().startsWith('size'))return;const parts=line.split(',').map(s=>s.trim());const sz=parts[0];const name=parts.length>=3?parts[2]:parts[1]||'';
+                      if(sz&&name&&item.sizes[sz]>0){if(!nn[sz])nn[sz]=Array(item.sizes[sz]||0).fill('');const ei=nn[sz].findIndex(v=>!v);if(ei>=0){nn[sz][ei]=name;ct++}}});
+                    uD(idx,di,'names',nn);nf(ct+' names imported')};reader.readAsText(f)}}>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
+                  <span style={{fontSize:11,fontWeight:600,color:'#92400e'}}>Drag CSV or enter names</span>
+                  <div style={{display:'flex',gap:4}}>
+                    <button className="btn btn-sm btn-secondary" style={{fontSize:9}} onClick={()=>{let csv='Size,Number,Name\n';sQ2.forEach(([sz,sq])=>{for(let i=0;i<sq;i++)csv+=sz+',,\n'});const b=new Blob([csv],{type:'text/csv'});const u=URL.createObjectURL(b);const a=document.createElement('a');a.href=u;a.download='name_template_'+item.sku+'.csv';a.click();URL.revokeObjectURL(u)}}>📥 Template</button>
+                    <button className="btn btn-sm btn-secondary" style={{fontSize:9,color:'#dc2626'}} onClick={()=>{uD(idx,di,'names',{});nf('Cleared')}}>Clear</button></div></div>
+                {sQ2.length===0?<div style={{fontSize:11,color:'#94a3b8'}}>Add sizes first</div>:
                 <div style={{display:'flex',flexDirection:'column',gap:2}}>
-                  <span style={{fontSize:10,fontWeight:600,color:'#7c3aed'}}>Vendor</span>
-                  <select className="form-select" style={{width:160,fontSize:12}} value={deco.vendor||''} onChange={e=>uD(idx,di,'vendor',e.target.value)}>
-                    <option value="">Select vendor...</option>
-                    {DECO_VENDORS.map(dv=><option key={dv} value={dv}>{dv}</option>)}
-                  </select>
-                </div>
-                <div style={{display:'flex',flexDirection:'column',gap:2}}>
-                  <span style={{fontSize:10,fontWeight:600,color:'#7c3aed'}}>Deco Type</span>
-                  <select className="form-select" style={{width:120,fontSize:12}} value={deco.deco_type||'embroidery'} onChange={e=>uD(idx,di,'deco_type',e.target.value)}>
-                    {['embroidery','screen_print','dtf','heat_transfer','sublimation','vinyl'].map(t=><option key={t} value={t}>{t.replace(/_/g,' ')}</option>)}
-                  </select>
-                </div>
-                <div style={{display:'flex',flexDirection:'column',gap:2}}>
-                  <span style={{fontSize:10,fontWeight:600,color:'#dc2626'}}>NSA Cost /ea</span>
-                  <$In value={deco.cost_each||0} onChange={v=>uD(idx,di,'cost_each',v)} w={60}/>
-                </div>
-                <div style={{display:'flex',flexDirection:'column',gap:2}}>
-                  <span style={{fontSize:10,fontWeight:600,color:'#166534'}}>Sell /ea</span>
-                  <$In value={deco.sell_each||0} onChange={v=>{uD(idx,di,'sell_each',v);uD(idx,di,'sell_override',v)}} w={60}/>
-                </div>
-                <div style={{display:'flex',flexDirection:'column',gap:2,flex:1}}>
-                  <span style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Notes</span>
-                  <input className="form-input" style={{fontSize:11,padding:'4px 6px'}} value={deco.notes||''} onChange={e=>uD(idx,di,'notes',e.target.value)} placeholder="Thread colors, instructions..."/>
-                </div>
-              </div>
-              <div style={{fontSize:10,color:'#7c3aed',marginTop:4}}>⚠️ Outside deco — no production job will be created. Decoration handled by external vendor.</div>
-            </div>)}
+                  {sQ2.map(([sz,sq])=>{const sn=nd[sz]||[];return<div key={sz} style={{display:'flex',gap:4,alignItems:'center',flexWrap:'wrap'}}>
+                    <span style={{width:50,fontSize:12,fontWeight:700,color:'#92400e'}}>{sz} ({sq})</span>
+                    {Array.from({length:sq}).map((_,si)=><input key={si} style={{width:100,border:'1px solid #d1d5db',borderRadius:3,padding:'3px 6px',fontSize:12,background:sn[si]?'#fef3c7':'white'}} value={sn[si]||''} placeholder="Name" onChange={e=>{const nn2={...nd};const ar=[...(nn2[sz]||Array(sq).fill(''))];ar[si]=e.target.value;nn2[sz]=ar;uD(idx,di,'names',nn2)}}/>)}
+                  </div>})}</div>}
+              </div></div>)}
             return null})}
+          {safeDecos(item).length>0&&<div style={{display:'flex',justifyContent:'flex-end',padding:'6px 12px',background:'#f0f9ff',borderRadius:6,marginTop:4,gap:16,alignItems:'center'}}>
+            <span style={{fontSize:11,color:'#64748b'}}>Garment: ${(qty*safeNum(item.unit_sell)).toFixed(2)}</span>
+            <span style={{fontSize:11,color:'#64748b'}}>Deco: ${(()=>{let d=0;safeDecos(item).forEach(dd=>{const cq2=dd.kind==='art'&&dd.art_file_id?artQty[dd.art_file_id]:qty;const dp2=dP(dd,qty,af,cq2);d+=qty*(dd.sell_override||dp2.sell)});return d.toFixed(2)})()}</span>
+            <span style={{fontSize:12,fontWeight:800,color:'#1e40af'}}>All-In: ${(()=>{let t=qty*safeNum(item.unit_sell);safeDecos(item).forEach(dd=>{const cq2=dd.kind==='art'&&dd.art_file_id?artQty[dd.art_file_id]:qty;const dp2=dP(dd,qty,af,cq2);t+=qty*(dd.sell_override||dp2.sell)});return t.toFixed(2)})()}</span>
+          </div>}
           <div style={{display:'flex',gap:6,marginTop:8,alignItems:'center',flexWrap:'wrap'}}>
-            <button className="btn btn-sm btn-secondary" onClick={()=>addArtDeco(idx)}><Icon name="image" size={12}/> + Add Art</button>
-            <button className="btn btn-sm btn-secondary" onClick={()=>addNumDeco(idx)}>#️⃣ + Add Numbers</button>
-            <button className="btn btn-sm btn-secondary" style={{background:'#faf5ff',borderColor:'#ddd6fe',color:'#7c3aed'}} onClick={()=>addOutsideDeco(idx)}>🎨 + Outside Deco</button>
+            <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>addArtDeco(idx)}><Icon name="image" size={12}/> + Add Art</button>
+            <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>addNumDeco(idx)}>#️⃣ + Numbers</button>
+            <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>addNameDeco(idx)}>🏷️ + Names</button>
+            <button className="btn btn-sm btn-secondary" style={{fontSize:11,background:'#faf5ff',borderColor:'#ddd6fe',color:'#7c3aed'}} onClick={()=>addOutsideDeco(idx)}>🎨 + Outside Deco</button>
             {safeDecos(item).length===0&&!item.no_deco&&<button className="btn btn-sm" style={{background:'#fef3c7',color:'#92400e',border:'1px solid #f59e0b',fontSize:10}} onClick={()=>uI(idx,'no_deco',true)}>✓ No Deco (Blank)</button>}
             {item.no_deco&&<span style={{fontSize:10,padding:'3px 8px',borderRadius:4,background:'#f1f5f9',color:'#64748b',fontWeight:600,display:'flex',alignItems:'center',gap:4}}>🚫 No Decoration <button onClick={()=>uI(idx,'no_deco',false)} style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',fontSize:12,padding:0,marginLeft:2}}>✕</button></span>}
             {safeDecos(item).length===0&&!item.no_deco&&<span style={{fontSize:10,color:'#dc2626',fontWeight:600}}>⚠️ No deco assigned</span>}
@@ -1290,7 +1318,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
     {showCustom&&<div className="card" style={{marginTop:8,borderLeft:'3px solid #d97706'}}><div style={{padding:'14px 18px'}}>
       <div style={{fontWeight:700,marginBottom:8}}>✏️ Custom Item {custItem.name&&<span style={{fontWeight:400,fontSize:12,color:'#64748b'}}>— {custItem.name}</span>}</div>
       <div style={{display:'grid',gridTemplateColumns:'120px 1fr 120px',gap:8,marginBottom:8}}>
-        <div><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Brand / Vendor</label><select className="form-select" value={custItem.vendor_id} onChange={e=>{const vid=e.target.value;const vn=D_V.find(v=>v.id===vid)?.name||'';setCustItem(x=>({...x,vendor_id:vid,brand:vn}))}}><option value="">Select...</option>{D_V.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}</select></div>
+        <div><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Brand / Vendor</label><SearchSelect options={D_V.map(v=>({value:v.id,label:v.name}))} value={custItem.vendor_id} onChange={vid=>{const vn=D_V.find(v=>v.id===vid)?.name||'';setCustItem(x=>({...x,vendor_id:vid,brand:vn}))}} placeholder="Search vendors..."/></div>
         <div><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Item Name</label><input className="form-input" value={custItem.name} onChange={e=>setCustItem(x=>({...x,name:e.target.value}))} placeholder="Custom jersey, special order hat, etc."/></div>
         <div><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Color</label><input className="form-input" value={custItem.color} onChange={e=>setCustItem(x=>({...x,color:e.target.value}))} placeholder="Navy"/></div></div>
 
@@ -1308,14 +1336,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
             <div><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Sell $</label><$In value={custItem.unit_sell} onChange={v=>setCustItem(x=>({...x,unit_sell:v}))}/></div>
             <div style={{display:'flex',gap:4,alignItems:'center'}}>
               {custItem.nsa_cost>0&&<span style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap'}}>
-                {au&&custItem.retail_price>0?Math.round((1-custItem.nsa_cost/custItem.retail_price)*100)+'% off retail':custItem.nsa_cost>0?(custItem.unit_sell/custItem.nsa_cost).toFixed(2)+'x markup':''}
+                {au&&custItem.nsa_cost>0&&custItem.unit_sell>0?Math.round((custItem.unit_sell-custItem.nsa_cost)/custItem.unit_sell*100)+'% margin':custItem.nsa_cost>0?(custItem.unit_sell/custItem.nsa_cost).toFixed(2)+'x markup':''}
                 {custItem.unit_sell>custItem.nsa_cost&&<span style={{color:'#166534',marginLeft:4}}>(${rQ(custItem.unit_sell-custItem.nsa_cost).toFixed(2)} margin)</span>}
               </span>}
             </div></div>
         </>})()}
       <div style={{display:'flex',gap:4}}>
         <button className="btn btn-primary" disabled={!custItem.name} onClick={()=>{const brandName=D_V.find(v=>v.id===custItem.vendor_id)?.name||'Custom';
-          sv('items',[...o.items,{product_id:null,sku:custItem.sku||'CUSTOM',name:custItem.name,brand:brandName,vendor_id:custItem.vendor_id,color:custItem.color,nsa_cost:custItem.nsa_cost,retail_price:custItem.retail_price||0,unit_sell:custItem.unit_sell,available_sizes:['S','M','L','XL','2XL'],sizes:{},decorations:[],is_custom:true}]);
+          sv('items',[...o.items,{product_id:null,sku:custItem.sku||'CUSTOM',name:custItem.name,brand:brandName,vendor_id:custItem.vendor_id,color:custItem.color,nsa_cost:custItem.nsa_cost,retail_price:custItem.retail_price||0,unit_sell:custItem.unit_sell,available_sizes:['S','M','L','XL','2XL'],sizes:{},decorations:isE?[{kind:'art',art_file_id:'__tbd',art_tbd_type:'screen_print',position:'',sell_override:0}]:[],is_custom:true}]);
           setShowCustom(false);setCustItem({vendor_id:'',name:'',sku:'CUSTOM',nsa_cost:0,unit_sell:0,retail_price:0,color:'',brand:''})}}>Add Item</button>
         <button className="btn btn-secondary" onClick={()=>setShowCustom(false)}>Cancel</button></div>
     </div></div>}
@@ -1594,86 +1622,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         </div></div>})()}
 
         {/* LINKED TRANSACTIONS TAB */}
-    {/* FULFILLMENT TAB — PO Ordered → Billed (SI Invoice) → Received */}
-    {isSO&&tab==='fulfillment'&&(()=>{
-      const soBills=safeArr(bills).filter(b=>b.matched_so_id===o.id||safePOs(o).flatMap((_,ii)=>safeItems(o).flatMap(it=>safePOs(it).map(p=>p.po_id))).some(pid=>pid&&b.po_number===pid));
-      // Build per-item fulfillment matrix
-      return<div className="card"><div className="card-header"><h2>📦 Fulfillment Tracker</h2>
-        <span style={{fontSize:12,color:'#64748b'}}>{soBills.length} supplier bill{soBills.length!==1?'s':''} matched</span></div>
-      <div className="card-body">
-      {safeItems(o).length===0?<div className="empty">No items on this order</div>:
-      safeItems(o).map((it,idx)=>{
-        const szList=Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).sort((a,b)=>SZ_ORD.indexOf(a[0])-SZ_ORD.indexOf(b[0]));
-        if(szList.length===0)return null;
-        const qty=szList.reduce((a,[,v])=>a+v,0);
-        // PO ordered quantities
-        const poOrd={};szList.forEach(([sz])=>{poOrd[sz]=safePOs(it).reduce((a,pk)=>{const ordered=safeNum(pk[sz]);const cancelled=safeNum((pk.cancelled||{})[sz]);return a+(ordered-cancelled)},0)});
-        // Picked (in-stock pull)
-        const picked={};szList.forEach(([sz])=>{picked[sz]=safePicks(it).reduce((a,pk)=>a+safeNum(pk[sz]),0)});
-        // Billed (from SI invoices matching PO IDs on this item)
-        const itemPOIds=safePOs(it).map(p=>p.po_id).filter(Boolean);
-        const billed={};szList.forEach(([sz])=>{billed[sz]=soBills.reduce((a,bill)=>{
-          if(!itemPOIds.some(pid=>bill.po_number===pid))return a;
-          return a+(bill.items||[]).reduce((a2,bi)=>{return bi.sku===it.sku?a2+safeNum((bi.sizes||{})[sz]):a2},0)
-        },0)});
-        // Received (warehouse count-in)
-        const rcvd={};szList.forEach(([sz])=>{rcvd[sz]=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0)});
-        // Pulled = pick lines with status pulled
-        const pulled={};szList.forEach(([sz])=>{pulled[sz]=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0)});
-        const totalOrd=Object.values(poOrd).reduce((a,v)=>a+v,0);
-        const totalPicked=Object.values(picked).reduce((a,v)=>a+v,0);
-        const totalBilled=Object.values(billed).reduce((a,v)=>a+v,0);
-        const totalRcvd=Object.values(rcvd).reduce((a,v)=>a+v,0);
-        const totalPulled=Object.values(pulled).reduce((a,v)=>a+v,0);
-        const totalFulfilled=totalPulled+totalRcvd;
-        const pct=qty>0?Math.round(totalFulfilled/qty*100):0;
-        return<div key={idx} style={{marginBottom:16,border:'1px solid #e2e8f0',borderRadius:8,overflow:'hidden'}}>
-          <div style={{padding:'10px 14px',background:'#f8fafc',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-            <div><span style={{fontWeight:700}}>{it.sku}</span> <span style={{color:'#475569'}}>{it.name}</span> <span style={{color:'#94a3b8'}}>({it.color||'—'})</span></div>
-            <div style={{display:'flex',alignItems:'center',gap:8}}>
-              <span style={{fontSize:12,fontWeight:700,color:pct>=100?'#166534':pct>0?'#b45309':'#94a3b8'}}>{totalFulfilled}/{qty}</span>
-              <div style={{width:60,background:'#e2e8f0',borderRadius:3,height:6}}><div style={{height:6,borderRadius:3,background:pct>=100?'#22c55e':pct>50?'#f59e0b':'#ef4444',width:Math.min(pct,100)+'%'}}/></div>
-            </div>
-          </div>
-          <table style={{fontSize:11,margin:0}}><thead><tr style={{background:'#f0f2f5'}}>
-            <th style={{textAlign:'left',padding:'6px 10px',fontSize:10}}>Stage</th>
-            {szList.map(([sz])=><th key={sz} style={{textAlign:'center',padding:'6px 6px',fontSize:10,minWidth:36}}>{sz}</th>)}
-            <th style={{textAlign:'center',padding:'6px 8px',fontSize:10}}>Total</th>
-          </tr></thead><tbody>
-            <tr style={{background:'#fff'}}><td style={{padding:'5px 10px',fontWeight:600,color:'#475569'}}>📋 Needed</td>
-              {szList.map(([sz,v])=><td key={sz} style={{textAlign:'center',padding:'5px 6px',fontWeight:700}}>{v}</td>)}
-              <td style={{textAlign:'center',fontWeight:700}}>{qty}</td></tr>
-            <tr style={{background:'#fefce8'}}><td style={{padding:'5px 10px',fontWeight:600,color:'#92400e'}}>🛒 PO Ordered</td>
-              {szList.map(([sz])=><td key={sz} style={{textAlign:'center',padding:'5px 6px',color:poOrd[sz]>0?'#92400e':'#d1d5db'}}>{poOrd[sz]||'—'}</td>)}
-              <td style={{textAlign:'center',fontWeight:600,color:'#92400e'}}>{totalOrd}</td></tr>
-            <tr style={{background:'#eff6ff'}}><td style={{padding:'5px 10px',fontWeight:600,color:'#1e40af'}}>📄 Billed (In Transit)</td>
-              {szList.map(([sz])=><td key={sz} style={{textAlign:'center',padding:'5px 6px',color:billed[sz]>0?'#1e40af':'#d1d5db'}}>{billed[sz]||'—'}</td>)}
-              <td style={{textAlign:'center',fontWeight:600,color:'#1e40af'}}>{totalBilled}</td></tr>
-            <tr style={{background:'#f0fdf4'}}><td style={{padding:'5px 10px',fontWeight:600,color:'#166534'}}>📥 Picked (In Stock)</td>
-              {szList.map(([sz])=><td key={sz} style={{textAlign:'center',padding:'5px 6px',color:pulled[sz]>0?'#166534':'#d1d5db'}}>{pulled[sz]||'—'}</td>)}
-              <td style={{textAlign:'center',fontWeight:600,color:'#166534'}}>{totalPulled}</td></tr>
-            <tr style={{background:'#dcfce7'}}><td style={{padding:'5px 10px',fontWeight:600,color:'#166534'}}>✅ PO Received</td>
-              {szList.map(([sz])=><td key={sz} style={{textAlign:'center',padding:'5px 6px',fontWeight:rcvd[sz]>0?700:400,color:rcvd[sz]>0?'#166534':'#d1d5db'}}>{rcvd[sz]||'—'}</td>)}
-              <td style={{textAlign:'center',fontWeight:700,color:'#166534'}}>{totalRcvd}</td></tr>
-          </tbody></table>
-          {/* Tracking numbers from matched bills */}
-          {(()=>{const tracks=soBills.filter(b=>itemPOIds.some(pid=>b.po_number===pid)&&b.tracking).map(b=>({tracking:b.tracking,carrier:b.carrier,ship_date:b.ship_date,po:b.po_number}));
-            return tracks.length>0?<div style={{padding:'6px 10px',background:'#faf5ff',borderTop:'1px solid #e9d5ff',fontSize:11}}>
-              {tracks.map((t,ti)=><span key={ti} style={{marginRight:12}}>🚚 <strong>{t.carrier}</strong> {t.tracking} <span style={{color:'#94a3b8'}}>({t.ship_date})</span></span>)}
-            </div>:null})()}
-        </div>})}
-        {/* Summary of all matched bills */}
-        {soBills.length>0&&<div style={{marginTop:12,padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0'}}>
-          <div style={{fontWeight:700,fontSize:13,marginBottom:6}}>Matched Supplier Bills</div>
-          <table style={{fontSize:11,margin:0}}><thead><tr><th>SI Doc</th><th>PO#</th><th>Ship To</th><th>Merch</th><th>Freight</th><th>Total</th><th>Status</th></tr></thead><tbody>
-          {soBills.map(b=><tr key={b.id}><td>{b.si_doc}</td><td>{b.po_number}</td><td style={{maxWidth:150,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{b.ship_to}</td>
-            <td style={{textAlign:'right'}}>${b.merch_total.toFixed(2)}</td><td style={{textAlign:'right',color:b.merch_total>0&&b.freight/b.merch_total>FREIGHT_WARN_PCT?'#dc2626':''}}>${b.freight.toFixed(2)}</td>
-            <td style={{textAlign:'right',fontWeight:700}}>${b.doc_total.toFixed(2)}</td>
-            <td><span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:b.triage==='ok'?'#dcfce7':b.triage==='freight'?'#fef2f2':'#fef3c7',color:b.triage==='ok'?'#166534':b.triage==='freight'?'#dc2626':'#92400e'}}>{b.triage==='ok'?'✓ OK':b.triage==='freight'?'🚩 Freight':'New'}</span></td></tr>)}
-          </tbody></table>
-        </div>}
-      </div></div>})()}
-
     {isSO&&tab==='transactions'&&<div className="card"><div className="card-header"><h2>Linked Transactions</h2></div><div className="card-body">
       <div style={{display:'flex',flexDirection:'column',gap:8}}>
         {o.estimate_id&&<div style={{display:'flex',gap:12,alignItems:'center',padding:12,background:'#faf5ff',borderRadius:8,border:'1px solid #e9d5ff'}}>
@@ -1713,7 +1661,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
             poIds:blankPOs.map(p=>p.po_id).filter(Boolean).join(', '),
             allReceived:blankPOs.length>0&&blankPOs.every(p=>p.status==='received')});
           safeDecos(it).forEach(d=>{
-            const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:qty;const dp=dP(d,qty,af,cq);
+            const dp=dP(d,qty,af,qty);
             const expectedDeco=qty*dp.cost;
             const matchingDPOs=(it.po_lines||[]).filter(pl=>pl.po_type==='outside_deco');
             const actualDeco=matchingDPOs.reduce((a,pl)=>{
@@ -1941,7 +1889,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         <div className="modal-footer">
           <button className="btn btn-secondary" onClick={()=>setShowInvCreate(false)}>Cancel</button>
           <button className="btn btn-primary" style={{background:'#dc2626',borderColor:'#dc2626'}} disabled={invSelItems.length===0} onClick={()=>{
-            if(!(invMemo||'').trim()&&!(o.memo||'').trim()){nf('Invoice memo is required','error');return}
             const invId='INV-'+o.id.replace('SO-','');
             const invDate=new Date().toLocaleDateString('en-CA');
             const termDays=parseInt((cust?.payment_terms||'net30').replace(/\D/g,''))||30;
@@ -2260,8 +2207,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           if(ful>0){rcvdItems.push({...ji,fulfilled:ful,units:ful});rcvdTotal+=ful}
         });
         if(rcvdTotal===0){nf('Nothing received to split','error');return}
-        let sNum=1;while(jobs.some(jj=>jj.id===j.id+'-S'+sNum))sNum++;
-        const splitId=j.id+'-S'+sNum;
+        const splitId=j.id+'-S';
         const splitJob2={...j,id:splitId,split_from:j.id,item_status:'items_received',items:rcvdItems,
           fulfilled_units:rcvdTotal,total_units:rcvdTotal,
           prod_status:j.art_status==='art_complete'?'hold':'hold',created_at:new Date().toLocaleDateString()};
@@ -2280,8 +2226,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         const splitFul=splitItems.reduce((a,gi)=>a+gi.fulfilled,0);
         const keepUnits=keepItems.reduce((a,gi)=>a+gi.units,0);
         const keepFul=keepItems.reduce((a,gi)=>a+gi.fulfilled,0);
-        let bNum=1;while(jobs.some(jj=>jj.id===j.id+'-B'+bNum))bNum++;
-        const splitId=j.id+'-B'+bNum;
+        const splitId=j.id+'-B';
         const splitJob2={...j,id:splitId,split_from:j.id,items:splitItems,
           total_units:splitUnits,fulfilled_units:splitFul,
           prod_status:'hold',created_at:new Date().toLocaleDateString()};
@@ -2562,7 +2507,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                 <div style={{textAlign:'right'}}><span style={{fontWeight:700,color:gi.received>0?'#166534':'#94a3b8'}}>{gi.received}</span><span style={{color:'#94a3b8'}}>/{gi.units}</span> <span style={{fontSize:10,color:'#64748b'}}>received</span></div>
               </div>)}
               <div style={{padding:10,background:'#fef9c3',borderRadius:6,marginTop:8,fontSize:12}}>
-                <strong>New job ({j.id}-S{(()=>{let n=1;while(jobs.some(jj=>jj.id===j.id+'-S'+n))n++;return n})()}):</strong> {totalReceived} units (received) → Ready for Prod<br/>
+                <strong>New job ({j.id}-S):</strong> {totalReceived} units (received) → Ready for Prod<br/>
                 <strong>Remaining ({j.id}):</strong> {j.total_units-totalReceived} units → Waiting for items
               </div>
             </div>}
@@ -2579,7 +2524,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                   <div style={{fontSize:11,color:gi.received>0?'#166534':'#94a3b8'}}>{gi.received} rcvd</div>
                 </div>})}
               {(splitModal.selectedSkus||[]).length>0&&(splitModal.selectedSkus||[]).length<items.length&&<div style={{padding:10,background:'#eff6ff',borderRadius:6,marginTop:8,fontSize:12}}>
-                <strong>New job ({j.id}-B{(()=>{let n=1;while(jobs.some(jj=>jj.id===j.id+'-B'+n))n++;return n})()}):</strong> {items.filter(gi=>(splitModal.selectedSkus||[]).includes(gi.sku)).map(gi=>gi.sku).join(', ')} ({items.filter(gi=>(splitModal.selectedSkus||[]).includes(gi.sku)).reduce((a,gi)=>a+gi.units,0)} units)<br/>
+                <strong>New job ({j.id}-B):</strong> {items.filter(gi=>(splitModal.selectedSkus||[]).includes(gi.sku)).map(gi=>gi.sku).join(', ')} ({items.filter(gi=>(splitModal.selectedSkus||[]).includes(gi.sku)).reduce((a,gi)=>a+gi.units,0)} units)<br/>
                 <strong>Remaining ({j.id}):</strong> {items.filter(gi=>!(splitModal.selectedSkus||[]).includes(gi.sku)).map(gi=>gi.sku).join(', ')} ({items.filter(gi=>!(splitModal.selectedSkus||[]).includes(gi.sku)).reduce((a,gi)=>a+gi.units,0)} units)
               </div>}
               {(splitModal.selectedSkus||[]).length>0&&(splitModal.selectedSkus||[]).length>=items.length&&<div style={{padding:8,background:'#fef2f2',borderRadius:6,marginTop:8,fontSize:12,color:'#dc2626'}}>Can't move all garments — deselect at least one to keep on the original job.</div>}
@@ -2994,6 +2939,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   const tl={prepay:'Prepay',net15:'Net 15',net30:'Net 30',net60:'Net 60'};
   const ids=isP?[customer.id,...subs.map(s=>s.id)]:[customer.id];
   const custSOs=(sos||[]).filter(o=>ids.includes(o.customer_id));
+  const custEsts=(ests||[]).filter(e=>ids.includes(e.customer_id));
   const orders=allOrders.filter(o=>ids.includes(o.customer_id));
   const fo=orders.filter(o=>{if(oF!=='all'&&o.type!==oF)return false;if(sF==='open')return['sent','draft','open','need_order','waiting_receive'].includes(o.status)||calcSOStatus(o)!=='complete';if(sF==='closed')return['approved','paid','complete'].includes(o.status)||calcSOStatus(o)==='complete';return true});
   const gn=id=>allCustomers.find(x=>x.id===id)?.alpha_tag||'';
@@ -3025,7 +2971,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     </div>
   </div>
   {(customer._ob||0)>0&&<div style={{textAlign:'right'}}><div style={{fontSize:11,color:'#dc2626',fontWeight:600}}>BALANCE</div><div style={{fontSize:24,fontWeight:800,color:'#dc2626'}}>${customer._ob.toLocaleString()}</div></div>}</div></div>
-  <div className="stats-row"><div className="stat-card"><div className="stat-label">Open Est</div><div className="stat-value">{customer._oe||0}</div></div><div className="stat-card"><div className="stat-label">Open SOs</div><div className="stat-value">{custSOs.filter(s=>calcSOStatus(s)!=='complete').length}</div></div><div className="stat-card"><div className="stat-label">Open Inv</div><div className="stat-value" style={{color:(customer._oi||0)>0?'#dc2626':''}}>{customer._oi||0}</div></div><div className="stat-card"><div className="stat-label">Balance</div><div className="stat-value" style={{color:(customer._ob||0)>0?'#dc2626':''}}>${(customer._ob||0).toLocaleString()}</div></div></div>
+  <div className="stats-row"><div className="stat-card"><div className="stat-label">Open Est</div><div className="stat-value">{custEsts.filter(e=>e.status==='draft'||e.status==='sent').length}</div></div><div className="stat-card"><div className="stat-label">Open SOs</div><div className="stat-value">{custSOs.filter(s=>calcSOStatus(s)!=='complete').length}</div></div><div className="stat-card"><div className="stat-label">Open Inv</div><div className="stat-value" style={{color:(customer._oi||0)>0?'#dc2626':''}}>{customer._oi||0}</div></div><div className="stat-card"><div className="stat-label">Balance</div><div className="stat-value" style={{color:(customer._ob||0)>0?'#dc2626':''}}>${(customer._ob||0).toLocaleString()}</div></div></div>
   {isP&&subs.length>0&&<div className="card" style={{marginBottom:16}}><div className="card-header" style={{cursor:'pointer'}} onClick={()=>setSubsCollapsed(!subsCollapsed)}><h2>{subsCollapsed?'▶':'▼'} Sub-Customers ({subs.length})</h2></div>
   {!subsCollapsed&&<div className="card-body" style={{padding:0}}>
   {subs.map(sub=><div key={sub.id} style={{padding:'10px 18px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:8,cursor:'pointer'}} onClick={()=>onSelCust(sub)}>
@@ -3371,6 +3317,20 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
           </div>
         </div>}
 
+        {/* Open Estimates */}
+        {(()=>{const pEsts=custEsts.filter(e=>e.status==='sent'||e.status==='draft');
+          return pEsts.length>0&&<>
+          <div style={{fontSize:13,fontWeight:800,color:'#d97706',marginBottom:10}}>📋 Estimates ({pEsts.length})</div>
+          {pEsts.map(est=>{const t=(est.items||[]).reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);let r=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const dp2=dP(d,qq,[],qq);r+=qq*dp2.sell});return a+r},0);
+            return<div key={est.id} style={{border:'1px solid #f59e0b',borderRadius:10,padding:14,marginBottom:10,background:'#fffbeb'}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                <div><div style={{fontWeight:700,fontSize:14,color:'#92400e'}}>{est.memo||est.id}</div>
+                  <div style={{fontSize:11,color:'#64748b'}}>{est.id} · {est.created_at?.split(' ')[0]} · {(est.items||[]).length} item{(est.items||[]).length!==1?'s':''}</div></div>
+                <div style={{textAlign:'right'}}><div style={{fontSize:18,fontWeight:800,color:'#92400e'}}>${t.toLocaleString(undefined,{maximumFractionDigits:2})}</div>
+                  <span className={'badge '+(est.status==='sent'?'badge-amber':'badge-gray')}>{est.status}</span></div>
+              </div></div>})}
+          </>})()}
+
         {/* Active orders with clickable jobs */}
         {activeSOs.length>0&&<>
           <div style={{fontSize:13,fontWeight:800,color:'#1e3a5f',marginBottom:10}}>📦 Active Orders</div>
@@ -3564,10 +3524,6 @@ export default function App(){
   const[ests,setEsts]=useState(D_E);const[sos,setSOs]=useState(D_SO);const[invs,setInvs]=useState(D_INV);
   // Batch PO system
   const[batchPOs,setBatchPOs]=useState([]);// pending queue
-  // Supplier Bills system
-  const[bills,setBills]=useState(D_BILLS);
-  const[billFilter,setBillFilter]=useState({status:'all',rep:'all',triage:'all',search:''});
-  const[billSel,setBillSel]=useState(null);// selected bill for detail view
   const[submittedBatches,setSubmittedBatches]=useState([]);// submitted batches for scan lookup
   const[batchCounter,setBatchCounter]=useState(4501);// sequential PO numbers: NSA-4501, NSA-4502...
   const[batchScan,setBatchScan]=useState('');// scan/lookup field
@@ -3611,14 +3567,8 @@ export default function App(){
   const newE=(c,product)=>{const mk=c?.catalog_markup||1.65;const items=[];
     if(product){const au=product.brand==='Adidas'||product.brand==='Under Armour'||product.brand==='New Balance';const sell=au?rQ(product.retail_price*(1-(({A:0.4,B:0.35,C:0.3})[c?.adidas_ua_tier||'B']||0.35))):rQ(product.nsa_cost*mk);
       items.push({product_id:product.id,sku:product.sku,name:product.name,brand:product.brand,color:product.color,nsa_cost:product.nsa_cost,retail_price:product.retail_price,unit_sell:sell,available_sizes:[...product.available_sizes],_colors:product._colors||null,sizes:{},decorations:[]})}
-    const e={id:uid('EST-'),customer_id:c?.id||null,memo:'',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:mk,shipping_type:'pct',shipping_value:5,ship_to_id:'default',email_status:null,art_files:[],items};setEEst(e);setEEstC(c||null);setPg('estimates')};
-  const convertSO=est=>{
-    if(!est.customer_id){nf('Cannot convert — no customer selected','error');return}
-    if(!est.memo?.trim()){nf('Cannot convert — memo is required','error');return}
-    const vItems=safeItems(est).filter(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
-    if(vItems.length===0){nf('Cannot convert — no items with sizes','error');return}
-    if(est.status!=='approved'){nf('Cannot convert — estimate must be approved first','error');return}
-    const fourWeeks=new Date();fourWeeks.setDate(fourWeeks.getDate()+28);const defExp=fourWeeks.toISOString().split('T')[0];const so={id:uid('SO-'),customer_id:est.customer_id,estimate_id:est.id,memo:est.memo,status:'need_order',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:est.default_markup,expected_date:defExp,production_notes:'',shipping_type:est.shipping_type,shipping_value:est.shipping_value,ship_to_id:est.ship_to_id,firm_dates:[],art_files:[...(est.art_files||[])],items:safeItems(est).map(it=>({...it,decorations:safeDecos(it).map(d=>({...d}))}))};
+    const e={id:nextEstId(ests),customer_id:c?.id||null,memo:'',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:mk,shipping_type:'pct',shipping_value:5,ship_to_id:'default',email_status:null,art_files:[],items};setEEst(e);setEEstC(c||null);setPg('estimates')};
+  const convertSO=est=>{const fourWeeks=new Date();fourWeeks.setDate(fourWeeks.getDate()+28);const defExp=fourWeeks.toISOString().split('T')[0];const so={id:nextSOId(sos),customer_id:est.customer_id,estimate_id:est.id,memo:est.memo,status:'need_order',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:est.default_markup,expected_date:defExp,production_notes:'',shipping_type:est.shipping_type,shipping_value:est.shipping_value,ship_to_id:est.ship_to_id,firm_dates:[],art_files:[...(est.art_files||[])],items:safeItems(est).map(it=>({...it,decorations:safeDecos(it).map(d=>({...d}))}))};
     setSOs(p=>[...p,so]);setEsts(p=>p.map(e=>e.id===est.id?{...e,status:'converted'}:e));setEEst(null);
     const c=cust.find(x=>x.id===so.customer_id);setESO(so);setESOC(c);setPg('orders');nf(`${so.id} created from ${est.id}`)};
   const aO=useMemo(()=>[
@@ -3921,7 +3871,7 @@ export default function App(){
 
   // ESTIMATES LIST
   const rEst=()=>{
-    if(eEst)return<OrderEditor order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} onSave={e=>{savE(e);setEEst(e)}} onBack={()=>setEEst(null)} onConvertSO={convertSO} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} batchPOs={batchPOs} onBatchPO={setBatchPOs} bills={bills}/>;
+    if(eEst)return<OrderEditor order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} onSave={e=>{savE(e);setEEst(e)}} onBack={()=>setEEst(null)} onConvertSO={convertSO} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}}/>;
     const fe=ests.filter(e=>!q||(e.id+' '+e.memo+' '+(cust.find(c=>c.id===e.customer_id)?.name||'')+' '+(cust.find(c=>c.id===e.customer_id)?.alpha_tag||'')).toLowerCase().includes(q.toLowerCase()));
     return(<><div style={{display:'flex',gap:8,marginBottom:16}}><div className="search-bar" style={{flex:1}}><Icon name="search"/><input placeholder="Search..." value={q} onChange={e=>setQ(e.target.value)}/></div>
       <button className="btn btn-primary" onClick={()=>newE(null)}><Icon name="plus" size={14}/> New Estimate</button></div>
@@ -3939,7 +3889,7 @@ export default function App(){
 
   // SALES ORDERS LIST
   const rSO=()=>{
-    if(eSO)return<OrderEditor order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} onSave={s=>{savSO(s);setESO(s)}} onBack={()=>{setESO(null);setESOTab(null)}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} batchPOs={batchPOs} onBatchPO={setBatchPOs} initTab={eSOTab} bills={bills}/>;
+    if(eSO)return<OrderEditor order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} onSave={s=>{savSO(s);setESO(s)}} onBack={()=>{setESO(null);setESOTab(null)}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} batchPOs={batchPOs} onBatchPO={setBatchPOs} initTab={eSOTab} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}}/>;
     // Filter SOs
     let fSOs=[...sos];
     if(soF.status!=='all')fSOs=fSOs.filter(s=>calcSOStatus(s)===soF.status);
@@ -4800,7 +4750,7 @@ export default function App(){
     _meta:{version:'1.0',exported_at:new Date().toISOString(),exported_by:cu.name,app:'NSA Portal'},
     customers:cust,estimates:ests,sales_orders:sos,products:prod,messages:msgs,invoices:invs,
     batch_queue:batchPOs,submitted_batches:submittedBatches,batch_counter:batchCounter,
-    change_log:changeLog,so_history:soHistory,bills:bills
+    change_log:changeLog,so_history:soHistory
   });
   const exportBackup=()=>{
     const data=getFullState();
@@ -4829,7 +4779,6 @@ export default function App(){
           if(data.messages)setMsgs(data.messages);
           if(data.invoices)setInvs(data.invoices);
           if(data.batch_queue)setBatchPOs(data.batch_queue);
-          if(data.bills)setBills(data.bills);
           if(data.submitted_batches)setSubmittedBatches(data.submitted_batches);
           if(data.batch_counter)setBatchCounter(data.batch_counter);
           if(data.change_log)setChangeLog(data.change_log);
@@ -4849,7 +4798,7 @@ export default function App(){
         const data=JSON.stringify({_meta:{version:'1.0',auto_backup:true,saved_at:new Date().toISOString()},
           customers:cust,estimates:ests,sales_orders:sos,products:prod,messages:msgs,invoices:invs,
           batch_queue:batchPOs,submitted_batches:submittedBatches,batch_counter:batchCounter,
-          change_log:changeLog,so_history:soHistory,bills:bills});
+          change_log:changeLog,so_history:soHistory});
         localStorage.setItem('nsa_auto_backup',data);
         localStorage.setItem('nsa_auto_backup_ts',new Date().toISOString());
       }catch{}
@@ -4871,7 +4820,6 @@ export default function App(){
         if(data.messages)setMsgs(data.messages);
         if(data.invoices)setInvs(data.invoices);
         if(data.batch_queue)setBatchPOs(data.batch_queue);
-        if(data.bills)setBills(data.bills);
         if(data.submitted_batches)setSubmittedBatches(data.submitted_batches);
         if(data.batch_counter)setBatchCounter(data.batch_counter);
         if(data.change_log)setChangeLog(data.change_log);
@@ -4888,126 +4836,6 @@ export default function App(){
   const[invSort,setInvSort]=useState({f:'due_date',d:'asc'});
   const[invEdit,setInvEdit]=useState(null);
   const[payModal,setPayModal]=useState(null);
-
-  // ═══════════════════════════════════════════════
-  // SUPPLIER BILLS INBOX
-  // ═══════════════════════════════════════════════
-  const rBills=()=>{
-    const fb=bills.filter(b=>{
-      if(billFilter.status!=='all'&&b.status!==billFilter.status)return false;
-      if(billFilter.rep!=='all'&&b.matched_rep_id!==billFilter.rep)return false;
-      if(billFilter.triage==='flagged'&&b.triage!=='freight')return false;
-      if(billFilter.triage==='ok'&&b.triage!=='ok')return false;
-      if(billFilter.triage==='new'&&b.triage!==null)return false;
-      if(billFilter.search){const s=billFilter.search.toLowerCase();return(b.si_doc||'').includes(s)||(b.po_number||'').toLowerCase().includes(s)||(b.ship_to||'').toLowerCase().includes(s)||(b.items||[]).some(i=>(i.sku||'').toLowerCase().includes(s)||(i.name||'').toLowerCase().includes(s))}
-      return true});
-    const newCount=bills.filter(b=>b.status==='new').length;
-    const flaggedCount=bills.filter(b=>b.triage==='freight').length;
-    const totalMerch=bills.reduce((a,b)=>a+b.merch_total,0);
-    const totalFreight=bills.reduce((a,b)=>a+b.freight,0);
-    const totalDoc=bills.reduce((a,b)=>a+b.doc_total,0);
-    const unsyncedCount=bills.filter(b=>!b.qb_synced&&b.triage==='ok').length;
-
-    if(billSel){
-      const b=billSel;const freightPct=b.merch_total>0?(b.freight/b.merch_total*100):0;const isHighFreight=freightPct>FREIGHT_WARN_PCT*100;
-      return<div>
-        <button className="btn btn-secondary" onClick={()=>setBillSel(null)} style={{marginBottom:12}}><Icon name="back" size={14}/> All Bills</button>
-        <div className="card" style={{marginBottom:12}}><div style={{padding:'16px 20px'}}>
-          <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',flexWrap:'wrap'}}>
-            <div><div style={{fontSize:20,fontWeight:800,color:'#1e40af'}}>SI #{b.si_doc}</div>
-              <div style={{fontSize:13,color:'#64748b'}}>{b.vendor} · PO: {b.po_number}</div>
-              <div style={{fontSize:12,color:'#94a3b8'}}>Doc date: {b.si_doc_date} · Due: {b.due_date}</div>
-              {b.matched_so_id&&<div style={{fontSize:12,color:'#7c3aed',marginTop:4}}>🔗 Matched to {b.matched_so_id}</div>}
-            </div>
-            <div style={{display:'flex',gap:8}}>
-              {[{l:'MERCH',v:b.merch_total,c:'#1e40af'},{l:'FREIGHT',v:b.freight,c:isHighFreight?'#dc2626':'#475569'},{l:'SI FEE',v:b.si_upcharge,c:'#92400e'},{l:'TOTAL',v:b.doc_total,c:'#166534'}].map(x=>
-                <div key={x.l} style={{textAlign:'center',padding:'8px 12px',background:'#f8fafc',borderRadius:8,minWidth:72}}>
-                  <div style={{fontSize:9,color:x.c,fontWeight:700}}>{x.l}</div>
-                  <div style={{fontSize:16,fontWeight:800,color:x.c}}>${x.v.toFixed(2)}</div>
-                </div>)}
-            </div>
-          </div>
-          {isHighFreight&&<div style={{marginTop:10,padding:'8px 12px',background:'#fef2f2',borderRadius:6,border:'1px solid #fca5a5',fontSize:12,color:'#dc2626'}}>
-            ⚠️ Freight is {freightPct.toFixed(1)}% of merchandise — above {(FREIGHT_WARN_PCT*100)}% threshold</div>}
-          <div style={{marginTop:10,padding:'8px 12px',background:'#f0fdf4',borderRadius:6,fontSize:12}}>
-            🚚 <strong>{b.carrier}</strong> · Tracking: <strong>{b.tracking}</strong> · Shipped: {b.ship_date} · {b.weight_lb} lbs
-          </div>
-          <div style={{marginTop:8,fontSize:12}}>📍 Ship to: <strong>{b.ship_to}</strong> <span className="badge" style={{background:b.ship_to_type==='warehouse'?'#dbeafe':'#fef3c7',color:b.ship_to_type==='warehouse'?'#1e40af':'#92400e',marginLeft:4}}>{b.ship_to_type==='warehouse'?'Warehouse':'Drop Ship'}</span></div>
-        </div></div>
-        {/* Line items */}
-        <div className="card" style={{marginBottom:12}}><div className="card-header"><h2>Line Items</h2></div><div className="card-body">
-          <table style={{fontSize:12}}><thead><tr><th>SKU</th><th>Description</th><th>Color</th><th>Sizes</th><th style={{textAlign:'right'}}>Net Price</th><th style={{textAlign:'right'}}>Extension</th></tr></thead><tbody>
-          {(b.items||[]).map((it,i)=>{const q=Object.values(it.sizes||{}).reduce((a,v)=>a+v,0);return<tr key={i}>
-            <td style={{fontWeight:700}}>{it.sku}</td><td>{it.name}</td><td>{it.color}</td>
-            <td>{Object.entries(it.sizes||{}).map(([sz,v])=>sz+':'+v).join(', ')}</td>
-            <td style={{textAlign:'right'}}>${it.net_price.toFixed(2)}</td>
-            <td style={{textAlign:'right',fontWeight:700}}>${(q*it.net_price).toFixed(2)}</td></tr>})}
-          </tbody></table>
-        </div></div>
-        {/* Triage actions */}
-        <div className="card"><div className="card-header"><h2>Triage</h2></div><div className="card-body">
-          <div style={{display:'flex',gap:8,marginBottom:12}}>
-            <button className={`btn ${b.triage==='ok'?'btn-primary':' btn-secondary'}`} style={b.triage==='ok'?{background:'#166534'}:{}} onClick={()=>{setBills(prev=>prev.map(x=>x.id===b.id?{...x,triage:'ok',status:'reviewed'}:x));setBillSel({...b,triage:'ok',status:'reviewed'})}}>✓ Looks Good</button>
-            <button className={`btn ${b.triage==='freight'?'btn-primary':'btn-secondary'}`} style={b.triage==='freight'?{background:'#dc2626'}:{}} onClick={()=>{setBills(prev=>prev.map(x=>x.id===b.id?{...x,triage:'freight',status:'flagged'}:x));setBillSel({...b,triage:'freight',status:'flagged'})}}>🚩 Flag Freight</button>
-          </div>
-          <div><label className="form-label">Notes</label><textarea className="form-input" rows={2} value={b.notes||''} onChange={e=>{const n=e.target.value;setBills(prev=>prev.map(x=>x.id===b.id?{...x,notes:n}:x));setBillSel({...b,notes:n})}} placeholder="Add notes about this bill..."/></div>
-          {b.matched_so_id&&<div style={{marginTop:8}}><label className="form-label">Matched Sales Order</label>
-            <button className="btn btn-sm" style={{background:'#7c3aed',color:'white'}} onClick={()=>{const so=sos.find(s=>s.id===b.matched_so_id);if(so){const c=cust.find(x=>x.id===so.customer_id);setESO(so);setESOC(c);setESOTab('fulfillment');setBillSel(null);setPg('orders')}}}>{b.matched_so_id} — View Fulfillment →</button></div>}
-          <div style={{marginTop:12,display:'flex',gap:8}}>
-            {b.triage==='ok'&&!b.qb_synced&&<button className="btn btn-primary" onClick={()=>{setBills(prev=>prev.map(x=>x.id===b.id?{...x,qb_synced:true}:x));setBillSel({...b,qb_synced:true});nf('📤 '+b.si_doc+' queued for QuickBooks sync')}}>📤 Push to QuickBooks</button>}
-            {b.qb_synced&&<span style={{fontSize:12,color:'#166534',fontWeight:600}}>✅ Synced to QuickBooks</span>}
-          </div>
-        </div></div>
-      </div>}
-
-    return<>
-      {/* Stats row */}
-      <div className="stats-row">
-        <div className="stat-card"><div className="stat-label">Total Bills</div><div className="stat-value">{bills.length}</div></div>
-        <div className="stat-card"><div className="stat-label">New</div><div className="stat-value" style={{color:newCount>0?'#dc2626':''}}>{newCount}</div></div>
-        <div className="stat-card"><div className="stat-label">Flagged</div><div className="stat-value" style={{color:flaggedCount>0?'#dc2626':''}}>{flaggedCount}</div></div>
-        <div className="stat-card"><div className="stat-label">Merchandise</div><div className="stat-value">${totalMerch.toLocaleString(undefined,{maximumFractionDigits:0})}</div></div>
-        <div className="stat-card"><div className="stat-label">Freight</div><div className="stat-value">${totalFreight.toFixed(2)}</div></div>
-        <div className="stat-card"><div className="stat-label">Ready for QB</div><div className="stat-value" style={{color:unsyncedCount>0?'#7c3aed':''}}>{unsyncedCount}</div></div>
-      </div>
-      {/* Filters */}
-      <div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap',alignItems:'center'}}>
-        <select className="form-select" style={{width:130}} value={billFilter.status} onChange={e=>setBillFilter(f=>({...f,status:e.target.value}))}>
-          <option value="all">All Status</option><option value="new">New</option><option value="reviewed">Reviewed</option><option value="flagged">Flagged</option></select>
-        <select className="form-select" style={{width:130}} value={billFilter.triage} onChange={e=>setBillFilter(f=>({...f,triage:e.target.value}))}>
-          <option value="all">All Triage</option><option value="new">Untriaged</option><option value="ok">OK</option><option value="flagged">Freight Issue</option></select>
-        <select className="form-select" style={{width:130}} value={billFilter.rep} onChange={e=>setBillFilter(f=>({...f,rep:e.target.value}))}>
-          <option value="all">All Reps</option>{REPS.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
-        <input className="form-input" style={{width:200}} placeholder="Search SKU, PO#, ship to..." value={billFilter.search} onChange={e=>setBillFilter(f=>({...f,search:e.target.value}))}/>
-        <span style={{fontSize:12,color:'#64748b'}}>{fb.length} bill{fb.length!==1?'s':''}</span>
-        {bills.some(b=>b.triage==='ok'&&!b.qb_synced)&&<button className="btn btn-sm btn-primary" style={{marginLeft:'auto'}} onClick={()=>{const count=bills.filter(b=>b.triage==='ok'&&!b.qb_synced).length;setBills(prev=>prev.map(b=>b.triage==='ok'&&!b.qb_synced?{...b,qb_synced:true}:b));nf('📤 '+count+' bill'+(count>1?'s':'')+' queued for QuickBooks')}}>📤 Push All OK to QB ({bills.filter(b=>b.triage==='ok'&&!b.qb_synced).length})</button>}
-      </div>
-      {/* Drop zone for PDF upload (demo) */}
-      <div style={{border:'2px dashed #d1d5db',borderRadius:12,padding:20,textAlign:'center',marginBottom:16,cursor:'pointer',background:'#fafafa'}}
-        onClick={()=>{const newBill={id:'BILL-'+String(bills.length+1).padStart(3,'0'),si_doc:String(23960000+Math.floor(Math.random()*1000)),si_doc_date:new Date().toLocaleDateString('en-CA'),due_date:'',vendor:'Adidas US Team Services',po_number:'PO'+String(7800+Math.floor(Math.random()*200)),ship_to:'NSA Warehouse',ship_to_type:'warehouse',carrier:'FedEx',tracking:String(Math.floor(Math.random()*999999999999)),ship_date:new Date().toLocaleDateString('en-CA'),weight_lb:Math.round(Math.random()*50*100)/100,merch_total:Math.round(Math.random()*2000*100)/100,freight:Math.round(Math.random()*40*100)/100,si_upcharge:Math.round(Math.random()*5*100)/100,doc_total:0,items:[{sku:'DEMO-SKU',name:'Demo Item',color:'Black',sizes:{M:5,L:3},net_price:15}],matched_so_id:null,matched_rep_id:cu.id,status:'new',triage:null,notes:'',qb_synced:false,created_at:new Date().toLocaleString()};newBill.doc_total=newBill.merch_total+newBill.freight+newBill.si_upcharge;setBills(prev=>[newBill,...prev]);nf('📄 Bill parsed: SI #'+newBill.si_doc)}}>
-        <Icon name="upload" size={24}/><div style={{fontSize:14,fontWeight:600,color:'#475569',marginTop:6}}>Drop Sports Inc PDF invoices here</div>
-        <div style={{fontSize:11,color:'#94a3b8'}}>Auto-parses PO#, SKUs, sizes, freight, tracking · Matches to your SOs</div>
-      </div>
-      {/* Bills table */}
-      <div className="card"><div className="card-body" style={{padding:0}}>
-        <table style={{fontSize:12}}><thead><tr><th>SI Doc</th><th>PO#</th><th>Ship To</th><th>Items</th><th style={{textAlign:'right'}}>Merch</th><th style={{textAlign:'right'}}>Freight</th><th style={{textAlign:'right'}}>Total</th><th>Triage</th><th>Rep</th><th>QB</th></tr></thead><tbody>
-        {fb.map(b=>{const freightPct=b.merch_total>0?(b.freight/b.merch_total*100):0;const isHigh=freightPct>FREIGHT_WARN_PCT*100;
-          const itemCount=(b.items||[]).reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((a2,v)=>a2+v,0),0);
-          return<tr key={b.id} style={{cursor:'pointer',background:b.status==='new'?'#fffbeb':b.triage==='freight'?'#fef2f2':''}} onClick={()=>setBillSel(b)}>
-            <td><span style={{fontWeight:700,color:'#1e40af'}}>{b.si_doc}</span><div style={{fontSize:10,color:'#94a3b8'}}>{b.si_doc_date}</div></td>
-            <td style={{fontWeight:600}}>{b.po_number}</td>
-            <td style={{maxWidth:150,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{b.ship_to}<div style={{fontSize:10}}><span className="badge" style={{background:b.ship_to_type==='warehouse'?'#dbeafe':'#fef3c7',color:b.ship_to_type==='warehouse'?'#1e40af':'#92400e',fontSize:9}}>{b.ship_to_type==='warehouse'?'WH':'Drop'}</span></div></td>
-            <td>{itemCount} pcs<div style={{fontSize:10,color:'#94a3b8'}}>{(b.items||[]).length} line{(b.items||[]).length!==1?'s':''}</div></td>
-            <td style={{textAlign:'right'}}>${b.merch_total.toFixed(2)}</td>
-            <td style={{textAlign:'right',color:isHigh?'#dc2626':'',fontWeight:isHigh?700:400}}>${b.freight.toFixed(2)}{isHigh&&<div style={{fontSize:9,color:'#dc2626'}}>{freightPct.toFixed(1)}%</div>}</td>
-            <td style={{textAlign:'right',fontWeight:700}}>${b.doc_total.toFixed(2)}</td>
-            <td>{b.triage==='ok'?<span style={{color:'#166534',fontSize:11}}>✓</span>:b.triage==='freight'?<span style={{color:'#dc2626',fontSize:11}}>🚩</span>:<span style={{color:'#94a3b8',fontSize:11}}>—</span>}</td>
-            <td style={{fontSize:11}}>{REPS.find(r=>r.id===b.matched_rep_id)?.name?.split(' ')[0]||'—'}</td>
-            <td>{b.qb_synced?<span style={{color:'#166534',fontSize:11}}>✓</span>:<span style={{color:'#94a3b8'}}>—</span>}</td>
-          </tr>})}
-        </tbody></table>
-      </div></div>
-    </>};
 
   const rInvoices=()=>{
     const today=new Date();
@@ -5174,10 +5002,9 @@ export default function App(){
               onClick={()=>setPayModal({inv,amount:inv._bal,method:'check',ref:''})}>💰 Pay</button>}
               <button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',marginLeft:2}} onClick={()=>{
                 const so=sos.find(s=>s.id===inv.so_id);const ic=cust.find(c=>c.id===inv.customer_id);
-                const _iAQ={};if(so)safeItems(so).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_iAQ[d.art_file_id]=(_iAQ[d.art_file_id]||0)+q2}})});
                 const invItems=(inv.line_items||[]).length>0?inv.line_items:
                   (so?safeItems(so).map(it=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);if(!qty)return null;
-                    const decoSell=safeDecos(it).reduce((a,d)=>{const cq=d.kind==='art'&&d.art_file_id?_iAQ[d.art_file_id]:qty;const dp=dP(d,qty,af,cq);return a+dp.sell},0);
+                    const decoSell=safeDecos(it).reduce((a,d)=>{const dp=dP(d,qty,af,qty);return a+dp.sell},0);
                     return{desc:it.sku+' '+it.name+(it.color?' — '+it.color:''),qty,rate:safeNum(it.unit_sell)+decoSell,amount:qty*(safeNum(it.unit_sell)+decoSell)}}).filter(Boolean):[]);
                 const shipAmt=inv.shipping!=null?inv.shipping:so?(()=>{const sub=invItems.reduce((a,l)=>a+l.amount,0);return(so.shipping_type==='pct'?sub*(so.shipping_value||0)/100:so.shipping_value||0)})():0;
                 const taxAmt=inv.tax||0;
@@ -6830,8 +6657,8 @@ export default function App(){
           </div></div>})}</div></div></>)};
 
     // NAV
-  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'reports',label:'Reports',icon:'dollar'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'production',label:'Prod Board',icon:'package'},{id:'decoration',label:'Decoration',icon:'image'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{id:'bills',label:'Supplier Bills',icon:'dollar'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{section:'Comms'},{id:'messages',label:'Messages',icon:'mail'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'System'},{id:'import',label:'NetSuite Import',icon:'save'},{id:'qb',label:'QuickBooks Sync',icon:'dollar'},{id:'backup',label:'Backup & Data',icon:'save'}];
-  const titles={dashboard:'Dashboard',reports:'Reports & Analytics',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',omg:'OMG Team Stores',jobs:'Jobs',production:'Production Board',decoration:'Decoration',warehouse:'Warehouse',batch_pos:'Batch PO Queue',bills:'Supplier Bills',customers:'Customers',vendors:'Vendors',products:'Products',inventory:'Inventory',messages:'Messages',import:'NetSuite Import',qb:'QuickBooks Online',backup:'Backup & Data'};
+  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'reports',label:'Reports',icon:'dollar'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'production',label:'Prod Board',icon:'package'},{id:'decoration',label:'Decoration',icon:'image'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{section:'Comms'},{id:'messages',label:'Messages',icon:'mail'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'System'},{id:'import',label:'NetSuite Import',icon:'save'},{id:'qb',label:'QuickBooks Sync',icon:'dollar'},{id:'backup',label:'Backup & Data',icon:'save'}];
+  const titles={dashboard:'Dashboard',reports:'Reports & Analytics',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',omg:'OMG Team Stores',jobs:'Jobs',production:'Production Board',decoration:'Decoration',warehouse:'Warehouse',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',products:'Products',inventory:'Inventory',messages:'Messages',import:'NetSuite Import',qb:'QuickBooks Online',backup:'Backup & Data'};
   // LOGIN GATE
   if(!cu)return<LoginGate onLogin={handleLogin}/>;
 
@@ -6840,7 +6667,7 @@ export default function App(){
       <nav className="sidebar-nav">{nav.map((item,i)=>{if(item.section)return<div key={i} className="sidebar-section">{item.section}</div>;
         const ubadge=item.id==='messages'?msgs.filter(m=>!(m.read_by||[]).includes(cu.id)).length:0;
         return<button key={item.id} className={`sidebar-link ${pg===item.id?'active':''}`}
-          onClick={()=>{if(dirtyRef.current&&!window.confirm('You have unsaved changes. Leave without saving?'))return;dirtyRef.current=false;setPg(item.id);setQ('');setSelC(null);setSelV(null);setEEst(null);setESO(null)}}><Icon name={item.icon}/>{item.label}{item.id==='messages'&&ubadge>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{ubadge}</span>}{item.id==='batch_pos'&&batchPOs.length>0&&<span style={{background:'#7c3aed',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{batchPOs.length}</span>}{item.id==='bills'&&bills.filter(b=>b.status==='new').length>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{bills.filter(b=>b.status==='new').length}</span>}</button>})}</nav>
+          onClick={()=>{if(dirtyRef.current&&!window.confirm('You have unsaved changes. Leave without saving?'))return;dirtyRef.current=false;setPg(item.id);setQ('');setSelC(null);setSelV(null);setEEst(null);setESO(null)}}><Icon name={item.icon}/>{item.label}{item.id==='messages'&&ubadge>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{ubadge}</span>}{item.id==='batch_pos'&&batchPOs.length>0&&<span style={{background:'#7c3aed',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{batchPOs.length}</span>}</button>})}</nav>
       <div className="sidebar-user"><div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}><div><div style={{fontWeight:600,color:'#e2e8f0'}}>{cu.name}</div><div>{cu.role}</div></div><button onClick={handleLogout} style={{background:'none',border:'1px solid #475569',borderRadius:6,padding:'3px 8px',color:'#94a3b8',cursor:'pointer',fontSize:10}} title="Log out">↪ Out</button></div></div></div>
     <div className="main"><div className="topbar"><h1>{eEst?eEst.id:eSO?eSO.id:selC?selC.name:selV?selV.name:(titles[pg]||'Dashboard')}</h1>
         <div style={{flex:1,maxWidth:400,margin:'0 20px',position:'relative'}}>
@@ -6869,7 +6696,7 @@ export default function App(){
           {gOpen&&<div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:59}} onClick={()=>setGOpen(false)}/>}
         </div>
         <div style={{display:'flex',gap:6,alignItems:'center'}}><button className="btn btn-sm btn-primary" onClick={()=>newE(null)} style={{fontSize:11}}><Icon name="plus" size={12}/> Estimate</button><button className="btn btn-sm btn-secondary" onClick={()=>setCM({open:true,c:null})} style={{fontSize:11}}><Icon name="plus" size={12}/> Customer</button><button className="btn btn-sm btn-secondary" onClick={()=>setQPC({open:true,mode:'single',items:[{sku:'',name:'',brand:'',color:'',category:'Tees',retail_price:0,nsa_cost:0,available_sizes:['S','M','L','XL','2XL'],vendor_id:''}]})} style={{fontSize:11}}><Icon name="plus" size={12}/> Product</button></div></div>
-      <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='production'&&rProd2()}{pg==='decoration'&&rDeco()}{pg==='warehouse'&&rWarehouse()}{pg==='batch_pos'&&rBatchPOs()}{pg==='bills'&&rBills()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='omg'&&rOMG()}{pg==='reports'&&rReports()}{pg==='import'&&rImport()}{pg==='qb'&&rQB()}{pg==='backup'&&rBackup()}</div></div>
+      <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='production'&&rProd2()}{pg==='decoration'&&rDeco()}{pg==='warehouse'&&rWarehouse()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='omg'&&rOMG()}{pg==='reports'&&rReports()}{pg==='import'&&rImport()}{pg==='qb'&&rQB()}{pg==='backup'&&rBackup()}</div></div>
     <CustModal isOpen={cM.open} onClose={()=>setCM({open:false,c:null})} onSave={savC} customer={cM.c} parents={pars}/>
     <AdjModal isOpen={aM.open} onClose={()=>setAM({open:false,p:null})} product={aM.p} onSave={savI}/>
 
