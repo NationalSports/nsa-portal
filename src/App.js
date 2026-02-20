@@ -197,7 +197,7 @@ const isJobReady=(j,o)=>{
     const it=safeItems(o)[gi.item_idx];if(!it)return;
     Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{
       totalSz+=v;
-      const picked=safePicks(it).reduce((a,pk)=>a+safeNum(pk[sz]),0);
+      const picked=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
       const rcvd=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
       fulfilledSz+=Math.min(v,picked+rcvd);
     });
@@ -206,8 +206,6 @@ const isJobReady=(j,o)=>{
 };
 const safeFirm=(o)=>safeArr(o?.firm_dates);
 
-// PICKS (demo)
-const D_PICKS=[{id:'IF-4001',so_id:'SO-1042',status:'sent',items:1},{id:'IF-4002',so_id:'SO-1045',status:'pending',items:1}];
 // DATA
 const D_C=[
 {id:'c1',parent_id:null,name:'Orange Lutheran High School',alpha_tag:'OLu',contacts:[{name:'Athletic Director',email:'athletics@orangelutheran.org',phone:'714-555-0100',role:'Athletic Director'},{name:'Janet Wu',email:'jwu@orangelutheran.org',phone:'714-555-0109',role:'Accounting'}],billing_address_line1:'2222 N Santiago Blvd',billing_city:'Orange',billing_state:'CA',billing_zip:'92867',shipping_address_line1:'2222 N Santiago Blvd',shipping_city:'Orange',shipping_state:'CA',shipping_zip:'92867',adidas_ua_tier:'A',catalog_markup:1.65,payment_terms:'net30',tax_rate:0.0775,primary_rep_id:'r1',is_active:true,_oe:1,_os:2,_oi:1,_ob:4200},
@@ -475,7 +473,7 @@ function calcSOStatus(ord){
     Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).forEach(([sz,v])=>{
       totalSz+=v;
       const picked=safePicks(it).reduce((a,pk)=>a+safeNum(pk[sz]),0);
-      const poOrd=safePOs(it).reduce((a,pk)=>a+safeNum(pk[sz]),0);
+      const poOrd=safePOs(it).reduce((a,pk)=>a+safeNum(pk[sz])-safeNum((pk.cancelled||{})[sz]),0);
       coveredSz+=Math.min(v,picked+poOrd);
       const pulledQty=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
       const rcvdQty=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
@@ -616,7 +614,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
   const[tab,setTab]=useState(initTab||'items');const[dirty,setDirty]=useState(false);const[selJob,setSelJob]=useState(null);const[jobNote,setJobNote]=useState('');const[msgDept,setMsgDept]=useState('all');
     React.useEffect(()=>{if(initTab)setTab(initTab)},[initTab]);
     const origRef=React.useRef(JSON.stringify(o));
-    const markDirty=()=>setDirty(true);const[saved,setSaved]=useState(!!order.customer_id);const[showSend,setShowSend]=useState(false);const[showPick,setShowPick]=useState(false);const[pickId,setPickId]=useState(()=>'IF-'+String(4000+Math.floor(Math.random()*1000)));const[showPO,setShowPO]=useState(null);const[poCounter,setPOCounter]=useState(()=>3001+Math.floor(Math.random()*100));
+    const markDirty=()=>setDirty(true);const[saved,setSaved]=useState(!!order.customer_id);const[showSend,setShowSend]=useState(false);const[showPick,setShowPick]=useState(false);const[pickId,setPickId]=useState(()=>{let max=4000;(allOrders||[]).concat([order]).forEach(so=>safeItems(so).forEach(it=>safePicks(it).forEach(pk=>{const m=parseInt((pk.pick_id||'').replace('IF-',''))||0;if(m>max)max=m})));return'IF-'+String(max+1)});const[showPO,setShowPO]=useState(null);const[poCounter,setPOCounter]=useState(()=>3001+Math.floor(Math.random()*100));
     const[pickNotes,setPickNotes]=useState('');const[pickShipDest,setPickShipDest]=useState('in_house');const[pickDecoVendor,setPickDecoVendor]=useState('');const[pickShipAddr,setPickShipAddr]=useState('default');
     const DECO_VENDORS=['Silver Screen','Olympic Embroidery','WePrintIt','Pacific Screen Print','Other'];
   const[showFirmReq,setShowFirmReq]=useState(false);const[firmReqDate,setFirmReqDate]=useState('');const[firmReqNote,setFirmReqNote]=useState('');
@@ -672,9 +670,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
   const uSz=(i,sz,v)=>{
     const n=v===''?0:parseInt(v)||0;
     const item=o.items[i];if(!item)return;
-    // Guard: don't allow reducing below committed qty (picks + POs)
-    const pickedQty=safePicks(item).reduce((a,pk)=>a+(pk[sz]||0),0);
-    const poQty=safePOs(item).reduce((a,pk)=>a+(pk[sz]||0),0);
+    // Guard: don't allow reducing below committed qty (pulled picks + net POs)
+    const pickedQty=safePicks(item).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+(pk[sz]||0),0);
+    const poQty=poCommitted(item.po_lines,sz);
     const committed=pickedQty+poQty;
     if(n<committed&&committed>0){
       nf('Cannot reduce '+sz+' below '+committed+' ('+pickedQty+' picked + '+poQty+' on PO)','error');return;
@@ -826,20 +824,28 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           <input className="form-input" type="date" value={o.expected_date||''} onChange={e=>sv('expected_date',e.target.value)}/>
           <button style={{fontSize:10,marginTop:4,padding:'3px 8px',borderRadius:4,background:'#f5f3ff',border:'1px solid #ddd6fe',color:'#7c3aed',cursor:'pointer',fontWeight:600,display:'flex',alignItems:'center',gap:3}} onClick={()=>{setFirmReqDate(o.expected_date||'');setFirmReqNote('');setShowFirmReq(true)}}>📌 Request Firm Date</button>
         </div>}
-        <button className="btn btn-primary" onClick={()=>{onSave(o);setSaved(true);setDirty(false);nf(`${isE?'Estimate':'SO'} saved`)}} style={{padding:'10px 28px',fontSize:16,fontWeight:800}}><Icon name="check" size={16}/> Save</button>
-        {isE&&saved&&o.status!=='approved'&&o.status!=='converted'&&<button className="btn btn-secondary" onClick={()=>{
-          if(!o.customer_id){nf('⚠️ Customer required','error');return}
-          if(!o.memo||!o.memo.trim()){nf('⚠️ Memo required','error');return}
-          const hasItems2=safeItems(o).some(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
-          if(!hasItems2){nf('⚠️ At least one item with quantities required','error');return}
-          setShowSend(true)}}><Icon name="send" size={14}/> Send</button>}
-        {isE&&(o.status==='sent'||o.status==='draft')&&<button className="btn btn-primary" style={{background:'#22c55e'}} onClick={()=>{
-          if(!o.customer_id){nf('⚠️ Customer required','error');return}
-          if(!o.memo||!o.memo.trim()){nf('⚠️ Memo required','error');return}
-          const hasItems=safeItems(o).some(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
-          if(!hasItems){nf('⚠️ At least one item with quantities required','error');return}
-          const updated={...o,status:'approved',updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setSaved(true);setDirty(false);nf('Estimate approved ✓')}}>✅ Approve</button>}
-        {isE&&o.status==='approved'&&<button className="btn btn-primary" style={{background:'#7c3aed'}} onClick={()=>onConvertSO(o)}><Icon name="box" size={14}/> → Sales Order</button>}
+        <button className="btn btn-primary" onClick={()=>{
+          if(!cust){nf('Select a customer first','error');return}
+          if(!o.memo?.trim()){nf('Memo is required','error');return}
+          const validItems=safeItems(o).filter(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
+          if(validItems.length===0){nf('Add at least one item with sizes','error');return}
+          const noSku=validItems.find(it=>!it.sku?.trim()&&!it.is_custom);
+          if(noSku){nf('Item '+(noSku.name||'#?')+' needs a SKU or mark as custom','error');return}
+          const noPrice=validItems.find(it=>safeNum(it.unit_sell)<=0);
+          if(noPrice){nf('Item '+(noPrice.sku||noPrice.name||'#?')+' needs a sell price','error');return}
+          onSave(o);setSaved(true);setDirty(false);nf(`${isE?'Estimate':'SO'} saved`)}} style={{padding:'10px 28px',fontSize:16,fontWeight:800}}><Icon name="check" size={16}/> Save</button>
+        {isE&&saved&&o.status!=='approved'&&o.status!=='converted'&&<button className="btn btn-secondary" onClick={()=>setShowSend(true)}><Icon name="send" size={14}/> Send</button>}
+        {isE&&saved&&(o.status==='sent'||o.status==='draft')&&<button className="btn btn-primary" style={{background:'#22c55e'}} onClick={()=>{sv('status','approved');onSave({...o,status:'approved'});nf('Estimate approved')}}><Icon name="check" size={14}/> Approve</button>}
+        {isE&&o.status==='approved'&&<button className="btn btn-primary" style={{background:'#7c3aed'}} onClick={()=>{
+          if(!cust){nf('Select a customer first','error');return}
+          if(!o.memo?.trim()){nf('Memo is required','error');return}
+          const validItems=safeItems(o).filter(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
+          if(validItems.length===0){nf('Cannot convert — add at least one item with sizes','error');return}
+          const noSku=validItems.find(it=>!it.sku?.trim()&&!it.is_custom);
+          if(noSku){nf('Item '+(noSku.name||'#?')+' needs a SKU or mark as custom','error');return}
+          const noPrice=validItems.find(it=>safeNum(it.unit_sell)<=0);
+          if(noPrice){nf('Item '+(noPrice.sku||noPrice.name||'#?')+' needs a sell price','error');return}
+          onConvertSO(o)}}><Icon name="box" size={14}/> Convert to SO</button>}
         {/* Print Estimate or SO */}
         <button className="btn btn-secondary" style={{fontSize:12}} onClick={()=>{
           const items=safeItems(o).filter(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
@@ -1854,9 +1860,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           <button className="btn btn-secondary" onClick={()=>setShowInvCreate(false)}>Cancel</button>
           <button className="btn btn-primary" style={{background:'#dc2626',borderColor:'#dc2626'}} disabled={invSelItems.length===0} onClick={()=>{
             const invId='INV-'+o.id.replace('SO-','');
+            const invDate=new Date().toLocaleDateString('en-CA');
+            const termDays=parseInt((cust?.payment_terms||'net30').replace(/\D/g,''))||30;
+            const due=new Date();due.setDate(due.getDate()+termDays);const dueDate=due.toLocaleDateString('en-CA');
+            const lineItems=invSelItems.map(idx=>{const it=items[idx];if(!it)return null;const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
+              const decoSell=safeDecos(it).reduce((a,d)=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:qty;const dp2=dP(d,qty,safeArt(o),cq);return a+dp2.sell},0);
+              return{desc:it.sku+' '+it.name+(it.color?' — '+it.color:''),qty,rate:safeNum(it.unit_sell)+decoSell,amount:qty*(safeNum(it.unit_sell)+decoSell)}}).filter(Boolean);
             const inv={id:invId+'-'+(Date.now()%1000),type:'invoice',customer_id:o.customer_id,so_id:o.id,
-              date:new Date().toLocaleDateString('en-CA'),total:Math.round(invTotal*100)/100,paid:0,
-              memo:invMemo||invType+' — '+o.memo,status:'open',
+              date:invDate,due_date:dueDate,total:Math.round(invTotal*100)/100,paid:0,
+              memo:invMemo||invType+' — '+o.memo,status:'open',_rep:o.created_by||cu.id,
+              tax:Math.round(invTax*100)/100,shipping:Math.round(invShip*100)/100,
+              line_items:lineItems,
               items:invSelItems.map(idx=>{const it=items[idx];return{sku:it.sku,name:it.name,qty:Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0),unit_sell:safeNum(it.unit_sell)}})};
             onInv(prev=>[...prev,inv]);
             setShowInvCreate(false);
@@ -2130,7 +2144,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
             // NOTE: Inventory is NOT decremented on pick creation (status:'pick')
             // It only decrements when status is changed to 'pulled' via the edit handler
             // This prevents double-decrement: create → edit to pulled
-            setShowPick(false);setPickId('IF-'+String(4000+Math.floor(Math.random()*1000)));setPickNotes('');setPickShipDest('in_house');setPickDecoVendor('');setPickShipAddr('default');
+            setShowPick(false);setPickId('IF-'+String((parseInt(pickId.replace('IF-',''))||4000)+1));setPickNotes('');setPickShipDest('in_house');setPickDecoVendor('');setPickShipAddr('default');
             const destLabel=pickShipDest==='ship_customer'?'→ Ship to Customer':pickShipDest==='ship_deco'?'→ '+pickDecoVendor:'→ In-House Deco';
             nf(pickId+' sent to warehouse ('+destLabel+')');
           }} style={{padding:'8px 20px',fontWeight:700}}>📦 Send to Warehouse</button>
@@ -2879,7 +2893,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
 }
 
 // CUSTOMER DETAIL
-function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,cu,onOpenSO,ests}){
+function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,cu,onOpenSO,ests,onSaveSO}){
   const[tab,setTab]=useState('activity');const[oF,setOF]=useState('all');const[sF,setSF]=useState('all');const[rR,setRR]=useState('thisyear');
   const[editContact,setEditContact]=useState(null);const[custLocal,setCustLocal]=useState(initCust);
   const[showInvEmail,setShowInvEmail]=useState(false);const[invEmailMsg,setInvEmailMsg]=useState('');const[showPortal,setShowPortal]=useState(false);
@@ -3179,7 +3193,9 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
           {j.art_status==='waiting_approval'&&<div style={{border:'2px solid #f59e0b',background:'#fffbeb',borderRadius:10,padding:16,marginBottom:16}}>
             <div style={{fontWeight:700,color:'#92400e',marginBottom:8}}>⏳ This artwork needs your approval</div>
             <div style={{display:'flex',gap:8}}>
-              <button className="btn btn-sm" style={{background:'#22c55e',color:'white',flex:1,justifyContent:'center'}} onClick={()=>{alert('✅ Art approved! (demo)');setPortalJobView(null)}}>✅ Approve</button>
+              <button className="btn btn-sm" style={{background:'#22c55e',color:'white',flex:1,justifyContent:'center'}} onClick={()=>{
+                const artId=j.art_file_id;if(artId&&onSaveSO){const updatedSO={...so,art_files:(so.art_files||[]).map(af=>af.id===artId?{...af,status:'approved'}:af),updated_at:new Date().toLocaleString()};onSaveSO(updatedSO)}
+                setPortalJobView(null)}}>✅ Approve</button>
               <button className="btn btn-sm" style={{background:'#dc2626',color:'white',flex:1,justifyContent:'center'}} onClick={()=>{if(portalComment.trim()){alert('❌ Rejected with feedback. (demo)');setPortalComment('');setPortalJobView(null)}else{alert('Please add a comment.')}}}>❌ Request Changes</button>
             </div>
           </div>}
@@ -3526,8 +3542,8 @@ export default function App(){
     setSOs(p=>[...p,so]);setEsts(p=>p.map(e=>e.id===est.id?{...e,status:'converted'}:e));setEEst(null);
     const c=cust.find(x=>x.id===so.customer_id);setESO(so);setESOC(c);setPg('orders');nf(`${so.id} created from ${est.id}`)};
   const aO=useMemo(()=>[
-    ...ests.map(e=>{const t=e.items?.reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((s,v)=>s+v,0);let r=qq*it.unit_sell;it.decorations?.forEach(d=>{const dp=dP(d,qq,[],qq);r+=qq*dp.sell});return a+r},0)||0;return{id:e.id,type:'estimate',customer_id:e.customer_id,date:e.created_at?.split(' ')[0],total:t,memo:e.memo,status:e.status}}),
-    ...sos.map(s=>{const t=s.items?.reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((ss,v)=>ss+v,0);return a+qq*(it.unit_sell||0)},0)||0;return{id:s.id,type:'sales_order',customer_id:s.customer_id,date:s.created_at?.split(' ')[0],total:t,memo:s.memo,status:s.status}}),
+    ...ests.map(e=>{const _eAQ={};safeItems(e).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_eAQ[d.art_file_id]=(_eAQ[d.art_file_id]||0)+q2}})});const eaf=safeArt(e);const t=e.items?.reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((s,v)=>s+v,0);let r=qq*it.unit_sell;it.decorations?.forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_eAQ[d.art_file_id]:qq;const dp=dP(d,qq,eaf,cq);r+=qq*dp.sell});return a+r},0)||0;return{id:e.id,type:'estimate',customer_id:e.customer_id,date:e.created_at?.split(' ')[0],total:t,memo:e.memo,status:e.status}}),
+    ...sos.map(s=>{const _sAQ={};safeItems(s).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((ss,v)=>ss+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_sAQ[d.art_file_id]=(_sAQ[d.art_file_id]||0)+q2}})});const saf=safeArt(s);const t=s.items?.reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((ss,v)=>ss+v,0);let r=qq*(it.unit_sell||0);(it.decorations||[]).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_sAQ[d.art_file_id]:qq;const dp=dP(d,qq,saf,cq);r+=qq*dp.sell});return a+r},0)||0;return{id:s.id,type:'sales_order',customer_id:s.customer_id,date:s.created_at?.split(' ')[0],total:t,memo:s.memo,status:s.status}}),
     ...invs.map(i=>({...i,type:'invoice'}))],[ests,sos,invs]);
   const fP=useMemo(()=>{let l=prod;if(q&&pg==='products'){const s=q.toLowerCase();l=l.filter(p=>p.sku.toLowerCase().includes(s)||p.name.toLowerCase().includes(s)||p.brand?.toLowerCase().includes(s)||p.color?.toLowerCase().includes(s))}
     if(pF.cat!=='all')l=l.filter(p=>p.category===pF.cat);if(pF.vnd!=='all')l=l.filter(p=>p.vendor_id===pF.vnd);if(pF.stk==='instock')l=l.filter(p=>Object.values(p._inv||{}).some(v=>v>0));if(pF.clr!=='all')l=l.filter(p=>p.color===pF.clr);return l},[prod,q,pF,pg]);
@@ -3915,7 +3931,7 @@ export default function App(){
   };
   // CUSTOMERS
   const rCust=()=>{
-    if(selC)return<CustDetail customer={selC} allCustomers={cust} allOrders={aO} onBack={()=>setSelC(null)} onEdit={c=>{setCM({open:true,c});setCust(prev=>prev.map(pp=>pp.id===c.id?c:pp))}} onSelCust={c=>setSelC(c)} onNewEst={c=>newE(c)} sos={sos} msgs={msgs} cu={cu} onOpenSO={so=>{const c3=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c3);setPg('orders')}} ests={ests}/>;
+    if(selC)return<CustDetail customer={selC} allCustomers={cust} allOrders={aO} onBack={()=>setSelC(null)} onEdit={c=>{setCM({open:true,c});setCust(prev=>prev.map(pp=>pp.id===c.id?c:pp))}} onSelCust={c=>setSelC(c)} onNewEst={c=>newE(c)} sos={sos} msgs={msgs} cu={cu} onOpenSO={so=>{const c3=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c3);setPg('orders')}} ests={ests} onSaveSO={savSO}/>;
     const f=pars.filter(p=>{if(rF!=='all'&&p.primary_rep_id!==rF)return false;if(q){const s=q.toLowerCase();return p.name.toLowerCase().includes(s)||p.alpha_tag?.toLowerCase().includes(s)||gK(p.id).some(c=>c.name.toLowerCase().includes(s))}return true});
     return(<><div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap'}}><div className="search-bar" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search..." value={q} onChange={e=>setQ(e.target.value)}/></div>
       <select className="form-select" style={{width:150}} value={rF} onChange={e=>setRF(e.target.value)}><option value="all">All Reps</option>{REPS.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
@@ -4960,7 +4976,7 @@ export default function App(){
                   (so?safeItems(so).map(it=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);if(!qty)return null;
                     const decoSell=safeDecos(it).reduce((a,d)=>{const dp=dP(d,qty,af,qty);return a+dp.sell},0);
                     return{desc:it.sku+' '+it.name+(it.color?' — '+it.color:''),qty,rate:safeNum(it.unit_sell)+decoSell,amount:qty*(safeNum(it.unit_sell)+decoSell)}}).filter(Boolean):[]);
-                const shipAmt=so?(()=>{const sub=invItems.reduce((a,l)=>a+l.amount,0);return(so.shipping_type==='pct'?sub*(so.shipping_value||0)/100:so.shipping_value||0)})():0;
+                const shipAmt=inv.shipping!=null?inv.shipping:so?(()=>{const sub=invItems.reduce((a,l)=>a+l.amount,0);return(so.shipping_type==='pct'?sub*(so.shipping_value||0)/100:so.shipping_value||0)})():0;
                 const taxAmt=inv.tax||0;
                 printDoc({
                   title:ic?.name||'Customer',docNum:inv.id,docType:'INVOICE',
@@ -5096,7 +5112,7 @@ export default function App(){
   const toggleWidget=(k)=>setRptWidgets(w=>({...w,[k]:!w[k]}));
 
   const rReports=()=>{
-    const soCalc=(so)=>{let rev=0,cost=0,units=0;safeItems(so).forEach(it=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);units+=qty;rev+=qty*safeNum(it.unit_sell);cost+=qty*safeNum(it.nsa_cost);(it.decorations||[]).forEach(d=>{rev+=qty*safeNum(d.sell_override||0);cost+=qty*safeNum(d.cost_override||d.cost_each||0)});(it.po_lines||[]).filter(pl=>pl.po_type==='outside_deco').forEach(pl=>{const poQty=Object.entries(pl).filter(([k,v])=>typeof v==='number'&&k!=='unit_cost').reduce((a,[,v])=>a+v,0);cost+=poQty*safeNum(pl.unit_cost)})});return{rev,cost,margin:rev-cost,pct:rev>0?Math.round((rev-cost)/rev*100):0,units}};
+    const soCalc=(so)=>{let rev=0,cost=0,units=0;const _aq={};safeItems(so).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_aq[d.art_file_id]=(_aq[d.art_file_id]||0)+q2}})});const af=safeArt(so);safeItems(so).forEach(it=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);units+=qty;rev+=qty*safeNum(it.unit_sell);cost+=qty*safeNum(it.nsa_cost);(it.decorations||[]).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qty;const dp=dP(d,qty,af,cq);rev+=qty*dp.sell;cost+=qty*dp.cost});(it.po_lines||[]).filter(pl=>pl.po_type==='outside_deco').forEach(pl=>{const poQty=Object.entries(pl).filter(([k,v])=>typeof v==='number'&&k!=='unit_cost').reduce((a,[,v])=>a+v,0);cost+=poQty*safeNum(pl.unit_cost)})});return{rev,cost,margin:rev-cost,pct:rev>0?Math.round((rev-cost)/rev*100):0,units}};
 
     const filtSOs=rptRep==='all'?sos:sos.filter(s=>s.created_by===rptRep);
     const filtInvs=rptRep==='all'?invs:invs.filter(i=>{const so=sos.find(s=>s.id===i.so_id);return so?.created_by===rptRep});
