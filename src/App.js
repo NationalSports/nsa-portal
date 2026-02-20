@@ -827,8 +827,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           <button style={{fontSize:10,marginTop:4,padding:'3px 8px',borderRadius:4,background:'#f5f3ff',border:'1px solid #ddd6fe',color:'#7c3aed',cursor:'pointer',fontWeight:600,display:'flex',alignItems:'center',gap:3}} onClick={()=>{setFirmReqDate(o.expected_date||'');setFirmReqNote('');setShowFirmReq(true)}}>📌 Request Firm Date</button>
         </div>}
         <button className="btn btn-primary" onClick={()=>{onSave(o);setSaved(true);setDirty(false);nf(`${isE?'Estimate':'SO'} saved`)}} style={{padding:'10px 28px',fontSize:16,fontWeight:800}}><Icon name="check" size={16}/> Save</button>
-        {isE&&saved&&o.status!=='approved'&&o.status!=='converted'&&<button className="btn btn-secondary" onClick={()=>setShowSend(true)}><Icon name="send" size={14}/> Send</button>}
-        {isE&&(o.status==='sent'||o.status==='draft')&&<button className="btn btn-primary" style={{background:'#22c55e'}} onClick={()=>{const updated={...o,status:'approved',updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setSaved(true);setDirty(false);nf('Estimate approved ✓')}}>✅ Approve</button>}
+        {isE&&saved&&o.status!=='approved'&&o.status!=='converted'&&<button className="btn btn-secondary" onClick={()=>{
+          if(!o.customer_id){nf('⚠️ Customer required','error');return}
+          if(!o.memo||!o.memo.trim()){nf('⚠️ Memo required','error');return}
+          const hasItems2=safeItems(o).some(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
+          if(!hasItems2){nf('⚠️ At least one item with quantities required','error');return}
+          setShowSend(true)}}><Icon name="send" size={14}/> Send</button>}
+        {isE&&(o.status==='sent'||o.status==='draft')&&<button className="btn btn-primary" style={{background:'#22c55e'}} onClick={()=>{
+          if(!o.customer_id){nf('⚠️ Customer required','error');return}
+          if(!o.memo||!o.memo.trim()){nf('⚠️ Memo required','error');return}
+          const hasItems=safeItems(o).some(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
+          if(!hasItems){nf('⚠️ At least one item with quantities required','error');return}
+          const updated={...o,status:'approved',updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setSaved(true);setDirty(false);nf('Estimate approved ✓')}}>✅ Approve</button>}
         {isE&&o.status==='approved'&&<button className="btn btn-primary" style={{background:'#7c3aed'}} onClick={()=>onConvertSO(o)}><Icon name="box" size={14}/> → Sales Order</button>}
         {/* Print Estimate or SO */}
         <button className="btn btn-secondary" style={{fontSize:12}} onClick={()=>{
