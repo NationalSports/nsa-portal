@@ -3881,14 +3881,24 @@ function CoachPortal({customer,estimates,orders,invoices,artFiles,onUpdate,onMsg
       </div>
 
       {/* CC Payment Modal */}
-      {ccModal&&<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',zIndex:100,display:'flex',alignItems:'center',justifyContent:'center'}} onClick={()=>setCCModal(null)}>
-        <div style={{background:'white',borderRadius:12,padding:24,maxWidth:420,width:'90%'}} onClick={e=>e.stopPropagation()}>
-          <div style={{fontSize:18,fontWeight:800,marginBottom:4}}>Pay Invoice {ccModal}</div>
+      {ccModal&&(()=>{
+        // Support both single invoice (from detail) and multi-select (from list)
+        const isMulti=ccModal.ids;
+        const payIds=isMulti?ccModal.ids:[ccModal];
+        const payTotal=isMulti?ccModal.total:(()=>{const inv=invoices.find(i=>i.id===ccModal);return inv?calcTotals(inv).grand:0})();
+        const fee=payTotal*0.029;
+        return<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',zIndex:100,display:'flex',alignItems:'center',justifyContent:'center'}} onClick={()=>setCCModal(null)}>
+        <div style={{background:'white',borderRadius:12,padding:24,maxWidth:440,width:'90%'}} onClick={e=>e.stopPropagation()}>
+          <div style={{fontSize:18,fontWeight:800,marginBottom:4}}>Pay {payIds.length>1?payIds.length+' Invoices':'Invoice '+payIds[0]}</div>
           <div style={{fontSize:12,color:'#64748b',marginBottom:16}}>Credit card payments include a 2.9% processing fee.</div>
+          {payIds.length>1&&<div style={{marginBottom:12,padding:8,background:'#f8f9fb',borderRadius:6}}>
+            {payIds.map(id=>{const inv=invoices.find(i=>i.id===id);const t=inv?calcTotals(inv).grand:0;
+              return<div key={id} style={{display:'flex',justifyContent:'space-between',fontSize:12,padding:'2px 0'}}><span>{id} — {inv?.memo||''}</span><span style={{fontWeight:600}}>${t.toFixed(2)}</span></div>})}
+          </div>}
           <div style={{padding:12,background:'#f8f9fb',borderRadius:8,marginBottom:16}}>
-            <div style={{display:'flex',justifyContent:'space-between',fontSize:13}}><span>Invoice Total</span><span style={{fontWeight:700}}>${tots.grand.toFixed(2)}</span></div>
-            <div style={{display:'flex',justifyContent:'space-between',fontSize:13,color:'#b45309'}}><span>CC Fee (2.9%)</span><span style={{fontWeight:700}}>${(tots.grand*0.029).toFixed(2)}</span></div>
-            <div style={{display:'flex',justifyContent:'space-between',fontSize:16,fontWeight:800,borderTop:'2px solid #1e3a5f',marginTop:8,paddingTop:8}}><span>Charge Total</span><span>${(tots.grand*1.029).toFixed(2)}</span></div>
+            <div style={{display:'flex',justifyContent:'space-between',fontSize:13}}><span>Subtotal</span><span style={{fontWeight:700}}>${payTotal.toFixed(2)}</span></div>
+            <div style={{display:'flex',justifyContent:'space-between',fontSize:13,color:'#b45309'}}><span>CC Fee (2.9%)</span><span style={{fontWeight:700}}>${fee.toFixed(2)}</span></div>
+            <div style={{display:'flex',justifyContent:'space-between',fontSize:16,fontWeight:800,borderTop:'2px solid #1e3a5f',marginTop:8,paddingTop:8}}><span>Charge Total</span><span>${(payTotal+fee).toFixed(2)}</span></div>
           </div>
           <div style={{display:'flex',flexDirection:'column',gap:8,marginBottom:16}}>
             <input placeholder="Card number" style={{padding:10,border:'1px solid #d1d5db',borderRadius:6,fontSize:14}}/>
@@ -3899,10 +3909,12 @@ function CoachPortal({customer,estimates,orders,invoices,artFiles,onUpdate,onMsg
             </div>
           </div>
           <div style={{display:'flex',gap:8}}>
-            <button className="cp-btn cp-btn-green" style={{flex:1}} onClick={()=>{alert('Payment processed! (Demo — will integrate Stripe)');setCCModal(null)}}>💳 Pay ${(tots.grand*1.029).toFixed(2)}</button>
+            <button className="cp-btn cp-btn-green" style={{flex:1}} onClick={()=>{alert('Payment of $'+(payTotal+fee).toFixed(2)+' processed! (Demo — Stripe integration)');setCCModal(null);setPaySelect({})}}>💳 Pay ${(payTotal+fee).toFixed(2)}</button>
             <button className="cp-btn cp-btn-outline" onClick={()=>setCCModal(null)}>Cancel</button>
           </div>
           <div style={{fontSize:10,color:'#94a3b8',marginTop:8,textAlign:'center'}}>Payments processed securely via Stripe. NSA never stores your card info.</div>
+        </div>
+      </div>})()}
         </div>
       </div>}
     </div>;
@@ -3912,9 +3924,9 @@ function CoachPortal({customer,estimates,orders,invoices,artFiles,onUpdate,onMsg
   const renderEstimates=()=>{
     const est=estimates.filter(e=>e.status!=='converted');
     return<>{est.length===0&&<div className="cp-card" style={{textAlign:'center',color:'#94a3b8',padding:40}}>No estimates right now.</div>}
-    {est.map(e=>{const tots=calcTotals(e);
+    {est.map(e=>{const tots=calcTotals(e);const rows=itemRows(e).filter(r=>!r.isDeco).slice(0,4);
       return<div key={e.id} className="cp-card" style={{cursor:'pointer'}} onClick={()=>setDetail({type:'est',id:e.id})}>
-        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
           <div>
             <div style={{display:'flex',gap:8,alignItems:'center'}}><span style={{fontWeight:800,fontSize:15}}>{e.memo||e.id}</span>
               <span className="cp-badge" style={{background:e.status==='approved'?'#dcfce7':e.status==='sent'?'#fef3c7':'#f1f5f9',color:e.status==='approved'?'#166534':e.status==='sent'?'#92400e':'#475569'}}>{e.status==='sent'?'Needs Review':e.status}</span></div>
@@ -3922,36 +3934,97 @@ function CoachPortal({customer,estimates,orders,invoices,artFiles,onUpdate,onMsg
           </div>
           <div style={{textAlign:'right'}}>
             <div style={{fontSize:20,fontWeight:800,color:'#1e3a5f'}}>${tots.grand.toFixed(2)}</div>
-            <div style={{fontSize:11,color:'#94a3b8'}}>{(e.items||[]).reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((b,v)=>b+(parseInt(v)||0),0),0)} items →</div>
           </div>
+        </div>
+        <div style={{borderTop:'1px solid #f1f5f9',paddingTop:6}}>
+          {rows.map((r,i)=><div key={i} style={{display:'flex',justifyContent:'space-between',fontSize:12,color:'#475569',padding:'2px 0'}}>
+            <span><span style={{fontFamily:'monospace',color:'#1e40af',marginRight:4}}>{r.sku}</span>{r.name}{r.color?` — ${r.color}`:''}</span>
+            <span style={{fontWeight:600}}>{r.qty} × ${r.unit.toFixed(2)}</span>
+          </div>)}
+          <div style={{fontSize:11,color:'#3b82f6',marginTop:4,fontWeight:600}}>View full details →</div>
         </div>
       </div>})}</>};
 
   const renderOrders=()=>{
     return<>{orders.length===0&&<div className="cp-card" style={{textAlign:'center',color:'#94a3b8',padding:40}}>No active orders.</div>}
-    {orders.map(so=>{const tots=calcTotals(so);const cur=stSteps.indexOf(so.status||'need_order');
+    {orders.map(so=>{const tots=calcTotals(so);const cur=stSteps.indexOf(so.status||'need_order');const rows=itemRows(so).filter(r=>!r.isDeco).slice(0,4);
       return<div key={so.id} className="cp-card" style={{cursor:'pointer'}} onClick={()=>setDetail({type:'so',id:so.id})}>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
           <div><div style={{fontWeight:800,fontSize:15}}>{so.memo||so.id}</div><div style={{fontSize:12,color:'#94a3b8'}}>{so.id} · Expected: {so.expected_date||'TBD'}</div></div>
           <div style={{textAlign:'right'}}><div style={{fontSize:20,fontWeight:800,color:'#1e3a5f'}}>${tots.grand.toFixed(2)}</div></div>
         </div>
-        <div className="cp-status" style={{margin:'4px 0'}}>
+        <div className="cp-status" style={{margin:'4px 0 8px'}}>
           {stSteps.map((st,i)=><div key={st} className={`cp-step ${i<cur?'done':i===cur?'active':''}`} style={{fontSize:9,padding:'6px 2px'}}>{stLabel[st]||st.replace(/_/g,' ')}</div>)}
+        </div>
+        <div style={{borderTop:'1px solid #f1f5f9',paddingTop:6}}>
+          {rows.map((r,i)=><div key={i} style={{display:'flex',justifyContent:'space-between',fontSize:12,color:'#475569',padding:'2px 0'}}>
+            <span><span style={{fontFamily:'monospace',color:'#1e40af',marginRight:4}}>{r.sku}</span>{r.name}{r.color?` — ${r.color}`:''}</span>
+            <span style={{fontWeight:600}}>{r.qty} pcs</span>
+          </div>)}
+          <div style={{fontSize:11,color:'#3b82f6',marginTop:4,fontWeight:600}}>View full details →</div>
         </div>
       </div>})}</>};
 
+  const[paySelect,setPaySelect]=useState({});// {inv_id: true/false} for multi-select payment
   const renderInvoices=()=>{
-    return<>{invoices.length===0&&<div className="cp-card" style={{textAlign:'center',color:'#94a3b8',padding:40}}>No invoices.</div>}
-    {invoices.map(inv=>{const tots=calcTotals(inv);const paid=inv.status==='paid';
-      return<div key={inv.id} className="cp-card" style={{cursor:'pointer'}} onClick={()=>setDetail({type:'inv',id:inv.id})}>
+    const open=invoices.filter(i=>i.status!=='paid');
+    const paid=invoices.filter(i=>i.status==='paid');
+    const selectedIds=Object.keys(paySelect).filter(k=>paySelect[k]);
+    const selectedTotals=selectedIds.reduce((a,id)=>{const inv=invoices.find(i=>i.id===id);return a+(inv?calcTotals(inv).grand:0)},0);
+
+    return<>
+    {/* Pay selected bar */}
+    {selectedIds.length>0&&<div className="cp-card" style={{background:'#f0fdf4',border:'2px solid #22c55e',display:'flex',justifyContent:'space-between',alignItems:'center',position:'sticky',top:0,zIndex:10}}>
+      <div><span style={{fontWeight:700,fontSize:14}}>{selectedIds.length} invoice{selectedIds.length>1?'s':''} selected</span>
+        <span style={{fontSize:13,color:'#64748b',marginLeft:8}}>Total: <strong style={{color:'#1e3a5f'}}>${selectedTotals.toFixed(2)}</strong></span></div>
+      <div style={{display:'flex',gap:8}}>
+        <button className="cp-btn cp-btn-green" onClick={()=>setCCModal({ids:selectedIds,total:selectedTotals})}>💳 Pay ${selectedTotals.toFixed(2)}</button>
+        <button className="cp-btn cp-btn-outline" style={{fontSize:12}} onClick={()=>setPaySelect({})}>Clear</button>
+      </div>
+    </div>}
+
+    {/* Open invoices */}
+    {open.length>0&&<div style={{fontSize:11,fontWeight:700,color:'#dc2626',textTransform:'uppercase',letterSpacing:0.5,marginBottom:8}}>Open ({open.length})</div>}
+    {open.map(inv=>{const tots=calcTotals(inv);const rows=itemRows(inv).slice(0,3);// preview first 3 lines
+      return<div key={inv.id} className="cp-card">
+        <div style={{display:'flex',gap:12,alignItems:'flex-start'}}>
+          <input type="checkbox" checked={!!paySelect[inv.id]} onChange={e=>{e.stopPropagation();setPaySelect({...paySelect,[inv.id]:e.target.checked})}} style={{marginTop:4,width:18,height:18,cursor:'pointer',accentColor:'#22c55e'}}/>
+          <div style={{flex:1,cursor:'pointer'}} onClick={()=>setDetail({type:'inv',id:inv.id})}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
+              <div><div style={{fontWeight:800,fontSize:15}}>{inv.memo||inv.id}</div><div style={{fontSize:12,color:'#94a3b8'}}>{inv.id} · {inv.created_at}</div></div>
+              <div style={{textAlign:'right'}}>
+                <div style={{fontSize:20,fontWeight:800,color:'#dc2626'}}>${tots.grand.toFixed(2)}</div>
+                <span className="cp-badge" style={{background:'#fef2f2',color:'#dc2626'}}>Open</span>
+              </div>
+            </div>
+            {/* Item preview */}
+            <div style={{borderTop:'1px solid #f1f5f9',paddingTop:6}}>
+              {rows.map((r,i)=><div key={i} style={{display:'flex',justifyContent:'space-between',fontSize:12,color:r.isDeco?'#94a3b8':'#475569',padding:'2px 0'}}>
+                <span>{r.sku&&<span style={{fontFamily:'monospace',color:'#1e40af',marginRight:4}}>{r.sku}</span>}{r.name}{r.color&&!r.isDeco?` — ${r.color}`:''}</span>
+                <span style={{fontWeight:600}}>{r.qty>0?`${r.qty} × $${r.unit.toFixed(2)}`:''}</span>
+              </div>)}
+              {itemRows(inv).length>3&&<div style={{fontSize:11,color:'#94a3b8',fontStyle:'italic'}}>+{itemRows(inv).length-3} more lines…</div>}
+            </div>
+            <div style={{fontSize:11,color:'#3b82f6',marginTop:4,fontWeight:600}}>View full details →</div>
+          </div>
+        </div>
+      </div>})}
+
+    {/* Paid invoices */}
+    {paid.length>0&&<><div style={{fontSize:11,fontWeight:700,color:'#166534',textTransform:'uppercase',letterSpacing:0.5,marginTop:20,marginBottom:8}}>Paid ({paid.length})</div>
+    {paid.map(inv=>{const tots=calcTotals(inv);
+      return<div key={inv.id} className="cp-card" style={{opacity:0.7,cursor:'pointer'}} onClick={()=>setDetail({type:'inv',id:inv.id})}>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
           <div><div style={{fontWeight:800,fontSize:15}}>{inv.memo||inv.id}</div><div style={{fontSize:12,color:'#94a3b8'}}>{inv.id} · {inv.created_at}</div></div>
           <div style={{textAlign:'right'}}>
-            <div style={{fontSize:20,fontWeight:800,color:paid?'#166534':'#dc2626'}}>${tots.grand.toFixed(2)}</div>
-            <span className="cp-badge" style={{background:paid?'#dcfce7':'#fef2f2',color:paid?'#166534':'#dc2626'}}>{paid?'Paid':'Open'}</span>
+            <div style={{fontSize:20,fontWeight:800,color:'#166534'}}>${tots.grand.toFixed(2)}</div>
+            <span className="cp-badge" style={{background:'#dcfce7',color:'#166534'}}>Paid</span>
           </div>
         </div>
-      </div>})}</>};
+      </div>})}</>}
+
+    {invoices.length===0&&<div className="cp-card" style={{textAlign:'center',color:'#94a3b8',padding:40}}>No invoices.</div>}
+    </>};
 
   // MAIN RENDER
   return<>
