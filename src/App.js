@@ -122,7 +122,14 @@ const safeJobs=(o)=>safeArr(o?.jobs);
 function dP(d,q,artFiles,cq){
   const pq=cq||q;
   // Art-based decoration: get type from art file
-  if(d.kind==='art'&&d.art_file_id&&artFiles){const art=artFiles.find(a=>a.id===d.art_file_id);if(art){
+  if(d.kind==='art'&&d.art_file_id&&artFiles){
+    // Art TBD — use selected type for pricing estimates
+    if(d.art_file_id==='__tbd'){const tType=d.art_tbd_type||'screen_print';
+      if(tType==='screen_print')return{sell:d.sell_override||rQ(spP(pq,1,true)),cost:rQ(spP(pq,1,false))};
+      if(tType==='embroidery')return{sell:d.sell_override||emP(8000,pq,true),cost:emP(8000,pq,false)};
+      if(tType==='heat_press'||tType==='dtf'){const t=DTF[0];return{sell:d.sell_override||t.sell,cost:t.cost}};
+      return{sell:d.sell_override||0,cost:0}}
+    const art=artFiles.find(a=>a.id===d.art_file_id);if(art){
     if(art.deco_type==='screen_print'){const nc=art.ink_colors?art.ink_colors.split('\n').filter(l=>l.trim()).length:1;const u=d.underbase?1+SP.ub:1;return{sell:d.sell_override||rQ(spP(pq,nc,true)*u),cost:rQ(spP(pq,nc,false)*u)}}
     if(art.deco_type==='embroidery')return{sell:d.sell_override||emP(art.stitches||8000,pq,true),cost:emP(art.stitches||8000,pq,false)};
     if(art.deco_type==='dtf'){const t=DTF[art.dtf_size||0];return{sell:d.sell_override||t.sell,cost:t.cost}}}}
@@ -1101,14 +1108,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                 setShowPick([pickItem]);
               }}><Icon name="grid" size={14}/> Create IF</button>
               :<span style={{fontSize:10,color:'#d97706',fontStyle:'italic'}}>Need to order</span>})()}
-            <div style={{textAlign:'right',borderLeft:'1px solid #e2e8f0',paddingLeft:12,minWidth:140}}>
-              <div style={{display:'flex',gap:8,justifyContent:'flex-end',alignItems:'baseline',marginBottom:2}}>
-                <span style={{fontSize:10,color:'#64748b'}}>Cost <strong style={{fontSize:12}}>${iC.toLocaleString(undefined,{maximumFractionDigits:0})}</strong></span>
-                <span style={{fontSize:10,color:mg>=0?'#166534':'#dc2626'}}>Margin <strong style={{fontSize:12}}>${mg.toLocaleString(undefined,{maximumFractionDigits:0})}</strong> <span style={{fontSize:9}}>({iR>0?(mg/iR*100).toFixed(0):0}%)</span></span>
-              </div>
-              <div style={{display:'flex',gap:4,justifyContent:'flex-end',alignItems:'baseline'}}>
-                <span style={{fontSize:10,color:'#64748b'}}>${qty>0?(iR/qty).toFixed(2):'-'}/ea</span>
-                <span style={{fontSize:22,fontWeight:900,color:'#166534'}}>${iR.toLocaleString(undefined,{maximumFractionDigits:0})}</span>
+            <div style={{textAlign:'right',borderLeft:'1px solid #e2e8f0',paddingLeft:12,minWidth:120}}>
+              <div style={{fontSize:10,color:'#64748b',lineHeight:'16px'}}>Cost <strong>${iC.toLocaleString(undefined,{maximumFractionDigits:0})}</strong> · Margin <strong style={{color:mg>=0?'#166534':'#dc2626'}}>${mg.toLocaleString(undefined,{maximumFractionDigits:0})}</strong> <span style={{color:mg>=0?'#166534':'#dc2626'}}>({iR>0?(mg/iR*100).toFixed(0):0}%)</span></div>
+              <div style={{display:'flex',justifyContent:'flex-end',alignItems:'baseline',gap:4}}>
+                <span style={{fontSize:10,color:'#94a3b8'}}>${qty>0?(iR/qty).toFixed(2):'-'}/ea</span>
+                <span style={{fontSize:22,fontWeight:900,color:mg>=0?'#166534':'#dc2626'}}>${iR.toLocaleString(undefined,{maximumFractionDigits:0})}</span>
               </div>
             </div>
           </div>
@@ -1154,9 +1158,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         <div style={{padding:'8px 18px 14px'}}>
           {safeDecos(item).map((deco,di)=>{const cq=deco.kind==='art'&&deco.art_file_id?artQty[deco.art_file_id]:qty;const dp=dP(deco,qty,af,cq);
             if(deco.kind==='art'){const artF=af.find(f=>f.id===deco.art_file_id);const artIcon=artF?(artF.deco_type==='screen_print'?'🎨':artF.deco_type==='embroidery'?'🧵':'🔥'):'';
+              const isTBD=deco.art_file_id==='__tbd';
+              const tbdType=deco.art_tbd_type||'screen_print';
+              const tbdLabels={screen_print:'Screen Print',embroidery:'Embroidery',heat_press:'Heat Press',dtf:'DTF'};
               return(<div key={di} style={{padding:'10px 0',borderTop:di>0?'1px solid #f1f5f9':''}}>
                 <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
-                  {artF&&<div style={{position:'relative'}}><div style={{width:36,height:36,borderRadius:6,background:artF.deco_type==='screen_print'?'#dbeafe':artF.deco_type==='embroidery'?'#ede9fe':'#fef3c7',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0,cursor:'pointer',border:'2px solid transparent'}} onClick={e=>{const el=e.currentTarget.nextSibling;if(el)el.style.display=el.style.display==='none'?'block':'none'}} title="Click to expand">{artIcon}</div>
+                  {isTBD&&<div style={{width:36,height:36,borderRadius:6,background:'#fef3c7',display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,flexShrink:0}}>🎨</div>}
+                  {artF&&!isTBD&&<div style={{position:'relative'}}><div style={{width:36,height:36,borderRadius:6,background:artF.deco_type==='screen_print'?'#dbeafe':artF.deco_type==='embroidery'?'#ede9fe':'#fef3c7',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0,cursor:'pointer',border:'2px solid transparent'}} onClick={e=>{const el=e.currentTarget.nextSibling;if(el)el.style.display=el.style.display==='none'?'block':'none'}} title="Click to expand">{artIcon}</div>
                   <div style={{display:'none',position:'absolute',top:40,left:0,width:260,background:'white',border:'1px solid #e2e8f0',borderRadius:8,boxShadow:'0 8px 24px rgba(0,0,0,0.12)',zIndex:50,padding:12}}>
                     <div style={{fontWeight:700,fontSize:13,marginBottom:4}}>{artF.name||'Untitled'}</div>
                     <div style={{fontSize:11,color:'#64748b',marginBottom:4}}>{artF.deco_type?.replace('_',' ')} {artF.art_size&&`· ${artF.art_size}`}</div>
@@ -1166,10 +1174,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                     {artF.notes&&<div style={{fontSize:10,color:'#7c3aed'}}>{artF.notes}</div>}
                     <div style={{fontSize:10,marginTop:4,padding:'2px 6px',display:'inline-block',borderRadius:4,background:artF.status==='approved'?'#dcfce7':'#fef3c7',color:artF.status==='approved'?'#166534':'#92400e'}}>{artF.status}</div>
                   </div></div>}
-                  <select className="form-select" style={{width:200,fontSize:12,border:!deco.art_file_id?'2px solid #f59e0b':'1px solid #22c55e'}} value={deco.art_file_id||''} onChange={e=>uD(idx,di,'art_file_id',e.target.value||null)}>
-                    <option value="">⚠️ Select artwork...</option>{af.map(f=><option key={f.id} value={f.id}>{f.name||'Untitled'}</option>)}</select>
+                  <select className="form-select" style={{width:200,fontSize:12,border:isTBD?'2px solid #f59e0b':!deco.art_file_id?'2px solid #f59e0b':'1px solid #22c55e'}} value={deco.art_file_id||''} onChange={e=>{uD(idx,di,'art_file_id',e.target.value||null);if(e.target.value==='__tbd')uD(idx,di,'art_tbd_type','screen_print')}}>
+                    <option value="">⚠️ Select artwork...</option>
+                    <option value="__tbd">🎨 Art TBD (set type for pricing)</option>
+                    {af.map(f=><option key={f.id} value={f.id}>{f.name||'Untitled'}</option>)}</select>
+                  {isTBD&&<select className="form-select" style={{width:130,fontSize:11,border:'1px solid #f59e0b'}} value={tbdType} onChange={e=>uD(idx,di,'art_tbd_type',e.target.value)}>
+                    {Object.entries(tbdLabels).map(([v,l])=><option key={v} value={v}>{l}</option>)}</select>}
+                  {isTBD&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:600}}>Art Needed</span>}
                   <select className="form-select" style={{width:120,fontSize:12}} value={deco.position} onChange={e=>uD(idx,di,'position',e.target.value)}>{POSITIONS.map(p=><option key={p}>{p}</option>)}</select>
-                  {artF&&<><span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:artF.deco_type==='screen_print'?'#dbeafe':artF.deco_type==='embroidery'?'#ede9fe':'#fef3c7',color:artF.deco_type==='screen_print'?'#1e40af':artF.deco_type==='embroidery'?'#6d28d9':'#92400e'}}>{artF.deco_type.replace('_',' ')}</span>
+                  {artF&&!isTBD&&<><span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:artF.deco_type==='screen_print'?'#dbeafe':artF.deco_type==='embroidery'?'#ede9fe':'#fef3c7',color:artF.deco_type==='screen_print'?'#1e40af':artF.deco_type==='embroidery'?'#6d28d9':'#92400e'}}>{artF.deco_type.replace('_',' ')}</span>
                     {artF.ink_colors&&<span style={{fontSize:11,color:'#64748b'}}>{artF.ink_colors.split('\n').filter(l=>l.trim()).length} color(s)</span>}
                     {artF.thread_colors&&<span style={{fontSize:11,color:'#64748b'}}>Thread: {artF.thread_colors}</span>}
                     {artF.art_size&&<span style={{fontSize:11,color:'#94a3b8'}}>{artF.art_size}</span>}
@@ -1180,8 +1193,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                     <span style={{fontSize:13}}>Sell: <$In value={deco.sell_override||dp.sell} onChange={v=>uD(idx,di,'sell_override',v)} w={50}/></span>
                     <button onClick={()=>rmD(idx,di)} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626'}}><Icon name="x" size={14}/></button>
                   </div></div></div>)}
-            // OUTSIDE DECORATION — no job created, just cost/sell
-            if(deco.kind==='outside_deco'){return(<div key={di} style={{padding:'8px 0',borderTop:di>0?'1px solid #f1f5f9':''}}>
+            // OUTSIDE DECORATION — no job created, just cost/sell + margin
+            if(deco.kind==='outside_deco'){const oCost=safeNum(deco.cost_each);const oSell=safeNum(deco.sell_each);const oMargin=oSell-oCost;const oMPct=oSell>0?Math.round(oMargin/oSell*100):0;
+              return(<div key={di} style={{padding:'10px 0',borderTop:di>0?'1px solid #f1f5f9':''}}>
               <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
                 <span style={{fontSize:13,fontWeight:700,color:'#7c3aed'}}>🎨 Outside Deco</span>
                 <select className="form-select" style={{width:120,fontSize:11}} value={deco.deco_type||'embroidery'} onChange={e=>uD(idx,di,'deco_type',e.target.value)}>
@@ -1192,9 +1206,19 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                   {DECO_VENDORS.map(dv=><option key={dv} value={dv}>{dv}</option>)}
                 </select>
                 <select className="form-select" style={{width:110,fontSize:11}} value={deco.position} onChange={e=>uD(idx,di,'position',e.target.value)}>{POSITIONS.map(p=><option key={p}>{p}</option>)}</select>
-                <div style={{display:'flex',alignItems:'center',gap:4}}><span style={{fontSize:10,color:'#dc2626',fontWeight:600}}>Cost:</span><$In value={deco.cost_each||0} onChange={v=>uD(idx,di,'cost_each',v)} w={55}/></div>
-                <div style={{display:'flex',alignItems:'center',gap:4}}><span style={{fontSize:10,color:'#166534',fontWeight:600}}>Sell:</span><$In value={deco.sell_each||0} onChange={v=>{uD(idx,di,'sell_each',v);uD(idx,di,'sell_override',v)}} w={55}/></div>
+                <div style={{display:'flex',alignItems:'center',gap:4}}><span style={{fontSize:10,color:'#dc2626',fontWeight:600}}>Cost:</span><$In value={oCost} onChange={v=>uD(idx,di,'cost_each',v)} w={55}/></div>
+                <div style={{display:'flex',alignItems:'center',gap:4}}><span style={{fontSize:10,color:'#166534',fontWeight:600}}>Sell:</span><$In value={oSell} onChange={v=>{uD(idx,di,'sell_each',v);uD(idx,di,'sell_override',v)}} w={55}/></div>
+                {(oCost>0||oSell>0)&&<span style={{fontSize:10,fontWeight:700,color:oMPct>=30?'#166534':oMPct>=15?'#b45309':'#dc2626'}}>Margin: ${oMargin.toFixed(2)} ({oMPct}%)</span>}
                 <button onClick={()=>rmD(idx,di)} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',marginLeft:'auto'}}><Icon name="x" size={14}/></button>
+              </div>
+              <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginTop:6}}>
+                <input className="form-input" style={{fontSize:11,flex:1,minWidth:180,padding:'4px 8px'}} value={deco.notes||''} onChange={e=>uD(idx,di,'notes',e.target.value)} placeholder="Notes — thread colors, stitch count, # screens, instructions..."/>
+                {deco.art_file_id?<span style={{fontSize:10,color:'#7c3aed'}}>🖼 {af.find(f=>f.id===deco.art_file_id)?.name||'Art linked'} <button onClick={()=>uD(idx,di,'art_file_id',null)} style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',fontSize:10}}>✕</button></span>
+                  :<select className="form-select" style={{width:160,fontSize:10,color:'#94a3b8'}} value="" onChange={e=>{if(e.target.value)uD(idx,di,'art_file_id',e.target.value)}}>
+                    <option value="">Link art (optional)...</option>
+                    {af.map(f=><option key={f.id} value={f.id}>{f.name||'Untitled'}</option>)}
+                  </select>}
+                {isSO&&deco.vendor&&qty>0&&<button className="btn btn-sm" style={{fontSize:10,background:'#faf5ff',border:'1px solid #ddd6fe',color:'#7c3aed',fontWeight:700,whiteSpace:'nowrap'}} onClick={()=>setShowPO('deco:'+deco.vendor)}>📦 Create Deco PO → {deco.vendor}</button>}
               </div>
             </div>)}
             // NUMBERS decoration
@@ -1246,11 +1270,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
             </div>)}
             return null})}
           <div style={{display:'flex',gap:6,marginTop:8,alignItems:'center',flexWrap:'wrap'}}>
-            <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>addArtDeco(idx)}><Icon name="image" size={12}/> + Add Art</button>
-            <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>addNumDeco(idx)}>#️⃣ + Add Numbers</button>
-            <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>addOutsideDeco(idx)}>🎨 + Outside Deco</button>
-            {safeDecos(item).length===0&&!item.no_deco&&<button className="btn btn-sm btn-secondary" style={{fontSize:10,color:'#94a3b8'}} onClick={()=>uI(idx,'no_deco',true)}>🚫 Blank Ship</button>}
-            {item.no_deco&&<span style={{fontSize:10,padding:'3px 8px',borderRadius:4,background:'#f1f5f9',color:'#64748b',fontWeight:600,display:'flex',alignItems:'center',gap:4}}>🚫 Blank Ship <button onClick={()=>uI(idx,'no_deco',false)} style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',fontSize:12,padding:0,marginLeft:2}}>✕</button></span>}
+            {(()=>{const hasOutside=safeDecos(item).some(d=>d.kind==='outside_deco');const hasInHouse=safeDecos(item).some(d=>d.kind==='art'||d.kind==='numbers');
+              return<>
+                {!hasOutside&&<button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>addArtDeco(idx)}><Icon name="image" size={12}/> + Add Art</button>}
+                {!hasOutside&&<button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>addNumDeco(idx)}>#️⃣ + Add Numbers</button>}
+                {!hasInHouse&&<button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>addOutsideDeco(idx)}>🎨 + Outside Deco</button>}
+                {safeDecos(item).length===0&&!item.no_deco&&<button className="btn btn-sm btn-secondary" style={{fontSize:10,color:'#94a3b8'}} onClick={()=>uI(idx,'no_deco',true)}>🚫 Blank Ship</button>}
+                {item.no_deco&&<span style={{fontSize:10,padding:'3px 8px',borderRadius:4,background:'#f1f5f9',color:'#64748b',fontWeight:600,display:'flex',alignItems:'center',gap:4}}>🚫 Blank Ship <button onClick={()=>uI(idx,'no_deco',false)} style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',fontSize:12,padding:0,marginLeft:2}}>✕</button></span>}
+              </>})()}
           </div>
         </div>
       </div>)})}
