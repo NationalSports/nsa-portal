@@ -774,7 +774,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
   const isAU=b=>b==='Adidas'||b==='Under Armour'||b==='New Balance';const tD={A:0.4,B:0.35,C:0.3};
   const selC=id=>{const c=allCustomers.find(x=>x.id===id);if(c){setCust(c);sv('customer_id',id);sv('default_markup',c.catalog_markup||1.65)}};
   const addP=p=>{const au=isAU(p.brand);const sell=au?rQ(p.retail_price*(1-(tD[cust?.adidas_ua_tier||'B']||0.35))):rQ(p.nsa_cost*(o.default_markup||1.65));
-    sv('items',[...o.items,{product_id:p.id,sku:p.sku,name:p.name,brand:p.brand,color:p.color,nsa_cost:p.nsa_cost,retail_price:p.retail_price,unit_sell:sell,available_sizes:[...p.available_sizes],_colors:p._colors||null,sizes:{},decorations:[]}]);setShowAdd(false);setPS('')};
+    const defaultDecos=isE?[{kind:'art',art_file_id:'__tbd',art_tbd_type:'screen_print',position:'',sell_override:0}]:[];
+    sv('items',[...o.items,{product_id:p.id,sku:p.sku,name:p.name,brand:p.brand,color:p.color,nsa_cost:p.nsa_cost,retail_price:p.retail_price,unit_sell:sell,available_sizes:[...p.available_sizes],_colors:p._colors||null,sizes:{},decorations:defaultDecos}]);setShowAdd(false);setPS('')};
   const uI=(i,k,v)=>sv('items',safeItems(o).map((it,x)=>x===i?{...it,[k]:v}:it));const rmI=i=>sv('items',safeItems(o).filter((_,x)=>x!==i));
   const copyI=(i)=>{const it=o.items[i];const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];clone.sizes={};sv('items',[...o.items,clone]);nf('📋 Copied '+it.sku+' — adjust sizes on the new item')};
   const uSz=(i,sz,v)=>{
@@ -965,46 +966,53 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         {/* Print Estimate or SO */}
         <button className="btn btn-secondary" style={{fontSize:12}} onClick={()=>{
           const items=safeItems(o).filter(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
-          // Build artQty for shared art combined pricing on print
           const _pAQ={};items.forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_pAQ[d.art_file_id]=(_pAQ[d.art_file_id]||0)+q2}})});
-          const rows=items.map(it=>{
+          const isRolled=(o.pricing_mode||'itemized')==='rolled_up';
+          const taxRate=cust?.tax_rate||0;
+          const rows=[];let subTotal=0;
+          items.forEach(it=>{
             const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
-            const decoSell=safeDecos(it).reduce((a,d)=>{const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:qty;const dp=dP(d,qty,af,cq);return a+dp.sell},0);
-            const unitTotal=safeNum(it.unit_sell)+decoSell;
-            return{cells:[it.sku+' '+(it.name||'')+(it.color?' — '+it.color:''),qty,'$'+unitTotal.toFixed(2),'$'+(qty*unitTotal).toFixed(2)]}});
-          const subTotal=items.reduce((a,it)=>{
-            const qty=Object.values(safeSizes(it)).reduce((acc,v)=>acc+safeNum(v),0);
-            const decoSell=safeDecos(it).reduce((acc,d)=>{const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:qty;const dp=dP(d,qty,af,cq);return acc+dp.sell},0);
-            return a+qty*(safeNum(it.unit_sell)+decoSell)},0);
+            const decos=safeDecos(it);
+            const decoSell=decos.reduce((a,d)=>{const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);return a+dp2.sell},0);
+            const szStr=SZ_ORD.filter(sz=>safeSizes(it)[sz]>0).map(sz=>safeSizes(it)[sz]+' '+sz).join(', ');
+            const unitPrice=isRolled?safeNum(it.unit_sell)+decoSell:safeNum(it.unit_sell);
+            const lineAmt=qty*unitPrice;subTotal+=lineAmt;
+            let itemDesc='<strong>'+it.sku+'</strong><br/>'+(it.name||'')+(it.color?' - '+it.color:'');
+            if(szStr)itemDesc+='<br/><span style="font-size:10px;color:#555">'+szStr+'</span>';
+            rows.push({cells:[{value:itemDesc},{value:qty,style:'text-align:center'},{value:'$'+unitPrice.toFixed(2),style:'text-align:right'},{value:'$'+lineAmt.toFixed(2),style:'text-align:right;font-weight:600'}]});
+            decos.forEach(d=>{
+              const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);
+              const artF=af.find(a2=>a2.id===d.art_file_id);
+              const decoName=(d.kind==='art'?(artF?.deco_type||d.art_tbd_type||'decoration'):d.kind==='numbers'?'Numbers':d.kind==='outside_deco'?(d.deco_type||'Decoration'):'Decoration').replace(/_/g,' ');
+              const posLabel=d.position?' — '+d.position:'';
+              if(isRolled){
+                rows.push({cells:[{value:'<span style="padding-left:20px;color:#666;font-size:11px">'+decoName+posLabel+'</span>',style:'border-bottom:none'},{value:'',style:'border-bottom:none'},{value:'',style:'border-bottom:none'},{value:'',style:'border-bottom:none'}]});
+              }else{
+                const decoAmt=qty*dp2.sell;subTotal+=decoAmt;
+                rows.push({cells:[{value:'<span style="padding-left:20px;color:#666;font-size:11px">'+decoName+posLabel+'</span>'},{value:qty,style:'text-align:center;color:#888;font-size:11px'},{value:'$'+dp2.sell.toFixed(2),style:'text-align:right;color:#888;font-size:11px'},{value:'$'+decoAmt.toFixed(2),style:'text-align:right;color:#888;font-size:11px'}]});
+              }
+            });
+          });
           const shipAmt=o.shipping_type==='pct'?subTotal*(o.shipping_value||0)/100:(o.shipping_value||0);
-          const total=subTotal+shipAmt;
+          const taxAmt=subTotal*taxRate;
+          const total=subTotal+shipAmt+taxAmt;
+          if(shipAmt>0)rows.push({cells:[{value:'<strong>Shipping</strong>'},{value:1,style:'text-align:center'},{value:'$'+shipAmt.toFixed(2),style:'text-align:right'},{value:'$'+shipAmt.toFixed(2),style:'text-align:right'}]});
           printDoc({
             title:cust?.name||'Customer',docNum:o.id,docType:isE?'ESTIMATE':'SALES ORDER',
-            headerRight:'<div style="font-size:28px;font-weight:900;color:#1e3a5f">$'+total.toFixed(2)+'</div>',
+            headerRight:'<div style="font-size:32px;font-weight:900;color:#1e3a5f">$'+total.toFixed(2)+'</div>'+(isE?'<div style="font-size:11px;color:#888">Expires: '+new Date(Date.now()+30*86400000).toLocaleDateString()+'</div>':''),
             infoBoxes:[
-              {label:isE?'Prepared For':'Customer',value:cust?.name||'—',sub:cust?.alpha_tag},
-              {label:'Date',value:o.created_at||new Date().toLocaleDateString(),sub:isE?'Valid for 30 days':'Expected: '+(o.expected_date||'TBD')},
+              {label:'Bill To',value:cust?.name||'—',sub:cust?.address||cust?.alpha_tag||''},
+              {label:isE?'Expires':'Expected',value:isE?new Date(Date.now()+30*86400000).toLocaleDateString():(o.expected_date||'TBD'),sub:'Exp. Close: '+new Date().toLocaleDateString()},
+              {label:'Sales Rep',value:REPS.find(r=>r.id===o.created_by)?.name||'—'},
               {label:'Memo',value:o.memo||'—'},
-              {label:'Rep',value:REPS.find(r=>r.id===o.created_by)?.name||'—',sub:NSA.phone},
             ],
             tables:[
-              {headers:['Item','Qty','Unit Price','Amount'],aligns:['left','center','right','right'],
+              {headers:['Item','Qty','Rate','Amount'],aligns:['left','center','right','right'],
                 rows:[...rows,
-                  ...(shipAmt>0?[{cells:[{value:'Shipping'+(o.shipping_type==='pct'?' ('+o.shipping_value+'%)':''),style:'font-style:italic'},'','','$'+shipAmt.toFixed(2)]}]:[]),
-                  {_class:'totals-row',cells:['','','Total','$'+total.toFixed(2)]}
+                  {cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Subtotal</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'},{value:'<strong>$'+subTotal.toFixed(2)+'</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'}]},
+                  ...(taxAmt>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'Tax ('+(taxRate*100).toFixed(3)+'%)',style:'text-align:right;border:none;font-size:11px'},{value:'$'+taxAmt.toFixed(2),style:'text-align:right;border:none'}]}]:[]),
+                  {_class:'totals-row',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Total</strong>',style:'text-align:right'},{value:'<strong style="font-size:14px">$'+total.toFixed(2)+'</strong>',style:'text-align:right'}]},
                 ]},
-              ...(o.pricing_mode!=='rolled_up'&&items.some(it=>safeDecos(it).length>0)?[{title:'Decoration Details',
-                headers:['Item','Position','Type','Per Unit','Extended'],aligns:['left','left','left','right','right'],
-                rows:items.flatMap(it=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
-                  return safeDecos(it).map(d=>{const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:qty;const dp=dP(d,qty,af,cq);const artF=af.find(a=>a.id===d.art_file_id);
-                    return{cells:[it.sku,d.position||'—',artF?.deco_type?.replace(/_/g,' ')||d.kind||'—','$'+dp.sell.toFixed(2),'$'+(qty*dp.sell).toFixed(2)]}})
-                })}]:[]),
-              ...(items.length>0?[{title:'Size Breakdown',className:'sz-table',
-                headers:['Item',...SZ_ORD.filter(sz=>items.some(it=>safeSizes(it)[sz]>0)),'Total'],
-                aligns:['left',...SZ_ORD.filter(sz=>items.some(it=>safeSizes(it)[sz]>0)).map(()=>'center'),'center'],
-                rows:items.map(it=>{const szs=SZ_ORD.filter(sz=>items.some(ii=>safeSizes(ii)[sz]>0));
-                  const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
-                  return{cells:[it.sku,...szs.map(sz=>({value:safeSizes(it)[sz]||'',style:safeSizes(it)[sz]>0?'font-weight:800;color:#1e3a5f;background:#eef2ff':'color:#ccc'})),{value:qty,style:'font-weight:800'}]}})}]:[]),
             ],
             footer:isE?'This estimate is valid for 30 days. Prices subject to change. '+NSA.depositTerms:NSA.terms,
             portalLink:cust?.alpha_tag?(window.location.origin+'?portal='+cust.alpha_tag):undefined
@@ -1365,7 +1373,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
     {showCustom&&<div className="card" style={{marginTop:8,borderLeft:'3px solid #d97706'}}><div style={{padding:'14px 18px'}}>
       <div style={{fontWeight:700,marginBottom:8}}>✏️ Custom Item {custItem.name&&<span style={{fontWeight:400,fontSize:12,color:'#64748b'}}>— {custItem.name}</span>}</div>
       <div style={{display:'grid',gridTemplateColumns:'120px 1fr 120px',gap:8,marginBottom:8}}>
-        <div><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Brand / Vendor</label><select className="form-select" value={custItem.vendor_id} onChange={e=>{const vid=e.target.value;const vn=D_V.find(v=>v.id===vid)?.name||'';setCustItem(x=>({...x,vendor_id:vid,brand:vn}))}}><option value="">Select...</option>{D_V.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}</select></div>
+        <div><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Brand / Vendor</label>
+          <SearchSelect options={D_V.map(v=>({value:v.id,label:v.name}))} value={custItem.vendor_id} onChange={vid=>{const vn=D_V.find(v=>v.id===vid)?.name||'';setCustItem(x=>({...x,vendor_id:vid,brand:vn}))}} placeholder="Search vendors..."/></div>
         <div><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Item Name</label><input className="form-input" value={custItem.name} onChange={e=>setCustItem(x=>({...x,name:e.target.value}))} placeholder="Custom jersey, special order hat, etc."/></div>
         <div><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Color</label><input className="form-input" value={custItem.color} onChange={e=>setCustItem(x=>({...x,color:e.target.value}))} placeholder="Navy"/></div></div>
 
@@ -1390,7 +1399,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         </>})()}
       <div style={{display:'flex',gap:4}}>
         <button className="btn btn-primary" disabled={!custItem.name} onClick={()=>{const brandName=D_V.find(v=>v.id===custItem.vendor_id)?.name||'Custom';
-          sv('items',[...o.items,{product_id:null,sku:custItem.sku||'CUSTOM',name:custItem.name,brand:brandName,vendor_id:custItem.vendor_id,color:custItem.color,nsa_cost:custItem.nsa_cost,retail_price:custItem.retail_price||0,unit_sell:custItem.unit_sell,available_sizes:['S','M','L','XL','2XL'],sizes:{},decorations:[],is_custom:true}]);
+          const defaultDecos=isE?[{kind:'art',art_file_id:'__tbd',art_tbd_type:'screen_print',position:'',sell_override:0}]:[];
+          sv('items',[...o.items,{product_id:null,sku:custItem.sku||'CUSTOM',name:custItem.name,brand:brandName,vendor_id:custItem.vendor_id,color:custItem.color,nsa_cost:custItem.nsa_cost,retail_price:custItem.retail_price||0,unit_sell:custItem.unit_sell,available_sizes:['S','M','L','XL','2XL'],sizes:{},decorations:defaultDecos,is_custom:true}]);
           setShowCustom(false);setCustItem({vendor_id:'',name:'',sku:'CUSTOM',nsa_cost:0,unit_sell:0,retail_price:0,color:'',brand:''})}}>Add Item</button>
         <button className="btn btn-secondary" onClick={()=>setShowCustom(false)}>Cancel</button></div>
     </div></div>}
