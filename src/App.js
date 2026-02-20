@@ -1095,7 +1095,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
               <input value={item.sizes[sz]||''} onChange={e=>uSz(idx,sz,e.target.value)} placeholder="0"
                 style={{width:42,textAlign:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'5px 2px',fontSize:15,fontWeight:700,color:(item.sizes[sz]||0)>0?'#0f172a':'#cbd5e1'}}/>
               {isAdded&&!(safeNum(item.sizes[sz])>0)&&<button onClick={()=>{const ns=(item.available_sizes||[]).filter(s=>s!==sz);uI(idx,'available_sizes',ns);const szCopy={...item.sizes};delete szCopy[sz];uI(idx,'sizes',szCopy)}} style={{position:'absolute',top:-4,right:-2,background:'#dc2626',color:'white',border:'none',borderRadius:'50%',width:14,height:14,fontSize:8,cursor:'pointer',lineHeight:'14px',padding:0}} title="Remove size">✕</button>}
-              {(()=>{const p=baseProd;const stk=p?._inv?.[sz];const need=item.sizes[sz]||0;return<div style={{fontSize:9,fontWeight:600,minHeight:13,color:stk==null?'transparent':stk<=0?'#dc2626':stk<need?'#ca8a04':'#166534'}}>{stk!=null?stk+' inv':'\u00A0'}</div>})()}</div>})}
+              {(()=>{const p=baseProd;const stk=p?._inv?.[sz];const need=item.sizes[sz]||0;return<div style={{fontSize:9,fontWeight:600,minHeight:13,color:stk==null?'transparent':stk<=0?'#dc2626':stk<need?'#ca8a04':'#166534'}}>{stk!=null?stk+' inv':' '}</div>})()}</div>})}
             <div style={{textAlign:'center',marginLeft:4,padding:'0 10px',borderLeft:'2px solid #e2e8f0'}}>
               <div style={{fontSize:10,fontWeight:700,color:'#1e40af'}}>QTY</div>
               <div style={{fontSize:20,fontWeight:800,color:'#1e40af'}}>{qty}</div>
@@ -3701,6 +3701,7 @@ function CoachPortal({customer,estimates,orders,invoices,artFiles,onUpdate,onMsg
   const[msg,setMsg]=useState('');
   const[files,setFiles]=useState({});
   const[paySelect,setPaySelect]=useState({});
+  const[changeReq,setChangeReq]=useState(false);// show change request textarea
   const af=artFiles||[];
   const isRolled=(o)=>(o?.pricing_mode||'itemized')==='rolled_up';
 
@@ -3715,7 +3716,7 @@ function CoachPortal({customer,estimates,orders,invoices,artFiles,onUpdate,onMsg
       else{rows.push({sku:it.sku,name:it.name,color:it.color,qty,unit:it.unit_sell,ext:qty*it.unit_sell});
         decos.forEach(d=>{const dp=pricingFn?pricingFn(d,qty,af,_pAQ[d.art_file_id]):null;const sell=dp?.sell||d.sell_override||0;if(sell<=0)return;
           const artF=af.find(f=>f.id===d.art_file_id);const label=d.kind==='art'?(artF?.deco_type||d.art_tbd_type||'decoration').replace(/_/g,' ')+' — '+(d.position||''):d.kind==='numbers'?'Numbers — '+(d.position||''):(d.deco_type||'decoration').replace(/_/g,' ')+' — '+(d.position||'');
-          rows.push({sku:'',name:'  \u21b3 '+label,color:'',qty,unit:sell,ext:qty*sell,isDeco:true})})}});
+          rows.push({sku:'',name:'  ↳ '+label,color:'',qty,unit:sell,ext:qty*sell,isDeco:true})})}});
     return rows};
 
   const calcTotals=(o)=>{const rows=itemRows(o);const sub=rows.reduce((a,r)=>a+r.ext,0);
@@ -3756,11 +3757,11 @@ function CoachPortal({customer,estimates,orders,invoices,artFiles,onUpdate,onMsg
 
     return<div style={cs.wrap}>
       <div style={cs.hdr}>
-        <button onClick={()=>setDetail(null)} style={{background:'rgba(255,255,255,0.2)',border:'none',color:'white',padding:'6px 14px',borderRadius:6,cursor:'pointer',fontSize:12,fontWeight:700,marginBottom:12}}>\u2190 Back</button>
+        <button onClick={()=>setDetail(null)} style={{background:'rgba(255,255,255,0.2)',border:'none',color:'white',padding:'6px 14px',borderRadius:6,cursor:'pointer',fontSize:12,fontWeight:700,marginBottom:12}}>← Back</button>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end'}}>
           <div><div style={{fontSize:10,opacity:0.7,letterSpacing:1}}>{detail.type==='est'?'ESTIMATE':detail.type==='so'?'SALES ORDER':'INVOICE'}</div>
             <div style={{fontSize:22,fontWeight:800}}>{o.id}</div>
-            <div style={{fontSize:13,opacity:0.8}}>{o.memo||'\u2014'}</div></div>
+            <div style={{fontSize:13,opacity:0.8}}>{o.memo||'—'}</div></div>
           <div style={{textAlign:'right'}}><div style={{fontSize:28,fontWeight:900}}>${tots.grand.toFixed(2)}</div></div>
         </div>
       </div>
@@ -3779,7 +3780,7 @@ function CoachPortal({customer,estimates,orders,invoices,artFiles,onUpdate,onMsg
         <div style={{marginBottom:16}}>
           {rows.map((r,i)=><div key={i} style={{...cs.itemRow,color:r.isDeco?'#94a3b8':'#1a1a2e'}}>
             <span>{r.sku&&<span style={{fontFamily:'monospace',color:'#1e40af',marginRight:6}}>{r.sku}</span>}{r.name}{r.color&&!r.isDeco?<span style={{color:'#94a3b8'}}> ({r.color})</span>:''}</span>
-            <span style={{fontWeight:r.isDeco?400:600,whiteSpace:'nowrap'}}>{!r.isDeco&&r.qty+' \u00d7 '}${r.unit.toFixed(2)}{!r.isDeco&&<span style={{color:'#64748b'}}> = ${r.ext.toFixed(2)}</span>}</span>
+            <span style={{fontWeight:r.isDeco?400:600,whiteSpace:'nowrap'}}>{!r.isDeco&&r.qty+' × '}${r.unit.toFixed(2)}{!r.isDeco&&<span style={{color:'#64748b'}}> = ${r.ext.toFixed(2)}</span>}</span>
           </div>)}
         </div>
 
@@ -3797,13 +3798,13 @@ function CoachPortal({customer,estimates,orders,invoices,artFiles,onUpdate,onMsg
           <table style={{width:'100%',borderCollapse:'collapse',fontSize:11}}>
             <thead><tr style={{borderBottom:'2px solid #e2e8f0'}}><th style={{textAlign:'left',padding:'4px 6px',color:'#94a3b8'}}>Item</th>{szs.map(sz=><th key={sz} style={{textAlign:'center',padding:'4px 3px',color:'#94a3b8',minWidth:28}}>{sz}</th>)}<th style={{textAlign:'center',color:'#94a3b8'}}>Tot</th></tr></thead>
             <tbody>{szItems.map((it,i)=>{const q=Object.values(it.sizes||{}).reduce((a,v)=>a+(parseInt(v)||0),0);
-              return<tr key={i} style={{borderBottom:'1px solid #f1f5f9'}}><td style={{padding:'4px 6px',fontWeight:600,fontSize:11}}>{it.sku}</td>{szs.map(sz=><td key={sz} style={{textAlign:'center',fontWeight:(it.sizes||{})[sz]>0?700:400,color:(it.sizes||{})[sz]>0?'#1e3a5f':'#d1d5db'}}>{(it.sizes||{})[sz]||'\u2014'}</td>)}<td style={{textAlign:'center',fontWeight:800}}>{q}</td></tr>})}</tbody>
+              return<tr key={i} style={{borderBottom:'1px solid #f1f5f9'}}><td style={{padding:'4px 6px',fontWeight:600,fontSize:11}}>{it.sku}</td>{szs.map(sz=><td key={sz} style={{textAlign:'center',fontWeight:(it.sizes||{})[sz]>0?700:400,color:(it.sizes||{})[sz]>0?'#1e3a5f':'#d1d5db'}}>{(it.sizes||{})[sz]||'—'}</td>)}<td style={{textAlign:'center',fontWeight:800}}>{q}</td></tr>})}</tbody>
           </table></div>
         </div>}
 
         {/* File upload */}
-        <div style={{marginBottom:16}}><div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:6}}>\ud83d\udcce Files & Roster</div>
-          {orderFiles.length>0&&<div style={{marginBottom:6}}>{orderFiles.map((f,i)=><span key={i} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'3px 8px',background:'#f1f5f9',borderRadius:4,fontSize:11,margin:'2px 2px'}}>\ud83d\udcce {f.name} <button onClick={()=>setFiles({...files,[o.id]:orderFiles.filter((_,j)=>j!==i)})} style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',fontSize:9}}>\u2715</button></span>)}</div>}
+        <div style={{marginBottom:16}}><div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:6}}>📎 Files & Roster</div>
+          {orderFiles.length>0&&<div style={{marginBottom:6}}>{orderFiles.map((f,i)=><span key={i} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'3px 8px',background:'#f1f5f9',borderRadius:4,fontSize:11,margin:'2px 2px'}}>📎 {f.name} <button onClick={()=>setFiles({...files,[o.id]:orderFiles.filter((_,j)=>j!==i)})} style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',fontSize:9}}>✕</button></span>)}</div>}
           <label style={{display:'block',border:'2px dashed #d1d5db',borderRadius:8,padding:16,textAlign:'center',cursor:'pointer'}}>
             <input type="file" multiple style={{display:'none'}} onChange={e=>{setFiles({...files,[o.id]:[...(files[o.id]||[]),...Array.from(e.target.files)]})}} accept=".pdf,.ai,.eps,.png,.jpg,.xlsx,.csv"/>
             <div style={{fontSize:13,fontWeight:600,color:'#3b82f6'}}>Drop files or click to upload</div>
@@ -3811,17 +3812,25 @@ function CoachPortal({customer,estimates,orders,invoices,artFiles,onUpdate,onMsg
           </label></div>
 
         {/* Message */}
-        <div style={{marginBottom:16}}><div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:6}}>\ud83d\udcac Send Message</div>
+        <div style={{marginBottom:16}}><div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:6}}>💬 Send Message</div>
           <textarea value={msg} onChange={e=>setMsg(e.target.value)} placeholder="Questions, change requests, roster info..." style={{width:'100%',border:'1px solid #d1d5db',borderRadius:8,padding:10,fontSize:13,resize:'vertical',minHeight:50,boxSizing:'border-box'}}/>
           {msg.trim()&&<button onClick={()=>{if(onMsg)onMsg(o.id,msg);setMsg('');alert('Message sent!')}} style={{marginTop:6,padding:'8px 16px',background:'#1e3a5f',color:'white',border:'none',borderRadius:6,cursor:'pointer',fontSize:12,fontWeight:700}}>Send</button>}
         </div>
 
         {/* Actions */}
         <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-          <button onClick={()=>window.print()} style={{padding:'10px 16px',background:'white',border:'2px solid #1e3a5f',borderRadius:8,cursor:'pointer',fontSize:12,fontWeight:700,color:'#1e3a5f'}}>\ud83d\udda8\ufe0f Print</button>
-          {detail.type==='est'&&o.status!=='approved'&&<button onClick={()=>{if(onUpdate)onUpdate(o.id,'approved');alert('Estimate approved!')}} style={{padding:'10px 16px',background:'#22c55e',border:'none',borderRadius:8,cursor:'pointer',fontSize:12,fontWeight:700,color:'white'}}>\u2705 Approve</button>}
-          {detail.type==='inv'&&o.status!=='paid'&&<button onClick={()=>setCCModal({ids:[o.id],total:tots.grand})} style={{padding:'10px 16px',background:'#22c55e',border:'none',borderRadius:8,cursor:'pointer',fontSize:12,fontWeight:700,color:'white'}}>\ud83d\udcb3 Pay ${tots.grand.toFixed(2)}</button>}
+          <button onClick={()=>window.print()} style={{padding:'10px 16px',background:'white',border:'2px solid #1e3a5f',borderRadius:8,cursor:'pointer',fontSize:12,fontWeight:700,color:'#1e3a5f'}}>🖨️ Print</button>
+          {detail.type==='est'&&o.status!=='approved'&&<button onClick={()=>{if(onUpdate)onUpdate(o.id,'approved');alert('Estimate approved! Your rep will begin processing your order.')}} style={{padding:'10px 16px',background:'#22c55e',border:'none',borderRadius:8,cursor:'pointer',fontSize:12,fontWeight:700,color:'white'}}>✅ Approve Estimate</button>}
+          {detail.type==='est'&&o.status!=='approved'&&<button onClick={()=>setChangeReq(!changeReq)} style={{padding:'10px 16px',background:changeReq?'#f59e0b':'white',border:'2px solid #f59e0b',borderRadius:8,cursor:'pointer',fontSize:12,fontWeight:700,color:changeReq?'white':'#b45309'}}>✏️ Request Changes</button>}
+          {detail.type==='inv'&&o.status!=='paid'&&<button onClick={()=>setCCModal({ids:[o.id],total:tots.grand})} style={{padding:'10px 16px',background:'#22c55e',border:'none',borderRadius:8,cursor:'pointer',fontSize:12,fontWeight:700,color:'white'}}>💳 Pay ${tots.grand.toFixed(2)}</button>}
         </div>
+        {/* Change request form */}
+        {changeReq&&detail.type==='est'&&<div style={{marginTop:12,padding:16,background:'#fffbeb',border:'2px solid #f59e0b',borderRadius:10}}>
+          <div style={{fontSize:13,fontWeight:700,color:'#92400e',marginBottom:6}}>What changes would you like?</div>
+          <div style={{fontSize:11,color:'#b45309',marginBottom:8}}>Describe any size, quantity, color, or product changes and your rep will update the estimate.</div>
+          <textarea value={msg} onChange={e=>setMsg(e.target.value)} placeholder="e.g. Change L to 25 and XL to 18, add 3XL size with 5 units. Also can we get the hoodie in Navy instead?" style={{width:'100%',border:'1px solid #fbbf24',borderRadius:8,padding:10,fontSize:13,resize:'vertical',minHeight:80,boxSizing:'border-box',background:'white'}}/>
+          {msg.trim()&&<button onClick={()=>{if(onMsg)onMsg(o.id,'📋 CHANGE REQUEST on '+o.id+':\n'+msg);if(onUpdate)onUpdate(o.id,'changes_requested');setMsg('');setChangeReq(false);alert('Change request sent! Your rep will review and send an updated estimate.')}} style={{marginTop:8,padding:'10px 20px',background:'#f59e0b',color:'white',border:'none',borderRadius:8,cursor:'pointer',fontSize:13,fontWeight:700,width:'100%'}}>Send Change Request</button>}
+        </div>}
       </div>
 
       {/* CC Modal in detail */}
@@ -3839,8 +3848,8 @@ function CoachPortal({customer,estimates,orders,invoices,artFiles,onUpdate,onMsg
               <input placeholder="Card number" style={{padding:10,border:'1px solid #d1d5db',borderRadius:6,fontSize:14}}/>
               <div style={{display:'flex',gap:8}}><input placeholder="MM/YY" style={{flex:1,padding:10,border:'1px solid #d1d5db',borderRadius:6}}/><input placeholder="CVC" style={{flex:1,padding:10,border:'1px solid #d1d5db',borderRadius:6}}/><input placeholder="ZIP" style={{flex:1,padding:10,border:'1px solid #d1d5db',borderRadius:6}}/></div>
             </div>
-            <button style={{width:'100%',padding:'12px',background:'#22c55e',color:'white',border:'none',borderRadius:8,fontSize:14,fontWeight:800,cursor:'pointer'}} onClick={()=>{alert('Payment processed! (Stripe integration coming)');setCCModal(null);setPaySelect({})}}>\ud83d\udcb3 Pay ${(ccModal.total+fee).toFixed(2)}</button>
-            <div style={{fontSize:10,color:'#94a3b8',marginTop:8,textAlign:'center'}}>Secured by Stripe \u00b7 NSA never stores your card info</div>
+            <button style={{width:'100%',padding:'12px',background:'#22c55e',color:'white',border:'none',borderRadius:8,fontSize:14,fontWeight:800,cursor:'pointer'}} onClick={()=>{alert('Payment processed! (Stripe integration coming)');setCCModal(null);setPaySelect({})}}>💳 Pay ${(ccModal.total+fee).toFixed(2)}</button>
+            <div style={{fontSize:10,color:'#94a3b8',marginTop:8,textAlign:'center'}}>Secured by Stripe · NSA never stores your card info</div>
           </div>
         </div>})()}
     </div>;
@@ -3866,37 +3875,37 @@ function CoachPortal({customer,estimates,orders,invoices,artFiles,onUpdate,onMsg
       {/* Pay Now */}
       {totalDue>0&&<div style={{marginBottom:20}}>
         <button style={{width:'100%',padding:'14px 20px',background:'#22c55e',color:'white',border:'none',borderRadius:10,fontSize:16,fontWeight:800,cursor:'pointer'}} onClick={()=>setCCModal({ids:openInvs.map(i=>i.id),total:totalDue})}>
-          \ud83d\udcb3 Pay Now \u2014 ${totalDue.toLocaleString(undefined,{minimumFractionDigits:2})}
+          💳 Pay Now — ${totalDue.toLocaleString(undefined,{minimumFractionDigits:2})}
         </button>
         <div style={{display:'flex',justifyContent:'center',gap:12,marginTop:6}}>
-          <span style={{fontSize:10,color:'#94a3b8'}}>\ud83d\udcb3 Credit Card</span>
-          <span style={{fontSize:10,color:'#94a3b8'}}>\uf8ff Apple Pay</span>
-          <span style={{fontSize:10,color:'#94a3b8'}}>\ud83c\udfe6 ACH/Bank</span>
+          <span style={{fontSize:10,color:'#94a3b8'}}>💳 Credit Card</span>
+          <span style={{fontSize:10,color:'#94a3b8'}}> Apple Pay</span>
+          <span style={{fontSize:10,color:'#94a3b8'}}>🏦 ACH/Bank</span>
         </div>
       </div>}
 
       {/* Estimates needing review */}
       {openEsts.length>0&&<>
-        <div style={{...cs.sectionTitle,color:'#b45309',marginTop:0}}>\ud83d\udccb Estimates to Review</div>
+        <div style={{...cs.sectionTitle,color:'#b45309',marginTop:0}}>📋 Estimates to Review</div>
         {openEsts.map(e=>{const tots=calcTotals(e);const items=(e.items||[]).filter(it=>Object.values(it.sizes||{}).some(v=>v>0));
           return<div key={e.id} style={{...cs.cardWarn,cursor:'pointer'}} onClick={()=>setDetail({type:'est',id:e.id})}>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:8}}>
               <div><div style={{fontWeight:700,fontSize:15,color:'#1e3a5f'}}>{e.memo||e.id}</div>
-                <div style={{fontSize:11,color:'#64748b'}}>{e.id} \u00b7 {e.created_at}</div></div>
+                <div style={{fontSize:11,color:'#64748b'}}>{e.id} · {e.created_at}</div></div>
               <div style={{textAlign:'right'}}><div style={{fontSize:18,fontWeight:800,color:'#1e3a5f'}}>${tots.grand.toFixed(2)}</div>
                 <span style={{fontSize:10,padding:'2px 8px',borderRadius:10,background:'#fef3c7',color:'#92400e',fontWeight:700}}>Needs Review</span></div>
             </div>
             {items.map((it,ii)=>{const qty=Object.values(it.sizes||{}).reduce((a,v)=>a+(parseInt(v)||0),0);
               return<div key={ii} style={{...cs.itemRow,borderColor:'#fef3c7'}}>
-                <span>{it.name} <span style={{color:'#94a3b8'}}>({it.color||'\u2014'})</span></span>
+                <span>{it.name} <span style={{color:'#94a3b8'}}>({it.color||'—'})</span></span>
                 <span style={{fontWeight:600,color:'#64748b'}}>{qty} units</span></div>})}
-            <div style={cs.link}>Tap to review & approve \u2192</div>
+            <div style={cs.link}>Tap to review & approve →</div>
           </div>})}
       </>}
 
       {/* Approved estimates */}
       {approvedEsts.length>0&&<>
-        <div style={{...cs.sectionTitle,color:'#166534'}}>\u2705 Approved Estimates</div>
+        <div style={{...cs.sectionTitle,color:'#166534'}}>✅ Approved Estimates</div>
         {approvedEsts.map(e=>{const tots=calcTotals(e);
           return<div key={e.id} style={{...cs.card,cursor:'pointer',background:'#f0fdf4'}} onClick={()=>setDetail({type:'est',id:e.id})}>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
@@ -3907,7 +3916,7 @@ function CoachPortal({customer,estimates,orders,invoices,artFiles,onUpdate,onMsg
 
       {/* Active Orders */}
       {activeSOs.length>0&&<>
-        <div style={{...cs.sectionTitle,color:'#1e3a5f'}}>\ud83d\udce6 Active Orders</div>
+        <div style={{...cs.sectionTitle,color:'#1e3a5f'}}>📦 Active Orders</div>
         {activeSOs.map(so=>{
           const items=(so.items||[]).filter(it=>Object.values(it.sizes||{}).some(v=>v>0));
           const cur=stSteps.indexOf(so.status||'need_order');const pct=Math.round((cur/Math.max(stSteps.length-1,1))*100);
@@ -3915,7 +3924,7 @@ function CoachPortal({customer,estimates,orders,invoices,artFiles,onUpdate,onMsg
           return<div key={so.id} style={{...cs.card,cursor:'pointer'}} onClick={()=>setDetail({type:'so',id:so.id})}>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:8}}>
               <div><div style={{fontWeight:700,fontSize:15,color:'#1e3a5f'}}>{so.memo||so.id}</div>
-                <div style={{fontSize:11,color:'#64748b'}}>Order {so.id} \u00b7 {so.created_at?.split(' ')[0]}</div></div>
+                <div style={{fontSize:11,color:'#64748b'}}>Order {so.id} · {so.created_at?.split(' ')[0]}</div></div>
               {so.expected_date&&<div style={{textAlign:'right'}}><div style={{fontSize:10,color:'#64748b'}}>EXPECTED</div>
                 <div style={{fontSize:14,fontWeight:700,color:daysOut!=null&&daysOut<=7?'#dc2626':'#1e3a5f'}}>{so.expected_date}</div></div>}
             </div>
@@ -3930,15 +3939,15 @@ function CoachPortal({customer,estimates,orders,invoices,artFiles,onUpdate,onMsg
             {/* Items */}
             {items.map((it,ii)=>{const qty=Object.values(it.sizes||{}).reduce((a,v)=>a+(parseInt(v)||0),0);
               return<div key={ii} style={cs.itemRow}>
-                <span>{it.name} <span style={{color:'#94a3b8'}}>({it.color||'\u2014'})</span></span>
+                <span>{it.name} <span style={{color:'#94a3b8'}}>({it.color||'—'})</span></span>
                 <span style={{fontWeight:600,color:'#64748b'}}>{qty} units</span></div>})}
-            <div style={cs.link}>View details \u2192</div>
+            <div style={cs.link}>View details →</div>
           </div>})}
       </>}
 
       {/* Open Invoices */}
       {openInvs.length>0&&<>
-        <div style={{...cs.sectionTitle,color:'#dc2626'}}>\ud83d\udcb0 Open Invoices</div>
+        <div style={{...cs.sectionTitle,color:'#dc2626'}}>💰 Open Invoices</div>
         <div style={{border:'1px solid #fecaca',borderRadius:10,overflow:'hidden'}}>
           {openInvs.map((inv,i)=>{const tots=calcTotals(inv);const items=(inv.items||[]).filter(it=>Object.values(it.sizes||{}).some(v=>v>0));
             return<div key={inv.id} style={{borderBottom:i<openInvs.length-1?'1px solid #fef2f2':'none'}}>
@@ -3948,17 +3957,17 @@ function CoachPortal({customer,estimates,orders,invoices,artFiles,onUpdate,onMsg
                   <div style={{fontWeight:700}}>{inv.id} <span style={{fontSize:11,color:'#64748b'}}>{inv.memo}</span></div>
                   <div style={{fontSize:11,color:'#64748b'}}>{inv.created_at}</div>
                   {items.length>0&&<div style={{marginTop:4}}>{items.slice(0,2).map((it,ii)=>{const qty=Object.values(it.sizes||{}).reduce((a,v)=>a+(parseInt(v)||0),0);
-                    return<div key={ii} style={{fontSize:11,color:'#64748b',padding:'1px 0'}}>{it.name} <span style={{color:'#94a3b8'}}>({it.color})</span> \u2014 {qty} units</div>})}
+                    return<div key={ii} style={{fontSize:11,color:'#64748b',padding:'1px 0'}}>{it.name} <span style={{color:'#94a3b8'}}>({it.color})</span> — {qty} units</div>})}
                     {items.length>2&&<div style={{fontSize:10,color:'#94a3b8'}}>+{items.length-2} more...</div>}
                   </div>}
                 </div>
                 <span style={{fontWeight:800,fontSize:16,color:'#dc2626'}}>${tots.grand.toFixed(2)}</span>
-                <span style={{color:'#94a3b8'}}>\u203a</span>
+                <span style={{color:'#94a3b8'}}>›</span>
               </div>
             </div>})}
           {selectedIds.length>0&&<div style={{padding:'12px 16px',background:'#f0fdf4',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
             <span style={{fontWeight:700,fontSize:12}}>{selectedIds.length} selected</span>
-            <button onClick={()=>setCCModal({ids:selectedIds,total:selectedTotal})} style={{padding:'8px 16px',background:'#22c55e',color:'white',border:'none',borderRadius:6,cursor:'pointer',fontSize:12,fontWeight:700}}>\ud83d\udcb3 Pay ${selectedTotal.toFixed(2)}</button>
+            <button onClick={()=>setCCModal({ids:selectedIds,total:selectedTotal})} style={{padding:'8px 16px',background:'#22c55e',color:'white',border:'none',borderRadius:6,cursor:'pointer',fontSize:12,fontWeight:700}}>💳 Pay ${selectedTotal.toFixed(2)}</button>
           </div>}
           <div style={{padding:'12px 16px',background:'#fef2f2',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
             <span style={{fontWeight:800,color:'#dc2626'}}>Total Balance</span>
@@ -3969,26 +3978,26 @@ function CoachPortal({customer,estimates,orders,invoices,artFiles,onUpdate,onMsg
 
       {/* Completed + Paid */}
       {(completedSOs.length>0||paidInvs.length>0)&&<div style={{marginTop:20,opacity:0.7}}>
-        {completedSOs.length>0&&<><div style={{fontSize:11,fontWeight:700,color:'#166534',marginBottom:6}}>\u2705 Completed Orders</div>
+        {completedSOs.length>0&&<><div style={{fontSize:11,fontWeight:700,color:'#166534',marginBottom:6}}>✅ Completed Orders</div>
           {completedSOs.slice(0,3).map(so=><div key={so.id} style={{padding:'8px 12px',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:6,display:'flex',justifyContent:'space-between',cursor:'pointer'}} onClick={()=>setDetail({type:'so',id:so.id})}>
             <span style={{fontWeight:600,fontSize:12}}>{so.memo||so.id}</span><span style={{fontSize:10,padding:'2px 8px',borderRadius:10,background:'#dcfce7',color:'#166534',fontWeight:700}}>Complete</span></div>)}</>}
-        {paidInvs.length>0&&<><div style={{fontSize:11,fontWeight:700,color:'#166534',marginBottom:6,marginTop:10}}>\ud83d\udcb0 Paid Invoices</div>
+        {paidInvs.length>0&&<><div style={{fontSize:11,fontWeight:700,color:'#166534',marginBottom:6,marginTop:10}}>💰 Paid Invoices</div>
           {paidInvs.slice(0,3).map(inv=>{const tots=calcTotals(inv);return<div key={inv.id} style={{padding:'8px 12px',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:6,display:'flex',justifyContent:'space-between',cursor:'pointer'}} onClick={()=>setDetail({type:'inv',id:inv.id})}>
-            <span style={{fontWeight:600,fontSize:12}}>{inv.id} \u2014 {inv.memo||''}</span><span style={{fontWeight:700,color:'#166534',fontSize:12}}>${tots.grand.toFixed(2)}</span></div>})}</>}
+            <span style={{fontWeight:600,fontSize:12}}>{inv.id} — {inv.memo||''}</span><span style={{fontWeight:700,color:'#166534',fontSize:12}}>${tots.grand.toFixed(2)}</span></div>})}</>}
       </div>}
 
       {/* Your Rep */}
       <div style={{marginTop:20,padding:14,background:'#f8fafc',borderRadius:10}}>
         <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:6}}>YOUR NSA REP</div>
         <div style={{fontSize:14,fontWeight:600}}>National Sports Apparel</div>
-        <div style={{fontSize:12,color:'#64748b'}}>{NSA.phone} \u00b7 {NSA.email}</div>
+        <div style={{fontSize:12,color:'#64748b'}}>{NSA.phone} · {NSA.email}</div>
       </div>
 
       {/* Upload */}
       <div style={{marginTop:16}}>
         <label style={{display:'block',border:'2px dashed #d1d5db',borderRadius:8,padding:20,textAlign:'center',cursor:'pointer'}}>
           <input type="file" multiple style={{display:'none'}} onChange={e=>{const id=activeSOs[0]?.id||openEsts[0]?.id||'general';setFiles({...files,[id]:[...(files[id]||[]),...Array.from(e.target.files)]})}} accept=".pdf,.ai,.eps,.png,.jpg,.xlsx,.csv"/>
-          <div style={{fontSize:14,fontWeight:600,color:'#3b82f6'}}>\ud83d\udcce Upload Files, Rosters, or Artwork</div>
+          <div style={{fontSize:14,fontWeight:600,color:'#3b82f6'}}>📎 Upload Files, Rosters, or Artwork</div>
           <div style={{fontSize:11,color:'#94a3b8',marginTop:4}}>PDF, AI, EPS, images, rosters (.xlsx/.csv)</div>
         </label>
       </div>
@@ -4013,8 +4022,8 @@ function CoachPortal({customer,estimates,orders,invoices,artFiles,onUpdate,onMsg
             <input placeholder="Card number" style={{padding:10,border:'1px solid #d1d5db',borderRadius:6,fontSize:14}}/>
             <div style={{display:'flex',gap:8}}><input placeholder="MM/YY" style={{flex:1,padding:10,border:'1px solid #d1d5db',borderRadius:6}}/><input placeholder="CVC" style={{flex:1,padding:10,border:'1px solid #d1d5db',borderRadius:6}}/><input placeholder="ZIP" style={{flex:1,padding:10,border:'1px solid #d1d5db',borderRadius:6}}/></div>
           </div>
-          <button style={{width:'100%',padding:'12px',background:'#22c55e',color:'white',border:'none',borderRadius:8,fontSize:14,fontWeight:800,cursor:'pointer'}} onClick={()=>{alert('Payment processed! (Stripe integration coming)');setCCModal(null);setPaySelect({})}}>\ud83d\udcb3 Pay ${(ccModal.total+fee).toFixed(2)}</button>
-          <div style={{fontSize:10,color:'#94a3b8',marginTop:8,textAlign:'center'}}>Secured by Stripe \u00b7 NSA never stores your card info</div>
+          <button style={{width:'100%',padding:'12px',background:'#22c55e',color:'white',border:'none',borderRadius:8,fontSize:14,fontWeight:800,cursor:'pointer'}} onClick={()=>{alert('Payment processed! (Stripe integration coming)');setCCModal(null);setPaySelect({})}}>💳 Pay ${(ccModal.total+fee).toFixed(2)}</button>
+          <div style={{fontSize:10,color:'#94a3b8',marginTop:8,textAlign:'center'}}>Secured by Stripe · NSA never stores your card info</div>
         </div>
       </div>})()}
   </div>;
@@ -4455,7 +4464,7 @@ export default function App(){
           <option value="all">All Reps</option>{REPS.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
         <select className="form-select" style={{width:150}} value={soF.sort} onChange={e=>setSOF(f=>({...f,sort:e.target.value}))}>
           <option value="date_desc">Newest First</option><option value="date_asc">Oldest First</option><option value="expected">By Expected Date</option><option value="customer">By Customer</option></select>
-        {activeFilters&&<button className="btn btn-sm btn-secondary" onClick={()=>setSOF({status:'all',rep:'all',search:'',sort:'date_desc'})}>\u2715 Clear</button>}
+        {activeFilters&&<button className="btn btn-sm btn-secondary" onClick={()=>setSOF({status:'all',rep:'all',search:'',sort:'date_desc'})}>✕ Clear</button>}
         <span style={{fontSize:11,color:'#64748b'}}>{fSOs.length}{fSOs.length!==sos.length?' of '+sos.length:''} orders</span>
       </div>
 
@@ -4474,12 +4483,12 @@ export default function App(){
       const statusLabel={need_order:'Need to Order',waiting_receive:'Waiting to Receive',items_received:'Items Received',in_production:'In Production',ready_to_invoice:'Ready to Invoice',complete:'Complete'}[displayStatus]||displayStatus.replace(/_/g,' ');
       return(<tr key={so.id} style={{cursor:'pointer'}} onClick={()=>{setESO(so);setESOC(c)}}>
       <td style={{fontWeight:700,color:'#1e40af'}}>{so.id}</td><td>{c?.name} <span className="badge badge-gray">{c?.alpha_tag}</span></td><td style={{fontSize:12}}>{so.memo}</td><td>{so.expected_date||'--'}</td>
-      <td><span style={{fontSize:11,color:'#64748b'}}>{rep?.name?.split(' ')[0]||'\u2014'}</span></td>
-      <td>{ac>0?<span style={{fontSize:11}}>{aa}/{ac} \u2713</span>:<span style={{fontSize:11,color:'#d97706'}}>\u2014</span>}</td>
+      <td><span style={{fontSize:11,color:'#64748b'}}>{rep?.name?.split(' ')[0]||'—'}</span></td>
+      <td>{ac>0?<span style={{fontSize:11}}>{aa}/{ac} ✓</span>:<span style={{fontSize:11,color:'#d97706'}}>—</span>}</td>
       <td>{itemStatus&&<span style={{fontSize:10,fontWeight:600,padding:'2px 6px',borderRadius:4,
         background:itemStatus==='received'?'#dcfce7':itemStatus==='partial'?'#fef3c7':itemStatus==='on_order'?'#dbeafe':'#fef2f2',
         color:itemStatus==='received'?'#166534':itemStatus==='partial'?'#92400e':itemStatus==='on_order'?'#1e40af':'#dc2626'}}>
-        {itemStatus==='received'?'\u2713 All In':itemStatus==='partial'?fulfilledSz+'/'+totalSz:itemStatus==='on_order'?'On Order':'Needs Items'}</span>}</td>
+        {itemStatus==='received'?'✓ All In':itemStatus==='partial'?fulfilledSz+'/'+totalSz:itemStatus==='on_order'?'On Order':'Needs Items'}</span>}</td>
       <td>{(()=>{const unread=msgs.filter(m=>m.so_id===so.id&&!(m.read_by||[]).includes(cu.id)).length;const total=msgs.filter(m=>m.so_id===so.id).length;return unread>0?<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'2px 8px',fontSize:10,fontWeight:700}}>{unread} new</span>:total>0?<span style={{fontSize:11,color:'#94a3b8'}}>{total}</span>:null})()}</td>
       <td><span style={{padding:'3px 10px',borderRadius:12,fontSize:11,fontWeight:700,background:SC[displayStatus]?.bg||'#f1f5f9',color:SC[displayStatus]?.c||'#475569'}}>{statusLabel}</span></td></tr>)})}
     </tbody></table></div></div></>);
@@ -5192,7 +5201,7 @@ export default function App(){
             <div><h2>{vg.name}</h2><div style={{fontSize:12,color:'#64748b'}}>{vg.pos.length} queued · {totalUnits} units</div></div>
             <div style={{textAlign:'right'}}>
               <div style={{fontSize:20,fontWeight:800,color:hitThreshold?'#166534':'#d97706'}}>${total.toFixed(2)}</div>
-              <div style={{fontSize:11,color:hitThreshold?'#166534':'#d97706',fontWeight:600}}>{hitThreshold?'\u2705 Free shipping!':'$'+(vg.threshold-total).toFixed(2)+' to free ship'}</div>
+              <div style={{fontSize:11,color:hitThreshold?'#166534':'#d97706',fontWeight:600}}>{hitThreshold?'✅ Free shipping!':'$'+(vg.threshold-total).toFixed(2)+' to free ship'}</div>
             </div>
           </div>
           <div className="card-body" style={{padding:0}}>
@@ -5202,7 +5211,7 @@ export default function App(){
                 <div style={{display:'flex',alignItems:'center',gap:8}}>
                   <span style={{fontWeight:700}}>${bp.total_cost.toFixed(2)}</span>
                   <span style={{fontSize:10,color:'#94a3b8'}}>{bp.created_by_name?.split(' ')[0]}</span>
-                  <button className="btn btn-sm" style={{color:'#dc2626',borderColor:'#fca5a5',padding:'2px 6px'}} onClick={()=>setBatchPOs(prev=>prev.filter(p=>p.id!==bp.id))}>\u2715</button>
+                  <button className="btn btn-sm" style={{color:'#dc2626',borderColor:'#fca5a5',padding:'2px 6px'}} onClick={()=>setBatchPOs(prev=>prev.filter(p=>p.id!==bp.id))}>✕</button>
                 </div>
               </div>
               <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
@@ -5220,7 +5229,7 @@ export default function App(){
                 <div style={{fontSize:10,color:'#94a3b8'}}>Enter this exact number in {vg.name}'s B2B. Warehouse scans this barcode on receiving.</div>
               </div>
               <div style={{display:'flex',flexDirection:'column',gap:6}}>
-                <button className="btn btn-sm btn-secondary" onClick={()=>{navigator.clipboard?.writeText(nextPO);nf('Copied '+nextPO)}}>\uD83D\uDCCB Copy PO#</button>
+                <button className="btn btn-sm btn-secondary" onClick={()=>{navigator.clipboard?.writeText(nextPO);nf('Copied '+nextPO)}}>📋 Copy PO#</button>
                 <button className="btn btn-sm btn-secondary" onClick={()=>{if(window.confirm('Clear all '+vg.pos.length+' POs?'))setBatchPOs(prev=>prev.filter(p=>p.vendor_key!==vk))}}>Clear</button>
               </div>
             </div>
@@ -5245,10 +5254,10 @@ export default function App(){
                 });
                 setBatchPOs(prev=>prev.filter(p=>p.vendor_key!==vk));
                 setBatchCounter(ct=>ct+1);
-                nf('\uD83D\uDE80 '+poNum+' submitted to '+vg.name+' ($'+total.toFixed(2)+')');
-              }}>\uD83D\uDE80 Submit {nextPO} to {vg.name}{hitThreshold?' \u2014 FREE SHIP':''} (${total.toFixed(2)})</button>
+                nf(' '+poNum+' submitted to '+vg.name+' ($'+total.toFixed(2)+')');
+              }}> Submit {nextPO} to {vg.name}{hitThreshold?' — FREE SHIP':''} (${total.toFixed(2)})</button>
             <div style={{fontSize:10,color:'#64748b',marginTop:6,textAlign:'center'}}>
-              Contains: {vg.pos.map(bp=>bp.so_id+' ('+bp.customer+')').join(' \u00B7 ')}
+              Contains: {vg.pos.map(bp=>bp.so_id+' ('+bp.customer+')').join(' · ')}
             </div>
           </div>
         </div>})}
@@ -5260,7 +5269,7 @@ export default function App(){
             return<div key={k} style={{padding:'10px 14px',border:'1px solid #e2e8f0',borderRadius:8,minWidth:150}}>
               <div style={{fontWeight:700,fontSize:13}}>{v.name}</div>
               <div style={{fontSize:11,color:'#64748b'}}>Free ship: ${v.threshold}+</div>
-              {queued.length>0&&<div style={{fontSize:11,marginTop:4,color:qTotal>=v.threshold?'#166534':'#d97706',fontWeight:600}}>{queued.length} queued \u00B7 ${qTotal.toFixed(2)}</div>}
+              {queued.length>0&&<div style={{fontSize:11,marginTop:4,color:qTotal>=v.threshold?'#166534':'#d97706',fontWeight:600}}>{queued.length} queued · ${qTotal.toFixed(2)}</div>}
             </div>})}
         </div>
         <div style={{fontSize:11,color:'#94a3b8',marginTop:10}}>The PO number assigned here (e.g. NSA-4501) goes into the vendor's B2B portal. When the box arrives, scan that PO number to see every SO and item inside.</div>
