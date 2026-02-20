@@ -764,11 +764,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
   };
   const addSzToItem=(i,sz)=>{const it=o.items[i];if(!it.available_sizes.includes(sz))uI(i,'available_sizes',[...it.available_sizes,sz]);setShowSzPicker(null)};
   const NUM_SZ={heat_transfer:['1"','1.5"','2"','3"','4"','5"','6"','8"','10"'],embroidery:['0.5"','0.75"','1"','1.5"','2"'],screen_print:['4"','6"','8"','10"']};
-  const addArtDeco=i=>{uI(i,'decorations',[...o.items[i].decorations,{kind:'art',position:'Front Center',art_file_id:null,sell_override:null}])};
-  const addNumDeco=i=>{uI(i,'decorations',[...o.items[i].decorations,{kind:'numbers',position:'Back Center',num_method:'heat_transfer',num_size:'4"',two_color:false,sell_override:null,custom_font_art_id:null,roster:[]}])};
-  const addOutsideDeco=i=>{uI(i,'decorations',[...o.items[i].decorations,{kind:'outside_deco',position:'Front Center',vendor:'',deco_type:'embroidery',cost_each:0,sell_each:0,notes:'',sell_override:null}])};
-  const uD=(ii,di,k,v)=>{uI(ii,'decorations',o.items[ii].decorations.map((d,i)=>i===di?{...d,[k]:v}:d))};
-  const rmD=(ii,di)=>{uI(ii,'decorations',o.items[ii].decorations.filter((_,i)=>i!==di))};
+  const addArtDeco=i=>{const it=safeItems(o)[i];if(!it)return;const prev=safeDecos(it);const upd=[...prev,{kind:'art',position:'Front Center',art_file_id:null,sell_override:null}];uI(i,'decorations',upd);if(it.no_deco)uI(i,'no_deco',false)};
+  const addNumDeco=i=>{const it=safeItems(o)[i];if(!it)return;const prev=safeDecos(it);const upd=[...prev,{kind:'numbers',position:'Back Center',num_method:'heat_transfer',num_size:'4"',two_color:false,sell_override:null,custom_font_art_id:null,roster:[]}];uI(i,'decorations',upd);if(it.no_deco)uI(i,'no_deco',false)};
+  const addOutsideDeco=i=>{const it=safeItems(o)[i];if(!it)return;const prev=safeDecos(it);const upd=[...prev,{kind:'outside_deco',position:'Front Center',vendor:'',deco_type:'embroidery',cost_each:0,sell_each:0,notes:'',sell_override:null}];uI(i,'decorations',upd);if(it.no_deco)uI(i,'no_deco',false)};
+  const uD=(ii,di,k,v)=>{uI(ii,'decorations',safeDecos(safeItems(o)[ii]).map((d,i)=>i===di?{...d,[k]:v}:d))};
+  const rmD=(ii,di)=>{uI(ii,'decorations',safeDecos(safeItems(o)[ii]).filter((_,i)=>i!==di))};
   // Art files (SO)
   const af=o.art_files||[];
   const addArt=()=>sv('art_files',[...af,{id:'af'+Date.now(),name:'',deco_type:'screen_print',ink_colors:'',thread_colors:'',art_size:'',files:[],mockup_files:[],prod_files:[],notes:'',status:'uploaded',uploaded:new Date().toLocaleDateString()}]);
