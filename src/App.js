@@ -2,7 +2,95 @@
 import React, { useState, useMemo, useCallback } from 'react';
 import './portal.css';
 const Icon=({name,size=18})=>{const p={home:<path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>,users:<><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></>,building:<><path d="M6 22V4a2 2 0 012-2h8a2 2 0 012 2v18z"/><path d="M6 12H4a2 2 0 00-2 2v6a2 2 0 002 2h2"/><path d="M18 9h2a2 2 0 012 2v9a2 2 0 01-2 2h-2"/><path d="M10 6h4M10 10h4M10 14h4M10 18h4"/></>,package:<><path d="M16.5 9.4l-9-5.19M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/><path d="M3.27 6.96L12 12.01l8.73-5.05M12 22.08V12"/></>,box:<path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/>,search:<><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></>,plus:<path d="M12 5v14M5 12h14"/>,edit:<><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></>,upload:<><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></>,back:<polyline points="15 18 9 12 15 6"/>,mail:<><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></>,file:<><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></>,sortUp:<path d="M7 14l5-5 5 5"/>,sort:<><path d="M7 15l5 5 5-5"/><path d="M7 9l5-5 5 5"/></>,image:<><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></>,cart:<><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 002 1.61h9.72a2 2 0 002-1.61L23 6H6"/></>,dollar:<><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></>,grid:<><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></>,warehouse:<><path d="M22 8.35V20a2 2 0 01-2 2H4a2 2 0 01-2-2V8.35A2 2 0 013.26 6.5l8-3.2a2 2 0 011.48 0l8 3.2A2 2 0 0122 8.35z"/><path d="M6 18h12M6 14h12"/></>,trash:<><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></>,eye:<><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></>,alert:<><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></>,x:<><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>,check:<polyline points="20 6 9 17 4 12"/>,save:<><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></>,send:<><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></>};return<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{p[name]}</svg>};
-const REPS=[{id:'r1',name:'Steve Peterson',role:'admin'},{id:'r2',name:'Denis',role:'gm'},{id:'r3',name:'Liliana',role:'production'},{id:'r4',name:'Laura Chen',role:'rep'},{id:'r5',name:'Mike Torres',role:'rep'}];
+const REPS=[{id:'r1',name:'Steve Peterson',role:'admin',pin:'1234'},{id:'r2',name:'Denis',role:'gm',pin:'2345'},{id:'r3',name:'Liliana',role:'production',pin:'3456'},{id:'r4',name:'Laura Chen',role:'rep',pin:'4567'},{id:'r5',name:'Mike Torres',role:'rep',pin:'5678'}];
+const NSA={name:'National Sports Apparel',legal:'National Sports Apparel LLC',phone:'(619) 555-0127',email:'team@nsa-teamwear.com',
+  addr:'9340 Cabot Dr, Suite A',city:'San Diego',state:'CA',zip:'91941',
+  fullAddr:'9340 Cabot Dr, Suite A, San Diego, CA 91941',
+  logo:'NSA',terms:'Net 30 from invoice date unless otherwise agreed.',
+  depositTerms:'50% deposit required to begin production. Balance due upon completion.'};
+
+// ═══════════════════════════════════════════════
+// PRINT DOCUMENT HELPER — generates professional print-ready HTML
+// ═══════════════════════════════════════════════
+const PRINT_CSS=`
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Segoe UI',Helvetica,Arial,sans-serif;font-size:12px;color:#1a1a1a;padding:24px 32px;line-height:1.5}
+.header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;padding-bottom:12px;border-bottom:3px solid #1e3a5f}
+.logo{font-size:28px;font-weight:900;color:#1e3a5f;letter-spacing:-1px}
+.logo span{font-size:11px;font-weight:400;color:#666;display:block;letter-spacing:1px}
+.company-info{text-align:right;font-size:10px;color:#555;line-height:1.6}
+.doc-title{font-size:22px;font-weight:800;color:#1e3a5f;margin:12px 0 4px}
+.doc-subtitle{font-size:11px;color:#666;margin-bottom:12px}
+.info-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px}
+.info-box{padding:10px 12px;background:#f8f9fa;border-radius:6px;border:1px solid #e8e8e8}
+.info-box .label{font-size:9px;font-weight:700;color:#888;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:2px}
+.info-box .value{font-size:13px;font-weight:700;color:#1a1a1a}
+.info-box .sub{font-size:10px;color:#666;margin-top:2px}
+table{width:100%;border-collapse:collapse;margin:10px 0}
+th{background:#f0f2f5;padding:7px 8px;text-align:left;font-size:10px;font-weight:700;color:#555;text-transform:uppercase;letter-spacing:0.3px;border-bottom:2px solid #d0d5dd}
+td{padding:6px 8px;border-bottom:1px solid #eee;font-size:11px}
+.sz-table th,.sz-table td{text-align:center;padding:4px 6px;font-size:10px;min-width:32px}
+.sz-table td.has-qty{font-weight:800;color:#1e3a5f;background:#eef2ff}
+.totals-row td{font-weight:800;border-top:2px solid #1e3a5f;font-size:12px}
+.notes{margin-top:12px;padding:10px 12px;background:#fffbe6;border-radius:6px;border:1px solid #f0e6b8;font-size:11px}
+.notes .label{font-weight:700;color:#8b6914;margin-bottom:2px}
+.footer{margin-top:20px;padding-top:10px;border-top:1px solid #ddd;font-size:9px;color:#999;display:flex;justify-content:space-between}
+.amount{text-align:right;font-weight:700}
+.highlight{background:#eef6ee;color:#166534}
+.badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:9px;font-weight:700}
+.no-price td:nth-child(n+5){display:none}.no-price th:nth-child(n+5){display:none}
+@media print{body{padding:12px 18px}.header{border-bottom-color:#000}th{background:#f0f0f0!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+@page{margin:0.5in;size:letter}
+`;
+
+const printDoc=({title,docNum,docType,headerRight,infoBoxes,tables,notes,footer,showPricing=true})=>{
+  const w=window.open('','_blank','width=800,height=1000');
+  if(!w)return;
+  let html='<!DOCTYPE html><html><head><title>'+docNum+' — '+title+'</title><style>'+PRINT_CSS+'</style></head><body>';
+  // Header
+  html+='<div class="header"><div><div class="logo">'+NSA.logo+'<span>'+NSA.name+'</span></div></div>';
+  html+='<div class="company-info">'+NSA.fullAddr+'<br/>'+NSA.phone+' · '+NSA.email+'</div></div>';
+  // Doc title
+  html+='<div style="display:flex;justify-content:space-between;align-items:baseline">';
+  html+='<div class="doc-title">'+docType+'</div>';
+  if(headerRight)html+='<div style="text-align:right">'+headerRight+'</div>';
+  html+='</div>';
+  html+='<div class="doc-subtitle">#'+docNum+' · '+new Date().toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'})+'</div>';
+  // Info boxes
+  if(infoBoxes){
+    html+='<div class="info-grid">';
+    infoBoxes.forEach(b=>{
+      html+='<div class="info-box"><div class="label">'+b.label+'</div><div class="value">'+b.value+'</div>';
+      if(b.sub)html+='<div class="sub">'+b.sub+'</div>';
+      html+='</div>';
+    });
+    html+='</div>';
+  }
+  // Tables
+  if(tables){tables.forEach(t=>{
+    if(t.title)html+='<div style="font-weight:700;font-size:12px;color:#1e3a5f;margin:12px 0 4px;border-bottom:1px solid #eee;padding-bottom:3px">'+t.title+'</div>';
+    html+='<table class="'+(t.className||'')+'">';
+    if(t.headers){html+='<thead><tr>';t.headers.forEach((h,i)=>{
+      const align=t.aligns?.[i]||'left';html+='<th style="text-align:'+align+'">'+h+'</th>'});
+      html+='</tr></thead>';}
+    html+='<tbody>';
+    (t.rows||[]).forEach(r=>{
+      html+='<tr'+(r._class?' class="'+r._class+'"':'')+(r._style?' style="'+r._style+'"':'')+'>';
+      r.cells.forEach((c,i)=>{
+        const align=t.aligns?.[i]||'left';
+        html+='<td style="text-align:'+align+';'+(c.style||'')+'">'+(c.value!==undefined?c.value:c)+'</td>'});
+      html+='</tr>'});
+    html+='</tbody></table>';
+  })}
+  // Notes
+  if(notes)html+='<div class="notes"><div class="label">Notes</div>'+notes+'</div>';
+  // Footer
+  html+='<div class="footer"><span>'+NSA.name+' · '+NSA.fullAddr+'</span><span>Printed '+(new Date().toLocaleString())+'</span></div>';
+  if(footer)html+='<div style="font-size:10px;color:#888;margin-top:6px">'+footer+'</div>';
+  html+='</body></html>';
+  w.document.write(html);w.document.close();
+  setTimeout(()=>w.print(),350);
+};
 let _idSeq=0;const uid=(prefix)=>prefix+Date.now().toString(36).slice(-4)+String(++_idSeq).padStart(2,'0');
 const CATEGORIES=['Tees','Hoodies','Polos','Shorts','1/4 Zips','Hats','Footwear','Jersey Tops','Jersey Bottoms','Balls'];
 const CONTACT_ROLES=['Head Coach','Assistant','Accounting','Athletic Director','Primary','Other'];
@@ -409,6 +497,109 @@ function calcSOStatus(ord){
   return'need_order';
 }
 
+// ═══════════════════════════════════════════════
+// LOGIN GATE — PIN-based authentication
+// ═══════════════════════════════════════════════
+function LoginGate({onLogin}){
+  const[selUser,setSelUser]=useState(null);
+  const[pin,setPin]=useState('');
+  const[error,setError]=useState('');
+  const[shake,setShake]=useState(false);
+
+  const tryLogin=()=>{
+    if(!selUser)return;
+    const user=REPS.find(r=>r.id===selUser);
+    if(user&&user.pin===pin){onLogin(user)}
+    else{setError('Incorrect PIN');setShake(true);setPin('');setTimeout(()=>setShake(false),500)}
+  };
+
+  return(
+    <div style={{minHeight:'100vh',background:'linear-gradient(135deg,#0f172a 0%,#1e3a5f 50%,#0f172a 100%)',display:'flex',alignItems:'center',justifyContent:'center',fontFamily:"'Inter','Segoe UI',sans-serif"}}>
+      <div style={{width:380,padding:0}}>
+        {/* Logo */}
+        <div style={{textAlign:'center',marginBottom:32}}>
+          <div style={{fontSize:48,fontWeight:900,color:'white',letterSpacing:-2}}>NSA</div>
+          <div style={{fontSize:13,color:'#94a3b8',letterSpacing:3,textTransform:'uppercase'}}>Portal</div>
+        </div>
+
+        {/* Login Card */}
+        <div style={{background:'white',borderRadius:16,padding:32,boxShadow:'0 20px 60px rgba(0,0,0,0.3)'}}>
+          {!selUser?<>
+            <div style={{fontSize:14,fontWeight:700,color:'#1e293b',marginBottom:16}}>Who's logging in?</div>
+            <div style={{display:'flex',flexDirection:'column',gap:6}}>
+              {REPS.map(r=>{
+                const roleColors={admin:'#1e40af',gm:'#7c3aed',production:'#d97706',rep:'#166534'};
+                const roleLabels={admin:'Admin',gm:'General Manager',production:'Production',rep:'Sales Rep'};
+                return<button key={r.id} onClick={()=>{setSelUser(r.id);setPin('');setError('')}}
+                  style={{display:'flex',alignItems:'center',gap:12,padding:'12px 16px',border:'1px solid #e2e8f0',
+                    borderRadius:10,background:'white',cursor:'pointer',transition:'all 0.15s',textAlign:'left'}}
+                  onMouseEnter={e=>{e.currentTarget.style.background='#f8fafc';e.currentTarget.style.borderColor='#3b82f6'}}
+                  onMouseLeave={e=>{e.currentTarget.style.background='white';e.currentTarget.style.borderColor='#e2e8f0'}}>
+                  <div style={{width:40,height:40,borderRadius:20,background:roleColors[r.role]||'#475569',color:'white',
+                    display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,fontWeight:800,flexShrink:0}}>
+                    {r.name[0]}</div>
+                  <div>
+                    <div style={{fontWeight:700,fontSize:14,color:'#0f172a'}}>{r.name}</div>
+                    <div style={{fontSize:11,color:'#64748b'}}>{roleLabels[r.role]||r.role}</div>
+                  </div>
+                </button>})}
+            </div>
+          </>:<>
+            {/* PIN Entry */}
+            <div style={{textAlign:'center'}}>
+              <button onClick={()=>{setSelUser(null);setPin('');setError('')}} style={{background:'none',border:'none',cursor:'pointer',
+                color:'#64748b',fontSize:11,marginBottom:12}}>← Back to user list</button>
+              <div style={{width:56,height:56,borderRadius:28,background:'#1e40af',color:'white',
+                display:'flex',alignItems:'center',justifyContent:'center',fontSize:24,fontWeight:800,margin:'0 auto 8px'}}>
+                {REPS.find(r=>r.id===selUser)?.name[0]}</div>
+              <div style={{fontSize:16,fontWeight:700,color:'#0f172a',marginBottom:4}}>{REPS.find(r=>r.id===selUser)?.name}</div>
+              <div style={{fontSize:12,color:'#64748b',marginBottom:20}}>Enter your 4-digit PIN</div>
+
+              <div style={{display:'flex',justifyContent:'center',gap:10,marginBottom:16,
+                animation:shake?'shake 0.3s ease':'none'}}>
+                {[0,1,2,3].map(i=><div key={i} style={{width:44,height:52,borderRadius:10,
+                  border:'2px solid '+(pin.length>i?'#3b82f6':'#d1d5db'),
+                  display:'flex',alignItems:'center',justifyContent:'center',
+                  fontSize:20,fontWeight:800,color:'#0f172a',
+                  background:pin.length>i?'#eff6ff':'white',
+                  transition:'all 0.15s'}}>{pin[i]?'●':''}</div>)}
+              </div>
+
+              {error&&<div style={{color:'#dc2626',fontSize:12,fontWeight:600,marginBottom:12}}>{error}</div>}
+
+              {/* Number pad */}
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:6,maxWidth:240,margin:'0 auto'}}>
+                {[1,2,3,4,5,6,7,8,9,'',0,'⌫'].map((n,i)=>{
+                  if(n==='')return<div key={i}/>;
+                  return<button key={i} onClick={()=>{
+                    if(n==='⌫'){setPin(p=>p.slice(0,-1));setError('')}
+                    else if(pin.length<4){
+                      const np=pin+n;setPin(np);setError('');
+                      if(np.length===4){
+                        const user=REPS.find(r=>r.id===selUser);
+                        if(user&&user.pin===np)setTimeout(()=>onLogin(user),200);
+                        else{setError('Incorrect PIN');setShake(true);setTimeout(()=>{setShake(false);setPin('')},500)}
+                      }
+                    }
+                  }} style={{padding:'14px 0',borderRadius:10,border:'1px solid #e2e8f0',background:'white',
+                    fontSize:18,fontWeight:700,cursor:'pointer',color:'#0f172a',transition:'all 0.1s'}}
+                  onMouseDown={e=>{e.currentTarget.style.background='#f1f5f9'}}
+                  onMouseUp={e=>{e.currentTarget.style.background='white'}}>{n}</button>})}
+              </div>
+            </div>
+          </>}
+        </div>
+
+        <div style={{textAlign:'center',marginTop:20,fontSize:10,color:'#475569'}}>
+          {NSA.name} · {NSA.fullAddr}
+        </div>
+      </div>
+
+      <style>{`@keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-8px)}75%{transform:translateX(8px)}}`}</style>
+    </div>
+  );
+}
+
 function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack,onConvertSO,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,batchPOs,onBatchPO,initTab}){
   const isE=mode==='estimate';const isSO=mode==='so';
   const[o,setO]=useState(order);const[cust,setCust]=useState(ic);const[pS,setPS]=useState('');const[showAdd,setShowAdd]=useState(false);
@@ -625,6 +816,51 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         <button className="btn btn-primary" onClick={()=>{onSave(o);setSaved(true);setDirty(false);nf(`${isE?'Estimate':'SO'} saved`)}} style={{padding:'10px 28px',fontSize:16,fontWeight:800}}><Icon name="check" size={16}/> Save</button>
         {isE&&saved&&o.status!=='approved'&&o.status!=='converted'&&<button className="btn btn-secondary" onClick={()=>setShowSend(true)}><Icon name="send" size={14}/> Send</button>}
         {isE&&o.status==='approved'&&<button className="btn btn-primary" style={{background:'#7c3aed'}} onClick={()=>onConvertSO(o)}><Icon name="box" size={14}/> Convert to SO</button>}
+        {/* Print Estimate or SO */}
+        <button className="btn btn-secondary" style={{fontSize:12}} onClick={()=>{
+          const items=safeItems(o).filter(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
+          const rows=items.map(it=>{
+            const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
+            const decoSell=safeDecos(it).reduce((a,d)=>{const dp=dP(d,qty,af,qty);return a+dp.sell},0);
+            const unitTotal=safeNum(it.unit_sell)+decoSell;
+            return{cells:[it.sku+' '+(it.name||'')+(it.color?' — '+it.color:''),qty,'$'+unitTotal.toFixed(2),'$'+(qty*unitTotal).toFixed(2)]}});
+          const subTotal=items.reduce((a,it)=>{
+            const qty=Object.values(safeSizes(it)).reduce((acc,v)=>acc+safeNum(v),0);
+            const decoSell=safeDecos(it).reduce((acc,d)=>{const dp=dP(d,qty,af,qty);return acc+dp.sell},0);
+            return a+qty*(safeNum(it.unit_sell)+decoSell)},0);
+          const shipAmt=o.shipping_type==='pct'?subTotal*(o.shipping_value||0)/100:(o.shipping_value||0);
+          const total=subTotal+shipAmt;
+          printDoc({
+            title:cust?.name||'Customer',docNum:o.id,docType:isE?'ESTIMATE':'SALES ORDER',
+            headerRight:'<div style="font-size:28px;font-weight:900;color:#1e3a5f">$'+total.toFixed(2)+'</div>',
+            infoBoxes:[
+              {label:isE?'Prepared For':'Customer',value:cust?.name||'—',sub:cust?.alpha_tag},
+              {label:'Date',value:o.created_at||new Date().toLocaleDateString(),sub:isE?'Valid for 30 days':'Expected: '+(o.expected_date||'TBD')},
+              {label:'Memo',value:o.memo||'—'},
+              {label:'Rep',value:REPS.find(r=>r.id===o.created_by)?.name||'—',sub:NSA.phone},
+            ],
+            tables:[
+              {headers:['Item','Qty','Unit Price','Amount'],aligns:['left','center','right','right'],
+                rows:[...rows,
+                  ...(shipAmt>0?[{cells:[{value:'Shipping'+(o.shipping_type==='pct'?' ('+o.shipping_value+'%)':''),style:'font-style:italic'},'','','$'+shipAmt.toFixed(2)]}]:[]),
+                  {_class:'totals-row',cells:['','','Total','$'+total.toFixed(2)]}
+                ]},
+              ...(items.some(it=>safeDecos(it).length>0)?[{title:'Decoration Details',
+                headers:['Item','Position','Type','Per Unit','Extended'],aligns:['left','left','left','right','right'],
+                rows:items.flatMap(it=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
+                  return safeDecos(it).map(d=>{const dp=dP(d,qty,af,qty);const artF=af.find(a=>a.id===d.art_file_id);
+                    return{cells:[it.sku,d.position||'—',artF?.deco_type?.replace(/_/g,' ')||d.kind||'—','$'+dp.sell.toFixed(2),'$'+(qty*dp.sell).toFixed(2)]}})
+                })}]:[]),
+              ...(items.length>0?[{title:'Size Breakdown',className:'sz-table',
+                headers:['Item',...SZ_ORD.filter(sz=>items.some(it=>safeSizes(it)[sz]>0)),'Total'],
+                aligns:['left',...SZ_ORD.filter(sz=>items.some(it=>safeSizes(it)[sz]>0)).map(()=>'center'),'center'],
+                rows:items.map(it=>{const szs=SZ_ORD.filter(sz=>items.some(ii=>safeSizes(ii)[sz]>0));
+                  const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
+                  return{cells:[it.sku,...szs.map(sz=>({value:safeSizes(it)[sz]||'',style:safeSizes(it)[sz]>0?'font-weight:800;color:#1e3a5f;background:#eef2ff':'color:#ccc'})),{value:qty,style:'font-weight:800'}]}})}]:[]),
+            ],
+            footer:isE?'This estimate is valid for 30 days. Prices subject to change. '+NSA.depositTerms:NSA.terms
+          });
+        }}>🖨️ Print {isE?'Estimate':'SO'}</button>
       </div>
       {isSO&&<div style={{display:'flex',gap:6,marginTop:8}}>
         <button className="btn btn-secondary" onClick={()=>setShowPO('select')}><Icon name="cart" size={14}/> Create PO</button>
@@ -2487,6 +2723,34 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
               if(totalOpen>0)w.document.write('<p class="sz a">Open: '+szKeys.filter(sz=>getOpen(sz)>0).map(sz=>sz+': '+getOpen(sz)).join(' &nbsp; ')+'</p>');
               w.document.write('</div></div></body></html>');w.document.close();w.print();
             }}>🖨️ Print PO Label</button>
+            <button className="btn btn-sm btn-primary" style={{marginTop:8,marginLeft:6,fontSize:11}} onClick={()=>{
+              const vendor=po.po_type==='outside_deco'?(po.deco_vendor||'Outside Decorator'):(D_V.find(v=>v.id===item?.vendor_id)?.name||item?.brand||'Vendor');
+              const isDPO=po.po_type==='outside_deco';
+              const szHeaders=szKeys.filter(sz=>po[sz]>0);
+              printDoc({
+                title:vendor,docNum:po.po_id,
+                docType:isDPO?'DECORATION PURCHASE ORDER':'PURCHASE ORDER',
+                headerRight:'<div style="font-size:11px;color:#666">Status: <strong>'+(poStatus==='received'?'Received':poStatus==='partial'?'Partial':'Open')+'</strong></div>',
+                infoBoxes:[
+                  {label:'Vendor',value:vendor,sub:isDPO?(po.deco_type||'').replace(/_/g,' '):undefined},
+                  {label:'Ship To',value:NSA.name,sub:NSA.fullAddr},
+                  {label:'Sales Order',value:o.id,sub:(cust?.name||'')+(o.memo?' — '+o.memo:'')},
+                  {label:'Expected Date',value:o.expected_date||'TBD',sub:'Rep: '+(REPS.find(r=>r.id===o.created_by)?.name||'—')},
+                ],
+                tables:[{
+                  title:item?.sku+' — '+(item?.name||'')+(item?.color?' · '+item.color:''),
+                  headers:['Size',...szHeaders.map(s=>s),'Total'],
+                  aligns:['left',...szHeaders.map(()=>'center'),'center'],
+                  rows:[
+                    {cells:[{value:'<strong>Ordered</strong>',style:'font-weight:700'},...szHeaders.map(s=>({value:po[s]||0,style:(po[s]>0?'font-weight:800;color:#1e3a5f':'')})),{value:totalOrdered,style:'font-weight:800'}]},
+                    ...(totalReceived>0?[{cells:[{value:'Received',style:'color:#166534'},...szHeaders.map(s=>({value:getRcvd(s)||'—',style:'color:#166534'})),{value:totalReceived,style:'color:#166534;font-weight:700'}]}]:[]),
+                    ...(totalOpen>0?[{cells:[{value:'Open',style:'color:#b45309'},...szHeaders.map(s=>({value:getOpen(s)||'—',style:'color:#b45309'})),{value:totalOpen,style:'color:#b45309;font-weight:700'}]}]:[]),
+                  ]
+                }],
+                notes:isDPO?('Deco Type: '+(po.deco_type||'—').replace(/_/g,' ')+(po.notes?'<br/>'+po.notes:'')):(po.notes||null),
+                footer:isDPO?'Expected return: '+(po.expected_date||'TBD'):null
+              });
+            }}>🖨️ Print Full PO</button>
           </div>
         </div>
         <div className="modal-footer" style={{justifyContent:'space-between'}}>
@@ -3110,7 +3374,10 @@ export default function App(){
   const[favSkus,setFavSkus]=useState(()=>{try{return JSON.parse(localStorage.getItem('nsa_fav_skus')||'[]')}catch{return[]}});
   const toggleFav=sku=>{setFavSkus(f=>{const n=f.includes(sku)?f.filter(s=>s!==sku):[...f,sku];try{localStorage.setItem('nsa_fav_skus',JSON.stringify(n))}catch{}return n})};
   const[iShowFav,setIShowFav]=useState(false);
-  const cu=REPS[0];const isA=cu.role==='admin';
+  const[cu,setCu]=useState(()=>{try{const s=localStorage.getItem('nsa_user');return s?JSON.parse(s):null}catch{return null}});
+  const handleLogin=(user)=>{setCu(user);try{localStorage.setItem('nsa_user',JSON.stringify(user))}catch{}};
+  const handleLogout=()=>{setCu(null);try{localStorage.removeItem('nsa_user')}catch{}};
+  const isA=cu?.role==='admin';
   const nf=(m,t='success')=>{setToast({msg:m,type:t});setTimeout(()=>setToast(null),3500)};
   const pars=useMemo(()=>cust.filter(c=>!c.parent_id),[cust]);const gK=useCallback(pid=>cust.filter(c=>c.parent_id===pid),[cust]);
   const cols=useMemo(()=>[...new Set(prod.map(p=>p.color).filter(Boolean))].sort(),[prod]);
@@ -3149,7 +3416,7 @@ export default function App(){
   // DASHBOARD
   const rDash=()=>{
     // Unread messages for this user
-    const unreadMsgs=(msgs||[]).filter(m=>!(m.read_by||[]).includes(cu.id));
+    const unreadMsgs=(msgs||[]).filter(m=>!(m.read_by||[]).includes(cu?.id));
     const myUnread=unreadMsgs.sort((a,b)=>(b.ts||'').localeCompare(a.ts)).slice(0,10);
     // Build to-do items from jobs and SOs
     const todos=[];
@@ -4559,7 +4826,40 @@ export default function App(){
               color:inv.status==='paid'?'#166534':inv.status==='partial'?'#92400e':inv._overdue?'#991b1b':'#1e40af'}}>
               {inv.status==='paid'?'Paid':inv.status==='partial'?'Partial':inv._overdue?'Overdue':'Open'}</span></td>
             <td>{inv.status!=='paid'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#166534',color:'white',border:'none'}}
-              onClick={()=>setPayModal({inv,amount:inv._bal,method:'check',ref:''})}>💰 Pay</button>}</td>
+              onClick={()=>setPayModal({inv,amount:inv._bal,method:'check',ref:''})}>💰 Pay</button>}
+              <button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',marginLeft:2}} onClick={()=>{
+                const so=sos.find(s=>s.id===inv.so_id);const ic=cust.find(c=>c.id===inv.customer_id);
+                const invItems=(inv.line_items||[]).length>0?inv.line_items:
+                  (so?safeItems(so).map(it=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);if(!qty)return null;
+                    const decoSell=safeDecos(it).reduce((a,d)=>{const dp=dP(d,qty,af,qty);return a+dp.sell},0);
+                    return{desc:it.sku+' '+it.name+(it.color?' — '+it.color:''),qty,rate:safeNum(it.unit_sell)+decoSell,amount:qty*(safeNum(it.unit_sell)+decoSell)}}).filter(Boolean):[]);
+                const shipAmt=so?(()=>{const sub=invItems.reduce((a,l)=>a+l.amount,0);return(so.shipping_type==='pct'?sub*(so.shipping_value||0)/100:so.shipping_value||0)})():0;
+                const taxAmt=inv.tax||0;
+                printDoc({
+                  title:ic?.name||'Customer',docNum:inv.id,docType:'INVOICE',
+                  headerRight:'<div style="font-size:24px;font-weight:900;color:'+(inv._bal>0?'#dc2626':'#166534')+'">$'+inv.total.toLocaleString()+'</div>'
+                    +'<div style="font-size:11px;color:#666">Balance Due: <strong style="color:'+(inv._bal>0?'#dc2626':'#166534')+'">$'+inv._bal.toLocaleString()+'</strong></div>',
+                  infoBoxes:[
+                    {label:'Bill To',value:ic?.name||'—',sub:ic?.alpha_tag},
+                    {label:'Invoice Date',value:inv.date||new Date().toLocaleDateString(),sub:inv.due_date?'Due: '+inv.due_date:''},
+                    {label:'Sales Order',value:inv.so_id||'—',sub:inv.memo||so?.memo||''},
+                    {label:'Payment Terms',value:inv.type==='deposit'?'50% Deposit':'Final Invoice',sub:'Rep: '+(REPS.find(r=>r.id===inv._rep)?.name||'—')},
+                  ],
+                  tables:[{
+                    headers:['Description','Qty','Rate','Amount'],
+                    aligns:['left','center','right','right'],
+                    rows:[
+                      ...invItems.map(li=>({cells:[li.desc,li.qty,'$'+safeNum(li.rate).toFixed(2),'$'+safeNum(li.amount).toFixed(2)]})),
+                      ...(shipAmt>0?[{cells:[{value:'Shipping',style:'font-style:italic'},'','','$'+shipAmt.toFixed(2)]}]:[]),
+                      ...(taxAmt>0?[{cells:[{value:'Tax',style:'font-style:italic'},'','','$'+taxAmt.toFixed(2)]}]:[]),
+                      {_class:'totals-row',cells:['','','Total','$'+inv.total.toLocaleString()]},
+                      ...(inv.paid>0?[{cells:['','',{value:'Paid',style:'color:#166534'},'$'+inv.paid.toLocaleString()]}]:[]),
+                      ...(inv._bal>0?[{_style:'background:#fef2f2',cells:['','',{value:'<strong>Balance Due</strong>',style:'color:#dc2626'},'<strong style="color:#dc2626;font-size:14px">$'+inv._bal.toLocaleString()+'</strong>']}]:[]),
+                    ]
+                  }],
+                  footer:inv.type==='deposit'?NSA.depositTerms:NSA.terms
+                });
+              }}>🖨️</button></td>
           </tr>})}</tbody></table>}
       </div></div>}
 
@@ -5224,7 +5524,26 @@ export default function App(){
                       e.target.value='';
                     }}}/>
                   <button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 10px'}}
-                    onClick={()=>{nf('📦 Packing slip printed for '+grp.cName+' ('+grp.totalUnits+' units)')}}>🖨️ Pack Slip</button>
+                    onClick={()=>{
+                      printDoc({
+                        title:grp.cName,docNum:grp.items.map(t=>t.soId).filter((v,i,a)=>a.indexOf(v)===i).join(', '),
+                        docType:'PACKING SLIP',showPricing:false,
+                        headerRight:'<div style="font-size:14px;font-weight:700;color:#166534">'+grp.totalUnits+' Total Units</div><div style="font-size:11px;color:#666">Ship: '+(grp.shipMethod||'TBD')+'</div>',
+                        infoBoxes:[
+                          {label:'Ship To',value:grp.cName,sub:grp.items[0]?.so?.ship_to_id==='default'?'Default address on file':'Custom address'},
+                          {label:'Ship Date',value:new Date().toLocaleDateString(),sub:'Method: '+(grp.shipMethod||'Ground')},
+                        ],
+                        tables:[{
+                          title:'Items in this Shipment',
+                          headers:['SO#','Item','Units','Type'],
+                          aligns:['left','left','center','left'],
+                          rows:grp.items.map(t=>({cells:[t.soId,t.desc,t.units,t.type==='deco_done'?'Decorated':'Plain']}))
+                        }],
+                        notes:'Please inspect all items upon receipt. Report any discrepancies within 48 hours.',
+                        footer:'NO PRICING — Customer Copy'
+                      });
+                      nf('📦 Packing slip printed for '+grp.cName);
+                    }}>🖨️ Pack Slip</button>
                   <button className="btn btn-sm" style={{fontSize:10,background:'#1e40af',color:'white',border:'none',padding:'4px 10px'}}
                     onClick={()=>{nf('📦 Marked shipped for '+grp.cName)}}>✓ Ship</button>
                 </div>
@@ -6167,13 +6486,16 @@ export default function App(){
     // NAV
   const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'reports',label:'Reports',icon:'dollar'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'production',label:'Prod Board',icon:'package'},{id:'decoration',label:'Decoration',icon:'image'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{section:'Comms'},{id:'messages',label:'Messages',icon:'mail'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'System'},{id:'import',label:'NetSuite Import',icon:'save'},{id:'qb',label:'QuickBooks Sync',icon:'dollar'},{id:'backup',label:'Backup & Data',icon:'save'}];
   const titles={dashboard:'Dashboard',reports:'Reports & Analytics',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',omg:'OMG Team Stores',jobs:'Jobs',production:'Production Board',decoration:'Decoration',warehouse:'Warehouse',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',products:'Products',inventory:'Inventory',messages:'Messages',import:'NetSuite Import',qb:'QuickBooks Online',backup:'Backup & Data'};
+  // LOGIN GATE
+  if(!cu)return<LoginGate onLogin={handleLogin}/>;
+
   return(<div className="app"><Toast msg={toast?.msg} type={toast?.type}/>
     <div className="sidebar"><div className="sidebar-logo">NSA<span>Portal</span></div>
       <nav className="sidebar-nav">{nav.map((item,i)=>{if(item.section)return<div key={i} className="sidebar-section">{item.section}</div>;
         const ubadge=item.id==='messages'?msgs.filter(m=>!(m.read_by||[]).includes(cu.id)).length:0;
         return<button key={item.id} className={`sidebar-link ${pg===item.id?'active':''}`}
           onClick={()=>{if(dirtyRef.current&&!window.confirm('You have unsaved changes. Leave without saving?'))return;dirtyRef.current=false;setPg(item.id);setQ('');setSelC(null);setSelV(null);setEEst(null);setESO(null)}}><Icon name={item.icon}/>{item.label}{item.id==='messages'&&ubadge>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{ubadge}</span>}{item.id==='batch_pos'&&batchPOs.length>0&&<span style={{background:'#7c3aed',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{batchPOs.length}</span>}</button>})}</nav>
-      <div className="sidebar-user"><div style={{fontWeight:600,color:'#e2e8f0'}}>{cu.name}</div><div>{cu.role}</div></div></div>
+      <div className="sidebar-user"><div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}><div><div style={{fontWeight:600,color:'#e2e8f0'}}>{cu.name}</div><div>{cu.role}</div></div><button onClick={handleLogout} style={{background:'none',border:'1px solid #475569',borderRadius:6,padding:'3px 8px',color:'#94a3b8',cursor:'pointer',fontSize:10}} title="Log out">↪ Out</button></div></div></div>
     <div className="main"><div className="topbar"><h1>{eEst?eEst.id:eSO?eSO.id:selC?selC.name:selV?selV.name:(titles[pg]||'Dashboard')}</h1>
         <div style={{flex:1,maxWidth:400,margin:'0 20px',position:'relative'}}>
           <div className="search-bar" style={{margin:0}}><Icon name="search"/><input placeholder="Search everything... (customers, orders, products)" value={gQ} onChange={e=>setGQ(e.target.value)} onFocus={()=>setGOpen(true)}/>{gQ&&<button onClick={()=>{setGQ('');setGOpen(false)}} style={{background:'none',border:'none',cursor:'pointer',padding:2}}><Icon name="x" size={14}/></button>}</div>
