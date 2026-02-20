@@ -3915,8 +3915,6 @@ function CoachPortal({customer,estimates,orders,invoices,artFiles,onUpdate,onMsg
           <div style={{fontSize:10,color:'#94a3b8',marginTop:8,textAlign:'center'}}>Payments processed securely via Stripe. NSA never stores your card info.</div>
         </div>
       </div>})()}
-        </div>
-      </div>}
     </div>;
   };
 
