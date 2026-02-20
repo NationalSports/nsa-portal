@@ -32,7 +32,7 @@ function dP(d,q,artFiles,cq){
 const SC={waiting_art:{bg:'#fef3c7',c:'#92400e'},in_production:{bg:'#dbeafe',c:'#1e40af'},ready_ship:{bg:'#dcfce7',c:'#166534'},shipped:{bg:'#ede9fe',c:'#6d28d9'},completed:{bg:'#f1f5f9',c:'#475569'}};
 
 // PICKS (demo)
-const D_PICKS=[{id:'IF-4001',so_id:'SO-1042',status:'sent',items:1},{id:'IF-4002',so_id:'SO-1045',status:'pending',items:1},
+const D_PICKS=[{id:'IF-4001',so_id:'SO-1042',status:'sent',items:1},{id:'IF-4002',so_id:'SO-1045',status:'pending',items:1}
 {id:'IF-4010',so_id:'SO-1060',status:'sent',items:1},
 {id:'IF-4011',so_id:'SO-1060',status:'pending',items:1},
 ];
@@ -74,6 +74,7 @@ const D_P=[
 const D_E=[
 {id:'EST-2089',customer_id:'c1b',memo:'Test 1: Simple - Football Camp Tees',status:'sent',created_by:'r1',created_at:'02/10/26 9:15 AM',updated_at:'02/10/26 2:30 PM',default_markup:1.65,shipping_type:'pct',shipping_value:8,ship_to_id:'default',email_status:'opened',email_opened_at:'02/10/26 3:45 PM',art_files:[{id:'af_t1',name:'OLu Football Camp Logo',deco_type:'screen_print',ink_colors:'Navy\nGold\nWhite',thread_colors:'',art_size:'10" x 8"',files:['OLuF_Camp_Logo.ai'],notes:'3-color front chest',status:'approved',uploaded:'02/09/26'}],items:[{product_id:'p1',sku:'JX4453',name:'Adidas Unisex Pregame Tee',brand:'Adidas',color:'Team Power Red/White',nsa_cost:18.5,retail_price:55.5,unit_sell:30.5,sizes:{S:3,M:8,L:12,XL:6,'2XL':2},available_sizes:['S','M','L','XL','2XL'],decorations:[{kind:'art',position:'Front Center',art_file_id:'af_t1',sell_override:null}]}]},
 {id:'EST-2094',customer_id:'c1b',memo:'Football Coaches Polos',status:'approved',created_by:'r1',created_at:'02/16/26 10:00 AM',updated_at:'02/16/26 10:00 AM',default_markup:1.65,shipping_type:'flat',shipping_value:25,ship_to_id:'default',email_status:'viewed',email_opened_at:'02/16/26 11:30 AM',email_viewed_at:'02/16/26 11:32 AM',art_files:[],items:[{product_id:'p4',sku:'1370399',name:'Under Armour Team Polo',brand:'Under Armour',color:'Cardinal/White',nsa_cost:22,retail_price:65,unit_sell:39,sizes:{M:2,L:3,XL:2,'2XL':1},available_sizes:['S','M','L','XL','2XL'],decorations:[{kind:'art',position:'Left Chest',art_file_id:null,sell_override:null}]}]},
+{id:'EST-2101',customer_id:'c3a',memo:'Badminton Team Uniforms',status:'draft',created_by:'r3',created_at:'02/12/26 3:00 PM',updated_at:'02/12/26 3:00 PM',default_markup:1.65,shipping_type:'pct',shipping_value:0,ship_to_id:'default',email_status:null,art_files:[],items:[]},
 
 {id:'EST-2100',customer_id:'c4a',memo:'Test 2: Complex - MD Football Spring Package',status:'draft',created_by:'r1',created_at:'02/18/26 9:00 AM',updated_at:'02/18/26 9:00 AM',default_markup:1.65,shipping_type:'flat',shipping_value:65,ship_to_id:'default',email_status:null,
   art_files:[
