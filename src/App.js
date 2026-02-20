@@ -43,9 +43,7 @@ td{padding:6px 8px;border-bottom:1px solid #eee;font-size:11px}
 @page{margin:0.5in;size:letter}
 `;
 
-const printDoc=({title,docNum,docType,headerRight,infoBoxes,tables,notes,footer,showPricing=true})=>{
-  const w=window.open('','_blank','width=800,height=1000');
-  if(!w)return;
+const printDoc=({title,docNum,docType,headerRight,infoBoxes,tables,notes,footer,showPricing=true,portalLink,emailTo,returnHtml=false})=>{
   let html='<!DOCTYPE html><html><head><title>'+docNum+' — '+title+'</title><style>'+PRINT_CSS+'</style></head><body>';
   // Header
   html+='<div class="header"><div><div class="logo">'+NSA.logo+'<span>'+NSA.name+'</span></div></div>';
@@ -82,14 +80,34 @@ const printDoc=({title,docNum,docType,headerRight,infoBoxes,tables,notes,footer,
       html+='</tr>'});
     html+='</tbody></table>';
   })}
+  // Portal link
+  if(portalLink)html+='<div style="margin:16px 0;padding:14px 18px;background:#eef6ff;border:2px solid #3b82f6;border-radius:8px;text-align:center"><div style="font-size:11px;color:#64748b;margin-bottom:4px">View and manage this order online:</div><a href="'+portalLink+'" style="color:#1e40af;font-weight:700;font-size:14px;text-decoration:none">'+portalLink+'</a><div style="font-size:10px;color:#94a3b8;margin-top:6px">Approve estimates, track orders, upload files, and pay invoices</div></div>';
   // Notes
   if(notes)html+='<div class="notes"><div class="label">Notes</div>'+notes+'</div>';
   // Footer
   html+='<div class="footer"><span>'+NSA.name+' · '+NSA.fullAddr+'</span><span>Printed '+(new Date().toLocaleString())+'</span></div>';
   if(footer)html+='<div style="font-size:10px;color:#888;margin-top:6px">'+footer+'</div>';
   html+='</body></html>';
+  if(returnHtml)return html;
+  const w=window.open('','_blank','width=800,height=1000');
+  if(!w)return;
   w.document.write(html);w.document.close();
   setTimeout(()=>w.print(),350);
+};
+
+// EMAIL DOCUMENT — opens mailto with portal link and prints PDF for attachment
+const emailDoc=({docType,docNum,custName,custEmail,total,portalTag,memo})=>{
+  const portalUrl=window.location.origin+'?portal='+encodeURIComponent(portalTag||'');
+  const subjects={ESTIMATE:'Estimate '+docNum+' from National Sports Apparel',
+    'SALES ORDER':'Sales Order '+docNum+' — '+NSA.name,
+    INVOICE:'Invoice '+docNum+' — $'+total+' — '+NSA.name};
+  const bodies={
+    ESTIMATE:'Hi'+(custName?' '+custName.split(' ')[0]:'')+',\n\nPlease find your estimate '+docNum+(memo?' for '+memo:'')+' attached.\n\nTotal: $'+total+'\n\nYou can review, approve, or request changes here:\n'+portalUrl+'\n\nOr simply reply to this email with any questions.\n\nThank you!\n'+NSA.name+'\n'+NSA.phone,
+    'SALES ORDER':'Hi'+(custName?' '+custName.split(' ')[0]:'')+',\n\nYour order '+docNum+(memo?' ('+memo+')':'')+' has been confirmed.\n\nTrack your order status anytime at:\n'+portalUrl+'\n\nThank you for your business!\n'+NSA.name,
+    INVOICE:'Hi'+(custName?' '+custName.split(' ')[0]:'')+',\n\nPlease find invoice '+docNum+' attached for $'+total+'.\n\nPay online (credit card, ACH, or check):\n'+portalUrl+'\n\nPayment Terms: '+NSA.terms+'\n\nThank you!\n'+NSA.name+'\n'+NSA.phone};
+  const subj=subjects[docType]||docType+' '+docNum;
+  const body=bodies[docType]||'Please see attached document '+docNum;
+  window.open('mailto:'+(custEmail||'')+'?subject='+encodeURIComponent(subj)+'&body='+encodeURIComponent(body));
 };
 const _seq={EST:2102,SO:1064,INV:1062,IF:4502,PO:3089,RCV:1001};
 const uid=(prefix)=>{const key=prefix.replace('-','');if(_seq[key]!==undefined){return prefix+(_seq[key]++)}return prefix+Date.now().toString(36).slice(-4)};
@@ -987,9 +1005,38 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                   const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
                   return{cells:[it.sku,...szs.map(sz=>({value:safeSizes(it)[sz]||'',style:safeSizes(it)[sz]>0?'font-weight:800;color:#1e3a5f;background:#eef2ff':'color:#ccc'})),{value:qty,style:'font-weight:800'}]}})}]:[]),
             ],
-            footer:isE?'This estimate is valid for 30 days. Prices subject to change. '+NSA.depositTerms:NSA.terms
+            footer:isE?'This estimate is valid for 30 days. Prices subject to change. '+NSA.depositTerms:NSA.terms,
+            portalLink:cust?.alpha_tag?(window.location.origin+'?portal='+cust.alpha_tag):undefined
           });
         }}>🖨️ Print {isE?'Estimate':'SO'}</button>
+        <button className="btn btn-secondary" style={{fontSize:12}} onClick={()=>{
+          const items=safeItems(o).filter(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
+          const _pAQ={};items.forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_pAQ[d.art_file_id]=(_pAQ[d.art_file_id]||0)+q2}})});
+          const subTotal=items.reduce((a,it)=>{const qty=Object.values(safeSizes(it)).reduce((acc,v)=>acc+safeNum(v),0);
+            const decoSell=safeDecos(it).reduce((acc,d)=>{const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);return acc+dp2.sell},0);
+            return a+qty*(safeNum(it.unit_sell)+decoSell)},0);
+          const shipAmt=o.shipping_type==='pct'?subTotal*(o.shipping_value||0)/100:(o.shipping_value||0);
+          const total=(subTotal+shipAmt).toFixed(2);
+          emailDoc({docType:isE?'ESTIMATE':'SALES ORDER',docNum:o.id,custName:cust?.name,custEmail:cust?.email,total,portalTag:cust?.alpha_tag,memo:o.memo});
+          // Also open print window for PDF attachment
+          alert('Email opened! Print the PDF that opens next and attach it to the email.');
+          setTimeout(()=>{
+            const items2=safeItems(o).filter(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
+            const rows2=items2.map(it=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
+              const decoSell=safeDecos(it).reduce((a,d)=>{const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);return a+dp2.sell},0);
+              const unitTotal=safeNum(it.unit_sell)+decoSell;
+              return{cells:[it.sku+' '+(it.name||'')+(it.color?' — '+it.color:''),qty,'$'+unitTotal.toFixed(2),'$'+(qty*unitTotal).toFixed(2)]}});
+            printDoc({title:cust?.name||'Customer',docNum:o.id,docType:isE?'ESTIMATE':'SALES ORDER',
+              headerRight:'<div style="font-size:28px;font-weight:900;color:#1e3a5f">$'+total+'</div>',
+              infoBoxes:[{label:isE?'Prepared For':'Customer',value:cust?.name||'—',sub:cust?.alpha_tag},{label:'Date',value:o.created_at||new Date().toLocaleDateString(),sub:isE?'Valid for 30 days':'Expected: '+(o.expected_date||'TBD')},{label:'Memo',value:o.memo||'—'},{label:'Rep',value:REPS.find(r=>r.id===o.created_by)?.name||'—',sub:NSA.phone}],
+              tables:[{headers:['Item','Qty','Unit Price','Amount'],aligns:['left','center','right','right'],rows:[...rows2,
+                ...(shipAmt>0?[{cells:[{value:'Shipping',style:'font-style:italic'},'','','$'+parseFloat(shipAmt).toFixed(2)]}]:[]),
+                {_class:'totals-row',cells:['','','Total','$'+total]}]}],
+              footer:isE?'This estimate is valid for 30 days. '+NSA.depositTerms:NSA.terms,
+              portalLink:cust?.alpha_tag?(window.location.origin+'?portal='+cust.alpha_tag):undefined
+            });
+          },500);
+        }}>📧 Email {isE?'Estimate':'SO'}</button>
       </div>
       {isSO&&<div style={{display:'flex',gap:6,marginTop:8}}>
         <button className="btn btn-secondary" onClick={()=>setShowPO('select')}><Icon name="cart" size={14}/> Create PO</button>
@@ -1652,35 +1699,60 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
 
     {/* MESSAGES TAB */}
     {isSO&&tab==='messages'&&(()=>{const soMsgs=(msgs||[]).filter(m=>m.so_id===o.id).sort((a,b)=>(a.ts||'').localeCompare(b.ts));
-      const DEPTS=[{id:'all',label:'All',color:'#64748b'},{id:'art',label:'Art',color:'#7c3aed'},{id:'production',label:'Production',color:'#2563eb'},{id:'warehouse',label:'Warehouse',color:'#d97706'},{id:'sales',label:'Sales',color:'#166534'},{id:'accounting',label:'Accounting',color:'#dc2626'}];
-      return<div className="card"><div className="card-header"><h2>Messages</h2><span style={{fontSize:12,color:'#64748b'}}>{soMsgs.length} message(s)</span></div>
+      const DEPTS=[{id:'all',label:'All',color:'#64748b'},{id:'art',label:'Art Dept',color:'#7c3aed'},{id:'production',label:'Production',color:'#2563eb'},{id:'warehouse',label:'Warehouse',color:'#d97706'},{id:'sales',label:'Sales',color:'#166534'},{id:'accounting',label:'Accounting',color:'#dc2626'}];
+      const ROLE_DEPT={admin:'all',sales:'sales',warehouse:'warehouse',decorator:'art',production:'production',csr:'sales',accounting:'accounting'};
+      const[showMention,setShowMention]=useState(false);
+      const[mentionQ,setMentionQ]=useState('');
+      const[selMentions,setSelMentions]=useState([]);// [{type:'person',id,name} | {type:'dept',id,label}]
+      const toggleMention=(m)=>{setSelMentions(p=>{const exists=p.find(x=>x.type===m.type&&x.id===m.id);return exists?p.filter(x=>!(x.type===m.type&&x.id===m.id)):[...p,m]})};
+      const isMentioned=(m)=>selMentions.some(x=>x.type===m.type&&x.id===m.id);
+      // Filter messages by current user's relevance
+      const myDept=ROLE_DEPT[cu.role]||'all';
+      const[msgFilter,setMsgFilter]=useState('all');// all|mine|forme
+      const visibleMsgs=msgFilter==='all'?soMsgs:msgFilter==='mine'?soMsgs.filter(m=>m.author_id===cu.id):soMsgs.filter(m=>{
+        if(!m.mentions||m.mentions.length===0)return true;// no mentions = visible to all
+        return m.mentions.some(mm=>mm.type==='person'&&mm.id===cu.id)||m.mentions.some(mm=>mm.type==='dept'&&(mm.id===myDept||mm.id==='all'))});
+
+      return<div className="card"><div className="card-header"><h2>Messages</h2>
+        <div style={{display:'flex',gap:4}}>{[['all','All ('+soMsgs.length+')'],['forme','For Me'],['mine','Sent']].map(([v,l])=>
+          <button key={v} className={`btn btn-sm ${msgFilter===v?'btn-primary':'btn-secondary'}`} style={{fontSize:10}} onClick={()=>setMsgFilter(v)}>{l}</button>)}
+        </div></div>
         <div className="card-body">
           <div style={{display:'flex',flexDirection:'column',gap:8,marginBottom:12,maxHeight:400,overflow:'auto'}}>
-            {soMsgs.length===0?<div className="empty">No messages yet. Start the conversation.</div>:
-            soMsgs.map(m=>{const author=REPS.find(r=>r.id===m.author_id);const isMe=m.author_id===cu.id;const unread=!(m.read_by||[]).includes(cu.id);
-              const dept=DEPTS.find(d=>d.id===m.dept);
-              return<div key={m.id} style={{padding:'10px 14px',borderRadius:8,background:isMe?'#dbeafe':'#f8fafc',border:unread?'2px solid #3b82f6':'1px solid #e2e8f0',marginLeft:isMe?40:0,marginRight:isMe?0:40}}
+            {visibleMsgs.length===0?<div className="empty">No messages{msgFilter!=='all'?' matching filter':''}. Start the conversation.</div>:
+            visibleMsgs.map(m=>{const author=REPS.find(r=>r.id===m.author_id);const isMe=m.author_id===cu.id;const unread=!(m.read_by||[]).includes(cu.id);
+              const mentions=m.mentions||[];const deptM=mentions.filter(x=>x.type==='dept');const personM=mentions.filter(x=>x.type==='person');
+              const isForMe=mentions.length===0||personM.some(x=>x.id===cu.id)||deptM.some(x=>x.id===myDept||x.id==='all');
+              return<div key={m.id} style={{padding:'10px 14px',borderRadius:8,background:isMe?'#dbeafe':!isForMe?'#fafafa':'#f8fafc',border:unread&&isForMe?'2px solid #3b82f6':'1px solid #e2e8f0',marginLeft:isMe?40:0,marginRight:isMe?0:40,opacity:!isForMe?0.6:1}}
                 onClick={()=>{if(unread&&onMsg){onMsg(msgs.map(mm=>mm.id===m.id?{...mm,read_by:[...(mm.read_by||[]),cu.id]}:mm))}}}>
                 <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
-                  <div style={{display:'flex',gap:6,alignItems:'center'}}>
-                    <span style={{fontSize:12,fontWeight:700,color:isMe?'#1e40af':'#475569'}}>{author?.name||'Unknown'}</span>
-                    {dept&&dept.id!=='all'&&<span style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:8,background:dept.color+'20',color:dept.color}}>@{dept.label}</span>}
+                  <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
+                    <span style={{fontSize:12,fontWeight:700,color:isMe?'#1e40af':m.from==='coach'?'#b45309':'#475569'}}>{m.from==='coach'?'Coach':author?.name||'Unknown'}</span>
+                    {deptM.map(d=>{const dd=DEPTS.find(x=>x.id===d.id);return dd?<span key={d.id} style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:8,background:dd.color+'20',color:dd.color}}>@{dd.label}</span>:null})}
+                    {personM.map(p=><span key={p.id} style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:8,background:'#dbeafe',color:'#1e40af'}}>@{p.name?.split(' ')[0]}</span>)}
                   </div>
                   <span style={{fontSize:10,color:'#94a3b8'}}>{m.ts}</span></div>
-                <div style={{fontSize:13,color:'#0f172a'}}>{m.text}</div>
-                {unread&&<div style={{fontSize:9,color:'#3b82f6',marginTop:2}}>● New</div>}
+                <div style={{fontSize:13,color:'#0f172a',whiteSpace:'pre-wrap'}}>{m.text}</div>
+                {unread&&isForMe&&<div style={{fontSize:9,color:'#3b82f6',marginTop:2}}>● New</div>}
               </div>})}
           </div>
-          {/* Message input with department tag */}
-          <div style={{display:'flex',gap:6,marginBottom:6,flexWrap:'wrap'}}>
-            {DEPTS.map(d=><button key={d.id} style={{fontSize:10,padding:'2px 8px',borderRadius:10,border:'1px solid '+(msgDept===d.id?d.color:'#e2e8f0'),background:msgDept===d.id?d.color+'15':'white',color:msgDept===d.id?d.color:'#94a3b8',cursor:'pointer',fontWeight:600}} onClick={()=>setMsgDept(d.id)}>@{d.label}</button>)}
+          {/* Mention selector */}
+          <div style={{marginBottom:8}}>
+            <div style={{fontSize:10,fontWeight:700,color:'#64748b',marginBottom:4}}>Tag departments or people:</div>
+            <div style={{display:'flex',gap:4,flexWrap:'wrap',marginBottom:4}}>
+              {DEPTS.filter(d=>d.id!=='all').map(d=><button key={d.id} style={{fontSize:10,padding:'3px 8px',borderRadius:10,border:'2px solid '+(isMentioned({type:'dept',id:d.id})?d.color:'#e2e8f0'),background:isMentioned({type:'dept',id:d.id})?d.color+'15':'white',color:isMentioned({type:'dept',id:d.id})?d.color:'#94a3b8',cursor:'pointer',fontWeight:600}} onClick={()=>toggleMention({type:'dept',id:d.id,label:d.label})}>@{d.label}</button>)}
+            </div>
+            <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
+              {REPS.filter(r=>r.id!==cu.id).map(r=><button key={r.id} style={{fontSize:10,padding:'3px 8px',borderRadius:10,border:'2px solid '+(isMentioned({type:'person',id:r.id})?'#3b82f6':'#e2e8f0'),background:isMentioned({type:'person',id:r.id})?'#dbeafe':'white',color:isMentioned({type:'person',id:r.id})?'#1e40af':'#94a3b8',cursor:'pointer',fontWeight:600}} onClick={()=>toggleMention({type:'person',id:r.id,name:r.name})}>@{r.name?.split(' ')[0]}</button>)}
+            </div>
+            {selMentions.length>0&&<div style={{fontSize:10,color:'#3b82f6',marginTop:4}}>Notifying: {selMentions.map(m=>m.type==='dept'?'@'+m.label:'@'+m.name?.split(' ')[0]).join(', ')}</div>}
           </div>
           <div style={{display:'flex',gap:8}}><input className="form-input" id="msg-input" placeholder="Type a message..." style={{flex:1}} onKeyDown={e=>{if(e.key==='Enter'&&e.target.value.trim()){
-            const nm={id:'m'+Date.now(),so_id:o.id,author_id:cu.id,text:e.target.value.trim(),ts:new Date().toLocaleString(),read_by:[cu.id],dept:msgDept};
-            if(onMsg)onMsg([...msgs,nm]);e.target.value='';setMsgDept('all');nf('Message sent')}}}/><button className="btn btn-primary" onClick={()=>{
+            const nm={id:'m'+Date.now(),so_id:o.id,author_id:cu.id,text:e.target.value.trim(),ts:new Date().toLocaleString(),read_by:[cu.id],dept:selMentions.find(m=>m.type==='dept')?.id||'all',mentions:[...selMentions]};
+            if(onMsg)onMsg([...msgs,nm]);e.target.value='';setSelMentions([]);nf('Message sent')}}}/><button className="btn btn-primary" onClick={()=>{
             const inp=document.getElementById('msg-input');if(inp&&inp.value.trim()){
-            const nm={id:'m'+Date.now(),so_id:o.id,author_id:cu.id,text:inp.value.trim(),ts:new Date().toLocaleString(),read_by:[cu.id],dept:msgDept};
-            if(onMsg)onMsg([...msgs,nm]);inp.value='';setMsgDept('all');nf('Message sent')}}}>Send</button></div>
+            const nm={id:'m'+Date.now(),so_id:o.id,author_id:cu.id,text:inp.value.trim(),ts:new Date().toLocaleString(),read_by:[cu.id],dept:selMentions.find(m=>m.type==='dept')?.id||'all',mentions:[...selMentions]};
+            if(onMsg)onMsg([...msgs,nm]);inp.value='';setSelMentions([]);nf('Message sent')}}}>Send</button></div>
         </div></div>})()}
 
         {/* LINKED TRANSACTIONS TAB */}
@@ -4077,6 +4149,90 @@ export default function App(){
   const[iShowFav,setIShowFav]=useState(false);
   const[cu,setCu]=useState(()=>{try{const s=localStorage.getItem('nsa_user');return s?JSON.parse(s):null}catch{return null}});
   const handleLogin=(user)=>{setCu(user);try{localStorage.setItem('nsa_user',JSON.stringify(user))}catch{}};
+
+  // ═══════════════════════════════════════════════
+  // DOCUMENT LOCKING — prevents concurrent editing
+  // In production: Supabase row-level locks with real-time subscriptions
+  // Demo: local state simulates the UX
+  // ═══════════════════════════════════════════════
+  const LOCK_TIMEOUT=15*60*1000;// 15 min auto-expire
+  const HEARTBEAT_MS=30*1000;// 30 sec heartbeat
+  const[locks,setLocks]=useState({});// {doc_id: {user_id, user_name, locked_at, heartbeat}}
+
+  const acquireLock=(docId)=>{
+    if(!cu)return false;
+    const existing=locks[docId];
+    // Check if someone else has an active lock
+    if(existing&&existing.user_id!==cu.id){
+      const age=Date.now()-existing.heartbeat;
+      if(age<LOCK_TIMEOUT){
+        // Lock is active — can't edit
+        return false;
+      }
+      // Lock expired — take it over
+    }
+    setLocks(prev=>({...prev,[docId]:{user_id:cu.id,user_name:cu.name,locked_at:Date.now(),heartbeat:Date.now()}}));
+    return true;
+  };
+
+  const releaseLock=(docId)=>{
+    setLocks(prev=>{const n={...prev};delete n[docId];return n});
+  };
+
+  const refreshLock=(docId)=>{
+    setLocks(prev=>{
+      if(!prev[docId]||prev[docId].user_id!==cu?.id)return prev;
+      return{...prev,[docId]:{...prev[docId],heartbeat:Date.now()}};
+    });
+  };
+
+  const isLockedByOther=(docId)=>{
+    const l=locks[docId];
+    if(!l||l.user_id===cu?.id)return null;
+    if(Date.now()-l.heartbeat>LOCK_TIMEOUT)return null;// expired
+    return l;
+  };
+
+  const myLocks=Object.entries(locks).filter(([,l])=>l.user_id===cu?.id).map(([id])=>id);
+  const otherLocks=Object.entries(locks).filter(([,l])=>l.user_id!==cu?.id&&Date.now()-l.heartbeat<LOCK_TIMEOUT);
+
+  // Heartbeat — keep our locks alive
+  useEffect(()=>{
+    if(!cu||myLocks.length===0)return;
+    const hb=setInterval(()=>{myLocks.forEach(id=>refreshLock(id))},HEARTBEAT_MS);
+    return()=>clearInterval(hb);
+  },[cu,myLocks.length]);
+
+  // Release locks on page unload
+  useEffect(()=>{
+    const cleanup=()=>{myLocks.forEach(id=>releaseLock(id))};
+    window.addEventListener('beforeunload',cleanup);
+    return()=>window.removeEventListener('beforeunload',cleanup);
+  },[myLocks]);
+
+  // Lock banner component
+  const LockBanner=({docId,style})=>{
+    const lock=isLockedByOther(docId);
+    if(!lock)return null;
+    const mins=Math.floor((Date.now()-lock.locked_at)/60000);
+    return<div style={{padding:'10px 16px',background:'#fef2f2',border:'2px solid #fca5a5',borderRadius:8,display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:12,...(style||{})}}>
+      <div style={{display:'flex',alignItems:'center',gap:8}}>
+        <span style={{fontSize:18}}>🔒</span>
+        <div><div style={{fontWeight:700,fontSize:13,color:'#dc2626'}}>{lock.user_name} is editing this</div>
+          <div style={{fontSize:11,color:'#b91c1c'}}>Opened {mins<1?'just now':mins+' min ago'} · Read-only until they finish</div></div>
+      </div>
+      <button onClick={()=>{if(window.confirm('Force unlock? '+lock.user_name+' may lose unsaved changes.'))releaseLock(docId)}} style={{padding:'4px 10px',background:'white',border:'1px solid #fca5a5',borderRadius:4,cursor:'pointer',fontSize:10,color:'#dc2626',fontWeight:600}}>Force Unlock</button>
+    </div>};
+
+  // Active editors sidebar widget
+  const ActiveEditors=()=>{
+    if(otherLocks.length===0)return null;
+    return<div style={{padding:'8px 12px',margin:'8px 12px',background:'rgba(251,191,36,0.1)',borderRadius:6,border:'1px solid rgba(251,191,36,0.2)'}}>
+      <div style={{fontSize:9,fontWeight:700,color:'#f59e0b',letterSpacing:0.5,marginBottom:4}}>ACTIVE EDITORS</div>
+      {otherLocks.map(([id,l])=>{const mins=Math.floor((Date.now()-l.locked_at)/60000);
+        return<div key={id} style={{fontSize:10,color:'#e2e8f0',padding:'2px 0',display:'flex',justifyContent:'space-between'}}>
+          <span>🔒 {l.user_name}</span><span style={{color:'#94a3b8'}}>{id} · {mins<1?'now':mins+'m'}</span></div>})}
+    </div>};
   const handleLogout=()=>{setCu(null);try{localStorage.removeItem('nsa_user')}catch{}};
   const isA=cu?.role==='admin';
   const nf=(m,t='success')=>{setToast({msg:m,type:t});setTimeout(()=>setToast(null),3500)};
@@ -4123,7 +4279,10 @@ export default function App(){
   // DASHBOARD
   const rDash=()=>{
     // Unread messages for this user
-    const unreadMsgs=(msgs||[]).filter(m=>!(m.read_by||[]).includes(cu?.id));
+    const _roleDeptDash={admin:'all',sales:'sales',warehouse:'warehouse',decorator:'art',production:'production',csr:'sales',accounting:'accounting'};
+    const _myDeptDash=_roleDeptDash[cu.role]||'all';
+    const _isRelDash=(m)=>{if(!m.mentions||m.mentions.length===0)return true;return m.mentions.some(mm=>mm.type==='person'&&mm.id===cu.id)||m.mentions.some(mm=>mm.type==='dept'&&(mm.id===_myDeptDash||mm.id==='all'))};
+    const unreadMsgs=(msgs||[]).filter(m=>!(m.read_by||[]).includes(cu?.id)&&_isRelDash(m));
     const myUnread=unreadMsgs.sort((a,b)=>(b.ts||'').localeCompare(a.ts)).slice(0,10);
     // Build to-do items from jobs and SOs
     const todos=[];
@@ -4405,14 +4564,17 @@ export default function App(){
 
   // ESTIMATES LIST
   const rEst=()=>{
-    if(eEst)return<OrderEditor order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} onSave={e=>{savE(e);setEEst(e)}} onBack={()=>setEEst(null)} onConvertSO={convertSO} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} batchPOs={batchPOs} onBatchPO={setBatchPOs} bills={bills}/>;
+    if(eEst){
+      const lockInfo=isLockedByOther(eEst.id);
+      return<>{lockInfo&&<LockBanner docId={eEst.id}/>}
+        <OrderEditor order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} onSave={e=>{savE(e);setEEst(e)}} onBack={()=>{releaseLock(eEst.id);setEEst(null)}} onConvertSO={convertSO} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} batchPOs={batchPOs} onBatchPO={setBatchPOs} bills={bills} readOnly={!!lockInfo}/></>}
     const fe=ests.filter(e=>!q||(e.id+' '+e.memo+' '+(cust.find(c=>c.id===e.customer_id)?.name||'')+' '+(cust.find(c=>c.id===e.customer_id)?.alpha_tag||'')).toLowerCase().includes(q.toLowerCase()));
     return(<><div style={{display:'flex',gap:8,marginBottom:16}}><div className="search-bar" style={{flex:1}}><Icon name="search"/><input placeholder="Search..." value={q} onChange={e=>setQ(e.target.value)}/></div>
       <button className="btn btn-primary" onClick={()=>newE(null)}><Icon name="plus" size={14}/> New Estimate</button></div>
       <div className="stats-row"><div className="stat-card"><div className="stat-label">Total</div><div className="stat-value">{ests.length}</div></div><div className="stat-card"><div className="stat-label">Draft</div><div className="stat-value">{ests.filter(e=>e.status==='draft').length}</div></div><div className="stat-card"><div className="stat-label">Sent</div><div className="stat-value" style={{color:'#d97706'}}>{ests.filter(e=>e.status==='sent').length}</div></div><div className="stat-card"><div className="stat-label">Approved</div><div className="stat-value" style={{color:'#166534'}}>{ests.filter(e=>e.status==='approved').length}</div></div></div>
       <div className="card"><div className="card-body" style={{padding:0}}><table><thead><tr><th>ID</th><th>Customer</th><th>Memo</th><th>Items</th><th>Rep</th><th>Status</th><th>Email</th><th></th></tr></thead><tbody>
-      {fe.map(e=>{const c=cust.find(x=>x.id===e.customer_id);const rep=REPS.find(r=>r.id===e.created_by);return(<tr key={e.id} style={{cursor:'pointer'}} onClick={()=>{setEEst(e);setEEstC(c)}}>
-        <td style={{fontWeight:700,color:'#1e40af'}}>{e.id}</td><td>{c?<>{c.name} <span className="badge badge-gray">{c.alpha_tag}</span></>:'--'}</td>
+      {fe.map(e=>{const c=cust.find(x=>x.id===e.customer_id);const rep=REPS.find(r=>r.id===e.created_by);const eLock=isLockedByOther(e.id);return(<tr key={e.id} style={{cursor:'pointer'}} onClick={()=>{acquireLock(e.id);setEEst(e);setEEstC(c)}}>
+        <td style={{fontWeight:700,color:'#1e40af'}}>{eLock&&<span title={eLock.user_name+' is editing'} style={{marginRight:4}}>🔒</span>}{e.id}</td><td>{c?<>{c.name} <span className="badge badge-gray">{c.alpha_tag}</span></>:'--'}</td>
         <td style={{fontSize:12}}>{e.memo}</td><td>{e.items?.length||0}</td>
         <td><span style={{fontSize:11,color:'#64748b'}}>{rep?.name?.split(' ')[0]||'—'}</span></td>
         <td><span className={`badge ${e.status==='draft'?'badge-gray':e.status==='sent'?'badge-amber':e.status==='approved'?'badge-green':'badge-blue'}`}>{e.status}</span></td>
@@ -4423,7 +4585,10 @@ export default function App(){
 
   // SALES ORDERS LIST
   const rSO=()=>{
-    if(eSO)return<OrderEditor order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} onSave={s=>{savSO(s);setESO(s)}} onBack={()=>{setESO(null);setESOTab(null)}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} batchPOs={batchPOs} onBatchPO={setBatchPOs} initTab={eSOTab} bills={bills}/>;
+    if(eSO){
+      const lockInfo=isLockedByOther(eSO.id);
+      return<>{lockInfo&&<LockBanner docId={eSO.id}/>}
+        <OrderEditor order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} onSave={s=>{savSO(s);setESO(s)}} onBack={()=>{releaseLock(eSO.id);setESO(null);setESOTab(null)}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} batchPOs={batchPOs} onBatchPO={setBatchPOs} initTab={eSOTab} bills={bills} readOnly={!!lockInfo}/></>}
     // Filter SOs
     let fSOs=[...sos];
     if(soF.status!=='all')fSOs=fSOs.filter(s=>calcSOStatus(s)===soF.status);
@@ -4481,8 +4646,9 @@ export default function App(){
       // Status badge uses the actual SO status field (what the user set)
       const displayStatus=calcSOStatus(so);
       const statusLabel={need_order:'Need to Order',waiting_receive:'Waiting to Receive',items_received:'Items Received',in_production:'In Production',ready_to_invoice:'Ready to Invoice',complete:'Complete'}[displayStatus]||displayStatus.replace(/_/g,' ');
-      return(<tr key={so.id} style={{cursor:'pointer'}} onClick={()=>{setESO(so);setESOC(c)}}>
-      <td style={{fontWeight:700,color:'#1e40af'}}>{so.id}</td><td>{c?.name} <span className="badge badge-gray">{c?.alpha_tag}</span></td><td style={{fontSize:12}}>{so.memo}</td><td>{so.expected_date||'--'}</td>
+      const soLock=isLockedByOther(so.id);
+      return(<tr key={so.id} style={{cursor:'pointer'}} onClick={()=>{acquireLock(so.id);setESO(so);setESOC(c)}}>
+      <td style={{fontWeight:700,color:'#1e40af'}}>{soLock&&<span title={soLock.user_name+' is editing'} style={{marginRight:4}}>🔒</span>}{so.id}</td><td>{c?.name} <span className="badge badge-gray">{c?.alpha_tag}</span></td><td style={{fontSize:12}}>{so.memo}</td><td>{so.expected_date||'--'}</td>
       <td><span style={{fontSize:11,color:'#64748b'}}>{rep?.name?.split(' ')[0]||'—'}</span></td>
       <td>{ac>0?<span style={{fontSize:11}}>{aa}/{ac} ✓</span>:<span style={{fontSize:11,color:'#d97706'}}>—</span>}</td>
       <td>{itemStatus&&<span style={{fontSize:10,fontWeight:600,padding:'2px 6px',borderRadius:4,
@@ -5718,9 +5884,13 @@ export default function App(){
                       ...(inv._bal>0?[{_style:'background:#fef2f2',cells:['','',{value:'<strong>Balance Due</strong>',style:'color:#dc2626'},'<strong style="color:#dc2626;font-size:14px">$'+inv._bal.toLocaleString()+'</strong>']}]:[]),
                     ]
                   }],
-                  footer:inv.type==='deposit'?NSA.depositTerms:NSA.terms
+                  footer:inv.type==='deposit'?NSA.depositTerms:NSA.terms,
+                  portalLink:ic?.alpha_tag?(window.location.origin+'?portal='+ic.alpha_tag):undefined
                 });
-              }}>🖨️</button></td>
+              }}>🖨️</button>
+              <button style={{background:'none',border:'none',cursor:'pointer',fontSize:12,padding:2}} title="Email Invoice" onClick={e=>{e.stopPropagation();
+                emailDoc({docType:'INVOICE',docNum:inv.id,custName:ic?.name,custEmail:ic?.email,total:inv.total?.toFixed(2),portalTag:ic?.alpha_tag,memo:inv.memo||so?.memo});
+              }}>📧</button></td>
           </tr>})}</tbody></table>}
       </div></div>}
 
@@ -7319,29 +7489,48 @@ export default function App(){
       </div>
     </>);
   };
-    const unread=allM.filter(m=>!(m.read_by||[]).includes(cu.id));
-    const filtered=mF==='unread'?unread:mF==='mine'?allM.filter(m=>sos.some(s=>s.id===m.so_id&&s.created_by===cu.id)):allM;
-    return(<><div className="stats-row"><div className="stat-card"><div className="stat-label">Total</div><div className="stat-value">{allM.length}</div></div><div className="stat-card"><div className="stat-label">Unread</div><div className="stat-value" style={{color:unread.length>0?'#dc2626':''}}>{unread.length}</div></div></div>
-    <div style={{display:'flex',gap:4,marginBottom:12}}>{[['all','All'],['unread','Unread'],['mine','My SOs']].map(([v,l])=><button key={v} className={`btn btn-sm ${mF===v?'btn-primary':'btn-secondary'}`} onClick={()=>setMF(v)}>{l}</button>)}
+    const ROLE_DEPT_MAP={admin:'all',sales:'sales',warehouse:'warehouse',decorator:'art',production:'production',csr:'sales',accounting:'accounting'};
+    const myDept=ROLE_DEPT_MAP[cu.role]||'all';
+    const isRelevantToMe=(m)=>{if(!m.mentions||m.mentions.length===0)return true;
+      return m.mentions.some(mm=>mm.type==='person'&&mm.id===cu.id)||m.mentions.some(mm=>mm.type==='dept'&&(mm.id===myDept||mm.id==='all'))};
+    const unread=allM.filter(m=>!(m.read_by||[]).includes(cu.id)&&isRelevantToMe(m));
+    const allUnread=allM.filter(m=>!(m.read_by||[]).includes(cu.id));
+    const DEPTS2=[{id:'all',label:'All',color:'#64748b'},{id:'forme',label:'For Me',color:'#3b82f6'},{id:'art',label:'Art',color:'#7c3aed'},{id:'production',label:'Production',color:'#2563eb'},{id:'warehouse',label:'Warehouse',color:'#d97706'},{id:'sales',label:'Sales',color:'#166534'},{id:'accounting',label:'Accounting',color:'#dc2626'},{id:'coach',label:'From Coach',color:'#b45309'}];
+    const filtered=mF==='unread'?allUnread:mF==='forme'?allM.filter(m=>isRelevantToMe(m)):
+      mF==='mine'?allM.filter(m=>sos.some(s=>s.id===m.so_id&&s.created_by===cu.id)):
+      mF==='coach'?allM.filter(m=>m.from==='coach'):
+      ['art','production','warehouse','sales','accounting'].includes(mF)?allM.filter(m=>(m.mentions||[]).some(mm=>mm.type==='dept'&&mm.id===mF)||(m.dept===mF)):allM;
+    return(<><div className="stats-row"><div className="stat-card"><div className="stat-label">Total</div><div className="stat-value">{allM.length}</div></div><div className="stat-card"><div className="stat-label">For Me</div><div className="stat-value" style={{color:unread.length>0?'#dc2626':''}}>{unread.length} unread</div></div><div className="stat-card"><div className="stat-label">All Unread</div><div className="stat-value">{allUnread.length}</div></div></div>
+    <div style={{display:'flex',gap:4,marginBottom:12,flexWrap:'wrap'}}>
+      {DEPTS2.map(d=>{const cnt=d.id==='all'?allM.length:d.id==='forme'?allM.filter(m=>isRelevantToMe(m)&&!(m.read_by||[]).includes(cu.id)).length:
+        d.id==='coach'?allM.filter(m=>m.from==='coach').length:allM.filter(m=>(m.mentions||[]).some(mm=>mm.type==='dept'&&mm.id===d.id)||(m.dept===d.id)).length;
+        return<button key={d.id} className={`btn btn-sm ${mF===d.id?'btn-primary':'btn-secondary'}`} style={{fontSize:10,borderColor:mF===d.id?d.color:'',background:mF===d.id?d.color:'',color:mF===d.id?'white':''}} onClick={()=>setMF(d.id)}>
+          {d.label}{cnt>0&&d.id!=='all'&&<span style={{marginLeft:4,opacity:0.8}}>({cnt})</span>}</button>})}
+      <button className={`btn btn-sm ${mF==='unread'?'btn-primary':'btn-secondary'}`} style={{fontSize:10}} onClick={()=>setMF('unread')}>Unread ({allUnread.length})</button>
+      <button className={`btn btn-sm ${mF==='mine'?'btn-primary':'btn-secondary'}`} style={{fontSize:10}} onClick={()=>setMF('mine')}>My SOs</button>
       <button className="btn btn-sm btn-secondary" style={{marginLeft:'auto'}} onClick={()=>{setMsgs(msgs.map(m=>({...m,read_by:[...new Set([...(m.read_by||[]),cu.id])]})));nf('All marked read')}}>Mark All Read</button></div>
     <div className="card"><div className="card-body" style={{padding:0}}>
-      {filtered.length===0?<div className="empty" style={{padding:20}}>No messages</div>:
+      {filtered.length===0?<div className="empty" style={{padding:20}}>No messages{mF!=='all'?' matching "'+mF+'" filter':''}</div>:
       filtered.map(m=>{const author=REPS.find(r=>r.id===m.author_id);const so=sos.find(s=>s.id===m.so_id);const c2=cust.find(cc=>cc.id===so?.customer_id);const isUnread=!(m.read_by||[]).includes(cu.id);
-        return<div key={m.id} style={{padding:'12px 18px',borderBottom:'1px solid #f1f5f9',cursor:'pointer',background:isUnread?'#eff6ff':'white'}}
-          onClick={()=>{if(so){const c3=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c3);setPg('orders')}setMsgs(msgs.map(mm=>mm.id===m.id?{...mm,read_by:[...new Set([...(mm.read_by||[]),cu.id])]}:mm))}}>
+        const mentions=m.mentions||[];const deptM=mentions.filter(x=>x.type==='dept');const personM=mentions.filter(x=>x.type==='person');
+        const relevant=isRelevantToMe(m);
+        return<div key={m.id} style={{padding:'12px 18px',borderBottom:'1px solid #f1f5f9',cursor:'pointer',background:isUnread&&relevant?'#eff6ff':!relevant?'#fafafa':'white',opacity:relevant?1:0.5}}
+          onClick={()=>{if(so){const c3=cust.find(cc=>cc.id===so.customer_id);acquireLock(so.id);setESO(so);setESOC(c3);setPg('orders')}setMsgs(msgs.map(mm=>mm.id===m.id?{...mm,read_by:[...new Set([...(mm.read_by||[]),cu.id])]}:mm))}}>
           <div style={{display:'flex',gap:12,alignItems:'flex-start'}}>
-            <div style={{width:36,height:36,borderRadius:18,background:isUnread?'#3b82f6':'#e2e8f0',color:isUnread?'white':'#64748b',display:'flex',alignItems:'center',justifyContent:'center',fontSize:13,fontWeight:700,flexShrink:0}}>{(author?.name||'?')[0]}</div>
+            <div style={{width:36,height:36,borderRadius:18,background:m.from==='coach'?'#f59e0b':isUnread&&relevant?'#3b82f6':'#e2e8f0',color:m.from==='coach'||isUnread&&relevant?'white':'#64748b',display:'flex',alignItems:'center',justifyContent:'center',fontSize:13,fontWeight:700,flexShrink:0}}>{m.from==='coach'?'🏈':(author?.name||'?')[0]}</div>
             <div style={{flex:1}}>
-              <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:2}}>
-                <span style={{fontWeight:700,fontSize:13}}>{author?.name}</span>
+              <div style={{display:'flex',gap:6,alignItems:'center',marginBottom:2,flexWrap:'wrap'}}>
+                <span style={{fontWeight:700,fontSize:13,color:m.from==='coach'?'#b45309':''}}>{m.from==='coach'?'Coach ('+c2?.name+')':author?.name}</span>
                 <span style={{fontSize:11,color:'#1e40af',fontWeight:600}}>{m.so_id}</span>
                 {c2&&<span style={{fontSize:11,color:'#64748b'}}>{c2.alpha_tag}</span>}
+                {deptM.map(d=>{const dd={art:{c:'#7c3aed',l:'Art'},production:{c:'#2563eb',l:'Production'},warehouse:{c:'#d97706',l:'Warehouse'},sales:{c:'#166534',l:'Sales'},accounting:{c:'#dc2626',l:'Accounting'}}[d.id];return dd?<span key={d.id} style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:8,background:dd.c+'20',color:dd.c}}>@{dd.l}</span>:null})}
+                {personM.map(p=><span key={p.id} style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:8,background:'#dbeafe',color:'#1e40af'}}>@{p.name?.split(' ')[0]}</span>)}
                 {so?.memo&&<span style={{fontSize:10,color:'#94a3b8'}}>— {so.memo}</span>}
                 <span style={{fontSize:10,color:'#94a3b8',marginLeft:'auto'}}>{m.ts}</span>
               </div>
-              <div style={{fontSize:13,color:'#374151'}}>{m.text}</div>
+              <div style={{fontSize:13,color:'#374151',whiteSpace:'pre-wrap'}}>{m.text}</div>
             </div>
-            {isUnread&&<div style={{width:8,height:8,borderRadius:4,background:'#3b82f6',flexShrink:0,marginTop:6}}/>}
+            {isUnread&&relevant&&<div style={{width:8,height:8,borderRadius:4,background:'#3b82f6',flexShrink:0,marginTop:6}}/>}
           </div></div>})}</div></div></>)};
 
     // NAV
@@ -7367,9 +7556,16 @@ export default function App(){
   return(<div className="app"><Toast msg={toast?.msg} type={toast?.type}/>
     <div className="sidebar"><div className="sidebar-logo">NSA<span>Portal</span></div>
       <nav className="sidebar-nav">{nav.map((item,i)=>{if(item.section)return<div key={i} className="sidebar-section">{item.section}</div>;
-        const ubadge=item.id==='messages'?msgs.filter(m=>!(m.read_by||[]).includes(cu.id)).length:0;
+        const ROLE_DEPT_NAV={admin:'all',sales:'sales',warehouse:'warehouse',decorator:'art',production:'production',csr:'sales',accounting:'accounting'};
+        const myDeptNav=ROLE_DEPT_NAV[cu.role]||'all';
+        const isRelevantNav=(m)=>{if(!m.mentions||m.mentions.length===0)return true;return m.mentions.some(mm=>mm.type==='person'&&mm.id===cu.id)||m.mentions.some(mm=>mm.type==='dept'&&(mm.id===myDeptNav||mm.id==='all'))};
+        const ubadge=item.id==='messages'?msgs.filter(m=>!(m.read_by||[]).includes(cu.id)&&isRelevantNav(m)).length:0;
         return<button key={item.id} className={`sidebar-link ${pg===item.id?'active':''}`}
-          onClick={()=>{if(dirtyRef.current&&!window.confirm('You have unsaved changes. Leave without saving?'))return;dirtyRef.current=false;setPg(item.id);setQ('');setSelC(null);setSelV(null);setEEst(null);setESO(null)}}><Icon name={item.icon}/>{item.label}{item.id==='messages'&&ubadge>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{ubadge}</span>}{item.id==='batch_pos'&&batchPOs.length>0&&<span style={{background:'#7c3aed',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{batchPOs.length}</span>}{item.id==='bills'&&bills.filter(b=>b.status==='new').length>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{bills.filter(b=>b.status==='new').length}</span>}</button>})}</nav>
+          onClick={()=>{if(dirtyRef.current&&!window.confirm('You have unsaved changes. Leave without saving?'))return;dirtyRef.current=false;
+            // Release any locks when navigating away
+            if(eEst)releaseLock(eEst.id);if(eSO)releaseLock(eSO.id);
+            setPg(item.id);setQ('');setSelC(null);setSelV(null);setEEst(null);setESO(null)}}><Icon name={item.icon}/>{item.label}{item.id==='messages'&&ubadge>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{ubadge}</span>}{item.id==='batch_pos'&&batchPOs.length>0&&<span style={{background:'#7c3aed',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{batchPOs.length}</span>}{item.id==='bills'&&bills.filter(b=>b.status==='new').length>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{bills.filter(b=>b.status==='new').length}</span>}</button>})}</nav>
+      <ActiveEditors/>
       <div className="sidebar-user"><div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}><div><div style={{fontWeight:600,color:'#e2e8f0'}}>{cu.name}</div><div>{cu.role}</div></div><button onClick={handleLogout} style={{background:'none',border:'1px solid #475569',borderRadius:6,padding:'3px 8px',color:'#94a3b8',cursor:'pointer',fontSize:10}} title="Log out">↪ Out</button></div></div></div>
     <div className="main"><div className="topbar"><h1>{eEst?eEst.id:eSO?eSO.id:selC?selC.name:selV?selV.name:(titles[pg]||'Dashboard')}</h1>
         <div style={{flex:1,maxWidth:400,margin:'0 20px',position:'relative'}}>
