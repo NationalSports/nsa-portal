@@ -974,7 +974,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                   ...(shipAmt>0?[{cells:[{value:'Shipping'+(o.shipping_type==='pct'?' ('+o.shipping_value+'%)':''),style:'font-style:italic'},'','','$'+shipAmt.toFixed(2)]}]:[]),
                   {_class:'totals-row',cells:['','','Total','$'+total.toFixed(2)]}
                 ]},
-              ...(items.some(it=>safeDecos(it).length>0)?[{title:'Decoration Details',
+              ...(o.pricing_mode!=='rolled_up'&&items.some(it=>safeDecos(it).length>0)?[{title:'Decoration Details',
                 headers:['Item','Position','Type','Per Unit','Extended'],aligns:['left','left','left','right','right'],
                 rows:items.flatMap(it=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
                   return safeDecos(it).map(d=>{const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:qty;const dp=dP(d,qty,af,cq);const artF=af.find(a=>a.id===d.art_file_id);
@@ -1002,9 +1002,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         <div><label className="form-label">Shipping</label><div style={{display:'flex',gap:4,alignItems:'center'}}>
           <Bg options={[{value:'pct',label:'% of Total'},{value:'flat',label:'Flat $'}]} value={o.shipping_type||'pct'} onChange={v=>sv('shipping_type',v)}/>
           {o.shipping_type==='pct'?<span style={{display:'inline-flex',alignItems:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'2px 6px',background:'white'}}><input value={o.shipping_value||0} onChange={e=>sv('shipping_value',parseFloat(e.target.value)||0)} style={{width:40,border:'none',outline:'none',fontSize:15,fontWeight:800,textAlign:'center',background:'transparent'}}/><span style={{fontWeight:700}}>%</span></span>
-          :<$In value={o.shipping_value||0} onChange={v=>sv('shipping_value',v)} w={60}/>}
-          <span style={{fontSize:12,color:'#64748b'}}>= ${totals.ship.toFixed(2)}</span>
-        </div></div>
+          :<span style={{display:'inline-flex',alignItems:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'2px 6px',background:'white'}}><span style={{fontWeight:700,color:'#166534'}}>$</span><input value={o.shipping_value||0} onChange={e=>sv('shipping_value',parseFloat(e.target.value)||0)} style={{width:50,border:'none',outline:'none',fontSize:15,fontWeight:800,textAlign:'center',background:'transparent'}}/></span>}
+          </div></div>
+        <div><label className="form-label">Customer Pricing</label>
+          <Bg options={[{value:'itemized',label:'Itemized'},{value:'rolled_up',label:'Rolled Up'}]} value={o.pricing_mode||'itemized'} onChange={v=>sv('pricing_mode',v)}/>
+          <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>{(o.pricing_mode||'itemized')==='rolled_up'?'Deco included in item price':'Deco shown as separate lines'}</div>
+        </div>
+        <div style={{fontSize:12,color:'#64748b',alignSelf:'end',marginBottom:6}}>= ${totals.ship.toFixed(2)}</div>
         <div style={{flex:1,minWidth:180}}><label className="form-label">Ship To</label>
           {!showNA?<select className="form-select" value={o.ship_to_id||'default'} onChange={e=>{if(e.target.value==='new')setShowNA(true);else sv('ship_to_id',e.target.value)}}>
             {addrs.map(a=><option key={a.id} value={a.id}>{a.label}</option>)}<option value="new">+ New Address</option></select>
@@ -1162,6 +1166,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         </div>}
         {/* DECORATIONS */}
         <div style={{padding:'8px 18px 14px'}}>
+          {(o.pricing_mode||'itemized')==='rolled_up'&&safeDecos(item).length>0&&<div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',padding:'6px 0'}}>
+            <span style={{fontSize:11,color:'#64748b'}}>Deco:</span>
+            {safeDecos(item).map((d,di)=>{const artF=d.kind==='art'?af.find(f=>f.id===d.art_file_id):null;
+              return<span key={di} style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:d.kind==='outside_deco'?'#faf5ff':d.kind==='numbers'?'#f0fdf4':'#dbeafe',
+                color:d.kind==='outside_deco'?'#7c3aed':d.kind==='numbers'?'#166534':'#1e40af',fontWeight:600}}>
+                {d.kind==='art'?(artF?.deco_type||d.art_tbd_type||'art').replace(/_/g,' '):d.kind==='numbers'?'Numbers ('+((d.num_method||'HT').replace(/_/g,' '))+')':d.kind==='outside_deco'?(d.deco_type||'deco').replace(/_/g,' '):'deco'} · {d.position}
+                <button onClick={()=>rmD(idx,di)} style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',fontSize:9,marginLeft:4}}>✕</button></span>})}
+            <span style={{fontSize:10,color:'#64748b',fontStyle:'italic'}}>(+${dR>0?(dR/qty).toFixed(2):'0.00'}/ea deco included)</span>
+          </div>}
+          {(o.pricing_mode||'itemized')!=='rolled_up'&&<>
           {safeDecos(item).map((deco,di)=>{const cq=deco.kind==='art'&&deco.art_file_id?artQty[deco.art_file_id]:qty;const dp=dP(deco,qty,af,cq);
             if(deco.kind==='art'){const artF=af.find(f=>f.id===deco.art_file_id);const artIcon=artF?(artF.deco_type==='screen_print'?'🎨':artF.deco_type==='embroidery'?'🧵':'🔥'):'';
               const isTBD=deco.art_file_id==='__tbd';
@@ -1295,6 +1309,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                 {item.no_deco&&<span style={{fontSize:10,padding:'3px 8px',borderRadius:4,background:'#f1f5f9',color:'#64748b',fontWeight:600,display:'flex',alignItems:'center',gap:4}}>🚫 Blank Ship <button onClick={()=>uI(idx,'no_deco',false)} style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',fontSize:12,padding:0,marginLeft:2}}>✕</button></span>}
               </>})()}
           </div>
+          </>}
+          {/* Deco buttons always visible for adding */}
+          {(o.pricing_mode||'itemized')==='rolled_up'&&safeDecos(item).length===0&&<div style={{display:'flex',gap:6,marginTop:4,alignItems:'center',flexWrap:'wrap'}}>
+            {(()=>{const hasOutside=safeDecos(item).some(d=>d.kind==='outside_deco');const hasInHouse=safeDecos(item).some(d=>d.kind==='art'||d.kind==='numbers');
+              return<>
+                {!hasOutside&&<button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>addArtDeco(idx)}><Icon name="image" size={12}/> + Add Art</button>}
+                {!hasOutside&&<button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>addNumDeco(idx)}>#️⃣ + Add Numbers</button>}
+                {!hasInHouse&&<button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>addOutsideDeco(idx)}>🎨 + Outside Deco</button>}
+                {safeDecos(item).length===0&&!item.no_deco&&<button className="btn btn-sm btn-secondary" style={{fontSize:10,color:'#94a3b8'}} onClick={()=>uI(idx,'no_deco',true)}>🚫 Blank Ship</button>}
+                {item.no_deco&&<span style={{fontSize:10,padding:'3px 8px',borderRadius:4,background:'#f1f5f9',color:'#64748b',fontWeight:600,display:'flex',alignItems:'center',gap:4}}>🚫 Blank Ship <button onClick={()=>uI(idx,'no_deco',false)} style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',fontSize:12,padding:0,marginLeft:2}}>✕</button></span>}
+              </>})()}
+          </div>}
         </div>
       </div>)})}
     {/* ADD PRODUCT */}
