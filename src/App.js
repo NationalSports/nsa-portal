@@ -978,7 +978,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                   <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{const csv=prompt('Paste roster (one per line: Size,Number,Name):\ne.g.\nM,12,Smith\nL,34,Jones');if(csv){const nr={...roster};csv.split('\n').forEach(line=>{const[sz,num]=line.split(',').map(s=>s.trim());if(sz&&num){if(!nr[sz])nr[sz]=Array(item.sizes[sz]||0).fill('');const ei=nr[sz].findIndex(v=>!v);if(ei>=0)nr[sz][ei]=num}});uD(idx,di,'roster',nr);nf('Roster imported')}}}><Icon name="upload" size={10}/> Paste Roster</button>
                   <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{uD(idx,di,'roster',{});nf('Roster cleared')}}>Clear All</button>
                 </div></div>
-            </div>)}}
+            </div>)}
             // OUTSIDE DECORATION — no job created, just cost/sell
             if(deco.kind==='outside_deco'){return(<div key={di} style={{padding:'10px 0',borderTop:di>0?'1px solid #f1f5f9':''}}>
               <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:6}}>
