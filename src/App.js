@@ -3689,361 +3689,335 @@ function AdjModal({isOpen,onClose,product,onSave}){const[a,setA]=useState({});co
 // ═══════════════════════════════════════════════════════════════════
 // COACH PORTAL — Customer-facing view for estimates, orders, invoices
 // ═══════════════════════════════════════════════════════════════════
-const COACH_CSS=`
-*{margin:0;padding:0;box-sizing:border-box}
-body{font-family:'DM Sans','Segoe UI',sans-serif;background:#f8f9fb;color:#1a1a2e}
-.cp{max-width:960px;margin:0 auto;padding:24px 16px}
-.cp-hdr{display:flex;justify-content:space-between;align-items:center;padding:20px 0;border-bottom:2px solid #e8ecf2;margin-bottom:24px}
-.cp-logo{font-size:22px;font-weight:900;color:#1e3a5f;letter-spacing:-0.5px}
-.cp-logo small{font-size:11px;font-weight:400;color:#94a3b8;display:block;letter-spacing:1px}
-.cp-tabs{display:flex;gap:4px;background:#e8ecf2;padding:3px;border-radius:10px}
-.cp-tab{padding:8px 18px;border-radius:8px;border:none;cursor:pointer;font-size:13px;font-weight:600;color:#64748b;background:transparent;transition:all 0.2s}
-.cp-tab.active{background:white;color:#1e3a5f;box-shadow:0 1px 4px rgba(0,0,0,0.08)}
-.cp-card{background:white;border-radius:12px;border:1px solid #e8ecf2;padding:20px;margin-bottom:16px;box-shadow:0 1px 3px rgba(0,0,0,0.04)}
-.cp-badge{display:inline-block;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700;letter-spacing:0.3px}
-.cp-btn{padding:10px 20px;border-radius:8px;border:none;cursor:pointer;font-size:13px;font-weight:700;transition:all 0.15s}
-.cp-btn:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(0,0,0,0.1)}
-.cp-btn-primary{background:#1e3a5f;color:white}
-.cp-btn-green{background:#166534;color:white}
-.cp-btn-outline{background:white;color:#1e3a5f;border:2px solid #1e3a5f}
-.cp-table{width:100%;border-collapse:collapse;margin:12px 0}
-.cp-table th{text-align:left;padding:8px 10px;font-size:10px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:0.5px;border-bottom:2px solid #e8ecf2}
-.cp-table td{padding:10px;border-bottom:1px solid #f1f5f9;font-size:13px}
-.cp-status{display:flex;gap:0;margin:16px 0}
-.cp-step{flex:1;text-align:center;padding:10px 4px;font-size:10px;font-weight:700;color:#94a3b8;border-bottom:3px solid #e8ecf2;position:relative}
-.cp-step.done{color:#166534;border-color:#22c55e}
-.cp-step.active{color:#1e40af;border-color:#3b82f6}
-.cp-step.done::after{content:'✓';position:absolute;top:-6px;left:50%;transform:translateX(-50%);width:16px;height:16px;background:#22c55e;color:white;border-radius:50%;font-size:9px;line-height:16px}
-.cp-upload{border:2px dashed #d1d5db;border-radius:8px;padding:24px;text-align:center;cursor:pointer;transition:all 0.2s}
-.cp-upload:hover{border-color:#3b82f6;background:#f0f7ff}
-.cp-file-pill{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;background:#f1f5f9;border-radius:6px;font-size:11px;margin:4px 2px}
-.cp-total-row{display:flex;justify-content:space-between;padding:6px 0;font-size:13px}
-.cp-total-row.grand{font-size:18px;font-weight:800;border-top:2px solid #1e3a5f;margin-top:8px;padding-top:12px}
-@media print{.cp-no-print{display:none!important}.cp{padding:0}.cp-card{box-shadow:none;border:1px solid #ddd}}
-`;
+
+// ═══════════════════════════════════════════════════════════════════
+// COACH PORTAL — Customer-facing view for estimates, orders, invoices
+// Mirrors the internal customer portal style: single flow, progress bars
+// ═══════════════════════════════════════════════════════════════════
 
 function CoachPortal({customer,estimates,orders,invoices,artFiles,onUpdate,onMsg,pricingFn}){
-  const[tab,setTab]=useState('estimates');
-  const[detail,setDetail]=useState(null);// {type:'est'|'so'|'inv', id:...}
-  const[files,setFiles]=useState({});// {order_id: [File,...]}
-  const[ccModal,setCCModal]=useState(null);// invoice id for CC payment
+  const[detail,setDetail]=useState(null);
+  const[ccModal,setCCModal]=useState(null);
   const[msg,setMsg]=useState('');
-
+  const[files,setFiles]=useState({});
+  const[paySelect,setPaySelect]=useState({});
   const af=artFiles||[];
   const isRolled=(o)=>(o?.pricing_mode||'itemized')==='rolled_up';
 
-  // Calculate item display for customer view
   const itemRows=(o)=>{
-    const items=o.items||[];
-    const rows=[];
+    const items=o.items||[];const rows=[];
     const _pAQ={};items.forEach(it=>{const q2=Object.values(it.sizes||{}).reduce((a,v)=>a+(parseInt(v)||0),0);(it.decorations||[]).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'){_pAQ[d.art_file_id]=(_pAQ[d.art_file_id]||0)+q2}})});
     items.forEach(it=>{
-      const qty=Object.values(it.sizes||{}).reduce((a,v)=>a+(parseInt(v)||0),0);
-      if(qty<=0)return;
+      const qty=Object.values(it.sizes||{}).reduce((a,v)=>a+(parseInt(v)||0),0);if(qty<=0)return;
       const decos=(it.decorations||[]).filter(d=>d.kind);
       const decoSell=decos.reduce((a,d)=>{const dp=pricingFn?pricingFn(d,qty,af,_pAQ[d.art_file_id]):null;return a+(dp?.sell||0)},0);
-      if(isRolled(o)){
-        // Rolled up: one line per item, deco in unit price
-        rows.push({sku:it.sku,name:it.name,color:it.color,qty,unit:it.unit_sell+decoSell,ext:qty*(it.unit_sell+decoSell),decos:[]});
-      }else{
-        // Itemized: item line + separate deco lines
-        rows.push({sku:it.sku,name:it.name,color:it.color,qty,unit:it.unit_sell,ext:qty*it.unit_sell,decos:[]});
-        decos.forEach(d=>{
-          const dp=pricingFn?pricingFn(d,qty,af,_pAQ[d.art_file_id]):null;
-          const sell=dp?.sell||d.sell_override||0;
-          if(sell<=0)return;
-          const artF=af.find(f=>f.id===d.art_file_id);
-          const label=d.kind==='art'?(artF?.deco_type||d.art_tbd_type||'decoration').replace(/_/g,' ')+' — '+(d.position||''):d.kind==='numbers'?'Numbers ('+((d.num_method||'heat transfer').replace(/_/g,' '))+') — '+(d.position||''):d.kind==='outside_deco'?(d.deco_type||'decoration').replace(/_/g,' ')+' — '+(d.position||''):'Decoration';
-          rows.push({sku:'',name:'  ↳ '+label,color:'',qty,unit:sell,ext:qty*sell,decos:[],isDeco:true});
-        });
-      }
-    });
-    return rows;
-  };
+      if(isRolled(o)){rows.push({sku:it.sku,name:it.name,color:it.color,qty,unit:it.unit_sell+decoSell,ext:qty*(it.unit_sell+decoSell)})}
+      else{rows.push({sku:it.sku,name:it.name,color:it.color,qty,unit:it.unit_sell,ext:qty*it.unit_sell});
+        decos.forEach(d=>{const dp=pricingFn?pricingFn(d,qty,af,_pAQ[d.art_file_id]):null;const sell=dp?.sell||d.sell_override||0;if(sell<=0)return;
+          const artF=af.find(f=>f.id===d.art_file_id);const label=d.kind==='art'?(artF?.deco_type||d.art_tbd_type||'decoration').replace(/_/g,' ')+' — '+(d.position||''):d.kind==='numbers'?'Numbers — '+(d.position||''):(d.deco_type||'decoration').replace(/_/g,' ')+' — '+(d.position||'');
+          rows.push({sku:'',name:'  \u21b3 '+label,color:'',qty,unit:sell,ext:qty*sell,isDeco:true})})}});
+    return rows};
 
-  const calcTotals=(o)=>{
-    const rows=itemRows(o);
-    const sub=rows.reduce((a,r)=>a+r.ext,0);
+  const calcTotals=(o)=>{const rows=itemRows(o);const sub=rows.reduce((a,r)=>a+r.ext,0);
     const ship=o.shipping_type==='pct'?sub*(o.shipping_value||0)/100:(o.shipping_value||0);
-    const taxRate=customer?.tax_rate||0;
-    const tax=sub*taxRate;
-    return{sub,ship,tax,grand:sub+ship+tax};
-  };
+    const tax=sub*(customer?.tax_rate||0);return{sub,ship,tax,grand:sub+ship+tax}};
 
-  const handleFileUpload=(orderId,e)=>{
-    const newFiles=[...(files[orderId]||[]),...Array.from(e.target.files)];
-    setFiles({...files,[orderId]:newFiles});
-    // In production: upload to Supabase storage
-  };
+  const openEsts=estimates.filter(e=>e.status==='sent'||e.status==='draft');
+  const approvedEsts=estimates.filter(e=>e.status==='approved'&&e.status!=='converted');
+  const activeSOs=orders.filter(s=>s.status!=='complete');
+  const completedSOs=orders.filter(s=>s.status==='complete');
+  const openInvs=invoices.filter(i=>i.status!=='paid');
+  const paidInvs=invoices.filter(i=>i.status==='paid');
+  const totalDue=openInvs.reduce((a,inv)=>a+calcTotals(inv).grand,0);
 
-  const stLabel={need_order:'Order Placed',waiting_receive:'Items on Order',items_received:'Items in Warehouse',in_production:'In Production',ready_to_invoice:'Ready to Ship',complete:'Complete'};
   const stSteps=['need_order','waiting_receive','items_received','in_production','ready_to_invoice','complete'];
+  const selectedIds=Object.keys(paySelect).filter(k=>paySelect[k]);
+  const selectedTotal=selectedIds.reduce((a,id)=>{const inv=invoices.find(i=>i.id===id);return a+(inv?calcTotals(inv).grand:0)},0);
 
-  // Size breakdown for an order
-  const sizeTable=(o)=>{
-    const items=(o.items||[]).filter(it=>Object.values(it.sizes||{}).some(v=>v>0));
-    const allSzs=[...new Set(items.flatMap(it=>Object.keys(it.sizes||{})))];
-    const szOrd=['XS','S','M','L','XL','2XL','3XL','4XL','LT','XLT','2XLT'];
-    const szs=allSzs.sort((a,b)=>(szOrd.indexOf(a)===-1?99:szOrd.indexOf(a))-(szOrd.indexOf(b)===-1?99:szOrd.indexOf(b)));
-    return{items,szs};
-  };
+  const cs={wrap:{maxWidth:700,margin:'0 auto',fontFamily:"'Segoe UI',sans-serif",padding:'12px 8px'},
+    hdr:{background:'linear-gradient(135deg,#1e3a5f,#2563eb)',color:'white',padding:'24px 28px',borderRadius:'12px 12px 0 0'},
+    body:{padding:'20px 28px',background:'white',borderRadius:'0 0 12px 12px',boxShadow:'0 4px 24px rgba(0,0,0,0.08)'},
+    card:{border:'1px solid #e2e8f0',borderRadius:10,padding:16,marginBottom:12},
+    cardWarn:{border:'2px solid #f59e0b',borderRadius:10,padding:16,marginBottom:12,background:'#fffbeb'},
+    sectionTitle:{fontSize:13,fontWeight:800,marginBottom:10,marginTop:16},
+    itemRow:{display:'flex',justifyContent:'space-between',padding:'4px 0',borderBottom:'1px solid #f8fafc',fontSize:12},
+    link:{fontSize:11,color:'#3b82f6',marginTop:6,fontWeight:600}};
 
-  // DETAIL VIEW
-  const renderDetail=()=>{
-    if(!detail)return null;
+  // ── DETAIL VIEW ──
+  if(detail){
     const o=detail.type==='est'?estimates.find(e=>e.id===detail.id):detail.type==='so'?orders.find(s=>s.id===detail.id):invoices.find(i=>i.id===detail.id);
-    if(!o)return null;
-    const rows=itemRows(o);
-    const tots=calcTotals(o);
-    const{items:szItems,szs}=sizeTable(o);
+    if(!o){setDetail(null);return null}
+    const rows=itemRows(o);const tots=calcTotals(o);
+    const szItems=(o.items||[]).filter(it=>Object.values(it.sizes||{}).some(v=>v>0));
+    const allSzs=[...new Set(szItems.flatMap(it=>Object.keys(it.sizes||{})))];
+    const szOrd=['YS','YM','YL','YXL','XS','S','M','L','XL','2XL','3XL','4XL'];
+    const szs=allSzs.sort((a,b)=>(szOrd.indexOf(a)===-1?99:szOrd.indexOf(a))-(szOrd.indexOf(b)===-1?99:szOrd.indexOf(b)));
     const orderFiles=files[o.id]||[];
 
-    return<div>
-      <button className="cp-btn cp-btn-outline cp-no-print" style={{marginBottom:16}} onClick={()=>setDetail(null)}>← Back to {tab==='estimates'?'Estimates':tab==='orders'?'Orders':'Invoices'}</button>
-
-      <div className="cp-card">
-        <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:16}}>
-          <div>
-            <div style={{fontSize:22,fontWeight:800,color:'#1e3a5f'}}>{o.id}</div>
-            <div style={{fontSize:14,color:'#64748b'}}>{o.memo||'—'}</div>
-            <div style={{fontSize:12,color:'#94a3b8',marginTop:4}}>{o.created_at}</div>
-          </div>
-          <div style={{textAlign:'right'}}>
-            {detail.type==='est'&&<span className="cp-badge" style={{background:o.status==='approved'?'#dcfce7':o.status==='sent'?'#fef3c7':'#f1f5f9',color:o.status==='approved'?'#166534':o.status==='sent'?'#92400e':'#475569'}}>{o.status}</span>}
-            <div style={{fontSize:28,fontWeight:900,color:'#1e3a5f',marginTop:4}}>${tots.grand.toFixed(2)}</div>
-          </div>
+    return<div style={cs.wrap}>
+      <div style={cs.hdr}>
+        <button onClick={()=>setDetail(null)} style={{background:'rgba(255,255,255,0.2)',border:'none',color:'white',padding:'6px 14px',borderRadius:6,cursor:'pointer',fontSize:12,fontWeight:700,marginBottom:12}}>\u2190 Back</button>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end'}}>
+          <div><div style={{fontSize:10,opacity:0.7,letterSpacing:1}}>{detail.type==='est'?'ESTIMATE':detail.type==='so'?'SALES ORDER':'INVOICE'}</div>
+            <div style={{fontSize:22,fontWeight:800}}>{o.id}</div>
+            <div style={{fontSize:13,opacity:0.8}}>{o.memo||'\u2014'}</div></div>
+          <div style={{textAlign:'right'}}><div style={{fontSize:28,fontWeight:900}}>${tots.grand.toFixed(2)}</div></div>
         </div>
-
-        {/* Status tracker for SOs */}
-        {detail.type==='so'&&<div className="cp-status">
-          {stSteps.map((st,i)=>{const cur=stSteps.indexOf(o.status||'need_order');
-            return<div key={st} className={`cp-step ${i<cur?'done':i===cur?'active':''}`}>{stLabel[st]||st.replace(/_/g,' ')}</div>})}
+      </div>
+      <div style={cs.body}>
+        {/* Status bar for SOs */}
+        {detail.type==='so'&&<div style={{marginBottom:16}}>
+          {(()=>{const cur=stSteps.indexOf(o.status||'need_order');const pct=Math.round((cur/Math.max(stSteps.length-1,1))*100);
+            return<><div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
+              <span style={{fontSize:11,fontWeight:600,color:'#64748b'}}>Order Progress</span>
+              <span style={{fontSize:11,fontWeight:700,color:pct>=100?'#166534':'#1e3a5f'}}>{pct}%</span></div>
+              <div style={{background:'#e2e8f0',borderRadius:6,height:8,overflow:'hidden'}}>
+                <div style={{height:8,borderRadius:6,background:pct>=100?'#22c55e':pct>50?'#3b82f6':'#f59e0b',width:pct+'%',transition:'width 0.3s'}}/></div></>})()}
         </div>}
 
-        {/* Items table */}
-        <table className="cp-table">
-          <thead><tr><th>Item</th><th style={{textAlign:'center'}}>Qty</th><th style={{textAlign:'right'}}>Unit</th><th style={{textAlign:'right'}}>Amount</th></tr></thead>
-          <tbody>
-            {rows.map((r,i)=><tr key={i} style={r.isDeco?{color:'#64748b',fontSize:12}:{}}>
-              <td><span style={{fontWeight:r.isDeco?400:700}}>{r.sku&&<span style={{fontFamily:'monospace',color:'#1e40af',marginRight:6}}>{r.sku}</span>}{r.name}{r.color&&!r.isDeco&&<span style={{color:'#94a3b8'}}> — {r.color}</span>}</span></td>
-              <td style={{textAlign:'center'}}>{r.isDeco?'':r.qty}</td>
-              <td style={{textAlign:'right'}}>${r.unit.toFixed(2)}</td>
-              <td style={{textAlign:'right',fontWeight:r.isDeco?400:600}}>${r.ext.toFixed(2)}</td>
-            </tr>)}
-          </tbody>
-        </table>
+        {/* Items */}
+        <div style={{marginBottom:16}}>
+          {rows.map((r,i)=><div key={i} style={{...cs.itemRow,color:r.isDeco?'#94a3b8':'#1a1a2e'}}>
+            <span>{r.sku&&<span style={{fontFamily:'monospace',color:'#1e40af',marginRight:6}}>{r.sku}</span>}{r.name}{r.color&&!r.isDeco?<span style={{color:'#94a3b8'}}> ({r.color})</span>:''}</span>
+            <span style={{fontWeight:r.isDeco?400:600,whiteSpace:'nowrap'}}>{!r.isDeco&&r.qty+' \u00d7 '}${r.unit.toFixed(2)}{!r.isDeco&&<span style={{color:'#64748b'}}> = ${r.ext.toFixed(2)}</span>}</span>
+          </div>)}
+        </div>
 
         {/* Totals */}
-        <div style={{maxWidth:280,marginLeft:'auto',marginTop:12}}>
-          <div className="cp-total-row"><span>Subtotal</span><span>${tots.sub.toFixed(2)}</span></div>
-          {tots.ship>0&&<div className="cp-total-row"><span>Shipping{o.shipping_type==='pct'?` (${o.shipping_value}%)`:''}</span><span>${tots.ship.toFixed(2)}</span></div>}
-          {tots.tax>0&&<div className="cp-total-row"><span>Tax ({((customer?.tax_rate||0)*100).toFixed(2)}%)</span><span>${tots.tax.toFixed(2)}</span></div>}
-          <div className="cp-total-row grand"><span>Total</span><span>${tots.grand.toFixed(2)}</span></div>
+        <div style={{borderTop:'2px solid #e2e8f0',paddingTop:10,marginBottom:16}}>
+          <div style={{display:'flex',justifyContent:'space-between',fontSize:12,padding:'3px 0'}}><span>Subtotal</span><span style={{fontWeight:600}}>${tots.sub.toFixed(2)}</span></div>
+          {tots.ship>0&&<div style={{display:'flex',justifyContent:'space-between',fontSize:12,padding:'3px 0'}}><span>Shipping</span><span>${tots.ship.toFixed(2)}</span></div>}
+          {tots.tax>0&&<div style={{display:'flex',justifyContent:'space-between',fontSize:12,padding:'3px 0'}}><span>Tax</span><span>${tots.tax.toFixed(2)}</span></div>}
+          <div style={{display:'flex',justifyContent:'space-between',fontSize:18,fontWeight:800,borderTop:'2px solid #1e3a5f',marginTop:6,paddingTop:8}}><span>Total</span><span>${tots.grand.toFixed(2)}</span></div>
+        </div>
+
+        {/* Size breakdown */}
+        {szItems.length>0&&<div style={{marginBottom:16}}><div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:6}}>Size Breakdown</div>
+          <div style={{overflowX:'auto'}}>
+          <table style={{width:'100%',borderCollapse:'collapse',fontSize:11}}>
+            <thead><tr style={{borderBottom:'2px solid #e2e8f0'}}><th style={{textAlign:'left',padding:'4px 6px',color:'#94a3b8'}}>Item</th>{szs.map(sz=><th key={sz} style={{textAlign:'center',padding:'4px 3px',color:'#94a3b8',minWidth:28}}>{sz}</th>)}<th style={{textAlign:'center',color:'#94a3b8'}}>Tot</th></tr></thead>
+            <tbody>{szItems.map((it,i)=>{const q=Object.values(it.sizes||{}).reduce((a,v)=>a+(parseInt(v)||0),0);
+              return<tr key={i} style={{borderBottom:'1px solid #f1f5f9'}}><td style={{padding:'4px 6px',fontWeight:600,fontSize:11}}>{it.sku}</td>{szs.map(sz=><td key={sz} style={{textAlign:'center',fontWeight:(it.sizes||{})[sz]>0?700:400,color:(it.sizes||{})[sz]>0?'#1e3a5f':'#d1d5db'}}>{(it.sizes||{})[sz]||'\u2014'}</td>)}<td style={{textAlign:'center',fontWeight:800}}>{q}</td></tr>})}</tbody>
+          </table></div>
+        </div>}
+
+        {/* File upload */}
+        <div style={{marginBottom:16}}><div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:6}}>\ud83d\udcce Files & Roster</div>
+          {orderFiles.length>0&&<div style={{marginBottom:6}}>{orderFiles.map((f,i)=><span key={i} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'3px 8px',background:'#f1f5f9',borderRadius:4,fontSize:11,margin:'2px 2px'}}>\ud83d\udcce {f.name} <button onClick={()=>setFiles({...files,[o.id]:orderFiles.filter((_,j)=>j!==i)})} style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',fontSize:9}}>\u2715</button></span>)}</div>}
+          <label style={{display:'block',border:'2px dashed #d1d5db',borderRadius:8,padding:16,textAlign:'center',cursor:'pointer'}}>
+            <input type="file" multiple style={{display:'none'}} onChange={e=>{setFiles({...files,[o.id]:[...(files[o.id]||[]),...Array.from(e.target.files)]})}} accept=".pdf,.ai,.eps,.png,.jpg,.xlsx,.csv"/>
+            <div style={{fontSize:13,fontWeight:600,color:'#3b82f6'}}>Drop files or click to upload</div>
+            <div style={{fontSize:10,color:'#94a3b8'}}>PDF, AI, roster (.xlsx/.csv), images</div>
+          </label></div>
+
+        {/* Message */}
+        <div style={{marginBottom:16}}><div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:6}}>\ud83d\udcac Send Message</div>
+          <textarea value={msg} onChange={e=>setMsg(e.target.value)} placeholder="Questions, change requests, roster info..." style={{width:'100%',border:'1px solid #d1d5db',borderRadius:8,padding:10,fontSize:13,resize:'vertical',minHeight:50,boxSizing:'border-box'}}/>
+          {msg.trim()&&<button onClick={()=>{if(onMsg)onMsg(o.id,msg);setMsg('');alert('Message sent!')}} style={{marginTop:6,padding:'8px 16px',background:'#1e3a5f',color:'white',border:'none',borderRadius:6,cursor:'pointer',fontSize:12,fontWeight:700}}>Send</button>}
+        </div>
+
+        {/* Actions */}
+        <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+          <button onClick={()=>window.print()} style={{padding:'10px 16px',background:'white',border:'2px solid #1e3a5f',borderRadius:8,cursor:'pointer',fontSize:12,fontWeight:700,color:'#1e3a5f'}}>\ud83d\udda8\ufe0f Print</button>
+          {detail.type==='est'&&o.status!=='approved'&&<button onClick={()=>{if(onUpdate)onUpdate(o.id,'approved');alert('Estimate approved!')}} style={{padding:'10px 16px',background:'#22c55e',border:'none',borderRadius:8,cursor:'pointer',fontSize:12,fontWeight:700,color:'white'}}>\u2705 Approve</button>}
+          {detail.type==='inv'&&o.status!=='paid'&&<button onClick={()=>setCCModal({ids:[o.id],total:tots.grand})} style={{padding:'10px 16px',background:'#22c55e',border:'none',borderRadius:8,cursor:'pointer',fontSize:12,fontWeight:700,color:'white'}}>\ud83d\udcb3 Pay ${tots.grand.toFixed(2)}</button>}
         </div>
       </div>
 
-      {/* Size breakdown */}
-      {szItems.length>0&&<div className="cp-card">
-        <div style={{fontSize:13,fontWeight:700,marginBottom:8}}>Size Breakdown</div>
-        <table className="cp-table" style={{fontSize:12}}>
-          <thead><tr><th>Item</th>{szs.map(sz=><th key={sz} style={{textAlign:'center',minWidth:36}}>{sz}</th>)}<th style={{textAlign:'center'}}>Total</th></tr></thead>
-          <tbody>{szItems.map((it,i)=>{const q=Object.values(it.sizes||{}).reduce((a,v)=>a+(parseInt(v)||0),0);
-            return<tr key={i}><td style={{fontWeight:600}}>{it.sku}</td>{szs.map(sz=><td key={sz} style={{textAlign:'center',fontWeight:(it.sizes||{})[sz]>0?700:400,color:(it.sizes||{})[sz]>0?'#1e3a5f':'#d1d5db'}}>{(it.sizes||{})[sz]||'—'}</td>)}<td style={{textAlign:'center',fontWeight:800}}>{q}</td></tr>})}</tbody>
-        </table>
+      {/* CC Modal in detail */}
+      {ccModal&&(()=>{const fee=ccModal.total*0.029;
+        return<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',zIndex:100,display:'flex',alignItems:'center',justifyContent:'center'}} onClick={()=>setCCModal(null)}>
+          <div style={{background:'white',borderRadius:12,padding:24,maxWidth:420,width:'90%'}} onClick={e=>e.stopPropagation()}>
+            <div style={{fontSize:18,fontWeight:800,marginBottom:4}}>Pay {ccModal.ids.length>1?ccModal.ids.length+' Invoices':'Invoice '+ccModal.ids[0]}</div>
+            <div style={{fontSize:12,color:'#64748b',marginBottom:16}}>Credit card payments include a 2.9% processing fee.</div>
+            <div style={{padding:12,background:'#f8f9fb',borderRadius:8,marginBottom:16}}>
+              <div style={{display:'flex',justifyContent:'space-between',fontSize:13}}><span>Subtotal</span><span style={{fontWeight:700}}>${ccModal.total.toFixed(2)}</span></div>
+              <div style={{display:'flex',justifyContent:'space-between',fontSize:13,color:'#b45309'}}><span>CC Fee (2.9%)</span><span style={{fontWeight:700}}>${fee.toFixed(2)}</span></div>
+              <div style={{display:'flex',justifyContent:'space-between',fontSize:16,fontWeight:800,borderTop:'2px solid #1e3a5f',marginTop:8,paddingTop:8}}><span>Charge</span><span>${(ccModal.total+fee).toFixed(2)}</span></div>
+            </div>
+            <div style={{display:'flex',flexDirection:'column',gap:8,marginBottom:16}}>
+              <input placeholder="Card number" style={{padding:10,border:'1px solid #d1d5db',borderRadius:6,fontSize:14}}/>
+              <div style={{display:'flex',gap:8}}><input placeholder="MM/YY" style={{flex:1,padding:10,border:'1px solid #d1d5db',borderRadius:6}}/><input placeholder="CVC" style={{flex:1,padding:10,border:'1px solid #d1d5db',borderRadius:6}}/><input placeholder="ZIP" style={{flex:1,padding:10,border:'1px solid #d1d5db',borderRadius:6}}/></div>
+            </div>
+            <button style={{width:'100%',padding:'12px',background:'#22c55e',color:'white',border:'none',borderRadius:8,fontSize:14,fontWeight:800,cursor:'pointer'}} onClick={()=>{alert('Payment processed! (Stripe integration coming)');setCCModal(null);setPaySelect({})}}>\ud83d\udcb3 Pay ${(ccModal.total+fee).toFixed(2)}</button>
+            <div style={{fontSize:10,color:'#94a3b8',marginTop:8,textAlign:'center'}}>Secured by Stripe \u00b7 NSA never stores your card info</div>
+          </div>
+        </div>})()}
+    </div>;
+  }
+
+  // ── MAIN SINGLE-FLOW VIEW ──
+  return<div style={cs.wrap}>
+    {/* Header */}
+    <div style={cs.hdr}>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+        <div>
+          <div style={{fontSize:11,opacity:0.7,letterSpacing:1,marginBottom:4}}>NATIONAL SPORTS APPAREL</div>
+          <div style={{fontSize:22,fontWeight:800}}>{customer?.name}</div>
+          <div style={{fontSize:13,opacity:0.8,marginTop:2}}>Customer Portal</div>
+        </div>
+        <div style={{textAlign:'right'}}>
+          {totalDue>0&&<><div style={{fontSize:10,opacity:0.7}}>BALANCE DUE</div><div style={{fontSize:24,fontWeight:800}}>${totalDue.toLocaleString(undefined,{minimumFractionDigits:2})}</div></>}
+        </div>
+      </div>
+    </div>
+    <div style={cs.body}>
+
+      {/* Pay Now */}
+      {totalDue>0&&<div style={{marginBottom:20}}>
+        <button style={{width:'100%',padding:'14px 20px',background:'#22c55e',color:'white',border:'none',borderRadius:10,fontSize:16,fontWeight:800,cursor:'pointer'}} onClick={()=>setCCModal({ids:openInvs.map(i=>i.id),total:totalDue})}>
+          \ud83d\udcb3 Pay Now \u2014 ${totalDue.toLocaleString(undefined,{minimumFractionDigits:2})}
+        </button>
+        <div style={{display:'flex',justifyContent:'center',gap:12,marginTop:6}}>
+          <span style={{fontSize:10,color:'#94a3b8'}}>\ud83d\udcb3 Credit Card</span>
+          <span style={{fontSize:10,color:'#94a3b8'}}>\uf8ff Apple Pay</span>
+          <span style={{fontSize:10,color:'#94a3b8'}}>\ud83c\udfe6 ACH/Bank</span>
+        </div>
       </div>}
 
-      {/* File upload */}
-      <div className="cp-card cp-no-print">
-        <div style={{fontSize:13,fontWeight:700,marginBottom:8}}>Files & Attachments</div>
-        {orderFiles.length>0&&<div style={{marginBottom:8}}>{orderFiles.map((f,i)=><span key={i} className="cp-file-pill">📎 {f.name} <button onClick={()=>setFiles({...files,[o.id]:orderFiles.filter((_,j)=>j!==i)})} style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',fontSize:10}}>✕</button></span>)}</div>}
-        <label className="cp-upload">
-          <input type="file" multiple style={{display:'none'}} onChange={e=>handleFileUpload(o.id,e)} accept=".pdf,.ai,.eps,.png,.jpg,.xlsx,.csv"/>
-          <div style={{fontSize:14,fontWeight:600,color:'#3b82f6'}}>📎 Drop files or click to upload</div>
-          <div style={{fontSize:11,color:'#94a3b8',marginTop:4}}>PDF, AI, EPS, images, rosters (.xlsx, .csv)</div>
+      {/* Estimates needing review */}
+      {openEsts.length>0&&<>
+        <div style={{...cs.sectionTitle,color:'#b45309',marginTop:0}}>\ud83d\udccb Estimates to Review</div>
+        {openEsts.map(e=>{const tots=calcTotals(e);const items=(e.items||[]).filter(it=>Object.values(it.sizes||{}).some(v=>v>0));
+          return<div key={e.id} style={{...cs.cardWarn,cursor:'pointer'}} onClick={()=>setDetail({type:'est',id:e.id})}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:8}}>
+              <div><div style={{fontWeight:700,fontSize:15,color:'#1e3a5f'}}>{e.memo||e.id}</div>
+                <div style={{fontSize:11,color:'#64748b'}}>{e.id} \u00b7 {e.created_at}</div></div>
+              <div style={{textAlign:'right'}}><div style={{fontSize:18,fontWeight:800,color:'#1e3a5f'}}>${tots.grand.toFixed(2)}</div>
+                <span style={{fontSize:10,padding:'2px 8px',borderRadius:10,background:'#fef3c7',color:'#92400e',fontWeight:700}}>Needs Review</span></div>
+            </div>
+            {items.map((it,ii)=>{const qty=Object.values(it.sizes||{}).reduce((a,v)=>a+(parseInt(v)||0),0);
+              return<div key={ii} style={{...cs.itemRow,borderColor:'#fef3c7'}}>
+                <span>{it.name} <span style={{color:'#94a3b8'}}>({it.color||'\u2014'})</span></span>
+                <span style={{fontWeight:600,color:'#64748b'}}>{qty} units</span></div>})}
+            <div style={cs.link}>Tap to review & approve \u2192</div>
+          </div>})}
+      </>}
+
+      {/* Approved estimates */}
+      {approvedEsts.length>0&&<>
+        <div style={{...cs.sectionTitle,color:'#166534'}}>\u2705 Approved Estimates</div>
+        {approvedEsts.map(e=>{const tots=calcTotals(e);
+          return<div key={e.id} style={{...cs.card,cursor:'pointer',background:'#f0fdf4'}} onClick={()=>setDetail({type:'est',id:e.id})}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+              <div><span style={{fontWeight:700}}>{e.memo||e.id}</span><span style={{fontSize:11,color:'#64748b',marginLeft:8}}>{e.id}</span></div>
+              <span style={{fontWeight:800,color:'#166534'}}>${tots.grand.toFixed(2)}</span>
+            </div></div>})}
+      </>}
+
+      {/* Active Orders */}
+      {activeSOs.length>0&&<>
+        <div style={{...cs.sectionTitle,color:'#1e3a5f'}}>\ud83d\udce6 Active Orders</div>
+        {activeSOs.map(so=>{
+          const items=(so.items||[]).filter(it=>Object.values(it.sizes||{}).some(v=>v>0));
+          const cur=stSteps.indexOf(so.status||'need_order');const pct=Math.round((cur/Math.max(stSteps.length-1,1))*100);
+          const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
+          return<div key={so.id} style={{...cs.card,cursor:'pointer'}} onClick={()=>setDetail({type:'so',id:so.id})}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:8}}>
+              <div><div style={{fontWeight:700,fontSize:15,color:'#1e3a5f'}}>{so.memo||so.id}</div>
+                <div style={{fontSize:11,color:'#64748b'}}>Order {so.id} \u00b7 {so.created_at?.split(' ')[0]}</div></div>
+              {so.expected_date&&<div style={{textAlign:'right'}}><div style={{fontSize:10,color:'#64748b'}}>EXPECTED</div>
+                <div style={{fontSize:14,fontWeight:700,color:daysOut!=null&&daysOut<=7?'#dc2626':'#1e3a5f'}}>{so.expected_date}</div></div>}
+            </div>
+            {/* Progress */}
+            <div style={{marginBottom:10}}>
+              <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
+                <span style={{fontSize:11,fontWeight:600,color:'#64748b'}}>Order Progress</span>
+                <span style={{fontSize:11,fontWeight:700,color:pct>=100?'#166534':'#1e3a5f'}}>{pct}%</span></div>
+              <div style={{background:'#e2e8f0',borderRadius:6,height:8,overflow:'hidden'}}>
+                <div style={{height:8,borderRadius:6,background:pct>=100?'#22c55e':pct>50?'#3b82f6':'#f59e0b',width:pct+'%',transition:'width 0.3s'}}/></div>
+            </div>
+            {/* Items */}
+            {items.map((it,ii)=>{const qty=Object.values(it.sizes||{}).reduce((a,v)=>a+(parseInt(v)||0),0);
+              return<div key={ii} style={cs.itemRow}>
+                <span>{it.name} <span style={{color:'#94a3b8'}}>({it.color||'\u2014'})</span></span>
+                <span style={{fontWeight:600,color:'#64748b'}}>{qty} units</span></div>})}
+            <div style={cs.link}>View details \u2192</div>
+          </div>})}
+      </>}
+
+      {/* Open Invoices */}
+      {openInvs.length>0&&<>
+        <div style={{...cs.sectionTitle,color:'#dc2626'}}>\ud83d\udcb0 Open Invoices</div>
+        <div style={{border:'1px solid #fecaca',borderRadius:10,overflow:'hidden'}}>
+          {openInvs.map((inv,i)=>{const tots=calcTotals(inv);const items=(inv.items||[]).filter(it=>Object.values(it.sizes||{}).some(v=>v>0));
+            return<div key={inv.id} style={{borderBottom:i<openInvs.length-1?'1px solid #fef2f2':'none'}}>
+              <div style={{padding:'12px 16px',display:'flex',alignItems:'center',gap:10,cursor:'pointer'}} onClick={()=>setDetail({type:'inv',id:inv.id})}>
+                <input type="checkbox" checked={!!paySelect[inv.id]} onChange={e=>{e.stopPropagation();setPaySelect({...paySelect,[inv.id]:e.target.checked})}} onClick={e=>e.stopPropagation()} style={{width:16,height:16,accentColor:'#22c55e',cursor:'pointer'}}/>
+                <div style={{flex:1}}>
+                  <div style={{fontWeight:700}}>{inv.id} <span style={{fontSize:11,color:'#64748b'}}>{inv.memo}</span></div>
+                  <div style={{fontSize:11,color:'#64748b'}}>{inv.created_at}</div>
+                  {items.length>0&&<div style={{marginTop:4}}>{items.slice(0,2).map((it,ii)=>{const qty=Object.values(it.sizes||{}).reduce((a,v)=>a+(parseInt(v)||0),0);
+                    return<div key={ii} style={{fontSize:11,color:'#64748b',padding:'1px 0'}}>{it.name} <span style={{color:'#94a3b8'}}>({it.color})</span> \u2014 {qty} units</div>})}
+                    {items.length>2&&<div style={{fontSize:10,color:'#94a3b8'}}>+{items.length-2} more...</div>}
+                  </div>}
+                </div>
+                <span style={{fontWeight:800,fontSize:16,color:'#dc2626'}}>${tots.grand.toFixed(2)}</span>
+                <span style={{color:'#94a3b8'}}>\u203a</span>
+              </div>
+            </div>})}
+          {selectedIds.length>0&&<div style={{padding:'12px 16px',background:'#f0fdf4',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+            <span style={{fontWeight:700,fontSize:12}}>{selectedIds.length} selected</span>
+            <button onClick={()=>setCCModal({ids:selectedIds,total:selectedTotal})} style={{padding:'8px 16px',background:'#22c55e',color:'white',border:'none',borderRadius:6,cursor:'pointer',fontSize:12,fontWeight:700}}>\ud83d\udcb3 Pay ${selectedTotal.toFixed(2)}</button>
+          </div>}
+          <div style={{padding:'12px 16px',background:'#fef2f2',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+            <span style={{fontWeight:800,color:'#dc2626'}}>Total Balance</span>
+            <span style={{fontSize:20,fontWeight:800,color:'#dc2626'}}>${totalDue.toFixed(2)}</span>
+          </div>
+        </div>
+      </>}
+
+      {/* Completed + Paid */}
+      {(completedSOs.length>0||paidInvs.length>0)&&<div style={{marginTop:20,opacity:0.7}}>
+        {completedSOs.length>0&&<><div style={{fontSize:11,fontWeight:700,color:'#166534',marginBottom:6}}>\u2705 Completed Orders</div>
+          {completedSOs.slice(0,3).map(so=><div key={so.id} style={{padding:'8px 12px',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:6,display:'flex',justifyContent:'space-between',cursor:'pointer'}} onClick={()=>setDetail({type:'so',id:so.id})}>
+            <span style={{fontWeight:600,fontSize:12}}>{so.memo||so.id}</span><span style={{fontSize:10,padding:'2px 8px',borderRadius:10,background:'#dcfce7',color:'#166534',fontWeight:700}}>Complete</span></div>)}</>}
+        {paidInvs.length>0&&<><div style={{fontSize:11,fontWeight:700,color:'#166534',marginBottom:6,marginTop:10}}>\ud83d\udcb0 Paid Invoices</div>
+          {paidInvs.slice(0,3).map(inv=>{const tots=calcTotals(inv);return<div key={inv.id} style={{padding:'8px 12px',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:6,display:'flex',justifyContent:'space-between',cursor:'pointer'}} onClick={()=>setDetail({type:'inv',id:inv.id})}>
+            <span style={{fontWeight:600,fontSize:12}}>{inv.id} \u2014 {inv.memo||''}</span><span style={{fontWeight:700,color:'#166534',fontSize:12}}>${tots.grand.toFixed(2)}</span></div>})}</>}
+      </div>}
+
+      {/* Your Rep */}
+      <div style={{marginTop:20,padding:14,background:'#f8fafc',borderRadius:10}}>
+        <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:6}}>YOUR NSA REP</div>
+        <div style={{fontSize:14,fontWeight:600}}>National Sports Apparel</div>
+        <div style={{fontSize:12,color:'#64748b'}}>{NSA.phone} \u00b7 {NSA.email}</div>
+      </div>
+
+      {/* Upload */}
+      <div style={{marginTop:16}}>
+        <label style={{display:'block',border:'2px dashed #d1d5db',borderRadius:8,padding:20,textAlign:'center',cursor:'pointer'}}>
+          <input type="file" multiple style={{display:'none'}} onChange={e=>{const id=activeSOs[0]?.id||openEsts[0]?.id||'general';setFiles({...files,[id]:[...(files[id]||[]),...Array.from(e.target.files)]})}} accept=".pdf,.ai,.eps,.png,.jpg,.xlsx,.csv"/>
+          <div style={{fontSize:14,fontWeight:600,color:'#3b82f6'}}>\ud83d\udcce Upload Files, Rosters, or Artwork</div>
+          <div style={{fontSize:11,color:'#94a3b8',marginTop:4}}>PDF, AI, EPS, images, rosters (.xlsx/.csv)</div>
         </label>
       </div>
+    </div>
 
-      {/* Message / request changes */}
-      <div className="cp-card cp-no-print">
-        <div style={{fontSize:13,fontWeight:700,marginBottom:8}}>Send Message</div>
-        <textarea value={msg} onChange={e=>setMsg(e.target.value)} placeholder="Questions, change requests, roster info..." style={{width:'100%',border:'1px solid #d1d5db',borderRadius:8,padding:10,fontSize:13,resize:'vertical',minHeight:60}}/>
-        <div style={{display:'flex',gap:8,marginTop:8}}>
-          <button className="cp-btn cp-btn-primary" onClick={()=>{if(!msg.trim())return;if(onMsg)onMsg(o.id,msg);setMsg('');alert('Message sent!')}}>Send Message</button>
-        </div>
-      </div>
-
-      {/* Action buttons */}
-      <div className="cp-card cp-no-print" style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-        <button className="cp-btn cp-btn-outline" onClick={()=>window.print()}>🖨️ Print / Save PDF</button>
-        {detail.type==='est'&&o.status!=='approved'&&<button className="cp-btn cp-btn-green" onClick={()=>{if(onUpdate)onUpdate(o.id,'approved');setDetail({...detail})}}>✅ Approve Estimate</button>}
-        {detail.type==='inv'&&<button className="cp-btn cp-btn-green" onClick={()=>setCCModal(o.id)}>💳 Pay with Credit Card</button>}
-        {detail.type==='inv'&&<button className="cp-btn cp-btn-outline">🏦 Request ACH/Check Info</button>}
-      </div>
-
-      {/* CC Payment Modal */}
-      {ccModal&&(()=>{
-        // Support both single invoice (from detail) and multi-select (from list)
-        const isMulti=ccModal.ids;
-        const payIds=isMulti?ccModal.ids:[ccModal];
-        const payTotal=isMulti?ccModal.total:(()=>{const inv=invoices.find(i=>i.id===ccModal);return inv?calcTotals(inv).grand:0})();
-        const fee=payTotal*0.029;
-        return<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',zIndex:100,display:'flex',alignItems:'center',justifyContent:'center'}} onClick={()=>setCCModal(null)}>
-        <div style={{background:'white',borderRadius:12,padding:24,maxWidth:440,width:'90%'}} onClick={e=>e.stopPropagation()}>
-          <div style={{fontSize:18,fontWeight:800,marginBottom:4}}>Pay {payIds.length>1?payIds.length+' Invoices':'Invoice '+payIds[0]}</div>
+    {/* CC Payment Modal */}
+    {ccModal&&(()=>{const fee=ccModal.total*0.029;
+      return<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',zIndex:100,display:'flex',alignItems:'center',justifyContent:'center'}} onClick={()=>setCCModal(null)}>
+        <div style={{background:'white',borderRadius:12,padding:24,maxWidth:420,width:'90%'}} onClick={e=>e.stopPropagation()}>
+          <div style={{fontSize:18,fontWeight:800,marginBottom:4}}>Pay {ccModal.ids.length>1?ccModal.ids.length+' Invoices':'Invoice '+ccModal.ids[0]}</div>
           <div style={{fontSize:12,color:'#64748b',marginBottom:16}}>Credit card payments include a 2.9% processing fee.</div>
-          {payIds.length>1&&<div style={{marginBottom:12,padding:8,background:'#f8f9fb',borderRadius:6}}>
-            {payIds.map(id=>{const inv=invoices.find(i=>i.id===id);const t=inv?calcTotals(inv).grand:0;
-              return<div key={id} style={{display:'flex',justifyContent:'space-between',fontSize:12,padding:'2px 0'}}><span>{id} — {inv?.memo||''}</span><span style={{fontWeight:600}}>${t.toFixed(2)}</span></div>})}
+          {ccModal.ids.length>1&&<div style={{marginBottom:12,padding:8,background:'#f8f9fb',borderRadius:6}}>
+            {ccModal.ids.map(id=>{const inv=invoices.find(i=>i.id===id);const t=inv?calcTotals(inv).grand:0;
+              return<div key={id} style={{display:'flex',justifyContent:'space-between',fontSize:12,padding:'2px 0'}}><span>{id}</span><span style={{fontWeight:600}}>${t.toFixed(2)}</span></div>})}
           </div>}
           <div style={{padding:12,background:'#f8f9fb',borderRadius:8,marginBottom:16}}>
-            <div style={{display:'flex',justifyContent:'space-between',fontSize:13}}><span>Subtotal</span><span style={{fontWeight:700}}>${payTotal.toFixed(2)}</span></div>
+            <div style={{display:'flex',justifyContent:'space-between',fontSize:13}}><span>Subtotal</span><span style={{fontWeight:700}}>${ccModal.total.toFixed(2)}</span></div>
             <div style={{display:'flex',justifyContent:'space-between',fontSize:13,color:'#b45309'}}><span>CC Fee (2.9%)</span><span style={{fontWeight:700}}>${fee.toFixed(2)}</span></div>
-            <div style={{display:'flex',justifyContent:'space-between',fontSize:16,fontWeight:800,borderTop:'2px solid #1e3a5f',marginTop:8,paddingTop:8}}><span>Charge Total</span><span>${(payTotal+fee).toFixed(2)}</span></div>
+            <div style={{display:'flex',justifyContent:'space-between',fontSize:16,fontWeight:800,borderTop:'2px solid #1e3a5f',marginTop:8,paddingTop:8}}><span>Charge</span><span>${(ccModal.total+fee).toFixed(2)}</span></div>
           </div>
           <div style={{display:'flex',flexDirection:'column',gap:8,marginBottom:16}}>
             <input placeholder="Card number" style={{padding:10,border:'1px solid #d1d5db',borderRadius:6,fontSize:14}}/>
-            <div style={{display:'flex',gap:8}}>
-              <input placeholder="MM/YY" style={{flex:1,padding:10,border:'1px solid #d1d5db',borderRadius:6,fontSize:14}}/>
-              <input placeholder="CVC" style={{flex:1,padding:10,border:'1px solid #d1d5db',borderRadius:6,fontSize:14}}/>
-              <input placeholder="ZIP" style={{flex:1,padding:10,border:'1px solid #d1d5db',borderRadius:6,fontSize:14}}/>
-            </div>
+            <div style={{display:'flex',gap:8}}><input placeholder="MM/YY" style={{flex:1,padding:10,border:'1px solid #d1d5db',borderRadius:6}}/><input placeholder="CVC" style={{flex:1,padding:10,border:'1px solid #d1d5db',borderRadius:6}}/><input placeholder="ZIP" style={{flex:1,padding:10,border:'1px solid #d1d5db',borderRadius:6}}/></div>
           </div>
-          <div style={{display:'flex',gap:8}}>
-            <button className="cp-btn cp-btn-green" style={{flex:1}} onClick={()=>{alert('Payment of $'+(payTotal+fee).toFixed(2)+' processed! (Demo — Stripe integration)');setCCModal(null);setPaySelect({})}}>💳 Pay ${(payTotal+fee).toFixed(2)}</button>
-            <button className="cp-btn cp-btn-outline" onClick={()=>setCCModal(null)}>Cancel</button>
-          </div>
-          <div style={{fontSize:10,color:'#94a3b8',marginTop:8,textAlign:'center'}}>Payments processed securely via Stripe. NSA never stores your card info.</div>
+          <button style={{width:'100%',padding:'12px',background:'#22c55e',color:'white',border:'none',borderRadius:8,fontSize:14,fontWeight:800,cursor:'pointer'}} onClick={()=>{alert('Payment processed! (Stripe integration coming)');setCCModal(null);setPaySelect({})}}>\ud83d\udcb3 Pay ${(ccModal.total+fee).toFixed(2)}</button>
+          <div style={{fontSize:10,color:'#94a3b8',marginTop:8,textAlign:'center'}}>Secured by Stripe \u00b7 NSA never stores your card info</div>
         </div>
       </div>})()}
-    </div>;
-  };
-
-  // LIST VIEWS
-  const renderEstimates=()=>{
-    const est=estimates.filter(e=>e.status!=='converted');
-    return<>{est.length===0&&<div className="cp-card" style={{textAlign:'center',color:'#94a3b8',padding:40}}>No estimates right now.</div>}
-    {est.map(e=>{const tots=calcTotals(e);const rows=itemRows(e).filter(r=>!r.isDeco).slice(0,4);
-      return<div key={e.id} className="cp-card" style={{cursor:'pointer'}} onClick={()=>setDetail({type:'est',id:e.id})}>
-        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
-          <div>
-            <div style={{display:'flex',gap:8,alignItems:'center'}}><span style={{fontWeight:800,fontSize:15}}>{e.memo||e.id}</span>
-              <span className="cp-badge" style={{background:e.status==='approved'?'#dcfce7':e.status==='sent'?'#fef3c7':'#f1f5f9',color:e.status==='approved'?'#166534':e.status==='sent'?'#92400e':'#475569'}}>{e.status==='sent'?'Needs Review':e.status}</span></div>
-            <div style={{fontSize:12,color:'#94a3b8',marginTop:2}}>{e.id} · {e.created_at}</div>
-          </div>
-          <div style={{textAlign:'right'}}>
-            <div style={{fontSize:20,fontWeight:800,color:'#1e3a5f'}}>${tots.grand.toFixed(2)}</div>
-          </div>
-        </div>
-        <div style={{borderTop:'1px solid #f1f5f9',paddingTop:6}}>
-          {rows.map((r,i)=><div key={i} style={{display:'flex',justifyContent:'space-between',fontSize:12,color:'#475569',padding:'2px 0'}}>
-            <span><span style={{fontFamily:'monospace',color:'#1e40af',marginRight:4}}>{r.sku}</span>{r.name}{r.color?` — ${r.color}`:''}</span>
-            <span style={{fontWeight:600}}>{r.qty} × ${r.unit.toFixed(2)}</span>
-          </div>)}
-          <div style={{fontSize:11,color:'#3b82f6',marginTop:4,fontWeight:600}}>View full details →</div>
-        </div>
-      </div>})}</>};
-
-  const renderOrders=()=>{
-    return<>{orders.length===0&&<div className="cp-card" style={{textAlign:'center',color:'#94a3b8',padding:40}}>No active orders.</div>}
-    {orders.map(so=>{const tots=calcTotals(so);const cur=stSteps.indexOf(so.status||'need_order');const rows=itemRows(so).filter(r=>!r.isDeco).slice(0,4);
-      return<div key={so.id} className="cp-card" style={{cursor:'pointer'}} onClick={()=>setDetail({type:'so',id:so.id})}>
-        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
-          <div><div style={{fontWeight:800,fontSize:15}}>{so.memo||so.id}</div><div style={{fontSize:12,color:'#94a3b8'}}>{so.id} · Expected: {so.expected_date||'TBD'}</div></div>
-          <div style={{textAlign:'right'}}><div style={{fontSize:20,fontWeight:800,color:'#1e3a5f'}}>${tots.grand.toFixed(2)}</div></div>
-        </div>
-        <div className="cp-status" style={{margin:'4px 0 8px'}}>
-          {stSteps.map((st,i)=><div key={st} className={`cp-step ${i<cur?'done':i===cur?'active':''}`} style={{fontSize:9,padding:'6px 2px'}}>{stLabel[st]||st.replace(/_/g,' ')}</div>)}
-        </div>
-        <div style={{borderTop:'1px solid #f1f5f9',paddingTop:6}}>
-          {rows.map((r,i)=><div key={i} style={{display:'flex',justifyContent:'space-between',fontSize:12,color:'#475569',padding:'2px 0'}}>
-            <span><span style={{fontFamily:'monospace',color:'#1e40af',marginRight:4}}>{r.sku}</span>{r.name}{r.color?` — ${r.color}`:''}</span>
-            <span style={{fontWeight:600}}>{r.qty} pcs</span>
-          </div>)}
-          <div style={{fontSize:11,color:'#3b82f6',marginTop:4,fontWeight:600}}>View full details →</div>
-        </div>
-      </div>})}</>};
-
-  const[paySelect,setPaySelect]=useState({});// {inv_id: true/false} for multi-select payment
-  const renderInvoices=()=>{
-    const open=invoices.filter(i=>i.status!=='paid');
-    const paid=invoices.filter(i=>i.status==='paid');
-    const selectedIds=Object.keys(paySelect).filter(k=>paySelect[k]);
-    const selectedTotals=selectedIds.reduce((a,id)=>{const inv=invoices.find(i=>i.id===id);return a+(inv?calcTotals(inv).grand:0)},0);
-
-    return<>
-    {/* Pay selected bar */}
-    {selectedIds.length>0&&<div className="cp-card" style={{background:'#f0fdf4',border:'2px solid #22c55e',display:'flex',justifyContent:'space-between',alignItems:'center',position:'sticky',top:0,zIndex:10}}>
-      <div><span style={{fontWeight:700,fontSize:14}}>{selectedIds.length} invoice{selectedIds.length>1?'s':''} selected</span>
-        <span style={{fontSize:13,color:'#64748b',marginLeft:8}}>Total: <strong style={{color:'#1e3a5f'}}>${selectedTotals.toFixed(2)}</strong></span></div>
-      <div style={{display:'flex',gap:8}}>
-        <button className="cp-btn cp-btn-green" onClick={()=>setCCModal({ids:selectedIds,total:selectedTotals})}>💳 Pay ${selectedTotals.toFixed(2)}</button>
-        <button className="cp-btn cp-btn-outline" style={{fontSize:12}} onClick={()=>setPaySelect({})}>Clear</button>
-      </div>
-    </div>}
-
-    {/* Open invoices */}
-    {open.length>0&&<div style={{fontSize:11,fontWeight:700,color:'#dc2626',textTransform:'uppercase',letterSpacing:0.5,marginBottom:8}}>Open ({open.length})</div>}
-    {open.map(inv=>{const tots=calcTotals(inv);const rows=itemRows(inv).slice(0,3);// preview first 3 lines
-      return<div key={inv.id} className="cp-card">
-        <div style={{display:'flex',gap:12,alignItems:'flex-start'}}>
-          <input type="checkbox" checked={!!paySelect[inv.id]} onChange={e=>{e.stopPropagation();setPaySelect({...paySelect,[inv.id]:e.target.checked})}} style={{marginTop:4,width:18,height:18,cursor:'pointer',accentColor:'#22c55e'}}/>
-          <div style={{flex:1,cursor:'pointer'}} onClick={()=>setDetail({type:'inv',id:inv.id})}>
-            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
-              <div><div style={{fontWeight:800,fontSize:15}}>{inv.memo||inv.id}</div><div style={{fontSize:12,color:'#94a3b8'}}>{inv.id} · {inv.created_at}</div></div>
-              <div style={{textAlign:'right'}}>
-                <div style={{fontSize:20,fontWeight:800,color:'#dc2626'}}>${tots.grand.toFixed(2)}</div>
-                <span className="cp-badge" style={{background:'#fef2f2',color:'#dc2626'}}>Open</span>
-              </div>
-            </div>
-            {/* Item preview */}
-            <div style={{borderTop:'1px solid #f1f5f9',paddingTop:6}}>
-              {rows.map((r,i)=><div key={i} style={{display:'flex',justifyContent:'space-between',fontSize:12,color:r.isDeco?'#94a3b8':'#475569',padding:'2px 0'}}>
-                <span>{r.sku&&<span style={{fontFamily:'monospace',color:'#1e40af',marginRight:4}}>{r.sku}</span>}{r.name}{r.color&&!r.isDeco?` — ${r.color}`:''}</span>
-                <span style={{fontWeight:600}}>{r.qty>0?`${r.qty} × $${r.unit.toFixed(2)}`:''}</span>
-              </div>)}
-              {itemRows(inv).length>3&&<div style={{fontSize:11,color:'#94a3b8',fontStyle:'italic'}}>+{itemRows(inv).length-3} more lines…</div>}
-            </div>
-            <div style={{fontSize:11,color:'#3b82f6',marginTop:4,fontWeight:600}}>View full details →</div>
-          </div>
-        </div>
-      </div>})}
-
-    {/* Paid invoices */}
-    {paid.length>0&&<><div style={{fontSize:11,fontWeight:700,color:'#166534',textTransform:'uppercase',letterSpacing:0.5,marginTop:20,marginBottom:8}}>Paid ({paid.length})</div>
-    {paid.map(inv=>{const tots=calcTotals(inv);
-      return<div key={inv.id} className="cp-card" style={{opacity:0.7,cursor:'pointer'}} onClick={()=>setDetail({type:'inv',id:inv.id})}>
-        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-          <div><div style={{fontWeight:800,fontSize:15}}>{inv.memo||inv.id}</div><div style={{fontSize:12,color:'#94a3b8'}}>{inv.id} · {inv.created_at}</div></div>
-          <div style={{textAlign:'right'}}>
-            <div style={{fontSize:20,fontWeight:800,color:'#166534'}}>${tots.grand.toFixed(2)}</div>
-            <span className="cp-badge" style={{background:'#dcfce7',color:'#166534'}}>Paid</span>
-          </div>
-        </div>
-      </div>})}</>}
-
-    {invoices.length===0&&<div className="cp-card" style={{textAlign:'center',color:'#94a3b8',padding:40}}>No invoices.</div>}
-    </>};
-
-  // MAIN RENDER
-  return<>
-    <style>{COACH_CSS}</style>
-    <div className="cp">
-      <div className="cp-hdr">
-        <div className="cp-logo">{NSA.name}<small>Customer Portal</small></div>
-        <div style={{textAlign:'right'}}><div style={{fontWeight:700,fontSize:15}}>{customer?.name}</div><div style={{fontSize:12,color:'#94a3b8'}}>{customer?.alpha_tag}</div></div>
-      </div>
-
-      {!detail&&<div style={{marginBottom:20}}>
-        <div className="cp-tabs">
-          <button className={`cp-tab ${tab==='estimates'?'active':''}`} onClick={()=>setTab('estimates')}>Estimates{estimates.filter(e=>e.status==='sent').length>0&&<span style={{background:'#f59e0b',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:6}}>{estimates.filter(e=>e.status==='sent').length}</span>}</button>
-          <button className={`cp-tab ${tab==='orders'?'active':''}`} onClick={()=>setTab('orders')}>Active Orders{orders.length>0&&<span style={{background:'#3b82f6',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:6}}>{orders.length}</span>}</button>
-          <button className={`cp-tab ${tab==='invoices'?'active':''}`} onClick={()=>setTab('invoices')}>Invoices{invoices.filter(i=>i.status!=='paid').length>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:6}}>{invoices.filter(i=>i.status!=='paid').length}</span>}</button>
-        </div>
-      </div>}
-
-      {detail?renderDetail():<>{tab==='estimates'&&renderEstimates()}{tab==='orders'&&renderOrders()}{tab==='invoices'&&renderInvoices()}</>}
-    </div>
-  </>;
+  </div>;
 }
 
 // MAIN APP
