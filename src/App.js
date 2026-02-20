@@ -924,6 +924,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           if(noPrice){nf('Item '+(noPrice.sku||noPrice.name||'#?')+' needs a sell price','error');return}
           onSave(o);setSaved(true);setDirty(false);nf(`${isE?'Estimate':'SO'} saved`)}} style={{padding:'10px 28px',fontSize:16,fontWeight:800}}><Icon name="check" size={16}/> Save</button>
         {isE&&saved&&o.status!=='approved'&&o.status!=='converted'&&<button className="btn btn-secondary" onClick={()=>setShowSend(true)}><Icon name="send" size={14}/> Send</button>}
+        {isE&&saved&&(o.status==='sent'||o.status==='draft')&&<button className="btn btn-secondary" style={{background:'#f0fdf4',borderColor:'#86efac',color:'#166534'}} onClick={()=>{sv('status','approved');onSave({...o,status:'approved',updated_at:new Date().toLocaleString()});nf('✅ Estimate approved — ready to convert to SO')}}><Icon name="check" size={14}/> Approve</button>}
         {isE&&o.status==='approved'&&<button className="btn btn-primary" style={{background:'#7c3aed'}} onClick={()=>{
           if(!cust){nf('Select a customer first','error');return}
           if(!o.memo?.trim()){nf('Memo is required','error');return}
@@ -1227,51 +1228,29 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                 </div></div>
             </div>)}
             // OUTSIDE DECORATION — no job created, just cost/sell
-            if(deco.kind==='outside_deco'){return(<div key={di} style={{padding:'10px 0',borderTop:di>0?'1px solid #f1f5f9':''}}>
-              <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:6}}>
-                <div style={{width:36,height:36,borderRadius:6,background:'#faf5ff',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0}}>🎨</div>
-                <span style={{fontWeight:700,fontSize:13,color:'#7c3aed'}}>Outside Decoration</span>
-                <select className="form-select" style={{width:120,fontSize:12}} value={deco.position} onChange={e=>uD(idx,di,'position',e.target.value)}>{POSITIONS.map(p=><option key={p}>{p}</option>)}</select>
-                <div style={{marginLeft:'auto',display:'flex',gap:4,alignItems:'center'}}>
-                  <button onClick={()=>rmD(idx,di)} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626'}}><Icon name="x" size={14}/></button>
-                </div></div>
-              <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:6,padding:'8px 10px',background:'#faf5ff',borderRadius:6,border:'1px solid #ede9fe'}}>
-                <div style={{display:'flex',flexDirection:'column',gap:2}}>
-                  <span style={{fontSize:10,fontWeight:600,color:'#7c3aed'}}>Vendor</span>
-                  <select className="form-select" style={{width:160,fontSize:12}} value={deco.vendor||''} onChange={e=>uD(idx,di,'vendor',e.target.value)}>
-                    <option value="">Select vendor...</option>
-                    {DECO_VENDORS.map(dv=><option key={dv} value={dv}>{dv}</option>)}
-                  </select>
-                </div>
-                <div style={{display:'flex',flexDirection:'column',gap:2}}>
-                  <span style={{fontSize:10,fontWeight:600,color:'#7c3aed'}}>Deco Type</span>
-                  <select className="form-select" style={{width:120,fontSize:12}} value={deco.deco_type||'embroidery'} onChange={e=>uD(idx,di,'deco_type',e.target.value)}>
-                    {['embroidery','screen_print','dtf','heat_transfer','sublimation','vinyl'].map(t=><option key={t} value={t}>{t.replace(/_/g,' ')}</option>)}
-                  </select>
-                </div>
-                <div style={{display:'flex',flexDirection:'column',gap:2}}>
-                  <span style={{fontSize:10,fontWeight:600,color:'#dc2626'}}>NSA Cost /ea</span>
-                  <$In value={deco.cost_each||0} onChange={v=>uD(idx,di,'cost_each',v)} w={60}/>
-                </div>
-                <div style={{display:'flex',flexDirection:'column',gap:2}}>
-                  <span style={{fontSize:10,fontWeight:600,color:'#166534'}}>Sell /ea</span>
-                  <$In value={deco.sell_each||0} onChange={v=>{uD(idx,di,'sell_each',v);uD(idx,di,'sell_override',v)}} w={60}/>
-                </div>
-                <div style={{display:'flex',flexDirection:'column',gap:2,flex:1}}>
-                  <span style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Notes</span>
-                  <input className="form-input" style={{fontSize:11,padding:'4px 6px'}} value={deco.notes||''} onChange={e=>uD(idx,di,'notes',e.target.value)} placeholder="Thread colors, instructions..."/>
-                </div>
+            if(deco.kind==='outside_deco'){return(<div key={di} style={{padding:'8px 0',borderTop:di>0?'1px solid #f1f5f9':''}}>
+              <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                <span style={{fontSize:13,fontWeight:700,color:'#7c3aed'}}>🎨 Outside Deco</span>
+                <select className="form-select" style={{width:120,fontSize:11}} value={deco.deco_type||'embroidery'} onChange={e=>uD(idx,di,'deco_type',e.target.value)}>
+                  {['embroidery','screen_print','dtf','heat_transfer','sublimation','vinyl'].map(t=><option key={t} value={t}>{t.replace(/_/g,' ')}</option>)}
+                </select>
+                <select className="form-select" style={{width:140,fontSize:11}} value={deco.vendor||''} onChange={e=>uD(idx,di,'vendor',e.target.value)}>
+                  <option value="">Vendor...</option>
+                  {DECO_VENDORS.map(dv=><option key={dv} value={dv}>{dv}</option>)}
+                </select>
+                <select className="form-select" style={{width:110,fontSize:11}} value={deco.position} onChange={e=>uD(idx,di,'position',e.target.value)}>{POSITIONS.map(p=><option key={p}>{p}</option>)}</select>
+                <div style={{display:'flex',alignItems:'center',gap:4}}><span style={{fontSize:10,color:'#dc2626',fontWeight:600}}>Cost:</span><$In value={deco.cost_each||0} onChange={v=>uD(idx,di,'cost_each',v)} w={55}/></div>
+                <div style={{display:'flex',alignItems:'center',gap:4}}><span style={{fontSize:10,color:'#166534',fontWeight:600}}>Sell:</span><$In value={deco.sell_each||0} onChange={v=>{uD(idx,di,'sell_each',v);uD(idx,di,'sell_override',v)}} w={55}/></div>
+                <button onClick={()=>rmD(idx,di)} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',marginLeft:'auto'}}><Icon name="x" size={14}/></button>
               </div>
-              <div style={{fontSize:10,color:'#7c3aed',marginTop:4}}>⚠️ Outside deco — no production job will be created. Decoration handled by external vendor.</div>
             </div>)}
             return null})}
           <div style={{display:'flex',gap:6,marginTop:8,alignItems:'center',flexWrap:'wrap'}}>
-            <button className="btn btn-sm btn-secondary" onClick={()=>addArtDeco(idx)}><Icon name="image" size={12}/> + Add Art</button>
-            <button className="btn btn-sm btn-secondary" onClick={()=>addNumDeco(idx)}>#️⃣ + Add Numbers</button>
-            <button className="btn btn-sm btn-secondary" style={{background:'#faf5ff',borderColor:'#ddd6fe',color:'#7c3aed'}} onClick={()=>addOutsideDeco(idx)}>🎨 + Outside Deco</button>
-            {safeDecos(item).length===0&&!item.no_deco&&<button className="btn btn-sm" style={{background:'#fef3c7',color:'#92400e',border:'1px solid #f59e0b',fontSize:10}} onClick={()=>uI(idx,'no_deco',true)}>✓ No Deco (Blank)</button>}
-            {item.no_deco&&<span style={{fontSize:10,padding:'3px 8px',borderRadius:4,background:'#f1f5f9',color:'#64748b',fontWeight:600,display:'flex',alignItems:'center',gap:4}}>🚫 No Decoration <button onClick={()=>uI(idx,'no_deco',false)} style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',fontSize:12,padding:0,marginLeft:2}}>✕</button></span>}
-            {safeDecos(item).length===0&&!item.no_deco&&<span style={{fontSize:10,color:'#dc2626',fontWeight:600}}>⚠️ No deco assigned</span>}
+            <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>addArtDeco(idx)}><Icon name="image" size={12}/> + Add Art</button>
+            <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>addNumDeco(idx)}>#️⃣ + Add Numbers</button>
+            <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>addOutsideDeco(idx)}>🎨 + Outside Deco</button>
+            {safeDecos(item).length===0&&!item.no_deco&&<button className="btn btn-sm btn-secondary" style={{fontSize:10,color:'#94a3b8'}} onClick={()=>uI(idx,'no_deco',true)}>🚫 Blank Ship</button>}
+            {item.no_deco&&<span style={{fontSize:10,padding:'3px 8px',borderRadius:4,background:'#f1f5f9',color:'#64748b',fontWeight:600,display:'flex',alignItems:'center',gap:4}}>🚫 Blank Ship <button onClick={()=>uI(idx,'no_deco',false)} style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',fontSize:12,padding:0,marginLeft:2}}>✕</button></span>}
           </div>
         </div>
       </div>)})}
