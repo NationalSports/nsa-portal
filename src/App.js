@@ -1431,6 +1431,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                     </div>})}
                 </div>}
               </div></div>)}
+            return null})}
           <div style={{display:'flex',gap:6,marginTop:8,alignItems:'center',flexWrap:'wrap'}}>
             {(()=>{const hasOutside=safeDecos(item).some(d=>d.kind==='outside_deco');const hasInHouse=safeDecos(item).some(d=>d.kind==='art'||d.kind==='numbers');
               return<>
