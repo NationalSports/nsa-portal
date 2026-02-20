@@ -716,7 +716,7 @@ function LoginGate({onLogin}){
   );
 }
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack,onConvertSO,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,batchPOs,onBatchPO,initTab,bills}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack,onConvertSO,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,batchPOs,onBatchPO,initTab,bills,readOnly,onNavCustomer}){
   const isE=mode==='estimate';const isSO=mode==='so';
   const[o,setO]=useState(order);const[cust,setCust]=useState(ic);const[pS,setPS]=useState('');const[showAdd,setShowAdd]=useState(false);
   const[tab,setTab]=useState(initTab||'items');const[dirty,setDirty]=useState(false);const[selJob,setSelJob]=useState(null);const[jobNote,setJobNote]=useState('');const[msgDept,setMsgDept]=useState('all');
@@ -729,6 +729,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
   const[showInvCreate,setShowInvCreate]=useState(false);const[invSelItems,setInvSelItems]=useState([]);const[invMemo,setInvMemo]=useState('');const[invType,setInvType]=useState('deposit');
   const[splitModal,setSplitModal]=useState(null);// {jIdx, mode:'received'|'sku'|null}
   const[showPastArt,setShowPastArt]=useState(false);const[pastArtFilter,setPastArtFilter]=useState('all');
+  const[selMentions,setSelMentions]=useState([]);const[msgFilter,setMsgFilter]=useState('all');
   // Sync dirty state to parent dirtyRef
   React.useEffect(()=>{if(dirtyRef)dirtyRef.current=dirty},[dirty,dirtyRef]);
   // Adjust inventory when pick is pulled or un-pulled
@@ -899,7 +900,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       <button className="btn btn-sm btn-secondary" onClick={()=>{if(dirty&&!window.confirm('You have unsaved changes. Leave without saving?'))return;onBack()}} style={{fontSize:10,padding:'4px 10px'}}><Icon name="back" size={12}/> Back</button>
       <span style={{fontWeight:800,color:'#1e40af',fontSize:14}}>{o.id}</span>
       {isSO&&<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:SC[o.status]?.bg||'#f1f5f9',color:SC[o.status]?.c||'#475569'}}>{o.status?.replace(/_/g,' ')}</span>}
-      {cust&&<span style={{fontSize:12,fontWeight:600,color:'#475569'}}>{cust.name}</span>}
+      {cust&&<span style={{fontSize:12,fontWeight:600,color:'#1e40af',cursor:'pointer',textDecoration:'underline',textDecorationStyle:'dotted',textUnderlineOffset:2}} onClick={()=>{if(onNavCustomer&&cust)onNavCustomer(cust)}} title={'View '+cust.name+' account'}>{cust.name} <span style={{color:'#94a3b8',fontWeight:400}}>{cust.alpha_tag}</span></span>}
       <span style={{fontSize:11,color:'#94a3b8',flex:1}}>{o.memo||''}</span>
       {dirty&&<span style={{fontSize:10,color:'#d97706',fontWeight:600}}>● Unsaved</span>}
       <button className="btn btn-sm btn-primary" onClick={()=>{
@@ -1701,14 +1702,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
     {isSO&&tab==='messages'&&(()=>{const soMsgs=(msgs||[]).filter(m=>m.so_id===o.id).sort((a,b)=>(a.ts||'').localeCompare(b.ts));
       const DEPTS=[{id:'all',label:'All',color:'#64748b'},{id:'art',label:'Art Dept',color:'#7c3aed'},{id:'production',label:'Production',color:'#2563eb'},{id:'warehouse',label:'Warehouse',color:'#d97706'},{id:'sales',label:'Sales',color:'#166534'},{id:'accounting',label:'Accounting',color:'#dc2626'}];
       const ROLE_DEPT={admin:'all',sales:'sales',warehouse:'warehouse',decorator:'art',production:'production',csr:'sales',accounting:'accounting'};
-      const[showMention,setShowMention]=useState(false);
-      const[mentionQ,setMentionQ]=useState('');
-      const[selMentions,setSelMentions]=useState([]);// [{type:'person',id,name} | {type:'dept',id,label}]
       const toggleMention=(m)=>{setSelMentions(p=>{const exists=p.find(x=>x.type===m.type&&x.id===m.id);return exists?p.filter(x=>!(x.type===m.type&&x.id===m.id)):[...p,m]})};
       const isMentioned=(m)=>selMentions.some(x=>x.type===m.type&&x.id===m.id);
-      // Filter messages by current user's relevance
       const myDept=ROLE_DEPT[cu.role]||'all';
-      const[msgFilter,setMsgFilter]=useState('all');// all|mine|forme
       const visibleMsgs=msgFilter==='all'?soMsgs:msgFilter==='mine'?soMsgs.filter(m=>m.author_id===cu.id):soMsgs.filter(m=>{
         if(!m.mentions||m.mentions.length===0)return true;// no mentions = visible to all
         return m.mentions.some(mm=>mm.type==='person'&&mm.id===cu.id)||m.mentions.some(mm=>mm.type==='dept'&&(mm.id===myDept||mm.id==='all'))});
@@ -4567,7 +4563,7 @@ export default function App(){
     if(eEst){
       const lockInfo=isLockedByOther(eEst.id);
       return<>{lockInfo&&<LockBanner docId={eEst.id}/>}
-        <OrderEditor order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} onSave={e=>{savE(e);setEEst(e)}} onBack={()=>{releaseLock(eEst.id);setEEst(null)}} onConvertSO={convertSO} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} batchPOs={batchPOs} onBatchPO={setBatchPOs} bills={bills} readOnly={!!lockInfo}/></>}
+        <OrderEditor order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} onSave={e=>{savE(e);setEEst(e)}} onBack={()=>{releaseLock(eEst.id);setEEst(null)}} onConvertSO={convertSO} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} batchPOs={batchPOs} onBatchPO={setBatchPOs} bills={bills} readOnly={!!lockInfo} onNavCustomer={c=>{releaseLock(eEst.id);setEEst(null);setSelC(c);setPg('customers')}}/></>}
     const fe=ests.filter(e=>!q||(e.id+' '+e.memo+' '+(cust.find(c=>c.id===e.customer_id)?.name||'')+' '+(cust.find(c=>c.id===e.customer_id)?.alpha_tag||'')).toLowerCase().includes(q.toLowerCase()));
     return(<><div style={{display:'flex',gap:8,marginBottom:16}}><div className="search-bar" style={{flex:1}}><Icon name="search"/><input placeholder="Search..." value={q} onChange={e=>setQ(e.target.value)}/></div>
       <button className="btn btn-primary" onClick={()=>newE(null)}><Icon name="plus" size={14}/> New Estimate</button></div>
@@ -4588,7 +4584,7 @@ export default function App(){
     if(eSO){
       const lockInfo=isLockedByOther(eSO.id);
       return<>{lockInfo&&<LockBanner docId={eSO.id}/>}
-        <OrderEditor order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} onSave={s=>{savSO(s);setESO(s)}} onBack={()=>{releaseLock(eSO.id);setESO(null);setESOTab(null)}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} batchPOs={batchPOs} onBatchPO={setBatchPOs} initTab={eSOTab} bills={bills} readOnly={!!lockInfo}/></>}
+        <OrderEditor order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} onSave={s=>{savSO(s);setESO(s)}} onBack={()=>{releaseLock(eSO.id);setESO(null);setESOTab(null)}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} batchPOs={batchPOs} onBatchPO={setBatchPOs} initTab={eSOTab} bills={bills} readOnly={!!lockInfo} onNavCustomer={c=>{releaseLock(eSO.id);setESO(null);setSelC(c);setPg('customers')}}/></>}
     // Filter SOs
     let fSOs=[...sos];
     if(soF.status!=='all')fSOs=fSOs.filter(s=>calcSOStatus(s)===soF.status);
