@@ -144,9 +144,9 @@ function dP(d,q,artFiles,cq){
   if(d.kind==='art'&&d.art_file_id&&artFiles){
     // Art TBD — use selected type for pricing estimates
     if(d.art_file_id==='__tbd'){const tType=d.art_tbd_type||'screen_print';
-      if(tType==='screen_print')return{sell:d.sell_override||rQ(spP(pq,1,true)),cost:rQ(spP(pq,1,false))};
-      if(tType==='embroidery')return{sell:d.sell_override||emP(8000,pq,true),cost:emP(8000,pq,false)};
-      if(tType==='heat_press'||tType==='dtf'){const t=DTF[0];return{sell:d.sell_override||t.sell,cost:t.cost}};
+      if(tType==='screen_print'){const nc=d.tbd_colors||1;const u=d.underbase?1+SP.ub:1;return{sell:d.sell_override||rQ(spP(pq,nc,true)*u),cost:rQ(spP(pq,nc,false)*u)}}
+      if(tType==='embroidery')return{sell:d.sell_override||emP(d.tbd_stitches||8000,pq,true),cost:emP(d.tbd_stitches||8000,pq,false)};
+      if(tType==='heat_press'||tType==='dtf'){const t=DTF[d.tbd_dtf_size||0];return{sell:d.sell_override||t.sell,cost:t.cost}};
       return{sell:d.sell_override||0,cost:0}}
     const art=artFiles.find(a=>a.id===d.art_file_id);if(art){
     if(art.deco_type==='screen_print'){const nc=art.ink_colors?art.ink_colors.split('\n').filter(l=>l.trim()).length:1;const u=d.underbase?1+SP.ub:1;return{sell:d.sell_override||rQ(spP(pq,nc,true)*u),cost:rQ(spP(pq,nc,false)*u)}}
@@ -1135,7 +1135,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                 {(isAU(item.brand)||item.retail_price>0)&&<span style={{fontSize:12,color:'#64748b'}}>Retail: {item.is_custom?<$In value={item.retail_price||0} onChange={v=>{uI(idx,'retail_price',v);if(isAU(item.brand)&&v>0){const tier=tD[cust?.adidas_ua_tier||'B']||0.35;uI(idx,'nsa_cost',rQ(v*(1-tier)));uI(idx,'unit_sell',rQ(v*(1-tier)))}}}/>:<strong>${item.retail_price?.toFixed(2)}</strong>}</span>}
                 <span style={{fontSize:13}}>Sell: <$In value={item.unit_sell} onChange={v=>uI(idx,'unit_sell',v)}/>/ea</span>
                 {!isAU(item.brand)&&item.nsa_cost>0&&<span style={{fontSize:11,color:'#64748b'}}>({(item.unit_sell/item.nsa_cost).toFixed(2)}x)</span>}
-                {isAU(item.brand)&&item.retail_price>0&&<span style={{fontSize:11,color:'#64748b'}}>({Math.round((1-item.nsa_cost/item.retail_price)*100)}% off retail)</span>}
+                {isAU(item.brand)&&item.nsa_cost>0&&<span style={{fontSize:11,color:item.unit_sell>item.nsa_cost?'#166534':'#dc2626'}}>({Math.round((item.unit_sell-item.nsa_cost)/item.unit_sell*100)}% margin)</span>}
               </div></div>
             <div style={{display:'flex',flexDirection:'column',gap:4}}>
               <button title="Copy item" onClick={()=>copyI(idx)} style={{background:'none',border:'none',cursor:'pointer',color:'#2563eb',padding:4}}><Icon name="file" size={14}/></button>
@@ -1244,8 +1244,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                     <option value="">⚠️ Select artwork...</option>
                     <option value="__tbd">🎨 Art TBD (pricing only)</option>
                     {af.map(f=><option key={f.id} value={f.id}>{f.name||'Untitled'}</option>)}</select>
-                  {isTBD&&<select className="form-select" style={{width:130,fontSize:11,border:'1px solid #f59e0b'}} value={tbdType} onChange={e=>uD(idx,di,'art_tbd_type',e.target.value)}>
+                  {isTBD&&<select className="form-select" style={{width:130,fontSize:11,border:'1px solid #f59e0b'}} value={tbdType} onChange={e=>{uD(idx,di,'art_tbd_type',e.target.value);uD(idx,di,'sell_override',0)}}>
                     {Object.entries(tbdLabels).map(([v,l])=><option key={v} value={v}>{l}</option>)}</select>}
+                  {isTBD&&tbdType==='screen_print'&&<select className="form-select" style={{width:90,fontSize:10}} value={deco.tbd_colors||1} onChange={e=>{uD(idx,di,'tbd_colors',parseInt(e.target.value));uD(idx,di,'sell_override',0)}}>
+                    {[1,2,3,4,5].map(n=><option key={n} value={n}>{n} color{n>1?'s':''}</option>)}</select>}
+                  {isTBD&&tbdType==='screen_print'&&<label style={{fontSize:10,display:'flex',alignItems:'center',gap:3,padding:'2px 6px',background:deco.underbase?'#fef3c7':'transparent',borderRadius:4,cursor:'pointer'}}><input type="checkbox" checked={deco.underbase||false} onChange={e=>{uD(idx,di,'underbase',e.target.checked);uD(idx,di,'sell_override',0)}}/> Underbase</label>}
+                  {isTBD&&tbdType==='embroidery'&&<select className="form-select" style={{width:110,fontSize:10}} value={deco.tbd_stitches||8000} onChange={e=>{uD(idx,di,'tbd_stitches',parseInt(e.target.value));uD(idx,di,'sell_override',0)}}>
+                    <option value={8000}>≤10k stitches</option><option value={12000}>10k-15k</option><option value={18000}>15k-20k</option><option value={25000}>20k+</option></select>}
+                  {isTBD&&(tbdType==='dtf'||tbdType==='heat_press')&&<select className="form-select" style={{width:130,fontSize:10}} value={deco.tbd_dtf_size||0} onChange={e=>{uD(idx,di,'tbd_dtf_size',parseInt(e.target.value));uD(idx,di,'sell_override',0)}}>
+                    {DTF.map((t,i)=><option key={i} value={i}>{t.label}</option>)}</select>}
                   {isTBD&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:600}}>Art Needed</span>}
                   <select className="form-select" style={{width:120,fontSize:12}} value={deco.position} onChange={e=>uD(idx,di,'position',e.target.value)}>{POSITIONS.map(p=><option key={p}>{p}</option>)}</select>
                   {artF&&!isTBD&&<><span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:artF.deco_type==='screen_print'?'#dbeafe':artF.deco_type==='embroidery'?'#ede9fe':'#fef3c7',color:artF.deco_type==='screen_print'?'#1e40af':artF.deco_type==='embroidery'?'#6d28d9':'#92400e'}}>{artF.deco_type.replace('_',' ')}</span>
@@ -1329,20 +1336,64 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                 {nm==='heat_transfer'&&<>{!deco.custom_font_art_id?<><span style={{fontSize:12,color:'#475569'}}>Standard</span><button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>uD(idx,di,'custom_font_art_id','pending')}>Use Custom Font Art</button></>
                   :<><span style={{fontSize:11,color:'#7c3aed'}}>Custom font art</span><button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>uD(idx,di,'custom_font_art_id',null)}>× Clear</button></>}</>}
               </div>
-              {/* Roster grid by size */}
+              {/* Roster grid by size — Size / Number / Name */}
               <div style={{marginTop:6,padding:10,background:'#f8fafc',borderRadius:6,border:'1px dashed #d1d5db'}}>
-                <div style={{fontSize:11,fontWeight:600,color:'#64748b',marginBottom:6}}>Roster / Number Assignment</div>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
+                  <div style={{fontSize:11,fontWeight:600,color:'#64748b'}}>Roster — Number & Name Assignment</div>
+                  <div style={{display:'flex',gap:4}}>
+                    <button className="btn btn-sm btn-secondary" style={{fontSize:9}} onClick={()=>{
+                      let csv='Size,Number,Name\n';sizedQtys.forEach(([sz,sqty])=>{
+                        for(let i=0;i<sqty;i++)csv+=sz+',,\n'});
+                      const blob=new Blob([csv],{type:'text/csv'});const url=URL.createObjectURL(blob);
+                      const a=document.createElement('a');a.href=url;a.download='roster_template_'+item.sku+'.csv';a.click();URL.revokeObjectURL(url);
+                    }}>📥 Download Template</button>
+                    <button className="btn btn-sm btn-secondary" style={{fontSize:9}} onClick={()=>{
+                      const inp=document.createElement('input');inp.type='file';inp.accept='.csv,.txt';
+                      inp.onchange=e=>{const f=e.target.files[0];if(!f)return;const reader=new FileReader();
+                        reader.onload=ev=>{const lines=ev.target.result.split('\n').filter(l=>l.trim());
+                          const nr={...roster};const names={...(deco.names||{})};let skipped=0;
+                          lines.forEach(line=>{if(line.toLowerCase().startsWith('size'))return;// skip header
+                            const parts=line.split(',').map(s=>s.trim());const[sz,num,name]=parts;
+                            if(sz&&item.sizes[sz]>0){
+                              if(!nr[sz])nr[sz]=Array(item.sizes[sz]||0).fill('');
+                              if(!names[sz])names[sz]=Array(item.sizes[sz]||0).fill('');
+                              const ei=nr[sz].findIndex(v=>!v);
+                              if(ei>=0){nr[sz][ei]=num||'';names[sz][ei]=name||''}else{skipped++}
+                            }else{skipped++}});
+                          uD(idx,di,'roster',nr);uD(idx,di,'names',names);
+                          nf('Roster imported'+(skipped>0?' ('+skipped+' rows skipped)':''))};
+                        reader.readAsText(f)};inp.click();
+                    }}>📤 Upload CSV</button>
+                    <button className="btn btn-sm btn-secondary" style={{fontSize:9}} onClick={()=>{
+                      const csv=prompt('Paste roster (one per line: Size,Number,Name):\ne.g.\nM,12,Smith\nL,34,Jones');
+                      if(csv){const nr={...roster};const names={...(deco.names||{})};
+                        csv.split('\n').forEach(line=>{const parts=line.split(',').map(s=>s.trim());const[sz,num,name]=parts;
+                          if(sz&&num){if(!nr[sz])nr[sz]=Array(item.sizes[sz]||0).fill('');if(!names[sz])names[sz]=Array(item.sizes[sz]||0).fill('');
+                            const ei=nr[sz].findIndex(v=>!v);if(ei>=0){nr[sz][ei]=num;names[sz][ei]=name||''}}});
+                        uD(idx,di,'roster',nr);uD(idx,di,'names',names);nf('Roster imported')}
+                    }}>📋 Paste</button>
+                    <button className="btn btn-sm btn-secondary" style={{fontSize:9,color:'#dc2626'}} onClick={()=>{uD(idx,di,'roster',{});uD(idx,di,'names',{});nf('Roster cleared')}}>Clear All</button>
+                  </div>
+                </div>
                 {sizedQtys.length===0?<div style={{fontSize:11,color:'#94a3b8'}}>Add sizes above first</div>:
-                <div style={{display:'flex',flexDirection:'column',gap:4}}>
-                  {sizedQtys.map(([sz,sqty])=>{const szRoster=roster[sz]||[];return<div key={sz} style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
-                    <span style={{fontSize:12,fontWeight:700,color:'#1e40af',width:40}}>{sz} ({sqty})</span>
-                    {Array.from({length:sqty}).map((_,si)=><input key={si} style={{width:36,textAlign:'center',border:'1px solid #d1d5db',borderRadius:3,padding:'3px 2px',fontSize:12,fontWeight:600,background:szRoster[si]?'#dbeafe':'white'}} value={szRoster[si]||''} placeholder="—" onChange={e=>{const nr={...roster};const arr=[...(nr[sz]||Array(sqty).fill(''))];arr[si]=e.target.value;nr[sz]=arr;uD(idx,di,'roster',nr)}}/>)}
-                  </div>})}
+                <div style={{display:'flex',flexDirection:'column',gap:2}}>
+                  <div style={{display:'flex',gap:6,alignItems:'center',marginBottom:2}}>
+                    <span style={{width:50,fontSize:9,fontWeight:700,color:'#94a3b8'}}>SIZE</span>
+                    <span style={{width:44,fontSize:9,fontWeight:700,color:'#94a3b8',textAlign:'center'}}>#</span>
+                    <span style={{flex:1,fontSize:9,fontWeight:700,color:'#94a3b8'}}>NAME</span>
+                  </div>
+                  {sizedQtys.map(([sz,sqty])=>{const szRoster=roster[sz]||[];const szNames=(deco.names||{})[sz]||[];
+                    return<React.Fragment key={sz}>
+                    {Array.from({length:sqty}).map((_,si)=><div key={si} style={{display:'flex',gap:6,alignItems:'center'}}>
+                      {si===0?<span style={{width:50,fontSize:12,fontWeight:700,color:'#1e40af'}}>{sz} ({sqty})</span>:<span style={{width:50}}/>}
+                      <input style={{width:44,textAlign:'center',border:'1px solid #d1d5db',borderRadius:3,padding:'3px 2px',fontSize:12,fontWeight:600,background:szRoster[si]?'#dbeafe':'white'}} value={szRoster[si]||''} placeholder="—" onChange={e=>{const nr={...roster};const arr=[...(nr[sz]||Array(sqty).fill(''))];arr[si]=e.target.value;nr[sz]=arr;uD(idx,di,'roster',nr)}}/>
+                      <input style={{flex:1,border:'1px solid #d1d5db',borderRadius:3,padding:'3px 6px',fontSize:12,background:szNames[si]?'#f0fdf4':'white'}} value={szNames[si]||''} placeholder="Name" onChange={e=>{const nn={...(deco.names||{})};const arr=[...(nn[sz]||Array(sqty).fill(''))];arr[si]=e.target.value;nn[sz]=arr;uD(idx,di,'names',nn)}}/>
+                    </div>)}
+                  </React.Fragment>})}
                 </div>}
-                <div style={{display:'flex',gap:4,marginTop:8}}>
-                  <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{const csv=prompt('Paste roster (one per line: Size,Number,Name):\ne.g.\nM,12,Smith\nL,34,Jones');if(csv){const nr={...roster};csv.split('\n').forEach(line=>{const[sz,num]=line.split(',').map(s=>s.trim());if(sz&&num){if(!nr[sz])nr[sz]=Array(item.sizes[sz]||0).fill('');const ei=nr[sz].findIndex(v=>!v);if(ei>=0)nr[sz][ei]=num}});uD(idx,di,'roster',nr);nf('Roster imported')}}}><Icon name="upload" size={10}/> Paste Roster</button>
-                  <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{uD(idx,di,'roster',{});nf('Roster cleared')}}>Clear All</button>
-                </div></div>
+                {(()=>{const filled=Object.values(roster).flat().filter(v=>v&&v.trim()).length;const total=sizedQtys.reduce((a,[,q])=>a+q,0);
+                  return filled>0&&<div style={{fontSize:10,color:'#64748b',marginTop:4}}>{filled}/{total} assigned</div>})()}
+              </div>
             </div>)}
             return null})}
           <div style={{display:'flex',gap:6,marginTop:8,alignItems:'center',flexWrap:'wrap'}}>
@@ -1392,7 +1443,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
             <div><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Sell $</label><$In value={custItem.unit_sell} onChange={v=>setCustItem(x=>({...x,unit_sell:v}))}/></div>
             <div style={{display:'flex',gap:4,alignItems:'center'}}>
               {custItem.nsa_cost>0&&<span style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap'}}>
-                {au&&custItem.retail_price>0?Math.round((1-custItem.nsa_cost/custItem.retail_price)*100)+'% off retail':custItem.nsa_cost>0?(custItem.unit_sell/custItem.nsa_cost).toFixed(2)+'x markup':''}
+                {au&&custItem.nsa_cost>0&&custItem.unit_sell>0?Math.round((custItem.unit_sell-custItem.nsa_cost)/custItem.unit_sell*100)+'% margin':custItem.nsa_cost>0?(custItem.unit_sell/custItem.nsa_cost).toFixed(2)+'x markup':''}
                 {custItem.unit_sell>custItem.nsa_cost&&<span style={{color:'#166534',marginLeft:4}}>(${rQ(custItem.unit_sell-custItem.nsa_cost).toFixed(2)} margin)</span>}
               </span>}
             </div></div>
