@@ -396,6 +396,86 @@ const D_INV=[
 
 // OMG TEAM STORES DEMO DATA
 const D_OMG=[
+
+// ═══════════════════════════════════════════════
+// SUPPLIER BILLS — Sports Inc / Adidas invoices parsed from PDF
+// ═══════════════════════════════════════════════
+const FREIGHT_WARN_PCT=0.10;// Flag bills where freight > 10% of merchandise total
+const D_BILLS=[
+  {id:'BILL-001',si_doc:'23958838',si_doc_date:'02/16/26',due_date:'04/10/26',vendor:'Adidas US Team Services',
+    po_number:'PO7607',ship_to:'Mission Viejo (PO7607MISSIONVI)',ship_to_type:'drop_ship',
+    carrier:'FedEx',tracking:'511217414032',ship_date:'02/16/26',weight_lb:8.33,
+    merch_total:112.50,freight:10.02,si_upcharge:0.98,doc_total:123.50,
+    items:[{sku:'JX4247',name:'Adidas Tiro26C AW Jacket',color:'Black/White',sizes:{L:2,'2XL':1},net_price:37.50}],
+    matched_so_id:'SO-1045',matched_rep_id:'r1',status:'reviewed',triage:'ok',notes:'',qb_synced:false,created_at:'02/16/26 4:00 PM'},
+  {id:'BILL-002',si_doc:'23958839',si_doc_date:'02/16/26',due_date:'04/10/26',vendor:'Adidas US Team Services',
+    po_number:'PO7714',ship_to:'Affirmative Athletics, Corona CA',ship_to_type:'drop_ship',
+    carrier:'FedEx',tracking:'513253555210',ship_date:'02/16/26',weight_lb:69.89,
+    merch_total:317.52,freight:37.71,si_upcharge:2.84,doc_total:358.07,
+    items:[{sku:'IE3992',name:'Adizero Impact.2 MD Cleats',color:'Black/White',sizes:{'9':4,'10':4,'10.5':4,'11.5':2},net_price:22.68}],
+    matched_so_id:null,matched_rep_id:'r4',status:'new',triage:null,notes:'',qb_synced:false,created_at:'02/16/26 4:00 PM'},
+  {id:'BILL-003',si_doc:'23959160',si_doc_date:'02/16/26',due_date:'04/10/26',vendor:'Adidas US Team Services',
+    po_number:'PO7710',ship_to:'NSA Warehouse, Orange CA',ship_to_type:'warehouse',
+    carrier:'FedEx',tracking:'511831274087',ship_date:'02/16/26',weight_lb:206.61,
+    merch_total:2532.61,freight:45.26,si_upcharge:20.62,doc_total:2598.49,
+    items:[
+      {sku:'IS1111',name:'Adidas D4T Workout Short',color:'Black/White',sizes:{'XL':3},net_price:20.62},
+      {sku:'JX4455',name:'Adidas SS Pregame Tee',color:'Grey Heather/Black',sizes:{S:10,M:30,L:30,XL:18,'2XL':7,'3XL':5},net_price:11.25},
+      {sku:'JX4464',name:'Adidas SS Pregame Tee',color:'Team Cobalt/White',sizes:{XL:3},net_price:11.25},
+      {sku:'JX4476',name:'Adidas LS Pregame Tee',color:'Black/White',sizes:{S:10,M:30,L:30,XL:18,'2XL':7,'3XL':5},net_price:13.12},
+    ],
+    matched_so_id:'SO-1042',matched_rep_id:'r1',status:'new',triage:null,notes:'',qb_synced:false,created_at:'02/16/26 4:00 PM'},
+  {id:'BILL-004',si_doc:'23959161',si_doc_date:'02/16/26',due_date:'04/10/26',vendor:'Adidas US Team Services',
+    po_number:'PO7307',ship_to:'NSA Warehouse, Orange CA',ship_to_type:'warehouse',
+    carrier:'FedEx',tracking:'511831272420',ship_date:'02/16/26',weight_lb:10.67,
+    merch_total:60.00,freight:6.54,si_upcharge:0.53,doc_total:67.07,
+    items:[{sku:'KV2196',name:'Adidas Fresh SS Tee',color:'Black',sizes:{M:4,XL:1,'2XL':2,'3XL':1},net_price:7.50}],
+    matched_so_id:null,matched_rep_id:'r1',status:'new',triage:null,notes:'Servite order',qb_synced:false,created_at:'02/16/26 4:00 PM'},
+  {id:'BILL-005',si_doc:'23959162',si_doc_date:'02/16/26',due_date:'04/10/26',vendor:'Adidas US Team Services',
+    po_number:'PO7726',ship_to:'NSA Warehouse, Orange CA',ship_to_type:'warehouse',
+    carrier:'FedEx',tracking:'511831383658',ship_date:'02/16/26',weight_lb:10.36,
+    merch_total:90.00,freight:6.54,si_upcharge:0.77,doc_total:97.31,
+    items:[{sku:'JJ1179',name:'Adidas GG SL Hoodie',color:'Medium Grey Heather',sizes:{M:1,L:3},net_price:22.50}],
+    matched_so_id:null,matched_rep_id:'r1',status:'new',triage:null,notes:'Lincoln Basketball',qb_synced:false,created_at:'02/16/26 4:01 PM'},
+  {id:'BILL-006',si_doc:'23959163',si_doc_date:'02/16/26',due_date:'05/10/26',vendor:'Adidas US Team Services',
+    po_number:'PO7508',ship_to:'Encinitas Express Soccer, Encinitas CA',ship_to_type:'drop_ship',
+    carrier:'FedEx',tracking:'478102612276',ship_date:'02/16/26',weight_lb:12.78,
+    merch_total:593.50,freight:0,si_upcharge:4.75,doc_total:598.25,
+    items:[{sku:'JW6705',name:'Adidas Custom ADI25 Sock',color:'Custom',sizes:{M:50},net_price:11.87}],
+    matched_so_id:null,matched_rep_id:'r5',status:'new',triage:null,notes:'Custom socks shipment 1 of 3',qb_synced:false,created_at:'02/16/26 4:01 PM'},
+  {id:'BILL-007',si_doc:'23959533',si_doc_date:'02/16/26',due_date:'05/10/26',vendor:'Adidas US Team Services',
+    po_number:'PO7508',ship_to:'Encinitas Express Soccer, Encinitas CA',ship_to_type:'drop_ship',
+    carrier:'FedEx',tracking:'478102612265',ship_date:'02/16/26',weight_lb:13.33,
+    merch_total:593.50,freight:0,si_upcharge:4.75,doc_total:598.25,
+    items:[{sku:'JW6705',name:'Adidas Custom ADI25 Sock',color:'Custom',sizes:{L:50},net_price:11.87}],
+    matched_so_id:null,matched_rep_id:'r5',status:'new',triage:null,notes:'Custom socks shipment 2 of 3',qb_synced:false,created_at:'02/16/26 4:01 PM'},
+  {id:'BILL-008',si_doc:'23959534',si_doc_date:'02/16/26',due_date:'05/10/26',vendor:'Adidas US Team Services',
+    po_number:'PO7508',ship_to:'Encinitas Express Soccer, Encinitas CA',ship_to_type:'drop_ship',
+    carrier:'FedEx',tracking:'478102612151',ship_date:'02/16/26',weight_lb:7.98,
+    merch_total:356.10,freight:0,si_upcharge:2.85,doc_total:358.95,
+    items:[{sku:'JW6705',name:'Adidas Custom ADI25 Sock',color:'Custom',sizes:{M:30},net_price:11.87}],
+    matched_so_id:null,matched_rep_id:'r5',status:'new',triage:null,notes:'Custom socks shipment 3 of 3',qb_synced:false,created_at:'02/16/26 4:01 PM'},
+  {id:'BILL-009',si_doc:'23959267',si_doc_date:'02/16/26',due_date:'04/10/26',vendor:'Adidas US Team Services',
+    po_number:'PO7724',ship_to:'Landon Miller, Track & Field, Fresno CA',ship_to_type:'drop_ship',
+    carrier:'FedEx',tracking:'513253587421',ship_date:'02/16/26',weight_lb:20.04,
+    merch_total:457.84,freight:20.77,si_upcharge:3.83,doc_total:482.44,
+    items:[
+      {sku:'JP6623',name:'Adizero Adios Pro 4',color:'Solar Yellow/Purple',sizes:{'9.5':1},net_price:105.18},
+      {sku:'JQ1690',name:'Adizero Adios Pro 4',color:'Solar Yellow/Purple',sizes:{'6':1},net_price:105.18},
+      {sku:'JQ5933',name:'Adizero Avanti',color:'Lemon/Black/Silver',sizes:{'7':1,'8':2,'8.5':1},net_price:61.87},
+    ],
+    matched_so_id:null,matched_rep_id:'r4',status:'new',triage:null,notes:'Track spikes - Fresno',qb_synced:false,created_at:'02/16/26 4:02 PM'},
+  {id:'BILL-010',si_doc:'23960051',si_doc_date:'02/16/26',due_date:'04/10/26',vendor:'Adidas US Team Services',
+    po_number:'PO7699',ship_to:'NSA Warehouse, Orange CA',ship_to_type:'warehouse',
+    carrier:'FedEx',tracking:'511217416377',ship_date:'02/13/26',weight_lb:55.09,
+    merch_total:487.50,freight:27.02,si_upcharge:4.12,doc_total:518.64,
+    items:[
+      {sku:'JW6602',name:'Adidas Fleece Hoodie',color:'Black',sizes:{L:2},net_price:18.75},
+      {sku:'JW6604',name:'Adidas Fleece Pant',color:'Black',sizes:{M:6,L:9},net_price:18.75},
+      {sku:'JX4488',name:'Adidas SL Pregame Tee',color:'Black/White',sizes:{M:6,L:9},net_price:11.25},
+    ],
+    matched_so_id:null,matched_rep_id:'r1',status:'flagged',triage:'freight',notes:'Freight seems high for 55lb — $27 on $487 merch = 5.5%',qb_synced:false,created_at:'02/16/26 4:02 PM'},
+];
   {id:'OMG-1001',store_name:'OLu Baseball Spring 2026',customer_id:'c1a',rep_id:'r1',status:'closed',open_date:'01/15/26',close_date:'02/10/26',
     orders:12,total_sales:4250,fundraise_total:425,items_sold:87,unique_buyers:12,
     products:[
@@ -610,7 +690,7 @@ function LoginGate({onLogin}){
   );
 }
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack,onConvertSO,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,batchPOs,onBatchPO,initTab}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack,onConvertSO,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,batchPOs,onBatchPO,initTab,bills}){
   const isE=mode==='estimate';const isSO=mode==='so';
   const[o,setO]=useState(order);const[cust,setCust]=useState(ic);const[pS,setPS]=useState('');const[showAdd,setShowAdd]=useState(false);
   const[tab,setTab]=useState(initTab||'items');const[dirty,setDirty]=useState(false);const[selJob,setSelJob]=useState(null);const[jobNote,setJobNote]=useState('');const[msgDept,setMsgDept]=useState('all');
@@ -795,7 +875,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       {cust&&<span style={{fontSize:12,fontWeight:600,color:'#475569'}}>{cust.name}</span>}
       <span style={{fontSize:11,color:'#94a3b8',flex:1}}>{o.memo||''}</span>
       {dirty&&<span style={{fontSize:10,color:'#d97706',fontWeight:600}}>● Unsaved</span>}
-      <button className="btn btn-sm btn-primary" onClick={()=>{const updated={...o,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setSaved(true);nf('Saved')}} style={{padding:'4px 14px',fontSize:11}}>✓ Save</button>
+      <button className="btn btn-sm btn-primary" onClick={()=>{
+        if(!cust){nf('Select a customer first','error');return}
+        if(!o.memo?.trim()){nf('Memo is required','error');return}
+        const validItems=safeItems(o).filter(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
+        if(validItems.length===0){nf('Add at least one item with sizes','error');return}
+        const noSku=validItems.find(it=>!it.sku?.trim()&&!it.is_custom);
+        if(noSku){nf('Item '+(noSku.name||'#?')+' needs a SKU or mark as custom','error');return}
+        const noPrice=validItems.find(it=>safeNum(it.unit_sell)<=0);
+        if(noPrice){nf('Item '+(noPrice.sku||noPrice.name||'#?')+' needs a sell price','error');return}
+        const updated={...o,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setSaved(true);nf('Saved')}} style={{padding:'4px 14px',fontSize:11}}>✓ Save</button>
     </div>
     {/* HEADER */}
     <div className="card" style={{marginBottom:16,marginTop:8}}><div style={{padding:'16px 20px'}}>
@@ -823,9 +912,27 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           <input className="form-input" type="date" value={o.expected_date||''} onChange={e=>sv('expected_date',e.target.value)}/>
           <button style={{fontSize:10,marginTop:4,padding:'3px 8px',borderRadius:4,background:'#f5f3ff',border:'1px solid #ddd6fe',color:'#7c3aed',cursor:'pointer',fontWeight:600,display:'flex',alignItems:'center',gap:3}} onClick={()=>{setFirmReqDate(o.expected_date||'');setFirmReqNote('');setShowFirmReq(true)}}>📌 Request Firm Date</button>
         </div>}
-        <button className="btn btn-primary" onClick={()=>{onSave(o);setSaved(true);setDirty(false);nf(`${isE?'Estimate':'SO'} saved`)}} style={{padding:'10px 28px',fontSize:16,fontWeight:800}}><Icon name="check" size={16}/> Save</button>
+        <button className="btn btn-primary" onClick={()=>{
+          if(!cust){nf('Select a customer first','error');return}
+          if(!o.memo?.trim()){nf('Memo is required','error');return}
+          const validItems=safeItems(o).filter(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
+          if(validItems.length===0){nf('Add at least one item with sizes','error');return}
+          const noSku=validItems.find(it=>!it.sku?.trim()&&!it.is_custom);
+          if(noSku){nf('Item '+(noSku.name||'#?')+' needs a SKU or mark as custom','error');return}
+          const noPrice=validItems.find(it=>safeNum(it.unit_sell)<=0);
+          if(noPrice){nf('Item '+(noPrice.sku||noPrice.name||'#?')+' needs a sell price','error');return}
+          onSave(o);setSaved(true);setDirty(false);nf(`${isE?'Estimate':'SO'} saved`)}} style={{padding:'10px 28px',fontSize:16,fontWeight:800}}><Icon name="check" size={16}/> Save</button>
         {isE&&saved&&o.status!=='approved'&&o.status!=='converted'&&<button className="btn btn-secondary" onClick={()=>setShowSend(true)}><Icon name="send" size={14}/> Send</button>}
-        {isE&&o.status==='approved'&&<button className="btn btn-primary" style={{background:'#7c3aed'}} onClick={()=>onConvertSO(o)}><Icon name="box" size={14}/> Convert to SO</button>}
+        {isE&&o.status==='approved'&&<button className="btn btn-primary" style={{background:'#7c3aed'}} onClick={()=>{
+          if(!cust){nf('Select a customer first','error');return}
+          if(!o.memo?.trim()){nf('Memo is required','error');return}
+          const validItems=safeItems(o).filter(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
+          if(validItems.length===0){nf('Cannot convert — add at least one item with sizes','error');return}
+          const noSku=validItems.find(it=>!it.sku?.trim()&&!it.is_custom);
+          if(noSku){nf('Item '+(noSku.name||'#?')+' needs a SKU or mark as custom','error');return}
+          const noPrice=validItems.find(it=>safeNum(it.unit_sell)<=0);
+          if(noPrice){nf('Item '+(noPrice.sku||noPrice.name||'#?')+' needs a sell price','error');return}
+          onConvertSO(o)}}><Icon name="box" size={14}/> Convert to SO</button>}
         {/* Print Estimate or SO */}
         <button className="btn btn-secondary" style={{fontSize:12}} onClick={()=>{
           const items=safeItems(o).filter(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
@@ -920,6 +1027,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       <button className={`tab ${tab==='items'?'active':''}`} onClick={()=>setTab('items')}>Line Items</button>
       <button className={`tab ${tab==='art'?'active':''}`} onClick={()=>setTab('art')}>Art Library ({af.length})</button>
       {isSO&&<button className={`tab ${tab==='messages'?'active':''}`} onClick={()=>setTab('messages')}>Messages {(()=>{const unread=(msgs||[]).filter(m=>m.so_id===o.id&&!(m.read_by||[]).includes(cu.id)).length;return unread>0?<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:4}}>{unread}</span>:` (${(msgs||[]).filter(m=>m.so_id===o.id).length})`})()}</button>}
+      {isSO&&<button className={`tab ${tab==='fulfillment'?'active':''}`} onClick={()=>setTab('fulfillment')} style={tab==='fulfillment'?{background:'#1e40af',color:'white'}:{}}>📦 Fulfillment</button>}
       {isSO&&<button className={`tab ${tab==='transactions'?'active':''}`} onClick={()=>setTab('transactions')}>Linked</button>}
       {isSO&&<button className={`tab ${tab==='jobs'?'active':''}`} onClick={()=>setTab('jobs')}>Jobs {(()=>{const jc=(o.jobs||[]).length;return jc>0?` (${jc})`:''})()}</button>}
       {isSO&&<button className={`tab ${tab==='firm_dates'?'active':''}`} onClick={()=>setTab('firm_dates')}>Firm Dates ({safeFirm(o).length})</button>}
@@ -1486,6 +1594,86 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         </div></div>})()}
 
         {/* LINKED TRANSACTIONS TAB */}
+    {/* FULFILLMENT TAB — PO Ordered → Billed (SI Invoice) → Received */}
+    {isSO&&tab==='fulfillment'&&(()=>{
+      const soBills=safeArr(bills).filter(b=>b.matched_so_id===o.id||safePOs(o).flatMap((_,ii)=>safeItems(o).flatMap(it=>safePOs(it).map(p=>p.po_id))).some(pid=>pid&&b.po_number===pid));
+      // Build per-item fulfillment matrix
+      return<div className="card"><div className="card-header"><h2>📦 Fulfillment Tracker</h2>
+        <span style={{fontSize:12,color:'#64748b'}}>{soBills.length} supplier bill{soBills.length!==1?'s':''} matched</span></div>
+      <div className="card-body">
+      {safeItems(o).length===0?<div className="empty">No items on this order</div>:
+      safeItems(o).map((it,idx)=>{
+        const szList=Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).sort((a,b)=>SZ_ORD.indexOf(a[0])-SZ_ORD.indexOf(b[0]));
+        if(szList.length===0)return null;
+        const qty=szList.reduce((a,[,v])=>a+v,0);
+        // PO ordered quantities
+        const poOrd={};szList.forEach(([sz])=>{poOrd[sz]=safePOs(it).reduce((a,pk)=>{const ordered=safeNum(pk[sz]);const cancelled=safeNum((pk.cancelled||{})[sz]);return a+(ordered-cancelled)},0)});
+        // Picked (in-stock pull)
+        const picked={};szList.forEach(([sz])=>{picked[sz]=safePicks(it).reduce((a,pk)=>a+safeNum(pk[sz]),0)});
+        // Billed (from SI invoices matching PO IDs on this item)
+        const itemPOIds=safePOs(it).map(p=>p.po_id).filter(Boolean);
+        const billed={};szList.forEach(([sz])=>{billed[sz]=soBills.reduce((a,bill)=>{
+          if(!itemPOIds.some(pid=>bill.po_number===pid))return a;
+          return a+(bill.items||[]).reduce((a2,bi)=>{return bi.sku===it.sku?a2+safeNum((bi.sizes||{})[sz]):a2},0)
+        },0)});
+        // Received (warehouse count-in)
+        const rcvd={};szList.forEach(([sz])=>{rcvd[sz]=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0)});
+        // Pulled = pick lines with status pulled
+        const pulled={};szList.forEach(([sz])=>{pulled[sz]=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0)});
+        const totalOrd=Object.values(poOrd).reduce((a,v)=>a+v,0);
+        const totalPicked=Object.values(picked).reduce((a,v)=>a+v,0);
+        const totalBilled=Object.values(billed).reduce((a,v)=>a+v,0);
+        const totalRcvd=Object.values(rcvd).reduce((a,v)=>a+v,0);
+        const totalPulled=Object.values(pulled).reduce((a,v)=>a+v,0);
+        const totalFulfilled=totalPulled+totalRcvd;
+        const pct=qty>0?Math.round(totalFulfilled/qty*100):0;
+        return<div key={idx} style={{marginBottom:16,border:'1px solid #e2e8f0',borderRadius:8,overflow:'hidden'}}>
+          <div style={{padding:'10px 14px',background:'#f8fafc',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+            <div><span style={{fontWeight:700}}>{it.sku}</span> <span style={{color:'#475569'}}>{it.name}</span> <span style={{color:'#94a3b8'}}>({it.color||'—'})</span></div>
+            <div style={{display:'flex',alignItems:'center',gap:8}}>
+              <span style={{fontSize:12,fontWeight:700,color:pct>=100?'#166534':pct>0?'#b45309':'#94a3b8'}}>{totalFulfilled}/{qty}</span>
+              <div style={{width:60,background:'#e2e8f0',borderRadius:3,height:6}}><div style={{height:6,borderRadius:3,background:pct>=100?'#22c55e':pct>50?'#f59e0b':'#ef4444',width:Math.min(pct,100)+'%'}}/></div>
+            </div>
+          </div>
+          <table style={{fontSize:11,margin:0}}><thead><tr style={{background:'#f0f2f5'}}>
+            <th style={{textAlign:'left',padding:'6px 10px',fontSize:10}}>Stage</th>
+            {szList.map(([sz])=><th key={sz} style={{textAlign:'center',padding:'6px 6px',fontSize:10,minWidth:36}}>{sz}</th>)}
+            <th style={{textAlign:'center',padding:'6px 8px',fontSize:10}}>Total</th>
+          </tr></thead><tbody>
+            <tr style={{background:'#fff'}}><td style={{padding:'5px 10px',fontWeight:600,color:'#475569'}}>📋 Needed</td>
+              {szList.map(([sz,v])=><td key={sz} style={{textAlign:'center',padding:'5px 6px',fontWeight:700}}>{v}</td>)}
+              <td style={{textAlign:'center',fontWeight:700}}>{qty}</td></tr>
+            <tr style={{background:'#fefce8'}}><td style={{padding:'5px 10px',fontWeight:600,color:'#92400e'}}>🛒 PO Ordered</td>
+              {szList.map(([sz])=><td key={sz} style={{textAlign:'center',padding:'5px 6px',color:poOrd[sz]>0?'#92400e':'#d1d5db'}}>{poOrd[sz]||'—'}</td>)}
+              <td style={{textAlign:'center',fontWeight:600,color:'#92400e'}}>{totalOrd}</td></tr>
+            <tr style={{background:'#eff6ff'}}><td style={{padding:'5px 10px',fontWeight:600,color:'#1e40af'}}>📄 Billed (In Transit)</td>
+              {szList.map(([sz])=><td key={sz} style={{textAlign:'center',padding:'5px 6px',color:billed[sz]>0?'#1e40af':'#d1d5db'}}>{billed[sz]||'—'}</td>)}
+              <td style={{textAlign:'center',fontWeight:600,color:'#1e40af'}}>{totalBilled}</td></tr>
+            <tr style={{background:'#f0fdf4'}}><td style={{padding:'5px 10px',fontWeight:600,color:'#166534'}}>📥 Picked (In Stock)</td>
+              {szList.map(([sz])=><td key={sz} style={{textAlign:'center',padding:'5px 6px',color:pulled[sz]>0?'#166534':'#d1d5db'}}>{pulled[sz]||'—'}</td>)}
+              <td style={{textAlign:'center',fontWeight:600,color:'#166534'}}>{totalPulled}</td></tr>
+            <tr style={{background:'#dcfce7'}}><td style={{padding:'5px 10px',fontWeight:600,color:'#166534'}}>✅ PO Received</td>
+              {szList.map(([sz])=><td key={sz} style={{textAlign:'center',padding:'5px 6px',fontWeight:rcvd[sz]>0?700:400,color:rcvd[sz]>0?'#166534':'#d1d5db'}}>{rcvd[sz]||'—'}</td>)}
+              <td style={{textAlign:'center',fontWeight:700,color:'#166534'}}>{totalRcvd}</td></tr>
+          </tbody></table>
+          {/* Tracking numbers from matched bills */}
+          {(()=>{const tracks=soBills.filter(b=>itemPOIds.some(pid=>b.po_number===pid)&&b.tracking).map(b=>({tracking:b.tracking,carrier:b.carrier,ship_date:b.ship_date,po:b.po_number}));
+            return tracks.length>0?<div style={{padding:'6px 10px',background:'#faf5ff',borderTop:'1px solid #e9d5ff',fontSize:11}}>
+              {tracks.map((t,ti)=><span key={ti} style={{marginRight:12}}>🚚 <strong>{t.carrier}</strong> {t.tracking} <span style={{color:'#94a3b8'}}>({t.ship_date})</span></span>)}
+            </div>:null})()}
+        </div>})}
+        {/* Summary of all matched bills */}
+        {soBills.length>0&&<div style={{marginTop:12,padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0'}}>
+          <div style={{fontWeight:700,fontSize:13,marginBottom:6}}>Matched Supplier Bills</div>
+          <table style={{fontSize:11,margin:0}}><thead><tr><th>SI Doc</th><th>PO#</th><th>Ship To</th><th>Merch</th><th>Freight</th><th>Total</th><th>Status</th></tr></thead><tbody>
+          {soBills.map(b=><tr key={b.id}><td>{b.si_doc}</td><td>{b.po_number}</td><td style={{maxWidth:150,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{b.ship_to}</td>
+            <td style={{textAlign:'right'}}>${b.merch_total.toFixed(2)}</td><td style={{textAlign:'right',color:b.merch_total>0&&b.freight/b.merch_total>FREIGHT_WARN_PCT?'#dc2626':''}}>${b.freight.toFixed(2)}</td>
+            <td style={{textAlign:'right',fontWeight:700}}>${b.doc_total.toFixed(2)}</td>
+            <td><span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:b.triage==='ok'?'#dcfce7':b.triage==='freight'?'#fef2f2':'#fef3c7',color:b.triage==='ok'?'#166534':b.triage==='freight'?'#dc2626':'#92400e'}}>{b.triage==='ok'?'✓ OK':b.triage==='freight'?'🚩 Freight':'New'}</span></td></tr>)}
+          </tbody></table>
+        </div>}
+      </div></div>})()}
+
     {isSO&&tab==='transactions'&&<div className="card"><div className="card-header"><h2>Linked Transactions</h2></div><div className="card-body">
       <div style={{display:'flex',flexDirection:'column',gap:8}}>
         {o.estimate_id&&<div style={{display:'flex',gap:12,alignItems:'center',padding:12,background:'#faf5ff',borderRadius:8,border:'1px solid #e9d5ff'}}>
@@ -1753,6 +1941,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         <div className="modal-footer">
           <button className="btn btn-secondary" onClick={()=>setShowInvCreate(false)}>Cancel</button>
           <button className="btn btn-primary" style={{background:'#dc2626',borderColor:'#dc2626'}} disabled={invSelItems.length===0} onClick={()=>{
+            if(!(invMemo||'').trim()&&!(o.memo||'').trim()){nf('Invoice memo is required','error');return}
             const invId='INV-'+o.id.replace('SO-','');
             const inv={id:invId+'-'+(Date.now()%1000),type:'invoice',customer_id:o.customer_id,so_id:o.id,
               date:new Date().toLocaleDateString('en-CA'),total:Math.round(invTotal*100)/100,paid:0,
@@ -3365,6 +3554,10 @@ export default function App(){
   const[ests,setEsts]=useState(D_E);const[sos,setSOs]=useState(D_SO);const[invs,setInvs]=useState(D_INV);
   // Batch PO system
   const[batchPOs,setBatchPOs]=useState([]);// pending queue
+  // Supplier Bills system
+  const[bills,setBills]=useState(D_BILLS);
+  const[billFilter,setBillFilter]=useState({status:'all',rep:'all',triage:'all',search:''});
+  const[billSel,setBillSel]=useState(null);// selected bill for detail view
   const[submittedBatches,setSubmittedBatches]=useState([]);// submitted batches for scan lookup
   const[batchCounter,setBatchCounter]=useState(4501);// sequential PO numbers: NSA-4501, NSA-4502...
   const[batchScan,setBatchScan]=useState('');// scan/lookup field
@@ -3409,7 +3602,13 @@ export default function App(){
     if(product){const au=product.brand==='Adidas'||product.brand==='Under Armour'||product.brand==='New Balance';const sell=au?rQ(product.retail_price*(1-(({A:0.4,B:0.35,C:0.3})[c?.adidas_ua_tier||'B']||0.35))):rQ(product.nsa_cost*mk);
       items.push({product_id:product.id,sku:product.sku,name:product.name,brand:product.brand,color:product.color,nsa_cost:product.nsa_cost,retail_price:product.retail_price,unit_sell:sell,available_sizes:[...product.available_sizes],_colors:product._colors||null,sizes:{},decorations:[]})}
     const e={id:uid('EST-'),customer_id:c?.id||null,memo:'',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:mk,shipping_type:'pct',shipping_value:5,ship_to_id:'default',email_status:null,art_files:[],items};setEEst(e);setEEstC(c||null);setPg('estimates')};
-  const convertSO=est=>{const fourWeeks=new Date();fourWeeks.setDate(fourWeeks.getDate()+28);const defExp=fourWeeks.toISOString().split('T')[0];const so={id:uid('SO-'),customer_id:est.customer_id,estimate_id:est.id,memo:est.memo,status:'need_order',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:est.default_markup,expected_date:defExp,production_notes:'',shipping_type:est.shipping_type,shipping_value:est.shipping_value,ship_to_id:est.ship_to_id,firm_dates:[],art_files:[...(est.art_files||[])],items:safeItems(est).map(it=>({...it,decorations:safeDecos(it).map(d=>({...d}))}))};
+  const convertSO=est=>{
+    if(!est.customer_id){nf('Cannot convert — no customer selected','error');return}
+    if(!est.memo?.trim()){nf('Cannot convert — memo is required','error');return}
+    const vItems=safeItems(est).filter(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
+    if(vItems.length===0){nf('Cannot convert — no items with sizes','error');return}
+    if(est.status!=='approved'){nf('Cannot convert — estimate must be approved first','error');return}
+    const fourWeeks=new Date();fourWeeks.setDate(fourWeeks.getDate()+28);const defExp=fourWeeks.toISOString().split('T')[0];const so={id:uid('SO-'),customer_id:est.customer_id,estimate_id:est.id,memo:est.memo,status:'need_order',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:est.default_markup,expected_date:defExp,production_notes:'',shipping_type:est.shipping_type,shipping_value:est.shipping_value,ship_to_id:est.ship_to_id,firm_dates:[],art_files:[...(est.art_files||[])],items:safeItems(est).map(it=>({...it,decorations:safeDecos(it).map(d=>({...d}))}))};
     setSOs(p=>[...p,so]);setEsts(p=>p.map(e=>e.id===est.id?{...e,status:'converted'}:e));setEEst(null);
     const c=cust.find(x=>x.id===so.customer_id);setESO(so);setESOC(c);setPg('orders');nf(`${so.id} created from ${est.id}`)};
   const aO=useMemo(()=>[
@@ -3712,7 +3911,7 @@ export default function App(){
 
   // ESTIMATES LIST
   const rEst=()=>{
-    if(eEst)return<OrderEditor order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} onSave={e=>{savE(e);setEEst(e)}} onBack={()=>setEEst(null)} onConvertSO={convertSO} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} batchPOs={batchPOs} onBatchPO={setBatchPOs}/>;
+    if(eEst)return<OrderEditor order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} onSave={e=>{savE(e);setEEst(e)}} onBack={()=>setEEst(null)} onConvertSO={convertSO} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} batchPOs={batchPOs} onBatchPO={setBatchPOs} bills={bills}/>;
     const fe=ests.filter(e=>!q||(e.id+' '+e.memo+' '+(cust.find(c=>c.id===e.customer_id)?.name||'')+' '+(cust.find(c=>c.id===e.customer_id)?.alpha_tag||'')).toLowerCase().includes(q.toLowerCase()));
     return(<><div style={{display:'flex',gap:8,marginBottom:16}}><div className="search-bar" style={{flex:1}}><Icon name="search"/><input placeholder="Search..." value={q} onChange={e=>setQ(e.target.value)}/></div>
       <button className="btn btn-primary" onClick={()=>newE(null)}><Icon name="plus" size={14}/> New Estimate</button></div>
@@ -3730,7 +3929,7 @@ export default function App(){
 
   // SALES ORDERS LIST
   const rSO=()=>{
-    if(eSO)return<OrderEditor order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} onSave={s=>{savSO(s);setESO(s)}} onBack={()=>{setESO(null);setESOTab(null)}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} batchPOs={batchPOs} onBatchPO={setBatchPOs} initTab={eSOTab}/>;
+    if(eSO)return<OrderEditor order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} onSave={s=>{savSO(s);setESO(s)}} onBack={()=>{setESO(null);setESOTab(null)}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} batchPOs={batchPOs} onBatchPO={setBatchPOs} initTab={eSOTab} bills={bills}/>;
     // Filter SOs
     let fSOs=[...sos];
     if(soF.status!=='all')fSOs=fSOs.filter(s=>calcSOStatus(s)===soF.status);
@@ -4591,7 +4790,7 @@ export default function App(){
     _meta:{version:'1.0',exported_at:new Date().toISOString(),exported_by:cu.name,app:'NSA Portal'},
     customers:cust,estimates:ests,sales_orders:sos,products:prod,messages:msgs,invoices:invs,
     batch_queue:batchPOs,submitted_batches:submittedBatches,batch_counter:batchCounter,
-    change_log:changeLog,so_history:soHistory
+    change_log:changeLog,so_history:soHistory,bills:bills
   });
   const exportBackup=()=>{
     const data=getFullState();
@@ -4620,6 +4819,7 @@ export default function App(){
           if(data.messages)setMsgs(data.messages);
           if(data.invoices)setInvs(data.invoices);
           if(data.batch_queue)setBatchPOs(data.batch_queue);
+          if(data.bills)setBills(data.bills);
           if(data.submitted_batches)setSubmittedBatches(data.submitted_batches);
           if(data.batch_counter)setBatchCounter(data.batch_counter);
           if(data.change_log)setChangeLog(data.change_log);
@@ -4639,7 +4839,7 @@ export default function App(){
         const data=JSON.stringify({_meta:{version:'1.0',auto_backup:true,saved_at:new Date().toISOString()},
           customers:cust,estimates:ests,sales_orders:sos,products:prod,messages:msgs,invoices:invs,
           batch_queue:batchPOs,submitted_batches:submittedBatches,batch_counter:batchCounter,
-          change_log:changeLog,so_history:soHistory});
+          change_log:changeLog,so_history:soHistory,bills:bills});
         localStorage.setItem('nsa_auto_backup',data);
         localStorage.setItem('nsa_auto_backup_ts',new Date().toISOString());
       }catch{}
@@ -4661,6 +4861,7 @@ export default function App(){
         if(data.messages)setMsgs(data.messages);
         if(data.invoices)setInvs(data.invoices);
         if(data.batch_queue)setBatchPOs(data.batch_queue);
+        if(data.bills)setBills(data.bills);
         if(data.submitted_batches)setSubmittedBatches(data.submitted_batches);
         if(data.batch_counter)setBatchCounter(data.batch_counter);
         if(data.change_log)setChangeLog(data.change_log);
@@ -4677,6 +4878,126 @@ export default function App(){
   const[invSort,setInvSort]=useState({f:'due_date',d:'asc'});
   const[invEdit,setInvEdit]=useState(null);
   const[payModal,setPayModal]=useState(null);
+
+  // ═══════════════════════════════════════════════
+  // SUPPLIER BILLS INBOX
+  // ═══════════════════════════════════════════════
+  const rBills=()=>{
+    const fb=bills.filter(b=>{
+      if(billFilter.status!=='all'&&b.status!==billFilter.status)return false;
+      if(billFilter.rep!=='all'&&b.matched_rep_id!==billFilter.rep)return false;
+      if(billFilter.triage==='flagged'&&b.triage!=='freight')return false;
+      if(billFilter.triage==='ok'&&b.triage!=='ok')return false;
+      if(billFilter.triage==='new'&&b.triage!==null)return false;
+      if(billFilter.search){const s=billFilter.search.toLowerCase();return(b.si_doc||'').includes(s)||(b.po_number||'').toLowerCase().includes(s)||(b.ship_to||'').toLowerCase().includes(s)||(b.items||[]).some(i=>(i.sku||'').toLowerCase().includes(s)||(i.name||'').toLowerCase().includes(s))}
+      return true});
+    const newCount=bills.filter(b=>b.status==='new').length;
+    const flaggedCount=bills.filter(b=>b.triage==='freight').length;
+    const totalMerch=bills.reduce((a,b)=>a+b.merch_total,0);
+    const totalFreight=bills.reduce((a,b)=>a+b.freight,0);
+    const totalDoc=bills.reduce((a,b)=>a+b.doc_total,0);
+    const unsyncedCount=bills.filter(b=>!b.qb_synced&&b.triage==='ok').length;
+
+    if(billSel){
+      const b=billSel;const freightPct=b.merch_total>0?(b.freight/b.merch_total*100):0;const isHighFreight=freightPct>FREIGHT_WARN_PCT*100;
+      return<div>
+        <button className="btn btn-secondary" onClick={()=>setBillSel(null)} style={{marginBottom:12}}><Icon name="back" size={14}/> All Bills</button>
+        <div className="card" style={{marginBottom:12}}><div style={{padding:'16px 20px'}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',flexWrap:'wrap'}}>
+            <div><div style={{fontSize:20,fontWeight:800,color:'#1e40af'}}>SI #{b.si_doc}</div>
+              <div style={{fontSize:13,color:'#64748b'}}>{b.vendor} · PO: {b.po_number}</div>
+              <div style={{fontSize:12,color:'#94a3b8'}}>Doc date: {b.si_doc_date} · Due: {b.due_date}</div>
+              {b.matched_so_id&&<div style={{fontSize:12,color:'#7c3aed',marginTop:4}}>🔗 Matched to {b.matched_so_id}</div>}
+            </div>
+            <div style={{display:'flex',gap:8}}>
+              {[{l:'MERCH',v:b.merch_total,c:'#1e40af'},{l:'FREIGHT',v:b.freight,c:isHighFreight?'#dc2626':'#475569'},{l:'SI FEE',v:b.si_upcharge,c:'#92400e'},{l:'TOTAL',v:b.doc_total,c:'#166534'}].map(x=>
+                <div key={x.l} style={{textAlign:'center',padding:'8px 12px',background:'#f8fafc',borderRadius:8,minWidth:72}}>
+                  <div style={{fontSize:9,color:x.c,fontWeight:700}}>{x.l}</div>
+                  <div style={{fontSize:16,fontWeight:800,color:x.c}}>${x.v.toFixed(2)}</div>
+                </div>)}
+            </div>
+          </div>
+          {isHighFreight&&<div style={{marginTop:10,padding:'8px 12px',background:'#fef2f2',borderRadius:6,border:'1px solid #fca5a5',fontSize:12,color:'#dc2626'}}>
+            ⚠️ Freight is {freightPct.toFixed(1)}% of merchandise — above {(FREIGHT_WARN_PCT*100)}% threshold</div>}
+          <div style={{marginTop:10,padding:'8px 12px',background:'#f0fdf4',borderRadius:6,fontSize:12}}>
+            🚚 <strong>{b.carrier}</strong> · Tracking: <strong>{b.tracking}</strong> · Shipped: {b.ship_date} · {b.weight_lb} lbs
+          </div>
+          <div style={{marginTop:8,fontSize:12}}>📍 Ship to: <strong>{b.ship_to}</strong> <span className="badge" style={{background:b.ship_to_type==='warehouse'?'#dbeafe':'#fef3c7',color:b.ship_to_type==='warehouse'?'#1e40af':'#92400e',marginLeft:4}}>{b.ship_to_type==='warehouse'?'Warehouse':'Drop Ship'}</span></div>
+        </div></div>
+        {/* Line items */}
+        <div className="card" style={{marginBottom:12}}><div className="card-header"><h2>Line Items</h2></div><div className="card-body">
+          <table style={{fontSize:12}}><thead><tr><th>SKU</th><th>Description</th><th>Color</th><th>Sizes</th><th style={{textAlign:'right'}}>Net Price</th><th style={{textAlign:'right'}}>Extension</th></tr></thead><tbody>
+          {(b.items||[]).map((it,i)=>{const q=Object.values(it.sizes||{}).reduce((a,v)=>a+v,0);return<tr key={i}>
+            <td style={{fontWeight:700}}>{it.sku}</td><td>{it.name}</td><td>{it.color}</td>
+            <td>{Object.entries(it.sizes||{}).map(([sz,v])=>sz+':'+v).join(', ')}</td>
+            <td style={{textAlign:'right'}}>${it.net_price.toFixed(2)}</td>
+            <td style={{textAlign:'right',fontWeight:700}}>${(q*it.net_price).toFixed(2)}</td></tr>})}
+          </tbody></table>
+        </div></div>
+        {/* Triage actions */}
+        <div className="card"><div className="card-header"><h2>Triage</h2></div><div className="card-body">
+          <div style={{display:'flex',gap:8,marginBottom:12}}>
+            <button className={`btn ${b.triage==='ok'?'btn-primary':' btn-secondary'}`} style={b.triage==='ok'?{background:'#166534'}:{}} onClick={()=>{setBills(prev=>prev.map(x=>x.id===b.id?{...x,triage:'ok',status:'reviewed'}:x));setBillSel({...b,triage:'ok',status:'reviewed'})}}>✓ Looks Good</button>
+            <button className={`btn ${b.triage==='freight'?'btn-primary':'btn-secondary'}`} style={b.triage==='freight'?{background:'#dc2626'}:{}} onClick={()=>{setBills(prev=>prev.map(x=>x.id===b.id?{...x,triage:'freight',status:'flagged'}:x));setBillSel({...b,triage:'freight',status:'flagged'})}}>🚩 Flag Freight</button>
+          </div>
+          <div><label className="form-label">Notes</label><textarea className="form-input" rows={2} value={b.notes||''} onChange={e=>{const n=e.target.value;setBills(prev=>prev.map(x=>x.id===b.id?{...x,notes:n}:x));setBillSel({...b,notes:n})}} placeholder="Add notes about this bill..."/></div>
+          {b.matched_so_id&&<div style={{marginTop:8}}><label className="form-label">Matched Sales Order</label>
+            <button className="btn btn-sm" style={{background:'#7c3aed',color:'white'}} onClick={()=>{const so=sos.find(s=>s.id===b.matched_so_id);if(so){const c=cust.find(x=>x.id===so.customer_id);setESO(so);setESOC(c);setESOTab('fulfillment');setBillSel(null);setPg('orders')}}}>{b.matched_so_id} — View Fulfillment →</button></div>}
+          <div style={{marginTop:12,display:'flex',gap:8}}>
+            {b.triage==='ok'&&!b.qb_synced&&<button className="btn btn-primary" onClick={()=>{setBills(prev=>prev.map(x=>x.id===b.id?{...x,qb_synced:true}:x));setBillSel({...b,qb_synced:true});nf('📤 '+b.si_doc+' queued for QuickBooks sync')}}>📤 Push to QuickBooks</button>}
+            {b.qb_synced&&<span style={{fontSize:12,color:'#166534',fontWeight:600}}>✅ Synced to QuickBooks</span>}
+          </div>
+        </div></div>
+      </div>}
+
+    return<>
+      {/* Stats row */}
+      <div className="stats-row">
+        <div className="stat-card"><div className="stat-label">Total Bills</div><div className="stat-value">{bills.length}</div></div>
+        <div className="stat-card"><div className="stat-label">New</div><div className="stat-value" style={{color:newCount>0?'#dc2626':''}}>{newCount}</div></div>
+        <div className="stat-card"><div className="stat-label">Flagged</div><div className="stat-value" style={{color:flaggedCount>0?'#dc2626':''}}>{flaggedCount}</div></div>
+        <div className="stat-card"><div className="stat-label">Merchandise</div><div className="stat-value">${totalMerch.toLocaleString(undefined,{maximumFractionDigits:0})}</div></div>
+        <div className="stat-card"><div className="stat-label">Freight</div><div className="stat-value">${totalFreight.toFixed(2)}</div></div>
+        <div className="stat-card"><div className="stat-label">Ready for QB</div><div className="stat-value" style={{color:unsyncedCount>0?'#7c3aed':''}}>{unsyncedCount}</div></div>
+      </div>
+      {/* Filters */}
+      <div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap',alignItems:'center'}}>
+        <select className="form-select" style={{width:130}} value={billFilter.status} onChange={e=>setBillFilter(f=>({...f,status:e.target.value}))}>
+          <option value="all">All Status</option><option value="new">New</option><option value="reviewed">Reviewed</option><option value="flagged">Flagged</option></select>
+        <select className="form-select" style={{width:130}} value={billFilter.triage} onChange={e=>setBillFilter(f=>({...f,triage:e.target.value}))}>
+          <option value="all">All Triage</option><option value="new">Untriaged</option><option value="ok">OK</option><option value="flagged">Freight Issue</option></select>
+        <select className="form-select" style={{width:130}} value={billFilter.rep} onChange={e=>setBillFilter(f=>({...f,rep:e.target.value}))}>
+          <option value="all">All Reps</option>{REPS.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
+        <input className="form-input" style={{width:200}} placeholder="Search SKU, PO#, ship to..." value={billFilter.search} onChange={e=>setBillFilter(f=>({...f,search:e.target.value}))}/>
+        <span style={{fontSize:12,color:'#64748b'}}>{fb.length} bill{fb.length!==1?'s':''}</span>
+        {bills.some(b=>b.triage==='ok'&&!b.qb_synced)&&<button className="btn btn-sm btn-primary" style={{marginLeft:'auto'}} onClick={()=>{const count=bills.filter(b=>b.triage==='ok'&&!b.qb_synced).length;setBills(prev=>prev.map(b=>b.triage==='ok'&&!b.qb_synced?{...b,qb_synced:true}:b));nf('📤 '+count+' bill'+(count>1?'s':'')+' queued for QuickBooks')}}>📤 Push All OK to QB ({bills.filter(b=>b.triage==='ok'&&!b.qb_synced).length})</button>}
+      </div>
+      {/* Drop zone for PDF upload (demo) */}
+      <div style={{border:'2px dashed #d1d5db',borderRadius:12,padding:20,textAlign:'center',marginBottom:16,cursor:'pointer',background:'#fafafa'}}
+        onClick={()=>{const newBill={id:'BILL-'+String(bills.length+1).padStart(3,'0'),si_doc:String(23960000+Math.floor(Math.random()*1000)),si_doc_date:new Date().toLocaleDateString('en-CA'),due_date:'',vendor:'Adidas US Team Services',po_number:'PO'+String(7800+Math.floor(Math.random()*200)),ship_to:'NSA Warehouse',ship_to_type:'warehouse',carrier:'FedEx',tracking:String(Math.floor(Math.random()*999999999999)),ship_date:new Date().toLocaleDateString('en-CA'),weight_lb:Math.round(Math.random()*50*100)/100,merch_total:Math.round(Math.random()*2000*100)/100,freight:Math.round(Math.random()*40*100)/100,si_upcharge:Math.round(Math.random()*5*100)/100,doc_total:0,items:[{sku:'DEMO-SKU',name:'Demo Item',color:'Black',sizes:{M:5,L:3},net_price:15}],matched_so_id:null,matched_rep_id:cu.id,status:'new',triage:null,notes:'',qb_synced:false,created_at:new Date().toLocaleString()};newBill.doc_total=newBill.merch_total+newBill.freight+newBill.si_upcharge;setBills(prev=>[newBill,...prev]);nf('📄 Bill parsed: SI #'+newBill.si_doc)}}>
+        <Icon name="upload" size={24}/><div style={{fontSize:14,fontWeight:600,color:'#475569',marginTop:6}}>Drop Sports Inc PDF invoices here</div>
+        <div style={{fontSize:11,color:'#94a3b8'}}>Auto-parses PO#, SKUs, sizes, freight, tracking · Matches to your SOs</div>
+      </div>
+      {/* Bills table */}
+      <div className="card"><div className="card-body" style={{padding:0}}>
+        <table style={{fontSize:12}}><thead><tr><th>SI Doc</th><th>PO#</th><th>Ship To</th><th>Items</th><th style={{textAlign:'right'}}>Merch</th><th style={{textAlign:'right'}}>Freight</th><th style={{textAlign:'right'}}>Total</th><th>Triage</th><th>Rep</th><th>QB</th></tr></thead><tbody>
+        {fb.map(b=>{const freightPct=b.merch_total>0?(b.freight/b.merch_total*100):0;const isHigh=freightPct>FREIGHT_WARN_PCT*100;
+          const itemCount=(b.items||[]).reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((a2,v)=>a2+v,0),0);
+          return<tr key={b.id} style={{cursor:'pointer',background:b.status==='new'?'#fffbeb':b.triage==='freight'?'#fef2f2':''}} onClick={()=>setBillSel(b)}>
+            <td><span style={{fontWeight:700,color:'#1e40af'}}>{b.si_doc}</span><div style={{fontSize:10,color:'#94a3b8'}}>{b.si_doc_date}</div></td>
+            <td style={{fontWeight:600}}>{b.po_number}</td>
+            <td style={{maxWidth:150,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{b.ship_to}<div style={{fontSize:10}}><span className="badge" style={{background:b.ship_to_type==='warehouse'?'#dbeafe':'#fef3c7',color:b.ship_to_type==='warehouse'?'#1e40af':'#92400e',fontSize:9}}>{b.ship_to_type==='warehouse'?'WH':'Drop'}</span></div></td>
+            <td>{itemCount} pcs<div style={{fontSize:10,color:'#94a3b8'}}>{(b.items||[]).length} line{(b.items||[]).length!==1?'s':''}</div></td>
+            <td style={{textAlign:'right'}}>${b.merch_total.toFixed(2)}</td>
+            <td style={{textAlign:'right',color:isHigh?'#dc2626':'',fontWeight:isHigh?700:400}}>${b.freight.toFixed(2)}{isHigh&&<div style={{fontSize:9,color:'#dc2626'}}>{freightPct.toFixed(1)}%</div>}</td>
+            <td style={{textAlign:'right',fontWeight:700}}>${b.doc_total.toFixed(2)}</td>
+            <td>{b.triage==='ok'?<span style={{color:'#166534',fontSize:11}}>✓</span>:b.triage==='freight'?<span style={{color:'#dc2626',fontSize:11}}>🚩</span>:<span style={{color:'#94a3b8',fontSize:11}}>—</span>}</td>
+            <td style={{fontSize:11}}>{REPS.find(r=>r.id===b.matched_rep_id)?.name?.split(' ')[0]||'—'}</td>
+            <td>{b.qb_synced?<span style={{color:'#166534',fontSize:11}}>✓</span>:<span style={{color:'#94a3b8'}}>—</span>}</td>
+          </tr>})}
+        </tbody></table>
+      </div></div>
+    </>};
 
   const rInvoices=()=>{
     const today=new Date();
@@ -6499,8 +6820,8 @@ export default function App(){
           </div></div>})}</div></div></>)};
 
     // NAV
-  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'reports',label:'Reports',icon:'dollar'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'production',label:'Prod Board',icon:'package'},{id:'decoration',label:'Decoration',icon:'image'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{section:'Comms'},{id:'messages',label:'Messages',icon:'mail'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'System'},{id:'import',label:'NetSuite Import',icon:'save'},{id:'qb',label:'QuickBooks Sync',icon:'dollar'},{id:'backup',label:'Backup & Data',icon:'save'}];
-  const titles={dashboard:'Dashboard',reports:'Reports & Analytics',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',omg:'OMG Team Stores',jobs:'Jobs',production:'Production Board',decoration:'Decoration',warehouse:'Warehouse',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',products:'Products',inventory:'Inventory',messages:'Messages',import:'NetSuite Import',qb:'QuickBooks Online',backup:'Backup & Data'};
+  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'reports',label:'Reports',icon:'dollar'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'production',label:'Prod Board',icon:'package'},{id:'decoration',label:'Decoration',icon:'image'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{id:'bills',label:'Supplier Bills',icon:'dollar'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{section:'Comms'},{id:'messages',label:'Messages',icon:'mail'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'System'},{id:'import',label:'NetSuite Import',icon:'save'},{id:'qb',label:'QuickBooks Sync',icon:'dollar'},{id:'backup',label:'Backup & Data',icon:'save'}];
+  const titles={dashboard:'Dashboard',reports:'Reports & Analytics',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',omg:'OMG Team Stores',jobs:'Jobs',production:'Production Board',decoration:'Decoration',warehouse:'Warehouse',batch_pos:'Batch PO Queue',bills:'Supplier Bills',customers:'Customers',vendors:'Vendors',products:'Products',inventory:'Inventory',messages:'Messages',import:'NetSuite Import',qb:'QuickBooks Online',backup:'Backup & Data'};
   // LOGIN GATE
   if(!cu)return<LoginGate onLogin={handleLogin}/>;
 
@@ -6509,7 +6830,7 @@ export default function App(){
       <nav className="sidebar-nav">{nav.map((item,i)=>{if(item.section)return<div key={i} className="sidebar-section">{item.section}</div>;
         const ubadge=item.id==='messages'?msgs.filter(m=>!(m.read_by||[]).includes(cu.id)).length:0;
         return<button key={item.id} className={`sidebar-link ${pg===item.id?'active':''}`}
-          onClick={()=>{if(dirtyRef.current&&!window.confirm('You have unsaved changes. Leave without saving?'))return;dirtyRef.current=false;setPg(item.id);setQ('');setSelC(null);setSelV(null);setEEst(null);setESO(null)}}><Icon name={item.icon}/>{item.label}{item.id==='messages'&&ubadge>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{ubadge}</span>}{item.id==='batch_pos'&&batchPOs.length>0&&<span style={{background:'#7c3aed',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{batchPOs.length}</span>}</button>})}</nav>
+          onClick={()=>{if(dirtyRef.current&&!window.confirm('You have unsaved changes. Leave without saving?'))return;dirtyRef.current=false;setPg(item.id);setQ('');setSelC(null);setSelV(null);setEEst(null);setESO(null)}}><Icon name={item.icon}/>{item.label}{item.id==='messages'&&ubadge>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{ubadge}</span>}{item.id==='batch_pos'&&batchPOs.length>0&&<span style={{background:'#7c3aed',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{batchPOs.length}</span>}{item.id==='bills'&&bills.filter(b=>b.status==='new').length>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{bills.filter(b=>b.status==='new').length}</span>}</button>})}</nav>
       <div className="sidebar-user"><div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}><div><div style={{fontWeight:600,color:'#e2e8f0'}}>{cu.name}</div><div>{cu.role}</div></div><button onClick={handleLogout} style={{background:'none',border:'1px solid #475569',borderRadius:6,padding:'3px 8px',color:'#94a3b8',cursor:'pointer',fontSize:10}} title="Log out">↪ Out</button></div></div></div>
     <div className="main"><div className="topbar"><h1>{eEst?eEst.id:eSO?eSO.id:selC?selC.name:selV?selV.name:(titles[pg]||'Dashboard')}</h1>
         <div style={{flex:1,maxWidth:400,margin:'0 20px',position:'relative'}}>
@@ -6538,7 +6859,7 @@ export default function App(){
           {gOpen&&<div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:59}} onClick={()=>setGOpen(false)}/>}
         </div>
         <div style={{display:'flex',gap:6,alignItems:'center'}}><button className="btn btn-sm btn-primary" onClick={()=>newE(null)} style={{fontSize:11}}><Icon name="plus" size={12}/> Estimate</button><button className="btn btn-sm btn-secondary" onClick={()=>setCM({open:true,c:null})} style={{fontSize:11}}><Icon name="plus" size={12}/> Customer</button><button className="btn btn-sm btn-secondary" onClick={()=>setQPC({open:true,mode:'single',items:[{sku:'',name:'',brand:'',color:'',category:'Tees',retail_price:0,nsa_cost:0,available_sizes:['S','M','L','XL','2XL'],vendor_id:''}]})} style={{fontSize:11}}><Icon name="plus" size={12}/> Product</button></div></div>
-      <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='production'&&rProd2()}{pg==='decoration'&&rDeco()}{pg==='warehouse'&&rWarehouse()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='omg'&&rOMG()}{pg==='reports'&&rReports()}{pg==='import'&&rImport()}{pg==='qb'&&rQB()}{pg==='backup'&&rBackup()}</div></div>
+      <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='production'&&rProd2()}{pg==='decoration'&&rDeco()}{pg==='warehouse'&&rWarehouse()}{pg==='batch_pos'&&rBatchPOs()}{pg==='bills'&&rBills()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='omg'&&rOMG()}{pg==='reports'&&rReports()}{pg==='import'&&rImport()}{pg==='qb'&&rQB()}{pg==='backup'&&rBackup()}</div></div>
     <CustModal isOpen={cM.open} onClose={()=>setCM({open:false,c:null})} onSave={savC} customer={cM.c} parents={pars}/>
     <AdjModal isOpen={aM.open} onClose={()=>setAM({open:false,p:null})} product={aM.p} onSave={savI}/>
 
