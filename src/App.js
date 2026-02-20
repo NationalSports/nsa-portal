@@ -395,8 +395,6 @@ const D_INV=[
 ];
 
 // OMG TEAM STORES DEMO DATA
-const D_OMG=[
-
 // ═══════════════════════════════════════════════
 // SUPPLIER BILLS — Sports Inc / Adidas invoices parsed from PDF
 // ═══════════════════════════════════════════════
@@ -476,6 +474,8 @@ const D_BILLS=[
     ],
     matched_so_id:null,matched_rep_id:'r1',status:'flagged',triage:'freight',notes:'Freight seems high for 55lb — $27 on $487 merch = 5.5%',qb_synced:false,created_at:'02/16/26 4:02 PM'},
 ];
+// OMG TEAM STORES DEMO DATA
+const D_OMG=[
   {id:'OMG-1001',store_name:'OLu Baseball Spring 2026',customer_id:'c1a',rep_id:'r1',status:'closed',open_date:'01/15/26',close_date:'02/10/26',
     orders:12,total_sales:4250,fundraise_total:425,items_sold:87,unique_buyers:12,
     products:[
