@@ -157,36 +157,6 @@ const safeDecos=(it)=>safeArr(it?.decorations);
 const safeItems=(o)=>safeArr(o?.items);
 const safeArt=(o)=>safeArr(o?.art_files);
 const safeJobs=(o)=>safeArr(o?.jobs);
-
-function dP(d,q,artFiles,cq){
-  const pq=cq||q;
-  // Art-based decoration: get type from art file
-  if(d.kind==='art'&&d.art_file_id&&artFiles){const art=artFiles.find(a=>a.id===d.art_file_id);if(art){
-    if(art.deco_type==='screen_print'){const nc=art.ink_colors?art.ink_colors.split('\n').filter(l=>l.trim()).length:1;const u=d.underbase?1+SP.ub:1;return{sell:d.sell_override||rQ(spP(pq,nc,true)*u),cost:rQ(spP(pq,nc,false)*u)}}
-    if(art.deco_type==='embroidery')return{sell:d.sell_override||emP(art.stitches||8000,pq,true),cost:emP(art.stitches||8000,pq,false)};
-    if(art.deco_type==='dtf'){const t=DTF[art.dtf_size||0];return{sell:d.sell_override||t.sell,cost:t.cost}}}}
-  // Legacy/fallback type-based (check both d.type and d.deco_type)
-  const dt=d.type||d.deco_type;
-  if(dt==='screen_print'){const u=d.underbase?1+SP.ub:1;return{sell:d.sell_override||rQ(spP(q,d.colors||1,true)*u),cost:rQ(spP(q,d.colors||1,false)*u)}}
-  if(dt==='embroidery')return{sell:d.sell_override||emP(d.stitches||8000,q,true),cost:emP(d.stitches||8000,q,false)};
-  // Numbers
-  if(d.kind==='numbers'||dt==='number_press'){const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:q;return{sell:d.sell_override||npP(nq||1,d.two_color,true),cost:npP(nq||1,d.two_color,false)}};
-  if(dt==='dtf'){const t=DTF[d.dtf_size||0];return{sell:d.sell_override||t.sell,cost:t.cost}}
-  // Outside decoration — user-entered cost/sell
-  if(d.kind==='outside_deco')return{sell:d.sell_override||safeNum(d.sell_each),cost:safeNum(d.cost_each)};
-  return{sell:0,cost:0}}
-const SC={
-  // SO statuses (5)
-  need_order:{bg:'#fef3c7',c:'#92400e'},waiting_receive:{bg:'#dbeafe',c:'#1e40af'},items_received:{bg:'#d1fae5',c:'#065f46'},complete:{bg:'#dcfce7',c:'#166534'},in_production:{bg:'#ede9fe',c:'#6d28d9'},ready_to_invoice:{bg:'#fef0c7',c:'#c2410c'},
-  // Job item statuses (items_received shared with SO statuses above)
-  need_to_order:{bg:'#fef3c7',c:'#92400e'},partially_received:{bg:'#fef9c3',c:'#854d0e'},
-  // Job production statuses
-  staging:{bg:'#fef3c7',c:'#92400e'},in_process:{bg:'#dbeafe',c:'#1e40af'},completed:{bg:'#dcfce7',c:'#166534'},shipped:{bg:'#ede9fe',c:'#6d28d9'},
-  // Job art statuses
-  needs_art:{bg:'#fef2f2',c:'#dc2626'},waiting_approval:{bg:'#fef3c7',c:'#92400e'},art_complete:{bg:'#dcfce7',c:'#166534'},
-  // Legacy (aliases — unique keys only)
-  waiting_art:{bg:'#fef3c7',c:'#92400e'},ready_ship:{bg:'#dcfce7',c:'#166534'},
-};
 // Build jobs from SO — uses existing jobs array, or auto-generates from decorations
 const buildJobs=(o)=>{
   if(o?.jobs&&o.jobs.length>0)return o.jobs;
