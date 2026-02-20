@@ -91,7 +91,8 @@ const printDoc=({title,docNum,docType,headerRight,infoBoxes,tables,notes,footer,
   w.document.write(html);w.document.close();
   setTimeout(()=>w.print(),350);
 };
-let _idSeq=0;const uid=(prefix)=>prefix+Date.now().toString(36).slice(-4)+String(++_idSeq).padStart(2,'0');
+const _seq={EST:2102,SO:1064,INV:1062,IF:4502,PO:3089,RCV:1001};
+const uid=(prefix)=>{const key=prefix.replace('-','');if(_seq[key]!==undefined){return prefix+(_seq[key]++)}return prefix+Date.now().toString(36).slice(-4)};
 const CATEGORIES=['Tees','Hoodies','Polos','Shorts','1/4 Zips','Hats','Footwear','Jersey Tops','Jersey Bottoms','Balls'];
 const CONTACT_ROLES=['Head Coach','Assistant','Accounting','Athletic Director','Primary','Other'];
 const POSITIONS=['Front Center','Back Center','Left Chest','Right Chest','Left Sleeve','Right Sleeve','Left Leg','Right Leg','Nape','Other'];
@@ -1085,11 +1086,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         <div style={{padding:'10px 18px',display:'flex',alignItems:'center',borderBottom:'1px solid #f1f5f9'}}>
           <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
             <span style={{fontSize:12,fontWeight:600,color:'#64748b',width:46}}>Sizes:</span>
-            {szs.map(sz=><div key={sz} style={{textAlign:'center',width:48}}><div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
+            {szs.map(sz=>{const baseProd=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);const isAdded=baseProd&&!baseProd.available_sizes?.includes(sz);
+              return<div key={sz} style={{textAlign:'center',width:48,position:'relative'}}><div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
               <input value={item.sizes[sz]||''} onChange={e=>uSz(idx,sz,e.target.value)} placeholder="0"
                 style={{width:42,textAlign:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'5px 2px',fontSize:15,fontWeight:700,color:(item.sizes[sz]||0)>0?'#0f172a':'#cbd5e1'}}/>
-              {(()=>{const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);const stk=p?._inv?.[sz];const need=item.sizes[sz]||0;return<div style={{fontSize:9,fontWeight:600,minHeight:13,color:stk==null?'transparent':stk<=0?'#dc2626':stk<need?'#ca8a04':'#166534'}}>{stk!=null?stk+' inv':'\u00A0'}</div>})()}</div>)}
-            <div style={{textAlign:'center',marginLeft:4,padding:'0 10px',borderLeft:'2px solid #e2e8f0'}}><div style={{fontSize:10,fontWeight:700,color:'#1e40af'}}>TOT</div><div style={{fontSize:20,fontWeight:800,color:'#1e40af'}}>{qty}</div></div>
+              {isAdded&&!(safeNum(item.sizes[sz])>0)&&<button onClick={()=>{const ns=(item.available_sizes||[]).filter(s=>s!==sz);uI(idx,'available_sizes',ns);const szCopy={...item.sizes};delete szCopy[sz];uI(idx,'sizes',szCopy)}} style={{position:'absolute',top:-4,right:-2,background:'#dc2626',color:'white',border:'none',borderRadius:'50%',width:14,height:14,fontSize:8,cursor:'pointer',lineHeight:'14px',padding:0}} title="Remove size">✕</button>}
+              {(()=>{const p=baseProd;const stk=p?._inv?.[sz];const need=item.sizes[sz]||0;return<div style={{fontSize:9,fontWeight:600,minHeight:13,color:stk==null?'transparent':stk<=0?'#dc2626':stk<need?'#ca8a04':'#166534'}}>{stk!=null?stk+' inv':'\u00A0'}</div>})()}</div>})}
+            <div style={{textAlign:'center',marginLeft:4,padding:'0 10px',borderLeft:'2px solid #e2e8f0'}}>
+              <div style={{fontSize:10,fontWeight:700,color:'#1e40af'}}>QTY</div>
+              <div style={{fontSize:20,fontWeight:800,color:'#1e40af'}}>{qty}</div>
+              {qty>0&&<div style={{fontSize:10,color:'#64748b'}}>${(iR/qty).toFixed(2)}/ea</div>}
+            </div>
             <div style={{position:'relative',marginLeft:4}}><button className="btn btn-sm btn-secondary" onClick={()=>setShowSzPicker(showSzPicker===idx?null:idx)} style={{fontSize:10}}>+ Size</button>
               {showSzPicker===idx&&addable.length>0&&<><div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:39}} onClick={()=>setShowSzPicker(null)}/><div style={{position:'absolute',top:'100%',left:0,background:'white',border:'1px solid #e2e8f0',borderRadius:6,boxShadow:'0 4px 12px rgba(0,0,0,0.1)',zIndex:40,padding:6,display:'flex',gap:3,flexWrap:'wrap',width:180}}>
                 {addable.map(sz=><button key={sz} className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 6px'}} onClick={()=>addSzToItem(idx,sz)}>{sz}</button>)}</div></>}
@@ -1109,10 +1116,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
               }}><Icon name="grid" size={14}/> Create IF</button>
               :<span style={{fontSize:10,color:'#d97706',fontStyle:'italic'}}>Need to order</span>})()}
             <div style={{textAlign:'right',borderLeft:'1px solid #e2e8f0',paddingLeft:12,minWidth:120}}>
-              <div style={{fontSize:10,color:'#64748b',lineHeight:'16px'}}>Cost <strong>${iC.toLocaleString(undefined,{maximumFractionDigits:0})}</strong> · Margin <strong style={{color:mg>=0?'#166534':'#dc2626'}}>${mg.toLocaleString(undefined,{maximumFractionDigits:0})}</strong> <span style={{color:mg>=0?'#166534':'#dc2626'}}>({iR>0?(mg/iR*100).toFixed(0):0}%)</span></div>
-              <div style={{display:'flex',justifyContent:'flex-end',alignItems:'baseline',gap:4}}>
-                <span style={{fontSize:10,color:'#94a3b8'}}>${qty>0?(iR/qty).toFixed(2):'-'}/ea</span>
-                <span style={{fontSize:22,fontWeight:900,color:mg>=0?'#166534':'#dc2626'}}>${iR.toLocaleString(undefined,{maximumFractionDigits:0})}</span>
+              <div style={{fontSize:10,color:'#64748b',lineHeight:'16px'}}>Cost <strong>${iC.toFixed(2)}</strong> · Margin <strong style={{color:mg>=0?'#166534':'#dc2626'}}>${mg.toFixed(2)}</strong> <span style={{color:mg>=0?'#166534':'#dc2626'}}>({iR>0?(mg/iR*100).toFixed(0):0}%)</span></div>
+              <div style={{textAlign:'right'}}>
+                <span style={{fontSize:22,fontWeight:900,color:mg>=0?'#166534':'#dc2626'}}>${iR.toFixed(2)}</span>
               </div>
             </div>
           </div>
@@ -1174,9 +1180,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                     {artF.notes&&<div style={{fontSize:10,color:'#7c3aed'}}>{artF.notes}</div>}
                     <div style={{fontSize:10,marginTop:4,padding:'2px 6px',display:'inline-block',borderRadius:4,background:artF.status==='approved'?'#dcfce7':'#fef3c7',color:artF.status==='approved'?'#166534':'#92400e'}}>{artF.status}</div>
                   </div></div>}
-                  <select className="form-select" style={{width:200,fontSize:12,border:isTBD?'2px solid #f59e0b':!deco.art_file_id?'2px solid #f59e0b':'1px solid #22c55e'}} value={deco.art_file_id||''} onChange={e=>{uD(idx,di,'art_file_id',e.target.value||null);if(e.target.value==='__tbd')uD(idx,di,'art_tbd_type','screen_print')}}>
+                  <select className="form-select" style={{width:200,fontSize:12,border:isTBD?'2px solid #f59e0b':!deco.art_file_id?'2px solid #f59e0b':'1px solid #22c55e'}} value={deco.art_file_id||''} onChange={e=>{const v=e.target.value;if(v==='__tbd'){const decos=safeDecos(safeItems(o)[idx]).map((d,i)=>i===di?{...d,art_file_id:'__tbd',art_tbd_type:'screen_print'}:d);uI(idx,'decorations',decos)}else{uD(idx,di,'art_file_id',v||null)}}}>
                     <option value="">⚠️ Select artwork...</option>
-                    <option value="__tbd">🎨 Art TBD (set type for pricing)</option>
+                    <option value="__tbd">🎨 Art TBD (pricing only)</option>
                     {af.map(f=><option key={f.id} value={f.id}>{f.name||'Untitled'}</option>)}</select>
                   {isTBD&&<select className="form-select" style={{width:130,fontSize:11,border:'1px solid #f59e0b'}} value={tbdType} onChange={e=>uD(idx,di,'art_tbd_type',e.target.value)}>
                     {Object.entries(tbdLabels).map(([v,l])=><option key={v} value={v}>{l}</option>)}</select>}
@@ -1195,12 +1201,22 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                   </div></div></div>)}
             // OUTSIDE DECORATION — no job created, just cost/sell + margin
             if(deco.kind==='outside_deco'){const oCost=safeNum(deco.cost_each);const oSell=safeNum(deco.sell_each);const oMargin=oSell-oCost;const oMPct=oSell>0?Math.round(oMargin/oSell*100):0;
+              // Auto-price from matrix when deco_type or options change
+              const autoPrice=(type,opts)=>{
+                if(type==='embroidery'){const st=opts?.stitches||8000;return{sell:emP(st,qty,true),cost:emP(st,qty,false)}}
+                if(type==='screen_print'){const nc=opts?.colors||1;return{sell:spP(qty,nc,true),cost:spP(qty,nc,false)}}
+                if(type==='dtf'||type==='heat_transfer'){const t=DTF[opts?.dtf_size||0];return{sell:t?.sell||0,cost:t?.cost||0}}
+                return{sell:0,cost:0}};
               return(<div key={di} style={{padding:'10px 0',borderTop:di>0?'1px solid #f1f5f9':''}}>
               <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
                 <span style={{fontSize:13,fontWeight:700,color:'#7c3aed'}}>🎨 Outside Deco</span>
-                <select className="form-select" style={{width:120,fontSize:11}} value={deco.deco_type||'embroidery'} onChange={e=>uD(idx,di,'deco_type',e.target.value)}>
+                <select className="form-select" style={{width:120,fontSize:11}} value={deco.deco_type||'embroidery'} onChange={e=>{const t=e.target.value;uD(idx,di,'deco_type',t);const ap=autoPrice(t,deco);uD(idx,di,'cost_each',ap.cost);uD(idx,di,'sell_each',ap.sell);uD(idx,di,'sell_override',ap.sell)}}>
                   {['embroidery','screen_print','dtf','heat_transfer','sublimation','vinyl'].map(t=><option key={t} value={t}>{t.replace(/_/g,' ')}</option>)}
                 </select>
+                {deco.deco_type==='embroidery'&&<select className="form-select" style={{width:110,fontSize:10}} value={deco.stitches||8000} onChange={e=>{const st=parseInt(e.target.value);uD(idx,di,'stitches',st);const ap=autoPrice('embroidery',{stitches:st});uD(idx,di,'cost_each',ap.cost);uD(idx,di,'sell_each',ap.sell);uD(idx,di,'sell_override',ap.sell)}}>
+                  <option value={8000}>≤10k stitches</option><option value={12000}>10k-15k</option><option value={18000}>15k-20k</option><option value={25000}>20k+</option></select>}
+                {deco.deco_type==='screen_print'&&<select className="form-select" style={{width:90,fontSize:10}} value={deco.colors||1} onChange={e=>{const nc=parseInt(e.target.value);uD(idx,di,'colors',nc);const ap=autoPrice('screen_print',{colors:nc});uD(idx,di,'cost_each',ap.cost);uD(idx,di,'sell_each',ap.sell);uD(idx,di,'sell_override',ap.sell)}}>
+                  {[1,2,3,4,5].map(n=><option key={n} value={n}>{n} color{n>1?'s':''}</option>)}</select>}
                 <select className="form-select" style={{width:140,fontSize:11}} value={deco.vendor||''} onChange={e=>uD(idx,di,'vendor',e.target.value)}>
                   <option value="">Vendor...</option>
                   {DECO_VENDORS.map(dv=><option key={dv} value={dv}>{dv}</option>)}
@@ -1208,7 +1224,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                 <select className="form-select" style={{width:110,fontSize:11}} value={deco.position} onChange={e=>uD(idx,di,'position',e.target.value)}>{POSITIONS.map(p=><option key={p}>{p}</option>)}</select>
                 <div style={{display:'flex',alignItems:'center',gap:4}}><span style={{fontSize:10,color:'#dc2626',fontWeight:600}}>Cost:</span><$In value={oCost} onChange={v=>uD(idx,di,'cost_each',v)} w={55}/></div>
                 <div style={{display:'flex',alignItems:'center',gap:4}}><span style={{fontSize:10,color:'#166534',fontWeight:600}}>Sell:</span><$In value={oSell} onChange={v=>{uD(idx,di,'sell_each',v);uD(idx,di,'sell_override',v)}} w={55}/></div>
-                {(oCost>0||oSell>0)&&<span style={{fontSize:10,fontWeight:700,color:oMPct>=30?'#166534':oMPct>=15?'#b45309':'#dc2626'}}>Margin: ${oMargin.toFixed(2)} ({oMPct}%)</span>}
+                {(oCost>0||oSell>0)&&<span style={{fontSize:10,fontWeight:700,color:oMPct>=30?'#166534':oMPct>=15?'#b45309':'#dc2626'}}>({oMPct}%)</span>}
                 <button onClick={()=>rmD(idx,di)} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',marginLeft:'auto'}}><Icon name="x" size={14}/></button>
               </div>
               <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginTop:6}}>
@@ -2061,7 +2077,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         const decoVendor=showPO.replace('deco:','');
         const allItems=safeItems(o).map((it,i)=>({...it,_idx:i})).filter(it=>{
           const q=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return q>0});
-        const poId='DPO-'+poCounter;
+        const poId='PO-'+poCounter+' '+(cust?.alpha_tag||'');
         return<div className="modal-overlay" onClick={()=>setShowPO(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:800,maxHeight:'90vh',overflow:'auto'}}>
           <div className="modal-header"><h2 style={{color:'#7c3aed'}}>🎨 Deco PO — {decoVendor}</h2><button className="modal-close" onClick={()=>setShowPO(null)}>x</button></div>
           <div className="modal-body">
@@ -2124,7 +2140,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       }
       // PO form for selected vendor — only show sizes that still need ordering (subtract picks + existing POs)
       const vItems=vendorMap[showPO]||[];const vn=D_V.find(v=>v.id===showPO)?.name||showPO;
-      const poId='PO-'+poCounter;
+      const poId='PO-'+poCounter+' '+(cust?.alpha_tag||'');
       const batchKey=Object.keys(BATCH_VENDORS).find(k=>vn.toLowerCase().includes(k)||showPO.toLowerCase().includes(k));
       const isBatchEligible=!!batchKey;
       const batchConfig=batchKey?BATCH_VENDORS[batchKey]:null;
@@ -2949,7 +2965,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
             <button className="btn btn-primary" style={{fontSize:12}} onClick={()=>{
               const dateEl=document.getElementById('po-recv-date');
               const date=dateEl?.value||new Date().toLocaleDateString();
-              const shipment={date};
+              const shipment={date,rcv_id:uid('RCV-')};
               const newReceived={...received};
               szKeys.filter(sz=>getOpen(sz)>0).forEach(sz=>{
                 const el=document.getElementById('po-recv-'+sz);
