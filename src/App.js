@@ -157,6 +157,7 @@ function dP(d,q,artFiles,cq){
   if(d.type==='embroidery')return{sell:d.sell_override||emP(d.stitches||8000,q,true),cost:emP(d.stitches||8000,q,false)};
   // Numbers
   if(d.kind==='numbers'||d.type==='number_press'){const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:q;return{sell:d.sell_override||npP(nq||1,d.two_color,true),cost:npP(nq||1,d.two_color,false)}};
+  if(d.kind==='names'){const nc=d.names?Object.values(d.names).flat().filter(v=>v&&v.trim()).length:0;const se=safeNum(d.sell_override||d.sell_each||6);const co=safeNum(d.cost_each||3);return{sell:nc>0?rQ(nc*se/q):se,cost:nc>0?rQ(nc*co/q):co}};
   if(d.type==='dtf'){const t=DTF[d.dtf_size||0];return{sell:d.sell_override||t.sell,cost:t.cost}}
   // Outside decoration — user-entered cost/sell
   if(d.kind==='outside_deco')return{sell:d.sell_override||safeNum(d.sell_each),cost:safeNum(d.cost_each)};
@@ -716,7 +717,7 @@ function LoginGate({onLogin}){
   );
 }
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack,onConvertSO,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,batchPOs,onBatchPO,initTab,bills,readOnly,onNavCustomer}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack,onConvertSO,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,batchPOs,onBatchPO,initTab,bills,readOnly,onNavCustomer,onNewEstimate}){
   const isE=mode==='estimate';const isSO=mode==='so';
   const[o,setO]=useState(order);const[cust,setCust]=useState(ic);const[pS,setPS]=useState('');const[showAdd,setShowAdd]=useState(false);
   const[tab,setTab]=useState(initTab||'items');const[dirty,setDirty]=useState(false);const[selJob,setSelJob]=useState(null);const[jobNote,setJobNote]=useState('');const[msgDept,setMsgDept]=useState('all');
@@ -793,9 +794,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
   const addSzToItem=(i,sz)=>{const it=o.items[i];if(!it.available_sizes.includes(sz))uI(i,'available_sizes',[...it.available_sizes,sz]);setShowSzPicker(null)};
   const NUM_SZ={heat_transfer:['1"','1.5"','2"','3"','4"','5"','6"','8"','10"'],embroidery:['0.5"','0.75"','1"','1.5"','2"'],screen_print:['4"','6"','8"','10"']};
   const addArtDeco=i=>{const it=safeItems(o)[i];if(!it)return;const prev=safeDecos(it);const upd=[...prev,{kind:'art',position:'Front Center',art_file_id:null,sell_override:null}];uI(i,'decorations',upd);if(it.no_deco)uI(i,'no_deco',false)};
-  const addNumDeco=i=>{const it=safeItems(o)[i];if(!it)return;const prev=safeDecos(it);const upd=[...prev,{kind:'numbers',position:'Back Center',num_method:'heat_transfer',num_size:'4"',two_color:false,sell_override:null,custom_font_art_id:null,roster:[]}];uI(i,'decorations',upd);if(it.no_deco)uI(i,'no_deco',false)};
+  const addNumDeco=i=>{const it=safeItems(o)[i];if(!it)return;const prev=safeDecos(it);const upd=[...prev,{kind:'numbers',position:'Back Center',num_method:'heat_transfer',num_size:'4"',two_color:false,sell_override:null,custom_font_art_id:null,roster:{}}];uI(i,'decorations',upd);if(it.no_deco)uI(i,'no_deco',false)};
+  const addNameDeco=i=>{const it=safeItems(o)[i];if(!it)return;const prev=safeDecos(it);const upd=[...prev,{kind:'names',position:'Back Center',sell_override:null,sell_each:6,cost_each:3,names:{}}];uI(i,'decorations',upd);if(it.no_deco)uI(i,'no_deco',false)};
   const addOutsideDeco=i=>{const it=safeItems(o)[i];if(!it)return;const prev=safeDecos(it);const upd=[...prev,{kind:'outside_deco',position:'Front Center',vendor:'',deco_type:'embroidery',cost_each:0,sell_each:0,notes:'',sell_override:null}];uI(i,'decorations',upd);if(it.no_deco)uI(i,'no_deco',false)};
   const uD=(ii,di,k,v)=>{uI(ii,'decorations',safeDecos(safeItems(o)[ii]).map((d,i)=>i===di?{...d,[k]:v}:d))};
+  const uDM=(ii,di,updates)=>{uI(ii,'decorations',safeDecos(safeItems(o)[ii]).map((d,i)=>i===di?{...d,...updates}:d))};
   const rmD=(ii,di)=>{uI(ii,'decorations',safeDecos(safeItems(o)[ii]).filter((_,i)=>i!==di))};
   // Art files (SO)
   const af=o.art_files||[];
@@ -899,6 +902,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
     {/* Sticky header — appears when scrolling */}
     <div style={{position:'sticky',top:0,zIndex:40,background:'white',borderBottom:'1px solid #e2e8f0',padding:'8px 16px',marginBottom:0,display:'flex',alignItems:'center',gap:12,boxShadow:'0 1px 3px rgba(0,0,0,0.05)',flexWrap:'wrap'}}>
       <button className="btn btn-sm btn-secondary" onClick={()=>{if(dirty&&!window.confirm('You have unsaved changes. Leave without saving?'))return;onBack()}} style={{fontSize:10,padding:'4px 10px'}}><Icon name="back" size={12}/> Back</button>
+      {isE&&onNewEstimate&&<button className="btn btn-sm btn-secondary" onClick={()=>{if(dirty&&!window.confirm('You have unsaved changes. Leave without saving?'))return;onNewEstimate()}} style={{fontSize:10,padding:'4px 10px'}}><Icon name="plus" size={12}/> New Est</button>}
       <span style={{fontWeight:800,color:'#1e40af',fontSize:14}}>{o.id}</span>
       {isSO&&<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:SC[o.status]?.bg||'#f1f5f9',color:SC[o.status]?.c||'#475569'}}>{o.status?.replace(/_/g,' ')}</span>}
       {cust&&<span style={{fontSize:12,fontWeight:600,color:'#1e40af',cursor:'pointer',textDecoration:'underline',textDecorationStyle:'dotted',textUnderlineOffset:2}} onClick={()=>{if(onNavCustomer&&cust)onNavCustomer(cust)}} title={'View '+cust.name+' account'}>{cust.name} <span style={{color:'#94a3b8',fontWeight:400}}>{cust.alpha_tag}</span></span>}
@@ -983,13 +987,19 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
             decos.forEach(d=>{
               const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);
               const artF=af.find(a2=>a2.id===d.art_file_id);
-              const decoName=(d.kind==='art'?(artF?.deco_type||d.art_tbd_type||'decoration'):d.kind==='numbers'?'Numbers':d.kind==='outside_deco'?(d.deco_type||'Decoration'):'Decoration').replace(/_/g,' ');
+              const decoName=(d.kind==='art'?(artF?.deco_type||d.art_tbd_type||'decoration'):d.kind==='numbers'?'Numbers':d.kind==='names'?'Names':d.kind==='outside_deco'?(d.deco_type||'Decoration'):'Decoration').replace(/_/g,' ');
               const posLabel=d.position?' — '+d.position:'';
+              // Build roster/names string for print
+              let rosterStr='';
+              if(d.kind==='numbers'&&d.roster){const entries=[];Object.entries(d.roster).forEach(([sz,arr])=>{(arr||[]).forEach((num,i)=>{if(num)entries.push(sz+': #'+num)})});
+                if(entries.length>0)rosterStr='<br/><span style="font-size:9px;color:#888;padding-left:20px">'+entries.join(' · ')+'</span>'}
+              if(d.kind==='names'&&d.names){const entries=[];Object.entries(d.names).forEach(([sz,arr])=>{(arr||[]).forEach((name,i)=>{if(name)entries.push(sz+': '+name)})});
+                if(entries.length>0)rosterStr='<br/><span style="font-size:9px;color:#888;padding-left:20px">'+entries.join(' · ')+'</span>'}
               if(isRolled){
-                rows.push({cells:[{value:'<span style="padding-left:20px;color:#666;font-size:11px">'+decoName+posLabel+'</span>',style:'border-bottom:none'},{value:'',style:'border-bottom:none'},{value:'',style:'border-bottom:none'},{value:'',style:'border-bottom:none'}]});
+                rows.push({cells:[{value:'<span style="padding-left:20px;color:#666;font-size:11px">'+decoName+posLabel+'</span>'+rosterStr,style:'border-bottom:none'},{value:'',style:'border-bottom:none'},{value:'',style:'border-bottom:none'},{value:'',style:'border-bottom:none'}]});
               }else{
                 const decoAmt=qty*dp2.sell;subTotal+=decoAmt;
-                rows.push({cells:[{value:'<span style="padding-left:20px;color:#666;font-size:11px">'+decoName+posLabel+'</span>'},{value:qty,style:'text-align:center;color:#888;font-size:11px'},{value:'$'+dp2.sell.toFixed(2),style:'text-align:right;color:#888;font-size:11px'},{value:'$'+decoAmt.toFixed(2),style:'text-align:right;color:#888;font-size:11px'}]});
+                rows.push({cells:[{value:'<span style="padding-left:20px;color:#666;font-size:11px">'+decoName+posLabel+'</span>'+rosterStr},{value:qty,style:'text-align:center;color:#888;font-size:11px'},{value:'$'+dp2.sell.toFixed(2),style:'text-align:right;color:#888;font-size:11px'},{value:'$'+decoAmt.toFixed(2),style:'text-align:right;color:#888;font-size:11px'}]});
               }
             });
           });
@@ -1244,14 +1254,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                     <option value="">⚠️ Select artwork...</option>
                     <option value="__tbd">🎨 Art TBD (pricing only)</option>
                     {af.map(f=><option key={f.id} value={f.id}>{f.name||'Untitled'}</option>)}</select>
-                  {isTBD&&<select className="form-select" style={{width:130,fontSize:11,border:'1px solid #f59e0b'}} value={tbdType} onChange={e=>{uD(idx,di,'art_tbd_type',e.target.value);uD(idx,di,'sell_override',0)}}>
+                  {isTBD&&<select className="form-select" style={{width:130,fontSize:11,border:'1px solid #f59e0b'}} value={tbdType} onChange={e=>{uDM(idx,di,{art_tbd_type:e.target.value,sell_override:0})}}>
                     {Object.entries(tbdLabels).map(([v,l])=><option key={v} value={v}>{l}</option>)}</select>}
-                  {isTBD&&tbdType==='screen_print'&&<select className="form-select" style={{width:90,fontSize:10}} value={deco.tbd_colors||1} onChange={e=>{uD(idx,di,'tbd_colors',parseInt(e.target.value));uD(idx,di,'sell_override',0)}}>
+                  {isTBD&&tbdType==='screen_print'&&<select className="form-select" style={{width:90,fontSize:10}} value={deco.tbd_colors||1} onChange={e=>{uDM(idx,di,{tbd_colors:parseInt(e.target.value),sell_override:0})}}>
                     {[1,2,3,4,5].map(n=><option key={n} value={n}>{n} color{n>1?'s':''}</option>)}</select>}
-                  {isTBD&&tbdType==='screen_print'&&<label style={{fontSize:10,display:'flex',alignItems:'center',gap:3,padding:'2px 6px',background:deco.underbase?'#fef3c7':'transparent',borderRadius:4,cursor:'pointer'}}><input type="checkbox" checked={deco.underbase||false} onChange={e=>{uD(idx,di,'underbase',e.target.checked);uD(idx,di,'sell_override',0)}}/> Underbase</label>}
-                  {isTBD&&tbdType==='embroidery'&&<select className="form-select" style={{width:110,fontSize:10}} value={deco.tbd_stitches||8000} onChange={e=>{uD(idx,di,'tbd_stitches',parseInt(e.target.value));uD(idx,di,'sell_override',0)}}>
+                  {isTBD&&tbdType==='screen_print'&&<label style={{fontSize:10,display:'flex',alignItems:'center',gap:3,padding:'2px 6px',background:deco.underbase?'#fef3c7':'transparent',borderRadius:4,cursor:'pointer'}}><input type="checkbox" checked={deco.underbase||false} onChange={e=>{uDM(idx,di,{underbase:e.target.checked,sell_override:0})}}/> Underbase</label>}
+                  {isTBD&&tbdType==='embroidery'&&<select className="form-select" style={{width:110,fontSize:10}} value={deco.tbd_stitches||8000} onChange={e=>{uDM(idx,di,{tbd_stitches:parseInt(e.target.value),sell_override:0})}}>
                     <option value={8000}>≤10k stitches</option><option value={12000}>10k-15k</option><option value={18000}>15k-20k</option><option value={25000}>20k+</option></select>}
-                  {isTBD&&(tbdType==='dtf'||tbdType==='heat_press')&&<select className="form-select" style={{width:130,fontSize:10}} value={deco.tbd_dtf_size||0} onChange={e=>{uD(idx,di,'tbd_dtf_size',parseInt(e.target.value));uD(idx,di,'sell_override',0)}}>
+                  {isTBD&&(tbdType==='dtf'||tbdType==='heat_press')&&<select className="form-select" style={{width:130,fontSize:10}} value={deco.tbd_dtf_size||0} onChange={e=>{uDM(idx,di,{tbd_dtf_size:parseInt(e.target.value),sell_override:0})}}>
                     {DTF.map((t,i)=><option key={i} value={i}>{t.label}</option>)}</select>}
                   {isTBD&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:600}}>Art Needed</span>}
                   <select className="form-select" style={{width:120,fontSize:12}} value={deco.position} onChange={e=>uD(idx,di,'position',e.target.value)}>{POSITIONS.map(p=><option key={p}>{p}</option>)}</select>
@@ -1336,71 +1346,97 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                 {nm==='heat_transfer'&&<>{!deco.custom_font_art_id?<><span style={{fontSize:12,color:'#475569'}}>Standard</span><button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>uD(idx,di,'custom_font_art_id','pending')}>Use Custom Font Art</button></>
                   :<><span style={{fontSize:11,color:'#7c3aed'}}>Custom font art</span><button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>uD(idx,di,'custom_font_art_id',null)}>× Clear</button></>}</>}
               </div>
-              {/* Roster grid by size — Size / Number / Name */}
-              <div style={{marginTop:6,padding:10,background:'#f8fafc',borderRadius:6,border:'1px dashed #d1d5db'}}>
+              {/* Roster grid — Numbers only */}
+              <div style={{marginTop:6,padding:10,background:'#f8fafc',borderRadius:6,border:'1px dashed #d1d5db'}}
+                onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#3b82f6';e.currentTarget.style.background='#eff6ff'}}
+                onDragLeave={e=>{e.currentTarget.style.borderColor='#d1d5db';e.currentTarget.style.background='#f8fafc'}}
+                onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor='#d1d5db';e.currentTarget.style.background='#f8fafc';
+                  const f=e.dataTransfer.files[0];if(!f)return;const reader=new FileReader();
+                  reader.onload=ev=>{const lines=ev.target.result.split('\n').filter(l=>l.trim());
+                    const nr={...roster};let skipped=0;
+                    lines.forEach(line=>{if(line.toLowerCase().startsWith('size'))return;
+                      const parts=line.split(',').map(s=>s.trim());const[sz,num]=parts;
+                      if(sz&&num&&item.sizes[sz]>0){if(!nr[sz])nr[sz]=Array(item.sizes[sz]||0).fill('');
+                        const ei=nr[sz].findIndex(v=>!v);if(ei>=0){nr[sz][ei]=num}else{skipped++}}else{skipped++}});
+                    uD(idx,di,'roster',nr);nf('Roster imported'+(skipped>0?' ('+skipped+' skipped)':''))};reader.readAsText(f)}}>
                 <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
-                  <div style={{fontSize:11,fontWeight:600,color:'#64748b'}}>Roster — Number & Name Assignment</div>
+                  <div style={{fontSize:11,fontWeight:600,color:'#64748b'}}>Number Assignment <span style={{fontWeight:400,fontSize:10}}>(drag CSV here)</span></div>
                   <div style={{display:'flex',gap:4}}>
                     <button className="btn btn-sm btn-secondary" style={{fontSize:9}} onClick={()=>{
-                      let csv='Size,Number,Name\n';sizedQtys.forEach(([sz,sqty])=>{
-                        for(let i=0;i<sqty;i++)csv+=sz+',,\n'});
+                      let csv='Size,Number\n';sizedQtys.forEach(([sz,sqty])=>{for(let i=0;i<sqty;i++)csv+=sz+',\n'});
                       const blob=new Blob([csv],{type:'text/csv'});const url=URL.createObjectURL(blob);
-                      const a=document.createElement('a');a.href=url;a.download='roster_template_'+item.sku+'.csv';a.click();URL.revokeObjectURL(url);
-                    }}>📥 Download Template</button>
+                      const a=document.createElement('a');a.href=url;a.download='number_template_'+item.sku+'.csv';a.click();URL.revokeObjectURL(url)}}>📥 Template</button>
                     <button className="btn btn-sm btn-secondary" style={{fontSize:9}} onClick={()=>{
-                      const inp=document.createElement('input');inp.type='file';inp.accept='.csv,.txt';
-                      inp.onchange=e=>{const f=e.target.files[0];if(!f)return;const reader=new FileReader();
-                        reader.onload=ev=>{const lines=ev.target.result.split('\n').filter(l=>l.trim());
-                          const nr={...roster};const names={...(deco.names||{})};let skipped=0;
-                          lines.forEach(line=>{if(line.toLowerCase().startsWith('size'))return;// skip header
-                            const parts=line.split(',').map(s=>s.trim());const[sz,num,name]=parts;
-                            if(sz&&item.sizes[sz]>0){
-                              if(!nr[sz])nr[sz]=Array(item.sizes[sz]||0).fill('');
-                              if(!names[sz])names[sz]=Array(item.sizes[sz]||0).fill('');
-                              const ei=nr[sz].findIndex(v=>!v);
-                              if(ei>=0){nr[sz][ei]=num||'';names[sz][ei]=name||''}else{skipped++}
-                            }else{skipped++}});
-                          uD(idx,di,'roster',nr);uD(idx,di,'names',names);
-                          nf('Roster imported'+(skipped>0?' ('+skipped+' rows skipped)':''))};
-                        reader.readAsText(f)};inp.click();
-                    }}>📤 Upload CSV</button>
-                    <button className="btn btn-sm btn-secondary" style={{fontSize:9}} onClick={()=>{
-                      const csv=prompt('Paste roster (one per line: Size,Number,Name):\ne.g.\nM,12,Smith\nL,34,Jones');
-                      if(csv){const nr={...roster};const names={...(deco.names||{})};
-                        csv.split('\n').forEach(line=>{const parts=line.split(',').map(s=>s.trim());const[sz,num,name]=parts;
-                          if(sz&&num){if(!nr[sz])nr[sz]=Array(item.sizes[sz]||0).fill('');if(!names[sz])names[sz]=Array(item.sizes[sz]||0).fill('');
-                            const ei=nr[sz].findIndex(v=>!v);if(ei>=0){nr[sz][ei]=num;names[sz][ei]=name||''}}});
-                        uD(idx,di,'roster',nr);uD(idx,di,'names',names);nf('Roster imported')}
-                    }}>📋 Paste</button>
-                    <button className="btn btn-sm btn-secondary" style={{fontSize:9,color:'#dc2626'}} onClick={()=>{uD(idx,di,'roster',{});uD(idx,di,'names',{});nf('Roster cleared')}}>Clear All</button>
-                  </div>
-                </div>
+                      const csv=prompt('Paste (Size,Number per line):\nM,12\nL,34');
+                      if(csv){const nr={...roster};csv.split('\n').forEach(line=>{const[sz,num]=line.split(',').map(s=>s.trim());
+                        if(sz&&num){if(!nr[sz])nr[sz]=Array(item.sizes[sz]||0).fill('');const ei=nr[sz].findIndex(v=>!v);if(ei>=0)nr[sz][ei]=num}});
+                        uD(idx,di,'roster',nr);nf('Imported')}}}>📋 Paste</button>
+                    <button className="btn btn-sm btn-secondary" style={{fontSize:9,color:'#dc2626'}} onClick={()=>{uD(idx,di,'roster',{});nf('Cleared')}}>Clear</button>
+                  </div></div>
                 {sizedQtys.length===0?<div style={{fontSize:11,color:'#94a3b8'}}>Add sizes above first</div>:
                 <div style={{display:'flex',flexDirection:'column',gap:2}}>
-                  <div style={{display:'flex',gap:6,alignItems:'center',marginBottom:2}}>
-                    <span style={{width:50,fontSize:9,fontWeight:700,color:'#94a3b8'}}>SIZE</span>
-                    <span style={{width:44,fontSize:9,fontWeight:700,color:'#94a3b8',textAlign:'center'}}>#</span>
-                    <span style={{flex:1,fontSize:9,fontWeight:700,color:'#94a3b8'}}>NAME</span>
-                  </div>
-                  {sizedQtys.map(([sz,sqty])=>{const szRoster=roster[sz]||[];const szNames=(deco.names||{})[sz]||[];
-                    return<React.Fragment key={sz}>
-                    {Array.from({length:sqty}).map((_,si)=><div key={si} style={{display:'flex',gap:6,alignItems:'center'}}>
-                      {si===0?<span style={{width:50,fontSize:12,fontWeight:700,color:'#1e40af'}}>{sz} ({sqty})</span>:<span style={{width:50}}/>}
-                      <input style={{width:44,textAlign:'center',border:'1px solid #d1d5db',borderRadius:3,padding:'3px 2px',fontSize:12,fontWeight:600,background:szRoster[si]?'#dbeafe':'white'}} value={szRoster[si]||''} placeholder="—" onChange={e=>{const nr={...roster};const arr=[...(nr[sz]||Array(sqty).fill(''))];arr[si]=e.target.value;nr[sz]=arr;uD(idx,di,'roster',nr)}}/>
-                      <input style={{flex:1,border:'1px solid #d1d5db',borderRadius:3,padding:'3px 6px',fontSize:12,background:szNames[si]?'#f0fdf4':'white'}} value={szNames[si]||''} placeholder="Name" onChange={e=>{const nn={...(deco.names||{})};const arr=[...(nn[sz]||Array(sqty).fill(''))];arr[si]=e.target.value;nn[sz]=arr;uD(idx,di,'names',nn)}}/>
-                    </div>)}
-                  </React.Fragment>})}
+                  {sizedQtys.map(([sz,sqty])=>{const szRoster=roster[sz]||[];
+                    return<div key={sz} style={{display:'flex',gap:4,alignItems:'center',flexWrap:'wrap'}}>
+                      <span style={{width:50,fontSize:12,fontWeight:700,color:'#1e40af'}}>{sz} ({sqty})</span>
+                      {Array.from({length:sqty}).map((_,si)=><input key={si} style={{width:38,textAlign:'center',border:'1px solid #d1d5db',borderRadius:3,padding:'3px 2px',fontSize:12,fontWeight:600,background:szRoster[si]?'#dbeafe':'white'}} value={szRoster[si]||''} placeholder="—" onChange={e=>{const nr={...roster};const arr=[...(nr[sz]||Array(sqty).fill(''))];arr[si]=e.target.value;nr[sz]=arr;uD(idx,di,'roster',nr)}}/>)}
+                    </div>})}
                 </div>}
-                {(()=>{const filled=Object.values(roster).flat().filter(v=>v&&v.trim()).length;const total=sizedQtys.reduce((a,[,q])=>a+q,0);
+                {(()=>{const filled=Object.values(roster).flat().filter(v=>v&&v.trim()).length;const total=sizedQtys.reduce((a,[,q2])=>a+q2,0);
                   return filled>0&&<div style={{fontSize:10,color:'#64748b',marginTop:4}}>{filled}/{total} assigned</div>})()}
               </div>
             </div>)}
-            return null})}
+            {/* NAMES DECORATION */}
+            if(deco.kind==='names'){
+              const sizedQtys2=Object.entries(item.sizes).filter(([,v])=>v>0).sort((a,b)=>{const ord=['XS','S','M','L','XL','2XL','3XL','4XL'];return(ord.indexOf(a[0])===-1?99:ord.indexOf(a[0]))-(ord.indexOf(b[0])===-1?99:ord.indexOf(b[0]))});
+              const nameData=deco.names||{};const nameSell=safeNum(deco.sell_override||deco.sell_each||6);const nameCost=safeNum(deco.cost_each||3);
+              const nameCount=Object.values(nameData).flat().filter(v=>v&&v.trim()).length;
+              return(<div key={di} style={{padding:'10px 0',borderTop:di>0?'1px solid #f1f5f9':''}}>
+              <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:6}}>
+                <div style={{width:36,height:36,borderRadius:6,background:'#fef3c7',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0}}>🏷️</div>
+                <span style={{fontWeight:700,fontSize:13}}>Names</span>
+                <select className="form-select" style={{width:120,fontSize:12}} value={deco.position} onChange={e=>uD(idx,di,'position',e.target.value)}>{POSITIONS.map(p=><option key={p}>{p}</option>)}</select>
+                <div style={{marginLeft:'auto',display:'flex',gap:8,alignItems:'center'}}>
+                  <span style={{fontSize:12}}>Cost/ea: <$In value={nameCost} onChange={v=>uD(idx,di,'cost_each',v)} w={40}/></span>
+                  <span style={{fontSize:12}}>Sell/ea: <$In value={nameSell} onChange={v=>uD(idx,di,'sell_override',v)} w={40}/></span>
+                  <span style={{fontSize:11,color:'#64748b'}}>{nameCount} × ${nameSell.toFixed(2)} = ${(nameCount*nameSell).toFixed(2)}</span>
+                  <button onClick={()=>rmD(idx,di)} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626'}}><Icon name="x" size={14}/></button>
+                </div></div>
+              <div style={{padding:10,background:'#fffbeb',borderRadius:6,border:'1px dashed #f59e0b'}}
+                onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#3b82f6'}}
+                onDragLeave={e=>{e.currentTarget.style.borderColor='#f59e0b'}}
+                onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor='#f59e0b';
+                  const f=e.dataTransfer.files[0];if(!f)return;const reader=new FileReader();
+                  reader.onload=ev=>{const lines=ev.target.result.split('\n').filter(l=>l.trim());
+                    const nn={...nameData};let ct=0;
+                    lines.forEach(line=>{if(line.toLowerCase().startsWith('size'))return;
+                      const parts=line.split(',').map(s=>s.trim());const sz=parts[0];const name=parts.length>=3?parts[2]:parts[1]||'';
+                      if(sz&&name&&item.sizes[sz]>0){if(!nn[sz])nn[sz]=Array(item.sizes[sz]||0).fill('');
+                        const ei=nn[sz].findIndex(v=>!v);if(ei>=0){nn[sz][ei]=name;ct++}}});
+                    uD(idx,di,'names',nn);nf(ct+' names imported')};reader.readAsText(f)}}>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
+                  <div style={{fontSize:11,fontWeight:600,color:'#92400e'}}>Name Assignment <span style={{fontWeight:400,fontSize:10}}>(drag CSV here)</span></div>
+                  <div style={{display:'flex',gap:4}}>
+                    <button className="btn btn-sm btn-secondary" style={{fontSize:9}} onClick={()=>{
+                      let csv='Size,Number,Name\n';sizedQtys2.forEach(([sz,sqty])=>{for(let i=0;i<sqty;i++)csv+=sz+',,\n'});
+                      const blob=new Blob([csv],{type:'text/csv'});const url=URL.createObjectURL(blob);
+                      const a=document.createElement('a');a.href=url;a.download='name_template_'+item.sku+'.csv';a.click();URL.revokeObjectURL(url)}}>📥 Template</button>
+                    <button className="btn btn-sm btn-secondary" style={{fontSize:9,color:'#dc2626'}} onClick={()=>{uD(idx,di,'names',{});nf('Cleared')}}>Clear</button>
+                  </div></div>
+                {sizedQtys2.length===0?<div style={{fontSize:11,color:'#94a3b8'}}>Add sizes first</div>:
+                <div style={{display:'flex',flexDirection:'column',gap:2}}>
+                  {sizedQtys2.map(([sz,sqty])=>{const szNames=nameData[sz]||[];
+                    return<div key={sz} style={{display:'flex',gap:4,alignItems:'center',flexWrap:'wrap'}}>
+                      <span style={{width:50,fontSize:12,fontWeight:700,color:'#92400e'}}>{sz} ({sqty})</span>
+                      {Array.from({length:sqty}).map((_,si)=><input key={si} style={{width:100,border:'1px solid #d1d5db',borderRadius:3,padding:'3px 6px',fontSize:12,background:szNames[si]?'#fef3c7':'white'}} value={szNames[si]||''} placeholder="Name" onChange={e=>{const nn={...nameData};const arr=[...(nn[sz]||Array(sqty).fill(''))];arr[si]=e.target.value;nn[sz]=arr;uD(idx,di,'names',nn)}}/>)}
+                    </div>})}
+                </div>}
+              </div></div>)}
           <div style={{display:'flex',gap:6,marginTop:8,alignItems:'center',flexWrap:'wrap'}}>
             {(()=>{const hasOutside=safeDecos(item).some(d=>d.kind==='outside_deco');const hasInHouse=safeDecos(item).some(d=>d.kind==='art'||d.kind==='numbers');
               return<>
                 {!hasOutside&&<button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>addArtDeco(idx)}><Icon name="image" size={12}/> + Add Art</button>}
-                {!hasOutside&&<button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>addNumDeco(idx)}>#️⃣ + Add Numbers</button>}
+                {!hasOutside&&<button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>addNumDeco(idx)}>#️⃣ + Numbers</button>}
+                {!hasOutside&&<button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>addNameDeco(idx)}>🏷️ + Names</button>}
                 {!hasInHouse&&<button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>addOutsideDeco(idx)}>🎨 + Outside Deco</button>}
                 {safeDecos(item).length===0&&!item.no_deco&&<button className="btn btn-sm btn-secondary" style={{fontSize:10,color:'#94a3b8'}} onClick={()=>uI(idx,'no_deco',true)}>🚫 Blank Ship</button>}
                 {item.no_deco&&<span style={{fontSize:10,padding:'3px 8px',borderRadius:4,background:'#f1f5f9',color:'#64748b',fontWeight:600,display:'flex',alignItems:'center',gap:4}}>🚫 Blank Ship <button onClick={()=>uI(idx,'no_deco',false)} style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',fontSize:12,padding:0,marginLeft:2}}>✕</button></span>}
@@ -4624,7 +4660,7 @@ export default function App(){
     if(eEst){
       const lockInfo=isLockedByOther(eEst.id);
       return<>{lockInfo&&<LockBanner docId={eEst.id}/>}
-        <OrderEditor order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} onSave={e=>{savE(e);setEEst(e)}} onBack={()=>{releaseLock(eEst.id);setEEst(null)}} onConvertSO={convertSO} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} batchPOs={batchPOs} onBatchPO={setBatchPOs} bills={bills} readOnly={!!lockInfo} onNavCustomer={c=>{releaseLock(eEst.id);setEEst(null);setSelC(c);setPg('customers')}}/></>}
+        <OrderEditor order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} onSave={e=>{savE(e);setEEst(e)}} onBack={()=>{releaseLock(eEst.id);setEEst(null)}} onConvertSO={convertSO} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} batchPOs={batchPOs} onBatchPO={setBatchPOs} bills={bills} readOnly={!!lockInfo} onNavCustomer={c=>{releaseLock(eEst.id);setEEst(null);setSelC(c);setPg('customers')}} onNewEstimate={()=>{releaseLock(eEst.id);setEEst(null);setTimeout(()=>newE(null),50)}}/></>}
     const fe=ests.filter(e=>!q||(e.id+' '+e.memo+' '+(cust.find(c=>c.id===e.customer_id)?.name||'')+' '+(cust.find(c=>c.id===e.customer_id)?.alpha_tag||'')).toLowerCase().includes(q.toLowerCase()));
     return(<><div style={{display:'flex',gap:8,marginBottom:16}}><div className="search-bar" style={{flex:1}}><Icon name="search"/><input placeholder="Search..." value={q} onChange={e=>setQ(e.target.value)}/></div>
       <button className="btn btn-primary" onClick={()=>newE(null)}><Icon name="plus" size={14}/> New Estimate</button></div>
