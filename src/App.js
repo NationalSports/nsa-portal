@@ -1180,8 +1180,25 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                     <span style={{fontSize:13}}>Sell: <$In value={deco.sell_override||dp.sell} onChange={v=>uD(idx,di,'sell_override',v)} w={50}/></span>
                     <button onClick={()=>rmD(idx,di)} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626'}}><Icon name="x" size={14}/></button>
                   </div></div></div>)}
+            // OUTSIDE DECORATION — no job created, just cost/sell
+            if(deco.kind==='outside_deco'){return(<div key={di} style={{padding:'8px 0',borderTop:di>0?'1px solid #f1f5f9':''}}>
+              <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                <span style={{fontSize:13,fontWeight:700,color:'#7c3aed'}}>🎨 Outside Deco</span>
+                <select className="form-select" style={{width:120,fontSize:11}} value={deco.deco_type||'embroidery'} onChange={e=>uD(idx,di,'deco_type',e.target.value)}>
+                  {['embroidery','screen_print','dtf','heat_transfer','sublimation','vinyl'].map(t=><option key={t} value={t}>{t.replace(/_/g,' ')}</option>)}
+                </select>
+                <select className="form-select" style={{width:140,fontSize:11}} value={deco.vendor||''} onChange={e=>uD(idx,di,'vendor',e.target.value)}>
+                  <option value="">Vendor...</option>
+                  {DECO_VENDORS.map(dv=><option key={dv} value={dv}>{dv}</option>)}
+                </select>
+                <select className="form-select" style={{width:110,fontSize:11}} value={deco.position} onChange={e=>uD(idx,di,'position',e.target.value)}>{POSITIONS.map(p=><option key={p}>{p}</option>)}</select>
+                <div style={{display:'flex',alignItems:'center',gap:4}}><span style={{fontSize:10,color:'#dc2626',fontWeight:600}}>Cost:</span><$In value={deco.cost_each||0} onChange={v=>uD(idx,di,'cost_each',v)} w={55}/></div>
+                <div style={{display:'flex',alignItems:'center',gap:4}}><span style={{fontSize:10,color:'#166534',fontWeight:600}}>Sell:</span><$In value={deco.sell_each||0} onChange={v=>{uD(idx,di,'sell_each',v);uD(idx,di,'sell_override',v)}} w={55}/></div>
+                <button onClick={()=>rmD(idx,di)} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',marginLeft:'auto'}}><Icon name="x" size={14}/></button>
+              </div>
+            </div>)}
             // NUMBERS decoration
-            {const nm=deco.num_method||'heat_transfer';const szOpts=NUM_SZ[nm]||[];
+            if(deco.kind==='numbers'){const nm=deco.num_method||'heat_transfer';const szOpts=NUM_SZ[nm]||[];
             // Build roster grid from parent item sizes
             const sizedQtys=Object.entries(item.sizes).filter(([,v])=>v>0).sort((a,b)=>{const ord=['XS','S','M','L','XL','2XL','3XL','4XL','LT','XLT','2XLT','3XLT'];return(ord.indexOf(a[0])===-1?99:ord.indexOf(a[0]))-(ord.indexOf(b[0])===-1?99:ord.indexOf(b[0]))});
             const roster=deco.roster||{};
@@ -1226,23 +1243,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                   <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{const csv=prompt('Paste roster (one per line: Size,Number,Name):\ne.g.\nM,12,Smith\nL,34,Jones');if(csv){const nr={...roster};csv.split('\n').forEach(line=>{const[sz,num]=line.split(',').map(s=>s.trim());if(sz&&num){if(!nr[sz])nr[sz]=Array(item.sizes[sz]||0).fill('');const ei=nr[sz].findIndex(v=>!v);if(ei>=0)nr[sz][ei]=num}});uD(idx,di,'roster',nr);nf('Roster imported')}}}><Icon name="upload" size={10}/> Paste Roster</button>
                   <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{uD(idx,di,'roster',{});nf('Roster cleared')}}>Clear All</button>
                 </div></div>
-            </div>)}
-            // OUTSIDE DECORATION — no job created, just cost/sell
-            if(deco.kind==='outside_deco'){return(<div key={di} style={{padding:'8px 0',borderTop:di>0?'1px solid #f1f5f9':''}}>
-              <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
-                <span style={{fontSize:13,fontWeight:700,color:'#7c3aed'}}>🎨 Outside Deco</span>
-                <select className="form-select" style={{width:120,fontSize:11}} value={deco.deco_type||'embroidery'} onChange={e=>uD(idx,di,'deco_type',e.target.value)}>
-                  {['embroidery','screen_print','dtf','heat_transfer','sublimation','vinyl'].map(t=><option key={t} value={t}>{t.replace(/_/g,' ')}</option>)}
-                </select>
-                <select className="form-select" style={{width:140,fontSize:11}} value={deco.vendor||''} onChange={e=>uD(idx,di,'vendor',e.target.value)}>
-                  <option value="">Vendor...</option>
-                  {DECO_VENDORS.map(dv=><option key={dv} value={dv}>{dv}</option>)}
-                </select>
-                <select className="form-select" style={{width:110,fontSize:11}} value={deco.position} onChange={e=>uD(idx,di,'position',e.target.value)}>{POSITIONS.map(p=><option key={p}>{p}</option>)}</select>
-                <div style={{display:'flex',alignItems:'center',gap:4}}><span style={{fontSize:10,color:'#dc2626',fontWeight:600}}>Cost:</span><$In value={deco.cost_each||0} onChange={v=>uD(idx,di,'cost_each',v)} w={55}/></div>
-                <div style={{display:'flex',alignItems:'center',gap:4}}><span style={{fontSize:10,color:'#166534',fontWeight:600}}>Sell:</span><$In value={deco.sell_each||0} onChange={v=>{uD(idx,di,'sell_each',v);uD(idx,di,'sell_override',v)}} w={55}/></div>
-                <button onClick={()=>rmD(idx,di)} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',marginLeft:'auto'}}><Icon name="x" size={14}/></button>
-              </div>
             </div>)}
             return null})}
           <div style={{display:'flex',gap:6,marginTop:8,alignItems:'center',flexWrap:'wrap'}}>
