@@ -5917,19 +5917,19 @@ export default function App(){
             {s.status==='closed'&&!sos.some(so=>so.omg_store_id===s.id)&&<button className="btn btn-primary" style={{background:'#166534'}} onClick={()=>{
               // PULL FROM OMG → Create SO
               if(sos.some(so=>so.omg_store_id===s.id)){nf('Already pulled — SO exists for this store','error');return}
-              const newItems=s.products.map(p=>{
+              const newItems=s.products.map((p,pi)=>{
                 const catP=prod.find(cp=>cp.sku===p.sku);
-                return{product_id:catP?.id||null,sku:p.sku,name:p.name,brand:catP?.brand||'',color:p.color,
-                  nsa_cost:p.cost,retail_price:catP?.retail_price||p.retail,unit_sell:p.retail,
-                  available_sizes:Object.keys(p.sizes),sizes:p.sizes,
-                  decorations:[{kind:'art',position:'Front Center',art_file_id:null,deco_type:p.deco_type,sell_override:null,cost_override:p.deco_cost}],
+                return{product_id:catP?.id||null,sku:p.sku||'ITEM-'+pi,name:p.name||'Product',brand:catP?.brand||'',color:p.color||'',
+                  nsa_cost:safeNum(p.cost),retail_price:catP?.retail_price||safeNum(p.retail),unit_sell:safeNum(p.retail),
+                  available_sizes:Object.keys(p.sizes||{}),sizes:{...(p.sizes||{})},
+                  decorations:p.deco_type?[{kind:'art',position:'Front Center',art_file_id:null,type:p.deco_type,art_tbd_type:p.deco_type,sell_override:safeNum(p.deco_cost)||0}]:[],
                   is_custom:false,pick_lines:[],po_lines:[]};
               });
               const newSO={id:nextSOId(sos),customer_id:s.customer_id,memo:'OMG Store Pull: '+s.store_name,status:'need_order',
                 created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),
                 expected_date:'',production_notes:'Pulled from OMG store '+s.id+'. Orders: '+s.orders+', Buyers: '+s.unique_buyers,
-                shipping_type:'flat',shipping_value:0,ship_to_id:'default',firm_dates:[],art_files:[],items:newItems,omg_store_id:s.id};
-              setSOs(prev=>[newSO,...prev]);setESO(newSO);setESOC(c);setPg('orders');
+                shipping_type:'flat',shipping_value:0,ship_to_id:'default',firm_dates:[],art_files:[],jobs:[],tbd_arts:[],items:newItems,omg_store_id:s.id};
+              setSOs(prev=>[newSO,...prev]);setESO(newSO);setESOC(c||null);setPg('orders');
               nf('🎉 Pulled '+newItems.length+' items from '+s.store_name+' into new SO');
             }}>🔄 Pull to Sales Order</button>}
             {s.status==='closed'&&sos.some(so=>so.omg_store_id===s.id)&&<div style={{padding:'6px 12px',background:'#f0fdf4',borderRadius:6,fontSize:11,color:'#166534',fontWeight:600}}>
