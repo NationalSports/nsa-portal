@@ -5509,19 +5509,24 @@ export default function App(){
         const szKeys=Object.keys(item.sizes||{}).filter(k=>SZ_ORD.includes(k)||(item.sizes[k]>0));
         const totalOrdered=szKeys.reduce((a,s)=>a+(item.sizes[s]||0),0);
         if(totalOrdered===0)return;
-        const pulled={};safePicks(item).forEach(pk=>{szKeys.forEach(s=>{pulled[s]=(pulled[s]||0)+(pk[s]||0)})});
+        const picks=safePicks(item);
+        const pulled={};picks.forEach(pk=>{szKeys.forEach(s=>{pulled[s]=(pulled[s]||0)+(pk[s]||0)})});
         const totalPulled=Object.values(pulled).reduce((a,v)=>a+v,0);
-        const needsPull=totalOrdered-totalPulled;
-        if(needsPull>0){
-          pullTasks.push({so,soId:so.id,item,itemIdx:ii,cName,alpha,rep,daysOut,urgent,
-            sku:item.sku,name:item.name,brand:item.brand||'',color:item.color||'',
-            sizes:item.sizes,pulled,needsPull,totalOrdered,totalPulled,szKeys,
-            noDeco:item.no_deco||!item.decorations?.length,
-            shipDest:safePicks(item).find(p=>p.ship_dest)?.ship_dest||'in_house'});
+        // Only show in Pull & Stage if there's an active pick ticket (IF not yet pulled)
+        const hasActivePick=picks.some(pk=>pk.status!=='pulled');
+        if(hasActivePick){
+          const needsPull=totalOrdered-totalPulled;
+          if(needsPull>0){
+            pullTasks.push({so,soId:so.id,item,itemIdx:ii,cName,alpha,rep,daysOut,urgent,
+              sku:item.sku,name:item.name,brand:item.brand||'',color:item.color||'',
+              sizes:item.sizes,pulled,needsPull,totalOrdered,totalPulled,szKeys,
+              noDeco:item.no_deco||!item.decorations?.length,
+              shipDest:picks.find(p=>p.ship_dest)?.ship_dest||'in_house'});
+          }
         }
         // No-deco items fully pulled → ready to ship
         if((!item.decorations?.length||item.no_deco)&&totalPulled>=totalOrdered&&totalOrdered>0){
-          const dest=safePicks(item).find(p=>p.ship_dest)?.ship_dest||'in_house';
+          const dest=picks.find(p=>p.ship_dest)?.ship_dest||'in_house';
           shipTasks.push({so,soId:so.id,type:'no_deco',cName,alpha,rep,daysOut,urgent,
             desc:item.sku+' · '+item.name,units:totalOrdered,shipMethod:dest});
         }
