@@ -591,7 +591,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
   const[tab,setTab]=useState(initTab||'items');const[dirty,setDirty]=useState(false);const[selJob,setSelJob]=useState(null);const[jobNote,setJobNote]=useState('');const[msgDept,setMsgDept]=useState('all');
     React.useEffect(()=>{if(initTab)setTab(initTab)},[initTab]);
     React.useEffect(()=>{if(scrollToItem!=null){setTab('items');setTimeout(()=>{const el=document.getElementById('so-item-'+scrollToItem);if(el){el.scrollIntoView({behavior:'smooth',block:'center'});el.style.boxShadow='0 0 0 3px #3b82f6';setTimeout(()=>{el.style.boxShadow=''},2000)}},150)}},[scrollToItem]);
-    React.useEffect(()=>{if(scrollToJob){setTab('jobs');setTimeout(()=>{const el=document.getElementById('so-job-'+scrollToJob);if(el){el.scrollIntoView({behavior:'smooth',block:'center'});el.style.boxShadow='0 0 0 3px #7c3aed';setTimeout(()=>{el.style.boxShadow=''},2000)}},150)}},[scrollToJob]);
+    React.useEffect(()=>{if(scrollToJob!=null){setTab('jobs');setTimeout(()=>{const el=document.getElementById('so-job-'+scrollToJob);if(el){el.scrollIntoView({behavior:'smooth',block:'center'});el.style.boxShadow='0 0 0 3px #7c3aed';setTimeout(()=>{el.style.boxShadow=''},2000)}},200)}},[scrollToJob]);
     const origRef=React.useRef(JSON.stringify(o));
     const markDirty=()=>setDirty(true);const[saved,setSaved]=useState(!!order.customer_id);const[showSend,setShowSend]=useState(false);const[showPick,setShowPick]=useState(false);const[pickId,setPickId]=useState(()=>{let max=4000;(allOrders||[]).concat([order]).forEach(so=>safeItems(so).forEach(it=>safePicks(it).forEach(pk=>{const m=parseInt((pk.pick_id||'').replace('IF-',''))||0;if(m>max)max=m})));return'IF-'+String(max+1)});const[showPO,setShowPO]=useState(null);const[poCounter,setPOCounter]=useState(()=>3001+Math.floor(Math.random()*100));
     const[pickNotes,setPickNotes]=useState('');const[pickShipDest,setPickShipDest]=useState('in_house');const[pickDecoVendor,setPickDecoVendor]=useState('');const[pickShipAddr,setPickShipAddr]=useState('default');
@@ -1830,6 +1830,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           } else if(d.kind==='numbers'){
             const dp=dP(d,qty,[],qty);
             decoRev+=qty*dp.sell;
+          } else if(d.kind==='names'){
+            const dp=dP(d,qty,[],qty);
+            decoRev+=qty*dp.sell;
+          } else if(d.kind==='outside_deco'){
+            const dp=dP(d,qty,[],qty);
+            decoRev+=qty*dp.sell;
           }
         });
         return{items:acc.items+1,units:acc.units+qty,subtotal:acc.subtotal+rev+decoRev};
@@ -1845,7 +1851,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           <div style={{padding:10,background:'#f8fafc',borderRadius:6,marginBottom:12}}>
             <div style={{fontWeight:700,color:'#1e40af'}}>{o.id}</div>
             <div style={{fontSize:12,color:'#64748b'}}>{cust?.name} — {o.memo}</div>
-            <div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>Order total: ${totals.total.toLocaleString()}</div>
+            <div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>Order total: ${totals.grand.toLocaleString()}</div>
           </div>
 
           {/* Invoice type */}
@@ -2470,7 +2476,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
             const canSplit=j.item_status==='partially_received'&&!j.split_from;
             const pct=j.total_units>0?Math.round(j.fulfilled_units/j.total_units*100):0;
             return<React.Fragment key={j.id}>
-              <tr id={'so-job-'+j.id} style={{background:j.prod_status==='completed'||j.prod_status==='shipped'?'#f0fdf4':undefined,cursor:'pointer',transition:'box-shadow 0.3s'}} onClick={()=>setSelJob(ji)}>
+              <tr id={'so-job-'+ji} style={{background:j.prod_status==='completed'||j.prod_status==='shipped'?'#f0fdf4':undefined,cursor:'pointer',transition:'box-shadow 0.3s'}} onClick={()=>setSelJob(ji)}>
               <td><span style={{fontWeight:700,color:'#1e40af'}}>{j.id}</span>
                 {j.split_from&&<div style={{fontSize:9,color:'#7c3aed'}}>split from {j.split_from}</div>}
                 {j.counted_at&&<div style={{fontSize:9,color:'#166534'}}>✅ counted</div>}</td>
@@ -4430,7 +4436,8 @@ export default function App(){
                   <div style={{display:'flex',gap:8,marginBottom:6}}>
                     <div style={{fontSize:10,color:'#7c3aed',cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={e=>{e.stopPropagation();
                       const jso=j.so;const jc=cust.find(c2=>c2.id===jso.customer_id);
-                      setESOTab('jobs');setESOScrollJob(j.id);setESO(jso);setESOC(jc);setPg('orders');
+                      const ji=safeJobs(jso).findIndex(jj=>jj.id===j.id);
+                      setESOTab('jobs');setESOScrollJob(ji>=0?ji:null);setESO(jso);setESOC(jc);setPg('orders');
                     }}>🔍 Open Job Detail</div>
                     <div style={{fontSize:10,color:'#2563eb',cursor:'pointer',textDecoration:'underline'}} onClick={e=>{e.stopPropagation();setESOTab(null);setESOScrollJob(null);setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so.customer_id));setPg('orders')}}>→ Open {j.soId}</div>
                   </div>
@@ -5922,7 +5929,7 @@ export default function App(){
                 return{product_id:catP?.id||null,sku:p.sku||'ITEM-'+pi,name:p.name||'Product',brand:catP?.brand||'',color:p.color||'',
                   nsa_cost:safeNum(p.cost),retail_price:catP?.retail_price||safeNum(p.retail),unit_sell:safeNum(p.retail),
                   available_sizes:Object.keys(p.sizes||{}),sizes:{...(p.sizes||{})},
-                  decorations:p.deco_type?[{kind:'art',position:'Front Center',art_file_id:null,type:p.deco_type,art_tbd_type:p.deco_type,sell_override:safeNum(p.deco_cost)||0}]:[],
+                  decorations:p.deco_type?[{kind:'art',position:'Front Center',art_file_id:'__tbd',art_tbd_type:p.deco_type,sell_override:safeNum(p.deco_cost)||0}]:[],
                   is_custom:false,pick_lines:[],po_lines:[]};
               });
               const newSO={id:nextSOId(sos),customer_id:s.customer_id,memo:'OMG Store Pull: '+s.store_name,status:'need_order',
@@ -7099,14 +7106,18 @@ export default function App(){
     // Build what a QB sync would push
     const buildQBSalesOrder=(so)=>{
       const c=cust.find(x=>x.id===so.customer_id);
+      const saf=safeArt(so);
+      const _aq={};safeItems(so).forEach(it2=>{const q2=Object.values(safeSizes(it2)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it2).forEach(d2=>{if(d2.kind==='art'&&d2.art_file_id){_aq[d2.art_file_id]=(_aq[d2.art_file_id]||0)+q2}})});
       const lines=[];
       safeItems(so).forEach(it=>{
         const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
         if(!qty)return;
         lines.push({type:'SalesItemLine',desc:it.sku+' '+it.name+(it.color?' - '+it.color:''),qty,rate:it.unit_sell,amount:qty*it.unit_sell,account:qbConfig.mapping.income_account});
         safeDecos(it).forEach(d=>{
-          const sell=safeNum(d.sell_override||d.sell_each||0);
-          if(sell>0)lines.push({type:'SalesItemLine',desc:'Decoration: '+(d.position||d.deco_type||'Art'),qty,rate:sell,amount:qty*sell,account:qbConfig.mapping.income_account});
+          const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qty;
+          const dp=dP(d,qty,saf,cq);
+          const sell=dp.sell;
+          if(sell>0)lines.push({type:'SalesItemLine',desc:'Decoration: '+(d.position||d.deco_type||d.kind||'Art'),qty,rate:sell,amount:qty*sell,account:qbConfig.mapping.income_account});
         });
       });
       return{docType:'SalesOrder',docNumber:so.id,customerRef:c?.name||'Unknown',date:so.created_at,memo:so.memo,lines,total:lines.reduce((a,l)=>a+l.amount,0)};
@@ -7124,7 +7135,7 @@ export default function App(){
     const buildQBInvoice=(inv)=>{
       const so=sos.find(s=>s.id===inv.so_id);
       return{docType:'Invoice',docNumber:inv.id,customerRef:cust.find(c=>c.id===inv.customer_id)?.name,
-        date:inv.created_at,soRef:inv.so_id,amount:inv.total,paid:inv.paid,balance:inv.total-inv.paid,
+        date:inv.date,soRef:inv.so_id,amount:inv.total,paid:inv.paid,balance:inv.total-inv.paid,
         account:qbConfig.mapping.ar_account};
     };
 
