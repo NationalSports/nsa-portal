@@ -776,7 +776,25 @@ create table public.favorite_skus (
 );
 
 -- ────────────────────────────────────────────────────────────
--- 36. SEQUENCE COUNTERS  (for display_id generation)
+-- 36. COMMISSION_OVERRIDES  (admin approves full rate on late invoices)
+--     Sensitive — GM must NOT have access, only admin + the rep
+-- ────────────────────────────────────────────────────────────
+create table public.commission_overrides (
+  id          uuid primary key default uuid_generate_v4(),
+  invoice_id  uuid not null references public.invoices(id) on delete cascade,
+  rep_id      uuid not null references public.user_profiles(id) on delete cascade,
+  override_rate numeric(4,2) not null default 0.30,  -- restored commission rate
+  approved_by uuid not null references public.user_profiles(id) on delete set null,
+  note        text,
+  created_at  timestamptz not null default now(),
+  unique (invoice_id, rep_id)
+);
+
+create index idx_comm_overrides_rep on public.commission_overrides(rep_id);
+create index idx_comm_overrides_inv on public.commission_overrides(invoice_id);
+
+-- ────────────────────────────────────────────────────────────
+-- 37. SEQUENCE COUNTERS  (for display_id generation)
 -- ────────────────────────────────────────────────────────────
 create table public.id_sequences (
   entity    text primary key,   -- estimates | sales_orders | invoices | etc.

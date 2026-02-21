@@ -3,8 +3,9 @@
 -- Migration: 00002_rls_policies
 -- ============================================================
 -- Strategy:
---   • Admin / GM  → full access to everything
---   • Rep         → own customers + related estimates/SOs/invoices
+--   • Admin       → full access to everything (including commissions)
+--   • GM          → full access EXCEPT commissions (cannot see rep pay)
+--   • Rep         → own customers + related estimates/SOs/invoices + own commissions
 --   • Production / Warehouse / Artist → read SOs & jobs, write job status
 --   • All authed  → read products, vendors, decoration_types, price_matrix
 
@@ -22,6 +23,16 @@ returns uuid as $$
   select id from public.user_profiles
   where auth_id = auth.uid()
   limit 1;
+$$ language sql security definer stable;
+
+-- Helper: is admin only? (excludes GM — used for commissions)
+create or replace function public.is_admin()
+returns boolean as $$
+  select exists (
+    select 1 from public.user_profiles
+    where auth_id = auth.uid()
+      and role = 'admin'
+  );
 $$ language sql security definer stable;
 
 -- Helper: is admin or gm?
@@ -70,6 +81,7 @@ alter table public.batch_po_items             enable row level security;
 alter table public.omg_stores                 enable row level security;
 alter table public.omg_store_products         enable row level security;
 alter table public.favorite_skus              enable row level security;
+alter table public.commission_overrides       enable row level security;
 alter table public.id_sequences               enable row level security;
 
 -- ─── USER_PROFILES ─────────────────────────────────────────
@@ -88,13 +100,9 @@ create policy "profiles_admin_all" on public.user_profiles
 
 -- ─── CUSTOMERS ─────────────────────────────────────────────
 
--- Admin/GM see all; reps see only their assigned customers
+-- All staff can see all customers (reps need cross-customer visibility)
 create policy "customers_select" on public.customers
-  for select using (
-    public.is_admin_or_gm()
-    or primary_rep_id = public.current_profile_id()
-    or public.current_user_role() in ('production','warehouse','artist','csr')
-  );
+  for select using (true);
 
 create policy "customers_admin_all" on public.customers
   for all using (public.is_admin_or_gm());
@@ -188,16 +196,9 @@ create policy "art_files_write" on public.art_files
 
 -- ─── ESTIMATES ─────────────────────────────────────────────
 
+-- All staff can read all estimates (reps need cross-customer visibility)
 create policy "estimates_select" on public.estimates
-  for select using (
-    public.is_admin_or_gm()
-    or created_by = public.current_profile_id()
-    or exists (
-      select 1 from public.customers c
-      where c.id = customer_id
-        and c.primary_rep_id = public.current_profile_id()
-    )
-  );
+  for select using (true);
 
 create policy "estimates_admin_all" on public.estimates
   for all using (public.is_admin_or_gm());
@@ -327,15 +328,9 @@ create policy "job_items_write" on public.production_job_items
 
 -- ─── INVOICES ──────────────────────────────────────────────
 
+-- All staff can read all invoices (reps need cross-customer visibility)
 create policy "invoices_select" on public.invoices
-  for select using (
-    public.is_admin_or_gm()
-    or exists (
-      select 1 from public.customers c
-      where c.id = customer_id
-        and c.primary_rep_id = public.current_profile_id()
-    )
-  );
+  for select using (true);
 
 create policy "invoices_admin_all" on public.invoices
   for all using (public.is_admin_or_gm());
@@ -396,6 +391,20 @@ create policy "favs_select" on public.favorite_skus
   for select using (user_id = public.current_profile_id());
 create policy "favs_manage" on public.favorite_skus
   for all using (user_id = public.current_profile_id());
+
+-- ─── COMMISSIONS (ADMIN + OWN REP ONLY — GM EXCLUDED) ─────
+-- GM must NOT see commission data. Only admin (full view) and
+-- the rep themselves (own commissions) have access.
+
+create policy "comm_overrides_select" on public.commission_overrides
+  for select using (
+    public.is_admin()
+    or rep_id = public.current_profile_id()
+  );
+
+-- Only admin can create/modify commission overrides
+create policy "comm_overrides_admin_manage" on public.commission_overrides
+  for all using (public.is_admin());
 
 -- ─── ID SEQUENCES ──────────────────────────────────────────
 
