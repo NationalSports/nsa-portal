@@ -3570,6 +3570,8 @@ export default function App(){
   const[issues,setIssues]=useState(()=>loadState('issues',[]));
   const[issueModal,setIssueModal]=useState({open:false,desc:'',priority:'medium'});
   const[issueFilter,setIssueFilter]=useState('all');// all|open|resolved
+  const[editMember,setEditMember]=useState(null);
+  const[showInactive,setShowInactive]=useState(false);
   React.useEffect(()=>{try{localStorage.setItem('nsa_issues',JSON.stringify(issues))}catch{}},[issues]);
   const openIssueCount=issues.filter(i=>i.status==='open').length;
   const consoleErrors=React.useRef([]);
@@ -7387,9 +7389,6 @@ export default function App(){
     const activeReps=REPS.filter(r=>r.is_active!==false);
     const inactiveReps=REPS.filter(r=>r.is_active===false);
     const grouped=Object.keys(roles).map(r=>({role:r,label:roles[r],members:activeReps.filter(m=>m.role===r)})).filter(g=>g.members.length>0);
-
-    const[editMember,setEditMember]=useState(null);// null or member object being edited
-    const[showInactive,setShowInactive]=useState(false);
 
     const saveMember=(m)=>{
       if(REPS.find(r=>r.id===m.id)){
