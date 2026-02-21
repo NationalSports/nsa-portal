@@ -820,3 +820,65 @@ begin
   return p_prefix || '-' || v_val;
 end;
 $$ language plpgsql;
+
+-- ────────────────────────────────────────────────────────────
+-- 38. SALES REPORTING VIEW (role-scoped)
+--     Admin sees all reps. Reps see only their own data.
+--     GM sees all reps (operational, not commission).
+-- ────────────────────────────────────────────────────────────
+create or replace function public.get_sales_report(
+  p_start_date date default (current_date - interval '30 days')::date,
+  p_end_date   date default current_date
+)
+returns table (
+  rep_id        uuid,
+  rep_name      text,
+  total_revenue numeric,
+  total_cost    numeric,
+  gross_profit  numeric,
+  gp_pct        numeric,
+  invoice_count bigint,
+  so_count      bigint,
+  estimate_count bigint,
+  avg_order_value numeric
+) as $$
+declare
+  v_role text;
+  v_profile_id uuid;
+begin
+  select up.role, up.id
+    into v_role, v_profile_id
+    from public.user_profiles up
+    where up.auth_id = auth.uid();
+
+  return query
+    select
+      u.id                                          as rep_id,
+      u.full_name                                   as rep_name,
+      coalesce(sum(i.total), 0)                     as total_revenue,
+      0::numeric                                    as total_cost,  -- computed at app layer
+      0::numeric                                    as gross_profit,
+      0::numeric                                    as gp_pct,
+      count(distinct i.id)                          as invoice_count,
+      count(distinct so.id)                         as so_count,
+      count(distinct e.id)                          as estimate_count,
+      case when count(distinct i.id) > 0
+        then round(coalesce(sum(i.total), 0) / count(distinct i.id), 2)
+        else 0 end                                  as avg_order_value
+    from public.user_profiles u
+    left join public.sales_orders so
+      on so.created_by = u.id
+      and so.created_at::date between p_start_date and p_end_date
+    left join public.invoices i
+      on i.sales_order_id = so.id
+      and i.invoice_date between p_start_date and p_end_date
+    left join public.estimates e
+      on e.created_by = u.id
+      and e.created_at::date between p_start_date and p_end_date
+    where u.role in ('rep', 'admin')
+      -- Reps can only see their own row
+      and (v_role in ('admin', 'gm') or u.id = v_profile_id)
+    group by u.id, u.full_name
+    order by coalesce(sum(i.total), 0) desc;
+end;
+$$ language plpgsql security definer stable;
