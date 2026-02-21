@@ -3510,6 +3510,18 @@ export default function App(){
   const[lastBackup,setLastBackup]=useState(null);
   const[autoBackupEnabled,setAutoBackupEnabled]=useState(true);
   const logChange=(action,entity,entityId,detail)=>{setChangeLog(prev=>[{ts:new Date().toLocaleString(),user:cu.name,action,entity,entityId,detail},...prev].slice(0,500))};
+  // Issue logging system
+  const[issues,setIssues]=useState(()=>loadState('issues',[]));
+  const[issueModal,setIssueModal]=useState({open:false,desc:'',priority:'medium'});
+  const[issueFilter,setIssueFilter]=useState('all');// all|open|resolved
+  React.useEffect(()=>{try{localStorage.setItem('nsa_issues',JSON.stringify(issues))}catch{}},[issues]);
+  const openIssueCount=issues.filter(i=>i.status==='open').length;
+  const consoleErrors=React.useRef([]);
+  React.useEffect(()=>{const orig=console.error;console.error=(...args)=>{consoleErrors.current=[{msg:args.map(a=>typeof a==='string'?a:JSON.stringify(a)).join(' '),ts:new Date().toISOString()},...consoleErrors.current].slice(0,5);orig.apply(console,args)};return()=>{console.error=orig}},[]);
+  const getIssueContext=()=>{const t=titles[pg]||pg;let viewing='';if(eEst)viewing='Editing '+eEst.id;else if(eSO)viewing='Editing '+eSO.id;else if(selC)viewing='Viewing customer: '+selC.name;else if(selV)viewing='Viewing vendor: '+selV.name;return{page:t,viewing,user:cu.name,role:cu.role,timestamp:new Date().toISOString(),recentErrors:consoleErrors.current.slice(0,5)}};
+  const submitIssue=()=>{if(!issueModal.desc.trim())return;const ctx=getIssueContext();const issue={id:'ISS-'+(issues.length+1001),status:'open',description:issueModal.desc.trim(),priority:issueModal.priority,page:ctx.page,viewing:ctx.viewing,reportedBy:ctx.user,role:ctx.role,timestamp:ctx.timestamp,recentErrors:ctx.recentErrors,resolvedAt:null,resolution:null};setIssues(prev=>[issue,...prev]);setIssueModal({open:false,desc:'',priority:'medium'});nf('Issue '+issue.id+' logged')};
+  const resolveIssue=(id,resolution)=>{setIssues(prev=>prev.map(i=>i.id===id?{...i,status:'resolved',resolution,resolvedAt:new Date().toISOString()}:i))};
+  const exportIssuesCSV=()=>{const hdr=['ID','Status','Priority','Description','Page','Context','Reported By','Role','Timestamp','Resolution','Resolved At'];const rows=issues.map(i=>[i.id,i.status,i.priority,'"'+i.description.replace(/"/g,'""')+'"',i.page,i.viewing||'',i.reportedBy,i.role,i.timestamp,i.resolution||'',i.resolvedAt||'']);const csv=[hdr.join(','),...rows.map(r=>r.join(','))].join('\n');const blob=new Blob([csv],{type:'text/csv'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='issues_export_'+new Date().toISOString().slice(0,10)+'.csv';a.click();URL.revokeObjectURL(url)};
   // SO version history
   const[soHistory,setSOHistory]=useState({});// {soId:[{ts,user,snapshot}]}
   const[msgs,setMsgs]=useState(()=>loadState('msgs',D_MSG));const[cM,setCM]=useState({open:false,c:null});const[aM,setAM]=useState({open:false,p:null});
@@ -7118,9 +7130,56 @@ export default function App(){
       </div>)}
     </>)};
 
+    // ISSUES PAGE
+  const rIssues=()=>{
+    const fi=issueFilter==='all'?issues:issues.filter(i=>i.status===issueFilter);
+    const prioColor={high:'#dc2626',medium:'#f59e0b',low:'#22c55e'};
+    const prioLabel={high:'High',medium:'Medium',low:'Low'};
+    return<>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16}}>
+        <div style={{display:'flex',gap:6}}>
+          {['all','open','resolved'].map(f=><button key={f} className={`btn btn-sm ${issueFilter===f?'btn-primary':'btn-secondary'}`} onClick={()=>setIssueFilter(f)}>{f==='all'?'All ('+issues.length+')':f==='open'?'Open ('+issues.filter(i=>i.status==='open').length+')':'Resolved ('+issues.filter(i=>i.status==='resolved').length+')'}</button>)}
+        </div>
+        <div style={{display:'flex',gap:6}}>
+          <button className="btn btn-sm btn-primary" onClick={()=>setIssueModal({open:true,desc:'',priority:'medium'})}><Icon name="plus" size={12}/> Report Issue</button>
+          {issues.length>0&&<button className="btn btn-sm btn-secondary" onClick={exportIssuesCSV}><Icon name="save" size={12}/> Export CSV</button>}
+        </div>
+      </div>
+      {fi.length===0&&<div className="card"><div className="card-body" style={{textAlign:'center',padding:40,color:'#94a3b8'}}>{issues.length===0?'No issues reported yet. Click the flag button in the topbar to report an issue.':'No '+issueFilter+' issues.'}</div></div>}
+      {fi.map(issue=><div key={issue.id} className="card" style={{marginBottom:12,borderLeft:'4px solid '+(prioColor[issue.priority]||'#94a3b8')}}>
+        <div className="card-body" style={{padding:16}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:8}}>
+            <div style={{display:'flex',gap:8,alignItems:'center'}}>
+              <span style={{fontWeight:700,fontSize:14,fontFamily:'monospace',color:'#1e40af'}}>{issue.id}</span>
+              <span className={`badge ${issue.status==='open'?'badge-amber':'badge-green'}`}>{issue.status}</span>
+              <span style={{background:prioColor[issue.priority]+'20',color:prioColor[issue.priority],borderRadius:4,padding:'2px 8px',fontSize:11,fontWeight:600}}>{prioLabel[issue.priority]}</span>
+            </div>
+            {issue.status==='open'&&<div style={{display:'flex',gap:4}}>
+              <button className="btn btn-sm btn-primary" onClick={()=>resolveIssue(issue.id,'resolved')} style={{fontSize:10}}><Icon name="check" size={12}/> Resolve</button>
+              <button className="btn btn-sm btn-secondary" onClick={()=>resolveIssue(issue.id,'wont_fix')} style={{fontSize:10,color:'#94a3b8'}}>Won't Fix</button>
+            </div>}
+          </div>
+          <p style={{margin:'0 0 8px',fontSize:14,lineHeight:1.5}}>{issue.description}</p>
+          <div style={{display:'flex',gap:16,fontSize:11,color:'#64748b',flexWrap:'wrap'}}>
+            <span>Page: <strong>{issue.page}</strong></span>
+            {issue.viewing&&<span>Context: <strong>{issue.viewing}</strong></span>}
+            <span>By: <strong>{issue.reportedBy}</strong> ({issue.role})</span>
+            <span>{new Date(issue.timestamp).toLocaleString()}</span>
+          </div>
+          {issue.recentErrors&&issue.recentErrors.length>0&&<details style={{marginTop:8}}>
+            <summary style={{fontSize:11,color:'#dc2626',cursor:'pointer'}}>Console errors at time of report ({issue.recentErrors.length})</summary>
+            <div style={{marginTop:4,padding:8,background:'#fef2f2',borderRadius:6,fontSize:10,fontFamily:'monospace',maxHeight:100,overflow:'auto'}}>
+              {issue.recentErrors.map((e,i)=><div key={i} style={{marginBottom:2}}>{e.msg}</div>)}
+            </div>
+          </details>}
+          {issue.resolution&&<div style={{marginTop:8,fontSize:11,color:'#16a34a'}}>Resolution: <strong>{issue.resolution==='wont_fix'?"Won't fix":'Resolved'}</strong> — {new Date(issue.resolvedAt).toLocaleString()}</div>}
+        </div>
+      </div>)}
+    </>};
+
     // NAV
-  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'reports',label:'Reports',icon:'dollar'},{id:'commissions',label:'Commissions',icon:'dollar',roles:['admin','rep']},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'production',label:'Prod Board',icon:'package'},{id:'decoration',label:'Decoration',icon:'image'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{id:'team',label:'Team',icon:'users'},{section:'Comms'},{id:'messages',label:'Messages',icon:'mail'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'System'},{id:'import',label:'NetSuite Import',icon:'save'},{id:'qb',label:'QuickBooks Sync',icon:'dollar'},{id:'backup',label:'Backup & Data',icon:'save'}];
-  const titles={dashboard:'Dashboard',reports:'Reports & Analytics',commissions:'Commissions',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',omg:'OMG Team Stores',jobs:'Jobs',production:'Production Board',decoration:'Decoration',warehouse:'Warehouse',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',team:'Team Directory',products:'Products',inventory:'Inventory',messages:'Messages',import:'NetSuite Import',qb:'QuickBooks Online',backup:'Backup & Data'};
+  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'reports',label:'Reports',icon:'dollar'},{id:'commissions',label:'Commissions',icon:'dollar',roles:['admin','rep']},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'production',label:'Prod Board',icon:'package'},{id:'decoration',label:'Decoration',icon:'image'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{id:'team',label:'Team',icon:'users'},{section:'Comms'},{id:'messages',label:'Messages',icon:'mail'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'System'},{id:'issues',label:'Issues',icon:'alert'},{id:'import',label:'NetSuite Import',icon:'save'},{id:'qb',label:'QuickBooks Sync',icon:'dollar'},{id:'backup',label:'Backup & Data',icon:'save'}];
+  const titles={dashboard:'Dashboard',reports:'Reports & Analytics',commissions:'Commissions',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',omg:'OMG Team Stores',jobs:'Jobs',production:'Production Board',decoration:'Decoration',warehouse:'Warehouse',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',team:'Team Directory',products:'Products',inventory:'Inventory',messages:'Messages',issues:'Issues',import:'NetSuite Import',qb:'QuickBooks Online',backup:'Backup & Data'};
   // LOGIN GATE
   if(!cu)return<LoginGate onLogin={handleLogin}/>;
 
@@ -7130,7 +7189,7 @@ export default function App(){
         if(item.roles&&!item.roles.includes(cu.role))return null;
         const ubadge=item.id==='messages'?msgs.filter(m=>!(m.read_by||[]).includes(cu.id)).length:0;
         return<button key={item.id} className={`sidebar-link ${pg===item.id?'active':''}`}
-          onClick={()=>{if(dirtyRef.current&&!window.confirm('You have unsaved changes. Leave without saving?'))return;dirtyRef.current=false;setPg(item.id);setQ('');setSelC(null);setSelV(null);setEEst(null);setESO(null)}}><Icon name={item.icon}/>{item.label}{item.id==='messages'&&ubadge>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{ubadge}</span>}{item.id==='batch_pos'&&batchPOs.length>0&&<span style={{background:'#7c3aed',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{batchPOs.length}</span>}</button>})}</nav>
+          onClick={()=>{if(dirtyRef.current&&!window.confirm('You have unsaved changes. Leave without saving?'))return;dirtyRef.current=false;setPg(item.id);setQ('');setSelC(null);setSelV(null);setEEst(null);setESO(null)}}><Icon name={item.icon}/>{item.label}{item.id==='messages'&&ubadge>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{ubadge}</span>}{item.id==='batch_pos'&&batchPOs.length>0&&<span style={{background:'#7c3aed',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{batchPOs.length}</span>}{item.id==='issues'&&openIssueCount>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{openIssueCount}</span>}</button>})}</nav>
       <div className="sidebar-user"><div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}><div><div style={{fontWeight:600,color:'#e2e8f0'}}>{cu.name}</div><div>{cu.role}</div></div><button onClick={handleLogout} style={{background:'none',border:'1px solid #475569',borderRadius:6,padding:'3px 8px',color:'#94a3b8',cursor:'pointer',fontSize:10}} title="Log out">↪ Out</button></div></div></div>
     <div className="main"><div className="topbar"><h1>{eEst?eEst.id:eSO?eSO.id:selC?selC.name:selV?selV.name:(titles[pg]||'Dashboard')}</h1>
         <div style={{flex:1,maxWidth:400,margin:'0 20px',position:'relative'}}>
@@ -7158,8 +7217,8 @@ export default function App(){
             </div>})()}
           {gOpen&&<div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:59}} onClick={()=>setGOpen(false)}/>}
         </div>
-        <div style={{display:'flex',gap:6,alignItems:'center'}}><button className="btn btn-sm btn-primary" onClick={()=>newE(null)} style={{fontSize:11}}><Icon name="plus" size={12}/> Estimate</button><button className="btn btn-sm btn-secondary" onClick={()=>setCM({open:true,c:null})} style={{fontSize:11}}><Icon name="plus" size={12}/> Customer</button><button className="btn btn-sm btn-secondary" onClick={()=>setQPC({open:true,mode:'single',items:[{sku:'',name:'',brand:'',color:'',category:'Tees',retail_price:0,nsa_cost:0,available_sizes:['S','M','L','XL','2XL'],vendor_id:''}]})} style={{fontSize:11}}><Icon name="plus" size={12}/> Product</button></div></div>
-      <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='production'&&rProd2()}{pg==='decoration'&&rDeco()}{pg==='warehouse'&&rWarehouse()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='team'&&rTeam()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='commissions'&&rCommissions()}{pg==='omg'&&rOMG()}{pg==='reports'&&rReports()}{pg==='import'&&rImport()}{pg==='qb'&&rQB()}{pg==='backup'&&rBackup()}</div></div>
+        <div style={{display:'flex',gap:6,alignItems:'center'}}><button className="btn btn-sm" onClick={()=>setIssueModal({open:true,desc:'',priority:'medium'})} style={{fontSize:11,background:'none',border:'1px solid #fca5a5',color:'#dc2626',position:'relative',padding:'4px 8px'}} title="Report an issue"><Icon name="alert" size={14}/>{openIssueCount>0&&<span style={{position:'absolute',top:-4,right:-4,background:'#dc2626',color:'white',borderRadius:10,padding:'0 5px',fontSize:9,minWidth:16,textAlign:'center',lineHeight:'16px'}}>{openIssueCount}</span>}</button><button className="btn btn-sm btn-primary" onClick={()=>newE(null)} style={{fontSize:11}}><Icon name="plus" size={12}/> Estimate</button><button className="btn btn-sm btn-secondary" onClick={()=>setCM({open:true,c:null})} style={{fontSize:11}}><Icon name="plus" size={12}/> Customer</button><button className="btn btn-sm btn-secondary" onClick={()=>setQPC({open:true,mode:'single',items:[{sku:'',name:'',brand:'',color:'',category:'Tees',retail_price:0,nsa_cost:0,available_sizes:['S','M','L','XL','2XL'],vendor_id:''}]})} style={{fontSize:11}}><Icon name="plus" size={12}/> Product</button></div></div>
+      <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='production'&&rProd2()}{pg==='decoration'&&rDeco()}{pg==='warehouse'&&rWarehouse()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='team'&&rTeam()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='commissions'&&rCommissions()}{pg==='omg'&&rOMG()}{pg==='reports'&&rReports()}{pg==='issues'&&rIssues()}{pg==='import'&&rImport()}{pg==='qb'&&rQB()}{pg==='backup'&&rBackup()}</div></div>
     <CustModal isOpen={cM.open} onClose={()=>setCM({open:false,c:null})} onSave={savC} customer={cM.c} parents={pars}/>
     <AdjModal isOpen={aM.open} onClose={()=>setAM({open:false,p:null})} product={aM.p} onSave={savI}/>
 
@@ -7240,6 +7299,37 @@ export default function App(){
             nf('📦 Added '+newProds.length+' product'+(newProds.length>1?'s':''));
           }}>{qPC.mode==='bulk'?'📥 Import Products':'💾 Save Product'+(qPC.mode==='multi'?'s':'')}</button>
           <button className="btn btn-secondary" onClick={()=>setQPC(x=>({...x,open:false}))}>Cancel</button>
+        </div>
+      </div>
+    </div></div>}
+
+    {/* ISSUE REPORT MODAL */}
+    {issueModal.open&&<div className="modal-overlay" onClick={()=>setIssueModal(x=>({...x,open:false}))}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:480}}>
+      <div className="modal-header" style={{background:'#fef2f2'}}><h2 style={{display:'flex',alignItems:'center',gap:8}}><Icon name="alert" size={18}/> Report an Issue</h2><button className="modal-close" onClick={()=>setIssueModal(x=>({...x,open:false}))}>×</button></div>
+      <div className="modal-body">
+        <div style={{background:'#f8fafc',borderRadius:6,padding:10,marginBottom:12,fontSize:11,color:'#64748b'}}>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:4}}>
+            <div>Page: <strong style={{color:'#1e293b'}}>{titles[pg]||pg}</strong></div>
+            <div>User: <strong style={{color:'#1e293b'}}>{cu.name}</strong></div>
+            <div>Role: <strong style={{color:'#1e293b'}}>{cu.role}</strong></div>
+            <div>Time: <strong style={{color:'#1e293b'}}>{new Date().toLocaleTimeString()}</strong></div>
+            {(eEst||eSO||selC||selV)&&<div style={{gridColumn:'1/3'}}>Context: <strong style={{color:'#1e293b'}}>{eEst?'Editing '+eEst.id:eSO?'Editing '+eSO.id:selC?'Viewing '+selC.name:selV?'Viewing '+selV.name:''}</strong></div>}
+          </div>
+          {consoleErrors.current.length>0&&<div style={{marginTop:6,color:'#dc2626'}}>Console errors captured: {consoleErrors.current.length}</div>}
+        </div>
+        <div style={{marginBottom:12}}>
+          <label className="form-label">Describe the issue *</label>
+          <textarea className="form-input" rows={4} value={issueModal.desc} onChange={e=>setIssueModal(x=>({...x,desc:e.target.value}))} placeholder="What went wrong? What were you trying to do?" autoFocus/>
+        </div>
+        <div style={{marginBottom:12}}>
+          <label className="form-label">Priority</label>
+          <div style={{display:'flex',gap:6}}>
+            {['low','medium','high'].map(p=><button key={p} className={`btn btn-sm ${issueModal.priority===p?'btn-primary':'btn-secondary'}`} onClick={()=>setIssueModal(x=>({...x,priority:p}))} style={{textTransform:'capitalize',...(p==='high'&&issueModal.priority===p?{background:'#dc2626',borderColor:'#dc2626'}:p==='low'&&issueModal.priority===p?{background:'#22c55e',borderColor:'#22c55e'}:{})}}>{p}</button>)}
+          </div>
+        </div>
+        <div style={{display:'flex',gap:8}}>
+          <button className="btn btn-primary" onClick={submitIssue} disabled={!issueModal.desc.trim()}>Submit Issue</button>
+          <button className="btn btn-secondary" onClick={()=>setIssueModal(x=>({...x,open:false}))}>Cancel</button>
         </div>
       </div>
     </div></div>}
