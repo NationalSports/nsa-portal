@@ -5110,6 +5110,9 @@ export default function App(){
   const[rptTab,setRptTab]=useState('overview');
   const[rptRep,setRptRep]=useState('all');
   const[rptWidgets,setRptWidgets]=useState({pipeline:true,repLeaderboard:true,custHealth:true,productMix:true,convFunnel:true,margins:true,seasonality:true,retention:true});
+  const[commOverrides,setCommOverrides]=useState({});// {invoiceId: true} = admin approved full commission on late invoice
+  const[commMonth,setCommMonth]=useState(()=>{const d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')});
+  const[commTab,setCommTab]=useState('statement');// statement, pipeline, ytd, byCustomer
   const toggleWidget=(k)=>setRptWidgets(w=>({...w,[k]:!w[k]}));
 
   const rReports=()=>{
@@ -5323,6 +5326,292 @@ export default function App(){
             </div>)}
         </div>}
       </div>}
+    </>);
+  };
+
+  // COMMISSIONS PAGE — visible only to admin and the logged-in rep
+  const rCommissions=()=>{
+    const isAdmin=cu.role==='admin';
+    const salesReps=REPS.filter(r=>r.role==='rep'||r.role==='admin');
+    // Admin sees all reps or picks one; rep only sees themselves
+    const viewRepId=isAdmin?(commTab==='statement'||commTab==='pipeline'||commTab==='ytd'||commTab==='byCustomer'?q||'all':'all'):cu.id;
+
+    // Gross profit calculator for an invoice
+    const calcGP=(inv)=>{
+      const so=sos.find(s=>s.id===inv.so_id);
+      if(!so)return{rev:inv.total||0,cost:0,gp:inv.total||0,shipRev:0,shipCost:0,inboundFreight:0};
+      const _aq={};safeItems(so).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_aq[d.art_file_id]=(_aq[d.art_file_id]||0)+q2}})});
+      const af=safeArt(so);let rev=0,cost=0;
+      safeItems(so).forEach(it=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
+        rev+=qty*safeNum(it.unit_sell);cost+=qty*safeNum(it.nsa_cost);
+        safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);rev+=qty*dp2.sell;cost+=qty*dp2.cost});
+        // Outside deco POs
+        (it.po_lines||[]).filter(pl=>pl.po_type==='outside_deco').forEach(pl=>{const poQty=Object.entries(pl).filter(([k,v])=>typeof v==='number'&&k!=='unit_cost').reduce((a,[,v])=>a+v,0);cost+=poQty*safeNum(pl.unit_cost)});
+      });
+      // Shipping revenue (charged to customer)
+      const shipRev=so.shipping_type==='pct'?rev*(safeNum(so.shipping_value)/100):safeNum(so.shipping_value);
+      // Outbound shipping cost — placeholder for ShipStation
+      const shipCost=safeNum(so._shipstation_cost||0);
+      // Inbound freight from supplier bills
+      const inboundFreight=safeNum(so._inbound_freight||0);
+      const totalRev=rev+shipRev;const totalCost=cost+shipCost+inboundFreight;
+      // Scale to invoice proportion (invoice may be partial payment of SO)
+      const soTotal=totalRev||1;const scale=safeNum(inv.total)/soTotal;
+      return{rev:inv.total,cost:Math.round(totalCost*scale*100)/100,gp:Math.round((inv.total-totalCost*scale)*100)/100,shipRev:Math.round(shipRev*scale*100)/100,shipCost:Math.round(shipCost*scale*100)/100,inboundFreight:Math.round(inboundFreight*scale*100)/100};
+    };
+
+    // Build commission line items from invoices
+    const buildCommLines=(repFilter)=>{
+      return invs.filter(inv=>{
+        if(inv.status!=='paid'&&inv.status!=='partial')return false;
+        const so=sos.find(s=>s.id===inv.so_id);
+        if(repFilter&&repFilter!=='all'){return so?.created_by===repFilter}
+        return true;
+      }).map(inv=>{
+        const so=sos.find(s=>s.id===inv.so_id);
+        const c=cust.find(x=>x.id===inv.customer_id);
+        const rep=REPS.find(r=>r.id===so?.created_by);
+        const gp=calcGP(inv);
+        const invDate=new Date(inv.date);
+        const paidDate=inv.payments?.length>0?new Date(inv.payments[inv.payments.length-1].date):null;
+        const daysToPay=paidDate?Math.round((paidDate-invDate)/(1000*60*60*24)):null;
+        const isLate=daysToPay!==null&&daysToPay>90;
+        const overridden=commOverrides[inv.id]||false;
+        const commRate=isLate&&!overridden?0.15:0.30;
+        const commAmt=Math.round(gp.gp*commRate*100)/100;
+        const paidAmt=inv.payments?.reduce((a,p)=>a+safeNum(p.amount),0)||0;
+        const invMonth=inv.date?inv.date.substring(0,2)+'/'+inv.date.substring(6,8):'';// MM/YY
+        const paidMonth=paidDate?(paidDate.getMonth()+1)+'/'+paidDate.getFullYear():'';
+        return{inv,so,customer:c,rep,gp,daysToPay,isLate,overridden,commRate,commAmt,paidAmt,paidDate,invMonth,paidMonth,repId:so?.created_by};
+      });
+    };
+
+    // Build pipeline from open/unpaid invoices
+    const buildPipeline=(repFilter)=>{
+      return invs.filter(inv=>{
+        if(inv.status==='paid')return false;
+        const so=sos.find(s=>s.id===inv.so_id);
+        if(repFilter&&repFilter!=='all')return so?.created_by===repFilter;
+        return true;
+      }).map(inv=>{
+        const so=sos.find(s=>s.id===inv.so_id);
+        const c=cust.find(x=>x.id===inv.customer_id);
+        const rep=REPS.find(r=>r.id===so?.created_by);
+        const gp=calcGP(inv);
+        const invDate=new Date(inv.date);
+        const now=new Date();const daysOpen=Math.round((now-invDate)/(1000*60*60*24));
+        const willBeLate=daysOpen>90;
+        const expRate=willBeLate?0.15:0.30;
+        const expComm=Math.round(gp.gp*expRate*100)/100;
+        const balance=safeNum(inv.total)-safeNum(inv.paid);
+        return{inv,so,customer:c,rep,gp,daysOpen,willBeLate,expRate,expComm,balance,repId:so?.created_by};
+      });
+    };
+
+    const allLines=buildCommLines(isAdmin?q||'all':cu.id);
+    const allPipeline=buildPipeline(isAdmin?q||'all':cu.id);
+
+    // Filter by selected month for statement
+    const monthLines=allLines.filter(l=>{
+      if(!l.paidDate)return false;
+      const ym=l.paidDate.getFullYear()+'-'+String(l.paidDate.getMonth()+1).padStart(2,'0');
+      return ym===commMonth;
+    });
+    const monthTotal=monthLines.reduce((a,l)=>a+l.commAmt,0);
+    const monthGP=monthLines.reduce((a,l)=>a+l.gp.gp,0);
+
+    // YTD
+    const yr=new Date().getFullYear();
+    const ytdLines=allLines.filter(l=>l.paidDate&&l.paidDate.getFullYear()===yr);
+    const ytdComm=ytdLines.reduce((a,l)=>a+l.commAmt,0);
+    const ytdGP=ytdLines.reduce((a,l)=>a+l.gp.gp,0);
+    const ytdRev=ytdLines.reduce((a,l)=>a+safeNum(l.inv.total),0);
+
+    // By customer
+    const byCust={};allLines.forEach(l=>{const cn=l.customer?.name||'Unknown';if(!byCust[cn])byCust[cn]={name:cn,gp:0,comm:0,invCount:0,rev:0};byCust[cn].gp+=l.gp.gp;byCust[cn].comm+=l.commAmt;byCust[cn].invCount++;byCust[cn].rev+=safeNum(l.inv.total)});
+    const custList=Object.values(byCust).sort((a,b)=>b.comm-a.comm);
+
+    // Monthly breakdown for YTD chart
+    const monthlyData={};ytdLines.forEach(l=>{const m=String(l.paidDate.getMonth()+1).padStart(2,'0');if(!monthlyData[m])monthlyData[m]={month:m,gp:0,comm:0,count:0};monthlyData[m].gp+=l.gp.gp;monthlyData[m].comm+=l.commAmt;monthlyData[m].count++});
+    const months=['01','02','03','04','05','06','07','08','09','10','11','12'];
+    const monthNames=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+    // Pipeline total
+    const pipeTotal=allPipeline.reduce((a,l)=>a+l.expComm,0);
+    const pipeBalance=allPipeline.reduce((a,l)=>a+l.balance,0);
+
+    return(<>
+      {/* Header with rep selector (admin only) */}
+      <div style={{display:'flex',gap:12,marginBottom:16,alignItems:'center',flexWrap:'wrap'}}>
+        {isAdmin&&<><span style={{fontSize:12,fontWeight:600,color:'#64748b'}}>Rep:</span>
+          <select className="form-select" style={{width:180}} value={q} onChange={e=>setQ(e.target.value)}>
+            <option value="all">All Reps</option>
+            {salesReps.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
+          </select></>}
+        <div style={{display:'flex',gap:4,marginLeft:isAdmin?'auto':0}}>
+          {[['statement','📋 Statement'],['pipeline','📊 Pipeline'],['ytd','📈 YTD'],['byCustomer','👥 By Customer']].map(([id,label])=>
+            <button key={id} className={`btn btn-sm ${commTab===id?'btn-primary':'btn-secondary'}`} onClick={()=>setCommTab(id)}>{label}</button>)}
+        </div>
+      </div>
+
+      {/* Summary cards */}
+      <div className="stats-row" style={{marginBottom:16}}>
+        <div className="stat-card"><div className="stat-label">This Month</div><div className="stat-value" style={{color:'#166534'}}>${monthTotal.toLocaleString(undefined,{maximumFractionDigits:2})}</div></div>
+        <div className="stat-card"><div className="stat-label">YTD Earned</div><div className="stat-value" style={{color:'#1e40af'}}>${ytdComm.toLocaleString(undefined,{maximumFractionDigits:2})}</div></div>
+        <div className="stat-card"><div className="stat-label">Pipeline</div><div className="stat-value" style={{color:'#7c3aed'}}>${pipeTotal.toLocaleString(undefined,{maximumFractionDigits:2})}</div></div>
+        <div className="stat-card"><div className="stat-label">Avg GP%</div><div className="stat-value" style={{color:ytdRev>0&&(ytdGP/ytdRev*100)>=30?'#166534':'#d97706'}}>{ytdRev>0?Math.round(ytdGP/ytdRev*100):0}%</div></div>
+      </div>
+
+      {/* MONTHLY STATEMENT TAB */}
+      {commTab==='statement'&&<div className="card">
+        <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+          <h2>💰 Commission Statement</h2>
+          <div style={{display:'flex',gap:8,alignItems:'center'}}>
+            <button className="btn btn-sm btn-secondary" onClick={()=>{const[y,m]=commMonth.split('-').map(Number);const d=new Date(y,m-2,1);setCommMonth(d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'))}}>◀</button>
+            <input type="month" className="form-input" style={{width:160}} value={commMonth} onChange={e=>setCommMonth(e.target.value)}/>
+            <button className="btn btn-sm btn-secondary" onClick={()=>{const[y,m]=commMonth.split('-').map(Number);const d=new Date(y,m,1);setCommMonth(d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'))}}>▶</button>
+          </div>
+        </div>
+        <div className="card-body" style={{padding:0}}>
+          {monthLines.length===0?<div style={{padding:40,textAlign:'center',color:'#94a3b8'}}>No paid invoices this month</div>:
+          <table style={{fontSize:12}}><thead><tr>
+            <th>Invoice</th><th>Customer</th>{isAdmin&&<th>Rep</th>}<th style={{textAlign:'right'}}>Revenue</th><th style={{textAlign:'right'}}>Cost</th><th style={{textAlign:'right'}}>Gross Profit</th><th style={{textAlign:'center'}}>Days</th><th style={{textAlign:'center'}}>Rate</th><th style={{textAlign:'right'}}>Commission</th>{isAdmin&&<th></th>}
+          </tr></thead><tbody>
+            {monthLines.map(l=><tr key={l.inv.id} style={{background:l.isLate&&!l.overridden?'#fef2f2':''}}>
+              <td style={{fontWeight:700,color:'#1e40af'}}>{l.inv.id}<div style={{fontSize:10,color:'#94a3b8'}}>{l.inv.date}</div></td>
+              <td>{l.customer?.name||'—'}<div style={{fontSize:10,color:'#94a3b8'}}>{l.inv.memo}</div></td>
+              {isAdmin&&<td style={{fontSize:11}}>{l.rep?.name||'—'}</td>}
+              <td style={{textAlign:'right'}}>${safeNum(l.inv.total).toLocaleString()}</td>
+              <td style={{textAlign:'right',color:'#dc2626'}}>${l.gp.cost.toLocaleString()}</td>
+              <td style={{textAlign:'right',fontWeight:700,color:l.gp.gp>0?'#166534':'#dc2626'}}>${l.gp.gp.toLocaleString()}</td>
+              <td style={{textAlign:'center'}}><span style={{padding:'2px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:l.isLate?'#fee2e2':'#dcfce7',color:l.isLate?'#dc2626':'#166534'}}>{l.daysToPay??'—'}d</span></td>
+              <td style={{textAlign:'center',fontWeight:600,color:l.commRate===0.30?'#166534':'#d97706'}}>{Math.round(l.commRate*100)}%</td>
+              <td style={{textAlign:'right',fontWeight:800,fontSize:14,color:'#166534'}}>${l.commAmt.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
+              {isAdmin&&<td style={{textAlign:'center'}}>
+                {l.isLate&&!l.overridden&&<button className="btn btn-sm" style={{fontSize:9,background:'#fef3c7',border:'1px solid #f59e0b',color:'#92400e',padding:'2px 6px'}} title="Approve full 30% commission" onClick={()=>setCommOverrides(p=>({...p,[l.inv.id]:true}))}>🔓 Full</button>}
+                {l.isLate&&l.overridden&&<span style={{fontSize:9,color:'#166534',fontWeight:700}}>✅ Approved</span>}
+              </td>}
+            </tr>)}
+            <tr style={{fontWeight:800,background:'#f0f9ff',borderTop:'2px solid #1e40af'}}>
+              <td colSpan={isAdmin?3:2}>TOTAL</td>
+              <td style={{textAlign:'right'}}>${monthLines.reduce((a,l)=>a+safeNum(l.inv.total),0).toLocaleString()}</td>
+              <td style={{textAlign:'right',color:'#dc2626'}}>${monthLines.reduce((a,l)=>a+l.gp.cost,0).toLocaleString()}</td>
+              <td style={{textAlign:'right',color:'#166534'}}>${monthGP.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
+              <td colSpan={2}></td>
+              <td style={{textAlign:'right',fontSize:16,color:'#166534'}}>${monthTotal.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
+              {isAdmin&&<td/>}
+            </tr>
+          </tbody></table>}
+        </div>
+      </div>}
+
+      {/* PIPELINE TAB */}
+      {commTab==='pipeline'&&<div className="card">
+        <div className="card-header"><h2>📊 Expected Commissions — Open Invoices</h2><span style={{fontSize:12,color:'#64748b'}}>Outstanding: ${pipeBalance.toLocaleString()}</span></div>
+        <div className="card-body" style={{padding:0}}>
+          {allPipeline.length===0?<div style={{padding:40,textAlign:'center',color:'#94a3b8'}}>No open invoices</div>:
+          <table style={{fontSize:12}}><thead><tr>
+            <th>Invoice</th><th>Customer</th>{isAdmin&&<th>Rep</th>}<th style={{textAlign:'right'}}>Balance</th><th style={{textAlign:'right'}}>Est. GP</th><th style={{textAlign:'center'}}>Days Open</th><th style={{textAlign:'center'}}>Est. Rate</th><th style={{textAlign:'right'}}>Expected Comm</th>
+          </tr></thead><tbody>
+            {allPipeline.sort((a,b)=>b.daysOpen-a.daysOpen).map(l=><tr key={l.inv.id} style={{background:l.willBeLate?'#fef2f2':l.daysOpen>60?'#fffbeb':''}}>
+              <td style={{fontWeight:700,color:'#1e40af'}}>{l.inv.id}<div style={{fontSize:10,color:'#94a3b8'}}>{l.inv.date}</div></td>
+              <td>{l.customer?.name||'—'}<div style={{fontSize:10,color:'#94a3b8'}}>{l.inv.memo}</div></td>
+              {isAdmin&&<td style={{fontSize:11}}>{l.rep?.name||'—'}</td>}
+              <td style={{textAlign:'right',fontWeight:600}}>${l.balance.toLocaleString()}</td>
+              <td style={{textAlign:'right',color:l.gp.gp>0?'#166534':'#dc2626'}}>${l.gp.gp.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+              <td style={{textAlign:'center'}}><span style={{padding:'2px 8px',borderRadius:8,fontSize:10,fontWeight:600,background:l.willBeLate?'#fee2e2':l.daysOpen>60?'#fef3c7':'#dcfce7',color:l.willBeLate?'#dc2626':l.daysOpen>60?'#92400e':'#166534'}}>{l.daysOpen}d</span></td>
+              <td style={{textAlign:'center',fontWeight:600,color:l.expRate===0.30?'#166534':'#d97706'}}>{Math.round(l.expRate*100)}%</td>
+              <td style={{textAlign:'right',fontWeight:700,color:'#7c3aed'}}>${l.expComm.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
+            </tr>)}
+            <tr style={{fontWeight:800,background:'#f5f3ff',borderTop:'2px solid #7c3aed'}}>
+              <td colSpan={isAdmin?3:2}>TOTAL PIPELINE</td>
+              <td style={{textAlign:'right'}}>${pipeBalance.toLocaleString()}</td>
+              <td style={{textAlign:'right'}}>${allPipeline.reduce((a,l)=>a+l.gp.gp,0).toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+              <td colSpan={2}></td>
+              <td style={{textAlign:'right',fontSize:16,color:'#7c3aed'}}>${pipeTotal.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
+            </tr>
+          </tbody></table>}
+        </div>
+      </div>}
+
+      {/* YTD TAB */}
+      {commTab==='ytd'&&<>
+        <div className="card" style={{marginBottom:16}}>
+          <div className="card-header"><h2>📈 Year-to-Date — {yr}</h2></div>
+          <div className="card-body">
+            <div className="stats-row">
+              <div className="stat-card"><div className="stat-label">Total Revenue</div><div className="stat-value">${(ytdRev/1000).toFixed(1)}k</div></div>
+              <div className="stat-card"><div className="stat-label">Total GP</div><div className="stat-value" style={{color:'#166534'}}>${(ytdGP/1000).toFixed(1)}k</div></div>
+              <div className="stat-card"><div className="stat-label">Commission Earned</div><div className="stat-value" style={{color:'#1e40af'}}>${ytdComm.toLocaleString(undefined,{maximumFractionDigits:2})}</div></div>
+              <div className="stat-card"><div className="stat-label">Invoices Paid</div><div className="stat-value">{ytdLines.length}</div></div>
+            </div>
+            {/* Monthly bar chart */}
+            <div style={{marginTop:16}}>
+              <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:8}}>Monthly Breakdown</div>
+              <div style={{display:'flex',gap:4,alignItems:'flex-end',height:120}}>
+                {months.map((m,mi)=>{const d=monthlyData[m];const maxC=Math.max(1,...Object.values(monthlyData).map(x=>x.comm));const h=d?Math.max(4,d.comm/maxC*100):4;
+                  return<div key={m} style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:2}}>
+                    {d&&<span style={{fontSize:9,color:'#166534',fontWeight:700}}>${Math.round(d.comm)}</span>}
+                    <div style={{width:'100%',height:h,background:d?'#3b82f6':'#e2e8f0',borderRadius:3,transition:'height 0.3s'}}/>
+                    <span style={{fontSize:9,color:'#94a3b8'}}>{monthNames[mi]}</span>
+                  </div>})}
+              </div>
+            </div>
+          </div>
+        </div>
+        {/* YTD detail table */}
+        {isAdmin&&<div className="card">
+          <div className="card-header"><h2>Rep Leaderboard — YTD</h2></div>
+          <div className="card-body" style={{padding:0}}>
+            <table style={{fontSize:12}}><thead><tr><th>Rep</th><th style={{textAlign:'right'}}>Revenue</th><th style={{textAlign:'right'}}>GP</th><th style={{textAlign:'center'}}>GP%</th><th style={{textAlign:'right'}}>Commission</th><th style={{textAlign:'center'}}>Invoices</th></tr></thead><tbody>
+              {salesReps.filter(r=>r.role==='rep'||r.role==='admin').map(r=>{
+                const rLines=ytdLines.filter(l=>l.repId===r.id);
+                const rRev=rLines.reduce((a,l)=>a+safeNum(l.inv.total),0);
+                const rGP=rLines.reduce((a,l)=>a+l.gp.gp,0);
+                const rComm=rLines.reduce((a,l)=>a+l.commAmt,0);
+                return<tr key={r.id}><td style={{fontWeight:700}}>{r.name}</td>
+                  <td style={{textAlign:'right'}}>${rRev.toLocaleString()}</td>
+                  <td style={{textAlign:'right',color:'#166534'}}>${rGP.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+                  <td style={{textAlign:'center'}}>{rRev>0?Math.round(rGP/rRev*100):0}%</td>
+                  <td style={{textAlign:'right',fontWeight:700,color:'#1e40af'}}>${rComm.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
+                  <td style={{textAlign:'center'}}>{rLines.length}</td></tr>})}
+            </tbody></table>
+          </div>
+        </div>}
+      </>}
+
+      {/* BY CUSTOMER TAB */}
+      {commTab==='byCustomer'&&<div className="card">
+        <div className="card-header"><h2>👥 Commission by Customer</h2></div>
+        <div className="card-body" style={{padding:0}}>
+          {custList.length===0?<div style={{padding:40,textAlign:'center',color:'#94a3b8'}}>No commission data</div>:
+          <table style={{fontSize:12}}><thead><tr>
+            <th>Customer</th><th style={{textAlign:'center'}}>Invoices</th><th style={{textAlign:'right'}}>Revenue</th><th style={{textAlign:'right'}}>Gross Profit</th><th style={{textAlign:'center'}}>GP%</th><th style={{textAlign:'right'}}>Commission</th>
+          </tr></thead><tbody>
+            {custList.map(c=><tr key={c.name}>
+              <td style={{fontWeight:700}}>{c.name}</td>
+              <td style={{textAlign:'center'}}>{c.invCount}</td>
+              <td style={{textAlign:'right'}}>${c.rev.toLocaleString()}</td>
+              <td style={{textAlign:'right',color:'#166534'}}>${c.gp.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+              <td style={{textAlign:'center'}}><span style={{padding:'2px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:c.rev>0&&c.gp/c.rev>=0.3?'#dcfce7':'#fef3c7',color:c.rev>0&&c.gp/c.rev>=0.3?'#166534':'#92400e'}}>{c.rev>0?Math.round(c.gp/c.rev*100):0}%</span></td>
+              <td style={{textAlign:'right',fontWeight:800,color:'#166534'}}>${c.comm.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
+            </tr>)}
+            <tr style={{fontWeight:800,background:'#f0f9ff',borderTop:'2px solid #1e40af'}}>
+              <td>TOTAL</td>
+              <td style={{textAlign:'center'}}>{custList.reduce((a,c)=>a+c.invCount,0)}</td>
+              <td style={{textAlign:'right'}}>${custList.reduce((a,c)=>a+c.rev,0).toLocaleString()}</td>
+              <td style={{textAlign:'right',color:'#166534'}}>${custList.reduce((a,c)=>a+c.gp,0).toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+              <td></td>
+              <td style={{textAlign:'right',fontSize:14,color:'#166534'}}>${custList.reduce((a,c)=>a+c.comm,0).toLocaleString(undefined,{maximumFractionDigits:2})}</td>
+            </tr>
+          </tbody></table>}
+        </div>
+      </div>}
+
+      {/* Commission policy note */}
+      <div style={{marginTop:16,padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0',fontSize:11,color:'#64748b'}}>
+        <strong>Commission Policy:</strong> 30% of gross profit on invoices paid within 90 days of invoice date. 15% on invoices paid after 90 days. Admin may approve full commission on late invoices at discretion. Gross profit = Revenue − Product Cost − Decoration Cost − Outbound Shipping (ShipStation) − Inbound Freight (Supplier Bills).
+      </div>
     </>);
   };
 
@@ -6733,14 +7022,15 @@ export default function App(){
           </div></div>})}</div></div></>)};
 
     // NAV
-  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'reports',label:'Reports',icon:'dollar'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'production',label:'Prod Board',icon:'package'},{id:'decoration',label:'Decoration',icon:'image'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{section:'Comms'},{id:'messages',label:'Messages',icon:'mail'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'System'},{id:'import',label:'NetSuite Import',icon:'save'},{id:'qb',label:'QuickBooks Sync',icon:'dollar'},{id:'backup',label:'Backup & Data',icon:'save'}];
-  const titles={dashboard:'Dashboard',reports:'Reports & Analytics',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',omg:'OMG Team Stores',jobs:'Jobs',production:'Production Board',decoration:'Decoration',warehouse:'Warehouse',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',products:'Products',inventory:'Inventory',messages:'Messages',import:'NetSuite Import',qb:'QuickBooks Online',backup:'Backup & Data'};
+  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'reports',label:'Reports',icon:'dollar'},{id:'commissions',label:'Commissions',icon:'dollar',roles:['admin','rep']},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'production',label:'Prod Board',icon:'package'},{id:'decoration',label:'Decoration',icon:'image'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{section:'Comms'},{id:'messages',label:'Messages',icon:'mail'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'System'},{id:'import',label:'NetSuite Import',icon:'save'},{id:'qb',label:'QuickBooks Sync',icon:'dollar'},{id:'backup',label:'Backup & Data',icon:'save'}];
+  const titles={dashboard:'Dashboard',reports:'Reports & Analytics',commissions:'Commissions',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',omg:'OMG Team Stores',jobs:'Jobs',production:'Production Board',decoration:'Decoration',warehouse:'Warehouse',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',products:'Products',inventory:'Inventory',messages:'Messages',import:'NetSuite Import',qb:'QuickBooks Online',backup:'Backup & Data'};
   // LOGIN GATE
   if(!cu)return<LoginGate onLogin={handleLogin}/>;
 
   return(<div className="app"><Toast msg={toast?.msg} type={toast?.type}/>
     <div className="sidebar"><div className="sidebar-logo">NSA<span>Portal</span></div>
       <nav className="sidebar-nav">{nav.map((item,i)=>{if(item.section)return<div key={i} className="sidebar-section">{item.section}</div>;
+        if(item.roles&&!item.roles.includes(cu.role))return null;
         const ubadge=item.id==='messages'?msgs.filter(m=>!(m.read_by||[]).includes(cu.id)).length:0;
         return<button key={item.id} className={`sidebar-link ${pg===item.id?'active':''}`}
           onClick={()=>{if(dirtyRef.current&&!window.confirm('You have unsaved changes. Leave without saving?'))return;dirtyRef.current=false;setPg(item.id);setQ('');setSelC(null);setSelV(null);setEEst(null);setESO(null)}}><Icon name={item.icon}/>{item.label}{item.id==='messages'&&ubadge>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{ubadge}</span>}{item.id==='batch_pos'&&batchPOs.length>0&&<span style={{background:'#7c3aed',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{batchPOs.length}</span>}</button>})}</nav>
@@ -6772,7 +7062,7 @@ export default function App(){
           {gOpen&&<div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:59}} onClick={()=>setGOpen(false)}/>}
         </div>
         <div style={{display:'flex',gap:6,alignItems:'center'}}><button className="btn btn-sm btn-primary" onClick={()=>newE(null)} style={{fontSize:11}}><Icon name="plus" size={12}/> Estimate</button><button className="btn btn-sm btn-secondary" onClick={()=>setCM({open:true,c:null})} style={{fontSize:11}}><Icon name="plus" size={12}/> Customer</button><button className="btn btn-sm btn-secondary" onClick={()=>setQPC({open:true,mode:'single',items:[{sku:'',name:'',brand:'',color:'',category:'Tees',retail_price:0,nsa_cost:0,available_sizes:['S','M','L','XL','2XL'],vendor_id:''}]})} style={{fontSize:11}}><Icon name="plus" size={12}/> Product</button></div></div>
-      <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='production'&&rProd2()}{pg==='decoration'&&rDeco()}{pg==='warehouse'&&rWarehouse()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='omg'&&rOMG()}{pg==='reports'&&rReports()}{pg==='import'&&rImport()}{pg==='qb'&&rQB()}{pg==='backup'&&rBackup()}</div></div>
+      <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='production'&&rProd2()}{pg==='decoration'&&rDeco()}{pg==='warehouse'&&rWarehouse()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='omg'&&rOMG()}{pg==='reports'&&rReports()}{pg==='commissions'&&rCommissions()}{pg==='import'&&rImport()}{pg==='qb'&&rQB()}{pg==='backup'&&rBackup()}</div></div>
     <CustModal isOpen={cM.open} onClose={()=>setCM({open:false,c:null})} onSave={savC} customer={cM.c} parents={pars}/>
     <AdjModal isOpen={aM.open} onClose={()=>setAM({open:false,p:null})} product={aM.p} onSave={savI}/>
 
