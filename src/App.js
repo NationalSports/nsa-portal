@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import './portal.css';
 const Icon=({name,size=18})=>{const p={home:<path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>,users:<><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></>,building:<><path d="M6 22V4a2 2 0 012-2h8a2 2 0 012 2v18z"/><path d="M6 12H4a2 2 0 00-2 2v6a2 2 0 002 2h2"/><path d="M18 9h2a2 2 0 012 2v9a2 2 0 01-2 2h-2"/><path d="M10 6h4M10 10h4M10 14h4M10 18h4"/></>,package:<><path d="M16.5 9.4l-9-5.19M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/><path d="M3.27 6.96L12 12.01l8.73-5.05M12 22.08V12"/></>,box:<path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/>,search:<><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></>,plus:<path d="M12 5v14M5 12h14"/>,edit:<><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></>,upload:<><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></>,back:<polyline points="15 18 9 12 15 6"/>,mail:<><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></>,file:<><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></>,sortUp:<path d="M7 14l5-5 5 5"/>,sort:<><path d="M7 15l5 5 5-5"/><path d="M7 9l5-5 5 5"/></>,image:<><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></>,cart:<><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 002 1.61h9.72a2 2 0 002-1.61L23 6H6"/></>,dollar:<><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></>,grid:<><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></>,warehouse:<><path d="M22 8.35V20a2 2 0 01-2 2H4a2 2 0 01-2-2V8.35A2 2 0 013.26 6.5l8-3.2a2 2 0 011.48 0l8 3.2A2 2 0 0122 8.35z"/><path d="M6 18h12M6 14h12"/></>,trash:<><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></>,eye:<><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></>,alert:<><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></>,x:<><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>,check:<polyline points="20 6 9 17 4 12"/>,save:<><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></>,send:<><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></>};return<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{p[name]}</svg>};
-const REPS=[{id:'r1',name:'Steve Peterson',role:'admin'},{id:'r2',name:'Denis',role:'gm'},{id:'r3',name:'Liliana',role:'production'},{id:'r4',name:'Laura Chen',role:'rep'},{id:'r5',name:'Mike Torres',role:'rep'}];
+const D_REPS=[{id:'r1',name:'Steve Peterson',role:'admin',email:'steve@nsa-teamwear.com',phone:'619-555-0101',is_active:true},{id:'r2',name:'Denis',role:'gm',email:'denis@nsa-teamwear.com',phone:'619-555-0102',is_active:true},{id:'r3',name:'Liliana',role:'production',email:'liliana@nsa-teamwear.com',phone:'619-555-0103',is_active:true},{id:'r4',name:'Laura Chen',role:'rep',email:'laura@nsa-teamwear.com',phone:'619-555-0104',is_active:true},{id:'r5',name:'Mike Torres',role:'rep',email:'mike@nsa-teamwear.com',phone:'619-555-0105',is_active:true}];
 const NSA={name:'National Sports Apparel',legal:'National Sports Apparel LLC',phone:'(619) 555-0127',email:'team@nsa-teamwear.com',
   addr:'9340 Cabot Dr, Suite A',city:'San Diego',state:'CA',zip:'91941',
   fullAddr:'9340 Cabot Dr, Suite A, San Diego, CA 91941',
@@ -508,9 +508,10 @@ function calcSOStatus(ord){
 // ═══════════════════════════════════════════════
 // LOGIN GATE — click to login
 // ═══════════════════════════════════════════════
-function LoginGate({onLogin}){
-  const roleColors={admin:'#1e40af',gm:'#7c3aed',production:'#d97706',rep:'#166534'};
-  const roleLabels={admin:'Admin',gm:'General Manager',production:'Production',rep:'Sales Rep'};
+function LoginGate({onLogin,reps}){
+  const REPS=reps;
+  const roleColors={admin:'#1e40af',gm:'#7c3aed',production:'#d97706',rep:'#166534',csr:'#0891b2',artist:'#be185d',warehouse:'#65a30d'};
+  const roleLabels={admin:'Admin',gm:'General Manager',production:'Production',rep:'Sales Rep',csr:'Customer Service',artist:'Artist',warehouse:'Warehouse'};
   return(
     <div style={{minHeight:'100vh',background:'linear-gradient(135deg,#0f172a 0%,#1e3a5f 50%,#0f172a 100%)',display:'flex',alignItems:'center',justifyContent:'center',fontFamily:"'Inter','Segoe UI',sans-serif"}}>
       <div style={{width:380,padding:0}}>
@@ -524,7 +525,7 @@ function LoginGate({onLogin}){
         <div style={{background:'white',borderRadius:16,padding:32,boxShadow:'0 20px 60px rgba(0,0,0,0.3)'}}>
           <div style={{fontSize:14,fontWeight:700,color:'#1e293b',marginBottom:16}}>Who's logging in?</div>
           <div style={{display:'flex',flexDirection:'column',gap:6}}>
-            {REPS.map(r=>
+            {REPS.filter(r=>r.is_active!==false).map(r=>
               <button key={r.id} onClick={()=>onLogin(r)}
                 style={{display:'flex',alignItems:'center',gap:12,padding:'12px 16px',border:'1px solid #e2e8f0',
                   borderRadius:10,background:'white',cursor:'pointer',transition:'all 0.15s',textAlign:'left'}}
@@ -551,7 +552,8 @@ function LoginGate({onLogin}){
   );
 }
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack,onConvertSO,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,batchPOs,onBatchPO,initTab,onNavCustomer,onNewEstimate,scrollToItem}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack,onConvertSO,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,batchPOs,onBatchPO,initTab,onNavCustomer,onNewEstimate,scrollToItem,reps}){
+  const REPS=reps||D_REPS;
   const isE=mode==='estimate';const isSO=mode==='so';
   const[o,setO]=useState(order);const[cust,setCust]=useState(ic);const[pS,setPS]=useState('');const[showAdd,setShowAdd]=useState(false);
   const[tab,setTab]=useState(initTab||'items');const[dirty,setDirty]=useState(false);const[selJob,setSelJob]=useState(null);const[jobNote,setJobNote]=useState('');const[msgDept,setMsgDept]=useState('all');
@@ -3465,6 +3467,7 @@ export default function App(){
     syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}});
   // Persistent state — loads from localStorage, falls back to demo data
   const loadState=(key,fallback)=>{try{const s=localStorage.getItem('nsa_'+key);return s?JSON.parse(s):fallback}catch{return fallback}};
+  const[reps,setReps]=useState(()=>loadState('reps',D_REPS));const REPS=reps;
   const[cust,setCust]=useState(()=>loadState('cust',D_C));const[vend]=useState(D_V);const[prod,setProd]=useState(()=>loadState('prod',D_P));
   const[ests,setEsts]=useState(()=>loadState('ests',D_E));const[sos,setSOs]=useState(()=>loadState('sos',D_SO));const[invs,setInvs]=useState(()=>loadState('invs',D_INV));
   // Batch PO system
@@ -3481,6 +3484,7 @@ export default function App(){
   const[soHistory,setSOHistory]=useState({});// {soId:[{ts,user,snapshot}]}
   const[msgs,setMsgs]=useState(()=>loadState('msgs',D_MSG));const[cM,setCM]=useState({open:false,c:null});const[aM,setAM]=useState({open:false,p:null});
   // Auto-save state to localStorage on change
+  React.useEffect(()=>{try{localStorage.setItem('nsa_reps',JSON.stringify(reps))}catch{}},[reps]);
   React.useEffect(()=>{try{localStorage.setItem('nsa_cust',JSON.stringify(cust))}catch{}},[cust]);
   React.useEffect(()=>{try{localStorage.setItem('nsa_prod',JSON.stringify(prod))}catch{}},[prod]);
   React.useEffect(()=>{try{localStorage.setItem('nsa_ests',JSON.stringify(ests))}catch{}},[ests]);
@@ -3852,7 +3856,7 @@ export default function App(){
 
   // ESTIMATES LIST
   const rEst=()=>{
-    if(eEst)return<OrderEditor order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} onSave={e=>{savE(e);setEEst(e)}} onBack={()=>setEEst(null)} onConvertSO={convertSO} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}}/>;
+    if(eEst)return<OrderEditor order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} onSave={e=>{savE(e);setEEst(e)}} onBack={()=>setEEst(null)} onConvertSO={convertSO} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={reps}/>;
     const fe=ests.filter(e=>!q||(e.id+' '+e.memo+' '+(cust.find(c=>c.id===e.customer_id)?.name||'')+' '+(cust.find(c=>c.id===e.customer_id)?.alpha_tag||'')).toLowerCase().includes(q.toLowerCase()));
     return(<><div style={{display:'flex',gap:8,marginBottom:16}}><div className="search-bar" style={{flex:1}}><Icon name="search"/><input placeholder="Search..." value={q} onChange={e=>setQ(e.target.value)}/></div>
       <button className="btn btn-primary" onClick={()=>newE(null)}><Icon name="plus" size={14}/> New Estimate</button></div>
@@ -3870,7 +3874,7 @@ export default function App(){
 
   // SALES ORDERS LIST
   const rSO=()=>{
-    if(eSO)return<OrderEditor order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} onSave={s=>{savSO(s);setESO(s)}} onBack={()=>{setESO(null);setESOTab(null);setESOScrollItem(null)}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} batchPOs={batchPOs} onBatchPO={setBatchPOs} initTab={eSOTab} scrollToItem={eSOScrollItem} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}}/>;
+    if(eSO)return<OrderEditor order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} onSave={s=>{savSO(s);setESO(s)}} onBack={()=>{setESO(null);setESOTab(null);setESOScrollItem(null)}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} batchPOs={batchPOs} onBatchPO={setBatchPOs} initTab={eSOTab} scrollToItem={eSOScrollItem} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={reps}/>;
     // Filter SOs
     let fSOs=[...sos];
     if(soF.status!=='all')fSOs=fSOs.filter(s=>calcSOStatus(s)===soF.status);
@@ -3973,6 +3977,66 @@ export default function App(){
       <td style={{fontSize:11}}>{v.contact_email}</td><td><span className="badge badge-gray">{v.payment_terms?.replace('net','Net ')}</span></td>
       {isA&&<td style={{fontWeight:700,color:(v._it||0)>0?'#dc2626':''}}>{(v._it||0)>0?'$'+v._it.toLocaleString():'--'}</td>}
       <td><span className="badge badge-green">Active</span></td></tr>)}</tbody></table></div></div></>);};
+
+  // TEAM MANAGEMENT
+  const[teamModal,setTeamModal]=useState({open:false,member:null});
+  const ROLE_OPTIONS=[{value:'admin',label:'Admin',color:'#1e40af'},{value:'gm',label:'General Manager',color:'#7c3aed'},{value:'production',label:'Production',color:'#d97706'},{value:'rep',label:'Sales Rep',color:'#166534'},{value:'csr',label:'Customer Service',color:'#0891b2'},{value:'artist',label:'Artist',color:'#be185d'},{value:'warehouse',label:'Warehouse',color:'#65a30d'}];
+  const roleColor=(role)=>(ROLE_OPTIONS.find(r=>r.value===role)?.color||'#475569');
+  const roleLabel=(role)=>(ROLE_OPTIONS.find(r=>r.value===role)?.label||role);
+  const saveTeamMember=(m)=>{
+    setReps(prev=>{const exists=prev.find(r=>r.id===m.id);
+      if(exists)return prev.map(r=>r.id===m.id?{...r,...m}:r);
+      return[...prev,m]});
+    // Update current user if they edited themselves
+    if(m.id===cu.id){const updated={...cu,...m};handleLogin(updated)}
+    nf(m.name+' saved');setTeamModal({open:false,member:null})};
+  const rTeam=()=>{
+    const active=reps.filter(r=>r.is_active!==false);const inactive=reps.filter(r=>r.is_active===false);
+    return(<>
+    <div className="stats-row">
+      <div className="stat-card"><div className="stat-label">Active Members</div><div className="stat-value" style={{color:'#166534'}}>{active.length}</div></div>
+      <div className="stat-card"><div className="stat-label">Admins</div><div className="stat-value" style={{color:'#1e40af'}}>{active.filter(r=>r.role==='admin').length}</div></div>
+      <div className="stat-card"><div className="stat-label">Sales Reps</div><div className="stat-value" style={{color:'#166534'}}>{active.filter(r=>r.role==='rep').length}</div></div>
+      <div className="stat-card"><div className="stat-label">Inactive</div><div className="stat-value" style={{color:inactive.length>0?'#dc2626':''}}>{inactive.length}</div></div>
+    </div>
+    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
+      <div style={{fontSize:13,color:'#64748b'}}>{reps.length} total team member{reps.length!==1?'s':''}</div>
+      {isA&&<button className="btn btn-primary" onClick={()=>{const nextId='r'+String(Date.now()).slice(-6);setTeamModal({open:true,member:{id:nextId,name:'',role:'rep',email:'',phone:'',is_active:true}})}}><Icon name="plus" size={14}/> Add Employee</button>}
+    </div>
+    <div className="card"><div className="card-body" style={{padding:0}}>
+      <table><thead><tr><th></th><th>Name</th><th>Role</th><th>Email</th><th>Phone</th><th>Status</th><th></th></tr></thead><tbody>
+      {reps.map(r=><tr key={r.id}>
+        <td><div style={{width:36,height:36,borderRadius:18,background:roleColor(r.role),color:'white',display:'flex',alignItems:'center',justifyContent:'center',fontSize:15,fontWeight:800}}>{(r.name||'?')[0]}</div></td>
+        <td style={{fontWeight:700,color:r.is_active===false?'#94a3b8':'#0f172a'}}>{r.name}{r.id===cu.id&&<span style={{fontSize:9,marginLeft:6,padding:'1px 6px',borderRadius:8,background:'#dbeafe',color:'#1e40af',fontWeight:600}}>You</span>}</td>
+        <td><span style={{padding:'3px 10px',borderRadius:10,fontSize:11,fontWeight:700,background:roleColor(r.role)+'18',color:roleColor(r.role)}}>{roleLabel(r.role)}</span></td>
+        <td style={{fontSize:12,color:'#64748b'}}>{r.email||'—'}</td>
+        <td style={{fontSize:12,color:'#64748b'}}>{r.phone||'—'}</td>
+        <td>{r.is_active===false?<span className="badge" style={{background:'#fef2f2',color:'#dc2626'}}>Inactive</span>:<span className="badge badge-green">Active</span>}</td>
+        <td>{isA&&<div style={{display:'flex',gap:4}}>
+          <button className="btn btn-sm btn-secondary" onClick={()=>setTeamModal({open:true,member:{...r}})} style={{fontSize:11}}><Icon name="edit" size={12}/></button>
+          {r.id!==cu.id&&<button className="btn btn-sm" style={{fontSize:11,background:r.is_active===false?'#dcfce7':'#fef2f2',color:r.is_active===false?'#166534':'#dc2626',border:'none'}} onClick={()=>{if(window.confirm((r.is_active===false?'Reactivate':'Deactivate')+' '+r.name+'?')){setReps(prev=>prev.map(x=>x.id===r.id?{...x,is_active:!x.is_active}:x));nf(r.name+(r.is_active===false?' reactivated':' deactivated'))}}}>{r.is_active===false?'Activate':'Deactivate'}</button>}
+        </div>}</td>
+      </tr>)}</tbody></table>
+    </div></div>
+    {/* Team Member Modal */}
+    {teamModal.open&&<div className="modal-overlay" onClick={()=>setTeamModal({open:false,member:null})}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:500}}>
+      <div className="modal-header" style={{background:'#eff6ff'}}><h2>{teamModal.member?.name?'Edit Employee':'New Employee'}</h2><button className="modal-close" onClick={()=>setTeamModal({open:false,member:null})}>×</button></div>
+      <div className="modal-body">
+        {(()=>{const m=teamModal.member||{};const up=(k,v)=>setTeamModal(prev=>({...prev,member:{...prev.member,[k]:v}}));
+          return<div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
+            <div style={{gridColumn:'1/3'}}><label className="form-label">Full Name *</label><input className="form-input" value={m.name||''} onChange={e=>up('name',e.target.value)} placeholder="Jane Smith"/></div>
+            <div><label className="form-label">Role *</label><select className="form-select" value={m.role||'rep'} onChange={e=>up('role',e.target.value)}>{ROLE_OPTIONS.map(r=><option key={r.value} value={r.value}>{r.label}</option>)}</select></div>
+            <div><label className="form-label">Status</label><select className="form-select" value={m.is_active===false?'inactive':'active'} onChange={e=>up('is_active',e.target.value==='active')}><option value="active">Active</option><option value="inactive">Inactive</option></select></div>
+            <div><label className="form-label">Email</label><input className="form-input" type="email" value={m.email||''} onChange={e=>up('email',e.target.value)} placeholder="jane@nsa-teamwear.com"/></div>
+            <div><label className="form-label">Phone</label><input className="form-input" value={m.phone||''} onChange={e=>up('phone',e.target.value)} placeholder="619-555-0106"/></div>
+          </div>})()}
+      </div>
+      <div className="modal-footer" style={{display:'flex',justifyContent:'flex-end',gap:8,padding:'12px 20px',borderTop:'1px solid #e2e8f0'}}>
+        <button className="btn btn-secondary" onClick={()=>setTeamModal({open:false,member:null})}>Cancel</button>
+        <button className="btn btn-primary" disabled={!teamModal.member?.name?.trim()} onClick={()=>{if(!teamModal.member?.name?.trim())return;saveTeamMember(teamModal.member)}}>Save</button>
+      </div>
+    </div></div>}
+    </>)};
 
   // PRODUCTS
   const rProd=()=>(<><div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap'}}>
@@ -7039,10 +7103,10 @@ export default function App(){
           </div></div>})}</div></div></>)};
 
     // NAV
-  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'reports',label:'Reports',icon:'dollar'},{id:'commissions',label:'Commissions',icon:'dollar',roles:['admin','rep']},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'production',label:'Prod Board',icon:'package'},{id:'decoration',label:'Decoration',icon:'image'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{section:'Comms'},{id:'messages',label:'Messages',icon:'mail'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'System'},{id:'import',label:'NetSuite Import',icon:'save'},{id:'qb',label:'QuickBooks Sync',icon:'dollar'},{id:'backup',label:'Backup & Data',icon:'save'}];
-  const titles={dashboard:'Dashboard',reports:'Reports & Analytics',commissions:'Commissions',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',omg:'OMG Team Stores',jobs:'Jobs',production:'Production Board',decoration:'Decoration',warehouse:'Warehouse',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',products:'Products',inventory:'Inventory',messages:'Messages',import:'NetSuite Import',qb:'QuickBooks Online',backup:'Backup & Data'};
+  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'reports',label:'Reports',icon:'dollar'},{id:'commissions',label:'Commissions',icon:'dollar',roles:['admin','rep']},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'production',label:'Prod Board',icon:'package'},{id:'decoration',label:'Decoration',icon:'image'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{id:'team',label:'Team',icon:'users',roles:['admin','gm']},{section:'Comms'},{id:'messages',label:'Messages',icon:'mail'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'System'},{id:'import',label:'NetSuite Import',icon:'save'},{id:'qb',label:'QuickBooks Sync',icon:'dollar'},{id:'backup',label:'Backup & Data',icon:'save'}];
+  const titles={dashboard:'Dashboard',reports:'Reports & Analytics',commissions:'Commissions',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',omg:'OMG Team Stores',jobs:'Jobs',production:'Production Board',decoration:'Decoration',warehouse:'Warehouse',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',team:'Team',products:'Products',inventory:'Inventory',messages:'Messages',import:'NetSuite Import',qb:'QuickBooks Online',backup:'Backup & Data'};
   // LOGIN GATE
-  if(!cu)return<LoginGate onLogin={handleLogin}/>;
+  if(!cu)return<LoginGate onLogin={handleLogin} reps={reps}/>;
 
   return(<div className="app"><Toast msg={toast?.msg} type={toast?.type}/>
     <div className="sidebar"><div className="sidebar-logo">NSA<span>Portal</span></div>
@@ -7079,7 +7143,7 @@ export default function App(){
           {gOpen&&<div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:59}} onClick={()=>setGOpen(false)}/>}
         </div>
         <div style={{display:'flex',gap:6,alignItems:'center'}}><button className="btn btn-sm btn-primary" onClick={()=>newE(null)} style={{fontSize:11}}><Icon name="plus" size={12}/> Estimate</button><button className="btn btn-sm btn-secondary" onClick={()=>setCM({open:true,c:null})} style={{fontSize:11}}><Icon name="plus" size={12}/> Customer</button><button className="btn btn-sm btn-secondary" onClick={()=>setQPC({open:true,mode:'single',items:[{sku:'',name:'',brand:'',color:'',category:'Tees',retail_price:0,nsa_cost:0,available_sizes:['S','M','L','XL','2XL'],vendor_id:''}]})} style={{fontSize:11}}><Icon name="plus" size={12}/> Product</button></div></div>
-      <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='production'&&rProd2()}{pg==='decoration'&&rDeco()}{pg==='warehouse'&&rWarehouse()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='commissions'&&rCommissions()}{pg==='omg'&&rOMG()}{pg==='reports'&&rReports()}{pg==='import'&&rImport()}{pg==='qb'&&rQB()}{pg==='backup'&&rBackup()}</div></div>
+      <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='production'&&rProd2()}{pg==='decoration'&&rDeco()}{pg==='warehouse'&&rWarehouse()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='team'&&rTeam()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='commissions'&&rCommissions()}{pg==='omg'&&rOMG()}{pg==='reports'&&rReports()}{pg==='import'&&rImport()}{pg==='qb'&&rQB()}{pg==='backup'&&rBackup()}</div></div>
     <CustModal isOpen={cM.open} onClose={()=>setCM({open:false,c:null})} onSave={savC} customer={cM.c} parents={pars}/>
     <AdjModal isOpen={aM.open} onClose={()=>setAM({open:false,p:null})} product={aM.p} onSave={savI}/>
 
