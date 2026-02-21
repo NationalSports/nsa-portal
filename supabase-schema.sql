@@ -10,7 +10,7 @@ CREATE TABLE user_profiles (
   id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
   email TEXT NOT NULL,
   full_name TEXT NOT NULL,
-  role TEXT NOT NULL CHECK (role IN ('admin', 'rep', 'csr', 'artist', 'production', 'warehouse')),
+  role TEXT NOT NULL CHECK (role IN ('admin', 'gm', 'rep', 'csr', 'artist', 'production', 'warehouse', 'accounting')),
   is_active BOOLEAN DEFAULT true,
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now()
