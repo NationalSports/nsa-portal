@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import './portal.css';
 const Icon=({name,size=18})=>{const p={home:<path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>,users:<><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></>,building:<><path d="M6 22V4a2 2 0 012-2h8a2 2 0 012 2v18z"/><path d="M6 12H4a2 2 0 00-2 2v6a2 2 0 002 2h2"/><path d="M18 9h2a2 2 0 012 2v9a2 2 0 01-2 2h-2"/><path d="M10 6h4M10 10h4M10 14h4M10 18h4"/></>,package:<><path d="M16.5 9.4l-9-5.19M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/><path d="M3.27 6.96L12 12.01l8.73-5.05M12 22.08V12"/></>,box:<path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/>,search:<><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></>,plus:<path d="M12 5v14M5 12h14"/>,edit:<><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></>,upload:<><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></>,back:<polyline points="15 18 9 12 15 6"/>,mail:<><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></>,file:<><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></>,sortUp:<path d="M7 14l5-5 5 5"/>,sort:<><path d="M7 15l5 5 5-5"/><path d="M7 9l5-5 5 5"/></>,image:<><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></>,cart:<><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 002 1.61h9.72a2 2 0 002-1.61L23 6H6"/></>,dollar:<><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></>,grid:<><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></>,warehouse:<><path d="M22 8.35V20a2 2 0 01-2 2H4a2 2 0 01-2-2V8.35A2 2 0 013.26 6.5l8-3.2a2 2 0 011.48 0l8 3.2A2 2 0 0122 8.35z"/><path d="M6 18h12M6 14h12"/></>,trash:<><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></>,eye:<><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></>,alert:<><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></>,x:<><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>,check:<polyline points="20 6 9 17 4 12"/>,save:<><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></>,send:<><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></>};return<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{p[name]}</svg>};
-const REPS=[{id:'r1',name:'Steve Peterson',role:'admin',pin:'1234'},{id:'r2',name:'Denis',role:'gm',pin:'2345'},{id:'r3',name:'Liliana',role:'production',pin:'3456'},{id:'r4',name:'Laura Chen',role:'rep',pin:'4567'},{id:'r5',name:'Mike Torres',role:'rep',pin:'5678'}];
+const REPS=[{id:'r1',name:'Steve Peterson',role:'admin'},{id:'r2',name:'Denis',role:'gm'},{id:'r3',name:'Liliana',role:'production'},{id:'r4',name:'Laura Chen',role:'rep'},{id:'r5',name:'Mike Torres',role:'rep'}];
 const NSA={name:'National Sports Apparel',legal:'National Sports Apparel LLC',phone:'(619) 555-0127',email:'team@nsa-teamwear.com',
   addr:'9340 Cabot Dr, Suite A',city:'San Diego',state:'CA',zip:'91941',
   fullAddr:'9340 Cabot Dr, Suite A, San Diego, CA 91941',
@@ -506,21 +506,11 @@ function calcSOStatus(ord){
 }
 
 // ═══════════════════════════════════════════════
-// LOGIN GATE — PIN-based authentication
+// LOGIN GATE — click to login
 // ═══════════════════════════════════════════════
 function LoginGate({onLogin}){
-  const[selUser,setSelUser]=useState(null);
-  const[pin,setPin]=useState('');
-  const[error,setError]=useState('');
-  const[shake,setShake]=useState(false);
-
-  const tryLogin=()=>{
-    if(!selUser)return;
-    const user=REPS.find(r=>r.id===selUser);
-    if(user&&user.pin===pin){onLogin(user)}
-    else{setError('Incorrect PIN');setShake(true);setPin('');setTimeout(()=>setShake(false),500)}
-  };
-
+  const roleColors={admin:'#1e40af',gm:'#7c3aed',production:'#d97706',rep:'#166534'};
+  const roleLabels={admin:'Admin',gm:'General Manager',production:'Production',rep:'Sales Rep'};
   return(
     <div style={{minHeight:'100vh',background:'linear-gradient(135deg,#0f172a 0%,#1e3a5f 50%,#0f172a 100%)',display:'flex',alignItems:'center',justifyContent:'center',fontFamily:"'Inter','Segoe UI',sans-serif"}}>
       <div style={{width:380,padding:0}}>
@@ -532,70 +522,23 @@ function LoginGate({onLogin}){
 
         {/* Login Card */}
         <div style={{background:'white',borderRadius:16,padding:32,boxShadow:'0 20px 60px rgba(0,0,0,0.3)'}}>
-          {!selUser?<>
-            <div style={{fontSize:14,fontWeight:700,color:'#1e293b',marginBottom:16}}>Who's logging in?</div>
-            <div style={{display:'flex',flexDirection:'column',gap:6}}>
-              {REPS.map(r=>{
-                const roleColors={admin:'#1e40af',gm:'#7c3aed',production:'#d97706',rep:'#166534'};
-                const roleLabels={admin:'Admin',gm:'General Manager',production:'Production',rep:'Sales Rep'};
-                return<button key={r.id} onClick={()=>{setSelUser(r.id);setPin('');setError('')}}
-                  style={{display:'flex',alignItems:'center',gap:12,padding:'12px 16px',border:'1px solid #e2e8f0',
-                    borderRadius:10,background:'white',cursor:'pointer',transition:'all 0.15s',textAlign:'left'}}
-                  onMouseEnter={e=>{e.currentTarget.style.background='#f8fafc';e.currentTarget.style.borderColor='#3b82f6'}}
-                  onMouseLeave={e=>{e.currentTarget.style.background='white';e.currentTarget.style.borderColor='#e2e8f0'}}>
-                  <div style={{width:40,height:40,borderRadius:20,background:roleColors[r.role]||'#475569',color:'white',
-                    display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,fontWeight:800,flexShrink:0}}>
-                    {r.name[0]}</div>
-                  <div>
-                    <div style={{fontWeight:700,fontSize:14,color:'#0f172a'}}>{r.name}</div>
-                    <div style={{fontSize:11,color:'#64748b'}}>{roleLabels[r.role]||r.role}</div>
-                  </div>
-                </button>})}
-            </div>
-          </>:<>
-            {/* PIN Entry */}
-            <div style={{textAlign:'center'}}>
-              <button onClick={()=>{setSelUser(null);setPin('');setError('')}} style={{background:'none',border:'none',cursor:'pointer',
-                color:'#64748b',fontSize:11,marginBottom:12}}>← Back to user list</button>
-              <div style={{width:56,height:56,borderRadius:28,background:'#1e40af',color:'white',
-                display:'flex',alignItems:'center',justifyContent:'center',fontSize:24,fontWeight:800,margin:'0 auto 8px'}}>
-                {REPS.find(r=>r.id===selUser)?.name[0]}</div>
-              <div style={{fontSize:16,fontWeight:700,color:'#0f172a',marginBottom:4}}>{REPS.find(r=>r.id===selUser)?.name}</div>
-              <div style={{fontSize:12,color:'#64748b',marginBottom:20}}>Enter your 4-digit PIN</div>
-
-              <div style={{display:'flex',justifyContent:'center',gap:10,marginBottom:16,
-                animation:shake?'shake 0.3s ease':'none'}}>
-                {[0,1,2,3].map(i=><div key={i} style={{width:44,height:52,borderRadius:10,
-                  border:'2px solid '+(pin.length>i?'#3b82f6':'#d1d5db'),
-                  display:'flex',alignItems:'center',justifyContent:'center',
-                  fontSize:20,fontWeight:800,color:'#0f172a',
-                  background:pin.length>i?'#eff6ff':'white',
-                  transition:'all 0.15s'}}>{pin[i]?'●':''}</div>)}
-              </div>
-
-              {error&&<div style={{color:'#dc2626',fontSize:12,fontWeight:600,marginBottom:12}}>{error}</div>}
-
-              {/* Number pad */}
-              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:6,maxWidth:240,margin:'0 auto'}}>
-                {[1,2,3,4,5,6,7,8,9,'',0,'⌫'].map((n,i)=>{
-                  if(n==='')return<div key={i}/>;
-                  return<button key={i} onClick={()=>{
-                    if(n==='⌫'){setPin(p=>p.slice(0,-1));setError('')}
-                    else if(pin.length<4){
-                      const np=pin+n;setPin(np);setError('');
-                      if(np.length===4){
-                        const user=REPS.find(r=>r.id===selUser);
-                        if(user&&user.pin===np)setTimeout(()=>onLogin(user),200);
-                        else{setError('Incorrect PIN');setShake(true);setTimeout(()=>{setShake(false);setPin('')},500)}
-                      }
-                    }
-                  }} style={{padding:'14px 0',borderRadius:10,border:'1px solid #e2e8f0',background:'white',
-                    fontSize:18,fontWeight:700,cursor:'pointer',color:'#0f172a',transition:'all 0.1s'}}
-                  onMouseDown={e=>{e.currentTarget.style.background='#f1f5f9'}}
-                  onMouseUp={e=>{e.currentTarget.style.background='white'}}>{n}</button>})}
-              </div>
-            </div>
-          </>}
+          <div style={{fontSize:14,fontWeight:700,color:'#1e293b',marginBottom:16}}>Who's logging in?</div>
+          <div style={{display:'flex',flexDirection:'column',gap:6}}>
+            {REPS.map(r=>
+              <button key={r.id} onClick={()=>onLogin(r)}
+                style={{display:'flex',alignItems:'center',gap:12,padding:'12px 16px',border:'1px solid #e2e8f0',
+                  borderRadius:10,background:'white',cursor:'pointer',transition:'all 0.15s',textAlign:'left'}}
+                onMouseEnter={e=>{e.currentTarget.style.background='#f8fafc';e.currentTarget.style.borderColor='#3b82f6'}}
+                onMouseLeave={e=>{e.currentTarget.style.background='white';e.currentTarget.style.borderColor='#e2e8f0'}}>
+                <div style={{width:40,height:40,borderRadius:20,background:roleColors[r.role]||'#475569',color:'white',
+                  display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,fontWeight:800,flexShrink:0}}>
+                  {r.name[0]}</div>
+                <div>
+                  <div style={{fontWeight:700,fontSize:14,color:'#0f172a'}}>{r.name}</div>
+                  <div style={{fontSize:11,color:'#64748b'}}>{roleLabels[r.role]||r.role}</div>
+                </div>
+              </button>)}
+          </div>
         </div>
 
         <div style={{textAlign:'center',marginTop:20,fontSize:10,color:'#475569'}}>
