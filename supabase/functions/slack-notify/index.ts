@@ -265,6 +265,26 @@ serve(async (req: Request) => {
         continue;
       }
 
+      // Check notification preferences (quiet hours, day schedule, event toggles)
+      const reason = recipientReasons.get(userId) || "all";
+      const { data: shouldSend } = await supabase.rpc("should_notify", {
+        p_user_id: userId,
+        p_event_type: reason,
+        p_is_urgent: false,
+      });
+
+      if (shouldSend === false) {
+        await supabase.from("slack_notifications").upsert({
+          message_id: messageId,
+          recipient_id: userId,
+          reason,
+          delivered: false,
+          error: "quiet_hours_or_prefs",
+        }, { onConflict: "message_id,recipient_id" });
+        results.push({ userId, ok: false, error: "quiet_hours" });
+        continue;
+      }
+
       try {
         // Open or reuse DM channel
         let dmChannel = user.slack_dm_channel;
