@@ -608,11 +608,12 @@ function LoginGate({onLogin}){
   );
 }
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack,onConvertSO,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,batchPOs,onBatchPO,initTab,onNavCustomer,onNewEstimate}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack,onConvertSO,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,batchPOs,onBatchPO,initTab,onNavCustomer,onNewEstimate,scrollToItem}){
   const isE=mode==='estimate';const isSO=mode==='so';
   const[o,setO]=useState(order);const[cust,setCust]=useState(ic);const[pS,setPS]=useState('');const[showAdd,setShowAdd]=useState(false);
   const[tab,setTab]=useState(initTab||'items');const[dirty,setDirty]=useState(false);const[selJob,setSelJob]=useState(null);const[jobNote,setJobNote]=useState('');const[msgDept,setMsgDept]=useState('all');
     React.useEffect(()=>{if(initTab)setTab(initTab)},[initTab]);
+    React.useEffect(()=>{if(scrollToItem!=null){setTab('items');setTimeout(()=>{const el=document.getElementById('so-item-'+scrollToItem);if(el){el.scrollIntoView({behavior:'smooth',block:'center'});el.style.boxShadow='0 0 0 3px #3b82f6';setTimeout(()=>{el.style.boxShadow=''},2000)}},150)}},[scrollToItem]);
     const origRef=React.useRef(JSON.stringify(o));
     const markDirty=()=>setDirty(true);const[saved,setSaved]=useState(!!order.customer_id);const[showSend,setShowSend]=useState(false);const[showPick,setShowPick]=useState(false);const[pickId,setPickId]=useState(()=>{let max=4000;(allOrders||[]).concat([order]).forEach(so=>safeItems(so).forEach(it=>safePicks(it).forEach(pk=>{const m=parseInt((pk.pick_id||'').replace('IF-',''))||0;if(m>max)max=m})));return'IF-'+String(max+1)});const[showPO,setShowPO]=useState(null);const[poCounter,setPOCounter]=useState(()=>3001+Math.floor(Math.random()*100));
     const[pickNotes,setPickNotes]=useState('');const[pickShipDest,setPickShipDest]=useState('in_house');const[pickDecoVendor,setPickDecoVendor]=useState('');const[pickShipAddr,setPickShipAddr]=useState('default');
@@ -970,7 +971,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       const iR=pRev+dR;const iC=pCost+dC;const mg=iR-iC;
       const szs=(item.available_sizes||['S','M','L','XL','2XL']).slice().sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
       const addable=EXTRA_SIZES.filter(s=>!(item.available_sizes||[]).includes(s));
-      return(<div key={idx} className="card" style={{marginBottom:12}}>
+      return(<div key={idx} id={'so-item-'+idx} className="card" style={{marginBottom:12,transition:'box-shadow 0.3s'}}>
         <div style={{padding:'12px 18px',borderBottom:'1px solid #f1f5f9'}}>
           <div style={{display:'flex',gap:12,alignItems:'center'}}>
             <div style={{flex:1}}>
@@ -3506,7 +3507,7 @@ export default function App(){
   const[soHistory,setSOHistory]=useState({});// {soId:[{ts,user,snapshot}]}
   const[msgs,setMsgs]=useState(D_MSG);const[cM,setCM]=useState({open:false,c:null});const[aM,setAM]=useState({open:false,p:null});
   const[q,setQ]=useState('');const[selC,setSelC]=useState(null);const[selV,setSelV]=useState(null);
-  const[eEst,setEEst]=useState(null);const[eEstC,setEEstC]=useState(null);const[eSO,setESO]=useState(null);const[eSOC,setESOC]=useState(null);const[eSOTab,setESOTab]=useState(null);
+  const[eEst,setEEst]=useState(null);const[eEstC,setEEstC]=useState(null);const[eSO,setESO]=useState(null);const[eSOC,setESOC]=useState(null);const[eSOTab,setESOTab]=useState(null);const[eSOScrollItem,setESOScrollItem]=useState(null);
   const[gQ,setGQ]=useState('');const[gOpen,setGOpen]=useState(false);const[mF,setMF]=useState('all');const[rF,setRF]=useState('all');const[pF,setPF]=useState({cat:'all',vnd:'all',stk:'all',clr:'all'});
   const[qPC,setQPC]=useState({open:false,mode:'single',items:[],bulkRaw:''});
   // OMG Team Stores
@@ -3859,7 +3860,7 @@ export default function App(){
 
   // SALES ORDERS LIST
   const rSO=()=>{
-    if(eSO)return<OrderEditor order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} onSave={s=>{savSO(s);setESO(s)}} onBack={()=>{setESO(null);setESOTab(null)}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} batchPOs={batchPOs} onBatchPO={setBatchPOs} initTab={eSOTab} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}}/>;
+    if(eSO)return<OrderEditor order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} onSave={s=>{savSO(s);setESO(s)}} onBack={()=>{setESO(null);setESOTab(null);setESOScrollItem(null)}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} batchPOs={batchPOs} onBatchPO={setBatchPOs} initTab={eSOTab} scrollToItem={eSOScrollItem} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}}/>;
     // Filter SOs
     let fSOs=[...sos];
     if(soF.status!=='all')fSOs=fSOs.filter(s=>calcSOStatus(s)===soF.status);
@@ -5489,6 +5490,10 @@ export default function App(){
 
   // WAREHOUSE DASHBOARD
   const[whTab,setWhTab]=useState('pull');const[whSearch,setWhSearch]=useState('');const[whRepF,setWhRepF]=useState('all');
+  const[stockPOs,setStockPOs]=useState([
+    {id:'PO-5001-NSA',vendor_id:'v1',vendor_name:'Adidas',status:'partial',created_at:'02/12/26',notes:'Restock pregame tees',items:[{sku:'JX4453',name:'Adidas Unisex Pregame Tee',color:'Team Power Red/White',sizes:{S:20,M:30,L:25,XL:15,'2XL':10},received:{S:20,M:30,L:0,XL:0,'2XL':0}}]},
+    {id:'PO-5002-NSA',vendor_id:'v2',vendor_name:'Under Armour',status:'waiting',created_at:'02/18/26',notes:'Stock up on polos for spring',items:[{sku:'1370399',name:'Under Armour Team Polo',color:'Cardinal/White',sizes:{S:10,M:20,L:20,XL:15,'2XL':8},received:{}}]},
+  ]);const[showStockPO,setShowStockPO]=useState(null);const[stockPOCounter,setStockPOCounter]=useState(5003);
   const[decoSearch,setDecoSearch]=useState('');const[decoRepF,setDecoRepF]=useState('all');const[decoStatF,setDecoStatF]=useState('active');const[decoTypeF,setDecoTypeF]=useState('all');
 
   // Shared data builder for warehouse + deco pages
@@ -5553,9 +5558,11 @@ export default function App(){
       return true;
     });
     const fPull=filt(pullTasks);const fShip=filt(shipTasks);
+    const openStockPOs=stockPOs.filter(p=>p.status!=='received');
     const tabs=[
       {id:'pull',label:'🏗️ Pull & Stage',count:fPull.length,color:'#d97706'},
       {id:'ship',label:'📦 Ready to Ship',count:fShip.length,color:'#166534'},
+      {id:'stockpo',label:'📋 Stock POs',count:openStockPOs.length,color:'#6366f1'},
     ];
 
     return(<>
@@ -5600,7 +5607,7 @@ export default function App(){
             <th style={{textAlign:'center'}}>Need</th><th style={{textAlign:'center'}}>On Hand</th><th>Sizes to Pull</th><th>Rep</th><th style={{width:60}}></th>
           </tr></thead><tbody>
           {fPull.map((t,ti)=><tr key={ti} style={{cursor:'pointer',background:t.urgent?'#fef2f2':'',borderLeft:t.urgent?'3px solid #dc2626':''}}
-            onClick={()=>{setESOTab(null);setESO(t.so);setESOC(cust.find(c2=>c2.id===t.so.customer_id));setPg('orders')}}>
+            onClick={()=>{setESOTab('items');setESOScrollItem(t.itemIdx);setESO(t.so);setESOC(cust.find(c2=>c2.id===t.so.customer_id));setPg('orders')}}>
             <td>{t.urgent&&<span title={'Due in '+t.daysOut+'d'}>🔥</span>}{t.noDeco&&<span title="No decoration">📦</span>}</td>
             <td style={{fontWeight:700,color:'#1e40af',whiteSpace:'nowrap'}}>{t.soId}</td>
             <td style={{fontWeight:600,maxWidth:140,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{t.cName}</td>
@@ -5617,7 +5624,7 @@ export default function App(){
             </div></td>
             <td style={{fontSize:10,color:'#94a3b8'}}>{t.rep}</td>
             <td><button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px'}}
-              onClick={e=>{e.stopPropagation();setESOTab(null);setESO(t.so);setESOC(cust.find(c2=>c2.id===t.so.customer_id));setPg('orders')}}>
+              onClick={e=>{e.stopPropagation();setESOTab('items');setESOScrollItem(t.itemIdx);setESO(t.so);setESOC(cust.find(c2=>c2.id===t.so.customer_id));setPg('orders')}}>
               Pick →</button></td>
           </tr>)}
           </tbody></table>
@@ -5694,6 +5701,105 @@ export default function App(){
             </div>)}
           </div>})()}
         </>}
+      </>}
+
+      {/* ── STOCK POs ── */}
+      {whTab==='stockpo'&&<>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
+          <div style={{fontSize:13,color:'#64748b'}}>Purchase orders for NSA warehouse stock (not tied to a sales order)</div>
+          <button className="btn btn-sm btn-primary" style={{background:'#6366f1',borderColor:'#6366f1'}} onClick={()=>setShowStockPO({vendor_id:'',items:[{sku:'',name:'',color:'',sizes:{S:0,M:0,L:0,XL:0,'2XL':0}}],notes:''})}>+ New Stock PO</button>
+        </div>
+        {stockPOs.length===0?<div className="empty" style={{padding:32,textAlign:'center'}}>No stock POs yet</div>:
+        <div style={{display:'grid',gap:10}}>
+          {stockPOs.map((po,pi)=>{
+            const totalOrd=po.items.reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((a2,v)=>a2+v,0),0);
+            const totalRcvd=po.items.reduce((a,it)=>a+Object.values(it.received||{}).reduce((a2,v)=>a2+v,0),0);
+            const st=po.status==='received'?'received':totalRcvd>0?'partial':'waiting';
+            return<div key={pi} className="card" style={{borderLeft:'3px solid '+(st==='received'?'#166534':st==='partial'?'#d97706':'#6366f1')}}>
+              <div style={{padding:'12px 16px'}}>
+                <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}>
+                  <span style={{fontFamily:'monospace',fontWeight:900,fontSize:15,color:'#6366f1'}}>{po.id}</span>
+                  <span className="badge" style={{background:st==='received'?'#dcfce7':st==='partial'?'#fef3c7':'#eef2ff',color:st==='received'?'#166534':st==='partial'?'#92400e':'#4338ca',fontWeight:700,fontSize:10}}>{st==='received'?'Received':st==='partial'?totalRcvd+'/'+totalOrd+' Received':'Waiting'}</span>
+                  <span style={{fontSize:11,color:'#94a3b8'}}>{po.vendor_name}</span>
+                  <span style={{fontSize:10,color:'#94a3b8'}}>{po.created_at}</span>
+                  <span style={{marginLeft:'auto',fontWeight:800,fontSize:13}}>{totalOrd} units</span>
+                </div>
+                {po.notes&&<div style={{fontSize:11,color:'#64748b',marginBottom:6}}>{po.notes}</div>}
+                <table style={{fontSize:11,width:'100%'}}><thead><tr style={{background:'#f8fafc'}}>
+                  <th style={{padding:'4px 6px',textAlign:'left'}}>SKU</th><th style={{textAlign:'left'}}>Item</th><th style={{textAlign:'left'}}>Color</th>
+                  {['S','M','L','XL','2XL'].map(sz=><th key={sz} style={{textAlign:'center',width:40}}>{sz}</th>)}
+                  <th style={{textAlign:'center',width:50}}>Total</th>
+                </tr></thead><tbody>
+                  {po.items.map((it,ii)=>{const itTotal=Object.values(it.sizes||{}).reduce((a,v)=>a+v,0);
+                    return<tr key={ii} style={{borderBottom:'1px solid #f1f5f9'}}>
+                      <td style={{padding:'4px 6px',fontFamily:'monospace',fontWeight:700}}>{it.sku}</td>
+                      <td style={{fontSize:10}}>{it.name}</td>
+                      <td style={{fontSize:10,color:'#64748b'}}>{it.color||'—'}</td>
+                      {['S','M','L','XL','2XL'].map(sz=>{const ord=it.sizes?.[sz]||0;const rcvd=(it.received||{})[sz]||0;
+                        return<td key={sz} style={{textAlign:'center',fontWeight:700,fontSize:10,
+                          color:ord===0?'#d1d5db':rcvd>=ord?'#166534':rcvd>0?'#d97706':'#475569',
+                          background:rcvd>=ord&&ord>0?'#dcfce7':rcvd>0?'#fef3c7':''}}>
+                          {ord===0?'—':rcvd>0?rcvd+'/'+ord:ord}</td>})}
+                      <td style={{textAlign:'center',fontWeight:800}}>{itTotal}</td>
+                    </tr>})}
+                </tbody></table>
+                {st!=='received'&&<div style={{display:'flex',gap:6,marginTop:8,borderTop:'1px solid #e2e8f0',paddingTop:6}}>
+                  <button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 10px'}}
+                    onClick={()=>{setStockPOs(prev=>prev.map((p,i)=>i===pi?{...p,status:'received',items:p.items.map(it=>({...it,received:{...it.sizes}}))}:p));nf('✓ Marked '+po.id+' fully received')}}>✓ Mark All Received</button>
+                  <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{
+                    const updated=prompt('Enter received sizes (e.g. S:5,M:10,L:8)');if(!updated)return;
+                    const rcvd={};updated.split(',').forEach(p=>{const[sz,v]=p.trim().split(':');if(sz&&v)rcvd[sz.trim()]=parseInt(v)||0});
+                    setStockPOs(prev=>prev.map((p,i)=>i===pi?{...p,status:'partial',items:p.items.map((it,ii)=>ii===0?{...it,received:{...(it.received||{}),...rcvd}}:it)}:p));
+                    nf('Updated received quantities for '+po.id);
+                  }}>Partial Receive</button>
+                </div>}
+              </div>
+            </div>})}
+        </div>}
+
+        {/* Stock PO Create Modal */}
+        {showStockPO&&<div className="modal-overlay" onClick={()=>setShowStockPO(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:650}}>
+          <div className="modal-header" style={{background:'#eef2ff'}}><h2>📋 New Stock PO</h2><button className="modal-close" onClick={()=>setShowStockPO(null)}>×</button></div>
+          <div className="modal-body">
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:12}}>
+              <div><label className="form-label">Vendor *</label><select className="form-select" value={showStockPO.vendor_id} onChange={e=>{const v=D_V.find(x=>x.id===e.target.value);setShowStockPO(x=>({...x,vendor_id:e.target.value,vendor_name:v?.name||''}))}}>
+                <option value="">Select vendor...</option>{D_V.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}</select></div>
+              <div><label className="form-label">Notes</label><input className="form-input" value={showStockPO.notes||''} onChange={e=>setShowStockPO(x=>({...x,notes:e.target.value}))} placeholder="Restock reason..."/></div>
+            </div>
+            <label className="form-label">Items</label>
+            {(showStockPO.items||[]).map((it,ii)=>{
+              const vProds=showStockPO.vendor_id?prod.filter(p=>p.vendor_id===showStockPO.vendor_id):prod;
+              return<div key={ii} style={{padding:8,background:'#f8fafc',borderRadius:6,marginBottom:6}}>
+                <div style={{display:'flex',gap:6,alignItems:'center',marginBottom:6}}>
+                  <select className="form-select" style={{flex:1,fontSize:11}} value={it.sku||''} onChange={e=>{const p=prod.find(x=>x.sku===e.target.value);setShowStockPO(x=>({...x,items:x.items.map((xi,xii)=>xii===ii?{...xi,sku:p?.sku||e.target.value,name:p?.name||'',color:p?.color||'',sizes:Object.fromEntries((p?.available_sizes||['S','M','L','XL','2XL']).map(s=>[s,0]))}:xi)}))}}>
+                    <option value="">Select product...</option>{vProds.map(p=><option key={p.id} value={p.sku}>{p.sku} — {p.name}</option>)}</select>
+                  <input className="form-input" value={it.color||''} onChange={e=>setShowStockPO(x=>({...x,items:x.items.map((xi,xii)=>xii===ii?{...xi,color:e.target.value}:xi)}))} placeholder="Color" style={{width:120,fontSize:11}}/>
+                  {(showStockPO.items||[]).length>1&&<button style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:2}} onClick={()=>setShowStockPO(x=>({...x,items:x.items.filter((_,xii)=>xii!==ii)}))}>×</button>}
+                </div>
+                {it.sku&&<div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
+                  {Object.keys(it.sizes||{}).map(sz=><div key={sz} style={{textAlign:'center'}}>
+                    <div style={{fontSize:9,fontWeight:700,color:'#64748b'}}>{sz}</div>
+                    <input className="form-input" type="number" min="0" value={it.sizes[sz]||0} onChange={e=>setShowStockPO(x=>({...x,items:x.items.map((xi,xii)=>xii===ii?{...xi,sizes:{...xi.sizes,[sz]:parseInt(e.target.value)||0}}:xi)}))} style={{width:44,textAlign:'center',fontSize:12,fontWeight:700,padding:'3px 2px'}}/>
+                  </div>)}
+                </div>}
+              </div>})}
+            <button className="btn btn-sm btn-secondary" style={{marginTop:4}} onClick={()=>setShowStockPO(x=>({...x,items:[...x.items,{sku:'',name:'',color:'',sizes:{S:0,M:0,L:0,XL:0,'2XL':0}}]}))}>+ Add Item</button>
+            <div style={{marginTop:12,display:'flex',gap:8}}>
+              <button className="btn btn-primary" style={{background:'#6366f1',borderColor:'#6366f1'}} onClick={()=>{
+                if(!showStockPO.vendor_id){nf('Select a vendor','error');return}
+                const validItems=showStockPO.items.filter(it=>it.sku&&Object.values(it.sizes||{}).some(v=>v>0));
+                if(validItems.length===0){nf('Add at least one item with quantities','error');return}
+                const poId='PO-'+stockPOCounter+'-NSA';
+                const newPO={id:poId,vendor_id:showStockPO.vendor_id,vendor_name:showStockPO.vendor_name||D_V.find(v=>v.id===showStockPO.vendor_id)?.name||'',
+                  status:'waiting',created_at:new Date().toLocaleDateString(),notes:showStockPO.notes||'',
+                  items:validItems.map(it=>({sku:it.sku,name:it.name,color:it.color||'',sizes:{...it.sizes},received:{}}))};
+                setStockPOs(prev=>[newPO,...prev]);setStockPOCounter(c=>c+1);setShowStockPO(null);
+                nf('📋 Created '+poId+' — '+validItems.length+' item'+(validItems.length>1?'s':''));
+              }}>Create PO</button>
+              <button className="btn btn-secondary" onClick={()=>setShowStockPO(null)}>Cancel</button>
+            </div>
+          </div>
+        </div></div>}
       </>}
     </>);
   };
@@ -6683,13 +6789,13 @@ export default function App(){
         {qPC.mode==='single'&&(()=>{const it=qPC.items[0]||{};const up=(k,v)=>setQPC(x=>({...x,items:[{...x.items[0],[k]:v}]}));
           return<div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
             <div><label className="form-label">SKU *</label><input className="form-input" value={it.sku} onChange={e=>up('sku',e.target.value)} placeholder="JJ0605"/></div>
-            <div><label className="form-label">Brand</label><select className="form-select" value={it.vendor_id} onChange={e=>{const v=D_V.find(x=>x.id===e.target.value);up('vendor_id',e.target.value);if(v)up('brand',v.name)}}><option value="">Select...</option>{D_V.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}</select></div>
+            <div><label className="form-label">Brand</label><select className="form-select" value={it.vendor_id} onChange={e=>{const v=D_V.find(x=>x.id===e.target.value);const bn=v?.name||'';const rp=it.retail_price||0;const cat=it.category||'Tees';if(bn==='Adidas'&&rp>0){setQPC(x=>({...x,items:[{...x.items[0],vendor_id:e.target.value,brand:bn,nsa_cost:Math.round(rp*(cat==='Custom'?0.4125:0.375)*100)/100}]}))}else if(bn==='Under Armour'&&rp>0){setQPC(x=>({...x,items:[{...x.items[0],vendor_id:e.target.value,brand:bn,nsa_cost:Math.round(rp*0.425*100)/100}]}))}else{up('vendor_id',e.target.value);if(v)up('brand',v.name)}}}><option value="">Select...</option>{D_V.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}</select></div>
             <div style={{gridColumn:'1/3'}}><label className="form-label">Product Name *</label><input className="form-input" value={it.name} onChange={e=>up('name',e.target.value)} placeholder="Adidas Practice Jersey 2.0"/></div>
             <div><label className="form-label">Color</label><input className="form-input" value={it.color} onChange={e=>up('color',e.target.value)} placeholder="Power Red/White"/></div>
-            <div><label className="form-label">Category</label><select className="form-select" value={it.category} onChange={e=>up('category',e.target.value)}>
+            <div><label className="form-label">Category</label><select className="form-select" value={it.category} onChange={e=>{const cat=e.target.value;const bn=it.brand||D_V.find(x=>x.id===it.vendor_id)?.name||'';const rp=it.retail_price||0;if(bn==='Adidas'&&rp>0){setQPC(x=>({...x,items:[{...x.items[0],category:cat,nsa_cost:Math.round(rp*(cat==='Custom'?0.4125:0.375)*100)/100}]}))}else{up('category',cat)}}}>
               {['Tees','Polos','Hoodies','1/4 Zips','Shorts','Pants','Hats','Bags','Accessories','Jackets','Jerseys','Custom'].map(c=><option key={c}>{c}</option>)}</select></div>
-            <div><label className="form-label">Retail Price</label><$In value={it.retail_price||0} onChange={v=>up('retail_price',v)}/></div>
-            <div><label className="form-label">NSA Cost</label><$In value={it.nsa_cost||0} onChange={v=>up('nsa_cost',v)}/></div>
+            <div><label className="form-label">Retail Price</label><$In value={it.retail_price||0} onChange={v=>{const bn=it.brand||D_V.find(x=>x.id===it.vendor_id)?.name||'';const cat=it.category||'Tees';if(bn==='Adidas'){setQPC(x=>({...x,items:[{...x.items[0],retail_price:v,nsa_cost:Math.round(v*(cat==='Custom'?0.4125:0.375)*100)/100}]}))}else if(bn==='Under Armour'){setQPC(x=>({...x,items:[{...x.items[0],retail_price:v,nsa_cost:Math.round(v*0.425*100)/100}]}))}else{up('retail_price',v)}}}/></div>
+            <div><label className="form-label">NSA Cost{(it.brand==='Adidas'||it.brand==='Under Armour')&&it.retail_price>0?<span style={{fontSize:9,color:'#16a34a',marginLeft:4}}>auto</span>:''}</label><$In value={it.nsa_cost||0} onChange={v=>{const bn=it.brand||D_V.find(x=>x.id===it.vendor_id)?.name||'';const cat=it.category||'Tees';if(bn==='Adidas'&&v>0){setQPC(x=>({...x,items:[{...x.items[0],nsa_cost:v,retail_price:Math.round(v/(cat==='Custom'?0.4125:0.375)*100)/100}]}))}else if(bn==='Under Armour'&&v>0){setQPC(x=>({...x,items:[{...x.items[0],nsa_cost:v,retail_price:Math.round(v/0.425*100)/100}]}))}else{up('nsa_cost',v)}}}/></div>
             <div style={{gridColumn:'1/3'}}><label className="form-label">Available Sizes</label>
               <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>{['XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL','OSFA'].map(sz=>
                 <button key={sz} className={`btn btn-sm ${(it.available_sizes||[]).includes(sz)?'btn-primary':'btn-secondary'}`} style={{fontSize:10,padding:'3px 8px'}}
@@ -6702,10 +6808,10 @@ export default function App(){
             <div style={{display:'flex',gap:6,alignItems:'center'}}>
               <input className="form-input" value={it.sku} onChange={e=>setQPC(x=>({...x,items:x.items.map((ii,ix)=>ix===i?{...ii,sku:e.target.value}:ii)}))} placeholder="SKU" style={{width:90,fontSize:11}}/>
               <input className="form-input" value={it.name} onChange={e=>setQPC(x=>({...x,items:x.items.map((ii,ix)=>ix===i?{...ii,name:e.target.value}:ii)}))} placeholder="Product name" style={{flex:1,fontSize:11}}/>
-              <select className="form-select" value={it.vendor_id||''} onChange={e=>setQPC(x=>({...x,items:x.items.map((ii,ix)=>ix===i?{...ii,vendor_id:e.target.value,brand:D_V.find(v=>v.id===e.target.value)?.name||''}:ii)}))} style={{width:100,fontSize:10}}>
+              <select className="form-select" value={it.vendor_id||''} onChange={e=>{const bn=D_V.find(v=>v.id===e.target.value)?.name||'';setQPC(x=>({...x,items:x.items.map((ii,ix)=>{if(ix!==i)return ii;const upd={...ii,vendor_id:e.target.value,brand:bn};if(bn==='Adidas'&&ii.retail_price>0)upd.nsa_cost=Math.round(ii.retail_price*0.375*100)/100;else if(bn==='Under Armour'&&ii.retail_price>0)upd.nsa_cost=Math.round(ii.retail_price*0.425*100)/100;return upd})}))}} style={{width:100,fontSize:10}}>
                 <option value="">Brand</option>{D_V.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}</select>
-              <$In value={it.nsa_cost||0} onChange={v=>setQPC(x=>({...x,items:x.items.map((ii,ix)=>ix===i?{...ii,nsa_cost:v}:ii)}))} w={50}/>
-              <$In value={it.retail_price||0} onChange={v=>setQPC(x=>({...x,items:x.items.map((ii,ix)=>ix===i?{...ii,retail_price:v}:ii)}))} w={50}/>
+              <$In value={it.nsa_cost||0} onChange={v=>{const bn=it.brand||D_V.find(x=>x.id===it.vendor_id)?.name||'';setQPC(x=>({...x,items:x.items.map((ii,ix)=>{if(ix!==i)return ii;const upd={...ii,nsa_cost:v};if(bn==='Adidas'&&v>0)upd.retail_price=Math.round(v/0.375*100)/100;else if(bn==='Under Armour'&&v>0)upd.retail_price=Math.round(v/0.425*100)/100;return upd})}))}} w={50}/>
+              <$In value={it.retail_price||0} onChange={v=>{const bn=it.brand||D_V.find(x=>x.id===it.vendor_id)?.name||'';setQPC(x=>({...x,items:x.items.map((ii,ix)=>{if(ix!==i)return ii;const upd={...ii,retail_price:v};if(bn==='Adidas')upd.nsa_cost=Math.round(v*0.375*100)/100;else if(bn==='Under Armour')upd.nsa_cost=Math.round(v*0.425*100)/100;return upd})}))}} w={50}/>
               <button style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:2}} onClick={()=>setQPC(x=>({...x,items:x.items.filter((_,ix)=>ix!==i)}))}>×</button>
             </div>
           </div>)}
@@ -6713,7 +6819,7 @@ export default function App(){
         </>}
 
         {qPC.mode==='bulk'&&<>
-          <div style={{fontSize:11,color:'#64748b',marginBottom:6}}>Paste tab-separated: <strong>SKU, Name, Brand, Color, Cost, Retail, Sizes</strong> (one per line)</div>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}><div style={{fontSize:11,color:'#64748b'}}>Paste tab-separated: <strong>SKU, Name, Brand, Color, Cost, Retail, Sizes</strong> (one per line)</div><button className="btn btn-sm btn-secondary" onClick={()=>{const tpl="SKU\tName\tBrand\tColor\tCost\tRetail\tSizes\nJJ0605\tAdidas Practice 2.0\tAdidas\tPower Red\t20.81\t55.50\tS,M,L,XL,2XL\n1370399\tUnder Armour Team Polo\tUnder Armour\tCardinal/White\t27.63\t65.00\tS,M,L,XL,2XL";const blob=new Blob([tpl],{type:'text/tab-separated-values'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='product_upload_template.tsv';a.click();URL.revokeObjectURL(url)}} style={{fontSize:10,whiteSpace:'nowrap'}}>⬇ Download Template</button></div>
           <textarea className="form-input" rows={8} value={qPC.bulkRaw||''} onChange={e=>setQPC(x=>({...x,bulkRaw:e.target.value}))}
             placeholder={"JJ0605\tAdidas Practice 2.0\tAdidas\tPower Red\t21.00\t55.50\tS,M,L,XL,2XL\nHF7245\tAdidas Team Hoodie\tAdidas\tNavy\t28.50\t85.00\tS,M,L,XL,2XL"} style={{fontFamily:'monospace',fontSize:10}}/>
           <div style={{marginTop:6,padding:8,border:'2px dashed #d1d5db',borderRadius:6,textAlign:'center',fontSize:11,color:'#94a3b8',cursor:'pointer'}}
