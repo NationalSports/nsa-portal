@@ -1775,6 +1775,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           } else if(d.kind==='numbers'){
             const dp=dP(d,qty,[],qty);
             decoRev+=qty*dp.sell;
+          } else if(d.kind==='names'){
+            const dp=dP(d,qty,[],qty);
+            decoRev+=qty*dp.sell;
+          } else if(d.kind==='outside_deco'){
+            const dp=dP(d,qty,[],qty);
+            decoRev+=qty*dp.sell;
           }
         });
         return{items:acc.items+1,units:acc.units+qty,subtotal:acc.subtotal+rev+decoRev};
@@ -1790,7 +1796,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           <div style={{padding:10,background:'#f8fafc',borderRadius:6,marginBottom:12}}>
             <div style={{fontWeight:700,color:'#1e40af'}}>{o.id}</div>
             <div style={{fontSize:12,color:'#64748b'}}>{cust?.name} — {o.memo}</div>
-            <div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>Order total: ${totals.total.toLocaleString()}</div>
+            <div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>Order total: ${totals.grand.toLocaleString()}</div>
           </div>
 
           {/* Invoice type */}
@@ -6837,14 +6843,18 @@ export default function App(){
     // Build what a QB sync would push
     const buildQBSalesOrder=(so)=>{
       const c=cust.find(x=>x.id===so.customer_id);
+      const saf=safeArt(so);
+      const _aq={};safeItems(so).forEach(it2=>{const q2=Object.values(safeSizes(it2)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it2).forEach(d2=>{if(d2.kind==='art'&&d2.art_file_id){_aq[d2.art_file_id]=(_aq[d2.art_file_id]||0)+q2}})});
       const lines=[];
       safeItems(so).forEach(it=>{
         const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
         if(!qty)return;
         lines.push({type:'SalesItemLine',desc:it.sku+' '+it.name+(it.color?' - '+it.color:''),qty,rate:it.unit_sell,amount:qty*it.unit_sell,account:qbConfig.mapping.income_account});
         safeDecos(it).forEach(d=>{
-          const sell=safeNum(d.sell_override||d.sell_each||0);
-          if(sell>0)lines.push({type:'SalesItemLine',desc:'Decoration: '+(d.position||d.deco_type||'Art'),qty,rate:sell,amount:qty*sell,account:qbConfig.mapping.income_account});
+          const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qty;
+          const dp=dP(d,qty,saf,cq);
+          const sell=dp.sell;
+          if(sell>0)lines.push({type:'SalesItemLine',desc:'Decoration: '+(d.position||d.deco_type||d.kind||'Art'),qty,rate:sell,amount:qty*sell,account:qbConfig.mapping.income_account});
         });
       });
       return{docType:'SalesOrder',docNumber:so.id,customerRef:c?.name||'Unknown',date:so.created_at,memo:so.memo,lines,total:lines.reduce((a,l)=>a+l.amount,0)};
@@ -6862,7 +6872,7 @@ export default function App(){
     const buildQBInvoice=(inv)=>{
       const so=sos.find(s=>s.id===inv.so_id);
       return{docType:'Invoice',docNumber:inv.id,customerRef:cust.find(c=>c.id===inv.customer_id)?.name,
-        date:inv.created_at,soRef:inv.so_id,amount:inv.total,paid:inv.paid,balance:inv.total-inv.paid,
+        date:inv.date,soRef:inv.so_id,amount:inv.total,paid:inv.paid,balance:inv.total-inv.paid,
         account:qbConfig.mapping.ar_account};
     };
 
