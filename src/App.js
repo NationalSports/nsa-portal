@@ -1655,6 +1655,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         const totalActual=costLines.reduce((a,l)=>a+l.actual,0);
         const variance=totalActual-totalExpected;
         const hasActuals=costLines.some(l=>l.poCount>0);
+        // Shipping & freight costs for GP calculation
+        const shipCostVal=safeNum(o._shipstation_cost||0);
+        const freightVal=safeNum(o._inbound_freight||0);
+        if(shipCostVal>0)costLines.push({category:'Shipping',sku:'—',name:'Outbound Shipping (ShipStation)',vendor:'ShipStation',qty:1,expected:shipCostVal,actual:shipCostVal,poCount:0,poIds:'',allReceived:true});
+        if(freightVal>0)costLines.push({category:'Freight',sku:'—',name:'Inbound Freight (Supplier)',vendor:'Supplier',qty:1,expected:freightVal,actual:freightVal,poCount:0,poIds:'',allReceived:true});
         const cats={};costLines.forEach(l=>{if(!cats[l.category])cats[l.category]={expected:0,actual:0};cats[l.category].expected+=l.expected;cats[l.category].actual+=l.actual});
 
         return<div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between'}}>
@@ -1704,6 +1709,30 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
               <td></td>
             </tr></tfoot>
           </table>
+          {/* Shipping & Freight overrides for GP / Commission calculation */}
+          <div style={{marginTop:16,padding:14,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0'}}>
+            <div style={{fontSize:12,fontWeight:700,color:'#475569',marginBottom:8}}>Shipping & Freight Costs (for Gross Profit / Commission)</div>
+            <div style={{display:'flex',gap:16,flexWrap:'wrap',alignItems:'end'}}>
+              <div>
+                <label className="form-label">Outbound Shipping (ShipStation)</label>
+                <div style={{display:'flex',alignItems:'center',gap:4}}>
+                  <$In value={o._shipstation_cost||0} onChange={v=>sv('_shipstation_cost',v)} w={90}/>
+                  <span style={{fontSize:10,color:'#94a3b8'}}>default $0 until integration</span>
+                </div>
+              </div>
+              <div>
+                <label className="form-label">Inbound Freight (Supplier Bills)</label>
+                <div style={{display:'flex',alignItems:'center',gap:4}}>
+                  <$In value={o._inbound_freight||0} onChange={v=>sv('_inbound_freight',v)} w={90}/>
+                  <span style={{fontSize:10,color:'#94a3b8'}}>from supplier bills tied to SO</span>
+                </div>
+              </div>
+              <div style={{padding:'6px 12px',background:'#eff6ff',borderRadius:6,fontSize:11,color:'#1e40af'}}>
+                <strong>GP Impact:</strong> These reduce gross profit and commission calculations.
+                {(shipCostVal>0||freightVal>0)&&<span style={{marginLeft:6,fontWeight:700,color:'#dc2626'}}>-${(shipCostVal+freightVal).toFixed(2)}</span>}
+              </div>
+            </div>
+          </div>
         </div></div>})()}
 
     <SendModal isOpen={showSend} onClose={()=>setShowSend(false)} estimate={o} customer={cust} onSend={()=>{sv('status','sent');sv('email_status','sent');onSave({...o,status:'sent',email_status:'sent'});nf('Estimate sent!')}}/>
@@ -3491,8 +3520,10 @@ export default function App(){
   const[qbConfig,setQBConfig]=useState({connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',
     mapping:{income_account:'Sales',cogs_account:'Cost of Goods Sold',deco_account:'Subcontractor - Decoration',ar_account:'Accounts Receivable',ap_account:'Accounts Payable'},
     syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}});
-  const[cust,setCust]=useState(D_C);const[vend]=useState(D_V);const[prod,setProd]=useState(D_P);
-  const[ests,setEsts]=useState(D_E);const[sos,setSOs]=useState(D_SO);const[invs,setInvs]=useState(D_INV);
+  // Persistent state — loads from localStorage, falls back to demo data
+  const loadState=(key,fallback)=>{try{const s=localStorage.getItem('nsa_'+key);return s?JSON.parse(s):fallback}catch{return fallback}};
+  const[cust,setCust]=useState(()=>loadState('cust',D_C));const[vend]=useState(D_V);const[prod,setProd]=useState(()=>loadState('prod',D_P));
+  const[ests,setEsts]=useState(()=>loadState('ests',D_E));const[sos,setSOs]=useState(()=>loadState('sos',D_SO));const[invs,setInvs]=useState(()=>loadState('invs',D_INV));
   // Batch PO system
   const[batchPOs,setBatchPOs]=useState([]);// pending queue
   const[submittedBatches,setSubmittedBatches]=useState([]);// submitted batches for scan lookup
@@ -3505,7 +3536,14 @@ export default function App(){
   const logChange=(action,entity,entityId,detail)=>{setChangeLog(prev=>[{ts:new Date().toLocaleString(),user:cu.name,action,entity,entityId,detail},...prev].slice(0,500))};
   // SO version history
   const[soHistory,setSOHistory]=useState({});// {soId:[{ts,user,snapshot}]}
-  const[msgs,setMsgs]=useState(D_MSG);const[cM,setCM]=useState({open:false,c:null});const[aM,setAM]=useState({open:false,p:null});
+  const[msgs,setMsgs]=useState(()=>loadState('msgs',D_MSG));const[cM,setCM]=useState({open:false,c:null});const[aM,setAM]=useState({open:false,p:null});
+  // Auto-save state to localStorage on change
+  React.useEffect(()=>{try{localStorage.setItem('nsa_cust',JSON.stringify(cust))}catch{}},[cust]);
+  React.useEffect(()=>{try{localStorage.setItem('nsa_prod',JSON.stringify(prod))}catch{}},[prod]);
+  React.useEffect(()=>{try{localStorage.setItem('nsa_ests',JSON.stringify(ests))}catch{}},[ests]);
+  React.useEffect(()=>{try{localStorage.setItem('nsa_sos',JSON.stringify(sos))}catch{}},[sos]);
+  React.useEffect(()=>{try{localStorage.setItem('nsa_invs',JSON.stringify(invs))}catch{}},[invs]);
+  React.useEffect(()=>{try{localStorage.setItem('nsa_msgs',JSON.stringify(msgs))}catch{}},[msgs]);
   const[q,setQ]=useState('');const[selC,setSelC]=useState(null);const[selV,setSelV]=useState(null);
   const[eEst,setEEst]=useState(null);const[eEstC,setEEstC]=useState(null);const[eSO,setESO]=useState(null);const[eSOC,setESOC]=useState(null);const[eSOTab,setESOTab]=useState(null);const[eSOScrollItem,setESOScrollItem]=useState(null);
   const[gQ,setGQ]=useState('');const[gOpen,setGOpen]=useState(false);const[mF,setMF]=useState('all');const[rF,setRF]=useState('all');const[pF,setPF]=useState({cat:'all',vnd:'all',stk:'all',clr:'all'});
@@ -3533,6 +3571,23 @@ export default function App(){
     if(prev){setSOHistory(h=>{const existing=h[s.id]||[];return{...h,[s.id]:[{ts:new Date().toLocaleString(),user:cu.name,snapshot:JSON.parse(JSON.stringify(prev))},...existing].slice(0,20)}})}
     setSOs(p=>{const ex=p.find(x=>x.id===s.id);return ex?p.map(x=>x.id===s.id?s:x):[...p,s]});
     logChange(prev?'updated':'created','SO',s.id,s.memo||'');
+    // Auto-invoice: when SO reaches ready_to_invoice, create draft invoice if none exists
+    const newStatus=calcSOStatus(s);
+    const prevStatus=prev?calcSOStatus(prev):null;
+    if(newStatus==='ready_to_invoice'&&prevStatus!=='ready_to_invoice'&&prevStatus!=='complete'){
+      const hasInv=invs.some(iv=>iv.so_id===s.id);
+      if(!hasInv){
+        const _aq={};safeItems(s).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_aq[d.art_file_id]=(_aq[d.art_file_id]||0)+q2}})});
+        const saf=safeArt(s);let total=0;
+        safeItems(s).forEach(it=>{const qq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);total+=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qq;const dp2=dP(d,qq,saf,cq);total+=qq*dp2.sell})});
+        if(s.shipping_type==='pct')total+=total*(safeNum(s.shipping_value)/100);else total+=safeNum(s.shipping_value);
+        const invId=uid('INV-');const today=new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'2-digit'});
+        const dueDate=new Date();dueDate.setDate(dueDate.getDate()+30);const due=dueDate.toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'2-digit'});
+        const newInv={id:invId,type:'invoice',customer_id:s.customer_id,so_id:s.id,date:today,due_date:due,total:rQ(total),paid:0,memo:s.memo||'',status:'open',payments:[],cc_fee:0};
+        setInvs(prev2=>[newInv,...prev2]);
+        nf('Auto-generated invoice '+invId+' for $'+rQ(total).toLocaleString());
+      }
+    }
   };
   const savI=(pid,inv)=>{setProd(p=>p.map(x=>x.id===pid?{...x,_inv:inv}:x));nf('Updated')};
   const newE=(c,product)=>{const mk=c?.catalog_markup||1.65;const items=[];
@@ -3576,6 +3631,17 @@ export default function App(){
       if(so.expected_date){const dOut=Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24));
         if(dOut<=3&&dOut>=0&&calcSOStatus(so)!=='complete')todos.push({type:'deadline',priority:0,msg:'⚠️ Due in '+dOut+' day'+(dOut!==1?'s':'')+': '+(so.memo||so.id),detail:tag+' · '+so.expected_date,so,action:'Open SO',role:'all'})};
       if(calcSOStatus(so)==='need_order')todos.push({type:'order',priority:2,msg:'🛒 Items need ordering: '+(so.memo||so.id),detail:tag,so,action:'Create PO',role:'sales'});
+    });
+    // Stale estimate follow-up alerts
+    ests.filter(e=>e.status==='sent').forEach(e=>{
+      const c2=cust.find(x=>x.id===e.customer_id);const tag2=c2?.alpha_tag||e.id;
+      const sentDate=e.updated_at||e.created_at;if(!sentDate)return;
+      const m=sentDate.match(/(\d{2})\/(\d{2})\/(\d{2})/);
+      const d=m?new Date('20'+m[3],m[1]-1,m[2]):new Date(sentDate);
+      const days=Math.floor((new Date()-d)/(1000*60*60*24));
+      if(days>=3&&days<7)todos.push({type:'follow_up',priority:2,msg:'📧 Follow up on estimate ('+days+'d): '+(e.memo||e.id),detail:tag2+' · Sent '+days+' days ago',action:'Follow Up',role:'sales',est:e,estC:c2});
+      else if(days>=7&&days<14)todos.push({type:'follow_up',priority:1,msg:'⚠️ Estimate going cold ('+days+'d): '+(e.memo||e.id),detail:tag2+' · No response in '+days+' days',action:'Follow Up',role:'sales',est:e,estC:c2});
+      else if(days>=14)todos.push({type:'follow_up',priority:0,msg:'🔴 Stale estimate ('+days+'d): '+(e.memo||e.id),detail:tag2+' · '+days+' days with no response',action:'Close or Re-send',role:'sales',est:e,estC:c2});
     });
     todos.sort((a,b)=>a.priority-b.priority);
 
@@ -3662,7 +3728,8 @@ export default function App(){
       <button className="btn btn-primary" onClick={()=>newE(null)}>📝 New Estimate</button>
       <button className="btn btn-secondary" onClick={()=>setPg('orders')}>📋 My Orders</button>
       <button className="btn btn-secondary" onClick={()=>setPg('omg')}>🏪 OMG Stores</button>
-      <button className="btn btn-secondary" onClick={()=>setPg('invoices')}>💰 Invoices</button></div></div>
+      <button className="btn btn-secondary" onClick={()=>setPg('invoices')}>💰 Invoices</button>
+      <button className="btn btn-secondary" onClick={()=>setPg('commissions')}>💵 My Commissions</button></div></div>
     </>}
 
     {/* ═══ WAREHOUSE VIEW ═══ */}
@@ -5337,6 +5404,7 @@ export default function App(){
     const viewRepId=isAdmin?(commTab==='statement'||commTab==='pipeline'||commTab==='ytd'||commTab==='byCustomer'?q||'all':'all'):cu.id;
 
     // Gross profit calculator for an invoice
+    // GP = Invoice Revenue − Garment Cost − Deco Cost − Outbound Shipping (ShipStation) − Inbound Freight (Supplier Bills)
     const calcGP=(inv)=>{
       const so=sos.find(s=>s.id===inv.so_id);
       if(!so)return{rev:inv.total||0,cost:0,gp:inv.total||0,shipRev:0,shipCost:0,inboundFreight:0};
@@ -5350,9 +5418,9 @@ export default function App(){
       });
       // Shipping revenue (charged to customer)
       const shipRev=so.shipping_type==='pct'?rev*(safeNum(so.shipping_value)/100):safeNum(so.shipping_value);
-      // Outbound shipping cost — placeholder for ShipStation
+      // Outbound shipping cost — placeholder for ShipStation (defaults $0)
       const shipCost=safeNum(so._shipstation_cost||0);
-      // Inbound freight from supplier bills
+      // Inbound freight from supplier bills tied to SO (manual override field)
       const inboundFreight=safeNum(so._inbound_freight||0);
       const totalRev=rev+shipRev;const totalCost=cost+shipCost+inboundFreight;
       // Scale to invoice proportion (invoice may be partial payment of SO)
@@ -5360,7 +5428,8 @@ export default function App(){
       return{rev:inv.total,cost:Math.round(totalCost*scale*100)/100,gp:Math.round((inv.total-totalCost*scale)*100)/100,shipRev:Math.round(shipRev*scale*100)/100,shipCost:Math.round(shipCost*scale*100)/100,inboundFreight:Math.round(inboundFreight*scale*100)/100};
     };
 
-    // Build commission line items from invoices
+    // Build commission line items from paid invoices
+    // Commission: 30% of GP if paid within 90 days, 15% if paid after 90 days
     const buildCommLines=(repFilter)=>{
       return invs.filter(inv=>{
         if(inv.status!=='paid'&&inv.status!=='partial')return false;
@@ -5449,7 +5518,7 @@ export default function App(){
             {salesReps.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
           </select></>}
         <div style={{display:'flex',gap:4,marginLeft:isAdmin?'auto':0}}>
-          {[['statement','📋 Statement'],['pipeline','📊 Pipeline'],['ytd','📈 YTD'],['byCustomer','👥 By Customer']].map(([id,label])=>
+          {[['statement','Statement'],['pipeline','Pipeline'],['ytd','YTD'],['byCustomer','By Customer']].map(([id,label])=>
             <button key={id} className={`btn btn-sm ${commTab===id?'btn-primary':'btn-secondary'}`} onClick={()=>setCommTab(id)}>{label}</button>)}
         </div>
       </div>
@@ -5465,11 +5534,11 @@ export default function App(){
       {/* MONTHLY STATEMENT TAB */}
       {commTab==='statement'&&<div className="card">
         <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-          <h2>💰 Commission Statement</h2>
+          <h2>Commission Statement</h2>
           <div style={{display:'flex',gap:8,alignItems:'center'}}>
-            <button className="btn btn-sm btn-secondary" onClick={()=>{const[y,m]=commMonth.split('-').map(Number);const d=new Date(y,m-2,1);setCommMonth(d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'))}}>◀</button>
+            <button className="btn btn-sm btn-secondary" onClick={()=>{const[y,m]=commMonth.split('-').map(Number);const d=new Date(y,m-2,1);setCommMonth(d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'))}}>&#9664;</button>
             <input type="month" className="form-input" style={{width:160}} value={commMonth} onChange={e=>setCommMonth(e.target.value)}/>
-            <button className="btn btn-sm btn-secondary" onClick={()=>{const[y,m]=commMonth.split('-').map(Number);const d=new Date(y,m,1);setCommMonth(d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'))}}>▶</button>
+            <button className="btn btn-sm btn-secondary" onClick={()=>{const[y,m]=commMonth.split('-').map(Number);const d=new Date(y,m,1);setCommMonth(d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'))}}>&#9654;</button>
           </div>
         </div>
         <div className="card-body" style={{padding:0}}>
@@ -5479,17 +5548,17 @@ export default function App(){
           </tr></thead><tbody>
             {monthLines.map(l=><tr key={l.inv.id} style={{background:l.isLate&&!l.overridden?'#fef2f2':''}}>
               <td style={{fontWeight:700,color:'#1e40af'}}>{l.inv.id}<div style={{fontSize:10,color:'#94a3b8'}}>{l.inv.date}</div></td>
-              <td>{l.customer?.name||'—'}<div style={{fontSize:10,color:'#94a3b8'}}>{l.inv.memo}</div></td>
-              {isAdmin&&<td style={{fontSize:11}}>{l.rep?.name||'—'}</td>}
+              <td>{l.customer?.name||'\u2014'}<div style={{fontSize:10,color:'#94a3b8'}}>{l.inv.memo}</div></td>
+              {isAdmin&&<td style={{fontSize:11}}>{l.rep?.name||'\u2014'}</td>}
               <td style={{textAlign:'right'}}>${safeNum(l.inv.total).toLocaleString()}</td>
               <td style={{textAlign:'right',color:'#dc2626'}}>${l.gp.cost.toLocaleString()}</td>
               <td style={{textAlign:'right',fontWeight:700,color:l.gp.gp>0?'#166534':'#dc2626'}}>${l.gp.gp.toLocaleString()}</td>
-              <td style={{textAlign:'center'}}><span style={{padding:'2px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:l.isLate?'#fee2e2':'#dcfce7',color:l.isLate?'#dc2626':'#166534'}}>{l.daysToPay??'—'}d</span></td>
+              <td style={{textAlign:'center'}}><span style={{padding:'2px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:l.isLate?'#fee2e2':'#dcfce7',color:l.isLate?'#dc2626':'#166534'}}>{l.daysToPay??'\u2014'}d</span></td>
               <td style={{textAlign:'center',fontWeight:600,color:l.commRate===0.30?'#166534':'#d97706'}}>{Math.round(l.commRate*100)}%</td>
               <td style={{textAlign:'right',fontWeight:800,fontSize:14,color:'#166534'}}>${l.commAmt.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
               {isAdmin&&<td style={{textAlign:'center'}}>
-                {l.isLate&&!l.overridden&&<button className="btn btn-sm" style={{fontSize:9,background:'#fef3c7',border:'1px solid #f59e0b',color:'#92400e',padding:'2px 6px'}} title="Approve full 30% commission" onClick={()=>setCommOverrides(p=>({...p,[l.inv.id]:true}))}>🔓 Full</button>}
-                {l.isLate&&l.overridden&&<span style={{fontSize:9,color:'#166534',fontWeight:700}}>✅ Approved</span>}
+                {l.isLate&&!l.overridden&&<button className="btn btn-sm" style={{fontSize:9,background:'#fef3c7',border:'1px solid #f59e0b',color:'#92400e',padding:'2px 6px'}} title="Approve full 30% commission" onClick={()=>setCommOverrides(p=>({...p,[l.inv.id]:true}))}>Full 30%</button>}
+                {l.isLate&&l.overridden&&<span style={{fontSize:9,color:'#166534',fontWeight:700}}>Approved</span>}
               </td>}
             </tr>)}
             <tr style={{fontWeight:800,background:'#f0f9ff',borderTop:'2px solid #1e40af'}}>
@@ -5507,7 +5576,7 @@ export default function App(){
 
       {/* PIPELINE TAB */}
       {commTab==='pipeline'&&<div className="card">
-        <div className="card-header"><h2>📊 Expected Commissions — Open Invoices</h2><span style={{fontSize:12,color:'#64748b'}}>Outstanding: ${pipeBalance.toLocaleString()}</span></div>
+        <div className="card-header"><h2>Expected Commissions — Open Invoices</h2><span style={{fontSize:12,color:'#64748b'}}>Outstanding: ${pipeBalance.toLocaleString()}</span></div>
         <div className="card-body" style={{padding:0}}>
           {allPipeline.length===0?<div style={{padding:40,textAlign:'center',color:'#94a3b8'}}>No open invoices</div>:
           <table style={{fontSize:12}}><thead><tr>
@@ -5515,8 +5584,8 @@ export default function App(){
           </tr></thead><tbody>
             {allPipeline.sort((a,b)=>b.daysOpen-a.daysOpen).map(l=><tr key={l.inv.id} style={{background:l.willBeLate?'#fef2f2':l.daysOpen>60?'#fffbeb':''}}>
               <td style={{fontWeight:700,color:'#1e40af'}}>{l.inv.id}<div style={{fontSize:10,color:'#94a3b8'}}>{l.inv.date}</div></td>
-              <td>{l.customer?.name||'—'}<div style={{fontSize:10,color:'#94a3b8'}}>{l.inv.memo}</div></td>
-              {isAdmin&&<td style={{fontSize:11}}>{l.rep?.name||'—'}</td>}
+              <td>{l.customer?.name||'\u2014'}<div style={{fontSize:10,color:'#94a3b8'}}>{l.inv.memo}</div></td>
+              {isAdmin&&<td style={{fontSize:11}}>{l.rep?.name||'\u2014'}</td>}
               <td style={{textAlign:'right',fontWeight:600}}>${l.balance.toLocaleString()}</td>
               <td style={{textAlign:'right',color:l.gp.gp>0?'#166534':'#dc2626'}}>${l.gp.gp.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
               <td style={{textAlign:'center'}}><span style={{padding:'2px 8px',borderRadius:8,fontSize:10,fontWeight:600,background:l.willBeLate?'#fee2e2':l.daysOpen>60?'#fef3c7':'#dcfce7',color:l.willBeLate?'#dc2626':l.daysOpen>60?'#92400e':'#166534'}}>{l.daysOpen}d</span></td>
@@ -5537,7 +5606,7 @@ export default function App(){
       {/* YTD TAB */}
       {commTab==='ytd'&&<>
         <div className="card" style={{marginBottom:16}}>
-          <div className="card-header"><h2>📈 Year-to-Date — {yr}</h2></div>
+          <div className="card-header"><h2>Year-to-Date — {yr}</h2></div>
           <div className="card-body">
             <div className="stats-row">
               <div className="stat-card"><div className="stat-label">Total Revenue</div><div className="stat-value">${(ytdRev/1000).toFixed(1)}k</div></div>
@@ -5582,7 +5651,7 @@ export default function App(){
 
       {/* BY CUSTOMER TAB */}
       {commTab==='byCustomer'&&<div className="card">
-        <div className="card-header"><h2>👥 Commission by Customer</h2></div>
+        <div className="card-header"><h2>Commission by Customer</h2></div>
         <div className="card-body" style={{padding:0}}>
           {custList.length===0?<div style={{padding:40,textAlign:'center',color:'#94a3b8'}}>No commission data</div>:
           <table style={{fontSize:12}}><thead><tr>
@@ -5610,7 +5679,7 @@ export default function App(){
 
       {/* Commission policy note */}
       <div style={{marginTop:16,padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0',fontSize:11,color:'#64748b'}}>
-        <strong>Commission Policy:</strong> 30% of gross profit on invoices paid within 90 days of invoice date. 15% on invoices paid after 90 days. Admin may approve full commission on late invoices at discretion. Gross profit = Revenue − Product Cost − Decoration Cost − Outbound Shipping (ShipStation) − Inbound Freight (Supplier Bills).
+        <strong>Commission Policy:</strong> 30% of gross profit on invoices paid within 90 days of invoice date. 15% on invoices paid after 90 days (50% penalty). Admin may click to restore full 30% on any late invoice. Gross profit = Revenue &minus; Product Cost &minus; Decoration Cost &minus; Outbound Shipping (ShipStation, default $0) &minus; Inbound Freight (Supplier Bills, manual override until integration live).
       </div>
     </>);
   };
@@ -5798,19 +5867,24 @@ export default function App(){
         const szKeys=Object.keys(item.sizes||{}).filter(k=>SZ_ORD.includes(k)||(item.sizes[k]>0));
         const totalOrdered=szKeys.reduce((a,s)=>a+(item.sizes[s]||0),0);
         if(totalOrdered===0)return;
-        const pulled={};safePicks(item).forEach(pk=>{szKeys.forEach(s=>{pulled[s]=(pulled[s]||0)+(pk[s]||0)})});
+        const picks=safePicks(item);
+        const pulled={};picks.forEach(pk=>{szKeys.forEach(s=>{pulled[s]=(pulled[s]||0)+(pk[s]||0)})});
         const totalPulled=Object.values(pulled).reduce((a,v)=>a+v,0);
-        const needsPull=totalOrdered-totalPulled;
-        if(needsPull>0){
-          pullTasks.push({so,soId:so.id,item,itemIdx:ii,cName,alpha,rep,daysOut,urgent,
-            sku:item.sku,name:item.name,brand:item.brand||'',color:item.color||'',
-            sizes:item.sizes,pulled,needsPull,totalOrdered,totalPulled,szKeys,
-            noDeco:item.no_deco||!item.decorations?.length,
-            shipDest:safePicks(item).find(p=>p.ship_dest)?.ship_dest||'in_house'});
+        // Only show in Pull & Stage if there's an active pick ticket (IF not yet pulled)
+        const hasActivePick=picks.some(pk=>pk.status!=='pulled');
+        if(hasActivePick){
+          const needsPull=totalOrdered-totalPulled;
+          if(needsPull>0){
+            pullTasks.push({so,soId:so.id,item,itemIdx:ii,cName,alpha,rep,daysOut,urgent,
+              sku:item.sku,name:item.name,brand:item.brand||'',color:item.color||'',
+              sizes:item.sizes,pulled,needsPull,totalOrdered,totalPulled,szKeys,
+              noDeco:item.no_deco||!item.decorations?.length,
+              shipDest:picks.find(p=>p.ship_dest)?.ship_dest||'in_house'});
+          }
         }
         // No-deco items fully pulled → ready to ship
         if((!item.decorations?.length||item.no_deco)&&totalPulled>=totalOrdered&&totalOrdered>0){
-          const dest=safePicks(item).find(p=>p.ship_dest)?.ship_dest||'in_house';
+          const dest=picks.find(p=>p.ship_dest)?.ship_dest||'in_house';
           shipTasks.push({so,soId:so.id,type:'no_deco',cName,alpha,rep,daysOut,urgent,
             desc:item.sku+' · '+item.name,units:totalOrdered,shipMethod:dest});
         }
@@ -6402,7 +6476,7 @@ export default function App(){
         <div style={{marginTop:12,display:'flex',gap:8}}>
           <button className="btn btn-primary" disabled={!imp.raw.trim()||!imp.custId} onClick={()=>{
             const result=parseNSData(imp.raw);
-            setImp(x=>({...x,step:result.questions.length>0?'review':'review',...result}));
+            setImp(x=>({...x,step:result.questions.length>0?'questions':'review',...result}));
           }}>?? Parse & Review →</button>
         </div>
       </>}
@@ -7062,7 +7136,7 @@ export default function App(){
           {gOpen&&<div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:59}} onClick={()=>setGOpen(false)}/>}
         </div>
         <div style={{display:'flex',gap:6,alignItems:'center'}}><button className="btn btn-sm btn-primary" onClick={()=>newE(null)} style={{fontSize:11}}><Icon name="plus" size={12}/> Estimate</button><button className="btn btn-sm btn-secondary" onClick={()=>setCM({open:true,c:null})} style={{fontSize:11}}><Icon name="plus" size={12}/> Customer</button><button className="btn btn-sm btn-secondary" onClick={()=>setQPC({open:true,mode:'single',items:[{sku:'',name:'',brand:'',color:'',category:'Tees',retail_price:0,nsa_cost:0,available_sizes:['S','M','L','XL','2XL'],vendor_id:''}]})} style={{fontSize:11}}><Icon name="plus" size={12}/> Product</button></div></div>
-      <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='production'&&rProd2()}{pg==='decoration'&&rDeco()}{pg==='warehouse'&&rWarehouse()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='omg'&&rOMG()}{pg==='reports'&&rReports()}{pg==='commissions'&&rCommissions()}{pg==='import'&&rImport()}{pg==='qb'&&rQB()}{pg==='backup'&&rBackup()}</div></div>
+      <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='production'&&rProd2()}{pg==='decoration'&&rDeco()}{pg==='warehouse'&&rWarehouse()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='commissions'&&rCommissions()}{pg==='omg'&&rOMG()}{pg==='reports'&&rReports()}{pg==='import'&&rImport()}{pg==='qb'&&rQB()}{pg==='backup'&&rBackup()}</div></div>
     <CustModal isOpen={cM.open} onClose={()=>setCM({open:false,c:null})} onSave={savC} customer={cM.c} parents={pars}/>
     <AdjModal isOpen={aM.open} onClose={()=>setAM({open:false,p:null})} product={aM.p} onSave={savI}/>
 
