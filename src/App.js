@@ -7071,9 +7071,56 @@ export default function App(){
             {isUnread&&<div style={{width:8,height:8,borderRadius:4,background:'#3b82f6',flexShrink:0,marginTop:6}}/>}
           </div></div>})}</div></div></>)};
 
+    // TEAM MANAGEMENT
+  const rTeam=()=>{
+    const roles={admin:'Admin',rep:'Sales Rep',csr:'Customer Service',accounting:'Accounting',warehouse:'Warehouse',production:'Production'};
+    const roleBadge={admin:'badge-purple',rep:'badge-blue',csr:'badge-green',accounting:'badge-amber',warehouse:'badge-gray',production:'badge-gray'};
+    const roleGroups=Object.keys(roles);
+    const grouped=roleGroups.map(r=>({role:r,label:roles[r],members:REPS.filter(m=>m.role===r)})).filter(g=>g.members.length>0);
+    const total=REPS.length;
+    const initials=n=>{const p=n.split(' ');return p.length>=2?(p[0][0]+p[p.length-1][0]).toUpperCase():n.slice(0,2).toUpperCase()};
+    const avatarColors={admin:'#7c3aed',rep:'#2563eb',csr:'#16a34a',accounting:'#d97706',warehouse:'#475569',production:'#0891b2'};
+
+    return(<>
+      <div className="stats-row">
+        <div className="stat-card"><div className="stat-label">Total Team</div><div className="stat-value">{total}</div></div>
+        <div className="stat-card"><div className="stat-label">Departments</div><div className="stat-value">{grouped.length}</div></div>
+        {grouped.map(g=><div key={g.role} className="stat-card"><div className="stat-label">{g.label}</div><div className="stat-value">{g.members.length}</div></div>)}
+      </div>
+
+      <div className="card" style={{marginBottom:16}}>
+        <div className="card-header" style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+          <h2>Company Info</h2>
+        </div>
+        <div className="card-body">
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:16}}>
+            <div><div style={{fontSize:11,color:'#64748b',fontWeight:600,textTransform:'uppercase',marginBottom:4}}>Company</div><div style={{fontSize:14,fontWeight:700}}>{NSA.name}</div><div style={{fontSize:12,color:'#64748b'}}>{NSA.legal}</div></div>
+            <div><div style={{fontSize:11,color:'#64748b',fontWeight:600,textTransform:'uppercase',marginBottom:4}}>Address</div><div style={{fontSize:13}}>{NSA.addr}</div><div style={{fontSize:12,color:'#64748b'}}>{NSA.city}, {NSA.state} {NSA.zip}</div></div>
+            <div><div style={{fontSize:11,color:'#64748b',fontWeight:600,textTransform:'uppercase',marginBottom:4}}>Contact</div><div style={{fontSize:13}}>{NSA.phone}</div><div style={{fontSize:12,color:'#64748b'}}>{NSA.email}</div></div>
+          </div>
+        </div>
+      </div>
+
+      {grouped.map(g=><div key={g.role} className="card" style={{marginBottom:16}}>
+        <div className="card-header" style={{display:'flex',alignItems:'center',gap:8}}>
+          <h2>{g.label}</h2>
+          <span className={`badge ${roleBadge[g.role]||'badge-gray'}`}>{g.members.length} {g.members.length===1?'member':'members'}</span>
+        </div>
+        <div className="card-body" style={{padding:0}}>
+          <table><thead><tr><th style={{width:50}}></th><th>Name</th><th>Role</th><th>ID</th></tr></thead>
+          <tbody>{g.members.map(m=><tr key={m.id}>
+            <td><div style={{width:34,height:34,borderRadius:17,background:avatarColors[m.role]||'#64748b',color:'white',display:'flex',alignItems:'center',justifyContent:'center',fontSize:12,fontWeight:700}}>{initials(m.name)}</div></td>
+            <td style={{fontWeight:700,fontSize:14}}>{m.name}</td>
+            <td><span className={`badge ${roleBadge[m.role]||'badge-gray'}`}>{roles[m.role]||m.role}</span></td>
+            <td style={{fontSize:11,color:'#94a3b8',fontFamily:'monospace'}}>{m.id.slice(-4)}</td>
+          </tr>)}</tbody></table>
+        </div>
+      </div>)}
+    </>)};
+
     // NAV
-  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'reports',label:'Reports',icon:'dollar'},{id:'commissions',label:'Commissions',icon:'dollar',roles:['admin','rep']},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'production',label:'Prod Board',icon:'package'},{id:'decoration',label:'Decoration',icon:'image'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{section:'Comms'},{id:'messages',label:'Messages',icon:'mail'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'System'},{id:'import',label:'NetSuite Import',icon:'save'},{id:'qb',label:'QuickBooks Sync',icon:'dollar'},{id:'backup',label:'Backup & Data',icon:'save'}];
-  const titles={dashboard:'Dashboard',reports:'Reports & Analytics',commissions:'Commissions',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',omg:'OMG Team Stores',jobs:'Jobs',production:'Production Board',decoration:'Decoration',warehouse:'Warehouse',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',products:'Products',inventory:'Inventory',messages:'Messages',import:'NetSuite Import',qb:'QuickBooks Online',backup:'Backup & Data'};
+  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'reports',label:'Reports',icon:'dollar'},{id:'commissions',label:'Commissions',icon:'dollar',roles:['admin','rep']},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'production',label:'Prod Board',icon:'package'},{id:'decoration',label:'Decoration',icon:'image'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{id:'team',label:'Team',icon:'users'},{section:'Comms'},{id:'messages',label:'Messages',icon:'mail'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'System'},{id:'import',label:'NetSuite Import',icon:'save'},{id:'qb',label:'QuickBooks Sync',icon:'dollar'},{id:'backup',label:'Backup & Data',icon:'save'}];
+  const titles={dashboard:'Dashboard',reports:'Reports & Analytics',commissions:'Commissions',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',omg:'OMG Team Stores',jobs:'Jobs',production:'Production Board',decoration:'Decoration',warehouse:'Warehouse',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',team:'Team Directory',products:'Products',inventory:'Inventory',messages:'Messages',import:'NetSuite Import',qb:'QuickBooks Online',backup:'Backup & Data'};
   // LOGIN GATE
   if(!cu)return<LoginGate onLogin={handleLogin}/>;
 
@@ -7112,7 +7159,7 @@ export default function App(){
           {gOpen&&<div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:59}} onClick={()=>setGOpen(false)}/>}
         </div>
         <div style={{display:'flex',gap:6,alignItems:'center'}}><button className="btn btn-sm btn-primary" onClick={()=>newE(null)} style={{fontSize:11}}><Icon name="plus" size={12}/> Estimate</button><button className="btn btn-sm btn-secondary" onClick={()=>setCM({open:true,c:null})} style={{fontSize:11}}><Icon name="plus" size={12}/> Customer</button><button className="btn btn-sm btn-secondary" onClick={()=>setQPC({open:true,mode:'single',items:[{sku:'',name:'',brand:'',color:'',category:'Tees',retail_price:0,nsa_cost:0,available_sizes:['S','M','L','XL','2XL'],vendor_id:''}]})} style={{fontSize:11}}><Icon name="plus" size={12}/> Product</button></div></div>
-      <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='production'&&rProd2()}{pg==='decoration'&&rDeco()}{pg==='warehouse'&&rWarehouse()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='commissions'&&rCommissions()}{pg==='omg'&&rOMG()}{pg==='reports'&&rReports()}{pg==='import'&&rImport()}{pg==='qb'&&rQB()}{pg==='backup'&&rBackup()}</div></div>
+      <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='production'&&rProd2()}{pg==='decoration'&&rDeco()}{pg==='warehouse'&&rWarehouse()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='team'&&rTeam()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='commissions'&&rCommissions()}{pg==='omg'&&rOMG()}{pg==='reports'&&rReports()}{pg==='import'&&rImport()}{pg==='qb'&&rQB()}{pg==='backup'&&rBackup()}</div></div>
     <CustModal isOpen={cM.open} onClose={()=>setCM({open:false,c:null})} onSave={savC} customer={cM.c} parents={pars}/>
     <AdjModal isOpen={aM.open} onClose={()=>setAM({open:false,p:null})} product={aM.p} onSave={savI}/>
 
