@@ -3512,6 +3512,25 @@ export default function App(){
   const[qPC,setQPC]=useState({open:false,mode:'single',items:[],bulkRaw:''});
   // OMG Team Stores
   const[omgFilter,setOmgFilter]=useState({rep:'all',status:'all',search:''});const[omgSel,setOmgSel]=useState(null);
+  // Commissions
+  const[commConfig,setCommConfig]=useState({
+    // Default commission rates (% of profit margin)
+    default_rate:10,// 10% of margin
+    // Per-rep overrides
+    rep_rates:{r1:0,r4:10,r5:10},// Steve=owner no commission, Laura=10%, Mike=10%
+    // Thresholds & bonuses
+    monthly_quota:15000,// monthly sales target per rep
+    bonus_rate:2,// extra 2% on margin above quota
+    // OMG Team Store commission
+    omg_rate:5,// 5% of OMG store profit
+    // Payment tracking
+    period:'monthly',// monthly | biweekly
+    // Commission history
+    payments:[],// [{id,rep_id,period,amount,paid_date,method,ref,items:[{so_id,amount}]}]
+  });
+  const[commPeriod,setCommPeriod]=useState(()=>{const d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')});
+  const[commRepF,setCommRepF]=useState('all');
+  const[commView,setCommView]=useState('summary');// summary | detail | settings | payments
   const[soF,setSOF]=useState({status:'all',rep:'all',search:'',sort:'date_desc'});
   const[iS,setIS]=useState({f:'value',d:'desc'});const[iF,setIF]=useState({cat:'all',vnd:'all'});
   const dirtyRef=React.useRef(false);
@@ -3662,7 +3681,8 @@ export default function App(){
       <button className="btn btn-primary" onClick={()=>newE(null)}>📝 New Estimate</button>
       <button className="btn btn-secondary" onClick={()=>setPg('orders')}>📋 My Orders</button>
       <button className="btn btn-secondary" onClick={()=>setPg('omg')}>🏪 OMG Stores</button>
-      <button className="btn btn-secondary" onClick={()=>setPg('invoices')}>💰 Invoices</button></div></div>
+      <button className="btn btn-secondary" onClick={()=>setPg('invoices')}>💰 Invoices</button>
+      <button className="btn btn-secondary" onClick={()=>{setCommRepF(cu.id);setPg('commissions')}}>💵 My Commissions</button></div></div>
     </>}
 
     {/* ═══ WAREHOUSE VIEW ═══ */}
@@ -5326,6 +5346,322 @@ export default function App(){
     </>);
   };
 
+  // ═══════════════════════════════════════════════
+  // COMMISSIONS PAGE
+  // ═══════════════════════════════════════════════
+  const calcRepCommissions=(repId,periodStr)=>{
+    const[yr,mo]=periodStr.split('-').map(Number);
+    const periodStart=new Date(yr,mo-1,1);
+    const periodEnd=new Date(yr,mo,0,23,59,59);
+    const inPeriod=(dateStr)=>{
+      if(!dateStr)return false;
+      const m=dateStr.match(/(\d{2})\/(\d{2})\/(\d{2})/);
+      const d=m?new Date('20'+m[3],m[1]-1,m[2]):new Date(dateStr);
+      return d>=periodStart&&d<=periodEnd;
+    };
+    const rate=commConfig.rep_rates[repId]!=null?commConfig.rep_rates[repId]:commConfig.default_rate;
+    const items=[];let totalRev=0,totalCost=0;
+    // Scan SOs created by this rep that are invoiced/complete in this period
+    sos.filter(so=>so.created_by===repId).forEach(so=>{
+      // Use SO updated_at or created_at to determine if it falls in period
+      const soDate=so.updated_at||so.created_at||'';
+      const st=calcSOStatus(so);
+      // Include SOs that are ready_to_invoice, complete, or have linked invoices in this period
+      const linkedInvs=invs.filter(iv=>iv.so_id===so.id&&inPeriod(iv.date));
+      const includeByStatus=(st==='ready_to_invoice'||st==='complete')&&inPeriod(soDate);
+      const includeByInv=linkedInvs.length>0;
+      if(!includeByStatus&&!includeByInv)return;
+      let soRev=0,soCost=0;
+      const _soAQ={};safeItems(so).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_soAQ[d.art_file_id]=(_soAQ[d.art_file_id]||0)+q2}})});
+      safeItems(so).forEach(it=>{
+        const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);if(!qty)return;
+        soRev+=qty*safeNum(it.unit_sell);soCost+=qty*safeNum(it.nsa_cost);
+        safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_soAQ[d.art_file_id]:qty;const dp=dP(d,qty,safeArt(so),cq);soRev+=qty*dp.sell;soCost+=qty*dp.cost});
+      });
+      const margin=soRev-soCost;
+      const comm=rQ(margin*rate/100);
+      const c2=cust.find(x=>x.id===so.customer_id);
+      items.push({type:'so',id:so.id,memo:so.memo||'',customer:c2?.name||'Unknown',rev:soRev,cost:soCost,margin,comm,status:st,date:soDate});
+      totalRev+=soRev;totalCost+=soCost;
+    });
+    // OMG Team Stores — attributed to rep
+    const omgStores=(D_OMG||[]).filter(s=>s.rep_id===repId);
+    omgStores.forEach(store=>{
+      const storeDate=store.close_date||store.open_date||'';
+      if(!inPeriod(storeDate)&&store.status!=='open')return;
+      let storeRev=0,storeCost=0;
+      (store.products||[]).forEach(p=>{
+        const qty=Object.values(p.sizes||{}).reduce((a,v)=>a+v,0);
+        storeRev+=qty*p.retail;storeCost+=qty*(p.cost+p.deco_cost);
+      });
+      const margin=storeRev-storeCost;
+      const comm=rQ(margin*commConfig.omg_rate/100);
+      const c2=cust.find(x=>x.id===store.customer_id);
+      items.push({type:'omg',id:store.id,memo:store.store_name,customer:c2?.name||'Unknown',rev:storeRev,cost:storeCost,margin,comm,status:store.status,date:storeDate});
+      totalRev+=storeRev;totalCost+=storeCost;
+    });
+    const totalMargin=totalRev-totalCost;
+    const baseComm=items.reduce((a,it)=>a+it.comm,0);
+    // Bonus: if total rev exceeds monthly quota
+    const overQuota=totalRev>commConfig.monthly_quota;
+    const bonusAmt=overQuota?rQ((totalRev-commConfig.monthly_quota)*commConfig.bonus_rate/100):0;
+    const totalComm=rQ(baseComm+bonusAmt);
+    // Already paid this period
+    const paidThisPeriod=commConfig.payments.filter(p=>p.rep_id===repId&&p.period===periodStr).reduce((a,p)=>a+p.amount,0);
+    return{repId,rate,items,totalRev,totalCost,totalMargin,baseComm,overQuota,bonusAmt,totalComm,paidThisPeriod,owed:rQ(totalComm-paidThisPeriod)};
+  };
+
+  const rCommissions=()=>{
+    const reps=REPS.filter(r=>r.role==='rep'||r.role==='admin');
+    const filteredReps=commRepF==='all'?reps:reps.filter(r=>r.id===commRepF);
+    const allData=filteredReps.map(r=>calcRepCommissions(r.id,commPeriod));
+    const grandTotalRev=allData.reduce((a,d)=>a+d.totalRev,0);
+    const grandTotalComm=allData.reduce((a,d)=>a+d.totalComm,0);
+    const grandOwed=allData.reduce((a,d)=>a+d.owed,0);
+    const grandMargin=allData.reduce((a,d)=>a+d.totalMargin,0);
+
+    // Period navigation helpers
+    const prevPeriod=()=>{const[y,m]=commPeriod.split('-').map(Number);const d=new Date(y,m-2,1);setCommPeriod(d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'))};
+    const nextPeriod=()=>{const[y,m]=commPeriod.split('-').map(Number);const d=new Date(y,m,1);setCommPeriod(d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'))};
+    const periodLabel=()=>{const[y,m]=commPeriod.split('-').map(Number);return new Date(y,m-1).toLocaleDateString('en-US',{month:'long',year:'numeric'})};
+
+    return(<>
+      {/* Tabs */}
+      <div className="tabs" style={{marginBottom:16}}>
+        <button className={`tab ${commView==='summary'?'active':''}`} onClick={()=>setCommView('summary')}>Summary</button>
+        <button className={`tab ${commView==='detail'?'active':''}`} onClick={()=>setCommView('detail')}>Detail by Rep</button>
+        <button className={`tab ${commView==='payments'?'active':''}`} onClick={()=>setCommView('payments')}>Payment History</button>
+        {isA&&<button className={`tab ${commView==='settings'?'active':''}`} onClick={()=>setCommView('settings')}>Settings</button>}
+      </div>
+
+      {/* Period Selector + Filter */}
+      <div style={{display:'flex',gap:8,marginBottom:16,alignItems:'center',flexWrap:'wrap'}}>
+        <button className="btn btn-sm btn-secondary" onClick={prevPeriod}>← Prev</button>
+        <div style={{fontSize:16,fontWeight:800,color:'#1e40af',minWidth:160,textAlign:'center'}}>{periodLabel()}</div>
+        <button className="btn btn-sm btn-secondary" onClick={nextPeriod}>Next →</button>
+        <select className="form-select" style={{width:160,marginLeft:'auto'}} value={commRepF} onChange={e=>setCommRepF(e.target.value)}>
+          <option value="all">All Reps</option>
+          {reps.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
+        </select>
+      </div>
+
+      {/* ═══ SUMMARY VIEW ═══ */}
+      {commView==='summary'&&<>
+        {/* Top Stats */}
+        <div className="stats-row">
+          <div className="stat-card"><div className="stat-label">Total Revenue</div><div className="stat-value" style={{color:'#166534'}}>${grandTotalRev.toLocaleString(undefined,{maximumFractionDigits:0})}</div></div>
+          <div className="stat-card"><div className="stat-label">Total Margin</div><div className="stat-value" style={{color:'#2563eb'}}>${grandMargin.toLocaleString(undefined,{maximumFractionDigits:0})}</div><div style={{fontSize:10,color:'#94a3b8'}}>{grandTotalRev>0?Math.round(grandMargin/grandTotalRev*100):0}%</div></div>
+          <div className="stat-card"><div className="stat-label">Total Commissions</div><div className="stat-value" style={{color:'#7c3aed'}}>${grandTotalComm.toLocaleString(undefined,{maximumFractionDigits:2})}</div></div>
+          <div className="stat-card" style={{borderLeft:'3px solid '+(grandOwed>0?'#dc2626':'#22c55e')}}><div className="stat-label">Outstanding</div><div className="stat-value" style={{color:grandOwed>0?'#dc2626':'#166534'}}>${grandOwed.toLocaleString(undefined,{maximumFractionDigits:2})}</div></div>
+        </div>
+
+        {/* Rep Cards */}
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(320px,1fr))',gap:12}}>
+          {allData.map(rd=>{
+            const rep=REPS.find(r=>r.id===rd.repId);if(!rep)return null;
+            const roleColors={admin:'#1e40af',gm:'#7c3aed',production:'#d97706',rep:'#166534'};
+            const quotaPct=commConfig.monthly_quota>0?Math.min(100,Math.round(rd.totalRev/commConfig.monthly_quota*100)):0;
+            return<div key={rd.repId} className="card" style={{overflow:'visible'}}>
+              <div style={{padding:'16px 18px'}}>
+                <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:12}}>
+                  <div style={{width:36,height:36,borderRadius:18,background:roleColors[rep.role]||'#475569',color:'white',display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,fontWeight:800}}>{rep.name[0]}</div>
+                  <div style={{flex:1}}>
+                    <div style={{fontWeight:800,fontSize:15}}>{rep.name}</div>
+                    <div style={{fontSize:11,color:'#64748b'}}>{rd.rate}% of margin{rd.rate===0?' (owner)':''}</div>
+                  </div>
+                  {rd.overQuota&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#fef3c7',color:'#92400e',fontWeight:700}}>🎯 Over Quota!</span>}
+                </div>
+
+                {/* Quota progress bar */}
+                <div style={{marginBottom:10}}>
+                  <div style={{display:'flex',justifyContent:'space-between',fontSize:10,color:'#64748b',marginBottom:2}}>
+                    <span>Sales: ${rd.totalRev.toLocaleString(undefined,{maximumFractionDigits:0})}</span>
+                    <span>Quota: ${commConfig.monthly_quota.toLocaleString()}</span>
+                  </div>
+                  <div style={{height:6,background:'#e2e8f0',borderRadius:3,overflow:'hidden'}}>
+                    <div style={{height:6,borderRadius:3,background:quotaPct>=100?'#22c55e':quotaPct>=75?'#f59e0b':'#3b82f6',width:quotaPct+'%',transition:'width 0.3s'}}/>
+                  </div>
+                  <div style={{fontSize:10,color:quotaPct>=100?'#166534':'#94a3b8',textAlign:'right',marginTop:1}}>{quotaPct}%</div>
+                </div>
+
+                {/* Commission breakdown */}
+                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:6,marginBottom:8}}>
+                  <div style={{textAlign:'center',padding:6,background:'#f0fdf4',borderRadius:6}}><div style={{fontSize:9,color:'#166534',fontWeight:600}}>MARGIN</div><div style={{fontSize:14,fontWeight:800,color:'#166534'}}>${rd.totalMargin.toLocaleString(undefined,{maximumFractionDigits:0})}</div></div>
+                  <div style={{textAlign:'center',padding:6,background:'#faf5ff',borderRadius:6}}><div style={{fontSize:9,color:'#7c3aed',fontWeight:600}}>COMMISSION</div><div style={{fontSize:14,fontWeight:800,color:'#7c3aed'}}>${rd.totalComm.toFixed(2)}</div></div>
+                  <div style={{textAlign:'center',padding:6,background:rd.owed>0?'#fef2f2':'#f0fdf4',borderRadius:6}}><div style={{fontSize:9,color:rd.owed>0?'#dc2626':'#166534',fontWeight:600}}>OWED</div><div style={{fontSize:14,fontWeight:800,color:rd.owed>0?'#dc2626':'#166534'}}>${rd.owed.toFixed(2)}</div></div>
+                </div>
+
+                {rd.bonusAmt>0&&<div style={{padding:'4px 8px',background:'#fef3c7',borderRadius:4,fontSize:11,color:'#92400e',marginBottom:6}}>🎯 Quota bonus: +${rd.bonusAmt.toFixed(2)} ({commConfig.bonus_rate}% on ${(rd.totalRev-commConfig.monthly_quota).toLocaleString(undefined,{maximumFractionDigits:0})} over quota)</div>}
+
+                {/* Line items */}
+                <div style={{fontSize:11,color:'#64748b',marginTop:4}}>{rd.items.length} commissionable order{rd.items.length!==1?'s':''}</div>
+                {rd.items.slice(0,3).map((it,i)=><div key={i} style={{display:'flex',gap:6,alignItems:'center',fontSize:11,padding:'3px 0',borderBottom:'1px solid #f8fafc'}}>
+                  <span style={{fontWeight:700,color:'#1e40af',minWidth:60}}>{it.id}</span>
+                  <span style={{flex:1,color:'#475569'}}>{it.customer}</span>
+                  <span style={{color:'#166534',fontWeight:600}}>${it.comm.toFixed(2)}</span>
+                </div>)}
+                {rd.items.length>3&&<div style={{fontSize:10,color:'#94a3b8',paddingTop:2}}>+{rd.items.length-3} more...</div>}
+
+                <div style={{display:'flex',gap:6,marginTop:10}}>
+                  <button className="btn btn-sm btn-secondary" style={{flex:1}} onClick={()=>{setCommRepF(rd.repId);setCommView('detail')}}>View Detail</button>
+                  {isA&&rd.owed>0&&<button className="btn btn-sm btn-primary" style={{flex:1}} onClick={()=>{
+                    const id='COMM-'+Date.now().toString(36).slice(-4);
+                    setCommConfig(prev=>({...prev,payments:[...prev.payments,{id,rep_id:rd.repId,period:commPeriod,amount:rd.owed,paid_date:new Date().toLocaleDateString(),method:'check',ref:'',items:rd.items.map(it=>({so_id:it.id,amount:it.comm}))}]}));
+                    nf('💰 Commission paid: $'+rd.owed.toFixed(2)+' to '+rep.name);
+                  }}>💰 Mark Paid</button>}
+                </div>
+              </div>
+            </div>})}
+        </div>
+      </>}
+
+      {/* ═══ DETAIL VIEW ═══ */}
+      {commView==='detail'&&<>
+        {allData.map(rd=>{
+          const rep=REPS.find(r=>r.id===rd.repId);if(!rep)return null;
+          return<div key={rd.repId} className="card" style={{marginBottom:16}}>
+            <div className="card-header" style={{background:'#f8fafc'}}>
+              <h2>{rep.name} — {periodLabel()}</h2>
+              <div style={{display:'flex',gap:8,alignItems:'center'}}>
+                <span style={{fontSize:12,color:'#7c3aed',fontWeight:700}}>Commission: ${rd.totalComm.toFixed(2)}</span>
+                <span style={{fontSize:12,color:rd.owed>0?'#dc2626':'#166534',fontWeight:700}}>Owed: ${rd.owed.toFixed(2)}</span>
+              </div>
+            </div>
+            <div className="card-body" style={{padding:0}}>
+              <table><thead><tr>
+                <th>Type</th><th>Order</th><th>Customer</th><th>Revenue</th><th>Cost</th><th>Margin</th><th>Rate</th><th>Commission</th><th>Status</th>
+              </tr></thead><tbody>
+              {rd.items.map((it,i)=><tr key={i}>
+                <td><span className={`badge ${it.type==='so'?'badge-blue':'badge-purple'}`}>{it.type==='so'?'SO':'OMG'}</span></td>
+                <td style={{fontWeight:700,color:'#1e40af',cursor:'pointer'}} onClick={()=>{
+                  if(it.type==='so'){const so=sos.find(s=>s.id===it.id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')}}
+                }}>{it.id}</td>
+                <td>{it.customer}</td>
+                <td style={{fontWeight:600,color:'#166534'}}>${it.rev.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+                <td style={{color:'#dc2626'}}>${it.cost.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+                <td style={{fontWeight:700,color:'#2563eb'}}>${it.margin.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+                <td>{rd.rate}%</td>
+                <td style={{fontWeight:800,color:'#7c3aed'}}>${it.comm.toFixed(2)}</td>
+                <td><span style={{padding:'2px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:SC[it.status]?.bg||'#f1f5f9',color:SC[it.status]?.c||'#475569'}}>{(it.status||'').replace(/_/g,' ')}</span></td>
+              </tr>)}
+              {rd.items.length===0&&<tr><td colSpan={9} style={{textAlign:'center',color:'#94a3b8',padding:20}}>No commissionable orders this period</td></tr>}
+              </tbody>
+              {rd.items.length>0&&<tfoot><tr style={{fontWeight:800,borderTop:'2px solid #e2e8f0'}}>
+                <td colSpan={3}>Totals</td>
+                <td style={{color:'#166534'}}>${rd.totalRev.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+                <td style={{color:'#dc2626'}}>${rd.totalCost.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+                <td style={{color:'#2563eb'}}>${rd.totalMargin.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+                <td></td>
+                <td style={{color:'#7c3aed'}}>${rd.baseComm.toFixed(2)}{rd.bonusAmt>0?' + $'+rd.bonusAmt.toFixed(2)+' bonus':''}</td>
+                <td></td>
+              </tr></tfoot>}
+              </table>
+            </div>
+          </div>})}
+        {/* Print Commission Statement */}
+        {allData.length===1&&<button className="btn btn-secondary" style={{marginTop:8}} onClick={()=>{
+          const rd=allData[0];const rep=REPS.find(r=>r.id===rd.repId);
+          printDoc({
+            title:rep?.name+' Commission Statement',docNum:'COMM-'+commPeriod,docType:'COMMISSION STATEMENT',
+            headerRight:'<div style="font-size:28px;font-weight:900;color:#7c3aed">$'+rd.totalComm.toFixed(2)+'</div><div style="font-size:11px;color:#888">'+periodLabel()+'</div>',
+            infoBoxes:[
+              {label:'Sales Rep',value:rep?.name||'—',sub:rd.rate+'% commission rate'},
+              {label:'Period',value:periodLabel()},
+              {label:'Total Revenue',value:'$'+rd.totalRev.toLocaleString(undefined,{maximumFractionDigits:0})},
+              {label:'Quota Status',value:rd.overQuota?'Over Quota!':'$'+(commConfig.monthly_quota-rd.totalRev).toLocaleString(undefined,{maximumFractionDigits:0})+' remaining'},
+            ],
+            tables:[{headers:['Order','Customer','Revenue','Cost','Margin','Commission'],aligns:['left','left','right','right','right','right'],
+              rows:[...rd.items.map(it=>({cells:[{value:it.id},{value:it.customer},{value:'$'+it.rev.toFixed(2)},{value:'$'+it.cost.toFixed(2)},{value:'$'+it.margin.toFixed(2)},{value:'$'+it.comm.toFixed(2)}]})),
+                ...(rd.bonusAmt>0?[{cells:[{value:'<strong>Quota Bonus</strong>'},{value:''},{value:''},{value:''},{value:''},{value:'<strong>$'+rd.bonusAmt.toFixed(2)+'</strong>'}]}]:[]),
+                {_class:'totals-row',cells:[{value:'<strong>Total</strong>'},{value:''},{value:'<strong>$'+rd.totalRev.toFixed(2)+'</strong>'},{value:'<strong>$'+rd.totalCost.toFixed(2)+'</strong>'},{value:'<strong>$'+rd.totalMargin.toFixed(2)+'</strong>'},{value:'<strong>$'+rd.totalComm.toFixed(2)+'</strong>'}]}
+              ]}],
+            footer:'Commission calculated at '+rd.rate+'% of profit margin. Paid: $'+rd.paidThisPeriod.toFixed(2)+'. Outstanding: $'+rd.owed.toFixed(2)+'.'
+          });
+        }}>🖨️ Print Commission Statement</button>}
+      </>}
+
+      {/* ═══ PAYMENT HISTORY ═══ */}
+      {commView==='payments'&&<>
+        <div className="card">
+          <div className="card-header"><h2>Commission Payments</h2></div>
+          <div className="card-body" style={{padding:0}}>
+            <table><thead><tr><th>ID</th><th>Rep</th><th>Period</th><th>Amount</th><th>Paid Date</th><th>Method</th><th>Ref</th><th>Orders</th></tr></thead><tbody>
+            {commConfig.payments.length===0?<tr><td colSpan={8} style={{textAlign:'center',color:'#94a3b8',padding:20}}>No commission payments recorded yet</td></tr>:
+            commConfig.payments.sort((a,b)=>(b.paid_date||'').localeCompare(a.paid_date||'')).map(p=>{
+              const rep=REPS.find(r=>r.id===p.rep_id);
+              return<tr key={p.id}>
+                <td style={{fontWeight:700,color:'#7c3aed'}}>{p.id}</td>
+                <td>{rep?.name||p.rep_id}</td>
+                <td>{p.period}</td>
+                <td style={{fontWeight:800,color:'#166534'}}>${p.amount.toFixed(2)}</td>
+                <td>{p.paid_date}</td>
+                <td><span className="badge badge-gray">{p.method}</span></td>
+                <td style={{fontSize:11,color:'#64748b'}}>{p.ref||'—'}</td>
+                <td style={{fontSize:11}}>{(p.items||[]).length} orders</td>
+              </tr>})}
+            </tbody></table>
+          </div>
+        </div>
+      </>}
+
+      {/* ═══ SETTINGS ═══ */}
+      {commView==='settings'&&isA&&<>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}}>
+          {/* Global Settings */}
+          <div className="card">
+            <div className="card-header"><h2>Commission Rates</h2></div>
+            <div className="card-body">
+              <div style={{marginBottom:12}}>
+                <label className="form-label">Default Commission Rate (% of margin)</label>
+                <div style={{display:'flex',alignItems:'center',gap:6}}>
+                  <input className="form-input" type="number" min="0" max="50" step="0.5" value={commConfig.default_rate} onChange={e=>setCommConfig(c=>({...c,default_rate:parseFloat(e.target.value)||0}))} style={{width:80}}/>
+                  <span style={{fontSize:13,fontWeight:700}}>%</span>
+                </div>
+              </div>
+              <div style={{marginBottom:12}}>
+                <label className="form-label">Monthly Sales Quota (per rep)</label>
+                <$In value={commConfig.monthly_quota} onChange={v=>setCommConfig(c=>({...c,monthly_quota:v}))} w={100}/>
+              </div>
+              <div style={{marginBottom:12}}>
+                <label className="form-label">Quota Bonus Rate (extra % on revenue above quota)</label>
+                <div style={{display:'flex',alignItems:'center',gap:6}}>
+                  <input className="form-input" type="number" min="0" max="20" step="0.5" value={commConfig.bonus_rate} onChange={e=>setCommConfig(c=>({...c,bonus_rate:parseFloat(e.target.value)||0}))} style={{width:80}}/>
+                  <span style={{fontSize:13,fontWeight:700}}>%</span>
+                </div>
+              </div>
+              <div style={{marginBottom:12}}>
+                <label className="form-label">OMG Team Store Commission Rate (% of margin)</label>
+                <div style={{display:'flex',alignItems:'center',gap:6}}>
+                  <input className="form-input" type="number" min="0" max="50" step="0.5" value={commConfig.omg_rate} onChange={e=>setCommConfig(c=>({...c,omg_rate:parseFloat(e.target.value)||0}))} style={{width:80}}/>
+                  <span style={{fontSize:13,fontWeight:700}}>%</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Per-Rep Overrides */}
+          <div className="card">
+            <div className="card-header"><h2>Per-Rep Rate Overrides</h2></div>
+            <div className="card-body">
+              <div style={{fontSize:11,color:'#64748b',marginBottom:12}}>Leave blank to use default rate ({commConfig.default_rate}%). Set to 0 for no commission (e.g., owner).</div>
+              {REPS.filter(r=>r.role==='rep'||r.role==='admin').map(r=>{
+                const val=commConfig.rep_rates[r.id];
+                const isOverride=val!=null;
+                return<div key={r.id} style={{display:'flex',alignItems:'center',gap:8,marginBottom:8,padding:'6px 8px',background:isOverride?'#eff6ff':'#f8fafc',borderRadius:6}}>
+                  <span style={{fontWeight:700,fontSize:13,minWidth:120}}>{r.name}</span>
+                  <span style={{fontSize:11,color:'#64748b',minWidth:80}}>{r.role}</span>
+                  <input className="form-input" type="number" min="0" max="50" step="0.5" placeholder={commConfig.default_rate+'%'}
+                    value={val!=null?val:''} onChange={e=>{const v=e.target.value;setCommConfig(c=>({...c,rep_rates:{...c.rep_rates,[r.id]:v===''?undefined:parseFloat(v)||0}}))}} style={{width:70,textAlign:'center'}}/>
+                  <span style={{fontSize:12,fontWeight:700}}>%</span>
+                  <span style={{fontSize:11,color:isOverride?'#2563eb':'#94a3b8'}}>{isOverride?'Override':'Default'}</span>
+                </div>})}
+            </div>
+          </div>
+        </div>
+      </>}
+    </>);
+  };
+
   // OMG TEAM STORES PAGE
   const rOMG=()=>{
     const stores=D_OMG;
@@ -6118,7 +6454,7 @@ export default function App(){
         <div style={{marginTop:12,display:'flex',gap:8}}>
           <button className="btn btn-primary" disabled={!imp.raw.trim()||!imp.custId} onClick={()=>{
             const result=parseNSData(imp.raw);
-            setImp(x=>({...x,step:result.questions.length>0?'review':'review',...result}));
+            setImp(x=>({...x,step:result.questions.length>0?'questions':'review',...result}));
           }}>?? Parse & Review →</button>
         </div>
       </>}
@@ -6738,8 +7074,8 @@ export default function App(){
           </div></div>})}</div></div></>)};
 
     // NAV
-  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'reports',label:'Reports',icon:'dollar'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'production',label:'Prod Board',icon:'package'},{id:'decoration',label:'Decoration',icon:'image'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{section:'Comms'},{id:'messages',label:'Messages',icon:'mail'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'System'},{id:'import',label:'NetSuite Import',icon:'save'},{id:'qb',label:'QuickBooks Sync',icon:'dollar'},{id:'backup',label:'Backup & Data',icon:'save'}];
-  const titles={dashboard:'Dashboard',reports:'Reports & Analytics',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',omg:'OMG Team Stores',jobs:'Jobs',production:'Production Board',decoration:'Decoration',warehouse:'Warehouse',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',products:'Products',inventory:'Inventory',messages:'Messages',import:'NetSuite Import',qb:'QuickBooks Online',backup:'Backup & Data'};
+  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'reports',label:'Reports',icon:'dollar'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'commissions',label:'Commissions',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'production',label:'Prod Board',icon:'package'},{id:'decoration',label:'Decoration',icon:'image'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{section:'Comms'},{id:'messages',label:'Messages',icon:'mail'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'System'},{id:'import',label:'NetSuite Import',icon:'save'},{id:'qb',label:'QuickBooks Sync',icon:'dollar'},{id:'backup',label:'Backup & Data',icon:'save'}];
+  const titles={dashboard:'Dashboard',reports:'Reports & Analytics',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',commissions:'Commissions',omg:'OMG Team Stores',jobs:'Jobs',production:'Production Board',decoration:'Decoration',warehouse:'Warehouse',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',products:'Products',inventory:'Inventory',messages:'Messages',import:'NetSuite Import',qb:'QuickBooks Online',backup:'Backup & Data'};
   // LOGIN GATE
   if(!cu)return<LoginGate onLogin={handleLogin}/>;
 
@@ -6777,7 +7113,7 @@ export default function App(){
           {gOpen&&<div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:59}} onClick={()=>setGOpen(false)}/>}
         </div>
         <div style={{display:'flex',gap:6,alignItems:'center'}}><button className="btn btn-sm btn-primary" onClick={()=>newE(null)} style={{fontSize:11}}><Icon name="plus" size={12}/> Estimate</button><button className="btn btn-sm btn-secondary" onClick={()=>setCM({open:true,c:null})} style={{fontSize:11}}><Icon name="plus" size={12}/> Customer</button><button className="btn btn-sm btn-secondary" onClick={()=>setQPC({open:true,mode:'single',items:[{sku:'',name:'',brand:'',color:'',category:'Tees',retail_price:0,nsa_cost:0,available_sizes:['S','M','L','XL','2XL'],vendor_id:''}]})} style={{fontSize:11}}><Icon name="plus" size={12}/> Product</button></div></div>
-      <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='production'&&rProd2()}{pg==='decoration'&&rDeco()}{pg==='warehouse'&&rWarehouse()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='omg'&&rOMG()}{pg==='reports'&&rReports()}{pg==='import'&&rImport()}{pg==='qb'&&rQB()}{pg==='backup'&&rBackup()}</div></div>
+      <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='production'&&rProd2()}{pg==='decoration'&&rDeco()}{pg==='warehouse'&&rWarehouse()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='commissions'&&rCommissions()}{pg==='omg'&&rOMG()}{pg==='reports'&&rReports()}{pg==='import'&&rImport()}{pg==='qb'&&rQB()}{pg==='backup'&&rBackup()}</div></div>
     <CustModal isOpen={cM.open} onClose={()=>setCM({open:false,c:null})} onSave={savC} customer={cM.c} parents={pars}/>
     <AdjModal isOpen={aM.open} onClose={()=>setAM({open:false,p:null})} product={aM.p} onSave={savI}/>
 
