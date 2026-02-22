@@ -125,9 +125,10 @@ const printDoc=({title,docNum,docType,headerRight,infoBoxes,tables,notes,footer,
   setTimeout(()=>w.print(),350);
 };
 let _idSeq=0;const uid=(prefix)=>prefix+Date.now().toString(36).slice(-4)+String(++_idSeq).padStart(2,'0');
-let _estSeq=2101;let _soSeq=1042;
+let _estSeq=2101;let _soSeq=1042;let _invSeq=1061;
 const nextEstId=(ests)=>{const nums=(ests||[]).map(e=>{const m=(e.id||'').match(/EST-(\d+)/);return m?parseInt(m[1]):0});const next=Math.max(_estSeq,...nums)+1;_estSeq=next;return'EST-'+next};
 const nextSOId=(sos)=>{const nums=(sos||[]).map(s=>{const m=(s.id||'').match(/SO-(\d+)/);return m?parseInt(m[1]):0});const next=Math.max(_soSeq,...nums)+1;_soSeq=next;return'SO-'+next};
+const nextInvId=(invs)=>{const nums=(invs||[]).map(i=>{const m=(i.id||'').match(/INV-(\d+)/);return m?parseInt(m[1]):0});const next=Math.max(_invSeq,...nums)+1;_invSeq=next;return'INV-'+next};
 const CATEGORIES=['Tees','Hoodies','Polos','Shorts','1/4 Zips','Hats','Footwear','Jersey Tops','Jersey Bottoms','Balls'];
 const CONTACT_ROLES=['Head Coach','Assistant','Accounting','Athletic Director','Primary','Other'];
 const POSITIONS=['Front Center','Back Center','Left Chest','Right Chest','Left Sleeve','Right Sleeve','Left Leg','Right Leg','Nape','Other'];
@@ -585,7 +586,7 @@ function LoginGate({onLogin,reps}){
   );
 }
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack,onConvertSO,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,batchPOs,onBatchPO,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack,onConvertSO,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,allInvoices,batchPOs,onBatchPO,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob}){
   const isE=mode==='estimate';const isSO=mode==='so';
   const[o,setO]=useState(order);const[cust,setCust]=useState(ic);const[pS,setPS]=useState('');const[showAdd,setShowAdd]=useState(false);
   const[tab,setTab]=useState(initTab||'items');const[dirty,setDirty]=useState(false);const[selJob,setSelJob]=useState(null);const[jobNote,setJobNote]=useState('');const[msgDept,setMsgDept]=useState('all');
@@ -1874,14 +1875,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         <div className="modal-footer">
           <button className="btn btn-secondary" onClick={()=>setShowInvCreate(false)}>Cancel</button>
           <button className="btn btn-primary" style={{background:'#dc2626',borderColor:'#dc2626'}} disabled={invSelItems.length===0} onClick={()=>{
-            const invId='INV-'+o.id.replace('SO-','');
+            const invId=nextInvId(allInvoices);
             const invDate=new Date().toLocaleDateString('en-CA');
             const termDays=parseInt((cust?.payment_terms||'net30').replace(/\D/g,''))||30;
             const due=new Date();due.setDate(due.getDate()+termDays);const dueDate=due.toLocaleDateString('en-CA');
             const lineItems=invSelItems.map(idx=>{const it=items[idx];if(!it)return null;const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
               const decoSell=safeDecos(it).reduce((a,d)=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:qty;const dp2=dP(d,qty,safeArt(o),cq);return a+dp2.sell},0);
               return{desc:it.sku+' '+it.name+(it.color?' — '+it.color:''),qty,rate:safeNum(it.unit_sell)+decoSell,amount:qty*(safeNum(it.unit_sell)+decoSell)}}).filter(Boolean);
-            const inv={id:invId+'-'+(Date.now()%1000),type:'invoice',customer_id:o.customer_id,so_id:o.id,
+            const inv={id:invId,type:'invoice',customer_id:o.customer_id,so_id:o.id,
               date:invDate,due_date:dueDate,total:Math.round(invTotal*100)/100,paid:0,
               memo:invMemo||invType+' — '+o.memo,status:'open',_rep:o.created_by||cu.id,
               tax:Math.round(invTax*100)/100,shipping:Math.round(invShip*100)/100,
@@ -3582,7 +3583,7 @@ export default function App(){
         const saf=safeArt(s);let total=0;
         safeItems(s).forEach(it=>{const qq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);total+=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qq;const dp2=dP(d,qq,saf,cq);total+=qq*dp2.sell})});
         if(s.shipping_type==='pct')total+=total*(safeNum(s.shipping_value)/100);else total+=safeNum(s.shipping_value);
-        const invId=uid('INV-');const today=new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'2-digit'});
+        const invId=nextInvId(invs);const today=new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'2-digit'});
         const dueDate=new Date();dueDate.setDate(dueDate.getDate()+30);const due=dueDate.toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'2-digit'});
         const newInv={id:invId,type:'invoice',customer_id:s.customer_id,so_id:s.id,date:today,due_date:due,total:rQ(total),paid:0,memo:s.memo||'',status:'open',payments:[],cc_fee:0};
         setInvs(prev2=>[newInv,...prev2]);
@@ -3910,7 +3911,7 @@ export default function App(){
 
   // ESTIMATES LIST
   const rEst=()=>{
-    if(eEst)return<OrderEditor order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} onSave={e=>{savE(e);setEEst(e)}} onBack={()=>setEEst(null)} onConvertSO={convertSO} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}}/>;
+    if(eEst)return<OrderEditor order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} onSave={e=>{savE(e);setEEst(e)}} onBack={()=>setEEst(null)} onConvertSO={convertSO} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}}/>;
     const fe=ests.filter(e=>!q||(e.id+' '+e.memo+' '+(cust.find(c=>c.id===e.customer_id)?.name||'')+' '+(cust.find(c=>c.id===e.customer_id)?.alpha_tag||'')).toLowerCase().includes(q.toLowerCase()));
     return(<><div style={{display:'flex',gap:8,marginBottom:16}}><div className="search-bar" style={{flex:1}}><Icon name="search"/><input placeholder="Search..." value={q} onChange={e=>setQ(e.target.value)}/></div>
       <button className="btn btn-primary" onClick={()=>newE(null)}><Icon name="plus" size={14}/> New Estimate</button></div>
@@ -3928,7 +3929,7 @@ export default function App(){
 
   // SALES ORDERS LIST
   const rSO=()=>{
-    if(eSO)return<OrderEditor order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} onSave={s=>{savSO(s);setESO(s)}} onBack={()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null)}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} batchPOs={batchPOs} onBatchPO={setBatchPOs} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}}/>;
+    if(eSO)return<OrderEditor order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} onSave={s=>{savSO(s);setESO(s)}} onBack={()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null)}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}}/>;
     // Filter SOs
     let fSOs=[...sos];
     if(soF.status!=='all')fSOs=fSOs.filter(s=>calcSOStatus(s)===soF.status);
