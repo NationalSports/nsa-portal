@@ -3508,9 +3508,58 @@ export default function App(){
     syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}});
   // Persistent state — loads from localStorage, falls back to demo data
   const loadState=(key,fallback)=>{try{const s=localStorage.getItem('nsa_'+key);return s?JSON.parse(s):fallback}catch{return fallback}};
+  // Migrate bad SO/EST/INV IDs from localStorage (non-numeric suffixes like SO-h4o401)
+  const migrateState=()=>{
+    let soList=loadState('sos',D_SO);let invList=loadState('invs',D_INV);let msgList=loadState('msgs',D_MSG);let estList=loadState('ests',D_E);
+    const idMap={};let needsMigrate=false;
+    // Fix SO IDs
+    const badSOs=soList.filter(s=>!(/^SO-\d+$/).test(s.id));
+    if(badSOs.length>0){
+      needsMigrate=true;
+      const validNums=soList.filter(s=>(/^SO-\d+$/).test(s.id)).map(s=>parseInt(s.id.replace('SO-','')));
+      let nextNum=Math.max(_soSeq,...validNums,0)+1;
+      badSOs.forEach(s=>{const oldId=s.id;s.id='SO-'+nextNum;idMap[oldId]='SO-'+nextNum;nextNum++});
+      _soSeq=nextNum;
+    }
+    // Fix EST IDs
+    const badEsts=estList.filter(e=>!(/^EST-\d+$/).test(e.id));
+    if(badEsts.length>0){
+      needsMigrate=true;
+      const validNums=estList.filter(e=>(/^EST-\d+$/).test(e.id)).map(e=>parseInt(e.id.replace('EST-','')));
+      let nextNum=Math.max(_estSeq,...validNums,0)+1;
+      badEsts.forEach(e=>{const oldId=e.id;e.id='EST-'+nextNum;idMap[oldId]='EST-'+nextNum;nextNum++});
+      _estSeq=nextNum;
+    }
+    // Fix INV IDs
+    const badInvs=invList.filter(i=>!(/^INV-\d+$/).test(i.id));
+    if(badInvs.length>0){
+      needsMigrate=true;
+      const validNums=invList.filter(i=>(/^INV-\d+$/).test(i.id)).map(i=>parseInt(i.id.replace('INV-','')));
+      let nextNum=Math.max(_invSeq,...validNums,0)+1;
+      badInvs.forEach(i=>{const oldId=i.id;i.id='INV-'+nextNum;idMap[oldId]='INV-'+nextNum;nextNum++});
+      _invSeq=nextNum;
+    }
+    // Update cross-references if any IDs were migrated
+    if(needsMigrate){
+      // Fix estimate_id refs on SOs
+      soList.forEach(s=>{if(s.estimate_id&&idMap[s.estimate_id])s.estimate_id=idMap[s.estimate_id]});
+      // Fix so_id refs on invoices
+      invList.forEach(i=>{if(i.so_id&&idMap[i.so_id])i.so_id=idMap[i.so_id]});
+      // Fix so_id refs on messages
+      msgList.forEach(m=>{if(m.so_id&&idMap[m.so_id])m.so_id=idMap[m.so_id]});
+      // Save migrated data back to localStorage
+      try{localStorage.setItem('nsa_sos',JSON.stringify(soList))}catch{}
+      try{localStorage.setItem('nsa_invs',JSON.stringify(invList))}catch{}
+      try{localStorage.setItem('nsa_msgs',JSON.stringify(msgList))}catch{}
+      try{localStorage.setItem('nsa_ests',JSON.stringify(estList))}catch{}
+      console.log('NSA: Migrated bad IDs →',idMap);
+    }
+    return{sos:soList,invs:invList,msgs:msgList,ests:estList};
+  };
+  const _migrated=useMemo(()=>migrateState(),[]);
   const[REPS,setREPS]=useState(()=>loadState('reps',DEFAULT_REPS));
   const[cust,setCust]=useState(()=>loadState('cust',D_C));const[vend]=useState(D_V);const[prod,setProd]=useState(()=>loadState('prod',D_P));
-  const[ests,setEsts]=useState(()=>loadState('ests',D_E));const[sos,setSOs]=useState(()=>loadState('sos',D_SO));const[invs,setInvs]=useState(()=>loadState('invs',D_INV));
+  const[ests,setEsts]=useState(()=>_migrated.ests);const[sos,setSOs]=useState(()=>_migrated.sos);const[invs,setInvs]=useState(()=>_migrated.invs);
   // Batch PO system
   const[batchPOs,setBatchPOs]=useState([]);// pending queue
   const[submittedBatches,setSubmittedBatches]=useState([]);// submitted batches for scan lookup
@@ -3537,7 +3586,7 @@ export default function App(){
   const exportIssuesCSV=()=>{const hdr=['ID','Status','Priority','Description','Page','Context','Reported By','Role','Timestamp','Resolution','Resolved At'];const rows=issues.map(i=>[i.id,i.status,i.priority,'"'+i.description.replace(/"/g,'""')+'"',i.page,i.viewing||'',i.reportedBy,i.role,i.timestamp,i.resolution||'',i.resolvedAt||'']);const csv=[hdr.join(','),...rows.map(r=>r.join(','))].join('\n');const blob=new Blob([csv],{type:'text/csv'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='issues_export_'+new Date().toISOString().slice(0,10)+'.csv';a.click();URL.revokeObjectURL(url)};
   // SO version history
   const[soHistory,setSOHistory]=useState({});// {soId:[{ts,user,snapshot}]}
-  const[msgs,setMsgs]=useState(()=>loadState('msgs',D_MSG));const[cM,setCM]=useState({open:false,c:null});const[aM,setAM]=useState({open:false,p:null});
+  const[msgs,setMsgs]=useState(()=>_migrated.msgs);const[cM,setCM]=useState({open:false,c:null});const[aM,setAM]=useState({open:false,p:null});
   // Auto-save state to localStorage on change
   React.useEffect(()=>{try{localStorage.setItem('nsa_reps',JSON.stringify(REPS))}catch{}},[REPS]);
   React.useEffect(()=>{try{localStorage.setItem('nsa_cust',JSON.stringify(cust))}catch{}},[cust]);
