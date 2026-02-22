@@ -7426,7 +7426,8 @@ export default function App(){
                 {t.assignedTo&&<span style={{fontSize:9,padding:'1px 5px',borderRadius:4,background:'#ede9fe',color:'#6d28d9',fontWeight:700}}>👤 {t.assignedTo}</span>}
                 <span style={{fontSize:10,color:'#64748b',marginLeft:'auto'}}>{t.rep}</span>
                 <div style={{display:'flex',gap:4}}>
-                  {decoCardFilter==='ready'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#2563eb',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();moveJobStatus({...t.job,soId:t.soId,so:t.so},'in_process')}}>→ Start</button>}
+                  {decoCardFilter==='ready'&&t.prodStatus!=='staging'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#f59e0b',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();moveJobStatus({...t.job,soId:t.soId,so:t.so},'staging')}}>→ In Line</button>}
+                  {decoCardFilter==='ready'&&t.prodStatus==='staging'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#2563eb',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();moveJobStatus({...t.job,soId:t.soId,so:t.so},'in_process')}}>→ Start</button>}
                   {decoCardFilter==='in_process'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#166534',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();moveJobStatus({...t.job,soId:t.soId,so:t.so},'completed')}}>✓ Done</button>}
                   {decoCardFilter==='waiting'&&<div style={{fontSize:9,color:'#d97706',fontWeight:600}}>
                     {t.artStatus!=='art_complete'&&'Art pending'}{t.artStatus!=='art_complete'&&t.itemStatus!=='items_received'&&' + '}{t.itemStatus!=='items_received'&&'Items pending'}
