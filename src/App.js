@@ -6513,6 +6513,7 @@ export default function App(){
     {id:'PO-5002-NSA',vendor_id:'v2',vendor_name:'Under Armour',status:'waiting',created_at:'02/18/26',notes:'Stock up on polos for spring',items:[{sku:'1370399',name:'Under Armour Team Polo',color:'Cardinal/White',sizes:{S:10,M:20,L:20,XL:15,'2XL':8},received:{}}]},
   ]);const[showStockPO,setShowStockPO]=useState(null);const[stockPOCounter,setStockPOCounter]=useState(5003);
   const[decoSearch,setDecoSearch]=useState('');const[decoRepF,setDecoRepF]=useState('all');const[decoStatF,setDecoStatF]=useState('active');const[decoTypeF,setDecoTypeF]=useState('all');
+  const[decoCardFilter,setDecoCardFilter]=useState(null);// null|'ready'|'in_process'|'waiting'
 
   // Shared data builder for warehouse + deco pages
   const buildWarehouseData=()=>{
@@ -7360,27 +7361,82 @@ export default function App(){
     const allDecoTypes=[...new Set(decoTasks.map(t=>t.decoType).filter(Boolean))];
     const filtered=decoTypeF==='all'?list:list.filter(t=>t.decoType===decoTypeF);
 
+    const readyJobs=active.filter(t=>t.isReady);
+    const inProcessJobs=active.filter(t=>t.prodStatus==='in_process');
+    const waitingJobs=active.filter(t=>!t.isReady&&t.prodStatus!=='in_process');
+
     return(<>
-      {/* Stats */}
+      {/* Workflow guide */}
+      <div style={{background:'linear-gradient(135deg,#eff6ff,#f0fdf4)',border:'1px solid #bfdbfe',borderRadius:8,padding:'10px 14px',marginBottom:12,display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
+        <span style={{fontSize:12,fontWeight:800,color:'#1e40af'}}>Workflow:</span>
+        {[
+          {icon:'1',label:'Check in items',desc:'Count & verify',color:'#d97706',bg:'#fef3c7'},
+          {icon:'2',label:'Start job',desc:'Move to In Process',color:'#2563eb',bg:'#dbeafe'},
+          {icon:'3',label:'Run decoration',desc:'Print / embroider',color:'#7c3aed',bg:'#ede9fe'},
+          {icon:'4',label:'Mark done',desc:'Complete & ship',color:'#166534',bg:'#dcfce7'},
+        ].map((s,i)=><React.Fragment key={i}>
+          {i>0&&<span style={{color:'#cbd5e1',fontWeight:800,fontSize:16}}>→</span>}
+          <div style={{display:'flex',alignItems:'center',gap:6}}>
+            <span style={{width:20,height:20,borderRadius:10,background:s.color,color:'white',fontSize:10,fontWeight:800,display:'flex',alignItems:'center',justifyContent:'center'}}>{s.icon}</span>
+            <div><div style={{fontSize:11,fontWeight:700,color:s.color}}>{s.label}</div><div style={{fontSize:9,color:'#64748b'}}>{s.desc}</div></div>
+          </div>
+        </React.Fragment>)}
+      </div>
+
+      {/* Clickable Stats */}
       <div className="stats-row" style={{marginBottom:12}}>
-        <div className="stat-card" style={{borderLeft:'3px solid #22c55e'}}>
-          <div className="stat-label">Ready to Go</div>
-          <div className="stat-value" style={{color:'#166534'}}>{readyCount}</div>
-        </div>
-        <div className="stat-card" style={{borderLeft:'3px solid #2563eb'}}>
-          <div className="stat-label">In Process</div>
-          <div className="stat-value" style={{color:'#2563eb'}}>{inProcessCount}</div>
-        </div>
-        <div className="stat-card" style={{borderLeft:'3px solid #d97706'}}>
-          <div className="stat-label">Waiting (Art/Items)</div>
-          <div className="stat-value" style={{color:'#d97706'}}>{waitingCount}</div>
-        </div>
+        {[
+          {id:'ready',label:'Ready to Go',count:readyCount,border:'#22c55e',valColor:'#166534',units:readyJobs.reduce((a,t)=>a+t.totalUnits,0)},
+          {id:'in_process',label:'In Process',count:inProcessCount,border:'#2563eb',valColor:'#2563eb',units:inProcessJobs.reduce((a,t)=>a+t.totalUnits,0)},
+          {id:'waiting',label:'Waiting (Art/Items)',count:waitingCount,border:'#d97706',valColor:'#d97706',units:waitingJobs.reduce((a,t)=>a+t.totalUnits,0)},
+        ].map(({id,label,count,border,valColor,units})=>
+          <div key={id} className="stat-card" style={{borderLeft:'3px solid '+border,cursor:'pointer',outline:decoCardFilter===id?'2px solid '+border:'none',background:decoCardFilter===id?'#f8fafc':'white',transition:'all 0.15s'}} onClick={()=>setDecoCardFilter(f=>f===id?null:id)}>
+            <div className="stat-label">{label}</div>
+            <div className="stat-value" style={{color:valColor}}>{count}</div>
+            <div style={{fontSize:10,color:'#94a3b8'}}>{units} units</div>
+          </div>)}
         <div className="stat-card" style={{borderLeft:'3px solid #7c3aed'}}>
           <div className="stat-label">Total Active</div>
           <div className="stat-value" style={{color:'#7c3aed'}}>{active.length}</div>
           <div style={{fontSize:10,color:'#94a3b8'}}>{active.reduce((a,t)=>a+t.totalUnits,0)} units</div>
         </div>
       </div>
+
+      {/* Filtered job list when a stat card is clicked */}
+      {decoCardFilter&&(()=>{
+        const cardJobs=decoCardFilter==='ready'?readyJobs:decoCardFilter==='in_process'?inProcessJobs:waitingJobs;
+        const cardLabel={ready:'Ready to Go',in_process:'In Process',waiting:'Waiting (Art/Items)'}[decoCardFilter];
+        return<div className="card" style={{marginBottom:12}}>
+          <div className="card-header"><h2>{cardLabel} — {cardJobs.length} job{cardJobs.length!==1?'s':''}</h2><button className="btn btn-sm btn-secondary" onClick={()=>setDecoCardFilter(null)}>× Close</button></div>
+          <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
+            {cardJobs.length===0?<div className="empty" style={{padding:20}}>No jobs</div>:
+            cardJobs.map((t,ti)=>{const pct=t.totalUnits>0?Math.round(t.fulfilledUnits/t.totalUnits*100):0;
+              return<div key={ti} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',background:t.urgent?'#fef2f2':'white'}}>
+              <div style={{display:'flex',alignItems:'center',gap:8}}>
+                {t.urgent&&<span style={{fontSize:9,fontWeight:800,color:'#dc2626',background:'#fef2f2',padding:'1px 5px',borderRadius:3}}>🔥 {t.daysOut}d</span>}
+                <span style={{fontWeight:700,fontSize:12,flex:1}}>{t.cName}</span>
+                <span style={{fontSize:10,color:'#94a3b8'}}>{t.soId}</span>
+                <span style={{fontSize:10,padding:'1px 6px',borderRadius:4,fontWeight:600,background:t.decoType==='screen_print'?'#dbeafe':t.decoType==='embroidery'?'#ede9fe':'#fef3c7',color:t.decoType==='screen_print'?'#1e40af':t.decoType==='embroidery'?'#6d28d9':'#92400e'}}>{t.decoType?.replace(/_/g,' ')}</span>
+                <span style={{fontWeight:700,fontSize:11}}>{t.fulfilledUnits}/{t.totalUnits}</span>
+                <div style={{width:40,background:'#e2e8f0',borderRadius:3,height:4}}><div style={{height:4,borderRadius:3,background:pct>=100?'#22c55e':pct>50?'#3b82f6':'#f59e0b',width:pct+'%'}}/></div>
+              </div>
+              <div style={{display:'flex',alignItems:'center',gap:6,marginTop:4}}>
+                <span style={{fontSize:12,fontWeight:700,color:'#7c3aed'}}>{t.artName}</span>
+                {t.machine&&<span style={{fontSize:9,padding:'1px 5px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:700}}>🖨️ {t.machine}</span>}
+                {t.assignedTo&&<span style={{fontSize:9,padding:'1px 5px',borderRadius:4,background:'#ede9fe',color:'#6d28d9',fontWeight:700}}>👤 {t.assignedTo}</span>}
+                <span style={{fontSize:10,color:'#64748b',marginLeft:'auto'}}>{t.rep}</span>
+                <div style={{display:'flex',gap:4}}>
+                  {decoCardFilter==='ready'&&t.prodStatus!=='staging'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#f59e0b',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();moveJobStatus({...t.job,soId:t.soId,so:t.so},'staging')}}>→ In Line</button>}
+                  {decoCardFilter==='ready'&&t.prodStatus==='staging'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#2563eb',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();moveJobStatus({...t.job,soId:t.soId,so:t.so},'in_process')}}>→ Start</button>}
+                  {decoCardFilter==='in_process'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#166534',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();moveJobStatus({...t.job,soId:t.soId,so:t.so},'completed')}}>✓ Done</button>}
+                  {decoCardFilter==='waiting'&&<div style={{fontSize:9,color:'#d97706',fontWeight:600}}>
+                    {t.artStatus!=='art_complete'&&'Art pending'}{t.artStatus!=='art_complete'&&t.itemStatus!=='items_received'&&' + '}{t.itemStatus!=='items_received'&&'Items pending'}
+                  </div>}
+                  <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px'}} onClick={e=>{e.stopPropagation();setESOTab('jobs');setESO(t.so);setESOC(cust.find(c2=>c2.id===t.so?.customer_id));setPg('orders')}}>Open</button>
+                </div>
+              </div>
+            </div>})}
+          </div></div>})()}
 
       {/* Filters */}
       <div style={{display:'flex',gap:8,marginBottom:12,alignItems:'center',flexWrap:'wrap'}}>
