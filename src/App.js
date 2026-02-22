@@ -6874,7 +6874,6 @@ export default function App(){
             <div style={{display:'flex',gap:3,marginTop:6,flexWrap:'wrap'}}>
               {col?.id==='art_requested'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#1e40af',color:'white',border:'none'}} onClick={()=>moveArtStatus(j,'art_in_progress')}>Start Working</button>}
               {col?.id==='art_in_progress'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#92400e',color:'white',border:'none'}} onClick={()=>moveArtStatus(j,'waiting_approval')}>Send to Rep</button>}
-              {col?.id==='waiting_approval'&&<span style={{fontSize:9,color:'#92400e',fontWeight:600}}>Awaiting rep review...</span>}
               {col?.id==='production_files_needed'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#166534',color:'white',border:'none'}} onClick={()=>{
                 const so=sos.find(s=>s.id===j.soId);if(!so){nf('SO not found','error');return}
                 const afIdx=safeArt(so).findIndex(f=>f.id===j.art_file_id);
@@ -6897,8 +6896,8 @@ export default function App(){
               <span style={{fontSize:9,padding:'1px 5px',borderRadius:4,background:SC[j.art_status]?.bg,color:SC[j.art_status]?.c,fontWeight:600}}>{ART_LABELS[j.art_status]||j.art_status}</span>
               <span style={{fontSize:9,color:'#94a3b8',marginLeft:'auto'}}>{j.rep}</span>
             </div>
-            {/* Mockup button — primary action, opens detail popup */}
-            <button className="btn btn-sm" style={{fontSize:11,padding:'6px 12px',background:'linear-gradient(135deg,#1e40af,#7c3aed)',color:'white',border:'none',width:'100%',marginTop:4,fontWeight:700,borderRadius:6,display:'flex',alignItems:'center',justifyContent:'center',gap:6}} onClick={()=>{setArtMockupModal(j);setArtMockupRevision('')}}>🖼️ Mockup{j.art_status==='waiting_approval'?' — Review & Approve':''}</button>
+            {/* Mockup button — primary action, opens popup with approve/reject */}
+            <button className="btn btn-sm" style={{fontSize:11,padding:'6px 12px',background:j.art_status==='waiting_approval'?'linear-gradient(135deg,#f59e0b,#d97706)':'linear-gradient(135deg,#1e40af,#7c3aed)',color:'white',border:'none',width:'100%',marginTop:4,fontWeight:700,borderRadius:6,display:'flex',alignItems:'center',justifyContent:'center',gap:6}} onClick={()=>{setArtMockupModal(j);setArtMockupRevision('')}}>{j.art_status==='waiting_approval'?'Review Mockup':'🖼️ View Mockup'}</button>
             <div style={{display:'flex',gap:3,marginTop:6,flexWrap:'wrap'}}>
               {/* Edit request (only when art is not complete — coaches change minds) */}
               {j.art_status!=='art_complete'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#2563eb',color:'white',border:'none'}} onClick={()=>setArtEditModal({job:j,instructions:(j.art_requests||[]).length>0?j.art_requests[j.art_requests.length-1].instructions||'':'',notes:j.rep_notes||''})}>Edit Request</button>}
@@ -7189,20 +7188,22 @@ export default function App(){
               </div>)}
             </div>}
 
-            {/* ─── Approve / Request Revision section ─── */}
-            {j.art_status==='waiting_approval'&&<div style={{padding:'20px 24px',background:'#fffbeb',borderBottom:'1px solid #fde68a'}}>
-              <div style={{fontWeight:700,color:'#92400e',marginBottom:10,fontSize:14}}>This artwork needs your review</div>
-              <div style={{display:'flex',gap:12,alignItems:'flex-start'}}>
-                <button className="btn" style={{padding:'12px 28px',background:'#22c55e',color:'white',border:'none',borderRadius:8,fontSize:14,fontWeight:800,cursor:'pointer',whiteSpace:'nowrap'}} onClick={()=>{
+            {/* ─── Approve / Reject section — only in popup ─── */}
+            {j.art_status==='waiting_approval'&&<div style={{padding:'24px',background:'linear-gradient(135deg,#fffbeb,#fef3c7)',borderBottom:'2px solid #f59e0b'}}>
+              <div style={{fontWeight:800,color:'#92400e',marginBottom:14,fontSize:16,display:'flex',alignItems:'center',gap:8}}>
+                <span style={{fontSize:20}}>⚠️</span> This artwork needs your review
+              </div>
+              <div style={{display:'flex',gap:16,alignItems:'stretch'}}>
+                <button className="btn" style={{padding:'16px 36px',background:'linear-gradient(135deg,#22c55e,#16a34a)',color:'white',border:'none',borderRadius:10,fontSize:16,fontWeight:800,cursor:'pointer',whiteSpace:'nowrap',boxShadow:'0 4px 12px rgba(34,197,94,0.3)',minWidth:140}} onClick={()=>{
                   moveArtStatus(j,'production_files_needed');
                   setArtMockupModal(null);
                 }}>Approve</button>
-                <div style={{flex:1}}>
-                  <textarea className="form-input" rows={3} placeholder="Tell the artist what needs to change — colors, sizing, placement, etc. (required to reject)" value={artMockupRevision} onChange={e=>setArtMockupRevision(e.target.value)} style={{resize:'vertical',fontSize:12,marginBottom:6}}/>
-                  <button className="btn" style={{padding:'8px 20px',background:'#dc2626',color:'white',border:'none',borderRadius:6,fontSize:12,fontWeight:700,cursor:artMockupRevision.trim()?'pointer':'not-allowed',opacity:artMockupRevision.trim()?1:0.5}} disabled={!artMockupRevision.trim()} onClick={()=>{
+                <div style={{flex:1,display:'flex',flexDirection:'column',gap:8}}>
+                  <textarea className="form-input" rows={3} placeholder="Tell the artist what needs to change — colors, sizing, placement, etc. (required to reject)" value={artMockupRevision} onChange={e=>setArtMockupRevision(e.target.value)} style={{resize:'vertical',fontSize:12,flex:1}}/>
+                  <button className="btn" style={{padding:'10px 24px',background:artMockupRevision.trim()?'linear-gradient(135deg,#dc2626,#b91c1c)':'#e5e7eb',color:artMockupRevision.trim()?'white':'#9ca3af',border:'none',borderRadius:8,fontSize:13,fontWeight:700,cursor:artMockupRevision.trim()?'pointer':'not-allowed',boxShadow:artMockupRevision.trim()?'0 4px 12px rgba(220,38,38,0.3)':'none'}} disabled={!artMockupRevision.trim()} onClick={()=>{
                     rejectArt(j,artMockupRevision.trim());
                     setArtMockupModal(null);setArtMockupRevision('');
-                  }}>Request Revision</button>
+                  }}>Reject & Request Revision</button>
                 </div>
               </div>
             </div>}
