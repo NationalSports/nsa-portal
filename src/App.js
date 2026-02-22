@@ -5929,7 +5929,8 @@ export default function App(){
                   decorations:p.deco_type?[{kind:'art',position:'Front Center',art_file_id:'__tbd',art_tbd_type:p.deco_type,sell_override:safeNum(p.deco_cost)||0}]:[],
                   is_custom:false,pick_lines:[],po_lines:[]};
               });
-              const newSO={id:nextSOId(sos),customer_id:s.customer_id,memo:'OMG Store Pull: '+s.store_name,status:'need_order',
+              const generatedId=nextSOId(sos);console.log('GENERATED SO ID:',generatedId);
+              const newSO={id:generatedId,customer_id:s.customer_id,memo:'OMG Store Pull: '+s.store_name,status:'need_order',
                 created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),
                 expected_date:'',production_notes:'Pulled from OMG store '+s.id+'. Orders: '+s.orders+', Buyers: '+s.unique_buyers,
                 shipping_type:'flat',shipping_value:0,ship_to_id:'default',firm_dates:[],art_files:[],jobs:[],items:newItems,omg_store_id:s.id};
