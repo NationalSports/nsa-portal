@@ -124,7 +124,6 @@ const printDoc=({title,docNum,docType,headerRight,infoBoxes,tables,notes,footer,
   w.document.write(html);w.document.close();
   setTimeout(()=>w.print(),350);
 };
-let _idSeq=0;const uid=(prefix)=>prefix+Date.now().toString(36).slice(-4)+String(++_idSeq).padStart(2,'0');
 let _estSeq=2101;let _soSeq=1042;let _invSeq=1061;
 const nextEstId=(ests)=>{const nums=(ests||[]).map(e=>{const m=(e.id||'').match(/EST-(\d+)/);return m?parseInt(m[1]):0});const next=Math.max(_estSeq,...nums)+1;_estSeq=next;return'EST-'+next};
 const nextSOId=(sos)=>{const nums=(sos||[]).map(s=>{const m=(s.id||'').match(/SO-(\d+)/);return m?parseInt(m[1]):0});const next=Math.max(_soSeq,...nums)+1;_soSeq=next;return'SO-'+next};
