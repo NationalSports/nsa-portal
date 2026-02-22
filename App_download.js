@@ -2,8 +2,8 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import './portal.css';
 // ─── Cloudinary Config ───
-const CLOUDINARY_CLOUD='YOUR_CLOUD_NAME';// Replace with your Cloudinary cloud name
-const CLOUDINARY_PRESET='YOUR_UPLOAD_PRESET';// Replace with your unsigned upload preset
+const CLOUDINARY_CLOUD='dwlyljyuz';
+const CLOUDINARY_PRESET='ml_default_nsaportal';
 const cloudUpload=async(file)=>{const fd=new FormData();fd.append('file',file);fd.append('upload_preset',CLOUDINARY_PRESET);fd.append('folder','nsa-products');const r=await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/image/upload`,{method:'POST',body:fd});const d=await r.json();return d.secure_url};
 const ImgUpload=({url,onUpload,size=48})=>{const[drag,setDrag]=React.useState(false);const[uploading,setUploading]=React.useState(false);
   const doUpload=async(file)=>{if(!file||!file.type.startsWith('image/'))return;setUploading(true);try{const u=await cloudUpload(file);onUpload(u)}catch(e){console.error('Upload failed',e)}finally{setUploading(false)}};
