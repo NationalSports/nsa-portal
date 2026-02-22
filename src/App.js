@@ -35,12 +35,16 @@ const DEFAULT_REPS=[
   {id:'00000000-0000-0000-0000-000000000064',name:'Luiz Acosta',role:'production'},
   {id:'00000000-0000-0000-0000-000000000065',name:'Claudia Hernandez',role:'production'},
   {id:'00000000-0000-0000-0000-000000000066',name:'Roberto Rivas',role:'production'},
+  // Artists
+  {id:'00000000-0000-0000-0000-000000000070',name:'Mo',role:'art'},
+  {id:'00000000-0000-0000-0000-000000000071',name:'Erik',role:'art'},
 ];
 const NSA={name:'National Sports Apparel',legal:'National Sports Apparel LLC',phone:'(619) 555-0127',email:'team@nsa-teamwear.com',
   addr:'9340 Cabot Dr, Suite A',city:'San Diego',state:'CA',zip:'91941',
   fullAddr:'9340 Cabot Dr, Suite A, San Diego, CA 91941',
   logo:'NSA',terms:'Net 30 from invoice date unless otherwise agreed.',
   depositTerms:'50% deposit required to begin production. Balance due upon completion.'};
+const ART_LABELS={needs_art:'Needs Art',art_requested:'Art Requested',art_in_progress:'In Progress',waiting_approval:'Waiting Approval',production_files_needed:'Prod Files Needed',art_complete:'Art Complete'};
 
 // ═══════════════════════════════════════════════
 // PRINT DOCUMENT HELPER — generates professional print-ready HTML
@@ -230,7 +234,7 @@ const isJobReady=(j,o)=>{
     const it=safeItems(o)[gi.item_idx];if(!it)return;
     Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{
       totalSz+=v;
-      const picked=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
+      const picked=safePicks(it).filter(pk=>pk.status==='pulled'||pk.status==='pick').reduce((a,pk)=>a+safeNum(pk[sz]),0);
       const rcvd=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
       fulfilledSz+=Math.min(v,picked+rcvd);
     });
@@ -508,7 +512,7 @@ function calcSOStatus(ord){
       const picked=safePicks(it).reduce((a,pk)=>a+safeNum(pk[sz]),0);
       const poOrd=safePOs(it).reduce((a,pk)=>a+safeNum(pk[sz])-safeNum((pk.cancelled||{})[sz]),0);
       coveredSz+=Math.min(v,picked+poOrd);
-      const pulledQty=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
+      const pulledQty=safePicks(it).filter(pk=>pk.status==='pulled'||pk.status==='pick').reduce((a,pk)=>a+safeNum(pk[sz]),0);
       const rcvdQty=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
       fulfilledSz+=Math.min(v,pulledQty+rcvdQty);
     });
@@ -599,6 +603,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
   const[showFirmReq,setShowFirmReq]=useState(false);const[firmReqDate,setFirmReqDate]=useState('');const[firmReqNote,setFirmReqNote]=useState('');
   const[showInvCreate,setShowInvCreate]=useState(false);const[invSelItems,setInvSelItems]=useState([]);const[invMemo,setInvMemo]=useState('');const[invType,setInvType]=useState('deposit');
   const[splitModal,setSplitModal]=useState(null);// {jIdx, mode:'received'|'sku'|null}
+  const[artReqModal,setArtReqModal]=useState(null);// {jIdx, artist:'', instructions:'', files:[]}
+
   // Sync dirty state to parent dirtyRef
   React.useEffect(()=>{if(dirtyRef)dirtyRef.current=dirty},[dirty,dirtyRef]);
   // Adjust inventory when pick is pulled or un-pulled
@@ -716,7 +722,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         let itemTotal=0,itemFulfilled=0;
         szEntries.forEach(([sz,v])=>{
           itemTotal+=v;
-          const pulledQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
+          const pulledQ=safePicks(it).filter(pk=>pk.status==='pulled'||pk.status==='pick').reduce((a,pk)=>a+safeNum(pk[sz]),0);
           const rcvdQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
           itemFulfilled+=Math.min(v,pulledQ+rcvdQ);
         });
@@ -2185,7 +2191,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           const it=safeItems(o)[ji.item_idx];if(!it)return;
           let ful=0;
           Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).forEach(([sz,v])=>{
-            const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
+            const pQ=safePicks(it).filter(pk=>pk.status==='pulled'||pk.status==='pick').reduce((a,pk)=>a+safeNum(pk[sz]),0);
             const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
             ful+=Math.min(v,pQ+rQ);
           });
@@ -2222,7 +2228,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       const updJob=(jIdx,k,v)=>{sv('jobs',jobs.map((j,i)=>i===jIdx?{...j,[k]:v}:j))};
       const prodStatuses=['hold','staging','in_process','completed','shipped'];
       const prodLabels={hold:'Ready for Prod',staging:'In Line',in_process:'In Process',completed:'Completed',shipped:'Shipped'};
-      const artLabels={needs_art:'Needs Art',art_requested:'Art Requested',art_in_progress:'In Progress',waiting_approval:'Waiting Approval',production_files_needed:'Prod Files Needed',art_complete:'Art Complete'};
+      const artLabels=ART_LABELS;
       const itemLabels={need_to_order:'Need to Order',partially_received:'Partially Received',items_received:'Items Received'};
 
       // Job detail view
@@ -2238,7 +2244,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           const it=safeItems(o)[gi.item_idx];if(!it)return{...gi,sizes:{},fulSizes:{}};
           const sizes=safeSizes(it);const fulSizes={};
           Object.entries(sizes).filter(([,v])=>safeNum(v)>0).forEach(([sz,v])=>{
-            const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
+            const pQ=safePicks(it).filter(pk=>pk.status==='pulled'||pk.status==='pick').reduce((a,pk)=>a+safeNum(pk[sz]),0);
             const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
             fulSizes[sz]=Math.min(v,pQ+rQ);
           });
@@ -2276,12 +2282,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
               <div style={{fontSize:11,fontWeight:600,color:'#64748b'}}>Art:</div>
               <select className="form-select" style={{width:150,fontSize:11}} value={j.art_status} onChange={e=>updJob(ji,'art_status',e.target.value)}>
                 {Object.entries(artLabels).map(([k,v])=><option key={k} value={k}>{v}</option>)}</select>
-              {j.art_status==='needs_art'&&<button className="btn btn-sm" style={{fontSize:10,background:'#be185d',color:'white',border:'none',padding:'3px 8px'}} onClick={()=>{updJob(ji,'art_status','art_requested');nf('🎨 Art requested for '+j.art_name)}}>🎨 Request Art</button>}
+              <button className="btn btn-sm" style={{fontSize:10,background:'#be185d',color:'white',border:'none',padding:'3px 8px'}} onClick={()=>setArtReqModal({jIdx:ji,artist:'',instructions:'',files:[]})}>🎨 Request Art</button>
               {(j.art_status==='waiting_approval')&&<button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'3px 8px'}} onClick={()=>{updJob(ji,'art_status','production_files_needed');nf('✅ Art approved — awaiting prod files')}}>✅ Approve Art</button>}
               <div style={{fontSize:11,fontWeight:600,color:'#64748b',marginLeft:8}}>Artist:</div>
               <select className="form-select" style={{width:130,fontSize:11}} value={j.assigned_artist||''} onChange={e=>updJob(ji,'assigned_artist',e.target.value)}>
                 <option value="">Unassigned</option>
-                {REPS.filter(r=>r.role==='artist'||r.role==='production'||r.role==='admin').filter(r=>r.is_active!==false).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
+                {REPS.filter(r=>r.role==='art'||r.role==='artist'||r.role==='production'||r.role==='admin').filter(r=>r.is_active!==false).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
               <div style={{fontSize:11,fontWeight:600,color:'#64748b',marginLeft:8}}>Production:</div>
               {j.prod_status==='hold'&&!canProduce&&!canOverride?<span style={{fontSize:11,color:'#94a3b8'}}>Waiting items/art</span>
               :<><select className="form-select" style={{width:150,fontSize:11}} value={j.prod_status} onChange={e=>updJob(ji,'prod_status',e.target.value)}>
@@ -2349,6 +2355,28 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
               </div>
             </div>
           </div>
+
+          {/* Art Requests Log */}
+          {(j.art_requests||[]).length>0&&<div className="card" style={{marginBottom:12}}>
+            <div className="card-header"><h2>🎨 Art Requests</h2></div>
+            <div className="card-body" style={{padding:0}}>
+              {(j.art_requests||[]).map((r,ri)=><div key={ri} style={{padding:'10px 16px',borderBottom:ri<(j.art_requests||[]).length-1?'1px solid #f1f5f9':'none',display:'flex',alignItems:'flex-start',gap:12}}>
+                <div style={{flex:1}}>
+                  <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
+                    <strong style={{fontSize:13}}>{r.artist_name||'Unknown'}</strong>
+                    <span className={`badge ${r.status==='completed'?'badge-green':r.status==='in_progress'?'badge-blue':'badge-amber'}`} style={{fontSize:9}}>{r.status==='completed'?'Completed':r.status==='in_progress'?'In Progress':'Requested'}</span>
+                    <span style={{fontSize:10,color:'#94a3b8',marginLeft:'auto'}}>{new Date(r.created_at).toLocaleDateString()} by {r.created_by||'—'}</span>
+                  </div>
+                  {r.instructions&&<div style={{fontSize:12,color:'#475569',marginBottom:4}}>{r.instructions}</div>}
+                  {(r.files||[]).length>0&&<div style={{fontSize:10,color:'#64748b'}}>📎 {r.files.length} file(s) attached</div>}
+                </div>
+                <div style={{display:'flex',gap:4}}>
+                  {r.status==='requested'&&<button className="btn btn-sm" style={{fontSize:9,background:'#3b82f6',color:'white',border:'none'}} onClick={()=>{const upd=jobs.map((jj,i)=>i===ji?{...jj,art_requests:(jj.art_requests||[]).map((rr,rri)=>rri===ri?{...rr,status:'in_progress'}:rr)}:jj);sv('jobs',upd)}}>Start Working</button>}
+                  {r.status==='in_progress'&&<button className="btn btn-sm" style={{fontSize:9,background:'#166534',color:'white',border:'none'}} onClick={()=>{const upd=jobs.map((jj,i)=>i===ji?{...jj,art_requests:(jj.art_requests||[]).map((rr,rri)=>rri===ri?{...rr,status:'completed'}:rr)}:jj);sv('jobs',upd)}}>Mark Done</button>}
+                </div>
+              </div>)}
+            </div>
+          </div>}
 
           {/* Items & Size Matrix */}
           <div className="card" style={{marginBottom:12}}>
@@ -2446,7 +2474,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                 :<select style={{fontSize:10,padding:'2px 4px',borderRadius:4,border:'1px solid #e2e8f0',fontWeight:600,background:SC[j.prod_status]?.bg||'#f1f5f9',color:SC[j.prod_status]?.c||'#475569'}} value={j.prod_status} onChange={e=>{e.stopPropagation();updJob(ji,'prod_status',e.target.value)}}>
                   {prodStatuses.map(ps=><option key={ps} value={ps}>{prodLabels[ps]}</option>)}</select>}</td>
               <td style={{whiteSpace:'nowrap'}}>
-                {(j.art_status==='needs_art')&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#be185d',color:'white',borderRadius:4,marginRight:3}} onClick={e=>{e.stopPropagation();updJob(ji,'art_status','art_requested');nf('🎨 Art requested for '+j.art_name)}} title="Request art from artist">🎨 Request Art</button>}
+                <button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#be185d',color:'white',borderRadius:4,marginRight:3}} onClick={e=>{e.stopPropagation();setArtReqModal({jIdx:ji,artist:'',instructions:'',files:[]})}} title="Request art from artist">🎨 Request Art</button>
                 {canSplit&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#7c3aed',color:'white',borderRadius:4}} onClick={e=>{e.stopPropagation();setSplitModal({jIdx:ji,mode:null,selectedSkus:[]})}} title="Split job">✂️ Split</button>}
               </td>
             </tr>
@@ -2467,7 +2495,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           const it=safeItems(o)[gi.item_idx];
           let ful=0;
           if(it)Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).forEach(([sz,v])=>{
-            const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
+            const pQ=safePicks(it).filter(pk=>pk.status==='pulled'||pk.status==='pick').reduce((a,pk)=>a+safeNum(pk[sz]),0);
             const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
             ful+=Math.min(v,pQ+rQ);
           });
@@ -2531,6 +2559,66 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
             {splitModal.mode==='sku'&&(splitModal.selectedSkus||[]).length>0&&(splitModal.selectedSkus||[]).length<items.length&&<button className="btn btn-primary" onClick={()=>splitBySku(splitModal.jIdx,splitModal.selectedSkus)}>✂️ Split Selected SKUs</button>}
           </div>
         </div></div>})()}
+
+      {/* Art Request Modal */}
+      {artReqModal&&(()=>{
+        const j=jobs[artReqModal.jIdx];if(!j)return null;
+        const artF=safeArt(o).find(a=>a.id===j.art_file_id);
+        const existingFiles=(artF?.mockup_files||[]).concat(artF?.prod_files||[]);
+        const artists=REPS.filter(r=>r.role==='art');
+        const submitArtReq=()=>{
+          const req={id:'AR-'+Date.now(),artist:artReqModal.artist,artist_name:(artists.find(a=>a.id===artReqModal.artist)||{}).name||'',instructions:artReqModal.instructions,files:artReqModal.files,existing_files:existingFiles.map(f=>f.name||f),status:'requested',created_at:new Date().toISOString(),created_by:cu.name};
+          const updatedJobs=jobs.map((jj,i)=>i===artReqModal.jIdx?{...jj,art_requests:[...(jj.art_requests||[]),req],art_status:jj.art_status==='needs_art'?'art_requested':jj.art_status,assigned_artist:artReqModal.artist||jj.assigned_artist}:jj);
+          sv('jobs',updatedJobs);setArtReqModal(null);nf('Art request sent to '+(artists.find(a=>a.id===artReqModal.artist)||{}).name||'artist');
+        };
+        return<div className="modal-overlay" onClick={()=>setArtReqModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
+          <div className="modal-header"><h2>🎨 Request Art — {j.art_name}</h2><button className="modal-close" onClick={()=>setArtReqModal(null)}>×</button></div>
+          <div className="modal-body">
+            <div style={{marginBottom:12}}>
+              <div className="form-label">Artist *</div>
+              <select className="form-select" value={artReqModal.artist} onChange={e=>setArtReqModal(m=>({...m,artist:e.target.value}))}>
+                <option value="">Select artist...</option>
+                {artists.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}
+              </select>
+            </div>
+            <div style={{marginBottom:12}}>
+              <div className="form-label">Instructions</div>
+              <textarea className="form-input" rows={4} placeholder="Describe what you need — mockup, revision, specific colors, placement notes, etc." value={artReqModal.instructions} onChange={e=>setArtReqModal(m=>({...m,instructions:e.target.value}))} style={{resize:'vertical'}}/>
+            </div>
+            <div style={{marginBottom:12}}>
+              <div className="form-label">Attach Files</div>
+              <div style={{border:'2px dashed #cbd5e1',borderRadius:8,padding:16,textAlign:'center',cursor:'pointer',background:'#f8fafc'}}
+                onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#3b82f6';e.currentTarget.style.background='#eff6ff'}}
+                onDragLeave={e=>{e.currentTarget.style.borderColor='#cbd5e1';e.currentTarget.style.background='#f8fafc'}}
+                onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor='#cbd5e1';e.currentTarget.style.background='#f8fafc';const newFiles=[...artReqModal.files];Array.from(e.dataTransfer.files).forEach(f=>newFiles.push({name:f.name,size:f.size,type:f.type}));setArtReqModal(m=>({...m,files:newFiles}))}}
+                onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.onchange=()=>{const newFiles=[...artReqModal.files];Array.from(inp.files).forEach(f=>newFiles.push({name:f.name,size:f.size,type:f.type}));setArtReqModal(m=>({...m,files:newFiles}))};inp.click()}}>
+                <div style={{fontSize:12,color:'#64748b'}}>Drop files here or click to browse</div>
+                <div style={{fontSize:10,color:'#94a3b8',marginTop:4}}>PNG, PDF, AI, EPS, JPG</div>
+              </div>
+              {artReqModal.files.length>0&&<div style={{marginTop:8}}>{artReqModal.files.map((f,i)=><div key={i} style={{display:'flex',alignItems:'center',gap:6,padding:'4px 8px',background:'#f1f5f9',borderRadius:4,fontSize:11,marginBottom:4}}>
+                <span>{f.name}</span><span style={{color:'#94a3b8',marginLeft:'auto'}}>{(f.size/1024).toFixed(0)}KB</span>
+                <button style={{background:'none',border:'none',color:'#ef4444',cursor:'pointer',fontSize:14,padding:0}} onClick={()=>setArtReqModal(m=>({...m,files:m.files.filter((_,fi)=>fi!==i)}))}>×</button>
+              </div>)}</div>}
+            </div>
+            {existingFiles.length>0&&<div style={{marginBottom:12}}>
+              <div className="form-label">Existing Art Files (auto-included)</div>
+              <div style={{background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:6,padding:8}}>{existingFiles.map((f,i)=><div key={i} style={{fontSize:11,color:'#166534',padding:'2px 0'}}>✓ {f.name||f}</div>)}</div>
+            </div>}
+            {(j.art_requests||[]).length>0&&<div style={{marginBottom:12}}>
+              <div className="form-label">Previous Requests ({(j.art_requests||[]).length})</div>
+              <div style={{maxHeight:120,overflowY:'auto',border:'1px solid #e2e8f0',borderRadius:6}}>{(j.art_requests||[]).map((r,i)=><div key={i} style={{padding:'6px 10px',borderBottom:'1px solid #f1f5f9',fontSize:11}}>
+                <div style={{display:'flex',justifyContent:'space-between'}}><strong>{r.artist_name||'Unknown'}</strong><span style={{color:'#94a3b8'}}>{new Date(r.created_at).toLocaleDateString()}</span></div>
+                <div style={{color:'#64748b',marginTop:2}}>{r.instructions||'No instructions'}</div>
+                <span className={`badge ${r.status==='completed'?'badge-green':r.status==='in_progress'?'badge-blue':'badge-amber'}`} style={{fontSize:9,marginTop:2}}>{r.status==='completed'?'Done':r.status==='in_progress'?'Working':'Requested'}</span>
+              </div>)}</div>
+            </div>}
+          </div>
+          <div className="modal-footer">
+            <button className="btn btn-secondary" onClick={()=>setArtReqModal(null)}>Cancel</button>
+            <button className="btn btn-primary" disabled={!artReqModal.artist} onClick={submitArtReq}>Send Art Request</button>
+          </div>
+        </div></div>
+      })()}
 
       </div></div>})()}
 
@@ -2981,7 +3069,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       {custSOs.filter(s=>calcSOStatus(s)!=='complete').map(so=>{
         const st=calcSOStatus(so);const stL={need_order:'Need to Order',waiting_receive:'Waiting to Receive',items_received:'Items Received',in_production:'In Production',ready_to_invoice:'Ready to Invoice',complete:'Complete'};
         let totalU=0,fulU=0;
-        safeItems(so).forEach(it=>{Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{totalU+=v;const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+(pk[sz]||0),0);const rQ=safePOs(it).reduce((a,pk)=>a+((pk.received||{})[sz]||0),0);fulU+=Math.min(v,pQ+rQ)})});
+        safeItems(so).forEach(it=>{Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{totalU+=v;const pQ=safePicks(it).filter(pk=>pk.status==='pulled'||pk.status==='pick').reduce((a,pk)=>a+(pk[sz]||0),0);const rQ=safePOs(it).reduce((a,pk)=>a+((pk.received||{})[sz]||0),0);fulU+=Math.min(v,pQ+rQ)})});
         const pct=totalU>0?Math.round(fulU/totalU*100):0;
         const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
         const jobs=so.jobs||[];
@@ -3330,7 +3418,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
           <div style={{fontSize:13,fontWeight:800,color:'#1e3a5f',marginBottom:10}}>📦 Active Orders</div>
           {activeSOs.map(so=>{
             let totalU=0,fulU=0;
-            safeItems(so).forEach(it=>{Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{totalU+=v;const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);fulU+=Math.min(v,pQ+rQ)})});
+            safeItems(so).forEach(it=>{Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{totalU+=v;const pQ=safePicks(it).filter(pk=>pk.status==='pulled'||pk.status==='pick').reduce((a,pk)=>a+safeNum(pk[sz]),0);const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);fulU+=Math.min(v,pQ+rQ)})});
             const pct=totalU>0?Math.round(fulU/totalU*100):0;
             const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
             const soJobs=safeJobs(so);
@@ -6473,7 +6561,7 @@ export default function App(){
       }
       const updatedJobs=safeJobs(so).map(jj=>jj.id===j.id?{...jj,art_status:newStatus,assigned_artist:jj.assigned_artist||j.assigned_artist}:jj);
       savSO({...so,jobs:updatedJobs});
-      nf('Art status → '+artLabels[newStatus]);
+      nf('Art status → '+ART_LABELS[newStatus]);
     };
 
     const assignArtist=(j,artistId)=>{
