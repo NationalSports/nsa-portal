@@ -49,8 +49,9 @@ const DEFAULT_REPS=[
   {id:'00000000-0000-0000-0000-000000000062',name:'Fransisco Moreno',role:'production'},
   {id:'00000000-0000-0000-0000-000000000063',name:'Griselda Franco',role:'production'},
   {id:'00000000-0000-0000-0000-000000000064',name:'Luiz Acosta',role:'production'},
-  {id:'00000000-0000-0000-0000-000000000065',name:'Claudia Hernandez',role:'production'},
-  {id:'00000000-0000-0000-0000-000000000066',name:'Roberto Rivas',role:'production'},
+  // Production assistants (check-in / count — not assigned jobs directly)
+  {id:'00000000-0000-0000-0000-000000000065',name:'Claudia Hernandez',role:'prod_assistant'},
+  {id:'00000000-0000-0000-0000-000000000066',name:'Roberto Rivas',role:'prod_assistant'},
   // Artists
   {id:'00000000-0000-0000-0000-000000000070',name:'Mo',role:'art'},
   {id:'00000000-0000-0000-0000-000000000071',name:'Erik',role:'art'},
@@ -563,8 +564,8 @@ function calcSOStatus(ord){
 // ═══════════════════════════════════════════════
 function LoginGate({onLogin,reps}){
   const REPS=(reps||DEFAULT_REPS).filter(r=>r.is_active!==false);
-  const roleColors={admin:'#1e40af',gm:'#7c3aed',prod_manager:'#b45309',production:'#d97706',rep:'#166534',csr:'#0891b2',warehouse:'#9333ea',accounting:'#dc2626',artist:'#ec4899'};
-  const roleLabels={admin:'Admin',gm:'General Manager',prod_manager:'Production Mgr',production:'Production',rep:'Sales Rep',csr:'CSR',warehouse:'Warehouse',accounting:'Accounting',artist:'Artist'};
+  const roleColors={admin:'#1e40af',gm:'#7c3aed',prod_manager:'#b45309',production:'#d97706',prod_assistant:'#a16207',rep:'#166534',csr:'#0891b2',warehouse:'#9333ea',accounting:'#dc2626',artist:'#ec4899'};
+  const roleLabels={admin:'Admin',gm:'General Manager',prod_manager:'Production Mgr',production:'Production',prod_assistant:'Prod Assistant',rep:'Sales Rep',csr:'CSR',warehouse:'Warehouse',accounting:'Accounting',artist:'Artist'};
   return(
     <div style={{minHeight:'100vh',background:'linear-gradient(135deg,#0f172a 0%,#1e3a5f 50%,#0f172a 100%)',display:'flex',alignItems:'center',justifyContent:'center',fontFamily:"'Inter','Segoe UI',sans-serif"}}>
       <div style={{width:380,padding:0}}>
@@ -8292,11 +8293,11 @@ export default function App(){
 
     // TEAM MANAGEMENT
   const rTeam=()=>{
-    const roles={admin:'Admin',rep:'Sales Rep',csr:'Customer Service',accounting:'Accounting',warehouse:'Warehouse',prod_manager:'Production Mgr',production:'Production',artist:'Artist'};
-    const roleBadge={admin:'badge-purple',rep:'badge-blue',csr:'badge-green',accounting:'badge-amber',warehouse:'badge-gray',prod_manager:'badge-amber',production:'badge-gray',artist:'badge-purple'};
+    const roles={admin:'Admin',rep:'Sales Rep',csr:'Customer Service',accounting:'Accounting',warehouse:'Warehouse',prod_manager:'Production Mgr',production:'Production',prod_assistant:'Prod Assistant',artist:'Artist'};
+    const roleBadge={admin:'badge-purple',rep:'badge-blue',csr:'badge-green',accounting:'badge-amber',warehouse:'badge-gray',prod_manager:'badge-amber',production:'badge-gray',prod_assistant:'badge-gray',artist:'badge-purple'};
     const isAdmin=cu.role==='admin';
     const initials=n=>{const p=(n||'').split(' ');return p.length>=2?(p[0][0]+p[p.length-1][0]).toUpperCase():(n||'??').slice(0,2).toUpperCase()};
-    const avatarColors={admin:'#7c3aed',rep:'#2563eb',csr:'#16a34a',accounting:'#d97706',warehouse:'#475569',prod_manager:'#b45309',production:'#0891b2'};
+    const avatarColors={admin:'#7c3aed',rep:'#2563eb',csr:'#16a34a',accounting:'#d97706',warehouse:'#475569',prod_manager:'#b45309',production:'#0891b2',prod_assistant:'#a16207'};
 
     // Default page access by role
     const ALL_PAGES=[
@@ -8330,6 +8331,7 @@ export default function App(){
       accounting:['dashboard','invoices','customers','reports','qb'],
       warehouse:['dashboard','orders','warehouse','batch_pos','inventory','production','decoration'],
       prod_manager:['dashboard','orders','jobs','art','production','decoration','warehouse','inventory','batch_pos'],
+      prod_assistant:['dashboard','orders','jobs','production','decoration','warehouse','inventory'],
       production:['dashboard','orders','jobs','art','production','decoration','warehouse','inventory'],
       artist:['dashboard','orders','art','jobs','production','decoration'],
     };
