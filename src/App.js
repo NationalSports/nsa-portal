@@ -4263,6 +4263,8 @@ export default function App(){
   };
 
   // PRODUCTION BOARD
+  // Artist Dashboard state
+  const[artFilter,setArtFilter]=useState('all');const[artSearch,setArtSearch]=useState('');
   const[prodView,setProdView]=useState('board');const[prodFilter,setProdFilter]=useState('all');const[expandedJob,setExpandedJob]=useState(null);
   const[prodSort,setProdSort]=useState({f:'expected',d:'asc'});const[prodStatF,setProdStatF]=useState('active');const[prodDecoF,setProdDecoF]=useState('all');
   const[assignModal,setAssignModal]=useState(null);// {job, soId, targetStatus}
@@ -6445,8 +6447,7 @@ export default function App(){
     });
 
     const artistMembers=REPS.filter(r=>(r.role==='artist'||r.role==='production')&&r.is_active!==false);
-    const[artFilter,setArtFilter]=useState('all');// artist filter
-    const[artSearch,setArtSearch]=useState('');
+    // artFilter/artSearch state is declared at App top level
 
     const filtered=allArtJobs.filter(j=>{
       if(artFilter!=='all'&&j.assigned_artist!==artFilter)return false;
