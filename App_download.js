@@ -49,8 +49,9 @@ const DEFAULT_REPS=[
   {id:'00000000-0000-0000-0000-000000000062',name:'Fransisco Moreno',role:'production'},
   {id:'00000000-0000-0000-0000-000000000063',name:'Griselda Franco',role:'production'},
   {id:'00000000-0000-0000-0000-000000000064',name:'Luiz Acosta',role:'production'},
-  {id:'00000000-0000-0000-0000-000000000065',name:'Claudia Hernandez',role:'production'},
-  {id:'00000000-0000-0000-0000-000000000066',name:'Roberto Rivas',role:'production'},
+  // Production assistants (check-in / count — not assigned jobs directly)
+  {id:'00000000-0000-0000-0000-000000000065',name:'Claudia Hernandez',role:'prod_assistant'},
+  {id:'00000000-0000-0000-0000-000000000066',name:'Roberto Rivas',role:'prod_assistant'},
   // Artists
   {id:'00000000-0000-0000-0000-000000000070',name:'Mo',role:'art'},
   {id:'00000000-0000-0000-0000-000000000071',name:'Erik',role:'art'},
@@ -563,8 +564,8 @@ function calcSOStatus(ord){
 // ═══════════════════════════════════════════════
 function LoginGate({onLogin,reps}){
   const REPS=(reps||DEFAULT_REPS).filter(r=>r.is_active!==false);
-  const roleColors={admin:'#1e40af',gm:'#7c3aed',prod_manager:'#b45309',production:'#d97706',rep:'#166534',csr:'#0891b2',warehouse:'#9333ea',accounting:'#dc2626',artist:'#ec4899'};
-  const roleLabels={admin:'Admin',gm:'General Manager',prod_manager:'Production Mgr',production:'Production',rep:'Sales Rep',csr:'CSR',warehouse:'Warehouse',accounting:'Accounting',artist:'Artist'};
+  const roleColors={admin:'#1e40af',gm:'#7c3aed',prod_manager:'#b45309',production:'#d97706',prod_assistant:'#a16207',rep:'#166534',csr:'#0891b2',warehouse:'#9333ea',accounting:'#dc2626',artist:'#ec4899'};
+  const roleLabels={admin:'Admin',gm:'General Manager',prod_manager:'Production Mgr',production:'Production',prod_assistant:'Prod Assistant',rep:'Sales Rep',csr:'CSR',warehouse:'Warehouse',accounting:'Accounting',artist:'Artist'};
   return(
     <div style={{minHeight:'100vh',background:'linear-gradient(135deg,#0f172a 0%,#1e3a5f 50%,#0f172a 100%)',display:'flex',alignItems:'center',justifyContent:'center',fontFamily:"'Inter','Segoe UI',sans-serif"}}>
       <div style={{width:380,padding:0}}>
@@ -3615,6 +3616,7 @@ function AdjModal({isOpen,onClose,product,onSave}){const[a,setA]=useState({});co
 export default function App(){
   const[pg,setPg]=useState('dashboard');const[toast,setToast]=useState(null);
   const[dashView,setDashView]=useState('admin');// admin|sales|warehouse|decorator|production|csr
+  const[prodDashFilter,setProdDashFilter]=useState(null);// null|'hold'|'ready'|'staging'|'in_process'|'completed'
   const[qbConfig,setQBConfig]=useState({connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',
     mapping:{income_account:'Sales',cogs_account:'Cost of Goods Sold',deco_account:'Subcontractor - Decoration',ar_account:'Accounts Receivable',ap_account:'Accounts Payable'},
     syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}});
@@ -4001,12 +4003,42 @@ export default function App(){
       const decoWorkload=decorators.map(d=>{const jobs=activeJobs.filter(j=>(j.prod_status==='in_process'||j.prod_status==='staging')&&j.assigned_to===d.name);return{...d,jobs,count:jobs.length}});
       return<>
       <div className="stats-row">
-        <div className="stat-card" style={{borderLeft:'3px solid #94a3b8'}}><div className="stat-label">Hold</div><div className="stat-value">{byStatus.hold}</div></div>
-        <div className="stat-card" style={{borderLeft:'3px solid #22c55e'}}><div className="stat-label">Ready to Go</div><div className="stat-value" style={{color:'#166534'}}>{readyForBoard.length}</div></div>
-        <div className="stat-card" style={{borderLeft:'3px solid #f59e0b'}}><div className="stat-label">In Line</div><div className="stat-value" style={{color:'#d97706'}}>{byStatus.staging}</div></div>
-        <div className="stat-card" style={{borderLeft:'3px solid #2563eb'}}><div className="stat-label">In Process</div><div className="stat-value" style={{color:'#2563eb'}}>{byStatus.in_process}</div></div>
-        <div className="stat-card" style={{borderLeft:'3px solid #166534'}}><div className="stat-label">Completed</div><div className="stat-value" style={{color:'#166534'}}>{byStatus.completed}</div></div>
+        {[['hold','Hold',byStatus.hold,'#94a3b8',null],['ready','Ready to Go',readyForBoard.length,'#22c55e','#166534'],['staging','In Line',byStatus.staging,'#f59e0b','#d97706'],['in_process','In Process',byStatus.in_process,'#2563eb','#2563eb'],['completed','Completed',byStatus.completed,'#166534','#166534']].map(([id,label,count,border,valColor])=>
+          <div key={id} className="stat-card" style={{borderLeft:'3px solid '+border,cursor:'pointer',outline:prodDashFilter===id?'2px solid '+border:'none',background:prodDashFilter===id?'#f8fafc':'white'}} onClick={()=>setProdDashFilter(f=>f===id?null:id)}>
+            <div className="stat-label">{label}</div><div className="stat-value" style={{color:valColor||undefined}}>{count}</div>
+          </div>)}
       </div>
+
+      {/* Filtered job list when a stat card is clicked */}
+      {prodDashFilter&&(()=>{
+        const filtered=prodDashFilter==='ready'?readyForBoard:activeJobs.filter(j=>j.prod_status===prodDashFilter);
+        const filterLabel={hold:'Hold',ready:'Ready to Go',staging:'In Line',in_process:'In Process',completed:'Completed'}[prodDashFilter];
+        return<div className="card" style={{marginBottom:16}}>
+          <div className="card-header"><h2>{filterLabel} — {filtered.length} job{filtered.length!==1?'s':''}</h2><button className="btn btn-sm btn-secondary" onClick={()=>setProdDashFilter(null)}>× Close</button></div>
+          <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
+            {filtered.length===0?<div className="empty" style={{padding:20}}>No jobs</div>:
+            filtered.map(j=>{const pct=j.total_units>0?Math.round(j.fulfilled_units/j.total_units*100):0;
+              return<div key={j.id+j.so?.id} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9'}}>
+              <div style={{display:'flex',alignItems:'center',gap:8}}>
+                <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',fontSize:11}}>{j.id}</span>
+                <span style={{fontWeight:700,fontSize:12,flex:1}}>{j.art_name}</span>
+                <span style={{fontSize:10,padding:'1px 6px',borderRadius:4,fontWeight:600,background:j.deco_type==='screen_print'?'#dbeafe':j.deco_type==='embroidery'?'#ede9fe':'#fef3c7',color:j.deco_type==='screen_print'?'#1e40af':j.deco_type==='embroidery'?'#6d28d9':'#92400e'}}>{j.deco_type?.replace(/_/g,' ')}</span>
+                {j.assigned_to&&<span style={{fontSize:9,padding:'1px 5px',borderRadius:4,background:'#ede9fe',color:'#6d28d9',fontWeight:700}}>👤 {j.assigned_to}</span>}
+                <span style={{fontWeight:700,fontSize:11}}>{j.fulfilled_units}/{j.total_units}</span>
+                <div style={{width:40,background:'#e2e8f0',borderRadius:3,height:4}}><div style={{height:4,borderRadius:3,background:pct>=100?'#22c55e':pct>50?'#3b82f6':'#f59e0b',width:pct+'%'}}/></div>
+              </div>
+              <div style={{display:'flex',alignItems:'center',gap:4,marginTop:3}}>
+                <span style={{fontSize:10,color:'#64748b'}}>{j.cName} · {j.soId} · {j.rep}{j.expected?' · Due '+j.expected:''}</span>
+                <div style={{marginLeft:'auto',display:'flex',gap:4}}>
+                  {prodDashFilter==='hold'&&j.item_status==='items_received'&&j.art_status==='art_complete'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#f59e0b',color:'white',border:'none'}} onClick={()=>moveJobStatus(j,'staging')}>→ In Line</button>}
+                  {prodDashFilter==='staging'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#2563eb',color:'white',border:'none'}} onClick={()=>moveJobStatus(j,'in_process')}>→ In Process</button>}
+                  {prodDashFilter==='in_process'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#166534',color:'white',border:'none'}} onClick={()=>moveJobStatus(j,'completed')}>✓ Done</button>}
+                  {prodDashFilter==='completed'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#6d28d9',color:'white',border:'none'}} onClick={()=>moveJobStatus(j,'shipped')}>📦 Ship</button>}
+                  <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px'}} onClick={()=>{setESOTab('jobs');setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so?.customer_id));setPg('orders')}}>Open</button>
+                </div>
+              </div>
+            </div>})}
+          </div></div>})()}
 
       {/* Ready to Go — art complete + items received */}
       {readyForBoard.length>0&&<div className="card" style={{marginBottom:16}}>
@@ -8261,11 +8293,11 @@ export default function App(){
 
     // TEAM MANAGEMENT
   const rTeam=()=>{
-    const roles={admin:'Admin',rep:'Sales Rep',csr:'Customer Service',accounting:'Accounting',warehouse:'Warehouse',prod_manager:'Production Mgr',production:'Production',artist:'Artist'};
-    const roleBadge={admin:'badge-purple',rep:'badge-blue',csr:'badge-green',accounting:'badge-amber',warehouse:'badge-gray',prod_manager:'badge-amber',production:'badge-gray',artist:'badge-purple'};
+    const roles={admin:'Admin',rep:'Sales Rep',csr:'Customer Service',accounting:'Accounting',warehouse:'Warehouse',prod_manager:'Production Mgr',production:'Production',prod_assistant:'Prod Assistant',artist:'Artist'};
+    const roleBadge={admin:'badge-purple',rep:'badge-blue',csr:'badge-green',accounting:'badge-amber',warehouse:'badge-gray',prod_manager:'badge-amber',production:'badge-gray',prod_assistant:'badge-gray',artist:'badge-purple'};
     const isAdmin=cu.role==='admin';
     const initials=n=>{const p=(n||'').split(' ');return p.length>=2?(p[0][0]+p[p.length-1][0]).toUpperCase():(n||'??').slice(0,2).toUpperCase()};
-    const avatarColors={admin:'#7c3aed',rep:'#2563eb',csr:'#16a34a',accounting:'#d97706',warehouse:'#475569',prod_manager:'#b45309',production:'#0891b2'};
+    const avatarColors={admin:'#7c3aed',rep:'#2563eb',csr:'#16a34a',accounting:'#d97706',warehouse:'#475569',prod_manager:'#b45309',production:'#0891b2',prod_assistant:'#a16207'};
 
     // Default page access by role
     const ALL_PAGES=[
@@ -8299,6 +8331,7 @@ export default function App(){
       accounting:['dashboard','invoices','customers','reports','qb'],
       warehouse:['dashboard','orders','warehouse','batch_pos','inventory','production','decoration'],
       prod_manager:['dashboard','orders','jobs','art','production','decoration','warehouse','inventory','batch_pos'],
+      prod_assistant:['dashboard','orders','jobs','production','decoration','warehouse','inventory'],
       production:['dashboard','orders','jobs','art','production','decoration','warehouse','inventory'],
       artist:['dashboard','orders','art','jobs','production','decoration'],
     };
