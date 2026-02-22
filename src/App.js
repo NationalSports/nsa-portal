@@ -4353,6 +4353,11 @@ export default function App(){
   // PRODUCTION BOARD
   // Artist Dashboard state
   const[artFilter,setArtFilter]=useState('all');const[artSearch,setArtSearch]=useState('');
+  const[artDashView,setArtDashView]=useState('artist');// 'artist' | 'rep'
+  const[artRejectModal,setArtRejectModal]=useState(null);// {job, reason:''}
+  const[artEditModal,setArtEditModal]=useState(null);// {job, instructions:'', notes:''}
+  const[prodJobModal,setProdJobModal]=useState(null);// job object for production mockup view
+  const[prodJobLightbox,setProdJobLightbox]=useState(false);// lightbox for mockup image
   const[prodView,setProdView]=useState('board');const[prodFilter,setProdFilter]=useState('all');const[expandedJob,setExpandedJob]=useState(null);
   const[prodSort,setProdSort]=useState({f:'expected',d:'asc'});const[prodStatF,setProdStatF]=useState('active');const[prodDecoF,setProdDecoF]=useState('all');
   const[assignModal,setAssignModal]=useState(null);// {job, soId, targetStatus}
@@ -4530,6 +4535,7 @@ export default function App(){
 
                   {/* Open SO / Job links */}
                   <div style={{display:'flex',gap:8,marginBottom:6}}>
+                    <div style={{fontSize:10,color:'#d97706',cursor:'pointer',textDecoration:'underline',fontWeight:700}} onClick={e=>{e.stopPropagation();setProdJobModal({...j})}}>📋 Production Sheet</div>
                     <div style={{fontSize:10,color:'#7c3aed',cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={e=>{e.stopPropagation();
                       const jso=j.so;const jc=cust.find(c2=>c2.id===jso.customer_id);
                       const ji=safeJobs(jso).findIndex(jj=>jj.id===j.id);
@@ -4580,7 +4586,7 @@ export default function App(){
           </div>})}
       </div>}
       {prodView==='list'&&<div className="card"><div className="card-body" style={{padding:0}}>
-        <table><thead><tr><th>Job</th><th>Artwork</th><th>Customer</th><th>SO</th><th>Rep</th><th>Units</th><th>Art</th><th>Items</th><th>Production</th><th>Expected</th></tr></thead><tbody>
+        <table><thead><tr><th>Job</th><th>Artwork</th><th>Customer</th><th>SO</th><th>Rep</th><th>Units</th><th>Art</th><th>Items</th><th>Production</th><th>Expected</th><th></th></tr></thead><tbody>
         {byStatus.map(j=>{const pct=j.total_units>0?Math.round(j.fulfilled_units/j.total_units*100):0;
           return<tr key={j.id+j.soId} style={{cursor:'pointer'}} onClick={()=>{setESOTab('jobs');setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so.customer_id));setPg('orders')}}>
             <td style={{fontWeight:700,color:'#1e40af'}}>{j.id}</td>
@@ -4594,6 +4600,7 @@ export default function App(){
             <td style={{fontSize:11}}>{(j.items||[]).length}</td>
             <td><span style={{padding:'2px 6px',borderRadius:8,fontSize:9,fontWeight:600,background:SC[j.prod_status]?.bg||'#f1f5f9',color:SC[j.prod_status]?.c||'#64748b'}}>{j.prod_status?.replace(/_/g,' ')}</span></td>
             <td style={{fontSize:11,color:j.daysOut!=null&&j.daysOut<=7?'#dc2626':'#64748b'}}>{j.expected||'—'}</td>
+            <td><button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#d97706',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();setProdJobModal({...j})}}>📋</button></td>
           </tr>})}
         </tbody></table>
       </div></div>}
@@ -4650,6 +4657,237 @@ export default function App(){
           }}>✓ Assign & Move to In Line</button>
         </div>
       </div></div>}
+
+      {/* ═══ PRODUCTION MOCKUP VIEW — full job detail for decorators ═══ */}
+      {prodJobModal&&(()=>{
+        const j=prodJobModal;
+        const so=j.so||sos.find(s=>s.id===j.soId);
+        if(!so)return null;
+        const c=cust.find(x=>x.id===so.customer_id);
+        const af=safeArt(so).find(f=>f.id===j.art_file_id);
+        const machine=MACHINES.find(m=>m.id===j.assigned_machine);
+        const itemDetails=(j.items||[]).map(gi=>{
+          const it=safeItems(so)[gi.item_idx];if(!it)return null;
+          const sizes={};const fulSizes={};
+          Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{
+            sizes[sz]=v;
+            const picked=safePicks(it).filter(pk=>pk.status==='pulled'||pk.status==='pick').reduce((a,pk)=>a+safeNum(pk[sz]),0);
+            const rcvd=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
+            fulSizes[sz]=Math.min(v,picked+rcvd);
+          });
+          return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,fulSizes};
+        }).filter(Boolean);
+        const allSizes=SZ_ORD.filter(sz=>itemDetails.some(it=>it.sizes[sz]>0));
+        // Parse colors for display
+        const colorList=af?(af.ink_colors||af.thread_colors||'').split(/[,\n]/).map(c2=>c2.trim()).filter(Boolean):[];
+        const isEmb=af?.deco_type==='embroidery';
+        const isSP=af?.deco_type==='screen_print';
+        // Mockup files
+        const mockupFiles=(af?.mockup_files||af?.files||[]);
+        const prodFiles=(af?.prod_files||[]);
+
+        // Print Production PDF
+        const printProdPDF=()=>{
+          const infoBoxes=[
+            {label:'Customer',value:c?.name||j.customer||'Unknown',sub:c?.alpha_tag||''},
+            {label:'Sales Order',value:so.id,sub:so.memo||''},
+            {label:'Expected Date',value:so.expected_date||'TBD',sub:j.daysOut!=null?(j.daysOut<=0?'PAST DUE':j.daysOut+' days out'):''},
+            {label:'Rep',value:j.rep||REPS.find(r=>r.id===so.created_by)?.name||'—'},
+          ];
+          const decoInfo=[
+            {label:'Decoration',value:j.deco_type?.replace(/_/g,' ')||'—'},
+            {label:'Position(s)',value:j.positions||'—'},
+            {label:'Art Size',value:af?.art_size||'—'},
+            {label:isEmb?'Thread Colors':'Ink Colors',value:colorList.join(', ')||'—'},
+          ];
+          if(machine)decoInfo.push({label:'Machine',value:machine.name});
+          if(j.assigned_to)decoInfo.push({label:'Assigned To',value:j.assigned_to});
+
+          const sizeHeaders=['','...sizes...','Total'];
+          const tables=[];
+          // Decoration details table
+          tables.push({title:'Decoration Details',headers:['Property','Value'],aligns:['left','left'],
+            rows:decoInfo.map(d=>({cells:[d.label,{value:'<strong>'+d.value+'</strong>'}]}))});
+          // Color table with swatches
+          if(colorList.length>0){
+            tables.push({title:(isEmb?'Thread':'Ink')+' Colors — '+colorList.length+' color(s)',
+              headers:['#','Color / Pantone'],aligns:['center','left'],
+              rows:colorList.map((cl,i)=>({cells:[(i+1)+'',cl]}))});
+          }
+          // Size/SKU tables per item
+          itemDetails.forEach(gi=>{
+            const hdrs=['',  ...allSizes,'Total'];
+            const ordRow={cells:['Ordered']};allSizes.forEach(sz=>{ordRow.cells.push(gi.sizes[sz]||'')});
+            ordRow.cells.push({value:'<strong>'+Object.values(gi.sizes).reduce((a,v)=>a+v,0)+'</strong>'});
+            const rows=[ordRow];
+            tables.push({title:gi.sku+' — '+gi.name+' ('+gi.color+')',className:'sz-table',
+              headers:hdrs,aligns:hdrs.map((_,i)=>i===0?'left':'center'),rows});
+          });
+          // Production files list
+          if(prodFiles.length>0||mockupFiles.length>0){
+            const fileRows=[];
+            prodFiles.forEach(f=>fileRows.push({cells:['Production',f]}));
+            mockupFiles.forEach(f=>fileRows.push({cells:['Mockup',f]}));
+            tables.push({title:'Production Files',headers:['Type','Filename'],aligns:['left','left'],rows:fileRows});
+          }
+          printDoc({title:j.customer||'Job',docNum:j.id,docType:'Production Job Sheet',
+            headerRight:'<div style="font-size:16px;font-weight:800;color:#1e3a5f">'+j.total_units+' UNITS</div><div style="font-size:10px;color:#666">'+j.deco_type?.replace(/_/g,' ')+'</div>',
+            infoBoxes,tables,
+            notes:j.notes||(so.production_notes?'SO Notes: '+so.production_notes:null),
+            showPricing:false});
+        };
+
+        return<div className="modal-overlay" onClick={()=>{setProdJobModal(null);setProdJobLightbox(false)}}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:860,maxHeight:'92vh',overflow:'auto'}}>
+          <div className="modal-header" style={{background:'#1e293b',color:'white'}}>
+            <div>
+              <h2 style={{color:'white',margin:0}}>{j.id} — {j.art_name}</h2>
+              <div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>{j.customer} · {so.id} · {j.total_units} units</div>
+            </div>
+            <div style={{display:'flex',gap:6,alignItems:'center'}}>
+              <button className="btn btn-sm" style={{fontSize:11,background:'#d97706',color:'white',border:'none',padding:'5px 12px'}} onClick={printProdPDF}>Print PDF</button>
+              <button className="modal-close" style={{color:'white'}} onClick={()=>{setProdJobModal(null);setProdJobLightbox(false)}}>×</button>
+            </div>
+          </div>
+          <div className="modal-body" style={{padding:0}}>
+            {/* Top section: Mockup + Decoration Details side by side */}
+            <div style={{display:'flex',gap:0,borderBottom:'1px solid #e2e8f0'}}>
+              {/* Mockup Image */}
+              <div style={{flex:'0 0 280px',padding:20,background:'#f8fafc',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',borderRight:'1px solid #e2e8f0',cursor:'pointer'}}
+                onClick={()=>setProdJobLightbox(!prodJobLightbox)}>
+                <div style={{width:240,height:240,borderRadius:10,background:'white',border:'2px dashed #d1d5db',display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column',overflow:'hidden'}}>
+                  {mockupFiles.length>0?<>
+                    <div style={{fontSize:48,marginBottom:4}}>🖼️</div>
+                    <div style={{fontSize:11,fontWeight:700,color:'#1e40af'}}>{mockupFiles[0]}</div>
+                    <div style={{fontSize:9,color:'#64748b',marginTop:2}}>Click to enlarge</div>
+                  </>:<>
+                    <div style={{fontSize:48,marginBottom:4}}>🎨</div>
+                    <div style={{fontSize:11,color:'#94a3b8'}}>No mockup uploaded</div>
+                  </>}
+                </div>
+                {mockupFiles.length>1&&<div style={{fontSize:10,color:'#64748b',marginTop:6}}>+{mockupFiles.length-1} more file{mockupFiles.length>2?'s':''}</div>}
+              </div>
+
+              {/* Decoration Details */}
+              <div style={{flex:1,padding:20}}>
+                <div style={{fontSize:14,fontWeight:800,color:'#1e3a5f',marginBottom:12}}>Decoration Details</div>
+                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+                  <div><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:2}}>Method</div>
+                    <div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{j.deco_type?.replace(/_/g,' ')||'—'}</div></div>
+                  <div><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:2}}>Position(s)</div>
+                    <div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{j.positions||'—'}</div></div>
+                  <div><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:2}}>Art Size</div>
+                    <div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{af?.art_size||'—'}</div></div>
+                  <div><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:2}}>Total Units</div>
+                    <div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{j.total_units}</div></div>
+                  {machine&&<div><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:2}}>Machine</div>
+                    <div style={{fontSize:14,fontWeight:700,color:'#92400e'}}>{machine.name}</div></div>}
+                  {j.assigned_to&&<div><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:2}}>Assigned To</div>
+                    <div style={{fontSize:14,fontWeight:700,color:'#6d28d9'}}>{j.assigned_to}</div></div>}
+                </div>
+
+                {/* Colors / Pantones */}
+                {colorList.length>0&&<div style={{marginTop:14}}>
+                  <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6}}>{isEmb?'Thread Colors':'Ink Colors / Pantones'} ({colorList.length})</div>
+                  <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                    {colorList.map((cl,i)=>{
+                      // Try to render color swatches for known Pantone names
+                      const colorMap={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000',
+                        'Silver':'#C0C0C0','Royal':'#4169e1','Cardinal':'#8C1515','Green':'#166534','Orange':'#EA580C',
+                        'Navy 2767':'#001f3f','PMS 286':'#0033A0','PMS 032':'#EF3340','PMS 877':'#C0C0C0'};
+                      const clLower=cl.toLowerCase();
+                      const swatchColor=colorMap[cl]||Object.entries(colorMap).find(([k])=>clLower.includes(k.toLowerCase()))?.[1]||null;
+                      return<div key={i} style={{display:'flex',alignItems:'center',gap:6,padding:'4px 10px',background:'white',border:'1px solid #e2e8f0',borderRadius:6}}>
+                        <div style={{width:16,height:16,borderRadius:3,border:'1px solid #d1d5db',background:swatchColor||'linear-gradient(135deg,#f1f5f9,#e2e8f0)'}}/>
+                        <span style={{fontSize:12,fontWeight:600}}>{cl}</span>
+                      </div>})}
+                  </div>
+                </div>}
+              </div>
+            </div>
+
+            {/* SKUs & Quantities */}
+            <div style={{padding:20,borderBottom:'1px solid #e2e8f0'}}>
+              <div style={{fontSize:14,fontWeight:800,color:'#1e3a5f',marginBottom:10}}>SKUs & Quantities</div>
+              {itemDetails.map((gi,gii)=>{
+                const rowTotal=Object.values(gi.sizes).reduce((a,v)=>a+v,0);
+                return<div key={gii} style={{marginBottom:gii<itemDetails.length-1?12:0}}>
+                  <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
+                    <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:12}}>{gi.sku}</span>
+                    <span style={{fontWeight:600,fontSize:13}}>{gi.name}</span>
+                    <span style={{color:'#64748b',fontSize:12}}>({gi.color})</span>
+                    {gi.brand&&<span className="badge badge-gray">{gi.brand}</span>}
+                    <span style={{marginLeft:'auto',fontWeight:800,fontSize:13,color:'#1e40af'}}>{rowTotal} units</span>
+                  </div>
+                  <div style={{overflowX:'auto'}}>
+                    <table style={{fontSize:12,minWidth:300}}><thead><tr style={{background:'#f0f2f5'}}>
+                      <th style={{textAlign:'left',padding:'6px 8px',fontSize:10,fontWeight:700,color:'#555'}}>SIZE</th>
+                      {allSizes.map(sz=><th key={sz} style={{textAlign:'center',padding:'6px 8px',fontSize:10,fontWeight:700,minWidth:40}}>{sz}</th>)}
+                      <th style={{textAlign:'center',padding:'6px 8px',fontSize:10,fontWeight:800}}>TOTAL</th>
+                    </tr></thead><tbody>
+                      <tr>{['QTY',...allSizes.map(sz=>gi.sizes[sz]||'—'),rowTotal].map((v,i)=>
+                        <td key={i} style={{textAlign:i===0?'left':'center',padding:'6px 8px',fontWeight:typeof v==='number'?800:i===0?700:400,
+                          color:typeof v==='number'?'#1e40af':i===0?'#475569':'#cbd5e1',
+                          background:typeof v==='number'&&i>0?'#eef2ff':i===allSizes.length+1?'#f0f2f5':''}}>{v}</td>)}
+                      </tr>
+                    </tbody></table>
+                  </div>
+                </div>})}
+            </div>
+
+            {/* Production Files */}
+            <div style={{padding:20,borderBottom:'1px solid #e2e8f0'}}>
+              <div style={{fontSize:14,fontWeight:800,color:'#1e3a5f',marginBottom:10}}>Production Files</div>
+              {prodFiles.length===0&&mockupFiles.length===0?<div style={{color:'#94a3b8',fontSize:12}}>No files attached</div>
+              :<div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                {prodFiles.map((f,i)=><div key={'p'+i} style={{display:'flex',alignItems:'center',gap:6,padding:'8px 14px',background:'#fef3c7',border:'1px solid #fde68a',borderRadius:8,cursor:'pointer'}}
+                  onClick={()=>nf('Would download: '+f)} title={'Production: '+f}>
+                  <span style={{fontSize:16}}>📁</span>
+                  <div><div style={{fontSize:12,fontWeight:700,color:'#92400e'}}>{f}</div><div style={{fontSize:9,color:'#b45309'}}>Production File</div></div>
+                </div>)}
+                {mockupFiles.map((f,i)=><div key={'m'+i} style={{display:'flex',alignItems:'center',gap:6,padding:'8px 14px',background:'#dbeafe',border:'1px solid #93c5fd',borderRadius:8,cursor:'pointer'}}
+                  onClick={()=>nf('Would download: '+f)} title={'Mockup: '+f}>
+                  <span style={{fontSize:16}}>🖼️</span>
+                  <div><div style={{fontSize:12,fontWeight:700,color:'#1e40af'}}>{f}</div><div style={{fontSize:9,color:'#3b82f6'}}>Mockup File</div></div>
+                </div>)}
+              </div>}
+            </div>
+
+            {/* Notes */}
+            {(j.notes||so.production_notes)&&<div style={{padding:20,background:'#fffbe6'}}>
+              <div style={{fontSize:14,fontWeight:800,color:'#92400e',marginBottom:6}}>Notes</div>
+              {j.notes&&<div style={{fontSize:12,marginBottom:4}}>{j.notes}</div>}
+              {so.production_notes&&<div style={{fontSize:12,color:'#64748b'}}>SO Notes: {so.production_notes}</div>}
+            </div>}
+
+            {/* Bottom action bar */}
+            <div style={{padding:16,display:'flex',gap:8,borderTop:'1px solid #e2e8f0',background:'#f8fafc'}}>
+              <button className="btn btn-primary" style={{background:'#d97706',borderColor:'#d97706'}} onClick={printProdPDF}>Print Production PDF</button>
+              <button className="btn btn-secondary" onClick={()=>{setESOTab('jobs');setESO(so);setESOC(c);setPg('orders');setProdJobModal(null)}}>Open Full Job</button>
+              <button className="btn btn-secondary" style={{marginLeft:'auto'}} onClick={()=>{setProdJobModal(null);setProdJobLightbox(false)}}>Close</button>
+            </div>
+          </div>
+        </div></div>
+      })()}
+
+      {/* Lightbox — full-size mockup image */}
+      {prodJobLightbox&&prodJobModal&&(()=>{
+        const so=prodJobModal.so||sos.find(s=>s.id===prodJobModal.soId);
+        const af=so?safeArt(so).find(f=>f.id===prodJobModal.art_file_id):null;
+        const mockupFiles2=(af?.mockup_files||af?.files||[]);
+        return<div style={{position:'fixed',top:0,left:0,right:0,bottom:0,background:'rgba(0,0,0,0.85)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer'}}
+          onClick={()=>setProdJobLightbox(false)}>
+          <div style={{maxWidth:'80vw',maxHeight:'80vh',background:'white',borderRadius:12,padding:24,textAlign:'center'}} onClick={e=>e.stopPropagation()}>
+            <div style={{fontSize:120,marginBottom:12}}>🖼️</div>
+            <div style={{fontSize:18,fontWeight:800,color:'#1e40af',marginBottom:4}}>{prodJobModal.art_name}</div>
+            <div style={{fontSize:13,color:'#64748b',marginBottom:8}}>{prodJobModal.deco_type?.replace(/_/g,' ')} · {prodJobModal.positions}</div>
+            {mockupFiles2.length>0&&<div style={{display:'flex',gap:6,justifyContent:'center',flexWrap:'wrap'}}>
+              {mockupFiles2.map((f,i)=><div key={i} style={{padding:'8px 16px',background:'#eff6ff',borderRadius:6,cursor:'pointer',fontSize:12,fontWeight:600,color:'#1e40af'}}
+                onClick={()=>nf('Would open: '+f)}>{f}</div>)}
+            </div>}
+            <button className="btn btn-secondary" style={{marginTop:16}} onClick={()=>setProdJobLightbox(false)}>Close</button>
+          </div>
+        </div>
+      })()}
     </>);
   };
   const rBatchPOs=()=>{
@@ -6504,28 +6742,26 @@ export default function App(){
   };
 
   // ═══════════════════════════════════════════════
-  // ARTIST DASHBOARD
+  // ARTIST DASHBOARD — dual-view (Artist workboard + Rep tracker)
   // ═══════════════════════════════════════════════
   const rArtist=()=>{
-    // Gather all jobs across all SOs that have art work
+    // Gather ALL art jobs across SOs — includes every status for rep view
     const allArtJobs=[];
     sos.forEach(so=>{const c=cust.find(x=>x.id===so.customer_id);
       buildJobs(so).forEach(j=>{
-        // Include jobs that need art attention (not needs_art unless requested, and not shipped)
-        if(j.art_status==='needs_art'||j.art_status==='art_complete')return;// skip — needs_art hasn't been requested; art_complete is done
+        if(j.art_status==='needs_art'&&!j.assigned_artist&&!(j.art_requests||[]).length)return;// skip truly untouched
         allArtJobs.push({...j,so,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',alpha:c?.alpha_tag||'',
           rep:REPS.find(r=>r.id===so.created_by)?.name||'—',repId:so.created_by,
           expected:so.expected_date,daysOut:so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null,
           artFile:safeArt(so).find(f=>f.id===j.art_file_id)});
       });
     });
-    // Also include art_complete jobs that still lack prod files (for the "Upload Prod Files" column)
+    // Also include art_complete jobs lacking prod files
     sos.forEach(so=>{const c=cust.find(x=>x.id===so.customer_id);
       buildJobs(so).forEach(j=>{
         if(j.art_status!=='art_complete')return;
         const af=safeArt(so).find(f=>f.id===j.art_file_id);
         if(af&&(af.prod_files||[]).length===0){
-          // This job is "art_complete" but artist still needs to upload prod files — treat as production_files_needed
           allArtJobs.push({...j,art_status:'production_files_needed',_overrideStatus:true,so,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',alpha:c?.alpha_tag||'',
             rep:REPS.find(r=>r.id===so.created_by)?.name||'—',repId:so.created_by,
             expected:so.expected_date,daysOut:so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null,
@@ -6534,8 +6770,7 @@ export default function App(){
       });
     });
 
-    const artistMembers=REPS.filter(r=>(r.role==='artist'||r.role==='production')&&r.is_active!==false);
-    // artFilter/artSearch state is declared at App top level
+    const artistMembers=REPS.filter(r=>(r.role==='art'||r.role==='artist'||r.role==='production')&&r.is_active!==false);
 
     const filtered=allArtJobs.filter(j=>{
       if(artFilter!=='all'&&j.assigned_artist!==artFilter)return false;
@@ -6545,17 +6780,10 @@ export default function App(){
       return true;
     });
 
-    const cols=[
-      {id:'art_requested',label:'Art Requested',color:'#be185d',bg:'#fce7f3',desc:'Rep requested art — needs artist attention'},
-      {id:'art_in_progress',label:'In Progress',color:'#1e40af',bg:'#dbeafe',desc:'Artist is working on it'},
-      {id:'waiting_approval',label:'Pending Approval',color:'#92400e',bg:'#fef3c7',desc:'Proof uploaded — waiting for rep/customer approval'},
-      {id:'production_files_needed',label:'Upload Prod Files',color:'#854d0e',bg:'#fef9c3',desc:'Art approved — upload final production files'},
-    ];
-
+    // ─── Shared helpers ───
     const moveArtStatus=(j,newStatus)=>{
       const so=sos.find(s=>s.id===j.soId);if(!so)return;
       if(newStatus==='art_complete'){
-        // Only allow art_complete if prod files exist
         const af=safeArt(so).find(f=>f.id===j.art_file_id);
         if(af&&(af.prod_files||[]).length===0){nf('Upload production files first','error');return}
       }
@@ -6563,114 +6791,273 @@ export default function App(){
       savSO({...so,jobs:updatedJobs});
       nf('Art status → '+ART_LABELS[newStatus]);
     };
-
     const assignArtist=(j,artistId)=>{
       const so=sos.find(s=>s.id===j.soId);if(!so)return;
       const updatedJobs=safeJobs(so).map(jj=>jj.id===j.id?{...jj,assigned_artist:artistId}:jj);
       savSO({...so,jobs:updatedJobs});
-      const artist=REPS.find(r=>r.id===artistId);
-      nf('Assigned to '+(artist?.name||'Unassigned'));
+      nf('Assigned to '+(REPS.find(r=>r.id===artistId)?.name||'Unassigned'));
+    };
+    const rejectArt=(j,reason)=>{
+      const so=sos.find(s=>s.id===j.soId);if(!so)return;
+      const rejection={by:cu.name,at:new Date().toISOString(),reason};
+      const updatedJobs=safeJobs(so).map(jj=>jj.id===j.id?{...jj,art_status:'art_in_progress',rejections:[...(jj.rejections||[]),rejection]}:jj);
+      savSO({...so,jobs:updatedJobs});
+      nf('Art rejected — sent back to artist');
+    };
+    const updateArtRequest=(j,updates)=>{
+      const so=sos.find(s=>s.id===j.soId);if(!so)return;
+      const updatedJobs=safeJobs(so).map(jj=>jj.id===j.id?{...jj,...updates}:jj);
+      savSO({...so,jobs:updatedJobs});
+      nf('Art request updated');
     };
 
-    const counts={};cols.forEach(c=>{counts[c.id]=filtered.filter(j=>j.art_status===c.id).length});
+    // ─── Artist-only jobs (active, not complete) ───
+    const artistJobs=filtered.filter(j=>j.art_status!=='art_complete'&&j.art_status!=='needs_art');
+    const artistCols=[
+      {id:'art_requested',label:'Pending',color:'#be185d',bg:'#fce7f3',desc:'Needs artist attention'},
+      {id:'art_in_progress',label:'In Progress',color:'#1e40af',bg:'#dbeafe',desc:'Artist working on it'},
+      {id:'waiting_approval',label:'Sent to Rep',color:'#92400e',bg:'#fef3c7',desc:'Waiting for rep/customer approval'},
+      {id:'production_files_needed',label:'Prod Files',color:'#854d0e',bg:'#fef9c3',desc:'Upload final production files'},
+    ];
+    const artistCounts={};artistCols.forEach(c=>{artistCounts[c.id]=artistJobs.filter(j=>j.art_status===c.id).length});
+
+    // ─── Rep view data — all jobs grouped by rep ───
+    const repJobs=filtered.filter(j=>artDashView==='rep'?(cu.role==='admin'||j.repId===cu.id||artFilter!=='all'):true);
+
+    // Card renderer shared between both views
+    const renderArtCard=(j,view,col)=>{
+      const urgent=j.daysOut!=null&&j.daysOut<=3;
+      const artist=REPS.find(r=>r.id===j.assigned_artist);
+      const af=j.artFile;
+      return<div key={j.id+j.soId+view} className="card" style={{marginBottom:6,border:urgent?'2px solid #dc2626':'1px solid #e2e8f0',borderRadius:8,overflow:'hidden'}}>
+        <div style={{padding:'8px 10px'}}>
+          <div style={{display:'flex',alignItems:'center',gap:4,marginBottom:4}}>
+            <span style={{fontSize:12,fontWeight:800,color:'#0f172a',flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{j.customer}</span>
+            {urgent&&<span style={{fontSize:9,fontWeight:800,color:'#dc2626',background:'#fef2f2',padding:'1px 5px',borderRadius:3}}>🔥 {j.daysOut}d</span>}
+            {j.daysOut!=null&&!urgent&&j.daysOut<=14&&<span style={{fontSize:9,color:'#92400e'}}>{j.daysOut}d</span>}
+          </div>
+          <div style={{fontSize:11,fontWeight:600,color:'#475569',marginBottom:2}}>{j.art_name}</div>
+          <div style={{fontSize:10,color:'#64748b',marginBottom:4}}>{j.deco_type?.replace(/_/g,' ')} · {j.soId} · {j.total_units}u</div>
+          {af&&<div style={{marginBottom:4}}>
+            {(af.mockup_files||af.files||[]).length>0&&<div style={{fontSize:9,color:'#2563eb'}}>{(af.mockup_files||af.files||[]).length} mockup file{(af.mockup_files||af.files||[]).length!==1?'s':''}</div>}
+            {(af.prod_files||[]).length>0&&<div style={{fontSize:9,color:'#d97706'}}>{af.prod_files.length} prod file{af.prod_files.length!==1?'s':''}</div>}
+            {af.ink_colors&&<div style={{fontSize:9,color:'#64748b'}}>{af.ink_colors.split('\n').filter(l=>l.trim()).length} color(s): {af.ink_colors.split('\n').filter(l=>l.trim()).slice(0,3).join(', ')}</div>}
+          </div>}
+          {/* Rejections history */}
+          {(j.rejections||[]).length>0&&<div style={{marginBottom:4,padding:'3px 6px',background:'#fef2f2',borderRadius:4,border:'1px solid #fecaca'}}>
+            <div style={{fontSize:9,fontWeight:700,color:'#dc2626'}}>Rejected {j.rejections.length}x</div>
+            <div style={{fontSize:9,color:'#7f1d1d'}}>{j.rejections[j.rejections.length-1].reason}</div>
+            <div style={{fontSize:8,color:'#94a3b8'}}>by {j.rejections[j.rejections.length-1].by} · {new Date(j.rejections[j.rejections.length-1].at).toLocaleDateString()}</div>
+          </div>}
+          {/* Art request notes if any */}
+          {(j.art_requests||[]).length>0&&<div style={{marginBottom:4,padding:'3px 6px',background:'#f8fafc',borderRadius:4,fontSize:9,color:'#475569'}}>
+            📝 {j.art_requests[j.art_requests.length-1].instructions?.slice(0,80)}{j.art_requests[j.art_requests.length-1].instructions?.length>80?'...':''}
+          </div>}
+
+          {/* ─── ARTIST VIEW: artist-facing actions ─── */}
+          {view==='artist'&&<>
+            <div style={{display:'flex',gap:4,alignItems:'center',marginBottom:4}}>
+              <select style={{fontSize:10,padding:'2px 4px',border:'1px solid #e2e8f0',borderRadius:4,flex:1}} value={j.assigned_artist||''} onChange={e=>assignArtist(j,e.target.value)}>
+                <option value="">Assign artist...</option>
+                {artistMembers.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
+              </select>
+              {artist&&<span style={{fontSize:9,fontWeight:700,color:'#7c3aed'}}>🎨 {artist.name.split(' ')[0]}</span>}
+            </div>
+            <div style={{fontSize:9,color:'#94a3b8'}}>{j.rep} · {j.alpha||j.soMemo}</div>
+            <div style={{display:'flex',gap:3,marginTop:6,flexWrap:'wrap'}}>
+              {col?.id==='art_requested'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#1e40af',color:'white',border:'none'}} onClick={()=>moveArtStatus(j,'art_in_progress')}>Start Working</button>}
+              {col?.id==='art_in_progress'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#92400e',color:'white',border:'none'}} onClick={()=>moveArtStatus(j,'waiting_approval')}>Send to Rep</button>}
+              {col?.id==='waiting_approval'&&<span style={{fontSize:9,color:'#92400e',fontWeight:600}}>Awaiting rep review...</span>}
+              {col?.id==='production_files_needed'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#166534',color:'white',border:'none'}} onClick={()=>{
+                const so=sos.find(s=>s.id===j.soId);if(!so){nf('SO not found','error');return}
+                const afIdx=safeArt(so).findIndex(f=>f.id===j.art_file_id);
+                if(afIdx>=0&&(safeArt(so)[afIdx].prod_files||[]).length===0){
+                  const ext=j.deco_type==='embroidery'?'.dst':j.deco_type==='screen_print'?'_seps.ai':'.pdf';
+                  const fn=(j.art_name||'art').replace(/\s+/g,'_')+'_FINAL'+ext;
+                  const updArt=[...safeArt(so)];updArt[afIdx]={...updArt[afIdx],prod_files:[...(updArt[afIdx].prod_files||[]),fn]};
+                  savSO({...so,art_files:updArt,jobs:safeJobs(so).map(jj=>jj.id===j.id?{...jj,art_status:'art_complete'}:jj)});
+                  nf('Prod files uploaded — Art Complete!');
+                }else{moveArtStatus(j,'art_complete')}
+              }}>Upload & Complete</button>}
+              <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px',marginLeft:'auto'}} onClick={()=>{setESOTab('jobs');setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so?.customer_id));setPg('orders')}}>Open SO</button>
+            </div>
+          </>}
+
+          {/* ─── REP VIEW: rep-facing actions (reject + edit) ─── */}
+          {view==='rep'&&<>
+            <div style={{display:'flex',alignItems:'center',gap:4,marginBottom:4}}>
+              {artist&&<span style={{fontSize:10,padding:'1px 6px',borderRadius:4,background:'#ede9fe',color:'#6d28d9',fontWeight:600}}>🎨 {artist.name}</span>}
+              <span style={{fontSize:9,padding:'1px 5px',borderRadius:4,background:SC[j.art_status]?.bg,color:SC[j.art_status]?.c,fontWeight:600}}>{ART_LABELS[j.art_status]||j.art_status}</span>
+              <span style={{fontSize:9,color:'#94a3b8',marginLeft:'auto'}}>{j.rep}</span>
+            </div>
+            <div style={{display:'flex',gap:3,marginTop:6,flexWrap:'wrap'}}>
+              {/* Approve (only when waiting_approval) */}
+              {j.art_status==='waiting_approval'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#166534',color:'white',border:'none'}} onClick={()=>moveArtStatus(j,'production_files_needed')}>Approve</button>}
+              {/* Reject with required text */}
+              {j.art_status==='waiting_approval'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#dc2626',color:'white',border:'none'}} onClick={()=>setArtRejectModal({job:j,reason:''})}>Reject</button>}
+              {/* Edit request (only when art is not complete — coaches change minds) */}
+              {j.art_status!=='art_complete'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#2563eb',color:'white',border:'none'}} onClick={()=>setArtEditModal({job:j,instructions:(j.art_requests||[]).length>0?j.art_requests[j.art_requests.length-1].instructions||'':'',notes:j.rep_notes||''})}>Edit Request</button>}
+              <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px',marginLeft:'auto'}} onClick={()=>{setESOTab('jobs');setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so?.customer_id));setPg('orders')}}>Open SO</button>
+            </div>
+          </>}
+        </div>
+      </div>};
 
     return(<>
-      <div className="stats-row">
-        {cols.map(c=><div key={c.id} className="stat-card"><div className="stat-label">{c.label}</div><div className="stat-value" style={{color:c.color}}>{counts[c.id]}</div></div>)}
-        <div className="stat-card"><div className="stat-label">Total Active</div><div className="stat-value">{filtered.length}</div></div>
+      {/* View toggle: Artist / Rep */}
+      <div style={{display:'flex',gap:4,marginBottom:14,background:'#f8fafc',padding:6,borderRadius:8,border:'1px solid #e2e8f0'}}>
+        <button className={`btn btn-sm ${artDashView==='artist'?'btn-primary':'btn-secondary'}`}
+          style={{fontSize:12,padding:'6px 16px',background:artDashView==='artist'?'#7c3aed':'',borderColor:artDashView==='artist'?'#7c3aed':''}}
+          onClick={()=>setArtDashView('artist')}>🎨 Artist Workboard</button>
+        <button className={`btn btn-sm ${artDashView==='rep'?'btn-primary':'btn-secondary'}`}
+          style={{fontSize:12,padding:'6px 16px',background:artDashView==='rep'?'#1e40af':'',borderColor:artDashView==='rep'?'#1e40af':''}}
+          onClick={()=>setArtDashView('rep')}>💼 Rep Art Tracker</button>
       </div>
 
-      {/* Filters */}
+      {/* Filters (shared) */}
       <div style={{display:'flex',gap:8,marginBottom:12,flexWrap:'wrap',alignItems:'center'}}>
-        <select className="form-select" style={{width:160,fontSize:12}} value={artFilter} onChange={e=>setArtFilter(e.target.value)}>
-          <option value="all">All Artists</option>
-          <option value="">Unassigned</option>
+        {artDashView==='artist'&&<select className="form-select" style={{width:160,fontSize:12}} value={artFilter} onChange={e=>setArtFilter(e.target.value)}>
+          <option value="all">All Artists</option><option value="">Unassigned</option>
           {artistMembers.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
-        </select>
+        </select>}
+        {artDashView==='rep'&&<select className="form-select" style={{width:160,fontSize:12}} value={artFilter} onChange={e=>setArtFilter(e.target.value)}>
+          <option value="all">All Reps</option>
+          {REPS.filter(r=>r.role==='rep'||r.role==='admin').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
+        </select>}
         <input className="form-input" style={{width:200,fontSize:12}} placeholder="Search customer, SO, art name..." value={artSearch} onChange={e=>setArtSearch(e.target.value)}/>
-        <span style={{fontSize:11,color:'#64748b',marginLeft:'auto'}}>{filtered.length} job{filtered.length!==1?'s':''}</span>
+        <span style={{fontSize:11,color:'#64748b',marginLeft:'auto'}}>{artDashView==='artist'?artistJobs.length:repJobs.length} job{(artDashView==='artist'?artistJobs.length:repJobs.length)!==1?'s':''}</span>
       </div>
 
-      {/* Kanban Board */}
-      <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:10,alignItems:'flex-start'}}>
-        {cols.map(col=>{
-          const colJobs=filtered.filter(j=>j.art_status===col.id).sort((a,b)=>{
-            if(a.daysOut!=null&&b.daysOut!=null)return a.daysOut-b.daysOut;
-            if(a.daysOut!=null)return -1;if(b.daysOut!=null)return 1;return 0;
-          });
-          return<div key={col.id} style={{background:col.bg,borderRadius:10,padding:8,minHeight:200}}>
-            <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:8,padding:'4px 6px'}}>
-              <div style={{width:10,height:10,borderRadius:5,background:col.color}}/>
-              <span style={{fontSize:12,fontWeight:800,color:col.color}}>{col.label}</span>
-              <span style={{marginLeft:'auto',fontSize:11,fontWeight:700,color:col.color,background:'white',borderRadius:10,padding:'1px 8px'}}>{colJobs.length}</span>
+      {/* ═══ ARTIST WORKBOARD ═══ */}
+      {artDashView==='artist'&&<>
+        <div className="stats-row">
+          {artistCols.map(c=><div key={c.id} className="stat-card"><div className="stat-label">{c.label}</div><div className="stat-value" style={{color:c.color}}>{artistCounts[c.id]}</div></div>)}
+          <div className="stat-card"><div className="stat-label">Active</div><div className="stat-value">{artistJobs.length}</div></div>
+        </div>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:10,alignItems:'flex-start'}}>
+          {artistCols.map(col=>{
+            const colJobs=artistJobs.filter(j=>j.art_status===col.id).sort((a,b)=>{
+              if(a.daysOut!=null&&b.daysOut!=null)return a.daysOut-b.daysOut;
+              if(a.daysOut!=null)return -1;if(b.daysOut!=null)return 1;return 0});
+            return<div key={col.id} style={{background:col.bg,borderRadius:10,padding:8,minHeight:200}}>
+              <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:8,padding:'4px 6px'}}>
+                <div style={{width:10,height:10,borderRadius:5,background:col.color}}/>
+                <span style={{fontSize:12,fontWeight:800,color:col.color}}>{col.label}</span>
+                <span style={{marginLeft:'auto',fontSize:11,fontWeight:700,color:col.color,background:'white',borderRadius:10,padding:'1px 8px'}}>{colJobs.length}</span>
+              </div>
+              {colJobs.length===0&&<div style={{textAlign:'center',padding:20,color:'#94a3b8',fontSize:11}}>No jobs</div>}
+              {colJobs.map(j=>renderArtCard(j,'artist',col))}
+            </div>})}
+        </div>
+      </>}
+
+      {/* ═══ REP ART TRACKER ═══ */}
+      {artDashView==='rep'&&(()=>{
+        const repFiltered=artDashView==='rep'&&artFilter!=='all'?repJobs.filter(j=>j.repId===artFilter):repJobs;
+        const waiting=repFiltered.filter(j=>j.art_status==='waiting_approval');
+        const inProg=repFiltered.filter(j=>j.art_status==='art_requested'||j.art_status==='art_in_progress');
+        const prodFiles=repFiltered.filter(j=>j.art_status==='production_files_needed');
+        const done=repFiltered.filter(j=>j.art_status==='art_complete');
+        const needsArt=repFiltered.filter(j=>j.art_status==='needs_art');
+        return<>
+          <div className="stats-row">
+            <div className="stat-card" style={{borderLeft:'3px solid #f59e0b'}}><div className="stat-label">Needs Your Approval</div><div className="stat-value" style={{color:'#d97706'}}>{waiting.length}</div></div>
+            <div className="stat-card" style={{borderLeft:'3px solid #2563eb'}}><div className="stat-label">In Progress</div><div className="stat-value" style={{color:'#2563eb'}}>{inProg.length}</div></div>
+            <div className="stat-card" style={{borderLeft:'3px solid #854d0e'}}><div className="stat-label">Prod Files</div><div className="stat-value" style={{color:'#854d0e'}}>{prodFiles.length}</div></div>
+            <div className="stat-card" style={{borderLeft:'3px solid #166534'}}><div className="stat-label">Complete</div><div className="stat-value" style={{color:'#166534'}}>{done.length}</div></div>
+          </div>
+
+          {/* Needs Approval — highlight section */}
+          {waiting.length>0&&<div style={{marginBottom:16}}>
+            <div style={{fontSize:14,fontWeight:800,color:'#d97706',marginBottom:8,display:'flex',alignItems:'center',gap:6}}>
+              <span style={{width:10,height:10,borderRadius:5,background:'#f59e0b'}}/>Needs Your Approval ({waiting.length})</div>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))',gap:8}}>
+              {waiting.map(j=>renderArtCard(j,'rep',null))}
             </div>
+          </div>}
 
-            {colJobs.length===0&&<div style={{textAlign:'center',padding:20,color:'#94a3b8',fontSize:11}}>No jobs</div>}
+          {/* In Progress — what artists are working on */}
+          {inProg.length>0&&<div style={{marginBottom:16}}>
+            <div style={{fontSize:14,fontWeight:800,color:'#2563eb',marginBottom:8,display:'flex',alignItems:'center',gap:6}}>
+              <span style={{width:10,height:10,borderRadius:5,background:'#2563eb'}}/>In Progress ({inProg.length})</div>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))',gap:8}}>
+              {inProg.map(j=>renderArtCard(j,'rep',null))}
+            </div>
+          </div>}
 
-            {colJobs.map(j=>{
-              const urgent=j.daysOut!=null&&j.daysOut<=3;
-              const artist=REPS.find(r=>r.id===j.assigned_artist);
-              const af=j.artFile;
-              return<div key={j.id+j.soId} className="card" style={{marginBottom:6,border:urgent?'2px solid #dc2626':'1px solid #e2e8f0',borderRadius:8,overflow:'hidden'}}>
-                <div style={{padding:'8px 10px'}}>
-                  {/* Header: customer + due */}
-                  <div style={{display:'flex',alignItems:'center',gap:4,marginBottom:4}}>
-                    <span style={{fontSize:12,fontWeight:800,color:'#0f172a',flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{j.customer}</span>
-                    {urgent&&<span style={{fontSize:9,fontWeight:800,color:'#dc2626',background:'#fef2f2',padding:'1px 5px',borderRadius:3}}>🔥 {j.daysOut}d</span>}
-                    {j.daysOut!=null&&!urgent&&j.daysOut<=14&&<span style={{fontSize:9,color:'#92400e'}}>{j.daysOut}d</span>}
-                  </div>
-                  {/* Art name + deco type */}
-                  <div style={{fontSize:11,fontWeight:600,color:'#475569',marginBottom:2}}>{j.art_name}</div>
-                  <div style={{fontSize:10,color:'#64748b',marginBottom:4}}>{j.deco_type?.replace(/_/g,' ')} · {j.soId} · {j.total_units}u</div>
+          {/* Awaiting Prod Files */}
+          {prodFiles.length>0&&<div style={{marginBottom:16}}>
+            <div style={{fontSize:14,fontWeight:800,color:'#854d0e',marginBottom:8,display:'flex',alignItems:'center',gap:6}}>
+              <span style={{width:10,height:10,borderRadius:5,background:'#854d0e'}}/>Finalizing Prod Files ({prodFiles.length})</div>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))',gap:8}}>
+              {prodFiles.map(j=>renderArtCard(j,'rep',null))}
+            </div>
+          </div>}
 
-                  {/* Reference files */}
-                  {af&&<div style={{marginBottom:4}}>
-                    {(af.mockup_files||af.files||[]).length>0&&<div style={{fontSize:9,color:'#2563eb'}}>{(af.mockup_files||af.files||[]).length} mockup file{(af.mockup_files||af.files||[]).length!==1?'s':''}</div>}
-                    {(af.prod_files||[]).length>0&&<div style={{fontSize:9,color:'#d97706'}}>{af.prod_files.length} prod file{af.prod_files.length!==1?'s':''}</div>}
-                    {af.ink_colors&&<div style={{fontSize:9,color:'#64748b'}}>{af.ink_colors.split('\n').filter(l=>l.trim()).length} color(s): {af.ink_colors.split('\n').filter(l=>l.trim()).slice(0,3).join(', ')}</div>}
-                  </div>}
+          {/* Completed */}
+          {done.length>0&&<div style={{marginBottom:16}}>
+            <div style={{fontSize:14,fontWeight:800,color:'#166534',marginBottom:8,display:'flex',alignItems:'center',gap:6}}>
+              <span style={{width:10,height:10,borderRadius:5,background:'#166534'}}/>Completed ({done.length})</div>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))',gap:8}}>
+              {done.slice(0,8).map(j=>renderArtCard(j,'rep',null))}
+              {done.length>8&&<div style={{padding:12,textAlign:'center',color:'#94a3b8',fontSize:11}}>+{done.length-8} more completed</div>}
+            </div>
+          </div>}
 
-                  {/* Artist assignment */}
-                  <div style={{display:'flex',gap:4,alignItems:'center',marginBottom:4}}>
-                    <select style={{fontSize:10,padding:'2px 4px',border:'1px solid #e2e8f0',borderRadius:4,flex:1}} value={j.assigned_artist||''} onChange={e=>assignArtist(j,e.target.value)}>
-                      <option value="">Assign artist...</option>
-                      {artistMembers.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
-                    </select>
-                    {artist&&<span style={{fontSize:9,fontWeight:700,color:'#7c3aed'}}>🎨 {artist.name.split(' ')[0]}</span>}
-                  </div>
+          {/* Needs Art (not yet requested) */}
+          {needsArt.length>0&&<div style={{marginBottom:16}}>
+            <div style={{fontSize:14,fontWeight:800,color:'#dc2626',marginBottom:8,display:'flex',alignItems:'center',gap:6}}>
+              <span style={{width:10,height:10,borderRadius:5,background:'#dc2626'}}/>Needs Art ({needsArt.length})</div>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))',gap:8}}>
+              {needsArt.map(j=>renderArtCard(j,'rep',null))}
+            </div>
+          </div>}
+        </>})()}
 
-                  {/* Rep info */}
-                  <div style={{fontSize:9,color:'#94a3b8'}}>{j.rep} · {j.alpha||j.soMemo}</div>
+      {/* ═══ REJECT ART MODAL (requires text) ═══ */}
+      {artRejectModal&&<div className="modal-overlay" onClick={()=>setArtRejectModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:460}}>
+        <div className="modal-header" style={{background:'#fef2f2'}}><h2>Reject Art — {artRejectModal.job.art_name}</h2><button className="modal-close" onClick={()=>setArtRejectModal(null)}>×</button></div>
+        <div className="modal-body">
+          <div style={{marginBottom:12,padding:8,background:'#f8fafc',borderRadius:6,fontSize:12}}>
+            <strong>{artRejectModal.job.customer}</strong> · {artRejectModal.job.soId} · {artRejectModal.job.deco_type?.replace(/_/g,' ')}
+          </div>
+          <label className="form-label">Reason for rejection *</label>
+          <textarea className="form-input" rows={4} placeholder="Tell the artist what needs to change — colors, sizing, placement, coach changed mind, etc." value={artRejectModal.reason} onChange={e=>setArtRejectModal(m=>({...m,reason:e.target.value}))} style={{resize:'vertical'}}/>
+          <div style={{fontSize:10,color:'#94a3b8',marginTop:4}}>This will be visible to the artist and logged in the job history.</div>
+        </div>
+        <div className="modal-footer">
+          <button className="btn btn-secondary" onClick={()=>setArtRejectModal(null)}>Cancel</button>
+          <button className="btn btn-primary" style={{background:'#dc2626',borderColor:'#dc2626'}} disabled={!artRejectModal.reason.trim()} onClick={()=>{
+            rejectArt(artRejectModal.job,artRejectModal.reason.trim());
+            setArtRejectModal(null);
+          }}>Reject & Send Back</button>
+        </div>
+      </div></div>}
 
-                  {/* Action buttons */}
-                  <div style={{display:'flex',gap:3,marginTop:6,flexWrap:'wrap'}}>
-                    {col.id==='art_requested'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#1e40af',color:'white',border:'none'}} onClick={()=>moveArtStatus(j,'art_in_progress')}>Start Working</button>}
-                    {col.id==='art_in_progress'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#92400e',color:'white',border:'none'}} onClick={()=>moveArtStatus(j,'waiting_approval')}>Submit for Approval</button>}
-                    {col.id==='waiting_approval'&&<>
-                      <button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#166534',color:'white',border:'none'}} onClick={()=>moveArtStatus(j,'production_files_needed')}>✅ Approve</button>
-                      <button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#dc2626',color:'white',border:'none'}} onClick={()=>moveArtStatus(j,'art_in_progress')}>↩ Revise</button>
-                    </>}
-                    {col.id==='production_files_needed'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#166534',color:'white',border:'none'}} onClick={()=>{
-                      const so=sos.find(s=>s.id===j.soId);
-                      if(!so){nf('SO not found','error');return}
-                      const afIdx=safeArt(so).findIndex(f=>f.id===j.art_file_id);
-                      if(afIdx>=0&&(safeArt(so)[afIdx].prod_files||[]).length===0){
-                        // Auto-add a placeholder prod file
-                        const ext=j.deco_type==='embroidery'?'.dst':j.deco_type==='screen_print'?'_seps.ai':'.pdf';
-                        const fn=(j.art_name||'art').replace(/\s+/g,'_')+'_FINAL'+ext;
-                        const updArt=[...safeArt(so)];updArt[afIdx]={...updArt[afIdx],prod_files:[...(updArt[afIdx].prod_files||[]),fn]};
-                        savSO({...so,art_files:updArt,jobs:safeJobs(so).map(jj=>jj.id===j.id?{...jj,art_status:'art_complete'}:jj)});
-                        nf('🎨 Prod files uploaded — Art Complete!');
-                      } else {
-                        moveArtStatus(j,'art_complete');
-                      }
-                    }}>📁 Upload & Complete</button>}
-                    <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px',marginLeft:'auto'}} onClick={()=>{setESOTab('jobs');setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so?.customer_id));setPg('orders')}}>Open SO →</button>
-                  </div>
-                </div>
-              </div>})}
-          </div>})}
-      </div>
+      {/* ═══ EDIT ART REQUEST MODAL (rep adjusts instructions mid-process) ═══ */}
+      {artEditModal&&<div className="modal-overlay" onClick={()=>setArtEditModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:520}}>
+        <div className="modal-header" style={{background:'#eff6ff'}}><h2>Edit Art Request — {artEditModal.job.art_name}</h2><button className="modal-close" onClick={()=>setArtEditModal(null)}>×</button></div>
+        <div className="modal-body">
+          <div style={{marginBottom:12,padding:8,background:'#f8fafc',borderRadius:6,fontSize:12}}>
+            <strong>{artEditModal.job.customer}</strong> · {artEditModal.job.soId} · Status: <span style={{fontWeight:700,color:SC[artEditModal.job.art_status]?.c}}>{ART_LABELS[artEditModal.job.art_status]||artEditModal.job.art_status}</span>
+          </div>
+          <label className="form-label">Updated Instructions</label>
+          <textarea className="form-input" rows={5} placeholder="Updated art direction — coach changed colors, different placement, new logo version, etc." value={artEditModal.instructions} onChange={e=>setArtEditModal(m=>({...m,instructions:e.target.value}))} style={{resize:'vertical'}}/>
+          <label className="form-label" style={{marginTop:12}}>Rep Notes to Artist</label>
+          <textarea className="form-input" rows={2} placeholder="Any additional context..." value={artEditModal.notes} onChange={e=>setArtEditModal(m=>({...m,notes:e.target.value}))} style={{resize:'vertical'}}/>
+        </div>
+        <div className="modal-footer">
+          <button className="btn btn-secondary" onClick={()=>setArtEditModal(null)}>Cancel</button>
+          <button className="btn btn-primary" onClick={()=>{
+            const j=artEditModal.job;
+            const updatedReqs=[...(j.art_requests||[])];
+            if(updatedReqs.length>0){updatedReqs[updatedReqs.length-1]={...updatedReqs[updatedReqs.length-1],instructions:artEditModal.instructions,updated_at:new Date().toISOString(),updated_by:cu.name}}
+            else{updatedReqs.push({id:'AR-'+Date.now(),instructions:artEditModal.instructions,status:'requested',created_at:new Date().toISOString(),created_by:cu.name})}
+            updateArtRequest(j,{art_requests:updatedReqs,rep_notes:artEditModal.notes});
+            setArtEditModal(null);
+          }}>Save Changes</button>
+        </div>
+      </div></div>}
     </>);
   };
 
