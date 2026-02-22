@@ -1,6 +1,20 @@
 /* eslint-disable */
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import './portal.css';
+// ─── Cloudinary Config ───
+const CLOUDINARY_CLOUD='YOUR_CLOUD_NAME';// Replace with your Cloudinary cloud name
+const CLOUDINARY_PRESET='YOUR_UPLOAD_PRESET';// Replace with your unsigned upload preset
+const cloudUpload=async(file)=>{const fd=new FormData();fd.append('file',file);fd.append('upload_preset',CLOUDINARY_PRESET);fd.append('folder','nsa-products');const r=await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/image/upload`,{method:'POST',body:fd});const d=await r.json();return d.secure_url};
+const ImgUpload=({url,onUpload,size=48})=>{const[drag,setDrag]=React.useState(false);const[uploading,setUploading]=React.useState(false);
+  const doUpload=async(file)=>{if(!file||!file.type.startsWith('image/'))return;setUploading(true);try{const u=await cloudUpload(file);onUpload(u)}catch(e){console.error('Upload failed',e)}finally{setUploading(false)}};
+  return<div style={{width:size,height:size,borderRadius:6,border:drag?'2px solid #3b82f6':'1px solid #e2e8f0',background:drag?'#eff6ff':'#f8fafc',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,cursor:'pointer',overflow:'hidden',position:'relative'}}
+    onDragOver={e=>{e.preventDefault();setDrag(true)}} onDragLeave={()=>setDrag(false)}
+    onDrop={e=>{e.preventDefault();setDrag(false);doUpload(e.dataTransfer.files[0])}}
+    onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.accept='image/*';inp.onchange=()=>doUpload(inp.files[0]);inp.click()}}>
+    {uploading?<span style={{fontSize:10,color:'#3b82f6',fontWeight:600}}>...</span>
+    :url?<img src={url} alt="" style={{width:'100%',height:'100%',objectFit:'cover'}}/>
+    :<span style={{fontSize:size>40?18:12,opacity:0.3}}>📷</span>}
+  </div>};
 const Icon=({name,size=18})=>{const p={home:<path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>,users:<><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></>,building:<><path d="M6 22V4a2 2 0 012-2h8a2 2 0 012 2v18z"/><path d="M6 12H4a2 2 0 00-2 2v6a2 2 0 002 2h2"/><path d="M18 9h2a2 2 0 012 2v9a2 2 0 01-2 2h-2"/><path d="M10 6h4M10 10h4M10 14h4M10 18h4"/></>,package:<><path d="M16.5 9.4l-9-5.19M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/><path d="M3.27 6.96L12 12.01l8.73-5.05M12 22.08V12"/></>,box:<path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/>,search:<><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></>,plus:<path d="M12 5v14M5 12h14"/>,edit:<><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></>,upload:<><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></>,back:<polyline points="15 18 9 12 15 6"/>,mail:<><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></>,file:<><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></>,sortUp:<path d="M7 14l5-5 5 5"/>,sort:<><path d="M7 15l5 5 5-5"/><path d="M7 9l5-5 5 5"/></>,image:<><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></>,cart:<><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 002 1.61h9.72a2 2 0 002-1.61L23 6H6"/></>,dollar:<><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></>,grid:<><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></>,warehouse:<><path d="M22 8.35V20a2 2 0 01-2 2H4a2 2 0 01-2-2V8.35A2 2 0 013.26 6.5l8-3.2a2 2 0 011.48 0l8 3.2A2 2 0 0122 8.35z"/><path d="M6 18h12M6 14h12"/></>,trash:<><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></>,eye:<><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></>,alert:<><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></>,x:<><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>,check:<polyline points="20 6 9 17 4 12"/>,save:<><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></>,send:<><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></>};return<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{p[name]}</svg>};
 const DEFAULT_REPS=[
   // Admins
@@ -4188,7 +4202,7 @@ export default function App(){
   <div className="card"><div className="card-body" style={{padding:0}}>
   {fP.map(p=>{const nt=Object.values(p._inv||{}).reduce((a,v)=>a+v,0);const au=p.brand==='Adidas'||p.brand==='Under Armour';
     return(<div key={p.id} style={{padding:'14px 16px',borderBottom:'1px solid #f1f5f9'}}><div style={{display:'flex',gap:14,alignItems:'flex-start'}}>
-      <div style={{width:48,height:48,background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:6,display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0}}>👕</div>
+      <ImgUpload url={p.image_url} onUpload={u=>setProd(ps=>ps.map(x=>x.id===p.id?{...x,image_url:u}:x))} size={48}/>
       <div style={{flex:1}}>
         <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}><span style={{fontFamily:'monospace',fontWeight:800,background:'#dbeafe',padding:'2px 8px',borderRadius:3,color:'#1e40af'}}>{p.sku}</span><span style={{fontWeight:700}}>{p.name}</span>{p._colors&&<span style={{fontSize:10,color:'#7c3aed'}}>{p._colors.length} clr</span>}</div>
         <div style={{fontSize:12,color:'#94a3b8',marginTop:2}}><span className="badge badge-blue" style={{marginRight:4}}>{p.brand}</span>{p.color} | ${p.nsa_cost?.toFixed(2)} | {au?'Tier':'$'+rQ(p.nsa_cost*1.65).toFixed(2)}</div>
@@ -6863,11 +6877,8 @@ export default function App(){
           {/* ─── ARTIST VIEW: artist-facing actions ─── */}
           {view==='artist'&&<>
             <div style={{display:'flex',gap:4,alignItems:'center',marginBottom:4}}>
-              <select style={{fontSize:10,padding:'2px 4px',border:'1px solid #e2e8f0',borderRadius:4,flex:1}} value={j.assigned_artist||''} onChange={e=>assignArtist(j,e.target.value)}>
-                <option value="">Assign artist...</option>
-                {artistMembers.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
-              </select>
-              {artist&&<span style={{fontSize:9,fontWeight:700,color:'#7c3aed'}}>🎨 {artist.name.split(' ')[0]}</span>}
+              {artist?<span style={{fontSize:10,fontWeight:700,color:'#7c3aed',padding:'2px 6px',background:'#ede9fe',borderRadius:4}}>🎨 {artist.name}</span>
+              :<span style={{fontSize:10,color:'#94a3b8',fontStyle:'italic'}}>No artist assigned</span>}
             </div>
             <div style={{fontSize:9,color:'#94a3b8'}}>{j.rep} · {j.alpha||j.soMemo}</div>
             <button className="btn btn-sm" style={{fontSize:10,padding:'4px 10px',background:'linear-gradient(135deg,#1e40af,#7c3aed)',color:'white',border:'none',width:'100%',marginTop:4,fontWeight:600,borderRadius:6,display:'flex',alignItems:'center',justifyContent:'center',gap:4}} onClick={()=>{setArtMockupModal(j);setArtMockupRevision('')}}>🖼️ Mockup</button>
@@ -7082,7 +7093,8 @@ export default function App(){
           const it=safeItems(so)[gi.item_idx];if(!it)return null;
           const sizes={};
           Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{sizes[sz]=v});
-          return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes};
+          const prd=prod.find(pp=>pp.id===it.product_id||pp.sku===it.sku);
+          return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,image_url:prd?.image_url||''};
         }).filter(Boolean);
         const allSizes=SZ_ORD.filter(sz=>itemDetails.some(it=>it.sizes[sz]>0));
 
@@ -7148,6 +7160,7 @@ export default function App(){
                 const rowTotal=Object.values(gi.sizes).reduce((a,v)=>a+v,0);
                 return<div key={gii} style={{marginBottom:gii<itemDetails.length-1?10:0}}>
                   <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
+                    {gi.image_url&&<img src={gi.image_url} alt="" style={{width:36,height:36,objectFit:'cover',borderRadius:4,border:'1px solid #e2e8f0'}}/>}
                     <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:12}}>{gi.sku}</span>
                     <span style={{fontWeight:600,fontSize:13}}>{gi.name}</span>
                     <span style={{color:'#64748b',fontSize:12}}>({gi.color})</span>
@@ -8446,6 +8459,12 @@ export default function App(){
               {['Tees','Polos','Hoodies','1/4 Zips','Shorts','Pants','Hats','Bags','Accessories','Jackets','Jerseys','Custom'].map(c=><option key={c}>{c}</option>)}</select></div>
             <div><label className="form-label">Retail Price</label><$In value={it.retail_price||0} onChange={v=>{const bn=it.brand||D_V.find(x=>x.id===it.vendor_id)?.name||'';const cat=it.category||'Tees';if(bn==='Adidas'){setQPC(x=>({...x,items:[{...x.items[0],retail_price:v,nsa_cost:Math.round(v*(cat==='Custom'?0.4125:0.375)*100)/100}]}))}else if(bn==='Under Armour'){setQPC(x=>({...x,items:[{...x.items[0],retail_price:v,nsa_cost:Math.round(v*0.425*100)/100}]}))}else{up('retail_price',v)}}}/></div>
             <div><label className="form-label">NSA Cost{(it.brand==='Adidas'||it.brand==='Under Armour')&&it.retail_price>0?<span style={{fontSize:9,color:'#16a34a',marginLeft:4}}>auto</span>:''}</label><$In value={it.nsa_cost||0} onChange={v=>{const bn=it.brand||D_V.find(x=>x.id===it.vendor_id)?.name||'';const cat=it.category||'Tees';if(bn==='Adidas'&&v>0){setQPC(x=>({...x,items:[{...x.items[0],nsa_cost:v,retail_price:Math.round(v/(cat==='Custom'?0.4125:0.375)*100)/100}]}))}else if(bn==='Under Armour'&&v>0){setQPC(x=>({...x,items:[{...x.items[0],nsa_cost:v,retail_price:Math.round(v/0.425*100)/100}]}))}else{up('nsa_cost',v)}}}/></div>
+            <div style={{gridColumn:'1/3'}}><label className="form-label">Product Image</label>
+              <div style={{display:'flex',alignItems:'center',gap:10}}>
+                <ImgUpload url={it.image_url} onUpload={v=>up('image_url',v)} size={64}/>
+                <span style={{fontSize:11,color:'#94a3b8'}}>Click or drag & drop an image</span>
+              </div>
+            </div>
             <div style={{gridColumn:'1/3'}}><label className="form-label">Available Sizes</label>
               <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>{['XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL','OSFA'].map(sz=>
                 <button key={sz} className={`btn btn-sm ${(it.available_sizes||[]).includes(sz)?'btn-primary':'btn-secondary'}`} style={{fontSize:10,padding:'3px 8px'}}
@@ -8497,7 +8516,7 @@ export default function App(){
             const newProds=toAdd.map((it,i)=>({id:'p'+(prod.length+i+1),vendor_id:it.vendor_id||D_V.find(v=>v.name===it.brand)?.id||'',
               sku:it.sku,name:it.name,brand:it.brand||D_V.find(v=>v.id===it.vendor_id)?.name||'',color:it.color||'',
               category:it.category||'Tees',retail_price:it.retail_price||0,nsa_cost:it.nsa_cost||0,
-              available_sizes:it.available_sizes||['S','M','L','XL','2XL'],is_active:true,_inv:{}}));
+              available_sizes:it.available_sizes||['S','M','L','XL','2XL'],is_active:true,_inv:{},image_url:it.image_url||''}));
             setProd(p=>[...p,...newProds]);
             setQPC({open:false,mode:'single',items:[{sku:'',name:'',brand:'',color:'',category:'Tees',retail_price:0,nsa_cost:0,available_sizes:['S','M','L','XL','2XL'],vendor_id:''}],bulkRaw:''});
             nf('📦 Added '+newProds.length+' product'+(newProds.length>1?'s':''));
