@@ -41,9 +41,11 @@ const DEFAULT_REPS=[
   {id:'00000000-0000-0000-0000-000000000051',name:'Noah Corral',role:'warehouse'},
   {id:'00000000-0000-0000-0000-000000000052',name:'Marcel Salceda',role:'warehouse'},
   {id:'00000000-0000-0000-0000-000000000053',name:'Irving Santos',role:'warehouse'},
+  // Production managers
+  {id:'00000000-0000-0000-0000-000000000058',name:'Dylan Aassness',role:'prod_manager'},
   // Production
   {id:'00000000-0000-0000-0000-000000000060',name:'Paco Salceda',role:'production'},
-  {id:'00000000-0000-0000-0000-000000000061',name:'Liliana Moreno',role:'production'},
+  {id:'00000000-0000-0000-0000-000000000061',name:'Liliana Moreno',role:'prod_manager'},
   {id:'00000000-0000-0000-0000-000000000062',name:'Fransisco Moreno',role:'production'},
   {id:'00000000-0000-0000-0000-000000000063',name:'Griselda Franco',role:'production'},
   {id:'00000000-0000-0000-0000-000000000064',name:'Luiz Acosta',role:'production'},
@@ -561,8 +563,8 @@ function calcSOStatus(ord){
 // ═══════════════════════════════════════════════
 function LoginGate({onLogin,reps}){
   const REPS=(reps||DEFAULT_REPS).filter(r=>r.is_active!==false);
-  const roleColors={admin:'#1e40af',gm:'#7c3aed',production:'#d97706',rep:'#166534',csr:'#0891b2',warehouse:'#9333ea',accounting:'#dc2626',artist:'#ec4899'};
-  const roleLabels={admin:'Admin',gm:'General Manager',production:'Production',rep:'Sales Rep',csr:'CSR',warehouse:'Warehouse',accounting:'Accounting',artist:'Artist'};
+  const roleColors={admin:'#1e40af',gm:'#7c3aed',prod_manager:'#b45309',production:'#d97706',rep:'#166534',csr:'#0891b2',warehouse:'#9333ea',accounting:'#dc2626',artist:'#ec4899'};
+  const roleLabels={admin:'Admin',gm:'General Manager',prod_manager:'Production Mgr',production:'Production',rep:'Sales Rep',csr:'CSR',warehouse:'Warehouse',accounting:'Accounting',artist:'Artist'};
   return(
     <div style={{minHeight:'100vh',background:'linear-gradient(135deg,#0f172a 0%,#1e3a5f 50%,#0f172a 100%)',display:'flex',alignItems:'center',justifyContent:'center',fontFamily:"'Inter','Segoe UI',sans-serif"}}>
       <div style={{width:380,padding:0}}>
@@ -2250,7 +2252,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         const ji=selJob;const j=jobs[ji];
         if(!j)return<div className="card"><div className="card-body"><button className="btn btn-sm btn-secondary" onClick={()=>setSelJob(null)}><Icon name="back" size={12}/> Back to Jobs</button><div style={{padding:20,color:'#94a3b8'}}>Job not found</div></div></div>;
         const canProduce=j.item_status==='items_received'&&j.art_status==='art_complete';
-        const canOverride=cu.role==="admin"||cu.role==="production"||cu.role==="gm";
+        const canOverride=cu.role==="admin"||cu.role==="production"||cu.role==="prod_manager"||cu.role==="gm";
         const pct=j.total_units>0?Math.round(j.fulfilled_units/j.total_units*100):0;
         const artF=safeArt(o).find(a=>a.id===j.art_file_id);
         // Get full size breakdowns per item
@@ -2468,7 +2470,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         {jobs.length===0&&<div style={{padding:24,textAlign:'center',color:'#94a3b8'}}>No decorations assigned yet. Add artwork or numbers to items and jobs will appear automatically.</div>}
         {jobs.length>0&&<table style={{fontSize:12}}><thead><tr><th>Job ID</th><th>Artwork / Decoration</th><th>Items</th><th>Units</th><th>Items Status</th><th>Art</th><th>Production</th><th></th></tr></thead><tbody>
           {jobs.map((j,ji)=>{
-            const canProduce=j.item_status==='items_received'&&j.art_status==='art_complete';const canOverride2=cu.role==='admin'||cu.role==='production'||cu.role==='gm';
+            const canProduce=j.item_status==='items_received'&&j.art_status==='art_complete';const canOverride2=cu.role==='admin'||cu.role==='production'||cu.role==='prod_manager'||cu.role==='gm';
             const canSplit=j.item_status==='partially_received'&&!j.split_from;
             const pct=j.total_units>0?Math.round(j.fulfilled_units/j.total_units*100):0;
             return<React.Fragment key={j.id}>
@@ -3815,7 +3817,7 @@ export default function App(){
       {id:'sales',label:'💼 Sales Rep',icon:'dollar'},
       {id:'warehouse',label:'📦 Warehouse',icon:'warehouse'},
       {id:'decorator',label:'🎨 Decorator',icon:'image'},
-      {id:'production',label:'🏭 Production Mgr',icon:'grid'},
+      {id:'production',label:'🏭 Production',icon:'grid'},
       {id:'csr',label:'📞 CSR',icon:'mail'},
     ];
 
@@ -3988,45 +3990,115 @@ export default function App(){
       </>})()}
     </>}
 
-    {/* ═══ PRODUCTION MANAGER VIEW ═══ */}
+    {/* ═══ PRODUCTION VIEW ═══ */}
     {dashView==='production'&&<>
     {(()=>{
       const byStatus={hold:0,staging:0,in_process:0,completed:0,shipped:0};
       activeJobs.forEach(j=>{byStatus[j.prod_status]=(byStatus[j.prod_status]||0)+1});
-      const totalActive=activeJobs.length;
-      const readyForBoard=todos.filter(t=>t.type==='schedule').length;
+      const readyForBoard=activeJobs.filter(j=>j.prod_status==='hold'&&j.item_status==='items_received'&&j.art_status==='art_complete');
+      const artReady=activeJobs.filter(j=>j.art_status==='art_complete'||j.art_status==='waiting_approval');
+      const decorators=REPS.filter(r=>r.role==='production');
+      const decoWorkload=decorators.map(d=>{const jobs=activeJobs.filter(j=>(j.prod_status==='in_process'||j.prod_status==='staging')&&j.assigned_to===d.name);return{...d,jobs,count:jobs.length}});
       return<>
       <div className="stats-row">
-        <div className="stat-card" style={{borderLeft:'3px solid #94a3b8'}}><div className="stat-label">Ready (Hold)</div><div className="stat-value">{byStatus.hold}</div></div>
+        <div className="stat-card" style={{borderLeft:'3px solid #94a3b8'}}><div className="stat-label">Hold</div><div className="stat-value">{byStatus.hold}</div></div>
+        <div className="stat-card" style={{borderLeft:'3px solid #22c55e'}}><div className="stat-label">Ready to Go</div><div className="stat-value" style={{color:'#166534'}}>{readyForBoard.length}</div></div>
         <div className="stat-card" style={{borderLeft:'3px solid #f59e0b'}}><div className="stat-label">In Line</div><div className="stat-value" style={{color:'#d97706'}}>{byStatus.staging}</div></div>
         <div className="stat-card" style={{borderLeft:'3px solid #2563eb'}}><div className="stat-label">In Process</div><div className="stat-value" style={{color:'#2563eb'}}>{byStatus.in_process}</div></div>
         <div className="stat-card" style={{borderLeft:'3px solid #166534'}}><div className="stat-label">Completed</div><div className="stat-value" style={{color:'#166534'}}>{byStatus.completed}</div></div>
-        <div className="stat-card" style={{borderLeft:'3px solid #7c3aed'}}><div className="stat-label">Not on Board</div><div className="stat-value" style={{color:'#7c3aed'}}>{readyForBoard}</div></div>
       </div>
-      {readyForBoard>0&&<div className="card" style={{marginBottom:12,borderLeft:'3px solid #7c3aed',background:'#faf5ff'}}>
-        <div style={{padding:'10px 14px',fontSize:12}}><strong>{readyForBoard} job{readyForBoard!==1?'s':''} ready for the production board</strong> — art approved + items received but not yet scheduled.</div></div>}
+
+      {/* Ready to Go — art complete + items received */}
+      {readyForBoard.length>0&&<div className="card" style={{marginBottom:16}}>
+        <div className="card-header" style={{background:'#f0fdf4'}}><h2>✅ Ready to Go — {readyForBoard.length} job{readyForBoard.length!==1?'s':''}</h2><button className="btn btn-sm btn-primary" onClick={()=>setPg('production')}>Open Board →</button></div>
+        <div className="card-body" style={{padding:0,maxHeight:350,overflow:'auto'}}>
+          {readyForBoard.map(j=><div key={j.id+j.so?.id} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9'}}>
+            <div style={{display:'flex',alignItems:'center',gap:8}}>
+              <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',fontSize:11}}>{j.id}</span>
+              <span style={{fontWeight:700,fontSize:12,flex:1}}>{j.art_name}</span>
+              <span style={{fontSize:10,padding:'1px 6px',borderRadius:4,fontWeight:600,background:j.deco_type==='screen_print'?'#dbeafe':j.deco_type==='embroidery'?'#ede9fe':'#fef3c7',color:j.deco_type==='screen_print'?'#1e40af':j.deco_type==='embroidery'?'#6d28d9':'#92400e'}}>{j.deco_type?.replace(/_/g,' ')}</span>
+              <span style={{fontWeight:700,fontSize:11}}>{j.total_units}u</span>
+              <select style={{fontSize:10,padding:'2px 4px',border:'1px solid #e2e8f0',borderRadius:4,width:110}} value={j.assigned_to||''} onClick={e=>e.stopPropagation()} onChange={e=>{const so=j.so;const updJobs=safeJobs(so).map(jj=>jj.id===j.id?{...jj,assigned_to:e.target.value}:jj);savSO({...so,jobs:updJobs});nf('Assigned to '+e.target.value)}}>
+                <option value="">Assign...</option>
+                {decorators.map(d=><option key={d.id} value={d.name}>{d.name}</option>)}
+              </select>
+              <button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#f59e0b',color:'white',border:'none'}} onClick={()=>{setAssignModal({job:j,targetStatus:'staging'});setAssignTo({machine:j.assigned_machine||'',person:j.assigned_to||'',shipMethod:j.ship_method||''})}}>→ In Line</button>
+            </div>
+            <div style={{fontSize:10,color:'#64748b',marginTop:2}}>{j.cName} · {j.soId} · {j.rep}{j.expected?' · Due '+j.expected:''}</div>
+          </div>)}
+        </div></div>}
+
+      {/* Art Status — what's coming */}
       <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
-        <div className="card"><div className="card-header"><h2>🏭 Active Production</h2><button className="btn btn-sm btn-primary" onClick={()=>setPg('production')}>Open Board →</button></div>
-          <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
-            {activeJobs.filter(j=>j.prod_status==='in_process'||j.prod_status==='staging').map(j=><div key={j.id+j.so?.id} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9'}}>
+        <div className="card"><div className="card-header" style={{background:'#ede9fe'}}><h2>🎨 Art Status</h2></div>
+          <div className="card-body" style={{padding:0,maxHeight:350,overflow:'auto'}}>
+            {artReady.length===0?<div className="empty" style={{padding:20}}>No art ready</div>:
+            artReady.map(j=><div key={j.id+j.so?.id} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9'}}>
               <div style={{display:'flex',alignItems:'center',gap:6}}>
-                <span style={{fontSize:9,padding:'1px 5px',borderRadius:4,background:SC[j.prod_status]?.bg,color:SC[j.prod_status]?.c,fontWeight:700}}>{j.prod_status==='in_process'?'RUN':'LINE'}</span>
-                <span style={{fontWeight:700,fontSize:12}}>{j.art_name}</span>
-                <span style={{fontSize:10,color:'#64748b'}}>{j.cName}</span>
-                <span style={{marginLeft:'auto',fontWeight:700,fontSize:11}}>{j.fulfilled_units}/{j.total_units}</span>
+                <span style={{fontSize:9,padding:'1px 5px',borderRadius:4,fontWeight:700,background:j.art_status==='art_complete'?'#dcfce7':'#fef3c7',color:j.art_status==='art_complete'?'#166534':'#92400e'}}>{j.art_status==='art_complete'?'Done':'Waiting Approval'}</span>
+                <span style={{fontWeight:700,fontSize:11}}>{j.art_name}</span>
+                <span style={{fontSize:10,color:'#64748b',marginLeft:'auto'}}>{j.cName}</span>
               </div></div>)}
           </div></div>
-        <div className="card"><div className="card-header"><h2>⏱️ Time Today</h2><button className="btn btn-sm btn-secondary" onClick={()=>setPg('decoration')}>Deco Page →</button></div>
-          <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
+
+        {/* Active Timers */}
+        <div className="card"><div className="card-header"><h2>⏱️ Clocked In Now</h2><button className="btn btn-sm btn-secondary" onClick={()=>setPg('decoration')}>Deco Page →</button></div>
+          <div className="card-body" style={{padding:0,maxHeight:350,overflow:'auto'}}>
             {Object.entries(activeTimers).length>0?Object.entries(activeTimers).map(([key,timer])=>{const[soId,jobId]=key.split('|');
               return<div key={key} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:8}}>
-                <span style={{width:8,height:8,borderRadius:4,background:'#22c55e'}}/> 
+                <span style={{width:8,height:8,borderRadius:4,background:'#22c55e'}}/>
                 <span style={{fontWeight:700,fontSize:12}}>{timer.person}</span>
                 <span style={{fontSize:11,color:'#64748b'}}>{jobId}</span>
                 <span style={{marginLeft:'auto',fontWeight:700,color:'#d97706'}}>{Math.round((Date.now()-timer.clockIn)/60000)}m</span>
               </div>}):<div className="empty" style={{padding:20}}>No one clocked in</div>}
           </div></div>
       </div>
+
+      {/* Decorator Workloads */}
+      <div className="card" style={{marginBottom:16}}>
+        <div className="card-header"><h2>👥 Decorator Workloads</h2><button className="btn btn-sm btn-primary" onClick={()=>setPg('production')}>Open Board →</button></div>
+        <div className="card-body" style={{padding:0}}>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(200px,1fr))',gap:0}}>
+            {decoWorkload.map(d=><div key={d.id} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',borderRight:'1px solid #f1f5f9'}}>
+              <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:6}}>
+                <div style={{width:28,height:28,borderRadius:14,background:'#7c3aed',color:'white',display:'flex',alignItems:'center',justifyContent:'center',fontSize:10,fontWeight:700}}>{d.name.split(' ').map(w=>w[0]).join('')}</div>
+                <div><div style={{fontWeight:700,fontSize:12}}>{d.name}</div><div style={{fontSize:10,color:d.count>0?'#2563eb':'#94a3b8'}}>{d.count} job{d.count!==1?'s':''}</div></div>
+              </div>
+              {d.jobs.map(j2=><div key={j2.id} style={{fontSize:10,padding:'3px 6px',background:j2.prod_status==='in_process'?'#dbeafe':'#f8fafc',borderRadius:4,marginBottom:3}}>
+                <span style={{fontWeight:700}}>{j2.id}</span> <span style={{color:'#64748b'}}>{j2.art_name} · {j2.total_units}u</span>
+              </div>)}
+              {d.count===0&&<div style={{fontSize:10,color:'#cbd5e1',fontStyle:'italic'}}>No jobs assigned</div>}
+            </div>)}
+          </div>
+        </div></div>
+
+      {/* Active Production — in line + in process */}
+      <div className="card" style={{marginBottom:16}}>
+        <div className="card-header"><h2>🏭 Active Production</h2></div>
+        <div className="card-body" style={{padding:0,maxHeight:500,overflow:'auto'}}>
+          {activeJobs.filter(j=>j.prod_status==='in_process'||j.prod_status==='staging').length===0?<div className="empty" style={{padding:20}}>Nothing running</div>:
+          activeJobs.filter(j=>j.prod_status==='in_process'||j.prod_status==='staging').map(j=>{
+            const pct=j.total_units>0?Math.round(j.fulfilled_units/j.total_units*100):0;
+            return<div key={j.id+j.so?.id} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9'}}>
+            <div style={{display:'flex',alignItems:'center',gap:8}}>
+              <span style={{fontSize:9,padding:'1px 5px',borderRadius:4,background:SC[j.prod_status]?.bg,color:SC[j.prod_status]?.c,fontWeight:700}}>{j.prod_status==='in_process'?'RUN':'LINE'}</span>
+              <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',fontSize:11}}>{j.id}</span>
+              <span style={{fontWeight:700,fontSize:12}}>{j.art_name}</span>
+              <span style={{fontSize:10,color:'#64748b'}}>{j.cName}</span>
+              {j.assigned_to&&<span style={{fontSize:9,padding:'1px 5px',borderRadius:4,background:'#ede9fe',color:'#6d28d9',fontWeight:700}}>👤 {j.assigned_to}</span>}
+              <span style={{marginLeft:'auto',fontWeight:700,fontSize:11}}>{j.fulfilled_units}/{j.total_units}</span>
+              <div style={{width:50,background:'#e2e8f0',borderRadius:3,height:4}}><div style={{height:4,borderRadius:3,background:pct>=100?'#22c55e':pct>50?'#3b82f6':'#f59e0b',width:pct+'%'}}/></div>
+            </div>
+            <div style={{display:'flex',alignItems:'center',gap:4,marginTop:4}}>
+              <span style={{fontSize:10,color:'#64748b'}}>{j.deco_type?.replace(/_/g,' ')} · {j.rep}{j.expected?' · Due '+j.expected:''}</span>
+              <div style={{marginLeft:'auto',display:'flex',gap:4}}>
+                {j.prod_status==='staging'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#2563eb',color:'white',border:'none'}} onClick={()=>moveJobStatus(j,'in_process')}>→ In Process</button>}
+                {j.prod_status==='in_process'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#166534',color:'white',border:'none'}} onClick={()=>moveJobStatus(j,'completed')}>✓ Done</button>}
+                <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px'}} onClick={()=>{setProdJobModal({...j})}}>📋</button>
+              </div>
+            </div>
+          </div>})}
+        </div></div>
       </>})()}
     </>}
 
@@ -4516,7 +4588,7 @@ export default function App(){
                       color:urgent?'#dc2626':j.daysOut<=7?'#92400e':'#166534'}}>{j.daysOut}d</span>}
                   </div>
                   <div style={{display:'flex',alignItems:'center',gap:4}}>
-                    <span style={{fontSize:9,color:'#94a3b8'}}>{j.alpha||j.soId} · {gCount} item{gCount!==1?'s':''} · {j.rep}</span>
+                    <span style={{fontSize:9,color:'#94a3b8'}}>{j.id} · {gCount} item{gCount!==1?'s':''} · {j.rep}</span>
                     <span style={{fontSize:9,color:'#94a3b8',marginLeft:'auto',transition:'transform 0.15s',transform:isExp?'rotate(180deg)':'rotate(0deg)'}}>▾</span>
                   </div>
                 </div>
@@ -4651,8 +4723,11 @@ export default function App(){
             </div>}
           </div>
           <div style={{marginBottom:12}}>
-            <label className="form-label">Assign to Person (optional)</label>
-            <input className="form-input" value={assignTo.person} onChange={e=>setAssignTo(a=>({...a,person:e.target.value}))} placeholder="e.g. Mike, Carlos, etc."/>
+            <label className="form-label">Assign to Decorator</label>
+            <select className="form-select" value={assignTo.person} onChange={e=>setAssignTo(a=>({...a,person:e.target.value}))}>
+              <option value="">Select decorator...</option>
+              {REPS.filter(r=>r.role==='production').map(r=><option key={r.id} value={r.name}>{r.name}</option>)}
+            </select>
           </div>
           <div style={{marginBottom:12}}>
             <label className="form-label">After Production — How is this shipping?</label>
@@ -8186,11 +8261,11 @@ export default function App(){
 
     // TEAM MANAGEMENT
   const rTeam=()=>{
-    const roles={admin:'Admin',rep:'Sales Rep',csr:'Customer Service',accounting:'Accounting',warehouse:'Warehouse',production:'Production',artist:'Artist'};
-    const roleBadge={admin:'badge-purple',rep:'badge-blue',csr:'badge-green',accounting:'badge-amber',warehouse:'badge-gray',production:'badge-gray',artist:'badge-purple'};
+    const roles={admin:'Admin',rep:'Sales Rep',csr:'Customer Service',accounting:'Accounting',warehouse:'Warehouse',prod_manager:'Production Mgr',production:'Production',artist:'Artist'};
+    const roleBadge={admin:'badge-purple',rep:'badge-blue',csr:'badge-green',accounting:'badge-amber',warehouse:'badge-gray',prod_manager:'badge-amber',production:'badge-gray',artist:'badge-purple'};
     const isAdmin=cu.role==='admin';
     const initials=n=>{const p=(n||'').split(' ');return p.length>=2?(p[0][0]+p[p.length-1][0]).toUpperCase():(n||'??').slice(0,2).toUpperCase()};
-    const avatarColors={admin:'#7c3aed',rep:'#2563eb',csr:'#16a34a',accounting:'#d97706',warehouse:'#475569',production:'#0891b2'};
+    const avatarColors={admin:'#7c3aed',rep:'#2563eb',csr:'#16a34a',accounting:'#d97706',warehouse:'#475569',prod_manager:'#b45309',production:'#0891b2'};
 
     // Default page access by role
     const ALL_PAGES=[
@@ -8223,6 +8298,7 @@ export default function App(){
       csr:['dashboard','estimates','orders','invoices','customers','messages','products','inventory'],
       accounting:['dashboard','invoices','customers','reports','qb'],
       warehouse:['dashboard','orders','warehouse','batch_pos','inventory','production','decoration'],
+      prod_manager:['dashboard','orders','jobs','art','production','decoration','warehouse','inventory','batch_pos'],
       production:['dashboard','orders','jobs','art','production','decoration','warehouse','inventory'],
       artist:['dashboard','orders','art','jobs','production','decoration'],
     };
