@@ -595,7 +595,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
   const[tab,setTab]=useState(initTab||'items');const[dirty,setDirty]=useState(false);const[selJob,setSelJob]=useState(null);const[jobNote,setJobNote]=useState('');const[msgDept,setMsgDept]=useState('all');
     React.useEffect(()=>{if(initTab)setTab(initTab)},[initTab]);
     React.useEffect(()=>{if(scrollToItem!=null){setTab('items');setTimeout(()=>{const el=document.getElementById('so-item-'+scrollToItem);if(el){el.scrollIntoView({behavior:'smooth',block:'center'});el.style.boxShadow='0 0 0 3px #3b82f6';setTimeout(()=>{el.style.boxShadow=''},2000)}},150)}},[scrollToItem]);
-    React.useEffect(()=>{if(scrollToJob!=null){setTab('jobs');setTimeout(()=>{const el=document.getElementById('so-job-'+scrollToJob);if(el){el.scrollIntoView({behavior:'smooth',block:'center'});el.style.boxShadow='0 0 0 3px #7c3aed';setTimeout(()=>{el.style.boxShadow=''},2000)}},200)}},[scrollToJob]);
+    React.useEffect(()=>{if(scrollToJob!=null){setTab('jobs');setSelJob(scrollToJob);setTimeout(()=>{const el=document.getElementById('so-job-'+scrollToJob);if(el){el.scrollIntoView({behavior:'smooth',block:'center'});el.style.boxShadow='0 0 0 3px #7c3aed';setTimeout(()=>{el.style.boxShadow=''},2000)}},200)}},[scrollToJob]);
     const origRef=React.useRef(JSON.stringify(o));
     const markDirty=()=>setDirty(true);const[saved,setSaved]=useState(!!order.customer_id);const[showSend,setShowSend]=useState(false);const[showPick,setShowPick]=useState(false);const[pickId,setPickId]=useState(()=>{let max=4000;(allOrders||[]).concat([order]).forEach(so=>safeItems(so).forEach(it=>safePicks(it).forEach(pk=>{const m=parseInt((pk.pick_id||'').replace('IF-',''))||0;if(m>max)max=m})));return'IF-'+String(max+1)});const[showPO,setShowPO]=useState(null);const[poCounter,setPOCounter]=useState(()=>3001+Math.floor(Math.random()*100));
     const[pickNotes,setPickNotes]=useState('');const[pickShipDest,setPickShipDest]=useState('in_house');const[pickDecoVendor,setPickDecoVendor]=useState('');const[pickShipAddr,setPickShipAddr]=useState('default');
@@ -756,7 +756,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
     return newJobs;
   },[o,af]);// eslint-disable-line
 
-  // Auto-sync jobs whenever decorations or items change
+  // Auto-sync jobs whenever decorations or items change (does NOT mark dirty — auto-sync is not a user edit)
   React.useEffect(()=>{
     if(!isSO)return;
     const synced=syncJobs();
@@ -765,7 +765,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
     const currentUnits=safeJobs(o).map(j=>j.total_units+'-'+j.fulfilled_units).join(',');
     const newUnits=synced.map(j=>j.total_units+'-'+j.fulfilled_units).join(',');
     if(currentKeys!==newKeys||currentUnits!==newUnits){
-      sv('jobs',synced);
+      setO(e=>({...e,jobs:synced,updated_at:new Date().toLocaleString()}));
     }
   },[syncJobs]);// eslint-disable-line
 
@@ -4326,7 +4326,7 @@ export default function App(){
         {fj.map(j=>{const pct=j.total_units>0?Math.round(j.fulfilled_units/j.total_units*100):0;
           const ready=isJobReady(j,j.so);
           const onBoard=safeJobs(j.so).some(ej=>ej.id===j.id);
-          return<tr key={j.id+j.soId} style={{cursor:'pointer',background:j.daysOut!=null&&j.daysOut<=3?'#fef2f2':ready&&!onBoard?'#f0fdf4':undefined}} onClick={()=>{setESOTab('jobs');setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so.customer_id));setPg('orders')}}>
+          return<tr key={j.id+j.soId} style={{cursor:'pointer',background:j.daysOut!=null&&j.daysOut<=3?'#fef2f2':ready&&!onBoard?'#f0fdf4':undefined}} onClick={()=>{const ji2=safeJobs(j.so).findIndex(jj=>jj.id===j.id);setESOTab('jobs');setESOScrollJob(ji2>=0?ji2:null);setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so.customer_id));setPg('orders')}}>
             <td style={{fontWeight:700,color:'#1e40af',fontSize:12}}>{j.id}</td>
             <td><div style={{fontWeight:600,fontSize:12}}>{j.art_name}</div><div style={{fontSize:10,color:'#64748b'}}>{j.deco_type?.replace(/_/g,' ')} · {j.positions}</div></td>
             <td style={{fontSize:12}}>{j.customer} <span className="badge badge-gray">{j.alpha}</span></td>
@@ -4356,6 +4356,8 @@ export default function App(){
   const[artDashView,setArtDashView]=useState('artist');// 'artist' | 'rep'
   const[artRejectModal,setArtRejectModal]=useState(null);// {job, reason:''}
   const[artEditModal,setArtEditModal]=useState(null);// {job, instructions:'', notes:''}
+  const[artMockupModal,setArtMockupModal]=useState(null);// job object for art mockup popup
+  const[artMockupRevision,setArtMockupRevision]=useState('');// revision text in mockup popup
   const[prodJobModal,setProdJobModal]=useState(null);// job object for production mockup view
   const[prodJobLightbox,setProdJobLightbox]=useState(false);// lightbox for mockup image
   const[prodView,setProdView]=useState('board');const[prodFilter,setProdFilter]=useState('all');const[expandedJob,setExpandedJob]=useState(null);
@@ -4588,7 +4590,7 @@ export default function App(){
       {prodView==='list'&&<div className="card"><div className="card-body" style={{padding:0}}>
         <table><thead><tr><th>Job</th><th>Artwork</th><th>Customer</th><th>SO</th><th>Rep</th><th>Units</th><th>Art</th><th>Items</th><th>Production</th><th>Expected</th><th></th></tr></thead><tbody>
         {byStatus.map(j=>{const pct=j.total_units>0?Math.round(j.fulfilled_units/j.total_units*100):0;
-          return<tr key={j.id+j.soId} style={{cursor:'pointer'}} onClick={()=>{setESOTab('jobs');setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so.customer_id));setPg('orders')}}>
+          return<tr key={j.id+j.soId} style={{cursor:'pointer'}} onClick={()=>{const ji2=safeJobs(j.so).findIndex(jj=>jj.id===j.id);setESOTab('jobs');setESOScrollJob(ji2>=0?ji2:null);setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so.customer_id));setPg('orders')}}>
             <td style={{fontWeight:700,color:'#1e40af'}}>{j.id}</td>
             <td><div style={{fontWeight:600,fontSize:12}}>{j.art_name}</div><div style={{fontSize:10,color:'#64748b'}}>{j.deco_type?.replace(/_/g,' ')}</div></td>
             <td>{j.customer} <span className="badge badge-gray">{j.alpha}</span></td>
@@ -6787,26 +6789,30 @@ export default function App(){
         const af=safeArt(so).find(f=>f.id===j.art_file_id);
         if(af&&(af.prod_files||[]).length===0){nf('Upload production files first','error');return}
       }
-      const updatedJobs=safeJobs(so).map(jj=>jj.id===j.id?{...jj,art_status:newStatus,assigned_artist:jj.assigned_artist||j.assigned_artist}:jj);
+      const currentJobs=buildJobs(so);
+      const updatedJobs=currentJobs.map(jj=>jj.id===j.id?{...jj,art_status:newStatus,assigned_artist:jj.assigned_artist||j.assigned_artist}:jj);
       savSO({...so,jobs:updatedJobs});
       nf('Art status → '+ART_LABELS[newStatus]);
     };
     const assignArtist=(j,artistId)=>{
       const so=sos.find(s=>s.id===j.soId);if(!so)return;
-      const updatedJobs=safeJobs(so).map(jj=>jj.id===j.id?{...jj,assigned_artist:artistId}:jj);
+      const currentJobs=buildJobs(so);
+      const updatedJobs=currentJobs.map(jj=>jj.id===j.id?{...jj,assigned_artist:artistId}:jj);
       savSO({...so,jobs:updatedJobs});
       nf('Assigned to '+(REPS.find(r=>r.id===artistId)?.name||'Unassigned'));
     };
     const rejectArt=(j,reason)=>{
       const so=sos.find(s=>s.id===j.soId);if(!so)return;
       const rejection={by:cu.name,at:new Date().toISOString(),reason};
-      const updatedJobs=safeJobs(so).map(jj=>jj.id===j.id?{...jj,art_status:'art_in_progress',rejections:[...(jj.rejections||[]),rejection]}:jj);
+      const currentJobs=buildJobs(so);
+      const updatedJobs=currentJobs.map(jj=>jj.id===j.id?{...jj,art_status:'art_in_progress',rejections:[...(jj.rejections||[]),rejection]}:jj);
       savSO({...so,jobs:updatedJobs});
       nf('Art rejected — sent back to artist');
     };
     const updateArtRequest=(j,updates)=>{
       const so=sos.find(s=>s.id===j.soId);if(!so)return;
-      const updatedJobs=safeJobs(so).map(jj=>jj.id===j.id?{...jj,...updates}:jj);
+      const currentJobs=buildJobs(so);
+      const updatedJobs=currentJobs.map(jj=>jj.id===j.id?{...jj,...updates}:jj);
       savSO({...so,jobs:updatedJobs});
       nf('Art request updated');
     };
@@ -6864,6 +6870,7 @@ export default function App(){
               {artist&&<span style={{fontSize:9,fontWeight:700,color:'#7c3aed'}}>🎨 {artist.name.split(' ')[0]}</span>}
             </div>
             <div style={{fontSize:9,color:'#94a3b8'}}>{j.rep} · {j.alpha||j.soMemo}</div>
+            <button className="btn btn-sm" style={{fontSize:10,padding:'4px 10px',background:'linear-gradient(135deg,#1e40af,#7c3aed)',color:'white',border:'none',width:'100%',marginTop:4,fontWeight:600,borderRadius:6,display:'flex',alignItems:'center',justifyContent:'center',gap:4}} onClick={()=>{setArtMockupModal(j);setArtMockupRevision('')}}>🖼️ Mockup</button>
             <div style={{display:'flex',gap:3,marginTop:6,flexWrap:'wrap'}}>
               {col?.id==='art_requested'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#1e40af',color:'white',border:'none'}} onClick={()=>moveArtStatus(j,'art_in_progress')}>Start Working</button>}
               {col?.id==='art_in_progress'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#92400e',color:'white',border:'none'}} onClick={()=>moveArtStatus(j,'waiting_approval')}>Send to Rep</button>}
@@ -6883,18 +6890,16 @@ export default function App(){
             </div>
           </>}
 
-          {/* ─── REP VIEW: rep-facing actions (reject + edit) ─── */}
+          {/* ─── REP VIEW: rep-facing actions ─── */}
           {view==='rep'&&<>
             <div style={{display:'flex',alignItems:'center',gap:4,marginBottom:4}}>
               {artist&&<span style={{fontSize:10,padding:'1px 6px',borderRadius:4,background:'#ede9fe',color:'#6d28d9',fontWeight:600}}>🎨 {artist.name}</span>}
               <span style={{fontSize:9,padding:'1px 5px',borderRadius:4,background:SC[j.art_status]?.bg,color:SC[j.art_status]?.c,fontWeight:600}}>{ART_LABELS[j.art_status]||j.art_status}</span>
               <span style={{fontSize:9,color:'#94a3b8',marginLeft:'auto'}}>{j.rep}</span>
             </div>
+            {/* Mockup button — primary action, opens detail popup */}
+            <button className="btn btn-sm" style={{fontSize:11,padding:'6px 12px',background:'linear-gradient(135deg,#1e40af,#7c3aed)',color:'white',border:'none',width:'100%',marginTop:4,fontWeight:700,borderRadius:6,display:'flex',alignItems:'center',justifyContent:'center',gap:6}} onClick={()=>{setArtMockupModal(j);setArtMockupRevision('')}}>🖼️ Mockup{j.art_status==='waiting_approval'?' — Review & Approve':''}</button>
             <div style={{display:'flex',gap:3,marginTop:6,flexWrap:'wrap'}}>
-              {/* Approve (only when waiting_approval) */}
-              {j.art_status==='waiting_approval'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#166534',color:'white',border:'none'}} onClick={()=>moveArtStatus(j,'production_files_needed')}>Approve</button>}
-              {/* Reject with required text */}
-              {j.art_status==='waiting_approval'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#dc2626',color:'white',border:'none'}} onClick={()=>setArtRejectModal({job:j,reason:''})}>Reject</button>}
               {/* Edit request (only when art is not complete — coaches change minds) */}
               {j.art_status!=='art_complete'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#2563eb',color:'white',border:'none'}} onClick={()=>setArtEditModal({job:j,instructions:(j.art_requests||[]).length>0?j.art_requests[j.art_requests.length-1].instructions||'':'',notes:j.rep_notes||''})}>Edit Request</button>}
               <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px',marginLeft:'auto'}} onClick={()=>{setESOTab('jobs');setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so?.customer_id));setPg('orders')}}>Open SO</button>
@@ -7058,6 +7063,160 @@ export default function App(){
           }}>Save Changes</button>
         </div>
       </div></div>}
+
+      {/* ═══ ART MOCKUP POPUP — full detail with approve/revise ═══ */}
+      {artMockupModal&&(()=>{
+        const j=artMockupModal;
+        const so=j.so||sos.find(s=>s.id===j.soId);
+        if(!so)return null;
+        const c2=cust.find(x=>x.id===so.customer_id);
+        const af=j.artFile||safeArt(so).find(f=>f.id===j.art_file_id);
+        const mockupFiles=(af?.mockup_files||af?.files||[]);
+        const prodFilesL=(af?.prod_files||[]);
+        const colorList=af?(af.ink_colors||af.thread_colors||'').split(/[,\n]/).map(c3=>c3.trim()).filter(Boolean):[];
+        const isEmb=af?.deco_type==='embroidery';
+        const colorMap={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000',
+          'Silver':'#C0C0C0','Royal':'#4169e1','Cardinal':'#8C1515','Green':'#166534','Orange':'#EA580C',
+          'Navy 2767':'#001f3f','PMS 286':'#0033A0','PMS 032':'#EF3340','PMS 877':'#C0C0C0'};
+        // Build size grid
+        const itemDetails=(j.items||[]).map(gi=>{
+          const it=safeItems(so)[gi.item_idx];if(!it)return null;
+          const sizes={};
+          Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{sizes[sz]=v});
+          return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes};
+        }).filter(Boolean);
+        const allSizes=SZ_ORD.filter(sz=>itemDetails.some(it=>it.sizes[sz]>0));
+
+        return<div className="modal-overlay" onClick={()=>setArtMockupModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:900,maxHeight:'94vh',overflow:'auto'}}>
+          <div className="modal-header" style={{background:'linear-gradient(135deg,#1e293b,#334155)',color:'white'}}>
+            <div>
+              <h2 style={{color:'white',margin:0}}>{j.art_name}</h2>
+              <div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>{j.customer} · {so.id} · {j.deco_type?.replace(/_/g,' ')} · {j.positions}</div>
+            </div>
+            <div style={{display:'flex',gap:6,alignItems:'center'}}>
+              <span style={{padding:'3px 10px',borderRadius:8,fontSize:11,fontWeight:700,background:SC[j.art_status]?.bg,color:SC[j.art_status]?.c}}>{ART_LABELS[j.art_status]||j.art_status}</span>
+              <button className="modal-close" style={{color:'white'}} onClick={()=>setArtMockupModal(null)}>×</button>
+            </div>
+          </div>
+          <div className="modal-body" style={{padding:0}}>
+            {/* Mockup image — large and prominent */}
+            <div style={{background:'#f8fafc',padding:28,display:'flex',flexDirection:'column',alignItems:'center',borderBottom:'1px solid #e2e8f0'}}>
+              <div style={{width:'100%',maxWidth:480,minHeight:320,borderRadius:12,background:'white',border:'2px dashed #d1d5db',display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column',overflow:'hidden'}}>
+                {mockupFiles.length>0?<>
+                  <div style={{fontSize:80,marginBottom:8}}>🖼️</div>
+                  <div style={{fontSize:14,fontWeight:700,color:'#1e40af'}}>{mockupFiles[0]}</div>
+                  {mockupFiles.length>1&&<div style={{fontSize:11,color:'#64748b',marginTop:4}}>+{mockupFiles.length-1} more file{mockupFiles.length>2?'s':''}</div>}
+                </>:<>
+                  <div style={{fontSize:64,marginBottom:8}}>🎨</div>
+                  <div style={{fontSize:13,color:'#94a3b8',fontWeight:600}}>No mockup uploaded yet</div>
+                </>}
+              </div>
+              {mockupFiles.length>0&&<div style={{display:'flex',gap:6,marginTop:12,flexWrap:'wrap'}}>
+                {mockupFiles.map((f,i)=><div key={i} style={{padding:'6px 12px',background:'#dbeafe',border:'1px solid #93c5fd',borderRadius:6,cursor:'pointer',fontSize:11,fontWeight:600,color:'#1e40af',display:'flex',alignItems:'center',gap:4}}
+                  onClick={()=>nf('Would download: '+f)}><span style={{fontSize:14}}>🖼️</span>{f}</div>)}
+              </div>}
+            </div>
+
+            {/* Decoration Details + Colors */}
+            <div style={{padding:'20px 24px',borderBottom:'1px solid #e2e8f0'}}>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:14}}>
+                <div><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:2}}>Method</div>
+                  <div style={{fontSize:15,fontWeight:700,color:'#0f172a'}}>{j.deco_type?.replace(/_/g,' ')||'—'}</div></div>
+                <div><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:2}}>Position(s)</div>
+                  <div style={{fontSize:15,fontWeight:700,color:'#0f172a'}}>{j.positions||'—'}</div></div>
+                <div><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:2}}>Art Size</div>
+                  <div style={{fontSize:15,fontWeight:700,color:'#0f172a'}}>{af?.art_size||'—'}</div></div>
+              </div>
+              {colorList.length>0&&<div style={{marginTop:14}}>
+                <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6}}>{isEmb?'Thread Colors':'Ink Colors / Pantones'} ({colorList.length})</div>
+                <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                  {colorList.map((cl,i)=>{
+                    const clLower=cl.toLowerCase();
+                    const swatchColor=colorMap[cl]||Object.entries(colorMap).find(([k])=>clLower.includes(k.toLowerCase()))?.[1]||null;
+                    return<div key={i} style={{display:'flex',alignItems:'center',gap:6,padding:'5px 12px',background:'white',border:'1px solid #e2e8f0',borderRadius:6}}>
+                      <div style={{width:18,height:18,borderRadius:4,border:'1px solid #d1d5db',background:swatchColor||'linear-gradient(135deg,#f1f5f9,#e2e8f0)'}}/>
+                      <span style={{fontSize:12,fontWeight:600}}>{cl}</span>
+                    </div>})}
+                </div>
+              </div>}
+              {af?.notes&&<div style={{marginTop:10,fontSize:12,color:'#64748b'}}><strong>Notes:</strong> {af.notes}</div>}
+            </div>
+
+            {/* SKUs & Quantities */}
+            <div style={{padding:'20px 24px',borderBottom:'1px solid #e2e8f0'}}>
+              <div style={{fontSize:13,fontWeight:800,color:'#1e3a5f',marginBottom:10}}>SKUs & Quantities — {j.total_units} total units</div>
+              {itemDetails.map((gi,gii)=>{
+                const rowTotal=Object.values(gi.sizes).reduce((a,v)=>a+v,0);
+                return<div key={gii} style={{marginBottom:gii<itemDetails.length-1?10:0}}>
+                  <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
+                    <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:12}}>{gi.sku}</span>
+                    <span style={{fontWeight:600,fontSize:13}}>{gi.name}</span>
+                    <span style={{color:'#64748b',fontSize:12}}>({gi.color})</span>
+                    {gi.brand&&<span className="badge badge-gray">{gi.brand}</span>}
+                    <span style={{marginLeft:'auto',fontWeight:800,fontSize:13,color:'#1e40af'}}>{rowTotal}</span>
+                  </div>
+                  <div style={{overflowX:'auto'}}>
+                    <table style={{fontSize:12,minWidth:300}}><thead><tr style={{background:'#f0f2f5'}}>
+                      <th style={{textAlign:'left',padding:'5px 8px',fontSize:10,fontWeight:700}}>SIZE</th>
+                      {allSizes.map(sz=><th key={sz} style={{textAlign:'center',padding:'5px 8px',fontSize:10,fontWeight:700,minWidth:38}}>{sz}</th>)}
+                      <th style={{textAlign:'center',padding:'5px 8px',fontSize:10,fontWeight:800}}>TOTAL</th>
+                    </tr></thead><tbody>
+                      <tr>{['QTY',...allSizes.map(sz=>gi.sizes[sz]||'—'),rowTotal].map((v,i)=>
+                        <td key={i} style={{textAlign:i===0?'left':'center',padding:'5px 8px',fontWeight:typeof v==='number'?800:i===0?700:400,
+                          color:typeof v==='number'?'#1e40af':i===0?'#475569':'#cbd5e1',
+                          background:typeof v==='number'&&i>0?'#eef2ff':i===allSizes.length+1?'#f0f2f5':''}}>{v}</td>)}
+                      </tr>
+                    </tbody></table>
+                  </div>
+                </div>})}
+            </div>
+
+            {/* Production Files */}
+            {(prodFilesL.length>0||mockupFiles.length>0)&&<div style={{padding:'16px 24px',borderBottom:'1px solid #e2e8f0'}}>
+              <div style={{fontSize:13,fontWeight:800,color:'#1e3a5f',marginBottom:8}}>Files</div>
+              <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                {prodFilesL.map((f,i)=><div key={'p'+i} style={{display:'flex',alignItems:'center',gap:4,padding:'6px 10px',background:'#fef3c7',border:'1px solid #fde68a',borderRadius:6,cursor:'pointer',fontSize:11,fontWeight:600,color:'#92400e'}}
+                  onClick={()=>nf('Would download: '+f)}>📁 {f}</div>)}
+              </div>
+            </div>}
+
+            {/* Rejections history */}
+            {(j.rejections||[]).length>0&&<div style={{padding:'16px 24px',borderBottom:'1px solid #e2e8f0',background:'#fef2f2'}}>
+              <div style={{fontSize:12,fontWeight:700,color:'#dc2626',marginBottom:6}}>Previous Rejections ({j.rejections.length})</div>
+              {j.rejections.map((r,ri)=><div key={ri} style={{padding:'6px 10px',background:'white',borderRadius:6,marginBottom:4,border:'1px solid #fecaca'}}>
+                <div style={{fontSize:12,color:'#7f1d1d'}}>{r.reason}</div>
+                <div style={{fontSize:10,color:'#94a3b8'}}>by {r.by} · {new Date(r.at).toLocaleDateString()}</div>
+              </div>)}
+            </div>}
+
+            {/* ─── Approve / Request Revision section ─── */}
+            {j.art_status==='waiting_approval'&&<div style={{padding:'20px 24px',background:'#fffbeb',borderBottom:'1px solid #fde68a'}}>
+              <div style={{fontWeight:700,color:'#92400e',marginBottom:10,fontSize:14}}>This artwork needs your review</div>
+              <div style={{display:'flex',gap:12,alignItems:'flex-start'}}>
+                <button className="btn" style={{padding:'12px 28px',background:'#22c55e',color:'white',border:'none',borderRadius:8,fontSize:14,fontWeight:800,cursor:'pointer',whiteSpace:'nowrap'}} onClick={()=>{
+                  moveArtStatus(j,'production_files_needed');
+                  setArtMockupModal(null);
+                }}>Approve</button>
+                <div style={{flex:1}}>
+                  <textarea className="form-input" rows={3} placeholder="Tell the artist what needs to change — colors, sizing, placement, etc. (required to reject)" value={artMockupRevision} onChange={e=>setArtMockupRevision(e.target.value)} style={{resize:'vertical',fontSize:12,marginBottom:6}}/>
+                  <button className="btn" style={{padding:'8px 20px',background:'#dc2626',color:'white',border:'none',borderRadius:6,fontSize:12,fontWeight:700,cursor:artMockupRevision.trim()?'pointer':'not-allowed',opacity:artMockupRevision.trim()?1:0.5}} disabled={!artMockupRevision.trim()} onClick={()=>{
+                    rejectArt(j,artMockupRevision.trim());
+                    setArtMockupModal(null);setArtMockupRevision('');
+                  }}>Request Revision</button>
+                </div>
+              </div>
+            </div>}
+            {j.art_status==='art_complete'&&<div style={{padding:'16px 24px',background:'#f0fdf4',borderBottom:'1px solid #bbf7d0'}}>
+              <div style={{fontSize:14,fontWeight:700,color:'#166534'}}>Approved</div>
+            </div>}
+          </div>
+          <div className="modal-footer">
+            {j.art_status!=='art_complete'&&<button className="btn btn-secondary" onClick={()=>setArtEditModal({job:j,instructions:(j.art_requests||[]).length>0?j.art_requests[j.art_requests.length-1].instructions||'':'',notes:j.rep_notes||''})}>Edit Request</button>}
+            <button className="btn btn-secondary" onClick={()=>{setESOTab('jobs');setESO(so);setESOC(c2);setPg('orders');setArtMockupModal(null)}}>Open Full Job</button>
+            <button className="btn btn-secondary" style={{marginLeft:'auto'}} onClick={()=>setArtMockupModal(null)}>Close</button>
+          </div>
+        </div></div>
+      })()}
     </>);
   };
 
