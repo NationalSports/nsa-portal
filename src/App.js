@@ -1,6 +1,48 @@
 /* eslint-disable */
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import './portal.css';
+import { createClient } from '@supabase/supabase-js';
+
+// ─── Supabase Setup ───
+const _sbUrl = process.env.REACT_APP_SUPABASE_URL || '';
+const _sbKey = process.env.REACT_APP_SUPABASE_ANON_KEY || '';
+const supabase = (_sbUrl && _sbKey && !_sbUrl.includes('your-project')) ? createClient(_sbUrl, _sbKey) : null;
+
+const _dbLoad = async () => {
+  if (!supabase) return null;
+  const [r1,r2,r3,r4,r5,r6,r7,r8,r9] = await Promise.all([
+    supabase.from('team_members').select('*').order('name'),
+    supabase.from('customers').select('*').order('name'),
+    supabase.from('vendors').select('*').order('name'),
+    supabase.from('products').select('*').order('name'),
+    supabase.from('estimates').select('*').order('id'),
+    supabase.from('sales_orders').select('*').order('id'),
+    supabase.from('invoices').select('*').order('id'),
+    supabase.from('messages').select('*').order('id'),
+    supabase.from('omg_stores').select('*').order('id'),
+  ]);
+  const errs = [r1,r2,r3,r4,r5,r6,r7,r8,r9].filter(r=>r.error);
+  if(errs.length) console.error('[DB] Load errors:', errs.map(r=>r.error.message));
+  return { team:r1.data||[], customers:r2.data||[], vendors:r3.data||[], products:r4.data||[],
+    estimates:r5.data||[], sales_orders:r6.data||[], invoices:r7.data||[], messages:r8.data||[], omg_stores:r9.data||[],
+    hasData: (r2.data&&r2.data.length>0)||(r6.data&&r6.data.length>0) };
+};
+const _dbSeed = async (d) => {
+  if (!supabase) return;
+  await Promise.all([
+    d.team?.length && supabase.from('team_members').upsert(d.team, {onConflict:'id'}),
+    d.customers?.length && supabase.from('customers').upsert(d.customers, {onConflict:'id'}),
+    d.vendors?.length && supabase.from('vendors').upsert(d.vendors, {onConflict:'id'}),
+    d.products?.length && supabase.from('products').upsert(d.products, {onConflict:'id'}),
+    d.estimates?.length && supabase.from('estimates').upsert(d.estimates, {onConflict:'id'}),
+    d.sales_orders?.length && supabase.from('sales_orders').upsert(d.sales_orders, {onConflict:'id'}),
+    d.invoices?.length && supabase.from('invoices').upsert(d.invoices, {onConflict:'id'}),
+    d.messages?.length && supabase.from('messages').upsert(d.messages, {onConflict:'id'}),
+    d.omg_stores?.length && supabase.from('omg_stores').upsert(d.omg_stores, {onConflict:'id'}),
+  ].filter(Boolean));
+};
+const _dbSave = (table, data) => { if(supabase && data) supabase.from(table).upsert(Array.isArray(data)?data:[data], {onConflict:'id'}).then(r=>{if(r.error)console.error('[DB] save '+table+':', r.error.message)}) };
+
 // ─── Cloudinary Config ───
 const CLOUDINARY_CLOUD='dwlyljyuz';
 const CLOUDINARY_PRESET='ml_default_nsaportal';
@@ -3672,8 +3714,10 @@ export default function App(){
   };
   const _migrated=useMemo(()=>migrateState(),[]);
   const[REPS,setREPS]=useState(()=>loadState('reps',DEFAULT_REPS));
-  const[cust,setCust]=useState(()=>loadState('cust',D_C));const[vend]=useState(D_V);const[prod,setProd]=useState(()=>loadState('prod',D_P));
+  const[cust,setCust]=useState(()=>loadState('cust',D_C));const[vend,setVend]=useState(D_V);const[prod,setProd]=useState(()=>loadState('prod',D_P));
   const[ests,setEsts]=useState(()=>_migrated.ests);const[sos,setSOs]=useState(()=>_migrated.sos);const[invs,setInvs]=useState(()=>_migrated.invs);
+  const[omgStores,setOmgStores]=useState(D_OMG);
+  const[dbLoading,setDbLoading]=useState(!!supabase);const _dbReady=useRef(false);
   // Batch PO system
   const[batchPOs,setBatchPOs]=useState([]);// pending queue
   const[submittedBatches,setSubmittedBatches]=useState([]);// submitted batches for scan lookup
@@ -3701,14 +3745,41 @@ export default function App(){
   // SO version history
   const[soHistory,setSOHistory]=useState({});// {soId:[{ts,user,snapshot}]}
   const[msgs,setMsgs]=useState(()=>_migrated.msgs);const[cM,setCM]=useState({open:false,c:null});const[aM,setAM]=useState({open:false,p:null});
-  // Auto-save state to localStorage on change
-  React.useEffect(()=>{try{localStorage.setItem('nsa_reps',JSON.stringify(REPS))}catch{}},[REPS]);
-  React.useEffect(()=>{try{localStorage.setItem('nsa_cust',JSON.stringify(cust))}catch{}},[cust]);
-  React.useEffect(()=>{try{localStorage.setItem('nsa_prod',JSON.stringify(prod))}catch{}},[prod]);
-  React.useEffect(()=>{try{localStorage.setItem('nsa_ests',JSON.stringify(ests))}catch{}},[ests]);
-  React.useEffect(()=>{try{localStorage.setItem('nsa_sos',JSON.stringify(sos))}catch{}},[sos]);
-  React.useEffect(()=>{try{localStorage.setItem('nsa_invs',JSON.stringify(invs))}catch{}},[invs]);
-  React.useEffect(()=>{try{localStorage.setItem('nsa_msgs',JSON.stringify(msgs))}catch{}},[msgs]);
+  // ─── Supabase: load on mount, seed if empty ───
+  React.useEffect(()=>{
+    if(!supabase){setDbLoading(false);return}
+    let c=false;
+    (async()=>{
+      try{
+        const d=await _dbLoad();
+        if(c||!d)return;
+        if(d.hasData){
+          if(d.team.length)setREPS(d.team);if(d.customers.length)setCust(d.customers);
+          if(d.vendors.length)setVend(d.vendors);if(d.products.length)setProd(d.products);
+          if(d.estimates.length)setEsts(d.estimates);if(d.sales_orders.length)setSOs(d.sales_orders);
+          if(d.invoices.length)setInvs(d.invoices);if(d.messages.length)setMsgs(d.messages);
+          if(d.omg_stores.length)setOmgStores(d.omg_stores);
+          console.log('[DB] Loaded from Supabase');
+        }else{
+          console.log('[DB] Supabase empty, seeding...');
+          await _dbSeed({team:DEFAULT_REPS,customers:D_C,vendors:D_V,products:D_P,
+            estimates:D_E,sales_orders:D_SO,invoices:D_INV,messages:D_MSG,omg_stores:D_OMG});
+          console.log('[DB] Seeded');
+        }
+      }catch(e){console.error('[DB] Load failed:',e)}
+      finally{if(!c){_dbReady.current=true;setDbLoading(false)}}
+    })();
+    return()=>{c=true};
+  },[]);
+  // Auto-save to localStorage + Supabase
+  React.useEffect(()=>{try{localStorage.setItem('nsa_reps',JSON.stringify(REPS))}catch{};if(_dbReady.current)_dbSave('team_members',REPS)},[REPS]);
+  React.useEffect(()=>{try{localStorage.setItem('nsa_cust',JSON.stringify(cust))}catch{};if(_dbReady.current)_dbSave('customers',cust)},[cust]);
+  React.useEffect(()=>{try{localStorage.setItem('nsa_prod',JSON.stringify(prod))}catch{};if(_dbReady.current)_dbSave('products',prod)},[prod]);
+  React.useEffect(()=>{try{localStorage.setItem('nsa_ests',JSON.stringify(ests))}catch{};if(_dbReady.current)ests.forEach(e=>_dbSave('estimates',e))},[ests]);
+  React.useEffect(()=>{try{localStorage.setItem('nsa_sos',JSON.stringify(sos))}catch{};if(_dbReady.current)sos.forEach(s=>_dbSave('sales_orders',s))},[sos]);
+  React.useEffect(()=>{try{localStorage.setItem('nsa_invs',JSON.stringify(invs))}catch{};if(_dbReady.current)invs.forEach(i=>_dbSave('invoices',i))},[invs]);
+  React.useEffect(()=>{try{localStorage.setItem('nsa_msgs',JSON.stringify(msgs))}catch{};if(_dbReady.current)_dbSave('messages',msgs)},[msgs]);
+  React.useEffect(()=>{if(_dbReady.current)_dbSave('omg_stores',omgStores)},[omgStores]);
   const[q,setQ]=useState('');const[selC,setSelC]=useState(null);const[selV,setSelV]=useState(null);
   const[eEst,setEEst]=useState(null);const[eEstC,setEEstC]=useState(null);const[eSO,setESO]=useState(null);const[eSOC,setESOC]=useState(null);const[eSOTab,setESOTab]=useState(null);const[eSOScrollItem,setESOScrollItem]=useState(null);const[eSOScrollJob,setESOScrollJob]=useState(null);
   const[gQ,setGQ]=useState('');const[gOpen,setGOpen]=useState(false);const[mF,setMF]=useState('all');const[rF,setRF]=useState('all');const[pF,setPF]=useState({cat:'all',vnd:'all',stk:'all',clr:'all'});
@@ -5940,7 +6011,7 @@ export default function App(){
       {(rptTab==='overview')&&<div className="card" style={{marginBottom:12}}>
         <WH id="omgStores" title="OMG Team Stores" icon="🏪"/>
         {rptWidgets.omgStores&&(()=>{
-          const stores=D_OMG||[];
+          const stores=omgStores||[];
           const filtStores=rptRep==='all'?stores:stores.filter(s=>s.rep_id===rptRep);
           const open=filtStores.filter(s=>s.status==='open');
           const closed=filtStores.filter(s=>s.status==='closed');
@@ -6345,7 +6416,7 @@ export default function App(){
 
   // OMG TEAM STORES PAGE
   const rOMG=()=>{
-    const stores=D_OMG;
+    const stores=omgStores;
     const filtered=stores.filter(s=>{
       if(omgFilter.rep!=='all'&&s.rep_id!==omgFilter.rep)return false;
       if(omgFilter.status!=='all'&&s.status!==omgFilter.status)return false;
@@ -8560,6 +8631,10 @@ export default function App(){
     // NAV
   const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'reports',label:'Reports',icon:'dollar'},{id:'commissions',label:'Commissions',icon:'dollar',roles:['admin','rep']},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'art',label:'Art Dashboard',icon:'image'},{id:'production',label:'Prod Board',icon:'package'},{id:'decoration',label:'Decoration',icon:'image'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{id:'team',label:'Team',icon:'users'},{section:'Comms'},{id:'messages',label:'Messages',icon:'mail'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'System'},{id:'issues',label:'Issues',icon:'alert'},{id:'import',label:'Import / Upload',icon:'upload'},{id:'qb',label:'QuickBooks Sync',icon:'dollar'},{id:'backup',label:'Backup & Data',icon:'save'}];
   const titles={dashboard:'Dashboard',reports:'Reports & Analytics',commissions:'Commissions',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',omg:'OMG Team Stores',jobs:'Jobs',art:'Art Dashboard',production:'Production Board',decoration:'Decoration',warehouse:'Warehouse',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',team:'Team Directory',products:'Products',inventory:'Inventory',messages:'Messages',issues:'Issues',import:'Import / Upload',qb:'QuickBooks Online',backup:'Backup & Data'};
+  // LOADING GATE
+  if(dbLoading)return<div style={{minHeight:'100vh',background:'linear-gradient(135deg,#0f172a 0%,#1e3a5f 50%,#0f172a 100%)',display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column',gap:16}}>
+    <div style={{fontSize:48,fontWeight:900,color:'white',letterSpacing:-2}}>NSA</div>
+    <div style={{fontSize:13,color:'#94a3b8',letterSpacing:3}}>Loading...</div></div>;
   // LOGIN GATE
   if(!cu)return<LoginGate onLogin={handleLogin} reps={REPS}/>;
 
