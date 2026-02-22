@@ -125,9 +125,10 @@ const printDoc=({title,docNum,docType,headerRight,infoBoxes,tables,notes,footer,
   setTimeout(()=>w.print(),350);
 };
 let _idSeq=0;const uid=(prefix)=>prefix+Date.now().toString(36).slice(-4)+String(++_idSeq).padStart(2,'0');
-let _estSeq=2101;let _soSeq=1042;
+let _estSeq=2101;let _soSeq=1042;let _invSeq=1061;
 const nextEstId=(ests)=>{const nums=(ests||[]).map(e=>{const m=(e.id||'').match(/EST-(\d+)/);return m?parseInt(m[1]):0});const next=Math.max(_estSeq,...nums)+1;_estSeq=next;return'EST-'+next};
 const nextSOId=(sos)=>{const nums=(sos||[]).map(s=>{const m=(s.id||'').match(/SO-(\d+)/);return m?parseInt(m[1]):0});const next=Math.max(_soSeq,...nums)+1;_soSeq=next;return'SO-'+next};
+const nextInvId=(invs)=>{const nums=(invs||[]).map(i=>{const m=(i.id||'').match(/INV-(\d+)/);return m?parseInt(m[1]):0});const next=Math.max(_invSeq,...nums)+1;_invSeq=next;return'INV-'+next};
 const CATEGORIES=['Tees','Hoodies','Polos','Shorts','1/4 Zips','Hats','Footwear','Jersey Tops','Jersey Bottoms','Balls'];
 const CONTACT_ROLES=['Head Coach','Assistant','Accounting','Athletic Director','Primary','Other'];
 const POSITIONS=['Front Center','Back Center','Left Chest','Right Chest','Left Sleeve','Right Sleeve','Left Leg','Right Leg','Nape','Other'];
@@ -145,7 +146,7 @@ function dP(d,q,artFiles,cq){
   const pq=cq||q;
   // Art-based decoration: get type from art file
   if(d.kind==='art'&&d.art_file_id&&artFiles){// Art TBD
-    if(d.art_file_id==='__tbd'||d.art_file_id?.startsWith('__tbd_')){const tType=d.art_tbd_type||'screen_print';
+    if(d.art_file_id==='__tbd'){const tType=d.art_tbd_type||'screen_print';
       if(tType==='screen_print'){const nc=d.tbd_colors||1;const u=d.underbase?1+SP.ub:1;return{sell:d.sell_override||rQ(spP(pq,nc,true)*u),cost:rQ(spP(pq,nc,false)*u)}}
       if(tType==='embroidery')return{sell:d.sell_override||emP(d.tbd_stitches||8000,pq,true),cost:emP(d.tbd_stitches||8000,pq,false)};
       if(tType==='heat_press'||tType==='dtf'){const t=DTF[d.tbd_dtf_size||0];return{sell:d.sell_override||t.sell,cost:t.cost}};
@@ -585,7 +586,7 @@ function LoginGate({onLogin,reps}){
   );
 }
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack,onConvertSO,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,batchPOs,onBatchPO,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack,onConvertSO,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,allInvoices,batchPOs,onBatchPO,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob}){
   const isE=mode==='estimate';const isSO=mode==='so';
   const[o,setO]=useState(order);const[cust,setCust]=useState(ic);const[pS,setPS]=useState('');const[showAdd,setShowAdd]=useState(false);
   const[tab,setTab]=useState(initTab||'items');const[dirty,setDirty]=useState(false);const[selJob,setSelJob]=useState(null);const[jobNote,setJobNote]=useState('');const[msgDept,setMsgDept]=useState('all');
@@ -643,8 +644,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
   const isAU=b=>b==='Adidas'||b==='Under Armour'||b==='New Balance';const tD={A:0.4,B:0.35,C:0.3};
   const selC=id=>{const c=allCustomers.find(x=>x.id===id);if(c){setCust(c);sv('customer_id',id);sv('default_markup',c.catalog_markup||1.65)}};
   const addP=p=>{const au=isAU(p.brand);const sell=au?rQ(p.retail_price*(1-(tD[cust?.adidas_ua_tier||'B']||0.35))):rQ(p.nsa_cost*(o.default_markup||1.65));
-    const defDeco=isE?(tbdArts.length>0?tbdArts.map(t=>({kind:'art',art_file_id:t.id,art_tbd_type:t.type,tbd_colors:t.colors,tbd_stitches:t.stitches,underbase:t.underbase,position:t.position,sell_override:0})):[{kind:'art',art_file_id:'__tbd',art_tbd_type:'screen_print',position:'',sell_override:0}]):[];
-    sv('items',[...o.items,{product_id:p.id,sku:p.sku,name:p.name,brand:p.brand,color:p.color,nsa_cost:p.nsa_cost,retail_price:p.retail_price,unit_sell:sell,available_sizes:[...p.available_sizes],_colors:p._colors||null,sizes:{},decorations:defDeco}]);setShowAdd(false);setPS('')};
+    sv('items',[...o.items,{product_id:p.id,sku:p.sku,name:p.name,brand:p.brand,color:p.color,nsa_cost:p.nsa_cost,retail_price:p.retail_price,unit_sell:sell,available_sizes:[...p.available_sizes],_colors:p._colors||null,sizes:{},decorations:isE?[{kind:'art',art_file_id:'__tbd',art_tbd_type:'screen_print',position:'',sell_override:0}]:[]}]);setShowAdd(false);setPS('')};
   const uI=(i,k,v)=>sv('items',safeItems(o).map((it,x)=>x===i?{...it,[k]:v}:it));const rmI=i=>sv('items',safeItems(o).filter((_,x)=>x!==i));
   const copyI=(i)=>{const it=o.items[i];const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];clone.sizes={};sv('items',[...o.items,clone]);nf('📋 Copied '+it.sku+' — adjust sizes on the new item')};
   const uSz=(i,sz,v)=>{
@@ -674,16 +674,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
   const uArt=(i,k,v)=>sv('art_files',af.map((f,x)=>x===i?{...f,[k]:v}:f));
   const rmArt=i=>sv('art_files',af.filter((_,x)=>x!==i));
 
-  // TBD Art management — estimate-level shared TBD definitions
-  const tbdArts=o.tbd_arts||[];
-  const addTbd=()=>{const num=tbdArts.length+1;sv('tbd_arts',[...tbdArts,{id:'__tbd_'+Date.now(),label:'TBD #'+num,type:'screen_print',colors:1,stitches:8000,underbase:false,position:'Front Center'}])};
-  const uTbd=(i,updates)=>{const newTbds=tbdArts.map((t,x)=>x===i?{...t,...updates}:t);const updated=newTbds[i];sv('tbd_arts',newTbds);
-    // Sync to all decos referencing this TBD
-    const newItems=o.items.map(it=>({...it,decorations:safeDecos(it).map(d=>d.art_file_id===updated.id?{...d,art_tbd_type:updated.type,tbd_colors:updated.colors,tbd_stitches:updated.stitches,underbase:updated.underbase,position:updated.position,sell_override:0}:d)}));sv('items',newItems)};
-  const rmTbd=(i)=>{const tid=tbdArts[i]?.id;sv('tbd_arts',tbdArts.filter((_,x)=>x!==i));
-    // Remove references from all items
-    const newItems=o.items.map(it=>({...it,decorations:safeDecos(it).filter(d=>d.art_file_id!==tid)}));sv('items',newItems)};
-  const tbdQty=(tid)=>{let q=0;safeItems(o).forEach(it=>{const iq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);if(safeDecos(it).some(d=>d.art_file_id===tid))q+=iq});return q};
   const addFileToArt=i=>{const a=af[i];uArt(i,'files',[...a.files,'new_file_'+(a.files.length+1)+'.ai'])};
 
   const addrs=useMemo(()=>getAddrs(cust,allCustomers),[cust,allCustomers]);
@@ -857,8 +847,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
             decos.forEach(d=>{
               const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);
               const artF=af.find(a2=>a2.id===d.art_file_id);
-              const tdRef=d.art_file_id?.startsWith('__tbd_')?(o.tbd_arts||[]).find(t=>t.id===d.art_file_id):null;
-              const decoLabel=(d.kind==='art'?(tdRef?tdRef.label+' ('+tdRef.type.replace('_',' ')+')':artF?.deco_type||d.art_tbd_type||'decoration'):d.kind==='numbers'?'Numbers ('+(d.num_method||'heat transfer').replace(/_/g,' ')+' '+(d.num_size||'4"')+')':d.kind==='names'?'Names':d.kind==='outside_deco'?(d.deco_type||'Decoration'):'Decoration').replace(/_/g,' ');
+              const decoLabel=(d.kind==='art'?(artF?.deco_type||d.art_tbd_type||'decoration'):d.kind==='numbers'?'Numbers ('+(d.num_method||'heat transfer').replace(/_/g,' ')+' '+(d.num_size||'4"')+')':d.kind==='names'?'Names':d.kind==='outside_deco'?(d.deco_type||'Decoration'):'Decoration').replace(/_/g,' ');
               const posLabel=d.position?' — '+d.position:'';
               // Build number list for print
               let numHtml='';
@@ -954,30 +943,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
     </div>
 
     {/* LINE ITEMS */}
-    {tab==='items'&&<>
-      {/* Shared TBD Art Definitions */}
-      {isE&&(tbdArts.length>0||safeItems(o).length>0)&&<div style={{marginBottom:12,padding:12,background:'#fffbeb',borderRadius:8,border:'1px solid #fde68a'}}>
-        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:tbdArts.length>0?8:0}}>
-          <span style={{fontSize:12,fontWeight:700,color:'#92400e'}}>🎨 Shared Art (TBD) — applies across items</span>
-          <button className="btn btn-sm" style={{fontSize:10,background:'#fef3c7',border:'1px solid #f59e0b',color:'#92400e'}} onClick={addTbd}>+ Add TBD Art</button>
-        </div>
-        {tbdArts.map((tbd,ti)=>{const tq=tbdQty(tbd.id);const dp=dP({kind:'art',art_file_id:tbd.id,art_tbd_type:tbd.type,tbd_colors:tbd.colors,tbd_stitches:tbd.stitches,underbase:tbd.underbase,sell_override:0},0,[],tq);
-          return<div key={tbd.id} style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',padding:'6px 8px',background:'white',borderRadius:6,marginBottom:4,border:'1px solid #fde68a'}}>
-            <span style={{fontSize:13,fontWeight:800,color:'#92400e',minWidth:60}}>{tbd.label}</span>
-            <select className="form-select" style={{width:120,fontSize:11}} value={tbd.type} onChange={e=>uTbd(ti,{type:e.target.value})}>
-              <option value="screen_print">Screen Print</option><option value="embroidery">Embroidery</option><option value="heat_press">Heat Press</option><option value="dtf">DTF</option></select>
-            {tbd.type==='screen_print'&&<select className="form-select" style={{width:80,fontSize:10}} value={tbd.colors} onChange={e=>uTbd(ti,{colors:parseInt(e.target.value)})}>
-              {[1,2,3,4,5].map(n=><option key={n} value={n}>{n} color{n>1?'s':''}</option>)}</select>}
-            {tbd.type==='screen_print'&&<label style={{fontSize:10,display:'flex',alignItems:'center',gap:3,cursor:'pointer'}}><input type="checkbox" checked={tbd.underbase||false} onChange={e=>uTbd(ti,{underbase:e.target.checked})}/> UB</label>}
-            {tbd.type==='embroidery'&&<select className="form-select" style={{width:100,fontSize:10}} value={tbd.stitches} onChange={e=>uTbd(ti,{stitches:parseInt(e.target.value)})}>
-              <option value={8000}>≤10k st</option><option value={12000}>10k-15k</option><option value={18000}>15k-20k</option><option value={25000}>20k+</option></select>}
-            <select className="form-select" style={{width:110,fontSize:10}} value={tbd.position} onChange={e=>uTbd(ti,{position:e.target.value})}>{POSITIONS.map(p=><option key={p}>{p}</option>)}</select>
-            <span style={{fontSize:10,color:'#64748b',marginLeft:4}}>{tq>0?tq+' pcs':'no items'}</span>
-            {tq>0&&<span style={{fontSize:10,color:'#166534',fontWeight:600}}>${dp.sell.toFixed(2)}/ea</span>}
-            <button onClick={()=>rmTbd(ti)} style={{marginLeft:'auto',background:'none',border:'none',cursor:'pointer',color:'#dc2626',fontSize:12}}>✕</button>
-          </div>})}
-      </div>}
-      {safeItems(o).map((item,idx)=>{const qty=Object.values(safeSizes(item)).reduce((a,v)=>a+safeNum(v),0);
+    {tab==='items'&&<>{safeItems(o).map((item,idx)=>{const qty=Object.values(safeSizes(item)).reduce((a,v)=>a+safeNum(v),0);
       let dR=0,dC=0;const decoBreak=[];safeDecos(item).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:qty;const dp=dP(d,qty,af,cq);const dr=qty*dp.sell;const dc=qty*dp.cost;dR+=dr;dC+=dc;
         const artF=d.kind==='art'?af.find(f=>f.id===d.art_file_id):null;const label=d.kind==='art'?(artF?artF.deco_type?.replace('_',' '):d.position):'Numbers @ '+d.position;
         decoBreak.push({label,sell:dp.sell,cost:dp.cost,rev:dr,costTot:dc,margin:dr-dc,pct:dr>0?((dr-dc)/dr*100):0})});
@@ -1104,12 +1070,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                     {artF.notes&&<div style={{fontSize:10,color:'#7c3aed'}}>{artF.notes}</div>}
                     <div style={{fontSize:10,marginTop:4,padding:'2px 6px',display:'inline-block',borderRadius:4,background:artF.status==='approved'?'#dcfce7':'#fef3c7',color:artF.status==='approved'?'#166534':'#92400e'}}>{artF.status}</div>
                   </div></div>}
-                  <select className="form-select" style={{width:200,fontSize:12,border:!deco.art_file_id?'2px solid #f59e0b':deco.art_file_id?.startsWith('__tbd')?'1px solid #f59e0b':'1px solid #22c55e'}} value={deco.art_file_id||''} onChange={e=>{const v=e.target.value;if(v==='__tbd'){uDM(idx,di,{art_file_id:'__tbd',art_tbd_type:'screen_print',sell_override:0})}else if(v.startsWith('__tbd_')){const td=tbdArts.find(t=>t.id===v);if(td)uDM(idx,di,{art_file_id:v,art_tbd_type:td.type,tbd_colors:td.colors,tbd_stitches:td.stitches,underbase:td.underbase,position:td.position,sell_override:0})}else{uD(idx,di,'art_file_id',v||null)}}}>
+                  <select className="form-select" style={{width:200,fontSize:12,border:!deco.art_file_id?'2px solid #f59e0b':'1px solid #22c55e'}} value={deco.art_file_id||''} onChange={e=>{const v=e.target.value;if(v==='__tbd'){uDM(idx,di,{art_file_id:'__tbd',art_tbd_type:'screen_print',sell_override:0})}else{uD(idx,di,'art_file_id',v||null)}}}>
                     <option value="">⚠️ Select artwork...</option>
-                    {tbdArts.map(t=>{const tq=tbdQty(t.id);return<option key={t.id} value={t.id}>🎨 {t.label} — {t.type.replace('_',' ')} {t.type==='screen_print'?t.colors+'c':t.type==='embroidery'?Math.round(t.stitches/1000)+'k':''} ({tq} pcs)</option>})}
-                    <option value="__tbd">🎨 + New Inline TBD</option>
-                    {af.map(f=><option key={f.id} value={f.id}>{f.name||'Untitled'}</option>)}</select>
-                  {deco.art_file_id?.startsWith('__tbd_')&&(()=>{const td=tbdArts.find(t=>t.id===deco.art_file_id);return td?<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:600}}>{td.label} — {td.type.replace('_',' ')} {td.type==='screen_print'?td.colors+'c ':''}{td.position} · {tbdQty(td.id)} pcs</span>:<span style={{fontSize:10,color:'#94a3b8'}}>TBD removed</span>})()}
+                    <option value="__tbd">🎨 Art TBD (pricing only)</option>{af.map(f=><option key={f.id} value={f.id}>{f.name||'Untitled'}</option>)}</select>
                   {deco.art_file_id==='__tbd'&&<><select className="form-select" style={{width:130,fontSize:11,border:'1px solid #f59e0b'}} value={deco.art_tbd_type||'screen_print'} onChange={e=>uDM(idx,di,{art_tbd_type:e.target.value,sell_override:0})}>
                     <option value="screen_print">Screen Print</option><option value="embroidery">Embroidery</option><option value="heat_press">Heat Press</option><option value="dtf">DTF</option></select>
                   {(deco.art_tbd_type||'screen_print')==='screen_print'&&<select className="form-select" style={{width:90,fontSize:10}} value={deco.tbd_colors||1} onChange={e=>uDM(idx,di,{tbd_colors:parseInt(e.target.value),sell_override:0})}>
@@ -1344,28 +1307,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       {/* STEP 1: Paste data */}
       {nsImport.step==='paste'&&<>
         <div style={{fontSize:12,color:'#64748b',marginBottom:8}}>
-          Drop a file or paste line items from NetSuite. The parser handles:
+          Copy the line items from your NetSuite Sales Order (ITEM through INVOICED columns) and paste below. The parser handles:
         </div>
         <div style={{display:'flex',gap:8,marginBottom:8,flexWrap:'wrap'}}>
           {['Size-split lines (JJ0605-M, JJ0605-L → one item)','Custom/misc lines with sizes in description','Decoration lines (Screen Print, Embroidery)','PO references and fulfillment data','Shipping lines'].map(t=>
             <span key={t} style={{fontSize:10,padding:'2px 8px',background:'#f0fdf4',borderRadius:8,color:'#166534'}}>✓ {t}</span>)}
         </div>
-        <div style={{padding:16,border:'2px dashed #d1d5db',borderRadius:8,textAlign:'center',color:'#64748b',fontSize:12,marginBottom:8,cursor:'pointer',transition:'all 0.2s'}}
-          onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#3b82f6';e.currentTarget.style.background='#eff6ff'}}
-          onDragLeave={e=>{e.currentTarget.style.borderColor='#d1d5db';e.currentTarget.style.background='transparent'}}
-          onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor='#d1d5db';e.currentTarget.style.background='transparent';
-            const f=e.dataTransfer.files[0];if(!f)return;
-            if(f.type==='application/pdf'){nf('📄 PDF text extraction coming soon — paste line items below','info');return}
-            const reader=new FileReader();
-            reader.onload=(ev)=>{setNsImport(x=>({...x,raw:ev.target.result}));nf('✅ Loaded '+f.name)};reader.readAsText(f)}}
-          onClick={()=>{const input=document.createElement('input');input.type='file';input.accept='.csv,.tsv,.txt';
-            input.onchange=(ev)=>{const f=ev.target.files[0];if(!f)return;
-              const reader=new FileReader();
-              reader.onload=(e2)=>{setNsImport(x=>({...x,raw:e2.target.result}));nf('✅ Loaded '+f.name)};reader.readAsText(f)};input.click()}}>
-          📂 Drop CSV/TXT file here or click to browse
-        </div>
-        <textarea className="form-input" rows={10} value={nsImport.raw} onChange={e=>setNsImport(x=>({...x,raw:e.target.value}))}
-          placeholder={"Or paste NetSuite lines here...\n\nExample:\nJJ0605 : JJ0605-M\tAdidas PRACTICE 2.0J - Power Red - M\t30\tAdidas Contract\t21.00\t630.00\tPO4133 OLuF\n..."} style={{fontFamily:'monospace',fontSize:11,whiteSpace:'pre'}}/>
+        <textarea className="form-input" rows={14} value={nsImport.raw} onChange={e=>setNsImport(x=>({...x,raw:e.target.value}))}
+          placeholder={"Paste NetSuite lines here...\n\nExample:\nJJ0605 : JJ0605-M\tAdidas PRACTICE 2.0J - Power Red - M\t30\tAdidas Contract\t21.00\t630.00\tPO4133 OLuF\n..."} style={{fontFamily:'monospace',fontSize:11,whiteSpace:'pre'}}/>
         <div style={{marginTop:8,display:'flex',gap:8}}>
           <button className="btn btn-primary" disabled={!nsImport.raw.trim()} onClick={()=>{
             // PARSE NETSUITE DATA
@@ -1926,14 +1875,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         <div className="modal-footer">
           <button className="btn btn-secondary" onClick={()=>setShowInvCreate(false)}>Cancel</button>
           <button className="btn btn-primary" style={{background:'#dc2626',borderColor:'#dc2626'}} disabled={invSelItems.length===0} onClick={()=>{
-            const invId='INV-'+o.id.replace('SO-','');
+            const invId=nextInvId(allInvoices);
             const invDate=new Date().toLocaleDateString('en-CA');
             const termDays=parseInt((cust?.payment_terms||'net30').replace(/\D/g,''))||30;
             const due=new Date();due.setDate(due.getDate()+termDays);const dueDate=due.toLocaleDateString('en-CA');
             const lineItems=invSelItems.map(idx=>{const it=items[idx];if(!it)return null;const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
               const decoSell=safeDecos(it).reduce((a,d)=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:qty;const dp2=dP(d,qty,safeArt(o),cq);return a+dp2.sell},0);
               return{desc:it.sku+' '+it.name+(it.color?' — '+it.color:''),qty,rate:safeNum(it.unit_sell)+decoSell,amount:qty*(safeNum(it.unit_sell)+decoSell)}}).filter(Boolean);
-            const inv={id:invId+'-'+(Date.now()%1000),type:'invoice',customer_id:o.customer_id,so_id:o.id,
+            const inv={id:invId,type:'invoice',customer_id:o.customer_id,so_id:o.id,
               date:invDate,due_date:dueDate,total:Math.round(invTotal*100)/100,paid:0,
               memo:invMemo||invType+' — '+o.memo,status:'open',_rep:o.created_by||cu.id,
               tax:Math.round(invTax*100)/100,shipping:Math.round(invShip*100)/100,
@@ -3634,7 +3583,7 @@ export default function App(){
         const saf=safeArt(s);let total=0;
         safeItems(s).forEach(it=>{const qq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);total+=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qq;const dp2=dP(d,qq,saf,cq);total+=qq*dp2.sell})});
         if(s.shipping_type==='pct')total+=total*(safeNum(s.shipping_value)/100);else total+=safeNum(s.shipping_value);
-        const invId=uid('INV-');const today=new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'2-digit'});
+        const invId=nextInvId(invs);const today=new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'2-digit'});
         const dueDate=new Date();dueDate.setDate(dueDate.getDate()+30);const due=dueDate.toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'2-digit'});
         const newInv={id:invId,type:'invoice',customer_id:s.customer_id,so_id:s.id,date:today,due_date:due,total:rQ(total),paid:0,memo:s.memo||'',status:'open',payments:[],cc_fee:0};
         setInvs(prev2=>[newInv,...prev2]);
@@ -3962,7 +3911,7 @@ export default function App(){
 
   // ESTIMATES LIST
   const rEst=()=>{
-    if(eEst)return<OrderEditor order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} onSave={e=>{savE(e);setEEst(e)}} onBack={()=>setEEst(null)} onConvertSO={convertSO} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}}/>;
+    if(eEst)return<OrderEditor order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} onSave={e=>{savE(e);setEEst(e)}} onBack={()=>setEEst(null)} onConvertSO={convertSO} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}}/>;
     const fe=ests.filter(e=>!q||(e.id+' '+e.memo+' '+(cust.find(c=>c.id===e.customer_id)?.name||'')+' '+(cust.find(c=>c.id===e.customer_id)?.alpha_tag||'')).toLowerCase().includes(q.toLowerCase()));
     return(<><div style={{display:'flex',gap:8,marginBottom:16}}><div className="search-bar" style={{flex:1}}><Icon name="search"/><input placeholder="Search..." value={q} onChange={e=>setQ(e.target.value)}/></div>
       <button className="btn btn-primary" onClick={()=>newE(null)}><Icon name="plus" size={14}/> New Estimate</button></div>
@@ -3980,7 +3929,7 @@ export default function App(){
 
   // SALES ORDERS LIST
   const rSO=()=>{
-    if(eSO)return<OrderEditor order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} onSave={s=>{savSO(s);setESO(s)}} onBack={()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null)}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} batchPOs={batchPOs} onBatchPO={setBatchPOs} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}}/>;
+    if(eSO)return<OrderEditor order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} onSave={s=>{savSO(s);setESO(s)}} onBack={()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null)}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}}/>;
     // Filter SOs
     let fSOs=[...sos];
     if(soF.status!=='all')fSOs=fSOs.filter(s=>calcSOStatus(s)===soF.status);
@@ -5935,7 +5884,7 @@ export default function App(){
               const newSO={id:nextSOId(sos),customer_id:s.customer_id,memo:'OMG Store Pull: '+s.store_name,status:'need_order',
                 created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),
                 expected_date:'',production_notes:'Pulled from OMG store '+s.id+'. Orders: '+s.orders+', Buyers: '+s.unique_buyers,
-                shipping_type:'flat',shipping_value:0,ship_to_id:'default',firm_dates:[],art_files:[],jobs:[],tbd_arts:[],items:newItems,omg_store_id:s.id};
+                shipping_type:'flat',shipping_value:0,ship_to_id:'default',firm_dates:[],art_files:[],jobs:[],items:newItems,omg_store_id:s.id};
               setSOs(prev=>[newSO,...prev]);setESO(newSO);setESOC(c||null);setPg('orders');
               nf('🎉 Pulled '+newItems.length+' items from '+s.store_name+' into new SO');
             }}>🔄 Pull to Sales Order</button>}
