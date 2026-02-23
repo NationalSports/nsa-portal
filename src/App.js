@@ -7725,6 +7725,8 @@ export default function App(){
     const CUST_FIELDS=[
       {key:'name',label:'Name *',required:true},
       {key:'alpha_tag',label:'Alpha Tag'},
+      {key:'account_type',label:'Account Type (parent/sub)'},
+      {key:'parent_name',label:'Parent Account Name'},
       {key:'contact_name',label:'Contact Name'},
       {key:'contact_email',label:'Contact Email'},
       {key:'contact_phone',label:'Contact Phone'},
@@ -7789,6 +7791,8 @@ export default function App(){
         payment_terms:['payment_terms','terms','net_terms'],
         tax_rate:['tax_rate','tax','sales_tax'],
         primary_rep_id:['rep','rep_id','sales_rep'],
+        account_type:['account_type','type','acct_type','parent_sub','parent_or_sub'],
+        parent_name:['parent','parent_name','parent_account','parent_company','parent_school'],
         sku:['sku','item_number','style','item','part_number','style_number'],
         brand:['brand','manufacturer','vendor'],
         color:['color','colour'],
@@ -7825,10 +7829,16 @@ export default function App(){
     // Import customers
     const importCustomers=()=>{
       const{parsed,colMap}=bulkImp;const added=[];const skipped=[];
+      // Two passes: parents first, then subs (so parent IDs exist when subs reference them)
+      const allExisting=[...cust];
+      // Pass 1: Import parents (account_type blank or 'parent', or no parent_name specified)
       parsed.forEach((row,i)=>{
         const name=(row[colMap.name]||'').trim();
         if(!name){skipped.push('Row '+(i+2)+': no name');return}
-        if(cust.find(c=>c.name.toLowerCase()===name.toLowerCase())){skipped.push(name+' — already exists');return}
+        if(allExisting.find(c=>c.name.toLowerCase()===name.toLowerCase())||added.find(c=>c.name.toLowerCase()===name.toLowerCase())){return}// handle in pass 2 dedup
+        const acctType=(row[colMap.account_type]||'').trim().toLowerCase();
+        const parentName=(row[colMap.parent_name]||'').trim();
+        if(acctType==='sub'&&parentName)return;// skip subs for pass 2
         const c={
           id:'c-'+Date.now()+'-'+i,parent_id:null,name,
           alpha_tag:row[colMap.alpha_tag]||name.split(' ').map(w=>w[0]).join('').toUpperCase().slice(0,4),
@@ -7848,9 +7858,49 @@ export default function App(){
         };
         added.push(c);
       });
+      // Pass 2: Import subs and link to parents
+      const allNow=[...allExisting,...added];
+      parsed.forEach((row,i)=>{
+        const name=(row[colMap.name]||'').trim();
+        if(!name)return;
+        if(allExisting.find(c=>c.name.toLowerCase()===name.toLowerCase())){skipped.push(name+' — already exists');return}
+        if(added.find(c=>c.name.toLowerCase()===name.toLowerCase()))return;// already added as parent
+        const acctType=(row[colMap.account_type]||'').trim().toLowerCase();
+        const parentName=(row[colMap.parent_name]||'').trim();
+        // Find parent by name in existing + newly added
+        let parentId=null;
+        if(parentName){
+          const parent=allNow.find(c=>c.name.toLowerCase()===parentName.toLowerCase());
+          if(parent)parentId=parent.id;
+          else{skipped.push(name+' — parent "'+parentName+'" not found');return}
+        }
+        const parent=parentId?allNow.find(c=>c.id===parentId):null;
+        const c={
+          id:'c-'+Date.now()+'-sub-'+i,parent_id:parentId,name,
+          alpha_tag:row[colMap.alpha_tag]||name.split(' ').map(w=>w[0]).join('').toUpperCase().slice(0,4),
+          contacts:row[colMap.contact_name]?[{name:row[colMap.contact_name],email:row[colMap.contact_email]||'',phone:row[colMap.contact_phone]||'',role:row[colMap.contact_role]||''}]:[],
+          billing_address_line1:row[colMap.billing_address_line1]||parent?.billing_address_line1||'',
+          billing_city:row[colMap.billing_city]||parent?.billing_city||'',
+          billing_state:row[colMap.billing_state]||parent?.billing_state||'',
+          billing_zip:row[colMap.billing_zip]||parent?.billing_zip||'',
+          shipping_address_line1:row[colMap.shipping_address_line1]||row[colMap.billing_address_line1]||parent?.shipping_address_line1||'',
+          shipping_city:row[colMap.shipping_city]||row[colMap.billing_city]||parent?.shipping_city||'',
+          shipping_state:row[colMap.shipping_state]||row[colMap.billing_state]||parent?.shipping_state||'',
+          shipping_zip:row[colMap.shipping_zip]||row[colMap.billing_zip]||parent?.shipping_zip||'',
+          adidas_ua_tier:row[colMap.adidas_ua_tier]||parent?.adidas_ua_tier||'B',
+          catalog_markup:parseFloat(row[colMap.catalog_markup])||parent?.catalog_markup||1.65,
+          payment_terms:row[colMap.payment_terms]||parent?.payment_terms||'net30',
+          tax_rate:parseFloat(row[colMap.tax_rate])||parent?.tax_rate||0,
+          primary_rep_id:row[colMap.primary_rep_id]||parent?.primary_rep_id||cu.id,
+          is_active:true,_oe:0,_os:0,_oi:0,_ob:0
+        };
+        added.push(c);
+      });
       if(added.length>0)setCust(prev=>[...prev,...added]);
-      setBulkImp(x=>({...x,step:'done',added:added.length,skipped}));
-      nf('✅ Imported '+added.length+' customers'+(skipped.length?' ('+skipped.length+' skipped)':''));
+      const parentCount=added.filter(c=>!c.parent_id).length;
+      const subCount=added.filter(c=>c.parent_id).length;
+      setBulkImp(x=>({...x,step:'done',added:added.length,skipped,parentCount,subCount}));
+      nf('✅ Imported '+parentCount+' parents, '+subCount+' sub-accounts'+(skipped.length?' ('+skipped.length+' skipped)':''));
     };
 
     // Import vendors
@@ -8308,6 +8358,9 @@ export default function App(){
                 <div style={{fontSize:48,marginBottom:8}}>🎉</div>
                 <div style={{fontSize:18,fontWeight:800,color:'#166534',marginBottom:4}}>Import Complete!</div>
                 <div style={{fontSize:14,color:'#475569'}}>{bulkImp.added} {impTab} imported successfully</div>
+                {impTab==='customers'&&bulkImp.added>0&&<div style={{fontSize:12,color:'#64748b',marginTop:4}}>
+                  {bulkImp.parentCount||0} parent accounts · {bulkImp.subCount||0} sub-accounts
+                </div>}
                 {(bulkImp.skipped||[]).length>0&&<div style={{marginTop:12,textAlign:'left',maxHeight:150,overflow:'auto'}}>
                   <div style={{fontSize:11,fontWeight:700,color:'#d97706',marginBottom:4}}>⚠️ Skipped ({bulkImp.skipped.length}):</div>
                   {bulkImp.skipped.map((s,i)=><div key={i} style={{fontSize:10,color:'#64748b',padding:'2px 0'}}>{s}</div>)}
