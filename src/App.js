@@ -47,7 +47,11 @@ const _dbSave = (table, data) => { if(supabase && data) supabase.from(table).ups
 // ─── Cloudinary Config ───
 const CLOUDINARY_CLOUD='dwlyljyuz';
 const CLOUDINARY_PRESET='ml_default_nsaportal';
-const cloudUpload=async(file)=>{const fd=new FormData();fd.append('file',file);fd.append('upload_preset',CLOUDINARY_PRESET);fd.append('folder','nsa-products');const r=await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/image/upload`,{method:'POST',body:fd});const d=await r.json();return d.secure_url};
+const cloudUpload=async(file,folder='nsa-products')=>{const fd=new FormData();fd.append('file',file);fd.append('upload_preset',CLOUDINARY_PRESET);fd.append('folder',folder);const resType=file.type?.startsWith('image/')?'image':'auto';const r=await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/${resType}/upload`,{method:'POST',body:fd});const d=await r.json();if(d.error)throw new Error(d.error.message);return d.secure_url};
+const fileUpload=async(file,folder='nsa-art-files')=>{const fd=new FormData();fd.append('file',file);fd.append('upload_preset',CLOUDINARY_PRESET);fd.append('folder',folder);const r=await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/auto/upload`,{method:'POST',body:fd});const d=await r.json();if(d.error)throw new Error(d.error.message);return d.secure_url};
+const isUrl=s=>typeof s==='string'&&(s.startsWith('http://')||s.startsWith('https://'));
+const fileDisplayName=f=>isUrl(f)?decodeURIComponent(f.split('/').pop().split('?')[0]):f;
+const openFile=f=>{if(isUrl(f)){window.open(f,'_blank')}else{nf('Legacy file: '+f+' — re-upload to enable downloads')}};
 const ImgUpload=({url,onUpload,size=48})=>{const[drag,setDrag]=React.useState(false);const[uploading,setUploading]=React.useState(false);
   const doUpload=async(file)=>{if(!file||!file.type.startsWith('image/'))return;setUploading(true);try{const u=await cloudUpload(file);onUpload(u)}catch(e){console.error('Upload failed',e)}finally{setUploading(false)}};
   return<div style={{width:size,height:size,borderRadius:6,border:drag?'2px solid #3b82f6':'1px solid #e2e8f0',background:drag?'#eff6ff':'#f8fafc',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,cursor:'pointer',overflow:'hidden',position:'relative'}}
@@ -1576,7 +1580,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                     </div>
                     <div style={{display:'flex',gap:4,flexWrap:'wrap',marginBottom:4}}>{(art.mockup_files||art.files||[]).map((fn,fi)=><span key={fi} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'3px 8px',background:'#dbeafe',borderRadius:4,fontSize:11}}>
                       <Icon name="file" size={10}/>{fn}<button onClick={()=>{const mf=[...(art.mockup_files||art.files||[])];mf.splice(fi,1);uArt(i,'mockup_files',mf);if(!art.mockup_files)uArt(i,'files',[])}} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:0}}><Icon name="x" size={10}/></button></span>)}</div>
-                    <div style={{border:'2px dashed #bfdbfe',borderRadius:6,padding:8,textAlign:'center',cursor:'pointer',background:'#eff6ff'}} onClick={()=>{const fn=art.name.replace(/\s+/g,'_')+'_mockup_'+(((art.mockup_files||art.files||[]).length)+1)+'.pdf';const mf=[...(art.mockup_files||art.files||[]),fn];uArt(i,'mockup_files',mf);if(!art.mockup_files)uArt(i,'files',[])}}>
+                    <div style={{border:'2px dashed #bfdbfe',borderRadius:6,padding:8,textAlign:'center',cursor:'pointer',background:'#eff6ff'}} onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps';inp.onchange=async()=>{const f=inp.files[0];if(!f)return;nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-mockups');const mf=[...(art.mockup_files||art.files||[]),url];uArt(i,'mockup_files',mf);if(!art.mockup_files)uArt(i,'files',[]);nf('✅ Mockup uploaded: '+f.name)}catch(e){nf('Upload failed: '+e.message,'error')}};inp.click()}}>
                       <div style={{fontSize:10,color:'#2563eb'}}><Icon name="upload" size={12}/> Add mockup (PDF, PNG, JPG)</div></div>
                   </div>
                   {/* PRODUCTION FILES — internal only */}
@@ -1587,7 +1591,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                     </div>
                     <div style={{display:'flex',gap:4,flexWrap:'wrap',marginBottom:4}}>{(art.prod_files||[]).map((fn,fi)=><span key={fi} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'3px 8px',background:'#fef3c7',borderRadius:4,fontSize:11}}>
                       <Icon name="file" size={10}/>{fn}<button onClick={()=>uArt(i,'prod_files',(art.prod_files||[]).filter((_,x)=>x!==fi))} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:0}}><Icon name="x" size={10}/></button></span>)}</div>
-                    <div style={{border:'2px dashed #fde68a',borderRadius:6,padding:8,textAlign:'center',cursor:'pointer',background:'#fffbeb'}} onClick={()=>{const ext=art.deco_type==='embroidery'?'.dst':art.deco_type==='screen_print'?'_seps.ai':'.pdf';const fn=art.name.replace(/\s+/g,'_')+'_prod_'+(((art.prod_files||[]).length)+1)+ext;uArt(i,'prod_files',[...(art.prod_files||[]),fn])}}>
+                    <div style={{border:'2px dashed #fde68a',borderRadius:6,padding:8,textAlign:'center',cursor:'pointer',background:'#fffbeb'}} onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.pdf,.ai,.eps,.dst,.png,.jpg,.jpeg';inp.onchange=async()=>{const f=inp.files[0];if(!f)return;nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-production');uArt(i,'prod_files',[...(art.prod_files||[]),url]);nf('✅ Production file uploaded: '+f.name)}catch(e){nf('Upload failed: '+e.message,'error')}};inp.click()}}>
                       <div style={{fontSize:10,color:'#d97706'}}><Icon name="upload" size={12}/> Add production file (DST, AI seps, PDF)</div></div>
                   </div>
                   {/* Notes */}
@@ -2650,8 +2654,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
               <div style={{border:'2px dashed #cbd5e1',borderRadius:8,padding:16,textAlign:'center',cursor:'pointer',background:'#f8fafc'}}
                 onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#3b82f6';e.currentTarget.style.background='#eff6ff'}}
                 onDragLeave={e=>{e.currentTarget.style.borderColor='#cbd5e1';e.currentTarget.style.background='#f8fafc'}}
-                onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor='#cbd5e1';e.currentTarget.style.background='#f8fafc';const newFiles=[...artReqModal.files];Array.from(e.dataTransfer.files).forEach(f=>newFiles.push({name:f.name,size:f.size,type:f.type}));setArtReqModal(m=>({...m,files:newFiles}))}}
-                onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.onchange=()=>{const newFiles=[...artReqModal.files];Array.from(inp.files).forEach(f=>newFiles.push({name:f.name,size:f.size,type:f.type}));setArtReqModal(m=>({...m,files:newFiles}))};inp.click()}}>
+                onDrop={async e=>{e.preventDefault();e.currentTarget.style.borderColor='#cbd5e1';e.currentTarget.style.background='#f8fafc';for(const f of Array.from(e.dataTransfer.files)){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-art-requests');setArtReqModal(m=>({...m,files:[...m.files,{name:f.name,size:f.size,type:f.type,url}]}))}catch(err){nf('Upload failed: '+err.message,'error')}}}}
+                onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.onchange=async()=>{for(const f of Array.from(inp.files)){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-art-requests');setArtReqModal(m=>({...m,files:[...m.files,{name:f.name,size:f.size,type:f.type,url}]}))}catch(err){nf('Upload failed: '+err.message,'error')}}};inp.click()}}>
                 <div style={{fontSize:12,color:'#64748b'}}>Drop files here or click to browse</div>
                 <div style={{fontSize:10,color:'#94a3b8',marginTop:4}}>PNG, PDF, AI, EPS, JPG</div>
               </div>
@@ -5035,14 +5039,14 @@ export default function App(){
               {prodFiles.length===0&&mockupFiles.length===0?<div style={{color:'#94a3b8',fontSize:12}}>No files attached</div>
               :<div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
                 {prodFiles.map((f,i)=><div key={'p'+i} style={{display:'flex',alignItems:'center',gap:6,padding:'8px 14px',background:'#fef3c7',border:'1px solid #fde68a',borderRadius:8,cursor:'pointer'}}
-                  onClick={()=>nf('Would download: '+f)} title={'Production: '+f}>
+                  onClick={()=>openFile(f)} title={'Production: '+f}>
                   <span style={{fontSize:16}}>📁</span>
-                  <div><div style={{fontSize:12,fontWeight:700,color:'#92400e'}}>{f}</div><div style={{fontSize:9,color:'#b45309'}}>Production File</div></div>
+                  <div><div style={{fontSize:12,fontWeight:700,color:'#92400e'}}>{fileDisplayName(f)}</div><div style={{fontSize:9,color:'#b45309'}}>Production File</div></div>
                 </div>)}
                 {mockupFiles.map((f,i)=><div key={'m'+i} style={{display:'flex',alignItems:'center',gap:6,padding:'8px 14px',background:'#dbeafe',border:'1px solid #93c5fd',borderRadius:8,cursor:'pointer'}}
-                  onClick={()=>nf('Would download: '+f)} title={'Mockup: '+f}>
+                  onClick={()=>openFile(f)} title={'Mockup: '+f}>
                   <span style={{fontSize:16}}>🖼️</span>
-                  <div><div style={{fontSize:12,fontWeight:700,color:'#1e40af'}}>{f}</div><div style={{fontSize:9,color:'#3b82f6'}}>Mockup File</div></div>
+                  <div><div style={{fontSize:12,fontWeight:700,color:'#1e40af'}}>{fileDisplayName(f)}</div><div style={{fontSize:9,color:'#3b82f6'}}>Mockup File</div></div>
                 </div>)}
               </div>}
             </div>
@@ -5077,7 +5081,7 @@ export default function App(){
             <div style={{fontSize:13,color:'#64748b',marginBottom:8}}>{prodJobModal.deco_type?.replace(/_/g,' ')} · {prodJobModal.positions}</div>
             {mockupFiles2.length>0&&<div style={{display:'flex',gap:6,justifyContent:'center',flexWrap:'wrap'}}>
               {mockupFiles2.map((f,i)=><div key={i} style={{padding:'8px 16px',background:'#eff6ff',borderRadius:6,cursor:'pointer',fontSize:12,fontWeight:600,color:'#1e40af'}}
-                onClick={()=>nf('Would open: '+f)}>{f}</div>)}
+                onClick={()=>openFile(f)}>{f}</div>)}
             </div>}
             <button className="btn btn-secondary" style={{marginTop:16}} onClick={()=>setProdJobLightbox(false)}>Close</button>
           </div>
@@ -7304,7 +7308,7 @@ export default function App(){
               </div>
               {mockupFiles.length>0&&<div style={{display:'flex',gap:6,marginTop:12,flexWrap:'wrap'}}>
                 {mockupFiles.map((f,i)=><div key={i} style={{padding:'6px 12px',background:'#dbeafe',border:'1px solid #93c5fd',borderRadius:6,cursor:'pointer',fontSize:11,fontWeight:600,color:'#1e40af',display:'flex',alignItems:'center',gap:4}}
-                  onClick={()=>nf('Would download: '+f)}><span style={{fontSize:14}}>🖼️</span>{f}</div>)}
+                  onClick={()=>openFile(f)}><span style={{fontSize:14}}>🖼️</span>{f}</div>)}
               </div>}
             </div>
 
@@ -7368,7 +7372,7 @@ export default function App(){
               <div style={{fontSize:13,fontWeight:800,color:'#1e3a5f',marginBottom:8}}>Files</div>
               <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
                 {prodFilesL.map((f,i)=><div key={'p'+i} style={{display:'flex',alignItems:'center',gap:4,padding:'6px 10px',background:'#fef3c7',border:'1px solid #fde68a',borderRadius:6,cursor:'pointer',fontSize:11,fontWeight:600,color:'#92400e'}}
-                  onClick={()=>nf('Would download: '+f)}>📁 {f}</div>)}
+                  onClick={()=>openFile(f)}>📁 {f}</div>)}
               </div>
             </div>}
 
@@ -7732,20 +7736,20 @@ export default function App(){
                   onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor='#d1d5db';e.currentTarget.style.background='transparent';
                     const f=e.dataTransfer.files[0];if(!f)return;
                     if(f.type==='application/pdf'){
-                      nf('📄 PDF detected — text extraction coming soon. For now, copy-paste the line items from the PDF below.','info');return}
+                      nf('📄 PDF detected — please also paste the line items below for best results.','info');return}
                     const reader=new FileReader();
                     reader.onload=(ev)=>{const txt=ev.target.result;setImp(x=>({...x,raw:txt}));
                       if(txt.length>20&&!imp.custId){const det=detectCustomer(txt);if(det)setImp(x=>({...x,custId:det.id}))}
                       nf('✅ File loaded — '+f.name)};reader.readAsText(f)}}
                   onClick={()=>{const input=document.createElement('input');input.type='file';input.accept='.csv,.tsv,.txt,.pdf';
                     input.onchange=(ev)=>{const f=ev.target.files[0];if(!f)return;
-                      if(f.type==='application/pdf'){nf('📄 PDF detected — text extraction coming soon. Copy-paste line items below.','info');return}
+                      if(f.type==='application/pdf'){nf('📄 PDF detected — please also paste line items below for best results.','info');return}
                       const reader=new FileReader();
                       reader.onload=(e2)=>{const txt=e2.target.result;setImp(x=>({...x,raw:txt}));
                         if(txt.length>20&&!imp.custId){const det=detectCustomer(txt);if(det)setImp(x=>({...x,custId:det.id}))}
                         nf('✅ File loaded — '+f.name)};reader.readAsText(f)};input.click()}}>
                   📂 Drag & drop file here or click to browse<br/>
-                  <span style={{fontSize:10,color:'#94a3b8'}}>Supports CSV, TSV, TXT (PDF text extraction coming soon)</span>
+                  <span style={{fontSize:10,color:'#94a3b8'}}>Supports CSV, TSV, TXT — drag & drop or click to browse</span>
                   {imp.raw&&<div style={{marginTop:8,fontSize:11,color:'#22c55e',fontWeight:600}}>✅ Data loaded — {imp.raw.split('\n').length} lines</div>}
                 </div>
               </div>
