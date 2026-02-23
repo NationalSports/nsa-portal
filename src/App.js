@@ -6,7 +6,9 @@ import { createClient } from '@supabase/supabase-js';
 // ─── Supabase Setup ───
 const _sbUrl = process.env.REACT_APP_SUPABASE_URL || '';
 const _sbKey = process.env.REACT_APP_SUPABASE_ANON_KEY || '';
-const supabase = (_sbUrl && _sbKey && !_sbUrl.includes('your-project')) ? createClient(_sbUrl, _sbKey) : null;
+let supabase = null;
+try { if (_sbUrl && _sbKey && _sbUrl.startsWith('https://') && !_sbUrl.includes('your-project')) supabase = createClient(_sbUrl, _sbKey); }
+catch(e) { console.warn('[Supabase] Init failed:', e.message); }
 
 const _dbLoad = async () => {
   if (!supabase) return null;
