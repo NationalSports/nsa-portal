@@ -91,48 +91,146 @@ const extractPdfText=async(file)=>{
 };
 const parseNetSuitePdf=(text,docType)=>{
   const result={docNumber:'',date:'',customerName:'',terms:'',subtotal:0,tax:0,shipping:0,total:0,lineItems:[],rawText:text,confidence:'low',warnings:[]};
-  // Extract doc number
-  const docPats={so:[/(?:Sales Order|SO)\s*#?\s*:?\s*(\d+)/i],est:[/(?:Estimate|Quote|EST)\s*#?\s*:?\s*(\d+)/i],po:[/(?:Purchase Order|PO)\s*#?\s*:?\s*(\d+)/i],inv:[/(?:Invoice|INV)\s*#?\s*:?\s*(\d+)/i]};
-  const pats=docPats[docType]||Object.values(docPats).flat();
-  for(const pat of pats){const m=text.match(pat);if(m){result.docNumber=m[1];break}}
-  // Extract date
-  const dm=text.match(/(?:Date|Order Date|Estimate Date|Invoice Date)\s*:?\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i);
-  if(dm)result.date=dm[1];
-  // Extract customer
-  const cp=[/(?:Bill To|Customer|Sold To)\s*:?\s*\n?\s*([A-Z][A-Za-z\s&.''"-]{3,60})/,/(?:Bill To|Customer)\s*:?\s*([^\n]{3,60})/i];
-  for(const pat of cp){const m=text.match(pat);if(m){result.customerName=m[1].trim();break}}
-  // Extract terms
-  const tm=text.match(/(?:Terms|Payment Terms)\s*:?\s*(Net\s*\d+|Due on Receipt|COD|Prepaid)/i);
-  if(tm)result.terms=tm[1];
+  
+  // NSA-specific parsing for estimates/SO/PO/invoices
+  // Extract doc number - look for EST8736, SO-1234, etc.
+  const nsa_doc_patterns=[
+    /#(EST\d+)/i,  // #EST8736
+    /#(SO-?\d+)/i, // #SO-1234 or #SO1234
+    /#(PO-?\d+)/i, // #PO-1234
+    /#(INV-?\d+)/i // #INV-1234
+  ];
+  for(const pat of nsa_doc_patterns){
+    const m=text.match(pat);
+    if(m){result.docNumber=m[1];break}
+  }
+
+  // Extract date from top right (e.g., "2/23/2026")
+  const dateMatch=text.match(/(\d{1,2}\/\d{1,2}\/\d{4})/);
+  if(dateMatch)result.date=dateMatch[1];
+
+  // Extract customer name - look for "Bill To" section
+  const billToMatch=text.match(/Bill To\s+([^\n]+(?:\n[^\n]+)*?)(?=\n\s*\d{4}|TOTAL|$)/i);
+  if(billToMatch){
+    // Take the first line after "Bill To" as customer name
+    const lines=billToMatch[1].trim().split('\n');
+    result.customerName=lines[0].trim();
+  }
+
   // Extract totals
-  const sm=text.match(/(?:Subtotal|Sub Total)\s*:?\s*\$?([\d,]+\.?\d*)/i);if(sm)result.subtotal=parseFloat(sm[1].replace(/,/g,''));
-  const txm=text.match(/(?:Tax|Sales Tax)\s*:?\s*\$?([\d,]+\.?\d*)/i);if(txm)result.tax=parseFloat(txm[1].replace(/,/g,''));
-  const shm=text.match(/(?:Shipping|Freight)\s*:?\s*\$?([\d,]+\.?\d*)/i);if(shm)result.shipping=parseFloat(shm[1].replace(/,/g,''));
-  const ttm=text.match(/(?:Total|Grand Total|Balance Due|Amount Due)\s*:?\s*\$?([\d,]+\.?\d*)/i);if(ttm)result.total=parseFloat(ttm[1].replace(/,/g,''));
-  // Check for tab-separated data
-  const tabLines=text.split('\n').filter(l=>l.includes('\t')&&l.trim().length>10);
-  if(tabLines.length>2){result.warnings.push('Tab-separated data detected — use paste mode for best results');result.confidence='medium';return result}
-  // Extract line items from PDF text
-  const lines=text.split('\n');let inItems=false;
+  const subtotalMatch=text.match(/Subtotal\s+\$?([\d,]+\.?\d{2})/i);
+  if(subtotalMatch)result.subtotal=parseFloat(subtotalMatch[1].replace(/,/g,''));
+
+  const taxMatch=text.match(/Tax\s*\([^)]+\)\s+\$?([\d,]+\.?\d{2})/i);
+  if(taxMatch)result.tax=parseFloat(taxMatch[1].replace(/,/g,''));
+
+  const totalMatch=text.match(/Total\s+\$?([\d,]+\.?\d{2})/i);
+  if(totalMatch)result.total=parseFloat(totalMatch[1].replace(/,/g,''));
+
+  // Extract shipping
+  const shippingMatch=text.match(/Shipping[^\n]*?\$?([\d,]+\.?\d{2})/i);
+  if(shippingMatch)result.shipping=parseFloat(shippingMatch[1].replace(/,/g,''));
+
+  // Parse line items - NSA format parsing
+  const lines=text.split('\n');
+  let inItemsSection=false;
+  
   for(let i=0;i<lines.length;i++){
-    const line=lines[i].trim();if(!line)continue;
-    if(/^(ITEM|Item|SKU|Style|Description)\b/i.test(line)&&/\b(QTY|Quantity|Rate|Amount)\b/i.test(line)){inItems=true;continue}
-    if(inItems&&/^(Subtotal|Total|Tax|Shipping|Freight|Memo|Notes)/i.test(line)){inItems=false;continue}
-    if(!inItems)continue;
-    const amtPat=/(\d+)\s+\$?([\d,]+\.?\d{2})\s+\$?([\d,]+\.?\d{2})$/;
-    const match=line.match(amtPat);
-    if(match){
-      const before=line.slice(0,match.index).trim();const qty=parseInt(match[1]);
-      const rate=parseFloat(match[2].replace(/,/g,''));const amount=parseFloat(match[3].replace(/,/g,''));
-      const skM=before.match(/^([A-Z0-9][\w\-.:]+(?:\s*:\s*[\w\-]+)?)\s+(.*)/);
-      let sku='',desc='';
-      if(skM){sku=skM[1].trim();desc=skM[2].trim()}else{desc=before;sku=before.split(/\s+/)[0]||''}
-      result.lineItems.push({sku,description:desc,quantity:qty,rate,amount,raw:line});
+    const line=lines[i].trim();
+    if(!line)continue;
+
+    // Start of items section (after "Quantity Item Options Tax Rate Amount" or similar header)
+    if(/Quantity\s+Item.*Amount/i.test(line)){
+      inItemsSection=true;
+      continue;
+    }
+
+    // End of items section
+    if(inItemsSection && (/Subtotal|Total|Tax/i.test(line))){
+      inItemsSection=false;
+      continue;
+    }
+
+    if(!inItemsSection)continue;
+
+    // Parse NSA item lines
+    // Format: "6 KD3334-M" or "14 Emb-NSA" etc.
+    const qtyItemMatch=line.match(/^(\d+)\s+([A-Za-z0-9\-]+)(?:-([A-Z0-9]+))?\s*/);
+    if(qtyItemMatch){
+      const qty=parseInt(qtyItemMatch[1]);
+      const baseSku=qtyItemMatch[2];
+      const size=qtyItemMatch[3]||'OSFA';
+      
+      // Look ahead for the description line and price info
+      let description='';
+      let rate=0;
+      let amount=0;
+      
+      // Next line usually has the description
+      if(i+1<lines.length){
+        const nextLine=lines[i+1].trim();
+        // Extract description (everything before "Yes" or "No" or price)
+        const descMatch=nextLine.match(/^([^$]+?)(?:\s+(?:Yes|No)\s+\$|$)/);
+        if(descMatch){
+          description=descMatch[1].trim();
+        }
+        
+        // Extract rate and amount from this line or next lines
+        const priceMatch=nextLine.match(/\$?([\d,]+\.?\d{2})\s+\$?([\d,]+\.?\d{2})$/);
+        if(priceMatch){
+          rate=parseFloat(priceMatch[1].replace(/,/g,''));
+          amount=parseFloat(priceMatch[2].replace(/,/g,''));
+        }
+      }
+
+      // Handle decoration items (Emb-NSA, etc.) differently
+      const isDecoration=/^(Emb|Embr|Screen|Heat|DTF|Vinyl)-/i.test(baseSku);
+      
+      if(isDecoration){
+        // This is a decoration line - associate with previous items
+        // For now, just add it as a separate item, Claude Code can improve the association logic
+        result.lineItems.push({
+          sku:baseSku,
+          description:description||'Decoration',
+          quantity:qty,
+          rate:rate||0,
+          amount:amount||0,
+          isDecoration:true,
+          raw:line
+        });
+      } else {
+        // Regular product item
+        const sizes={};
+        sizes[size]=qty;
+        
+        result.lineItems.push({
+          sku:baseSku,
+          description:description,
+          quantity:qty,
+          rate:rate||0,
+          amount:amount||0,
+          sizes:sizes,
+          isDecoration:false,
+          raw:line
+        });
+      }
     }
   }
-  if(result.lineItems.length>0&&result.docNumber)result.confidence='high';
-  else if(result.lineItems.length>0||result.docNumber)result.confidence='medium';
-  if(result.lineItems.length===0)result.warnings.push('Could not auto-detect line items from PDF. Try pasting tab-separated data instead.');
+
+  // Set confidence based on what we found
+  if(result.docNumber && result.customerName && result.lineItems.length>0){
+    result.confidence='high';
+  } else if(result.docNumber || (result.customerName && result.lineItems.length>0)){
+    result.confidence='medium';
+  } else {
+    result.confidence='low';
+    result.warnings.push('Could not detect NSA document format. This may not be an NSA estimate/SO/PO/invoice.');
+  }
+
+  if(result.lineItems.length===0){
+    result.warnings.push('No line items detected. Try uploading a clearer PDF or check the document format.');
+  }
+
   return result;
 };
 const Icon=({name,size=18})=>{const p={home:<path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>,users:<><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></>,building:<><path d="M6 22V4a2 2 0 012-2h8a2 2 0 012 2v18z"/><path d="M6 12H4a2 2 0 00-2 2v6a2 2 0 002 2h2"/><path d="M18 9h2a2 2 0 012 2v9a2 2 0 01-2 2h-2"/><path d="M10 6h4M10 10h4M10 14h4M10 18h4"/></>,package:<><path d="M16.5 9.4l-9-5.19M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/><path d="M3.27 6.96L12 12.01l8.73-5.05M12 22.08V12"/></>,box:<path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/>,search:<><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></>,plus:<path d="M12 5v14M5 12h14"/>,edit:<><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></>,upload:<><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></>,back:<polyline points="15 18 9 12 15 6"/>,mail:<><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></>,file:<><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></>,sortUp:<path d="M7 14l5-5 5 5"/>,sort:<><path d="M7 15l5 5 5-5"/><path d="M7 9l5-5 5 5"/></>,image:<><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></>,cart:<><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 002 1.61h9.72a2 2 0 002-1.61L23 6H6"/></>,dollar:<><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></>,grid:<><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></>,warehouse:<><path d="M22 8.35V20a2 2 0 01-2 2H4a2 2 0 01-2-2V8.35A2 2 0 013.26 6.5l8-3.2a2 2 0 011.48 0l8 3.2A2 2 0 0122 8.35z"/><path d="M6 18h12M6 14h12"/></>,trash:<><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></>,eye:<><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></>,alert:<><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></>,x:<><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>,check:<polyline points="20 6 9 17 4 12"/>,save:<><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></>,send:<><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></>};return<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{p[name]}</svg>};
@@ -8121,7 +8219,7 @@ export default function App(){
                         if(parsed.customerName&&!detCustId){const det=detectCustomer(parsed.customerName);if(det)detCustId=det.id}
                         setImp(x=>({...x,pdfLoading:false,pdfText:text,pdfParsed:parsed,
                           externalDocNum:parsed.docNumber||x.externalDocNum,
-                          memo:parsed.memo||x.memo||('Imported from NetSuite'+(parsed.docNumber?' #'+parsed.docNumber:'')),
+                          memo:parsed.memo||x.memo||('Imported from NSA'+(parsed.docNumber?' #'+parsed.docNumber:'')),
                           custId:detCustId||x.custId}));
                         nf('✅ PDF loaded — '+parsed.lineItems.length+' items detected');
                       }catch(err){setImp(x=>({...x,pdfLoading:false}));nf('PDF parsing failed: '+err.message,'error')}
@@ -8219,24 +8317,64 @@ export default function App(){
               if(imp.pdfParsed&&imp.pdfParsed.lineItems.length>0){
                 const SZ_RE2=/[-\s](XXS|XS|S|M|L|XL|2XL|3XL|4XL|5XL|YXS|YS|YM|YL|YXL|OSFA)$/i;
                 const pdfItems=imp.pdfParsed.lineItems.map((li,idx)=>{
-                  const baseSku=li.sku.split(/\s*:\s*/)[0]||li.sku;
+                  // Handle NSA format items
+                  const baseSku=li.sku;
                   const catMatch=prod.find(p=>p.sku===baseSku)||(baseSku.length>3?prod.find(p=>p.sku.toLowerCase()===baseSku.toLowerCase()):null);
-                  const szMatch=li.sku.match(SZ_RE2);
-                  const sizes=szMatch?{[szMatch[1].toUpperCase()]:li.quantity}:{OSFA:li.quantity};
+                  
+                  // For NSA format, sizes are already parsed in the sizes object
+                  const sizes=li.sizes||{OSFA:li.quantity};
+                  
                   let brand=catMatch?.brand||'';
-                  if(!brand){if(/adidas/i.test(li.description))brand='Adidas';else if(/under armour|ua\b/i.test(li.description))brand='Under Armour';else if(/nike/i.test(li.description))brand='Nike';else if(/richardson/i.test(li.description))brand='Richardson'}
+                  if(!brand){
+                    if(/adidas/i.test(li.description))brand='Adidas';
+                    else if(/under armour|ua\b/i.test(li.description))brand='Under Armour';
+                    else if(/nike/i.test(li.description))brand='Nike';
+                    else if(/richardson/i.test(li.description))brand='Richardson';
+                  }
+                  
                   let color=catMatch?.color||'';
-                  if(!color){const cM=li.description.match(/[-–]\s*([A-Za-z\s\/]+?)(?:\s*[-–]|$)/);if(cM)color=cM[1].trim()}
-                  return{sku:baseSku,name:catMatch?.name||li.description,brand,color,rate:li.rate,sizes,totalQty:li.quantity,totalAmt:li.amount,
-                    poRef:'',priceLevel:'',catMatch:catMatch||null,is_custom:!catMatch,issues:catMatch?[]:['Not in catalog'],_pdfRaw:li.raw};
+                  if(!color){
+                    // Extract color from NSA description (e.g., "Navy/Black")
+                    const colorMatch=li.description.match(/\b(Navy|Black|White|Red|Blue|Green|Gray|Grey|Maroon|Purple|Orange|Yellow|Pink|Brown)(?:\/([A-Za-z]+))?\b/i);
+                    if(colorMatch){
+                      color=colorMatch[0];
+                    }
+                  }
+
+                  return{
+                    sku:baseSku,
+                    name:catMatch?.name||li.description,
+                    brand,
+                    color,
+                    rate:li.rate,
+                    sizes,
+                    totalQty:li.quantity,
+                    totalAmt:li.amount,
+                    poRef:'',
+                    priceLevel:'',
+                    catMatch:catMatch||null,
+                    is_custom:!catMatch,
+                    is_decoration:li.isDecoration||false,
+                    issues:catMatch?[]:['Not in catalog'],
+                    _pdfRaw:li.raw
+                  };
                 });
+
+                // Separate decorations from products
+                const products=pdfItems.filter(it=>!it.is_decoration);
+                const decorations=pdfItems.filter(it=>it.is_decoration);
+
                 const questions=[];
-                pdfItems.forEach((it,i)=>{
+                products.forEach((it,i)=>{
                   if(!it.catMatch&&!it.is_custom)questions.push({idx:i,type:'match',msg:'"'+it.sku+'" not found in catalog. Known product or custom?',options:['match_catalog','custom','skip'],answer:null});
                   if(!it.color)questions.push({idx:i,type:'color',msg:'What color is "'+it.sku+' — '+it.name.slice(0,40)+'"?',answer:''});
                 });
-                setImp(x=>({...x,step:questions.length>0?'questions':'review',parsed:pdfItems,decoLines:[],issues:[],questions,
-                  shipping:imp.pdfParsed.shipping>0?[{desc:'Shipping',amount:imp.pdfParsed.shipping,rate:imp.pdfParsed.shipping}]:[]}));
+
+                setImp(x=>({...x,step:questions.length>0?'questions':'review',parsed:products,decoLines:decorations.map(d=>({
+                  rawItem:d.sku,desc:d.name,rate:d.rate,amount:d.totalAmt,_assignTo:'all'
+                })),issues:[],questions,
+                  shipping:imp.pdfParsed.shipping>0?[{desc:'Shipping',amount:imp.pdfParsed.shipping,rate:imp.pdfParsed.shipping}]:[]
+                }));
               } else if(imp.raw.trim()){
                 const result=parseNSData(imp.raw);
                 setImp(x=>({...x,step:result.questions.length>0?'questions':'review',...result}));
