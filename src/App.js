@@ -44,6 +44,49 @@ const _dbSeed = async (d) => {
   ].filter(Boolean));
 };
 const _dbSave = (table, data) => { if(supabase && data) supabase.from(table).upsert(Array.isArray(data)?data:[data], {onConflict:'id'}).then(r=>{if(r.error)console.error('[DB] save '+table+':', r.error.message)}) };
+import { createClient } from '@supabase/supabase-js';
+
+// ─── Supabase Setup ───
+const _sbUrl = process.env.REACT_APP_SUPABASE_URL || '';
+const _sbKey = process.env.REACT_APP_SUPABASE_ANON_KEY || '';
+let supabase = null;
+try { if (_sbUrl && _sbKey && _sbUrl.startsWith('https://') && !_sbUrl.includes('your-project')) supabase = createClient(_sbUrl, _sbKey); }
+catch(e) { console.warn('[Supabase] Init failed:', e.message); }
+
+const _dbLoad = async () => {
+  if (!supabase) return null;
+  const [r1,r2,r3,r4,r5,r6,r7,r8,r9] = await Promise.all([
+    supabase.from('team_members').select('*').order('name'),
+    supabase.from('customers').select('*').order('name'),
+    supabase.from('vendors').select('*').order('name'),
+    supabase.from('products').select('*').order('name'),
+    supabase.from('estimates').select('*').order('id'),
+    supabase.from('sales_orders').select('*').order('id'),
+    supabase.from('invoices').select('*').order('id'),
+    supabase.from('messages').select('*').order('id'),
+    supabase.from('omg_stores').select('*').order('id'),
+  ]);
+  const errs = [r1,r2,r3,r4,r5,r6,r7,r8,r9].filter(r=>r.error);
+  if(errs.length) console.error('[DB] Load errors:', errs.map(r=>r.error.message));
+  return { team:r1.data||[], customers:r2.data||[], vendors:r3.data||[], products:r4.data||[],
+    estimates:r5.data||[], sales_orders:r6.data||[], invoices:r7.data||[], messages:r8.data||[], omg_stores:r9.data||[],
+    hasData: (r2.data&&r2.data.length>0)||(r6.data&&r6.data.length>0) };
+};
+const _dbSeed = async (d) => {
+  if (!supabase) return;
+  await Promise.all([
+    d.team?.length && supabase.from('team_members').upsert(d.team, {onConflict:'id'}),
+    d.customers?.length && supabase.from('customers').upsert(d.customers, {onConflict:'id'}),
+    d.vendors?.length && supabase.from('vendors').upsert(d.vendors, {onConflict:'id'}),
+    d.products?.length && supabase.from('products').upsert(d.products, {onConflict:'id'}),
+    d.estimates?.length && supabase.from('estimates').upsert(d.estimates, {onConflict:'id'}),
+    d.sales_orders?.length && supabase.from('sales_orders').upsert(d.sales_orders, {onConflict:'id'}),
+    d.invoices?.length && supabase.from('invoices').upsert(d.invoices, {onConflict:'id'}),
+    d.messages?.length && supabase.from('messages').upsert(d.messages, {onConflict:'id'}),
+    d.omg_stores?.length && supabase.from('omg_stores').upsert(d.omg_stores, {onConflict:'id'}),
+  ].filter(Boolean));
+};
+const _dbSave = (table, data) => { if(supabase && data) supabase.from(table).upsert(Array.isArray(data)?data:[data], {onConflict:'id'}).then(r=>{if(r.error)console.error('[DB] save '+table+':', r.error.message)}) };
 
 // ─── Cloudinary Config ───
 const CLOUDINARY_CLOUD='dwlyljyuz';
