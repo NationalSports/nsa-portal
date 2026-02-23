@@ -7615,6 +7615,8 @@ export default function App(){
 
   // NETSUITE IMPORT PAGE
   const[imp,setImp]=useState({step:'upload',raw:'',docType:'so',custId:'',parsed:[],decoLines:[],issues:[],questions:[],shipping:[],memo:'',poRef:''});
+  const[impTab,setImpTab]=useState('orders');// orders|customers|vendors|products
+  const[bulkImp,setBulkImp]=useState({raw:'',parsed:[],issues:[],step:'paste'});// paste|review|done
   const SZ_ORD_I=['XXS','XS','YXS','YS','YM','YL','YXL','S','M','L','XL','2XL','3XL','4XL','5XL','OSFA'];
 
   const parseNSData=(raw)=>{
@@ -7707,7 +7709,209 @@ export default function App(){
     const applyAnswer=(qi,val)=>setImp(x=>({...x,questions:x.questions.map((q,i)=>i===qi?{...q,answer:val}:q)}));
     const updItem=(pi,k,v)=>setImp(x=>({...x,parsed:x.parsed.map((p,i)=>i===pi?{...p,[k]:v}:p)}));
 
+    // Bulk CSV parser
+    const parseCSV=(text)=>{
+      const lines=text.trim().split('\n');if(lines.length<2)return{rows:[],headers:[]};
+      const sep=lines[0].includes('\t')?'\t':',';
+      const headers=lines[0].split(sep).map(h=>h.trim().replace(/^"|"$/g,'').toLowerCase().replace(/\s+/g,'_'));
+      const rows=lines.slice(1).filter(l=>l.trim()).map(l=>{
+        const vals=l.split(sep).map(v=>v.trim().replace(/^"|"$/g,''));
+        const obj={};headers.forEach((h,i)=>{obj[h]=vals[i]||''});return obj;
+      });
+      return{rows,headers};
+    };
+
+    // Column mapping helpers
+    const CUST_FIELDS=[
+      {key:'name',label:'Name *',required:true},
+      {key:'alpha_tag',label:'Alpha Tag'},
+      {key:'contact_name',label:'Contact Name'},
+      {key:'contact_email',label:'Contact Email'},
+      {key:'contact_phone',label:'Contact Phone'},
+      {key:'contact_role',label:'Contact Role'},
+      {key:'billing_address_line1',label:'Billing Address'},
+      {key:'billing_city',label:'Billing City'},
+      {key:'billing_state',label:'Billing State'},
+      {key:'billing_zip',label:'Billing ZIP'},
+      {key:'shipping_address_line1',label:'Ship Address'},
+      {key:'shipping_city',label:'Ship City'},
+      {key:'shipping_state',label:'Ship State'},
+      {key:'shipping_zip',label:'Ship ZIP'},
+      {key:'adidas_ua_tier',label:'Tier (A/B/C)'},
+      {key:'catalog_markup',label:'Markup (e.g. 1.65)'},
+      {key:'payment_terms',label:'Payment Terms'},
+      {key:'tax_rate',label:'Tax Rate (decimal)'},
+      {key:'primary_rep_id',label:'Rep ID'},
+    ];
+    const VEND_FIELDS=[
+      {key:'name',label:'Name *',required:true},
+      {key:'vendor_type',label:'Type (api/upload)'},
+      {key:'contact_email',label:'Email'},
+      {key:'contact_phone',label:'Phone'},
+      {key:'rep_name',label:'Rep Name'},
+      {key:'payment_terms',label:'Payment Terms'},
+      {key:'notes',label:'Notes'},
+    ];
+    const PROD_FIELDS=[
+      {key:'sku',label:'SKU *',required:true},
+      {key:'name',label:'Name *',required:true},
+      {key:'brand',label:'Brand'},
+      {key:'color',label:'Color'},
+      {key:'category',label:'Category'},
+      {key:'retail_price',label:'Retail Price'},
+      {key:'nsa_cost',label:'NSA Cost'},
+      {key:'available_sizes',label:'Available Sizes (comma sep)'},
+      {key:'vendor_name',label:'Vendor Name'},
+    ];
+
+    const fieldMap=impTab==='customers'?CUST_FIELDS:impTab==='vendors'?VEND_FIELDS:PROD_FIELDS;
+
+    // Auto-map columns
+    const autoMap=(headers)=>{
+      const map={};
+      const aliases={
+        name:['name','customer_name','company','school','organization','vendor_name','product_name'],
+        alpha_tag:['alpha','alpha_tag','short_name','abbrev','code'],
+        contact_name:['contact','contact_name','primary_contact'],
+        contact_email:['email','contact_email','e-mail'],
+        contact_phone:['phone','contact_phone','telephone'],
+        contact_role:['role','contact_role','title'],
+        billing_address_line1:['billing_address','address','street','address_1','bill_to'],
+        billing_city:['billing_city','city','bill_city'],
+        billing_state:['billing_state','state','bill_state'],
+        billing_zip:['billing_zip','zip','postal','bill_zip'],
+        shipping_address_line1:['shipping_address','ship_address','ship_to','ship_street'],
+        shipping_city:['shipping_city','ship_city'],
+        shipping_state:['shipping_state','ship_state'],
+        shipping_zip:['shipping_zip','ship_zip'],
+        adidas_ua_tier:['tier','pricing_tier'],
+        catalog_markup:['markup','multiplier'],
+        payment_terms:['payment_terms','terms','net_terms'],
+        tax_rate:['tax_rate','tax','sales_tax'],
+        primary_rep_id:['rep','rep_id','sales_rep'],
+        sku:['sku','item_number','style','item','part_number','style_number'],
+        brand:['brand','manufacturer','vendor'],
+        color:['color','colour'],
+        category:['category','type','product_type'],
+        retail_price:['retail','retail_price','msrp','list_price','price'],
+        nsa_cost:['cost','nsa_cost','unit_cost','our_cost','dealer_cost'],
+        available_sizes:['sizes','available_sizes','size_range'],
+        vendor_name:['vendor','vendor_name','supplier'],
+        vendor_type:['type','vendor_type'],
+        rep_name:['rep','rep_name','account_rep'],
+        notes:['notes','comments','memo'],
+      };
+      headers.forEach(h=>{
+        const hl=h.toLowerCase().replace(/[^a-z0-9_]/g,'');
+        Object.entries(aliases).forEach(([field,alts])=>{
+          if(!map[field]&&(alts.includes(hl)||hl===field))map[field]=h;
+        });
+      });
+      return map;
+    };
+
+    // Parse and review bulk data
+    const parseBulk=()=>{
+      const{rows,headers}=parseCSV(bulkImp.raw);
+      if(rows.length===0){nf('No data found — check format','error');return}
+      const colMap=autoMap(headers);
+      const issues=[];
+      const required=fieldMap.filter(f=>f.required).map(f=>f.key);
+      required.forEach(k=>{if(!colMap[k])issues.push('⚠️ Required field "'+fieldMap.find(f=>f.key===k)?.label+'" not mapped — check your column headers')});
+      setBulkImp(x=>({...x,parsed:rows,headers,colMap,issues,step:'review'}));
+      nf('✅ Parsed '+rows.length+' rows, '+headers.length+' columns');
+    };
+
+    // Import customers
+    const importCustomers=()=>{
+      const{parsed,colMap}=bulkImp;const added=[];const skipped=[];
+      parsed.forEach((row,i)=>{
+        const name=(row[colMap.name]||'').trim();
+        if(!name){skipped.push('Row '+(i+2)+': no name');return}
+        if(cust.find(c=>c.name.toLowerCase()===name.toLowerCase())){skipped.push(name+' — already exists');return}
+        const c={
+          id:'c-'+Date.now()+'-'+i,parent_id:null,name,
+          alpha_tag:row[colMap.alpha_tag]||name.split(' ').map(w=>w[0]).join('').toUpperCase().slice(0,4),
+          contacts:row[colMap.contact_name]?[{name:row[colMap.contact_name],email:row[colMap.contact_email]||'',phone:row[colMap.contact_phone]||'',role:row[colMap.contact_role]||''}]:[],
+          billing_address_line1:row[colMap.billing_address_line1]||'',billing_city:row[colMap.billing_city]||'',
+          billing_state:row[colMap.billing_state]||'',billing_zip:row[colMap.billing_zip]||'',
+          shipping_address_line1:row[colMap.shipping_address_line1]||row[colMap.billing_address_line1]||'',
+          shipping_city:row[colMap.shipping_city]||row[colMap.billing_city]||'',
+          shipping_state:row[colMap.shipping_state]||row[colMap.billing_state]||'',
+          shipping_zip:row[colMap.shipping_zip]||row[colMap.billing_zip]||'',
+          adidas_ua_tier:row[colMap.adidas_ua_tier]||'B',
+          catalog_markup:parseFloat(row[colMap.catalog_markup])||1.65,
+          payment_terms:row[colMap.payment_terms]||'net30',
+          tax_rate:parseFloat(row[colMap.tax_rate])||0,
+          primary_rep_id:row[colMap.primary_rep_id]||cu.id,
+          is_active:true,_oe:0,_os:0,_oi:0,_ob:0
+        };
+        added.push(c);
+      });
+      if(added.length>0)setCust(prev=>[...prev,...added]);
+      setBulkImp(x=>({...x,step:'done',added:added.length,skipped}));
+      nf('✅ Imported '+added.length+' customers'+(skipped.length?' ('+skipped.length+' skipped)':''));
+    };
+
+    // Import vendors
+    const importVendors=()=>{
+      const{parsed,colMap}=bulkImp;const added=[];const skipped=[];
+      parsed.forEach((row,i)=>{
+        const name=(row[colMap.name]||'').trim();
+        if(!name){skipped.push('Row '+(i+2)+': no name');return}
+        if(D_V.find(v=>v.name.toLowerCase()===name.toLowerCase())){skipped.push(name+' — already exists');return}
+        added.push({
+          id:'v-'+Date.now()+'-'+i,name,
+          vendor_type:row[colMap.vendor_type]||'upload',
+          contact_email:row[colMap.contact_email]||'',contact_phone:row[colMap.contact_phone]||'',
+          rep_name:row[colMap.rep_name]||'',payment_terms:row[colMap.payment_terms]||'net30',
+          notes:row[colMap.notes]||'',nsa_carries_inventory:false,is_active:true,
+          _oi:0,_it:0,_ac:0,_a3:0,_a6:0,_a9:0
+        });
+      });
+      // Note: vendors are currently const D_V — for now store in localStorage
+      nf('✅ Parsed '+added.length+' vendors — vendor list is currently read-only. Export ready for Code to wire up.','info');
+      setBulkImp(x=>({...x,step:'done',added:added.length,skipped}));
+    };
+
+    // Import products
+    const importProducts=()=>{
+      const{parsed,colMap}=bulkImp;const added=[];const skipped=[];
+      parsed.forEach((row,i)=>{
+        const sku=(row[colMap.sku]||'').trim();const name=(row[colMap.name]||'').trim();
+        if(!sku||!name){skipped.push('Row '+(i+2)+': missing SKU or name');return}
+        if(prod.find(p=>p.sku.toLowerCase()===sku.toLowerCase())){skipped.push(sku+' — already exists');return}
+        const vendorName=(row[colMap.vendor_name]||row[colMap.brand]||'').trim();
+        const vendor=D_V.find(v=>v.name.toLowerCase()===vendorName.toLowerCase());
+        const sizes=(row[colMap.available_sizes]||'S,M,L,XL,2XL').split(',').map(s=>s.trim()).filter(Boolean);
+        added.push({
+          id:'p-'+Date.now()+'-'+i,vendor_id:vendor?.id||null,sku,name,
+          brand:row[colMap.brand]||'',color:row[colMap.color]||'',
+          category:row[colMap.category]||'',
+          retail_price:parseFloat(row[colMap.retail_price])||0,
+          nsa_cost:parseFloat(row[colMap.nsa_cost])||0,
+          available_sizes:sizes,is_active:true,_inv:{},_alerts:{}
+        });
+      });
+      if(added.length>0)setProd(prev=>[...prev,...added]);
+      setBulkImp(x=>({...x,step:'done',added:added.length,skipped}));
+      nf('✅ Imported '+added.length+' products'+(skipped.length?' ('+skipped.length+' skipped)':''));
+    };
+
+    const doImport=()=>{if(impTab==='customers')importCustomers();else if(impTab==='vendors')importVendors();else importProducts()};
+
+    const resetBulk=()=>setBulkImp({raw:'',parsed:[],issues:[],step:'paste'});
+
     return(<>
+      {/* Import type tabs */}
+      <div style={{display:'flex',gap:4,marginBottom:16}}>
+        {[['orders','📋 Orders / NetSuite'],['customers','👥 Customers'],['vendors','🏭 Vendors'],['products','📦 Products']].map(([id,label])=>
+          <button key={id} className={`btn btn-sm ${impTab===id?'btn-primary':'btn-secondary'}`}
+            onClick={()=>{setImpTab(id);resetBulk()}}>{label}</button>)}
+      </div>
+
+      {/* ORDERS TAB — existing import */}
+      {impTab==='orders'&&<>
       {/* Step indicators */}
       <div style={{display:'flex',gap:4,marginBottom:16}}>
         {[['upload','1. Upload / Paste'],['review','2. Review Items'],['questions','3. Answer Questions'],['confirm','4. Confirm & Create']].map(([id,label])=>
@@ -7996,6 +8200,124 @@ export default function App(){
               }}>?? Create {imp.docType==='so'?'Sales Order':'Estimate'} ({keeping.length} items)</button>
             </div>
           </>})()}
+      </>}
+    </>}
+
+      {/* BULK IMPORT — Customers, Vendors, Products */}
+      {impTab!=='orders'&&<>
+        <div className="card" style={{marginBottom:12}}>
+          <div className="card-header"><h2>{impTab==='customers'?'👥 Bulk Import Customers':impTab==='vendors'?'🏭 Bulk Import Vendors':'📦 Bulk Import Products'}</h2></div>
+          <div className="card-body">
+
+            {/* STEP 1: Paste / Upload */}
+            {bulkImp.step==='paste'&&<>
+              <div style={{fontSize:12,color:'#64748b',marginBottom:8}}>
+                Paste CSV/TSV data or drag a file. First row must be column headers.
+              </div>
+
+              {/* Template info */}
+              <div style={{marginBottom:12,padding:10,background:'#eff6ff',borderRadius:6}}>
+                <div style={{fontSize:11,fontWeight:700,color:'#1e40af',marginBottom:4}}>📄 Expected columns:</div>
+                <div style={{fontSize:10,color:'#475569',display:'flex',gap:4,flexWrap:'wrap'}}>
+                  {fieldMap.map(f=><span key={f.key} style={{padding:'2px 6px',borderRadius:4,background:f.required?'#fef3c7':'#f1f5f9',fontWeight:f.required?700:400}}>{f.label}</span>)}
+                </div>
+                <button className="btn btn-sm btn-secondary" style={{marginTop:8,fontSize:10}} onClick={()=>{
+                  const headers=fieldMap.map(f=>f.key).join(',');
+                  const example=fieldMap.map(f=>f.key==='name'?'Example School':f.key==='sku'?'ABC123':f.key==='alpha_tag'?'EXS':'').join(',');
+                  const blob=new Blob([headers+'\n'+example],{type:'text/csv'});
+                  const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=impTab+'_template.csv';a.click();URL.revokeObjectURL(url);
+                }}>⬇️ Download CSV Template</button>
+              </div>
+
+              {/* Drop zone */}
+              <div style={{padding:20,border:'2px dashed #d1d5db',borderRadius:8,textAlign:'center',color:'#64748b',fontSize:12,marginBottom:8,cursor:'pointer',transition:'all 0.2s'}}
+                onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#3b82f6';e.currentTarget.style.background='#eff6ff'}}
+                onDragLeave={e=>{e.currentTarget.style.borderColor='#d1d5db';e.currentTarget.style.background='transparent'}}
+                onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor='#d1d5db';e.currentTarget.style.background='transparent';
+                  const f=e.dataTransfer.files[0];if(!f)return;
+                  const reader=new FileReader();reader.onload=ev=>{setBulkImp(x=>({...x,raw:ev.target.result}));nf('✅ Loaded '+f.name)};reader.readAsText(f)}}
+                onClick={()=>{const input=document.createElement('input');input.type='file';input.accept='.csv,.tsv,.txt';
+                  input.onchange=ev=>{const f=ev.target.files[0];if(!f)return;
+                    const reader=new FileReader();reader.onload=e2=>{setBulkImp(x=>({...x,raw:e2.target.result}));nf('✅ Loaded '+f.name)};reader.readAsText(f)};input.click()}}>
+                📂 Drop CSV/TSV file here or click to browse
+                {bulkImp.raw&&<div style={{marginTop:6,color:'#22c55e',fontWeight:600}}>✅ {bulkImp.raw.split('\n').length-1} rows loaded</div>}
+              </div>
+
+              <textarea className="form-input" rows={8} value={bulkImp.raw} onChange={e=>setBulkImp(x=>({...x,raw:e.target.value}))}
+                placeholder={"name,alpha_tag,contact_email,city,state\nMaple High School,MHS,coach@maple.edu,Springfield,IL\nOak Valley Academy,OVA,ad@oakvalley.org,Oakland,CA"} style={{fontFamily:'monospace',fontSize:10,marginBottom:8}}/>
+
+              <div style={{display:'flex',gap:8}}>
+                <button className="btn btn-primary" disabled={!bulkImp.raw.trim()} onClick={parseBulk}>📊 Parse & Preview</button>
+                <button className="btn btn-secondary" onClick={resetBulk}>Clear</button>
+              </div>
+            </>}
+
+            {/* STEP 2: Review & Map */}
+            {bulkImp.step==='review'&&<>
+              <div className="stats-row" style={{marginBottom:12}}>
+                <div className="stat-card"><div className="stat-label">Rows Parsed</div><div className="stat-value" style={{color:'#1e40af'}}>{bulkImp.parsed.length}</div></div>
+                <div className="stat-card"><div className="stat-label">Columns</div><div className="stat-value">{(bulkImp.headers||[]).length}</div></div>
+                <div className="stat-card"><div className="stat-label">Fields Mapped</div><div className="stat-value" style={{color:'#22c55e'}}>{Object.keys(bulkImp.colMap||{}).length}</div></div>
+                <div className="stat-card"><div className="stat-label">Issues</div><div className="stat-value" style={{color:(bulkImp.issues||[]).length?'#dc2626':'#94a3b8'}}>{(bulkImp.issues||[]).length}</div></div>
+              </div>
+
+              {/* Column mapping */}
+              <div style={{marginBottom:12}}>
+                <div style={{fontSize:12,fontWeight:700,marginBottom:6}}>Column Mapping — adjust if auto-mapping missed anything</div>
+                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:6}}>
+                  {fieldMap.map(f=>{const mapped=bulkImp.colMap?.[f.key];
+                    return<div key={f.key} style={{display:'flex',alignItems:'center',gap:4,padding:'4px 8px',background:mapped?'#f0fdf4':f.required?'#fef2f2':'#f8fafc',borderRadius:4,border:'1px solid '+(mapped?'#86efac':f.required?'#fecaca':'#e2e8f0')}}>
+                      <span style={{fontSize:10,fontWeight:600,minWidth:90}}>{f.label}</span>
+                      <select style={{flex:1,fontSize:10,padding:'2px 4px',borderRadius:3,border:'1px solid #d1d5db'}} value={mapped||''} onChange={e=>{
+                        const v=e.target.value;setBulkImp(x=>{const cm={...x.colMap};if(v)cm[f.key]=v;else delete cm[f.key];return{...x,colMap:cm}})}}>
+                        <option value="">— skip —</option>
+                        {(bulkImp.headers||[]).map(h=><option key={h} value={h}>{h}</option>)}
+                      </select>
+                      {mapped&&<span style={{fontSize:10,color:'#22c55e'}}>✓</span>}
+                    </div>})}
+                </div>
+              </div>
+
+              {/* Issues */}
+              {(bulkImp.issues||[]).length>0&&<div style={{padding:8,background:'#fef2f2',borderRadius:6,marginBottom:12}}>
+                {bulkImp.issues.map((iss,i)=><div key={i} style={{fontSize:11,color:'#dc2626'}}>{iss}</div>)}
+              </div>}
+
+              {/* Preview table */}
+              <div style={{fontSize:12,fontWeight:700,marginBottom:4}}>Preview (first 5 rows)</div>
+              <div style={{overflow:'auto',maxHeight:200,marginBottom:12}}>
+                <table style={{fontSize:10}}><thead><tr>
+                  {fieldMap.filter(f=>bulkImp.colMap?.[f.key]).map(f=><th key={f.key}>{f.label}</th>)}
+                </tr></thead><tbody>
+                  {bulkImp.parsed.slice(0,5).map((row,ri)=><tr key={ri}>
+                    {fieldMap.filter(f=>bulkImp.colMap?.[f.key]).map(f=><td key={f.key}>{row[bulkImp.colMap[f.key]]||'—'}</td>)}
+                  </tr>)}
+                </tbody></table>
+              </div>
+
+              <div style={{display:'flex',gap:8}}>
+                <button className="btn btn-primary" onClick={doImport} disabled={!fieldMap.filter(f=>f.required).every(f=>bulkImp.colMap?.[f.key])}>
+                  ✅ Import {bulkImp.parsed.length} {impTab}</button>
+                <button className="btn btn-secondary" onClick={()=>setBulkImp(x=>({...x,step:'paste'}))}>← Back</button>
+              </div>
+            </>}
+
+            {/* STEP 3: Done */}
+            {bulkImp.step==='done'&&<>
+              <div style={{textAlign:'center',padding:24}}>
+                <div style={{fontSize:48,marginBottom:8}}>🎉</div>
+                <div style={{fontSize:18,fontWeight:800,color:'#166534',marginBottom:4}}>Import Complete!</div>
+                <div style={{fontSize:14,color:'#475569'}}>{bulkImp.added} {impTab} imported successfully</div>
+                {(bulkImp.skipped||[]).length>0&&<div style={{marginTop:12,textAlign:'left',maxHeight:150,overflow:'auto'}}>
+                  <div style={{fontSize:11,fontWeight:700,color:'#d97706',marginBottom:4}}>⚠️ Skipped ({bulkImp.skipped.length}):</div>
+                  {bulkImp.skipped.map((s,i)=><div key={i} style={{fontSize:10,color:'#64748b',padding:'2px 0'}}>{s}</div>)}
+                </div>}
+                <button className="btn btn-primary" style={{marginTop:16}} onClick={resetBulk}>Import More</button>
+              </div>
+            </>}
+
+          </div>
+        </div>
       </>}
     </>);
   };
