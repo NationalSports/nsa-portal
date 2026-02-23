@@ -12,7 +12,7 @@ catch(e) { console.warn('[Supabase] Init failed:', e.message); }
 
 const _dbLoad = async () => {
   if (!supabase) return null;
-  const [r1,r2,r3,r4,r5,r6,r7,r8,r9] = await Promise.all([
+  const [r1,r2,r3,r4,r5,r6,r7,r8,r9,r10] = await Promise.all([
     supabase.from('team_members').select('*').order('name'),
     supabase.from('customers').select('*').order('name'),
     supabase.from('vendors').select('*').order('name'),
@@ -22,11 +22,12 @@ const _dbLoad = async () => {
     supabase.from('invoices').select('*').order('id'),
     supabase.from('messages').select('*').order('id'),
     supabase.from('omg_stores').select('*').order('id'),
+    supabase.from('issues').select('*').order('id'),
   ]);
-  const errs = [r1,r2,r3,r4,r5,r6,r7,r8,r9].filter(r=>r.error);
+  const errs = [r1,r2,r3,r4,r5,r6,r7,r8,r9,r10].filter(r=>r.error);
   if(errs.length) console.error('[DB] Load errors:', errs.map(r=>r.error.message));
   return { team:r1.data||[], customers:r2.data||[], vendors:r3.data||[], products:r4.data||[],
-    estimates:r5.data||[], sales_orders:r6.data||[], invoices:r7.data||[], messages:r8.data||[], omg_stores:r9.data||[],
+    estimates:r5.data||[], sales_orders:r6.data||[], invoices:r7.data||[], messages:r8.data||[], omg_stores:r9.data||[], issues:r10.data||[],
     hasData: (r2.data&&r2.data.length>0)||(r6.data&&r6.data.length>0) };
 };
 const _dbSeed = async (d) => {
@@ -3811,7 +3812,6 @@ export default function App(){
   const[issueFilter,setIssueFilter]=useState('all');// all|open|resolved
   const[editMember,setEditMember]=useState(null);
   const[showInactive,setShowInactive]=useState(false);
-  React.useEffect(()=>{try{localStorage.setItem('nsa_issues',JSON.stringify(issues))}catch{}},[issues]);
   const openIssueCount=issues.filter(i=>i.status==='open').length;
   const consoleErrors=React.useRef([]);
   React.useEffect(()=>{const orig=console.error;console.error=(...args)=>{consoleErrors.current=[{msg:args.map(a=>typeof a==='string'?a:JSON.stringify(a)).join(' '),ts:new Date().toISOString()},...consoleErrors.current].slice(0,5);orig.apply(console,args)};return()=>{console.error=orig}},[]);
@@ -3823,8 +3823,9 @@ export default function App(){
   const[soHistory,setSOHistory]=useState({});// {soId:[{ts,user,snapshot}]}
   const[msgs,setMsgs]=useState(()=>_migrated.msgs);const[cM,setCM]=useState({open:false,c:null});const[aM,setAM]=useState({open:false,p:null});
   // ─── Supabase: load on mount, seed if empty ───
+  const _initialLoadDone=useRef(false);
   React.useEffect(()=>{
-    if(!supabase){setDbLoading(false);return}
+    if(!supabase){setDbLoading(false);_initialLoadDone.current=true;return}
     let c=false;
     (async()=>{
       try{
@@ -3835,7 +3836,7 @@ export default function App(){
           if(d.vendors.length)setVend(d.vendors);if(d.products.length)setProd(d.products);
           if(d.estimates.length)setEsts(d.estimates);if(d.sales_orders.length)setSOs(d.sales_orders);
           if(d.invoices.length)setInvs(d.invoices);if(d.messages.length)setMsgs(d.messages);
-          if(d.omg_stores.length)setOmgStores(d.omg_stores);
+          if(d.omg_stores.length)setOmgStores(d.omg_stores);if(d.issues.length)setIssues(d.issues);
           console.log('[DB] Loaded from Supabase');
         }else{
           console.log('[DB] Supabase empty, seeding...');
@@ -3844,19 +3845,44 @@ export default function App(){
           console.log('[DB] Seeded');
         }
       }catch(e){console.error('[DB] Load failed:',e)}
-      finally{if(!c){_dbReady.current=true;setDbLoading(false)}}
+      finally{if(!c){_dbReady.current=true;setDbLoading(false);
+        // Mark initial load done after a tick so auto-save effects don't fire from the setState calls above
+        setTimeout(()=>{_initialLoadDone.current=true},100);
+      }}
     })();
     return()=>{c=true};
   },[]);
-  // Auto-save to localStorage + Supabase
-  React.useEffect(()=>{try{localStorage.setItem('nsa_reps',JSON.stringify(REPS))}catch{};if(_dbReady.current)_dbSave('team_members',REPS)},[REPS]);
-  React.useEffect(()=>{try{localStorage.setItem('nsa_cust',JSON.stringify(cust))}catch{};if(_dbReady.current)_dbSave('customers',cust)},[cust]);
-  React.useEffect(()=>{try{localStorage.setItem('nsa_prod',JSON.stringify(prod))}catch{};if(_dbReady.current)_dbSave('products',prod)},[prod]);
-  React.useEffect(()=>{try{localStorage.setItem('nsa_ests',JSON.stringify(ests))}catch{};if(_dbReady.current)ests.forEach(e=>_dbSave('estimates',e))},[ests]);
-  React.useEffect(()=>{try{localStorage.setItem('nsa_sos',JSON.stringify(sos))}catch{};if(_dbReady.current)sos.forEach(s=>_dbSave('sales_orders',s))},[sos]);
-  React.useEffect(()=>{try{localStorage.setItem('nsa_invs',JSON.stringify(invs))}catch{};if(_dbReady.current)invs.forEach(i=>_dbSave('invoices',i))},[invs]);
-  React.useEffect(()=>{try{localStorage.setItem('nsa_msgs',JSON.stringify(msgs))}catch{};if(_dbReady.current)_dbSave('messages',msgs)},[msgs]);
-  React.useEffect(()=>{if(_dbReady.current)_dbSave('omg_stores',omgStores)},[omgStores]);
+
+  // ─── Supabase polling: refresh from DB every 30 seconds so all users stay in sync ───
+  React.useEffect(()=>{
+    if(!supabase)return;
+    const poll=setInterval(async()=>{
+      if(!_dbReady.current||!_initialLoadDone.current)return;
+      try{
+        const d=await _dbLoad();
+        if(!d||!d.hasData)return;
+        // Only update if DB has data — compare lengths to avoid unnecessary re-renders
+        if(d.estimates.length)setEsts(prev=>JSON.stringify(prev.map(e=>e.id).sort())===JSON.stringify(d.estimates.map(e=>e.id).sort())&&prev.length===d.estimates.length?prev:d.estimates);
+        if(d.sales_orders.length)setSOs(prev=>JSON.stringify(prev.map(s=>s.id).sort())===JSON.stringify(d.sales_orders.map(s=>s.id).sort())&&prev.length===d.sales_orders.length?prev:d.sales_orders);
+        if(d.invoices.length)setInvs(prev=>prev.length===d.invoices.length&&JSON.stringify(prev.map(i=>i.id).sort())===JSON.stringify(d.invoices.map(i=>i.id).sort())?prev:d.invoices);
+        if(d.customers.length)setCust(prev=>prev.length===d.customers.length?prev:d.customers);
+        if(d.messages.length)setMsgs(prev=>prev.length===d.messages.length?prev:d.messages);
+        if(d.issues.length)setIssues(prev=>prev.length===d.issues.length&&JSON.stringify(prev.map(i=>i.id).sort())===JSON.stringify(d.issues.map(i=>i.id).sort())?prev:d.issues);
+      }catch(e){console.warn('[DB] Poll failed:',e.message)}
+    },30000);
+    return()=>clearInterval(poll);
+  },[]);
+
+  // Auto-save to localStorage + Supabase (only after initial load is complete)
+  React.useEffect(()=>{try{localStorage.setItem('nsa_reps',JSON.stringify(REPS))}catch{};if(_initialLoadDone.current&&_dbReady.current)_dbSave('team_members',REPS)},[REPS]);
+  React.useEffect(()=>{try{localStorage.setItem('nsa_cust',JSON.stringify(cust))}catch{};if(_initialLoadDone.current&&_dbReady.current)_dbSave('customers',cust)},[cust]);
+  React.useEffect(()=>{try{localStorage.setItem('nsa_prod',JSON.stringify(prod))}catch{};if(_initialLoadDone.current&&_dbReady.current)_dbSave('products',prod)},[prod]);
+  React.useEffect(()=>{try{localStorage.setItem('nsa_ests',JSON.stringify(ests))}catch{};if(_initialLoadDone.current&&_dbReady.current)ests.forEach(e=>_dbSave('estimates',e))},[ests]);
+  React.useEffect(()=>{try{localStorage.setItem('nsa_sos',JSON.stringify(sos))}catch{};if(_initialLoadDone.current&&_dbReady.current)sos.forEach(s=>_dbSave('sales_orders',s))},[sos]);
+  React.useEffect(()=>{try{localStorage.setItem('nsa_invs',JSON.stringify(invs))}catch{};if(_initialLoadDone.current&&_dbReady.current)invs.forEach(i=>_dbSave('invoices',i))},[invs]);
+  React.useEffect(()=>{try{localStorage.setItem('nsa_msgs',JSON.stringify(msgs))}catch{};if(_initialLoadDone.current&&_dbReady.current)_dbSave('messages',msgs)},[msgs]);
+  React.useEffect(()=>{if(_initialLoadDone.current&&_dbReady.current)_dbSave('omg_stores',omgStores)},[omgStores]);
+  React.useEffect(()=>{try{localStorage.setItem('nsa_issues',JSON.stringify(issues))}catch{};if(_initialLoadDone.current&&_dbReady.current)_dbSave('issues',issues)},[issues]);
   const[q,setQ]=useState('');const[selC,setSelC]=useState(null);const[selV,setSelV]=useState(null);
   const[eEst,setEEst]=useState(null);const[eEstC,setEEstC]=useState(null);const[eSO,setESO]=useState(null);const[eSOC,setESOC]=useState(null);const[eSOTab,setESOTab]=useState(null);const[eSOScrollItem,setESOScrollItem]=useState(null);const[eSOScrollJob,setESOScrollJob]=useState(null);
   const[gQ,setGQ]=useState('');const[gOpen,setGOpen]=useState(false);const[mF,setMF]=useState('all');const[rF,setRF]=useState('all');const[pF,setPF]=useState({cat:'all',vnd:'all',stk:'all',clr:'all'});
