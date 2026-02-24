@@ -4428,8 +4428,9 @@ export default function App(){
         if(d.estimates.length)setEsts(d.estimates);if(d.sales_orders.length)setSOs(d.sales_orders);
         if(d.invoices.length)setInvs(d.invoices);if(d.messages.length)setMsgs(d.messages);
         if(d.customers.length)setCust(d.customers);if(d.products.length)setProd(d.products);
+        if(d.vendors.length)setVend(d.vendors);if(d.omg_stores.length)setOmgStores(d.omg_stores);
         if(d.issues?.length)setIssues(d.issues)};
-      ['estimates','sales_orders','invoices','messages','so_items','issues'].forEach(table=>{
+      ['estimates','estimate_items','sales_orders','so_items','invoices','invoice_items','invoice_payments','messages','customers','customer_contacts','products','product_inventory','issues'].forEach(table=>{
         const ch=supabase.channel('realtime_'+table).on('postgres_changes',{event:'*',schema:'public',table},()=>{reloadAll()}).subscribe();
         channels.push(ch);
       });
@@ -4445,13 +4446,15 @@ export default function App(){
       try{
         const d=await _dbLoad();
         if(!d||!d.hasData)return;
-        // Only update if DB has data — compare lengths to avoid unnecessary re-renders
-        if(d.estimates.length)setEsts(prev=>JSON.stringify(prev.map(e=>e.id).sort())===JSON.stringify(d.estimates.map(e=>e.id).sort())&&prev.length===d.estimates.length?prev:d.estimates);
-        if(d.sales_orders.length)setSOs(prev=>JSON.stringify(prev.map(s=>s.id).sort())===JSON.stringify(d.sales_orders.map(s=>s.id).sort())&&prev.length===d.sales_orders.length?prev:d.sales_orders);
-        if(d.invoices.length)setInvs(prev=>prev.length===d.invoices.length&&JSON.stringify(prev.map(i=>i.id).sort())===JSON.stringify(d.invoices.map(i=>i.id).sort())?prev:d.invoices);
-        if(d.customers.length)setCust(prev=>prev.length===d.customers.length?prev:d.customers);
-        if(d.messages.length)setMsgs(prev=>prev.length===d.messages.length?prev:d.messages);
-        if(d.issues.length)setIssues(prev=>prev.length===d.issues.length&&JSON.stringify(prev.map(i=>i.id).sort())===JSON.stringify(d.issues.map(i=>i.id).sort())?prev:d.issues);
+        // Use updated_at (or full JSON hash) to detect content changes, not just ID changes
+        const changed=(prev,next)=>{if(prev.length!==next.length)return true;const pIds=prev.map(e=>e.id+':'+(e.updated_at||'')).sort().join(',');const nIds=next.map(e=>e.id+':'+(e.updated_at||'')).sort().join(',');return pIds!==nIds};
+        if(d.estimates.length)setEsts(prev=>changed(prev,d.estimates)?d.estimates:prev);
+        if(d.sales_orders.length)setSOs(prev=>changed(prev,d.sales_orders)?d.sales_orders:prev);
+        if(d.invoices.length)setInvs(prev=>changed(prev,d.invoices)?d.invoices:prev);
+        if(d.customers.length)setCust(prev=>changed(prev,d.customers)?d.customers:prev);
+        if(d.messages.length)setMsgs(prev=>changed(prev,d.messages)?d.messages:prev);
+        if(d.issues.length)setIssues(prev=>changed(prev,d.issues)?d.issues:prev);
+        if(d.products.length)setProd(prev=>changed(prev,d.products)?d.products:prev);
       }catch(e){console.warn('[DB] Poll failed:',e.message)}
     },30000);
     return()=>clearInterval(poll);
