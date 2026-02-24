@@ -288,24 +288,26 @@ const extractPdfText=async(file)=>{
     // Group text items into rows using Y position, then sort by X within each row
     const items=content.items.filter(it=>it.str.trim());
     if(items.length===0)continue;
-    // Build rows by grouping items with similar Y coordinates (within 3 units)
+    // Build rows by grouping items with similar Y coordinates (within 5 units)
     const rows=[];
     items.forEach(it=>{
       const y=Math.round(it.transform[5]);const x=it.transform[4];
-      let row=rows.find(r=>Math.abs(r.y-y)<3);
+      const w=it.width||it.str.length*5;
+      let row=rows.find(r=>Math.abs(r.y-y)<=5);
       if(!row){row={y,items:[]};rows.push(row)}
-      row.items.push({x,str:it.str});
+      row.items.push({x,w,str:it.str});
     });
     // Sort rows top-to-bottom (higher Y = higher on page in PDF coords)
     rows.sort((a,b)=>b.y-a.y);
     rows.forEach(row=>{
       row.items.sort((a,b)=>a.x-b.x);
-      // Join items with tab if they have significant horizontal gaps (>30 units = likely different columns)
+      // Join items — insert tab when horizontal gap suggests a new column
       let line='';
       row.items.forEach((it,idx)=>{
         if(idx>0){
-          const gap=it.x-(row.items[idx-1].x+row.items[idx-1].str.length*4);
-          line+=gap>30?'\t':' ';
+          const prev=row.items[idx-1];
+          const gap=it.x-(prev.x+prev.w);
+          line+=gap>15?'\t':gap>1?' ':'';
         }
         line+=it.str;
       });
@@ -474,17 +476,18 @@ const parseNetSuitePdf=(text,docType)=>{
     // Parse description line for product name and color
     const description=(descLine||'').replace(/\t.*/,'').trim();
     let color='';
-    // NSA descriptions: "Adidas Creator Tee - Black - S" or "Under Armour Tech Polo - Black,White - 2XL"
-    const colorSizeMatch=description.match(/\s*-\s*([A-Za-z][A-Za-z\s,\/]+?)\s*-\s*(?:XXS|XS|YXS|YS|YM|YL|YXL|S|M|L|XL|2XL|3XL|4XL|5XL|OSFA)\s*$/i);
+    // NSA descriptions use both - and – (en-dash): "Adidas Creator Tee - Black - S" or "Pant – White Pins"
+    const DASH=/\s*[-–—]\s*/;
+    const colorSizeMatch=description.match(/\s*[-–—]\s*([A-Za-z][A-Za-z\s,\/]+?)\s*[-–—]\s*(?:XXS|XS|YXS|YS|YM|YL|YXL|S|M|L|XL|2XL|3XL|4XL|5XL|OSFA)\s*$/i);
     if(colorSizeMatch)color=colorSizeMatch[1].trim();
     else{
-      // Try: "Name - Color" (no size at end)
-      const colorOnly=description.match(/\s*-\s*([A-Za-z][A-Za-z\s,\/]+?)\s*$/);
-      if(colorOnly&&!/(?:color|print|press|emb|screen)/i.test(colorOnly[1]))color=colorOnly[1].trim();
+      // Try: "Name – Color" or "Name – Color Variant" (no size at end)
+      const colorOnly=description.match(/\s*[-–—]\s*([A-Za-z][A-Za-z\s,\/]+?)\s*$/);
+      if(colorOnly&&!/(?:color|print|press|emb|screen|knicker|regular)/i.test(colorOnly[1]))color=colorOnly[1].trim();
     }
-    // Clean product name (strip color and size from description)
+    // Clean product name (strip color/variant suffix from description)
     let productName=description;
-    if(color){productName=description.replace(new RegExp('\\s*-\\s*'+color.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'.*$','i'),'').trim()}
+    if(color){productName=description.replace(new RegExp('\\s*[-–—]\\s*'+color.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'.*$','i'),'').trim()}
 
     // Detect shipping lines
     if(/^shipping$/i.test(baseSku)||/^shipping$/i.test(description)){
@@ -519,10 +522,16 @@ const parseNetSuitePdf=(text,docType)=>{
       if(color&&!sizeItems[collapseKey].color)sizeItems[collapseKey].color=color;
       if(productName&&!sizeItems[collapseKey].description)sizeItems[collapseKey].description=productName;
     } else {
-      // No size detected — single item (OSFA)
+      // No size detected — single item or embedded sizes in description
       const sizes={};
+      // Check for letter sizes: "12/S, 14/M, 8/L"
       const embSizeRe=/(\d+)\s*\/\s*(XXS|XS|YXS|YS|YM|YL|YXL|S|M|L|XL|2XL|3XL|4XL|5XL)/gi;
       let embMatch;while((embMatch=embSizeRe.exec(description)))sizes[embMatch[2].toUpperCase()]=parseInt(embMatch[1]);
+      // Check for numeric sizes: "1/38 – knickers 1/40 – knickers 2/42" → sizes {38:1, 40:1, 42:2}
+      if(Object.keys(sizes).length===0){
+        const numSizeRe=/(\d+)\s*\/\s*(\d{2,3})/g;
+        let nm;while((nm=numSizeRe.exec(description)))sizes[nm[2]]=(sizes[nm[2]]||0)+parseInt(nm[1]);
+      }
       if(Object.keys(sizes).length===0)sizes['OSFA']=qty;
       result.lineItems.push({sku:baseSku||'MISC',description:productName||description,color,quantity:qty,rate,amount,isDecoration:false,sizes,raw:dataLine});
     }
