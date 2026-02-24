@@ -6,7 +6,7 @@ exports.handler = async (event) => {
   }
 
   const path = event.queryStringParameters?.path || '/stores';
-  const url = `https://api.ordermygear.com/v2${path}`;
+  const url = `https://app.ordermygear.com/api/v2${path}`;
 
   try {
     const response = await fetch(url, {
