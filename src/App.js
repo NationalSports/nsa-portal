@@ -567,16 +567,18 @@ let _estSeq=2101;let _soSeq=1042;let _invSeq=1061;
 const nextEstId=(ests)=>{const nums=(ests||[]).map(e=>{const m=(e.id||'').match(/EST-(\d+)/);return m?parseInt(m[1]):0});const next=Math.max(_estSeq,...nums)+1;_estSeq=next;return'EST-'+next};
 const nextSOId=(sos)=>{const nums=(sos||[]).map(s=>{const m=(s.id||'').match(/SO-(\d+)/);return m?parseInt(m[1]):0});const next=Math.max(_soSeq,...nums)+1;_soSeq=next;return'SO-'+next};
 const nextInvId=(invs)=>{const nums=(invs||[]).map(i=>{const m=(i.id||'').match(/INV-(\d+)/);return m?parseInt(m[1]):0});const next=Math.max(_invSeq,...nums)+1;_invSeq=next;return'INV-'+next};
-const CATEGORIES=['Tees','Hoodies','Polos','Shorts','1/4 Zips','Hats','Footwear','Jersey Tops','Jersey Bottoms','Balls'];
-const CONTACT_ROLES=['Head Coach','Assistant','Accounting','Athletic Director','Primary','Other'];
-const POSITIONS=['Front Center','Back Center','Left Chest','Right Chest','Left Sleeve','Right Sleeve','Left Leg','Right Leg','Nape','Other'];
+let CATEGORIES=['Tees','Hoodies','Polos','Shorts','1/4 Zips','Hats','Footwear','Jersey Tops','Jersey Bottoms','Balls'];
+let CONTACT_ROLES=['Head Coach','Assistant','Accounting','Athletic Director','Primary','Other'];
+let POSITIONS=['Front Center','Back Center','Left Chest','Right Chest','Left Sleeve','Right Sleeve','Left Leg','Right Leg','Nape','Other'];
 const EXTRA_SIZES=['XS','3XL','4XL','LT','XLT','2XLT','3XLT'];
 const SZ_ORD=['XS','S','M','L','XL','2XL','3XL','4XL','LT','XLT','2XLT','3XLT','OSFA'];
 const rQ=v=>Math.round(v*4)/4;
 const showSz=(s,inv)=>{const c=['S','M','L','XL','2XL'];if(c.includes(s))return true;return!EXTRA_SIZES.includes(s)||(inv||0)>0};
-const SP={bk:[{min:1,max:11},{min:12,max:23},{min:24,max:35},{min:36,max:47},{min:48,max:71},{min:72,max:107},{min:108,max:143},{min:144,max:215},{min:216,max:499},{min:500,max:99999}],pr:{0:[50,60,70,null,null],1:[5,6.5,8,9,null],2:[3.5,4.5,6,7,8],3:[3.2,4.25,4.75,6,7.5],4:[2.95,3.85,4.25,5,6],5:[2.75,3.5,3.95,4.5,5.25],6:[2.5,3.2,3.7,4,4.75],7:[2.25,3,3.5,3.75,4.25],8:[2.1,2.85,3.1,3.3,4],9:[1.9,2.75,2.9,3.1,3.75]},mk:1.5,ub:0.15};
-const EM={sb:[10000,15000,20000,999999],qb:[6,24,48,99999],pr:[[8,8.5,8,7.5],[9,8.5,8,8],[10,9.5,9,9],[12,12.5,12,10]],mk:1.6};
-const NP={bk:[10,50,99999],co:[4,3,3],se:[7,6,5],tc:3};const DTF=[{label:'4" Sq & Under',cost:2.5,sell:4.5},{label:'Front Chest (12"x4")',cost:4.5,sell:7.5}];
+let SP={bk:[{min:1,max:11},{min:12,max:23},{min:24,max:35},{min:36,max:47},{min:48,max:71},{min:72,max:107},{min:108,max:143},{min:144,max:215},{min:216,max:499},{min:500,max:99999}],pr:{0:[50,60,70,null,null],1:[5,6.5,8,9,null],2:[3.5,4.5,6,7,8],3:[3.2,4.25,4.75,6,7.5],4:[2.95,3.85,4.25,5,6],5:[2.75,3.5,3.95,4.5,5.25],6:[2.5,3.2,3.7,4,4.75],7:[2.25,3,3.5,3.75,4.25],8:[2.1,2.85,3.1,3.3,4],9:[1.9,2.75,2.9,3.1,3.75]},mk:1.5,ub:0.15};
+let EM={sb:[10000,15000,20000,999999],qb:[6,24,48,99999],pr:[[8,8.5,8,7.5],[9,8.5,8,8],[10,9.5,9,9],[12,12.5,12,10]],mk:1.6};
+let NP={bk:[10,50,99999],co:[4,3,3],se:[7,6,5],tc:3};let DTF=[{label:'4" Sq & Under',cost:2.5,sell:4.5},{label:'Front Chest (12"x4")',cost:4.5,sell:7.5}];
+// Load settings overrides from localStorage
+try{const _s=JSON.parse(localStorage.getItem('nsa_settings')||'{}');if(_s.SP)SP=_s.SP;if(_s.EM)EM=_s.EM;if(_s.NP)NP=_s.NP;if(_s.DTF)DTF=_s.DTF;if(_s.CATEGORIES)CATEGORIES=_s.CATEGORIES;if(_s.POSITIONS)POSITIONS=_s.POSITIONS;if(_s.CONTACT_ROLES)CONTACT_ROLES=_s.CONTACT_ROLES}catch{}
 function spP(q,c,s=true){const bi=SP.bk.findIndex(b=>q>=b.min&&q<=b.max);if(bi<0||c<1||c>5)return 0;const v=SP.pr[bi]?.[c-1];if(v==null)return 0;return s?v:rQ(v/SP.mk)}
 function emP(st,q,s=true){const si=EM.sb.findIndex(b=>st<=b);const qi=EM.qb.findIndex(b=>q<=b);if(si<0||qi<0)return 0;const v=EM.pr[si][qi];return s?v:rQ(v/EM.mk)}
 function npP(q,tw=false,s=true){const bi=NP.bk.findIndex(b=>q<=b);if(bi<0)return 0;return s?(NP.se[bi]+(tw?rQ(NP.tc*1.65):0)):(NP.co[bi]+(tw?NP.tc:0))}
@@ -10257,9 +10259,182 @@ export default function App(){
       </div>)}
     </>};
 
+  // SETTINGS PAGE
+  const[settingsTab,setSettingsTab]=useState('pricing');
+  const savSettings=(key,val)=>{
+    try{const s=JSON.parse(localStorage.getItem('nsa_settings')||'{}');s[key]=val;localStorage.setItem('nsa_settings',JSON.stringify(s));
+      if(key==='SP')SP=val;if(key==='EM')EM=val;if(key==='NP')NP=val;if(key==='DTF')DTF=val;
+      if(key==='CATEGORIES')CATEGORIES=val;if(key==='POSITIONS')POSITIONS=val;if(key==='CONTACT_ROLES')CONTACT_ROLES=val;
+      nf('Settings saved')}catch{nf('Error saving','warn')}};
+  const rSettings=()=>{
+    const tabs=[['pricing','Decoration Pricing'],['tiers','Customer Tiers'],['lists','Lists & Options'],['terms','Terms & Policies']];
+    return(<>
+      <div style={{display:'flex',gap:4,marginBottom:16,flexWrap:'wrap'}}>
+        {tabs.map(([k,label])=><button key={k} className={`btn btn-sm ${settingsTab===k?'btn-primary':'btn-secondary'}`} onClick={()=>setSettingsTab(k)}>{label}</button>)}
+      </div>
+
+      {/* DECORATION PRICING */}
+      {settingsTab==='pricing'&&<>
+        {/* Screen Print Matrix */}
+        <div className="card" style={{marginBottom:16}}><div className="card-header"><h3>Screen Print Pricing</h3></div><div className="card-body">
+          <div style={{display:'flex',gap:16,marginBottom:12,flexWrap:'wrap'}}>
+            <div><label className="form-label">Markup (cost-to-sell)</label><input className="form-input" type="number" step="0.05" style={{width:80}} value={SP.mk} onChange={e=>{SP.mk=parseFloat(e.target.value)||1.5;savSettings('SP',{...SP})}}/></div>
+            <div><label className="form-label">Underbase Upcharge</label><input className="form-input" type="number" step="0.01" style={{width:80}} value={SP.ub} onChange={e=>{SP.ub=parseFloat(e.target.value)||0;savSettings('SP',{...SP})}}/></div>
+          </div>
+          <div style={{overflowX:'auto'}}><table style={{fontSize:12}}>
+            <thead><tr><th style={{fontSize:10}}>Qty Range</th>{[1,2,3,4,5].map(c=><th key={c} style={{fontSize:10,textAlign:'center'}}>{c} Color{c>1?'s':''}</th>)}</tr></thead>
+            <tbody>{SP.bk.map((b,bi)=><tr key={bi}>
+              <td style={{fontWeight:700,fontSize:11,whiteSpace:'nowrap'}}>{b.min}-{b.max>=99999?'+':b.max}</td>
+              {[0,1,2,3,4].map(ci=><td key={ci} style={{padding:2}}><input className="form-input" type="number" step="0.05" style={{width:60,fontSize:11,textAlign:'center',padding:'2px 4px'}}
+                value={SP.pr[bi]?.[ci]??''} onChange={e=>{const v=e.target.value===''?null:parseFloat(e.target.value);const pr={...SP.pr};if(!pr[bi])pr[bi]=[null,null,null,null,null];pr[bi]=[...pr[bi]];pr[bi][ci]=v;SP.pr=pr;savSettings('SP',{...SP})}}/></td>)}
+            </tr>)}</tbody>
+          </table></div>
+          <div style={{fontSize:10,color:'#64748b',marginTop:8}}>Sell prices shown. Cost = Sell / Markup ({SP.mk}x). Underbase adds {Math.round(SP.ub*100)}% to both.</div>
+        </div></div>
+
+        {/* Embroidery Matrix */}
+        <div className="card" style={{marginBottom:16}}><div className="card-header"><h3>Embroidery Pricing</h3></div><div className="card-body">
+          <div style={{marginBottom:12}}>
+            <label className="form-label">Markup (cost-to-sell)</label><input className="form-input" type="number" step="0.05" style={{width:80}} value={EM.mk} onChange={e=>{EM.mk=parseFloat(e.target.value)||1.6;savSettings('EM',{...EM})}}/>
+          </div>
+          <div style={{overflowX:'auto'}}><table style={{fontSize:12}}>
+            <thead><tr><th style={{fontSize:10}}>Stitches</th>{EM.qb.map((q,i)=><th key={i} style={{fontSize:10,textAlign:'center'}}>{i===0?'1':EM.qb[i-1]+1}-{q>=99999?'+':q}</th>)}</tr></thead>
+            <tbody>{EM.sb.map((s,si)=><tr key={si}>
+              <td style={{fontWeight:700,fontSize:11,whiteSpace:'nowrap'}}>{si===0?'0':(EM.sb[si-1]+1).toLocaleString()}-{s>=99999?'+':s.toLocaleString()}</td>
+              {EM.qb.map((_,qi)=><td key={qi} style={{padding:2}}><input className="form-input" type="number" step="0.25" style={{width:60,fontSize:11,textAlign:'center',padding:'2px 4px'}}
+                value={EM.pr[si]?.[qi]??0} onChange={e=>{const v=parseFloat(e.target.value)||0;const pr=EM.pr.map(r=>[...r]);pr[si][qi]=v;EM.pr=pr;savSettings('EM',{...EM})}}/></td>)}
+            </tr>)}</tbody>
+          </table></div>
+          <div style={{fontSize:10,color:'#64748b',marginTop:8}}>Sell prices shown. Cost = Sell / Markup ({EM.mk}x).</div>
+        </div></div>
+
+        {/* Number Press Pricing */}
+        <div className="card" style={{marginBottom:16}}><div className="card-header"><h3>Number Press Pricing</h3></div><div className="card-body">
+          <div style={{overflowX:'auto'}}><table style={{fontSize:12}}>
+            <thead><tr><th style={{fontSize:10}}>Qty Range</th><th style={{fontSize:10,textAlign:'center'}}>Cost</th><th style={{fontSize:10,textAlign:'center'}}>Sell</th></tr></thead>
+            <tbody>{NP.bk.map((b,i)=><tr key={i}>
+              <td style={{fontWeight:700,fontSize:11}}>{i===0?'1':(NP.bk[i-1]+1)}-{b>=99999?'+':b}</td>
+              <td style={{padding:2}}><input className="form-input" type="number" step="0.25" style={{width:60,fontSize:11,textAlign:'center',padding:'2px 4px'}} value={NP.co[i]} onChange={e=>{NP.co=[...NP.co];NP.co[i]=parseFloat(e.target.value)||0;savSettings('NP',{...NP})}}/></td>
+              <td style={{padding:2}}><input className="form-input" type="number" step="0.25" style={{width:60,fontSize:11,textAlign:'center',padding:'2px 4px'}} value={NP.se[i]} onChange={e=>{NP.se=[...NP.se];NP.se[i]=parseFloat(e.target.value)||0;savSettings('NP',{...NP})}}/></td>
+            </tr>)}</tbody>
+          </table></div>
+          <div style={{marginTop:8}}><label className="form-label">Two-Color Upcharge</label><input className="form-input" type="number" step="0.5" style={{width:80}} value={NP.tc} onChange={e=>{NP.tc=parseFloat(e.target.value)||0;savSettings('NP',{...NP})}}/></div>
+        </div></div>
+
+        {/* DTF Pricing */}
+        <div className="card" style={{marginBottom:16}}><div className="card-header"><h3>DTF Pricing</h3></div><div className="card-body">
+          <table style={{fontSize:12}}>
+            <thead><tr><th style={{fontSize:10}}>Size</th><th style={{fontSize:10,textAlign:'center'}}>Cost</th><th style={{fontSize:10,textAlign:'center'}}>Sell</th></tr></thead>
+            <tbody>{DTF.map((d,i)=><tr key={i}>
+              <td style={{fontWeight:700,fontSize:11}}><input className="form-input" style={{width:160,fontSize:11,padding:'2px 6px'}} value={d.label} onChange={e=>{DTF[i]={...DTF[i],label:e.target.value};savSettings('DTF',[...DTF])}}/></td>
+              <td style={{padding:2}}><input className="form-input" type="number" step="0.25" style={{width:60,fontSize:11,textAlign:'center',padding:'2px 4px'}} value={d.cost} onChange={e=>{DTF[i]={...DTF[i],cost:parseFloat(e.target.value)||0};savSettings('DTF',[...DTF])}}/></td>
+              <td style={{padding:2}}><input className="form-input" type="number" step="0.25" style={{width:60,fontSize:11,textAlign:'center',padding:'2px 4px'}} value={d.sell} onChange={e=>{DTF[i]={...DTF[i],sell:parseFloat(e.target.value)||0};savSettings('DTF',[...DTF])}}/></td>
+            </tr>)}</tbody>
+          </table>
+          <button className="btn btn-sm btn-secondary" style={{marginTop:8,fontSize:11}} onClick={()=>{DTF.push({label:'New Size',cost:0,sell:0});savSettings('DTF',[...DTF])}}>+ Add Size</button>
+        </div></div>
+      </>}
+
+      {/* CUSTOMER TIERS */}
+      {settingsTab==='tiers'&&<>
+        <div className="card" style={{marginBottom:16}}><div className="card-header"><h3>Adidas / UA / NB Tier Discounts</h3></div><div className="card-body">
+          <div style={{fontSize:12,color:'#64748b',marginBottom:12}}>Tier pricing: Sell = Retail Price x (1 - Discount). Applies to Adidas, Under Armour, and New Balance brands. Set per customer.</div>
+          <table style={{fontSize:13}}>
+            <thead><tr><th>Tier</th><th>Discount off Retail</th><th>Example ($65 Retail)</th></tr></thead>
+            <tbody>
+              <tr><td style={{fontWeight:700}}>Tier A</td><td>40%</td><td style={{color:'#059669',fontWeight:700}}>${(65*0.6).toFixed(2)}</td></tr>
+              <tr><td style={{fontWeight:700}}>Tier B <span className="badge badge-blue" style={{fontSize:9}}>Default</span></td><td>35%</td><td style={{color:'#059669',fontWeight:700}}>${(65*0.65).toFixed(2)}</td></tr>
+              <tr><td style={{fontWeight:700}}>Tier C</td><td>30%</td><td style={{color:'#059669',fontWeight:700}}>${(65*0.7).toFixed(2)}</td></tr>
+            </tbody>
+          </table>
+          <div style={{fontSize:11,color:'#94a3b8',marginTop:8}}>Tier is assigned per customer in their profile (Customers → Edit).</div>
+        </div></div>
+
+        <div className="card" style={{marginBottom:16}}><div className="card-header"><h3>Standard Markup (Non-Tier Brands)</h3></div><div className="card-body">
+          <div style={{fontSize:12,color:'#64748b',marginBottom:12}}>For brands not on tier pricing (Port & Company, etc.): Sell = NSA Cost x Markup. Default markup can be set per customer or per estimate.</div>
+          <table style={{fontSize:13}}>
+            <thead><tr><th>Setting</th><th>Default Value</th><th>Where to Change</th></tr></thead>
+            <tbody>
+              <tr><td style={{fontWeight:700}}>Default Markup</td><td>1.65x</td><td style={{fontSize:11,color:'#64748b'}}>Per customer (catalog_markup) or per estimate</td></tr>
+              <tr><td style={{fontWeight:700}}>Rounding</td><td>Nearest $0.25</td><td style={{fontSize:11,color:'#64748b'}}>System-wide (rQ function)</td></tr>
+            </tbody>
+          </table>
+        </div></div>
+
+        <div className="card" style={{marginBottom:16}}><div className="card-header"><h3>Commission Rates</h3></div><div className="card-body">
+          <table style={{fontSize:13}}>
+            <thead><tr><th>Condition</th><th>Rate</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr><td style={{fontWeight:700}}>Standard</td><td style={{color:'#059669',fontWeight:700}}>30%</td><td style={{fontSize:12,color:'#64748b'}}>Invoice paid within terms</td></tr>
+              <tr><td style={{fontWeight:700}}>Late Payment</td><td style={{color:'#d97706',fontWeight:700}}>15%</td><td style={{fontSize:12,color:'#64748b'}}>Invoice paid after due date</td></tr>
+            </tbody>
+          </table>
+        </div></div>
+
+        <div className="card"><div className="card-header"><h3>Payment Terms</h3></div><div className="card-body">
+          <table style={{fontSize:13}}>
+            <thead><tr><th>Term</th><th>Days</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr><td style={{fontWeight:700}}>Prepay</td><td>0</td><td style={{fontSize:12,color:'#64748b'}}>Payment due before production</td></tr>
+              <tr><td style={{fontWeight:700}}>Net 15</td><td>15</td><td style={{fontSize:12,color:'#64748b'}}>Due 15 days from invoice date</td></tr>
+              <tr><td style={{fontWeight:700}}>Net 30 <span className="badge badge-blue" style={{fontSize:9}}>Default</span></td><td>30</td><td style={{fontSize:12,color:'#64748b'}}>Due 30 days from invoice date</td></tr>
+              <tr><td style={{fontWeight:700}}>Net 60</td><td>60</td><td style={{fontSize:12,color:'#64748b'}}>Due 60 days from invoice date</td></tr>
+            </tbody>
+          </table>
+          <div style={{fontSize:11,color:'#94a3b8',marginTop:8}}>Payment terms are set per customer in their profile.</div>
+        </div></div>
+      </>}
+
+      {/* LISTS & OPTIONS */}
+      {settingsTab==='lists'&&<>
+        {[
+          {key:'CATEGORIES',label:'Product Categories',val:CATEGORIES,save:v=>{CATEGORIES.length=0;CATEGORIES.push(...v);savSettings('CATEGORIES',v)}},
+          {key:'POSITIONS',label:'Decoration Positions',val:POSITIONS,save:v=>{POSITIONS.length=0;POSITIONS.push(...v);savSettings('POSITIONS',v)}},
+          {key:'CONTACT_ROLES',label:'Contact Roles',val:CONTACT_ROLES,save:v=>{CONTACT_ROLES.length=0;CONTACT_ROLES.push(...v);savSettings('CONTACT_ROLES',v)}},
+        ].map(({key,label,val,save})=><div key={key} className="card" style={{marginBottom:16}}><div className="card-header"><h3>{label}</h3></div><div className="card-body">
+          <div style={{display:'flex',flexDirection:'column',gap:4}}>
+            {val.map((item,i)=><div key={i} style={{display:'flex',gap:4,alignItems:'center'}}>
+              <input className="form-input" style={{flex:1,fontSize:12,padding:'4px 8px'}} value={item} onChange={e=>{const n=[...val];n[i]=e.target.value;save(n)}}/>
+              <button onClick={()=>{const n=val.filter((_,x)=>x!==i);save(n)}} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',fontSize:16,padding:'0 4px'}}>×</button>
+            </div>)}
+          </div>
+          <button className="btn btn-sm btn-secondary" style={{marginTop:8,fontSize:11}} onClick={()=>{save([...val,'New'])}}>+ Add</button>
+        </div></div>)}
+      </>}
+
+      {/* TERMS & POLICIES */}
+      {settingsTab==='terms'&&<>
+        <div className="card" style={{marginBottom:16}}><div className="card-header"><h3>Invoice & Estimate Terms</h3></div><div className="card-body">
+          <div style={{fontSize:12,color:'#64748b',marginBottom:12}}>These terms appear on printed estimates and invoices.</div>
+          <div style={{marginBottom:12}}>
+            <label className="form-label">Standard Terms</label>
+            <textarea className="form-input" rows={3} style={{fontSize:12}} defaultValue="Net 30 from invoice date unless otherwise agreed." readOnly/>
+          </div>
+          <div>
+            <label className="form-label">Deposit Terms</label>
+            <textarea className="form-input" rows={3} style={{fontSize:12}} defaultValue="50% deposit required to begin production. Balance due upon completion." readOnly/>
+          </div>
+          <div style={{fontSize:10,color:'#94a3b8',marginTop:8}}>Contact admin to update these terms.</div>
+        </div></div>
+
+        <div className="card"><div className="card-header"><h3>Batch PO Free Shipping Thresholds</h3></div><div className="card-body">
+          <table style={{fontSize:13}}>
+            <thead><tr><th>Vendor</th><th>Free Ship Threshold</th></tr></thead>
+            <tbody>
+              <tr><td style={{fontWeight:700}}>S&S Activewear</td><td>$200</td></tr>
+              <tr><td style={{fontWeight:700}}>SanMar</td><td>$200</td></tr>
+              <tr><td style={{fontWeight:700}}>Richardson</td><td>$200</td></tr>
+              <tr><td style={{fontWeight:700}}>Momentec</td><td>$200</td></tr>
+              <tr><td style={{fontWeight:700}}>A4</td><td>$200</td></tr>
+            </tbody>
+          </table>
+        </div></div>
+      </>}
+    </>)};
+
     // NAV
-  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'reports',label:'Reports',icon:'dollar'},{id:'commissions',label:'Commissions',icon:'dollar',roles:['admin','rep']},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'art',label:'Art Dashboard',icon:'image'},{id:'production',label:'Prod Board',icon:'package'},{id:'decoration',label:'Decoration',icon:'image'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{id:'team',label:'Team',icon:'users'},{section:'Comms'},{id:'messages',label:'Messages',icon:'mail'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'System'},{id:'issues',label:'Issues',icon:'alert'},{id:'import',label:'Import / Upload',icon:'upload'},{id:'qb',label:'QuickBooks Sync',icon:'dollar'},{id:'backup',label:'Backup & Data',icon:'save'}];
-  const titles={dashboard:'Dashboard',reports:'Reports & Analytics',commissions:'Commissions',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',omg:'OMG Team Stores',jobs:'Jobs',art:'Art Dashboard',production:'Production Board',decoration:'Decoration',warehouse:'Warehouse',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',team:'Team Directory',products:'Products',inventory:'Inventory',messages:'Messages',issues:'Issues',import:'Import / Upload',qb:'QuickBooks Online',backup:'Backup & Data'};
+  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'reports',label:'Reports',icon:'dollar'},{id:'commissions',label:'Commissions',icon:'dollar',roles:['admin','rep']},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'art',label:'Art Dashboard',icon:'image'},{id:'production',label:'Prod Board',icon:'package'},{id:'decoration',label:'Decoration',icon:'image'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{id:'team',label:'Team',icon:'users'},{section:'Comms'},{id:'messages',label:'Messages',icon:'mail'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'System'},{id:'issues',label:'Issues',icon:'alert'},{id:'import',label:'Import / Upload',icon:'upload'},{id:'qb',label:'QuickBooks Sync',icon:'dollar'},{id:'backup',label:'Backup & Data',icon:'save'},{id:'settings',label:'Settings',icon:'grid',roles:['admin']}];
+  const titles={dashboard:'Dashboard',reports:'Reports & Analytics',commissions:'Commissions',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',omg:'OMG Team Stores',jobs:'Jobs',art:'Art Dashboard',production:'Production Board',decoration:'Decoration',warehouse:'Warehouse',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',team:'Team Directory',products:'Products',inventory:'Inventory',messages:'Messages',issues:'Issues',import:'Import / Upload',qb:'QuickBooks Online',backup:'Backup & Data',settings:'Settings'};
   // LOADING GATE
   if(dbLoading)return<div style={{minHeight:'100vh',background:'linear-gradient(135deg,#0f172a 0%,#1e3a5f 50%,#0f172a 100%)',display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column',gap:16}}>
     <div style={{fontSize:48,fontWeight:900,color:'white',letterSpacing:-2}}>NSA</div>
@@ -10304,7 +10479,7 @@ export default function App(){
           {gOpen&&<div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:59}} onClick={()=>setGOpen(false)}/>}
         </div>
         <div style={{display:'flex',gap:6,alignItems:'center'}}><button className="btn btn-sm" onClick={()=>setIssueModal({open:true,desc:'',priority:'medium'})} style={{fontSize:11,background:'none',border:'1px solid #fca5a5',color:'#dc2626',position:'relative',padding:'4px 8px'}} title="Report an issue"><Icon name="alert" size={14}/>{openIssueCount>0&&<span style={{position:'absolute',top:-4,right:-4,background:'#dc2626',color:'white',borderRadius:10,padding:'0 5px',fontSize:9,minWidth:16,textAlign:'center',lineHeight:'16px'}}>{openIssueCount}</span>}</button><button className="btn btn-sm btn-primary" onClick={()=>newE(null)} style={{fontSize:11}}><Icon name="plus" size={12}/> Estimate</button><button className="btn btn-sm btn-secondary" onClick={()=>setCM({open:true,c:null})} style={{fontSize:11}}><Icon name="plus" size={12}/> Customer</button><button className="btn btn-sm btn-secondary" onClick={()=>setQPC({open:true,mode:'single',items:[{sku:'',name:'',brand:'',color:'',category:'Tees',retail_price:0,nsa_cost:0,available_sizes:['S','M','L','XL','2XL'],vendor_id:''}]})} style={{fontSize:11}}><Icon name="plus" size={12}/> Product</button></div></div>
-      <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='art'&&rArtist()}{pg==='production'&&rProd2()}{pg==='decoration'&&rDeco()}{pg==='warehouse'&&rWarehouse()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='team'&&rTeam()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='commissions'&&rCommissions()}{pg==='omg'&&rOMG()}{pg==='reports'&&rReports()}{pg==='issues'&&rIssues()}{pg==='import'&&rImport()}{pg==='qb'&&rQB()}{pg==='backup'&&rBackup()}</div></div>
+      <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='art'&&rArtist()}{pg==='production'&&rProd2()}{pg==='decoration'&&rDeco()}{pg==='warehouse'&&rWarehouse()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='team'&&rTeam()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='commissions'&&rCommissions()}{pg==='omg'&&rOMG()}{pg==='reports'&&rReports()}{pg==='issues'&&rIssues()}{pg==='import'&&rImport()}{pg==='qb'&&rQB()}{pg==='backup'&&rBackup()}{pg==='settings'&&rSettings()}</div></div>
     <CustModal isOpen={cM.open} onClose={()=>setCM({open:false,c:null})} onSave={savC} customer={cM.c} parents={pars}/>
     <AdjModal isOpen={aM.open} onClose={()=>setAM({open:false,p:null})} product={aM.p} onSave={savI}/>
 
