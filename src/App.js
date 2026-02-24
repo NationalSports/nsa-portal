@@ -1018,7 +1018,9 @@ const omgApiCall = async (endpoint, options = {}) => {
     });
     if (!response.ok) {
       const errText = await response.text().catch(() => '');
-      throw new Error(`OMG API error: ${response.status} ${errText}`);
+      let msg;
+      try { msg = JSON.parse(errText)?.error; } catch {}
+      throw new Error(msg || `OMG API error: ${response.status}`);
     }
     const data = await response.json();
     console.log('[OMG] API response:', endpoint, data);
@@ -1026,36 +1028,122 @@ const omgApiCall = async (endpoint, options = {}) => {
   } catch (error) { console.error('[OMG] API call failed:', endpoint, error); throw error; }
 };
 
-const fetchOMGStores = async () => await omgApiCall('/stores');
+const fetchOMGStores = async () => await omgApiCall('/sales?include=organization');
 
-const fetchOMGStoreDetail = async (storeId) => {
-  const [storeData, orders, products] = await Promise.all([
-    omgApiCall(`/stores/${storeId}`), omgApiCall(`/stores/${storeId}/orders`), omgApiCall(`/stores/${storeId}/products`)
+const fetchOMGStoreDetail = async (saleId) => {
+  const [saleData, orders] = await Promise.all([
+    omgApiCall(`/sales/${saleId}?include=organization`),
+    omgApiCall(`/orders?filter[relationships][sale]=${saleId}&include=sale,customer_info`)
   ]);
-  return { ...storeData, orders: orders?.data || [], products: products?.data || [] };
+  const orderList = orders?.data || [];
+  // Fetch order products for each order to get real item/product data
+  const orderProducts = await Promise.all(
+    orderList.map(o => omgApiCall(`/order_products?filter[relationships][order]=${o.id}&include=product,product.images`).catch(() => ({ data: [], included: [] })))
+  );
+  return { ...saleData, orders: orderList, orderProducts };
 };
 
-const convertOMGStore = (omgStore, nsaCustomers) => {
+// Convert OMG JSON:API response to NSA store format
+// OMG API v1 returns: { data: { id, type, attributes: {...}, relationships: {...} }, included: [...] }
+const convertOMGStore = (omgResponse, nsaCustomers) => {
+  // Handle both single resource and already-unwrapped formats
+  const resource = omgResponse.data || omgResponse;
+  const attrs = resource.attributes || resource;
+  const rels = resource.relationships || {};
+  const included = omgResponse.included || [];
+
+  // Find organization name from included resources
+  const orgRel = rels.organization?.data;
+  const orgIncluded = orgRel ? included.find(i => i.id === orgRel.id && i.type === orgRel.type) : null;
+  const orgName = orgIncluded?.attributes?.name || '';
+
   const matchedCustomer = nsaCustomers.find(c =>
-    c.name.toLowerCase().includes(omgStore.customer_name?.toLowerCase() || '') ||
-    c.contacts?.some(contact => contact.email?.toLowerCase() === omgStore.customer_email?.toLowerCase())
+    (orgName && c.name.toLowerCase().includes(orgName.toLowerCase())) ||
+    (attrs.name && c.name.toLowerCase().includes(attrs.name.toLowerCase()))
   );
+
+  // Map OMG status to NSA status (OMG: open, closed, pending, ordered, fulfilled, scheduled, finalized, archived)
+  const statusMap = { open: 'open', closed: 'closed', finalized: 'closed', archived: 'closed', fulfilled: 'closed' };
+  const nsaStatus = statusMap[attrs.status] || 'draft';
+
+  // Aggregate order product data across all orders
+  const allOrderProducts = (omgResponse.orderProducts || []).flatMap(resp => resp?.data || []);
+  const allIncluded = (omgResponse.orderProducts || []).flatMap(resp => resp?.included || []);
+
+  // Build product map and image map from included resources
+  const productMap = {};
+  const productRels = {};
+  const imageMap = {};
+  allIncluded.forEach(i => {
+    if (i.type === 'product' || i.type === 'products') {
+      productMap[i.id] = i.attributes;
+      productRels[i.id] = i.relationships || {};
+    } else if (i.type === 'image' || i.type === 'images') {
+      imageMap[i.id] = i.attributes?.asset_url || '';
+    }
+  });
+
+  // Calculate totals from order products
+  let totalItems = 0;
+  let totalSales = 0;
+  let fundraiseTotal = 0;
+  const productSummary = {};
+
+  allOrderProducts.forEach(op => {
+    const opAttrs = op.attributes || {};
+    const qty = opAttrs.quantity || 0;
+    totalItems += qty;
+
+    // Look up product details from included resources
+    const productRel = op.relationships?.product?.data;
+    const product = productRel ? productMap[productRel.id] : null;
+    const basePrice = product?.base_price || 0;
+    totalSales += basePrice * qty;
+
+    // Get product image URL from sideloaded images
+    let imageUrl = '';
+    if (productRel) {
+      const imgRels = productRels[productRel.id]?.images?.data || productRels[productRel.id]?.image?.data;
+      if (Array.isArray(imgRels) && imgRels.length > 0) {
+        imageUrl = imageMap[imgRels[0].id] || '';
+      } else if (imgRels?.id) {
+        imageUrl = imageMap[imgRels.id] || '';
+      }
+    }
+
+    // Track unique products by SKU
+    const sku = opAttrs.sku || product?.style || op.id;
+    if (!productSummary[sku]) {
+      productSummary[sku] = {
+        sku, name: product?.name || '', style: product?.style || '',
+        retail: basePrice, cost: product?.cogs || 0,
+        deco_type: '', deco_cost: 0, qty: 0, image_url: imageUrl
+      };
+    }
+    productSummary[sku].qty += qty;
+  });
+
+  // Count unique buyers from customer_info on orders
+  const buyerIds = new Set((omgResponse.orders || []).map(o => o.relationships?.customer_info?.data?.id).filter(Boolean));
+
   return {
-    id: `OMG-${omgStore.id}`, store_name: omgStore.name || omgStore.title,
+    id: `OMG-${resource.id}`, store_name: attrs.name || attrs.sale_code,
     customer_id: matchedCustomer?.id || null, rep_id: matchedCustomer?.primary_rep_id || 'r1',
-    status: omgStore.status === 'active' ? 'open' : omgStore.status === 'completed' ? 'closed' : 'draft',
-    open_date: omgStore.start_date ? new Date(omgStore.start_date).toLocaleDateString() : '',
-    close_date: omgStore.end_date ? new Date(omgStore.end_date).toLocaleDateString() : '',
-    orders: omgStore.orders?.length || 0, total_sales: omgStore.total_revenue || 0,
-    fundraise_total: omgStore.fundraise_amount || 0, items_sold: omgStore.total_items_sold || 0,
-    unique_buyers: omgStore.unique_customers || 0,
-    products: (omgStore.products || []).map(p => ({
-      sku: p.sku || p.item_number, name: p.name || p.title, color: p.color || p.color_name,
-      retail: p.retail_price || p.price, cost: p.wholesale_cost || p.cost,
-      deco_type: p.decoration_type || 'screen_print', deco_cost: p.decoration_cost || 0,
-      sizes: p.sizes_sold || {}
+    status: nsaStatus,
+    open_date: attrs.opens_at ? new Date(attrs.opens_at).toLocaleDateString() : '',
+    close_date: attrs.expires_at ? new Date(attrs.expires_at).toLocaleDateString() : '',
+    orders: omgResponse.orders?.length || 0, total_sales: totalSales,
+    fundraise_total: fundraiseTotal, items_sold: totalItems,
+    unique_buyers: buyerIds.size,
+    products: Object.values(productSummary).map(p => ({
+      sku: p.sku, name: p.name, color: '', retail: p.retail, cost: p.cost,
+      deco_type: p.deco_type, deco_cost: p.deco_cost, sizes: {},
+      image_url: p.image_url || ''
     })),
-    _omg_source: true, _omg_id: omgStore.id, _last_synced: new Date().toISOString()
+    subdomain: attrs.subdomain || '',
+    channel_type: attrs.channel_type || 'pop-up',
+    _omg_source: true, _omg_id: resource.id, _omg_sale_code: attrs.sale_code,
+    _last_synced: new Date().toISOString()
   };
 };
 
