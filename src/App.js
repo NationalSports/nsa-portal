@@ -9501,11 +9501,16 @@ export default function App(){
       {imp.step==='confirm'&&<>
         {(()=>{
           const c=cust.find(x=>x.id===imp.custId);
-          const keeping=imp.parsed.filter(p=>!p._skip&&!imp.questions.find(q=>q.idx===imp.parsed.indexOf(p)&&q.answer==='skip'));
+          // Apply color answers from questions back to parsed items
+          const resolved=imp.parsed.map((p,pi)=>{
+            const cq=imp.questions.find(q=>q.idx===pi&&q.type==='color'&&q.answer);
+            return cq?{...p,color:cq.answer}:p;
+          });
+          const keeping=resolved.filter(p=>!p._skip&&!imp.questions.find(q=>q.idx===resolved.indexOf(p)&&q.answer==='skip'));
           const isAUi=b=>b==='Adidas'||b==='Under Armour'||b==='New Balance';
           const mk=c?.catalog_markup||1.65;const tier=c?.adidas_ua_tier||'B';const disc=tD[tier]||0.35;
-          const totalRev=keeping.reduce((a,it)=>a+it.totalAmt,0);
-          const shipAmt=imp.shipping.reduce((a,s)=>a+s.amount,0);
+          const totalRev=keeping.reduce((a,it)=>a+(it.totalAmt||0),0);
+          const shipAmt=Array.isArray(imp.shipping)?imp.shipping.reduce((a,s)=>a+(s.amount||0),0):(imp.shipping||0);
 
           return<>
             <div className="card" style={{marginBottom:12}}><div className="card-body" style={{padding:16}}>
@@ -9532,17 +9537,17 @@ export default function App(){
               <table style={{fontSize:11}}><thead><tr><th>SKU</th><th>Name</th><th>Brand</th><th>Color</th><th>Cost</th><th>Sell</th><th>Sizes</th><th>Qty</th><th>Total</th></tr></thead>
               <tbody>{keeping.map((it,i)=>{
                 const au=isAUi(it.brand);
-                const sell=it.rate;const cost=au?rQ(sell):rQ(sell/mk);
+                const sell=it.rate||0;const cost=au?rQ(sell):rQ(sell/mk);
                 return<tr key={i}>
                   <td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{it.sku}</td>
-                  <td>{it.catMatch?<span style={{color:'#166534'}}>✅ {it.name.slice(0,35)}</span>:it.name.slice(0,35)}</td>
+                  <td>{it.catMatch?<span style={{color:'#166534'}}>✅ {(it.name||'').slice(0,35)}</span>:(it.name||'').slice(0,35)}</td>
                   <td style={{fontSize:10}}>{it.brand}</td>
                   <td style={{fontSize:10}}>{it.color}</td>
                   <td style={{textAlign:'right'}}>${cost.toFixed(2)}</td>
                   <td style={{textAlign:'right',fontWeight:600}}>${sell.toFixed(2)}</td>
-                  <td style={{fontSize:9}}>{Object.entries(it.sizes).sort(([a],[b])=>SZ_ORD_I.indexOf(a)-SZ_ORD_I.indexOf(b)).map(([s,q])=>s+':'+q).join(' ')}</td>
-                  <td style={{fontWeight:700,textAlign:'center'}}>{it.totalQty}</td>
-                  <td style={{textAlign:'right'}}>${it.totalAmt.toFixed(0)}</td>
+                  <td style={{fontSize:9}}>{Object.entries(it.sizes||{}).sort(([a],[b])=>SZ_ORD_I.indexOf(a)-SZ_ORD_I.indexOf(b)).map(([s,q])=>s+':'+q).join(' ')}</td>
+                  <td style={{fontWeight:700,textAlign:'center'}}>{it.totalQty||0}</td>
+                  <td style={{textAlign:'right'}}>${(it.totalAmt||0).toFixed(0)}</td>
                 </tr>})}</tbody></table>
             </div></div>
 
@@ -9558,12 +9563,12 @@ export default function App(){
               <button className="btn btn-secondary" onClick={()=>setImp(x=>({...x,step:'questions'}))}>← Back</button>
               <button className="btn btn-primary" style={{background:'#166534'}} onClick={()=>{
                 const newItems=keeping.map(it=>{
-                  const au=isAUi(it.brand);const sell=it.rate;const cost=au?rQ(sell):rQ(sell/mk);
-                  const retail=au?rQ(sell/(1-disc)):0;const szKeys=Object.keys(it.sizes);
+                  const au=isAUi(it.brand);const sell=it.rate||0;const cost=au?rQ(sell):rQ(sell/mk);
+                  const retail=au?rQ(sell/(1-disc)):0;const szKeys=Object.keys(it.sizes||{});
                   return{product_id:it.catMatch?.id||null,sku:it.sku,name:it.catMatch?.name||it.name,brand:it.catMatch?.brand||it.brand,
                     color:it.color||it.catMatch?.color||'',nsa_cost:cost,retail_price:retail,unit_sell:sell,
                     available_sizes:szKeys.length>0?szKeys.sort((a,b)=>SZ_ORD_I.indexOf(a)-SZ_ORD_I.indexOf(b)):['S','M','L','XL','2XL'],
-                    sizes:it.sizes,decorations:[],is_custom:it.is_custom||false,pick_lines:[],po_lines:[]};
+                    sizes:it.sizes||{OSFA:it.totalQty||1},decorations:[],is_custom:it.is_custom||false,pick_lines:[],po_lines:[]};
                 });
                 imp.decoLines.forEach(d=>{
                   const deco={kind:'art',position:'Front Center',art_file_id:'__tbd',art_tbd_type:d.decoType||'screen_print',
