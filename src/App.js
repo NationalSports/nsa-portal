@@ -12,38 +12,238 @@ catch(e) { console.warn('[Supabase] Init failed:', e.message); }
 
 const _dbLoad = async () => {
   if (!supabase) return null;
-  const [r1,r2,r3,r4,r5,r6,r7,r8,r9,r10] = await Promise.all([
-    supabase.from('team_members').select('*').order('name'),
-    supabase.from('customers').select('*').order('name'),
-    supabase.from('vendors').select('*').order('name'),
-    supabase.from('products').select('*').order('name'),
-    supabase.from('estimates').select('*').order('id'),
-    supabase.from('sales_orders').select('*').order('id'),
-    supabase.from('invoices').select('*').order('id'),
-    supabase.from('messages').select('*').order('id'),
-    supabase.from('omg_stores').select('*').order('id'),
-    supabase.from('issues').select('*').order('id'),
-  ]);
-  const errs = [r1,r2,r3,r4,r5,r6,r7,r8,r9,r10].filter(r=>r.error);
-  if(errs.length) console.error('[DB] Load errors:', errs.map(r=>r.error.message));
-  return { team:r1.data||[], customers:r2.data||[], vendors:r3.data||[], products:r4.data||[],
-    estimates:r5.data||[], sales_orders:r6.data||[], invoices:r7.data||[], messages:r8.data||[], omg_stores:r9.data||[], issues:r10.data||[],
-    hasData: (r2.data&&r2.data.length>0)||(r6.data&&r6.data.length>0) };
+  try {
+    // Load all tables in parallel
+    const [rTeam,rCust,rContacts,rVend,rProd,rProdInv,rEst,rEstArt,rEstItems,rEstDecos,
+      rSO,rSOArt,rSOFirm,rSOItems,rSODecos,rSOPicks,rSOPOs,rSOJobs,
+      rInv,rInvPay,rInvItems,rMsg,rMsgReads,rOMG,rOMGProd,rIssues] = await Promise.all([
+      supabase.from('team_members').select('*').order('name'),
+      supabase.from('customers').select('*').order('name'),
+      supabase.from('customer_contacts').select('*'),
+      supabase.from('vendors').select('*').order('name'),
+      supabase.from('products').select('*').order('name'),
+      supabase.from('product_inventory').select('*'),
+      supabase.from('estimates').select('*').is('deleted_at',null).order('id'),
+      supabase.from('estimate_art_files').select('*'),
+      supabase.from('estimate_items').select('*').order('item_index'),
+      supabase.from('estimate_item_decorations').select('*').order('deco_index'),
+      supabase.from('sales_orders').select('*').is('deleted_at',null).order('id'),
+      supabase.from('so_art_files').select('*'),
+      supabase.from('so_firm_dates').select('*'),
+      supabase.from('so_items').select('*').order('item_index'),
+      supabase.from('so_item_decorations').select('*').order('deco_index'),
+      supabase.from('so_item_pick_lines').select('*'),
+      supabase.from('so_item_po_lines').select('*'),
+      supabase.from('so_jobs').select('*'),
+      supabase.from('invoices').select('*').is('deleted_at',null).order('id'),
+      supabase.from('invoice_payments').select('*'),
+      supabase.from('invoice_items').select('*'),
+      supabase.from('messages').select('*').order('id'),
+      supabase.from('message_reads').select('*'),
+      supabase.from('omg_stores').select('*').order('id'),
+      supabase.from('omg_store_products').select('*'),
+      supabase.from('issues').select('*'),
+    ]);
+    // Check for critical errors
+    const allResults=[rTeam,rCust,rVend,rProd,rEst,rSO,rInv,rMsg,rOMG];
+    const errs=allResults.filter(r=>r.error);
+    if(errs.length){console.error('[DB] Load errors:',errs.map(r=>r.error.message));return null}
+    const team=rTeam.data||[];const custRaw=rCust.data||[];const contacts=rContacts.data||[];
+    const vendors=rVend.data||[];const prodRaw=rProd.data||[];const prodInv=rProdInv.data||[];
+    const estRaw=rEst.data||[];const estArt=rEstArt.data||[];const estItems=rEstItems.data||[];const estDecos=rEstDecos.data||[];
+    const soRaw=rSO.data||[];const soArt=rSOArt.data||[];const soFirm=rSOFirm.data||[];
+    const soItems=rSOItems.data||[];const soDecos=rSODecos.data||[];const soPicks=rSOPicks.data||[];const soPOs=rSOPOs.data||[];const soJobs=rSOJobs.data||[];
+    const invRaw=rInv.data||[];const invPay=rInvPay.data||[];const invItems=rInvItems.data||[];
+    const msgRaw=rMsg.data||[];const msgReads=rMsgReads.data||[];
+    const omgRaw=rOMG.data||[];const omgProd=rOMGProd.data||[];
+    const issues=rIssues.data||[];
+    // ─── Reconstruct nested objects ───
+    // Customers: attach contacts array
+    const customers=custRaw.map(c=>({...c,contacts:contacts.filter(ct=>ct.customer_id===c.id).sort((a,b)=>a.sort_order-b.sort_order).map(ct=>({name:ct.name,email:ct.email,phone:ct.phone,role:ct.role}))}));
+    // Products: attach _inv and _alerts from product_inventory
+    const products=prodRaw.map(p=>{const invRows=prodInv.filter(pi=>pi.product_id===p.id);const _inv={};const _alerts={};invRows.forEach(r=>{_inv[r.size]=r.quantity;if(r.alert_threshold)_alerts[r.size]=r.alert_threshold});return{...p,_inv,_alerts}});
+    // Estimates: attach items (with decorations) and art_files
+    const estimates=estRaw.map(est=>{
+      const art_files=estArt.filter(a=>a.estimate_id===est.id).map(a=>({id:a.id,name:a.name,deco_type:a.deco_type,ink_colors:a.ink_colors,thread_colors:a.thread_colors,art_size:a.art_size,files:a.files||[],mockup_files:a.mockup_files||[],prod_files:a.prod_files||[],notes:a.notes,status:a.status,uploaded:a.uploaded}));
+      const items=estItems.filter(i=>i.estimate_id===est.id).sort((a,b)=>a.item_index-b.item_index).map(item=>{
+        const decorations=estDecos.filter(d=>d.estimate_item_id===item.id).sort((a,b)=>a.deco_index-b.deco_index).map(d=>{const{id:_,estimate_item_id:__,deco_index:___,...rest}=d;return rest});
+        const{id:_,estimate_id:__,item_index:___,...rest}=item;return{...rest,decorations}});
+      return{...est,items,art_files}});
+    // Sales Orders: attach items (with decorations, pick_lines, po_lines), art_files, firm_dates, jobs
+    const sales_orders=soRaw.map(so=>{
+      const art_files=soArt.filter(a=>a.so_id===so.id).map(a=>({id:a.id,name:a.name,deco_type:a.deco_type,ink_colors:a.ink_colors,thread_colors:a.thread_colors,art_size:a.art_size,files:a.files||[],mockup_files:a.mockup_files||[],prod_files:a.prod_files||[],notes:a.notes,status:a.status,uploaded:a.uploaded}));
+      const firm_dates=soFirm.filter(f=>f.so_id===so.id).map(f=>({item_desc:f.item_desc,date:f.date,approved:f.approved}));
+      const jobs=soJobs.filter(j=>j.so_id===so.id).map(j=>{const{so_id:_,...rest}=j;return rest});
+      const items=soItems.filter(i=>i.so_id===so.id).sort((a,b)=>a.item_index-b.item_index).map(item=>{
+        const decorations=soDecos.filter(d=>d.so_item_id===item.id).sort((a,b)=>a.deco_index-b.deco_index).map(d=>{const{id:_,so_item_id:__,deco_index:___,...rest}=d;return rest});
+        const pick_lines=soPicks.filter(pk=>pk.so_item_id===item.id).map(pk=>{const{id:_,so_item_id:__,...rest}=pk;const sizes=rest.sizes||{};delete rest.sizes;return{...rest,...sizes}});
+        const po_lines=soPOs.filter(po=>po.so_item_id===item.id).map(po=>{const{id:_,so_item_id:__,...rest}=po;const sizes=rest.sizes||{};delete rest.sizes;return{...rest,...sizes}});
+        const{id:_,so_id:__,item_index:___,...rest}=item;return{...rest,decorations,pick_lines,po_lines}});
+      return{...so,items,art_files,firm_dates,jobs}});
+    // Invoices: attach payments and items
+    const invoices=invRaw.map(inv=>{
+      const payments=invPay.filter(p=>p.invoice_id===inv.id).map(p=>({amount:p.amount,method:p.method,ref:p.ref,date:p.date}));
+      const items=invItems.filter(i=>i.invoice_id===inv.id).map(i=>({sku:i.sku,name:i.name,qty:i.qty,unit_price:i.unit_price,total:i.total,description:i.description}));
+      return{...inv,payments,items:items.length?items:undefined}});
+    // Messages: attach read_by array
+    const messages=msgRaw.map(m=>({...m,read_by:msgReads.filter(r=>r.message_id===m.id).map(r=>r.user_id)}));
+    // OMG Stores: attach products
+    const omg_stores=omgRaw.map(s=>({...s,products:omgProd.filter(p=>p.store_id===s.id).map(p=>({sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:p.deco_type,deco_cost:p.deco_cost,sizes:p.sizes||{}}))}));
+    const hasData=(customers.length>0)||(sales_orders.length>0);
+    return{team,customers,vendors,products,estimates,sales_orders,invoices,messages,omg_stores,issues,hasData};
+  }catch(e){console.error('[DB] Load failed:',e);return null}
 };
 const _dbSeed = async (d) => {
   if (!supabase) return;
-  await Promise.all([
-    d.team?.length && supabase.from('team_members').upsert(d.team, {onConflict:'id'}),
-    d.customers?.length && supabase.from('customers').upsert(d.customers, {onConflict:'id'}),
-    d.vendors?.length && supabase.from('vendors').upsert(d.vendors, {onConflict:'id'}),
-    d.products?.length && supabase.from('products').upsert(d.products, {onConflict:'id'}),
-    d.estimates?.length && supabase.from('estimates').upsert(d.estimates, {onConflict:'id'}),
-    d.sales_orders?.length && supabase.from('sales_orders').upsert(d.sales_orders, {onConflict:'id'}),
-    d.invoices?.length && supabase.from('invoices').upsert(d.invoices, {onConflict:'id'}),
-    d.messages?.length && supabase.from('messages').upsert(d.messages, {onConflict:'id'}),
-    d.omg_stores?.length && supabase.from('omg_stores').upsert(d.omg_stores, {onConflict:'id'}),
-  ].filter(Boolean));
+  // Seed core tables
+  if(d.team?.length) await supabase.from('team_members').upsert(d.team.map(t=>({id:t.id,name:t.name,role:t.role,email:t.email,phone:t.phone})),{onConflict:'id'});
+  if(d.vendors?.length) await supabase.from('vendors').upsert(d.vendors.map(v=>{const{_oi,_it,_ac,_a3,_a6,_a9,...rest}=v;return rest}),{onConflict:'id'});
+  // Customers + contacts
+  if(d.customers?.length){
+    await supabase.from('customers').upsert(d.customers.map(c=>{const{contacts,_oe,_os,_oi,_ob,...rest}=c;return rest}),{onConflict:'id'});
+    const allContacts=[];d.customers.forEach(c=>(c.contacts||[]).forEach((ct,i)=>allContacts.push({customer_id:c.id,name:ct.name,email:ct.email,phone:ct.phone,role:ct.role,sort_order:i})));
+    if(allContacts.length) await supabase.from('customer_contacts').upsert(allContacts);
+  }
+  // Products + inventory
+  if(d.products?.length){
+    await supabase.from('products').upsert(d.products.map(p=>{const{_inv,_alerts,_colors,...rest}=p;return{...rest,_colors:_colors||null}}),{onConflict:'id'});
+    const allInv=[];d.products.forEach(p=>{const inv=p._inv||{};const alerts=p._alerts||{};const allSizes=new Set([...Object.keys(inv),...Object.keys(alerts)]);allSizes.forEach(sz=>allInv.push({product_id:p.id,size:sz,quantity:inv[sz]||0,alert_threshold:alerts[sz]||null}))});
+    if(allInv.length) await supabase.from('product_inventory').upsert(allInv,{onConflict:'product_id,size'});
+  }
+  // Seed estimates (decompose nested items/decorations)
+  for(const est of(d.estimates||[])){await _dbSaveEstimate(est)}
+  // Seed sales orders (decompose nested items/decorations/picks/pos/jobs)
+  for(const so of(d.sales_orders||[])){await _dbSaveSO(so)}
+  // Seed invoices (decompose payments)
+  for(const inv of(d.invoices||[])){await _dbSaveInvoice(inv)}
+  // Seed messages
+  if(d.messages?.length){
+    await supabase.from('messages').upsert(d.messages.map(m=>{const{read_by,...rest}=m;return rest}),{onConflict:'id'});
+    const reads=[];d.messages.forEach(m=>(m.read_by||[]).forEach(uid=>reads.push({message_id:m.id,user_id:uid})));
+    if(reads.length) await supabase.from('message_reads').upsert(reads,{onConflict:'message_id,user_id'});
+  }
+  // Seed OMG stores
+  if(d.omg_stores?.length){
+    await supabase.from('omg_stores').upsert(d.omg_stores.map(s=>{const{products,...rest}=s;return rest}),{onConflict:'id'});
+    const allProds=[];d.omg_stores.forEach(s=>(s.products||[]).forEach(p=>allProds.push({store_id:s.id,sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:p.deco_type,deco_cost:p.deco_cost,sizes:p.sizes})));
+    if(allProds.length) await supabase.from('omg_store_products').insert(allProds);
+  }
 };
+// ─── Normalized Save Helpers ───
+const _dbSaveEstimate = async (est) => {
+  if(!supabase)return;
+  try{
+    const{items,art_files,...estRow}=est;
+    await supabase.from('estimates').upsert(estRow,{onConflict:'id'});
+    // Delete old children, re-insert
+    await supabase.from('estimate_items').delete().eq('estimate_id',est.id);
+    if(art_files?.length) await supabase.from('estimate_art_files').upsert(art_files.map(a=>({...a,estimate_id:est.id})),{onConflict:'estimate_id,id'});
+    if(!items?.length)return;
+    for(let idx=0;idx<items.length;idx++){
+      const{decorations,...itemData}=items[idx];
+      const{data:inserted}=await supabase.from('estimate_items').insert({...itemData,estimate_id:est.id,item_index:idx}).select('id').single();
+      if(inserted&&decorations?.length){
+        await supabase.from('estimate_item_decorations').insert(decorations.map((d,di)=>({...d,estimate_item_id:inserted.id,deco_index:di})));
+      }
+    }
+  }catch(e){console.error('[DB] save estimate:',e)}
+};
+const _dbSaveSO = async (so) => {
+  if(!supabase)return;
+  try{
+    const{items,art_files,firm_dates,jobs,...soRow}=so;
+    await supabase.from('sales_orders').upsert(soRow,{onConflict:'id'});
+    // Delete old children, re-insert
+    await supabase.from('so_items').delete().eq('so_id',so.id);
+    await supabase.from('so_jobs').delete().eq('so_id',so.id);
+    await supabase.from('so_firm_dates').delete().eq('so_id',so.id);
+    if(art_files?.length) await supabase.from('so_art_files').upsert(art_files.map(a=>({...a,so_id:so.id})),{onConflict:'so_id,id'});
+    if(firm_dates?.length) await supabase.from('so_firm_dates').insert(firm_dates.map(f=>({...f,so_id:so.id})));
+    if(jobs?.length) await supabase.from('so_jobs').insert(jobs.map(j=>({...j,so_id:so.id})));
+    if(!items?.length)return;
+    for(let idx=0;idx<items.length;idx++){
+      const{decorations,pick_lines,po_lines,...itemData}=items[idx];
+      // Separate size fields from pick_lines/po_lines back into sizes JSONB
+      const{data:inserted}=await supabase.from('so_items').insert({...itemData,so_id:so.id,item_index:idx}).select('id').single();
+      if(!inserted)continue;
+      if(decorations?.length){
+        await supabase.from('so_item_decorations').insert(decorations.map((d,di)=>({...d,so_item_id:inserted.id,deco_index:di})));
+      }
+      if(pick_lines?.length){
+        const pickRows=pick_lines.map(pk=>{const{pick_id,status,created_at,memo,ship_dest,ship_addr,deco_vendor,...sizes}=pk;
+          return{so_item_id:inserted.id,pick_id,status,created_at,memo,ship_dest,ship_addr,deco_vendor,sizes}});
+        await supabase.from('so_item_pick_lines').insert(pickRows);
+      }
+      if(po_lines?.length){
+        const poRows=po_lines.map(po=>{const{po_id,vendor,received,cancelled,shipments,status,created_at,expected_date,memo,...sizes}=po;
+          return{so_item_id:inserted.id,po_id,vendor,received:received||{},cancelled:cancelled||{},shipments:shipments||[],status,created_at,expected_date,memo,sizes}});
+        await supabase.from('so_item_po_lines').insert(poRows);
+      }
+    }
+  }catch(e){console.error('[DB] save SO:',e)}
+};
+const _dbSaveInvoice = async (inv) => {
+  if(!supabase)return;
+  try{
+    const{payments,items,...invRow}=inv;
+    await supabase.from('invoices').upsert(invRow,{onConflict:'id'});
+    await supabase.from('invoice_payments').delete().eq('invoice_id',inv.id);
+    if(payments?.length) await supabase.from('invoice_payments').insert(payments.map(p=>({...p,invoice_id:inv.id})));
+    if(items?.length){
+      await supabase.from('invoice_items').delete().eq('invoice_id',inv.id);
+      await supabase.from('invoice_items').insert(items.map(i=>({...i,invoice_id:inv.id})));
+    }
+  }catch(e){console.error('[DB] save invoice:',e)}
+};
+const _dbSaveCustomer = async (c) => {
+  if(!supabase)return;
+  try{
+    const{contacts,_oe,_os,_oi,_ob,...custRow}=c;
+    await supabase.from('customers').upsert(custRow,{onConflict:'id'});
+    await supabase.from('customer_contacts').delete().eq('customer_id',c.id);
+    if(contacts?.length) await supabase.from('customer_contacts').insert(contacts.map((ct,i)=>({customer_id:c.id,name:ct.name,email:ct.email,phone:ct.phone,role:ct.role,sort_order:i})));
+  }catch(e){console.error('[DB] save customer:',e)}
+};
+const _dbSaveProduct = async (p) => {
+  if(!supabase)return;
+  try{
+    const{_inv,_alerts,_colors,...prodRow}=p;
+    await supabase.from('products').upsert({...prodRow,_colors:_colors||null},{onConflict:'id'});
+    const allSizes=new Set([...Object.keys(_inv||{}),...Object.keys(_alerts||{})]);
+    if(allSizes.size>0){
+      const rows=[...allSizes].map(sz=>({product_id:p.id,size:sz,quantity:(_inv||{})[sz]||0,alert_threshold:(_alerts||{})[sz]||null}));
+      await supabase.from('product_inventory').upsert(rows,{onConflict:'product_id,size'});
+    }
+  }catch(e){console.error('[DB] save product:',e)}
+};
+const _dbSaveMessage = async (m) => {
+  if(!supabase)return;
+  try{
+    const{read_by,...msgRow}=m;
+    await supabase.from('messages').upsert(msgRow,{onConflict:'id'});
+    if(read_by?.length){
+      const reads=read_by.map(uid=>({message_id:m.id,user_id:uid}));
+      await supabase.from('message_reads').upsert(reads,{onConflict:'message_id,user_id'});
+    }
+  }catch(e){console.error('[DB] save message:',e)}
+};
+// ─── Delete Helpers ───
+const _dbDeleteEstimate = async (id) => {
+  if(!supabase)return;
+  try{await supabase.from('estimates').update({deleted_at:new Date().toISOString()}).eq('id',id)}
+  catch(e){console.error('[DB] delete estimate:',e)}
+};
+const _dbDeleteSO = async (id) => {
+  if(!supabase)return;
+  try{await supabase.from('sales_orders').update({deleted_at:new Date().toISOString()}).eq('id',id)}
+  catch(e){console.error('[DB] delete SO:',e)}
+};
+const _dbDeleteInvoice = async (id) => {
+  if(!supabase)return;
+  try{await supabase.from('invoices').update({deleted_at:new Date().toISOString()}).eq('id',id)}
+  catch(e){console.error('[DB] delete invoice:',e)}
+};
+// Legacy compat — keep old _dbSave for team_members and other simple tables
 const _dbSave = (table, data) => { if(supabase && data) supabase.from(table).upsert(Array.isArray(data)?data:[data], {onConflict:'id'}).then(r=>{if(r.error)console.error('[DB] save '+table+':', r.error.message)}) };
 // ─── Cloudinary Config ───
 const CLOUDINARY_CLOUD='dwlyljyuz';
@@ -995,7 +1195,7 @@ function LoginGate({onLogin,reps}){
   );
 }
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack,onConvertSO,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,allInvoices,batchPOs,onBatchPO,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack,onConvertSO,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,allInvoices,batchPOs,onBatchPO,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete}){
   const isE=mode==='estimate';const isSO=mode==='so';
   const[o,setO]=useState(order);const[cust,setCust]=useState(ic);const[pS,setPS]=useState('');const[showAdd,setShowAdd]=useState(false);
   const[tab,setTab]=useState(initTab||'items');const[dirty,setDirty]=useState(false);const[selJob,setSelJob]=useState(null);const[jobNote,setJobNote]=useState('');const[msgDept,setMsgDept]=useState('all');
@@ -1315,6 +1515,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
             portalLink:cust?.alpha_tag?(window.location.origin+'?portal='+cust.alpha_tag):undefined
           });
         }}>🖨️ Print {isE?'Estimate':'SO'}</button>
+        {onDelete&&<button className="btn btn-sm" style={{background:'#dc2626',color:'white',border:'none',fontSize:11}} onClick={()=>onDelete(o.id)}><Icon name="trash" size={12}/> Delete</button>}
       </div>
       {isSO&&<div style={{display:'flex',gap:6,marginTop:8}}>
         <button className="btn btn-secondary" onClick={()=>setShowPO('select')}><Icon name="cart" size={14}/> Create PO</button>
@@ -4116,18 +4317,19 @@ export default function App(){
   const _initialLoadDone=useRef(false);
   React.useEffect(()=>{
     if(!supabase){setDbLoading(false);_initialLoadDone.current=true;return}
-    let c=false;
+    let cancelled=false;
     (async()=>{
       try{
         const d=await _dbLoad();
-        if(c||!d)return;
+        if(cancelled||!d)return;
         if(d.hasData){
           if(d.team.length)setREPS(d.team);if(d.customers.length)setCust(d.customers);
           if(d.vendors.length)setVend(d.vendors);if(d.products.length)setProd(d.products);
           if(d.estimates.length)setEsts(d.estimates);if(d.sales_orders.length)setSOs(d.sales_orders);
           if(d.invoices.length)setInvs(d.invoices);if(d.messages.length)setMsgs(d.messages);
-          if(d.omg_stores.length)setOmgStores(d.omg_stores);if(d.issues.length)setIssues(d.issues);
-          console.log('[DB] Loaded from Supabase');
+          if(d.omg_stores.length)setOmgStores(d.omg_stores);
+          if(d.issues?.length)setIssues(d.issues);
+          console.log('[DB] Loaded from Supabase (normalized)');
         }else{
           console.log('[DB] Supabase empty, seeding...');
           await _dbSeed({team:DEFAULT_REPS,customers:D_C,vendors:D_V,products:D_P,
@@ -4135,12 +4337,25 @@ export default function App(){
           console.log('[DB] Seeded');
         }
       }catch(e){console.error('[DB] Load failed:',e)}
-      finally{if(!c){_dbReady.current=true;setDbLoading(false);
+      finally{if(!cancelled){_dbReady.current=true;setDbLoading(false);
         // Mark initial load done after a tick so auto-save effects don't fire from the setState calls above
         setTimeout(()=>{_initialLoadDone.current=true},100);
       }}
     })();
-    return()=>{c=true};
+    // ─── Supabase Realtime subscriptions ───
+    const channels=[];
+    if(supabase){
+      const reloadAll=async()=>{const d=await _dbLoad();if(!d)return;
+        if(d.estimates.length)setEsts(d.estimates);if(d.sales_orders.length)setSOs(d.sales_orders);
+        if(d.invoices.length)setInvs(d.invoices);if(d.messages.length)setMsgs(d.messages);
+        if(d.customers.length)setCust(d.customers);if(d.products.length)setProd(d.products);
+        if(d.issues?.length)setIssues(d.issues)};
+      ['estimates','sales_orders','invoices','messages','so_items','issues'].forEach(table=>{
+        const ch=supabase.channel('realtime_'+table).on('postgres_changes',{event:'*',schema:'public',table},()=>{reloadAll()}).subscribe();
+        channels.push(ch);
+      });
+    }
+    return()=>{cancelled=true;channels.forEach(ch=>supabase?.removeChannel(ch))};
   },[]);
 
   // ─── Supabase polling: refresh from DB every 30 seconds so all users stay in sync ───
@@ -4163,15 +4378,15 @@ export default function App(){
     return()=>clearInterval(poll);
   },[]);
 
-  // Auto-save to localStorage + Supabase (only after initial load is complete)
+  // Auto-save to localStorage + Supabase (normalized, only after initial load is complete)
   React.useEffect(()=>{try{localStorage.setItem('nsa_reps',JSON.stringify(REPS))}catch{};if(_initialLoadDone.current&&_dbReady.current)_dbSave('team_members',REPS)},[REPS]);
-  React.useEffect(()=>{try{localStorage.setItem('nsa_cust',JSON.stringify(cust))}catch{};if(_initialLoadDone.current&&_dbReady.current)_dbSave('customers',cust)},[cust]);
-  React.useEffect(()=>{try{localStorage.setItem('nsa_prod',JSON.stringify(prod))}catch{};if(_initialLoadDone.current&&_dbReady.current)_dbSave('products',prod)},[prod]);
-  React.useEffect(()=>{try{localStorage.setItem('nsa_ests',JSON.stringify(ests))}catch{};if(_initialLoadDone.current&&_dbReady.current)ests.forEach(e=>_dbSave('estimates',e))},[ests]);
-  React.useEffect(()=>{try{localStorage.setItem('nsa_sos',JSON.stringify(sos))}catch{};if(_initialLoadDone.current&&_dbReady.current)sos.forEach(s=>_dbSave('sales_orders',s))},[sos]);
-  React.useEffect(()=>{try{localStorage.setItem('nsa_invs',JSON.stringify(invs))}catch{};if(_initialLoadDone.current&&_dbReady.current)invs.forEach(i=>_dbSave('invoices',i))},[invs]);
-  React.useEffect(()=>{try{localStorage.setItem('nsa_msgs',JSON.stringify(msgs))}catch{};if(_initialLoadDone.current&&_dbReady.current)_dbSave('messages',msgs)},[msgs]);
-  React.useEffect(()=>{if(_initialLoadDone.current&&_dbReady.current)_dbSave('omg_stores',omgStores)},[omgStores]);
+  React.useEffect(()=>{try{localStorage.setItem('nsa_cust',JSON.stringify(cust))}catch{};if(_initialLoadDone.current&&_dbReady.current)cust.forEach(c=>_dbSaveCustomer(c))},[cust]);
+  React.useEffect(()=>{try{localStorage.setItem('nsa_prod',JSON.stringify(prod))}catch{};if(_initialLoadDone.current&&_dbReady.current)prod.forEach(p=>_dbSaveProduct(p))},[prod]);
+  React.useEffect(()=>{try{localStorage.setItem('nsa_ests',JSON.stringify(ests))}catch{};if(_initialLoadDone.current&&_dbReady.current)ests.forEach(e=>_dbSaveEstimate(e))},[ests]);
+  React.useEffect(()=>{try{localStorage.setItem('nsa_sos',JSON.stringify(sos))}catch{};if(_initialLoadDone.current&&_dbReady.current)sos.forEach(s=>_dbSaveSO(s))},[sos]);
+  React.useEffect(()=>{try{localStorage.setItem('nsa_invs',JSON.stringify(invs))}catch{};if(_initialLoadDone.current&&_dbReady.current)invs.forEach(i=>_dbSaveInvoice(i))},[invs]);
+  React.useEffect(()=>{try{localStorage.setItem('nsa_msgs',JSON.stringify(msgs))}catch{};if(_initialLoadDone.current&&_dbReady.current)msgs.forEach(m=>_dbSaveMessage(m))},[msgs]);
+  React.useEffect(()=>{if(_initialLoadDone.current&&_dbReady.current){omgStores.forEach(s=>{const{products,...rest}=s;_dbSave('omg_stores',[rest])})}},[omgStores]);
   React.useEffect(()=>{try{localStorage.setItem('nsa_issues',JSON.stringify(issues))}catch{};if(_initialLoadDone.current&&_dbReady.current)_dbSave('issues',issues)},[issues]);
   const[q,setQ]=useState('');const[selC,setSelC]=useState(null);const[selV,setSelV]=useState(null);
   const[eEst,setEEst]=useState(null);const[eEstC,setEEstC]=useState(null);const[eSO,setESO]=useState(null);const[eSOC,setESOC]=useState(null);const[eSOTab,setESOTab]=useState(null);const[eSOScrollItem,setESOScrollItem]=useState(null);const[eSOScrollJob,setESOScrollJob]=useState(null);
@@ -4317,6 +4532,77 @@ export default function App(){
       console.error('[OMG] Sync failed:', error);
       nf('OMG sync failed: ' + error.message, 'error');
     } finally { setOmgSyncing(false); }
+  };
+
+  // ─── Delete Handlers (with cascade status updates) ───
+  const canDelete = cu && (cu.role==='admin'||cu.role==='rep'||cu.role==='csr');
+
+  const deleteEstimate = (estId) => {
+    if(!canDelete)return nf('You do not have permission to delete','error');
+    const est=ests.find(e=>e.id===estId);if(!est)return;
+    // Check if an SO was created from this estimate
+    const linkedSO=sos.find(s=>s.estimate_id===estId);
+    if(linkedSO&&!window.confirm('SO '+linkedSO.id+' was created from this estimate. The SO will remain but its estimate link will be cleared. Continue?'))return;
+    if(!window.confirm('Delete estimate '+estId+'? This cannot be undone.'))return;
+    // Remove from state
+    setEsts(prev=>prev.filter(e=>e.id!==estId));
+    // Clear estimate link on any linked SO
+    if(linkedSO){setSOs(prev=>prev.map(s=>s.estimate_id===estId?{...s,estimate_id:null,updated_at:new Date().toLocaleString()}:s))}
+    // Soft-delete in DB
+    _dbDeleteEstimate(estId);
+    logChange('deleted','Estimate',estId,est.memo||'');
+    nf('Estimate '+estId+' deleted');
+    // If we were editing this estimate, go back to list
+    if(eEst?.id===estId){setEEst(null);setEEstC(null)}
+  };
+
+  const deleteSO = (soId) => {
+    if(!canDelete)return nf('You do not have permission to delete','error');
+    const so=sos.find(s=>s.id===soId);if(!so)return;
+    // Check for linked invoices
+    const linkedInvs=invs.filter(i=>i.so_id===soId);
+    if(linkedInvs.length>0){
+      const paidInvs=linkedInvs.filter(i=>i.paid>0);
+      if(paidInvs.length>0)return nf('Cannot delete — SO has invoices with payments ('+paidInvs.map(i=>i.id).join(', ')+'). Void invoices first.','error');
+      if(!window.confirm('This will also delete '+linkedInvs.length+' linked invoice(s): '+linkedInvs.map(i=>i.id).join(', ')+'. Continue?'))return;
+    }
+    if(!window.confirm('Delete sales order '+soId+'? This cannot be undone.'))return;
+    // Remove SO from state
+    setSOs(prev=>prev.filter(s=>s.id!==soId));
+    // Delete linked unpaid invoices and update their status
+    if(linkedInvs.length>0){
+      setInvs(prev=>prev.filter(i=>i.so_id!==soId||i.paid>0));
+      linkedInvs.filter(i=>i.paid===0).forEach(i=>_dbDeleteInvoice(i.id));
+    }
+    // Soft-delete in DB
+    _dbDeleteSO(soId);
+    logChange('deleted','SO',soId,so.memo||'');
+    nf('Sales order '+soId+' deleted'+(linkedInvs.length?' ('+linkedInvs.filter(i=>i.paid===0).length+' invoices also removed)':''));
+    if(eSO?.id===soId){setESO(null);setESOC(null)}
+  };
+
+  const deleteInvoice = (invId) => {
+    if(!canDelete)return nf('You do not have permission to delete','error');
+    const inv=invs.find(i=>i.id===invId);if(!inv)return;
+    if(inv.paid>0&&!window.confirm('This invoice has $'+inv.paid.toLocaleString()+' in payments recorded. Deleting will lose this payment history. Continue?'))return;
+    if(!window.confirm('Delete invoice '+invId+'?'))return;
+    // Remove from state
+    setInvs(prev=>prev.filter(i=>i.id!==invId));
+    // If invoice was linked to an SO, recalculate SO status (it might go back to ready_to_invoice)
+    if(inv.so_id){
+      const so=sos.find(s=>s.id===inv.so_id);
+      if(so&&(so.status==='complete'||calcSOStatus(so)==='complete')){
+        // Check if any other invoices remain for this SO
+        const remainingInvs=invs.filter(i=>i.so_id===inv.so_id&&i.id!==invId);
+        if(remainingInvs.length===0){
+          // No more invoices — SO goes back to ready_to_invoice
+          setSOs(prev=>prev.map(s=>s.id===inv.so_id?{...s,status:'ready_to_invoice',updated_at:new Date().toLocaleString()}:s));
+          nf('Invoice '+invId+' deleted — '+inv.so_id+' reverted to ready_to_invoice');
+        }else{nf('Invoice '+invId+' deleted')}
+      }else{nf('Invoice '+invId+' deleted')}
+    }else{nf('Invoice '+invId+' deleted')}
+    _dbDeleteInvoice(invId);
+    logChange('deleted','Invoice',invId,inv.memo||'');
   };
 
   // DASHBOARD
@@ -4717,7 +5003,7 @@ export default function App(){
 
   // ESTIMATES LIST
   const rEst=()=>{
-    if(eEst)return<OrderEditor order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} onSave={e=>{savE(e);setEEst(e)}} onBack={()=>setEEst(null)} onConvertSO={convertSO} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS}/>;
+    if(eEst)return<OrderEditor order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} onSave={e=>{savE(e);setEEst(e)}} onBack={()=>setEEst(null)} onConvertSO={convertSO} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={canDelete?deleteEstimate:null}/>;
     const fe=ests.filter(e=>!q||(e.id+' '+e.memo+' '+(cust.find(c=>c.id===e.customer_id)?.name||'')+' '+(cust.find(c=>c.id===e.customer_id)?.alpha_tag||'')).toLowerCase().includes(q.toLowerCase()));
     return(<><div style={{display:'flex',gap:8,marginBottom:16}}><div className="search-bar" style={{flex:1}}><Icon name="search"/><input placeholder="Search..." value={q} onChange={e=>setQ(e.target.value)}/></div>
       <button className="btn btn-primary" onClick={()=>newE(null)}><Icon name="plus" size={14}/> New Estimate</button></div>
@@ -4729,13 +5015,13 @@ export default function App(){
         <td><span style={{fontSize:11,color:'#64748b'}}>{rep?.name?.split(' ')[0]||'—'}</span></td>
         <td><span className={`badge ${e.status==='draft'?'badge-gray':e.status==='sent'?'badge-amber':e.status==='approved'?'badge-green':'badge-blue'}`}>{e.status}</span></td>
         <td><EmailBadge e={e}/></td>
-        <td onClick={ev=>ev.stopPropagation()}>{e.status==='approved'&&<button className="btn btn-sm btn-primary" style={{background:'#7c3aed'}} onClick={()=>convertSO(e)}>→ SO</button>}</td>
+        <td onClick={ev=>ev.stopPropagation()}>{e.status==='approved'&&<button className="btn btn-sm btn-primary" style={{background:'#7c3aed'}} onClick={()=>convertSO(e)}>→ SO</button>}{canDelete&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',color:'#dc2626',border:'1px solid #fca5a5',marginLeft:4,background:'white'}} onClick={()=>deleteEstimate(e.id)}><Icon name="trash" size={10}/></button>}</td>
       </tr>)})}</tbody></table></div></div></>);};
 
 
   // SALES ORDERS LIST
   const rSO=()=>{
-    if(eSO)return<OrderEditor order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} onSave={s=>{savSO(s);setESO(s)}} onBack={()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null)}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus}/>;
+    if(eSO)return<OrderEditor order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} onSave={s=>{savSO(s);setESO(s)}} onBack={()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null)}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null}/>;
     // Filter SOs
     let fSOs=[...sos];
     if(soF.status!=='all')fSOs=fSOs.filter(s=>calcSOStatus(s)===soF.status);
@@ -4780,7 +5066,7 @@ export default function App(){
         <span style={{fontSize:11,color:'#64748b'}}>{fSOs.length}{fSOs.length!==sos.length?' of '+sos.length:''} orders</span>
       </div>
 
-    <div className="card"><div className="card-body" style={{padding:0}}><table><thead><tr><th>SO</th><th>Customer</th><th>Memo</th><th>Expected</th><th>Rep</th><th>Art</th><th>Items</th><th>Msgs</th><th>Ship</th><th>Status</th></tr></thead><tbody>
+    <div className="card"><div className="card-body" style={{padding:0}}><table><thead><tr><th>SO</th><th>Customer</th><th>Memo</th><th>Expected</th><th>Rep</th><th>Art</th><th>Items</th><th>Msgs</th><th>Ship</th><th>Status</th>{canDelete&&<th></th>}</tr></thead><tbody>
     {fSOs.map(so=>{const c=cust.find(x=>x.id===so.customer_id);const ac=(so.art_files||[]).length;const aa=(so.art_files||[]).filter(f=>f.status==='approved').length;const rep=REPS.find(r=>r.id===so.created_by);
       // Item fulfillment progress (for Items column)
       const allItems=so.items||[];let totalSz=0,pickedSz=0,poSz=0,rcvdSz=0;
@@ -4803,7 +5089,8 @@ export default function App(){
         {itemStatus==='received'?'\u2713 All In':itemStatus==='partial'?fulfilledSz+'/'+totalSz:itemStatus==='on_order'?'On Order':'Needs Items'}</span>}</td>
       <td>{(()=>{const unread=msgs.filter(m=>m.so_id===so.id&&!(m.read_by||[]).includes(cu.id)).length;const total=msgs.filter(m=>m.so_id===so.id).length;return unread>0?<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'2px 8px',fontSize:10,fontWeight:700}}>{unread} new</span>:total>0?<span style={{fontSize:11,color:'#94a3b8'}}>{total}</span>:null})()}</td>
       <td>{so._tracking_number?<span style={{fontSize:10,fontWeight:600,padding:'2px 6px',borderRadius:4,background:'#dcfce7',color:'#166534'}}>Shipped</span>:so._shipstation_order_id?<span style={{fontSize:10,fontWeight:600,padding:'2px 6px',borderRadius:4,background:'#dbeafe',color:'#1e40af'}}>Submitted</span>:displayStatus==='in_production'&&ssConnected?<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#7c3aed',color:'white',border:'none',borderRadius:4}} onClick={ev=>{ev.stopPropagation();handleShipToShipStation(so)}} disabled={ssShipping}>Ship</button>:null}</td>
-      <td><span style={{padding:'3px 10px',borderRadius:12,fontSize:11,fontWeight:700,background:SC[displayStatus]?.bg||'#f1f5f9',color:SC[displayStatus]?.c||'#475569'}}>{statusLabel}</span></td></tr>)})}
+      <td><span style={{padding:'3px 10px',borderRadius:12,fontSize:11,fontWeight:700,background:SC[displayStatus]?.bg||'#f1f5f9',color:SC[displayStatus]?.c||'#475569'}}>{statusLabel}</span></td>
+      {canDelete&&<td onClick={ev=>ev.stopPropagation()}><button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',color:'#dc2626',border:'1px solid #fca5a5',background:'white'}} onClick={()=>deleteSO(so.id)}><Icon name="trash" size={10}/></button></td>}</tr>)})}
     </tbody></table></div></div></>);
   };
   // CUSTOMERS
@@ -6131,7 +6418,7 @@ export default function App(){
                   }],
                   footer:inv.type==='deposit'?NSA.depositTerms:NSA.terms
                 });
-              }}>🖨️</button></td>
+              }}>🖨️</button>{canDelete&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',color:'#dc2626',border:'1px solid #fca5a5',marginLeft:4,background:'white'}} onClick={()=>deleteInvoice(inv.id)}><Icon name="trash" size={10}/></button>}</td>
           </tr>})}</tbody></table>}
       </div></div>}
 
