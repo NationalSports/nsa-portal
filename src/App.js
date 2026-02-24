@@ -1018,7 +1018,9 @@ const omgApiCall = async (endpoint, options = {}) => {
     });
     if (!response.ok) {
       const errText = await response.text().catch(() => '');
-      throw new Error(`OMG API error: ${response.status} ${errText}`);
+      let msg;
+      try { msg = JSON.parse(errText)?.error; } catch {}
+      throw new Error(msg || `OMG API error: ${response.status}`);
     }
     const data = await response.json();
     console.log('[OMG] API response:', endpoint, data);
