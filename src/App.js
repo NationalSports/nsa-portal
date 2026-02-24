@@ -288,24 +288,26 @@ const extractPdfText=async(file)=>{
     // Group text items into rows using Y position, then sort by X within each row
     const items=content.items.filter(it=>it.str.trim());
     if(items.length===0)continue;
-    // Build rows by grouping items with similar Y coordinates (within 3 units)
+    // Build rows by grouping items with similar Y coordinates (within 5 units)
     const rows=[];
     items.forEach(it=>{
       const y=Math.round(it.transform[5]);const x=it.transform[4];
-      let row=rows.find(r=>Math.abs(r.y-y)<3);
+      const w=it.width||it.str.length*5;
+      let row=rows.find(r=>Math.abs(r.y-y)<=5);
       if(!row){row={y,items:[]};rows.push(row)}
-      row.items.push({x,str:it.str});
+      row.items.push({x,w,str:it.str});
     });
     // Sort rows top-to-bottom (higher Y = higher on page in PDF coords)
     rows.sort((a,b)=>b.y-a.y);
     rows.forEach(row=>{
       row.items.sort((a,b)=>a.x-b.x);
-      // Join items with tab if they have significant horizontal gaps (>30 units = likely different columns)
+      // Join items — insert tab when horizontal gap suggests a new column
       let line='';
       row.items.forEach((it,idx)=>{
         if(idx>0){
-          const gap=it.x-(row.items[idx-1].x+row.items[idx-1].str.length*4);
-          line+=gap>30?'\t':' ';
+          const prev=row.items[idx-1];
+          const gap=it.x-(prev.x+prev.w);
+          line+=gap>15?'\t':gap>1?' ':'';
         }
         line+=it.str;
       });
@@ -319,11 +321,8 @@ const parseNetSuitePdf=(text,docType)=>{
   const result={docNumber:'',date:'',customerName:'',terms:'',subtotal:0,tax:0,shipping:0,total:0,lineItems:[],rawText:text,confidence:'low',warnings:[]};
   const lines=text.split('\n').map(l=>l.trim()).filter(Boolean);
   const SZ_RE=/[-\s](XXS|XS|YXS|YS|YM|YL|YXL|S|M|L|XL|2XL|3XL|4XL|5XL|OSFA)$/i;
-  const SIZES_SET=new Set(['XXS','XS','YXS','YS','YM','YL','YXL','S','M','L','XL','2XL','3XL','4XL','5XL','OSFA']);
 
   // ── Extract document number ──
-  // NetSuite formats: "Estimate #EST8736", "Sales Order #SO12345", "Invoice #INV-1234", "Purchase Order #PO-5678"
-  // Also: "Estimate 8736", "Transaction #12345", standalone "#EST8736"
   const docPatterns=[
     /(?:Estimate|EST)[#\s:]*#?(EST-?\d+)/i,
     /(?:Sales Order|SO)[#\s:]*#?(SO-?\d+)/i,
@@ -345,22 +344,18 @@ const parseNetSuitePdf=(text,docType)=>{
   if(termsMatch)result.terms=termsMatch[1].trim();
 
   // ── Extract customer/Bill To ──
-  // Try multiple patterns: "Bill To", "Customer", "Sold To"
   let custFound=false;
   for(let i=0;i<lines.length&&!custFound;i++){
     if(/^(Bill\s*To|Sold\s*To|Customer|Ship\s*To)\b/i.test(lines[i])){
-      // Customer name is typically on the next line(s) after the label
       const nameLines=[];
       for(let j=i+1;j<Math.min(i+5,lines.length);j++){
         const l=lines[j];
-        // Stop at next section header, date, or obvious non-name content
         if(/^(Ship\s*To|Date|Terms|Item|Quantity|Due|PO\s*#|Rep|Memo)/i.test(l))break;
         if(/^\d{1,2}\/\d{1,2}\/\d{2,4}/.test(l))break;
         if(l.length<2)break;
         nameLines.push(l);
       }
       if(nameLines.length>0){
-        // First line is typically the company/customer name
         result.customerName=nameLines[0].replace(/\t.*/,'').trim();
         custFound=true;
       }
@@ -368,157 +363,181 @@ const parseNetSuitePdf=(text,docType)=>{
   }
 
   // ── Extract totals ──
+  // Look for totals that appear after the items section (tab-separated label + value)
   const pN=s=>{const m=s.match(/\$?\s*([\d,]+\.?\d*)/);return m?parseFloat(m[1].replace(/,/g,'')):0};
+  const pNfromLine=line=>{
+    // Extract the last dollar amount from a line (handles tab-separated totals)
+    const parts=line.split('\t');
+    for(let k=parts.length-1;k>=0;k--){
+      const v=parts[k].trim().replace(/[$,]/g,'');
+      if(/^\d+\.?\d*$/.test(v)&&parseFloat(v)>0)return parseFloat(v);
+    }
+    return pN(line);
+  };
   for(const line of lines){
-    if(/^Subtotal\b/i.test(line))result.subtotal=pN(line);
-    else if(/^Tax\b/i.test(line))result.tax=pN(line);
-    else if(/^Shipping\b/i.test(line)&&!/Shipping\s*(Address|Method|To)/i.test(line))result.shipping=pN(line);
-    else if(/^Total\b/i.test(line)&&!/Total\s*(Qty|Quantity|Items)/i.test(line))result.total=pN(line);
+    const lt=line.replace(/\t.*/,'').trim();// first cell only for label matching
+    if(/^Subtotal$/i.test(lt))result.subtotal=pNfromLine(line);
+    else if(/^Tax\b/i.test(lt))result.tax=pNfromLine(line);
+    else if(/^Shipping$/i.test(lt))result.shipping=pNfromLine(line);
+    else if(/^Total$/i.test(lt))result.total=pNfromLine(line);
   }
 
   // ── Parse line items ──
-  // NetSuite PDFs have a header row like: "Quantity | Item | Description | Rate | Amount"
-  // or "Item | Description | Quantity | Rate | Amount" — many variations
+  // NSA NetSuite PDFs: 2-line format per item
+  // Line 1: Quantity \t Item (SKU : SKU-SIZE) \t [Options] \t Tax(Yes/No) \t Rate \t Amount
+  // Line 2: Description (product name - Color - Size)
+  // Detect header row
   let headerIdx=-1;
-  let colOrder=null;// 'qty_first' or 'item_first'
   for(let i=0;i<lines.length;i++){
     const l=lines[i].toLowerCase();
-    // Detect header row by presence of key column names
     if((l.includes('quantity')||l.includes('qty'))&&(l.includes('item')||l.includes('sku'))&&(l.includes('amount')||l.includes('rate'))){
-      headerIdx=i;
-      colOrder=l.indexOf('quantity')<l.indexOf('item')||l.indexOf('qty')<l.indexOf('item')?'qty_first':'item_first';
-      break;
+      headerIdx=i;break;
     }
   }
 
-  // Track where items section ends
-  const isEndMarker=l=>/^(Subtotal|Total|Tax\b|Discount|Thank you|Comments|Notes|Memo|Terms|Page\s+\d)/i.test(l);
+  const isEndMarker=l=>/^(Subtotal|Total$|Tax\b|Discount|Thank you|Comments|Notes$|Memo$|Terms$|Page\s+\d)/i.test(l.replace(/\t.*/,'').trim());
+  // Check if a line starts with a quantity number (item data line vs description line)
+  const isItemLine=line=>{
+    const p=line.split('\t')[0]?.trim();
+    return/^\d+$/.test(p);
+  };
 
-  // Collect raw item groups (an item may span multiple lines in NetSuite PDFs)
-  const rawItems=[];
+  // Collect 2-line item pairs from after the header
+  const itemPairs=[];// [{dataLine, descLine}]
   if(headerIdx>=0){
-    for(let i=headerIdx+1;i<lines.length;i++){
+    let i=headerIdx+1;
+    while(i<lines.length){
       const line=lines[i];
       if(isEndMarker(line))break;
-      if(!line.trim())continue;
-      // Detect whether this line starts a new item (has a quantity + sku pattern or a sku at start)
-      const tabParts=line.split('\t').map(s=>s.trim());
-      const isNewItem=tabParts.length>=3||(colOrder==='qty_first'?/^\d+\s+[A-Za-z]/.test(line):/^[A-Za-z0-9]/.test(line)&&/\d/.test(line));
-      if(isNewItem)rawItems.push(tabParts);
-      else if(rawItems.length>0){
-        // Continuation line — append to previous item's description
-        rawItems[rawItems.length-1].push('_cont:'+line);
+      if(!line.trim()){i++;continue}
+
+      if(isItemLine(line)){
+        // This is a data line (qty/sku/rate/amount) — next non-empty line is description
+        let descLine='';
+        if(i+1<lines.length&&!isItemLine(lines[i+1])&&!isEndMarker(lines[i+1])){
+          descLine=lines[i+1];
+          i+=2;
+        } else {i++}
+        itemPairs.push({dataLine:line,descLine});
+      } else {
+        // Standalone description line (might be continuation or orphan)
+        if(itemPairs.length>0&&!itemPairs[itemPairs.length-1].descLine){
+          itemPairs[itemPairs.length-1].descLine=line;
+        }
+        i++;
       }
     }
   } else {
-    // No header found — try to parse lines with quantity/sku/price pattern
+    // No header — try scanning for qty-starting lines
     result.warnings.push('Could not detect item table header — trying pattern-based parsing');
     for(let i=0;i<lines.length;i++){
-      const line=lines[i];
-      if(isEndMarker(line))continue;
-      // Pattern: number sku desc ... price price
-      const m=line.match(/^(\d+)\s+([A-Za-z0-9][\w\-]+(?:\s*:\s*[\w\-]+)?)\s+(.+?)\s+\$?([\d,]+\.?\d{2})\s+\$?([\d,]+\.?\d{2})$/);
-      if(m)rawItems.push([m[1],m[2],m[3],m[4],m[5]]);
-      else{
-        // Tab-separated fallback
-        const tabParts=line.split('\t').map(s=>s.trim());
-        if(tabParts.length>=4&&/^\d+$/.test(tabParts[0]))rawItems.push(tabParts);
-        else if(tabParts.length>=4&&/^\d+$/.test(tabParts[2]))rawItems.push(tabParts);
+      if(isEndMarker(lines[i]))continue;
+      if(isItemLine(lines[i])){
+        let descLine='';
+        if(i+1<lines.length&&!isItemLine(lines[i+1])&&!isEndMarker(lines[i+1])){
+          descLine=lines[i+1];i++;
+        }
+        itemPairs.push({dataLine:lines[i]||lines[i-1],descLine});
       }
     }
   }
 
-  // Parse each raw item group
-  const sizeItems={};// keyed by baseSku for collapsing sizes
-  rawItems.forEach(parts=>{
-    // Filter out continuation markers and join as extra description
-    const contParts=parts.filter(p=>p.startsWith('_cont:')).map(p=>p.slice(6));
-    parts=parts.filter(p=>!p.startsWith('_cont:'));
-
-    let qty=0,sku='',description='',rate=0,amount=0;
-
-    if(colOrder==='qty_first'||(!colOrder&&/^\d+$/.test(parts[0]))){
-      // Quantity | Item | Description ... | Rate | Amount
-      qty=parseInt(parts[0])||0;
-      sku=(parts[1]||'').trim();
-      // Rate and amount are typically the last two numeric values
-      const lastParts=parts.slice(2);
-      const nums=[];const descs=[];
-      lastParts.forEach(p=>{
-        const n=p.replace(/[$,]/g,'');
-        if(/^\d+\.?\d*$/.test(n)&&parseFloat(n)<100000)nums.push(parseFloat(n));
-        else descs.push(p);
-      });
-      description=descs.join(' ').trim();
-      if(nums.length>=2){amount=nums[nums.length-1];rate=nums[nums.length-2]}
-      else if(nums.length===1){amount=nums[0];rate=qty>0?rQ(nums[0]/qty):0}
-    } else {
-      // Item | Description | Quantity | Rate | Amount
-      sku=(parts[0]||'').trim();
-      description=(parts[1]||'').trim();
-      qty=parseInt(parts[2])||0;
-      rate=parseFloat((parts[3]||'').replace(/[$,]/g,''))||0;
-      amount=parseFloat((parts[4]||'').replace(/[$,]/g,''))||0;
+  // Parse each item pair
+  const sizeItems={};// keyed by baseSku+color for collapsing sizes
+  itemPairs.forEach(({dataLine,descLine})=>{
+    const parts=dataLine.split('\t').map(s=>s.trim());
+    const qty=parseInt(parts[0])||0;
+    const skuRaw=parts[1]||'';
+    // Extract rate and amount: scan from the end for numbers
+    let rate=0,amount=0;
+    const nums=[];
+    for(let k=parts.length-1;k>=2;k--){
+      const v=parts[k].replace(/[$,]/g,'').trim();
+      if(/^\d+\.?\d*$/.test(v))nums.unshift(parseFloat(v));
+      else if(nums.length>=2)break;// stop once we have rate+amount
     }
-    if(contParts.length>0)description+=' '+contParts.join(' ');
+    if(nums.length>=2){rate=nums[nums.length-2];amount=nums[nums.length-1]}
+    else if(nums.length===1){amount=nums[0];rate=qty>0?rQ(nums[0]/qty):0}
 
-    if(!qty&&!sku)return;
-    if(!qty&&sku)qty=1;
+    // Parse SKU — handles "JP4674 : JP4674-S" and "Screen 1"
+    const skuColonParts=skuRaw.split(/\s*:\s*/);
+    let baseSku=(skuColonParts[0]||skuRaw).trim();
+    const fullSku=(skuColonParts[1]||baseSku).trim();
 
-    // Handle NetSuite "ItemCode : ItemCode-Size" format (e.g. "KD3334 : KD3334-M")
-    const skuColonParts=sku.split(/\s*:\s*/);
-    let baseSku=skuColonParts[0]||sku;
-    const fullSku=skuColonParts[1]||baseSku;
-
-    // Detect size suffix
+    // Detect size suffix from fullSku
     const sizeMatch=fullSku.match(SZ_RE);
     let size=null;
     if(sizeMatch){
       size=sizeMatch[1].toUpperCase();
-      // Strip size from baseSku if it ended up there
       baseSku=baseSku.replace(SZ_RE,'').replace(/-$/,'').trim();
     }
-    // Also check if baseSku itself has a size
-    if(!size){
-      const bsm=baseSku.match(SZ_RE);
-      if(bsm){size=bsm[1].toUpperCase();baseSku=baseSku.replace(SZ_RE,'').replace(/-$/,'').trim()}
-    }
+    if(!size){const bsm=baseSku.match(SZ_RE);if(bsm){size=bsm[1].toUpperCase();baseSku=baseSku.replace(SZ_RE,'').replace(/-$/,'').trim()}}
 
-    // Detect decoration lines
-    const isDecoration=/^(Emb|Embr|Screen|SP|Heat|DTF|Vinyl|Sublim|Deco)/i.test(baseSku)
-      ||/^(screen\s*print|embroid|dtf|heat\s*trans|vinyl|sublim)/i.test(description);
+    // Parse description line for product name and color
+    const description=(descLine||'').replace(/\t.*/,'').trim();
+    let color='';
+    // NSA descriptions use both - and – (en-dash): "Adidas Creator Tee - Black - S" or "Pant – White Pins"
+    const DASH=/\s*[-–—]\s*/;
+    const colorSizeMatch=description.match(/\s*[-–—]\s*([A-Za-z][A-Za-z\s,\/]+?)\s*[-–—]\s*(?:XXS|XS|YXS|YS|YM|YL|YXL|S|M|L|XL|2XL|3XL|4XL|5XL|OSFA)\s*$/i);
+    if(colorSizeMatch)color=colorSizeMatch[1].trim();
+    else{
+      // Try: "Name – Color" or "Name – Color Variant" (no size at end)
+      const colorOnly=description.match(/\s*[-–—]\s*([A-Za-z][A-Za-z\s,\/]+?)\s*$/);
+      if(colorOnly&&!/(?:color|print|press|emb|screen|knicker|regular)/i.test(colorOnly[1]))color=colorOnly[1].trim();
+    }
+    // Clean product name (strip color/variant suffix from description)
+    let productName=description;
+    if(color){productName=description.replace(new RegExp('\\s*[-–—]\\s*'+color.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'.*$','i'),'').trim()}
 
     // Detect shipping lines
-    if(/^shipping$/i.test(baseSku)||/shipping/i.test(description)){
-      result.shipping=amount||rate;return;
+    if(/^shipping$/i.test(baseSku)||/^shipping$/i.test(description)){
+      result.shipping+=amount||rate;return;
     }
 
+    // Detect decoration lines: "Screen 1", "Screen 2", "Emb 1", "DTF 1", etc.
+    const isDecoration=/^(Screen|Emb|Embr|DTF|Heat|Vinyl|Sublim|Deco)\s*\d*$/i.test(baseSku);
     if(isDecoration){
-      result.lineItems.push({sku:baseSku,description:description||'Decoration',quantity:qty,rate:rate||0,amount:amount||0,isDecoration:true,sizes:{},raw:parts.join('\t')});
+      // Parse decoration type from description: "Screen Print 1 Color", "Embroidery up to 8000 stitches"
+      let decoType='art';
+      if(/screen\s*print/i.test(description))decoType='screen_print';
+      else if(/embroid/i.test(description))decoType='embroidery';
+      else if(/dtf|heat\s*trans/i.test(description))decoType='dtf';
+      // Count colors from description: "Screen Print 2 Color" → 2
+      const colorCountMatch=description.match(/(\d+)\s*colou?r/i);
+      const colors=colorCountMatch?parseInt(colorCountMatch[1]):1;
+      result.lineItems.push({sku:baseSku,description,quantity:qty,rate:rate||0,amount:amount||0,
+        isDecoration:true,decoType,colors,sizes:{},raw:dataLine});
       return;
     }
 
-    // Collapse sizes: same baseSku with different sizes → one item
+    // Collapse sizes: same baseSku+color → one item with size breakdown
+    const collapseKey=baseSku+(color?'||'+color:'');
     if(size&&baseSku){
-      if(!sizeItems[baseSku]){
-        sizeItems[baseSku]={sku:baseSku,description,quantity:0,rate,amount:0,isDecoration:false,sizes:{},raw:parts.join('\t')};
+      if(!sizeItems[collapseKey]){
+        sizeItems[collapseKey]={sku:baseSku,description:productName,color,quantity:0,rate,amount:0,isDecoration:false,sizes:{},raw:dataLine};
       }
-      sizeItems[baseSku].sizes[size]=(sizeItems[baseSku].sizes[size]||0)+qty;
-      sizeItems[baseSku].quantity+=qty;
-      sizeItems[baseSku].amount+=amount;
-      if(!sizeItems[baseSku].description&&description)sizeItems[baseSku].description=description;
+      sizeItems[collapseKey].sizes[size]=(sizeItems[collapseKey].sizes[size]||0)+qty;
+      sizeItems[collapseKey].quantity+=qty;
+      sizeItems[collapseKey].amount+=amount;
+      if(color&&!sizeItems[collapseKey].color)sizeItems[collapseKey].color=color;
+      if(productName&&!sizeItems[collapseKey].description)sizeItems[collapseKey].description=productName;
     } else {
-      // No size detected — single item
+      // No size detected — single item or embedded sizes in description
       const sizes={};
-      // Check if description contains embedded sizes like "12/S, 14/M, 8/L"
+      // Check for letter sizes: "12/S, 14/M, 8/L"
       const embSizeRe=/(\d+)\s*\/\s*(XXS|XS|YXS|YS|YM|YL|YXL|S|M|L|XL|2XL|3XL|4XL|5XL)/gi;
       let embMatch;while((embMatch=embSizeRe.exec(description)))sizes[embMatch[2].toUpperCase()]=parseInt(embMatch[1]);
+      // Check for numeric sizes: "1/38 – knickers 1/40 – knickers 2/42" → sizes {38:1, 40:1, 42:2}
+      if(Object.keys(sizes).length===0){
+        const numSizeRe=/(\d+)\s*\/\s*(\d{2,3})/g;
+        let nm;while((nm=numSizeRe.exec(description)))sizes[nm[2]]=(sizes[nm[2]]||0)+parseInt(nm[1]);
+      }
       if(Object.keys(sizes).length===0)sizes['OSFA']=qty;
-      result.lineItems.push({sku:baseSku||'MISC',description,quantity:qty,rate,amount,isDecoration:false,sizes,raw:parts.join('\t')});
+      result.lineItems.push({sku:baseSku||'MISC',description:productName||description,color,quantity:qty,rate,amount,isDecoration:false,sizes,raw:dataLine});
     }
   });
 
-  // Add collapsed size items
+  // Add collapsed size items to lineItems
   Object.values(sizeItems).forEach(it=>{
     if(it.quantity>0&&it.rate===0&&it.amount>0)it.rate=rQ(it.amount/it.quantity);
     result.lineItems.push(it);
@@ -9295,15 +9314,11 @@ export default function App(){
           <button className="btn btn-primary" disabled={(!imp.pdfParsed&&!imp.raw.trim())||!imp.custId||imp.pdfLoading}
             onClick={()=>{
               if(imp.pdfParsed&&imp.pdfParsed.lineItems.length>0){
-                const SZ_RE2=/[-\s](XXS|XS|S|M|L|XL|2XL|3XL|4XL|5XL|YXS|YS|YM|YL|YXL|OSFA)$/i;
                 const pdfItems=imp.pdfParsed.lineItems.map((li,idx)=>{
-                  // Handle NSA format items
                   const baseSku=li.sku;
                   const catMatch=prod.find(p=>p.sku===baseSku)||(baseSku.length>3?prod.find(p=>p.sku.toLowerCase()===baseSku.toLowerCase()):null);
-                  
-                  // For NSA format, sizes are already parsed in the sizes object
-                  const sizes=li.sizes||{OSFA:li.quantity};
-                  
+                  const sizes=li.sizes&&Object.keys(li.sizes).length>0?li.sizes:{OSFA:li.quantity};
+
                   let brand=catMatch?.brand||'';
                   if(!brand){
                     if(/adidas/i.test(li.description))brand='Adidas';
@@ -9311,15 +9326,9 @@ export default function App(){
                     else if(/nike/i.test(li.description))brand='Nike';
                     else if(/richardson/i.test(li.description))brand='Richardson';
                   }
-                  
-                  let color=catMatch?.color||'';
-                  if(!color){
-                    // Extract color from NSA description (e.g., "Navy/Black")
-                    const colorMatch=li.description.match(/\b(Navy|Black|White|Red|Blue|Green|Gray|Grey|Maroon|Purple|Orange|Yellow|Pink|Brown)(?:\/([A-Za-z]+))?\b/i);
-                    if(colorMatch){
-                      color=colorMatch[0];
-                    }
-                  }
+
+                  // Use color from parser (extracted from description), fall back to catalog
+                  const color=li.color||catMatch?.color||'';
 
                   return{
                     sku:baseSku,
@@ -9335,6 +9344,8 @@ export default function App(){
                     catMatch:catMatch||null,
                     is_custom:!catMatch,
                     is_decoration:li.isDecoration||false,
+                    decoType:li.decoType||null,
+                    decoColors:li.colors||1,
                     issues:catMatch?[]:['Not in catalog'],
                     _pdfRaw:li.raw
                   };
@@ -9351,7 +9362,7 @@ export default function App(){
                 });
 
                 setImp(x=>({...x,step:questions.length>0?'questions':'review',parsed:products,decoLines:decorations.map(d=>({
-                  rawItem:d.sku,desc:d.name,rate:d.rate,amount:d.totalAmt,_assignTo:'all'
+                  rawItem:d.sku,desc:d.name,rate:d.rate,amount:d.totalAmt,decoType:d.decoType||'screen_print',colors:d.decoColors||1,_assignTo:'all'
                 })),issues:[],questions,
                   shipping:imp.pdfParsed.shipping>0?[{desc:'Shipping',amount:imp.pdfParsed.shipping,rate:imp.pdfParsed.shipping}]:[]
                 }));
@@ -9555,7 +9566,8 @@ export default function App(){
                     sizes:it.sizes,decorations:[],is_custom:it.is_custom||false,pick_lines:[],po_lines:[]};
                 });
                 imp.decoLines.forEach(d=>{
-                  const deco={kind:'art',position:'Front Center',art_file_id:null,sell_override:d.rate||0};
+                  const deco={kind:'art',position:'Front Center',art_file_id:'__tbd',art_tbd_type:d.decoType||'screen_print',
+                    tbd_colors:d.colors||1,sell_override:d.rate||0,_ns_desc:d.desc||''};
                   if(d._assignTo==='all')newItems.forEach(it=>it.decorations.push({...deco}));
                   else{const idx=parseInt(d._assignTo);if(newItems[idx])newItems[idx].decorations.push({...deco})}
                 });
