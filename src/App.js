@@ -3706,7 +3706,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
 }
 
 // CUSTOMER DETAIL
-function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,cu,onOpenSO,ests,onSaveSO,REPS}){
+function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,cu,onOpenSO,onOpenEst,ests,onSaveSO,REPS}){
   const[tab,setTab]=useState('activity');const[oF,setOF]=useState('all');const[sF,setSF]=useState('all');const[rR,setRR]=useState('thisyear');
   const[editContact,setEditContact]=useState(null);const[custLocal,setCustLocal]=useState(initCust);
   const[showInvEmail,setShowInvEmail]=useState(false);const[invEmailMsg,setInvEmailMsg]=useState('');const[showPortal,setShowPortal]=useState(false);
@@ -3856,7 +3856,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         {[['all','All'],['open','Open'],['closed','Closed']].map(([v,l])=><button key={v} className={`btn btn-sm ${sF===v?'btn-primary':'btn-secondary'}`} onClick={()=>setSF(v)}>{l}</button>)}
       </div></div><div className="card-body" style={{padding:0}}><table style={{fontSize:12}}><thead><tr><th>ID</th><th>Type</th><th>Date</th><th>SO</th><th>Memo</th>{isP&&<th>Sub</th>}<th>Amount</th><th>Status</th></tr></thead><tbody>
         {filt.length===0?<tr><td colSpan={8} style={{textAlign:'center',color:'#94a3b8',padding:20}}>No records</td></tr>:
-        filt.map((t,i)=><tr key={t.id+'-'+i} style={{cursor:t._src==='order'?'pointer':undefined}} onClick={()=>{if(t._src==='order'){const so2=(sos||[]).find(s=>s.id===t.id);if(so2&&onOpenSO)onOpenSO(so2)}else if(t.so_id){const so2=(sos||[]).find(s=>s.id===t.so_id);if(so2&&onOpenSO)onOpenSO(so2)}}}>
+        filt.map((t,i)=><tr key={t.id+'-'+i} style={{cursor:(t._src==='order'||t.type==='estimate')?'pointer':undefined}} onClick={()=>{if(t.type==='estimate'){const est2=(ests||[]).find(e=>e.id===t.id);if(est2&&onOpenEst)onOpenEst(est2)}else if(t._src==='order'){const so2=(sos||[]).find(s=>s.id===t.id);if(so2&&onOpenSO)onOpenSO(so2)}else if(t.so_id){const so2=(sos||[]).find(s=>s.id===t.so_id);if(so2&&onOpenSO)onOpenSO(so2)}}}>
           <td style={{fontWeight:700,color:'#1e40af'}}>{t.id}</td>
           <td><span className={`badge ${typeBadge[t.type]||'badge-gray'}`}>{typeLabels[t.type]||t.type}</span></td>
           <td style={{fontSize:11,color:'#64748b'}}>{t.date}</td>
@@ -5176,7 +5176,7 @@ export default function App(){
   };
   // CUSTOMERS
   const rCust=()=>{
-    if(selC)return<CustDetail customer={selC} allCustomers={cust} allOrders={aO} onBack={()=>setSelC(null)} onEdit={c=>{setCM({open:true,c});setCust(prev=>prev.map(pp=>pp.id===c.id?c:pp))}} onSelCust={c=>setSelC(c)} onNewEst={c=>newE(c)} sos={sos} msgs={msgs} cu={cu} onOpenSO={so=>{const c3=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c3);setPg('orders')}} ests={ests} onSaveSO={savSO} REPS={REPS}/>;
+    if(selC)return<CustDetail customer={selC} allCustomers={cust} allOrders={aO} onBack={()=>setSelC(null)} onEdit={c=>{setCM({open:true,c});setCust(prev=>prev.map(pp=>pp.id===c.id?c:pp))}} onSelCust={c=>setSelC(c)} onNewEst={c=>newE(c)} sos={sos} msgs={msgs} cu={cu} onOpenSO={so=>{const c3=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c3);setPg('orders')}} onOpenEst={est=>{const c3=cust.find(cc=>cc.id===est.customer_id);setEEst(est);setEEstC(c3);setPg('estimates')}} ests={ests} onSaveSO={savSO} REPS={REPS}/>;
     const f=pars.filter(p=>{if(rF!=='all'&&p.primary_rep_id!==rF)return false;if(q){const s=q.toLowerCase();return p.name.toLowerCase().includes(s)||p.alpha_tag?.toLowerCase().includes(s)||gK(p.id).some(c=>c.name.toLowerCase().includes(s))}return true});
     return(<><div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap'}}><div className="search-bar" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search..." value={q} onChange={e=>setQ(e.target.value)}/></div>
       <select className="form-select" style={{width:150}} value={rF} onChange={e=>setRF(e.target.value)}><option value="all">All Reps</option>{REPS.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
@@ -8563,7 +8563,7 @@ export default function App(){
 
     // Bulk CSV parser
     const parseCSV=(text)=>{
-      const lines=text.trim().split('\n');if(lines.length<2)return{rows:[],headers:[]};
+      const lines=text.trim().replace(/\r\n?/g,'\n').split('\n');if(lines.length<2)return{rows:[],headers:[]};
       const sep=lines[0].includes('\t')?'\t':',';
       const headers=lines[0].split(sep).map(h=>h.trim().replace(/^"|"$/g,'').toLowerCase().replace(/\s+/g,'_'));
       const rows=lines.slice(1).filter(l=>l.trim()).map(l=>{
@@ -9333,7 +9333,7 @@ export default function App(){
                   input.onchange=ev=>{const f=ev.target.files[0];if(!f)return;
                     const reader=new FileReader();reader.onload=e2=>{setBulkImp(x=>({...x,raw:e2.target.result}));nf('✅ Loaded '+f.name)};reader.readAsText(f)};input.click()}}>
                 📂 Drop CSV/TSV file here or click to browse
-                {bulkImp.raw&&<div style={{marginTop:6,color:'#22c55e',fontWeight:600}}>✅ {bulkImp.raw.split('\n').length-1} rows loaded</div>}
+                {bulkImp.raw&&<div style={{marginTop:6,color:'#22c55e',fontWeight:600}}>✅ {bulkImp.raw.replace(/\r\n?/g,'\n').split('\n').length-1} rows loaded</div>}
               </div>
 
               <textarea className="form-input" rows={8} value={bulkImp.raw} onChange={e=>setBulkImp(x=>({...x,raw:e.target.value}))}
