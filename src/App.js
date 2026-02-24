@@ -721,7 +721,7 @@ const D_P=[
 const D_E=[
 {id:'EST-2089',customer_id:'c1b',memo:'Spring 2026 Football Camp Tees',status:'sent',created_by:'r1',created_at:'02/10/26 9:15 AM',updated_at:'02/10/26 2:30 PM',default_markup:1.65,shipping_type:'pct',shipping_value:8,ship_to_id:'default',email_status:'opened',email_opened_at:'02/10/26 3:45 PM',art_files:[],items:[{product_id:'p5',sku:'PC61',name:'Port & Company Essential Tee',brand:'Port & Company',color:'Jet Black',nsa_cost:2.85,retail_price:8.98,unit_sell:4.75,sizes:{S:8,M:15,L:20,XL:12,'2XL':5},available_sizes:['S','M','L','XL','2XL','3XL'],_colors:['Jet Black','Navy','Red','White'],decorations:[{kind:'art',position:'Front Center',art_file_id:null,sell_override:null},{kind:'art',position:'Back Center',art_file_id:null,sell_override:null}]}]},
 {id:'EST-2094',customer_id:'c1b',memo:'Football Coaches Polos',status:'approved',created_by:'r1',created_at:'02/16/26 10:00 AM',updated_at:'02/16/26 10:00 AM',default_markup:1.65,shipping_type:'flat',shipping_value:25,ship_to_id:'default',email_status:'viewed',email_opened_at:'02/16/26 11:30 AM',email_viewed_at:'02/16/26 11:32 AM',art_files:[],items:[{product_id:'p4',sku:'1370399',name:'Under Armour Team Polo',brand:'Under Armour',color:'Cardinal/White',nsa_cost:22,retail_price:65,unit_sell:39,sizes:{M:2,L:3,XL:2,'2XL':1},available_sizes:['S','M','L','XL','2XL'],decorations:[{kind:'art',position:'Left Chest',art_file_id:null,sell_override:null}]}]},
-{id:'EST-2101',customer_id:'c3a',memo:'Badminton Team Uniforms',status:'draft',created_by:'r5',created_at:'02/12/26 3:00 PM',updated_at:'02/12/26 3:00 PM',default_markup:1.65,shipping_type:'pct',shipping_value:0,ship_to_id:'default',email_status:null,art_files:[],items:[]},
+{id:'EST-2101',customer_id:'c3a',memo:'Badminton Team Uniforms',status:'open',created_by:'r5',created_at:'02/12/26 3:00 PM',updated_at:'02/12/26 3:00 PM',default_markup:1.65,shipping_type:'pct',shipping_value:0,ship_to_id:'default',email_status:null,art_files:[],items:[]},
 ];
 const D_SO=[
 // SO-1042: Baseball — FULLY IN PRODUCTION. All items ordered/received, art approved, prod files done, jobs on board in process
@@ -1474,7 +1474,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       <div style={{display:'flex',gap:16,alignItems:'flex-start',flexWrap:'wrap'}}>
         <div style={{flex:1,minWidth:300}}>
           <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4,flexWrap:'wrap'}}><span style={{fontSize:22,fontWeight:800,color:'#1e40af'}}>{o.id}</span>
-            {isE&&<span className={`badge ${o.status==='draft'?'badge-gray':o.status==='sent'?'badge-amber':o.status==='approved'?'badge-green':'badge-blue'}`}>{o.status}</span>}
+            {isE&&<span className={`badge ${o.status==='draft'||o.status==='open'?'badge-blue':o.status==='sent'?'badge-amber':o.status==='approved'?'badge-green':'badge-blue'}`}>{o.status}</span>}
             {isSO&&<span style={{padding:'3px 10px',borderRadius:12,fontSize:12,fontWeight:700,background:SC[o.status]?.bg||'#f1f5f9',color:SC[o.status]?.c||'#475569'}}>{o.status?.replace(/_/g,' ')}</span>}
             {isE&&<EmailBadge e={o}/>}</div>
           {!cust?<div style={{marginBottom:8}}><label className="form-label">Select Customer *</label><SearchSelect options={allCustomers.map(c=>({value:c.id,label:`${c.name} (${c.alpha_tag})`}))} value={o.customer_id} onChange={selC} placeholder="Search customer..."/></div>
@@ -1521,7 +1521,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           if(noPrice){nf('Item '+(noPrice.sku||noPrice.name||'#?')+' needs a sell price','error');return}
           onSave(o);setSaved(true);setDirty(false);nf(`${isE?'Estimate':'SO'} saved`)}} style={{padding:'10px 28px',fontSize:16,fontWeight:800}}><Icon name="check" size={16}/> Save</button>
         {isE&&saved&&o.status!=='approved'&&o.status!=='converted'&&<button className="btn btn-secondary" onClick={()=>setShowSend(true)}><Icon name="send" size={14}/> Send</button>}
-        {isE&&saved&&(o.status==='sent'||o.status==='draft')&&<button className="btn btn-primary" style={{background:'#22c55e'}} onClick={()=>{sv('status','approved');onSave({...o,status:'approved'});nf('Estimate approved')}}><Icon name="check" size={14}/> Approve</button>}
+        {isE&&saved&&(o.status==='sent'||o.status==='draft'||o.status==='open')&&<button className="btn btn-primary" style={{background:'#22c55e'}} onClick={()=>{sv('status','approved');onSave({...o,status:'approved'});nf('Estimate approved')}}><Icon name="check" size={14}/> Approve</button>}
         {isE&&o.status==='approved'&&<button className="btn btn-primary" style={{background:'#7c3aed'}} onClick={()=>{
           if(!cust){nf('Select a customer first','error');return}
           if(!o.memo?.trim()){nf('Memo is required','error');return}
@@ -3706,7 +3706,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
 }
 
 // CUSTOMER DETAIL
-function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,cu,onOpenSO,ests,onSaveSO,REPS}){
+function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,cu,onOpenSO,onOpenEst,ests,onSaveSO,REPS}){
   const[tab,setTab]=useState('activity');const[oF,setOF]=useState('all');const[sF,setSF]=useState('all');const[rR,setRR]=useState('thisyear');
   const[editContact,setEditContact]=useState(null);const[custLocal,setCustLocal]=useState(initCust);
   const[showInvEmail,setShowInvEmail]=useState(false);const[invEmailMsg,setInvEmailMsg]=useState('');const[showPortal,setShowPortal]=useState(false);
@@ -3856,7 +3856,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         {[['all','All'],['open','Open'],['closed','Closed']].map(([v,l])=><button key={v} className={`btn btn-sm ${sF===v?'btn-primary':'btn-secondary'}`} onClick={()=>setSF(v)}>{l}</button>)}
       </div></div><div className="card-body" style={{padding:0}}><table style={{fontSize:12}}><thead><tr><th>ID</th><th>Type</th><th>Date</th><th>SO</th><th>Memo</th>{isP&&<th>Sub</th>}<th>Amount</th><th>Status</th></tr></thead><tbody>
         {filt.length===0?<tr><td colSpan={8} style={{textAlign:'center',color:'#94a3b8',padding:20}}>No records</td></tr>:
-        filt.map((t,i)=><tr key={t.id+'-'+i} style={{cursor:t._src==='order'?'pointer':undefined}} onClick={()=>{if(t._src==='order'){const so2=(sos||[]).find(s=>s.id===t.id);if(so2&&onOpenSO)onOpenSO(so2)}else if(t.so_id){const so2=(sos||[]).find(s=>s.id===t.so_id);if(so2&&onOpenSO)onOpenSO(so2)}}}>
+        filt.map((t,i)=><tr key={t.id+'-'+i} style={{cursor:(t._src==='order'||t.type==='estimate')?'pointer':undefined}} onClick={()=>{if(t.type==='estimate'){const est2=(ests||[]).find(e=>e.id===t.id);if(est2&&onOpenEst)onOpenEst(est2)}else if(t._src==='order'){const so2=(sos||[]).find(s=>s.id===t.id);if(so2&&onOpenSO)onOpenSO(so2)}else if(t.so_id){const so2=(sos||[]).find(s=>s.id===t.so_id);if(so2&&onOpenSO)onOpenSO(so2)}}}>
           <td style={{fontWeight:700,color:'#1e40af'}}>{t.id}</td>
           <td><span className={`badge ${typeBadge[t.type]||'badge-gray'}`}>{typeLabels[t.type]||t.type}</span></td>
           <td style={{fontSize:11,color:'#64748b'}}>{t.date}</td>
@@ -4101,7 +4101,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         </div>}
 
         {/* Open Estimates */}
-        {(()=>{const pEsts=custEsts.filter(e=>e.status==='sent'||e.status==='draft');
+        {(()=>{const pEsts=custEsts.filter(e=>e.status==='sent'||e.status==='draft'||e.status==='open');
           return pEsts.length>0&&<>
           <div style={{fontSize:13,fontWeight:800,color:'#d97706',marginBottom:10}}>📋 Estimates ({pEsts.length})</div>
           {pEsts.map(est=>{const t=(est.items||[]).reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);let r=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const dp2=dP(d,qq,[],qq);r+=qq*dp2.sell});return a+r},0);
@@ -4428,8 +4428,9 @@ export default function App(){
         if(d.estimates.length)setEsts(d.estimates);if(d.sales_orders.length)setSOs(d.sales_orders);
         if(d.invoices.length)setInvs(d.invoices);if(d.messages.length)setMsgs(d.messages);
         if(d.customers.length)setCust(d.customers);if(d.products.length)setProd(d.products);
+        if(d.vendors.length)setVend(d.vendors);if(d.omg_stores.length)setOmgStores(d.omg_stores);
         if(d.issues?.length)setIssues(d.issues)};
-      ['estimates','sales_orders','invoices','messages','so_items','issues'].forEach(table=>{
+      ['estimates','estimate_items','sales_orders','so_items','invoices','invoice_items','invoice_payments','messages','customers','customer_contacts','products','product_inventory','issues'].forEach(table=>{
         const ch=supabase.channel('realtime_'+table).on('postgres_changes',{event:'*',schema:'public',table},()=>{reloadAll()}).subscribe();
         channels.push(ch);
       });
@@ -4445,13 +4446,15 @@ export default function App(){
       try{
         const d=await _dbLoad();
         if(!d||!d.hasData)return;
-        // Only update if DB has data — compare lengths to avoid unnecessary re-renders
-        if(d.estimates.length)setEsts(prev=>JSON.stringify(prev.map(e=>e.id).sort())===JSON.stringify(d.estimates.map(e=>e.id).sort())&&prev.length===d.estimates.length?prev:d.estimates);
-        if(d.sales_orders.length)setSOs(prev=>JSON.stringify(prev.map(s=>s.id).sort())===JSON.stringify(d.sales_orders.map(s=>s.id).sort())&&prev.length===d.sales_orders.length?prev:d.sales_orders);
-        if(d.invoices.length)setInvs(prev=>prev.length===d.invoices.length&&JSON.stringify(prev.map(i=>i.id).sort())===JSON.stringify(d.invoices.map(i=>i.id).sort())?prev:d.invoices);
-        if(d.customers.length)setCust(prev=>prev.length===d.customers.length?prev:d.customers);
-        if(d.messages.length)setMsgs(prev=>prev.length===d.messages.length?prev:d.messages);
-        if(d.issues.length)setIssues(prev=>prev.length===d.issues.length&&JSON.stringify(prev.map(i=>i.id).sort())===JSON.stringify(d.issues.map(i=>i.id).sort())?prev:d.issues);
+        // Use updated_at (or full JSON hash) to detect content changes, not just ID changes
+        const changed=(prev,next)=>{if(prev.length!==next.length)return true;const pIds=prev.map(e=>e.id+':'+(e.updated_at||'')).sort().join(',');const nIds=next.map(e=>e.id+':'+(e.updated_at||'')).sort().join(',');return pIds!==nIds};
+        if(d.estimates.length)setEsts(prev=>changed(prev,d.estimates)?d.estimates:prev);
+        if(d.sales_orders.length)setSOs(prev=>changed(prev,d.sales_orders)?d.sales_orders:prev);
+        if(d.invoices.length)setInvs(prev=>changed(prev,d.invoices)?d.invoices:prev);
+        if(d.customers.length)setCust(prev=>changed(prev,d.customers)?d.customers:prev);
+        if(d.messages.length)setMsgs(prev=>changed(prev,d.messages)?d.messages:prev);
+        if(d.issues.length)setIssues(prev=>changed(prev,d.issues)?d.issues:prev);
+        if(d.products.length)setProd(prev=>changed(prev,d.products)?d.products:prev);
       }catch(e){console.warn('[DB] Poll failed:',e.message)}
     },30000);
     return()=>clearInterval(poll);
@@ -4487,7 +4490,7 @@ export default function App(){
   const pars=useMemo(()=>cust.filter(c=>!c.parent_id),[cust]);const gK=useCallback(pid=>cust.filter(c=>c.parent_id===pid),[cust]);
   const cols=useMemo(()=>[...new Set(prod.map(p=>p.color).filter(Boolean))].sort(),[prod]);
   const savC=c=>{setCust(p=>{const e=p.find(x=>x.id===c.id);return e?p.map(x=>x.id===c.id?c:x):[...p,c]});nf('Saved')};
-  const savE=e=>{setEsts(p=>{const ex=p.find(x=>x.id===e.id);return ex?p.map(x=>x.id===e.id?e:x):[...p,e]});logChange(ests.find(x=>x.id===e.id)?'updated':'created','Estimate',e.id,e.memo||'')};
+  const savE=e=>{const e2=e.status==='draft'?{...e,status:'open'}:e;setEsts(p=>{const ex=p.find(x=>x.id===e2.id);return ex?p.map(x=>x.id===e2.id?e2:x):[...p,e2]});logChange(ests.find(x=>x.id===e2.id)?'updated':'created','Estimate',e2.id,e2.memo||'');return e2};
   const savSO=s=>{
     // Save version history before overwriting
     const prev=sos.find(x=>x.id===s.id);
@@ -4773,7 +4776,7 @@ export default function App(){
     {/* ═══ SALES REP VIEW ═══ */}
     {dashView==='sales'&&<>
     <div className="stats-row">
-      <div className="stat-card"><div className="stat-label">My Open Estimates</div><div className="stat-value" style={{color:'#d97706'}}>{ests.filter(e=>(e.status==='draft'||e.status==='sent')&&e.created_by===cu.id).length}</div></div>
+      <div className="stat-card"><div className="stat-label">My Open Estimates</div><div className="stat-value" style={{color:'#d97706'}}>{ests.filter(e=>(e.status==='draft'||e.status==='open'||e.status==='sent')&&e.created_by===cu.id).length}</div></div>
       <div className="stat-card"><div className="stat-label">My Active SOs</div><div className="stat-value" style={{color:'#2563eb'}}>{sos.filter(s=>s.created_by===cu.id&&calcSOStatus(s)!=='complete').length}</div></div>
       <div className="stat-card"><div className="stat-label">Pending Approvals</div><div className="stat-value" style={{color:'#7c3aed'}}>{todos.filter(t=>t.type==='art').length}</div></div>
       <div className="stat-card"><div className="stat-label">Due This Week</div><div className="stat-value" style={{color:'#dc2626'}}>{todos.filter(t=>t.type==='deadline').length}</div></div>
@@ -5081,7 +5084,7 @@ export default function App(){
 
   // ESTIMATES LIST
   const rEst=()=>{
-    if(eEst)return<OrderEditor order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} onSave={e=>{savE(e);setEEst(e)}} onBack={()=>setEEst(null)} onConvertSO={convertSO} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={canDelete?deleteEstimate:null}/>;
+    if(eEst)return<OrderEditor order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} onSave={e=>{const e2=savE(e);setEEst(e2)}} onBack={()=>setEEst(null)} onConvertSO={convertSO} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={canDelete?deleteEstimate:null}/>;
     const fe=ests.filter(e=>!q||(e.id+' '+e.memo+' '+(cust.find(c=>c.id===e.customer_id)?.name||'')+' '+(cust.find(c=>c.id===e.customer_id)?.alpha_tag||'')).toLowerCase().includes(q.toLowerCase()));
     return(<><div style={{display:'flex',gap:8,marginBottom:16}}><div className="search-bar" style={{flex:1}}><Icon name="search"/><input placeholder="Search..." value={q} onChange={e=>setQ(e.target.value)}/></div>
       <button className="btn btn-primary" onClick={()=>newE(null)}><Icon name="plus" size={14}/> New Estimate</button></div>
@@ -5091,7 +5094,7 @@ export default function App(){
         <td style={{fontWeight:700,color:'#1e40af'}}>{e.id}</td><td>{c?<>{c.name} <span className="badge badge-gray">{c.alpha_tag}</span></>:'--'}</td>
         <td style={{fontSize:12}}>{e.memo}</td><td>{e.items?.length||0}</td>
         <td><span style={{fontSize:11,color:'#64748b'}}>{rep?.name?.split(' ')[0]||'—'}</span></td>
-        <td><span className={`badge ${e.status==='draft'?'badge-gray':e.status==='sent'?'badge-amber':e.status==='approved'?'badge-green':'badge-blue'}`}>{e.status}</span></td>
+        <td><span className={`badge ${e.status==='draft'||e.status==='open'?'badge-blue':e.status==='sent'?'badge-amber':e.status==='approved'?'badge-green':'badge-blue'}`}>{e.status}</span></td>
         <td><EmailBadge e={e}/></td>
         <td onClick={ev=>ev.stopPropagation()}>{e.status==='approved'&&<button className="btn btn-sm btn-primary" style={{background:'#7c3aed'}} onClick={()=>convertSO(e)}>→ SO</button>}{canDelete&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',color:'#dc2626',border:'1px solid #fca5a5',marginLeft:4,background:'white'}} onClick={()=>deleteEstimate(e.id)}><Icon name="trash" size={10}/></button>}</td>
       </tr>)})}</tbody></table></div></div></>);};
@@ -5173,7 +5176,7 @@ export default function App(){
   };
   // CUSTOMERS
   const rCust=()=>{
-    if(selC)return<CustDetail customer={selC} allCustomers={cust} allOrders={aO} onBack={()=>setSelC(null)} onEdit={c=>{setCM({open:true,c});setCust(prev=>prev.map(pp=>pp.id===c.id?c:pp))}} onSelCust={c=>setSelC(c)} onNewEst={c=>newE(c)} sos={sos} msgs={msgs} cu={cu} onOpenSO={so=>{const c3=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c3);setPg('orders')}} ests={ests} onSaveSO={savSO} REPS={REPS}/>;
+    if(selC)return<CustDetail customer={selC} allCustomers={cust} allOrders={aO} onBack={()=>setSelC(null)} onEdit={c=>{setCM({open:true,c});setCust(prev=>prev.map(pp=>pp.id===c.id?c:pp))}} onSelCust={c=>setSelC(c)} onNewEst={c=>newE(c)} sos={sos} msgs={msgs} cu={cu} onOpenSO={so=>{const c3=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c3);setPg('orders')}} onOpenEst={est=>{const c3=cust.find(cc=>cc.id===est.customer_id);setEEst(est);setEEstC(c3);setPg('estimates')}} ests={ests} onSaveSO={savSO} REPS={REPS}/>;
     const f=pars.filter(p=>{if(rF!=='all'&&p.primary_rep_id!==rF)return false;if(q){const s=q.toLowerCase();return p.name.toLowerCase().includes(s)||p.alpha_tag?.toLowerCase().includes(s)||gK(p.id).some(c=>c.name.toLowerCase().includes(s))}return true});
     return(<><div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap'}}><div className="search-bar" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search..." value={q} onChange={e=>setQ(e.target.value)}/></div>
       <select className="form-select" style={{width:150}} value={rF} onChange={e=>setRF(e.target.value)}><option value="all">All Reps</option>{REPS.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
@@ -6631,7 +6634,7 @@ export default function App(){
       const collected=rInv.filter(i=>i.status==='paid').reduce((a,i)=>a+i.paid,0);
       const openAR=rInv.filter(i=>i.status!=='paid').reduce((a,i)=>a+(i.total-i.paid),0);
       const uniqueCusts=[...new Set(rSOs.map(s=>s.customer_id))].length;
-      const convRate=rEsts.length>0?Math.round(rSOs.filter(s=>s.estimate_id).length/Math.max(1,rEsts.filter(e=>e.status!=='draft').length)*100):0;
+      const convRate=rEsts.length>0?Math.round(rSOs.filter(s=>s.estimate_id).length/Math.max(1,rEsts.length)*100):0;
       return{...r,rev,margin,soCount:rSOs.length,estCount:rEsts.length,collected,openAR,uniqueCusts,convRate,pct:rev>0?Math.round(margin/rev*100):0};
     }).sort((a,b)=>b.rev-a.rev);
 
@@ -6657,7 +6660,7 @@ export default function App(){
 
     // Conversion funnel
     const funnelEsts=rptRep==='all'?ests:ests.filter(e=>e.created_by===rptRep);
-    const fDraft=funnelEsts.filter(e=>e.status==='draft').length;const fSent=funnelEsts.filter(e=>e.status==='sent').length;
+    const fDraft=funnelEsts.filter(e=>e.status==='draft'||e.status==='open').length;const fSent=funnelEsts.filter(e=>e.status==='sent').length;
     const fApproved=funnelEsts.filter(e=>e.status==='approved').length;const fConverted=filtSOs.filter(s=>s.estimate_id).length;
 
     const WH=({id,title,icon})=><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'10px 16px'}}>
@@ -6701,7 +6704,7 @@ export default function App(){
           <WH id="convFunnel" title="Estimate → SO Conversion Funnel" icon="🔄"/>
           {rptWidgets.convFunnel&&<div className="card-body">
             <div style={{display:'flex',gap:8,alignItems:'center'}}>
-              {[['Draft',fDraft,'#94a3b8'],['Sent',fSent,'#d97706'],['Approved',fApproved,'#22c55e'],['→ SO',fConverted,'#2563eb']].map(([label,val,color],i)=>
+              {[['Open',fDraft,'#3b82f6'],['Sent',fSent,'#d97706'],['Approved',fApproved,'#22c55e'],['→ SO',fConverted,'#2563eb']].map(([label,val,color],i)=>
                 <div key={i} style={{flex:1,textAlign:'center'}}>
                   <div style={{height:60,background:color+'20',borderRadius:8,display:'flex',alignItems:'center',justifyContent:'center',marginBottom:4,
                     clipPath:i===0?'polygon(0 0,90% 0,100% 50%,90% 100%,0 100%)':i===3?'polygon(0 0,100% 0,100% 100%,0 100%,10% 50%)':'polygon(0 0,90% 0,100% 50%,90% 100%,0 100%,10% 50%)'}}>
@@ -7280,7 +7283,11 @@ export default function App(){
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
             <div>
               <div style={{fontSize:20,fontWeight:800}}>{s.store_name}</div>
-              <div style={{fontSize:13,color:'#64748b'}}>{c?.name} ({c?.alpha_tag}) · Rep: {rep?.name} · {s.id}</div>
+              <div style={{fontSize:13,color:'#64748b'}}>{c?.name} ({c?.alpha_tag}) · Rep: {rep?.name} · {s.id}{s._omg_sale_code&&<span> · Code: <b>{s._omg_sale_code}</b></span>}</div>
+              {s._omg_id&&<div style={{fontSize:12,marginTop:2,display:'flex',gap:10}}>
+                <a href={`https://team.ordermygear.com/admin/sales/${s._omg_id}`} target="_blank" rel="noopener noreferrer" style={{color:'#2563eb',textDecoration:'none',fontWeight:600}}>🔗 OMG Admin</a>
+                {s.subdomain&&<a href={`https://${s.subdomain}.ordermygear.com`} target="_blank" rel="noopener noreferrer" style={{color:'#64748b',textDecoration:'none'}}>🌐 {s.subdomain}.ordermygear.com</a>}
+              </div>}
               <div style={{marginTop:4}}><span style={{padding:'3px 10px',borderRadius:8,fontSize:11,fontWeight:700,
                 background:s.status==='open'?'#dcfce7':s.status==='closed'?'#dbeafe':s.status==='draft'?'#f1f5f9':'#fef3c7',
                 color:s.status==='open'?'#166534':s.status==='closed'?'#1e40af':s.status==='draft'?'#64748b':'#92400e'}}>{s.status.toUpperCase()}</span>
@@ -7399,7 +7406,8 @@ export default function App(){
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:6}}>
                 <div>
                   <div style={{fontSize:14,fontWeight:800}}>{s.store_name}</div>
-                  <div style={{fontSize:11,color:'#64748b'}}>{c?.name} · {rep?.name?.split(' ')[0]}</div>
+                  <div style={{fontSize:11,color:'#64748b'}}>{c?.name} · {rep?.name?.split(' ')[0]}{s._omg_sale_code&&<span> · <b>{s._omg_sale_code}</b></span>}</div>
+                  {s._omg_id&&<a href={`https://team.ordermygear.com/admin/sales/${s._omg_id}`} target="_blank" rel="noopener noreferrer" onClick={e=>e.stopPropagation()} style={{fontSize:10,color:'#2563eb',textDecoration:'none',fontWeight:600}}>🔗 OMG Admin</a>}
                 </div>
                 <span style={{padding:'2px 8px',borderRadius:8,fontSize:10,fontWeight:700,
                   background:s.status==='open'?'#dcfce7':s.status==='closed'?'#dbeafe':'#f1f5f9',
@@ -8555,7 +8563,7 @@ export default function App(){
 
     // Bulk CSV parser
     const parseCSV=(text)=>{
-      const lines=text.trim().split('\n');if(lines.length<2)return{rows:[],headers:[]};
+      const lines=text.trim().replace(/\r\n?/g,'\n').split('\n');if(lines.length<2)return{rows:[],headers:[]};
       const sep=lines[0].includes('\t')?'\t':',';
       const headers=lines[0].split(sep).map(h=>h.trim().replace(/^"|"$/g,'').toLowerCase().replace(/\s+/g,'_'));
       const rows=lines.slice(1).filter(l=>l.trim()).map(l=>{
@@ -9240,7 +9248,7 @@ export default function App(){
                   setSOs(prev=>[newSO,...prev]);setESO(newSO);setESOC(c);setPg('orders');
                   nf('✅ Imported SO with '+newItems.length+' items'+(imp.externalDocNum?' (NS #'+imp.externalDocNum+')':''));
                 } else if(imp.docType==='est'){
-                  const newEst={id:nextEstId(ests),customer_id:imp.custId,memo:importMemo,status:'draft',
+                  const newEst={id:nextEstId(ests),customer_id:imp.custId,memo:importMemo,status:'open',
                     created_by:cu.id,created_at:now,updated_at:now,
                     default_markup:mk,shipping_type:shipAmt>0?'flat':'pct',shipping_value:shipAmt||0,
                     ship_to_id:'default',email_status:null,art_files:[],items:newItems,
@@ -9325,7 +9333,7 @@ export default function App(){
                   input.onchange=ev=>{const f=ev.target.files[0];if(!f)return;
                     const reader=new FileReader();reader.onload=e2=>{setBulkImp(x=>({...x,raw:e2.target.result}));nf('✅ Loaded '+f.name)};reader.readAsText(f)};input.click()}}>
                 📂 Drop CSV/TSV file here or click to browse
-                {bulkImp.raw&&<div style={{marginTop:6,color:'#22c55e',fontWeight:600}}>✅ {bulkImp.raw.split('\n').length-1} rows loaded</div>}
+                {bulkImp.raw&&<div style={{marginTop:6,color:'#22c55e',fontWeight:600}}>✅ {bulkImp.raw.replace(/\r\n?/g,'\n').split('\n').length-1} rows loaded</div>}
               </div>
 
               <textarea className="form-input" rows={8} value={bulkImp.raw} onChange={e=>setBulkImp(x=>({...x,raw:e.target.value}))}
