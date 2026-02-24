@@ -7280,7 +7280,11 @@ export default function App(){
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
             <div>
               <div style={{fontSize:20,fontWeight:800}}>{s.store_name}</div>
-              <div style={{fontSize:13,color:'#64748b'}}>{c?.name} ({c?.alpha_tag}) · Rep: {rep?.name} · {s.id}</div>
+              <div style={{fontSize:13,color:'#64748b'}}>{c?.name} ({c?.alpha_tag}) · Rep: {rep?.name} · {s.id}{s._omg_sale_code&&<span> · Code: <b>{s._omg_sale_code}</b></span>}</div>
+              {s._omg_id&&<div style={{fontSize:12,marginTop:2,display:'flex',gap:10}}>
+                <a href={`https://team.ordermygear.com/admin/sales/${s._omg_id}`} target="_blank" rel="noopener noreferrer" style={{color:'#2563eb',textDecoration:'none',fontWeight:600}}>🔗 OMG Admin</a>
+                {s.subdomain&&<a href={`https://${s.subdomain}.ordermygear.com`} target="_blank" rel="noopener noreferrer" style={{color:'#64748b',textDecoration:'none'}}>🌐 {s.subdomain}.ordermygear.com</a>}
+              </div>}
               <div style={{marginTop:4}}><span style={{padding:'3px 10px',borderRadius:8,fontSize:11,fontWeight:700,
                 background:s.status==='open'?'#dcfce7':s.status==='closed'?'#dbeafe':s.status==='draft'?'#f1f5f9':'#fef3c7',
                 color:s.status==='open'?'#166534':s.status==='closed'?'#1e40af':s.status==='draft'?'#64748b':'#92400e'}}>{s.status.toUpperCase()}</span>
@@ -7399,7 +7403,8 @@ export default function App(){
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:6}}>
                 <div>
                   <div style={{fontSize:14,fontWeight:800}}>{s.store_name}</div>
-                  <div style={{fontSize:11,color:'#64748b'}}>{c?.name} · {rep?.name?.split(' ')[0]}</div>
+                  <div style={{fontSize:11,color:'#64748b'}}>{c?.name} · {rep?.name?.split(' ')[0]}{s._omg_sale_code&&<span> · <b>{s._omg_sale_code}</b></span>}</div>
+                  {s._omg_id&&<a href={`https://team.ordermygear.com/admin/sales/${s._omg_id}`} target="_blank" rel="noopener noreferrer" onClick={e=>e.stopPropagation()} style={{fontSize:10,color:'#2563eb',textDecoration:'none',fontWeight:600}}>🔗 OMG Admin</a>}
                 </div>
                 <span style={{padding:'2px 8px',borderRadius:8,fontSize:10,fontWeight:700,
                   background:s.status==='open'?'#dcfce7':s.status==='closed'?'#dbeafe':'#f1f5f9',
