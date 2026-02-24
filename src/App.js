@@ -4470,7 +4470,7 @@ export default function App(){
   React.useEffect(()=>{try{localStorage.setItem('nsa_msgs',JSON.stringify(msgs))}catch{};if(_initialLoadDone.current&&_dbReady.current)msgs.forEach(m=>_dbSaveMessage(m))},[msgs]);
   React.useEffect(()=>{if(_initialLoadDone.current&&_dbReady.current){omgStores.forEach(s=>{const{products,...rest}=s;_dbSave('omg_stores',[rest])})}},[omgStores]);
   React.useEffect(()=>{try{localStorage.setItem('nsa_issues',JSON.stringify(issues))}catch{};if(_initialLoadDone.current&&_dbReady.current)_dbSave('issues',issues)},[issues]);
-  const[q,setQ]=useState('');const[selC,setSelC]=useState(null);const[selV,setSelV]=useState(null);
+  const[q,setQ]=useState('');const[selC,setSelC]=useState(null);const[selV,setSelV]=useState(null);const[selP,setSelP]=useState(null);
   const[eEst,setEEst]=useState(null);const[eEstC,setEEstC]=useState(null);const[eSO,setESO]=useState(null);const[eSOC,setESOC]=useState(null);const[eSOTab,setESOTab]=useState(null);const[eSOScrollItem,setESOScrollItem]=useState(null);const[eSOScrollJob,setESOScrollJob]=useState(null);
   const[gQ,setGQ]=useState('');const[gOpen,setGOpen]=useState(false);const[mF,setMF]=useState('all');const[rF,setRF]=useState('all');const[pF,setPF]=useState({cat:'all',vnd:'all',stk:'all',clr:'all'});
   const[qPC,setQPC]=useState({open:false,mode:'single',items:[],bulkRaw:''});
@@ -5208,8 +5208,164 @@ export default function App(){
       {isA&&<td style={{fontWeight:700,color:(v._it||0)>0?'#dc2626':''}}>{(v._it||0)>0?'$'+v._it.toLocaleString():'--'}</td>}
       <td><span className="badge badge-green">Active</span></td></tr>)}</tbody></table></div></div></>);};
 
+  // PRODUCT DETAIL VIEW
+  const ProductDetail=({product,onBack})=>{
+    const[ep,setEp]=useState({...product});const[editing,setEditing]=useState(false);const[tab,setTab]=useState('history');
+    const v=vend.find(x=>x.id===ep.vendor_id);
+    // Find all orders this product appears on
+    const pEsts=ests.filter(e=>e.items?.some(it=>it.product_id===product.id||it.sku===product.sku));
+    const pSOs=sos.filter(s=>s.items?.some(it=>it.product_id===product.id||it.sku===product.sku));
+    const pJobs=[];pSOs.forEach(so=>{buildJobs(so).forEach(j=>{if(j.items?.some(gi=>gi.sku===product.sku))pJobs.push({...j,soId:so.id,soMemo:so.memo,customer:cust.find(c=>c.id===so.customer_id)})})});
+    const pPOs=[];pSOs.forEach(so=>{so.items?.forEach(it=>{if(it.product_id===product.id||it.sku===product.sku){(it.po_lines||[]).forEach(po=>{pPOs.push({...po,soId:so.id,sku:it.sku,name:it.name,customer:cust.find(c=>c.id===so.customer_id)})})}})});
+    const pInvs=invs.filter(inv=>pSOs.some(s=>s.id===inv.so_id));
+    const saveProduct=()=>{setProd(p=>p.map(x=>x.id===ep.id?ep:x));setEditing(false);nf('Product updated');setSelP(ep)};
+    const nt=Object.values(ep._inv||{}).reduce((a,v2)=>a+v2,0);
+    return(<div>
+      <button className="btn btn-secondary" onClick={onBack} style={{marginBottom:12}}><Icon name="chevron-left" size={14}/> Products</button>
+      <div className="card" style={{marginBottom:16}}><div className="card-body">
+        <div style={{display:'flex',gap:16,alignItems:'flex-start'}}>
+          <ImgUpload url={ep.image_url} onUpload={u=>{const up={...ep,image_url:u};setEp(up);setProd(p=>p.map(x=>x.id===up.id?up:x));setSelP(up)}} size={80}/>
+          <div style={{flex:1}}>
+            {!editing?<>
+              <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap',marginBottom:4}}>
+                <span style={{fontFamily:'monospace',fontWeight:800,fontSize:18,background:'#dbeafe',padding:'2px 10px',borderRadius:4,color:'#1e40af'}}>{ep.sku}</span>
+                <span style={{fontSize:18,fontWeight:700}}>{ep.name}</span>
+                <button className="btn btn-sm btn-secondary" onClick={()=>setEditing(true)} style={{marginLeft:'auto'}}><Icon name="edit" size={12}/> Edit</button>
+              </div>
+              <div style={{display:'flex',gap:12,flexWrap:'wrap',fontSize:13,color:'#64748b',marginBottom:8}}>
+                <span><span className="badge badge-blue">{ep.brand}</span></span>
+                <span>{ep.color}</span>
+                <span>Category: <strong>{ep.category}</strong></span>
+                {v&&<span>Vendor: <strong>{v.name}</strong></span>}
+              </div>
+              <div style={{display:'flex',gap:16,fontSize:13,marginBottom:8}}>
+                <span>Cost: <strong>${ep.nsa_cost?.toFixed(2)}</strong></span>
+                <span>Retail: <strong>${ep.retail_price?.toFixed(2)}</strong></span>
+                <span>Sell: <strong>${rQ(ep.nsa_cost*1.65).toFixed(2)}</strong></span>
+              </div>
+              <div style={{display:'flex',gap:2,flexWrap:'wrap'}}>
+                {ep.available_sizes.filter(sz=>showSz(sz,ep._inv?.[sz])).map(sz=>{const val=ep._inv?.[sz]||0;return<div key={sz} className={`size-cell ${val>10?'in-stock':val>0?'low-stock':'no-stock'}`}><div className="size-label">{sz}</div><div className="size-qty">{val}</div></div>})}
+                <div className="size-cell total"><div className="size-label">TOT</div><div className="size-qty">{nt}</div></div>
+              </div>
+            </>:<>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:8}}>
+                <div><label className="form-label">SKU</label><input className="form-input" value={ep.sku} onChange={e=>setEp(x=>({...x,sku:e.target.value}))}/></div>
+                <div><label className="form-label">Brand</label><select className="form-select" value={ep.vendor_id} onChange={e=>{const vn=D_V.find(x=>x.id===e.target.value);setEp(x=>({...x,vendor_id:e.target.value,brand:vn?.name||x.brand}))}}><option value="">Select...</option>{D_V.map(vv=><option key={vv.id} value={vv.id}>{vv.name}</option>)}</select></div>
+                <div style={{gridColumn:'1/3'}}><label className="form-label">Name</label><input className="form-input" value={ep.name} onChange={e=>setEp(x=>({...x,name:e.target.value}))}/></div>
+                <div><label className="form-label">Color</label><input className="form-input" value={ep.color} onChange={e=>setEp(x=>({...x,color:e.target.value}))}/></div>
+                <div><label className="form-label">Category</label><select className="form-select" value={ep.category} onChange={e=>setEp(x=>({...x,category:e.target.value}))}>{CATEGORIES.map(c=><option key={c}>{c}</option>)}</select></div>
+                <div><label className="form-label">NSA Cost</label><input className="form-input" type="number" step="0.01" value={ep.nsa_cost} onChange={e=>setEp(x=>({...x,nsa_cost:parseFloat(e.target.value)||0}))}/></div>
+                <div><label className="form-label">Retail Price</label><input className="form-input" type="number" step="0.01" value={ep.retail_price} onChange={e=>setEp(x=>({...x,retail_price:parseFloat(e.target.value)||0}))}/></div>
+                <div style={{gridColumn:'1/3'}}><label className="form-label">Available Sizes</label><input className="form-input" value={ep.available_sizes.join(', ')} onChange={e=>setEp(x=>({...x,available_sizes:e.target.value.split(',').map(s=>s.trim()).filter(Boolean)}))}/></div>
+              </div>
+              <div style={{display:'flex',gap:8}}>
+                <button className="btn btn-primary" onClick={saveProduct}><Icon name="check" size={14}/> Save</button>
+                <button className="btn btn-secondary" onClick={()=>{setEp({...product});setEditing(false)}}>Cancel</button>
+              </div>
+            </>}
+          </div>
+        </div>
+      </div></div>
+
+      {/* Stats row */}
+      <div className="stats-row" style={{marginBottom:16}}>
+        <div className="stat-card"><div className="stat-label">Estimates</div><div className="stat-value" style={{color:'#d97706'}}>{pEsts.length}</div></div>
+        <div className="stat-card"><div className="stat-label">Sales Orders</div><div className="stat-value" style={{color:'#2563eb'}}>{pSOs.length}</div></div>
+        <div className="stat-card"><div className="stat-label">POs</div><div className="stat-value" style={{color:'#7c3aed'}}>{pPOs.length}</div></div>
+        <div className="stat-card"><div className="stat-label">Jobs</div><div className="stat-value" style={{color:'#0891b2'}}>{pJobs.length}</div></div>
+        <div className="stat-card"><div className="stat-label">Invoices</div><div className="stat-value" style={{color:'#059669'}}>{pInvs.length}</div></div>
+      </div>
+
+      {/* Tabs */}
+      <div style={{display:'flex',gap:4,marginBottom:12}}>
+        {[['history','Order History'],['estimates','Estimates'],['pos','POs'],['jobs','Jobs'],['invoices','Invoices']].map(([k,label])=>
+          <button key={k} className={`btn btn-sm ${tab===k?'btn-primary':'btn-secondary'}`} onClick={()=>setTab(k)}>{label}</button>)}
+      </div>
+
+      {/* ORDER HISTORY (ALL) */}
+      {tab==='history'&&<div className="card"><div className="card-header"><h3>All Orders</h3></div><div className="card-body" style={{padding:0}}>
+        <table><thead><tr><th>Type</th><th>ID</th><th>Customer</th><th>Memo</th><th>Qty</th><th>Status</th><th>Date</th></tr></thead><tbody>
+        {[...pEsts.map(e=>{const c=cust.find(x=>x.id===e.customer_id);const it=e.items?.find(i=>i.product_id===product.id||i.sku===product.sku);const qty=it?Object.values(safeSizes(it)).reduce((a,v2)=>a+v2,0):0;
+          return{type:'Estimate',id:e.id,cust:c,memo:e.memo,qty,status:e.status,date:e.created_at,badge:e.status==='open'||e.status==='draft'?'badge-blue':e.status==='sent'?'badge-amber':e.status==='approved'?'badge-green':'badge-gray',
+            onClick:()=>{setEEst(e);setEEstC(c);setPg('estimates');setSelP(null)}}}),
+        ...pSOs.map(s=>{const c=cust.find(x=>x.id===s.customer_id);const it=s.items?.find(i=>i.product_id===product.id||i.sku===product.sku);const qty=it?Object.values(safeSizes(it)).reduce((a,v2)=>a+v2,0):0;
+          return{type:'SO',id:s.id,cust:c,memo:s.memo,qty,status:calcSOStatus(s),date:s.created_at,badge:'badge-blue',
+            onClick:()=>{setESO(s);setESOC(c);setPg('orders');setSelP(null)}}}),
+        ...pPOs.map(po=>({type:'PO',id:po.po_id,cust:po.customer,memo:'→ '+po.soId,qty:Object.values(po.received||{}).reduce((a,v2)=>a+v2,0),status:po.status,date:po.created_at,badge:po.status==='received'?'badge-green':po.status==='ordered'?'badge-amber':'badge-gray',
+            onClick:()=>{const s=sos.find(x=>x.id===po.soId);if(s){setESO(s);setESOC(cust.find(x=>x.id===s.customer_id));setPg('orders');setSelP(null)}}})),
+        ...pJobs.map(j=>({type:'Job',id:j.id,cust:j.customer,memo:j.art_name,qty:j.total_units,status:j.prod_status,date:null,badge:j.prod_status==='completed'?'badge-green':j.prod_status==='in_process'?'badge-amber':'badge-gray',
+            onClick:()=>{const s=sos.find(x=>x.id===j.soId);if(s){setESO(s);setESOC(cust.find(x=>x.id===s.customer_id));setPg('orders');setSelP(null)}}})),
+        ...pInvs.map(inv=>{const c=cust.find(x=>x.id===inv.customer_id);return{type:'Invoice',id:inv.id,cust:c,memo:inv.memo,qty:null,status:inv.status,date:inv.date,badge:inv.status==='paid'?'badge-green':inv.status==='open'?'badge-amber':'badge-gray',
+            onClick:()=>{setPg('invoices');setSelP(null)}}})
+        ].sort((a,b)=>(b.date||'').localeCompare(a.date||'')).map((r,i)=>
+          <tr key={i} style={{cursor:'pointer'}} onClick={r.onClick}>
+            <td><span className={`badge ${r.type==='Estimate'?'badge-amber':r.type==='SO'?'badge-blue':r.type==='PO'?'badge-purple':r.type==='Job'?'badge-gray':'badge-green'}`}>{r.type}</span></td>
+            <td style={{fontWeight:700,color:'#1e40af'}}>{r.id}</td>
+            <td>{r.cust?.name||'—'}</td>
+            <td style={{fontSize:12}}>{r.memo}</td>
+            <td>{r.qty!=null?r.qty:'—'}</td>
+            <td><span className={`badge ${r.badge}`}>{r.status}</span></td>
+            <td style={{fontSize:11,color:'#64748b'}}>{r.date||'—'}</td>
+          </tr>)}
+        {pEsts.length+pSOs.length+pPOs.length+pJobs.length+pInvs.length===0&&<tr><td colSpan={7} style={{textAlign:'center',color:'#94a3b8',padding:20}}>No orders found for this product</td></tr>}
+        </tbody></table></div></div>}
+
+      {/* ESTIMATES TAB */}
+      {tab==='estimates'&&<div className="card"><div className="card-header"><h3>Estimates ({pEsts.length})</h3></div><div className="card-body" style={{padding:0}}>
+        <table><thead><tr><th>ID</th><th>Customer</th><th>Memo</th><th>Qty</th><th>Unit Sell</th><th>Status</th><th>Date</th></tr></thead><tbody>
+        {pEsts.map(e=>{const c=cust.find(x=>x.id===e.customer_id);const it=e.items?.find(i=>i.product_id===product.id||i.sku===product.sku);const qty=it?Object.values(safeSizes(it)).reduce((a,v2)=>a+v2,0):0;
+          return<tr key={e.id} style={{cursor:'pointer'}} onClick={()=>{setEEst(e);setEEstC(c);setPg('estimates');setSelP(null)}}>
+            <td style={{fontWeight:700,color:'#1e40af'}}>{e.id}</td><td>{c?.name||'—'}</td><td style={{fontSize:12}}>{e.memo}</td>
+            <td>{qty}</td><td>${it?.unit_sell?.toFixed(2)||'—'}</td>
+            <td><span className={`badge ${e.status==='open'||e.status==='draft'?'badge-blue':e.status==='sent'?'badge-amber':e.status==='approved'?'badge-green':'badge-gray'}`}>{e.status}</span></td>
+            <td style={{fontSize:11,color:'#64748b'}}>{e.created_at}</td></tr>})}
+        {pEsts.length===0&&<tr><td colSpan={7} style={{textAlign:'center',color:'#94a3b8',padding:20}}>No estimates</td></tr>}
+        </tbody></table></div></div>}
+
+      {/* POs TAB */}
+      {tab==='pos'&&<div className="card"><div className="card-header"><h3>Purchase Orders ({pPOs.length})</h3></div><div className="card-body" style={{padding:0}}>
+        <table><thead><tr><th>PO</th><th>SO</th><th>Customer</th><th>Status</th><th>Ordered</th><th>Received</th><th>Date</th></tr></thead><tbody>
+        {pPOs.map((po,i)=>{const ordQty=Object.entries(po).filter(([k])=>['S','M','L','XL','2XL','3XL','XS','OSFA','4XL'].includes(k)).reduce((a,[,v2])=>a+(typeof v2==='number'?v2:0),0);
+          const recQty=Object.values(po.received||{}).reduce((a,v2)=>a+v2,0);
+          return<tr key={i} style={{cursor:'pointer'}} onClick={()=>{const s=sos.find(x=>x.id===po.soId);if(s){setESO(s);setESOC(cust.find(x=>x.id===s.customer_id));setPg('orders');setSelP(null)}}}>
+            <td style={{fontWeight:700,color:'#7c3aed'}}>{po.po_id}</td><td style={{fontWeight:700,color:'#1e40af'}}>{po.soId}</td>
+            <td>{po.customer?.name||'—'}</td>
+            <td><span className={`badge ${po.status==='received'?'badge-green':po.status==='ordered'?'badge-amber':'badge-gray'}`}>{po.status}</span></td>
+            <td>{ordQty}</td><td>{recQty}</td>
+            <td style={{fontSize:11,color:'#64748b'}}>{po.created_at||'—'}</td></tr>})}
+        {pPOs.length===0&&<tr><td colSpan={7} style={{textAlign:'center',color:'#94a3b8',padding:20}}>No purchase orders</td></tr>}
+        </tbody></table></div></div>}
+
+      {/* JOBS TAB */}
+      {tab==='jobs'&&<div className="card"><div className="card-header"><h3>Jobs ({pJobs.length})</h3></div><div className="card-body" style={{padding:0}}>
+        <table><thead><tr><th>Job</th><th>SO</th><th>Customer</th><th>Art</th><th>Type</th><th>Units</th><th>Status</th></tr></thead><tbody>
+        {pJobs.map((j,i)=><tr key={i} style={{cursor:'pointer'}} onClick={()=>{const s=sos.find(x=>x.id===j.soId);if(s){setESO(s);setESOC(cust.find(x=>x.id===s.customer_id));setPg('orders');setSelP(null)}}}>
+            <td style={{fontWeight:700,color:'#0891b2'}}>{j.id}</td><td style={{fontWeight:700,color:'#1e40af'}}>{j.soId}</td>
+            <td>{j.customer?.name||'—'}</td><td style={{fontSize:12}}>{j.art_name}</td>
+            <td><span className="badge badge-gray">{j.deco_type?.replace('_',' ')}</span></td>
+            <td>{j.total_units}</td>
+            <td><span className={`badge ${j.prod_status==='completed'?'badge-green':j.prod_status==='in_process'?'badge-amber':'badge-gray'}`}>{j.prod_status?.replace('_',' ')}</span></td></tr>)}
+        {pJobs.length===0&&<tr><td colSpan={7} style={{textAlign:'center',color:'#94a3b8',padding:20}}>No jobs</td></tr>}
+        </tbody></table></div></div>}
+
+      {/* INVOICES TAB */}
+      {tab==='invoices'&&<div className="card"><div className="card-header"><h3>Invoices ({pInvs.length})</h3></div><div className="card-body" style={{padding:0}}>
+        <table><thead><tr><th>Invoice</th><th>SO</th><th>Customer</th><th>Memo</th><th>Total</th><th>Paid</th><th>Status</th></tr></thead><tbody>
+        {pInvs.map(inv=>{const c=cust.find(x=>x.id===inv.customer_id);return<tr key={inv.id} style={{cursor:'pointer'}} onClick={()=>{setPg('invoices');setSelP(null)}}>
+            <td style={{fontWeight:700,color:'#059669'}}>{inv.id}</td><td style={{fontWeight:700,color:'#1e40af'}}>{inv.so_id}</td>
+            <td>{c?.name||'—'}</td><td style={{fontSize:12}}>{inv.memo}</td>
+            <td style={{fontWeight:700}}>${inv.total?.toLocaleString()}</td>
+            <td>${inv.paid?.toLocaleString()}</td>
+            <td><span className={`badge ${inv.status==='paid'?'badge-green':inv.status==='open'?'badge-amber':'badge-gray'}`}>{inv.status}</span></td></tr>})}
+        {pInvs.length===0&&<tr><td colSpan={7} style={{textAlign:'center',color:'#94a3b8',padding:20}}>No invoices</td></tr>}
+        </tbody></table></div></div>}
+    </div>);
+  };
+
   // PRODUCTS
-  const rProd=()=>(<><div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap'}}>
+  const rProd=()=>{
+    if(selP)return<ProductDetail product={selP} onBack={()=>setSelP(null)}/>;
+    return(<><div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap'}}>
     <div className="search-bar" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search..." value={q} onChange={e=>setQ(e.target.value)}/></div>
     <label style={{fontSize:12,display:'flex',alignItems:'center',gap:4}}><input type="checkbox" checked={pF.stk==='instock'} onChange={e=>setPF(f=>({...f,stk:e.target.checked?'instock':'all'}))}/> In Stock</label>
     <select className="form-select" style={{width:110}} value={pF.cat} onChange={e=>setPF(f=>({...f,cat:e.target.value}))}><option value="all">Category</option>{CATEGORIES.map(c=><option key={c}>{c}</option>)}</select>
@@ -5217,7 +5373,7 @@ export default function App(){
     <select className="form-select" style={{width:130}} value={pF.clr} onChange={e=>setPF(f=>({...f,clr:e.target.value}))}><option value="all">Color</option>{cols.map(c=><option key={c}>{c}</option>)}</select></div>
   <div className="card"><div className="card-body" style={{padding:0}}>
   {fP.map(p=>{const nt=Object.values(p._inv||{}).reduce((a,v)=>a+v,0);const au=p.brand==='Adidas'||p.brand==='Under Armour';
-    return(<div key={p.id} style={{padding:'14px 16px',borderBottom:'1px solid #f1f5f9'}}><div style={{display:'flex',gap:14,alignItems:'flex-start'}}>
+    return(<div key={p.id} style={{padding:'14px 16px',borderBottom:'1px solid #f1f5f9',cursor:'pointer'}} onClick={()=>setSelP(p)}><div style={{display:'flex',gap:14,alignItems:'flex-start'}}>
       <ImgUpload url={p.image_url} onUpload={u=>setProd(ps=>ps.map(x=>x.id===p.id?{...x,image_url:u}:x))} size={48}/>
       <div style={{flex:1}}>
         <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}><span style={{fontFamily:'monospace',fontWeight:800,background:'#dbeafe',padding:'2px 8px',borderRadius:3,color:'#1e40af'}}>{p.sku}</span><span style={{fontWeight:700}}>{p.name}</span>{p._colors&&<span style={{fontSize:10,color:'#7c3aed'}}>{p._colors.length} clr</span>}</div>
@@ -5225,7 +5381,7 @@ export default function App(){
         <div style={{display:'flex',gap:2,marginTop:6,flexWrap:'wrap'}}>
           {p.available_sizes.filter(sz=>showSz(sz,p._inv?.[sz])).map(sz=>{const v=p._inv?.[sz]||0;return<div key={sz} className={`size-cell ${v>10?'in-stock':v>0?'low-stock':'no-stock'}`}><div className="size-label">{sz}</div><div className="size-qty">{v}</div></div>})}
           <div className="size-cell total"><div className="size-label">TOT</div><div className="size-qty">{nt}</div></div></div></div></div></div>)})}
-  {fP.length===0&&<div className="empty">No products</div>}</div></div></>);
+  {fP.length===0&&<div className="empty">No products</div>}</div></div></>);};
 
   // INVENTORY
   const rInv=()=>(<><div className="stats-row"><div className="stat-card"><div className="stat-label">Units</div><div className="stat-value">{tU}</div></div><div className="stat-card"><div className="stat-label">Value</div><div className="stat-value">${tV.toLocaleString(undefined,{maximumFractionDigits:0})}</div></div><div className="stat-card"><div className="stat-label">Products</div><div className="stat-value">{iD.length}</div></div>
@@ -10091,7 +10247,7 @@ export default function App(){
               {rs.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Sales Orders</div>
                 {rs.map(so=>{const cc=cust.find(x=>x.id===so.customer_id);return<div key={so.id} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>{setESO(so);setESOC(cc);setPg('orders');setGQ('');setGOpen(false)}}><Icon name="box" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{so.id}</span><span>{so.memo}</span></div>})}</>}
               {rp.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Products</div>
-                {rp.map(p=><div key={p.id} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>{setPg('products');setQ(p.sku);setGQ('');setGOpen(false)}}><Icon name="package" size={14}/><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{p.sku}</span><span>{p.name}</span></div>)}</>}
+                {rp.map(p=><div key={p.id} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>{setSelP(p);setPg('products');setQ('');setGQ('');setGOpen(false)}}><Icon name="package" size={14}/><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{p.sku}</span><span>{p.name}</span></div>)}</>}
               {rpk.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Item Fulfillments</div>
                 {rpk.map(pk=>{const cc=cust.find(x=>x.id===pk.so?.customer_id);return<div key={pk.pick_id} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>{setESO(pk.so);setESOC(cc);setPg('orders');setGQ('');setGOpen(false)}}><Icon name="grid" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{pk.pick_id}</span><span>→ {pk.so_id}</span><span className={`badge ${pk.status==='pulled'?'badge-green':'badge-amber'}`}>{pk.status}</span></div>})}</>}
             </div>})()}
