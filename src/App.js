@@ -1038,7 +1038,7 @@ const fetchOMGStoreDetail = async (saleId) => {
   const orderList = orders?.data || [];
   // Fetch order products for each order to get real item/product data
   const orderProducts = await Promise.all(
-    orderList.map(o => omgApiCall(`/order_products?filter[relationships][order]=${o.id}&include=product`).catch(() => ({ data: [], included: [] })))
+    orderList.map(o => omgApiCall(`/order_products?filter[relationships][order]=${o.id}&include=product,product.images`).catch(() => ({ data: [], included: [] })))
   );
   return { ...saleData, orders: orderList, orderProducts };
 };
@@ -1070,9 +1070,18 @@ const convertOMGStore = (omgResponse, nsaCustomers) => {
   const allOrderProducts = (omgResponse.orderProducts || []).flatMap(resp => resp?.data || []);
   const allIncluded = (omgResponse.orderProducts || []).flatMap(resp => resp?.included || []);
 
-  // Build product map from included resources (type "product")
+  // Build product map and image map from included resources
   const productMap = {};
-  allIncluded.filter(i => i.type === 'product' || i.type === 'products').forEach(p => { productMap[p.id] = p.attributes; });
+  const productRels = {};
+  const imageMap = {};
+  allIncluded.forEach(i => {
+    if (i.type === 'product' || i.type === 'products') {
+      productMap[i.id] = i.attributes;
+      productRels[i.id] = i.relationships || {};
+    } else if (i.type === 'image' || i.type === 'images') {
+      imageMap[i.id] = i.attributes?.asset_url || '';
+    }
+  });
 
   // Calculate totals from order products
   let totalItems = 0;
@@ -1091,13 +1100,24 @@ const convertOMGStore = (omgResponse, nsaCustomers) => {
     const basePrice = product?.base_price || 0;
     totalSales += basePrice * qty;
 
+    // Get product image URL from sideloaded images
+    let imageUrl = '';
+    if (productRel) {
+      const imgRels = productRels[productRel.id]?.images?.data || productRels[productRel.id]?.image?.data;
+      if (Array.isArray(imgRels) && imgRels.length > 0) {
+        imageUrl = imageMap[imgRels[0].id] || '';
+      } else if (imgRels?.id) {
+        imageUrl = imageMap[imgRels.id] || '';
+      }
+    }
+
     // Track unique products by SKU
     const sku = opAttrs.sku || product?.style || op.id;
     if (!productSummary[sku]) {
       productSummary[sku] = {
         sku, name: product?.name || '', style: product?.style || '',
         retail: basePrice, cost: product?.cogs || 0,
-        deco_type: '', deco_cost: 0, qty: 0
+        deco_type: '', deco_cost: 0, qty: 0, image_url: imageUrl
       };
     }
     productSummary[sku].qty += qty;
@@ -1117,7 +1137,8 @@ const convertOMGStore = (omgResponse, nsaCustomers) => {
     unique_buyers: buyerIds.size,
     products: Object.values(productSummary).map(p => ({
       sku: p.sku, name: p.name, color: '', retail: p.retail, cost: p.cost,
-      deco_type: p.deco_type, deco_cost: p.deco_cost, sizes: {}
+      deco_type: p.deco_type, deco_cost: p.deco_cost, sizes: {},
+      image_url: p.image_url || ''
     })),
     subdomain: attrs.subdomain || '',
     channel_type: attrs.channel_type || 'pop-up',
