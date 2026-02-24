@@ -897,29 +897,19 @@ const D_OMG=[
     orders:0,total_sales:0,fundraise_total:0,items_sold:0,unique_buyers:0,products:[]},
 ];
 
-// ─── ShipStation API Integration ───
-const SS_API_KEY = process.env.REACT_APP_SHIPSTATION_API_KEY;
-const SS_API_SECRET = process.env.REACT_APP_SHIPSTATION_API_SECRET;
-const SS_BASE_URL = 'https://ssapi.shipstation.com';
-
+// ─── ShipStation API Integration (via Netlify proxy to avoid CORS) ───
 const shipStationCall = async (endpoint, options = {}) => {
-  if (!SS_API_KEY || !SS_API_SECRET) {
-    console.warn('[ShipStation] API credentials not configured');
-    return null;
-  }
   try {
-    const url = `${SS_BASE_URL}${endpoint}`;
-    const auth = btoa(`${SS_API_KEY}:${SS_API_SECRET}`);
-    const response = await fetch(url, {
-      headers: {
-        'Authorization': `Basic ${auth}`,
-        'Content-Type': 'application/json',
-        ...options.headers
-      },
-      ...options
+    const method = options.method || 'GET';
+    const proxyUrl = `/.netlify/functions/shipstation-proxy?path=${encodeURIComponent(endpoint)}`;
+    const response = await fetch(proxyUrl, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      ...(options.body ? { body: options.body } : {})
     });
     if (!response.ok) {
-      throw new Error(`ShipStation API error: ${response.status} ${response.statusText}`);
+      const errText = await response.text().catch(() => '');
+      throw new Error(`ShipStation API error: ${response.status} ${errText}`);
     }
     const data = await response.json();
     console.log('[ShipStation] API response:', endpoint, data);
@@ -1016,19 +1006,20 @@ const fetchRecentShipments = async () => {
   return shipments?.shipments || [];
 };
 
-// ─── OrderMyGear API Integration ───
-const OMG_API_KEY = process.env.REACT_APP_OMG_API_KEY;
-const OMG_BASE_URL = 'https://api.ordermygear.com/v2';
-
+// ─── OrderMyGear API Integration (via Netlify proxy to avoid CORS) ───
 const omgApiCall = async (endpoint, options = {}) => {
-  if (!OMG_API_KEY) { console.warn('[OMG] API key not configured'); return null; }
   try {
-    const url = `${OMG_BASE_URL}${endpoint}`;
-    const response = await fetch(url, {
-      headers: { 'Authorization': `Bearer ${OMG_API_KEY}`, 'Content-Type': 'application/json', ...options.headers },
-      ...options
+    const method = options.method || 'GET';
+    const proxyUrl = `/.netlify/functions/omg-proxy?path=${encodeURIComponent(endpoint)}`;
+    const response = await fetch(proxyUrl, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      ...(options.body ? { body: options.body } : {})
     });
-    if (!response.ok) throw new Error(`OMG API error: ${response.status} ${response.statusText}`);
+    if (!response.ok) {
+      const errText = await response.text().catch(() => '');
+      throw new Error(`OMG API error: ${response.status} ${errText}`);
+    }
     const data = await response.json();
     console.log('[OMG] API response:', endpoint, data);
     return data;
@@ -4458,7 +4449,7 @@ export default function App(){
 
   // ─── ShipStation Handlers ───
   React.useEffect(() => {
-    if (SS_API_KEY && SS_API_SECRET) { testShipStationConnection().then(setSSConnected); }
+    testShipStationConnection().then(setSSConnected).catch(() => setSSConnected(false));
   }, []);
 
   const handleShipToShipStation = async (so) => {
@@ -4517,7 +4508,6 @@ export default function App(){
 
   // ─── OMG Sync Handler ───
   const syncOMGStores = async () => {
-    if (!OMG_API_KEY) { nf('OMG API key not configured. Check environment variables.', 'error'); return; }
     setOmgSyncing(true);
     try {
       const omgStoresData = await fetchOMGStores();
