@@ -697,6 +697,177 @@ const D_OMG=[
     orders:0,total_sales:0,fundraise_total:0,items_sold:0,unique_buyers:0,products:[]},
 ];
 
+// ─── ShipStation API Integration ───
+const SS_API_KEY = process.env.REACT_APP_SHIPSTATION_API_KEY;
+const SS_API_SECRET = process.env.REACT_APP_SHIPSTATION_API_SECRET;
+const SS_BASE_URL = 'https://ssapi.shipstation.com';
+
+const shipStationCall = async (endpoint, options = {}) => {
+  if (!SS_API_KEY || !SS_API_SECRET) {
+    console.warn('[ShipStation] API credentials not configured');
+    return null;
+  }
+  try {
+    const url = `${SS_BASE_URL}${endpoint}`;
+    const auth = btoa(`${SS_API_KEY}:${SS_API_SECRET}`);
+    const response = await fetch(url, {
+      headers: {
+        'Authorization': `Basic ${auth}`,
+        'Content-Type': 'application/json',
+        ...options.headers
+      },
+      ...options
+    });
+    if (!response.ok) {
+      throw new Error(`ShipStation API error: ${response.status} ${response.statusText}`);
+    }
+    const data = await response.json();
+    console.log('[ShipStation] API response:', endpoint, data);
+    return data;
+  } catch (error) {
+    console.error('[ShipStation] API call failed:', endpoint, error);
+    throw error;
+  }
+};
+
+const testShipStationConnection = async () => {
+  try {
+    const stores = await shipStationCall('/stores');
+    console.log('[ShipStation] Connection test successful:', stores);
+    return true;
+  } catch (error) {
+    console.error('[ShipStation] Connection test failed:', error);
+    return false;
+  }
+};
+
+const convertSOToShipStation = (so, customer) => {
+  const shipToAddress = customer.shipping_address_line1 ? {
+    name: customer.name, company: customer.name,
+    street1: customer.shipping_address_line1, street2: customer.shipping_address_line2 || '',
+    city: customer.shipping_city, state: customer.shipping_state,
+    postalCode: customer.shipping_zip, country: 'US',
+    phone: customer.contacts?.[0]?.phone || '', residential: true
+  } : {
+    name: customer.name, company: customer.name,
+    street1: customer.billing_address_line1, street2: customer.billing_address_line2 || '',
+    city: customer.billing_city, state: customer.billing_state,
+    postalCode: customer.billing_zip, country: 'US',
+    phone: customer.contacts?.[0]?.phone || '', residential: true
+  };
+  const items = so.items.map(item => {
+    const totalQty = Object.values(item.sizes).reduce((sum, qty) => sum + qty, 0);
+    return {
+      lineItemKey: `${so.id}-${item.sku}`, sku: item.sku, name: item.name, imageUrl: null,
+      weight: { value: 1, units: 'pounds' }, quantity: totalQty, unitPrice: item.unit_sell,
+      taxAmount: null, shippingAmount: null, warehouseLocation: null,
+      options: Object.entries(item.sizes).filter(([, qty]) => qty > 0)
+        .map(([size, qty]) => ({ name: 'Size', value: `${size} (${qty})` })),
+      productId: item.product_id, fulfillmentSku: item.sku, adjustment: false, upc: null
+    };
+  });
+  return {
+    orderNumber: so.id, orderKey: so.id, orderDate: so.created_at, paymentDate: so.created_at,
+    shipByDate: so.expected_date, orderStatus: 'awaiting_shipment',
+    customerUsername: customer.alpha_tag, customerEmail: customer.contacts?.[0]?.email || '',
+    billTo: {
+      name: customer.name, company: customer.name,
+      street1: customer.billing_address_line1, street2: customer.billing_address_line2 || '',
+      city: customer.billing_city, state: customer.billing_state,
+      postalCode: customer.billing_zip, country: 'US',
+      phone: customer.contacts?.[0]?.phone || '', residential: true
+    },
+    shipTo: shipToAddress, items,
+    orderTotal: so.items.reduce((sum, item) => sum + (item.unit_sell * Object.values(item.sizes).reduce((a, b) => a + b, 0)), 0),
+    amountPaid: 0, taxAmount: 0, shippingAmount: so.shipping_value || 0,
+    customerNotes: so.memo || '', internalNotes: so.production_notes || '',
+    gift: false, giftMessage: null, paymentMethod: null,
+    requestedShippingService: 'Ground', carrierCode: null, serviceCode: null, packageCode: null,
+    confirmation: 'none', shipDate: null, holdUntilDate: null,
+    weight: { value: items.length, units: 'pounds' }, dimensions: null,
+    insuranceOptions: { provider: null, insureShipment: false, insuredValue: 0 },
+    internationalOptions: null,
+    advancedOptions: {
+      warehouseId: null, nonMachinable: false, saturdayDelivery: false, containsAlcohol: false,
+      storeId: null, customField1: `NSA-SO-${so.id}`, customField2: customer.alpha_tag,
+      customField3: so.created_by, source: 'NSA Portal',
+      mergedOrSplit: false, mergedIds: [], parentId: null,
+      billToParty: null, billToAccount: null, billToPostalCode: null, billToCountryCode: null
+    }
+  };
+};
+
+const pushSOToShipStation = async (so, customer) => {
+  if (so.status !== 'in_production') {
+    throw new Error('Only Sales Orders in "in_production" status can be shipped');
+  }
+  const ssOrder = convertSOToShipStation(so, customer);
+  return await shipStationCall('/orders/createorder', { method: 'POST', body: JSON.stringify(ssOrder) });
+};
+
+const fetchShipStationUpdates = async (orderNumber) => {
+  const orders = await shipStationCall(`/orders?orderNumber=${orderNumber}`);
+  return orders?.orders?.[0] || null;
+};
+
+const fetchRecentShipments = async () => {
+  const shipments = await shipStationCall('/shipments?createDateStart=' +
+    new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]);
+  return shipments?.shipments || [];
+};
+
+// ─── OrderMyGear API Integration ───
+const OMG_API_KEY = process.env.REACT_APP_OMG_API_KEY;
+const OMG_BASE_URL = 'https://api.ordermygear.com/v2';
+
+const omgApiCall = async (endpoint, options = {}) => {
+  if (!OMG_API_KEY) { console.warn('[OMG] API key not configured'); return null; }
+  try {
+    const url = `${OMG_BASE_URL}${endpoint}`;
+    const response = await fetch(url, {
+      headers: { 'Authorization': `Bearer ${OMG_API_KEY}`, 'Content-Type': 'application/json', ...options.headers },
+      ...options
+    });
+    if (!response.ok) throw new Error(`OMG API error: ${response.status} ${response.statusText}`);
+    const data = await response.json();
+    console.log('[OMG] API response:', endpoint, data);
+    return data;
+  } catch (error) { console.error('[OMG] API call failed:', endpoint, error); throw error; }
+};
+
+const fetchOMGStores = async () => await omgApiCall('/stores');
+
+const fetchOMGStoreDetail = async (storeId) => {
+  const [storeData, orders, products] = await Promise.all([
+    omgApiCall(`/stores/${storeId}`), omgApiCall(`/stores/${storeId}/orders`), omgApiCall(`/stores/${storeId}/products`)
+  ]);
+  return { ...storeData, orders: orders?.data || [], products: products?.data || [] };
+};
+
+const convertOMGStore = (omgStore, nsaCustomers) => {
+  const matchedCustomer = nsaCustomers.find(c =>
+    c.name.toLowerCase().includes(omgStore.customer_name?.toLowerCase() || '') ||
+    c.contacts?.some(contact => contact.email?.toLowerCase() === omgStore.customer_email?.toLowerCase())
+  );
+  return {
+    id: `OMG-${omgStore.id}`, store_name: omgStore.name || omgStore.title,
+    customer_id: matchedCustomer?.id || null, rep_id: matchedCustomer?.primary_rep_id || 'r1',
+    status: omgStore.status === 'active' ? 'open' : omgStore.status === 'completed' ? 'closed' : 'draft',
+    open_date: omgStore.start_date ? new Date(omgStore.start_date).toLocaleDateString() : '',
+    close_date: omgStore.end_date ? new Date(omgStore.end_date).toLocaleDateString() : '',
+    orders: omgStore.orders?.length || 0, total_sales: omgStore.total_revenue || 0,
+    fundraise_total: omgStore.fundraise_amount || 0, items_sold: omgStore.total_items_sold || 0,
+    unique_buyers: omgStore.unique_customers || 0,
+    products: (omgStore.products || []).map(p => ({
+      sku: p.sku || p.item_number, name: p.name || p.title, color: p.color || p.color_name,
+      retail: p.retail_price || p.price, cost: p.wholesale_cost || p.cost,
+      deco_type: p.decoration_type || 'screen_print', deco_cost: p.decoration_cost || 0,
+      sizes: p.sizes_sold || {}
+    })),
+    _omg_source: true, _omg_id: omgStore.id, _last_synced: new Date().toISOString()
+  };
+};
+
 // SHARED UI
 function Toast({msg,type='success'}){if(!msg)return null;return<div className={`toast toast-${type}`}>{msg}</div>}
 function SortHeader({label,field,sortField,sortDir,onSort}){const a=sortField===field;return<th onClick={()=>onSort(field)} style={{cursor:'pointer',userSelect:'none'}}><span style={{display:'inline-flex',alignItems:'center',gap:4}}>{label}<span style={{opacity:a?1:0.3}}>{a&&sortDir==='asc'?<Icon name="sortUp" size={12}/>:<Icon name="sort" size={12}/>}</span></span></th>}
@@ -824,7 +995,7 @@ function LoginGate({onLogin,reps}){
   );
 }
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack,onConvertSO,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,allInvoices,batchPOs,onBatchPO,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,reps:REPS}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack,onConvertSO,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,allInvoices,batchPOs,onBatchPO,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus}){
   const isE=mode==='estimate';const isSO=mode==='so';
   const[o,setO]=useState(order);const[cust,setCust]=useState(ic);const[pS,setPS]=useState('');const[showAdd,setShowAdd]=useState(false);
   const[tab,setTab]=useState(initTab||'items');const[dirty,setDirty]=useState(false);const[selJob,setSelJob]=useState(null);const[jobNote,setJobNote]=useState('');const[msgDept,setMsgDept]=useState('all');
@@ -1031,8 +1202,23 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           :<div><div style={{display:'flex',alignItems:'center',gap:6}}><span style={{fontSize:18,fontWeight:800}}>{cust.name}</span> <span style={{fontSize:14,color:'#64748b'}}>({cust.alpha_tag})</span>
             <button style={{background:'none',border:'none',cursor:'pointer',color:'#64748b',fontSize:10,textDecoration:'underline',padding:0}} onClick={()=>{if(window.confirm('Change customer for '+o.id+'? This will update pricing tier.'))selC(null);setCust(null)}}>change</button></div>
             <div style={{fontSize:13,color:'#64748b'}}>Tier {cust.adidas_ua_tier} | {o.default_markup||1.65}x | Tax: {cust.tax_rate?(cust.tax_rate*100).toFixed(2)+'%':'N/A'}</div></div>}
-          {isSO&&o.estimate_id&&<div style={{fontSize:11,color:'#7c3aed'}}>🔗 From: {o.estimate_id}</div>}
-          <div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>By {REPS.find(r=>r.id===o.created_by)?.name} · {o.created_at}</div></div>
+          {isSO&&o.estimate_id&&<div style={{fontSize:11,color:'#7c3aed'}}>From: {o.estimate_id}</div>}
+          <div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>By {REPS.find(r=>r.id===o.created_by)?.name} · {o.created_at}</div>
+          {isSO&&o._tracking_number&&<div style={{padding:8,background:'#f0fdf4',borderRadius:6,marginTop:8}}>
+            <strong>Shipped:</strong> Tracking #{o._tracking_number} via {o._carrier} on {o._ship_date}
+            {o._tracking_url&&<a href={o._tracking_url} target="_blank" rel="noreferrer" style={{marginLeft:8}}>Track Package</a>}
+          </div>}
+          {isSO&&o.status==='in_production'&&!o._shipped&&ssConnected&&onShipSS&&<div style={{display:'flex',gap:8,marginTop:8}}>
+            <button className="btn btn-sm btn-primary" style={{background:'#7c3aed',fontSize:11}} onClick={()=>onShipSS(o)} disabled={ssShipping}>
+              {ssShipping?'Submitting...':'Ship via ShipStation'}
+            </button>
+            {o._shipstation_order_id&&<button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>onCheckShipStatus(o.id)}>Check Shipping Status</button>}
+          </div>}
+          {isSO&&o._shipstation_order_id&&!o._tracking_number&&<div style={{padding:6,background:'#eff6ff',borderRadius:6,marginTop:6,fontSize:11,color:'#1e40af'}}>
+            Submitted to ShipStation (ID: {o._shipstation_order_id})
+            <button className="btn btn-sm btn-secondary" style={{marginLeft:8,fontSize:10}} onClick={()=>onCheckShipStatus&&onCheckShipStatus(o.id)}>Refresh Status</button>
+          </div>}
+        </div>
         <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
           {[{l:'REV',v:totals.rev,bg:'#f0fdf4',c:'#166534'},{l:'COST',v:totals.cost,bg:'#fef2f2',c:'#dc2626'},{l:'MARGIN',v:totals.margin,bg:'#dbeafe',c:'#1e40af',s:`${totals.pct.toFixed(1)}%`},{l:'TOTAL',v:totals.grand,bg:'#faf5ff',c:'#7c3aed',s:'+tax+ship'}].map(x=>
             <div key={x.l} style={{textAlign:'center',padding:'8px 12px',background:x.bg,borderRadius:8,minWidth:72}}><div style={{fontSize:9,color:x.c,fontWeight:700}}>{x.l}</div><div style={{fontSize:17,fontWeight:800,color:x.c}}>${x.v.toLocaleString(undefined,{maximumFractionDigits:0})}</div>{x.s&&<div style={{fontSize:9,color:'#94a3b8'}}>{x.s}</div>}</div>)}</div>
@@ -3893,6 +4079,12 @@ export default function App(){
   const[cust,setCust]=useState(()=>loadState('cust',D_C));const[vend,setVend]=useState(D_V);const[prod,setProd]=useState(()=>loadState('prod',D_P));
   const[ests,setEsts]=useState(()=>_migrated.ests);const[sos,setSOs]=useState(()=>_migrated.sos);const[invs,setInvs]=useState(()=>_migrated.invs);
   const[omgStores,setOmgStores]=useState(D_OMG);
+  // ShipStation integration state
+  const[ssConnected,setSSConnected]=useState(false);
+  const[ssShipping,setSSShipping]=useState(false);
+  // OMG API sync state
+  const[omgSyncing,setOmgSyncing]=useState(false);
+  const[omgLastSync,setOmgLastSync]=useState(null);
   const[dbLoading,setDbLoading]=useState(!!supabase);const _dbReady=useRef(false);
   // Batch PO system
   const[batchPOs,setBatchPOs]=useState([]);// pending queue
@@ -4049,6 +4241,84 @@ export default function App(){
   const tV=useMemo(()=>iD.reduce((a,p)=>a+p._tV,0),[iD]);const tU=useMemo(()=>iD.reduce((a,p)=>a+p._tQ,0),[iD]);
   const al=useMemo(()=>{const r=[];prod.forEach(p=>{if(!p._alerts)return;Object.entries(p._alerts).forEach(([sz,min])=>{const c=p._inv?.[sz]||0;if(c<min)r.push({p,sz,c,min,need:min-c})})});return r},[prod]);
 
+  // ─── ShipStation Handlers ───
+  React.useEffect(() => {
+    if (SS_API_KEY && SS_API_SECRET) { testShipStationConnection().then(setSSConnected); }
+  }, []);
+
+  const handleShipToShipStation = async (so) => {
+    const customer = cust.find(c => c.id === so.customer_id);
+    if (!customer) { nf('Customer not found for this order', 'error'); return; }
+    setSSShipping(true);
+    try {
+      const ssResponse = await pushSOToShipStation(so, customer);
+      const updatedSO = { ...so, _shipstation_order_id: ssResponse.orderId, _shipping_status: 'submitted', updated_at: new Date().toLocaleString() };
+      setSOs(prev => prev.map(s => s.id === so.id ? updatedSO : s));
+      nf('Order ' + so.id + ' submitted to ShipStation (' + ssResponse.orderId + ')');
+    } catch (error) {
+      console.error('[ShipStation] Ship order failed:', error);
+      nf('ShipStation shipping failed: ' + error.message, 'error');
+    } finally { setSSShipping(false); }
+  };
+
+  const fetchSOShippingStatus = async (soId) => {
+    try {
+      const updates = await fetchShipStationUpdates(soId);
+      if (updates?.shipments?.length > 0) {
+        const shipment = updates.shipments[0];
+        const updatedSO = sos.find(s => s.id === soId);
+        if (updatedSO && !updatedSO._tracking_number) {
+          const updated = { ...updatedSO, _tracking_number: shipment.trackingNumber, _carrier: shipment.carrierCode, _ship_date: shipment.shipDate, _tracking_url: shipment.trackingUrl, _shipped: true, _shipping_status: 'shipped', updated_at: new Date().toLocaleString() };
+          setSOs(prev => prev.map(s => s.id === soId ? updated : s));
+          nf(soId + ' shipped - Tracking: ' + shipment.trackingNumber);
+        }
+      } else { nf('No shipment data yet for ' + soId, 'error'); }
+    } catch (error) {
+      console.error('[ShipStation] Status check failed:', error);
+      nf('Status check failed: ' + error.message, 'error');
+    }
+  };
+
+  // Auto-check for shipping updates every 10 minutes
+  React.useEffect(() => {
+    if (!ssConnected) return;
+    const checkUpdates = async () => {
+      try {
+        const recentShipments = await fetchRecentShipments();
+        const nsaShipments = recentShipments.filter(s => s.advancedOptions?.customField1?.startsWith('NSA-SO-'));
+        nsaShipments.forEach(shipment => {
+          const soId = shipment.advancedOptions.customField1.replace('NSA-SO-', '');
+          const existingSO = sos.find(s => s.id === soId);
+          if (existingSO && !existingSO._tracking_number) {
+            const updated = { ...existingSO, _tracking_number: shipment.trackingNumber, _carrier: shipment.carrierCode, _ship_date: shipment.shipDate, _tracking_url: shipment.trackingUrl, _shipped: true, _shipping_status: 'shipped', updated_at: new Date().toLocaleString() };
+            setSOs(prev => prev.map(s => s.id === soId ? updated : s));
+          }
+        });
+      } catch (error) { console.warn('[ShipStation] Auto-update failed:', error); }
+    };
+    const interval = setInterval(checkUpdates, 10 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [ssConnected, sos]);
+
+  // ─── OMG Sync Handler ───
+  const syncOMGStores = async () => {
+    if (!OMG_API_KEY) { nf('OMG API key not configured. Check environment variables.', 'error'); return; }
+    setOmgSyncing(true);
+    try {
+      const omgStoresData = await fetchOMGStores();
+      if (!omgStoresData?.data) { nf('No stores found in OMG API response', 'error'); return; }
+      const detailedStores = await Promise.all(omgStoresData.data.map(store => fetchOMGStoreDetail(store.id)));
+      const convertedStores = detailedStores.map(store => convertOMGStore(store, cust));
+      const manualStores = omgStores.filter(s => !s._omg_source);
+      setOmgStores([...manualStores, ...convertedStores]);
+      setOmgLastSync(new Date().toISOString());
+      nf('Synced ' + convertedStores.length + ' stores from OrderMyGear');
+    } catch (error) {
+      console.error('[OMG] Sync failed:', error);
+      nf('OMG sync failed: ' + error.message, 'error');
+    } finally { setOmgSyncing(false); }
+  };
+
   // DASHBOARD
   const rDash=()=>{
     // Unread messages for this user
@@ -4106,7 +4376,8 @@ export default function App(){
     {/* ═══ ADMIN VIEW ═══ */}
     {dashView==='admin'&&<>
     <div className="stats-row"><div className="stat-card"><div className="stat-label">Open Estimates</div><div className="stat-value" style={{color:'#d97706'}}>{ests.filter(e=>e.status==='draft'||e.status==='sent').length}</div></div><div className="stat-card"><div className="stat-label">Active SOs</div><div className="stat-value" style={{color:'#2563eb'}}>{sos.filter(s=>calcSOStatus(s)!=='complete').length}</div></div><div className="stat-card"><div className="stat-label">Active Jobs</div><div className="stat-value" style={{color:'#7c3aed'}}>{activeJobs.length}</div></div><div className="stat-card"><div className="stat-label">Unread Msgs</div><div className="stat-value" style={{color:unreadMsgs.length>0?'#dc2626':''}}>{unreadMsgs.length}</div></div>
-      {isA&&<div className="stat-card" style={{borderColor:'#fbbf24'}}><div className="stat-label">Stock Alerts</div><div className="stat-value" style={{color:'#d97706'}}>{al.length}</div></div>}</div>
+      {isA&&<div className="stat-card" style={{borderColor:'#fbbf24'}}><div className="stat-label">Stock Alerts</div><div className="stat-value" style={{color:'#d97706'}}>{al.length}</div></div>}
+      <div className="stat-card" style={{borderColor:ssConnected?'#22c55e':'#ef4444'}}><div className="stat-label">ShipStation</div><div className="stat-value" style={{color:ssConnected?'#166534':'#dc2626',fontSize:16}}>{ssConnected?'Connected':'Offline'}</div></div></div>
     <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
       <div className="card"><div className="card-header"><h2>📋 To-Do ({todos.length})</h2></div>
         <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
@@ -4464,7 +4735,7 @@ export default function App(){
 
   // SALES ORDERS LIST
   const rSO=()=>{
-    if(eSO)return<OrderEditor order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} onSave={s=>{savSO(s);setESO(s)}} onBack={()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null)}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS}/>;
+    if(eSO)return<OrderEditor order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} onSave={s=>{savSO(s);setESO(s)}} onBack={()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null)}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus}/>;
     // Filter SOs
     let fSOs=[...sos];
     if(soF.status!=='all')fSOs=fSOs.filter(s=>calcSOStatus(s)===soF.status);
@@ -4509,7 +4780,7 @@ export default function App(){
         <span style={{fontSize:11,color:'#64748b'}}>{fSOs.length}{fSOs.length!==sos.length?' of '+sos.length:''} orders</span>
       </div>
 
-    <div className="card"><div className="card-body" style={{padding:0}}><table><thead><tr><th>SO</th><th>Customer</th><th>Memo</th><th>Expected</th><th>Rep</th><th>Art</th><th>Items</th><th>Msgs</th><th>Status</th></tr></thead><tbody>
+    <div className="card"><div className="card-body" style={{padding:0}}><table><thead><tr><th>SO</th><th>Customer</th><th>Memo</th><th>Expected</th><th>Rep</th><th>Art</th><th>Items</th><th>Msgs</th><th>Ship</th><th>Status</th></tr></thead><tbody>
     {fSOs.map(so=>{const c=cust.find(x=>x.id===so.customer_id);const ac=(so.art_files||[]).length;const aa=(so.art_files||[]).filter(f=>f.status==='approved').length;const rep=REPS.find(r=>r.id===so.created_by);
       // Item fulfillment progress (for Items column)
       const allItems=so.items||[];let totalSz=0,pickedSz=0,poSz=0,rcvdSz=0;
@@ -4531,6 +4802,7 @@ export default function App(){
         color:itemStatus==='received'?'#166534':itemStatus==='partial'?'#92400e':itemStatus==='on_order'?'#1e40af':'#dc2626'}}>
         {itemStatus==='received'?'\u2713 All In':itemStatus==='partial'?fulfilledSz+'/'+totalSz:itemStatus==='on_order'?'On Order':'Needs Items'}</span>}</td>
       <td>{(()=>{const unread=msgs.filter(m=>m.so_id===so.id&&!(m.read_by||[]).includes(cu.id)).length;const total=msgs.filter(m=>m.so_id===so.id).length;return unread>0?<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'2px 8px',fontSize:10,fontWeight:700}}>{unread} new</span>:total>0?<span style={{fontSize:11,color:'#94a3b8'}}>{total}</span>:null})()}</td>
+      <td>{so._tracking_number?<span style={{fontSize:10,fontWeight:600,padding:'2px 6px',borderRadius:4,background:'#dcfce7',color:'#166534'}}>Shipped</span>:so._shipstation_order_id?<span style={{fontSize:10,fontWeight:600,padding:'2px 6px',borderRadius:4,background:'#dbeafe',color:'#1e40af'}}>Submitted</span>:displayStatus==='in_production'&&ssConnected?<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#7c3aed',color:'white',border:'none',borderRadius:4}} onClick={ev=>{ev.stopPropagation();handleShipToShipStation(so)}} disabled={ssShipping}>Ship</button>:null}</td>
       <td><span style={{padding:'3px 10px',borderRadius:12,fontSize:11,fontWeight:700,background:SC[displayStatus]?.bg||'#f1f5f9',color:SC[displayStatus]?.c||'#475569'}}>{statusLabel}</span></td></tr>)})}
     </tbody></table></div></div></>);
   };
@@ -6724,6 +6996,16 @@ export default function App(){
     }
 
     return(<>
+      {/* OMG API Sync */}
+      <div style={{display:'flex',gap:8,marginBottom:12,alignItems:'center'}}>
+        <button className="btn btn-primary" onClick={syncOMGStores} disabled={omgSyncing} style={{fontSize:12}}>
+          {omgSyncing ? 'Syncing...' : 'Sync from OMG'}
+        </button>
+        <div style={{fontSize:11,color:'#64748b'}}>
+          Last synced: {omgLastSync ? new Date(omgLastSync).toLocaleString() : 'Never'}
+        </div>
+      </div>
+
       {/* Filters */}
       <div style={{display:'flex',gap:8,marginBottom:12,flexWrap:'wrap',alignItems:'center'}}>
         <div className="search-bar" style={{flex:1,maxWidth:300}}><Icon name="search"/><input placeholder="Search stores..." value={omgFilter.search} onChange={e=>setOmgFilter(x=>({...x,search:e.target.value}))}/></div>
