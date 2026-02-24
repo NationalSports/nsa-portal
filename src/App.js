@@ -263,6 +263,176 @@ const ImgUpload=({url,onUpload,size=48})=>{const[drag,setDrag]=React.useState(fa
     :url?<img src={url} alt="" style={{width:'100%',height:'100%',objectFit:'cover'}}/>
     :<span style={{fontSize:size>40?18:12,opacity:0.3}}>📷</span>}
   </div>};
+// ── PDF.js Setup (for NetSuite PDF import) ──
+const PDFJS_CDN='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174';
+let _pdfjsLoaded=false;
+const loadPdfJs=()=>{
+  if(_pdfjsLoaded)return Promise.resolve();
+  return new Promise((resolve,reject)=>{
+    if(window.pdfjsLib){_pdfjsLoaded=true;resolve();return}
+    const script=document.createElement('script');
+    script.src=PDFJS_CDN+'/pdf.min.js';
+    script.onload=()=>{window.pdfjsLib.GlobalWorkerOptions.workerSrc=PDFJS_CDN+'/pdf.worker.min.js';_pdfjsLoaded=true;resolve()};
+    script.onerror=()=>reject(new Error('Failed to load PDF.js'));
+    document.head.appendChild(script);
+  });
+};
+const extractPdfText=async(file)=>{
+  await loadPdfJs();
+  const ab=await file.arrayBuffer();
+  const pdf=await window.pdfjsLib.getDocument({data:ab}).promise;
+  let fullText='';
+  for(let i=1;i<=pdf.numPages;i++){
+    const page=await pdf.getPage(i);
+    const content=await page.getTextContent();
+    fullText+=content.items.map(item=>item.str).join(' ')+'\n';
+  }
+  return fullText;
+};
+const parseNetSuitePdf=(text,docType)=>{
+  const result={docNumber:'',date:'',customerName:'',terms:'',subtotal:0,tax:0,shipping:0,total:0,lineItems:[],rawText:text,confidence:'low',warnings:[]};
+  
+  // NSA-specific parsing for estimates/SO/PO/invoices
+  // Extract doc number - look for EST8736, SO-1234, etc.
+  const nsa_doc_patterns=[
+    /#(EST\d+)/i,  // #EST8736
+    /#(SO-?\d+)/i, // #SO-1234 or #SO1234
+    /#(PO-?\d+)/i, // #PO-1234
+    /#(INV-?\d+)/i // #INV-1234
+  ];
+  for(const pat of nsa_doc_patterns){
+    const m=text.match(pat);
+    if(m){result.docNumber=m[1];break}
+  }
+
+  // Extract date from top right (e.g., "2/23/2026")
+  const dateMatch=text.match(/(\d{1,2}\/\d{1,2}\/\d{4})/);
+  if(dateMatch)result.date=dateMatch[1];
+
+  // Extract customer name - look for "Bill To" section
+  const billToMatch=text.match(/Bill To\s+([^\n]+(?:\n[^\n]+)*?)(?=\n\s*\d{4}|TOTAL|$)/i);
+  if(billToMatch){
+    // Take the first line after "Bill To" as customer name
+    const lines=billToMatch[1].trim().split('\n');
+    result.customerName=lines[0].trim();
+  }
+
+  // Extract totals
+  const subtotalMatch=text.match(/Subtotal\s+\$?([\d,]+\.?\d{2})/i);
+  if(subtotalMatch)result.subtotal=parseFloat(subtotalMatch[1].replace(/,/g,''));
+
+  const taxMatch=text.match(/Tax\s*\([^)]+\)\s+\$?([\d,]+\.?\d{2})/i);
+  if(taxMatch)result.tax=parseFloat(taxMatch[1].replace(/,/g,''));
+
+  const totalMatch=text.match(/Total\s+\$?([\d,]+\.?\d{2})/i);
+  if(totalMatch)result.total=parseFloat(totalMatch[1].replace(/,/g,''));
+
+  // Extract shipping
+  const shippingMatch=text.match(/Shipping[^\n]*?\$?([\d,]+\.?\d{2})/i);
+  if(shippingMatch)result.shipping=parseFloat(shippingMatch[1].replace(/,/g,''));
+
+  // Parse line items - NSA format parsing
+  const lines=text.split('\n');
+  let inItemsSection=false;
+  
+  for(let i=0;i<lines.length;i++){
+    const line=lines[i].trim();
+    if(!line)continue;
+
+    // Start of items section (after "Quantity Item Options Tax Rate Amount" or similar header)
+    if(/Quantity\s+Item.*Amount/i.test(line)){
+      inItemsSection=true;
+      continue;
+    }
+
+    // End of items section
+    if(inItemsSection && (/Subtotal|Total|Tax/i.test(line))){
+      inItemsSection=false;
+      continue;
+    }
+
+    if(!inItemsSection)continue;
+
+    // Parse NSA item lines
+    // Format: "6 KD3334-M" or "14 Emb-NSA" etc.
+    const qtyItemMatch=line.match(/^(\d+)\s+([A-Za-z0-9\-]+)(?:-([A-Z0-9]+))?\s*/);
+    if(qtyItemMatch){
+      const qty=parseInt(qtyItemMatch[1]);
+      const baseSku=qtyItemMatch[2];
+      const size=qtyItemMatch[3]||'OSFA';
+      
+      // Look ahead for the description line and price info
+      let description='';
+      let rate=0;
+      let amount=0;
+      
+      // Next line usually has the description
+      if(i+1<lines.length){
+        const nextLine=lines[i+1].trim();
+        // Extract description (everything before "Yes" or "No" or price)
+        const descMatch=nextLine.match(/^([^$]+?)(?:\s+(?:Yes|No)\s+\$|$)/);
+        if(descMatch){
+          description=descMatch[1].trim();
+        }
+        
+        // Extract rate and amount from this line or next lines
+        const priceMatch=nextLine.match(/\$?([\d,]+\.?\d{2})\s+\$?([\d,]+\.?\d{2})$/);
+        if(priceMatch){
+          rate=parseFloat(priceMatch[1].replace(/,/g,''));
+          amount=parseFloat(priceMatch[2].replace(/,/g,''));
+        }
+      }
+
+      // Handle decoration items (Emb-NSA, etc.) differently
+      const isDecoration=/^(Emb|Embr|Screen|Heat|DTF|Vinyl)-/i.test(baseSku);
+      
+      if(isDecoration){
+        // This is a decoration line - associate with previous items
+        // For now, just add it as a separate item, Claude Code can improve the association logic
+        result.lineItems.push({
+          sku:baseSku,
+          description:description||'Decoration',
+          quantity:qty,
+          rate:rate||0,
+          amount:amount||0,
+          isDecoration:true,
+          raw:line
+        });
+      } else {
+        // Regular product item
+        const sizes={};
+        sizes[size]=qty;
+        
+        result.lineItems.push({
+          sku:baseSku,
+          description:description,
+          quantity:qty,
+          rate:rate||0,
+          amount:amount||0,
+          sizes:sizes,
+          isDecoration:false,
+          raw:line
+        });
+      }
+    }
+  }
+
+  // Set confidence based on what we found
+  if(result.docNumber && result.customerName && result.lineItems.length>0){
+    result.confidence='high';
+  } else if(result.docNumber || (result.customerName && result.lineItems.length>0)){
+    result.confidence='medium';
+  } else {
+    result.confidence='low';
+    result.warnings.push('Could not detect NSA document format. This may not be an NSA estimate/SO/PO/invoice.');
+  }
+
+  if(result.lineItems.length===0){
+    result.warnings.push('No line items detected. Try uploading a clearer PDF or check the document format.');
+  }
+
+  return result;
+};
 const Icon=({name,size=18})=>{const p={home:<path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>,users:<><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></>,building:<><path d="M6 22V4a2 2 0 012-2h8a2 2 0 012 2v18z"/><path d="M6 12H4a2 2 0 00-2 2v6a2 2 0 002 2h2"/><path d="M18 9h2a2 2 0 012 2v9a2 2 0 01-2 2h-2"/><path d="M10 6h4M10 10h4M10 14h4M10 18h4"/></>,package:<><path d="M16.5 9.4l-9-5.19M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/><path d="M3.27 6.96L12 12.01l8.73-5.05M12 22.08V12"/></>,box:<path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/>,search:<><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></>,plus:<path d="M12 5v14M5 12h14"/>,edit:<><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></>,upload:<><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></>,back:<polyline points="15 18 9 12 15 6"/>,mail:<><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></>,file:<><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></>,sortUp:<path d="M7 14l5-5 5 5"/>,sort:<><path d="M7 15l5 5 5-5"/><path d="M7 9l5-5 5 5"/></>,image:<><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></>,cart:<><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 002 1.61h9.72a2 2 0 002-1.61L23 6H6"/></>,dollar:<><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></>,grid:<><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></>,warehouse:<><path d="M22 8.35V20a2 2 0 01-2 2H4a2 2 0 01-2-2V8.35A2 2 0 013.26 6.5l8-3.2a2 2 0 011.48 0l8 3.2A2 2 0 0122 8.35z"/><path d="M6 18h12M6 14h12"/></>,trash:<><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></>,eye:<><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></>,alert:<><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></>,x:<><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>,check:<polyline points="20 6 9 17 4 12"/>,save:<><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></>,send:<><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></>};return<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{p[name]}</svg>};
 const DEFAULT_REPS=[
   // Admins
@@ -4133,7 +4303,6 @@ export default function App(){
   const[issueFilter,setIssueFilter]=useState('all');// all|open|resolved
   const[editMember,setEditMember]=useState(null);
   const[showInactive,setShowInactive]=useState(false);
-  React.useEffect(()=>{try{localStorage.setItem('nsa_issues',JSON.stringify(issues))}catch{}},[issues]);
   const openIssueCount=issues.filter(i=>i.status==='open').length;
   const consoleErrors=React.useRef([]);
   React.useEffect(()=>{const orig=console.error;console.error=(...args)=>{consoleErrors.current=[{msg:args.map(a=>typeof a==='string'?a:JSON.stringify(a)).join(' '),ts:new Date().toISOString()},...consoleErrors.current].slice(0,5);orig.apply(console,args)};return()=>{console.error=orig}},[]);
@@ -4145,8 +4314,9 @@ export default function App(){
   const[soHistory,setSOHistory]=useState({});// {soId:[{ts,user,snapshot}]}
   const[msgs,setMsgs]=useState(()=>_migrated.msgs);const[cM,setCM]=useState({open:false,c:null});const[aM,setAM]=useState({open:false,p:null});
   // ─── Supabase: load on mount, seed if empty ───
+  const _initialLoadDone=useRef(false);
   React.useEffect(()=>{
-    if(!supabase){setDbLoading(false);return}
+    if(!supabase){setDbLoading(false);_initialLoadDone.current=true;return}
     let cancelled=false;
     (async()=>{
       try{
@@ -4167,7 +4337,10 @@ export default function App(){
           console.log('[DB] Seeded');
         }
       }catch(e){console.error('[DB] Load failed:',e)}
-      finally{if(!cancelled){_dbReady.current=true;setDbLoading(false)}}
+      finally{if(!cancelled){_dbReady.current=true;setDbLoading(false);
+        // Mark initial load done after a tick so auto-save effects don't fire from the setState calls above
+        setTimeout(()=>{_initialLoadDone.current=true},100);
+      }}
     })();
     // ─── Supabase Realtime subscriptions ───
     const channels=[];
@@ -4184,15 +4357,37 @@ export default function App(){
     }
     return()=>{cancelled=true;channels.forEach(ch=>supabase?.removeChannel(ch))};
   },[]);
-  // Auto-save to localStorage + Supabase (normalized)
-  React.useEffect(()=>{try{localStorage.setItem('nsa_reps',JSON.stringify(REPS))}catch{};if(_dbReady.current)_dbSave('team_members',REPS)},[REPS]);
-  React.useEffect(()=>{try{localStorage.setItem('nsa_cust',JSON.stringify(cust))}catch{};if(_dbReady.current)cust.forEach(c=>_dbSaveCustomer(c))},[cust]);
-  React.useEffect(()=>{try{localStorage.setItem('nsa_prod',JSON.stringify(prod))}catch{};if(_dbReady.current)prod.forEach(p=>_dbSaveProduct(p))},[prod]);
-  React.useEffect(()=>{try{localStorage.setItem('nsa_ests',JSON.stringify(ests))}catch{};if(_dbReady.current)ests.forEach(e=>_dbSaveEstimate(e))},[ests]);
-  React.useEffect(()=>{try{localStorage.setItem('nsa_sos',JSON.stringify(sos))}catch{};if(_dbReady.current)sos.forEach(s=>_dbSaveSO(s))},[sos]);
-  React.useEffect(()=>{try{localStorage.setItem('nsa_invs',JSON.stringify(invs))}catch{};if(_dbReady.current)invs.forEach(i=>_dbSaveInvoice(i))},[invs]);
-  React.useEffect(()=>{try{localStorage.setItem('nsa_msgs',JSON.stringify(msgs))}catch{};if(_dbReady.current)msgs.forEach(m=>_dbSaveMessage(m))},[msgs]);
-  React.useEffect(()=>{if(_dbReady.current){omgStores.forEach(s=>{const{products,...rest}=s;_dbSave('omg_stores',[rest])})}},[omgStores]);
+
+  // ─── Supabase polling: refresh from DB every 30 seconds so all users stay in sync ───
+  React.useEffect(()=>{
+    if(!supabase)return;
+    const poll=setInterval(async()=>{
+      if(!_dbReady.current||!_initialLoadDone.current)return;
+      try{
+        const d=await _dbLoad();
+        if(!d||!d.hasData)return;
+        // Only update if DB has data — compare lengths to avoid unnecessary re-renders
+        if(d.estimates.length)setEsts(prev=>JSON.stringify(prev.map(e=>e.id).sort())===JSON.stringify(d.estimates.map(e=>e.id).sort())&&prev.length===d.estimates.length?prev:d.estimates);
+        if(d.sales_orders.length)setSOs(prev=>JSON.stringify(prev.map(s=>s.id).sort())===JSON.stringify(d.sales_orders.map(s=>s.id).sort())&&prev.length===d.sales_orders.length?prev:d.sales_orders);
+        if(d.invoices.length)setInvs(prev=>prev.length===d.invoices.length&&JSON.stringify(prev.map(i=>i.id).sort())===JSON.stringify(d.invoices.map(i=>i.id).sort())?prev:d.invoices);
+        if(d.customers.length)setCust(prev=>prev.length===d.customers.length?prev:d.customers);
+        if(d.messages.length)setMsgs(prev=>prev.length===d.messages.length?prev:d.messages);
+        if(d.issues.length)setIssues(prev=>prev.length===d.issues.length&&JSON.stringify(prev.map(i=>i.id).sort())===JSON.stringify(d.issues.map(i=>i.id).sort())?prev:d.issues);
+      }catch(e){console.warn('[DB] Poll failed:',e.message)}
+    },30000);
+    return()=>clearInterval(poll);
+  },[]);
+
+  // Auto-save to localStorage + Supabase (normalized, only after initial load is complete)
+  React.useEffect(()=>{try{localStorage.setItem('nsa_reps',JSON.stringify(REPS))}catch{};if(_initialLoadDone.current&&_dbReady.current)_dbSave('team_members',REPS)},[REPS]);
+  React.useEffect(()=>{try{localStorage.setItem('nsa_cust',JSON.stringify(cust))}catch{};if(_initialLoadDone.current&&_dbReady.current)cust.forEach(c=>_dbSaveCustomer(c))},[cust]);
+  React.useEffect(()=>{try{localStorage.setItem('nsa_prod',JSON.stringify(prod))}catch{};if(_initialLoadDone.current&&_dbReady.current)prod.forEach(p=>_dbSaveProduct(p))},[prod]);
+  React.useEffect(()=>{try{localStorage.setItem('nsa_ests',JSON.stringify(ests))}catch{};if(_initialLoadDone.current&&_dbReady.current)ests.forEach(e=>_dbSaveEstimate(e))},[ests]);
+  React.useEffect(()=>{try{localStorage.setItem('nsa_sos',JSON.stringify(sos))}catch{};if(_initialLoadDone.current&&_dbReady.current)sos.forEach(s=>_dbSaveSO(s))},[sos]);
+  React.useEffect(()=>{try{localStorage.setItem('nsa_invs',JSON.stringify(invs))}catch{};if(_initialLoadDone.current&&_dbReady.current)invs.forEach(i=>_dbSaveInvoice(i))},[invs]);
+  React.useEffect(()=>{try{localStorage.setItem('nsa_msgs',JSON.stringify(msgs))}catch{};if(_initialLoadDone.current&&_dbReady.current)msgs.forEach(m=>_dbSaveMessage(m))},[msgs]);
+  React.useEffect(()=>{if(_initialLoadDone.current&&_dbReady.current){omgStores.forEach(s=>{const{products,...rest}=s;_dbSave('omg_stores',[rest])})}},[omgStores]);
+  React.useEffect(()=>{try{localStorage.setItem('nsa_issues',JSON.stringify(issues))}catch{};if(_initialLoadDone.current&&_dbReady.current)_dbSave('issues',issues)},[issues]);
   const[q,setQ]=useState('');const[selC,setSelC]=useState(null);const[selV,setSelV]=useState(null);
   const[eEst,setEEst]=useState(null);const[eEstC,setEEstC]=useState(null);const[eSO,setESO]=useState(null);const[eSOC,setESOC]=useState(null);const[eSOTab,setESOTab]=useState(null);const[eSOScrollItem,setESOScrollItem]=useState(null);const[eSOScrollJob,setESOScrollJob]=useState(null);
   const[gQ,setGQ]=useState('');const[gOpen,setGOpen]=useState(false);const[mF,setMF]=useState('all');const[rF,setRF]=useState('all');const[pF,setPF]=useState({cat:'all',vnd:'all',stk:'all',clr:'all'});
@@ -8184,7 +8379,8 @@ export default function App(){
   };
 
   // NETSUITE IMPORT PAGE
-  const[imp,setImp]=useState({step:'upload',raw:'',docType:'so',custId:'',parsed:[],decoLines:[],issues:[],questions:[],shipping:[],memo:'',poRef:''});
+  const[imp,setImp]=useState({step:'upload',raw:'',docType:'so',custId:'',parsed:[],decoLines:[],issues:[],questions:[],shipping:[],memo:'',poRef:'',
+    pdfFile:null,pdfText:'',pdfParsed:null,pdfLoading:false,pdfItems:[],linkedSoId:'',externalDocNum:'',importSource:'netsuite'});
   const[impTab,setImpTab]=useState('orders');// orders|customers|vendors|products
   const[bulkImp,setBulkImp]=useState({raw:'',parsed:[],issues:[],step:'paste'});// paste|review|done
   const SZ_ORD_I=['XXS','XS','YXS','YS','YM','YL','YXL','S','M','L','XL','2XL','3XL','4XL','5XL','OSFA'];
@@ -8530,72 +8726,106 @@ export default function App(){
             onClick={()=>{setImpTab(id);resetBulk()}}>{label}</button>)}
       </div>
 
-      {/* ORDERS TAB — existing import */}
+      {/* ORDERS TAB — NetSuite PDF Import */}
       {impTab==='orders'&&<>
       {/* Step indicators */}
       <div style={{display:'flex',gap:4,marginBottom:16}}>
-        {[['upload','1. Upload / Paste'],['review','2. Review Items'],['questions','3. Answer Questions'],['confirm','4. Confirm & Create']].map(([id,label])=>
+        {[['upload','1. Upload PDF'],['parse','2. Raw Text'],['review','3. Review Items'],['questions','4. Clarify'],['confirm','5. Create']].map(([id,label])=>
           <div key={id} style={{flex:1,padding:'8px 12px',borderRadius:6,textAlign:'center',fontSize:11,fontWeight:700,
             background:imp.step===id?'#1e40af':'#f1f5f9',color:imp.step===id?'white':'#64748b'}}>{label}</div>)}
       </div>
 
-      {/* STEP 1: Upload */}
+      {/* ═══ STEP 1: Upload PDF ═══ */}
       {imp.step==='upload'&&<>
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}}>
           {/* Left: upload area */}
-          <div className="card"><div className="card-header"><h2>?? Upload PDF or Paste Data</h2></div>
+          <div className="card"><div className="card-header"><h2>📄 Upload NetSuite PDF</h2></div>
             <div className="card-body">
-              <div style={{marginBottom:12}}>
-                <label className="form-label">Document Type</label>
+              <div style={{marginBottom:16}}>
+                <label className="form-label" style={{fontWeight:700}}>Document Type</label>
                 <div style={{display:'flex',gap:4}}>
-                  {[['so','Sales Order'],['est','Estimate'],['po','Purchase Order']].map(([v,l])=>
-                    <button key={v} className={`btn btn-sm ${imp.docType===v?'btn-primary':'btn-secondary'}`} onClick={()=>setImp(x=>({...x,docType:v}))}>{l}</button>)}
+                  {[['so','Sales Order'],['est','Estimate'],['po','Purchase Order'],['inv','Invoice']].map(([v,l])=>
+                    <button key={v} className={`btn btn-sm ${imp.docType===v?'btn-primary':'btn-secondary'}`}
+                      onClick={()=>setImp(x=>({...x,docType:v}))}>{l}</button>)}
                 </div>
               </div>
-              <div style={{marginBottom:12}}>
-                <label className="form-label">Upload File (PDF, CSV, TXT) or Drag & Drop</label>
-                <div style={{padding:24,border:'2px dashed #d1d5db',borderRadius:8,textAlign:'center',color:'#64748b',fontSize:12,cursor:'pointer',transition:'all 0.2s'}}
+
+              {/* PDF Upload Zone */}
+              <div style={{marginBottom:16}}>
+                <label className="form-label">Upload PDF</label>
+                <div style={{
+                  padding:32,border:'2px dashed '+(imp.pdfFile?'#22c55e':'#d1d5db'),
+                  borderRadius:8,textAlign:'center',cursor:'pointer',
+                  background:imp.pdfFile?'#f0fdf4':'#f8fafc',transition:'all 0.2s'
+                }}
                   onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#3b82f6';e.currentTarget.style.background='#eff6ff'}}
-                  onDragLeave={e=>{e.currentTarget.style.borderColor='#d1d5db';e.currentTarget.style.background='transparent'}}
-                  onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor='#d1d5db';e.currentTarget.style.background='transparent';
+                  onDragLeave={e=>{e.currentTarget.style.borderColor=imp.pdfFile?'#22c55e':'#d1d5db';e.currentTarget.style.background=imp.pdfFile?'#f0fdf4':'#f8fafc'}}
+                  onDrop={async e=>{
+                    e.preventDefault();e.currentTarget.style.borderColor='#22c55e';e.currentTarget.style.background='#f0fdf4';
                     const f=e.dataTransfer.files[0];if(!f)return;
-                    if(f.type==='application/pdf'){
-                      nf('📄 PDF detected — please also paste the line items below for best results.','info');return}
-                    const reader=new FileReader();
-                    reader.onload=(ev)=>{const txt=ev.target.result;setImp(x=>({...x,raw:txt}));
-                      if(txt.length>20&&!imp.custId){const det=detectCustomer(txt);if(det)setImp(x=>({...x,custId:det.id}))}
-                      nf('✅ File loaded — '+f.name)};reader.readAsText(f)}}
-                  onClick={()=>{const input=document.createElement('input');input.type='file';input.accept='.csv,.tsv,.txt,.pdf';
-                    input.onchange=(ev)=>{const f=ev.target.files[0];if(!f)return;
-                      if(f.type==='application/pdf'){nf('📄 PDF detected — please also paste line items below for best results.','info');return}
-                      const reader=new FileReader();
-                      reader.onload=(e2)=>{const txt=e2.target.result;setImp(x=>({...x,raw:txt}));
-                        if(txt.length>20&&!imp.custId){const det=detectCustomer(txt);if(det)setImp(x=>({...x,custId:det.id}))}
-                        nf('✅ File loaded — '+f.name)};reader.readAsText(f)};input.click()}}>
-                  📂 Drag & drop file here or click to browse<br/>
-                  <span style={{fontSize:10,color:'#94a3b8'}}>Supports CSV, TSV, TXT — drag & drop or click to browse</span>
-                  {imp.raw&&<div style={{marginTop:8,fontSize:11,color:'#22c55e',fontWeight:600}}>✅ Data loaded — {imp.raw.split('\n').length} lines</div>}
+                    setImp(x=>({...x,pdfFile:f,pdfLoading:true,pdfText:'',pdfParsed:null}));
+                    try{
+                      const text=await extractPdfText(f);
+                      const parsed=parseNetSuitePdf(text,imp.docType);
+                      let detCustId=imp.custId;
+                      if(parsed.customerName&&!detCustId){const det=detectCustomer(parsed.customerName);if(det)detCustId=det.id}
+                      setImp(x=>({...x,pdfLoading:false,pdfText:text,pdfParsed:parsed,
+                        externalDocNum:parsed.docNumber||x.externalDocNum,
+                        memo:parsed.memo||x.memo||('Imported from NetSuite'+(parsed.docNumber?' #'+parsed.docNumber:'')),
+                        custId:detCustId||x.custId}));
+                      nf('✅ PDF loaded — '+parsed.lineItems.length+' items detected');
+                    }catch(err){setImp(x=>({...x,pdfLoading:false}));nf('PDF parsing failed: '+err.message,'error')}
+                  }}
+                  onClick={()=>{
+                    const input=document.createElement('input');input.type='file';input.accept='.pdf';
+                    input.onchange=async(ev)=>{
+                      const f=ev.target.files[0];if(!f)return;
+                      setImp(x=>({...x,pdfFile:f,pdfLoading:true,pdfText:'',pdfParsed:null}));
+                      try{
+                        const text=await extractPdfText(f);
+                        const parsed=parseNetSuitePdf(text,imp.docType);
+                        let detCustId=imp.custId;
+                        if(parsed.customerName&&!detCustId){const det=detectCustomer(parsed.customerName);if(det)detCustId=det.id}
+                        setImp(x=>({...x,pdfLoading:false,pdfText:text,pdfParsed:parsed,
+                          externalDocNum:parsed.docNumber||x.externalDocNum,
+                          memo:parsed.memo||x.memo||('Imported from NSA'+(parsed.docNumber?' #'+parsed.docNumber:'')),
+                          custId:detCustId||x.custId}));
+                        nf('✅ PDF loaded — '+parsed.lineItems.length+' items detected');
+                      }catch(err){setImp(x=>({...x,pdfLoading:false}));nf('PDF parsing failed: '+err.message,'error')}
+                    };input.click()}}>
+                  {imp.pdfLoading?<div style={{color:'#3b82f6',fontWeight:600}}>⏳ Reading PDF...</div>
+                  :imp.pdfFile?<div>
+                    <div style={{fontSize:14,color:'#166534',fontWeight:700}}>✅ {imp.pdfFile.name}</div>
+                    <div style={{fontSize:11,color:'#64748b',marginTop:4}}>{imp.pdfParsed?.lineItems?.length||0} items detected · Click to replace</div>
+                  </div>
+                  :<div>
+                    <div style={{fontSize:24,marginBottom:8}}>📄</div>
+                    <div style={{fontSize:13,fontWeight:600,color:'#374151'}}>Drop your NetSuite PDF here</div>
+                    <div style={{fontSize:11,color:'#94a3b8',marginTop:4}}>or click to browse</div>
+                  </div>}
                 </div>
               </div>
-              <div>
-                <label className="form-label">Or paste tab-separated data directly</label>
-                <textarea className="form-input" rows={10} value={imp.raw} onChange={e=>{
+
+              {/* Fallback paste */}
+              <details style={{marginTop:8}}>
+                <summary style={{fontSize:11,color:'#64748b',cursor:'pointer'}}>📋 Or paste tab-separated data (advanced)</summary>
+                <textarea className="form-input" rows={6} value={imp.raw} onChange={e=>{
                   const v=e.target.value;setImp(x=>({...x,raw:v}));
-                  // Auto-detect customer
                   if(v.length>20&&!imp.custId){const det=detectCustomer(v);if(det)setImp(x=>({...x,custId:det.id}))}
-                }} placeholder="Copy lines from NetSuite (ITEM → INVOICED columns) and paste here..." style={{fontFamily:'monospace',fontSize:10,whiteSpace:'pre'}}/>
-              </div>
+                }} placeholder="Paste NetSuite ITEM through INVOICED columns here..." style={{fontFamily:'monospace',fontSize:10,whiteSpace:'pre',marginTop:8}}/>
+              </details>
             </div>
           </div>
 
-          {/* Right: customer + settings */}
-          <div className="card"><div className="card-header"><h2>?? Customer & Settings</h2></div>
+          {/* Right: customer & settings */}
+          <div className="card"><div className="card-header"><h2>⚙️ Document Settings</h2></div>
             <div className="card-body">
               <div style={{marginBottom:12}}>
-                <label className="form-label">Customer {imp.custId&&<span style={{color:'#22c55e',fontSize:10}}>✓ Detected</span>}</label>
+                <label className="form-label">Customer {imp.custId&&<span style={{color:'#22c55e',fontSize:10}}>✓ {imp.pdfParsed?.customerName?'Auto-detected':'Selected'}</span>}</label>
                 <select className="form-select" value={imp.custId} onChange={e=>setImp(x=>({...x,custId:e.target.value}))}>
                   <option value="">Select customer...</option>
-                  {cust.filter(c=>c.is_active!==false).map(c=><option key={c.id} value={c.id}>{c.name} ({c.alpha_tag})</option>)}
+                  {cust.filter(c=>c.is_active!==false).sort((a,b)=>a.name.localeCompare(b.name)).map(c=>
+                    <option key={c.id} value={c.id}>{c.name} ({c.alpha_tag})</option>)}
                 </select>
               </div>
               {imp.custId&&(()=>{const c=cust.find(x=>x.id===imp.custId);if(!c)return null;
@@ -8607,120 +8837,227 @@ export default function App(){
                   </div>
                 </div>})()}
               <div style={{marginBottom:12}}>
-                <label className="form-label">Order Memo / Description</label>
-                <input className="form-input" value={imp.memo} onChange={e=>setImp(x=>({...x,memo:e.target.value}))} placeholder="e.g. Spring Football 2026 — from NS SO#12345"/>
+                <label className="form-label">NetSuite Document # (original)</label>
+                <input className="form-input" value={imp.externalDocNum} onChange={e=>setImp(x=>({...x,externalDocNum:e.target.value}))}
+                  placeholder={imp.docType==='po'?'NS PO# (e.g. 54321)':'NS doc # (e.g. 12345)'}/>
+                <div style={{fontSize:10,color:'#94a3b8',marginTop:2}}>Kept as reference — won't affect your portal numbering.</div>
               </div>
               <div style={{marginBottom:12}}>
-                <label className="form-label">NetSuite Reference # (optional)</label>
-                <input className="form-input" value={imp.poRef} onChange={e=>setImp(x=>({...x,poRef:e.target.value}))} placeholder="NS SO# or PO#"/>
+                <label className="form-label">Memo / Description</label>
+                <input className="form-input" value={imp.memo} onChange={e=>setImp(x=>({...x,memo:e.target.value}))}
+                  placeholder="e.g. Spring Football 2026"/>
               </div>
-              <div style={{padding:10,background:'#eff6ff',borderRadius:6,fontSize:11,color:'#1e40af'}}>
-                <strong>How this works:</strong> Paste your NetSuite data → we parse and collapse size-split lines → match items to the NSA catalog → you review and answer questions → create as Estimate or SO.
+              {imp.docType==='po'&&<div style={{marginBottom:12}}>
+                <label className="form-label">Link to Sales Order (optional)</label>
+                <select className="form-select" value={imp.linkedSoId||''} onChange={e=>setImp(x=>({...x,linkedSoId:e.target.value}))}>
+                  <option value="">None — standalone PO</option>
+                  {sos.filter(s=>s.status!=='cancelled').sort((a,b)=>(b.id||'').localeCompare(a.id||'')).map(s=>{
+                    const sc=cust.find(c=>c.id===s.customer_id);
+                    return<option key={s.id} value={s.id}>{s.id} — {sc?.name||'Unknown'} — {s.memo||'No memo'}</option>})}
+                </select>
+              </div>}
+              {/* PDF extraction summary */}
+              {imp.pdfParsed&&<div style={{padding:10,background:'#eff6ff',borderRadius:6,fontSize:11,marginBottom:12}}>
+                <div style={{fontWeight:700,color:'#1e40af',marginBottom:4}}>📊 PDF Extraction Summary</div>
+                <div style={{display:'grid',gridTemplateColumns:'auto 1fr',gap:'2px 12px',color:'#475569'}}>
+                  {imp.pdfParsed.docNumber&&<><span style={{fontWeight:600}}>Doc #:</span><span>{imp.pdfParsed.docNumber}</span></>}
+                  {imp.pdfParsed.date&&<><span style={{fontWeight:600}}>Date:</span><span>{imp.pdfParsed.date}</span></>}
+                  {imp.pdfParsed.customerName&&<><span style={{fontWeight:600}}>Customer:</span><span>{imp.pdfParsed.customerName}</span></>}
+                  {imp.pdfParsed.terms&&<><span style={{fontWeight:600}}>Terms:</span><span>{imp.pdfParsed.terms}</span></>}
+                  {imp.pdfParsed.total>0&&<><span style={{fontWeight:600}}>Total:</span><span>${imp.pdfParsed.total.toLocaleString()}</span></>}
+                  <span style={{fontWeight:600}}>Line Items:</span><span>{imp.pdfParsed.lineItems.length} detected</span>
+                  <span style={{fontWeight:600}}>Confidence:</span>
+                  <span style={{color:imp.pdfParsed.confidence==='high'?'#166534':imp.pdfParsed.confidence==='medium'?'#d97706':'#dc2626',fontWeight:700}}>
+                    {imp.pdfParsed.confidence==='high'?'✅ High':imp.pdfParsed.confidence==='medium'?'⚠️ Medium':'❌ Low — manual review needed'}
+                  </span>
+                </div>
+                {imp.pdfParsed.warnings.map((w,i)=><div key={i} style={{marginTop:4,color:'#d97706',fontSize:10}}>⚠️ {w}</div>)}
+              </div>}
+              <div style={{padding:10,background:'#f0f9ff',borderRadius:6,fontSize:11,color:'#1e40af'}}>
+                <strong>How it works:</strong> Upload a NetSuite PDF → we extract and parse items → you verify and match to catalog → portal creates the document with your numbering. NetSuite doc # saved as reference.
               </div>
             </div>
           </div>
         </div>
 
         <div style={{marginTop:12,display:'flex',gap:8}}>
-          <button className="btn btn-primary" disabled={!imp.raw.trim()||!imp.custId} onClick={()=>{
-            const result=parseNSData(imp.raw);
-            setImp(x=>({...x,step:result.questions.length>0?'questions':'review',...result}));
-          }}>?? Parse & Review →</button>
+          <button className="btn btn-primary" disabled={(!imp.pdfParsed&&!imp.raw.trim())||!imp.custId||imp.pdfLoading}
+            onClick={()=>{
+              if(imp.pdfParsed&&imp.pdfParsed.lineItems.length>0){
+                const SZ_RE2=/[-\s](XXS|XS|S|M|L|XL|2XL|3XL|4XL|5XL|YXS|YS|YM|YL|YXL|OSFA)$/i;
+                const pdfItems=imp.pdfParsed.lineItems.map((li,idx)=>{
+                  // Handle NSA format items
+                  const baseSku=li.sku;
+                  const catMatch=prod.find(p=>p.sku===baseSku)||(baseSku.length>3?prod.find(p=>p.sku.toLowerCase()===baseSku.toLowerCase()):null);
+                  
+                  // For NSA format, sizes are already parsed in the sizes object
+                  const sizes=li.sizes||{OSFA:li.quantity};
+                  
+                  let brand=catMatch?.brand||'';
+                  if(!brand){
+                    if(/adidas/i.test(li.description))brand='Adidas';
+                    else if(/under armour|ua\b/i.test(li.description))brand='Under Armour';
+                    else if(/nike/i.test(li.description))brand='Nike';
+                    else if(/richardson/i.test(li.description))brand='Richardson';
+                  }
+                  
+                  let color=catMatch?.color||'';
+                  if(!color){
+                    // Extract color from NSA description (e.g., "Navy/Black")
+                    const colorMatch=li.description.match(/\b(Navy|Black|White|Red|Blue|Green|Gray|Grey|Maroon|Purple|Orange|Yellow|Pink|Brown)(?:\/([A-Za-z]+))?\b/i);
+                    if(colorMatch){
+                      color=colorMatch[0];
+                    }
+                  }
+
+                  return{
+                    sku:baseSku,
+                    name:catMatch?.name||li.description,
+                    brand,
+                    color,
+                    rate:li.rate,
+                    sizes,
+                    totalQty:li.quantity,
+                    totalAmt:li.amount,
+                    poRef:'',
+                    priceLevel:'',
+                    catMatch:catMatch||null,
+                    is_custom:!catMatch,
+                    is_decoration:li.isDecoration||false,
+                    issues:catMatch?[]:['Not in catalog'],
+                    _pdfRaw:li.raw
+                  };
+                });
+
+                // Separate decorations from products
+                const products=pdfItems.filter(it=>!it.is_decoration);
+                const decorations=pdfItems.filter(it=>it.is_decoration);
+
+                const questions=[];
+                products.forEach((it,i)=>{
+                  if(!it.catMatch&&!it.is_custom)questions.push({idx:i,type:'match',msg:'"'+it.sku+'" not found in catalog. Known product or custom?',options:['match_catalog','custom','skip'],answer:null});
+                  if(!it.color)questions.push({idx:i,type:'color',msg:'What color is "'+it.sku+' — '+it.name.slice(0,40)+'"?',answer:''});
+                });
+
+                setImp(x=>({...x,step:questions.length>0?'questions':'review',parsed:products,decoLines:decorations.map(d=>({
+                  rawItem:d.sku,desc:d.name,rate:d.rate,amount:d.totalAmt,_assignTo:'all'
+                })),issues:[],questions,
+                  shipping:imp.pdfParsed.shipping>0?[{desc:'Shipping',amount:imp.pdfParsed.shipping,rate:imp.pdfParsed.shipping}]:[]
+                }));
+              } else if(imp.raw.trim()){
+                const result=parseNSData(imp.raw);
+                setImp(x=>({...x,step:result.questions.length>0?'questions':'review',...result}));
+              } else if(imp.pdfParsed){
+                setImp(x=>({...x,step:'parse'}));
+              }
+            }}>
+            {imp.pdfParsed?'📊 Review Extracted Items →':'📋 Parse & Review →'}
+          </button>
         </div>
       </>}
 
-      {/* STEP 2: Review Items */}
+      {/* ═══ STEP 2: Raw Text Review ═══ */}
+      {imp.step==='parse'&&<>
+        <div className="card" style={{marginBottom:12}}>
+          <div className="card-header"><h2>📝 Extracted PDF Text</h2></div>
+          <div className="card-body">
+            <div style={{fontSize:11,color:'#64748b',marginBottom:8}}>
+              Auto-detection found {imp.pdfParsed?.lineItems?.length||0} items. If items are missing, paste tab-separated data below.
+            </div>
+            <div style={{maxHeight:300,overflow:'auto',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:6,padding:12,fontFamily:'monospace',fontSize:10,whiteSpace:'pre-wrap',color:'#334155',marginBottom:12}}>
+              {imp.pdfText||'(No text extracted)'}
+            </div>
+            <label className="form-label">Paste additional line items (tab-separated)</label>
+            <textarea className="form-input" rows={6} value={imp.raw} onChange={e=>setImp(x=>({...x,raw:e.target.value}))}
+              placeholder="Paste NetSuite ITEM through INVOICED columns here..." style={{fontFamily:'monospace',fontSize:10,whiteSpace:'pre'}}/>
+          </div>
+        </div>
+        <div style={{display:'flex',gap:8}}>
+          <button className="btn btn-secondary" onClick={()=>setImp(x=>({...x,step:'upload'}))}>← Back</button>
+          <button className="btn btn-primary" disabled={!imp.raw.trim()} onClick={()=>{
+            const result=parseNSData(imp.raw);
+            setImp(x=>({...x,step:result.questions.length>0?'questions':'review',...result}));
+          }}>📋 Parse Pasted Data →</button>
+        </div>
+      </>}
+
+      {/* ═══ STEP 3: Review Items ═══ */}
       {imp.step==='review'&&<>
+        {imp.externalDocNum&&<div style={{padding:8,background:'#dbeafe',borderRadius:6,marginBottom:12,fontSize:11,color:'#1e40af'}}>
+          📎 NetSuite {imp.docType==='so'?'SO':imp.docType==='est'?'EST':imp.docType==='po'?'PO':'INV'} #{imp.externalDocNum} → new portal {imp.docType==='so'?'Sales Order':imp.docType==='est'?'Estimate':imp.docType==='po'?'Purchase Order':'Invoice'}
+        </div>}
         <div style={{display:'flex',gap:8,marginBottom:12}}>
           <div style={{padding:8,background:'#f0fdf4',borderRadius:6,flex:1,textAlign:'center'}}>
-            <div style={{fontSize:22,fontWeight:800,color:'#166534'}}>{imp.parsed.length}</div><div style={{fontSize:10}}>Items Parsed</div></div>
+            <div style={{fontSize:22,fontWeight:800,color:'#166534'}}>{imp.parsed.length}</div><div style={{fontSize:10}}>Items</div></div>
           <div style={{padding:8,background:'#dbeafe',borderRadius:6,flex:1,textAlign:'center'}}>
-            <div style={{fontSize:22,fontWeight:800,color:'#1e40af'}}>{imp.parsed.filter(p=>p.catMatch).length}</div><div style={{fontSize:10}}>Catalog Matches</div></div>
+            <div style={{fontSize:22,fontWeight:800,color:'#1e40af'}}>{imp.parsed.filter(p=>p.catMatch).length}</div><div style={{fontSize:10}}>Matched</div></div>
           <div style={{padding:8,background:'#fef3c7',borderRadius:6,flex:1,textAlign:'center'}}>
-            <div style={{fontSize:22,fontWeight:800,color:'#92400e'}}>{imp.parsed.filter(p=>!p.catMatch).length}</div><div style={{fontSize:10}}>Custom / Unmatched</div></div>
+            <div style={{fontSize:22,fontWeight:800,color:'#92400e'}}>{imp.parsed.filter(p=>!p.catMatch).length}</div><div style={{fontSize:10}}>Unmatched</div></div>
           <div style={{padding:8,background:'#ede9fe',borderRadius:6,flex:1,textAlign:'center'}}>
-            <div style={{fontSize:22,fontWeight:800,color:'#6d28d9'}}>{imp.decoLines.length}</div><div style={{fontSize:10}}>Decorations</div></div>
+            <div style={{fontSize:22,fontWeight:800,color:'#6d28d9'}}>{imp.decoLines.length}</div><div style={{fontSize:10}}>Deco</div></div>
           <div style={{padding:8,background:imp.issues.length?'#fecaca':'#f8fafc',borderRadius:6,flex:1,textAlign:'center'}}>
             <div style={{fontSize:22,fontWeight:800,color:imp.issues.length?'#dc2626':'#94a3b8'}}>{imp.issues.length}</div><div style={{fontSize:10}}>Issues</div></div>
         </div>
 
-        {imp.issues.length>0&&<div style={{marginBottom:8,padding:8,background:'#fef2f2',borderRadius:6}}>
-          <div style={{fontSize:11,fontWeight:700,color:'#dc2626'}}>⚠️ Parser Issues</div>
-          {imp.issues.map((is,i)=><div key={i} style={{fontSize:10,color:'#991b1b'}}>Line {is.line}: {is.msg}</div>)}
-        </div>}
+        <div className="card" style={{marginBottom:12}}><div className="card-body" style={{padding:0}}>
+          <table style={{fontSize:11}}><thead><tr>
+            <th style={{width:30}}></th><th>SKU</th><th>Name</th><th>Brand</th><th>Color</th>
+            <th style={{textAlign:'right'}}>Rate</th><th>Sizes</th><th style={{textAlign:'center'}}>Qty</th><th style={{textAlign:'right'}}>Amount</th>
+          </tr></thead>
+          <tbody>{imp.parsed.map((it,i)=><tr key={i} style={{background:it.catMatch?'#f0fdf4':it.is_custom?'#fffbeb':'#fef2f2'}}>
+            <td style={{textAlign:'center'}}><input type="checkbox" checked={!it._skip} onChange={e=>updItem(i,'_skip',!e.target.checked)}/></td>
+            <td style={{fontFamily:'monospace',fontWeight:700,color:it.catMatch?'#166534':'#dc2626'}}>{it.sku}</td>
+            <td>{it.catMatch?<span>✅ {it.name.slice(0,35)}</span>:it.name.slice(0,35)}</td>
+            <td style={{fontSize:10}}>{it.brand}</td>
+            <td style={{fontSize:10}}>{it.color||<span style={{color:'#dc2626'}}>?</span>}</td>
+            <td style={{textAlign:'right'}}>${it.rate?.toFixed(2)}</td>
+            <td style={{fontSize:9}}>{Object.entries(it.sizes||{}).map(([s,q])=>s+':'+q).join(' ')}</td>
+            <td style={{fontWeight:700,textAlign:'center'}}>{it.totalQty}</td>
+            <td style={{textAlign:'right'}}>${(it.totalAmt||0).toFixed(0)}</td>
+          </tr>)}</tbody></table>
+        </div></div>
 
-        <div className="card" style={{marginBottom:12}}><div className="card-header"><h2>?? Parsed Items</h2></div>
-          <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
-            <table style={{fontSize:11}}><thead><tr><th style={{width:28}}>✓</th><th>SKU</th><th>Name</th><th>Brand</th><th>Color</th><th>Rate</th><th>Sizes</th><th>Qty</th><th>$</th><th>Match</th></tr></thead>
-            <tbody>{imp.parsed.map((it,i)=>{
-              return<tr key={i} style={{opacity:it._skip?0.3:1,background:it.catMatch?'#f0fdf4':it.is_custom?'#fffbeb':'#fef2f2'}}>
-                <td><input type="checkbox" checked={!it._skip} onChange={()=>updItem(i,'_skip',!it._skip)}/></td>
-                <td><input className="form-input" value={it.sku} onChange={e=>updItem(i,'sku',e.target.value)} style={{width:80,fontSize:10,fontFamily:'monospace',fontWeight:700}}/></td>
-                <td><input className="form-input" value={it.name} onChange={e=>updItem(i,'name',e.target.value)} style={{width:'100%',fontSize:10}}/></td>
-                <td><input className="form-input" value={it.brand} onChange={e=>updItem(i,'brand',e.target.value)} style={{width:70,fontSize:10}}/></td>
-                <td><input className="form-input" value={it.color} onChange={e=>updItem(i,'color',e.target.value)} style={{width:70,fontSize:10}}/></td>
-                <td style={{textAlign:'right'}}>${it.rate?.toFixed(2)}</td>
-                <td style={{fontSize:9,maxWidth:120}}>{Object.entries(it.sizes).sort(([a],[b])=>SZ_ORD_I.indexOf(a)-SZ_ORD_I.indexOf(b)).map(([s,q])=>s+':'+q).join(' ')}</td>
-                <td style={{fontWeight:700,textAlign:'center'}}>{it.totalQty}</td>
-                <td style={{textAlign:'right'}}>${it.totalAmt?.toFixed(0)}</td>
-                <td>{it.catMatch?<span style={{fontSize:9,background:'#dcfce7',padding:'1px 5px',borderRadius:4,color:'#166534',fontWeight:600}}>✅ {it.catMatch.sku}</span>
-                  :<div><select className="form-select" style={{fontSize:9,width:120}} value={it._manualMatch||''} onChange={e=>{
-                    const pId=e.target.value;const pm=prod.find(p=>p.id===pId);
-                    if(pm)updItem(i,'catMatch',pm);updItem(i,'_manualMatch',pId)}}>
-                    <option value="">No match — custom</option>
-                    {prod.filter(p=>p.sku.toLowerCase().includes(it.sku.toLowerCase().slice(0,3))||p.name.toLowerCase().includes(it.name.toLowerCase().split(' ')[0])).slice(0,8).map(p=>
-                      <option key={p.id} value={p.id}>{p.sku} — {p.name.slice(0,25)}</option>)}
-                    <option disabled>──────</option>
-                    {prod.map(p=><option key={p.id} value={p.id}>{p.sku} — {p.name.slice(0,25)}</option>)}
-                  </select></div>}</td>
-              </tr>})}</tbody></table>
-          </div>
-        </div>
+        {imp.decoLines.length>0&&<div className="card" style={{marginBottom:12}}><div className="card-header"><h2>🎨 Decoration Lines</h2></div>
+          <div className="card-body" style={{padding:0}}>
+            <table style={{fontSize:11}}><thead><tr><th>Item</th><th>Description</th><th>Rate</th><th>Amount</th><th>Assign To</th></tr></thead>
+            <tbody>{imp.decoLines.map((d,di)=><tr key={di}>
+              <td>{d.rawItem}</td><td>{d.desc}</td><td>${d.rate?.toFixed(2)}</td><td>${d.amount?.toFixed(2)}</td>
+              <td><select className="form-select" style={{width:200,fontSize:10}} value={d._assignTo||'all'}
+                onChange={e=>setImp(x=>({...x,decoLines:x.decoLines.map((dl,dli)=>dli===di?{...dl,_assignTo:e.target.value}:dl)}))}>
+                <option value="all">All items</option>
+                {imp.parsed.map((p,pi)=><option key={pi} value={String(pi)}>{p.sku} — {p.name.slice(0,25)}</option>)}
+              </select></td>
+            </tr>)}</tbody></table>
+          </div></div>}
 
-        {imp.decoLines.length>0&&<div className="card" style={{marginBottom:12}}><div className="card-header"><h2>?? Decorations</h2></div>
-          <div className="card-body">{imp.decoLines.map((d,di)=>
-            <div key={di} style={{padding:8,background:'#f8fafc',borderRadius:6,marginBottom:4,display:'flex',gap:8,alignItems:'center',fontSize:11}}>
-              <span style={{fontWeight:700,flex:1}}>{d.desc}</span>
-              <span style={{color:'#64748b'}}>Qty:{d.qty} · ${d.rate}/ea</span>
-              <select className="form-select" style={{width:200,fontSize:10}} value={d._assignTo||'all'} onChange={e=>setImp(x=>({...x,decoLines:x.decoLines.map((dl,dli)=>dli===di?{...dl,_assignTo:e.target.value}:dl)}))}>
-                <option value="all">Apply to all items</option>
-                {imp.parsed.filter(p=>!p._skip).map((p,pi)=><option key={pi} value={String(pi)}>{p.sku} — {p.name?.slice(0,30)}</option>)}
-              </select>
-            </div>)}</div>
+        {imp.issues.length>0&&<div style={{marginBottom:12,padding:10,background:'#fef2f2',borderRadius:6}}>
+          <div style={{fontWeight:700,color:'#dc2626',marginBottom:4}}>⚠️ Issues</div>
+          {imp.issues.map((iss,i)=><div key={i} style={{fontSize:11,color:'#dc2626'}}>Line {iss.line}: {iss.msg}</div>)}
         </div>}
 
         <div style={{display:'flex',gap:8}}>
           <button className="btn btn-secondary" onClick={()=>setImp(x=>({...x,step:'upload'}))}>← Back</button>
-          <button className="btn btn-primary" onClick={()=>setImp(x=>({...x,step:x.questions.filter(q=>!q.answer).length>0?'questions':'confirm'}))}>{imp.questions.filter(q=>!q.answer).length>0?'Answer Questions →':'Confirm →'}</button>
+          <button className="btn btn-primary" onClick={()=>setImp(x=>({...x,step:x.questions.length>0?'questions':'confirm'}))}>
+            {imp.questions.length>0?'Answer '+imp.questions.length+' Questions →':'Review & Create →'}
+          </button>
         </div>
       </>}
 
-      {/* STEP 3: Questions */}
+      {/* ═══ STEP 4: Questions ═══ */}
       {imp.step==='questions'&&<>
-        <div style={{fontSize:14,fontWeight:700,marginBottom:12}}>?? A few questions about your import</div>
-        <div style={{fontSize:12,color:'#64748b',marginBottom:16}}>Some items need your input to import correctly. Answer these and we'll finalize everything.</div>
-
-        {imp.questions.map((q,qi)=>{const it=imp.parsed[q.idx];
-          return<div key={qi} className="card" style={{marginBottom:8,borderLeft:q.answer?'3px solid #22c55e':'3px solid #d97706'}}>
-            <div style={{padding:'12px 16px'}}>
-              <div style={{fontSize:12,fontWeight:700,marginBottom:4}}>{q.msg}</div>
-              <div style={{fontSize:10,color:'#64748b',marginBottom:8}}>
-                Item: {it?.sku} — {it?.name?.slice(0,50)} · Qty: {it?.totalQty} · ${it?.rate}/ea
-              </div>
-
-              {q.type==='match'&&<div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-                <button className={`btn btn-sm ${q.answer==='custom'?'btn-primary':'btn-secondary'}`} onClick={()=>applyAnswer(qi,'custom')}>?? Custom / Special Order</button>
-                <button className={`btn btn-sm ${q.answer==='skip'?'btn-primary':'btn-secondary'}`} style={{color:q.answer==='skip'?'white':'#dc2626'}} onClick={()=>applyAnswer(qi,'skip')}>⏭ Skip This Item</button>
-                <div style={{display:'flex',gap:4,alignItems:'center'}}>
-                  <span style={{fontSize:10}}>Or match to:</span>
-                  <select className="form-select" style={{fontSize:10,width:200}} value={q.answer?.startsWith?.('match_')?q.answer:''} onChange={e=>{applyAnswer(qi,e.target.value);
-                    if(e.target.value){const pm=prod.find(p=>p.id===e.target.value.replace('match_',''));if(pm)updItem(q.idx,'catMatch',pm)}}}>
-                    <option value="">Search catalog...</option>
-                    {prod.map(p=><option key={p.id} value={'match_'+p.id}>{p.sku} — {p.name.slice(0,30)} ({p.brand})</option>)}
-                  </select>
-                </div>
+        <div className="card" style={{marginBottom:12}}><div className="card-header"><h2>❓ Clarify Items ({imp.questions.length})</h2></div>
+          <div className="card-body">
+            {imp.questions.map((q,qi)=><div key={qi} style={{padding:10,marginBottom:8,background:q.answer?'#f0fdf4':'#fffbeb',borderRadius:6,border:'1px solid '+(q.answer?'#bbf7d0':'#fde68a')}}>
+              <div style={{fontWeight:600,fontSize:12,marginBottom:6}}>{q.msg}</div>
+              {q.type==='match'&&<div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
+                <button className={`btn btn-sm ${q.answer==='match_catalog'?'btn-primary':'btn-secondary'}`} onClick={()=>applyAnswer(qi,'match_catalog')}>Match to Catalog</button>
+                <button className={`btn btn-sm ${q.answer==='custom'?'btn-primary':'btn-secondary'}`} onClick={()=>applyAnswer(qi,'custom')}>Keep as Custom</button>
+                <button className={`btn btn-sm ${q.answer==='skip'?'btn-primary':'btn-secondary'}`} style={{background:q.answer==='skip'?'#dc2626':undefined,borderColor:q.answer==='skip'?'#dc2626':undefined}} onClick={()=>applyAnswer(qi,'skip')}>Skip</button>
+                {q.answer==='match_catalog'&&<select className="form-select" style={{fontSize:10,width:250}} onChange={e=>{if(e.target.value){applyAnswer(qi,e.target.value);const pm=prod.find(p=>p.sku===e.target.value);if(pm)updItem(q.idx,'catMatch',pm)}}}>
+                  <option value="">Pick from catalog...</option>
+                  {prod.map(p=><option key={p.id} value={p.sku}>{p.sku} — {p.name.slice(0,30)}</option>)}
+                </select>}
               </div>}
-
               {q.type==='sku'&&<div style={{display:'flex',gap:6,alignItems:'center'}}>
                 <input className="form-input" value={q.answer||''} onChange={e=>applyAnswer(qi,e.target.value)} placeholder="Enter real SKU..." style={{width:120,fontSize:11}}/>
                 <select className="form-select" style={{fontSize:10,width:200}} onChange={e=>{if(e.target.value){applyAnswer(qi,e.target.value);const pm=prod.find(p=>p.sku===e.target.value);if(pm)updItem(q.idx,'catMatch',pm)}}}>
@@ -8729,18 +9066,16 @@ export default function App(){
                 </select>
                 <button className={`btn btn-sm ${q.answer==='keep_custom'?'btn-primary':'btn-secondary'}`} onClick={()=>applyAnswer(qi,'keep_custom')}>Keep as Custom</button>
               </div>}
-
               {q.type==='color'&&<input className="form-input" value={q.answer||''} onChange={e=>applyAnswer(qi,e.target.value)} placeholder="Enter color..." style={{width:200,fontSize:11}}/>}
-            </div>
-          </div>})}
-
-        <div style={{display:'flex',gap:8,marginTop:12}}>
+            </div>)}
+          </div></div>
+        <div style={{display:'flex',gap:8}}>
           <button className="btn btn-secondary" onClick={()=>setImp(x=>({...x,step:'review'}))}>← Back</button>
           <button className="btn btn-primary" onClick={()=>setImp(x=>({...x,step:'confirm'}))}>Review Final →</button>
         </div>
       </>}
 
-      {/* STEP 4: Confirm & Create */}
+      {/* ═══ STEP 5: Confirm & Create ═══ */}
       {imp.step==='confirm'&&<>
         {(()=>{
           const c=cust.find(x=>x.id===imp.custId);
@@ -8753,8 +9088,17 @@ export default function App(){
           return<>
             <div className="card" style={{marginBottom:12}}><div className="card-body" style={{padding:16}}>
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-                <div><div style={{fontSize:18,fontWeight:800}}>{imp.docType==='so'?'New Sales Order':'New Estimate'}</div>
-                  <div style={{fontSize:12,color:'#64748b'}}>{c?.name} ({c?.alpha_tag}) · {keeping.length} items · {imp.memo||'Imported from NetSuite'}</div></div>
+                <div>
+                  <div style={{fontSize:18,fontWeight:800}}>
+                    New {imp.docType==='so'?'Sales Order':imp.docType==='est'?'Estimate':imp.docType==='po'?'Purchase Order':'Invoice'}
+                  </div>
+                  <div style={{fontSize:12,color:'#64748b'}}>
+                    {c?.name} ({c?.alpha_tag}) · {keeping.length} items · {imp.memo||'Imported from NetSuite'}
+                  </div>
+                  {imp.externalDocNum&&<div style={{fontSize:11,color:'#6366f1',marginTop:2}}>
+                    📎 NetSuite Ref: #{imp.externalDocNum}{imp.linkedSoId&&<> · 🔗 Linked to {imp.linkedSoId}</>}
+                  </div>}
+                </div>
                 <div style={{textAlign:'right'}}>
                   <div style={{fontSize:24,fontWeight:800,color:'#1e40af'}}>${totalRev.toLocaleString()}</div>
                   {shipAmt>0&&<div style={{fontSize:11,color:'#64748b'}}>+ ${shipAmt.toFixed(2)} shipping</div>}
@@ -8780,6 +9124,14 @@ export default function App(){
                 </tr>})}</tbody></table>
             </div></div>
 
+            {/* Change doc type at final step */}
+            <div style={{display:'flex',gap:8,marginBottom:12}}>
+              <span style={{fontSize:12,fontWeight:600,alignSelf:'center'}}>Create as:</span>
+              {[['so','Sales Order'],['est','Estimate'],['po','Purchase Order'],['inv','Invoice']].map(([v,l])=>
+                <button key={v} className={`btn btn-sm ${imp.docType===v?'btn-primary':'btn-secondary'}`}
+                  onClick={()=>setImp(x=>({...x,docType:v}))}>{l}</button>)}
+            </div>
+
             <div style={{display:'flex',gap:8}}>
               <button className="btn btn-secondary" onClick={()=>setImp(x=>({...x,step:'questions'}))}>← Back</button>
               <button className="btn btn-primary" style={{background:'#166534'}} onClick={()=>{
@@ -8791,33 +9143,68 @@ export default function App(){
                     available_sizes:szKeys.length>0?szKeys.sort((a,b)=>SZ_ORD_I.indexOf(a)-SZ_ORD_I.indexOf(b)):['S','M','L','XL','2XL'],
                     sizes:it.sizes,decorations:[],is_custom:it.is_custom||false,pick_lines:[],po_lines:[]};
                 });
-                // Apply decos
                 imp.decoLines.forEach(d=>{
-                  const dt=d.desc.toLowerCase().includes('embroid')?'embroidery':d.desc.toLowerCase().includes('dtf')?'dtf':'screen_print';
                   const deco={kind:'art',position:'Front Center',art_file_id:null,sell_override:d.rate||0};
                   if(d._assignTo==='all')newItems.forEach(it=>it.decorations.push({...deco}));
                   else{const idx=parseInt(d._assignTo);if(newItems[idx])newItems[idx].decorations.push({...deco})}
                 });
-                // Create the SO or Estimate
+                const nsRef=imp.externalDocNum?'NS Ref: #'+imp.externalDocNum:'';
+                const now=new Date().toLocaleString();
+                const importMemo=imp.memo||('Imported from NetSuite'+(imp.externalDocNum?' #'+imp.externalDocNum:''));
+
                 if(imp.docType==='so'){
-                  const newSO={id:nextSOId(sos),customer_id:imp.custId,memo:imp.memo||'Imported from NetSuite',status:'need_order',
-                    created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),
-                    expected_date:'',production_notes:imp.poRef?'NS Ref: '+imp.poRef:'',shipping_type:shipAmt>0?'flat':'pct',shipping_value:shipAmt||0,
-                    ship_to_id:'default',firm_dates:[],art_files:[],items:newItems};
-                  setSOs(prev=>[newSO,...prev]);
-                  setESO(newSO);setESOC(c);setPg('orders');
-                  nf('?? Imported SO with '+newItems.length+' items from NetSuite');
-                } else {
-                  const newEst={id:nextEstId(ests),customer_id:imp.custId,memo:imp.memo||'Imported from NetSuite',status:'draft',
-                    created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),
+                  const newSO={id:nextSOId(sos),customer_id:imp.custId,memo:importMemo,status:'need_order',
+                    created_by:cu.id,created_at:now,updated_at:now,
+                    expected_date:'',production_notes:nsRef+(imp.linkedSoId?' | Linked: '+imp.linkedSoId:''),
+                    shipping_type:shipAmt>0?'flat':'pct',shipping_value:shipAmt||0,
+                    ship_to_id:'default',firm_dates:[],art_files:[],items:newItems,
+                    _ns_ref:imp.externalDocNum,_import_source:'netsuite'};
+                  setSOs(prev=>[newSO,...prev]);setESO(newSO);setESOC(c);setPg('orders');
+                  nf('✅ Imported SO with '+newItems.length+' items'+(imp.externalDocNum?' (NS #'+imp.externalDocNum+')':''));
+                } else if(imp.docType==='est'){
+                  const newEst={id:nextEstId(ests),customer_id:imp.custId,memo:importMemo,status:'draft',
+                    created_by:cu.id,created_at:now,updated_at:now,
                     default_markup:mk,shipping_type:shipAmt>0?'flat':'pct',shipping_value:shipAmt||0,
-                    ship_to_id:'default',email_status:null,art_files:[],items:newItems};
-                  setEsts(prev=>[newEst,...prev]);
-                  setEEst(newEst);setEEstC(c);setPg('estimates');
-                  nf('?? Imported Estimate with '+newItems.length+' items from NetSuite');
+                    ship_to_id:'default',email_status:null,art_files:[],items:newItems,
+                    _ns_ref:imp.externalDocNum,_import_source:'netsuite'};
+                  setEsts(prev=>[newEst,...prev]);setEEst(newEst);setEEstC(c);setPg('estimates');
+                  nf('✅ Imported Estimate with '+newItems.length+' items'+(imp.externalDocNum?' (NS #'+imp.externalDocNum+')':''));
+                } else if(imp.docType==='inv'){
+                  const newInv={id:nextInvId(invs),so_id:imp.linkedSoId||null,customer_id:imp.custId,
+                    type:'full',memo:importMemo,status:'unpaid',
+                    created_by:cu.id,created_at:now,updated_at:now,
+                    items:newItems.map(it=>({sku:it.sku,name:it.name,qty:it.sizes?Object.values(it.sizes).reduce((a,b)=>a+b,0):0,
+                      unit_price:it.unit_sell,total:it.unit_sell*(it.sizes?Object.values(it.sizes).reduce((a,b)=>a+b,0):0)})),
+                    subtotal:totalRev,tax:imp.pdfParsed?.tax||0,shipping:shipAmt,
+                    total:totalRev+(imp.pdfParsed?.tax||0)+shipAmt,
+                    _ns_ref:imp.externalDocNum,_import_source:'netsuite'};
+                  setInvs(prev=>[newInv,...prev]);setPg('invoices');
+                  nf('✅ Imported Invoice with '+newItems.length+' items'+(imp.externalDocNum?' (NS #'+imp.externalDocNum+')':''));
+                } else if(imp.docType==='po'){
+                  const poMemo=importMemo+(imp.linkedSoId?'\nLinked SO: '+imp.linkedSoId:'');
+                  if(imp.linkedSoId){
+                    const so=sos.find(s=>s.id===imp.linkedSoId);
+                    if(so){
+                      const updated={...so,production_notes:(so.production_notes||'')+(so.production_notes?'\n':'')+nsRef+' | PO imported with '+newItems.length+' items',updated_at:now};
+                      setSOs(prev=>prev.map(s=>s.id===so.id?updated:s));
+                      nf('✅ PO imported and linked to '+imp.linkedSoId);
+                    }
+                  } else {
+                    const newSO={id:nextSOId(sos),customer_id:imp.custId,memo:poMemo,status:'need_order',
+                      created_by:cu.id,created_at:now,updated_at:now,
+                      expected_date:'',production_notes:nsRef+' — Purchase Order import',
+                      shipping_type:shipAmt>0?'flat':'pct',shipping_value:shipAmt||0,
+                      ship_to_id:'default',firm_dates:[],art_files:[],items:newItems,
+                      _ns_ref:imp.externalDocNum,_import_source:'netsuite',_doc_type:'po'};
+                    setSOs(prev=>[newSO,...prev]);setESO(newSO);setESOC(c);setPg('orders');
+                    nf('✅ PO imported as SO with '+newItems.length+' items');
+                  }
                 }
-                setImp({step:'upload',raw:'',docType:'so',custId:'',parsed:[],decoLines:[],issues:[],questions:[],shipping:[],memo:'',poRef:''});
-              }}>?? Create {imp.docType==='so'?'Sales Order':'Estimate'} ({keeping.length} items)</button>
+                setImp({step:'upload',raw:'',docType:'so',custId:'',parsed:[],decoLines:[],issues:[],questions:[],shipping:[],memo:'',poRef:'',
+                  pdfFile:null,pdfText:'',pdfParsed:null,pdfLoading:false,pdfItems:[],linkedSoId:'',externalDocNum:'',importSource:'netsuite'});
+              }}>
+                ✅ Create {imp.docType==='so'?'Sales Order':imp.docType==='est'?'Estimate':imp.docType==='po'?'Purchase Order':'Invoice'} ({keeping.length} items)
+              </button>
             </div>
           </>})()}
       </>}
