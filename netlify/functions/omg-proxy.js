@@ -6,16 +6,16 @@ exports.handler = async (event) => {
   }
 
   // Base URL is configurable — set OMG_API_BASE_URL in Netlify env vars
-  // to match the URL from your OMG API documentation (docs.ordermygear.com)
-  const baseUrl = (process.env.OMG_API_BASE_URL || 'https://api.ordermygear.com/v2').replace(/\/+$/, '');
-  const path = event.queryStringParameters?.path || '/stores';
+  // OMG Pop-up Stores API v1: https://docs.ordermygear.com
+  const baseUrl = (process.env.OMG_API_BASE_URL || 'https://app.ordermygear.com/v1').replace(/\/+$/, '');
+  const path = event.queryStringParameters?.path || '/sales';
   const url = `${baseUrl}${path}`;
 
   try {
     const response = await fetch(url, {
       method: event.httpMethod === 'POST' ? 'POST' : 'GET',
       headers: {
-        'Authorization': `Bearer ${OMG_API_KEY}`,
+        'X-ACCESS-TOKEN': OMG_API_KEY,
         'Accept': 'application/json',
         'Content-Type': 'application/json',
       },

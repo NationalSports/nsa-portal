@@ -1028,36 +1028,52 @@ const omgApiCall = async (endpoint, options = {}) => {
   } catch (error) { console.error('[OMG] API call failed:', endpoint, error); throw error; }
 };
 
-const fetchOMGStores = async () => await omgApiCall('/stores');
+const fetchOMGStores = async () => await omgApiCall('/sales?include=organization');
 
-const fetchOMGStoreDetail = async (storeId) => {
-  const [storeData, orders, products] = await Promise.all([
-    omgApiCall(`/stores/${storeId}`), omgApiCall(`/stores/${storeId}/orders`), omgApiCall(`/stores/${storeId}/products`)
+const fetchOMGStoreDetail = async (saleId) => {
+  const [saleData, orders] = await Promise.all([
+    omgApiCall(`/sales/${saleId}?include=organization`),
+    omgApiCall(`/orders?filter[relationships][sale]=${saleId}&include=sale,customer_info`)
   ]);
-  return { ...storeData, orders: orders?.data || [], products: products?.data || [] };
+  return { ...saleData, orders: orders?.data || [] };
 };
 
-const convertOMGStore = (omgStore, nsaCustomers) => {
+// Convert OMG JSON:API response to NSA store format
+// OMG API v1 returns: { data: { id, type, attributes: {...}, relationships: {...} }, included: [...] }
+const convertOMGStore = (omgResponse, nsaCustomers) => {
+  // Handle both single resource and already-unwrapped formats
+  const resource = omgResponse.data || omgResponse;
+  const attrs = resource.attributes || resource;
+  const rels = resource.relationships || {};
+  const included = omgResponse.included || [];
+
+  // Find organization name from included resources
+  const orgRel = rels.organization?.data;
+  const orgIncluded = orgRel ? included.find(i => i.id === orgRel.id && i.type === orgRel.type) : null;
+  const orgName = orgIncluded?.attributes?.name || '';
+
   const matchedCustomer = nsaCustomers.find(c =>
-    c.name.toLowerCase().includes(omgStore.customer_name?.toLowerCase() || '') ||
-    c.contacts?.some(contact => contact.email?.toLowerCase() === omgStore.customer_email?.toLowerCase())
+    (orgName && c.name.toLowerCase().includes(orgName.toLowerCase())) ||
+    (attrs.name && c.name.toLowerCase().includes(attrs.name.toLowerCase()))
   );
+
+  // Map OMG status to NSA status (OMG: open, closed, pending, ordered, fulfilled, scheduled, finalized, archived)
+  const statusMap = { open: 'open', closed: 'closed', finalized: 'closed', archived: 'closed', fulfilled: 'closed' };
+  const nsaStatus = statusMap[attrs.status] || 'draft';
+
   return {
-    id: `OMG-${omgStore.id}`, store_name: omgStore.name || omgStore.title,
+    id: `OMG-${resource.id}`, store_name: attrs.name || attrs.sale_code,
     customer_id: matchedCustomer?.id || null, rep_id: matchedCustomer?.primary_rep_id || 'r1',
-    status: omgStore.status === 'active' ? 'open' : omgStore.status === 'completed' ? 'closed' : 'draft',
-    open_date: omgStore.start_date ? new Date(omgStore.start_date).toLocaleDateString() : '',
-    close_date: omgStore.end_date ? new Date(omgStore.end_date).toLocaleDateString() : '',
-    orders: omgStore.orders?.length || 0, total_sales: omgStore.total_revenue || 0,
-    fundraise_total: omgStore.fundraise_amount || 0, items_sold: omgStore.total_items_sold || 0,
-    unique_buyers: omgStore.unique_customers || 0,
-    products: (omgStore.products || []).map(p => ({
-      sku: p.sku || p.item_number, name: p.name || p.title, color: p.color || p.color_name,
-      retail: p.retail_price || p.price, cost: p.wholesale_cost || p.cost,
-      deco_type: p.decoration_type || 'screen_print', deco_cost: p.decoration_cost || 0,
-      sizes: p.sizes_sold || {}
-    })),
-    _omg_source: true, _omg_id: omgStore.id, _last_synced: new Date().toISOString()
+    status: nsaStatus,
+    open_date: attrs.opens_at ? new Date(attrs.opens_at).toLocaleDateString() : '',
+    close_date: attrs.expires_at ? new Date(attrs.expires_at).toLocaleDateString() : '',
+    orders: omgResponse.orders?.length || 0, total_sales: 0,
+    fundraise_total: 0, items_sold: 0, unique_buyers: 0,
+    products: [],
+    subdomain: attrs.subdomain || '',
+    channel_type: attrs.channel_type || 'pop-up',
+    _omg_source: true, _omg_id: resource.id, _omg_sale_code: attrs.sale_code,
+    _last_synced: new Date().toISOString()
   };
 };
 
