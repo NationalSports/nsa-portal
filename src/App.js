@@ -1035,7 +1035,12 @@ const fetchOMGStoreDetail = async (saleId) => {
     omgApiCall(`/sales/${saleId}?include=organization`),
     omgApiCall(`/orders?filter[relationships][sale]=${saleId}&include=sale,customer_info`)
   ]);
-  return { ...saleData, orders: orders?.data || [] };
+  const orderList = orders?.data || [];
+  // Fetch order products for each order to get real item/product data
+  const orderProducts = await Promise.all(
+    orderList.map(o => omgApiCall(`/order_products?filter[relationships][order]=${o.id}&include=product`).catch(() => ({ data: [], included: [] })))
+  );
+  return { ...saleData, orders: orderList, orderProducts };
 };
 
 // Convert OMG JSON:API response to NSA store format
@@ -1061,15 +1066,59 @@ const convertOMGStore = (omgResponse, nsaCustomers) => {
   const statusMap = { open: 'open', closed: 'closed', finalized: 'closed', archived: 'closed', fulfilled: 'closed' };
   const nsaStatus = statusMap[attrs.status] || 'draft';
 
+  // Aggregate order product data across all orders
+  const allOrderProducts = (omgResponse.orderProducts || []).flatMap(resp => resp?.data || []);
+  const allIncluded = (omgResponse.orderProducts || []).flatMap(resp => resp?.included || []);
+
+  // Build product map from included resources (type "product")
+  const productMap = {};
+  allIncluded.filter(i => i.type === 'product' || i.type === 'products').forEach(p => { productMap[p.id] = p.attributes; });
+
+  // Calculate totals from order products
+  let totalItems = 0;
+  let totalSales = 0;
+  let fundraiseTotal = 0;
+  const productSummary = {};
+
+  allOrderProducts.forEach(op => {
+    const opAttrs = op.attributes || {};
+    const qty = opAttrs.quantity || 0;
+    totalItems += qty;
+
+    // Look up product details from included resources
+    const productRel = op.relationships?.product?.data;
+    const product = productRel ? productMap[productRel.id] : null;
+    const basePrice = product?.base_price || 0;
+    totalSales += basePrice * qty;
+
+    // Track unique products by SKU
+    const sku = opAttrs.sku || product?.style || op.id;
+    if (!productSummary[sku]) {
+      productSummary[sku] = {
+        sku, name: product?.name || '', style: product?.style || '',
+        retail: basePrice, cost: product?.cogs || 0,
+        deco_type: '', deco_cost: 0, qty: 0
+      };
+    }
+    productSummary[sku].qty += qty;
+  });
+
+  // Count unique buyers from customer_info on orders
+  const buyerIds = new Set((omgResponse.orders || []).map(o => o.relationships?.customer_info?.data?.id).filter(Boolean));
+
   return {
     id: `OMG-${resource.id}`, store_name: attrs.name || attrs.sale_code,
     customer_id: matchedCustomer?.id || null, rep_id: matchedCustomer?.primary_rep_id || 'r1',
     status: nsaStatus,
     open_date: attrs.opens_at ? new Date(attrs.opens_at).toLocaleDateString() : '',
     close_date: attrs.expires_at ? new Date(attrs.expires_at).toLocaleDateString() : '',
-    orders: omgResponse.orders?.length || 0, total_sales: 0,
-    fundraise_total: 0, items_sold: 0, unique_buyers: 0,
-    products: [],
+    orders: omgResponse.orders?.length || 0, total_sales: totalSales,
+    fundraise_total: fundraiseTotal, items_sold: totalItems,
+    unique_buyers: buyerIds.size,
+    products: Object.values(productSummary).map(p => ({
+      sku: p.sku, name: p.name, color: '', retail: p.retail, cost: p.cost,
+      deco_type: p.deco_type, deco_cost: p.deco_cost, sizes: {}
+    })),
     subdomain: attrs.subdomain || '',
     channel_type: attrs.channel_type || 'pop-up',
     _omg_source: true, _omg_id: resource.id, _omg_sale_code: attrs.sale_code,
