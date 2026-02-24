@@ -5210,7 +5210,7 @@ export default function App(){
 
   // PRODUCT DETAIL VIEW
   const ProductDetail=({product,onBack})=>{
-    const[ep,setEp]=useState({...product});const[editing,setEditing]=useState(false);const[tab,setTab]=useState('history');
+    const[ep,setEp]=useState({...product});const[editing,setEditing]=useState(false);const[tab,setTab]=useState('history');const[salesYr,setSalesYr]=useState(new Date().getFullYear());
     const v=vend.find(x=>x.id===ep.vendor_id);
     // Find all orders this product appears on
     const pEsts=ests.filter(e=>e.items?.some(it=>it.product_id===product.id||it.sku===product.sku));
@@ -5218,6 +5218,18 @@ export default function App(){
     const pJobs=[];pSOs.forEach(so=>{buildJobs(so).forEach(j=>{if(j.items?.some(gi=>gi.sku===product.sku))pJobs.push({...j,soId:so.id,soMemo:so.memo,customer:cust.find(c=>c.id===so.customer_id)})})});
     const pPOs=[];pSOs.forEach(so=>{so.items?.forEach(it=>{if(it.product_id===product.id||it.sku===product.sku){(it.po_lines||[]).forEach(po=>{pPOs.push({...po,soId:so.id,sku:it.sku,name:it.name,customer:cust.find(c=>c.id===so.customer_id)})})}})});
     const pInvs=invs.filter(inv=>pSOs.some(s=>s.id===inv.so_id));
+    // Sales volume by month
+    const parseDt=(d)=>{if(!d)return null;const m=d.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);if(!m)return null;let y=parseInt(m[3]);if(y<100)y+=2000;return{m:parseInt(m[1])-1,y}};
+    const salesYears=[...new Set(pSOs.map(s=>parseDt(s.created_at)?.y).filter(Boolean))].sort((a,b)=>b-a);
+    if(salesYears.length>0&&!salesYears.includes(salesYr))setSalesYr(salesYears[0]);
+    const MONTHS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const monthlyData=MONTHS.map((_,mi)=>{let units=0,revenue=0,orders=0;
+      pSOs.forEach(so=>{const dt=parseDt(so.created_at);if(!dt||dt.y!==salesYr||dt.m!==mi)return;
+        so.items?.forEach(it=>{if(it.product_id!==product.id&&it.sku!==product.sku)return;
+          const qty=Object.values(safeSizes(it)).reduce((a,v2)=>a+v2,0);units+=qty;revenue+=qty*(it.unit_sell||0);orders++})});
+      return{month:MONTHS[mi],units,revenue,orders}});
+    const totalUnits=monthlyData.reduce((a,m)=>a+m.units,0);const totalRev=monthlyData.reduce((a,m)=>a+m.revenue,0);const totalOrders=monthlyData.reduce((a,m)=>a+m.orders,0);
+    const maxUnits=Math.max(...monthlyData.map(m=>m.units),1);
     const saveProduct=()=>{setProd(p=>p.map(x=>x.id===ep.id?ep:x));setEditing(false);nf('Product updated');setSelP(ep)};
     const nt=Object.values(ep._inv||{}).reduce((a,v2)=>a+v2,0);
     return(<div>
@@ -5274,11 +5286,12 @@ export default function App(){
         <div className="stat-card"><div className="stat-label">POs</div><div className="stat-value" style={{color:'#7c3aed'}}>{pPOs.length}</div></div>
         <div className="stat-card"><div className="stat-label">Jobs</div><div className="stat-value" style={{color:'#0891b2'}}>{pJobs.length}</div></div>
         <div className="stat-card"><div className="stat-label">Invoices</div><div className="stat-value" style={{color:'#059669'}}>{pInvs.length}</div></div>
+        <div className="stat-card" style={{borderColor:'#10b981'}}><div className="stat-label">Units Sold ({salesYr})</div><div className="stat-value" style={{color:'#059669'}}>{totalUnits}</div></div>
       </div>
 
       {/* Tabs */}
       <div style={{display:'flex',gap:4,marginBottom:12}}>
-        {[['history','Order History'],['estimates','Estimates'],['pos','POs'],['jobs','Jobs'],['invoices','Invoices']].map(([k,label])=>
+        {[['history','Order History'],['sales','Sales Volume'],['estimates','Estimates'],['pos','POs'],['jobs','Jobs'],['invoices','Invoices']].map(([k,label])=>
           <button key={k} className={`btn btn-sm ${tab===k?'btn-primary':'btn-secondary'}`} onClick={()=>setTab(k)}>{label}</button>)}
       </div>
 
@@ -5309,6 +5322,43 @@ export default function App(){
           </tr>)}
         {pEsts.length+pSOs.length+pPOs.length+pJobs.length+pInvs.length===0&&<tr><td colSpan={7} style={{textAlign:'center',color:'#94a3b8',padding:20}}>No orders found for this product</td></tr>}
         </tbody></table></div></div>}
+
+      {/* SALES VOLUME TAB */}
+      {tab==='sales'&&<div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+        <h3>Sales Volume by Month</h3>
+        <select className="form-select" style={{width:100}} value={salesYr} onChange={e=>setSalesYr(parseInt(e.target.value))}>
+          {(salesYears.length>0?salesYears:[new Date().getFullYear()]).map(y=><option key={y} value={y}>{y}</option>)}
+        </select>
+      </div><div className="card-body">
+        {/* Summary stats */}
+        <div style={{display:'flex',gap:24,marginBottom:20,flexWrap:'wrap'}}>
+          <div><div style={{fontSize:11,color:'#64748b',textTransform:'uppercase'}}>Total Units</div><div style={{fontSize:24,fontWeight:800,color:'#1e40af'}}>{totalUnits}</div></div>
+          <div><div style={{fontSize:11,color:'#64748b',textTransform:'uppercase'}}>Revenue</div><div style={{fontSize:24,fontWeight:800,color:'#059669'}}>${totalRev.toLocaleString(undefined,{maximumFractionDigits:0})}</div></div>
+          <div><div style={{fontSize:11,color:'#64748b',textTransform:'uppercase'}}>Line Items</div><div style={{fontSize:24,fontWeight:800,color:'#7c3aed'}}>{totalOrders}</div></div>
+          <div><div style={{fontSize:11,color:'#64748b',textTransform:'uppercase'}}>Avg/Month</div><div style={{fontSize:24,fontWeight:800,color:'#d97706'}}>{totalUnits>0?Math.round(totalUnits/12):0}</div></div>
+        </div>
+        {/* Bar chart */}
+        <div style={{display:'flex',alignItems:'flex-end',gap:4,height:180,marginBottom:16,padding:'0 4px'}}>
+          {monthlyData.map((m,i)=>{const h=maxUnits>0?(m.units/maxUnits)*150:0;const isNow=salesYr===new Date().getFullYear()&&i===new Date().getMonth();
+            return<div key={i} style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:2}}>
+              <span style={{fontSize:10,fontWeight:700,color:m.units>0?'#1e293b':'#cbd5e1'}}>{m.units>0?m.units:''}</span>
+              <div style={{width:'100%',maxWidth:40,height:Math.max(h,2),background:m.units>0?(isNow?'#2563eb':'#93c5fd'):'#f1f5f9',borderRadius:'4px 4px 0 0',transition:'height 0.3s'}}/>
+              <span style={{fontSize:9,color:isNow?'#1e40af':'#94a3b8',fontWeight:isNow?800:400}}>{m.month}</span>
+            </div>})}
+        </div>
+        {/* Monthly table */}
+        <table><thead><tr><th>Month</th><th>Units Sold</th><th>Revenue</th><th># Orders</th><th>Avg Sell Price</th></tr></thead><tbody>
+          {monthlyData.map((m,i)=><tr key={i} style={{opacity:m.units===0?0.4:1}}>
+            <td style={{fontWeight:700}}>{m.month} {salesYr}</td>
+            <td style={{fontWeight:800,color:m.units>0?'#1e40af':'#94a3b8'}}>{m.units}</td>
+            <td style={{fontWeight:700,color:m.revenue>0?'#059669':'#94a3b8'}}>${m.revenue.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+            <td>{m.orders}</td>
+            <td>{m.units>0?'$'+(m.revenue/m.units).toFixed(2):'—'}</td></tr>)}
+          <tr style={{fontWeight:800,borderTop:'2px solid #e2e8f0',background:'#f8fafc'}}>
+            <td>Total</td><td style={{color:'#1e40af'}}>{totalUnits}</td><td style={{color:'#059669'}}>${totalRev.toLocaleString(undefined,{maximumFractionDigits:0})}</td><td>{totalOrders}</td>
+            <td>{totalUnits>0?'$'+(totalRev/totalUnits).toFixed(2):'—'}</td></tr>
+        </tbody></table>
+      </div></div>}
 
       {/* ESTIMATES TAB */}
       {tab==='estimates'&&<div className="card"><div className="card-header"><h3>Estimates ({pEsts.length})</h3></div><div className="card-body" style={{padding:0}}>
