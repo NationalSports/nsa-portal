@@ -1351,10 +1351,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
   };
   const addSzToItem=(i,sz)=>{const it=o.items[i];if(!it.available_sizes.includes(sz))uI(i,'available_sizes',[...it.available_sizes,sz]);setShowSzPicker(null)};
   const NUM_SZ={heat_transfer:['1"','1.5"','2"','3"','4"','5"','6"','8"','10"'],embroidery:['0.5"','0.75"','1"','1.5"','2"'],screen_print:['4"','6"','8"','10"']};
-  const addArtDeco=i=>{uI(i,'decorations',[...o.items[i].decorations,{kind:'art',position:'Front Center',art_file_id:null,sell_override:null}])};
-  const addNumDeco=i=>{uI(i,'decorations',[...o.items[i].decorations,{kind:'numbers',position:'Back Center',num_method:'heat_transfer',num_size:'4"',two_color:false,sell_override:null,custom_font_art_id:null,roster:{}}])};
-  const addNameDeco=i=>{uI(i,'decorations',[...o.items[i].decorations,{kind:'names',position:'Back Center',sell_override:null,sell_each:6,cost_each:3,names:{}}])};
-  const addOutsideDeco=i=>{uI(i,'decorations',[...o.items[i].decorations,{kind:'outside_deco',position:'Front Center',vendor:'',deco_type:'embroidery',cost_each:0,sell_each:0,notes:'',sell_override:null}])};
+  const addArtDeco=i=>{const it=o.items[i];sv('items',safeItems(o).map((x,xi)=>xi===i?{...x,no_deco:false,decorations:[...x.decorations,{kind:'art',position:'Front Center',art_file_id:null,sell_override:null}]}:x))};
+  const addNumDeco=i=>{const it=o.items[i];sv('items',safeItems(o).map((x,xi)=>xi===i?{...x,no_deco:false,decorations:[...x.decorations,{kind:'numbers',position:'Back Center',num_method:'heat_transfer',num_size:'4"',two_color:false,sell_override:null,custom_font_art_id:null,roster:{}}]}:x))};
+  const addNameDeco=i=>{const it=o.items[i];sv('items',safeItems(o).map((x,xi)=>xi===i?{...x,no_deco:false,decorations:[...x.decorations,{kind:'names',position:'Back Center',sell_override:null,sell_each:6,cost_each:3,names:{}}]}:x))};
+  const addOutsideDeco=i=>{const it=o.items[i];sv('items',safeItems(o).map((x,xi)=>xi===i?{...x,no_deco:false,decorations:[...x.decorations,{kind:'outside_deco',position:'Front Center',vendor:'',deco_type:'embroidery',cost_each:0,sell_each:0,notes:'',sell_override:null}]}:x))};
   const uD=(ii,di,k,v)=>{uI(ii,'decorations',o.items[ii].decorations.map((d,i)=>i===di?{...d,[k]:v}:d))};
   const uDM=(ii,di,updates)=>{uI(ii,'decorations',o.items[ii].decorations.map((d,i)=>i===di?{...d,...updates}:d))};
   const rmD=(ii,di)=>{uI(ii,'decorations',o.items[ii].decorations.filter((_,i)=>i!==di))};
@@ -1802,7 +1802,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                     <button onClick={()=>rmD(idx,di)} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626'}}><Icon name="x" size={14}/></button>
                   </div></div></div>)}
             // NUMBERS decoration
-            {const nm=deco.num_method||'heat_transfer';const szOpts=NUM_SZ[nm]||[];
+            if(deco.kind==='numbers'){const nm=deco.num_method||'heat_transfer';const szOpts=NUM_SZ[nm]||[];
             const sizedQtys=Object.entries(item.sizes).filter(([,v])=>v>0).sort((a,b)=>{const ord=['XS','S','M','L','XL','2XL','3XL','4XL','LT','XLT','2XLT','3XLT'];return(ord.indexOf(a[0])===-1?99:ord.indexOf(a[0]))-(ord.indexOf(b[0])===-1?99:ord.indexOf(b[0]))});
             const roster=deco.roster||{};
             const filledNums=Object.values(roster).flat().filter(v=>v&&v.trim()).length;
@@ -1953,9 +1953,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
             <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>addNumDeco(idx)}>#️⃣ + Numbers</button>
             <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>addNameDeco(idx)}>🏷️ + Names</button>
             <button className="btn btn-sm btn-secondary" style={{fontSize:11,background:'#faf5ff',borderColor:'#ddd6fe',color:'#7c3aed'}} onClick={()=>addOutsideDeco(idx)}>🎨 + Outside Deco</button>
-            {safeDecos(item).length===0&&!item.no_deco&&<button className="btn btn-sm" style={{background:'#fef3c7',color:'#92400e',border:'1px solid #f59e0b',fontSize:10}} onClick={()=>uI(idx,'no_deco',true)}>✓ No Deco (Blank)</button>}
+            {safeDecos(item).length===0&&!item.no_deco&&qty>0&&<button className="btn btn-sm" style={{background:'#fef3c7',color:'#92400e',border:'1px solid #f59e0b',fontSize:10}} onClick={()=>uI(idx,'no_deco',true)}>✓ No Deco (Blank)</button>}
             {item.no_deco&&<span style={{fontSize:10,padding:'3px 8px',borderRadius:4,background:'#f1f5f9',color:'#64748b',fontWeight:600,display:'flex',alignItems:'center',gap:4}}>🚫 No Decoration <button onClick={()=>uI(idx,'no_deco',false)} style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',fontSize:12,padding:0,marginLeft:2}}>✕</button></span>}
-            {safeDecos(item).length===0&&!item.no_deco&&<span style={{fontSize:10,color:'#dc2626',fontWeight:600}}>⚠️ No deco assigned</span>}
+            {safeDecos(item).length===0&&!item.no_deco&&qty>0&&<span style={{fontSize:10,color:'#dc2626',fontWeight:600}}>⚠️ No deco assigned</span>}
           </div>
         </div>
       </div>)})}
