@@ -1606,7 +1606,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
   const isAU=b=>b==='Adidas'||b==='Under Armour'||b==='New Balance';const tD={A:0.4,B:0.35,C:0.3};
   const selC=id=>{const c=allCustomers.find(x=>x.id===id);if(c){setCust(c);sv('customer_id',id);sv('default_markup',c.catalog_markup||1.65)}};
   const addP=p=>{const au=isAU(p.brand);const sell=au?rQ(p.retail_price*(1-(tD[cust?.adidas_ua_tier||'B']||0.35))):rQ(p.nsa_cost*(o.default_markup||1.65));
-    sv('items',[...o.items,{product_id:p.id,sku:p.sku,name:p.name,brand:p.brand,color:p.color,nsa_cost:p.nsa_cost,retail_price:p.retail_price,unit_sell:sell,available_sizes:[...p.available_sizes],_colors:p._colors||null,sizes:{},decorations:isE?[{kind:'art',art_file_id:'__tbd',art_tbd_type:'screen_print',position:'',sell_override:0}]:[]}]);setShowAdd(false);setPS('')};
+    sv('items',[...o.items,{product_id:p.id,sku:p.sku,name:p.name,brand:p.brand,vendor_id:p.vendor_id||null,color:p.color,nsa_cost:p.nsa_cost,retail_price:p.retail_price,unit_sell:sell,available_sizes:[...p.available_sizes],_colors:p._colors||null,sizes:{},decorations:isE?[{kind:'art',art_file_id:'__tbd',art_tbd_type:'screen_print',position:'',sell_override:0}]:[]}]);setShowAdd(false);setPS('')};
   const uI=(i,k,v)=>sv('items',safeItems(o).map((it,x)=>x===i?{...it,[k]:v}:it));const rmI=i=>sv('items',safeItems(o).filter((_,x)=>x!==i));
   const copyI=(i)=>{const it=o.items[i];const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];clone.sizes={};sv('items',[...o.items,clone]);nf('📋 Copied '+it.sku+' — adjust sizes on the new item')};
   const uSz=(i,sz,v)=>{
@@ -2875,8 +2875,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
 
     {showPO&&(()=>{
       // Vendor selection or PO form
-      const vendorMap={};safeItems(o).forEach((it,i)=>{const vk=it.vendor_id||D_V.find(v=>v.name===it.brand)?.id;if(!vk)return;if(!vendorMap[vk])vendorMap[vk]=[];vendorMap[vk].push({...it,_idx:i})});
-      const unlinkedItems=safeItems(o).filter(it=>{const vk=it.vendor_id||D_V.find(v=>v.name===it.brand)?.id;return!vk&&Object.values(safeSizes(it)).some(v=>safeNum(v)>0)});
+      const resolveVendor=it=>it.vendor_id||D_V.find(v=>v.name===it.brand)?.id||(it.product_id&&products.find(p=>p.id===it.product_id)?.vendor_id)||null;
+      const vendorMap={};safeItems(o).forEach((it,i)=>{const vk=resolveVendor(it);if(!vk)return;if(!vendorMap[vk])vendorMap[vk]=[];vendorMap[vk].push({...it,_idx:i})});
+      const unlinkedItems=safeItems(o).filter(it=>{const vk=resolveVendor(it);return!vk&&Object.values(safeSizes(it)).some(v=>safeNum(v)>0)});
       if(showPO==='select')return<div className="modal-overlay" onClick={()=>setShowPO(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:500}}>
         <div className="modal-header"><h2>Create PO — Select Vendor</h2><button className="modal-close" onClick={()=>setShowPO(null)}>x</button></div>
         <div className="modal-body">{Object.entries(vendorMap).map(([vk,items])=>{const vn=D_V.find(v=>v.id===vk)?.name||vk;
@@ -2910,7 +2911,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         const decoVendor=showPO.replace('deco:','');
         const allItems=safeItems(o).map((it,i)=>({...it,_idx:i})).filter(it=>{
           const q=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return q>0});
-        const poId='DPO-'+poCounter;
+        const poId='DPO-'+poCounter+(cust?.alpha_tag?'-'+cust.alpha_tag:'');
         return<div className="modal-overlay" onClick={()=>setShowPO(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:800,maxHeight:'90vh',overflow:'auto'}}>
           <div className="modal-header"><h2 style={{color:'#7c3aed'}}>🎨 Deco PO — {decoVendor}</h2><button className="modal-close" onClick={()=>setShowPO(null)}>x</button></div>
           <div className="modal-body">
@@ -2973,7 +2974,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       }
       // PO form for selected vendor — only show sizes that still need ordering (subtract picks + existing POs)
       const vItems=vendorMap[showPO]||[];const vn=D_V.find(v=>v.id===showPO)?.name||showPO;
-      const poId='PO-'+poCounter;
+      const poId='PO-'+poCounter+(cust?.alpha_tag?'-'+cust.alpha_tag:'');
       const batchKey=Object.keys(BATCH_VENDORS).find(k=>vn.toLowerCase().includes(k)||showPO.toLowerCase().includes(k));
       const isBatchEligible=!!batchKey;
       const batchConfig=batchKey?BATCH_VENDORS[batchKey]:null;
