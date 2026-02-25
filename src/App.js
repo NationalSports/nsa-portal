@@ -168,7 +168,13 @@ const _dbSaveSO = async (so) => {
   try{
     const{items,art_files,firm_dates,jobs,...soRow}=so;
     await supabase.from('sales_orders').upsert(soRow,{onConflict:'id'});
-    // Delete old children, re-insert
+    // Delete old children — must delete grandchildren (decorations/picks/POs) BEFORE so_items due to FK constraints
+    const oldItemIds=(await supabase.from('so_items').select('id').eq('so_id',so.id)).data?.map(i=>i.id)||[];
+    if(oldItemIds.length){
+      await supabase.from('so_item_decorations').delete().in('so_item_id',oldItemIds);
+      await supabase.from('so_item_pick_lines').delete().in('so_item_id',oldItemIds);
+      await supabase.from('so_item_po_lines').delete().in('so_item_id',oldItemIds);
+    }
     await supabase.from('so_items').delete().eq('so_id',so.id);
     await supabase.from('so_jobs').delete().eq('so_id',so.id);
     await supabase.from('so_firm_dates').delete().eq('so_id',so.id);
@@ -5370,6 +5376,7 @@ export default function App(){
   const[eEst,setEEst]=useState(null);const[eEstC,setEEstC]=useState(null);const[eSO,setESO]=useState(null);const[eSOC,setESOC]=useState(null);const[eSOTab,setESOTab]=useState(null);const[eSOScrollItem,setESOScrollItem]=useState(null);const[eSOScrollJob,setESOScrollJob]=useState(null);
   const[gQ,setGQ]=useState('');const[gOpen,setGOpen]=useState(false);const[mF,setMF]=useState('all');const[rF,setRF]=useState('all');const[pF,setPF]=useState({cat:'all',vnd:'all',stk:'all',clr:'all'});
   const[qPC,setQPC]=useState({open:false,mode:'single',items:[],bulkRaw:''});
+  const[poF,setPOF]=useState({status:'all',vendor:'all',search:'',sort:'date_desc'});
   // OMG Team Stores
   const[omgFilter,setOmgFilter]=useState({rep:'all',status:'all',search:''});const[omgSel,setOmgSel]=useState(null);
   const[soF,setSOF]=useState({status:'all',rep:'all',search:'',sort:'date_desc'});
@@ -7039,6 +7046,98 @@ export default function App(){
         </div>
       })()}
     </>);
+  };
+  // ─── PURCHASE ORDERS PAGE ───
+  const rPOs=()=>{
+    // Build flat list of ALL PO lines across every SO + submitted batches
+    const allPOs=[];
+    sos.forEach(so=>{const c2=cust.find(x=>x.id===so.customer_id);
+      safeItems(so).forEach((it,idx)=>{safePOs(it).forEach((po,pli)=>{
+        const szKeys=Object.keys(po).filter(k=>!['status','po_id','received','shipments','cancelled','vendor','created_at','expected_date','memo','po_type','unit_cost'].includes(k)&&typeof po[k]==='number');
+        const totalOrd=szKeys.reduce((a,sz)=>a+(po[sz]||0),0);
+        const rcvd=po.received||{};const cncl=po.cancelled||{};
+        const totalRcvd=szKeys.reduce((a,sz)=>a+(rcvd[sz]||0),0);
+        const totalCncl=szKeys.reduce((a,sz)=>a+(cncl[sz]||0),0);
+        const totalOpen=szKeys.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-(rcvd[sz]||0)-(cncl[sz]||0)),0);
+        const st=totalOpen<=0&&totalRcvd>0?'received':totalRcvd>0?'partial':'waiting';
+        allPOs.push({po_id:po.po_id||`${so.id}-PO-${pli+1}`,vendor:po.vendor||'',status:st,so_id:so.id,so,customer:c2?.alpha_tag||c2?.name||'',soMemo:so.memo,itemSku:it.sku||'',itemName:it.name||'',totalOrd,totalRcvd,totalCncl,totalOpen,created_at:po.created_at||so.created_at||'',expected_date:po.expected_date||'',memo:po.memo||'',source:'so'})
+      })})});
+    // Add submitted batches
+    submittedBatches.forEach(sb=>{
+      const totalOrd=sb.total_units||0;const st=sb.status||'waiting';
+      const soIds=(sb.source_pos||[]).map(sp=>sp.so_id).filter(Boolean);
+      const customers=(sb.source_pos||[]).map(sp=>sp.customer).filter(Boolean);
+      allPOs.push({po_id:sb.po_number,vendor:sb.vendor_name||'',status:st,so_id:soIds.join(', '),so:sos.find(x=>x.id===soIds[0]),customer:customers.join(', '),soMemo:soIds.join(', '),itemSku:'',itemName:`Batch: ${sb.total_units||0} units`,totalOrd,totalRcvd:st==='received'?totalOrd:0,totalCncl:0,totalOpen:st==='received'?0:totalOrd,created_at:sb.submitted_at||'',expected_date:'',memo:'',source:'batch'})
+    });
+    // Dedup by po_id (keep first occurrence)
+    const seen=new Set();const dedupPOs=[];allPOs.forEach(po=>{if(!seen.has(po.po_id)){seen.add(po.po_id);dedupPOs.push(po)}});
+    // Extract unique vendors for filter
+    const allVendors=[...new Set(dedupPOs.map(p=>p.vendor).filter(Boolean))].sort();
+    // Apply filters
+    let fPOs=dedupPOs;
+    if(poF.status!=='all')fPOs=fPOs.filter(p=>p.status===poF.status);
+    if(poF.vendor!=='all')fPOs=fPOs.filter(p=>p.vendor===poF.vendor);
+    if(poF.search){const ss=poF.search.toLowerCase();fPOs=fPOs.filter(p=>p.po_id.toLowerCase().includes(ss)||p.vendor.toLowerCase().includes(ss)||p.so_id.toLowerCase().includes(ss)||p.customer.toLowerCase().includes(ss)||p.itemSku.toLowerCase().includes(ss)||p.itemName.toLowerCase().includes(ss)||p.memo.toLowerCase().includes(ss))}
+    // Sort
+    if(poF.sort==='date_desc')fPOs.sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||''));
+    else if(poF.sort==='date_asc')fPOs.sort((a,b)=>(a.created_at||'').localeCompare(b.created_at||''));
+    else if(poF.sort==='vendor')fPOs.sort((a,b)=>a.vendor.localeCompare(b.vendor));
+    else if(poF.sort==='po_id')fPOs.sort((a,b)=>a.po_id.localeCompare(b.po_id));
+    else if(poF.sort==='customer')fPOs.sort((a,b)=>a.customer.localeCompare(b.customer));
+    else if(poF.sort==='status')fPOs.sort((a,b)=>a.status.localeCompare(b.status));
+    // Stats
+    const waitCount=dedupPOs.filter(p=>p.status==='waiting').length;
+    const partCount=dedupPOs.filter(p=>p.status==='partial').length;
+    const rcvdCount=dedupPOs.filter(p=>p.status==='received').length;
+    const totalOpenUnits=dedupPOs.reduce((a,p)=>a+p.totalOpen,0);
+    const activeFilters=poF.status!=='all'||poF.vendor!=='all'||poF.search;
+    return<>
+      {/* Stat cards */}
+      <div className="stat-grid" style={{gridTemplateColumns:'repeat(4,1fr)',marginBottom:16}}>
+        <div className="stat-card" style={{cursor:'pointer',outline:poF.status==='all'?'2px solid #2563eb':'none',borderRadius:8}} onClick={()=>setPOF(f=>({...f,status:'all'}))}>
+          <div className="stat-value">{dedupPOs.length}</div><div className="stat-label">Total POs</div></div>
+        <div className="stat-card" style={{cursor:'pointer',outline:poF.status==='waiting'?'2px solid #d97706':'none',borderRadius:8}} onClick={()=>setPOF(f=>({...f,status:f.status==='waiting'?'all':'waiting'}))}>
+          <div className="stat-value" style={{color:'#d97706'}}>{waitCount}</div><div className="stat-label">Waiting</div></div>
+        <div className="stat-card" style={{cursor:'pointer',outline:poF.status==='partial'?'2px solid #2563eb':'none',borderRadius:8}} onClick={()=>setPOF(f=>({...f,status:f.status==='partial'?'all':'partial'}))}>
+          <div className="stat-value" style={{color:'#2563eb'}}>{partCount}</div><div className="stat-label">Partial</div></div>
+        <div className="stat-card" style={{cursor:'pointer',outline:poF.status==='received'?'2px solid #059669':'none',borderRadius:8}} onClick={()=>setPOF(f=>({...f,status:f.status==='received'?'all':'received'}))}>
+          <div className="stat-value" style={{color:'#059669'}}>{rcvdCount}</div><div className="stat-label">Received</div></div>
+      </div>
+      {/* Open units banner */}
+      {totalOpenUnits>0&&<div style={{padding:'8px 16px',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:8,fontSize:13,fontWeight:600,color:'#92400e',marginBottom:12}}>
+        {totalOpenUnits} unit{totalOpenUnits!==1?'s':''} still open across all POs
+      </div>}
+      {/* Filters */}
+      <div style={{display:'flex',gap:8,marginBottom:12,flexWrap:'wrap',alignItems:'center'}}>
+        <div className="search-bar" style={{margin:0,flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search POs..." value={poF.search} onChange={e=>setPOF(f=>({...f,search:e.target.value}))}/>{poF.search&&<button onClick={()=>setPOF(f=>({...f,search:''}))} style={{background:'none',border:'none',cursor:'pointer'}}><Icon name="x" size={14}/></button>}</div>
+        <select value={poF.vendor} onChange={e=>setPOF(f=>({...f,vendor:e.target.value}))} style={{padding:'6px 10px',borderRadius:6,border:'1px solid #e2e8f0',fontSize:12}}>
+          <option value="all">All Vendors</option>{allVendors.map(v=><option key={v} value={v}>{v}</option>)}</select>
+        <select value={poF.sort} onChange={e=>setPOF(f=>({...f,sort:e.target.value}))} style={{padding:'6px 10px',borderRadius:6,border:'1px solid #e2e8f0',fontSize:12}}>
+          <option value="date_desc">Newest First</option><option value="date_asc">Oldest First</option><option value="vendor">Vendor</option><option value="po_id">PO Number</option><option value="customer">Customer</option><option value="status">Status</option></select>
+        {activeFilters&&<button className="btn btn-sm btn-secondary" onClick={()=>setPOF({status:'all',vendor:'all',search:'',sort:'date_desc'})} style={{fontSize:11}}>Clear Filters</button>}
+      </div>
+      {/* Table */}
+      <div className="card"><div className="card-body" style={{padding:0,overflow:'auto'}}>
+        <table className="data-table">
+          <thead><tr><th style={{cursor:'pointer'}} onClick={()=>setPOF(f=>({...f,sort:f.sort==='po_id'?'date_desc':'po_id'}))}>PO #</th><th style={{cursor:'pointer'}} onClick={()=>setPOF(f=>({...f,sort:f.sort==='vendor'?'date_desc':'vendor'}))}>Vendor</th><th style={{cursor:'pointer'}} onClick={()=>setPOF(f=>({...f,sort:f.sort==='customer'?'date_desc':'customer'}))}>Customer</th><th>SO</th><th>Item</th><th style={{textAlign:'right'}}>Ordered</th><th style={{textAlign:'right'}}>Received</th><th style={{textAlign:'right'}}>Open</th><th style={{cursor:'pointer'}} onClick={()=>setPOF(f=>({...f,sort:f.sort==='status'?'date_desc':'status'}))}>Status</th><th>Date</th><th>Expected</th></tr></thead>
+          <tbody>{fPOs.length===0?<tr><td colSpan={11} style={{textAlign:'center',color:'#94a3b8',padding:32}}>No purchase orders{activeFilters?' match filters':' found'}</td></tr>:
+            fPOs.map((po,i)=><tr key={po.po_id+'-'+i} style={{cursor:'pointer'}} onClick={()=>{if(po.so){const cc=cust.find(x=>x.id===po.so.customer_id);setESO(po.so);setESOC(cc);setPg('orders')}}}>
+              <td><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{po.po_id}</span>{po.source==='batch'&&<span className="badge badge-purple" style={{marginLeft:4,fontSize:9}}>Batch</span>}</td>
+              <td>{po.vendor}</td>
+              <td>{po.customer}</td>
+              <td><span style={{color:'#1e40af',fontWeight:600}}>{po.so_id}</span></td>
+              <td>{po.itemSku&&<span style={{fontFamily:'monospace',fontSize:11,color:'#64748b'}}>{po.itemSku}</span>}{po.itemSku&&po.itemName&&' '}{po.itemName}</td>
+              <td style={{textAlign:'right',fontWeight:600}}>{po.totalOrd}</td>
+              <td style={{textAlign:'right',fontWeight:600,color:po.totalRcvd>0?'#059669':'#94a3b8'}}>{po.totalRcvd}</td>
+              <td style={{textAlign:'right',fontWeight:600,color:po.totalOpen>0?'#d97706':'#059669'}}>{po.totalOpen}</td>
+              <td><span className={`badge ${po.status==='received'?'badge-green':po.status==='partial'?'badge-amber':'badge-blue'}`}>{po.status==='received'?'Received':po.status==='partial'?'Partial':'Waiting'}</span></td>
+              <td style={{fontSize:11,color:'#64748b'}}>{po.created_at}</td>
+              <td style={{fontSize:11,color:'#64748b'}}>{po.expected_date||'—'}</td>
+            </tr>)}
+          </tbody>
+        </table>
+      </div></div>
+    </>;
   };
   const rBatchPOs=()=>{
     const byVendor={};
@@ -11418,8 +11517,8 @@ export default function App(){
     </>)};
 
     // NAV
-  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'reports',label:'Reports',icon:'dollar'},{id:'commissions',label:'Commissions',icon:'dollar',roles:['admin','rep']},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'art',label:'Art Dashboard',icon:'image'},{id:'production',label:'Prod Board',icon:'package'},{id:'decoration',label:'Decoration',icon:'image'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{id:'team',label:'Team',icon:'users'},{section:'Comms'},{id:'messages',label:'Messages',icon:'mail'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'System'},{id:'issues',label:'Issues',icon:'alert'},{id:'import',label:'Import / Upload',icon:'upload'},{id:'qb',label:'QuickBooks Sync',icon:'dollar'},{id:'backup',label:'Backup & Data',icon:'save'},{id:'settings',label:'Settings',icon:'grid',roles:['admin']}];
-  const titles={dashboard:'Dashboard',reports:'Reports & Analytics',commissions:'Commissions',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',omg:'OMG Team Stores',jobs:'Jobs',art:'Art Dashboard',production:'Production Board',decoration:'Decoration',warehouse:'Warehouse',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',team:'Team Directory',products:'Products',inventory:'Inventory',messages:'Messages',issues:'Issues',import:'Import / Upload',qb:'QuickBooks Online',backup:'Backup & Data',settings:'Settings'};
+  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'reports',label:'Reports',icon:'dollar'},{id:'commissions',label:'Commissions',icon:'dollar',roles:['admin','rep']},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'art',label:'Art Dashboard',icon:'image'},{id:'production',label:'Prod Board',icon:'package'},{id:'decoration',label:'Decoration',icon:'image'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'purchase_orders',label:'Purchase Orders',icon:'cart'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{id:'team',label:'Team',icon:'users'},{section:'Comms'},{id:'messages',label:'Messages',icon:'mail'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'System'},{id:'issues',label:'Issues',icon:'alert'},{id:'import',label:'Import / Upload',icon:'upload'},{id:'qb',label:'QuickBooks Sync',icon:'dollar'},{id:'backup',label:'Backup & Data',icon:'save'},{id:'settings',label:'Settings',icon:'grid',roles:['admin']}];
+  const titles={dashboard:'Dashboard',reports:'Reports & Analytics',commissions:'Commissions',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',omg:'OMG Team Stores',jobs:'Jobs',art:'Art Dashboard',production:'Production Board',decoration:'Decoration',warehouse:'Warehouse',purchase_orders:'Purchase Orders',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',team:'Team Directory',products:'Products',inventory:'Inventory',messages:'Messages',issues:'Issues',import:'Import / Upload',qb:'QuickBooks Online',backup:'Backup & Data',settings:'Settings'};
   // ─── COACH PORTAL GATE — public access via ?portal=<alpha_tag> ───
   const _portalTag=useMemo(()=>{try{return new URLSearchParams(window.location.search).get('portal')}catch{return null}},[]);
   const _portalCust=_portalTag?cust.find(c=>(c.alpha_tag||'').toLowerCase()===_portalTag.toLowerCase()):null;
@@ -11449,7 +11548,7 @@ export default function App(){
         if(cu.role!=='admin'&&cu.access&&!cu.access.includes(item.id))return null;
         const ubadge=item.id==='messages'?msgs.filter(m=>!(m.read_by||[]).includes(cu.id)).length:0;
         return<button key={item.id} className={`sidebar-link ${pg===item.id?'active':''}`}
-          onClick={()=>{if(dirtyRef.current&&!window.confirm('You have unsaved changes. Leave without saving?'))return;dirtyRef.current=false;setPg(item.id);setQ('');setSelC(null);setSelV(null);setEEst(null);setESO(null)}}><Icon name={item.icon}/>{item.label}{item.id==='messages'&&ubadge>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{ubadge}</span>}{item.id==='batch_pos'&&batchPOs.length>0&&<span style={{background:'#7c3aed',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{batchPOs.length}</span>}{item.id==='issues'&&openIssueCount>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{openIssueCount}</span>}</button>})}</nav>
+          onClick={()=>{if(dirtyRef.current&&!window.confirm('You have unsaved changes. Leave without saving?'))return;dirtyRef.current=false;setPg(item.id);setQ('');setSelC(null);setSelV(null);setEEst(null);setESO(null)}}><Icon name={item.icon}/>{item.label}{item.id==='messages'&&ubadge>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{ubadge}</span>}{item.id==='purchase_orders'&&(()=>{let wc=0;sos.forEach(so=>safeItems(so).forEach(it=>safePOs(it).forEach(po=>{const szKeys=Object.keys(po).filter(k=>typeof po[k]==='number'&&!['status'].includes(k));const open=szKeys.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-((po.received||{})[sz]||0)-((po.cancelled||{})[sz]||0)),0);if(open>0)wc++})));return wc>0?<span style={{background:'#d97706',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{wc}</span>:null})()}{item.id==='batch_pos'&&batchPOs.length>0&&<span style={{background:'#7c3aed',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{batchPOs.length}</span>}{item.id==='issues'&&openIssueCount>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{openIssueCount}</span>}</button>})}</nav>
       <div className="sidebar-user"><div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}><div><div style={{fontWeight:600,color:'#e2e8f0'}}>{cu.name}</div><div>{cu.role}</div></div><button onClick={handleLogout} style={{background:'none',border:'1px solid #475569',borderRadius:6,padding:'3px 8px',color:'#94a3b8',cursor:'pointer',fontSize:10}} title="Log out">↪ Out</button></div></div></div>
     <div className="main"><div className="topbar"><h1>{eEst?eEst.id:eSO?eSO.id:selC?selC.name:selV?selV.name:(titles[pg]||'Dashboard')}</h1>
         <div style={{flex:1,maxWidth:400,margin:'0 20px',position:'relative'}}>
@@ -11462,7 +11561,11 @@ export default function App(){
             // Build IF index from all SOs
             const allPicks=[];sos.forEach(so=>{safeItems(so).forEach(it=>{safePicks(it).forEach(pk=>{if(pk.pick_id&&pk.pick_id.toLowerCase().includes(s)&&!allPicks.find(x=>x.pick_id===pk.pick_id)){allPicks.push({pick_id:pk.pick_id,so_id:so.id,so,status:pk.status||'pick'})}})})});
             const rpk=allPicks.slice(0,4);
-            const tot=rc.length+re.length+rs.length+rp.length+rpk.length;
+            // Build PO index from all SO po_lines + submitted batches
+            const allPOs=[];sos.forEach(so=>{const c2=cust.find(x=>x.id===so.customer_id);safeItems(so).forEach(it=>{safePOs(it).forEach(po=>{if((po.po_id||'').toLowerCase().includes(s)||(po.vendor||'').toLowerCase().includes(s)){if(!allPOs.find(x=>x.po_id===po.po_id))allPOs.push({po_id:po.po_id,vendor:po.vendor,status:po.status||'waiting',so_id:so.id,so,customer:c2?.alpha_tag||''})}})})});
+            submittedBatches.forEach(sb=>{if((sb.po_number||'').toLowerCase().includes(s)||(sb.vendor_name||'').toLowerCase().includes(s)){if(!allPOs.find(x=>x.po_id===sb.po_number))allPOs.push({po_id:sb.po_number,vendor:sb.vendor_name,status:sb.status||'waiting',so_id:(sb.source_pos||[])[0]?.so_id||'',so:sos.find(x=>x.id===((sb.source_pos||[])[0]?.so_id)),customer:(sb.source_pos||[])[0]?.customer||'',isBatch:true})}});
+            const rpo=allPOs.slice(0,4);
+            const tot=rc.length+re.length+rs.length+rp.length+rpk.length+rpo.length;
             return tot>0&&<div style={{position:'absolute',top:'100%',left:0,right:0,background:'white',border:'1px solid #e2e8f0',borderRadius:8,boxShadow:'0 8px 24px rgba(0,0,0,0.12)',zIndex:60,maxHeight:350,overflow:'auto'}}>
               {rc.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Customers</div>
                 {rc.map(cc=><div key={cc.id} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>{setSelC(cc);setPg('customers');setGQ('');setGOpen(false)}}><Icon name="users" size={14}/><span style={{fontWeight:600}}>{cc.name}</span><span className="badge badge-gray">{cc.alpha_tag}</span></div>)}</>}
@@ -11474,6 +11577,8 @@ export default function App(){
                 {rp.map(p=><div key={p.id} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>{setSelP(p);setPg('products');setQ('');setGQ('');setGOpen(false)}}><Icon name="package" size={14}/><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{p.sku}</span><span>{p.name}</span></div>)}</>}
               {rpk.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Item Fulfillments</div>
                 {rpk.map(pk=>{const cc=cust.find(x=>x.id===pk.so?.customer_id);return<div key={pk.pick_id} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>{setESO(pk.so);setESOC(cc);setPg('orders');setGQ('');setGOpen(false)}}><Icon name="grid" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{pk.pick_id}</span><span>→ {pk.so_id}</span><span className={`badge ${pk.status==='pulled'?'badge-green':'badge-amber'}`}>{pk.status}</span></div>})}</>}
+              {rpo.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Purchase Orders</div>
+                {rpo.map(po=><div key={po.po_id} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>{if(po.isBatch){setBatchScan(po.po_id);setPg('purchase_orders')}else if(po.so){const cc=cust.find(x=>x.id===po.so.customer_id);setESO(po.so);setESOC(cc);setPg('orders')}else{setPg('purchase_orders')};setGQ('');setGOpen(false)}}><Icon name="cart" size={14}/><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{po.po_id}</span><span>{po.vendor}</span>{po.so_id&&<span style={{color:'#64748b'}}>→ {po.so_id}</span>}<span className={`badge ${po.status==='received'?'badge-green':po.status==='partial'?'badge-amber':'badge-blue'}`}>{po.status}</span></div>)}</>}
             </div>})()}
           {gOpen&&<div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:59}} onClick={()=>setGOpen(false)}/>}
         </div>
@@ -11482,7 +11587,7 @@ export default function App(){
         <span style={{fontSize:16}}>&#9888;</span><span style={{flex:1}}>{dbError}</span>
         <button onClick={()=>setDbError(null)} style={{background:'none',border:'none',color:'#991b1b',cursor:'pointer',fontWeight:800,fontSize:14}}>&#215;</button>
       </div>}
-      <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='art'&&rArtist()}{pg==='production'&&rProd2()}{pg==='decoration'&&rDeco()}{pg==='warehouse'&&rWarehouse()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='team'&&rTeam()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='commissions'&&rCommissions()}{pg==='omg'&&rOMG()}{pg==='reports'&&rReports()}{pg==='issues'&&rIssues()}{pg==='import'&&rImport()}{pg==='qb'&&rQB()}{pg==='backup'&&rBackup()}{pg==='settings'&&rSettings()}</div></div>
+      <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='art'&&rArtist()}{pg==='production'&&rProd2()}{pg==='decoration'&&rDeco()}{pg==='warehouse'&&rWarehouse()}{pg==='purchase_orders'&&rPOs()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='team'&&rTeam()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='commissions'&&rCommissions()}{pg==='omg'&&rOMG()}{pg==='reports'&&rReports()}{pg==='issues'&&rIssues()}{pg==='import'&&rImport()}{pg==='qb'&&rQB()}{pg==='backup'&&rBackup()}{pg==='settings'&&rSettings()}</div></div>
     <CustModal isOpen={cM.open} onClose={()=>setCM({open:false,c:null})} onSave={savC} customer={cM.c} parents={pars}/>
     <AdjModal isOpen={aM.open} onClose={()=>setAM({open:false,p:null})} product={aM.p} onSave={savI}/>
 
