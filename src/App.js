@@ -9629,8 +9629,13 @@ export default function App(){
                     nf('✅ PO imported as SO with '+newItems.length+' items');
                   }
                 }
-                setImp({step:'upload',raw:'',docType:'so',custId:'',parsed:[],decoLines:[],issues:[],questions:[],shipping:[],memo:'',poRef:'',
-                  pdfFile:null,pdfText:'',pdfParsed:null,pdfLoading:false,pdfItems:[],linkedSoId:'',externalDocNum:'',importSource:'netsuite'});
+                const customItems=newItems.filter(it=>it.is_custom&&!it.product_id);
+                if(customItems.length>0){
+                  setImp(x=>({...x,step:'save_products',_customItems:customItems.map(it=>({...it,_save:true}))}));
+                } else {
+                  setImp({step:'upload',raw:'',docType:'so',custId:'',parsed:[],decoLines:[],issues:[],questions:[],shipping:[],memo:'',poRef:'',
+                    pdfFile:null,pdfText:'',pdfParsed:null,pdfLoading:false,pdfItems:[],linkedSoId:'',externalDocNum:'',importSource:'netsuite'});
+                }
               }}>
                 ✅ Create {imp.docType==='so'?'Sales Order':imp.docType==='est'?'Estimate':imp.docType==='po'?'Purchase Order':'Invoice'} ({keeping.length} items)
               </button>
@@ -9641,6 +9646,49 @@ export default function App(){
             <div style={{fontSize:11,color:'#64748b',marginTop:8}}>Items: {imp.parsed?.length}, Questions: {imp.questions?.length}, Shipping: {JSON.stringify(imp.shipping)?.slice(0,100)}</div>
             <button className="btn btn-secondary" style={{marginTop:12}} onClick={()=>setImp(x=>({...x,step:'questions'}))}>← Back to Questions</button>
           </div>}})()}
+      </>}
+
+      {/* ═══ STEP 6: Save Custom Items to Catalog ═══ */}
+      {imp.step==='save_products'&&<>
+        <div className="card" style={{marginBottom:12}}>
+          <div className="card-header"><h2>📦 Save New Products to Catalog</h2></div>
+          <div className="card-body">
+            <div style={{fontSize:12,color:'#64748b',marginBottom:12}}>
+              {(imp._customItems||[]).length} custom item{(imp._customItems||[]).length!==1?'s were':' was'} imported without a catalog match.
+              Select which items to save as products in your catalog.
+            </div>
+            <table style={{fontSize:11,width:'100%'}}><thead><tr><th style={{width:30}}></th><th>SKU</th><th>Name</th><th>Brand</th><th>Color</th><th>Cost</th><th>Retail</th><th>Sizes</th></tr></thead>
+            <tbody>{(imp._customItems||[]).map((it,i)=><tr key={i} style={{opacity:it._save?1:0.45}}>
+              <td><input type="checkbox" checked={!!it._save} onChange={()=>setImp(x=>({...x,_customItems:x._customItems.map((c,ci)=>ci===i?{...c,_save:!c._save}:c)}))}/></td>
+              <td style={{fontFamily:'monospace',fontWeight:700}}>{it.sku}</td>
+              <td>{(it.name||'').slice(0,40)}</td>
+              <td style={{fontSize:10}}>{it.brand}</td>
+              <td style={{fontSize:10}}>{it.color}</td>
+              <td style={{textAlign:'right'}}>${(it.nsa_cost||0).toFixed(2)}</td>
+              <td style={{textAlign:'right'}}>${(it.retail_price||0).toFixed(2)}</td>
+              <td style={{fontSize:9}}>{(it.available_sizes||[]).join(', ')}</td>
+            </tr>)}</tbody></table>
+            <div style={{display:'flex',gap:8,marginTop:16}}>
+              <button className="btn btn-secondary" onClick={()=>{
+                setImp({step:'upload',raw:'',docType:'so',custId:'',parsed:[],decoLines:[],issues:[],questions:[],shipping:[],memo:'',poRef:'',
+                  pdfFile:null,pdfText:'',pdfParsed:null,pdfLoading:false,pdfItems:[],linkedSoId:'',externalDocNum:'',importSource:'netsuite'});
+              }}>Skip</button>
+              <button className="btn btn-primary" disabled={!(imp._customItems||[]).some(c=>c._save)} onClick={()=>{
+                const toSave=(imp._customItems||[]).filter(c=>c._save);
+                const newProds=toSave.map((it,i)=>{
+                  const vendor=D_V.find(v=>v.name.toLowerCase()===(it.brand||'').toLowerCase());
+                  return{id:'p-imp-'+Date.now()+'-'+i,vendor_id:vendor?.id||null,sku:it.sku,name:it.name,brand:it.brand,color:it.color||'',
+                    category:'',retail_price:it.retail_price||0,nsa_cost:it.nsa_cost||0,
+                    available_sizes:it.available_sizes||['S','M','L','XL','2XL'],is_active:true,_inv:{},_alerts:{}};
+                });
+                setProd(prev=>[...prev,...newProds]);
+                nf('✅ '+newProds.length+' product'+(newProds.length!==1?'s':'')+' saved to catalog');
+                setImp({step:'upload',raw:'',docType:'so',custId:'',parsed:[],decoLines:[],issues:[],questions:[],shipping:[],memo:'',poRef:'',
+                  pdfFile:null,pdfText:'',pdfParsed:null,pdfLoading:false,pdfItems:[],linkedSoId:'',externalDocNum:'',importSource:'netsuite'});
+              }}>Save {(imp._customItems||[]).filter(c=>c._save).length} Product{(imp._customItems||[]).filter(c=>c._save).length!==1?'s':''} to Catalog</button>
+            </div>
+          </div>
+        </div>
       </>}
     </>}
 
