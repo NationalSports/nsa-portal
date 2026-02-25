@@ -3997,6 +3997,8 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   const[portalContactEdit,setPortalContactEdit]=useState(null);
   const[portalContactMsg,setPortalContactMsg]=useState('');
   const[portalInvView,setPortalInvView]=useState(null);// viewing an invoice detail
+  const[portalShowPay,setPortalShowPay]=useState(null);// null | 'all' | inv object
+  const[portalPaySuccess,setPortalPaySuccess]=useState(null);
   React.useEffect(()=>setCustLocal(initCust),[initCust]);
   const customer=custLocal;
   const isP=!customer.parent_id;const subs=isP?allCustomers.filter(c=>c.parent_id===customer.id):[];
@@ -4345,7 +4347,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
           <div style={{display:'flex',justifyContent:'space-between',padding:'12px 0',borderTop:'2px solid #e2e8f0'}}>
             <span style={{fontWeight:800}}>Total</span><span style={{fontWeight:800,fontSize:18,color:'#dc2626'}}>${inv.total?.toLocaleString()}</span>
           </div>
-          {bal>0&&<button style={{width:'100%',marginTop:16,padding:'14px 20px',background:'#22c55e',color:'white',border:'none',borderRadius:10,fontSize:16,fontWeight:800,cursor:'pointer'}} onClick={()=>alert('Pay $'+bal.toLocaleString()+' (demo)')}>
+          {bal>0&&<button style={{width:'100%',marginTop:16,padding:'14px 20px',background:'#22c55e',color:'white',border:'none',borderRadius:10,fontSize:16,fontWeight:800,cursor:'pointer'}} onClick={()=>setPortalShowPay(inv)}>
             💳 Pay ${bal.toLocaleString()}
           </button>}
           {bal<=0&&<div style={{textAlign:'center',padding:12,background:'#f0fdf4',borderRadius:8,color:'#166534',fontWeight:700}}>✅ Paid in Full</div>}
@@ -4370,9 +4372,17 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       </div>
       <div style={{padding:'20px 28px'}}>
 
+        {/* Payment success banner */}
+        {portalPaySuccess&&<div style={{padding:16,background:'#f0fdf4',border:'2px solid #22c55e',borderRadius:12,marginBottom:16,textAlign:'center'}}>
+          <div style={{fontSize:32,marginBottom:8}}>&#10003;</div>
+          <div style={{fontSize:18,fontWeight:800,color:'#166534',marginBottom:4}}>Payment Successful!</div>
+          <div style={{fontSize:14,color:'#166534'}}>${portalPaySuccess.amount.toLocaleString(undefined,{minimumFractionDigits:2})} paid{portalPaySuccess.fee>0?' + $'+portalPaySuccess.fee.toFixed(2)+' processing fee':''}</div>
+          <div style={{fontSize:12,color:'#64748b',marginTop:4}}>A receipt has been sent to the customer's email.</div>
+        </div>}
+
         {/* Pay Now button */}
         {totalDue>0&&<div style={{marginBottom:16}}>
-          <button style={{width:'100%',padding:'14px 20px',background:'#22c55e',color:'white',border:'none',borderRadius:10,fontSize:16,fontWeight:800,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:10}} onClick={()=>alert('Payment portal opening... (demo)\n\nThis would connect to Stripe for CC + Apple Pay processing.\nAmount: $'+totalDue.toLocaleString())}>
+          <button style={{width:'100%',padding:'14px 20px',background:'#22c55e',color:'white',border:'none',borderRadius:10,fontSize:16,fontWeight:800,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:10}} onClick={()=>setPortalShowPay('all')}>
             💳 Pay Now — ${totalDue.toLocaleString()}
           </button>
           <div style={{display:'flex',justifyContent:'center',gap:12,marginTop:6}}>
@@ -4513,7 +4523,17 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
           </>}
         </div>
       </div>
-    </div></div>})()}
+    </div>
+    {/* Stripe Payment Modal */}
+    {portalShowPay&&<StripePaymentModal
+      invoices={portalShowPay==='all'?openInvs:[portalShowPay]}
+      customerName={customer.name}
+      customerEmail={(customer.contacts||[])[0]?.email||''}
+      alphaTag={customer.alpha_tag}
+      onSuccess={(result)=>{setPortalPaySuccess({amount:result.amount,fee:result.fee,invoices:result.invoices});setPortalShowPay(null);setPortalInvView(null)}}
+      onClose={()=>setPortalShowPay(null)}
+    />}
+    </div>})()}
 
   </div>)}
 
