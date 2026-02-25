@@ -31,11 +31,11 @@ const _dbLoad = async () => {
       supabase.from('vendors').select('*').order('name'),
       supabase.from('products').select('*').order('name'),
       supabase.from('product_inventory').select('*'),
-      supabase.from('estimates').select('*').is('deleted_at',null).order('id'),
+      supabase.from('estimates').select('*').order('id'),
       supabase.from('estimate_art_files').select('*'),
       supabase.from('estimate_items').select('*').order('item_index'),
       supabase.from('estimate_item_decorations').select('*').order('deco_index'),
-      supabase.from('sales_orders').select('*').is('deleted_at',null).order('id'),
+      supabase.from('sales_orders').select('*').order('id'),
       supabase.from('so_art_files').select('*'),
       supabase.from('so_firm_dates').select('*'),
       supabase.from('so_items').select('*').order('item_index'),
@@ -43,7 +43,7 @@ const _dbLoad = async () => {
       supabase.from('so_item_pick_lines').select('*'),
       supabase.from('so_item_po_lines').select('*'),
       supabase.from('so_jobs').select('*'),
-      supabase.from('invoices').select('*').is('deleted_at',null).order('id'),
+      supabase.from('invoices').select('*').order('id'),
       supabase.from('invoice_payments').select('*'),
       supabase.from('invoice_items').select('*'),
       supabase.from('messages').select('*').order('id'),
@@ -52,19 +52,22 @@ const _dbLoad = async () => {
       supabase.from('omg_store_products').select('*'),
       supabase.from('issues').select('*'),
     ]);
-    // Check for critical errors
-    const allResults=[rTeam,rCust,rVend,rProd,rEst,rSO,rInv,rMsg,rOMG];
-    const errs=allResults.filter(r=>r.error);
-    if(errs.length){console.error('[DB] Load errors:',errs.map(r=>r.error.message));return null}
-    const team=rTeam.data||[];const custRaw=rCust.data||[];const contacts=rContacts.data||[];
-    const vendors=rVend.data||[];const prodRaw=rProd.data||[];const prodInv=rProdInv.data||[];
-    const estRaw=rEst.data||[];const estArt=rEstArt.data||[];const estItems=rEstItems.data||[];const estDecos=rEstDecos.data||[];
-    const soRaw=rSO.data||[];const soArt=rSOArt.data||[];const soFirm=rSOFirm.data||[];
-    const soItems=rSOItems.data||[];const soDecos=rSODecos.data||[];const soPicks=rSOPicks.data||[];const soPOs=rSOPOs.data||[];const soJobs=rSOJobs.data||[];
-    const invRaw=rInv.data||[];const invPay=rInvPay.data||[];const invItems=rInvItems.data||[];
-    const msgRaw=rMsg.data||[];const msgReads=rMsgReads.data||[];
-    const omgRaw=rOMG.data||[];const omgProd=rOMGProd.data||[];
-    const issues=rIssues.data||[];
+    // Check for critical errors on core tables only (child tables may not exist yet — 404 is OK)
+    const coreResults=[{n:'team_members',r:rTeam},{n:'customers',r:rCust},{n:'vendors',r:rVend},{n:'products',r:rProd},{n:'estimates',r:rEst},{n:'sales_orders',r:rSO},{n:'invoices',r:rInv},{n:'messages',r:rMsg},{n:'omg_stores',r:rOMG}];
+    const is404=r=>r.status===404||(r.error?.message||'').includes('does not exist')||(r.error?.code==='PGRST204');
+    const errs=coreResults.filter(({r})=>r.error&&!is404(r));
+    if(errs.length){console.error('[DB] Load errors:',errs.map(({n,r})=>`${n}: ${r.error.message}`));return null}
+    // Helper: return data or empty array (safe for 404 / missing tables)
+    const d=r=>r.data||[];
+    const team=d(rTeam);const custRaw=d(rCust);const contacts=d(rContacts);
+    const vendors=d(rVend);const prodRaw=d(rProd);const prodInv=d(rProdInv);
+    const estRaw=d(rEst);const estArt=d(rEstArt);const estItems=d(rEstItems);const estDecos=d(rEstDecos);
+    const soRaw=d(rSO);const soArt=d(rSOArt);const soFirm=d(rSOFirm);
+    const soItems=d(rSOItems);const soDecos=d(rSODecos);const soPicks=d(rSOPicks);const soPOs=d(rSOPOs);const soJobs=d(rSOJobs);
+    const invRaw=d(rInv);const invPay=d(rInvPay);const invItems=d(rInvItems);
+    const msgRaw=d(rMsg);const msgReads=d(rMsgReads);
+    const omgRaw=d(rOMG);const omgProd=d(rOMGProd);
+    const issues=d(rIssues);
     // ─── Reconstruct nested objects ───
     // Customers: attach contacts array
     const customers=custRaw.map(c=>({...c,contacts:contacts.filter(ct=>ct.customer_id===c.id).sort((a,b)=>a.sort_order-b.sort_order).map(ct=>({name:ct.name,email:ct.email,phone:ct.phone,role:ct.role}))}));
@@ -238,18 +241,34 @@ const _dbSaveMessage = async (m) => {
 // ─── Delete Helpers ───
 const _dbDeleteEstimate = async (id) => {
   if(!supabase)return;
-  try{await supabase.from('estimates').update({deleted_at:new Date().toISOString()}).eq('id',id)}
-  catch(e){console.error('[DB] delete estimate:',e)}
+  try{
+    await supabase.from('estimate_item_decorations').delete().in('estimate_item_id',(await supabase.from('estimate_items').select('id').eq('estimate_id',id)).data?.map(i=>i.id)||[]);
+    await supabase.from('estimate_items').delete().eq('estimate_id',id);
+    await supabase.from('estimate_art_files').delete().eq('estimate_id',id);
+    await supabase.from('estimates').delete().eq('id',id);
+  }catch(e){console.error('[DB] delete estimate:',e)}
 };
 const _dbDeleteSO = async (id) => {
   if(!supabase)return;
-  try{await supabase.from('sales_orders').update({deleted_at:new Date().toISOString()}).eq('id',id)}
-  catch(e){console.error('[DB] delete SO:',e)}
+  try{
+    const itemIds=(await supabase.from('so_items').select('id').eq('so_id',id)).data?.map(i=>i.id)||[];
+    await supabase.from('so_item_decorations').delete().in('so_item_id',itemIds);
+    await supabase.from('so_item_pick_lines').delete().in('so_item_id',itemIds);
+    await supabase.from('so_item_po_lines').delete().in('so_item_id',itemIds);
+    await supabase.from('so_items').delete().eq('so_id',id);
+    await supabase.from('so_art_files').delete().eq('so_id',id);
+    await supabase.from('so_firm_dates').delete().eq('so_id',id);
+    await supabase.from('so_jobs').delete().eq('so_id',id);
+    await supabase.from('sales_orders').delete().eq('id',id);
+  }catch(e){console.error('[DB] delete SO:',e)}
 };
 const _dbDeleteInvoice = async (id) => {
   if(!supabase)return;
-  try{await supabase.from('invoices').update({deleted_at:new Date().toISOString()}).eq('id',id)}
-  catch(e){console.error('[DB] delete invoice:',e)}
+  try{
+    await supabase.from('invoice_payments').delete().eq('invoice_id',id);
+    await supabase.from('invoice_items').delete().eq('invoice_id',id);
+    await supabase.from('invoices').delete().eq('id',id);
+  }catch(e){console.error('[DB] delete invoice:',e)}
 };
 // Legacy compat — keep old _dbSave for team_members and other simple tables
 const _dbSave = (table, data) => { if(supabase && data) supabase.from(table).upsert(Array.isArray(data)?data:[data], {onConflict:'id'}).then(r=>{if(r.error)console.error('[DB] save '+table+':', r.error.message)}) };
