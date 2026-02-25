@@ -4693,8 +4693,10 @@ function CustModal({isOpen,onClose,onSave,customer,parents}){
   </div>
   <div className="modal-footer"><button className="btn btn-secondary" onClick={onClose}>Cancel</button><button className="btn btn-primary" onClick={()=>{if(!ok())return;onSave({...f,id:f.id||'c'+Date.now(),parent_id:ct==='sub'?f.parent_id:null,is_active:true,_oe:f._oe||0,_os:f._os||0,_oi:f._oi||0,_ob:f._ob||0});onClose()}}>Save</button></div></div></div>);
 }
-function AdjModal({isOpen,onClose,product,onSave}){const[a,setA]=useState({});const[d,setD]=useState({});React.useEffect(()=>{if(product){setA({...product._inv});setD({})}},[product,isOpen]);if(!isOpen||!product)return null;
+function AdjModal({isOpen,onClose,product,onSave}){const[a,setA]=useState({});const[d,setD]=useState({});const[reason,setReason]=useState('');const[adjType,setAdjType]=useState('manual');
+  React.useEffect(()=>{if(product){setA({...product._inv});setD({});setReason('');setAdjType('manual')}},[product,isOpen]);if(!isOpen||!product)return null;
   const applyDelta=(sz,val)=>{const cur=product._inv?.[sz]||0;const delta=parseInt(val)||0;setD(x=>({...x,[sz]:delta}));setA(x=>({...x,[sz]:Math.max(0,cur+delta)}))};
+  const hasChanges=Object.values(d).some(v=>v!==0);
   return(<div className="modal-overlay" onClick={onClose}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:650}}>
     <div className="modal-header"><h2>Adjust Inventory</h2><button className="modal-close" onClick={onClose}>x</button></div>
     <div className="modal-body"><div style={{padding:12,background:'#f8fafc',borderRadius:6,marginBottom:16}}><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{product.sku}</span> {product.name}</div>
@@ -4708,7 +4710,17 @@ function AdjModal({isOpen,onClose,product,onSave}){const[a,setA]=useState({});co
             onChange={e=>{const raw=e.target.value.replace(/[^0-9\-+]/g,'');if(raw===''||raw==='-'||raw==='+'){setD(x=>({...x,[sz]:0}));setA(x=>({...x,[sz]:cur}));return}applyDelta(sz,raw)}}/>
           <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>= <strong style={{color:delta!==0?'#1e40af':'#94a3b8'}}>{newVal}</strong></div>
         </div>})}</div>
-    </div><div className="modal-footer"><button className="btn btn-secondary" onClick={onClose}>Cancel</button><button className="btn btn-primary" onClick={()=>{onSave(product.id,a);onClose()}}>Save</button></div></div></div>);
+      {hasChanges&&<div style={{marginTop:16,borderTop:'1px solid #e2e8f0',paddingTop:12}}>
+        <div style={{display:'flex',gap:12,marginBottom:8}}>
+          <div style={{flex:1}}><label style={{fontSize:11,fontWeight:700,color:'#475569',display:'block',marginBottom:4}}>Type</label>
+            <select className="form-select" value={adjType} onChange={e=>setAdjType(e.target.value)} style={{width:'100%'}}>
+              <option value="manual">Manual Adjustment</option><option value="correction">Correction</option><option value="return">Return</option><option value="damage">Damage/Loss</option></select></div>
+          <div style={{flex:2}}><label style={{fontSize:11,fontWeight:700,color:'#475569',display:'block',marginBottom:4}}>Reason / Notes</label>
+            <input className="form-input" value={reason} onChange={e=>setReason(e.target.value)} placeholder="Why is this being adjusted?" style={{width:'100%'}}/></div>
+        </div>
+        <div style={{fontSize:11,color:'#64748b',background:'#fffbeb',padding:'6px 10px',borderRadius:4,border:'1px solid #fef3c7'}}>This adjustment will be logged and synced to QuickBooks.</div>
+      </div>}
+    </div><div className="modal-footer"><button className="btn btn-secondary" onClick={onClose}>Cancel</button><button className="btn btn-primary" disabled={!hasChanges} onClick={()=>{onSave(product.id,a,d,reason,adjType);onClose()}}>Save</button></div></div></div>);
 }
 
 // ─── STRIPE CHECKOUT ───
@@ -5201,6 +5213,14 @@ export default function App(){
   const[batchCounter,setBatchCounter]=useState(4501);// sequential PO numbers: NSA-4501, NSA-4502...
   const[batchScan,setBatchScan]=useState('');// scan/lookup field
   const[editingBatchId,setEditingBatchId]=useState(null);// batch PO id being edited in queue
+  // Inventory adjustments log & inventory POs
+  const[invAdjLog,setInvAdjLog]=useState([]);// [{id,product_id,sku,product_name,size,qty_change,prev_qty,new_qty,reason,adjustment_type,performed_by,created_at}]
+  const[invPOs,setInvPOs]=useState([]);// [{id,po_number,vendor_id,vendor_name,items:[{product_id,sku,name,color,sizes:{},received:{},nsa_cost}],status,created_at,expected_date,memo,created_by,received_at,received_by}]
+  const[invPOCounter,setInvPOCounter]=useState(1001);// sequential: IPO-1001-NSA, IPO-1002-NSA...
+  const[invTab,setInvTab]=useState('stock');// stock | log | pos
+  const[invPOModal,setInvPOModal]=useState({open:false,vendor_id:'',items:[],memo:'',expected_date:''});// create PO modal
+  const[invPOReceive,setInvPOReceive]=useState(null);// PO being received
+  const[invPOSearch,setInvPOSearch]=useState('');
   // Changelog & backup system
   const[changeLog,setChangeLog]=useState([]);// [{ts,user,action,entity,entityId,detail}]
   const[lastBackup,setLastBackup]=useState(null);
@@ -5370,7 +5390,18 @@ export default function App(){
     }
     return sl;
   };
-  const savI=(pid,inv)=>{setProd(p=>p.map(x=>x.id===pid?{...x,_inv:inv}:x));nf('Updated')};
+  const savI=(pid,inv,deltas,reason,adjType)=>{
+    const p=prod.find(x=>x.id===pid);
+    if(deltas&&p){
+      const entries=Object.entries(deltas).filter(([,v])=>v!==0);
+      if(entries.length>0){
+        const logs=entries.map(([sz,delta])=>({id:'ADJ-'+(invAdjLog.length+1001+entries.indexOf([sz,delta])),product_id:pid,sku:p.sku,product_name:p.name,color:p.color||'',size:sz,qty_change:delta,prev_qty:p._inv?.[sz]||0,new_qty:Math.max(0,(p._inv?.[sz]||0)+delta),reason:reason||'',adjustment_type:adjType||'manual',performed_by:cu?.name||'Unknown',created_at:new Date().toLocaleString()}));
+        setInvAdjLog(prev=>[...logs.map((l,i)=>({...l,id:'ADJ-'+(prev.length+1001+i)})),...prev].slice(0,2000));
+        logChange('inventory_adjustment','Product',pid,entries.map(([sz,d2])=>(d2>0?'+':'')+d2+' '+sz).join(', ')+(reason?' — '+reason:''));
+      }
+    }
+    setProd(pp=>pp.map(x=>x.id===pid?{...x,_inv:inv}:x));nf('Inventory updated');
+  };
   const newE=(c,product)=>{const mk=c?.catalog_markup||1.65;const items=[];
     if(product){const au=product.brand==='Adidas'||product.brand==='Under Armour'||product.brand==='New Balance';const sell=au?rQ(product.retail_price*(1-(({A:0.4,B:0.35,C:0.3})[c?.adidas_ua_tier||'B']||0.35))):rQ(product.nsa_cost*mk);
       items.push({product_id:product.id,sku:product.sku,name:product.name,brand:product.brand,color:product.color,nsa_cost:product.nsa_cost,retail_price:product.retail_price,unit_sell:sell,available_sizes:[...product.available_sizes],_colors:product._colors||null,sizes:{},decorations:[]})}
@@ -6289,10 +6320,9 @@ export default function App(){
   {fP.length===0&&<div className="empty">No products</div>}</div></div></>);};
 
   // INVENTORY
-  const rInv=()=>(<><div className="stats-row"><div className="stat-card"><div className="stat-label">Units</div><div className="stat-value">{tU}</div></div><div className="stat-card"><div className="stat-label">Value</div><div className="stat-value">${tV.toLocaleString(undefined,{maximumFractionDigits:0})}</div></div><div className="stat-card"><div className="stat-label">Products</div><div className="stat-value">{iD.length}</div></div>
-    {isA&&al.length>0&&<div className="stat-card" style={{borderColor:'#fbbf24'}}><div className="stat-label">Alerts</div><div className="stat-value" style={{color:'#d97706'}}>{al.length}</div></div>}</div>
+  const rInvStock=()=>(<>
   <div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap'}}><div className="search-bar" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search..." value={q} onChange={e=>setQ(e.target.value)}/></div>
-    <button className={`btn btn-sm ${iShowFav?'btn-primary':'btn-secondary'}`} style={{fontSize:11}} onClick={()=>setIShowFav(f=>!f)}>⭐ Favorites{favSkus.length>0?` (${favSkus.length})`:''}</button>
+    <button className={`btn btn-sm ${iShowFav?'btn-primary':'btn-secondary'}`} style={{fontSize:11}} onClick={()=>setIShowFav(f=>!f)}>Favorites{favSkus.length>0?` (${favSkus.length})`:''}</button>
     <select className="form-select" style={{width:110}} value={iF.cat} onChange={e=>setIF(f=>({...f,cat:e.target.value}))}><option value="all">Category</option>{CATEGORIES.map(c=><option key={c}>{c}</option>)}</select>
     <select className="form-select" style={{width:110}} value={iF.vnd} onChange={e=>setIF(f=>({...f,vnd:e.target.value}))}><option value="all">Vendor</option>{vend.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}</select></div>
   <div className="card"><div className="card-body" style={{padding:0}}><table><thead><tr>
@@ -6311,6 +6341,159 @@ export default function App(){
     <td><div style={{display:'flex',gap:4}}><button className="btn btn-sm btn-secondary" onClick={()=>newE(null,p)}>+EST</button>
       {isA&&<button className="btn btn-sm btn-secondary" onClick={()=>setAM({open:true,p})}>INV</button>}</div></td>
   </tr>)}</tbody></table></div></div></>);
+
+  // INVENTORY CHANGE LOG
+  const rInvLog=()=>{
+    const filtered=invAdjLog.filter(l=>{if(!invPOSearch)return true;const s=invPOSearch.toLowerCase();return l.sku?.toLowerCase().includes(s)||l.product_name?.toLowerCase().includes(s)||l.reason?.toLowerCase().includes(s)||l.performed_by?.toLowerCase().includes(s)});
+    const typeColors={manual:{bg:'#eff6ff',c:'#1e40af',label:'Manual'},correction:{bg:'#fefce8',c:'#a16207',label:'Correction'},'return':{bg:'#f0fdf4',c:'#166534',label:'Return'},damage:{bg:'#fef2f2',c:'#dc2626',label:'Damage'},po_receive:{bg:'#f5f3ff',c:'#7c3aed',label:'PO Receive'}};
+    return(<>
+      <div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap'}}>
+        <div className="search-bar" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search adjustments..." value={invPOSearch} onChange={e=>setInvPOSearch(e.target.value)}/></div>
+      </div>
+      {filtered.length===0?<div className="card"><div className="card-body"><div className="empty" style={{padding:30}}>No inventory adjustments logged yet. Use the INV button on the Stock tab to make adjustments.</div></div></div>:
+      <div className="card"><div className="card-body" style={{padding:0}}><table><thead><tr>
+        <th>Date</th><th>Type</th><th>Product</th><th>Size</th><th>Change</th><th>Before</th><th>After</th><th>Reason</th><th>By</th>
+      </tr></thead><tbody>
+        {filtered.slice(0,200).map(l=>{const tc=typeColors[l.adjustment_type]||typeColors.manual;return<tr key={l.id}>
+          <td style={{fontSize:11,color:'#64748b',whiteSpace:'nowrap'}}>{l.created_at}</td>
+          <td><span style={{padding:'2px 8px',borderRadius:8,fontSize:10,fontWeight:700,background:tc.bg,color:tc.c}}>{tc.label}</span></td>
+          <td><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',fontSize:12}}>{l.sku}</span><br/><span style={{fontSize:11,color:'#64748b'}}>{l.product_name}{l.color?' — '+l.color:''}</span></td>
+          <td style={{fontWeight:700,fontSize:13}}>{l.size}</td>
+          <td style={{fontWeight:800,fontSize:14,color:l.qty_change>0?'#166534':'#dc2626'}}>{l.qty_change>0?'+':''}{l.qty_change}</td>
+          <td style={{fontSize:12,color:'#94a3b8'}}>{l.prev_qty}</td>
+          <td style={{fontSize:12,fontWeight:700}}>{l.new_qty}</td>
+          <td style={{fontSize:11,color:'#475569',maxWidth:200}}>{l.reason||'—'}</td>
+          <td style={{fontSize:11,color:'#64748b'}}>{l.performed_by}</td>
+        </tr>})}
+      </tbody></table></div></div>}
+    </>);
+  };
+
+  // INVENTORY POs
+  const createInvPO=()=>{
+    const vendorId=invPOModal.vendor_id;const vendor=vend.find(v=>v.id===vendorId);
+    if(!vendorId||!vendor){nf('Select a vendor','warn');return}
+    const validItems=invPOModal.items.filter(it=>it.product_id&&Object.values(it.sizes||{}).some(v=>v>0));
+    if(validItems.length===0){nf('Add at least one item with quantities','warn');return}
+    const poNum='IPO-'+invPOCounter+'-NSA';
+    const po={id:'ipo-'+Date.now(),po_number:poNum,vendor_id:vendorId,vendor_name:vendor.name,
+      items:validItems.map(it=>({product_id:it.product_id,sku:it.sku,name:it.name,color:it.color||'',available_sizes:it.available_sizes||[],sizes:{...it.sizes},received:{},nsa_cost:it.nsa_cost||0})),
+      status:'ordered',created_at:new Date().toLocaleString(),expected_date:invPOModal.expected_date||'',memo:invPOModal.memo||'',
+      created_by:cu?.name||'Unknown',received_at:null,received_by:null,_qb_synced:false};
+    setInvPOs(prev=>[po,...prev]);setInvPOCounter(c2=>c2+1);
+    setInvPOModal({open:false,vendor_id:'',items:[],memo:'',expected_date:''});
+    logChange('created','Inventory PO',poNum,vendor.name+' — '+validItems.length+' items');
+    nf('Inventory PO '+poNum+' created');
+  };
+
+  const receiveInvPO=(poId,receivedMap)=>{
+    // receivedMap: {itemIdx: {size: qty, ...}, ...}
+    setInvPOs(prev=>prev.map(po=>{
+      if(po.id!==poId)return po;
+      const updatedItems=po.items.map((it,idx)=>{
+        if(!receivedMap[idx])return it;
+        const newRcvd={...it.received};
+        Object.entries(receivedMap[idx]).forEach(([sz,qty])=>{newRcvd[sz]=(newRcvd[sz]||0)+qty});
+        return{...it,received:newRcvd};
+      });
+      // Check if fully received
+      let allReceived=true;
+      updatedItems.forEach(it=>{Object.entries(it.sizes).forEach(([sz,ordered])=>{if(ordered>0&&(it.received[sz]||0)<ordered)allReceived=false})});
+      const newStatus=allReceived?'received':po.status==='ordered'?'partial':po.status;
+      return{...po,items:updatedItems,status:newStatus,received_at:allReceived?new Date().toLocaleString():po.received_at,received_by:allReceived?cu?.name:po.received_by};
+    }));
+    // Update product inventory
+    const po=invPOs.find(p=>p.id===poId);
+    if(!po)return;
+    const adjLogs=[];
+    Object.entries(receivedMap).forEach(([idx,szMap])=>{
+      const poItem=po.items[parseInt(idx)];if(!poItem)return;
+      const p2=prod.find(x=>x.id===poItem.product_id);if(!p2)return;
+      const newInv={...p2._inv};
+      Object.entries(szMap).forEach(([sz,qty])=>{
+        if(qty<=0)return;
+        const prev=newInv[sz]||0;newInv[sz]=prev+qty;
+        adjLogs.push({product_id:p2.id,sku:p2.sku,product_name:p2.name,color:p2.color||'',size:sz,qty_change:qty,prev_qty:prev,new_qty:prev+qty,reason:'PO Receive: '+po.po_number,adjustment_type:'po_receive',performed_by:cu?.name||'Unknown',created_at:new Date().toLocaleString()});
+      });
+      setProd(pp=>pp.map(x=>x.id===p2.id?{...x,_inv:newInv}:x));
+    });
+    if(adjLogs.length>0){
+      setInvAdjLog(prev=>[...adjLogs.map((l,i)=>({...l,id:'ADJ-'+(prev.length+1001+i)})),...prev].slice(0,2000));
+      logChange('po_received','Inventory PO',po.po_number,adjLogs.map(l=>'+'+l.qty_change+' '+l.size+' '+l.sku).join(', '));
+    }
+    nf('PO '+po.po_number+' items received — inventory updated');
+  };
+
+  const rInvPOs=()=>{
+    const q3=invPOSearch.trim().toLowerCase();
+    const filtered=invPOs.filter(po=>{if(!q3)return true;return po.po_number.toLowerCase().includes(q3)||po.vendor_name.toLowerCase().includes(q3)||po.items.some(it=>it.sku.toLowerCase().includes(q3)||it.name.toLowerCase().includes(q3))});
+    const statusColors={ordered:{bg:'#eff6ff',c:'#1e40af',label:'Ordered'},partial:{bg:'#fffbeb',c:'#d97706',label:'Partial'},received:{bg:'#f0fdf4',c:'#166534',label:'Received'},cancelled:{bg:'#fef2f2',c:'#dc2626',label:'Cancelled'}};
+    return(<>
+      <div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap',alignItems:'center'}}>
+        <div className="search-bar" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search POs..." value={invPOSearch} onChange={e=>setInvPOSearch(e.target.value)}/></div>
+        <button className="btn btn-primary" onClick={()=>setInvPOModal({open:true,vendor_id:'',items:[],memo:'',expected_date:''})}>+ New Inventory PO</button>
+      </div>
+      {filtered.length===0?<div className="card"><div className="card-body"><div className="empty" style={{padding:30}}>No inventory POs yet. Click "+ New Inventory PO" to create one.</div></div></div>:
+      <div style={{display:'flex',flexDirection:'column',gap:12}}>
+        {filtered.map(po=>{const sc=statusColors[po.status]||statusColors.ordered;
+          const totalOrdered=po.items.reduce((a,it)=>a+Object.values(it.sizes).reduce((a2,v)=>a2+v,0),0);
+          const totalReceived=po.items.reduce((a,it)=>a+Object.values(it.received||{}).reduce((a2,v)=>a2+v,0),0);
+          const totalCost=po.items.reduce((a,it)=>a+Object.values(it.sizes).reduce((a2,v)=>a2+v,0)*(it.nsa_cost||0),0);
+          return<div key={po.id} className="card" style={{borderLeft:'4px solid '+(sc.c)}}>
+            <div className="card-header" style={{padding:'12px 16px'}}>
+              <div style={{flex:1}}>
+                <div style={{display:'flex',alignItems:'center',gap:10}}>
+                  <span style={{fontFamily:'monospace',fontWeight:900,fontSize:18,color:'#1e40af',letterSpacing:1}}>{po.po_number}</span>
+                  <span className="badge" style={{background:sc.bg,color:sc.c,fontWeight:700}}>{sc.label}</span>
+                  <span style={{fontSize:12,color:'#64748b'}}>{po.vendor_name}</span>
+                </div>
+                <div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>Created {po.created_at} by {po.created_by}{po.expected_date?' · Expected '+po.expected_date:''}{po.memo?' · '+po.memo:''}</div>
+              </div>
+              <div style={{textAlign:'right'}}>
+                <div style={{fontSize:16,fontWeight:800}}>{totalReceived}/{totalOrdered} <span style={{fontSize:11,fontWeight:400,color:'#94a3b8'}}>units</span></div>
+                <div style={{fontSize:12,color:'#64748b'}}>${totalCost.toFixed(2)}</div>
+              </div>
+            </div>
+            <div className="card-body" style={{padding:0}}>
+              <table><thead><tr><th>SKU</th><th>Product</th><th>Ordered</th><th>Received</th><th>Remaining</th></tr></thead>
+              <tbody>{po.items.map((it,idx)=>{
+                const ordQty=Object.values(it.sizes).reduce((a,v)=>a+v,0);
+                const rcvQty=Object.values(it.received||{}).reduce((a,v)=>a+v,0);
+                return<tr key={idx}>
+                  <td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',fontSize:12}}>{it.sku}</td>
+                  <td style={{fontSize:12}}>{it.name}<span style={{color:'#94a3b8'}}>{it.color?' — '+it.color:''}</span>
+                    <div style={{display:'flex',gap:3,marginTop:3}}>{Object.entries(it.sizes).filter(([,v])=>v>0).map(([sz,v])=>{
+                      const rv=(it.received||{})[sz]||0;
+                      return<span key={sz} style={{fontSize:10,padding:'1px 5px',borderRadius:3,fontWeight:600,background:rv>=v?'#dcfce7':rv>0?'#fef9c3':'#f1f5f9',color:rv>=v?'#166534':rv>0?'#a16207':'#475569'}}>{sz}:{rv}/{v}</span>
+                    })}</div>
+                  </td>
+                  <td style={{fontWeight:700}}>{ordQty}</td>
+                  <td style={{fontWeight:700,color:rcvQty>=ordQty?'#166534':rcvQty>0?'#d97706':'#94a3b8'}}>{rcvQty}</td>
+                  <td style={{fontWeight:700,color:(ordQty-rcvQty)>0?'#dc2626':'#166534'}}>{ordQty-rcvQty}</td>
+                </tr>})}</tbody></table>
+            </div>
+            {po.status!=='received'&&po.status!=='cancelled'&&<div style={{padding:'10px 16px',background:'#f8fafc',borderTop:'1px solid #e2e8f0',display:'flex',gap:8}}>
+              <button className="btn btn-sm btn-primary" style={{background:'#166534',borderColor:'#166534'}} onClick={()=>setInvPOReceive(po)}>Receive Items</button>
+              {po.status==='ordered'&&<button className="btn btn-sm btn-secondary" style={{color:'#dc2626',borderColor:'#fca5a5'}} onClick={()=>{if(!window.confirm('Cancel PO '+po.po_number+'?'))return;setInvPOs(prev=>prev.map(p2=>p2.id===po.id?{...p2,status:'cancelled'}:p2));nf('PO cancelled')}}>Cancel PO</button>}
+            </div>}
+          </div>})}
+      </div>}
+    </>);
+  };
+
+  const rInv=()=>(<>
+    <div className="stats-row"><div className="stat-card"><div className="stat-label">Units</div><div className="stat-value">{tU}</div></div><div className="stat-card"><div className="stat-label">Value</div><div className="stat-value">${tV.toLocaleString(undefined,{maximumFractionDigits:0})}</div></div><div className="stat-card"><div className="stat-label">Products</div><div className="stat-value">{iD.length}</div></div>
+    {isA&&al.length>0&&<div className="stat-card" style={{borderColor:'#fbbf24'}}><div className="stat-label">Alerts</div><div className="stat-value" style={{color:'#d97706'}}>{al.length}</div></div>}
+    {invPOs.filter(p=>p.status==='ordered'||p.status==='partial').length>0&&<div className="stat-card" style={{borderColor:'#7c3aed'}}><div className="stat-label">Open POs</div><div className="stat-value" style={{color:'#7c3aed'}}>{invPOs.filter(p=>p.status==='ordered'||p.status==='partial').length}</div></div>}</div>
+    <div className="tabs" style={{marginBottom:16}}>
+      <button className={`tab ${invTab==='stock'?'active':''}`} onClick={()=>setInvTab('stock')}>Stock</button>
+      <button className={`tab ${invTab==='log'?'active':''}`} onClick={()=>setInvTab('log')}>Change Log{invAdjLog.length>0?' ('+invAdjLog.length+')':''}</button>
+      <button className={`tab ${invTab==='pos'?'active':''}`} onClick={()=>setInvTab('pos')}>Inventory POs{invPOs.length>0?' ('+invPOs.length+')':''}</button>
+    </div>
+    {invTab==='stock'&&rInvStock()}
+    {invTab==='log'&&rInvLog()}
+    {invTab==='pos'&&rInvPOs()}
+  </>);
 
   // JOBS LIST
   const[jobFilters,setJobFilters]=useState({statuses:['hold','staging','in_process'],rep:'all',deco:'all',artSt:'all',dueBefore:'',search:''});
@@ -7304,7 +7487,8 @@ export default function App(){
     _meta:{version:'1.0',exported_at:new Date().toISOString(),exported_by:cu.name,app:'NSA Portal'},
     customers:cust,estimates:ests,sales_orders:sos,products:prod,messages:msgs,invoices:invs,
     batch_queue:batchPOs,submitted_batches:submittedBatches,batch_counter:batchCounter,
-    change_log:changeLog,so_history:soHistory
+    change_log:changeLog,so_history:soHistory,
+    inv_adj_log:invAdjLog,inv_pos:invPOs,inv_po_counter:invPOCounter
   });
   const exportBackup=()=>{
     const data=getFullState();
@@ -7352,13 +7536,14 @@ export default function App(){
         const data=JSON.stringify({_meta:{version:'1.0',auto_backup:true,saved_at:new Date().toISOString()},
           customers:cust,estimates:ests,sales_orders:sos,products:prod,messages:msgs,invoices:invs,
           batch_queue:batchPOs,submitted_batches:submittedBatches,batch_counter:batchCounter,
-          change_log:changeLog,so_history:soHistory});
+          change_log:changeLog,so_history:soHistory,
+          inv_adj_log:invAdjLog,inv_pos:invPOs,inv_po_counter:invPOCounter});
         localStorage.setItem('nsa_auto_backup',data);
         localStorage.setItem('nsa_auto_backup_ts',new Date().toISOString());
       }catch{}
     },300000);// 5 min
     return()=>clearInterval(interval);
-  },[autoBackupEnabled,cust,ests,sos,prod,msgs,invs,batchPOs,submittedBatches,batchCounter,changeLog,soHistory]);
+  },[autoBackupEnabled,cust,ests,sos,prod,msgs,invs,batchPOs,submittedBatches,batchCounter,changeLog,soHistory,invAdjLog,invPOs,invPOCounter]);
 
   const restoreAutoBackup=()=>{
     try{
@@ -10750,6 +10935,7 @@ export default function App(){
     const unsyncedPOs=[];
     sos.forEach(so=>{safeItems(so).forEach(it=>{(it.po_lines||[]).forEach(pl=>{if(!pl._qb_synced)unsyncedPOs.push({...pl,soId:so.id,sku:it.sku,itemName:it.name,vendor:pl.deco_vendor||D_V.find(v=>v.id===it.vendor_id)?.name||it.brand})})})});
     const unsyncedInvs=invs.filter(i=>!i._qb_synced);
+    const unsyncedInvPOs=invPOs.filter(p=>!p._qb_synced);
 
     // Build what a QB sync would push
     const buildQBSalesOrder=(so)=>{
@@ -10801,6 +10987,17 @@ export default function App(){
           const qbPO=buildQBPurchaseOrder(pl,so,it);
           log.details.push('PO: '+pl.po_id+' → QB PurchaseOrder to '+qbPO.vendorRef+' ($'+qbPO.total.toFixed(2)+')');
         })})});
+        // Inventory POs
+        unsyncedInvPOs.forEach(po=>{
+          const totalCost=po.items.reduce((a,it)=>a+Object.values(it.sizes).reduce((a2,v)=>a2+v,0)*(it.nsa_cost||0),0);
+          log.details.push('INV-PO: '+po.po_number+' → QB PurchaseOrder to '+po.vendor_name+' ($'+totalCost.toFixed(2)+')');
+        });
+      }
+      if(type==='all'||type==='inventory_adjustments'){
+        const recentAdj=invAdjLog.filter(l=>!l._qb_synced).slice(0,50);
+        recentAdj.forEach(adj=>{
+          log.details.push('ADJ: '+adj.sku+' '+adj.size+' '+(adj.qty_change>0?'+':'')+adj.qty_change+' ('+adj.adjustment_type+')');
+        });
       }
       if(type==='all'||type==='invoices'){
         unsyncedInvs.forEach(inv=>{
@@ -10845,8 +11042,9 @@ export default function App(){
       {/* Sync Queue Stats */}
       <div className="stats-row" style={{marginBottom:16}}>
         <div className="stat-card" style={{borderLeft:'3px solid #2563eb'}}><div className="stat-label">SOs to Sync</div><div className="stat-value" style={{color:'#2563eb'}}>{unsyncedSOs.length}</div></div>
-        <div className="stat-card" style={{borderLeft:'3px solid #7c3aed'}}><div className="stat-label">POs to Sync</div><div className="stat-value" style={{color:'#7c3aed'}}>{unsyncedPOs.length}</div></div>
+        <div className="stat-card" style={{borderLeft:'3px solid #7c3aed'}}><div className="stat-label">POs to Sync</div><div className="stat-value" style={{color:'#7c3aed'}}>{unsyncedPOs.length+unsyncedInvPOs.length}</div></div>
         <div className="stat-card" style={{borderLeft:'3px solid #d97706'}}><div className="stat-label">Invoices to Sync</div><div className="stat-value" style={{color:'#d97706'}}>{unsyncedInvs.length}</div></div>
+        <div className="stat-card" style={{borderLeft:'3px solid #16a34a'}}><div className="stat-label">Inv Adjustments</div><div className="stat-value" style={{color:'#16a34a'}}>{invAdjLog.filter(l=>!l._qb_synced).length}</div></div>
         <div className="stat-card" style={{borderLeft:'3px solid #166534'}}><div className="stat-label">Last Sync</div><div className="stat-value" style={{fontSize:12,color:'#166534'}}>{qbConfig.lastSync||'Never'}</div></div>
       </div>
 
@@ -11431,6 +11629,106 @@ export default function App(){
       <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='art'&&rArtist()}{pg==='production'&&rProd2()}{pg==='decoration'&&rDeco()}{pg==='warehouse'&&rWarehouse()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='team'&&rTeam()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='commissions'&&rCommissions()}{pg==='omg'&&rOMG()}{pg==='reports'&&rReports()}{pg==='issues'&&rIssues()}{pg==='import'&&rImport()}{pg==='qb'&&rQB()}{pg==='backup'&&rBackup()}{pg==='settings'&&rSettings()}</div></div>
     <CustModal isOpen={cM.open} onClose={()=>setCM({open:false,c:null})} onSave={savC} customer={cM.c} parents={pars}/>
     <AdjModal isOpen={aM.open} onClose={()=>setAM({open:false,p:null})} product={aM.p} onSave={savI}/>
+
+    {/* INVENTORY PO CREATE MODAL */}
+    {invPOModal.open&&<div className="modal-overlay" onClick={()=>setInvPOModal(x=>({...x,open:false}))}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:750,maxHeight:'85vh',overflow:'auto'}}>
+      <div className="modal-header" style={{background:'#f5f3ff'}}><h2>New Inventory PO</h2><button className="modal-close" onClick={()=>setInvPOModal(x=>({...x,open:false}))}>x</button></div>
+      <div className="modal-body">
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10,marginBottom:16}}>
+          <div><label className="form-label">Vendor *</label>
+            <select className="form-select" style={{width:'100%'}} value={invPOModal.vendor_id} onChange={e=>setInvPOModal(x=>({...x,vendor_id:e.target.value}))}>
+              <option value="">Select vendor...</option>{vend.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}</select></div>
+          <div><label className="form-label">Expected Date</label>
+            <input type="date" className="form-input" style={{width:'100%'}} value={invPOModal.expected_date} onChange={e=>setInvPOModal(x=>({...x,expected_date:e.target.value}))}/></div>
+          <div><label className="form-label">Memo</label>
+            <input className="form-input" style={{width:'100%'}} value={invPOModal.memo} onChange={e=>setInvPOModal(x=>({...x,memo:e.target.value}))} placeholder="Notes..."/></div>
+        </div>
+        <div style={{fontSize:10,fontWeight:700,color:'#64748b',marginBottom:4,textTransform:'uppercase'}}>PO Number: <span style={{color:'#7c3aed',fontSize:13,letterSpacing:1}}>IPO-{invPOCounter}-NSA</span></div>
+
+        {/* Product search & add */}
+        <div style={{marginBottom:12,padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0'}}>
+          <label className="form-label">Add Products</label>
+          {(()=>{
+            const vendorId=invPOModal.vendor_id;
+            const available=vendorId?prod.filter(p=>p.vendor_id===vendorId&&!invPOModal.items.find(it=>it.product_id===p.id)):prod.filter(p=>!invPOModal.items.find(it=>it.product_id===p.id));
+            return<select className="form-select" style={{width:'100%'}} value="" onChange={e=>{
+              const p2=prod.find(x=>x.id===e.target.value);if(!p2)return;
+              setInvPOModal(x=>({...x,items:[...x.items,{product_id:p2.id,sku:p2.sku,name:p2.name,color:p2.color||'',available_sizes:[...p2.available_sizes],sizes:{},nsa_cost:p2.nsa_cost||0}]}));
+            }}><option value="">Search and add a product...</option>{available.slice(0,100).map(p2=><option key={p2.id} value={p2.id}>{p2.sku} — {p2.name}{p2.color?' — '+p2.color:''}</option>)}</select>;
+          })()}
+        </div>
+
+        {/* Items list with size inputs */}
+        {invPOModal.items.length===0?<div style={{textAlign:'center',padding:20,color:'#94a3b8',fontSize:13}}>No items added yet. Select a vendor and add products above.</div>:
+        invPOModal.items.map((it,idx)=>{
+          const itTotal=Object.values(it.sizes||{}).reduce((a,v)=>a+v,0);
+          return<div key={idx} style={{padding:12,background:'#f8fafc',borderRadius:6,marginBottom:8,border:'1px solid #e2e8f0'}}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
+              <div><span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af'}}>{it.sku}</span> <span style={{fontWeight:600}}>{it.name}</span>{it.color&&<span style={{color:'#94a3b8'}}> — {it.color}</span>}
+                <span style={{fontSize:11,color:'#64748b',marginLeft:8}}>@ ${it.nsa_cost?.toFixed(2)}/ea</span></div>
+              <div style={{display:'flex',alignItems:'center',gap:8}}>
+                <span style={{fontWeight:700,fontSize:13}}>{itTotal} units = ${(itTotal*(it.nsa_cost||0)).toFixed(2)}</span>
+                <button style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',fontSize:16,padding:'0 4px'}} onClick={()=>setInvPOModal(x=>({...x,items:x.items.filter((_,i2)=>i2!==idx)}))}>x</button>
+              </div>
+            </div>
+            <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+              {(it.available_sizes||['S','M','L','XL','2XL']).map(sz=><div key={sz} style={{textAlign:'center'}}>
+                <div style={{fontSize:10,fontWeight:700,color:'#475569',marginBottom:2}}>{sz}</div>
+                <input style={{width:48,textAlign:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700}} value={it.sizes[sz]||''} placeholder="0"
+                  onChange={e=>{const val=Math.max(0,parseInt(e.target.value)||0);setInvPOModal(x=>({...x,items:x.items.map((ii,i2)=>i2!==idx?ii:{...ii,sizes:{...ii.sizes,[sz]:val}})}))}}/>
+              </div>)}
+            </div>
+          </div>})}
+        {invPOModal.items.length>0&&<div style={{padding:10,background:'#eff6ff',borderRadius:6,marginTop:8,display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+          <span style={{fontWeight:700}}>Total: {invPOModal.items.reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((a2,v)=>a2+v,0),0)} units</span>
+          <span style={{fontWeight:700,color:'#1e40af'}}>${invPOModal.items.reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((a2,v)=>a2+v,0)*(it.nsa_cost||0),0).toFixed(2)}</span>
+        </div>}
+      </div>
+      <div className="modal-footer">
+        <button className="btn btn-secondary" onClick={()=>setInvPOModal(x=>({...x,open:false}))}>Cancel</button>
+        <button className="btn btn-primary" style={{background:'#7c3aed',borderColor:'#7c3aed'}} onClick={createInvPO}>Create PO</button>
+      </div>
+    </div></div>}
+
+    {/* INVENTORY PO RECEIVE MODAL */}
+    {invPOReceive&&<div className="modal-overlay" onClick={()=>setInvPOReceive(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:700,maxHeight:'85vh',overflow:'auto'}}>
+      <div className="modal-header" style={{background:'#f0fdf4'}}><h2>Receive PO: {invPOReceive.po_number}</h2><button className="modal-close" onClick={()=>setInvPOReceive(null)}>x</button></div>
+      <div className="modal-body">
+        <div style={{padding:8,background:'#f8fafc',borderRadius:6,marginBottom:12,fontSize:12,color:'#64748b'}}>{invPOReceive.vendor_name} · Created {invPOReceive.created_at}</div>
+        {invPOReceive.items.map((it,idx)=>{
+          const remaining={};Object.entries(it.sizes).forEach(([sz,v])=>{const rcvd=(it.received||{})[sz]||0;if(v-rcvd>0)remaining[sz]=v-rcvd});
+          if(Object.keys(remaining).length===0)return<div key={idx} style={{padding:8,background:'#dcfce7',borderRadius:6,marginBottom:6,fontSize:12,color:'#166534',fontWeight:600}}>{it.sku} — Fully received</div>;
+          return<div key={idx} style={{padding:12,background:'#f8fafc',borderRadius:6,marginBottom:8,border:'1px solid #e2e8f0'}}>
+            <div style={{marginBottom:8}}><span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af'}}>{it.sku}</span> {it.name}{it.color?' — '+it.color:''}</div>
+            <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+              {Object.entries(remaining).map(([sz,rem])=><div key={sz} style={{textAlign:'center'}}>
+                <div style={{fontSize:10,fontWeight:700,color:'#475569',marginBottom:2}}>{sz} <span style={{color:'#94a3b8'}}>({rem} left)</span></div>
+                <input id={'rcv-'+invPOReceive.id+'-'+idx+'-'+sz} style={{width:48,textAlign:'center',border:'2px solid #22c55e',borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700,background:'#f0fdf4'}} defaultValue={rem} placeholder="0"/>
+              </div>)}
+            </div>
+          </div>})}
+      </div>
+      <div className="modal-footer">
+        <button className="btn btn-secondary" onClick={()=>setInvPOReceive(null)}>Cancel</button>
+        <button className="btn btn-primary" style={{background:'#166534',borderColor:'#166534'}} onClick={()=>{
+          const receivedMap={};
+          invPOReceive.items.forEach((it,idx)=>{
+            const szMap={};
+            Object.entries(it.sizes).forEach(([sz,v])=>{
+              const rcvd=(it.received||{})[sz]||0;
+              if(v-rcvd<=0)return;
+              const el=document.getElementById('rcv-'+invPOReceive.id+'-'+idx+'-'+sz);
+              const val=el?Math.min(Math.max(0,parseInt(el.value)||0),v-rcvd):0;
+              if(val>0)szMap[sz]=val;
+            });
+            if(Object.keys(szMap).length>0)receivedMap[idx]=szMap;
+          });
+          if(Object.keys(receivedMap).length===0){nf('No quantities to receive','warn');return}
+          receiveInvPO(invPOReceive.id,receivedMap);
+          setInvPOReceive(null);
+        }}>Receive & Update Inventory</button>
+      </div>
+    </div></div>}
 
     {/* QUICK PRODUCT CREATE MODAL */}
     {qPC.open&&<div className="modal-overlay" onClick={()=>setQPC(x=>({...x,open:false}))}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:qPC.mode==='bulk'?800:550,maxHeight:'85vh',overflow:'auto'}}>
