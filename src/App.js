@@ -9509,7 +9509,7 @@ export default function App(){
           });
           const keeping=resolved.filter((p,pi)=>!p._skip&&!(imp.questions||[]).find(q=>q.idx===pi&&q.answer==='skip'));
           const isAUi=b=>b==='Adidas'||b==='Under Armour'||b==='New Balance';
-          const mk=c?.catalog_markup||1.65;const tier=c?.adidas_ua_tier||'B';const disc=tD[tier]||0.35;
+          const mk=c?.catalog_markup||1.65;const tier=c?.adidas_ua_tier||'B';const tD={A:0.4,B:0.35,C:0.3};const disc=tD[tier]||0.35;
           const totalRev=keeping.reduce((a,it)=>a+(it.totalAmt||0),0);
           const shipAmt=Array.isArray(imp.shipping)?imp.shipping.reduce((a,s)=>a+(s.amount||0),0):(typeof imp.shipping==='number'?imp.shipping:0);
 
