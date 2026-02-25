@@ -7040,7 +7040,7 @@ export default function App(){
                 <div style={{fontSize:10,opacity:0.6,fontWeight:600}}>PURCHASE ORDER</div>
                 <div style={{fontSize:24,fontWeight:900,fontFamily:'monospace',letterSpacing:2}}>{poId}</div>
                 {vendor&&<div style={{fontSize:12,opacity:0.8}}>{vendor}</div>}
-                {submittedInfo&&<div style={{fontSize:11,opacity:0.6}}>Submitted {submittedInfo.submitted_at} by {submittedInfo.submitted_by}</div>}
+                {submittedInfo&&<div style={{fontSize:11,opacity:0.6}}>Ordered {submittedInfo.submitted_at} by {submittedInfo.submitted_by}</div>}
               </div>
               <div style={{textAlign:'right'}}>
                 <div style={{fontSize:24,fontWeight:900}}>{totalUnits}</div>
@@ -7123,11 +7123,11 @@ export default function App(){
 
       {/* Regular (non-batch) PO match — handled above now */}
 
-      {/* Submitted batches history */}
+      {/* Ordered batches history */}
       {!batchScan.trim()&&submittedBatches.length>0&&<div className="card" style={{marginBottom:16}}>
-        <div className="card-header"><h2>Submitted Batch POs</h2></div>
+        <div className="card-header"><h2>Ordered Batch POs</h2></div>
         <div className="card-body" style={{padding:0}}>
-          <table><thead><tr><th>PO#</th><th>Vendor</th><th>SOs</th><th>Units</th><th>Total</th><th>Submitted</th><th>By</th><th>Status</th></tr></thead><tbody>
+          <table><thead><tr><th>PO#</th><th>Vendor</th><th>SOs</th><th>Units</th><th>Total</th><th>Ordered</th><th>By</th><th>Status</th></tr></thead><tbody>
           {submittedBatches.map(sb=><tr key={sb.po_number} style={{cursor:'pointer'}} onClick={()=>setBatchScan(sb.po_number)}>
             <td style={{fontWeight:800,color:'#1e40af',fontFamily:'monospace'}}>{sb.po_number}</td>
             <td>{sb.vendor_name}</td>
@@ -7148,12 +7148,12 @@ export default function App(){
         <div className="stat-card"><div className="stat-label">Queued</div><div className="stat-value">{batchPOs.length}</div></div>
         <div className="stat-card"><div className="stat-label">Vendors</div><div className="stat-value">{vendorGroups.length}</div></div>
         <div className="stat-card"><div className="stat-label">Queue Value</div><div className="stat-value">${batchPOs.reduce((a,bp)=>a+bp.total_cost,0).toFixed(2)}</div></div>
-        <div className="stat-card"><div className="stat-label">Submitted</div><div className="stat-value">{submittedBatches.length}</div></div>
+        <div className="stat-card"><div className="stat-label">Ordered</div><div className="stat-value">{submittedBatches.length}</div></div>
       </div>
       {vendorGroups.length===0&&submittedBatches.length===0&&<div className="card"><div className="empty" style={{padding:40}}>
         <div style={{fontSize:32,marginBottom:8}}>📦</div>
         <div style={{fontWeight:700,fontSize:16,marginBottom:4}}>No batch POs queued</div>
-        <div style={{maxWidth:400,margin:'0 auto'}}>When creating a PO for S&S, SanMar, Richardson, Momentec, or A4 — click "Add to Batch" to queue it. Submit when the batch hits free shipping threshold.</div>
+        <div style={{maxWidth:400,margin:'0 auto'}}>When creating a PO for S&S, SanMar, Richardson, Momentec, A4, Adidas, or Under Armour — click "Add to Batch" to queue it. Order when the batch hits free shipping threshold.</div>
       </div></div>}
       {vendorGroups.map(([vk,vg])=>{
         const total=vg.pos.reduce((a,bp)=>a+bp.total_cost,0);
@@ -7213,9 +7213,9 @@ export default function App(){
           <div style={{padding:'14px 16px',background:'#f8fafc',borderTop:'1px solid #e2e8f0'}}>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
               <div>
-                <div style={{fontSize:10,color:'#64748b',fontWeight:600}}>PO NUMBER FOR VENDOR B2B</div>
+                <div style={{fontSize:10,color:'#64748b',fontWeight:600}}>PO NUMBER FOR ONLINE ORDER</div>
                 <div style={{fontSize:22,fontWeight:800,fontFamily:'monospace',color:'#1e40af',letterSpacing:2}}>{nextPO}</div>
-                <div style={{fontSize:10,color:'#94a3b8'}}>Enter this exact number in {vg.name}'s B2B. Warehouse scans this barcode on receiving.</div>
+                <div style={{fontSize:10,color:'#94a3b8'}}>Use this PO# when ordering online from {vg.name}. Warehouse scans this on receiving.</div>
               </div>
               <div style={{display:'flex',flexDirection:'column',gap:6}}>
                 <button className="btn btn-sm btn-secondary" onClick={()=>{navigator.clipboard?.writeText(nextPO);nf('Copied '+nextPO)}}>{'📋'} Copy PO#</button>
@@ -7243,8 +7243,9 @@ export default function App(){
                 });
                 setBatchPOs(prev=>prev.filter(p=>p.vendor_key!==vk));
                 setBatchCounter(ct=>ct+1);
-                nf('\uD83D\uDE80 '+poNum+' submitted to '+vg.name+' ($'+total.toFixed(2)+')');
-              }}>{'🚀'} Submit {nextPO} to {vg.name}{hitThreshold?' — FREE SHIP':''} (${total.toFixed(2)})</button>
+                nf('🚀 '+poNum+' ordered for '+vg.name+' ($'+total.toFixed(2)+')');
+                setPg('batch_pos');
+              }}>{'🚀'} Order {nextPO} for {vg.name}{hitThreshold?' — FREE SHIP':''} (${total.toFixed(2)})</button>
             <div style={{fontSize:10,color:'#64748b',marginTop:6,textAlign:'center'}}>
               Contains: {vg.pos.map(bp=>bp.so_id+' ('+bp.customer+')').join(' · ')}
             </div>
@@ -7261,7 +7262,7 @@ export default function App(){
               {queued.length>0&&<div style={{fontSize:11,marginTop:4,color:qTotal>=v.threshold?'#166534':'#d97706',fontWeight:600}}>{queued.length} queued · ${qTotal.toFixed(2)}</div>}
             </div>})}
         </div>
-        <div style={{fontSize:11,color:'#94a3b8',marginTop:10}}>The PO number assigned here (e.g. NSA-4501) goes into the vendor's B2B portal. When the box arrives, scan that PO number to see every SO and item inside.</div>
+        <div style={{fontSize:11,color:'#94a3b8',marginTop:10}}>The PO number assigned here (e.g. NSA-4501) is used when placing the order online. When the box arrives, scan that PO number to see every SO and item inside.</div>
       </div></div>
       </>}
     </>);
