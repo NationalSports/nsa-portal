@@ -9499,18 +9499,19 @@ export default function App(){
 
       {/* ═══ STEP 5: Confirm & Create ═══ */}
       {imp.step==='confirm'&&<>
-        {(()=>{
+        {(()=>{try{
+          console.log('CONFIRM STEP DEBUG:',JSON.stringify({custId:imp.custId,parsedLen:imp.parsed?.length,questionsLen:imp.questions?.length,shippingType:typeof imp.shipping,shipping:imp.shipping,parsed:imp.parsed?.map(p=>({sku:p.sku,rate:p.rate,sizes:p.sizes,color:p.color,totalAmt:p.totalAmt,totalQty:p.totalQty}))},null,2));
           const c=cust.find(x=>x.id===imp.custId);
           // Apply color answers from questions back to parsed items
-          const resolved=imp.parsed.map((p,pi)=>{
-            const cq=imp.questions.find(q=>q.idx===pi&&q.type==='color'&&q.answer);
+          const resolved=(imp.parsed||[]).map((p,pi)=>{
+            const cq=(imp.questions||[]).find(q=>q.idx===pi&&q.type==='color'&&q.answer);
             return cq?{...p,color:cq.answer}:p;
           });
-          const keeping=resolved.filter(p=>!p._skip&&!imp.questions.find(q=>q.idx===resolved.indexOf(p)&&q.answer==='skip'));
+          const keeping=resolved.filter((p,pi)=>!p._skip&&!(imp.questions||[]).find(q=>q.idx===pi&&q.answer==='skip'));
           const isAUi=b=>b==='Adidas'||b==='Under Armour'||b==='New Balance';
           const mk=c?.catalog_markup||1.65;const tier=c?.adidas_ua_tier||'B';const disc=tD[tier]||0.35;
           const totalRev=keeping.reduce((a,it)=>a+(it.totalAmt||0),0);
-          const shipAmt=Array.isArray(imp.shipping)?imp.shipping.reduce((a,s)=>a+(s.amount||0),0):(imp.shipping||0);
+          const shipAmt=Array.isArray(imp.shipping)?imp.shipping.reduce((a,s)=>a+(s.amount||0),0):(typeof imp.shipping==='number'?imp.shipping:0);
 
           return<>
             <div className="card" style={{marginBottom:12}}><div className="card-body" style={{padding:16}}>
@@ -9634,7 +9635,12 @@ export default function App(){
                 ✅ Create {imp.docType==='so'?'Sales Order':imp.docType==='est'?'Estimate':imp.docType==='po'?'Purchase Order':'Invoice'} ({keeping.length} items)
               </button>
             </div>
-          </>})()}
+          </>}catch(err){console.error('Confirm step render error:',err);return<div style={{padding:20,background:'#fef2f2',border:'2px solid #dc2626',borderRadius:8,margin:12}}>
+            <div style={{fontWeight:700,color:'#dc2626',marginBottom:8}}>⚠️ Render Error</div>
+            <div style={{fontSize:12,fontFamily:'monospace',color:'#991b1b',whiteSpace:'pre-wrap'}}>{err?.message||String(err)}</div>
+            <div style={{fontSize:11,color:'#64748b',marginTop:8}}>Items: {imp.parsed?.length}, Questions: {imp.questions?.length}, Shipping: {JSON.stringify(imp.shipping)?.slice(0,100)}</div>
+            <button className="btn btn-secondary" style={{marginTop:12}} onClick={()=>setImp(x=>({...x,step:'questions'}))}>← Back to Questions</button>
+          </div>}})()}
       </>}
     </>}
 
