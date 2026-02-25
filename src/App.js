@@ -5216,9 +5216,9 @@ export default function App(){
   // Inventory adjustments log & inventory POs
   const[invAdjLog,setInvAdjLog]=useState([]);// [{id,product_id,sku,product_name,size,qty_change,prev_qty,new_qty,reason,adjustment_type,performed_by,created_at}]
   const[invPOs,setInvPOs]=useState([]);// [{id,po_number,vendor_id,vendor_name,items:[{product_id,sku,name,color,sizes:{},received:{},nsa_cost}],status,created_at,expected_date,memo,created_by,received_at,received_by}]
-  const[invPOCounter,setInvPOCounter]=useState(1001);// sequential: IPO-1001-NSA, IPO-1002-NSA...
+  const[invPOCounter,setInvPOCounter]=useState(1001);// sequential: PO-1001-NSA, PO-1002-NSA...
   const[invTab,setInvTab]=useState('stock');// stock | log | pos
-  const[invPOModal,setInvPOModal]=useState({open:false,vendor_id:'',items:[],memo:'',expected_date:''});// create PO modal
+  const[invPOModal,setInvPOModal]=useState({open:false,vendor_id:'',items:[],memo:'',expected_date:'',productSearch:'',editId:null});// create/edit PO modal
   const[invPOReceive,setInvPOReceive]=useState(null);// PO being received
   const[invPOSearch,setInvPOSearch]=useState('');
   // Changelog & backup system
@@ -6370,20 +6370,44 @@ export default function App(){
   };
 
   // INVENTORY POs
-  const createInvPO=()=>{
+  const saveInvPO=()=>{
     const vendorId=invPOModal.vendor_id;const vendor=vend.find(v=>v.id===vendorId);
     if(!vendorId||!vendor){nf('Select a vendor','warn');return}
     const validItems=invPOModal.items.filter(it=>it.product_id&&Object.values(it.sizes||{}).some(v=>v>0));
     if(validItems.length===0){nf('Add at least one item with quantities','warn');return}
-    const poNum='IPO-'+invPOCounter+'-NSA';
-    const po={id:'ipo-'+Date.now(),po_number:poNum,vendor_id:vendorId,vendor_name:vendor.name,
-      items:validItems.map(it=>({product_id:it.product_id,sku:it.sku,name:it.name,color:it.color||'',available_sizes:it.available_sizes||[],sizes:{...it.sizes},received:{},nsa_cost:it.nsa_cost||0})),
-      status:'ordered',created_at:new Date().toLocaleString(),expected_date:invPOModal.expected_date||'',memo:invPOModal.memo||'',
-      created_by:cu?.name||'Unknown',received_at:null,received_by:null,_qb_synced:false};
-    setInvPOs(prev=>[po,...prev]);setInvPOCounter(c2=>c2+1);
-    setInvPOModal({open:false,vendor_id:'',items:[],memo:'',expected_date:''});
-    logChange('created','Inventory PO',poNum,vendor.name+' — '+validItems.length+' items');
-    nf('Inventory PO '+poNum+' created');
+    const isEdit=!!invPOModal.editId;
+    if(isEdit){
+      // Update existing PO
+      setInvPOs(prev=>prev.map(po=>{
+        if(po.id!==invPOModal.editId)return po;
+        return{...po,vendor_id:vendorId,vendor_name:vendor.name,
+          items:validItems.map(it=>({product_id:it.product_id,sku:it.sku,name:it.name,color:it.color||'',available_sizes:it.available_sizes||[],sizes:{...it.sizes},received:it.received||{},nsa_cost:it.nsa_cost||0})),
+          expected_date:invPOModal.expected_date||'',memo:invPOModal.memo||'',_qb_synced:false};
+      }));
+      const existingPO=invPOs.find(p=>p.id===invPOModal.editId);
+      logChange('updated','Inventory PO',existingPO?.po_number||'',vendor.name+' — '+validItems.length+' items');
+      nf('PO '+(existingPO?.po_number||'')+' updated');
+    } else {
+      // Create new PO
+      const poNum='PO-'+invPOCounter+'-NSA';
+      const po={id:'ipo-'+Date.now(),po_number:poNum,vendor_id:vendorId,vendor_name:vendor.name,
+        items:validItems.map(it=>({product_id:it.product_id,sku:it.sku,name:it.name,color:it.color||'',available_sizes:it.available_sizes||[],sizes:{...it.sizes},received:{},nsa_cost:it.nsa_cost||0})),
+        status:'ordered',created_at:new Date().toLocaleString(),expected_date:invPOModal.expected_date||'',memo:invPOModal.memo||'',
+        created_by:cu?.name||'Unknown',received_at:null,received_by:null,_qb_synced:false};
+      setInvPOs(prev=>[po,...prev]);setInvPOCounter(c2=>c2+1);
+      logChange('created','Inventory PO',poNum,vendor.name+' — '+validItems.length+' items');
+      nf('Inventory PO '+poNum+' created');
+    }
+    setInvPOModal({open:false,vendor_id:'',items:[],memo:'',expected_date:'',productSearch:'',editId:null});
+  };
+  const editInvPO=(po)=>{
+    setInvPOModal({open:true,vendor_id:po.vendor_id,items:po.items.map(it=>({...it})),memo:po.memo||'',expected_date:po.expected_date||'',productSearch:'',editId:po.id});
+  };
+  const deleteInvPO=(po)=>{
+    if(!window.confirm('Delete PO '+po.po_number+'? This cannot be undone.'))return;
+    setInvPOs(prev=>prev.filter(p=>p.id!==po.id));
+    logChange('deleted','Inventory PO',po.po_number,po.vendor_name);
+    nf('PO '+po.po_number+' deleted');
   };
 
   const receiveInvPO=(poId,receivedMap)=>{
@@ -6431,7 +6455,7 @@ export default function App(){
     return(<>
       <div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap',alignItems:'center'}}>
         <div className="search-bar" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search POs..." value={invPOSearch} onChange={e=>setInvPOSearch(e.target.value)}/></div>
-        <button className="btn btn-primary" onClick={()=>setInvPOModal({open:true,vendor_id:'',items:[],memo:'',expected_date:''})}>+ New Inventory PO</button>
+        <button className="btn btn-primary" onClick={()=>setInvPOModal({open:true,vendor_id:'',items:[],memo:'',expected_date:'',productSearch:'',editId:null})}>+ New Inventory PO</button>
       </div>
       {filtered.length===0?<div className="card"><div className="card-body"><div className="empty" style={{padding:30}}>No inventory POs yet. Click "+ New Inventory PO" to create one.</div></div></div>:
       <div style={{display:'flex',flexDirection:'column',gap:12}}>
@@ -6472,10 +6496,11 @@ export default function App(){
                   <td style={{fontWeight:700,color:(ordQty-rcvQty)>0?'#dc2626':'#166534'}}>{ordQty-rcvQty}</td>
                 </tr>})}</tbody></table>
             </div>
-            {po.status!=='received'&&po.status!=='cancelled'&&<div style={{padding:'10px 16px',background:'#f8fafc',borderTop:'1px solid #e2e8f0',display:'flex',gap:8}}>
-              <button className="btn btn-sm btn-primary" style={{background:'#166534',borderColor:'#166534'}} onClick={()=>setInvPOReceive(po)}>Receive Items</button>
-              {po.status==='ordered'&&<button className="btn btn-sm btn-secondary" style={{color:'#dc2626',borderColor:'#fca5a5'}} onClick={()=>{if(!window.confirm('Cancel PO '+po.po_number+'?'))return;setInvPOs(prev=>prev.map(p2=>p2.id===po.id?{...p2,status:'cancelled'}:p2));nf('PO cancelled')}}>Cancel PO</button>}
-            </div>}
+            <div style={{padding:'10px 16px',background:'#f8fafc',borderTop:'1px solid #e2e8f0',display:'flex',gap:8}}>
+              {po.status!=='received'&&po.status!=='cancelled'&&<button className="btn btn-sm btn-primary" style={{background:'#166534',borderColor:'#166534'}} onClick={()=>setInvPOReceive(po)}>Receive Items</button>}
+              {po.status==='ordered'&&<button className="btn btn-sm btn-secondary" onClick={()=>editInvPO(po)}>Edit</button>}
+              {po.status!=='received'&&<button className="btn btn-sm btn-secondary" style={{color:'#dc2626',borderColor:'#fca5a5'}} onClick={()=>deleteInvPO(po)}>Delete</button>}
+            </div>
           </div>})}
       </div>}
     </>);
@@ -11632,7 +11657,7 @@ export default function App(){
 
     {/* INVENTORY PO CREATE MODAL */}
     {invPOModal.open&&<div className="modal-overlay" onClick={()=>setInvPOModal(x=>({...x,open:false}))}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:750,maxHeight:'85vh',overflow:'auto'}}>
-      <div className="modal-header" style={{background:'#f5f3ff'}}><h2>New Inventory PO</h2><button className="modal-close" onClick={()=>setInvPOModal(x=>({...x,open:false}))}>x</button></div>
+      <div className="modal-header" style={{background:'#f5f3ff'}}><h2>{invPOModal.editId?'Edit Inventory PO':'New Inventory PO'}</h2><button className="modal-close" onClick={()=>setInvPOModal(x=>({...x,open:false}))}>x</button></div>
       <div className="modal-body">
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10,marginBottom:16}}>
           <div><label className="form-label">Vendor *</label>
@@ -11643,18 +11668,28 @@ export default function App(){
           <div><label className="form-label">Memo</label>
             <input className="form-input" style={{width:'100%'}} value={invPOModal.memo} onChange={e=>setInvPOModal(x=>({...x,memo:e.target.value}))} placeholder="Notes..."/></div>
         </div>
-        <div style={{fontSize:10,fontWeight:700,color:'#64748b',marginBottom:4,textTransform:'uppercase'}}>PO Number: <span style={{color:'#7c3aed',fontSize:13,letterSpacing:1}}>IPO-{invPOCounter}-NSA</span></div>
+        <div style={{fontSize:10,fontWeight:700,color:'#64748b',marginBottom:4,textTransform:'uppercase'}}>PO Number: <span style={{color:'#7c3aed',fontSize:13,letterSpacing:1}}>{invPOModal.editId?(invPOs.find(p=>p.id===invPOModal.editId)?.po_number||''):'PO-'+invPOCounter+'-NSA'}</span></div>
 
         {/* Product search & add */}
-        <div style={{marginBottom:12,padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0'}}>
+        <div style={{marginBottom:12,padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0',position:'relative'}}>
           <label className="form-label">Add Products</label>
+          <div className="search-bar" style={{background:'white'}}><Icon name="search"/><input placeholder="Search by SKU, name, or color..." value={invPOModal.productSearch||''} onChange={e=>setInvPOModal(x=>({...x,productSearch:e.target.value}))}/></div>
           {(()=>{
+            const pq=(invPOModal.productSearch||'').trim().toLowerCase();
+            if(!pq)return null;
             const vendorId=invPOModal.vendor_id;
             const available=vendorId?prod.filter(p=>p.vendor_id===vendorId&&!invPOModal.items.find(it=>it.product_id===p.id)):prod.filter(p=>!invPOModal.items.find(it=>it.product_id===p.id));
-            return<select className="form-select" style={{width:'100%'}} value="" onChange={e=>{
-              const p2=prod.find(x=>x.id===e.target.value);if(!p2)return;
-              setInvPOModal(x=>({...x,items:[...x.items,{product_id:p2.id,sku:p2.sku,name:p2.name,color:p2.color||'',available_sizes:[...p2.available_sizes],sizes:{},nsa_cost:p2.nsa_cost||0}]}));
-            }}><option value="">Search and add a product...</option>{available.slice(0,100).map(p2=><option key={p2.id} value={p2.id}>{p2.sku} — {p2.name}{p2.color?' — '+p2.color:''}</option>)}</select>;
+            const matches=available.filter(p=>p.sku.toLowerCase().includes(pq)||p.name.toLowerCase().includes(pq)||(p.color||'').toLowerCase().includes(pq)||(p.brand||'').toLowerCase().includes(pq)).slice(0,15);
+            if(matches.length===0)return<div style={{padding:8,fontSize:12,color:'#94a3b8',marginTop:4}}>No products found{vendorId?' for this vendor':''}.</div>;
+            return<div style={{marginTop:4,border:'1px solid #e2e8f0',borderRadius:6,background:'white',maxHeight:200,overflowY:'auto'}}>
+              {matches.map(p2=><div key={p2.id} style={{padding:'8px 12px',borderBottom:'1px solid #f1f5f9',cursor:'pointer',fontSize:12,display:'flex',gap:8,alignItems:'center'}}
+                onClick={()=>{setInvPOModal(x=>({...x,productSearch:'',items:[...x.items,{product_id:p2.id,sku:p2.sku,name:p2.name,color:p2.color||'',available_sizes:[...p2.available_sizes],sizes:{},nsa_cost:p2.nsa_cost||0}]}))}}>
+                <span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{p2.sku}</span>
+                <span style={{flex:1}}>{p2.name}</span>
+                <span style={{color:'#94a3b8',fontSize:11}}>{p2.color}</span>
+                <span style={{fontSize:10,color:'#64748b'}}>${p2.nsa_cost?.toFixed(2)}</span>
+              </div>)}
+            </div>;
           })()}
         </div>
 
@@ -11686,7 +11721,7 @@ export default function App(){
       </div>
       <div className="modal-footer">
         <button className="btn btn-secondary" onClick={()=>setInvPOModal(x=>({...x,open:false}))}>Cancel</button>
-        <button className="btn btn-primary" style={{background:'#7c3aed',borderColor:'#7c3aed'}} onClick={createInvPO}>Create PO</button>
+        <button className="btn btn-primary" style={{background:'#7c3aed',borderColor:'#7c3aed'}} onClick={saveInvPO}>{invPOModal.editId?'Save Changes':'Create PO'}</button>
       </div>
     </div></div>}
 
