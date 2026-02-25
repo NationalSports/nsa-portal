@@ -1442,27 +1442,32 @@ function getAddrs(cu,all){const a=[];const add=(c,l)=>{if(c.shipping_address_lin
   else{all.filter(c=>c.parent_id===cu.id).forEach(s=>add(s,s.alpha_tag))}return a}
 
 // SEND ESTIMATE MODAL
-function SendModal({isOpen,onClose,estimate,customer,onSend}){
-  const[body,setBody]=useState('');const[attachments,setAttachments]=useState([]);
-  React.useEffect(()=>{if(isOpen&&customer){setBody(`Hi ${(customer.contacts||[])[0]?.name||'Coach'},\n\nPlease find the attached estimate for ${estimate?.memo||'your order'}. You can view and approve it through your portal.\n\nPortal link: https://nsa-portal.netlify.app/?portal=${customer.alpha_tag}\n\nLet me know if you have any questions!\n\nSteve Peterson\nNational Sports Apparel`);setAttachments([])}},[isOpen,customer,estimate]);
-  if(!isOpen)return null;const emails=(customer?.contacts||[]).map(c=>c.email).filter(Boolean);
+function SendModal({isOpen,onClose,estimate,customer,onSend,docType}){
+  const[body,setBody]=useState('');const[attachments,setAttachments]=useState([]);const[toEmails,setToEmails]=useState('');
+  const label=docType==='so'?'Sales Order':'Estimate';
+  React.useEffect(()=>{if(isOpen&&customer){
+    const emails=(customer?.contacts||[]).map(c=>c.email).filter(Boolean);
+    setToEmails(emails.join(', '));
+    setBody(`Hi ${(customer.contacts||[])[0]?.name||'Coach'},\n\nPlease find the attached ${label.toLowerCase()} for ${estimate?.memo||'your order'}. You can view ${docType==='so'?'it':'and approve it'} through your portal.\n\nPortal link: https://nsa-portal.netlify.app/?portal=${customer.alpha_tag}\n\nLet me know if you have any questions!\n\nSteve Peterson\nNational Sports Apparel`);
+    setAttachments([])}},[isOpen,customer,estimate,docType,label]);
+  if(!isOpen)return null;
   return(<div className="modal-overlay" onClick={onClose}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:650}}>
-    <div className="modal-header"><h2>Send Estimate to Coach</h2><button className="modal-close" onClick={onClose}>x</button></div>
+    <div className="modal-header"><h2>Send {label}</h2><button className="modal-close" onClick={onClose}>x</button></div>
     <div className="modal-body">
-      <div style={{marginBottom:12}}><label className="form-label">To</label><div style={{fontSize:13,padding:'8px 12px',background:'#f8fafc',borderRadius:6}}>{emails.join(', ')||'No email on file'}</div></div>
-      <div style={{marginBottom:12}}><label className="form-label">Subject</label><input className="form-input" value={`Estimate ${estimate?.id} - ${estimate?.memo||''}`} readOnly style={{color:'#64748b'}}/></div>
+      <div style={{marginBottom:12}}><label className="form-label">To</label><input className="form-input" value={toEmails} onChange={e=>setToEmails(e.target.value)} placeholder="Enter email addresses separated by commas"/></div>
+      <div style={{marginBottom:12}}><label className="form-label">Subject</label><input className="form-input" value={`${label} ${estimate?.id} - ${estimate?.memo||''}`} readOnly style={{color:'#64748b'}}/></div>
       <div style={{marginBottom:12}}><label className="form-label">Message</label><textarea className="form-input" rows={8} value={body} onChange={e=>setBody(e.target.value)} style={{fontFamily:'inherit',resize:'vertical'}}/></div>
       <div style={{marginBottom:12}}><label className="form-label">Attachments</label>
         <div style={{border:'2px dashed #d1d5db',borderRadius:8,padding:16,textAlign:'center',cursor:'pointer',background:'#fafafa'}} onClick={()=>setAttachments(a=>[...a,{name:`item_photo_${a.length+1}.jpg`,size:'245 KB'}])}>
           <Icon name="upload" size={20}/><div style={{fontSize:12,color:'#64748b',marginTop:4}}>Drag & drop files here or click to browse</div>
-          <div style={{fontSize:10,color:'#94a3b8'}}>Include product photos, mockups, or other files for the coach</div></div>
+          <div style={{fontSize:10,color:'#94a3b8'}}>Include product photos, mockups, or other files</div></div>
         {attachments.length>0&&<div style={{marginTop:8}}>{attachments.map((f,i)=><div key={i} style={{display:'flex',gap:8,alignItems:'center',padding:'4px 8px',background:'#f0fdf4',borderRadius:4,marginBottom:4}}>
           <Icon name="file" size={14}/><span style={{fontSize:12,flex:1}}>{f.name}</span><span style={{fontSize:10,color:'#94a3b8'}}>{f.size}</span>
           <button onClick={()=>setAttachments(a=>a.filter((_,x)=>x!==i))} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626'}}><Icon name="x" size={12}/></button></div>)}</div>}
       </div>
-      <div style={{padding:8,background:'#dbeafe',borderRadius:6,fontSize:11,color:'#1e40af'}}>📎 Estimate PDF will be auto-attached | 🔗 Portal link included in message</div>
+      <div style={{padding:8,background:'#dbeafe',borderRadius:6,fontSize:11,color:'#1e40af'}}>📎 {label} PDF will be auto-attached | 🔗 Portal link included in message</div>
     </div>
-    <div className="modal-footer"><button className="btn btn-secondary" onClick={onClose}>Cancel</button><button className="btn btn-primary" onClick={()=>{onSend();onClose()}}><Icon name="send" size={14}/> Send Estimate</button></div>
+    <div className="modal-footer"><button className="btn btn-secondary" onClick={onClose}>Cancel</button><button className="btn btn-primary" onClick={()=>{onSend();onClose()}}><Icon name="send" size={14}/> Send {label}</button></div>
   </div></div>);
 }
 
@@ -1800,7 +1805,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           const noPrice=validItems.find(it=>safeNum(it.unit_sell)<=0);
           if(noPrice){nf('Item '+(noPrice.sku||noPrice.name||'#?')+' needs a sell price','error');return}
           onSave(o);setSaved(true);setDirty(false);nf(`${isE?'Estimate':'SO'} saved`)}} style={{padding:'10px 28px',fontSize:16,fontWeight:800}}><Icon name="check" size={16}/> Save</button>
-        {isE&&saved&&o.status!=='approved'&&o.status!=='converted'&&<button className="btn btn-secondary" onClick={()=>setShowSend(true)}><Icon name="send" size={14}/> Send</button>}
+        {isE&&saved&&<button className="btn btn-secondary" onClick={()=>setShowSend(true)}><Icon name="send" size={14}/> Send</button>}
         {isE&&saved&&(o.status==='sent'||o.status==='draft'||o.status==='open')&&<button className="btn btn-primary" style={{background:'#22c55e'}} onClick={()=>{sv('status','approved');onSave({...o,status:'approved'});nf('Estimate approved')}}><Icon name="check" size={14}/> Approve</button>}
         {isE&&o.status==='approved'&&<button className="btn btn-primary" style={{background:'#7c3aed'}} onClick={()=>{
           if(!cust){nf('Select a customer first','error');return}
@@ -1881,6 +1886,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         <button className="btn btn-secondary" style={{color:'#dc2626',borderColor:'#fca5a5'}} onClick={()=>{
           setInvSelItems(safeItems(o).map((_,i)=>i));setInvMemo(o.memo||'');setInvType('deposit');setShowInvCreate(true);
         }}><Icon name="dollar" size={14}/> Create Invoice</button>
+        {saved&&<button className="btn btn-secondary" onClick={()=>setShowSend(true)}><Icon name="send" size={14}/> Send</button>}
       </div>}
       {/* SHIPPING */}
       <div style={{display:'flex',gap:12,marginTop:12,alignItems:'end',flexWrap:'wrap',borderTop:'1px solid #f1f5f9',paddingTop:12}}>
@@ -2701,7 +2707,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           </div>
         </div></div>})()}
 
-    <SendModal isOpen={showSend} onClose={()=>setShowSend(false)} estimate={o} customer={cust} onSend={()=>{sv('status','sent');sv('email_status','sent');onSave({...o,status:'sent',email_status:'sent'});nf('Estimate sent!')}}/>
+    <SendModal isOpen={showSend} onClose={()=>setShowSend(false)} estimate={o} customer={cust} docType={isE?'estimate':'so'} onSend={()=>{if(isE&&o.status!=='approved'&&o.status!=='converted'){sv('status','sent');sv('email_status','sent');onSave({...o,status:'sent',email_status:'sent'});nf('Estimate sent!')}else{sv('email_status','sent');onSave({...o,email_status:'sent'});nf((isE?'Estimate':'Sales Order')+' sent!')}}}/>
 
     {/* FIRM DATE REQUEST MODAL */}
     {showFirmReq&&<div className="modal-overlay" onClick={()=>setShowFirmReq(false)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:500}}>
