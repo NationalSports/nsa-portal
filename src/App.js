@@ -156,9 +156,11 @@ const _dbSaveEstimate = async (est) => {
     if(!items?.length)return;
     for(let idx=0;idx<items.length;idx++){
       const{decorations,...itemData}=items[idx];
-      const{data:inserted}=await supabase.from('estimate_items').insert({...itemData,estimate_id:est.id,item_index:idx}).select('id').single();
+      const{data:inserted,error:itemErr}=await supabase.from('estimate_items').insert({...itemData,estimate_id:est.id,item_index:idx}).select('id').single();
+      if(itemErr){console.error('[DB] estimate_items insert failed:',itemErr.message,itemErr.details);continue}
       if(inserted&&decorations?.length){
-        await supabase.from('estimate_item_decorations').insert(decorations.map((d,di)=>({...d,estimate_item_id:inserted.id,deco_index:di})));
+        const{error:decoErr}=await supabase.from('estimate_item_decorations').insert(decorations.map((d,di)=>({...d,estimate_item_id:inserted.id,deco_index:di})));
+        if(decoErr)console.error('[DB] estimate_item_decorations insert failed:',decoErr.message,decoErr.details);
       }
     }
   }catch(e){console.error('[DB] save estimate:',e)}
@@ -185,20 +187,24 @@ const _dbSaveSO = async (so) => {
     for(let idx=0;idx<items.length;idx++){
       const{decorations,pick_lines,po_lines,...itemData}=items[idx];
       // Separate size fields from pick_lines/po_lines back into sizes JSONB
-      const{data:inserted}=await supabase.from('so_items').insert({...itemData,so_id:so.id,item_index:idx}).select('id').single();
+      const{data:inserted,error:itemErr}=await supabase.from('so_items').insert({...itemData,so_id:so.id,item_index:idx}).select('id').single();
+      if(itemErr){console.error('[DB] so_items insert failed:',itemErr.message,itemErr.details);continue}
       if(!inserted)continue;
       if(decorations?.length){
-        await supabase.from('so_item_decorations').insert(decorations.map((d,di)=>({...d,so_item_id:inserted.id,deco_index:di})));
+        const{error:decoErr}=await supabase.from('so_item_decorations').insert(decorations.map((d,di)=>({...d,so_item_id:inserted.id,deco_index:di})));
+        if(decoErr)console.error('[DB] so_item_decorations insert failed:',decoErr.message,decoErr.details);
       }
       if(pick_lines?.length){
         const pickRows=pick_lines.map(pk=>{const{pick_id,status,created_at,memo,ship_dest,ship_addr,deco_vendor,...sizes}=pk;
           return{so_item_id:inserted.id,pick_id,status,created_at,memo,ship_dest,ship_addr,deco_vendor,sizes}});
-        await supabase.from('so_item_pick_lines').insert(pickRows);
+        const{error:pickErr}=await supabase.from('so_item_pick_lines').insert(pickRows);
+        if(pickErr)console.error('[DB] so_item_pick_lines insert failed:',pickErr.message,pickErr.details);
       }
       if(po_lines?.length){
         const poRows=po_lines.map(po=>{const{po_id,vendor,received,cancelled,shipments,status,created_at,expected_date,memo,...sizes}=po;
           return{so_item_id:inserted.id,po_id,vendor,received:received||{},cancelled:cancelled||{},shipments:shipments||[],status,created_at,expected_date,memo,sizes}});
-        await supabase.from('so_item_po_lines').insert(poRows);
+        const{error:poErr}=await supabase.from('so_item_po_lines').insert(poRows);
+        if(poErr)console.error('[DB] so_item_po_lines insert failed:',poErr.message,poErr.details);
       }
     }
   }catch(e){console.error('[DB] save SO:',e)}
