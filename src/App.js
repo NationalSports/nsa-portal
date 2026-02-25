@@ -821,7 +821,7 @@ const D_C=[
 {id:'c3',parent_id:null,name:'Clovis Unified School District',alpha_tag:'CUSD',contacts:[{name:'District Office',email:'purchasing@clovisusd.k12.ca.us',phone:'559-555-0300',role:'Primary'}],billing_city:'Clovis',billing_state:'CA',shipping_city:'Clovis',shipping_state:'CA',adidas_ua_tier:'B',catalog_markup:1.65,payment_terms:'prepay',tax_rate:0.0863,primary_rep_id:'r5',is_active:true,_oe:2,_os:0,_oi:0,_ob:0},
 {id:'c3a',parent_id:'c3',name:'Clovis High Badminton',alpha_tag:'CHBad',contacts:[{name:'Coach Kim',email:'kim@clovisusd.k12.ca.us',phone:'',role:'Head Coach'}],shipping_city:'Clovis',shipping_state:'CA',adidas_ua_tier:'B',catalog_markup:1.65,payment_terms:'prepay',primary_rep_id:'r5',is_active:true,_oe:2,_os:0,_oi:0,_ob:0},
 ];
-const BATCH_VENDORS={'sss':{name:'S&S Activewear',threshold:200},'sanmar':{name:'SanMar',threshold:200},'richardson':{name:'Richardson',threshold:200},'momentec':{name:'Momentec',threshold:200},'a4':{name:'A4',threshold:200}};
+const BATCH_VENDORS={'sss':{name:'S&S Activewear',threshold:200},'sanmar':{name:'SanMar',threshold:200},'richardson':{name:'Richardson',threshold:200},'momentec':{name:'Momentec',threshold:200},'a4':{name:'A4',threshold:200},'adidas':{name:'Adidas',threshold:500},'under armour':{name:'Under Armour',threshold:500}};
 const MACHINES=[
   {id:'auto_press',name:'Auto Press',type:'screen_print'},
   {id:'manual_press',name:'Manual Press',type:'screen_print'},
@@ -7159,7 +7159,7 @@ export default function App(){
             <div><h2>{vg.name}</h2><div style={{fontSize:12,color:'#64748b'}}>{vg.pos.length} queued · {totalUnits} units</div></div>
             <div style={{textAlign:'right'}}>
               <div style={{fontSize:20,fontWeight:800,color:hitThreshold?'#166534':'#d97706'}}>${total.toFixed(2)}</div>
-              <div style={{fontSize:11,color:hitThreshold?'#166534':'#d97706',fontWeight:600}}>{hitThreshold?'\u2705 Free shipping!':'$'+(vg.threshold-total).toFixed(2)+' to free ship'}</div>
+              <div style={{fontSize:11,color:hitThreshold?'#166534':'#d97706',fontWeight:600}}>{hitThreshold?'✅ Free shipping!':'$'+(vg.threshold-total).toFixed(2)+' to free ship'}</div>
             </div>
           </div>
           <div className="card-body" style={{padding:0}}>
@@ -7212,7 +7212,7 @@ export default function App(){
                 <div style={{fontSize:10,color:'#94a3b8'}}>Enter this exact number in {vg.name}'s B2B. Warehouse scans this barcode on receiving.</div>
               </div>
               <div style={{display:'flex',flexDirection:'column',gap:6}}>
-                <button className="btn btn-sm btn-secondary" onClick={()=>{navigator.clipboard?.writeText(nextPO);nf('Copied '+nextPO)}}>\uD83D\uDCCB Copy PO#</button>
+                <button className="btn btn-sm btn-secondary" onClick={()=>{navigator.clipboard?.writeText(nextPO);nf('Copied '+nextPO)}}>{'📋'} Copy PO#</button>
                 <button className="btn btn-sm btn-secondary" onClick={()=>{if(window.confirm('Clear all '+vg.pos.length+' POs?'))setBatchPOs(prev=>prev.filter(p=>p.vendor_key!==vk))}}>Clear</button>
               </div>
             </div>
@@ -7238,9 +7238,9 @@ export default function App(){
                 setBatchPOs(prev=>prev.filter(p=>p.vendor_key!==vk));
                 setBatchCounter(ct=>ct+1);
                 nf('\uD83D\uDE80 '+poNum+' submitted to '+vg.name+' ($'+total.toFixed(2)+')');
-              }}>\uD83D\uDE80 Submit {nextPO} to {vg.name}{hitThreshold?' \u2014 FREE SHIP':''} (${total.toFixed(2)})</button>
+              }}>{'🚀'} Submit {nextPO} to {vg.name}{hitThreshold?' — FREE SHIP':''} (${total.toFixed(2)})</button>
             <div style={{fontSize:10,color:'#64748b',marginTop:6,textAlign:'center'}}>
-              Contains: {vg.pos.map(bp=>bp.so_id+' ('+bp.customer+')').join(' \u00B7 ')}
+              Contains: {vg.pos.map(bp=>bp.so_id+' ('+bp.customer+')').join(' · ')}
             </div>
           </div>
         </div>})}
@@ -7252,7 +7252,7 @@ export default function App(){
             return<div key={k} style={{padding:'10px 14px',border:'1px solid #e2e8f0',borderRadius:8,minWidth:150}}>
               <div style={{fontWeight:700,fontSize:13}}>{v.name}</div>
               <div style={{fontSize:11,color:'#64748b'}}>Free ship: ${v.threshold}+</div>
-              {queued.length>0&&<div style={{fontSize:11,marginTop:4,color:qTotal>=v.threshold?'#166534':'#d97706',fontWeight:600}}>{queued.length} queued \u00B7 ${qTotal.toFixed(2)}</div>}
+              {queued.length>0&&<div style={{fontSize:11,marginTop:4,color:qTotal>=v.threshold?'#166534':'#d97706',fontWeight:600}}>{queued.length} queued · ${qTotal.toFixed(2)}</div>}
             </div>})}
         </div>
         <div style={{fontSize:11,color:'#94a3b8',marginTop:10}}>The PO number assigned here (e.g. NSA-4501) goes into the vendor's B2B portal. When the box arrives, scan that PO number to see every SO and item inside.</div>
