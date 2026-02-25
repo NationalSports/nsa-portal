@@ -821,7 +821,7 @@ const D_C=[
 {id:'c3',parent_id:null,name:'Clovis Unified School District',alpha_tag:'CUSD',contacts:[{name:'District Office',email:'purchasing@clovisusd.k12.ca.us',phone:'559-555-0300',role:'Primary'}],billing_city:'Clovis',billing_state:'CA',shipping_city:'Clovis',shipping_state:'CA',adidas_ua_tier:'B',catalog_markup:1.65,payment_terms:'prepay',tax_rate:0.0863,primary_rep_id:'r5',is_active:true,_oe:2,_os:0,_oi:0,_ob:0},
 {id:'c3a',parent_id:'c3',name:'Clovis High Badminton',alpha_tag:'CHBad',contacts:[{name:'Coach Kim',email:'kim@clovisusd.k12.ca.us',phone:'',role:'Head Coach'}],shipping_city:'Clovis',shipping_state:'CA',adidas_ua_tier:'B',catalog_markup:1.65,payment_terms:'prepay',primary_rep_id:'r5',is_active:true,_oe:2,_os:0,_oi:0,_ob:0},
 ];
-const BATCH_VENDORS={'sss':{name:'S&S Activewear',threshold:200},'sanmar':{name:'SanMar',threshold:200},'richardson':{name:'Richardson',threshold:200},'momentec':{name:'Momentec',threshold:200},'a4':{name:'A4',threshold:200}};
+const BATCH_VENDORS={'sss':{name:'S&S Activewear',threshold:200},'sanmar':{name:'SanMar',threshold:200},'richardson':{name:'Richardson',threshold:200},'momentec':{name:'Momentec',threshold:200},'a4':{name:'A4',threshold:200},'adidas':{name:'Adidas',threshold:500},'under armour':{name:'Under Armour',threshold:500}};
 const MACHINES=[
   {id:'auto_press',name:'Auto Press',type:'screen_print'},
   {id:'manual_press',name:'Manual Press',type:'screen_print'},
@@ -1559,7 +1559,7 @@ function LoginGate({onLogin,reps}){
   );
 }
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack,onConvertSO,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,allInvoices,batchPOs,onBatchPO,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack,onConvertSO,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,allInvoices,batchPOs,onBatchPO,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice}){
   const isE=mode==='estimate';const isSO=mode==='so';
   const[o,setO]=useState(order);const[cust,setCust]=useState(ic);const[pS,setPS]=useState('');const[showAdd,setShowAdd]=useState(false);
   const[tab,setTab]=useState(initTab||'items');const[dirty,setDirty]=useState(false);const[selJob,setSelJob]=useState(null);const[jobNote,setJobNote]=useState('');const[msgDept,setMsgDept]=useState('all');
@@ -1571,7 +1571,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
     const[pickNotes,setPickNotes]=useState('');const[pickShipDest,setPickShipDest]=useState('in_house');const[pickDecoVendor,setPickDecoVendor]=useState('');const[pickShipAddr,setPickShipAddr]=useState('default');
     const DECO_VENDORS=['Silver Screen','Olympic Embroidery','WePrintIt','Pacific Screen Print','Other'];
   const[showFirmReq,setShowFirmReq]=useState(false);const[firmReqDate,setFirmReqDate]=useState('');const[firmReqNote,setFirmReqNote]=useState('');
-  const[showInvCreate,setShowInvCreate]=useState(false);const[invSelItems,setInvSelItems]=useState([]);const[invMemo,setInvMemo]=useState('');const[invType,setInvType]=useState('deposit');
+  const[showInvCreate,setShowInvCreate]=useState(false);const[invSelItems,setInvSelItems]=useState([]);const[invMemo,setInvMemo]=useState('');const[invType,setInvType]=useState('deposit');const[invDepositPct,setInvDepositPct]=useState(50);
   const[splitModal,setSplitModal]=useState(null);// {jIdx, mode:'received'|'sku'|null}
   const[artReqModal,setArtReqModal]=useState(null);// {jIdx, artist:'', instructions:'', files:[]}
 
@@ -1884,7 +1884,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       {isSO&&<div style={{display:'flex',gap:6,marginTop:8}}>
         <button className="btn btn-secondary" onClick={()=>setShowPO('select')}><Icon name="cart" size={14}/> Create PO</button>
         <button className="btn btn-secondary" style={{color:'#dc2626',borderColor:'#fca5a5'}} onClick={()=>{
-          setInvSelItems(safeItems(o).map((_,i)=>i));setInvMemo(o.memo||'');setInvType('deposit');setShowInvCreate(true);
+          setInvSelItems(safeItems(o).map((_,i)=>i));setInvMemo(o.memo||'');setInvType('deposit');setInvDepositPct(50);setShowInvCreate(true);
         }}><Icon name="dollar" size={14}/> Create Invoice</button>
         {saved&&<button className="btn btn-secondary" onClick={()=>setShowSend(true)}><Icon name="send" size={14}/> Send</button>}
       </div>}
@@ -2769,133 +2769,155 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
     {/* CREATE INVOICE MODAL */}
     {showInvCreate&&(()=>{
       const items=safeItems(o);
-      const selTotals=invSelItems.reduce((acc,idx)=>{
-        const it=items[idx];if(!it)return acc;
-        const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
-        const rev=qty*safeNum(it.unit_sell);
-        // Deco cost per item
-        let decoRev=0;
-        safeDecos(it).forEach(d=>{
-          if(d.kind==='art'&&d.art_file_id){
-            const artF=safeArt(o).find(a=>a.id===d.art_file_id);
-            const dp=dP(d,qty,artF?[artF]:[],qty);
-            decoRev+=qty*dp.sell;
-          } else if(d.kind==='numbers'){
-            const dp=dP(d,qty,[],qty);
-            decoRev+=qty*dp.sell;
-          } else if(d.kind==='names'){
-            const dp=dP(d,qty,[],qty);
-            decoRev+=qty*dp.sell;
-          } else if(d.kind==='outside_deco'){
-            const dp=dP(d,qty,[],qty);
-            decoRev+=qty*dp.sell;
-          }
-        });
-        return{items:acc.items+1,units:acc.units+qty,subtotal:acc.subtotal+rev+decoRev};
-      },{items:0,units:0,subtotal:0});
-      const invShip=invSelItems.length===items.length?totals.ship:0;
-      const invTax=invSelItems.length===items.length?totals.tax:0;
-      const invTotal=selTotals.subtotal+invShip+invTax;
-      const pctOfTotal=totals.rev>0?Math.round(selTotals.subtotal/totals.rev*100):0;
+      // Compute per-item totals
+      const itemTotals=items.map(it=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const rev=qty*safeNum(it.unit_sell);
+        let decoRev=0;safeDecos(it).forEach(d=>{const dp2=dP(d,qty,safeArt(o),qty);decoRev+=qty*dp2.sell});return{qty,rev,decoRev,total:rev+decoRev}});
+
+      // For deposit: use full order total * pct
+      // For partial: use selected items total
+      // For final: use full order total
+      const activeItems=invType==='partial'?invSelItems:items.map((_,i)=>i);
+      const selTotals=activeItems.reduce((acc,idx)=>{const t=itemTotals[idx];if(!t)return acc;return{items:acc.items+1,units:acc.units+t.qty,subtotal:acc.subtotal+t.total}},{items:0,units:0,subtotal:0});
+      const invShip=activeItems.length===items.length?totals.ship:0;
+      const invTax=activeItems.length===items.length?totals.tax:0;
+      const fullTotal=selTotals.subtotal+invShip+invTax;
+      const invTotal=invType==='deposit'?Math.round(fullTotal*invDepositPct/100*100)/100:fullTotal;
+
+      // Existing invoices on this SO
+      const soInvs=(allInvoices||[]).filter(i=>i.so_id===o.id);
+      const soInvTotal=soInvs.reduce((a,i)=>a+(i.total||0),0);
 
       return<div className="modal-overlay" onClick={()=>setShowInvCreate(false)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:600}}>
-        <div className="modal-header"><h2>💰 Create Invoice — {o.id}</h2><button className="modal-close" onClick={()=>setShowInvCreate(false)}>×</button></div>
+        <div className="modal-header"><h2>Create Invoice — {o.id}</h2><button className="modal-close" onClick={()=>setShowInvCreate(false)}>x</button></div>
         <div className="modal-body">
           <div style={{padding:10,background:'#f8fafc',borderRadius:6,marginBottom:12}}>
             <div style={{fontWeight:700,color:'#1e40af'}}>{o.id}</div>
             <div style={{fontSize:12,color:'#64748b'}}>{cust?.name} — {o.memo}</div>
-            <div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>Order total: ${totals.grand.toLocaleString()}</div>
+            <div style={{display:'flex',gap:16,marginTop:4,fontSize:11}}>
+              <span>Order total: <strong>${totals.grand.toLocaleString()}</strong></span>
+              {soInvTotal>0&&<span>Already invoiced: <strong style={{color:'#d97706'}}>${soInvTotal.toLocaleString()}</strong></span>}
+            </div>
           </div>
 
           {/* Invoice type */}
           <div style={{marginBottom:12}}>
             <label className="form-label">Invoice Type</label>
             <div style={{display:'flex',gap:6}}>
-              {[['deposit','Deposit'],['progress','Progress'],['final','Final'],['custom','Custom']].map(([v,l])=>
-                <button key={v} className={`btn btn-sm ${invType===v?'btn-primary':'btn-secondary'}`} onClick={()=>setInvType(v)}>{l}</button>)}
+              {[['deposit','Deposit','Percentage of full order total'],['partial','Partial','Invoice selected items only'],['final','Final','Full order — closes SO']].map(([v,l,desc])=>
+                <button key={v} className={`btn btn-sm ${invType===v?'btn-primary':'btn-secondary'}`} style={{flex:1,flexDirection:'column',padding:'8px 10px'}} onClick={()=>{setInvType(v);if(v!=='partial')setInvSelItems(items.map((_,i)=>i))}}>
+                  <div style={{fontWeight:700}}>{l}</div>
+                  <div style={{fontSize:9,opacity:0.8,fontWeight:400,marginTop:2}}>{desc}</div>
+                </button>)}
             </div>
           </div>
 
-          {/* Memo */}
-          <div style={{marginBottom:12}}>
-            <label className="form-label">Invoice Memo</label>
-            <input className="form-input" value={invMemo} onChange={e=>setInvMemo(e.target.value)} placeholder="e.g., Baseball Deposit 50%"/>
-          </div>
+          {/* Deposit: percentage selector */}
+          {invType==='deposit'&&<div style={{marginBottom:12,padding:12,background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:8}}>
+            <label className="form-label" style={{color:'#1e40af'}}>Deposit Percentage</label>
+            <div style={{display:'flex',gap:6,marginBottom:8}}>
+              {[25,50,75].map(p=><button key={p} className={`btn btn-sm ${invDepositPct===p?'btn-primary':'btn-secondary'}`} onClick={()=>setInvDepositPct(p)}>{p}%</button>)}
+              <div style={{display:'flex',alignItems:'center',gap:4,marginLeft:'auto'}}>
+                <input type="number" min={1} max={100} value={invDepositPct} onChange={e=>setInvDepositPct(Math.max(1,Math.min(100,parseInt(e.target.value)||0)))} style={{width:60,textAlign:'center',border:'1px solid #93c5fd',borderRadius:4,padding:'4px 6px',fontSize:14,fontWeight:700}}/>
+                <span style={{fontSize:12,fontWeight:600}}>%</span>
+              </div>
+            </div>
+            <div style={{display:'flex',justifyContent:'space-between',fontSize:12}}>
+              <span style={{color:'#64748b'}}>Full order: ${fullTotal.toFixed(2)}</span>
+              <span style={{fontWeight:700,color:'#1e40af'}}>Deposit: ${invTotal.toFixed(2)}</span>
+            </div>
+          </div>}
 
-          {/* Item selection with checkboxes */}
-          <div style={{marginBottom:12}}>
-            <label className="form-label">Items to Invoice</label>
+          {/* Partial: item selection */}
+          {invType==='partial'&&<div style={{marginBottom:12}}>
+            <label className="form-label">Select Items to Invoice</label>
             <div style={{display:'flex',gap:4,marginBottom:8}}>
               <button className="btn btn-sm btn-secondary" onClick={()=>setInvSelItems(items.map((_,i)=>i))}>Select All</button>
               <button className="btn btn-sm btn-secondary" onClick={()=>setInvSelItems([])}>Clear</button>
             </div>
             <div style={{border:'1px solid #e2e8f0',borderRadius:8,overflow:'hidden'}}>
               {items.map((it,idx)=>{
-                const sel=invSelItems.includes(idx);
-                const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
-                const lineRev=qty*safeNum(it.unit_sell);
-                let lineDeco=0;
-                safeDecos(it).forEach(d=>{const dp2=dP(d,qty,safeArt(o),qty);lineDeco+=qty*dp2.sell});
-                const lineTotal=lineRev+lineDeco;
+                const sel=invSelItems.includes(idx);const t=itemTotals[idx];
                 return<div key={idx} style={{padding:'10px 14px',borderBottom:idx<items.length-1?'1px solid #f1f5f9':'none',display:'flex',alignItems:'center',gap:10,cursor:'pointer',background:sel?'#eff6ff':'white'}} onClick={()=>setInvSelItems(sel?invSelItems.filter(i=>i!==idx):[...invSelItems,idx])}>
                   <input type="checkbox" checked={sel} readOnly style={{accentColor:'#2563eb',width:16,height:16}}/>
                   <div style={{flex:1}}>
                     <div style={{fontWeight:600,fontSize:13}}><span style={{fontFamily:'monospace',color:'#1e40af'}}>{it.sku||'—'}</span> {safeStr(it.name)||'Item'}</div>
-                    <div style={{fontSize:11,color:'#64748b'}}>{safeStr(it.color)||'—'} · {qty} units · ${safeNum(it.unit_sell).toFixed(2)}/ea{lineDeco>0?' + $'+lineDeco.toFixed(2)+' deco':''}</div>
+                    <div style={{fontSize:11,color:'#64748b'}}>{safeStr(it.color)||'—'} · {t.qty} units · ${safeNum(it.unit_sell).toFixed(2)}/ea{t.decoRev>0?' + $'+t.decoRev.toFixed(2)+' deco':''}</div>
                   </div>
-                  <div style={{fontWeight:700,fontSize:13,color:sel?'#1e40af':'#94a3b8'}}>${lineTotal.toFixed(2)}</div>
+                  <div style={{fontWeight:700,fontSize:13,color:sel?'#1e40af':'#94a3b8'}}>${t.total.toFixed(2)}</div>
                 </div>})}
             </div>
+          </div>}
+
+          {/* Final: warning about closing SO */}
+          {invType==='final'&&<div style={{marginBottom:12,padding:12,background:'#fef2f2',border:'1px solid #fecaca',borderRadius:8}}>
+            <div style={{fontWeight:700,color:'#dc2626',fontSize:13,marginBottom:4}}>Final Invoice</div>
+            <div style={{fontSize:12,color:'#991b1b'}}>This will invoice the full order amount and mark <strong>{o.id}</strong> as <strong>Complete</strong>.</div>
+            {soInvTotal>0&&<div style={{fontSize:11,color:'#b91c1c',marginTop:4,padding:'4px 8px',background:'#fee2e2',borderRadius:4}}>Note: ${soInvTotal.toLocaleString()} already invoiced on this SO. This final invoice will be for the full remaining order value.</div>}
+          </div>}
+
+          {/* Memo */}
+          <div style={{marginBottom:12}}>
+            <label className="form-label">Invoice Memo</label>
+            <input className="form-input" value={invMemo} onChange={e=>setInvMemo(e.target.value)} placeholder={invType==='deposit'?'e.g., '+invDepositPct+'% Deposit — '+o.memo:invType==='partial'?'e.g., Partial — Hats only':'e.g., Final Invoice — '+o.memo}/>
           </div>
 
           {/* Summary */}
           <div style={{background:'#f8fafc',borderRadius:8,padding:14}}>
             <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
-              <span style={{fontSize:12,color:'#64748b'}}>Selected items</span>
+              <span style={{fontSize:12,color:'#64748b'}}>{invType==='deposit'?'Full order':'Selected items'}</span>
               <span style={{fontSize:12,fontWeight:600}}>{selTotals.items} items · {selTotals.units} units</span>
             </div>
             <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
-              <span style={{fontSize:12,color:'#64748b'}}>Line items subtotal</span>
+              <span style={{fontSize:12,color:'#64748b'}}>Subtotal</span>
               <span style={{fontSize:12,fontWeight:600}}>${selTotals.subtotal.toFixed(2)}</span>
             </div>
-            {invSelItems.length===items.length&&<>
-              <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
-                <span style={{fontSize:12,color:'#64748b'}}>Shipping</span>
-                <span style={{fontSize:12}}>${invShip.toFixed(2)}</span>
-              </div>
-              <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
-                <span style={{fontSize:12,color:'#64748b'}}>Tax</span>
-                <span style={{fontSize:12}}>${invTax.toFixed(2)}</span>
-              </div>
-            </>}
-            {invSelItems.length!==items.length&&<div style={{fontSize:10,color:'#94a3b8',marginBottom:4}}>Shipping & tax apply when all items selected</div>}
+            {invShip>0&&<div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
+              <span style={{fontSize:12,color:'#64748b'}}>Shipping</span>
+              <span style={{fontSize:12}}>${(invType==='deposit'?invShip*invDepositPct/100:invShip).toFixed(2)}</span>
+            </div>}
+            {invTax>0&&<div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
+              <span style={{fontSize:12,color:'#64748b'}}>Tax</span>
+              <span style={{fontSize:12}}>${(invType==='deposit'?invTax*invDepositPct/100:invTax).toFixed(2)}</span>
+            </div>}
+            {invType==='deposit'&&<div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
+              <span style={{fontSize:12,color:'#1e40af',fontWeight:600}}>Deposit ({invDepositPct}%)</span>
+              <span style={{fontSize:12,fontWeight:700,color:'#1e40af'}}>${invTotal.toFixed(2)}</span>
+            </div>}
             <div style={{display:'flex',justifyContent:'space-between',paddingTop:8,borderTop:'2px solid #e2e8f0'}}>
               <span style={{fontSize:14,fontWeight:800}}>Invoice Total</span>
               <span style={{fontSize:18,fontWeight:800,color:'#dc2626'}}>${invTotal.toFixed(2)}</span>
             </div>
-            {pctOfTotal>0&&pctOfTotal<100&&<div style={{fontSize:10,color:'#64748b',textAlign:'right'}}>{pctOfTotal}% of order total</div>}
           </div>
         </div>
         <div className="modal-footer">
           <button className="btn btn-secondary" onClick={()=>setShowInvCreate(false)}>Cancel</button>
-          <button className="btn btn-primary" style={{background:'#dc2626',borderColor:'#dc2626'}} disabled={invSelItems.length===0} onClick={()=>{
+          <button className="btn btn-primary" style={{background:'#dc2626',borderColor:'#dc2626'}} disabled={invType==='partial'&&invSelItems.length===0} onClick={()=>{
             const invId=nextInvId(allInvoices);
             const invDate=new Date().toLocaleDateString('en-CA');
             const termDays=parseInt((cust?.payment_terms||'net30').replace(/\D/g,''))||30;
             const due=new Date();due.setDate(due.getDate()+termDays);const dueDate=due.toLocaleDateString('en-CA');
-            const lineItems=invSelItems.map(idx=>{const it=items[idx];if(!it)return null;const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
+            const lineItems=activeItems.map(idx=>{const it=items[idx];if(!it)return null;const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
               const decoSell=safeDecos(it).reduce((a,d)=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:qty;const dp2=dP(d,qty,safeArt(o),cq);return a+dp2.sell},0);
-              return{desc:it.sku+' '+it.name+(it.color?' — '+it.color:''),qty,rate:safeNum(it.unit_sell)+decoSell,amount:qty*(safeNum(it.unit_sell)+decoSell)}}).filter(Boolean);
-            const inv={id:invId,type:'invoice',customer_id:o.customer_id,so_id:o.id,
+              const lineAmt=qty*(safeNum(it.unit_sell)+decoSell);
+              return{desc:it.sku+' '+it.name+(it.color?' — '+it.color:''),qty,rate:safeNum(it.unit_sell)+decoSell,amount:invType==='deposit'?Math.round(lineAmt*invDepositPct/100*100)/100:lineAmt}}).filter(Boolean);
+            const invShipAmt=invType==='deposit'?Math.round(invShip*invDepositPct/100*100)/100:invShip;
+            const invTaxAmt=invType==='deposit'?Math.round(invTax*invDepositPct/100*100)/100:invTax;
+            const defaultMemo=invType==='deposit'?invDepositPct+'% Deposit — '+o.memo:invType==='partial'?'Partial — '+o.memo:'Final Invoice — '+o.memo;
+            const inv={id:invId,type:'invoice',inv_type:invType,customer_id:o.customer_id,so_id:o.id,
               date:invDate,due_date:dueDate,total:Math.round(invTotal*100)/100,paid:0,
-              memo:invMemo||invType+' — '+o.memo,status:'open',_rep:o.created_by||cu.id,
-              tax:Math.round(invTax*100)/100,shipping:Math.round(invShip*100)/100,
+              memo:invMemo||defaultMemo,status:'open',_rep:o.created_by||cu.id,
+              tax:Math.round(invTaxAmt*100)/100,shipping:Math.round(invShipAmt*100)/100,
+              ...(invType==='deposit'?{deposit_pct:invDepositPct}:{}),
               line_items:lineItems,
-              items:invSelItems.map(idx=>{const it=items[idx];return{sku:it.sku,name:it.name,qty:Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0),unit_sell:safeNum(it.unit_sell)}})};
+              items:activeItems.map(idx=>{const it=items[idx];return{sku:it.sku,name:it.name,qty:Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0),unit_sell:safeNum(it.unit_sell)}})};
             onInv(prev=>[...prev,inv]);
+            // Final invoice: mark SO as complete
+            if(invType==='final'){const updated={...o,status:'complete',updated_at:new Date().toLocaleString()};setO(updated);onSave(updated)}
             setShowInvCreate(false);
-            nf('Invoice '+inv.id+' created for $'+invTotal.toFixed(2));
-          }}>💰 Create Invoice — ${invTotal.toFixed(2)}</button>
+            nf('Invoice '+inv.id+' created for $'+invTotal.toFixed(2)+(invType==='final'?' — SO marked complete':''));
+            // Navigate to invoice page
+            if(onNavInvoice)onNavInvoice(inv);
+          }}>{invType==='final'?'Create Final Invoice — Close SO':'Create '+invType.charAt(0).toUpperCase()+invType.slice(1)+' Invoice'} — ${invTotal.toFixed(2)}</button>
         </div>
       </div></div>})()}
 
@@ -5887,7 +5909,7 @@ export default function App(){
 
   // ESTIMATES LIST
   const rEst=()=>{
-    if(eEst)return<OrderEditor order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} onSave={e=>{const e2=savE(e);setEEst(e2)}} onBack={()=>setEEst(null)} onConvertSO={convertSO} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={canDelete?deleteEstimate:null}/>;
+    if(eEst)return<OrderEditor order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} onSave={e=>{const e2=savE(e);setEEst(e2)}} onBack={()=>setEEst(null)} onConvertSO={convertSO} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={canDelete?deleteEstimate:null} onNavInvoice={inv=>{setEEst(null);setPg('invoices');setInvF(f=>({...f,search:inv.id}))}}/>;
     const fe=ests.filter(e=>!q||(e.id+' '+e.memo+' '+(cust.find(c=>c.id===e.customer_id)?.name||'')+' '+(cust.find(c=>c.id===e.customer_id)?.alpha_tag||'')).toLowerCase().includes(q.toLowerCase()));
     return(<><div style={{display:'flex',gap:8,marginBottom:16}}><div className="search-bar" style={{flex:1}}><Icon name="search"/><input placeholder="Search..." value={q} onChange={e=>setQ(e.target.value)}/></div>
       <button className="btn btn-primary" onClick={()=>newE(null)}><Icon name="plus" size={14}/> New Estimate</button></div>
@@ -5905,7 +5927,7 @@ export default function App(){
 
   // SALES ORDERS LIST
   const rSO=()=>{
-    if(eSO)return<OrderEditor order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} onSave={s=>{const locked=savSO(s);setESO(locked)}} onBack={()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null)}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null}/>;
+    if(eSO)return<OrderEditor order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} onSave={s=>{const locked=savSO(s);setESO(locked)}} onBack={()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null)}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onNavInvoice={inv=>{setESO(null);setPg('invoices');setInvF(f=>({...f,search:inv.id}))}}/>;
     // Filter SOs
     let fSOs=[...sos];
     if(soF.status!=='all')fSOs=fSOs.filter(s=>calcSOStatus(s)===soF.status);
@@ -7143,7 +7165,7 @@ export default function App(){
             <div><h2>{vg.name}</h2><div style={{fontSize:12,color:'#64748b'}}>{vg.pos.length} queued · {totalUnits} units</div></div>
             <div style={{textAlign:'right'}}>
               <div style={{fontSize:20,fontWeight:800,color:hitThreshold?'#166534':'#d97706'}}>${total.toFixed(2)}</div>
-              <div style={{fontSize:11,color:hitThreshold?'#166534':'#d97706',fontWeight:600}}>{hitThreshold?'\u2705 Free shipping!':'$'+(vg.threshold-total).toFixed(2)+' to free ship'}</div>
+              <div style={{fontSize:11,color:hitThreshold?'#166534':'#d97706',fontWeight:600}}>{hitThreshold?'✅ Free shipping!':'$'+(vg.threshold-total).toFixed(2)+' to free ship'}</div>
             </div>
           </div>
           <div className="card-body" style={{padding:0}}>
@@ -7196,7 +7218,7 @@ export default function App(){
                 <div style={{fontSize:10,color:'#94a3b8'}}>Enter this exact number in {vg.name}'s B2B. Warehouse scans this barcode on receiving.</div>
               </div>
               <div style={{display:'flex',flexDirection:'column',gap:6}}>
-                <button className="btn btn-sm btn-secondary" onClick={()=>{navigator.clipboard?.writeText(nextPO);nf('Copied '+nextPO)}}>\uD83D\uDCCB Copy PO#</button>
+                <button className="btn btn-sm btn-secondary" onClick={()=>{navigator.clipboard?.writeText(nextPO);nf('Copied '+nextPO)}}>{'📋'} Copy PO#</button>
                 <button className="btn btn-sm btn-secondary" onClick={()=>{if(window.confirm('Clear all '+vg.pos.length+' POs?'))setBatchPOs(prev=>prev.filter(p=>p.vendor_key!==vk))}}>Clear</button>
               </div>
             </div>
@@ -7222,9 +7244,9 @@ export default function App(){
                 setBatchPOs(prev=>prev.filter(p=>p.vendor_key!==vk));
                 setBatchCounter(ct=>ct+1);
                 nf('\uD83D\uDE80 '+poNum+' submitted to '+vg.name+' ($'+total.toFixed(2)+')');
-              }}>\uD83D\uDE80 Submit {nextPO} to {vg.name}{hitThreshold?' \u2014 FREE SHIP':''} (${total.toFixed(2)})</button>
+              }}>{'🚀'} Submit {nextPO} to {vg.name}{hitThreshold?' — FREE SHIP':''} (${total.toFixed(2)})</button>
             <div style={{fontSize:10,color:'#64748b',marginTop:6,textAlign:'center'}}>
-              Contains: {vg.pos.map(bp=>bp.so_id+' ('+bp.customer+')').join(' \u00B7 ')}
+              Contains: {vg.pos.map(bp=>bp.so_id+' ('+bp.customer+')').join(' · ')}
             </div>
           </div>
         </div>})}
@@ -7236,7 +7258,7 @@ export default function App(){
             return<div key={k} style={{padding:'10px 14px',border:'1px solid #e2e8f0',borderRadius:8,minWidth:150}}>
               <div style={{fontWeight:700,fontSize:13}}>{v.name}</div>
               <div style={{fontSize:11,color:'#64748b'}}>Free ship: ${v.threshold}+</div>
-              {queued.length>0&&<div style={{fontSize:11,marginTop:4,color:qTotal>=v.threshold?'#166534':'#d97706',fontWeight:600}}>{queued.length} queued \u00B7 ${qTotal.toFixed(2)}</div>}
+              {queued.length>0&&<div style={{fontSize:11,marginTop:4,color:qTotal>=v.threshold?'#166534':'#d97706',fontWeight:600}}>{queued.length} queued · ${qTotal.toFixed(2)}</div>}
             </div>})}
         </div>
         <div style={{fontSize:11,color:'#94a3b8',marginTop:10}}>The PO number assigned here (e.g. NSA-4501) goes into the vendor's B2B portal. When the box arrives, scan that PO number to see every SO and item inside.</div>
@@ -7517,7 +7539,7 @@ export default function App(){
                     {label:'Bill To',value:ic?.name||'—',sub:ic?.alpha_tag},
                     {label:'Invoice Date',value:inv.date||new Date().toLocaleDateString(),sub:inv.due_date?'Due: '+inv.due_date:''},
                     {label:'Sales Order',value:inv.so_id||'—',sub:inv.memo||so?.memo||''},
-                    {label:'Payment Terms',value:inv.type==='deposit'?'50% Deposit':'Final Invoice',sub:'Rep: '+(REPS.find(r=>r.id===inv._rep)?.name||'—')},
+                    {label:'Payment Terms',value:inv.inv_type==='deposit'?(inv.deposit_pct||50)+'% Deposit':inv.inv_type==='partial'?'Partial Invoice':'Final Invoice',sub:'Rep: '+(REPS.find(r=>r.id===inv._rep)?.name||'—')},
                   ],
                   tables:[{
                     headers:['Description','Qty','Rate','Amount'],
@@ -7531,7 +7553,7 @@ export default function App(){
                       ...(inv._bal>0?[{_style:'background:#fef2f2',cells:['','',{value:'<strong>Balance Due</strong>',style:'color:#dc2626'},'<strong style="color:#dc2626;font-size:14px">$'+inv._bal.toLocaleString()+'</strong>']}]:[]),
                     ]
                   }],
-                  footer:inv.type==='deposit'?NSA.depositTerms:NSA.terms
+                  footer:inv.inv_type==='deposit'?NSA.depositTerms:NSA.terms
                 });
               }}>🖨️</button>{canDelete&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',color:'#dc2626',border:'1px solid #fca5a5',marginLeft:4,background:'white'}} onClick={()=>deleteInvoice(inv.id)}><Icon name="trash" size={10}/></button>}</td>
           </tr>})}</tbody></table>}
