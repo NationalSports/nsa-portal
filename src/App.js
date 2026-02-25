@@ -5169,7 +5169,7 @@ export default function App(){
   // OMG API sync state
   const[omgSyncing,setOmgSyncing]=useState(false);
   const[omgLastSync,setOmgLastSync]=useState(null);
-  const[dbLoading,setDbLoading]=useState(!!supabase);const _dbReady=useRef(false);
+  const[dbLoading,setDbLoading]=useState(!!supabase);const[dbError,setDbError]=useState(null);const _dbReady=useRef(false);const _dbLoadSuccess=useRef(false);
   // Batch PO system
   const[batchPOs,setBatchPOs]=useState([]);// pending queue
   const[submittedBatches,setSubmittedBatches]=useState([]);// submitted batches for scan lookup
@@ -5197,7 +5197,7 @@ export default function App(){
   // SO version history
   const[soHistory,setSOHistory]=useState({});// {soId:[{ts,user,snapshot}]}
   const[msgs,setMsgs]=useState(()=>_migrated.msgs);const[cM,setCM]=useState({open:false,c:null});const[aM,setAM]=useState({open:false,p:null});
-  // ─── Supabase: load on mount, seed if empty ───
+  // ─── Supabase: load on mount ───
   const _initialLoadDone=useRef(false);
   React.useEffect(()=>{
     if(!supabase){setDbLoading(false);_initialLoadDone.current=true;return}
@@ -5205,9 +5205,14 @@ export default function App(){
     (async()=>{
       try{
         const d=await _dbLoad();
-        if(cancelled||!d)return;
-        if(d.hasData){
-          // Always trust Supabase as source of truth when it has data
+        if(cancelled)return;
+        if(!d){
+          // Supabase connected but query failed — do NOT allow writes that could overwrite real data
+          setDbError('Could not load data from Supabase. Changes will only be saved locally until this is resolved.');
+          console.error('[DB] Load returned null — blocking Supabase writes');
+        }else if(d.hasData){
+          // Supabase has data — use it as source of truth
+          _dbLoadSuccess.current=true;
           setREPS(d.team.length?d.team:DEFAULT_REPS);setCust(d.customers);
           if(d.vendors.length)setVend(d.vendors);setProd(d.products.length?d.products:prod);
           setEsts(d.estimates);setSOs(d.sales_orders);
@@ -5216,12 +5221,15 @@ export default function App(){
           if(d.issues?.length)setIssues(d.issues);
           console.log('[DB] Loaded from Supabase (normalized)');
         }else{
-          console.log('[DB] Supabase empty, seeding...');
-          await _dbSeed({team:DEFAULT_REPS,customers:D_C,vendors:D_V,products:D_P,
-            estimates:D_E,sales_orders:D_SO,invoices:D_INV,messages:D_MSG,omg_stores:D_OMG});
-          console.log('[DB] Seeded');
+          // Supabase connected but empty — likely first deploy or tables were cleared
+          // Do NOT auto-seed demo data as it could overwrite real data that failed to load
+          setDbError('Supabase connected but no data found. If this is a new setup, use Backup > Import to load your data.');
+          console.warn('[DB] Supabase empty — not seeding to protect against data loss');
         }
-      }catch(e){console.error('[DB] Load failed:',e)}
+      }catch(e){
+        console.error('[DB] Load failed:',e);
+        if(!cancelled)setDbError('Supabase connection failed: '+e.message+'. Changes will only be saved locally.');
+      }
       finally{if(!cancelled){_dbReady.current=true;setDbLoading(false);
         // Mark initial load done after a tick so auto-save effects don't fire from the setState calls above
         setTimeout(()=>{_initialLoadDone.current=true},100);
@@ -5252,6 +5260,8 @@ export default function App(){
       try{
         const d=await _dbLoad();
         if(!d||!d.hasData)return;
+        // If initial load failed but polling recovered, re-enable Supabase writes
+        if(!_dbLoadSuccess.current){_dbLoadSuccess.current=true;setDbError(null);console.log('[DB] Poll recovered — Supabase writes re-enabled')}
         // Use updated_at (or full JSON hash) to detect content changes, not just ID changes
         const changed=(prev,next)=>{if(prev.length!==next.length)return true;const pIds=prev.map(e=>e.id+':'+(e.updated_at||'')).sort().join(',');const nIds=next.map(e=>e.id+':'+(e.updated_at||'')).sort().join(',');return pIds!==nIds};
         setEsts(prev=>changed(prev,d.estimates)?d.estimates:prev);
@@ -5267,15 +5277,16 @@ export default function App(){
   },[]);
 
   // Auto-save to localStorage + Supabase (normalized, only after initial load is complete)
-  React.useEffect(()=>{try{localStorage.setItem('nsa_reps',JSON.stringify(REPS))}catch{};if(_initialLoadDone.current&&_dbReady.current)_dbSave('team_members',REPS)},[REPS]);
-  React.useEffect(()=>{try{localStorage.setItem('nsa_cust',JSON.stringify(cust))}catch{};if(_initialLoadDone.current&&_dbReady.current)cust.forEach(c=>_dbSaveCustomer(c))},[cust]);
-  React.useEffect(()=>{try{localStorage.setItem('nsa_prod',JSON.stringify(prod))}catch{};if(_initialLoadDone.current&&_dbReady.current)prod.forEach(p=>_dbSaveProduct(p))},[prod]);
-  React.useEffect(()=>{try{localStorage.setItem('nsa_ests',JSON.stringify(ests))}catch{};if(_initialLoadDone.current&&_dbReady.current)ests.forEach(e=>_dbSaveEstimate(e))},[ests]);
-  React.useEffect(()=>{try{localStorage.setItem('nsa_sos',JSON.stringify(sos))}catch{};if(_initialLoadDone.current&&_dbReady.current)sos.forEach(s=>_dbSaveSO(s))},[sos]);
-  React.useEffect(()=>{try{localStorage.setItem('nsa_invs',JSON.stringify(invs))}catch{};if(_initialLoadDone.current&&_dbReady.current)invs.forEach(i=>_dbSaveInvoice(i))},[invs]);
-  React.useEffect(()=>{try{localStorage.setItem('nsa_msgs',JSON.stringify(msgs))}catch{};if(_initialLoadDone.current&&_dbReady.current)msgs.forEach(m=>_dbSaveMessage(m))},[msgs]);
-  React.useEffect(()=>{if(_initialLoadDone.current&&_dbReady.current){omgStores.forEach(s=>{const{products,...rest}=s;_dbSave('omg_stores',[rest])})}},[omgStores]);
-  React.useEffect(()=>{try{localStorage.setItem('nsa_issues',JSON.stringify(issues))}catch{};if(_initialLoadDone.current&&_dbReady.current)_dbSave('issues',issues)},[issues]);
+  // IMPORTANT: Supabase writes are gated behind _dbLoadSuccess to prevent demo/stale data from overwriting real cloud data
+  React.useEffect(()=>{try{localStorage.setItem('nsa_reps',JSON.stringify(REPS))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current)_dbSave('team_members',REPS)},[REPS]);
+  React.useEffect(()=>{try{localStorage.setItem('nsa_cust',JSON.stringify(cust))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current)cust.forEach(c=>_dbSaveCustomer(c))},[cust]);
+  React.useEffect(()=>{try{localStorage.setItem('nsa_prod',JSON.stringify(prod))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current)prod.forEach(p=>_dbSaveProduct(p))},[prod]);
+  React.useEffect(()=>{try{localStorage.setItem('nsa_ests',JSON.stringify(ests))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current)ests.forEach(e=>_dbSaveEstimate(e))},[ests]);
+  React.useEffect(()=>{try{localStorage.setItem('nsa_sos',JSON.stringify(sos))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current)sos.forEach(s=>_dbSaveSO(s))},[sos]);
+  React.useEffect(()=>{try{localStorage.setItem('nsa_invs',JSON.stringify(invs))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current)invs.forEach(i=>_dbSaveInvoice(i))},[invs]);
+  React.useEffect(()=>{try{localStorage.setItem('nsa_msgs',JSON.stringify(msgs))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current)msgs.forEach(m=>_dbSaveMessage(m))},[msgs]);
+  React.useEffect(()=>{if(_initialLoadDone.current&&_dbLoadSuccess.current){omgStores.forEach(s=>{const{products,...rest}=s;_dbSave('omg_stores',[rest])})}},[omgStores]);
+  React.useEffect(()=>{try{localStorage.setItem('nsa_issues',JSON.stringify(issues))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current)_dbSave('issues',issues)},[issues]);
   const[q,setQ]=useState('');const[selC,setSelC]=useState(null);const[selV,setSelV]=useState(null);const[selP,setSelP]=useState(null);
   const[eEst,setEEst]=useState(null);const[eEstC,setEEstC]=useState(null);const[eSO,setESO]=useState(null);const[eSOC,setESOC]=useState(null);const[eSOTab,setESOTab]=useState(null);const[eSOScrollItem,setESOScrollItem]=useState(null);const[eSOScrollJob,setESOScrollJob]=useState(null);
   const[gQ,setGQ]=useState('');const[gOpen,setGOpen]=useState(false);const[mF,setMF]=useState('all');const[rF,setRF]=useState('all');const[pF,setPF]=useState({cat:'all',vnd:'all',stk:'all',clr:'all'});
@@ -11388,6 +11399,10 @@ export default function App(){
           {gOpen&&<div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:59}} onClick={()=>setGOpen(false)}/>}
         </div>
         <div style={{display:'flex',gap:6,alignItems:'center'}}><button className="btn btn-sm" onClick={()=>setIssueModal({open:true,desc:'',priority:'medium'})} style={{fontSize:11,background:'none',border:'1px solid #fca5a5',color:'#dc2626',position:'relative',padding:'4px 8px'}} title="Report an issue"><Icon name="alert" size={14}/>{openIssueCount>0&&<span style={{position:'absolute',top:-4,right:-4,background:'#dc2626',color:'white',borderRadius:10,padding:'0 5px',fontSize:9,minWidth:16,textAlign:'center',lineHeight:'16px'}}>{openIssueCount}</span>}</button><button className="btn btn-sm btn-primary" onClick={()=>newE(null)} style={{fontSize:11}}><Icon name="plus" size={12}/> Estimate</button><button className="btn btn-sm btn-secondary" onClick={()=>setCM({open:true,c:null})} style={{fontSize:11}}><Icon name="plus" size={12}/> Customer</button><button className="btn btn-sm btn-secondary" onClick={()=>setQPC({open:true,mode:'single',items:[{sku:'',name:'',brand:'',color:'',category:'Tees',retail_price:0,nsa_cost:0,available_sizes:['S','M','L','XL','2XL'],vendor_id:''}]})} style={{fontSize:11}}><Icon name="plus" size={12}/> Product</button></div></div>
+      {dbError&&<div style={{padding:'10px 16px',background:'#fef2f2',border:'1px solid #fecaca',color:'#991b1b',fontSize:12,fontWeight:600,display:'flex',alignItems:'center',gap:8}}>
+        <span style={{fontSize:16}}>&#9888;</span><span style={{flex:1}}>{dbError}</span>
+        <button onClick={()=>setDbError(null)} style={{background:'none',border:'none',color:'#991b1b',cursor:'pointer',fontWeight:800,fontSize:14}}>&#215;</button>
+      </div>}
       <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='art'&&rArtist()}{pg==='production'&&rProd2()}{pg==='decoration'&&rDeco()}{pg==='warehouse'&&rWarehouse()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='team'&&rTeam()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='commissions'&&rCommissions()}{pg==='omg'&&rOMG()}{pg==='reports'&&rReports()}{pg==='issues'&&rIssues()}{pg==='import'&&rImport()}{pg==='qb'&&rQB()}{pg==='backup'&&rBackup()}{pg==='settings'&&rSettings()}</div></div>
     <CustModal isOpen={cM.open} onClose={()=>setCM({open:false,c:null})} onSave={savC} customer={cM.c} parents={pars}/>
     <AdjModal isOpen={aM.open} onClose={()=>setAM({open:false,p:null})} product={aM.p} onSave={savI}/>
