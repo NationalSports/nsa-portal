@@ -2,6 +2,14 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import './portal.css';
 import { createClient } from '@supabase/supabase-js';
+import { loadStripe } from '@stripe/stripe-js';
+import { Elements, PaymentElement, useStripe, useElements } from '@stripe/react-stripe-js';
+
+// ─── Stripe Setup ───
+const _stripePk = process.env.REACT_APP_STRIPE_PK || '';
+let stripePromise = null;
+try { if (_stripePk) stripePromise = loadStripe(_stripePk); }
+catch(e) { console.warn('[Stripe] Init failed:', e.message); }
 
 // ─── Supabase Setup ───
 const _sbUrl = process.env.REACT_APP_SUPABASE_URL || '';
@@ -4570,13 +4578,116 @@ function AdjModal({isOpen,onClose,product,onSave}){const[a,setA]=useState({});co
     </div><div className="modal-footer"><button className="btn btn-secondary" onClick={onClose}>Cancel</button><button className="btn btn-primary" onClick={()=>{onSave(product.id,a);onClose()}}>Save</button></div></div></div>);
 }
 
+// ─── STRIPE CHECKOUT ───
+const CC_FEE_PORTAL=0.029;// 2.9% CC surcharge — matches admin CC_FEE_PCT
+
+function StripeCheckoutForm({amount,onSuccess,onCancel}){
+  const stripe=useStripe();const elements=useElements();
+  const[processing,setProcessing]=useState(false);
+  const[error,setError]=useState(null);
+  const fee=Math.round(amount*CC_FEE_PORTAL*100)/100;
+  const total=amount+fee;
+
+  const handleSubmit=async(e)=>{
+    e.preventDefault();
+    if(!stripe||!elements){return}
+    setProcessing(true);setError(null);
+    const result=await stripe.confirmPayment({elements,confirmParams:{return_url:window.location.href},redirect:'if_required'});
+    if(result.error){
+      setError(result.error.message);setProcessing(false);
+    }else if(result.paymentIntent&&result.paymentIntent.status==='succeeded'){
+      onSuccess({intentId:result.paymentIntent.id,amount,fee,last4:null,brand:null});
+    }else{
+      setError('Payment was not completed. Please try again.');setProcessing(false);
+    }
+  };
+
+  return<form onSubmit={handleSubmit}>
+    <div style={{marginBottom:16}}>
+      <PaymentElement options={{layout:'tabs',wallets:{applePay:'auto',googlePay:'auto'}}}/>
+    </div>
+    {error&&<div style={{padding:'10px 14px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:8,color:'#dc2626',fontSize:12,marginBottom:12}}>{error}</div>}
+    <div style={{padding:12,background:'#f8fafc',borderRadius:8,marginBottom:16,fontSize:12}}>
+      <div style={{display:'flex',justifyContent:'space-between'}}><span>Subtotal:</span><span>${amount.toLocaleString(undefined,{minimumFractionDigits:2})}</span></div>
+      <div style={{display:'flex',justifyContent:'space-between',color:'#d97706'}}><span>Processing Fee (2.9%):</span><span>+${fee.toFixed(2)}</span></div>
+      <div style={{display:'flex',justifyContent:'space-between',fontWeight:800,borderTop:'2px solid #e2e8f0',paddingTop:6,marginTop:6,fontSize:14}}><span>Total:</span><span>${total.toFixed(2)}</span></div>
+    </div>
+    <div style={{display:'flex',gap:8}}>
+      <button type="submit" disabled={!stripe||processing} style={{flex:1,padding:'14px 20px',background:processing?'#94a3b8':'#22c55e',color:'white',border:'none',borderRadius:10,fontSize:16,fontWeight:800,cursor:processing?'default':'pointer'}}>
+        {processing?'Processing...':'💳 Pay $'+total.toFixed(2)}
+      </button>
+      <button type="button" onClick={onCancel} style={{padding:'14px 16px',background:'#f1f5f9',color:'#64748b',border:'1px solid #e2e8f0',borderRadius:10,fontSize:14,cursor:'pointer'}}>Cancel</button>
+    </div>
+  </form>
+}
+
+function StripePaymentModal({invoices,customerName,customerEmail,alphaTag,onSuccess,onClose}){
+  const[clientSecret,setClientSecret]=useState(null);
+  const[loading,setLoading]=useState(true);
+  const[error,setError]=useState(null);
+  const totalDue=invoices.reduce((a,inv)=>a+(inv.total||0)-(inv.paid||0),0);
+  const fee=Math.round(totalDue*CC_FEE_PORTAL*100)/100;
+  const totalCharge=totalDue+fee;
+  const invoiceIds=invoices.map(i=>i.id).join(', ');
+
+  useEffect(()=>{
+    if(!stripePromise){setError('Stripe is not configured. Please contact NSA to set up payments.');setLoading(false);return}
+    (async()=>{
+      try{
+        const res=await fetch('/.netlify/functions/stripe-payment',{
+          method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({
+            action:'create_intent',
+            amount_cents:Math.round(totalCharge*100),
+            customer_name:customerName,
+            customer_email:customerEmail,
+            invoice_id:invoiceIds,
+            invoice_memo:invoices[0]?.memo||'',
+            alpha_tag:alphaTag,
+          })
+        });
+        const data=await res.json();
+        if(!res.ok)throw new Error(data.error||'Failed to create payment');
+        setClientSecret(data.clientSecret);
+      }catch(e){setError(e.message)}
+      finally{setLoading(false)}
+    })();
+  },[]);
+
+  return<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:9999,padding:16}}>
+    <div style={{width:'100%',maxWidth:480,background:'white',borderRadius:16,boxShadow:'0 8px 32px rgba(0,0,0,0.2)',overflow:'hidden'}} onClick={e=>e.stopPropagation()}>
+      <div style={{background:'linear-gradient(135deg,#059669,#22c55e)',color:'white',padding:'20px 24px'}}>
+        <div style={{fontSize:11,opacity:0.8,letterSpacing:1}}>NATIONAL SPORTS APPAREL</div>
+        <div style={{fontSize:20,fontWeight:800,marginTop:4}}>Secure Payment</div>
+        <div style={{fontSize:13,opacity:0.8,marginTop:2}}>{customerName} · {invoiceIds}</div>
+      </div>
+      <div style={{padding:'20px 24px'}}>
+        {loading&&<div style={{textAlign:'center',padding:40}}><div style={{fontSize:14,color:'#64748b'}}>Setting up secure checkout...</div></div>}
+        {error&&<div style={{padding:20,textAlign:'center'}}>
+          <div style={{fontSize:32,marginBottom:8}}>⚠️</div>
+          <div style={{fontSize:14,color:'#dc2626',fontWeight:600,marginBottom:4}}>{error}</div>
+          <div style={{fontSize:12,color:'#64748b',marginBottom:16}}>Please try again or contact NSA for assistance.</div>
+          <button className="btn btn-secondary" onClick={onClose}>Close</button>
+        </div>}
+        {clientSecret&&stripePromise&&<Elements stripe={stripePromise} options={{clientSecret,appearance:{theme:'stripe',variables:{colorPrimary:'#22c55e',borderRadius:'8px'}}}}>
+          <StripeCheckoutForm amount={totalDue} onCancel={onClose} onSuccess={(result)=>onSuccess({...result,invoices})}/>
+        </Elements>}
+      </div>
+    </div>
+  </div>
+}
+
 // ─── STANDALONE COACH PORTAL ───
-function CoachPortal({customer,allCustomers,sos,ests,invs,REPS,prod}){
+function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onUpdateInvs}){
   const[jobView,setJobView]=useState(null);
   const[invView,setInvView]=useState(null);
   const[comment,setComment]=useState('');
   const[contactEdit,setContactEdit]=useState(null);
   const[contactMsg,setContactMsg]=useState('');
+  const[showPay,setShowPay]=useState(null);// null | 'all' | inv object
+  const[paySuccess,setPaySuccess]=useState(null);// {amount,fee,invoices}
+  const[invs,setInvs]=useState(initInvs);
+  useEffect(()=>setInvs(initInvs),[initInvs]);
   const isP=!customer.parent_id;
   const subs=isP?allCustomers.filter(c=>c.parent_id===customer.id):[];
   const ids=isP?[customer.id,...subs.map(s=>s.id)]:[customer.id];
@@ -4590,6 +4701,24 @@ function CoachPortal({customer,allCustomers,sos,ests,invs,REPS,prod}){
   const allPortalJobs=[];activeSOs.forEach(so=>{safeJobs(so).forEach(j=>{allPortalJobs.push({...j,so,soMemo:so.memo})})});
   const artLabelsP={needs_art:'Art Needed',art_requested:'Art Requested',art_in_progress:'Art In Progress',waiting_approval:'Awaiting Your Approval',production_files_needed:'Finalizing Files',art_complete:'Approved'};
   const prodLabelsP={hold:'Ready for Production',staging:'In Line',in_process:'In Production',completed:'Done',shipped:'Shipped'};
+  const contactEmail=(customer.contacts||[])[0]?.email||'';
+
+  const handlePaymentSuccess=(result)=>{
+    // Update invoices locally and in parent (persists to Supabase/localStorage/QB)
+    const paidInvIds=result.invoices.map(i=>i.id);
+    const updater=prev=>prev.map(inv=>{
+      if(!paidInvIds.includes(inv.id))return inv;
+      const bal=(inv.total||0)-(inv.paid||0);
+      const newPaid=(inv.paid||0)+bal;
+      const fee=Math.round(bal*CC_FEE_PORTAL*100)/100;
+      const payment={amount:bal,method:'cc',ref:'Stripe '+result.intentId,date:new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'2-digit'}),cc_fee:fee};
+      return{...inv,paid:newPaid,status:newPaid>=inv.total?'paid':'partial',cc_fee:(inv.cc_fee||0)+fee,payments:[...(inv.payments||[]),payment],updated_at:new Date().toLocaleString()};
+    });
+    setInvs(updater);
+    if(onUpdateInvs)onUpdateInvs(updater);// persist to parent → Supabase + localStorage + QB sync
+    setPaySuccess({amount:result.amount,fee:result.fee,invoices:result.invoices});
+    setShowPay(null);setInvView(null);
+  };
 
   // Job detail view
   if(jobView){
@@ -4675,7 +4804,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs,REPS,prod}){
           <div style={{display:'flex',justifyContent:'space-between',padding:'12px 0',borderTop:'2px solid #e2e8f0'}}>
             <span style={{fontWeight:800}}>Total</span><span style={{fontWeight:800,fontSize:18,color:'#dc2626'}}>${inv.total?.toLocaleString()}</span>
           </div>
-          {bal>0&&<button style={{width:'100%',marginTop:16,padding:'14px 20px',background:'#22c55e',color:'white',border:'none',borderRadius:10,fontSize:16,fontWeight:800,cursor:'pointer'}} onClick={()=>alert('Pay $'+bal.toLocaleString()+' (demo)')}>
+          {bal>0&&<button style={{width:'100%',marginTop:16,padding:'14px 20px',background:'#22c55e',color:'white',border:'none',borderRadius:10,fontSize:16,fontWeight:800,cursor:'pointer'}} onClick={()=>setShowPay(inv)}>
             💳 Pay ${bal.toLocaleString()}
           </button>}
           {bal<=0&&<div style={{textAlign:'center',padding:12,background:'#f0fdf4',borderRadius:8,color:'#166534',fontWeight:700}}>✅ Paid in Full</div>}
@@ -4701,9 +4830,17 @@ function CoachPortal({customer,allCustomers,sos,ests,invs,REPS,prod}){
       </div>
       <div style={{padding:'20px 28px'}}>
 
+        {/* Payment success banner */}
+        {paySuccess&&<div style={{padding:16,background:'#f0fdf4',border:'2px solid #22c55e',borderRadius:12,marginBottom:16,textAlign:'center'}}>
+          <div style={{fontSize:32,marginBottom:8}}>✅</div>
+          <div style={{fontSize:18,fontWeight:800,color:'#166534',marginBottom:4}}>Payment Successful!</div>
+          <div style={{fontSize:14,color:'#166534'}}>${paySuccess.amount.toLocaleString(undefined,{minimumFractionDigits:2})} paid{paySuccess.fee>0?' + $'+paySuccess.fee.toFixed(2)+' processing fee':''}</div>
+          <div style={{fontSize:12,color:'#64748b',marginTop:4}}>A receipt has been sent to your email. Your account has been updated.</div>
+        </div>}
+
         {/* Pay Now button */}
         {totalDue>0&&<div style={{marginBottom:16}}>
-          <button style={{width:'100%',padding:'14px 20px',background:'#22c55e',color:'white',border:'none',borderRadius:10,fontSize:16,fontWeight:800,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:10}} onClick={()=>alert('Payment portal opening... (demo)\n\nThis would connect to Stripe for CC + Apple Pay processing.\nAmount: $'+totalDue.toLocaleString())}>
+          <button style={{width:'100%',padding:'14px 20px',background:'#22c55e',color:'white',border:'none',borderRadius:10,fontSize:16,fontWeight:800,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:10}} onClick={()=>setShowPay('all')}>
             💳 Pay Now — ${totalDue.toLocaleString()}
           </button>
           <div style={{display:'flex',justifyContent:'center',gap:12,marginTop:6}}>
@@ -4842,6 +4979,16 @@ function CoachPortal({customer,allCustomers,sos,ests,invs,REPS,prod}){
         </div>
       </div>
     </div>
+
+    {/* Stripe Payment Modal */}
+    {showPay&&<StripePaymentModal
+      invoices={showPay==='all'?openInvs:[showPay]}
+      customerName={customer.name}
+      customerEmail={contactEmail}
+      alphaTag={customer.alpha_tag}
+      onSuccess={handlePaymentSuccess}
+      onClose={()=>setShowPay(null)}
+    />}
   </div>
 }
 
@@ -11059,7 +11206,7 @@ export default function App(){
       <div style={{fontSize:48,fontWeight:900,color:'#1e3a5f'}}>NSA</div>
       <div style={{fontSize:16,color:'#64748b'}}>Portal not found for "<strong>{_portalTag}</strong>"</div>
       <div style={{fontSize:13,color:'#94a3b8'}}>Please check the link with your NSA rep.</div></div>;
-    return<CoachPortal customer={_portalCust} allCustomers={cust} sos={sos} ests={ests} invs={invs} REPS={REPS} prod={prod}/>;
+    return<CoachPortal customer={_portalCust} allCustomers={cust} sos={sos} ests={ests} invs={invs} REPS={REPS} prod={prod} onUpdateInvs={setInvs}/>;
   }
 
   // LOADING GATE
