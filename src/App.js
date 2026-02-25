@@ -721,7 +721,7 @@ function dP(d,q,artFiles,cq){
   if(d.type==='screen_print'){const u=d.underbase?1+SP.ub:1;return{sell:d.sell_override||rQ(spP(q,d.colors||1,true)*u),cost:rQ(spP(q,d.colors||1,false)*u)}}
   if(d.type==='embroidery')return{sell:d.sell_override||emP(d.stitches||8000,q,true),cost:emP(d.stitches||8000,q,false)};
   // Numbers
-  if(d.kind==='numbers'||d.type==='number_press'){const hasRoster=d._showRoster&&d.roster&&Object.values(d.roster).flat().some(v=>v&&v.trim());const nq=hasRoster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:q;return{sell:d.sell_override||npP(nq||1,d.two_color,true),cost:npP(nq||1,d.two_color,false)}};
+  if(d.kind==='numbers'||d.type==='number_press'){const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:0;const useQty=nq>0?nq:q;return{sell:d.sell_override||npP(useQty||1,d.two_color,true),cost:npP(useQty||1,d.two_color,false)}};
   if(d.kind==='names'){const nc=d.names?Object.values(d.names).flat().filter(v=>v&&v.trim()).length:0;const se=safeNum(d.sell_override||d.sell_each||6);const co=safeNum(d.cost_each||3);return{sell:nc>0?rQ(nc*se/q):se,cost:nc>0?rQ(nc*co/q):co}};
   if(d.type==='dtf'){const t=DTF[d.dtf_size||0];return{sell:d.sell_override||t.sell,cost:t.cost}}
   // Outside decoration — user-entered cost/sell
@@ -828,9 +828,10 @@ const D_V=[
 {id:'v2',name:'Under Armour',vendor_type:'upload',nsa_carries_inventory:true,click_automation:true,is_active:true,contact_email:'teamdealer@underarmour.com',rep_name:'Mike Daniels',payment_terms:'net60',_oi:2,_it:8200,_ac:5200,_a3:3000,_a6:0,_a9:0},
 {id:'v3',name:'SanMar',vendor_type:'api',api_provider:'sanmar',nsa_carries_inventory:false,is_active:true,contact_email:'orders@sanmar.com',payment_terms:'net30',_oi:1,_it:2100,_ac:2100,_a3:0,_a6:0,_a9:0},
 {id:'v4',name:'S&S Activewear',vendor_type:'api',api_provider:'ss_activewear',nsa_carries_inventory:false,is_active:true,contact_email:'service@ssactivewear.com',payment_terms:'net30',_oi:0,_it:0,_ac:0,_a3:0,_a6:0,_a9:0},
-{id:'v5',name:'Richardson',vendor_type:'upload',nsa_carries_inventory:false,is_active:true,payment_terms:'net30',_oi:0,_it:0,_ac:0,_a3:0,_a6:0,_a9:0},
+{id:'v5',name:'Richardson',vendor_type:'api',api_provider:'richardson',nsa_carries_inventory:false,is_active:true,contact_email:'orders@richardsonsports.com',payment_terms:'net30',_oi:0,_it:0,_ac:0,_a3:0,_a6:0,_a9:0},
 {id:'v6',name:'Rawlings',vendor_type:'upload',nsa_carries_inventory:false,is_active:true,payment_terms:'net30',_oi:0,_it:0,_ac:0,_a3:0,_a6:0,_a9:0},
 {id:'v7',name:'Badger',vendor_type:'upload',nsa_carries_inventory:false,is_active:true,payment_terms:'net30',_oi:0,_it:0,_ac:0,_a3:0,_a6:0,_a9:0},
+{id:'v8',name:'Momentec',vendor_type:'api',api_provider:'momentec',nsa_carries_inventory:false,is_active:true,contact_email:'orders@momentecbrands.com',payment_terms:'net30',_oi:0,_it:0,_ac:0,_a3:0,_a6:0,_a9:0},
 ];
 const D_P=[
 {id:'p1',vendor_id:'v1',sku:'JX4453',name:'Adidas Unisex Pregame Tee',brand:'Adidas',color:'Team Power Red/White',category:'Tees',retail_price:55.5,nsa_cost:18.5,available_sizes:['XS','S','M','L','XL','2XL'],is_active:true,_inv:{XS:0,S:7,M:0,L:0,XL:0,'2XL':0},_alerts:{S:15,M:15,L:10,XL:8,'2XL':5,'3XL':1}},
@@ -1271,6 +1272,153 @@ const convertOMGStore = (omgResponse, nsaCustomers) => {
   };
 };
 
+// ─── SanMar API Integration (via Netlify proxy — SOAP/XML) ───
+// Requires SANMAR_USERNAME + SANMAR_PASSWORD in Netlify env vars
+// Contact sanmarintegrations@sanmar.com for access
+const sanmarApiCall = async (service, action, params = {}) => {
+  try {
+    const qs = `service=${encodeURIComponent(service)}&action=${encodeURIComponent(action)}`;
+    const proxyUrl = `/.netlify/functions/sanmar-proxy?${qs}`;
+    const response = await fetch(proxyUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+    });
+    if (!response.ok) {
+      const errText = await response.text().catch(() => '');
+      let msg; try { msg = JSON.parse(errText)?.error; } catch {}
+      throw new Error(msg || `SanMar API error: ${response.status}`);
+    }
+    const xml = await response.text();
+    console.log('[SanMar] API response:', action, xml.slice(0, 500));
+    return xml;
+  } catch (error) { console.error('[SanMar] API call failed:', action, error); throw error; }
+};
+
+const sanmarGetProduct = async (style, color, size) => {
+  const params = { style };
+  if (color) params.color = color;
+  if (size) params.size = size;
+  return await sanmarApiCall('product', 'getProductInfoByStyleColorSize', params);
+};
+
+const sanmarGetProductByBrand = async (brand) =>
+  await sanmarApiCall('product', 'getProductInfoByBrand', { brand });
+
+const sanmarGetInventory = async (style, color, size) =>
+  await sanmarApiCall('inventory', 'getInventoryQtyForStyleColorSize', { style, color: color || '', size: size || '' });
+
+const sanmarGetPricing = async (style, color, size) =>
+  await sanmarApiCall('pricing', 'getSignInPricing', { style, color: color || '', size: size || '' });
+
+const testSanMarConnection = async () => {
+  try { await sanmarGetProduct('PC61'); console.log('[SanMar] Connection test successful'); return true; }
+  catch (error) { console.error('[SanMar] Connection test failed:', error); return false; }
+};
+
+// ─── S&S Activewear API Integration (via Netlify proxy — REST/JSON) ───
+// Requires SS_ACCOUNT_NUMBER + SS_API_KEY in Netlify env vars
+// Docs: https://api.ssactivewear.com/V2/Default.aspx
+const ssApiCall = async (endpoint, options = {}) => {
+  try {
+    const method = options.method || 'GET';
+    const proxyUrl = `/.netlify/functions/ss-proxy?path=${encodeURIComponent(endpoint)}`;
+    const response = await fetch(proxyUrl, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      ...(options.body ? { body: options.body } : {})
+    });
+    if (!response.ok) {
+      const errText = await response.text().catch(() => '');
+      let msg; try { msg = JSON.parse(errText)?.error; } catch {}
+      throw new Error(msg || `S&S API error: ${response.status}`);
+    }
+    const data = await response.json();
+    console.log('[S&S] API response:', endpoint, Array.isArray(data) ? `${data.length} items` : data);
+    return data;
+  } catch (error) { console.error('[S&S] API call failed:', endpoint, error); throw error; }
+};
+
+const ssGetProducts = async (filter) => {
+  let endpoint = '/Products';
+  if (filter?.sku) endpoint = `/Products/${encodeURIComponent(filter.sku)}`;
+  else if (filter?.style) endpoint = `/Products?style=${encodeURIComponent(filter.style)}`;
+  else if (filter?.brand) endpoint = `/Products?style=${encodeURIComponent(filter.brand)}`;
+  return await ssApiCall(endpoint);
+};
+
+const ssGetInventory = async () => await ssApiCall('/Inventory');
+const ssGetStyles = async () => await ssApiCall('/Styles');
+const ssGetBrands = async () => await ssApiCall('/Brands');
+const ssGetCategories = async () => await ssApiCall('/Categories');
+
+const testSSConnection = async () => {
+  try { await ssGetBrands(); console.log('[S&S] Connection test successful'); return true; }
+  catch (error) { console.error('[S&S] Connection test failed:', error); return false; }
+};
+
+// ─── Richardson API Integration (via Netlify proxy) ───
+// Requires RICHARDSON_API_KEY + RICHARDSON_API_BASE_URL in Netlify env vars
+// May also be accessible through S&S Activewear API (Richardson products carried by S&S)
+const richardsonApiCall = async (endpoint, options = {}) => {
+  try {
+    const method = options.method || 'GET';
+    const proxyUrl = `/.netlify/functions/richardson-proxy?path=${encodeURIComponent(endpoint)}`;
+    const response = await fetch(proxyUrl, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      ...(options.body ? { body: options.body } : {})
+    });
+    if (!response.ok) {
+      const errText = await response.text().catch(() => '');
+      let msg; try { msg = JSON.parse(errText)?.error; } catch {}
+      throw new Error(msg || `Richardson API error: ${response.status}`);
+    }
+    const data = await response.json();
+    console.log('[Richardson] API response:', endpoint, data);
+    return data;
+  } catch (error) { console.error('[Richardson] API call failed:', endpoint, error); throw error; }
+};
+
+const richardsonGetProducts = async () => await richardsonApiCall('/products');
+const richardsonGetInventory = async () => await richardsonApiCall('/inventory');
+
+const testRichardsonConnection = async () => {
+  try { await richardsonApiCall('/products?limit=1'); console.log('[Richardson] Connection test successful'); return true; }
+  catch (error) { console.error('[Richardson] Connection test failed:', error); return false; }
+};
+
+// ─── Momentec Brands API Integration (via Netlify proxy) ───
+// Requires MOMENTEC_API_KEY + MOMENTEC_API_BASE_URL in Netlify env vars
+// Docs may require dealer login: https://www.momentecbrands.com/api
+const momentecApiCall = async (endpoint, options = {}) => {
+  try {
+    const method = options.method || 'GET';
+    const proxyUrl = `/.netlify/functions/momentec-proxy?path=${encodeURIComponent(endpoint)}`;
+    const response = await fetch(proxyUrl, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      ...(options.body ? { body: options.body } : {})
+    });
+    if (!response.ok) {
+      const errText = await response.text().catch(() => '');
+      let msg; try { msg = JSON.parse(errText)?.error; } catch {}
+      throw new Error(msg || `Momentec API error: ${response.status}`);
+    }
+    const data = await response.json();
+    console.log('[Momentec] API response:', endpoint, data);
+    return data;
+  } catch (error) { console.error('[Momentec] API call failed:', endpoint, error); throw error; }
+};
+
+const momentecGetProducts = async () => await momentecApiCall('/products');
+const momentecGetInventory = async () => await momentecApiCall('/inventory');
+
+const testMomentecConnection = async () => {
+  try { await momentecApiCall('/products?limit=1'); console.log('[Momentec] Connection test successful'); return true; }
+  catch (error) { console.error('[Momentec] Connection test failed:', error); return false; }
+};
+
 // SHARED UI
 function Toast({msg,type='success'}){if(!msg)return null;return<div className={`toast toast-${type}`}>{msg}</div>}
 function SortHeader({label,field,sortField,sortDir,onSort}){const a=sortField===field;return<th onClick={()=>onSort(field)} style={{cursor:'pointer',userSelect:'none'}}><span style={{display:'inline-flex',alignItems:'center',gap:4}}>{label}<span style={{opacity:a?1:0.3}}>{a&&sortDir==='asc'?<Icon name="sortUp" size={12}/>:<Icon name="sort" size={12}/>}</span></span></th>}
@@ -1458,7 +1606,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
   const isAU=b=>b==='Adidas'||b==='Under Armour'||b==='New Balance';const tD={A:0.4,B:0.35,C:0.3};
   const selC=id=>{const c=allCustomers.find(x=>x.id===id);if(c){setCust(c);sv('customer_id',id);sv('default_markup',c.catalog_markup||1.65)}};
   const addP=p=>{const au=isAU(p.brand);const sell=au?rQ(p.retail_price*(1-(tD[cust?.adidas_ua_tier||'B']||0.35))):rQ(p.nsa_cost*(o.default_markup||1.65));
-    sv('items',[...o.items,{product_id:p.id,sku:p.sku,name:p.name,brand:p.brand,color:p.color,nsa_cost:p.nsa_cost,retail_price:p.retail_price,unit_sell:sell,available_sizes:[...p.available_sizes],_colors:p._colors||null,sizes:{},decorations:isE?[{kind:'art',art_file_id:'__tbd',art_tbd_type:'screen_print',position:'',sell_override:0}]:[]}]);setShowAdd(false);setPS('')};
+    sv('items',[...o.items,{product_id:p.id,sku:p.sku,name:p.name,brand:p.brand,vendor_id:p.vendor_id||null,color:p.color,nsa_cost:p.nsa_cost,retail_price:p.retail_price,unit_sell:sell,available_sizes:[...p.available_sizes],_colors:p._colors||null,sizes:{},decorations:isE?[{kind:'art',art_file_id:'__tbd',art_tbd_type:'screen_print',position:'',sell_override:0}]:[]}]);setShowAdd(false);setPS('')};
   const uI=(i,k,v)=>sv('items',safeItems(o).map((it,x)=>x===i?{...it,[k]:v}:it));const rmI=i=>sv('items',safeItems(o).filter((_,x)=>x!==i));
   const copyI=(i)=>{const it=o.items[i];const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];clone.sizes={};sv('items',[...o.items,clone]);nf('📋 Copied '+it.sku+' — adjust sizes on the new item')};
   const uSz=(i,sz,v)=>{
@@ -1944,7 +2092,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                 <div style={{width:36,height:36,borderRadius:6,background:'#f0fdf4',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0}}>#️⃣</div>
                 <span style={{fontWeight:700,fontSize:13}}>Numbers</span>
                 <select className="form-select" style={{width:120,fontSize:12}} value={deco.position} onChange={e=>uD(idx,di,'position',e.target.value)}>{POSITIONS.map(p=><option key={p}>{p}</option>)}</select>
-                <span style={{fontSize:11,color:'#64748b'}}>{showRoster?filledNums+'/'+qty+' assigned':qty+' pcs'}</span>
+                <span style={{fontSize:11,color:filledNums>0?'#166534':'#64748b',fontWeight:filledNums>0?600:400}}>{filledNums}/{qty} assigned</span>
                 <div style={{marginLeft:'auto',display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
                   <span style={{fontSize:11}}>Cost: <strong style={{color:'#dc2626'}}>${dp.cost.toFixed(2)}</strong></span>
                   <span style={{fontSize:11}}>Sell: <$In value={deco.sell_override||dp.sell} onChange={v=>uD(idx,di,'sell_override',v)} w={50}/></span>
@@ -1970,7 +2118,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                   :<><span style={{fontSize:11,color:'#7c3aed'}}>Custom font art</span><button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>uD(idx,di,'custom_font_art_id',null)}>× Clear</button></>}</>}
               </div>
               {/* Toggle number assignment */}
-              {!showRoster?<button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>uD(idx,di,'_showRoster',true)}>📋 Assign Numbers ({qty} pcs)</button>
+              {!showRoster?<button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>uD(idx,di,'_showRoster',true)}>📋 Assign Numbers ({filledNums>0?filledNums+'/':''}{qty} pcs)</button>
               :<div style={{marginTop:6,padding:10,background:'#f8fafc',borderRadius:6,border:'1px dashed #d1d5db'}}
                 onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#3b82f6';e.currentTarget.style.background='#eff6ff'}}
                 onDragLeave={e=>{e.currentTarget.style.borderColor='#d1d5db';e.currentTarget.style.background='#f8fafc'}}
@@ -2727,8 +2875,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
 
     {showPO&&(()=>{
       // Vendor selection or PO form
-      const vendorMap={};safeItems(o).forEach((it,i)=>{const vk=it.vendor_id||D_V.find(v=>v.name===it.brand)?.id;if(!vk)return;if(!vendorMap[vk])vendorMap[vk]=[];vendorMap[vk].push({...it,_idx:i})});
-      const unlinkedItems=safeItems(o).filter(it=>{const vk=it.vendor_id||D_V.find(v=>v.name===it.brand)?.id;return!vk&&Object.values(safeSizes(it)).some(v=>safeNum(v)>0)});
+      const resolveVendor=it=>it.vendor_id||D_V.find(v=>v.name===it.brand)?.id||(it.product_id&&products.find(p=>p.id===it.product_id)?.vendor_id)||null;
+      const vendorMap={};safeItems(o).forEach((it,i)=>{const vk=resolveVendor(it);if(!vk)return;if(!vendorMap[vk])vendorMap[vk]=[];vendorMap[vk].push({...it,_idx:i})});
+      const unlinkedItems=safeItems(o).filter(it=>{const vk=resolveVendor(it);return!vk&&Object.values(safeSizes(it)).some(v=>safeNum(v)>0)});
       if(showPO==='select')return<div className="modal-overlay" onClick={()=>setShowPO(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:500}}>
         <div className="modal-header"><h2>Create PO — Select Vendor</h2><button className="modal-close" onClick={()=>setShowPO(null)}>x</button></div>
         <div className="modal-body">{Object.entries(vendorMap).map(([vk,items])=>{const vn=D_V.find(v=>v.id===vk)?.name||vk;
@@ -2762,7 +2911,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         const decoVendor=showPO.replace('deco:','');
         const allItems=safeItems(o).map((it,i)=>({...it,_idx:i})).filter(it=>{
           const q=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return q>0});
-        const poId='DPO-'+poCounter;
+        const poId='DPO-'+poCounter+(cust?.alpha_tag?'-'+cust.alpha_tag:'');
         return<div className="modal-overlay" onClick={()=>setShowPO(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:800,maxHeight:'90vh',overflow:'auto'}}>
           <div className="modal-header"><h2 style={{color:'#7c3aed'}}>🎨 Deco PO — {decoVendor}</h2><button className="modal-close" onClick={()=>setShowPO(null)}>x</button></div>
           <div className="modal-body">
@@ -2825,7 +2974,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       }
       // PO form for selected vendor — only show sizes that still need ordering (subtract picks + existing POs)
       const vItems=vendorMap[showPO]||[];const vn=D_V.find(v=>v.id===showPO)?.name||showPO;
-      const poId='PO-'+poCounter;
+      const poId='PO-'+poCounter+(cust?.alpha_tag?'-'+cust.alpha_tag:'');
       const batchKey=Object.keys(BATCH_VENDORS).find(k=>vn.toLowerCase().includes(k)||showPO.toLowerCase().includes(k));
       const isBatchEligible=!!batchKey;
       const batchConfig=batchKey?BATCH_VENDORS[batchKey]:null;
