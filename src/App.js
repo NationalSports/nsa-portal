@@ -2,6 +2,14 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import './portal.css';
 import { createClient } from '@supabase/supabase-js';
+import { loadStripe } from '@stripe/stripe-js';
+import { Elements, PaymentElement, useStripe, useElements } from '@stripe/react-stripe-js';
+
+// ─── Stripe Setup ───
+const _stripePk = process.env.REACT_APP_STRIPE_PK || '';
+let stripePromise = null;
+try { if (_stripePk) stripePromise = loadStripe(_stripePk); }
+catch(e) { console.warn('[Stripe] Init failed:', e.message); }
 
 // ─── Supabase Setup ───
 const _sbUrl = process.env.REACT_APP_SUPABASE_URL || '';
@@ -4024,6 +4032,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         <button className="btn btn-sm" style={{background:'#dc2626',color:'white',fontSize:11}} onClick={()=>{setInvEmailMsg('Hi '+(customer.contacts||[])[0]?.name+',\n\nPlease find attached your open invoice(s). Let us know if you have any questions.\n\nThank you,\nNSA Team');setShowInvEmail(true)}}>📄 Email Invoices ({customer._oi})</button>
       </>}
       <button className="btn btn-sm" style={{background:'#7c3aed',color:'white',fontSize:11}} onClick={()=>setShowPortal(true)}>🔗 Portal</button>
+      {customer.alpha_tag&&<button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{const url=window.location.origin+'/?portal='+customer.alpha_tag;navigator.clipboard.writeText(url).then(()=>alert('Copied portal link:\n'+url)).catch(()=>{window.prompt('Copy this portal link:',url)})}}>📋 Copy Portal Link</button>}
     </div>
   </div>
   {(customer._ob||0)>0&&<div style={{textAlign:'right'}}><div style={{fontSize:11,color:'#dc2626',fontWeight:600}}>BALANCE</div><div style={{fontSize:24,fontWeight:800,color:'#dc2626'}}>${customer._ob.toLocaleString()}</div></div>}</div></div>
@@ -4567,6 +4576,420 @@ function AdjModal({isOpen,onClose,product,onSave}){const[a,setA]=useState({});co
           <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>= <strong style={{color:delta!==0?'#1e40af':'#94a3b8'}}>{newVal}</strong></div>
         </div>})}</div>
     </div><div className="modal-footer"><button className="btn btn-secondary" onClick={onClose}>Cancel</button><button className="btn btn-primary" onClick={()=>{onSave(product.id,a);onClose()}}>Save</button></div></div></div>);
+}
+
+// ─── STRIPE CHECKOUT ───
+const CC_FEE_PORTAL=0.029;// 2.9% CC surcharge — matches admin CC_FEE_PCT
+
+function StripeCheckoutForm({amount,onSuccess,onCancel}){
+  const stripe=useStripe();const elements=useElements();
+  const[processing,setProcessing]=useState(false);
+  const[error,setError]=useState(null);
+  const fee=Math.round(amount*CC_FEE_PORTAL*100)/100;
+  const total=amount+fee;
+
+  const handleSubmit=async(e)=>{
+    e.preventDefault();
+    if(!stripe||!elements){return}
+    setProcessing(true);setError(null);
+    const result=await stripe.confirmPayment({elements,confirmParams:{return_url:window.location.href},redirect:'if_required'});
+    if(result.error){
+      setError(result.error.message);setProcessing(false);
+    }else if(result.paymentIntent&&result.paymentIntent.status==='succeeded'){
+      onSuccess({intentId:result.paymentIntent.id,amount,fee,last4:null,brand:null});
+    }else{
+      setError('Payment was not completed. Please try again.');setProcessing(false);
+    }
+  };
+
+  return<form onSubmit={handleSubmit}>
+    <div style={{marginBottom:16}}>
+      <PaymentElement options={{layout:'tabs',wallets:{applePay:'auto',googlePay:'auto'}}}/>
+    </div>
+    {error&&<div style={{padding:'10px 14px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:8,color:'#dc2626',fontSize:12,marginBottom:12}}>{error}</div>}
+    <div style={{padding:12,background:'#f8fafc',borderRadius:8,marginBottom:16,fontSize:12}}>
+      <div style={{display:'flex',justifyContent:'space-between'}}><span>Subtotal:</span><span>${amount.toLocaleString(undefined,{minimumFractionDigits:2})}</span></div>
+      <div style={{display:'flex',justifyContent:'space-between',color:'#d97706'}}><span>Processing Fee (2.9%):</span><span>+${fee.toFixed(2)}</span></div>
+      <div style={{display:'flex',justifyContent:'space-between',fontWeight:800,borderTop:'2px solid #e2e8f0',paddingTop:6,marginTop:6,fontSize:14}}><span>Total:</span><span>${total.toFixed(2)}</span></div>
+    </div>
+    <div style={{display:'flex',gap:8}}>
+      <button type="submit" disabled={!stripe||processing} style={{flex:1,padding:'14px 20px',background:processing?'#94a3b8':'#22c55e',color:'white',border:'none',borderRadius:10,fontSize:16,fontWeight:800,cursor:processing?'default':'pointer'}}>
+        {processing?'Processing...':'💳 Pay $'+total.toFixed(2)}
+      </button>
+      <button type="button" onClick={onCancel} style={{padding:'14px 16px',background:'#f1f5f9',color:'#64748b',border:'1px solid #e2e8f0',borderRadius:10,fontSize:14,cursor:'pointer'}}>Cancel</button>
+    </div>
+  </form>
+}
+
+function StripePaymentModal({invoices,customerName,customerEmail,alphaTag,onSuccess,onClose}){
+  const[clientSecret,setClientSecret]=useState(null);
+  const[loading,setLoading]=useState(true);
+  const[error,setError]=useState(null);
+  const totalDue=invoices.reduce((a,inv)=>a+(inv.total||0)-(inv.paid||0),0);
+  const fee=Math.round(totalDue*CC_FEE_PORTAL*100)/100;
+  const totalCharge=totalDue+fee;
+  const invoiceIds=invoices.map(i=>i.id).join(', ');
+
+  useEffect(()=>{
+    if(!stripePromise){setError('Stripe is not configured. Please contact NSA to set up payments.');setLoading(false);return}
+    (async()=>{
+      try{
+        const res=await fetch('/.netlify/functions/stripe-payment',{
+          method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({
+            action:'create_intent',
+            amount_cents:Math.round(totalCharge*100),
+            customer_name:customerName,
+            customer_email:customerEmail,
+            invoice_id:invoiceIds,
+            invoice_memo:invoices[0]?.memo||'',
+            alpha_tag:alphaTag,
+          })
+        });
+        const data=await res.json();
+        if(!res.ok)throw new Error(data.error||'Failed to create payment');
+        setClientSecret(data.clientSecret);
+      }catch(e){setError(e.message)}
+      finally{setLoading(false)}
+    })();
+  },[]);
+
+  return<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:9999,padding:16}}>
+    <div style={{width:'100%',maxWidth:480,background:'white',borderRadius:16,boxShadow:'0 8px 32px rgba(0,0,0,0.2)',overflow:'hidden'}} onClick={e=>e.stopPropagation()}>
+      <div style={{background:'linear-gradient(135deg,#059669,#22c55e)',color:'white',padding:'20px 24px'}}>
+        <div style={{fontSize:11,opacity:0.8,letterSpacing:1}}>NATIONAL SPORTS APPAREL</div>
+        <div style={{fontSize:20,fontWeight:800,marginTop:4}}>Secure Payment</div>
+        <div style={{fontSize:13,opacity:0.8,marginTop:2}}>{customerName} · {invoiceIds}</div>
+      </div>
+      <div style={{padding:'20px 24px'}}>
+        {loading&&<div style={{textAlign:'center',padding:40}}><div style={{fontSize:14,color:'#64748b'}}>Setting up secure checkout...</div></div>}
+        {error&&<div style={{padding:20,textAlign:'center'}}>
+          <div style={{fontSize:32,marginBottom:8}}>⚠️</div>
+          <div style={{fontSize:14,color:'#dc2626',fontWeight:600,marginBottom:4}}>{error}</div>
+          <div style={{fontSize:12,color:'#64748b',marginBottom:16}}>Please try again or contact NSA for assistance.</div>
+          <button className="btn btn-secondary" onClick={onClose}>Close</button>
+        </div>}
+        {clientSecret&&stripePromise&&<Elements stripe={stripePromise} options={{clientSecret,appearance:{theme:'stripe',variables:{colorPrimary:'#22c55e',borderRadius:'8px'}}}}>
+          <StripeCheckoutForm amount={totalDue} onCancel={onClose} onSuccess={(result)=>onSuccess({...result,invoices})}/>
+        </Elements>}
+      </div>
+    </div>
+  </div>
+}
+
+// ─── STANDALONE COACH PORTAL ───
+function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onUpdateInvs}){
+  const[jobView,setJobView]=useState(null);
+  const[invView,setInvView]=useState(null);
+  const[comment,setComment]=useState('');
+  const[contactEdit,setContactEdit]=useState(null);
+  const[contactMsg,setContactMsg]=useState('');
+  const[showPay,setShowPay]=useState(null);// null | 'all' | inv object
+  const[paySuccess,setPaySuccess]=useState(null);// {amount,fee,invoices}
+  const[invs,setInvs]=useState(initInvs);
+  useEffect(()=>setInvs(initInvs),[initInvs]);
+  const isP=!customer.parent_id;
+  const subs=isP?allCustomers.filter(c=>c.parent_id===customer.id):[];
+  const ids=isP?[customer.id,...subs.map(s=>s.id)]:[customer.id];
+  const custSOs=sos.filter(s=>ids.includes(s.customer_id));
+  const custEsts=ests.filter(e=>ids.includes(e.customer_id));
+  const activeSOs=custSOs.filter(s=>calcSOStatus(s)!=='complete');
+  const completedSOs=custSOs.filter(s=>calcSOStatus(s)==='complete');
+  const openInvs=invs.filter(inv=>ids.includes(inv.customer_id)&&inv.status==='open');
+  const totalDue=openInvs.reduce((a,inv)=>a+(inv.total||0)-(inv.paid||0),0);
+  const rep=REPS.find(r=>r.id===customer.primary_rep_id);
+  const allPortalJobs=[];activeSOs.forEach(so=>{safeJobs(so).forEach(j=>{allPortalJobs.push({...j,so,soMemo:so.memo})})});
+  const artLabelsP={needs_art:'Art Needed',art_requested:'Art Requested',art_in_progress:'Art In Progress',waiting_approval:'Awaiting Your Approval',production_files_needed:'Finalizing Files',art_complete:'Approved'};
+  const prodLabelsP={hold:'Ready for Production',staging:'In Line',in_process:'In Production',completed:'Done',shipped:'Shipped'};
+  const contactEmail=(customer.contacts||[])[0]?.email||'';
+
+  const handlePaymentSuccess=(result)=>{
+    // Update invoices locally and in parent (persists to Supabase/localStorage/QB)
+    const paidInvIds=result.invoices.map(i=>i.id);
+    const updater=prev=>prev.map(inv=>{
+      if(!paidInvIds.includes(inv.id))return inv;
+      const bal=(inv.total||0)-(inv.paid||0);
+      const newPaid=(inv.paid||0)+bal;
+      const fee=Math.round(bal*CC_FEE_PORTAL*100)/100;
+      const payment={amount:bal,method:'cc',ref:'Stripe '+result.intentId,date:new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'2-digit'}),cc_fee:fee};
+      return{...inv,paid:newPaid,status:newPaid>=inv.total?'paid':'partial',cc_fee:(inv.cc_fee||0)+fee,payments:[...(inv.payments||[]),payment],updated_at:new Date().toLocaleString()};
+    });
+    setInvs(updater);
+    if(onUpdateInvs)onUpdateInvs(updater);// persist to parent → Supabase + localStorage + QB sync
+    setPaySuccess({amount:result.amount,fee:result.fee,invoices:result.invoices});
+    setShowPay(null);setInvView(null);
+  };
+
+  // Job detail view
+  if(jobView){
+    const j=jobView.job;const so=jobView.so;
+    const items=(j.items||[]).map(gi=>{const it=safeItems(so)[gi.item_idx];return{...gi,brand:it?.brand||'',fullName:safeStr(it?.name)||gi.name}});
+    return<div style={{minHeight:'100vh',background:'#f1f5f9',display:'flex',justifyContent:'center',padding:'40px 16px'}}>
+      <div style={{width:'100%',maxWidth:640,background:'white',borderRadius:16,boxShadow:'0 4px 24px rgba(0,0,0,0.08)',overflow:'hidden'}}>
+        <div style={{background:'linear-gradient(135deg,#1e3a5f,#2563eb)',color:'white',padding:'20px 24px',position:'relative'}}>
+          <button style={{position:'absolute',top:8,left:12,background:'rgba(255,255,255,0.15)',border:'none',color:'white',borderRadius:6,padding:'4px 10px',fontSize:12,cursor:'pointer'}} onClick={()=>setJobView(null)}>← Back</button>
+          <div style={{textAlign:'center',paddingTop:16}}>
+            <div style={{fontSize:10,opacity:0.6}}>ARTWORK PROOF</div>
+            <div style={{fontSize:18,fontWeight:800}}>{j.art_name}</div>
+            <div style={{fontSize:12,opacity:0.7}}>{so.memo} · {j.deco_type?.replace(/_/g,' ')} · {j.positions}</div>
+          </div>
+        </div>
+        <div style={{padding:'20px 24px'}}>
+          <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:8}}>Mockups per Garment</div>
+          {items.map((gi,i)=><div key={i} style={{border:'1px solid #e2e8f0',borderRadius:10,padding:14,marginBottom:10,display:'flex',gap:14,alignItems:'center'}}>
+            <div style={{width:80,height:80,background:'#f8fafc',border:'2px dashed #d1d5db',borderRadius:8,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',flexShrink:0}}>
+              <div style={{fontSize:24}}>👕</div>
+              <div style={{fontSize:8,color:'#94a3b8',textAlign:'center'}}>{j.deco_type?.replace(/_/g,' ')}</div>
+            </div>
+            <div style={{flex:1}}>
+              <div style={{fontWeight:700,fontSize:13}}>{gi.fullName}</div>
+              <div style={{fontSize:11,color:'#64748b'}}>{gi.sku} · {gi.color||'—'} {gi.brand&&'· '+gi.brand}</div>
+              <div style={{fontSize:11,color:'#64748b',marginTop:2}}>📍 {j.positions} · {gi.units} units</div>
+              <div style={{fontSize:10,color:'#94a3b8',marginTop:4,fontStyle:'italic'}}>Mockup preview when art files are uploaded</div>
+            </div>
+          </div>)}
+          {j.art_status==='waiting_approval'&&<div style={{border:'2px solid #f59e0b',background:'#fffbeb',borderRadius:10,padding:16,marginBottom:16}}>
+            <div style={{fontWeight:700,color:'#92400e',marginBottom:8}}>⏳ This artwork needs your approval</div>
+            <div style={{display:'flex',gap:8}}>
+              <button className="btn btn-sm" style={{background:'#22c55e',color:'white',flex:1,justifyContent:'center'}} onClick={()=>setJobView(null)}>✅ Approve</button>
+              <button className="btn btn-sm" style={{background:'#dc2626',color:'white',flex:1,justifyContent:'center'}} onClick={()=>{if(comment.trim()){alert('❌ Rejected with feedback. (demo)');setComment('');setJobView(null)}else{alert('Please add a comment.')}}}>❌ Request Changes</button>
+            </div>
+          </div>}
+          {j.art_status==='art_complete'&&<div style={{background:'#f0fdf4',borderRadius:8,padding:10,marginBottom:16,fontSize:12,color:'#166534',fontWeight:600}}>✅ You approved this artwork</div>}
+          {j.prod_status!=='hold'&&<div style={{padding:10,background:'#f8fafc',borderRadius:8,marginBottom:16}}>
+            <div style={{fontSize:10,color:'#64748b',fontWeight:600}}>PRODUCTION STATUS</div>
+            <div style={{fontSize:14,fontWeight:700,color:'#1e40af',marginTop:2}}>{prodLabelsP[j.prod_status]||j.prod_status}</div>
+          </div>}
+          <div>
+            <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:6}}>💬 Comments</div>
+            <div style={{border:'1px solid #e2e8f0',borderRadius:8,padding:8,marginBottom:8,minHeight:40}}>
+              <div style={{fontSize:11,color:'#94a3b8',fontStyle:'italic'}}>No comments yet</div>
+            </div>
+            <div style={{display:'flex',gap:6}}>
+              <input className="form-input" placeholder="Add a comment..." value={comment} onChange={e=>setComment(e.target.value)} style={{flex:1,fontSize:12}}/>
+              <button className="btn btn-sm btn-primary" onClick={()=>{if(comment.trim()){alert('Comment sent! (demo)');setComment('')}}}>Send</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  }
+
+  // Invoice detail view
+  if(invView){
+    const inv=invView;const bal=(inv.total||0)-(inv.paid||0);
+    return<div style={{minHeight:'100vh',background:'#f1f5f9',display:'flex',justifyContent:'center',padding:'40px 16px'}}>
+      <div style={{width:'100%',maxWidth:550,background:'white',borderRadius:16,boxShadow:'0 4px 24px rgba(0,0,0,0.08)',overflow:'hidden'}}>
+        <div style={{background:'linear-gradient(135deg,#991b1b,#dc2626)',color:'white',padding:'20px 24px',position:'relative'}}>
+          <button style={{position:'absolute',top:8,left:12,background:'rgba(255,255,255,0.15)',border:'none',color:'white',borderRadius:6,padding:'4px 10px',fontSize:12,cursor:'pointer'}} onClick={()=>setInvView(null)}>← Back</button>
+          <div style={{textAlign:'center',paddingTop:16}}>
+            <div style={{fontSize:10,opacity:0.6}}>INVOICE</div>
+            <div style={{fontSize:20,fontWeight:800}}>{inv.id}</div>
+            <div style={{fontSize:13,opacity:0.8}}>{inv.memo||'—'}</div>
+          </div>
+        </div>
+        <div style={{padding:'20px 24px'}}>
+          <div style={{textAlign:'center',padding:20,marginBottom:16}}>
+            <div style={{fontSize:12,color:'#64748b'}}>Amount Due</div>
+            <div style={{fontSize:36,fontWeight:800,color:'#dc2626'}}>${bal.toLocaleString()}</div>
+            {inv.paid>0&&<div style={{fontSize:12,color:'#64748b'}}>Paid: ${inv.paid.toLocaleString()} of ${inv.total.toLocaleString()}</div>}
+          </div>
+          {inv.items?.length>0&&<div style={{marginBottom:16}}>
+            <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:6}}>Items</div>
+            {inv.items.map((li,i)=><div key={i} style={{display:'flex',justifyContent:'space-between',padding:'8px 0',borderBottom:'1px solid #f1f5f9'}}>
+              <div><div style={{fontWeight:600,fontSize:13}}>{li.name||li.sku}</div><div style={{fontSize:11,color:'#64748b'}}>{li.qty} × ${safeNum(li.unit_sell).toFixed(2)}</div></div>
+              <div style={{fontWeight:700,fontSize:13}}>${(li.qty*safeNum(li.unit_sell)).toFixed(2)}</div>
+            </div>)}
+          </div>}
+          <div style={{display:'flex',justifyContent:'space-between',padding:'12px 0',borderTop:'2px solid #e2e8f0'}}>
+            <span style={{fontWeight:800}}>Total</span><span style={{fontWeight:800,fontSize:18,color:'#dc2626'}}>${inv.total?.toLocaleString()}</span>
+          </div>
+          {bal>0&&<button style={{width:'100%',marginTop:16,padding:'14px 20px',background:'#22c55e',color:'white',border:'none',borderRadius:10,fontSize:16,fontWeight:800,cursor:'pointer'}} onClick={()=>setShowPay(inv)}>
+            💳 Pay ${bal.toLocaleString()}
+          </button>}
+          {bal<=0&&<div style={{textAlign:'center',padding:12,background:'#f0fdf4',borderRadius:8,color:'#166534',fontWeight:700}}>✅ Paid in Full</div>}
+        </div>
+      </div>
+    </div>
+  }
+
+  // Main portal view
+  return<div style={{minHeight:'100vh',background:'#f1f5f9',display:'flex',justifyContent:'center',padding:'40px 16px'}}>
+    <div style={{width:'100%',maxWidth:700,background:'white',borderRadius:16,boxShadow:'0 4px 24px rgba(0,0,0,0.08)',overflow:'hidden'}}>
+      <div style={{background:'linear-gradient(135deg,#1e3a5f,#2563eb)',color:'white',padding:'24px 28px',position:'relative'}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+          <div>
+            <div style={{fontSize:11,opacity:0.7,letterSpacing:1,marginBottom:4}}>NATIONAL SPORTS APPAREL</div>
+            <div style={{fontSize:22,fontWeight:800}}>{customer.name}</div>
+            <div style={{fontSize:13,opacity:0.8,marginTop:2}}>Customer Portal</div>
+          </div>
+          <div style={{textAlign:'right'}}>
+            {totalDue>0&&<><div style={{fontSize:10,opacity:0.7}}>BALANCE DUE</div><div style={{fontSize:24,fontWeight:800}}>${totalDue.toLocaleString()}</div></>}
+          </div>
+        </div>
+      </div>
+      <div style={{padding:'20px 28px'}}>
+
+        {/* Payment success banner */}
+        {paySuccess&&<div style={{padding:16,background:'#f0fdf4',border:'2px solid #22c55e',borderRadius:12,marginBottom:16,textAlign:'center'}}>
+          <div style={{fontSize:32,marginBottom:8}}>✅</div>
+          <div style={{fontSize:18,fontWeight:800,color:'#166534',marginBottom:4}}>Payment Successful!</div>
+          <div style={{fontSize:14,color:'#166534'}}>${paySuccess.amount.toLocaleString(undefined,{minimumFractionDigits:2})} paid{paySuccess.fee>0?' + $'+paySuccess.fee.toFixed(2)+' processing fee':''}</div>
+          <div style={{fontSize:12,color:'#64748b',marginTop:4}}>A receipt has been sent to your email. Your account has been updated.</div>
+        </div>}
+
+        {/* Pay Now button */}
+        {totalDue>0&&<div style={{marginBottom:16}}>
+          <button style={{width:'100%',padding:'14px 20px',background:'#22c55e',color:'white',border:'none',borderRadius:10,fontSize:16,fontWeight:800,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:10}} onClick={()=>setShowPay('all')}>
+            💳 Pay Now — ${totalDue.toLocaleString()}
+          </button>
+          <div style={{display:'flex',justifyContent:'center',gap:12,marginTop:6}}>
+            <span style={{fontSize:10,color:'#94a3b8'}}>💳 Credit Card</span>
+            <span style={{fontSize:10,color:'#94a3b8'}}> Apple Pay</span>
+            <span style={{fontSize:10,color:'#94a3b8'}}>🏦 ACH/Bank</span>
+          </div>
+        </div>}
+
+        {/* Open Estimates */}
+        {(()=>{const pEsts=custEsts.filter(e=>e.status==='sent'||e.status==='draft'||e.status==='open');
+          return pEsts.length>0&&<>
+          <div style={{fontSize:13,fontWeight:800,color:'#d97706',marginBottom:10}}>📋 Estimates ({pEsts.length})</div>
+          {pEsts.map(est=>{const t=(est.items||[]).reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);let r=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const dp2=dP(d,qq,[],qq);r+=qq*dp2.sell});return a+r},0);
+            return<div key={est.id} style={{border:'1px solid #f59e0b',borderRadius:10,padding:14,marginBottom:10,background:'#fffbeb'}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                <div><div style={{fontWeight:700,fontSize:14,color:'#92400e'}}>{est.memo||est.id}</div>
+                  <div style={{fontSize:11,color:'#64748b'}}>{est.id} · {est.created_at?.split(' ')[0]} · {(est.items||[]).length} item{(est.items||[]).length!==1?'s':''}</div></div>
+                <div style={{textAlign:'right'}}><div style={{fontSize:18,fontWeight:800,color:'#92400e'}}>${t.toLocaleString(undefined,{maximumFractionDigits:2})}</div>
+                  <span className={'badge '+(est.status==='sent'?'badge-amber':'badge-gray')}>{est.status}</span></div>
+              </div></div>})}
+          </>})()}
+
+        {/* Active orders */}
+        {activeSOs.length>0&&<>
+          <div style={{fontSize:13,fontWeight:800,color:'#1e3a5f',marginBottom:10}}>📦 Active Orders</div>
+          {activeSOs.map(so=>{
+            let totalU=0,fulU=0;
+            safeItems(so).forEach(it=>{Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{totalU+=v;const pQ=safePicks(it).filter(pk=>pk.status==='pulled'||pk.status==='pick').reduce((a,pk)=>a+safeNum(pk[sz]),0);const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);fulU+=Math.min(v,pQ+rQ)})});
+            const pct=totalU>0?Math.round(fulU/totalU*100):0;
+            const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
+            const soJobs=safeJobs(so);
+            return<div key={so.id} style={{border:'1px solid #e2e8f0',borderRadius:10,padding:16,marginBottom:12}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:8}}>
+                <div>
+                  <div style={{fontWeight:700,fontSize:15,color:'#1e3a5f'}}>{so.memo||so.id}</div>
+                  <div style={{fontSize:11,color:'#64748b'}}>Order {so.id} · {so.created_at?.split(' ')[0]}</div>
+                </div>
+                {so.expected_date&&<div style={{textAlign:'right'}}>
+                  <div style={{fontSize:10,color:'#64748b'}}>EXPECTED</div>
+                  <div style={{fontSize:14,fontWeight:700,color:daysOut!=null&&daysOut<=7?'#dc2626':'#1e3a5f'}}>{so.expected_date}</div>
+                </div>}
+              </div>
+              <div style={{marginBottom:10}}>
+                <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
+                  <span style={{fontSize:11,fontWeight:600,color:'#64748b'}}>Order Progress</span>
+                  <span style={{fontSize:11,fontWeight:700,color:pct>=100?'#166534':'#1e3a5f'}}>{pct}%</span>
+                </div>
+                <div style={{background:'#e2e8f0',borderRadius:6,height:8,overflow:'hidden'}}>
+                  <div style={{height:8,borderRadius:6,background:pct>=100?'#22c55e':pct>50?'#3b82f6':'#f59e0b',width:pct+'%',transition:'width 0.3s'}}/></div>
+              </div>
+              <div style={{fontSize:12,marginBottom:soJobs.length>0?10:0}}>
+                {safeItems(so).map((it,ii)=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
+                  return<div key={ii} style={{display:'flex',justifyContent:'space-between',padding:'4px 0',borderBottom:'1px solid #f8fafc'}}>
+                    <span>{safeStr(it.name)||'Item'} <span style={{color:'#94a3b8'}}>({safeStr(it.color)||'—'})</span></span>
+                    <span style={{fontWeight:600,color:'#64748b'}}>{qty} units</span></div>})}
+              </div>
+              {soJobs.length>0&&<>
+                <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:6}}>🎨 Artwork & Decoration</div>
+                {soJobs.map(j=><div key={j.id} style={{display:'flex',alignItems:'center',gap:10,padding:'8px 10px',border:'1px solid '+(j.art_status==='waiting_approval'?'#f59e0b':'#e2e8f0'),background:j.art_status==='waiting_approval'?'#fffbeb':'#fafbfc',borderRadius:8,marginBottom:6,cursor:'pointer'}} onClick={()=>{setJobView({job:j,so});setComment('')}}>
+                  <div style={{width:36,height:36,borderRadius:6,background:j.art_status==='art_complete'?'#dcfce7':j.art_status==='waiting_approval'?'#fef3c7':'#fee2e2',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0}}>
+                    {j.art_status==='art_complete'?'✅':j.art_status==='waiting_approval'?'⏳':'🎨'}</div>
+                  <div style={{flex:1}}>
+                    <div style={{fontWeight:600,fontSize:12}}>{j.art_name}</div>
+                    <div style={{fontSize:10,color:'#64748b'}}>{j.deco_type?.replace(/_/g,' ')} · {j.positions} · {(j.items||[]).length} garment{(j.items||[]).length!==1?'s':''}</div>
+                  </div>
+                  <div style={{textAlign:'right'}}>
+                    <span style={{padding:'2px 8px',borderRadius:10,fontSize:9,fontWeight:700,background:j.art_status==='art_complete'?'#dcfce7':j.art_status==='waiting_approval'?'#fef3c7':'#fee2e2',color:j.art_status==='art_complete'?'#166534':j.art_status==='waiting_approval'?'#92400e':'#dc2626'}}>{artLabelsP[j.art_status]}</span>
+                    {j.prod_status!=='hold'&&<div style={{fontSize:9,color:'#64748b',marginTop:2}}>{prodLabelsP[j.prod_status]}</div>}
+                  </div>
+                  <span style={{color:'#94a3b8',fontSize:14}}>›</span>
+                </div>)}
+              </>}
+              {safeFirm(so).filter(f=>f.approved).length>0&&<div style={{marginTop:8,padding:'6px 10px',background:'#f0fdf4',borderRadius:6,fontSize:11,color:'#166534'}}>
+                📌 Firm date: {(safeFirm(so).filter(f=>f.approved)[0]||{}).date||"TBD"}</div>}
+            </div>})}
+        </>}
+
+        {/* Completed orders */}
+        {completedSOs.length>0&&<>
+          <div style={{fontSize:13,fontWeight:800,color:'#166534',marginBottom:10,marginTop:16}}>✅ Completed Orders</div>
+          {completedSOs.slice(0,3).map(so=><div key={so.id} style={{padding:'10px 14px',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:8,display:'flex',justifyContent:'space-between'}}>
+            <div><span style={{fontWeight:600}}>{so.memo||so.id}</span><span style={{fontSize:11,color:'#94a3b8',marginLeft:8}}>{so.id}</span></div>
+            <span className="badge badge-green">Complete</span></div>)}
+        </>}
+
+        {/* Open invoices */}
+        {openInvs.length>0&&<>
+          <div style={{fontSize:13,fontWeight:800,color:'#dc2626',marginBottom:10,marginTop:16}}>💰 Open Invoices</div>
+          <div style={{border:'1px solid #fecaca',borderRadius:10,overflow:'hidden'}}>
+            {openInvs.map((inv,i)=>{const bal=(inv.total||0)-(inv.paid||0);const age=inv.date?Math.ceil((new Date()-new Date(inv.date))/(1000*60*60*24)):0;
+              return<div key={inv.id} style={{padding:'12px 16px',borderBottom:i<openInvs.length-1?'1px solid #fef2f2':'none',display:'flex',justifyContent:'space-between',alignItems:'center',cursor:'pointer'}} onClick={()=>setInvView(inv)}>
+                <div>
+                  <div style={{fontWeight:700}}>{inv.id} <span style={{fontSize:11,color:'#64748b'}}>{inv.memo}</span></div>
+                  <div style={{fontSize:11,color:age>30?'#dc2626':'#64748b'}}>{inv.date} · {age>0?age+' days ago':'Current'}</div>
+                </div>
+                <div style={{display:'flex',alignItems:'center',gap:8}}>
+                  <span style={{fontWeight:800,fontSize:16,color:'#dc2626'}}>${bal.toLocaleString()}</span>
+                  <button className="btn btn-sm" style={{background:'#22c55e',color:'white',fontSize:10}} onClick={e=>{e.stopPropagation();setInvView(inv)}}>View</button>
+                  <span style={{color:'#94a3b8',fontSize:14}}>›</span>
+                </div>
+              </div>})}
+            <div style={{padding:'12px 16px',background:'#fef2f2',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+              <span style={{fontWeight:800,color:'#dc2626'}}>Total Balance Due</span>
+              <span style={{fontSize:20,fontWeight:800,color:'#dc2626'}}>${totalDue.toLocaleString()}</span>
+            </div>
+          </div>
+        </>}
+
+        {/* Your rep */}
+        <div style={{marginTop:20,padding:14,background:'#f8fafc',borderRadius:10}}>
+          <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:6}}>YOUR NSA REP</div>
+          <div style={{fontSize:14,fontWeight:600}}>{rep?.name||'NSA Team'}</div>
+          <div style={{fontSize:12,color:'#64748b'}}>National Sports Apparel · team@nsa-teamwear.com</div>
+          <button className="btn btn-sm btn-secondary" style={{marginTop:8,fontSize:11}} onClick={()=>alert('Message to '+rep?.name+' (demo)')}>💬 Message Your Rep</button>
+        </div>
+
+        {/* Contact update */}
+        <div style={{marginTop:14,padding:14,border:'1px dashed #d1d5db',borderRadius:10}}>
+          <div style={{fontSize:12,fontWeight:600,color:'#374151',marginBottom:6}}>📋 Update Contact / Shipping Info</div>
+          {!contactEdit?<>
+            <div style={{fontSize:11,color:'#64748b',marginBottom:6}}>Current: {(customer.contacts||[])[0]?.name} · {(customer.contacts||[])[0]?.email}{customer.shipping_city&&' · '+customer.shipping_city+', '+customer.shipping_state}</div>
+            <button className="btn btn-sm btn-secondary" onClick={()=>setContactEdit({name:(customer.contacts||[])[0]?.name||'',email:(customer.contacts||[])[0]?.email||'',phone:(customer.contacts||[])[0]?.phone||'',shipping:safeStr(customer.shipping_address_line1)})}>✏️ Request Update</button>
+          </>:<>
+            <div style={{display:'flex',flexDirection:'column',gap:6,marginBottom:8}}>
+              <div style={{display:'flex',gap:6}}><input className="form-input" placeholder="Name" style={{flex:1,fontSize:12}} value={contactEdit.name} onChange={e=>setContactEdit(p=>({...p,name:e.target.value}))}/><input className="form-input" placeholder="Email" style={{flex:1,fontSize:12}} value={contactEdit.email} onChange={e=>setContactEdit(p=>({...p,email:e.target.value}))}/></div>
+              <div style={{display:'flex',gap:6}}><input className="form-input" placeholder="Phone" style={{flex:1,fontSize:12}} value={contactEdit.phone} onChange={e=>setContactEdit(p=>({...p,phone:e.target.value}))}/><input className="form-input" placeholder="Shipping Address" style={{flex:1,fontSize:12}} value={contactEdit.shipping} onChange={e=>setContactEdit(p=>({...p,shipping:e.target.value}))}/></div>
+              <textarea className="form-input" placeholder="Notes for your rep (optional)" rows={2} style={{fontSize:12}} value={contactMsg} onChange={e=>setContactMsg(e.target.value)}/>
+            </div>
+            <div style={{display:'flex',gap:6}}>
+              <button className="btn btn-sm btn-primary" onClick={()=>{alert('📩 Update request sent to '+rep?.name+' for approval! (demo)\n\nYour rep will review and update your info.');setContactEdit(null);setContactMsg('')}}>Send Request</button>
+              <button className="btn btn-sm btn-secondary" onClick={()=>{setContactEdit(null);setContactMsg('')}}>Cancel</button>
+            </div>
+            <div style={{fontSize:10,color:'#94a3b8',marginTop:6}}>Changes will be reviewed by your rep before updating</div>
+          </>}
+        </div>
+      </div>
+    </div>
+
+    {/* Stripe Payment Modal */}
+    {showPay&&<StripePaymentModal
+      invoices={showPay==='all'?openInvs:[showPay]}
+      customerName={customer.name}
+      customerEmail={contactEmail}
+      alphaTag={customer.alpha_tag}
+      onSuccess={handlePaymentSuccess}
+      onClose={()=>setShowPay(null)}
+    />}
+  </div>
 }
 
 // MAIN APP
@@ -10772,6 +11195,20 @@ export default function App(){
     // NAV
   const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'reports',label:'Reports',icon:'dollar'},{id:'commissions',label:'Commissions',icon:'dollar',roles:['admin','rep']},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'art',label:'Art Dashboard',icon:'image'},{id:'production',label:'Prod Board',icon:'package'},{id:'decoration',label:'Decoration',icon:'image'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{id:'team',label:'Team',icon:'users'},{section:'Comms'},{id:'messages',label:'Messages',icon:'mail'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'System'},{id:'issues',label:'Issues',icon:'alert'},{id:'import',label:'Import / Upload',icon:'upload'},{id:'qb',label:'QuickBooks Sync',icon:'dollar'},{id:'backup',label:'Backup & Data',icon:'save'},{id:'settings',label:'Settings',icon:'grid',roles:['admin']}];
   const titles={dashboard:'Dashboard',reports:'Reports & Analytics',commissions:'Commissions',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',omg:'OMG Team Stores',jobs:'Jobs',art:'Art Dashboard',production:'Production Board',decoration:'Decoration',warehouse:'Warehouse',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',team:'Team Directory',products:'Products',inventory:'Inventory',messages:'Messages',issues:'Issues',import:'Import / Upload',qb:'QuickBooks Online',backup:'Backup & Data',settings:'Settings'};
+  // ─── COACH PORTAL GATE — public access via ?portal=<alpha_tag> ───
+  const _portalTag=useMemo(()=>{try{return new URLSearchParams(window.location.search).get('portal')}catch{return null}},[]);
+  const _portalCust=_portalTag?cust.find(c=>c.alpha_tag===_portalTag):null;
+  if(_portalTag){
+    if(dbLoading)return<div style={{minHeight:'100vh',background:'linear-gradient(135deg,#0f172a 0%,#1e3a5f 50%,#0f172a 100%)',display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column',gap:16}}>
+      <div style={{fontSize:48,fontWeight:900,color:'white',letterSpacing:-2}}>NSA</div>
+      <div style={{fontSize:13,color:'#94a3b8',letterSpacing:3}}>Loading portal...</div></div>;
+    if(!_portalCust)return<div style={{minHeight:'100vh',background:'#f1f5f9',display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column',gap:12}}>
+      <div style={{fontSize:48,fontWeight:900,color:'#1e3a5f'}}>NSA</div>
+      <div style={{fontSize:16,color:'#64748b'}}>Portal not found for "<strong>{_portalTag}</strong>"</div>
+      <div style={{fontSize:13,color:'#94a3b8'}}>Please check the link with your NSA rep.</div></div>;
+    return<CoachPortal customer={_portalCust} allCustomers={cust} sos={sos} ests={ests} invs={invs} REPS={REPS} prod={prod} onUpdateInvs={setInvs}/>;
+  }
+
   // LOADING GATE
   if(dbLoading)return<div style={{minHeight:'100vh',background:'linear-gradient(135deg,#0f172a 0%,#1e3a5f 50%,#0f172a 100%)',display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column',gap:16}}>
     <div style={{fontSize:48,fontWeight:900,color:'white',letterSpacing:-2}}>NSA</div>
