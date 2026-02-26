@@ -5427,10 +5427,15 @@ export default function App(){
         }else{
           // Supabase connected but empty — likely first deploy or tables were cleared
           // Do NOT auto-seed demo data as it could overwrite real data that failed to load
-          // Supabase tables exist but are empty — app will work from localStorage
-          // Enable writes so localStorage data auto-syncs to Supabase via save effects
-          console.warn('[DB] Supabase empty — enabling sync so localStorage data pushes to Supabase');
+          // Supabase tables exist but are empty — push localStorage data to Supabase
+          console.warn('[DB] Supabase empty — seeding from localStorage');
           _dbLoadSuccess.current=true;
+          await _dbSeed({team:REPS,customers:cust,vendors:vend,products:prod,estimates:ests,sales_orders:sos,invoices:invs,messages:msgs,omg_stores:omgStores,issues});
+          if(issues?.length) _dbSave('issues',issues);
+          // Sync app_state keys
+          const _as={batch_pos:batchPOs,submitted_batches:submittedBatches,batch_counter:batchCounter,change_log:changeLog,so_history:soHistory,qb_config:qbConfig};
+          for(const[k,v]of Object.entries(_as)){if(v!==undefined&&v!==null)_dbSave('app_state',[{id:k,value:JSON.stringify(v),updated_at:new Date().toISOString()}])}
+          console.log('[DB] localStorage data seeded to Supabase');
         }
       }catch(e){
         console.error('[DB] Load failed:',e);
