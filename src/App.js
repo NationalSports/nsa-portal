@@ -792,7 +792,7 @@ function dP(d,q,artFiles,cq){
   return{sell:0,cost:0}}
 const SC={
   // SO statuses (5)
-  need_order:{bg:'#fef3c7',c:'#92400e'},waiting_receive:{bg:'#dbeafe',c:'#1e40af'},items_received:{bg:'#d1fae5',c:'#065f46'},complete:{bg:'#dcfce7',c:'#166534'},in_production:{bg:'#ede9fe',c:'#6d28d9'},ready_to_invoice:{bg:'#fef0c7',c:'#c2410c'},
+  need_order:{bg:'#fef3c7',c:'#92400e'},waiting_receive:{bg:'#dbeafe',c:'#1e40af'},needs_pull:{bg:'#fef9c3',c:'#a16207'},items_received:{bg:'#d1fae5',c:'#065f46'},complete:{bg:'#dcfce7',c:'#166534'},in_production:{bg:'#ede9fe',c:'#6d28d9'},ready_to_invoice:{bg:'#fef0c7',c:'#c2410c'},
   // Job item statuses
   need_to_order:{bg:'#fef3c7',c:'#92400e'},partially_received:{bg:'#fef9c3',c:'#854d0e'},items_received:{bg:'#d1fae5',c:'#065f46'},
   // Job production statuses
@@ -856,7 +856,7 @@ const isJobReady=(j,o)=>{
     const it=safeItems(o)[gi.item_idx];if(!it)return;
     Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{
       totalSz+=v;
-      const picked=safePicks(it).filter(pk=>pk.status==='pulled'||pk.status==='pick').reduce((a,pk)=>a+safeNum(pk[sz]),0);
+      const picked=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
       const rcvd=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
       fulfilledSz+=Math.min(v,picked+rcvd);
     });
@@ -1537,7 +1537,7 @@ function calcSOStatus(ord){
       const picked=safePicks(it).reduce((a,pk)=>a+safeNum(pk[sz]),0);
       const poOrd=safePOs(it).reduce((a,pk)=>a+safeNum(pk[sz])-safeNum((pk.cancelled||{})[sz]),0);
       coveredSz+=Math.min(v,picked+poOrd);
-      const pulledQty=safePicks(it).filter(pk=>pk.status==='pulled'||pk.status==='pick').reduce((a,pk)=>a+safeNum(pk[sz]),0);
+      const pulledQty=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
       const rcvdQty=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
       fulfilledSz+=Math.min(v,pulledQty+rcvdQty);
     });
@@ -1559,6 +1559,9 @@ function calcSOStatus(ord){
   if(allJobsDone)return'ready_to_invoice';
   // If any job in staging or in_process → in production
   if(anyJobActive)return'in_production';
+  // If picks exist but not yet pulled → needs_pull
+  const hasPendingPull=safeItems(ord).some(it=>safePicks(it).some(pk=>pk.status==='pick'));
+  if(hasPendingPull)return'needs_pull';
   // If all items received → items_received
   if(fulfilledSz>=totalSz)return'items_received';
   // If all items covered (ordered/picked) but not all received → waiting
@@ -1747,7 +1750,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         let itemTotal=0,itemFulfilled=0;
         szEntries.forEach(([sz,v])=>{
           itemTotal+=v;
-          const pulledQ=safePicks(it).filter(pk=>pk.status==='pulled'||pk.status==='pick').reduce((a,pk)=>a+safeNum(pk[sz]),0);
+          const pulledQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
           const rcvdQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
           itemFulfilled+=Math.min(v,pulledQ+rcvdQ);
         });
@@ -1795,7 +1798,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
   },[syncJobs]);// eslint-disable-line
 
   const fp=products.filter(p=>{if(!pS)return true;const q=pS.toLowerCase();return p.sku.toLowerCase().includes(q)||p.name.toLowerCase().includes(q)||p.brand?.toLowerCase().includes(q)});
-  const statusFlow=['need_order','waiting_receive','items_received','in_production','ready_to_invoice','complete'];
+  const statusFlow=['need_order','waiting_receive','needs_pull','items_received','in_production','ready_to_invoice','complete'];
 
   return(<div>
     {/* Sticky header — appears when scrolling */}
@@ -1963,7 +1966,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         const autoSt=calcSOStatus(o);
         // Auto-sync status
         if(o.status!==autoSt&&o.status!=='complete'){setTimeout(()=>sv('status',autoSt),0)}
-        const stLabels={need_order:'Need to Order',waiting_receive:'Waiting to Receive',items_received:'Items Received',in_production:'In Production',ready_to_invoice:'Ready to Invoice',complete:'Complete'};
+        const stLabels={need_order:'Need to Order',waiting_receive:'Waiting to Receive',needs_pull:'Needs Pull',items_received:'Items Received',in_production:'In Production',ready_to_invoice:'Ready to Invoice',complete:'Complete'};
         const displaySt=o.status==='complete'?'complete':autoSt;
         return<div style={{display:'flex',gap:8,marginTop:12,borderTop:'1px solid #f1f5f9',paddingTop:12,alignItems:'center',flexWrap:'wrap'}}>
           <span style={{fontSize:11,color:'#64748b',fontWeight:600}}>Order Status:</span>
@@ -3278,7 +3281,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           const it=safeItems(o)[ji.item_idx];if(!it)return;
           let ful=0;
           Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).forEach(([sz,v])=>{
-            const pQ=safePicks(it).filter(pk=>pk.status==='pulled'||pk.status==='pick').reduce((a,pk)=>a+safeNum(pk[sz]),0);
+            const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
             const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
             ful+=Math.min(v,pQ+rQ);
           });
@@ -3331,7 +3334,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           const it=safeItems(o)[gi.item_idx];if(!it)return{...gi,sizes:{},fulSizes:{}};
           const sizes=safeSizes(it);const fulSizes={};
           Object.entries(sizes).filter(([,v])=>safeNum(v)>0).forEach(([sz,v])=>{
-            const pQ=safePicks(it).filter(pk=>pk.status==='pulled'||pk.status==='pick').reduce((a,pk)=>a+safeNum(pk[sz]),0);
+            const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
             const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
             fulSizes[sz]=Math.min(v,pQ+rQ);
           });
@@ -3582,7 +3585,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           const it=safeItems(o)[gi.item_idx];
           let ful=0;
           if(it)Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).forEach(([sz,v])=>{
-            const pQ=safePicks(it).filter(pk=>pk.status==='pulled'||pk.status==='pick').reduce((a,pk)=>a+safeNum(pk[sz]),0);
+            const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
             const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
             ful+=Math.min(v,pQ+rQ);
           });
@@ -4193,7 +4196,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   const custSOs=(sos||[]).filter(o=>ids.includes(o.customer_id));
   const custEsts=(ests||[]).filter(e=>ids.includes(e.customer_id));
   const orders=allOrders.filter(o=>ids.includes(o.customer_id));
-  const fo=orders.filter(o=>{if(oF!=='all'&&o.type!==oF)return false;if(sF==='open')return['sent','draft','open','need_order','waiting_receive'].includes(o.status)||calcSOStatus(o)!=='complete';if(sF==='closed')return['approved','paid','complete'].includes(o.status)||calcSOStatus(o)==='complete';return true});
+  const fo=orders.filter(o=>{if(oF!=='all'&&o.type!==oF)return false;if(sF==='open')return['sent','draft','open','need_order','waiting_receive','needs_pull'].includes(o.status)||calcSOStatus(o)!=='complete';if(sF==='closed')return['approved','paid','complete'].includes(o.status)||calcSOStatus(o)==='complete';return true});
   const gn=id=>allCustomers.find(x=>x.id===id)?.alpha_tag||'';
   // Contact editing
   const saveContact=(idx,updated)=>{const newContacts=[...(customer.contacts||[])];newContacts[idx]=updated;const newCust={...customer,contacts:newContacts};setCustLocal(newCust);onEdit(newCust);setEditContact(null)};
@@ -4238,9 +4241,9 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     {custSOs.filter(s=>calcSOStatus(s)!=='complete').length>0&&<div className="card" style={{marginBottom:12}}><div className="card-header"><h2>Active Sales Orders</h2></div><div className="card-body" style={{padding:0}}>
       <table style={{fontSize:12}}><thead><tr><th>SO</th><th>Memo</th>{isP&&<th>Customer</th>}{isP&&<th>Rep</th>}<th>Status</th><th>Items</th><th>Fulfillment</th><th>Expected</th></tr></thead><tbody>
       {custSOs.filter(s=>calcSOStatus(s)!=='complete').map(so=>{
-        const st=calcSOStatus(so);const stL={need_order:'Need to Order',waiting_receive:'Waiting to Receive',items_received:'Items Received',in_production:'In Production',ready_to_invoice:'Ready to Invoice',complete:'Complete'};
+        const st=calcSOStatus(so);const stL={need_order:'Need to Order',waiting_receive:'Waiting to Receive',needs_pull:'Needs Pull',items_received:'Items Received',in_production:'In Production',ready_to_invoice:'Ready to Invoice',complete:'Complete'};
         let totalU=0,fulU=0;
-        safeItems(so).forEach(it=>{Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{totalU+=v;const pQ=safePicks(it).filter(pk=>pk.status==='pulled'||pk.status==='pick').reduce((a,pk)=>a+(pk[sz]||0),0);const rQ=safePOs(it).reduce((a,pk)=>a+((pk.received||{})[sz]||0),0);fulU+=Math.min(v,pQ+rQ)})});
+        safeItems(so).forEach(it=>{Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{totalU+=v;const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+(pk[sz]||0),0);const rQ=safePOs(it).reduce((a,pk)=>a+((pk.received||{})[sz]||0),0);fulU+=Math.min(v,pQ+rQ)})});
         const pct=totalU>0?Math.round(fulU/totalU*100):0;
         const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
         const jobs=so.jobs||[];
@@ -4597,7 +4600,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
           <div style={{fontSize:13,fontWeight:800,color:'#1e3a5f',marginBottom:10}}>📦 Active Orders</div>
           {activeSOs.map(so=>{
             let totalU=0,fulU=0;
-            safeItems(so).forEach(it=>{Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{totalU+=v;const pQ=safePicks(it).filter(pk=>pk.status==='pulled'||pk.status==='pick').reduce((a,pk)=>a+safeNum(pk[sz]),0);const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);fulU+=Math.min(v,pQ+rQ)})});
+            safeItems(so).forEach(it=>{Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{totalU+=v;const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);fulU+=Math.min(v,pQ+rQ)})});
             const pct=totalU>0?Math.round(fulU/totalU*100):0;
             const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
             const soJobs=safeJobs(so);
@@ -5087,7 +5090,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           <div style={{fontSize:13,fontWeight:800,color:'#1e3a5f',marginBottom:10}}>📦 Active Orders</div>
           {activeSOs.map(so=>{
             let totalU=0,fulU=0;
-            safeItems(so).forEach(it=>{Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{totalU+=v;const pQ=safePicks(it).filter(pk=>pk.status==='pulled'||pk.status==='pick').reduce((a,pk)=>a+safeNum(pk[sz]),0);const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);fulU+=Math.min(v,pQ+rQ)})});
+            safeItems(so).forEach(it=>{Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{totalU+=v;const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);fulU+=Math.min(v,pQ+rQ)})});
             const pct=totalU>0?Math.round(fulU/totalU*100):0;
             const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
             const soJobs=safeJobs(so);
@@ -5869,7 +5872,7 @@ export default function App(){
         const totalOrdered=szKeys.reduce((a,s)=>a+(item.sizes[s]||0),0);
         if(totalOrdered===0)return;
         const picks=safePicks(item);
-        const pulled={};picks.forEach(pk=>{szKeys.forEach(s=>{pulled[s]=(pulled[s]||0)+(pk[s]||0)})});
+        const pulled={};picks.filter(pk=>pk.status==='pulled').forEach(pk=>{szKeys.forEach(s=>{pulled[s]=(pulled[s]||0)+(pk[s]||0)})});
         const totalPulled=Object.values(pulled).reduce((a,v)=>a+v,0);
         // Only show in Pull & Stage if there's an active pick ticket (IF not yet pulled)
         const hasActivePick=picks.some(pk=>pk.status!=='pulled');
@@ -6385,7 +6388,7 @@ export default function App(){
       const itemStatus=totalSz===0?null:fulfilledSz>=totalSz?'received':fulfilledSz>0?'partial':poSz>0?'on_order':'needs_items';
       // Status badge uses the actual SO status field (what the user set)
       const displayStatus=calcSOStatus(so);
-      const statusLabel={need_order:'Need to Order',waiting_receive:'Waiting to Receive',items_received:'Items Received',in_production:'In Production',ready_to_invoice:'Ready to Invoice',complete:'Complete'}[displayStatus]||displayStatus.replace(/_/g,' ');
+      const statusLabel={need_order:'Need to Order',waiting_receive:'Waiting to Receive',needs_pull:'Needs Pull',items_received:'Items Received',in_production:'In Production',ready_to_invoice:'Ready to Invoice',complete:'Complete'}[displayStatus]||displayStatus.replace(/_/g,' ');
       return(<tr key={so.id} style={{cursor:'pointer'}} onClick={()=>{setESO(so);setESOC(c)}}>
       <td style={{fontWeight:700,color:'#1e40af'}}>{so.id}</td><td>{c?.name} <span className="badge badge-gray">{c?.alpha_tag}</span></td><td style={{fontSize:12}}>{so.memo}</td><td>{so.expected_date||'--'}</td>
       <td><span style={{fontSize:11,color:'#64748b'}}>{rep?.name?.split(' ')[0]||'\u2014'}</span></td>
@@ -7316,7 +7319,7 @@ export default function App(){
           const sizes={};const fulSizes={};
           Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{
             sizes[sz]=v;
-            const picked=safePicks(it).filter(pk=>pk.status==='pulled'||pk.status==='pick').reduce((a,pk)=>a+safeNum(pk[sz]),0);
+            const picked=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
             const rcvd=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
             fulSizes[sz]=Math.min(v,picked+rcvd);
           });
