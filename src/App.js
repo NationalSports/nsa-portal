@@ -5427,8 +5427,10 @@ export default function App(){
         }else{
           // Supabase connected but empty — likely first deploy or tables were cleared
           // Do NOT auto-seed demo data as it could overwrite real data that failed to load
-          setDbError('Supabase connected but no data found. If this is a new setup, use Backup > Import to load your data.');
-          console.warn('[DB] Supabase empty — not seeding to protect against data loss');
+          // Supabase tables exist but are empty — app will work from localStorage
+          // Enable writes so localStorage data auto-syncs to Supabase via save effects
+          console.warn('[DB] Supabase empty — enabling sync so localStorage data pushes to Supabase');
+          _dbLoadSuccess.current=true;
         }
       }catch(e){
         console.error('[DB] Load failed:',e);
