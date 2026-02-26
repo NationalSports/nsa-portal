@@ -202,12 +202,42 @@ tbody tr { cursor: pointer; }
 .csv-preview table { font-size: 11px; }
 .csv-preview th { position: sticky; top: 0; background: #fff; }
 
+/* Mobile hamburger button - hidden on desktop */
+.mobile-menu-btn {
+  display: none; background: none; border: none; padding: 6px; cursor: pointer;
+  color: #0f172a; line-height: 1;
+}
+/* Sidebar overlay backdrop - hidden by default */
+.sidebar-backdrop {
+  display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+  z-index: 49; opacity: 0; transition: opacity 0.2s;
+}
+
 /* Responsive */
 @media (max-width: 768px) {
-  .sidebar { display: none; }
+  .mobile-menu-btn { display: block; }
+  .sidebar {
+    transform: translateX(-100%); transition: transform 0.25s ease;
+    box-shadow: 4px 0 20px rgba(0,0,0,0.3);
+  }
+  .sidebar.open { transform: translateX(0); }
+  .sidebar-backdrop.open { display: block; opacity: 1; }
   .main { margin-left: 0; }
+  .topbar { padding: 0 12px; gap: 8px; }
+  .topbar h1 { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 120px; }
+  .content { padding: 12px 12px 80px; }
   .form-row-2, .form-row-3, .form-row-4 { grid-template-columns: 1fr; }
   .stats-row { grid-template-columns: 1fr 1fr; }
+  .card-body { padding: 10px 12px; }
+  table { font-size: 11px; }
+  thead th { padding: 6px 8px; font-size: 10px; }
+  tbody td { padding: 6px 8px; }
+  .modal-overlay { padding: 10px; }
+  .modal { max-width: 100%; max-height: calc(100vh - 20px); border-radius: 10px; }
+  .modal-header { padding: 12px 14px; }
+  .modal-body { padding: 12px 14px; }
+  .search-bar input { font-size: 14px; } /* Prevent iOS zoom on focus */
+  .form-input, .form-select { font-size: 16px; } /* Prevent iOS zoom */
 }
 
 /* V2 additions */
