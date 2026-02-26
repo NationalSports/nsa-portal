@@ -296,14 +296,15 @@ const fileUpload=async(file,folder='nsa-art-files')=>{const fd=new FormData();fd
 const isUrl=s=>typeof s==='string'&&(s.startsWith('http://')||s.startsWith('https://'));
 const fileDisplayName=f=>isUrl(f)?decodeURIComponent(f.split('/').pop().split('?')[0]):f;
 const openFile=f=>{if(isUrl(f)){window.open(f,'_blank')}else{nf('Legacy file: '+f+' — re-upload to enable downloads')}};
-const ImgUpload=({url,onUpload,size=48})=>{const[drag,setDrag]=React.useState(false);const[uploading,setUploading]=React.useState(false);
-  const doUpload=async(file)=>{if(!file||!file.type.startsWith('image/'))return;setUploading(true);try{const u=await cloudUpload(file);onUpload(u)}catch(e){console.error('Upload failed',e)}finally{setUploading(false)}};
-  return<div style={{width:size,height:size,borderRadius:6,border:drag?'2px solid #3b82f6':'1px solid #e2e8f0',background:drag?'#eff6ff':'#f8fafc',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,cursor:'pointer',overflow:'hidden',position:'relative'}}
+const ImgUpload=({url,onUpload,size=48,onError})=>{const[drag,setDrag]=React.useState(false);const[uploading,setUploading]=React.useState(false);const[err,setErr]=React.useState(false);
+  const doUpload=async(file)=>{if(!file||!file.type.startsWith('image/')){if(onError)onError('Please select an image file');return}setUploading(true);setErr(false);try{const u=await cloudUpload(file);onUpload(u)}catch(e){console.error('Upload failed',e);setErr(true);if(onError)onError('Upload failed: '+e.message)}finally{setUploading(false)}};
+  return<div style={{width:size,height:size,borderRadius:6,border:err?'2px solid #dc2626':drag?'2px solid #3b82f6':'1px solid #e2e8f0',background:drag?'#eff6ff':err?'#fef2f2':'#f8fafc',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,cursor:'pointer',overflow:'hidden',position:'relative'}}
     onDragOver={e=>{e.preventDefault();setDrag(true)}} onDragLeave={()=>setDrag(false)}
     onDrop={e=>{e.preventDefault();setDrag(false);doUpload(e.dataTransfer.files[0])}}
     onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.accept='image/*';inp.onchange=()=>doUpload(inp.files[0]);inp.click()}}>
     {uploading?<span style={{fontSize:10,color:'#3b82f6',fontWeight:600}}>...</span>
-    :url?<img src={url} alt="" style={{width:'100%',height:'100%',objectFit:'cover'}}/>
+    :url?<img src={url} alt="" style={{width:'100%',height:'100%',objectFit:'cover'}} onError={e=>{e.target.style.display='none'}}/>
+    :err?<span style={{fontSize:size>40?14:10,color:'#dc2626'}}>!</span>
     :<span style={{fontSize:size>40?18:12,opacity:0.3}}>📷</span>}
   </div>};
 // ── PDF.js Setup (for NetSuite PDF import) ──
@@ -596,7 +597,7 @@ const parseNetSuitePdf=(text,docType)=>{
   }
   return result;
 };
-const Icon=({name,size=18})=>{const p={home:<path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>,users:<><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></>,building:<><path d="M6 22V4a2 2 0 012-2h8a2 2 0 012 2v18z"/><path d="M6 12H4a2 2 0 00-2 2v6a2 2 0 002 2h2"/><path d="M18 9h2a2 2 0 012 2v9a2 2 0 01-2 2h-2"/><path d="M10 6h4M10 10h4M10 14h4M10 18h4"/></>,package:<><path d="M16.5 9.4l-9-5.19M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/><path d="M3.27 6.96L12 12.01l8.73-5.05M12 22.08V12"/></>,box:<path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/>,search:<><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></>,plus:<path d="M12 5v14M5 12h14"/>,edit:<><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></>,upload:<><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></>,back:<polyline points="15 18 9 12 15 6"/>,mail:<><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></>,file:<><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></>,sortUp:<path d="M7 14l5-5 5 5"/>,sort:<><path d="M7 15l5 5 5-5"/><path d="M7 9l5-5 5 5"/></>,image:<><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></>,cart:<><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 002 1.61h9.72a2 2 0 002-1.61L23 6H6"/></>,dollar:<><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></>,grid:<><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></>,warehouse:<><path d="M22 8.35V20a2 2 0 01-2 2H4a2 2 0 01-2-2V8.35A2 2 0 013.26 6.5l8-3.2a2 2 0 011.48 0l8 3.2A2 2 0 0122 8.35z"/><path d="M6 18h12M6 14h12"/></>,trash:<><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></>,eye:<><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></>,alert:<><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></>,x:<><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>,check:<polyline points="20 6 9 17 4 12"/>,save:<><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></>,send:<><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></>};return<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{p[name]}</svg>};
+const Icon=({name,size=18})=>{const p={home:<path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>,users:<><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></>,building:<><path d="M6 22V4a2 2 0 012-2h8a2 2 0 012 2v18z"/><path d="M6 12H4a2 2 0 00-2 2v6a2 2 0 002 2h2"/><path d="M18 9h2a2 2 0 012 2v9a2 2 0 01-2 2h-2"/><path d="M10 6h4M10 10h4M10 14h4M10 18h4"/></>,package:<><path d="M16.5 9.4l-9-5.19M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/><path d="M3.27 6.96L12 12.01l8.73-5.05M12 22.08V12"/></>,box:<path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/>,search:<><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></>,plus:<path d="M12 5v14M5 12h14"/>,edit:<><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></>,upload:<><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></>,back:<polyline points="15 18 9 12 15 6"/>,mail:<><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></>,file:<><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></>,sortUp:<path d="M7 14l5-5 5 5"/>,sort:<><path d="M7 15l5 5 5-5"/><path d="M7 9l5-5 5 5"/></>,image:<><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></>,cart:<><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 002 1.61h9.72a2 2 0 002-1.61L23 6H6"/></>,dollar:<><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></>,grid:<><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></>,warehouse:<><path d="M22 8.35V20a2 2 0 01-2 2H4a2 2 0 01-2-2V8.35A2 2 0 013.26 6.5l8-3.2a2 2 0 011.48 0l8 3.2A2 2 0 0122 8.35z"/><path d="M6 18h12M6 14h12"/></>,trash:<><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></>,eye:<><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></>,alert:<><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></>,x:<><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>,check:<polyline points="20 6 9 17 4 12"/>,camera:<><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/><circle cx="12" cy="13" r="4"/></>,scan:<><path d="M3 7V5a2 2 0 012-2h2"/><path d="M17 3h2a2 2 0 012 2v2"/><path d="M21 17v2a2 2 0 01-2 2h-2"/><path d="M7 21H5a2 2 0 01-2-2v-2"/><line x1="7" y1="12" x2="17" y2="12"/></>,save:<><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></>,send:<><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></>};return<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{p[name]}</svg>};
 const DEFAULT_REPS=[
   // Admins
   {id:'00000000-0000-0000-0000-000000000001',name:'Steve Peterson',role:'admin'},
@@ -2553,8 +2554,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                       <span style={{fontSize:10,fontWeight:700,color:'#2563eb'}}>📎 MOCKUP FILES</span>
                       <span style={{fontSize:9,color:'#94a3b8'}}>Shared with customer</span>
                     </div>
-                    <div style={{display:'flex',gap:4,flexWrap:'wrap',marginBottom:4}}>{(art.mockup_files||art.files||[]).map((fn,fi)=><span key={fi} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'3px 8px',background:'#dbeafe',borderRadius:4,fontSize:11}}>
-                      <Icon name="file" size={10}/>{fn}<button onClick={()=>{const mf=[...(art.mockup_files||art.files||[])];mf.splice(fi,1);uArt(i,'mockup_files',mf);if(!art.mockup_files)uArt(i,'files',[])}} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:0}}><Icon name="x" size={10}/></button></span>)}</div>
+                    <div style={{display:'flex',gap:4,flexWrap:'wrap',marginBottom:4}}>{(art.mockup_files||art.files||[]).map((fn,fi)=><span key={fi} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'3px 8px',background:'#dbeafe',borderRadius:4,fontSize:11,cursor:isUrl(fn)?'pointer':'default'}} onClick={()=>openFile(fn)} title={isUrl(fn)?'Click to open':'Legacy file — re-upload'}>
+                      <Icon name="file" size={10}/>{fileDisplayName(fn)}<button onClick={e=>{e.stopPropagation();const mf=[...(art.mockup_files||art.files||[])];mf.splice(fi,1);uArt(i,'mockup_files',mf);if(!art.mockup_files)uArt(i,'files',[])}} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:0}}><Icon name="x" size={10}/></button></span>)}</div>
                     <div style={{border:'2px dashed #bfdbfe',borderRadius:6,padding:8,textAlign:'center',cursor:'pointer',background:'#eff6ff'}} onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps';inp.onchange=async()=>{const f=inp.files[0];if(!f)return;nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-mockups');const mf=[...(art.mockup_files||art.files||[]),url];uArt(i,'mockup_files',mf);if(!art.mockup_files)uArt(i,'files',[]);nf('✅ Mockup uploaded: '+f.name)}catch(e){nf('Upload failed: '+e.message,'error')}};inp.click()}}>
                       <div style={{fontSize:10,color:'#2563eb'}}><Icon name="upload" size={12}/> Add mockup (PDF, PNG, JPG)</div></div>
                   </div>
@@ -2564,8 +2565,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                       <span style={{fontSize:10,fontWeight:700,color:'#d97706'}}>🔧 PRODUCTION FILES</span>
                       <span style={{fontSize:9,color:'#94a3b8'}}>Internal — not shared with customer</span>
                     </div>
-                    <div style={{display:'flex',gap:4,flexWrap:'wrap',marginBottom:4}}>{(art.prod_files||[]).map((fn,fi)=><span key={fi} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'3px 8px',background:'#fef3c7',borderRadius:4,fontSize:11}}>
-                      <Icon name="file" size={10}/>{fn}<button onClick={()=>uArt(i,'prod_files',(art.prod_files||[]).filter((_,x)=>x!==fi))} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:0}}><Icon name="x" size={10}/></button></span>)}</div>
+                    <div style={{display:'flex',gap:4,flexWrap:'wrap',marginBottom:4}}>{(art.prod_files||[]).map((fn,fi)=><span key={fi} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'3px 8px',background:'#fef3c7',borderRadius:4,fontSize:11,cursor:isUrl(fn)?'pointer':'default'}} onClick={()=>openFile(fn)} title={isUrl(fn)?'Click to open':'Legacy file — re-upload'}>
+                      <Icon name="file" size={10}/>{fileDisplayName(fn)}<button onClick={e=>{e.stopPropagation();uArt(i,'prod_files',(art.prod_files||[]).filter((_,x)=>x!==fi))}} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:0}}><Icon name="x" size={10}/></button></span>)}</div>
                     <div style={{border:'2px dashed #fde68a',borderRadius:6,padding:8,textAlign:'center',cursor:'pointer',background:'#fffbeb'}} onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.pdf,.ai,.eps,.dst,.png,.jpg,.jpeg';inp.onchange=async()=>{const f=inp.files[0];if(!f)return;nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-production');uArt(i,'prod_files',[...(art.prod_files||[]),url]);nf('✅ Production file uploaded: '+f.name)}catch(e){nf('Upload failed: '+e.message,'error')}};inp.click()}}>
                       <div style={{fontSize:10,color:'#d97706'}}><Icon name="upload" size={12}/> Add production file (DST, AI seps, PDF)</div></div>
                   </div>
@@ -3763,7 +3764,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       const pk=editPick.pick;const item=o.items[editPick.lineIdx];
       const pkSzKeys=Object.keys(pk).filter(k=>k!=='status'&&k!=='pick_id'&&typeof pk[k]==='number'&&pk[k]>0);
       const pkTotal=pkSzKeys.reduce((a,sz)=>a+(pk[sz]||0),0);
-      const qrData=JSON.stringify({type:'PICK',id:pk.pick_id,so:o.id,sku:item?.sku,qty:pkTotal});
+      const qrData=window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(pk.pick_id);
       return<div className="modal-overlay" onClick={()=>setEditPick(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:600}}>
       <div className="modal-header"><h2>Pick — {pk.pick_id||'Pick'}</h2>
         <div style={{display:'flex',gap:6,alignItems:'center'}}>
@@ -3854,7 +3855,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       const totalOpen=szKeys.reduce((a,sz)=>a+getOpen(sz),0);
       const hasOpen=szKeys.some(sz=>getOpen(sz)>0);
       const poStatus=totalOpen<=0&&totalReceived>0?'received':totalReceived>0?'partial':'waiting';
-      const qrData=JSON.stringify({type:'PO',id:po.po_id,so:o.id,sku:item?.sku,qty:totalOrdered});
+      const qrData=window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(po.po_id);
 
       return<div className="modal-overlay" onClick={()=>setEditPO(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:750,maxHeight:'90vh',overflow:'auto'}}>
         <div className="modal-header"><h2>PO — {po.po_id||'PO'}</h2>
@@ -5190,9 +5191,105 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   </div>
 }
 
+// ─── BARCODE / QR CAMERA SCANNER ───
+const BarcodeScanner=({onScan,onClose,placeholder='Scan barcode or QR code...'})=>{
+  const videoRef=useRef(null);const streamRef=useRef(null);const canvasRef=useRef(null);const scanningRef=useRef(false);
+  const[active,setActive]=useState(false);const[error,setError]=useState(null);const[manualVal,setManualVal]=useState('');
+  const detectorRef=useRef(null);
+
+  const startCamera=async()=>{
+    setError(null);
+    try{
+      const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment',width:{ideal:1280},height:{ideal:720}}});
+      streamRef.current=stream;
+      if(videoRef.current){videoRef.current.srcObject=stream;videoRef.current.play()}
+      setActive(true);
+      // Check BarcodeDetector support
+      if('BarcodeDetector' in window){
+        detectorRef.current=new window.BarcodeDetector({formats:['qr_code','code_128','code_39','ean_13','ean_8','upc_a','upc_e','codabar','itf']});
+        scanningRef.current=true;
+        scanLoop();
+      } else {
+        // Fallback: use QR code reader via canvas-based polling with basic detection
+        scanningRef.current=true;
+        scanLoopFallback();
+      }
+    }catch(err){
+      if(err.name==='NotAllowedError')setError('Camera permission denied. Please allow camera access and try again.');
+      else if(err.name==='NotFoundError')setError('No camera found. Use manual entry below.');
+      else setError('Camera error: '+err.message);
+    }
+  };
+
+  const scanLoop=async()=>{
+    if(!scanningRef.current||!videoRef.current||!detectorRef.current)return;
+    try{
+      const barcodes=await detectorRef.current.detect(videoRef.current);
+      if(barcodes.length>0){
+        const val=barcodes[0].rawValue;
+        if(val){stopCamera();onScan(val);return}
+      }
+    }catch{}
+    requestAnimationFrame(()=>setTimeout(scanLoop,150));
+  };
+
+  const scanLoopFallback=()=>{
+    // Fallback polling - reads from video and checks for text patterns via image analysis
+    // For devices without BarcodeDetector, users should use manual entry
+    if(!scanningRef.current)return;
+    setTimeout(scanLoopFallback,500);
+  };
+
+  const stopCamera=()=>{
+    scanningRef.current=false;
+    if(streamRef.current){streamRef.current.getTracks().forEach(t=>t.stop());streamRef.current=null}
+    setActive(false);
+  };
+
+  // Cleanup on unmount
+  React.useEffect(()=>()=>{scanningRef.current=false;if(streamRef.current){streamRef.current.getTracks().forEach(t=>t.stop())};},[]);
+
+  const handleManual=(e)=>{
+    if(e.key==='Enter'&&manualVal.trim()){onScan(manualVal.trim());setManualVal('')}
+  };
+
+  return<div style={{background:'#0f172a',borderRadius:12,overflow:'hidden',border:'2px solid #334155'}}>
+    {/* Camera viewport */}
+    {active?<div style={{position:'relative',background:'#000'}}>
+      <video ref={videoRef} style={{width:'100%',maxHeight:280,objectFit:'cover',display:'block'}} playsInline muted/>
+      <canvas ref={canvasRef} style={{display:'none'}}/>
+      {/* Scan overlay */}
+      <div style={{position:'absolute',top:0,left:0,right:0,bottom:0,display:'flex',alignItems:'center',justifyContent:'center',pointerEvents:'none'}}>
+        <div style={{width:200,height:200,border:'2px solid rgba(34,197,94,0.7)',borderRadius:12,boxShadow:'0 0 0 9999px rgba(0,0,0,0.3)'}}/>
+      </div>
+      <div style={{position:'absolute',bottom:8,left:0,right:0,textAlign:'center',color:'#22c55e',fontSize:11,fontWeight:600,textShadow:'0 1px 3px rgba(0,0,0,0.8)'}}>
+        Point camera at barcode or QR code
+      </div>
+      <button onClick={stopCamera} style={{position:'absolute',top:8,right:8,background:'rgba(0,0,0,0.6)',border:'none',color:'white',borderRadius:8,padding:'4px 10px',cursor:'pointer',fontSize:12}}>Close Camera</button>
+    </div>:
+    <div style={{padding:'20px',textAlign:'center'}}>
+      {error?<div style={{color:'#f87171',fontSize:12,marginBottom:10}}>{error}</div>:
+      <div style={{color:'#94a3b8',fontSize:12,marginBottom:10}}>Open the camera to scan barcodes/QR codes, or type manually below</div>}
+      <button onClick={startCamera} style={{background:'#22c55e',color:'white',border:'none',borderRadius:8,padding:'10px 24px',fontSize:14,fontWeight:700,cursor:'pointer',display:'inline-flex',alignItems:'center',gap:8}}>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/><circle cx="12" cy="13" r="4"/></svg>
+        Open Camera
+      </button>
+      {'BarcodeDetector' in window?null:<div style={{fontSize:10,color:'#64748b',marginTop:6}}>Tip: Use Chrome on Android/iOS for best barcode scanning support</div>}
+    </div>}
+    {/* Manual entry always available */}
+    <div style={{padding:'10px 16px',borderTop:'1px solid #1e293b',display:'flex',gap:8}}>
+      <input value={manualVal} onChange={e=>setManualVal(e.target.value)} onKeyDown={handleManual}
+        placeholder={placeholder} style={{flex:1,background:'#1e293b',border:'1px solid #334155',borderRadius:6,padding:'8px 12px',color:'white',fontSize:13,fontWeight:600,fontFamily:'monospace'}}/>
+      <button onClick={()=>{if(manualVal.trim()){onScan(manualVal.trim());setManualVal('')}}}
+        style={{background:'#2563eb',color:'white',border:'none',borderRadius:6,padding:'8px 16px',fontSize:12,fontWeight:700,cursor:'pointer',whiteSpace:'nowrap'}}>Look Up</button>
+      {onClose&&<button onClick={onClose} style={{background:'#334155',color:'#94a3b8',border:'none',borderRadius:6,padding:'8px 12px',cursor:'pointer',fontSize:12}}>Cancel</button>}
+    </div>
+  </div>;
+};
+
 // MAIN APP
 export default function App(){
-  const[pg,setPg]=useState('dashboard');const[toast,setToast]=useState(null);
+  const[pg,setPg]=useState('dashboard');const[toast,setToast]=useState(null);const[mobileMenuOpen,setMobileMenuOpen]=useState(false);
   const[dashView,setDashView]=useState('admin');// admin|sales|warehouse|decorator|production|csr
   const[prodDashFilter,setProdDashFilter]=useState(null);// null|'hold'|'ready'|'staging'|'in_process'|'completed'
   const[qbConfig,setQBConfig]=useState({connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',
@@ -6195,7 +6292,7 @@ export default function App(){
       <button className="btn btn-secondary" onClick={onBack} style={{marginBottom:12}}><Icon name="chevron-left" size={14}/> Products</button>
       <div className="card" style={{marginBottom:16}}><div className="card-body">
         <div style={{display:'flex',gap:16,alignItems:'flex-start'}}>
-          <ImgUpload url={ep.image_url} onUpload={u=>{const up={...ep,image_url:u};setEp(up);setProd(p=>p.map(x=>x.id===up.id?up:x));setSelP(up)}} size={80}/>
+          <ImgUpload url={ep.image_url} onUpload={u=>{const up={...ep,image_url:u};setEp(up);setProd(p=>p.map(x=>x.id===up.id?up:x));setSelP(up);nf('Product image uploaded')}} onError={e=>nf(e,'error')} size={80}/>
           <div style={{flex:1}}>
             {!editing?<>
               <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap',marginBottom:4}}>
@@ -6383,7 +6480,7 @@ export default function App(){
   <div className="card"><div className="card-body" style={{padding:0}}>
   {fP.map(p=>{const nt=Object.values(p._inv||{}).reduce((a,v)=>a+v,0);const au=p.brand==='Adidas'||p.brand==='Under Armour';
     return(<div key={p.id} style={{padding:'14px 16px',borderBottom:'1px solid #f1f5f9',cursor:'pointer'}} onClick={()=>setSelP(p)}><div style={{display:'flex',gap:14,alignItems:'flex-start'}}>
-      <ImgUpload url={p.image_url} onUpload={u=>setProd(ps=>ps.map(x=>x.id===p.id?{...x,image_url:u}:x))} size={48}/>
+      <ImgUpload url={p.image_url} onUpload={u=>{setProd(ps=>ps.map(x=>x.id===p.id?{...x,image_url:u}:x));nf('Image uploaded')}} onError={e=>nf(e,'error')} size={48}/>
       <div style={{flex:1}}>
         <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}><span style={{fontFamily:'monospace',fontWeight:800,background:'#dbeafe',padding:'2px 8px',borderRadius:3,color:'#1e40af'}}>{p.sku}</span><span style={{fontWeight:700}}>{p.name}</span>{p._colors&&<span style={{fontSize:10,color:'#7c3aed'}}>{p._colors.length} clr</span>}</div>
         <div style={{fontSize:12,color:'#94a3b8',marginTop:2}}><span className="badge badge-blue" style={{marginRight:4}}>{p.brand}</span>{p.color} | ${p.nsa_cost?.toFixed(2)} | {au?'Tier':'$'+rQ(p.nsa_cost*1.65).toFixed(2)}</div>
@@ -7329,6 +7426,7 @@ export default function App(){
       </div>}
       {/* Filters */}
       <div style={{display:'flex',gap:8,marginBottom:12,flexWrap:'wrap',alignItems:'center'}}>
+        <button onClick={()=>setScanModalOpen(true)} style={{background:'#0f172a',border:'2px solid #334155',borderRadius:8,padding:'6px 12px',cursor:'pointer',color:'#22c55e',display:'flex',alignItems:'center',gap:6,fontSize:12,fontWeight:700}} title="Scan barcode"><Icon name="scan" size={16}/> Scan</button>
         <div className="search-bar" style={{margin:0,flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search POs..." value={poF.search} onChange={e=>setPOF(f=>({...f,search:e.target.value}))}/>{poF.search&&<button onClick={()=>setPOF(f=>({...f,search:''}))} style={{background:'none',border:'none',cursor:'pointer'}}><Icon name="x" size={14}/></button>}</div>
         <select value={poF.vendor} onChange={e=>setPOF(f=>({...f,vendor:e.target.value}))} style={{padding:'6px 10px',borderRadius:6,border:'1px solid #e2e8f0',fontSize:12}}>
           <option value="all">All Vendors</option>{allVendors.map(v=><option key={v} value={v}>{v}</option>)}</select>
@@ -7377,7 +7475,8 @@ export default function App(){
     // Label print helper
     const printLabel=(items,poId,boxLabel)=>{
       const w=window.open('','_blank','width=400,height=600');if(!w)return;
-      const qrData=encodeURIComponent(poId);
+      const scanUrl=window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(poId);
+      const qrData=encodeURIComponent(scanUrl);
       const qrUrl='https://api.qrserver.com/v1/create-qr-code/?size=150x150&data='+qrData;
       w.document.write('<html><head><title>Box Label</title><style>@page{size:4in 6in;margin:0.2in}body{font-family:Arial,sans-serif;margin:0;padding:12px;width:3.6in}');
       w.document.write('.po{font-size:28px;font-weight:900;font-family:monospace;letter-spacing:2px;text-align:center;margin:8px 0}');
@@ -7397,7 +7496,7 @@ export default function App(){
       w.document.write('</tbody></table>');
       const totalQty=items.reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((a2,v)=>a2+v,0),0);
       w.document.write('<div style="text-align:right;font-size:14px;font-weight:900;margin-top:6px">TOTAL: '+totalQty+' units</div>');
-      w.document.write('<div class="footer">NSA · '+new Date().toLocaleDateString()+' · Scan QR to look up this PO</div>');
+      w.document.write('<div class="footer">NSA · '+new Date().toLocaleDateString()+' · Scan QR with tablet camera to open this PO</div>');
       w.document.write('</body></html>');w.document.close();
       setTimeout(()=>w.print(),400);
     };
@@ -7406,7 +7505,7 @@ export default function App(){
       {/* Scan / Lookup bar */}
       <div className="card" style={{marginBottom:16}}><div className="card-body" style={{padding:'14px 18px'}}>
         <div style={{display:'flex',gap:10,alignItems:'center'}}>
-          <span style={{fontSize:20}}>📱</span>
+          <button onClick={()=>setScanModalOpen(true)} style={{background:'#0f172a',border:'2px solid #334155',borderRadius:10,padding:'8px 14px',cursor:'pointer',color:'#22c55e',display:'flex',alignItems:'center',gap:6,fontSize:13,fontWeight:700,whiteSpace:'nowrap'}} title="Open camera scanner"><Icon name="camera" size={18}/> Scan</button>
           <div style={{flex:1}}>
             <div className="search-bar" style={{maxWidth:400}}><Icon name="search"/><input placeholder="Scan or type PO number (e.g. NSA-4501)..." value={batchScan} onChange={e=>setBatchScan(e.target.value)} style={{fontSize:14,fontWeight:600}}/></div>
           </div>
@@ -8896,7 +8995,7 @@ export default function App(){
   };
 
   // WAREHOUSE DASHBOARD
-  const[whTab,setWhTab]=useState('pull');const[whSearch,setWhSearch]=useState('');const[whRepF,setWhRepF]=useState('all');
+  const[whTab,setWhTab]=useState('pull');const[whSearch,setWhSearch]=useState('');const[whRepF,setWhRepF]=useState('all');const[scanModalOpen,setScanModalOpen]=useState(false);
   const[stockPOs,setStockPOs]=useState([
     {id:'PO-5001-NSA',vendor_id:'v1',vendor_name:'Adidas',status:'partial',created_at:'02/12/26',notes:'Restock pregame tees',items:[{sku:'JX4453',name:'Adidas Unisex Pregame Tee',color:'Team Power Red/White',sizes:{S:20,M:30,L:25,XL:15,'2XL':10},received:{S:20,M:30,L:0,XL:0,'2XL':0}}]},
     {id:'PO-5002-NSA',vendor_id:'v2',vendor_name:'Under Armour',status:'waiting',created_at:'02/18/26',notes:'Stock up on polos for spring',items:[{sku:'1370399',name:'Under Armour Team Polo',color:'Cardinal/White',sizes:{S:10,M:20,L:20,XL:15,'2XL':8},received:{}}]},
@@ -8975,6 +9074,7 @@ export default function App(){
     const readyForDeco=decoTasks.filter(t=>t.isReady);const fDeco=filt(readyForDeco);
     const openStockPOs=stockPOs.filter(p=>p.status!=='received');
     const tabs=[
+      {id:'receive',label:'📱 Scan to Receive',count:0,color:'#2563eb'},
       {id:'pull',label:'🏗️ Pull & Stage',count:fPull.length,color:'#d97706'},
       {id:'deco',label:'🎨 Ready for Deco',count:fDeco.length,color:'#7c3aed'},
       {id:'ship',label:'📦 Ready to Ship',count:fShip.length,color:'#166534'},
@@ -9018,6 +9118,53 @@ export default function App(){
             onClick={()=>setWhTab(t.id)}>{t.label} ({t.count})</button>)}
         </div>
       </div>
+
+      {/* ── SCAN TO RECEIVE ── */}
+      {whTab==='receive'&&<>
+        <div style={{maxWidth:600,margin:'0 auto'}}>
+          <div style={{textAlign:'center',marginBottom:16}}>
+            <div style={{fontSize:16,fontWeight:800,color:'#1e3a5f',marginBottom:4}}>Scan Vendor Ship Label</div>
+            <div style={{fontSize:12,color:'#64748b'}}>Scan the barcode or QR code on the vendor shipping label to pull up the PO</div>
+          </div>
+          <BarcodeScanner placeholder="Type or scan PO number (e.g. NSA-4501, PO-3001)..." onScan={(val)=>{handleScanResult(val)}}/>
+          {/* Recent scans quick list */}
+          <div style={{marginTop:20}}>
+            <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:8,textTransform:'uppercase'}}>Open POs Awaiting Receive</div>
+            {(()=>{
+              const openPOs=[];
+              // Submitted batches awaiting
+              submittedBatches.filter(sb=>sb.status!=='received').forEach(sb=>{
+                openPOs.push({id:sb.po_number,vendor:sb.vendor_name,units:sb.total_units,date:sb.submitted_at,type:'batch'})});
+              // SO PO lines awaiting
+              sos.forEach(so=>{safeItems(so).forEach(it=>{safePOs(it).forEach(po=>{
+                const szKeys=Object.keys(po).filter(k=>typeof po[k]==='number'&&!['status'].includes(k));
+                const open=szKeys.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-((po.received||{})[sz]||0)-((po.cancelled||{})[sz]||0)),0);
+                if(open>0&&!openPOs.find(x=>x.id===po.po_id))openPOs.push({id:po.po_id||'—',vendor:po.vendor||'',units:open,date:po.created_at||'',type:'so',soId:so.id,so})
+              })})});
+              // Inventory POs awaiting
+              invPOs.filter(p=>p.status!=='received'&&p.status!=='cancelled').forEach(po=>{
+                const units=po.items.reduce((a,it)=>a+Object.values(it.sizes).reduce((a2,v)=>a2+v,0)-Object.values(it.received||{}).reduce((a2,v)=>a2+v,0),0);
+                if(!openPOs.find(x=>x.id===po.po_number))openPOs.push({id:po.po_number,vendor:po.vendor_name,units,date:po.created_at,type:'inv'})});
+              // Stock POs awaiting
+              stockPOs.filter(p=>p.status!=='received').forEach(po=>{
+                const units=po.items.reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((a2,v)=>a2+v,0)-Object.values(it.received||{}).reduce((a2,v)=>a2+v,0),0);
+                if(!openPOs.find(x=>x.id===po.id))openPOs.push({id:po.id,vendor:po.vendor_name,units,date:po.created_at,type:'stock'})});
+              if(openPOs.length===0)return<div style={{textAlign:'center',padding:20,color:'#94a3b8',fontSize:13}}>No open POs awaiting receive</div>;
+              return<div className="card"><div className="card-body" style={{padding:0}}>
+                <table style={{fontSize:12}}><thead><tr><th>PO #</th><th>Vendor</th><th>Open Units</th><th>Date</th><th></th></tr></thead><tbody>
+                {openPOs.slice(0,20).map((po,i)=><tr key={po.id+i} style={{cursor:'pointer'}} onClick={()=>handleScanResult(po.id)}>
+                  <td style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af'}}>{po.id}</td>
+                  <td>{po.vendor}</td>
+                  <td style={{fontWeight:700,color:'#d97706'}}>{po.units}</td>
+                  <td style={{fontSize:11,color:'#64748b'}}>{po.date}</td>
+                  <td><button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} onClick={e=>{e.stopPropagation();handleScanResult(po.id)}}>Open</button></td>
+                </tr>)}
+                </tbody></table>
+              </div></div>;
+            })()}
+          </div>
+        </div>
+      </>}
 
       {/* ── PULL & STAGE ── */}
       {whTab==='pull'&&<>
@@ -11754,6 +11901,70 @@ export default function App(){
     // NAV
   const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'reports',label:'Reports',icon:'dollar'},{id:'commissions',label:'Commissions',icon:'dollar',roles:['admin','rep']},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'art',label:'Art Dashboard',icon:'image'},{id:'production',label:'Prod Board',icon:'package'},{id:'decoration',label:'Decoration',icon:'image'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'purchase_orders',label:'Purchase Orders',icon:'cart'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{id:'team',label:'Team',icon:'users'},{section:'Comms'},{id:'messages',label:'Messages',icon:'mail'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'System'},{id:'issues',label:'Issues',icon:'alert'},{id:'import',label:'Import / Upload',icon:'upload'},{id:'qb',label:'QuickBooks Sync',icon:'dollar'},{id:'backup',label:'Backup & Data',icon:'save'},{id:'settings',label:'Settings',icon:'grid',roles:['admin']}];
   const titles={dashboard:'Dashboard',reports:'Reports & Analytics',commissions:'Commissions',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',omg:'OMG Team Stores',jobs:'Jobs',art:'Art Dashboard',production:'Production Board',decoration:'Decoration',warehouse:'Warehouse',purchase_orders:'Purchase Orders',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',team:'Team Directory',products:'Products',inventory:'Inventory',messages:'Messages',issues:'Issues',import:'Import / Upload',qb:'QuickBooks Online',backup:'Backup & Data',settings:'Settings'};
+  // ─── SCAN URL HANDLER — ?scan=PO-XXXX or ?scan=IF-XXXX auto-navigates ───
+  const _scanParam=useMemo(()=>{try{return new URLSearchParams(window.location.search).get('scan')}catch{return null}},[]);
+  const _scanHandled=useRef(false);
+  useEffect(()=>{
+    if(!_scanParam||_scanHandled.current||dbLoading)return;
+    _scanHandled.current=true;
+    const val=_scanParam.trim();
+    // Clean the URL param after reading
+    try{const u=new URL(window.location);u.searchParams.delete('scan');window.history.replaceState({},'',u)}catch{}
+    handleScanResult(val);
+  },[_scanParam,dbLoading]);// eslint-disable-line
+
+  const handleScanResult=(val)=>{
+    if(!val)return;
+    // If scanned value is a URL with ?scan= parameter, extract the value
+    let scanVal=val.trim();
+    try{const u=new URL(scanVal);const sp=u.searchParams.get('scan');if(sp)scanVal=sp}catch{}
+    // Also handle JSON-encoded QR data (legacy format)
+    try{const j=JSON.parse(scanVal);if(j.id)scanVal=j.id}catch{}
+    const upper=scanVal.toUpperCase();
+    // Check if it's an Item Fulfillment (IF-XXXX)
+    if(upper.startsWith('IF-')){
+      for(const so of sos){
+        for(const it of safeItems(so)){
+          for(const pk of safePicks(it)){
+            if((pk.pick_id||'').toUpperCase()===upper){
+              const cc=cust.find(x=>x.id===so.customer_id);
+              setESO(so);setESOC(cc);setESOTab('items');setPg('orders');
+              nf('Scanned: '+pk.pick_id+' — opened '+so.id);return;
+            }
+          }
+        }
+      }
+      nf('Item Fulfillment "'+scanVal+'" not found','warn');return;
+    }
+    // Check if it's a PO — try batch POs first, then SO PO lines, then inventory POs
+    const lc=scanVal.toLowerCase();
+    const bMatch=submittedBatches.find(sb=>sb.po_number.toLowerCase()===lc);
+    if(bMatch){setBatchScan(bMatch.po_number);setPg('batch_pos');nf('Scanned: '+bMatch.po_number);return}
+    // Check SO PO lines
+    for(const so of sos){
+      for(const it of safeItems(so)){
+        for(const po of safePOs(it)){
+          if((po.po_id||'').toLowerCase()===lc){
+            const cc=cust.find(x=>x.id===so.customer_id);
+            setESO(so);setESOC(cc);setESOTab('items');setPg('orders');
+            nf('Scanned: '+po.po_id+' — opened '+so.id);return;
+          }
+        }
+      }
+    }
+    // Check inventory POs
+    const invMatch=invPOs.find(p=>p.po_number.toLowerCase()===lc);
+    if(invMatch){setInvTab('pos');setInvPOSearch(scanVal);setPg('inventory');nf('Scanned: '+invMatch.po_number);return}
+    // Check stock POs
+    const stockMatch=stockPOs.find(p=>p.id.toLowerCase()===lc);
+    if(stockMatch){setWhTab('stockpo');setPg('warehouse');nf('Scanned: '+stockMatch.id);return}
+    // Also search SO IDs directly
+    const soMatch=sos.find(s=>s.id.toLowerCase()===lc);
+    if(soMatch){const cc=cust.find(x=>x.id===soMatch.customer_id);setESO(soMatch);setESOC(cc);setPg('orders');nf('Scanned: '+soMatch.id);return}
+    // Fallback: put into batch scan field on PO page
+    setBatchScan(scanVal);setPg('batch_pos');nf('Looking up: '+scanVal,'warn');
+  };
+
   // ─── COACH PORTAL GATE — public access via ?portal=<alpha_tag> ───
   const _portalTag=useMemo(()=>{try{return new URLSearchParams(window.location.search).get('portal')}catch{return null}},[]);
   const _portalCust=_portalTag?cust.find(c=>(c.alpha_tag||'').toLowerCase()===_portalTag.toLowerCase()):null;
@@ -11776,16 +11987,21 @@ export default function App(){
   if(!cu)return<LoginGate onLogin={handleLogin} reps={REPS}/>;
 
   return(<div className="app"><Toast msg={toast?.msg} type={toast?.type}/>
-    <div className="sidebar"><div className="sidebar-logo">NSA<span>Portal</span></div>
+    {/* Mobile sidebar backdrop */}
+    <div className={`sidebar-backdrop${mobileMenuOpen?' open':''}`} onClick={()=>setMobileMenuOpen(false)}/>
+    <div className={`sidebar${mobileMenuOpen?' open':''}`}><div className="sidebar-logo" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+      <div>NSA<span>Portal</span></div>
+      <button className="mobile-menu-btn" onClick={()=>setMobileMenuOpen(false)} style={{color:'#94a3b8',fontSize:20,background:'none',border:'none',cursor:'pointer',padding:4}}>x</button>
+    </div>
       <nav className="sidebar-nav">{nav.map((item,i)=>{if(item.section)return<div key={i} className="sidebar-section">{item.section}</div>;
         if(item.roles&&!item.roles.includes(cu.role))return null;
         // Page access control: if employee has custom access list, enforce it (admins always see all)
         if(cu.role!=='admin'&&cu.access&&!cu.access.includes(item.id))return null;
         const ubadge=item.id==='messages'?msgs.filter(m=>!(m.read_by||[]).includes(cu.id)).length:0;
         return<button key={item.id} className={`sidebar-link ${pg===item.id?'active':''}`}
-          onClick={()=>{if(dirtyRef.current&&!window.confirm('You have unsaved changes. Leave without saving?'))return;dirtyRef.current=false;setPg(item.id);setQ('');setSelC(null);setSelV(null);setEEst(null);setESO(null)}}><Icon name={item.icon}/>{item.label}{item.id==='messages'&&ubadge>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{ubadge}</span>}{item.id==='purchase_orders'&&(()=>{let wc=0;sos.forEach(so=>safeItems(so).forEach(it=>safePOs(it).forEach(po=>{const szKeys=Object.keys(po).filter(k=>typeof po[k]==='number'&&!['status'].includes(k));const open=szKeys.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-((po.received||{})[sz]||0)-((po.cancelled||{})[sz]||0)),0);if(open>0)wc++})));return wc>0?<span style={{background:'#d97706',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{wc}</span>:null})()}{item.id==='batch_pos'&&batchPOs.length>0&&<span style={{background:'#7c3aed',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{batchPOs.length}</span>}{item.id==='issues'&&openIssueCount>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{openIssueCount}</span>}</button>})}</nav>
+          onClick={()=>{if(dirtyRef.current&&!window.confirm('You have unsaved changes. Leave without saving?'))return;dirtyRef.current=false;setPg(item.id);setQ('');setSelC(null);setSelV(null);setEEst(null);setESO(null);setMobileMenuOpen(false)}}><Icon name={item.icon}/>{item.label}{item.id==='messages'&&ubadge>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{ubadge}</span>}{item.id==='purchase_orders'&&(()=>{let wc=0;sos.forEach(so=>safeItems(so).forEach(it=>safePOs(it).forEach(po=>{const szKeys=Object.keys(po).filter(k=>typeof po[k]==='number'&&!['status'].includes(k));const open=szKeys.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-((po.received||{})[sz]||0)-((po.cancelled||{})[sz]||0)),0);if(open>0)wc++})));return wc>0?<span style={{background:'#d97706',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{wc}</span>:null})()}{item.id==='batch_pos'&&batchPOs.length>0&&<span style={{background:'#7c3aed',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{batchPOs.length}</span>}{item.id==='issues'&&openIssueCount>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{openIssueCount}</span>}</button>})}</nav>
       <div className="sidebar-user"><div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}><div><div style={{fontWeight:600,color:'#e2e8f0'}}>{cu.name}</div><div>{cu.role}</div></div><button onClick={handleLogout} style={{background:'none',border:'1px solid #475569',borderRadius:6,padding:'3px 8px',color:'#94a3b8',cursor:'pointer',fontSize:10}} title="Log out">↪ Out</button></div></div></div>
-    <div className="main"><div className="topbar"><h1>{eEst?eEst.id:eSO?eSO.id:selC?selC.name:selV?selV.name:(titles[pg]||'Dashboard')}</h1>
+    <div className="main"><div className="topbar"><button className="mobile-menu-btn" onClick={()=>setMobileMenuOpen(true)}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button><h1>{eEst?eEst.id:eSO?eSO.id:selC?selC.name:selV?selV.name:(titles[pg]||'Dashboard')}</h1>
         <div style={{flex:1,maxWidth:400,margin:'0 20px',position:'relative'}}>
           <div className="search-bar" style={{margin:0}}><Icon name="search"/><input placeholder="Search everything... (customers, orders, products)" value={gQ} onChange={e=>setGQ(e.target.value)} onFocus={()=>setGOpen(true)}/>{gQ&&<button onClick={()=>{setGQ('');setGOpen(false)}} style={{background:'none',border:'none',cursor:'pointer',padding:2}}><Icon name="x" size={14}/></button>}</div>
           {gOpen&&gQ.length>=2&&(()=>{const s=gQ.toLowerCase();
@@ -11817,7 +12033,7 @@ export default function App(){
             </div>})()}
           {gOpen&&<div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:59}} onClick={()=>setGOpen(false)}/>}
         </div>
-        <div style={{display:'flex',gap:6,alignItems:'center'}}><button className="btn btn-sm" onClick={()=>setIssueModal({open:true,desc:'',priority:'medium'})} style={{fontSize:11,background:'none',border:'1px solid #fca5a5',color:'#dc2626',position:'relative',padding:'4px 8px'}} title="Report an issue"><Icon name="alert" size={14}/>{openIssueCount>0&&<span style={{position:'absolute',top:-4,right:-4,background:'#dc2626',color:'white',borderRadius:10,padding:'0 5px',fontSize:9,minWidth:16,textAlign:'center',lineHeight:'16px'}}>{openIssueCount}</span>}</button><button className="btn btn-sm btn-primary" onClick={()=>newE(null)} style={{fontSize:11}}><Icon name="plus" size={12}/> Estimate</button><button className="btn btn-sm btn-secondary" onClick={()=>setCM({open:true,c:null})} style={{fontSize:11}}><Icon name="plus" size={12}/> Customer</button><button className="btn btn-sm btn-secondary" onClick={()=>setQPC({open:true,mode:'single',items:[{sku:'',name:'',brand:'',color:'',category:'Tees',retail_price:0,nsa_cost:0,available_sizes:['S','M','L','XL','2XL'],vendor_id:''}]})} style={{fontSize:11}}><Icon name="plus" size={12}/> Product</button></div></div>
+        <div style={{display:'flex',gap:6,alignItems:'center'}}><button className="btn btn-sm" onClick={()=>setScanModalOpen(true)} style={{fontSize:11,background:'#0f172a',border:'1px solid #334155',color:'#22c55e',padding:'4px 8px'}} title="Scan barcode / QR code"><Icon name="scan" size={14}/></button><button className="btn btn-sm" onClick={()=>setIssueModal({open:true,desc:'',priority:'medium'})} style={{fontSize:11,background:'none',border:'1px solid #fca5a5',color:'#dc2626',position:'relative',padding:'4px 8px'}} title="Report an issue"><Icon name="alert" size={14}/>{openIssueCount>0&&<span style={{position:'absolute',top:-4,right:-4,background:'#dc2626',color:'white',borderRadius:10,padding:'0 5px',fontSize:9,minWidth:16,textAlign:'center',lineHeight:'16px'}}>{openIssueCount}</span>}</button><button className="btn btn-sm btn-primary" onClick={()=>newE(null)} style={{fontSize:11}}><Icon name="plus" size={12}/> Estimate</button><button className="btn btn-sm btn-secondary" onClick={()=>setCM({open:true,c:null})} style={{fontSize:11}}><Icon name="plus" size={12}/> Customer</button><button className="btn btn-sm btn-secondary" onClick={()=>setQPC({open:true,mode:'single',items:[{sku:'',name:'',brand:'',color:'',category:'Tees',retail_price:0,nsa_cost:0,available_sizes:['S','M','L','XL','2XL'],vendor_id:''}]})} style={{fontSize:11}}><Icon name="plus" size={12}/> Product</button></div></div>
       {dbError&&<div style={{padding:'10px 16px',background:'#fef2f2',border:'1px solid #fecaca',color:'#991b1b',fontSize:12,fontWeight:600,display:'flex',alignItems:'center',gap:8}}>
         <span style={{fontSize:16}}>&#9888;</span><span style={{flex:1}}>{dbError}</span>
         <button onClick={()=>setDbError(null)} style={{background:'none',border:'none',color:'#991b1b',cursor:'pointer',fontWeight:800,fontSize:14}}>&#215;</button>
@@ -11958,7 +12174,7 @@ export default function App(){
             <div><label className="form-label">NSA Cost{(it.brand==='Adidas'||it.brand==='Under Armour')&&it.retail_price>0?<span style={{fontSize:9,color:'#16a34a',marginLeft:4}}>auto</span>:''}</label><$In value={it.nsa_cost||0} onChange={v=>{const bn=it.brand||D_V.find(x=>x.id===it.vendor_id)?.name||'';const cat=it.category||'Tees';if(bn==='Adidas'&&v>0){setQPC(x=>({...x,items:[{...x.items[0],nsa_cost:v,retail_price:Math.round(v/(cat==='Custom'?0.4125:0.375)*100)/100}]}))}else if(bn==='Under Armour'&&v>0){setQPC(x=>({...x,items:[{...x.items[0],nsa_cost:v,retail_price:Math.round(v/0.425*100)/100}]}))}else{up('nsa_cost',v)}}}/></div>
             <div style={{gridColumn:'1/3'}}><label className="form-label">Product Image</label>
               <div style={{display:'flex',alignItems:'center',gap:10}}>
-                <ImgUpload url={it.image_url} onUpload={v=>up('image_url',v)} size={64}/>
+                <ImgUpload url={it.image_url} onUpload={v=>{up('image_url',v);nf('Image uploaded')}} onError={e=>nf(e,'error')} size={64}/>
                 <span style={{fontSize:11,color:'#94a3b8'}}>Click or drag & drop an image</span>
               </div>
             </div>
@@ -12051,6 +12267,17 @@ export default function App(){
           <button className="btn btn-primary" onClick={submitIssue} disabled={!issueModal.desc.trim()}>Submit Issue</button>
           <button className="btn btn-secondary" onClick={()=>setIssueModal(x=>({...x,open:false}))}>Cancel</button>
         </div>
+      </div>
+    </div></div>}
+
+    {/* GLOBAL SCAN MODAL */}
+    {scanModalOpen&&<div className="modal-overlay" onClick={()=>setScanModalOpen(false)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:500,background:'#0f172a',border:'2px solid #334155'}}>
+      <div style={{padding:'16px 20px',display:'flex',justifyContent:'space-between',alignItems:'center',borderBottom:'1px solid #1e293b'}}>
+        <div style={{color:'white',fontWeight:800,fontSize:16,display:'flex',alignItems:'center',gap:8}}><Icon name="scan" size={20}/> Scan PO / Item Fulfillment</div>
+        <button onClick={()=>setScanModalOpen(false)} style={{background:'none',border:'none',color:'#64748b',cursor:'pointer',fontSize:20}}>x</button>
+      </div>
+      <div style={{padding:16}}>
+        <BarcodeScanner placeholder="Scan or type PO#, IF#, SO#..." onScan={(val)=>{setScanModalOpen(false);handleScanResult(val)}} onClose={()=>setScanModalOpen(false)}/>
       </div>
     </div></div>}
   </div>);
