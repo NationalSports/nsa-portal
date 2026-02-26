@@ -9636,7 +9636,10 @@ export default function App(){
             {urgent&&<span style={{fontSize:9,fontWeight:800,color:'#dc2626',background:'#fef2f2',padding:'1px 5px',borderRadius:3}}>🔥 {j.daysOut}d</span>}
             {j.daysOut!=null&&!urgent&&j.daysOut<=14&&<span style={{fontSize:9,color:'#92400e'}}>{j.daysOut}d</span>}
           </div>
-          <div style={{fontSize:11,fontWeight:600,color:'#475569',marginBottom:2}}>{j.art_name}</div>
+          <div style={{display:'flex',gap:5,alignItems:'center',marginBottom:2}}>
+            <span style={{fontSize:11,fontWeight:600,color:'#475569'}}>{j.art_name}</span>
+            {af&&(()=>{const fSt=af.status==='uploaded'?'needs_approval':af.status||'waiting_for_art';return<span style={{padding:'1px 5px',borderRadius:6,fontSize:8,fontWeight:700,background:ART_FILE_SC[fSt]?.bg||'#f1f5f9',color:ART_FILE_SC[fSt]?.c||'#64748b'}}>{ART_FILE_LABELS[fSt]||fSt}</span>})()}
+          </div>
           <div style={{fontSize:10,color:'#64748b',marginBottom:4}}>{j.deco_type?.replace(/_/g,' ')} · {j.soId} · {j.total_units}u</div>
           {af&&<div style={{marginBottom:4}}>
             {(af.mockup_files||af.files||[]).length>0&&<div style={{fontSize:9,color:'#2563eb'}}>{(af.mockup_files||af.files||[]).length} mockup file{(af.mockup_files||af.files||[]).length!==1?'s':''}</div>}
