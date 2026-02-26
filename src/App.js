@@ -111,18 +111,24 @@ const _dbLoad = async () => {
 };
 const _dbSeed = async (d) => {
   if (!supabase) return;
-  // Seed core tables
-  if(d.team?.length) await supabase.from('team_members').upsert(d.team.map(t=>({id:t.id,name:t.name,role:t.role,email:t.email,phone:t.phone})),{onConflict:'id'});
-  if(d.vendors?.length) await supabase.from('vendors').upsert(d.vendors.map(v=>{const{_oi,_it,_ac,_a3,_a6,_a9,...rest}=v;return rest}),{onConflict:'id'});
-  // Customers + contacts
+  // Seed core tables — team_members MUST succeed first (customers FK to team_members)
+  const teamIds=new Set((d.team||[]).map(t=>t.id));
+  if(d.team?.length){const{error:tErr}=await supabase.from('team_members').upsert(d.team.map(t=>({id:t.id,name:t.name,role:t.role,email:t.email,phone:t.phone})),{onConflict:'id'});if(tErr)console.error('[DB] seed team_members:',tErr.message)}
+  if(d.vendors?.length){const{error:vErr}=await supabase.from('vendors').upsert(d.vendors.map(v=>{const{_oi,_it,_ac,_a3,_a6,_a9,...rest}=v;return rest}),{onConflict:'id'});if(vErr)console.error('[DB] seed vendors:',vErr.message)}
+  // Customers + contacts — use _pick to strip unknown cols, null out invalid FKs
+  const custIds=new Set((d.customers||[]).map(c=>c.id));
   if(d.customers?.length){
-    await supabase.from('customers').upsert(d.customers.map(c=>{const{contacts,_oe,_os,_oi,_ob,...rest}=c;return rest}),{onConflict:'id'});
+    const custRows=d.customers.map(c=>{const clean=_pick(c,_custCols);if(clean.primary_rep_id&&!teamIds.has(clean.primary_rep_id))clean.primary_rep_id=null;if(clean.parent_id&&!custIds.has(clean.parent_id))clean.parent_id=null;return clean});
+    // Insert parent-less customers first, then those with parent_id (to satisfy FK)
+    const noParent=custRows.filter(c=>!c.parent_id);const withParent=custRows.filter(c=>c.parent_id);
+    if(noParent.length){const{error:cErr}=await supabase.from('customers').upsert(noParent,{onConflict:'id'});if(cErr)console.error('[DB] seed customers:',cErr.message)}
+    if(withParent.length){const{error:cErr}=await supabase.from('customers').upsert(withParent,{onConflict:'id'});if(cErr)console.error('[DB] seed customers (parents):',cErr.message)}
     const allContacts=[];d.customers.forEach(c=>(c.contacts||[]).forEach((ct,i)=>allContacts.push({customer_id:c.id,name:ct.name,email:ct.email,phone:ct.phone,role:ct.role,sort_order:i})));
-    if(allContacts.length) await supabase.from('customer_contacts').upsert(allContacts);
+    if(allContacts.length){const{error:ctErr}=await supabase.from('customer_contacts').insert(allContacts);if(ctErr)console.error('[DB] seed contacts:',ctErr.message)}
   }
-  // Products + inventory
+  // Products + inventory — strip extra fields
   if(d.products?.length){
-    await supabase.from('products').upsert(d.products.map(p=>{const{_inv,_alerts,_colors,...rest}=p;return{...rest,_colors:_colors||null}}),{onConflict:'id'});
+    await supabase.from('products').upsert(d.products.map(p=>{const{_inv,_alerts,_colors,vendor_id,...rest}=p;return{...rest,vendor_id:vendor_id||null,_colors:_colors||null}}),{onConflict:'id'});
     const allInv=[];d.products.forEach(p=>{const inv=p._inv||{};const alerts=p._alerts||{};const allSizes=new Set([...Object.keys(inv),...Object.keys(alerts)]);allSizes.forEach(sz=>allInv.push({product_id:p.id,size:sz,quantity:inv[sz]||0,alert_threshold:alerts[sz]||null}))});
     if(allInv.length) await supabase.from('product_inventory').upsert(allInv,{onConflict:'product_id,size'});
   }
@@ -150,17 +156,17 @@ const _dbSaveEstimate = async (est) => {
   if(!supabase)return;
   return _dbSavingGuard(async()=>{try{
     const{items,art_files,...estRow}=est;
-    await supabase.from('estimates').upsert(estRow,{onConflict:'id'});
+    await supabase.from('estimates').upsert(_pick(estRow,_estCols),{onConflict:'id'});
     // Delete old children, re-insert
     await supabase.from('estimate_items').delete().eq('estimate_id',est.id);
     if(art_files?.length) await supabase.from('estimate_art_files').upsert(art_files.map(a=>({...a,estimate_id:est.id})),{onConflict:'estimate_id,id'});
     if(!items?.length)return;
     for(let idx=0;idx<items.length;idx++){
       const{decorations,...itemData}=items[idx];
-      const{data:inserted,error:itemErr}=await supabase.from('estimate_items').insert({...itemData,estimate_id:est.id,item_index:idx}).select('id').single();
+      const{data:inserted,error:itemErr}=await supabase.from('estimate_items').insert({..._pick(itemData,_itemCols),estimate_id:est.id,item_index:idx}).select('id').single();
       if(itemErr){console.error('[DB] estimate_items insert failed:',itemErr.message,itemErr.details);continue}
       if(inserted&&decorations?.length){
-        const{error:decoErr}=await supabase.from('estimate_item_decorations').insert(decorations.map((d,di)=>({...d,estimate_item_id:inserted.id,deco_index:di})));
+        const{error:decoErr}=await supabase.from('estimate_item_decorations').insert(decorations.map((d,di)=>({..._pick(d,_decoCols),estimate_item_id:inserted.id,deco_index:di})));
         if(decoErr)console.error('[DB] estimate_item_decorations insert failed:',decoErr.message,decoErr.details);
       }
     }
@@ -170,7 +176,7 @@ const _dbSaveSO = async (so) => {
   if(!supabase)return;
   return _dbSavingGuard(async()=>{try{
     const{items,art_files,firm_dates,jobs,...soRow}=so;
-    await supabase.from('sales_orders').upsert(soRow,{onConflict:'id'});
+    await supabase.from('sales_orders').upsert(_pick(soRow,_soCols),{onConflict:'id'});
     // Delete old children — must delete grandchildren (decorations/picks/POs) BEFORE so_items due to FK constraints
     const oldItemIds=(await supabase.from('so_items').select('id').eq('so_id',so.id)).data?.map(i=>i.id)||[];
     if(oldItemIds.length){
@@ -188,11 +194,11 @@ const _dbSaveSO = async (so) => {
     for(let idx=0;idx<items.length;idx++){
       const{decorations,pick_lines,po_lines,...itemData}=items[idx];
       // Separate size fields from pick_lines/po_lines back into sizes JSONB
-      const{data:inserted,error:itemErr}=await supabase.from('so_items').insert({...itemData,so_id:so.id,item_index:idx}).select('id').single();
+      const{data:inserted,error:itemErr}=await supabase.from('so_items').insert({..._pick(itemData,_itemCols),so_id:so.id,item_index:idx}).select('id').single();
       if(itemErr){console.error('[DB] so_items insert failed:',itemErr.message,itemErr.details);continue}
       if(!inserted)continue;
       if(decorations?.length){
-        const{error:decoErr}=await supabase.from('so_item_decorations').insert(decorations.map((d,di)=>({...d,so_item_id:inserted.id,deco_index:di})));
+        const{error:decoErr}=await supabase.from('so_item_decorations').insert(decorations.map((d,di)=>({..._pick(d,_decoCols),so_item_id:inserted.id,deco_index:di})));
         if(decoErr)console.error('[DB] so_item_decorations insert failed:',decoErr.message,decoErr.details);
       }
       if(pick_lines?.length){
@@ -227,7 +233,7 @@ const _dbSaveCustomer = async (c) => {
   if(!supabase)return;
   try{
     const{contacts,_oe,_os,_oi,_ob,...custRow}=c;
-    await supabase.from('customers').upsert(custRow,{onConflict:'id'});
+    await supabase.from('customers').upsert(_pick(custRow,_custCols),{onConflict:'id'});
     await supabase.from('customer_contacts').delete().eq('customer_id',c.id);
     if(contacts?.length) await supabase.from('customer_contacts').insert(contacts.map((ct,i)=>({customer_id:c.id,name:ct.name,email:ct.email,phone:ct.phone,role:ct.role,sort_order:i})));
   }catch(e){console.error('[DB] save customer:',e)}
@@ -290,6 +296,13 @@ const _dbDeleteInvoice = async (id) => {
 // Save-in-progress guard — prevents poll/realtime from loading partial data during delete-and-reinsert
 let _dbSaving=false;
 const _dbSavingGuard=async(fn)=>{_dbSaving=true;try{await fn()}finally{_dbSaving=false}};
+// Column whitelists — strip unknown fields before sending to Supabase (localStorage may have extra UI fields like vendor_id)
+const _pick=(obj,cols)=>{const r={};cols.forEach(c=>{if(c in obj)r[c]=obj[c]});return r};
+const _estCols=['id','customer_id','memo','status','created_by','created_at','updated_at','default_markup','shipping_type','shipping_value','ship_to_id','email_status','email_opened_at','email_viewed_at','deleted_at'];
+const _soCols=['id','customer_id','estimate_id','memo','status','created_by','created_at','updated_at','expected_date','production_notes','shipping_type','shipping_value','ship_to_id','default_markup','omg_store_id','_shipstation_order_id','_shipping_status','_tracking_number','_carrier','_ship_date','_tracking_url','_shipped','deleted_at'];
+const _itemCols=['product_id','sku','name','brand','color','nsa_cost','retail_price','unit_sell','sizes','available_sizes','_colors','no_deco','is_custom','custom_desc','custom_cost','custom_sell'];
+const _decoCols=['kind','position','type','art_file_id','art_tbd_type','tbd_colors','tbd_stitches','tbd_dtf_size','sell_override','sell_each','cost_each','underbase','two_color','colors','stitches','dtf_size','num_method','num_size','roster','names','names_list','vendor','deco_type','notes','custom_font_art_id','_showRoster'];
+const _custCols=['id','parent_id','name','alpha_tag','billing_address_line1','billing_address_line2','billing_city','billing_state','billing_zip','shipping_address_line1','shipping_address_line2','shipping_city','shipping_state','shipping_zip','adidas_ua_tier','catalog_markup','payment_terms','tax_rate','tax_exempt','primary_rep_id','notes','is_active','created_at','updated_at'];
 // Legacy compat — keep old _dbSave for team_members and other simple tables
 const _dbSave = (table, data) => { if(supabase && data) supabase.from(table).upsert(Array.isArray(data)?data:[data], {onConflict:'id'}).then(r=>{if(r.error)console.error('[DB] save '+table+':', r.error.message)}) };
 // ─── Cloudinary Config ───
