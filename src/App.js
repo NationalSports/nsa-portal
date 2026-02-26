@@ -5452,14 +5452,32 @@ export default function App(){
     // ─── Supabase Realtime subscriptions ───
     const channels=[];
     if(supabase){
+      let _rtTimer=null;
+      const _jsonEq=(a,b)=>{try{return JSON.stringify(a)===JSON.stringify(b)}catch{return false}};
       const reloadAll=async()=>{const d=await _dbLoad();if(!d||!d.hasData)return;
-        if(d.team.length)setREPS(d.team);setEsts(d.estimates);setSOs(d.sales_orders);
-        setInvs(d.invoices);if(d.messages.length)setMsgs(d.messages);
-        setCust(d.customers);if(d.products.length)setProd(d.products);
-        if(d.vendors.length)setVend(d.vendors);if(d.omg_stores.length)setOmgStores(d.omg_stores);
-        if(d.issues?.length)setIssues(d.issues)};
+        // Use change detection to avoid triggering save effects needlessly
+        if(d.team.length)setREPS(prev=>_jsonEq(prev,d.team)?prev:d.team);
+        setEsts(prev=>_jsonEq(prev,d.estimates)?prev:d.estimates);
+        setSOs(prev=>_jsonEq(prev,d.sales_orders)?prev:d.sales_orders);
+        setInvs(prev=>_jsonEq(prev,d.invoices)?prev:d.invoices);
+        if(d.messages.length)setMsgs(prev=>_jsonEq(prev,d.messages)?prev:d.messages);
+        setCust(prev=>_jsonEq(prev,d.customers)?prev:d.customers);
+        if(d.products.length)setProd(prev=>_jsonEq(prev,d.products)?prev:d.products);
+        if(d.vendors.length)setVend(prev=>_jsonEq(prev,d.vendors)?prev:d.vendors);
+        if(d.omg_stores.length)setOmgStores(prev=>_jsonEq(prev,d.omg_stores)?prev:d.omg_stores);
+        if(d.issues?.length)setIssues(prev=>_jsonEq(prev,d.issues)?prev:d.issues);
+        // Refresh app_state keys
+        const as=d.appState||{};
+        if(as.inv_pos)setInvPOs(prev=>_jsonEq(prev,as.inv_pos)?prev:as.inv_pos);
+        if(as.inv_adj_log)setInvAdjLog(prev=>_jsonEq(prev,as.inv_adj_log)?prev:as.inv_adj_log);
+        if(as.inv_po_counter)setInvPOCounter(prev=>as.inv_po_counter===prev?prev:as.inv_po_counter);
+        if(as.submitted_batches)setSubmittedBatches(prev=>_jsonEq(prev,as.submitted_batches)?prev:as.submitted_batches);
+        if(as.batch_pos)setBatchPOs(prev=>_jsonEq(prev,as.batch_pos)?prev:as.batch_pos);
+      };
+      // Debounce realtime events — coalesce rapid-fire changes into a single reload
+      const debouncedReload=()=>{if(_rtTimer)clearTimeout(_rtTimer);_rtTimer=setTimeout(reloadAll,2000)};
       ['estimates','estimate_items','estimate_item_decorations','estimate_art_files','sales_orders','so_items','so_item_decorations','so_item_pick_lines','so_item_po_lines','so_art_files','so_jobs','so_firm_dates','invoices','invoice_items','invoice_payments','messages','message_reads','customers','customer_contacts','products','product_inventory','vendors','team_members','omg_stores','omg_store_products','issues','app_state'].forEach(table=>{
-        const ch=supabase.channel('realtime_'+table).on('postgres_changes',{event:'*',schema:'public',table},()=>{reloadAll()}).subscribe();
+        const ch=supabase.channel('realtime_'+table).on('postgres_changes',{event:'*',schema:'public',table},()=>{debouncedReload()}).subscribe();
         channels.push(ch);
       });
     }
