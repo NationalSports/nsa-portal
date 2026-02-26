@@ -7070,14 +7070,21 @@ export default function App(){
   const[artEditModal,setArtEditModal]=useState(null);// {job, instructions:'', notes:''}
   const[artMockupModal,setArtMockupModal]=useState(null);// job object for art mockup popup
   const[artMockupRevision,setArtMockupRevision]=useState('');// revision text in mockup popup
+  const[artJobDetailModal,setArtJobDetailModal]=useState(null);// job object for artist card detail popup
+  const[artJobDetailMsg,setArtJobDetailMsg]=useState('');// message text in artist detail popup
+  const[artJobDetailUploading,setArtJobDetailUploading]=useState(false);// upload in-progress flag
   const[prodJobModal,setProdJobModal]=useState(null);// job object for production mockup view
   const[prodJobLightbox,setProdJobLightbox]=useState(false);// lightbox for mockup image
   const[prodView,setProdView]=useState('board');const[prodFilter,setProdFilter]=useState('all');const[expandedJob,setExpandedJob]=useState(null);
   const[prodSort,setProdSort]=useState({f:'expected',d:'asc'});const[prodStatF,setProdStatF]=useState('active');const[prodDecoF,setProdDecoF]=useState('all');
   const[assignModal,setAssignModal]=useState(null);// {job, soId, targetStatus}
-  const[jobTimeLogs,setJobTimeLogs]=useState(()=>loadState('job_time_logs',[]));// [{jobId,soId,person,clockIn,clockOut,minutes}]
+  const[jobTimeLogs,setJobTimeLogs]=useState(()=>loadState('job_time_logs',[]));// [{jobId,soId,person,clockIn,clockOut,minutes,dept:'production'}]
   React.useEffect(()=>{_saveAppState('job_time_logs',jobTimeLogs)},[jobTimeLogs]);
   const[activeTimers,setActiveTimers]=useState({});// {jobId:{person,clockIn,soId}}
+  // Art time tracking — separate logs for artist work
+  const[artTimeLogs,setArtTimeLogs]=useState(()=>loadState('art_time_logs',[]));// [{jobId,soId,person,clockIn,clockOut,minutes,artName,customer}]
+  React.useEffect(()=>{_saveAppState('art_time_logs',artTimeLogs)},[artTimeLogs]);
+  const[activeArtTimers,setActiveArtTimers]=useState({});// {soId|jobId:{person,clockIn,soId,artName,customer}}
   const[assignTo,setAssignTo]=useState({machine:'',person:'',shipMethod:''});
   const moveJobStatus=(j,newStatus)=>{
     // If moving to staging (In Line), prompt for assignment
@@ -8416,7 +8423,7 @@ export default function App(){
   // REPORTS & ANALYTICS PAGE
   const[rptTab,setRptTab]=useState('overview');
   const[rptRep,setRptRep]=useState('all');
-  const[rptWidgets,setRptWidgets]=useState({pipeline:true,repLeaderboard:true,custHealth:true,productMix:true,convFunnel:true,margins:true,seasonality:true,retention:true,omgStores:true,atRisk:true,lowMargin:true});
+  const[rptWidgets,setRptWidgets]=useState({pipeline:true,repLeaderboard:true,custHealth:true,productMix:true,convFunnel:true,margins:true,seasonality:true,retention:true,omgStores:true,atRisk:true,lowMargin:true,prodThroughput:true,artTime:true,decoTime:true,laborSummary:true});
   const[commOverrides,setCommOverrides]=useState({});// {invoiceId: true} = admin approved full commission on late invoice
   const[commMonth,setCommMonth]=useState(()=>{const d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')});
   const[commTab,setCommTab]=useState('statement');// statement, pipeline, ytd, byCustomer
@@ -8491,7 +8498,7 @@ export default function App(){
       {/* Report controls */}
       <div style={{display:'flex',gap:8,marginBottom:12,alignItems:'center',flexWrap:'wrap'}}>
         <div style={{display:'flex',gap:4}}>
-          {[['overview','📊 Overview'],['pipeline','💰 Pipeline'],['customers','👥 Customers'],['products','📦 Products'],['reps','🏆 Reps']].map(([v,l])=>
+          {[['overview','📊 Overview'],['pipeline','💰 Pipeline'],['customers','👥 Customers'],['products','📦 Products'],['reps','🏆 Reps'],['production','🏭 Production'],['time','⏱️ Time & Labor']].map(([v,l])=>
             <button key={v} className={`btn btn-sm ${rptTab===v?'btn-primary':'btn-secondary'}`} onClick={()=>setRptTab(v)}>{l}</button>)}
         </div>
         <select className="form-select" style={{width:140,fontSize:11}} value={rptRep} onChange={e=>setRptRep(e.target.value)}>
@@ -8765,11 +8772,173 @@ export default function App(){
           </div>})()}
       </div>}
 
+      {/* ═══ PRODUCTION TAB ═══ */}
+      {(rptTab==='production')&&<>
+        {/* Production Throughput */}
+        <div className="card" style={{marginBottom:12}}>
+          <WH id="prodThroughput" title="Production Throughput" icon="🏭"/>
+          {rptWidgets.prodThroughput&&(()=>{
+            const allJobs=[];sos.forEach(so=>{const c=cust.find(x=>x.id===so.customer_id);
+              buildJobs(so).forEach(j=>allJobs.push({...j,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',rep:REPS.find(r=>r.id===so.created_by)?.name||'—'}))});
+            const hold=allJobs.filter(j=>j.prod_status==='hold').length;const staging=allJobs.filter(j=>j.prod_status==='staging').length;
+            const inProcess=allJobs.filter(j=>j.prod_status==='in_process').length;const completed=allJobs.filter(j=>j.prod_status==='completed').length;
+            const shipped=allJobs.filter(j=>j.prod_status==='shipped').length;
+            const totalUnits=allJobs.reduce((a,j)=>a+j.total_units,0);const fulfilledUnits=allJobs.reduce((a,j)=>a+j.fulfilled_units,0);
+            const byDeco={};allJobs.forEach(j=>{const dt=j.deco_type||'unknown';if(!byDeco[dt])byDeco[dt]={count:0,units:0,completed:0};byDeco[dt].count++;byDeco[dt].units+=j.total_units;if(j.prod_status==='completed'||j.prod_status==='shipped')byDeco[dt].completed++});
+            const byMachine={};allJobs.filter(j=>j.assigned_machine).forEach(j=>{const m=j.assigned_machine;if(!byMachine[m])byMachine[m]={count:0,units:0};byMachine[m].count++;byMachine[m].units+=j.total_units});
+            return<div className="card-body">
+              <div className="stats-row" style={{marginBottom:12}}>
+                <div className="stat-card"><div className="stat-label">On Hold</div><div className="stat-value" style={{color:'#94a3b8'}}>{hold}</div></div>
+                <div className="stat-card"><div className="stat-label">Staging</div><div className="stat-value" style={{color:'#d97706'}}>{staging}</div></div>
+                <div className="stat-card"><div className="stat-label">In Process</div><div className="stat-value" style={{color:'#2563eb'}}>{inProcess}</div></div>
+                <div className="stat-card"><div className="stat-label">Completed</div><div className="stat-value" style={{color:'#22c55e'}}>{completed}</div></div>
+                <div className="stat-card"><div className="stat-label">Shipped</div><div className="stat-value" style={{color:'#166534'}}>{shipped}</div></div>
+              </div>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
+                <div>
+                  <div style={{fontSize:12,fontWeight:700,color:'#1e293b',marginBottom:6}}>By Decoration Type</div>
+                  <table style={{fontSize:12}}><thead><tr><th>Type</th><th style={{textAlign:'center'}}>Jobs</th><th style={{textAlign:'center'}}>Units</th><th style={{textAlign:'center'}}>Done</th></tr></thead>
+                  <tbody>{Object.entries(byDeco).sort((a,b)=>b[1].count-a[1].count).map(([dt,d])=>
+                    <tr key={dt}><td style={{fontWeight:600}}>{dt.replace(/_/g,' ')}</td><td style={{textAlign:'center'}}>{d.count}</td><td style={{textAlign:'center'}}>{d.units}</td><td style={{textAlign:'center',color:'#22c55e',fontWeight:600}}>{d.completed}</td></tr>
+                  )}</tbody></table>
+                </div>
+                <div>
+                  <div style={{fontSize:12,fontWeight:700,color:'#1e293b',marginBottom:6}}>By Machine</div>
+                  {Object.keys(byMachine).length===0?<div style={{fontSize:11,color:'#94a3b8'}}>No machine assignments yet</div>:
+                  <table style={{fontSize:12}}><thead><tr><th>Machine</th><th style={{textAlign:'center'}}>Jobs</th><th style={{textAlign:'center'}}>Units</th></tr></thead>
+                  <tbody>{Object.entries(byMachine).sort((a,b)=>b[1].count-a[1].count).map(([m,d])=>
+                    <tr key={m}><td style={{fontWeight:600}}>{MACHINES.find(mc=>mc.id===m)?.name||m}</td><td style={{textAlign:'center'}}>{d.count}</td><td style={{textAlign:'center'}}>{d.units}</td></tr>
+                  )}</tbody></table>}
+                </div>
+              </div>
+              <div style={{marginTop:12,padding:8,background:'#f8fafc',borderRadius:6,display:'flex',gap:16,fontSize:12}}>
+                <span>Total Jobs: <strong>{allJobs.length}</strong></span>
+                <span>Total Units: <strong>{totalUnits.toLocaleString()}</strong></span>
+                <span>Fulfilled: <strong style={{color:'#22c55e'}}>{fulfilledUnits.toLocaleString()}</strong></span>
+                <span>Fulfillment Rate: <strong style={{color:totalUnits>0&&fulfilledUnits/totalUnits>=0.5?'#22c55e':'#d97706'}}>{totalUnits>0?Math.round(fulfilledUnits/totalUnits*100):0}%</strong></span>
+              </div>
+            </div>})()}
+        </div>
+      </>}
+
+      {/* ═══ TIME & LABOR TAB ═══ */}
+      {(rptTab==='time')&&<>
+        {/* Labor Rates Key */}
+        <div className="card" style={{marginBottom:12,borderLeft:'3px solid #7c3aed'}}>
+          <div style={{padding:'10px 14px',display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
+            <span style={{fontSize:12,fontWeight:700,color:'#6d28d9'}}>Hourly Rates:</span>
+            {(()=>{const rates=laborRates;const people=[...new Set([...artTimeLogs.map(l=>l.person),...jobTimeLogs.map(l=>l.person)])];
+              return people.length>0?people.map(p=><span key={p} style={{fontSize:11,padding:'2px 8px',background:'#f5f3ff',borderRadius:4,border:'1px solid #ddd6fe'}}>
+                <strong>{p}</strong>: ${(rates[p]||0).toFixed(2)}/hr
+              </span>):<span style={{fontSize:11,color:'#94a3b8'}}>Set rates in Settings → Labor Rates</span>})()}
+          </div>
+        </div>
+
+        {/* Art Time Summary */}
+        <div className="card" style={{marginBottom:12}}>
+          <WH id="artTime" title="Art Department Time" icon="🎨"/>
+          {rptWidgets.artTime&&(()=>{
+            const rates=laborRates;
+            const byPerson={};artTimeLogs.forEach(l=>{if(!byPerson[l.person])byPerson[l.person]={minutes:0,jobs:0,customers:new Set()};byPerson[l.person].minutes+=l.minutes;byPerson[l.person].jobs++;byPerson[l.person].customers.add(l.customer)});
+            const byJob={};artTimeLogs.forEach(l=>{const key=l.soId+'|'+l.artName;if(!byJob[key])byJob[key]={artName:l.artName,customer:l.customer,soId:l.soId,minutes:0,entries:0,people:new Set()};byJob[key].minutes+=l.minutes;byJob[key].entries++;byJob[key].people.add(l.person)});
+            const totalMins=artTimeLogs.reduce((a,l)=>a+l.minutes,0);
+            const totalCost=Object.entries(byPerson).reduce((a,[person,d])=>a+d.minutes/60*(rates[person]||0),0);
+            return<div className="card-body">
+              <div className="stats-row" style={{marginBottom:12}}>
+                <div className="stat-card"><div className="stat-label">Total Art Hours</div><div className="stat-value" style={{color:'#7c3aed'}}>{(totalMins/60).toFixed(1)}</div></div>
+                <div className="stat-card"><div className="stat-label">Total Entries</div><div className="stat-value">{artTimeLogs.length}</div></div>
+                <div className="stat-card"><div className="stat-label">Artists Active</div><div className="stat-value" style={{color:'#2563eb'}}>{Object.keys(byPerson).length}</div></div>
+                <div className="stat-card"><div className="stat-label">Labor Cost</div><div className="stat-value" style={{color:'#dc2626'}}>${totalCost.toFixed(2)}</div></div>
+              </div>
+              {/* By artist */}
+              <div style={{fontSize:12,fontWeight:700,color:'#1e293b',marginBottom:6}}>By Artist</div>
+              <table style={{fontSize:12,marginBottom:16}}><thead><tr><th>Artist</th><th style={{textAlign:'right'}}>Hours</th><th style={{textAlign:'center'}}>Jobs</th><th style={{textAlign:'center'}}>Customers</th><th style={{textAlign:'right'}}>Rate</th><th style={{textAlign:'right'}}>Cost</th></tr></thead>
+              <tbody>{Object.entries(byPerson).sort((a,b)=>b[1].minutes-a[1].minutes).map(([person,d])=>{
+                const rate=rates[person]||0;const cost=(d.minutes/60)*rate;
+                return<tr key={person}><td style={{fontWeight:600}}>{person}</td><td style={{textAlign:'right',fontWeight:700,color:'#7c3aed'}}>{(d.minutes/60).toFixed(1)}</td><td style={{textAlign:'center'}}>{d.jobs}</td><td style={{textAlign:'center'}}>{d.customers.size}</td><td style={{textAlign:'right',color:'#64748b'}}>${rate.toFixed(2)}</td><td style={{textAlign:'right',fontWeight:600,color:'#dc2626'}}>${cost.toFixed(2)}</td></tr>
+              })}</tbody></table>
+              {/* By job */}
+              <div style={{fontSize:12,fontWeight:700,color:'#1e293b',marginBottom:6}}>By Job</div>
+              <table style={{fontSize:12}}><thead><tr><th>Art Name</th><th>Customer</th><th>SO</th><th style={{textAlign:'right'}}>Hours</th><th style={{textAlign:'center'}}>Entries</th><th style={{textAlign:'center'}}>People</th><th style={{textAlign:'right'}}>Cost</th></tr></thead>
+              <tbody>{Object.values(byJob).sort((a,b)=>b.minutes-a.minutes).slice(0,20).map((d,i)=>{
+                const cost=artTimeLogs.filter(l=>l.soId===d.soId&&l.artName===d.artName).reduce((a,l)=>a+(l.minutes/60)*(rates[l.person]||0),0);
+                return<tr key={i}><td style={{fontWeight:600,color:'#7c3aed'}}>{d.artName}</td><td>{d.customer}</td><td style={{fontSize:11,color:'#1e40af',fontWeight:600}}>{d.soId}</td><td style={{textAlign:'right',fontWeight:700}}>{(d.minutes/60).toFixed(1)}</td><td style={{textAlign:'center'}}>{d.entries}</td><td style={{textAlign:'center'}}>{d.people.size}</td><td style={{textAlign:'right',fontWeight:600,color:'#dc2626'}}>${cost.toFixed(2)}</td></tr>
+              })}</tbody></table>
+            </div>})()}
+        </div>
+
+        {/* Decoration/Production Time Summary */}
+        <div className="card" style={{marginBottom:12}}>
+          <WH id="decoTime" title="Production/Decoration Time" icon="🖨️"/>
+          {rptWidgets.decoTime&&(()=>{
+            const rates=laborRates;
+            const byPerson={};jobTimeLogs.forEach(l=>{if(!byPerson[l.person])byPerson[l.person]={minutes:0,jobs:0};byPerson[l.person].minutes+=l.minutes;byPerson[l.person].jobs++});
+            const byJob={};jobTimeLogs.forEach(l=>{const key=l.soId+'|'+l.jobId;if(!byJob[key])byJob[key]={jobId:l.jobId,soId:l.soId,minutes:0,entries:0,people:new Set()};byJob[key].minutes+=l.minutes;byJob[key].entries++;byJob[key].people.add(l.person)});
+            const totalMins=jobTimeLogs.reduce((a,l)=>a+l.minutes,0);
+            const totalCost=Object.entries(byPerson).reduce((a,[person,d])=>a+d.minutes/60*(rates[person]||0),0);
+            return<div className="card-body">
+              <div className="stats-row" style={{marginBottom:12}}>
+                <div className="stat-card"><div className="stat-label">Total Prod Hours</div><div className="stat-value" style={{color:'#2563eb'}}>{(totalMins/60).toFixed(1)}</div></div>
+                <div className="stat-card"><div className="stat-label">Total Entries</div><div className="stat-value">{jobTimeLogs.length}</div></div>
+                <div className="stat-card"><div className="stat-label">Workers Active</div><div className="stat-value" style={{color:'#7c3aed'}}>{Object.keys(byPerson).length}</div></div>
+                <div className="stat-card"><div className="stat-label">Labor Cost</div><div className="stat-value" style={{color:'#dc2626'}}>${totalCost.toFixed(2)}</div></div>
+              </div>
+              {/* By worker */}
+              <div style={{fontSize:12,fontWeight:700,color:'#1e293b',marginBottom:6}}>By Worker</div>
+              <table style={{fontSize:12,marginBottom:16}}><thead><tr><th>Worker</th><th style={{textAlign:'right'}}>Hours</th><th style={{textAlign:'center'}}>Jobs</th><th style={{textAlign:'right'}}>Rate</th><th style={{textAlign:'right'}}>Cost</th></tr></thead>
+              <tbody>{Object.entries(byPerson).sort((a,b)=>b[1].minutes-a[1].minutes).map(([person,d])=>{
+                const rate=rates[person]||0;const cost=(d.minutes/60)*rate;
+                return<tr key={person}><td style={{fontWeight:600}}>{person}</td><td style={{textAlign:'right',fontWeight:700,color:'#2563eb'}}>{(d.minutes/60).toFixed(1)}</td><td style={{textAlign:'center'}}>{d.jobs}</td><td style={{textAlign:'right',color:'#64748b'}}>${rate.toFixed(2)}</td><td style={{textAlign:'right',fontWeight:600,color:'#dc2626'}}>${cost.toFixed(2)}</td></tr>
+              })}</tbody></table>
+              {/* By SO */}
+              <div style={{fontSize:12,fontWeight:700,color:'#1e293b',marginBottom:6}}>By Sales Order</div>
+              <table style={{fontSize:12}}><thead><tr><th>Job</th><th>SO</th><th style={{textAlign:'right'}}>Hours</th><th style={{textAlign:'center'}}>Entries</th><th style={{textAlign:'center'}}>People</th><th style={{textAlign:'right'}}>Cost</th></tr></thead>
+              <tbody>{Object.values(byJob).sort((a,b)=>b.minutes-a.minutes).slice(0,20).map((d,i)=>{
+                const cost=jobTimeLogs.filter(l=>l.soId===d.soId&&l.jobId===d.jobId).reduce((a,l)=>a+(l.minutes/60)*(rates[l.person]||0),0);
+                return<tr key={i}><td style={{fontWeight:600,color:'#7c3aed'}}>{d.jobId}</td><td style={{fontSize:11,color:'#1e40af',fontWeight:600}}>{d.soId}</td><td style={{textAlign:'right',fontWeight:700}}>{(d.minutes/60).toFixed(1)}</td><td style={{textAlign:'center'}}>{d.entries}</td><td style={{textAlign:'center'}}>{d.people.size}</td><td style={{textAlign:'right',fontWeight:600,color:'#dc2626'}}>${cost.toFixed(2)}</td></tr>
+              })}</tbody></table>
+            </div>})()}
+        </div>
+
+        {/* Combined Labor Summary */}
+        <div className="card" style={{marginBottom:12}}>
+          <WH id="laborSummary" title="Combined Labor Summary" icon="📊"/>
+          {rptWidgets.laborSummary&&(()=>{
+            const rates=laborRates;
+            const artMins=artTimeLogs.reduce((a,l)=>a+l.minutes,0);const prodMins=jobTimeLogs.reduce((a,l)=>a+l.minutes,0);
+            const artCost=artTimeLogs.reduce((a,l)=>a+(l.minutes/60)*(rates[l.person]||0),0);
+            const prodCost=jobTimeLogs.reduce((a,l)=>a+(l.minutes/60)*(rates[l.person]||0),0);
+            const allPeople=new Set([...artTimeLogs.map(l=>l.person),...jobTimeLogs.map(l=>l.person)]);
+            const combined=[];allPeople.forEach(p=>{const aLogs=artTimeLogs.filter(l=>l.person===p);const pLogs=jobTimeLogs.filter(l=>l.person===p);
+              const aMins=aLogs.reduce((a,l)=>a+l.minutes,0);const pMins=pLogs.reduce((a,l)=>a+l.minutes,0);const rate=rates[p]||0;
+              combined.push({name:p,artMins:aMins,prodMins:pMins,totalMins:aMins+pMins,rate,cost:(aMins+pMins)/60*rate,artJobs:aLogs.length,prodJobs:pLogs.length})});
+            combined.sort((a,b)=>b.totalMins-a.totalMins);
+            return<div className="card-body">
+              <div className="stats-row" style={{marginBottom:12}}>
+                <div className="stat-card" style={{borderLeft:'3px solid #7c3aed'}}><div className="stat-label">Art Hours</div><div className="stat-value" style={{color:'#7c3aed'}}>{(artMins/60).toFixed(1)}</div><div style={{fontSize:10,color:'#dc2626'}}>${artCost.toFixed(2)}</div></div>
+                <div className="stat-card" style={{borderLeft:'3px solid #2563eb'}}><div className="stat-label">Production Hours</div><div className="stat-value" style={{color:'#2563eb'}}>{(prodMins/60).toFixed(1)}</div><div style={{fontSize:10,color:'#dc2626'}}>${prodCost.toFixed(2)}</div></div>
+                <div className="stat-card" style={{borderLeft:'3px solid #1e293b'}}><div className="stat-label">Total Hours</div><div className="stat-value">{((artMins+prodMins)/60).toFixed(1)}</div><div style={{fontSize:10,color:'#dc2626'}}>${(artCost+prodCost).toFixed(2)}</div></div>
+                <div className="stat-card" style={{borderLeft:'3px solid #dc2626'}}><div className="stat-label">Total Labor Cost</div><div className="stat-value" style={{color:'#dc2626'}}>${(artCost+prodCost).toFixed(2)}</div></div>
+              </div>
+              <table style={{fontSize:12}}><thead><tr><th>Person</th><th>Role</th><th style={{textAlign:'right'}}>Art Hrs</th><th style={{textAlign:'right'}}>Prod Hrs</th><th style={{textAlign:'right'}}>Total Hrs</th><th style={{textAlign:'right'}}>Rate</th><th style={{textAlign:'right'}}>Total Cost</th></tr></thead>
+              <tbody>{combined.map(p=><tr key={p.name}>
+                <td style={{fontWeight:600}}>{p.name}</td>
+                <td style={{fontSize:11,color:'#64748b'}}>{p.artMins>0&&p.prodMins>0?'Art + Prod':p.artMins>0?'Art':'Production'}</td>
+                <td style={{textAlign:'right',color:'#7c3aed',fontWeight:600}}>{p.artMins>0?(p.artMins/60).toFixed(1):'—'}</td>
+                <td style={{textAlign:'right',color:'#2563eb',fontWeight:600}}>{p.prodMins>0?(p.prodMins/60).toFixed(1):'—'}</td>
+                <td style={{textAlign:'right',fontWeight:700}}>{(p.totalMins/60).toFixed(1)}</td>
+                <td style={{textAlign:'right',color:'#64748b'}}>${p.rate.toFixed(2)}/hr</td>
+                <td style={{textAlign:'right',fontWeight:700,color:'#dc2626'}}>${p.cost.toFixed(2)}</td>
+              </tr>)}</tbody></table>
+            </div>})()}
+        </div>
+      </>}
+
       {/* Widget Customization */}
       <div className="card" style={{marginBottom:12}}>
         <div className="card-header" style={{padding:'8px 16px'}}><h2 style={{margin:0,fontSize:13}}>⚙️ Customize Dashboard</h2></div>
         <div className="card-body" style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-          {[['convFunnel','Conversion Funnel'],['pipeline','Pipeline'],['repLeaderboard','Rep Leaderboard'],['custHealth','Customer Health'],['productMix','Product Mix'],['margins','Margin Analysis'],['lowMargin','Low Margin Alert'],['omgStores','OMG Stores'],['atRisk','At-Risk Customers']].map(([k,label])=>
+          {[['convFunnel','Conversion Funnel'],['pipeline','Pipeline'],['repLeaderboard','Rep Leaderboard'],['custHealth','Customer Health'],['productMix','Product Mix'],['margins','Margin Analysis'],['lowMargin','Low Margin Alert'],['omgStores','OMG Stores'],['atRisk','At-Risk Customers'],['prodThroughput','Prod Throughput'],['artTime','Art Time'],['decoTime','Deco Time'],['laborSummary','Labor Summary']].map(([k,label])=>
             <label key={k} style={{fontSize:11,display:'flex',alignItems:'center',gap:4,padding:'4px 8px',background:rptWidgets[k]?'#dbeafe':'#f1f5f9',borderRadius:6,cursor:'pointer',border:'1px solid '+(rptWidgets[k]?'#93c5fd':'#e2e8f0')}}>
               <input type="checkbox" checked={rptWidgets[k]||false} onChange={()=>toggleWidget(k)}/> {label}
             </label>)}
@@ -9691,7 +9860,7 @@ export default function App(){
       const urgent=j.daysOut!=null&&j.daysOut<=3;
       const artist=REPS.find(r=>r.id===j.assigned_artist);
       const af=j.artFile;
-      return<div key={j.id+j.soId+view} className="card" style={{marginBottom:6,border:urgent?'2px solid #dc2626':'1px solid #e2e8f0',borderRadius:8,overflow:'hidden'}}>
+      return<div key={j.id+j.soId+view} className="card" style={{marginBottom:6,border:urgent?'2px solid #dc2626':'1px solid #e2e8f0',borderRadius:8,overflow:'hidden',cursor:'pointer'}} onClick={()=>{setArtJobDetailModal(j);setArtJobDetailMsg('')}}>
         <div style={{padding:'8px 10px'}}>
           <div style={{display:'flex',alignItems:'center',gap:4,marginBottom:4}}>
             <span style={{fontSize:12,fontWeight:800,color:'#0f172a',flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{j.customer}</span>
@@ -9726,11 +9895,26 @@ export default function App(){
               :<span style={{fontSize:10,color:'#94a3b8',fontStyle:'italic'}}>No artist assigned</span>}
             </div>
             <div style={{fontSize:9,color:'#94a3b8'}}>{j.rep} · {j.alpha||j.soMemo}</div>
-            <button className="btn btn-sm" style={{fontSize:10,padding:'4px 10px',background:'linear-gradient(135deg,#1e40af,#7c3aed)',color:'white',border:'none',width:'100%',marginTop:4,fontWeight:600,borderRadius:6,display:'flex',alignItems:'center',justifyContent:'center',gap:4}} onClick={()=>{setArtMockupModal(j);setArtMockupRevision('')}}>🖼️ Mockup</button>
+            {/* Art Time Clock In/Out */}
+            {(()=>{const artTimerKey=j.soId+'|'+j.id;const artActive=activeArtTimers[artTimerKey];
+              return<div style={{display:'flex',gap:4,marginTop:4}}>
+                <button className="btn btn-sm" style={{fontSize:10,padding:'4px 10px',background:'linear-gradient(135deg,#1e40af,#7c3aed)',color:'white',border:'none',flex:1,fontWeight:600,borderRadius:6,display:'flex',alignItems:'center',justifyContent:'center',gap:4}} onClick={e=>{e.stopPropagation();setArtMockupModal(j);setArtMockupRevision('')}}>🖼️ Mockup</button>
+                {artActive?<button className="btn btn-sm" style={{fontSize:10,padding:'4px 10px',background:'#dc2626',color:'white',border:'none',flex:1,fontWeight:600,borderRadius:6,display:'flex',alignItems:'center',justifyContent:'center',gap:4}} onClick={e=>{e.stopPropagation();
+                  const mins=Math.round((Date.now()-artActive.clockIn)/60000);
+                  setArtTimeLogs(prev=>[...prev,{jobId:j.id,soId:j.soId,person:artActive.person,clockIn:new Date(artActive.clockIn).toLocaleString(),clockOut:new Date().toLocaleString(),minutes:mins,artName:j.art_name||'',customer:j.customer||''}]);
+                  setActiveArtTimers(prev=>{const n={...prev};delete n[artTimerKey];return n});
+                  nf('Art clock out: '+mins+' min logged');
+                }}>⏱️ Out ({Math.round((Date.now()-artActive.clockIn)/60000)}m)</button>
+                :<button className="btn btn-sm" style={{fontSize:10,padding:'4px 10px',background:'#166534',color:'white',border:'none',flex:1,fontWeight:600,borderRadius:6,display:'flex',alignItems:'center',justifyContent:'center',gap:4}} onClick={e=>{e.stopPropagation();
+                  const person=artist?.name||cu.name;
+                  setActiveArtTimers(prev=>({...prev,[artTimerKey]:{person,clockIn:Date.now(),soId:j.soId,artName:j.art_name||'',customer:j.customer||''}}));
+                  nf('Art clock in: '+person+' on '+j.art_name);
+                }}>⏱️ Clock In</button>}
+              </div>})()}
             <div style={{display:'flex',gap:3,marginTop:6,flexWrap:'wrap'}}>
-              {col?.id==='waiting_for_art'&&j.art_status==='art_requested'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#1e40af',color:'white',border:'none'}} onClick={()=>moveArtStatus(j,'art_in_progress')}>Start Working</button>}
-              {col?.id==='waiting_for_art'&&j.art_status==='art_in_progress'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#92400e',color:'white',border:'none'}} onClick={()=>moveArtStatus(j,'waiting_approval')}>Send for Approval</button>}
-              {col?.id==='approved'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#166534',color:'white',border:'none'}} onClick={()=>{
+              {col?.id==='waiting_for_art'&&j.art_status==='art_requested'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#1e40af',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();moveArtStatus(j,'art_in_progress')}}>Start Working</button>}
+              {col?.id==='waiting_for_art'&&j.art_status==='art_in_progress'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#92400e',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();moveArtStatus(j,'waiting_approval')}}>Send for Approval</button>}
+              {col?.id==='approved'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#166534',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();
                 const so=sos.find(s=>s.id===j.soId);if(!so){nf('SO not found','error');return}
                 const afIdx=safeArt(so).findIndex(f=>f.id===j.art_file_id);
                 if(afIdx>=0&&(safeArt(so)[afIdx].prod_files||[]).length===0){
@@ -9741,7 +9925,7 @@ export default function App(){
                   nf('Prod files uploaded — Art Complete!');
                 }else{moveArtStatus(j,'art_complete')}
               }}>Upload & Complete</button>}
-              <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px',marginLeft:'auto'}} onClick={()=>{setESOTab('jobs');setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so?.customer_id));setPg('orders')}}>Open SO</button>
+              <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px',marginLeft:'auto'}} onClick={e=>{e.stopPropagation();setESOTab('jobs');setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so?.customer_id));setPg('orders')}}>Open SO</button>
             </div>
           </>}
 
@@ -9753,11 +9937,11 @@ export default function App(){
               <span style={{fontSize:9,color:'#94a3b8',marginLeft:'auto'}}>{j.rep}</span>
             </div>
             {/* Mockup button — primary action, opens popup with approve/reject */}
-            <button className="btn btn-sm" style={{fontSize:11,padding:'6px 12px',background:j.art_status==='waiting_approval'?'linear-gradient(135deg,#f59e0b,#d97706)':'linear-gradient(135deg,#1e40af,#7c3aed)',color:'white',border:'none',width:'100%',marginTop:4,fontWeight:700,borderRadius:6,display:'flex',alignItems:'center',justifyContent:'center',gap:6}} onClick={()=>{setArtMockupModal(j);setArtMockupRevision('')}}>{j.art_status==='waiting_approval'?'Review Mockup':'🖼️ View Mockup'}</button>
+            <button className="btn btn-sm" style={{fontSize:11,padding:'6px 12px',background:j.art_status==='waiting_approval'?'linear-gradient(135deg,#f59e0b,#d97706)':'linear-gradient(135deg,#1e40af,#7c3aed)',color:'white',border:'none',width:'100%',marginTop:4,fontWeight:700,borderRadius:6,display:'flex',alignItems:'center',justifyContent:'center',gap:6}} onClick={e=>{e.stopPropagation();setArtMockupModal(j);setArtMockupRevision('')}}>{j.art_status==='waiting_approval'?'Review Mockup':'🖼️ View Mockup'}</button>
             <div style={{display:'flex',gap:3,marginTop:6,flexWrap:'wrap'}}>
               {/* Edit request (only when art is not complete — coaches change minds) */}
-              {j.art_status!=='art_complete'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#2563eb',color:'white',border:'none'}} onClick={()=>setArtEditModal({job:j,instructions:(j.art_requests||[]).length>0?j.art_requests[j.art_requests.length-1].instructions||'':'',notes:j.rep_notes||''})}>Edit Request</button>}
-              <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px',marginLeft:'auto'}} onClick={()=>{setESOTab('jobs');setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so?.customer_id));setPg('orders')}}>Open SO</button>
+              {j.art_status!=='art_complete'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#2563eb',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();setArtEditModal({job:j,instructions:(j.art_requests||[]).length>0?j.art_requests[j.art_requests.length-1].instructions||'':'',notes:j.rep_notes||''})}}>Edit Request</button>}
+              <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px',marginLeft:'auto'}} onClick={e=>{e.stopPropagation();setESOTab('jobs');setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so?.customer_id));setPg('orders')}}>Open SO</button>
             </div>
           </>}
         </div>
@@ -9787,6 +9971,48 @@ export default function App(){
         <input className="form-input" style={{width:200,fontSize:12}} placeholder="Search customer, SO, art name..." value={artSearch} onChange={e=>setArtSearch(e.target.value)}/>
         <span style={{fontSize:11,color:'#64748b',marginLeft:'auto'}}>{artDashView==='artist'?artistJobs.length:repJobs.length} job{(artDashView==='artist'?artistJobs.length:repJobs.length)!==1?'s':''}</span>
       </div>
+
+      {/* ═══ ART TIME CLOCK ═══ */}
+      {artDashView==='artist'&&<div className="card" style={{marginBottom:12,borderLeft:'3px solid #7c3aed'}}>
+        <div style={{padding:'10px 14px'}}>
+          <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
+            <span style={{fontSize:13,fontWeight:800,color:'#6d28d9'}}>⏱️ Art Time Clock</span>
+            <span style={{fontSize:10,color:'#94a3b8'}}>Track time spent on each art job</span>
+          </div>
+          {Object.keys(activeArtTimers).length>0&&<div style={{marginBottom:8}}>
+            <div style={{fontSize:10,fontWeight:600,color:'#166534',marginBottom:4}}>ACTIVE NOW:</div>
+            {Object.entries(activeArtTimers).map(([key,timer])=>{
+              const mins=Math.round((Date.now()-timer.clockIn)/60000);const hrs=Math.floor(mins/60);const rm=mins%60;
+              return<div key={key} style={{display:'flex',alignItems:'center',gap:8,padding:'4px 8px',background:'#f0fdf4',borderRadius:6,marginBottom:4,fontSize:11}}>
+                <span style={{width:8,height:8,borderRadius:4,background:'#22c55e',animation:'pulse 2s infinite'}}/>
+                <span style={{fontWeight:700,color:'#7c3aed'}}>{timer.person}</span>
+                <span style={{color:'#475569'}}>working on <strong>{timer.artName}</strong></span>
+                <span style={{color:'#64748b',fontSize:10}}>({timer.customer})</span>
+                <span style={{marginLeft:'auto',fontWeight:700,color:'#d97706',fontSize:13}}>{hrs>0?hrs+'h '+rm+'m':mins+'m'}</span>
+                <button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#dc2626',color:'white',border:'none'}} onClick={()=>{
+                  const logMins=Math.round((Date.now()-timer.clockIn)/60000);
+                  setArtTimeLogs(prev=>[...prev,{jobId:key.split('|')[1],soId:key.split('|')[0],person:timer.person,clockIn:new Date(timer.clockIn).toLocaleString(),clockOut:new Date().toLocaleString(),minutes:logMins,artName:timer.artName,customer:timer.customer}]);
+                  setActiveArtTimers(prev=>{const n={...prev};delete n[key];return n});
+                  nf('Art clock out: '+logMins+' min logged');
+                }}>Clock Out</button>
+              </div>})}
+          </div>}
+          {artTimeLogs.length>0&&<div>
+            <div style={{fontSize:10,fontWeight:600,color:'#64748b',marginBottom:4}}>RECENT ART TIME LOGS:</div>
+            {artTimeLogs.slice(-8).reverse().map((log,i)=><div key={i} style={{display:'flex',gap:8,fontSize:10,color:'#475569',padding:'3px 0',borderBottom:'1px solid #f8fafc'}}>
+              <span style={{fontWeight:600,minWidth:60}}>{log.person}</span>
+              <span style={{color:'#7c3aed',fontWeight:600,minWidth:100}}>{log.artName}</span>
+              <span style={{color:'#94a3b8',minWidth:80}}>{log.customer}</span>
+              <span style={{color:'#94a3b8',fontSize:9}}>{log.clockOut}</span>
+              <span style={{marginLeft:'auto',fontWeight:700,color:'#6d28d9'}}>{log.minutes>=60?Math.floor(log.minutes/60)+'h '+log.minutes%60+'m':log.minutes+'m'}</span>
+            </div>)}
+            <div style={{fontSize:10,color:'#64748b',marginTop:4,borderTop:'1px solid #f1f5f9',paddingTop:4}}>
+              Total art time logged: <strong style={{color:'#6d28d9'}}>{artTimeLogs.reduce((a,l)=>a+l.minutes,0)>=60?Math.floor(artTimeLogs.reduce((a,l)=>a+l.minutes,0)/60)+'h '+artTimeLogs.reduce((a,l)=>a+l.minutes,0)%60+'m':artTimeLogs.reduce((a,l)=>a+l.minutes,0)+'m'}</strong>
+            </div>
+          </div>}
+          {Object.keys(activeArtTimers).length===0&&artTimeLogs.length===0&&<div style={{fontSize:11,color:'#94a3b8',padding:'6px 0'}}>No active timers. Click "Clock In" on any art job card to start tracking time.</div>}
+        </div>
+      </div>}
 
       {/* ═══ ARTIST WORKBOARD ═══ */}
       {artDashView==='artist'&&<>
@@ -10063,6 +10289,260 @@ export default function App(){
             {j.art_status!=='art_complete'&&<button className="btn btn-secondary" onClick={()=>setArtEditModal({job:j,instructions:(j.art_requests||[]).length>0?j.art_requests[j.art_requests.length-1].instructions||'':'',notes:j.rep_notes||''})}>Edit Request</button>}
             <button className="btn btn-secondary" onClick={()=>{setESOTab('jobs');setESO(so);setESOC(c2);setPg('orders');setArtMockupModal(null)}}>Open Full Job</button>
             <button className="btn btn-secondary" style={{marginLeft:'auto'}} onClick={()=>setArtMockupModal(null)}>Close</button>
+          </div>
+        </div></div>
+      })()}
+
+      {/* ═══ ARTIST JOB DETAIL POPUP — click a Kanban card to open ═══ */}
+      {artJobDetailModal&&(()=>{
+        const j=artJobDetailModal;
+        const so=j.so||sos.find(s=>s.id===j.soId);
+        if(!so)return null;
+        const c2=cust.find(x=>x.id===so.customer_id);
+        const af=j.artFile||safeArt(so).find(f=>f.id===j.art_file_id);
+        const mockupFiles=(af?.mockup_files||af?.files||[]);
+        const prodFilesL=(af?.prod_files||[]);
+        const colorList=af?(af.ink_colors||af.thread_colors||'').split(/[,\n]/).map(c3=>c3.trim()).filter(Boolean):[];
+        const isEmb=af?.deco_type==='embroidery';
+        const colorMap={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000',
+          'Silver':'#C0C0C0','Royal':'#4169e1','Cardinal':'#8C1515','Green':'#166534','Orange':'#EA580C',
+          'Navy 2767':'#001f3f','PMS 286':'#0033A0','PMS 032':'#EF3340','PMS 877':'#C0C0C0'};
+        const artist=REPS.find(r=>r.id===j.assigned_artist);
+        const rep=REPS.find(r=>r.id===so.created_by);
+        const latestReq=(j.art_requests||[]).length>0?j.art_requests[j.art_requests.length-1]:null;
+
+        // Build size grid
+        const itemDetails=(j.items||[]).map(gi=>{
+          const it=safeItems(so)[gi.item_idx];if(!it)return null;
+          const sizes={};
+          Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{sizes[sz]=v});
+          const prd=prod.find(pp=>pp.id===it.product_id||pp.sku===it.sku);
+          return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,image_url:prd?.image_url||''};
+        }).filter(Boolean);
+        const allSizes=SZ_ORD.filter(sz=>itemDetails.some(it=>it.sizes[sz]>0));
+
+        // Art messages for this job (stored on the job)
+        const artMessages=j.art_messages||[];
+
+        // Upload handler for artist to upload updated art
+        const handleArtUpload=async(files)=>{
+          setArtJobDetailUploading(true);
+          try{
+            const urls=[];
+            for(const f of files){
+              nf('Uploading '+f.name+'...');
+              const url=await fileUpload(f,'nsa-art-files');
+              urls.push(url);
+            }
+            // Add to mockup_files on the art file
+            const updArt=safeArt(so).map(a=>a.id===j.art_file_id?{...a,mockup_files:[...(a.mockup_files||a.files||[]),...urls],status:'uploaded'}:a);
+            const updatedJobs=safeJobs(so).map(jj=>jj.id===j.id?{...jj,art_status:jj.art_status==='needs_art'||jj.art_status==='art_requested'?'art_in_progress':jj.art_status}:jj);
+            savSO({...so,art_files:updArt,jobs:updatedJobs});
+            // Refresh modal with updated data
+            const updatedAf=updArt.find(a=>a.id===j.art_file_id);
+            setArtJobDetailModal({...j,artFile:updatedAf,art_status:updatedJobs.find(jj=>jj.id===j.id)?.art_status||j.art_status});
+            nf(urls.length+' file'+(urls.length>1?'s':'')+' uploaded!');
+          }catch(err){nf('Upload failed: '+err.message,'error')}
+          finally{setArtJobDetailUploading(false)}
+        };
+
+        // Send message from artist to rep
+        const sendArtMessage=()=>{
+          if(!artJobDetailMsg.trim())return;
+          const msg={id:'AM-'+Date.now(),from_id:cu.id,from_name:cu.name,from_role:cu.role,text:artJobDetailMsg.trim(),ts:new Date().toISOString()};
+          const updatedMsgs=[...artMessages,msg];
+          const updatedJobs=safeJobs(so).map(jj=>jj.id===j.id?{...jj,art_messages:updatedMsgs}:jj);
+          savSO({...so,jobs:updatedJobs});
+          setArtJobDetailModal({...j,art_messages:updatedMsgs});
+          setArtJobDetailMsg('');
+          nf('Message sent to '+(rep?.name||'rep'));
+        };
+
+        // Send for approval (moves status and notifies)
+        const sendForApproval=()=>{
+          moveArtStatus(j,'waiting_approval');
+          const msg={id:'AM-'+Date.now(),from_id:cu.id,from_name:cu.name,from_role:cu.role,text:'Sent artwork for approval',ts:new Date().toISOString(),is_system:true};
+          const updatedMsgs=[...artMessages,msg];
+          const updatedJobs=safeJobs(so).map(jj=>jj.id===j.id?{...jj,art_messages:updatedMsgs,art_status:'waiting_approval'}:jj);
+          savSO({...so,art_files:safeArt(so).map(a=>a.id===j.art_file_id?{...a,status:'needs_approval'}:a),jobs:updatedJobs});
+          setArtJobDetailModal({...j,art_messages:updatedMsgs,art_status:'waiting_approval'});
+          nf('Sent for approval!');
+        };
+
+        return<div className="modal-overlay" onClick={()=>setArtJobDetailModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:920,maxHeight:'94vh',overflow:'auto'}}>
+          {/* Header */}
+          <div className="modal-header" style={{background:'linear-gradient(135deg,#7c3aed,#4c1d95)',color:'white',padding:'16px 20px'}}>
+            <div style={{flex:1}}>
+              <h2 style={{color:'white',margin:0,fontSize:18}}>{j.art_name||'Untitled Art'}</h2>
+              <div style={{fontSize:12,color:'#c4b5fd',marginTop:3}}>{j.customer} · {so.id} · {j.deco_type?.replace(/_/g,' ')} · {j.positions||'—'}</div>
+            </div>
+            <div style={{display:'flex',gap:8,alignItems:'center'}}>
+              <span style={{padding:'4px 12px',borderRadius:8,fontSize:11,fontWeight:700,background:SC[j.art_status]?.bg,color:SC[j.art_status]?.c}}>{ART_LABELS[j.art_status]||j.art_status}</span>
+              {artist&&<span style={{padding:'4px 10px',borderRadius:8,fontSize:11,fontWeight:600,background:'#ede9fe',color:'#6d28d9'}}>🎨 {artist.name}</span>}
+              <button className="modal-close" style={{color:'white',fontSize:20}} onClick={()=>setArtJobDetailModal(null)}>×</button>
+            </div>
+          </div>
+
+          <div className="modal-body" style={{padding:0}}>
+
+            {/* ─── Rep Instructions / Art Request Text ─── */}
+            <div style={{padding:'16px 20px',borderBottom:'1px solid #e2e8f0',background:'#faf5ff'}}>
+              <div style={{fontSize:12,fontWeight:800,color:'#6d28d9',marginBottom:8,display:'flex',alignItems:'center',gap:6}}>
+                <span style={{fontSize:16}}>📋</span> Rep Instructions
+              </div>
+              {latestReq?<>
+                <div style={{padding:'10px 14px',background:'white',borderRadius:8,border:'1px solid #e9d5ff',marginBottom:6}}>
+                  <div style={{fontSize:13,color:'#1e293b',lineHeight:1.6,whiteSpace:'pre-wrap'}}>{latestReq.instructions||'No specific instructions'}</div>
+                  <div style={{fontSize:10,color:'#94a3b8',marginTop:6}}>From {latestReq.created_by||rep?.name||'Rep'} · {new Date(latestReq.created_at).toLocaleDateString()}{latestReq.updated_at?' · Updated '+new Date(latestReq.updated_at).toLocaleDateString():''}</div>
+                </div>
+                {j.rep_notes&&<div style={{padding:'8px 12px',background:'#fffbeb',borderRadius:6,border:'1px solid #fde68a',fontSize:12,color:'#92400e'}}>
+                  <strong>Rep notes:</strong> {j.rep_notes}
+                </div>}
+              </>:<div style={{fontSize:12,color:'#94a3b8',fontStyle:'italic'}}>No art request instructions yet</div>}
+              {af?.notes&&<div style={{marginTop:6,padding:'8px 12px',background:'white',borderRadius:6,border:'1px solid #e2e8f0',fontSize:12,color:'#475569'}}>
+                <strong>Art file notes:</strong> {af.notes}
+              </div>}
+            </div>
+
+            {/* ─── Artwork Files ─── */}
+            <div style={{padding:'16px 20px',borderBottom:'1px solid #e2e8f0'}}>
+              <div style={{fontSize:12,fontWeight:800,color:'#1e3a5f',marginBottom:10,display:'flex',alignItems:'center',gap:6}}>
+                <span style={{fontSize:16}}>🖼️</span> Artwork Files
+              </div>
+              {mockupFiles.length>0?<div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:10}}>
+                {mockupFiles.map((f,i)=><div key={i} style={{padding:'8px 14px',background:'#dbeafe',border:'1px solid #93c5fd',borderRadius:8,cursor:'pointer',fontSize:12,fontWeight:600,color:'#1e40af',display:'flex',alignItems:'center',gap:6}}
+                  onClick={()=>openFile(f)}><span style={{fontSize:16}}>🖼️</span>{typeof f==='string'?(f.split('/').pop()||f):f}</div>)}
+              </div>:<div style={{padding:16,textAlign:'center',color:'#94a3b8',fontSize:12,background:'#f8fafc',borderRadius:8,border:'2px dashed #e2e8f0'}}>No artwork files uploaded yet</div>}
+              {prodFilesL.length>0&&<><div style={{fontSize:11,fontWeight:700,color:'#92400e',marginTop:8,marginBottom:4}}>Production Files</div>
+                <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                  {prodFilesL.map((f,i)=><div key={i} style={{padding:'6px 10px',background:'#fef3c7',border:'1px solid #fde68a',borderRadius:6,cursor:'pointer',fontSize:11,fontWeight:600,color:'#92400e',display:'flex',alignItems:'center',gap:4}}
+                    onClick={()=>openFile(f)}>📁 {typeof f==='string'?(f.split('/').pop()||f):f}</div>)}
+                </div></>}
+
+              {/* Decoration details + colors */}
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:12,marginTop:14}}>
+                <div><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:2}}>Method</div>
+                  <div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{j.deco_type?.replace(/_/g,' ')||'—'}</div></div>
+                <div><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:2}}>Position(s)</div>
+                  <div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{j.positions||'—'}</div></div>
+                <div><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:2}}>Art Size</div>
+                  <div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{af?.art_size||'—'}</div></div>
+              </div>
+              {colorList.length>0&&<div style={{marginTop:10}}>
+                <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:4}}>{isEmb?'Thread Colors':'Ink Colors'} ({colorList.length})</div>
+                <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
+                  {colorList.map((cl,i)=>{
+                    const clLower=cl.toLowerCase();
+                    const swatchColor=colorMap[cl]||Object.entries(colorMap).find(([k])=>clLower.includes(k.toLowerCase()))?.[1]||null;
+                    return<div key={i} style={{display:'flex',alignItems:'center',gap:4,padding:'4px 10px',background:'white',border:'1px solid #e2e8f0',borderRadius:6}}>
+                      <div style={{width:14,height:14,borderRadius:3,border:'1px solid #d1d5db',background:swatchColor||'linear-gradient(135deg,#f1f5f9,#e2e8f0)'}}/>
+                      <span style={{fontSize:11,fontWeight:600}}>{cl}</span>
+                    </div>})}
+                </div>
+              </div>}
+            </div>
+
+            {/* ─── SKU Sizes ─── */}
+            <div style={{padding:'16px 20px',borderBottom:'1px solid #e2e8f0'}}>
+              <div style={{fontSize:12,fontWeight:800,color:'#1e3a5f',marginBottom:10,display:'flex',alignItems:'center',gap:6}}>
+                <span style={{fontSize:16}}>📦</span> SKUs & Sizes — {j.total_units} total units
+              </div>
+              {itemDetails.map((gi,gii)=>{
+                const rowTotal=Object.values(gi.sizes).reduce((a,v)=>a+v,0);
+                return<div key={gii} style={{marginBottom:gii<itemDetails.length-1?10:0}}>
+                  <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
+                    {gi.image_url&&<img src={gi.image_url} alt="" style={{width:32,height:32,objectFit:'cover',borderRadius:4,border:'1px solid #e2e8f0'}}/>}
+                    <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:12}}>{gi.sku}</span>
+                    <span style={{fontWeight:600,fontSize:12}}>{gi.name}</span>
+                    {gi.color&&<span style={{color:'#64748b',fontSize:11}}>({gi.color})</span>}
+                    {gi.brand&&<span style={{fontSize:10,padding:'1px 6px',background:'#f1f5f9',borderRadius:4,color:'#64748b'}}>{gi.brand}</span>}
+                    <span style={{marginLeft:'auto',fontWeight:800,fontSize:13,color:'#1e40af'}}>{rowTotal}</span>
+                  </div>
+                  <div style={{overflowX:'auto'}}>
+                    <table style={{fontSize:12,minWidth:300,width:'100%'}}><thead><tr style={{background:'#f0f2f5'}}>
+                      <th style={{textAlign:'left',padding:'4px 8px',fontSize:10,fontWeight:700}}>SIZE</th>
+                      {allSizes.map(sz=><th key={sz} style={{textAlign:'center',padding:'4px 8px',fontSize:10,fontWeight:700,minWidth:36}}>{sz}</th>)}
+                      <th style={{textAlign:'center',padding:'4px 8px',fontSize:10,fontWeight:800}}>TOTAL</th>
+                    </tr></thead><tbody>
+                      <tr>{['QTY',...allSizes.map(sz=>gi.sizes[sz]||'—'),rowTotal].map((v,i)=>
+                        <td key={i} style={{textAlign:i===0?'left':'center',padding:'4px 8px',fontWeight:typeof v==='number'?800:i===0?700:400,
+                          color:typeof v==='number'?'#1e40af':i===0?'#475569':'#cbd5e1',
+                          background:typeof v==='number'&&i>0?'#eef2ff':i===allSizes.length+1?'#f0f2f5':''}}>{v}</td>)}
+                      </tr>
+                    </tbody></table>
+                  </div>
+                </div>})}
+              {itemDetails.length===0&&<div style={{padding:12,textAlign:'center',color:'#94a3b8',fontSize:12}}>No items linked to this job</div>}
+            </div>
+
+            {/* ─── Rejections History ─── */}
+            {(j.rejections||[]).length>0&&<div style={{padding:'16px 20px',borderBottom:'1px solid #e2e8f0',background:'#fef2f2'}}>
+              <div style={{fontSize:12,fontWeight:700,color:'#dc2626',marginBottom:6}}>Previous Rejections ({j.rejections.length})</div>
+              {j.rejections.map((r,ri)=><div key={ri} style={{padding:'6px 10px',background:'white',borderRadius:6,marginBottom:4,border:'1px solid #fecaca'}}>
+                <div style={{fontSize:12,color:'#7f1d1d'}}>{r.reason}</div>
+                <div style={{fontSize:10,color:'#94a3b8'}}>by {r.by} · {new Date(r.at).toLocaleDateString()}</div>
+              </div>)}
+            </div>}
+
+            {/* ─── Upload Updated Art ─── */}
+            <div style={{padding:'16px 20px',borderBottom:'1px solid #e2e8f0'}}>
+              <div style={{fontSize:12,fontWeight:800,color:'#1e3a5f',marginBottom:8,display:'flex',alignItems:'center',gap:6}}>
+                <span style={{fontSize:16}}>📤</span> Upload Updated Art
+              </div>
+              <div style={{padding:20,textAlign:'center',borderRadius:8,border:'2px dashed #a78bfa',background:'#faf5ff',cursor:artJobDetailUploading?'wait':'pointer',opacity:artJobDetailUploading?0.6:1}}
+                onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#7c3aed';e.currentTarget.style.background='#ede9fe'}}
+                onDragLeave={e=>{e.currentTarget.style.borderColor='#a78bfa';e.currentTarget.style.background='#faf5ff'}}
+                onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor='#a78bfa';e.currentTarget.style.background='#faf5ff';if(!artJobDetailUploading)handleArtUpload(Array.from(e.dataTransfer.files))}}
+                onClick={()=>{if(artJobDetailUploading)return;const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps,.dst,.svg';inp.onchange=()=>handleArtUpload(Array.from(inp.files));inp.click()}}>
+                {artJobDetailUploading?<><div style={{fontSize:28,marginBottom:4}}>⏳</div><div style={{fontSize:12,fontWeight:600,color:'#7c3aed'}}>Uploading...</div></>
+                :<><div style={{fontSize:28,marginBottom:4}}>📎</div><div style={{fontSize:12,fontWeight:600,color:'#7c3aed'}}>Drop files here or click to upload</div>
+                  <div style={{fontSize:10,color:'#94a3b8',marginTop:2}}>Supports PDF, PNG, JPG, AI, EPS, DST, SVG</div></>}
+              </div>
+            </div>
+
+            {/* ─── Messages between Artist and Rep ─── */}
+            <div style={{padding:'16px 20px'}}>
+              <div style={{fontSize:12,fontWeight:800,color:'#1e3a5f',marginBottom:8,display:'flex',alignItems:'center',gap:6}}>
+                <span style={{fontSize:16}}>💬</span> Messages
+                {artMessages.length>0&&<span style={{fontSize:10,color:'#94a3b8'}}>({artMessages.length})</span>}
+              </div>
+
+              {/* Message history */}
+              {artMessages.length>0&&<div style={{maxHeight:200,overflowY:'auto',marginBottom:10,border:'1px solid #e2e8f0',borderRadius:8,background:'#f8fafc'}}>
+                {artMessages.map((m,mi)=>{
+                  const isMe=m.from_id===cu.id;
+                  const isSystem=m.is_system;
+                  return<div key={mi} style={{padding:'8px 12px',borderBottom:mi<artMessages.length-1?'1px solid #f1f5f9':'none',
+                    background:isSystem?'#fffbeb':isMe?'#f0fdf4':'white'}}>
+                    {isSystem?<div style={{fontSize:11,color:'#92400e',fontStyle:'italic',textAlign:'center'}}>{m.text} — {m.from_name} · {new Date(m.ts).toLocaleString()}</div>
+                    :<>
+                      <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:2}}>
+                        <span style={{fontSize:11,fontWeight:700,color:isMe?'#166534':'#1e40af'}}>{m.from_name}</span>
+                        <span style={{fontSize:9,padding:'1px 5px',borderRadius:4,background:m.from_role==='art'||m.from_role==='artist'?'#ede9fe':'#dbeafe',color:m.from_role==='art'||m.from_role==='artist'?'#6d28d9':'#1e40af',fontWeight:600}}>{m.from_role==='art'||m.from_role==='artist'?'Artist':m.from_role==='rep'?'Rep':m.from_role||'Team'}</span>
+                        <span style={{fontSize:9,color:'#94a3b8',marginLeft:'auto'}}>{new Date(m.ts).toLocaleString()}</span>
+                      </div>
+                      <div style={{fontSize:12,color:'#334155',lineHeight:1.5}}>{m.text}</div>
+                    </>}
+                  </div>})}
+              </div>}
+
+              {/* Compose message */}
+              <div style={{display:'flex',gap:8,alignItems:'flex-end'}}>
+                <textarea className="form-input" rows={2} placeholder="Type a message to the rep or coach..." value={artJobDetailMsg} onChange={e=>setArtJobDetailMsg(e.target.value)}
+                  onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendArtMessage()}}}
+                  style={{flex:1,resize:'vertical',fontSize:12}}/>
+                <button className="btn btn-primary" style={{padding:'8px 16px',fontSize:12,fontWeight:700,whiteSpace:'nowrap'}} disabled={!artJobDetailMsg.trim()} onClick={sendArtMessage}>Send</button>
+              </div>
+            </div>
+          </div>
+
+          {/* Footer actions */}
+          <div className="modal-footer" style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+            {j.art_status!=='waiting_approval'&&j.art_status!=='art_complete'&&j.art_status!=='production_files_needed'&&
+              <button className="btn" style={{padding:'8px 20px',background:'linear-gradient(135deg,#f59e0b,#d97706)',color:'white',border:'none',borderRadius:8,fontSize:13,fontWeight:700}} onClick={()=>{sendForApproval();setArtJobDetailModal(null)}}>Send for Approval</button>}
+            <button className="btn btn-secondary" onClick={()=>{setArtMockupModal(j);setArtMockupRevision('');setArtJobDetailModal(null)}}>View Full Mockup</button>
+            <button className="btn btn-secondary" onClick={()=>{setESOTab('jobs');setESO(so);setESOC(c2);setPg('orders');setArtJobDetailModal(null)}}>Open SO</button>
+            <button className="btn btn-secondary" style={{marginLeft:'auto'}} onClick={()=>setArtJobDetailModal(null)}>Close</button>
           </div>
         </div></div>
       })()}
@@ -11917,6 +12397,8 @@ export default function App(){
     </>};
 
   // SETTINGS PAGE
+  const[laborRates,setLaborRates]=useState(()=>loadState('labor_rates',{}));// {personName: hourlyRate}
+  React.useEffect(()=>{_saveAppState('labor_rates',laborRates)},[laborRates]);
   const[settingsTab,setSettingsTab]=useState('pricing');
   const savSettings=(key,val)=>{
     try{const s=JSON.parse(localStorage.getItem('nsa_settings')||'{}');s[key]=val;localStorage.setItem('nsa_settings',JSON.stringify(s));
@@ -11924,7 +12406,7 @@ export default function App(){
       if(key==='CATEGORIES')CATEGORIES=val;if(key==='POSITIONS')POSITIONS=val;if(key==='CONTACT_ROLES')CONTACT_ROLES=val;
       nf('Settings saved')}catch{nf('Error saving','warn')}};
   function rSettings(){
-    const tabs=[['pricing','Decoration Pricing'],['tiers','Customer Tiers'],['lists','Lists & Options'],['terms','Terms & Policies']];
+    const tabs=[['pricing','Decoration Pricing'],['tiers','Customer Tiers'],['lists','Lists & Options'],['terms','Terms & Policies'],['labor','Labor Rates']];
     return(<>
       <div style={{display:'flex',gap:4,marginBottom:16,flexWrap:'wrap'}}>
         {tabs.map(([k,label])=><button key={k} className={`btn btn-sm ${settingsTab===k?'btn-primary':'btn-secondary'}`} onClick={()=>setSettingsTab(k)}>{label}</button>)}
@@ -12086,6 +12568,70 @@ export default function App(){
             </tbody>
           </table>
         </div></div>
+      </>}
+
+      {/* LABOR RATES */}
+      {settingsTab==='labor'&&<>
+        <div className="card" style={{marginBottom:16}}>
+          <div className="card-header"><h3>Hourly Labor Rates</h3></div>
+          <div className="card-body">
+            <div style={{fontSize:12,color:'#64748b',marginBottom:12}}>Set hourly rates per team member for time tracking cost calculations. These rates are used in the Reports → Time & Labor tab to calculate labor costs.</div>
+
+            {/* Artist Rates */}
+            <div style={{fontSize:13,fontWeight:700,color:'#6d28d9',marginBottom:8,borderBottom:'2px solid #ede9fe',paddingBottom:4}}>Art Department</div>
+            {REPS.filter(r=>(r.role==='art'||r.role==='artist'||r.role==='production')&&r.is_active!==false).map(r=>
+              <div key={r.id} style={{display:'flex',alignItems:'center',gap:12,padding:'6px 0',borderBottom:'1px solid #f1f5f9'}}>
+                <span style={{fontWeight:600,fontSize:13,minWidth:140}}>{r.name}</span>
+                <span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#ede9fe',color:'#6d28d9'}}>{r.role}</span>
+                <div style={{display:'flex',alignItems:'center',gap:4}}>
+                  <span style={{fontSize:12,color:'#64748b'}}>$</span>
+                  <input className="form-input" type="number" step="0.50" min="0" style={{width:80,fontSize:13,padding:'4px 8px'}} value={laborRates[r.name]||''} placeholder="0.00"
+                    onChange={e=>{const v=parseFloat(e.target.value)||0;setLaborRates(prev=>({...prev,[r.name]:v}))}}/>
+                  <span style={{fontSize:11,color:'#94a3b8'}}>/hr</span>
+                </div>
+                {laborRates[r.name]>0&&<span style={{fontSize:10,color:'#22c55e',fontWeight:600}}>${((laborRates[r.name]||0)/60).toFixed(3)}/min</span>}
+              </div>
+            )}
+            {REPS.filter(r=>(r.role==='art'||r.role==='artist'||r.role==='production')&&r.is_active!==false).length===0&&
+              <div style={{fontSize:11,color:'#94a3b8',padding:8}}>No artists/production team found. Add team members in Team Directory with role "art" or "production".</div>}
+
+            {/* Decorator/Production Rates */}
+            <div style={{fontSize:13,fontWeight:700,color:'#2563eb',marginTop:16,marginBottom:8,borderBottom:'2px solid #dbeafe',paddingBottom:4}}>Decoration / Production Staff</div>
+            {REPS.filter(r=>(r.role==='warehouse'||r.role==='production')&&r.is_active!==false).map(r=>
+              <div key={r.id} style={{display:'flex',alignItems:'center',gap:12,padding:'6px 0',borderBottom:'1px solid #f1f5f9'}}>
+                <span style={{fontWeight:600,fontSize:13,minWidth:140}}>{r.name}</span>
+                <span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#dbeafe',color:'#1e40af'}}>{r.role}</span>
+                <div style={{display:'flex',alignItems:'center',gap:4}}>
+                  <span style={{fontSize:12,color:'#64748b'}}>$</span>
+                  <input className="form-input" type="number" step="0.50" min="0" style={{width:80,fontSize:13,padding:'4px 8px'}} value={laborRates[r.name]||''} placeholder="0.00"
+                    onChange={e=>{const v=parseFloat(e.target.value)||0;setLaborRates(prev=>({...prev,[r.name]:v}))}}/>
+                  <span style={{fontSize:11,color:'#94a3b8'}}>/hr</span>
+                </div>
+                {laborRates[r.name]>0&&<span style={{fontSize:10,color:'#22c55e',fontWeight:600}}>${((laborRates[r.name]||0)/60).toFixed(3)}/min</span>}
+              </div>
+            )}
+
+            {/* Other / Admin rates */}
+            <div style={{fontSize:13,fontWeight:700,color:'#475569',marginTop:16,marginBottom:8,borderBottom:'2px solid #e2e8f0',paddingBottom:4}}>Other Staff</div>
+            {REPS.filter(r=>r.role!=='art'&&r.role!=='artist'&&r.role!=='production'&&r.role!=='warehouse'&&r.is_active!==false).map(r=>
+              <div key={r.id} style={{display:'flex',alignItems:'center',gap:12,padding:'6px 0',borderBottom:'1px solid #f1f5f9'}}>
+                <span style={{fontWeight:600,fontSize:13,minWidth:140}}>{r.name}</span>
+                <span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#f1f5f9',color:'#475569'}}>{r.role}</span>
+                <div style={{display:'flex',alignItems:'center',gap:4}}>
+                  <span style={{fontSize:12,color:'#64748b'}}>$</span>
+                  <input className="form-input" type="number" step="0.50" min="0" style={{width:80,fontSize:13,padding:'4px 8px'}} value={laborRates[r.name]||''} placeholder="0.00"
+                    onChange={e=>{const v=parseFloat(e.target.value)||0;setLaborRates(prev=>({...prev,[r.name]:v}))}}/>
+                  <span style={{fontSize:11,color:'#94a3b8'}}>/hr</span>
+                </div>
+                {laborRates[r.name]>0&&<span style={{fontSize:10,color:'#22c55e',fontWeight:600}}>${((laborRates[r.name]||0)/60).toFixed(3)}/min</span>}
+              </div>
+            )}
+
+            <div style={{marginTop:16,padding:10,background:'#f8fafc',borderRadius:6,fontSize:11,color:'#64748b'}}>
+              Rates are used to calculate labor costs in the Reports → Time & Labor dashboard. Set $0 to exclude a person from cost calculations.
+            </div>
+          </div>
+        </div>
       </>}
     </>)};
 
