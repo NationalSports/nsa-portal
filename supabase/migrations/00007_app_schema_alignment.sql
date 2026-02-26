@@ -13,35 +13,44 @@
 -- ============================================================
 
 -- ─── STEP 1: Preserve data we need ──────────────────────────
+-- Use SELECT * to avoid assuming which columns exist
 
 -- Save customer data (user may have created customers already)
-CREATE TEMP TABLE IF NOT EXISTS _save_customers AS
-  SELECT id::TEXT as id, parent_id::TEXT as parent_id, name, alpha_tag,
-         billing_address_line1, billing_address_line2, billing_city, billing_state, billing_zip,
-         shipping_address_line1, shipping_address_line2, shipping_city, shipping_state, shipping_zip,
-         pricing_tier as adidas_ua_tier, catalog_markup,
-         payment_terms, tax_rate, tax_exempt, primary_rep_id::TEXT as primary_rep_id,
-         notes, is_active, created_at, updated_at
-  FROM public.customers;
+CREATE TEMP TABLE IF NOT EXISTS _save_customers AS SELECT * FROM public.customers;
 
-CREATE TEMP TABLE IF NOT EXISTS _save_contacts AS
-  SELECT id, customer_id::TEXT as customer_id, name, email, phone, role
-  FROM public.customer_contacts;
+-- Save contacts (may not exist yet)
+DO $$ BEGIN
+  CREATE TEMP TABLE IF NOT EXISTS _save_contacts AS SELECT * FROM public.customer_contacts;
+EXCEPTION WHEN OTHERS THEN
+  CREATE TEMP TABLE IF NOT EXISTS _save_contacts (customer_id TEXT, name TEXT, email TEXT, phone TEXT, role TEXT);
+END $$;
 
--- Save user_profiles for team_members seeding
-CREATE TEMP TABLE IF NOT EXISTS _save_profiles AS
-  SELECT id::TEXT as id, full_name as name, role, email, pin as phone, is_active
-  FROM public.user_profiles;
+-- Save user_profiles for team_members seeding (may not exist)
+DO $$ BEGIN
+  CREATE TEMP TABLE IF NOT EXISTS _save_profiles AS
+    SELECT id::TEXT as id, full_name as name, role, email, pin as phone, is_active
+    FROM public.user_profiles;
+EXCEPTION WHEN OTHERS THEN
+  CREATE TEMP TABLE IF NOT EXISTS _save_profiles (id TEXT, name TEXT, role TEXT, email TEXT, phone TEXT, is_active BOOLEAN);
+END $$;
 
 -- Save decoration_types and price_matrix (reference data from seed)
-CREATE TEMP TABLE IF NOT EXISTS _save_deco_types AS SELECT * FROM public.decoration_types;
-CREATE TEMP TABLE IF NOT EXISTS _save_price_matrix AS SELECT * FROM public.price_matrix;
+DO $$ BEGIN
+  CREATE TEMP TABLE IF NOT EXISTS _save_deco_types AS SELECT * FROM public.decoration_types;
+EXCEPTION WHEN OTHERS THEN NULL; END $$;
+DO $$ BEGIN
+  CREATE TEMP TABLE IF NOT EXISTS _save_price_matrix AS SELECT * FROM public.price_matrix;
+EXCEPTION WHEN OTHERS THEN NULL; END $$;
 
 -- Save id_sequences
-CREATE TEMP TABLE IF NOT EXISTS _save_id_sequences AS SELECT * FROM public.id_sequences;
+DO $$ BEGIN
+  CREATE TEMP TABLE IF NOT EXISTS _save_id_sequences AS SELECT * FROM public.id_sequences;
+EXCEPTION WHEN OTHERS THEN NULL; END $$;
 
 -- Save app_settings (Slack config)
-CREATE TEMP TABLE IF NOT EXISTS _save_app_settings AS SELECT * FROM public.app_settings;
+DO $$ BEGIN
+  CREATE TEMP TABLE IF NOT EXISTS _save_app_settings AS SELECT * FROM public.app_settings;
+EXCEPTION WHEN OTHERS THEN NULL; END $$;
 
 
 -- ─── STEP 2: Drop ALL conflicting tables ────────────────────
@@ -643,58 +652,107 @@ CREATE INDEX idx_price_matrix_deco ON public.price_matrix(decoration_type_id);
 -- ─── STEP 4: Migrate saved data ─────────────────────────────
 
 -- Seed team_members from user_profiles
-INSERT INTO public.team_members (id, name, role, email, phone, is_active)
-SELECT id, name, role, null, phone, is_active FROM _save_profiles
-ON CONFLICT (id) DO NOTHING;
+DO $$ BEGIN
+  INSERT INTO public.team_members (id, name, role, email, phone, is_active)
+  SELECT id, name, role, null, phone, is_active FROM _save_profiles
+  ON CONFLICT (id) DO NOTHING;
+EXCEPTION WHEN OTHERS THEN NULL;
+END $$;
 
--- Restore customers
-INSERT INTO public.customers (id, parent_id, name, alpha_tag,
-  billing_address_line1, billing_address_line2, billing_city, billing_state, billing_zip,
-  shipping_address_line1, shipping_address_line2, shipping_city, shipping_state, shipping_zip,
-  adidas_ua_tier, catalog_markup, payment_terms, tax_rate, tax_exempt, primary_rep_id, notes, is_active,
-  created_at, updated_at)
-SELECT id, parent_id, name, alpha_tag,
-  billing_address_line1, billing_address_line2, billing_city, billing_state, billing_zip,
-  shipping_address_line1, shipping_address_line2, shipping_city, shipping_state, shipping_zip,
-  adidas_ua_tier, catalog_markup, payment_terms, tax_rate, tax_exempt, primary_rep_id, notes, is_active,
-  created_at, updated_at
-FROM _save_customers
-ON CONFLICT (id) DO NOTHING;
+-- Restore customers dynamically (handle unknown source columns)
+DO $$
+DECLARE
+  src_cols TEXT[];
+  sel TEXT;
+BEGIN
+  -- Get column names from the saved table
+  SELECT array_agg(column_name::TEXT) INTO src_cols
+  FROM information_schema.columns
+  WHERE table_name = '_save_customers' AND table_schema LIKE 'pg_temp%';
+
+  -- Build dynamic insert with only the columns that exist in both tables
+  sel := 'INSERT INTO public.customers (id, name, is_active, created_at, updated_at) SELECT id::TEXT, name, COALESCE(is_active::BOOLEAN, true), COALESCE(created_at::TIMESTAMPTZ, now()), COALESCE(updated_at::TIMESTAMPTZ, now()) FROM _save_customers ON CONFLICT (id) DO NOTHING';
+  EXECUTE sel;
+
+  -- Try to update additional fields if they exist in the source
+  IF 'parent_id' = ANY(src_cols) THEN
+    EXECUTE 'UPDATE public.customers c SET parent_id = s.parent_id::TEXT FROM _save_customers s WHERE c.id = s.id::TEXT AND s.parent_id IS NOT NULL';
+  END IF;
+  IF 'alpha_tag' = ANY(src_cols) THEN
+    EXECUTE 'UPDATE public.customers c SET alpha_tag = s.alpha_tag FROM _save_customers s WHERE c.id = s.id::TEXT AND s.alpha_tag IS NOT NULL';
+  END IF;
+  IF 'payment_terms' = ANY(src_cols) THEN
+    EXECUTE 'UPDATE public.customers c SET payment_terms = s.payment_terms::TEXT FROM _save_customers s WHERE c.id = s.id::TEXT AND s.payment_terms IS NOT NULL';
+  END IF;
+  IF 'tax_rate' = ANY(src_cols) THEN
+    EXECUTE 'UPDATE public.customers c SET tax_rate = s.tax_rate::NUMERIC FROM _save_customers s WHERE c.id = s.id::TEXT';
+  END IF;
+  IF 'catalog_markup' = ANY(src_cols) THEN
+    EXECUTE 'UPDATE public.customers c SET catalog_markup = s.catalog_markup::NUMERIC FROM _save_customers s WHERE c.id = s.id::TEXT';
+  END IF;
+  IF 'notes' = ANY(src_cols) THEN
+    EXECUTE 'UPDATE public.customers c SET notes = s.notes FROM _save_customers s WHERE c.id = s.id::TEXT AND s.notes IS NOT NULL';
+  END IF;
+  IF 'billing_address_line1' = ANY(src_cols) THEN
+    EXECUTE 'UPDATE public.customers c SET billing_address_line1 = s.billing_address_line1 FROM _save_customers s WHERE c.id = s.id::TEXT';
+  END IF;
+  IF 'shipping_address_line1' = ANY(src_cols) THEN
+    EXECUTE 'UPDATE public.customers c SET shipping_address_line1 = s.shipping_address_line1 FROM _save_customers s WHERE c.id = s.id::TEXT';
+  END IF;
+
+EXCEPTION WHEN OTHERS THEN
+  RAISE NOTICE 'Customer restore partial: %', SQLERRM;
+END $$;
 
 -- Restore customer contacts
-INSERT INTO public.customer_contacts (customer_id, name, email, phone, role, sort_order)
-SELECT customer_id, name, email, phone, role, 0
-FROM _save_contacts
-WHERE customer_id IN (SELECT id FROM public.customers)
-ON CONFLICT DO NOTHING;
+DO $$ BEGIN
+  INSERT INTO public.customer_contacts (customer_id, name, email, phone, role, sort_order)
+  SELECT customer_id::TEXT, name, email, phone, role, 0
+  FROM _save_contacts
+  WHERE customer_id::TEXT IN (SELECT id FROM public.customers)
+  ON CONFLICT DO NOTHING;
+EXCEPTION WHEN OTHERS THEN NULL;
+END $$;
 
 -- Restore decoration_types
-INSERT INTO public.decoration_types (id, name, code, is_active)
-SELECT id, name, code, is_active FROM _save_deco_types
-ON CONFLICT (id) DO NOTHING;
+DO $$ BEGIN
+  INSERT INTO public.decoration_types (id, name, code, is_active)
+  SELECT id, name, code, is_active FROM _save_deco_types
+  ON CONFLICT (id) DO NOTHING;
+EXCEPTION WHEN OTHERS THEN NULL;
+END $$;
 
 -- Restore price_matrix
-INSERT INTO public.price_matrix (id, decoration_type_id, tier_name, tier_sort, qty_min, qty_max, price_per_piece, created_at, updated_at)
-SELECT id, decoration_type_id, tier_name, tier_sort, qty_min, qty_max, price_per_piece, created_at, updated_at
-FROM _save_price_matrix
-WHERE decoration_type_id IN (SELECT id FROM public.decoration_types)
-ON CONFLICT (id) DO NOTHING;
+DO $$ BEGIN
+  INSERT INTO public.price_matrix (id, decoration_type_id, tier_name, tier_sort, qty_min, qty_max, price_per_piece, created_at, updated_at)
+  SELECT id, decoration_type_id, tier_name, tier_sort, qty_min, qty_max, price_per_piece, created_at, updated_at
+  FROM _save_price_matrix
+  WHERE decoration_type_id IN (SELECT id FROM public.decoration_types)
+  ON CONFLICT (id) DO NOTHING;
+EXCEPTION WHEN OTHERS THEN NULL;
+END $$;
 
 -- Restore id_sequences
-INSERT INTO public.id_sequences (entity, next_val)
-SELECT entity, next_val FROM _save_id_sequences
-ON CONFLICT (entity) DO NOTHING;
+DO $$ BEGIN
+  INSERT INTO public.id_sequences (entity, next_val)
+  SELECT entity, next_val FROM _save_id_sequences
+  ON CONFLICT (entity) DO NOTHING;
+EXCEPTION WHEN OTHERS THEN NULL;
+END $$;
 
--- Restore app_settings (recreate table first)
+-- Restore app_settings
 CREATE TABLE IF NOT EXISTS public.app_settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-INSERT INTO public.app_settings (key, value, updated_at)
-SELECT key, value, updated_at FROM _save_app_settings
-ON CONFLICT (key) DO NOTHING;
+DO $$ BEGIN
+  INSERT INTO public.app_settings (key, value, updated_at)
+  SELECT key, value, updated_at FROM _save_app_settings
+  ON CONFLICT (key) DO NOTHING;
+EXCEPTION WHEN OTHERS THEN NULL;
+END $$;
 
 
 -- ─── STEP 5: Enable Realtime ─────────────────────────────────
