@@ -7070,6 +7070,9 @@ export default function App(){
   const[artEditModal,setArtEditModal]=useState(null);// {job, instructions:'', notes:''}
   const[artMockupModal,setArtMockupModal]=useState(null);// job object for art mockup popup
   const[artMockupRevision,setArtMockupRevision]=useState('');// revision text in mockup popup
+  const[artJobDetailModal,setArtJobDetailModal]=useState(null);// job object for artist card detail popup
+  const[artJobDetailMsg,setArtJobDetailMsg]=useState('');// message text in artist detail popup
+  const[artJobDetailUploading,setArtJobDetailUploading]=useState(false);// upload in-progress flag
   const[prodJobModal,setProdJobModal]=useState(null);// job object for production mockup view
   const[prodJobLightbox,setProdJobLightbox]=useState(false);// lightbox for mockup image
   const[prodView,setProdView]=useState('board');const[prodFilter,setProdFilter]=useState('all');const[expandedJob,setExpandedJob]=useState(null);
@@ -9691,7 +9694,7 @@ export default function App(){
       const urgent=j.daysOut!=null&&j.daysOut<=3;
       const artist=REPS.find(r=>r.id===j.assigned_artist);
       const af=j.artFile;
-      return<div key={j.id+j.soId+view} className="card" style={{marginBottom:6,border:urgent?'2px solid #dc2626':'1px solid #e2e8f0',borderRadius:8,overflow:'hidden'}}>
+      return<div key={j.id+j.soId+view} className="card" style={{marginBottom:6,border:urgent?'2px solid #dc2626':'1px solid #e2e8f0',borderRadius:8,overflow:'hidden',cursor:'pointer'}} onClick={()=>{setArtJobDetailModal(j);setArtJobDetailMsg('')}}>
         <div style={{padding:'8px 10px'}}>
           <div style={{display:'flex',alignItems:'center',gap:4,marginBottom:4}}>
             <span style={{fontSize:12,fontWeight:800,color:'#0f172a',flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{j.customer}</span>
@@ -9726,11 +9729,11 @@ export default function App(){
               :<span style={{fontSize:10,color:'#94a3b8',fontStyle:'italic'}}>No artist assigned</span>}
             </div>
             <div style={{fontSize:9,color:'#94a3b8'}}>{j.rep} · {j.alpha||j.soMemo}</div>
-            <button className="btn btn-sm" style={{fontSize:10,padding:'4px 10px',background:'linear-gradient(135deg,#1e40af,#7c3aed)',color:'white',border:'none',width:'100%',marginTop:4,fontWeight:600,borderRadius:6,display:'flex',alignItems:'center',justifyContent:'center',gap:4}} onClick={()=>{setArtMockupModal(j);setArtMockupRevision('')}}>🖼️ Mockup</button>
+            <button className="btn btn-sm" style={{fontSize:10,padding:'4px 10px',background:'linear-gradient(135deg,#1e40af,#7c3aed)',color:'white',border:'none',width:'100%',marginTop:4,fontWeight:600,borderRadius:6,display:'flex',alignItems:'center',justifyContent:'center',gap:4}} onClick={e=>{e.stopPropagation();setArtMockupModal(j);setArtMockupRevision('')}}>🖼️ Mockup</button>
             <div style={{display:'flex',gap:3,marginTop:6,flexWrap:'wrap'}}>
-              {col?.id==='waiting_for_art'&&j.art_status==='art_requested'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#1e40af',color:'white',border:'none'}} onClick={()=>moveArtStatus(j,'art_in_progress')}>Start Working</button>}
-              {col?.id==='waiting_for_art'&&j.art_status==='art_in_progress'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#92400e',color:'white',border:'none'}} onClick={()=>moveArtStatus(j,'waiting_approval')}>Send for Approval</button>}
-              {col?.id==='approved'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#166534',color:'white',border:'none'}} onClick={()=>{
+              {col?.id==='waiting_for_art'&&j.art_status==='art_requested'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#1e40af',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();moveArtStatus(j,'art_in_progress')}}>Start Working</button>}
+              {col?.id==='waiting_for_art'&&j.art_status==='art_in_progress'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#92400e',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();moveArtStatus(j,'waiting_approval')}}>Send for Approval</button>}
+              {col?.id==='approved'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#166534',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();
                 const so=sos.find(s=>s.id===j.soId);if(!so){nf('SO not found','error');return}
                 const afIdx=safeArt(so).findIndex(f=>f.id===j.art_file_id);
                 if(afIdx>=0&&(safeArt(so)[afIdx].prod_files||[]).length===0){
@@ -9741,7 +9744,7 @@ export default function App(){
                   nf('Prod files uploaded — Art Complete!');
                 }else{moveArtStatus(j,'art_complete')}
               }}>Upload & Complete</button>}
-              <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px',marginLeft:'auto'}} onClick={()=>{setESOTab('jobs');setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so?.customer_id));setPg('orders')}}>Open SO</button>
+              <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px',marginLeft:'auto'}} onClick={e=>{e.stopPropagation();setESOTab('jobs');setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so?.customer_id));setPg('orders')}}>Open SO</button>
             </div>
           </>}
 
@@ -9753,11 +9756,11 @@ export default function App(){
               <span style={{fontSize:9,color:'#94a3b8',marginLeft:'auto'}}>{j.rep}</span>
             </div>
             {/* Mockup button — primary action, opens popup with approve/reject */}
-            <button className="btn btn-sm" style={{fontSize:11,padding:'6px 12px',background:j.art_status==='waiting_approval'?'linear-gradient(135deg,#f59e0b,#d97706)':'linear-gradient(135deg,#1e40af,#7c3aed)',color:'white',border:'none',width:'100%',marginTop:4,fontWeight:700,borderRadius:6,display:'flex',alignItems:'center',justifyContent:'center',gap:6}} onClick={()=>{setArtMockupModal(j);setArtMockupRevision('')}}>{j.art_status==='waiting_approval'?'Review Mockup':'🖼️ View Mockup'}</button>
+            <button className="btn btn-sm" style={{fontSize:11,padding:'6px 12px',background:j.art_status==='waiting_approval'?'linear-gradient(135deg,#f59e0b,#d97706)':'linear-gradient(135deg,#1e40af,#7c3aed)',color:'white',border:'none',width:'100%',marginTop:4,fontWeight:700,borderRadius:6,display:'flex',alignItems:'center',justifyContent:'center',gap:6}} onClick={e=>{e.stopPropagation();setArtMockupModal(j);setArtMockupRevision('')}}>{j.art_status==='waiting_approval'?'Review Mockup':'🖼️ View Mockup'}</button>
             <div style={{display:'flex',gap:3,marginTop:6,flexWrap:'wrap'}}>
               {/* Edit request (only when art is not complete — coaches change minds) */}
-              {j.art_status!=='art_complete'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#2563eb',color:'white',border:'none'}} onClick={()=>setArtEditModal({job:j,instructions:(j.art_requests||[]).length>0?j.art_requests[j.art_requests.length-1].instructions||'':'',notes:j.rep_notes||''})}>Edit Request</button>}
-              <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px',marginLeft:'auto'}} onClick={()=>{setESOTab('jobs');setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so?.customer_id));setPg('orders')}}>Open SO</button>
+              {j.art_status!=='art_complete'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#2563eb',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();setArtEditModal({job:j,instructions:(j.art_requests||[]).length>0?j.art_requests[j.art_requests.length-1].instructions||'':'',notes:j.rep_notes||''})}}>Edit Request</button>}
+              <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px',marginLeft:'auto'}} onClick={e=>{e.stopPropagation();setESOTab('jobs');setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so?.customer_id));setPg('orders')}}>Open SO</button>
             </div>
           </>}
         </div>
@@ -10063,6 +10066,260 @@ export default function App(){
             {j.art_status!=='art_complete'&&<button className="btn btn-secondary" onClick={()=>setArtEditModal({job:j,instructions:(j.art_requests||[]).length>0?j.art_requests[j.art_requests.length-1].instructions||'':'',notes:j.rep_notes||''})}>Edit Request</button>}
             <button className="btn btn-secondary" onClick={()=>{setESOTab('jobs');setESO(so);setESOC(c2);setPg('orders');setArtMockupModal(null)}}>Open Full Job</button>
             <button className="btn btn-secondary" style={{marginLeft:'auto'}} onClick={()=>setArtMockupModal(null)}>Close</button>
+          </div>
+        </div></div>
+      })()}
+
+      {/* ═══ ARTIST JOB DETAIL POPUP — click a Kanban card to open ═══ */}
+      {artJobDetailModal&&(()=>{
+        const j=artJobDetailModal;
+        const so=j.so||sos.find(s=>s.id===j.soId);
+        if(!so)return null;
+        const c2=cust.find(x=>x.id===so.customer_id);
+        const af=j.artFile||safeArt(so).find(f=>f.id===j.art_file_id);
+        const mockupFiles=(af?.mockup_files||af?.files||[]);
+        const prodFilesL=(af?.prod_files||[]);
+        const colorList=af?(af.ink_colors||af.thread_colors||'').split(/[,\n]/).map(c3=>c3.trim()).filter(Boolean):[];
+        const isEmb=af?.deco_type==='embroidery';
+        const colorMap={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000',
+          'Silver':'#C0C0C0','Royal':'#4169e1','Cardinal':'#8C1515','Green':'#166534','Orange':'#EA580C',
+          'Navy 2767':'#001f3f','PMS 286':'#0033A0','PMS 032':'#EF3340','PMS 877':'#C0C0C0'};
+        const artist=REPS.find(r=>r.id===j.assigned_artist);
+        const rep=REPS.find(r=>r.id===so.created_by);
+        const latestReq=(j.art_requests||[]).length>0?j.art_requests[j.art_requests.length-1]:null;
+
+        // Build size grid
+        const itemDetails=(j.items||[]).map(gi=>{
+          const it=safeItems(so)[gi.item_idx];if(!it)return null;
+          const sizes={};
+          Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{sizes[sz]=v});
+          const prd=prod.find(pp=>pp.id===it.product_id||pp.sku===it.sku);
+          return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,image_url:prd?.image_url||''};
+        }).filter(Boolean);
+        const allSizes=SZ_ORD.filter(sz=>itemDetails.some(it=>it.sizes[sz]>0));
+
+        // Art messages for this job (stored on the job)
+        const artMessages=j.art_messages||[];
+
+        // Upload handler for artist to upload updated art
+        const handleArtUpload=async(files)=>{
+          setArtJobDetailUploading(true);
+          try{
+            const urls=[];
+            for(const f of files){
+              nf('Uploading '+f.name+'...');
+              const url=await fileUpload(f,'nsa-art-files');
+              urls.push(url);
+            }
+            // Add to mockup_files on the art file
+            const updArt=safeArt(so).map(a=>a.id===j.art_file_id?{...a,mockup_files:[...(a.mockup_files||a.files||[]),...urls],status:'uploaded'}:a);
+            const updatedJobs=safeJobs(so).map(jj=>jj.id===j.id?{...jj,art_status:jj.art_status==='needs_art'||jj.art_status==='art_requested'?'art_in_progress':jj.art_status}:jj);
+            savSO({...so,art_files:updArt,jobs:updatedJobs});
+            // Refresh modal with updated data
+            const updatedAf=updArt.find(a=>a.id===j.art_file_id);
+            setArtJobDetailModal({...j,artFile:updatedAf,art_status:updatedJobs.find(jj=>jj.id===j.id)?.art_status||j.art_status});
+            nf(urls.length+' file'+(urls.length>1?'s':'')+' uploaded!');
+          }catch(err){nf('Upload failed: '+err.message,'error')}
+          finally{setArtJobDetailUploading(false)}
+        };
+
+        // Send message from artist to rep
+        const sendArtMessage=()=>{
+          if(!artJobDetailMsg.trim())return;
+          const msg={id:'AM-'+Date.now(),from_id:cu.id,from_name:cu.name,from_role:cu.role,text:artJobDetailMsg.trim(),ts:new Date().toISOString()};
+          const updatedMsgs=[...artMessages,msg];
+          const updatedJobs=safeJobs(so).map(jj=>jj.id===j.id?{...jj,art_messages:updatedMsgs}:jj);
+          savSO({...so,jobs:updatedJobs});
+          setArtJobDetailModal({...j,art_messages:updatedMsgs});
+          setArtJobDetailMsg('');
+          nf('Message sent to '+(rep?.name||'rep'));
+        };
+
+        // Send for approval (moves status and notifies)
+        const sendForApproval=()=>{
+          moveArtStatus(j,'waiting_approval');
+          const msg={id:'AM-'+Date.now(),from_id:cu.id,from_name:cu.name,from_role:cu.role,text:'Sent artwork for approval',ts:new Date().toISOString(),is_system:true};
+          const updatedMsgs=[...artMessages,msg];
+          const updatedJobs=safeJobs(so).map(jj=>jj.id===j.id?{...jj,art_messages:updatedMsgs,art_status:'waiting_approval'}:jj);
+          savSO({...so,art_files:safeArt(so).map(a=>a.id===j.art_file_id?{...a,status:'needs_approval'}:a),jobs:updatedJobs});
+          setArtJobDetailModal({...j,art_messages:updatedMsgs,art_status:'waiting_approval'});
+          nf('Sent for approval!');
+        };
+
+        return<div className="modal-overlay" onClick={()=>setArtJobDetailModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:920,maxHeight:'94vh',overflow:'auto'}}>
+          {/* Header */}
+          <div className="modal-header" style={{background:'linear-gradient(135deg,#7c3aed,#4c1d95)',color:'white',padding:'16px 20px'}}>
+            <div style={{flex:1}}>
+              <h2 style={{color:'white',margin:0,fontSize:18}}>{j.art_name||'Untitled Art'}</h2>
+              <div style={{fontSize:12,color:'#c4b5fd',marginTop:3}}>{j.customer} · {so.id} · {j.deco_type?.replace(/_/g,' ')} · {j.positions||'—'}</div>
+            </div>
+            <div style={{display:'flex',gap:8,alignItems:'center'}}>
+              <span style={{padding:'4px 12px',borderRadius:8,fontSize:11,fontWeight:700,background:SC[j.art_status]?.bg,color:SC[j.art_status]?.c}}>{ART_LABELS[j.art_status]||j.art_status}</span>
+              {artist&&<span style={{padding:'4px 10px',borderRadius:8,fontSize:11,fontWeight:600,background:'#ede9fe',color:'#6d28d9'}}>🎨 {artist.name}</span>}
+              <button className="modal-close" style={{color:'white',fontSize:20}} onClick={()=>setArtJobDetailModal(null)}>×</button>
+            </div>
+          </div>
+
+          <div className="modal-body" style={{padding:0}}>
+
+            {/* ─── Rep Instructions / Art Request Text ─── */}
+            <div style={{padding:'16px 20px',borderBottom:'1px solid #e2e8f0',background:'#faf5ff'}}>
+              <div style={{fontSize:12,fontWeight:800,color:'#6d28d9',marginBottom:8,display:'flex',alignItems:'center',gap:6}}>
+                <span style={{fontSize:16}}>📋</span> Rep Instructions
+              </div>
+              {latestReq?<>
+                <div style={{padding:'10px 14px',background:'white',borderRadius:8,border:'1px solid #e9d5ff',marginBottom:6}}>
+                  <div style={{fontSize:13,color:'#1e293b',lineHeight:1.6,whiteSpace:'pre-wrap'}}>{latestReq.instructions||'No specific instructions'}</div>
+                  <div style={{fontSize:10,color:'#94a3b8',marginTop:6}}>From {latestReq.created_by||rep?.name||'Rep'} · {new Date(latestReq.created_at).toLocaleDateString()}{latestReq.updated_at?' · Updated '+new Date(latestReq.updated_at).toLocaleDateString():''}</div>
+                </div>
+                {j.rep_notes&&<div style={{padding:'8px 12px',background:'#fffbeb',borderRadius:6,border:'1px solid #fde68a',fontSize:12,color:'#92400e'}}>
+                  <strong>Rep notes:</strong> {j.rep_notes}
+                </div>}
+              </>:<div style={{fontSize:12,color:'#94a3b8',fontStyle:'italic'}}>No art request instructions yet</div>}
+              {af?.notes&&<div style={{marginTop:6,padding:'8px 12px',background:'white',borderRadius:6,border:'1px solid #e2e8f0',fontSize:12,color:'#475569'}}>
+                <strong>Art file notes:</strong> {af.notes}
+              </div>}
+            </div>
+
+            {/* ─── Artwork Files ─── */}
+            <div style={{padding:'16px 20px',borderBottom:'1px solid #e2e8f0'}}>
+              <div style={{fontSize:12,fontWeight:800,color:'#1e3a5f',marginBottom:10,display:'flex',alignItems:'center',gap:6}}>
+                <span style={{fontSize:16}}>🖼️</span> Artwork Files
+              </div>
+              {mockupFiles.length>0?<div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:10}}>
+                {mockupFiles.map((f,i)=><div key={i} style={{padding:'8px 14px',background:'#dbeafe',border:'1px solid #93c5fd',borderRadius:8,cursor:'pointer',fontSize:12,fontWeight:600,color:'#1e40af',display:'flex',alignItems:'center',gap:6}}
+                  onClick={()=>openFile(f)}><span style={{fontSize:16}}>🖼️</span>{typeof f==='string'?(f.split('/').pop()||f):f}</div>)}
+              </div>:<div style={{padding:16,textAlign:'center',color:'#94a3b8',fontSize:12,background:'#f8fafc',borderRadius:8,border:'2px dashed #e2e8f0'}}>No artwork files uploaded yet</div>}
+              {prodFilesL.length>0&&<><div style={{fontSize:11,fontWeight:700,color:'#92400e',marginTop:8,marginBottom:4}}>Production Files</div>
+                <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                  {prodFilesL.map((f,i)=><div key={i} style={{padding:'6px 10px',background:'#fef3c7',border:'1px solid #fde68a',borderRadius:6,cursor:'pointer',fontSize:11,fontWeight:600,color:'#92400e',display:'flex',alignItems:'center',gap:4}}
+                    onClick={()=>openFile(f)}>📁 {typeof f==='string'?(f.split('/').pop()||f):f}</div>)}
+                </div></>}
+
+              {/* Decoration details + colors */}
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:12,marginTop:14}}>
+                <div><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:2}}>Method</div>
+                  <div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{j.deco_type?.replace(/_/g,' ')||'—'}</div></div>
+                <div><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:2}}>Position(s)</div>
+                  <div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{j.positions||'—'}</div></div>
+                <div><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:2}}>Art Size</div>
+                  <div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{af?.art_size||'—'}</div></div>
+              </div>
+              {colorList.length>0&&<div style={{marginTop:10}}>
+                <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:4}}>{isEmb?'Thread Colors':'Ink Colors'} ({colorList.length})</div>
+                <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
+                  {colorList.map((cl,i)=>{
+                    const clLower=cl.toLowerCase();
+                    const swatchColor=colorMap[cl]||Object.entries(colorMap).find(([k])=>clLower.includes(k.toLowerCase()))?.[1]||null;
+                    return<div key={i} style={{display:'flex',alignItems:'center',gap:4,padding:'4px 10px',background:'white',border:'1px solid #e2e8f0',borderRadius:6}}>
+                      <div style={{width:14,height:14,borderRadius:3,border:'1px solid #d1d5db',background:swatchColor||'linear-gradient(135deg,#f1f5f9,#e2e8f0)'}}/>
+                      <span style={{fontSize:11,fontWeight:600}}>{cl}</span>
+                    </div>})}
+                </div>
+              </div>}
+            </div>
+
+            {/* ─── SKU Sizes ─── */}
+            <div style={{padding:'16px 20px',borderBottom:'1px solid #e2e8f0'}}>
+              <div style={{fontSize:12,fontWeight:800,color:'#1e3a5f',marginBottom:10,display:'flex',alignItems:'center',gap:6}}>
+                <span style={{fontSize:16}}>📦</span> SKUs & Sizes — {j.total_units} total units
+              </div>
+              {itemDetails.map((gi,gii)=>{
+                const rowTotal=Object.values(gi.sizes).reduce((a,v)=>a+v,0);
+                return<div key={gii} style={{marginBottom:gii<itemDetails.length-1?10:0}}>
+                  <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
+                    {gi.image_url&&<img src={gi.image_url} alt="" style={{width:32,height:32,objectFit:'cover',borderRadius:4,border:'1px solid #e2e8f0'}}/>}
+                    <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:12}}>{gi.sku}</span>
+                    <span style={{fontWeight:600,fontSize:12}}>{gi.name}</span>
+                    {gi.color&&<span style={{color:'#64748b',fontSize:11}}>({gi.color})</span>}
+                    {gi.brand&&<span style={{fontSize:10,padding:'1px 6px',background:'#f1f5f9',borderRadius:4,color:'#64748b'}}>{gi.brand}</span>}
+                    <span style={{marginLeft:'auto',fontWeight:800,fontSize:13,color:'#1e40af'}}>{rowTotal}</span>
+                  </div>
+                  <div style={{overflowX:'auto'}}>
+                    <table style={{fontSize:12,minWidth:300,width:'100%'}}><thead><tr style={{background:'#f0f2f5'}}>
+                      <th style={{textAlign:'left',padding:'4px 8px',fontSize:10,fontWeight:700}}>SIZE</th>
+                      {allSizes.map(sz=><th key={sz} style={{textAlign:'center',padding:'4px 8px',fontSize:10,fontWeight:700,minWidth:36}}>{sz}</th>)}
+                      <th style={{textAlign:'center',padding:'4px 8px',fontSize:10,fontWeight:800}}>TOTAL</th>
+                    </tr></thead><tbody>
+                      <tr>{['QTY',...allSizes.map(sz=>gi.sizes[sz]||'—'),rowTotal].map((v,i)=>
+                        <td key={i} style={{textAlign:i===0?'left':'center',padding:'4px 8px',fontWeight:typeof v==='number'?800:i===0?700:400,
+                          color:typeof v==='number'?'#1e40af':i===0?'#475569':'#cbd5e1',
+                          background:typeof v==='number'&&i>0?'#eef2ff':i===allSizes.length+1?'#f0f2f5':''}}>{v}</td>)}
+                      </tr>
+                    </tbody></table>
+                  </div>
+                </div>})}
+              {itemDetails.length===0&&<div style={{padding:12,textAlign:'center',color:'#94a3b8',fontSize:12}}>No items linked to this job</div>}
+            </div>
+
+            {/* ─── Rejections History ─── */}
+            {(j.rejections||[]).length>0&&<div style={{padding:'16px 20px',borderBottom:'1px solid #e2e8f0',background:'#fef2f2'}}>
+              <div style={{fontSize:12,fontWeight:700,color:'#dc2626',marginBottom:6}}>Previous Rejections ({j.rejections.length})</div>
+              {j.rejections.map((r,ri)=><div key={ri} style={{padding:'6px 10px',background:'white',borderRadius:6,marginBottom:4,border:'1px solid #fecaca'}}>
+                <div style={{fontSize:12,color:'#7f1d1d'}}>{r.reason}</div>
+                <div style={{fontSize:10,color:'#94a3b8'}}>by {r.by} · {new Date(r.at).toLocaleDateString()}</div>
+              </div>)}
+            </div>}
+
+            {/* ─── Upload Updated Art ─── */}
+            <div style={{padding:'16px 20px',borderBottom:'1px solid #e2e8f0'}}>
+              <div style={{fontSize:12,fontWeight:800,color:'#1e3a5f',marginBottom:8,display:'flex',alignItems:'center',gap:6}}>
+                <span style={{fontSize:16}}>📤</span> Upload Updated Art
+              </div>
+              <div style={{padding:20,textAlign:'center',borderRadius:8,border:'2px dashed #a78bfa',background:'#faf5ff',cursor:artJobDetailUploading?'wait':'pointer',opacity:artJobDetailUploading?0.6:1}}
+                onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#7c3aed';e.currentTarget.style.background='#ede9fe'}}
+                onDragLeave={e=>{e.currentTarget.style.borderColor='#a78bfa';e.currentTarget.style.background='#faf5ff'}}
+                onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor='#a78bfa';e.currentTarget.style.background='#faf5ff';if(!artJobDetailUploading)handleArtUpload(Array.from(e.dataTransfer.files))}}
+                onClick={()=>{if(artJobDetailUploading)return;const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps,.dst,.svg';inp.onchange=()=>handleArtUpload(Array.from(inp.files));inp.click()}}>
+                {artJobDetailUploading?<><div style={{fontSize:28,marginBottom:4}}>⏳</div><div style={{fontSize:12,fontWeight:600,color:'#7c3aed'}}>Uploading...</div></>
+                :<><div style={{fontSize:28,marginBottom:4}}>📎</div><div style={{fontSize:12,fontWeight:600,color:'#7c3aed'}}>Drop files here or click to upload</div>
+                  <div style={{fontSize:10,color:'#94a3b8',marginTop:2}}>Supports PDF, PNG, JPG, AI, EPS, DST, SVG</div></>}
+              </div>
+            </div>
+
+            {/* ─── Messages between Artist and Rep ─── */}
+            <div style={{padding:'16px 20px'}}>
+              <div style={{fontSize:12,fontWeight:800,color:'#1e3a5f',marginBottom:8,display:'flex',alignItems:'center',gap:6}}>
+                <span style={{fontSize:16}}>💬</span> Messages
+                {artMessages.length>0&&<span style={{fontSize:10,color:'#94a3b8'}}>({artMessages.length})</span>}
+              </div>
+
+              {/* Message history */}
+              {artMessages.length>0&&<div style={{maxHeight:200,overflowY:'auto',marginBottom:10,border:'1px solid #e2e8f0',borderRadius:8,background:'#f8fafc'}}>
+                {artMessages.map((m,mi)=>{
+                  const isMe=m.from_id===cu.id;
+                  const isSystem=m.is_system;
+                  return<div key={mi} style={{padding:'8px 12px',borderBottom:mi<artMessages.length-1?'1px solid #f1f5f9':'none',
+                    background:isSystem?'#fffbeb':isMe?'#f0fdf4':'white'}}>
+                    {isSystem?<div style={{fontSize:11,color:'#92400e',fontStyle:'italic',textAlign:'center'}}>{m.text} — {m.from_name} · {new Date(m.ts).toLocaleString()}</div>
+                    :<>
+                      <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:2}}>
+                        <span style={{fontSize:11,fontWeight:700,color:isMe?'#166534':'#1e40af'}}>{m.from_name}</span>
+                        <span style={{fontSize:9,padding:'1px 5px',borderRadius:4,background:m.from_role==='art'||m.from_role==='artist'?'#ede9fe':'#dbeafe',color:m.from_role==='art'||m.from_role==='artist'?'#6d28d9':'#1e40af',fontWeight:600}}>{m.from_role==='art'||m.from_role==='artist'?'Artist':m.from_role==='rep'?'Rep':m.from_role||'Team'}</span>
+                        <span style={{fontSize:9,color:'#94a3b8',marginLeft:'auto'}}>{new Date(m.ts).toLocaleString()}</span>
+                      </div>
+                      <div style={{fontSize:12,color:'#334155',lineHeight:1.5}}>{m.text}</div>
+                    </>}
+                  </div>})}
+              </div>}
+
+              {/* Compose message */}
+              <div style={{display:'flex',gap:8,alignItems:'flex-end'}}>
+                <textarea className="form-input" rows={2} placeholder="Type a message to the rep or coach..." value={artJobDetailMsg} onChange={e=>setArtJobDetailMsg(e.target.value)}
+                  onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendArtMessage()}}}
+                  style={{flex:1,resize:'vertical',fontSize:12}}/>
+                <button className="btn btn-primary" style={{padding:'8px 16px',fontSize:12,fontWeight:700,whiteSpace:'nowrap'}} disabled={!artJobDetailMsg.trim()} onClick={sendArtMessage}>Send</button>
+              </div>
+            </div>
+          </div>
+
+          {/* Footer actions */}
+          <div className="modal-footer" style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+            {j.art_status!=='waiting_approval'&&j.art_status!=='art_complete'&&j.art_status!=='production_files_needed'&&
+              <button className="btn" style={{padding:'8px 20px',background:'linear-gradient(135deg,#f59e0b,#d97706)',color:'white',border:'none',borderRadius:8,fontSize:13,fontWeight:700}} onClick={()=>{sendForApproval();setArtJobDetailModal(null)}}>Send for Approval</button>}
+            <button className="btn btn-secondary" onClick={()=>{setArtMockupModal(j);setArtMockupRevision('');setArtJobDetailModal(null)}}>View Full Mockup</button>
+            <button className="btn btn-secondary" onClick={()=>{setESOTab('jobs');setESO(so);setESOC(c2);setPg('orders');setArtJobDetailModal(null)}}>Open SO</button>
+            <button className="btn btn-secondary" style={{marginLeft:'auto'}} onClick={()=>setArtJobDetailModal(null)}>Close</button>
           </div>
         </div></div>
       })()}
