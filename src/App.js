@@ -732,9 +732,11 @@ const printDoc=({title,docNum,docType,headerRight,infoBoxes,tables,notes,footer,
   setTimeout(()=>w.print(),350);
 };
 let _estSeq=2101;let _soSeq=1042;let _invSeq=1061;
-const nextEstId=(ests)=>{const nums=(ests||[]).map(e=>{const m=(e.id||'').match(/EST-(\d+)/);return m?parseInt(m[1]):0});const next=Math.max(_estSeq,...nums)+1;_estSeq=next;return'EST-'+next};
-const nextSOId=(sos)=>{const nums=(sos||[]).map(s=>{const m=(s.id||'').match(/SO-(\d+)/);return m?parseInt(m[1]):0});const next=Math.max(_soSeq,...nums)+1;_soSeq=next;return'SO-'+next};
-const nextInvId=(invs)=>{const nums=(invs||[]).map(i=>{const m=(i.id||'').match(/INV-(\d+)/);return m?parseInt(m[1]):0});const next=Math.max(_invSeq,...nums)+1;_invSeq=next;return'INV-'+next};
+// Collision-safe ID generation: random gap of 10-99 between IDs so two browsers creating simultaneously won't collide (~1% chance vs 100% before)
+const _gap=()=>Math.floor(Math.random()*90)+10;
+const nextEstId=(ests)=>{const nums=(ests||[]).map(e=>{const m=(e.id||'').match(/EST-(\d+)/);return m?parseInt(m[1]):0});const next=Math.max(_estSeq,...nums)+_gap();_estSeq=next;return'EST-'+next};
+const nextSOId=(sos)=>{const nums=(sos||[]).map(s=>{const m=(s.id||'').match(/SO-(\d+)/);return m?parseInt(m[1]):0});const next=Math.max(_soSeq,...nums)+_gap();_soSeq=next;return'SO-'+next};
+const nextInvId=(invs)=>{const nums=(invs||[]).map(i=>{const m=(i.id||'').match(/INV-(\d+)/);return m?parseInt(m[1]):0});const next=Math.max(_invSeq,...nums)+_gap();_invSeq=next;return'INV-'+next};
 let CATEGORIES=['Tees','Hoodies','Polos','Shorts','1/4 Zips','Hats','Footwear','Jersey Tops','Jersey Bottoms','Balls'];
 let CONTACT_ROLES=['Head Coach','Assistant','Accounting','Athletic Director','Primary','Other'];
 let POSITIONS=['Front Center','Back Center','Left Chest','Right Chest','Left Sleeve','Right Sleeve','Left Leg','Right Leg','Nape','Other'];
@@ -5432,17 +5434,13 @@ export default function App(){
           if(as.inv_po_counter)setInvPOCounter(as.inv_po_counter);
           console.log('[DB] Loaded from Supabase (normalized)');
         }else{
-          // Supabase connected but empty — likely first deploy or tables were cleared
-          // Do NOT auto-seed demo data as it could overwrite real data that failed to load
-          // Supabase tables exist but are empty — push localStorage data to Supabase
-          console.warn('[DB] Supabase empty — seeding from localStorage');
+          // Supabase connected but returned no customers and no sales orders
+          // This could be a genuinely empty DB (first deploy) or a transient load failure
+          // NEVER auto-seed from localStorage — it risks overwriting real data with stale local copies
+          // Instead: enable writes so any NEW records created will be saved to Supabase
+          // If the DB is truly empty, the user can use the manual backup restore feature
+          console.warn('[DB] Supabase returned empty — using localStorage, writes enabled for new records only');
           _dbLoadSuccess.current=true;
-          await _dbSeed({team:REPS,customers:cust,vendors:vend,products:prod,estimates:ests,sales_orders:sos,invoices:invs,messages:msgs,omg_stores:omgStores,issues});
-          if(issues?.length) _dbSave('issues',issues);
-          // Sync app_state keys
-          const _as={batch_pos:batchPOs,submitted_batches:submittedBatches,batch_counter:batchCounter,change_log:changeLog,so_history:soHistory,qb_config:qbConfig,inv_pos:invPOs,inv_adj_log:invAdjLog,inv_po_counter:invPOCounter};
-          for(const[k,v]of Object.entries(_as)){if(v!==undefined&&v!==null)_dbSave('app_state',[{id:k,value:JSON.stringify(v),updated_at:new Date().toISOString()}])}
-          console.log('[DB] localStorage data seeded to Supabase');
         }
       }catch(e){
         console.error('[DB] Load failed:',e);
