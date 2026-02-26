@@ -5364,9 +5364,9 @@ export default function App(){
   const[batchScan,setBatchScan]=useState('');// scan/lookup field
   const[editingBatchId,setEditingBatchId]=useState(null);// batch PO id being edited in queue
   // Inventory adjustments log & inventory POs
-  const[invAdjLog,setInvAdjLog]=useState([]);// [{id,product_id,sku,product_name,size,qty_change,prev_qty,new_qty,reason,adjustment_type,performed_by,created_at}]
-  const[invPOs,setInvPOs]=useState([]);// [{id,po_number,vendor_id,vendor_name,items:[{product_id,sku,name,color,sizes:{},received:{},nsa_cost}],status,created_at,expected_date,memo,created_by,received_at,received_by}]
-  const[invPOCounter,setInvPOCounter]=useState(1001);// sequential: PO-1001-NSA, PO-1002-NSA...
+  const[invAdjLog,setInvAdjLog]=useState(()=>loadState('inv_adj_log',[]));// [{id,product_id,sku,product_name,size,qty_change,prev_qty,new_qty,reason,adjustment_type,performed_by,created_at}]
+  const[invPOs,setInvPOs]=useState(()=>loadState('inv_pos',[]));// [{id,po_number,vendor_id,vendor_name,items:[{product_id,sku,name,color,sizes:{},received:{},nsa_cost}],status,created_at,expected_date,memo,created_by,received_at,received_by}]
+  const[invPOCounter,setInvPOCounter]=useState(()=>loadState('inv_po_counter',1001));// sequential: PO-1001-NSA, PO-1002-NSA...
   const[invTab,setInvTab]=useState('stock');// stock | log | pos
   const[invPOModal,setInvPOModal]=useState({open:false,vendor_id:'',items:[],memo:'',expected_date:'',productSearch:'',editId:null});// create/edit PO modal
   const[invPOReceive,setInvPOReceive]=useState(null);// PO being received
@@ -5423,6 +5423,9 @@ export default function App(){
           if(as.so_history)setSOHistory(as.so_history);
           if(as.job_time_logs)setJobTimeLogs(as.job_time_logs);
           if(as.qb_config)setQBConfig(as.qb_config);
+          if(as.inv_pos)setInvPOs(as.inv_pos);
+          if(as.inv_adj_log)setInvAdjLog(as.inv_adj_log);
+          if(as.inv_po_counter)setInvPOCounter(as.inv_po_counter);
           console.log('[DB] Loaded from Supabase (normalized)');
         }else{
           // Supabase connected but empty — likely first deploy or tables were cleared
@@ -5433,7 +5436,7 @@ export default function App(){
           await _dbSeed({team:REPS,customers:cust,vendors:vend,products:prod,estimates:ests,sales_orders:sos,invoices:invs,messages:msgs,omg_stores:omgStores,issues});
           if(issues?.length) _dbSave('issues',issues);
           // Sync app_state keys
-          const _as={batch_pos:batchPOs,submitted_batches:submittedBatches,batch_counter:batchCounter,change_log:changeLog,so_history:soHistory,qb_config:qbConfig};
+          const _as={batch_pos:batchPOs,submitted_batches:submittedBatches,batch_counter:batchCounter,change_log:changeLog,so_history:soHistory,qb_config:qbConfig,inv_pos:invPOs,inv_adj_log:invAdjLog,inv_po_counter:invPOCounter};
           for(const[k,v]of Object.entries(_as)){if(v!==undefined&&v!==null)_dbSave('app_state',[{id:k,value:JSON.stringify(v),updated_at:new Date().toISOString()}])}
           console.log('[DB] localStorage data seeded to Supabase');
         }
@@ -5482,6 +5485,13 @@ export default function App(){
         if(d.messages.length)setMsgs(prev=>changed(prev,d.messages)?d.messages:prev);
         if(d.issues.length)setIssues(prev=>changed(prev,d.issues)?d.issues:prev);
         if(d.products.length)setProd(prev=>changed(prev,d.products)?d.products:prev);
+        // Refresh app_state keys (batch POs, inventory POs, etc.)
+        const as=d.appState||{};
+        if(as.inv_pos)setInvPOs(prev=>JSON.stringify(prev)!==JSON.stringify(as.inv_pos)?as.inv_pos:prev);
+        if(as.inv_adj_log)setInvAdjLog(prev=>JSON.stringify(prev)!==JSON.stringify(as.inv_adj_log)?as.inv_adj_log:prev);
+        if(as.inv_po_counter)setInvPOCounter(prev=>as.inv_po_counter!==prev?as.inv_po_counter:prev);
+        if(as.submitted_batches)setSubmittedBatches(prev=>JSON.stringify(prev)!==JSON.stringify(as.submitted_batches)?as.submitted_batches:prev);
+        if(as.batch_pos)setBatchPOs(prev=>JSON.stringify(prev)!==JSON.stringify(as.batch_pos)?as.batch_pos:prev);
       }catch(e){console.warn('[DB] Poll failed:',e.message)}
     },30000);
     return()=>clearInterval(poll);
@@ -5507,6 +5517,9 @@ export default function App(){
   React.useEffect(()=>{_saveAppState('change_log',changeLog)},[changeLog]);
   React.useEffect(()=>{_saveAppState('so_history',soHistory)},[soHistory]);
   React.useEffect(()=>{_saveAppState('qb_config',qbConfig)},[qbConfig]);
+  React.useEffect(()=>{_saveAppState('inv_pos',invPOs)},[invPOs]);
+  React.useEffect(()=>{_saveAppState('inv_adj_log',invAdjLog)},[invAdjLog]);
+  React.useEffect(()=>{_saveAppState('inv_po_counter',invPOCounter)},[invPOCounter]);
   const[q,setQ]=useState('');const[selC,setSelC]=useState(null);const[selV,setSelV]=useState(null);const[selP,setSelP]=useState(null);
   const[eEst,setEEst]=useState(null);const[eEstC,setEEstC]=useState(null);const[eSO,setESO]=useState(null);const[eSOC,setESOC]=useState(null);const[eSOTab,setESOTab]=useState(null);const[eSOScrollItem,setESOScrollItem]=useState(null);const[eSOScrollJob,setESOScrollJob]=useState(null);
   const[gQ,setGQ]=useState('');const[gOpen,setGOpen]=useState(false);const[mF,setMF]=useState('all');const[rF,setRF]=useState('all');const[pF,setPF]=useState({cat:'all',vnd:'all',stk:'all',clr:'all'});
@@ -7874,6 +7887,9 @@ export default function App(){
           if(data.batch_counter)setBatchCounter(data.batch_counter);
           if(data.change_log)setChangeLog(data.change_log);
           if(data.so_history)setSOHistory(data.so_history);
+          if(data.inv_adj_log)setInvAdjLog(data.inv_adj_log);
+          if(data.inv_pos)setInvPOs(data.inv_pos);
+          if(data.inv_po_counter)setInvPOCounter(data.inv_po_counter);
           logChange('restore','system','full','Restored from backup: '+data._meta.exported_at);
           nf('✅ Data restored from backup ('+data._meta.exported_at+')');
         }
@@ -7916,6 +7932,9 @@ export default function App(){
         if(data.batch_counter)setBatchCounter(data.batch_counter);
         if(data.change_log)setChangeLog(data.change_log);
         if(data.so_history)setSOHistory(data.so_history);
+        if(data.inv_adj_log)setInvAdjLog(data.inv_adj_log);
+        if(data.inv_pos)setInvPOs(data.inv_pos);
+        if(data.inv_po_counter)setInvPOCounter(data.inv_po_counter);
         nf('✅ Restored from auto-backup');
       }
     }catch{nf('❌ No valid auto-backup found')}
