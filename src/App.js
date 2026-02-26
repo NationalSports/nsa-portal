@@ -5499,7 +5499,6 @@ export default function App(){
   React.useEffect(()=>{_saveAppState('batch_counter',batchCounter)},[batchCounter]);
   React.useEffect(()=>{_saveAppState('change_log',changeLog)},[changeLog]);
   React.useEffect(()=>{_saveAppState('so_history',soHistory)},[soHistory]);
-  React.useEffect(()=>{_saveAppState('job_time_logs',jobTimeLogs)},[jobTimeLogs]);
   React.useEffect(()=>{_saveAppState('qb_config',qbConfig)},[qbConfig]);
   const[q,setQ]=useState('');const[selC,setSelC]=useState(null);const[selV,setSelV]=useState(null);const[selP,setSelP]=useState(null);
   const[eEst,setEEst]=useState(null);const[eEstC,setEEstC]=useState(null);const[eSO,setESO]=useState(null);const[eSOC,setESOC]=useState(null);const[eSOTab,setESOTab]=useState(null);const[eSOScrollItem,setESOScrollItem]=useState(null);const[eSOScrollJob,setESOScrollJob]=useState(null);
@@ -6890,6 +6889,7 @@ export default function App(){
   const[prodSort,setProdSort]=useState({f:'expected',d:'asc'});const[prodStatF,setProdStatF]=useState('active');const[prodDecoF,setProdDecoF]=useState('all');
   const[assignModal,setAssignModal]=useState(null);// {job, soId, targetStatus}
   const[jobTimeLogs,setJobTimeLogs]=useState(()=>loadState('job_time_logs',[]));// [{jobId,soId,person,clockIn,clockOut,minutes}]
+  React.useEffect(()=>{_saveAppState('job_time_logs',jobTimeLogs)},[jobTimeLogs]);
   const[activeTimers,setActiveTimers]=useState({});// {jobId:{person,clockIn,soId}}
   const[assignTo,setAssignTo]=useState({machine:'',person:'',shipMethod:''});
   const moveJobStatus=(j,newStatus)=>{
