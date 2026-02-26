@@ -661,6 +661,8 @@ const NSA={name:'National Sports Apparel',legal:'National Sports Apparel LLC',ph
   logo:'NSA',terms:'Net 30 from invoice date unless otherwise agreed.',
   depositTerms:'50% deposit required to begin production. Balance due upon completion.'};
 const ART_LABELS={needs_art:'Needs Art',art_requested:'Art Requested',art_in_progress:'In Progress',waiting_approval:'Waiting Approval',production_files_needed:'Prod Files Needed',art_complete:'Art Complete'};
+const ART_FILE_LABELS={waiting_for_art:'Waiting for Art',needs_approval:'Needs Approval',approved:'Approved / Needs Files'};
+const ART_FILE_SC={waiting_for_art:{bg:'#fef2f2',c:'#dc2626'},needs_approval:{bg:'#fef3c7',c:'#92400e'},approved:{bg:'#dcfce7',c:'#166534'}};
 
 // ═══════════════════════════════════════════════
 // PRINT DOCUMENT HELPER — generates professional print-ready HTML
@@ -792,15 +794,17 @@ function dP(d,q,artFiles,cq){
   return{sell:0,cost:0}}
 const SC={
   // SO statuses (5)
-  need_order:{bg:'#fef3c7',c:'#92400e'},waiting_receive:{bg:'#dbeafe',c:'#1e40af'},items_received:{bg:'#d1fae5',c:'#065f46'},complete:{bg:'#dcfce7',c:'#166534'},in_production:{bg:'#ede9fe',c:'#6d28d9'},ready_to_invoice:{bg:'#fef0c7',c:'#c2410c'},
+  need_order:{bg:'#fef3c7',c:'#92400e'},waiting_receive:{bg:'#dbeafe',c:'#1e40af'},needs_pull:{bg:'#fef9c3',c:'#a16207'},items_received:{bg:'#d1fae5',c:'#065f46'},complete:{bg:'#dcfce7',c:'#166534'},in_production:{bg:'#ede9fe',c:'#6d28d9'},ready_to_invoice:{bg:'#fef0c7',c:'#c2410c'},
   // Job item statuses
   need_to_order:{bg:'#fef3c7',c:'#92400e'},partially_received:{bg:'#fef9c3',c:'#854d0e'},items_received:{bg:'#d1fae5',c:'#065f46'},
   // Job production statuses
   staging:{bg:'#fef3c7',c:'#92400e'},in_process:{bg:'#dbeafe',c:'#1e40af'},completed:{bg:'#dcfce7',c:'#166534'},shipped:{bg:'#ede9fe',c:'#6d28d9'},
   // Job art statuses
   needs_art:{bg:'#fef2f2',c:'#dc2626'},art_requested:{bg:'#fce7f3',c:'#be185d'},art_in_progress:{bg:'#dbeafe',c:'#1e40af'},waiting_approval:{bg:'#fef3c7',c:'#92400e'},production_files_needed:{bg:'#fef9c3',c:'#854d0e'},art_complete:{bg:'#dcfce7',c:'#166534'},
+  // Art file statuses
+  waiting_for_art:{bg:'#fef2f2',c:'#dc2626'},needs_approval:{bg:'#fef3c7',c:'#92400e'},
   // Legacy
-  waiting_art:{bg:'#fef3c7',c:'#92400e'},in_production:{bg:'#dbeafe',c:'#1e40af'},ready_ship:{bg:'#dcfce7',c:'#166534'},
+  uploaded:{bg:'#fef3c7',c:'#92400e'},waiting_art:{bg:'#fef3c7',c:'#92400e'},in_production:{bg:'#dbeafe',c:'#1e40af'},ready_ship:{bg:'#dcfce7',c:'#166534'},
 };
 
 // SAFE ACCESSORS — defensive helpers to prevent crashes from missing/null data
@@ -856,7 +860,7 @@ const isJobReady=(j,o)=>{
     const it=safeItems(o)[gi.item_idx];if(!it)return;
     Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{
       totalSz+=v;
-      const picked=safePicks(it).filter(pk=>pk.status==='pulled'||pk.status==='pick').reduce((a,pk)=>a+safeNum(pk[sz]),0);
+      const picked=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
       const rcvd=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
       fulfilledSz+=Math.min(v,picked+rcvd);
     });
@@ -951,7 +955,7 @@ const D_SO=[
   ]},
 // SO-1045: Football — WAITING TO RECEIVE. All items covered by POs/picks but not all received yet. Art not approved.
 {id:'SO-1045',customer_id:'c1b',memo:'Football Spring Practice Gear',status:'waiting_receive',created_by:'r1',created_at:'02/12/26 2:00 PM',updated_at:'02/12/26',expected_date:'2026-03-20',production_notes:'Need sizes confirmed by coach',shipping_type:'pct',shipping_value:8,ship_to_id:'default',firm_dates:[],
-  art_files:[{id:'af4',name:'OLu Football Helmet Logo',deco_type:'screen_print',ink_colors:'Red, White',thread_colors:'',art_size:'10" x 8"',files:['OLu_Football.ai'],mockup_files:['OLu_Football_Mockup.pdf'],prod_files:[],notes:'Waiting coach approval',status:'uploaded',uploaded:'02/13/26'}],
+  art_files:[{id:'af4',name:'OLu Football Helmet Logo',deco_type:'screen_print',ink_colors:'Red, White',thread_colors:'',art_size:'10" x 8"',files:['OLu_Football.ai'],mockup_files:['OLu_Football_Mockup.pdf'],prod_files:[],notes:'Waiting coach approval',status:'needs_approval',uploaded:'02/13/26'}],
   items:[
     {sku:'JX4453',name:'Adidas Unisex Pregame Tee',brand:'Adidas',color:'Team Power Red/White',nsa_cost:18.5,retail_price:55.5,unit_sell:33.3,product_id:'p1',
       sizes:{S:3,M:5,L:4,XL:2},available_sizes:['S','M','L','XL','2XL'],
@@ -975,7 +979,7 @@ const D_SO=[
   ]},
 // SO-1051: Lacrosse — NEED TO ORDER. Nothing ordered yet. Art waiting approval.
 {id:'SO-1051',customer_id:'c2a',memo:'Lacrosse Team Store',status:'need_order',created_by:'r4',created_at:'02/14/26 10:30 AM',updated_at:'02/15/26',expected_date:'2026-03-10',production_notes:'Coach wants navy/silver colorway',shipping_type:'flat',shipping_value:0,ship_to_id:'default',firm_dates:[],
-  art_files:[{id:'af3',name:'SFL Lacrosse Crest',deco_type:'embroidery',ink_colors:'',thread_colors:'Navy 2767, White, Silver 877',art_size:'3.5" wide',files:['SFL_Crest.eps','SFL_Crest_preview.png'],mockup_files:['SFL_Crest_Preview.pdf'],prod_files:[],notes:'',status:'uploaded',uploaded:'02/15/26'}],
+  art_files:[{id:'af3',name:'SFL Lacrosse Crest',deco_type:'embroidery',ink_colors:'',thread_colors:'Navy 2767, White, Silver 877',art_size:'3.5" wide',files:['SFL_Crest.eps','SFL_Crest_preview.png'],mockup_files:['SFL_Crest_Preview.pdf'],prod_files:[],notes:'',status:'needs_approval',uploaded:'02/15/26'}],
   items:[
     {sku:'1370399',name:'Under Armour Team Polo',brand:'Under Armour',color:'Cardinal/White',nsa_cost:22,retail_price:65,unit_sell:39,product_id:'p4',
       sizes:{M:4,L:6,XL:4,'2XL':2},available_sizes:['S','M','L','XL','2XL'],
@@ -1537,7 +1541,7 @@ function calcSOStatus(ord){
       const picked=safePicks(it).reduce((a,pk)=>a+safeNum(pk[sz]),0);
       const poOrd=safePOs(it).reduce((a,pk)=>a+safeNum(pk[sz])-safeNum((pk.cancelled||{})[sz]),0);
       coveredSz+=Math.min(v,picked+poOrd);
-      const pulledQty=safePicks(it).filter(pk=>pk.status==='pulled'||pk.status==='pick').reduce((a,pk)=>a+safeNum(pk[sz]),0);
+      const pulledQty=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
       const rcvdQty=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
       fulfilledSz+=Math.min(v,pulledQty+rcvdQty);
     });
@@ -1559,6 +1563,9 @@ function calcSOStatus(ord){
   if(allJobsDone)return'ready_to_invoice';
   // If any job in staging or in_process → in production
   if(anyJobActive)return'in_production';
+  // If picks exist but not yet pulled → needs_pull
+  const hasPendingPull=safeItems(ord).some(it=>safePicks(it).some(pk=>pk.status==='pick'));
+  if(hasPendingPull)return'needs_pull';
   // If all items received → items_received
   if(fulfilledSz>=totalSz)return'items_received';
   // If all items covered (ordered/picked) but not all received → waiting
@@ -1700,7 +1707,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
   const rmD=(ii,di)=>{uI(ii,'decorations',o.items[ii].decorations.filter((_,i)=>i!==di))};
   // Art files (SO)
   const af=o.art_files||[];
-  const addArt=()=>sv('art_files',[...af,{id:'af'+Date.now(),name:'',deco_type:'screen_print',ink_colors:'',thread_colors:'',art_size:'',files:[],mockup_files:[],prod_files:[],notes:'',status:'uploaded',uploaded:new Date().toLocaleDateString()}]);
+  const addArt=()=>sv('art_files',[...af,{id:'af'+Date.now(),name:'',deco_type:'screen_print',ink_colors:'',thread_colors:'',art_size:'',files:[],mockup_files:[],prod_files:[],notes:'',status:'waiting_for_art',uploaded:new Date().toLocaleDateString()}]);
   const uArt=(i,k,v)=>sv('art_files',af.map((f,x)=>x===i?{...f,[k]:v}:f));
   const rmArt=i=>sv('art_files',af.filter((_,x)=>x!==i));
 
@@ -1730,7 +1737,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
             const artF=af.find(a=>a.id===d.art_file_id);
             artName=artF?.name||'Unknown Art';artId=d.art_file_id;
             decoType=artF?.deco_type||d.deco_type||'screen_print';
-            artSt=artF?.status==='approved'?'art_complete':'waiting_approval';
+            artSt=artF?.status==='approved'?(artF.prod_files?.length?'art_complete':'production_files_needed'):artF?.status==='needs_approval'?'waiting_approval':'needs_art';
           }
         } else if(d.kind==='numbers'){
           jobKey='numbers_'+(d.num_method||'ht')+'_'+safeStr(d.position);
@@ -1747,7 +1754,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         let itemTotal=0,itemFulfilled=0;
         szEntries.forEach(([sz,v])=>{
           itemTotal+=v;
-          const pulledQ=safePicks(it).filter(pk=>pk.status==='pulled'||pk.status==='pick').reduce((a,pk)=>a+safeNum(pk[sz]),0);
+          const pulledQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
           const rcvdQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
           itemFulfilled+=Math.min(v,pulledQ+rcvdQ);
         });
@@ -1795,7 +1802,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
   },[syncJobs]);// eslint-disable-line
 
   const fp=products.filter(p=>{if(!pS)return true;const q=pS.toLowerCase();return p.sku.toLowerCase().includes(q)||p.name.toLowerCase().includes(q)||p.brand?.toLowerCase().includes(q)});
-  const statusFlow=['need_order','waiting_receive','items_received','in_production','ready_to_invoice','complete'];
+  const statusFlow=['need_order','waiting_receive','needs_pull','items_received','in_production','ready_to_invoice','complete'];
 
   return(<div>
     {/* Sticky header — appears when scrolling */}
@@ -1963,7 +1970,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         const autoSt=calcSOStatus(o);
         // Auto-sync status
         if(o.status!==autoSt&&o.status!=='complete'){setTimeout(()=>sv('status',autoSt),0)}
-        const stLabels={need_order:'Need to Order',waiting_receive:'Waiting to Receive',items_received:'Items Received',in_production:'In Production',ready_to_invoice:'Ready to Invoice',complete:'Complete'};
+        const stLabels={need_order:'Need to Order',waiting_receive:'Waiting to Receive',needs_pull:'Needs Pull',items_received:'Items Received',in_production:'In Production',ready_to_invoice:'Ready to Invoice',complete:'Complete'};
         const displaySt=o.status==='complete'?'complete':autoSt;
         return<div style={{display:'flex',gap:8,marginTop:12,borderTop:'1px solid #f1f5f9',paddingTop:12,alignItems:'center',flexWrap:'wrap'}}>
           <span style={{fontSize:11,color:'#64748b',fontWeight:600}}>Order Status:</span>
@@ -2548,7 +2555,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       <div className="card-body">{af.length===0?<div className="empty">No art uploaded. Create art groups and add files.</div>:
         <div style={{display:'flex',flexDirection:'column',gap:12}}>
           {af.map((art,i)=>{const usedIn=safeItems(o).reduce((a,it)=>a+safeDecos(it).filter(d=>d.art_file_id===art.id).length,0);
-            return(<div key={art.id} style={{padding:14,background:'#f8fafc',borderRadius:8,border:art.status==='approved'?'2px solid #22c55e':'1px solid #e2e8f0'}}>
+            const afSt=art.status==='uploaded'?'needs_approval':art.status||'waiting_for_art';
+            return(<div key={art.id} style={{padding:14,background:'#f8fafc',borderRadius:8,border:afSt==='approved'?'2px solid #22c55e':afSt==='needs_approval'?'2px solid #f59e0b':'1px solid #e2e8f0'}}>
               <div style={{display:'flex',gap:12,alignItems:'flex-start'}}>
                 <div style={{width:48,height:48,background:art.deco_type==='screen_print'?'#dbeafe':art.deco_type==='embroidery'?'#ede9fe':art.deco_type==='dtf'?'#fef3c7':'#f0fdf4',borderRadius:8,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,fontSize:20}}>
                   {art.deco_type==='screen_print'?'🎨':art.deco_type==='embroidery'?'🧵':art.deco_type==='dtf'?'🔥':'#️⃣'}</div>
@@ -2556,7 +2564,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                   {/* Name + Status */}
                   <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:6}}>
                     <input className="form-input" value={art.name} onChange={e=>uArt(i,'name',e.target.value)} placeholder="Art group name..." style={{fontWeight:700,fontSize:14,flex:1}}/>
-                    <span style={{padding:'2px 8px',borderRadius:10,fontSize:11,fontWeight:600,flexShrink:0,background:art.status==='approved'?'#dcfce7':'#fef3c7',color:art.status==='approved'?'#166534':'#92400e'}}>{art.status}</span>
+                    <select style={{padding:'2px 8px',borderRadius:10,fontSize:11,fontWeight:600,flexShrink:0,border:'1px solid #e2e8f0',background:ART_FILE_SC[art.status]?.bg||ART_FILE_SC.waiting_for_art.bg,color:ART_FILE_SC[art.status]?.c||ART_FILE_SC.waiting_for_art.c,cursor:'pointer'}} value={art.status==='uploaded'?'needs_approval':art.status} onChange={e=>uArt(i,'status',e.target.value)}>
+                      <option value="waiting_for_art">Waiting for Art</option><option value="needs_approval">Needs Approval</option><option value="approved">Approved / Needs Files</option>
+                    </select>
                   </div>
                   {/* Decoration Type */}
                   <div style={{marginBottom:6}}><span style={{fontSize:11,fontWeight:600,color:'#64748b',marginRight:6}}>Type:</span>
@@ -2594,8 +2604,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                   <div style={{display:'flex',gap:8,alignItems:'center',marginTop:6}}><span style={{fontSize:10,color:'#94a3b8'}}>Uploaded {art.uploaded} · Applied to {usedIn} decoration(s)</span></div>
                 </div>
                 <div style={{display:'flex',flexDirection:'column',gap:4,flexShrink:0}}>
-                  {art.status!=='approved'?<button className="btn btn-sm btn-primary" style={{fontSize:10}} onClick={()=>{uArt(i,'status','approved');nf('Art approved')}}>✓ Approve</button>
-                  :<button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>uArt(i,'status','uploaded')}>Unapprove</button>}
+                  {(art.status==='waiting_for_art'||art.status==='uploaded')&&<button className="btn btn-sm btn-primary" style={{fontSize:10}} onClick={()=>{uArt(i,'status','needs_approval');nf('Art sent for approval')}}>Send for Approval</button>}
+                  {art.status==='needs_approval'&&<button className="btn btn-sm btn-primary" style={{fontSize:10,background:'#166534',borderColor:'#166534'}} onClick={()=>{uArt(i,'status','approved');nf('Art approved')}}>Approve</button>}
+                  {art.status==='approved'&&<button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{uArt(i,'status','needs_approval');nf('Art unapproved')}}>Unapprove</button>}
                   <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>rmArt(i)}><Icon name="trash" size={10}/></button>
                 </div>
               </div>
@@ -3278,7 +3289,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           const it=safeItems(o)[ji.item_idx];if(!it)return;
           let ful=0;
           Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).forEach(([sz,v])=>{
-            const pQ=safePicks(it).filter(pk=>pk.status==='pulled'||pk.status==='pick').reduce((a,pk)=>a+safeNum(pk[sz]),0);
+            const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
             const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
             ful+=Math.min(v,pQ+rQ);
           });
@@ -3331,7 +3342,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           const it=safeItems(o)[gi.item_idx];if(!it)return{...gi,sizes:{},fulSizes:{}};
           const sizes=safeSizes(it);const fulSizes={};
           Object.entries(sizes).filter(([,v])=>safeNum(v)>0).forEach(([sz,v])=>{
-            const pQ=safePicks(it).filter(pk=>pk.status==='pulled'||pk.status==='pick').reduce((a,pk)=>a+safeNum(pk[sz]),0);
+            const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
             const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
             fulSizes[sz]=Math.min(v,pQ+rQ);
           });
@@ -3350,7 +3361,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
               <div style={{flex:1}}>
                 <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
                   <span style={{fontSize:18,fontWeight:800,color:'#1e40af'}}>{j.id}</span>
-                  <span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:SC[j.art_status]?.bg,color:SC[j.art_status]?.c}}>{artLabels[j.art_status]}</span>
+                  {(()=>{const fSt=artF?(artF.status==='uploaded'?'needs_approval':artF.status||'waiting_for_art'):null;return fSt?<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:ART_FILE_SC[fSt]?.bg||'#f1f5f9',color:ART_FILE_SC[fSt]?.c||'#64748b'}}>{ART_FILE_LABELS[fSt]||fSt}</span>:null})()}
                   <span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:SC[j.item_status]?.bg,color:SC[j.item_status]?.c}}>{itemLabels[j.item_status]}</span>
                   <span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:SC[j.prod_status]?.bg||'#f1f5f9',color:SC[j.prod_status]?.c||'#475569'}}>{prodLabels[j.prod_status]}</span>
                 </div>
@@ -3370,7 +3381,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
               <select className="form-select" style={{width:150,fontSize:11}} value={j.art_status} onChange={e=>updJob(ji,'art_status',e.target.value)}>
                 {Object.entries(artLabels).map(([k,v])=><option key={k} value={k}>{v}</option>)}</select>
               <button className="btn btn-sm" style={{fontSize:10,background:'#be185d',color:'white',border:'none',padding:'3px 8px'}} onClick={()=>setArtReqModal({jIdx:ji,artist:'',instructions:'',files:[]})}>🎨 Request Art</button>
-              {(j.art_status==='waiting_approval')&&<button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'3px 8px'}} onClick={()=>{updJob(ji,'art_status','production_files_needed');nf('✅ Art approved — awaiting prod files')}}>✅ Approve Art</button>}
+              {(j.art_status==='waiting_approval')&&<button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'3px 8px'}} onClick={()=>{updJob(ji,'art_status','production_files_needed');if(j.art_file_id){const afi=af.findIndex(a=>a.id===j.art_file_id);if(afi>=0)uArt(afi,'status','approved')}nf('✅ Art approved — awaiting prod files')}}>✅ Approve Art</button>}
               <div style={{fontSize:11,fontWeight:600,color:'#64748b',marginLeft:8}}>Artist:</div>
               <select className="form-select" style={{width:130,fontSize:11}} value={j.assigned_artist||''} onChange={e=>updJob(ji,'assigned_artist',e.target.value)}>
                 <option value="">Unassigned</option>
@@ -3429,7 +3440,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                       <div><div className="form-label">Art File</div><div style={{fontSize:13,fontWeight:600}}>{artF.name}</div></div>
                       <div><div className="form-label">Deco Method</div><div style={{fontSize:13}}>{artF.deco_type?.replace(/_/g,' ')||'—'}</div></div>
                       <div><div className="form-label">Art Size</div><div style={{fontSize:13}}>{artF.art_size||'—'}</div></div>
-                      <div><div className="form-label">Status</div><div style={{fontSize:13}}><span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:SC[j.art_status]?.bg,color:SC[j.art_status]?.c}}>{artLabels[j.art_status]}</span></div></div>
+                      <div><div className="form-label">Art File Status</div><div style={{fontSize:13}}>{(()=>{const fSt=artF.status==='uploaded'?'needs_approval':artF.status||'waiting_for_art';return<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:ART_FILE_SC[fSt]?.bg||'#f1f5f9',color:ART_FILE_SC[fSt]?.c||'#64748b'}}>{ART_FILE_LABELS[fSt]||fSt}</span>})()}</div></div>
                     </div>
                     {artF.ink_colors&&<div style={{marginTop:10}}><div className="form-label">Ink Colors</div><div style={{fontSize:13}}>{artF.ink_colors}</div></div>}
                     {artF.thread_colors&&<div style={{marginTop:6}}><div className="form-label">Thread Colors</div><div style={{fontSize:13}}>{artF.thread_colors}</div></div>}
@@ -3549,7 +3560,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
               <td><span style={{fontWeight:700,color:'#1e40af'}}>{j.id}</span>
                 {j.split_from&&<div style={{fontSize:9,color:'#7c3aed'}}>split from {j.split_from}</div>}
                 {j.counted_at&&<div style={{fontSize:9,color:'#166534'}}>✅ counted</div>}</td>
-              <td><div style={{fontWeight:600}}>{j.art_name}</div>
+              <td><div style={{display:'flex',gap:6,alignItems:'center'}}><span style={{fontWeight:600}}>{j.art_name}</span>{(()=>{const afs=j.art_file_id&&af.find(a=>a.id===j.art_file_id);const fSt=afs?(afs.status==='uploaded'?'needs_approval':afs.status||'waiting_for_art'):null;return fSt?<span style={{padding:'1px 6px',borderRadius:8,fontSize:9,fontWeight:600,background:ART_FILE_SC[fSt]?.bg||'#f1f5f9',color:ART_FILE_SC[fSt]?.c||'#64748b'}}>{ART_FILE_LABELS[fSt]||fSt}</span>:null})()}</div>
                 <div style={{fontSize:10,color:'#64748b'}}>{j.deco_type?.replace(/_/g,' ')} · {j.positions}</div></td>
               <td style={{fontSize:11}}>{(j.items||[]).length} garment{(j.items||[]).length!==1?'s':''}</td>
               <td style={{fontWeight:700}}>{j.fulfilled_units}/{j.total_units}
@@ -3582,7 +3593,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           const it=safeItems(o)[gi.item_idx];
           let ful=0;
           if(it)Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).forEach(([sz,v])=>{
-            const pQ=safePicks(it).filter(pk=>pk.status==='pulled'||pk.status==='pick').reduce((a,pk)=>a+safeNum(pk[sz]),0);
+            const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
             const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
             ful+=Math.min(v,pQ+rQ);
           });
@@ -4193,7 +4204,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   const custSOs=(sos||[]).filter(o=>ids.includes(o.customer_id));
   const custEsts=(ests||[]).filter(e=>ids.includes(e.customer_id));
   const orders=allOrders.filter(o=>ids.includes(o.customer_id));
-  const fo=orders.filter(o=>{if(oF!=='all'&&o.type!==oF)return false;if(sF==='open')return['sent','draft','open','need_order','waiting_receive'].includes(o.status)||calcSOStatus(o)!=='complete';if(sF==='closed')return['approved','paid','complete'].includes(o.status)||calcSOStatus(o)==='complete';return true});
+  const fo=orders.filter(o=>{if(oF!=='all'&&o.type!==oF)return false;if(sF==='open')return['sent','draft','open','need_order','waiting_receive','needs_pull'].includes(o.status)||calcSOStatus(o)!=='complete';if(sF==='closed')return['approved','paid','complete'].includes(o.status)||calcSOStatus(o)==='complete';return true});
   const gn=id=>allCustomers.find(x=>x.id===id)?.alpha_tag||'';
   // Contact editing
   const saveContact=(idx,updated)=>{const newContacts=[...(customer.contacts||[])];newContacts[idx]=updated;const newCust={...customer,contacts:newContacts};setCustLocal(newCust);onEdit(newCust);setEditContact(null)};
@@ -4238,9 +4249,9 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     {custSOs.filter(s=>calcSOStatus(s)!=='complete').length>0&&<div className="card" style={{marginBottom:12}}><div className="card-header"><h2>Active Sales Orders</h2></div><div className="card-body" style={{padding:0}}>
       <table style={{fontSize:12}}><thead><tr><th>SO</th><th>Memo</th>{isP&&<th>Customer</th>}{isP&&<th>Rep</th>}<th>Status</th><th>Items</th><th>Fulfillment</th><th>Expected</th></tr></thead><tbody>
       {custSOs.filter(s=>calcSOStatus(s)!=='complete').map(so=>{
-        const st=calcSOStatus(so);const stL={need_order:'Need to Order',waiting_receive:'Waiting to Receive',items_received:'Items Received',in_production:'In Production',ready_to_invoice:'Ready to Invoice',complete:'Complete'};
+        const st=calcSOStatus(so);const stL={need_order:'Need to Order',waiting_receive:'Waiting to Receive',needs_pull:'Needs Pull',items_received:'Items Received',in_production:'In Production',ready_to_invoice:'Ready to Invoice',complete:'Complete'};
         let totalU=0,fulU=0;
-        safeItems(so).forEach(it=>{Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{totalU+=v;const pQ=safePicks(it).filter(pk=>pk.status==='pulled'||pk.status==='pick').reduce((a,pk)=>a+(pk[sz]||0),0);const rQ=safePOs(it).reduce((a,pk)=>a+((pk.received||{})[sz]||0),0);fulU+=Math.min(v,pQ+rQ)})});
+        safeItems(so).forEach(it=>{Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{totalU+=v;const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+(pk[sz]||0),0);const rQ=safePOs(it).reduce((a,pk)=>a+((pk.received||{})[sz]||0),0);fulU+=Math.min(v,pQ+rQ)})});
         const pct=totalU>0?Math.round(fulU/totalU*100):0;
         const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
         const jobs=so.jobs||[];
@@ -4597,7 +4608,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
           <div style={{fontSize:13,fontWeight:800,color:'#1e3a5f',marginBottom:10}}>📦 Active Orders</div>
           {activeSOs.map(so=>{
             let totalU=0,fulU=0;
-            safeItems(so).forEach(it=>{Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{totalU+=v;const pQ=safePicks(it).filter(pk=>pk.status==='pulled'||pk.status==='pick').reduce((a,pk)=>a+safeNum(pk[sz]),0);const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);fulU+=Math.min(v,pQ+rQ)})});
+            safeItems(so).forEach(it=>{Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{totalU+=v;const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);fulU+=Math.min(v,pQ+rQ)})});
             const pct=totalU>0?Math.round(fulU/totalU*100):0;
             const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
             const soJobs=safeJobs(so);
@@ -5087,7 +5098,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           <div style={{fontSize:13,fontWeight:800,color:'#1e3a5f',marginBottom:10}}>📦 Active Orders</div>
           {activeSOs.map(so=>{
             let totalU=0,fulU=0;
-            safeItems(so).forEach(it=>{Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{totalU+=v;const pQ=safePicks(it).filter(pk=>pk.status==='pulled'||pk.status==='pick').reduce((a,pk)=>a+safeNum(pk[sz]),0);const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);fulU+=Math.min(v,pQ+rQ)})});
+            safeItems(so).forEach(it=>{Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{totalU+=v;const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);fulU+=Math.min(v,pQ+rQ)})});
             const pct=totalU>0?Math.round(fulU/totalU*100):0;
             const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
             const soJobs=safeJobs(so);
@@ -5869,7 +5880,7 @@ export default function App(){
         const totalOrdered=szKeys.reduce((a,s)=>a+(item.sizes[s]||0),0);
         if(totalOrdered===0)return;
         const picks=safePicks(item);
-        const pulled={};picks.forEach(pk=>{szKeys.forEach(s=>{pulled[s]=(pulled[s]||0)+(pk[s]||0)})});
+        const pulled={};picks.filter(pk=>pk.status==='pulled').forEach(pk=>{szKeys.forEach(s=>{pulled[s]=(pulled[s]||0)+(pk[s]||0)})});
         const totalPulled=Object.values(pulled).reduce((a,v)=>a+v,0);
         // Only show in Pull & Stage if there's an active pick ticket (IF not yet pulled)
         const hasActivePick=picks.some(pk=>pk.status!=='pulled');
@@ -6385,7 +6396,7 @@ export default function App(){
       const itemStatus=totalSz===0?null:fulfilledSz>=totalSz?'received':fulfilledSz>0?'partial':poSz>0?'on_order':'needs_items';
       // Status badge uses the actual SO status field (what the user set)
       const displayStatus=calcSOStatus(so);
-      const statusLabel={need_order:'Need to Order',waiting_receive:'Waiting to Receive',items_received:'Items Received',in_production:'In Production',ready_to_invoice:'Ready to Invoice',complete:'Complete'}[displayStatus]||displayStatus.replace(/_/g,' ');
+      const statusLabel={need_order:'Need to Order',waiting_receive:'Waiting to Receive',needs_pull:'Needs Pull',items_received:'Items Received',in_production:'In Production',ready_to_invoice:'Ready to Invoice',complete:'Complete'}[displayStatus]||displayStatus.replace(/_/g,' ');
       return(<tr key={so.id} style={{cursor:'pointer'}} onClick={()=>{setESO(so);setESOC(c)}}>
       <td style={{fontWeight:700,color:'#1e40af'}}>{so.id}</td><td>{c?.name} <span className="badge badge-gray">{c?.alpha_tag}</span></td><td style={{fontSize:12}}>{so.memo}</td><td>{so.expected_date||'--'}</td>
       <td><span style={{fontSize:11,color:'#64748b'}}>{rep?.name?.split(' ')[0]||'\u2014'}</span></td>
@@ -7316,7 +7327,7 @@ export default function App(){
           const sizes={};const fulSizes={};
           Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{
             sizes[sz]=v;
-            const picked=safePicks(it).filter(pk=>pk.status==='pulled'||pk.status==='pick').reduce((a,pk)=>a+safeNum(pk[sz]),0);
+            const picked=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
             const rcvd=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
             fulSizes[sz]=Math.min(v,picked+rcvd);
           });
@@ -9569,7 +9580,12 @@ export default function App(){
       }
       const currentJobs=buildJobs(so);
       const updatedJobs=currentJobs.map(jj=>jj.id===j.id?{...jj,art_status:newStatus,assigned_artist:jj.assigned_artist||j.assigned_artist}:jj);
-      savSO({...so,jobs:updatedJobs});
+      let updArt=safeArt(so);
+      if(j.art_file_id){
+        const afSt=newStatus==='waiting_approval'?'needs_approval':newStatus==='production_files_needed'||newStatus==='art_complete'?'approved':null;
+        if(afSt)updArt=updArt.map(a=>a.id===j.art_file_id?{...a,status:afSt}:a);
+      }
+      savSO({...so,art_files:updArt,jobs:updatedJobs});
       nf('Art status → '+ART_LABELS[newStatus]);
     };
     const assignArtist=(j,artistId)=>{
