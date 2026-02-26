@@ -5743,7 +5743,7 @@ export default function App(){
   };
 
   // Shared data builder for warehouse + deco + dashboard pages
-  const buildWarehouseData=()=>{
+  function buildWarehouseData(){
     const pullTasks=[];const shipTasks=[];const decoTasks=[];
     sos.filter(so=>{const st=calcSOStatus(so);return st!=='complete'}).forEach(so=>{
       const c=cust.find(x=>x.id===so.customer_id);const cName=c?.name||'Unknown';const alpha=c?.alpha_tag||'';
@@ -5800,7 +5800,7 @@ export default function App(){
   };
 
   // DASHBOARD
-  const rDash=()=>{
+  function rDash(){
     // Unread messages for this user
     const unreadMsgs=(msgs||[]).filter(m=>!(m.read_by||[]).includes(cu?.id));
     const myUnread=unreadMsgs.sort((a,b)=>(b.ts||'').localeCompare(a.ts)).slice(0,10);
@@ -6196,7 +6196,7 @@ export default function App(){
 
 
   // ESTIMATES LIST
-  const rEst=()=>{
+  function rEst(){
     if(eEst)return<OrderEditor order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} onSave={e=>{const e2=savE(e);setEEst(e2)}} onBack={()=>setEEst(null)} onConvertSO={convertSO} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={canDelete?deleteEstimate:null} onNavInvoice={inv=>{setEEst(null);setPg('invoices');setInvF(f=>({...f,search:inv.id}))}}/>;
     const fe=ests.filter(e=>!q||(e.id+' '+e.memo+' '+(cust.find(c=>c.id===e.customer_id)?.name||'')+' '+(cust.find(c=>c.id===e.customer_id)?.alpha_tag||'')).toLowerCase().includes(q.toLowerCase()));
     return(<><div style={{display:'flex',gap:8,marginBottom:16}}><div className="search-bar" style={{flex:1}}><Icon name="search"/><input placeholder="Search..." value={q} onChange={e=>setQ(e.target.value)}/></div>
@@ -6214,7 +6214,7 @@ export default function App(){
 
 
   // SALES ORDERS LIST
-  const rSO=()=>{
+  function rSO(){
     if(eSO)return<OrderEditor order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} onSave={s=>{const locked=savSO(s);setESO(locked)}} onBack={()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null)}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onNavInvoice={inv=>{setESO(null);setPg('invoices');setInvF(f=>({...f,search:inv.id}))}}/>;
     // Filter SOs
     let fSOs=[...sos];
@@ -6288,7 +6288,7 @@ export default function App(){
     </tbody></table></div></div></>);
   };
   // CUSTOMERS
-  const rCust=()=>{
+  function rCust(){
     if(selC)return<CustDetail customer={selC} allCustomers={cust} allOrders={aO} onBack={()=>setSelC(null)} onEdit={c=>{setCM({open:true,c});setCust(prev=>prev.map(pp=>pp.id===c.id?c:pp))}} onSelCust={c=>setSelC(c)} onNewEst={c=>newE(c)} sos={sos} msgs={msgs} cu={cu} onOpenSO={so=>{const c3=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c3);setPg('orders')}} onOpenEst={est=>{const c3=cust.find(cc=>cc.id===est.customer_id);setEEst(est);setEEstC(c3);setPg('estimates')}} ests={ests} onSaveSO={savSO} REPS={REPS}/>;
     const f=pars.filter(p=>{if(rF!=='all'&&p.primary_rep_id!==rF)return false;if(q){const s=q.toLowerCase();return p.name.toLowerCase().includes(s)||p.alpha_tag?.toLowerCase().includes(s)||gK(p.id).some(c=>c.name.toLowerCase().includes(s))}return true});
     return(<><div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap'}}><div className="search-bar" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search..." value={q} onChange={e=>setQ(e.target.value)}/></div>
@@ -6311,7 +6311,7 @@ export default function App(){
     </>);};
 
   // VENDORS
-  const rVend=()=>{if(selV)return<VendDetail vendor={selV} onBack={()=>setSelV(null)}/>;
+  function rVend(){if(selV)return<VendDetail vendor={selV} onBack={()=>setSelV(null)}/>;
     return(<><div className="stats-row"><div className="stat-card"><div className="stat-label">Vendors</div><div className="stat-value">{vend.length}</div></div><div className="stat-card"><div className="stat-label">API</div><div className="stat-value">{vend.filter(v=>v.vendor_type==='api').length}</div></div>
       {isA&&<div className="stat-card"><div className="stat-label">Open AP</div><div className="stat-value" style={{color:'#dc2626'}}>${vend.reduce((a,v)=>a+(v._it||0),0).toLocaleString()}</div></div>}</div>
     <div className="card"><div className="card-body" style={{padding:0}}><table><thead><tr><th>Vendor</th><th>Type</th><th>Contact</th><th>Terms</th>{isA&&<th>Owed</th>}<th>Status</th></tr></thead><tbody>
@@ -6526,7 +6526,7 @@ export default function App(){
   };
 
   // PRODUCTS
-  const rProd=()=>{
+  function rProd(){
     if(selP)return<ProductDetail product={selP} onBack={()=>setSelP(null)}/>;
     return(<><div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap'}}>
     <div className="search-bar" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search..." value={q} onChange={e=>setQ(e.target.value)}/></div>
@@ -6570,7 +6570,7 @@ export default function App(){
   </tr>)}</tbody></table></div></div></>);
 
   // INVENTORY CHANGE LOG
-  const rInvLog=()=>{
+  function rInvLog(){
     const filtered=invAdjLog.filter(l=>{if(!invPOSearch)return true;const s=invPOSearch.toLowerCase();return l.sku?.toLowerCase().includes(s)||l.product_name?.toLowerCase().includes(s)||l.reason?.toLowerCase().includes(s)||l.performed_by?.toLowerCase().includes(s)});
     const typeColors={manual:{bg:'#eff6ff',c:'#1e40af',label:'Manual'},correction:{bg:'#fefce8',c:'#a16207',label:'Correction'},'return':{bg:'#f0fdf4',c:'#166534',label:'Return'},damage:{bg:'#fef2f2',c:'#dc2626',label:'Damage'},po_receive:{bg:'#f5f3ff',c:'#7c3aed',label:'PO Receive'}};
     return(<>
@@ -6675,7 +6675,7 @@ export default function App(){
     nf('PO '+po.po_number+' items received — inventory updated');
   };
 
-  const rInvPOs=()=>{
+  function rInvPOs(){
     const q3=invPOSearch.trim().toLowerCase();
     const filtered=invPOs.filter(po=>{if(!q3)return true;return po.po_number.toLowerCase().includes(q3)||po.vendor_name.toLowerCase().includes(q3)||po.items.some(it=>it.sku.toLowerCase().includes(q3)||it.name.toLowerCase().includes(q3))});
     const statusColors={ordered:{bg:'#eff6ff',c:'#1e40af',label:'Ordered'},partial:{bg:'#fffbeb',c:'#d97706',label:'Partial'},received:{bg:'#f0fdf4',c:'#166534',label:'Received'},cancelled:{bg:'#fef2f2',c:'#dc2626',label:'Cancelled'}};
@@ -6756,7 +6756,7 @@ export default function App(){
     {name:'All Active',filters:{statuses:['hold','staging','in_process'],rep:'all',deco:'all',artSt:'all',dueBefore:'',search:''}},
   ]);
 
-  const rJobs=()=>{
+  function rJobs(){
     // Build flat jobs list
     const allJobs=[];
     sos.forEach(so=>{const c=cust.find(x=>x.id===so.customer_id);
@@ -6943,7 +6943,7 @@ export default function App(){
   const resetCols=()=>{setProdCols(defaultCols);try{localStorage.setItem('nsa_prod_cols',JSON.stringify(defaultCols))}catch{}};
   const[roleView,setRoleView]=useState(()=>{try{return localStorage.getItem('nsa_role_view')||'sales'}catch{return'sales'}});
   const changeRoleView=v=>{setRoleView(v);try{localStorage.setItem('nsa_role_view',v)}catch{}};
-  const rProd2=()=>{
+  function rProd2(){
     // Build flat list of SAVED jobs only (must be explicitly on SO.jobs[])
     const allJobs=[];
     sos.forEach(so=>{
@@ -7422,7 +7422,7 @@ export default function App(){
     </>);
   };
   // ─── PURCHASE ORDERS PAGE ───
-  const rPOs=()=>{
+  function rPOs(){
     // Build flat list of ALL PO lines across every SO + submitted batches
     const allPOs=[];
     sos.forEach(so=>{const c2=cust.find(x=>x.id===so.customer_id);
@@ -7514,7 +7514,7 @@ export default function App(){
       </div></div>
     </>;
   };
-  const rBatchPOs=()=>{
+  function rBatchPOs(){
     const byVendor={};
     batchPOs.forEach(bp=>{if(!byVendor[bp.vendor_key])byVendor[bp.vendor_key]={name:bp.vendor_name,threshold:BATCH_VENDORS[bp.vendor_key]?.threshold||200,pos:[]};byVendor[bp.vendor_key].pos.push(bp)});
     const vendorGroups=Object.entries(byVendor);
@@ -7922,7 +7922,7 @@ export default function App(){
   const[invEdit,setInvEdit]=useState(null);
   const[payModal,setPayModal]=useState(null);
 
-  const rInvoices=()=>{
+  function rInvoices(){
     const today=new Date();
     const parseD=(ds)=>{if(!ds)return null;const m=ds.match(/(\d{2})\/(\d{2})\/(\d{2})/);return m?new Date('20'+m[3],m[1]-1,m[2]):new Date(ds)};
     const agingDays=(dateStr)=>{const d=parseD(dateStr);return d?Math.floor((today-d)/(1000*60*60*24)):0};
@@ -8229,7 +8229,7 @@ export default function App(){
   const[commTab,setCommTab]=useState('statement');// statement, pipeline, ytd, byCustomer
   const toggleWidget=(k)=>setRptWidgets(w=>({...w,[k]:!w[k]}));
 
-  const rReports=()=>{
+  function rReports(){
     const soCalc=(so)=>{let rev=0,cost=0,units=0;const _aq={};safeItems(so).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_aq[d.art_file_id]=(_aq[d.art_file_id]||0)+q2}})});const af=safeArt(so);safeItems(so).forEach(it=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);units+=qty;rev+=qty*safeNum(it.unit_sell);cost+=qty*safeNum(it.nsa_cost);(it.decorations||[]).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qty;const dp=dP(d,qty,af,cq);rev+=qty*dp.sell;cost+=qty*dp.cost});(it.po_lines||[]).filter(pl=>pl.po_type==='outside_deco').forEach(pl=>{const poQty=Object.entries(pl).filter(([k,v])=>typeof v==='number'&&k!=='unit_cost').reduce((a,[,v])=>a+v,0);cost+=poQty*safeNum(pl.unit_cost)})});return{rev,cost,margin:rev-cost,pct:rev>0?Math.round((rev-cost)/rev*100):0,units}};
 
     const filtSOs=rptRep==='all'?sos:sos.filter(s=>s.created_by===rptRep);
@@ -8586,7 +8586,7 @@ export default function App(){
   };
 
   // COMMISSIONS PAGE — visible only to admin and the logged-in rep
-  const rCommissions=()=>{
+  function rCommissions(){
     const isAdmin=cu.role==='admin';
     const salesReps=REPS.filter(r=>r.role==='rep'||r.role==='admin');
     // Admin sees all reps or picks one; rep only sees themselves
@@ -8874,7 +8874,7 @@ export default function App(){
   };
 
   // OMG TEAM STORES PAGE
-  const rOMG=()=>{
+  function rOMG(){
     const stores=omgStores;
     const filtered=stores.filter(s=>{
       if(omgFilter.rep!=='all'&&s.rep_id!==omgFilter.rep)return false;
@@ -9060,7 +9060,7 @@ export default function App(){
   const[decoSearch,setDecoSearch]=useState('');const[decoRepF,setDecoRepF]=useState('all');const[decoStatF,setDecoStatF]=useState('active');const[decoTypeF,setDecoTypeF]=useState('all');
   const[decoCardFilter,setDecoCardFilter]=useState(null);// null|'ready'|'in_process'|'waiting'
 
-  const rWarehouse=()=>{
+  function rWarehouse(){
     const{pullTasks,shipTasks,decoTasks}=buildWarehouseData();
     const filt=(arr)=>arr.filter(t=>{
       if(whRepF!=='all'&&t.so?.created_by!==whRepF)return false;
@@ -9404,7 +9404,7 @@ export default function App(){
   // ═══════════════════════════════════════════════
   // ARTIST DASHBOARD — dual-view (Artist workboard + Rep tracker)
   // ═══════════════════════════════════════════════
-  const rArtist=()=>{
+  function rArtist(){
     // Gather ALL art jobs across SOs — includes every status for rep view
     const allArtJobs=[];
     sos.forEach(so=>{const c=cust.find(x=>x.id===so.customer_id);
@@ -9879,7 +9879,7 @@ export default function App(){
   };
 
   // DECORATION DASHBOARD (separate from warehouse)
-  const rDeco=()=>{
+  function rDeco(){
     const{decoTasks}=buildWarehouseData();
     const filt=(arr)=>arr.filter(t=>{
       if(decoRepF!=='all'&&t.so?.created_by!==decoRepF)return false;
@@ -10165,7 +10165,7 @@ export default function App(){
     });
   };
 
-  const rImport=()=>{
+  function rImport(){
 
     const applyAnswer=(qi,val)=>setImp(x=>({...x,questions:x.questions.map((q,i)=>i===qi?{...q,answer:val}:q)}));
     const updItem=(pi,k,v)=>setImp(x=>({...x,parsed:x.parsed.map((p,i)=>i===pi?{...p,[k]:v}:p)}));
@@ -11081,7 +11081,7 @@ export default function App(){
 
 
 
-  const rBackup=()=>{
+  function rBackup(){
     const stateSize=JSON.stringify({customers:cust,estimates:ests,sales_orders:sos,products:prod,messages:msgs,invoices:invs}).length;
     const sizeMB=(stateSize/1024/1024).toFixed(2);
     const autoTs=typeof localStorage!=='undefined'?localStorage.getItem('nsa_auto_backup_ts'):null;
@@ -11236,7 +11236,7 @@ export default function App(){
   };
 
   // MESSAGES PAGE
-  const rMsg=()=>{const allM=[...msgs].sort((a,b)=>(b.ts||'').localeCompare(a.ts));
+  function rMsg(){const allM=[...msgs].sort((a,b)=>(b.ts||'').localeCompare(a.ts));
     const unread=allM.filter(m=>!(m.read_by||[]).includes(cu.id));
     const filtered=mF==='unread'?unread:mF==='mine'?allM.filter(m=>sos.some(s=>s.id===m.so_id&&s.created_by===cu.id)):allM;
     return(<><div className="stats-row"><div className="stat-card"><div className="stat-label">Total</div><div className="stat-value">{allM.length}</div></div><div className="stat-card"><div className="stat-label">Unread</div><div className="stat-value" style={{color:unread.length>0?'#dc2626':''}}>{unread.length}</div></div></div>
@@ -11263,7 +11263,7 @@ export default function App(){
           </div></div>})}</div></div></>)};
 
   // QUICKBOOKS ONLINE INTEGRATION
-  const rQB=()=>{
+  function rQB(){
     // Build sync queue — SOs/POs/Invoices that need pushing to QB
     const unsyncedSOs=sos.filter(so=>{
       const hasItems=safeItems(so).some(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
@@ -11516,7 +11516,7 @@ export default function App(){
   };
 
   // TEAM MANAGEMENT
-  const rTeam=()=>{
+  function rTeam(){
     const roles={admin:'Admin',rep:'Sales Rep',csr:'Customer Service',accounting:'Accounting',warehouse:'Warehouse',prod_manager:'Production Mgr',production:'Production',prod_assistant:'Prod Assistant',artist:'Artist'};
     const roleBadge={admin:'badge-purple',rep:'badge-blue',csr:'badge-green',accounting:'badge-amber',warehouse:'badge-gray',prod_manager:'badge-amber',production:'badge-gray',prod_assistant:'badge-gray',artist:'badge-purple'};
     const isAdmin=cu.role==='admin';
@@ -11679,7 +11679,7 @@ export default function App(){
     </>)};
 
     // ISSUES PAGE
-  const rIssues=()=>{
+  function rIssues(){
     const fi=issueFilter==='all'?issues:issues.filter(i=>i.status===issueFilter);
     const prioColor={high:'#dc2626',medium:'#f59e0b',low:'#22c55e'};
     const prioLabel={high:'High',medium:'Medium',low:'Low'};
@@ -11732,7 +11732,7 @@ export default function App(){
       if(key==='SP')SP=val;if(key==='EM')EM=val;if(key==='NP')NP=val;if(key==='DTF')DTF=val;
       if(key==='CATEGORIES')CATEGORIES=val;if(key==='POSITIONS')POSITIONS=val;if(key==='CONTACT_ROLES')CONTACT_ROLES=val;
       nf('Settings saved')}catch{nf('Error saving','warn')}};
-  const rSettings=()=>{
+  function rSettings(){
     const tabs=[['pricing','Decoration Pricing'],['tiers','Customer Tiers'],['lists','Lists & Options'],['terms','Terms & Policies']];
     return(<>
       <div style={{display:'flex',gap:4,marginBottom:16,flexWrap:'wrap'}}>
@@ -11902,7 +11902,7 @@ export default function App(){
   const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'reports',label:'Reports',icon:'dollar'},{id:'commissions',label:'Commissions',icon:'dollar',roles:['admin','rep']},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'art',label:'Art Dashboard',icon:'image'},{id:'production',label:'Prod Board',icon:'package'},{id:'decoration',label:'Decoration',icon:'image'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'purchase_orders',label:'Purchase Orders',icon:'cart'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{id:'team',label:'Team',icon:'users'},{section:'Comms'},{id:'messages',label:'Messages',icon:'mail'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'System'},{id:'issues',label:'Issues',icon:'alert'},{id:'import',label:'Import / Upload',icon:'upload'},{id:'qb',label:'QuickBooks Sync',icon:'dollar'},{id:'backup',label:'Backup & Data',icon:'save'},{id:'settings',label:'Settings',icon:'grid',roles:['admin']}];
   const titles={dashboard:'Dashboard',reports:'Reports & Analytics',commissions:'Commissions',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',omg:'OMG Team Stores',jobs:'Jobs',art:'Art Dashboard',production:'Production Board',decoration:'Decoration',warehouse:'Warehouse',purchase_orders:'Purchase Orders',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',team:'Team Directory',products:'Products',inventory:'Inventory',messages:'Messages',issues:'Issues',import:'Import / Upload',qb:'QuickBooks Online',backup:'Backup & Data',settings:'Settings'};
   // ─── SCAN RESULT HANDLER ───
-  const handleScanResult=(val)=>{
+  function handleScanResult(val){
     if(!val)return;
     // If scanned value is a URL with ?scan= parameter, extract the value
     let scanVal=val.trim();
