@@ -1785,7 +1785,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         _auto:existing?._auto!=null?existing._auto:true,
       };
     });
-    return newJobs;
+    // Preserve manually split jobs — they won't be auto-generated from decorations
+    const splitJobs=safeJobs(o).filter(j=>j.split_from&&!newJobs.find(nj=>nj.id===j.id));
+    return[...newJobs,...splitJobs];
   },[o,af]);// eslint-disable-line
 
   // Auto-sync jobs whenever decorations or items change (does NOT mark dirty — auto-sync is not a user edit)
@@ -3323,6 +3325,35 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         const newJobs2=[...jobs];newJobs2.splice(jIdx,1,remainJob,splitJob2);
         sv('jobs',newJobs2);setSplitModal(null);nf('✂️ Split by SKU! '+splitId+' with '+splitItems.length+' garment(s)');
       };
+      // Custom split — split specific unit counts per item/size
+      const splitCustom=(jIdx,splitQtys)=>{
+        const j=jobs[jIdx];if(!j||!j.items?.length)return;
+        let splitTotal=0;
+        const splitItems=[];const keepItems=[];
+        j.items.forEach(gi=>{
+          const sqty=splitQtys[gi.item_idx]||0;
+          if(sqty>0&&sqty<gi.units){
+            splitItems.push({...gi,units:sqty,fulfilled:Math.min(gi.fulfilled||0,sqty)});
+            keepItems.push({...gi,units:gi.units-sqty,fulfilled:Math.max(0,(gi.fulfilled||0)-sqty)});
+            splitTotal+=sqty;
+          } else if(sqty>=gi.units){
+            splitItems.push({...gi});splitTotal+=gi.units;
+          } else {
+            keepItems.push({...gi});
+          }
+        });
+        if(splitTotal===0){nf('Enter units to split off','error');return}
+        if(keepItems.length===0||keepItems.reduce((a,gi)=>a+gi.units,0)===0){nf('Must leave some units on the original job','error');return}
+        const existingSplits=jobs.filter(jj=>jj.split_from===j.id).length;
+        const splitId=j.id+'-C'+(existingSplits+1);
+        const splitJob2={...j,id:splitId,split_from:j.id,items:splitItems,
+          total_units:splitTotal,fulfilled_units:splitItems.reduce((a,gi)=>a+(gi.fulfilled||0),0),
+          prod_status:'hold',created_at:new Date().toLocaleDateString()};
+        const remainJob={...j,items:keepItems,total_units:keepItems.reduce((a,gi)=>a+gi.units,0),
+          fulfilled_units:keepItems.reduce((a,gi)=>a+(gi.fulfilled||0),0)};
+        const newJobs2=[...jobs];newJobs2.splice(jIdx,1,remainJob,splitJob2);
+        sv('jobs',newJobs2);setSplitModal(null);nf('✂️ Custom split! '+splitId+' with '+splitTotal+' units');
+      };
       const updJob=(jIdx,k,v)=>{sv('jobs',jobs.map((j,i)=>i===jIdx?{...j,[k]:v}:j))};
       const prodStatuses=['hold','staging','in_process','completed','shipped'];
       const prodLabels={hold:'Ready for Prod',staging:'In Line',in_process:'In Process',completed:'Completed',shipped:'Shipped'};
@@ -3392,7 +3423,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                 {prodStatuses.map(ps=><option key={ps} value={ps}>{prodLabels[ps]}</option>)}</select>
               {!canProduce&&j.prod_status!=='hold'&&<span style={{fontSize:9,color:'#d97706',marginLeft:4}}>⚠️ Items/art incomplete</span>}</>}
               <div style={{marginLeft:'auto',display:'flex',gap:6}}>
-                {(j.items||[]).length>=1&&j.fulfilled_units<j.total_units&&<button className="btn btn-sm" style={{background:'#7c3aed',color:'white',fontSize:10}} onClick={()=>setSplitModal({jIdx:ji,mode:null,selectedSkus:[]})}>✂️ Split Job</button>}
+                {(j.items||[]).length>0&&j.total_units>1&&<button className="btn btn-sm" style={{background:'#7c3aed',color:'white',fontSize:10}} onClick={()=>setSplitModal({jIdx:ji,mode:null,selectedSkus:[]})}>✂️ Split Job</button>}
                 <button className="btn btn-sm btn-secondary" onClick={()=>{
                   const w=window.open('','_blank','width=700,height=900');
                   w.document.write('<html><head><title>'+j.id+' — '+j.art_name+'</title><style>body{font-family:sans-serif;padding:24px;font-size:13px}h1{font-size:20px;margin:0 0 4px}h2{font-size:14px;margin:16px 0 8px;border-bottom:1px solid #ccc;padding-bottom:4px}table{width:100%;border-collapse:collapse;margin:8px 0}th,td{border:1px solid #ddd;padding:6px 8px;text-align:center;font-size:12px}th{background:#f0f0f0;font-weight:700}.badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700}.info{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:8px 0}.info div{padding:8px;background:#f8f8f8;border-radius:4px}.label{font-size:10px;color:#666;font-weight:600;text-transform:uppercase}@media print{body{padding:12px}}</style></head><body>');
@@ -3553,7 +3584,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         {jobs.length>0&&<table style={{fontSize:12}}><thead><tr><th>Job ID</th><th>Artwork / Decoration</th><th>Items</th><th>Units</th><th>Items Status</th><th>Art</th><th>Production</th><th></th></tr></thead><tbody>
           {jobs.map((j,ji)=>{
             const canProduce=j.item_status==='items_received'&&j.art_status==='art_complete';const canOverride2=cu.role==='admin'||cu.role==='production'||cu.role==='prod_manager'||cu.role==='gm';
-            const canSplit=j.item_status==='partially_received'&&!j.split_from;
+            const canSplit=(j.items||[]).length>0&&j.total_units>1;
             const pct=j.total_units>0?Math.round(j.fulfilled_units/j.total_units*100):0;
             return<React.Fragment key={j.id}>
               <tr id={'so-job-'+ji} style={{background:j.prod_status==='completed'||j.prod_status==='shipped'?'#f0fdf4':undefined,cursor:'pointer',transition:'box-shadow 0.3s'}} onClick={()=>setSelJob(ji)}>
@@ -3617,6 +3648,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                 <div style={{fontSize:12,color:'#475569'}}>Select which garments to move to a new job. Useful when different garments arrive at different times or need separate production runs.</div>
                 {items.length<2&&<div style={{fontSize:11,color:'#dc2626',marginTop:4}}>⚠️ Only 1 garment on this job — can't split by SKU</div>}
               </button>
+              <button className="btn" style={{padding:16,background:'#faf5ff',border:'2px solid #c4b5fd',borderRadius:12,textAlign:'left',cursor:'pointer'}} onClick={()=>setSplitModal(m=>({...m,mode:'custom',customQtys:{}}))}>
+                <div style={{fontWeight:800,fontSize:14,color:'#7c3aed',marginBottom:4}}>✏️ Custom Split — Choose Quantities</div>
+                <div style={{fontSize:12,color:'#475569'}}>Enter exact number of units per garment to split into a new job.</div>
+              </button>
             </div>}
 
             {/* Split by received confirmation */}
@@ -3649,12 +3684,39 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
               </div>}
               {(splitModal.selectedSkus||[]).length>0&&(splitModal.selectedSkus||[]).length>=items.length&&<div style={{padding:8,background:'#fef2f2',borderRadius:6,marginTop:8,fontSize:12,color:'#dc2626'}}>Can't move all garments — deselect at least one to keep on the original job.</div>}
             </div>}
+
+            {/* Custom split — enter quantities */}
+            {splitModal.mode==='custom'&&(()=>{
+              const cq=splitModal.customQtys||{};
+              const totalSplit=items.reduce((a,gi)=>a+Math.min(safeNum(cq[gi.item_idx]),gi.units),0);
+              const totalRemain=j.total_units-totalSplit;
+              return<div>
+                <div style={{fontSize:12,fontWeight:700,marginBottom:8}}>Enter units to split off per garment:</div>
+                {items.map((gi,i)=><div key={i} style={{padding:10,border:'1px solid #e2e8f0',borderRadius:6,marginBottom:6,display:'flex',gap:10,alignItems:'center',background:safeNum(cq[gi.item_idx])>0?'#faf5ff':'white'}}>
+                  <div style={{flex:1}}>
+                    <div><span style={{fontWeight:700,fontSize:12}}>{gi.sku}</span> <span style={{fontSize:12}}>{gi.name}</span> <span style={{color:'#94a3b8',fontSize:11}}>({gi.color})</span></div>
+                    <div style={{fontSize:10,color:'#64748b'}}>{gi.units} total · {gi.received} received</div>
+                  </div>
+                  <div style={{display:'flex',alignItems:'center',gap:6}}>
+                    <input type="number" className="form-input" min={0} max={gi.units} value={cq[gi.item_idx]||''} placeholder="0"
+                      style={{width:70,fontSize:13,fontWeight:700,textAlign:'center'}}
+                      onChange={e=>setSplitModal(m=>({...m,customQtys:{...m.customQtys,[gi.item_idx]:Math.min(parseInt(e.target.value)||0,gi.units)}}))}/>
+                    <span style={{fontSize:11,color:'#64748b'}}>/ {gi.units}</span>
+                  </div>
+                </div>)}
+                {totalSplit>0&&totalRemain>0&&<div style={{padding:10,background:'#faf5ff',borderRadius:6,marginTop:8,fontSize:12}}>
+                  <strong>New split job:</strong> {totalSplit} units<br/>
+                  <strong>Remaining on {j.id}:</strong> {totalRemain} units
+                </div>}
+                {totalSplit>0&&totalRemain<=0&&<div style={{padding:8,background:'#fef2f2',borderRadius:6,marginTop:8,fontSize:12,color:'#dc2626'}}>Must leave some units on the original job.</div>}
+              </div>})()}
           </div>
           <div className="modal-footer">
             {splitModal.mode&&<button className="btn btn-secondary" onClick={()=>setSplitModal(m=>({...m,mode:null}))}>← Back</button>}
             <button className="btn btn-secondary" onClick={()=>setSplitModal(null)}>Cancel</button>
             {splitModal.mode==='received'&&totalReceived>0&&<button className="btn btn-primary" onClick={()=>splitByReceived(splitModal.jIdx)}>✂️ Split by Received ({totalReceived} units)</button>}
             {splitModal.mode==='sku'&&(splitModal.selectedSkus||[]).length>0&&(splitModal.selectedSkus||[]).length<items.length&&<button className="btn btn-primary" onClick={()=>splitBySku(splitModal.jIdx,splitModal.selectedSkus)}>✂️ Split Selected SKUs</button>}
+            {splitModal.mode==='custom'&&(()=>{const cq=splitModal.customQtys||{};const ts=items.reduce((a,gi)=>a+Math.min(safeNum(cq[gi.item_idx]),gi.units),0);const tr=j.total_units-ts;return ts>0&&tr>0?<button className="btn btn-primary" style={{background:'#7c3aed',borderColor:'#7c3aed'}} onClick={()=>splitCustom(splitModal.jIdx,cq)}>✂️ Split {ts} Units</button>:null})()}
           </div>
         </div></div>})()}
 
