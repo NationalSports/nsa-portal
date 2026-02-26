@@ -5363,6 +5363,8 @@ export default function App(){
   const[omgSyncing,setOmgSyncing]=useState(false);
   const[omgLastSync,setOmgLastSync]=useState(null);
   const[dbLoading,setDbLoading]=useState(!!supabase);const[dbError,setDbError]=useState(null);const _dbReady=useRef(false);const _dbLoadSuccess=useRef(false);
+  // Snapshot of last DB-loaded data — used to diff auto-save and only write changed records
+  const _dbSnap=useRef({});
   // Batch PO system
   const[batchPOs,setBatchPOs]=useState(()=>loadState('batch_pos',[]));// pending queue
   const[submittedBatches,setSubmittedBatches]=useState(()=>loadState('submitted_batches',[]));// submitted batches for scan lookup
@@ -5414,6 +5416,7 @@ export default function App(){
         }else if(d.hasData){
           // Supabase has data — use it as source of truth
           _dbLoadSuccess.current=true;
+          _dbSnap.current={ests:d.estimates,sos:d.sales_orders,invs:d.invoices,msgs:d.messages,cust:d.customers,prod:d.products,vend:d.vendors,team:d.team,omg:d.omg_stores,issues:d.issues};
           setREPS(d.team.length?d.team:DEFAULT_REPS);setCust(d.customers);
           if(d.vendors.length)setVend(d.vendors);setProd(d.products.length?d.products:prod);
           setEsts(d.estimates);setSOs(d.sales_orders);
@@ -5438,9 +5441,14 @@ export default function App(){
           // Use a lock row to prevent multiple browsers from seeding simultaneously
           _dbLoadSuccess.current=true;
           const lockId='_seed_lock';
-          const{data:lockCheck}=await supabase.from('app_state').select('id').eq('id',lockId).single();
-          if(!lockCheck){
-            // No lock — this browser wins, claim it and seed
+          const{data:lockCheck}=await supabase.from('app_state').select('*').eq('id',lockId).single();
+          // Determine if we should seed: no lock, OR lock is stale (>30s stuck on "seeding"), OR lock says "done" but tables are empty
+          const lockStale=lockCheck&&lockCheck.value==='"seeding"'&&(new Date()-new Date(lockCheck.updated_at)>30000);
+          const lockDoneButEmpty=lockCheck&&lockCheck.value==='"done"';
+          if(!lockCheck||lockStale||lockDoneButEmpty){
+            // This browser wins — claim lock and seed
+            if(lockStale)console.warn('[DB] Seed lock was stale (stuck >30s) — retrying seed');
+            if(lockDoneButEmpty)console.warn('[DB] Seed lock says done but tables empty — re-seeding');
             await supabase.from('app_state').upsert({id:lockId,value:'"seeding"',updated_at:new Date().toISOString()});
             console.warn('[DB] Supabase tables empty — seeding from localStorage');
             try{
@@ -5450,13 +5458,17 @@ export default function App(){
               for(const[k,v]of Object.entries(_as)){if(v!==undefined&&v!==null)_dbSave('app_state',[{id:k,value:JSON.stringify(v),updated_at:new Date().toISOString()}])}
               await supabase.from('app_state').upsert({id:lockId,value:'"done"',updated_at:new Date().toISOString()});
               console.log('[DB] Seeded Supabase from localStorage');
-            }catch(seedErr){console.error('[DB] Seed failed:',seedErr)}
+            }catch(seedErr){console.error('[DB] Seed failed:',seedErr);
+              // Clear the stuck lock so next browser can retry
+              await supabase.from('app_state').upsert({id:lockId,value:'"failed"',updated_at:new Date().toISOString()}).catch(()=>{});
+            }
           }else{
-            // Another browser is seeding or already seeded — wait and reload
+            // Another browser is actively seeding (lock <30s old) — wait and reload
             console.log('[DB] Another browser is seeding — waiting to reload');
-            await new Promise(r=>setTimeout(r,3000));
+            await new Promise(r=>setTimeout(r,5000));
             const d2=await _dbLoad();
             if(d2?.hasData){
+              _dbSnap.current={ests:d2.estimates,sos:d2.sales_orders,invs:d2.invoices,msgs:d2.messages,cust:d2.customers,prod:d2.products,vend:d2.vendors,team:d2.team,omg:d2.omg_stores,issues:d2.issues};
               setREPS(d2.team.length?d2.team:DEFAULT_REPS);setCust(d2.customers);
               if(d2.vendors.length)setVend(d2.vendors);setProd(d2.products.length?d2.products:prod);
               setEsts(d2.estimates);setSOs(d2.sales_orders);
@@ -5470,6 +5482,18 @@ export default function App(){
               if(as2.qb_config)setQBConfig(as2.qb_config);if(as2.inv_pos)setInvPOs(as2.inv_pos);
               if(as2.inv_adj_log)setInvAdjLog(as2.inv_adj_log);if(as2.inv_po_counter)setInvPOCounter(as2.inv_po_counter);
               console.log('[DB] Loaded from Supabase after seed by other browser');
+            }else{
+              // Other browser's seed also failed — this browser tries to seed
+              console.warn('[DB] Other browser seed did not produce data — this browser will seed');
+              await supabase.from('app_state').upsert({id:lockId,value:'"seeding"',updated_at:new Date().toISOString()});
+              try{
+                await _dbSeed({team:REPS,customers:cust,vendors:vend,products:prod,estimates:ests,sales_orders:sos,invoices:invs,messages:msgs,omg_stores:omgStores,issues});
+                if(issues?.length) _dbSave('issues',issues);
+                const _as={batch_pos:batchPOs,submitted_batches:submittedBatches,batch_counter:batchCounter,change_log:changeLog,so_history:soHistory,qb_config:qbConfig,inv_pos:invPOs,inv_adj_log:invAdjLog,inv_po_counter:invPOCounter};
+                for(const[k,v]of Object.entries(_as)){if(v!==undefined&&v!==null)_dbSave('app_state',[{id:k,value:JSON.stringify(v),updated_at:new Date().toISOString()}])}
+                await supabase.from('app_state').upsert({id:lockId,value:'"done"',updated_at:new Date().toISOString()});
+                console.log('[DB] Seeded Supabase from localStorage (fallback)');
+              }catch(seedErr){console.error('[DB] Fallback seed failed:',seedErr)}
             }
           }
         }
@@ -5488,6 +5512,8 @@ export default function App(){
       let _rtTimer=null;
       const _jsonEq=(a,b)=>{try{return JSON.stringify(a)===JSON.stringify(b)}catch{return false}};
       const reloadAll=async()=>{const d=await _dbLoad();if(!d||!d.hasData)return;
+        // Update snapshot before state — auto-save effects will diff against this
+        _dbSnap.current={ests:d.estimates,sos:d.sales_orders,invs:d.invoices,msgs:d.messages,cust:d.customers,prod:d.products,vend:d.vendors,team:d.team,omg:d.omg_stores,issues:d.issues};
         // Use change detection to avoid triggering save effects needlessly
         if(d.team.length)setREPS(prev=>_jsonEq(prev,d.team)?prev:d.team);
         setEsts(prev=>_jsonEq(prev,d.estimates)?prev:d.estimates);
@@ -5527,6 +5553,8 @@ export default function App(){
         if(!d||!d.hasData)return;
         // If initial load failed but polling recovered, re-enable Supabase writes
         if(!_dbLoadSuccess.current){_dbLoadSuccess.current=true;setDbError(null);console.log('[DB] Poll recovered — Supabase writes re-enabled')}
+        // Update snapshot before state — auto-save effects will diff against this
+        _dbSnap.current={ests:d.estimates,sos:d.sales_orders,invs:d.invoices,msgs:d.messages,cust:d.customers,prod:d.products,vend:d.vendors,team:d.team,omg:d.omg_stores,issues:d.issues};
         // Use updated_at (or full JSON hash) to detect content changes, not just ID changes
         const changed=(prev,next)=>{if(prev.length!==next.length)return true;const pIds=prev.map(e=>e.id+':'+(e.updated_at||'')).sort().join(',');const nIds=next.map(e=>e.id+':'+(e.updated_at||'')).sort().join(',');return pIds!==nIds};
         setEsts(prev=>changed(prev,d.estimates)?d.estimates:prev);
@@ -5550,16 +5578,18 @@ export default function App(){
 
   // Auto-save to localStorage + Supabase (normalized, only after initial load is complete)
   // IMPORTANT: Supabase writes are gated behind _dbLoadSuccess to prevent demo/stale data from overwriting real cloud data
-  React.useEffect(()=>{try{localStorage.setItem('nsa_reps',JSON.stringify(REPS))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current)_dbSave('team_members',REPS)},[REPS]);
-  React.useEffect(()=>{try{localStorage.setItem('nsa_cust',JSON.stringify(cust))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current)cust.forEach(c=>_dbSaveCustomer(c))},[cust]);
-  React.useEffect(()=>{try{localStorage.setItem('nsa_vend',JSON.stringify(vend))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current)_dbSave('vendors',vend)},[vend]);
-  React.useEffect(()=>{try{localStorage.setItem('nsa_prod',JSON.stringify(prod))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current)prod.forEach(p=>_dbSaveProduct(p))},[prod]);
-  React.useEffect(()=>{try{localStorage.setItem('nsa_ests',JSON.stringify(ests))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current)ests.forEach(e=>_dbSaveEstimate(e))},[ests]);
-  React.useEffect(()=>{try{localStorage.setItem('nsa_sos',JSON.stringify(sos))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current)sos.forEach(s=>_dbSaveSO(s))},[sos]);
-  React.useEffect(()=>{try{localStorage.setItem('nsa_invs',JSON.stringify(invs))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current)invs.forEach(i=>_dbSaveInvoice(i))},[invs]);
-  React.useEffect(()=>{try{localStorage.setItem('nsa_msgs',JSON.stringify(msgs))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current)msgs.forEach(m=>_dbSaveMessage(m))},[msgs]);
-  React.useEffect(()=>{if(_initialLoadDone.current&&_dbLoadSuccess.current){omgStores.forEach(s=>{const{products,...rest}=s;_dbSave('omg_stores',[rest])})}},[omgStores]);
-  React.useEffect(()=>{try{localStorage.setItem('nsa_issues',JSON.stringify(issues))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current)_dbSave('issues',issues)},[issues]);
+  // Uses _dbSnap to diff against last DB state — only saves records that actually changed (prevents cross-browser feedback loops)
+  const _diffSave=(arr,snapKey,saveFn)=>{if(!_initialLoadDone.current||!_dbLoadSuccess.current)return;const snap=_dbSnap.current[snapKey]||[];arr.forEach(item=>{const old=snap.find(p=>p.id===item.id);if(!old||JSON.stringify(old)!==JSON.stringify(item))saveFn(item)});_dbSnap.current[snapKey]=arr};
+  React.useEffect(()=>{try{localStorage.setItem('nsa_reps',JSON.stringify(REPS))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.team||[];const changed=REPS.filter(r=>{const old=snap.find(p=>p.id===r.id);return!old||JSON.stringify(old)!==JSON.stringify(r)});if(changed.length)_dbSave('team_members',changed);_dbSnap.current.team=REPS}},[REPS]);
+  React.useEffect(()=>{try{localStorage.setItem('nsa_cust',JSON.stringify(cust))}catch{};_diffSave(cust,'cust',c=>_dbSaveCustomer(c))},[cust]);
+  React.useEffect(()=>{try{localStorage.setItem('nsa_vend',JSON.stringify(vend))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.vend||[];const changed=vend.filter(v=>{const old=snap.find(p=>p.id===v.id);return!old||JSON.stringify(old)!==JSON.stringify(v)});if(changed.length)_dbSave('vendors',changed);_dbSnap.current.vend=vend}},[vend]);
+  React.useEffect(()=>{try{localStorage.setItem('nsa_prod',JSON.stringify(prod))}catch{};_diffSave(prod,'prod',p=>_dbSaveProduct(p))},[prod]);
+  React.useEffect(()=>{try{localStorage.setItem('nsa_ests',JSON.stringify(ests))}catch{};_diffSave(ests,'ests',e=>_dbSaveEstimate(e))},[ests]);
+  React.useEffect(()=>{try{localStorage.setItem('nsa_sos',JSON.stringify(sos))}catch{};_diffSave(sos,'sos',s=>_dbSaveSO(s))},[sos]);
+  React.useEffect(()=>{try{localStorage.setItem('nsa_invs',JSON.stringify(invs))}catch{};_diffSave(invs,'invs',i=>_dbSaveInvoice(i))},[invs]);
+  React.useEffect(()=>{try{localStorage.setItem('nsa_msgs',JSON.stringify(msgs))}catch{};_diffSave(msgs,'msgs',m=>_dbSaveMessage(m))},[msgs]);
+  React.useEffect(()=>{if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.omg||[];omgStores.forEach(s=>{const old=snap.find(p=>p.id===s.id);if(!old||JSON.stringify(old)!==JSON.stringify(s)){const{products,...rest}=s;_dbSave('omg_stores',[rest])}});_dbSnap.current.omg=omgStores}},[omgStores]);
+  React.useEffect(()=>{try{localStorage.setItem('nsa_issues',JSON.stringify(issues))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.issues||[];const changed=issues.filter(i=>{const old=snap.find(p=>p.id===i.id);return!old||JSON.stringify(old)!==JSON.stringify(i)});if(changed.length)_dbSave('issues',changed);_dbSnap.current.issues=issues}},[issues]);
   // Batch POs, submitted batches, changelog, SO history — sync to localStorage + Supabase app_state table
   const _saveAppState=(key,val)=>{try{localStorage.setItem('nsa_'+key,JSON.stringify(val))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current)_dbSave('app_state',[{id:key,value:JSON.stringify(val),updated_at:new Date().toISOString()}])};
   React.useEffect(()=>{_saveAppState('batch_pos',batchPOs)},[batchPOs]);
