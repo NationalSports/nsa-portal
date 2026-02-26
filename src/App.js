@@ -9612,14 +9612,14 @@ export default function App(){
     };
 
     // ─── Artist-only jobs (active, not complete) ───
-    const artistJobs=filtered.filter(j=>j.art_status!=='art_complete'&&j.art_status!=='needs_art');
+    const getArtFileStatus=(j)=>{const s=j.artFile?.status;return s==='uploaded'?'needs_approval':s||'waiting_for_art'};
+    const artistJobs=filtered.filter(j=>j.art_status!=='art_complete');
     const artistCols=[
-      {id:'art_requested',label:'Pending',color:'#be185d',bg:'#fce7f3',desc:'Needs artist attention'},
-      {id:'art_in_progress',label:'In Progress',color:'#1e40af',bg:'#dbeafe',desc:'Artist working on it'},
-      {id:'waiting_approval',label:'Sent to Rep',color:'#92400e',bg:'#fef3c7',desc:'Waiting for rep/customer approval'},
-      {id:'production_files_needed',label:'Prod Files',color:'#854d0e',bg:'#fef9c3',desc:'Upload final production files'},
+      {id:'waiting_for_art',label:'Waiting for Art',color:'#dc2626',bg:'#fef2f2',desc:'Needs artist attention'},
+      {id:'needs_approval',label:'Needs Approval',color:'#92400e',bg:'#fef3c7',desc:'Waiting for rep/customer approval'},
+      {id:'approved',label:'Approved / Needs Files',color:'#166534',bg:'#dcfce7',desc:'Approved — upload production files'},
     ];
-    const artistCounts={};artistCols.forEach(c=>{artistCounts[c.id]=artistJobs.filter(j=>j.art_status===c.id).length});
+    const artistCounts={};artistCols.forEach(c=>{artistCounts[c.id]=artistJobs.filter(j=>getArtFileStatus(j)===c.id).length});
 
     // ─── Rep view data — all jobs grouped by rep ───
     const repJobs=filtered.filter(j=>artDashView==='rep'?(cu.role==='admin'||j.repId===cu.id||artFilter!=='all'):true);
@@ -9666,9 +9666,9 @@ export default function App(){
             <div style={{fontSize:9,color:'#94a3b8'}}>{j.rep} · {j.alpha||j.soMemo}</div>
             <button className="btn btn-sm" style={{fontSize:10,padding:'4px 10px',background:'linear-gradient(135deg,#1e40af,#7c3aed)',color:'white',border:'none',width:'100%',marginTop:4,fontWeight:600,borderRadius:6,display:'flex',alignItems:'center',justifyContent:'center',gap:4}} onClick={()=>{setArtMockupModal(j);setArtMockupRevision('')}}>🖼️ Mockup</button>
             <div style={{display:'flex',gap:3,marginTop:6,flexWrap:'wrap'}}>
-              {col?.id==='art_requested'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#1e40af',color:'white',border:'none'}} onClick={()=>moveArtStatus(j,'art_in_progress')}>Start Working</button>}
-              {col?.id==='art_in_progress'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#92400e',color:'white',border:'none'}} onClick={()=>moveArtStatus(j,'waiting_approval')}>Send to Rep</button>}
-              {col?.id==='production_files_needed'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#166534',color:'white',border:'none'}} onClick={()=>{
+              {col?.id==='waiting_for_art'&&j.art_status==='art_requested'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#1e40af',color:'white',border:'none'}} onClick={()=>moveArtStatus(j,'art_in_progress')}>Start Working</button>}
+              {col?.id==='waiting_for_art'&&j.art_status==='art_in_progress'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#92400e',color:'white',border:'none'}} onClick={()=>moveArtStatus(j,'waiting_approval')}>Send for Approval</button>}
+              {col?.id==='approved'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#166534',color:'white',border:'none'}} onClick={()=>{
                 const so=sos.find(s=>s.id===j.soId);if(!so){nf('SO not found','error');return}
                 const afIdx=safeArt(so).findIndex(f=>f.id===j.art_file_id);
                 if(afIdx>=0&&(safeArt(so)[afIdx].prod_files||[]).length===0){
@@ -9732,9 +9732,9 @@ export default function App(){
           {artistCols.map(c=><div key={c.id} className="stat-card"><div className="stat-label">{c.label}</div><div className="stat-value" style={{color:c.color}}>{artistCounts[c.id]}</div></div>)}
           <div className="stat-card"><div className="stat-label">Active</div><div className="stat-value">{artistJobs.length}</div></div>
         </div>
-        <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:10,alignItems:'flex-start'}}>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:10,alignItems:'flex-start'}}>
           {artistCols.map(col=>{
-            const colJobs=artistJobs.filter(j=>j.art_status===col.id).sort((a,b)=>{
+            const colJobs=artistJobs.filter(j=>getArtFileStatus(j)===col.id).sort((a,b)=>{
               if(a.daysOut!=null&&b.daysOut!=null)return a.daysOut-b.daysOut;
               if(a.daysOut!=null)return -1;if(b.daysOut!=null)return 1;return 0});
             return<div key={col.id} style={{background:col.bg,borderRadius:10,padding:8,minHeight:200}}>
@@ -9752,41 +9752,40 @@ export default function App(){
       {/* ═══ REP ART TRACKER ═══ */}
       {artDashView==='rep'&&(()=>{
         const repFiltered=artDashView==='rep'&&artFilter!=='all'?repJobs.filter(j=>j.repId===artFilter):repJobs;
-        const waiting=repFiltered.filter(j=>j.art_status==='waiting_approval');
-        const inProg=repFiltered.filter(j=>j.art_status==='art_requested'||j.art_status==='art_in_progress');
-        const prodFiles=repFiltered.filter(j=>j.art_status==='production_files_needed');
+        const waitingForArt=repFiltered.filter(j=>getArtFileStatus(j)==='waiting_for_art');
+        const waiting=repFiltered.filter(j=>getArtFileStatus(j)==='needs_approval');
+        const prodFiles=repFiltered.filter(j=>getArtFileStatus(j)==='approved');
         const done=repFiltered.filter(j=>j.art_status==='art_complete');
-        const needsArt=repFiltered.filter(j=>j.art_status==='needs_art');
         return<>
           <div className="stats-row">
-            <div className="stat-card" style={{borderLeft:'3px solid #f59e0b'}}><div className="stat-label">Needs Your Approval</div><div className="stat-value" style={{color:'#d97706'}}>{waiting.length}</div></div>
-            <div className="stat-card" style={{borderLeft:'3px solid #2563eb'}}><div className="stat-label">In Progress</div><div className="stat-value" style={{color:'#2563eb'}}>{inProg.length}</div></div>
-            <div className="stat-card" style={{borderLeft:'3px solid #854d0e'}}><div className="stat-label">Prod Files</div><div className="stat-value" style={{color:'#854d0e'}}>{prodFiles.length}</div></div>
-            <div className="stat-card" style={{borderLeft:'3px solid #166534'}}><div className="stat-label">Complete</div><div className="stat-value" style={{color:'#166534'}}>{done.length}</div></div>
+            <div className="stat-card" style={{borderLeft:'3px solid #dc2626'}}><div className="stat-label">Waiting for Art</div><div className="stat-value" style={{color:'#dc2626'}}>{waitingForArt.length}</div></div>
+            <div className="stat-card" style={{borderLeft:'3px solid #f59e0b'}}><div className="stat-label">Needs Approval</div><div className="stat-value" style={{color:'#d97706'}}>{waiting.length}</div></div>
+            <div className="stat-card" style={{borderLeft:'3px solid #166534'}}><div className="stat-label">Approved / Needs Files</div><div className="stat-value" style={{color:'#166534'}}>{prodFiles.length}</div></div>
+            <div className="stat-card" style={{borderLeft:'3px solid #6d28d9'}}><div className="stat-label">Complete</div><div className="stat-value" style={{color:'#6d28d9'}}>{done.length}</div></div>
           </div>
 
-          {/* Needs Approval — highlight section */}
+          {/* Waiting for Art */}
+          {waitingForArt.length>0&&<div style={{marginBottom:16}}>
+            <div style={{fontSize:14,fontWeight:800,color:'#dc2626',marginBottom:8,display:'flex',alignItems:'center',gap:6}}>
+              <span style={{width:10,height:10,borderRadius:5,background:'#dc2626'}}/>Waiting for Art ({waitingForArt.length})</div>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))',gap:8}}>
+              {waitingForArt.map(j=>renderArtCard(j,'rep',null))}
+            </div>
+          </div>}
+
+          {/* Needs Approval */}
           {waiting.length>0&&<div style={{marginBottom:16}}>
             <div style={{fontSize:14,fontWeight:800,color:'#d97706',marginBottom:8,display:'flex',alignItems:'center',gap:6}}>
-              <span style={{width:10,height:10,borderRadius:5,background:'#f59e0b'}}/>Needs Your Approval ({waiting.length})</div>
+              <span style={{width:10,height:10,borderRadius:5,background:'#f59e0b'}}/>Needs Approval ({waiting.length})</div>
             <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))',gap:8}}>
               {waiting.map(j=>renderArtCard(j,'rep',null))}
             </div>
           </div>}
 
-          {/* In Progress — what artists are working on */}
-          {inProg.length>0&&<div style={{marginBottom:16}}>
-            <div style={{fontSize:14,fontWeight:800,color:'#2563eb',marginBottom:8,display:'flex',alignItems:'center',gap:6}}>
-              <span style={{width:10,height:10,borderRadius:5,background:'#2563eb'}}/>In Progress ({inProg.length})</div>
-            <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))',gap:8}}>
-              {inProg.map(j=>renderArtCard(j,'rep',null))}
-            </div>
-          </div>}
-
-          {/* Awaiting Prod Files */}
+          {/* Approved / Needs Files */}
           {prodFiles.length>0&&<div style={{marginBottom:16}}>
-            <div style={{fontSize:14,fontWeight:800,color:'#854d0e',marginBottom:8,display:'flex',alignItems:'center',gap:6}}>
-              <span style={{width:10,height:10,borderRadius:5,background:'#854d0e'}}/>Finalizing Prod Files ({prodFiles.length})</div>
+            <div style={{fontSize:14,fontWeight:800,color:'#166534',marginBottom:8,display:'flex',alignItems:'center',gap:6}}>
+              <span style={{width:10,height:10,borderRadius:5,background:'#166534'}}/>Approved / Needs Files ({prodFiles.length})</div>
             <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))',gap:8}}>
               {prodFiles.map(j=>renderArtCard(j,'rep',null))}
             </div>
@@ -9794,20 +9793,11 @@ export default function App(){
 
           {/* Completed */}
           {done.length>0&&<div style={{marginBottom:16}}>
-            <div style={{fontSize:14,fontWeight:800,color:'#166534',marginBottom:8,display:'flex',alignItems:'center',gap:6}}>
-              <span style={{width:10,height:10,borderRadius:5,background:'#166534'}}/>Completed ({done.length})</div>
+            <div style={{fontSize:14,fontWeight:800,color:'#6d28d9',marginBottom:8,display:'flex',alignItems:'center',gap:6}}>
+              <span style={{width:10,height:10,borderRadius:5,background:'#6d28d9'}}/>Completed ({done.length})</div>
             <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))',gap:8}}>
               {done.slice(0,8).map(j=>renderArtCard(j,'rep',null))}
               {done.length>8&&<div style={{padding:12,textAlign:'center',color:'#94a3b8',fontSize:11}}>+{done.length-8} more completed</div>}
-            </div>
-          </div>}
-
-          {/* Needs Art (not yet requested) */}
-          {needsArt.length>0&&<div style={{marginBottom:16}}>
-            <div style={{fontSize:14,fontWeight:800,color:'#dc2626',marginBottom:8,display:'flex',alignItems:'center',gap:6}}>
-              <span style={{width:10,height:10,borderRadius:5,background:'#dc2626'}}/>Needs Art ({needsArt.length})</div>
-            <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))',gap:8}}>
-              {needsArt.map(j=>renderArtCard(j,'rep',null))}
             </div>
           </div>}
         </>})()}
