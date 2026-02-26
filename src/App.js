@@ -5443,12 +5443,12 @@ export default function App(){
     const channels=[];
     if(supabase){
       const reloadAll=async()=>{const d=await _dbLoad();if(!d||!d.hasData)return;
-        setEsts(d.estimates);setSOs(d.sales_orders);
+        if(d.team.length)setREPS(d.team);setEsts(d.estimates);setSOs(d.sales_orders);
         setInvs(d.invoices);if(d.messages.length)setMsgs(d.messages);
         setCust(d.customers);if(d.products.length)setProd(d.products);
         if(d.vendors.length)setVend(d.vendors);if(d.omg_stores.length)setOmgStores(d.omg_stores);
         if(d.issues?.length)setIssues(d.issues)};
-      ['estimates','estimate_items','sales_orders','so_items','invoices','invoice_items','invoice_payments','messages','customers','customer_contacts','products','product_inventory','issues'].forEach(table=>{
+      ['estimates','estimate_items','estimate_item_decorations','estimate_art_files','sales_orders','so_items','so_item_decorations','so_item_pick_lines','so_item_po_lines','so_art_files','so_jobs','so_firm_dates','invoices','invoice_items','invoice_payments','messages','message_reads','customers','customer_contacts','products','product_inventory','vendors','team_members','omg_stores','omg_store_products','issues','app_state'].forEach(table=>{
         const ch=supabase.channel('realtime_'+table).on('postgres_changes',{event:'*',schema:'public',table},()=>{reloadAll()}).subscribe();
         channels.push(ch);
       });
