@@ -20,38 +20,39 @@ catch(e) { console.warn('[Supabase] Init failed:', e.message); }
 
 const _dbLoad = async () => {
   if (!supabase) return null;
+  if (_dbSaving) { console.log('[DB] Skipping load — save in progress'); return null; }
   try {
     // Load all tables in parallel
     const [rTeam,rCust,rContacts,rVend,rProd,rProdInv,rEst,rEstArt,rEstItems,rEstDecos,
       rSO,rSOArt,rSOFirm,rSOItems,rSODecos,rSOPicks,rSOPOs,rSOJobs,
       rInv,rInvPay,rInvItems,rMsg,rMsgReads,rOMG,rOMGProd,rIssues,rAppState] = await Promise.all([
-      supabase.from('team_members').select('*').order('name'),
-      supabase.from('customers').select('*').order('name'),
-      supabase.from('customer_contacts').select('*'),
-      supabase.from('vendors').select('*').order('name'),
-      supabase.from('products').select('*').order('name'),
-      supabase.from('product_inventory').select('*'),
-      supabase.from('estimates').select('*').order('id'),
-      supabase.from('estimate_art_files').select('*'),
-      supabase.from('estimate_items').select('*').order('item_index'),
-      supabase.from('estimate_item_decorations').select('*').order('deco_index'),
-      supabase.from('sales_orders').select('*').order('id'),
-      supabase.from('so_art_files').select('*'),
-      supabase.from('so_firm_dates').select('*'),
-      supabase.from('so_items').select('*').order('item_index'),
-      supabase.from('so_item_decorations').select('*').order('deco_index'),
-      supabase.from('so_item_pick_lines').select('*'),
-      supabase.from('so_item_po_lines').select('*'),
-      supabase.from('so_jobs').select('*'),
-      supabase.from('invoices').select('*').order('id'),
-      supabase.from('invoice_payments').select('*'),
-      supabase.from('invoice_items').select('*'),
-      supabase.from('messages').select('*').order('id'),
-      supabase.from('message_reads').select('*'),
-      supabase.from('omg_stores').select('*').order('id'),
-      supabase.from('omg_store_products').select('*'),
-      supabase.from('issues').select('*'),
-      supabase.from('app_state').select('*'),
+      supabase.from('team_members').select('*').order('name').limit(10000),
+      supabase.from('customers').select('*').order('name').limit(10000),
+      supabase.from('customer_contacts').select('*').limit(10000),
+      supabase.from('vendors').select('*').order('name').limit(10000),
+      supabase.from('products').select('*').order('name').limit(10000),
+      supabase.from('product_inventory').select('*').limit(10000),
+      supabase.from('estimates').select('*').order('id').limit(10000),
+      supabase.from('estimate_art_files').select('*').limit(10000),
+      supabase.from('estimate_items').select('*').order('item_index').limit(10000),
+      supabase.from('estimate_item_decorations').select('*').order('deco_index').limit(10000),
+      supabase.from('sales_orders').select('*').order('id').limit(10000),
+      supabase.from('so_art_files').select('*').limit(10000),
+      supabase.from('so_firm_dates').select('*').limit(10000),
+      supabase.from('so_items').select('*').order('item_index').limit(10000),
+      supabase.from('so_item_decorations').select('*').order('deco_index').limit(10000),
+      supabase.from('so_item_pick_lines').select('*').limit(10000),
+      supabase.from('so_item_po_lines').select('*').limit(10000),
+      supabase.from('so_jobs').select('*').limit(10000),
+      supabase.from('invoices').select('*').order('id').limit(10000),
+      supabase.from('invoice_payments').select('*').limit(10000),
+      supabase.from('invoice_items').select('*').limit(10000),
+      supabase.from('messages').select('*').order('id').limit(10000),
+      supabase.from('message_reads').select('*').limit(10000),
+      supabase.from('omg_stores').select('*').order('id').limit(10000),
+      supabase.from('omg_store_products').select('*').limit(10000),
+      supabase.from('issues').select('*').limit(10000),
+      supabase.from('app_state').select('*').limit(10000),
     ]);
     // Check for critical errors on core tables only (child tables may not exist yet — 404 is OK)
     const coreResults=[{n:'team_members',r:rTeam},{n:'customers',r:rCust},{n:'vendors',r:rVend},{n:'products',r:rProd},{n:'estimates',r:rEst},{n:'sales_orders',r:rSO},{n:'invoices',r:rInv},{n:'messages',r:rMsg},{n:'omg_stores',r:rOMG}];
@@ -147,7 +148,7 @@ const _dbSeed = async (d) => {
 // ─── Normalized Save Helpers ───
 const _dbSaveEstimate = async (est) => {
   if(!supabase)return;
-  try{
+  return _dbSavingGuard(async()=>{try{
     const{items,art_files,...estRow}=est;
     await supabase.from('estimates').upsert(estRow,{onConflict:'id'});
     // Delete old children, re-insert
@@ -163,11 +164,11 @@ const _dbSaveEstimate = async (est) => {
         if(decoErr)console.error('[DB] estimate_item_decorations insert failed:',decoErr.message,decoErr.details);
       }
     }
-  }catch(e){console.error('[DB] save estimate:',e)}
+  }catch(e){console.error('[DB] save estimate:',e)}});
 };
 const _dbSaveSO = async (so) => {
   if(!supabase)return;
-  try{
+  return _dbSavingGuard(async()=>{try{
     const{items,art_files,firm_dates,jobs,...soRow}=so;
     await supabase.from('sales_orders').upsert(soRow,{onConflict:'id'});
     // Delete old children — must delete grandchildren (decorations/picks/POs) BEFORE so_items due to FK constraints
@@ -201,13 +202,13 @@ const _dbSaveSO = async (so) => {
         if(pickErr)console.error('[DB] so_item_pick_lines insert failed:',pickErr.message,pickErr.details);
       }
       if(po_lines?.length){
-        const poRows=po_lines.map(po=>{const{po_id,vendor,received,cancelled,shipments,status,created_at,expected_date,memo,...sizes}=po;
-          return{so_item_id:inserted.id,po_id,vendor,received:received||{},cancelled:cancelled||{},shipments:shipments||[],status,created_at,expected_date,memo,sizes}});
+        const poRows=po_lines.map(po=>{const{po_id,vendor,received,cancelled,shipments,status,created_at,expected_date,memo,po_type,deco_vendor,deco_type,unit_cost,...sizes}=po;
+          return{so_item_id:inserted.id,po_id,vendor,received:received||{},cancelled:cancelled||{},shipments:shipments||[],status,created_at,expected_date,memo,sizes:{...sizes,po_type:po_type||undefined,deco_vendor:deco_vendor||undefined,deco_type:deco_type||undefined,unit_cost:unit_cost||undefined}}});
         const{error:poErr}=await supabase.from('so_item_po_lines').insert(poRows);
         if(poErr)console.error('[DB] so_item_po_lines insert failed:',poErr.message,poErr.details);
       }
     }
-  }catch(e){console.error('[DB] save SO:',e)}
+  }catch(e){console.error('[DB] save SO:',e)}});
 };
 const _dbSaveInvoice = async (inv) => {
   if(!supabase)return;
@@ -286,6 +287,9 @@ const _dbDeleteInvoice = async (id) => {
     await supabase.from('invoices').delete().eq('id',id);
   }catch(e){console.error('[DB] delete invoice:',e)}
 };
+// Save-in-progress guard — prevents poll/realtime from loading partial data during delete-and-reinsert
+let _dbSaving=false;
+const _dbSavingGuard=async(fn)=>{_dbSaving=true;try{await fn()}finally{_dbSaving=false}};
 // Legacy compat — keep old _dbSave for team_members and other simple tables
 const _dbSave = (table, data) => { if(supabase && data) supabase.from(table).upsert(Array.isArray(data)?data:[data], {onConflict:'id'}).then(r=>{if(r.error)console.error('[DB] save '+table+':', r.error.message)}) };
 // ─── Cloudinary Config ───
