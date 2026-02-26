@@ -7078,9 +7078,13 @@ export default function App(){
   const[prodView,setProdView]=useState('board');const[prodFilter,setProdFilter]=useState('all');const[expandedJob,setExpandedJob]=useState(null);
   const[prodSort,setProdSort]=useState({f:'expected',d:'asc'});const[prodStatF,setProdStatF]=useState('active');const[prodDecoF,setProdDecoF]=useState('all');
   const[assignModal,setAssignModal]=useState(null);// {job, soId, targetStatus}
-  const[jobTimeLogs,setJobTimeLogs]=useState(()=>loadState('job_time_logs',[]));// [{jobId,soId,person,clockIn,clockOut,minutes}]
+  const[jobTimeLogs,setJobTimeLogs]=useState(()=>loadState('job_time_logs',[]));// [{jobId,soId,person,clockIn,clockOut,minutes,dept:'production'}]
   React.useEffect(()=>{_saveAppState('job_time_logs',jobTimeLogs)},[jobTimeLogs]);
   const[activeTimers,setActiveTimers]=useState({});// {jobId:{person,clockIn,soId}}
+  // Art time tracking — separate logs for artist work
+  const[artTimeLogs,setArtTimeLogs]=useState(()=>loadState('art_time_logs',[]));// [{jobId,soId,person,clockIn,clockOut,minutes,artName,customer}]
+  React.useEffect(()=>{_saveAppState('art_time_logs',artTimeLogs)},[artTimeLogs]);
+  const[activeArtTimers,setActiveArtTimers]=useState({});// {soId|jobId:{person,clockIn,soId,artName,customer}}
   const[assignTo,setAssignTo]=useState({machine:'',person:'',shipMethod:''});
   const moveJobStatus=(j,newStatus)=>{
     // If moving to staging (In Line), prompt for assignment
@@ -8419,7 +8423,7 @@ export default function App(){
   // REPORTS & ANALYTICS PAGE
   const[rptTab,setRptTab]=useState('overview');
   const[rptRep,setRptRep]=useState('all');
-  const[rptWidgets,setRptWidgets]=useState({pipeline:true,repLeaderboard:true,custHealth:true,productMix:true,convFunnel:true,margins:true,seasonality:true,retention:true,omgStores:true,atRisk:true,lowMargin:true});
+  const[rptWidgets,setRptWidgets]=useState({pipeline:true,repLeaderboard:true,custHealth:true,productMix:true,convFunnel:true,margins:true,seasonality:true,retention:true,omgStores:true,atRisk:true,lowMargin:true,prodThroughput:true,artTime:true,decoTime:true,laborSummary:true});
   const[commOverrides,setCommOverrides]=useState({});// {invoiceId: true} = admin approved full commission on late invoice
   const[commMonth,setCommMonth]=useState(()=>{const d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')});
   const[commTab,setCommTab]=useState('statement');// statement, pipeline, ytd, byCustomer
@@ -8494,7 +8498,7 @@ export default function App(){
       {/* Report controls */}
       <div style={{display:'flex',gap:8,marginBottom:12,alignItems:'center',flexWrap:'wrap'}}>
         <div style={{display:'flex',gap:4}}>
-          {[['overview','📊 Overview'],['pipeline','💰 Pipeline'],['customers','👥 Customers'],['products','📦 Products'],['reps','🏆 Reps']].map(([v,l])=>
+          {[['overview','📊 Overview'],['pipeline','💰 Pipeline'],['customers','👥 Customers'],['products','📦 Products'],['reps','🏆 Reps'],['production','🏭 Production'],['time','⏱️ Time & Labor']].map(([v,l])=>
             <button key={v} className={`btn btn-sm ${rptTab===v?'btn-primary':'btn-secondary'}`} onClick={()=>setRptTab(v)}>{l}</button>)}
         </div>
         <select className="form-select" style={{width:140,fontSize:11}} value={rptRep} onChange={e=>setRptRep(e.target.value)}>
@@ -8768,11 +8772,173 @@ export default function App(){
           </div>})()}
       </div>}
 
+      {/* ═══ PRODUCTION TAB ═══ */}
+      {(rptTab==='production')&&<>
+        {/* Production Throughput */}
+        <div className="card" style={{marginBottom:12}}>
+          <WH id="prodThroughput" title="Production Throughput" icon="🏭"/>
+          {rptWidgets.prodThroughput&&(()=>{
+            const allJobs=[];sos.forEach(so=>{const c=cust.find(x=>x.id===so.customer_id);
+              buildJobs(so).forEach(j=>allJobs.push({...j,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',rep:REPS.find(r=>r.id===so.created_by)?.name||'—'}))});
+            const hold=allJobs.filter(j=>j.prod_status==='hold').length;const staging=allJobs.filter(j=>j.prod_status==='staging').length;
+            const inProcess=allJobs.filter(j=>j.prod_status==='in_process').length;const completed=allJobs.filter(j=>j.prod_status==='completed').length;
+            const shipped=allJobs.filter(j=>j.prod_status==='shipped').length;
+            const totalUnits=allJobs.reduce((a,j)=>a+j.total_units,0);const fulfilledUnits=allJobs.reduce((a,j)=>a+j.fulfilled_units,0);
+            const byDeco={};allJobs.forEach(j=>{const dt=j.deco_type||'unknown';if(!byDeco[dt])byDeco[dt]={count:0,units:0,completed:0};byDeco[dt].count++;byDeco[dt].units+=j.total_units;if(j.prod_status==='completed'||j.prod_status==='shipped')byDeco[dt].completed++});
+            const byMachine={};allJobs.filter(j=>j.assigned_machine).forEach(j=>{const m=j.assigned_machine;if(!byMachine[m])byMachine[m]={count:0,units:0};byMachine[m].count++;byMachine[m].units+=j.total_units});
+            return<div className="card-body">
+              <div className="stats-row" style={{marginBottom:12}}>
+                <div className="stat-card"><div className="stat-label">On Hold</div><div className="stat-value" style={{color:'#94a3b8'}}>{hold}</div></div>
+                <div className="stat-card"><div className="stat-label">Staging</div><div className="stat-value" style={{color:'#d97706'}}>{staging}</div></div>
+                <div className="stat-card"><div className="stat-label">In Process</div><div className="stat-value" style={{color:'#2563eb'}}>{inProcess}</div></div>
+                <div className="stat-card"><div className="stat-label">Completed</div><div className="stat-value" style={{color:'#22c55e'}}>{completed}</div></div>
+                <div className="stat-card"><div className="stat-label">Shipped</div><div className="stat-value" style={{color:'#166534'}}>{shipped}</div></div>
+              </div>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
+                <div>
+                  <div style={{fontSize:12,fontWeight:700,color:'#1e293b',marginBottom:6}}>By Decoration Type</div>
+                  <table style={{fontSize:12}}><thead><tr><th>Type</th><th style={{textAlign:'center'}}>Jobs</th><th style={{textAlign:'center'}}>Units</th><th style={{textAlign:'center'}}>Done</th></tr></thead>
+                  <tbody>{Object.entries(byDeco).sort((a,b)=>b[1].count-a[1].count).map(([dt,d])=>
+                    <tr key={dt}><td style={{fontWeight:600}}>{dt.replace(/_/g,' ')}</td><td style={{textAlign:'center'}}>{d.count}</td><td style={{textAlign:'center'}}>{d.units}</td><td style={{textAlign:'center',color:'#22c55e',fontWeight:600}}>{d.completed}</td></tr>
+                  )}</tbody></table>
+                </div>
+                <div>
+                  <div style={{fontSize:12,fontWeight:700,color:'#1e293b',marginBottom:6}}>By Machine</div>
+                  {Object.keys(byMachine).length===0?<div style={{fontSize:11,color:'#94a3b8'}}>No machine assignments yet</div>:
+                  <table style={{fontSize:12}}><thead><tr><th>Machine</th><th style={{textAlign:'center'}}>Jobs</th><th style={{textAlign:'center'}}>Units</th></tr></thead>
+                  <tbody>{Object.entries(byMachine).sort((a,b)=>b[1].count-a[1].count).map(([m,d])=>
+                    <tr key={m}><td style={{fontWeight:600}}>{MACHINES.find(mc=>mc.id===m)?.name||m}</td><td style={{textAlign:'center'}}>{d.count}</td><td style={{textAlign:'center'}}>{d.units}</td></tr>
+                  )}</tbody></table>}
+                </div>
+              </div>
+              <div style={{marginTop:12,padding:8,background:'#f8fafc',borderRadius:6,display:'flex',gap:16,fontSize:12}}>
+                <span>Total Jobs: <strong>{allJobs.length}</strong></span>
+                <span>Total Units: <strong>{totalUnits.toLocaleString()}</strong></span>
+                <span>Fulfilled: <strong style={{color:'#22c55e'}}>{fulfilledUnits.toLocaleString()}</strong></span>
+                <span>Fulfillment Rate: <strong style={{color:totalUnits>0&&fulfilledUnits/totalUnits>=0.5?'#22c55e':'#d97706'}}>{totalUnits>0?Math.round(fulfilledUnits/totalUnits*100):0}%</strong></span>
+              </div>
+            </div>})()}
+        </div>
+      </>}
+
+      {/* ═══ TIME & LABOR TAB ═══ */}
+      {(rptTab==='time')&&<>
+        {/* Labor Rates Key */}
+        <div className="card" style={{marginBottom:12,borderLeft:'3px solid #7c3aed'}}>
+          <div style={{padding:'10px 14px',display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
+            <span style={{fontSize:12,fontWeight:700,color:'#6d28d9'}}>Hourly Rates:</span>
+            {(()=>{const rates=laborRates;const people=[...new Set([...artTimeLogs.map(l=>l.person),...jobTimeLogs.map(l=>l.person)])];
+              return people.length>0?people.map(p=><span key={p} style={{fontSize:11,padding:'2px 8px',background:'#f5f3ff',borderRadius:4,border:'1px solid #ddd6fe'}}>
+                <strong>{p}</strong>: ${(rates[p]||0).toFixed(2)}/hr
+              </span>):<span style={{fontSize:11,color:'#94a3b8'}}>Set rates in Settings → Labor Rates</span>})()}
+          </div>
+        </div>
+
+        {/* Art Time Summary */}
+        <div className="card" style={{marginBottom:12}}>
+          <WH id="artTime" title="Art Department Time" icon="🎨"/>
+          {rptWidgets.artTime&&(()=>{
+            const rates=laborRates;
+            const byPerson={};artTimeLogs.forEach(l=>{if(!byPerson[l.person])byPerson[l.person]={minutes:0,jobs:0,customers:new Set()};byPerson[l.person].minutes+=l.minutes;byPerson[l.person].jobs++;byPerson[l.person].customers.add(l.customer)});
+            const byJob={};artTimeLogs.forEach(l=>{const key=l.soId+'|'+l.artName;if(!byJob[key])byJob[key]={artName:l.artName,customer:l.customer,soId:l.soId,minutes:0,entries:0,people:new Set()};byJob[key].minutes+=l.minutes;byJob[key].entries++;byJob[key].people.add(l.person)});
+            const totalMins=artTimeLogs.reduce((a,l)=>a+l.minutes,0);
+            const totalCost=Object.entries(byPerson).reduce((a,[person,d])=>a+d.minutes/60*(rates[person]||0),0);
+            return<div className="card-body">
+              <div className="stats-row" style={{marginBottom:12}}>
+                <div className="stat-card"><div className="stat-label">Total Art Hours</div><div className="stat-value" style={{color:'#7c3aed'}}>{(totalMins/60).toFixed(1)}</div></div>
+                <div className="stat-card"><div className="stat-label">Total Entries</div><div className="stat-value">{artTimeLogs.length}</div></div>
+                <div className="stat-card"><div className="stat-label">Artists Active</div><div className="stat-value" style={{color:'#2563eb'}}>{Object.keys(byPerson).length}</div></div>
+                <div className="stat-card"><div className="stat-label">Labor Cost</div><div className="stat-value" style={{color:'#dc2626'}}>${totalCost.toFixed(2)}</div></div>
+              </div>
+              {/* By artist */}
+              <div style={{fontSize:12,fontWeight:700,color:'#1e293b',marginBottom:6}}>By Artist</div>
+              <table style={{fontSize:12,marginBottom:16}}><thead><tr><th>Artist</th><th style={{textAlign:'right'}}>Hours</th><th style={{textAlign:'center'}}>Jobs</th><th style={{textAlign:'center'}}>Customers</th><th style={{textAlign:'right'}}>Rate</th><th style={{textAlign:'right'}}>Cost</th></tr></thead>
+              <tbody>{Object.entries(byPerson).sort((a,b)=>b[1].minutes-a[1].minutes).map(([person,d])=>{
+                const rate=rates[person]||0;const cost=(d.minutes/60)*rate;
+                return<tr key={person}><td style={{fontWeight:600}}>{person}</td><td style={{textAlign:'right',fontWeight:700,color:'#7c3aed'}}>{(d.minutes/60).toFixed(1)}</td><td style={{textAlign:'center'}}>{d.jobs}</td><td style={{textAlign:'center'}}>{d.customers.size}</td><td style={{textAlign:'right',color:'#64748b'}}>${rate.toFixed(2)}</td><td style={{textAlign:'right',fontWeight:600,color:'#dc2626'}}>${cost.toFixed(2)}</td></tr>
+              })}</tbody></table>
+              {/* By job */}
+              <div style={{fontSize:12,fontWeight:700,color:'#1e293b',marginBottom:6}}>By Job</div>
+              <table style={{fontSize:12}}><thead><tr><th>Art Name</th><th>Customer</th><th>SO</th><th style={{textAlign:'right'}}>Hours</th><th style={{textAlign:'center'}}>Entries</th><th style={{textAlign:'center'}}>People</th><th style={{textAlign:'right'}}>Cost</th></tr></thead>
+              <tbody>{Object.values(byJob).sort((a,b)=>b.minutes-a.minutes).slice(0,20).map((d,i)=>{
+                const cost=artTimeLogs.filter(l=>l.soId===d.soId&&l.artName===d.artName).reduce((a,l)=>a+(l.minutes/60)*(rates[l.person]||0),0);
+                return<tr key={i}><td style={{fontWeight:600,color:'#7c3aed'}}>{d.artName}</td><td>{d.customer}</td><td style={{fontSize:11,color:'#1e40af',fontWeight:600}}>{d.soId}</td><td style={{textAlign:'right',fontWeight:700}}>{(d.minutes/60).toFixed(1)}</td><td style={{textAlign:'center'}}>{d.entries}</td><td style={{textAlign:'center'}}>{d.people.size}</td><td style={{textAlign:'right',fontWeight:600,color:'#dc2626'}}>${cost.toFixed(2)}</td></tr>
+              })}</tbody></table>
+            </div>})()}
+        </div>
+
+        {/* Decoration/Production Time Summary */}
+        <div className="card" style={{marginBottom:12}}>
+          <WH id="decoTime" title="Production/Decoration Time" icon="🖨️"/>
+          {rptWidgets.decoTime&&(()=>{
+            const rates=laborRates;
+            const byPerson={};jobTimeLogs.forEach(l=>{if(!byPerson[l.person])byPerson[l.person]={minutes:0,jobs:0};byPerson[l.person].minutes+=l.minutes;byPerson[l.person].jobs++});
+            const byJob={};jobTimeLogs.forEach(l=>{const key=l.soId+'|'+l.jobId;if(!byJob[key])byJob[key]={jobId:l.jobId,soId:l.soId,minutes:0,entries:0,people:new Set()};byJob[key].minutes+=l.minutes;byJob[key].entries++;byJob[key].people.add(l.person)});
+            const totalMins=jobTimeLogs.reduce((a,l)=>a+l.minutes,0);
+            const totalCost=Object.entries(byPerson).reduce((a,[person,d])=>a+d.minutes/60*(rates[person]||0),0);
+            return<div className="card-body">
+              <div className="stats-row" style={{marginBottom:12}}>
+                <div className="stat-card"><div className="stat-label">Total Prod Hours</div><div className="stat-value" style={{color:'#2563eb'}}>{(totalMins/60).toFixed(1)}</div></div>
+                <div className="stat-card"><div className="stat-label">Total Entries</div><div className="stat-value">{jobTimeLogs.length}</div></div>
+                <div className="stat-card"><div className="stat-label">Workers Active</div><div className="stat-value" style={{color:'#7c3aed'}}>{Object.keys(byPerson).length}</div></div>
+                <div className="stat-card"><div className="stat-label">Labor Cost</div><div className="stat-value" style={{color:'#dc2626'}}>${totalCost.toFixed(2)}</div></div>
+              </div>
+              {/* By worker */}
+              <div style={{fontSize:12,fontWeight:700,color:'#1e293b',marginBottom:6}}>By Worker</div>
+              <table style={{fontSize:12,marginBottom:16}}><thead><tr><th>Worker</th><th style={{textAlign:'right'}}>Hours</th><th style={{textAlign:'center'}}>Jobs</th><th style={{textAlign:'right'}}>Rate</th><th style={{textAlign:'right'}}>Cost</th></tr></thead>
+              <tbody>{Object.entries(byPerson).sort((a,b)=>b[1].minutes-a[1].minutes).map(([person,d])=>{
+                const rate=rates[person]||0;const cost=(d.minutes/60)*rate;
+                return<tr key={person}><td style={{fontWeight:600}}>{person}</td><td style={{textAlign:'right',fontWeight:700,color:'#2563eb'}}>{(d.minutes/60).toFixed(1)}</td><td style={{textAlign:'center'}}>{d.jobs}</td><td style={{textAlign:'right',color:'#64748b'}}>${rate.toFixed(2)}</td><td style={{textAlign:'right',fontWeight:600,color:'#dc2626'}}>${cost.toFixed(2)}</td></tr>
+              })}</tbody></table>
+              {/* By SO */}
+              <div style={{fontSize:12,fontWeight:700,color:'#1e293b',marginBottom:6}}>By Sales Order</div>
+              <table style={{fontSize:12}}><thead><tr><th>Job</th><th>SO</th><th style={{textAlign:'right'}}>Hours</th><th style={{textAlign:'center'}}>Entries</th><th style={{textAlign:'center'}}>People</th><th style={{textAlign:'right'}}>Cost</th></tr></thead>
+              <tbody>{Object.values(byJob).sort((a,b)=>b.minutes-a.minutes).slice(0,20).map((d,i)=>{
+                const cost=jobTimeLogs.filter(l=>l.soId===d.soId&&l.jobId===d.jobId).reduce((a,l)=>a+(l.minutes/60)*(rates[l.person]||0),0);
+                return<tr key={i}><td style={{fontWeight:600,color:'#7c3aed'}}>{d.jobId}</td><td style={{fontSize:11,color:'#1e40af',fontWeight:600}}>{d.soId}</td><td style={{textAlign:'right',fontWeight:700}}>{(d.minutes/60).toFixed(1)}</td><td style={{textAlign:'center'}}>{d.entries}</td><td style={{textAlign:'center'}}>{d.people.size}</td><td style={{textAlign:'right',fontWeight:600,color:'#dc2626'}}>${cost.toFixed(2)}</td></tr>
+              })}</tbody></table>
+            </div>})()}
+        </div>
+
+        {/* Combined Labor Summary */}
+        <div className="card" style={{marginBottom:12}}>
+          <WH id="laborSummary" title="Combined Labor Summary" icon="📊"/>
+          {rptWidgets.laborSummary&&(()=>{
+            const rates=laborRates;
+            const artMins=artTimeLogs.reduce((a,l)=>a+l.minutes,0);const prodMins=jobTimeLogs.reduce((a,l)=>a+l.minutes,0);
+            const artCost=artTimeLogs.reduce((a,l)=>a+(l.minutes/60)*(rates[l.person]||0),0);
+            const prodCost=jobTimeLogs.reduce((a,l)=>a+(l.minutes/60)*(rates[l.person]||0),0);
+            const allPeople=new Set([...artTimeLogs.map(l=>l.person),...jobTimeLogs.map(l=>l.person)]);
+            const combined=[];allPeople.forEach(p=>{const aLogs=artTimeLogs.filter(l=>l.person===p);const pLogs=jobTimeLogs.filter(l=>l.person===p);
+              const aMins=aLogs.reduce((a,l)=>a+l.minutes,0);const pMins=pLogs.reduce((a,l)=>a+l.minutes,0);const rate=rates[p]||0;
+              combined.push({name:p,artMins:aMins,prodMins:pMins,totalMins:aMins+pMins,rate,cost:(aMins+pMins)/60*rate,artJobs:aLogs.length,prodJobs:pLogs.length})});
+            combined.sort((a,b)=>b.totalMins-a.totalMins);
+            return<div className="card-body">
+              <div className="stats-row" style={{marginBottom:12}}>
+                <div className="stat-card" style={{borderLeft:'3px solid #7c3aed'}}><div className="stat-label">Art Hours</div><div className="stat-value" style={{color:'#7c3aed'}}>{(artMins/60).toFixed(1)}</div><div style={{fontSize:10,color:'#dc2626'}}>${artCost.toFixed(2)}</div></div>
+                <div className="stat-card" style={{borderLeft:'3px solid #2563eb'}}><div className="stat-label">Production Hours</div><div className="stat-value" style={{color:'#2563eb'}}>{(prodMins/60).toFixed(1)}</div><div style={{fontSize:10,color:'#dc2626'}}>${prodCost.toFixed(2)}</div></div>
+                <div className="stat-card" style={{borderLeft:'3px solid #1e293b'}}><div className="stat-label">Total Hours</div><div className="stat-value">{((artMins+prodMins)/60).toFixed(1)}</div><div style={{fontSize:10,color:'#dc2626'}}>${(artCost+prodCost).toFixed(2)}</div></div>
+                <div className="stat-card" style={{borderLeft:'3px solid #dc2626'}}><div className="stat-label">Total Labor Cost</div><div className="stat-value" style={{color:'#dc2626'}}>${(artCost+prodCost).toFixed(2)}</div></div>
+              </div>
+              <table style={{fontSize:12}}><thead><tr><th>Person</th><th>Role</th><th style={{textAlign:'right'}}>Art Hrs</th><th style={{textAlign:'right'}}>Prod Hrs</th><th style={{textAlign:'right'}}>Total Hrs</th><th style={{textAlign:'right'}}>Rate</th><th style={{textAlign:'right'}}>Total Cost</th></tr></thead>
+              <tbody>{combined.map(p=><tr key={p.name}>
+                <td style={{fontWeight:600}}>{p.name}</td>
+                <td style={{fontSize:11,color:'#64748b'}}>{p.artMins>0&&p.prodMins>0?'Art + Prod':p.artMins>0?'Art':'Production'}</td>
+                <td style={{textAlign:'right',color:'#7c3aed',fontWeight:600}}>{p.artMins>0?(p.artMins/60).toFixed(1):'—'}</td>
+                <td style={{textAlign:'right',color:'#2563eb',fontWeight:600}}>{p.prodMins>0?(p.prodMins/60).toFixed(1):'—'}</td>
+                <td style={{textAlign:'right',fontWeight:700}}>{(p.totalMins/60).toFixed(1)}</td>
+                <td style={{textAlign:'right',color:'#64748b'}}>${p.rate.toFixed(2)}/hr</td>
+                <td style={{textAlign:'right',fontWeight:700,color:'#dc2626'}}>${p.cost.toFixed(2)}</td>
+              </tr>)}</tbody></table>
+            </div>})()}
+        </div>
+      </>}
+
       {/* Widget Customization */}
       <div className="card" style={{marginBottom:12}}>
         <div className="card-header" style={{padding:'8px 16px'}}><h2 style={{margin:0,fontSize:13}}>⚙️ Customize Dashboard</h2></div>
         <div className="card-body" style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-          {[['convFunnel','Conversion Funnel'],['pipeline','Pipeline'],['repLeaderboard','Rep Leaderboard'],['custHealth','Customer Health'],['productMix','Product Mix'],['margins','Margin Analysis'],['lowMargin','Low Margin Alert'],['omgStores','OMG Stores'],['atRisk','At-Risk Customers']].map(([k,label])=>
+          {[['convFunnel','Conversion Funnel'],['pipeline','Pipeline'],['repLeaderboard','Rep Leaderboard'],['custHealth','Customer Health'],['productMix','Product Mix'],['margins','Margin Analysis'],['lowMargin','Low Margin Alert'],['omgStores','OMG Stores'],['atRisk','At-Risk Customers'],['prodThroughput','Prod Throughput'],['artTime','Art Time'],['decoTime','Deco Time'],['laborSummary','Labor Summary']].map(([k,label])=>
             <label key={k} style={{fontSize:11,display:'flex',alignItems:'center',gap:4,padding:'4px 8px',background:rptWidgets[k]?'#dbeafe':'#f1f5f9',borderRadius:6,cursor:'pointer',border:'1px solid '+(rptWidgets[k]?'#93c5fd':'#e2e8f0')}}>
               <input type="checkbox" checked={rptWidgets[k]||false} onChange={()=>toggleWidget(k)}/> {label}
             </label>)}
@@ -9729,7 +9895,22 @@ export default function App(){
               :<span style={{fontSize:10,color:'#94a3b8',fontStyle:'italic'}}>No artist assigned</span>}
             </div>
             <div style={{fontSize:9,color:'#94a3b8'}}>{j.rep} · {j.alpha||j.soMemo}</div>
-            <button className="btn btn-sm" style={{fontSize:10,padding:'4px 10px',background:'linear-gradient(135deg,#1e40af,#7c3aed)',color:'white',border:'none',width:'100%',marginTop:4,fontWeight:600,borderRadius:6,display:'flex',alignItems:'center',justifyContent:'center',gap:4}} onClick={e=>{e.stopPropagation();setArtMockupModal(j);setArtMockupRevision('')}}>🖼️ Mockup</button>
+            {/* Art Time Clock In/Out */}
+            {(()=>{const artTimerKey=j.soId+'|'+j.id;const artActive=activeArtTimers[artTimerKey];
+              return<div style={{display:'flex',gap:4,marginTop:4}}>
+                <button className="btn btn-sm" style={{fontSize:10,padding:'4px 10px',background:'linear-gradient(135deg,#1e40af,#7c3aed)',color:'white',border:'none',flex:1,fontWeight:600,borderRadius:6,display:'flex',alignItems:'center',justifyContent:'center',gap:4}} onClick={e=>{e.stopPropagation();setArtMockupModal(j);setArtMockupRevision('')}}>🖼️ Mockup</button>
+                {artActive?<button className="btn btn-sm" style={{fontSize:10,padding:'4px 10px',background:'#dc2626',color:'white',border:'none',flex:1,fontWeight:600,borderRadius:6,display:'flex',alignItems:'center',justifyContent:'center',gap:4}} onClick={e=>{e.stopPropagation();
+                  const mins=Math.round((Date.now()-artActive.clockIn)/60000);
+                  setArtTimeLogs(prev=>[...prev,{jobId:j.id,soId:j.soId,person:artActive.person,clockIn:new Date(artActive.clockIn).toLocaleString(),clockOut:new Date().toLocaleString(),minutes:mins,artName:j.art_name||'',customer:j.customer||''}]);
+                  setActiveArtTimers(prev=>{const n={...prev};delete n[artTimerKey];return n});
+                  nf('Art clock out: '+mins+' min logged');
+                }}>⏱️ Out ({Math.round((Date.now()-artActive.clockIn)/60000)}m)</button>
+                :<button className="btn btn-sm" style={{fontSize:10,padding:'4px 10px',background:'#166534',color:'white',border:'none',flex:1,fontWeight:600,borderRadius:6,display:'flex',alignItems:'center',justifyContent:'center',gap:4}} onClick={e=>{e.stopPropagation();
+                  const person=artist?.name||cu.name;
+                  setActiveArtTimers(prev=>({...prev,[artTimerKey]:{person,clockIn:Date.now(),soId:j.soId,artName:j.art_name||'',customer:j.customer||''}}));
+                  nf('Art clock in: '+person+' on '+j.art_name);
+                }}>⏱️ Clock In</button>}
+              </div>})()}
             <div style={{display:'flex',gap:3,marginTop:6,flexWrap:'wrap'}}>
               {col?.id==='waiting_for_art'&&j.art_status==='art_requested'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#1e40af',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();moveArtStatus(j,'art_in_progress')}}>Start Working</button>}
               {col?.id==='waiting_for_art'&&j.art_status==='art_in_progress'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#92400e',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();moveArtStatus(j,'waiting_approval')}}>Send for Approval</button>}
@@ -9790,6 +9971,48 @@ export default function App(){
         <input className="form-input" style={{width:200,fontSize:12}} placeholder="Search customer, SO, art name..." value={artSearch} onChange={e=>setArtSearch(e.target.value)}/>
         <span style={{fontSize:11,color:'#64748b',marginLeft:'auto'}}>{artDashView==='artist'?artistJobs.length:repJobs.length} job{(artDashView==='artist'?artistJobs.length:repJobs.length)!==1?'s':''}</span>
       </div>
+
+      {/* ═══ ART TIME CLOCK ═══ */}
+      {artDashView==='artist'&&<div className="card" style={{marginBottom:12,borderLeft:'3px solid #7c3aed'}}>
+        <div style={{padding:'10px 14px'}}>
+          <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
+            <span style={{fontSize:13,fontWeight:800,color:'#6d28d9'}}>⏱️ Art Time Clock</span>
+            <span style={{fontSize:10,color:'#94a3b8'}}>Track time spent on each art job</span>
+          </div>
+          {Object.keys(activeArtTimers).length>0&&<div style={{marginBottom:8}}>
+            <div style={{fontSize:10,fontWeight:600,color:'#166534',marginBottom:4}}>ACTIVE NOW:</div>
+            {Object.entries(activeArtTimers).map(([key,timer])=>{
+              const mins=Math.round((Date.now()-timer.clockIn)/60000);const hrs=Math.floor(mins/60);const rm=mins%60;
+              return<div key={key} style={{display:'flex',alignItems:'center',gap:8,padding:'4px 8px',background:'#f0fdf4',borderRadius:6,marginBottom:4,fontSize:11}}>
+                <span style={{width:8,height:8,borderRadius:4,background:'#22c55e',animation:'pulse 2s infinite'}}/>
+                <span style={{fontWeight:700,color:'#7c3aed'}}>{timer.person}</span>
+                <span style={{color:'#475569'}}>working on <strong>{timer.artName}</strong></span>
+                <span style={{color:'#64748b',fontSize:10}}>({timer.customer})</span>
+                <span style={{marginLeft:'auto',fontWeight:700,color:'#d97706',fontSize:13}}>{hrs>0?hrs+'h '+rm+'m':mins+'m'}</span>
+                <button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#dc2626',color:'white',border:'none'}} onClick={()=>{
+                  const logMins=Math.round((Date.now()-timer.clockIn)/60000);
+                  setArtTimeLogs(prev=>[...prev,{jobId:key.split('|')[1],soId:key.split('|')[0],person:timer.person,clockIn:new Date(timer.clockIn).toLocaleString(),clockOut:new Date().toLocaleString(),minutes:logMins,artName:timer.artName,customer:timer.customer}]);
+                  setActiveArtTimers(prev=>{const n={...prev};delete n[key];return n});
+                  nf('Art clock out: '+logMins+' min logged');
+                }}>Clock Out</button>
+              </div>})}
+          </div>}
+          {artTimeLogs.length>0&&<div>
+            <div style={{fontSize:10,fontWeight:600,color:'#64748b',marginBottom:4}}>RECENT ART TIME LOGS:</div>
+            {artTimeLogs.slice(-8).reverse().map((log,i)=><div key={i} style={{display:'flex',gap:8,fontSize:10,color:'#475569',padding:'3px 0',borderBottom:'1px solid #f8fafc'}}>
+              <span style={{fontWeight:600,minWidth:60}}>{log.person}</span>
+              <span style={{color:'#7c3aed',fontWeight:600,minWidth:100}}>{log.artName}</span>
+              <span style={{color:'#94a3b8',minWidth:80}}>{log.customer}</span>
+              <span style={{color:'#94a3b8',fontSize:9}}>{log.clockOut}</span>
+              <span style={{marginLeft:'auto',fontWeight:700,color:'#6d28d9'}}>{log.minutes>=60?Math.floor(log.minutes/60)+'h '+log.minutes%60+'m':log.minutes+'m'}</span>
+            </div>)}
+            <div style={{fontSize:10,color:'#64748b',marginTop:4,borderTop:'1px solid #f1f5f9',paddingTop:4}}>
+              Total art time logged: <strong style={{color:'#6d28d9'}}>{artTimeLogs.reduce((a,l)=>a+l.minutes,0)>=60?Math.floor(artTimeLogs.reduce((a,l)=>a+l.minutes,0)/60)+'h '+artTimeLogs.reduce((a,l)=>a+l.minutes,0)%60+'m':artTimeLogs.reduce((a,l)=>a+l.minutes,0)+'m'}</strong>
+            </div>
+          </div>}
+          {Object.keys(activeArtTimers).length===0&&artTimeLogs.length===0&&<div style={{fontSize:11,color:'#94a3b8',padding:'6px 0'}}>No active timers. Click "Clock In" on any art job card to start tracking time.</div>}
+        </div>
+      </div>}
 
       {/* ═══ ARTIST WORKBOARD ═══ */}
       {artDashView==='artist'&&<>
@@ -12174,6 +12397,8 @@ export default function App(){
     </>};
 
   // SETTINGS PAGE
+  const[laborRates,setLaborRates]=useState(()=>loadState('labor_rates',{}));// {personName: hourlyRate}
+  React.useEffect(()=>{_saveAppState('labor_rates',laborRates)},[laborRates]);
   const[settingsTab,setSettingsTab]=useState('pricing');
   const savSettings=(key,val)=>{
     try{const s=JSON.parse(localStorage.getItem('nsa_settings')||'{}');s[key]=val;localStorage.setItem('nsa_settings',JSON.stringify(s));
@@ -12181,7 +12406,7 @@ export default function App(){
       if(key==='CATEGORIES')CATEGORIES=val;if(key==='POSITIONS')POSITIONS=val;if(key==='CONTACT_ROLES')CONTACT_ROLES=val;
       nf('Settings saved')}catch{nf('Error saving','warn')}};
   function rSettings(){
-    const tabs=[['pricing','Decoration Pricing'],['tiers','Customer Tiers'],['lists','Lists & Options'],['terms','Terms & Policies']];
+    const tabs=[['pricing','Decoration Pricing'],['tiers','Customer Tiers'],['lists','Lists & Options'],['terms','Terms & Policies'],['labor','Labor Rates']];
     return(<>
       <div style={{display:'flex',gap:4,marginBottom:16,flexWrap:'wrap'}}>
         {tabs.map(([k,label])=><button key={k} className={`btn btn-sm ${settingsTab===k?'btn-primary':'btn-secondary'}`} onClick={()=>setSettingsTab(k)}>{label}</button>)}
@@ -12343,6 +12568,70 @@ export default function App(){
             </tbody>
           </table>
         </div></div>
+      </>}
+
+      {/* LABOR RATES */}
+      {settingsTab==='labor'&&<>
+        <div className="card" style={{marginBottom:16}}>
+          <div className="card-header"><h3>Hourly Labor Rates</h3></div>
+          <div className="card-body">
+            <div style={{fontSize:12,color:'#64748b',marginBottom:12}}>Set hourly rates per team member for time tracking cost calculations. These rates are used in the Reports → Time & Labor tab to calculate labor costs.</div>
+
+            {/* Artist Rates */}
+            <div style={{fontSize:13,fontWeight:700,color:'#6d28d9',marginBottom:8,borderBottom:'2px solid #ede9fe',paddingBottom:4}}>Art Department</div>
+            {REPS.filter(r=>(r.role==='art'||r.role==='artist'||r.role==='production')&&r.is_active!==false).map(r=>
+              <div key={r.id} style={{display:'flex',alignItems:'center',gap:12,padding:'6px 0',borderBottom:'1px solid #f1f5f9'}}>
+                <span style={{fontWeight:600,fontSize:13,minWidth:140}}>{r.name}</span>
+                <span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#ede9fe',color:'#6d28d9'}}>{r.role}</span>
+                <div style={{display:'flex',alignItems:'center',gap:4}}>
+                  <span style={{fontSize:12,color:'#64748b'}}>$</span>
+                  <input className="form-input" type="number" step="0.50" min="0" style={{width:80,fontSize:13,padding:'4px 8px'}} value={laborRates[r.name]||''} placeholder="0.00"
+                    onChange={e=>{const v=parseFloat(e.target.value)||0;setLaborRates(prev=>({...prev,[r.name]:v}))}}/>
+                  <span style={{fontSize:11,color:'#94a3b8'}}>/hr</span>
+                </div>
+                {laborRates[r.name]>0&&<span style={{fontSize:10,color:'#22c55e',fontWeight:600}}>${((laborRates[r.name]||0)/60).toFixed(3)}/min</span>}
+              </div>
+            )}
+            {REPS.filter(r=>(r.role==='art'||r.role==='artist'||r.role==='production')&&r.is_active!==false).length===0&&
+              <div style={{fontSize:11,color:'#94a3b8',padding:8}}>No artists/production team found. Add team members in Team Directory with role "art" or "production".</div>}
+
+            {/* Decorator/Production Rates */}
+            <div style={{fontSize:13,fontWeight:700,color:'#2563eb',marginTop:16,marginBottom:8,borderBottom:'2px solid #dbeafe',paddingBottom:4}}>Decoration / Production Staff</div>
+            {REPS.filter(r=>(r.role==='warehouse'||r.role==='production')&&r.is_active!==false).map(r=>
+              <div key={r.id} style={{display:'flex',alignItems:'center',gap:12,padding:'6px 0',borderBottom:'1px solid #f1f5f9'}}>
+                <span style={{fontWeight:600,fontSize:13,minWidth:140}}>{r.name}</span>
+                <span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#dbeafe',color:'#1e40af'}}>{r.role}</span>
+                <div style={{display:'flex',alignItems:'center',gap:4}}>
+                  <span style={{fontSize:12,color:'#64748b'}}>$</span>
+                  <input className="form-input" type="number" step="0.50" min="0" style={{width:80,fontSize:13,padding:'4px 8px'}} value={laborRates[r.name]||''} placeholder="0.00"
+                    onChange={e=>{const v=parseFloat(e.target.value)||0;setLaborRates(prev=>({...prev,[r.name]:v}))}}/>
+                  <span style={{fontSize:11,color:'#94a3b8'}}>/hr</span>
+                </div>
+                {laborRates[r.name]>0&&<span style={{fontSize:10,color:'#22c55e',fontWeight:600}}>${((laborRates[r.name]||0)/60).toFixed(3)}/min</span>}
+              </div>
+            )}
+
+            {/* Other / Admin rates */}
+            <div style={{fontSize:13,fontWeight:700,color:'#475569',marginTop:16,marginBottom:8,borderBottom:'2px solid #e2e8f0',paddingBottom:4}}>Other Staff</div>
+            {REPS.filter(r=>r.role!=='art'&&r.role!=='artist'&&r.role!=='production'&&r.role!=='warehouse'&&r.is_active!==false).map(r=>
+              <div key={r.id} style={{display:'flex',alignItems:'center',gap:12,padding:'6px 0',borderBottom:'1px solid #f1f5f9'}}>
+                <span style={{fontWeight:600,fontSize:13,minWidth:140}}>{r.name}</span>
+                <span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#f1f5f9',color:'#475569'}}>{r.role}</span>
+                <div style={{display:'flex',alignItems:'center',gap:4}}>
+                  <span style={{fontSize:12,color:'#64748b'}}>$</span>
+                  <input className="form-input" type="number" step="0.50" min="0" style={{width:80,fontSize:13,padding:'4px 8px'}} value={laborRates[r.name]||''} placeholder="0.00"
+                    onChange={e=>{const v=parseFloat(e.target.value)||0;setLaborRates(prev=>({...prev,[r.name]:v}))}}/>
+                  <span style={{fontSize:11,color:'#94a3b8'}}>/hr</span>
+                </div>
+                {laborRates[r.name]>0&&<span style={{fontSize:10,color:'#22c55e',fontWeight:600}}>${((laborRates[r.name]||0)/60).toFixed(3)}/min</span>}
+              </div>
+            )}
+
+            <div style={{marginTop:16,padding:10,background:'#f8fafc',borderRadius:6,fontSize:11,color:'#64748b'}}>
+              Rates are used to calculate labor costs in the Reports → Time & Labor dashboard. Set $0 to exclude a person from cost calculations.
+            </div>
+          </div>
+        </div>
       </>}
     </>)};
 
