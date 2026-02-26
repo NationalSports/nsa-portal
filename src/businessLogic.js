@@ -95,7 +95,7 @@ const buildJobs = (o) => {
       if (!artMap[key]) artMap[key] = { art_file_id: d.art_file_id, position: d.position, deco_type: null, items: [] };
       artMap[key].items.push({ item_idx: idx, deco_idx: di, sku: it.sku, name: safeStr(it.name), color: it.color || '', units: Object.values(safeSizes(it)).reduce((a, v) => a + v, 0), fulfilled: 0 });
       const af = safeArr(o?.art_files).find(f => f.id === d.art_file_id);
-      if (af) { artMap[key].deco_type = af.deco_type; artMap[key].art_name = af.name; artMap[key].art_status = af.status === 'approved' ? 'art_complete' : af.status === 'uploaded' ? 'waiting_approval' : 'needs_art' }
+      if (af) { artMap[key].deco_type = af.deco_type; artMap[key].art_name = af.name; artMap[key].art_status = af.status === 'approved' ? (af.prod_files?.length ? 'art_complete' : 'production_files_needed') : af.status === 'needs_approval' ? 'waiting_approval' : af.status === 'uploaded' ? 'waiting_approval' : 'needs_art' }
     });
   });
   return Object.entries(artMap).map(([key, v], idx) => {
