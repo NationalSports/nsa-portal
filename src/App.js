@@ -5742,6 +5742,63 @@ export default function App(){
     logChange('deleted','Invoice',invId,inv.memo||'');
   };
 
+  // Shared data builder for warehouse + deco + dashboard pages
+  const buildWarehouseData=()=>{
+    const pullTasks=[];const shipTasks=[];const decoTasks=[];
+    sos.filter(so=>{const st=calcSOStatus(so);return st!=='complete'}).forEach(so=>{
+      const c=cust.find(x=>x.id===so.customer_id);const cName=c?.name||'Unknown';const alpha=c?.alpha_tag||'';
+      const rep=REPS.find(r=>r.id===so.created_by)?.name?.split(' ')[0]||'—';
+      const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
+      const urgent=daysOut!=null&&daysOut<=3;
+
+      safeItems(so).forEach((item,ii)=>{
+        const szKeys=Object.keys(item.sizes||{}).filter(k=>SZ_ORD.includes(k)||(item.sizes[k]>0));
+        const totalOrdered=szKeys.reduce((a,s)=>a+(item.sizes[s]||0),0);
+        if(totalOrdered===0)return;
+        const picks=safePicks(item);
+        const pulled={};picks.forEach(pk=>{szKeys.forEach(s=>{pulled[s]=(pulled[s]||0)+(pk[s]||0)})});
+        const totalPulled=Object.values(pulled).reduce((a,v)=>a+v,0);
+        // Only show in Pull & Stage if there's an active pick ticket (IF not yet pulled)
+        const hasActivePick=picks.some(pk=>pk.status!=='pulled');
+        if(hasActivePick){
+          const needsPull=totalOrdered-totalPulled;
+          if(needsPull>0){
+            pullTasks.push({so,soId:so.id,item,itemIdx:ii,cName,alpha,rep,daysOut,urgent,
+              sku:item.sku,name:item.name,brand:item.brand||'',color:item.color||'',
+              sizes:item.sizes,pulled,needsPull,totalOrdered,totalPulled,szKeys,
+              noDeco:item.no_deco||!item.decorations?.length,
+              shipDest:picks.find(p=>p.ship_dest)?.ship_dest||'in_house'});
+          }
+        }
+        // No-deco items fully pulled → ready to ship
+        if((!item.decorations?.length||item.no_deco)&&totalPulled>=totalOrdered&&totalOrdered>0){
+          const dest=picks.find(p=>p.ship_dest)?.ship_dest||'in_house';
+          shipTasks.push({so,soId:so.id,type:'no_deco',cName,alpha,rep,daysOut,urgent,
+            desc:item.sku+' · '+item.name,units:totalOrdered,shipMethod:dest});
+        }
+      });
+      // Completed deco jobs → ready to ship
+      safeJobs(so).forEach(j=>{
+        if(j.prod_status==='completed'){
+          shipTasks.push({so,soId:so.id,type:'deco_done',cName,alpha,rep,daysOut,urgent,
+            desc:j.art_name+' ('+j.deco_type?.replace(/_/g,' ')+')',units:j.total_units,
+            shipMethod:j.ship_method||'pending'});
+        }
+        // Deco tasks
+        if(j.prod_status!=='completed'&&j.prod_status!=='shipped'){
+          const isReady=j.art_status==='art_complete'&&j.item_status==='items_received';
+          decoTasks.push({so,soId:so.id,job:j,cName,alpha,rep,daysOut,urgent,
+            artName:j.art_name,decoType:j.deco_type,totalUnits:j.total_units,fulfilledUnits:j.fulfilled_units,
+            prodStatus:j.prod_status,artStatus:j.art_status,itemStatus:j.item_status,isReady,
+            machine:MACHINES.find(m=>m.id===j.assigned_machine)?.name,assignedTo:j.assigned_to});
+        }
+      });
+    });
+    const sortU=(a,b)=>{if(a.urgent&&!b.urgent)return -1;if(!a.urgent&&b.urgent)return 1;return(a.daysOut||999)-(b.daysOut||999)};
+    pullTasks.sort(sortU);shipTasks.sort(sortU);decoTasks.sort(sortU);
+    return{pullTasks,shipTasks,decoTasks};
+  };
+
   // DASHBOARD
   const rDash=()=>{
     // Unread messages for this user
@@ -9003,63 +9060,6 @@ export default function App(){
   const[decoSearch,setDecoSearch]=useState('');const[decoRepF,setDecoRepF]=useState('all');const[decoStatF,setDecoStatF]=useState('active');const[decoTypeF,setDecoTypeF]=useState('all');
   const[decoCardFilter,setDecoCardFilter]=useState(null);// null|'ready'|'in_process'|'waiting'
 
-  // Shared data builder for warehouse + deco pages
-  const buildWarehouseData=()=>{
-    const pullTasks=[];const shipTasks=[];const decoTasks=[];
-    sos.filter(so=>{const st=calcSOStatus(so);return st!=='complete'}).forEach(so=>{
-      const c=cust.find(x=>x.id===so.customer_id);const cName=c?.name||'Unknown';const alpha=c?.alpha_tag||'';
-      const rep=REPS.find(r=>r.id===so.created_by)?.name?.split(' ')[0]||'—';
-      const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
-      const urgent=daysOut!=null&&daysOut<=3;
-
-      safeItems(so).forEach((item,ii)=>{
-        const szKeys=Object.keys(item.sizes||{}).filter(k=>SZ_ORD.includes(k)||(item.sizes[k]>0));
-        const totalOrdered=szKeys.reduce((a,s)=>a+(item.sizes[s]||0),0);
-        if(totalOrdered===0)return;
-        const picks=safePicks(item);
-        const pulled={};picks.forEach(pk=>{szKeys.forEach(s=>{pulled[s]=(pulled[s]||0)+(pk[s]||0)})});
-        const totalPulled=Object.values(pulled).reduce((a,v)=>a+v,0);
-        // Only show in Pull & Stage if there's an active pick ticket (IF not yet pulled)
-        const hasActivePick=picks.some(pk=>pk.status!=='pulled');
-        if(hasActivePick){
-          const needsPull=totalOrdered-totalPulled;
-          if(needsPull>0){
-            pullTasks.push({so,soId:so.id,item,itemIdx:ii,cName,alpha,rep,daysOut,urgent,
-              sku:item.sku,name:item.name,brand:item.brand||'',color:item.color||'',
-              sizes:item.sizes,pulled,needsPull,totalOrdered,totalPulled,szKeys,
-              noDeco:item.no_deco||!item.decorations?.length,
-              shipDest:picks.find(p=>p.ship_dest)?.ship_dest||'in_house'});
-          }
-        }
-        // No-deco items fully pulled → ready to ship
-        if((!item.decorations?.length||item.no_deco)&&totalPulled>=totalOrdered&&totalOrdered>0){
-          const dest=picks.find(p=>p.ship_dest)?.ship_dest||'in_house';
-          shipTasks.push({so,soId:so.id,type:'no_deco',cName,alpha,rep,daysOut,urgent,
-            desc:item.sku+' · '+item.name,units:totalOrdered,shipMethod:dest});
-        }
-      });
-      // Completed deco jobs → ready to ship
-      safeJobs(so).forEach(j=>{
-        if(j.prod_status==='completed'){
-          shipTasks.push({so,soId:so.id,type:'deco_done',cName,alpha,rep,daysOut,urgent,
-            desc:j.art_name+' ('+j.deco_type?.replace(/_/g,' ')+')',units:j.total_units,
-            shipMethod:j.ship_method||'pending'});
-        }
-        // Deco tasks
-        if(j.prod_status!=='completed'&&j.prod_status!=='shipped'){
-          const isReady=j.art_status==='art_complete'&&j.item_status==='items_received';
-          decoTasks.push({so,soId:so.id,job:j,cName,alpha,rep,daysOut,urgent,
-            artName:j.art_name,decoType:j.deco_type,totalUnits:j.total_units,fulfilledUnits:j.fulfilled_units,
-            prodStatus:j.prod_status,artStatus:j.art_status,itemStatus:j.item_status,isReady,
-            machine:MACHINES.find(m=>m.id===j.assigned_machine)?.name,assignedTo:j.assigned_to});
-        }
-      });
-    });
-    const sortU=(a,b)=>{if(a.urgent&&!b.urgent)return -1;if(!a.urgent&&b.urgent)return 1;return(a.daysOut||999)-(b.daysOut||999)};
-    pullTasks.sort(sortU);shipTasks.sort(sortU);decoTasks.sort(sortU);
-    return{pullTasks,shipTasks,decoTasks};
-  };
-
   const rWarehouse=()=>{
     const{pullTasks,shipTasks,decoTasks}=buildWarehouseData();
     const filt=(arr)=>arr.filter(t=>{
@@ -11901,18 +11901,7 @@ export default function App(){
     // NAV
   const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'reports',label:'Reports',icon:'dollar'},{id:'commissions',label:'Commissions',icon:'dollar',roles:['admin','rep']},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'art',label:'Art Dashboard',icon:'image'},{id:'production',label:'Prod Board',icon:'package'},{id:'decoration',label:'Decoration',icon:'image'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'purchase_orders',label:'Purchase Orders',icon:'cart'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{id:'team',label:'Team',icon:'users'},{section:'Comms'},{id:'messages',label:'Messages',icon:'mail'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'System'},{id:'issues',label:'Issues',icon:'alert'},{id:'import',label:'Import / Upload',icon:'upload'},{id:'qb',label:'QuickBooks Sync',icon:'dollar'},{id:'backup',label:'Backup & Data',icon:'save'},{id:'settings',label:'Settings',icon:'grid',roles:['admin']}];
   const titles={dashboard:'Dashboard',reports:'Reports & Analytics',commissions:'Commissions',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',omg:'OMG Team Stores',jobs:'Jobs',art:'Art Dashboard',production:'Production Board',decoration:'Decoration',warehouse:'Warehouse',purchase_orders:'Purchase Orders',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',team:'Team Directory',products:'Products',inventory:'Inventory',messages:'Messages',issues:'Issues',import:'Import / Upload',qb:'QuickBooks Online',backup:'Backup & Data',settings:'Settings'};
-  // ─── SCAN URL HANDLER — ?scan=PO-XXXX or ?scan=IF-XXXX auto-navigates ───
-  const _scanParam=useMemo(()=>{try{return new URLSearchParams(window.location.search).get('scan')}catch{return null}},[]);
-  const _scanHandled=useRef(false);
-  useEffect(()=>{
-    if(!_scanParam||_scanHandled.current||dbLoading)return;
-    _scanHandled.current=true;
-    const val=_scanParam.trim();
-    // Clean the URL param after reading
-    try{const u=new URL(window.location);u.searchParams.delete('scan');window.history.replaceState({},'',u)}catch{}
-    handleScanResult(val);
-  },[_scanParam,dbLoading]);// eslint-disable-line
-
+  // ─── SCAN RESULT HANDLER ───
   const handleScanResult=(val)=>{
     if(!val)return;
     // If scanned value is a URL with ?scan= parameter, extract the value
@@ -11964,6 +11953,18 @@ export default function App(){
     // Fallback: put into batch scan field on PO page
     setBatchScan(scanVal);setPg('batch_pos');nf('Looking up: '+scanVal,'warn');
   };
+
+  // ─── SCAN URL HANDLER — ?scan=PO-XXXX or ?scan=IF-XXXX auto-navigates ───
+  const _scanParam=useMemo(()=>{try{return new URLSearchParams(window.location.search).get('scan')}catch{return null}},[]);
+  const _scanHandled=useRef(false);
+  useEffect(()=>{
+    if(!_scanParam||_scanHandled.current||dbLoading)return;
+    _scanHandled.current=true;
+    const val=_scanParam.trim();
+    // Clean the URL param after reading
+    try{const u=new URL(window.location);u.searchParams.delete('scan');window.history.replaceState({},'',u)}catch{}
+    handleScanResult(val);
+  },[_scanParam,dbLoading]);// eslint-disable-line
 
   // ─── COACH PORTAL GATE — public access via ?portal=<alpha_tag> ───
   const _portalTag=useMemo(()=>{try{return new URLSearchParams(window.location.search).get('portal')}catch{return null}},[]);
