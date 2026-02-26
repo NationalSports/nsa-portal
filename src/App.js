@@ -296,14 +296,15 @@ const fileUpload=async(file,folder='nsa-art-files')=>{const fd=new FormData();fd
 const isUrl=s=>typeof s==='string'&&(s.startsWith('http://')||s.startsWith('https://'));
 const fileDisplayName=f=>isUrl(f)?decodeURIComponent(f.split('/').pop().split('?')[0]):f;
 const openFile=f=>{if(isUrl(f)){window.open(f,'_blank')}else{nf('Legacy file: '+f+' — re-upload to enable downloads')}};
-const ImgUpload=({url,onUpload,size=48})=>{const[drag,setDrag]=React.useState(false);const[uploading,setUploading]=React.useState(false);
-  const doUpload=async(file)=>{if(!file||!file.type.startsWith('image/'))return;setUploading(true);try{const u=await cloudUpload(file);onUpload(u)}catch(e){console.error('Upload failed',e)}finally{setUploading(false)}};
-  return<div style={{width:size,height:size,borderRadius:6,border:drag?'2px solid #3b82f6':'1px solid #e2e8f0',background:drag?'#eff6ff':'#f8fafc',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,cursor:'pointer',overflow:'hidden',position:'relative'}}
+const ImgUpload=({url,onUpload,size=48,onError})=>{const[drag,setDrag]=React.useState(false);const[uploading,setUploading]=React.useState(false);const[err,setErr]=React.useState(false);
+  const doUpload=async(file)=>{if(!file||!file.type.startsWith('image/')){if(onError)onError('Please select an image file');return}setUploading(true);setErr(false);try{const u=await cloudUpload(file);onUpload(u)}catch(e){console.error('Upload failed',e);setErr(true);if(onError)onError('Upload failed: '+e.message)}finally{setUploading(false)}};
+  return<div style={{width:size,height:size,borderRadius:6,border:err?'2px solid #dc2626':drag?'2px solid #3b82f6':'1px solid #e2e8f0',background:drag?'#eff6ff':err?'#fef2f2':'#f8fafc',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,cursor:'pointer',overflow:'hidden',position:'relative'}}
     onDragOver={e=>{e.preventDefault();setDrag(true)}} onDragLeave={()=>setDrag(false)}
     onDrop={e=>{e.preventDefault();setDrag(false);doUpload(e.dataTransfer.files[0])}}
     onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.accept='image/*';inp.onchange=()=>doUpload(inp.files[0]);inp.click()}}>
     {uploading?<span style={{fontSize:10,color:'#3b82f6',fontWeight:600}}>...</span>
-    :url?<img src={url} alt="" style={{width:'100%',height:'100%',objectFit:'cover'}}/>
+    :url?<img src={url} alt="" style={{width:'100%',height:'100%',objectFit:'cover'}} onError={e=>{e.target.style.display='none'}}/>
+    :err?<span style={{fontSize:size>40?14:10,color:'#dc2626'}}>!</span>
     :<span style={{fontSize:size>40?18:12,opacity:0.3}}>📷</span>}
   </div>};
 // ── PDF.js Setup (for NetSuite PDF import) ──
@@ -2553,8 +2554,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                       <span style={{fontSize:10,fontWeight:700,color:'#2563eb'}}>📎 MOCKUP FILES</span>
                       <span style={{fontSize:9,color:'#94a3b8'}}>Shared with customer</span>
                     </div>
-                    <div style={{display:'flex',gap:4,flexWrap:'wrap',marginBottom:4}}>{(art.mockup_files||art.files||[]).map((fn,fi)=><span key={fi} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'3px 8px',background:'#dbeafe',borderRadius:4,fontSize:11}}>
-                      <Icon name="file" size={10}/>{fn}<button onClick={()=>{const mf=[...(art.mockup_files||art.files||[])];mf.splice(fi,1);uArt(i,'mockup_files',mf);if(!art.mockup_files)uArt(i,'files',[])}} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:0}}><Icon name="x" size={10}/></button></span>)}</div>
+                    <div style={{display:'flex',gap:4,flexWrap:'wrap',marginBottom:4}}>{(art.mockup_files||art.files||[]).map((fn,fi)=><span key={fi} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'3px 8px',background:'#dbeafe',borderRadius:4,fontSize:11,cursor:isUrl(fn)?'pointer':'default'}} onClick={()=>openFile(fn)} title={isUrl(fn)?'Click to open':'Legacy file — re-upload'}>
+                      <Icon name="file" size={10}/>{fileDisplayName(fn)}<button onClick={e=>{e.stopPropagation();const mf=[...(art.mockup_files||art.files||[])];mf.splice(fi,1);uArt(i,'mockup_files',mf);if(!art.mockup_files)uArt(i,'files',[])}} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:0}}><Icon name="x" size={10}/></button></span>)}</div>
                     <div style={{border:'2px dashed #bfdbfe',borderRadius:6,padding:8,textAlign:'center',cursor:'pointer',background:'#eff6ff'}} onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps';inp.onchange=async()=>{const f=inp.files[0];if(!f)return;nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-mockups');const mf=[...(art.mockup_files||art.files||[]),url];uArt(i,'mockup_files',mf);if(!art.mockup_files)uArt(i,'files',[]);nf('✅ Mockup uploaded: '+f.name)}catch(e){nf('Upload failed: '+e.message,'error')}};inp.click()}}>
                       <div style={{fontSize:10,color:'#2563eb'}}><Icon name="upload" size={12}/> Add mockup (PDF, PNG, JPG)</div></div>
                   </div>
@@ -2564,8 +2565,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                       <span style={{fontSize:10,fontWeight:700,color:'#d97706'}}>🔧 PRODUCTION FILES</span>
                       <span style={{fontSize:9,color:'#94a3b8'}}>Internal — not shared with customer</span>
                     </div>
-                    <div style={{display:'flex',gap:4,flexWrap:'wrap',marginBottom:4}}>{(art.prod_files||[]).map((fn,fi)=><span key={fi} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'3px 8px',background:'#fef3c7',borderRadius:4,fontSize:11}}>
-                      <Icon name="file" size={10}/>{fn}<button onClick={()=>uArt(i,'prod_files',(art.prod_files||[]).filter((_,x)=>x!==fi))} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:0}}><Icon name="x" size={10}/></button></span>)}</div>
+                    <div style={{display:'flex',gap:4,flexWrap:'wrap',marginBottom:4}}>{(art.prod_files||[]).map((fn,fi)=><span key={fi} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'3px 8px',background:'#fef3c7',borderRadius:4,fontSize:11,cursor:isUrl(fn)?'pointer':'default'}} onClick={()=>openFile(fn)} title={isUrl(fn)?'Click to open':'Legacy file — re-upload'}>
+                      <Icon name="file" size={10}/>{fileDisplayName(fn)}<button onClick={e=>{e.stopPropagation();uArt(i,'prod_files',(art.prod_files||[]).filter((_,x)=>x!==fi))}} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:0}}><Icon name="x" size={10}/></button></span>)}</div>
                     <div style={{border:'2px dashed #fde68a',borderRadius:6,padding:8,textAlign:'center',cursor:'pointer',background:'#fffbeb'}} onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.pdf,.ai,.eps,.dst,.png,.jpg,.jpeg';inp.onchange=async()=>{const f=inp.files[0];if(!f)return;nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-production');uArt(i,'prod_files',[...(art.prod_files||[]),url]);nf('✅ Production file uploaded: '+f.name)}catch(e){nf('Upload failed: '+e.message,'error')}};inp.click()}}>
                       <div style={{fontSize:10,color:'#d97706'}}><Icon name="upload" size={12}/> Add production file (DST, AI seps, PDF)</div></div>
                   </div>
@@ -6291,7 +6292,7 @@ export default function App(){
       <button className="btn btn-secondary" onClick={onBack} style={{marginBottom:12}}><Icon name="chevron-left" size={14}/> Products</button>
       <div className="card" style={{marginBottom:16}}><div className="card-body">
         <div style={{display:'flex',gap:16,alignItems:'flex-start'}}>
-          <ImgUpload url={ep.image_url} onUpload={u=>{const up={...ep,image_url:u};setEp(up);setProd(p=>p.map(x=>x.id===up.id?up:x));setSelP(up)}} size={80}/>
+          <ImgUpload url={ep.image_url} onUpload={u=>{const up={...ep,image_url:u};setEp(up);setProd(p=>p.map(x=>x.id===up.id?up:x));setSelP(up);nf('Product image uploaded')}} onError={e=>nf(e,'error')} size={80}/>
           <div style={{flex:1}}>
             {!editing?<>
               <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap',marginBottom:4}}>
@@ -6479,7 +6480,7 @@ export default function App(){
   <div className="card"><div className="card-body" style={{padding:0}}>
   {fP.map(p=>{const nt=Object.values(p._inv||{}).reduce((a,v)=>a+v,0);const au=p.brand==='Adidas'||p.brand==='Under Armour';
     return(<div key={p.id} style={{padding:'14px 16px',borderBottom:'1px solid #f1f5f9',cursor:'pointer'}} onClick={()=>setSelP(p)}><div style={{display:'flex',gap:14,alignItems:'flex-start'}}>
-      <ImgUpload url={p.image_url} onUpload={u=>setProd(ps=>ps.map(x=>x.id===p.id?{...x,image_url:u}:x))} size={48}/>
+      <ImgUpload url={p.image_url} onUpload={u=>{setProd(ps=>ps.map(x=>x.id===p.id?{...x,image_url:u}:x));nf('Image uploaded')}} onError={e=>nf(e,'error')} size={48}/>
       <div style={{flex:1}}>
         <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}><span style={{fontFamily:'monospace',fontWeight:800,background:'#dbeafe',padding:'2px 8px',borderRadius:3,color:'#1e40af'}}>{p.sku}</span><span style={{fontWeight:700}}>{p.name}</span>{p._colors&&<span style={{fontSize:10,color:'#7c3aed'}}>{p._colors.length} clr</span>}</div>
         <div style={{fontSize:12,color:'#94a3b8',marginTop:2}}><span className="badge badge-blue" style={{marginRight:4}}>{p.brand}</span>{p.color} | ${p.nsa_cost?.toFixed(2)} | {au?'Tier':'$'+rQ(p.nsa_cost*1.65).toFixed(2)}</div>
@@ -12173,7 +12174,7 @@ export default function App(){
             <div><label className="form-label">NSA Cost{(it.brand==='Adidas'||it.brand==='Under Armour')&&it.retail_price>0?<span style={{fontSize:9,color:'#16a34a',marginLeft:4}}>auto</span>:''}</label><$In value={it.nsa_cost||0} onChange={v=>{const bn=it.brand||D_V.find(x=>x.id===it.vendor_id)?.name||'';const cat=it.category||'Tees';if(bn==='Adidas'&&v>0){setQPC(x=>({...x,items:[{...x.items[0],nsa_cost:v,retail_price:Math.round(v/(cat==='Custom'?0.4125:0.375)*100)/100}]}))}else if(bn==='Under Armour'&&v>0){setQPC(x=>({...x,items:[{...x.items[0],nsa_cost:v,retail_price:Math.round(v/0.425*100)/100}]}))}else{up('nsa_cost',v)}}}/></div>
             <div style={{gridColumn:'1/3'}}><label className="form-label">Product Image</label>
               <div style={{display:'flex',alignItems:'center',gap:10}}>
-                <ImgUpload url={it.image_url} onUpload={v=>up('image_url',v)} size={64}/>
+                <ImgUpload url={it.image_url} onUpload={v=>{up('image_url',v);nf('Image uploaded')}} onError={e=>nf(e,'error')} size={64}/>
                 <span style={{fontSize:11,color:'#94a3b8'}}>Click or drag & drop an image</span>
               </div>
             </div>
