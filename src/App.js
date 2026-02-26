@@ -5434,13 +5434,44 @@ export default function App(){
           if(as.inv_po_counter)setInvPOCounter(as.inv_po_counter);
           console.log('[DB] Loaded from Supabase (normalized)');
         }else{
-          // Supabase connected but returned no customers and no sales orders
-          // This could be a genuinely empty DB (first deploy) or a transient load failure
-          // NEVER auto-seed from localStorage — it risks overwriting real data with stale local copies
-          // Instead: enable writes so any NEW records created will be saved to Supabase
-          // If the DB is truly empty, the user can use the manual backup restore feature
-          console.warn('[DB] Supabase returned empty — using localStorage, writes enabled for new records only');
+          // Supabase tables exist but are all empty — seed from localStorage
+          // Use a lock row to prevent multiple browsers from seeding simultaneously
           _dbLoadSuccess.current=true;
+          const lockId='_seed_lock';
+          const{data:lockCheck}=await supabase.from('app_state').select('id').eq('id',lockId).single();
+          if(!lockCheck){
+            // No lock — this browser wins, claim it and seed
+            await supabase.from('app_state').upsert({id:lockId,value:'"seeding"',updated_at:new Date().toISOString()});
+            console.warn('[DB] Supabase tables empty — seeding from localStorage');
+            try{
+              await _dbSeed({team:REPS,customers:cust,vendors:vend,products:prod,estimates:ests,sales_orders:sos,invoices:invs,messages:msgs,omg_stores:omgStores,issues});
+              if(issues?.length) _dbSave('issues',issues);
+              const _as={batch_pos:batchPOs,submitted_batches:submittedBatches,batch_counter:batchCounter,change_log:changeLog,so_history:soHistory,qb_config:qbConfig,inv_pos:invPOs,inv_adj_log:invAdjLog,inv_po_counter:invPOCounter};
+              for(const[k,v]of Object.entries(_as)){if(v!==undefined&&v!==null)_dbSave('app_state',[{id:k,value:JSON.stringify(v),updated_at:new Date().toISOString()}])}
+              await supabase.from('app_state').upsert({id:lockId,value:'"done"',updated_at:new Date().toISOString()});
+              console.log('[DB] Seeded Supabase from localStorage');
+            }catch(seedErr){console.error('[DB] Seed failed:',seedErr)}
+          }else{
+            // Another browser is seeding or already seeded — wait and reload
+            console.log('[DB] Another browser is seeding — waiting to reload');
+            await new Promise(r=>setTimeout(r,3000));
+            const d2=await _dbLoad();
+            if(d2?.hasData){
+              setREPS(d2.team.length?d2.team:DEFAULT_REPS);setCust(d2.customers);
+              if(d2.vendors.length)setVend(d2.vendors);setProd(d2.products.length?d2.products:prod);
+              setEsts(d2.estimates);setSOs(d2.sales_orders);
+              setInvs(d2.invoices);setMsgs(d2.messages.length?d2.messages:msgs);
+              if(d2.omg_stores.length)setOmgStores(d2.omg_stores);
+              if(d2.issues?.length)setIssues(d2.issues);
+              const as2=d2.appState||{};
+              if(as2.batch_pos)setBatchPOs(as2.batch_pos);if(as2.submitted_batches)setSubmittedBatches(as2.submitted_batches);
+              if(as2.batch_counter)setBatchCounter(as2.batch_counter);if(as2.change_log)setChangeLog(as2.change_log);
+              if(as2.so_history)setSOHistory(as2.so_history);if(as2.job_time_logs)setJobTimeLogs(as2.job_time_logs);
+              if(as2.qb_config)setQBConfig(as2.qb_config);if(as2.inv_pos)setInvPOs(as2.inv_pos);
+              if(as2.inv_adj_log)setInvAdjLog(as2.inv_adj_log);if(as2.inv_po_counter)setInvPOCounter(as2.inv_po_counter);
+              console.log('[DB] Loaded from Supabase after seed by other browser');
+            }
+          }
         }
       }catch(e){
         console.error('[DB] Load failed:',e);
