@@ -1741,8 +1741,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
   const totals=useMemo(()=>{let rev=0,cost=0;safeItems(o).forEach(it=>{const q=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);if(!q)return;rev+=q*safeNum(it.unit_sell);cost+=q*safeNum(it.nsa_cost);
     safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:q;const dp=dP(d,q,af,cq);rev+=q*dp.sell;cost+=q*dp.cost});
     (it.po_lines||[]).filter(pl=>pl.po_type==='outside_deco').forEach(pl=>{const poQty=Object.entries(pl).filter(([k,v])=>typeof v==='number'&&!['unit_cost'].includes(k)).reduce((a,[,v])=>a+v,0);cost+=poQty*safeNum(pl.unit_cost)})});
-    const ship=o.shipping_type==='pct'?rev*(o.shipping_value||0)/100:(o.shipping_value||0);const tax=rev*(cust?.tax_rate||0);
-    return{rev,cost,ship,tax,grand:rev+ship+tax,margin:rev-cost,pct:rev>0?((rev-cost)/rev*100):0}},[o,artQty]); // eslint-disable-line
+    const ship=o.shipping_type==='pct'?rev*(o.shipping_value||0)/100:(o.shipping_value||0);const taxRate=cust?.tax_exempt?0:(cust?.tax_rate||0);const tax=rev*taxRate;
+    return{rev,cost,ship,tax,taxRate,grand:rev+ship+tax,margin:rev-cost,pct:rev>0?((rev-cost)/rev*100):0}},[o,artQty]); // eslint-disable-line
 
   // AUTO-SYNC JOBS from decorations — one job per unique artwork across entire SO
   const syncJobs=useCallback(()=>{
@@ -1871,7 +1871,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           </div>}
         </div>
         <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-          {[{l:'REV',v:totals.rev,bg:'#f0fdf4',c:'#166534'},{l:'COST',v:totals.cost,bg:'#fef2f2',c:'#dc2626'},{l:'MARGIN',v:totals.margin,bg:'#dbeafe',c:'#1e40af',s:`${totals.pct.toFixed(1)}%`},{l:'TOTAL',v:totals.grand,bg:'#faf5ff',c:'#7c3aed',s:'+tax+ship'}].map(x=>
+          {[{l:'REV',v:totals.rev,bg:'#f0fdf4',c:'#166534'},{l:'COST',v:totals.cost,bg:'#fef2f2',c:'#dc2626'},{l:'MARGIN',v:totals.margin,bg:'#dbeafe',c:'#1e40af',s:`${totals.pct.toFixed(1)}%`},
+            ...(totals.ship>0?[{l:'SHIP',v:totals.ship,bg:'#f0f9ff',c:'#0369a1'}]:[]),
+            ...(totals.tax>0?[{l:'TAX',v:totals.tax,bg:'#fefce8',c:'#a16207',s:(totals.taxRate*100).toFixed(2)+'%'}]:[]),
+            ...(cust?.tax_exempt?[{l:'TAX',v:0,bg:'#fef2f2',c:'#dc2626',s:'EXEMPT'}]:[]),
+            {l:'TOTAL',v:totals.grand,bg:'#faf5ff',c:'#7c3aed'}].map(x=>
             <div key={x.l} style={{textAlign:'center',padding:'8px 12px',background:x.bg,borderRadius:8,minWidth:72}}><div style={{fontSize:9,color:x.c,fontWeight:700}}>{x.l}</div><div style={{fontSize:17,fontWeight:800,color:x.c}}>${x.v.toLocaleString(undefined,{maximumFractionDigits:0})}</div>{x.s&&<div style={{fontSize:9,color:'#94a3b8'}}>{x.s}</div>}</div>)}</div>
       </div>
       <div style={{display:'flex',gap:8,marginTop:12,alignItems:'end',flexWrap:'wrap'}}>
@@ -1909,7 +1913,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           const items=safeItems(o).filter(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
           const _pAQ={};items.forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'){_pAQ[d.art_file_id]=(_pAQ[d.art_file_id]||0)+q2}})});
           const isRolled=(o.pricing_mode||'itemized')==='rolled_up';
-          const taxRate=cust?.tax_rate||0;
+          const taxRate=cust?.tax_exempt?0:(cust?.tax_rate||0);
           const rows=[];let subTotal=0;
           items.forEach(it=>{
             const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
@@ -3087,7 +3091,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
             const inv={id:invId,type:'invoice',inv_type:invType,customer_id:o.customer_id,so_id:o.id,
               date:invDate,due_date:dueDate,total:Math.round(invTotal*100)/100,paid:0,
               memo:invMemo||defaultMemo,status:'open',_rep:o.created_by||cu.id,
-              tax:Math.round(invTaxAmt*100)/100,shipping:Math.round(invShipAmt*100)/100,
+              tax:Math.round(invTaxAmt*100)/100,tax_rate:cust?.tax_exempt?0:(cust?.tax_rate||0),tax_exempt:cust?.tax_exempt||false,shipping:Math.round(invShipAmt*100)/100,
               ...(invType==='deposit'?{deposit_pct:invDepositPct}:{}),
               line_items:lineItems,
               items:activeItems.map(idx=>{const it=items[idx];return{sku:it.sku,name:it.name,qty:Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0),unit_sell:safeNum(it.unit_sell)}})};
@@ -4553,7 +4557,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   {tab==='overview'&&<div className="card"><div className="card-header"><h2>Info</h2></div><div className="card-body">
     <div className="form-row form-row-3"><div><div className="form-label">Billing</div><div style={{fontSize:13}}>{customer.billing_address_line1||'--'}<br/>{customer.billing_city}, {customer.billing_state} {customer.billing_zip}</div></div>
     <div><div className="form-label">Shipping</div><div style={{fontSize:13}}>{customer.shipping_address_line1||'--'}<br/>{customer.shipping_city}, {customer.shipping_state}</div></div>
-    <div><div className="form-label">Tax</div><div style={{fontSize:13}}>{customer.tax_rate?(customer.tax_rate*100).toFixed(2)+'%':'Auto'}</div></div></div>
+    <div><div className="form-label">Tax</div><div style={{fontSize:13}}>{customer.tax_exempt?<span style={{color:'#dc2626',fontWeight:700}}>TAX EXEMPT</span>:customer.tax_rate?(customer.tax_rate*100).toFixed(2)+'%':'No rate set'}</div></div></div>
   </div></div>}
   {tab==='artwork'&&<div className="card"><div className="card-body"><div className="empty">Customer art library — aggregates from SOs (Phase 3)</div></div></div>}
   {tab==='reporting'&&<div className="card"><div className="card-header"><h2>Reporting</h2><div style={{display:'flex',gap:4}}>{[['thisyear','This Year'],['lastyear','Last Year'],['rolling','Rolling 12'],['alltime','All']].map(([v,l])=><button key={v} className={`btn btn-sm ${rR===v?'btn-primary':'btn-secondary'}`} onClick={()=>setRR(v)}>{l}</button>)}</div></div>
@@ -4944,6 +4948,9 @@ function CustModal({isOpen,onClose,onSave,customer,parents}){
     <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginTop:12,marginBottom:6,textTransform:'uppercase'}}>Pricing</div>
     <div className="form-row form-row-2"><div><label className="form-label">Tier</label><select className="form-select" value={f.adidas_ua_tier||'B'} onChange={e=>sv('adidas_ua_tier',e.target.value)}><option value="A">A - 40%</option><option value="B">B - 35%</option><option value="C">C - 30%</option></select></div>
       <div><label className="form-label">Markup</label><input className="form-input" type="number" step="0.05" value={f.catalog_markup||1.65} onChange={e=>sv('catalog_markup',parseFloat(e.target.value)||1.65)}/></div></div>
+    <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginTop:12,marginBottom:6,textTransform:'uppercase'}}>Tax</div>
+    <div className="form-row form-row-2"><div><label className="form-label">Tax Rate (%)</label><input className="form-input" type="number" step="0.25" min="0" max="15" value={f.tax_rate?(f.tax_rate*100).toFixed(4).replace(/0+$/,'').replace(/\.$/,''):''} onChange={e=>{const v=parseFloat(e.target.value);sv('tax_rate',v>0?v/100:0)}} placeholder="e.g. 7.75"/></div>
+      <div style={{display:'flex',alignItems:'center',paddingTop:20}}><label style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer',fontSize:13}}><input type="checkbox" checked={f.tax_exempt||false} onChange={e=>sv('tax_exempt',e.target.checked)} style={{width:16,height:16}}/><span style={{fontWeight:600,color:f.tax_exempt?'#dc2626':'#475569'}}>{f.tax_exempt?'Tax Exempt':'Taxable'}</span></label></div></div>
   </div>
   <div className="modal-footer"><button className="btn btn-secondary" onClick={onClose}>Cancel</button><button className="btn btn-primary" onClick={()=>{if(!ok())return;onSave({...f,id:f.id||'c'+Date.now(),parent_id:ct==='sub'?f.parent_id:null,is_active:true,_oe:f._oe||0,_os:f._os||0,_oi:f._oi||0,_ob:f._ob||0});onClose()}}>Save</button></div></div></div>);
 }
@@ -8608,7 +8615,7 @@ export default function App(){
       {/* Report controls */}
       <div style={{display:'flex',gap:8,marginBottom:12,alignItems:'center',flexWrap:'wrap'}}>
         <div style={{display:'flex',gap:4}}>
-          {[['overview','📊 Overview'],['pipeline','💰 Pipeline'],['customers','👥 Customers'],['products','📦 Products'],['reps','🏆 Reps'],['production','🏭 Production'],['time','⏱️ Time & Labor']].map(([v,l])=>
+          {[['overview','📊 Overview'],['pipeline','💰 Pipeline'],['customers','👥 Customers'],['products','📦 Products'],['reps','🏆 Reps'],['production','🏭 Production'],['time','⏱️ Time & Labor'],['sales_tax','🧾 Sales Tax']].map(([v,l])=>
             <button key={v} className={`btn btn-sm ${rptTab===v?'btn-primary':'btn-secondary'}`} onClick={()=>setRptTab(v)}>{l}</button>)}
         </div>
         <select className="form-select" style={{width:140,fontSize:11}} value={rptRep} onChange={e=>setRptRep(e.target.value)}>
@@ -9043,6 +9050,157 @@ export default function App(){
             </div>})()}
         </div>
       </>}
+
+      {/* SALES TAX REPORT */}
+      {(rptTab==='sales_tax')&&(()=>{
+        // Build tax data from invoices (realized tax) and SOs (expected tax)
+        const now=new Date();const curYear=now.getFullYear();const curMonth=now.getMonth();
+        const parseDate=d=>{if(!d)return null;try{return new Date(d)}catch{return null}};
+        const monthName=m=>['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][m];
+
+        // Tax collected from invoices (actual collections)
+        const taxInvs=filtInvs.filter(i=>i.tax>0||i.tax_rate>0).map(i=>{
+          const dt=parseDate(i.date);const c=cust.find(x=>x.id===i.customer_id);
+          const state=c?.shipping_state||c?.billing_state||'Unknown';
+          return{...i,_dt:dt,_cname:c?.name||'Unknown',_state:state.toUpperCase().trim(),_month:dt?dt.getMonth():0,_year:dt?dt.getFullYear():curYear};
+        });
+
+        // Tax expected from open SOs (not yet invoiced)
+        const taxSOs=filtSOs.filter(so=>{const c=cust.find(x=>x.id===so.customer_id);return c&&!c.tax_exempt&&(c.tax_rate||0)>0}).map(so=>{
+          const m=soCalc(so);const c=cust.find(x=>x.id===so.customer_id);const state=c?.shipping_state||c?.billing_state||'Unknown';
+          const taxAmt=m.rev*(c.tax_rate||0);
+          return{id:so.id,memo:so.memo,_cname:c?.name||'Unknown',_state:state.toUpperCase().trim(),_rev:m.rev,_tax:taxAmt,_rate:c.tax_rate,status:so.status};
+        });
+
+        // Group invoices by state for payable summary
+        const byState={};
+        taxInvs.forEach(i=>{
+          if(!byState[i._state])byState[i._state]={state:i._state,taxCollected:0,taxableRev:0,invCount:0,rate:i.tax_rate||0};
+          byState[i._state].taxCollected+=i.tax||0;
+          byState[i._state].taxableRev+=(i.tax&&i.tax_rate)?i.tax/i.tax_rate:0;
+          byState[i._state].invCount++;
+          if(i.tax_rate)byState[i._state].rate=i.tax_rate;
+        });
+        const stateRows=Object.values(byState).sort((a,b)=>b.taxCollected-a.taxCollected);
+        const totalCollected=stateRows.reduce((a,s)=>a+s.taxCollected,0);
+        const totalTaxableRev=stateRows.reduce((a,s)=>a+s.taxableRev,0);
+
+        // Monthly breakdown (last 12 months)
+        const monthly=[];
+        for(let mi=11;mi>=0;mi--){
+          const mm=(curMonth-mi+12)%12;const yy=curMonth-mi<0?curYear-1:curYear;
+          const mInvs=taxInvs.filter(i=>i._year===yy&&i._month===mm);
+          const taxAmt=mInvs.reduce((a,i)=>a+(i.tax||0),0);
+          const rev=mInvs.reduce((a,i)=>{const r=(i.tax&&i.tax_rate)?i.tax/i.tax_rate:(i.total-i.tax-(i.shipping||0));return a+r},0);
+          monthly.push({label:monthName(mm)+' '+String(yy).slice(2),tax:taxAmt,rev,count:mInvs.length});
+        }
+
+        // Tax-exempt customers
+        const exemptCusts=cust.filter(c=>c.tax_exempt&&c.is_active!==false);
+
+        // By customer breakdown
+        const byCust={};
+        taxInvs.forEach(i=>{
+          if(!byCust[i.customer_id])byCust[i.customer_id]={name:i._cname,state:i._state,taxCollected:0,invCount:0,rev:0};
+          byCust[i.customer_id].taxCollected+=i.tax||0;
+          byCust[i.customer_id].invCount++;
+          byCust[i.customer_id].rev+=(i.tax&&i.tax_rate)?i.tax/i.tax_rate:(i.total-(i.tax||0)-(i.shipping||0));
+        });
+        const custRows=Object.values(byCust).sort((a,b)=>b.taxCollected-a.taxCollected);
+
+        const maxMonthTax=Math.max(...monthly.map(m=>m.tax),1);
+
+        return<>
+        {/* KPI cards */}
+        <div className="stats-row" style={{marginBottom:16}}>
+          <div className="stat-card" style={{borderLeft:'3px solid #a16207'}}><div className="stat-label">Tax Collected (Invoiced)</div><div className="stat-value" style={{color:'#a16207'}}>${totalCollected.toLocaleString(undefined,{maximumFractionDigits:2})}</div></div>
+          <div className="stat-card" style={{borderLeft:'3px solid #166534'}}><div className="stat-label">Taxable Revenue</div><div className="stat-value" style={{color:'#166534'}}>${(totalTaxableRev/1000).toFixed(1)}k</div></div>
+          <div className="stat-card" style={{borderLeft:'3px solid #1e40af'}}><div className="stat-label">States w/ Tax</div><div className="stat-value" style={{color:'#1e40af'}}>{stateRows.length}</div></div>
+          <div className="stat-card" style={{borderLeft:'3px solid #dc2626'}}><div className="stat-label">Exempt Customers</div><div className="stat-value" style={{color:'#dc2626'}}>{exemptCusts.length}</div></div>
+        </div>
+
+        {/* Tax Payable by State/Jurisdiction */}
+        <div className="card" style={{marginBottom:12}}>
+          <div className="card-header"><h2 style={{margin:0,fontSize:14}}>🏛️ Sales Tax Payable by State</h2></div>
+          <div className="card-body">
+            {stateRows.length===0?<div className="empty">No tax collected on invoices yet. Set tax rates on customers to start tracking.</div>:
+            <table style={{fontSize:12,width:'100%'}}><thead><tr><th>State</th><th style={{textAlign:'right'}}>Tax Rate</th><th style={{textAlign:'right'}}>Taxable Revenue</th><th style={{textAlign:'right'}}>Tax Collected</th><th style={{textAlign:'center'}}>Invoices</th></tr></thead>
+            <tbody>{stateRows.map(s=><tr key={s.state}>
+              <td style={{fontWeight:700,fontSize:13}}>{s.state}</td>
+              <td style={{textAlign:'right',color:'#64748b'}}>{s.rate?(s.rate*100).toFixed(2)+'%':'—'}</td>
+              <td style={{textAlign:'right'}}>${s.taxableRev.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+              <td style={{textAlign:'right',fontWeight:700,color:'#a16207'}}>${s.taxCollected.toFixed(2)}</td>
+              <td style={{textAlign:'center'}}>{s.invCount}</td>
+            </tr>)}
+            <tr style={{borderTop:'2px solid #1e293b',fontWeight:800}}>
+              <td>TOTAL</td><td/><td style={{textAlign:'right'}}>${totalTaxableRev.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+              <td style={{textAlign:'right',color:'#a16207',fontSize:14}}>${totalCollected.toFixed(2)}</td><td style={{textAlign:'center'}}>{taxInvs.length}</td>
+            </tr></tbody></table>}
+          </div>
+        </div>
+
+        {/* Monthly Trend */}
+        <div className="card" style={{marginBottom:12}}>
+          <div className="card-header"><h2 style={{margin:0,fontSize:14}}>📈 Monthly Tax Collected</h2></div>
+          <div className="card-body">
+            <div style={{display:'flex',gap:4,alignItems:'flex-end',height:120,marginBottom:8}}>
+              {monthly.map((m,i)=><div key={i} style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:2}}>
+                <div style={{fontSize:9,fontWeight:700,color:'#a16207'}}>{m.tax>0?'$'+m.tax.toFixed(0):''}</div>
+                <div style={{width:'100%',background:m.tax>0?'#fbbf24':'#e2e8f0',borderRadius:'3px 3px 0 0',height:Math.max(2,m.tax/maxMonthTax*80)}}/>
+                <div style={{fontSize:8,color:'#64748b',textAlign:'center'}}>{m.label}</div>
+              </div>)}
+            </div>
+          </div>
+        </div>
+
+        {/* By Customer */}
+        <div className="card" style={{marginBottom:12}}>
+          <div className="card-header"><h2 style={{margin:0,fontSize:14}}>👥 Tax by Customer</h2></div>
+          <div className="card-body">
+            {custRows.length===0?<div className="empty">No tax data by customer yet.</div>:
+            <table style={{fontSize:12,width:'100%'}}><thead><tr><th>Customer</th><th>State</th><th style={{textAlign:'right'}}>Revenue</th><th style={{textAlign:'right'}}>Tax Collected</th><th style={{textAlign:'center'}}>Invoices</th></tr></thead>
+            <tbody>{custRows.slice(0,25).map((c,i)=><tr key={i}>
+              <td style={{fontWeight:600}}>{c.name}</td>
+              <td style={{color:'#64748b'}}>{c.state}</td>
+              <td style={{textAlign:'right'}}>${c.rev.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+              <td style={{textAlign:'right',fontWeight:700,color:'#a16207'}}>${c.taxCollected.toFixed(2)}</td>
+              <td style={{textAlign:'center'}}>{c.invCount}</td>
+            </tr>)}</tbody></table>}
+          </div>
+        </div>
+
+        {/* Upcoming Tax (from open SOs) */}
+        <div className="card" style={{marginBottom:12}}>
+          <div className="card-header"><h2 style={{margin:0,fontSize:14}}>📋 Expected Tax (Open Sales Orders)</h2></div>
+          <div className="card-body">
+            {taxSOs.length===0?<div className="empty">No open SOs with tax rates set.</div>:
+            <table style={{fontSize:12,width:'100%'}}><thead><tr><th>SO</th><th>Customer</th><th>State</th><th style={{textAlign:'right'}}>Revenue</th><th style={{textAlign:'right'}}>Tax Rate</th><th style={{textAlign:'right'}}>Expected Tax</th></tr></thead>
+            <tbody>{taxSOs.slice(0,25).map(s=><tr key={s.id}>
+              <td style={{fontWeight:600,color:'#1e40af'}}>{s.id}</td>
+              <td>{s._cname}</td>
+              <td style={{color:'#64748b'}}>{s._state}</td>
+              <td style={{textAlign:'right'}}>${s._rev.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+              <td style={{textAlign:'right',color:'#64748b'}}>{(s._rate*100).toFixed(2)}%</td>
+              <td style={{textAlign:'right',fontWeight:700,color:'#d97706'}}>${s._tax.toFixed(2)}</td>
+            </tr>)}
+            <tr style={{borderTop:'2px solid #1e293b',fontWeight:800}}>
+              <td colSpan={5}>TOTAL EXPECTED</td>
+              <td style={{textAlign:'right',color:'#d97706',fontSize:14}}>${taxSOs.reduce((a,s)=>a+s._tax,0).toFixed(2)}</td>
+            </tr></tbody></table>}
+          </div>
+        </div>
+
+        {/* Tax Exempt Customers */}
+        <div className="card" style={{marginBottom:12}}>
+          <div className="card-header"><h2 style={{margin:0,fontSize:14}}>🚫 Tax-Exempt Customers</h2></div>
+          <div className="card-body">
+            {exemptCusts.length===0?<div className="empty">No tax-exempt customers.</div>:
+            <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+              {exemptCusts.map(c=><span key={c.id} style={{padding:'4px 10px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:6,fontSize:12,fontWeight:600,color:'#dc2626'}}>{c.name} ({c.shipping_state||'?'})</span>)}
+            </div>}
+          </div>
+        </div>
+        </>})()}
 
       {/* Widget Customization */}
       <div className="card" style={{marginBottom:12}}>
