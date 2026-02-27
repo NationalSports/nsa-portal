@@ -5764,6 +5764,7 @@ export default function App(){
   const[soHistory,setSOHistory]=useState(()=>loadState('so_history',{}));// {soId:[{ts,user,snapshot}]}
   const[msgs,setMsgs]=useState(()=>_migrated.msgs);const[cM,setCM]=useState({open:false,c:null});const[aM,setAM]=useState({open:false,p:null});
   // ─── Supabase: load on mount ───
+  const _pendingQBTokens=useRef(null);
   const _initialLoadDone=useRef(false);
   React.useEffect(()=>{
     if(!supabase){setDbLoading(false);_initialLoadDone.current=true;return}
@@ -5983,24 +5984,13 @@ export default function App(){
     }catch{}
   },[]);
   // Handle QB OAuth callback tokens from URL hash (Netlify flow)
+  // Step 1: Parse tokens from hash immediately and save to ref (before Supabase can overwrite)
   React.useEffect(()=>{
     const hash=window.location.hash;
     if(hash.includes('tokens=')){
       try{
         const encoded=hash.split('tokens=')[1]?.split('&')[0];
-        if(encoded){
-          const tokenData=JSON.parse(atob(encoded));
-          setQBConfig(prev=>({...prev,connected:true,access_token:tokenData.access_token,refresh_token:tokenData.refresh_token,
-            realm_id:tokenData.realm_id,token_created_at:tokenData.created_at||Date.now()}));
-          fetch('/.netlify/functions/qb-api',{method:'POST',headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({action:'company_info',access_token:tokenData.access_token,realm_id:tokenData.realm_id})})
-            .then(r=>r.json()).then(d=>{
-              const ci=d?.CompanyInfo;
-              if(ci)setQBConfig(prev=>({...prev,companyId:tokenData.realm_id,companyName:ci.CompanyName||'Connected'}));
-            }).catch(()=>{});
-          window.location.hash='';
-          nf('Connected to QuickBooks Online');
-        }
+        if(encoded){_pendingQBTokens.current=JSON.parse(atob(encoded));window.location.hash=''}
       }catch(e){console.error('[QB] Token parse error:',e)}
     }
     if(hash.includes('error=')){
@@ -6009,6 +5999,20 @@ export default function App(){
       window.location.hash='';
     }
   },[]);
+  // Step 2: Apply tokens AFTER Supabase load completes so they don't get overwritten
+  React.useEffect(()=>{
+    if(dbLoading||!_pendingQBTokens.current)return;
+    const t=_pendingQBTokens.current;_pendingQBTokens.current=null;
+    setQBConfig(prev=>({...prev,connected:true,access_token:t.access_token,refresh_token:t.refresh_token,
+      realm_id:t.realm_id,token_created_at:t.created_at||Date.now()}));
+    fetch('/.netlify/functions/qb-api',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({action:'company_info',access_token:t.access_token,realm_id:t.realm_id})})
+      .then(r=>r.json()).then(d=>{
+        const ci=d?.CompanyInfo;
+        if(ci)setQBConfig(prev=>({...prev,companyId:t.realm_id,companyName:ci.CompanyName||'Connected'}));
+      }).catch(()=>{});
+    nf('Connected to QuickBooks Online');
+  },[dbLoading]);
   React.useEffect(()=>{_saveAppState('inv_pos',invPOs)},[invPOs]);
   React.useEffect(()=>{_saveAppState('inv_adj_log',invAdjLog)},[invAdjLog]);
   React.useEffect(()=>{_saveAppState('inv_po_counter',invPOCounter)},[invPOCounter]);
