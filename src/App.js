@@ -1740,7 +1740,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
   const uArt=(i,k,v)=>sv('art_files',af.map((f,x)=>x===i?{...f,[k]:v}:f));
   const rmArt=i=>sv('art_files',af.filter((_,x)=>x!==i));
 
-  const addFileToArt=i=>{const a=af[i];uArt(i,'files',[...a.files,'new_file_'+(a.files.length+1)+'.ai'])};
+  const addFileToArt=i=>{const a=af[i];if(!a)return;uArt(i,'files',[...(a.files||[]),'new_file_'+((a.files||[]).length+1)+'.ai'])};
 
   const addrs=useMemo(()=>getAddrs(cust,allCustomers),[cust,allCustomers]);
   const artQty=useMemo(()=>{const m={};safeItems(o).forEach(it=>{const q=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){m[d.art_file_id]=(m[d.art_file_id]||0)+q}})});return m},[o]);
@@ -3845,7 +3845,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         const existingFiles=(artF?.mockup_files||[]).concat(artF?.prod_files||[]);
         const artists=REPS.filter(r=>r.role==='art');
         const submitArtReq=()=>{
-          const req={id:'AR-'+Date.now(),artist:artReqModal.artist,artist_name:(artists.find(a=>a.id===artReqModal.artist)||{}).name||'',instructions:artReqModal.instructions,files:artReqModal.files,existing_files:existingFiles.map(f=>f.name||f),status:'requested',created_at:new Date().toISOString(),created_by:cu.name};
+          const req={id:'AR-'+Date.now(),artist:artReqModal.artist,artist_name:(artists.find(a=>a.id===artReqModal.artist)||{}).name||'',instructions:artReqModal.instructions,files:artReqModal.files||[],existing_files:existingFiles.map(f=>f.name||f),status:'requested',created_at:new Date().toISOString(),created_by:cu.name};
           const updatedJobs=jobs.map((jj,i)=>i===artReqModal.jIdx?{...jj,art_requests:[...(jj.art_requests||[]),req],art_status:jj.art_status==='needs_art'?'art_requested':jj.art_status,assigned_artist:artReqModal.artist||jj.assigned_artist}:jj);
           const updated={...o,jobs:updatedJobs,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setArtReqModal(null);nf('Art request sent to '+(artists.find(a=>a.id===artReqModal.artist)||{}).name||'artist');
         };
@@ -3868,14 +3868,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
               <div style={{border:'2px dashed #cbd5e1',borderRadius:8,padding:16,textAlign:'center',cursor:'pointer',background:'#f8fafc'}}
                 onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#3b82f6';e.currentTarget.style.background='#eff6ff'}}
                 onDragLeave={e=>{e.currentTarget.style.borderColor='#cbd5e1';e.currentTarget.style.background='#f8fafc'}}
-                onDrop={async e=>{e.preventDefault();e.currentTarget.style.borderColor='#cbd5e1';e.currentTarget.style.background='#f8fafc';for(const f of Array.from(e.dataTransfer.files)){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-art-requests');setArtReqModal(m=>({...m,files:[...m.files,{name:f.name,size:f.size,type:f.type,url}]}))}catch(err){nf('Upload failed: '+err.message,'error')}}}}
-                onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.onchange=async()=>{for(const f of Array.from(inp.files)){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-art-requests');setArtReqModal(m=>({...m,files:[...m.files,{name:f.name,size:f.size,type:f.type,url}]}))}catch(err){nf('Upload failed: '+err.message,'error')}}};inp.click()}}>
+                onDrop={async e=>{e.preventDefault();e.currentTarget.style.borderColor='#cbd5e1';e.currentTarget.style.background='#f8fafc';for(const f of Array.from(e.dataTransfer.files)){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-art-requests');setArtReqModal(m=>m?{...m,files:[...(m.files||[]),{name:f.name,size:f.size,type:f.type,url}]}:m)}catch(err){nf('Upload failed: '+err.message,'error')}}}}
+                onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.onchange=async()=>{for(const f of Array.from(inp.files)){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-art-requests');setArtReqModal(m=>m?{...m,files:[...(m.files||[]),{name:f.name,size:f.size,type:f.type,url}]}:m)}catch(err){nf('Upload failed: '+err.message,'error')}}};inp.click()}}>
                 <div style={{fontSize:12,color:'#64748b'}}>Drop files here or click to browse</div>
                 <div style={{fontSize:10,color:'#94a3b8',marginTop:4}}>PNG, PDF, AI, EPS, JPG</div>
               </div>
-              {artReqModal.files.length>0&&<div style={{marginTop:8}}>{artReqModal.files.map((f,i)=><div key={i} style={{display:'flex',alignItems:'center',gap:6,padding:'4px 8px',background:'#f1f5f9',borderRadius:4,fontSize:11,marginBottom:4}}>
+              {(artReqModal.files||[]).length>0&&<div style={{marginTop:8}}>{(artReqModal.files||[]).map((f,i)=><div key={i} style={{display:'flex',alignItems:'center',gap:6,padding:'4px 8px',background:'#f1f5f9',borderRadius:4,fontSize:11,marginBottom:4}}>
                 <span>{f.name}</span><span style={{color:'#94a3b8',marginLeft:'auto'}}>{(f.size/1024).toFixed(0)}KB</span>
-                <button style={{background:'none',border:'none',color:'#ef4444',cursor:'pointer',fontSize:14,padding:0}} onClick={()=>setArtReqModal(m=>({...m,files:m.files.filter((_,fi)=>fi!==i)}))}>×</button>
+                <button style={{background:'none',border:'none',color:'#ef4444',cursor:'pointer',fontSize:14,padding:0}} onClick={()=>setArtReqModal(m=>({...m,files:(m.files||[]).filter((_,fi)=>fi!==i)}))}>×</button>
               </div>)}</div>}
             </div>
             {existingFiles.length>0&&<div style={{marginBottom:12}}>
