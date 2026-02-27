@@ -189,7 +189,7 @@ const _dbSaveSO = async (so) => {
     await supabase.from('so_firm_dates').delete().eq('so_id',so.id);
     if(art_files?.length) await supabase.from('so_art_files').upsert(art_files.map(a=>({...a,so_id:so.id})),{onConflict:'so_id,id'});
     if(firm_dates?.length) await supabase.from('so_firm_dates').insert(firm_dates.map(f=>({...f,so_id:so.id})));
-    if(jobs?.length) await supabase.from('so_jobs').insert(jobs.map(j=>({...j,so_id:so.id})));
+    if(jobs?.length) await supabase.from('so_jobs').insert(jobs.map(j=>({..._pick(j,_jobCols),so_id:so.id})));
     if(!items?.length)return;
     for(let idx=0;idx<items.length;idx++){
       const{decorations,pick_lines,po_lines,...itemData}=items[idx];
@@ -310,6 +310,7 @@ const _estCols=['id','customer_id','memo','status','created_by','created_at','up
 const _soCols=['id','customer_id','estimate_id','memo','status','created_by','created_at','updated_at','expected_date','production_notes','shipping_type','shipping_value','ship_to_id','default_markup','omg_store_id','_shipstation_order_id','_shipping_status','_tracking_number','_carrier','_ship_date','_tracking_url','_shipped','deleted_at'];
 const _itemCols=['product_id','sku','name','brand','color','nsa_cost','retail_price','unit_sell','sizes','available_sizes','_colors','no_deco','is_custom','custom_desc','custom_cost','custom_sell'];
 const _decoCols=['kind','position','type','art_file_id','art_tbd_type','tbd_colors','tbd_stitches','tbd_dtf_size','sell_override','sell_each','cost_each','underbase','two_color','colors','stitches','dtf_size','num_method','num_size','roster','names','names_list','vendor','deco_type','notes','custom_font_art_id','_showRoster'];
+const _jobCols=['id','key','art_file_id','art_name','deco_type','positions','art_status','item_status','prod_status','total_units','fulfilled_units','split_from','created_at','assigned_machine','assigned_to','ship_method','items','_auto','art_requests','art_messages','assigned_artist','rep_notes','rejections'];
 const _custCols=['id','parent_id','name','alpha_tag','billing_address_line1','billing_address_line2','billing_city','billing_state','billing_zip','shipping_address_line1','shipping_address_line2','shipping_city','shipping_state','shipping_zip','adidas_ua_tier','catalog_markup','payment_terms','tax_rate','tax_exempt','primary_rep_id','notes','is_active','created_at','updated_at'];
 // Legacy compat — keep old _dbSave for team_members and other simple tables
 const _dbSave = (table, data) => { if(supabase && data) supabase.from(table).upsert(Array.isArray(data)?data:[data], {onConflict:'id'}).then(r=>{if(r.error)console.error('[DB] save '+table+':', r.error.message)}) };
