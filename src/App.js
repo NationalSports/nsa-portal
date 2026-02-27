@@ -229,18 +229,20 @@ const _dbSaveInvoice = async (inv) => {
     }
   }catch(e){console.error('[DB] save invoice:',e)}
 };
+let _dbNotify=null; // set by App component for visible error toasts
 const _dbSaveCustomer = async (c) => {
-  if(!supabase)return;
+  if(!supabase){console.warn('[DB] save customer skipped — no supabase');return false}
   try{
     const{contacts,_oe,_os,_oi,_ob,...custRow}=c;
     custRow.updated_at=new Date().toISOString();
     if(!custRow.created_at)custRow.created_at=custRow.updated_at;
     const{error:custErr}=await supabase.from('customers').upsert(_pick(custRow,_custCols),{onConflict:'id'});
-    if(custErr)console.error('[DB] save customer upsert error:',custErr.message);
+    if(custErr){console.error('[DB] save customer upsert error:',custErr.message);if(_dbNotify)_dbNotify('Customer save failed: '+custErr.message,'error');return false}
     const{error:delErr}=await supabase.from('customer_contacts').delete().eq('customer_id',c.id);
-    if(delErr)console.error('[DB] delete contacts error:',delErr.message);
-    if(contacts?.length){const{error:insErr}=await supabase.from('customer_contacts').insert(contacts.map((ct,i)=>({customer_id:c.id,name:ct.name,email:ct.email,phone:ct.phone,role:ct.role,sort_order:i})));if(insErr)console.error('[DB] insert contacts error:',insErr.message)}
-  }catch(e){console.error('[DB] save customer:',e)}
+    if(delErr){console.error('[DB] delete contacts error:',delErr.message)}
+    if(contacts?.length){const{error:insErr}=await supabase.from('customer_contacts').insert(contacts.map((ct,i)=>({customer_id:c.id,name:ct.name,email:ct.email,phone:ct.phone,role:ct.role,sort_order:i})));if(insErr){console.error('[DB] insert contacts error:',insErr.message)}}
+    console.log('[DB] Customer saved:',c.id,c.name);return true;
+  }catch(e){console.error('[DB] save customer:',e);if(_dbNotify)_dbNotify('Customer save failed: '+e.message,'error');return false}
 };
 const _dbSaveProduct = async (p) => {
   if(!supabase)return;
@@ -5955,7 +5957,7 @@ export default function App(){
   // Auto-save to localStorage + Supabase (normalized, only after initial load is complete)
   // IMPORTANT: Supabase writes are gated behind _dbLoadSuccess to prevent demo/stale data from overwriting real cloud data
   // Uses _dbSnap to diff against last DB state — only saves records that actually changed (prevents cross-browser feedback loops)
-  const _diffSave=(arr,snapKey,saveFn)=>{if(!_initialLoadDone.current||!_dbLoadSuccess.current)return;const snap=_dbSnap.current[snapKey]||[];arr.forEach(item=>{const old=snap.find(p=>p.id===item.id);if(!old||JSON.stringify(old)!==JSON.stringify(item))saveFn(item)});_dbSnap.current[snapKey]=arr};
+  const _diffSave=(arr,snapKey,saveFn)=>{if(!_initialLoadDone.current||!_dbLoadSuccess.current){console.warn('[DB] _diffSave skipped for',snapKey,'— initialLoad:',_initialLoadDone.current,'dbSuccess:',_dbLoadSuccess.current);return}const snap=_dbSnap.current[snapKey]||[];const failedIds=new Set();arr.forEach(item=>{const old=snap.find(p=>p.id===item.id);if(!old||JSON.stringify(old)!==JSON.stringify(item)){const result=saveFn(item);if(result&&typeof result.then==='function')result.then(ok=>{if(ok===false){failedIds.add(item.id);const oldSnap=_dbSnap.current[snapKey]||[];_dbSnap.current[snapKey]=oldSnap.map(s=>s.id===item.id?(snap.find(p=>p.id===item.id)||s):s)}})}});_dbSnap.current[snapKey]=arr};
   React.useEffect(()=>{try{localStorage.setItem('nsa_reps',JSON.stringify(REPS))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.team||[];const changed=REPS.filter(r=>{const old=snap.find(p=>p.id===r.id);return!old||JSON.stringify(old)!==JSON.stringify(r)});if(changed.length)_dbSave('team_members',changed.map(r=>({id:r.id,name:r.name,role:r.role,email:r.email,phone:r.phone,is_active:r.is_active!==false})));_dbSnap.current.team=REPS}},[REPS]);
   React.useEffect(()=>{try{localStorage.setItem('nsa_cust',JSON.stringify(cust))}catch{};_diffSave(cust,'cust',c=>_dbSaveCustomer(c))},[cust]);
   React.useEffect(()=>{try{localStorage.setItem('nsa_vend',JSON.stringify(vend))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.vend||[];const changed=vend.filter(v=>{const old=snap.find(p=>p.id===v.id);return!old||JSON.stringify(old)!==JSON.stringify(v)});if(changed.length)_dbSave('vendors',changed);_dbSnap.current.vend=vend}},[vend]);
@@ -6042,10 +6044,10 @@ export default function App(){
   const handleLogin=(user)=>{setCu(user);try{localStorage.setItem('nsa_user',JSON.stringify(user))}catch{}};
   const handleLogout=()=>{setCu(null);try{localStorage.removeItem('nsa_user')}catch{}};
   const isA=cu?.role==='admin';
-  const nf=(m,t='success')=>{setToast({msg:m,type:t});setTimeout(()=>setToast(null),3500)};
+  const nf=(m,t='success')=>{setToast({msg:m,type:t});setTimeout(()=>setToast(null),3500)};_dbNotify=nf;
   const pars=useMemo(()=>cust.filter(c=>!c.parent_id),[cust]);const gK=useCallback(pid=>cust.filter(c=>c.parent_id===pid),[cust]);
   const cols=useMemo(()=>[...new Set(prod.map(p=>p.color).filter(Boolean))].sort(),[prod]);
-  const savC=c=>{setCust(p=>{const e=p.find(x=>x.id===c.id);return e?p.map(x=>x.id===c.id?c:x):[...p,c]});nf('Saved')};
+  const savC=c=>{console.log('[SAVE] Customer save triggered:',c.id,c.name,{tax_rate:c.tax_rate,contacts:c.contacts?.length,shipping_state:c.shipping_state});setCust(p=>{const e=p.find(x=>x.id===c.id);return e?p.map(x=>x.id===c.id?c:x):[...p,c]});nf('Saved')};
   // Lock decoration pricing on save so matrix changes don't affect existing orders
   const lockPrices=(order)=>{const af=order.art_files||[];
     if(!order.items)return order;
