@@ -2051,6 +2051,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       return(<div key={idx} id={'so-item-'+idx} className="card" style={{marginBottom:12,transition:'box-shadow 0.3s'}}>
         <div style={{padding:'12px 18px',borderBottom:'1px solid #f1f5f9'}}>
           <div style={{display:'flex',gap:12,alignItems:'center'}}>
+            {(()=>{const prd=prod.find(pp=>pp.id===item.product_id||pp.sku===item.sku);return<div style={{display:'flex',gap:4,flexShrink:0}}>
+              <ImgUpload url={prd?.image_url||''} onUpload={u=>{if(prd){const up={...prd,image_url:u};setProd(ps=>ps.map(x=>x.id===prd.id?up:x));_dbSaveProduct(up)}nf('Front image saved')}} onError={e=>nf(e,'error')} size={44}/>
+              <ImgUpload url={prd?.back_image_url||''} onUpload={u=>{if(prd){const up={...prd,back_image_url:u};setProd(ps=>ps.map(x=>x.id===prd.id?up:x));_dbSaveProduct(up)}nf('Back image saved')}} onError={e=>nf(e,'error')} size={44}/>
+            </div>})()}
             <div style={{flex:1}}>
               <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
                 {item.is_custom?<input className="form-input" value={item.sku} onChange={e=>uI(idx,'sku',e.target.value)} style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'3px 10px',borderRadius:4,fontSize:15,width:100,border:'1px solid #93c5fd'}}/>
@@ -6146,6 +6150,7 @@ export default function App(){
   const[q,setQ]=useState('');const[selC,setSelC]=useState(null);const[selV,setSelV]=useState(null);const[selP,setSelP]=useState(null);
   // Keep selC/selV/selP in sync with their source arrays after saves/reloads
   React.useEffect(()=>{if(selC){const u=cust.find(c=>c.id===selC.id);if(u&&u!==selC)setSelC(u);else if(!u)setSelC(null)}},[cust]); // eslint-disable-line
+  React.useEffect(()=>{if(selP){const u=prod.find(p=>p.id===selP.id);if(u&&u!==selP)setSelP(u);else if(!u)setSelP(null)}},[prod]); // eslint-disable-line
   const[eEst,setEEst]=useState(null);const[eEstC,setEEstC]=useState(null);const[eSO,setESO]=useState(null);const[eSOC,setESOC]=useState(null);const[eSOTab,setESOTab]=useState(null);const[eSOScrollItem,setESOScrollItem]=useState(null);const[eSOScrollJob,setESOScrollJob]=useState(null);
   const[gQ,setGQ]=useState('');const[gOpen,setGOpen]=useState(false);const[mF,setMF]=useState('all');const[rF,setRF]=useState('all');const[pF,setPF]=useState({cat:'all',vnd:'all',stk:'all',clr:'all'});
   const[qPC,setQPC]=useState({open:false,mode:'single',items:[],bulkRaw:''});
@@ -6989,16 +6994,17 @@ export default function App(){
       return{month:MONTHS[mi],units,revenue,orders}});
     const totalUnits=monthlyData.reduce((a,m)=>a+m.units,0);const totalRev=monthlyData.reduce((a,m)=>a+m.revenue,0);const totalOrders=monthlyData.reduce((a,m)=>a+m.orders,0);
     const maxUnits=Math.max(...monthlyData.map(m=>m.units),1);
-    const saveProduct=()=>{setProd(p=>p.map(x=>x.id===ep.id?ep:x));setEditing(false);nf('Product updated');setSelP(ep)};
+    const saveProduct=()=>{setProd(p=>p.map(x=>x.id===ep.id?ep:x));setEditing(false);nf('Product updated')};
+    const imgSave=(up)=>{setEp(up);_dbSaveProduct(up);nf('Image saved')};
     const nt=Object.values(ep._inv||{}).reduce((a,v2)=>a+v2,0);
     return(<div>
       <button className="btn btn-secondary" onClick={onBack} style={{marginBottom:12}}><Icon name="chevron-left" size={14}/> Products</button>
       <div className="card" style={{marginBottom:16}}><div className="card-body">
         <div style={{display:'flex',gap:16,alignItems:'flex-start'}}>
           <div style={{display:'flex',flexDirection:'column',gap:4,alignItems:'center'}}>
-            <ImgUpload url={ep.image_url} onUpload={u=>{const up={...ep,image_url:u};setEp(up);setProd(p=>p.map(x=>x.id===up.id?up:x));setSelP(up);nf('Front image uploaded')}} onError={e=>nf(e,'error')} size={80}/>
+            <ImgUpload url={ep.image_url} onUpload={u=>imgSave({...ep,image_url:u})} onError={e=>nf(e,'error')} size={80}/>
             <span style={{fontSize:9,color:'#64748b',fontWeight:600}}>Front</span>
-            <ImgUpload url={ep.back_image_url} onUpload={u=>{const up={...ep,back_image_url:u};setEp(up);setProd(p=>p.map(x=>x.id===up.id?up:x));setSelP(up);nf('Back image uploaded')}} onError={e=>nf(e,'error')} size={80}/>
+            <ImgUpload url={ep.back_image_url} onUpload={u=>imgSave({...ep,back_image_url:u})} onError={e=>nf(e,'error')} size={80}/>
             <span style={{fontSize:9,color:'#64748b',fontWeight:600}}>Back</span>
           </div>
           <div style={{flex:1}}>
