@@ -13,3 +13,6 @@ build/
 .env.production.local
 
 npm-debug.log*
+
+# supabase
+supabase/.temp/
