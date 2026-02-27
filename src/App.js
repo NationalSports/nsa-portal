@@ -1741,8 +1741,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
   const totals=useMemo(()=>{let rev=0,cost=0;safeItems(o).forEach(it=>{const q=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);if(!q)return;rev+=q*safeNum(it.unit_sell);cost+=q*safeNum(it.nsa_cost);
     safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:q;const dp=dP(d,q,af,cq);rev+=q*dp.sell;cost+=q*dp.cost});
     (it.po_lines||[]).filter(pl=>pl.po_type==='outside_deco').forEach(pl=>{const poQty=Object.entries(pl).filter(([k,v])=>typeof v==='number'&&!['unit_cost'].includes(k)).reduce((a,[,v])=>a+v,0);cost+=poQty*safeNum(pl.unit_cost)})});
-    const ship=o.shipping_type==='pct'?rev*(o.shipping_value||0)/100:(o.shipping_value||0);const tax=rev*(cust?.tax_rate||0);
-    return{rev,cost,ship,tax,grand:rev+ship+tax,margin:rev-cost,pct:rev>0?((rev-cost)/rev*100):0}},[o,artQty]); // eslint-disable-line
+    const ship=o.shipping_type==='pct'?rev*(o.shipping_value||0)/100:(o.shipping_value||0);const taxRate=cust?.tax_exempt?0:(cust?.tax_rate||0);const tax=rev*taxRate;
+    return{rev,cost,ship,tax,taxRate,grand:rev+ship+tax,margin:rev-cost,pct:rev>0?((rev-cost)/rev*100):0}},[o,artQty]); // eslint-disable-line
 
   // AUTO-SYNC JOBS from decorations — one job per unique artwork across entire SO
   const syncJobs=useCallback(()=>{
@@ -1852,7 +1852,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           {!cust?<div style={{marginBottom:8}}><label className="form-label">Select Customer *</label><SearchSelect options={allCustomers.map(c=>({value:c.id,label:`${c.name} (${c.alpha_tag})`}))} value={o.customer_id} onChange={selC} placeholder="Search customer..."/></div>
           :<div><div style={{display:'flex',alignItems:'center',gap:6}}><span style={{fontSize:18,fontWeight:800}}>{cust.name}</span> <span style={{fontSize:14,color:'#64748b'}}>({cust.alpha_tag})</span>
             <button style={{background:'none',border:'none',cursor:'pointer',color:'#64748b',fontSize:10,textDecoration:'underline',padding:0}} onClick={()=>{if(window.confirm('Change customer for '+o.id+'? This will update pricing tier.'))selC(null);setCust(null)}}>change</button></div>
-            <div style={{fontSize:13,color:'#64748b'}}>Tier {cust.adidas_ua_tier} | {o.default_markup||1.65}x | Tax: {cust.tax_rate?(cust.tax_rate*100).toFixed(2)+'%':'N/A'}</div></div>}
+            <div style={{fontSize:13,color:'#64748b'}}>Tier {cust.adidas_ua_tier} | {o.default_markup||1.65}x | Tax: {cust.tax_rate?(cust.tax_rate*100).toFixed(3)+'%':'N/A'}</div></div>}
           {isSO&&o.estimate_id&&<div style={{fontSize:11,color:'#7c3aed'}}>From: {o.estimate_id}</div>}
           <div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>By {REPS.find(r=>r.id===o.created_by)?.name} · {o.created_at}</div>
           {isSO&&o._tracking_number&&<div style={{padding:8,background:'#f0fdf4',borderRadius:6,marginTop:8}}>
@@ -1871,7 +1871,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           </div>}
         </div>
         <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-          {[{l:'REV',v:totals.rev,bg:'#f0fdf4',c:'#166534'},{l:'COST',v:totals.cost,bg:'#fef2f2',c:'#dc2626'},{l:'MARGIN',v:totals.margin,bg:'#dbeafe',c:'#1e40af',s:`${totals.pct.toFixed(1)}%`},{l:'TOTAL',v:totals.grand,bg:'#faf5ff',c:'#7c3aed',s:'+tax+ship'}].map(x=>
+          {[{l:'REV',v:totals.rev,bg:'#f0fdf4',c:'#166534'},{l:'COST',v:totals.cost,bg:'#fef2f2',c:'#dc2626'},{l:'MARGIN',v:totals.margin,bg:'#dbeafe',c:'#1e40af',s:`${totals.pct.toFixed(1)}%`},
+            ...(totals.ship>0?[{l:'SHIP',v:totals.ship,bg:'#f0f9ff',c:'#0369a1'}]:[]),
+            ...(totals.tax>0?[{l:'TAX',v:totals.tax,bg:'#fefce8',c:'#a16207',s:(totals.taxRate*100).toFixed(3)+'%'}]:[]),
+            ...(cust?.tax_exempt?[{l:'TAX',v:0,bg:'#fef2f2',c:'#dc2626',s:'EXEMPT'}]:[]),
+            {l:'TOTAL',v:totals.grand,bg:'#faf5ff',c:'#7c3aed'}].map(x=>
             <div key={x.l} style={{textAlign:'center',padding:'8px 12px',background:x.bg,borderRadius:8,minWidth:72}}><div style={{fontSize:9,color:x.c,fontWeight:700}}>{x.l}</div><div style={{fontSize:17,fontWeight:800,color:x.c}}>${x.v.toLocaleString(undefined,{maximumFractionDigits:0})}</div>{x.s&&<div style={{fontSize:9,color:'#94a3b8'}}>{x.s}</div>}</div>)}</div>
       </div>
       <div style={{display:'flex',gap:8,marginTop:12,alignItems:'end',flexWrap:'wrap'}}>
@@ -1909,7 +1913,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           const items=safeItems(o).filter(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
           const _pAQ={};items.forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'){_pAQ[d.art_file_id]=(_pAQ[d.art_file_id]||0)+q2}})});
           const isRolled=(o.pricing_mode||'itemized')==='rolled_up';
-          const taxRate=cust?.tax_rate||0;
+          const taxRate=cust?.tax_exempt?0:(cust?.tax_rate||0);
           const rows=[];let subTotal=0;
           items.forEach(it=>{
             const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
@@ -3087,7 +3091,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
             const inv={id:invId,type:'invoice',inv_type:invType,customer_id:o.customer_id,so_id:o.id,
               date:invDate,due_date:dueDate,total:Math.round(invTotal*100)/100,paid:0,
               memo:invMemo||defaultMemo,status:'open',_rep:o.created_by||cu.id,
-              tax:Math.round(invTaxAmt*100)/100,shipping:Math.round(invShipAmt*100)/100,
+              tax:Math.round(invTaxAmt*100)/100,tax_rate:cust?.tax_exempt?0:(cust?.tax_rate||0),tax_exempt:cust?.tax_exempt||false,shipping:Math.round(invShipAmt*100)/100,
               ...(invType==='deposit'?{deposit_pct:invDepositPct}:{}),
               line_items:lineItems,
               items:activeItems.map(idx=>{const it=items[idx];return{sku:it.sku,name:it.name,qty:Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0),unit_sell:safeNum(it.unit_sell)}})};
@@ -4553,7 +4557,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   {tab==='overview'&&<div className="card"><div className="card-header"><h2>Info</h2></div><div className="card-body">
     <div className="form-row form-row-3"><div><div className="form-label">Billing</div><div style={{fontSize:13}}>{customer.billing_address_line1||'--'}<br/>{customer.billing_city}, {customer.billing_state} {customer.billing_zip}</div></div>
     <div><div className="form-label">Shipping</div><div style={{fontSize:13}}>{customer.shipping_address_line1||'--'}<br/>{customer.shipping_city}, {customer.shipping_state}</div></div>
-    <div><div className="form-label">Tax</div><div style={{fontSize:13}}>{customer.tax_rate?(customer.tax_rate*100).toFixed(2)+'%':'Auto'}</div></div></div>
+    <div><div className="form-label">Tax</div><div style={{fontSize:13}}>{customer.tax_exempt?<span style={{color:'#dc2626',fontWeight:700}}>TAX EXEMPT</span>:customer.tax_rate?(customer.tax_rate*100).toFixed(3)+'%':'No rate set'}</div></div></div>
   </div></div>}
   {tab==='artwork'&&<div className="card"><div className="card-body"><div className="empty">Customer art library — aggregates from SOs (Phase 3)</div></div></div>}
   {tab==='reporting'&&<div className="card"><div className="card-header"><h2>Reporting</h2><div style={{display:'flex',gap:4}}>{[['thisyear','This Year'],['lastyear','Last Year'],['rolling','Rolling 12'],['alltime','All']].map(([v,l])=><button key={v} className={`btn btn-sm ${rR===v?'btn-primary':'btn-secondary'}`} onClick={()=>setRR(v)}>{l}</button>)}</div></div>
@@ -4917,8 +4921,9 @@ function VendDetail({vendor,onBack}){return(<div><button className="btn btn-seco
 // MODALS
 function CustModal({isOpen,onClose,onSave,customer,parents}){
   const b={parent_id:null,name:'',alpha_tag:'',contacts:[{name:'',email:'',phone:'',role:'Head Coach'}],shipping_city:'',shipping_state:'',adidas_ua_tier:'B',catalog_markup:1.65,payment_terms:'net30'};
-  const[f,setF]=useState(customer||b);const[ct,setCt]=useState(customer?.parent_id?'sub':'parent');const[err,setErr]=useState({});
-  const sv=(k,v)=>setF(x=>({...x,[k]:v}));React.useEffect(()=>{setF(customer||b);setCt(customer?.parent_id?'sub':'parent');setErr({})},[customer,isOpen]); // eslint-disable-line
+  const[f,setF]=useState(customer||b);const[ct,setCt]=useState(customer?.parent_id?'sub':'parent');const[err,setErr]=useState({});const[tcLook,setTcLook]=useState({loading:false,msg:''});
+  const APPAREL_EXEMPT=['MN','NJ','PA','VT','AK','DE','MT','NH','OR'];const APPAREL_THRESHOLD=['MA','NY','RI'];
+  const sv=(k,v)=>setF(x=>({...x,[k]:v}));React.useEffect(()=>{setF(customer||b);setCt(customer?.parent_id?'sub':'parent');setErr({});setTcLook({loading:false,msg:''})},[customer,isOpen]); // eslint-disable-line
   const addC=()=>sv('contacts',[...(f.contacts||[]),{name:'',email:'',phone:'',role:'Head Coach'}]);const rmC=i=>sv('contacts',(f.contacts||[]).filter((_,x)=>x!==i));
   const upC=(i,k,v)=>sv('contacts',(f.contacts||[]).map((c,x)=>x===i?{...c,[k]:v}:c));
   const ok=()=>{const e={};if(!f.name)e.n=1;if(!f.alpha_tag)e.a=1;if(!f.shipping_city)e.c=1;if(!f.shipping_state)e.s=1;if(ct==='sub'&&!f.parent_id)e.p=1;if(!(f.contacts||[])[0]?.name)e.cn=1;if(!(f.contacts||[])[0]?.email)e.ce=1;setErr(e);return!Object.keys(e).length};
@@ -4944,6 +4949,12 @@ function CustModal({isOpen,onClose,onSave,customer,parents}){
     <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginTop:12,marginBottom:6,textTransform:'uppercase'}}>Pricing</div>
     <div className="form-row form-row-2"><div><label className="form-label">Tier</label><select className="form-select" value={f.adidas_ua_tier||'B'} onChange={e=>sv('adidas_ua_tier',e.target.value)}><option value="A">A - 40%</option><option value="B">B - 35%</option><option value="C">C - 30%</option></select></div>
       <div><label className="form-label">Markup</label><input className="form-input" type="number" step="0.05" value={f.catalog_markup||1.65} onChange={e=>sv('catalog_markup',parseFloat(e.target.value)||1.65)}/></div></div>
+    <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginTop:12,marginBottom:6,textTransform:'uppercase'}}>Tax</div>
+    <div className="form-row form-row-2"><div><label className="form-label">Tax Rate (%)</label><div style={{display:'flex',gap:6}}><input className="form-input" type="number" step="0.125" min="0" max="15" value={f.tax_rate?(f.tax_rate*100).toFixed(4).replace(/0+$/,'').replace(/\.$/,''):''} onChange={e=>{const v=parseFloat(e.target.value);sv('tax_rate',v>0?v/100:0)}} placeholder="e.g. 7.875" style={{flex:1}}/><button className="btn btn-sm btn-secondary" disabled={tcLook.loading||!f.shipping_state||!f.shipping_zip} title={!f.shipping_state||!f.shipping_zip?'Enter shipping state & ZIP first':'Lookup rate from TaxCloud'} style={{whiteSpace:'nowrap',fontSize:11}} onClick={async()=>{setTcLook({loading:true,msg:''});try{const r=await supabase.functions.invoke('taxcloud-lookup',{body:{address1:f.shipping_address_line1||'',city:f.shipping_city||'',state:f.shipping_state,zip5:f.shipping_zip}});if(r.data?.ok){sv('tax_rate',r.data.tax_rate);setTcLook({loading:false,msg:r.data.tax_pct+'% (TaxCloud)'})}else{setTcLook({loading:false,msg:r.data?.error||'Lookup failed'})}}catch(e){setTcLook({loading:false,msg:'Error: '+e.message})}}}>{tcLook.loading?'...':'TaxCloud'}</button></div>
+    {tcLook.msg&&<div style={{fontSize:10,marginTop:3,color:tcLook.msg.includes('fail')||tcLook.msg.includes('Error')?'#dc2626':'#166534'}}>{tcLook.msg}</div>}
+    {f.shipping_state&&APPAREL_EXEMPT.includes(f.shipping_state.toUpperCase())&&<div style={{fontSize:10,marginTop:3,color:'#7c3aed'}}>{f.shipping_state.toUpperCase()} does not tax apparel</div>}
+    {f.shipping_state&&APPAREL_THRESHOLD.includes(f.shipping_state.toUpperCase())&&<div style={{fontSize:10,marginTop:3,color:'#b45309'}}>{f.shipping_state.toUpperCase()} exempts apparel under threshold</div>}</div>
+      <div style={{display:'flex',alignItems:'center',paddingTop:20}}><label style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer',fontSize:13}}><input type="checkbox" checked={f.tax_exempt||false} onChange={e=>sv('tax_exempt',e.target.checked)} style={{width:16,height:16}}/><span style={{fontWeight:600,color:f.tax_exempt?'#dc2626':'#475569'}}>{f.tax_exempt?'Tax Exempt':'Taxable'}</span></label></div></div>
   </div>
   <div className="modal-footer"><button className="btn btn-secondary" onClick={onClose}>Cancel</button><button className="btn btn-primary" onClick={()=>{if(!ok())return;onSave({...f,id:f.id||'c'+Date.now(),parent_id:ct==='sub'?f.parent_id:null,is_active:true,_oe:f._oe||0,_os:f._os||0,_oi:f._oi||0,_ob:f._ob||0});onClose()}}>Save</button></div></div></div>);
 }
@@ -5493,7 +5504,7 @@ export default function App(){
   const[dashView,setDashView]=useState('admin');// admin|sales|warehouse|decorator|production|csr
   const[prodDashFilter,setProdDashFilter]=useState(null);// null|'hold'|'ready'|'staging'|'in_process'|'completed'
   const[qbConfig,setQBConfig]=useState({connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',
-    mapping:{income_account:'Sales',cogs_account:'Cost of Goods Sold',deco_account:'Subcontractor - Decoration',ar_account:'Accounts Receivable',ap_account:'Accounts Payable'},
+    mapping:{income_account:'Sales',cogs_account:'Cost of Goods Sold',deco_account:'Subcontractor - Decoration',ar_account:'Accounts Receivable',ap_account:'Accounts Payable',tax_account:'Sales Tax Payable'},
     syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}});
   // Persistent state — loads from localStorage, falls back to demo data
   const loadState=(key,fallback)=>{try{const s=localStorage.getItem('nsa_'+key);return s?JSON.parse(s):fallback}catch{return fallback}};
@@ -5792,6 +5803,27 @@ export default function App(){
   React.useEffect(()=>{_saveAppState('change_log',changeLog)},[changeLog]);
   React.useEffect(()=>{_saveAppState('so_history',soHistory)},[soHistory]);
   React.useEffect(()=>{_saveAppState('qb_config',qbConfig)},[qbConfig]);
+  // Handle QB OAuth callback redirect
+  React.useEffect(()=>{
+    try{
+      const params=new URLSearchParams(window.location.search);
+      if(params.get('qb_connected')==='true'){
+        const company=params.get('qb_company')||'';
+        const realm=params.get('qb_realm')||'';
+        setQBConfig(prev=>({...prev,connected:true,companyId:realm,companyName:company}));
+        nf('Connected to QuickBooks Online'+(company?' — '+company:''));
+        // Clean URL
+        const u=new URL(window.location);u.searchParams.delete('qb_connected');u.searchParams.delete('qb_company');u.searchParams.delete('qb_realm');
+        window.history.replaceState({},'',u);
+        sessionStorage.removeItem('qb_oauth_state');
+      }else if(params.get('qb_error')){
+        nf('QB connection failed: '+params.get('qb_error'));
+        const u=new URL(window.location);u.searchParams.delete('qb_error');
+        window.history.replaceState({},'',u);
+        sessionStorage.removeItem('qb_oauth_state');
+      }
+    }catch{}
+  },[]);
   React.useEffect(()=>{_saveAppState('inv_pos',invPOs)},[invPOs]);
   React.useEffect(()=>{_saveAppState('inv_adj_log',invAdjLog)},[invAdjLog]);
   React.useEffect(()=>{_saveAppState('inv_po_counter',invPOCounter)},[invPOCounter]);
@@ -8608,7 +8640,7 @@ export default function App(){
       {/* Report controls */}
       <div style={{display:'flex',gap:8,marginBottom:12,alignItems:'center',flexWrap:'wrap'}}>
         <div style={{display:'flex',gap:4}}>
-          {[['overview','📊 Overview'],['pipeline','💰 Pipeline'],['customers','👥 Customers'],['products','📦 Products'],['reps','🏆 Reps'],['production','🏭 Production'],['time','⏱️ Time & Labor']].map(([v,l])=>
+          {[['overview','📊 Overview'],['pipeline','💰 Pipeline'],['customers','👥 Customers'],['products','📦 Products'],['reps','🏆 Reps'],['production','🏭 Production'],['time','⏱️ Time & Labor'],['sales_tax','🧾 Sales Tax']].map(([v,l])=>
             <button key={v} className={`btn btn-sm ${rptTab===v?'btn-primary':'btn-secondary'}`} onClick={()=>setRptTab(v)}>{l}</button>)}
         </div>
         <select className="form-select" style={{width:140,fontSize:11}} value={rptRep} onChange={e=>setRptRep(e.target.value)}>
@@ -9043,6 +9075,214 @@ export default function App(){
             </div>})()}
         </div>
       </>}
+
+      {/* SALES TAX REPORT */}
+      {(rptTab==='sales_tax')&&(()=>{
+        // Build tax data from invoices (realized tax) and SOs (expected tax)
+        const now=new Date();const curYear=now.getFullYear();const curMonth=now.getMonth();
+        const parseDate=d=>{if(!d)return null;try{return new Date(d)}catch{return null}};
+        const monthName=m=>['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][m];
+        const qLabel=q=>'Q'+(q+1);
+        const getQ=m=>Math.floor(m/3); // 0=Q1(Jan-Mar), 1=Q2(Apr-Jun), 2=Q3(Jul-Sep), 3=Q4(Oct-Dec)
+        const curQ=getQ(curMonth);
+
+        // Tax collected from invoices (actual collections)
+        const taxInvs=filtInvs.filter(i=>i.tax>0||i.tax_rate>0).map(i=>{
+          const dt=parseDate(i.date);const c=cust.find(x=>x.id===i.customer_id);
+          const state=c?.shipping_state||c?.billing_state||'Unknown';
+          const city=c?.shipping_city||c?.billing_city||'';
+          return{...i,_dt:dt,_cname:c?.name||'Unknown',_state:state.toUpperCase().trim(),_city:city.trim(),_month:dt?dt.getMonth():0,_year:dt?dt.getFullYear():curYear,_q:dt?getQ(dt.getMonth()):curQ};
+        });
+
+        // Running totals: current month, current quarter, current year
+        const thisMonthInvs=taxInvs.filter(i=>i._year===curYear&&i._month===curMonth);
+        const thisQInvs=taxInvs.filter(i=>i._year===curYear&&i._q===curQ);
+        const thisYearInvs=taxInvs.filter(i=>i._year===curYear);
+        const monthTax=thisMonthInvs.reduce((a,i)=>a+(i.tax||0),0);
+        const qTax=thisQInvs.reduce((a,i)=>a+(i.tax||0),0);
+        const yearTax=thisYearInvs.reduce((a,i)=>a+(i.tax||0),0);
+        const totalCollectedAll=taxInvs.reduce((a,i)=>a+(i.tax||0),0);
+
+        // Tax expected from open SOs (not yet invoiced)
+        const taxSOs=filtSOs.filter(so=>{const c=cust.find(x=>x.id===so.customer_id);return c&&!c.tax_exempt&&(c.tax_rate||0)>0}).map(so=>{
+          const m=soCalc(so);const c=cust.find(x=>x.id===so.customer_id);const state=c?.shipping_state||c?.billing_state||'Unknown';
+          const taxAmt=m.rev*(c.tax_rate||0);
+          return{id:so.id,memo:so.memo,_cname:c?.name||'Unknown',_state:state.toUpperCase().trim(),_rev:m.rev,_tax:taxAmt,_rate:c.tax_rate,status:so.status};
+        });
+
+        // Tax-exempt customers
+        const exemptCusts=cust.filter(c=>c.tax_exempt&&c.is_active!==false);
+
+        // --- Quarterly breakdown by state (for filing) ---
+        // Build quarters for current year + previous year
+        const quarters=[];
+        for(let y=curYear-1;y<=curYear;y++){for(let q=0;q<4;q++){
+          if(y===curYear&&q>curQ)continue; // skip future quarters
+          quarters.push({year:y,q,label:qLabel(q)+' '+y,start:new Date(y,q*3,1),end:new Date(y,q*3+3,0,23,59,59)});
+        }}
+        quarters.reverse(); // most recent first
+
+        const qData=quarters.map(qr=>{
+          const qInvs=taxInvs.filter(i=>i._year===qr.year&&i._q===qr.q);
+          // Group by state+city within this quarter
+          const byJuris={};
+          qInvs.forEach(i=>{
+            const key=i._state+'|'+(i._city||'');
+            if(!byJuris[key])byJuris[key]={state:i._state,city:i._city||'',tax:0,rev:0,count:0,rate:i.tax_rate||0};
+            byJuris[key].tax+=i.tax||0;
+            byJuris[key].rev+=(i.tax&&i.tax_rate)?i.tax/i.tax_rate:0;
+            byJuris[key].count++;
+            if(i.tax_rate)byJuris[key].rate=i.tax_rate;
+          });
+          const jurisdictions=Object.values(byJuris).sort((a,b)=>a.state===b.state?b.tax-a.tax:a.state.localeCompare(b.state));
+          const totalTax=jurisdictions.reduce((a,s)=>a+s.tax,0);
+          const totalRev=jurisdictions.reduce((a,s)=>a+s.rev,0);
+          // Also group totals by state for subtotals
+          const stTotals={};jurisdictions.forEach(j=>{if(!stTotals[j.state])stTotals[j.state]=0;stTotals[j.state]+=j.tax});
+          return{...qr,jurisdictions,stTotals,totalTax,totalRev,invCount:qInvs.length,isCurrent:qr.year===curYear&&qr.q===curQ};
+        });
+
+        // Monthly breakdown (last 12 months)
+        const monthly=[];
+        for(let mi=11;mi>=0;mi--){
+          const mm=(curMonth-mi+12)%12;const yy=curMonth-mi<0?curYear-1:curYear;
+          const mInvs=taxInvs.filter(i=>i._year===yy&&i._month===mm);
+          const taxAmt=mInvs.reduce((a,i)=>a+(i.tax||0),0);
+          const rev=mInvs.reduce((a,i)=>{const r=(i.tax&&i.tax_rate)?i.tax/i.tax_rate:(i.total-i.tax-(i.shipping||0));return a+r},0);
+          monthly.push({label:monthName(mm)+' '+String(yy).slice(2),tax:taxAmt,rev,count:mInvs.length,month:mm,year:yy});
+        }
+
+        // By customer breakdown
+        const byCust={};
+        taxInvs.forEach(i=>{
+          if(!byCust[i.customer_id])byCust[i.customer_id]={name:i._cname,state:i._state,city:i._city,taxCollected:0,invCount:0,rev:0};
+          byCust[i.customer_id].taxCollected+=i.tax||0;
+          byCust[i.customer_id].invCount++;
+          byCust[i.customer_id].rev+=(i.tax&&i.tax_rate)?i.tax/i.tax_rate:(i.total-(i.tax||0)-(i.shipping||0));
+        });
+        const custRows=Object.values(byCust).sort((a,b)=>b.taxCollected-a.taxCollected);
+
+        const maxMonthTax=Math.max(...monthly.map(m=>m.tax),1);
+        const qMonths=['Jan-Mar','Apr-Jun','Jul-Sep','Oct-Dec'];
+
+        return<>
+        {/* Running totals: Month / Quarter / Year */}
+        <div className="stats-row" style={{marginBottom:16}}>
+          <div className="stat-card" style={{borderLeft:'3px solid #2563eb'}}><div className="stat-label">{monthName(curMonth)} {curYear} (This Month)</div><div className="stat-value" style={{color:'#2563eb'}}>${monthTax.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div><div style={{fontSize:10,color:'#64748b'}}>{thisMonthInvs.length} invoice(s)</div></div>
+          <div className="stat-card" style={{borderLeft:'3px solid #7c3aed',background:'#faf5ff'}}><div className="stat-label">{qLabel(curQ)} {curYear} ({qMonths[curQ]})</div><div className="stat-value" style={{color:'#7c3aed'}}>${qTax.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div><div style={{fontSize:10,color:'#64748b'}}>{thisQInvs.length} invoice(s)</div></div>
+          <div className="stat-card" style={{borderLeft:'3px solid #166534'}}><div className="stat-label">{curYear} Year-to-Date</div><div className="stat-value" style={{color:'#166534'}}>${yearTax.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div><div style={{fontSize:10,color:'#64748b'}}>{thisYearInvs.length} invoice(s)</div></div>
+          <div className="stat-card" style={{borderLeft:'3px solid #dc2626'}}><div className="stat-label">Exempt Customers</div><div className="stat-value" style={{color:'#dc2626'}}>{exemptCusts.length}</div></div>
+        </div>
+
+        {/* Quarterly Tax Payable by State — for filing */}
+        <div className="card" style={{marginBottom:12}}>
+          <div className="card-header"><h2 style={{margin:0,fontSize:14}}>🏛️ Quarterly Tax Payable by State</h2><span style={{fontSize:11,color:'#64748b'}}>For quarterly filing</span></div>
+          <div className="card-body">
+            {qData.filter(q=>q.invCount>0).length===0?<div className="empty">No tax collected yet. Set tax rates on customers to start tracking.</div>:
+            <div style={{display:'flex',flexDirection:'column',gap:16}}>
+              {qData.filter(q=>q.invCount>0).map(q=><div key={q.label}>
+                <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
+                  <span style={{fontSize:14,fontWeight:800,color:q.isCurrent?'#7c3aed':'#1e293b'}}>{q.label}</span>
+                  <span style={{fontSize:11,color:'#64748b'}}>{qMonths[q.q]}</span>
+                  {q.isCurrent&&<span style={{fontSize:10,fontWeight:700,padding:'2px 8px',background:'#f5f3ff',border:'1px solid #ddd6fe',borderRadius:10,color:'#7c3aed'}}>CURRENT</span>}
+                  <span style={{marginLeft:'auto',fontSize:13,fontWeight:800,color:'#a16207'}}>${q.totalTax.toFixed(2)}</span>
+                </div>
+                <table style={{fontSize:12,width:'100%'}}><thead><tr style={{background:'#f8fafc'}}><th style={{padding:'4px 8px'}}>State</th><th style={{padding:'4px 8px'}}>City</th><th style={{textAlign:'right',padding:'4px 8px'}}>Tax Rate</th><th style={{textAlign:'right',padding:'4px 8px'}}>Taxable Revenue</th><th style={{textAlign:'right',padding:'4px 8px'}}>Tax Payable</th><th style={{textAlign:'center',padding:'4px 8px'}}>Invoices</th></tr></thead>
+                <tbody>{(()=>{const rows=[];let lastSt='';q.jurisdictions.forEach((j,ji)=>{
+                  const newState=j.state!==lastSt;lastSt=j.state;
+                  const stateHasMultiple=q.jurisdictions.filter(x=>x.state===j.state).length>1;
+                  rows.push(<tr key={ji} style={newState&&ji>0?{borderTop:'1px solid #cbd5e1'}:{}}>
+                    <td style={{fontWeight:700,padding:'4px 8px',color:newState?'#1e293b':'#94a3b8'}}>{newState?j.state:''}</td>
+                    <td style={{padding:'4px 8px',color:'#475569'}}>{j.city||'—'}</td>
+                    <td style={{textAlign:'right',color:'#64748b',padding:'4px 8px'}}>{j.rate?(j.rate*100).toFixed(3)+'%':'—'}</td>
+                    <td style={{textAlign:'right',padding:'4px 8px'}}>${j.rev.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+                    <td style={{textAlign:'right',fontWeight:600,color:'#a16207',padding:'4px 8px'}}>${j.tax.toFixed(2)}</td>
+                    <td style={{textAlign:'center',padding:'4px 8px'}}>{j.count}</td>
+                  </tr>);
+                  // State subtotal row if multiple cities
+                  const isLastInState=ji===q.jurisdictions.length-1||q.jurisdictions[ji+1]?.state!==j.state;
+                  if(stateHasMultiple&&isLastInState){
+                    rows.push(<tr key={j.state+'_sub'} style={{background:'#f8fafc',borderTop:'1px solid #e2e8f0'}}>
+                      <td style={{padding:'4px 8px',fontWeight:700,fontSize:11,color:'#1e40af'}} colSpan={2}>{j.state} Subtotal</td>
+                      <td/><td/>
+                      <td style={{textAlign:'right',fontWeight:700,color:'#1e40af',padding:'4px 8px',fontSize:11}}>${q.stTotals[j.state].toFixed(2)}</td>
+                      <td/>
+                    </tr>);
+                  }
+                });return rows})()}
+                <tr style={{borderTop:'2px solid #1e293b',fontWeight:800}}>
+                  <td style={{padding:'4px 8px'}} colSpan={2}>TOTAL</td><td/><td style={{textAlign:'right',padding:'4px 8px'}}>${q.totalRev.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+                  <td style={{textAlign:'right',color:'#a16207',padding:'4px 8px'}}>${q.totalTax.toFixed(2)}</td><td style={{textAlign:'center',padding:'4px 8px'}}>{q.invCount}</td>
+                </tr></tbody></table>
+              </div>)}
+            </div>}
+          </div>
+        </div>
+
+        {/* Monthly Trend */}
+        <div className="card" style={{marginBottom:12}}>
+          <div className="card-header"><h2 style={{margin:0,fontSize:14}}>📈 Monthly Tax Collected (Last 12 Months)</h2></div>
+          <div className="card-body">
+            <div style={{display:'flex',gap:4,alignItems:'flex-end',height:120,marginBottom:8}}>
+              {monthly.map((m,i)=>{const isCur=m.month===curMonth&&m.year===curYear;
+                return<div key={i} style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:2}}>
+                <div style={{fontSize:9,fontWeight:700,color:'#a16207'}}>{m.tax>0?'$'+m.tax.toFixed(0):''}</div>
+                <div style={{width:'100%',background:m.tax>0?(isCur?'#7c3aed':'#fbbf24'):'#e2e8f0',borderRadius:'3px 3px 0 0',height:Math.max(2,m.tax/maxMonthTax*80)}}/>
+                <div style={{fontSize:8,color:isCur?'#7c3aed':'#64748b',fontWeight:isCur?700:400,textAlign:'center'}}>{m.label}</div>
+              </div>})}
+            </div>
+          </div>
+        </div>
+
+        {/* By Customer */}
+        <div className="card" style={{marginBottom:12}}>
+          <div className="card-header"><h2 style={{margin:0,fontSize:14}}>👥 Tax by Customer</h2></div>
+          <div className="card-body">
+            {custRows.length===0?<div className="empty">No tax data by customer yet.</div>:
+            <table style={{fontSize:12,width:'100%'}}><thead><tr><th>Customer</th><th>City</th><th>State</th><th style={{textAlign:'right'}}>Revenue</th><th style={{textAlign:'right'}}>Tax Collected</th><th style={{textAlign:'center'}}>Invoices</th></tr></thead>
+            <tbody>{custRows.slice(0,25).map((c,i)=><tr key={i}>
+              <td style={{fontWeight:600}}>{c.name}</td>
+              <td style={{color:'#475569'}}>{c.city||'—'}</td>
+              <td style={{color:'#64748b'}}>{c.state}</td>
+              <td style={{textAlign:'right'}}>${c.rev.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+              <td style={{textAlign:'right',fontWeight:700,color:'#a16207'}}>${c.taxCollected.toFixed(2)}</td>
+              <td style={{textAlign:'center'}}>{c.invCount}</td>
+            </tr>)}</tbody></table>}
+          </div>
+        </div>
+
+        {/* Upcoming Tax (from open SOs) */}
+        <div className="card" style={{marginBottom:12}}>
+          <div className="card-header"><h2 style={{margin:0,fontSize:14}}>📋 Expected Tax (Open Sales Orders)</h2></div>
+          <div className="card-body">
+            {taxSOs.length===0?<div className="empty">No open SOs with tax rates set.</div>:
+            <table style={{fontSize:12,width:'100%'}}><thead><tr><th>SO</th><th>Customer</th><th>State</th><th style={{textAlign:'right'}}>Revenue</th><th style={{textAlign:'right'}}>Tax Rate</th><th style={{textAlign:'right'}}>Expected Tax</th></tr></thead>
+            <tbody>{taxSOs.slice(0,25).map(s=><tr key={s.id}>
+              <td style={{fontWeight:600,color:'#1e40af'}}>{s.id}</td>
+              <td>{s._cname}</td>
+              <td style={{color:'#64748b'}}>{s._state}</td>
+              <td style={{textAlign:'right'}}>${s._rev.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+              <td style={{textAlign:'right',color:'#64748b'}}>{(s._rate*100).toFixed(3)}%</td>
+              <td style={{textAlign:'right',fontWeight:700,color:'#d97706'}}>${s._tax.toFixed(2)}</td>
+            </tr>)}
+            <tr style={{borderTop:'2px solid #1e293b',fontWeight:800}}>
+              <td colSpan={5}>TOTAL EXPECTED</td>
+              <td style={{textAlign:'right',color:'#d97706',fontSize:14}}>${taxSOs.reduce((a,s)=>a+s._tax,0).toFixed(2)}</td>
+            </tr></tbody></table>}
+          </div>
+        </div>
+
+        {/* Tax Exempt Customers */}
+        <div className="card" style={{marginBottom:12}}>
+          <div className="card-header"><h2 style={{margin:0,fontSize:14}}>🚫 Tax-Exempt Customers</h2></div>
+          <div className="card-body">
+            {exemptCusts.length===0?<div className="empty">No tax-exempt customers.</div>:
+            <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+              {exemptCusts.map(c=><span key={c.id} style={{padding:'4px 10px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:6,fontSize:12,fontWeight:600,color:'#dc2626'}}>{c.name} ({c.shipping_state||'?'})</span>)}
+            </div>}
+          </div>
+        </div>
+        </>})()}
 
       {/* Widget Customization */}
       <div className="card" style={{marginBottom:12}}>
@@ -12107,6 +12347,7 @@ export default function App(){
       const so=sos.find(s=>s.id===inv.so_id);
       return{docType:'Invoice',docNumber:inv.id,customerRef:cust.find(c=>c.id===inv.customer_id)?.name,
         date:inv.date,soRef:inv.so_id,amount:inv.total,paid:inv.paid,balance:inv.total-inv.paid,
+        tax:inv.tax||0,taxAccount:qbConfig.mapping.tax_account,
         account:qbConfig.mapping.ar_account};
     };
 
@@ -12165,11 +12406,22 @@ export default function App(){
             </div>
             {qbConfig.connected?
               <button className="btn btn-secondary" style={{color:'#dc2626'}} onClick={()=>setQBConfig(prev=>({...prev,connected:false,companyId:'',companyName:''}))}>Disconnect</button>:
-              <button className="btn btn-primary" style={{background:'#2CA01C',borderColor:'#2CA01C',padding:'10px 20px',fontSize:14,fontWeight:700}} onClick={()=>{
-                // In production: window.location.href = '/auth/quickbooks' → OAuth2 flow
-                // For demo, simulate connection
-                setQBConfig(prev=>({...prev,connected:true,companyId:'4620816365181050610',companyName:'National Sports Apparel LLC'}));
-                nf('✅ Connected to QuickBooks Online');
+              <button className="btn btn-primary" style={{background:'#2CA01C',borderColor:'#2CA01C',padding:'10px 20px',fontSize:14,fontWeight:700}} onClick={async()=>{
+                if(supabase){
+                  try{
+                    const r=await supabase.functions.invoke('qb-auth');
+                    if(r.data?.ok&&r.data.auth_url){
+                      sessionStorage.setItem('qb_oauth_state',r.data.state);
+                      window.location.href=r.data.auth_url;
+                      return;
+                    }
+                    nf(r.data?.error||'Failed to start QB auth');
+                  }catch(e){nf('QB auth error: '+e.message)}
+                }else{
+                  // Fallback demo mode when no Supabase
+                  setQBConfig(prev=>({...prev,connected:true,companyId:'4620816365181050610',companyName:'National Sports Apparel LLC'}));
+                  nf('✅ Connected to QuickBooks Online (demo)');
+                }
               }}>Connect to QuickBooks</button>}
           </div>
         </div>
@@ -12217,7 +12469,7 @@ export default function App(){
           <div className="card-header"><h2>🗂️ Account Mapping</h2></div>
           <div className="card-body">
             <div style={{fontSize:11,color:'#64748b',marginBottom:8}}>Map NSA line items to your QB Chart of Accounts</div>
-            {[['income_account','Item Revenue','Sales'],['cogs_account','Blank Goods COGS','Cost of Goods Sold'],['deco_account','Outside Decoration','Subcontractor - Decoration'],['ar_account','Accounts Receivable','Accounts Receivable'],['ap_account','Accounts Payable','Accounts Payable']].map(([key,label,def])=>
+            {[['income_account','Item Revenue','Sales'],['cogs_account','Blank Goods COGS','Cost of Goods Sold'],['deco_account','Outside Decoration','Subcontractor - Decoration'],['ar_account','Accounts Receivable','Accounts Receivable'],['ap_account','Accounts Payable','Accounts Payable'],['tax_account','Sales Tax Payable','Sales Tax Payable']].map(([key,label,def])=>
               <div key={key} style={{display:'flex',gap:8,alignItems:'center',marginBottom:4}}>
                 <span style={{fontSize:11,fontWeight:600,color:'#475569',width:140}}>{label}</span>
                 <input className="form-input" style={{flex:1,fontSize:11,padding:'3px 6px'}} value={qbConfig.mapping[key]||def}
@@ -12305,9 +12557,18 @@ export default function App(){
           <div>• <strong>Sales Orders</strong> → QB Sales Order with line items (products + decoration as separate lines)</div>
           <div>• <strong>Blank POs</strong> → QB Purchase Order to vendor (SanMar, S&S, etc.) linked to SO</div>
           <div>• <strong>Deco POs</strong> → QB Purchase Order to decorator (Silver Screen, Olympic, etc.) posted to "{qbConfig.mapping.deco_account}" account</div>
-          <div>• <strong>Invoices</strong> → QB Invoice with A/R tracking, payment application</div>
+          <div>• <strong>Invoices</strong> → QB Invoice with A/R tracking, tax posted to "{qbConfig.mapping.tax_account}"</div>
+          <div style={{marginTop:8,marginBottom:8}}><strong>Edge functions:</strong></div>
+          <div style={{fontFamily:'monospace',fontSize:10,background:'#f8fafc',padding:10,borderRadius:6,marginBottom:8}}>
+            qb-auth — Initiates OAuth2 flow, returns Intuit consent URL<br/>
+            qb-callback — Handles OAuth redirect, exchanges code for tokens<br/>
+            qb-refresh-token — Refreshes expired access tokens (auto before sync)<br/>
+            taxcloud-capture — Reports paid invoices to TaxCloud for state filing<br/>
+            taxcloud-lookup — Looks up tax rate for a shipping address<br/>
+            taxcloud-refresh — Quarterly batch refresh of all customer tax rates
+          </div>
           <div style={{marginTop:8,padding:8,background:'#fef3c7',borderRadius:6,color:'#92400e'}}>
-            <strong>Setup required:</strong> QBO OAuth2 app credentials (Client ID + Secret) from <a href="https://developer.intuit.com" target="_blank" rel="noreferrer" style={{color:'#1e40af'}}>developer.intuit.com</a>. 
+            <strong>Setup required:</strong> QBO OAuth2 app credentials (Client ID + Secret) from <a href="https://developer.intuit.com" target="_blank" rel="noreferrer" style={{color:'#1e40af'}}>developer.intuit.com</a>.
             Add your redirect URI and scopes: <code>com.intuit.quickbooks.accounting</code>
           </div>
         </div>
