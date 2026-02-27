@@ -4932,6 +4932,8 @@ async function invokeEdgeFn(supabase,fnName,body){
   // Also check error for body content
   if(!d&&r.error){const ctx=r.error?.context;if(ctx&&typeof ctx.json==='function'){try{d=await ctx.json()}catch(e){}}if(!d)d={ok:false,error:r.error?.message||String(r.error)}}
   console.log('[invokeEdgeFn]',fnName,'parsed:',d);
+  // Ensure error is always a string
+  if(d&&d.error&&typeof d.error!=='string'){d.error=d.error?.message||JSON.stringify(d.error)}
   return d||{ok:false,error:'No response from edge function'};
 }
 
@@ -4962,7 +4964,7 @@ function TaxCloudSettings({supabase,nf,cust,setCust}){
           setCust(prev=>prev.map(c=>{const ch=d.changes.find(x=>x.id===c.id);return ch?{...c,tax_rate:ch.new_rate}:c}));
         }
         nf(d.updated+' customer rate(s) updated');
-      }else{setRefreshStatus({loading:false,result:{ok:false,error:d?.error||'Refresh failed'}})}
+      }else{setRefreshStatus({loading:false,result:{ok:false,error:typeof d?.error==='string'?d.error:d?.error?.message||JSON.stringify(d?.error)||'Refresh failed'}})}
     }catch(e){setRefreshStatus({loading:false,result:{ok:false,error:e.message}})}
   };
 
@@ -5017,7 +5019,7 @@ function TaxCloudSettings({supabase,nf,cust,setCust}){
             <strong>Refresh complete:</strong> {refreshStatus.result.total_customers} customers checked, {refreshStatus.result.updated} updated, {refreshStatus.result.skipped} skipped, {refreshStatus.result.errors} errors
             {refreshStatus.result.changes?.length>0&&<div style={{marginTop:6}}>{refreshStatus.result.changes.map((ch,i)=>
               <div key={i} style={{fontSize:11}}>{ch.name}: {(ch.old_rate*100).toFixed(3)}% → <strong>{(ch.new_rate*100).toFixed(3)}%</strong></div>)}</div>}
-          </>:<>Error: {refreshStatus.result.error}</>}
+          </>:<>Error: {typeof refreshStatus.result.error==='string'?refreshStatus.result.error:refreshStatus.result.error?.message||JSON.stringify(refreshStatus.result.error)}</>}
         </div>}
 
         <div style={{display:'flex',gap:12,marginBottom:12}}>
