@@ -41,8 +41,8 @@ exports.handler = async (event) => {
 
   const QB_CLIENT_ID = process.env.QB_CLIENT_ID;
   const QB_CLIENT_SECRET = process.env.QB_CLIENT_SECRET;
-  const QB_REDIRECT_URI = process.env.QB_REDIRECT_URI; // e.g. https://yoursite.netlify.app/.netlify/functions/qb-auth?action=callback
   const SITE_URL = process.env.URL || process.env.SITE_URL || 'http://localhost:3000';
+  const QB_REDIRECT_URI = process.env.QB_REDIRECT_URI || `${SITE_URL}/.netlify/functions/qb-auth?action=callback`;
 
   if (!QB_CLIENT_ID || !QB_CLIENT_SECRET) {
     return {
