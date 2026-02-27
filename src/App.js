@@ -323,9 +323,12 @@ const isUrl=s=>typeof s==='string'&&(s.startsWith('http://')||s.startsWith('http
 const fileDisplayName=f=>isUrl(f)?decodeURIComponent(f.split('/').pop().split('?')[0]):f;
 const openFile=f=>{if(isUrl(f)){window.open(f,'_blank')}else{nf('Legacy file: '+f+' — re-upload to enable downloads')}};
 const _urlExt=u=>{if(!u||typeof u!=='string')return '';const clean=u.split('?')[0].split('#')[0];const m=clean.match(/\.(\w+)$/);return m?m[1].toLowerCase():''};
-const _isImgUrl=u=>{const e=_urlExt(u);return['png','jpg','jpeg','gif','webp','svg','bmp'].includes(e)||/\/image\//.test(u)};
-const _isPdfUrl=u=>_urlExt(u)==='pdf'||/\/raw\//.test(u)&&u.includes('.pdf');
-const _cloudinaryPdfThumb=u=>{if(!u||!u.includes('cloudinary.com'))return null;return u.replace('/upload/','/upload/w_600,pg_1,f_jpg/')};
+const _isImgUrl=u=>{const e=_urlExt(u);return['png','jpg','jpeg','gif','webp','svg','bmp'].includes(e)};
+const _isPdfUrl=u=>_urlExt(u)==='pdf';
+const _cloudinaryPdfThumb=u=>{if(!u||!u.includes('cloudinary.com'))return null;
+  // Replace raw/upload with image/upload so transformations work, then add pg_1 transform
+  let t=u.replace('/raw/upload/','/image/upload/').replace('/video/upload/','/image/upload/');
+  return t.replace('/image/upload/','/image/upload/w_600,pg_1,f_jpg/')};
 const ImgUpload=({url,onUpload,size=48,onError})=>{const[drag,setDrag]=React.useState(false);const[uploading,setUploading]=React.useState(false);const[err,setErr]=React.useState(false);
   const doUpload=async(file)=>{if(!file||!file.type.startsWith('image/')){if(onError)onError('Please select an image file');return}setUploading(true);setErr(false);try{const u=await cloudUpload(file);onUpload(u)}catch(e){console.error('Upload failed',e);setErr(true);if(onError)onError('Upload failed: '+e.message)}finally{setUploading(false)}};
   return<div style={{width:size,height:size,borderRadius:6,border:err?'2px solid #dc2626':drag?'2px solid #3b82f6':'1px solid #e2e8f0',background:drag?'#eff6ff':err?'#fef2f2':'#f8fafc',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,cursor:'pointer',overflow:'hidden',position:'relative'}}
@@ -4700,8 +4703,10 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     // Job detail view inside portal
     if(portalJobView){
       const j=portalJobView.job;const so=portalJobView.so;
-      const items=(j.items||[]).map(gi=>{const it=safeItems(so)[gi.item_idx];return{...gi,brand:it?.brand||'',fullName:safeStr(it?.name)||gi.name}});
-      return<div className="modal-overlay" onClick={()=>setShowPortal(false)}><div className="modal" style={{maxWidth:640,maxHeight:'90vh',overflow:'auto'}} onClick={e=>e.stopPropagation()}>
+      const af2=safeArt(so).find(a=>a.id===j.art_file_id);
+      const mockupFiles2=(af2?.mockup_files||af2?.files||[]);
+      const items=(j.items||[]).map(gi=>{const it=safeItems(so)[gi.item_idx];const prd2=prod.find(pp=>pp.id===it?.product_id||pp.sku===it?.sku);return{...gi,brand:it?.brand||'',fullName:safeStr(it?.name)||gi.name,image_url:prd2?.image_url||'',back_image_url:prd2?.back_image_url||''}});
+      return<div className="modal-overlay" onClick={()=>setShowPortal(false)}><div className="modal" style={{maxWidth:700,maxHeight:'90vh',overflow:'auto'}} onClick={e=>e.stopPropagation()}>
         <div style={{background:'linear-gradient(135deg,#1e3a5f,#2563eb)',color:'white',padding:'20px 24px',borderRadius:'12px 12px 0 0',position:'relative'}}>
           <button style={{position:'absolute',top:8,left:12,background:'rgba(255,255,255,0.15)',border:'none',color:'white',borderRadius:6,padding:'4px 10px',fontSize:12,cursor:'pointer'}} onClick={()=>setPortalJobView(null)}>← Back</button>
           <button style={{position:'absolute',top:8,right:12,background:'none',border:'none',color:'white',fontSize:18,cursor:'pointer',opacity:0.7}} onClick={()=>{setPortalJobView(null);setShowPortal(false)}}>×</button>
@@ -4712,18 +4717,44 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
           </div>
         </div>
         <div style={{padding:'20px 24px'}}>
-          {/* Per-item mockups */}
-          <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:8}}>🖼️ Mockups per Garment</div>
+          {/* Mockup artwork display */}
+          {mockupFiles2.length>0&&<div style={{marginBottom:16}}>
+            <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:8}}>🖼️ Artwork Mockup</div>
+            {mockupFiles2.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(url||f);
+              return<div key={fi} style={{borderRadius:10,border:'1px solid #e2e8f0',overflow:'hidden',background:'white',marginBottom:8}}>
+                {_isImgUrl(url)?<img src={url} alt={name} style={{width:'100%',maxHeight:500,objectFit:'contain',display:'block',cursor:'pointer'}} onClick={()=>openFile(url)}/>
+                :_isPdfUrl(url)?<div style={{position:'relative'}}>
+                  {_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',maxHeight:500,objectFit:'contain',display:'block'}} onError={e=>{e.target.style.display='none';e.target.nextSibling.style.display='flex'}}/>:null}
+                  <div style={{display:_cloudinaryPdfThumb(url)?'none':'flex',flexDirection:'column',alignItems:'center',padding:40,gap:8}}>
+                    <span style={{fontSize:48}}>PDF</span>
+                    <span style={{fontSize:13,fontWeight:600,color:'#1e40af'}}>{name}</span>
+                  </div>
+                  <button className="btn btn-sm" style={{position:'absolute',bottom:8,right:8,fontSize:11,background:'#1e40af',color:'white',border:'none',padding:'6px 14px',borderRadius:6}} onClick={()=>openFile(url)}>Open PDF</button>
+                </div>
+                :<div style={{display:'flex',alignItems:'center',gap:8,padding:20,cursor:'pointer'}} onClick={()=>openFile(url)}>
+                  <span style={{fontSize:32}}>📄</span><span style={{fontSize:14,fontWeight:600,color:'#1e40af'}}>{name}</span>
+                </div>}
+              </div>})}
+          </div>}
+          {mockupFiles2.length===0&&<div style={{padding:20,textAlign:'center',background:'#f8fafc',border:'2px dashed #d1d5db',borderRadius:10,marginBottom:16}}>
+            <div style={{fontSize:36,marginBottom:6}}>🎨</div>
+            <div style={{fontSize:13,color:'#94a3b8',fontWeight:600}}>Artwork mockup is being prepared</div>
+          </div>}
+
+          {/* Per-item garments */}
+          <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:8}}>👕 Garments</div>
           {items.map((gi,i)=><div key={i} style={{border:'1px solid #e2e8f0',borderRadius:10,padding:14,marginBottom:10,display:'flex',gap:14,alignItems:'center'}}>
-            <div style={{width:80,height:80,background:'#f8fafc',border:'2px dashed #d1d5db',borderRadius:8,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',flexShrink:0}}>
-              <div style={{fontSize:24}}>👕</div>
-              <div style={{fontSize:8,color:'#94a3b8',textAlign:'center'}}>{j.deco_type?.replace(/_/g,' ')}</div>
+            <div style={{display:'flex',gap:6,flexShrink:0}}>
+              {gi.image_url?<img src={gi.image_url} alt="Front" style={{width:70,height:70,objectFit:'contain',borderRadius:8,border:'1px solid #e2e8f0',background:'white'}}/>
+              :<div style={{width:70,height:70,background:'#f8fafc',border:'2px dashed #d1d5db',borderRadius:8,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center'}}>
+                <div style={{fontSize:24}}>👕</div>
+              </div>}
+              {gi.back_image_url&&<img src={gi.back_image_url} alt="Back" style={{width:70,height:70,objectFit:'contain',borderRadius:8,border:'1px solid #e2e8f0',background:'white'}}/>}
             </div>
             <div style={{flex:1}}>
               <div style={{fontWeight:700,fontSize:13}}>{gi.fullName}</div>
               <div style={{fontSize:11,color:'#64748b'}}>{gi.sku} · {gi.color||'—'} {gi.brand&&'· '+gi.brand}</div>
               <div style={{fontSize:11,color:'#64748b',marginTop:2}}>📍 {j.positions} · {gi.units} units</div>
-              <div style={{fontSize:10,color:'#94a3b8',marginTop:4,fontStyle:'italic'}}>Mockup preview when art files are uploaded</div>
             </div>
           </div>)}
 
@@ -4732,12 +4763,21 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
             <div style={{fontWeight:700,color:'#92400e',marginBottom:8}}>⏳ This artwork needs your approval</div>
             <div style={{display:'flex',gap:8}}>
               <button className="btn btn-sm" style={{background:'#22c55e',color:'white',flex:1,justifyContent:'center'}} onClick={()=>{
-                const artId=j.art_file_id;if(artId&&onSaveSO){const updatedSO={...so,art_files:(so.art_files||[]).map(af=>af.id===artId?{...af,status:'approved'}:af),updated_at:new Date().toLocaleString()};onSaveSO(updatedSO)}
+                const artId=j.art_file_id;if(artId&&onSaveSO){const updJobs2=safeJobs(so).map(jj=>jj.id===j.id?{...jj,art_status:'production_files_needed'}:jj);const updatedSO={...so,art_files:(so.art_files||[]).map(af3=>af3.id===artId?{...af3,status:'approved'}:af3),jobs:updJobs2,updated_at:new Date().toLocaleString()};onSaveSO(updatedSO)}
                 setPortalJobView(null)}}>✅ Approve</button>
-              <button className="btn btn-sm" style={{background:'#dc2626',color:'white',flex:1,justifyContent:'center'}} onClick={()=>{if(portalComment.trim()){alert('❌ Rejected with feedback. (demo)');setPortalComment('');setPortalJobView(null)}else{alert('Please add a comment.')}}}>❌ Request Changes</button>
+              <button className="btn btn-sm" style={{background:'#dc2626',color:'white',flex:1,justifyContent:'center'}} onClick={()=>{
+                if(portalComment.trim()){
+                  const artId=j.art_file_id;if(artId&&onSaveSO){
+                    const rej={reason:portalComment.trim(),by:'Coach',at:new Date().toISOString()};
+                    const updJobs2=safeJobs(so).map(jj=>jj.id===j.id?{...jj,art_status:'art_requested',rejections:[...(jj.rejections||[]),rej]}:jj);
+                    const updatedSO={...so,art_files:(so.art_files||[]).map(af3=>af3.id===artId?{...af3,status:'waiting_for_art'}:af3),jobs:updJobs2,updated_at:new Date().toLocaleString()};
+                    onSaveSO(updatedSO)}
+                  setPortalComment('');setPortalJobView(null)}else{alert('Please add a comment explaining what needs to change.')}
+              }}>❌ Request Changes</button>
             </div>
+            <textarea className="form-input" rows={2} placeholder="Tell us what needs to change..." value={portalComment} onChange={e=>setPortalComment(e.target.value)} style={{marginTop:8,fontSize:12,resize:'vertical'}}/>
           </div>}
-          {j.art_status==='art_complete'&&<div style={{background:'#f0fdf4',borderRadius:8,padding:10,marginBottom:16,fontSize:12,color:'#166534',fontWeight:600}}>✅ You approved this artwork</div>}
+          {j.art_status==='art_complete'||j.art_status==='production_files_needed'?<div style={{background:'#f0fdf4',borderRadius:8,padding:10,marginBottom:16,fontSize:12,color:'#166534',fontWeight:600}}>✅ You approved this artwork</div>:null}
           {/* Status */}
           {j.prod_status!=='hold'&&<div style={{padding:10,background:'#f8fafc',borderRadius:8,marginBottom:16}}>
             <div style={{fontSize:10,color:'#64748b',fontWeight:600}}>PRODUCTION STATUS</div>
@@ -4746,12 +4786,24 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
           {/* Comments */}
           <div>
             <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:6}}>💬 Comments</div>
-            <div style={{border:'1px solid #e2e8f0',borderRadius:8,padding:8,marginBottom:8,minHeight:40}}>
+            {(j.art_messages||[]).length>0?<div style={{border:'1px solid #e2e8f0',borderRadius:8,padding:0,marginBottom:8,maxHeight:200,overflowY:'auto'}}>
+              {(j.art_messages||[]).map((m,mi)=><div key={mi} style={{padding:'8px 12px',borderBottom:mi<(j.art_messages||[]).length-1?'1px solid #f1f5f9':'none',background:m.is_system?'#fffbeb':'white'}}>
+                {m.is_system?<div style={{fontSize:11,color:'#92400e',fontStyle:'italic',textAlign:'center'}}>{m.text}</div>
+                :<><div style={{fontSize:11,fontWeight:700,color:'#1e40af'}}>{m.from_name} <span style={{fontWeight:400,color:'#94a3b8',fontSize:9}}>{new Date(m.ts).toLocaleString()}</span></div>
+                <div style={{fontSize:12,color:'#334155'}}>{m.text}</div></>}
+              </div>)}
+            </div>:<div style={{border:'1px solid #e2e8f0',borderRadius:8,padding:8,marginBottom:8,minHeight:40}}>
               <div style={{fontSize:11,color:'#94a3b8',fontStyle:'italic'}}>No comments yet</div>
-            </div>
+            </div>}
             <div style={{display:'flex',gap:6}}>
-              <input className="form-input" placeholder="Add a comment..." value={portalComment} onChange={e=>setPortalComment(e.target.value)} style={{flex:1,fontSize:12}}/>
-              <button className="btn btn-sm btn-primary" onClick={()=>{if(portalComment.trim()){alert('Comment sent! (demo)');setPortalComment('')}}}>Send</button>
+              <input className="form-input" placeholder="Add a comment..." value={portalComment} onChange={e=>setPortalComment(e.target.value)} style={{flex:1,fontSize:12}} onKeyDown={e=>{if(e.key==='Enter'&&portalComment.trim()){
+                const msg={id:'AM-'+Date.now(),from_id:'coach',from_name:'Coach',from_role:'coach',text:portalComment.trim(),ts:new Date().toISOString()};
+                if(onSaveSO){const updJobs2=safeJobs(so).map(jj=>jj.id===j.id?{...jj,art_messages:[...(jj.art_messages||[]),msg]}:jj);onSaveSO({...so,jobs:updJobs2,updated_at:new Date().toLocaleString()})}
+                setPortalComment('')}}}/>
+              <button className="btn btn-sm btn-primary" onClick={()=>{if(portalComment.trim()){
+                const msg={id:'AM-'+Date.now(),from_id:'coach',from_name:'Coach',from_role:'coach',text:portalComment.trim(),ts:new Date().toISOString()};
+                if(onSaveSO){const updJobs2=safeJobs(so).map(jj=>jj.id===j.id?{...jj,art_messages:[...(jj.art_messages||[]),msg]}:jj);onSaveSO({...so,jobs:updJobs2,updated_at:new Date().toLocaleString()})}
+                setPortalComment('')}}}>Send</button>
             </div>
           </div>
         </div>
@@ -7489,6 +7541,7 @@ export default function App(){
   const[artJobDetailModal,setArtJobDetailModal]=useState(null);// job object for artist card detail popup
   const[artJobDetailMsg,setArtJobDetailMsg]=useState('');// message text in artist detail popup
   const[artJobDetailUploading,setArtJobDetailUploading]=useState(false);// upload in-progress flag
+  const[approvalNotifyModal,setApprovalNotifyModal]=useState(null);// {job,so,contact,method,message} for send-for-approval popup
   const[prodJobModal,setProdJobModal]=useState(null);// job object for production mockup view
   const[prodJobLightbox,setProdJobLightbox]=useState(false);// lightbox for mockup image
   const[prodView,setProdView]=useState('board');const[prodFilter,setProdFilter]=useState('all');const[expandedJob,setExpandedJob]=useState(null);
@@ -10843,7 +10896,12 @@ export default function App(){
               </div>})()}
             <div style={{display:'flex',gap:3,marginTop:6,flexWrap:'wrap'}}>
               {col?.id==='waiting_for_art'&&j.art_status==='art_requested'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#1e40af',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();moveArtStatus(j,'art_in_progress')}}>Start Working</button>}
-              {col?.id==='waiting_for_art'&&j.art_status==='art_in_progress'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#92400e',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();moveArtStatus(j,'waiting_approval')}}>Send for Approval</button>}
+              {col?.id==='waiting_for_art'&&j.art_status==='art_in_progress'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#92400e',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();
+                const so2=sos.find(s=>s.id===j.soId);if(!so2)return;
+                const c3=cust.find(x=>x.id===so2.customer_id);const ct=(c3?.contacts||[])[0]||{};
+                const pUrl=c3?.alpha_tag?(window.location.origin+'/?portal='+c3.alpha_tag):'';
+                const defMsg=`Hi ${ct.name||'Coach'},\n\nYour artwork mockup for "${j.art_name}" is ready for review!\n\nPlease review and approve it through your portal:\n${pUrl}\n\nLet us know if you'd like any changes.\n\n${cu.name}\nNational Sports Apparel`;
+                setApprovalNotifyModal({job:j,so:so2,contact:ct,portalUrl:pUrl,method:ct.phone?'text':'email',message:defMsg,artMessages:j.art_messages||[]})}}>Send for Approval</button>}
               {col?.id==='approved'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#166534',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();
                 const so=sos.find(s=>s.id===j.soId);if(!so){nf('SO not found','error');return}
                 const afIdx=safeArt(so).findIndex(f=>f.id===j.art_file_id);
@@ -11339,15 +11397,13 @@ export default function App(){
           nf('Message sent to '+(rep?.name||'rep'));
         };
 
-        // Send for approval (moves status and notifies)
+        // Send for approval — opens notification popup
         const sendForApproval=()=>{
-          moveArtStatus(j,'waiting_approval');
-          const msg={id:'AM-'+Date.now(),from_id:cu.id,from_name:cu.name,from_role:cu.role,text:'Sent artwork for approval',ts:new Date().toISOString(),is_system:true};
-          const updatedMsgs=[...artMessages,msg];
-          const updatedJobs=safeJobs(so).map(jj=>jj.id===j.id?{...jj,art_messages:updatedMsgs,art_status:'waiting_approval'}:jj);
-          savSO({...so,art_files:safeArt(so).map(a=>a.id===j.art_file_id?{...a,status:'needs_approval'}:a),jobs:updatedJobs});
-          setArtJobDetailModal({...j,art_messages:updatedMsgs,art_status:'waiting_approval'});
-          nf('Sent for approval!');
+          const c2=cust.find(x=>x.id===so.customer_id);
+          const contact=(c2?.contacts||[])[0]||{};
+          const portalUrl=c2?.alpha_tag?(window.location.origin+'/?portal='+c2.alpha_tag):'';
+          const defaultMsg=`Hi ${contact.name||'Coach'},\n\nYour artwork mockup for "${j.art_name}" is ready for review!\n\nPlease review and approve it through your portal:\n${portalUrl}\n\nLet us know if you'd like any changes.\n\n${cu.name}\nNational Sports Apparel`;
+          setApprovalNotifyModal({job:j,so,contact,portalUrl,method:contact.phone?'text':'email',message:defaultMsg,artMessages});
         };
 
         return<div className="modal-overlay" onClick={()=>setArtJobDetailModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:920,maxHeight:'94vh',overflow:'auto'}}>
@@ -11560,10 +11616,75 @@ export default function App(){
           {/* Footer actions */}
           <div className="modal-footer" style={{display:'flex',gap:8,flexWrap:'wrap'}}>
             {j.art_status!=='waiting_approval'&&j.art_status!=='art_complete'&&j.art_status!=='production_files_needed'&&
-              <button className="btn" style={{padding:'8px 20px',background:'linear-gradient(135deg,#f59e0b,#d97706)',color:'white',border:'none',borderRadius:8,fontSize:13,fontWeight:700}} onClick={()=>{sendForApproval();setArtJobDetailModal(null)}}>Send for Approval</button>}
+              <button className="btn" style={{padding:'8px 20px',background:'linear-gradient(135deg,#f59e0b,#d97706)',color:'white',border:'none',borderRadius:8,fontSize:13,fontWeight:700}} onClick={sendForApproval}>Send for Approval</button>}
             <button className="btn btn-secondary" onClick={()=>{setArtMockupModal(j);setArtMockupRevision('');setArtJobDetailModal(null)}}>View Full Mockup</button>
             <button className="btn btn-secondary" onClick={()=>{setESOTab('jobs');setESO(so);setESOC(c2);setPg('orders');setArtJobDetailModal(null)}}>Open SO</button>
             <button className="btn btn-secondary" style={{marginLeft:'auto'}} onClick={()=>setArtJobDetailModal(null)}>Close</button>
+          </div>
+        </div></div>
+      })()}
+
+      {/* ═══ SEND FOR APPROVAL NOTIFICATION MODAL ═══ */}
+      {approvalNotifyModal&&(()=>{
+        const{job:aj,so:aso,contact:ac,portalUrl:apu,method:am,message:amsg,artMessages:aam}=approvalNotifyModal;
+        const doSend=(notifyMethod)=>{
+          // 1. Move art status to waiting_approval
+          moveArtStatus(aj,'waiting_approval');
+          const sysMsg={id:'AM-'+Date.now(),from_id:cu.id,from_name:cu.name,from_role:cu.role,text:'Sent artwork for approval'+(notifyMethod!=='none'?' — '+notifyMethod+' notification sent to '+(ac.name||'coach'):''),ts:new Date().toISOString(),is_system:true};
+          const updMsgs=[...(aam||[]),sysMsg];
+          const updJobs=safeJobs(aso).map(jj=>jj.id===aj.id?{...jj,art_messages:updMsgs,art_status:'waiting_approval'}:jj);
+          savSO({...aso,art_files:safeArt(aso).map(a=>a.id===aj.art_file_id?{...a,status:'needs_approval'}:a),jobs:updJobs});
+          // 2. Handle notification
+          if(notifyMethod==='email'&&ac.email){
+            const subj=encodeURIComponent('Artwork ready for approval — '+aj.art_name);
+            const body=encodeURIComponent(approvalNotifyModal.message);
+            window.open('mailto:'+ac.email+'?subject='+subj+'&body='+body,'_blank');
+          }else if(notifyMethod==='text'&&ac.phone){
+            const smsBody=encodeURIComponent(approvalNotifyModal.message);
+            window.open('sms:'+ac.phone+'?body='+smsBody,'_blank');
+          }
+          setArtJobDetailModal(aj.art_status!=='waiting_approval'?{...aj,art_messages:updMsgs,art_status:'waiting_approval'}:null);
+          setApprovalNotifyModal(null);
+          nf('Sent for approval!'+(notifyMethod!=='none'?' '+notifyMethod+' notification opened.':''));
+        };
+        return<div className="modal-overlay" style={{zIndex:10001}} onClick={()=>setApprovalNotifyModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:520}}>
+          <div className="modal-header" style={{background:'linear-gradient(135deg,#f59e0b,#d97706)',color:'white'}}>
+            <h2 style={{color:'white',margin:0}}>Send for Approval</h2>
+            <button className="modal-close" style={{color:'white'}} onClick={()=>setApprovalNotifyModal(null)}>×</button>
+          </div>
+          <div className="modal-body">
+            <div style={{padding:'10px 14px',background:'#faf5ff',borderRadius:8,border:'1px solid #e9d5ff',marginBottom:14}}>
+              <div style={{fontSize:13,fontWeight:700,color:'#6d28d9'}}>{aj.art_name}</div>
+              <div style={{fontSize:11,color:'#64748b'}}>{aj.customer} · {aso.id}</div>
+            </div>
+
+            <div style={{marginBottom:14}}>
+              <div className="form-label">Notify Coach</div>
+              <div style={{display:'flex',gap:8,marginBottom:8}}>
+                <button className={`btn btn-sm ${am==='email'?'btn-primary':'btn-secondary'}`} style={{flex:1}} onClick={()=>setApprovalNotifyModal(m=>({...m,method:'email'}))}>Email{ac.email?' — '+ac.email:' (no email)'}</button>
+                <button className={`btn btn-sm ${am==='text'?'btn-primary':'btn-secondary'}`} style={{flex:1}} onClick={()=>setApprovalNotifyModal(m=>({...m,method:'text'}))}>Text{ac.phone?' — '+ac.phone:' (no phone)'}</button>
+              </div>
+            </div>
+
+            {apu&&<div style={{marginBottom:14}}>
+              <div className="form-label">Portal Link</div>
+              <div style={{display:'flex',gap:6,alignItems:'center'}}>
+                <input className="form-input" readOnly value={apu} style={{flex:1,fontSize:11,background:'#f8fafc'}}/>
+                <button className="btn btn-sm btn-secondary" onClick={()=>{navigator.clipboard.writeText(apu).then(()=>nf('Portal link copied!')).catch(()=>{window.prompt('Copy:',apu)})}}>Copy</button>
+              </div>
+            </div>}
+
+            <div style={{marginBottom:12}}>
+              <div className="form-label">Message to Coach</div>
+              <textarea className="form-input" rows={6} value={amsg} onChange={e=>setApprovalNotifyModal(m=>({...m,message:e.target.value}))} style={{resize:'vertical',fontSize:12}}/>
+            </div>
+          </div>
+          <div className="modal-footer" style={{display:'flex',gap:8}}>
+            <button className="btn btn-secondary" onClick={()=>setApprovalNotifyModal(null)}>Cancel</button>
+            <button className="btn btn-secondary" onClick={()=>doSend('none')}>Send Without Notifying</button>
+            <button className="btn" style={{background:'linear-gradient(135deg,#f59e0b,#d97706)',color:'white',border:'none',fontWeight:700,padding:'8px 20px'}} disabled={am==='email'&&!ac.email||am==='text'&&!ac.phone} onClick={()=>doSend(am)}>
+              {am==='text'?'Send & Text Coach':'Send & Email Coach'}
+            </button>
           </div>
         </div></div>
       })()}
