@@ -78,7 +78,7 @@ serve(async (req: Request) => {
     let skipped = 0;
 
     for (const c of customers || []) {
-      if (!c.shipping_state || !c.shipping_zip) { skipped++; continue; }
+      if (!c.shipping_state?.trim() || !c.shipping_zip?.trim()) { skipped++; continue; }
 
       // Rate-limit: ~1 req/sec to be respectful to TaxCloud
       await new Promise(r => setTimeout(r, 500));
