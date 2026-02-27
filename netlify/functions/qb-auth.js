@@ -63,6 +63,22 @@ exports.handler = async (event) => {
 
   const basicAuth = 'Basic ' + Buffer.from(QB_CLIENT_ID + ':' + QB_CLIENT_SECRET).toString('base64');
 
+  // ── ACTION: debug ──
+  // Returns the current redirect_uri configuration for troubleshooting
+  if (action === 'debug') {
+    return {
+      statusCode: 200,
+      headers: corsHeaders(origin),
+      body: JSON.stringify({
+        redirect_uri: QB_REDIRECT_URI,
+        site_url: SITE_URL,
+        has_explicit_redirect_uri: !!process.env.QB_REDIRECT_URI,
+        client_id_prefix: QB_CLIENT_ID ? QB_CLIENT_ID.substring(0, 8) + '...' : 'NOT SET',
+        hint: 'The redirect_uri above must EXACTLY match what is listed in your Intuit Developer portal under Keys & credentials > Redirect URIs.',
+      }),
+    };
+  }
+
   // ── ACTION: connect ──
   // Returns the OAuth2 authorization URL for the frontend to redirect to
   if (action === 'connect') {
@@ -71,7 +87,7 @@ exports.handler = async (event) => {
     return {
       statusCode: 200,
       headers: corsHeaders(origin),
-      body: JSON.stringify({ authUrl, state }),
+      body: JSON.stringify({ authUrl, state, redirect_uri: QB_REDIRECT_URI }),
     };
   }
 
