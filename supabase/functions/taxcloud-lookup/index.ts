@@ -38,6 +38,13 @@ serve(async (req: Request) => {
       );
     }
 
+    if (!city) {
+      return new Response(
+        JSON.stringify({ ok: false, error: "City is required — TaxCloud needs city for tax jurisdiction lookup" }),
+        { status: 200, headers: CORS }
+      );
+    }
+
     if (!TAXCLOUD_API_ID || !TAXCLOUD_API_KEY) {
       return new Response(
         JSON.stringify({ ok: false, error: "TaxCloud API credentials not configured — set TAXCLOUD_API_LOGIN_ID and TAXCLOUD_API_KEY in Supabase secrets" }),
