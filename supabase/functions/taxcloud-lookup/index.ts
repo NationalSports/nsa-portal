@@ -64,7 +64,8 @@ serve(async (req: Request) => {
 
     const data = await res.json();
 
-    if (data.ResponseType === 3 || data.ResponseType === 0) {
+    // ResponseType 0 = Error, 3 = Success/Informational
+    if (data.ResponseType === 0 || (!data.CartItemsResponse && data.Messages?.length)) {
       return new Response(
         JSON.stringify({ ok: false, error: data.Messages?.[0]?.Message || "TaxCloud lookup failed" }),
         { status: 400, headers: CORS }

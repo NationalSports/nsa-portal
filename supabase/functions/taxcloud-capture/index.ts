@@ -104,7 +104,7 @@ serve(async (req: Request) => {
       });
       const lookupData = await lookupRes.json();
 
-      if (lookupData.ResponseType === 3 || lookupData.ResponseType === 0) {
+      if (lookupData.ResponseType === 0 || (!lookupData.CartItemsResponse && lookupData.Messages?.length)) {
         return new Response(
           JSON.stringify({
             ok: false,
@@ -133,7 +133,7 @@ serve(async (req: Request) => {
       });
       const captureData = await captureRes.json();
 
-      if (captureData.ResponseType === 3 || captureData.ResponseType === 0) {
+      if (captureData.ResponseType === 0 || (!captureData.CartItemsResponse && captureData.Messages?.length)) {
         return new Response(
           JSON.stringify({
             ok: false,
@@ -178,7 +178,7 @@ serve(async (req: Request) => {
       });
       const returnData = await returnRes.json();
 
-      if (returnData.ResponseType === 3 || returnData.ResponseType === 0) {
+      if (returnData.ResponseType === 0 || (!returnData.CartItemsResponse && returnData.Messages?.length)) {
         return new Response(
           JSON.stringify({
             ok: false,

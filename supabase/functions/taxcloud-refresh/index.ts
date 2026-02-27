@@ -48,7 +48,7 @@ async function lookupRate(address1: string, city: string, state: string, zip5: s
       }),
     });
     const data = await res.json();
-    if (data.ResponseType === 3 || data.ResponseType === 0) return null;
+    if (data.ResponseType === 0 || (!data.CartItemsResponse && data.Messages?.length)) return null;
     const taxAmount = data.CartItemsResponse?.[0]?.TaxAmount ?? 0;
     return Math.round((taxAmount / 100) * 100000) / 100000;
   } catch {
