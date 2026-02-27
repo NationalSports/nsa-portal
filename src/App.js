@@ -101,8 +101,8 @@ const _dbLoad = async () => {
       const payments=invPay.filter(p=>p.invoice_id===inv.id).map(p=>({amount:p.amount,method:p.method,ref:p.ref,date:p.date}));
       const items=invItems.filter(i=>i.invoice_id===inv.id).map(i=>({sku:i.sku,name:i.name,qty:i.qty,unit_price:i.unit_price,total:i.total,description:i.description}));
       return{...inv,payments,items:items.length?items:undefined}});
-    // Messages: attach read_by array
-    const messages=msgRaw.map(m=>({...m,read_by:msgReads.filter(r=>r.message_id===m.id).map(r=>r.user_id)}));
+    // Messages: attach read_by array and parse tagged_members
+    const messages=msgRaw.map(m=>{const tm=m.tagged_members;return{...m,read_by:msgReads.filter(r=>r.message_id===m.id).map(r=>r.user_id),tagged_members:Array.isArray(tm)?tm:(typeof tm==='string'?(() => {try{return JSON.parse(tm)}catch{return[]}})():[])}});
     // OMG Stores: attach products
     const omg_stores=omgRaw.map(s=>({...s,products:omgProd.filter(p=>p.store_id===s.id).map(p=>({sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:p.deco_type,deco_cost:p.deco_cost,sizes:p.sizes||{}}))}));
     const hasData=(customers.length>0)||(sales_orders.length>0);
@@ -113,7 +113,7 @@ const _dbSeed = async (d) => {
   if (!supabase) return;
   // Seed core tables — team_members MUST succeed first (customers FK to team_members)
   const teamIds=new Set((d.team||[]).map(t=>t.id));
-  if(d.team?.length){const{error:tErr}=await supabase.from('team_members').upsert(d.team.map(t=>({id:t.id,name:t.name,role:t.role,email:t.email,phone:t.phone})),{onConflict:'id'});if(tErr)console.error('[DB] seed team_members:',tErr.message)}
+  if(d.team?.length){const{error:tErr}=await supabase.from('team_members').upsert(d.team.map(t=>({id:t.id,name:t.name,role:t.role,email:t.email,phone:t.phone,is_active:t.is_active!==false})),{onConflict:'id'});if(tErr)console.error('[DB] seed team_members:',tErr.message)}
   if(d.vendors?.length){const{error:vErr}=await supabase.from('vendors').upsert(d.vendors.map(v=>{const{_oi,_it,_ac,_a3,_a6,_a9,...rest}=v;return rest}),{onConflict:'id'});if(vErr)console.error('[DB] seed vendors:',vErr.message)}
   // Customers + contacts — use _pick to strip unknown cols, null out invalid FKs
   const custIds=new Set((d.customers||[]).map(c=>c.id));
@@ -253,8 +253,10 @@ const _dbSaveProduct = async (p) => {
 const _dbSaveMessage = async (m) => {
   if(!supabase)return;
   try{
-    const{read_by,...msgRow}=m;
-    await supabase.from('messages').upsert(msgRow,{onConflict:'id'});
+    const{read_by,tagged_members,...msgRow}=m;
+    const row={...msgRow};
+    if(tagged_members&&tagged_members.length>0)row.tagged_members=JSON.stringify(tagged_members);
+    await supabase.from('messages').upsert(row,{onConflict:'id'});
     if(read_by?.length){
       const reads=read_by.map(uid=>({message_id:m.id,user_id:uid}));
       await supabase.from('message_reads').upsert(reads,{onConflict:'message_id,user_id'});
@@ -1036,15 +1038,15 @@ const D_SO=[
   ]},
 ];
 const D_MSG=[
-{id:'m1',so_id:'SO-1042',author_id:'r1',text:'Coach Martinez confirmed navy/gold for front logo. Approved the proof.',ts:'02/10/26 11:30 AM',read_by:['r1','r2']},
-{id:'m2',so_id:'SO-1042',author_id:'r5',text:'Warehouse: we have 30 of JX4453 in stock, rest need to be ordered from Adidas.',ts:'02/11/26 9:15 AM',read_by:['r5']},
-{id:'m3',so_id:'SO-1042',author_id:'r1',text:'PO placed with Adidas for remaining sizes. Expected 02/20.',ts:'02/11/26 2:00 PM',read_by:['r1']},
-{id:'m4',so_id:'SO-1042',author_id:'r4',text:'@Steve - coach called, needs jerseys by 3/10 not 3/15. Can we rush?',ts:'02/14/26 10:00 AM',read_by:['r4']},
-{id:'m5',so_id:'SO-1042',author_id:'r1',text:'Updated expected date. Adidas confirmed they can expedite.',ts:'02/14/26 11:30 AM',read_by:['r1']},
-{id:'m6',so_id:'SO-1045',author_id:'r1',text:'Waiting on Coach Davis for logo approval. Sent follow-up email.',ts:'02/13/26 3:00 PM',read_by:['r1']},
-{id:'m7',so_id:'SO-1051',author_id:'r4',text:'Crest file from coach is low-res. Need vector version.',ts:'02/15/26 11:00 AM',read_by:['r4']},
-{id:'m8',so_id:'SO-1063',author_id:'r1',text:'UA says custom navy/gold will ship 3/1. Backordered on XL and 2XL.',ts:'02/16/26 4:30 PM',read_by:['r1']},
-{id:'m9',so_id:'SO-1062',author_id:'r99',text:'This message is from a deleted rep — should still render.',ts:'02/17/26 9:00 AM',read_by:[]},
+{id:'m1',so_id:'SO-1042',author_id:'r1',text:'Coach Martinez confirmed navy/gold for front logo. Approved the proof.',ts:'02/10/26 11:30 AM',read_by:['r1','r2'],tagged_members:[]},
+{id:'m2',so_id:'SO-1042',author_id:'r5',text:'Warehouse: we have 30 of JX4453 in stock, rest need to be ordered from Adidas.',ts:'02/11/26 9:15 AM',read_by:['r5'],tagged_members:[]},
+{id:'m3',so_id:'SO-1042',author_id:'r1',text:'PO placed with Adidas for remaining sizes. Expected 02/20.',ts:'02/11/26 2:00 PM',read_by:['r1'],tagged_members:[]},
+{id:'m4',so_id:'SO-1042',author_id:'r4',text:'@Steve Peterson - coach called, needs jerseys by 3/10 not 3/15. Can we rush?',ts:'02/14/26 10:00 AM',read_by:['r4'],tagged_members:['r1']},
+{id:'m5',so_id:'SO-1042',author_id:'r1',text:'Updated expected date. Adidas confirmed they can expedite.',ts:'02/14/26 11:30 AM',read_by:['r1'],tagged_members:[]},
+{id:'m6',so_id:'SO-1045',author_id:'r1',text:'Waiting on Coach Davis for logo approval. Sent follow-up email.',ts:'02/13/26 3:00 PM',read_by:['r1'],tagged_members:[]},
+{id:'m7',so_id:'SO-1051',author_id:'r4',text:'@Mo - Crest file from coach is low-res. Need vector version.',ts:'02/15/26 11:00 AM',read_by:['r4'],tagged_members:['r7']},
+{id:'m8',so_id:'SO-1063',author_id:'r1',text:'UA says custom navy/gold will ship 3/1. Backordered on XL and 2XL. @Kellen Coates check warehouse stock.',ts:'02/16/26 4:30 PM',read_by:['r1'],tagged_members:['r5']},
+{id:'m9',so_id:'SO-1062',author_id:'r99',text:'This message is from a deleted rep — should still render.',ts:'02/17/26 9:00 AM',read_by:[],tagged_members:[]},
 ];
 const D_INV=[
   {id:'INV-1042',type:'invoice',customer_id:'c1a',so_id:'SO-1042',date:'02/10/26',due_date:'03/12/26',total:2765,paid:0,memo:'Baseball Spring Season Full Package',status:'open',payments:[],cc_fee:0},
@@ -1625,6 +1627,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
   const isE=mode==='estimate';const isSO=mode==='so';
   const[o,setO]=useState(order);const[cust,setCust]=useState(ic);const[pS,setPS]=useState('');const[showAdd,setShowAdd]=useState(false);
   const[tab,setTab]=useState(initTab||'items');const[dirty,setDirty]=useState(false);const[selJob,setSelJob]=useState(null);const[jobNote,setJobNote]=useState('');const[msgDept,setMsgDept]=useState('all');
+  const[mentionQuery,setMentionQuery]=useState(null);const[mentionIdx,setMentionIdx]=useState(0);const mentionRef=useRef(null);const msgInputRef=useRef(null);
     React.useEffect(()=>{if(initTab)setTab(initTab)},[initTab]);
     React.useEffect(()=>{if(scrollToItem!=null){setTab('items');setTimeout(()=>{const el=document.getElementById('so-item-'+scrollToItem);if(el){el.scrollIntoView({behavior:'smooth',block:'center'});el.style.boxShadow='0 0 0 3px #3b82f6';setTimeout(()=>{el.style.boxShadow=''},2000)}},150)}},[scrollToItem]);
     React.useEffect(()=>{if(scrollToJob!=null){setTab('jobs');setSelJob(scrollToJob);setTimeout(()=>{const el=document.getElementById('so-job-'+scrollToJob);if(el){el.scrollIntoView({behavior:'smooth',block:'center'});el.style.boxShadow='0 0 0 3px #7c3aed';setTimeout(()=>{el.style.boxShadow=''},2000)}},200)}},[scrollToJob]);
@@ -2619,34 +2622,109 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
     {/* MESSAGES TAB */}
     {isSO&&tab==='messages'&&(()=>{const soMsgs=(msgs||[]).filter(m=>m.so_id===o.id).sort((a,b)=>(a.ts||'').localeCompare(b.ts));
       const DEPTS=[{id:'all',label:'All',color:'#64748b'},{id:'art',label:'Art',color:'#7c3aed'},{id:'production',label:'Production',color:'#2563eb'},{id:'warehouse',label:'Warehouse',color:'#d97706'},{id:'sales',label:'Sales',color:'#166534'},{id:'accounting',label:'Accounting',color:'#dc2626'}];
+      const activeMembers=(REPS||[]).filter(r=>r.is_active!==false);
+      const mentionMembers=mentionQuery!=null?activeMembers.filter(r=>r.name.toLowerCase().includes(mentionQuery.toLowerCase())).slice(0,6):[];
+      const renderMsgText=(text,tagged)=>{
+        if(!text)return text;
+        const parts=[];let last=0;
+        const regex=/@(\w[\w\s]*?)(?=\s@|\s*$|[.,!?;:]|\s(?=[^@]))/g;
+        let match;
+        while((match=regex.exec(text))!==null){
+          if(match.index>last)parts.push({type:'text',value:text.slice(last,match.index)});
+          const name=match[1].trim();
+          const member=activeMembers.find(r=>r.name.toLowerCase()===name.toLowerCase()||r.name.split(' ')[0].toLowerCase()===name.toLowerCase());
+          if(member){parts.push({type:'mention',value:'@'+name,id:member.id})}else{parts.push({type:'text',value:match[0]})}
+          last=match.index+match[0].length;
+        }
+        if(last<text.length)parts.push({type:'text',value:text.slice(last)});
+        return parts.map((p,i)=>p.type==='mention'?<span key={i} style={{background:'#dbeafe',color:'#1e40af',fontWeight:600,borderRadius:3,padding:'0 3px'}}>{p.value}</span>:<span key={i}>{p.value}</span>);
+      };
+      const extractTaggedIds=(text)=>{
+        const ids=[];
+        const regex=/@(\w[\w\s]*?)(?=\s@|\s*$|[.,!?;:]|\s(?=[^@]))/g;
+        let match;
+        while((match=regex.exec(text))!==null){
+          const name=match[1].trim();
+          const member=activeMembers.find(r=>r.name.toLowerCase()===name.toLowerCase()||r.name.split(' ')[0].toLowerCase()===name.toLowerCase());
+          if(member&&!ids.includes(member.id))ids.push(member.id);
+        }
+        return ids;
+      };
+      const insertMention=(member)=>{
+        const inp=msgInputRef.current;if(!inp)return;
+        const val=inp.value;const pos=inp.selectionStart;
+        const before=val.slice(0,pos);const after=val.slice(pos);
+        const atIdx=before.lastIndexOf('@');
+        if(atIdx>=0){inp.value=before.slice(0,atIdx)+'@'+member.name+' '+after;
+          const newPos=atIdx+member.name.length+2;inp.setSelectionRange(newPos,newPos)}
+        setMentionQuery(null);setMentionIdx(0);inp.focus();
+      };
+      const handleMsgInput=(e)=>{
+        const val=e.target.value;const pos=e.target.selectionStart;
+        const before=val.slice(0,pos);const atIdx=before.lastIndexOf('@');
+        if(atIdx>=0){const afterAt=before.slice(atIdx+1);
+          if(!afterAt.includes('\n')&&afterAt.length<=30&&!/\s{2}/.test(afterAt)){setMentionQuery(afterAt);setMentionIdx(0)}
+          else{setMentionQuery(null)}}
+        else{setMentionQuery(null)}
+      };
+      const handleMsgKeyDown=(e)=>{
+        if(mentionQuery!=null&&mentionMembers.length>0){
+          if(e.key==='ArrowDown'){e.preventDefault();setMentionIdx(i=>(i+1)%mentionMembers.length);return}
+          if(e.key==='ArrowUp'){e.preventDefault();setMentionIdx(i=>(i-1+mentionMembers.length)%mentionMembers.length);return}
+          if(e.key==='Tab'||e.key==='Enter'){e.preventDefault();insertMention(mentionMembers[mentionIdx]);return}
+          if(e.key==='Escape'){setMentionQuery(null);return}
+        }
+        if(e.key==='Enter'&&mentionQuery==null&&e.target.value.trim()){
+          const text=e.target.value.trim();
+          const tagged=extractTaggedIds(text);
+          const nm={id:'m'+Date.now(),so_id:o.id,author_id:cu.id,text,ts:new Date().toLocaleString(),read_by:[cu.id],dept:msgDept,tagged_members:tagged};
+          if(onMsg)onMsg([...msgs,nm]);e.target.value='';setMsgDept('all');setMentionQuery(null);nf(tagged.length?'Message sent — '+tagged.length+' member(s) tagged':'Message sent')}
+      };
+      const sendMsg=()=>{
+        const inp=msgInputRef.current;if(!inp||!inp.value.trim())return;
+        const text=inp.value.trim();
+        const tagged=extractTaggedIds(text);
+        const nm={id:'m'+Date.now(),so_id:o.id,author_id:cu.id,text,ts:new Date().toLocaleString(),read_by:[cu.id],dept:msgDept,tagged_members:tagged};
+        if(onMsg)onMsg([...msgs,nm]);inp.value='';setMsgDept('all');setMentionQuery(null);nf(tagged.length?'Message sent — '+tagged.length+' member(s) tagged':'Message sent');
+      };
       return<div className="card"><div className="card-header"><h2>Messages</h2><span style={{fontSize:12,color:'#64748b'}}>{soMsgs.length} message(s)</span></div>
         <div className="card-body">
           <div style={{display:'flex',flexDirection:'column',gap:8,marginBottom:12,maxHeight:400,overflow:'auto'}}>
-            {soMsgs.length===0?<div className="empty">No messages yet. Start the conversation.</div>:
+            {soMsgs.length===0?<div className="empty">No messages yet. Start the conversation. Type @ to tag a team member.</div>:
             soMsgs.map(m=>{const author=REPS.find(r=>r.id===m.author_id);const isMe=m.author_id===cu.id;const unread=!(m.read_by||[]).includes(cu.id);
-              const dept=DEPTS.find(d=>d.id===m.dept);
-              return<div key={m.id} style={{padding:'10px 14px',borderRadius:8,background:isMe?'#dbeafe':'#f8fafc',border:unread?'2px solid #3b82f6':'1px solid #e2e8f0',marginLeft:isMe?40:0,marginRight:isMe?0:40}}
+              const dept=DEPTS.find(d=>d.id===m.dept);const isTagged=(m.tagged_members||[]).includes(cu.id);
+              return<div key={m.id} style={{padding:'10px 14px',borderRadius:8,background:isTagged?'#fef3c7':isMe?'#dbeafe':'#f8fafc',border:unread?'2px solid #3b82f6':isTagged?'1px solid #f59e0b':'1px solid #e2e8f0',marginLeft:isMe?40:0,marginRight:isMe?0:40}}
                 onClick={()=>{if(unread&&onMsg){onMsg(msgs.map(mm=>mm.id===m.id?{...mm,read_by:[...(mm.read_by||[]),cu.id]}:mm))}}}>
                 <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
                   <div style={{display:'flex',gap:6,alignItems:'center'}}>
                     <span style={{fontSize:12,fontWeight:700,color:isMe?'#1e40af':'#475569'}}>{author?.name||'Unknown'}</span>
                     {dept&&dept.id!=='all'&&<span style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:8,background:dept.color+'20',color:dept.color}}>@{dept.label}</span>}
+                    {isTagged&&<span style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:8,background:'#fef3c7',color:'#92400e'}}>Tagged you</span>}
                   </div>
                   <span style={{fontSize:10,color:'#94a3b8'}}>{m.ts}</span></div>
-                <div style={{fontSize:13,color:'#0f172a'}}>{m.text}</div>
+                <div style={{fontSize:13,color:'#0f172a'}}>{renderMsgText(m.text,m.tagged_members)}</div>
+                {(m.tagged_members||[]).length>0&&<div style={{display:'flex',gap:4,marginTop:4,flexWrap:'wrap'}}>{(m.tagged_members||[]).map(tid=>{const tm=REPS.find(r=>r.id===tid);return tm?<span key={tid} style={{fontSize:9,padding:'1px 6px',borderRadius:8,background:'#dbeafe',color:'#1e40af',fontWeight:600}}>@{tm.name.split(' ')[0]}</span>:null})}</div>}
                 {unread&&<div style={{fontSize:9,color:'#3b82f6',marginTop:2}}>● New</div>}
               </div>})}
           </div>
-          {/* Message input with department tag */}
+          {/* Message input with department tag and @mention */}
           <div style={{display:'flex',gap:6,marginBottom:6,flexWrap:'wrap'}}>
             {DEPTS.map(d=><button key={d.id} style={{fontSize:10,padding:'2px 8px',borderRadius:10,border:'1px solid '+(msgDept===d.id?d.color:'#e2e8f0'),background:msgDept===d.id?d.color+'15':'white',color:msgDept===d.id?d.color:'#94a3b8',cursor:'pointer',fontWeight:600}} onClick={()=>setMsgDept(d.id)}>@{d.label}</button>)}
           </div>
-          <div style={{display:'flex',gap:8}}><input className="form-input" id="msg-input" placeholder="Type a message..." style={{flex:1}} onKeyDown={e=>{if(e.key==='Enter'&&e.target.value.trim()){
-            const nm={id:'m'+Date.now(),so_id:o.id,author_id:cu.id,text:e.target.value.trim(),ts:new Date().toLocaleString(),read_by:[cu.id],dept:msgDept};
-            if(onMsg)onMsg([...msgs,nm]);e.target.value='';setMsgDept('all');nf('Message sent')}}}/><button className="btn btn-primary" onClick={()=>{
-            const inp=document.getElementById('msg-input');if(inp&&inp.value.trim()){
-            const nm={id:'m'+Date.now(),so_id:o.id,author_id:cu.id,text:inp.value.trim(),ts:new Date().toLocaleString(),read_by:[cu.id],dept:msgDept};
-            if(onMsg)onMsg([...msgs,nm]);inp.value='';setMsgDept('all');nf('Message sent')}}}>Send</button></div>
+          <div style={{position:'relative'}}>
+            {mentionQuery!=null&&mentionMembers.length>0&&<div style={{position:'absolute',bottom:'100%',left:0,right:0,background:'white',border:'1px solid #e2e8f0',borderRadius:8,boxShadow:'0 4px 12px rgba(0,0,0,0.15)',maxHeight:200,overflow:'auto',zIndex:50,marginBottom:4}}>
+              {mentionMembers.map((m,i)=><div key={m.id} style={{padding:'8px 12px',cursor:'pointer',background:i===mentionIdx?'#eff6ff':'white',display:'flex',alignItems:'center',gap:8,borderBottom:'1px solid #f1f5f9'}}
+                onMouseEnter={()=>setMentionIdx(i)} onClick={()=>insertMention(m)}>
+                <div style={{width:28,height:28,borderRadius:14,background:'#3b82f6',color:'white',display:'flex',alignItems:'center',justifyContent:'center',fontSize:11,fontWeight:700,flexShrink:0}}>{(m.name||'?')[0]}</div>
+                <div><div style={{fontSize:12,fontWeight:600}}>{m.name}</div><div style={{fontSize:10,color:'#94a3b8'}}>{m.role}</div></div>
+              </div>)}
+            </div>}
+            <div style={{display:'flex',gap:8}}>
+              <input ref={msgInputRef} className="form-input" placeholder="Type a message... (@ to tag someone)" style={{flex:1}}
+                onChange={handleMsgInput} onKeyDown={handleMsgKeyDown}/>
+              <button className="btn btn-primary" onClick={sendMsg}>Send</button>
+            </div>
+          </div>
         </div></div>})()}
 
         {/* LINKED TRANSACTIONS TAB */}
@@ -2828,7 +2906,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           const msg={id:'m'+Date.now(),so_id:o.id,author_id:cu.id,
             text:'📌 FIRM DATE REQUEST: '+firmReqDate+(firmReqNote?' — '+firmReqNote:''),
             ts:new Date().toLocaleString(),read_by:[cu.id],
-            firm_request:true,firm_date:firmReqDate};
+            firm_request:true,firm_date:firmReqDate,tagged_members:[]};
           onMsg(prev=>[...prev,msg]);
           // Add to firm_dates on the SO
           const fd=[...safeFirm(o),{item_desc:'Full Order',date:firmReqDate,approved:false,requested_by:cu.name,requested_at:new Date().toLocaleString(),note:firmReqNote}];
@@ -5666,7 +5744,7 @@ export default function App(){
   // IMPORTANT: Supabase writes are gated behind _dbLoadSuccess to prevent demo/stale data from overwriting real cloud data
   // Uses _dbSnap to diff against last DB state — only saves records that actually changed (prevents cross-browser feedback loops)
   const _diffSave=(arr,snapKey,saveFn)=>{if(!_initialLoadDone.current||!_dbLoadSuccess.current)return;const snap=_dbSnap.current[snapKey]||[];arr.forEach(item=>{const old=snap.find(p=>p.id===item.id);if(!old||JSON.stringify(old)!==JSON.stringify(item))saveFn(item)});_dbSnap.current[snapKey]=arr};
-  React.useEffect(()=>{try{localStorage.setItem('nsa_reps',JSON.stringify(REPS))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.team||[];const changed=REPS.filter(r=>{const old=snap.find(p=>p.id===r.id);return!old||JSON.stringify(old)!==JSON.stringify(r)});if(changed.length)_dbSave('team_members',changed);_dbSnap.current.team=REPS}},[REPS]);
+  React.useEffect(()=>{try{localStorage.setItem('nsa_reps',JSON.stringify(REPS))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.team||[];const changed=REPS.filter(r=>{const old=snap.find(p=>p.id===r.id);return!old||JSON.stringify(old)!==JSON.stringify(r)});if(changed.length)_dbSave('team_members',changed.map(r=>({id:r.id,name:r.name,role:r.role,email:r.email,phone:r.phone,is_active:r.is_active!==false})));_dbSnap.current.team=REPS}},[REPS]);
   React.useEffect(()=>{try{localStorage.setItem('nsa_cust',JSON.stringify(cust))}catch{};_diffSave(cust,'cust',c=>_dbSaveCustomer(c))},[cust]);
   React.useEffect(()=>{try{localStorage.setItem('nsa_vend',JSON.stringify(vend))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.vend||[];const changed=vend.filter(v=>{const old=snap.find(p=>p.id===v.id);return!old||JSON.stringify(old)!==JSON.stringify(v)});if(changed.length)_dbSave('vendors',changed);_dbSnap.current.vend=vend}},[vend]);
   React.useEffect(()=>{try{localStorage.setItem('nsa_prod',JSON.stringify(prod))}catch{};_diffSave(prod,'prod',p=>_dbSaveProduct(p))},[prod]);
@@ -5989,7 +6067,8 @@ export default function App(){
   function rDash(){
     // Unread messages for this user
     const unreadMsgs=(msgs||[]).filter(m=>!(m.read_by||[]).includes(cu?.id));
-    const myUnread=unreadMsgs.sort((a,b)=>(b.ts||'').localeCompare(a.ts)).slice(0,10);
+    const unreadMentions=unreadMsgs.filter(m=>(m.tagged_members||[]).includes(cu?.id));
+    const myUnread=unreadMsgs.sort((a,b)=>{const aTag=(a.tagged_members||[]).includes(cu?.id)?0:1;const bTag=(b.tagged_members||[]).includes(cu?.id)?0:1;if(aTag!==bTag)return aTag-bTag;return(b.ts||'').localeCompare(a.ts)}).slice(0,10);
     // Build to-do items from jobs and SOs
     const todos=[];
     sos.forEach(so=>{
@@ -6041,7 +6120,7 @@ export default function App(){
 
     {/* ═══ ADMIN VIEW ═══ */}
     {dashView==='admin'&&<>
-    <div className="stats-row"><div className="stat-card"><div className="stat-label">Open Estimates</div><div className="stat-value" style={{color:'#d97706'}}>{ests.filter(e=>e.status==='draft'||e.status==='sent').length}</div></div><div className="stat-card"><div className="stat-label">Active SOs</div><div className="stat-value" style={{color:'#2563eb'}}>{sos.filter(s=>calcSOStatus(s)!=='complete').length}</div></div><div className="stat-card"><div className="stat-label">Active Jobs</div><div className="stat-value" style={{color:'#7c3aed'}}>{activeJobs.length}</div></div><div className="stat-card"><div className="stat-label">Unread Msgs</div><div className="stat-value" style={{color:unreadMsgs.length>0?'#dc2626':''}}>{unreadMsgs.length}</div></div>
+    <div className="stats-row"><div className="stat-card"><div className="stat-label">Open Estimates</div><div className="stat-value" style={{color:'#d97706'}}>{ests.filter(e=>e.status==='draft'||e.status==='sent').length}</div></div><div className="stat-card"><div className="stat-label">Active SOs</div><div className="stat-value" style={{color:'#2563eb'}}>{sos.filter(s=>calcSOStatus(s)!=='complete').length}</div></div><div className="stat-card"><div className="stat-label">Active Jobs</div><div className="stat-value" style={{color:'#7c3aed'}}>{activeJobs.length}</div></div><div className="stat-card"><div className="stat-label">Unread Msgs</div><div className="stat-value" style={{color:unreadMsgs.length>0?'#dc2626':''}}>{unreadMsgs.length}</div></div>{unreadMentions.length>0&&<div className="stat-card" style={{borderColor:'#f59e0b'}}><div className="stat-label">@ Mentions</div><div className="stat-value" style={{color:'#d97706'}}>{unreadMentions.length}</div></div>}
       {isA&&<div className="stat-card" style={{borderColor:'#fbbf24'}}><div className="stat-label">Stock Alerts</div><div className="stat-value" style={{color:'#d97706'}}>{al.length}</div></div>}
       <div className="stat-card" style={{borderColor:ssConnected?'#22c55e':'#ef4444'}}><div className="stat-label">ShipStation</div><div className="stat-value" style={{color:ssConnected?'#166534':'#dc2626',fontSize:16}}>{ssConnected?'Connected':'Offline'}</div></div></div>
     <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
@@ -6053,13 +6132,14 @@ export default function App(){
             <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#eff6ff',color:'#2563eb',fontWeight:600,whiteSpace:'nowrap'}}>{t.action}</span>
           </div>)}
         </div></div>
-      <div className="card"><div className="card-header"><h2>💬 Unread ({unreadMsgs.length})</h2></div>
+      <div className="card"><div className="card-header"><h2>💬 Unread ({unreadMsgs.length}){unreadMentions.length>0&&<span style={{fontSize:12,color:'#d97706',fontWeight:600,marginLeft:8}}>({unreadMentions.length} mention{unreadMentions.length!==1?'s':''})</span>}</h2></div>
         <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
           {myUnread.length===0?<div className="empty" style={{padding:20}}>No unread messages</div>:
-          myUnread.map(m=>{const author=REPS.find(r=>r.id===m.author_id);const so=sos.find(s=>s.id===m.so_id);const c2=cust.find(cc=>cc.id===so?.customer_id);
-            return<div key={m.id} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',cursor:'pointer'}} onClick={()=>{if(so){setESO(so);setESOC(c2);setPg('orders')}}}>
+          myUnread.map(m=>{const author=REPS.find(r=>r.id===m.author_id);const so=sos.find(s=>s.id===m.so_id);const c2=cust.find(cc=>cc.id===so?.customer_id);const isTagged=(m.tagged_members||[]).includes(cu?.id);
+            return<div key={m.id} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',cursor:'pointer',background:isTagged?'#fef3c7':'white'}} onClick={()=>{if(so){setESO(so);setESOC(c2);setPg('orders')}}}>
               <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:2}}>
                 <span style={{fontSize:12,fontWeight:700}}>{author?.name?.split(' ')[0]}</span><span style={{fontSize:10,color:'#1e40af'}}>{so?.id}</span>
+                {isTagged&&<span style={{fontSize:9,fontWeight:700,padding:'1px 4px',borderRadius:6,background:'#fef3c7',color:'#92400e'}}>@you</span>}
                 <span style={{fontSize:10,color:'#94a3b8',marginLeft:'auto'}}>{m.ts}</span></div>
               <div style={{fontSize:12,color:'#475569',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{m.text}</div>
             </div>})}
@@ -11909,28 +11989,47 @@ export default function App(){
   // MESSAGES PAGE
   function rMsg(){const allM=[...msgs].sort((a,b)=>(b.ts||'').localeCompare(a.ts));
     const unread=allM.filter(m=>!(m.read_by||[]).includes(cu.id));
-    const filtered=mF==='unread'?unread:mF==='mine'?allM.filter(m=>sos.some(s=>s.id===m.so_id&&s.created_by===cu.id)):allM;
-    return(<><div className="stats-row"><div className="stat-card"><div className="stat-label">Total</div><div className="stat-value">{allM.length}</div></div><div className="stat-card"><div className="stat-label">Unread</div><div className="stat-value" style={{color:unread.length>0?'#dc2626':''}}>{unread.length}</div></div></div>
-    <div style={{display:'flex',gap:4,marginBottom:12}}>{[['all','All'],['unread','Unread'],['mine','My SOs']].map(([v,l])=><button key={v} className={`btn btn-sm ${mF===v?'btn-primary':'btn-secondary'}`} onClick={()=>setMF(v)}>{l}</button>)}
+    const mentions=allM.filter(m=>(m.tagged_members||[]).includes(cu.id));
+    const filtered=mF==='unread'?unread:mF==='mine'?allM.filter(m=>sos.some(s=>s.id===m.so_id&&s.created_by===cu.id)):mF==='mentions'?mentions:allM;
+    const activeMembers=(REPS||[]).filter(r=>r.is_active!==false);
+    const renderMsgPageText=(text)=>{
+      if(!text)return text;
+      const parts=[];let last=0;
+      const regex=/@(\w[\w\s]*?)(?=\s@|\s*$|[.,!?;:]|\s(?=[^@]))/g;
+      let match2;
+      while((match2=regex.exec(text))!==null){
+        if(match2.index>last)parts.push({type:'text',value:text.slice(last,match2.index)});
+        const name=match2[1].trim();
+        const member=activeMembers.find(r=>r.name.toLowerCase()===name.toLowerCase()||r.name.split(' ')[0].toLowerCase()===name.toLowerCase());
+        if(member){parts.push({type:'mention',value:'@'+name,id:member.id})}else{parts.push({type:'text',value:match2[0]})}
+        last=match2.index+match2[0].length;
+      }
+      if(last<text.length)parts.push({type:'text',value:text.slice(last)});
+      return parts.map((p,i)=>p.type==='mention'?<span key={i} style={{background:'#dbeafe',color:'#1e40af',fontWeight:600,borderRadius:3,padding:'0 3px'}}>{p.value}</span>:<span key={i}>{p.value}</span>);
+    };
+    return(<><div className="stats-row"><div className="stat-card"><div className="stat-label">Total</div><div className="stat-value">{allM.length}</div></div><div className="stat-card"><div className="stat-label">Unread</div><div className="stat-value" style={{color:unread.length>0?'#dc2626':''}}>{unread.length}</div></div><div className="stat-card"><div className="stat-label">Mentions</div><div className="stat-value" style={{color:mentions.length>0?'#d97706':''}}>{mentions.length}</div></div></div>
+    <div style={{display:'flex',gap:4,marginBottom:12}}>{[['all','All'],['unread','Unread'],['mentions','@ Mentions'],['mine','My SOs']].map(([v,l])=><button key={v} className={`btn btn-sm ${mF===v?'btn-primary':'btn-secondary'}`} onClick={()=>setMF(v)}>{l}{v==='mentions'&&mentions.filter(m=>!(m.read_by||[]).includes(cu.id)).length>0?' ('+mentions.filter(m=>!(m.read_by||[]).includes(cu.id)).length+')':''}</button>)}
       <button className="btn btn-sm btn-secondary" style={{marginLeft:'auto'}} onClick={()=>{setMsgs(msgs.map(m=>({...m,read_by:[...new Set([...(m.read_by||[]),cu.id])]})));nf('All marked read')}}>Mark All Read</button></div>
     <div className="card"><div className="card-body" style={{padding:0}}>
-      {filtered.length===0?<div className="empty" style={{padding:20}}>No messages</div>:
-      filtered.map(m=>{const author=REPS.find(r=>r.id===m.author_id);const so=sos.find(s=>s.id===m.so_id);const c2=cust.find(cc=>cc.id===so?.customer_id);const isUnread=!(m.read_by||[]).includes(cu.id);
-        return<div key={m.id} style={{padding:'12px 18px',borderBottom:'1px solid #f1f5f9',cursor:'pointer',background:isUnread?'#eff6ff':'white'}}
+      {filtered.length===0?<div className="empty" style={{padding:20}}>{mF==='mentions'?'No messages where you were tagged':'No messages'}</div>:
+      filtered.map(m=>{const author=REPS.find(r=>r.id===m.author_id);const so=sos.find(s=>s.id===m.so_id);const c2=cust.find(cc=>cc.id===so?.customer_id);const isUnread=!(m.read_by||[]).includes(cu.id);const isTagged=(m.tagged_members||[]).includes(cu.id);
+        return<div key={m.id} style={{padding:'12px 18px',borderBottom:'1px solid #f1f5f9',cursor:'pointer',background:isTagged&&isUnread?'#fef3c7':isUnread?'#eff6ff':'white'}}
           onClick={()=>{if(so){const c3=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c3);setPg('orders')}setMsgs(msgs.map(mm=>mm.id===m.id?{...mm,read_by:[...new Set([...(mm.read_by||[]),cu.id])]}:mm))}}>
           <div style={{display:'flex',gap:12,alignItems:'flex-start'}}>
-            <div style={{width:36,height:36,borderRadius:18,background:isUnread?'#3b82f6':'#e2e8f0',color:isUnread?'white':'#64748b',display:'flex',alignItems:'center',justifyContent:'center',fontSize:13,fontWeight:700,flexShrink:0}}>{(author?.name||'?')[0]}</div>
+            <div style={{width:36,height:36,borderRadius:18,background:isTagged?'#f59e0b':isUnread?'#3b82f6':'#e2e8f0',color:isTagged||isUnread?'white':'#64748b',display:'flex',alignItems:'center',justifyContent:'center',fontSize:13,fontWeight:700,flexShrink:0}}>{isTagged?'@':(author?.name||'?')[0]}</div>
             <div style={{flex:1}}>
               <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:2}}>
                 <span style={{fontWeight:700,fontSize:13}}>{author?.name}</span>
                 <span style={{fontSize:11,color:'#1e40af',fontWeight:600}}>{m.so_id}</span>
                 {c2&&<span style={{fontSize:11,color:'#64748b'}}>{c2.alpha_tag}</span>}
                 {so?.memo&&<span style={{fontSize:10,color:'#94a3b8'}}>— {so.memo}</span>}
+                {isTagged&&<span style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:8,background:'#fef3c7',color:'#92400e'}}>Tagged you</span>}
                 <span style={{fontSize:10,color:'#94a3b8',marginLeft:'auto'}}>{m.ts}</span>
               </div>
-              <div style={{fontSize:13,color:'#374151'}}>{m.text}</div>
+              <div style={{fontSize:13,color:'#374151'}}>{renderMsgPageText(m.text)}</div>
+              {(m.tagged_members||[]).length>0&&<div style={{display:'flex',gap:4,marginTop:3,flexWrap:'wrap'}}>{(m.tagged_members||[]).map(tid=>{const tm=REPS.find(r=>r.id===tid);return tm?<span key={tid} style={{fontSize:9,padding:'1px 6px',borderRadius:8,background:'#dbeafe',color:'#1e40af',fontWeight:600}}>@{tm.name.split(' ')[0]}</span>:null})}</div>}
             </div>
-            {isUnread&&<div style={{width:8,height:8,borderRadius:4,background:'#3b82f6',flexShrink:0,marginTop:6}}/>}
+            {isUnread&&<div style={{width:8,height:8,borderRadius:4,background:isTagged?'#f59e0b':'#3b82f6',flexShrink:0,marginTop:6}}/>}
           </div></div>})}</div></div></>)};
 
   // QUICKBOOKS ONLINE INTEGRATION
@@ -12736,8 +12835,9 @@ export default function App(){
         // Page access control: if employee has custom access list, enforce it (admins always see all)
         if(cu.role!=='admin'&&cu.access&&!cu.access.includes(item.id))return null;
         const ubadge=item.id==='messages'?msgs.filter(m=>!(m.read_by||[]).includes(cu.id)).length:0;
+        const mentionBadge=item.id==='messages'?msgs.filter(m=>!(m.read_by||[]).includes(cu.id)&&(m.tagged_members||[]).includes(cu.id)).length:0;
         return<button key={item.id} className={`sidebar-link ${pg===item.id?'active':''}`}
-          onClick={()=>{if(dirtyRef.current&&!window.confirm('You have unsaved changes. Leave without saving?'))return;dirtyRef.current=false;setPg(item.id);setQ('');setSelC(null);setSelV(null);setEEst(null);setESO(null);setMobileMenuOpen(false)}}><Icon name={item.icon}/>{item.label}{item.id==='messages'&&ubadge>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{ubadge}</span>}{item.id==='purchase_orders'&&(()=>{let wc=0;sos.forEach(so=>safeItems(so).forEach(it=>safePOs(it).forEach(po=>{const szKeys=Object.keys(po).filter(k=>typeof po[k]==='number'&&!['status'].includes(k));const open=szKeys.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-((po.received||{})[sz]||0)-((po.cancelled||{})[sz]||0)),0);if(open>0)wc++})));return wc>0?<span style={{background:'#d97706',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{wc}</span>:null})()}{item.id==='batch_pos'&&batchPOs.length>0&&<span style={{background:'#7c3aed',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{batchPOs.length}</span>}{item.id==='issues'&&openIssueCount>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{openIssueCount}</span>}</button>})}</nav>
+          onClick={()=>{if(dirtyRef.current&&!window.confirm('You have unsaved changes. Leave without saving?'))return;dirtyRef.current=false;setPg(item.id);setQ('');setSelC(null);setSelV(null);setEEst(null);setESO(null);setMobileMenuOpen(false)}}><Icon name={item.icon}/>{item.label}{item.id==='messages'&&mentionBadge>0&&<span style={{background:'#f59e0b',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:4}}>@{mentionBadge}</span>}{item.id==='messages'&&ubadge>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{ubadge}</span>}{item.id==='purchase_orders'&&(()=>{let wc=0;sos.forEach(so=>safeItems(so).forEach(it=>safePOs(it).forEach(po=>{const szKeys=Object.keys(po).filter(k=>typeof po[k]==='number'&&!['status'].includes(k));const open=szKeys.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-((po.received||{})[sz]||0)-((po.cancelled||{})[sz]||0)),0);if(open>0)wc++})));return wc>0?<span style={{background:'#d97706',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{wc}</span>:null})()}{item.id==='batch_pos'&&batchPOs.length>0&&<span style={{background:'#7c3aed',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{batchPOs.length}</span>}{item.id==='issues'&&openIssueCount>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{openIssueCount}</span>}</button>})}</nav>
       <div className="sidebar-user"><div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}><div><div style={{fontWeight:600,color:'#e2e8f0'}}>{cu.name}</div><div>{cu.role}</div></div><button onClick={handleLogout} style={{background:'none',border:'1px solid #475569',borderRadius:6,padding:'3px 8px',color:'#94a3b8',cursor:'pointer',fontSize:10}} title="Log out">↪ Out</button></div></div></div>
     <div className="main"><div className="topbar"><button className="mobile-menu-btn" onClick={()=>setMobileMenuOpen(true)}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button><h1>{eEst?eEst.id:eSO?eSO.id:selC?selC.name:selV?selV.name:(titles[pg]||'Dashboard')}</h1>
         <div style={{flex:1,maxWidth:400,margin:'0 20px',position:'relative'}}>
