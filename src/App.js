@@ -5666,7 +5666,7 @@ export default function App(){
   const[dashView,setDashView]=useState('admin');// admin|sales|warehouse|decorator|production|csr
   const[prodDashFilter,setProdDashFilter]=useState(null);// null|'hold'|'ready'|'staging'|'in_process'|'completed'
   const[qbConfig,setQBConfig]=useState({connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',
-    access_token:'',refresh_token:'',realm_id:'',token_created_at:0,sandbox:false,
+    access_token:'',refresh_token:'',realm_id:'',token_created_at:0,sandbox:true,
     mapping:{income_account:'Sales',cogs_account:'Cost of Goods Sold',deco_account:'Subcontractor - Decoration',ar_account:'Accounts Receivable',ap_account:'Accounts Payable',tax_account:'Sales Tax Payable'},
     syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}});
   const[qbTab,setQbTab]=useState('overview');
@@ -13469,7 +13469,7 @@ export default function App(){
                 <strong>Required Netlify env vars:</strong><br/>
                 QB_CLIENT_ID — from developer.intuit.com<br/>
                 QB_CLIENT_SECRET — from developer.intuit.com<br/>
-                QB_REDIRECT_URI — your site's qb-auth callback URL
+                QB_REDIRECT_URI — (optional) auto-detected from site URL if not set
               </div>
             </div>
           </div>
@@ -13514,7 +13514,7 @@ export default function App(){
           <div style={{fontFamily:'monospace',fontSize:10,background:'#f8fafc',padding:10,borderRadius:6,marginBottom:12}}>
             QB_CLIENT_ID=your_client_id<br/>
             QB_CLIENT_SECRET=your_client_secret<br/>
-            QB_REDIRECT_URI=https://your-site.netlify.app/.netlify/functions/qb-auth?action=callback
+            QB_REDIRECT_URI (optional — auto-detected from site URL)
           </div>
           <div style={{marginBottom:8}}><strong>3. What gets synced:</strong></div>
           <div>&#8226; <strong>Customers</strong> &#8594; QB Customers (name, contact, address, order totals in notes)</div>
