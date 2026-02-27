@@ -5504,7 +5504,7 @@ export default function App(){
   const[dashView,setDashView]=useState('admin');// admin|sales|warehouse|decorator|production|csr
   const[prodDashFilter,setProdDashFilter]=useState(null);// null|'hold'|'ready'|'staging'|'in_process'|'completed'
   const[qbConfig,setQBConfig]=useState({connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',
-    mapping:{income_account:'Sales',cogs_account:'Cost of Goods Sold',deco_account:'Subcontractor - Decoration',ar_account:'Accounts Receivable',ap_account:'Accounts Payable'},
+    mapping:{income_account:'Sales',cogs_account:'Cost of Goods Sold',deco_account:'Subcontractor - Decoration',ar_account:'Accounts Receivable',ap_account:'Accounts Payable',tax_account:'Sales Tax Payable'},
     syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}});
   // Persistent state — loads from localStorage, falls back to demo data
   const loadState=(key,fallback)=>{try{const s=localStorage.getItem('nsa_'+key);return s?JSON.parse(s):fallback}catch{return fallback}};
@@ -5803,6 +5803,27 @@ export default function App(){
   React.useEffect(()=>{_saveAppState('change_log',changeLog)},[changeLog]);
   React.useEffect(()=>{_saveAppState('so_history',soHistory)},[soHistory]);
   React.useEffect(()=>{_saveAppState('qb_config',qbConfig)},[qbConfig]);
+  // Handle QB OAuth callback redirect
+  React.useEffect(()=>{
+    try{
+      const params=new URLSearchParams(window.location.search);
+      if(params.get('qb_connected')==='true'){
+        const company=params.get('qb_company')||'';
+        const realm=params.get('qb_realm')||'';
+        setQBConfig(prev=>({...prev,connected:true,companyId:realm,companyName:company}));
+        nf('Connected to QuickBooks Online'+(company?' — '+company:''));
+        // Clean URL
+        const u=new URL(window.location);u.searchParams.delete('qb_connected');u.searchParams.delete('qb_company');u.searchParams.delete('qb_realm');
+        window.history.replaceState({},'',u);
+        sessionStorage.removeItem('qb_oauth_state');
+      }else if(params.get('qb_error')){
+        nf('QB connection failed: '+params.get('qb_error'));
+        const u=new URL(window.location);u.searchParams.delete('qb_error');
+        window.history.replaceState({},'',u);
+        sessionStorage.removeItem('qb_oauth_state');
+      }
+    }catch{}
+  },[]);
   React.useEffect(()=>{_saveAppState('inv_pos',invPOs)},[invPOs]);
   React.useEffect(()=>{_saveAppState('inv_adj_log',invAdjLog)},[invAdjLog]);
   React.useEffect(()=>{_saveAppState('inv_po_counter',invPOCounter)},[invPOCounter]);
@@ -12326,6 +12347,7 @@ export default function App(){
       const so=sos.find(s=>s.id===inv.so_id);
       return{docType:'Invoice',docNumber:inv.id,customerRef:cust.find(c=>c.id===inv.customer_id)?.name,
         date:inv.date,soRef:inv.so_id,amount:inv.total,paid:inv.paid,balance:inv.total-inv.paid,
+        tax:inv.tax||0,taxAccount:qbConfig.mapping.tax_account,
         account:qbConfig.mapping.ar_account};
     };
 
@@ -12384,11 +12406,22 @@ export default function App(){
             </div>
             {qbConfig.connected?
               <button className="btn btn-secondary" style={{color:'#dc2626'}} onClick={()=>setQBConfig(prev=>({...prev,connected:false,companyId:'',companyName:''}))}>Disconnect</button>:
-              <button className="btn btn-primary" style={{background:'#2CA01C',borderColor:'#2CA01C',padding:'10px 20px',fontSize:14,fontWeight:700}} onClick={()=>{
-                // In production: window.location.href = '/auth/quickbooks' → OAuth2 flow
-                // For demo, simulate connection
-                setQBConfig(prev=>({...prev,connected:true,companyId:'4620816365181050610',companyName:'National Sports Apparel LLC'}));
-                nf('✅ Connected to QuickBooks Online');
+              <button className="btn btn-primary" style={{background:'#2CA01C',borderColor:'#2CA01C',padding:'10px 20px',fontSize:14,fontWeight:700}} onClick={async()=>{
+                if(supabase){
+                  try{
+                    const r=await supabase.functions.invoke('qb-auth');
+                    if(r.data?.ok&&r.data.auth_url){
+                      sessionStorage.setItem('qb_oauth_state',r.data.state);
+                      window.location.href=r.data.auth_url;
+                      return;
+                    }
+                    nf(r.data?.error||'Failed to start QB auth');
+                  }catch(e){nf('QB auth error: '+e.message)}
+                }else{
+                  // Fallback demo mode when no Supabase
+                  setQBConfig(prev=>({...prev,connected:true,companyId:'4620816365181050610',companyName:'National Sports Apparel LLC'}));
+                  nf('✅ Connected to QuickBooks Online (demo)');
+                }
               }}>Connect to QuickBooks</button>}
           </div>
         </div>
@@ -12436,7 +12469,7 @@ export default function App(){
           <div className="card-header"><h2>🗂️ Account Mapping</h2></div>
           <div className="card-body">
             <div style={{fontSize:11,color:'#64748b',marginBottom:8}}>Map NSA line items to your QB Chart of Accounts</div>
-            {[['income_account','Item Revenue','Sales'],['cogs_account','Blank Goods COGS','Cost of Goods Sold'],['deco_account','Outside Decoration','Subcontractor - Decoration'],['ar_account','Accounts Receivable','Accounts Receivable'],['ap_account','Accounts Payable','Accounts Payable']].map(([key,label,def])=>
+            {[['income_account','Item Revenue','Sales'],['cogs_account','Blank Goods COGS','Cost of Goods Sold'],['deco_account','Outside Decoration','Subcontractor - Decoration'],['ar_account','Accounts Receivable','Accounts Receivable'],['ap_account','Accounts Payable','Accounts Payable'],['tax_account','Sales Tax Payable','Sales Tax Payable']].map(([key,label,def])=>
               <div key={key} style={{display:'flex',gap:8,alignItems:'center',marginBottom:4}}>
                 <span style={{fontSize:11,fontWeight:600,color:'#475569',width:140}}>{label}</span>
                 <input className="form-input" style={{flex:1,fontSize:11,padding:'3px 6px'}} value={qbConfig.mapping[key]||def}
@@ -12524,9 +12557,18 @@ export default function App(){
           <div>• <strong>Sales Orders</strong> → QB Sales Order with line items (products + decoration as separate lines)</div>
           <div>• <strong>Blank POs</strong> → QB Purchase Order to vendor (SanMar, S&S, etc.) linked to SO</div>
           <div>• <strong>Deco POs</strong> → QB Purchase Order to decorator (Silver Screen, Olympic, etc.) posted to "{qbConfig.mapping.deco_account}" account</div>
-          <div>• <strong>Invoices</strong> → QB Invoice with A/R tracking, payment application</div>
+          <div>• <strong>Invoices</strong> → QB Invoice with A/R tracking, tax posted to "{qbConfig.mapping.tax_account}"</div>
+          <div style={{marginTop:8,marginBottom:8}}><strong>Edge functions:</strong></div>
+          <div style={{fontFamily:'monospace',fontSize:10,background:'#f8fafc',padding:10,borderRadius:6,marginBottom:8}}>
+            qb-auth — Initiates OAuth2 flow, returns Intuit consent URL<br/>
+            qb-callback — Handles OAuth redirect, exchanges code for tokens<br/>
+            qb-refresh-token — Refreshes expired access tokens (auto before sync)<br/>
+            taxcloud-capture — Reports paid invoices to TaxCloud for state filing<br/>
+            taxcloud-lookup — Looks up tax rate for a shipping address<br/>
+            taxcloud-refresh — Quarterly batch refresh of all customer tax rates
+          </div>
           <div style={{marginTop:8,padding:8,background:'#fef3c7',borderRadius:6,color:'#92400e'}}>
-            <strong>Setup required:</strong> QBO OAuth2 app credentials (Client ID + Secret) from <a href="https://developer.intuit.com" target="_blank" rel="noreferrer" style={{color:'#1e40af'}}>developer.intuit.com</a>. 
+            <strong>Setup required:</strong> QBO OAuth2 app credentials (Client ID + Secret) from <a href="https://developer.intuit.com" target="_blank" rel="noreferrer" style={{color:'#1e40af'}}>developer.intuit.com</a>.
             Add your redirect URI and scopes: <code>com.intuit.quickbooks.accounting</code>
           </div>
         </div>
