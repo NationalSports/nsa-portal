@@ -101,8 +101,8 @@ const _dbLoad = async () => {
       const payments=invPay.filter(p=>p.invoice_id===inv.id).map(p=>({amount:p.amount,method:p.method,ref:p.ref,date:p.date}));
       const items=invItems.filter(i=>i.invoice_id===inv.id).map(i=>({sku:i.sku,name:i.name,qty:i.qty,unit_price:i.unit_price,total:i.total,description:i.description}));
       return{...inv,payments,items:items.length?items:undefined}});
-    // Messages: attach read_by array
-    const messages=msgRaw.map(m=>({...m,read_by:msgReads.filter(r=>r.message_id===m.id).map(r=>r.user_id)}));
+    // Messages: attach read_by array and parse tagged_members
+    const messages=msgRaw.map(m=>{const tm=m.tagged_members;return{...m,read_by:msgReads.filter(r=>r.message_id===m.id).map(r=>r.user_id),tagged_members:Array.isArray(tm)?tm:(typeof tm==='string'?(() => {try{return JSON.parse(tm)}catch{return[]}})():[])}});
     // OMG Stores: attach products
     const omg_stores=omgRaw.map(s=>({...s,products:omgProd.filter(p=>p.store_id===s.id).map(p=>({sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:p.deco_type,deco_cost:p.deco_cost,sizes:p.sizes||{}}))}));
     const hasData=(customers.length>0)||(sales_orders.length>0);
@@ -113,7 +113,7 @@ const _dbSeed = async (d) => {
   if (!supabase) return;
   // Seed core tables — team_members MUST succeed first (customers FK to team_members)
   const teamIds=new Set((d.team||[]).map(t=>t.id));
-  if(d.team?.length){const{error:tErr}=await supabase.from('team_members').upsert(d.team.map(t=>({id:t.id,name:t.name,role:t.role,email:t.email,phone:t.phone})),{onConflict:'id'});if(tErr)console.error('[DB] seed team_members:',tErr.message)}
+  if(d.team?.length){const{error:tErr}=await supabase.from('team_members').upsert(d.team.map(t=>({id:t.id,name:t.name,role:t.role,email:t.email,phone:t.phone,is_active:t.is_active!==false})),{onConflict:'id'});if(tErr)console.error('[DB] seed team_members:',tErr.message)}
   if(d.vendors?.length){const{error:vErr}=await supabase.from('vendors').upsert(d.vendors.map(v=>{const{_oi,_it,_ac,_a3,_a6,_a9,...rest}=v;return rest}),{onConflict:'id'});if(vErr)console.error('[DB] seed vendors:',vErr.message)}
   // Customers + contacts — use _pick to strip unknown cols, null out invalid FKs
   const custIds=new Set((d.customers||[]).map(c=>c.id));
@@ -253,8 +253,10 @@ const _dbSaveProduct = async (p) => {
 const _dbSaveMessage = async (m) => {
   if(!supabase)return;
   try{
-    const{read_by,...msgRow}=m;
-    await supabase.from('messages').upsert(msgRow,{onConflict:'id'});
+    const{read_by,tagged_members,...msgRow}=m;
+    const row={...msgRow};
+    if(tagged_members&&tagged_members.length>0)row.tagged_members=JSON.stringify(tagged_members);
+    await supabase.from('messages').upsert(row,{onConflict:'id'});
     if(read_by?.length){
       const reads=read_by.map(uid=>({message_id:m.id,user_id:uid}));
       await supabase.from('message_reads').upsert(reads,{onConflict:'message_id,user_id'});
@@ -1036,15 +1038,15 @@ const D_SO=[
   ]},
 ];
 const D_MSG=[
-{id:'m1',so_id:'SO-1042',author_id:'r1',text:'Coach Martinez confirmed navy/gold for front logo. Approved the proof.',ts:'02/10/26 11:30 AM',read_by:['r1','r2']},
-{id:'m2',so_id:'SO-1042',author_id:'r5',text:'Warehouse: we have 30 of JX4453 in stock, rest need to be ordered from Adidas.',ts:'02/11/26 9:15 AM',read_by:['r5']},
-{id:'m3',so_id:'SO-1042',author_id:'r1',text:'PO placed with Adidas for remaining sizes. Expected 02/20.',ts:'02/11/26 2:00 PM',read_by:['r1']},
-{id:'m4',so_id:'SO-1042',author_id:'r4',text:'@Steve - coach called, needs jerseys by 3/10 not 3/15. Can we rush?',ts:'02/14/26 10:00 AM',read_by:['r4']},
-{id:'m5',so_id:'SO-1042',author_id:'r1',text:'Updated expected date. Adidas confirmed they can expedite.',ts:'02/14/26 11:30 AM',read_by:['r1']},
-{id:'m6',so_id:'SO-1045',author_id:'r1',text:'Waiting on Coach Davis for logo approval. Sent follow-up email.',ts:'02/13/26 3:00 PM',read_by:['r1']},
-{id:'m7',so_id:'SO-1051',author_id:'r4',text:'Crest file from coach is low-res. Need vector version.',ts:'02/15/26 11:00 AM',read_by:['r4']},
-{id:'m8',so_id:'SO-1063',author_id:'r1',text:'UA says custom navy/gold will ship 3/1. Backordered on XL and 2XL.',ts:'02/16/26 4:30 PM',read_by:['r1']},
-{id:'m9',so_id:'SO-1062',author_id:'r99',text:'This message is from a deleted rep — should still render.',ts:'02/17/26 9:00 AM',read_by:[]},
+{id:'m1',so_id:'SO-1042',author_id:'r1',text:'Coach Martinez confirmed navy/gold for front logo. Approved the proof.',ts:'02/10/26 11:30 AM',read_by:['r1','r2'],tagged_members:[]},
+{id:'m2',so_id:'SO-1042',author_id:'r5',text:'Warehouse: we have 30 of JX4453 in stock, rest need to be ordered from Adidas.',ts:'02/11/26 9:15 AM',read_by:['r5'],tagged_members:[]},
+{id:'m3',so_id:'SO-1042',author_id:'r1',text:'PO placed with Adidas for remaining sizes. Expected 02/20.',ts:'02/11/26 2:00 PM',read_by:['r1'],tagged_members:[]},
+{id:'m4',so_id:'SO-1042',author_id:'r4',text:'@Steve Peterson - coach called, needs jerseys by 3/10 not 3/15. Can we rush?',ts:'02/14/26 10:00 AM',read_by:['r4'],tagged_members:['r1']},
+{id:'m5',so_id:'SO-1042',author_id:'r1',text:'Updated expected date. Adidas confirmed they can expedite.',ts:'02/14/26 11:30 AM',read_by:['r1'],tagged_members:[]},
+{id:'m6',so_id:'SO-1045',author_id:'r1',text:'Waiting on Coach Davis for logo approval. Sent follow-up email.',ts:'02/13/26 3:00 PM',read_by:['r1'],tagged_members:[]},
+{id:'m7',so_id:'SO-1051',author_id:'r4',text:'@Mo - Crest file from coach is low-res. Need vector version.',ts:'02/15/26 11:00 AM',read_by:['r4'],tagged_members:['r7']},
+{id:'m8',so_id:'SO-1063',author_id:'r1',text:'UA says custom navy/gold will ship 3/1. Backordered on XL and 2XL. @Kellen Coates check warehouse stock.',ts:'02/16/26 4:30 PM',read_by:['r1'],tagged_members:['r5']},
+{id:'m9',so_id:'SO-1062',author_id:'r99',text:'This message is from a deleted rep — should still render.',ts:'02/17/26 9:00 AM',read_by:[],tagged_members:[]},
 ];
 const D_INV=[
   {id:'INV-1042',type:'invoice',customer_id:'c1a',so_id:'SO-1042',date:'02/10/26',due_date:'03/12/26',total:2765,paid:0,memo:'Baseball Spring Season Full Package',status:'open',payments:[],cc_fee:0},
@@ -1579,11 +1581,14 @@ function calcSOStatus(ord){
 // ═══════════════════════════════════════════════
 function LoginGate({onLogin,reps}){
   const REPS=(reps||DEFAULT_REPS).filter(r=>r.is_active!==false);
-  const roleColors={admin:'#1e40af',gm:'#7c3aed',prod_manager:'#b45309',production:'#d97706',prod_assistant:'#a16207',rep:'#166534',csr:'#0891b2',warehouse:'#9333ea',accounting:'#dc2626',artist:'#ec4899'};
-  const roleLabels={admin:'Admin',gm:'General Manager',prod_manager:'Production Mgr',production:'Production',prod_assistant:'Prod Assistant',rep:'Sales Rep',csr:'CSR',warehouse:'Warehouse',accounting:'Accounting',artist:'Artist'};
+  const roleColors={admin:'#1e40af',gm:'#7c3aed',prod_manager:'#b45309',production:'#d97706',prod_assistant:'#a16207',rep:'#166534',csr:'#0891b2',warehouse:'#9333ea',accounting:'#dc2626',art:'#ec4899'};
+  const roleLabels={admin:'Admin',gm:'General Manager',prod_manager:'Production Mgr',production:'Production',prod_assistant:'Prod Assistant',rep:'Sales Rep',csr:'CSR',warehouse:'Warehouse',accounting:'Accounting',art:'Artist'};
+  const deptOrder=['admin','rep','csr','accounting','warehouse','prod_manager','production','prod_assistant','art'];
+  const grouped=deptOrder.map(role=>({role,label:roleLabels[role]||role,color:roleColors[role]||'#475569',members:REPS.filter(r=>r.role===role)})).filter(g=>g.members.length>0);
+  const[selDept,setSelDept]=React.useState(null);
   return(
     <div style={{minHeight:'100vh',background:'linear-gradient(135deg,#0f172a 0%,#1e3a5f 50%,#0f172a 100%)',display:'flex',alignItems:'center',justifyContent:'center',fontFamily:"'Inter','Segoe UI',sans-serif"}}>
-      <div style={{width:380,padding:0}}>
+      <div style={{width:480,padding:0}}>
         {/* Logo */}
         <div style={{textAlign:'center',marginBottom:32}}>
           <div style={{fontSize:48,fontWeight:900,color:'white',letterSpacing:-2}}>NSA</div>
@@ -1591,21 +1596,38 @@ function LoginGate({onLogin,reps}){
         </div>
 
         {/* Login Card */}
-        <div style={{background:'white',borderRadius:16,padding:32,boxShadow:'0 20px 60px rgba(0,0,0,0.3)'}}>
-          <div style={{fontSize:14,fontWeight:700,color:'#1e293b',marginBottom:16}}>Who's logging in?</div>
-          <div style={{display:'flex',flexDirection:'column',gap:6}}>
-            {REPS.map(r=>
+        <div style={{background:'white',borderRadius:16,padding:28,boxShadow:'0 20px 60px rgba(0,0,0,0.3)'}}>
+          <div style={{fontSize:14,fontWeight:700,color:'#1e293b',marginBottom:4}}>Who's logging in?</div>
+          <div style={{fontSize:11,color:'#94a3b8',marginBottom:14}}>Select your department, then your name</div>
+
+          {/* Department pills */}
+          <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:16}}>
+            {grouped.map(g=><button key={g.role} onClick={()=>setSelDept(selDept===g.role?null:g.role)}
+              style={{display:'flex',alignItems:'center',gap:6,padding:'8px 14px',borderRadius:10,
+                border:selDept===g.role?'2px solid '+g.color:'1px solid #e2e8f0',
+                background:selDept===g.role?g.color+'12':'white',cursor:'pointer',transition:'all 0.15s'}}
+              onMouseEnter={e=>{if(selDept!==g.role)e.currentTarget.style.borderColor=g.color}}
+              onMouseLeave={e=>{if(selDept!==g.role)e.currentTarget.style.borderColor='#e2e8f0'}}>
+              <div style={{width:8,height:8,borderRadius:4,background:g.color,flexShrink:0}}/>
+              <span style={{fontSize:12,fontWeight:600,color:selDept===g.role?g.color:'#475569'}}>{g.label}</span>
+              <span style={{fontSize:10,color:'#94a3b8'}}>{g.members.length}</span>
+            </button>)}
+          </div>
+
+          {/* Members grid - show selected department or all */}
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6,maxHeight:340,overflow:'auto'}}>
+            {(selDept?grouped.find(g=>g.role===selDept)?.members||[]:REPS).map(r=>
               <button key={r.id} onClick={()=>onLogin(r)}
-                style={{display:'flex',alignItems:'center',gap:12,padding:'12px 16px',border:'1px solid #e2e8f0',
+                style={{display:'flex',alignItems:'center',gap:10,padding:'10px 12px',border:'1px solid #e2e8f0',
                   borderRadius:10,background:'white',cursor:'pointer',transition:'all 0.15s',textAlign:'left'}}
-                onMouseEnter={e=>{e.currentTarget.style.background='#f8fafc';e.currentTarget.style.borderColor='#3b82f6'}}
-                onMouseLeave={e=>{e.currentTarget.style.background='white';e.currentTarget.style.borderColor='#e2e8f0'}}>
-                <div style={{width:40,height:40,borderRadius:20,background:roleColors[r.role]||'#475569',color:'white',
-                  display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,fontWeight:800,flexShrink:0}}>
+                onMouseEnter={e=>{e.currentTarget.style.background='#f8fafc';e.currentTarget.style.borderColor='#3b82f6';e.currentTarget.style.transform='translateY(-1px)'}}
+                onMouseLeave={e=>{e.currentTarget.style.background='white';e.currentTarget.style.borderColor='#e2e8f0';e.currentTarget.style.transform='none'}}>
+                <div style={{width:34,height:34,borderRadius:17,background:roleColors[r.role]||'#475569',color:'white',
+                  display:'flex',alignItems:'center',justifyContent:'center',fontSize:14,fontWeight:800,flexShrink:0}}>
                   {r.name[0]}</div>
-                <div>
-                  <div style={{fontWeight:700,fontSize:14,color:'#0f172a'}}>{r.name}</div>
-                  <div style={{fontSize:11,color:'#64748b'}}>{roleLabels[r.role]||r.role}</div>
+                <div style={{minWidth:0}}>
+                  <div style={{fontWeight:700,fontSize:13,color:'#0f172a',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{r.name}</div>
+                  <div style={{fontSize:10,color:roleColors[r.role]||'#64748b',fontWeight:600}}>{roleLabels[r.role]||r.role}</div>
                 </div>
               </button>)}
           </div>
@@ -1625,6 +1647,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
   const isE=mode==='estimate';const isSO=mode==='so';
   const[o,setO]=useState(order);const[cust,setCust]=useState(ic);const[pS,setPS]=useState('');const[showAdd,setShowAdd]=useState(false);
   const[tab,setTab]=useState(initTab||'items');const[dirty,setDirty]=useState(false);const[selJob,setSelJob]=useState(null);const[jobNote,setJobNote]=useState('');const[msgDept,setMsgDept]=useState('all');
+  const[mentionQuery,setMentionQuery]=useState(null);const[mentionIdx,setMentionIdx]=useState(0);const mentionRef=useRef(null);const msgInputRef=useRef(null);
     React.useEffect(()=>{if(initTab)setTab(initTab)},[initTab]);
     React.useEffect(()=>{if(scrollToItem!=null){setTab('items');setTimeout(()=>{const el=document.getElementById('so-item-'+scrollToItem);if(el){el.scrollIntoView({behavior:'smooth',block:'center'});el.style.boxShadow='0 0 0 3px #3b82f6';setTimeout(()=>{el.style.boxShadow=''},2000)}},150)}},[scrollToItem]);
     React.useEffect(()=>{if(scrollToJob!=null){setTab('jobs');setSelJob(scrollToJob);setTimeout(()=>{const el=document.getElementById('so-job-'+scrollToJob);if(el){el.scrollIntoView({behavior:'smooth',block:'center'});el.style.boxShadow='0 0 0 3px #7c3aed';setTimeout(()=>{el.style.boxShadow=''},2000)}},200)}},[scrollToJob]);
@@ -1718,8 +1741,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
   const totals=useMemo(()=>{let rev=0,cost=0;safeItems(o).forEach(it=>{const q=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);if(!q)return;rev+=q*safeNum(it.unit_sell);cost+=q*safeNum(it.nsa_cost);
     safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:q;const dp=dP(d,q,af,cq);rev+=q*dp.sell;cost+=q*dp.cost});
     (it.po_lines||[]).filter(pl=>pl.po_type==='outside_deco').forEach(pl=>{const poQty=Object.entries(pl).filter(([k,v])=>typeof v==='number'&&!['unit_cost'].includes(k)).reduce((a,[,v])=>a+v,0);cost+=poQty*safeNum(pl.unit_cost)})});
-    const ship=o.shipping_type==='pct'?rev*(o.shipping_value||0)/100:(o.shipping_value||0);const tax=rev*(cust?.tax_rate||0);
-    return{rev,cost,ship,tax,grand:rev+ship+tax,margin:rev-cost,pct:rev>0?((rev-cost)/rev*100):0}},[o,artQty]); // eslint-disable-line
+    const ship=o.shipping_type==='pct'?rev*(o.shipping_value||0)/100:(o.shipping_value||0);const taxRate=cust?.tax_exempt?0:(cust?.tax_rate||0);const tax=rev*taxRate;
+    return{rev,cost,ship,tax,taxRate,grand:rev+ship+tax,margin:rev-cost,pct:rev>0?((rev-cost)/rev*100):0}},[o,artQty,cust]); // eslint-disable-line
 
   // AUTO-SYNC JOBS from decorations — one job per unique artwork across entire SO
   const syncJobs=useCallback(()=>{
@@ -1829,7 +1852,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           {!cust?<div style={{marginBottom:8}}><label className="form-label">Select Customer *</label><SearchSelect options={allCustomers.map(c=>({value:c.id,label:`${c.name} (${c.alpha_tag})`}))} value={o.customer_id} onChange={selC} placeholder="Search customer..."/></div>
           :<div><div style={{display:'flex',alignItems:'center',gap:6}}><span style={{fontSize:18,fontWeight:800}}>{cust.name}</span> <span style={{fontSize:14,color:'#64748b'}}>({cust.alpha_tag})</span>
             <button style={{background:'none',border:'none',cursor:'pointer',color:'#64748b',fontSize:10,textDecoration:'underline',padding:0}} onClick={()=>{if(window.confirm('Change customer for '+o.id+'? This will update pricing tier.'))selC(null);setCust(null)}}>change</button></div>
-            <div style={{fontSize:13,color:'#64748b'}}>Tier {cust.adidas_ua_tier} | {o.default_markup||1.65}x | Tax: {cust.tax_rate?(cust.tax_rate*100).toFixed(2)+'%':'N/A'}</div></div>}
+            <div style={{fontSize:13,color:'#64748b'}}>Tier {cust.adidas_ua_tier} | {o.default_markup||1.65}x | Tax: {cust.tax_rate?(cust.tax_rate*100).toFixed(3)+'%':'N/A'}</div></div>}
           {isSO&&o.estimate_id&&<div style={{fontSize:11,color:'#7c3aed'}}>From: {o.estimate_id}</div>}
           <div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>By {REPS.find(r=>r.id===o.created_by)?.name} · {o.created_at}</div>
           {isSO&&o._tracking_number&&<div style={{padding:8,background:'#f0fdf4',borderRadius:6,marginTop:8}}>
@@ -1848,7 +1871,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           </div>}
         </div>
         <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-          {[{l:'REV',v:totals.rev,bg:'#f0fdf4',c:'#166534'},{l:'COST',v:totals.cost,bg:'#fef2f2',c:'#dc2626'},{l:'MARGIN',v:totals.margin,bg:'#dbeafe',c:'#1e40af',s:`${totals.pct.toFixed(1)}%`},{l:'TOTAL',v:totals.grand,bg:'#faf5ff',c:'#7c3aed',s:'+tax+ship'}].map(x=>
+          {[{l:'REV',v:totals.rev,bg:'#f0fdf4',c:'#166534'},{l:'COST',v:totals.cost,bg:'#fef2f2',c:'#dc2626'},{l:'MARGIN',v:totals.margin,bg:'#dbeafe',c:'#1e40af',s:`${totals.pct.toFixed(1)}%`},
+            ...(totals.ship>0?[{l:'SHIP',v:totals.ship,bg:'#f0f9ff',c:'#0369a1'}]:[]),
+            ...(totals.tax>0?[{l:'TAX',v:totals.tax,bg:'#fefce8',c:'#a16207',s:(totals.taxRate*100).toFixed(3)+'%'}]:[]),
+            ...(cust?.tax_exempt?[{l:'TAX',v:0,bg:'#fef2f2',c:'#dc2626',s:'EXEMPT'}]:[]),
+            {l:'TOTAL',v:totals.grand,bg:'#faf5ff',c:'#7c3aed'}].map(x=>
             <div key={x.l} style={{textAlign:'center',padding:'8px 12px',background:x.bg,borderRadius:8,minWidth:72}}><div style={{fontSize:9,color:x.c,fontWeight:700}}>{x.l}</div><div style={{fontSize:17,fontWeight:800,color:x.c}}>${x.v.toLocaleString(undefined,{maximumFractionDigits:0})}</div>{x.s&&<div style={{fontSize:9,color:'#94a3b8'}}>{x.s}</div>}</div>)}</div>
       </div>
       <div style={{display:'flex',gap:8,marginTop:12,alignItems:'end',flexWrap:'wrap'}}>
@@ -1886,7 +1913,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           const items=safeItems(o).filter(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
           const _pAQ={};items.forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'){_pAQ[d.art_file_id]=(_pAQ[d.art_file_id]||0)+q2}})});
           const isRolled=(o.pricing_mode||'itemized')==='rolled_up';
-          const taxRate=cust?.tax_rate||0;
+          const taxRate=cust?.tax_exempt?0:(cust?.tax_rate||0);
           const rows=[];let subTotal=0;
           items.forEach(it=>{
             const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
@@ -2553,7 +2580,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
     </>}
 
     {/* ART LIBRARY TAB */}
-    {tab==='art'&&<div className="card"><div className="card-header"><h2>Art Library</h2><button className="btn btn-sm btn-primary" onClick={addArt}><Icon name="plus" size={12}/> New Art Group</button></div>
+    {tab==='art'&&<div className="card"><div className="card-header"><h2>Art Library</h2><div style={{display:'flex',gap:6}}>{dirty&&<button className="btn btn-sm btn-primary" onClick={()=>{const updated={...o,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setSaved(true);nf('Art saved')}} style={{background:'#166534',borderColor:'#166534'}}>Save</button>}<button className="btn btn-sm btn-primary" onClick={addArt}><Icon name="plus" size={12}/> New Art Group</button></div></div>
       <div className="card-body">{af.length===0?<div className="empty">No art uploaded. Create art groups and add files.</div>:
         <div style={{display:'flex',flexDirection:'column',gap:12}}>
           {af.map((art,i)=>{const usedIn=safeItems(o).reduce((a,it)=>a+safeDecos(it).filter(d=>d.art_file_id===art.id).length,0);
@@ -2587,8 +2614,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                     </div>
                     <div style={{display:'flex',gap:4,flexWrap:'wrap',marginBottom:4}}>{(art.mockup_files||art.files||[]).map((fn,fi)=><span key={fi} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'3px 8px',background:'#dbeafe',borderRadius:4,fontSize:11,cursor:isUrl(fn)?'pointer':'default'}} onClick={()=>openFile(fn)} title={isUrl(fn)?'Click to open':'Legacy file — re-upload'}>
                       <Icon name="file" size={10}/>{fileDisplayName(fn)}<button onClick={e=>{e.stopPropagation();const mf=[...(art.mockup_files||art.files||[])];mf.splice(fi,1);uArt(i,'mockup_files',mf);if(!art.mockup_files)uArt(i,'files',[])}} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:0}}><Icon name="x" size={10}/></button></span>)}</div>
-                    <div style={{border:'2px dashed #bfdbfe',borderRadius:6,padding:8,textAlign:'center',cursor:'pointer',background:'#eff6ff'}} onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps';inp.onchange=async()=>{const f=inp.files[0];if(!f)return;nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-mockups');const mf=[...(art.mockup_files||art.files||[]),url];uArt(i,'mockup_files',mf);if(!art.mockup_files)uArt(i,'files',[]);nf('✅ Mockup uploaded: '+f.name)}catch(e){nf('Upload failed: '+e.message,'error')}};inp.click()}}>
-                      <div style={{fontSize:10,color:'#2563eb'}}><Icon name="upload" size={12}/> Add mockup (PDF, PNG, JPG)</div></div>
+                    <div style={{border:'2px dashed #bfdbfe',borderRadius:6,padding:12,textAlign:'center',cursor:'pointer',background:'#eff6ff',transition:'all 0.15s'}}
+                      onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps';inp.multiple=true;inp.onchange=async()=>{for(const f of inp.files){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-mockups');const mf=[...(art.mockup_files||art.files||[]),url];uArt(i,'mockup_files',mf);if(!art.mockup_files)uArt(i,'files',[]);nf('✅ '+f.name+' uploaded')}catch(e){nf('Upload failed: '+e.message,'error')}}};inp.click()}}
+                      onDragOver={e=>{e.preventDefault();e.stopPropagation();e.currentTarget.style.background='#dbeafe';e.currentTarget.style.borderColor='#3b82f6'}}
+                      onDragLeave={e=>{e.preventDefault();e.stopPropagation();e.currentTarget.style.background='#eff6ff';e.currentTarget.style.borderColor='#bfdbfe'}}
+                      onDrop={async e=>{e.preventDefault();e.stopPropagation();e.currentTarget.style.background='#eff6ff';e.currentTarget.style.borderColor='#bfdbfe';const files=Array.from(e.dataTransfer.files);for(const f of files){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-mockups');const mf=[...(art.mockup_files||art.files||[]),url];uArt(i,'mockup_files',mf);if(!art.mockup_files)uArt(i,'files',[]);nf('✅ '+f.name+' uploaded')}catch(err){nf('Upload failed: '+err.message,'error')}}}}>
+                      <div style={{fontSize:11,color:'#2563eb',fontWeight:600}}><Icon name="upload" size={14}/> Drop mockup files here or click to browse</div>
+                      <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>PDF, PNG, JPG, AI, EPS</div></div>
                   </div>
                   {/* PRODUCTION FILES — internal only */}
                   <div style={{marginBottom:6}}>
@@ -2598,8 +2630,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                     </div>
                     <div style={{display:'flex',gap:4,flexWrap:'wrap',marginBottom:4}}>{(art.prod_files||[]).map((fn,fi)=><span key={fi} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'3px 8px',background:'#fef3c7',borderRadius:4,fontSize:11,cursor:isUrl(fn)?'pointer':'default'}} onClick={()=>openFile(fn)} title={isUrl(fn)?'Click to open':'Legacy file — re-upload'}>
                       <Icon name="file" size={10}/>{fileDisplayName(fn)}<button onClick={e=>{e.stopPropagation();uArt(i,'prod_files',(art.prod_files||[]).filter((_,x)=>x!==fi))}} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:0}}><Icon name="x" size={10}/></button></span>)}</div>
-                    <div style={{border:'2px dashed #fde68a',borderRadius:6,padding:8,textAlign:'center',cursor:'pointer',background:'#fffbeb'}} onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.pdf,.ai,.eps,.dst,.png,.jpg,.jpeg';inp.onchange=async()=>{const f=inp.files[0];if(!f)return;nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-production');uArt(i,'prod_files',[...(art.prod_files||[]),url]);nf('✅ Production file uploaded: '+f.name)}catch(e){nf('Upload failed: '+e.message,'error')}};inp.click()}}>
-                      <div style={{fontSize:10,color:'#d97706'}}><Icon name="upload" size={12}/> Add production file (DST, AI seps, PDF)</div></div>
+                    <div style={{border:'2px dashed #fde68a',borderRadius:6,padding:12,textAlign:'center',cursor:'pointer',background:'#fffbeb',transition:'all 0.15s'}}
+                      onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.pdf,.ai,.eps,.dst,.png,.jpg,.jpeg';inp.multiple=true;inp.onchange=async()=>{for(const f of inp.files){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-production');uArt(i,'prod_files',[...(art.prod_files||[]),url]);nf('✅ '+f.name+' uploaded')}catch(e){nf('Upload failed: '+e.message,'error')}}};inp.click()}}
+                      onDragOver={e=>{e.preventDefault();e.stopPropagation();e.currentTarget.style.background='#fef3c7';e.currentTarget.style.borderColor='#f59e0b'}}
+                      onDragLeave={e=>{e.preventDefault();e.stopPropagation();e.currentTarget.style.background='#fffbeb';e.currentTarget.style.borderColor='#fde68a'}}
+                      onDrop={async e=>{e.preventDefault();e.stopPropagation();e.currentTarget.style.background='#fffbeb';e.currentTarget.style.borderColor='#fde68a';const files=Array.from(e.dataTransfer.files);for(const f of files){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-production');uArt(i,'prod_files',[...(art.prod_files||[]),url]);nf('✅ '+f.name+' uploaded')}catch(err){nf('Upload failed: '+err.message,'error')}}}}>
+                      <div style={{fontSize:11,color:'#d97706',fontWeight:600}}><Icon name="upload" size={14}/> Drop production files here or click to browse</div>
+                      <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>DST, AI seps, PDF, PNG, JPG</div></div>
                   </div>
                   {/* Notes */}
                   <input className="form-input" value={art.notes||''} onChange={e=>uArt(i,'notes',e.target.value)} placeholder="Notes..." style={{fontSize:12}}/>
@@ -2619,34 +2656,109 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
     {/* MESSAGES TAB */}
     {isSO&&tab==='messages'&&(()=>{const soMsgs=(msgs||[]).filter(m=>m.so_id===o.id).sort((a,b)=>(a.ts||'').localeCompare(b.ts));
       const DEPTS=[{id:'all',label:'All',color:'#64748b'},{id:'art',label:'Art',color:'#7c3aed'},{id:'production',label:'Production',color:'#2563eb'},{id:'warehouse',label:'Warehouse',color:'#d97706'},{id:'sales',label:'Sales',color:'#166534'},{id:'accounting',label:'Accounting',color:'#dc2626'}];
+      const activeMembers=(REPS||[]).filter(r=>r.is_active!==false);
+      const mentionMembers=mentionQuery!=null?activeMembers.filter(r=>r.name.toLowerCase().includes(mentionQuery.toLowerCase())).slice(0,6):[];
+      const renderMsgText=(text,tagged)=>{
+        if(!text)return text;
+        const parts=[];let last=0;
+        const regex=/@(\w[\w\s]*?)(?=\s@|\s*$|[.,!?;:]|\s(?=[^@]))/g;
+        let match;
+        while((match=regex.exec(text))!==null){
+          if(match.index>last)parts.push({type:'text',value:text.slice(last,match.index)});
+          const name=match[1].trim();
+          const member=activeMembers.find(r=>r.name.toLowerCase()===name.toLowerCase()||r.name.split(' ')[0].toLowerCase()===name.toLowerCase());
+          if(member){parts.push({type:'mention',value:'@'+name,id:member.id})}else{parts.push({type:'text',value:match[0]})}
+          last=match.index+match[0].length;
+        }
+        if(last<text.length)parts.push({type:'text',value:text.slice(last)});
+        return parts.map((p,i)=>p.type==='mention'?<span key={i} style={{background:'#dbeafe',color:'#1e40af',fontWeight:600,borderRadius:3,padding:'0 3px'}}>{p.value}</span>:<span key={i}>{p.value}</span>);
+      };
+      const extractTaggedIds=(text)=>{
+        const ids=[];
+        const regex=/@(\w[\w\s]*?)(?=\s@|\s*$|[.,!?;:]|\s(?=[^@]))/g;
+        let match;
+        while((match=regex.exec(text))!==null){
+          const name=match[1].trim();
+          const member=activeMembers.find(r=>r.name.toLowerCase()===name.toLowerCase()||r.name.split(' ')[0].toLowerCase()===name.toLowerCase());
+          if(member&&!ids.includes(member.id))ids.push(member.id);
+        }
+        return ids;
+      };
+      const insertMention=(member)=>{
+        const inp=msgInputRef.current;if(!inp)return;
+        const val=inp.value;const pos=inp.selectionStart;
+        const before=val.slice(0,pos);const after=val.slice(pos);
+        const atIdx=before.lastIndexOf('@');
+        if(atIdx>=0){inp.value=before.slice(0,atIdx)+'@'+member.name+' '+after;
+          const newPos=atIdx+member.name.length+2;inp.setSelectionRange(newPos,newPos)}
+        setMentionQuery(null);setMentionIdx(0);inp.focus();
+      };
+      const handleMsgInput=(e)=>{
+        const val=e.target.value;const pos=e.target.selectionStart;
+        const before=val.slice(0,pos);const atIdx=before.lastIndexOf('@');
+        if(atIdx>=0){const afterAt=before.slice(atIdx+1);
+          if(!afterAt.includes('\n')&&afterAt.length<=30&&!/\s{2}/.test(afterAt)){setMentionQuery(afterAt);setMentionIdx(0)}
+          else{setMentionQuery(null)}}
+        else{setMentionQuery(null)}
+      };
+      const handleMsgKeyDown=(e)=>{
+        if(mentionQuery!=null&&mentionMembers.length>0){
+          if(e.key==='ArrowDown'){e.preventDefault();setMentionIdx(i=>(i+1)%mentionMembers.length);return}
+          if(e.key==='ArrowUp'){e.preventDefault();setMentionIdx(i=>(i-1+mentionMembers.length)%mentionMembers.length);return}
+          if(e.key==='Tab'||e.key==='Enter'){e.preventDefault();insertMention(mentionMembers[mentionIdx]);return}
+          if(e.key==='Escape'){setMentionQuery(null);return}
+        }
+        if(e.key==='Enter'&&mentionQuery==null&&e.target.value.trim()){
+          const text=e.target.value.trim();
+          const tagged=extractTaggedIds(text);
+          const nm={id:'m'+Date.now(),so_id:o.id,author_id:cu.id,text,ts:new Date().toLocaleString(),read_by:[cu.id],dept:msgDept,tagged_members:tagged};
+          if(onMsg)onMsg([...msgs,nm]);e.target.value='';setMsgDept('all');setMentionQuery(null);nf(tagged.length?'Message sent — '+tagged.length+' member(s) tagged':'Message sent')}
+      };
+      const sendMsg=()=>{
+        const inp=msgInputRef.current;if(!inp||!inp.value.trim())return;
+        const text=inp.value.trim();
+        const tagged=extractTaggedIds(text);
+        const nm={id:'m'+Date.now(),so_id:o.id,author_id:cu.id,text,ts:new Date().toLocaleString(),read_by:[cu.id],dept:msgDept,tagged_members:tagged};
+        if(onMsg)onMsg([...msgs,nm]);inp.value='';setMsgDept('all');setMentionQuery(null);nf(tagged.length?'Message sent — '+tagged.length+' member(s) tagged':'Message sent');
+      };
       return<div className="card"><div className="card-header"><h2>Messages</h2><span style={{fontSize:12,color:'#64748b'}}>{soMsgs.length} message(s)</span></div>
         <div className="card-body">
           <div style={{display:'flex',flexDirection:'column',gap:8,marginBottom:12,maxHeight:400,overflow:'auto'}}>
-            {soMsgs.length===0?<div className="empty">No messages yet. Start the conversation.</div>:
+            {soMsgs.length===0?<div className="empty">No messages yet. Start the conversation. Type @ to tag a team member.</div>:
             soMsgs.map(m=>{const author=REPS.find(r=>r.id===m.author_id);const isMe=m.author_id===cu.id;const unread=!(m.read_by||[]).includes(cu.id);
-              const dept=DEPTS.find(d=>d.id===m.dept);
-              return<div key={m.id} style={{padding:'10px 14px',borderRadius:8,background:isMe?'#dbeafe':'#f8fafc',border:unread?'2px solid #3b82f6':'1px solid #e2e8f0',marginLeft:isMe?40:0,marginRight:isMe?0:40}}
+              const dept=DEPTS.find(d=>d.id===m.dept);const isTagged=(m.tagged_members||[]).includes(cu.id);
+              return<div key={m.id} style={{padding:'10px 14px',borderRadius:8,background:isTagged?'#fef3c7':isMe?'#dbeafe':'#f8fafc',border:unread?'2px solid #3b82f6':isTagged?'1px solid #f59e0b':'1px solid #e2e8f0',marginLeft:isMe?40:0,marginRight:isMe?0:40}}
                 onClick={()=>{if(unread&&onMsg){onMsg(msgs.map(mm=>mm.id===m.id?{...mm,read_by:[...(mm.read_by||[]),cu.id]}:mm))}}}>
                 <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
                   <div style={{display:'flex',gap:6,alignItems:'center'}}>
                     <span style={{fontSize:12,fontWeight:700,color:isMe?'#1e40af':'#475569'}}>{author?.name||'Unknown'}</span>
                     {dept&&dept.id!=='all'&&<span style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:8,background:dept.color+'20',color:dept.color}}>@{dept.label}</span>}
+                    {isTagged&&<span style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:8,background:'#fef3c7',color:'#92400e'}}>Tagged you</span>}
                   </div>
                   <span style={{fontSize:10,color:'#94a3b8'}}>{m.ts}</span></div>
-                <div style={{fontSize:13,color:'#0f172a'}}>{m.text}</div>
+                <div style={{fontSize:13,color:'#0f172a'}}>{renderMsgText(m.text,m.tagged_members)}</div>
+                {(m.tagged_members||[]).length>0&&<div style={{display:'flex',gap:4,marginTop:4,flexWrap:'wrap'}}>{(m.tagged_members||[]).map(tid=>{const tm=REPS.find(r=>r.id===tid);return tm?<span key={tid} style={{fontSize:9,padding:'1px 6px',borderRadius:8,background:'#dbeafe',color:'#1e40af',fontWeight:600}}>@{tm.name.split(' ')[0]}</span>:null})}</div>}
                 {unread&&<div style={{fontSize:9,color:'#3b82f6',marginTop:2}}>● New</div>}
               </div>})}
           </div>
-          {/* Message input with department tag */}
+          {/* Message input with department tag and @mention */}
           <div style={{display:'flex',gap:6,marginBottom:6,flexWrap:'wrap'}}>
             {DEPTS.map(d=><button key={d.id} style={{fontSize:10,padding:'2px 8px',borderRadius:10,border:'1px solid '+(msgDept===d.id?d.color:'#e2e8f0'),background:msgDept===d.id?d.color+'15':'white',color:msgDept===d.id?d.color:'#94a3b8',cursor:'pointer',fontWeight:600}} onClick={()=>setMsgDept(d.id)}>@{d.label}</button>)}
           </div>
-          <div style={{display:'flex',gap:8}}><input className="form-input" id="msg-input" placeholder="Type a message..." style={{flex:1}} onKeyDown={e=>{if(e.key==='Enter'&&e.target.value.trim()){
-            const nm={id:'m'+Date.now(),so_id:o.id,author_id:cu.id,text:e.target.value.trim(),ts:new Date().toLocaleString(),read_by:[cu.id],dept:msgDept};
-            if(onMsg)onMsg([...msgs,nm]);e.target.value='';setMsgDept('all');nf('Message sent')}}}/><button className="btn btn-primary" onClick={()=>{
-            const inp=document.getElementById('msg-input');if(inp&&inp.value.trim()){
-            const nm={id:'m'+Date.now(),so_id:o.id,author_id:cu.id,text:inp.value.trim(),ts:new Date().toLocaleString(),read_by:[cu.id],dept:msgDept};
-            if(onMsg)onMsg([...msgs,nm]);inp.value='';setMsgDept('all');nf('Message sent')}}}>Send</button></div>
+          <div style={{position:'relative'}}>
+            {mentionQuery!=null&&mentionMembers.length>0&&<div style={{position:'absolute',bottom:'100%',left:0,right:0,background:'white',border:'1px solid #e2e8f0',borderRadius:8,boxShadow:'0 4px 12px rgba(0,0,0,0.15)',maxHeight:200,overflow:'auto',zIndex:50,marginBottom:4}}>
+              {mentionMembers.map((m,i)=><div key={m.id} style={{padding:'8px 12px',cursor:'pointer',background:i===mentionIdx?'#eff6ff':'white',display:'flex',alignItems:'center',gap:8,borderBottom:'1px solid #f1f5f9'}}
+                onMouseEnter={()=>setMentionIdx(i)} onClick={()=>insertMention(m)}>
+                <div style={{width:28,height:28,borderRadius:14,background:'#3b82f6',color:'white',display:'flex',alignItems:'center',justifyContent:'center',fontSize:11,fontWeight:700,flexShrink:0}}>{(m.name||'?')[0]}</div>
+                <div><div style={{fontSize:12,fontWeight:600}}>{m.name}</div><div style={{fontSize:10,color:'#94a3b8'}}>{m.role}</div></div>
+              </div>)}
+            </div>}
+            <div style={{display:'flex',gap:8}}>
+              <input ref={msgInputRef} className="form-input" placeholder="Type a message... (@ to tag someone)" style={{flex:1}}
+                onChange={handleMsgInput} onKeyDown={handleMsgKeyDown}/>
+              <button className="btn btn-primary" onClick={sendMsg}>Send</button>
+            </div>
+          </div>
         </div></div>})()}
 
         {/* LINKED TRANSACTIONS TAB */}
@@ -2828,7 +2940,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           const msg={id:'m'+Date.now(),so_id:o.id,author_id:cu.id,
             text:'📌 FIRM DATE REQUEST: '+firmReqDate+(firmReqNote?' — '+firmReqNote:''),
             ts:new Date().toLocaleString(),read_by:[cu.id],
-            firm_request:true,firm_date:firmReqDate};
+            firm_request:true,firm_date:firmReqDate,tagged_members:[]};
           onMsg(prev=>[...prev,msg]);
           // Add to firm_dates on the SO
           const fd=[...safeFirm(o),{item_desc:'Full Order',date:firmReqDate,approved:false,requested_by:cu.name,requested_at:new Date().toLocaleString(),note:firmReqNote}];
@@ -2979,7 +3091,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
             const inv={id:invId,type:'invoice',inv_type:invType,customer_id:o.customer_id,so_id:o.id,
               date:invDate,due_date:dueDate,total:Math.round(invTotal*100)/100,paid:0,
               memo:invMemo||defaultMemo,status:'open',_rep:o.created_by||cu.id,
-              tax:Math.round(invTaxAmt*100)/100,shipping:Math.round(invShipAmt*100)/100,
+              tax:Math.round(invTaxAmt*100)/100,tax_rate:cust?.tax_exempt?0:(cust?.tax_rate||0),tax_exempt:cust?.tax_exempt||false,shipping:Math.round(invShipAmt*100)/100,
               ...(invType==='deposit'?{deposit_pct:invDepositPct}:{}),
               line_items:lineItems,
               items:activeItems.map(idx=>{const it=items[idx];return{sku:it.sku,name:it.name,qty:Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0),unit_sell:safeNum(it.unit_sell)}})};
@@ -4445,7 +4557,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   {tab==='overview'&&<div className="card"><div className="card-header"><h2>Info</h2></div><div className="card-body">
     <div className="form-row form-row-3"><div><div className="form-label">Billing</div><div style={{fontSize:13}}>{customer.billing_address_line1||'--'}<br/>{customer.billing_city}, {customer.billing_state} {customer.billing_zip}</div></div>
     <div><div className="form-label">Shipping</div><div style={{fontSize:13}}>{customer.shipping_address_line1||'--'}<br/>{customer.shipping_city}, {customer.shipping_state}</div></div>
-    <div><div className="form-label">Tax</div><div style={{fontSize:13}}>{customer.tax_rate?(customer.tax_rate*100).toFixed(2)+'%':'Auto'}</div></div></div>
+    <div><div className="form-label">Tax</div><div style={{fontSize:13}}>{customer.tax_exempt?<span style={{color:'#dc2626',fontWeight:700}}>TAX EXEMPT</span>:customer.tax_rate?(customer.tax_rate*100).toFixed(3)+'%':'No rate set'}</div></div></div>
   </div></div>}
   {tab==='artwork'&&<div className="card"><div className="card-body"><div className="empty">Customer art library — aggregates from SOs (Phase 3)</div></div></div>}
   {tab==='reporting'&&<div className="card"><div className="card-header"><h2>Reporting</h2><div style={{display:'flex',gap:4}}>{[['thisyear','This Year'],['lastyear','Last Year'],['rolling','Rolling 12'],['alltime','All']].map(([v,l])=><button key={v} className={`btn btn-sm ${rR===v?'btn-primary':'btn-secondary'}`} onClick={()=>setRR(v)}>{l}</button>)}</div></div>
@@ -4806,11 +4918,169 @@ function VendDetail({vendor,onBack}){return(<div><button className="btn btn-seco
   <div className="stats-row"><div className="stat-card"><div className="stat-label">Invoices</div><div className="stat-value">{vendor._oi||0}</div></div><div className="stat-card"><div className="stat-label">Current</div><div className="stat-value" style={{color:'#166534'}}>${(vendor._ac||0).toLocaleString()}</div></div><div className="stat-card"><div className="stat-label">30 Day</div><div className="stat-value" style={{color:(vendor._a3||0)>0?'#d97706':''}}>${(vendor._a3||0).toLocaleString()}</div></div><div className="stat-card"><div className="stat-label">60+</div><div className="stat-value" style={{color:(vendor._a6||0)>0?'#dc2626':''}}>${((vendor._a6||0)+(vendor._a9||0)).toLocaleString()}</div></div></div>
   <div className="card"><div className="card-header"><h2>Purchase Orders</h2></div><div className="card-body"><div className="empty">PO tracking — Phase 4</div></div></div></div>)}
 
+// Helper: Supabase functions.invoke can return ReadableStream instead of parsed JSON in v2.39+
+async function invokeEdgeFn(supabase,fnName,body){
+  const r=await supabase.functions.invoke(fnName,{body});
+  let d=r.data;
+  // If data is a ReadableStream or Response, read and parse it
+  if(d&&typeof d==='object'&&typeof d.getReader==='function'){d=await new Response(d).json()}
+  else if(d&&typeof d==='object'&&typeof d.text==='function'){d=await d.json()}
+  else if(typeof d==='string'){try{d=JSON.parse(d)}catch(e){d=null}}
+  // Also check error for body content
+  if(!d&&r.error){const ctx=r.error?.context;if(ctx&&typeof ctx.json==='function'){try{d=await ctx.json()}catch(e){}}if(!d)d={ok:false,error:r.error?.message||String(r.error)}}
+  return d||{ok:false,error:'No response from edge function'};
+}
+
+// ─── TAXCLOUD SETTINGS COMPONENT ───
+function TaxCloudSettings({supabase,nf,cust,setCust}){
+  const[tcStatus,setTcStatus]=useState({tested:false,ok:false,msg:'',loading:false});
+  const[refreshStatus,setRefreshStatus]=useState({loading:false,result:null});
+
+  const testConnection=async()=>{
+    setTcStatus({tested:false,ok:false,msg:'',loading:true});
+    try{
+      if(!supabase){setTcStatus({tested:true,ok:false,msg:'Supabase not configured — set REACT_APP_SUPABASE_URL and REACT_APP_SUPABASE_ANON_KEY',loading:false});return}
+      const d=await invokeEdgeFn(supabase,'taxcloud-lookup',{address1:'',city:'',state:'TX',zip5:'75001'});
+      if(d?.ok){setTcStatus({tested:true,ok:true,msg:'Connected — test rate for TX 75001: '+d.tax_pct+'%',loading:false})}
+      else{setTcStatus({tested:true,ok:false,msg:d?.error||'Lookup failed — check API credentials in Supabase secrets',loading:false})}
+    }catch(e){setTcStatus({tested:true,ok:false,msg:'Error: '+e.message,loading:false})}
+  };
+
+  const refreshAllRates=async()=>{
+    setRefreshStatus({loading:true,result:null});
+    try{
+      if(!supabase){setRefreshStatus({loading:false,result:{ok:false,error:'Supabase not configured'}});return}
+      const d=await invokeEdgeFn(supabase,'taxcloud-refresh',{});
+      if(d?.ok){
+        setRefreshStatus({loading:false,result:d});
+        if(d.changes?.length>0){
+          setCust(prev=>prev.map(c=>{const ch=d.changes.find(x=>x.id===c.id);return ch?{...c,tax_rate:ch.new_rate}:c}));
+        }
+        nf(d.updated+' customer rate(s) updated');
+      }else{setRefreshStatus({loading:false,result:{ok:false,error:d?.error||'Refresh failed'}})}
+    }catch(e){setRefreshStatus({loading:false,result:{ok:false,error:e.message}})}
+  };
+
+  const taxableCusts=cust.filter(c=>c.is_active!==false&&!c.tax_exempt&&(c.tax_rate||0)>0);
+  const exemptCusts=cust.filter(c=>c.is_active!==false&&c.tax_exempt);
+  const noRateCusts=cust.filter(c=>c.is_active!==false&&!c.tax_exempt&&!(c.tax_rate>0)&&c.shipping_state);
+  const statesUsed=[...new Set(taxableCusts.map(c=>(c.shipping_state||'').toUpperCase()).filter(Boolean))].sort();
+
+  return<>
+    {/* Connection Status */}
+    <div className="card" style={{marginBottom:16}}>
+      <div className="card-header"><h3>TaxCloud Connection</h3></div>
+      <div className="card-body">
+        <div style={{fontSize:12,color:'#64748b',marginBottom:12}}>
+          TaxCloud handles sales tax rate lookups and files returns automatically. API credentials are stored as Supabase Edge Function secrets (TAXCLOUD_API_LOGIN_ID, TAXCLOUD_API_KEY).
+        </div>
+        <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:12}}>
+          <button className="btn btn-sm btn-primary" onClick={testConnection} disabled={tcStatus.loading}
+            style={{fontSize:12}}>{tcStatus.loading?'Testing...':'Test Connection'}</button>
+          {tcStatus.tested&&<div style={{display:'flex',alignItems:'center',gap:6}}>
+            <span style={{width:10,height:10,borderRadius:'50%',background:tcStatus.ok?'#22c55e':'#ef4444',display:'inline-block'}}/>
+            <span style={{fontSize:12,color:tcStatus.ok?'#166534':'#dc2626',fontWeight:600}}>{tcStatus.ok?'Connected':'Failed'}</span>
+          </div>}
+        </div>
+        {tcStatus.msg&&<div style={{padding:8,background:tcStatus.ok?'#f0fdf4':'#fef2f2',border:'1px solid '+(tcStatus.ok?'#bbf7d0':'#fecaca'),borderRadius:6,fontSize:11,color:tcStatus.ok?'#166534':'#991b1b'}}>{tcStatus.msg}</div>}
+        <div style={{marginTop:12,padding:10,background:'#f8fafc',borderRadius:6}}>
+          <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:6}}>EDGE FUNCTIONS</div>
+          <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+            {[['taxcloud-lookup','Rate Lookup','Looks up tax rate for a shipping address'],['taxcloud-capture','Capture / File','Reports paid invoices for state filing'],['taxcloud-refresh','Quarterly Refresh','Batch updates all customer rates']].map(([fn,label,desc])=>
+              <div key={fn} style={{flex:'1 1 180px',padding:8,background:'white',border:'1px solid #e2e8f0',borderRadius:6}}>
+                <div style={{fontSize:11,fontWeight:700,color:'#1e40af',fontFamily:'monospace'}}>{fn}</div>
+                <div style={{fontSize:10,color:'#475569',fontWeight:600}}>{label}</div>
+                <div style={{fontSize:9,color:'#94a3b8'}}>{desc}</div>
+              </div>)}
+          </div>
+        </div>
+      </div>
+    </div>
+
+    {/* Customer Rate Summary */}
+    <div className="card" style={{marginBottom:16}}>
+      <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+        <h3>Customer Tax Rates</h3>
+        <button className="btn btn-sm" style={{fontSize:11,background:'#7c3aed',color:'white',border:'none'}} onClick={refreshAllRates} disabled={refreshStatus.loading}>
+          {refreshStatus.loading?'Refreshing...':'Refresh All Rates'}</button>
+      </div>
+      <div className="card-body">
+        {refreshStatus.result&&<div style={{marginBottom:12,padding:10,borderRadius:6,fontSize:12,
+          background:refreshStatus.result.ok?'#f0fdf4':'#fef2f2',border:'1px solid '+(refreshStatus.result.ok?'#bbf7d0':'#fecaca'),
+          color:refreshStatus.result.ok?'#166534':'#991b1b'}}>
+          {refreshStatus.result.ok?<>
+            <strong>Refresh complete:</strong> {refreshStatus.result.total_customers} customers checked, {refreshStatus.result.updated} updated, {refreshStatus.result.skipped} skipped, {refreshStatus.result.errors} errors
+            {refreshStatus.result.changes?.length>0&&<div style={{marginTop:6}}>{refreshStatus.result.changes.map((ch,i)=>
+              <div key={i} style={{fontSize:11}}>{ch.name}: {(ch.old_rate*100).toFixed(3)}% → <strong>{(ch.new_rate*100).toFixed(3)}%</strong></div>)}</div>}
+          </>:<>Error: {refreshStatus.result.error}</>}
+        </div>}
+
+        <div style={{display:'flex',gap:12,marginBottom:12}}>
+          <div style={{padding:10,background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:8,flex:1,textAlign:'center'}}>
+            <div style={{fontSize:22,fontWeight:800,color:'#166534'}}>{taxableCusts.length}</div>
+            <div style={{fontSize:10,color:'#64748b'}}>Taxable (rate set)</div>
+          </div>
+          <div style={{padding:10,background:'#fef2f2',border:'1px solid #fecaca',borderRadius:8,flex:1,textAlign:'center'}}>
+            <div style={{fontSize:22,fontWeight:800,color:'#dc2626'}}>{exemptCusts.length}</div>
+            <div style={{fontSize:10,color:'#64748b'}}>Tax Exempt</div>
+          </div>
+          <div style={{padding:10,background:noRateCusts.length>0?'#fef3c7':'#f8fafc',border:'1px solid '+(noRateCusts.length>0?'#fde68a':'#e2e8f0'),borderRadius:8,flex:1,textAlign:'center'}}>
+            <div style={{fontSize:22,fontWeight:800,color:noRateCusts.length>0?'#d97706':'#94a3b8'}}>{noRateCusts.length}</div>
+            <div style={{fontSize:10,color:'#64748b'}}>Missing Rate</div>
+          </div>
+        </div>
+
+        {noRateCusts.length>0&&<div style={{marginBottom:12}}>
+          <div style={{fontSize:11,fontWeight:700,color:'#d97706',marginBottom:4}}>Customers needing tax rate:</div>
+          <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>{noRateCusts.map(c=>
+            <span key={c.id} style={{padding:'3px 8px',background:'#fef3c7',border:'1px solid #fde68a',borderRadius:6,fontSize:11,color:'#92400e'}}>{c.name} ({c.shipping_state||'?'})</span>)}
+          </div>
+        </div>}
+
+        {statesUsed.length>0&&<div>
+          <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:4}}>States with active tax rates:</div>
+          <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>{statesUsed.map(st=>{
+            const count=taxableCusts.filter(c=>(c.shipping_state||'').toUpperCase()===st).length;
+            const avgRate=taxableCusts.filter(c=>(c.shipping_state||'').toUpperCase()===st).reduce((a,c)=>a+(c.tax_rate||0),0)/count;
+            return<span key={st} style={{padding:'4px 10px',background:'#dbeafe',border:'1px solid #93c5fd',borderRadius:6,fontSize:11,color:'#1e40af',fontWeight:600}}>
+              {st} <span style={{fontSize:9,fontWeight:400}}>({count}) ~{(avgRate*100).toFixed(2)}%</span></span>})}</div>
+        </div>}
+      </div>
+    </div>
+
+    {/* Auto-Capture Info */}
+    <div className="card" style={{marginBottom:16}}>
+      <div className="card-header"><h3>Tax Filing (AuthorizedWithCapture)</h3></div>
+      <div className="card-body">
+        <div style={{fontSize:12,color:'#475569',lineHeight:1.6}}>
+          When an invoice is fully paid, the portal automatically reports the transaction to TaxCloud via <strong>AuthorizedWithCapture</strong>. This means:
+        </div>
+        <div style={{marginTop:8,display:'flex',flexDirection:'column',gap:6}}>
+          {[['TaxCloud calculates the exact tax for each line item based on TIC codes','#2563eb'],
+            ['The transaction is authorized and captured in a single call','#7c3aed'],
+            ['TaxCloud includes it in your next state filing','#166534'],
+            ['Invoices show a "TC" badge once reported','#d97706']
+          ].map(([text,color],i)=>
+            <div key={i} style={{display:'flex',gap:8,alignItems:'center'}}>
+              <span style={{width:6,height:6,borderRadius:'50%',background:color,flexShrink:0}}/>
+              <span style={{fontSize:12}}>{text}</span>
+            </div>)}
+        </div>
+        <div style={{marginTop:12,padding:8,background:'#fef3c7',borderRadius:6,fontSize:11,color:'#92400e'}}>
+          <strong>TIC Code:</strong> All items default to TIC 20010 (Clothing/Apparel). TaxCloud automatically handles state-specific apparel exemptions (PA, NJ, MN, etc.).
+        </div>
+      </div>
+    </div>
+  </>;
+}
+
 // MODALS
 function CustModal({isOpen,onClose,onSave,customer,parents}){
   const b={parent_id:null,name:'',alpha_tag:'',contacts:[{name:'',email:'',phone:'',role:'Head Coach'}],shipping_city:'',shipping_state:'',adidas_ua_tier:'B',catalog_markup:1.65,payment_terms:'net30'};
-  const[f,setF]=useState(customer||b);const[ct,setCt]=useState(customer?.parent_id?'sub':'parent');const[err,setErr]=useState({});
-  const sv=(k,v)=>setF(x=>({...x,[k]:v}));React.useEffect(()=>{setF(customer||b);setCt(customer?.parent_id?'sub':'parent');setErr({})},[customer,isOpen]); // eslint-disable-line
+  const[f,setF]=useState(customer||b);const[ct,setCt]=useState(customer?.parent_id?'sub':'parent');const[err,setErr]=useState({});const[tcLook,setTcLook]=useState({loading:false,msg:''});
+  const doTcLookup=async(fields)=>{if(!supabase||!fields.shipping_state||!fields.shipping_zip)return null;try{return await invokeEdgeFn(supabase,'taxcloud-lookup',{address1:fields.shipping_address_line1||'',city:fields.shipping_city||'',state:fields.shipping_state,zip5:fields.shipping_zip})}catch(e){return{ok:false,error:'Error: '+e.message}}};
+  const APPAREL_EXEMPT=['MN','NJ','PA','VT','AK','DE','MT','NH','OR'];const APPAREL_THRESHOLD=['MA','NY','RI'];
+  const sv=(k,v)=>setF(x=>({...x,[k]:v}));React.useEffect(()=>{setF(customer||b);setCt(customer?.parent_id?'sub':'parent');setErr({});setTcLook({loading:false,msg:''})},[customer,isOpen]); // eslint-disable-line
   const addC=()=>sv('contacts',[...(f.contacts||[]),{name:'',email:'',phone:'',role:'Head Coach'}]);const rmC=i=>sv('contacts',(f.contacts||[]).filter((_,x)=>x!==i));
   const upC=(i,k,v)=>sv('contacts',(f.contacts||[]).map((c,x)=>x===i?{...c,[k]:v}:c));
   const ok=()=>{const e={};if(!f.name)e.n=1;if(!f.alpha_tag)e.a=1;if(!f.shipping_city)e.c=1;if(!f.shipping_state)e.s=1;if(ct==='sub'&&!f.parent_id)e.p=1;if(!(f.contacts||[])[0]?.name)e.cn=1;if(!(f.contacts||[])[0]?.email)e.ce=1;setErr(e);return!Object.keys(e).length};
@@ -4836,8 +5106,14 @@ function CustModal({isOpen,onClose,onSave,customer,parents}){
     <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginTop:12,marginBottom:6,textTransform:'uppercase'}}>Pricing</div>
     <div className="form-row form-row-2"><div><label className="form-label">Tier</label><select className="form-select" value={f.adidas_ua_tier||'B'} onChange={e=>sv('adidas_ua_tier',e.target.value)}><option value="A">A - 40%</option><option value="B">B - 35%</option><option value="C">C - 30%</option></select></div>
       <div><label className="form-label">Markup</label><input className="form-input" type="number" step="0.05" value={f.catalog_markup||1.65} onChange={e=>sv('catalog_markup',parseFloat(e.target.value)||1.65)}/></div></div>
+    <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginTop:12,marginBottom:6,textTransform:'uppercase'}}>Tax</div>
+    <div className="form-row form-row-2"><div><label className="form-label">Tax Rate (%)</label><div style={{display:'flex',gap:6}}><input className="form-input" type="number" step="0.125" min="0" max="15" value={f.tax_rate?(f.tax_rate*100).toFixed(4).replace(/0+$/,'').replace(/\.$/,''):''} onChange={e=>{const v=parseFloat(e.target.value);sv('tax_rate',v>0?v/100:0)}} placeholder="e.g. 7.875" style={{flex:1}}/><button className="btn btn-sm btn-secondary" disabled={tcLook.loading||!f.shipping_state||!f.shipping_zip} title={!f.shipping_state||!f.shipping_zip?'Enter shipping state & ZIP first':'Lookup rate from TaxCloud'} style={{whiteSpace:'nowrap',fontSize:11}} onClick={async()=>{setTcLook({loading:true,msg:''});const d=await doTcLookup(f);if(d?.ok){sv('tax_rate',d.tax_rate);setTcLook({loading:false,msg:d.tax_pct+'% (TaxCloud)'})}else{setTcLook({loading:false,msg:d?.error||'Lookup failed'})}}}>{tcLook.loading?'...':'TaxCloud'}</button></div>
+    {tcLook.msg&&<div style={{fontSize:10,marginTop:3,color:tcLook.msg.includes('fail')||tcLook.msg.includes('Error')?'#dc2626':'#166534'}}>{tcLook.msg}</div>}
+    {f.shipping_state&&APPAREL_EXEMPT.includes(f.shipping_state.toUpperCase())&&<div style={{fontSize:10,marginTop:3,color:'#7c3aed'}}>{f.shipping_state.toUpperCase()} does not tax apparel</div>}
+    {f.shipping_state&&APPAREL_THRESHOLD.includes(f.shipping_state.toUpperCase())&&<div style={{fontSize:10,marginTop:3,color:'#b45309'}}>{f.shipping_state.toUpperCase()} exempts apparel under threshold</div>}</div>
+      <div style={{display:'flex',alignItems:'center',paddingTop:20}}><label style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer',fontSize:13}}><input type="checkbox" checked={f.tax_exempt||false} onChange={e=>sv('tax_exempt',e.target.checked)} style={{width:16,height:16}}/><span style={{fontWeight:600,color:f.tax_exempt?'#dc2626':'#475569'}}>{f.tax_exempt?'Tax Exempt':'Taxable'}</span></label></div></div>
   </div>
-  <div className="modal-footer"><button className="btn btn-secondary" onClick={onClose}>Cancel</button><button className="btn btn-primary" onClick={()=>{if(!ok())return;onSave({...f,id:f.id||'c'+Date.now(),parent_id:ct==='sub'?f.parent_id:null,is_active:true,_oe:f._oe||0,_os:f._os||0,_oi:f._oi||0,_ob:f._ob||0});onClose()}}>Save</button></div></div></div>);
+  <div className="modal-footer"><button className="btn btn-secondary" onClick={onClose}>Cancel</button><button className="btn btn-primary" disabled={tcLook.loading} onClick={async()=>{if(!ok())return;const dat={...f,id:f.id||'c'+Date.now(),parent_id:ct==='sub'?f.parent_id:null,is_active:true,_oe:f._oe||0,_os:f._os||0,_oi:f._oi||0,_ob:f._ob||0};if(!dat.tax_exempt&&!(dat.tax_rate>0)&&dat.shipping_state&&dat.shipping_zip&&supabase){setTcLook({loading:true,msg:'Looking up tax rate...'});const d=await doTcLookup(dat);if(d?.ok){dat.tax_rate=d.tax_rate}}onSave(dat);onClose()}}>{tcLook.loading?'Saving...':'Save'}</button></div></div></div>);
 }
 function AdjModal({isOpen,onClose,product,onSave}){const[a,setA]=useState({});const[d,setD]=useState({});const[reason,setReason]=useState('');const[adjType,setAdjType]=useState('manual');
   React.useEffect(()=>{if(product){setA({...product._inv});setD({});setReason('');setAdjType('manual')}},[product,isOpen]);if(!isOpen||!product)return null;
@@ -5378,7 +5654,7 @@ export default function App(){
   const[prodDashFilter,setProdDashFilter]=useState(null);// null|'hold'|'ready'|'staging'|'in_process'|'completed'
   const[qbConfig,setQBConfig]=useState({connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',
     access_token:'',refresh_token:'',realm_id:'',token_created_at:0,sandbox:false,
-    mapping:{income_account:'Sales',cogs_account:'Cost of Goods Sold',deco_account:'Subcontractor - Decoration',ar_account:'Accounts Receivable',ap_account:'Accounts Payable'},
+    mapping:{income_account:'Sales',cogs_account:'Cost of Goods Sold',deco_account:'Subcontractor - Decoration',ar_account:'Accounts Receivable',ap_account:'Accounts Payable',tax_account:'Sales Tax Payable'},
     syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}});
   // Persistent state — loads from localStorage, falls back to demo data
   const loadState=(key,fallback)=>{try{const s=localStorage.getItem('nsa_'+key);return s?JSON.parse(s):fallback}catch{return fallback}};
@@ -5659,7 +5935,7 @@ export default function App(){
   // IMPORTANT: Supabase writes are gated behind _dbLoadSuccess to prevent demo/stale data from overwriting real cloud data
   // Uses _dbSnap to diff against last DB state — only saves records that actually changed (prevents cross-browser feedback loops)
   const _diffSave=(arr,snapKey,saveFn)=>{if(!_initialLoadDone.current||!_dbLoadSuccess.current)return;const snap=_dbSnap.current[snapKey]||[];arr.forEach(item=>{const old=snap.find(p=>p.id===item.id);if(!old||JSON.stringify(old)!==JSON.stringify(item))saveFn(item)});_dbSnap.current[snapKey]=arr};
-  React.useEffect(()=>{try{localStorage.setItem('nsa_reps',JSON.stringify(REPS))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.team||[];const changed=REPS.filter(r=>{const old=snap.find(p=>p.id===r.id);return!old||JSON.stringify(old)!==JSON.stringify(r)});if(changed.length)_dbSave('team_members',changed);_dbSnap.current.team=REPS}},[REPS]);
+  React.useEffect(()=>{try{localStorage.setItem('nsa_reps',JSON.stringify(REPS))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.team||[];const changed=REPS.filter(r=>{const old=snap.find(p=>p.id===r.id);return!old||JSON.stringify(old)!==JSON.stringify(r)});if(changed.length)_dbSave('team_members',changed.map(r=>({id:r.id,name:r.name,role:r.role,email:r.email,phone:r.phone,is_active:r.is_active!==false})));_dbSnap.current.team=REPS}},[REPS]);
   React.useEffect(()=>{try{localStorage.setItem('nsa_cust',JSON.stringify(cust))}catch{};_diffSave(cust,'cust',c=>_dbSaveCustomer(c))},[cust]);
   React.useEffect(()=>{try{localStorage.setItem('nsa_vend',JSON.stringify(vend))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.vend||[];const changed=vend.filter(v=>{const old=snap.find(p=>p.id===v.id);return!old||JSON.stringify(old)!==JSON.stringify(v)});if(changed.length)_dbSave('vendors',changed);_dbSnap.current.vend=vend}},[vend]);
   React.useEffect(()=>{try{localStorage.setItem('nsa_prod',JSON.stringify(prod))}catch{};_diffSave(prod,'prod',p=>_dbSaveProduct(p))},[prod]);
@@ -5677,6 +5953,27 @@ export default function App(){
   React.useEffect(()=>{_saveAppState('change_log',changeLog)},[changeLog]);
   React.useEffect(()=>{_saveAppState('so_history',soHistory)},[soHistory]);
   React.useEffect(()=>{_saveAppState('qb_config',qbConfig)},[qbConfig]);
+  // Handle QB OAuth callback redirect
+  React.useEffect(()=>{
+    try{
+      const params=new URLSearchParams(window.location.search);
+      if(params.get('qb_connected')==='true'){
+        const company=params.get('qb_company')||'';
+        const realm=params.get('qb_realm')||'';
+        setQBConfig(prev=>({...prev,connected:true,companyId:realm,companyName:company}));
+        nf('Connected to QuickBooks Online'+(company?' — '+company:''));
+        // Clean URL
+        const u=new URL(window.location);u.searchParams.delete('qb_connected');u.searchParams.delete('qb_company');u.searchParams.delete('qb_realm');
+        window.history.replaceState({},'',u);
+        sessionStorage.removeItem('qb_oauth_state');
+      }else if(params.get('qb_error')){
+        nf('QB connection failed: '+params.get('qb_error'));
+        const u=new URL(window.location);u.searchParams.delete('qb_error');
+        window.history.replaceState({},'',u);
+        sessionStorage.removeItem('qb_oauth_state');
+      }
+    }catch{}
+  },[]);
   React.useEffect(()=>{_saveAppState('inv_pos',invPOs)},[invPOs]);
   React.useEffect(()=>{_saveAppState('inv_adj_log',invAdjLog)},[invAdjLog]);
   React.useEffect(()=>{_saveAppState('inv_po_counter',invPOCounter)},[invPOCounter]);
@@ -5982,7 +6279,8 @@ export default function App(){
   function rDash(){
     // Unread messages for this user
     const unreadMsgs=(msgs||[]).filter(m=>!(m.read_by||[]).includes(cu?.id));
-    const myUnread=unreadMsgs.sort((a,b)=>(b.ts||'').localeCompare(a.ts)).slice(0,10);
+    const unreadMentions=unreadMsgs.filter(m=>(m.tagged_members||[]).includes(cu?.id));
+    const myUnread=unreadMsgs.sort((a,b)=>{const aTag=(a.tagged_members||[]).includes(cu?.id)?0:1;const bTag=(b.tagged_members||[]).includes(cu?.id)?0:1;if(aTag!==bTag)return aTag-bTag;return(b.ts||'').localeCompare(a.ts)}).slice(0,10);
     // Build to-do items from jobs and SOs
     const todos=[];
     sos.forEach(so=>{
@@ -6034,7 +6332,7 @@ export default function App(){
 
     {/* ═══ ADMIN VIEW ═══ */}
     {dashView==='admin'&&<>
-    <div className="stats-row"><div className="stat-card"><div className="stat-label">Open Estimates</div><div className="stat-value" style={{color:'#d97706'}}>{ests.filter(e=>e.status==='draft'||e.status==='sent').length}</div></div><div className="stat-card"><div className="stat-label">Active SOs</div><div className="stat-value" style={{color:'#2563eb'}}>{sos.filter(s=>calcSOStatus(s)!=='complete').length}</div></div><div className="stat-card"><div className="stat-label">Active Jobs</div><div className="stat-value" style={{color:'#7c3aed'}}>{activeJobs.length}</div></div><div className="stat-card"><div className="stat-label">Unread Msgs</div><div className="stat-value" style={{color:unreadMsgs.length>0?'#dc2626':''}}>{unreadMsgs.length}</div></div>
+    <div className="stats-row"><div className="stat-card"><div className="stat-label">Open Estimates</div><div className="stat-value" style={{color:'#d97706'}}>{ests.filter(e=>e.status==='draft'||e.status==='sent').length}</div></div><div className="stat-card"><div className="stat-label">Active SOs</div><div className="stat-value" style={{color:'#2563eb'}}>{sos.filter(s=>calcSOStatus(s)!=='complete').length}</div></div><div className="stat-card"><div className="stat-label">Active Jobs</div><div className="stat-value" style={{color:'#7c3aed'}}>{activeJobs.length}</div></div><div className="stat-card"><div className="stat-label">Unread Msgs</div><div className="stat-value" style={{color:unreadMsgs.length>0?'#dc2626':''}}>{unreadMsgs.length}</div></div>{unreadMentions.length>0&&<div className="stat-card" style={{borderColor:'#f59e0b'}}><div className="stat-label">@ Mentions</div><div className="stat-value" style={{color:'#d97706'}}>{unreadMentions.length}</div></div>}
       {isA&&<div className="stat-card" style={{borderColor:'#fbbf24'}}><div className="stat-label">Stock Alerts</div><div className="stat-value" style={{color:'#d97706'}}>{al.length}</div></div>}
       <div className="stat-card" style={{borderColor:ssConnected?'#22c55e':'#ef4444'}}><div className="stat-label">ShipStation</div><div className="stat-value" style={{color:ssConnected?'#166534':'#dc2626',fontSize:16}}>{ssConnected?'Connected':'Offline'}</div></div></div>
     <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
@@ -6046,13 +6344,14 @@ export default function App(){
             <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#eff6ff',color:'#2563eb',fontWeight:600,whiteSpace:'nowrap'}}>{t.action}</span>
           </div>)}
         </div></div>
-      <div className="card"><div className="card-header"><h2>💬 Unread ({unreadMsgs.length})</h2></div>
+      <div className="card"><div className="card-header"><h2>💬 Unread ({unreadMsgs.length}){unreadMentions.length>0&&<span style={{fontSize:12,color:'#d97706',fontWeight:600,marginLeft:8}}>({unreadMentions.length} mention{unreadMentions.length!==1?'s':''})</span>}</h2></div>
         <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
           {myUnread.length===0?<div className="empty" style={{padding:20}}>No unread messages</div>:
-          myUnread.map(m=>{const author=REPS.find(r=>r.id===m.author_id);const so=sos.find(s=>s.id===m.so_id);const c2=cust.find(cc=>cc.id===so?.customer_id);
-            return<div key={m.id} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',cursor:'pointer'}} onClick={()=>{if(so){setESO(so);setESOC(c2);setPg('orders')}}}>
+          myUnread.map(m=>{const author=REPS.find(r=>r.id===m.author_id);const so=sos.find(s=>s.id===m.so_id);const c2=cust.find(cc=>cc.id===so?.customer_id);const isTagged=(m.tagged_members||[]).includes(cu?.id);
+            return<div key={m.id} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',cursor:'pointer',background:isTagged?'#fef3c7':'white'}} onClick={()=>{if(so){setESO(so);setESOC(c2);setPg('orders')}}}>
               <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:2}}>
                 <span style={{fontSize:12,fontWeight:700}}>{author?.name?.split(' ')[0]}</span><span style={{fontSize:10,color:'#1e40af'}}>{so?.id}</span>
+                {isTagged&&<span style={{fontSize:9,fontWeight:700,padding:'1px 4px',borderRadius:6,background:'#fef3c7',color:'#92400e'}}>@you</span>}
                 <span style={{fontSize:10,color:'#94a3b8',marginLeft:'auto'}}>{m.ts}</span></div>
               <div style={{fontSize:12,color:'#475569',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{m.text}</div>
             </div>})}
@@ -8181,6 +8480,20 @@ export default function App(){
       setInvs(prev=>prev.map(i=>i.id===inv.id?updated:i));
       setPayModal(null);
       nf('💰 $'+amount.toLocaleString()+' recorded on '+inv.id+(fee>0?' (+$'+fee.toFixed(2)+' CC fee)':''));
+      // Auto-report to TaxCloud when invoice is fully paid
+      if(newStatus==='paid'&&(inv.tax||0)>0&&!inv.tc_reported&&supabase){
+        const c=cust.find(x=>x.id===inv.customer_id);
+        if(c&&!c.tax_exempt&&(c.shipping_state||c.billing_state)){
+          (async()=>{try{
+            const d=await invokeEdgeFn(supabase,'taxcloud-capture',{
+              action:'capture',customer_id:inv.customer_id,invoice_id:inv.id,so_id:inv.so_id||inv.id,
+              items:(inv.items||inv.line_items||[]).map(it=>({sku:it.sku||it.desc||'ITEM',name:it.name||it.desc||'Item',price:it.rate||it.unit_sell||0,qty:it.qty||1})),
+              destination:{state:c.shipping_state||c.billing_state||'',zip5:c.shipping_zip||c.billing_zip||''}});
+            if(d?.ok){setInvs(prev=>prev.map(i=>i.id===inv.id?{...i,tc_reported:true,tc_tax:d.total_tax}:i));nf('TaxCloud: $'+d.total_tax+' tax filed for '+inv.id)}
+            else{console.warn('[TaxCloud] Capture failed for '+inv.id,d?.error)}
+          }catch(e){console.warn('[TaxCloud] Error capturing '+inv.id,e.message)}})();
+        }
+      }
     };
 
     // Grouped by customer
@@ -8275,9 +8588,11 @@ export default function App(){
             <td><span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,
               background:inv.status==='paid'?'#dcfce7':inv.status==='partial'?'#fef3c7':inv._overdue?'#fecaca':'#dbeafe',
               color:inv.status==='paid'?'#166534':inv.status==='partial'?'#92400e':inv._overdue?'#991b1b':'#1e40af'}}>
-              {inv.status==='paid'?'Paid':inv.status==='partial'?'Partial':inv._overdue?'Overdue':'Open'}</span></td>
+              {inv.status==='paid'?'Paid':inv.status==='partial'?'Partial':inv._overdue?'Overdue':'Open'}</span>
+              {inv.tc_reported&&<span style={{padding:'1px 5px',borderRadius:4,fontSize:8,fontWeight:700,background:'#dbeafe',color:'#1e40af',marginLeft:3,verticalAlign:'middle'}} title="Reported to TaxCloud for filing">TC</span>}</td>
             <td>{inv.status!=='paid'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#166534',color:'white',border:'none'}}
               onClick={()=>setPayModal({inv,amount:inv._bal,method:'check',ref:''})}>💰 Pay</button>}
+              {inv.status==='paid'&&!inv.tc_reported&&inv.tax>0&&<button className="btn btn-sm" style={{fontSize:8,padding:'2px 6px',background:'#1e40af',color:'white',border:'none'}} title="Report this invoice to TaxCloud for state tax filing" onClick={async()=>{const c=cust.find(x=>x.id===inv.customer_id);if(!c)return;if(!supabase){nf('Supabase not configured','error');return}try{const d=await invokeEdgeFn(supabase,'taxcloud-capture',{action:'capture',customer_id:inv.customer_id,invoice_id:inv.id,so_id:inv.so_id||inv.id,items:(inv.items||inv.line_items||[]).map(it=>({sku:it.sku||it.desc||'ITEM',name:it.name||it.desc||'Item',price:it.rate||it.unit_sell||0,qty:it.qty||1})),destination:{state:c.shipping_state||c.billing_state||'',zip5:c.shipping_zip||c.billing_zip||''}});if(d?.ok){setInvs(prev=>prev.map(i=>i.id===inv.id?{...i,tc_reported:true,tc_tax:d.total_tax}:i));nf('Reported to TaxCloud — $'+d.total_tax+' tax filed')}else{nf(d?.error||'TaxCloud capture failed','error')}}catch(e){nf('Error: '+e.message,'error')}}}>TC File</button>}
               <button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',marginLeft:2}} onClick={()=>{
                 const so=sos.find(s=>s.id===inv.so_id);const ic=cust.find(c=>c.id===inv.customer_id);
                 const invItems=(inv.line_items||[]).length>0?inv.line_items:
@@ -8343,7 +8658,8 @@ export default function App(){
                 <td><span style={{padding:'2px 6px',borderRadius:8,fontSize:9,fontWeight:600,
                   background:inv.status==='paid'?'#dcfce7':inv.status==='partial'?'#fef3c7':inv._overdue?'#fecaca':'#dbeafe',
                   color:inv.status==='paid'?'#166534':inv.status==='partial'?'#92400e':inv._overdue?'#991b1b':'#1e40af'}}>
-                  {inv.status==='paid'?'Paid':inv.status==='partial'?'Partial':inv._overdue?'Overdue':'Open'}</span></td>
+                  {inv.status==='paid'?'Paid':inv.status==='partial'?'Partial':inv._overdue?'Overdue':'Open'}</span>
+                  {inv.tc_reported&&<span style={{padding:'1px 5px',borderRadius:4,fontSize:8,fontWeight:700,background:'#dbeafe',color:'#1e40af',marginLeft:3}} title="Reported to TaxCloud">TC</span>}</td>
                 <td>{inv.status!=='paid'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#166534',color:'white',border:'none'}}
                   onClick={()=>setPayModal({inv,amount:inv._bal,method:'check',ref:''})}>💰 Pay</button>}</td>
               </tr>)}</tbody></table>
@@ -8491,7 +8807,7 @@ export default function App(){
       {/* Report controls */}
       <div style={{display:'flex',gap:8,marginBottom:12,alignItems:'center',flexWrap:'wrap'}}>
         <div style={{display:'flex',gap:4}}>
-          {[['overview','📊 Overview'],['pipeline','💰 Pipeline'],['customers','👥 Customers'],['products','📦 Products'],['reps','🏆 Reps'],['production','🏭 Production'],['time','⏱️ Time & Labor']].map(([v,l])=>
+          {[['overview','📊 Overview'],['pipeline','💰 Pipeline'],['customers','👥 Customers'],['products','📦 Products'],['reps','🏆 Reps'],['production','🏭 Production'],['time','⏱️ Time & Labor'],['sales_tax','🧾 Sales Tax']].map(([v,l])=>
             <button key={v} className={`btn btn-sm ${rptTab===v?'btn-primary':'btn-secondary'}`} onClick={()=>setRptTab(v)}>{l}</button>)}
         </div>
         <select className="form-select" style={{width:140,fontSize:11}} value={rptRep} onChange={e=>setRptRep(e.target.value)}>
@@ -8926,6 +9242,233 @@ export default function App(){
             </div>})()}
         </div>
       </>}
+
+      {/* SALES TAX REPORT */}
+      {(rptTab==='sales_tax')&&(()=>{
+        // Build tax data from invoices (realized tax) and SOs (expected tax)
+        const now=new Date();const curYear=now.getFullYear();const curMonth=now.getMonth();
+        const parseDate=d=>{if(!d)return null;try{return new Date(d)}catch{return null}};
+        const monthName=m=>['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][m];
+        const qLabel=q=>'Q'+(q+1);
+        const getQ=m=>Math.floor(m/3); // 0=Q1(Jan-Mar), 1=Q2(Apr-Jun), 2=Q3(Jul-Sep), 3=Q4(Oct-Dec)
+        const curQ=getQ(curMonth);
+
+        // Tax collected from invoices (actual collections)
+        const taxInvs=filtInvs.filter(i=>i.tax>0||i.tax_rate>0).map(i=>{
+          const dt=parseDate(i.date);const c=cust.find(x=>x.id===i.customer_id);
+          const state=c?.shipping_state||c?.billing_state||'Unknown';
+          const city=c?.shipping_city||c?.billing_city||'';
+          return{...i,_dt:dt,_cname:c?.name||'Unknown',_state:state.toUpperCase().trim(),_city:city.trim(),_month:dt?dt.getMonth():0,_year:dt?dt.getFullYear():curYear,_q:dt?getQ(dt.getMonth()):curQ};
+        });
+
+        // Running totals: current month, current quarter, current year
+        const thisMonthInvs=taxInvs.filter(i=>i._year===curYear&&i._month===curMonth);
+        const thisQInvs=taxInvs.filter(i=>i._year===curYear&&i._q===curQ);
+        const thisYearInvs=taxInvs.filter(i=>i._year===curYear);
+        const monthTax=thisMonthInvs.reduce((a,i)=>a+(i.tax||0),0);
+        const qTax=thisQInvs.reduce((a,i)=>a+(i.tax||0),0);
+        const yearTax=thisYearInvs.reduce((a,i)=>a+(i.tax||0),0);
+        const totalCollectedAll=taxInvs.reduce((a,i)=>a+(i.tax||0),0);
+
+        // Tax expected from open SOs (not yet invoiced)
+        const taxSOs=filtSOs.filter(so=>{const c=cust.find(x=>x.id===so.customer_id);return c&&!c.tax_exempt&&(c.tax_rate||0)>0}).map(so=>{
+          const m=soCalc(so);const c=cust.find(x=>x.id===so.customer_id);const state=c?.shipping_state||c?.billing_state||'Unknown';
+          const taxAmt=m.rev*(c.tax_rate||0);
+          return{id:so.id,memo:so.memo,_cname:c?.name||'Unknown',_state:state.toUpperCase().trim(),_rev:m.rev,_tax:taxAmt,_rate:c.tax_rate,status:so.status};
+        });
+
+        // Tax-exempt customers
+        const exemptCusts=cust.filter(c=>c.tax_exempt&&c.is_active!==false);
+
+        // --- Quarterly breakdown by state (for filing) ---
+        // Build quarters for current year + previous year
+        const quarters=[];
+        for(let y=curYear-1;y<=curYear;y++){for(let q=0;q<4;q++){
+          if(y===curYear&&q>curQ)continue; // skip future quarters
+          quarters.push({year:y,q,label:qLabel(q)+' '+y,start:new Date(y,q*3,1),end:new Date(y,q*3+3,0,23,59,59)});
+        }}
+        quarters.reverse(); // most recent first
+
+        const qData=quarters.map(qr=>{
+          const qInvs=taxInvs.filter(i=>i._year===qr.year&&i._q===qr.q);
+          // Group by state+city within this quarter
+          const byJuris={};
+          qInvs.forEach(i=>{
+            const key=i._state+'|'+(i._city||'');
+            if(!byJuris[key])byJuris[key]={state:i._state,city:i._city||'',tax:0,rev:0,count:0,rate:i.tax_rate||0};
+            byJuris[key].tax+=i.tax||0;
+            byJuris[key].rev+=(i.tax&&i.tax_rate)?i.tax/i.tax_rate:0;
+            byJuris[key].count++;
+            if(i.tax_rate)byJuris[key].rate=i.tax_rate;
+          });
+          const jurisdictions=Object.values(byJuris).sort((a,b)=>a.state===b.state?b.tax-a.tax:a.state.localeCompare(b.state));
+          const totalTax=jurisdictions.reduce((a,s)=>a+s.tax,0);
+          const totalRev=jurisdictions.reduce((a,s)=>a+s.rev,0);
+          // Also group totals by state for subtotals
+          const stTotals={};jurisdictions.forEach(j=>{if(!stTotals[j.state])stTotals[j.state]=0;stTotals[j.state]+=j.tax});
+          return{...qr,jurisdictions,stTotals,totalTax,totalRev,invCount:qInvs.length,isCurrent:qr.year===curYear&&qr.q===curQ};
+        });
+
+        // Monthly breakdown (last 12 months)
+        const monthly=[];
+        for(let mi=11;mi>=0;mi--){
+          const mm=(curMonth-mi+12)%12;const yy=curMonth-mi<0?curYear-1:curYear;
+          const mInvs=taxInvs.filter(i=>i._year===yy&&i._month===mm);
+          const taxAmt=mInvs.reduce((a,i)=>a+(i.tax||0),0);
+          const rev=mInvs.reduce((a,i)=>{const r=(i.tax&&i.tax_rate)?i.tax/i.tax_rate:(i.total-i.tax-(i.shipping||0));return a+r},0);
+          monthly.push({label:monthName(mm)+' '+String(yy).slice(2),tax:taxAmt,rev,count:mInvs.length,month:mm,year:yy});
+        }
+
+        // By customer breakdown
+        const byCust={};
+        taxInvs.forEach(i=>{
+          if(!byCust[i.customer_id])byCust[i.customer_id]={name:i._cname,state:i._state,city:i._city,taxCollected:0,invCount:0,rev:0};
+          byCust[i.customer_id].taxCollected+=i.tax||0;
+          byCust[i.customer_id].invCount++;
+          byCust[i.customer_id].rev+=(i.tax&&i.tax_rate)?i.tax/i.tax_rate:(i.total-(i.tax||0)-(i.shipping||0));
+        });
+        const custRows=Object.values(byCust).sort((a,b)=>b.taxCollected-a.taxCollected);
+
+        const maxMonthTax=Math.max(...monthly.map(m=>m.tax),1);
+        const qMonths=['Jan-Mar','Apr-Jun','Jul-Sep','Oct-Dec'];
+
+        return<>
+        {/* Running totals: Month / Quarter / Year */}
+        <div className="stats-row" style={{marginBottom:16}}>
+          <div className="stat-card" style={{borderLeft:'3px solid #2563eb'}}><div className="stat-label">{monthName(curMonth)} {curYear} (This Month)</div><div className="stat-value" style={{color:'#2563eb'}}>${monthTax.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div><div style={{fontSize:10,color:'#64748b'}}>{thisMonthInvs.length} invoice(s)</div></div>
+          <div className="stat-card" style={{borderLeft:'3px solid #7c3aed',background:'#faf5ff'}}><div className="stat-label">{qLabel(curQ)} {curYear} ({qMonths[curQ]})</div><div className="stat-value" style={{color:'#7c3aed'}}>${qTax.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div><div style={{fontSize:10,color:'#64748b'}}>{thisQInvs.length} invoice(s)</div></div>
+          <div className="stat-card" style={{borderLeft:'3px solid #166534'}}><div className="stat-label">{curYear} Year-to-Date</div><div className="stat-value" style={{color:'#166534'}}>${yearTax.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div><div style={{fontSize:10,color:'#64748b'}}>{thisYearInvs.length} invoice(s)</div></div>
+          <div className="stat-card" style={{borderLeft:'3px solid #dc2626'}}><div className="stat-label">Exempt Customers</div><div className="stat-value" style={{color:'#dc2626'}}>{exemptCusts.length}</div></div>
+        </div>
+
+        {/* TaxCloud Filing Status */}
+        <div className="card" style={{marginBottom:12}}>
+          <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+            <div style={{display:'flex',alignItems:'center',gap:8}}><h2 style={{margin:0,fontSize:14}}>TaxCloud Filing Status</h2></div>
+            <button className="btn btn-sm" style={{fontSize:10,background:'#1e40af',color:'white',border:'none'}} onClick={async()=>{if(!supabase){nf('Supabase not configured','error');return}nf('Refreshing all customer tax rates...');try{const d=await invokeEdgeFn(supabase,'taxcloud-refresh',{});if(d?.ok){if(d.changes?.length>0)setCust(prev=>prev.map(c=>{const ch=d.changes.find(x=>x.id===c.id);return ch?{...c,tax_rate:ch.new_rate}:c}));nf(d.updated+' rate(s) updated out of '+d.total_customers+' checked')}else{nf(d?.error||'Refresh failed','error')}}catch(e){nf('Error: '+e.message,'error')}}}>Refresh All Rates</button>
+          </div>
+          <div className="card-body" style={{padding:'10px 16px'}}>
+            {(()=>{const reported=thisYearInvs.filter(i=>i.tc_reported);const unreported=thisYearInvs.filter(i=>!i.tc_reported&&(i.tax||0)>0&&i.status==='paid');
+              return<div style={{display:'flex',gap:12,fontSize:12}}>
+                <div style={{display:'flex',alignItems:'center',gap:6}}><span style={{width:8,height:8,borderRadius:'50%',background:'#22c55e'}}/>
+                  <span><strong>{reported.length}</strong> invoices reported to TaxCloud (${reported.reduce((a,i)=>a+(i.tc_tax||i.tax||0),0).toFixed(2)} tax filed)</span></div>
+                {unreported.length>0&&<div style={{display:'flex',alignItems:'center',gap:6}}><span style={{width:8,height:8,borderRadius:'50%',background:'#f59e0b'}}/>
+                  <span style={{color:'#d97706'}}><strong>{unreported.length}</strong> paid invoices not yet reported (${unreported.reduce((a,i)=>a+(i.tax||0),0).toFixed(2)} tax uncaptured)</span></div>}
+                {unreported.length===0&&thisYearInvs.filter(i=>i.status==='paid'&&(i.tax||0)>0).length>0&&<div style={{display:'flex',alignItems:'center',gap:6}}><span style={{width:8,height:8,borderRadius:'50%',background:'#22c55e'}}/>
+                  <span style={{color:'#166534'}}>All paid taxable invoices reported</span></div>}
+              </div>})()}
+          </div>
+        </div>
+
+        {/* Quarterly Tax Payable by State — for filing */}
+        <div className="card" style={{marginBottom:12}}>
+          <div className="card-header"><h2 style={{margin:0,fontSize:14}}>🏛️ Quarterly Tax Payable by State</h2><span style={{fontSize:11,color:'#64748b'}}>For quarterly filing</span></div>
+          <div className="card-body">
+            {qData.filter(q=>q.invCount>0).length===0?<div className="empty">No tax collected yet. Set tax rates on customers to start tracking.</div>:
+            <div style={{display:'flex',flexDirection:'column',gap:16}}>
+              {qData.filter(q=>q.invCount>0).map(q=><div key={q.label}>
+                <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
+                  <span style={{fontSize:14,fontWeight:800,color:q.isCurrent?'#7c3aed':'#1e293b'}}>{q.label}</span>
+                  <span style={{fontSize:11,color:'#64748b'}}>{qMonths[q.q]}</span>
+                  {q.isCurrent&&<span style={{fontSize:10,fontWeight:700,padding:'2px 8px',background:'#f5f3ff',border:'1px solid #ddd6fe',borderRadius:10,color:'#7c3aed'}}>CURRENT</span>}
+                  <span style={{marginLeft:'auto',fontSize:13,fontWeight:800,color:'#a16207'}}>${q.totalTax.toFixed(2)}</span>
+                </div>
+                <table style={{fontSize:12,width:'100%'}}><thead><tr style={{background:'#f8fafc'}}><th style={{padding:'4px 8px'}}>State</th><th style={{padding:'4px 8px'}}>City</th><th style={{textAlign:'right',padding:'4px 8px'}}>Tax Rate</th><th style={{textAlign:'right',padding:'4px 8px'}}>Taxable Revenue</th><th style={{textAlign:'right',padding:'4px 8px'}}>Tax Payable</th><th style={{textAlign:'center',padding:'4px 8px'}}>Invoices</th></tr></thead>
+                <tbody>{(()=>{const rows=[];let lastSt='';q.jurisdictions.forEach((j,ji)=>{
+                  const newState=j.state!==lastSt;lastSt=j.state;
+                  const stateHasMultiple=q.jurisdictions.filter(x=>x.state===j.state).length>1;
+                  rows.push(<tr key={ji} style={newState&&ji>0?{borderTop:'1px solid #cbd5e1'}:{}}>
+                    <td style={{fontWeight:700,padding:'4px 8px',color:newState?'#1e293b':'#94a3b8'}}>{newState?j.state:''}</td>
+                    <td style={{padding:'4px 8px',color:'#475569'}}>{j.city||'—'}</td>
+                    <td style={{textAlign:'right',color:'#64748b',padding:'4px 8px'}}>{j.rate?(j.rate*100).toFixed(3)+'%':'—'}</td>
+                    <td style={{textAlign:'right',padding:'4px 8px'}}>${j.rev.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+                    <td style={{textAlign:'right',fontWeight:600,color:'#a16207',padding:'4px 8px'}}>${j.tax.toFixed(2)}</td>
+                    <td style={{textAlign:'center',padding:'4px 8px'}}>{j.count}</td>
+                  </tr>);
+                  // State subtotal row if multiple cities
+                  const isLastInState=ji===q.jurisdictions.length-1||q.jurisdictions[ji+1]?.state!==j.state;
+                  if(stateHasMultiple&&isLastInState){
+                    rows.push(<tr key={j.state+'_sub'} style={{background:'#f8fafc',borderTop:'1px solid #e2e8f0'}}>
+                      <td style={{padding:'4px 8px',fontWeight:700,fontSize:11,color:'#1e40af'}} colSpan={2}>{j.state} Subtotal</td>
+                      <td/><td/>
+                      <td style={{textAlign:'right',fontWeight:700,color:'#1e40af',padding:'4px 8px',fontSize:11}}>${q.stTotals[j.state].toFixed(2)}</td>
+                      <td/>
+                    </tr>);
+                  }
+                });return rows})()}
+                <tr style={{borderTop:'2px solid #1e293b',fontWeight:800}}>
+                  <td style={{padding:'4px 8px'}} colSpan={2}>TOTAL</td><td/><td style={{textAlign:'right',padding:'4px 8px'}}>${q.totalRev.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+                  <td style={{textAlign:'right',color:'#a16207',padding:'4px 8px'}}>${q.totalTax.toFixed(2)}</td><td style={{textAlign:'center',padding:'4px 8px'}}>{q.invCount}</td>
+                </tr></tbody></table>
+              </div>)}
+            </div>}
+          </div>
+        </div>
+
+        {/* Monthly Trend */}
+        <div className="card" style={{marginBottom:12}}>
+          <div className="card-header"><h2 style={{margin:0,fontSize:14}}>📈 Monthly Tax Collected (Last 12 Months)</h2></div>
+          <div className="card-body">
+            <div style={{display:'flex',gap:4,alignItems:'flex-end',height:120,marginBottom:8}}>
+              {monthly.map((m,i)=>{const isCur=m.month===curMonth&&m.year===curYear;
+                return<div key={i} style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:2}}>
+                <div style={{fontSize:9,fontWeight:700,color:'#a16207'}}>{m.tax>0?'$'+m.tax.toFixed(0):''}</div>
+                <div style={{width:'100%',background:m.tax>0?(isCur?'#7c3aed':'#fbbf24'):'#e2e8f0',borderRadius:'3px 3px 0 0',height:Math.max(2,m.tax/maxMonthTax*80)}}/>
+                <div style={{fontSize:8,color:isCur?'#7c3aed':'#64748b',fontWeight:isCur?700:400,textAlign:'center'}}>{m.label}</div>
+              </div>})}
+            </div>
+          </div>
+        </div>
+
+        {/* By Customer */}
+        <div className="card" style={{marginBottom:12}}>
+          <div className="card-header"><h2 style={{margin:0,fontSize:14}}>👥 Tax by Customer</h2></div>
+          <div className="card-body">
+            {custRows.length===0?<div className="empty">No tax data by customer yet.</div>:
+            <table style={{fontSize:12,width:'100%'}}><thead><tr><th>Customer</th><th>City</th><th>State</th><th style={{textAlign:'right'}}>Revenue</th><th style={{textAlign:'right'}}>Tax Collected</th><th style={{textAlign:'center'}}>Invoices</th></tr></thead>
+            <tbody>{custRows.slice(0,25).map((c,i)=><tr key={i}>
+              <td style={{fontWeight:600}}>{c.name}</td>
+              <td style={{color:'#475569'}}>{c.city||'—'}</td>
+              <td style={{color:'#64748b'}}>{c.state}</td>
+              <td style={{textAlign:'right'}}>${c.rev.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+              <td style={{textAlign:'right',fontWeight:700,color:'#a16207'}}>${c.taxCollected.toFixed(2)}</td>
+              <td style={{textAlign:'center'}}>{c.invCount}</td>
+            </tr>)}</tbody></table>}
+          </div>
+        </div>
+
+        {/* Upcoming Tax (from open SOs) */}
+        <div className="card" style={{marginBottom:12}}>
+          <div className="card-header"><h2 style={{margin:0,fontSize:14}}>📋 Expected Tax (Open Sales Orders)</h2></div>
+          <div className="card-body">
+            {taxSOs.length===0?<div className="empty">No open SOs with tax rates set.</div>:
+            <table style={{fontSize:12,width:'100%'}}><thead><tr><th>SO</th><th>Customer</th><th>State</th><th style={{textAlign:'right'}}>Revenue</th><th style={{textAlign:'right'}}>Tax Rate</th><th style={{textAlign:'right'}}>Expected Tax</th></tr></thead>
+            <tbody>{taxSOs.slice(0,25).map(s=><tr key={s.id}>
+              <td style={{fontWeight:600,color:'#1e40af'}}>{s.id}</td>
+              <td>{s._cname}</td>
+              <td style={{color:'#64748b'}}>{s._state}</td>
+              <td style={{textAlign:'right'}}>${s._rev.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+              <td style={{textAlign:'right',color:'#64748b'}}>{(s._rate*100).toFixed(3)}%</td>
+              <td style={{textAlign:'right',fontWeight:700,color:'#d97706'}}>${s._tax.toFixed(2)}</td>
+            </tr>)}
+            <tr style={{borderTop:'2px solid #1e293b',fontWeight:800}}>
+              <td colSpan={5}>TOTAL EXPECTED</td>
+              <td style={{textAlign:'right',color:'#d97706',fontSize:14}}>${taxSOs.reduce((a,s)=>a+s._tax,0).toFixed(2)}</td>
+            </tr></tbody></table>}
+          </div>
+        </div>
+
+        {/* Tax Exempt Customers */}
+        <div className="card" style={{marginBottom:12}}>
+          <div className="card-header"><h2 style={{margin:0,fontSize:14}}>🚫 Tax-Exempt Customers</h2></div>
+          <div className="card-body">
+            {exemptCusts.length===0?<div className="empty">No tax-exempt customers.</div>:
+            <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+              {exemptCusts.map(c=><span key={c.id} style={{padding:'4px 10px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:6,fontSize:12,fontWeight:600,color:'#dc2626'}}>{c.name} ({c.shipping_state||'?'})</span>)}
+            </div>}
+          </div>
+        </div>
+        </>})()}
 
       {/* Widget Customization */}
       <div className="card" style={{marginBottom:12}}>
@@ -11296,6 +11839,8 @@ export default function App(){
       const subCount=added.filter(c=>c.parent_id).length;
       setBulkImp(x=>({...x,step:'done',added:added.length,skipped,parentCount,subCount}));
       nf('✅ Imported '+parentCount+' parents, '+subCount+' sub-accounts'+(skipped.length?' ('+skipped.length+' skipped)':''));
+      // Auto-fetch tax rates from TaxCloud for imported customers missing rates
+      if(supabase&&added.length>0){const needRate=added.filter(c=>!c.tax_exempt&&!(c.tax_rate>0)&&c.shipping_state&&c.shipping_zip);if(needRate.length>0){nf('Looking up tax rates for '+needRate.length+' customers...');(async()=>{let updated=0;for(const c of needRate){try{const d=await invokeEdgeFn(supabase,'taxcloud-lookup',{address1:c.shipping_address_line1||'',city:c.shipping_city||'',state:c.shipping_state,zip5:c.shipping_zip});if(d?.ok){setCust(prev=>prev.map(x=>x.id===c.id?{...x,tax_rate:d.tax_rate}:x));updated++}}catch(e){}await new Promise(r=>setTimeout(r,500))}nf('Tax rates updated for '+updated+'/'+needRate.length+' customers')})()}}
     };
 
     // Import vendors
@@ -12172,28 +12717,47 @@ export default function App(){
   // MESSAGES PAGE
   function rMsg(){const allM=[...msgs].sort((a,b)=>(b.ts||'').localeCompare(a.ts));
     const unread=allM.filter(m=>!(m.read_by||[]).includes(cu.id));
-    const filtered=mF==='unread'?unread:mF==='mine'?allM.filter(m=>sos.some(s=>s.id===m.so_id&&s.created_by===cu.id)):allM;
-    return(<><div className="stats-row"><div className="stat-card"><div className="stat-label">Total</div><div className="stat-value">{allM.length}</div></div><div className="stat-card"><div className="stat-label">Unread</div><div className="stat-value" style={{color:unread.length>0?'#dc2626':''}}>{unread.length}</div></div></div>
-    <div style={{display:'flex',gap:4,marginBottom:12}}>{[['all','All'],['unread','Unread'],['mine','My SOs']].map(([v,l])=><button key={v} className={`btn btn-sm ${mF===v?'btn-primary':'btn-secondary'}`} onClick={()=>setMF(v)}>{l}</button>)}
+    const mentions=allM.filter(m=>(m.tagged_members||[]).includes(cu.id));
+    const filtered=mF==='unread'?unread:mF==='mine'?allM.filter(m=>sos.some(s=>s.id===m.so_id&&s.created_by===cu.id)):mF==='mentions'?mentions:allM;
+    const activeMembers=(REPS||[]).filter(r=>r.is_active!==false);
+    const renderMsgPageText=(text)=>{
+      if(!text)return text;
+      const parts=[];let last=0;
+      const regex=/@(\w[\w\s]*?)(?=\s@|\s*$|[.,!?;:]|\s(?=[^@]))/g;
+      let match2;
+      while((match2=regex.exec(text))!==null){
+        if(match2.index>last)parts.push({type:'text',value:text.slice(last,match2.index)});
+        const name=match2[1].trim();
+        const member=activeMembers.find(r=>r.name.toLowerCase()===name.toLowerCase()||r.name.split(' ')[0].toLowerCase()===name.toLowerCase());
+        if(member){parts.push({type:'mention',value:'@'+name,id:member.id})}else{parts.push({type:'text',value:match2[0]})}
+        last=match2.index+match2[0].length;
+      }
+      if(last<text.length)parts.push({type:'text',value:text.slice(last)});
+      return parts.map((p,i)=>p.type==='mention'?<span key={i} style={{background:'#dbeafe',color:'#1e40af',fontWeight:600,borderRadius:3,padding:'0 3px'}}>{p.value}</span>:<span key={i}>{p.value}</span>);
+    };
+    return(<><div className="stats-row"><div className="stat-card"><div className="stat-label">Total</div><div className="stat-value">{allM.length}</div></div><div className="stat-card"><div className="stat-label">Unread</div><div className="stat-value" style={{color:unread.length>0?'#dc2626':''}}>{unread.length}</div></div><div className="stat-card"><div className="stat-label">Mentions</div><div className="stat-value" style={{color:mentions.length>0?'#d97706':''}}>{mentions.length}</div></div></div>
+    <div style={{display:'flex',gap:4,marginBottom:12}}>{[['all','All'],['unread','Unread'],['mentions','@ Mentions'],['mine','My SOs']].map(([v,l])=><button key={v} className={`btn btn-sm ${mF===v?'btn-primary':'btn-secondary'}`} onClick={()=>setMF(v)}>{l}{v==='mentions'&&mentions.filter(m=>!(m.read_by||[]).includes(cu.id)).length>0?' ('+mentions.filter(m=>!(m.read_by||[]).includes(cu.id)).length+')':''}</button>)}
       <button className="btn btn-sm btn-secondary" style={{marginLeft:'auto'}} onClick={()=>{setMsgs(msgs.map(m=>({...m,read_by:[...new Set([...(m.read_by||[]),cu.id])]})));nf('All marked read')}}>Mark All Read</button></div>
     <div className="card"><div className="card-body" style={{padding:0}}>
-      {filtered.length===0?<div className="empty" style={{padding:20}}>No messages</div>:
-      filtered.map(m=>{const author=REPS.find(r=>r.id===m.author_id);const so=sos.find(s=>s.id===m.so_id);const c2=cust.find(cc=>cc.id===so?.customer_id);const isUnread=!(m.read_by||[]).includes(cu.id);
-        return<div key={m.id} style={{padding:'12px 18px',borderBottom:'1px solid #f1f5f9',cursor:'pointer',background:isUnread?'#eff6ff':'white'}}
+      {filtered.length===0?<div className="empty" style={{padding:20}}>{mF==='mentions'?'No messages where you were tagged':'No messages'}</div>:
+      filtered.map(m=>{const author=REPS.find(r=>r.id===m.author_id);const so=sos.find(s=>s.id===m.so_id);const c2=cust.find(cc=>cc.id===so?.customer_id);const isUnread=!(m.read_by||[]).includes(cu.id);const isTagged=(m.tagged_members||[]).includes(cu.id);
+        return<div key={m.id} style={{padding:'12px 18px',borderBottom:'1px solid #f1f5f9',cursor:'pointer',background:isTagged&&isUnread?'#fef3c7':isUnread?'#eff6ff':'white'}}
           onClick={()=>{if(so){const c3=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c3);setPg('orders')}setMsgs(msgs.map(mm=>mm.id===m.id?{...mm,read_by:[...new Set([...(mm.read_by||[]),cu.id])]}:mm))}}>
           <div style={{display:'flex',gap:12,alignItems:'flex-start'}}>
-            <div style={{width:36,height:36,borderRadius:18,background:isUnread?'#3b82f6':'#e2e8f0',color:isUnread?'white':'#64748b',display:'flex',alignItems:'center',justifyContent:'center',fontSize:13,fontWeight:700,flexShrink:0}}>{(author?.name||'?')[0]}</div>
+            <div style={{width:36,height:36,borderRadius:18,background:isTagged?'#f59e0b':isUnread?'#3b82f6':'#e2e8f0',color:isTagged||isUnread?'white':'#64748b',display:'flex',alignItems:'center',justifyContent:'center',fontSize:13,fontWeight:700,flexShrink:0}}>{isTagged?'@':(author?.name||'?')[0]}</div>
             <div style={{flex:1}}>
               <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:2}}>
                 <span style={{fontWeight:700,fontSize:13}}>{author?.name}</span>
                 <span style={{fontSize:11,color:'#1e40af',fontWeight:600}}>{m.so_id}</span>
                 {c2&&<span style={{fontSize:11,color:'#64748b'}}>{c2.alpha_tag}</span>}
                 {so?.memo&&<span style={{fontSize:10,color:'#94a3b8'}}>— {so.memo}</span>}
+                {isTagged&&<span style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:8,background:'#fef3c7',color:'#92400e'}}>Tagged you</span>}
                 <span style={{fontSize:10,color:'#94a3b8',marginLeft:'auto'}}>{m.ts}</span>
               </div>
-              <div style={{fontSize:13,color:'#374151'}}>{m.text}</div>
+              <div style={{fontSize:13,color:'#374151'}}>{renderMsgPageText(m.text)}</div>
+              {(m.tagged_members||[]).length>0&&<div style={{display:'flex',gap:4,marginTop:3,flexWrap:'wrap'}}>{(m.tagged_members||[]).map(tid=>{const tm=REPS.find(r=>r.id===tid);return tm?<span key={tid} style={{fontSize:9,padding:'1px 6px',borderRadius:8,background:'#dbeafe',color:'#1e40af',fontWeight:600}}>@{tm.name.split(' ')[0]}</span>:null})}</div>}
             </div>
-            {isUnread&&<div style={{width:8,height:8,borderRadius:4,background:'#3b82f6',flexShrink:0,marginTop:6}}/>}
+            {isUnread&&<div style={{width:8,height:8,borderRadius:4,background:isTagged?'#f59e0b':'#3b82f6',flexShrink:0,marginTop:6}}/>}
           </div></div>})}</div></div></>)};
 
   // QUICKBOOKS ONLINE INTEGRATION
@@ -12479,6 +13043,81 @@ export default function App(){
     const prodWithQB=prod.filter(p=>p.qb_item_id).length;
     const totalInvQty=prod.reduce((a,p)=>a+Object.values(p._inv||{}).reduce((a2,v)=>a2+safeNum(v),0),0);
     const totalInvValue=prod.reduce((a,p)=>{const qty=Object.values(p._inv||{}).reduce((a2,v)=>a2+safeNum(v),0);return a+qty*safeNum(p.nsa_cost)},0);
+    const unsyncedInvPOs=invPOs.filter(p=>!p._qb_synced);
+
+    // Build what a QB sync would push
+    const buildQBSalesOrder=(so)=>{
+      const c=cust.find(x=>x.id===so.customer_id);
+      const saf=safeArt(so);
+      const _aq={};safeItems(so).forEach(it2=>{const q2=Object.values(safeSizes(it2)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it2).forEach(d2=>{if(d2.kind==='art'&&d2.art_file_id){_aq[d2.art_file_id]=(_aq[d2.art_file_id]||0)+q2}})});
+      const lines=[];
+      safeItems(so).forEach(it=>{
+        const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
+        if(!qty)return;
+        lines.push({type:'SalesItemLine',desc:it.sku+' '+it.name+(it.color?' - '+it.color:''),qty,rate:it.unit_sell,amount:qty*it.unit_sell,account:qbConfig.mapping.income_account});
+        safeDecos(it).forEach(d=>{
+          const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qty;
+          const dp=dP(d,qty,saf,cq);
+          const sell=dp.sell;
+          if(sell>0)lines.push({type:'SalesItemLine',desc:'Decoration: '+(d.position||d.deco_type||d.kind||'Art'),qty,rate:sell,amount:qty*sell,account:qbConfig.mapping.income_account});
+        });
+      });
+      return{docType:'SalesOrder',docNumber:so.id,customerRef:c?.name||'Unknown',date:so.created_at,memo:so.memo,lines,total:lines.reduce((a,l)=>a+l.amount,0)};
+    };
+
+    const buildQBPurchaseOrder=(pl,so,it)=>{
+      const qty=Object.entries(pl).filter(([k,v])=>typeof v==='number'&&!['unit_cost'].includes(k)&&k.match(/^[A-Z0-9]/)).reduce((a,[,v])=>a+v,0);
+      const rate=pl.po_type==='outside_deco'?safeNum(pl.unit_cost):safeNum(it.nsa_cost);
+      return{docType:'PurchaseOrder',docNumber:pl.po_id,vendorRef:pl.deco_vendor||D_V.find(v=>v.id===it.vendor_id)?.name||it.brand,
+        date:pl.created_at,soRef:so.id,lines:[{desc:it.sku+' '+it.name,qty,rate,amount:qty*rate}],
+        account:pl.po_type==='outside_deco'?qbConfig.mapping.deco_account:qbConfig.mapping.cogs_account,
+        total:qty*rate};
+    };
+
+    const buildQBInvoice=(inv)=>{
+      const so=sos.find(s=>s.id===inv.so_id);
+      return{docType:'Invoice',docNumber:inv.id,customerRef:cust.find(c=>c.id===inv.customer_id)?.name,
+        date:inv.date,soRef:inv.so_id,amount:inv.total,paid:inv.paid,balance:inv.total-inv.paid,
+        tax:inv.tax||0,taxAccount:qbConfig.mapping.tax_account,
+        account:qbConfig.mapping.ar_account};
+    };
+
+    // Simulate a sync
+    const runSync=(type)=>{
+      const log={ts:new Date().toLocaleString(),type,status:'success',details:[]};
+      if(type==='all'||type==='sales_orders'){
+        unsyncedSOs.forEach(so=>{
+          const qbSO=buildQBSalesOrder(so);
+          log.details.push('SO: '+so.id+' → QB SalesOrder ($'+qbSO.total.toFixed(2)+')');
+        });
+      }
+      if(type==='all'||type==='purchase_orders'){
+        sos.forEach(so=>{safeItems(so).forEach(it=>{(it.po_lines||[]).filter(pl=>!pl._qb_synced).forEach(pl=>{
+          const qbPO=buildQBPurchaseOrder(pl,so,it);
+          log.details.push('PO: '+pl.po_id+' → QB PurchaseOrder to '+qbPO.vendorRef+' ($'+qbPO.total.toFixed(2)+')');
+        })})});
+        // Inventory POs
+        unsyncedInvPOs.forEach(po=>{
+          const totalCost=po.items.reduce((a,it)=>a+Object.values(it.sizes).reduce((a2,v)=>a2+v,0)*(it.nsa_cost||0),0);
+          log.details.push('INV-PO: '+po.po_number+' → QB PurchaseOrder to '+po.vendor_name+' ($'+totalCost.toFixed(2)+')');
+        });
+      }
+      if(type==='all'||type==='inventory_adjustments'){
+        const recentAdj=invAdjLog.filter(l=>!l._qb_synced).slice(0,50);
+        recentAdj.forEach(adj=>{
+          log.details.push('ADJ: '+adj.sku+' '+adj.size+' '+(adj.qty_change>0?'+':'')+adj.qty_change+' ('+adj.adjustment_type+')');
+        });
+      }
+      if(type==='all'||type==='invoices'){
+        unsyncedInvs.forEach(inv=>{
+          const qbInv=buildQBInvoice(inv);
+          log.details.push('INV: '+inv.id+' → QB Invoice ($'+qbInv.amount.toFixed(2)+')');
+        });
+      }
+      if(log.details.length===0){log.details.push('Nothing to sync');log.status='skipped'}
+      setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,50),lastSync:new Date().toLocaleString()}));
+      nf('🔄 QB Sync: '+log.details.length+' items processed');
+    };
 
     return(<>
       {/* Connection Status */}
@@ -12551,6 +13190,80 @@ export default function App(){
             </div>
           </div>
         </div>
+
+        <div className="card">
+          <div className="card-header"><h2>🗂️ Account Mapping</h2></div>
+          <div className="card-body">
+            <div style={{fontSize:11,color:'#64748b',marginBottom:8}}>Map NSA line items to your QB Chart of Accounts</div>
+            {[['income_account','Item Revenue','Sales'],['cogs_account','Blank Goods COGS','Cost of Goods Sold'],['deco_account','Outside Decoration','Subcontractor - Decoration'],['ar_account','Accounts Receivable','Accounts Receivable'],['ap_account','Accounts Payable','Accounts Payable'],['tax_account','Sales Tax Payable','Sales Tax Payable']].map(([key,label,def])=>
+              <div key={key} style={{display:'flex',gap:8,alignItems:'center',marginBottom:4}}>
+                <span style={{fontSize:11,fontWeight:600,color:'#475569',width:140}}>{label}</span>
+                <input className="form-input" style={{flex:1,fontSize:11,padding:'3px 6px'}} value={qbConfig.mapping[key]||def}
+                  onChange={e=>setQBConfig(prev=>({...prev,mapping:{...prev.mapping,[key]:e.target.value}}))}/>
+              </div>)}
+          </div>
+        </div>
+
+      {/* Preview — what would sync */}
+      <div className="card" style={{marginBottom:16}}>
+        <div className="card-header"><h2>📋 Sync Preview — What Will Go to QB</h2></div>
+        <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
+          {unsyncedSOs.length===0&&unsyncedPOs.length===0&&unsyncedInvs.length===0?
+            <div className="empty" style={{padding:20}}>Everything is synced!</div>:
+          <table style={{fontSize:11}}>
+            <thead><tr style={{background:'#f8fafc'}}><th>Type</th><th>Doc #</th><th>Customer/Vendor</th><th>SO Ref</th><th>QB Account</th><th style={{textAlign:'right'}}>Amount</th><th>Status</th></tr></thead>
+            <tbody>
+              {unsyncedSOs.map(so=>{const qb=buildQBSalesOrder(so);
+                return<tr key={so.id} style={{borderBottom:'1px solid #f1f5f9'}}>
+                  <td><span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:'#dbeafe',color:'#1e40af',fontWeight:600}}>Sales Order</span></td>
+                  <td style={{fontWeight:700,color:'#1e40af'}}>{so.id}</td>
+                  <td>{qb.customerRef}</td><td>—</td>
+                  <td style={{fontSize:10,color:'#64748b'}}>{qbConfig.mapping.income_account}</td>
+                  <td style={{textAlign:'right',fontWeight:700,color:'#166534'}}>${qb.total.toFixed(2)}</td>
+                  <td><span style={{fontSize:8,padding:'1px 4px',borderRadius:3,background:'#fef3c7',color:'#92400e',fontWeight:600}}>Pending</span></td>
+                </tr>})}
+              {sos.map(so=>safeItems(so).map(it=>(it.po_lines||[]).filter(pl=>!pl._qb_synced).map((pl,pi)=>{
+                const qb=buildQBPurchaseOrder(pl,so,it);
+                return<tr key={so.id+pl.po_id+pi} style={{borderBottom:'1px solid #f1f5f9'}}>
+                  <td><span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:pl.po_type==='outside_deco'?'#ede9fe':'#fef3c7',
+                    color:pl.po_type==='outside_deco'?'#7c3aed':'#92400e',fontWeight:600}}>{pl.po_type==='outside_deco'?'Deco PO':'Blank PO'}</span></td>
+                  <td style={{fontWeight:700,color:pl.po_id?.startsWith('DPO')?'#7c3aed':'#1e40af'}}>{pl.po_id}</td>
+                  <td>{qb.vendorRef}</td><td style={{fontSize:10,color:'#64748b'}}>{so.id}</td>
+                  <td style={{fontSize:10,color:'#64748b'}}>{qb.account}</td>
+                  <td style={{textAlign:'right',fontWeight:700,color:'#dc2626'}}>${qb.total.toFixed(2)}</td>
+                  <td><span style={{fontSize:8,padding:'1px 4px',borderRadius:3,background:'#fef3c7',color:'#92400e',fontWeight:600}}>Pending</span></td>
+                </tr>}))).flat(2)}
+              {unsyncedInvs.map(inv=>{const qb=buildQBInvoice(inv);
+                return<tr key={inv.id} style={{borderBottom:'1px solid #f1f5f9'}}>
+                  <td><span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:'#dcfce7',color:'#166534',fontWeight:600}}>Invoice</span></td>
+                  <td style={{fontWeight:700,color:'#166534'}}>{inv.id}</td>
+                  <td>{qb.customerRef}</td><td style={{fontSize:10,color:'#64748b'}}>{qb.soRef}</td>
+                  <td style={{fontSize:10,color:'#64748b'}}>{qbConfig.mapping.ar_account}</td>
+                  <td style={{textAlign:'right',fontWeight:700,color:'#166534'}}>${qb.amount.toFixed(2)}</td>
+                  <td><span style={{fontSize:8,padding:'1px 4px',borderRadius:3,background:'#fef3c7',color:'#92400e',fontWeight:600}}>Pending</span></td>
+                </tr>})}
+            </tbody>
+          </table>}
+        </div>
+      </div>
+
+      {/* Sync Log */}
+      <div className="card">
+        <div className="card-header"><h2>📜 Sync History</h2></div>
+        <div className="card-body" style={{padding:0,maxHeight:300,overflow:'auto'}}>
+          {qbConfig.syncLog.length===0?<div className="empty" style={{padding:20}}>No sync history yet</div>:
+          qbConfig.syncLog.map((log,i)=><div key={i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9'}}>
+            <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
+              <span style={{fontSize:9,padding:'1px 5px',borderRadius:3,fontWeight:600,
+                background:log.status==='success'?'#dcfce7':log.status==='skipped'?'#f1f5f9':'#fef2f2',
+                color:log.status==='success'?'#166534':log.status==='skipped'?'#64748b':'#dc2626'}}>{log.status}</span>
+              <span style={{fontSize:11,fontWeight:700}}>{log.type==='all'?'Full Sync':log.type.replace(/_/g,' ')}</span>
+              <span style={{fontSize:10,color:'#94a3b8',marginLeft:'auto'}}>{log.ts}</span>
+            </div>
+            {log.details.map((d,di)=><div key={di} style={{fontSize:10,color:'#64748b',paddingLeft:8}}>• {d}</div>)}
+          </div>)}
+        </div>
+      </div>
       </>}
 
       {/* ── CUSTOMERS TAB ── */}
@@ -13012,7 +13725,7 @@ export default function App(){
       if(key==='CATEGORIES')CATEGORIES=val;if(key==='POSITIONS')POSITIONS=val;if(key==='CONTACT_ROLES')CONTACT_ROLES=val;
       nf('Settings saved')}catch{nf('Error saving','warn')}};
   function rSettings(){
-    const tabs=[['pricing','Decoration Pricing'],['tiers','Customer Tiers'],['lists','Lists & Options'],['terms','Terms & Policies'],['labor','Labor Rates']];
+    const tabs=[['pricing','Decoration Pricing'],['tiers','Customer Tiers'],['lists','Lists & Options'],['terms','Terms & Policies'],['labor','Labor Rates'],['taxcloud','TaxCloud']];
     return(<>
       <div style={{display:'flex',gap:4,marginBottom:16,flexWrap:'wrap'}}>
         {tabs.map(([k,label])=><button key={k} className={`btn btn-sm ${settingsTab===k?'btn-primary':'btn-secondary'}`} onClick={()=>setSettingsTab(k)}>{label}</button>)}
@@ -13177,6 +13890,10 @@ export default function App(){
       </>}
 
       {/* LABOR RATES */}
+      {settingsTab==='taxcloud'&&<>
+        <TaxCloudSettings supabase={supabase} nf={nf} cust={cust} setCust={setCust}/>
+      </>}
+
       {settingsTab==='labor'&&<>
         <div className="card" style={{marginBottom:16}}>
           <div className="card-header"><h3>Hourly Labor Rates</h3></div>
@@ -13342,8 +14059,9 @@ export default function App(){
         // Page access control: if employee has custom access list, enforce it (admins always see all)
         if(cu.role!=='admin'&&cu.access&&!cu.access.includes(item.id))return null;
         const ubadge=item.id==='messages'?msgs.filter(m=>!(m.read_by||[]).includes(cu.id)).length:0;
+        const mentionBadge=item.id==='messages'?msgs.filter(m=>!(m.read_by||[]).includes(cu.id)&&(m.tagged_members||[]).includes(cu.id)).length:0;
         return<button key={item.id} className={`sidebar-link ${pg===item.id?'active':''}`}
-          onClick={()=>{if(dirtyRef.current&&!window.confirm('You have unsaved changes. Leave without saving?'))return;dirtyRef.current=false;setPg(item.id);setQ('');setSelC(null);setSelV(null);setEEst(null);setESO(null);setMobileMenuOpen(false)}}><Icon name={item.icon}/>{item.label}{item.id==='messages'&&ubadge>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{ubadge}</span>}{item.id==='purchase_orders'&&(()=>{let wc=0;sos.forEach(so=>safeItems(so).forEach(it=>safePOs(it).forEach(po=>{const szKeys=Object.keys(po).filter(k=>typeof po[k]==='number'&&!['status'].includes(k));const open=szKeys.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-((po.received||{})[sz]||0)-((po.cancelled||{})[sz]||0)),0);if(open>0)wc++})));return wc>0?<span style={{background:'#d97706',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{wc}</span>:null})()}{item.id==='batch_pos'&&batchPOs.length>0&&<span style={{background:'#7c3aed',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{batchPOs.length}</span>}{item.id==='issues'&&openIssueCount>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{openIssueCount}</span>}</button>})}</nav>
+          onClick={()=>{if(dirtyRef.current&&!window.confirm('You have unsaved changes. Leave without saving?'))return;dirtyRef.current=false;setPg(item.id);setQ('');setSelC(null);setSelV(null);setEEst(null);setESO(null);setMobileMenuOpen(false)}}><Icon name={item.icon}/>{item.label}{item.id==='messages'&&mentionBadge>0&&<span style={{background:'#f59e0b',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:4}}>@{mentionBadge}</span>}{item.id==='messages'&&ubadge>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{ubadge}</span>}{item.id==='purchase_orders'&&(()=>{let wc=0;sos.forEach(so=>safeItems(so).forEach(it=>safePOs(it).forEach(po=>{const szKeys=Object.keys(po).filter(k=>typeof po[k]==='number'&&!['status'].includes(k));const open=szKeys.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-((po.received||{})[sz]||0)-((po.cancelled||{})[sz]||0)),0);if(open>0)wc++})));return wc>0?<span style={{background:'#d97706',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{wc}</span>:null})()}{item.id==='batch_pos'&&batchPOs.length>0&&<span style={{background:'#7c3aed',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{batchPOs.length}</span>}{item.id==='issues'&&openIssueCount>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{openIssueCount}</span>}</button>})}</nav>
       <div className="sidebar-user"><div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}><div><div style={{fontWeight:600,color:'#e2e8f0'}}>{cu.name}</div><div>{cu.role}</div></div><button onClick={handleLogout} style={{background:'none',border:'1px solid #475569',borderRadius:6,padding:'3px 8px',color:'#94a3b8',cursor:'pointer',fontSize:10}} title="Log out">↪ Out</button></div></div></div>
     <div className="main"><div className="topbar"><button className="mobile-menu-btn" onClick={()=>setMobileMenuOpen(true)}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button><h1>{eEst?eEst.id:eSO?eSO.id:selC?selC.name:selV?selV.name:(titles[pg]||'Dashboard')}</h1>
         <div style={{flex:1,maxWidth:400,margin:'0 20px',position:'relative'}}>
