@@ -1852,7 +1852,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           {!cust?<div style={{marginBottom:8}}><label className="form-label">Select Customer *</label><SearchSelect options={allCustomers.map(c=>({value:c.id,label:`${c.name} (${c.alpha_tag})`}))} value={o.customer_id} onChange={selC} placeholder="Search customer..."/></div>
           :<div><div style={{display:'flex',alignItems:'center',gap:6}}><span style={{fontSize:18,fontWeight:800}}>{cust.name}</span> <span style={{fontSize:14,color:'#64748b'}}>({cust.alpha_tag})</span>
             <button style={{background:'none',border:'none',cursor:'pointer',color:'#64748b',fontSize:10,textDecoration:'underline',padding:0}} onClick={()=>{if(window.confirm('Change customer for '+o.id+'? This will update pricing tier.'))selC(null);setCust(null)}}>change</button></div>
-            <div style={{fontSize:13,color:'#64748b'}}>Tier {cust.adidas_ua_tier} | {o.default_markup||1.65}x | Tax: {cust.tax_rate?(cust.tax_rate*100).toFixed(2)+'%':'N/A'}</div></div>}
+            <div style={{fontSize:13,color:'#64748b'}}>Tier {cust.adidas_ua_tier} | {o.default_markup||1.65}x | Tax: {cust.tax_rate?(cust.tax_rate*100).toFixed(3)+'%':'N/A'}</div></div>}
           {isSO&&o.estimate_id&&<div style={{fontSize:11,color:'#7c3aed'}}>From: {o.estimate_id}</div>}
           <div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>By {REPS.find(r=>r.id===o.created_by)?.name} · {o.created_at}</div>
           {isSO&&o._tracking_number&&<div style={{padding:8,background:'#f0fdf4',borderRadius:6,marginTop:8}}>
@@ -1873,7 +1873,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
           {[{l:'REV',v:totals.rev,bg:'#f0fdf4',c:'#166534'},{l:'COST',v:totals.cost,bg:'#fef2f2',c:'#dc2626'},{l:'MARGIN',v:totals.margin,bg:'#dbeafe',c:'#1e40af',s:`${totals.pct.toFixed(1)}%`},
             ...(totals.ship>0?[{l:'SHIP',v:totals.ship,bg:'#f0f9ff',c:'#0369a1'}]:[]),
-            ...(totals.tax>0?[{l:'TAX',v:totals.tax,bg:'#fefce8',c:'#a16207',s:(totals.taxRate*100).toFixed(2)+'%'}]:[]),
+            ...(totals.tax>0?[{l:'TAX',v:totals.tax,bg:'#fefce8',c:'#a16207',s:(totals.taxRate*100).toFixed(3)+'%'}]:[]),
             ...(cust?.tax_exempt?[{l:'TAX',v:0,bg:'#fef2f2',c:'#dc2626',s:'EXEMPT'}]:[]),
             {l:'TOTAL',v:totals.grand,bg:'#faf5ff',c:'#7c3aed'}].map(x=>
             <div key={x.l} style={{textAlign:'center',padding:'8px 12px',background:x.bg,borderRadius:8,minWidth:72}}><div style={{fontSize:9,color:x.c,fontWeight:700}}>{x.l}</div><div style={{fontSize:17,fontWeight:800,color:x.c}}>${x.v.toLocaleString(undefined,{maximumFractionDigits:0})}</div>{x.s&&<div style={{fontSize:9,color:'#94a3b8'}}>{x.s}</div>}</div>)}</div>
@@ -4557,7 +4557,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   {tab==='overview'&&<div className="card"><div className="card-header"><h2>Info</h2></div><div className="card-body">
     <div className="form-row form-row-3"><div><div className="form-label">Billing</div><div style={{fontSize:13}}>{customer.billing_address_line1||'--'}<br/>{customer.billing_city}, {customer.billing_state} {customer.billing_zip}</div></div>
     <div><div className="form-label">Shipping</div><div style={{fontSize:13}}>{customer.shipping_address_line1||'--'}<br/>{customer.shipping_city}, {customer.shipping_state}</div></div>
-    <div><div className="form-label">Tax</div><div style={{fontSize:13}}>{customer.tax_exempt?<span style={{color:'#dc2626',fontWeight:700}}>TAX EXEMPT</span>:customer.tax_rate?(customer.tax_rate*100).toFixed(2)+'%':'No rate set'}</div></div></div>
+    <div><div className="form-label">Tax</div><div style={{fontSize:13}}>{customer.tax_exempt?<span style={{color:'#dc2626',fontWeight:700}}>TAX EXEMPT</span>:customer.tax_rate?(customer.tax_rate*100).toFixed(3)+'%':'No rate set'}</div></div></div>
   </div></div>}
   {tab==='artwork'&&<div className="card"><div className="card-body"><div className="empty">Customer art library — aggregates from SOs (Phase 3)</div></div></div>}
   {tab==='reporting'&&<div className="card"><div className="card-header"><h2>Reporting</h2><div style={{display:'flex',gap:4}}>{[['thisyear','This Year'],['lastyear','Last Year'],['rolling','Rolling 12'],['alltime','All']].map(([v,l])=><button key={v} className={`btn btn-sm ${rR===v?'btn-primary':'btn-secondary'}`} onClick={()=>setRR(v)}>{l}</button>)}</div></div>
@@ -4949,7 +4949,7 @@ function CustModal({isOpen,onClose,onSave,customer,parents}){
     <div className="form-row form-row-2"><div><label className="form-label">Tier</label><select className="form-select" value={f.adidas_ua_tier||'B'} onChange={e=>sv('adidas_ua_tier',e.target.value)}><option value="A">A - 40%</option><option value="B">B - 35%</option><option value="C">C - 30%</option></select></div>
       <div><label className="form-label">Markup</label><input className="form-input" type="number" step="0.05" value={f.catalog_markup||1.65} onChange={e=>sv('catalog_markup',parseFloat(e.target.value)||1.65)}/></div></div>
     <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginTop:12,marginBottom:6,textTransform:'uppercase'}}>Tax</div>
-    <div className="form-row form-row-2"><div><label className="form-label">Tax Rate (%)</label><input className="form-input" type="number" step="0.25" min="0" max="15" value={f.tax_rate?(f.tax_rate*100).toFixed(4).replace(/0+$/,'').replace(/\.$/,''):''} onChange={e=>{const v=parseFloat(e.target.value);sv('tax_rate',v>0?v/100:0)}} placeholder="e.g. 7.75"/></div>
+    <div className="form-row form-row-2"><div><label className="form-label">Tax Rate (%)</label><input className="form-input" type="number" step="0.125" min="0" max="15" value={f.tax_rate?(f.tax_rate*100).toFixed(4).replace(/0+$/,'').replace(/\.$/,''):''} onChange={e=>{const v=parseFloat(e.target.value);sv('tax_rate',v>0?v/100:0)}} placeholder="e.g. 7.875"/></div>
       <div style={{display:'flex',alignItems:'center',paddingTop:20}}><label style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer',fontSize:13}}><input type="checkbox" checked={f.tax_exempt||false} onChange={e=>sv('tax_exempt',e.target.checked)} style={{width:16,height:16}}/><span style={{fontWeight:600,color:f.tax_exempt?'#dc2626':'#475569'}}>{f.tax_exempt?'Tax Exempt':'Taxable'}</span></label></div></div>
   </div>
   <div className="modal-footer"><button className="btn btn-secondary" onClick={onClose}>Cancel</button><button className="btn btn-primary" onClick={()=>{if(!ok())return;onSave({...f,id:f.id||'c'+Date.now(),parent_id:ct==='sub'?f.parent_id:null,is_active:true,_oe:f._oe||0,_os:f._os||0,_oi:f._oi||0,_ob:f._ob||0});onClose()}}>Save</button></div></div></div>);
@@ -9169,7 +9169,7 @@ export default function App(){
                   rows.push(<tr key={ji} style={newState&&ji>0?{borderTop:'1px solid #cbd5e1'}:{}}>
                     <td style={{fontWeight:700,padding:'4px 8px',color:newState?'#1e293b':'#94a3b8'}}>{newState?j.state:''}</td>
                     <td style={{padding:'4px 8px',color:'#475569'}}>{j.city||'—'}</td>
-                    <td style={{textAlign:'right',color:'#64748b',padding:'4px 8px'}}>{j.rate?(j.rate*100).toFixed(2)+'%':'—'}</td>
+                    <td style={{textAlign:'right',color:'#64748b',padding:'4px 8px'}}>{j.rate?(j.rate*100).toFixed(3)+'%':'—'}</td>
                     <td style={{textAlign:'right',padding:'4px 8px'}}>${j.rev.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
                     <td style={{textAlign:'right',fontWeight:600,color:'#a16207',padding:'4px 8px'}}>${j.tax.toFixed(2)}</td>
                     <td style={{textAlign:'center',padding:'4px 8px'}}>{j.count}</td>
@@ -9237,7 +9237,7 @@ export default function App(){
               <td>{s._cname}</td>
               <td style={{color:'#64748b'}}>{s._state}</td>
               <td style={{textAlign:'right'}}>${s._rev.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
-              <td style={{textAlign:'right',color:'#64748b'}}>{(s._rate*100).toFixed(2)}%</td>
+              <td style={{textAlign:'right',color:'#64748b'}}>{(s._rate*100).toFixed(3)}%</td>
               <td style={{textAlign:'right',fontWeight:700,color:'#d97706'}}>${s._tax.toFixed(2)}</td>
             </tr>)}
             <tr style={{borderTop:'2px solid #1e293b',fontWeight:800}}>
