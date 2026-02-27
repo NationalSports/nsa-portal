@@ -63,7 +63,7 @@ serve(async (req: Request) => {
       },
     };
 
-    const res = await fetch("https://api.taxcloud.com/1.0/TaxCloud/Lookup", {
+    const res = await fetch("https://api.taxcloud.net/1.0/TaxCloud/Lookup", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
