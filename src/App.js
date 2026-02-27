@@ -4922,12 +4922,16 @@ function VendDetail({vendor,onBack}){return(<div><button className="btn btn-seco
 async function invokeEdgeFn(supabase,fnName,body){
   const r=await supabase.functions.invoke(fnName,{body});
   let d=r.data;
+  console.log('[invokeEdgeFn]',fnName,'raw response:',{data:d,error:r.error,dataType:typeof d});
   // If data is a ReadableStream or Response, read and parse it
   if(d&&typeof d==='object'&&typeof d.getReader==='function'){d=await new Response(d).json()}
-  else if(d&&typeof d==='object'&&typeof d.text==='function'){d=await d.json()}
+  else if(d&&typeof d==='object'&&typeof d.text==='function'){
+    try{const txt=await d.text();d=JSON.parse(txt)}catch(e){console.error('[invokeEdgeFn] parse error:',e);d=null}
+  }
   else if(typeof d==='string'){try{d=JSON.parse(d)}catch(e){d=null}}
   // Also check error for body content
   if(!d&&r.error){const ctx=r.error?.context;if(ctx&&typeof ctx.json==='function'){try{d=await ctx.json()}catch(e){}}if(!d)d={ok:false,error:r.error?.message||String(r.error)}}
+  console.log('[invokeEdgeFn]',fnName,'parsed:',d);
   return d||{ok:false,error:'No response from edge function'};
 }
 
@@ -4941,8 +4945,9 @@ function TaxCloudSettings({supabase,nf,cust,setCust}){
     try{
       if(!supabase){setTcStatus({tested:true,ok:false,msg:'Supabase not configured — set REACT_APP_SUPABASE_URL and REACT_APP_SUPABASE_ANON_KEY',loading:false});return}
       const d=await invokeEdgeFn(supabase,'taxcloud-lookup',{address1:'123 Main St',city:'McKinney',state:'TX',zip5:'75001'});
+      console.log('[TaxCloud test]',JSON.stringify(d));
       if(d?.ok){setTcStatus({tested:true,ok:true,msg:'Connected — test rate for TX 75001: '+d.tax_pct+'%',loading:false})}
-      else{setTcStatus({tested:true,ok:false,msg:d?.error||'Lookup failed — check API credentials in Supabase secrets',loading:false})}
+      else{setTcStatus({tested:true,ok:false,msg:d?.error||('Lookup failed — raw response: '+JSON.stringify(d)),loading:false})}
     }catch(e){setTcStatus({tested:true,ok:false,msg:'Error: '+e.message,loading:false})}
   };
 
