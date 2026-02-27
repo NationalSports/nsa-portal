@@ -38,6 +38,13 @@ serve(async (req: Request) => {
       );
     }
 
+    if (!city) {
+      return new Response(
+        JSON.stringify({ ok: false, error: "City is required — TaxCloud needs city for tax jurisdiction lookup" }),
+        { status: 200, headers: CORS }
+      );
+    }
+
     if (!TAXCLOUD_API_ID || !TAXCLOUD_API_KEY) {
       return new Response(
         JSON.stringify({ ok: false, error: "TaxCloud API credentials not configured — set TAXCLOUD_API_LOGIN_ID and TAXCLOUD_API_KEY in Supabase secrets" }),
@@ -63,7 +70,7 @@ serve(async (req: Request) => {
       },
     };
 
-    const res = await fetch("https://api.taxcloud.com/1.0/TaxCloud/Lookup", {
+    const res = await fetch("https://api.taxcloud.net/1.0/TaxCloud/Lookup", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -73,8 +80,10 @@ serve(async (req: Request) => {
 
     // ResponseType 0 = Error, 3 = Success/Informational
     if (data.ResponseType === 0 || (!data.CartItemsResponse && data.Messages?.length)) {
+      const tcMsg = data.Messages?.[0]?.Message || "";
+      const errDetail = tcMsg || "TaxCloud returned no results — verify API Login ID and API Key are correct in Supabase secrets";
       return new Response(
-        JSON.stringify({ ok: false, error: data.Messages?.[0]?.Message || "TaxCloud lookup failed" }),
+        JSON.stringify({ ok: false, error: errDetail, response_type: data.ResponseType, messages: data.Messages }),
         { status: 200, headers: CORS }
       );
     }

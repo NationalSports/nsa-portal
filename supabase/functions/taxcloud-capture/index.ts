@@ -97,7 +97,7 @@ serve(async (req: Request) => {
         },
       };
 
-      const lookupRes = await fetch("https://api.taxcloud.com/1.0/TaxCloud/Lookup", {
+      const lookupRes = await fetch("https://api.taxcloud.net/1.0/TaxCloud/Lookup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(lookupBody),
@@ -126,7 +126,7 @@ serve(async (req: Request) => {
         dateCaptured: body.date_captured || now,
       };
 
-      const captureRes = await fetch("https://api.taxcloud.com/1.0/TaxCloud/AuthorizedWithCapture", {
+      const captureRes = await fetch("https://api.taxcloud.net/1.0/TaxCloud/AuthorizedWithCapture", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(captureBody),
@@ -171,7 +171,7 @@ serve(async (req: Request) => {
         returnedDate: body.date_captured || now,
       };
 
-      const returnRes = await fetch("https://api.taxcloud.com/1.0/TaxCloud/Returned", {
+      const returnRes = await fetch("https://api.taxcloud.net/1.0/TaxCloud/Returned", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(returnBody),

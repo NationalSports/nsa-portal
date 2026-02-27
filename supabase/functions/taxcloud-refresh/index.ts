@@ -35,7 +35,7 @@ const CORS = {
 
 async function lookupRate(address1: string, city: string, state: string, zip5: string): Promise<number | null> {
   try {
-    const res = await fetch("https://api.taxcloud.com/1.0/TaxCloud/Lookup", {
+    const res = await fetch("https://api.taxcloud.net/1.0/TaxCloud/Lookup", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

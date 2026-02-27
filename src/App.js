@@ -4940,7 +4940,7 @@ function TaxCloudSettings({supabase,nf,cust,setCust}){
     setTcStatus({tested:false,ok:false,msg:'',loading:true});
     try{
       if(!supabase){setTcStatus({tested:true,ok:false,msg:'Supabase not configured — set REACT_APP_SUPABASE_URL and REACT_APP_SUPABASE_ANON_KEY',loading:false});return}
-      const d=await invokeEdgeFn(supabase,'taxcloud-lookup',{address1:'',city:'',state:'TX',zip5:'75001'});
+      const d=await invokeEdgeFn(supabase,'taxcloud-lookup',{address1:'123 Main St',city:'McKinney',state:'TX',zip5:'75001'});
       if(d?.ok){setTcStatus({tested:true,ok:true,msg:'Connected — test rate for TX 75001: '+d.tax_pct+'%',loading:false})}
       else{setTcStatus({tested:true,ok:false,msg:d?.error||'Lookup failed — check API credentials in Supabase secrets',loading:false})}
     }catch(e){setTcStatus({tested:true,ok:false,msg:'Error: '+e.message,loading:false})}
