@@ -1581,11 +1581,14 @@ function calcSOStatus(ord){
 // ═══════════════════════════════════════════════
 function LoginGate({onLogin,reps}){
   const REPS=(reps||DEFAULT_REPS).filter(r=>r.is_active!==false);
-  const roleColors={admin:'#1e40af',gm:'#7c3aed',prod_manager:'#b45309',production:'#d97706',prod_assistant:'#a16207',rep:'#166534',csr:'#0891b2',warehouse:'#9333ea',accounting:'#dc2626',artist:'#ec4899'};
-  const roleLabels={admin:'Admin',gm:'General Manager',prod_manager:'Production Mgr',production:'Production',prod_assistant:'Prod Assistant',rep:'Sales Rep',csr:'CSR',warehouse:'Warehouse',accounting:'Accounting',artist:'Artist'};
+  const roleColors={admin:'#1e40af',gm:'#7c3aed',prod_manager:'#b45309',production:'#d97706',prod_assistant:'#a16207',rep:'#166534',csr:'#0891b2',warehouse:'#9333ea',accounting:'#dc2626',art:'#ec4899'};
+  const roleLabels={admin:'Admin',gm:'General Manager',prod_manager:'Production Mgr',production:'Production',prod_assistant:'Prod Assistant',rep:'Sales Rep',csr:'CSR',warehouse:'Warehouse',accounting:'Accounting',art:'Artist'};
+  const deptOrder=['admin','rep','csr','accounting','warehouse','prod_manager','production','prod_assistant','art'];
+  const grouped=deptOrder.map(role=>({role,label:roleLabels[role]||role,color:roleColors[role]||'#475569',members:REPS.filter(r=>r.role===role)})).filter(g=>g.members.length>0);
+  const[selDept,setSelDept]=React.useState(null);
   return(
     <div style={{minHeight:'100vh',background:'linear-gradient(135deg,#0f172a 0%,#1e3a5f 50%,#0f172a 100%)',display:'flex',alignItems:'center',justifyContent:'center',fontFamily:"'Inter','Segoe UI',sans-serif"}}>
-      <div style={{width:380,padding:0}}>
+      <div style={{width:480,padding:0}}>
         {/* Logo */}
         <div style={{textAlign:'center',marginBottom:32}}>
           <div style={{fontSize:48,fontWeight:900,color:'white',letterSpacing:-2}}>NSA</div>
@@ -1593,21 +1596,38 @@ function LoginGate({onLogin,reps}){
         </div>
 
         {/* Login Card */}
-        <div style={{background:'white',borderRadius:16,padding:32,boxShadow:'0 20px 60px rgba(0,0,0,0.3)'}}>
-          <div style={{fontSize:14,fontWeight:700,color:'#1e293b',marginBottom:16}}>Who's logging in?</div>
-          <div style={{display:'flex',flexDirection:'column',gap:6}}>
-            {REPS.map(r=>
+        <div style={{background:'white',borderRadius:16,padding:28,boxShadow:'0 20px 60px rgba(0,0,0,0.3)'}}>
+          <div style={{fontSize:14,fontWeight:700,color:'#1e293b',marginBottom:4}}>Who's logging in?</div>
+          <div style={{fontSize:11,color:'#94a3b8',marginBottom:14}}>Select your department, then your name</div>
+
+          {/* Department pills */}
+          <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:16}}>
+            {grouped.map(g=><button key={g.role} onClick={()=>setSelDept(selDept===g.role?null:g.role)}
+              style={{display:'flex',alignItems:'center',gap:6,padding:'8px 14px',borderRadius:10,
+                border:selDept===g.role?'2px solid '+g.color:'1px solid #e2e8f0',
+                background:selDept===g.role?g.color+'12':'white',cursor:'pointer',transition:'all 0.15s'}}
+              onMouseEnter={e=>{if(selDept!==g.role)e.currentTarget.style.borderColor=g.color}}
+              onMouseLeave={e=>{if(selDept!==g.role)e.currentTarget.style.borderColor='#e2e8f0'}}>
+              <div style={{width:8,height:8,borderRadius:4,background:g.color,flexShrink:0}}/>
+              <span style={{fontSize:12,fontWeight:600,color:selDept===g.role?g.color:'#475569'}}>{g.label}</span>
+              <span style={{fontSize:10,color:'#94a3b8'}}>{g.members.length}</span>
+            </button>)}
+          </div>
+
+          {/* Members grid - show selected department or all */}
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6,maxHeight:340,overflow:'auto'}}>
+            {(selDept?grouped.find(g=>g.role===selDept)?.members||[]:REPS).map(r=>
               <button key={r.id} onClick={()=>onLogin(r)}
-                style={{display:'flex',alignItems:'center',gap:12,padding:'12px 16px',border:'1px solid #e2e8f0',
+                style={{display:'flex',alignItems:'center',gap:10,padding:'10px 12px',border:'1px solid #e2e8f0',
                   borderRadius:10,background:'white',cursor:'pointer',transition:'all 0.15s',textAlign:'left'}}
-                onMouseEnter={e=>{e.currentTarget.style.background='#f8fafc';e.currentTarget.style.borderColor='#3b82f6'}}
-                onMouseLeave={e=>{e.currentTarget.style.background='white';e.currentTarget.style.borderColor='#e2e8f0'}}>
-                <div style={{width:40,height:40,borderRadius:20,background:roleColors[r.role]||'#475569',color:'white',
-                  display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,fontWeight:800,flexShrink:0}}>
+                onMouseEnter={e=>{e.currentTarget.style.background='#f8fafc';e.currentTarget.style.borderColor='#3b82f6';e.currentTarget.style.transform='translateY(-1px)'}}
+                onMouseLeave={e=>{e.currentTarget.style.background='white';e.currentTarget.style.borderColor='#e2e8f0';e.currentTarget.style.transform='none'}}>
+                <div style={{width:34,height:34,borderRadius:17,background:roleColors[r.role]||'#475569',color:'white',
+                  display:'flex',alignItems:'center',justifyContent:'center',fontSize:14,fontWeight:800,flexShrink:0}}>
                   {r.name[0]}</div>
-                <div>
-                  <div style={{fontWeight:700,fontSize:14,color:'#0f172a'}}>{r.name}</div>
-                  <div style={{fontSize:11,color:'#64748b'}}>{roleLabels[r.role]||r.role}</div>
+                <div style={{minWidth:0}}>
+                  <div style={{fontWeight:700,fontSize:13,color:'#0f172a',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{r.name}</div>
+                  <div style={{fontSize:10,color:roleColors[r.role]||'#64748b',fontWeight:600}}>{roleLabels[r.role]||r.role}</div>
                 </div>
               </button>)}
           </div>
