@@ -5656,6 +5656,14 @@ export default function App(){
     access_token:'',refresh_token:'',realm_id:'',token_created_at:0,sandbox:false,
     mapping:{income_account:'Sales',cogs_account:'Cost of Goods Sold',deco_account:'Subcontractor - Decoration',ar_account:'Accounts Receivable',ap_account:'Accounts Payable',tax_account:'Sales Tax Payable'},
     syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}});
+  const[qbTab,setQbTab]=useState('overview');
+  const[qbSyncing,setQbSyncing]=useState(false);
+  const[qbBillFile,setQbBillFile]=useState(null);
+  const[qbBillVendor,setQbBillVendor]=useState('');
+  const[qbBillAmount,setQbBillAmount]=useState('');
+  const[qbBillMemo,setQbBillMemo]=useState('');
+  const[qbBillDate,setQbBillDate]=useState(new Date().toISOString().slice(0,10));
+  const[qbBillUploading,setQbBillUploading]=useState(false);
   // Persistent state — loads from localStorage, falls back to demo data
   const loadState=(key,fallback)=>{try{const s=localStorage.getItem('nsa_'+key);return s?JSON.parse(s):fallback}catch{return fallback}};
   // Migrate bad SO/EST/INV IDs from localStorage (non-numeric suffixes like SO-h4o401)
@@ -5973,6 +5981,33 @@ export default function App(){
         sessionStorage.removeItem('qb_oauth_state');
       }
     }catch{}
+  },[]);
+  // Handle QB OAuth callback tokens from URL hash (Netlify flow)
+  React.useEffect(()=>{
+    const hash=window.location.hash;
+    if(hash.includes('tokens=')){
+      try{
+        const encoded=hash.split('tokens=')[1]?.split('&')[0];
+        if(encoded){
+          const tokenData=JSON.parse(atob(encoded));
+          setQBConfig(prev=>({...prev,connected:true,access_token:tokenData.access_token,refresh_token:tokenData.refresh_token,
+            realm_id:tokenData.realm_id,token_created_at:tokenData.created_at||Date.now()}));
+          fetch('/.netlify/functions/qb-api',{method:'POST',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({action:'company_info',access_token:tokenData.access_token,realm_id:tokenData.realm_id})})
+            .then(r=>r.json()).then(d=>{
+              const ci=d?.CompanyInfo;
+              if(ci)setQBConfig(prev=>({...prev,companyId:tokenData.realm_id,companyName:ci.CompanyName||'Connected'}));
+            }).catch(()=>{});
+          window.location.hash='';
+          nf('Connected to QuickBooks Online');
+        }
+      }catch(e){console.error('[QB] Token parse error:',e)}
+    }
+    if(hash.includes('error=')){
+      const err=hash.split('error=')[1]?.split('&')[0];
+      nf('QB connection failed: '+err,'error');
+      window.location.hash='';
+    }
   },[]);
   React.useEffect(()=>{_saveAppState('inv_pos',invPOs)},[invPOs]);
   React.useEffect(()=>{_saveAppState('inv_adj_log',invAdjLog)},[invAdjLog]);
@@ -12762,14 +12797,6 @@ export default function App(){
 
   // QUICKBOOKS ONLINE INTEGRATION
   function rQB(){
-    const [qbTab,setQbTab]=useState('overview');
-    const [qbSyncing,setQbSyncing]=useState(false);
-    const [qbBillFile,setQbBillFile]=useState(null);
-    const [qbBillVendor,setQbBillVendor]=useState('');
-    const [qbBillAmount,setQbBillAmount]=useState('');
-    const [qbBillMemo,setQbBillMemo]=useState('');
-    const [qbBillDate,setQbBillDate]=useState(new Date().toISOString().slice(0,10));
-    const [qbBillUploading,setQbBillUploading]=useState(false);
 
     // ── QB API helpers ──
     const qbApi=async(action,payload={})=>{
@@ -12795,35 +12822,6 @@ export default function App(){
         return d;
       }catch(e){nf('QB API error: '+e.message,'error');return null}
     };
-
-    // ── Handle OAuth callback tokens from URL ──
-    React.useEffect(()=>{
-      const hash=window.location.hash;
-      if(hash.includes('tokens=')){
-        try{
-          const encoded=hash.split('tokens=')[1]?.split('&')[0];
-          if(encoded){
-            const tokenData=JSON.parse(atob(encoded));
-            setQBConfig(prev=>({...prev,connected:true,access_token:tokenData.access_token,refresh_token:tokenData.refresh_token,
-              realm_id:tokenData.realm_id,token_created_at:tokenData.created_at||Date.now()}));
-            // Fetch company info
-            fetch('/.netlify/functions/qb-api',{method:'POST',headers:{'Content-Type':'application/json'},
-              body:JSON.stringify({action:'company_info',access_token:tokenData.access_token,realm_id:tokenData.realm_id})})
-              .then(r=>r.json()).then(d=>{
-                const ci=d?.CompanyInfo;
-                if(ci)setQBConfig(prev=>({...prev,companyId:tokenData.realm_id,companyName:ci.CompanyName||'Connected'}));
-              }).catch(()=>{});
-            window.location.hash='';
-            nf('Connected to QuickBooks Online');
-          }
-        }catch(e){console.error('[QB] Token parse error:',e)}
-      }
-      if(hash.includes('error=')){
-        const err=hash.split('error=')[1]?.split('&')[0];
-        nf('QB connection failed: '+err,'error');
-        window.location.hash='';
-      }
-    },[]);
 
     // ── Connect to QB via OAuth ──
     const connectQB=async()=>{
