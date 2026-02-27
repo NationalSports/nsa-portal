@@ -77,7 +77,7 @@ const _dbLoad = async () => {
     // Customers: attach contacts array
     const customers=custRaw.map(c=>({...c,contacts:contacts.filter(ct=>ct.customer_id===c.id).sort((a,b)=>a.sort_order-b.sort_order).map(ct=>({name:ct.name,email:ct.email,phone:ct.phone,role:ct.role}))}));
     // Products: attach _inv and _alerts from product_inventory
-    const products=prodRaw.map(p=>{const invRows=prodInv.filter(pi=>pi.product_id===p.id);const _inv={};const _alerts={};invRows.forEach(r=>{_inv[r.size]=r.quantity;if(r.alert_threshold)_alerts[r.size]=r.alert_threshold});return{...p,_inv,_alerts}});
+    const products=prodRaw.map(p=>{const invRows=prodInv.filter(pi=>pi.product_id===p.id);const _inv={};const _alerts={};invRows.forEach(r=>{_inv[r.size]=r.quantity;if(r.alert_threshold)_alerts[r.size]=r.alert_threshold});return{...p,image_url:p.image_url||p.image_front_url||'',back_image_url:p.back_image_url||p.image_back_url||'',_inv,_alerts}});
     // Estimates: attach items (with decorations) and art_files
     const estimates=estRaw.map(est=>{
       const art_files=estArt.filter(a=>a.estimate_id===est.id).map(a=>({id:a.id,name:a.name,deco_type:a.deco_type,ink_colors:a.ink_colors,thread_colors:a.thread_colors,art_size:a.art_size,files:a.files||[],mockup_files:a.mockup_files||[],prod_files:a.prod_files||[],notes:a.notes,status:a.status,uploaded:a.uploaded}));
@@ -241,8 +241,8 @@ const _dbSaveCustomer = async (c) => {
 const _dbSaveProduct = async (p) => {
   if(!supabase)return;
   try{
-    const{_inv,_alerts,_colors,...prodRow}=p;
-    await supabase.from('products').upsert({...prodRow,_colors:_colors||null},{onConflict:'id'});
+    const{_inv,_alerts,_colors,image_url,back_image_url,...prodRow}=p;
+    await supabase.from('products').upsert({...prodRow,_colors:_colors||null,image_front_url:image_url||prodRow.image_front_url||'',image_back_url:back_image_url||prodRow.image_back_url||''},{onConflict:'id'});
     const allSizes=new Set([...Object.keys(_inv||{}),...Object.keys(_alerts||{})]);
     if(allSizes.size>0){
       const rows=[...allSizes].map(sz=>({product_id:p.id,size:sz,quantity:(_inv||{})[sz]||0,alert_threshold:(_alerts||{})[sz]||null}));
@@ -3612,8 +3612,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                   {(r.files||[]).length>0&&<div style={{fontSize:10,color:'#64748b'}}>📎 {r.files.length} file(s) attached</div>}
                 </div>
                 <div style={{display:'flex',gap:4}}>
-                  {r.status==='requested'&&<button className="btn btn-sm" style={{fontSize:9,background:'#3b82f6',color:'white',border:'none'}} onClick={()=>{const upd=jobs.map((jj,i)=>i===ji?{...jj,art_requests:(jj.art_requests||[]).map((rr,rri)=>rri===ri?{...rr,status:'in_progress'}:rr)}:jj);sv('jobs',upd)}}>Start Working</button>}
-                  {r.status==='in_progress'&&<button className="btn btn-sm" style={{fontSize:9,background:'#166534',color:'white',border:'none'}} onClick={()=>{const upd=jobs.map((jj,i)=>i===ji?{...jj,art_requests:(jj.art_requests||[]).map((rr,rri)=>rri===ri?{...rr,status:'completed'}:rr)}:jj);sv('jobs',upd)}}>Mark Done</button>}
+                  {r.status==='requested'&&<button className="btn btn-sm" style={{fontSize:9,background:'#3b82f6',color:'white',border:'none'}} onClick={()=>{const upd=jobs.map((jj,i)=>i===ji?{...jj,art_requests:(jj.art_requests||[]).map((rr,rri)=>rri===ri?{...rr,status:'in_progress'}:rr)}:jj);const updated={...o,jobs:upd,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false)}}>Start Working</button>}
+                  {r.status==='in_progress'&&<button className="btn btn-sm" style={{fontSize:9,background:'#166534',color:'white',border:'none'}} onClick={()=>{const upd=jobs.map((jj,i)=>i===ji?{...jj,art_requests:(jj.art_requests||[]).map((rr,rri)=>rri===ri?{...rr,status:'completed'}:rr)}:jj);const updated={...o,jobs:upd,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false)}}>Mark Done</button>}
                 </div>
               </div>)}
             </div>
@@ -3841,7 +3841,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         const submitArtReq=()=>{
           const req={id:'AR-'+Date.now(),artist:artReqModal.artist,artist_name:(artists.find(a=>a.id===artReqModal.artist)||{}).name||'',instructions:artReqModal.instructions,files:artReqModal.files,existing_files:existingFiles.map(f=>f.name||f),status:'requested',created_at:new Date().toISOString(),created_by:cu.name};
           const updatedJobs=jobs.map((jj,i)=>i===artReqModal.jIdx?{...jj,art_requests:[...(jj.art_requests||[]),req],art_status:jj.art_status==='needs_art'?'art_requested':jj.art_status,assigned_artist:artReqModal.artist||jj.assigned_artist}:jj);
-          sv('jobs',updatedJobs);setArtReqModal(null);nf('Art request sent to '+(artists.find(a=>a.id===artReqModal.artist)||{}).name||'artist');
+          const updated={...o,jobs:updatedJobs,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setArtReqModal(null);nf('Art request sent to '+(artists.find(a=>a.id===artReqModal.artist)||{}).name||'artist');
         };
         return<div className="modal-overlay" onClick={()=>setArtReqModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
           <div className="modal-header"><h2>🎨 Request Art — {j.art_name}</h2><button className="modal-close" onClick={()=>setArtReqModal(null)}>×</button></div>
@@ -6826,7 +6826,12 @@ export default function App(){
       <button className="btn btn-secondary" onClick={onBack} style={{marginBottom:12}}><Icon name="chevron-left" size={14}/> Products</button>
       <div className="card" style={{marginBottom:16}}><div className="card-body">
         <div style={{display:'flex',gap:16,alignItems:'flex-start'}}>
-          <ImgUpload url={ep.image_url} onUpload={u=>{const up={...ep,image_url:u};setEp(up);setProd(p=>p.map(x=>x.id===up.id?up:x));setSelP(up);nf('Product image uploaded')}} onError={e=>nf(e,'error')} size={80}/>
+          <div style={{display:'flex',flexDirection:'column',gap:4,alignItems:'center'}}>
+            <ImgUpload url={ep.image_url} onUpload={u=>{const up={...ep,image_url:u};setEp(up);setProd(p=>p.map(x=>x.id===up.id?up:x));setSelP(up);nf('Front image uploaded')}} onError={e=>nf(e,'error')} size={80}/>
+            <span style={{fontSize:9,color:'#64748b',fontWeight:600}}>Front</span>
+            <ImgUpload url={ep.back_image_url} onUpload={u=>{const up={...ep,back_image_url:u};setEp(up);setProd(p=>p.map(x=>x.id===up.id?up:x));setSelP(up);nf('Back image uploaded')}} onError={e=>nf(e,'error')} size={80}/>
+            <span style={{fontSize:9,color:'#64748b',fontWeight:600}}>Back</span>
+          </div>
           <div style={{flex:1}}>
             {!editing?<>
               <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap',marginBottom:4}}>
@@ -7014,7 +7019,10 @@ export default function App(){
   <div className="card"><div className="card-body" style={{padding:0}}>
   {fP.map(p=>{const nt=Object.values(p._inv||{}).reduce((a,v)=>a+v,0);const au=p.brand==='Adidas'||p.brand==='Under Armour';
     return(<div key={p.id} style={{padding:'14px 16px',borderBottom:'1px solid #f1f5f9',cursor:'pointer'}} onClick={()=>setSelP(p)}><div style={{display:'flex',gap:14,alignItems:'flex-start'}}>
-      <ImgUpload url={p.image_url} onUpload={u=>{setProd(ps=>ps.map(x=>x.id===p.id?{...x,image_url:u}:x));nf('Image uploaded')}} onError={e=>nf(e,'error')} size={48}/>
+      <div style={{display:'flex',gap:4}}>
+        <ImgUpload url={p.image_url} onUpload={u=>{setProd(ps=>ps.map(x=>x.id===p.id?{...x,image_url:u}:x));nf('Front image uploaded')}} onError={e=>nf(e,'error')} size={48}/>
+        <ImgUpload url={p.back_image_url} onUpload={u=>{setProd(ps=>ps.map(x=>x.id===p.id?{...x,back_image_url:u}:x));nf('Back image uploaded')}} onError={e=>nf(e,'error')} size={48}/>
+      </div>
       <div style={{flex:1}}>
         <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}><span style={{fontFamily:'monospace',fontWeight:800,background:'#dbeafe',padding:'2px 8px',borderRadius:3,color:'#1e40af'}}>{p.sku}</span><span style={{fontWeight:700}}>{p.name}</span>{p._colors&&<span style={{fontSize:10,color:'#7c3aed'}}>{p._colors.length} clr</span>}</div>
         <div style={{fontSize:12,color:'#94a3b8',marginTop:2}}><span className="badge badge-blue" style={{marginRight:4}}>{p.brand}</span>{p.color} | ${p.nsa_cost?.toFixed(2)} | {au?'Tier':'$'+rQ(p.nsa_cost*1.65).toFixed(2)}</div>
@@ -10960,7 +10968,7 @@ export default function App(){
           const sizes={};
           Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{sizes[sz]=v});
           const prd=prod.find(pp=>pp.id===it.product_id||pp.sku===it.sku);
-          return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,image_url:prd?.image_url||''};
+          return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,image_url:prd?.image_url||'',back_image_url:prd?.back_image_url||''};
         }).filter(Boolean);
         const allSizes=SZ_ORD.filter(sz=>itemDetails.some(it=>it.sizes[sz]>0));
 
@@ -11026,7 +11034,8 @@ export default function App(){
                 const rowTotal=Object.values(gi.sizes).reduce((a,v)=>a+v,0);
                 return<div key={gii} style={{marginBottom:gii<itemDetails.length-1?10:0}}>
                   <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
-                    {gi.image_url&&<img src={gi.image_url} alt="" style={{width:36,height:36,objectFit:'cover',borderRadius:4,border:'1px solid #e2e8f0'}}/>}
+                    {gi.image_url&&<img src={gi.image_url} alt="Front" style={{width:36,height:36,objectFit:'cover',borderRadius:4,border:'1px solid #e2e8f0'}}/>}
+                    {gi.back_image_url&&<img src={gi.back_image_url} alt="Back" style={{width:36,height:36,objectFit:'cover',borderRadius:4,border:'1px solid #e2e8f0'}}/>}
                     <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:12}}>{gi.sku}</span>
                     <span style={{fontWeight:600,fontSize:13}}>{gi.name}</span>
                     <span style={{color:'#64748b',fontSize:12}}>({gi.color})</span>
@@ -11122,7 +11131,7 @@ export default function App(){
           const sizes={};
           Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{sizes[sz]=v});
           const prd=prod.find(pp=>pp.id===it.product_id||pp.sku===it.sku);
-          return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,image_url:prd?.image_url||''};
+          return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,image_url:prd?.image_url||'',back_image_url:prd?.back_image_url||''};
         }).filter(Boolean);
         const allSizes=SZ_ORD.filter(sz=>itemDetails.some(it=>it.sizes[sz]>0));
 
@@ -11256,7 +11265,8 @@ export default function App(){
                 const rowTotal=Object.values(gi.sizes).reduce((a,v)=>a+v,0);
                 return<div key={gii} style={{marginBottom:gii<itemDetails.length-1?10:0}}>
                   <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
-                    {gi.image_url&&<img src={gi.image_url} alt="" style={{width:32,height:32,objectFit:'cover',borderRadius:4,border:'1px solid #e2e8f0'}}/>}
+                    {gi.image_url&&<img src={gi.image_url} alt="Front" style={{width:32,height:32,objectFit:'cover',borderRadius:4,border:'1px solid #e2e8f0'}}/>}
+                    {gi.back_image_url&&<img src={gi.back_image_url} alt="Back" style={{width:32,height:32,objectFit:'cover',borderRadius:4,border:'1px solid #e2e8f0'}}/>}
                     <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:12}}>{gi.sku}</span>
                     <span style={{fontWeight:600,fontSize:12}}>{gi.name}</span>
                     {gi.color&&<span style={{color:'#64748b',fontSize:11}}>({gi.color})</span>}
@@ -13762,10 +13772,17 @@ export default function App(){
               {['Tees','Polos','Hoodies','1/4 Zips','Shorts','Pants','Hats','Bags','Accessories','Jackets','Jerseys','Custom'].map(c=><option key={c}>{c}</option>)}</select></div>
             <div><label className="form-label">Retail Price</label><$In value={it.retail_price||0} onChange={v=>{const bn=it.brand||D_V.find(x=>x.id===it.vendor_id)?.name||'';const cat=it.category||'Tees';if(bn==='Adidas'){setQPC(x=>({...x,items:[{...x.items[0],retail_price:v,nsa_cost:Math.round(v*(cat==='Custom'?0.4125:0.375)*100)/100}]}))}else if(bn==='Under Armour'){setQPC(x=>({...x,items:[{...x.items[0],retail_price:v,nsa_cost:Math.round(v*0.425*100)/100}]}))}else{up('retail_price',v)}}}/></div>
             <div><label className="form-label">NSA Cost{(it.brand==='Adidas'||it.brand==='Under Armour')&&it.retail_price>0?<span style={{fontSize:9,color:'#16a34a',marginLeft:4}}>auto</span>:''}</label><$In value={it.nsa_cost||0} onChange={v=>{const bn=it.brand||D_V.find(x=>x.id===it.vendor_id)?.name||'';const cat=it.category||'Tees';if(bn==='Adidas'&&v>0){setQPC(x=>({...x,items:[{...x.items[0],nsa_cost:v,retail_price:Math.round(v/(cat==='Custom'?0.4125:0.375)*100)/100}]}))}else if(bn==='Under Armour'&&v>0){setQPC(x=>({...x,items:[{...x.items[0],nsa_cost:v,retail_price:Math.round(v/0.425*100)/100}]}))}else{up('nsa_cost',v)}}}/></div>
-            <div style={{gridColumn:'1/3'}}><label className="form-label">Product Image</label>
+            <div style={{gridColumn:'1/3'}}><label className="form-label">Product Images</label>
               <div style={{display:'flex',alignItems:'center',gap:10}}>
-                <ImgUpload url={it.image_url} onUpload={v=>{up('image_url',v);nf('Image uploaded')}} onError={e=>nf(e,'error')} size={64}/>
-                <span style={{fontSize:11,color:'#94a3b8'}}>Click or drag & drop an image</span>
+                <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:2}}>
+                  <ImgUpload url={it.image_url} onUpload={v=>{up('image_url',v);nf('Front image uploaded')}} onError={e=>nf(e,'error')} size={64}/>
+                  <span style={{fontSize:9,color:'#64748b'}}>Front</span>
+                </div>
+                <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:2}}>
+                  <ImgUpload url={it.back_image_url} onUpload={v=>{up('back_image_url',v);nf('Back image uploaded')}} onError={e=>nf(e,'error')} size={64}/>
+                  <span style={{fontSize:9,color:'#64748b'}}>Back</span>
+                </div>
+                <span style={{fontSize:11,color:'#94a3b8'}}>Click or drag & drop images</span>
               </div>
             </div>
             <div style={{gridColumn:'1/3'}}><label className="form-label">Available Sizes</label>
@@ -13819,7 +13836,7 @@ export default function App(){
             const newProds=toAdd.map((it,i)=>({id:'p'+(prod.length+i+1),vendor_id:it.vendor_id||D_V.find(v=>v.name===it.brand)?.id||'',
               sku:it.sku,name:it.name,brand:it.brand||D_V.find(v=>v.id===it.vendor_id)?.name||'',color:it.color||'',
               category:it.category||'Tees',retail_price:it.retail_price||0,nsa_cost:it.nsa_cost||0,
-              available_sizes:it.available_sizes||['S','M','L','XL','2XL'],is_active:true,_inv:{},image_url:it.image_url||''}));
+              available_sizes:it.available_sizes||['S','M','L','XL','2XL'],is_active:true,_inv:{},image_url:it.image_url||'',back_image_url:it.back_image_url||''}));
             setProd(p=>[...p,...newProds]);
             setQPC({open:false,mode:'single',items:[{sku:'',name:'',brand:'',color:'',category:'Tees',retail_price:0,nsa_cost:0,available_sizes:['S','M','L','XL','2XL'],vendor_id:''}],bulkRaw:''});
             nf('📦 Added '+newProds.length+' product'+(newProds.length>1?'s':''));
