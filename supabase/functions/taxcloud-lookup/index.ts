@@ -73,8 +73,10 @@ serve(async (req: Request) => {
 
     // ResponseType 0 = Error, 3 = Success/Informational
     if (data.ResponseType === 0 || (!data.CartItemsResponse && data.Messages?.length)) {
+      const tcMsg = data.Messages?.[0]?.Message || "";
+      const errDetail = tcMsg || "TaxCloud returned no results — verify API Login ID and API Key are correct in Supabase secrets";
       return new Response(
-        JSON.stringify({ ok: false, error: data.Messages?.[0]?.Message || "TaxCloud lookup failed" }),
+        JSON.stringify({ ok: false, error: errDetail, response_type: data.ResponseType, messages: data.Messages }),
         { status: 200, headers: CORS }
       );
     }
