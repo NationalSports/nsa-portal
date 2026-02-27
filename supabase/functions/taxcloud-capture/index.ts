@@ -65,7 +65,7 @@ serve(async (req: Request) => {
     if (!customer_id || !invoice_id || !items?.length || !destination?.state || !destination?.zip5) {
       return new Response(
         JSON.stringify({ ok: false, error: "Missing required fields: customer_id, invoice_id, items, destination.state, destination.zip5" }),
-        { status: 400, headers: CORS }
+        { status: 200, headers: CORS }
       );
     }
 
@@ -111,7 +111,7 @@ serve(async (req: Request) => {
             step: "lookup",
             error: lookupData.Messages?.[0]?.Message || "TaxCloud Lookup failed",
           }),
-          { status: 400, headers: CORS }
+          { status: 200, headers: CORS }
         );
       }
 
@@ -140,7 +140,7 @@ serve(async (req: Request) => {
             step: "capture",
             error: captureData.Messages?.[0]?.Message || "AuthorizedWithCapture failed",
           }),
-          { status: 400, headers: CORS }
+          { status: 200, headers: CORS }
         );
       }
 
@@ -185,7 +185,7 @@ serve(async (req: Request) => {
             step: "returned",
             error: returnData.Messages?.[0]?.Message || "Return failed",
           }),
-          { status: 400, headers: CORS }
+          { status: 200, headers: CORS }
         );
       }
 
@@ -204,12 +204,12 @@ serve(async (req: Request) => {
 
     return new Response(
       JSON.stringify({ ok: false, error: "Invalid action. Use 'capture' or 'returned'" }),
-      { status: 400, headers: CORS }
+      { status: 200, headers: CORS }
     );
   } catch (err) {
     return new Response(
       JSON.stringify({ ok: false, error: String(err) }),
-      { status: 500, headers: CORS }
+      { status: 200, headers: CORS }
     );
   }
 });

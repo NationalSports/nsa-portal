@@ -4918,6 +4918,19 @@ function VendDetail({vendor,onBack}){return(<div><button className="btn btn-seco
   <div className="stats-row"><div className="stat-card"><div className="stat-label">Invoices</div><div className="stat-value">{vendor._oi||0}</div></div><div className="stat-card"><div className="stat-label">Current</div><div className="stat-value" style={{color:'#166534'}}>${(vendor._ac||0).toLocaleString()}</div></div><div className="stat-card"><div className="stat-label">30 Day</div><div className="stat-value" style={{color:(vendor._a3||0)>0?'#d97706':''}}>${(vendor._a3||0).toLocaleString()}</div></div><div className="stat-card"><div className="stat-label">60+</div><div className="stat-value" style={{color:(vendor._a6||0)>0?'#dc2626':''}}>${((vendor._a6||0)+(vendor._a9||0)).toLocaleString()}</div></div></div>
   <div className="card"><div className="card-header"><h2>Purchase Orders</h2></div><div className="card-body"><div className="empty">PO tracking — Phase 4</div></div></div></div>)}
 
+// Helper: Supabase functions.invoke can return ReadableStream instead of parsed JSON in v2.39+
+async function invokeEdgeFn(supabase,fnName,body){
+  const r=await supabase.functions.invoke(fnName,{body});
+  let d=r.data;
+  // If data is a ReadableStream or Response, read and parse it
+  if(d&&typeof d==='object'&&typeof d.getReader==='function'){d=await new Response(d).json()}
+  else if(d&&typeof d==='object'&&typeof d.text==='function'){d=await d.json()}
+  else if(typeof d==='string'){try{d=JSON.parse(d)}catch(e){d=null}}
+  // Also check error for body content
+  if(!d&&r.error){const ctx=r.error?.context;if(ctx&&typeof ctx.json==='function'){try{d=await ctx.json()}catch(e){}}if(!d)d={ok:false,error:r.error?.message||String(r.error)}}
+  return d||{ok:false,error:'No response from edge function'};
+}
+
 // ─── TAXCLOUD SETTINGS COMPONENT ───
 function TaxCloudSettings({supabase,nf,cust,setCust}){
   const[tcStatus,setTcStatus]=useState({tested:false,ok:false,msg:'',loading:false});
@@ -4927,9 +4940,9 @@ function TaxCloudSettings({supabase,nf,cust,setCust}){
     setTcStatus({tested:false,ok:false,msg:'',loading:true});
     try{
       if(!supabase){setTcStatus({tested:true,ok:false,msg:'Supabase not configured — set REACT_APP_SUPABASE_URL and REACT_APP_SUPABASE_ANON_KEY',loading:false});return}
-      const r=await supabase.functions.invoke('taxcloud-lookup',{body:{address1:'',city:'',state:'TX',zip5:'75001'}});
-      if(r.data?.ok){setTcStatus({tested:true,ok:true,msg:'Connected — test rate for TX 75001: '+r.data.tax_pct+'%',loading:false})}
-      else{setTcStatus({tested:true,ok:false,msg:r.data?.error||r.error?.message||'Lookup failed — check API credentials in Supabase secrets',loading:false})}
+      const d=await invokeEdgeFn(supabase,'taxcloud-lookup',{address1:'',city:'',state:'TX',zip5:'75001'});
+      if(d?.ok){setTcStatus({tested:true,ok:true,msg:'Connected — test rate for TX 75001: '+d.tax_pct+'%',loading:false})}
+      else{setTcStatus({tested:true,ok:false,msg:d?.error||'Lookup failed — check API credentials in Supabase secrets',loading:false})}
     }catch(e){setTcStatus({tested:true,ok:false,msg:'Error: '+e.message,loading:false})}
   };
 
@@ -4937,15 +4950,14 @@ function TaxCloudSettings({supabase,nf,cust,setCust}){
     setRefreshStatus({loading:true,result:null});
     try{
       if(!supabase){setRefreshStatus({loading:false,result:{ok:false,error:'Supabase not configured'}});return}
-      const r=await supabase.functions.invoke('taxcloud-refresh',{body:{}});
-      if(r.data?.ok){
-        setRefreshStatus({loading:false,result:r.data});
-        // Update local customer tax rates from the changes
-        if(r.data.changes?.length>0){
-          setCust(prev=>prev.map(c=>{const ch=r.data.changes.find(x=>x.id===c.id);return ch?{...c,tax_rate:ch.new_rate}:c}));
+      const d=await invokeEdgeFn(supabase,'taxcloud-refresh',{});
+      if(d?.ok){
+        setRefreshStatus({loading:false,result:d});
+        if(d.changes?.length>0){
+          setCust(prev=>prev.map(c=>{const ch=d.changes.find(x=>x.id===c.id);return ch?{...c,tax_rate:ch.new_rate}:c}));
         }
-        nf(r.data.updated+' customer rate(s) updated');
-      }else{setRefreshStatus({loading:false,result:{ok:false,error:r.data?.error||r.error?.message||'Refresh failed'}})}
+        nf(d.updated+' customer rate(s) updated');
+      }else{setRefreshStatus({loading:false,result:{ok:false,error:d?.error||'Refresh failed'}})}
     }catch(e){setRefreshStatus({loading:false,result:{ok:false,error:e.message}})}
   };
 
@@ -5066,7 +5078,7 @@ function TaxCloudSettings({supabase,nf,cust,setCust}){
 function CustModal({isOpen,onClose,onSave,customer,parents}){
   const b={parent_id:null,name:'',alpha_tag:'',contacts:[{name:'',email:'',phone:'',role:'Head Coach'}],shipping_city:'',shipping_state:'',adidas_ua_tier:'B',catalog_markup:1.65,payment_terms:'net30'};
   const[f,setF]=useState(customer||b);const[ct,setCt]=useState(customer?.parent_id?'sub':'parent');const[err,setErr]=useState({});const[tcLook,setTcLook]=useState({loading:false,msg:''});
-  const doTcLookup=async(fields)=>{if(!supabase||!fields.shipping_state||!fields.shipping_zip)return null;try{const r=await supabase.functions.invoke('taxcloud-lookup',{body:{address1:fields.shipping_address_line1||'',city:fields.shipping_city||'',state:fields.shipping_state,zip5:fields.shipping_zip}});if(r.data&&typeof r.data==='object'&&r.data.ok)return r.data;const msg=(r.data&&typeof r.data==='object'&&r.data.error)?r.data.error:(typeof r.error==='string'?r.error:r.error?.message||'Lookup failed — check API credentials');return{ok:false,error:msg}}catch(e){return{ok:false,error:'Error: '+e.message}}};
+  const doTcLookup=async(fields)=>{if(!supabase||!fields.shipping_state||!fields.shipping_zip)return null;try{return await invokeEdgeFn(supabase,'taxcloud-lookup',{address1:fields.shipping_address_line1||'',city:fields.shipping_city||'',state:fields.shipping_state,zip5:fields.shipping_zip})}catch(e){return{ok:false,error:'Error: '+e.message}}};
   const APPAREL_EXEMPT=['MN','NJ','PA','VT','AK','DE','MT','NH','OR'];const APPAREL_THRESHOLD=['MA','NY','RI'];
   const sv=(k,v)=>setF(x=>({...x,[k]:v}));React.useEffect(()=>{setF(customer||b);setCt(customer?.parent_id?'sub':'parent');setErr({});setTcLook({loading:false,msg:''})},[customer,isOpen]); // eslint-disable-line
   const addC=()=>sv('contacts',[...(f.contacts||[]),{name:'',email:'',phone:'',role:'Head Coach'}]);const rmC=i=>sv('contacts',(f.contacts||[]).filter((_,x)=>x!==i));
@@ -8472,12 +8484,12 @@ export default function App(){
         const c=cust.find(x=>x.id===inv.customer_id);
         if(c&&!c.tax_exempt&&(c.shipping_state||c.billing_state)){
           (async()=>{try{
-            const r=await supabase.functions.invoke('taxcloud-capture',{body:{
+            const d=await invokeEdgeFn(supabase,'taxcloud-capture',{
               action:'capture',customer_id:inv.customer_id,invoice_id:inv.id,so_id:inv.so_id||inv.id,
               items:(inv.items||inv.line_items||[]).map(it=>({sku:it.sku||it.desc||'ITEM',name:it.name||it.desc||'Item',price:it.rate||it.unit_sell||0,qty:it.qty||1})),
-              destination:{state:c.shipping_state||c.billing_state||'',zip5:c.shipping_zip||c.billing_zip||''}}});
-            if(r.data?.ok){setInvs(prev=>prev.map(i=>i.id===inv.id?{...i,tc_reported:true,tc_tax:r.data.total_tax}:i));nf('TaxCloud: $'+r.data.total_tax+' tax filed for '+inv.id)}
-            else{console.warn('[TaxCloud] Capture failed for '+inv.id,r.data?.error)}
+              destination:{state:c.shipping_state||c.billing_state||'',zip5:c.shipping_zip||c.billing_zip||''}});
+            if(d?.ok){setInvs(prev=>prev.map(i=>i.id===inv.id?{...i,tc_reported:true,tc_tax:d.total_tax}:i));nf('TaxCloud: $'+d.total_tax+' tax filed for '+inv.id)}
+            else{console.warn('[TaxCloud] Capture failed for '+inv.id,d?.error)}
           }catch(e){console.warn('[TaxCloud] Error capturing '+inv.id,e.message)}})();
         }
       }
@@ -8579,7 +8591,7 @@ export default function App(){
               {inv.tc_reported&&<span style={{padding:'1px 5px',borderRadius:4,fontSize:8,fontWeight:700,background:'#dbeafe',color:'#1e40af',marginLeft:3,verticalAlign:'middle'}} title="Reported to TaxCloud for filing">TC</span>}</td>
             <td>{inv.status!=='paid'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#166534',color:'white',border:'none'}}
               onClick={()=>setPayModal({inv,amount:inv._bal,method:'check',ref:''})}>💰 Pay</button>}
-              {inv.status==='paid'&&!inv.tc_reported&&inv.tax>0&&<button className="btn btn-sm" style={{fontSize:8,padding:'2px 6px',background:'#1e40af',color:'white',border:'none'}} title="Report this invoice to TaxCloud for state tax filing" onClick={async()=>{const c=cust.find(x=>x.id===inv.customer_id);if(!c)return;if(!supabase){nf('Supabase not configured','error');return}try{const r=await supabase.functions.invoke('taxcloud-capture',{body:{action:'capture',customer_id:inv.customer_id,invoice_id:inv.id,so_id:inv.so_id||inv.id,items:(inv.items||inv.line_items||[]).map(it=>({sku:it.sku||it.desc||'ITEM',name:it.name||it.desc||'Item',price:it.rate||it.unit_sell||0,qty:it.qty||1})),destination:{state:c.shipping_state||c.billing_state||'',zip5:c.shipping_zip||c.billing_zip||''}}});if(r.data?.ok){setInvs(prev=>prev.map(i=>i.id===inv.id?{...i,tc_reported:true,tc_tax:r.data.total_tax}:i));nf('Reported to TaxCloud — $'+r.data.total_tax+' tax filed')}else{nf(r.data?.error||'TaxCloud capture failed','error')}}catch(e){nf('Error: '+e.message,'error')}}}>TC File</button>}
+              {inv.status==='paid'&&!inv.tc_reported&&inv.tax>0&&<button className="btn btn-sm" style={{fontSize:8,padding:'2px 6px',background:'#1e40af',color:'white',border:'none'}} title="Report this invoice to TaxCloud for state tax filing" onClick={async()=>{const c=cust.find(x=>x.id===inv.customer_id);if(!c)return;if(!supabase){nf('Supabase not configured','error');return}try{const d=await invokeEdgeFn(supabase,'taxcloud-capture',{action:'capture',customer_id:inv.customer_id,invoice_id:inv.id,so_id:inv.so_id||inv.id,items:(inv.items||inv.line_items||[]).map(it=>({sku:it.sku||it.desc||'ITEM',name:it.name||it.desc||'Item',price:it.rate||it.unit_sell||0,qty:it.qty||1})),destination:{state:c.shipping_state||c.billing_state||'',zip5:c.shipping_zip||c.billing_zip||''}});if(d?.ok){setInvs(prev=>prev.map(i=>i.id===inv.id?{...i,tc_reported:true,tc_tax:d.total_tax}:i));nf('Reported to TaxCloud — $'+d.total_tax+' tax filed')}else{nf(d?.error||'TaxCloud capture failed','error')}}catch(e){nf('Error: '+e.message,'error')}}}>TC File</button>}
               <button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',marginLeft:2}} onClick={()=>{
                 const so=sos.find(s=>s.id===inv.so_id);const ic=cust.find(c=>c.id===inv.customer_id);
                 const invItems=(inv.line_items||[]).length>0?inv.line_items:
@@ -9332,7 +9344,7 @@ export default function App(){
         <div className="card" style={{marginBottom:12}}>
           <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
             <div style={{display:'flex',alignItems:'center',gap:8}}><h2 style={{margin:0,fontSize:14}}>TaxCloud Filing Status</h2></div>
-            <button className="btn btn-sm" style={{fontSize:10,background:'#1e40af',color:'white',border:'none'}} onClick={async()=>{if(!supabase){nf('Supabase not configured','error');return}nf('Refreshing all customer tax rates...');try{const r=await supabase.functions.invoke('taxcloud-refresh',{body:{}});if(r.data?.ok){if(r.data.changes?.length>0)setCust(prev=>prev.map(c=>{const ch=r.data.changes.find(x=>x.id===c.id);return ch?{...c,tax_rate:ch.new_rate}:c}));nf(r.data.updated+' rate(s) updated out of '+r.data.total_customers+' checked')}else{nf(r.data?.error||'Refresh failed','error')}}catch(e){nf('Error: '+e.message,'error')}}}>Refresh All Rates</button>
+            <button className="btn btn-sm" style={{fontSize:10,background:'#1e40af',color:'white',border:'none'}} onClick={async()=>{if(!supabase){nf('Supabase not configured','error');return}nf('Refreshing all customer tax rates...');try{const d=await invokeEdgeFn(supabase,'taxcloud-refresh',{});if(d?.ok){if(d.changes?.length>0)setCust(prev=>prev.map(c=>{const ch=d.changes.find(x=>x.id===c.id);return ch?{...c,tax_rate:ch.new_rate}:c}));nf(d.updated+' rate(s) updated out of '+d.total_customers+' checked')}else{nf(d?.error||'Refresh failed','error')}}catch(e){nf('Error: '+e.message,'error')}}}>Refresh All Rates</button>
           </div>
           <div className="card-body" style={{padding:'10px 16px'}}>
             {(()=>{const reported=thisYearInvs.filter(i=>i.tc_reported);const unreported=thisYearInvs.filter(i=>!i.tc_reported&&(i.tax||0)>0&&i.status==='paid');
@@ -11827,7 +11839,7 @@ export default function App(){
       setBulkImp(x=>({...x,step:'done',added:added.length,skipped,parentCount,subCount}));
       nf('✅ Imported '+parentCount+' parents, '+subCount+' sub-accounts'+(skipped.length?' ('+skipped.length+' skipped)':''));
       // Auto-fetch tax rates from TaxCloud for imported customers missing rates
-      if(supabase&&added.length>0){const needRate=added.filter(c=>!c.tax_exempt&&!(c.tax_rate>0)&&c.shipping_state&&c.shipping_zip);if(needRate.length>0){nf('Looking up tax rates for '+needRate.length+' customers...');(async()=>{let updated=0;for(const c of needRate){try{const r=await supabase.functions.invoke('taxcloud-lookup',{body:{address1:c.shipping_address_line1||'',city:c.shipping_city||'',state:c.shipping_state,zip5:c.shipping_zip}});if(r.data?.ok){setCust(prev=>prev.map(x=>x.id===c.id?{...x,tax_rate:r.data.tax_rate}:x));updated++}}catch(e){}await new Promise(r=>setTimeout(r,500))}nf('Tax rates updated for '+updated+'/'+needRate.length+' customers')})()}}
+      if(supabase&&added.length>0){const needRate=added.filter(c=>!c.tax_exempt&&!(c.tax_rate>0)&&c.shipping_state&&c.shipping_zip);if(needRate.length>0){nf('Looking up tax rates for '+needRate.length+' customers...');(async()=>{let updated=0;for(const c of needRate){try{const d=await invokeEdgeFn(supabase,'taxcloud-lookup',{address1:c.shipping_address_line1||'',city:c.shipping_city||'',state:c.shipping_state,zip5:c.shipping_zip});if(d?.ok){setCust(prev=>prev.map(x=>x.id===c.id?{...x,tax_rate:d.tax_rate}:x));updated++}}catch(e){}await new Promise(r=>setTimeout(r,500))}nf('Tax rates updated for '+updated+'/'+needRate.length+' customers')})()}}
     };
 
     // Import vendors
