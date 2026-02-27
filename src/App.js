@@ -233,9 +233,13 @@ const _dbSaveCustomer = async (c) => {
   if(!supabase)return;
   try{
     const{contacts,_oe,_os,_oi,_ob,...custRow}=c;
-    await supabase.from('customers').upsert(_pick(custRow,_custCols),{onConflict:'id'});
-    await supabase.from('customer_contacts').delete().eq('customer_id',c.id);
-    if(contacts?.length) await supabase.from('customer_contacts').insert(contacts.map((ct,i)=>({customer_id:c.id,name:ct.name,email:ct.email,phone:ct.phone,role:ct.role,sort_order:i})));
+    custRow.updated_at=new Date().toISOString();
+    if(!custRow.created_at)custRow.created_at=custRow.updated_at;
+    const{error:custErr}=await supabase.from('customers').upsert(_pick(custRow,_custCols),{onConflict:'id'});
+    if(custErr)console.error('[DB] save customer upsert error:',custErr.message);
+    const{error:delErr}=await supabase.from('customer_contacts').delete().eq('customer_id',c.id);
+    if(delErr)console.error('[DB] delete contacts error:',delErr.message);
+    if(contacts?.length){const{error:insErr}=await supabase.from('customer_contacts').insert(contacts.map((ct,i)=>({customer_id:c.id,name:ct.name,email:ct.email,phone:ct.phone,role:ct.role,sort_order:i})));if(insErr)console.error('[DB] insert contacts error:',insErr.message)}
   }catch(e){console.error('[DB] save customer:',e)}
 };
 const _dbSaveProduct = async (p) => {
