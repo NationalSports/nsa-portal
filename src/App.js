@@ -9057,13 +9057,26 @@ export default function App(){
         const now=new Date();const curYear=now.getFullYear();const curMonth=now.getMonth();
         const parseDate=d=>{if(!d)return null;try{return new Date(d)}catch{return null}};
         const monthName=m=>['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][m];
+        const qLabel=q=>'Q'+(q+1);
+        const getQ=m=>Math.floor(m/3); // 0=Q1(Jan-Mar), 1=Q2(Apr-Jun), 2=Q3(Jul-Sep), 3=Q4(Oct-Dec)
+        const curQ=getQ(curMonth);
 
         // Tax collected from invoices (actual collections)
         const taxInvs=filtInvs.filter(i=>i.tax>0||i.tax_rate>0).map(i=>{
           const dt=parseDate(i.date);const c=cust.find(x=>x.id===i.customer_id);
           const state=c?.shipping_state||c?.billing_state||'Unknown';
-          return{...i,_dt:dt,_cname:c?.name||'Unknown',_state:state.toUpperCase().trim(),_month:dt?dt.getMonth():0,_year:dt?dt.getFullYear():curYear};
+          const city=c?.shipping_city||c?.billing_city||'';
+          return{...i,_dt:dt,_cname:c?.name||'Unknown',_state:state.toUpperCase().trim(),_city:city.trim(),_month:dt?dt.getMonth():0,_year:dt?dt.getFullYear():curYear,_q:dt?getQ(dt.getMonth()):curQ};
         });
+
+        // Running totals: current month, current quarter, current year
+        const thisMonthInvs=taxInvs.filter(i=>i._year===curYear&&i._month===curMonth);
+        const thisQInvs=taxInvs.filter(i=>i._year===curYear&&i._q===curQ);
+        const thisYearInvs=taxInvs.filter(i=>i._year===curYear);
+        const monthTax=thisMonthInvs.reduce((a,i)=>a+(i.tax||0),0);
+        const qTax=thisQInvs.reduce((a,i)=>a+(i.tax||0),0);
+        const yearTax=thisYearInvs.reduce((a,i)=>a+(i.tax||0),0);
+        const totalCollectedAll=taxInvs.reduce((a,i)=>a+(i.tax||0),0);
 
         // Tax expected from open SOs (not yet invoiced)
         const taxSOs=filtSOs.filter(so=>{const c=cust.find(x=>x.id===so.customer_id);return c&&!c.tax_exempt&&(c.tax_rate||0)>0}).map(so=>{
@@ -9072,18 +9085,37 @@ export default function App(){
           return{id:so.id,memo:so.memo,_cname:c?.name||'Unknown',_state:state.toUpperCase().trim(),_rev:m.rev,_tax:taxAmt,_rate:c.tax_rate,status:so.status};
         });
 
-        // Group invoices by state for payable summary
-        const byState={};
-        taxInvs.forEach(i=>{
-          if(!byState[i._state])byState[i._state]={state:i._state,taxCollected:0,taxableRev:0,invCount:0,rate:i.tax_rate||0};
-          byState[i._state].taxCollected+=i.tax||0;
-          byState[i._state].taxableRev+=(i.tax&&i.tax_rate)?i.tax/i.tax_rate:0;
-          byState[i._state].invCount++;
-          if(i.tax_rate)byState[i._state].rate=i.tax_rate;
+        // Tax-exempt customers
+        const exemptCusts=cust.filter(c=>c.tax_exempt&&c.is_active!==false);
+
+        // --- Quarterly breakdown by state (for filing) ---
+        // Build quarters for current year + previous year
+        const quarters=[];
+        for(let y=curYear-1;y<=curYear;y++){for(let q=0;q<4;q++){
+          if(y===curYear&&q>curQ)continue; // skip future quarters
+          quarters.push({year:y,q,label:qLabel(q)+' '+y,start:new Date(y,q*3,1),end:new Date(y,q*3+3,0,23,59,59)});
+        }}
+        quarters.reverse(); // most recent first
+
+        const qData=quarters.map(qr=>{
+          const qInvs=taxInvs.filter(i=>i._year===qr.year&&i._q===qr.q);
+          // Group by state+city within this quarter
+          const byJuris={};
+          qInvs.forEach(i=>{
+            const key=i._state+'|'+(i._city||'');
+            if(!byJuris[key])byJuris[key]={state:i._state,city:i._city||'',tax:0,rev:0,count:0,rate:i.tax_rate||0};
+            byJuris[key].tax+=i.tax||0;
+            byJuris[key].rev+=(i.tax&&i.tax_rate)?i.tax/i.tax_rate:0;
+            byJuris[key].count++;
+            if(i.tax_rate)byJuris[key].rate=i.tax_rate;
+          });
+          const jurisdictions=Object.values(byJuris).sort((a,b)=>a.state===b.state?b.tax-a.tax:a.state.localeCompare(b.state));
+          const totalTax=jurisdictions.reduce((a,s)=>a+s.tax,0);
+          const totalRev=jurisdictions.reduce((a,s)=>a+s.rev,0);
+          // Also group totals by state for subtotals
+          const stTotals={};jurisdictions.forEach(j=>{if(!stTotals[j.state])stTotals[j.state]=0;stTotals[j.state]+=j.tax});
+          return{...qr,jurisdictions,stTotals,totalTax,totalRev,invCount:qInvs.length,isCurrent:qr.year===curYear&&qr.q===curQ};
         });
-        const stateRows=Object.values(byState).sort((a,b)=>b.taxCollected-a.taxCollected);
-        const totalCollected=stateRows.reduce((a,s)=>a+s.taxCollected,0);
-        const totalTaxableRev=stateRows.reduce((a,s)=>a+s.taxableRev,0);
 
         // Monthly breakdown (last 12 months)
         const monthly=[];
@@ -9092,16 +9124,13 @@ export default function App(){
           const mInvs=taxInvs.filter(i=>i._year===yy&&i._month===mm);
           const taxAmt=mInvs.reduce((a,i)=>a+(i.tax||0),0);
           const rev=mInvs.reduce((a,i)=>{const r=(i.tax&&i.tax_rate)?i.tax/i.tax_rate:(i.total-i.tax-(i.shipping||0));return a+r},0);
-          monthly.push({label:monthName(mm)+' '+String(yy).slice(2),tax:taxAmt,rev,count:mInvs.length});
+          monthly.push({label:monthName(mm)+' '+String(yy).slice(2),tax:taxAmt,rev,count:mInvs.length,month:mm,year:yy});
         }
-
-        // Tax-exempt customers
-        const exemptCusts=cust.filter(c=>c.tax_exempt&&c.is_active!==false);
 
         // By customer breakdown
         const byCust={};
         taxInvs.forEach(i=>{
-          if(!byCust[i.customer_id])byCust[i.customer_id]={name:i._cname,state:i._state,taxCollected:0,invCount:0,rev:0};
+          if(!byCust[i.customer_id])byCust[i.customer_id]={name:i._cname,state:i._state,city:i._city,taxCollected:0,invCount:0,rev:0};
           byCust[i.customer_id].taxCollected+=i.tax||0;
           byCust[i.customer_id].invCount++;
           byCust[i.customer_id].rev+=(i.tax&&i.tax_rate)?i.tax/i.tax_rate:(i.total-(i.tax||0)-(i.shipping||0));
@@ -9109,46 +9138,73 @@ export default function App(){
         const custRows=Object.values(byCust).sort((a,b)=>b.taxCollected-a.taxCollected);
 
         const maxMonthTax=Math.max(...monthly.map(m=>m.tax),1);
+        const qMonths=['Jan-Mar','Apr-Jun','Jul-Sep','Oct-Dec'];
 
         return<>
-        {/* KPI cards */}
+        {/* Running totals: Month / Quarter / Year */}
         <div className="stats-row" style={{marginBottom:16}}>
-          <div className="stat-card" style={{borderLeft:'3px solid #a16207'}}><div className="stat-label">Tax Collected (Invoiced)</div><div className="stat-value" style={{color:'#a16207'}}>${totalCollected.toLocaleString(undefined,{maximumFractionDigits:2})}</div></div>
-          <div className="stat-card" style={{borderLeft:'3px solid #166534'}}><div className="stat-label">Taxable Revenue</div><div className="stat-value" style={{color:'#166534'}}>${(totalTaxableRev/1000).toFixed(1)}k</div></div>
-          <div className="stat-card" style={{borderLeft:'3px solid #1e40af'}}><div className="stat-label">States w/ Tax</div><div className="stat-value" style={{color:'#1e40af'}}>{stateRows.length}</div></div>
+          <div className="stat-card" style={{borderLeft:'3px solid #2563eb'}}><div className="stat-label">{monthName(curMonth)} {curYear} (This Month)</div><div className="stat-value" style={{color:'#2563eb'}}>${monthTax.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div><div style={{fontSize:10,color:'#64748b'}}>{thisMonthInvs.length} invoice(s)</div></div>
+          <div className="stat-card" style={{borderLeft:'3px solid #7c3aed',background:'#faf5ff'}}><div className="stat-label">{qLabel(curQ)} {curYear} ({qMonths[curQ]})</div><div className="stat-value" style={{color:'#7c3aed'}}>${qTax.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div><div style={{fontSize:10,color:'#64748b'}}>{thisQInvs.length} invoice(s)</div></div>
+          <div className="stat-card" style={{borderLeft:'3px solid #166534'}}><div className="stat-label">{curYear} Year-to-Date</div><div className="stat-value" style={{color:'#166534'}}>${yearTax.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div><div style={{fontSize:10,color:'#64748b'}}>{thisYearInvs.length} invoice(s)</div></div>
           <div className="stat-card" style={{borderLeft:'3px solid #dc2626'}}><div className="stat-label">Exempt Customers</div><div className="stat-value" style={{color:'#dc2626'}}>{exemptCusts.length}</div></div>
         </div>
 
-        {/* Tax Payable by State/Jurisdiction */}
+        {/* Quarterly Tax Payable by State — for filing */}
         <div className="card" style={{marginBottom:12}}>
-          <div className="card-header"><h2 style={{margin:0,fontSize:14}}>🏛️ Sales Tax Payable by State</h2></div>
+          <div className="card-header"><h2 style={{margin:0,fontSize:14}}>🏛️ Quarterly Tax Payable by State</h2><span style={{fontSize:11,color:'#64748b'}}>For quarterly filing</span></div>
           <div className="card-body">
-            {stateRows.length===0?<div className="empty">No tax collected on invoices yet. Set tax rates on customers to start tracking.</div>:
-            <table style={{fontSize:12,width:'100%'}}><thead><tr><th>State</th><th style={{textAlign:'right'}}>Tax Rate</th><th style={{textAlign:'right'}}>Taxable Revenue</th><th style={{textAlign:'right'}}>Tax Collected</th><th style={{textAlign:'center'}}>Invoices</th></tr></thead>
-            <tbody>{stateRows.map(s=><tr key={s.state}>
-              <td style={{fontWeight:700,fontSize:13}}>{s.state}</td>
-              <td style={{textAlign:'right',color:'#64748b'}}>{s.rate?(s.rate*100).toFixed(2)+'%':'—'}</td>
-              <td style={{textAlign:'right'}}>${s.taxableRev.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
-              <td style={{textAlign:'right',fontWeight:700,color:'#a16207'}}>${s.taxCollected.toFixed(2)}</td>
-              <td style={{textAlign:'center'}}>{s.invCount}</td>
-            </tr>)}
-            <tr style={{borderTop:'2px solid #1e293b',fontWeight:800}}>
-              <td>TOTAL</td><td/><td style={{textAlign:'right'}}>${totalTaxableRev.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
-              <td style={{textAlign:'right',color:'#a16207',fontSize:14}}>${totalCollected.toFixed(2)}</td><td style={{textAlign:'center'}}>{taxInvs.length}</td>
-            </tr></tbody></table>}
+            {qData.filter(q=>q.invCount>0).length===0?<div className="empty">No tax collected yet. Set tax rates on customers to start tracking.</div>:
+            <div style={{display:'flex',flexDirection:'column',gap:16}}>
+              {qData.filter(q=>q.invCount>0).map(q=><div key={q.label}>
+                <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
+                  <span style={{fontSize:14,fontWeight:800,color:q.isCurrent?'#7c3aed':'#1e293b'}}>{q.label}</span>
+                  <span style={{fontSize:11,color:'#64748b'}}>{qMonths[q.q]}</span>
+                  {q.isCurrent&&<span style={{fontSize:10,fontWeight:700,padding:'2px 8px',background:'#f5f3ff',border:'1px solid #ddd6fe',borderRadius:10,color:'#7c3aed'}}>CURRENT</span>}
+                  <span style={{marginLeft:'auto',fontSize:13,fontWeight:800,color:'#a16207'}}>${q.totalTax.toFixed(2)}</span>
+                </div>
+                <table style={{fontSize:12,width:'100%'}}><thead><tr style={{background:'#f8fafc'}}><th style={{padding:'4px 8px'}}>State</th><th style={{padding:'4px 8px'}}>City</th><th style={{textAlign:'right',padding:'4px 8px'}}>Tax Rate</th><th style={{textAlign:'right',padding:'4px 8px'}}>Taxable Revenue</th><th style={{textAlign:'right',padding:'4px 8px'}}>Tax Payable</th><th style={{textAlign:'center',padding:'4px 8px'}}>Invoices</th></tr></thead>
+                <tbody>{(()=>{const rows=[];let lastSt='';q.jurisdictions.forEach((j,ji)=>{
+                  const newState=j.state!==lastSt;lastSt=j.state;
+                  const stateHasMultiple=q.jurisdictions.filter(x=>x.state===j.state).length>1;
+                  rows.push(<tr key={ji} style={newState&&ji>0?{borderTop:'1px solid #cbd5e1'}:{}}>
+                    <td style={{fontWeight:700,padding:'4px 8px',color:newState?'#1e293b':'#94a3b8'}}>{newState?j.state:''}</td>
+                    <td style={{padding:'4px 8px',color:'#475569'}}>{j.city||'—'}</td>
+                    <td style={{textAlign:'right',color:'#64748b',padding:'4px 8px'}}>{j.rate?(j.rate*100).toFixed(2)+'%':'—'}</td>
+                    <td style={{textAlign:'right',padding:'4px 8px'}}>${j.rev.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+                    <td style={{textAlign:'right',fontWeight:600,color:'#a16207',padding:'4px 8px'}}>${j.tax.toFixed(2)}</td>
+                    <td style={{textAlign:'center',padding:'4px 8px'}}>{j.count}</td>
+                  </tr>);
+                  // State subtotal row if multiple cities
+                  const isLastInState=ji===q.jurisdictions.length-1||q.jurisdictions[ji+1]?.state!==j.state;
+                  if(stateHasMultiple&&isLastInState){
+                    rows.push(<tr key={j.state+'_sub'} style={{background:'#f8fafc',borderTop:'1px solid #e2e8f0'}}>
+                      <td style={{padding:'4px 8px',fontWeight:700,fontSize:11,color:'#1e40af'}} colSpan={2}>{j.state} Subtotal</td>
+                      <td/><td/>
+                      <td style={{textAlign:'right',fontWeight:700,color:'#1e40af',padding:'4px 8px',fontSize:11}}>${q.stTotals[j.state].toFixed(2)}</td>
+                      <td/>
+                    </tr>);
+                  }
+                });return rows})()}
+                <tr style={{borderTop:'2px solid #1e293b',fontWeight:800}}>
+                  <td style={{padding:'4px 8px'}} colSpan={2}>TOTAL</td><td/><td style={{textAlign:'right',padding:'4px 8px'}}>${q.totalRev.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+                  <td style={{textAlign:'right',color:'#a16207',padding:'4px 8px'}}>${q.totalTax.toFixed(2)}</td><td style={{textAlign:'center',padding:'4px 8px'}}>{q.invCount}</td>
+                </tr></tbody></table>
+              </div>)}
+            </div>}
           </div>
         </div>
 
         {/* Monthly Trend */}
         <div className="card" style={{marginBottom:12}}>
-          <div className="card-header"><h2 style={{margin:0,fontSize:14}}>📈 Monthly Tax Collected</h2></div>
+          <div className="card-header"><h2 style={{margin:0,fontSize:14}}>📈 Monthly Tax Collected (Last 12 Months)</h2></div>
           <div className="card-body">
             <div style={{display:'flex',gap:4,alignItems:'flex-end',height:120,marginBottom:8}}>
-              {monthly.map((m,i)=><div key={i} style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:2}}>
+              {monthly.map((m,i)=>{const isCur=m.month===curMonth&&m.year===curYear;
+                return<div key={i} style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:2}}>
                 <div style={{fontSize:9,fontWeight:700,color:'#a16207'}}>{m.tax>0?'$'+m.tax.toFixed(0):''}</div>
-                <div style={{width:'100%',background:m.tax>0?'#fbbf24':'#e2e8f0',borderRadius:'3px 3px 0 0',height:Math.max(2,m.tax/maxMonthTax*80)}}/>
-                <div style={{fontSize:8,color:'#64748b',textAlign:'center'}}>{m.label}</div>
-              </div>)}
+                <div style={{width:'100%',background:m.tax>0?(isCur?'#7c3aed':'#fbbf24'):'#e2e8f0',borderRadius:'3px 3px 0 0',height:Math.max(2,m.tax/maxMonthTax*80)}}/>
+                <div style={{fontSize:8,color:isCur?'#7c3aed':'#64748b',fontWeight:isCur?700:400,textAlign:'center'}}>{m.label}</div>
+              </div>})}
             </div>
           </div>
         </div>
@@ -9158,9 +9214,10 @@ export default function App(){
           <div className="card-header"><h2 style={{margin:0,fontSize:14}}>👥 Tax by Customer</h2></div>
           <div className="card-body">
             {custRows.length===0?<div className="empty">No tax data by customer yet.</div>:
-            <table style={{fontSize:12,width:'100%'}}><thead><tr><th>Customer</th><th>State</th><th style={{textAlign:'right'}}>Revenue</th><th style={{textAlign:'right'}}>Tax Collected</th><th style={{textAlign:'center'}}>Invoices</th></tr></thead>
+            <table style={{fontSize:12,width:'100%'}}><thead><tr><th>Customer</th><th>City</th><th>State</th><th style={{textAlign:'right'}}>Revenue</th><th style={{textAlign:'right'}}>Tax Collected</th><th style={{textAlign:'center'}}>Invoices</th></tr></thead>
             <tbody>{custRows.slice(0,25).map((c,i)=><tr key={i}>
               <td style={{fontWeight:600}}>{c.name}</td>
+              <td style={{color:'#475569'}}>{c.city||'—'}</td>
               <td style={{color:'#64748b'}}>{c.state}</td>
               <td style={{textAlign:'right'}}>${c.rev.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
               <td style={{textAlign:'right',fontWeight:700,color:'#a16207'}}>${c.taxCollected.toFixed(2)}</td>
