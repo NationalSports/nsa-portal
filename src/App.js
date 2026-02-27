@@ -322,6 +322,10 @@ const fileUpload=async(file,folder='nsa-art-files')=>{const fd=new FormData();fd
 const isUrl=s=>typeof s==='string'&&(s.startsWith('http://')||s.startsWith('https://'));
 const fileDisplayName=f=>isUrl(f)?decodeURIComponent(f.split('/').pop().split('?')[0]):f;
 const openFile=f=>{if(isUrl(f)){window.open(f,'_blank')}else{nf('Legacy file: '+f+' — re-upload to enable downloads')}};
+const _urlExt=u=>{if(!u||typeof u!=='string')return '';const clean=u.split('?')[0].split('#')[0];const m=clean.match(/\.(\w+)$/);return m?m[1].toLowerCase():''};
+const _isImgUrl=u=>{const e=_urlExt(u);return['png','jpg','jpeg','gif','webp','svg','bmp'].includes(e)||/\/image\//.test(u)};
+const _isPdfUrl=u=>_urlExt(u)==='pdf'||/\/raw\//.test(u)&&u.includes('.pdf');
+const _cloudinaryPdfThumb=u=>{if(!u||!u.includes('cloudinary.com'))return null;return u.replace('/upload/','/upload/w_600,pg_1,f_jpg/')};
 const ImgUpload=({url,onUpload,size=48,onError})=>{const[drag,setDrag]=React.useState(false);const[uploading,setUploading]=React.useState(false);const[err,setErr]=React.useState(false);
   const doUpload=async(file)=>{if(!file||!file.type.startsWith('image/')){if(onError)onError('Please select an image file');return}setUploading(true);setErr(false);try{const u=await cloudUpload(file);onUpload(u)}catch(e){console.error('Upload failed',e);setErr(true);if(onError)onError('Upload failed: '+e.message)}finally{setUploading(false)}};
   return<div style={{width:size,height:size,borderRadius:6,border:err?'2px solid #dc2626':drag?'2px solid #3b82f6':'1px solid #e2e8f0',background:drag?'#eff6ff':err?'#fef2f2':'#f8fafc',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,cursor:'pointer',overflow:'hidden',position:'relative'}}
@@ -3475,7 +3479,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       };
       const updJob=(jIdx,k,v)=>{sv('jobs',jobs.map((j,i)=>i===jIdx?{...j,[k]:v}:j))};
       const prodStatuses=['hold','staging','in_process','completed','shipped'];
-      const prodLabels={hold:'Ready for Prod',staging:'In Line',in_process:'In Process',completed:'Completed',shipped:'Shipped'};
+      const prodLabels={hold:'On Hold',staging:'In Line',in_process:'In Process',completed:'Completed',shipped:'Shipped'};
       const artLabels=ART_LABELS;
       const itemLabels={need_to_order:'Need to Order',partially_received:'Partially Received',items_received:'Items Received'};
 
@@ -3502,7 +3506,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         const sizeOrder=['YXS','YS','YM','YL','YXL','XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL'];
         allSizes.sort((a,b)=>(sizeOrder.indexOf(a)===-1?99:sizeOrder.indexOf(a))-(sizeOrder.indexOf(b)===-1?99:sizeOrder.indexOf(b)));
 
-        return<div>
+        return<><div>
           <button className="btn btn-sm btn-secondary" onClick={()=>setSelJob(null)} style={{marginBottom:12}}><Icon name="back" size={12}/> All Jobs</button>
           {/* Job header */}
           <div className="card" style={{marginBottom:12}}>
@@ -3691,7 +3695,66 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
             </div>
           </div>
         </div>
-      }
+      {/* Art Request Modal (also needed in job detail view) */}
+      {artReqModal&&(()=>{
+        const j2=jobs[artReqModal.jIdx];if(!j2)return null;
+        const artF2=safeArt(o).find(a=>a.id===j2.art_file_id);
+        const existingFiles2=(artF2?.mockup_files||[]).concat(artF2?.prod_files||[]);
+        const artists2=REPS.filter(r=>r.role==='art');
+        const submitArtReq2=()=>{
+          const req={id:'AR-'+Date.now(),artist:artReqModal.artist,artist_name:(artists2.find(a=>a.id===artReqModal.artist)||{}).name||'',instructions:artReqModal.instructions,files:artReqModal.files||[],existing_files:existingFiles2.map(f=>f.name||f),status:'requested',created_at:new Date().toISOString(),created_by:cu.name};
+          const updatedJobs=jobs.map((jj,i)=>i===artReqModal.jIdx?{...jj,art_requests:[...(jj.art_requests||[]),req],art_status:jj.art_status==='needs_art'?'art_requested':jj.art_status,assigned_artist:artReqModal.artist||jj.assigned_artist}:jj);
+          const updated={...o,jobs:updatedJobs,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setArtReqModal(null);nf('Art request sent to '+(artists2.find(a=>a.id===artReqModal.artist)||{}).name||'artist');
+        };
+        return<div className="modal-overlay" onClick={()=>setArtReqModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
+          <div className="modal-header"><h2>🎨 Request Art — {j2.art_name}</h2><button className="modal-close" onClick={()=>setArtReqModal(null)}>×</button></div>
+          <div className="modal-body">
+            <div style={{marginBottom:12}}>
+              <div className="form-label">Artist *</div>
+              <select className="form-select" value={artReqModal.artist} onChange={e=>setArtReqModal(m=>({...m,artist:e.target.value}))}>
+                <option value="">Select artist...</option>
+                {artists2.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}
+              </select>
+            </div>
+            <div style={{marginBottom:12}}>
+              <div className="form-label">Instructions</div>
+              <textarea className="form-input" rows={4} placeholder="Describe what you need — mockup, revision, specific colors, placement notes, etc." value={artReqModal.instructions} onChange={e=>setArtReqModal(m=>({...m,instructions:e.target.value}))} style={{resize:'vertical'}}/>
+            </div>
+            <div style={{marginBottom:12}}>
+              <div className="form-label">Attach Files</div>
+              <div style={{border:'2px dashed #cbd5e1',borderRadius:8,padding:16,textAlign:'center',cursor:'pointer',background:'#f8fafc'}}
+                onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#3b82f6';e.currentTarget.style.background='#eff6ff'}}
+                onDragLeave={e=>{e.currentTarget.style.borderColor='#cbd5e1';e.currentTarget.style.background='#f8fafc'}}
+                onDrop={async e=>{e.preventDefault();e.currentTarget.style.borderColor='#cbd5e1';e.currentTarget.style.background='#f8fafc';for(const f of Array.from(e.dataTransfer.files)){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-art-requests');setArtReqModal(m=>m?{...m,files:[...(m.files||[]),{name:f.name,size:f.size,type:f.type,url}]}:m)}catch(err){nf('Upload failed: '+err.message,'error')}}}}
+                onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.onchange=async()=>{for(const f of Array.from(inp.files)){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-art-requests');setArtReqModal(m=>m?{...m,files:[...(m.files||[]),{name:f.name,size:f.size,type:f.type,url}]}:m)}catch(err){nf('Upload failed: '+err.message,'error')}}};inp.click()}}>
+                <div style={{fontSize:12,color:'#64748b'}}>Drop files here or click to browse</div>
+                <div style={{fontSize:10,color:'#94a3b8',marginTop:4}}>PNG, PDF, AI, EPS, JPG</div>
+              </div>
+              {(artReqModal.files||[]).length>0&&<div style={{marginTop:8}}>{(artReqModal.files||[]).map((f,i)=><div key={i} style={{display:'flex',alignItems:'center',gap:6,padding:'4px 8px',background:'#f1f5f9',borderRadius:4,fontSize:11,marginBottom:4}}>
+                <span>{f.name}</span><span style={{color:'#94a3b8',marginLeft:'auto'}}>{(f.size/1024).toFixed(0)}KB</span>
+                <button style={{background:'none',border:'none',color:'#ef4444',cursor:'pointer',fontSize:14,padding:0}} onClick={()=>setArtReqModal(m=>({...m,files:(m.files||[]).filter((_,fi)=>fi!==i)}))}>×</button>
+              </div>)}</div>}
+            </div>
+            {existingFiles2.length>0&&<div style={{marginBottom:12}}>
+              <div className="form-label">Existing Art Files (auto-included)</div>
+              <div style={{background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:6,padding:8}}>{existingFiles2.map((f,i)=><div key={i} style={{fontSize:11,color:'#166534',padding:'2px 0'}}>✓ {f.name||f}</div>)}</div>
+            </div>}
+            {(j2.art_requests||[]).length>0&&<div style={{marginBottom:12}}>
+              <div className="form-label">Previous Requests ({(j2.art_requests||[]).length})</div>
+              <div style={{maxHeight:120,overflowY:'auto',border:'1px solid #e2e8f0',borderRadius:6}}>{(j2.art_requests||[]).map((r,i)=><div key={i} style={{padding:'6px 10px',borderBottom:'1px solid #f1f5f9',fontSize:11}}>
+                <div style={{display:'flex',justifyContent:'space-between'}}><strong>{r.artist_name||'Unknown'}</strong><span style={{color:'#94a3b8'}}>{new Date(r.created_at).toLocaleDateString()}</span></div>
+                <div style={{color:'#64748b',marginTop:2}}>{r.instructions||'No instructions'}</div>
+                <span className={`badge ${r.status==='completed'?'badge-green':r.status==='in_progress'?'badge-blue':'badge-amber'}`} style={{fontSize:9,marginTop:2}}>{r.status==='completed'?'Done':r.status==='in_progress'?'Working':'Requested'}</span>
+              </div>)}</div>
+            </div>}
+          </div>
+          <div className="modal-footer">
+            <button className="btn btn-secondary" onClick={()=>setArtReqModal(null)}>Cancel</button>
+            <button className="btn btn-primary" disabled={!artReqModal.artist} onClick={submitArtReq2}>Send Art Request</button>
+          </div>
+        </div></div>
+      })()}
+      </>}
 
       return<div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
         <h2>Production Jobs ({jobs.length})</h2>
@@ -4632,7 +4695,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     // Collect all jobs across customer's SOs
     const allPortalJobs=[];activeSOs.forEach(so=>{safeJobs(so).forEach(j=>{allPortalJobs.push({...j,so,soMemo:so.memo})})});
     const artLabelsP={needs_art:'Art Needed',art_requested:'Art Requested',art_in_progress:'Art In Progress',waiting_approval:'Awaiting Your Approval',production_files_needed:'Finalizing Files',art_complete:'Approved'};
-    const prodLabelsP={hold:'Ready for Production',staging:'In Line',in_process:'In Production',completed:'Done',shipped:'Shipped'};
+    const prodLabelsP={hold:'On Hold',staging:'In Line',in_process:'In Production',completed:'Done',shipped:'Shipped'};
 
     // Job detail view inside portal
     if(portalJobView){
@@ -5283,7 +5346,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   const rep=REPS.find(r=>r.id===customer.primary_rep_id);
   const allPortalJobs=[];activeSOs.forEach(so=>{safeJobs(so).forEach(j=>{allPortalJobs.push({...j,so,soMemo:so.memo})})});
   const artLabelsP={needs_art:'Art Needed',art_requested:'Art Requested',art_in_progress:'Art In Progress',waiting_approval:'Awaiting Your Approval',production_files_needed:'Finalizing Files',art_complete:'Approved'};
-  const prodLabelsP={hold:'Ready for Production',staging:'In Line',in_process:'In Production',completed:'Done',shipped:'Shipped'};
+  const prodLabelsP={hold:'On Hold',staging:'In Line',in_process:'In Production',completed:'Done',shipped:'Shipped'};
   const contactEmail=(customer.contacts||[])[0]?.email||'';
 
   const handlePaymentSuccess=(result)=>{
@@ -10804,7 +10867,7 @@ export default function App(){
               <span style={{fontSize:9,color:'#94a3b8',marginLeft:'auto'}}>{j.rep}</span>
             </div>
             {/* Mockup button — primary action, opens popup with approve/reject */}
-            <button className="btn btn-sm" style={{fontSize:11,padding:'6px 12px',background:j.art_status==='waiting_approval'?'linear-gradient(135deg,#f59e0b,#d97706)':'linear-gradient(135deg,#1e40af,#7c3aed)',color:'white',border:'none',width:'100%',marginTop:4,fontWeight:700,borderRadius:6,display:'flex',alignItems:'center',justifyContent:'center',gap:6}} onClick={e=>{e.stopPropagation();setArtMockupModal(j);setArtMockupRevision('')}}>{j.art_status==='waiting_approval'?'Review Mockup':'🖼️ View Mockup'}</button>
+            <button className="btn btn-sm" style={{fontSize:11,padding:'6px 12px',background:'linear-gradient(135deg,#1e40af,#7c3aed)',color:'white',border:'none',width:'100%',marginTop:4,fontWeight:700,borderRadius:6,display:'flex',alignItems:'center',justifyContent:'center',gap:6}} onClick={e=>{e.stopPropagation();setArtMockupModal(j);setArtMockupRevision('')}}>🖼️ View Mockup{j.art_status==='waiting_approval'&&<span style={{background:'#f59e0b',padding:'1px 6px',borderRadius:4,fontSize:9,marginLeft:4}}>Needs Approval</span>}</button>
             <div style={{display:'flex',gap:3,marginTop:6,flexWrap:'wrap'}}>
               {/* Edit request (only when art is not complete — coaches change minds) */}
               {j.art_status!=='art_complete'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#2563eb',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();setArtEditModal({job:j,instructions:(j.art_requests||[]).length>0?j.art_requests[j.art_requests.length-1].instructions||'':'',notes:j.rep_notes||''})}}>Edit Request</button>}
@@ -11040,19 +11103,30 @@ export default function App(){
           <div className="modal-body" style={{padding:0}}>
             {/* Mockup image — large and prominent */}
             <div style={{background:'#f8fafc',padding:28,display:'flex',flexDirection:'column',alignItems:'center',borderBottom:'1px solid #e2e8f0'}}>
-              <div style={{width:'100%',maxWidth:480,minHeight:320,borderRadius:12,background:'white',border:'2px dashed #d1d5db',display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column',overflow:'hidden'}}>
-                {mockupFiles.length>0?<>
-                  <div style={{fontSize:80,marginBottom:8}}>🖼️</div>
-                  <div style={{fontSize:14,fontWeight:700,color:'#1e40af'}}>{mockupFiles[0]}</div>
-                  {mockupFiles.length>1&&<div style={{fontSize:11,color:'#64748b',marginTop:4}}>+{mockupFiles.length-1} more file{mockupFiles.length>2?'s':''}</div>}
-                </>:<>
-                  <div style={{fontSize:64,marginBottom:8}}>🎨</div>
-                  <div style={{fontSize:13,color:'#94a3b8',fontWeight:600}}>No mockup uploaded yet</div>
-                </>}
-              </div>
-              {mockupFiles.length>0&&<div style={{display:'flex',gap:6,marginTop:12,flexWrap:'wrap'}}>
-                {mockupFiles.map((f,i)=><div key={i} style={{padding:'6px 12px',background:'#dbeafe',border:'1px solid #93c5fd',borderRadius:6,cursor:'pointer',fontSize:11,fontWeight:600,color:'#1e40af',display:'flex',alignItems:'center',gap:4}}
-                  onClick={()=>openFile(f)}><span style={{fontSize:14}}>🖼️</span>{f}</div>)}
+              {mockupFiles.length>0?<>
+                {mockupFiles.map((f,i)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(url||f);
+                  return<div key={i} style={{width:'100%',maxWidth:600,marginBottom:i<mockupFiles.length-1?12:0,borderRadius:12,background:'white',border:'1px solid #e2e8f0',overflow:'hidden'}}>
+                    {_isImgUrl(url)?<img src={url} alt={name} style={{width:'100%',maxHeight:500,objectFit:'contain',display:'block',cursor:'pointer'}} onClick={()=>openFile(url)}/>
+                    :_isPdfUrl(url)?<div style={{position:'relative'}}>
+                      {_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',maxHeight:500,objectFit:'contain',display:'block'}} onError={e=>{e.target.style.display='none';e.target.nextSibling.style.display='flex'}}/>:null}
+                      <div style={{display:_cloudinaryPdfThumb(url)?'none':'flex',flexDirection:'column',alignItems:'center',padding:40,gap:8}}>
+                        <span style={{fontSize:48}}>PDF</span>
+                        <span style={{fontSize:13,fontWeight:600,color:'#1e40af'}}>{name}</span>
+                      </div>
+                      <button className="btn btn-sm" style={{position:'absolute',bottom:8,right:8,fontSize:11,background:'#1e40af',color:'white',border:'none',padding:'6px 14px',borderRadius:6}} onClick={()=>openFile(url)}>Open PDF</button>
+                    </div>
+                    :<div style={{display:'flex',flexDirection:'column',alignItems:'center',padding:40,gap:8,cursor:'pointer'}} onClick={()=>openFile(url)}>
+                      <span style={{fontSize:48}}>📄</span>
+                      <span style={{fontSize:13,fontWeight:600,color:'#1e40af'}}>{name}</span>
+                    </div>}
+                    <div style={{padding:'6px 12px',borderTop:'1px solid #f1f5f9',display:'flex',alignItems:'center',justifyContent:'space-between',fontSize:11,color:'#64748b'}}>
+                      <span>{name}</span>
+                      <button className="btn btn-sm" style={{fontSize:10,padding:'2px 8px'}} onClick={()=>openFile(url)}>Open in new tab</button>
+                    </div>
+                  </div>})}
+              </>:<div style={{width:'100%',maxWidth:480,minHeight:320,borderRadius:12,background:'white',border:'2px dashed #d1d5db',display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column'}}>
+                <div style={{fontSize:64,marginBottom:8}}>🎨</div>
+                <div style={{fontSize:13,color:'#94a3b8',fontWeight:600}}>No mockup uploaded yet</div>
               </div>}
             </div>
 
@@ -11081,6 +11155,27 @@ export default function App(){
               {af?.notes&&<div style={{marginTop:10,fontSize:12,color:'#64748b'}}><strong>Notes:</strong> {af.notes}</div>}
             </div>
 
+            {/* Product Reference Images */}
+            {itemDetails.some(gi=>gi.image_url||gi.back_image_url)&&<div style={{padding:'20px 24px',borderBottom:'1px solid #e2e8f0'}}>
+              <div style={{fontSize:13,fontWeight:800,color:'#1e3a5f',marginBottom:10}}>Product Reference Images</div>
+              <div style={{display:'flex',gap:12,flexWrap:'wrap'}}>
+                {itemDetails.filter(gi=>gi.image_url||gi.back_image_url).map((gi,gii)=><div key={gii} style={{background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8,padding:10,textAlign:'center'}}>
+                  <div style={{fontSize:11,fontWeight:700,color:'#1e40af',marginBottom:6}}>{gi.sku} — {gi.color}</div>
+                  <div style={{display:'flex',gap:8,justifyContent:'center'}}>
+                    {gi.image_url&&<div>
+                      <img src={gi.image_url} alt="Front" style={{width:120,height:120,objectFit:'contain',borderRadius:6,border:'1px solid #e2e8f0',background:'white',cursor:'pointer'}} onClick={()=>openFile(gi.image_url)}/>
+                      <div style={{fontSize:9,color:'#64748b',marginTop:2}}>Front</div>
+                    </div>}
+                    {gi.back_image_url&&<div>
+                      <img src={gi.back_image_url} alt="Back" style={{width:120,height:120,objectFit:'contain',borderRadius:6,border:'1px solid #e2e8f0',background:'white',cursor:'pointer'}} onClick={()=>openFile(gi.back_image_url)}/>
+                      <div style={{fontSize:9,color:'#64748b',marginTop:2}}>Back</div>
+                    </div>}
+                  </div>
+                  <button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',marginTop:6}} onClick={()=>{if(gi.image_url)openFile(gi.image_url);if(gi.back_image_url)openFile(gi.back_image_url)}}>Download Images</button>
+                </div>)}
+              </div>
+            </div>}
+
             {/* SKUs & Quantities */}
             <div style={{padding:'20px 24px',borderBottom:'1px solid #e2e8f0'}}>
               <div style={{fontSize:13,fontWeight:800,color:'#1e3a5f',marginBottom:10}}>SKUs & Quantities — {j.total_units} total units</div>
@@ -11088,8 +11183,6 @@ export default function App(){
                 const rowTotal=Object.values(gi.sizes).reduce((a,v)=>a+v,0);
                 return<div key={gii} style={{marginBottom:gii<itemDetails.length-1?10:0}}>
                   <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
-                    {gi.image_url&&<img src={gi.image_url} alt="Front" style={{width:36,height:36,objectFit:'cover',borderRadius:4,border:'1px solid #e2e8f0'}}/>}
-                    {gi.back_image_url&&<img src={gi.back_image_url} alt="Back" style={{width:36,height:36,objectFit:'cover',borderRadius:4,border:'1px solid #e2e8f0'}}/>}
                     <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:12}}>{gi.sku}</span>
                     <span style={{fontWeight:600,fontSize:13}}>{gi.name}</span>
                     <span style={{color:'#64748b',fontSize:12}}>({gi.color})</span>
@@ -11192,6 +11285,26 @@ export default function App(){
         // Art messages for this job (stored on the job)
         const artMessages=j.art_messages||[];
 
+        // Delete file from artwork files
+        const handleArtFileDelete=(fileUrl)=>{
+          const curFiles=(af?.mockup_files||af?.files||[]);
+          const updFiles=curFiles.filter(f=>f!==fileUrl);
+          const updArt=safeArt(so).map(a=>a.id===j.art_file_id?{...a,mockup_files:updFiles}:a);
+          savSO({...so,art_files:updArt});
+          const updatedAf=updArt.find(a=>a.id===j.art_file_id);
+          setArtJobDetailModal({...j,artFile:updatedAf});
+          nf('File removed');
+        };
+        // Set a file as the primary mockup (move to first position)
+        const handleSetAsMockup=(fileUrl)=>{
+          const curFiles=(af?.mockup_files||af?.files||[]);
+          const updFiles=[fileUrl,...curFiles.filter(f=>f!==fileUrl)];
+          const updArt=safeArt(so).map(a=>a.id===j.art_file_id?{...a,mockup_files:updFiles}:a);
+          savSO({...so,art_files:updArt});
+          const updatedAf=updArt.find(a=>a.id===j.art_file_id);
+          setArtJobDetailModal({...j,artFile:updatedAf});
+          nf('Set as primary mockup');
+        };
         // Upload handler for artist to upload updated art
         const handleArtUpload=async(files)=>{
           setArtJobDetailUploading(true);
@@ -11278,8 +11391,26 @@ export default function App(){
                 <span style={{fontSize:16}}>🖼️</span> Artwork Files
               </div>
               {mockupFiles.length>0?<div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:10}}>
-                {mockupFiles.map((f,i)=><div key={i} style={{padding:'8px 14px',background:'#dbeafe',border:'1px solid #93c5fd',borderRadius:8,cursor:'pointer',fontSize:12,fontWeight:600,color:'#1e40af',display:'flex',alignItems:'center',gap:6}}
-                  onClick={()=>openFile(f)}><span style={{fontSize:16}}>🖼️</span>{typeof f==='string'?(f.split('/').pop()||f):f}</div>)}
+                {mockupFiles.map((f,i)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(url||f);const isPrimary=i===0;
+                  return<div key={i} style={{borderRadius:8,border:isPrimary?'2px solid #7c3aed':'1px solid #e2e8f0',overflow:'hidden',background:'white',maxWidth:280,position:'relative'}}>
+                    {isPrimary&&<div style={{position:'absolute',top:4,left:4,background:'#7c3aed',color:'white',fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:4,zIndex:1}}>MOCKUP</div>}
+                    {_isImgUrl(url)?<img src={url} alt={name} style={{width:'100%',maxHeight:200,objectFit:'contain',display:'block',cursor:'pointer'}} onClick={()=>openFile(url)}/>
+                    :_isPdfUrl(url)?<div style={{position:'relative',cursor:'pointer'}} onClick={()=>openFile(url)}>
+                      {_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',maxHeight:200,objectFit:'contain',display:'block'}} onError={e=>{e.target.style.display='none';e.target.nextSibling.style.display='flex'}}/>:null}
+                      <div style={{display:_cloudinaryPdfThumb(url)?'none':'flex',flexDirection:'column',alignItems:'center',padding:20,gap:4}}>
+                        <span style={{fontSize:32}}>PDF</span><span style={{fontSize:11,color:'#1e40af'}}>{name}</span>
+                      </div>
+                    </div>
+                    :<div style={{display:'flex',alignItems:'center',gap:6,padding:'10px 14px',cursor:'pointer'}} onClick={()=>openFile(url)}>
+                      <span style={{fontSize:16}}>📄</span><span style={{fontSize:12,fontWeight:600,color:'#1e40af'}}>{name}</span>
+                    </div>}
+                    <div style={{padding:'4px 8px',borderTop:'1px solid #f1f5f9',fontSize:10,color:'#64748b',display:'flex',alignItems:'center',gap:4}}>
+                      <span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',flex:1}}>{name}</span>
+                      {!isPrimary&&<button className="btn btn-sm" style={{fontSize:8,padding:'1px 5px',background:'#7c3aed',color:'white',border:'none'}} onClick={()=>handleSetAsMockup(url)} title="Set as primary mockup">Set Mockup</button>}
+                      <button className="btn btn-sm" style={{fontSize:8,padding:'1px 5px'}} onClick={()=>openFile(url)}>Open</button>
+                      <button style={{background:'none',border:'none',color:'#ef4444',cursor:'pointer',fontSize:14,padding:'0 2px',lineHeight:1}} onClick={()=>{if(window.confirm('Remove this file?'))handleArtFileDelete(url)}} title="Remove file">×</button>
+                    </div>
+                  </div>})}
               </div>:<div style={{padding:16,textAlign:'center',color:'#94a3b8',fontSize:12,background:'#f8fafc',borderRadius:8,border:'2px dashed #e2e8f0'}}>No artwork files uploaded yet</div>}
               {prodFilesL.length>0&&<><div style={{fontSize:11,fontWeight:700,color:'#92400e',marginTop:8,marginBottom:4}}>Production Files</div>
                 <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
@@ -11310,6 +11441,29 @@ export default function App(){
               </div>}
             </div>
 
+            {/* ─── Product Reference Images ─── */}
+            {itemDetails.some(gi=>gi.image_url||gi.back_image_url)&&<div style={{padding:'16px 20px',borderBottom:'1px solid #e2e8f0'}}>
+              <div style={{fontSize:12,fontWeight:800,color:'#1e3a5f',marginBottom:10,display:'flex',alignItems:'center',gap:6}}>
+                <span style={{fontSize:16}}>👕</span> Product Reference Images
+              </div>
+              <div style={{display:'flex',gap:10,flexWrap:'wrap'}}>
+                {itemDetails.filter(gi=>gi.image_url||gi.back_image_url).map((gi,gii)=><div key={gii} style={{background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8,padding:8,textAlign:'center'}}>
+                  <div style={{fontSize:10,fontWeight:700,color:'#1e40af',marginBottom:4}}>{gi.sku} — {gi.color}</div>
+                  <div style={{display:'flex',gap:6,justifyContent:'center'}}>
+                    {gi.image_url&&<div>
+                      <img src={gi.image_url} alt="Front" style={{width:100,height:100,objectFit:'contain',borderRadius:4,border:'1px solid #e2e8f0',background:'white',cursor:'pointer'}} onClick={()=>openFile(gi.image_url)}/>
+                      <div style={{fontSize:8,color:'#64748b',marginTop:1}}>Front</div>
+                    </div>}
+                    {gi.back_image_url&&<div>
+                      <img src={gi.back_image_url} alt="Back" style={{width:100,height:100,objectFit:'contain',borderRadius:4,border:'1px solid #e2e8f0',background:'white',cursor:'pointer'}} onClick={()=>openFile(gi.back_image_url)}/>
+                      <div style={{fontSize:8,color:'#64748b',marginTop:1}}>Back</div>
+                    </div>}
+                  </div>
+                  <button className="btn btn-sm" style={{fontSize:8,padding:'1px 6px',marginTop:4}} onClick={()=>{if(gi.image_url)openFile(gi.image_url);if(gi.back_image_url)openFile(gi.back_image_url)}}>Download</button>
+                </div>)}
+              </div>
+            </div>}
+
             {/* ─── SKU Sizes ─── */}
             <div style={{padding:'16px 20px',borderBottom:'1px solid #e2e8f0'}}>
               <div style={{fontSize:12,fontWeight:800,color:'#1e3a5f',marginBottom:10,display:'flex',alignItems:'center',gap:6}}>
@@ -11319,8 +11473,6 @@ export default function App(){
                 const rowTotal=Object.values(gi.sizes).reduce((a,v)=>a+v,0);
                 return<div key={gii} style={{marginBottom:gii<itemDetails.length-1?10:0}}>
                   <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
-                    {gi.image_url&&<img src={gi.image_url} alt="Front" style={{width:32,height:32,objectFit:'cover',borderRadius:4,border:'1px solid #e2e8f0'}}/>}
-                    {gi.back_image_url&&<img src={gi.back_image_url} alt="Back" style={{width:32,height:32,objectFit:'cover',borderRadius:4,border:'1px solid #e2e8f0'}}/>}
                     <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:12}}>{gi.sku}</span>
                     <span style={{fontWeight:600,fontSize:12}}>{gi.name}</span>
                     {gi.color&&<span style={{color:'#64748b',fontSize:11}}>({gi.color})</span>}
