@@ -5653,6 +5653,7 @@ export default function App(){
   const[dashView,setDashView]=useState('admin');// admin|sales|warehouse|decorator|production|csr
   const[prodDashFilter,setProdDashFilter]=useState(null);// null|'hold'|'ready'|'staging'|'in_process'|'completed'
   const[qbConfig,setQBConfig]=useState({connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',
+    access_token:'',refresh_token:'',realm_id:'',token_created_at:0,sandbox:false,
     mapping:{income_account:'Sales',cogs_account:'Cost of Goods Sold',deco_account:'Subcontractor - Decoration',ar_account:'Accounts Receivable',ap_account:'Accounts Payable',tax_account:'Sales Tax Payable'},
     syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}});
   // Persistent state — loads from localStorage, falls back to demo data
@@ -12771,14 +12772,287 @@ export default function App(){
 
   // QUICKBOOKS ONLINE INTEGRATION
   function rQB(){
-    // Build sync queue — SOs/POs/Invoices that need pushing to QB
-    const unsyncedSOs=sos.filter(so=>{
-      const hasItems=safeItems(so).some(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
-      return hasItems&&!so._qb_synced;
-    });
-    const unsyncedPOs=[];
-    sos.forEach(so=>{safeItems(so).forEach(it=>{(it.po_lines||[]).forEach(pl=>{if(!pl._qb_synced)unsyncedPOs.push({...pl,soId:so.id,sku:it.sku,itemName:it.name,vendor:pl.deco_vendor||D_V.find(v=>v.id===it.vendor_id)?.name||it.brand})})})});
+    const [qbTab,setQbTab]=useState('overview');
+    const [qbSyncing,setQbSyncing]=useState(false);
+    const [qbBillFile,setQbBillFile]=useState(null);
+    const [qbBillVendor,setQbBillVendor]=useState('');
+    const [qbBillAmount,setQbBillAmount]=useState('');
+    const [qbBillMemo,setQbBillMemo]=useState('');
+    const [qbBillDate,setQbBillDate]=useState(new Date().toISOString().slice(0,10));
+    const [qbBillUploading,setQbBillUploading]=useState(false);
+
+    // ── QB API helpers ──
+    const qbApi=async(action,payload={})=>{
+      if(!qbConfig.access_token||!qbConfig.realm_id){nf('QB not connected','error');return null}
+      // Check if token is expired (tokens last ~1 hour)
+      const tokenAge=Date.now()-(qbConfig.token_created_at||0);
+      if(tokenAge>3300000&&qbConfig.refresh_token){ // refresh if >55 min old
+        try{
+          const rr=await fetch('/.netlify/functions/qb-auth',{method:'POST',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({action:'refresh',refresh_token:qbConfig.refresh_token})});
+          const rd=await rr.json();
+          if(rd.access_token){
+            setQBConfig(prev=>({...prev,access_token:rd.access_token,refresh_token:rd.refresh_token||prev.refresh_token,token_created_at:Date.now()}));
+            payload.access_token=rd.access_token;
+          }
+        }catch(e){console.warn('[QB] Token refresh failed:',e)}
+      }
+      try{
+        const r=await fetch('/.netlify/functions/qb-api',{method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({action,access_token:payload.access_token||qbConfig.access_token,realm_id:qbConfig.realm_id,sandbox:qbConfig.sandbox,...payload})});
+        const d=await r.json();
+        if(r.status===401){nf('QB session expired — please reconnect','error');return null}
+        return d;
+      }catch(e){nf('QB API error: '+e.message,'error');return null}
+    };
+
+    // ── Handle OAuth callback tokens from URL ──
+    React.useEffect(()=>{
+      const hash=window.location.hash;
+      if(hash.includes('tokens=')){
+        try{
+          const encoded=hash.split('tokens=')[1]?.split('&')[0];
+          if(encoded){
+            const tokenData=JSON.parse(atob(encoded));
+            setQBConfig(prev=>({...prev,connected:true,access_token:tokenData.access_token,refresh_token:tokenData.refresh_token,
+              realm_id:tokenData.realm_id,token_created_at:tokenData.created_at||Date.now()}));
+            // Fetch company info
+            fetch('/.netlify/functions/qb-api',{method:'POST',headers:{'Content-Type':'application/json'},
+              body:JSON.stringify({action:'company_info',access_token:tokenData.access_token,realm_id:tokenData.realm_id})})
+              .then(r=>r.json()).then(d=>{
+                const ci=d?.CompanyInfo;
+                if(ci)setQBConfig(prev=>({...prev,companyId:tokenData.realm_id,companyName:ci.CompanyName||'Connected'}));
+              }).catch(()=>{});
+            window.location.hash='';
+            nf('Connected to QuickBooks Online');
+          }
+        }catch(e){console.error('[QB] Token parse error:',e)}
+      }
+      if(hash.includes('error=')){
+        const err=hash.split('error=')[1]?.split('&')[0];
+        nf('QB connection failed: '+err,'error');
+        window.location.hash='';
+      }
+    },[]);
+
+    // ── Connect to QB via OAuth ──
+    const connectQB=async()=>{
+      try{
+        const r=await fetch('/.netlify/functions/qb-auth',{method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({action:'connect'})});
+        const d=await r.json();
+        if(d.authUrl){window.location.href=d.authUrl}
+        else if(d.error){nf('QB connect error: '+d.error,'error')}
+      }catch(e){nf('Cannot reach QB auth service: '+e.message,'error')}
+    };
+
+    // ── Disconnect ──
+    const disconnectQB=async()=>{
+      if(!window.confirm('Disconnect from QuickBooks? You can reconnect anytime.'))return;
+      try{await fetch('/.netlify/functions/qb-auth',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({action:'disconnect',refresh_token:qbConfig.refresh_token})});}catch{}
+      setQBConfig(prev=>({...prev,connected:false,access_token:'',refresh_token:'',realm_id:'',companyId:'',companyName:''}));
+      nf('Disconnected from QuickBooks');
+    };
+
+    // ── SYNC: Customers (name + totals) ──
+    const syncCustomers=async()=>{
+      setQbSyncing(true);
+      const log={ts:new Date().toLocaleString(),type:'customers',status:'success',details:[]};
+      let synced=0;
+      for(const c of cust.filter(c=>c.is_active!==false)){
+        // Calculate totals
+        const custSOs=sos.filter(s=>s.customer_id===c.id);
+        const totalRevenue=invs.filter(i=>i.customer_id===c.id).reduce((a,i)=>a+(i.total||0),0);
+        const totalPaid=invs.filter(i=>i.customer_id===c.id).reduce((a,i)=>a+(i.paid||0),0);
+        const openBalance=totalRevenue-totalPaid;
+
+        const qbCustomer={
+          DisplayName:c.name+(c.alpha_tag?' ('+c.alpha_tag+')':''),
+          CompanyName:c.name,
+          ...(c.contact_email||c.contacts?.[0]?.email?{PrimaryEmailAddr:{Address:c.contact_email||c.contacts[0].email}}:{}),
+          ...(c.contact_phone||c.contacts?.[0]?.phone?{PrimaryPhone:{FreeFormNumber:c.contact_phone||c.contacts[0].phone}}:{}),
+          ...(c.billing_address_line1?{BillAddr:{Line1:c.billing_address_line1,City:c.billing_city||'',CountrySubDivisionCode:c.billing_state||'',PostalCode:c.billing_zip||''}}:{}),
+          ...(c.shipping_address_line1?{ShipAddr:{Line1:c.shipping_address_line1,City:c.shipping_city||'',CountrySubDivisionCode:c.shipping_state||'',PostalCode:c.shipping_zip||''}}:{}),
+          Notes:'Portal: '+custSOs.length+' orders, $'+totalRevenue.toFixed(0)+' revenue, $'+openBalance.toFixed(0)+' open balance. Tier: '+(c.adidas_ua_tier||'B')+'. Terms: '+(c.payment_terms||'net30'),
+          ...(c.qb_customer_id?{Id:c.qb_customer_id,sparse:true}:{}),
+        };
+        const res=await qbApi('upsert_customer',{customer:qbCustomer});
+        if(res?.Customer?.Id){
+          // Store QB ID back on customer
+          setCust(prev=>prev.map(cc=>cc.id===c.id?{...cc,qb_customer_id:res.Customer.Id}:cc));
+          log.details.push(c.name+' → QB #'+res.Customer.Id);synced++;
+        }else{log.details.push(c.name+' — FAILED: '+(res?.Fault?.Error?.[0]?.Detail||'unknown error'));log.status='partial'}
+      }
+      if(synced===0&&log.details.length>0)log.status='error';
+      log.details.unshift(synced+'/'+cust.filter(c=>c.is_active!==false).length+' customers synced');
+      setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
+      nf(synced+' customers synced to QB');
+      setQbSyncing(false);
+    };
+
+    // ── SYNC: Invoices (totals) ──
+    const syncInvoices=async()=>{
+      setQbSyncing(true);
+      const log={ts:new Date().toLocaleString(),type:'invoices',status:'success',details:[]};
+      let synced=0;
+      const unsyncedInvs2=invs.filter(i=>!i._qb_synced);
+      for(const inv of unsyncedInvs2){
+        const c=cust.find(cc=>cc.id===inv.customer_id);
+        if(!c?.qb_customer_id){log.details.push(inv.id+' — skipped: customer "'+c?.name+'" not synced to QB');continue}
+        const so=sos.find(s=>s.id===inv.so_id);
+        const qbInvoice={
+          DocNumber:inv.id,
+          TxnDate:inv.date||new Date().toISOString().slice(0,10),
+          CustomerRef:{value:c.qb_customer_id},
+          Line:[{DetailType:'SalesItemLineDetail',Amount:inv.total||0,Description:'Invoice '+inv.id+(so?' for '+so.id:'')+(so?.memo?' — '+so.memo:''),
+            SalesItemLineDetail:{Quantity:1,UnitPrice:inv.total||0}}],
+          ...(inv._qb_id?{Id:inv._qb_id,sparse:true}:{}),
+        };
+        const res=await qbApi('upsert_invoice',{invoice:qbInvoice});
+        if(res?.Invoice?.Id){
+          setInvs(prev=>prev.map(ii=>ii.id===inv.id?{...ii,_qb_synced:true,_qb_id:res.Invoice.Id}:ii));
+          log.details.push(inv.id+' → QB Invoice #'+res.Invoice.Id+' ($'+safeNum(inv.total).toFixed(2)+')');synced++;
+          // Sync payments if any
+          if(inv.paid>0&&inv.payments?.length){
+            for(const pmt of inv.payments){
+              const qbPmt={CustomerRef:{value:c.qb_customer_id},TotalAmt:pmt.amount,
+                Line:[{Amount:pmt.amount,LinkedTxn:[{TxnId:res.Invoice.Id,TxnType:'Invoice'}]}]};
+              await qbApi('upsert_payment',{payment:qbPmt});
+            }
+          }
+        }else{log.details.push(inv.id+' — FAILED: '+(res?.Fault?.Error?.[0]?.Detail||'unknown'));log.status='partial'}
+      }
+      if(synced===0&&unsyncedInvs2.length>0)log.status='error';
+      log.details.unshift(synced+'/'+unsyncedInvs2.length+' invoices synced');
+      setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
+      nf(synced+' invoices synced to QB');
+      setQbSyncing(false);
+    };
+
+    // ── SYNC: Inventory (totals per product as non-inventory items) ──
+    const syncInventory=async()=>{
+      setQbSyncing(true);
+      const log={ts:new Date().toLocaleString(),type:'inventory',status:'success',details:[]};
+      let synced=0;
+      // Aggregate inventory totals per product (not per size — just totals)
+      for(const p of prod.filter(p=>p.is_active!==false)){
+        const inv=p._inv||{};
+        const totalQty=Object.values(inv).reduce((a,v)=>a+safeNum(v),0);
+        if(totalQty===0&&!p.qb_item_id)continue; // skip products with no inventory and no QB record
+        const totalValue=totalQty*safeNum(p.nsa_cost);
+        const qbItem={
+          Name:(p.sku+' '+p.name).slice(0,100),
+          Type:'NonInventory', // totals only — real inventory tracked on portal
+          Description:p.name+(p.color?' - '+p.color:'')+' | Portal Qty: '+totalQty+' | Value: $'+totalValue.toFixed(2),
+          UnitPrice:safeNum(p.retail_price||p.nsa_cost),
+          PurchaseCost:safeNum(p.nsa_cost),
+          IncomeAccountRef:{name:qbConfig.mapping.income_account||'Sales'},
+          ExpenseAccountRef:{name:qbConfig.mapping.cogs_account||'Cost of Goods Sold'},
+          ...(p.qb_item_id?{Id:p.qb_item_id,sparse:true}:{}),
+        };
+        const res=await qbApi('upsert_item',{item:qbItem});
+        if(res?.Item?.Id){
+          setProd(prev=>prev.map(pp=>pp.id===p.id?{...pp,qb_item_id:res.Item.Id}:pp));
+          log.details.push(p.sku+' '+p.name+' → QB Item #'+res.Item.Id+' (qty: '+totalQty+', val: $'+totalValue.toFixed(2)+')');synced++;
+        }else{log.details.push(p.sku+' — FAILED: '+(res?.Fault?.Error?.[0]?.Detail||'unknown'));log.status='partial'}
+      }
+      log.details.unshift(synced+' product items synced');
+      setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
+      nf(synced+' inventory items synced to QB');
+      setQbSyncing(false);
+    };
+
+    // ── BILL UPLOAD — upload vendor bill to QB ──
+    const uploadBill=async()=>{
+      if(!qbBillVendor){nf('Select a vendor','error');return}
+      if(!qbBillAmount||parseFloat(qbBillAmount)<=0){nf('Enter bill amount','error');return}
+      setQbBillUploading(true);
+      const log={ts:new Date().toLocaleString(),type:'bill_upload',status:'success',details:[]};
+
+      // Find or create vendor in QB
+      const vendor=vend.find(v=>v.id===qbBillVendor)||D_V.find(v=>v.id===qbBillVendor)||{name:qbBillVendor};
+      let qbVendorId=vendor.qb_vendor_id;
+      if(!qbVendorId){
+        // Try to create vendor
+        const vRes=await qbApi('upsert_vendor',{vendor:{
+          DisplayName:vendor.name,CompanyName:vendor.name,
+          ...(vendor.contact_email?{PrimaryEmailAddr:{Address:vendor.contact_email}}:{}),
+        }});
+        if(vRes?.Vendor?.Id){
+          qbVendorId=vRes.Vendor.Id;
+          setVend(prev=>prev.map(v=>v.id===vendor.id?{...v,qb_vendor_id:qbVendorId}:v));
+          log.details.push('Created vendor: '+vendor.name+' → QB #'+qbVendorId);
+        }else{
+          log.details.push('Vendor creation failed: '+(vRes?.Fault?.Error?.[0]?.Detail||'unknown'));
+          log.status='error';
+          setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));
+          setQbBillUploading(false);return;
+        }
+      }
+
+      // Create bill in QB
+      const amt=parseFloat(qbBillAmount);
+      const qbBill={
+        VendorRef:{value:qbVendorId},
+        TxnDate:qbBillDate,
+        Line:[{DetailType:'AccountBasedExpenseLineDetail',Amount:amt,Description:qbBillMemo||'Vendor bill from '+vendor.name,
+          AccountBasedExpenseLineDetail:{AccountRef:{name:qbConfig.mapping.ap_account||'Accounts Payable'}}}],
+        ...(qbBillMemo?{PrivateNote:qbBillMemo}:{}),
+      };
+      const billRes=await qbApi('upsert_bill',{bill:qbBill});
+      if(!billRes?.Bill?.Id){
+        log.details.push('Bill creation failed: '+(billRes?.Fault?.Error?.[0]?.Detail||'unknown'));
+        log.status='error';
+        setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));
+        nf('Bill upload failed','error');
+        setQbBillUploading(false);return;
+      }
+      const billId=billRes.Bill.Id;
+      log.details.push('Bill created: '+vendor.name+' $'+amt.toFixed(2)+' → QB Bill #'+billId);
+
+      // Upload attachment if file selected
+      if(qbBillFile){
+        try{
+          const reader=new FileReader();
+          const fileBase64=await new Promise((resolve,reject)=>{
+            reader.onload=()=>resolve(reader.result.split(',')[1]);
+            reader.onerror=reject;
+            reader.readAsDataURL(qbBillFile);
+          });
+          const attachRes=await qbApi('upload_attachment',{
+            entity_type:'Bill',entity_id:billId,
+            file_name:qbBillFile.name,file_base64:fileBase64,content_type:qbBillFile.type||'application/pdf',
+          });
+          if(attachRes?.attachableId){
+            log.details.push('Attachment uploaded: '+qbBillFile.name);
+          }else{
+            log.details.push('Attachment upload failed — bill was created without attachment');log.status='partial';
+          }
+        }catch(e){log.details.push('File read error: '+e.message);log.status='partial'}
+      }
+
+      setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
+      nf('Bill $'+amt.toFixed(2)+' uploaded to QB for '+vendor.name);
+      setQbBillFile(null);setQbBillVendor('');setQbBillAmount('');setQbBillMemo('');
+      setQbBillUploading(false);
+    };
+
+    // ── SYNC ALL ──
+    const syncAll=async()=>{
+      setQbSyncing(true);
+      await syncCustomers();
+      await syncInvoices();
+      await syncInventory();
+      setQbSyncing(false);
+    };
+
+    // Build counts for overview
     const unsyncedInvs=invs.filter(i=>!i._qb_synced);
+    const custWithQB=cust.filter(c=>c.qb_customer_id).length;
+    const prodWithQB=prod.filter(p=>p.qb_item_id).length;
+    const totalInvQty=prod.reduce((a,p)=>a+Object.values(p._inv||{}).reduce((a2,v)=>a2+safeNum(v),0),0);
+    const totalInvValue=prod.reduce((a,p)=>{const qty=Object.values(p._inv||{}).reduce((a2,v)=>a2+safeNum(v),0);return a+qty*safeNum(p.nsa_cost)},0);
     const unsyncedInvPOs=invPOs.filter(p=>!p._qb_synced);
 
     // Build what a QB sync would push
@@ -12868,66 +13142,61 @@ export default function App(){
                 {qbConfig.connected?'Connected to QuickBooks Online':'QuickBooks Not Connected'}
               </div>
               {qbConfig.connected?
-                <div style={{fontSize:12,color:'#64748b'}}>Company: {qbConfig.companyName} · Last sync: {qbConfig.lastSync||'Never'}</div>:
-                <div style={{fontSize:12,color:'#92400e'}}>Connect your QBO account to enable automatic sync of SOs, POs, and Invoices</div>}
+                <div style={{fontSize:12,color:'#64748b'}}>Company: {qbConfig.companyName||'Connected'} · Realm: {qbConfig.realm_id} · Last sync: {qbConfig.lastSync||'Never'}</div>:
+                <div style={{fontSize:12,color:'#92400e'}}>Connect your QBO account to sync customers, invoices, bills, and inventory</div>}
             </div>
             {qbConfig.connected?
-              <button className="btn btn-secondary" style={{color:'#dc2626'}} onClick={()=>setQBConfig(prev=>({...prev,connected:false,companyId:'',companyName:''}))}>Disconnect</button>:
-              <button className="btn btn-primary" style={{background:'#2CA01C',borderColor:'#2CA01C',padding:'10px 20px',fontSize:14,fontWeight:700}} onClick={async()=>{
-                if(supabase){
-                  try{
-                    const r=await supabase.functions.invoke('qb-auth');
-                    if(r.data?.ok&&r.data.auth_url){
-                      sessionStorage.setItem('qb_oauth_state',r.data.state);
-                      window.location.href=r.data.auth_url;
-                      return;
-                    }
-                    nf(r.data?.error||'Failed to start QB auth');
-                  }catch(e){nf('QB auth error: '+e.message)}
-                }else{
-                  // Fallback demo mode when no Supabase
-                  setQBConfig(prev=>({...prev,connected:true,companyId:'4620816365181050610',companyName:'National Sports Apparel LLC'}));
-                  nf('✅ Connected to QuickBooks Online (demo)');
-                }
-              }}>Connect to QuickBooks</button>}
+              <button className="btn btn-secondary" style={{color:'#dc2626'}} onClick={disconnectQB}>Disconnect</button>:
+              <button className="btn btn-primary" style={{background:'#2CA01C',borderColor:'#2CA01C',padding:'10px 20px',fontSize:14,fontWeight:700}} onClick={connectQB}>Connect to QuickBooks</button>}
           </div>
         </div>
       </div>
 
       {qbConfig.connected&&<>
-      {/* Sync Queue Stats */}
+      {/* Stats */}
       <div className="stats-row" style={{marginBottom:16}}>
-        <div className="stat-card" style={{borderLeft:'3px solid #2563eb'}}><div className="stat-label">SOs to Sync</div><div className="stat-value" style={{color:'#2563eb'}}>{unsyncedSOs.length}</div></div>
-        <div className="stat-card" style={{borderLeft:'3px solid #7c3aed'}}><div className="stat-label">POs to Sync</div><div className="stat-value" style={{color:'#7c3aed'}}>{unsyncedPOs.length+unsyncedInvPOs.length}</div></div>
+        <div className="stat-card" style={{borderLeft:'3px solid #2563eb'}}><div className="stat-label">Customers in QB</div><div className="stat-value" style={{color:'#2563eb'}}>{custWithQB}/{cust.length}</div></div>
         <div className="stat-card" style={{borderLeft:'3px solid #d97706'}}><div className="stat-label">Invoices to Sync</div><div className="stat-value" style={{color:'#d97706'}}>{unsyncedInvs.length}</div></div>
-        <div className="stat-card" style={{borderLeft:'3px solid #16a34a'}}><div className="stat-label">Inv Adjustments</div><div className="stat-value" style={{color:'#16a34a'}}>{invAdjLog.filter(l=>!l._qb_synced).length}</div></div>
+        <div className="stat-card" style={{borderLeft:'3px solid #16a34a'}}><div className="stat-label">Products in QB</div><div className="stat-value" style={{color:'#16a34a'}}>{prodWithQB}/{prod.length}</div></div>
+        <div className="stat-card" style={{borderLeft:'3px solid #7c3aed'}}><div className="stat-label">Inventory Value</div><div className="stat-value" style={{fontSize:14,color:'#7c3aed'}}>${totalInvValue.toFixed(0)}</div></div>
         <div className="stat-card" style={{borderLeft:'3px solid #166534'}}><div className="stat-label">Last Sync</div><div className="stat-value" style={{fontSize:12,color:'#166534'}}>{qbConfig.lastSync||'Never'}</div></div>
       </div>
 
-      {/* Sync Controls */}
-      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
-        <div className="card">
-          <div className="card-header"><h2>🔄 Sync Controls</h2></div>
-          <div className="card-body">
-            <div style={{marginBottom:12}}>
-              <label className="form-label">Sync Mode</label>
-              <div style={{display:'flex',gap:4}}>
-                {[['manual','Manual'],['hourly','Hourly'],['daily','Daily'],['realtime','Real-time']].map(([v,l])=>
-                  <button key={v} className={`btn btn-sm ${qbConfig.autoSync===v?'btn-primary':'btn-secondary'}`}
-                    onClick={()=>setQBConfig(prev=>({...prev,autoSync:v}))}>{l}</button>)}
+      {/* Tabs */}
+      <div className="tab-bar" style={{marginBottom:16}}>
+        {[['overview','Overview'],['customers','Customers'],['invoices','Invoices'],['bills','Bill Upload'],['inventory','Inventory'],['settings','Settings'],['log','Sync Log']].map(([k,l])=>
+          <button key={k} className={`tab ${qbTab===k?'active':''}`} onClick={()=>setQbTab(k)}>{l}</button>)}
+      </div>
+
+      {/* ── OVERVIEW TAB ── */}
+      {qbTab==='overview'&&<>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
+          <div className="card">
+            <div className="card-header"><h2>Sync Controls</h2></div>
+            <div className="card-body">
+              <div style={{marginBottom:12}}>
+                <label className="form-label">Sync Mode</label>
+                <div style={{display:'flex',gap:4}}>
+                  {[['manual','Manual'],['hourly','Hourly'],['daily','Daily'],['realtime','Real-time']].map(([v,l])=>
+                    <button key={v} className={`btn btn-sm ${qbConfig.autoSync===v?'btn-primary':'btn-secondary'}`}
+                      onClick={()=>setQBConfig(prev=>({...prev,autoSync:v}))}>{l}</button>)}
+                </div>
               </div>
-              <div style={{fontSize:10,color:'#64748b',marginTop:4}}>
-                {qbConfig.autoSync==='manual'?'Push changes manually when ready':
-                 qbConfig.autoSync==='hourly'?'Auto-syncs every hour':
-                 qbConfig.autoSync==='daily'?'Auto-syncs once daily at midnight':
-                 'Syncs immediately when changes are saved'}
+              <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                <button className="btn btn-primary" style={{flex:1}} disabled={qbSyncing} onClick={syncAll}>{qbSyncing?'Syncing...':'Sync Everything'}</button>
+                <button className="btn btn-secondary" disabled={qbSyncing} onClick={syncCustomers}>Customers</button>
+                <button className="btn btn-secondary" disabled={qbSyncing} onClick={syncInvoices}>Invoices</button>
+                <button className="btn btn-secondary" disabled={qbSyncing} onClick={syncInventory}>Inventory</button>
               </div>
             </div>
-            <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-              <button className="btn btn-primary" style={{flex:1}} onClick={()=>runSync('all')}>🔄 Sync Everything</button>
-              <button className="btn btn-secondary" onClick={()=>runSync('sales_orders')}>SOs</button>
-              <button className="btn btn-secondary" onClick={()=>runSync('purchase_orders')}>POs</button>
-              <button className="btn btn-secondary" onClick={()=>runSync('invoices')}>Invoices</button>
+          </div>
+          <div className="card">
+            <div className="card-header"><h2>What Syncs</h2></div>
+            <div className="card-body" style={{fontSize:12,color:'#475569'}}>
+              <div style={{marginBottom:4}}>&#8226; <strong>Customers</strong> — name, contact, address, order totals in notes</div>
+              <div style={{marginBottom:4}}>&#8226; <strong>Invoices</strong> — invoice total as single line item, payments applied</div>
+              <div style={{marginBottom:4}}>&#8226; <strong>Bills</strong> — upload vendor bills (PDF/image) directly to QB with amounts</div>
+              <div>&#8226; <strong>Inventory</strong> — product totals (qty + cost value) as non-inventory items. Real inventory stays on portal.</div>
             </div>
           </div>
         </div>
@@ -12944,7 +13213,6 @@ export default function App(){
               </div>)}
           </div>
         </div>
-      </div>
 
       {/* Preview — what would sync */}
       <div className="card" style={{marginBottom:16}}>
@@ -13008,38 +13276,242 @@ export default function App(){
       </div>
       </>}
 
-      {/* API Documentation for developer */}
-      <div className="card" style={{marginTop:16}}>
-        <div className="card-header"><h2>🔧 Integration Notes</h2></div>
-        <div className="card-body" style={{fontSize:12,color:'#64748b'}}>
-          <div style={{marginBottom:8}}><strong>QB Online API endpoints used:</strong></div>
-          <div style={{fontFamily:'monospace',fontSize:10,background:'#f8fafc',padding:10,borderRadius:6,marginBottom:8}}>
-            POST /v3/company/{'{'}{'{'}companyId{'}'}{'}' }/salesorder — Create/update Sales Orders<br/>
-            POST /v3/company/{'{'}{'{'}companyId{'}'}{'}' }/purchaseorder — Create POs (blanks + deco)<br/>
-            POST /v3/company/{'{'}{'{'}companyId{'}'}{'}' }/invoice — Create Invoices<br/>
-            POST /v3/company/{'{'}{'{'}companyId{'}'}{'}' }/payment — Record payments<br/>
-            GET  /v3/company/{'{'}{'{'}companyId{'}'}{'}' }/query — Sync back QB data
+      {/* ── CUSTOMERS TAB ── */}
+      {qbTab==='customers'&&<>
+        <div className="card" style={{marginBottom:16}}>
+          <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+            <h2>Customer Sync</h2>
+            <button className="btn btn-primary btn-sm" disabled={qbSyncing} onClick={syncCustomers}>{qbSyncing?'Syncing...':'Sync All Customers'}</button>
           </div>
-          <div style={{marginBottom:4}}><strong>What syncs:</strong></div>
-          <div>• <strong>Sales Orders</strong> → QB Sales Order with line items (products + decoration as separate lines)</div>
-          <div>• <strong>Blank POs</strong> → QB Purchase Order to vendor (SanMar, S&S, etc.) linked to SO</div>
-          <div>• <strong>Deco POs</strong> → QB Purchase Order to decorator (Silver Screen, Olympic, etc.) posted to "{qbConfig.mapping.deco_account}" account</div>
-          <div>• <strong>Invoices</strong> → QB Invoice with A/R tracking, tax posted to "{qbConfig.mapping.tax_account}"</div>
-          <div style={{marginTop:8,marginBottom:8}}><strong>Edge functions:</strong></div>
-          <div style={{fontFamily:'monospace',fontSize:10,background:'#f8fafc',padding:10,borderRadius:6,marginBottom:8}}>
-            qb-auth — Initiates OAuth2 flow, returns Intuit consent URL<br/>
-            qb-callback — Handles OAuth redirect, exchanges code for tokens<br/>
-            qb-refresh-token — Refreshes expired access tokens (auto before sync)<br/>
-            taxcloud-capture — Reports paid invoices to TaxCloud for state filing<br/>
-            taxcloud-lookup — Looks up tax rate for a shipping address<br/>
-            taxcloud-refresh — Quarterly batch refresh of all customer tax rates
-          </div>
-          <div style={{marginTop:8,padding:8,background:'#fef3c7',borderRadius:6,color:'#92400e'}}>
-            <strong>Setup required:</strong> QBO OAuth2 app credentials (Client ID + Secret) from <a href="https://developer.intuit.com" target="_blank" rel="noreferrer" style={{color:'#1e40af'}}>developer.intuit.com</a>.
-            Add your redirect URI and scopes: <code>com.intuit.quickbooks.accounting</code>
+          <div className="card-body" style={{padding:0,maxHeight:500,overflow:'auto'}}>
+            <table style={{fontSize:11}}>
+              <thead><tr style={{background:'#f8fafc'}}><th>Customer</th><th>Alpha</th><th>Orders</th><th style={{textAlign:'right'}}>Revenue</th><th style={{textAlign:'right'}}>Open Balance</th><th>QB Status</th></tr></thead>
+              <tbody>
+                {cust.filter(c=>c.is_active!==false).map(c=>{
+                  const custInvs=invs.filter(i=>i.customer_id===c.id);
+                  const rev=custInvs.reduce((a,i)=>a+(i.total||0),0);
+                  const paid=custInvs.reduce((a,i)=>a+(i.paid||0),0);
+                  const orders=sos.filter(s=>s.customer_id===c.id).length;
+                  return<tr key={c.id} style={{borderBottom:'1px solid #f1f5f9'}}>
+                    <td style={{fontWeight:600}}>{c.name}</td>
+                    <td><span className="badge badge-gray">{c.alpha_tag}</span></td>
+                    <td>{orders}</td>
+                    <td style={{textAlign:'right',fontWeight:600}}>${rev.toFixed(0)}</td>
+                    <td style={{textAlign:'right',color:rev-paid>0?'#dc2626':'#16a34a',fontWeight:600}}>${(rev-paid).toFixed(0)}</td>
+                    <td>{c.qb_customer_id?<span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:'#dcfce7',color:'#166534',fontWeight:600}}>QB #{c.qb_customer_id}</span>:
+                      <span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:'#fef3c7',color:'#92400e',fontWeight:600}}>Not synced</span>}</td>
+                  </tr>})}
+              </tbody>
+            </table>
           </div>
         </div>
-      </div>
+      </>}
+
+      {/* ── INVOICES TAB ── */}
+      {qbTab==='invoices'&&<>
+        <div className="card" style={{marginBottom:16}}>
+          <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+            <h2>Invoice Sync ({unsyncedInvs.length} pending)</h2>
+            <button className="btn btn-primary btn-sm" disabled={qbSyncing} onClick={syncInvoices}>{qbSyncing?'Syncing...':'Sync Invoices'}</button>
+          </div>
+          <div className="card-body" style={{padding:0,maxHeight:500,overflow:'auto'}}>
+            <table style={{fontSize:11}}>
+              <thead><tr style={{background:'#f8fafc'}}><th>Invoice</th><th>Customer</th><th>SO</th><th style={{textAlign:'right'}}>Total</th><th style={{textAlign:'right'}}>Paid</th><th>QB Status</th></tr></thead>
+              <tbody>
+                {invs.map(inv=>{
+                  const c=cust.find(cc=>cc.id===inv.customer_id);
+                  return<tr key={inv.id} style={{borderBottom:'1px solid #f1f5f9'}}>
+                    <td style={{fontWeight:700,color:'#166534'}}>{inv.id}</td>
+                    <td>{c?.name||'—'}</td>
+                    <td style={{color:'#64748b'}}>{inv.so_id||'—'}</td>
+                    <td style={{textAlign:'right',fontWeight:600}}>${safeNum(inv.total).toFixed(2)}</td>
+                    <td style={{textAlign:'right',color:inv.paid>=inv.total?'#16a34a':'#d97706'}}>${safeNum(inv.paid).toFixed(2)}</td>
+                    <td>{inv._qb_synced?<span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:'#dcfce7',color:'#166534',fontWeight:600}}>Synced{inv._qb_id?' #'+inv._qb_id:''}</span>:
+                      <span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:'#fef3c7',color:'#92400e',fontWeight:600}}>Pending</span>}</td>
+                  </tr>})}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </>}
+
+      {/* ── BILL UPLOAD TAB ── */}
+      {qbTab==='bills'&&<>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}}>
+          <div className="card">
+            <div className="card-header"><h2>Upload Vendor Bill to QuickBooks</h2></div>
+            <div className="card-body">
+              <div style={{fontSize:12,color:'#64748b',marginBottom:12}}>Upload a vendor bill (PDF or image) with amount. It creates the bill in QB and attaches the document.</div>
+              <div style={{marginBottom:10}}>
+                <label className="form-label">Vendor *</label>
+                <select className="form-input" value={qbBillVendor} onChange={e=>setQbBillVendor(e.target.value)}>
+                  <option value="">Select vendor...</option>
+                  {vend.filter(v=>v.is_active!==false).map(v=><option key={v.id} value={v.id}>{v.name}</option>)}
+                </select>
+              </div>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:10}}>
+                <div>
+                  <label className="form-label">Amount *</label>
+                  <input className="form-input" type="number" step="0.01" placeholder="0.00" value={qbBillAmount} onChange={e=>setQbBillAmount(e.target.value)}/>
+                </div>
+                <div>
+                  <label className="form-label">Bill Date</label>
+                  <input className="form-input" type="date" value={qbBillDate} onChange={e=>setQbBillDate(e.target.value)}/>
+                </div>
+              </div>
+              <div style={{marginBottom:10}}>
+                <label className="form-label">Memo / Description</label>
+                <input className="form-input" value={qbBillMemo} onChange={e=>setQbBillMemo(e.target.value)} placeholder="e.g. Adidas team order #12345"/>
+              </div>
+              <div style={{marginBottom:12}}>
+                <label className="form-label">Attach Document (PDF, PNG, JPG)</label>
+                <div style={{border:'2px dashed #cbd5e1',borderRadius:8,padding:16,textAlign:'center',cursor:'pointer',background:qbBillFile?'#f0fdf4':'#fafafa'}}
+                  onClick={()=>document.getElementById('qb-bill-file-input')?.click()}>
+                  <input id="qb-bill-file-input" type="file" accept=".pdf,.png,.jpg,.jpeg" style={{display:'none'}}
+                    onChange={e=>{if(e.target.files?.[0])setQbBillFile(e.target.files[0])}}/>
+                  {qbBillFile?<div><div style={{fontSize:13,fontWeight:600,color:'#166534'}}>{qbBillFile.name}</div><div style={{fontSize:10,color:'#64748b'}}>{(qbBillFile.size/1024).toFixed(0)} KB — click to change</div></div>:
+                    <div style={{color:'#94a3b8',fontSize:12}}>Click to select file (optional)</div>}
+                </div>
+              </div>
+              <button className="btn btn-primary" style={{width:'100%'}} disabled={qbBillUploading} onClick={uploadBill}>
+                {qbBillUploading?'Uploading to QuickBooks...':'Upload Bill to QuickBooks'}
+              </button>
+            </div>
+          </div>
+          <div className="card">
+            <div className="card-header"><h2>Recent Bill Uploads</h2></div>
+            <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
+              {qbConfig.syncLog.filter(l=>l.type==='bill_upload').length===0?
+                <div className="empty" style={{padding:20}}>No bills uploaded yet</div>:
+              qbConfig.syncLog.filter(l=>l.type==='bill_upload').map((log,i)=><div key={i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9'}}>
+                <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
+                  <span style={{fontSize:9,padding:'1px 5px',borderRadius:3,fontWeight:600,
+                    background:log.status==='success'?'#dcfce7':'#fef2f2',
+                    color:log.status==='success'?'#166534':'#dc2626'}}>{log.status}</span>
+                  <span style={{fontSize:10,color:'#94a3b8'}}>{log.ts}</span>
+                </div>
+                {log.details.map((d,di)=><div key={di} style={{fontSize:11,color:'#475569',paddingLeft:4}}>&#8226; {d}</div>)}
+              </div>)}
+            </div>
+          </div>
+        </div>
+      </>}
+
+      {/* ── INVENTORY TAB ── */}
+      {qbTab==='inventory'&&<>
+        <div className="card" style={{marginBottom:16}}>
+          <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+            <h2>Inventory Sync (Totals Only)</h2>
+            <button className="btn btn-primary btn-sm" disabled={qbSyncing} onClick={syncInventory}>{qbSyncing?'Syncing...':'Sync Inventory'}</button>
+          </div>
+          <div style={{padding:'8px 16px',background:'#fffbeb',fontSize:11,color:'#92400e',borderBottom:'1px solid #fef3c7'}}>
+            Syncs product totals (qty + cost value) as non-inventory items to QB. Real size-level inventory tracking stays on the portal.
+          </div>
+          <div className="card-body" style={{padding:0,maxHeight:500,overflow:'auto'}}>
+            <table style={{fontSize:11}}>
+              <thead><tr style={{background:'#f8fafc'}}><th>SKU</th><th>Product</th><th>Brand</th><th style={{textAlign:'right'}}>Total Qty</th><th style={{textAlign:'right'}}>Cost Value</th><th>QB Status</th></tr></thead>
+              <tbody>
+                {prod.filter(p=>p.is_active!==false).map(p=>{
+                  const inv=p._inv||{};
+                  const totalQty=Object.values(inv).reduce((a,v)=>a+safeNum(v),0);
+                  const totalValue=totalQty*safeNum(p.nsa_cost);
+                  return<tr key={p.id} style={{borderBottom:'1px solid #f1f5f9'}}>
+                    <td style={{fontWeight:700,fontFamily:'monospace'}}>{p.sku}</td>
+                    <td>{p.name}{p.color?' - '+p.color:''}</td>
+                    <td><span className="badge badge-gray">{p.brand}</span></td>
+                    <td style={{textAlign:'right',fontWeight:600}}>{totalQty}</td>
+                    <td style={{textAlign:'right',fontWeight:600,color:'#166534'}}>${totalValue.toFixed(2)}</td>
+                    <td>{p.qb_item_id?<span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:'#dcfce7',color:'#166534',fontWeight:600}}>QB #{p.qb_item_id}</span>:
+                      <span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:'#f1f5f9',color:'#94a3b8',fontWeight:600}}>—</span>}</td>
+                  </tr>})}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </>}
+
+      {/* ── SETTINGS TAB ── */}
+      {qbTab==='settings'&&<>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}}>
+          <div className="card">
+            <div className="card-header"><h2>Account Mapping</h2></div>
+            <div className="card-body">
+              <div style={{fontSize:11,color:'#64748b',marginBottom:8}}>Map NSA data to your QB Chart of Accounts</div>
+              {[['income_account','Income / Revenue','Sales'],['cogs_account','Cost of Goods Sold','Cost of Goods Sold'],['deco_account','Decoration Expense','Subcontractor - Decoration'],['ar_account','Accounts Receivable','Accounts Receivable'],['ap_account','Accounts Payable','Accounts Payable']].map(([key,label,def])=>
+                <div key={key} style={{display:'flex',gap:8,alignItems:'center',marginBottom:6}}>
+                  <span style={{fontSize:11,fontWeight:600,color:'#475569',width:150}}>{label}</span>
+                  <input className="form-input" style={{flex:1,fontSize:11,padding:'4px 8px'}} value={qbConfig.mapping[key]||def}
+                    onChange={e=>setQBConfig(prev=>({...prev,mapping:{...prev.mapping,[key]:e.target.value}}))}/>
+                </div>)}
+            </div>
+          </div>
+          <div className="card">
+            <div className="card-header"><h2>Connection Details</h2></div>
+            <div className="card-body" style={{fontSize:12}}>
+              <div style={{marginBottom:6}}><strong>Realm ID:</strong> <code style={{background:'#f1f5f9',padding:'1px 4px',borderRadius:3}}>{qbConfig.realm_id||'—'}</code></div>
+              <div style={{marginBottom:6}}><strong>Company:</strong> {qbConfig.companyName||'—'}</div>
+              <div style={{marginBottom:6}}><strong>Token Status:</strong> {qbConfig.access_token?
+                <span style={{color:'#16a34a',fontWeight:600}}>Active ({Math.max(0,Math.round((3600000-(Date.now()-(qbConfig.token_created_at||0)))/60000))} min remaining)</span>:
+                <span style={{color:'#dc2626'}}>Not authenticated</span>}</div>
+              <div style={{marginBottom:12}}><strong>Auto-sync:</strong> {qbConfig.autoSync}</div>
+              <div style={{padding:10,background:'#f8fafc',borderRadius:6,fontSize:11,color:'#64748b'}}>
+                <strong>Required Netlify env vars:</strong><br/>
+                QB_CLIENT_ID — from developer.intuit.com<br/>
+                QB_CLIENT_SECRET — from developer.intuit.com<br/>
+                QB_REDIRECT_URI — your site's qb-auth callback URL
+              </div>
+            </div>
+          </div>
+        </div>
+      </>}
+
+      {/* ── SYNC LOG TAB ── */}
+      {qbTab==='log'&&<>
+        <div className="card">
+          <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+            <h2>Sync History</h2>
+            {qbConfig.syncLog.length>0&&<button className="btn btn-sm btn-secondary" onClick={()=>setQBConfig(prev=>({...prev,syncLog:[]}))}>Clear Log</button>}
+          </div>
+          <div className="card-body" style={{padding:0,maxHeight:500,overflow:'auto'}}>
+            {qbConfig.syncLog.length===0?<div className="empty" style={{padding:20}}>No sync history yet</div>:
+            qbConfig.syncLog.map((log,i)=><div key={i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9'}}>
+              <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
+                <span style={{fontSize:9,padding:'1px 5px',borderRadius:3,fontWeight:600,
+                  background:log.status==='success'?'#dcfce7':log.status==='partial'?'#fef3c7':log.status==='skipped'?'#f1f5f9':'#fef2f2',
+                  color:log.status==='success'?'#166534':log.status==='partial'?'#92400e':log.status==='skipped'?'#64748b':'#dc2626'}}>{log.status}</span>
+                <span style={{fontSize:11,fontWeight:700}}>{log.type==='all'?'Full Sync':log.type.replace(/_/g,' ')}</span>
+                <span style={{fontSize:10,color:'#94a3b8',marginLeft:'auto'}}>{log.ts}</span>
+              </div>
+              {log.details.map((d,di)=><div key={di} style={{fontSize:10,color:'#64748b',paddingLeft:8}}>&#8226; {d}</div>)}
+            </div>)}
+          </div>
+        </div>
+      </>}
+      </>}
+
+      {/* Setup info when not connected */}
+      {!qbConfig.connected&&<div className="card" style={{marginTop:16}}>
+        <div className="card-header"><h2>Setup Instructions</h2></div>
+        <div className="card-body" style={{fontSize:12,color:'#64748b'}}>
+          <div style={{marginBottom:8}}><strong>1. Create a QuickBooks Developer App:</strong></div>
+          <div style={{paddingLeft:16,marginBottom:12}}>
+            Go to developer.intuit.com &#8594; Create an app &#8594; Select "QuickBooks Online and Payments"<br/>
+            Scope: <code>com.intuit.quickbooks.accounting</code><br/>
+            Redirect URI: <code>https://your-site.netlify.app/.netlify/functions/qb-auth?action=callback</code>
+          </div>
+          <div style={{marginBottom:8}}><strong>2. Add Netlify environment variables:</strong></div>
+          <div style={{fontFamily:'monospace',fontSize:10,background:'#f8fafc',padding:10,borderRadius:6,marginBottom:12}}>
+            QB_CLIENT_ID=your_client_id<br/>
+            QB_CLIENT_SECRET=your_client_secret<br/>
+            QB_REDIRECT_URI=https://your-site.netlify.app/.netlify/functions/qb-auth?action=callback
+          </div>
+          <div style={{marginBottom:8}}><strong>3. What gets synced:</strong></div>
+          <div>&#8226; <strong>Customers</strong> &#8594; QB Customers (name, contact, address, order totals in notes)</div>
+          <div>&#8226; <strong>Invoices</strong> &#8594; QB Invoices (total amount as single line, payments applied)</div>
+          <div>&#8226; <strong>Vendor Bills</strong> &#8594; Upload bills with PDF/image attachments directly into QB</div>
+          <div>&#8226; <strong>Inventory</strong> &#8594; Product totals as QB Items (qty + cost value — real inventory stays on portal)</div>
+        </div>
+      </div>}
     </>);
   };
 
