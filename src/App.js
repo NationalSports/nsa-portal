@@ -4918,6 +4918,150 @@ function VendDetail({vendor,onBack}){return(<div><button className="btn btn-seco
   <div className="stats-row"><div className="stat-card"><div className="stat-label">Invoices</div><div className="stat-value">{vendor._oi||0}</div></div><div className="stat-card"><div className="stat-label">Current</div><div className="stat-value" style={{color:'#166534'}}>${(vendor._ac||0).toLocaleString()}</div></div><div className="stat-card"><div className="stat-label">30 Day</div><div className="stat-value" style={{color:(vendor._a3||0)>0?'#d97706':''}}>${(vendor._a3||0).toLocaleString()}</div></div><div className="stat-card"><div className="stat-label">60+</div><div className="stat-value" style={{color:(vendor._a6||0)>0?'#dc2626':''}}>${((vendor._a6||0)+(vendor._a9||0)).toLocaleString()}</div></div></div>
   <div className="card"><div className="card-header"><h2>Purchase Orders</h2></div><div className="card-body"><div className="empty">PO tracking — Phase 4</div></div></div></div>)}
 
+// ─── TAXCLOUD SETTINGS COMPONENT ───
+function TaxCloudSettings({supabase,nf,cust,setCust}){
+  const[tcStatus,setTcStatus]=useState({tested:false,ok:false,msg:'',loading:false});
+  const[refreshStatus,setRefreshStatus]=useState({loading:false,result:null});
+
+  const testConnection=async()=>{
+    setTcStatus({tested:false,ok:false,msg:'',loading:true});
+    try{
+      if(!supabase){setTcStatus({tested:true,ok:false,msg:'Supabase not configured — set REACT_APP_SUPABASE_URL and REACT_APP_SUPABASE_ANON_KEY',loading:false});return}
+      const r=await supabase.functions.invoke('taxcloud-lookup',{body:{address1:'',city:'',state:'TX',zip5:'75001'}});
+      if(r.data?.ok){setTcStatus({tested:true,ok:true,msg:'Connected — test rate for TX 75001: '+r.data.tax_pct+'%',loading:false})}
+      else{setTcStatus({tested:true,ok:false,msg:r.data?.error||r.error?.message||'Lookup failed — check API credentials in Supabase secrets',loading:false})}
+    }catch(e){setTcStatus({tested:true,ok:false,msg:'Error: '+e.message,loading:false})}
+  };
+
+  const refreshAllRates=async()=>{
+    setRefreshStatus({loading:true,result:null});
+    try{
+      if(!supabase){setRefreshStatus({loading:false,result:{ok:false,error:'Supabase not configured'}});return}
+      const r=await supabase.functions.invoke('taxcloud-refresh',{body:{}});
+      if(r.data?.ok){
+        setRefreshStatus({loading:false,result:r.data});
+        // Update local customer tax rates from the changes
+        if(r.data.changes?.length>0){
+          setCust(prev=>prev.map(c=>{const ch=r.data.changes.find(x=>x.id===c.id);return ch?{...c,tax_rate:ch.new_rate}:c}));
+        }
+        nf(r.data.updated+' customer rate(s) updated');
+      }else{setRefreshStatus({loading:false,result:{ok:false,error:r.data?.error||r.error?.message||'Refresh failed'}})}
+    }catch(e){setRefreshStatus({loading:false,result:{ok:false,error:e.message}})}
+  };
+
+  const taxableCusts=cust.filter(c=>c.is_active!==false&&!c.tax_exempt&&(c.tax_rate||0)>0);
+  const exemptCusts=cust.filter(c=>c.is_active!==false&&c.tax_exempt);
+  const noRateCusts=cust.filter(c=>c.is_active!==false&&!c.tax_exempt&&!(c.tax_rate>0)&&c.shipping_state);
+  const statesUsed=[...new Set(taxableCusts.map(c=>(c.shipping_state||'').toUpperCase()).filter(Boolean))].sort();
+
+  return<>
+    {/* Connection Status */}
+    <div className="card" style={{marginBottom:16}}>
+      <div className="card-header"><h3>TaxCloud Connection</h3></div>
+      <div className="card-body">
+        <div style={{fontSize:12,color:'#64748b',marginBottom:12}}>
+          TaxCloud handles sales tax rate lookups and files returns automatically. API credentials are stored as Supabase Edge Function secrets (TAXCLOUD_API_LOGIN_ID, TAXCLOUD_API_KEY).
+        </div>
+        <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:12}}>
+          <button className="btn btn-sm btn-primary" onClick={testConnection} disabled={tcStatus.loading}
+            style={{fontSize:12}}>{tcStatus.loading?'Testing...':'Test Connection'}</button>
+          {tcStatus.tested&&<div style={{display:'flex',alignItems:'center',gap:6}}>
+            <span style={{width:10,height:10,borderRadius:'50%',background:tcStatus.ok?'#22c55e':'#ef4444',display:'inline-block'}}/>
+            <span style={{fontSize:12,color:tcStatus.ok?'#166534':'#dc2626',fontWeight:600}}>{tcStatus.ok?'Connected':'Failed'}</span>
+          </div>}
+        </div>
+        {tcStatus.msg&&<div style={{padding:8,background:tcStatus.ok?'#f0fdf4':'#fef2f2',border:'1px solid '+(tcStatus.ok?'#bbf7d0':'#fecaca'),borderRadius:6,fontSize:11,color:tcStatus.ok?'#166534':'#991b1b'}}>{tcStatus.msg}</div>}
+        <div style={{marginTop:12,padding:10,background:'#f8fafc',borderRadius:6}}>
+          <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:6}}>EDGE FUNCTIONS</div>
+          <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+            {[['taxcloud-lookup','Rate Lookup','Looks up tax rate for a shipping address'],['taxcloud-capture','Capture / File','Reports paid invoices for state filing'],['taxcloud-refresh','Quarterly Refresh','Batch updates all customer rates']].map(([fn,label,desc])=>
+              <div key={fn} style={{flex:'1 1 180px',padding:8,background:'white',border:'1px solid #e2e8f0',borderRadius:6}}>
+                <div style={{fontSize:11,fontWeight:700,color:'#1e40af',fontFamily:'monospace'}}>{fn}</div>
+                <div style={{fontSize:10,color:'#475569',fontWeight:600}}>{label}</div>
+                <div style={{fontSize:9,color:'#94a3b8'}}>{desc}</div>
+              </div>)}
+          </div>
+        </div>
+      </div>
+    </div>
+
+    {/* Customer Rate Summary */}
+    <div className="card" style={{marginBottom:16}}>
+      <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+        <h3>Customer Tax Rates</h3>
+        <button className="btn btn-sm" style={{fontSize:11,background:'#7c3aed',color:'white',border:'none'}} onClick={refreshAllRates} disabled={refreshStatus.loading}>
+          {refreshStatus.loading?'Refreshing...':'Refresh All Rates'}</button>
+      </div>
+      <div className="card-body">
+        {refreshStatus.result&&<div style={{marginBottom:12,padding:10,borderRadius:6,fontSize:12,
+          background:refreshStatus.result.ok?'#f0fdf4':'#fef2f2',border:'1px solid '+(refreshStatus.result.ok?'#bbf7d0':'#fecaca'),
+          color:refreshStatus.result.ok?'#166534':'#991b1b'}}>
+          {refreshStatus.result.ok?<>
+            <strong>Refresh complete:</strong> {refreshStatus.result.total_customers} customers checked, {refreshStatus.result.updated} updated, {refreshStatus.result.skipped} skipped, {refreshStatus.result.errors} errors
+            {refreshStatus.result.changes?.length>0&&<div style={{marginTop:6}}>{refreshStatus.result.changes.map((ch,i)=>
+              <div key={i} style={{fontSize:11}}>{ch.name}: {(ch.old_rate*100).toFixed(3)}% → <strong>{(ch.new_rate*100).toFixed(3)}%</strong></div>)}</div>}
+          </>:<>Error: {refreshStatus.result.error}</>}
+        </div>}
+
+        <div style={{display:'flex',gap:12,marginBottom:12}}>
+          <div style={{padding:10,background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:8,flex:1,textAlign:'center'}}>
+            <div style={{fontSize:22,fontWeight:800,color:'#166534'}}>{taxableCusts.length}</div>
+            <div style={{fontSize:10,color:'#64748b'}}>Taxable (rate set)</div>
+          </div>
+          <div style={{padding:10,background:'#fef2f2',border:'1px solid #fecaca',borderRadius:8,flex:1,textAlign:'center'}}>
+            <div style={{fontSize:22,fontWeight:800,color:'#dc2626'}}>{exemptCusts.length}</div>
+            <div style={{fontSize:10,color:'#64748b'}}>Tax Exempt</div>
+          </div>
+          <div style={{padding:10,background:noRateCusts.length>0?'#fef3c7':'#f8fafc',border:'1px solid '+(noRateCusts.length>0?'#fde68a':'#e2e8f0'),borderRadius:8,flex:1,textAlign:'center'}}>
+            <div style={{fontSize:22,fontWeight:800,color:noRateCusts.length>0?'#d97706':'#94a3b8'}}>{noRateCusts.length}</div>
+            <div style={{fontSize:10,color:'#64748b'}}>Missing Rate</div>
+          </div>
+        </div>
+
+        {noRateCusts.length>0&&<div style={{marginBottom:12}}>
+          <div style={{fontSize:11,fontWeight:700,color:'#d97706',marginBottom:4}}>Customers needing tax rate:</div>
+          <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>{noRateCusts.map(c=>
+            <span key={c.id} style={{padding:'3px 8px',background:'#fef3c7',border:'1px solid #fde68a',borderRadius:6,fontSize:11,color:'#92400e'}}>{c.name} ({c.shipping_state||'?'})</span>)}
+          </div>
+        </div>}
+
+        {statesUsed.length>0&&<div>
+          <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:4}}>States with active tax rates:</div>
+          <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>{statesUsed.map(st=>{
+            const count=taxableCusts.filter(c=>(c.shipping_state||'').toUpperCase()===st).length;
+            const avgRate=taxableCusts.filter(c=>(c.shipping_state||'').toUpperCase()===st).reduce((a,c)=>a+(c.tax_rate||0),0)/count;
+            return<span key={st} style={{padding:'4px 10px',background:'#dbeafe',border:'1px solid #93c5fd',borderRadius:6,fontSize:11,color:'#1e40af',fontWeight:600}}>
+              {st} <span style={{fontSize:9,fontWeight:400}}>({count}) ~{(avgRate*100).toFixed(2)}%</span></span>})}</div>
+        </div>}
+      </div>
+    </div>
+
+    {/* Auto-Capture Info */}
+    <div className="card" style={{marginBottom:16}}>
+      <div className="card-header"><h3>Tax Filing (AuthorizedWithCapture)</h3></div>
+      <div className="card-body">
+        <div style={{fontSize:12,color:'#475569',lineHeight:1.6}}>
+          When an invoice is fully paid, the portal automatically reports the transaction to TaxCloud via <strong>AuthorizedWithCapture</strong>. This means:
+        </div>
+        <div style={{marginTop:8,display:'flex',flexDirection:'column',gap:6}}>
+          {[['TaxCloud calculates the exact tax for each line item based on TIC codes','#2563eb'],
+            ['The transaction is authorized and captured in a single call','#7c3aed'],
+            ['TaxCloud includes it in your next state filing','#166534'],
+            ['Invoices show a "TC" badge once reported','#d97706']
+          ].map(([text,color],i)=>
+            <div key={i} style={{display:'flex',gap:8,alignItems:'center'}}>
+              <span style={{width:6,height:6,borderRadius:'50%',background:color,flexShrink:0}}/>
+              <span style={{fontSize:12}}>{text}</span>
+            </div>)}
+        </div>
+        <div style={{marginTop:12,padding:8,background:'#fef3c7',borderRadius:6,fontSize:11,color:'#92400e'}}>
+          <strong>TIC Code:</strong> All items default to TIC 20010 (Clothing/Apparel). TaxCloud automatically handles state-specific apparel exemptions (PA, NJ, MN, etc.).
+        </div>
+      </div>
+    </div>
+  </>;
+}
+
 // MODALS
 function CustModal({isOpen,onClose,onSave,customer,parents}){
   const b={parent_id:null,name:'',alpha_tag:'',contacts:[{name:'',email:'',phone:'',role:'Head Coach'}],shipping_city:'',shipping_state:'',adidas_ua_tier:'B',catalog_markup:1.65,payment_terms:'net30'};
@@ -8330,6 +8474,20 @@ export default function App(){
       setInvs(prev=>prev.map(i=>i.id===inv.id?updated:i));
       setPayModal(null);
       nf('💰 $'+amount.toLocaleString()+' recorded on '+inv.id+(fee>0?' (+$'+fee.toFixed(2)+' CC fee)':''));
+      // Auto-report to TaxCloud when invoice is fully paid
+      if(newStatus==='paid'&&(inv.tax||0)>0&&!inv.tc_reported&&supabase){
+        const c=cust.find(x=>x.id===inv.customer_id);
+        if(c&&!c.tax_exempt&&(c.shipping_state||c.billing_state)){
+          (async()=>{try{
+            const r=await supabase.functions.invoke('taxcloud-capture',{body:{
+              action:'capture',customer_id:inv.customer_id,invoice_id:inv.id,so_id:inv.so_id||inv.id,
+              items:(inv.items||inv.line_items||[]).map(it=>({sku:it.sku||it.desc||'ITEM',name:it.name||it.desc||'Item',price:it.rate||it.unit_sell||0,qty:it.qty||1})),
+              destination:{state:c.shipping_state||c.billing_state||'',zip5:c.shipping_zip||c.billing_zip||''}}});
+            if(r.data?.ok){setInvs(prev=>prev.map(i=>i.id===inv.id?{...i,tc_reported:true,tc_tax:r.data.total_tax}:i));nf('TaxCloud: $'+r.data.total_tax+' tax filed for '+inv.id)}
+            else{console.warn('[TaxCloud] Capture failed for '+inv.id,r.data?.error)}
+          }catch(e){console.warn('[TaxCloud] Error capturing '+inv.id,e.message)}})();
+        }
+      }
     };
 
     // Grouped by customer
@@ -8424,9 +8582,11 @@ export default function App(){
             <td><span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,
               background:inv.status==='paid'?'#dcfce7':inv.status==='partial'?'#fef3c7':inv._overdue?'#fecaca':'#dbeafe',
               color:inv.status==='paid'?'#166534':inv.status==='partial'?'#92400e':inv._overdue?'#991b1b':'#1e40af'}}>
-              {inv.status==='paid'?'Paid':inv.status==='partial'?'Partial':inv._overdue?'Overdue':'Open'}</span></td>
+              {inv.status==='paid'?'Paid':inv.status==='partial'?'Partial':inv._overdue?'Overdue':'Open'}</span>
+              {inv.tc_reported&&<span style={{padding:'1px 5px',borderRadius:4,fontSize:8,fontWeight:700,background:'#dbeafe',color:'#1e40af',marginLeft:3,verticalAlign:'middle'}} title="Reported to TaxCloud for filing">TC</span>}</td>
             <td>{inv.status!=='paid'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#166534',color:'white',border:'none'}}
               onClick={()=>setPayModal({inv,amount:inv._bal,method:'check',ref:''})}>💰 Pay</button>}
+              {inv.status==='paid'&&!inv.tc_reported&&inv.tax>0&&<button className="btn btn-sm" style={{fontSize:8,padding:'2px 6px',background:'#1e40af',color:'white',border:'none'}} title="Report this invoice to TaxCloud for state tax filing" onClick={async()=>{const c=cust.find(x=>x.id===inv.customer_id);if(!c)return;if(!supabase){nf('Supabase not configured','error');return}try{const r=await supabase.functions.invoke('taxcloud-capture',{body:{action:'capture',customer_id:inv.customer_id,invoice_id:inv.id,so_id:inv.so_id||inv.id,items:(inv.items||inv.line_items||[]).map(it=>({sku:it.sku||it.desc||'ITEM',name:it.name||it.desc||'Item',price:it.rate||it.unit_sell||0,qty:it.qty||1})),destination:{state:c.shipping_state||c.billing_state||'',zip5:c.shipping_zip||c.billing_zip||''}}});if(r.data?.ok){setInvs(prev=>prev.map(i=>i.id===inv.id?{...i,tc_reported:true,tc_tax:r.data.total_tax}:i));nf('Reported to TaxCloud — $'+r.data.total_tax+' tax filed')}else{nf(r.data?.error||'TaxCloud capture failed','error')}}catch(e){nf('Error: '+e.message,'error')}}}>TC File</button>}
               <button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',marginLeft:2}} onClick={()=>{
                 const so=sos.find(s=>s.id===inv.so_id);const ic=cust.find(c=>c.id===inv.customer_id);
                 const invItems=(inv.line_items||[]).length>0?inv.line_items:
@@ -8492,7 +8652,8 @@ export default function App(){
                 <td><span style={{padding:'2px 6px',borderRadius:8,fontSize:9,fontWeight:600,
                   background:inv.status==='paid'?'#dcfce7':inv.status==='partial'?'#fef3c7':inv._overdue?'#fecaca':'#dbeafe',
                   color:inv.status==='paid'?'#166534':inv.status==='partial'?'#92400e':inv._overdue?'#991b1b':'#1e40af'}}>
-                  {inv.status==='paid'?'Paid':inv.status==='partial'?'Partial':inv._overdue?'Overdue':'Open'}</span></td>
+                  {inv.status==='paid'?'Paid':inv.status==='partial'?'Partial':inv._overdue?'Overdue':'Open'}</span>
+                  {inv.tc_reported&&<span style={{padding:'1px 5px',borderRadius:4,fontSize:8,fontWeight:700,background:'#dbeafe',color:'#1e40af',marginLeft:3}} title="Reported to TaxCloud">TC</span>}</td>
                 <td>{inv.status!=='paid'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#166534',color:'white',border:'none'}}
                   onClick={()=>setPayModal({inv,amount:inv._bal,method:'check',ref:''})}>💰 Pay</button>}</td>
               </tr>)}</tbody></table>
@@ -9172,6 +9333,25 @@ export default function App(){
           <div className="stat-card" style={{borderLeft:'3px solid #7c3aed',background:'#faf5ff'}}><div className="stat-label">{qLabel(curQ)} {curYear} ({qMonths[curQ]})</div><div className="stat-value" style={{color:'#7c3aed'}}>${qTax.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div><div style={{fontSize:10,color:'#64748b'}}>{thisQInvs.length} invoice(s)</div></div>
           <div className="stat-card" style={{borderLeft:'3px solid #166534'}}><div className="stat-label">{curYear} Year-to-Date</div><div className="stat-value" style={{color:'#166534'}}>${yearTax.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div><div style={{fontSize:10,color:'#64748b'}}>{thisYearInvs.length} invoice(s)</div></div>
           <div className="stat-card" style={{borderLeft:'3px solid #dc2626'}}><div className="stat-label">Exempt Customers</div><div className="stat-value" style={{color:'#dc2626'}}>{exemptCusts.length}</div></div>
+        </div>
+
+        {/* TaxCloud Filing Status */}
+        <div className="card" style={{marginBottom:12}}>
+          <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+            <div style={{display:'flex',alignItems:'center',gap:8}}><h2 style={{margin:0,fontSize:14}}>TaxCloud Filing Status</h2></div>
+            <button className="btn btn-sm" style={{fontSize:10,background:'#1e40af',color:'white',border:'none'}} onClick={async()=>{if(!supabase){nf('Supabase not configured','error');return}nf('Refreshing all customer tax rates...');try{const r=await supabase.functions.invoke('taxcloud-refresh',{body:{}});if(r.data?.ok){if(r.data.changes?.length>0)setCust(prev=>prev.map(c=>{const ch=r.data.changes.find(x=>x.id===c.id);return ch?{...c,tax_rate:ch.new_rate}:c}));nf(r.data.updated+' rate(s) updated out of '+r.data.total_customers+' checked')}else{nf(r.data?.error||'Refresh failed','error')}}catch(e){nf('Error: '+e.message,'error')}}}>Refresh All Rates</button>
+          </div>
+          <div className="card-body" style={{padding:'10px 16px'}}>
+            {(()=>{const reported=thisYearInvs.filter(i=>i.tc_reported);const unreported=thisYearInvs.filter(i=>!i.tc_reported&&(i.tax||0)>0&&i.status==='paid');
+              return<div style={{display:'flex',gap:12,fontSize:12}}>
+                <div style={{display:'flex',alignItems:'center',gap:6}}><span style={{width:8,height:8,borderRadius:'50%',background:'#22c55e'}}/>
+                  <span><strong>{reported.length}</strong> invoices reported to TaxCloud (${reported.reduce((a,i)=>a+(i.tc_tax||i.tax||0),0).toFixed(2)} tax filed)</span></div>
+                {unreported.length>0&&<div style={{display:'flex',alignItems:'center',gap:6}}><span style={{width:8,height:8,borderRadius:'50%',background:'#f59e0b'}}/>
+                  <span style={{color:'#d97706'}}><strong>{unreported.length}</strong> paid invoices not yet reported (${unreported.reduce((a,i)=>a+(i.tax||0),0).toFixed(2)} tax uncaptured)</span></div>}
+                {unreported.length===0&&thisYearInvs.filter(i=>i.status==='paid'&&(i.tax||0)>0).length>0&&<div style={{display:'flex',alignItems:'center',gap:6}}><span style={{width:8,height:8,borderRadius:'50%',background:'#22c55e'}}/>
+                  <span style={{color:'#166534'}}>All paid taxable invoices reported</span></div>}
+              </div>})()}
+          </div>
         </div>
 
         {/* Quarterly Tax Payable by State — for filing */}
@@ -12796,7 +12976,7 @@ export default function App(){
       if(key==='CATEGORIES')CATEGORIES=val;if(key==='POSITIONS')POSITIONS=val;if(key==='CONTACT_ROLES')CONTACT_ROLES=val;
       nf('Settings saved')}catch{nf('Error saving','warn')}};
   function rSettings(){
-    const tabs=[['pricing','Decoration Pricing'],['tiers','Customer Tiers'],['lists','Lists & Options'],['terms','Terms & Policies'],['labor','Labor Rates']];
+    const tabs=[['pricing','Decoration Pricing'],['tiers','Customer Tiers'],['lists','Lists & Options'],['terms','Terms & Policies'],['labor','Labor Rates'],['taxcloud','TaxCloud']];
     return(<>
       <div style={{display:'flex',gap:4,marginBottom:16,flexWrap:'wrap'}}>
         {tabs.map(([k,label])=><button key={k} className={`btn btn-sm ${settingsTab===k?'btn-primary':'btn-secondary'}`} onClick={()=>setSettingsTab(k)}>{label}</button>)}
@@ -12961,6 +13141,10 @@ export default function App(){
       </>}
 
       {/* LABOR RATES */}
+      {settingsTab==='taxcloud'&&<>
+        <TaxCloudSettings supabase={supabase} nf={nf} cust={cust} setCust={setCust}/>
+      </>}
+
       {settingsTab==='labor'&&<>
         <div className="card" style={{marginBottom:16}}>
           <div className="card-header"><h3>Hourly Labor Rates</h3></div>
