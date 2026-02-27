@@ -9414,13 +9414,30 @@ export default function App(){
   };
 
   // WAREHOUSE DASHBOARD
-  const[whTab,setWhTab]=useState('pull');const[whSearch,setWhSearch]=useState('');const[whRepF,setWhRepF]=useState('all');const[scanModalOpen,setScanModalOpen]=useState(false);
+  const[whTab,setWhTab]=useState('pull');const[whSearch,setWhSearch]=useState('');const[whRepF,setWhRepF]=useState('all');const[scanModalOpen,setScanModalOpen]=useState(false);const[whRecvPO,setWhRecvPO]=useState(null);
   const[stockPOs,setStockPOs]=useState([
     {id:'PO-5001-NSA',vendor_id:'v1',vendor_name:'Adidas',status:'partial',created_at:'02/12/26',notes:'Restock pregame tees',items:[{sku:'JX4453',name:'Adidas Unisex Pregame Tee',color:'Team Power Red/White',sizes:{S:20,M:30,L:25,XL:15,'2XL':10},received:{S:20,M:30,L:0,XL:0,'2XL':0}}]},
     {id:'PO-5002-NSA',vendor_id:'v2',vendor_name:'Under Armour',status:'waiting',created_at:'02/18/26',notes:'Stock up on polos for spring',items:[{sku:'1370399',name:'Under Armour Team Polo',color:'Cardinal/White',sizes:{S:10,M:20,L:20,XL:15,'2XL':8},received:{}}]},
   ]);const[showStockPO,setShowStockPO]=useState(null);const[stockPOCounter,setStockPOCounter]=useState(5003);
   const[decoSearch,setDecoSearch]=useState('');const[decoRepF,setDecoRepF]=useState('all');const[decoStatF,setDecoStatF]=useState('active');const[decoTypeF,setDecoTypeF]=useState('all');
   const[decoCardFilter,setDecoCardFilter]=useState(null);// null|'ready'|'in_process'|'waiting'
+
+  function handleReceiveScan(val){
+    if(!val)return;
+    let sv=val.trim();
+    try{const u=new URL(sv);const sp=u.searchParams.get('scan');if(sp)sv=sp}catch{}
+    try{const j=JSON.parse(sv);if(j.id)sv=j.id}catch{}
+    const lc=sv.toLowerCase();
+    const bm=submittedBatches.find(sb=>sb.po_number.toLowerCase()===lc);
+    if(bm){setWhRecvPO(bm.po_number);nf('Loaded '+bm.po_number);return}
+    for(const so of sos){for(const it of safeItems(so)){for(const po of safePOs(it)){
+      if((po.po_id||'').toLowerCase()===lc){setWhRecvPO(po.po_id);nf('Loaded '+po.po_id);return}}}}
+    const im=invPOs.find(p=>p.po_number.toLowerCase()===lc);
+    if(im){setWhRecvPO(im.po_number);nf('Loaded '+im.po_number);return}
+    const sm=stockPOs.find(p=>p.id.toLowerCase()===lc);
+    if(sm){setWhRecvPO(sm.id);nf('Loaded '+sm.id);return}
+    nf('PO "'+sv+'" not found','warn');
+  }
 
   function rWarehouse(){
     const{pullTasks,shipTasks,decoTasks}=buildWarehouseData();
@@ -9483,49 +9500,293 @@ export default function App(){
 
       {/* ── SCAN TO RECEIVE ── */}
       {whTab==='receive'&&<>
-        <div style={{maxWidth:600,margin:'0 auto'}}>
+        {!whRecvPO ? /* === SCAN MODE === */ <div style={{maxWidth:600,margin:'0 auto'}}>
           <div style={{textAlign:'center',marginBottom:16}}>
             <div style={{fontSize:16,fontWeight:800,color:'#1e3a5f',marginBottom:4}}>Scan Vendor Ship Label</div>
-            <div style={{fontSize:12,color:'#64748b'}}>Scan the barcode or QR code on the vendor shipping label to pull up the PO</div>
+            <div style={{fontSize:12,color:'#64748b'}}>Scan the barcode or QR code on the vendor shipping label, or click a PO below</div>
           </div>
-          <BarcodeScanner placeholder="Type or scan PO number (e.g. NSA-4501, PO-3001)..." onScan={(val)=>{handleScanResult(val)}}/>
-          {/* Recent scans quick list */}
+          <BarcodeScanner placeholder="Type or scan PO number (e.g. NSA-4501, PO-3001)..." onScan={handleReceiveScan}/>
           <div style={{marginTop:20}}>
             <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:8,textTransform:'uppercase'}}>Open POs Awaiting Receive</div>
             {(()=>{
               const openPOs=[];
-              // Submitted batches awaiting
               submittedBatches.filter(sb=>sb.status!=='received').forEach(sb=>{
                 openPOs.push({id:sb.po_number,vendor:sb.vendor_name,units:sb.total_units,date:sb.submitted_at,type:'batch'})});
-              // SO PO lines awaiting
               sos.forEach(so=>{safeItems(so).forEach(it=>{safePOs(it).forEach(po=>{
                 const szKeys=Object.keys(po).filter(k=>typeof po[k]==='number'&&!['status'].includes(k));
                 const open=szKeys.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-((po.received||{})[sz]||0)-((po.cancelled||{})[sz]||0)),0);
-                if(open>0&&!openPOs.find(x=>x.id===po.po_id))openPOs.push({id:po.po_id||'—',vendor:po.vendor||'',units:open,date:po.created_at||'',type:'so',soId:so.id,so})
+                if(open>0&&!openPOs.find(x=>x.id===po.po_id))openPOs.push({id:po.po_id||'—',vendor:po.vendor||'',units:open,date:po.created_at||'',type:'so'})
               })})});
-              // Inventory POs awaiting
               invPOs.filter(p=>p.status!=='received'&&p.status!=='cancelled').forEach(po=>{
                 const units=po.items.reduce((a,it)=>a+Object.values(it.sizes).reduce((a2,v)=>a2+v,0)-Object.values(it.received||{}).reduce((a2,v)=>a2+v,0),0);
                 if(!openPOs.find(x=>x.id===po.po_number))openPOs.push({id:po.po_number,vendor:po.vendor_name,units,date:po.created_at,type:'inv'})});
-              // Stock POs awaiting
               stockPOs.filter(p=>p.status!=='received').forEach(po=>{
                 const units=po.items.reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((a2,v)=>a2+v,0)-Object.values(it.received||{}).reduce((a2,v)=>a2+v,0),0);
                 if(!openPOs.find(x=>x.id===po.id))openPOs.push({id:po.id,vendor:po.vendor_name,units,date:po.created_at,type:'stock'})});
               if(openPOs.length===0)return<div style={{textAlign:'center',padding:20,color:'#94a3b8',fontSize:13}}>No open POs awaiting receive</div>;
               return<div className="card"><div className="card-body" style={{padding:0}}>
                 <table style={{fontSize:12}}><thead><tr><th>PO #</th><th>Vendor</th><th>Open Units</th><th>Date</th><th></th></tr></thead><tbody>
-                {openPOs.slice(0,20).map((po,i)=><tr key={po.id+i} style={{cursor:'pointer'}} onClick={()=>handleScanResult(po.id)}>
+                {openPOs.slice(0,20).map((po,i)=><tr key={po.id+i} style={{cursor:'pointer'}} onClick={()=>setWhRecvPO(po.id)}>
                   <td style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af'}}>{po.id}</td>
                   <td>{po.vendor}</td>
                   <td style={{fontWeight:700,color:'#d97706'}}>{po.units}</td>
                   <td style={{fontSize:11,color:'#64748b'}}>{po.date}</td>
-                  <td><button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} onClick={e=>{e.stopPropagation();handleScanResult(po.id)}}>Open</button></td>
+                  <td><button className="btn btn-sm" style={{fontSize:10,padding:'2px 8px',background:'#22c55e',color:'white',border:'none',borderRadius:4}} onClick={e=>{e.stopPropagation();setWhRecvPO(po.id)}}>Receive</button></td>
                 </tr>)}
                 </tbody></table>
               </div></div>;
             })()}
           </div>
         </div>
+
+        : /* === RECEIVING MODE === */ (()=>{
+          const poId=whRecvPO;const lc=poId.toLowerCase();
+          // Look up PO across all sources
+          const batchMatch=submittedBatches.find(sb=>sb.po_number.toLowerCase()===lc);
+          const soPOLines=[];
+          sos.forEach(so=>{const c2=cust.find(x=>x.id===so.customer_id);
+            safeItems(so).forEach((it,idx)=>{safePOs(it).forEach((po,pli)=>{
+              if((po.po_id||'').toLowerCase()===lc)soPOLines.push({so,soId:so.id,customer:c2?.name||c2?.alpha_tag||'',item:it,itemIdx:idx,poLine:po,poLineIdx:pli})
+            })})});
+          const invMatch=invPOs.find(p=>p.po_number.toLowerCase()===lc);
+          const stockMatch=stockPOs.find(p=>p.id.toLowerCase()===lc);
+
+          // Build unified item list for display
+          const poItems=[];let vendorName='';let poDate='';
+          if(soPOLines.length>0){
+            vendorName=soPOLines[0]?.poLine?.vendor||batchMatch?.vendor_name||'';
+            poDate=soPOLines[0]?.poLine?.created_at||'';
+            soPOLines.forEach((pl,pli)=>{
+              const po=pl.poLine;
+              const szKeys=Object.keys(po).filter(k=>typeof po[k]==='number'&&!['status'].includes(k));
+              poItems.push({_idx:pli,sku:pl.item.sku,name:safeStr(pl.item.name),color:pl.item.color||'',
+                soId:pl.soId,customer:pl.customer,szKeys,
+                ordered:Object.fromEntries(szKeys.map(sz=>[sz,po[sz]||0])),
+                received:{...(po.received||{})},cancelled:{...(po.cancelled||{})},
+                shipments:po.shipments||[]});
+            });
+          } else if(invMatch){
+            vendorName=invMatch.vendor_name;poDate=invMatch.created_at;
+            invMatch.items.forEach((it,ii)=>{
+              const szKeys=Object.keys(it.sizes).filter(k=>(it.sizes[k]||0)>0);
+              poItems.push({_idx:ii,sku:it.sku,name:it.name,color:it.color||'',szKeys,
+                ordered:{...it.sizes},received:{...(it.received||{})},cancelled:{}});
+            });
+          } else if(stockMatch){
+            vendorName=stockMatch.vendor_name;poDate=stockMatch.created_at;
+            stockMatch.items.forEach((it,ii)=>{
+              const szKeys=Object.keys(it.sizes||{}).filter(k=>((it.sizes||{})[k]||0)>0);
+              poItems.push({_idx:ii,sku:it.sku,name:it.name,color:it.color||'',szKeys,
+                ordered:{...(it.sizes||{})},received:{...(it.received||{})},cancelled:{}});
+            });
+          } else if(batchMatch){
+            vendorName=batchMatch.vendor_name;poDate=batchMatch.submitted_at;
+            batchMatch.source_pos.forEach((sp,spi)=>{sp.items.forEach((it,iti)=>{
+              const szKeys=Object.keys(it.sizes).filter(k=>it.sizes[k]>0);
+              poItems.push({_idx:spi*100+iti,sku:it.sku,name:it.name,color:it.color||'',
+                soId:sp.so_id,customer:sp.customer,szKeys,
+                ordered:{...it.sizes},received:{},cancelled:{}});
+            })});
+          }
+
+          if(poItems.length===0&&!batchMatch)return<div style={{maxWidth:600,margin:'0 auto',textAlign:'center',padding:40}}>
+            <button onClick={()=>setWhRecvPO(null)} className="btn btn-sm btn-secondary" style={{marginBottom:16}}><Icon name="arrow-left" size={14}/> Back to Scan</button>
+            <div style={{color:'#dc2626',fontSize:14,fontWeight:700}}>PO "{poId}" not found</div>
+            <div style={{color:'#64748b',fontSize:12,marginTop:4}}>Scan a different PO or check the number</div>
+          </div>;
+
+          // Calculate totals
+          let totalOrdered=0,totalReceived=0,totalOpen=0;
+          poItems.forEach(it=>{it.szKeys.forEach(sz=>{
+            totalOrdered+=(it.ordered[sz]||0);totalReceived+=(it.received[sz]||0);
+            totalOpen+=Math.max(0,(it.ordered[sz]||0)-(it.received[sz]||0)-(it.cancelled[sz]||0));
+          })});
+          const isFullyReceived=(totalOpen<=0&&totalReceived>0)||(batchMatch?.status==='received');
+          const poStatus=isFullyReceived?'received':totalReceived>0?'partial':'waiting';
+
+          return<div style={{maxWidth:700,margin:'0 auto'}}>
+            {/* Back + scanner bar */}
+            <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:12}}>
+              <button onClick={()=>setWhRecvPO(null)} className="btn btn-sm btn-secondary" style={{display:'flex',alignItems:'center',gap:4,whiteSpace:'nowrap'}}>
+                <Icon name="arrow-left" size={14}/> Back</button>
+              <div style={{flex:1}}>
+                <BarcodeScanner placeholder="Scan next PO..." onScan={handleReceiveScan}/>
+              </div>
+            </div>
+
+            {/* PO Header */}
+            <div className="card" style={{marginBottom:0,overflow:'hidden',borderLeft:'4px solid '+(poStatus==='received'?'#22c55e':poStatus==='partial'?'#2563eb':'#d97706')}}>
+              <div style={{background:poStatus==='received'?'linear-gradient(135deg,#166534,#22c55e)':'linear-gradient(135deg,#1e3a5f,#2563eb)',color:'white',padding:'16px 20px'}}>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                  <div>
+                    <div style={{fontSize:10,opacity:0.6,fontWeight:600,textTransform:'uppercase'}}>Receiving</div>
+                    <div style={{fontSize:24,fontWeight:900,fontFamily:'monospace',letterSpacing:2}}>{poId}</div>
+                    {vendorName&&<div style={{fontSize:12,opacity:0.8}}>{vendorName}</div>}
+                    {poDate&&<div style={{fontSize:11,opacity:0.5}}>{poDate}</div>}
+                  </div>
+                  <div style={{textAlign:'right'}}>
+                    <span className={`badge ${poStatus==='received'?'badge-green':poStatus==='partial'?'badge-amber':'badge-blue'}`} style={{fontSize:12,padding:'4px 10px'}}>
+                      {poStatus==='received'?'Fully Received':poStatus==='partial'?totalReceived+'/'+totalOrdered+' received':'Waiting'}</span>
+                    <div style={{fontSize:11,opacity:0.7,marginTop:4}}>{totalOrdered} ordered · {poItems.length} item{poItems.length!==1?'s':''}</div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Items with receiving inputs */}
+              <div style={{padding:0}}>
+                {poItems.map((it,i)=>{
+                  const hasOpen=it.szKeys.some(sz=>Math.max(0,(it.ordered[sz]||0)-(it.received[sz]||0)-(it.cancelled[sz]||0))>0);
+                  return<div key={i} style={{padding:'12px 16px',borderBottom:'1px solid #e2e8f0'}}>
+                    <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:8,flexWrap:'wrap'}}>
+                      <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:12}}>{it.sku}</span>
+                      <span style={{fontWeight:600,fontSize:13}}>{it.name}</span>
+                      {it.color&&<span className="badge badge-gray">{it.color}</span>}
+                      {it.soId&&<span style={{marginLeft:'auto',fontSize:10,color:'#64748b'}}>{it.soId}{it.customer?' · '+it.customer:''}</span>}
+                    </div>
+                    <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}>
+                      <thead><tr style={{borderBottom:'2px solid #e2e8f0'}}>
+                        <th style={{padding:'3px 6px',textAlign:'left',fontSize:10,color:'#64748b',width:80}}></th>
+                        {it.szKeys.map(sz=><th key={sz} style={{padding:'3px 6px',textAlign:'center',minWidth:44,fontSize:11,fontWeight:700}}>{sz}</th>)}
+                        <th style={{padding:'3px 6px',textAlign:'center',fontSize:10,fontWeight:700}}>TOTAL</th>
+                      </tr></thead>
+                      <tbody>
+                        <tr><td style={{padding:'2px 6px',fontSize:10,color:'#64748b'}}>Ordered</td>
+                          {it.szKeys.map(sz=><td key={sz} style={{padding:'2px 6px',textAlign:'center',fontWeight:700}}>{it.ordered[sz]||0}</td>)}
+                          <td style={{padding:'2px 6px',textAlign:'center',fontWeight:800}}>{it.szKeys.reduce((a,sz)=>a+(it.ordered[sz]||0),0)}</td></tr>
+                        {it.szKeys.some(sz=>(it.received[sz]||0)>0)&&
+                          <tr style={{color:'#166534'}}><td style={{padding:'2px 6px',fontSize:10}}>Received</td>
+                            {it.szKeys.map(sz=><td key={sz} style={{padding:'2px 6px',textAlign:'center',fontWeight:700,color:(it.received[sz]||0)>0?'#166534':'#d1d5db'}}>{(it.received[sz]||0)||'—'}</td>)}
+                            <td style={{padding:'2px 6px',textAlign:'center',fontWeight:800}}>{it.szKeys.reduce((a,sz)=>a+(it.received[sz]||0),0)}</td></tr>}
+                        {hasOpen&&<tr style={{borderTop:'1px solid #e2e8f0'}}>
+                          <td style={{padding:'4px 6px',fontSize:10,fontWeight:700,color:'#166534'}}>Receive Now</td>
+                          {it.szKeys.map(sz=>{
+                            const open=Math.max(0,(it.ordered[sz]||0)-(it.received[sz]||0)-(it.cancelled[sz]||0));
+                            if(open<=0)return<td key={sz} style={{padding:'4px 6px',textAlign:'center',color:'#22c55e',fontSize:11}}>&#10003;</td>;
+                            return<td key={sz} style={{padding:'4px 6px',textAlign:'center'}}>
+                              <input id={'wh-rcv-'+i+'-'+sz} type="number" style={{width:46,textAlign:'center',border:'2px solid #22c55e',borderRadius:6,padding:'4px 2px',fontSize:14,fontWeight:700,background:'#f0fdf4'}} defaultValue={open} min={0} max={it.ordered[sz]||0}/>
+                              <div style={{fontSize:8,color:'#64748b'}}>{open} open</div>
+                            </td>})}
+                          <td></td>
+                        </tr>}
+                      </tbody>
+                    </table>
+                    {/* Shipment history for this item */}
+                    {it.shipments&&it.shipments.length>0&&<div style={{marginTop:6}}>
+                      {it.shipments.map((sh,si)=>{const shSizes=it.szKeys.filter(sz=>sh[sz]);
+                        return shSizes.length>0&&<div key={si} style={{padding:'4px 8px',background:'#f0fdf4',borderRadius:4,fontSize:10,display:'inline-flex',gap:6,marginRight:4,marginBottom:2}}>
+                          <span style={{fontWeight:700,color:'#166534'}}>{sh.date}</span>
+                          {shSizes.map(sz=><span key={sz}>{sz}:<strong>{sh[sz]}</strong></span>)}
+                        </div>})}
+                    </div>}
+                  </div>})}
+
+                {/* SO references */}
+                {poItems.some(it=>it.soId)&&<div style={{padding:'8px 16px',background:'#f8fafc',borderTop:'1px solid #e2e8f0'}}>
+                  <div style={{fontSize:10,fontWeight:600,color:'#94a3b8',marginBottom:4}}>AFFECTS SALES ORDERS</div>
+                  <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                    {[...new Set(poItems.filter(it=>it.soId).map(it=>it.soId))].map(sid=>{const it=poItems.find(p=>p.soId===sid);
+                      return<span key={sid} style={{fontSize:10,padding:'2px 8px',background:'#eff6ff',borderRadius:6,color:'#1e40af',fontWeight:600,cursor:'pointer'}}
+                        onClick={()=>{const so=sos.find(s=>s.id===sid);if(so){const cc=cust.find(x=>x.id===so.customer_id);setESO(so);setESOC(cc);setESOTab('items');setPg('orders')}}}>{sid} <span style={{color:'#64748b',fontWeight:400}}>{it?.customer||''}</span></span>})}
+                  </div>
+                </div>}
+              </div>
+
+              {/* Confirm Receive action bar */}
+              {!isFullyReceived&&totalOpen>0&&<div style={{padding:'12px 16px',borderTop:'2px solid #22c55e',background:'#f0fdf4',display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                <div style={{display:'flex',gap:6,alignItems:'center'}}>
+                  <span style={{fontSize:11,fontWeight:600,color:'#64748b'}}>Date:</span>
+                  <input type="date" id="wh-recv-date" className="form-input" style={{width:140,fontSize:12}} defaultValue={new Date().toISOString().split('T')[0]}/>
+                </div>
+                <button className="btn btn-primary" style={{background:'#22c55e',borderColor:'#22c55e',padding:'8px 20px',marginLeft:'auto',fontSize:13,fontWeight:800}} onClick={()=>{
+                  const date=document.getElementById('wh-recv-date')?.value||new Date().toISOString().split('T')[0];
+                  let anyReceived=false;
+
+                  // --- SO PO Lines: group by SO to avoid overwrite race ---
+                  if(soPOLines.length>0){
+                    const soGroups={};
+                    soPOLines.forEach((pl,pli)=>{
+                      if(!soGroups[pl.soId])soGroups[pl.soId]={so:sos.find(s=>s.id===pl.soId),lines:[]};
+                      soGroups[pl.soId].lines.push({...pl,displayIdx:pli});
+                    });
+                    Object.values(soGroups).forEach(({so:grpSO,lines})=>{
+                      if(!grpSO)return;
+                      const updItems=[...safeItems(grpSO)];
+                      lines.forEach(pl=>{
+                        const po=updItems[pl.itemIdx]?.po_lines?.[pl.poLineIdx];if(!po)return;
+                        const szKeys=Object.keys(po).filter(k=>typeof po[k]==='number'&&!['status'].includes(k));
+                        const shipment={date};const newReceived={...(po.received||{})};
+                        szKeys.forEach(sz=>{
+                          const open=Math.max(0,(po[sz]||0)-((po.received||{})[sz]||0)-((po.cancelled||{})[sz]||0));
+                          if(open<=0)return;
+                          const el=document.getElementById('wh-rcv-'+pl.displayIdx+'-'+sz);
+                          const qty=el?Math.min(parseInt(el.value)||0,open):0;
+                          if(qty>0){newReceived[sz]=(newReceived[sz]||0)+qty;shipment[sz]=qty;anyReceived=true}
+                        });
+                        if(Object.keys(shipment).length<=1)return;
+                        const newShipments=[...(po.shipments||[]),shipment];
+                        const newTotalOpen=szKeys.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-(newReceived[sz]||0)-((po.cancelled||{})[sz]||0)),0);
+                        const newStatus=newTotalOpen<=0&&Object.values(newReceived).some(v=>v>0)?'received':Object.values(newReceived).some(v=>v>0)?'partial':'waiting';
+                        const pls=[...(updItems[pl.itemIdx].po_lines||[])];
+                        pls[pl.poLineIdx]={...po,received:newReceived,shipments:newShipments,status:newStatus};
+                        updItems[pl.itemIdx]={...updItems[pl.itemIdx],po_lines:pls};
+                      });
+                      savSO({...grpSO,items:updItems,updated_at:new Date().toLocaleString()});
+                    });
+                  }
+
+                  // --- Batch PO status ---
+                  if(batchMatch&&batchMatch.status!=='received'){
+                    setSubmittedBatches(prev=>prev.map(sb=>sb.po_number===poId?{...sb,status:'received',received_at:new Date().toLocaleString(),received_by:cu.name}:sb));
+                    anyReceived=true;
+                  }
+
+                  // --- Inventory POs ---
+                  if(invMatch){
+                    const updInvItems=invMatch.items.map((it,ii)=>{
+                      const newRcvd={...(it.received||{})};
+                      Object.keys(it.sizes).forEach(sz=>{
+                        const open=Math.max(0,(it.sizes[sz]||0)-((it.received||{})[sz]||0));
+                        if(open<=0)return;
+                        const el=document.getElementById('wh-rcv-'+ii+'-'+sz);
+                        const qty=el?Math.min(parseInt(el.value)||0,open):0;
+                        if(qty>0){newRcvd[sz]=(newRcvd[sz]||0)+qty;anyReceived=true}
+                      });return{...it,received:newRcvd};
+                    });
+                    const allDone=updInvItems.every(it=>Object.keys(it.sizes).every(sz=>((it.received||{})[sz]||0)>=(it.sizes[sz]||0)));
+                    setInvPOs(prev=>prev.map(p=>p.po_number===invMatch.po_number?{...p,items:updInvItems,status:allDone?'received':'partial',
+                      ...(allDone?{received_at:new Date().toLocaleString(),received_by:cu.name}:{})}:p));
+                  }
+
+                  // --- Stock POs ---
+                  if(stockMatch){
+                    const updStockItems=stockMatch.items.map((it,ii)=>{
+                      const newRcvd={...(it.received||{})};
+                      Object.keys(it.sizes||{}).forEach(sz=>{
+                        const open=Math.max(0,((it.sizes||{})[sz]||0)-((it.received||{})[sz]||0));
+                        if(open<=0)return;
+                        const el=document.getElementById('wh-rcv-'+ii+'-'+sz);
+                        const qty=el?Math.min(parseInt(el.value)||0,open):0;
+                        if(qty>0){newRcvd[sz]=(newRcvd[sz]||0)+qty;anyReceived=true}
+                      });return{...it,received:newRcvd};
+                    });
+                    const allDone=updStockItems.every(it=>Object.keys(it.sizes||{}).every(sz=>((it.received||{})[sz]||0)>=((it.sizes||{})[sz]||0)));
+                    setStockPOs(prev=>prev.map(p=>p.id===stockMatch.id?{...p,items:updStockItems,status:allDone?'received':'partial'}:p));
+                  }
+
+                  if(anyReceived){nf('Received on '+poId);setWhRecvPO(null)}
+                  else nf('Enter quantities to receive','error');
+                }}>&#10003; Confirm Received</button>
+              </div>}
+
+              {/* Fully received banner */}
+              {isFullyReceived&&<div style={{padding:'16px 20px',background:'#f0fdf4',borderTop:'2px solid #22c55e',textAlign:'center'}}>
+                <div style={{fontSize:16,fontWeight:800,color:'#166534',marginBottom:2}}>Fully Received</div>
+                <div style={{fontSize:12,color:'#15803d'}}>{totalReceived} units received</div>
+                <button onClick={()=>setWhRecvPO(null)} className="btn btn-sm btn-secondary" style={{marginTop:8}}>Scan Next PO</button>
+              </div>}
+            </div>
+          </div>
+        })()}
       </>}
 
       {/* ── PULL & STAGE ── */}
