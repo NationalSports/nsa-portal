@@ -5285,7 +5285,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
 
 // ─── BARCODE / QR CAMERA SCANNER ───
 const BarcodeScanner=({onScan,onClose,placeholder='Scan barcode or QR code...'})=>{
-  const videoRef=useRef(null);const streamRef=useRef(null);const canvasRef=useRef(null);const scanningRef=useRef(false);
+  const videoRef=useRef(null);const streamRef=useRef(null);const scanningRef=useRef(false);
   const[active,setActive]=useState(false);const[error,setError]=useState(null);const[manualVal,setManualVal]=useState('');
   const detectorRef=useRef(null);
 
@@ -5302,9 +5302,9 @@ const BarcodeScanner=({onScan,onClose,placeholder='Scan barcode or QR code...'})
         scanningRef.current=true;
         scanLoop();
       } else {
-        // Fallback: use QR code reader via canvas-based polling with basic detection
-        scanningRef.current=true;
-        scanLoopFallback();
+        // BarcodeDetector not supported — stop camera and prompt manual entry
+        stopCamera();
+        setError('Barcode scanning not supported in this browser. Use manual entry below, or switch to Chrome for camera scanning.');
       }
     }catch(err){
       if(err.name==='NotAllowedError')setError('Camera permission denied. Please allow camera access and try again.');
@@ -5321,15 +5321,8 @@ const BarcodeScanner=({onScan,onClose,placeholder='Scan barcode or QR code...'})
         const val=barcodes[0].rawValue;
         if(val){stopCamera();onScan(val);return}
       }
-    }catch{}
+    }catch(err){if(err?.name!=='InvalidStateError')console.warn('[BarcodeScanner] detect error:',err?.message||err)}
     requestAnimationFrame(()=>setTimeout(scanLoop,150));
-  };
-
-  const scanLoopFallback=()=>{
-    // Fallback polling - reads from video and checks for text patterns via image analysis
-    // For devices without BarcodeDetector, users should use manual entry
-    if(!scanningRef.current)return;
-    setTimeout(scanLoopFallback,500);
   };
 
   const stopCamera=()=>{
@@ -5349,7 +5342,6 @@ const BarcodeScanner=({onScan,onClose,placeholder='Scan barcode or QR code...'})
     {/* Camera viewport */}
     {active?<div style={{position:'relative',background:'#000'}}>
       <video ref={videoRef} style={{width:'100%',maxHeight:280,objectFit:'cover',display:'block'}} playsInline muted/>
-      <canvas ref={canvasRef} style={{display:'none'}}/>
       {/* Scan overlay */}
       <div style={{position:'absolute',top:0,left:0,right:0,bottom:0,display:'flex',alignItems:'center',justifyContent:'center',pointerEvents:'none'}}>
         <div style={{width:200,height:200,border:'2px solid rgba(34,197,94,0.7)',borderRadius:12,boxShadow:'0 0 0 9999px rgba(0,0,0,0.3)'}}/>
@@ -9414,7 +9406,7 @@ export default function App(){
   };
 
   // WAREHOUSE DASHBOARD
-  const[whTab,setWhTab]=useState('pull');const[whSearch,setWhSearch]=useState('');const[whRepF,setWhRepF]=useState('all');const[scanModalOpen,setScanModalOpen]=useState(false);const[whRecvPO,setWhRecvPO]=useState(null);
+  const[whTab,setWhTab]=useState('pull');const[whSearch,setWhSearch]=useState('');const[whRepF,setWhRepF]=useState('all');const[scanModalOpen,setScanModalOpen]=useState(false);const[whRecvPO,setWhRecvPO]=useState(null);const[whReceiving,setWhReceiving]=useState(false);
   const[stockPOs,setStockPOs]=useState([
     {id:'PO-5001-NSA',vendor_id:'v1',vendor_name:'Adidas',status:'partial',created_at:'02/12/26',notes:'Restock pregame tees',items:[{sku:'JX4453',name:'Adidas Unisex Pregame Tee',color:'Team Power Red/White',sizes:{S:20,M:30,L:25,XL:15,'2XL':10},received:{S:20,M:30,L:0,XL:0,'2XL':0}}]},
     {id:'PO-5002-NSA',vendor_id:'v2',vendor_name:'Under Armour',status:'waiting',created_at:'02/18/26',notes:'Stock up on polos for spring',items:[{sku:'1370399',name:'Under Armour Team Polo',color:'Cardinal/White',sizes:{S:10,M:20,L:20,XL:15,'2XL':8},received:{}}]},
@@ -9697,9 +9689,20 @@ export default function App(){
                   <span style={{fontSize:11,fontWeight:600,color:'#64748b'}}>Date:</span>
                   <input type="date" id="wh-recv-date" className="form-input" style={{width:140,fontSize:12}} defaultValue={new Date().toISOString().split('T')[0]}/>
                 </div>
-                <button className="btn btn-primary" style={{background:'#22c55e',borderColor:'#22c55e',padding:'8px 20px',marginLeft:'auto',fontSize:13,fontWeight:800}} onClick={()=>{
+                <button className="btn btn-primary" disabled={whReceiving} style={{background:whReceiving?'#86efac':'#22c55e',borderColor:'#22c55e',padding:'8px 20px',marginLeft:'auto',fontSize:13,fontWeight:800,opacity:whReceiving?0.6:1}} onClick={()=>{
+                  if(whReceiving)return;
+                  // Batch-read all receive input values upfront to avoid repeated DOM queries
+                  const rcvInputs={};document.querySelectorAll('[id^="wh-rcv-"]').forEach(el=>{rcvInputs[el.id]=parseInt(el.value)||0});
+                  const getRcvQty=(idx,sz,maxOpen)=>{const v=rcvInputs['wh-rcv-'+idx+'-'+sz];return v!=null?Math.min(v,maxOpen):0};
+                  // Pre-check: sum up what will be received vs what's open
+                  let preTotal=0;poItems.forEach((it,i)=>{it.szKeys.forEach(sz=>{
+                    const open=Math.max(0,(it.ordered[sz]||0)-(it.received[sz]||0)-(it.cancelled?.[sz]||0));
+                    if(open>0)preTotal+=getRcvQty(i,sz,open);
+                  })});
+                  if(preTotal>0&&preTotal<totalOpen&&!window.confirm('Partial receive: '+preTotal+' of '+totalOpen+' open units. Continue?')){return}
+                  setWhReceiving(true);
                   const date=document.getElementById('wh-recv-date')?.value||new Date().toISOString().split('T')[0];
-                  let anyReceived=false;
+                  let anyReceived=false;let totalQtyReceived=0;
 
                   // --- SO PO Lines: group by SO to avoid overwrite race ---
                   if(soPOLines.length>0){
@@ -9718,9 +9721,8 @@ export default function App(){
                         szKeys.forEach(sz=>{
                           const open=Math.max(0,(po[sz]||0)-((po.received||{})[sz]||0)-((po.cancelled||{})[sz]||0));
                           if(open<=0)return;
-                          const el=document.getElementById('wh-rcv-'+pl.displayIdx+'-'+sz);
-                          const qty=el?Math.min(parseInt(el.value)||0,open):0;
-                          if(qty>0){newReceived[sz]=(newReceived[sz]||0)+qty;shipment[sz]=qty;anyReceived=true}
+                          const qty=getRcvQty(pl.displayIdx,sz,open);
+                          if(qty>0){newReceived[sz]=(newReceived[sz]||0)+qty;shipment[sz]=qty;anyReceived=true;totalQtyReceived+=qty}
                         });
                         if(Object.keys(shipment).length<=1)return;
                         const newShipments=[...(po.shipments||[]),shipment];
@@ -9747,14 +9749,13 @@ export default function App(){
                       Object.keys(it.sizes).forEach(sz=>{
                         const open=Math.max(0,(it.sizes[sz]||0)-((it.received||{})[sz]||0));
                         if(open<=0)return;
-                        const el=document.getElementById('wh-rcv-'+ii+'-'+sz);
-                        const qty=el?Math.min(parseInt(el.value)||0,open):0;
-                        if(qty>0){newRcvd[sz]=(newRcvd[sz]||0)+qty;anyReceived=true}
+                        const qty=getRcvQty(ii,sz,open);
+                        if(qty>0){newRcvd[sz]=(newRcvd[sz]||0)+qty;anyReceived=true;totalQtyReceived+=qty}
                       });return{...it,received:newRcvd};
                     });
                     const allDone=updInvItems.every(it=>Object.keys(it.sizes).every(sz=>((it.received||{})[sz]||0)>=(it.sizes[sz]||0)));
                     setInvPOs(prev=>prev.map(p=>p.po_number===invMatch.po_number?{...p,items:updInvItems,status:allDone?'received':'partial',
-                      ...(allDone?{received_at:new Date().toLocaleString(),received_by:cu.name}:{})}:p));
+                      received_at:new Date().toLocaleString(),received_by:cu.name}:p));
                   }
 
                   // --- Stock POs ---
@@ -9764,18 +9765,18 @@ export default function App(){
                       Object.keys(it.sizes||{}).forEach(sz=>{
                         const open=Math.max(0,((it.sizes||{})[sz]||0)-((it.received||{})[sz]||0));
                         if(open<=0)return;
-                        const el=document.getElementById('wh-rcv-'+ii+'-'+sz);
-                        const qty=el?Math.min(parseInt(el.value)||0,open):0;
-                        if(qty>0){newRcvd[sz]=(newRcvd[sz]||0)+qty;anyReceived=true}
+                        const qty=getRcvQty(ii,sz,open);
+                        if(qty>0){newRcvd[sz]=(newRcvd[sz]||0)+qty;anyReceived=true;totalQtyReceived+=qty}
                       });return{...it,received:newRcvd};
                     });
                     const allDone=updStockItems.every(it=>Object.keys(it.sizes||{}).every(sz=>((it.received||{})[sz]||0)>=((it.sizes||{})[sz]||0)));
-                    setStockPOs(prev=>prev.map(p=>p.id===stockMatch.id?{...p,items:updStockItems,status:allDone?'received':'partial'}:p));
+                    setStockPOs(prev=>prev.map(p=>p.id===stockMatch.id?{...p,items:updStockItems,status:allDone?'received':'partial',received_at:new Date().toLocaleString(),received_by:cu.name}:p));
                   }
 
-                  if(anyReceived){nf('Received on '+poId);setWhRecvPO(null)}
-                  else nf('Enter quantities to receive','error');
-                }}>&#10003; Confirm Received</button>
+                  setWhReceiving(false);
+                  if(anyReceived){nf('Received '+totalQtyReceived+' unit'+(totalQtyReceived!==1?'s':'')+' on '+poId);setWhRecvPO(null)}
+                  else{const allAlreadyDone=totalOpen<=0;nf(allAlreadyDone?'All items on '+poId+' already fully received':'Enter at least one quantity to receive','error')}
+                }}>{whReceiving?'Saving...':'✓ Confirm Received'}</button>
               </div>}
 
               {/* Fully received banner */}
