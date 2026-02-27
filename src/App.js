@@ -5066,7 +5066,7 @@ function TaxCloudSettings({supabase,nf,cust,setCust}){
 function CustModal({isOpen,onClose,onSave,customer,parents}){
   const b={parent_id:null,name:'',alpha_tag:'',contacts:[{name:'',email:'',phone:'',role:'Head Coach'}],shipping_city:'',shipping_state:'',adidas_ua_tier:'B',catalog_markup:1.65,payment_terms:'net30'};
   const[f,setF]=useState(customer||b);const[ct,setCt]=useState(customer?.parent_id?'sub':'parent');const[err,setErr]=useState({});const[tcLook,setTcLook]=useState({loading:false,msg:''});
-  const doTcLookup=async(fields)=>{if(!supabase||!fields.shipping_state||!fields.shipping_zip)return null;try{const r=await supabase.functions.invoke('taxcloud-lookup',{body:{address1:fields.shipping_address_line1||'',city:fields.shipping_city||'',state:fields.shipping_state,zip5:fields.shipping_zip}});const d=r.data&&typeof r.data==='object'?r.data:(typeof r.error==='object'&&r.error?.context?.body?JSON.parse(r.error.context.body):null);if(d?.ok)return d;const msg=d?.error||r.error?.message||'Lookup failed — check API credentials';return{ok:false,error:msg}}catch(e){return{ok:false,error:'Error: '+e.message}}};
+  const doTcLookup=async(fields)=>{if(!supabase||!fields.shipping_state||!fields.shipping_zip)return null;try{const r=await supabase.functions.invoke('taxcloud-lookup',{body:{address1:fields.shipping_address_line1||'',city:fields.shipping_city||'',state:fields.shipping_state,zip5:fields.shipping_zip}});if(r.data&&typeof r.data==='object'&&r.data.ok)return r.data;const msg=(r.data&&typeof r.data==='object'&&r.data.error)?r.data.error:(typeof r.error==='string'?r.error:r.error?.message||'Lookup failed — check API credentials');return{ok:false,error:msg}}catch(e){return{ok:false,error:'Error: '+e.message}}};
   const APPAREL_EXEMPT=['MN','NJ','PA','VT','AK','DE','MT','NH','OR'];const APPAREL_THRESHOLD=['MA','NY','RI'];
   const sv=(k,v)=>setF(x=>({...x,[k]:v}));React.useEffect(()=>{setF(customer||b);setCt(customer?.parent_id?'sub':'parent');setErr({});setTcLook({loading:false,msg:''})},[customer,isOpen]); // eslint-disable-line
   const addC=()=>sv('contacts',[...(f.contacts||[]),{name:'',email:'',phone:'',role:'Head Coach'}]);const rmC=i=>sv('contacts',(f.contacts||[]).filter((_,x)=>x!==i));
@@ -11826,6 +11826,8 @@ export default function App(){
       const subCount=added.filter(c=>c.parent_id).length;
       setBulkImp(x=>({...x,step:'done',added:added.length,skipped,parentCount,subCount}));
       nf('✅ Imported '+parentCount+' parents, '+subCount+' sub-accounts'+(skipped.length?' ('+skipped.length+' skipped)':''));
+      // Auto-fetch tax rates from TaxCloud for imported customers missing rates
+      if(supabase&&added.length>0){const needRate=added.filter(c=>!c.tax_exempt&&!(c.tax_rate>0)&&c.shipping_state&&c.shipping_zip);if(needRate.length>0){nf('Looking up tax rates for '+needRate.length+' customers...');(async()=>{let updated=0;for(const c of needRate){try{const r=await supabase.functions.invoke('taxcloud-lookup',{body:{address1:c.shipping_address_line1||'',city:c.shipping_city||'',state:c.shipping_state,zip5:c.shipping_zip}});if(r.data?.ok){setCust(prev=>prev.map(x=>x.id===c.id?{...x,tax_rate:r.data.tax_rate}:x));updated++}}catch(e){}await new Promise(r=>setTimeout(r,500))}nf('Tax rates updated for '+updated+'/'+needRate.length+' customers')})()}}
     };
 
     // Import vendors
