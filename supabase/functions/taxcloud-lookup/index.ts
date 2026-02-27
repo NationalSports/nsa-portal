@@ -34,7 +34,14 @@ serve(async (req: Request) => {
     if (!state || !zip5) {
       return new Response(
         JSON.stringify({ ok: false, error: "State and ZIP are required" }),
-        { status: 400, headers: CORS }
+        { status: 200, headers: CORS }
+      );
+    }
+
+    if (!TAXCLOUD_API_ID || !TAXCLOUD_API_KEY) {
+      return new Response(
+        JSON.stringify({ ok: false, error: "TaxCloud API credentials not configured — set TAXCLOUD_API_LOGIN_ID and TAXCLOUD_API_KEY in Supabase secrets" }),
+        { status: 200, headers: CORS }
       );
     }
 
@@ -68,7 +75,7 @@ serve(async (req: Request) => {
     if (data.ResponseType === 0 || (!data.CartItemsResponse && data.Messages?.length)) {
       return new Response(
         JSON.stringify({ ok: false, error: data.Messages?.[0]?.Message || "TaxCloud lookup failed" }),
-        { status: 400, headers: CORS }
+        { status: 200, headers: CORS }
       );
     }
 
@@ -88,7 +95,7 @@ serve(async (req: Request) => {
   } catch (err) {
     return new Response(
       JSON.stringify({ ok: false, error: String(err) }),
-      { status: 500, headers: CORS }
+      { status: 200, headers: CORS }
     );
   }
 });

@@ -125,7 +125,7 @@ serve(async (req: Request) => {
   } catch (err) {
     return new Response(
       JSON.stringify({ ok: false, error: String(err) }),
-      { status: 500, headers: CORS }
+      { status: 200, headers: CORS }
     );
   }
 });
