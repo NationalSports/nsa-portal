@@ -5876,7 +5876,7 @@ export default function App(){
   const[dashView,setDashView]=useState('admin');// admin|sales|warehouse|decorator|production|csr
   const[prodDashFilter,setProdDashFilter]=useState(null);// null|'hold'|'ready'|'staging'|'in_process'|'completed'
   const[qbConfig,setQBConfig]=useState({connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',
-    access_token:'',refresh_token:'',realm_id:'',token_created_at:0,sandbox:true,
+    access_token:'',refresh_token:'',realm_id:'',token_created_at:0,sandbox:false,
     mapping:{income_account:'Sales',cogs_account:'Cost of Goods Sold',deco_account:'Subcontractor - Decoration',ar_account:'Accounts Receivable',ap_account:'Accounts Payable',tax_account:'Sales Tax Payable'},
     syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}});
   const[qbTab,setQbTab]=useState('overview');
@@ -6018,7 +6018,7 @@ export default function App(){
           if(as.change_log)setChangeLog(as.change_log);
           if(as.so_history)setSOHistory(as.so_history);
           if(as.job_time_logs)setJobTimeLogs(as.job_time_logs);
-          if(as.qb_config)setQBConfig(as.qb_config);
+          if(as.qb_config)setQBConfig({...as.qb_config,sandbox:as.qb_config.sandbox===true&&as.qb_config.realm_id?false:as.qb_config.sandbox});
           if(as.inv_pos)setInvPOs(as.inv_pos);
           if(as.inv_adj_log)setInvAdjLog(as.inv_adj_log);
           if(as.inv_po_counter)setInvPOCounter(as.inv_po_counter);
@@ -6226,10 +6226,10 @@ export default function App(){
   React.useEffect(()=>{
     if(dbLoading||!_pendingQBTokens.current)return;
     const t=_pendingQBTokens.current;_pendingQBTokens.current=null;
-    setQBConfig(prev=>({...prev,connected:true,access_token:t.access_token,refresh_token:t.refresh_token,
+    setQBConfig(prev=>({...prev,connected:true,sandbox:false,access_token:t.access_token,refresh_token:t.refresh_token,
       realm_id:t.realm_id,token_created_at:t.created_at||Date.now()}));
     fetch('/.netlify/functions/qb-api',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({action:'company_info',access_token:t.access_token,realm_id:t.realm_id})})
+      body:JSON.stringify({action:'company_info',access_token:t.access_token,realm_id:t.realm_id,sandbox:false})})
       .then(r=>r.json()).then(d=>{
         const ci=d?.CompanyInfo;
         if(ci)setQBConfig(prev=>({...prev,companyId:t.realm_id,companyName:ci.CompanyName||'Connected'}));
