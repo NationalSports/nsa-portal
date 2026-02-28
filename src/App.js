@@ -13745,6 +13745,7 @@ export default function App(){
       setQbSyncing(true);
       const log={ts:new Date().toLocaleString(),type:'customers',status:'success',details:[]};
       let synced=0;
+      const custQBMap={};// localId -> qbCustomerId (returned for downstream syncs)
       // Fetch existing QB customers to match by name and avoid duplicates
       let existingQBCusts=[];
       try{
@@ -13780,33 +13781,39 @@ export default function App(){
         };
         const res=await qbApi('upsert_customer',{customer:qbCustomer});
         if(res?.Customer?.Id){
-          // Store QB ID back on customer
+          custQBMap[c.id]=res.Customer.Id;
           setCust(prev=>prev.map(cc=>cc.id===c.id?{...cc,qb_customer_id:res.Customer.Id}:cc));
           log.details.push(c.name+' → QB #'+res.Customer.Id);synced++;
-        }else{log.details.push(c.name+' — FAILED: '+(res?.Fault?.Error?.[0]?.Detail||'unknown error'));log.status='partial'}
+        }else{
+          if(c.qb_customer_id)custQBMap[c.id]=c.qb_customer_id;
+          log.details.push(c.name+' — FAILED: '+(res?.Fault?.Error?.[0]?.Detail||'unknown error'));log.status='partial';
+        }
       }
+      cust.forEach(c=>{if(c.qb_customer_id&&!custQBMap[c.id])custQBMap[c.id]=c.qb_customer_id});
       if(synced===0&&log.details.length>0)log.status='error';
       log.details.unshift(synced+'/'+cust.filter(c=>c.is_active!==false).length+' customers synced');
       setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
       nf(synced+' customers synced to QB');
       setQbSyncing(false);
+      return custQBMap;
     };
 
     // ── SYNC: Invoices (totals) ──
-    const syncInvoices=async()=>{
+    const syncInvoices=async(custQBMap={})=>{
       setQbSyncing(true);
       const log={ts:new Date().toLocaleString(),type:'invoices',status:'success',details:[]};
       let synced=0;
       const unsyncedInvs2=invs.filter(i=>!i.qb_invoice_id);
       for(const inv of unsyncedInvs2){
         const c=cust.find(cc=>cc.id===inv.customer_id);
-        if(!c?.qb_customer_id){log.details.push((inv.display_id||inv.id)+' — skipped: customer "'+c?.name+'" not synced to QB');continue}
+        const cQBId=custQBMap[inv.customer_id]||c?.qb_customer_id;
+        if(!cQBId){log.details.push((inv.display_id||inv.id)+' — skipped: customer "'+c?.name+'" not synced to QB');continue}
         const so=sos.find(s=>s.id===inv.sales_order_id);
         const invPaid=(inv.payments||[]).reduce((a,p)=>a+safeNum(p.amount),0);
         const qbInvoice={
           DocNumber:inv.display_id||inv.id,
           TxnDate:inv.invoice_date||new Date().toISOString().slice(0,10),
-          CustomerRef:{value:c.qb_customer_id},
+          CustomerRef:{value:cQBId},
           Line:[{DetailType:'SalesItemLineDetail',Amount:inv.total||0,Description:'Invoice '+(inv.display_id||inv.id)+(so?' for '+so.id:'')+(so?.memo?' — '+so.memo:''),
             SalesItemLineDetail:{Quantity:1,UnitPrice:inv.total||0}}],
           ...(inv.qb_invoice_id?{Id:inv.qb_invoice_id,sparse:true}:{}),
@@ -13818,7 +13825,7 @@ export default function App(){
           // Sync payments if any
           if(invPaid>0&&inv.payments?.length){
             for(const pmt of inv.payments){
-              const qbPmt={CustomerRef:{value:c.qb_customer_id},TotalAmt:pmt.amount,
+              const qbPmt={CustomerRef:{value:cQBId},TotalAmt:pmt.amount,
                 Line:[{Amount:pmt.amount,LinkedTxn:[{TxnId:res.Invoice.Id,TxnType:'Invoice'}]}]};
               await qbApi('upsert_payment',{payment:qbPmt});
             }
@@ -13957,7 +13964,7 @@ export default function App(){
     };
 
     // ── SYNC: Sales Orders (as QB Estimates) ──
-    const syncSalesOrders=async()=>{
+    const syncSalesOrders=async(custQBMap={})=>{
       setQbSyncing(true);
       const log={ts:new Date().toLocaleString(),type:'sales_orders',status:'success',details:[]};
       let synced=0;
@@ -13968,7 +13975,8 @@ export default function App(){
       });
       for(const so of toSync){
         const c=cust.find(x=>x.id===so.customer_id);
-        if(!c?.qb_customer_id){log.details.push(so.id+' — skipped: customer not synced to QB');continue}
+        const cQBId=custQBMap[so.customer_id]||c?.qb_customer_id;
+        if(!cQBId){log.details.push(so.id+' — skipped: customer not synced to QB');continue}
         const saf=safeArt(so);
         const _aq={};safeItems(so).forEach(it2=>{const q2=Object.values(safeSizes(it2)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it2).forEach(d2=>{if(d2.kind==='art'&&d2.art_file_id){_aq[d2.art_file_id]=(_aq[d2.art_file_id]||0)+q2}})});
         const lines=[];
@@ -13990,7 +13998,7 @@ export default function App(){
         const qbEstimate={
           DocNumber:so.id,
           TxnDate:(so.created_at||'').slice(0,10)||new Date().toISOString().slice(0,10),
-          CustomerRef:{value:c.qb_customer_id},
+          CustomerRef:{value:cQBId},
           Line:lines,
           PrivateNote:'Portal SO: '+so.id+(so.memo?' — '+so.memo:''),
           ...(soMap[so.id]?{Id:soMap[so.id],sparse:true}:{}),
@@ -14014,6 +14022,19 @@ export default function App(){
       const log={ts:new Date().toLocaleString(),type:'purchase_orders',status:'success',details:[]};
       let synced=0;
       const poMap=qbConfig.qbPOMap||{};
+      // Fetch existing QB vendors to match by name and avoid duplicates
+      let existingQBVendors=[];
+      try{
+        const vRes=await qbApi('query',{query:"SELECT Id, DisplayName, CompanyName, SyncToken FROM Vendor MAXRESULTS 500"});
+        existingQBVendors=vRes?.QueryResponse?.Vendor||[];
+      }catch(e){console.warn('[QB] Vendor query failed:',e)}
+      const vendorQBMap={};// vendorName -> qbVendorId (cache for this sync run)
+      // Look up expense accounts for PO line items
+      let acctMap={};
+      try{
+        const acctRes=await qbApi('query',{query:"SELECT Id, Name, AccountType FROM Account WHERE AccountType IN ('Cost of Goods Sold','Expense') MAXRESULTS 200"});
+        (acctRes?.QueryResponse?.Account||[]).forEach(a=>{acctMap[a.Name]={value:a.Id,name:a.Name}});
+      }catch(e){console.warn('[QB] Account query failed:',e)}
       const toSync=[];
       sos.forEach(so=>{safeItems(so).forEach(it=>{(it.po_lines||[]).forEach(pl=>{
         if(!poMap[pl.po_id]){
@@ -14021,15 +14042,21 @@ export default function App(){
         }
       })})});
       for(const{pl,so,it,vendor:vendorName}of toSync){
+        if(!vendorName){log.details.push(pl.po_id+' — skipped: no vendor name');log.status='partial';continue}
         // Find or create vendor in QB
         let v=vend.find(x=>x.name===vendorName)||D_V.find(x=>x.name===vendorName);
-        let qbVendorId=v?.qb_vendor_id;
+        let qbVendorId=vendorQBMap[vendorName]||v?.qb_vendor_id;
         if(!qbVendorId){
-          const vRes=await qbApi('upsert_vendor',{vendor:{DisplayName:vendorName,CompanyName:vendorName}});
-          if(vRes?.Vendor?.Id){
-            qbVendorId=vRes.Vendor.Id;
-            if(v)setVend(prev=>prev.map(vv=>vv.id===v.id?{...vv,qb_vendor_id:qbVendorId}:vv));
-          }else{log.details.push(pl.po_id+' — vendor creation failed');log.status='partial';continue}
+          // Check existing QB vendors by name
+          const match=existingQBVendors.find(q=>q.DisplayName===vendorName||q.CompanyName===vendorName);
+          if(match){qbVendorId=match.Id}
+          else{
+            const vRes=await qbApi('upsert_vendor',{vendor:{DisplayName:vendorName,CompanyName:vendorName}});
+            if(vRes?.Vendor?.Id){qbVendorId=vRes.Vendor.Id}
+            else{log.details.push(pl.po_id+' — vendor "'+vendorName+'" creation failed: '+(vRes?.Fault?.Error?.[0]?.Detail||'unknown'));log.status='partial';continue}
+          }
+          vendorQBMap[vendorName]=qbVendorId;
+          if(v)setVend(prev=>prev.map(vv=>vv.id===v.id?{...vv,qb_vendor_id:qbVendorId}:vv));
         }
         const qty=Object.entries(pl).filter(([k,v])=>typeof v==='number'&&!['unit_cost'].includes(k)&&k.match(/^[A-Z0-9]/)).reduce((a,[,v])=>a+v,0);
         const rate=pl.po_type==='outside_deco'?safeNum(pl.unit_cost):safeNum(it.nsa_cost);
@@ -14038,9 +14065,9 @@ export default function App(){
           DocNumber:pl.po_id,
           VendorRef:{value:qbVendorId},
           TxnDate:(pl.created_at||'').slice(0,10)||new Date().toISOString().slice(0,10),
-          Line:[{DetailType:'ItemBasedExpenseLineDetail',Amount:qty*rate,
+          Line:[{DetailType:'AccountBasedExpenseLineDetail',Amount:qty*rate,
             Description:it.sku+' '+it.name+' (SO: '+so.id+')',
-            ItemBasedExpenseLineDetail:{Qty:qty,UnitPrice:rate,CustomerRef:undefined}}],
+            AccountBasedExpenseLineDetail:{Qty:qty,UnitPrice:rate,AccountRef:acctMap[account]||{name:account}}}],
           PrivateNote:'Portal PO for SO: '+so.id,
           ...(poMap[pl.po_id]?{Id:poMap[pl.po_id],sparse:true}:{}),
         };
@@ -14060,9 +14087,9 @@ export default function App(){
     // ── SYNC ALL ──
     const syncAll=async()=>{
       setQbSyncing(true);
-      await syncCustomers();
-      await syncSalesOrders();
-      await syncInvoices();
+      const custQBMap=await syncCustomers();
+      await syncSalesOrders(custQBMap);
+      await syncInvoices(custQBMap);
       await syncPurchaseOrders();
       await syncInventory();
       setQbSyncing(false);
@@ -15407,3 +15434,4 @@ export default function App(){
     </div></div>}
   </div>);
 }
+
