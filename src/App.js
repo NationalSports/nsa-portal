@@ -3560,8 +3560,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
               <div style={{fontSize:11,fontWeight:600,color:'#64748b'}}>Art:</div>
               <select className="form-select" style={{width:150,fontSize:11}} value={j.art_status} onChange={e=>updJob(ji,'art_status',e.target.value)}>
                 {Object.entries(artLabels).map(([k,v])=><option key={k} value={k}>{v}</option>)}</select>
-              <button className="btn btn-sm" style={{fontSize:10,background:'#be185d',color:'white',border:'none',padding:'3px 8px'}} onClick={()=>setArtReqModal({jIdx:ji,artist:'',instructions:'',files:[]})}>🎨 Request Art</button>
-              {(j.art_status==='waiting_approval')&&<button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'3px 8px'}} onClick={()=>{updJob(ji,'art_status','production_files_needed');if(j.art_file_id){const afi=af.findIndex(a=>a.id===j.art_file_id);if(afi>=0)uArt(afi,'status','approved')}nf('✅ Art approved — awaiting prod files')}}>✅ Approve Art</button>}
+              {(()=>{const hasReqs=(j.art_requests||[]).length>0;const activeReq=(j.art_requests||[]).find(r=>r.status==='in_progress'||r.status==='requested');
+                return<>{hasReqs&&<span style={{padding:'2px 8px',borderRadius:10,fontSize:9,fontWeight:700,background:activeReq?'#fef3c7':'#dcfce7',color:activeReq?'#92400e':'#166534',marginRight:4,animation:activeReq?'pulse 2s infinite':'none'}}>
+                  {activeReq?(activeReq.status==='in_progress'?'Art In Progress':'Art Requested'):'Art Complete'}</span>}
+                <button className="btn btn-sm" style={{fontSize:10,background:hasReqs?'#6d28d9':'#be185d',color:'white',border:'none',padding:'3px 8px'}} onClick={()=>setArtReqModal({jIdx:ji,artist:j.assigned_artist||'',instructions:'',files:[]})}>
+                  {hasReqs?'Update Art Request':'🎨 Request Art'}</button></>})()}
+              {(j.art_status==='waiting_approval')&&<button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'3px 8px'}} onClick={()=>{updJob(ji,'art_status','production_files_needed');if(j.art_file_id){const afi=af.findIndex(a=>a.id===j.art_file_id);if(afi>=0)uArt(afi,'status','approved')}nf('Art approved — awaiting prod files')}}>Approve Art</button>}
               <div style={{fontSize:11,fontWeight:600,color:'#64748b',marginLeft:8}}>Artist:</div>
               <select className="form-select" style={{width:130,fontSize:11}} value={j.assigned_artist||''} onChange={e=>updJob(ji,'assigned_artist',e.target.value)}>
                 <option value="">Unassigned</option>
@@ -3732,9 +3736,20 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           const updatedJobs=jobs.map((jj,i)=>i===artReqModal.jIdx?{...jj,art_requests:[...(jj.art_requests||[]),req],art_status:jj.art_status==='needs_art'?'art_requested':jj.art_status,assigned_artist:artReqModal.artist||jj.assigned_artist}:jj);
           const updated={...o,jobs:updatedJobs,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setArtReqModal(null);nf('Art request sent to '+(artists2.find(a=>a.id===artReqModal.artist)||{}).name||'artist');
         };
+        const hasExistingReqs2=(j2.art_requests||[]).length>0;
+        const activeReq2=(j2.art_requests||[]).find(r=>r.status==='in_progress'||r.status==='requested');
         return<div className="modal-overlay" onClick={()=>setArtReqModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
-          <div className="modal-header"><h2>🎨 Request Art — {j2.art_name}</h2><button className="modal-close" onClick={()=>setArtReqModal(null)}>×</button></div>
+          <div className="modal-header" style={hasExistingReqs2?{background:'#faf5ff'}:undefined}><h2>{hasExistingReqs2?'Update Art Request':'🎨 Request Art'} — {j2.art_name}</h2><button className="modal-close" onClick={()=>setArtReqModal(null)}>×</button></div>
           <div className="modal-body">
+            {hasExistingReqs2&&<div style={{padding:'10px 14px',marginBottom:12,borderRadius:8,border:'2px solid '+(activeReq2?'#fbbf24':'#86efac'),background:activeReq2?'#fffbeb':'#f0fdf4'}}>
+              <div style={{display:'flex',alignItems:'center',gap:8}}>
+                <span style={{fontSize:18}}>{activeReq2?(activeReq2.status==='in_progress'?'🎨':'📩'):'✅'}</span>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:13,fontWeight:700,color:activeReq2?'#92400e':'#166534'}}>{activeReq2?(activeReq2.status==='in_progress'?'Art In Progress — '+activeReq2.artist_name:'Art Requested — Awaiting '+activeReq2.artist_name):'All Requests Complete'}</div>
+                  <div style={{fontSize:10,color:'#64748b'}}>{(j2.art_requests||[]).length} request(s) total · Last: {new Date((j2.art_requests||[])[(j2.art_requests||[]).length-1]?.created_at).toLocaleDateString()}</div>
+                </div>
+              </div>
+            </div>}
             <div style={{marginBottom:12}}>
               <div className="form-label">Artist *</div>
               <select className="form-select" value={artReqModal.artist} onChange={e=>setArtReqModal(m=>({...m,artist:e.target.value}))}>
@@ -3743,8 +3758,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
               </select>
             </div>
             <div style={{marginBottom:12}}>
-              <div className="form-label">Instructions</div>
-              <textarea className="form-input" rows={4} placeholder="Describe what you need — mockup, revision, specific colors, placement notes, etc." value={artReqModal.instructions} onChange={e=>setArtReqModal(m=>({...m,instructions:e.target.value}))} style={{resize:'vertical'}}/>
+              <div className="form-label">{hasExistingReqs2?'Update / Additional Instructions':'Instructions'}</div>
+              <textarea className="form-input" rows={4} placeholder={hasExistingReqs2?'Add revision notes, feedback, or additional instructions...':'Describe what you need — mockup, revision, specific colors, placement notes, etc.'} value={artReqModal.instructions} onChange={e=>setArtReqModal(m=>({...m,instructions:e.target.value}))} style={{resize:'vertical'}}/>
             </div>
             <div style={{marginBottom:12}}>
               <div className="form-label">Attach Files</div>
@@ -3776,7 +3791,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           </div>
           <div className="modal-footer">
             <button className="btn btn-secondary" onClick={()=>setArtReqModal(null)}>Cancel</button>
-            <button className="btn btn-primary" disabled={!artReqModal.artist} onClick={submitArtReq2}>Send Art Request</button>
+            <button className="btn btn-primary" style={hasExistingReqs2?{background:'#6d28d9',borderColor:'#6d28d9'}:{}} disabled={!artReqModal.artist} onClick={submitArtReq2}>{hasExistingReqs2?'Send Update':'Send Art Request'}</button>
           </div>
         </div></div>
       })()}
@@ -3811,7 +3826,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                 :<select style={{fontSize:10,padding:'2px 4px',borderRadius:4,border:'1px solid #e2e8f0',fontWeight:600,background:SC[j.prod_status]?.bg||'#f1f5f9',color:SC[j.prod_status]?.c||'#475569'}} value={j.prod_status} onChange={e=>{e.stopPropagation();updJob(ji,'prod_status',e.target.value)}}>
                   {prodStatuses.map(ps=><option key={ps} value={ps}>{prodLabels[ps]}</option>)}</select>}</td>
               <td style={{whiteSpace:'nowrap'}}>
-                <button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#be185d',color:'white',borderRadius:4,marginRight:3}} onClick={e=>{e.stopPropagation();setArtReqModal({jIdx:ji,artist:'',instructions:'',files:[]})}} title="Request art from artist">🎨 Request Art</button>
+                {(()=>{const hasReqs=(j.art_requests||[]).length>0;const activeReq=(j.art_requests||[]).find(r=>r.status==='in_progress'||r.status==='requested');
+                  return<>{hasReqs&&activeReq&&<span style={{fontSize:8,padding:'1px 5px',borderRadius:8,fontWeight:700,background:'#fef3c7',color:'#92400e',marginRight:3}}>{activeReq.status==='in_progress'?'In Progress':'Requested'}</span>}
+                  <button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:hasReqs?'#6d28d9':'#be185d',color:'white',borderRadius:4,marginRight:3}} onClick={e=>{e.stopPropagation();setArtReqModal({jIdx:ji,artist:j.assigned_artist||'',instructions:'',files:[]})}} title={hasReqs?'Update art request':'Request art from artist'}>{hasReqs?'Update Art':'🎨 Request Art'}</button></>})()}
                 {canSplit&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#7c3aed',color:'white',borderRadius:4}} onClick={e=>{e.stopPropagation();setSplitModal({jIdx:ji,mode:null,selectedSkus:[]})}} title="Split job">✂️ Split</button>}
               </td>
             </tr>
@@ -3934,14 +3951,25 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         const artF=safeArt(o).find(a=>a.id===j.art_file_id);
         const existingFiles=(artF?.mockup_files||[]).concat(artF?.prod_files||[]);
         const artists=REPS.filter(r=>r.role==='art');
+        const hasExistingReqs=(j.art_requests||[]).length>0;
+        const activeReq=(j.art_requests||[]).find(r=>r.status==='in_progress'||r.status==='requested');
         const submitArtReq=()=>{
           const req={id:'AR-'+Date.now(),artist:artReqModal.artist,artist_name:(artists.find(a=>a.id===artReqModal.artist)||{}).name||'',instructions:artReqModal.instructions,files:artReqModal.files||[],existing_files:existingFiles.map(f=>f.name||f),status:'requested',created_at:new Date().toISOString(),created_by:cu.name};
           const updatedJobs=jobs.map((jj,i)=>i===artReqModal.jIdx?{...jj,art_requests:[...(jj.art_requests||[]),req],art_status:jj.art_status==='needs_art'?'art_requested':jj.art_status,assigned_artist:artReqModal.artist||jj.assigned_artist}:jj);
           const updated={...o,jobs:updatedJobs,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setArtReqModal(null);nf('Art request sent to '+(artists.find(a=>a.id===artReqModal.artist)||{}).name||'artist');
         };
         return<div className="modal-overlay" onClick={()=>setArtReqModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
-          <div className="modal-header"><h2>🎨 Request Art — {j.art_name}</h2><button className="modal-close" onClick={()=>setArtReqModal(null)}>×</button></div>
+          <div className="modal-header" style={hasExistingReqs?{background:'#faf5ff'}:undefined}><h2>{hasExistingReqs?'Update Art Request':'🎨 Request Art'} — {j.art_name}</h2><button className="modal-close" onClick={()=>setArtReqModal(null)}>×</button></div>
           <div className="modal-body">
+            {hasExistingReqs&&<div style={{padding:'10px 14px',marginBottom:12,borderRadius:8,border:'2px solid '+(activeReq?'#fbbf24':'#86efac'),background:activeReq?'#fffbeb':'#f0fdf4'}}>
+              <div style={{display:'flex',alignItems:'center',gap:8}}>
+                <span style={{fontSize:18}}>{activeReq?(activeReq.status==='in_progress'?'🎨':'📩'):'✅'}</span>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:13,fontWeight:700,color:activeReq?'#92400e':'#166534'}}>{activeReq?(activeReq.status==='in_progress'?'Art In Progress — '+activeReq.artist_name:'Art Requested — Awaiting '+activeReq.artist_name):'All Requests Complete'}</div>
+                  <div style={{fontSize:10,color:'#64748b'}}>{(j.art_requests||[]).length} request(s) total · Last: {new Date((j.art_requests||[])[(j.art_requests||[]).length-1]?.created_at).toLocaleDateString()}</div>
+                </div>
+              </div>
+            </div>}
             <div style={{marginBottom:12}}>
               <div className="form-label">Artist *</div>
               <select className="form-select" value={artReqModal.artist} onChange={e=>setArtReqModal(m=>({...m,artist:e.target.value}))}>
@@ -3950,8 +3978,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
               </select>
             </div>
             <div style={{marginBottom:12}}>
-              <div className="form-label">Instructions</div>
-              <textarea className="form-input" rows={4} placeholder="Describe what you need — mockup, revision, specific colors, placement notes, etc." value={artReqModal.instructions} onChange={e=>setArtReqModal(m=>({...m,instructions:e.target.value}))} style={{resize:'vertical'}}/>
+              <div className="form-label">{hasExistingReqs?'Update / Additional Instructions':'Instructions'}</div>
+              <textarea className="form-input" rows={4} placeholder={hasExistingReqs?'Add revision notes, feedback, or additional instructions...':'Describe what you need — mockup, revision, specific colors, placement notes, etc.'} value={artReqModal.instructions} onChange={e=>setArtReqModal(m=>({...m,instructions:e.target.value}))} style={{resize:'vertical'}}/>
             </div>
             <div style={{marginBottom:12}}>
               <div className="form-label">Attach Files</div>
@@ -3983,7 +4011,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           </div>
           <div className="modal-footer">
             <button className="btn btn-secondary" onClick={()=>setArtReqModal(null)}>Cancel</button>
-            <button className="btn btn-primary" disabled={!artReqModal.artist} onClick={submitArtReq}>Send Art Request</button>
+            <button className="btn btn-primary" style={hasExistingReqs?{background:'#6d28d9',borderColor:'#6d28d9'}:{}} disabled={!artReqModal.artist} onClick={submitArtReq}>{hasExistingReqs?'Send Update':'Send Art Request'}</button>
           </div>
         </div></div>
       })()}
