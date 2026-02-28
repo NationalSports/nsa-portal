@@ -1799,7 +1799,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         job.total_units+=itemTotal;job.fulfilled_units+=itemFulfilled;
       });
     });
-    const existingJobMap={};safeJobs(o).forEach(j=>{existingJobMap[j.key||j.id]=j});
+    // Build map of existing NON-split jobs keyed by job key (skip splits so they don't collide)
+    const existingJobMap={};safeJobs(o).forEach(j=>{if(!j.split_from)existingJobMap[j.key||j.id]=j});
     const soNum=o.id?.replace('SO-','')||'0';
     let jIdx=1;
     const newJobs=Object.values(artJobs).map(j=>{
@@ -1812,7 +1813,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       return{
         id,key:j.key,art_file_id:j.art_file_id,art_name:j.art_name,deco_type:j.deco_type,
         positions:[...j.positions].join(', '),items:j.items,
-        art_status:j.art_status,item_status:itemSt,prod_status:prodSt,
+        art_status:existing?.art_status||j.art_status,item_status:itemSt,prod_status:prodSt,
         total_units:j.total_units,fulfilled_units:j.fulfilled_units,
         assigned_machine:existing?.assigned_machine||null,assigned_to:existing?.assigned_to||null,
         ship_method:existing?.ship_method||null,
@@ -1820,10 +1821,25 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         counted_at:existing?.counted_at||null,counted_by:existing?.counted_by||null,
         count_discrepancy:existing?.count_discrepancy||null,notes:existing?.notes||null,
         _auto:existing?._auto!=null?existing._auto:true,
+        // Preserve art workflow fields from existing job
+        art_requests:existing?.art_requests||[],art_messages:existing?.art_messages||[],
+        assigned_artist:existing?.assigned_artist||null,rep_notes:existing?.rep_notes||null,
+        rejections:existing?.rejections||null,
       };
     });
     // Preserve manually split jobs — they won't be auto-generated from decorations
     const splitJobs=safeJobs(o).filter(j=>j.split_from&&!newJobs.find(nj=>nj.id===j.id));
+    // Subtract split-off units from parent jobs so totals stay correct
+    splitJobs.forEach(sj=>{
+      const parent=newJobs.find(nj=>nj.id===sj.split_from);
+      if(parent){parent.total_units=Math.max(0,parent.total_units-sj.total_units);parent.fulfilled_units=Math.max(0,parent.fulfilled_units-sj.fulfilled_units)}
+    });
+    // Recalculate item_status on parents after unit adjustment
+    newJobs.forEach(nj=>{
+      if(splitJobs.some(sj=>sj.split_from===nj.id)){
+        nj.item_status=nj.fulfilled_units>=nj.total_units&&nj.total_units>0?'items_received':nj.fulfilled_units>0?'partially_received':'need_to_order';
+      }
+    });
     return[...newJobs,...splitJobs];
   },[o,af]);// eslint-disable-line
 
@@ -3409,6 +3425,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       // Split job modal state
       // Split job modal state is at component level (splitModal/setSplitModal)
 
+      // Helper: copy art-related fields from parent job to split job
+      const _artFields=j=>({art_file_id:j.art_file_id,art_name:j.art_name,art_status:j.art_status,deco_type:j.deco_type,positions:j.positions,
+        art_requests:j.art_requests?JSON.parse(JSON.stringify(j.art_requests)):[],
+        art_messages:j.art_messages?JSON.parse(JSON.stringify(j.art_messages)):[],
+        assigned_artist:j.assigned_artist||null,rep_notes:j.rep_notes||null,
+        rejections:j.rejections?JSON.parse(JSON.stringify(j.rejections)):null});
+
       // Split job by received — create partial job with received items
       const splitByReceived=(jIdx)=>{
         const j=jobs[jIdx];if(!j||!j.items?.length)return;
@@ -3425,12 +3448,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         });
         if(rcvdTotal===0){nf('Nothing received to split','error');return}
         const splitId=j.id+'-S';
-        const splitJob2={...j,id:splitId,split_from:j.id,item_status:'items_received',items:rcvdItems,
+        const splitJob2={...j,..._artFields(j),id:splitId,key:j.key+'__split__S',split_from:j.id,item_status:'items_received',items:rcvdItems,
           fulfilled_units:rcvdTotal,total_units:rcvdTotal,
-          prod_status:j.art_status==='art_complete'?'hold':'hold',created_at:new Date().toLocaleDateString()};
-        const remainJob={...j,total_units:j.total_units-rcvdTotal,fulfilled_units:0,item_status:'need_to_order'};
+          prod_status:'hold',created_at:new Date().toLocaleDateString()};
+        const remainJob={...j,total_units:j.total_units-rcvdTotal,fulfilled_units:Math.max(0,j.fulfilled_units-rcvdTotal),item_status:'need_to_order'};
         const newJobs2=[...jobs];newJobs2.splice(jIdx,1,remainJob,splitJob2);
-        sv('jobs',newJobs2);setSplitModal(null);nf('✂️ Split! '+splitId+' ready with '+rcvdTotal+' units');
+        sv('jobs',newJobs2);setSplitModal(null);nf('Split! '+splitId+' ready with '+rcvdTotal+' units');
       };
 
       // Split job by SKU — separate into one job per garment
@@ -3444,12 +3467,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         const keepUnits=keepItems.reduce((a,gi)=>a+gi.units,0);
         const keepFul=keepItems.reduce((a,gi)=>a+gi.fulfilled,0);
         const splitId=j.id+'-B';
-        const splitJob2={...j,id:splitId,split_from:j.id,items:splitItems,
+        const splitJob2={...j,..._artFields(j),id:splitId,key:j.key+'__split__B',split_from:j.id,items:splitItems,
           total_units:splitUnits,fulfilled_units:splitFul,
           prod_status:'hold',created_at:new Date().toLocaleDateString()};
         const remainJob={...j,items:keepItems,total_units:keepUnits,fulfilled_units:keepFul};
         const newJobs2=[...jobs];newJobs2.splice(jIdx,1,remainJob,splitJob2);
-        sv('jobs',newJobs2);setSplitModal(null);nf('✂️ Split by SKU! '+splitId+' with '+splitItems.length+' garment(s)');
+        sv('jobs',newJobs2);setSplitModal(null);nf('Split by SKU! '+splitId+' with '+splitItems.length+' garment(s)');
       };
       // Custom split — split specific unit counts per item/size
       const splitCustom=(jIdx,splitQtys)=>{
@@ -3472,13 +3495,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         if(keepItems.length===0||keepItems.reduce((a,gi)=>a+gi.units,0)===0){nf('Must leave some units on the original job','error');return}
         const existingSplits=jobs.filter(jj=>jj.split_from===j.id).length;
         const splitId=j.id+'-C'+(existingSplits+1);
-        const splitJob2={...j,id:splitId,split_from:j.id,items:splitItems,
+        const splitJob2={...j,..._artFields(j),id:splitId,key:j.key+'__split__C'+(existingSplits+1),split_from:j.id,items:splitItems,
           total_units:splitTotal,fulfilled_units:splitItems.reduce((a,gi)=>a+(gi.fulfilled||0),0),
           prod_status:'hold',created_at:new Date().toLocaleDateString()};
         const remainJob={...j,items:keepItems,total_units:keepItems.reduce((a,gi)=>a+gi.units,0),
           fulfilled_units:keepItems.reduce((a,gi)=>a+(gi.fulfilled||0),0)};
         const newJobs2=[...jobs];newJobs2.splice(jIdx,1,remainJob,splitJob2);
-        sv('jobs',newJobs2);setSplitModal(null);nf('✂️ Custom split! '+splitId+' with '+splitTotal+' units');
+        sv('jobs',newJobs2);setSplitModal(null);nf('Custom split! '+splitId+' with '+splitTotal+' units');
       };
       const updJob=(jIdx,k,v)=>{sv('jobs',jobs.map((j,i)=>i===jIdx?{...j,[k]:v}:j))};
       const prodStatuses=['hold','staging','in_process','completed','shipped'];
