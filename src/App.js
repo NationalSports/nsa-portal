@@ -13040,6 +13040,12 @@ export default function App(){
     };
 
     // Build counts for overview
+    const unsyncedSOs=sos.filter(so=>{
+      const hasItems=safeItems(so).some(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
+      return hasItems&&!so._qb_synced;
+    });
+    const unsyncedPOs=[];
+    sos.forEach(so=>{safeItems(so).forEach(it=>{(it.po_lines||[]).forEach(pl=>{if(!pl._qb_synced)unsyncedPOs.push({...pl,soId:so.id,sku:it.sku,itemName:it.name,vendor:pl.deco_vendor||D_V.find(v=>v.id===it.vendor_id)?.name||it.brand})})})});
     const unsyncedInvs=invs.filter(i=>!i._qb_synced);
     const custWithQB=cust.filter(c=>c.qb_customer_id).length;
     const prodWithQB=prod.filter(p=>p.qb_item_id).length;
