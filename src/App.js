@@ -219,7 +219,7 @@ const _dbSaveSO = async (so) => {
 const _dbSaveInvoice = async (inv) => {
   if(!supabase)return;
   try{
-    const{payments,items,...invRow}=inv;
+    const{payments,items,_qb_synced,_qb_id,so_id,date,paid,...invRow}=inv;
     await supabase.from('invoices').upsert(invRow,{onConflict:'id'});
     await supabase.from('invoice_payments').delete().eq('invoice_id',inv.id);
     if(payments?.length) await supabase.from('invoice_payments').insert(payments.map(p=>({...p,invoice_id:inv.id})));
@@ -13572,32 +13572,33 @@ export default function App(){
       setQbSyncing(true);
       const log={ts:new Date().toLocaleString(),type:'invoices',status:'success',details:[]};
       let synced=0;
-      const unsyncedInvs2=invs.filter(i=>!i._qb_synced);
+      const unsyncedInvs2=invs.filter(i=>!i.qb_invoice_id);
       for(const inv of unsyncedInvs2){
         const c=cust.find(cc=>cc.id===inv.customer_id);
-        if(!c?.qb_customer_id){log.details.push(inv.id+' — skipped: customer "'+c?.name+'" not synced to QB');continue}
-        const so=sos.find(s=>s.id===inv.so_id);
+        if(!c?.qb_customer_id){log.details.push((inv.display_id||inv.id)+' — skipped: customer "'+c?.name+'" not synced to QB');continue}
+        const so=sos.find(s=>s.id===inv.sales_order_id);
+        const invPaid=(inv.payments||[]).reduce((a,p)=>a+safeNum(p.amount),0);
         const qbInvoice={
-          DocNumber:inv.id,
-          TxnDate:inv.date||new Date().toISOString().slice(0,10),
+          DocNumber:inv.display_id||inv.id,
+          TxnDate:inv.invoice_date||new Date().toISOString().slice(0,10),
           CustomerRef:{value:c.qb_customer_id},
-          Line:[{DetailType:'SalesItemLineDetail',Amount:inv.total||0,Description:'Invoice '+inv.id+(so?' for '+so.id:'')+(so?.memo?' — '+so.memo:''),
+          Line:[{DetailType:'SalesItemLineDetail',Amount:inv.total||0,Description:'Invoice '+(inv.display_id||inv.id)+(so?' for '+so.id:'')+(so?.memo?' — '+so.memo:''),
             SalesItemLineDetail:{Quantity:1,UnitPrice:inv.total||0}}],
-          ...(inv._qb_id?{Id:inv._qb_id,sparse:true}:{}),
+          ...(inv.qb_invoice_id?{Id:inv.qb_invoice_id,sparse:true}:{}),
         };
         const res=await qbApi('upsert_invoice',{invoice:qbInvoice});
         if(res?.Invoice?.Id){
-          setInvs(prev=>prev.map(ii=>ii.id===inv.id?{...ii,_qb_synced:true,_qb_id:res.Invoice.Id}:ii));
-          log.details.push(inv.id+' → QB Invoice #'+res.Invoice.Id+' ($'+safeNum(inv.total).toFixed(2)+')');synced++;
+          setInvs(prev=>prev.map(ii=>ii.id===inv.id?{...ii,qb_invoice_id:res.Invoice.Id}:ii));
+          log.details.push((inv.display_id||inv.id)+' → QB Invoice #'+res.Invoice.Id+' ($'+safeNum(inv.total).toFixed(2)+')');synced++;
           // Sync payments if any
-          if(inv.paid>0&&inv.payments?.length){
+          if(invPaid>0&&inv.payments?.length){
             for(const pmt of inv.payments){
               const qbPmt={CustomerRef:{value:c.qb_customer_id},TotalAmt:pmt.amount,
                 Line:[{Amount:pmt.amount,LinkedTxn:[{TxnId:res.Invoice.Id,TxnType:'Invoice'}]}]};
               await qbApi('upsert_payment',{payment:qbPmt});
             }
           }
-        }else{log.details.push(inv.id+' — FAILED: '+(res?.Fault?.Error?.[0]?.Detail||'unknown'));log.status='partial'}
+        }else{log.details.push((inv.display_id||inv.id)+' — FAILED: '+(res?.Fault?.Error?.[0]?.Detail||'unknown'));log.status='partial'}
       }
       if(synced===0&&unsyncedInvs2.length>0)log.status='error';
       log.details.unshift(synced+'/'+unsyncedInvs2.length+' invoices synced');
@@ -13714,23 +13715,128 @@ export default function App(){
       setQbBillUploading(false);
     };
 
+    // ── SYNC: Sales Orders (as QB Estimates) ──
+    const syncSalesOrders=async()=>{
+      setQbSyncing(true);
+      const log={ts:new Date().toLocaleString(),type:'sales_orders',status:'success',details:[]};
+      let synced=0;
+      const soMap=qbConfig.qbSOMap||{};
+      const toSync=sos.filter(so=>{
+        const hasItems=safeItems(so).some(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
+        return hasItems&&!soMap[so.id];
+      });
+      for(const so of toSync){
+        const c=cust.find(x=>x.id===so.customer_id);
+        if(!c?.qb_customer_id){log.details.push(so.id+' — skipped: customer not synced to QB');continue}
+        const saf=safeArt(so);
+        const _aq={};safeItems(so).forEach(it2=>{const q2=Object.values(safeSizes(it2)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it2).forEach(d2=>{if(d2.kind==='art'&&d2.art_file_id){_aq[d2.art_file_id]=(_aq[d2.art_file_id]||0)+q2}})});
+        const lines=[];
+        safeItems(so).forEach(it=>{
+          const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
+          if(!qty)return;
+          lines.push({DetailType:'SalesItemLineDetail',Amount:qty*(it.unit_sell||0),
+            Description:it.sku+' '+it.name+(it.color?' - '+it.color:''),
+            SalesItemLineDetail:{Quantity:qty,UnitPrice:it.unit_sell||0}});
+          safeDecos(it).forEach(d=>{
+            const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qty;
+            const dp=dP(d,qty,saf,cq);
+            if(dp.sell>0)lines.push({DetailType:'SalesItemLineDetail',Amount:qty*dp.sell,
+              Description:'Decoration: '+(d.position||d.deco_type||d.kind||'Art'),
+              SalesItemLineDetail:{Quantity:qty,UnitPrice:dp.sell}});
+          });
+        });
+        if(!lines.length)continue;
+        const qbEstimate={
+          DocNumber:so.id,
+          TxnDate:(so.created_at||'').slice(0,10)||new Date().toISOString().slice(0,10),
+          CustomerRef:{value:c.qb_customer_id},
+          Line:lines,
+          PrivateNote:'Portal SO: '+so.id+(so.memo?' — '+so.memo:''),
+          ...(soMap[so.id]?{Id:soMap[so.id],sparse:true}:{}),
+        };
+        const res=await qbApi('upsert_estimate',{estimate:qbEstimate});
+        if(res?.Estimate?.Id){
+          soMap[so.id]=res.Estimate.Id;
+          log.details.push(so.id+' → QB Estimate #'+res.Estimate.Id);synced++;
+        }else{log.details.push(so.id+' — FAILED: '+(res?.Fault?.Error?.[0]?.Detail||'unknown'));log.status='partial'}
+      }
+      if(synced===0&&toSync.length>0)log.status='error';
+      log.details.unshift(synced+'/'+toSync.length+' sales orders synced');
+      setQBConfig(prev=>({...prev,qbSOMap:{...prev.qbSOMap,...soMap},syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
+      nf(synced+' sales orders synced to QB');
+      setQbSyncing(false);
+    };
+
+    // ── SYNC: Purchase Orders ──
+    const syncPurchaseOrders=async()=>{
+      setQbSyncing(true);
+      const log={ts:new Date().toLocaleString(),type:'purchase_orders',status:'success',details:[]};
+      let synced=0;
+      const poMap=qbConfig.qbPOMap||{};
+      const toSync=[];
+      sos.forEach(so=>{safeItems(so).forEach(it=>{(it.po_lines||[]).forEach(pl=>{
+        if(!poMap[pl.po_id]){
+          toSync.push({pl,so,it,vendor:pl.deco_vendor||D_V.find(v=>v.id===it.vendor_id)?.name||it.brand});
+        }
+      })})});
+      for(const{pl,so,it,vendor:vendorName}of toSync){
+        // Find or create vendor in QB
+        let v=vend.find(x=>x.name===vendorName)||D_V.find(x=>x.name===vendorName);
+        let qbVendorId=v?.qb_vendor_id;
+        if(!qbVendorId){
+          const vRes=await qbApi('upsert_vendor',{vendor:{DisplayName:vendorName,CompanyName:vendorName}});
+          if(vRes?.Vendor?.Id){
+            qbVendorId=vRes.Vendor.Id;
+            if(v)setVend(prev=>prev.map(vv=>vv.id===v.id?{...vv,qb_vendor_id:qbVendorId}:vv));
+          }else{log.details.push(pl.po_id+' — vendor creation failed');log.status='partial';continue}
+        }
+        const qty=Object.entries(pl).filter(([k,v])=>typeof v==='number'&&!['unit_cost'].includes(k)&&k.match(/^[A-Z0-9]/)).reduce((a,[,v])=>a+v,0);
+        const rate=pl.po_type==='outside_deco'?safeNum(pl.unit_cost):safeNum(it.nsa_cost);
+        const account=pl.po_type==='outside_deco'?qbConfig.mapping.deco_account:qbConfig.mapping.cogs_account;
+        const qbPO={
+          DocNumber:pl.po_id,
+          VendorRef:{value:qbVendorId},
+          TxnDate:(pl.created_at||'').slice(0,10)||new Date().toISOString().slice(0,10),
+          Line:[{DetailType:'ItemBasedExpenseLineDetail',Amount:qty*rate,
+            Description:it.sku+' '+it.name+' (SO: '+so.id+')',
+            ItemBasedExpenseLineDetail:{Qty:qty,UnitPrice:rate,CustomerRef:undefined}}],
+          PrivateNote:'Portal PO for SO: '+so.id,
+          ...(poMap[pl.po_id]?{Id:poMap[pl.po_id],sparse:true}:{}),
+        };
+        const res=await qbApi('upsert_purchase_order',{purchase_order:qbPO});
+        if(res?.PurchaseOrder?.Id){
+          poMap[pl.po_id]=res.PurchaseOrder.Id;
+          log.details.push(pl.po_id+' → QB PO #'+res.PurchaseOrder.Id+' ('+vendorName+' $'+(qty*rate).toFixed(2)+')');synced++;
+        }else{log.details.push(pl.po_id+' — FAILED: '+(res?.Fault?.Error?.[0]?.Detail||'unknown'));log.status='partial'}
+      }
+      if(synced===0&&toSync.length>0)log.status='error';
+      log.details.unshift(synced+'/'+toSync.length+' purchase orders synced');
+      setQBConfig(prev=>({...prev,qbPOMap:{...prev.qbPOMap,...poMap},syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
+      nf(synced+' purchase orders synced to QB');
+      setQbSyncing(false);
+    };
+
     // ── SYNC ALL ──
     const syncAll=async()=>{
       setQbSyncing(true);
       await syncCustomers();
+      await syncSalesOrders();
       await syncInvoices();
+      await syncPurchaseOrders();
       await syncInventory();
       setQbSyncing(false);
     };
 
     // Build counts for overview
+    const soMap=qbConfig.qbSOMap||{};
+    const poMap=qbConfig.qbPOMap||{};
     const unsyncedSOs=sos.filter(so=>{
       const hasItems=safeItems(so).some(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
-      return hasItems&&!so._qb_synced;
+      return hasItems&&!soMap[so.id];
     });
     const unsyncedPOs=[];
-    sos.forEach(so=>{safeItems(so).forEach(it=>{(it.po_lines||[]).forEach(pl=>{if(!pl._qb_synced)unsyncedPOs.push({...pl,soId:so.id,sku:it.sku,itemName:it.name,vendor:pl.deco_vendor||D_V.find(v=>v.id===it.vendor_id)?.name||it.brand})})})});
-    const unsyncedInvs=invs.filter(i=>!i._qb_synced);
+    sos.forEach(so=>{safeItems(so).forEach(it=>{(it.po_lines||[]).forEach(pl=>{if(!poMap[pl.po_id])unsyncedPOs.push({...pl,soId:so.id,sku:it.sku,itemName:it.name,vendor:pl.deco_vendor||D_V.find(v=>v.id===it.vendor_id)?.name||it.brand})})})});
+    const unsyncedInvs=invs.filter(i=>!i.qb_invoice_id);
     const custWithQB=cust.filter(c=>c.qb_customer_id).length;
     const prodWithQB=prod.filter(p=>p.qb_item_id).length;
     const totalInvQty=prod.reduce((a,p)=>a+Object.values(p._inv||{}).reduce((a2,v)=>a2+safeNum(v),0),0);
@@ -13784,7 +13890,7 @@ export default function App(){
         });
       }
       if(type==='all'||type==='purchase_orders'){
-        sos.forEach(so=>{safeItems(so).forEach(it=>{(it.po_lines||[]).filter(pl=>!pl._qb_synced).forEach(pl=>{
+        sos.forEach(so=>{safeItems(so).forEach(it=>{(it.po_lines||[]).filter(pl=>!poMap[pl.po_id]).forEach(pl=>{
           const qbPO=buildQBPurchaseOrder(pl,so,it);
           log.details.push('PO: '+pl.po_id+' → QB PurchaseOrder to '+qbPO.vendorRef+' ($'+qbPO.total.toFixed(2)+')');
         })})});
@@ -13839,9 +13945,9 @@ export default function App(){
       <div className="stats-row" style={{marginBottom:16}}>
         <div className="stat-card" style={{borderLeft:'3px solid #2563eb'}}><div className="stat-label">Customers in QB</div><div className="stat-value" style={{color:'#2563eb'}}>{custWithQB}/{cust.length}</div></div>
         <div className="stat-card" style={{borderLeft:'3px solid #d97706'}}><div className="stat-label">Invoices to Sync</div><div className="stat-value" style={{color:'#d97706'}}>{unsyncedInvs.length}</div></div>
-        <div className="stat-card" style={{borderLeft:'3px solid #16a34a'}}><div className="stat-label">Products in QB</div><div className="stat-value" style={{color:'#16a34a'}}>{prodWithQB}/{prod.length}</div></div>
-        <div className="stat-card" style={{borderLeft:'3px solid #7c3aed'}}><div className="stat-label">Inventory Value</div><div className="stat-value" style={{fontSize:14,color:'#7c3aed'}}>${totalInvValue.toFixed(0)}</div></div>
-        <div className="stat-card" style={{borderLeft:'3px solid #166534'}}><div className="stat-label">Last Sync</div><div className="stat-value" style={{fontSize:12,color:'#166534'}}>{qbConfig.lastSync||'Never'}</div></div>
+        <div className="stat-card" style={{borderLeft:'3px solid #16a34a'}}><div className="stat-label">SOs to Sync</div><div className="stat-value" style={{color:'#16a34a'}}>{unsyncedSOs.length}</div></div>
+        <div className="stat-card" style={{borderLeft:'3px solid #7c3aed'}}><div className="stat-label">POs to Sync</div><div className="stat-value" style={{color:'#7c3aed'}}>{unsyncedPOs.length}</div></div>
+        <div className="stat-card" style={{borderLeft:'3px solid #166534'}}><div className="stat-label">Products in QB</div><div className="stat-value" style={{color:'#166534'}}>{prodWithQB}/{prod.length}</div></div>
       </div>
 
       {/* Tabs */}
@@ -13867,7 +13973,9 @@ export default function App(){
               <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
                 <button className="btn btn-primary" style={{flex:1}} disabled={qbSyncing} onClick={syncAll}>{qbSyncing?'Syncing...':'Sync Everything'}</button>
                 <button className="btn btn-secondary" disabled={qbSyncing} onClick={syncCustomers}>Customers</button>
+                <button className="btn btn-secondary" disabled={qbSyncing} onClick={syncSalesOrders}>Sales Orders</button>
                 <button className="btn btn-secondary" disabled={qbSyncing} onClick={syncInvoices}>Invoices</button>
+                <button className="btn btn-secondary" disabled={qbSyncing} onClick={syncPurchaseOrders}>POs</button>
                 <button className="btn btn-secondary" disabled={qbSyncing} onClick={syncInventory}>Inventory</button>
               </div>
             </div>
@@ -13876,9 +13984,11 @@ export default function App(){
             <div className="card-header"><h2>What Syncs</h2></div>
             <div className="card-body" style={{fontSize:12,color:'#475569'}}>
               <div style={{marginBottom:4}}>&#8226; <strong>Customers</strong> — name, contact, address, order totals in notes</div>
+              <div style={{marginBottom:4}}>&#8226; <strong>Sales Orders</strong> — line items + decoration as QB Estimates</div>
               <div style={{marginBottom:4}}>&#8226; <strong>Invoices</strong> — invoice total as single line item, payments applied</div>
+              <div style={{marginBottom:4}}>&#8226; <strong>Purchase Orders</strong> — blank goods + outside deco POs to vendors</div>
               <div style={{marginBottom:4}}>&#8226; <strong>Bills</strong> — upload vendor bills (PDF/image) directly to QB with amounts</div>
-              <div>&#8226; <strong>Inventory</strong> — product totals (qty + cost value) as non-inventory items. Real inventory stays on portal.</div>
+              <div>&#8226; <strong>Inventory</strong> — product totals (qty + cost value) as non-inventory items</div>
             </div>
           </div>
         </div>
@@ -13914,7 +14024,7 @@ export default function App(){
                   <td style={{textAlign:'right',fontWeight:700,color:'#166534'}}>${qb.total.toFixed(2)}</td>
                   <td><span style={{fontSize:8,padding:'1px 4px',borderRadius:3,background:'#fef3c7',color:'#92400e',fontWeight:600}}>Pending</span></td>
                 </tr>})}
-              {sos.map(so=>safeItems(so).map(it=>(it.po_lines||[]).filter(pl=>!pl._qb_synced).map((pl,pi)=>{
+              {sos.map(so=>safeItems(so).map(it=>(it.po_lines||[]).filter(pl=>!poMap[pl.po_id]).map((pl,pi)=>{
                 const qb=buildQBPurchaseOrder(pl,so,it);
                 return<tr key={so.id+pl.po_id+pi} style={{borderBottom:'1px solid #f1f5f9'}}>
                   <td><span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:pl.po_type==='outside_deco'?'#ede9fe':'#fef3c7',
@@ -14008,7 +14118,7 @@ export default function App(){
                     <td style={{color:'#64748b'}}>{inv.so_id||'—'}</td>
                     <td style={{textAlign:'right',fontWeight:600}}>${safeNum(inv.total).toFixed(2)}</td>
                     <td style={{textAlign:'right',color:inv.paid>=inv.total?'#16a34a':'#d97706'}}>${safeNum(inv.paid).toFixed(2)}</td>
-                    <td>{inv._qb_synced?<span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:'#dcfce7',color:'#166534',fontWeight:600}}>Synced{inv._qb_id?' #'+inv._qb_id:''}</span>:
+                    <td>{inv.qb_invoice_id?<span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:'#dcfce7',color:'#166534',fontWeight:600}}>QB #{inv.qb_invoice_id}</span>:
                       <span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:'#fef3c7',color:'#92400e',fontWeight:600}}>Pending</span>}</td>
                   </tr>})}
               </tbody>
