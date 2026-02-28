@@ -11945,7 +11945,8 @@ export default function App(){
     pdfFile:null,pdfText:'',pdfParsed:null,pdfLoading:false,pdfItems:[],linkedSoId:'',externalDocNum:'',importSource:'netsuite'});
   const[impTab,setImpTab]=useState('orders');// orders|customers|vendors|products|bills
   const[bulkImp,setBulkImp]=useState({raw:'',parsed:[],issues:[],step:'paste'});// paste|review|done
-  const[billImport,setBillImport]=useState({step:'upload',files:[],parsed:[],uploading:false});
+  const[billImport,setBillImport]=useState({step:'upload',files:[],parsed:[],uploading:false,showRaw:{}});
+  const[savedBills,setSavedBills]=useState(()=>{try{const s=localStorage.getItem('nsa_saved_bills');return s?JSON.parse(s):[]}catch{return[]}});
   const SZ_ORD_I=['XXS','XS','YXS','YS','YM','YL','YXL','S','M','L','XL','2XL','3XL','4XL','5XL','OSFA'];
 
   const parseNSData=(raw)=>{
@@ -12284,105 +12285,141 @@ export default function App(){
     const resetBulk=()=>setBulkImp({raw:'',parsed:[],issues:[],step:'paste'});
 
     // ── BILL PDF PARSER ──
+    // Sports Inc / Adidas / UA supplier bill format parser
     const parseSupplierBill=(text)=>{
       const lines=text.split('\n').map(l=>l.trim()).filter(Boolean);
       const bill={po_number:'',tracking:'',supplier:'',doc_number:'',doc_date:'',due_date:'',ship_date:'',
-        items:[],merchandise_total:0,freight:0,si_upcharge:0,doc_total:0,warnings:[]};
-      for(const line of lines){
-        // PO Number — top right area
-        if(!bill.po_number){const m=line.match(/PO\s*(?:NUMBER|#|NUM)[:\s]*([A-Z0-9]+)/i);if(m)bill.po_number=m[1]}
-        // Tracking number
-        if(!bill.tracking){const m=line.match(/TRACKING\s*(?:NUMBER|#|NUM)?[:\s]*(\d{10,30})/i);if(m)bill.tracking=m[1]}
-        // Supplier name
-        if(!bill.supplier){const m=line.match(/^SUPPLIER\s*$/i);if(m){const ni=lines.indexOf(line);if(ni>=0&&lines[ni+1])bill.supplier=lines[ni+1].trim()}}
-        if(!bill.supplier&&/ADIDAS/i.test(line)&&!/SOLD|SHIP|BILL/i.test(line)){bill.supplier='Adidas'}
-        if(!bill.supplier&&/UNDER\s*ARMOU?R/i.test(line)&&!/SOLD|SHIP|BILL/i.test(line)){bill.supplier='Under Armour'}
-        if(!bill.supplier&&/NIKE/i.test(line)&&!/SOLD|SHIP|BILL/i.test(line)){bill.supplier='Nike'}
-        // SI Document Number
-        if(!bill.doc_number){const m=line.match(/SI\s*DOCUMENT\s*NUMBER[:\s]*(\d+)/i);if(m)bill.doc_number=m[1]}
-        if(!bill.doc_number){const m=line.match(/DOCUMENT\s*NUMBER[:\s]*(\d+)/i);if(m)bill.doc_number=m[1]}
-        // Document date
-        if(!bill.doc_date){const m=line.match(/DOCUMENT\s*DATE[:\s]*([\d\/]+)/i);if(m)bill.doc_date=m[1]}
-        // Due date
-        if(!bill.due_date){const m=line.match(/DUE\s*DATE[:\s]*([\d\/]+)/i);if(m)bill.due_date=m[1]}
-        // Ship date
-        if(!bill.ship_date){const m=line.match(/SHIP\s*DATE[:\s]*([\d\/]+)/i);if(m)bill.ship_date=m[1]}
-        // Totals
-        const merch=line.match(/MERCHANDISE\s*TOTAL\s*([\d,.]+)/i);if(merch)bill.merchandise_total=parseFloat(merch[1].replace(/,/g,''))||0;
-        const frt=line.match(/FREIGHT\s*CHARGE\s*([\d,.]+)/i);if(frt)bill.freight=parseFloat(frt[1].replace(/,/g,''))||0;
-        const siu=line.match(/SI\s*UPCHARGE\s*([\d,.]+)/i);if(siu)bill.si_upcharge=parseFloat(siu[1].replace(/,/g,''))||0;
-        const docT=line.match(/DOCUMENT\s*TOTAL\s*([\d,.]+)/i);if(docT)bill.doc_total=parseFloat(docT[1].replace(/,/g,''))||0;
+        items:[],merchandise_total:0,freight:0,si_upcharge:0,doc_total:0,warnings:[],rawText:text};
+
+      // ── PASS 1: Extract header fields ──
+      // Scan every line but use LAST match for totals (totals appear at bottom of bill)
+      for(let li=0;li<lines.length;li++){
+        const line=lines[li];
+        // PO Number — look for "PO NUMBER:" or "PO NUMBER" followed by alphanumeric code
+        if(!bill.po_number){const m=line.match(/PO\s*NUMBER\s*[:\s]+([A-Z0-9][A-Z0-9\s]*[A-Z0-9])/i);if(m)bill.po_number=m[1].trim()}
+        // Tracking number — 10+ digit number after TRACKING
+        if(!bill.tracking){const m=line.match(/TRACKING\s*(?:NUMBER|#|NUM|NO)?[:\s]*(\d{10,30})/i);if(m)bill.tracking=m[1]}
+        // Supplier detection from "SUPPLIER" label or known names
+        if(!bill.supplier&&/^SUPPLIER\b/i.test(line)){
+          // Next non-empty line after SUPPLIER heading is the name
+          for(let j=li+1;j<Math.min(li+3,lines.length);j++){
+            const nl=lines[j].trim();
+            if(nl.length>3&&!/^DEPT|^PH|^FX|^FAX|^\d/.test(nl)){bill.supplier=nl;break}
+          }
+        }
+        if(!bill.supplier){
+          if(/ADIDAS\s*(US|TEAM|AMERICA)/i.test(line))bill.supplier='Adidas';
+          else if(/UNDER\s*ARMOU?R/i.test(line)&&!/SOLD|SHIP|BILL|ATTN/i.test(line))bill.supplier='Under Armour';
+          else if(/\bNIKE\b/i.test(line)&&!/SOLD|SHIP|BILL|ATTN/i.test(line))bill.supplier='Nike';
+        }
+        // Document number (SI DOCUMENT NUMBER or DOCUMENT NUMBER at bottom of bill)
+        {const m=line.match(/(?:SI\s+)?DOCUMENT\s+NUMBER[:\s]+(\d+)/i);if(m)bill.doc_number=m[1]}
+        // Dates — take last match since bottom section has the real document date
+        {const m=line.match(/DOCUMENT\s+DATE[:\s]+([\d\/]+)/i);if(m)bill.doc_date=m[1]}
+        {const m=line.match(/DUE\s+DATE[:\s]+([\d\/]+)/i);if(m)bill.due_date=m[1]}
+        // Ship date from header area (only take first match — header has the real one)
+        if(!bill.ship_date){const m=line.match(/SHIP\s+DATE[:\s]+([\d\/]+)/i);if(m)bill.ship_date=m[1]}
+        // Totals — take last match (bottom of document is authoritative)
+        {const m=line.match(/MERCHANDISE\s+TOTAL\s+([\d,.]+)/i);if(m)bill.merchandise_total=parseFloat(m[1].replace(/,/g,''))||0}
+        {const m=line.match(/FREIGHT\s+CHARGE\s+([\d,.]+)/i);if(m)bill.freight=parseFloat(m[1].replace(/,/g,''))||0}
+        {const m=line.match(/SI\s+UPCHARGE\s+([\d,.]+)/i);if(m)bill.si_upcharge=parseFloat(m[1].replace(/,/g,''))||0}
+        {const m=line.match(/DOCUMENT\s+TOTAL\s+([\d,.]+)/i);if(m)bill.doc_total=parseFloat(m[1].replace(/,/g,''))||0}
       }
-      // Parse line items — look for rows with SKU, size, qty, price pattern
-      // Format: UPC | SUPPLIER ITEM / DESCRIPTION | SIZE | COLOR | QTY ORDERED | QTY SHIPPED | QTY ON B/O | UNIT | LIST PRICE | DISC % | NET PRICE | EXTENSION
+
+      // ── PASS 2: Extract line items ──
+      // SKU pattern: 1-3 letters followed by 3-10 digits, OR digits followed by letters (like 1376844)
+      // Can appear anywhere in line (UPC barcode text may precede it)
+      const SKU_RE=/\b([A-Z]{1,3}\d{3,10}|\d{5,10}[A-Z]?)\b/i;
+      const SZ_RE=/\b(XXS|XS|YXS|YS|YM|YL|YXL|S|M|L|XL|2XL|3XL|4XL|5XL|OSFA)\b/i;
       const itemLines=[];
       for(let i=0;i<lines.length;i++){
         const line=lines[i];
-        // Match item lines: look for a style number like H44529 or ABC1234 followed by size and numbers
-        const m=line.match(/^([A-Z]\d{3,10})\s+(.*)/i);
-        if(m){
-          const sku=m[1];const rest=m[2];
-          // Try to extract size — common sizes at start of remainder or after description
-          const szMatch=rest.match(/\b(XXS|XS|YXS|YS|YM|YL|YXL|S|M|L|XL|2XL|3XL|4XL|5XL|OSFA)\b/i);
-          const size=szMatch?szMatch[1].toUpperCase():'';
-          // Extract numbers — look for qty shipped and prices
-          const nums=rest.match(/([\d,.]+)/g)||[];
-          const floats=nums.map(n=>parseFloat(n.replace(/,/g,''))).filter(n=>!isNaN(n));
-          // Heuristic: qty is usually a whole number < 1000, price has decimals
-          let qty=0,unitPrice=0,extension=0;
-          if(floats.length>=3){
-            // Try to find qty shipped (whole number), net price, extension
-            const wholeNums=floats.filter(n=>n===Math.floor(n)&&n>0&&n<10000);
-            const decNums=floats.filter(n=>n!==Math.floor(n)||n>100);
-            qty=wholeNums[0]||0;
-            extension=floats[floats.length-1]||0;
-            unitPrice=floats.length>=2?floats[floats.length-2]:0;
-            // If extension looks like qty*price, confirm
-            if(qty>0&&unitPrice>0&&Math.abs(extension-qty*unitPrice)<0.02){/* confirmed */}
-            else if(qty>0&&extension>0){unitPrice=Math.round(extension/qty*100)/100}
-          }else if(floats.length===2){
-            qty=floats[0];extension=floats[1];
-            if(qty>0)unitPrice=Math.round(extension/qty*100)/100;
+        // Skip header/footer lines
+        if(/SUPPLIER ITEM|UPC NUMBER|QUANTITY ORDERED|MERCHANDISE TOTAL|FREIGHT|DOCUMENT|REPORT PROBLEMS|SI STORE|SOLD TO|SHIP TO|SHIPMENT METHOD|TERMS OF|CARRIER|WEIGHT/i.test(line))continue;
+        // Look for a line that has: a SKU, a size, and numeric values (qty + price)
+        const skuMatch=line.match(SKU_RE);
+        if(!skuMatch)continue;
+        const sku=skuMatch[1].toUpperCase();
+        // Skip if it looks like a barcode (all digits, > 10 chars) or document/PO number
+        if(/^\d{8,}$/.test(sku))continue;
+        if(sku===bill.doc_number||sku===bill.po_number)continue;
+        // Check for size
+        const sizeMatch=line.match(SZ_RE);
+        const size=sizeMatch?sizeMatch[1].toUpperCase():'';
+        // Extract all numbers from the line
+        const allNums=(line.match(/\d+\.?\d*/g)||[]).map(n=>parseFloat(n)).filter(n=>!isNaN(n)&&n>0);
+        // Filter out the UPC digits (long digit sequences that aren't prices/qtys)
+        const nums=allNums.filter(n=>n<100000);
+        if(nums.length<2)continue;// Need at least qty + price
+        // The extension (line total) is typically the last number on the line
+        // Price is second-to-last, qty is a whole number before the prices
+        let qty=0,unitPrice=0,extension=0;
+        // Find qty: first whole number that's reasonable (1-9999) and not a price
+        const wholeNums=nums.filter(n=>n===Math.floor(n)&&n>=1&&n<10000);
+        // Find price-like numbers (have decimals or are reasonable dollar amounts)
+        const priceNums=nums.filter(n=>n!==Math.floor(n)||(n>=1&&n<10000));
+        extension=nums[nums.length-1]||0;
+        // Work backwards: extension is last, net price is before it (same or close to list price)
+        if(nums.length>=4){
+          // Pattern: qty_ordered, qty_shipped, ... list_price, net_price, extension
+          // Find qty shipped — look for whole numbers, pick the one that makes qty*price=extension
+          for(const wn of wholeNums){
+            const possiblePrice=extension/wn;
+            // Check if this price appears in the numbers
+            if(nums.some(n=>Math.abs(n-possiblePrice)<0.02)){qty=wn;unitPrice=Math.round(possiblePrice*100)/100;break}
           }
-          // Get description from next line(s) — often has brand name + color
-          let desc='';let color='';
-          for(let j=i+1;j<Math.min(i+3,lines.length);j++){
-            const nl=lines[j];
-            if(nl.match(/^[A-Z]\d{3,10}\s/i))break;// next item
-            if(nl.match(/^[\d\s|]+$/))break;// barcode/separator
-            if(nl.match(/MERCHANDISE|FREIGHT|DOCUMENT|SI UPCHARGE|REPORT/i))break;
-            if(!desc&&nl.length>3){
-              desc=nl;
-              const colorMatch=nl.match(/\b(BLACK|WHITE|RED|BLUE|GREEN|NAVY|GREY|GRAY|MAROON|GOLD|ORANGE|PURPLE|YELLOW|SCARLET|ROYAL|PINK|BROWN|TAN|CREAM)\b/i);
-              if(colorMatch)color=colorMatch[1].toUpperCase();
-              const slashColor=nl.match(/\b([A-Z]+)\s*\/\s*([A-Z]+)\b/);
-              if(slashColor)color=slashColor[0];
-            }
-          }
-          if(qty>0){itemLines.push({sku,size,qty,unit_price:unitPrice,extension,desc,color})}
+          if(!qty){qty=wholeNums.length>=2?wholeNums[1]:wholeNums[0]||0;unitPrice=qty>0?Math.round(extension/qty*100)/100:0}
+        }else if(nums.length>=2){
+          qty=wholeNums[0]||nums[0];
+          if(qty>0)unitPrice=Math.round(extension/qty*100)/100;
         }
+        if(qty<=0||extension<=0)continue;
+        // Get description from nearby lines
+        let desc='';let color='';
+        for(let j=i+1;j<Math.min(i+3,lines.length);j++){
+          const nl=lines[j];
+          if(SKU_RE.test(nl)&&SZ_RE.test(nl))break;// next item line
+          if(/MERCHANDISE|FREIGHT|DOCUMENT|SI UPCHARGE|REPORT|SI STORE/i.test(nl))break;
+          if(!desc&&nl.length>3&&!/^\d[\d\s]*\d$/.test(nl)){
+            desc=nl.replace(/\t+/g,' ').trim();
+            const cm=desc.match(/\b(BLACK|WHITE|RED|BLUE|GREEN|NAVY|GREY|GRAY|MAROON|GOLD|ORANGE|PURPLE|YELLOW|SCARLET|ROYAL|PINK|BROWN|TAN|CREAM|ONIX|CARBON|POWER|TEAM)\b.*?(\/\s*[A-Z]+)?/i);
+            if(cm)color=cm[0].trim();
+          }
+        }
+        // Dedupe: if same SKU+size already exists, skip (probably UPC barcode line re-matched)
+        if(itemLines.some(it=>it.sku===sku&&it.size===size&&Math.abs(it.extension-extension)<0.01))continue;
+        itemLines.push({sku,size,qty,unit_price:unitPrice,extension,desc,color});
       }
       bill.items=itemLines;
+      // Validate: if sum of extensions ≈ merchandise_total, we're good
+      if(bill.items.length>0&&bill.merchandise_total>0){
+        const itemsSum=bill.items.reduce((a,it)=>a+it.extension,0);
+        if(Math.abs(itemsSum-bill.merchandise_total)>1){
+          bill.warnings.push('Item total ($'+itemsSum.toFixed(2)+') differs from merchandise total ($'+bill.merchandise_total.toFixed(2)+')')}}
       if(!bill.po_number)bill.warnings.push('PO number not found');
       if(!bill.doc_total&&!bill.merchandise_total)bill.warnings.push('Could not detect totals');
-      if(bill.items.length===0)bill.warnings.push('No line items detected');
+      if(bill.items.length===0)bill.warnings.push('No line items detected — check raw text');
       return bill;
     };
 
-    // Process multiple bill PDFs
+    // Process multiple bill PDFs — each file extracted independently
     const processBillPdfs=async(files)=>{
       setBillImport(x=>({...x,uploading:true,step:'parsing'}));
       const results=[];
-      for(const file of files){
+      for(let fi=0;fi<files.length;fi++){
+        const file=files[fi];
         try{
           const text=await extractPdfText(file);
           const parsed=parseSupplierBill(text);
-          results.push({file:file.name,text,parsed,selected:true,qbStatus:null});
+          results.push({id:'BILL-'+Date.now()+'-'+fi,file:file.name,text,parsed,selected:true,qbStatus:null,uploadedAt:new Date().toLocaleString()});
         }catch(e){
-          results.push({file:file.name,text:'',parsed:{po_number:'',tracking:'',supplier:'',doc_number:'',items:[],merchandise_total:0,freight:0,doc_total:0,warnings:['PDF read failed: '+e.message]},selected:true,qbStatus:null});
+          results.push({id:'BILL-'+Date.now()+'-'+fi,file:file.name,text:'',parsed:{po_number:'',tracking:'',supplier:'',doc_number:'',items:[],merchandise_total:0,freight:0,doc_total:0,si_upcharge:0,warnings:['PDF read failed: '+e.message],rawText:''},selected:true,qbStatus:null,uploadedAt:new Date().toLocaleString()});
         }
       }
       setBillImport(x=>({...x,parsed:results,step:'review',uploading:false}));
+      // Auto-save to history
+      const toSave=results.map(r=>({id:r.id,file:r.file,parsed:{...r.parsed,rawText:undefined},uploadedAt:r.uploadedAt,qbStatus:null}));
+      setSavedBills(prev=>{const updated=[...toSave,...prev].slice(0,200);try{localStorage.setItem('nsa_saved_bills',JSON.stringify(updated))}catch{};return updated});
       nf(results.length+' bill(s) parsed');
     };
 
@@ -12458,6 +12495,16 @@ export default function App(){
         }
       }
       setBillImport(x=>({...x,uploading:false}));
+      // Persist QB status to savedBills history
+      setSavedBills(prev=>{
+        const updated=prev.map(sb=>{
+          const match=billImport.parsed.find(p=>p.id===sb.id);
+          if(match&&match.qbStatus)return{...sb,qbStatus:match.qbStatus,qbMsg:match.qbMsg||''};
+          return sb;
+        });
+        try{localStorage.setItem('nsa_saved_bills',JSON.stringify(updated))}catch{};
+        return updated;
+      });
       nf(success+' bill(s) pushed to QB'+(failed?' ('+failed+' failed)':''));
     };
 
@@ -13263,6 +13310,14 @@ export default function App(){
                 {bill.warnings.length>0&&<div style={{padding:'6px 14px',background:'#fef3c7'}}>
                   {bill.warnings.map((w,wi)=><div key={wi} style={{fontSize:10,color:'#92400e'}}>&#9888; {w}</div>)}
                 </div>}
+                {/* Raw text toggle */}
+                <div style={{padding:'6px 14px',borderTop:'1px solid #f1f5f9'}}>
+                  <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}}
+                    onClick={()=>setBillImport(x=>({...x,showRaw:{...x.showRaw,[bi]:!x.showRaw[bi]}}))}>
+                    {billImport.showRaw[bi]?'Hide Raw Text':'Show Raw Text'}
+                  </button>
+                  {billImport.showRaw[bi]&&<pre style={{marginTop:6,padding:8,background:'#1e293b',color:'#e2e8f0',borderRadius:6,fontSize:10,maxHeight:300,overflow:'auto',whiteSpace:'pre-wrap',wordBreak:'break-all'}}>{b.text||'(no text extracted)'}</pre>}
+                </div>
               </div>
             </div>})}
         </>}
@@ -13273,6 +13328,38 @@ export default function App(){
           <div style={{fontSize:16,fontWeight:700,color:'#7c3aed'}}>Parsing PDFs...</div>
           <div style={{fontSize:12,color:'#94a3b8',marginTop:4}}>Extracting text and detecting bill data</div>
         </div></div>}
+
+        {/* Saved Bills History */}
+        {savedBills.length>0&&<div className="card" style={{marginTop:16}}>
+          <div className="card-header" style={{display:'flex',alignItems:'center',gap:8}}>
+            <h2 style={{margin:0,flex:1}}>Bill History ({savedBills.length})</h2>
+            <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{if(window.confirm('Clear all saved bill history?')){setSavedBills([]);localStorage.removeItem('nsa_saved_bills')}}}>Clear History</button>
+          </div>
+          <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
+            <table style={{fontSize:11,width:'100%'}}>
+              <thead><tr style={{background:'#f8fafc',position:'sticky',top:0}}>
+                <th style={{textAlign:'left',padding:'8px 12px'}}>File</th>
+                <th style={{textAlign:'left',padding:'8px 12px'}}>PO Number</th>
+                <th style={{textAlign:'left',padding:'8px 12px'}}>Supplier</th>
+                <th style={{textAlign:'right',padding:'8px 12px'}}>Total</th>
+                <th style={{textAlign:'right',padding:'8px 12px'}}>Freight</th>
+                <th style={{textAlign:'center',padding:'8px 12px'}}>Items</th>
+                <th style={{textAlign:'left',padding:'8px 12px'}}>QB Status</th>
+                <th style={{textAlign:'left',padding:'8px 12px'}}>Uploaded</th>
+              </tr></thead>
+              <tbody>{savedBills.map((sb,si)=><tr key={si} style={{borderBottom:'1px solid #f1f5f9',background:sb.qbStatus==='success'?'#f0fdf4':sb.qbStatus==='error'?'#fef2f2':'white'}}>
+                <td style={{padding:'6px 12px',fontWeight:600,maxWidth:180,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{sb.file}</td>
+                <td style={{padding:'6px 12px',fontFamily:'monospace',color:'#7c3aed',fontWeight:700}}>{sb.parsed?.po_number||'—'}</td>
+                <td style={{padding:'6px 12px',color:'#475569'}}>{sb.parsed?.supplier||'—'}</td>
+                <td style={{padding:'6px 12px',textAlign:'right',fontWeight:700,color:'#166534'}}>{sb.parsed?.doc_total?'$'+sb.parsed.doc_total.toFixed(2):'—'}</td>
+                <td style={{padding:'6px 12px',textAlign:'right',color:'#64748b'}}>{sb.parsed?.freight?'$'+sb.parsed.freight.toFixed(2):'—'}</td>
+                <td style={{padding:'6px 12px',textAlign:'center'}}>{sb.parsed?.items?.length||0}</td>
+                <td style={{padding:'6px 12px'}}>{sb.qbStatus==='success'?<span style={{color:'#166534',fontWeight:700}}>Pushed</span>:sb.qbStatus==='error'?<span style={{color:'#dc2626',fontWeight:700}}>Failed</span>:<span style={{color:'#94a3b8'}}>Not pushed</span>}</td>
+                <td style={{padding:'6px 12px',fontSize:10,color:'#94a3b8'}}>{sb.uploadedAt||'—'}</td>
+              </tr>)}</tbody>
+            </table>
+          </div>
+        </div>}
       </>}
     </>);
   };
