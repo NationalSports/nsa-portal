@@ -11915,8 +11915,9 @@ export default function App(){
   // NETSUITE IMPORT PAGE
   const[imp,setImp]=useState({step:'upload',raw:'',docType:'so',custId:'',parsed:[],decoLines:[],issues:[],questions:[],shipping:[],memo:'',poRef:'',
     pdfFile:null,pdfText:'',pdfParsed:null,pdfLoading:false,pdfItems:[],linkedSoId:'',externalDocNum:'',importSource:'netsuite'});
-  const[impTab,setImpTab]=useState('orders');// orders|customers|vendors|products
+  const[impTab,setImpTab]=useState('orders');// orders|customers|vendors|products|bills
   const[bulkImp,setBulkImp]=useState({raw:'',parsed:[],issues:[],step:'paste'});// paste|review|done
+  const[billImport,setBillImport]=useState({step:'upload',files:[],parsed:[],uploading:false});
   const SZ_ORD_I=['XXS','XS','YXS','YS','YM','YL','YXL','S','M','L','XL','2XL','3XL','4XL','5XL','OSFA'];
 
   const parseNSData=(raw)=>{
@@ -12254,10 +12255,188 @@ export default function App(){
 
     const resetBulk=()=>setBulkImp({raw:'',parsed:[],issues:[],step:'paste'});
 
+    // ── BILL PDF PARSER ──
+    const parseSupplierBill=(text)=>{
+      const lines=text.split('\n').map(l=>l.trim()).filter(Boolean);
+      const bill={po_number:'',tracking:'',supplier:'',doc_number:'',doc_date:'',due_date:'',ship_date:'',
+        items:[],merchandise_total:0,freight:0,si_upcharge:0,doc_total:0,warnings:[]};
+      for(const line of lines){
+        // PO Number — top right area
+        if(!bill.po_number){const m=line.match(/PO\s*(?:NUMBER|#|NUM)[:\s]*([A-Z0-9]+)/i);if(m)bill.po_number=m[1]}
+        // Tracking number
+        if(!bill.tracking){const m=line.match(/TRACKING\s*(?:NUMBER|#|NUM)?[:\s]*(\d{10,30})/i);if(m)bill.tracking=m[1]}
+        // Supplier name
+        if(!bill.supplier){const m=line.match(/^SUPPLIER\s*$/i);if(m){const ni=lines.indexOf(line);if(ni>=0&&lines[ni+1])bill.supplier=lines[ni+1].trim()}}
+        if(!bill.supplier&&/ADIDAS/i.test(line)&&!/SOLD|SHIP|BILL/i.test(line)){bill.supplier='Adidas'}
+        if(!bill.supplier&&/UNDER\s*ARMOU?R/i.test(line)&&!/SOLD|SHIP|BILL/i.test(line)){bill.supplier='Under Armour'}
+        if(!bill.supplier&&/NIKE/i.test(line)&&!/SOLD|SHIP|BILL/i.test(line)){bill.supplier='Nike'}
+        // SI Document Number
+        if(!bill.doc_number){const m=line.match(/SI\s*DOCUMENT\s*NUMBER[:\s]*(\d+)/i);if(m)bill.doc_number=m[1]}
+        if(!bill.doc_number){const m=line.match(/DOCUMENT\s*NUMBER[:\s]*(\d+)/i);if(m)bill.doc_number=m[1]}
+        // Document date
+        if(!bill.doc_date){const m=line.match(/DOCUMENT\s*DATE[:\s]*([\d\/]+)/i);if(m)bill.doc_date=m[1]}
+        // Due date
+        if(!bill.due_date){const m=line.match(/DUE\s*DATE[:\s]*([\d\/]+)/i);if(m)bill.due_date=m[1]}
+        // Ship date
+        if(!bill.ship_date){const m=line.match(/SHIP\s*DATE[:\s]*([\d\/]+)/i);if(m)bill.ship_date=m[1]}
+        // Totals
+        const merch=line.match(/MERCHANDISE\s*TOTAL\s*([\d,.]+)/i);if(merch)bill.merchandise_total=parseFloat(merch[1].replace(/,/g,''))||0;
+        const frt=line.match(/FREIGHT\s*CHARGE\s*([\d,.]+)/i);if(frt)bill.freight=parseFloat(frt[1].replace(/,/g,''))||0;
+        const siu=line.match(/SI\s*UPCHARGE\s*([\d,.]+)/i);if(siu)bill.si_upcharge=parseFloat(siu[1].replace(/,/g,''))||0;
+        const docT=line.match(/DOCUMENT\s*TOTAL\s*([\d,.]+)/i);if(docT)bill.doc_total=parseFloat(docT[1].replace(/,/g,''))||0;
+      }
+      // Parse line items — look for rows with SKU, size, qty, price pattern
+      // Format: UPC | SUPPLIER ITEM / DESCRIPTION | SIZE | COLOR | QTY ORDERED | QTY SHIPPED | QTY ON B/O | UNIT | LIST PRICE | DISC % | NET PRICE | EXTENSION
+      const itemLines=[];
+      for(let i=0;i<lines.length;i++){
+        const line=lines[i];
+        // Match item lines: look for a style number like H44529 or ABC1234 followed by size and numbers
+        const m=line.match(/^([A-Z]\d{3,10})\s+(.*)/i);
+        if(m){
+          const sku=m[1];const rest=m[2];
+          // Try to extract size — common sizes at start of remainder or after description
+          const szMatch=rest.match(/\b(XXS|XS|YXS|YS|YM|YL|YXL|S|M|L|XL|2XL|3XL|4XL|5XL|OSFA)\b/i);
+          const size=szMatch?szMatch[1].toUpperCase():'';
+          // Extract numbers — look for qty shipped and prices
+          const nums=rest.match(/([\d,.]+)/g)||[];
+          const floats=nums.map(n=>parseFloat(n.replace(/,/g,''))).filter(n=>!isNaN(n));
+          // Heuristic: qty is usually a whole number < 1000, price has decimals
+          let qty=0,unitPrice=0,extension=0;
+          if(floats.length>=3){
+            // Try to find qty shipped (whole number), net price, extension
+            const wholeNums=floats.filter(n=>n===Math.floor(n)&&n>0&&n<10000);
+            const decNums=floats.filter(n=>n!==Math.floor(n)||n>100);
+            qty=wholeNums[0]||0;
+            extension=floats[floats.length-1]||0;
+            unitPrice=floats.length>=2?floats[floats.length-2]:0;
+            // If extension looks like qty*price, confirm
+            if(qty>0&&unitPrice>0&&Math.abs(extension-qty*unitPrice)<0.02){/* confirmed */}
+            else if(qty>0&&extension>0){unitPrice=Math.round(extension/qty*100)/100}
+          }else if(floats.length===2){
+            qty=floats[0];extension=floats[1];
+            if(qty>0)unitPrice=Math.round(extension/qty*100)/100;
+          }
+          // Get description from next line(s) — often has brand name + color
+          let desc='';let color='';
+          for(let j=i+1;j<Math.min(i+3,lines.length);j++){
+            const nl=lines[j];
+            if(nl.match(/^[A-Z]\d{3,10}\s/i))break;// next item
+            if(nl.match(/^[\d\s|]+$/))break;// barcode/separator
+            if(nl.match(/MERCHANDISE|FREIGHT|DOCUMENT|SI UPCHARGE|REPORT/i))break;
+            if(!desc&&nl.length>3){
+              desc=nl;
+              const colorMatch=nl.match(/\b(BLACK|WHITE|RED|BLUE|GREEN|NAVY|GREY|GRAY|MAROON|GOLD|ORANGE|PURPLE|YELLOW|SCARLET|ROYAL|PINK|BROWN|TAN|CREAM)\b/i);
+              if(colorMatch)color=colorMatch[1].toUpperCase();
+              const slashColor=nl.match(/\b([A-Z]+)\s*\/\s*([A-Z]+)\b/);
+              if(slashColor)color=slashColor[0];
+            }
+          }
+          if(qty>0){itemLines.push({sku,size,qty,unit_price:unitPrice,extension,desc,color})}
+        }
+      }
+      bill.items=itemLines;
+      if(!bill.po_number)bill.warnings.push('PO number not found');
+      if(!bill.doc_total&&!bill.merchandise_total)bill.warnings.push('Could not detect totals');
+      if(bill.items.length===0)bill.warnings.push('No line items detected');
+      return bill;
+    };
+
+    // Process multiple bill PDFs
+    const processBillPdfs=async(files)=>{
+      setBillImport(x=>({...x,uploading:true,step:'parsing'}));
+      const results=[];
+      for(const file of files){
+        try{
+          const text=await extractPdfText(file);
+          const parsed=parseSupplierBill(text);
+          results.push({file:file.name,text,parsed,selected:true,qbStatus:null});
+        }catch(e){
+          results.push({file:file.name,text:'',parsed:{po_number:'',tracking:'',supplier:'',doc_number:'',items:[],merchandise_total:0,freight:0,doc_total:0,warnings:['PDF read failed: '+e.message]},selected:true,qbStatus:null});
+        }
+      }
+      setBillImport(x=>({...x,parsed:results,step:'review',uploading:false}));
+      nf(results.length+' bill(s) parsed');
+    };
+
+    // Push bills to QuickBooks
+    const pushBillsToQB=async()=>{
+      const selected=billImport.parsed.filter(b=>b.selected);
+      if(!selected.length){nf('No bills selected','error');return}
+      setBillImport(x=>({...x,uploading:true}));
+      let success=0,failed=0;
+      for(let bi=0;bi<billImport.parsed.length;bi++){
+        const b=billImport.parsed[bi];if(!b.selected)continue;
+        const bill=b.parsed;
+        // Find vendor
+        const vendorName=bill.supplier||'Unknown Vendor';
+        let vendor=vend.find(v=>v.name.toLowerCase().includes(vendorName.toLowerCase()));
+        if(!vendor)vendor=vend.find(v=>vendorName.toLowerCase().includes(v.name.toLowerCase()));
+        let qbVendorId=vendor?.qb_vendor_id;
+        if(!qbVendorId&&vendor){
+          const vRes=await qbApi('upsert_vendor',{vendor:{DisplayName:vendor.name,CompanyName:vendor.name}});
+          if(vRes?.Vendor?.Id){qbVendorId=vRes.Vendor.Id;setVend(prev=>prev.map(v=>v.id===vendor.id?{...v,qb_vendor_id:qbVendorId}:v))}
+        }
+        if(!qbVendorId){
+          // Create vendor with supplier name
+          const vRes=await qbApi('upsert_vendor',{vendor:{DisplayName:vendorName,CompanyName:vendorName}});
+          if(vRes?.Vendor?.Id)qbVendorId=vRes.Vendor.Id;
+        }
+        if(!qbVendorId){
+          setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,qbStatus:'error',qbMsg:'Vendor not found/created'}:p)}));
+          failed++;continue;
+        }
+        const amt=bill.doc_total||bill.merchandise_total+bill.freight+(bill.si_upcharge||0);
+        const lineItems=[];
+        // Merchandise line
+        if(bill.merchandise_total>0){
+          lineItems.push({DetailType:'AccountBasedExpenseLineDetail',Amount:bill.merchandise_total,
+            Description:'Merchandise — PO '+bill.po_number+(bill.items.length?' ('+bill.items.length+' items)':''),
+            AccountBasedExpenseLineDetail:{AccountRef:{name:qbConfig.mapping.cogs_account||'Cost of Goods Sold'}}});
+        }else if(amt>0&&!bill.freight){
+          lineItems.push({DetailType:'AccountBasedExpenseLineDetail',Amount:amt,
+            Description:'Vendor bill — PO '+bill.po_number,
+            AccountBasedExpenseLineDetail:{AccountRef:{name:qbConfig.mapping.cogs_account||'Cost of Goods Sold'}}});
+        }
+        // Freight line
+        if(bill.freight>0){
+          lineItems.push({DetailType:'AccountBasedExpenseLineDetail',Amount:bill.freight,
+            Description:'Freight charge — PO '+bill.po_number,
+            AccountBasedExpenseLineDetail:{AccountRef:{name:'Shipping and delivery expense'}}});
+        }
+        // SI Upcharge line
+        if(bill.si_upcharge>0){
+          lineItems.push({DetailType:'AccountBasedExpenseLineDetail',Amount:bill.si_upcharge,
+            Description:'SI Upcharge — PO '+bill.po_number,
+            AccountBasedExpenseLineDetail:{AccountRef:{name:qbConfig.mapping.cogs_account||'Cost of Goods Sold'}}});
+        }
+        if(lineItems.length===0){
+          setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,qbStatus:'error',qbMsg:'No amounts to bill'}:p)}));
+          failed++;continue;
+        }
+        const memo=['PO: '+bill.po_number,bill.tracking?'Tracking: '+bill.tracking:'',bill.doc_number?'Doc #'+bill.doc_number:''].filter(Boolean).join(' | ');
+        const qbBill={VendorRef:{value:qbVendorId},TxnDate:bill.doc_date?bill.doc_date.replace(/(\d+)\/(\d+)\/(\d+)/,'20$3-$1-$2'):new Date().toISOString().slice(0,10),
+          DocNumber:bill.doc_number||bill.po_number||undefined,
+          Line:lineItems,PrivateNote:memo};
+        const billRes=await qbApi('upsert_bill',{bill:qbBill});
+        if(billRes?.Bill?.Id){
+          const log={ts:new Date().toLocaleString(),type:'bill_upload',status:'success',
+            details:['Bill created: '+vendorName+' $'+amt.toFixed(2)+' → QB Bill #'+billRes.Bill.Id,'PO: '+bill.po_number,bill.items.length+' line items, Freight: $'+bill.freight.toFixed(2)]};
+          setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));
+          setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,qbStatus:'success',qbMsg:'QB Bill #'+billRes.Bill.Id}:p)}));
+          success++;
+        }else{
+          setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,qbStatus:'error',qbMsg:billRes?.Fault?.Error?.[0]?.Detail||'Unknown error'}:p)}));
+          failed++;
+        }
+      }
+      setBillImport(x=>({...x,uploading:false}));
+      nf(success+' bill(s) pushed to QB'+(failed?' ('+failed+' failed)':''));
+    };
+
     return(<>
       {/* Import type tabs */}
       <div style={{display:'flex',gap:4,marginBottom:16}}>
-        {[['orders','📋 Orders / NetSuite'],['customers','👥 Customers'],['vendors','🏭 Vendors'],['products','📦 Products']].map(([id,label])=>
+        {[['orders','📋 Orders / NetSuite'],['customers','👥 Customers'],['vendors','🏭 Vendors'],['products','📦 Products'],['bills','📄 Supplier Bills']].map(([id,label])=>
           <button key={id} className={`btn btn-sm ${impTab===id?'btn-primary':'btn-secondary'}`}
             onClick={()=>{setImpTab(id);resetBulk()}}>{label}</button>)}
       </div>
@@ -12916,6 +13095,156 @@ export default function App(){
 
           </div>
         </div>
+      </>}
+
+      {/* BILLS TAB — Supplier Bill PDF Upload & Parse */}
+      {impTab==='bills'&&<>
+        {billImport.step==='upload'&&<div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}}>
+          <div className="card">
+            <div className="card-header"><h2>Upload Supplier Bills (PDF)</h2></div>
+            <div className="card-body">
+              <div style={{fontSize:12,color:'#64748b',marginBottom:12}}>
+                Upload one or more supplier bill PDFs. They'll be parsed automatically to extract PO number, tracking, items, sizes, costs, and freight charges.
+              </div>
+              <div style={{border:'2px dashed #7c3aed',borderRadius:12,padding:32,textAlign:'center',cursor:'pointer',background:'#faf5ff',marginBottom:12,transition:'all 0.2s'}}
+                onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#3b82f6';e.currentTarget.style.background='#eff6ff'}}
+                onDragLeave={e=>{e.currentTarget.style.borderColor='#7c3aed';e.currentTarget.style.background='#faf5ff'}}
+                onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor='#7c3aed';e.currentTarget.style.background='#faf5ff';
+                  const files=[...e.dataTransfer.files].filter(f=>f.type==='application/pdf'||f.name.endsWith('.pdf'));
+                  if(files.length)setBillImport(x=>({...x,files:[...x.files,...files]}));
+                  else nf('Only PDF files accepted','error')}}
+                onClick={()=>document.getElementById('bill-pdf-input')?.click()}>
+                <input id="bill-pdf-input" type="file" accept=".pdf" multiple style={{display:'none'}}
+                  onChange={e=>{const files=[...e.target.files];if(files.length)setBillImport(x=>({...x,files:[...x.files,...files]}));e.target.value=''}}/>
+                <div style={{fontSize:36,marginBottom:8}}>📄</div>
+                <div style={{fontSize:14,fontWeight:700,color:'#7c3aed'}}>Drop PDF bills here or click to browse</div>
+                <div style={{fontSize:11,color:'#94a3b8',marginTop:4}}>Supports multiple files at once</div>
+              </div>
+              {billImport.files.length>0&&<>
+                <div style={{fontSize:12,fontWeight:700,marginBottom:6}}>{billImport.files.length} file(s) ready:</div>
+                {billImport.files.map((f,i)=><div key={i} style={{display:'flex',alignItems:'center',gap:8,padding:'6px 10px',background:'#f8fafc',borderRadius:6,marginBottom:4,border:'1px solid #e2e8f0'}}>
+                  <span style={{fontSize:12,flex:1,fontWeight:600}}>{f.name}</span>
+                  <span style={{fontSize:10,color:'#64748b'}}>{(f.size/1024).toFixed(0)} KB</span>
+                  <button style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',fontWeight:800,fontSize:14}} onClick={()=>setBillImport(x=>({...x,files:x.files.filter((_,fi)=>fi!==i)}))}>x</button>
+                </div>)}
+                <div style={{display:'flex',gap:8,marginTop:12}}>
+                  <button className="btn btn-primary" style={{flex:1,background:'#7c3aed',borderColor:'#7c3aed'}} disabled={billImport.uploading}
+                    onClick={()=>processBillPdfs(billImport.files)}>
+                    {billImport.uploading?'Parsing...':'Parse '+billImport.files.length+' Bill(s)'}
+                  </button>
+                  <button className="btn btn-secondary" onClick={()=>setBillImport({step:'upload',files:[],parsed:[],uploading:false})}>Clear</button>
+                </div>
+              </>}
+            </div>
+          </div>
+          <div className="card">
+            <div className="card-header"><h2>What Gets Extracted</h2></div>
+            <div className="card-body">
+              <div style={{fontSize:12,color:'#475569'}}>
+                {[['PO Number','Top right of invoice (e.g. 4270CORFC STK S)'],
+                  ['Tracking Number','Middle section (e.g. 511831220499)'],
+                  ['Supplier','Auto-detected (Adidas, Under Armour, Nike, etc.)'],
+                  ['Line Items','SKU, size, color, qty shipped, unit price, extension'],
+                  ['Merchandise Total','Sum of all line items'],
+                  ['Freight Charge','Shipping / freight cost'],
+                  ['SI Upcharge','Additional supplier charges'],
+                  ['Document Total','Final invoice total']
+                ].map(([k,v],i)=><div key={i} style={{padding:'8px 0',borderBottom:i<7?'1px solid #f1f5f9':'none',display:'flex',gap:8}}>
+                  <span style={{fontWeight:700,minWidth:120,color:'#1e40af',fontSize:12}}>{k}</span>
+                  <span style={{color:'#64748b',fontSize:11}}>{v}</span>
+                </div>)}
+              </div>
+            </div>
+          </div>
+        </div>}
+
+        {/* Review parsed bills */}
+        {billImport.step==='review'&&<>
+          <div style={{display:'flex',gap:8,marginBottom:12,alignItems:'center'}}>
+            <button className="btn btn-secondary" onClick={()=>setBillImport({step:'upload',files:[],parsed:[],uploading:false})}>← Upload More</button>
+            <span style={{fontSize:14,fontWeight:700,flex:1}}>{billImport.parsed.length} Bill(s) Parsed</span>
+            <button className="btn btn-primary" style={{background:'#166534',borderColor:'#166534'}} disabled={billImport.uploading||!billImport.parsed.some(b=>b.selected&&!b.qbStatus)}
+              onClick={pushBillsToQB}>
+              {billImport.uploading?'Pushing to QB...':'Push '+billImport.parsed.filter(b=>b.selected&&!b.qbStatus).length+' to QuickBooks'}
+            </button>
+          </div>
+
+          {billImport.parsed.map((b,bi)=>{
+            const bill=b.parsed;
+            return<div key={bi} className="card" style={{marginBottom:12,border:b.qbStatus==='success'?'2px solid #22c55e':b.qbStatus==='error'?'2px solid #ef4444':'1px solid #e2e8f0'}}>
+              <div className="card-header" style={{display:'flex',alignItems:'center',gap:8,background:b.qbStatus==='success'?'#f0fdf4':b.qbStatus==='error'?'#fef2f2':'#faf5ff'}}>
+                {!b.qbStatus&&<input type="checkbox" checked={b.selected} onChange={()=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,selected:!p.selected}:p)}))} style={{width:18,height:18}}/>}
+                {b.qbStatus==='success'&&<span style={{fontSize:16,color:'#22c55e'}}>&#10003;</span>}
+                {b.qbStatus==='error'&&<span style={{fontSize:16,color:'#ef4444'}}>&#10007;</span>}
+                <h2 style={{margin:0,flex:1}}>{b.file}</h2>
+                {b.qbMsg&&<span style={{fontSize:11,fontWeight:600,color:b.qbStatus==='success'?'#166534':'#dc2626'}}>{b.qbMsg}</span>}
+                {bill.warnings.length>0&&<span style={{fontSize:10,padding:'2px 6px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:600}}>{bill.warnings.length} warning(s)</span>}
+              </div>
+              <div className="card-body" style={{padding:0}}>
+                {/* Summary row */}
+                <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(140px,1fr))',gap:0,borderBottom:'1px solid #f1f5f9'}}>
+                  {[['PO Number',bill.po_number||'—','#7c3aed'],['Tracking',bill.tracking||'—','#1e40af'],['Supplier',bill.supplier||'Unknown','#475569'],
+                    ['Doc #',bill.doc_number||'—','#64748b'],['Doc Date',bill.doc_date||'—','#64748b'],['Ship Date',bill.ship_date||'—','#64748b']
+                  ].map(([label,val,color],i)=><div key={i} style={{padding:'10px 14px',borderRight:'1px solid #f1f5f9'}}>
+                    <div style={{fontSize:9,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',marginBottom:2}}>{label}</div>
+                    <div style={{fontSize:13,fontWeight:700,color,wordBreak:'break-all'}}>{val}</div>
+                  </div>)}
+                </div>
+                {/* Editable fields */}
+                <div style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',gap:12,alignItems:'center',background:'#fafafa'}}>
+                  <div style={{fontSize:11,fontWeight:600,color:'#64748b'}}>Edit:</div>
+                  <div style={{display:'flex',gap:6,alignItems:'center',flex:1}}>
+                    <label style={{fontSize:10,fontWeight:600}}>PO</label>
+                    <input className="form-input" style={{width:140,fontSize:11,padding:'3px 6px'}} value={bill.po_number}
+                      onChange={e=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:{...p.parsed,po_number:e.target.value}}:p)}))}/>
+                    <label style={{fontSize:10,fontWeight:600,marginLeft:8}}>Supplier</label>
+                    <input className="form-input" style={{width:120,fontSize:11,padding:'3px 6px'}} value={bill.supplier}
+                      onChange={e=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:{...p.parsed,supplier:e.target.value}}:p)}))}/>
+                    <label style={{fontSize:10,fontWeight:600,marginLeft:8}}>Tracking</label>
+                    <input className="form-input" style={{width:140,fontSize:11,padding:'3px 6px'}} value={bill.tracking}
+                      onChange={e=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:{...p.parsed,tracking:e.target.value}}:p)}))}/>
+                  </div>
+                </div>
+                {/* Line items */}
+                {bill.items.length>0&&<div style={{padding:'0 14px'}}>
+                  <table style={{fontSize:11,marginTop:8,marginBottom:8}}>
+                    <thead><tr><th style={{textAlign:'left'}}>SKU</th><th>Size</th><th>Color</th><th style={{textAlign:'right'}}>Qty</th><th style={{textAlign:'right'}}>Unit Price</th><th style={{textAlign:'right'}}>Extension</th><th style={{textAlign:'left',maxWidth:180}}>Description</th></tr></thead>
+                    <tbody>{bill.items.map((it,ii)=><tr key={ii}>
+                      <td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{it.sku}</td>
+                      <td style={{textAlign:'center',fontWeight:600}}>{it.size}</td>
+                      <td style={{color:'#64748b'}}>{it.color||'—'}</td>
+                      <td style={{textAlign:'right',fontWeight:700}}>{it.qty}</td>
+                      <td style={{textAlign:'right'}}>${it.unit_price.toFixed(2)}</td>
+                      <td style={{textAlign:'right',fontWeight:600}}>${it.extension.toFixed(2)}</td>
+                      <td style={{maxWidth:180,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',color:'#64748b',fontSize:10}}>{it.desc||'—'}</td>
+                    </tr>)}</tbody>
+                  </table>
+                </div>}
+                {bill.items.length===0&&<div style={{padding:'12px 14px',fontSize:12,color:'#d97706'}}>No line items detected — totals will be used as a single line</div>}
+                {/* Totals */}
+                <div style={{display:'flex',gap:0,borderTop:'1px solid #f1f5f9'}}>
+                  {[['Merchandise',bill.merchandise_total,'merchandise_total'],['Freight',bill.freight,'freight'],['SI Upcharge',bill.si_upcharge,'si_upcharge'],['Doc Total',bill.doc_total,'doc_total']].map(([label,val,key],i)=>
+                    <div key={i} style={{flex:1,padding:'10px 14px',borderRight:'1px solid #f1f5f9',textAlign:'center'}}>
+                      <div style={{fontSize:9,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',marginBottom:2}}>{label}</div>
+                      <input className="form-input" type="number" step="0.01" style={{width:'100%',fontSize:14,fontWeight:800,textAlign:'center',color:val>0?'#166534':'#94a3b8',padding:'2px 4px'}}
+                        value={val||''} placeholder="0.00"
+                        onChange={e=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i2)=>i2===bi?{...p,parsed:{...p.parsed,[key]:parseFloat(e.target.value)||0}}:p)}))}/>
+                    </div>)}
+                </div>
+                {/* Warnings */}
+                {bill.warnings.length>0&&<div style={{padding:'6px 14px',background:'#fef3c7'}}>
+                  {bill.warnings.map((w,wi)=><div key={wi} style={{fontSize:10,color:'#92400e'}}>&#9888; {w}</div>)}
+                </div>}
+              </div>
+            </div>})}
+        </>}
+
+        {/* Parsing indicator */}
+        {billImport.step==='parsing'&&<div className="card"><div className="card-body" style={{textAlign:'center',padding:40}}>
+          <div style={{fontSize:36,marginBottom:8}}>&#8987;</div>
+          <div style={{fontSize:16,fontWeight:700,color:'#7c3aed'}}>Parsing PDFs...</div>
+          <div style={{fontSize:12,color:'#94a3b8',marginTop:4}}>Extracting text and detecting bill data</div>
+        </div></div>}
       </>}
     </>);
   };
