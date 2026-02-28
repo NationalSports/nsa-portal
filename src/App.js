@@ -12286,119 +12286,166 @@ export default function App(){
 
     // ── BILL PDF PARSER ──
     // Sports Inc / Adidas / UA supplier bill format parser
+    // Key: only extract items from the ITEM TABLE SECTION (between header row and totals row)
     const parseSupplierBill=(text)=>{
       const lines=text.split('\n').map(l=>l.trim()).filter(Boolean);
-      const bill={po_number:'',tracking:'',supplier:'',doc_number:'',doc_date:'',due_date:'',ship_date:'',
-        items:[],merchandise_total:0,freight:0,si_upcharge:0,doc_total:0,warnings:[],rawText:text};
+      const bill={po_number:'',tracking:'',supplier:'',vendor:'',doc_number:'',doc_date:'',due_date:'',ship_date:'',
+        items:[],merchandise_total:0,freight:0,si_upcharge:0,doc_total:0,warnings:[],rawText:text,
+        matchedPO:null,matchedPOSource:null};
 
-      // ── PASS 1: Extract header fields ──
-      // Scan every line but use LAST match for totals (totals appear at bottom of bill)
+      // ── PASS 1: Extract header fields & find item table boundaries ──
+      let itemSectionStart=-1,itemSectionEnd=-1;
       for(let li=0;li<lines.length;li++){
         const line=lines[li];
-        // PO Number — look for "PO NUMBER:" or "PO NUMBER" followed by alphanumeric code
-        if(!bill.po_number){const m=line.match(/PO\s*NUMBER\s*[:\s]+([A-Z0-9][A-Z0-9\s]*[A-Z0-9])/i);if(m)bill.po_number=m[1].trim()}
-        // Tracking number — 10+ digit number after TRACKING
-        if(!bill.tracking){const m=line.match(/TRACKING\s*(?:NUMBER|#|NUM|NO)?[:\s]*(\d{10,30})/i);if(m)bill.tracking=m[1]}
-        // Supplier detection from "SUPPLIER" label or known names
-        if(!bill.supplier&&/^SUPPLIER\b/i.test(line)){
-          // Next non-empty line after SUPPLIER heading is the name
-          for(let j=li+1;j<Math.min(li+3,lines.length);j++){
-            const nl=lines[j].trim();
-            if(nl.length>3&&!/^DEPT|^PH|^FX|^FAX|^\d/.test(nl)){bill.supplier=nl;break}
+        // PO Number — "PO NUMBER" label followed by the value (may be on same line or next line)
+        if(!bill.po_number){
+          const m=line.match(/PO\s*NUMBER\s*[:\s]+(.+)/i);
+          if(m){
+            const val=m[1].trim();
+            // PO is typically alphanumeric like "PO7508" or "4270CORFC STK S" — grab first meaningful token(s)
+            if(val.length>1)bill.po_number=val;
           }
         }
+        // Tracking number — long digit sequence after TRACKING label
+        if(!bill.tracking){const m=line.match(/TRACKING\s*(?:NUMBER|#|NUM|NO)?[:\s]*(\d{10,30})/i);if(m)bill.tracking=m[1]}
+        // Also catch standalone long digit number on a line near "TRACKING" context
+        if(!bill.tracking&&/^\d{10,20}$/.test(line)){
+          // Check if nearby lines mention tracking/carrier
+          const ctx=lines.slice(Math.max(0,li-3),li+3).join(' ');
+          if(/TRACKING|CARRIER|FEDERAL|UPS|USPS/i.test(ctx))bill.tracking=line;
+        }
+        // Supplier detection — look for known supplier names
         if(!bill.supplier){
           if(/ADIDAS\s*(US|TEAM|AMERICA)/i.test(line))bill.supplier='Adidas';
           else if(/UNDER\s*ARMOU?R/i.test(line)&&!/SOLD|SHIP|BILL|ATTN/i.test(line))bill.supplier='Under Armour';
           else if(/\bNIKE\b/i.test(line)&&!/SOLD|SHIP|BILL|ATTN/i.test(line))bill.supplier='Nike';
+          else if(/\bPUMA\b/i.test(line)&&!/SOLD|SHIP|BILL|ATTN/i.test(line))bill.supplier='Puma';
+          else if(/\bNEW\s*BALANCE\b/i.test(line)&&!/SOLD|SHIP|BILL|ATTN/i.test(line))bill.supplier='New Balance';
         }
-        // Document number (SI DOCUMENT NUMBER or DOCUMENT NUMBER at bottom of bill)
+        // Supplier from explicit "SUPPLIER" label
+        if(!bill.supplier&&/^SUPPLIER\b/i.test(line)){
+          for(let j=li+1;j<Math.min(li+3,lines.length);j++){
+            const nl=lines[j].trim();
+            if(nl.length>3&&!/^DEPT|^PH|^FX|^FAX|^\d|^SOLD|^SHIP/i.test(nl)){bill.supplier=nl;break}
+          }
+        }
+        // Document number
         {const m=line.match(/(?:SI\s+)?DOCUMENT\s+NUMBER[:\s]+(\d+)/i);if(m)bill.doc_number=m[1]}
-        // Dates — take last match since bottom section has the real document date
+        // Dates — use last match for doc date (bottom is authoritative), first for ship date
         {const m=line.match(/DOCUMENT\s+DATE[:\s]+([\d\/]+)/i);if(m)bill.doc_date=m[1]}
         {const m=line.match(/DUE\s+DATE[:\s]+([\d\/]+)/i);if(m)bill.due_date=m[1]}
-        // Ship date from header area (only take first match — header has the real one)
         if(!bill.ship_date){const m=line.match(/SHIP\s+DATE[:\s]+([\d\/]+)/i);if(m)bill.ship_date=m[1]}
-        // Totals — take last match (bottom of document is authoritative)
+        // Totals — use last match (bottom of document)
         {const m=line.match(/MERCHANDISE\s+TOTAL\s+([\d,.]+)/i);if(m)bill.merchandise_total=parseFloat(m[1].replace(/,/g,''))||0}
         {const m=line.match(/FREIGHT\s+CHARGE\s+([\d,.]+)/i);if(m)bill.freight=parseFloat(m[1].replace(/,/g,''))||0}
         {const m=line.match(/SI\s+UPCHARGE\s+([\d,.]+)/i);if(m)bill.si_upcharge=parseFloat(m[1].replace(/,/g,''))||0}
         {const m=line.match(/DOCUMENT\s+TOTAL\s+([\d,.]+)/i);if(m)bill.doc_total=parseFloat(m[1].replace(/,/g,''))||0}
+        // Detect item table section: starts at header row, ends at totals/footer
+        if(itemSectionStart<0&&(/UPC\s*NUMBER/i.test(line)||/SUPPLIER\s*ITEM\s*NUMBER/i.test(line)||/QUANTITY\s*ORDERED.*QUANTITY\s*SHIPPED/i.test(line))){
+          itemSectionStart=li+1;// items start AFTER the header row
+        }
+        if(itemSectionStart>=0&&itemSectionEnd<0&&(/MERCHANDISE\s+TOTAL/i.test(line)||/SI\s+DOCUMENT\s+NUMBER/i.test(line)||/REPORT\s+PROBLEMS/i.test(line))){
+          itemSectionEnd=li;
+        }
       }
 
-      // ── PASS 2: Extract line items ──
-      // SKU pattern: 1-3 letters followed by 3-10 digits, OR digits followed by letters (like 1376844)
-      // Can appear anywhere in line (UPC barcode text may precede it)
-      const SKU_RE=/\b([A-Z]{1,3}\d{3,10}|\d{5,10}[A-Z]?)\b/i;
+      // ── PASS 2: Extract line items ONLY from item table section ──
+      // SKU pattern: 1-4 uppercase letters followed by 3-6 digits (e.g. HT6546, JW6705, KB9662, H44529)
+      // This is strict to avoid matching ZIP codes, phone numbers, addresses
+      const SKU_RE=/\b([A-Z]{1,4}\d{3,6})\b/;
       const SZ_RE=/\b(XXS|XS|YXS|YS|YM|YL|YXL|S|M|L|XL|2XL|3XL|4XL|5XL|OSFA)\b/i;
       const itemLines=[];
-      for(let i=0;i<lines.length;i++){
-        const line=lines[i];
-        // Skip header/footer lines
-        if(/SUPPLIER ITEM|UPC NUMBER|QUANTITY ORDERED|MERCHANDISE TOTAL|FREIGHT|DOCUMENT|REPORT PROBLEMS|SI STORE|SOLD TO|SHIP TO|SHIPMENT METHOD|TERMS OF|CARRIER|WEIGHT/i.test(line))continue;
-        // Look for a line that has: a SKU, a size, and numeric values (qty + price)
-        const skuMatch=line.match(SKU_RE);
-        if(!skuMatch)continue;
-        const sku=skuMatch[1].toUpperCase();
-        // Skip if it looks like a barcode (all digits, > 10 chars) or document/PO number
-        if(/^\d{8,}$/.test(sku))continue;
-        if(sku===bill.doc_number||sku===bill.po_number)continue;
-        // Check for size
-        const sizeMatch=line.match(SZ_RE);
-        const size=sizeMatch?sizeMatch[1].toUpperCase():'';
-        // Extract all numbers from the line
-        const allNums=(line.match(/\d+\.?\d*/g)||[]).map(n=>parseFloat(n)).filter(n=>!isNaN(n)&&n>0);
-        // Filter out the UPC digits (long digit sequences that aren't prices/qtys)
-        const nums=allNums.filter(n=>n<100000);
-        if(nums.length<2)continue;// Need at least qty + price
-        // The extension (line total) is typically the last number on the line
-        // Price is second-to-last, qty is a whole number before the prices
-        let qty=0,unitPrice=0,extension=0;
-        // Find qty: first whole number that's reasonable (1-9999) and not a price
-        const wholeNums=nums.filter(n=>n===Math.floor(n)&&n>=1&&n<10000);
-        // Find price-like numbers (have decimals or are reasonable dollar amounts)
-        const priceNums=nums.filter(n=>n!==Math.floor(n)||(n>=1&&n<10000));
-        extension=nums[nums.length-1]||0;
-        // Work backwards: extension is last, net price is before it (same or close to list price)
-        if(nums.length>=4){
-          // Pattern: qty_ordered, qty_shipped, ... list_price, net_price, extension
-          // Find qty shipped — look for whole numbers, pick the one that makes qty*price=extension
+      const startIdx=itemSectionStart>=0?itemSectionStart:0;
+      const endIdx=itemSectionEnd>0?itemSectionEnd:lines.length;
+      // If we couldn't find section boundaries, warn and skip item extraction to avoid hallucination
+      if(itemSectionStart<0){
+        bill.warnings.push('Could not find item table header (UPC NUMBER / SUPPLIER ITEM) — items not extracted');
+      }else{
+        for(let i=startIdx;i<endIdx;i++){
+          const line=lines[i];
+          // Skip sub-headers and labels that appear within the table
+          if(/^UPC\s*NUMBER|^SUPPLIER\s*ITEM|^QUANTITY|^UNIT|^LIST|^DISC|^NET|^EXTENSION|^SIZE|^COLOR/i.test(line))continue;
+          // Find SKU — must be letter(s)+digits format
+          const skuMatch=line.match(SKU_RE);
+          if(!skuMatch)continue;
+          const sku=skuMatch[1];
+          // Must also have a size on the same line
+          const sizeMatch=line.match(SZ_RE);
+          if(!sizeMatch)continue;
+          const size=sizeMatch[1].toUpperCase();
+          // Extract numeric values — filter to reasonable range (not UPC barcodes)
+          // Split by tabs first to understand column structure better
+          const parts=line.split(/\t+/);
+          // Collect all numbers that look like qty/price (< 100000, not part of UPC barcode)
+          const nums=[];
+          parts.forEach(part=>{
+            // Skip parts that are pure long digit sequences (UPC barcodes like "1 96463 09488 2")
+            const cleaned=part.replace(/\s/g,'');
+            if(/^\d{8,}$/.test(cleaned))return;
+            const matches=part.match(/[\d,]+\.?\d*/g)||[];
+            matches.forEach(n=>{const v=parseFloat(n.replace(/,/g,''));if(!isNaN(v)&&v>0&&v<100000)nums.push(v)});
+          });
+          if(nums.length<2)continue;
+          // Extension is the LAST number, find qty by checking which whole number * price = extension
+          let qty=0,unitPrice=0,extension=nums[nums.length-1]||0;
+          const wholeNums=nums.filter(n=>n===Math.floor(n)&&n>=1&&n<10000);
           for(const wn of wholeNums){
-            const possiblePrice=extension/wn;
-            // Check if this price appears in the numbers
-            if(nums.some(n=>Math.abs(n-possiblePrice)<0.02)){qty=wn;unitPrice=Math.round(possiblePrice*100)/100;break}
+            const pp=extension/wn;
+            if(pp>0.10&&pp<1000&&nums.some(n=>Math.abs(n-pp)<0.02)){qty=wn;unitPrice=Math.round(pp*100)/100;break}
           }
-          if(!qty){qty=wholeNums.length>=2?wholeNums[1]:wholeNums[0]||0;unitPrice=qty>0?Math.round(extension/qty*100)/100:0}
-        }else if(nums.length>=2){
-          qty=wholeNums[0]||nums[0];
-          if(qty>0)unitPrice=Math.round(extension/qty*100)/100;
-        }
-        if(qty<=0||extension<=0)continue;
-        // Get description from nearby lines
-        let desc='';let color='';
-        for(let j=i+1;j<Math.min(i+3,lines.length);j++){
-          const nl=lines[j];
-          if(SKU_RE.test(nl)&&SZ_RE.test(nl))break;// next item line
-          if(/MERCHANDISE|FREIGHT|DOCUMENT|SI UPCHARGE|REPORT|SI STORE/i.test(nl))break;
-          if(!desc&&nl.length>3&&!/^\d[\d\s]*\d$/.test(nl)){
-            desc=nl.replace(/\t+/g,' ').trim();
-            const cm=desc.match(/\b(BLACK|WHITE|RED|BLUE|GREEN|NAVY|GREY|GRAY|MAROON|GOLD|ORANGE|PURPLE|YELLOW|SCARLET|ROYAL|PINK|BROWN|TAN|CREAM|ONIX|CARBON|POWER|TEAM)\b.*?(\/\s*[A-Z]+)?/i);
-            if(cm)color=cm[0].trim();
+          if(!qty&&wholeNums.length>0){
+            // Fallback: use first reasonable whole number as qty
+            qty=wholeNums.length>=2?wholeNums[1]:wholeNums[0];
+            if(qty>0)unitPrice=Math.round(extension/qty*100)/100;
           }
+          if(qty<=0||extension<=0)continue;
+          // Get description/color from next line(s)
+          let desc='',color='';
+          for(let j=i+1;j<Math.min(i+3,endIdx);j++){
+            const nl=lines[j];
+            if(SKU_RE.test(nl)&&SZ_RE.test(nl))break;
+            if(/MERCHANDISE|FREIGHT|DOCUMENT|SI UPCHARGE|REPORT|SI STORE/i.test(nl))break;
+            if(!desc&&nl.length>3&&!/^\d[\d\s]*\d$/.test(nl)&&!SKU_RE.test(nl)){
+              desc=nl.replace(/\t+/g,' ').trim();
+              const cm=desc.match(/\b(BLACK|WHITE|RED|BLUE|GREEN|NAVY|GREY|GRAY|MAROON|GOLD|ORANGE|PURPLE|YELLOW|SCARLET|ROYAL|PINK|BROWN|TAN|CREAM|ONIX|CARBON|POWER|TEAM|CUSTOM)\b.*?(\/\s*[A-Z]+)?/i);
+              if(cm)color=cm[0].trim();
+            }
+          }
+          // Dedupe
+          if(itemLines.some(it=>it.sku===sku&&it.size===size&&Math.abs(it.extension-extension)<0.01))continue;
+          itemLines.push({sku,size,qty,unit_price:unitPrice,extension,desc,color});
         }
-        // Dedupe: if same SKU+size already exists, skip (probably UPC barcode line re-matched)
-        if(itemLines.some(it=>it.sku===sku&&it.size===size&&Math.abs(it.extension-extension)<0.01))continue;
-        itemLines.push({sku,size,qty,unit_price:unitPrice,extension,desc,color});
       }
       bill.items=itemLines;
-      // Validate: if sum of extensions ≈ merchandise_total, we're good
+      // Validate items vs merchandise total
       if(bill.items.length>0&&bill.merchandise_total>0){
         const itemsSum=bill.items.reduce((a,it)=>a+it.extension,0);
         if(Math.abs(itemsSum-bill.merchandise_total)>1){
           bill.warnings.push('Item total ($'+itemsSum.toFixed(2)+') differs from merchandise total ($'+bill.merchandise_total.toFixed(2)+')')}}
       if(!bill.po_number)bill.warnings.push('PO number not found');
       if(!bill.doc_total&&!bill.merchandise_total)bill.warnings.push('Could not detect totals');
-      if(bill.items.length===0)bill.warnings.push('No line items detected — check raw text');
+      if(bill.items.length===0&&itemSectionStart>=0)bill.warnings.push('No line items detected in item table — check raw text');
+
+      // ── PASS 3: Match vendor from system vendors ──
+      if(bill.supplier){
+        const sl=bill.supplier.toLowerCase();
+        const v=vend.find(v=>v.name&&v.name.toLowerCase().includes(sl))||vend.find(v=>v.name&&sl.includes(v.name.toLowerCase()));
+        if(v)bill.vendor=v.name;
+        else bill.vendor=bill.supplier;
+      }
+
+      // ── PASS 4: Match PO against existing POs in the system ──
+      if(bill.po_number){
+        const poLc=bill.po_number.toLowerCase().replace(/\s+/g,'');
+        // Check submitted batches
+        const batchMatch=submittedBatches.find(sb=>sb.po_number&&sb.po_number.toLowerCase().replace(/\s+/g,'')===poLc);
+        if(batchMatch){bill.matchedPO=batchMatch;bill.matchedPOSource='batch'}
+        // Check inventory POs
+        if(!bill.matchedPO){
+          const invMatch=invPOs.find(p=>p.po_number&&p.po_number.toLowerCase().replace(/\s+/g,'')===poLc);
+          if(invMatch){bill.matchedPO=invMatch;bill.matchedPOSource='inv_po'}
+        }
+      }
       return bill;
     };
 
@@ -13246,19 +13293,44 @@ export default function App(){
 
           {billImport.parsed.map((b,bi)=>{
             const bill=b.parsed;
-            return<div key={bi} className="card" style={{marginBottom:12,border:b.qbStatus==='success'?'2px solid #22c55e':b.qbStatus==='error'?'2px solid #ef4444':'1px solid #e2e8f0'}}>
+            const poMatch=bill.matchedPO;const poSrc=bill.matchedPOSource;
+            return<div key={bi} className="card" style={{marginBottom:12,border:b.qbStatus==='success'?'2px solid #22c55e':b.qbStatus==='error'?'2px solid #ef4444':poMatch?'2px solid #3b82f6':'1px solid #e2e8f0'}}>
               <div className="card-header" style={{display:'flex',alignItems:'center',gap:8,background:b.qbStatus==='success'?'#f0fdf4':b.qbStatus==='error'?'#fef2f2':'#faf5ff'}}>
                 {!b.qbStatus&&<input type="checkbox" checked={b.selected} onChange={()=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,selected:!p.selected}:p)}))} style={{width:18,height:18}}/>}
                 {b.qbStatus==='success'&&<span style={{fontSize:16,color:'#22c55e'}}>&#10003;</span>}
                 {b.qbStatus==='error'&&<span style={{fontSize:16,color:'#ef4444'}}>&#10007;</span>}
                 <h2 style={{margin:0,flex:1}}>{b.file}</h2>
                 {b.qbMsg&&<span style={{fontSize:11,fontWeight:600,color:b.qbStatus==='success'?'#166534':'#dc2626'}}>{b.qbMsg}</span>}
+                {poMatch&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#dbeafe',color:'#1e40af',fontWeight:700}}>PO Matched</span>}
+                {bill.po_number&&!poMatch&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:700}}>PO Not Found</span>}
                 {bill.warnings.length>0&&<span style={{fontSize:10,padding:'2px 6px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:600}}>{bill.warnings.length} warning(s)</span>}
               </div>
               <div className="card-body" style={{padding:0}}>
+                {/* PO Match banner */}
+                {poMatch&&<div style={{padding:'8px 14px',background:'#eff6ff',borderBottom:'1px solid #bfdbfe',display:'flex',alignItems:'center',gap:12}}>
+                  <span style={{fontSize:14}}>&#128279;</span>
+                  <div style={{flex:1}}>
+                    <div style={{fontSize:12,fontWeight:700,color:'#1e40af'}}>
+                      Matched to {poSrc==='batch'?'Batch PO':'Inventory PO'}: {poMatch.po_number}
+                      {poSrc==='batch'&&poMatch.vendor_name&&<span style={{fontWeight:400,color:'#64748b'}}> — {poMatch.vendor_name}</span>}
+                      {poSrc==='inv_po'&&poMatch.vendor_name&&<span style={{fontWeight:400,color:'#64748b'}}> — {poMatch.vendor_name}</span>}
+                    </div>
+                    <div style={{fontSize:11,color:'#475569',marginTop:2}}>
+                      {poSrc==='batch'&&<>Units: {poMatch.total_units||'?'} | Cost: ${(poMatch.total_cost||0).toFixed(2)}
+                        {bill.doc_total>0&&<>{' '}| Bill Total: ${bill.doc_total.toFixed(2)}
+                          {Math.abs((poMatch.total_cost||0)-bill.doc_total)<1
+                            ?<span style={{color:'#166534',fontWeight:700}}> &#10003; Totals match</span>
+                            :<span style={{color:'#dc2626',fontWeight:700}}> &#9888; Totals differ by ${Math.abs((poMatch.total_cost||0)-bill.doc_total).toFixed(2)}</span>}
+                        </>}
+                      </>}
+                      {poSrc==='inv_po'&&<>Items: {poMatch.items?.length||0} | Status: {poMatch.status||'open'}
+                      </>}
+                    </div>
+                  </div>
+                </div>}
                 {/* Summary row */}
-                <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(140px,1fr))',gap:0,borderBottom:'1px solid #f1f5f9'}}>
-                  {[['PO Number',bill.po_number||'—','#7c3aed'],['Tracking',bill.tracking||'—','#1e40af'],['Supplier',bill.supplier||'Unknown','#475569'],
+                <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(120px,1fr))',gap:0,borderBottom:'1px solid #f1f5f9'}}>
+                  {[['PO Number',bill.po_number||'—','#7c3aed'],['Vendor',bill.vendor||bill.supplier||'Unknown','#1e40af'],['Tracking',bill.tracking||'—','#475569'],
                     ['Doc #',bill.doc_number||'—','#64748b'],['Doc Date',bill.doc_date||'—','#64748b'],['Ship Date',bill.ship_date||'—','#64748b']
                   ].map(([label,val,color],i)=><div key={i} style={{padding:'10px 14px',borderRight:'1px solid #f1f5f9'}}>
                     <div style={{fontSize:9,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',marginBottom:2}}>{label}</div>
@@ -13266,15 +13338,15 @@ export default function App(){
                   </div>)}
                 </div>
                 {/* Editable fields */}
-                <div style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',gap:12,alignItems:'center',background:'#fafafa'}}>
+                <div style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',gap:12,alignItems:'center',background:'#fafafa',flexWrap:'wrap'}}>
                   <div style={{fontSize:11,fontWeight:600,color:'#64748b'}}>Edit:</div>
-                  <div style={{display:'flex',gap:6,alignItems:'center',flex:1}}>
+                  <div style={{display:'flex',gap:6,alignItems:'center',flex:1,flexWrap:'wrap'}}>
                     <label style={{fontSize:10,fontWeight:600}}>PO</label>
                     <input className="form-input" style={{width:140,fontSize:11,padding:'3px 6px'}} value={bill.po_number}
                       onChange={e=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:{...p.parsed,po_number:e.target.value}}:p)}))}/>
-                    <label style={{fontSize:10,fontWeight:600,marginLeft:8}}>Supplier</label>
-                    <input className="form-input" style={{width:120,fontSize:11,padding:'3px 6px'}} value={bill.supplier}
-                      onChange={e=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:{...p.parsed,supplier:e.target.value}}:p)}))}/>
+                    <label style={{fontSize:10,fontWeight:600,marginLeft:8}}>Vendor</label>
+                    <input className="form-input" style={{width:120,fontSize:11,padding:'3px 6px'}} value={bill.vendor||bill.supplier}
+                      onChange={e=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:{...p.parsed,vendor:e.target.value,supplier:e.target.value}}:p)}))}/>
                     <label style={{fontSize:10,fontWeight:600,marginLeft:8}}>Tracking</label>
                     <input className="form-input" style={{width:140,fontSize:11,padding:'3px 6px'}} value={bill.tracking}
                       onChange={e=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:{...p.parsed,tracking:e.target.value}}:p)}))}/>
@@ -13340,7 +13412,7 @@ export default function App(){
               <thead><tr style={{background:'#f8fafc',position:'sticky',top:0}}>
                 <th style={{textAlign:'left',padding:'8px 12px'}}>File</th>
                 <th style={{textAlign:'left',padding:'8px 12px'}}>PO Number</th>
-                <th style={{textAlign:'left',padding:'8px 12px'}}>Supplier</th>
+                <th style={{textAlign:'left',padding:'8px 12px'}}>Vendor</th>
                 <th style={{textAlign:'right',padding:'8px 12px'}}>Total</th>
                 <th style={{textAlign:'right',padding:'8px 12px'}}>Freight</th>
                 <th style={{textAlign:'center',padding:'8px 12px'}}>Items</th>
@@ -13350,7 +13422,7 @@ export default function App(){
               <tbody>{savedBills.map((sb,si)=><tr key={si} style={{borderBottom:'1px solid #f1f5f9',background:sb.qbStatus==='success'?'#f0fdf4':sb.qbStatus==='error'?'#fef2f2':'white'}}>
                 <td style={{padding:'6px 12px',fontWeight:600,maxWidth:180,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{sb.file}</td>
                 <td style={{padding:'6px 12px',fontFamily:'monospace',color:'#7c3aed',fontWeight:700}}>{sb.parsed?.po_number||'—'}</td>
-                <td style={{padding:'6px 12px',color:'#475569'}}>{sb.parsed?.supplier||'—'}</td>
+                <td style={{padding:'6px 12px',color:'#475569'}}>{sb.parsed?.vendor||sb.parsed?.supplier||'—'}</td>
                 <td style={{padding:'6px 12px',textAlign:'right',fontWeight:700,color:'#166534'}}>{sb.parsed?.doc_total?'$'+sb.parsed.doc_total.toFixed(2):'—'}</td>
                 <td style={{padding:'6px 12px',textAlign:'right',color:'#64748b'}}>{sb.parsed?.freight?'$'+sb.parsed.freight.toFixed(2):'—'}</td>
                 <td style={{padding:'6px 12px',textAlign:'center'}}>{sb.parsed?.items?.length||0}</td>
