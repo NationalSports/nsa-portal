@@ -13745,22 +13745,38 @@ export default function App(){
       setQbSyncing(true);
       const log={ts:new Date().toLocaleString(),type:'customers',status:'success',details:[]};
       let synced=0;
+      // Fetch existing QB customers to match by name and avoid duplicates
+      let existingQBCusts=[];
+      try{
+        const qRes=await qbApi('query',{query:"SELECT Id, DisplayName, CompanyName, SyncToken FROM Customer MAXRESULTS 1000"});
+        existingQBCusts=qRes?.QueryResponse?.Customer||[];
+      }catch(e){console.warn('[QB] Customer query failed:',e)}
       for(const c of cust.filter(c=>c.is_active!==false)){
         // Calculate totals
         const custSOs=sos.filter(s=>s.customer_id===c.id);
         const totalRevenue=invs.filter(i=>i.customer_id===c.id).reduce((a,i)=>a+(i.total||0),0);
         const totalPaid=invs.filter(i=>i.customer_id===c.id).reduce((a,i)=>a+(i.paid||0),0);
         const openBalance=totalRevenue-totalPaid;
-
+        const displayName=c.name+(c.alpha_tag?' ('+c.alpha_tag+')':'');
+        // Match existing QB customer by name if we don't already have a QB ID
+        let qbId=c.qb_customer_id;let syncToken=null;
+        if(!qbId){
+          const match=existingQBCusts.find(q=>q.DisplayName===displayName||q.CompanyName===c.name||q.DisplayName===c.name);
+          if(match){qbId=match.Id;syncToken=match.SyncToken}
+        }else{
+          const match=existingQBCusts.find(q=>q.Id===qbId);
+          if(match)syncToken=match.SyncToken;
+        }
         const qbCustomer={
-          DisplayName:c.name+(c.alpha_tag?' ('+c.alpha_tag+')':''),
+          DisplayName:displayName,
           CompanyName:c.name,
           ...(c.contact_email||c.contacts?.[0]?.email?{PrimaryEmailAddr:{Address:c.contact_email||c.contacts[0].email}}:{}),
           ...(c.contact_phone||c.contacts?.[0]?.phone?{PrimaryPhone:{FreeFormNumber:c.contact_phone||c.contacts[0].phone}}:{}),
           ...(c.billing_address_line1?{BillAddr:{Line1:c.billing_address_line1,City:c.billing_city||'',CountrySubDivisionCode:c.billing_state||'',PostalCode:c.billing_zip||''}}:{}),
           ...(c.shipping_address_line1?{ShipAddr:{Line1:c.shipping_address_line1,City:c.shipping_city||'',CountrySubDivisionCode:c.shipping_state||'',PostalCode:c.shipping_zip||''}}:{}),
           Notes:'Portal: '+custSOs.length+' orders, $'+totalRevenue.toFixed(0)+' revenue, $'+openBalance.toFixed(0)+' open balance. Tier: '+(c.adidas_ua_tier||'B')+'. Terms: '+(c.payment_terms||'net30'),
-          ...(c.qb_customer_id?{Id:c.qb_customer_id,sparse:true}:{}),
+          ...(qbId?{Id:qbId,sparse:true}:{}),
+          ...(syncToken?{SyncToken:syncToken}:{}),
         };
         const res=await qbApi('upsert_customer',{customer:qbCustomer});
         if(res?.Customer?.Id){
@@ -13821,6 +13837,22 @@ export default function App(){
       setQbSyncing(true);
       const log={ts:new Date().toLocaleString(),type:'inventory',status:'success',details:[]};
       let synced=0;
+      // Look up QB account IDs by name (required by QB API)
+      let incomeAcctRef=null,expenseAcctRef=null;
+      try{
+        const acctRes=await qbApi('query',{query:"SELECT Id, Name, AccountType FROM Account WHERE AccountType IN ('Income','Cost of Goods Sold','Expense') MAXRESULTS 200"});
+        const accts=acctRes?.QueryResponse?.Account||[];
+        const incomeName=qbConfig.mapping.income_account||'Sales';
+        const expenseName=qbConfig.mapping.cogs_account||'Cost of Goods Sold';
+        const incomeAcct=accts.find(a=>a.Name===incomeName)||accts.find(a=>a.AccountType==='Income');
+        const expenseAcct=accts.find(a=>a.Name===expenseName)||accts.find(a=>a.AccountType==='Cost of Goods Sold')||accts.find(a=>a.AccountType==='Expense');
+        if(incomeAcct)incomeAcctRef={value:incomeAcct.Id,name:incomeAcct.Name};
+        if(expenseAcct)expenseAcctRef={value:expenseAcct.Id,name:expenseAcct.Name};
+      }catch(e){console.error('[QB] Account lookup failed:',e)}
+      if(!incomeAcctRef||!expenseAcctRef){
+        log.status='error';log.details.push('Could not find QB accounts for Income ("'+(qbConfig.mapping.income_account||'Sales')+'") or Expense ("'+(qbConfig.mapping.cogs_account||'Cost of Goods Sold')+'"). Check your QB Chart of Accounts.');
+        setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));nf('Inventory sync failed — QB accounts not found','error');setQbSyncing(false);return;
+      }
       // Aggregate inventory totals per product (not per size — just totals)
       for(const p of prod.filter(p=>p.is_active!==false)){
         const inv=p._inv||{};
@@ -13833,8 +13865,8 @@ export default function App(){
           Description:p.name+(p.color?' - '+p.color:'')+' | Portal Qty: '+totalQty+' | Value: $'+totalValue.toFixed(2),
           UnitPrice:safeNum(p.retail_price||p.nsa_cost),
           PurchaseCost:safeNum(p.nsa_cost),
-          IncomeAccountRef:{name:qbConfig.mapping.income_account||'Sales'},
-          ExpenseAccountRef:{name:qbConfig.mapping.cogs_account||'Cost of Goods Sold'},
+          IncomeAccountRef:incomeAcctRef,
+          ExpenseAccountRef:expenseAcctRef,
           ...(p.qb_item_id?{Id:p.qb_item_id,sparse:true}:{}),
         };
         const res=await qbApi('upsert_item',{item:qbItem});
