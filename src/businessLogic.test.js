@@ -219,11 +219,21 @@ describe('Pricing Functions', () => {
       expect(result.sell).toBe(15);
     });
 
-    test('numbers decoration pricing', () => {
+    test('numbers decoration pricing with no roster', () => {
       const d = { kind: 'numbers', two_color: false };
       const result = dP(d, 24, [], 24);
-      expect(result.sell).toBe(npP(24, false, true));
-      expect(result.cost).toBe(npP(24, false, false));
+      expect(result.sell).toBe(npP(1, false, true));
+      expect(result.cost).toBe(npP(1, false, false));
+      expect(result._nq).toBe(0);
+    });
+
+    test('numbers decoration pricing uses only assigned count', () => {
+      const d = { kind: 'numbers', two_color: false, roster: { S: ['12', '5', ''], M: ['3', '', ''], L: ['7', '', ''] } };
+      const result = dP(d, 15, [], 15);
+      // 4 numbers assigned out of 15
+      expect(result._nq).toBe(4);
+      expect(result.sell).toBe(npP(4, false, true));
+      expect(result.cost).toBe(npP(4, false, false));
     });
 
     test('names decoration pricing', () => {
@@ -620,7 +630,21 @@ describe('Invoice Creation', () => {
     expect(result.selTotals.subtotal).toBe(24 * 20 + 24 * decoP.sell);
   });
 
-  test('invoice includes numbers decoration revenue', () => {
+  test('invoice includes numbers decoration revenue only for assigned numbers', () => {
+    const numRoster = { M: Array.from({ length: 24 }, (_, i) => String(i + 1)) };
+    const so = makeSO({
+      items: [makeSOItem({
+        sizes: { M: 24 }, unit_sell: 20,
+        decorations: [{ kind: 'numbers', two_color: false, roster: numRoster }],
+      })],
+      shipping_type: 'flat', shipping_value: 0,
+    });
+    const result = createInvoice(so, [0], {}, {});
+    const numP = dP({ kind: 'numbers', two_color: false, roster: numRoster }, 24, [], 24);
+    expect(result.selTotals.subtotal).toBe(24 * 20 + numP._nq * numP.sell);
+  });
+
+  test('invoice numbers revenue is zero when no numbers assigned', () => {
     const so = makeSO({
       items: [makeSOItem({
         sizes: { M: 24 }, unit_sell: 20,
@@ -629,8 +653,8 @@ describe('Invoice Creation', () => {
       shipping_type: 'flat', shipping_value: 0,
     });
     const result = createInvoice(so, [0], {}, {});
-    const numP = dP({ kind: 'numbers', two_color: false }, 24, [], 24);
-    expect(result.selTotals.subtotal).toBe(24 * 20 + 24 * numP.sell);
+    // No roster = no numbers assigned, so numbers should contribute $0
+    expect(result.selTotals.subtotal).toBe(24 * 20);
   });
 
   test('invoice includes names decoration revenue (BUG FIX VERIFICATION)', () => {
@@ -1123,12 +1147,13 @@ describe('Cross-Module Integration Scenarios', () => {
   describe('Scenario: Multiple decoration types on one SO', () => {
     test('totals include all deco types', () => {
       const artFile = makeArtFile({ deco_type: 'screen_print', ink_colors: 'PMS 123' });
+      const numRoster = { M: Array.from({ length: 24 }, (_, i) => String(i + 1)) };
       const so = makeSO({
         items: [makeSOItem({
           sizes: { M: 24 }, unit_sell: 20, nsa_cost: 10,
           decorations: [
             { kind: 'art', art_file_id: 'af1', position: 'Front' },
-            { kind: 'numbers', two_color: false, position: 'Back' },
+            { kind: 'numbers', two_color: false, position: 'Back', roster: numRoster },
             { kind: 'names', sell_each: 6, cost_each: 3, names: {}, position: 'Back' },
             { kind: 'outside_deco', sell_each: 5, cost_each: 2.5, position: 'Sleeve' },
           ],
@@ -1137,23 +1162,24 @@ describe('Cross-Module Integration Scenarios', () => {
         shipping_type: 'flat', shipping_value: 0,
       });
       const totals = calcTotals(so, {});
-      // Revenue should include: item + art + numbers + names + outside_deco
+      // Revenue should include: item + art + numbers (all 24 assigned) + names + outside_deco
       const artP = dP({ kind: 'art', art_file_id: 'af1' }, 24, [artFile], 24);
-      const numP = dP({ kind: 'numbers', two_color: false }, 24, [], 24);
+      const numP = dP({ kind: 'numbers', two_color: false, roster: numRoster }, 24, [], 24);
       const nameP = dP({ kind: 'names', sell_each: 6, cost_each: 3, names: {} }, 24, [], 24);
       const outsideP = dP({ kind: 'outside_deco', sell_each: 5, cost_each: 2.5 }, 24, [], 24);
-      const expectedRev = 24 * (20 + artP.sell + numP.sell + nameP.sell + outsideP.sell);
+      const expectedRev = 24 * (20 + artP.sell + nameP.sell + outsideP.sell) + numP._nq * numP.sell;
       expect(totals.rev).toBeCloseTo(expectedRev, 2);
     });
 
     test('invoice includes all deco types (integration verification)', () => {
       const artFile = makeArtFile({ deco_type: 'screen_print', ink_colors: 'PMS 123' });
+      const numRoster = { M: Array.from({ length: 24 }, (_, i) => String(i + 1)) };
       const so = makeSO({
         items: [makeSOItem({
           sizes: { M: 24 }, unit_sell: 20,
           decorations: [
             { kind: 'art', art_file_id: 'af1', position: 'Front' },
-            { kind: 'numbers', two_color: false },
+            { kind: 'numbers', two_color: false, roster: numRoster },
             { kind: 'names', sell_each: 6, cost_each: 3, names: {} },
             { kind: 'outside_deco', sell_each: 5, cost_each: 2.5 },
           ],
