@@ -247,7 +247,7 @@ const _dbSaveCustomer = async (c) => {
 const _dbSaveProduct = async (p) => {
   if(!supabase)return;
   try{
-    const{_inv,_alerts,_colors,image_url,back_image_url,...prodRow}=p;
+    const{_inv,_alerts,_colors,image_url,back_image_url,qb_item_id,...prodRow}=p;
     await supabase.from('products').upsert({...prodRow,_colors:_colors||null,image_front_url:image_url||prodRow.image_front_url||'',image_back_url:back_image_url||prodRow.image_back_url||''},{onConflict:'id'});
     const allSizes=new Set([...Object.keys(_inv||{}),...Object.keys(_alerts||{})]);
     if(allSizes.size>0){
@@ -311,7 +311,7 @@ const _soCols=['id','customer_id','estimate_id','memo','status','created_by','cr
 const _itemCols=['product_id','sku','name','brand','color','nsa_cost','retail_price','unit_sell','sizes','available_sizes','_colors','no_deco','is_custom','custom_desc','custom_cost','custom_sell'];
 const _decoCols=['kind','position','type','art_file_id','art_tbd_type','tbd_colors','tbd_stitches','tbd_dtf_size','sell_override','sell_each','cost_each','underbase','two_color','colors','stitches','dtf_size','num_method','num_size','roster','names','names_list','vendor','deco_type','notes','custom_font_art_id','_showRoster'];
 const _jobCols=['id','key','art_file_id','art_name','deco_type','positions','art_status','item_status','prod_status','total_units','fulfilled_units','split_from','created_at','assigned_machine','assigned_to','ship_method','items','_auto','art_requests','art_messages','assigned_artist','rep_notes','rejections'];
-const _custCols=['id','parent_id','name','alpha_tag','billing_address_line1','billing_address_line2','billing_city','billing_state','billing_zip','shipping_address_line1','shipping_address_line2','shipping_city','shipping_state','shipping_zip','adidas_ua_tier','catalog_markup','payment_terms','tax_rate','tax_exempt','primary_rep_id','qb_customer_id','notes','is_active','created_at','updated_at'];
+const _custCols=['id','parent_id','name','alpha_tag','billing_address_line1','billing_address_line2','billing_city','billing_state','billing_zip','shipping_address_line1','shipping_address_line2','shipping_city','shipping_state','shipping_zip','adidas_ua_tier','catalog_markup','payment_terms','tax_rate','tax_exempt','primary_rep_id','notes','is_active','created_at','updated_at'];
 // Legacy compat — keep old _dbSave for team_members and other simple tables
 const _dbSave = (table, data) => { if(supabase && data) supabase.from(table).upsert(Array.isArray(data)?data:[data], {onConflict:'id'}).then(r=>{if(r.error)console.error('[DB] save '+table+':', r.error.message)}) };
 // ─── Cloudinary Config ───
@@ -13760,7 +13760,7 @@ export default function App(){
         const openBalance=totalRevenue-totalPaid;
         const displayName=c.name+(c.alpha_tag?' ('+c.alpha_tag+')':'');
         // Match existing QB customer by name if we don't already have a QB ID
-        let qbId=c.qb_customer_id;let syncToken=null;
+        let qbId=c.qb_customer_id||(qbConfig.custQBMap||{})[c.id];let syncToken=null;
         if(!qbId){
           const match=existingQBCusts.find(q=>q.DisplayName===displayName||q.CompanyName===c.name||q.DisplayName===c.name);
           if(match){qbId=match.Id;syncToken=match.SyncToken}
@@ -13782,31 +13782,31 @@ export default function App(){
         const res=await qbApi('upsert_customer',{customer:qbCustomer});
         if(res?.Customer?.Id){
           custQBMap[c.id]=res.Customer.Id;
-          setCust(prev=>prev.map(cc=>cc.id===c.id?{...cc,qb_customer_id:res.Customer.Id}:cc));
           log.details.push(c.name+' → QB #'+res.Customer.Id);synced++;
         }else{
-          if(c.qb_customer_id)custQBMap[c.id]=c.qb_customer_id;
+          if(qbId)custQBMap[c.id]=qbId;
           log.details.push(c.name+' — FAILED: '+(res?.Fault?.Error?.[0]?.Detail||'unknown error'));log.status='partial';
         }
       }
-      cust.forEach(c=>{if(c.qb_customer_id&&!custQBMap[c.id])custQBMap[c.id]=c.qb_customer_id});
+      // Include customers that already had QB IDs from previous syncs
+      cust.forEach(c=>{const prev=(qbConfig.custQBMap||{})[c.id];if(prev&&!custQBMap[c.id])custQBMap[c.id]=prev});
       if(synced===0&&log.details.length>0)log.status='error';
       log.details.unshift(synced+'/'+cust.filter(c=>c.is_active!==false).length+' customers synced');
-      setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
+      setQBConfig(prev=>({...prev,custQBMap:{...prev.custQBMap,...custQBMap},syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
       nf(synced+' customers synced to QB');
       setQbSyncing(false);
       return custQBMap;
     };
 
     // ── SYNC: Invoices (totals) ──
-    const syncInvoices=async(custQBMap={})=>{
+    const syncInvoices=async(custQBMap={},prodQBMap={})=>{
       setQbSyncing(true);
       const log={ts:new Date().toLocaleString(),type:'invoices',status:'success',details:[]};
       let synced=0;
       const unsyncedInvs2=invs.filter(i=>!i.qb_invoice_id);
       for(const inv of unsyncedInvs2){
         const c=cust.find(cc=>cc.id===inv.customer_id);
-        const cQBId=custQBMap[inv.customer_id]||c?.qb_customer_id;
+        const cQBId=custQBMap[inv.customer_id]||(qbConfig.custQBMap||{})[inv.customer_id];
         if(!cQBId){log.details.push((inv.display_id||inv.id)+' — skipped: customer "'+c?.name+'" not synced to QB');continue}
         const so=sos.find(s=>s.id===inv.sales_order_id);
         const invPaid=(inv.payments||[]).reduce((a,p)=>a+safeNum(p.amount),0);
@@ -13815,7 +13815,7 @@ export default function App(){
           TxnDate:inv.invoice_date||new Date().toISOString().slice(0,10),
           CustomerRef:{value:cQBId},
           Line:[{DetailType:'SalesItemLineDetail',Amount:inv.total||0,Description:'Invoice '+(inv.display_id||inv.id)+(so?' for '+so.id:'')+(so?.memo?' — '+so.memo:''),
-            SalesItemLineDetail:{Quantity:1,UnitPrice:inv.total||0}}],
+            SalesItemLineDetail:{Qty:1,UnitPrice:inv.total||0}}],
           ...(inv.qb_invoice_id?{Id:inv.qb_invoice_id,sparse:true}:{}),
         };
         const res=await qbApi('upsert_invoice',{invoice:qbInvoice});
@@ -13858,34 +13858,75 @@ export default function App(){
       }catch(e){console.error('[QB] Account lookup failed:',e)}
       if(!incomeAcctRef||!expenseAcctRef){
         log.status='error';log.details.push('Could not find QB accounts for Income ("'+(qbConfig.mapping.income_account||'Sales')+'") or Expense ("'+(qbConfig.mapping.cogs_account||'Cost of Goods Sold')+'"). Check your QB Chart of Accounts.');
-        setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));nf('Inventory sync failed — QB accounts not found','error');setQbSyncing(false);return;
+        setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));nf('Inventory sync failed — QB accounts not found','error');setQbSyncing(false);return{};
       }
+      // Look up asset account for Inventory type items
+      let assetAcctRef=null;
+      try{
+        const aRes=await qbApi('query',{query:"SELECT Id, Name FROM Account WHERE AccountType='Other Current Asset' AND AccountSubType='Inventory' MAXRESULTS 10"});
+        const aa=(aRes?.QueryResponse?.Account||[])[0];
+        if(aa)assetAcctRef={value:aa.Id,name:aa.Name};
+      }catch{}
+      if(!assetAcctRef){// fallback: search by name
+        try{
+          const aRes2=await qbApi('query',{query:"SELECT Id, Name FROM Account WHERE Name='Inventory Asset' MAXRESULTS 1"});
+          const aa2=(aRes2?.QueryResponse?.Account||[])[0];
+          if(aa2)assetAcctRef={value:aa2.Id,name:aa2.Name};
+        }catch{}
+      }
+      // Query existing QB items to match by name and avoid duplicates
+      let existingQBItems=[];
+      try{
+        const iRes=await qbApi('query',{query:"SELECT Id, Name, Type, SyncToken, QtyOnHand FROM Item MAXRESULTS 1000"});
+        existingQBItems=iRes?.QueryResponse?.Item||[];
+      }catch(e){console.warn('[QB] Item query failed:',e)}
+      const prodQBMap={...(qbConfig.prodQBMap||{})};
+      const today=new Date().toISOString().slice(0,10);
       // Aggregate inventory totals per product (not per size — just totals)
       for(const p of prod.filter(p=>p.is_active!==false)){
         const inv=p._inv||{};
         const totalQty=Object.values(inv).reduce((a,v)=>a+safeNum(v),0);
-        if(totalQty===0&&!p.qb_item_id)continue; // skip products with no inventory and no QB record
+        const existingQBId=prodQBMap[p.id];
+        if(totalQty===0&&!existingQBId)continue; // skip products with no inventory and no QB record
         const totalValue=totalQty*safeNum(p.nsa_cost);
+        const itemName=(p.sku+' '+p.name).slice(0,100);
+        // Match existing QB item by name or stored ID
+        let qbId=existingQBId;let syncToken=null;let existingType=null;
+        if(qbId){
+          const match=existingQBItems.find(i=>i.Id===qbId);
+          if(match){syncToken=match.SyncToken;existingType=match.Type}
+        }else{
+          const match=existingQBItems.find(i=>i.Name===itemName);
+          if(match){qbId=match.Id;syncToken=match.SyncToken;existingType=match.Type}
+        }
+        // Use Inventory type if we have an asset account; otherwise NonInventory
+        const useInventoryType=!!assetAcctRef&&existingType!=='NonInventory';
         const qbItem={
-          Name:(p.sku+' '+p.name).slice(0,100),
-          Type:'NonInventory', // totals only — real inventory tracked on portal
+          Name:itemName,
+          ...(useInventoryType?{Type:'Inventory',TrackQtyOnHand:true,QtyOnHand:totalQty,InvStartDate:today,AssetAccountRef:assetAcctRef}:
+            {Type:'NonInventory'}),
           Description:p.name+(p.color?' - '+p.color:'')+' | Portal Qty: '+totalQty+' | Value: $'+totalValue.toFixed(2),
           UnitPrice:safeNum(p.retail_price||p.nsa_cost),
           PurchaseCost:safeNum(p.nsa_cost),
           IncomeAccountRef:incomeAcctRef,
           ExpenseAccountRef:expenseAcctRef,
-          ...(p.qb_item_id?{Id:p.qb_item_id,sparse:true}:{}),
+          ...(qbId?{Id:qbId,SyncToken:syncToken,sparse:true}:{}),
         };
+        // For existing Inventory items, use InventoryAdjustment instead of setting QtyOnHand directly
+        if(qbId&&existingType==='Inventory'){
+          delete qbItem.QtyOnHand;delete qbItem.InvStartDate;delete qbItem.TrackQtyOnHand;delete qbItem.AssetAccountRef;delete qbItem.Type;
+        }
         const res=await qbApi('upsert_item',{item:qbItem});
         if(res?.Item?.Id){
-          setProd(prev=>prev.map(pp=>pp.id===p.id?{...pp,qb_item_id:res.Item.Id}:pp));
+          prodQBMap[p.id]=res.Item.Id;
           log.details.push(p.sku+' '+p.name+' → QB Item #'+res.Item.Id+' (qty: '+totalQty+', val: $'+totalValue.toFixed(2)+')');synced++;
         }else{log.details.push(p.sku+' — FAILED: '+(res?.Fault?.Error?.[0]?.Detail||'unknown'));log.status='partial'}
       }
       log.details.unshift(synced+' product items synced');
-      setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
+      setQBConfig(prev=>({...prev,prodQBMap:{...prev.prodQBMap,...prodQBMap},syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
       nf(synced+' inventory items synced to QB');
       setQbSyncing(false);
+      return prodQBMap;
     };
 
     // ── BILL UPLOAD — upload vendor bill to QB ──
@@ -13964,7 +14005,7 @@ export default function App(){
     };
 
     // ── SYNC: Sales Orders (as QB Estimates) ──
-    const syncSalesOrders=async(custQBMap={})=>{
+    const syncSalesOrders=async(custQBMap={},prodQBMap={})=>{
       setQbSyncing(true);
       const log={ts:new Date().toLocaleString(),type:'sales_orders',status:'success',details:[]};
       let synced=0;
@@ -13975,7 +14016,7 @@ export default function App(){
       });
       for(const so of toSync){
         const c=cust.find(x=>x.id===so.customer_id);
-        const cQBId=custQBMap[so.customer_id]||c?.qb_customer_id;
+        const cQBId=custQBMap[so.customer_id]||(qbConfig.custQBMap||{})[so.customer_id];
         if(!cQBId){log.details.push(so.id+' — skipped: customer not synced to QB');continue}
         const saf=safeArt(so);
         const _aq={};safeItems(so).forEach(it2=>{const q2=Object.values(safeSizes(it2)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it2).forEach(d2=>{if(d2.kind==='art'&&d2.art_file_id){_aq[d2.art_file_id]=(_aq[d2.art_file_id]||0)+q2}})});
@@ -13983,15 +14024,16 @@ export default function App(){
         safeItems(so).forEach(it=>{
           const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
           if(!qty)return;
+          const itemQBId=prodQBMap[it.product_id||(prod.find(pp=>pp.sku===it.sku)||{}).id];
           lines.push({DetailType:'SalesItemLineDetail',Amount:qty*(it.unit_sell||0),
             Description:it.sku+' '+it.name+(it.color?' - '+it.color:''),
-            SalesItemLineDetail:{Quantity:qty,UnitPrice:it.unit_sell||0}});
+            SalesItemLineDetail:{Qty:qty,UnitPrice:it.unit_sell||0,...(itemQBId?{ItemRef:{value:String(itemQBId)}}:{})}});
           safeDecos(it).forEach(d=>{
             const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qty;
             const dp=dP(d,qty,saf,cq);
             if(dp.sell>0)lines.push({DetailType:'SalesItemLineDetail',Amount:qty*dp.sell,
               Description:'Decoration: '+(d.position||d.deco_type||d.kind||'Art'),
-              SalesItemLineDetail:{Quantity:qty,UnitPrice:dp.sell}});
+              SalesItemLineDetail:{Qty:qty,UnitPrice:dp.sell}});
           });
         });
         if(!lines.length)continue;
@@ -14066,8 +14108,8 @@ export default function App(){
           VendorRef:{value:qbVendorId},
           TxnDate:(pl.created_at||'').slice(0,10)||new Date().toISOString().slice(0,10),
           Line:[{DetailType:'AccountBasedExpenseLineDetail',Amount:qty*rate,
-            Description:it.sku+' '+it.name+' (SO: '+so.id+')',
-            AccountBasedExpenseLineDetail:{Qty:qty,UnitPrice:rate,AccountRef:acctMap[account]||{name:account}}}],
+            Description:it.sku+' '+it.name+' x'+qty+' @$'+rate.toFixed(2)+' (SO: '+so.id+')',
+            AccountBasedExpenseLineDetail:{AccountRef:acctMap[account]||Object.values(acctMap)[0]||{name:account||'Expenses'}}}],
           PrivateNote:'Portal PO for SO: '+so.id,
           ...(poMap[pl.po_id]?{Id:poMap[pl.po_id],sparse:true}:{}),
         };
@@ -14088,10 +14130,10 @@ export default function App(){
     const syncAll=async()=>{
       setQbSyncing(true);
       const custQBMap=await syncCustomers();
-      await syncSalesOrders(custQBMap);
-      await syncInvoices(custQBMap);
+      const prodQBMap=await syncInventory();
+      await syncSalesOrders(custQBMap,prodQBMap);
+      await syncInvoices(custQBMap,prodQBMap);
       await syncPurchaseOrders();
-      await syncInventory();
       setQbSyncing(false);
     };
 
@@ -14105,8 +14147,10 @@ export default function App(){
     const unsyncedPOs=[];
     sos.forEach(so=>{safeItems(so).forEach(it=>{(it.po_lines||[]).forEach(pl=>{if(!poMap[pl.po_id])unsyncedPOs.push({...pl,soId:so.id,sku:it.sku,itemName:it.name,vendor:pl.deco_vendor||D_V.find(v=>v.id===it.vendor_id)?.name||it.brand})})})});
     const unsyncedInvs=invs.filter(i=>!i.qb_invoice_id);
-    const custWithQB=cust.filter(c=>c.qb_customer_id).length;
-    const prodWithQB=prod.filter(p=>p.qb_item_id).length;
+    const _custQBMap=qbConfig.custQBMap||{};
+    const _prodQBMap=qbConfig.prodQBMap||{};
+    const custWithQB=cust.filter(c=>_custQBMap[c.id]).length;
+    const prodWithQB=prod.filter(p=>_prodQBMap[p.id]).length;
     const totalInvQty=prod.reduce((a,p)=>a+Object.values(p._inv||{}).reduce((a2,v)=>a2+safeNum(v),0),0);
     const totalInvValue=prod.reduce((a,p)=>{const qty=Object.values(p._inv||{}).reduce((a2,v)=>a2+safeNum(v),0);return a+qty*safeNum(p.nsa_cost)},0);
     const unsyncedInvPOs=invPOs.filter(p=>!p._qb_synced);
@@ -14358,7 +14402,7 @@ export default function App(){
                     <td>{orders}</td>
                     <td style={{textAlign:'right',fontWeight:600}}>${rev.toFixed(0)}</td>
                     <td style={{textAlign:'right',color:rev-paid>0?'#dc2626':'#16a34a',fontWeight:600}}>${(rev-paid).toFixed(0)}</td>
-                    <td>{c.qb_customer_id?<span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:'#dcfce7',color:'#166534',fontWeight:600}}>QB #{c.qb_customer_id}</span>:
+                    <td>{_custQBMap[c.id]?<span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:'#dcfce7',color:'#166534',fontWeight:600}}>QB #{_custQBMap[c.id]}</span>:
                       <span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:'#fef3c7',color:'#92400e',fontWeight:600}}>Not synced</span>}</td>
                   </tr>})}
               </tbody>
@@ -14481,7 +14525,7 @@ export default function App(){
                     <td><span className="badge badge-gray">{p.brand}</span></td>
                     <td style={{textAlign:'right',fontWeight:600}}>{totalQty}</td>
                     <td style={{textAlign:'right',fontWeight:600,color:'#166534'}}>${totalValue.toFixed(2)}</td>
-                    <td>{p.qb_item_id?<span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:'#dcfce7',color:'#166534',fontWeight:600}}>QB #{p.qb_item_id}</span>:
+                    <td>{_prodQBMap[p.id]?<span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:'#dcfce7',color:'#166534',fontWeight:600}}>QB #{_prodQBMap[p.id]}</span>:
                       <span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:'#f1f5f9',color:'#94a3b8',fontWeight:600}}>—</span>}</td>
                   </tr>})}
               </tbody>
@@ -15435,3 +15479,4 @@ export default function App(){
   </div>);
 }
 
+// QB sync fix v2
