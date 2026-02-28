@@ -3555,6 +3555,47 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                 <div style={{fontSize:10,color:'#64748b',marginTop:2}}>{pct}% fulfilled</div>
               </div>
             </div>
+            {/* ── Art Status Banners ── */}
+            {j.art_status==='art_requested'&&<div style={{margin:'0 20px',padding:'12px 16px',background:'linear-gradient(135deg,#fce7f3,#fdf2f8)',border:'2px solid #f9a8d4',borderRadius:8}}>
+              <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
+                <span style={{fontSize:16}}>📨</span>
+                <span style={{fontWeight:700,fontSize:14,color:'#9d174d'}}>Art Request Sent</span>
+                {(()=>{const lastReq=(j.art_requests||[]).slice(-1)[0];return lastReq?<span style={{fontSize:11,color:'#be185d'}}>to {lastReq.artist_name||'artist'} on {new Date(lastReq.created_at).toLocaleDateString()}</span>:null})()}
+              </div>
+              <div style={{fontSize:12,color:'#831843'}}>Waiting for the artist to complete the mockup. You can request updates or send messages below.</div>
+            </div>}
+            {j.art_status==='art_in_progress'&&<div style={{margin:'0 20px',padding:'12px 16px',background:'linear-gradient(135deg,#dbeafe,#eff6ff)',border:'2px solid #93c5fd',borderRadius:8}}>
+              <div style={{display:'flex',alignItems:'center',gap:8}}>
+                <span style={{fontSize:16}}>🎨</span>
+                <span style={{fontWeight:700,fontSize:14,color:'#1e40af'}}>Artist is Working on This</span>
+                {j.assigned_artist&&<span style={{fontSize:11,color:'#2563eb'}}>({REPS.find(r=>r.id===j.assigned_artist)?.name||'Artist'})</span>}
+              </div>
+              <div style={{fontSize:12,color:'#1e3a8a',marginTop:4}}>The mockup will be sent to you for approval when ready.</div>
+            </div>}
+            {j.art_status==='waiting_approval'&&<div style={{margin:'0 20px',padding:'14px 16px',background:'linear-gradient(135deg,#fef3c7,#fffbeb)',border:'2px solid #fbbf24',borderRadius:8}}>
+              <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}>
+                <span style={{fontSize:20}}>⚠️</span>
+                <span style={{fontWeight:800,fontSize:15,color:'#92400e'}}>Artwork Needs Your Approval</span>
+              </div>
+              <div style={{fontSize:12,color:'#78350f',marginBottom:10}}>The mockup is ready for review. Approve it or send it to the coach for their approval.</div>
+              <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                <button className="btn btn-sm" style={{fontSize:12,padding:'6px 16px',background:'#22c55e',color:'white',border:'none',borderRadius:6,fontWeight:700}} onClick={()=>{updJob(ji,'art_status','production_files_needed');if(j.art_file_id){const afi=af.findIndex(a=>a.id===j.art_file_id);if(afi>=0)uArt(afi,'status','approved')}nf('✅ Art approved — awaiting prod files')}}>✅ Approve Artwork</button>
+                <button className="btn btn-sm" style={{fontSize:12,padding:'6px 16px',background:'#3b82f6',color:'white',border:'none',borderRadius:6,fontWeight:700}} onClick={()=>{const c2=ic||cust?.find?.(x=>x.id===o.customer_id);const ct=(c2?.contacts||[])[0]||{};const pUrl=c2?.alpha_tag?(window.location.origin+'/?portal='+c2.alpha_tag):'';if(pUrl){navigator.clipboard?.writeText(pUrl);nf('Portal link copied! Send to coach for approval.')}else{nf('No portal link — approve directly or set customer alpha tag','error')}}}>📤 Send to Coach for Approval</button>
+              </div>
+            </div>}
+            {j.art_status==='production_files_needed'&&<div style={{margin:'0 20px',padding:'12px 16px',background:'linear-gradient(135deg,#fef9c3,#fefce8)',border:'2px solid #fde047',borderRadius:8}}>
+              <div style={{display:'flex',alignItems:'center',gap:8}}>
+                <span style={{fontSize:16}}>✅</span>
+                <span style={{fontWeight:700,fontSize:14,color:'#854d0e'}}>Art Approved — Waiting for Production Files</span>
+              </div>
+              <div style={{fontSize:12,color:'#713f12',marginTop:4}}>The artist needs to upload final production files before this job can go to production.</div>
+            </div>}
+            {j.art_status==='art_complete'&&<div style={{margin:'0 20px',padding:'10px 16px',background:'linear-gradient(135deg,#dcfce7,#f0fdf4)',border:'2px solid #86efac',borderRadius:8}}>
+              <div style={{display:'flex',alignItems:'center',gap:8}}>
+                <span style={{fontSize:16}}>🎉</span>
+                <span style={{fontWeight:700,fontSize:14,color:'#166534'}}>Art Complete — Ready for Production</span>
+              </div>
+            </div>}
             {/* Status controls */}
             <div style={{padding:'10px 20px',borderTop:'1px solid #f1f5f9',display:'flex',gap:12,alignItems:'center',flexWrap:'wrap'}}>
               <div style={{fontSize:11,fontWeight:600,color:'#64748b'}}>Art:</div>
@@ -6510,7 +6551,7 @@ export default function App(){
     sos.forEach(so=>{
       const c=cust.find(x=>x.id===so.customer_id);const tag=c?.alpha_tag||so.id;
       buildJobs(so).forEach(j=>{
-        if(j.art_status==='waiting_approval')todos.push({type:'art',priority:2,msg:'⏳ Art awaiting approval: '+j.art_name,detail:tag+' · '+so.id,so,action:'Review art',role:'sales'});
+        if(j.art_status==='waiting_approval')todos.push({type:'art',priority:2,msg:'⏳ Art awaiting approval: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,action:'Review art',role:'sales'});
         const ready=isJobReady(j,so);const onBoard=safeJobs(so).some(ej=>ej.id===j.id);
         if(ready&&!onBoard)todos.push({type:'schedule',priority:1,msg:'🏭 Ready for production — send to board: '+j.art_name,detail:tag+' · '+j.id,so,action:'Open Jobs',role:'production'});
         if(j.item_status==='partially_received'&&!j.split_from&&j.fulfilled_units>0)todos.push({type:'split',priority:3,msg:'✂️ Can split: '+j.art_name+' ('+j.fulfilled_units+'/'+j.total_units+')',detail:tag+' · '+j.id,so,action:'Review split',role:'production'});
@@ -6563,9 +6604,9 @@ export default function App(){
       <div className="card"><div className="card-header"><h2>📋 To-Do ({todos.length})</h2></div>
         <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
           {todos.length===0?<div className="empty" style={{padding:20}}>All clear!</div>:
-          todos.slice(0,12).map((t,i)=><div key={i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer'}} onClick={()=>{if(t.so){setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
+          todos.slice(0,12).map((t,i)=><div key={i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer'}} onClick={()=>{if(t.so){if(t.type==='art'&&t.jobId){const jIdx=safeJobs(t.so).findIndex(jj=>jj.id===t.jobId);setESOTab('jobs');setESOScrollJob(jIdx>=0?jIdx:null)}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
             <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}</div></div>
-            <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#eff6ff',color:'#2563eb',fontWeight:600,whiteSpace:'nowrap'}}>{t.action}</span>
+            <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:t.type==='art'?'#fef3c7':'#eff6ff',color:t.type==='art'?'#92400e':'#2563eb',fontWeight:600,whiteSpace:'nowrap'}}>{t.action}</span>
           </div>)}
         </div></div>
       <div className="card"><div className="card-header"><h2>💬 Unread ({unreadMsgs.length}){unreadMentions.length>0&&<span style={{fontSize:12,color:'#d97706',fontWeight:600,marginLeft:8}}>({unreadMentions.length} mention{unreadMentions.length!==1?'s':''})</span>}</h2></div>
@@ -6600,9 +6641,9 @@ export default function App(){
       <div className="card"><div className="card-header"><h2>🎯 My Action Items</h2></div>
         <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
           {todos.filter(t=>t.role==='sales'||t.role==='all').length===0?<div className="empty" style={{padding:20}}>Nothing pending!</div>:
-          todos.filter(t=>t.role==='sales'||t.role==='all').slice(0,12).map((t,i)=><div key={i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer'}} onClick={()=>{if(t.so){setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
+          todos.filter(t=>t.role==='sales'||t.role==='all').slice(0,12).map((t,i)=><div key={i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer'}} onClick={()=>{if(t.so){if(t.type==='art'&&t.jobId){const jIdx=safeJobs(t.so).findIndex(jj=>jj.id===t.jobId);setESOTab('jobs');setESOScrollJob(jIdx>=0?jIdx:null)}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
             <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}</div></div>
-            <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#eff6ff',color:'#2563eb',fontWeight:600}}>{t.action}</span>
+            <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:t.type==='art'?'#fef3c7':'#eff6ff',color:t.type==='art'?'#92400e':'#2563eb',fontWeight:600}}>{t.action}</span>
           </div>)}</div></div>
       <div className="card"><div className="card-header"><h2>📊 My Pipeline</h2></div>
         <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
@@ -10851,14 +10892,21 @@ export default function App(){
         if(af&&(af.prod_files||[]).length===0){nf('Upload production files first','error');return}
       }
       const currentJobs=buildJobs(so);
-      const updatedJobs=currentJobs.map(jj=>jj.id===j.id?{...jj,art_status:newStatus,assigned_artist:jj.assigned_artist||j.assigned_artist}:jj);
+      const updatedJobs=currentJobs.map(jj=>{
+        if(jj.id!==j.id)return jj;
+        const upd={...jj,art_status:newStatus,assigned_artist:jj.assigned_artist||j.assigned_artist};
+        // Auto-move to production staging when art complete + items received
+        if(newStatus==='art_complete'&&jj.item_status==='items_received'&&(jj.prod_status==='hold'||!jj.prod_status)){upd.prod_status='staging'}
+        return upd;
+      });
       let updArt=safeArt(so);
       if(j.art_file_id){
         const afSt=newStatus==='waiting_approval'?'needs_approval':newStatus==='production_files_needed'||newStatus==='art_complete'?'approved':null;
         if(afSt)updArt=updArt.map(a=>a.id===j.art_file_id?{...a,status:afSt}:a);
       }
       savSO({...so,art_files:updArt,jobs:updatedJobs});
-      nf('Art status → '+ART_LABELS[newStatus]);
+      if(newStatus==='art_complete'){const autoStaged=updatedJobs.find(jj=>jj.id===j.id);if(autoStaged?.prod_status==='staging')nf('Art complete — job moved to Ready for Production!');else nf('Art status → '+ART_LABELS[newStatus])}
+      else nf('Art status → '+ART_LABELS[newStatus]);
     };
     const assignArtist=(j,artistId)=>{
       const so=sos.find(s=>s.id===j.soId);if(!so)return;
@@ -10967,8 +11015,10 @@ export default function App(){
                   const ext=j.deco_type==='embroidery'?'.dst':j.deco_type==='screen_print'?'_seps.ai':'.pdf';
                   const fn=(j.art_name||'art').replace(/\s+/g,'_')+'_FINAL'+ext;
                   const updArt=[...safeArt(so)];updArt[afIdx]={...updArt[afIdx],prod_files:[...(updArt[afIdx].prod_files||[]),fn]};
-                  savSO({...so,art_files:updArt,jobs:safeJobs(so).map(jj=>jj.id===j.id?{...jj,art_status:'art_complete'}:jj)});
-                  nf('Prod files uploaded — Art Complete!');
+                  const updJobs=safeJobs(so).map(jj=>{if(jj.id!==j.id)return jj;const upd={...jj,art_status:'art_complete'};if(jj.item_status==='items_received'&&(jj.prod_status==='hold'||!jj.prod_status))upd.prod_status='staging';return upd});
+                  savSO({...so,art_files:updArt,jobs:updJobs});
+                  const autoStaged=updJobs.find(jj=>jj.id===j.id);
+                  nf(autoStaged?.prod_status==='staging'?'Art complete — job moved to Ready for Production!':'Prod files uploaded — Art Complete!');
                 }else{moveArtStatus(j,'art_complete')}
               }}>Upload & Complete</button>}
               <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px',marginLeft:'auto'}} onClick={e=>{e.stopPropagation();setESOTab('jobs');setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so?.customer_id));setPg('orders')}}>Open SO</button>
