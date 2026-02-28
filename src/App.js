@@ -13899,8 +13899,8 @@ export default function App(){
           const match=existingQBItems.find(i=>i.Name===itemName);
           if(match){qbId=match.Id;syncToken=match.SyncToken;existingType=match.Type}
         }
-        // Use Inventory type if we have an asset account; otherwise NonInventory
-        const useInventoryType=!!assetAcctRef&&existingType!=='NonInventory';
+        // Use Inventory type with QtyOnHand if we have an asset account
+        const useInventoryType=!!assetAcctRef;
         const qbItem={
           Name:itemName,
           ...(useInventoryType?{Type:'Inventory',TrackQtyOnHand:true,QtyOnHand:totalQty,InvStartDate:today,AssetAccountRef:assetAcctRef}:
@@ -13912,14 +13912,24 @@ export default function App(){
           ExpenseAccountRef:expenseAcctRef,
           ...(qbId?{Id:qbId,SyncToken:syncToken,sparse:true}:{}),
         };
-        // For existing Inventory items, use InventoryAdjustment instead of setting QtyOnHand directly
-        if(qbId&&existingType==='Inventory'){
-          delete qbItem.QtyOnHand;delete qbItem.InvStartDate;delete qbItem.TrackQtyOnHand;delete qbItem.AssetAccountRef;delete qbItem.Type;
-        }
         const res=await qbApi('upsert_item',{item:qbItem});
         if(res?.Item?.Id){
           prodQBMap[p.id]=res.Item.Id;
           log.details.push(p.sku+' '+p.name+' → QB Item #'+res.Item.Id+' (qty: '+totalQty+', val: $'+totalValue.toFixed(2)+')');synced++;
+          // For existing items, also adjust qty via InventoryAdjustment if needed
+          if(qbId&&useInventoryType){
+            const currentQBQty=existingQBItems.find(i=>i.Id===(res.Item.Id||qbId))?.QtyOnHand||0;
+            const qtyDiff=totalQty-currentQBQty;
+            if(qtyDiff!==0){
+              await qbApi('inventory_adjustment',{adjustment:{
+                AdjDate:today,
+                AdjustAccountRef:expenseAcctRef,
+                Line:[{ItemRef:{value:String(res.Item.Id||qbId),name:itemName},
+                  QtyDiff:qtyDiff,DetailType:'ItemAdjustmentLineDetail',
+                  ItemAdjustmentLineDetail:{Qty:qtyDiff}}]
+              }});
+            }
+          }
         }else{log.details.push(p.sku+' — FAILED: '+(res?.Fault?.Error?.[0]?.Detail||'unknown'));log.status='partial'}
       }
       log.details.unshift(synced+' product items synced');
@@ -15480,3 +15490,4 @@ export default function App(){
 }
 
 // QB sync fix v2
+
