@@ -2051,10 +2051,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       return(<div key={idx} id={'so-item-'+idx} className="card" style={{marginBottom:12,transition:'box-shadow 0.3s'}}>
         <div style={{padding:'12px 18px',borderBottom:'1px solid #f1f5f9'}}>
           <div style={{display:'flex',gap:12,alignItems:'center'}}>
-            {(()=>{const prd=prod.find(pp=>pp.id===item.product_id||pp.sku===item.sku);return<div style={{display:'flex',gap:4,flexShrink:0}}>
-              <ImgUpload url={prd?.image_url||''} onUpload={u=>{if(prd){const up={...prd,image_url:u};setProd(ps=>ps.map(x=>x.id===prd.id?up:x));_dbSaveProduct(up)}nf('Front image saved')}} onError={e=>nf(e,'error')} size={44}/>
-              <ImgUpload url={prd?.back_image_url||''} onUpload={u=>{if(prd){const up={...prd,back_image_url:u};setProd(ps=>ps.map(x=>x.id===prd.id?up:x));_dbSaveProduct(up)}nf('Back image saved')}} onError={e=>nf(e,'error')} size={44}/>
-            </div>})()}
             <div style={{flex:1}}>
               <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
                 {item.is_custom?<input className="form-input" value={item.sku} onChange={e=>uI(idx,'sku',e.target.value)} style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'3px 10px',borderRadius:4,fontSize:15,width:100,border:'1px solid #93c5fd'}}/>
@@ -7005,11 +7001,12 @@ export default function App(){
       <button className="btn btn-secondary" onClick={onBack} style={{marginBottom:12}}><Icon name="chevron-left" size={14}/> Products</button>
       <div className="card" style={{marginBottom:16}}><div className="card-body">
         <div style={{display:'flex',gap:16,alignItems:'flex-start'}}>
-          <div style={{display:'flex',flexDirection:'column',gap:4,alignItems:'center'}}>
-            <ImgUpload url={ep.image_url} onUpload={u=>imgSave({...ep,image_url:u})} onError={e=>nf(e,'error')} size={80}/>
-            <span style={{fontSize:9,color:'#64748b',fontWeight:600}}>Front</span>
-            <ImgUpload url={ep.back_image_url} onUpload={u=>imgSave({...ep,back_image_url:u})} onError={e=>nf(e,'error')} size={80}/>
-            <span style={{fontSize:9,color:'#64748b',fontWeight:600}}>Back</span>
+          <div style={{display:'flex',flexDirection:'column',gap:6,alignItems:'center'}}>
+            <ImgUpload url={ep.image_url} onUpload={u=>imgSave({...ep,image_url:u})} onError={e=>nf(e,'error')} size={100}/>
+            <span style={{fontSize:10,color:'#64748b',fontWeight:600}}>Front</span>
+            <ImgUpload url={ep.back_image_url} onUpload={u=>imgSave({...ep,back_image_url:u})} onError={e=>nf(e,'error')} size={100}/>
+            <span style={{fontSize:10,color:'#64748b',fontWeight:600}}>Back</span>
+            <span style={{fontSize:9,color:'#94a3b8',textAlign:'center',lineHeight:1.3}}>Click or drag<br/>& drop images</span>
           </div>
           <div style={{flex:1}}>
             {!editing?<>
