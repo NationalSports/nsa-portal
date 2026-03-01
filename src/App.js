@@ -12387,17 +12387,17 @@ export default function App(){
             if(nl.length>3&&!/^DEPT|^PH|^FX|^FAX|^\d|^SOLD|^SHIP/i.test(nl)){bill.supplier=nl;break}
           }
         }
-        // Document number
-        {const m=line.match(/(?:SI\s+)?DOCUMENT\s+NUMBER[:\s]+(\d+)/i);if(m)bill.doc_number=m[1]}
-        // Dates — use last match for doc date (bottom is authoritative), first for ship date
-        {const m=line.match(/DOCUMENT\s+DATE[:\s]+([\d\/]+)/i);if(m)bill.doc_date=m[1]}
-        {const m=line.match(/DUE\s+DATE[:\s]+([\d\/]+)/i);if(m)bill.due_date=m[1]}
+        // Document number — first match (avoid overwrite from later invoices in same PDF)
+        {const m=line.match(/(?:SI\s+)?DOCUMENT\s+NUMBER[:\s]+(\d+)/i);if(m&&!bill.doc_number)bill.doc_number=m[1]}
+        // Dates — first match to stay consistent with first invoice section
+        {const m=line.match(/DOCUMENT\s+DATE[:\s]+([\d\/]+)/i);if(m&&!bill.doc_date)bill.doc_date=m[1]}
+        {const m=line.match(/DUE\s+DATE[:\s]+([\d\/]+)/i);if(m&&!bill.due_date)bill.due_date=m[1]}
         if(!bill.ship_date){const m=line.match(/SHIP\s+DATE[:\s]+([\d\/]+)/i);if(m)bill.ship_date=m[1]}
-        // Totals — use last match (bottom of document)
-        {const v=extractTotal(line,/MERCHANDISE\s+TOTAL/i,lines[li+1]);if(v!=null)bill.merchandise_total=v}
-        {const v=extractTotal(line,/FREIGHT\s+CHARGE/i,lines[li+1]);if(v!=null)bill.freight=v}
-        {const v=extractTotal(line,/SI\s+UPCHARGE/i,lines[li+1]);if(v!=null)bill.si_upcharge=v}
-        {const v=extractTotal(line,/DOCUMENT\s+TOTAL/i,lines[li+1]);if(v!=null)bill.doc_total=v}
+        // Totals — first match (avoid overwrite from later invoices in multi-invoice PDFs)
+        {const v=extractTotal(line,/MERCHANDISE\s+TOTAL/i,lines[li+1]);if(v!=null&&!bill.merchandise_total)bill.merchandise_total=v}
+        {const v=extractTotal(line,/FREIGHT\s+CHARGE/i,lines[li+1]);if(v!=null&&!bill.freight)bill.freight=v}
+        {const v=extractTotal(line,/SI\s+UPCHARGE/i,lines[li+1]);if(v!=null&&!bill.si_upcharge)bill.si_upcharge=v}
+        {const v=extractTotal(line,/DOCUMENT\s+TOTAL/i,lines[li+1]);if(v!=null&&!bill.doc_total)bill.doc_total=v}
         // Detect item table section: starts at header row, ends at totals/footer
         if(itemSectionStart<0&&(/UPC\s*NUMBER/i.test(line)||/SUPPLIER\s*ITEM\s*NUMBER/i.test(line)||/QUANTITY\s*ORDERED.*QUANTITY\s*SHIPPED/i.test(line))){
           itemSectionStart=li+1;// items start AFTER the header row
