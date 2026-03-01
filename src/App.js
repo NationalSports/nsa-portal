@@ -3644,7 +3644,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
               {mockups.length===0&&<div style={{padding:12,background:'#fff7ed',border:'1px dashed #fdba74',borderRadius:6,marginBottom:12,fontSize:12,color:'#9a3412'}}>No mockup files attached yet — check the Art Library tab for files.</div>}
               <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:10}}>
                 <button className="btn" style={{fontSize:13,padding:'8px 20px',background:'linear-gradient(135deg,#22c55e,#16a34a)',color:'white',border:'none',borderRadius:8,fontWeight:800,boxShadow:'0 2px 8px rgba(34,197,94,0.3)'}} onClick={()=>{updJob(ji,'art_status','production_files_needed');if(j.art_file_id){const afi=af.findIndex(a=>a.id===j.art_file_id);if(afi>=0)uArt(afi,'status','approved')}setArtRevisionNote('');nf('✅ Art approved — awaiting prod files')}}>✅ Approve Artwork</button>
-                <button className="btn" style={{fontSize:13,padding:'8px 20px',background:'linear-gradient(135deg,#3b82f6,#2563eb)',color:'white',border:'none',borderRadius:8,fontWeight:800,boxShadow:'0 2px 8px rgba(59,130,246,0.3)'}} onClick={()=>{const c2=ic||allCustomers?.find?.(x=>x.id===o.customer_id);const contacts=(c2?.contacts||[]).filter(ct2=>ct2.email||ct2.phone);const ct=contacts[0]||{};const pUrl=c2?.alpha_tag?(window.location.origin+'/?portal='+c2.alpha_tag):'';const defMsg='Hi '+(ct.name||'Coach')+',\n\nYour artwork mockup for "'+j.art_name+'" is ready for review!\n\nPlease review and approve it through your portal:\n'+(pUrl||'(portal link unavailable)')+'\n\nLet us know if you\'d like any changes.\n\n'+cu.name+'\nNational Sports Apparel';setCoachApprovalModal({jIdx:ji,contacts,contact:ct,portalUrl:pUrl,sendEmail:!!ct.email,sendText:!!ct.phone,selectedEmail:ct.email||'',customEmail:'',message:defMsg,sending:false})}}>📤 Send to Coach</button>
+                <button className="btn" style={{fontSize:13,padding:'8px 20px',background:'linear-gradient(135deg,#3b82f6,#2563eb)',color:'white',border:'none',borderRadius:8,fontWeight:800,boxShadow:'0 2px 8px rgba(59,130,246,0.3)'}} onClick={()=>{const c2=ic||allCustomers?.find?.(x=>x.id===o.customer_id);const contacts=(c2?.contacts||[]).filter(ct2=>ct2.email||ct2.phone);const ct=contacts[0]||{};const pUrl=c2?.alpha_tag?(window.location.origin+'/?portal='+c2.alpha_tag):'';const defMsg='Hi '+(ct.name||'Coach')+',\n\nYour artwork mockup for "'+j.art_name+'" is ready for review!\n\nPlease review and approve it through your portal:\n'+(pUrl||'(portal link unavailable)')+'\n\nLet us know if you\'d like any changes.\n\n'+cu.name+'\nNational Sports Apparel';setCoachApprovalModal({jIdx:ji,contacts,contact:ct,portalUrl:pUrl,sendEmail:!!ct.email,sendText:!!ct.phone,checkedEmails:Object.fromEntries((c2?.contacts||[]).filter(ct2=>ct2.email).map(ct2=>[ct2.email,true])),customEmails:[],addingEmail:'',message:defMsg,sending:false})}}>📤 Send to Coach</button>
               </div>
               <div style={{borderTop:'1px solid #fde68a',paddingTop:10}}>
                 <div style={{fontSize:11,fontWeight:700,color:'#92400e',marginBottom:4}}>Something wrong? Send it back to the artist:</div>
@@ -3915,21 +3915,22 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       {coachApprovalModal&&(()=>{
         const j3=jobs[coachApprovalModal.jIdx];if(!j3)return null;
         const cam=coachApprovalModal;
-        const emailTarget=cam.selectedEmail==='_custom'?cam.customEmail:cam.selectedEmail;
         const allEmails=[...new Set((cam.contacts||[]).filter(c3=>c3.email).map(c3=>c3.email))];
+        const allTargets=[...allEmails,...(cam.customEmails||[])].filter(em=>cam.checkedEmails?.[em]);
         const doSendCoach=async()=>{
           const actions=[];
-          if(cam.sendEmail&&emailTarget){
+          if(cam.sendEmail&&allTargets.length>0){
             if(_brevoKey){
               setCoachApprovalModal(m=>({...m,sending:true}));
               const htmlMsg=cam.message.replace(/\n/g,'<br/>');
-              const res=await sendBrevoEmail({to:emailTarget,subject:'Artwork ready for approval — '+j3.art_name,htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6">'+htmlMsg+'</div>',senderName:cu.name||'National Sports Apparel',senderEmail:'noreply@nationalsportsapparel.com'});
-              if(res.ok){actions.push('email sent to '+emailTarget)}else{nf('Email failed: '+res.error,'error');setCoachApprovalModal(m=>({...m,sending:false}));return}
+              const toList=allTargets.map(em=>({email:em}));
+              const res=await sendBrevoEmail({to:toList,subject:'Artwork ready for approval — '+j3.art_name,htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6">'+htmlMsg+'</div>',senderName:cu.name||'National Sports Apparel',senderEmail:'noreply@nationalsportsapparel.com'});
+              if(res.ok){actions.push('email sent to '+allTargets.join(', '))}else{nf('Email failed: '+res.error,'error');setCoachApprovalModal(m=>({...m,sending:false}));return}
             }else{
               const subj=encodeURIComponent('Artwork ready for approval — '+j3.art_name);
               const body=encodeURIComponent(cam.message);
-              window.open('mailto:'+emailTarget+'?subject='+subj+'&body='+body,'_blank');
-              actions.push('email draft opened');
+              window.open('mailto:'+allTargets.join(',')+'?subject='+subj+'&body='+body,'_blank');
+              actions.push('email draft opened for '+allTargets.length+' recipient(s)');
             }
           }
           if(cam.sendText&&cam.contact.phone){
@@ -3960,12 +3961,20 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                 {!_brevoKey&&<span style={{fontSize:9,padding:'1px 6px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:600}}>Opens email app</span>}
               </label>
               {cam.sendEmail&&<div>
-                <div className="form-label" style={{fontSize:11,marginBottom:4}}>Send to</div>
-                <select className="form-select" style={{fontSize:12,marginBottom:6}} value={cam.selectedEmail} onChange={e=>{setCoachApprovalModal(m=>({...m,selectedEmail:e.target.value}))}}>
-                  {allEmails.map(em=>{const ct2=(cam.contacts||[]).find(c3=>c3.email===em);return<option key={em} value={em}>{ct2?.name||'Contact'} — {em}{ct2?.role?' ('+ct2.role+')':''}</option>})}
-                  <option value="_custom">+ Enter a different email...</option>
-                </select>
-                {cam.selectedEmail==='_custom'&&<input className="form-input" type="email" placeholder="coach@school.edu" value={cam.customEmail} onChange={e=>setCoachApprovalModal(m=>({...m,customEmail:e.target.value}))} style={{fontSize:12}}/>}
+                <div className="form-label" style={{fontSize:11,marginBottom:6}}>Send to</div>
+                {allEmails.map(em=>{const ct2=(cam.contacts||[]).find(c3=>c3.email===em);return<label key={em} style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer',padding:'6px 8px',borderRadius:6,background:cam.checkedEmails?.[em]?'#dbeafe':'transparent',marginBottom:4}}>
+                  <input type="checkbox" checked={!!cam.checkedEmails?.[em]} onChange={e=>setCoachApprovalModal(m=>({...m,checkedEmails:{...m.checkedEmails,[em]:e.target.checked}}))} style={{width:14,height:14,accentColor:'#2563eb'}}/>
+                  <span style={{fontSize:12}}><strong>{ct2?.name||'Contact'}</strong> — {em}{ct2?.role?' ('+ct2.role+')':''}</span>
+                </label>})}
+                {(cam.customEmails||[]).map(em=><label key={em} style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer',padding:'6px 8px',borderRadius:6,background:cam.checkedEmails?.[em]?'#dbeafe':'transparent',marginBottom:4}}>
+                  <input type="checkbox" checked={!!cam.checkedEmails?.[em]} onChange={e=>setCoachApprovalModal(m=>({...m,checkedEmails:{...m.checkedEmails,[em]:e.target.checked}}))} style={{width:14,height:14,accentColor:'#2563eb'}}/>
+                  <span style={{fontSize:12}}>{em} <span style={{fontSize:10,color:'#64748b'}}>(added)</span></span>
+                  <button style={{marginLeft:'auto',background:'none',border:'none',color:'#94a3b8',cursor:'pointer',fontSize:14,padding:0}} onClick={()=>setCoachApprovalModal(m=>{const ce={...m.checkedEmails};delete ce[em];return{...m,customEmails:m.customEmails.filter(x=>x!==em),checkedEmails:ce}})}>x</button>
+                </label>)}
+                <div style={{display:'flex',gap:6,marginTop:6}}>
+                  <input className="form-input" type="email" placeholder="+ Add another email..." value={cam.addingEmail||''} onChange={e=>setCoachApprovalModal(m=>({...m,addingEmail:e.target.value}))} onKeyDown={e=>{if(e.key==='Enter'&&cam.addingEmail?.includes('@')){e.preventDefault();setCoachApprovalModal(m=>({...m,customEmails:[...(m.customEmails||[]),m.addingEmail.trim()],checkedEmails:{...m.checkedEmails,[m.addingEmail.trim()]:true},addingEmail:''}))}}} style={{fontSize:12,flex:1}}/>
+                  <button className="btn btn-sm btn-secondary" disabled={!cam.addingEmail?.includes('@')} onClick={()=>setCoachApprovalModal(m=>({...m,customEmails:[...(m.customEmails||[]),m.addingEmail.trim()],checkedEmails:{...m.checkedEmails,[m.addingEmail.trim()]:true},addingEmail:''}))}>Add</button>
+                </div>
               </div>}
             </div>
 
@@ -3997,8 +4006,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           </div>
           <div className="modal-footer" style={{display:'flex',gap:8,flexWrap:'wrap'}}>
             <button className="btn btn-secondary" onClick={()=>setCoachApprovalModal(null)}>Cancel</button>
-            <button className="btn" style={{background:'linear-gradient(135deg,#3b82f6,#2563eb)',color:'white',border:'none',fontWeight:700,padding:'8px 20px',opacity:(!cam.sendEmail&&!cam.sendText)||cam.sending?0.5:1}} disabled={(!cam.sendEmail&&!cam.sendText)||cam.sending||(cam.sendEmail&&!emailTarget)} onClick={doSendCoach}>
-              {cam.sending?'Sending...':((cam.sendEmail&&cam.sendText)?'Send Email + Text':(cam.sendEmail?'Send Email':'Send Text'))}
+            <button className="btn" style={{background:'linear-gradient(135deg,#3b82f6,#2563eb)',color:'white',border:'none',fontWeight:700,padding:'8px 20px',opacity:(!cam.sendEmail&&!cam.sendText)||cam.sending?0.5:1}} disabled={(!cam.sendEmail&&!cam.sendText)||cam.sending||(cam.sendEmail&&allTargets.length===0)} onClick={doSendCoach}>
+              {cam.sending?'Sending...':((cam.sendEmail&&cam.sendText)?'Send Email + Text':(cam.sendEmail?('Send Email to '+allTargets.length+' recipient'+(allTargets.length!==1?'s':'')):'Send Text'))}
             </button>
           </div>
         </div></div>
