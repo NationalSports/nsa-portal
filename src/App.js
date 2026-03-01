@@ -1700,6 +1700,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
   const[showInvCreate,setShowInvCreate]=useState(false);const[invSelItems,setInvSelItems]=useState([]);const[invMemo,setInvMemo]=useState('');const[invType,setInvType]=useState('deposit');const[invDepositPct,setInvDepositPct]=useState(50);
   const[splitModal,setSplitModal]=useState(null);// {jIdx, mode:'received'|'sku'|null}
   const[artReqModal,setArtReqModal]=useState(null);// {jIdx, artist:'', instructions:'', files:[]}
+  const[artRevisionNote,setArtRevisionNote]=useState('');
 
   // Sync dirty state to parent dirtyRef
   React.useEffect(()=>{if(dirtyRef)dirtyRef.current=dirty},[dirty,dirtyRef]);
@@ -3599,17 +3600,48 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
               </div>
               <div style={{fontSize:12,color:'#1e3a8a',marginTop:4}}>The mockup will be sent to you for approval when ready.</div>
             </div>}
-            {j.art_status==='waiting_approval'&&<div style={{margin:'0 20px',padding:'14px 16px',background:'linear-gradient(135deg,#fef3c7,#fffbeb)',border:'2px solid #fbbf24',borderRadius:8}}>
-              <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}>
+            {j.art_status==='waiting_approval'&&(()=>{const artFile2=af.find(a=>a.id===j.art_file_id);const mockups=(artFile2?.mockup_files||artFile2?.files||[]);return<div style={{margin:'0 20px',padding:'16px',background:'linear-gradient(135deg,#fef3c7,#fffbeb)',border:'2px solid #fbbf24',borderRadius:10}}>
+              <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:10}}>
                 <span style={{fontSize:20}}>⚠️</span>
-                <span style={{fontWeight:800,fontSize:15,color:'#92400e'}}>Artwork Needs Your Approval</span>
+                <span style={{fontWeight:800,fontSize:16,color:'#92400e'}}>Artwork Needs Your Approval</span>
               </div>
-              <div style={{fontSize:12,color:'#78350f',marginBottom:10}}>The mockup is ready for review. Approve it or send it to the coach for their approval.</div>
-              <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-                <button className="btn btn-sm" style={{fontSize:12,padding:'6px 16px',background:'#22c55e',color:'white',border:'none',borderRadius:6,fontWeight:700}} onClick={()=>{updJob(ji,'art_status','production_files_needed');if(j.art_file_id){const afi=af.findIndex(a=>a.id===j.art_file_id);if(afi>=0)uArt(afi,'status','approved')}nf('✅ Art approved — awaiting prod files')}}>✅ Approve Artwork</button>
-                <button className="btn btn-sm" style={{fontSize:12,padding:'6px 16px',background:'#3b82f6',color:'white',border:'none',borderRadius:6,fontWeight:700}} onClick={()=>{const c2=ic||cust?.find?.(x=>x.id===o.customer_id);const ct=(c2?.contacts||[])[0]||{};const pUrl=c2?.alpha_tag?(window.location.origin+'/?portal='+c2.alpha_tag):'';if(pUrl){navigator.clipboard?.writeText(pUrl);nf('Portal link copied! Send to coach for approval.')}else{nf('No portal link — approve directly or set customer alpha tag','error')}}}>📤 Send to Coach for Approval</button>
+              {mockups.length>0&&<div style={{marginBottom:12}}>
+                <div style={{fontSize:11,fontWeight:700,color:'#78350f',marginBottom:6}}>Review the mockup:</div>
+                <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                  {mockups.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(url||f);
+                    return<div key={fi} style={{borderRadius:8,border:'2px solid #f59e0b',overflow:'hidden',background:'white',maxWidth:260,cursor:'pointer'}} onClick={()=>openFile(url)}>
+                      {_isImgUrl(url)?<img src={url} alt={name} style={{width:'100%',maxHeight:180,objectFit:'contain',display:'block'}}/>
+                      :_isPdfUrl(url)?<div style={{position:'relative'}}>
+                        {_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',maxHeight:180,objectFit:'contain',display:'block'}} onError={e=>{e.target.style.display='none';e.target.nextSibling.style.display='flex'}}/>:null}
+                        <div style={{display:_cloudinaryPdfThumb(url)?'none':'flex',flexDirection:'column',alignItems:'center',padding:16,gap:4}}>
+                          <span style={{fontSize:28}}>PDF</span><span style={{fontSize:11,color:'#1e40af'}}>{name}</span>
+                        </div>
+                      </div>
+                      :<div style={{display:'flex',alignItems:'center',gap:6,padding:'12px 14px'}}>
+                        <span style={{fontSize:16}}>📄</span><span style={{fontSize:12,fontWeight:600,color:'#1e40af'}}>{name}</span>
+                      </div>}
+                      <div style={{padding:'3px 8px',borderTop:'1px solid #fde68a',fontSize:10,color:'#92400e',fontWeight:600,textAlign:'center'}}>{name}</div>
+                    </div>})}
+                </div>
+              </div>}
+              {mockups.length===0&&<div style={{padding:12,background:'#fff7ed',border:'1px dashed #fdba74',borderRadius:6,marginBottom:12,fontSize:12,color:'#9a3412'}}>No mockup files attached yet — check the Art Library tab for files.</div>}
+              <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:10}}>
+                <button className="btn" style={{fontSize:13,padding:'8px 20px',background:'linear-gradient(135deg,#22c55e,#16a34a)',color:'white',border:'none',borderRadius:8,fontWeight:800,boxShadow:'0 2px 8px rgba(34,197,94,0.3)'}} onClick={()=>{updJob(ji,'art_status','production_files_needed');if(j.art_file_id){const afi=af.findIndex(a=>a.id===j.art_file_id);if(afi>=0)uArt(afi,'status','approved')}setArtRevisionNote('');nf('✅ Art approved — awaiting prod files')}}>✅ Approve Artwork</button>
+                <button className="btn" style={{fontSize:13,padding:'8px 20px',background:'linear-gradient(135deg,#3b82f6,#2563eb)',color:'white',border:'none',borderRadius:8,fontWeight:800,boxShadow:'0 2px 8px rgba(59,130,246,0.3)'}} onClick={()=>{const c2=ic||cust?.find?.(x=>x.id===o.customer_id);const ct=(c2?.contacts||[])[0]||{};const pUrl=c2?.alpha_tag?(window.location.origin+'/?portal='+c2.alpha_tag):'';if(pUrl){navigator.clipboard?.writeText(pUrl);nf('Portal link copied! Send to coach for approval.')}else{nf('No portal link — approve directly or set customer alpha tag','error')}}}>📤 Send to Coach</button>
               </div>
-            </div>}
+              <div style={{borderTop:'1px solid #fde68a',paddingTop:10}}>
+                <div style={{fontSize:11,fontWeight:700,color:'#92400e',marginBottom:4}}>Something wrong? Send it back to the artist:</div>
+                <textarea className="form-input" rows={2} placeholder="Describe what needs to change — colors, sizing, placement, etc." value={artRevisionNote} onChange={e=>setArtRevisionNote(e.target.value)} style={{fontSize:12,resize:'vertical',marginBottom:6,borderColor:'#fbbf24'}}/>
+                <button className="btn btn-sm" style={{fontSize:12,padding:'5px 14px',background:artRevisionNote.trim()?'linear-gradient(135deg,#dc2626,#b91c1c)':'#e5e7eb',color:artRevisionNote.trim()?'white':'#9ca3af',border:'none',borderRadius:6,fontWeight:700,cursor:artRevisionNote.trim()?'pointer':'not-allowed'}} disabled={!artRevisionNote.trim()} onClick={()=>{
+                  const rejection={by:cu.name,at:new Date().toISOString(),reason:artRevisionNote.trim()};
+                  const updJobs=safeJobs(o).map((jj,i2)=>i2===ji?{...jj,art_status:'art_in_progress',rejections:[...(jj.rejections||[]),rejection]}:jj);
+                  const updArt2=af.map(a=>a.id===j.art_file_id?{...a,status:'waiting_for_art'}:a);
+                  const updated={...o,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()};
+                  setO(updated);onSave(updated);setDirty(false);setArtRevisionNote('');
+                  nf('Art sent back to artist for revision');
+                }}>🔄 Request Update</button>
+              </div>
+            </div>})()}
             {j.art_status==='production_files_needed'&&<div style={{margin:'0 20px',padding:'12px 16px',background:'linear-gradient(135deg,#fef9c3,#fefce8)',border:'2px solid #fde047',borderRadius:8}}>
               <div style={{display:'flex',alignItems:'center',gap:8}}>
                 <span style={{fontSize:16}}>✅</span>
