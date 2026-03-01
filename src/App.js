@@ -11,6 +11,16 @@ let stripePromise = null;
 try { if (_stripePk) stripePromise = loadStripe(_stripePk); }
 catch(e) { console.warn('[Stripe] Init failed:', e.message); }
 
+// ─── Brevo Email Setup ───
+const _brevoKey = process.env.REACT_APP_BREVO_API_KEY || '';
+const sendBrevoEmail=async({to,subject,htmlContent,textContent,senderName,senderEmail})=>{
+  if(!_brevoKey){return{ok:false,error:'Brevo API key not configured (set REACT_APP_BREVO_API_KEY)'}}
+  try{const r=await fetch('https://api.brevo.com/v3/smtp/email',{method:'POST',headers:{'accept':'application/json','content-type':'application/json','api-key':_brevoKey},
+    body:JSON.stringify({sender:{name:senderName||'National Sports Apparel',email:senderEmail||'noreply@nationalsportsapparel.com'},to:Array.isArray(to)?to:[{email:to}],subject,htmlContent:htmlContent||undefined,textContent:textContent||undefined})});
+    const d=await r.json();if(!r.ok)return{ok:false,error:d.message||'Send failed'};return{ok:true,messageId:d.messageId}}
+  catch(e){return{ok:false,error:e.message}}
+};
+
 // ─── Supabase Setup ───
 const _sbUrl = process.env.REACT_APP_SUPABASE_URL || '';
 const _sbKey = process.env.REACT_APP_SUPABASE_ANON_KEY || '';
@@ -321,7 +331,7 @@ const cloudUpload=async(file,folder='nsa-products')=>{const fd=new FormData();fd
 const fileUpload=async(file,folder='nsa-art-files')=>{const fd=new FormData();fd.append('file',file);fd.append('upload_preset',CLOUDINARY_PRESET);fd.append('folder',folder);const r=await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/auto/upload`,{method:'POST',body:fd});const d=await r.json();if(d.error)throw new Error(d.error.message);return d.secure_url};
 const isUrl=s=>typeof s==='string'&&(s.startsWith('http://')||s.startsWith('https://'));
 const fileDisplayName=f=>isUrl(f)?decodeURIComponent(f.split('/').pop().split('?')[0]):f;
-const openFile=f=>{if(isUrl(f)){window.open(f,'_blank')}else{nf('Legacy file: '+f+' — re-upload to enable downloads')}};
+const openFile=f=>{if(isUrl(f)){if(_isPdfUrl(f)){window.open('https://docs.google.com/gview?url='+encodeURIComponent(f)+'&embedded=true','_blank')}else{window.open(f,'_blank')}}else{nf('Legacy file: '+f+' — re-upload to enable downloads')}};
 const _urlExt=u=>{if(!u||typeof u!=='string')return '';const clean=u.split('?')[0].split('#')[0];const m=clean.match(/\.(\w+)$/);return m?m[1].toLowerCase():''};
 const _isImgUrl=u=>{const e=_urlExt(u);return['png','jpg','jpeg','gif','webp','svg','bmp'].includes(e)};
 const _isPdfUrl=u=>_urlExt(u)==='pdf';
@@ -1706,6 +1716,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
   const[showInvCreate,setShowInvCreate]=useState(false);const[invSelItems,setInvSelItems]=useState([]);const[invMemo,setInvMemo]=useState('');const[invType,setInvType]=useState('deposit');const[invDepositPct,setInvDepositPct]=useState(50);
   const[splitModal,setSplitModal]=useState(null);// {jIdx, mode:'received'|'sku'|null}
   const[artReqModal,setArtReqModal]=useState(null);// {jIdx, artist:'', instructions:'', files:[]}
+  const[artRevisionNote,setArtRevisionNote]=useState('');
+  const[coachApprovalModal,setCoachApprovalModal]=useState(null);// {jIdx, contact, portalUrl, method, message}
 
   // Sync dirty state to parent dirtyRef
   React.useEffect(()=>{if(dirtyRef)dirtyRef.current=dirty},[dirty,dirtyRef]);
@@ -1742,7 +1754,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       }
     }
   };
-  const[editPick,setEditPick]=useState(null);const[editPO,setEditPO]=useState(null);const[editBatchPO,setEditBatchPO]=useState(null);
+  const[editPick,setEditPick]=useState(null);const[editPO,setEditPO]=useState(null);const[editBatchPO,setEditBatchPO]=useState(null);const[poFullPage,setPoFullPage]=useState(null);
   // Helper: effective PO committed qty for a size (ordered minus cancelled)
   const poCommitted=(poLines,sz)=>(poLines||[]).reduce((a,pk)=>{const ordered=pk[sz]||0;const cancelled=(pk.cancelled||{})[sz]||0;return a+(ordered-cancelled)},0);
   const[newAddr,setNewAddr]=useState('');const[showNA,setShowNA]=useState(false);const[showSzPicker,setShowSzPicker]=useState(null);const[showCustom,setShowCustom]=useState(false);const[custItem,setCustItem]=useState({vendor_id:'',name:'',sku:'CUSTOM',nsa_cost:0,unit_sell:0,retail_price:0,color:'',brand:''});
@@ -3605,17 +3617,48 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
               </div>
               <div style={{fontSize:12,color:'#1e3a8a',marginTop:4}}>The mockup will be sent to you for approval when ready.</div>
             </div>}
-            {j.art_status==='waiting_approval'&&<div style={{margin:'0 20px',padding:'14px 16px',background:'linear-gradient(135deg,#fef3c7,#fffbeb)',border:'2px solid #fbbf24',borderRadius:8}}>
-              <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}>
+            {j.art_status==='waiting_approval'&&(()=>{const artFile2=af.find(a=>a.id===j.art_file_id);const mockups=(artFile2?.mockup_files||artFile2?.files||[]);return<div style={{margin:'0 20px',padding:'16px',background:'linear-gradient(135deg,#fef3c7,#fffbeb)',border:'2px solid #fbbf24',borderRadius:10}}>
+              <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:10}}>
                 <span style={{fontSize:20}}>⚠️</span>
-                <span style={{fontWeight:800,fontSize:15,color:'#92400e'}}>Artwork Needs Your Approval</span>
+                <span style={{fontWeight:800,fontSize:16,color:'#92400e'}}>Artwork Needs Your Approval</span>
               </div>
-              <div style={{fontSize:12,color:'#78350f',marginBottom:10}}>The mockup is ready for review. Approve it or send it to the coach for their approval.</div>
-              <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-                <button className="btn btn-sm" style={{fontSize:12,padding:'6px 16px',background:'#22c55e',color:'white',border:'none',borderRadius:6,fontWeight:700}} onClick={()=>{updJob(ji,'art_status','production_files_needed');if(j.art_file_id){const afi=af.findIndex(a=>a.id===j.art_file_id);if(afi>=0)uArt(afi,'status','approved')}nf('✅ Art approved — awaiting prod files')}}>✅ Approve Artwork</button>
-                <button className="btn btn-sm" style={{fontSize:12,padding:'6px 16px',background:'#3b82f6',color:'white',border:'none',borderRadius:6,fontWeight:700}} onClick={()=>{const c2=ic||cust?.find?.(x=>x.id===o.customer_id);const ct=(c2?.contacts||[])[0]||{};const pUrl=c2?.alpha_tag?(window.location.origin+'/?portal='+c2.alpha_tag):'';if(pUrl){navigator.clipboard?.writeText(pUrl);nf('Portal link copied! Send to coach for approval.')}else{nf('No portal link — approve directly or set customer alpha tag','error')}}}>📤 Send to Coach for Approval</button>
+              {mockups.length>0&&<div style={{marginBottom:12}}>
+                <div style={{fontSize:11,fontWeight:700,color:'#78350f',marginBottom:6}}>Review the mockup:</div>
+                <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                  {mockups.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(url||f);
+                    return<div key={fi} style={{borderRadius:8,border:'2px solid #f59e0b',overflow:'hidden',background:'white',maxWidth:260,cursor:'pointer'}} onClick={()=>openFile(url)}>
+                      {_isImgUrl(url)?<img src={url} alt={name} style={{width:'100%',maxHeight:180,objectFit:'contain',display:'block'}}/>
+                      :_isPdfUrl(url)?<div style={{position:'relative'}}>
+                        {_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',maxHeight:180,objectFit:'contain',display:'block'}} onError={e=>{e.target.style.display='none';e.target.nextSibling.style.display='flex'}}/>:null}
+                        <div style={{display:_cloudinaryPdfThumb(url)?'none':'flex',flexDirection:'column',alignItems:'center',padding:16,gap:4}}>
+                          <span style={{fontSize:28}}>PDF</span><span style={{fontSize:11,color:'#1e40af'}}>{name}</span>
+                        </div>
+                      </div>
+                      :<div style={{display:'flex',alignItems:'center',gap:6,padding:'12px 14px'}}>
+                        <span style={{fontSize:16}}>📄</span><span style={{fontSize:12,fontWeight:600,color:'#1e40af'}}>{name}</span>
+                      </div>}
+                      <div style={{padding:'3px 8px',borderTop:'1px solid #fde68a',fontSize:10,color:'#92400e',fontWeight:600,textAlign:'center'}}>{name}</div>
+                    </div>})}
+                </div>
+              </div>}
+              {mockups.length===0&&<div style={{padding:12,background:'#fff7ed',border:'1px dashed #fdba74',borderRadius:6,marginBottom:12,fontSize:12,color:'#9a3412'}}>No mockup files attached yet — check the Art Library tab for files.</div>}
+              <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:10}}>
+                <button className="btn" style={{fontSize:13,padding:'8px 20px',background:'linear-gradient(135deg,#22c55e,#16a34a)',color:'white',border:'none',borderRadius:8,fontWeight:800,boxShadow:'0 2px 8px rgba(34,197,94,0.3)'}} onClick={()=>{updJob(ji,'art_status','production_files_needed');if(j.art_file_id){const afi=af.findIndex(a=>a.id===j.art_file_id);if(afi>=0)uArt(afi,'status','approved')}setArtRevisionNote('');nf('✅ Art approved — awaiting prod files')}}>✅ Approve Artwork</button>
+                <button className="btn" style={{fontSize:13,padding:'8px 20px',background:'linear-gradient(135deg,#3b82f6,#2563eb)',color:'white',border:'none',borderRadius:8,fontWeight:800,boxShadow:'0 2px 8px rgba(59,130,246,0.3)'}} onClick={()=>{const c2=ic||allCustomers?.find?.(x=>x.id===o.customer_id);const contacts=(c2?.contacts||[]).filter(ct2=>ct2.email||ct2.phone);const ct=contacts[0]||{};const pUrl=c2?.alpha_tag?(window.location.origin+'/?portal='+c2.alpha_tag):'';const defMsg='Hi '+(ct.name||'Coach')+',\n\nYour artwork mockup for "'+j.art_name+'" is ready for review!\n\nPlease review and approve it through your portal:\n'+(pUrl||'(portal link unavailable)')+'\n\nLet us know if you\'d like any changes.\n\n'+cu.name+'\nNational Sports Apparel';setCoachApprovalModal({jIdx:ji,contacts,contact:ct,portalUrl:pUrl,sendEmail:!!ct.email,sendText:!!ct.phone,selectedEmail:ct.email||'',customEmail:'',message:defMsg,sending:false})}}>📤 Send to Coach</button>
               </div>
-            </div>}
+              <div style={{borderTop:'1px solid #fde68a',paddingTop:10}}>
+                <div style={{fontSize:11,fontWeight:700,color:'#92400e',marginBottom:4}}>Something wrong? Send it back to the artist:</div>
+                <textarea className="form-input" rows={2} placeholder="Describe what needs to change — colors, sizing, placement, etc." value={artRevisionNote} onChange={e=>setArtRevisionNote(e.target.value)} style={{fontSize:12,resize:'vertical',marginBottom:6,borderColor:'#fbbf24'}}/>
+                <button className="btn btn-sm" style={{fontSize:12,padding:'5px 14px',background:artRevisionNote.trim()?'linear-gradient(135deg,#dc2626,#b91c1c)':'#e5e7eb',color:artRevisionNote.trim()?'white':'#9ca3af',border:'none',borderRadius:6,fontWeight:700,cursor:artRevisionNote.trim()?'pointer':'not-allowed'}} disabled={!artRevisionNote.trim()} onClick={()=>{
+                  const rejection={by:cu.name,at:new Date().toISOString(),reason:artRevisionNote.trim()};
+                  const updJobs=safeJobs(o).map((jj,i2)=>i2===ji?{...jj,art_status:'art_in_progress',rejections:[...(jj.rejections||[]),rejection]}:jj);
+                  const updArt2=af.map(a=>a.id===j.art_file_id?{...a,status:'waiting_for_art'}:a);
+                  const updated={...o,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()};
+                  setO(updated);onSave(updated);setDirty(false);setArtRevisionNote('');
+                  nf('Art sent back to artist for revision');
+                }}>🔄 Request Update</button>
+              </div>
+            </div>})()}
             {j.art_status==='production_files_needed'&&<div style={{margin:'0 20px',padding:'12px 16px',background:'linear-gradient(135deg,#fef9c3,#fefce8)',border:'2px solid #fde047',borderRadius:8}}>
               <div style={{display:'flex',alignItems:'center',gap:8}}>
                 <span style={{fontSize:16}}>✅</span>
@@ -3866,6 +3909,97 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           <div className="modal-footer">
             <button className="btn btn-secondary" onClick={()=>setArtReqModal(null)}>Cancel</button>
             <button className="btn btn-primary" style={hasExistingReqs2?{background:'#6d28d9',borderColor:'#6d28d9'}:{}} disabled={!artReqModal.artist} onClick={submitArtReq2}>{hasExistingReqs2?'Send Update':'Send Art Request'}</button>
+          </div>
+        </div></div>
+      })()}
+      {coachApprovalModal&&(()=>{
+        const j3=jobs[coachApprovalModal.jIdx];if(!j3)return null;
+        const cam=coachApprovalModal;
+        const emailTarget=cam.selectedEmail==='_custom'?cam.customEmail:cam.selectedEmail;
+        const allEmails=[...new Set((cam.contacts||[]).filter(c3=>c3.email).map(c3=>c3.email))];
+        const doSendCoach=async()=>{
+          const actions=[];
+          if(cam.sendEmail&&emailTarget){
+            if(_brevoKey){
+              setCoachApprovalModal(m=>({...m,sending:true}));
+              const htmlMsg=cam.message.replace(/\n/g,'<br/>');
+              const res=await sendBrevoEmail({to:emailTarget,subject:'Artwork ready for approval — '+j3.art_name,htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6">'+htmlMsg+'</div>',senderName:cu.name||'National Sports Apparel',senderEmail:'noreply@nationalsportsapparel.com'});
+              if(res.ok){actions.push('email sent to '+emailTarget)}else{nf('Email failed: '+res.error,'error');setCoachApprovalModal(m=>({...m,sending:false}));return}
+            }else{
+              const subj=encodeURIComponent('Artwork ready for approval — '+j3.art_name);
+              const body=encodeURIComponent(cam.message);
+              window.open('mailto:'+emailTarget+'?subject='+subj+'&body='+body,'_blank');
+              actions.push('email draft opened');
+            }
+          }
+          if(cam.sendText&&cam.contact.phone){
+            const smsBody=encodeURIComponent(cam.message);
+            window.open('sms:'+cam.contact.phone+'?body='+smsBody,'_blank');
+            actions.push('text opened');
+          }
+          setCoachApprovalModal(null);
+          nf(actions.length>0?'Sent to coach — '+actions.join(' + '):'No notification method selected');
+        };
+        return<div className="modal-overlay" style={{zIndex:10001}} onClick={()=>setCoachApprovalModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
+          <div className="modal-header" style={{background:'linear-gradient(135deg,#3b82f6,#2563eb)',color:'white'}}>
+            <h2 style={{color:'white',margin:0}}>Send to Coach for Approval</h2>
+            <button className="modal-close" style={{color:'white'}} onClick={()=>setCoachApprovalModal(null)}>×</button>
+          </div>
+          <div className="modal-body">
+            <div style={{padding:'10px 14px',background:'#faf5ff',borderRadius:8,border:'1px solid #e9d5ff',marginBottom:14}}>
+              <div style={{fontSize:13,fontWeight:700,color:'#6d28d9'}}>{j3.art_name}</div>
+              <div style={{fontSize:11,color:'#64748b'}}>{o.id}{o.memo?' — '+o.memo:''}</div>
+            </div>
+
+            {/* ── Email toggle + selector ── */}
+            <div style={{marginBottom:12,padding:12,background:cam.sendEmail?'#eff6ff':'#f8fafc',border:'1px solid '+(cam.sendEmail?'#93c5fd':'#e2e8f0'),borderRadius:8}}>
+              <label style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer',marginBottom:cam.sendEmail?10:0}}>
+                <input type="checkbox" checked={cam.sendEmail} onChange={e=>setCoachApprovalModal(m=>({...m,sendEmail:e.target.checked}))} style={{width:16,height:16,accentColor:'#2563eb'}}/>
+                <span style={{fontWeight:700,fontSize:13,color:cam.sendEmail?'#1e40af':'#64748b'}}>Email Coach</span>
+                {_brevoKey&&<span style={{fontSize:9,padding:'1px 6px',borderRadius:4,background:'#dcfce7',color:'#166534',fontWeight:600}}>Sends directly</span>}
+                {!_brevoKey&&<span style={{fontSize:9,padding:'1px 6px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:600}}>Opens email app</span>}
+              </label>
+              {cam.sendEmail&&<div>
+                <div className="form-label" style={{fontSize:11,marginBottom:4}}>Send to</div>
+                <select className="form-select" style={{fontSize:12,marginBottom:6}} value={cam.selectedEmail} onChange={e=>{setCoachApprovalModal(m=>({...m,selectedEmail:e.target.value}))}}>
+                  {allEmails.map(em=>{const ct2=(cam.contacts||[]).find(c3=>c3.email===em);return<option key={em} value={em}>{ct2?.name||'Contact'} — {em}{ct2?.role?' ('+ct2.role+')':''}</option>})}
+                  <option value="_custom">+ Enter a different email...</option>
+                </select>
+                {cam.selectedEmail==='_custom'&&<input className="form-input" type="email" placeholder="coach@school.edu" value={cam.customEmail} onChange={e=>setCoachApprovalModal(m=>({...m,customEmail:e.target.value}))} style={{fontSize:12}}/>}
+              </div>}
+            </div>
+
+            {/* ── Text toggle ── */}
+            <div style={{marginBottom:12,padding:12,background:cam.sendText?'#f0fdf4':'#f8fafc',border:'1px solid '+(cam.sendText?'#86efac':'#e2e8f0'),borderRadius:8}}>
+              <label style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer'}}>
+                <input type="checkbox" checked={cam.sendText} onChange={e=>setCoachApprovalModal(m=>({...m,sendText:e.target.checked}))} style={{width:16,height:16,accentColor:'#22c55e'}}/>
+                <span style={{fontWeight:700,fontSize:13,color:cam.sendText?'#166534':'#64748b'}}>Text Coach</span>
+                {cam.contact.phone?<span style={{fontSize:11,color:'#64748b'}}>{cam.contact.phone}</span>:<span style={{fontSize:11,color:'#dc2626'}}>No phone on file</span>}
+              </label>
+            </div>
+
+            {/* ── Portal Link ── */}
+            {cam.portalUrl&&<div style={{marginBottom:14}}>
+              <div className="form-label" style={{fontSize:11}}>Portal Link</div>
+              <div style={{display:'flex',gap:6,alignItems:'center'}}>
+                <input className="form-input" readOnly value={cam.portalUrl} style={{flex:1,fontSize:11,background:'#f8fafc'}}/>
+                <button className="btn btn-sm btn-secondary" onClick={()=>{navigator.clipboard?.writeText(cam.portalUrl).then(()=>nf('Portal link copied!')).catch(()=>{window.prompt('Copy:',cam.portalUrl)})}}>Copy Link</button>
+              </div>
+              <div style={{fontSize:10,color:'#64748b',marginTop:4}}>Coach can review and approve artwork directly from this link</div>
+            </div>}
+            {!cam.portalUrl&&<div style={{padding:10,background:'#fef2f2',border:'1px solid #fecaca',borderRadius:6,marginBottom:14,fontSize:12,color:'#dc2626'}}>No portal link available — set the customer's alpha tag to enable the coach portal.</div>}
+
+            {/* ── Message ── */}
+            <div style={{marginBottom:12}}>
+              <div className="form-label" style={{fontSize:11}}>Message</div>
+              <textarea className="form-input" rows={6} value={cam.message} onChange={e=>setCoachApprovalModal(m=>({...m,message:e.target.value}))} style={{resize:'vertical',fontSize:12}}/>
+            </div>
+          </div>
+          <div className="modal-footer" style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+            <button className="btn btn-secondary" onClick={()=>setCoachApprovalModal(null)}>Cancel</button>
+            <button className="btn" style={{background:'linear-gradient(135deg,#3b82f6,#2563eb)',color:'white',border:'none',fontWeight:700,padding:'8px 20px',opacity:(!cam.sendEmail&&!cam.sendText)||cam.sending?0.5:1}} disabled={(!cam.sendEmail&&!cam.sendText)||cam.sending||(cam.sendEmail&&!emailTarget)} onClick={doSendCoach}>
+              {cam.sending?'Sending...':((cam.sendEmail&&cam.sendText)?'Send Email + Text':(cam.sendEmail?'Send Email':'Send Text'))}
+            </button>
           </div>
         </div></div>
       })()}
@@ -4266,6 +4400,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         <div className="modal-header"><h2>PO — {po.po_id||'PO'}</h2>
           <div style={{display:'flex',gap:6,alignItems:'center'}}>
             <span className={`badge ${poStatus==='received'?'badge-green':poStatus==='partial'?'badge-amber':'badge-gray'}`}>{poStatus==='received'?'Fully Received':poStatus==='partial'?'Partial — '+totalOpen+' open':'Waiting'}</span>
+            <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} onClick={()=>{setPoFullPage({po,item,allLines,soId:o.id,soItems:o.items});setEditPO(null)}}>View Full Page</button>
             <button className="modal-close" onClick={()=>setEditPO(null)}>x</button>
           </div>
         </div>
@@ -4295,17 +4430,25 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           </div>}
 
           {/* PO Summary Table */}
+          {(()=>{const unitCost=po.po_type==='outside_deco'?safeNum(po.unit_cost):safeNum(item?.nsa_cost);const poTotal=totalOrdered*unitCost;const rcvdTotal=totalReceived*unitCost;const openTotal=totalOpen*unitCost;return<>
           <table style={{width:'100%',fontSize:12,borderCollapse:'collapse',marginBottom:12}}>
-            <thead><tr style={{borderBottom:'2px solid #0f172a'}}><th style={{padding:'4px 8px',textAlign:'left',fontSize:10,color:'#64748b'}}></th>{szKeys.map(sz=><th key={sz} style={{padding:'4px 8px',textAlign:'center',minWidth:48}}>{sz}</th>)}<th style={{padding:'4px 8px',textAlign:'center'}}>TOTAL</th></tr></thead>
+            <thead><tr style={{borderBottom:'2px solid #0f172a'}}><th style={{padding:'4px 8px',textAlign:'left',fontSize:10,color:'#64748b'}}></th>{szKeys.map(sz=><th key={sz} style={{padding:'4px 8px',textAlign:'center',minWidth:48}}>{sz}</th>)}<th style={{padding:'4px 8px',textAlign:'center'}}>TOTAL</th><th style={{padding:'4px 8px',textAlign:'right',minWidth:70}}>$</th></tr></thead>
             <tbody>
-              <tr><td style={{padding:'3px 8px',fontSize:10,color:'#64748b'}}>Ordered</td>{szKeys.map(sz=><td key={sz} style={{padding:'3px 8px',textAlign:'center',fontWeight:700}}>{po[sz]||0}</td>)}<td style={{padding:'3px 8px',textAlign:'center',fontWeight:800}}>{totalOrdered}</td></tr>
-              {totalBilled>0&&<tr style={{color:'#1e40af'}}><td style={{padding:'3px 8px',fontSize:10}}>Billed</td>{szKeys.map(sz=><td key={sz} style={{padding:'3px 8px',textAlign:'center',fontWeight:700,color:getBilled(sz)>0?'#1e40af':'#d1d5db'}}>{getBilled(sz)||'—'}</td>)}<td style={{padding:'3px 8px',textAlign:'center',fontWeight:800}}>{totalBilled}</td></tr>}
-              <tr style={{color:'#166534'}}><td style={{padding:'3px 8px',fontSize:10}}>Received</td>{szKeys.map(sz=><td key={sz} style={{padding:'3px 8px',textAlign:'center',fontWeight:700,color:getRcvd(sz)>0?'#166534':'#d1d5db'}}>{getRcvd(sz)||'—'}</td>)}<td style={{padding:'3px 8px',textAlign:'center',fontWeight:800}}>{totalReceived}</td></tr>
-              {totalCancelled>0&&<tr style={{color:'#dc2626'}}><td style={{padding:'3px 8px',fontSize:10}}>Cancelled</td>{szKeys.map(sz=><td key={sz} style={{padding:'3px 8px',textAlign:'center',fontWeight:700,color:getCncl(sz)>0?'#dc2626':'#d1d5db'}}>{getCncl(sz)||'—'}</td>)}<td style={{padding:'3px 8px',textAlign:'center',fontWeight:800}}>{totalCancelled}</td></tr>}
-              {totalInTransit>0&&<tr style={{color:'#7c3aed'}}><td style={{padding:'3px 8px',fontSize:10}}>In Transit</td>{szKeys.map(sz=>{const it=Math.max(0,getBilled(sz)-getRcvd(sz));return<td key={sz} style={{padding:'3px 8px',textAlign:'center',fontWeight:700,color:it>0?'#7c3aed':'#d1d5db'}}>{it>0?it:'—'}</td>})}<td style={{padding:'3px 8px',textAlign:'center',fontWeight:800}}>{totalInTransit}</td></tr>}
-              {hasOpen&&<tr style={{borderTop:'1px solid #e2e8f0',color:'#b45309'}}><td style={{padding:'3px 8px',fontSize:10,fontWeight:600}}>Open</td>{szKeys.map(sz=>{const op=getOpen(sz);return<td key={sz} style={{padding:'3px 8px',textAlign:'center',fontWeight:700,color:op>0?'#b45309':'#d1d5db'}}>{op>0?op:'—'}</td>})}<td style={{padding:'3px 8px',textAlign:'center',fontWeight:800}}>{totalOpen}</td></tr>}
+              <tr><td style={{padding:'3px 8px',fontSize:10,color:'#64748b'}}>Ordered</td>{szKeys.map(sz=><td key={sz} style={{padding:'3px 8px',textAlign:'center',fontWeight:700}}>{po[sz]||0}</td>)}<td style={{padding:'3px 8px',textAlign:'center',fontWeight:800}}>{totalOrdered}</td><td style={{padding:'3px 8px',textAlign:'right',fontWeight:800}}>${poTotal.toFixed(2)}</td></tr>
+              {totalBilled>0&&<tr style={{color:'#1e40af'}}><td style={{padding:'3px 8px',fontSize:10}}>Billed</td>{szKeys.map(sz=><td key={sz} style={{padding:'3px 8px',textAlign:'center',fontWeight:700,color:getBilled(sz)>0?'#1e40af':'#d1d5db'}}>{getBilled(sz)||'—'}</td>)}<td style={{padding:'3px 8px',textAlign:'center',fontWeight:800}}>{totalBilled}</td><td style={{padding:'3px 8px',textAlign:'right',fontWeight:800,color:'#1e40af'}}>${(totalBilled*unitCost).toFixed(2)}</td></tr>}
+              <tr style={{color:'#166534'}}><td style={{padding:'3px 8px',fontSize:10}}>Received</td>{szKeys.map(sz=><td key={sz} style={{padding:'3px 8px',textAlign:'center',fontWeight:700,color:getRcvd(sz)>0?'#166534':'#d1d5db'}}>{getRcvd(sz)||'—'}</td>)}<td style={{padding:'3px 8px',textAlign:'center',fontWeight:800}}>{totalReceived}</td><td style={{padding:'3px 8px',textAlign:'right',fontWeight:800,color:'#166534'}}>${rcvdTotal.toFixed(2)}</td></tr>
+              {totalCancelled>0&&<tr style={{color:'#dc2626'}}><td style={{padding:'3px 8px',fontSize:10}}>Cancelled</td>{szKeys.map(sz=><td key={sz} style={{padding:'3px 8px',textAlign:'center',fontWeight:700,color:getCncl(sz)>0?'#dc2626':'#d1d5db'}}>{getCncl(sz)||'—'}</td>)}<td style={{padding:'3px 8px',textAlign:'center',fontWeight:800}}>{totalCancelled}</td><td style={{padding:'3px 8px',textAlign:'right',fontWeight:800,color:'#dc2626'}}>${(totalCancelled*unitCost).toFixed(2)}</td></tr>}
+              {totalInTransit>0&&<tr style={{color:'#7c3aed'}}><td style={{padding:'3px 8px',fontSize:10}}>In Transit</td>{szKeys.map(sz=>{const it=Math.max(0,getBilled(sz)-getRcvd(sz));return<td key={sz} style={{padding:'3px 8px',textAlign:'center',fontWeight:700,color:it>0?'#7c3aed':'#d1d5db'}}>{it>0?it:'—'}</td>})}<td style={{padding:'3px 8px',textAlign:'center',fontWeight:800}}>{totalInTransit}</td><td style={{padding:'3px 8px',textAlign:'right',fontWeight:800,color:'#7c3aed'}}>${(totalInTransit*unitCost).toFixed(2)}</td></tr>}
+              {hasOpen&&<tr style={{borderTop:'1px solid #e2e8f0',color:'#b45309'}}><td style={{padding:'3px 8px',fontSize:10,fontWeight:600}}>Open</td>{szKeys.map(sz=>{const op=getOpen(sz);return<td key={sz} style={{padding:'3px 8px',textAlign:'center',fontWeight:700,color:op>0?'#b45309':'#d1d5db'}}>{op>0?op:'—'}</td>})}<td style={{padding:'3px 8px',textAlign:'center',fontWeight:800}}>{totalOpen}</td><td style={{padding:'3px 8px',textAlign:'right',fontWeight:800,color:'#b45309'}}>${openTotal.toFixed(2)}</td></tr>}
             </tbody>
           </table>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 12px',background:'#f0f9ff',borderRadius:6,marginBottom:12}}>
+            <div style={{display:'flex',gap:16,fontSize:12}}>
+              <span style={{color:'#64748b'}}>Unit Cost: <strong style={{color:'#0f172a'}}>${unitCost.toFixed(2)}</strong></span>
+              {po.po_type==='outside_deco'&&<span className="badge badge-blue" style={{fontSize:10}}>Decoration PO</span>}
+            </div>
+            <div style={{fontWeight:800,fontSize:16,color:'#0f172a'}}>PO Total: ${poTotal.toFixed(2)}</div>
+          </div></>})()}
 
           {/* Cancel sizes from PO */}
           {hasOpen&&<div style={{marginBottom:12}}>
@@ -4511,6 +4654,128 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           <button className="btn btn-primary" onClick={()=>setEditPO(null)}>Close</button>
         </div>
       </div></div>})()}
+
+    {/* PO FULL PAGE VIEW */}
+    {poFullPage&&(()=>{
+      const{po,item,allLines,soId,soItems}=poFullPage;
+      const szKeys=Object.keys(po).filter(k=>k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='po_type'&&k!=='deco_vendor'&&k!=='deco_type'&&k!=='created_at'&&k!=='memo'&&k!=='notes'&&k!=='expected_date'&&k!=='unit_cost'&&typeof po[k]==='number');
+      const received=po.received||{};const cancelled=po.cancelled||{};const shipments=po.shipments||[];
+      const getRcvd=sz=>(received[sz]||0);const getCncl=sz=>(cancelled[sz]||0);const getOpen=sz=>Math.max(0,(po[sz]||0)-getRcvd(sz)-getCncl(sz));
+      const totalOrdered=szKeys.reduce((a,sz)=>a+(po[sz]||0),0);const totalReceived=szKeys.reduce((a,sz)=>a+getRcvd(sz),0);
+      const totalCancelled=szKeys.reduce((a,sz)=>a+getCncl(sz),0);const totalOpen=szKeys.reduce((a,sz)=>a+getOpen(sz),0);
+      const poStatus=totalOpen<=0&&totalReceived>0?'received':totalReceived>0?'partial':'waiting';
+      const unitCost=po.po_type==='outside_deco'?safeNum(po.unit_cost):safeNum(item?.nsa_cost);
+      const poTotal=totalOrdered*unitCost;
+      const vendorName=po.deco_vendor||D_V.find(v=>v.id===(item?.vendor_id||item?.brand))?.name||item?.brand||'';
+      // Gather all items on this PO from the SO
+      const poItems=(allLines||[{lineIdx:0}]).map(ln=>({item:soItems?.[ln.lineIdx],po:soItems?.[ln.lineIdx]?.po_lines?.find(p=>p.po_id===po.po_id)||po})).filter(x=>x.item);
+      const grandTotal=poItems.reduce((a,{item:it,po:p})=>{
+        const sk=Object.keys(p).filter(k=>k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='po_type'&&k!=='deco_vendor'&&k!=='deco_type'&&k!=='created_at'&&k!=='memo'&&k!=='notes'&&k!=='expected_date'&&k!=='unit_cost'&&typeof p[k]==='number');
+        const qty=sk.reduce((s,sz)=>s+(p[sz]||0),0);const uc=p.po_type==='outside_deco'?safeNum(p.unit_cost):safeNum(it.nsa_cost);return a+qty*uc},0);
+      return<div style={{position:'fixed',top:0,left:0,right:0,bottom:0,background:'#f1f5f9',zIndex:9999,overflow:'auto'}}>
+        <div style={{maxWidth:900,margin:'0 auto',padding:'24px 20px'}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:20}}>
+            <div style={{display:'flex',alignItems:'center',gap:12}}>
+              <button className="btn btn-secondary btn-sm" onClick={()=>setPoFullPage(null)}>&larr; Back</button>
+              <h1 style={{margin:0,fontSize:22}}>{po.po_id}</h1>
+              <span className={`badge ${poStatus==='received'?'badge-green':poStatus==='partial'?'badge-amber':'badge-gray'}`} style={{fontSize:11}}>{poStatus==='received'?'Fully Received':poStatus==='partial'?'Partial':'Waiting'}</span>
+              {po.po_type==='outside_deco'&&<span className="badge badge-blue" style={{fontSize:10}}>Decoration PO</span>}
+            </div>
+            <div style={{textAlign:'right'}}>
+              <div style={{fontSize:11,color:'#64748b'}}>SO: <strong>{soId}</strong></div>
+              <div style={{fontSize:11,color:'#64748b'}}>Vendor: <strong>{vendorName}</strong></div>
+              {po.created_at&&<div style={{fontSize:10,color:'#94a3b8'}}>Created: {po.created_at}</div>}
+              {po.expected_date&&<div style={{fontSize:10,color:'#94a3b8'}}>Expected: {po.expected_date}</div>}
+            </div>
+          </div>
+
+          {/* PO Total Summary */}
+          <div className="card" style={{marginBottom:16,background:'#0f172a',color:'white'}}>
+            <div className="card-body" style={{display:'flex',justifyContent:'space-around',textAlign:'center',padding:'16px 12px'}}>
+              <div><div style={{fontSize:11,opacity:0.7}}>Total Units</div><div style={{fontSize:24,fontWeight:800}}>{totalOrdered}</div></div>
+              <div><div style={{fontSize:11,opacity:0.7}}>Received</div><div style={{fontSize:24,fontWeight:800,color:'#4ade80'}}>{totalReceived}</div></div>
+              <div><div style={{fontSize:11,opacity:0.7}}>Open</div><div style={{fontSize:24,fontWeight:800,color:totalOpen>0?'#fbbf24':'#4ade80'}}>{totalOpen}</div></div>
+              <div><div style={{fontSize:11,opacity:0.7}}>Unit Cost</div><div style={{fontSize:24,fontWeight:800}}>${unitCost.toFixed(2)}</div></div>
+              <div><div style={{fontSize:11,opacity:0.7}}>PO Total</div><div style={{fontSize:24,fontWeight:800,color:'#38bdf8'}}>${grandTotal.toFixed(2)}</div></div>
+            </div>
+          </div>
+
+          {/* Items on this PO */}
+          <div className="card" style={{marginBottom:16}}>
+            <div className="card-header"><h2>Line Items</h2></div>
+            <div className="card-body">
+              <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}>
+                <thead><tr style={{borderBottom:'2px solid #0f172a'}}>
+                  <th style={{padding:'6px 8px',textAlign:'left'}}>SKU</th>
+                  <th style={{padding:'6px 8px',textAlign:'left'}}>Product</th>
+                  <th style={{padding:'6px 8px',textAlign:'left'}}>Color</th>
+                  <th style={{padding:'6px 8px',textAlign:'center'}}>Qty</th>
+                  <th style={{padding:'6px 8px',textAlign:'right'}}>Unit Cost</th>
+                  <th style={{padding:'6px 8px',textAlign:'right'}}>Line Total</th>
+                </tr></thead>
+                <tbody>
+                  {poItems.map(({item:it,po:p},idx)=>{
+                    const sk=Object.keys(p).filter(k=>k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='po_type'&&k!=='deco_vendor'&&k!=='deco_type'&&k!=='created_at'&&k!=='memo'&&k!=='notes'&&k!=='expected_date'&&k!=='unit_cost'&&typeof p[k]==='number');
+                    const qty=sk.reduce((s,sz)=>s+(p[sz]||0),0);const uc=p.po_type==='outside_deco'?safeNum(p.unit_cost):safeNum(it.nsa_cost);
+                    return<tr key={idx} style={{borderBottom:'1px solid #e2e8f0'}}>
+                      <td style={{padding:'6px 8px',fontFamily:'monospace',fontWeight:800,color:'#1e40af'}}>{it.sku}</td>
+                      <td style={{padding:'6px 8px',fontWeight:600}}>{it.name}</td>
+                      <td style={{padding:'6px 8px',color:'#64748b'}}>{it.color}</td>
+                      <td style={{padding:'6px 8px',textAlign:'center',fontWeight:700}}>{qty}<div style={{fontSize:10,color:'#94a3b8'}}>{sk.map(sz=>sz+':'+p[sz]).join(' ')}</div></td>
+                      <td style={{padding:'6px 8px',textAlign:'right',fontWeight:600}}>${uc.toFixed(2)}</td>
+                      <td style={{padding:'6px 8px',textAlign:'right',fontWeight:800,fontSize:14}}>${(qty*uc).toFixed(2)}</td>
+                    </tr>})}
+                  <tr style={{borderTop:'2px solid #0f172a',fontWeight:800}}>
+                    <td colSpan={3} style={{padding:'6px 8px',textAlign:'right'}}>Grand Total</td>
+                    <td style={{padding:'6px 8px',textAlign:'center'}}>{totalOrdered}</td>
+                    <td></td>
+                    <td style={{padding:'6px 8px',textAlign:'right',fontSize:16,color:'#166534'}}>${grandTotal.toFixed(2)}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Size Breakdown */}
+          <div className="card" style={{marginBottom:16}}>
+            <div className="card-header"><h2>Size Breakdown</h2></div>
+            <div className="card-body">
+              <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}>
+                <thead><tr style={{borderBottom:'2px solid #0f172a'}}><th style={{padding:'4px 8px',textAlign:'left',fontSize:10,color:'#64748b'}}></th>{szKeys.map(sz=><th key={sz} style={{padding:'4px 8px',textAlign:'center',minWidth:48}}>{sz}</th>)}<th style={{padding:'4px 8px',textAlign:'center'}}>TOTAL</th></tr></thead>
+                <tbody>
+                  <tr><td style={{padding:'4px 8px',fontSize:11,fontWeight:600}}>Ordered</td>{szKeys.map(sz=><td key={sz} style={{padding:'4px 8px',textAlign:'center',fontWeight:700}}>{po[sz]||0}</td>)}<td style={{padding:'4px 8px',textAlign:'center',fontWeight:800}}>{totalOrdered}</td></tr>
+                  <tr style={{color:'#166534'}}><td style={{padding:'4px 8px',fontSize:11,fontWeight:600}}>Received</td>{szKeys.map(sz=><td key={sz} style={{padding:'4px 8px',textAlign:'center',fontWeight:700,color:getRcvd(sz)>0?'#166534':'#d1d5db'}}>{getRcvd(sz)||'—'}</td>)}<td style={{padding:'4px 8px',textAlign:'center',fontWeight:800}}>{totalReceived}</td></tr>
+                  {totalCancelled>0&&<tr style={{color:'#dc2626'}}><td style={{padding:'4px 8px',fontSize:11,fontWeight:600}}>Cancelled</td>{szKeys.map(sz=><td key={sz} style={{padding:'4px 8px',textAlign:'center',fontWeight:700,color:getCncl(sz)>0?'#dc2626':'#d1d5db'}}>{getCncl(sz)||'—'}</td>)}<td style={{padding:'4px 8px',textAlign:'center',fontWeight:800}}>{totalCancelled}</td></tr>}
+                  {totalOpen>0&&<tr style={{borderTop:'1px solid #e2e8f0',color:'#b45309'}}><td style={{padding:'4px 8px',fontSize:11,fontWeight:600}}>Open</td>{szKeys.map(sz=>{const op=getOpen(sz);return<td key={sz} style={{padding:'4px 8px',textAlign:'center',fontWeight:700,color:op>0?'#b45309':'#d1d5db'}}>{op>0?op:'—'}</td>})}<td style={{padding:'4px 8px',textAlign:'center',fontWeight:800}}>{totalOpen}</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Shipment History */}
+          {shipments.length>0&&<div className="card" style={{marginBottom:16}}>
+            <div className="card-header"><h2>Shipment History ({shipments.length})</h2></div>
+            <div className="card-body">
+              {shipments.map((sh,si)=>{const shQty=Object.entries(sh.qty||{}).reduce((a,[,v])=>a+safeNum(v),0);return<div key={si} style={{padding:'10px 12px',border:'1px solid #e2e8f0',borderRadius:6,marginBottom:8,background:si%2===0?'#f8fafc':'#fff'}}>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4}}>
+                  <span style={{fontWeight:700,fontSize:13}}>Shipment #{si+1}</span>
+                  <span style={{fontSize:12,color:'#64748b'}}>{sh.date||'No date'}</span>
+                </div>
+                <div style={{display:'flex',gap:8,flexWrap:'wrap',fontSize:12}}>
+                  {Object.entries(sh.qty||{}).filter(([,v])=>v>0).map(([sz,q])=><span key={sz} style={{padding:'2px 8px',background:'#dcfce7',color:'#166534',borderRadius:4,fontWeight:600}}>{sz}: {q}</span>)}
+                  <span style={{fontWeight:700}}>({shQty} units)</span>
+                </div>
+                {sh.memo&&<div style={{fontSize:11,color:'#475569',marginTop:4,fontStyle:'italic'}}>{sh.memo}</div>}
+              </div>})}
+            </div>
+          </div>}
+
+          {po.memo&&<div className="card" style={{marginBottom:16}}>
+            <div className="card-header"><h2>Notes</h2></div>
+            <div className="card-body"><p style={{margin:0,fontSize:13,color:'#475569'}}>{po.memo}</p></div>
+          </div>}
+        </div>
+      </div>})()}
 
     {/* EDIT BATCH PO MODAL */}
     {editBatchPO&&(()=>{
@@ -14076,12 +14341,13 @@ export default function App(){
       // Look up QB account IDs by name (required by QB API)
       let incomeAcctRef=null,expenseAcctRef=null;
       try{
-        const acctRes=await qbApi('query',{query:"SELECT Id, Name, AccountType FROM Account WHERE AccountType IN ('Income','Cost of Goods Sold','Expense') MAXRESULTS 200"});
+        const acctRes=await qbApi('query',{query:"SELECT Id, Name, AccountType, AccountSubType FROM Account WHERE AccountType IN ('Income','Cost of Goods Sold','Expense') MAXRESULTS 200"});
         const accts=acctRes?.QueryResponse?.Account||[];
-        const incomeName=qbConfig.mapping.income_account||'Sales';
+        const incomeName=qbConfig.mapping.income_account||'Sales of Product Income';
         const expenseName=qbConfig.mapping.cogs_account||'Cost of Goods Sold';
-        const incomeAcct=accts.find(a=>a.Name===incomeName)||accts.find(a=>a.AccountType==='Income');
-        const expenseAcct=accts.find(a=>a.Name===expenseName)||accts.find(a=>a.AccountType==='Cost of Goods Sold')||accts.find(a=>a.AccountType==='Expense');
+        // For Inventory items, QB requires Income account with subtype SalesOfProductIncome
+        const incomeAcct=accts.find(a=>a.Name===incomeName)||accts.find(a=>a.AccountSubType==='SalesOfProductIncome')||accts.find(a=>a.AccountType==='Income');
+        const expenseAcct=accts.find(a=>a.Name===expenseName)||accts.find(a=>a.AccountSubType==='SuppliesMaterialsCogs')||accts.find(a=>a.AccountType==='Cost of Goods Sold')||accts.find(a=>a.AccountType==='Expense');
         if(incomeAcct)incomeAcctRef={value:incomeAcct.Id,name:incomeAcct.Name};
         if(expenseAcct)expenseAcctRef={value:expenseAcct.Id,name:expenseAcct.Name};
       }catch(e){console.error('[QB] Account lookup failed:',e)}
@@ -14264,16 +14530,18 @@ export default function App(){
           const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
           if(!qty)return;
           const itemQBId=prodQBMap[it.product_id||(prod.find(pp=>pp.sku===it.sku)||{}).id];
-          lines.push({DetailType:'SalesItemLineDetail',Amount:qty*(it.unit_sell||0),
-            Description:it.sku+' '+it.name+(it.color?' - '+it.color:''),
-            SalesItemLineDetail:{Qty:qty,UnitPrice:it.unit_sell||0,...(itemQBId?{ItemRef:{value:String(itemQBId)}}:{})}});
+          // Calculate deco costs to include in line total
+          let decoTotal=0;const decoDescs=[];
           safeDecos(it).forEach(d=>{
             const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qty;
             const dp=dP(d,qty,saf,cq);
-            if(dp.sell>0)lines.push({DetailType:'SalesItemLineDetail',Amount:qty*dp.sell,
-              Description:'Decoration: '+(d.position||d.deco_type||d.kind||'Art'),
-              SalesItemLineDetail:{Qty:qty,UnitPrice:dp.sell}});
+            if(dp.sell>0){decoTotal+=qty*dp.sell;decoDescs.push((d.position||d.deco_type||d.kind||'Art')+' @$'+dp.sell.toFixed(2))}
           });
+          const lineAmt=qty*(it.unit_sell||0)+decoTotal;
+          const desc=it.sku+' '+it.name+(it.color?' - '+it.color:'')+(decoDescs.length?' + '+decoDescs.join(', '):'');
+          lines.push({DetailType:'SalesItemLineDetail',Amount:lineAmt,
+            Description:desc,
+            SalesItemLineDetail:{Qty:qty,UnitPrice:lineAmt/qty,...(itemQBId?{ItemRef:{value:String(itemQBId)}}:{})}});
         });
         if(!lines.length)continue;
         const qbEstimate={
