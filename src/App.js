@@ -5789,7 +5789,7 @@ function StripePaymentModal({invoices,customerName,customerEmail,alphaTag,onSucc
 }
 
 // ─── STANDALONE COACH PORTAL ───
-function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onUpdateInvs}){
+function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onUpdateInvs,onUpdateSOs}){
   const[jobView,setJobView]=useState(null);
   const[invView,setInvView]=useState(null);
   const[comment,setComment]=useState('');
@@ -5834,6 +5834,8 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   // Job detail view
   if(jobView){
     const j=jobView.job;const so=jobView.so;
+    const artFile=safeArt(so).find(a=>a.id===j.art_file_id);
+    const mockups=(artFile?.mockup_files||artFile?.files||[]).filter(f=>f);
     const items=(j.items||[]).map(gi=>{const it=safeItems(so)[gi.item_idx];return{...gi,brand:it?.brand||'',fullName:safeStr(it?.name)||gi.name}});
     return<div style={{minHeight:'100vh',background:'#f1f5f9',display:'flex',justifyContent:'center',padding:'40px 16px'}}>
       <div style={{width:'100%',maxWidth:640,background:'white',borderRadius:16,boxShadow:'0 4px 24px rgba(0,0,0,0.08)',overflow:'hidden'}}>
@@ -5846,41 +5848,61 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           </div>
         </div>
         <div style={{padding:'20px 24px'}}>
-          <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:8}}>Mockups per Garment</div>
+          {/* ── Mockup Files ── */}
+          {mockups.length>0&&<div style={{marginBottom:16}}>
+            <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:8}}>Artwork Mockups</div>
+            {mockups.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(url||f);const isPdf=_isPdfUrl(url);const isImg=_isImgUrl(url);const thumb=isPdf?_cloudinaryPdfThumb(url):null;
+              return<div key={fi} style={{border:'1px solid #e2e8f0',borderRadius:10,padding:10,marginBottom:8,cursor:isUrl(url)?'pointer':'default'}} onClick={()=>isUrl(url)&&openFile(url)}>
+                {isImg&&isUrl(url)&&<img src={url} alt={name} style={{width:'100%',borderRadius:8,marginBottom:6,maxHeight:400,objectFit:'contain',background:'#f8fafc'}}/>}
+                {isPdf&&thumb&&<img src={thumb} alt={name} style={{width:'100%',borderRadius:8,marginBottom:6,maxHeight:400,objectFit:'contain',background:'#f8fafc'}} onError={e=>{e.target.style.display='none'}}/>}
+                {isPdf&&!thumb&&<div style={{padding:20,background:'#f8fafc',borderRadius:8,marginBottom:6,textAlign:'center'}}><span style={{fontSize:32}}>📄</span><div style={{fontSize:11,color:'#64748b',marginTop:4}}>PDF Document</div></div>}
+                <div style={{display:'flex',alignItems:'center',gap:6}}>
+                  <span style={{fontSize:12,fontWeight:600,color:'#1e40af'}}>{name}</span>
+                  {isUrl(url)&&<span style={{fontSize:10,color:'#64748b'}}>— tap to view full size</span>}
+                </div>
+              </div>})}
+          </div>}
+          {mockups.length===0&&<div style={{padding:16,background:'#fff7ed',border:'1px dashed #fdba74',borderRadius:10,marginBottom:16,textAlign:'center'}}>
+            <div style={{fontSize:24,marginBottom:4}}>🎨</div>
+            <div style={{fontSize:12,color:'#9a3412',fontWeight:600}}>Mockup files haven't been uploaded yet</div>
+            <div style={{fontSize:11,color:'#c2410c',marginTop:2}}>Your rep will upload mockups once artwork is ready for review</div>
+          </div>}
+
+          {/* ── Garments ── */}
+          <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:8}}>Garments</div>
           {items.map((gi,i)=><div key={i} style={{border:'1px solid #e2e8f0',borderRadius:10,padding:14,marginBottom:10,display:'flex',gap:14,alignItems:'center'}}>
-            <div style={{width:80,height:80,background:'#f8fafc',border:'2px dashed #d1d5db',borderRadius:8,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',flexShrink:0}}>
-              <div style={{fontSize:24}}>👕</div>
-              <div style={{fontSize:8,color:'#94a3b8',textAlign:'center'}}>{j.deco_type?.replace(/_/g,' ')}</div>
+            <div style={{width:48,height:48,background:'#f8fafc',borderRadius:8,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
+              <div style={{fontSize:20}}>👕</div>
             </div>
             <div style={{flex:1}}>
               <div style={{fontWeight:700,fontSize:13}}>{gi.fullName}</div>
               <div style={{fontSize:11,color:'#64748b'}}>{gi.sku} · {gi.color||'—'} {gi.brand&&'· '+gi.brand}</div>
               <div style={{fontSize:11,color:'#64748b',marginTop:2}}>📍 {j.positions} · {gi.units} units</div>
-              <div style={{fontSize:10,color:'#94a3b8',marginTop:4,fontStyle:'italic'}}>Mockup preview when art files are uploaded</div>
             </div>
           </div>)}
           {j.art_status==='waiting_approval'&&<div style={{border:'2px solid #f59e0b',background:'#fffbeb',borderRadius:10,padding:16,marginBottom:16}}>
-            <div style={{fontWeight:700,color:'#92400e',marginBottom:8}}>⏳ This artwork needs your approval</div>
+            <div style={{fontWeight:700,color:'#92400e',marginBottom:10}}>⏳ This artwork needs your approval</div>
+            <div style={{marginBottom:10}}>
+              <textarea className="form-input" rows={3} placeholder="Add feedback or comments (required for rejection)..." value={comment} onChange={e=>setComment(e.target.value)} style={{fontSize:12,resize:'vertical'}}/>
+            </div>
             <div style={{display:'flex',gap:8}}>
-              <button className="btn btn-sm" style={{background:'#22c55e',color:'white',flex:1,justifyContent:'center'}} onClick={()=>setJobView(null)}>✅ Approve</button>
-              <button className="btn btn-sm" style={{background:'#dc2626',color:'white',flex:1,justifyContent:'center'}} onClick={()=>{if(comment.trim()){alert('❌ Rejected with feedback. (demo)');setComment('');setJobView(null)}else{alert('Please add a comment.')}}}>❌ Request Changes</button>
+              <button className="btn btn-sm" style={{background:'#22c55e',color:'white',flex:1,justifyContent:'center',fontWeight:700,padding:'10px 16px'}} onClick={()=>{
+                if(onUpdateSOs){onUpdateSOs(prev=>prev.map(s=>{if(s.id!==so.id)return s;return{...s,jobs:safeJobs(s).map(jj=>jj.id===j.id?{...jj,art_status:'production_files_needed'}:jj),art_files:safeArt(s).map(a=>a.id===j.art_file_id?{...a,status:'approved'}:a)}}))}
+                setJobView(null);
+              }}>✅ Approve Artwork</button>
+              <button className="btn btn-sm" style={{background:'#dc2626',color:'white',flex:1,justifyContent:'center',fontWeight:700,padding:'10px 16px'}} onClick={()=>{
+                if(!comment.trim()){alert('Please describe what changes you need.');return}
+                if(onUpdateSOs){onUpdateSOs(prev=>prev.map(s=>{if(s.id!==so.id)return s;return{...s,jobs:safeJobs(s).map(jj=>jj.id===j.id?{...jj,art_status:'art_revision'}:jj),art_files:safeArt(s).map(a=>a.id===j.art_file_id?{...a,status:'needs_revision',notes:(a.notes?a.notes+'\n':'')+('Coach feedback: '+comment.trim())}:a)}}))}
+                setComment('');setJobView(null);
+              }}>❌ Request Changes</button>
             </div>
           </div>}
-          {j.art_status==='art_complete'&&<div style={{background:'#f0fdf4',borderRadius:8,padding:10,marginBottom:16,fontSize:12,color:'#166534',fontWeight:600}}>✅ You approved this artwork</div>}
+          {(j.art_status==='art_complete'||j.art_status==='production_files_needed')&&<div style={{background:'#f0fdf4',borderRadius:8,padding:10,marginBottom:16,fontSize:12,color:'#166534',fontWeight:600}}>✅ You approved this artwork</div>}
+          {j.art_status==='art_revision'&&<div style={{background:'#fef2f2',borderRadius:8,padding:10,marginBottom:16,fontSize:12,color:'#dc2626',fontWeight:600}}>🔄 Changes requested — your artist is working on revisions</div>}
           {j.prod_status!=='hold'&&<div style={{padding:10,background:'#f8fafc',borderRadius:8,marginBottom:16}}>
             <div style={{fontSize:10,color:'#64748b',fontWeight:600}}>PRODUCTION STATUS</div>
             <div style={{fontSize:14,fontWeight:700,color:'#1e40af',marginTop:2}}>{prodLabelsP[j.prod_status]||j.prod_status}</div>
           </div>}
-          <div>
-            <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:6}}>💬 Comments</div>
-            <div style={{border:'1px solid #e2e8f0',borderRadius:8,padding:8,marginBottom:8,minHeight:40}}>
-              <div style={{fontSize:11,color:'#94a3b8',fontStyle:'italic'}}>No comments yet</div>
-            </div>
-            <div style={{display:'flex',gap:6}}>
-              <input className="form-input" placeholder="Add a comment..." value={comment} onChange={e=>setComment(e.target.value)} style={{flex:1,fontSize:12}}/>
-              <button className="btn btn-sm btn-primary" onClick={()=>{if(comment.trim()){alert('Comment sent! (demo)');setComment('')}}}>Send</button>
-            </div>
-          </div>
         </div>
       </div>
     </div>
@@ -15667,7 +15689,7 @@ export default function App(){
       <div style={{fontSize:48,fontWeight:900,color:'#1e3a5f'}}>NSA</div>
       <div style={{fontSize:16,color:'#64748b'}}>Portal not found for "<strong>{_portalTag}</strong>"</div>
       <div style={{fontSize:13,color:'#94a3b8'}}>Please check the link with your NSA rep.</div></div>;
-    return<CoachPortal customer={_portalCust} allCustomers={cust} sos={sos} ests={ests} invs={invs} REPS={REPS} prod={prod} onUpdateInvs={setInvs}/>;
+    return<CoachPortal customer={_portalCust} allCustomers={cust} sos={sos} ests={ests} invs={invs} REPS={REPS} prod={prod} onUpdateInvs={setInvs} onUpdateSOs={setSOs}/>;
   }
 
   // LOADING GATE
