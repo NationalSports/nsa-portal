@@ -14000,12 +14000,13 @@ export default function App(){
       // Look up QB account IDs by name (required by QB API)
       let incomeAcctRef=null,expenseAcctRef=null;
       try{
-        const acctRes=await qbApi('query',{query:"SELECT Id, Name, AccountType FROM Account WHERE AccountType IN ('Income','Cost of Goods Sold','Expense') MAXRESULTS 200"});
+        const acctRes=await qbApi('query',{query:"SELECT Id, Name, AccountType, AccountSubType FROM Account WHERE AccountType IN ('Income','Cost of Goods Sold','Expense') MAXRESULTS 200"});
         const accts=acctRes?.QueryResponse?.Account||[];
-        const incomeName=qbConfig.mapping.income_account||'Sales';
+        const incomeName=qbConfig.mapping.income_account||'Sales of Product Income';
         const expenseName=qbConfig.mapping.cogs_account||'Cost of Goods Sold';
-        const incomeAcct=accts.find(a=>a.Name===incomeName)||accts.find(a=>a.AccountType==='Income');
-        const expenseAcct=accts.find(a=>a.Name===expenseName)||accts.find(a=>a.AccountType==='Cost of Goods Sold')||accts.find(a=>a.AccountType==='Expense');
+        // For Inventory items, QB requires Income account with subtype SalesOfProductIncome
+        const incomeAcct=accts.find(a=>a.Name===incomeName)||accts.find(a=>a.AccountSubType==='SalesOfProductIncome')||accts.find(a=>a.AccountType==='Income');
+        const expenseAcct=accts.find(a=>a.Name===expenseName)||accts.find(a=>a.AccountSubType==='SuppliesMaterialsCogs')||accts.find(a=>a.AccountType==='Cost of Goods Sold')||accts.find(a=>a.AccountType==='Expense');
         if(incomeAcct)incomeAcctRef={value:incomeAcct.Id,name:incomeAcct.Name};
         if(expenseAcct)expenseAcctRef={value:expenseAcct.Id,name:expenseAcct.Name};
       }catch(e){console.error('[QB] Account lookup failed:',e)}
