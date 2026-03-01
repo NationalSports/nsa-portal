@@ -5583,9 +5583,10 @@ function StripePaymentModal({invoices,customerName,customerEmail,alphaTag,onSucc
 }
 
 // ─── STANDALONE COACH PORTAL ───
-function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onUpdateInvs,onUpdateSOs}){
+function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onUpdateInvs,onUpdateSOs,onUpdateEsts,savSOFn}){
   const[jobView,setJobView]=useState(null);
   const[invView,setInvView]=useState(null);
+  const[estView,setEstView]=useState(null);
   const[comment,setComment]=useState('');
   const[contactEdit,setContactEdit]=useState(null);
   const[contactMsg,setContactMsg]=useState('');
@@ -5601,7 +5602,9 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   const custEsts=ests.filter(e=>ids.includes(e.customer_id));
   const activeSOs=custSOs.filter(s=>calcSOStatus(s)!=='complete');
   const completedSOs=custSOs.filter(s=>calcSOStatus(s)==='complete');
-  const openInvs=invs.filter(inv=>ids.includes(inv.customer_id)&&inv.status==='open');
+  const custInvs=invs.filter(inv=>ids.includes(inv.customer_id));
+  const openInvs=custInvs.filter(inv=>inv.status==='open'||inv.status==='partial');
+  const paidInvs=custInvs.filter(inv=>inv.status==='paid');
   const totalDue=openInvs.reduce((a,inv)=>a+(inv.total||0)-(inv.paid||0),0);
   const rep=REPS.find(r=>r.id===customer.primary_rep_id);
   const allPortalJobs=[];activeSOs.forEach(so=>{safeJobs(so).forEach(j=>{allPortalJobs.push({...j,so,soMemo:so.memo})})});
@@ -5625,6 +5628,65 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     setPaySuccess({amount:result.amount,fee:result.fee,invoices:result.invoices});
     setShowPay(null);setInvView(null);
   };
+
+  // Estimate detail view
+  if(estView){
+    const est=estView;
+    const estTotal=(est.items||[]).reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);let r=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const dp2=dP(d,qq,[],qq);r+=qq*dp2.sell});return a+r},0);
+    const canApprove=est.status==='sent'||est.status==='open';
+    return<div style={{minHeight:'100vh',background:'#f1f5f9',display:'flex',justifyContent:'center',padding:'40px 16px'}}>
+      <div style={{width:'100%',maxWidth:640,background:'white',borderRadius:16,boxShadow:'0 4px 24px rgba(0,0,0,0.08)',overflow:'hidden'}}>
+        <div style={{background:'linear-gradient(135deg,#92400e,#d97706)',color:'white',padding:'20px 24px',position:'relative'}}>
+          <button style={{position:'absolute',top:8,left:12,background:'rgba(255,255,255,0.15)',border:'none',color:'white',borderRadius:6,padding:'4px 10px',fontSize:12,cursor:'pointer'}} onClick={()=>setEstView(null)}>← Back</button>
+          <div style={{textAlign:'center',paddingTop:16}}>
+            <div style={{fontSize:10,opacity:0.6}}>ESTIMATE</div>
+            <div style={{fontSize:20,fontWeight:800}}>{est.memo||est.id}</div>
+            <div style={{fontSize:12,opacity:0.8}}>{est.id} · {est.created_at?.split(' ')[0]}</div>
+          </div>
+        </div>
+        <div style={{padding:'20px 24px'}}>
+          <div style={{textAlign:'center',padding:16,marginBottom:16}}>
+            <div style={{fontSize:12,color:'#64748b'}}>Estimated Total</div>
+            <div style={{fontSize:36,fontWeight:800,color:'#92400e'}}>${estTotal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
+            <span style={{padding:'3px 10px',borderRadius:10,fontSize:11,fontWeight:700,background:est.status==='approved'?'#dcfce7':est.status==='converted'?'#dbeafe':'#fef3c7',color:est.status==='approved'?'#166534':est.status==='converted'?'#1e40af':'#92400e'}}>{est.status==='converted'?'Converted to Order':est.status.charAt(0).toUpperCase()+est.status.slice(1)}</span>
+          </div>
+          <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:8}}>Items</div>
+          {(est.items||[]).map((it,i)=>{const qty=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);const lineTotal=qty*safeNum(it.unit_sell);const sizes=Object.entries(safeSizes(it)).filter(([,v])=>v>0).sort((a,b)=>{const o=SZ_ORD;return(o.indexOf(a[0])<0?99:o.indexOf(a[0]))-(o.indexOf(b[0])<0?99:o.indexOf(b[0]))});
+            let decoTotal=0;safeDecos(it).forEach(d=>{const dp2=dP(d,qty,[],qty);decoTotal+=qty*dp2.sell});
+            return<div key={i} style={{border:'1px solid #e2e8f0',borderRadius:10,padding:14,marginBottom:10}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:6}}>
+                <div>
+                  <div style={{fontWeight:700,fontSize:13}}>{safeStr(it.name)||'Item'}</div>
+                  <div style={{fontSize:11,color:'#64748b'}}>{it.sku} · {safeStr(it.color)||'—'} {it.brand&&'· '+it.brand}</div>
+                </div>
+                <div style={{textAlign:'right'}}>
+                  <div style={{fontWeight:800,fontSize:14,color:'#1e3a5f'}}>${(lineTotal+decoTotal).toFixed(2)}</div>
+                  <div style={{fontSize:10,color:'#64748b'}}>{qty} × ${safeNum(it.unit_sell).toFixed(2)}</div>
+                </div>
+              </div>
+              {sizes.length>0&&<div style={{display:'flex',gap:4,flexWrap:'wrap',marginBottom:6}}>
+                {sizes.map(([sz,q])=><div key={sz} style={{textAlign:'center',padding:'3px 6px',background:'#f8fafc',borderRadius:5,minWidth:32}}>
+                  <div style={{fontSize:9,fontWeight:700,color:'#64748b'}}>{sz}</div>
+                  <div style={{fontSize:12,fontWeight:800,color:'#1e3a5f'}}>{q}</div>
+                </div>)}
+              </div>}
+              {safeDecos(it).length>0&&<div style={{fontSize:11,color:'#64748b',borderTop:'1px solid #f1f5f9',paddingTop:4}}>
+                {safeDecos(it).map((d,di)=><div key={di}>🎨 {d.position||'Decoration'}{d.art_file_id?' · Art attached':''}</div>)}
+              </div>}
+            </div>})}
+          <div style={{display:'flex',justifyContent:'space-between',padding:'12px 0',borderTop:'2px solid #e2e8f0',marginBottom:16}}>
+            <span style={{fontWeight:800}}>Estimated Total</span><span style={{fontWeight:800,fontSize:18,color:'#92400e'}}>${estTotal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
+          </div>
+          {canApprove&&<button style={{width:'100%',padding:'14px 20px',background:'#22c55e',color:'white',border:'none',borderRadius:10,fontSize:16,fontWeight:800,cursor:'pointer'}} onClick={()=>{
+            if(onUpdateEsts){onUpdateEsts(prev=>prev.map(e=>e.id===est.id?{...e,status:'approved',approved_by:'Coach',approved_at:new Date().toISOString(),updated_at:new Date().toLocaleString()}:e))}
+            setEstView({...est,status:'approved'});
+          }}>✅ Approve This Estimate</button>}
+          {est.status==='approved'&&<div style={{textAlign:'center',padding:12,background:'#f0fdf4',borderRadius:8,color:'#166534',fontWeight:700}}>✅ Approved — your rep will convert this to an order</div>}
+          {est.status==='converted'&&<div style={{textAlign:'center',padding:12,background:'#dbeafe',borderRadius:8,color:'#1e40af',fontWeight:700}}>📦 This estimate has been converted to an active order</div>}
+        </div>
+      </div>
+    </div>
+  }
 
   // Job detail view
   if(jobView){
@@ -5672,16 +5734,24 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
 
           {/* ── Garments ── */}
           <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:8}}>Garments</div>
-          {items.map((gi,i)=><div key={i} style={{border:'1px solid #e2e8f0',borderRadius:10,padding:14,marginBottom:10,display:'flex',gap:14,alignItems:'center'}}>
-            <div style={{width:48,height:48,background:'#f8fafc',borderRadius:8,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
-              <div style={{fontSize:20}}>👕</div>
+          {items.map((gi,i)=>{const srcItem=safeItems(so)[gi.item_idx];const sizes=srcItem?Object.entries(safeSizes(srcItem)).filter(([,v])=>v>0).sort((a,b)=>{const o=SZ_ORD;return(o.indexOf(a[0])<0?99:o.indexOf(a[0]))-(o.indexOf(b[0])<0?99:o.indexOf(b[0]))}):[]; return<div key={i} style={{border:'1px solid #e2e8f0',borderRadius:10,padding:14,marginBottom:10}}>
+            <div style={{display:'flex',gap:14,alignItems:'center'}}>
+              <div style={{width:48,height:48,background:'#f8fafc',borderRadius:8,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
+                <div style={{fontSize:20}}>👕</div>
+              </div>
+              <div style={{flex:1}}>
+                <div style={{fontWeight:700,fontSize:13}}>{gi.fullName}</div>
+                <div style={{fontSize:11,color:'#64748b'}}>{gi.sku} · {gi.color||'—'} {gi.brand&&'· '+gi.brand}</div>
+                <div style={{fontSize:11,color:'#64748b',marginTop:2}}>📍 {j.positions} · {gi.units} units</div>
+              </div>
             </div>
-            <div style={{flex:1}}>
-              <div style={{fontWeight:700,fontSize:13}}>{gi.fullName}</div>
-              <div style={{fontSize:11,color:'#64748b'}}>{gi.sku} · {gi.color||'—'} {gi.brand&&'· '+gi.brand}</div>
-              <div style={{fontSize:11,color:'#64748b',marginTop:2}}>📍 {j.positions} · {gi.units} units</div>
-            </div>
-          </div>)}
+            {sizes.length>0&&<div style={{display:'flex',gap:4,flexWrap:'wrap',marginTop:8,paddingTop:8,borderTop:'1px solid #f1f5f9'}}>
+              {sizes.map(([sz,qty])=><div key={sz} style={{textAlign:'center',padding:'4px 8px',background:'#f8fafc',borderRadius:6,minWidth:36}}>
+                <div style={{fontSize:10,fontWeight:700,color:'#64748b'}}>{sz}</div>
+                <div style={{fontSize:13,fontWeight:800,color:'#1e3a5f'}}>{qty}</div>
+              </div>)}
+            </div>}
+          </div>})}
           {j.art_status==='waiting_approval'&&<div style={{border:'2px solid #f59e0b',background:'#fffbeb',borderRadius:10,padding:16,marginBottom:16}}>
             <div style={{fontWeight:700,color:'#92400e',marginBottom:10}}>⏳ This artwork needs your approval</div>
             <div style={{marginBottom:10}}>
@@ -5689,12 +5759,17 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             </div>
             <div style={{display:'flex',gap:8}}>
               <button className="btn btn-sm" style={{background:'#22c55e',color:'white',flex:1,justifyContent:'center',fontWeight:700,padding:'10px 16px'}} onClick={()=>{
-                if(onUpdateSOs){onUpdateSOs(prev=>prev.map(s=>{if(s.id!==so.id)return s;return{...s,jobs:safeJobs(s).map(jj=>jj.id===j.id?{...jj,art_status:'production_files_needed'}:jj),art_files:safeArt(s).map(a=>a.id===j.art_file_id?{...a,status:'approved'}:a),updated_at:new Date().toLocaleString()}}))}
+                const liveSO=sos.find(s=>s.id===so.id);if(!liveSO)return;
+                const updSO={...liveSO,jobs:safeJobs(liveSO).map(jj=>jj.id===j.id?{...jj,art_status:'production_files_needed'}:jj),art_files:safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,status:'approved'}:a),updated_at:new Date().toLocaleString()};
+                if(savSOFn)savSOFn(updSO);else if(onUpdateSOs)onUpdateSOs(prev=>prev.map(s=>s.id===so.id?updSO:s));
                 setJobView(null);
               }}>✅ Approve Artwork</button>
               <button className="btn btn-sm" style={{background:'#dc2626',color:'white',flex:1,justifyContent:'center',fontWeight:700,padding:'10px 16px'}} onClick={()=>{
                 if(!comment.trim()){alert('Please describe what changes you need.');return}
-                if(onUpdateSOs){const rej={reason:comment.trim(),by:'Coach',at:new Date().toISOString()};onUpdateSOs(prev=>prev.map(s=>{if(s.id!==so.id)return s;return{...s,jobs:safeJobs(s).map(jj=>jj.id===j.id?{...jj,art_status:'art_requested',coach_rejected:true,rejections:[...(jj.rejections||[]),rej]}:jj),art_files:safeArt(s).map(a=>a.id===j.art_file_id?{...a,status:'waiting_for_art',notes:(a.notes?a.notes+'\n':'')+'Coach feedback: '+comment.trim()}:a),updated_at:new Date().toLocaleString()}}))}
+                const liveSO=sos.find(s=>s.id===so.id);if(!liveSO)return;
+                const rej={reason:comment.trim(),by:'Coach',at:new Date().toISOString()};
+                const updSO={...liveSO,jobs:safeJobs(liveSO).map(jj=>jj.id===j.id?{...jj,art_status:'art_requested',coach_rejected:true,rejections:[...(jj.rejections||[]),rej]}:jj),art_files:safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,status:'waiting_for_art',notes:(a.notes?a.notes+'\n':'')+'Coach feedback: '+comment.trim()}:a),updated_at:new Date().toLocaleString()};
+                if(savSOFn)savSOFn(updSO);else if(onUpdateSOs)onUpdateSOs(prev=>prev.map(s=>s.id===so.id?updSO:s));
                 setComment('');setJobView(null);
               }}>❌ Request Changes</button>
             </div>
@@ -5785,18 +5860,39 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           </div>
         </div>}
 
-        {/* Open Estimates */}
-        {(()=>{const pEsts=custEsts.filter(e=>e.status==='sent'||e.status==='draft'||e.status==='open');
-          return pEsts.length>0&&<>
-          <div style={{fontSize:13,fontWeight:800,color:'#d97706',marginBottom:10}}>📋 Estimates ({pEsts.length})</div>
-          {pEsts.map(est=>{const t=(est.items||[]).reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);let r=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const dp2=dP(d,qq,[],qq);r+=qq*dp2.sell});return a+r},0);
-            return<div key={est.id} style={{border:'1px solid #f59e0b',borderRadius:10,padding:14,marginBottom:10,background:'#fffbeb'}}>
+        {/* Estimates — All */}
+        {(()=>{const openEsts=custEsts.filter(e=>e.status==='sent'||e.status==='open');
+          const approvedEsts=custEsts.filter(e=>e.status==='approved');
+          const pastEsts=custEsts.filter(e=>e.status==='converted'||e.status==='draft');
+          const allEsts=[...openEsts,...approvedEsts,...pastEsts];
+          const estBadge=(st)=>({background:st==='sent'||st==='open'?'#fef3c7':st==='approved'?'#dcfce7':st==='converted'?'#dbeafe':'#f1f5f9',color:st==='sent'||st==='open'?'#92400e':st==='approved'?'#166534':st==='converted'?'#1e40af':'#64748b'});
+          return allEsts.length>0&&<>
+          <div style={{fontSize:13,fontWeight:800,color:'#d97706',marginBottom:10}}>📋 Estimates ({allEsts.length})</div>
+          {openEsts.length>0&&openEsts.map(est=>{const t=(est.items||[]).reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);let r=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const dp2=dP(d,qq,[],qq);r+=qq*dp2.sell});return a+r},0);
+            return<div key={est.id} style={{border:'2px solid #f59e0b',borderRadius:10,padding:14,marginBottom:10,background:'#fffbeb',cursor:'pointer'}} onClick={()=>setEstView(est)}>
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
                 <div><div style={{fontWeight:700,fontSize:14,color:'#92400e'}}>{est.memo||est.id}</div>
                   <div style={{fontSize:11,color:'#64748b'}}>{est.id} · {est.created_at?.split(' ')[0]} · {(est.items||[]).length} item{(est.items||[]).length!==1?'s':''}</div></div>
-                <div style={{textAlign:'right'}}><div style={{fontSize:18,fontWeight:800,color:'#92400e'}}>${t.toLocaleString(undefined,{maximumFractionDigits:2})}</div>
-                  <span className={'badge '+(est.status==='sent'?'badge-amber':'badge-gray')}>{est.status}</span></div>
+                <div style={{display:'flex',alignItems:'center',gap:8}}>
+                  <div style={{textAlign:'right'}}><div style={{fontSize:18,fontWeight:800,color:'#92400e'}}>${t.toLocaleString(undefined,{maximumFractionDigits:2})}</div>
+                    <span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,...estBadge(est.status)}}>{est.status==='sent'?'Awaiting Approval':est.status}</span></div>
+                  <span style={{color:'#94a3b8',fontSize:14}}>›</span>
+                </div>
               </div></div>})}
+          {(approvedEsts.length>0||pastEsts.length>0)&&<div style={{border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden',marginBottom:10}}>
+            {[...approvedEsts,...pastEsts].map((est,i,arr)=>{const t=(est.items||[]).reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);let r=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const dp2=dP(d,qq,[],qq);r+=qq*dp2.sell});return a+r},0);
+              return<div key={est.id} style={{padding:'10px 14px',borderBottom:i<arr.length-1?'1px solid #f1f5f9':'none',display:'flex',justifyContent:'space-between',alignItems:'center',cursor:'pointer'}} onClick={()=>setEstView(est)}>
+                <div><span style={{fontWeight:600,fontSize:13}}>{est.memo||est.id}</span> <span style={{fontSize:11,color:'#94a3b8'}}>{est.id}</span>
+                  <div style={{fontSize:10,color:'#64748b'}}>{est.created_at?.split(' ')[0]} · {(est.items||[]).length} item{(est.items||[]).length!==1?'s':''}</div></div>
+                <div style={{display:'flex',alignItems:'center',gap:8}}>
+                  <div style={{textAlign:'right'}}>
+                    <div style={{fontWeight:700,fontSize:13}}>${t.toLocaleString(undefined,{maximumFractionDigits:2})}</div>
+                    <span style={{padding:'2px 8px',borderRadius:10,fontSize:9,fontWeight:700,...estBadge(est.status)}}>{est.status==='converted'?'Converted':est.status.charAt(0).toUpperCase()+est.status.slice(1)}</span>
+                  </div>
+                  <span style={{color:'#94a3b8',fontSize:14}}>›</span>
+                </div>
+              </div>})}
+          </div>}
           </>})()}
 
         {/* Active orders */}
@@ -5862,27 +5958,44 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             <span className="badge badge-green">Complete</span></div>)}
         </>}
 
-        {/* Open invoices */}
-        {openInvs.length>0&&<>
-          <div style={{fontSize:13,fontWeight:800,color:'#dc2626',marginBottom:10,marginTop:16}}>💰 Open Invoices</div>
-          <div style={{border:'1px solid #fecaca',borderRadius:10,overflow:'hidden'}}>
-            {openInvs.map((inv,i)=>{const bal=(inv.total||0)-(inv.paid||0);const age=inv.date?Math.ceil((new Date()-new Date(inv.date))/(1000*60*60*24)):0;
-              return<div key={inv.id} style={{padding:'12px 16px',borderBottom:i<openInvs.length-1?'1px solid #fef2f2':'none',display:'flex',justifyContent:'space-between',alignItems:'center',cursor:'pointer'}} onClick={()=>setInvView(inv)}>
-                <div>
-                  <div style={{fontWeight:700}}>{inv.id} <span style={{fontSize:11,color:'#64748b'}}>{inv.memo}</span></div>
-                  <div style={{fontSize:11,color:age>30?'#dc2626':'#64748b'}}>{inv.date} · {age>0?age+' days ago':'Current'}</div>
-                </div>
-                <div style={{display:'flex',alignItems:'center',gap:8}}>
-                  <span style={{fontWeight:800,fontSize:16,color:'#dc2626'}}>${bal.toLocaleString()}</span>
-                  <button className="btn btn-sm" style={{background:'#22c55e',color:'white',fontSize:10}} onClick={e=>{e.stopPropagation();setInvView(inv)}}>View</button>
-                  <span style={{color:'#94a3b8',fontSize:14}}>›</span>
-                </div>
-              </div>})}
-            <div style={{padding:'12px 16px',background:'#fef2f2',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-              <span style={{fontWeight:800,color:'#dc2626'}}>Total Balance Due</span>
-              <span style={{fontSize:20,fontWeight:800,color:'#dc2626'}}>${totalDue.toLocaleString()}</span>
+        {/* Invoices — Open + Paid */}
+        {custInvs.length>0&&<>
+          {openInvs.length>0&&<>
+            <div style={{fontSize:13,fontWeight:800,color:'#dc2626',marginBottom:10,marginTop:16}}>💰 Open Invoices</div>
+            <div style={{border:'1px solid #fecaca',borderRadius:10,overflow:'hidden',marginBottom:10}}>
+              {openInvs.map((inv,i)=>{const bal=(inv.total||0)-(inv.paid||0);const age=inv.date?Math.ceil((new Date()-new Date(inv.date))/(1000*60*60*24)):0;
+                return<div key={inv.id} style={{padding:'12px 16px',borderBottom:i<openInvs.length-1?'1px solid #fef2f2':'none',display:'flex',justifyContent:'space-between',alignItems:'center',cursor:'pointer'}} onClick={()=>setInvView(inv)}>
+                  <div>
+                    <div style={{fontWeight:700}}>{inv.id} <span style={{fontSize:11,color:'#64748b'}}>{inv.memo}</span></div>
+                    <div style={{fontSize:11,color:age>30?'#dc2626':'#64748b'}}>{inv.date} · {age>0?age+' days ago':'Current'}</div>
+                  </div>
+                  <div style={{display:'flex',alignItems:'center',gap:8}}>
+                    <span style={{fontWeight:800,fontSize:16,color:'#dc2626'}}>${bal.toLocaleString()}</span>
+                    <button className="btn btn-sm" style={{background:'#22c55e',color:'white',fontSize:10}} onClick={e=>{e.stopPropagation();setShowPay(inv)}}>Pay</button>
+                    <span style={{color:'#94a3b8',fontSize:14}}>›</span>
+                  </div>
+                </div>})}
+              <div style={{padding:'12px 16px',background:'#fef2f2',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                <span style={{fontWeight:800,color:'#dc2626'}}>Total Balance Due</span>
+                <span style={{fontSize:20,fontWeight:800,color:'#dc2626'}}>${totalDue.toLocaleString()}</span>
+              </div>
             </div>
-          </div>
+          </>}
+          {paidInvs.length>0&&<>
+            <div style={{fontSize:13,fontWeight:800,color:'#166534',marginBottom:10,marginTop:openInvs.length>0?4:16}}>✅ Paid Invoices</div>
+            <div style={{border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden',marginBottom:10}}>
+              {paidInvs.slice(0,10).map((inv,i,arr)=>
+                <div key={inv.id} style={{padding:'10px 14px',borderBottom:i<arr.length-1?'1px solid #f1f5f9':'none',display:'flex',justifyContent:'space-between',alignItems:'center',cursor:'pointer'}} onClick={()=>setInvView(inv)}>
+                  <div><span style={{fontWeight:600}}>{inv.id}</span> <span style={{fontSize:11,color:'#94a3b8'}}>{inv.memo}</span>
+                    <div style={{fontSize:10,color:'#64748b'}}>{inv.date}</div></div>
+                  <div style={{display:'flex',alignItems:'center',gap:8}}>
+                    <span style={{fontWeight:700,fontSize:13,color:'#166534'}}>${(inv.total||0).toLocaleString()}</span>
+                    <span style={{padding:'2px 8px',borderRadius:10,fontSize:9,fontWeight:700,background:'#dcfce7',color:'#166534'}}>Paid</span>
+                    <span style={{color:'#94a3b8',fontSize:14}}>›</span>
+                  </div>
+                </div>)}
+            </div>
+          </>}
         </>}
 
         {/* Your rep */}
@@ -6706,6 +6819,11 @@ export default function App(){
       if(so.expected_date){const dOut=Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24));
         if(dOut<=3&&dOut>=0&&calcSOStatus(so)!=='complete')todos.push({type:'deadline',priority:0,msg:'⚠️ Due in '+dOut+' day'+(dOut!==1?'s':'')+': '+(so.memo||so.id),detail:tag+' · '+so.expected_date,so,action:'Open SO',role:'all'})};
       if(calcSOStatus(so)==='need_order')todos.push({type:'order',priority:2,msg:'🛒 Items need ordering: '+(so.memo||so.id),detail:tag,so,action:'Create PO',role:'sales'});
+    });
+    // Coach-approved estimates → rep needs to convert to SO
+    ests.filter(e=>e.status==='approved'&&e.approved_by==='Coach').forEach(e=>{
+      const c2=cust.find(x=>x.id===e.customer_id);const tag2=c2?.alpha_tag||e.id;
+      todos.push({type:'est_approved',priority:1,msg:'✅ Coach approved estimate: '+(e.memo||e.id),detail:tag2+' · Ready to convert to order',action:'Convert to SO',role:'sales',est:e,estC:c2});
     });
     // Stale estimate follow-up alerts
     ests.filter(e=>e.status==='sent').forEach(e=>{
@@ -14596,7 +14714,7 @@ export default function App(){
       <div style={{fontSize:48,fontWeight:900,color:'#1e3a5f'}}>NSA</div>
       <div style={{fontSize:16,color:'#64748b'}}>Portal not found for "<strong>{_portalTag}</strong>"</div>
       <div style={{fontSize:13,color:'#94a3b8'}}>Please check the link with your NSA rep.</div></div>;
-    return<CoachPortal customer={_portalCust} allCustomers={cust} sos={sos} ests={ests} invs={invs} REPS={REPS} prod={prod} onUpdateInvs={setInvs} onUpdateSOs={setSOs}/>;
+    return<CoachPortal customer={_portalCust} allCustomers={cust} sos={sos} ests={ests} invs={invs} REPS={REPS} prod={prod} onUpdateInvs={setInvs} onUpdateSOs={setSOs} onUpdateEsts={setEsts} savSOFn={savSO}/>;
   }
 
   // LOADING GATE
