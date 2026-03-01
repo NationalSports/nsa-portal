@@ -12537,54 +12537,45 @@ export default function App(){
     };
 
     // Parse supplier bill PDF — supports multiple invoices per PDF, split by DOCUMENT NUMBER
-    const parseSupplierBill=(text)=>{
-      const lines=text.split('\n').map(l=>l.trim()).filter(Boolean);
-
-      // Find all DOCUMENT NUMBER line indices to detect multi-invoice PDFs
-      const docNumIndices=[];
-      for(let li=0;li<lines.length;li++){
-        if(/(?:SI\s+)?DOCUMENT\s+NUMBER[:\s]+\d+/i.test(lines[li]))docNumIndices.push(li);
-      }
-
-      // Single invoice (or no doc number found) — parse as one bill
-      if(docNumIndices.length<=1){
-        return [parseSingleInvoice(lines,{},text)];
-      }
-
-      // Multi-invoice PDF: extract shared fields (supplier, PO, tracking) from the preamble
-      // (lines before the first DOCUMENT NUMBER)
-      const preambleLines=lines.slice(0,docNumIndices[0]);
-      const shared={po_number:'',tracking:'',supplier:'',vendor:''};
-      for(const line of preambleLines){
-        if(!shared.po_number){const m=line.match(/PO\s*NUMBER\s*[:\s]+(.+)/i);if(m&&m[1].trim().length>1)shared.po_number=m[1].trim()}
-        if(!shared.tracking){const m=line.match(/TRACKING\s*(?:NUMBER|#|NUM|NO)?[:\s]*(\d{10,30})/i);if(m)shared.tracking=m[1]}
-        if(!shared.supplier){
-          if(/ADIDAS\s*(US|TEAM|AMERICA)/i.test(line))shared.supplier='Adidas';
-          else if(/UNDER\s*ARMOU?R/i.test(line)&&!/SOLD|SHIP|BILL|ATTN/i.test(line))shared.supplier='Under Armour';
-          else if(/\bNIKE\b/i.test(line)&&!/SOLD|SHIP|BILL|ATTN/i.test(line))shared.supplier='Nike';
-          else if(/\bPUMA\b/i.test(line)&&!/SOLD|SHIP|BILL|ATTN/i.test(line))shared.supplier='Puma';
-          else if(/\bNEW\s*BALANCE\b/i.test(line)&&!/SOLD|SHIP|BILL|ATTN/i.test(line))shared.supplier='New Balance';
-          else if(/^SUPPLIER\b/i.test(line)){
-            const nextIdx=preambleLines.indexOf(line)+1;
-            for(let j=nextIdx;j<Math.min(nextIdx+3,preambleLines.length);j++){
-              const nl=preambleLines[j].trim();
-              if(nl.length>3&&!/^DEPT|^PH|^FX|^FAX|^\d|^SOLD|^SHIP/i.test(nl)){shared.supplier=nl;break}
-            }
+    // Uses per-page text to group pages by the Document Number in the top-left header
+    // (NOT the SI DOCUMENT NUMBER in the bottom-middle, which only appears on the last page)
+    const parseSupplierBill=(text,pages)=>{
+      // If we have per-page text, group pages by top-left Document Number
+      if(pages&&pages.length>1){
+        // Extract Document Number from the top of each page (skip SI DOCUMENT NUMBER)
+        const pageDocNums=pages.map(pt=>{
+          const topLines=pt.split('\n').slice(0,15);
+          for(const ln of topLines){
+            if(/SI\s+DOCUMENT\s+NUMBER/i.test(ln))continue;
+            const m=ln.match(/DOCUMENT\s+NUMBER[:\s]+(\d+)/i);
+            if(m)return m[1];
           }
+          return '';
+        });
+        // Group pages by document number; pages without a doc number attach to previous page's doc
+        const groups={};const order=[];
+        let currentDoc='__unknown__';
+        pageDocNums.forEach((dn,i)=>{
+          if(dn)currentDoc=dn;
+          if(!groups[currentDoc]){groups[currentDoc]=[];order.push(currentDoc)}
+          groups[currentDoc].push(pages[i]);
+        });
+        // If only one group, parse as single invoice
+        if(order.length<=1){
+          const allLines=text.split('\n').map(l=>l.trim()).filter(Boolean);
+          return [parseSingleInvoice(allLines,{},text)];
         }
+        // Parse each group as a separate invoice
+        return order.map(docNum=>{
+          const groupText=groups[docNum].join('\n');
+          const lines=groupText.split('\n').map(l=>l.trim()).filter(Boolean);
+          return parseSingleInvoice(lines,{},groupText);
+        });
       }
 
-      // Split lines into per-invoice sections at each DOCUMENT NUMBER boundary
-      const bills=[];
-      for(let di=0;di<docNumIndices.length;di++){
-        const sectionStart=docNumIndices[di];
-        const sectionEnd=di+1<docNumIndices.length?docNumIndices[di+1]:lines.length;
-        // Include preamble lines (supplier/PO headers) with each section for context
-        const sectionLines=[...preambleLines,...lines.slice(sectionStart,sectionEnd)];
-        const bill=parseSingleInvoice(sectionLines,shared,text);
-        bills.push(bill);
-      }
-      return bills;
+      // Fallback: no pages array or single page — use flat text
+      const lines=text.split('\n').map(l=>l.trim()).filter(Boolean);
+      return [parseSingleInvoice(lines,{},text)];
     };
 
     // Process multiple bill PDFs — each file may contain multiple invoices
@@ -12595,8 +12586,8 @@ export default function App(){
       for(let fi=0;fi<files.length;fi++){
         const file=files[fi];
         try{
-          const{fullText:text}=await extractPdfText(file);
-          const bills=parseSupplierBill(text);// returns array of bills (one per invoice in the PDF)
+          const{fullText:text,pages}=await extractPdfText(file);
+          const bills=parseSupplierBill(text,pages);// returns array of bills (one per invoice in the PDF)
           for(let bi=0;bi<bills.length;bi++){
             const parsed=bills[bi];
             const label=bills.length>1?file.name+' (Invoice '+(bi+1)+'/'+bills.length+' — Doc #'+parsed.doc_number+')':file.name;
