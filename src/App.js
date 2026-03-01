@@ -12361,6 +12361,19 @@ export default function App(){
       if(itemSectionStart<0){
         bill.warnings.push('Could not find item table header (UPC NUMBER / SUPPLIER ITEM) — items not extracted');
       }else{
+        // ── Parse column layout from header row ──
+        const headerLine=lines[itemSectionStart-1]||'';
+        const headerParts=headerLine.split(/\t+/).map(h=>h.trim().toUpperCase());
+        const colIdx={};
+        headerParts.forEach((h,ci)=>{
+          if(/QU?A?N?T(?:ITY)?\s*SHIP/i.test(h))colIdx.qtyShipped=ci;
+          else if(/QU?A?N?T(?:ITY)?\s*ORD/i.test(h))colIdx.qtyOrdered=ci;
+          else if(/NET\s*(?:PRICE|COST)|^NET$/i.test(h))colIdx.netPrice=ci;
+          else if(/UNIT\s*(?:PRICE|COST)|^LIST/i.test(h))colIdx.unitPrice=ci;
+          else if(/EXTENSION|EXT\s*COST|^AMOUNT$/i.test(h))colIdx.extension=ci;
+        });
+        const useColumns=colIdx.extension!=null&&(colIdx.qtyShipped!=null||colIdx.qtyOrdered!=null);
+
         for(let i=startIdx;i<endIdx;i++){
           const line=lines[i];
           // Skip sub-headers and labels that appear within the table
@@ -12373,32 +12386,48 @@ export default function App(){
           const sizeMatch=line.match(SZ_RE);
           if(!sizeMatch)continue;
           const size=sizeMatch[1].toUpperCase();
-          // Extract numeric values — filter to reasonable range (not UPC barcodes)
-          // Split by tabs first to understand column structure better
-          const parts=line.split(/\t+/);
-          // Collect all numbers that look like qty/price (< 100000, not part of UPC barcode)
-          const nums=[];
-          parts.forEach(part=>{
-            // Skip parts that are pure long digit sequences (UPC barcodes like "1 96463 09488 2")
-            const cleaned=part.replace(/\s/g,'');
-            if(/^\d{8,}$/.test(cleaned))return;
-            const matches=part.match(/[\d,]+\.?\d*/g)||[];
-            matches.forEach(n=>{const v=parseFloat(n.replace(/,/g,''));if(!isNaN(v)&&v>0&&v<100000)nums.push(v)});
-          });
-          if(nums.length<2)continue;
-          // Extension is the LAST number, find qty by checking which whole number * price = extension
-          let qty=0,unitPrice=0,extension=nums[nums.length-1]||0;
-          const wholeNums=nums.filter(n=>n===Math.floor(n)&&n>=1&&n<10000);
-          for(const wn of wholeNums){
-            const pp=extension/wn;
-            if(pp>0.10&&pp<1000&&nums.some(n=>Math.abs(n-pp)<0.02)){qty=wn;unitPrice=Math.round(pp*100)/100;break}
+          const parts=line.split(/\t+/).map(p=>p.trim());
+          let qty=0,unitPrice=0,extension=0;
+
+          if(useColumns){
+            // ── Column-based extraction (reliable) ──
+            const getNum=idx=>{if(idx==null||idx>=parts.length)return 0;return parseFloat(parts[idx].replace(/[$,]/g,''))||0};
+            qty=getNum(colIdx.qtyShipped)||getNum(colIdx.qtyOrdered);
+            unitPrice=getNum(colIdx.netPrice)||getNum(colIdx.unitPrice);
+            extension=getNum(colIdx.extension);
+            if(!extension&&qty&&unitPrice)extension=Math.round(qty*unitPrice*100)/100;
+            if(!unitPrice&&qty&&extension)unitPrice=Math.round(extension/qty*100)/100;
+          }else{
+            // ── Heuristic extraction (fallback when header columns not detected) ──
+            const nums=[];
+            parts.forEach(part=>{
+              // Skip parts that are UPC barcodes (8+ digits when spaces removed)
+              const cleaned=part.replace(/\s/g,'');
+              if(/^\d{8,}$/.test(cleaned))return;
+              const matches=part.match(/[\d,]+\.?\d*/g)||[];
+              matches.forEach(n=>{const v=parseFloat(n.replace(/,/g,''));if(!isNaN(v)&&v>0&&v<100000)nums.push(v)});
+            });
+            if(nums.length<2)continue;
+            extension=nums[nums.length-1]||0;
+            // Find qty: whole number where extension/qty matches a SEPARATE number in the line
+            // Use nums.slice(0,-1) to avoid extension matching itself as the unit price
+            const wholeNums=nums.filter(n=>n===Math.floor(n)&&n>=1&&n<=500);
+            for(const wn of wholeNums){
+              const pp=extension/wn;
+              if(pp>=0.50&&pp<=500&&nums.slice(0,-1).some(n=>Math.abs(n-pp)<0.02)){qty=wn;unitPrice=Math.round(pp*100)/100;break}
+            }
+            // Conservative fallback: only for simple lines with few numbers
+            if(!qty&&nums.length<=5){
+              for(const wn of wholeNums){
+                const pp=extension/wn;
+                if(pp>=0.50&&pp<=500&&wn<=500){qty=wn;unitPrice=Math.round(pp*100)/100;break}
+              }
+            }
           }
-          if(!qty&&wholeNums.length>0){
-            // Fallback: use first reasonable whole number as qty
-            qty=wholeNums.length>=2?wholeNums[1]:wholeNums[0];
-            if(qty>0)unitPrice=Math.round(extension/qty*100)/100;
-          }
+
           if(qty<=0||extension<=0)continue;
+          // Validate: qty * unitPrice should be close to extension (within 5% + $0.10 tolerance)
+          if(unitPrice>0&&Math.abs(qty*unitPrice-extension)>extension*0.05+0.10)continue;
           // Get description/color from next line(s)
           let desc='',color='';
           for(let j=i+1;j<Math.min(i+3,endIdx);j++){
