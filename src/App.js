@@ -5798,6 +5798,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   const[showPay,setShowPay]=useState(null);// null | 'all' | inv object
   const[paySuccess,setPaySuccess]=useState(null);// {amount,fee,invoices}
   const[invs,setInvs]=useState(initInvs);
+  const[lightbox,setLightbox]=useState(null);// url string for lightbox overlay
   useEffect(()=>setInvs(initInvs),[initInvs]);
   const isP=!customer.parent_id;
   const subs=isP?allCustomers.filter(c=>c.parent_id===customer.id):[];
@@ -5838,6 +5839,13 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     const mockups=(artFile?.mockup_files||artFile?.files||[]).filter(f=>f);
     const items=(j.items||[]).map(gi=>{const it=safeItems(so)[gi.item_idx];return{...gi,brand:it?.brand||'',fullName:safeStr(it?.name)||gi.name}});
     return<div style={{minHeight:'100vh',background:'#f1f5f9',display:'flex',justifyContent:'center',padding:'40px 16px'}}>
+      {/* ── Lightbox overlay ── */}
+      {lightbox&&<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.85)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center',padding:16}} onClick={()=>setLightbox(null)}>
+        <button style={{position:'absolute',top:16,right:20,background:'rgba(255,255,255,0.15)',border:'none',color:'white',fontSize:28,borderRadius:'50%',width:44,height:44,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center'}} onClick={()=>setLightbox(null)}>×</button>
+        {_isImgUrl(lightbox)?<img src={lightbox} alt="Mockup" style={{maxWidth:'95vw',maxHeight:'90vh',objectFit:'contain',borderRadius:8}} onClick={e=>e.stopPropagation()}/>
+        :_isPdfUrl(lightbox)?<iframe title="PDF Preview" src={'https://docs.google.com/gview?url='+encodeURIComponent(lightbox)+'&embedded=true'} style={{width:'90vw',height:'90vh',border:'none',borderRadius:8,background:'white'}} onClick={e=>e.stopPropagation()}/>
+        :<div style={{color:'white',fontSize:16}} onClick={e=>e.stopPropagation()}>Cannot preview this file type</div>}
+      </div>}
       <div style={{width:'100%',maxWidth:640,background:'white',borderRadius:16,boxShadow:'0 4px 24px rgba(0,0,0,0.08)',overflow:'hidden'}}>
         <div style={{background:'linear-gradient(135deg,#1e3a5f,#2563eb)',color:'white',padding:'20px 24px',position:'relative'}}>
           <button style={{position:'absolute',top:8,left:12,background:'rgba(255,255,255,0.15)',border:'none',color:'white',borderRadius:6,padding:'4px 10px',fontSize:12,cursor:'pointer'}} onClick={()=>setJobView(null)}>← Back</button>
@@ -5852,13 +5860,13 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           {mockups.length>0&&<div style={{marginBottom:16}}>
             <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:8}}>Artwork Mockups</div>
             {mockups.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(url||f);const isPdf=_isPdfUrl(url);const isImg=_isImgUrl(url);const thumb=isPdf?_cloudinaryPdfThumb(url):null;
-              return<div key={fi} style={{border:'1px solid #e2e8f0',borderRadius:10,padding:10,marginBottom:8,cursor:isUrl(url)?'pointer':'default'}} onClick={()=>isUrl(url)&&openFile(url)}>
+              return<div key={fi} style={{border:'1px solid #e2e8f0',borderRadius:10,padding:10,marginBottom:8,cursor:isUrl(url)?'pointer':'default'}} onClick={()=>{if(isUrl(url))setLightbox(url)}}>
                 {isImg&&isUrl(url)&&<img src={url} alt={name} style={{width:'100%',borderRadius:8,marginBottom:6,maxHeight:400,objectFit:'contain',background:'#f8fafc'}}/>}
                 {isPdf&&thumb&&<img src={thumb} alt={name} style={{width:'100%',borderRadius:8,marginBottom:6,maxHeight:400,objectFit:'contain',background:'#f8fafc'}} onError={e=>{e.target.style.display='none'}}/>}
                 {isPdf&&!thumb&&<div style={{padding:20,background:'#f8fafc',borderRadius:8,marginBottom:6,textAlign:'center'}}><span style={{fontSize:32}}>📄</span><div style={{fontSize:11,color:'#64748b',marginTop:4}}>PDF Document</div></div>}
                 <div style={{display:'flex',alignItems:'center',gap:6}}>
                   <span style={{fontSize:12,fontWeight:600,color:'#1e40af'}}>{name}</span>
-                  {isUrl(url)&&<span style={{fontSize:10,color:'#64748b'}}>— tap to view full size</span>}
+                  {isUrl(url)&&<span style={{fontSize:10,color:'#64748b'}}>— tap to enlarge</span>}
                 </div>
               </div>})}
           </div>}
@@ -5887,18 +5895,18 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             </div>
             <div style={{display:'flex',gap:8}}>
               <button className="btn btn-sm" style={{background:'#22c55e',color:'white',flex:1,justifyContent:'center',fontWeight:700,padding:'10px 16px'}} onClick={()=>{
-                if(onUpdateSOs){onUpdateSOs(prev=>prev.map(s=>{if(s.id!==so.id)return s;return{...s,jobs:safeJobs(s).map(jj=>jj.id===j.id?{...jj,art_status:'production_files_needed'}:jj),art_files:safeArt(s).map(a=>a.id===j.art_file_id?{...a,status:'approved'}:a)}}))}
+                if(onUpdateSOs){onUpdateSOs(prev=>prev.map(s=>{if(s.id!==so.id)return s;return{...s,jobs:safeJobs(s).map(jj=>jj.id===j.id?{...jj,art_status:'production_files_needed'}:jj),art_files:safeArt(s).map(a=>a.id===j.art_file_id?{...a,status:'approved'}:a),updated_at:new Date().toLocaleString()}}))}
                 setJobView(null);
               }}>✅ Approve Artwork</button>
               <button className="btn btn-sm" style={{background:'#dc2626',color:'white',flex:1,justifyContent:'center',fontWeight:700,padding:'10px 16px'}} onClick={()=>{
                 if(!comment.trim()){alert('Please describe what changes you need.');return}
-                if(onUpdateSOs){onUpdateSOs(prev=>prev.map(s=>{if(s.id!==so.id)return s;return{...s,jobs:safeJobs(s).map(jj=>jj.id===j.id?{...jj,art_status:'art_revision'}:jj),art_files:safeArt(s).map(a=>a.id===j.art_file_id?{...a,status:'needs_revision',notes:(a.notes?a.notes+'\n':'')+('Coach feedback: '+comment.trim())}:a)}}))}
+                if(onUpdateSOs){const rej={reason:comment.trim(),by:'Coach',at:new Date().toISOString()};onUpdateSOs(prev=>prev.map(s=>{if(s.id!==so.id)return s;return{...s,jobs:safeJobs(s).map(jj=>jj.id===j.id?{...jj,art_status:'art_requested',coach_rejected:true,rejections:[...(jj.rejections||[]),rej]}:jj),art_files:safeArt(s).map(a=>a.id===j.art_file_id?{...a,status:'waiting_for_art',notes:(a.notes?a.notes+'\n':'')+'Coach feedback: '+comment.trim()}:a),updated_at:new Date().toLocaleString()}}))}
                 setComment('');setJobView(null);
               }}>❌ Request Changes</button>
             </div>
           </div>}
           {(j.art_status==='art_complete'||j.art_status==='production_files_needed')&&<div style={{background:'#f0fdf4',borderRadius:8,padding:10,marginBottom:16,fontSize:12,color:'#166534',fontWeight:600}}>✅ You approved this artwork</div>}
-          {j.art_status==='art_revision'&&<div style={{background:'#fef2f2',borderRadius:8,padding:10,marginBottom:16,fontSize:12,color:'#dc2626',fontWeight:600}}>🔄 Changes requested — your artist is working on revisions</div>}
+          {(j.art_status==='art_requested'&&j.coach_rejected)&&<div style={{background:'#fef2f2',borderRadius:8,padding:10,marginBottom:16,fontSize:12,color:'#dc2626',fontWeight:600}}>🔄 Changes requested — your artist is working on revisions</div>}
           {j.prod_status!=='hold'&&<div style={{padding:10,background:'#f8fafc',borderRadius:8,marginBottom:16}}>
             <div style={{fontSize:10,color:'#64748b',fontWeight:600}}>PRODUCTION STATUS</div>
             <div style={{fontSize:14,fontWeight:700,color:'#1e40af',marginTop:2}}>{prodLabelsP[j.prod_status]||j.prod_status}</div>
@@ -6895,6 +6903,7 @@ export default function App(){
       const c=cust.find(x=>x.id===so.customer_id);const tag=c?.alpha_tag||so.id;
       buildJobs(so).forEach(j=>{
         if(j.art_status==='waiting_approval')todos.push({type:'art',priority:2,msg:'⏳ Art awaiting approval: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,action:'Review art',role:'sales'});
+        if(j.art_status==='art_requested'&&j.coach_rejected){const lastRej=(j.rejections||[]).slice(-1)[0];todos.push({type:'art_rejected',priority:1,msg:'❌ Coach rejected art: '+j.art_name,detail:tag+' · '+so.id+(lastRej?' · "'+lastRej.reason.slice(0,60)+(lastRej.reason.length>60?'...':'')+'"':''),so,jobId:j.id,action:'Review feedback',role:'sales'})}
         const ready=isJobReady(j,so);const onBoard=safeJobs(so).some(ej=>ej.id===j.id);
         if(ready&&!onBoard)todos.push({type:'schedule',priority:1,msg:'🏭 Ready for production — send to board: '+j.art_name,detail:tag+' · '+j.id,so,action:'Open Jobs',role:'production'});
         if(j.item_status==='partially_received'&&!j.split_from&&j.fulfilled_units>0)todos.push({type:'split',priority:3,msg:'✂️ Can split: '+j.art_name+' ('+j.fulfilled_units+'/'+j.total_units+')',detail:tag+' · '+j.id,so,action:'Review split',role:'production'});
