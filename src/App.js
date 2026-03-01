@@ -4379,16 +4379,19 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       const activeLine=allLines[activeLineIdx]||allLines[0];
       const po=o.items[activeLine.lineIdx]?.po_lines?.[activeLine.poIdx]||editPO.po;
       const item=o.items[activeLine.lineIdx];
-      const szKeys=Object.keys(po).filter(k=>k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='po_type'&&k!=='deco_vendor'&&k!=='deco_type'&&k!=='created_at'&&k!=='memo'&&k!=='notes'&&k!=='expected_date'&&typeof po[k]==='number');
-      const received=po.received||{};const cancelled=po.cancelled||{};
-      const shipments=po.shipments||[];
+      const szKeys=Object.keys(po).filter(k=>k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='po_type'&&k!=='deco_vendor'&&k!=='deco_type'&&k!=='created_at'&&k!=='memo'&&k!=='notes'&&k!=='expected_date'&&k!=='billed'&&k!=='tracking_numbers'&&k!=='unit_cost'&&k!=='vendor'&&typeof po[k]==='number');
+      const received=po.received||{};const cancelled=po.cancelled||{};const billed=po.billed||{};
+      const shipments=po.shipments||[];const trackingNums=po.tracking_numbers||[];
       const getRcvd=sz=>(received[sz]||0);
       const getCncl=sz=>(cancelled[sz]||0);
+      const getBilled=sz=>(billed[sz]||0);
       const getOpen=sz=>Math.max(0,(po[sz]||0)-getRcvd(sz)-getCncl(sz));
       const totalOrdered=szKeys.reduce((a,sz)=>a+(po[sz]||0),0);
       const totalReceived=szKeys.reduce((a,sz)=>a+getRcvd(sz),0);
       const totalCancelled=szKeys.reduce((a,sz)=>a+getCncl(sz),0);
+      const totalBilled=szKeys.reduce((a,sz)=>a+getBilled(sz),0);
       const totalOpen=szKeys.reduce((a,sz)=>a+getOpen(sz),0);
+      const totalInTransit=Math.max(0,totalBilled-totalReceived);
       const hasOpen=szKeys.some(sz=>getOpen(sz)>0);
       const poStatus=totalOpen<=0&&totalReceived>0?'received':totalReceived>0?'partial':'waiting';
       const qrData=window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(po.po_id);
@@ -4420,14 +4423,22 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
             <span className="badge badge-gray">{item.color}</span>
           </div>}
 
+          {/* Tracking Numbers */}
+          {trackingNums.length>0&&<div style={{padding:'8px 12px',background:'#eff6ff',borderRadius:6,marginBottom:12,display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+            <span style={{fontSize:10,fontWeight:700,color:'#1e40af',textTransform:'uppercase'}}>Tracking:</span>
+            {trackingNums.map((tn,ti)=><span key={ti} style={{fontFamily:'monospace',fontSize:12,fontWeight:700,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4}}>{tn}</span>)}
+          </div>}
+
           {/* PO Summary Table */}
           {(()=>{const unitCost=po.po_type==='outside_deco'?safeNum(po.unit_cost):safeNum(item?.nsa_cost);const poTotal=totalOrdered*unitCost;const rcvdTotal=totalReceived*unitCost;const openTotal=totalOpen*unitCost;return<>
           <table style={{width:'100%',fontSize:12,borderCollapse:'collapse',marginBottom:12}}>
             <thead><tr style={{borderBottom:'2px solid #0f172a'}}><th style={{padding:'4px 8px',textAlign:'left',fontSize:10,color:'#64748b'}}></th>{szKeys.map(sz=><th key={sz} style={{padding:'4px 8px',textAlign:'center',minWidth:48}}>{sz}</th>)}<th style={{padding:'4px 8px',textAlign:'center'}}>TOTAL</th><th style={{padding:'4px 8px',textAlign:'right',minWidth:70}}>$</th></tr></thead>
             <tbody>
               <tr><td style={{padding:'3px 8px',fontSize:10,color:'#64748b'}}>Ordered</td>{szKeys.map(sz=><td key={sz} style={{padding:'3px 8px',textAlign:'center',fontWeight:700}}>{po[sz]||0}</td>)}<td style={{padding:'3px 8px',textAlign:'center',fontWeight:800}}>{totalOrdered}</td><td style={{padding:'3px 8px',textAlign:'right',fontWeight:800}}>${poTotal.toFixed(2)}</td></tr>
+              {totalBilled>0&&<tr style={{color:'#1e40af'}}><td style={{padding:'3px 8px',fontSize:10}}>Billed</td>{szKeys.map(sz=><td key={sz} style={{padding:'3px 8px',textAlign:'center',fontWeight:700,color:getBilled(sz)>0?'#1e40af':'#d1d5db'}}>{getBilled(sz)||'—'}</td>)}<td style={{padding:'3px 8px',textAlign:'center',fontWeight:800}}>{totalBilled}</td><td style={{padding:'3px 8px',textAlign:'right',fontWeight:800,color:'#1e40af'}}>${(totalBilled*unitCost).toFixed(2)}</td></tr>}
               <tr style={{color:'#166534'}}><td style={{padding:'3px 8px',fontSize:10}}>Received</td>{szKeys.map(sz=><td key={sz} style={{padding:'3px 8px',textAlign:'center',fontWeight:700,color:getRcvd(sz)>0?'#166534':'#d1d5db'}}>{getRcvd(sz)||'—'}</td>)}<td style={{padding:'3px 8px',textAlign:'center',fontWeight:800}}>{totalReceived}</td><td style={{padding:'3px 8px',textAlign:'right',fontWeight:800,color:'#166534'}}>${rcvdTotal.toFixed(2)}</td></tr>
               {totalCancelled>0&&<tr style={{color:'#dc2626'}}><td style={{padding:'3px 8px',fontSize:10}}>Cancelled</td>{szKeys.map(sz=><td key={sz} style={{padding:'3px 8px',textAlign:'center',fontWeight:700,color:getCncl(sz)>0?'#dc2626':'#d1d5db'}}>{getCncl(sz)||'—'}</td>)}<td style={{padding:'3px 8px',textAlign:'center',fontWeight:800}}>{totalCancelled}</td><td style={{padding:'3px 8px',textAlign:'right',fontWeight:800,color:'#dc2626'}}>${(totalCancelled*unitCost).toFixed(2)}</td></tr>}
+              {totalInTransit>0&&<tr style={{color:'#7c3aed'}}><td style={{padding:'3px 8px',fontSize:10}}>In Transit</td>{szKeys.map(sz=>{const it=Math.max(0,getBilled(sz)-getRcvd(sz));return<td key={sz} style={{padding:'3px 8px',textAlign:'center',fontWeight:700,color:it>0?'#7c3aed':'#d1d5db'}}>{it>0?it:'—'}</td>})}<td style={{padding:'3px 8px',textAlign:'center',fontWeight:800}}>{totalInTransit}</td><td style={{padding:'3px 8px',textAlign:'right',fontWeight:800,color:'#7c3aed'}}>${(totalInTransit*unitCost).toFixed(2)}</td></tr>}
               {hasOpen&&<tr style={{borderTop:'1px solid #e2e8f0',color:'#b45309'}}><td style={{padding:'3px 8px',fontSize:10,fontWeight:600}}>Open</td>{szKeys.map(sz=>{const op=getOpen(sz);return<td key={sz} style={{padding:'3px 8px',textAlign:'center',fontWeight:700,color:op>0?'#b45309':'#d1d5db'}}>{op>0?op:'—'}</td>})}<td style={{padding:'3px 8px',textAlign:'center',fontWeight:800}}>{totalOpen}</td><td style={{padding:'3px 8px',textAlign:'right',fontWeight:800,color:'#b45309'}}>${openTotal.toFixed(2)}</td></tr>}
             </tbody>
           </table>
@@ -4585,8 +4596,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                 <div style={{fontWeight:600}}>{item?.sku} {item?.name}</div>
                 <div>{item?.color} — {totalOrdered} ordered{totalReceived>0?', '+totalReceived+' received':''}</div>
                 <div style={{marginTop:4}}>Ordered: {szKeys.map(sz=>sz+':'+po[sz]).join('  ')}</div>
+                {totalBilled>0&&<div style={{color:'#1e40af'}}>Billed: {szKeys.filter(sz=>getBilled(sz)>0).map(sz=>sz+':'+getBilled(sz)).join('  ')}</div>}
                 {totalReceived>0&&<div style={{color:'#166534'}}>Received: {szKeys.filter(sz=>getRcvd(sz)>0).map(sz=>sz+':'+getRcvd(sz)).join('  ')}</div>}
                 {totalOpen>0&&<div style={{color:'#b45309'}}>Open: {szKeys.filter(sz=>getOpen(sz)>0).map(sz=>sz+':'+getOpen(sz)).join('  ')}</div>}
+                {trackingNums.length>0&&<div style={{color:'#1e40af',marginTop:2}}>Tracking: {trackingNums.join(', ')}</div>}
               </div>
             </div>
             <button className="btn btn-sm btn-secondary" style={{marginTop:8,fontSize:11}} onClick={()=>{
@@ -4620,6 +4633,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                   aligns:['left',...szHeaders.map(()=>'center'),'center'],
                   rows:[
                     {cells:[{value:'<strong>Ordered</strong>',style:'font-weight:700'},...szHeaders.map(s=>({value:po[s]||0,style:(po[s]>0?'font-weight:800;color:#1e3a5f':'')})),{value:totalOrdered,style:'font-weight:800'}]},
+                    ...(totalBilled>0?[{cells:[{value:'Billed',style:'color:#1e40af'},...szHeaders.map(s=>({value:getBilled(s)||'—',style:'color:#1e40af'})),{value:totalBilled,style:'color:#1e40af;font-weight:700'}]}]:[]),
                     ...(totalReceived>0?[{cells:[{value:'Received',style:'color:#166534'},...szHeaders.map(s=>({value:getRcvd(s)||'—',style:'color:#166534'})),{value:totalReceived,style:'color:#166534;font-weight:700'}]}]:[]),
                     ...(totalOpen>0?[{cells:[{value:'Open',style:'color:#b45309'},...szHeaders.map(s=>({value:getOpen(s)||'—',style:'color:#b45309'})),{value:totalOpen,style:'color:#b45309;font-weight:700'}]}]:[]),
                   ]
@@ -12687,6 +12701,14 @@ export default function App(){
           const ctx=lines.slice(Math.max(0,li-3),li+3).join(' ');
           if(/TRACKING|CARRIER|FEDERAL|UPS|USPS/i.test(ctx))bill.tracking=line;
         }
+        // Handle SI format: TRACKING NUMBER is a column header, actual number is on the next data line
+        if(!bill.tracking&&/TRACKING\s*NUMBER/i.test(line)&&/WEIGHT|METHOD|SHIP\s*DATE|DELIVERY/i.test(line)){
+          for(let j=li+1;j<Math.min(li+3,lines.length);j++){
+            const parts=lines[j].split(/\t+/);
+            for(const p of parts){const val=p.trim();if(/^\d{10,30}$/.test(val)){bill.tracking=val;break}}
+            if(bill.tracking)break;
+          }
+        }
         // Supplier detection
         if(!bill.supplier){
           if(/ADIDAS\s*(US|TEAM|AMERICA)/i.test(line))bill.supplier='Adidas';
@@ -12827,6 +12849,24 @@ export default function App(){
           const invMatch=invPOs.find(p=>p.po_number&&p.po_number.toLowerCase().replace(/\s+/g,'')===poLc);
           if(invMatch){bill.matchedPO=invMatch;bill.matchedPOSource='inv_po'}
         }
+        // Also search SO item PO lines (match by po_id or memo)
+        if(!bill.matchedPO){
+          for(const so of sos){
+            for(const it of (so.items||[])){
+              for(const po of (it.po_lines||[])){
+                const pid=(po.po_id||'').toLowerCase().replace(/\s+/g,'');
+                const pmemo=(po.memo||'').toLowerCase().replace(/\s+/g,'');
+                if(pid===poLc||pmemo.includes(poLc)){
+                  bill.matchedPO={so_id:so.id,po_id:po.po_id,po,item:it,so};
+                  bill.matchedPOSource='so_po';
+                  break;
+                }
+              }
+              if(bill.matchedPO)break;
+            }
+            if(bill.matchedPO)break;
+          }
+        }
       }
       return bill;
     };
@@ -12839,11 +12879,19 @@ export default function App(){
       if(pages&&pages.length>1){
         // Extract Document Number from the top of each page (skip SI DOCUMENT NUMBER)
         const pageDocNums=pages.map(pt=>{
-          const topLines=pt.split('\n').slice(0,15);
-          for(const ln of topLines){
+          const topLines=pt.split('\n').slice(0,25);
+          for(let li=0;li<topLines.length;li++){
+            const ln=topLines[li];
             if(/SI\s+DOCUMENT\s+NUMBER/i.test(ln))continue;
             const m=ln.match(/DOCUMENT\s+NUMBER[:\s]+(\d+)/i);
             if(m)return m[1];
+            // Handle SI format: "DOCUMENT NUMBER" is a column header, actual number is on the next line
+            if(/DOCUMENT\s+NUMBER/i.test(ln)&&/DOCUMENT\s+DATE|CARRIER|SHIP\s+DATE|TERMS/i.test(ln)){
+              for(let j=li+1;j<Math.min(li+3,topLines.length);j++){
+                const firstField=topLines[j].split(/\t/)[0].trim();
+                if(/^\d{5,}$/.test(firstField))return firstField;
+              }
+            }
           }
           return '';
         });
@@ -12924,6 +12972,17 @@ export default function App(){
           const vRes=await qbApi('upsert_vendor',{vendor:{DisplayName:vendorName,CompanyName:vendorName}});
           if(vRes?.Vendor?.Id)qbVendorId=vRes.Vendor.Id;
         }
+        // Query QB for existing vendor by name before giving up
+        if(!qbVendorId){
+          try{
+            const qRes=await qbApi('query',{query:"SELECT * FROM Vendor WHERE DisplayName = '"+vendorName.replace(/'/g,"\\'")+"'"});
+            const qbVendor=qRes?.QueryResponse?.Vendor?.[0];
+            if(qbVendor?.Id){
+              qbVendorId=qbVendor.Id;
+              if(vendor)setVend(prev=>prev.map(v=>v.id===vendor.id?{...v,qb_vendor_id:qbVendorId}:v));
+            }
+          }catch(e){console.warn('[QB] Vendor query failed:',e)}
+        }
         if(!qbVendorId){
           setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,qbStatus:'error',qbMsg:'Vendor not found/created'}:p)}));
           failed++;continue;
@@ -12966,6 +13025,56 @@ export default function App(){
             details:['Bill created: '+vendorName+' $'+amt.toFixed(2)+' → QB Bill #'+billRes.Bill.Id,'PO: '+bill.po_number,bill.items.length+' line items, Freight: $'+bill.freight.toFixed(2)]};
           setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));
           setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,qbStatus:'success',qbMsg:'QB Bill #'+billRes.Bill.Id}:p)}));
+          // Update matched PO with billed quantities and tracking
+          if(bill.matchedPOSource==='batch'&&bill.matchedPO){
+            const batchId=bill.matchedPO.id||bill.matchedPO.po_number;
+            const billedSizes={};
+            bill.items.forEach(it=>{if(it.size&&it.qty)billedSizes[it.size]=(billedSizes[it.size]||0)+it.qty});
+            setSubmittedBatches(prev=>prev.map(sb=>{
+              if((sb.id||sb.po_number)!==batchId)return sb;
+              const existingBilled=sb.billed||{};
+              const newBilled={...existingBilled};
+              Object.entries(billedSizes).forEach(([sz,qty])=>{newBilled[sz]=(newBilled[sz]||0)+qty});
+              const trackNums=[...(sb.tracking_numbers||[])];
+              if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
+              return{...sb,billed:newBilled,tracking_numbers:trackNums,bill_doc_number:bill.doc_number,bill_date:bill.doc_date};
+            }));
+          }
+          if(bill.matchedPOSource==='inv_po'&&bill.matchedPO){
+            const poId=bill.matchedPO.id;
+            const billedSizes={};
+            bill.items.forEach(it=>{if(it.size&&it.qty)billedSizes[it.size]=(billedSizes[it.size]||0)+it.qty});
+            setInvPOs(prev=>prev.map(po=>{
+              if(po.id!==poId)return po;
+              const existingBilled=po.billed||{};
+              const newBilled={...existingBilled};
+              Object.entries(billedSizes).forEach(([sz,qty])=>{newBilled[sz]=(newBilled[sz]||0)+qty});
+              const trackNums=[...(po.tracking_numbers||[])];
+              if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
+              return{...po,billed:newBilled,tracking_numbers:trackNums};
+            }));
+          }
+          if(bill.matchedPOSource==='so_po'&&bill.matchedPO){
+            const matchedSO=bill.matchedPO.so;
+            if(matchedSO){
+              const billedSizes={};
+              bill.items.forEach(it=>{if(it.size&&it.qty)billedSizes[it.size]=(billedSizes[it.size]||0)+it.qty});
+              const updatedSO={...matchedSO,items:matchedSO.items.map(it=>{
+                const matchPO=it.po_lines?.find(po=>po.po_id===bill.matchedPO.po_id);
+                if(!matchPO)return it;
+                return{...it,po_lines:it.po_lines.map(po=>{
+                  if(po.po_id!==bill.matchedPO.po_id)return po;
+                  const existingBilled=po.billed||{};
+                  const newBilled={...existingBilled};
+                  Object.entries(billedSizes).forEach(([sz,qty])=>{newBilled[sz]=(newBilled[sz]||0)+qty});
+                  const trackNums=[...(po.tracking_numbers||[])];
+                  if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
+                  return{...po,billed:newBilled,tracking_numbers:trackNums};
+                })};
+              }),updated_at:new Date().toLocaleString()};
+              setSOs(prev=>prev.map(s=>s.id===matchedSO.id?updatedSO:s));
+            }
+          }
           success++;
         }else{
           setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,qbStatus:'error',qbMsg:billRes?.Fault?.Error?.[0]?.Detail||'Unknown error'}:p)}));
@@ -13772,9 +13881,10 @@ export default function App(){
                   <span style={{fontSize:14}}>&#128279;</span>
                   <div style={{flex:1}}>
                     <div style={{fontSize:12,fontWeight:700,color:'#1e40af'}}>
-                      Matched to {poSrc==='batch'?'Batch PO':'Inventory PO'}: {poMatch.po_number}
+                      Matched to {poSrc==='batch'?'Batch PO':poSrc==='so_po'?'Sales Order PO':'Inventory PO'}: {poMatch.po_number||poMatch.po_id||''}
                       {poSrc==='batch'&&poMatch.vendor_name&&<span style={{fontWeight:400,color:'#64748b'}}> — {poMatch.vendor_name}</span>}
                       {poSrc==='inv_po'&&poMatch.vendor_name&&<span style={{fontWeight:400,color:'#64748b'}}> — {poMatch.vendor_name}</span>}
+                      {poSrc==='so_po'&&poMatch.so_id&&<span style={{fontWeight:400,color:'#64748b'}}> — {poMatch.so_id}</span>}
                     </div>
                     <div style={{fontSize:11,color:'#475569',marginTop:2}}>
                       {poSrc==='batch'&&<>Units: {poMatch.total_units||'?'} | Cost: ${(poMatch.total_cost||0).toFixed(2)}
@@ -13785,6 +13895,8 @@ export default function App(){
                         </>}
                       </>}
                       {poSrc==='inv_po'&&<>Items: {poMatch.items?.length||0} | Status: {poMatch.status||'open'}
+                      </>}
+                      {poSrc==='so_po'&&<>{poMatch.item?.sku||''} {poMatch.item?.name||''} | {poMatch.so_id}
                       </>}
                     </div>
                   </div>
