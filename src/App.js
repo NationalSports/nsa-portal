@@ -229,7 +229,7 @@ const _dbSaveSO = async (so) => {
 const _dbSaveInvoice = async (inv) => {
   if(!supabase)return;
   try{
-    const{payments,items,...invRow}=inv;
+    const{payments,items,_qb_synced,_qb_id,so_id,date,paid,...invRow}=inv;
     await supabase.from('invoices').upsert(invRow,{onConflict:'id'});
     await supabase.from('invoice_payments').delete().eq('invoice_id',inv.id);
     if(payments?.length) await supabase.from('invoice_payments').insert(payments.map(p=>({...p,invoice_id:inv.id})));
@@ -257,7 +257,7 @@ const _dbSaveCustomer = async (c) => {
 const _dbSaveProduct = async (p) => {
   if(!supabase)return;
   try{
-    const{_inv,_alerts,_colors,image_url,back_image_url,...prodRow}=p;
+    const{_inv,_alerts,_colors,image_url,back_image_url,qb_item_id,...prodRow}=p;
     await supabase.from('products').upsert({...prodRow,_colors:_colors||null,image_front_url:image_url||prodRow.image_front_url||'',image_back_url:back_image_url||prodRow.image_back_url||''},{onConflict:'id'});
     const allSizes=new Set([...Object.keys(_inv||{}),...Object.keys(_alerts||{})]);
     if(allSizes.size>0){
@@ -321,7 +321,7 @@ const _soCols=['id','customer_id','estimate_id','memo','status','created_by','cr
 const _itemCols=['product_id','sku','name','brand','color','nsa_cost','retail_price','unit_sell','sizes','available_sizes','_colors','no_deco','is_custom','custom_desc','custom_cost','custom_sell'];
 const _decoCols=['kind','position','type','art_file_id','art_tbd_type','tbd_colors','tbd_stitches','tbd_dtf_size','sell_override','sell_each','cost_each','underbase','two_color','colors','stitches','dtf_size','num_method','num_size','roster','names','names_list','vendor','deco_type','notes','custom_font_art_id','_showRoster'];
 const _jobCols=['id','key','art_file_id','art_name','deco_type','positions','art_status','item_status','prod_status','total_units','fulfilled_units','split_from','created_at','assigned_machine','assigned_to','ship_method','items','_auto','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected'];
-const _custCols=['id','parent_id','name','alpha_tag','billing_address_line1','billing_address_line2','billing_city','billing_state','billing_zip','shipping_address_line1','shipping_address_line2','shipping_city','shipping_state','shipping_zip','adidas_ua_tier','catalog_markup','payment_terms','tax_rate','tax_exempt','primary_rep_id','qb_customer_id','notes','is_active','created_at','updated_at'];
+const _custCols=['id','parent_id','name','alpha_tag','billing_address_line1','billing_address_line2','billing_city','billing_state','billing_zip','shipping_address_line1','shipping_address_line2','shipping_city','shipping_state','shipping_zip','adidas_ua_tier','catalog_markup','payment_terms','tax_rate','tax_exempt','primary_rep_id','notes','is_active','created_at','updated_at'];
 // Legacy compat — keep old _dbSave for team_members and other simple tables
 const _dbSave = (table, data) => { if(supabase && data) supabase.from(table).upsert(Array.isArray(data)?data:[data], {onConflict:'id'}).then(r=>{if(r.error)console.error('[DB] save '+table+':', r.error.message)}) };
 // ─── Cloudinary Config ───
@@ -369,12 +369,13 @@ const extractPdfText=async(file)=>{
   const ab=await file.arrayBuffer();
   const pdf=await window.pdfjsLib.getDocument({data:ab}).promise;
   let fullText='';
+  const pages=[];// per-page text for multi-document splitting
   for(let i=1;i<=pdf.numPages;i++){
     const page=await pdf.getPage(i);
     const content=await page.getTextContent();
     // Group text items into rows using Y position, then sort by X within each row
     const items=content.items.filter(it=>it.str.trim());
-    if(items.length===0)continue;
+    if(items.length===0){pages.push('');continue}
     // Build rows by grouping items with similar Y coordinates (within 5 units)
     const rows=[];
     items.forEach(it=>{
@@ -386,6 +387,7 @@ const extractPdfText=async(file)=>{
     });
     // Sort rows top-to-bottom (higher Y = higher on page in PDF coords)
     rows.sort((a,b)=>b.y-a.y);
+    let pageText='';
     rows.forEach(row=>{
       row.items.sort((a,b)=>a.x-b.x);
       // Join items — insert tab when horizontal gap suggests a new column
@@ -398,11 +400,12 @@ const extractPdfText=async(file)=>{
         }
         line+=it.str;
       });
-      fullText+=line+'\n';
+      pageText+=line+'\n';
     });
-    fullText+='\n';
+    pages.push(pageText);
+    fullText+=pageText+'\n';
   }
-  return fullText;
+  return{fullText,pages};
 };
 const parseNetSuitePdf=(text,docType)=>{
   const result={docNumber:'',date:'',customerName:'',terms:'',subtotal:0,tax:0,shipping:0,total:0,lineItems:[],rawText:text,confidence:'low',warnings:[]};
@@ -482,7 +485,10 @@ const parseNetSuitePdf=(text,docType)=>{
     }
   }
 
-  const isEndMarker=l=>/^(Subtotal|Total$|Tax\b|Discount|Thank you|Comments|Notes$|Memo$|Terms$|Page\s+\d)/i.test(l.replace(/\t.*/,'').trim());
+  const isEndMarker=l=>/^(Subtotal|Total$|Tax\b|Discount|Thank you|Comments|Notes$|Memo$|Terms$)/i.test(l.replace(/\t.*/,'').trim());
+  // Detect page breaks and repeated headers from multi-page PDFs (skip, don't end)
+  const isPageBreak=l=>{const t=l.replace(/\t.*/,'').trim();return/^Page\s+\d/i.test(t)};
+  const isRepeatedHeader=l=>{const lo=l.toLowerCase();return(lo.includes('quantity')||lo.includes('qty'))&&(lo.includes('item')||lo.includes('sku'))&&(lo.includes('amount')||lo.includes('rate'))};
   // Check if a line starts with a quantity number (item data line vs description line)
   const isItemLine=line=>{
     const p=line.split('\t')[0]?.trim();
@@ -496,14 +502,17 @@ const parseNetSuitePdf=(text,docType)=>{
     while(i<lines.length){
       const line=lines[i];
       if(isEndMarker(line))break;
-      if(!line.trim()){i++;continue}
+      if(!line.trim()||isPageBreak(line)||isRepeatedHeader(line)){i++;continue}
 
       if(isItemLine(line)){
         // This is a data line (qty/sku/rate/amount) — next non-empty line is description
         let descLine='';
-        if(i+1<lines.length&&!isItemLine(lines[i+1])&&!isEndMarker(lines[i+1])){
-          descLine=lines[i+1];
-          i+=2;
+        let nextIdx=i+1;
+        // Skip page breaks/headers between data line and description
+        while(nextIdx<lines.length&&(isPageBreak(lines[nextIdx])||isRepeatedHeader(lines[nextIdx])||!lines[nextIdx].trim()))nextIdx++;
+        if(nextIdx<lines.length&&!isItemLine(lines[nextIdx])&&!isEndMarker(lines[nextIdx])){
+          descLine=lines[nextIdx];
+          i=nextIdx+1;
         } else {i++}
         itemPairs.push({dataLine:line,descLine});
       } else {
@@ -518,7 +527,7 @@ const parseNetSuitePdf=(text,docType)=>{
     // No header — try scanning for qty-starting lines
     result.warnings.push('Could not detect item table header — trying pattern-based parsing');
     for(let i=0;i<lines.length;i++){
-      if(isEndMarker(lines[i]))continue;
+      if(isEndMarker(lines[i])||isPageBreak(lines[i])||isRepeatedHeader(lines[i]))continue;
       if(isItemLine(lines[i])){
         let descLine='';
         if(i+1<lines.length&&!isItemLine(lines[i+1])&&!isEndMarker(lines[i+1])){
@@ -639,6 +648,30 @@ const parseNetSuitePdf=(text,docType)=>{
     else result.warnings.push('Missing document number or customer. Please verify the extracted data.');
   }
   return result;
+};
+// Split multi-invoice PDF into separate documents by document number
+const parseNetSuitePdfMulti=(pages,docType)=>{
+  const DOC_RE=/(?:Estimate|EST)[#\s:]*#?(EST-?\d+)|(?:Sales Order|SO)[#\s:]*#?(SO-?\d+)|(?:Purchase Order|PO)[#\s:]*#?(PO-?\d+)|(?:Invoice|INV)[#\s:]*#?(INV-?\d+)|#(EST\d+)|#(SO-?\d+)|#(PO-?\d+)|#(INV-?\d+)|(?:Estimate|Sales Order|Invoice|Purchase Order)\s*#?\s*(\d{3,})/i;
+  // Detect document number on each page
+  const pageDocNums=pages.map(pt=>{const m=pt.match(DOC_RE);return m?(m.find((v,i)=>i>0&&v)||''):''});
+  // Group pages by document number; pages without a doc number attach to the previous page's doc
+  const groups={};const order=[];
+  let currentDoc='__unknown__';
+  pageDocNums.forEach((dn,i)=>{
+    if(dn)currentDoc=dn;
+    if(!groups[currentDoc]){groups[currentDoc]=[];order.push(currentDoc)}
+    groups[currentDoc].push(pages[i]);
+  });
+  // If only one group, just parse normally (single document)
+  if(order.length<=1){
+    const allText=pages.join('\n');
+    return[parseNetSuitePdf(allText,docType)];
+  }
+  // Parse each group as a separate document
+  return order.map(docNum=>{
+    const text=groups[docNum].join('\n');
+    return parseNetSuitePdf(text,docType);
+  });
 };
 const Icon=({name,size=18})=>{const p={home:<path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>,users:<><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></>,building:<><path d="M6 22V4a2 2 0 012-2h8a2 2 0 012 2v18z"/><path d="M6 12H4a2 2 0 00-2 2v6a2 2 0 002 2h2"/><path d="M18 9h2a2 2 0 012 2v9a2 2 0 01-2 2h-2"/><path d="M10 6h4M10 10h4M10 14h4M10 18h4"/></>,package:<><path d="M16.5 9.4l-9-5.19M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/><path d="M3.27 6.96L12 12.01l8.73-5.05M12 22.08V12"/></>,box:<path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/>,search:<><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></>,plus:<path d="M12 5v14M5 12h14"/>,edit:<><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></>,upload:<><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></>,back:<polyline points="15 18 9 12 15 6"/>,mail:<><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></>,file:<><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></>,sortUp:<path d="M7 14l5-5 5 5"/>,sort:<><path d="M7 15l5 5 5-5"/><path d="M7 9l5-5 5 5"/></>,image:<><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></>,cart:<><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 002 1.61h9.72a2 2 0 002-1.61L23 6H6"/></>,dollar:<><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></>,grid:<><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></>,warehouse:<><path d="M22 8.35V20a2 2 0 01-2 2H4a2 2 0 01-2-2V8.35A2 2 0 013.26 6.5l8-3.2a2 2 0 011.48 0l8 3.2A2 2 0 0122 8.35z"/><path d="M6 18h12M6 14h12"/></>,trash:<><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></>,eye:<><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></>,alert:<><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></>,x:<><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>,check:<polyline points="20 6 9 17 4 12"/>,camera:<><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/><circle cx="12" cy="13" r="4"/></>,scan:<><path d="M3 7V5a2 2 0 012-2h2"/><path d="M17 3h2a2 2 0 012 2v2"/><path d="M21 17v2a2 2 0 01-2 2h-2"/><path d="M7 21H5a2 2 0 01-2-2v-2"/><line x1="7" y1="12" x2="17" y2="12"/></>,save:<><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></>,send:<><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></>};return<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{p[name]}</svg>};
 const DEFAULT_REPS=[
@@ -1721,7 +1754,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       }
     }
   };
-  const[editPick,setEditPick]=useState(null);const[editPO,setEditPO]=useState(null);const[editBatchPO,setEditBatchPO]=useState(null);
+  const[editPick,setEditPick]=useState(null);const[editPO,setEditPO]=useState(null);const[editBatchPO,setEditBatchPO]=useState(null);const[poFullPage,setPoFullPage]=useState(null);
   // Helper: effective PO committed qty for a size (ordered minus cancelled)
   const poCommitted=(poLines,sz)=>(poLines||[]).reduce((a,pk)=>{const ordered=pk[sz]||0;const cancelled=(pk.cancelled||{})[sz]||0;return a+(ordered-cancelled)},0);
   const[newAddr,setNewAddr]=useState('');const[showNA,setShowNA]=useState(false);const[showSzPicker,setShowSzPicker]=useState(null);const[showCustom,setShowCustom]=useState(false);const[custItem,setCustItem]=useState({vendor_id:'',name:'',sku:'CUSTOM',nsa_cost:0,unit_sell:0,retail_price:0,color:'',brand:''});
@@ -2064,6 +2097,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       {isSO&&<button className={`tab ${tab==='transactions'?'active':''}`} onClick={()=>setTab('transactions')}>Linked</button>}
       {isSO&&<button className={`tab ${tab==='jobs'?'active':''}`} onClick={()=>setTab('jobs')}>Jobs {(()=>{const jc=(o.jobs||[]).length;return jc>0?` (${jc})`:''})()}</button>}
       {isSO&&<button className={`tab ${tab==='firm_dates'?'active':''}`} onClick={()=>setTab('firm_dates')}>Firm Dates ({safeFirm(o).length})</button>}
+      {isSO&&<button className={`tab ${tab==='tracking'?'active':''}`} onClick={()=>setTab('tracking')}>Tracking</button>}
       {isSO&&<button className={`tab ${tab==='costs'?'active':''}`} onClick={()=>setTab('costs')} style={tab==='costs'?{background:'#166534',color:'white'}:{}}>💰 Costs</button>}
     </div>
 
@@ -2812,6 +2846,55 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         <div style={{padding:12,background:'#f8fafc',borderRadius:8}}><div style={{fontWeight:600,marginBottom:4}}>Purchase Orders</div><div style={{fontSize:12,color:'#94a3b8'}}>No POs linked yet (Phase 4)</div></div>
         <div style={{padding:12,background:'#f8fafc',borderRadius:8}}><div style={{fontWeight:600,marginBottom:4}}>Invoices</div><div style={{fontSize:12,color:'#94a3b8'}}>No invoices linked yet</div></div>
       </div></div></div>}
+
+    {/* TRACKING TAB */}
+    {isSO&&tab==='tracking'&&(()=>{
+      const trackUrl=tn=>{if(/^1Z/i.test(tn))return'https://www.ups.com/track?tracknum='+tn;if(/^(94|93|92|91)\d{18,}/.test(tn))return'https://tools.usps.com/go/TrackConfirmAction?tLabels='+tn;return'https://www.fedex.com/fedextrack/?trknbr='+tn};
+      const poData=[];
+      safeItems(o).forEach((item,idx)=>{(item.po_lines||[]).forEach((po,pi)=>{
+        const billed=po.billed||{};const received=po.received||{};const trackNums=po.tracking_numbers||[];const shipments=po.shipments||[];
+        const szKeys=Object.keys(po).filter(k=>!['status','po_id','received','shipments','cancelled','po_type','deco_vendor','deco_type','created_at','memo','notes','expected_date','billed','tracking_numbers','unit_cost','vendor'].includes(k)&&typeof po[k]==='number');
+        const totalOrdered=szKeys.reduce((a,sz)=>a+(po[sz]||0),0);const totalBilled=szKeys.reduce((a,sz)=>a+(billed[sz]||0),0);const totalReceived=szKeys.reduce((a,sz)=>a+(received[sz]||0),0);
+        if(totalOrdered>0)poData.push({item,po,szKeys,billed,received,trackNums,shipments,totalOrdered,totalBilled,totalReceived,
+          vendor:po.vendor||po.deco_vendor||'',expectedDate:po.expected_date||'',
+          shipDate:shipments.length>0?shipments[shipments.length-1].date:po.created_at||'',
+          status:totalReceived>=totalOrdered?'received':totalBilled>0?(totalReceived>0?'partial':'in_transit'):'waiting'});
+      })});
+      return<div className="card"><div className="card-header"><h2>Tracking & Billing</h2></div><div className="card-body">
+        {o._tracking_number&&<div style={{padding:12,background:'#f0fdf4',borderRadius:8,marginBottom:16,border:'1px solid #bbf7d0'}}>
+          <div style={{fontSize:10,fontWeight:700,color:'#166534',textTransform:'uppercase',marginBottom:6}}>Customer Shipment</div>
+          <div style={{display:'flex',gap:12,alignItems:'center',flexWrap:'wrap'}}>
+            <a href={o._tracking_url||trackUrl(o._tracking_number)} target="_blank" rel="noreferrer" style={{fontFamily:'monospace',fontWeight:700,color:'#166534',background:'#dcfce7',padding:'4px 10px',borderRadius:4,textDecoration:'none',fontSize:13}}>{o._tracking_number}</a>
+            {o._carrier&&<span style={{fontSize:12,color:'#166534'}}>via {o._carrier}</span>}
+            {o._ship_date&&<span style={{fontSize:12,color:'#64748b'}}>Shipped {o._ship_date}</span>}
+          </div>
+        </div>}
+        {poData.length===0?<div className="empty">No purchase orders on this SO</div>:
+        <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}>
+          <thead><tr style={{borderBottom:'2px solid #e2e8f0',textAlign:'left'}}>
+            <th style={{padding:'6px 8px',fontSize:10,color:'#64748b'}}>ITEM</th>
+            <th style={{padding:'6px 8px',fontSize:10,color:'#64748b'}}>PO</th>
+            <th style={{padding:'6px 8px',fontSize:10,color:'#64748b'}}>VENDOR</th>
+            <th style={{padding:'6px 8px',fontSize:10,color:'#64748b'}}>STATUS</th>
+            <th style={{padding:'6px 8px',fontSize:10,color:'#64748b'}}>TRACKING</th>
+            <th style={{padding:'6px 8px',fontSize:10,color:'#64748b'}}>SHIP DATE</th>
+            <th style={{padding:'6px 8px',fontSize:10,color:'#64748b'}}>EXPECTED</th>
+            <th style={{padding:'6px 8px',fontSize:10,color:'#64748b',textAlign:'center'}}>BILLED</th>
+            <th style={{padding:'6px 8px',fontSize:10,color:'#64748b',textAlign:'center'}}>RECEIVED</th>
+          </tr></thead>
+          <tbody>{poData.map((d,i)=><tr key={i} style={{borderBottom:'1px solid #f1f5f9'}}>
+            <td style={{padding:'6px 8px'}}><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{d.item.sku}</span> <span style={{color:'#64748b'}}>{d.item.color}</span></td>
+            <td style={{padding:'6px 8px',fontFamily:'monospace',fontWeight:600}}>{d.po.po_id}</td>
+            <td style={{padding:'6px 8px'}}>{d.vendor}</td>
+            <td style={{padding:'6px 8px'}}><span className={`badge ${d.status==='received'?'badge-green':d.status==='in_transit'?'badge-blue':d.status==='partial'?'badge-amber':'badge-gray'}`}>{d.status==='received'?'Received':d.status==='in_transit'?'In Transit':d.status==='partial'?'Partial':'Waiting'}</span></td>
+            <td style={{padding:'6px 8px'}}>{d.trackNums.length>0?<div style={{display:'flex',gap:4,flexWrap:'wrap'}}>{d.trackNums.map((tn,ti)=><a key={ti} href={trackUrl(tn)} target="_blank" rel="noreferrer" style={{fontFamily:'monospace',fontSize:11,fontWeight:700,color:'#1e40af',background:'#dbeafe',padding:'2px 6px',borderRadius:4,textDecoration:'none'}}>{tn}</a>)}</div>:<span style={{color:'#d1d5db'}}>—</span>}</td>
+            <td style={{padding:'6px 8px',color:'#475569'}}>{d.shipDate||<span style={{color:'#d1d5db'}}>—</span>}</td>
+            <td style={{padding:'6px 8px',color:'#475569'}}>{d.expectedDate||<span style={{color:'#d1d5db'}}>—</span>}</td>
+            <td style={{padding:'6px 8px',textAlign:'center',fontWeight:700,color:d.totalBilled>0?'#1e40af':'#d1d5db'}}>{d.totalBilled>0?d.totalBilled+'/'+d.totalOrdered:'—'}</td>
+            <td style={{padding:'6px 8px',textAlign:'center',fontWeight:700,color:d.totalReceived>0?'#166534':'#d1d5db'}}>{d.totalReceived>0?d.totalReceived+'/'+d.totalOrdered:'—'}</td>
+          </tr>)}</tbody>
+        </table>}
+      </div></div>})()}
 
     {/* FIRM DATES TAB */}
     {isSO&&tab==='firm_dates'&&<div className="card"><div className="card-header"><h2>Firm Date Requests</h2><button className="btn btn-sm btn-primary" onClick={()=>sv('firm_dates',[...safeFirm(o),{item_desc:'',date:'',approved:false}])}><Icon name="plus" size={12}/> Add</button></div>
@@ -3644,8 +3727,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
               <div style={{fontSize:11,fontWeight:600,color:'#64748b'}}>Art:</div>
               <select className="form-select" style={{width:150,fontSize:11}} value={j.art_status} onChange={e=>updJob(ji,'art_status',e.target.value)}>
                 {Object.entries(artLabels).map(([k,v])=><option key={k} value={k}>{v}</option>)}</select>
-              {j.art_file_id&&j.art_file_id!=='__tbd'&&<button className="btn btn-sm" style={{fontSize:10,background:'#be185d',color:'white',border:'none',padding:'3px 8px'}} onClick={()=>setArtReqModal({jIdx:ji,artist:'',instructions:'',files:[]})}>🎨 Request Art</button>}
-              {(j.art_status==='waiting_approval')&&<button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'3px 8px'}} onClick={()=>{updJob(ji,'art_status','production_files_needed');if(j.art_file_id){const afi=af.findIndex(a=>a.id===j.art_file_id);if(afi>=0)uArt(afi,'status','approved')}nf('✅ Art approved — awaiting prod files')}}>✅ Approve Art</button>}
+              {(()=>{if(!j.art_file_id||j.art_file_id==='__tbd')return null;const hasReqs=(j.art_requests||[]).length>0;const activeReq=(j.art_requests||[]).find(r=>r.status==='in_progress'||r.status==='requested');
+                return<>{hasReqs&&<span style={{padding:'2px 8px',borderRadius:10,fontSize:9,fontWeight:700,background:activeReq?'#fef3c7':'#dcfce7',color:activeReq?'#92400e':'#166534',marginRight:4,animation:activeReq?'pulse 2s infinite':'none'}}>
+                  {activeReq?(activeReq.status==='in_progress'?'Art In Progress':'Art Requested'):'Art Complete'}</span>}
+                <button className="btn btn-sm" style={{fontSize:10,background:hasReqs?'#6d28d9':'#be185d',color:'white',border:'none',padding:'3px 8px'}} onClick={()=>setArtReqModal({jIdx:ji,artist:j.assigned_artist||'',instructions:'',files:[]})}>
+                  {hasReqs?'Update Art Request':'🎨 Request Art'}</button></>})()}
+              {(j.art_status==='waiting_approval')&&<button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'3px 8px'}} onClick={()=>{updJob(ji,'art_status','production_files_needed');if(j.art_file_id){const afi=af.findIndex(a=>a.id===j.art_file_id);if(afi>=0)uArt(afi,'status','approved')}nf('Art approved — awaiting prod files')}}>Approve Art</button>}
               <div style={{fontSize:11,fontWeight:600,color:'#64748b',marginLeft:8}}>Artist:</div>
               <select className="form-select" style={{width:130,fontSize:11}} value={j.assigned_artist||''} onChange={e=>updJob(ji,'assigned_artist',e.target.value)}>
                 <option value="">Unassigned</option>
@@ -3816,9 +3903,20 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           const updatedJobs=jobs.map((jj,i)=>i===artReqModal.jIdx?{...jj,art_requests:[...(jj.art_requests||[]),req],art_status:jj.art_status==='needs_art'?'art_requested':jj.art_status,assigned_artist:artReqModal.artist||jj.assigned_artist}:jj);
           const updated={...o,jobs:updatedJobs,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setArtReqModal(null);nf('Art request sent to '+(artists2.find(a=>a.id===artReqModal.artist)||{}).name||'artist');
         };
+        const hasExistingReqs2=(j2.art_requests||[]).length>0;
+        const activeReq2=(j2.art_requests||[]).find(r=>r.status==='in_progress'||r.status==='requested');
         return<div className="modal-overlay" onClick={()=>setArtReqModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
-          <div className="modal-header"><h2>🎨 Request Art — {j2.art_name}</h2><button className="modal-close" onClick={()=>setArtReqModal(null)}>×</button></div>
+          <div className="modal-header" style={hasExistingReqs2?{background:'#faf5ff'}:undefined}><h2>{hasExistingReqs2?'Update Art Request':'🎨 Request Art'} — {j2.art_name}</h2><button className="modal-close" onClick={()=>setArtReqModal(null)}>×</button></div>
           <div className="modal-body">
+            {hasExistingReqs2&&<div style={{padding:'10px 14px',marginBottom:12,borderRadius:8,border:'2px solid '+(activeReq2?'#fbbf24':'#86efac'),background:activeReq2?'#fffbeb':'#f0fdf4'}}>
+              <div style={{display:'flex',alignItems:'center',gap:8}}>
+                <span style={{fontSize:18}}>{activeReq2?(activeReq2.status==='in_progress'?'🎨':'📩'):'✅'}</span>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:13,fontWeight:700,color:activeReq2?'#92400e':'#166534'}}>{activeReq2?(activeReq2.status==='in_progress'?'Art In Progress — '+activeReq2.artist_name:'Art Requested — Awaiting '+activeReq2.artist_name):'All Requests Complete'}</div>
+                  <div style={{fontSize:10,color:'#64748b'}}>{(j2.art_requests||[]).length} request(s) total · Last: {new Date((j2.art_requests||[])[(j2.art_requests||[]).length-1]?.created_at).toLocaleDateString()}</div>
+                </div>
+              </div>
+            </div>}
             <div style={{marginBottom:12}}>
               <div className="form-label">Artist *</div>
               <select className="form-select" value={artReqModal.artist} onChange={e=>setArtReqModal(m=>({...m,artist:e.target.value}))}>
@@ -3827,8 +3925,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
               </select>
             </div>
             <div style={{marginBottom:12}}>
-              <div className="form-label">Instructions</div>
-              <textarea className="form-input" rows={4} placeholder="Describe what you need — mockup, revision, specific colors, placement notes, etc." value={artReqModal.instructions} onChange={e=>setArtReqModal(m=>({...m,instructions:e.target.value}))} style={{resize:'vertical'}}/>
+              <div className="form-label">{hasExistingReqs2?'Update / Additional Instructions':'Instructions'}</div>
+              <textarea className="form-input" rows={4} placeholder={hasExistingReqs2?'Add revision notes, feedback, or additional instructions...':'Describe what you need — mockup, revision, specific colors, placement notes, etc.'} value={artReqModal.instructions} onChange={e=>setArtReqModal(m=>({...m,instructions:e.target.value}))} style={{resize:'vertical'}}/>
             </div>
             <div style={{marginBottom:12}}>
               <div className="form-label">Attach Files</div>
@@ -3860,7 +3958,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           </div>
           <div className="modal-footer">
             <button className="btn btn-secondary" onClick={()=>setArtReqModal(null)}>Cancel</button>
-            <button className="btn btn-primary" disabled={!artReqModal.artist} onClick={submitArtReq2}>Send Art Request</button>
+            <button className="btn btn-primary" style={hasExistingReqs2?{background:'#6d28d9',borderColor:'#6d28d9'}:{}} disabled={!artReqModal.artist} onClick={submitArtReq2}>{hasExistingReqs2?'Send Update':'Send Art Request'}</button>
           </div>
         </div></div>
       })()}
@@ -3995,7 +4093,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                 :<select style={{fontSize:10,padding:'2px 4px',borderRadius:4,border:'1px solid #e2e8f0',fontWeight:600,background:SC[j.prod_status]?.bg||'#f1f5f9',color:SC[j.prod_status]?.c||'#475569'}} value={j.prod_status} onChange={e=>{e.stopPropagation();updJob(ji,'prod_status',e.target.value)}}>
                   {prodStatuses.map(ps=><option key={ps} value={ps}>{prodLabels[ps]}</option>)}</select>}</td>
               <td style={{whiteSpace:'nowrap'}}>
-                {j.art_file_id&&j.art_file_id!=='__tbd'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#be185d',color:'white',borderRadius:4,marginRight:3}} onClick={e=>{e.stopPropagation();setArtReqModal({jIdx:ji,artist:'',instructions:'',files:[]})}} title="Request art from artist">🎨 Request Art</button>}
+                {(()=>{if(!j.art_file_id||j.art_file_id==='__tbd')return null;const hasReqs=(j.art_requests||[]).length>0;const activeReq=(j.art_requests||[]).find(r=>r.status==='in_progress'||r.status==='requested');
+                  return<>{hasReqs&&activeReq&&<span style={{fontSize:8,padding:'1px 5px',borderRadius:8,fontWeight:700,background:'#fef3c7',color:'#92400e',marginRight:3}}>{activeReq.status==='in_progress'?'In Progress':'Requested'}</span>}
+                  <button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:hasReqs?'#6d28d9':'#be185d',color:'white',borderRadius:4,marginRight:3}} onClick={e=>{e.stopPropagation();setArtReqModal({jIdx:ji,artist:j.assigned_artist||'',instructions:'',files:[]})}} title={hasReqs?'Update art request':'Request art from artist'}>{hasReqs?'Update Art':'🎨 Request Art'}</button></>})()}
                 {canSplit&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#7c3aed',color:'white',borderRadius:4}} onClick={e=>{e.stopPropagation();setSplitModal({jIdx:ji,mode:null,selectedSkus:[]})}} title="Split job">✂️ Split</button>}
               </td>
             </tr>
@@ -4118,14 +4218,25 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         const artF=safeArt(o).find(a=>a.id===j.art_file_id);
         const existingFiles=(artF?.mockup_files||[]).concat(artF?.prod_files||[]);
         const artists=REPS.filter(r=>r.role==='art');
+        const hasExistingReqs=(j.art_requests||[]).length>0;
+        const activeReq=(j.art_requests||[]).find(r=>r.status==='in_progress'||r.status==='requested');
         const submitArtReq=()=>{
           const req={id:'AR-'+Date.now(),artist:artReqModal.artist,artist_name:(artists.find(a=>a.id===artReqModal.artist)||{}).name||'',instructions:artReqModal.instructions,files:artReqModal.files||[],existing_files:existingFiles.map(f=>f.name||f),status:'requested',created_at:new Date().toISOString(),created_by:cu.name};
           const updatedJobs=jobs.map((jj,i)=>i===artReqModal.jIdx?{...jj,art_requests:[...(jj.art_requests||[]),req],art_status:jj.art_status==='needs_art'?'art_requested':jj.art_status,assigned_artist:artReqModal.artist||jj.assigned_artist}:jj);
           const updated={...o,jobs:updatedJobs,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setArtReqModal(null);nf('Art request sent to '+(artists.find(a=>a.id===artReqModal.artist)||{}).name||'artist');
         };
         return<div className="modal-overlay" onClick={()=>setArtReqModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
-          <div className="modal-header"><h2>🎨 Request Art — {j.art_name}</h2><button className="modal-close" onClick={()=>setArtReqModal(null)}>×</button></div>
+          <div className="modal-header" style={hasExistingReqs?{background:'#faf5ff'}:undefined}><h2>{hasExistingReqs?'Update Art Request':'🎨 Request Art'} — {j.art_name}</h2><button className="modal-close" onClick={()=>setArtReqModal(null)}>×</button></div>
           <div className="modal-body">
+            {hasExistingReqs&&<div style={{padding:'10px 14px',marginBottom:12,borderRadius:8,border:'2px solid '+(activeReq?'#fbbf24':'#86efac'),background:activeReq?'#fffbeb':'#f0fdf4'}}>
+              <div style={{display:'flex',alignItems:'center',gap:8}}>
+                <span style={{fontSize:18}}>{activeReq?(activeReq.status==='in_progress'?'🎨':'📩'):'✅'}</span>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:13,fontWeight:700,color:activeReq?'#92400e':'#166534'}}>{activeReq?(activeReq.status==='in_progress'?'Art In Progress — '+activeReq.artist_name:'Art Requested — Awaiting '+activeReq.artist_name):'All Requests Complete'}</div>
+                  <div style={{fontSize:10,color:'#64748b'}}>{(j.art_requests||[]).length} request(s) total · Last: {new Date((j.art_requests||[])[(j.art_requests||[]).length-1]?.created_at).toLocaleDateString()}</div>
+                </div>
+              </div>
+            </div>}
             <div style={{marginBottom:12}}>
               <div className="form-label">Artist *</div>
               <select className="form-select" value={artReqModal.artist} onChange={e=>setArtReqModal(m=>({...m,artist:e.target.value}))}>
@@ -4134,8 +4245,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
               </select>
             </div>
             <div style={{marginBottom:12}}>
-              <div className="form-label">Instructions</div>
-              <textarea className="form-input" rows={4} placeholder="Describe what you need — mockup, revision, specific colors, placement notes, etc." value={artReqModal.instructions} onChange={e=>setArtReqModal(m=>({...m,instructions:e.target.value}))} style={{resize:'vertical'}}/>
+              <div className="form-label">{hasExistingReqs?'Update / Additional Instructions':'Instructions'}</div>
+              <textarea className="form-input" rows={4} placeholder={hasExistingReqs?'Add revision notes, feedback, or additional instructions...':'Describe what you need — mockup, revision, specific colors, placement notes, etc.'} value={artReqModal.instructions} onChange={e=>setArtReqModal(m=>({...m,instructions:e.target.value}))} style={{resize:'vertical'}}/>
             </div>
             <div style={{marginBottom:12}}>
               <div className="form-label">Attach Files</div>
@@ -4167,7 +4278,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           </div>
           <div className="modal-footer">
             <button className="btn btn-secondary" onClick={()=>setArtReqModal(null)}>Cancel</button>
-            <button className="btn btn-primary" disabled={!artReqModal.artist} onClick={submitArtReq}>Send Art Request</button>
+            <button className="btn btn-primary" style={hasExistingReqs?{background:'#6d28d9',borderColor:'#6d28d9'}:{}} disabled={!artReqModal.artist} onClick={submitArtReq}>{hasExistingReqs?'Send Update':'Send Art Request'}</button>
           </div>
         </div></div>
       })()}
@@ -4327,16 +4438,19 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       const activeLine=allLines[activeLineIdx]||allLines[0];
       const po=o.items[activeLine.lineIdx]?.po_lines?.[activeLine.poIdx]||editPO.po;
       const item=o.items[activeLine.lineIdx];
-      const szKeys=Object.keys(po).filter(k=>k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='po_type'&&k!=='deco_vendor'&&k!=='deco_type'&&k!=='created_at'&&k!=='memo'&&k!=='notes'&&k!=='expected_date'&&typeof po[k]==='number');
-      const received=po.received||{};const cancelled=po.cancelled||{};
-      const shipments=po.shipments||[];
+      const szKeys=Object.keys(po).filter(k=>k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='po_type'&&k!=='deco_vendor'&&k!=='deco_type'&&k!=='created_at'&&k!=='memo'&&k!=='notes'&&k!=='expected_date'&&k!=='billed'&&k!=='tracking_numbers'&&k!=='unit_cost'&&k!=='vendor'&&typeof po[k]==='number');
+      const received=po.received||{};const cancelled=po.cancelled||{};const billed=po.billed||{};
+      const shipments=po.shipments||[];const trackingNums=po.tracking_numbers||[];
       const getRcvd=sz=>(received[sz]||0);
       const getCncl=sz=>(cancelled[sz]||0);
+      const getBilled=sz=>(billed[sz]||0);
       const getOpen=sz=>Math.max(0,(po[sz]||0)-getRcvd(sz)-getCncl(sz));
       const totalOrdered=szKeys.reduce((a,sz)=>a+(po[sz]||0),0);
       const totalReceived=szKeys.reduce((a,sz)=>a+getRcvd(sz),0);
       const totalCancelled=szKeys.reduce((a,sz)=>a+getCncl(sz),0);
+      const totalBilled=szKeys.reduce((a,sz)=>a+getBilled(sz),0);
       const totalOpen=szKeys.reduce((a,sz)=>a+getOpen(sz),0);
+      const totalInTransit=Math.max(0,totalBilled-totalReceived);
       const hasOpen=szKeys.some(sz=>getOpen(sz)>0);
       const poStatus=totalOpen<=0&&totalReceived>0?'received':totalReceived>0?'partial':'waiting';
       const qrData=window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(po.po_id);
@@ -4345,6 +4459,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         <div className="modal-header"><h2>PO — {po.po_id||'PO'}</h2>
           <div style={{display:'flex',gap:6,alignItems:'center'}}>
             <span className={`badge ${poStatus==='received'?'badge-green':poStatus==='partial'?'badge-amber':'badge-gray'}`}>{poStatus==='received'?'Fully Received':poStatus==='partial'?'Partial — '+totalOpen+' open':'Waiting'}</span>
+            <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} onClick={()=>{setPoFullPage({po,item,allLines,soId:o.id,soItems:o.items});setEditPO(null)}}>View Full Page</button>
             <button className="modal-close" onClick={()=>setEditPO(null)}>x</button>
           </div>
         </div>
@@ -4367,16 +4482,32 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
             <span className="badge badge-gray">{item.color}</span>
           </div>}
 
+          {/* Tracking Numbers */}
+          {trackingNums.length>0&&<div style={{padding:'8px 12px',background:'#eff6ff',borderRadius:6,marginBottom:12,display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+            <span style={{fontSize:10,fontWeight:700,color:'#1e40af',textTransform:'uppercase'}}>Tracking:</span>
+            {trackingNums.map((tn,ti)=><span key={ti} style={{fontFamily:'monospace',fontSize:12,fontWeight:700,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4}}>{tn}</span>)}
+          </div>}
+
           {/* PO Summary Table */}
+          {(()=>{const unitCost=po.po_type==='outside_deco'?safeNum(po.unit_cost):safeNum(item?.nsa_cost);const poTotal=totalOrdered*unitCost;const rcvdTotal=totalReceived*unitCost;const openTotal=totalOpen*unitCost;return<>
           <table style={{width:'100%',fontSize:12,borderCollapse:'collapse',marginBottom:12}}>
-            <thead><tr style={{borderBottom:'2px solid #0f172a'}}><th style={{padding:'4px 8px',textAlign:'left',fontSize:10,color:'#64748b'}}></th>{szKeys.map(sz=><th key={sz} style={{padding:'4px 8px',textAlign:'center',minWidth:48}}>{sz}</th>)}<th style={{padding:'4px 8px',textAlign:'center'}}>TOTAL</th></tr></thead>
+            <thead><tr style={{borderBottom:'2px solid #0f172a'}}><th style={{padding:'4px 8px',textAlign:'left',fontSize:10,color:'#64748b'}}></th>{szKeys.map(sz=><th key={sz} style={{padding:'4px 8px',textAlign:'center',minWidth:48}}>{sz}</th>)}<th style={{padding:'4px 8px',textAlign:'center'}}>TOTAL</th><th style={{padding:'4px 8px',textAlign:'right',minWidth:70}}>$</th></tr></thead>
             <tbody>
-              <tr><td style={{padding:'3px 8px',fontSize:10,color:'#64748b'}}>Ordered</td>{szKeys.map(sz=><td key={sz} style={{padding:'3px 8px',textAlign:'center',fontWeight:700}}>{po[sz]||0}</td>)}<td style={{padding:'3px 8px',textAlign:'center',fontWeight:800}}>{totalOrdered}</td></tr>
-              <tr style={{color:'#166534'}}><td style={{padding:'3px 8px',fontSize:10}}>Received</td>{szKeys.map(sz=><td key={sz} style={{padding:'3px 8px',textAlign:'center',fontWeight:700,color:getRcvd(sz)>0?'#166534':'#d1d5db'}}>{getRcvd(sz)||'—'}</td>)}<td style={{padding:'3px 8px',textAlign:'center',fontWeight:800}}>{totalReceived}</td></tr>
-              {totalCancelled>0&&<tr style={{color:'#dc2626'}}><td style={{padding:'3px 8px',fontSize:10}}>Cancelled</td>{szKeys.map(sz=><td key={sz} style={{padding:'3px 8px',textAlign:'center',fontWeight:700,color:getCncl(sz)>0?'#dc2626':'#d1d5db'}}>{getCncl(sz)||'—'}</td>)}<td style={{padding:'3px 8px',textAlign:'center',fontWeight:800}}>{totalCancelled}</td></tr>}
-              {hasOpen&&<tr style={{borderTop:'1px solid #e2e8f0',color:'#b45309'}}><td style={{padding:'3px 8px',fontSize:10,fontWeight:600}}>Open</td>{szKeys.map(sz=>{const op=getOpen(sz);return<td key={sz} style={{padding:'3px 8px',textAlign:'center',fontWeight:700,color:op>0?'#b45309':'#d1d5db'}}>{op>0?op:'—'}</td>})}<td style={{padding:'3px 8px',textAlign:'center',fontWeight:800}}>{totalOpen}</td></tr>}
+              <tr><td style={{padding:'3px 8px',fontSize:10,color:'#64748b'}}>Ordered</td>{szKeys.map(sz=><td key={sz} style={{padding:'3px 8px',textAlign:'center',fontWeight:700}}>{po[sz]||0}</td>)}<td style={{padding:'3px 8px',textAlign:'center',fontWeight:800}}>{totalOrdered}</td><td style={{padding:'3px 8px',textAlign:'right',fontWeight:800}}>${poTotal.toFixed(2)}</td></tr>
+              {totalBilled>0&&<tr style={{color:'#1e40af'}}><td style={{padding:'3px 8px',fontSize:10}}>Billed</td>{szKeys.map(sz=><td key={sz} style={{padding:'3px 8px',textAlign:'center',fontWeight:700,color:getBilled(sz)>0?'#1e40af':'#d1d5db'}}>{getBilled(sz)||'—'}</td>)}<td style={{padding:'3px 8px',textAlign:'center',fontWeight:800}}>{totalBilled}</td><td style={{padding:'3px 8px',textAlign:'right',fontWeight:800,color:'#1e40af'}}>${(totalBilled*unitCost).toFixed(2)}</td></tr>}
+              <tr style={{color:'#166534'}}><td style={{padding:'3px 8px',fontSize:10}}>Received</td>{szKeys.map(sz=><td key={sz} style={{padding:'3px 8px',textAlign:'center',fontWeight:700,color:getRcvd(sz)>0?'#166534':'#d1d5db'}}>{getRcvd(sz)||'—'}</td>)}<td style={{padding:'3px 8px',textAlign:'center',fontWeight:800}}>{totalReceived}</td><td style={{padding:'3px 8px',textAlign:'right',fontWeight:800,color:'#166534'}}>${rcvdTotal.toFixed(2)}</td></tr>
+              {totalCancelled>0&&<tr style={{color:'#dc2626'}}><td style={{padding:'3px 8px',fontSize:10}}>Cancelled</td>{szKeys.map(sz=><td key={sz} style={{padding:'3px 8px',textAlign:'center',fontWeight:700,color:getCncl(sz)>0?'#dc2626':'#d1d5db'}}>{getCncl(sz)||'—'}</td>)}<td style={{padding:'3px 8px',textAlign:'center',fontWeight:800}}>{totalCancelled}</td><td style={{padding:'3px 8px',textAlign:'right',fontWeight:800,color:'#dc2626'}}>${(totalCancelled*unitCost).toFixed(2)}</td></tr>}
+              {totalInTransit>0&&<tr style={{color:'#7c3aed'}}><td style={{padding:'3px 8px',fontSize:10}}>In Transit</td>{szKeys.map(sz=>{const it=Math.max(0,getBilled(sz)-getRcvd(sz));return<td key={sz} style={{padding:'3px 8px',textAlign:'center',fontWeight:700,color:it>0?'#7c3aed':'#d1d5db'}}>{it>0?it:'—'}</td>})}<td style={{padding:'3px 8px',textAlign:'center',fontWeight:800}}>{totalInTransit}</td><td style={{padding:'3px 8px',textAlign:'right',fontWeight:800,color:'#7c3aed'}}>${(totalInTransit*unitCost).toFixed(2)}</td></tr>}
+              {hasOpen&&<tr style={{borderTop:'1px solid #e2e8f0',color:'#b45309'}}><td style={{padding:'3px 8px',fontSize:10,fontWeight:600}}>Open</td>{szKeys.map(sz=>{const op=getOpen(sz);return<td key={sz} style={{padding:'3px 8px',textAlign:'center',fontWeight:700,color:op>0?'#b45309':'#d1d5db'}}>{op>0?op:'—'}</td>})}<td style={{padding:'3px 8px',textAlign:'center',fontWeight:800}}>{totalOpen}</td><td style={{padding:'3px 8px',textAlign:'right',fontWeight:800,color:'#b45309'}}>${openTotal.toFixed(2)}</td></tr>}
             </tbody>
           </table>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 12px',background:'#f0f9ff',borderRadius:6,marginBottom:12}}>
+            <div style={{display:'flex',gap:16,fontSize:12}}>
+              <span style={{color:'#64748b'}}>Unit Cost: <strong style={{color:'#0f172a'}}>${unitCost.toFixed(2)}</strong></span>
+              {po.po_type==='outside_deco'&&<span className="badge badge-blue" style={{fontSize:10}}>Decoration PO</span>}
+            </div>
+            <div style={{fontWeight:800,fontSize:16,color:'#0f172a'}}>PO Total: ${poTotal.toFixed(2)}</div>
+          </div></>})()}
 
           {/* Cancel sizes from PO */}
           {hasOpen&&<div style={{marginBottom:12}}>
@@ -4524,8 +4655,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                 <div style={{fontWeight:600}}>{item?.sku} {item?.name}</div>
                 <div>{item?.color} — {totalOrdered} ordered{totalReceived>0?', '+totalReceived+' received':''}</div>
                 <div style={{marginTop:4}}>Ordered: {szKeys.map(sz=>sz+':'+po[sz]).join('  ')}</div>
+                {totalBilled>0&&<div style={{color:'#1e40af'}}>Billed: {szKeys.filter(sz=>getBilled(sz)>0).map(sz=>sz+':'+getBilled(sz)).join('  ')}</div>}
                 {totalReceived>0&&<div style={{color:'#166534'}}>Received: {szKeys.filter(sz=>getRcvd(sz)>0).map(sz=>sz+':'+getRcvd(sz)).join('  ')}</div>}
                 {totalOpen>0&&<div style={{color:'#b45309'}}>Open: {szKeys.filter(sz=>getOpen(sz)>0).map(sz=>sz+':'+getOpen(sz)).join('  ')}</div>}
+                {trackingNums.length>0&&<div style={{color:'#1e40af',marginTop:2}}>Tracking: {trackingNums.join(', ')}</div>}
               </div>
             </div>
             <button className="btn btn-sm btn-secondary" style={{marginTop:8,fontSize:11}} onClick={()=>{
@@ -4559,6 +4692,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                   aligns:['left',...szHeaders.map(()=>'center'),'center'],
                   rows:[
                     {cells:[{value:'<strong>Ordered</strong>',style:'font-weight:700'},...szHeaders.map(s=>({value:po[s]||0,style:(po[s]>0?'font-weight:800;color:#1e3a5f':'')})),{value:totalOrdered,style:'font-weight:800'}]},
+                    ...(totalBilled>0?[{cells:[{value:'Billed',style:'color:#1e40af'},...szHeaders.map(s=>({value:getBilled(s)||'—',style:'color:#1e40af'})),{value:totalBilled,style:'color:#1e40af;font-weight:700'}]}]:[]),
                     ...(totalReceived>0?[{cells:[{value:'Received',style:'color:#166534'},...szHeaders.map(s=>({value:getRcvd(s)||'—',style:'color:#166534'})),{value:totalReceived,style:'color:#166534;font-weight:700'}]}]:[]),
                     ...(totalOpen>0?[{cells:[{value:'Open',style:'color:#b45309'},...szHeaders.map(s=>({value:getOpen(s)||'—',style:'color:#b45309'})),{value:totalOpen,style:'color:#b45309;font-weight:700'}]}]:[]),
                   ]
@@ -4579,6 +4713,128 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           <button className="btn btn-primary" onClick={()=>setEditPO(null)}>Close</button>
         </div>
       </div></div>})()}
+
+    {/* PO FULL PAGE VIEW */}
+    {poFullPage&&(()=>{
+      const{po,item,allLines,soId,soItems}=poFullPage;
+      const szKeys=Object.keys(po).filter(k=>k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='po_type'&&k!=='deco_vendor'&&k!=='deco_type'&&k!=='created_at'&&k!=='memo'&&k!=='notes'&&k!=='expected_date'&&k!=='unit_cost'&&typeof po[k]==='number');
+      const received=po.received||{};const cancelled=po.cancelled||{};const shipments=po.shipments||[];
+      const getRcvd=sz=>(received[sz]||0);const getCncl=sz=>(cancelled[sz]||0);const getOpen=sz=>Math.max(0,(po[sz]||0)-getRcvd(sz)-getCncl(sz));
+      const totalOrdered=szKeys.reduce((a,sz)=>a+(po[sz]||0),0);const totalReceived=szKeys.reduce((a,sz)=>a+getRcvd(sz),0);
+      const totalCancelled=szKeys.reduce((a,sz)=>a+getCncl(sz),0);const totalOpen=szKeys.reduce((a,sz)=>a+getOpen(sz),0);
+      const poStatus=totalOpen<=0&&totalReceived>0?'received':totalReceived>0?'partial':'waiting';
+      const unitCost=po.po_type==='outside_deco'?safeNum(po.unit_cost):safeNum(item?.nsa_cost);
+      const poTotal=totalOrdered*unitCost;
+      const vendorName=po.deco_vendor||D_V.find(v=>v.id===(item?.vendor_id||item?.brand))?.name||item?.brand||'';
+      // Gather all items on this PO from the SO
+      const poItems=(allLines||[{lineIdx:0}]).map(ln=>({item:soItems?.[ln.lineIdx],po:soItems?.[ln.lineIdx]?.po_lines?.find(p=>p.po_id===po.po_id)||po})).filter(x=>x.item);
+      const grandTotal=poItems.reduce((a,{item:it,po:p})=>{
+        const sk=Object.keys(p).filter(k=>k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='po_type'&&k!=='deco_vendor'&&k!=='deco_type'&&k!=='created_at'&&k!=='memo'&&k!=='notes'&&k!=='expected_date'&&k!=='unit_cost'&&typeof p[k]==='number');
+        const qty=sk.reduce((s,sz)=>s+(p[sz]||0),0);const uc=p.po_type==='outside_deco'?safeNum(p.unit_cost):safeNum(it.nsa_cost);return a+qty*uc},0);
+      return<div style={{position:'fixed',top:0,left:0,right:0,bottom:0,background:'#f1f5f9',zIndex:9999,overflow:'auto'}}>
+        <div style={{maxWidth:900,margin:'0 auto',padding:'24px 20px'}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:20}}>
+            <div style={{display:'flex',alignItems:'center',gap:12}}>
+              <button className="btn btn-secondary btn-sm" onClick={()=>setPoFullPage(null)}>&larr; Back</button>
+              <h1 style={{margin:0,fontSize:22}}>{po.po_id}</h1>
+              <span className={`badge ${poStatus==='received'?'badge-green':poStatus==='partial'?'badge-amber':'badge-gray'}`} style={{fontSize:11}}>{poStatus==='received'?'Fully Received':poStatus==='partial'?'Partial':'Waiting'}</span>
+              {po.po_type==='outside_deco'&&<span className="badge badge-blue" style={{fontSize:10}}>Decoration PO</span>}
+            </div>
+            <div style={{textAlign:'right'}}>
+              <div style={{fontSize:11,color:'#64748b'}}>SO: <strong>{soId}</strong></div>
+              <div style={{fontSize:11,color:'#64748b'}}>Vendor: <strong>{vendorName}</strong></div>
+              {po.created_at&&<div style={{fontSize:10,color:'#94a3b8'}}>Created: {po.created_at}</div>}
+              {po.expected_date&&<div style={{fontSize:10,color:'#94a3b8'}}>Expected: {po.expected_date}</div>}
+            </div>
+          </div>
+
+          {/* PO Total Summary */}
+          <div className="card" style={{marginBottom:16,background:'#0f172a',color:'white'}}>
+            <div className="card-body" style={{display:'flex',justifyContent:'space-around',textAlign:'center',padding:'16px 12px'}}>
+              <div><div style={{fontSize:11,opacity:0.7}}>Total Units</div><div style={{fontSize:24,fontWeight:800}}>{totalOrdered}</div></div>
+              <div><div style={{fontSize:11,opacity:0.7}}>Received</div><div style={{fontSize:24,fontWeight:800,color:'#4ade80'}}>{totalReceived}</div></div>
+              <div><div style={{fontSize:11,opacity:0.7}}>Open</div><div style={{fontSize:24,fontWeight:800,color:totalOpen>0?'#fbbf24':'#4ade80'}}>{totalOpen}</div></div>
+              <div><div style={{fontSize:11,opacity:0.7}}>Unit Cost</div><div style={{fontSize:24,fontWeight:800}}>${unitCost.toFixed(2)}</div></div>
+              <div><div style={{fontSize:11,opacity:0.7}}>PO Total</div><div style={{fontSize:24,fontWeight:800,color:'#38bdf8'}}>${grandTotal.toFixed(2)}</div></div>
+            </div>
+          </div>
+
+          {/* Items on this PO */}
+          <div className="card" style={{marginBottom:16}}>
+            <div className="card-header"><h2>Line Items</h2></div>
+            <div className="card-body">
+              <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}>
+                <thead><tr style={{borderBottom:'2px solid #0f172a'}}>
+                  <th style={{padding:'6px 8px',textAlign:'left'}}>SKU</th>
+                  <th style={{padding:'6px 8px',textAlign:'left'}}>Product</th>
+                  <th style={{padding:'6px 8px',textAlign:'left'}}>Color</th>
+                  <th style={{padding:'6px 8px',textAlign:'center'}}>Qty</th>
+                  <th style={{padding:'6px 8px',textAlign:'right'}}>Unit Cost</th>
+                  <th style={{padding:'6px 8px',textAlign:'right'}}>Line Total</th>
+                </tr></thead>
+                <tbody>
+                  {poItems.map(({item:it,po:p},idx)=>{
+                    const sk=Object.keys(p).filter(k=>k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='po_type'&&k!=='deco_vendor'&&k!=='deco_type'&&k!=='created_at'&&k!=='memo'&&k!=='notes'&&k!=='expected_date'&&k!=='unit_cost'&&typeof p[k]==='number');
+                    const qty=sk.reduce((s,sz)=>s+(p[sz]||0),0);const uc=p.po_type==='outside_deco'?safeNum(p.unit_cost):safeNum(it.nsa_cost);
+                    return<tr key={idx} style={{borderBottom:'1px solid #e2e8f0'}}>
+                      <td style={{padding:'6px 8px',fontFamily:'monospace',fontWeight:800,color:'#1e40af'}}>{it.sku}</td>
+                      <td style={{padding:'6px 8px',fontWeight:600}}>{it.name}</td>
+                      <td style={{padding:'6px 8px',color:'#64748b'}}>{it.color}</td>
+                      <td style={{padding:'6px 8px',textAlign:'center',fontWeight:700}}>{qty}<div style={{fontSize:10,color:'#94a3b8'}}>{sk.map(sz=>sz+':'+p[sz]).join(' ')}</div></td>
+                      <td style={{padding:'6px 8px',textAlign:'right',fontWeight:600}}>${uc.toFixed(2)}</td>
+                      <td style={{padding:'6px 8px',textAlign:'right',fontWeight:800,fontSize:14}}>${(qty*uc).toFixed(2)}</td>
+                    </tr>})}
+                  <tr style={{borderTop:'2px solid #0f172a',fontWeight:800}}>
+                    <td colSpan={3} style={{padding:'6px 8px',textAlign:'right'}}>Grand Total</td>
+                    <td style={{padding:'6px 8px',textAlign:'center'}}>{totalOrdered}</td>
+                    <td></td>
+                    <td style={{padding:'6px 8px',textAlign:'right',fontSize:16,color:'#166534'}}>${grandTotal.toFixed(2)}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Size Breakdown */}
+          <div className="card" style={{marginBottom:16}}>
+            <div className="card-header"><h2>Size Breakdown</h2></div>
+            <div className="card-body">
+              <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}>
+                <thead><tr style={{borderBottom:'2px solid #0f172a'}}><th style={{padding:'4px 8px',textAlign:'left',fontSize:10,color:'#64748b'}}></th>{szKeys.map(sz=><th key={sz} style={{padding:'4px 8px',textAlign:'center',minWidth:48}}>{sz}</th>)}<th style={{padding:'4px 8px',textAlign:'center'}}>TOTAL</th></tr></thead>
+                <tbody>
+                  <tr><td style={{padding:'4px 8px',fontSize:11,fontWeight:600}}>Ordered</td>{szKeys.map(sz=><td key={sz} style={{padding:'4px 8px',textAlign:'center',fontWeight:700}}>{po[sz]||0}</td>)}<td style={{padding:'4px 8px',textAlign:'center',fontWeight:800}}>{totalOrdered}</td></tr>
+                  <tr style={{color:'#166534'}}><td style={{padding:'4px 8px',fontSize:11,fontWeight:600}}>Received</td>{szKeys.map(sz=><td key={sz} style={{padding:'4px 8px',textAlign:'center',fontWeight:700,color:getRcvd(sz)>0?'#166534':'#d1d5db'}}>{getRcvd(sz)||'—'}</td>)}<td style={{padding:'4px 8px',textAlign:'center',fontWeight:800}}>{totalReceived}</td></tr>
+                  {totalCancelled>0&&<tr style={{color:'#dc2626'}}><td style={{padding:'4px 8px',fontSize:11,fontWeight:600}}>Cancelled</td>{szKeys.map(sz=><td key={sz} style={{padding:'4px 8px',textAlign:'center',fontWeight:700,color:getCncl(sz)>0?'#dc2626':'#d1d5db'}}>{getCncl(sz)||'—'}</td>)}<td style={{padding:'4px 8px',textAlign:'center',fontWeight:800}}>{totalCancelled}</td></tr>}
+                  {totalOpen>0&&<tr style={{borderTop:'1px solid #e2e8f0',color:'#b45309'}}><td style={{padding:'4px 8px',fontSize:11,fontWeight:600}}>Open</td>{szKeys.map(sz=>{const op=getOpen(sz);return<td key={sz} style={{padding:'4px 8px',textAlign:'center',fontWeight:700,color:op>0?'#b45309':'#d1d5db'}}>{op>0?op:'—'}</td>})}<td style={{padding:'4px 8px',textAlign:'center',fontWeight:800}}>{totalOpen}</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Shipment History */}
+          {shipments.length>0&&<div className="card" style={{marginBottom:16}}>
+            <div className="card-header"><h2>Shipment History ({shipments.length})</h2></div>
+            <div className="card-body">
+              {shipments.map((sh,si)=>{const shQty=Object.entries(sh.qty||{}).reduce((a,[,v])=>a+safeNum(v),0);return<div key={si} style={{padding:'10px 12px',border:'1px solid #e2e8f0',borderRadius:6,marginBottom:8,background:si%2===0?'#f8fafc':'#fff'}}>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4}}>
+                  <span style={{fontWeight:700,fontSize:13}}>Shipment #{si+1}</span>
+                  <span style={{fontSize:12,color:'#64748b'}}>{sh.date||'No date'}</span>
+                </div>
+                <div style={{display:'flex',gap:8,flexWrap:'wrap',fontSize:12}}>
+                  {Object.entries(sh.qty||{}).filter(([,v])=>v>0).map(([sz,q])=><span key={sz} style={{padding:'2px 8px',background:'#dcfce7',color:'#166534',borderRadius:4,fontWeight:600}}>{sz}: {q}</span>)}
+                  <span style={{fontWeight:700}}>({shQty} units)</span>
+                </div>
+                {sh.memo&&<div style={{fontSize:11,color:'#475569',marginTop:4,fontStyle:'italic'}}>{sh.memo}</div>}
+              </div>})}
+            </div>
+          </div>}
+
+          {po.memo&&<div className="card" style={{marginBottom:16}}>
+            <div className="card-header"><h2>Notes</h2></div>
+            <div className="card-body"><p style={{margin:0,fontSize:13,color:'#475569'}}>{po.memo}</p></div>
+          </div>}
+        </div>
+      </div>})()}
 
     {/* EDIT BATCH PO MODAL */}
     {editBatchPO&&(()=>{
@@ -6134,7 +6390,7 @@ export default function App(){
   const[dashView,setDashView]=useState('admin');// admin|sales|warehouse|decorator|production|csr
   const[prodDashFilter,setProdDashFilter]=useState(null);// null|'hold'|'ready'|'staging'|'in_process'|'completed'
   const[qbConfig,setQBConfig]=useState({connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',
-    access_token:'',refresh_token:'',realm_id:'',token_created_at:0,sandbox:true,
+    access_token:'',refresh_token:'',realm_id:'',token_created_at:0,sandbox:false,
     mapping:{income_account:'Sales',cogs_account:'Cost of Goods Sold',deco_account:'Subcontractor - Decoration',ar_account:'Accounts Receivable',ap_account:'Accounts Payable',tax_account:'Sales Tax Payable'},
     syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}});
   const[qbTab,setQbTab]=useState('overview');
@@ -6276,7 +6532,7 @@ export default function App(){
           if(as.change_log)setChangeLog(as.change_log);
           if(as.so_history)setSOHistory(as.so_history);
           if(as.job_time_logs)setJobTimeLogs(as.job_time_logs);
-          if(as.qb_config)setQBConfig(as.qb_config);
+          if(as.qb_config)setQBConfig({...as.qb_config,sandbox:as.qb_config.sandbox===true&&as.qb_config.realm_id?false:as.qb_config.sandbox});
           if(as.inv_pos)setInvPOs(as.inv_pos);
           if(as.inv_adj_log)setInvAdjLog(as.inv_adj_log);
           if(as.inv_po_counter)setInvPOCounter(as.inv_po_counter);
@@ -6484,10 +6740,10 @@ export default function App(){
   React.useEffect(()=>{
     if(dbLoading||!_pendingQBTokens.current)return;
     const t=_pendingQBTokens.current;_pendingQBTokens.current=null;
-    setQBConfig(prev=>({...prev,connected:true,access_token:t.access_token,refresh_token:t.refresh_token,
+    setQBConfig(prev=>({...prev,connected:true,sandbox:false,access_token:t.access_token,refresh_token:t.refresh_token,
       realm_id:t.realm_id,token_created_at:t.created_at||Date.now()}));
     fetch('/.netlify/functions/qb-api',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({action:'company_info',access_token:t.access_token,realm_id:t.realm_id})})
+      body:JSON.stringify({action:'company_info',access_token:t.access_token,realm_id:t.realm_id,sandbox:false})})
       .then(r=>r.json()).then(d=>{
         const ci=d?.CompanyInfo;
         if(ci)setQBConfig(prev=>({...prev,companyId:t.realm_id,companyName:ci.CompanyName||'Connected'}));
@@ -12295,9 +12551,11 @@ export default function App(){
 
   // NETSUITE IMPORT PAGE
   const[imp,setImp]=useState({step:'upload',raw:'',docType:'so',custId:'',parsed:[],decoLines:[],issues:[],questions:[],shipping:[],memo:'',poRef:'',
-    pdfFile:null,pdfText:'',pdfParsed:null,pdfLoading:false,pdfItems:[],linkedSoId:'',externalDocNum:'',importSource:'netsuite'});
-  const[impTab,setImpTab]=useState('orders');// orders|customers|vendors|products
+    pdfFile:null,pdfText:'',pdfParsed:null,pdfParsedAll:[],pdfSelectedIdx:0,pdfLoading:false,pdfItems:[],linkedSoId:'',externalDocNum:'',importSource:'netsuite'});
+  const[impTab,setImpTab]=useState('orders');// orders|customers|vendors|products|bills
   const[bulkImp,setBulkImp]=useState({raw:'',parsed:[],issues:[],step:'paste'});// paste|review|done
+  const[billImport,setBillImport]=useState({step:'upload',files:[],parsed:[],uploading:false,showRaw:{}});
+  const[savedBills,setSavedBills]=useState(()=>{try{const s=localStorage.getItem('nsa_saved_bills');return s?JSON.parse(s):[]}catch{return[]}});
   const SZ_ORD_I=['XXS','XS','YXS','YS','YM','YL','YXL','S','M','L','XL','2XL','3XL','4XL','5XL','OSFA'];
 
   const parseNSData=(raw)=>{
@@ -12383,6 +12641,30 @@ export default function App(){
       if(c.name&&lower.includes(c.name.toLowerCase()))return true;
       return c.contacts?.some(ct=>ct.name&&lower.includes(ct.name.toLowerCase()));
     });
+  };
+
+  // ── QB API helper (shared by rImport and rQB) ──
+  const qbApi=async(action,payload={})=>{
+    if(!qbConfig.access_token||!qbConfig.realm_id){nf('QB not connected','error');return null}
+    const tokenAge=Date.now()-(qbConfig.token_created_at||0);
+    if(tokenAge>3300000&&qbConfig.refresh_token){
+      try{
+        const rr=await fetch('/.netlify/functions/qb-auth',{method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({action:'refresh',refresh_token:qbConfig.refresh_token})});
+        const rd=await rr.json();
+        if(rd.access_token){
+          setQBConfig(prev=>({...prev,access_token:rd.access_token,refresh_token:rd.refresh_token||prev.refresh_token,token_created_at:Date.now()}));
+          payload.access_token=rd.access_token;
+        }
+      }catch(e){console.warn('[QB] Token refresh failed:',e)}
+    }
+    try{
+      const r=await fetch('/.netlify/functions/qb-api',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({action,access_token:payload.access_token||qbConfig.access_token,realm_id:qbConfig.realm_id,sandbox:qbConfig.sandbox,...payload})});
+      const d=await r.json();
+      if(r.status===401){nf('QB session expired — please reconnect','error');return null}
+      return d;
+    }catch(e){nf('QB API error: '+e.message,'error');return null}
   };
 
   function rImport(){
@@ -12635,10 +12917,441 @@ export default function App(){
 
     const resetBulk=()=>setBulkImp({raw:'',parsed:[],issues:[],step:'paste'});
 
+    // ── BILL PDF PARSER ──
+    // Sports Inc / Adidas / UA supplier bill format parser
+    // Key: only extract items from the ITEM TABLE SECTION (between header row and totals row)
+    // Parse a single invoice section (lines belonging to one invoice within a PDF)
+    const parseSingleInvoice=(lines,sharedFields,fullText)=>{
+      const bill={po_number:sharedFields.po_number||'',tracking:sharedFields.tracking||'',supplier:sharedFields.supplier||'',vendor:sharedFields.vendor||'',doc_number:'',doc_date:'',due_date:'',ship_date:'',
+        items:[],merchandise_total:0,freight:0,si_upcharge:0,doc_total:0,warnings:[],rawText:fullText,
+        matchedPO:null,matchedPOSource:null};
+
+      // Helper: extract last monetary value after a label on a line
+      const extractTotal=(line,re,nextLine)=>{const m=line.match(re);if(!m)return null;const rest=line.slice(m.index+m[0].length);const nums=(rest.match(/[\d,]+\.\d{1,2}/g)||[]);if(nums.length>0)return parseFloat(nums[nums.length-1].replace(/,/g,''))||0;if(nextLine){const nm=nextLine.match(/^\s*([\d,]+\.\d{1,2})\s*$/);if(nm)return parseFloat(nm[1].replace(/,/g,''))||0}return null};
+
+      // ── PASS 1: Extract header fields & find item table boundaries ──
+      let itemSectionStart=-1,itemSectionEnd=-1;
+      for(let li=0;li<lines.length;li++){
+        const line=lines[li];
+        // PO Number
+        if(!bill.po_number){
+          const m=line.match(/PO\s*NUMBER\s*[:\s]+(.+)/i);
+          if(m){const val=m[1].trim();if(val.length>1)bill.po_number=val}
+        }
+        // Tracking number
+        if(!bill.tracking){const m=line.match(/TRACKING\s*(?:NUMBER|#|NUM|NO)?[:\s]*(\d{10,30})/i);if(m)bill.tracking=m[1]}
+        if(!bill.tracking&&/^\d{10,20}$/.test(line)){
+          const ctx=lines.slice(Math.max(0,li-3),li+3).join(' ');
+          if(/TRACKING|CARRIER|FEDERAL|UPS|USPS/i.test(ctx))bill.tracking=line;
+        }
+        // Handle SI format: TRACKING NUMBER is a column header, actual number is on the next data line
+        if(!bill.tracking&&/TRACKING\s*NUMBER/i.test(line)&&/WEIGHT|METHOD|SHIP\s*DATE|DELIVERY/i.test(line)){
+          for(let j=li+1;j<Math.min(li+3,lines.length);j++){
+            const parts=lines[j].split(/\t+/);
+            for(const p of parts){const val=p.trim();if(/^\d{10,30}$/.test(val)){bill.tracking=val;break}}
+            if(bill.tracking)break;
+          }
+        }
+        // Supplier detection
+        if(!bill.supplier){
+          if(/ADIDAS\s*(US|TEAM|AMERICA)/i.test(line))bill.supplier='Adidas';
+          else if(/UNDER\s*ARMOU?R/i.test(line)&&!/SOLD|SHIP|BILL|ATTN/i.test(line))bill.supplier='Under Armour';
+          else if(/\bNIKE\b/i.test(line)&&!/SOLD|SHIP|BILL|ATTN/i.test(line))bill.supplier='Nike';
+          else if(/\bPUMA\b/i.test(line)&&!/SOLD|SHIP|BILL|ATTN/i.test(line))bill.supplier='Puma';
+          else if(/\bNEW\s*BALANCE\b/i.test(line)&&!/SOLD|SHIP|BILL|ATTN/i.test(line))bill.supplier='New Balance';
+        }
+        if(!bill.supplier&&/^SUPPLIER\b/i.test(line)){
+          for(let j=li+1;j<Math.min(li+3,lines.length);j++){
+            const nl=lines[j].trim();
+            if(nl.length>3&&!/^DEPT|^PH|^FX|^FAX|^\d|^SOLD|^SHIP/i.test(nl)){bill.supplier=nl;break}
+          }
+        }
+        // Document number
+        {const m=line.match(/(?:SI\s+)?DOCUMENT\s+NUMBER[:\s]+(\d+)/i);if(m&&!bill.doc_number)bill.doc_number=m[1]}
+        // Dates
+        {const m=line.match(/DOCUMENT\s+DATE[:\s]+([\d\/]+)/i);if(m&&!bill.doc_date)bill.doc_date=m[1]}
+        {const m=line.match(/DUE\s+DATE[:\s]+([\d\/]+)/i);if(m&&!bill.due_date)bill.due_date=m[1]}
+        if(!bill.ship_date){const m=line.match(/SHIP\s+DATE[:\s]+([\d\/]+)/i);if(m)bill.ship_date=m[1]}
+        // Totals
+        {const v=extractTotal(line,/MERCHANDISE\s+TOTAL/i,lines[li+1]);if(v!=null&&!bill.merchandise_total)bill.merchandise_total=v}
+        {const v=extractTotal(line,/FREIGHT\s+CHARGE/i,lines[li+1]);if(v!=null&&!bill.freight)bill.freight=v}
+        {const v=extractTotal(line,/SI\s+UPCHARGE/i,lines[li+1]);if(v!=null&&!bill.si_upcharge)bill.si_upcharge=v}
+        {const v=extractTotal(line,/DOCUMENT\s+TOTAL/i,lines[li+1]);if(v!=null&&!bill.doc_total)bill.doc_total=v}
+        // Item table boundaries
+        if(itemSectionStart<0&&(/UPC\s*NUMBER/i.test(line)||/SUPPLIER\s*ITEM\s*NUMBER/i.test(line)||/QUANTITY\s*ORDERED.*QUANTITY\s*SHIPPED/i.test(line))){
+          itemSectionStart=li+1;
+        }
+        if(itemSectionStart>=0&&itemSectionEnd<0&&(/MERCHANDISE\s+TOTAL/i.test(line)||/REPORT\s+PROBLEMS/i.test(line))){
+          itemSectionEnd=li;
+        }
+      }
+
+      // ── PASS 2: Extract line items ONLY from item table section ──
+      const SKU_RE=/\b([A-Z]{1,4}\d{3,6})\b/;
+      const SZ_RE=/\b(XXS|XS|YXS|YS|YM|YL|YXL|S|M|L|XL|2XL|3XL|4XL|5XL|6XL|MT|LT|XLT|OSFA)\b/i;
+      const NUM_SZ_RE=/\b(\d{1,2}(?:\.\d)?)\b/;
+      const itemLines=[];
+      const startIdx=itemSectionStart>=0?itemSectionStart:0;
+      const endIdx=itemSectionEnd>0?itemSectionEnd:lines.length;
+      if(itemSectionStart<0){
+        bill.warnings.push('Could not find item table header (UPC NUMBER / SUPPLIER ITEM) — items not extracted');
+      }else{
+        const headerLine=lines[itemSectionStart-1]||'';
+        const headerParts=headerLine.split(/\t+/).map(h=>h.trim().toUpperCase());
+        const colIdx={};
+        headerParts.forEach((h,ci)=>{
+          if(/QU?A?N?T(?:ITY)?\s*SHIP/i.test(h))colIdx.qtyShipped=ci;
+          else if(/QU?A?N?T(?:ITY)?\s*ORD/i.test(h))colIdx.qtyOrdered=ci;
+          else if(/NET\s*(?:PRICE|COST)|^NET$/i.test(h))colIdx.netPrice=ci;
+          else if(/UNIT\s*(?:PRICE|COST)|^LIST/i.test(h))colIdx.unitPrice=ci;
+          else if(/EXTENSION|EXT\s*COST|^AMOUNT$/i.test(h))colIdx.extension=ci;
+          else if(/^SIZE$/i.test(h))colIdx.size=ci;
+        });
+        const useColumns=colIdx.extension!=null&&(colIdx.qtyShipped!=null||colIdx.qtyOrdered!=null);
+
+        for(let i=startIdx;i<endIdx;i++){
+          const line=lines[i];
+          if(/^UPC\s*NUMBER|^SUPPLIER\s*ITEM|^QUANTITY|^UNIT|^LIST|^DISC|^NET|^EXTENSION|^SIZE|^COLOR/i.test(line))continue;
+          const skuMatch=line.match(SKU_RE);
+          if(!skuMatch)continue;
+          const sku=skuMatch[1];
+          const parts=line.split(/\t+/).map(p=>p.trim());
+          // Try named sizes first, then SIZE column, then numeric sizes, then empty
+          const sizeMatch=line.match(SZ_RE);
+          let size='';
+          if(sizeMatch){size=sizeMatch[1].toUpperCase()}
+          else if(colIdx.size!=null&&parts[colIdx.size]){size=parts[colIdx.size].trim().toUpperCase()}
+          else{const nm=line.match(NUM_SZ_RE);if(nm)size=nm[1]}
+          // Detect half-size suffix (e.g. 10- means 10½) for numeric sizes
+          if(/^\d{1,2}$/.test(size)){const hre=new RegExp('\\b'+size+'\\s*[-–](?!\\d)');if(hre.test(line))size+='-'}
+          let qty=0,unitPrice=0,extension=0;
+
+          if(useColumns){
+            const getNum=idx=>{if(idx==null||idx>=parts.length)return 0;return parseFloat(parts[idx].replace(/[$,]/g,''))||0};
+            qty=getNum(colIdx.qtyShipped)||getNum(colIdx.qtyOrdered);
+            unitPrice=getNum(colIdx.netPrice)||getNum(colIdx.unitPrice);
+            extension=getNum(colIdx.extension);
+            if(!extension&&qty&&unitPrice)extension=Math.round(qty*unitPrice*100)/100;
+            if(!unitPrice&&qty&&extension)unitPrice=Math.round(extension/qty*100)/100;
+          }else{
+            const nums=[];
+            parts.forEach(part=>{
+              const cleaned=part.replace(/\s/g,'');
+              if(/^\d{8,}$/.test(cleaned))return;
+              const matches=part.match(/[\d,]+\.?\d*/g)||[];
+              matches.forEach(n=>{const v=parseFloat(n.replace(/,/g,''));if(!isNaN(v)&&v>0&&v<100000)nums.push(v)});
+            });
+            if(nums.length<2)continue;
+            extension=nums[nums.length-1]||0;
+            const wholeNums=nums.filter(n=>n===Math.floor(n)&&n>=1&&n<=500);
+            for(const wn of wholeNums){
+              const pp=extension/wn;
+              if(pp>=0.50&&pp<=500&&nums.slice(0,-1).some(n=>Math.abs(n-pp)<0.02)){qty=wn;unitPrice=Math.round(pp*100)/100;break}
+            }
+            if(!qty&&nums.length<=5){
+              for(const wn of wholeNums){
+                const pp=extension/wn;
+                if(pp>=0.50&&pp<=500&&wn<=500){qty=wn;unitPrice=Math.round(pp*100)/100;break}
+              }
+            }
+          }
+
+          if(qty<=0||extension<=0)continue;
+          if(unitPrice>0&&Math.abs(qty*unitPrice-extension)>extension*0.05+0.10)continue;
+          let desc='',color='';
+          for(let j=i+1;j<Math.min(i+3,endIdx);j++){
+            const nl=lines[j];
+            if(SKU_RE.test(nl))break;
+            if(/MERCHANDISE|FREIGHT|DOCUMENT|SI UPCHARGE|REPORT|SI STORE/i.test(nl))break;
+            if(!desc&&nl.length>3&&!/^\d[\d\s]*\d$/.test(nl)&&!SKU_RE.test(nl)){
+              desc=nl.replace(/\t+/g,' ').trim();
+              desc=desc.replace(/^\d[\d ]{10,16}\d\s+/,'').trim();
+              const cm=desc.match(/\b(BLACK|WHITE|RED|BLUE|GREEN|NAVY|GREY|GRAY|MAROON|GOLD|ORANGE|PURPLE|YELLOW|SCARLET|ROYAL|PINK|BROWN|TAN|CREAM|ONIX|CARBON|POWER|TEAM|CUSTOM)\b.*?(\/\s*[A-Z]+)?/i);
+              if(cm)color=cm[0].trim();
+            }
+          }
+          if(itemLines.some(it=>it.sku===sku&&it.size===size&&Math.abs(it.extension-extension)<0.01))continue;
+          itemLines.push({sku,size,qty,unit_price:unitPrice,extension,desc,color});
+        }
+      }
+      bill.items=itemLines;
+      if(bill.items.length>0&&bill.merchandise_total>0){
+        const itemsSum=bill.items.reduce((a,it)=>a+it.extension,0);
+        if(Math.abs(itemsSum-bill.merchandise_total)>1){
+          bill.warnings.push('Item total ($'+itemsSum.toFixed(2)+') differs from merchandise total ($'+bill.merchandise_total.toFixed(2)+')')}}
+      if(!bill.po_number)bill.warnings.push('PO number not found');
+      if(!bill.doc_total&&!bill.merchandise_total)bill.warnings.push('Could not detect totals');
+      if(bill.items.length===0&&itemSectionStart>=0)bill.warnings.push('No line items detected in item table — check raw text');
+
+      // Match vendor from system vendors
+      if(bill.supplier){
+        const sl=bill.supplier.toLowerCase();
+        const v=vend.find(v=>v.name&&v.name.toLowerCase().includes(sl))||vend.find(v=>v.name&&sl.includes(v.name.toLowerCase()));
+        if(v)bill.vendor=v.name;
+        else bill.vendor=bill.supplier;
+      }
+
+      // Match PO against existing POs in the system
+      if(bill.po_number){
+        const poLc=bill.po_number.toLowerCase().replace(/\s+/g,'');
+        const batchMatch=submittedBatches.find(sb=>sb.po_number&&sb.po_number.toLowerCase().replace(/\s+/g,'')===poLc);
+        if(batchMatch){bill.matchedPO=batchMatch;bill.matchedPOSource='batch'}
+        if(!bill.matchedPO){
+          const invMatch=invPOs.find(p=>p.po_number&&p.po_number.toLowerCase().replace(/\s+/g,'')===poLc);
+          if(invMatch){bill.matchedPO=invMatch;bill.matchedPOSource='inv_po'}
+        }
+        // Also search SO item PO lines (match by po_id or memo)
+        if(!bill.matchedPO){
+          for(const so of sos){
+            for(const it of (so.items||[])){
+              for(const po of (it.po_lines||[])){
+                const pid=(po.po_id||'').toLowerCase().replace(/\s+/g,'');
+                const pmemo=(po.memo||'').toLowerCase().replace(/\s+/g,'');
+                if(pid===poLc||pmemo.includes(poLc)){
+                  bill.matchedPO={so_id:so.id,po_id:po.po_id,po,item:it,so};
+                  bill.matchedPOSource='so_po';
+                  break;
+                }
+              }
+              if(bill.matchedPO)break;
+            }
+            if(bill.matchedPO)break;
+          }
+        }
+      }
+      return bill;
+    };
+
+    // Parse supplier bill PDF — supports multiple invoices per PDF, split by DOCUMENT NUMBER
+    // Uses per-page text to group pages by the Document Number in the top-left header
+    // (NOT the SI DOCUMENT NUMBER in the bottom-middle, which only appears on the last page)
+    const parseSupplierBill=(text,pages)=>{
+      // If we have per-page text, group pages by top-left Document Number
+      if(pages&&pages.length>1){
+        // Extract Document Number from the top of each page (skip SI DOCUMENT NUMBER)
+        const pageDocNums=pages.map(pt=>{
+          const topLines=pt.split('\n').slice(0,25);
+          // Detect continuation pages (Page 2 of N, Page 3 of N) — always attach to previous doc
+          for(const ln of topLines){const pgm=ln.match(/\bPage\s+(\d+)\s+of\s+\d+/i);if(pgm&&parseInt(pgm[1])>1)return ''}
+          for(let li=0;li<topLines.length;li++){
+            const ln=topLines[li];
+            if(/SI\s+DOCUMENT\s+NUMBER/i.test(ln))continue;
+            const m=ln.match(/DOCUMENT\s+NUMBER[:\s]+(\d+)/i);
+            if(m)return m[1];
+            // Handle SI format: "DOCUMENT NUMBER" is a column header, actual number is on the next line
+            if(/DOCUMENT\s+NUMBER/i.test(ln)&&/DOCUMENT\s+DATE|CARRIER|SHIP\s+DATE|TERMS/i.test(ln)){
+              for(let j=li+1;j<Math.min(li+3,topLines.length);j++){
+                const firstField=topLines[j].split(/\t/)[0].trim();
+                if(/^\d{5,}$/.test(firstField))return firstField;
+              }
+            }
+          }
+          return '';
+        });
+        // Group pages by document number; pages without a doc number attach to previous page's doc
+        const groups={};const order=[];
+        let currentDoc='__unknown__';
+        pageDocNums.forEach((dn,i)=>{
+          if(dn)currentDoc=dn;
+          if(!groups[currentDoc]){groups[currentDoc]=[];order.push(currentDoc)}
+          groups[currentDoc].push(pages[i]);
+        });
+        // If only one group, parse as single invoice
+        if(order.length<=1){
+          const allLines=text.split('\n').map(l=>l.trim()).filter(Boolean);
+          return [parseSingleInvoice(allLines,{},text)];
+        }
+        // Parse each group as a separate invoice
+        return order.map(docNum=>{
+          const groupText=groups[docNum].join('\n');
+          const lines=groupText.split('\n').map(l=>l.trim()).filter(Boolean);
+          return parseSingleInvoice(lines,{},groupText);
+        });
+      }
+
+      // Fallback: no pages array or single page — use flat text
+      const lines=text.split('\n').map(l=>l.trim()).filter(Boolean);
+      return [parseSingleInvoice(lines,{},text)];
+    };
+
+    // Process multiple bill PDFs — each file may contain multiple invoices
+    const processBillPdfs=async(files)=>{
+      setBillImport(x=>({...x,uploading:true,step:'parsing'}));
+      const results=[];
+      let idx=0;
+      for(let fi=0;fi<files.length;fi++){
+        const file=files[fi];
+        try{
+          const{fullText:text,pages}=await extractPdfText(file);
+          const bills=parseSupplierBill(text,pages);// returns array of bills (one per invoice in the PDF)
+          for(let bi=0;bi<bills.length;bi++){
+            const parsed=bills[bi];
+            const label=bills.length>1?file.name+' (Invoice '+(bi+1)+'/'+bills.length+' — Doc #'+parsed.doc_number+')':file.name;
+            results.push({id:'BILL-'+Date.now()+'-'+idx,file:label,text,parsed,selected:true,qbStatus:null,uploadedAt:new Date().toLocaleString()});
+            idx++;
+          }
+        }catch(e){
+          results.push({id:'BILL-'+Date.now()+'-'+idx,file:file.name,text:'',parsed:{po_number:'',tracking:'',supplier:'',doc_number:'',items:[],merchandise_total:0,freight:0,doc_total:0,si_upcharge:0,warnings:['PDF read failed: '+e.message],rawText:''},selected:true,qbStatus:null,uploadedAt:new Date().toLocaleString()});
+          idx++;
+        }
+      }
+      setBillImport(x=>({...x,parsed:results,step:'review',uploading:false}));
+      // Auto-save to history
+      const toSave=results.map(r=>({id:r.id,file:r.file,parsed:{...r.parsed,rawText:undefined},uploadedAt:r.uploadedAt,qbStatus:null}));
+      setSavedBills(prev=>{const updated=[...toSave,...prev].slice(0,200);try{localStorage.setItem('nsa_saved_bills',JSON.stringify(updated))}catch{};return updated});
+      nf(results.length+' bill(s) parsed from '+files.length+' PDF(s)');
+    };
+
+    // Push bills to QuickBooks
+    const pushBillsToQB=async()=>{
+      const selected=billImport.parsed.filter(b=>b.selected);
+      if(!selected.length){nf('No bills selected','error');return}
+      setBillImport(x=>({...x,uploading:true}));
+      let success=0,failed=0;
+      for(let bi=0;bi<billImport.parsed.length;bi++){
+        const b=billImport.parsed[bi];if(!b.selected)continue;
+        const bill=b.parsed;
+        // Find vendor
+        const vendorName=bill.supplier||'Unknown Vendor';
+        let vendor=vend.find(v=>v.name.toLowerCase().includes(vendorName.toLowerCase()));
+        if(!vendor)vendor=vend.find(v=>vendorName.toLowerCase().includes(v.name.toLowerCase()));
+        let qbVendorId=vendor?.qb_vendor_id;
+        if(!qbVendorId&&vendor){
+          const vRes=await qbApi('upsert_vendor',{vendor:{DisplayName:vendor.name,CompanyName:vendor.name}});
+          if(vRes?.Vendor?.Id){qbVendorId=vRes.Vendor.Id;setVend(prev=>prev.map(v=>v.id===vendor.id?{...v,qb_vendor_id:qbVendorId}:v))}
+        }
+        if(!qbVendorId){
+          // Create vendor with supplier name
+          const vRes=await qbApi('upsert_vendor',{vendor:{DisplayName:vendorName,CompanyName:vendorName}});
+          if(vRes?.Vendor?.Id)qbVendorId=vRes.Vendor.Id;
+        }
+        // Query QB for existing vendor by name before giving up
+        if(!qbVendorId){
+          try{
+            const qRes=await qbApi('query',{query:"SELECT * FROM Vendor WHERE DisplayName = '"+vendorName.replace(/'/g,"\\'")+"'"});
+            const qbVendor=qRes?.QueryResponse?.Vendor?.[0];
+            if(qbVendor?.Id){
+              qbVendorId=qbVendor.Id;
+              if(vendor)setVend(prev=>prev.map(v=>v.id===vendor.id?{...v,qb_vendor_id:qbVendorId}:v));
+            }
+          }catch(e){console.warn('[QB] Vendor query failed:',e)}
+        }
+        if(!qbVendorId){
+          setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,qbStatus:'error',qbMsg:'Vendor not found/created'}:p)}));
+          failed++;continue;
+        }
+        const amt=bill.doc_total||bill.merchandise_total+bill.freight+(bill.si_upcharge||0);
+        const lineItems=[];
+        // Merchandise line
+        if(bill.merchandise_total>0){
+          lineItems.push({DetailType:'AccountBasedExpenseLineDetail',Amount:bill.merchandise_total,
+            Description:'Merchandise — PO '+bill.po_number+(bill.items.length?' ('+bill.items.length+' items)':''),
+            AccountBasedExpenseLineDetail:{AccountRef:{name:qbConfig.mapping.cogs_account||'Cost of Goods Sold'}}});
+        }else if(amt>0&&!bill.freight){
+          lineItems.push({DetailType:'AccountBasedExpenseLineDetail',Amount:amt,
+            Description:'Vendor bill — PO '+bill.po_number,
+            AccountBasedExpenseLineDetail:{AccountRef:{name:qbConfig.mapping.cogs_account||'Cost of Goods Sold'}}});
+        }
+        // Freight line
+        if(bill.freight>0){
+          lineItems.push({DetailType:'AccountBasedExpenseLineDetail',Amount:bill.freight,
+            Description:'Freight charge — PO '+bill.po_number,
+            AccountBasedExpenseLineDetail:{AccountRef:{name:'Shipping and delivery expense'}}});
+        }
+        // SI Upcharge line
+        if(bill.si_upcharge>0){
+          lineItems.push({DetailType:'AccountBasedExpenseLineDetail',Amount:bill.si_upcharge,
+            Description:'SI Upcharge — PO '+bill.po_number,
+            AccountBasedExpenseLineDetail:{AccountRef:{name:qbConfig.mapping.cogs_account||'Cost of Goods Sold'}}});
+        }
+        if(lineItems.length===0){
+          setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,qbStatus:'error',qbMsg:'No amounts to bill'}:p)}));
+          failed++;continue;
+        }
+        const memo=['PO: '+bill.po_number,bill.tracking?'Tracking: '+bill.tracking:'',bill.doc_number?'Doc #'+bill.doc_number:''].filter(Boolean).join(' | ');
+        const qbBill={VendorRef:{value:qbVendorId},TxnDate:bill.doc_date?bill.doc_date.replace(/(\d+)\/(\d+)\/(\d+)/,'20$3-$1-$2'):new Date().toISOString().slice(0,10),
+          DocNumber:bill.doc_number||bill.po_number||undefined,
+          Line:lineItems,PrivateNote:memo};
+        const billRes=await qbApi('upsert_bill',{bill:qbBill});
+        if(billRes?.Bill?.Id){
+          const log={ts:new Date().toLocaleString(),type:'bill_upload',status:'success',
+            details:['Bill created: '+vendorName+' $'+amt.toFixed(2)+' → QB Bill #'+billRes.Bill.Id,'PO: '+bill.po_number,bill.items.length+' line items, Freight: $'+bill.freight.toFixed(2)]};
+          setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));
+          setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,qbStatus:'success',qbMsg:'QB Bill #'+billRes.Bill.Id}:p)}));
+          // Update matched PO with billed quantities and tracking
+          if(bill.matchedPOSource==='batch'&&bill.matchedPO){
+            const batchId=bill.matchedPO.id||bill.matchedPO.po_number;
+            const billedSizes={};
+            bill.items.forEach(it=>{if(it.size&&it.qty)billedSizes[it.size]=(billedSizes[it.size]||0)+it.qty});
+            setSubmittedBatches(prev=>prev.map(sb=>{
+              if((sb.id||sb.po_number)!==batchId)return sb;
+              const existingBilled=sb.billed||{};
+              const newBilled={...existingBilled};
+              Object.entries(billedSizes).forEach(([sz,qty])=>{newBilled[sz]=(newBilled[sz]||0)+qty});
+              const trackNums=[...(sb.tracking_numbers||[])];
+              if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
+              return{...sb,billed:newBilled,tracking_numbers:trackNums,bill_doc_number:bill.doc_number,bill_date:bill.doc_date};
+            }));
+          }
+          if(bill.matchedPOSource==='inv_po'&&bill.matchedPO){
+            const poId=bill.matchedPO.id;
+            const billedSizes={};
+            bill.items.forEach(it=>{if(it.size&&it.qty)billedSizes[it.size]=(billedSizes[it.size]||0)+it.qty});
+            setInvPOs(prev=>prev.map(po=>{
+              if(po.id!==poId)return po;
+              const existingBilled=po.billed||{};
+              const newBilled={...existingBilled};
+              Object.entries(billedSizes).forEach(([sz,qty])=>{newBilled[sz]=(newBilled[sz]||0)+qty});
+              const trackNums=[...(po.tracking_numbers||[])];
+              if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
+              return{...po,billed:newBilled,tracking_numbers:trackNums};
+            }));
+          }
+          if(bill.matchedPOSource==='so_po'&&bill.matchedPO){
+            const matchedSO=bill.matchedPO.so;
+            if(matchedSO){
+              const billedSizes={};
+              bill.items.forEach(it=>{if(it.size&&it.qty)billedSizes[it.size]=(billedSizes[it.size]||0)+it.qty});
+              const updatedSO={...matchedSO,items:matchedSO.items.map(it=>{
+                const matchPO=it.po_lines?.find(po=>po.po_id===bill.matchedPO.po_id);
+                if(!matchPO)return it;
+                return{...it,po_lines:it.po_lines.map(po=>{
+                  if(po.po_id!==bill.matchedPO.po_id)return po;
+                  const existingBilled=po.billed||{};
+                  const newBilled={...existingBilled};
+                  Object.entries(billedSizes).forEach(([sz,qty])=>{newBilled[sz]=(newBilled[sz]||0)+qty});
+                  const trackNums=[...(po.tracking_numbers||[])];
+                  if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
+                  return{...po,billed:newBilled,tracking_numbers:trackNums};
+                })};
+              }),updated_at:new Date().toLocaleString()};
+              setSOs(prev=>prev.map(s=>s.id===matchedSO.id?updatedSO:s));
+            }
+          }
+          success++;
+        }else{
+          setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,qbStatus:'error',qbMsg:billRes?.Fault?.Error?.[0]?.Detail||'Unknown error'}:p)}));
+          failed++;
+        }
+      }
+      setBillImport(x=>({...x,uploading:false}));
+      // Persist QB status to savedBills history
+      setSavedBills(prev=>{
+        const updated=prev.map(sb=>{
+          const match=billImport.parsed.find(p=>p.id===sb.id);
+          if(match&&match.qbStatus)return{...sb,qbStatus:match.qbStatus,qbMsg:match.qbMsg||''};
+          return sb;
+        });
+        try{localStorage.setItem('nsa_saved_bills',JSON.stringify(updated))}catch{};
+        return updated;
+      });
+      nf(success+' bill(s) pushed to QB'+(failed?' ('+failed+' failed)':''));
+    };
+
     return(<>
       {/* Import type tabs */}
       <div style={{display:'flex',gap:4,marginBottom:16}}>
-        {[['orders','📋 Orders / NetSuite'],['customers','👥 Customers'],['vendors','🏭 Vendors'],['products','📦 Products']].map(([id,label])=>
+        {[['orders','📋 Orders / NetSuite'],['customers','👥 Customers'],['vendors','🏭 Vendors'],['products','📦 Products'],['bills','📄 Supplier Bills']].map(([id,label])=>
           <button key={id} className={`btn btn-sm ${impTab===id?'btn-primary':'btn-secondary'}`}
             onClick={()=>{setImpTab(id);resetBulk()}}>{label}</button>)}
       </div>
@@ -12680,40 +13393,50 @@ export default function App(){
                   onDrop={async e=>{
                     e.preventDefault();e.currentTarget.style.borderColor='#22c55e';e.currentTarget.style.background='#f0fdf4';
                     const f=e.dataTransfer.files[0];if(!f)return;
-                    setImp(x=>({...x,pdfFile:f,pdfLoading:true,pdfText:'',pdfParsed:null}));
+                    setImp(x=>({...x,pdfFile:f,pdfLoading:true,pdfText:'',pdfParsed:null,pdfParsedAll:[],pdfSelectedIdx:0}));
                     try{
-                      const text=await extractPdfText(f);
-                      const parsed=parseNetSuitePdf(text,imp.docType);
+                      const{fullText,pages}=await extractPdfText(f);
+                      const allParsed=parseNetSuitePdfMulti(pages,imp.docType);
+                      const parsed=allParsed[0];
                       let detCustId=imp.custId;
                       if(parsed.customerName&&!detCustId){const det=detectCustomer(parsed.customerName);if(det)detCustId=det.id}
-                      setImp(x=>({...x,pdfLoading:false,pdfText:text,pdfParsed:parsed,
+                      setImp(x=>({...x,pdfLoading:false,pdfText:fullText,pdfParsed:parsed,pdfParsedAll:allParsed,pdfSelectedIdx:0,
                         externalDocNum:parsed.docNumber||x.externalDocNum,
                         memo:parsed.memo||x.memo||('Imported from NetSuite'+(parsed.docNumber?' #'+parsed.docNumber:'')),
                         custId:detCustId||x.custId}));
-                      nf('✅ PDF loaded — '+parsed.lineItems.length+' items detected');
+                      nf(allParsed.length>1
+                        ?'✅ PDF loaded — '+allParsed.length+' documents detected ('+allParsed.reduce((s,p)=>s+p.lineItems.length,0)+' total items)'
+                        :'✅ PDF loaded — '+parsed.lineItems.length+' items detected');
                     }catch(err){setImp(x=>({...x,pdfLoading:false}));nf('PDF parsing failed: '+err.message,'error')}
                   }}
                   onClick={()=>{
                     const input=document.createElement('input');input.type='file';input.accept='.pdf';
                     input.onchange=async(ev)=>{
                       const f=ev.target.files[0];if(!f)return;
-                      setImp(x=>({...x,pdfFile:f,pdfLoading:true,pdfText:'',pdfParsed:null}));
+                      setImp(x=>({...x,pdfFile:f,pdfLoading:true,pdfText:'',pdfParsed:null,pdfParsedAll:[],pdfSelectedIdx:0}));
                       try{
-                        const text=await extractPdfText(f);
-                        const parsed=parseNetSuitePdf(text,imp.docType);
+                        const{fullText,pages}=await extractPdfText(f);
+                        const allParsed=parseNetSuitePdfMulti(pages,imp.docType);
+                        const parsed=allParsed[0];
                         let detCustId=imp.custId;
                         if(parsed.customerName&&!detCustId){const det=detectCustomer(parsed.customerName);if(det)detCustId=det.id}
-                        setImp(x=>({...x,pdfLoading:false,pdfText:text,pdfParsed:parsed,
+                        setImp(x=>({...x,pdfLoading:false,pdfText:fullText,pdfParsed:parsed,pdfParsedAll:allParsed,pdfSelectedIdx:0,
                           externalDocNum:parsed.docNumber||x.externalDocNum,
                           memo:parsed.memo||x.memo||('Imported from NSA'+(parsed.docNumber?' #'+parsed.docNumber:'')),
                           custId:detCustId||x.custId}));
-                        nf('✅ PDF loaded — '+parsed.lineItems.length+' items detected');
+                        nf(allParsed.length>1
+                          ?'✅ PDF loaded — '+allParsed.length+' documents detected ('+allParsed.reduce((s,p)=>s+p.lineItems.length,0)+' total items)'
+                          :'✅ PDF loaded — '+parsed.lineItems.length+' items detected');
                       }catch(err){setImp(x=>({...x,pdfLoading:false}));nf('PDF parsing failed: '+err.message,'error')}
                     };input.click()}}>
                   {imp.pdfLoading?<div style={{color:'#3b82f6',fontWeight:600}}>⏳ Reading PDF...</div>
                   :imp.pdfFile?<div>
                     <div style={{fontSize:14,color:'#166534',fontWeight:700}}>✅ {imp.pdfFile.name}</div>
-                    <div style={{fontSize:11,color:'#64748b',marginTop:4}}>{imp.pdfParsed?.lineItems?.length||0} items detected · Click to replace</div>
+                    <div style={{fontSize:11,color:'#64748b',marginTop:4}}>
+                      {imp.pdfParsedAll.length>1
+                        ?imp.pdfParsedAll.length+' documents · '+imp.pdfParsedAll.reduce((s,p)=>s+p.lineItems.length,0)+' total items · Click to replace'
+                        :(imp.pdfParsed?.lineItems?.length||0)+' items detected · Click to replace'}
+                    </div>
                   </div>
                   :<div>
                     <div style={{fontSize:24,marginBottom:8}}>📄</div>
@@ -12776,6 +13499,26 @@ export default function App(){
               {/* PDF extraction summary */}
               {imp.pdfParsed&&<div style={{padding:10,background:'#eff6ff',borderRadius:6,fontSize:11,marginBottom:12}}>
                 <div style={{fontWeight:700,color:'#1e40af',marginBottom:4}}>📊 PDF Extraction Summary</div>
+                {/* Document selector for multi-invoice PDFs */}
+                {imp.pdfParsedAll.length>1&&<div style={{marginBottom:8}}>
+                  <div style={{fontSize:10,color:'#64748b',marginBottom:4}}>Multiple documents detected — select which to import:</div>
+                  <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
+                    {imp.pdfParsedAll.map((p,i)=><button key={i}
+                      className={`btn btn-sm ${imp.pdfSelectedIdx===i?'btn-primary':'btn-secondary'}`}
+                      style={{fontSize:10,padding:'2px 8px'}}
+                      onClick={()=>{
+                        const sel=imp.pdfParsedAll[i];
+                        let detCustId=imp.custId;
+                        if(sel.customerName&&!detCustId){const det=detectCustomer(sel.customerName);if(det)detCustId=det.id}
+                        setImp(x=>({...x,pdfSelectedIdx:i,pdfParsed:sel,
+                          externalDocNum:sel.docNumber||'',
+                          memo:sel.memo||'Imported from NetSuite'+(sel.docNumber?' #'+sel.docNumber:''),
+                          custId:detCustId||x.custId}));
+                      }}>
+                      {p.docNumber||'Doc '+(i+1)} ({p.lineItems.length} items)
+                    </button>)}
+                  </div>
+                </div>}
                 <div style={{display:'grid',gridTemplateColumns:'auto 1fr',gap:'2px 12px',color:'#475569'}}>
                   {imp.pdfParsed.docNumber&&<><span style={{fontWeight:600}}>Doc #:</span><span>{imp.pdfParsed.docNumber}</span></>}
                   {imp.pdfParsed.date&&<><span style={{fontWeight:600}}>Date:</span><span>{imp.pdfParsed.date}</span></>}
@@ -13121,7 +13864,7 @@ export default function App(){
                   setImp(x=>({...x,step:'save_products',_customItems:customItems.map(it=>({...it,_save:true}))}));
                 } else {
                   setImp({step:'upload',raw:'',docType:'so',custId:'',parsed:[],decoLines:[],issues:[],questions:[],shipping:[],memo:'',poRef:'',
-                    pdfFile:null,pdfText:'',pdfParsed:null,pdfLoading:false,pdfItems:[],linkedSoId:'',externalDocNum:'',importSource:'netsuite'});
+                    pdfFile:null,pdfText:'',pdfParsed:null,pdfParsedAll:[],pdfSelectedIdx:0,pdfLoading:false,pdfItems:[],linkedSoId:'',externalDocNum:'',importSource:'netsuite'});
                 }
               }}>
                 ✅ Create {imp.docType==='so'?'Sales Order':imp.docType==='est'?'Estimate':imp.docType==='po'?'Purchase Order':'Invoice'} ({keeping.length} items)
@@ -13158,7 +13901,7 @@ export default function App(){
             <div style={{display:'flex',gap:8,marginTop:16}}>
               <button className="btn btn-secondary" onClick={()=>{
                 setImp({step:'upload',raw:'',docType:'so',custId:'',parsed:[],decoLines:[],issues:[],questions:[],shipping:[],memo:'',poRef:'',
-                  pdfFile:null,pdfText:'',pdfParsed:null,pdfLoading:false,pdfItems:[],linkedSoId:'',externalDocNum:'',importSource:'netsuite'});
+                  pdfFile:null,pdfText:'',pdfParsed:null,pdfParsedAll:[],pdfSelectedIdx:0,pdfLoading:false,pdfItems:[],linkedSoId:'',externalDocNum:'',importSource:'netsuite'});
               }}>Skip</button>
               <button className="btn btn-primary" disabled={!(imp._customItems||[]).some(c=>c._save)} onClick={()=>{
                 const toSave=(imp._customItems||[]).filter(c=>c._save);
@@ -13171,7 +13914,7 @@ export default function App(){
                 setProd(prev=>[...prev,...newProds]);
                 nf('✅ '+newProds.length+' product'+(newProds.length!==1?'s':'')+' saved to catalog');
                 setImp({step:'upload',raw:'',docType:'so',custId:'',parsed:[],decoLines:[],issues:[],questions:[],shipping:[],memo:'',poRef:'',
-                  pdfFile:null,pdfText:'',pdfParsed:null,pdfLoading:false,pdfItems:[],linkedSoId:'',externalDocNum:'',importSource:'netsuite'});
+                  pdfFile:null,pdfText:'',pdfParsed:null,pdfParsedAll:[],pdfSelectedIdx:0,pdfLoading:false,pdfItems:[],linkedSoId:'',externalDocNum:'',importSource:'netsuite'});
               }}>Save {(imp._customItems||[]).filter(c=>c._save).length} Product{(imp._customItems||[]).filter(c=>c._save).length!==1?'s':''} to Catalog</button>
             </div>
           </div>
@@ -13297,6 +14040,224 @@ export default function App(){
 
           </div>
         </div>
+      </>}
+
+      {/* BILLS TAB — Supplier Bill PDF Upload & Parse */}
+      {impTab==='bills'&&<>
+        {billImport.step==='upload'&&<div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}}>
+          <div className="card">
+            <div className="card-header"><h2>Upload Supplier Bills (PDF)</h2></div>
+            <div className="card-body">
+              <div style={{fontSize:12,color:'#64748b',marginBottom:12}}>
+                Upload one or more supplier bill PDFs. They'll be parsed automatically to extract PO number, tracking, items, sizes, costs, and freight charges.
+              </div>
+              <div style={{border:'2px dashed #7c3aed',borderRadius:12,padding:32,textAlign:'center',cursor:'pointer',background:'#faf5ff',marginBottom:12,transition:'all 0.2s'}}
+                onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#3b82f6';e.currentTarget.style.background='#eff6ff'}}
+                onDragLeave={e=>{e.currentTarget.style.borderColor='#7c3aed';e.currentTarget.style.background='#faf5ff'}}
+                onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor='#7c3aed';e.currentTarget.style.background='#faf5ff';
+                  const files=[...e.dataTransfer.files].filter(f=>f.type==='application/pdf'||f.name.endsWith('.pdf'));
+                  if(files.length)setBillImport(x=>({...x,files:[...x.files,...files]}));
+                  else nf('Only PDF files accepted','error')}}
+                onClick={()=>document.getElementById('bill-pdf-input')?.click()}>
+                <input id="bill-pdf-input" type="file" accept=".pdf" multiple style={{display:'none'}}
+                  onChange={e=>{const files=[...e.target.files];if(files.length)setBillImport(x=>({...x,files:[...x.files,...files]}));e.target.value=''}}/>
+                <div style={{fontSize:36,marginBottom:8}}>📄</div>
+                <div style={{fontSize:14,fontWeight:700,color:'#7c3aed'}}>Drop PDF bills here or click to browse</div>
+                <div style={{fontSize:11,color:'#94a3b8',marginTop:4}}>Supports multiple files at once</div>
+              </div>
+              {billImport.files.length>0&&<>
+                <div style={{fontSize:12,fontWeight:700,marginBottom:6}}>{billImport.files.length} file(s) ready:</div>
+                {billImport.files.map((f,i)=><div key={i} style={{display:'flex',alignItems:'center',gap:8,padding:'6px 10px',background:'#f8fafc',borderRadius:6,marginBottom:4,border:'1px solid #e2e8f0'}}>
+                  <span style={{fontSize:12,flex:1,fontWeight:600}}>{f.name}</span>
+                  <span style={{fontSize:10,color:'#64748b'}}>{(f.size/1024).toFixed(0)} KB</span>
+                  <button style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',fontWeight:800,fontSize:14}} onClick={()=>setBillImport(x=>({...x,files:x.files.filter((_,fi)=>fi!==i)}))}>x</button>
+                </div>)}
+                <div style={{display:'flex',gap:8,marginTop:12}}>
+                  <button className="btn btn-primary" style={{flex:1,background:'#7c3aed',borderColor:'#7c3aed'}} disabled={billImport.uploading}
+                    onClick={()=>processBillPdfs(billImport.files)}>
+                    {billImport.uploading?'Parsing...':'Parse '+billImport.files.length+' Bill(s)'}
+                  </button>
+                  <button className="btn btn-secondary" onClick={()=>setBillImport({step:'upload',files:[],parsed:[],uploading:false,showRaw:{}})}>Clear</button>
+                </div>
+              </>}
+            </div>
+          </div>
+          <div className="card">
+            <div className="card-header"><h2>What Gets Extracted</h2></div>
+            <div className="card-body">
+              <div style={{fontSize:12,color:'#475569'}}>
+                {[['PO Number','Top right of invoice (e.g. 4270CORFC STK S)'],
+                  ['Tracking Number','Middle section (e.g. 511831220499)'],
+                  ['Supplier','Auto-detected (Adidas, Under Armour, Nike, etc.)'],
+                  ['Line Items','SKU, size, color, qty shipped, unit price, extension'],
+                  ['Merchandise Total','Sum of all line items'],
+                  ['Freight Charge','Shipping / freight cost'],
+                  ['SI Upcharge','Additional supplier charges'],
+                  ['Document Total','Final invoice total']
+                ].map(([k,v],i)=><div key={i} style={{padding:'8px 0',borderBottom:i<7?'1px solid #f1f5f9':'none',display:'flex',gap:8}}>
+                  <span style={{fontWeight:700,minWidth:120,color:'#1e40af',fontSize:12}}>{k}</span>
+                  <span style={{color:'#64748b',fontSize:11}}>{v}</span>
+                </div>)}
+              </div>
+            </div>
+          </div>
+        </div>}
+
+        {/* Review parsed bills */}
+        {billImport.step==='review'&&<>
+          <div style={{display:'flex',gap:8,marginBottom:12,alignItems:'center'}}>
+            <button className="btn btn-secondary" onClick={()=>setBillImport({step:'upload',files:[],parsed:[],uploading:false,showRaw:{}})}>← Upload More</button>
+            <span style={{fontSize:14,fontWeight:700,flex:1}}>{billImport.parsed.length} Bill(s) Parsed</span>
+            <button className="btn btn-primary" style={{background:'#166534',borderColor:'#166534'}} disabled={billImport.uploading||!billImport.parsed.some(b=>b.selected&&!b.qbStatus)}
+              onClick={pushBillsToQB}>
+              {billImport.uploading?'Pushing to QB...':'Push '+billImport.parsed.filter(b=>b.selected&&!b.qbStatus).length+' to QuickBooks'}
+            </button>
+          </div>
+
+          {billImport.parsed.map((b,bi)=>{
+            const bill=b.parsed;
+            const poMatch=bill.matchedPO;const poSrc=bill.matchedPOSource;
+            return<div key={bi} className="card" style={{marginBottom:12,border:b.qbStatus==='success'?'2px solid #22c55e':b.qbStatus==='error'?'2px solid #ef4444':poMatch?'2px solid #3b82f6':'1px solid #e2e8f0'}}>
+              <div className="card-header" style={{display:'flex',alignItems:'center',gap:8,background:b.qbStatus==='success'?'#f0fdf4':b.qbStatus==='error'?'#fef2f2':'#faf5ff'}}>
+                {!b.qbStatus&&<input type="checkbox" checked={b.selected} onChange={()=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,selected:!p.selected}:p)}))} style={{width:18,height:18}}/>}
+                {b.qbStatus==='success'&&<span style={{fontSize:16,color:'#22c55e'}}>&#10003;</span>}
+                {b.qbStatus==='error'&&<span style={{fontSize:16,color:'#ef4444'}}>&#10007;</span>}
+                <h2 style={{margin:0,flex:1}}>{b.file}</h2>
+                {b.qbMsg&&<span style={{fontSize:11,fontWeight:600,color:b.qbStatus==='success'?'#166534':'#dc2626'}}>{b.qbMsg}</span>}
+                {poMatch&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#dbeafe',color:'#1e40af',fontWeight:700}}>PO Matched</span>}
+                {bill.po_number&&!poMatch&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:700}}>PO Not Found</span>}
+                {bill.warnings.length>0&&<span style={{fontSize:10,padding:'2px 6px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:600}}>{bill.warnings.length} warning(s)</span>}
+              </div>
+              <div className="card-body" style={{padding:0}}>
+                {/* PO Match banner */}
+                {poMatch&&<div style={{padding:'8px 14px',background:'#eff6ff',borderBottom:'1px solid #bfdbfe',display:'flex',alignItems:'center',gap:12}}>
+                  <span style={{fontSize:14}}>&#128279;</span>
+                  <div style={{flex:1}}>
+                    <div style={{fontSize:12,fontWeight:700,color:'#1e40af'}}>
+                      Matched to {poSrc==='batch'?'Batch PO':poSrc==='so_po'?'Sales Order PO':'Inventory PO'}: {poMatch.po_number||poMatch.po_id||''}
+                      {poSrc==='batch'&&poMatch.vendor_name&&<span style={{fontWeight:400,color:'#64748b'}}> — {poMatch.vendor_name}</span>}
+                      {poSrc==='inv_po'&&poMatch.vendor_name&&<span style={{fontWeight:400,color:'#64748b'}}> — {poMatch.vendor_name}</span>}
+                      {poSrc==='so_po'&&poMatch.so_id&&<span style={{fontWeight:400,color:'#64748b'}}> — {poMatch.so_id}</span>}
+                    </div>
+                    <div style={{fontSize:11,color:'#475569',marginTop:2}}>
+                      {poSrc==='batch'&&<>Units: {poMatch.total_units||'?'} | Cost: ${(poMatch.total_cost||0).toFixed(2)}
+                        {bill.doc_total>0&&<>{' '}| Bill Total: ${bill.doc_total.toFixed(2)}
+                          {Math.abs((poMatch.total_cost||0)-bill.doc_total)<1
+                            ?<span style={{color:'#166534',fontWeight:700}}> &#10003; Totals match</span>
+                            :<span style={{color:'#dc2626',fontWeight:700}}> &#9888; Totals differ by ${Math.abs((poMatch.total_cost||0)-bill.doc_total).toFixed(2)}</span>}
+                        </>}
+                      </>}
+                      {poSrc==='inv_po'&&<>Items: {poMatch.items?.length||0} | Status: {poMatch.status||'open'}
+                      </>}
+                      {poSrc==='so_po'&&<>{poMatch.item?.sku||''} {poMatch.item?.name||''} | {poMatch.so_id}
+                      </>}
+                    </div>
+                  </div>
+                </div>}
+                {/* Summary row */}
+                <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(120px,1fr))',gap:0,borderBottom:'1px solid #f1f5f9'}}>
+                  {[['PO Number',bill.po_number||'—','#7c3aed'],['Vendor',bill.vendor||bill.supplier||'Unknown','#1e40af'],['Tracking',bill.tracking||'—','#475569'],
+                    ['Doc #',bill.doc_number||'—','#64748b'],['Doc Date',bill.doc_date||'—','#64748b'],['Ship Date',bill.ship_date||'—','#64748b']
+                  ].map(([label,val,color],i)=><div key={i} style={{padding:'10px 14px',borderRight:'1px solid #f1f5f9'}}>
+                    <div style={{fontSize:9,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',marginBottom:2}}>{label}</div>
+                    <div style={{fontSize:13,fontWeight:700,color,wordBreak:'break-all'}}>{val}</div>
+                  </div>)}
+                </div>
+                {/* Editable fields */}
+                <div style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',gap:12,alignItems:'center',background:'#fafafa',flexWrap:'wrap'}}>
+                  <div style={{fontSize:11,fontWeight:600,color:'#64748b'}}>Edit:</div>
+                  <div style={{display:'flex',gap:6,alignItems:'center',flex:1,flexWrap:'wrap'}}>
+                    <label style={{fontSize:10,fontWeight:600}}>PO</label>
+                    <input className="form-input" style={{width:140,fontSize:11,padding:'3px 6px'}} value={bill.po_number}
+                      onChange={e=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:{...p.parsed,po_number:e.target.value}}:p)}))}/>
+                    <label style={{fontSize:10,fontWeight:600,marginLeft:8}}>Vendor</label>
+                    <input className="form-input" style={{width:120,fontSize:11,padding:'3px 6px'}} value={bill.vendor||bill.supplier}
+                      onChange={e=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:{...p.parsed,vendor:e.target.value,supplier:e.target.value}}:p)}))}/>
+                    <label style={{fontSize:10,fontWeight:600,marginLeft:8}}>Tracking</label>
+                    <input className="form-input" style={{width:140,fontSize:11,padding:'3px 6px'}} value={bill.tracking}
+                      onChange={e=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:{...p.parsed,tracking:e.target.value}}:p)}))}/>
+                  </div>
+                </div>
+                {/* Line items */}
+                {bill.items.length>0&&<div style={{padding:'0 14px'}}>
+                  <table style={{fontSize:11,marginTop:8,marginBottom:8}}>
+                    <thead><tr><th style={{textAlign:'left'}}>SKU</th><th>Size</th><th>Color</th><th style={{textAlign:'right'}}>Qty</th><th style={{textAlign:'right'}}>Unit Price</th><th style={{textAlign:'right'}}>Extension</th><th style={{textAlign:'left',maxWidth:180}}>Description</th></tr></thead>
+                    <tbody>{bill.items.map((it,ii)=><tr key={ii}>
+                      <td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{it.sku}</td>
+                      <td style={{textAlign:'center',fontWeight:600}}>{it.size}</td>
+                      <td style={{color:'#64748b'}}>{it.color||'—'}</td>
+                      <td style={{textAlign:'right',fontWeight:700}}>{it.qty}</td>
+                      <td style={{textAlign:'right'}}>${it.unit_price.toFixed(2)}</td>
+                      <td style={{textAlign:'right',fontWeight:600}}>${it.extension.toFixed(2)}</td>
+                      <td style={{maxWidth:180,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',color:'#64748b',fontSize:10}}>{it.desc||'—'}</td>
+                    </tr>)}</tbody>
+                  </table>
+                </div>}
+                {bill.items.length===0&&<div style={{padding:'12px 14px',fontSize:12,color:'#d97706'}}>No line items detected — totals will be used as a single line</div>}
+                {/* Totals */}
+                <div style={{display:'flex',gap:0,borderTop:'1px solid #f1f5f9'}}>
+                  {[['Merchandise',bill.merchandise_total,'merchandise_total'],['Freight',bill.freight,'freight'],['SI Upcharge',bill.si_upcharge,'si_upcharge'],['Doc Total',bill.doc_total,'doc_total']].map(([label,val,key],i)=>
+                    <div key={i} style={{flex:1,padding:'10px 14px',borderRight:'1px solid #f1f5f9',textAlign:'center'}}>
+                      <div style={{fontSize:9,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',marginBottom:2}}>{label}</div>
+                      <input className="form-input" type="number" step="0.01" style={{width:'100%',fontSize:14,fontWeight:800,textAlign:'center',color:val>0?'#166534':'#94a3b8',padding:'2px 4px'}}
+                        value={val||''} placeholder="0.00"
+                        onChange={e=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i2)=>i2===bi?{...p,parsed:{...p.parsed,[key]:parseFloat(e.target.value)||0}}:p)}))}/>
+                    </div>)}
+                </div>
+                {/* Warnings */}
+                {bill.warnings.length>0&&<div style={{padding:'6px 14px',background:'#fef3c7'}}>
+                  {bill.warnings.map((w,wi)=><div key={wi} style={{fontSize:10,color:'#92400e'}}>&#9888; {w}</div>)}
+                </div>}
+                {/* Raw text toggle */}
+                <div style={{padding:'6px 14px',borderTop:'1px solid #f1f5f9'}}>
+                  <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}}
+                    onClick={()=>setBillImport(x=>({...x,showRaw:{...x.showRaw,[bi]:!x.showRaw[bi]}}))}>
+                    {billImport.showRaw[bi]?'Hide Raw Text':'Show Raw Text'}
+                  </button>
+                  {billImport.showRaw[bi]&&<pre style={{marginTop:6,padding:8,background:'#1e293b',color:'#e2e8f0',borderRadius:6,fontSize:10,maxHeight:300,overflow:'auto',whiteSpace:'pre-wrap',wordBreak:'break-all'}}>{b.text||'(no text extracted)'}</pre>}
+                </div>
+              </div>
+            </div>})}
+        </>}
+
+        {/* Parsing indicator */}
+        {billImport.step==='parsing'&&<div className="card"><div className="card-body" style={{textAlign:'center',padding:40}}>
+          <div style={{fontSize:36,marginBottom:8}}>&#8987;</div>
+          <div style={{fontSize:16,fontWeight:700,color:'#7c3aed'}}>Parsing PDFs...</div>
+          <div style={{fontSize:12,color:'#94a3b8',marginTop:4}}>Extracting text and detecting bill data</div>
+        </div></div>}
+
+        {/* Saved Bills History */}
+        {savedBills.length>0&&<div className="card" style={{marginTop:16}}>
+          <div className="card-header" style={{display:'flex',alignItems:'center',gap:8}}>
+            <h2 style={{margin:0,flex:1}}>Bill History ({savedBills.length})</h2>
+            <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{if(window.confirm('Clear all saved bill history?')){setSavedBills([]);localStorage.removeItem('nsa_saved_bills')}}}>Clear History</button>
+          </div>
+          <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
+            <table style={{fontSize:11,width:'100%'}}>
+              <thead><tr style={{background:'#f8fafc',position:'sticky',top:0}}>
+                <th style={{textAlign:'left',padding:'8px 12px'}}>File</th>
+                <th style={{textAlign:'left',padding:'8px 12px'}}>PO Number</th>
+                <th style={{textAlign:'left',padding:'8px 12px'}}>Vendor</th>
+                <th style={{textAlign:'right',padding:'8px 12px'}}>Total</th>
+                <th style={{textAlign:'right',padding:'8px 12px'}}>Freight</th>
+                <th style={{textAlign:'center',padding:'8px 12px'}}>Items</th>
+                <th style={{textAlign:'left',padding:'8px 12px'}}>QB Status</th>
+                <th style={{textAlign:'left',padding:'8px 12px'}}>Uploaded</th>
+              </tr></thead>
+              <tbody>{savedBills.map((sb,si)=><tr key={si} style={{borderBottom:'1px solid #f1f5f9',background:sb.qbStatus==='success'?'#f0fdf4':sb.qbStatus==='error'?'#fef2f2':'white'}}>
+                <td style={{padding:'6px 12px',fontWeight:600,maxWidth:180,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{sb.file}</td>
+                <td style={{padding:'6px 12px',fontFamily:'monospace',color:'#7c3aed',fontWeight:700}}>{sb.parsed?.po_number||'—'}</td>
+                <td style={{padding:'6px 12px',color:'#475569'}}>{sb.parsed?.vendor||sb.parsed?.supplier||'—'}</td>
+                <td style={{padding:'6px 12px',textAlign:'right',fontWeight:700,color:'#166534'}}>{sb.parsed?.doc_total?'$'+sb.parsed.doc_total.toFixed(2):'—'}</td>
+                <td style={{padding:'6px 12px',textAlign:'right',color:'#64748b'}}>{sb.parsed?.freight?'$'+sb.parsed.freight.toFixed(2):'—'}</td>
+                <td style={{padding:'6px 12px',textAlign:'center'}}>{sb.parsed?.items?.length||0}</td>
+                <td style={{padding:'6px 12px'}}>{sb.qbStatus==='success'?<span style={{color:'#166534',fontWeight:700}}>Pushed</span>:sb.qbStatus==='error'?<span style={{color:'#dc2626',fontWeight:700}}>Failed</span>:<span style={{color:'#94a3b8'}}>Not pushed</span>}</td>
+                <td style={{padding:'6px 12px',fontSize:10,color:'#94a3b8'}}>{sb.uploadedAt||'—'}</td>
+              </tr>)}</tbody>
+            </table>
+          </div>
+        </div>}
       </>}
     </>);
   };
@@ -13506,31 +14467,6 @@ export default function App(){
   // QUICKBOOKS ONLINE INTEGRATION
   function rQB(){
 
-    // ── QB API helpers ──
-    const qbApi=async(action,payload={})=>{
-      if(!qbConfig.access_token||!qbConfig.realm_id){nf('QB not connected','error');return null}
-      // Check if token is expired (tokens last ~1 hour)
-      const tokenAge=Date.now()-(qbConfig.token_created_at||0);
-      if(tokenAge>3300000&&qbConfig.refresh_token){ // refresh if >55 min old
-        try{
-          const rr=await fetch('/.netlify/functions/qb-auth',{method:'POST',headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({action:'refresh',refresh_token:qbConfig.refresh_token})});
-          const rd=await rr.json();
-          if(rd.access_token){
-            setQBConfig(prev=>({...prev,access_token:rd.access_token,refresh_token:rd.refresh_token||prev.refresh_token,token_created_at:Date.now()}));
-            payload.access_token=rd.access_token;
-          }
-        }catch(e){console.warn('[QB] Token refresh failed:',e)}
-      }
-      try{
-        const r=await fetch('/.netlify/functions/qb-api',{method:'POST',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({action,access_token:payload.access_token||qbConfig.access_token,realm_id:qbConfig.realm_id,sandbox:qbConfig.sandbox,...payload})});
-        const d=await r.json();
-        if(r.status===401){nf('QB session expired — please reconnect','error');return null}
-        return d;
-      }catch(e){nf('QB API error: '+e.message,'error');return null}
-    };
-
     // ── Connect to QB via OAuth ──
     const connectQB=async()=>{
       try{
@@ -13556,68 +14492,92 @@ export default function App(){
       setQbSyncing(true);
       const log={ts:new Date().toLocaleString(),type:'customers',status:'success',details:[]};
       let synced=0;
+      const custQBMap={};// localId -> qbCustomerId (returned for downstream syncs)
+      // Fetch existing QB customers to match by name and avoid duplicates
+      let existingQBCusts=[];
+      try{
+        const qRes=await qbApi('query',{query:"SELECT Id, DisplayName, CompanyName, SyncToken FROM Customer MAXRESULTS 1000"});
+        existingQBCusts=qRes?.QueryResponse?.Customer||[];
+      }catch(e){console.warn('[QB] Customer query failed:',e)}
       for(const c of cust.filter(c=>c.is_active!==false)){
         // Calculate totals
         const custSOs=sos.filter(s=>s.customer_id===c.id);
         const totalRevenue=invs.filter(i=>i.customer_id===c.id).reduce((a,i)=>a+(i.total||0),0);
         const totalPaid=invs.filter(i=>i.customer_id===c.id).reduce((a,i)=>a+(i.paid||0),0);
         const openBalance=totalRevenue-totalPaid;
-
+        const displayName=c.name+(c.alpha_tag?' ('+c.alpha_tag+')':'');
+        // Match existing QB customer by name if we don't already have a QB ID
+        let qbId=c.qb_customer_id||(qbConfig.custQBMap||{})[c.id];let syncToken=null;
+        if(!qbId){
+          const match=existingQBCusts.find(q=>q.DisplayName===displayName||q.CompanyName===c.name||q.DisplayName===c.name);
+          if(match){qbId=match.Id;syncToken=match.SyncToken}
+        }else{
+          const match=existingQBCusts.find(q=>q.Id===qbId);
+          if(match)syncToken=match.SyncToken;
+        }
         const qbCustomer={
-          DisplayName:c.name+(c.alpha_tag?' ('+c.alpha_tag+')':''),
+          DisplayName:displayName,
           CompanyName:c.name,
           ...(c.contact_email||c.contacts?.[0]?.email?{PrimaryEmailAddr:{Address:c.contact_email||c.contacts[0].email}}:{}),
           ...(c.contact_phone||c.contacts?.[0]?.phone?{PrimaryPhone:{FreeFormNumber:c.contact_phone||c.contacts[0].phone}}:{}),
           ...(c.billing_address_line1?{BillAddr:{Line1:c.billing_address_line1,City:c.billing_city||'',CountrySubDivisionCode:c.billing_state||'',PostalCode:c.billing_zip||''}}:{}),
           ...(c.shipping_address_line1?{ShipAddr:{Line1:c.shipping_address_line1,City:c.shipping_city||'',CountrySubDivisionCode:c.shipping_state||'',PostalCode:c.shipping_zip||''}}:{}),
           Notes:'Portal: '+custSOs.length+' orders, $'+totalRevenue.toFixed(0)+' revenue, $'+openBalance.toFixed(0)+' open balance. Tier: '+(c.adidas_ua_tier||'B')+'. Terms: '+(c.payment_terms||'net30'),
-          ...(c.qb_customer_id?{Id:c.qb_customer_id,sparse:true}:{}),
+          ...(qbId?{Id:qbId,sparse:true}:{}),
+          ...(syncToken?{SyncToken:syncToken}:{}),
         };
         const res=await qbApi('upsert_customer',{customer:qbCustomer});
         if(res?.Customer?.Id){
-          // Store QB ID back on customer
-          setCust(prev=>prev.map(cc=>cc.id===c.id?{...cc,qb_customer_id:res.Customer.Id}:cc));
+          custQBMap[c.id]=res.Customer.Id;
           log.details.push(c.name+' → QB #'+res.Customer.Id);synced++;
-        }else{log.details.push(c.name+' — FAILED: '+(res?.Fault?.Error?.[0]?.Detail||'unknown error'));log.status='partial'}
+        }else{
+          if(qbId)custQBMap[c.id]=qbId;
+          log.details.push(c.name+' — FAILED: '+(res?.Fault?.Error?.[0]?.Detail||'unknown error'));log.status='partial';
+        }
       }
+      // Include customers that already had QB IDs from previous syncs
+      cust.forEach(c=>{const prev=(qbConfig.custQBMap||{})[c.id];if(prev&&!custQBMap[c.id])custQBMap[c.id]=prev});
       if(synced===0&&log.details.length>0)log.status='error';
       log.details.unshift(synced+'/'+cust.filter(c=>c.is_active!==false).length+' customers synced');
-      setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
+      setQBConfig(prev=>({...prev,custQBMap:{...prev.custQBMap,...custQBMap},syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
       nf(synced+' customers synced to QB');
       setQbSyncing(false);
+      return custQBMap;
     };
 
     // ── SYNC: Invoices (totals) ──
-    const syncInvoices=async()=>{
+    const syncInvoices=async(custQBMap={},prodQBMap={})=>{
       setQbSyncing(true);
       const log={ts:new Date().toLocaleString(),type:'invoices',status:'success',details:[]};
       let synced=0;
-      const unsyncedInvs2=invs.filter(i=>!i._qb_synced);
+      const unsyncedInvs2=invs.filter(i=>!i.qb_invoice_id);
       for(const inv of unsyncedInvs2){
         const c=cust.find(cc=>cc.id===inv.customer_id);
-        if(!c?.qb_customer_id){log.details.push(inv.id+' — skipped: customer "'+c?.name+'" not synced to QB');continue}
-        const so=sos.find(s=>s.id===inv.so_id);
+        const cQBId=custQBMap[inv.customer_id]||(qbConfig.custQBMap||{})[inv.customer_id];
+        if(!cQBId){log.details.push((inv.display_id||inv.id)+' — skipped: customer "'+c?.name+'" not synced to QB');continue}
+        const so=sos.find(s=>s.id===inv.sales_order_id);
+        const invPaid=(inv.payments||[]).reduce((a,p)=>a+safeNum(p.amount),0);
         const qbInvoice={
-          DocNumber:inv.id,
-          TxnDate:inv.date||new Date().toISOString().slice(0,10),
-          CustomerRef:{value:c.qb_customer_id},
-          Line:[{DetailType:'SalesItemLineDetail',Amount:inv.total||0,Description:'Invoice '+inv.id+(so?' for '+so.id:'')+(so?.memo?' — '+so.memo:''),
-            SalesItemLineDetail:{Quantity:1,UnitPrice:inv.total||0}}],
-          ...(inv._qb_id?{Id:inv._qb_id,sparse:true}:{}),
+          DocNumber:inv.display_id||inv.id,
+          TxnDate:inv.invoice_date||new Date().toISOString().slice(0,10),
+          CustomerRef:{value:cQBId},
+          Line:[{DetailType:'SalesItemLineDetail',Amount:inv.total||0,Description:'Invoice '+(inv.display_id||inv.id)+(so?' for '+so.id:'')+(so?.memo?' — '+so.memo:''),
+            SalesItemLineDetail:{Qty:1,UnitPrice:inv.total||0}}],
+          ...(inv.qb_invoice_id?{Id:inv.qb_invoice_id,sparse:true}:{}),
         };
         const res=await qbApi('upsert_invoice',{invoice:qbInvoice});
         if(res?.Invoice?.Id){
-          setInvs(prev=>prev.map(ii=>ii.id===inv.id?{...ii,_qb_synced:true,_qb_id:res.Invoice.Id}:ii));
-          log.details.push(inv.id+' → QB Invoice #'+res.Invoice.Id+' ($'+safeNum(inv.total).toFixed(2)+')');synced++;
+          setInvs(prev=>prev.map(ii=>ii.id===inv.id?{...ii,qb_invoice_id:res.Invoice.Id}:ii));
+          log.details.push((inv.display_id||inv.id)+' → QB Invoice #'+res.Invoice.Id+' ($'+safeNum(inv.total).toFixed(2)+')');synced++;
           // Sync payments if any
-          if(inv.paid>0&&inv.payments?.length){
+          if(invPaid>0&&inv.payments?.length){
             for(const pmt of inv.payments){
-              const qbPmt={CustomerRef:{value:c.qb_customer_id},TotalAmt:pmt.amount,
+              const qbPmt={CustomerRef:{value:cQBId},TotalAmt:pmt.amount,
                 Line:[{Amount:pmt.amount,LinkedTxn:[{TxnId:res.Invoice.Id,TxnType:'Invoice'}]}]};
               await qbApi('upsert_payment',{payment:qbPmt});
             }
           }
-        }else{log.details.push(inv.id+' — FAILED: '+(res?.Fault?.Error?.[0]?.Detail||'unknown'));log.status='partial'}
+        }else{log.details.push((inv.display_id||inv.id)+' — FAILED: '+(res?.Fault?.Error?.[0]?.Detail||'unknown'));log.status='partial'}
       }
       if(synced===0&&unsyncedInvs2.length>0)log.status='error';
       log.details.unshift(synced+'/'+unsyncedInvs2.length+' invoices synced');
@@ -13631,32 +14591,100 @@ export default function App(){
       setQbSyncing(true);
       const log={ts:new Date().toLocaleString(),type:'inventory',status:'success',details:[]};
       let synced=0;
+      // Look up QB account IDs by name (required by QB API)
+      let incomeAcctRef=null,expenseAcctRef=null;
+      try{
+        const acctRes=await qbApi('query',{query:"SELECT Id, Name, AccountType, AccountSubType FROM Account WHERE AccountType IN ('Income','Cost of Goods Sold','Expense') MAXRESULTS 200"});
+        const accts=acctRes?.QueryResponse?.Account||[];
+        const incomeName=qbConfig.mapping.income_account||'Sales of Product Income';
+        const expenseName=qbConfig.mapping.cogs_account||'Cost of Goods Sold';
+        // For Inventory items, QB requires Income account with subtype SalesOfProductIncome
+        const incomeAcct=accts.find(a=>a.Name===incomeName)||accts.find(a=>a.AccountSubType==='SalesOfProductIncome')||accts.find(a=>a.AccountType==='Income');
+        const expenseAcct=accts.find(a=>a.Name===expenseName)||accts.find(a=>a.AccountSubType==='SuppliesMaterialsCogs')||accts.find(a=>a.AccountType==='Cost of Goods Sold')||accts.find(a=>a.AccountType==='Expense');
+        if(incomeAcct)incomeAcctRef={value:incomeAcct.Id,name:incomeAcct.Name};
+        if(expenseAcct)expenseAcctRef={value:expenseAcct.Id,name:expenseAcct.Name};
+      }catch(e){console.error('[QB] Account lookup failed:',e)}
+      if(!incomeAcctRef||!expenseAcctRef){
+        log.status='error';log.details.push('Could not find QB accounts for Income ("'+(qbConfig.mapping.income_account||'Sales')+'") or Expense ("'+(qbConfig.mapping.cogs_account||'Cost of Goods Sold')+'"). Check your QB Chart of Accounts.');
+        setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));nf('Inventory sync failed — QB accounts not found','error');setQbSyncing(false);return{};
+      }
+      // Look up asset account for Inventory type items
+      let assetAcctRef=null;
+      try{
+        const aRes=await qbApi('query',{query:"SELECT Id, Name FROM Account WHERE AccountType='Other Current Asset' AND AccountSubType='Inventory' MAXRESULTS 10"});
+        const aa=(aRes?.QueryResponse?.Account||[])[0];
+        if(aa)assetAcctRef={value:aa.Id,name:aa.Name};
+      }catch{}
+      if(!assetAcctRef){// fallback: search by name
+        try{
+          const aRes2=await qbApi('query',{query:"SELECT Id, Name FROM Account WHERE Name='Inventory Asset' MAXRESULTS 1"});
+          const aa2=(aRes2?.QueryResponse?.Account||[])[0];
+          if(aa2)assetAcctRef={value:aa2.Id,name:aa2.Name};
+        }catch{}
+      }
+      // Query existing QB items to match by name and avoid duplicates
+      let existingQBItems=[];
+      try{
+        const iRes=await qbApi('query',{query:"SELECT Id, Name, Type, SyncToken, QtyOnHand FROM Item MAXRESULTS 1000"});
+        existingQBItems=iRes?.QueryResponse?.Item||[];
+      }catch(e){console.warn('[QB] Item query failed:',e)}
+      const prodQBMap={...(qbConfig.prodQBMap||{})};
+      const today=new Date().toISOString().slice(0,10);
       // Aggregate inventory totals per product (not per size — just totals)
       for(const p of prod.filter(p=>p.is_active!==false)){
         const inv=p._inv||{};
         const totalQty=Object.values(inv).reduce((a,v)=>a+safeNum(v),0);
-        if(totalQty===0&&!p.qb_item_id)continue; // skip products with no inventory and no QB record
+        const existingQBId=prodQBMap[p.id];
+        if(totalQty===0&&!existingQBId)continue; // skip products with no inventory and no QB record
         const totalValue=totalQty*safeNum(p.nsa_cost);
+        const itemName=(p.sku+' '+p.name).slice(0,100);
+        // Match existing QB item by name or stored ID
+        let qbId=existingQBId;let syncToken=null;let existingType=null;
+        if(qbId){
+          const match=existingQBItems.find(i=>i.Id===qbId);
+          if(match){syncToken=match.SyncToken;existingType=match.Type}
+        }else{
+          const match=existingQBItems.find(i=>i.Name===itemName);
+          if(match){qbId=match.Id;syncToken=match.SyncToken;existingType=match.Type}
+        }
+        // Use Inventory type with QtyOnHand if we have an asset account
+        const useInventoryType=!!assetAcctRef;
         const qbItem={
-          Name:(p.sku+' '+p.name).slice(0,100),
-          Type:'NonInventory', // totals only — real inventory tracked on portal
+          Name:itemName,
+          ...(useInventoryType?{Type:'Inventory',TrackQtyOnHand:true,QtyOnHand:totalQty,InvStartDate:today,AssetAccountRef:assetAcctRef}:
+            {Type:'NonInventory'}),
           Description:p.name+(p.color?' - '+p.color:'')+' | Portal Qty: '+totalQty+' | Value: $'+totalValue.toFixed(2),
           UnitPrice:safeNum(p.retail_price||p.nsa_cost),
           PurchaseCost:safeNum(p.nsa_cost),
-          IncomeAccountRef:{name:qbConfig.mapping.income_account||'Sales'},
-          ExpenseAccountRef:{name:qbConfig.mapping.cogs_account||'Cost of Goods Sold'},
-          ...(p.qb_item_id?{Id:p.qb_item_id,sparse:true}:{}),
+          IncomeAccountRef:incomeAcctRef,
+          ExpenseAccountRef:expenseAcctRef,
+          ...(qbId?{Id:qbId,SyncToken:syncToken,sparse:true}:{}),
         };
         const res=await qbApi('upsert_item',{item:qbItem});
         if(res?.Item?.Id){
-          setProd(prev=>prev.map(pp=>pp.id===p.id?{...pp,qb_item_id:res.Item.Id}:pp));
+          prodQBMap[p.id]=res.Item.Id;
           log.details.push(p.sku+' '+p.name+' → QB Item #'+res.Item.Id+' (qty: '+totalQty+', val: $'+totalValue.toFixed(2)+')');synced++;
+          // For existing items, also adjust qty via InventoryAdjustment if needed
+          if(qbId&&useInventoryType){
+            const currentQBQty=existingQBItems.find(i=>i.Id===(res.Item.Id||qbId))?.QtyOnHand||0;
+            const qtyDiff=totalQty-currentQBQty;
+            if(qtyDiff!==0){
+              await qbApi('inventory_adjustment',{adjustment:{
+                AdjDate:today,
+                AdjustAccountRef:expenseAcctRef,
+                Line:[{ItemRef:{value:String(res.Item.Id||qbId),name:itemName},
+                  QtyDiff:qtyDiff,DetailType:'ItemAdjustmentLineDetail',
+                  ItemAdjustmentLineDetail:{Qty:qtyDiff}}]
+              }});
+            }
+          }
         }else{log.details.push(p.sku+' — FAILED: '+(res?.Fault?.Error?.[0]?.Detail||'unknown'));log.status='partial'}
       }
       log.details.unshift(synced+' product items synced');
-      setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
+      setQBConfig(prev=>({...prev,prodQBMap:{...prev.prodQBMap,...prodQBMap},syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
       nf(synced+' inventory items synced to QB');
       setQbSyncing(false);
+      return prodQBMap;
     };
 
     // ── BILL UPLOAD — upload vendor bill to QB ──
@@ -13734,25 +14762,155 @@ export default function App(){
       setQbBillUploading(false);
     };
 
+    // ── SYNC: Sales Orders (as QB Estimates) ──
+    const syncSalesOrders=async(custQBMap={},prodQBMap={})=>{
+      setQbSyncing(true);
+      const log={ts:new Date().toLocaleString(),type:'sales_orders',status:'success',details:[]};
+      let synced=0;
+      const soMap=qbConfig.qbSOMap||{};
+      const toSync=sos.filter(so=>{
+        const hasItems=safeItems(so).some(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
+        return hasItems&&!soMap[so.id];
+      });
+      for(const so of toSync){
+        const c=cust.find(x=>x.id===so.customer_id);
+        const cQBId=custQBMap[so.customer_id]||(qbConfig.custQBMap||{})[so.customer_id];
+        if(!cQBId){log.details.push(so.id+' — skipped: customer not synced to QB');continue}
+        const saf=safeArt(so);
+        const _aq={};safeItems(so).forEach(it2=>{const q2=Object.values(safeSizes(it2)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it2).forEach(d2=>{if(d2.kind==='art'&&d2.art_file_id){_aq[d2.art_file_id]=(_aq[d2.art_file_id]||0)+q2}})});
+        const lines=[];
+        safeItems(so).forEach(it=>{
+          const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
+          if(!qty)return;
+          const itemQBId=prodQBMap[it.product_id||(prod.find(pp=>pp.sku===it.sku)||{}).id];
+          // Calculate deco costs to include in line total
+          let decoTotal=0;const decoDescs=[];
+          safeDecos(it).forEach(d=>{
+            const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qty;
+            const dp=dP(d,qty,saf,cq);
+            if(dp.sell>0){decoTotal+=qty*dp.sell;decoDescs.push((d.position||d.deco_type||d.kind||'Art')+' @$'+dp.sell.toFixed(2))}
+          });
+          const lineAmt=qty*(it.unit_sell||0)+decoTotal;
+          const desc=it.sku+' '+it.name+(it.color?' - '+it.color:'')+(decoDescs.length?' + '+decoDescs.join(', '):'');
+          lines.push({DetailType:'SalesItemLineDetail',Amount:lineAmt,
+            Description:desc,
+            SalesItemLineDetail:{Qty:qty,UnitPrice:lineAmt/qty,...(itemQBId?{ItemRef:{value:String(itemQBId)}}:{})}});
+        });
+        if(!lines.length)continue;
+        const qbEstimate={
+          DocNumber:so.id,
+          TxnDate:(so.created_at||'').slice(0,10)||new Date().toISOString().slice(0,10),
+          CustomerRef:{value:cQBId},
+          Line:lines,
+          PrivateNote:'Portal SO: '+so.id+(so.memo?' — '+so.memo:''),
+          ...(soMap[so.id]?{Id:soMap[so.id],sparse:true}:{}),
+        };
+        const res=await qbApi('upsert_estimate',{estimate:qbEstimate});
+        if(res?.Estimate?.Id){
+          soMap[so.id]=res.Estimate.Id;
+          log.details.push(so.id+' → QB Estimate #'+res.Estimate.Id);synced++;
+        }else{log.details.push(so.id+' — FAILED: '+(res?.Fault?.Error?.[0]?.Detail||'unknown'));log.status='partial'}
+      }
+      if(synced===0&&toSync.length>0)log.status='error';
+      log.details.unshift(synced+'/'+toSync.length+' sales orders synced');
+      setQBConfig(prev=>({...prev,qbSOMap:{...prev.qbSOMap,...soMap},syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
+      nf(synced+' sales orders synced to QB');
+      setQbSyncing(false);
+    };
+
+    // ── SYNC: Purchase Orders ──
+    const syncPurchaseOrders=async()=>{
+      setQbSyncing(true);
+      const log={ts:new Date().toLocaleString(),type:'purchase_orders',status:'success',details:[]};
+      let synced=0;
+      const poMap=qbConfig.qbPOMap||{};
+      // Fetch existing QB vendors to match by name and avoid duplicates
+      let existingQBVendors=[];
+      try{
+        const vRes=await qbApi('query',{query:"SELECT Id, DisplayName, CompanyName, SyncToken FROM Vendor MAXRESULTS 500"});
+        existingQBVendors=vRes?.QueryResponse?.Vendor||[];
+      }catch(e){console.warn('[QB] Vendor query failed:',e)}
+      const vendorQBMap={};// vendorName -> qbVendorId (cache for this sync run)
+      // Look up expense accounts for PO line items
+      let acctMap={};
+      try{
+        const acctRes=await qbApi('query',{query:"SELECT Id, Name, AccountType FROM Account WHERE AccountType IN ('Cost of Goods Sold','Expense') MAXRESULTS 200"});
+        (acctRes?.QueryResponse?.Account||[]).forEach(a=>{acctMap[a.Name]={value:a.Id,name:a.Name}});
+      }catch(e){console.warn('[QB] Account query failed:',e)}
+      const toSync=[];
+      sos.forEach(so=>{safeItems(so).forEach(it=>{(it.po_lines||[]).forEach(pl=>{
+        if(!poMap[pl.po_id]){
+          toSync.push({pl,so,it,vendor:pl.deco_vendor||D_V.find(v=>v.id===it.vendor_id)?.name||it.brand});
+        }
+      })})});
+      for(const{pl,so,it,vendor:vendorName}of toSync){
+        if(!vendorName){log.details.push(pl.po_id+' — skipped: no vendor name');log.status='partial';continue}
+        // Find or create vendor in QB
+        let v=vend.find(x=>x.name===vendorName)||D_V.find(x=>x.name===vendorName);
+        let qbVendorId=vendorQBMap[vendorName]||v?.qb_vendor_id;
+        if(!qbVendorId){
+          // Check existing QB vendors by name
+          const match=existingQBVendors.find(q=>q.DisplayName===vendorName||q.CompanyName===vendorName);
+          if(match){qbVendorId=match.Id}
+          else{
+            const vRes=await qbApi('upsert_vendor',{vendor:{DisplayName:vendorName,CompanyName:vendorName}});
+            if(vRes?.Vendor?.Id){qbVendorId=vRes.Vendor.Id}
+            else{log.details.push(pl.po_id+' — vendor "'+vendorName+'" creation failed: '+(vRes?.Fault?.Error?.[0]?.Detail||'unknown'));log.status='partial';continue}
+          }
+          vendorQBMap[vendorName]=qbVendorId;
+          if(v)setVend(prev=>prev.map(vv=>vv.id===v.id?{...vv,qb_vendor_id:qbVendorId}:vv));
+        }
+        const qty=Object.entries(pl).filter(([k,v])=>typeof v==='number'&&!['unit_cost'].includes(k)&&k.match(/^[A-Z0-9]/)).reduce((a,[,v])=>a+v,0);
+        const rate=pl.po_type==='outside_deco'?safeNum(pl.unit_cost):safeNum(it.nsa_cost);
+        const account=pl.po_type==='outside_deco'?qbConfig.mapping.deco_account:qbConfig.mapping.cogs_account;
+        const qbPO={
+          DocNumber:pl.po_id,
+          VendorRef:{value:qbVendorId},
+          TxnDate:(pl.created_at||'').slice(0,10)||new Date().toISOString().slice(0,10),
+          Line:[{DetailType:'AccountBasedExpenseLineDetail',Amount:qty*rate,
+            Description:it.sku+' '+it.name+' x'+qty+' @$'+rate.toFixed(2)+' (SO: '+so.id+')',
+            AccountBasedExpenseLineDetail:{AccountRef:acctMap[account]||Object.values(acctMap)[0]||{name:account||'Expenses'}}}],
+          PrivateNote:'Portal PO for SO: '+so.id,
+          ...(poMap[pl.po_id]?{Id:poMap[pl.po_id],sparse:true}:{}),
+        };
+        const res=await qbApi('upsert_purchase_order',{purchase_order:qbPO});
+        if(res?.PurchaseOrder?.Id){
+          poMap[pl.po_id]=res.PurchaseOrder.Id;
+          log.details.push(pl.po_id+' → QB PO #'+res.PurchaseOrder.Id+' ('+vendorName+' $'+(qty*rate).toFixed(2)+')');synced++;
+        }else{log.details.push(pl.po_id+' — FAILED: '+(res?.Fault?.Error?.[0]?.Detail||'unknown'));log.status='partial'}
+      }
+      if(synced===0&&toSync.length>0)log.status='error';
+      log.details.unshift(synced+'/'+toSync.length+' purchase orders synced');
+      setQBConfig(prev=>({...prev,qbPOMap:{...prev.qbPOMap,...poMap},syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
+      nf(synced+' purchase orders synced to QB');
+      setQbSyncing(false);
+    };
+
     // ── SYNC ALL ──
     const syncAll=async()=>{
       setQbSyncing(true);
-      await syncCustomers();
-      await syncInvoices();
-      await syncInventory();
+      const custQBMap=await syncCustomers();
+      const prodQBMap=await syncInventory();
+      await syncSalesOrders(custQBMap,prodQBMap);
+      await syncInvoices(custQBMap,prodQBMap);
+      await syncPurchaseOrders();
       setQbSyncing(false);
     };
 
     // Build counts for overview
+    const soMap=qbConfig.qbSOMap||{};
+    const poMap=qbConfig.qbPOMap||{};
     const unsyncedSOs=sos.filter(so=>{
       const hasItems=safeItems(so).some(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
-      return hasItems&&!so._qb_synced;
+      return hasItems&&!soMap[so.id];
     });
     const unsyncedPOs=[];
-    sos.forEach(so=>{safeItems(so).forEach(it=>{(it.po_lines||[]).forEach(pl=>{if(!pl._qb_synced)unsyncedPOs.push({...pl,soId:so.id,sku:it.sku,itemName:it.name,vendor:pl.deco_vendor||D_V.find(v=>v.id===it.vendor_id)?.name||it.brand})})})});
-    const unsyncedInvs=invs.filter(i=>!i._qb_synced);
-    const custWithQB=cust.filter(c=>c.qb_customer_id).length;
-    const prodWithQB=prod.filter(p=>p.qb_item_id).length;
+    sos.forEach(so=>{safeItems(so).forEach(it=>{(it.po_lines||[]).forEach(pl=>{if(!poMap[pl.po_id])unsyncedPOs.push({...pl,soId:so.id,sku:it.sku,itemName:it.name,vendor:pl.deco_vendor||D_V.find(v=>v.id===it.vendor_id)?.name||it.brand})})})});
+    const unsyncedInvs=invs.filter(i=>!i.qb_invoice_id);
+    const _custQBMap=qbConfig.custQBMap||{};
+    const _prodQBMap=qbConfig.prodQBMap||{};
+    const custWithQB=cust.filter(c=>_custQBMap[c.id]).length;
+    const prodWithQB=prod.filter(p=>_prodQBMap[p.id]).length;
     const totalInvQty=prod.reduce((a,p)=>a+Object.values(p._inv||{}).reduce((a2,v)=>a2+safeNum(v),0),0);
     const totalInvValue=prod.reduce((a,p)=>{const qty=Object.values(p._inv||{}).reduce((a2,v)=>a2+safeNum(v),0);return a+qty*safeNum(p.nsa_cost)},0);
     const unsyncedInvPOs=invPOs.filter(p=>!p._qb_synced);
@@ -13804,7 +14962,7 @@ export default function App(){
         });
       }
       if(type==='all'||type==='purchase_orders'){
-        sos.forEach(so=>{safeItems(so).forEach(it=>{(it.po_lines||[]).filter(pl=>!pl._qb_synced).forEach(pl=>{
+        sos.forEach(so=>{safeItems(so).forEach(it=>{(it.po_lines||[]).filter(pl=>!poMap[pl.po_id]).forEach(pl=>{
           const qbPO=buildQBPurchaseOrder(pl,so,it);
           log.details.push('PO: '+pl.po_id+' → QB PurchaseOrder to '+qbPO.vendorRef+' ($'+qbPO.total.toFixed(2)+')');
         })})});
@@ -13859,9 +15017,9 @@ export default function App(){
       <div className="stats-row" style={{marginBottom:16}}>
         <div className="stat-card" style={{borderLeft:'3px solid #2563eb'}}><div className="stat-label">Customers in QB</div><div className="stat-value" style={{color:'#2563eb'}}>{custWithQB}/{cust.length}</div></div>
         <div className="stat-card" style={{borderLeft:'3px solid #d97706'}}><div className="stat-label">Invoices to Sync</div><div className="stat-value" style={{color:'#d97706'}}>{unsyncedInvs.length}</div></div>
-        <div className="stat-card" style={{borderLeft:'3px solid #16a34a'}}><div className="stat-label">Products in QB</div><div className="stat-value" style={{color:'#16a34a'}}>{prodWithQB}/{prod.length}</div></div>
-        <div className="stat-card" style={{borderLeft:'3px solid #7c3aed'}}><div className="stat-label">Inventory Value</div><div className="stat-value" style={{fontSize:14,color:'#7c3aed'}}>${totalInvValue.toFixed(0)}</div></div>
-        <div className="stat-card" style={{borderLeft:'3px solid #166534'}}><div className="stat-label">Last Sync</div><div className="stat-value" style={{fontSize:12,color:'#166534'}}>{qbConfig.lastSync||'Never'}</div></div>
+        <div className="stat-card" style={{borderLeft:'3px solid #16a34a'}}><div className="stat-label">SOs to Sync</div><div className="stat-value" style={{color:'#16a34a'}}>{unsyncedSOs.length}</div></div>
+        <div className="stat-card" style={{borderLeft:'3px solid #7c3aed'}}><div className="stat-label">POs to Sync</div><div className="stat-value" style={{color:'#7c3aed'}}>{unsyncedPOs.length}</div></div>
+        <div className="stat-card" style={{borderLeft:'3px solid #166534'}}><div className="stat-label">Products in QB</div><div className="stat-value" style={{color:'#166534'}}>{prodWithQB}/{prod.length}</div></div>
       </div>
 
       {/* Tabs */}
@@ -13887,7 +15045,9 @@ export default function App(){
               <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
                 <button className="btn btn-primary" style={{flex:1}} disabled={qbSyncing} onClick={syncAll}>{qbSyncing?'Syncing...':'Sync Everything'}</button>
                 <button className="btn btn-secondary" disabled={qbSyncing} onClick={syncCustomers}>Customers</button>
+                <button className="btn btn-secondary" disabled={qbSyncing} onClick={syncSalesOrders}>Sales Orders</button>
                 <button className="btn btn-secondary" disabled={qbSyncing} onClick={syncInvoices}>Invoices</button>
+                <button className="btn btn-secondary" disabled={qbSyncing} onClick={syncPurchaseOrders}>POs</button>
                 <button className="btn btn-secondary" disabled={qbSyncing} onClick={syncInventory}>Inventory</button>
               </div>
             </div>
@@ -13896,9 +15056,11 @@ export default function App(){
             <div className="card-header"><h2>What Syncs</h2></div>
             <div className="card-body" style={{fontSize:12,color:'#475569'}}>
               <div style={{marginBottom:4}}>&#8226; <strong>Customers</strong> — name, contact, address, order totals in notes</div>
+              <div style={{marginBottom:4}}>&#8226; <strong>Sales Orders</strong> — line items + decoration as QB Estimates</div>
               <div style={{marginBottom:4}}>&#8226; <strong>Invoices</strong> — invoice total as single line item, payments applied</div>
+              <div style={{marginBottom:4}}>&#8226; <strong>Purchase Orders</strong> — blank goods + outside deco POs to vendors</div>
               <div style={{marginBottom:4}}>&#8226; <strong>Bills</strong> — upload vendor bills (PDF/image) directly to QB with amounts</div>
-              <div>&#8226; <strong>Inventory</strong> — product totals (qty + cost value) as non-inventory items. Real inventory stays on portal.</div>
+              <div>&#8226; <strong>Inventory</strong> — product totals (qty + cost value) as non-inventory items</div>
             </div>
           </div>
         </div>
@@ -13934,7 +15096,7 @@ export default function App(){
                   <td style={{textAlign:'right',fontWeight:700,color:'#166534'}}>${qb.total.toFixed(2)}</td>
                   <td><span style={{fontSize:8,padding:'1px 4px',borderRadius:3,background:'#fef3c7',color:'#92400e',fontWeight:600}}>Pending</span></td>
                 </tr>})}
-              {sos.map(so=>safeItems(so).map(it=>(it.po_lines||[]).filter(pl=>!pl._qb_synced).map((pl,pi)=>{
+              {sos.map(so=>safeItems(so).map(it=>(it.po_lines||[]).filter(pl=>!poMap[pl.po_id]).map((pl,pi)=>{
                 const qb=buildQBPurchaseOrder(pl,so,it);
                 return<tr key={so.id+pl.po_id+pi} style={{borderBottom:'1px solid #f1f5f9'}}>
                   <td><span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:pl.po_type==='outside_deco'?'#ede9fe':'#fef3c7',
@@ -14000,7 +15162,7 @@ export default function App(){
                     <td>{orders}</td>
                     <td style={{textAlign:'right',fontWeight:600}}>${rev.toFixed(0)}</td>
                     <td style={{textAlign:'right',color:rev-paid>0?'#dc2626':'#16a34a',fontWeight:600}}>${(rev-paid).toFixed(0)}</td>
-                    <td>{c.qb_customer_id?<span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:'#dcfce7',color:'#166534',fontWeight:600}}>QB #{c.qb_customer_id}</span>:
+                    <td>{_custQBMap[c.id]?<span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:'#dcfce7',color:'#166534',fontWeight:600}}>QB #{_custQBMap[c.id]}</span>:
                       <span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:'#fef3c7',color:'#92400e',fontWeight:600}}>Not synced</span>}</td>
                   </tr>})}
               </tbody>
@@ -14028,7 +15190,7 @@ export default function App(){
                     <td style={{color:'#64748b'}}>{inv.so_id||'—'}</td>
                     <td style={{textAlign:'right',fontWeight:600}}>${safeNum(inv.total).toFixed(2)}</td>
                     <td style={{textAlign:'right',color:inv.paid>=inv.total?'#16a34a':'#d97706'}}>${safeNum(inv.paid).toFixed(2)}</td>
-                    <td>{inv._qb_synced?<span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:'#dcfce7',color:'#166534',fontWeight:600}}>Synced{inv._qb_id?' #'+inv._qb_id:''}</span>:
+                    <td>{inv.qb_invoice_id?<span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:'#dcfce7',color:'#166534',fontWeight:600}}>QB #{inv.qb_invoice_id}</span>:
                       <span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:'#fef3c7',color:'#92400e',fontWeight:600}}>Pending</span>}</td>
                   </tr>})}
               </tbody>
@@ -14123,7 +15285,7 @@ export default function App(){
                     <td><span className="badge badge-gray">{p.brand}</span></td>
                     <td style={{textAlign:'right',fontWeight:600}}>{totalQty}</td>
                     <td style={{textAlign:'right',fontWeight:600,color:'#166534'}}>${totalValue.toFixed(2)}</td>
-                    <td>{p.qb_item_id?<span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:'#dcfce7',color:'#166534',fontWeight:600}}>QB #{p.qb_item_id}</span>:
+                    <td>{_prodQBMap[p.id]?<span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:'#dcfce7',color:'#166534',fontWeight:600}}>QB #{_prodQBMap[p.id]}</span>:
                       <span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:'#f1f5f9',color:'#94a3b8',fontWeight:600}}>—</span>}</td>
                   </tr>})}
               </tbody>
@@ -14777,7 +15939,7 @@ export default function App(){
       <div className="sidebar-user"><div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}><div><div style={{fontWeight:600,color:'#e2e8f0'}}>{cu.name}</div><div>{cu.role}</div></div><button onClick={handleLogout} style={{background:'none',border:'1px solid #475569',borderRadius:6,padding:'3px 8px',color:'#94a3b8',cursor:'pointer',fontSize:10}} title="Log out">↪ Out</button></div></div></div>
     <div className="main"><div className="topbar"><button className="mobile-menu-btn" onClick={()=>setMobileMenuOpen(true)}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button><h1>{eEst?eEst.id:eSO?eSO.id:selC?selC.name:selV?selV.name:(titles[pg]||'Dashboard')}</h1>
         <div style={{flex:1,maxWidth:400,margin:'0 20px',position:'relative'}}>
-          <div className="search-bar" style={{margin:0}}><Icon name="search"/><input placeholder="Search everything... (customers, orders, products)" value={gQ} onChange={e=>setGQ(e.target.value)} onFocus={()=>setGOpen(true)}/>{gQ&&<button onClick={()=>{setGQ('');setGOpen(false)}} style={{background:'none',border:'none',cursor:'pointer',padding:2}}><Icon name="x" size={14}/></button>}</div>
+          <div className="search-bar" style={{margin:0}}><Icon name="search"/><input placeholder="Search everything... (orders, jobs, POs, invoices, customers)" value={gQ} onChange={e=>setGQ(e.target.value)} onFocus={()=>setGOpen(true)}/>{gQ&&<button onClick={()=>{setGQ('');setGOpen(false)}} style={{background:'none',border:'none',cursor:'pointer',padding:2}}><Icon name="x" size={14}/></button>}</div>
           {gOpen&&gQ.length>=2&&(()=>{const s=gQ.toLowerCase();
             const rc=cust.filter(cc=>(cc.name+' '+cc.alpha_tag).toLowerCase().includes(s)).slice(0,4);
             const re=ests.filter(e=>(e.id+' '+e.memo).toLowerCase().includes(s)).slice(0,4);
@@ -14790,7 +15952,14 @@ export default function App(){
             const allPOs=[];sos.forEach(so=>{const c2=cust.find(x=>x.id===so.customer_id);safeItems(so).forEach(it=>{safePOs(it).forEach(po=>{if((po.po_id||'').toLowerCase().includes(s)||(po.vendor||'').toLowerCase().includes(s)){if(!allPOs.find(x=>x.po_id===po.po_id))allPOs.push({po_id:po.po_id,vendor:po.vendor,status:po.status||'waiting',so_id:so.id,so,customer:c2?.alpha_tag||''})}})})});
             submittedBatches.forEach(sb=>{if((sb.po_number||'').toLowerCase().includes(s)||(sb.vendor_name||'').toLowerCase().includes(s)){if(!allPOs.find(x=>x.po_id===sb.po_number))allPOs.push({po_id:sb.po_number,vendor:sb.vendor_name,status:sb.status||'waiting',so_id:(sb.source_pos||[])[0]?.so_id||'',so:sos.find(x=>x.id===((sb.source_pos||[])[0]?.so_id)),customer:(sb.source_pos||[])[0]?.customer||'',isBatch:true})}});
             const rpo=allPOs.slice(0,4);
-            const tot=rc.length+re.length+rs.length+rp.length+rpk.length+rpo.length;
+            // Build Jobs index from all SOs
+            const allJobs2=[];sos.forEach(so=>{const c2=cust.find(x=>x.id===so.customer_id);safeJobs(so).forEach((j,ji)=>{if((j.id||'').toLowerCase().includes(s)||(j.art_name||'').toLowerCase().includes(s)||(j.deco_type||'').toLowerCase().includes(s)||so.id.toLowerCase().includes(s)){if(!allJobs2.find(x=>x.id===j.id&&x.so_id===so.id))allJobs2.push({...j,so,so_id:so.id,ji,customer:c2?.alpha_tag||c2?.name||''})}})});
+            const rj=allJobs2.slice(0,4);
+            // Invoices
+            const ri=invs.filter(i=>(i.id+' '+(i.memo||'')+' '+(cust.find(c=>c.id===i.customer_id)?.name||'')).toLowerCase().includes(s)).slice(0,4);
+            // Vendors
+            const rv=vend.filter(v=>(v.name+' '+(v.rep_name||'')).toLowerCase().includes(s)).slice(0,4);
+            const tot=rc.length+re.length+rs.length+rp.length+rpk.length+rpo.length+rj.length+ri.length+rv.length;
             return tot>0&&<div style={{position:'absolute',top:'100%',left:0,right:0,background:'white',border:'1px solid #e2e8f0',borderRadius:8,boxShadow:'0 8px 24px rgba(0,0,0,0.12)',zIndex:60,maxHeight:350,overflow:'auto'}}>
               {rc.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Customers</div>
                 {rc.map(cc=><div key={cc.id} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>{setSelC(cc);setPg('customers');setGQ('');setGOpen(false)}}><Icon name="users" size={14}/><span style={{fontWeight:600}}>{cc.name}</span><span className="badge badge-gray">{cc.alpha_tag}</span></div>)}</>}
@@ -14804,6 +15973,12 @@ export default function App(){
                 {rpk.map(pk=>{const cc=cust.find(x=>x.id===pk.so?.customer_id);return<div key={pk.pick_id} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>{setESO(pk.so);setESOC(cc);setPg('orders');setGQ('');setGOpen(false)}}><Icon name="grid" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{pk.pick_id}</span><span>→ {pk.so_id}</span><span className={`badge ${pk.status==='pulled'?'badge-green':'badge-amber'}`}>{pk.status}</span></div>})}</>}
               {rpo.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Purchase Orders</div>
                 {rpo.map(po=><div key={po.po_id} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>{if(po.isBatch){setBatchScan(po.po_id);setPg('purchase_orders')}else if(po.so){const cc=cust.find(x=>x.id===po.so.customer_id);setESO(po.so);setESOC(cc);setPg('orders')}else{setPg('purchase_orders')};setGQ('');setGOpen(false)}}><Icon name="cart" size={14}/><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{po.po_id}</span><span>{po.vendor}</span>{po.so_id&&<span style={{color:'#64748b'}}>→ {po.so_id}</span>}<span className={`badge ${po.status==='received'?'badge-green':po.status==='partial'?'badge-amber':'badge-blue'}`}>{po.status}</span></div>)}</>}
+              {rj.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Jobs</div>
+                {rj.map(j=><div key={j.id+j.so_id} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>{const ji2=safeJobs(j.so).findIndex(jj=>jj.id===j.id);setESOTab('jobs');setESOScrollJob(ji2>=0?ji2:null);setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so.customer_id));setPg('orders');setGQ('');setGOpen(false)}}><Icon name="grid" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{j.id}</span><span>{j.art_name||j.deco_type}</span><span style={{color:'#64748b'}}>→ {j.so_id}</span></div>)}</>}
+              {ri.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Invoices</div>
+                {ri.map(inv=><div key={inv.id} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>{setInvF(f=>({...f,search:inv.id}));setPg('invoices');setGQ('');setGOpen(false)}}><Icon name="file" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{inv.id}</span><span>{cust.find(c=>c.id===inv.customer_id)?.name||''}</span><span className={`badge ${inv.status==='paid'?'badge-green':inv.status==='partial'?'badge-amber':'badge-blue'}`}>{inv.status}</span></div>)}</>}
+              {rv.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Vendors</div>
+                {rv.map(v=><div key={v.id} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>{setSelV(v);setPg('vendors');setGQ('');setGOpen(false)}}><Icon name="building" size={14}/><span style={{fontWeight:600}}>{v.name}</span>{v.rep_name&&<span style={{color:'#64748b',fontSize:11}}>{v.rep_name}</span>}</div>)}</>}
             </div>})()}
           {gOpen&&<div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:59}} onClick={()=>setGOpen(false)}/>}
         </div>
@@ -15063,3 +16238,6 @@ export default function App(){
     </div></div>}
   </div>);
 }
+
+// QB sync fix v2
+

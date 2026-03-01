@@ -100,6 +100,13 @@ exports.handler = async (event) => {
       return { statusCode: res.status, headers: corsHeaders(origin), body: JSON.stringify(res.data) };
     }
 
+    // ── CREATE/UPDATE ESTIMATE (for sales orders) ──
+    if (action === 'upsert_estimate') {
+      const { estimate } = body;
+      const res = await qbRequest('POST', `${basePath}/estimate`, access_token, estimate, sandbox);
+      return { statusCode: res.status, headers: corsHeaders(origin), body: JSON.stringify(res.data) };
+    }
+
     // ── CREATE/UPDATE BILL (vendor bill) ──
     if (action === 'upsert_bill') {
       const { bill } = body;
