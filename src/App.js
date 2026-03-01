@@ -475,7 +475,10 @@ const parseNetSuitePdf=(text,docType)=>{
     }
   }
 
-  const isEndMarker=l=>/^(Subtotal|Total$|Tax\b|Discount|Thank you|Comments|Notes$|Memo$|Terms$|Page\s+\d)/i.test(l.replace(/\t.*/,'').trim());
+  const isEndMarker=l=>/^(Subtotal|Total$|Tax\b|Discount|Thank you|Comments|Notes$|Memo$|Terms$)/i.test(l.replace(/\t.*/,'').trim());
+  // Detect page breaks and repeated headers from multi-page PDFs (skip, don't end)
+  const isPageBreak=l=>{const t=l.replace(/\t.*/,'').trim();return/^Page\s+\d/i.test(t)};
+  const isRepeatedHeader=l=>{const lo=l.toLowerCase();return(lo.includes('quantity')||lo.includes('qty'))&&(lo.includes('item')||lo.includes('sku'))&&(lo.includes('amount')||lo.includes('rate'))};
   // Check if a line starts with a quantity number (item data line vs description line)
   const isItemLine=line=>{
     const p=line.split('\t')[0]?.trim();
@@ -489,14 +492,17 @@ const parseNetSuitePdf=(text,docType)=>{
     while(i<lines.length){
       const line=lines[i];
       if(isEndMarker(line))break;
-      if(!line.trim()){i++;continue}
+      if(!line.trim()||isPageBreak(line)||isRepeatedHeader(line)){i++;continue}
 
       if(isItemLine(line)){
         // This is a data line (qty/sku/rate/amount) — next non-empty line is description
         let descLine='';
-        if(i+1<lines.length&&!isItemLine(lines[i+1])&&!isEndMarker(lines[i+1])){
-          descLine=lines[i+1];
-          i+=2;
+        let nextIdx=i+1;
+        // Skip page breaks/headers between data line and description
+        while(nextIdx<lines.length&&(isPageBreak(lines[nextIdx])||isRepeatedHeader(lines[nextIdx])||!lines[nextIdx].trim()))nextIdx++;
+        if(nextIdx<lines.length&&!isItemLine(lines[nextIdx])&&!isEndMarker(lines[nextIdx])){
+          descLine=lines[nextIdx];
+          i=nextIdx+1;
         } else {i++}
         itemPairs.push({dataLine:line,descLine});
       } else {
@@ -511,7 +517,7 @@ const parseNetSuitePdf=(text,docType)=>{
     // No header — try scanning for qty-starting lines
     result.warnings.push('Could not detect item table header — trying pattern-based parsing');
     for(let i=0;i<lines.length;i++){
-      if(isEndMarker(lines[i]))continue;
+      if(isEndMarker(lines[i])||isPageBreak(lines[i])||isRepeatedHeader(lines[i]))continue;
       if(isItemLine(lines[i])){
         let descLine='';
         if(i+1<lines.length&&!isItemLine(lines[i+1])&&!isEndMarker(lines[i+1])){
@@ -12115,6 +12121,30 @@ export default function App(){
     });
   };
 
+  // ── QB API helper (shared by rImport and rQB) ──
+  const qbApi=async(action,payload={})=>{
+    if(!qbConfig.access_token||!qbConfig.realm_id){nf('QB not connected','error');return null}
+    const tokenAge=Date.now()-(qbConfig.token_created_at||0);
+    if(tokenAge>3300000&&qbConfig.refresh_token){
+      try{
+        const rr=await fetch('/.netlify/functions/qb-auth',{method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({action:'refresh',refresh_token:qbConfig.refresh_token})});
+        const rd=await rr.json();
+        if(rd.access_token){
+          setQBConfig(prev=>({...prev,access_token:rd.access_token,refresh_token:rd.refresh_token||prev.refresh_token,token_created_at:Date.now()}));
+          payload.access_token=rd.access_token;
+        }
+      }catch(e){console.warn('[QB] Token refresh failed:',e)}
+    }
+    try{
+      const r=await fetch('/.netlify/functions/qb-api',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({action,access_token:payload.access_token||qbConfig.access_token,realm_id:qbConfig.realm_id,sandbox:qbConfig.sandbox,...payload})});
+      const d=await r.json();
+      if(r.status===401){nf('QB session expired — please reconnect','error');return null}
+      return d;
+    }catch(e){nf('QB API error: '+e.message,'error');return null}
+  };
+
   function rImport(){
 
     const applyAnswer=(qi,val)=>setImp(x=>({...x,questions:x.questions.map((q,i)=>i===qi?{...q,answer:val}:q)}));
@@ -13806,31 +13836,6 @@ export default function App(){
 
   // QUICKBOOKS ONLINE INTEGRATION
   function rQB(){
-
-    // ── QB API helpers ──
-    const qbApi=async(action,payload={})=>{
-      if(!qbConfig.access_token||!qbConfig.realm_id){nf('QB not connected','error');return null}
-      // Check if token is expired (tokens last ~1 hour)
-      const tokenAge=Date.now()-(qbConfig.token_created_at||0);
-      if(tokenAge>3300000&&qbConfig.refresh_token){ // refresh if >55 min old
-        try{
-          const rr=await fetch('/.netlify/functions/qb-auth',{method:'POST',headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({action:'refresh',refresh_token:qbConfig.refresh_token})});
-          const rd=await rr.json();
-          if(rd.access_token){
-            setQBConfig(prev=>({...prev,access_token:rd.access_token,refresh_token:rd.refresh_token||prev.refresh_token,token_created_at:Date.now()}));
-            payload.access_token=rd.access_token;
-          }
-        }catch(e){console.warn('[QB] Token refresh failed:',e)}
-      }
-      try{
-        const r=await fetch('/.netlify/functions/qb-api',{method:'POST',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({action,access_token:payload.access_token||qbConfig.access_token,realm_id:qbConfig.realm_id,sandbox:qbConfig.sandbox,...payload})});
-        const d=await r.json();
-        if(r.status===401){nf('QB session expired — please reconnect','error');return null}
-        return d;
-      }catch(e){nf('QB API error: '+e.message,'error');return null}
-    };
 
     // ── Connect to QB via OAuth ──
     const connectQB=async()=>{
