@@ -12738,7 +12738,7 @@ export default function App(){
         if(itemSectionStart<0&&(/UPC\s*NUMBER/i.test(line)||/SUPPLIER\s*ITEM\s*NUMBER/i.test(line)||/QUANTITY\s*ORDERED.*QUANTITY\s*SHIPPED/i.test(line))){
           itemSectionStart=li+1;
         }
-        if(itemSectionStart>=0&&itemSectionEnd<0&&(/MERCHANDISE\s+TOTAL/i.test(line)||/SI\s+DOCUMENT\s+NUMBER/i.test(line)||/REPORT\s+PROBLEMS/i.test(line))){
+        if(itemSectionStart>=0&&itemSectionEnd<0&&(/MERCHANDISE\s+TOTAL/i.test(line)||/REPORT\s+PROBLEMS/i.test(line))){
           itemSectionEnd=li;
         }
       }
@@ -12779,6 +12779,8 @@ export default function App(){
           if(sizeMatch){size=sizeMatch[1].toUpperCase()}
           else if(colIdx.size!=null&&parts[colIdx.size]){size=parts[colIdx.size].trim().toUpperCase()}
           else{const nm=line.match(NUM_SZ_RE);if(nm)size=nm[1]}
+          // Detect half-size suffix (e.g. 10- means 10½) for numeric sizes
+          if(/^\d{1,2}$/.test(size)){const hre=new RegExp('\\b'+size+'\\s*[-–](?!\\d)');if(hre.test(line))size+='-'}
           let qty=0,unitPrice=0,extension=0;
 
           if(useColumns){
@@ -12885,6 +12887,8 @@ export default function App(){
         // Extract Document Number from the top of each page (skip SI DOCUMENT NUMBER)
         const pageDocNums=pages.map(pt=>{
           const topLines=pt.split('\n').slice(0,25);
+          // Detect continuation pages (Page 2 of N, Page 3 of N) — always attach to previous doc
+          for(const ln of topLines){const pgm=ln.match(/\bPage\s+(\d+)\s+of\s+\d+/i);if(pgm&&parseInt(pgm[1])>1)return ''}
           for(let li=0;li<topLines.length;li++){
             const ln=topLines[li];
             if(/SI\s+DOCUMENT\s+NUMBER/i.test(ln))continue;
