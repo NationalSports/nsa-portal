@@ -219,7 +219,7 @@ const _dbSaveSO = async (so) => {
 const _dbSaveInvoice = async (inv) => {
   if(!supabase)return;
   try{
-    const{payments,items,...invRow}=inv;
+    const{payments,items,_qb_synced,_qb_id,so_id,date,paid,...invRow}=inv;
     await supabase.from('invoices').upsert(invRow,{onConflict:'id'});
     await supabase.from('invoice_payments').delete().eq('invoice_id',inv.id);
     if(payments?.length) await supabase.from('invoice_payments').insert(payments.map(p=>({...p,invoice_id:inv.id})));
@@ -247,7 +247,7 @@ const _dbSaveCustomer = async (c) => {
 const _dbSaveProduct = async (p) => {
   if(!supabase)return;
   try{
-    const{_inv,_alerts,_colors,image_url,back_image_url,...prodRow}=p;
+    const{_inv,_alerts,_colors,image_url,back_image_url,qb_item_id,...prodRow}=p;
     await supabase.from('products').upsert({...prodRow,_colors:_colors||null,image_front_url:image_url||prodRow.image_front_url||'',image_back_url:back_image_url||prodRow.image_back_url||''},{onConflict:'id'});
     const allSizes=new Set([...Object.keys(_inv||{}),...Object.keys(_alerts||{})]);
     if(allSizes.size>0){
@@ -785,7 +785,7 @@ function emP(st,q,s=true){const si=EM.sb.findIndex(b=>st<=b);const qi=EM.qb.find
 function npP(q,tw=false,s=true){const bi=NP.bk.findIndex(b=>q<=b);if(bi<0)return 0;return s?(NP.se[bi]+(tw?rQ(NP.tc*1.65):0)):(NP.co[bi]+(tw?NP.tc:0))}
 function dP(d,q,artFiles,cq){
   // If pricing was locked at save time, return locked values
-  if(d.sell_override!=null&&d._cost_locked!=null)return{sell:d.sell_override,cost:d._cost_locked};
+  if(d.sell_override!=null&&d._cost_locked!=null){if(d.kind==='numbers'||d.type==='number_press'){const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:0;return{sell:d.sell_override,cost:d._cost_locked,_nq:nq}}return{sell:d.sell_override,cost:d._cost_locked}};
   const pq=cq||q;
   // Art-based decoration: get type from art file
   if(d.kind==='art'&&d.art_file_id&&artFiles){// Art TBD
@@ -802,7 +802,7 @@ function dP(d,q,artFiles,cq){
   if(d.type==='screen_print'){const u=d.underbase?1+SP.ub:1;return{sell:d.sell_override||rQ(spP(q,d.colors||1,true)*u),cost:rQ(spP(q,d.colors||1,false)*u)}}
   if(d.type==='embroidery')return{sell:d.sell_override||emP(d.stitches||8000,q,true),cost:emP(d.stitches||8000,q,false)};
   // Numbers
-  if(d.kind==='numbers'||d.type==='number_press'){const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:0;const useQty=nq>0?nq:q;return{sell:d.sell_override||npP(useQty||1,d.two_color,true),cost:npP(useQty||1,d.two_color,false)}};
+  if(d.kind==='numbers'||d.type==='number_press'){const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:0;return{sell:d.sell_override||npP(nq||1,d.two_color,true),cost:npP(nq||1,d.two_color,false),_nq:nq}};
   if(d.kind==='names'){const nc=d.names?Object.values(d.names).flat().filter(v=>v&&v.trim()).length:0;const se=safeNum(d.sell_override||d.sell_each||6);const co=safeNum(d.cost_each||3);return{sell:nc>0?rQ(nc*se/q):se,cost:nc>0?rQ(nc*co/q):co}};
   if(d.type==='dtf'){const t=DTF[d.dtf_size||0];return{sell:d.sell_override||t.sell,cost:t.cost}}
   // Outside decoration — user-entered cost/sell
@@ -2057,7 +2057,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
 
     {/* LINE ITEMS */}
     {tab==='items'&&<>{safeItems(o).map((item,idx)=>{const qty=Object.values(safeSizes(item)).reduce((a,v)=>a+safeNum(v),0);
-      let dR=0,dC=0;const decoBreak=[];safeDecos(item).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:qty;const dp=dP(d,qty,af,cq);const dr=qty*dp.sell;const dc=qty*dp.cost;dR+=dr;dC+=dc;
+      let dR=0,dC=0;const decoBreak=[];safeDecos(item).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:qty;const dp=dP(d,qty,af,cq);const eq=dp._nq!=null?dp._nq:qty;const dr=eq*dp.sell;const dc=eq*dp.cost;dR+=dr;dC+=dc;
         const artF=d.kind==='art'?af.find(f=>f.id===d.art_file_id):null;const label=d.kind==='art'?(artF?artF.deco_type?.replace('_',' '):d.position):'Numbers @ '+d.position;
         decoBreak.push({label,sell:dp.sell,cost:dp.cost,rev:dr,costTot:dc,margin:dr-dc,pct:dr>0?((dr-dc)/dr*100):0})});
       const pRev=qty*item.unit_sell;const pCost=qty*item.nsa_cost;const pMg=pRev-pCost;
@@ -2184,7 +2184,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         {/* DECORATIONS */}
         <div style={{padding:'8px 18px 14px'}}>
           {safeDecos(item).map((deco,di)=>{const cq=deco.kind==='art'&&deco.art_file_id?artQty[deco.art_file_id]:qty;const dp=dP(deco,qty,af,cq);
-            const decoTotal=qty*(deco.sell_override||dp.sell);const decoCostTotal=qty*dp.cost;const decoMargin=decoTotal-decoCostTotal;const decoMPct=decoTotal>0?Math.round(decoMargin/decoTotal*100):0;
+            const eq=dp._nq!=null?dp._nq:qty;const decoTotal=eq*(deco.sell_override||dp.sell);const decoCostTotal=eq*dp.cost;const decoMargin=decoTotal-decoCostTotal;const decoMPct=decoTotal>0?Math.round(decoMargin/decoTotal*100):0;
             const decoCardStyle={padding:'10px 12px',marginBottom:4,borderRadius:6,background:di%2===0?'#fafbfc':'#f8f9fb',borderLeft:'3px solid '+(deco.kind==='art'?'#3b82f6':deco.kind==='numbers'?'#22c55e':deco.kind==='names'?'#f59e0b':deco.kind==='outside_deco'?'#7c3aed':'#94a3b8')};
             if(deco.kind==='art'){const artF=af.find(f=>f.id===deco.art_file_id);const artIcon=artF?(artF.deco_type==='screen_print'?'🎨':artF.deco_type==='embroidery'?'🧵':'🔥'):'';
               return(<div key={di} style={decoCardStyle}>
@@ -2832,7 +2832,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
             allReceived:blankPOs.length>0&&blankPOs.every(p=>p.status==='received')});
           safeDecos(it).forEach(d=>{
             const dp=dP(d,qty,af,qty);
-            const expectedDeco=qty*dp.cost;
+            const eqD=dp._nq!=null?dp._nq:qty;const expectedDeco=eqD*dp.cost;
             const matchingDPOs=(it.po_lines||[]).filter(pl=>pl.po_type==='outside_deco');
             const actualDeco=matchingDPOs.reduce((a,pl)=>{
               const poQty=Object.entries(pl).filter(([k,v])=>typeof v==='number'&&!['unit_cost'].includes(k)&&safeSizes(it)[k]!==undefined).reduce((a2,[,v])=>a2+v,0);
@@ -3555,6 +3555,47 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                 <div style={{fontSize:10,color:'#64748b',marginTop:2}}>{pct}% fulfilled</div>
               </div>
             </div>
+            {/* ── Art Status Banners ── */}
+            {j.art_status==='art_requested'&&<div style={{margin:'0 20px',padding:'12px 16px',background:'linear-gradient(135deg,#fce7f3,#fdf2f8)',border:'2px solid #f9a8d4',borderRadius:8}}>
+              <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
+                <span style={{fontSize:16}}>📨</span>
+                <span style={{fontWeight:700,fontSize:14,color:'#9d174d'}}>Art Request Sent</span>
+                {(()=>{const lastReq=(j.art_requests||[]).slice(-1)[0];return lastReq?<span style={{fontSize:11,color:'#be185d'}}>to {lastReq.artist_name||'artist'} on {new Date(lastReq.created_at).toLocaleDateString()}</span>:null})()}
+              </div>
+              <div style={{fontSize:12,color:'#831843'}}>Waiting for the artist to complete the mockup. You can request updates or send messages below.</div>
+            </div>}
+            {j.art_status==='art_in_progress'&&<div style={{margin:'0 20px',padding:'12px 16px',background:'linear-gradient(135deg,#dbeafe,#eff6ff)',border:'2px solid #93c5fd',borderRadius:8}}>
+              <div style={{display:'flex',alignItems:'center',gap:8}}>
+                <span style={{fontSize:16}}>🎨</span>
+                <span style={{fontWeight:700,fontSize:14,color:'#1e40af'}}>Artist is Working on This</span>
+                {j.assigned_artist&&<span style={{fontSize:11,color:'#2563eb'}}>({REPS.find(r=>r.id===j.assigned_artist)?.name||'Artist'})</span>}
+              </div>
+              <div style={{fontSize:12,color:'#1e3a8a',marginTop:4}}>The mockup will be sent to you for approval when ready.</div>
+            </div>}
+            {j.art_status==='waiting_approval'&&<div style={{margin:'0 20px',padding:'14px 16px',background:'linear-gradient(135deg,#fef3c7,#fffbeb)',border:'2px solid #fbbf24',borderRadius:8}}>
+              <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}>
+                <span style={{fontSize:20}}>⚠️</span>
+                <span style={{fontWeight:800,fontSize:15,color:'#92400e'}}>Artwork Needs Your Approval</span>
+              </div>
+              <div style={{fontSize:12,color:'#78350f',marginBottom:10}}>The mockup is ready for review. Approve it or send it to the coach for their approval.</div>
+              <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                <button className="btn btn-sm" style={{fontSize:12,padding:'6px 16px',background:'#22c55e',color:'white',border:'none',borderRadius:6,fontWeight:700}} onClick={()=>{updJob(ji,'art_status','production_files_needed');if(j.art_file_id){const afi=af.findIndex(a=>a.id===j.art_file_id);if(afi>=0)uArt(afi,'status','approved')}nf('✅ Art approved — awaiting prod files')}}>✅ Approve Artwork</button>
+                <button className="btn btn-sm" style={{fontSize:12,padding:'6px 16px',background:'#3b82f6',color:'white',border:'none',borderRadius:6,fontWeight:700}} onClick={()=>{const c2=ic||cust?.find?.(x=>x.id===o.customer_id);const ct=(c2?.contacts||[])[0]||{};const pUrl=c2?.alpha_tag?(window.location.origin+'/?portal='+c2.alpha_tag):'';if(pUrl){navigator.clipboard?.writeText(pUrl);nf('Portal link copied! Send to coach for approval.')}else{nf('No portal link — approve directly or set customer alpha tag','error')}}}>📤 Send to Coach for Approval</button>
+              </div>
+            </div>}
+            {j.art_status==='production_files_needed'&&<div style={{margin:'0 20px',padding:'12px 16px',background:'linear-gradient(135deg,#fef9c3,#fefce8)',border:'2px solid #fde047',borderRadius:8}}>
+              <div style={{display:'flex',alignItems:'center',gap:8}}>
+                <span style={{fontSize:16}}>✅</span>
+                <span style={{fontWeight:700,fontSize:14,color:'#854d0e'}}>Art Approved — Waiting for Production Files</span>
+              </div>
+              <div style={{fontSize:12,color:'#713f12',marginTop:4}}>The artist needs to upload final production files before this job can go to production.</div>
+            </div>}
+            {j.art_status==='art_complete'&&<div style={{margin:'0 20px',padding:'10px 16px',background:'linear-gradient(135deg,#dcfce7,#f0fdf4)',border:'2px solid #86efac',borderRadius:8}}>
+              <div style={{display:'flex',alignItems:'center',gap:8}}>
+                <span style={{fontSize:16}}>🎉</span>
+                <span style={{fontWeight:700,fontSize:14,color:'#166534'}}>Art Complete — Ready for Production</span>
+              </div>
+            </div>}
             {/* Status controls */}
             <div style={{padding:'10px 20px',borderTop:'1px solid #f1f5f9',display:'flex',gap:12,alignItems:'center',flexWrap:'wrap'}}>
               <div style={{fontSize:11,fontWeight:600,color:'#64748b'}}>Art:</div>
@@ -5946,6 +5987,7 @@ export default function App(){
   const[soHistory,setSOHistory]=useState(()=>loadState('so_history',{}));// {soId:[{ts,user,snapshot}]}
   const[msgs,setMsgs]=useState(()=>_migrated.msgs);const[cM,setCM]=useState({open:false,c:null});const[aM,setAM]=useState({open:false,p:null});
   // ─── Supabase: load on mount ───
+  const _pendingQBTokens=useRef(null);
   const _initialLoadDone=useRef(false);
   React.useEffect(()=>{
     if(!supabase){setDbLoading(false);_initialLoadDone.current=true;return}
@@ -5976,7 +6018,7 @@ export default function App(){
           if(as.change_log)setChangeLog(as.change_log);
           if(as.so_history)setSOHistory(as.so_history);
           if(as.job_time_logs)setJobTimeLogs(as.job_time_logs);
-          if(as.qb_config)setQBConfig(as.qb_config);
+          if(as.qb_config)setQBConfig({...as.qb_config,sandbox:as.qb_config.sandbox===true&&as.qb_config.realm_id?false:as.qb_config.sandbox});
           if(as.inv_pos)setInvPOs(as.inv_pos);
           if(as.inv_adj_log)setInvAdjLog(as.inv_adj_log);
           if(as.inv_po_counter)setInvPOCounter(as.inv_po_counter);
@@ -6165,24 +6207,13 @@ export default function App(){
     }catch{}
   },[]);
   // Handle QB OAuth callback tokens from URL hash (Netlify flow)
+  // Step 1: Parse tokens from hash immediately and save to ref (before Supabase can overwrite)
   React.useEffect(()=>{
     const hash=window.location.hash;
     if(hash.includes('tokens=')){
       try{
         const encoded=hash.split('tokens=')[1]?.split('&')[0];
-        if(encoded){
-          const tokenData=JSON.parse(atob(encoded));
-          setQBConfig(prev=>({...prev,connected:true,access_token:tokenData.access_token,refresh_token:tokenData.refresh_token,
-            realm_id:tokenData.realm_id,token_created_at:tokenData.created_at||Date.now()}));
-          fetch('/.netlify/functions/qb-api',{method:'POST',headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({action:'company_info',access_token:tokenData.access_token,realm_id:tokenData.realm_id})})
-            .then(r=>r.json()).then(d=>{
-              const ci=d?.CompanyInfo;
-              if(ci)setQBConfig(prev=>({...prev,companyId:tokenData.realm_id,companyName:ci.CompanyName||'Connected'}));
-            }).catch(()=>{});
-          window.location.hash='';
-          nf('Connected to QuickBooks Online');
-        }
+        if(encoded){_pendingQBTokens.current=JSON.parse(atob(encoded));window.location.hash=''}
       }catch(e){console.error('[QB] Token parse error:',e)}
     }
     if(hash.includes('error=')){
@@ -6191,6 +6222,20 @@ export default function App(){
       window.location.hash='';
     }
   },[]);
+  // Step 2: Apply tokens AFTER Supabase load completes so they don't get overwritten
+  React.useEffect(()=>{
+    if(dbLoading||!_pendingQBTokens.current)return;
+    const t=_pendingQBTokens.current;_pendingQBTokens.current=null;
+    setQBConfig(prev=>({...prev,connected:true,sandbox:false,access_token:t.access_token,refresh_token:t.refresh_token,
+      realm_id:t.realm_id,token_created_at:t.created_at||Date.now()}));
+    fetch('/.netlify/functions/qb-api',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({action:'company_info',access_token:t.access_token,realm_id:t.realm_id,sandbox:false})})
+      .then(r=>r.json()).then(d=>{
+        const ci=d?.CompanyInfo;
+        if(ci)setQBConfig(prev=>({...prev,companyId:t.realm_id,companyName:ci.CompanyName||'Connected'}));
+      }).catch(()=>{});
+    nf('Connected to QuickBooks Online');
+  },[dbLoading]);
   React.useEffect(()=>{_saveAppState('inv_pos',invPOs)},[invPOs]);
   React.useEffect(()=>{_saveAppState('inv_adj_log',invAdjLog)},[invAdjLog]);
   React.useEffect(()=>{_saveAppState('inv_po_counter',invPOCounter)},[invPOCounter]);
@@ -6506,7 +6551,7 @@ export default function App(){
     sos.forEach(so=>{
       const c=cust.find(x=>x.id===so.customer_id);const tag=c?.alpha_tag||so.id;
       buildJobs(so).forEach(j=>{
-        if(j.art_status==='waiting_approval')todos.push({type:'art',priority:2,msg:'⏳ Art awaiting approval: '+j.art_name,detail:tag+' · '+so.id,so,action:'Review art',role:'sales'});
+        if(j.art_status==='waiting_approval')todos.push({type:'art',priority:2,msg:'⏳ Art awaiting approval: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,action:'Review art',role:'sales'});
         const ready=isJobReady(j,so);const onBoard=safeJobs(so).some(ej=>ej.id===j.id);
         if(ready&&!onBoard)todos.push({type:'schedule',priority:1,msg:'🏭 Ready for production — send to board: '+j.art_name,detail:tag+' · '+j.id,so,action:'Open Jobs',role:'production'});
         if(j.item_status==='partially_received'&&!j.split_from&&j.fulfilled_units>0)todos.push({type:'split',priority:3,msg:'✂️ Can split: '+j.art_name+' ('+j.fulfilled_units+'/'+j.total_units+')',detail:tag+' · '+j.id,so,action:'Review split',role:'production'});
@@ -6559,9 +6604,9 @@ export default function App(){
       <div className="card"><div className="card-header"><h2>📋 To-Do ({todos.length})</h2></div>
         <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
           {todos.length===0?<div className="empty" style={{padding:20}}>All clear!</div>:
-          todos.slice(0,12).map((t,i)=><div key={i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer'}} onClick={()=>{if(t.so){setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
+          todos.slice(0,12).map((t,i)=><div key={i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer'}} onClick={()=>{if(t.so){if(t.type==='art'&&t.jobId){const jIdx=safeJobs(t.so).findIndex(jj=>jj.id===t.jobId);setESOTab('jobs');setESOScrollJob(jIdx>=0?jIdx:null)}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
             <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}</div></div>
-            <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#eff6ff',color:'#2563eb',fontWeight:600,whiteSpace:'nowrap'}}>{t.action}</span>
+            <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:t.type==='art'?'#fef3c7':'#eff6ff',color:t.type==='art'?'#92400e':'#2563eb',fontWeight:600,whiteSpace:'nowrap'}}>{t.action}</span>
           </div>)}
         </div></div>
       <div className="card"><div className="card-header"><h2>💬 Unread ({unreadMsgs.length}){unreadMentions.length>0&&<span style={{fontSize:12,color:'#d97706',fontWeight:600,marginLeft:8}}>({unreadMentions.length} mention{unreadMentions.length!==1?'s':''})</span>}</h2></div>
@@ -6596,9 +6641,9 @@ export default function App(){
       <div className="card"><div className="card-header"><h2>🎯 My Action Items</h2></div>
         <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
           {todos.filter(t=>t.role==='sales'||t.role==='all').length===0?<div className="empty" style={{padding:20}}>Nothing pending!</div>:
-          todos.filter(t=>t.role==='sales'||t.role==='all').slice(0,12).map((t,i)=><div key={i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer'}} onClick={()=>{if(t.so){setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
+          todos.filter(t=>t.role==='sales'||t.role==='all').slice(0,12).map((t,i)=><div key={i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer'}} onClick={()=>{if(t.so){if(t.type==='art'&&t.jobId){const jIdx=safeJobs(t.so).findIndex(jj=>jj.id===t.jobId);setESOTab('jobs');setESOScrollJob(jIdx>=0?jIdx:null)}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
             <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}</div></div>
-            <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#eff6ff',color:'#2563eb',fontWeight:600}}>{t.action}</span>
+            <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:t.type==='art'?'#fef3c7':'#eff6ff',color:t.type==='art'?'#92400e':'#2563eb',fontWeight:600}}>{t.action}</span>
           </div>)}</div></div>
       <div className="card"><div className="card-header"><h2>📊 My Pipeline</h2></div>
         <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
@@ -8970,7 +9015,7 @@ export default function App(){
   const toggleWidget=(k)=>setRptWidgets(w=>({...w,[k]:!w[k]}));
 
   function rReports(){
-    const soCalc=(so)=>{let rev=0,cost=0,units=0;const _aq={};safeItems(so).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_aq[d.art_file_id]=(_aq[d.art_file_id]||0)+q2}})});const af=safeArt(so);safeItems(so).forEach(it=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);units+=qty;rev+=qty*safeNum(it.unit_sell);cost+=qty*safeNum(it.nsa_cost);(it.decorations||[]).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qty;const dp=dP(d,qty,af,cq);rev+=qty*dp.sell;cost+=qty*dp.cost});(it.po_lines||[]).filter(pl=>pl.po_type==='outside_deco').forEach(pl=>{const poQty=Object.entries(pl).filter(([k,v])=>typeof v==='number'&&k!=='unit_cost').reduce((a,[,v])=>a+v,0);cost+=poQty*safeNum(pl.unit_cost)})});return{rev,cost,margin:rev-cost,pct:rev>0?Math.round((rev-cost)/rev*100):0,units}};
+    const soCalc=(so)=>{let rev=0,cost=0,units=0;const _aq={};safeItems(so).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_aq[d.art_file_id]=(_aq[d.art_file_id]||0)+q2}})});const af=safeArt(so);safeItems(so).forEach(it=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);units+=qty;rev+=qty*safeNum(it.unit_sell);cost+=qty*safeNum(it.nsa_cost);(it.decorations||[]).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qty;const dp=dP(d,qty,af,cq);const eq=dp._nq!=null?dp._nq:qty;rev+=eq*dp.sell;cost+=eq*dp.cost});(it.po_lines||[]).filter(pl=>pl.po_type==='outside_deco').forEach(pl=>{const poQty=Object.entries(pl).filter(([k,v])=>typeof v==='number'&&k!=='unit_cost').reduce((a,[,v])=>a+v,0);cost+=poQty*safeNum(pl.unit_cost)})});return{rev,cost,margin:rev-cost,pct:rev>0?Math.round((rev-cost)/rev*100):0,units}};
 
     const filtSOs=rptRep==='all'?sos:sos.filter(s=>s.created_by===rptRep);
     const filtInvs=rptRep==='all'?invs:invs.filter(i=>{const so=sos.find(s=>s.id===i.so_id);return so?.created_by===rptRep});
@@ -10847,14 +10892,21 @@ export default function App(){
         if(af&&(af.prod_files||[]).length===0){nf('Upload production files first','error');return}
       }
       const currentJobs=buildJobs(so);
-      const updatedJobs=currentJobs.map(jj=>jj.id===j.id?{...jj,art_status:newStatus,assigned_artist:jj.assigned_artist||j.assigned_artist}:jj);
+      const updatedJobs=currentJobs.map(jj=>{
+        if(jj.id!==j.id)return jj;
+        const upd={...jj,art_status:newStatus,assigned_artist:jj.assigned_artist||j.assigned_artist};
+        // Auto-move to production staging when art complete + items received
+        if(newStatus==='art_complete'&&jj.item_status==='items_received'&&(jj.prod_status==='hold'||!jj.prod_status)){upd.prod_status='staging'}
+        return upd;
+      });
       let updArt=safeArt(so);
       if(j.art_file_id){
         const afSt=newStatus==='waiting_approval'?'needs_approval':newStatus==='production_files_needed'||newStatus==='art_complete'?'approved':null;
         if(afSt)updArt=updArt.map(a=>a.id===j.art_file_id?{...a,status:afSt}:a);
       }
       savSO({...so,art_files:updArt,jobs:updatedJobs});
-      nf('Art status → '+ART_LABELS[newStatus]);
+      if(newStatus==='art_complete'){const autoStaged=updatedJobs.find(jj=>jj.id===j.id);if(autoStaged?.prod_status==='staging')nf('Art complete — job moved to Ready for Production!');else nf('Art status → '+ART_LABELS[newStatus])}
+      else nf('Art status → '+ART_LABELS[newStatus]);
     };
     const assignArtist=(j,artistId)=>{
       const so=sos.find(s=>s.id===j.soId);if(!so)return;
@@ -10963,8 +11015,10 @@ export default function App(){
                   const ext=j.deco_type==='embroidery'?'.dst':j.deco_type==='screen_print'?'_seps.ai':'.pdf';
                   const fn=(j.art_name||'art').replace(/\s+/g,'_')+'_FINAL'+ext;
                   const updArt=[...safeArt(so)];updArt[afIdx]={...updArt[afIdx],prod_files:[...(updArt[afIdx].prod_files||[]),fn]};
-                  savSO({...so,art_files:updArt,jobs:safeJobs(so).map(jj=>jj.id===j.id?{...jj,art_status:'art_complete'}:jj)});
-                  nf('Prod files uploaded — Art Complete!');
+                  const updJobs=safeJobs(so).map(jj=>{if(jj.id!==j.id)return jj;const upd={...jj,art_status:'art_complete'};if(jj.item_status==='items_received'&&(jj.prod_status==='hold'||!jj.prod_status))upd.prod_status='staging';return upd});
+                  savSO({...so,art_files:updArt,jobs:updJobs});
+                  const autoStaged=updJobs.find(jj=>jj.id===j.id);
+                  nf(autoStaged?.prod_status==='staging'?'Art complete — job moved to Ready for Production!':'Prod files uploaded — Art Complete!');
                 }else{moveArtStatus(j,'art_complete')}
               }}>Upload & Complete</button>}
               <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px',marginLeft:'auto'}} onClick={e=>{e.stopPropagation();setESOTab('jobs');setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so?.customer_id));setPg('orders')}}>Open SO</button>
@@ -13720,68 +13774,92 @@ export default function App(){
       setQbSyncing(true);
       const log={ts:new Date().toLocaleString(),type:'customers',status:'success',details:[]};
       let synced=0;
+      const custQBMap={};// localId -> qbCustomerId (returned for downstream syncs)
+      // Fetch existing QB customers to match by name and avoid duplicates
+      let existingQBCusts=[];
+      try{
+        const qRes=await qbApi('query',{query:"SELECT Id, DisplayName, CompanyName, SyncToken FROM Customer MAXRESULTS 1000"});
+        existingQBCusts=qRes?.QueryResponse?.Customer||[];
+      }catch(e){console.warn('[QB] Customer query failed:',e)}
       for(const c of cust.filter(c=>c.is_active!==false)){
         // Calculate totals
         const custSOs=sos.filter(s=>s.customer_id===c.id);
         const totalRevenue=invs.filter(i=>i.customer_id===c.id).reduce((a,i)=>a+(i.total||0),0);
         const totalPaid=invs.filter(i=>i.customer_id===c.id).reduce((a,i)=>a+(i.paid||0),0);
         const openBalance=totalRevenue-totalPaid;
-
+        const displayName=c.name+(c.alpha_tag?' ('+c.alpha_tag+')':'');
+        // Match existing QB customer by name if we don't already have a QB ID
+        let qbId=c.qb_customer_id||(qbConfig.custQBMap||{})[c.id];let syncToken=null;
+        if(!qbId){
+          const match=existingQBCusts.find(q=>q.DisplayName===displayName||q.CompanyName===c.name||q.DisplayName===c.name);
+          if(match){qbId=match.Id;syncToken=match.SyncToken}
+        }else{
+          const match=existingQBCusts.find(q=>q.Id===qbId);
+          if(match)syncToken=match.SyncToken;
+        }
         const qbCustomer={
-          DisplayName:c.name+(c.alpha_tag?' ('+c.alpha_tag+')':''),
+          DisplayName:displayName,
           CompanyName:c.name,
           ...(c.contact_email||c.contacts?.[0]?.email?{PrimaryEmailAddr:{Address:c.contact_email||c.contacts[0].email}}:{}),
           ...(c.contact_phone||c.contacts?.[0]?.phone?{PrimaryPhone:{FreeFormNumber:c.contact_phone||c.contacts[0].phone}}:{}),
           ...(c.billing_address_line1?{BillAddr:{Line1:c.billing_address_line1,City:c.billing_city||'',CountrySubDivisionCode:c.billing_state||'',PostalCode:c.billing_zip||''}}:{}),
           ...(c.shipping_address_line1?{ShipAddr:{Line1:c.shipping_address_line1,City:c.shipping_city||'',CountrySubDivisionCode:c.shipping_state||'',PostalCode:c.shipping_zip||''}}:{}),
           Notes:'Portal: '+custSOs.length+' orders, $'+totalRevenue.toFixed(0)+' revenue, $'+openBalance.toFixed(0)+' open balance. Tier: '+(c.adidas_ua_tier||'B')+'. Terms: '+(c.payment_terms||'net30'),
-          ...(c.qb_customer_id?{Id:c.qb_customer_id,sparse:true}:{}),
+          ...(qbId?{Id:qbId,sparse:true}:{}),
+          ...(syncToken?{SyncToken:syncToken}:{}),
         };
         const res=await qbApi('upsert_customer',{customer:qbCustomer});
         if(res?.Customer?.Id){
-          // Store QB ID back on customer
-          setCust(prev=>prev.map(cc=>cc.id===c.id?{...cc,qb_customer_id:res.Customer.Id}:cc));
+          custQBMap[c.id]=res.Customer.Id;
           log.details.push(c.name+' → QB #'+res.Customer.Id);synced++;
-        }else{log.details.push(c.name+' — FAILED: '+(res?.Fault?.Error?.[0]?.Detail||'unknown error'));log.status='partial'}
+        }else{
+          if(qbId)custQBMap[c.id]=qbId;
+          log.details.push(c.name+' — FAILED: '+(res?.Fault?.Error?.[0]?.Detail||'unknown error'));log.status='partial';
+        }
       }
+      // Include customers that already had QB IDs from previous syncs
+      cust.forEach(c=>{const prev=(qbConfig.custQBMap||{})[c.id];if(prev&&!custQBMap[c.id])custQBMap[c.id]=prev});
       if(synced===0&&log.details.length>0)log.status='error';
       log.details.unshift(synced+'/'+cust.filter(c=>c.is_active!==false).length+' customers synced');
-      setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
+      setQBConfig(prev=>({...prev,custQBMap:{...prev.custQBMap,...custQBMap},syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
       nf(synced+' customers synced to QB');
       setQbSyncing(false);
+      return custQBMap;
     };
 
     // ── SYNC: Invoices (totals) ──
-    const syncInvoices=async()=>{
+    const syncInvoices=async(custQBMap={},prodQBMap={})=>{
       setQbSyncing(true);
       const log={ts:new Date().toLocaleString(),type:'invoices',status:'success',details:[]};
       let synced=0;
-      const unsyncedInvs2=invs.filter(i=>!i._qb_synced);
+      const unsyncedInvs2=invs.filter(i=>!i.qb_invoice_id);
       for(const inv of unsyncedInvs2){
         const c=cust.find(cc=>cc.id===inv.customer_id);
-        if(!c?.qb_customer_id){log.details.push(inv.id+' — skipped: customer "'+c?.name+'" not synced to QB');continue}
-        const so=sos.find(s=>s.id===inv.so_id);
+        const cQBId=custQBMap[inv.customer_id]||(qbConfig.custQBMap||{})[inv.customer_id];
+        if(!cQBId){log.details.push((inv.display_id||inv.id)+' — skipped: customer "'+c?.name+'" not synced to QB');continue}
+        const so=sos.find(s=>s.id===inv.sales_order_id);
+        const invPaid=(inv.payments||[]).reduce((a,p)=>a+safeNum(p.amount),0);
         const qbInvoice={
-          DocNumber:inv.id,
-          TxnDate:inv.date||new Date().toISOString().slice(0,10),
-          CustomerRef:{value:c.qb_customer_id},
-          Line:[{DetailType:'SalesItemLineDetail',Amount:inv.total||0,Description:'Invoice '+inv.id+(so?' for '+so.id:'')+(so?.memo?' — '+so.memo:''),
-            SalesItemLineDetail:{Quantity:1,UnitPrice:inv.total||0}}],
-          ...(inv._qb_id?{Id:inv._qb_id,sparse:true}:{}),
+          DocNumber:inv.display_id||inv.id,
+          TxnDate:inv.invoice_date||new Date().toISOString().slice(0,10),
+          CustomerRef:{value:cQBId},
+          Line:[{DetailType:'SalesItemLineDetail',Amount:inv.total||0,Description:'Invoice '+(inv.display_id||inv.id)+(so?' for '+so.id:'')+(so?.memo?' — '+so.memo:''),
+            SalesItemLineDetail:{Qty:1,UnitPrice:inv.total||0}}],
+          ...(inv.qb_invoice_id?{Id:inv.qb_invoice_id,sparse:true}:{}),
         };
         const res=await qbApi('upsert_invoice',{invoice:qbInvoice});
         if(res?.Invoice?.Id){
-          setInvs(prev=>prev.map(ii=>ii.id===inv.id?{...ii,_qb_synced:true,_qb_id:res.Invoice.Id}:ii));
-          log.details.push(inv.id+' → QB Invoice #'+res.Invoice.Id+' ($'+safeNum(inv.total).toFixed(2)+')');synced++;
+          setInvs(prev=>prev.map(ii=>ii.id===inv.id?{...ii,qb_invoice_id:res.Invoice.Id}:ii));
+          log.details.push((inv.display_id||inv.id)+' → QB Invoice #'+res.Invoice.Id+' ($'+safeNum(inv.total).toFixed(2)+')');synced++;
           // Sync payments if any
-          if(inv.paid>0&&inv.payments?.length){
+          if(invPaid>0&&inv.payments?.length){
             for(const pmt of inv.payments){
-              const qbPmt={CustomerRef:{value:c.qb_customer_id},TotalAmt:pmt.amount,
+              const qbPmt={CustomerRef:{value:cQBId},TotalAmt:pmt.amount,
                 Line:[{Amount:pmt.amount,LinkedTxn:[{TxnId:res.Invoice.Id,TxnType:'Invoice'}]}]};
               await qbApi('upsert_payment',{payment:qbPmt});
             }
           }
-        }else{log.details.push(inv.id+' — FAILED: '+(res?.Fault?.Error?.[0]?.Detail||'unknown'));log.status='partial'}
+        }else{log.details.push((inv.display_id||inv.id)+' — FAILED: '+(res?.Fault?.Error?.[0]?.Detail||'unknown'));log.status='partial'}
       }
       if(synced===0&&unsyncedInvs2.length>0)log.status='error';
       log.details.unshift(synced+'/'+unsyncedInvs2.length+' invoices synced');
@@ -13795,32 +13873,99 @@ export default function App(){
       setQbSyncing(true);
       const log={ts:new Date().toLocaleString(),type:'inventory',status:'success',details:[]};
       let synced=0;
+      // Look up QB account IDs by name (required by QB API)
+      let incomeAcctRef=null,expenseAcctRef=null;
+      try{
+        const acctRes=await qbApi('query',{query:"SELECT Id, Name, AccountType FROM Account WHERE AccountType IN ('Income','Cost of Goods Sold','Expense') MAXRESULTS 200"});
+        const accts=acctRes?.QueryResponse?.Account||[];
+        const incomeName=qbConfig.mapping.income_account||'Sales';
+        const expenseName=qbConfig.mapping.cogs_account||'Cost of Goods Sold';
+        const incomeAcct=accts.find(a=>a.Name===incomeName)||accts.find(a=>a.AccountType==='Income');
+        const expenseAcct=accts.find(a=>a.Name===expenseName)||accts.find(a=>a.AccountType==='Cost of Goods Sold')||accts.find(a=>a.AccountType==='Expense');
+        if(incomeAcct)incomeAcctRef={value:incomeAcct.Id,name:incomeAcct.Name};
+        if(expenseAcct)expenseAcctRef={value:expenseAcct.Id,name:expenseAcct.Name};
+      }catch(e){console.error('[QB] Account lookup failed:',e)}
+      if(!incomeAcctRef||!expenseAcctRef){
+        log.status='error';log.details.push('Could not find QB accounts for Income ("'+(qbConfig.mapping.income_account||'Sales')+'") or Expense ("'+(qbConfig.mapping.cogs_account||'Cost of Goods Sold')+'"). Check your QB Chart of Accounts.');
+        setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));nf('Inventory sync failed — QB accounts not found','error');setQbSyncing(false);return{};
+      }
+      // Look up asset account for Inventory type items
+      let assetAcctRef=null;
+      try{
+        const aRes=await qbApi('query',{query:"SELECT Id, Name FROM Account WHERE AccountType='Other Current Asset' AND AccountSubType='Inventory' MAXRESULTS 10"});
+        const aa=(aRes?.QueryResponse?.Account||[])[0];
+        if(aa)assetAcctRef={value:aa.Id,name:aa.Name};
+      }catch{}
+      if(!assetAcctRef){// fallback: search by name
+        try{
+          const aRes2=await qbApi('query',{query:"SELECT Id, Name FROM Account WHERE Name='Inventory Asset' MAXRESULTS 1"});
+          const aa2=(aRes2?.QueryResponse?.Account||[])[0];
+          if(aa2)assetAcctRef={value:aa2.Id,name:aa2.Name};
+        }catch{}
+      }
+      // Query existing QB items to match by name and avoid duplicates
+      let existingQBItems=[];
+      try{
+        const iRes=await qbApi('query',{query:"SELECT Id, Name, Type, SyncToken, QtyOnHand FROM Item MAXRESULTS 1000"});
+        existingQBItems=iRes?.QueryResponse?.Item||[];
+      }catch(e){console.warn('[QB] Item query failed:',e)}
+      const prodQBMap={...(qbConfig.prodQBMap||{})};
+      const today=new Date().toISOString().slice(0,10);
       // Aggregate inventory totals per product (not per size — just totals)
       for(const p of prod.filter(p=>p.is_active!==false)){
         const inv=p._inv||{};
         const totalQty=Object.values(inv).reduce((a,v)=>a+safeNum(v),0);
-        if(totalQty===0&&!p.qb_item_id)continue; // skip products with no inventory and no QB record
+        const existingQBId=prodQBMap[p.id];
+        if(totalQty===0&&!existingQBId)continue; // skip products with no inventory and no QB record
         const totalValue=totalQty*safeNum(p.nsa_cost);
+        const itemName=(p.sku+' '+p.name).slice(0,100);
+        // Match existing QB item by name or stored ID
+        let qbId=existingQBId;let syncToken=null;let existingType=null;
+        if(qbId){
+          const match=existingQBItems.find(i=>i.Id===qbId);
+          if(match){syncToken=match.SyncToken;existingType=match.Type}
+        }else{
+          const match=existingQBItems.find(i=>i.Name===itemName);
+          if(match){qbId=match.Id;syncToken=match.SyncToken;existingType=match.Type}
+        }
+        // Use Inventory type with QtyOnHand if we have an asset account
+        const useInventoryType=!!assetAcctRef;
         const qbItem={
-          Name:(p.sku+' '+p.name).slice(0,100),
-          Type:'NonInventory', // totals only — real inventory tracked on portal
+          Name:itemName,
+          ...(useInventoryType?{Type:'Inventory',TrackQtyOnHand:true,QtyOnHand:totalQty,InvStartDate:today,AssetAccountRef:assetAcctRef}:
+            {Type:'NonInventory'}),
           Description:p.name+(p.color?' - '+p.color:'')+' | Portal Qty: '+totalQty+' | Value: $'+totalValue.toFixed(2),
           UnitPrice:safeNum(p.retail_price||p.nsa_cost),
           PurchaseCost:safeNum(p.nsa_cost),
-          IncomeAccountRef:{name:qbConfig.mapping.income_account||'Sales'},
-          ExpenseAccountRef:{name:qbConfig.mapping.cogs_account||'Cost of Goods Sold'},
-          ...(p.qb_item_id?{Id:p.qb_item_id,sparse:true}:{}),
+          IncomeAccountRef:incomeAcctRef,
+          ExpenseAccountRef:expenseAcctRef,
+          ...(qbId?{Id:qbId,SyncToken:syncToken,sparse:true}:{}),
         };
         const res=await qbApi('upsert_item',{item:qbItem});
         if(res?.Item?.Id){
-          setProd(prev=>prev.map(pp=>pp.id===p.id?{...pp,qb_item_id:res.Item.Id}:pp));
+          prodQBMap[p.id]=res.Item.Id;
           log.details.push(p.sku+' '+p.name+' → QB Item #'+res.Item.Id+' (qty: '+totalQty+', val: $'+totalValue.toFixed(2)+')');synced++;
+          // For existing items, also adjust qty via InventoryAdjustment if needed
+          if(qbId&&useInventoryType){
+            const currentQBQty=existingQBItems.find(i=>i.Id===(res.Item.Id||qbId))?.QtyOnHand||0;
+            const qtyDiff=totalQty-currentQBQty;
+            if(qtyDiff!==0){
+              await qbApi('inventory_adjustment',{adjustment:{
+                AdjDate:today,
+                AdjustAccountRef:expenseAcctRef,
+                Line:[{ItemRef:{value:String(res.Item.Id||qbId),name:itemName},
+                  QtyDiff:qtyDiff,DetailType:'ItemAdjustmentLineDetail',
+                  ItemAdjustmentLineDetail:{Qty:qtyDiff}}]
+              }});
+            }
+          }
         }else{log.details.push(p.sku+' — FAILED: '+(res?.Fault?.Error?.[0]?.Detail||'unknown'));log.status='partial'}
       }
       log.details.unshift(synced+' product items synced');
-      setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
+      setQBConfig(prev=>({...prev,prodQBMap:{...prev.prodQBMap,...prodQBMap},syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
       nf(synced+' inventory items synced to QB');
       setQbSyncing(false);
+      return prodQBMap;
     };
 
     // ── BILL UPLOAD — upload vendor bill to QB ──
@@ -13898,19 +14043,153 @@ export default function App(){
       setQbBillUploading(false);
     };
 
+    // ── SYNC: Sales Orders (as QB Estimates) ──
+    const syncSalesOrders=async(custQBMap={},prodQBMap={})=>{
+      setQbSyncing(true);
+      const log={ts:new Date().toLocaleString(),type:'sales_orders',status:'success',details:[]};
+      let synced=0;
+      const soMap=qbConfig.qbSOMap||{};
+      const toSync=sos.filter(so=>{
+        const hasItems=safeItems(so).some(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
+        return hasItems&&!soMap[so.id];
+      });
+      for(const so of toSync){
+        const c=cust.find(x=>x.id===so.customer_id);
+        const cQBId=custQBMap[so.customer_id]||(qbConfig.custQBMap||{})[so.customer_id];
+        if(!cQBId){log.details.push(so.id+' — skipped: customer not synced to QB');continue}
+        const saf=safeArt(so);
+        const _aq={};safeItems(so).forEach(it2=>{const q2=Object.values(safeSizes(it2)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it2).forEach(d2=>{if(d2.kind==='art'&&d2.art_file_id){_aq[d2.art_file_id]=(_aq[d2.art_file_id]||0)+q2}})});
+        const lines=[];
+        safeItems(so).forEach(it=>{
+          const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
+          if(!qty)return;
+          const itemQBId=prodQBMap[it.product_id||(prod.find(pp=>pp.sku===it.sku)||{}).id];
+          lines.push({DetailType:'SalesItemLineDetail',Amount:qty*(it.unit_sell||0),
+            Description:it.sku+' '+it.name+(it.color?' - '+it.color:''),
+            SalesItemLineDetail:{Qty:qty,UnitPrice:it.unit_sell||0,...(itemQBId?{ItemRef:{value:String(itemQBId)}}:{})}});
+          safeDecos(it).forEach(d=>{
+            const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qty;
+            const dp=dP(d,qty,saf,cq);
+            if(dp.sell>0)lines.push({DetailType:'SalesItemLineDetail',Amount:qty*dp.sell,
+              Description:'Decoration: '+(d.position||d.deco_type||d.kind||'Art'),
+              SalesItemLineDetail:{Qty:qty,UnitPrice:dp.sell}});
+          });
+        });
+        if(!lines.length)continue;
+        const qbEstimate={
+          DocNumber:so.id,
+          TxnDate:(so.created_at||'').slice(0,10)||new Date().toISOString().slice(0,10),
+          CustomerRef:{value:cQBId},
+          Line:lines,
+          PrivateNote:'Portal SO: '+so.id+(so.memo?' — '+so.memo:''),
+          ...(soMap[so.id]?{Id:soMap[so.id],sparse:true}:{}),
+        };
+        const res=await qbApi('upsert_estimate',{estimate:qbEstimate});
+        if(res?.Estimate?.Id){
+          soMap[so.id]=res.Estimate.Id;
+          log.details.push(so.id+' → QB Estimate #'+res.Estimate.Id);synced++;
+        }else{log.details.push(so.id+' — FAILED: '+(res?.Fault?.Error?.[0]?.Detail||'unknown'));log.status='partial'}
+      }
+      if(synced===0&&toSync.length>0)log.status='error';
+      log.details.unshift(synced+'/'+toSync.length+' sales orders synced');
+      setQBConfig(prev=>({...prev,qbSOMap:{...prev.qbSOMap,...soMap},syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
+      nf(synced+' sales orders synced to QB');
+      setQbSyncing(false);
+    };
+
+    // ── SYNC: Purchase Orders ──
+    const syncPurchaseOrders=async()=>{
+      setQbSyncing(true);
+      const log={ts:new Date().toLocaleString(),type:'purchase_orders',status:'success',details:[]};
+      let synced=0;
+      const poMap=qbConfig.qbPOMap||{};
+      // Fetch existing QB vendors to match by name and avoid duplicates
+      let existingQBVendors=[];
+      try{
+        const vRes=await qbApi('query',{query:"SELECT Id, DisplayName, CompanyName, SyncToken FROM Vendor MAXRESULTS 500"});
+        existingQBVendors=vRes?.QueryResponse?.Vendor||[];
+      }catch(e){console.warn('[QB] Vendor query failed:',e)}
+      const vendorQBMap={};// vendorName -> qbVendorId (cache for this sync run)
+      // Look up expense accounts for PO line items
+      let acctMap={};
+      try{
+        const acctRes=await qbApi('query',{query:"SELECT Id, Name, AccountType FROM Account WHERE AccountType IN ('Cost of Goods Sold','Expense') MAXRESULTS 200"});
+        (acctRes?.QueryResponse?.Account||[]).forEach(a=>{acctMap[a.Name]={value:a.Id,name:a.Name}});
+      }catch(e){console.warn('[QB] Account query failed:',e)}
+      const toSync=[];
+      sos.forEach(so=>{safeItems(so).forEach(it=>{(it.po_lines||[]).forEach(pl=>{
+        if(!poMap[pl.po_id]){
+          toSync.push({pl,so,it,vendor:pl.deco_vendor||D_V.find(v=>v.id===it.vendor_id)?.name||it.brand});
+        }
+      })})});
+      for(const{pl,so,it,vendor:vendorName}of toSync){
+        if(!vendorName){log.details.push(pl.po_id+' — skipped: no vendor name');log.status='partial';continue}
+        // Find or create vendor in QB
+        let v=vend.find(x=>x.name===vendorName)||D_V.find(x=>x.name===vendorName);
+        let qbVendorId=vendorQBMap[vendorName]||v?.qb_vendor_id;
+        if(!qbVendorId){
+          // Check existing QB vendors by name
+          const match=existingQBVendors.find(q=>q.DisplayName===vendorName||q.CompanyName===vendorName);
+          if(match){qbVendorId=match.Id}
+          else{
+            const vRes=await qbApi('upsert_vendor',{vendor:{DisplayName:vendorName,CompanyName:vendorName}});
+            if(vRes?.Vendor?.Id){qbVendorId=vRes.Vendor.Id}
+            else{log.details.push(pl.po_id+' — vendor "'+vendorName+'" creation failed: '+(vRes?.Fault?.Error?.[0]?.Detail||'unknown'));log.status='partial';continue}
+          }
+          vendorQBMap[vendorName]=qbVendorId;
+          if(v)setVend(prev=>prev.map(vv=>vv.id===v.id?{...vv,qb_vendor_id:qbVendorId}:vv));
+        }
+        const qty=Object.entries(pl).filter(([k,v])=>typeof v==='number'&&!['unit_cost'].includes(k)&&k.match(/^[A-Z0-9]/)).reduce((a,[,v])=>a+v,0);
+        const rate=pl.po_type==='outside_deco'?safeNum(pl.unit_cost):safeNum(it.nsa_cost);
+        const account=pl.po_type==='outside_deco'?qbConfig.mapping.deco_account:qbConfig.mapping.cogs_account;
+        const qbPO={
+          DocNumber:pl.po_id,
+          VendorRef:{value:qbVendorId},
+          TxnDate:(pl.created_at||'').slice(0,10)||new Date().toISOString().slice(0,10),
+          Line:[{DetailType:'AccountBasedExpenseLineDetail',Amount:qty*rate,
+            Description:it.sku+' '+it.name+' x'+qty+' @$'+rate.toFixed(2)+' (SO: '+so.id+')',
+            AccountBasedExpenseLineDetail:{AccountRef:acctMap[account]||Object.values(acctMap)[0]||{name:account||'Expenses'}}}],
+          PrivateNote:'Portal PO for SO: '+so.id,
+          ...(poMap[pl.po_id]?{Id:poMap[pl.po_id],sparse:true}:{}),
+        };
+        const res=await qbApi('upsert_purchase_order',{purchase_order:qbPO});
+        if(res?.PurchaseOrder?.Id){
+          poMap[pl.po_id]=res.PurchaseOrder.Id;
+          log.details.push(pl.po_id+' → QB PO #'+res.PurchaseOrder.Id+' ('+vendorName+' $'+(qty*rate).toFixed(2)+')');synced++;
+        }else{log.details.push(pl.po_id+' — FAILED: '+(res?.Fault?.Error?.[0]?.Detail||'unknown'));log.status='partial'}
+      }
+      if(synced===0&&toSync.length>0)log.status='error';
+      log.details.unshift(synced+'/'+toSync.length+' purchase orders synced');
+      setQBConfig(prev=>({...prev,qbPOMap:{...prev.qbPOMap,...poMap},syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
+      nf(synced+' purchase orders synced to QB');
+      setQbSyncing(false);
+    };
+
     // ── SYNC ALL ──
     const syncAll=async()=>{
       setQbSyncing(true);
-      await syncCustomers();
-      await syncInvoices();
-      await syncInventory();
+      const custQBMap=await syncCustomers();
+      const prodQBMap=await syncInventory();
+      await syncSalesOrders(custQBMap,prodQBMap);
+      await syncInvoices(custQBMap,prodQBMap);
+      await syncPurchaseOrders();
       setQbSyncing(false);
     };
 
     // Build counts for overview
-    const unsyncedInvs=invs.filter(i=>!i._qb_synced);
-    const custWithQB=cust.filter(c=>c.qb_customer_id).length;
-    const prodWithQB=prod.filter(p=>p.qb_item_id).length;
+    const soMap=qbConfig.qbSOMap||{};
+    const poMap=qbConfig.qbPOMap||{};
+    const unsyncedSOs=sos.filter(so=>{
+      const hasItems=safeItems(so).some(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
+      return hasItems&&!soMap[so.id];
+    });
+    const unsyncedPOs=[];
+    sos.forEach(so=>{safeItems(so).forEach(it=>{(it.po_lines||[]).forEach(pl=>{if(!poMap[pl.po_id])unsyncedPOs.push({...pl,soId:so.id,sku:it.sku,itemName:it.name,vendor:pl.deco_vendor||D_V.find(v=>v.id===it.vendor_id)?.name||it.brand})})})});
+    const unsyncedInvs=invs.filter(i=>!i.qb_invoice_id);
+    const _custQBMap=qbConfig.custQBMap||{};
+    const _prodQBMap=qbConfig.prodQBMap||{};
+    const custWithQB=cust.filter(c=>_custQBMap[c.id]).length;
+    const prodWithQB=prod.filter(p=>_prodQBMap[p.id]).length;
     const totalInvQty=prod.reduce((a,p)=>a+Object.values(p._inv||{}).reduce((a2,v)=>a2+safeNum(v),0),0);
     const totalInvValue=prod.reduce((a,p)=>{const qty=Object.values(p._inv||{}).reduce((a2,v)=>a2+safeNum(v),0);return a+qty*safeNum(p.nsa_cost)},0);
     const unsyncedInvPOs=invPOs.filter(p=>!p._qb_synced);
@@ -13962,7 +14241,7 @@ export default function App(){
         });
       }
       if(type==='all'||type==='purchase_orders'){
-        sos.forEach(so=>{safeItems(so).forEach(it=>{(it.po_lines||[]).filter(pl=>!pl._qb_synced).forEach(pl=>{
+        sos.forEach(so=>{safeItems(so).forEach(it=>{(it.po_lines||[]).filter(pl=>!poMap[pl.po_id]).forEach(pl=>{
           const qbPO=buildQBPurchaseOrder(pl,so,it);
           log.details.push('PO: '+pl.po_id+' → QB PurchaseOrder to '+qbPO.vendorRef+' ($'+qbPO.total.toFixed(2)+')');
         })})});
@@ -14017,9 +14296,9 @@ export default function App(){
       <div className="stats-row" style={{marginBottom:16}}>
         <div className="stat-card" style={{borderLeft:'3px solid #2563eb'}}><div className="stat-label">Customers in QB</div><div className="stat-value" style={{color:'#2563eb'}}>{custWithQB}/{cust.length}</div></div>
         <div className="stat-card" style={{borderLeft:'3px solid #d97706'}}><div className="stat-label">Invoices to Sync</div><div className="stat-value" style={{color:'#d97706'}}>{unsyncedInvs.length}</div></div>
-        <div className="stat-card" style={{borderLeft:'3px solid #16a34a'}}><div className="stat-label">Products in QB</div><div className="stat-value" style={{color:'#16a34a'}}>{prodWithQB}/{prod.length}</div></div>
-        <div className="stat-card" style={{borderLeft:'3px solid #7c3aed'}}><div className="stat-label">Inventory Value</div><div className="stat-value" style={{fontSize:14,color:'#7c3aed'}}>${totalInvValue.toFixed(0)}</div></div>
-        <div className="stat-card" style={{borderLeft:'3px solid #166534'}}><div className="stat-label">Last Sync</div><div className="stat-value" style={{fontSize:12,color:'#166534'}}>{qbConfig.lastSync||'Never'}</div></div>
+        <div className="stat-card" style={{borderLeft:'3px solid #16a34a'}}><div className="stat-label">SOs to Sync</div><div className="stat-value" style={{color:'#16a34a'}}>{unsyncedSOs.length}</div></div>
+        <div className="stat-card" style={{borderLeft:'3px solid #7c3aed'}}><div className="stat-label">POs to Sync</div><div className="stat-value" style={{color:'#7c3aed'}}>{unsyncedPOs.length}</div></div>
+        <div className="stat-card" style={{borderLeft:'3px solid #166534'}}><div className="stat-label">Products in QB</div><div className="stat-value" style={{color:'#166534'}}>{prodWithQB}/{prod.length}</div></div>
       </div>
 
       {/* Tabs */}
@@ -14045,7 +14324,9 @@ export default function App(){
               <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
                 <button className="btn btn-primary" style={{flex:1}} disabled={qbSyncing} onClick={syncAll}>{qbSyncing?'Syncing...':'Sync Everything'}</button>
                 <button className="btn btn-secondary" disabled={qbSyncing} onClick={syncCustomers}>Customers</button>
+                <button className="btn btn-secondary" disabled={qbSyncing} onClick={syncSalesOrders}>Sales Orders</button>
                 <button className="btn btn-secondary" disabled={qbSyncing} onClick={syncInvoices}>Invoices</button>
+                <button className="btn btn-secondary" disabled={qbSyncing} onClick={syncPurchaseOrders}>POs</button>
                 <button className="btn btn-secondary" disabled={qbSyncing} onClick={syncInventory}>Inventory</button>
               </div>
             </div>
@@ -14054,9 +14335,11 @@ export default function App(){
             <div className="card-header"><h2>What Syncs</h2></div>
             <div className="card-body" style={{fontSize:12,color:'#475569'}}>
               <div style={{marginBottom:4}}>&#8226; <strong>Customers</strong> — name, contact, address, order totals in notes</div>
+              <div style={{marginBottom:4}}>&#8226; <strong>Sales Orders</strong> — line items + decoration as QB Estimates</div>
               <div style={{marginBottom:4}}>&#8226; <strong>Invoices</strong> — invoice total as single line item, payments applied</div>
+              <div style={{marginBottom:4}}>&#8226; <strong>Purchase Orders</strong> — blank goods + outside deco POs to vendors</div>
               <div style={{marginBottom:4}}>&#8226; <strong>Bills</strong> — upload vendor bills (PDF/image) directly to QB with amounts</div>
-              <div>&#8226; <strong>Inventory</strong> — product totals (qty + cost value) as non-inventory items. Real inventory stays on portal.</div>
+              <div>&#8226; <strong>Inventory</strong> — product totals (qty + cost value) as non-inventory items</div>
             </div>
           </div>
         </div>
@@ -14092,7 +14375,7 @@ export default function App(){
                   <td style={{textAlign:'right',fontWeight:700,color:'#166534'}}>${qb.total.toFixed(2)}</td>
                   <td><span style={{fontSize:8,padding:'1px 4px',borderRadius:3,background:'#fef3c7',color:'#92400e',fontWeight:600}}>Pending</span></td>
                 </tr>})}
-              {sos.map(so=>safeItems(so).map(it=>(it.po_lines||[]).filter(pl=>!pl._qb_synced).map((pl,pi)=>{
+              {sos.map(so=>safeItems(so).map(it=>(it.po_lines||[]).filter(pl=>!poMap[pl.po_id]).map((pl,pi)=>{
                 const qb=buildQBPurchaseOrder(pl,so,it);
                 return<tr key={so.id+pl.po_id+pi} style={{borderBottom:'1px solid #f1f5f9'}}>
                   <td><span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:pl.po_type==='outside_deco'?'#ede9fe':'#fef3c7',
@@ -14158,7 +14441,7 @@ export default function App(){
                     <td>{orders}</td>
                     <td style={{textAlign:'right',fontWeight:600}}>${rev.toFixed(0)}</td>
                     <td style={{textAlign:'right',color:rev-paid>0?'#dc2626':'#16a34a',fontWeight:600}}>${(rev-paid).toFixed(0)}</td>
-                    <td>{c.qb_customer_id?<span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:'#dcfce7',color:'#166534',fontWeight:600}}>QB #{c.qb_customer_id}</span>:
+                    <td>{_custQBMap[c.id]?<span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:'#dcfce7',color:'#166534',fontWeight:600}}>QB #{_custQBMap[c.id]}</span>:
                       <span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:'#fef3c7',color:'#92400e',fontWeight:600}}>Not synced</span>}</td>
                   </tr>})}
               </tbody>
@@ -14186,7 +14469,7 @@ export default function App(){
                     <td style={{color:'#64748b'}}>{inv.so_id||'—'}</td>
                     <td style={{textAlign:'right',fontWeight:600}}>${safeNum(inv.total).toFixed(2)}</td>
                     <td style={{textAlign:'right',color:inv.paid>=inv.total?'#16a34a':'#d97706'}}>${safeNum(inv.paid).toFixed(2)}</td>
-                    <td>{inv._qb_synced?<span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:'#dcfce7',color:'#166534',fontWeight:600}}>Synced{inv._qb_id?' #'+inv._qb_id:''}</span>:
+                    <td>{inv.qb_invoice_id?<span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:'#dcfce7',color:'#166534',fontWeight:600}}>QB #{inv.qb_invoice_id}</span>:
                       <span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:'#fef3c7',color:'#92400e',fontWeight:600}}>Pending</span>}</td>
                   </tr>})}
               </tbody>
@@ -14281,7 +14564,7 @@ export default function App(){
                     <td><span className="badge badge-gray">{p.brand}</span></td>
                     <td style={{textAlign:'right',fontWeight:600}}>{totalQty}</td>
                     <td style={{textAlign:'right',fontWeight:600,color:'#166534'}}>${totalValue.toFixed(2)}</td>
-                    <td>{p.qb_item_id?<span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:'#dcfce7',color:'#166534',fontWeight:600}}>QB #{p.qb_item_id}</span>:
+                    <td>{_prodQBMap[p.id]?<span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:'#dcfce7',color:'#166534',fontWeight:600}}>QB #{_prodQBMap[p.id]}</span>:
                       <span style={{fontSize:9,padding:'1px 5px',borderRadius:3,background:'#f1f5f9',color:'#94a3b8',fontWeight:600}}>—</span>}</td>
                   </tr>})}
               </tbody>
@@ -14318,7 +14601,7 @@ export default function App(){
                 <strong>Required Netlify env vars:</strong><br/>
                 QB_CLIENT_ID — from developer.intuit.com<br/>
                 QB_CLIENT_SECRET — from developer.intuit.com<br/>
-                QB_REDIRECT_URI — your site's qb-auth callback URL
+                QB_REDIRECT_URI — (optional) auto-detected from site URL if not set
               </div>
             </div>
           </div>
@@ -14363,7 +14646,7 @@ export default function App(){
           <div style={{fontFamily:'monospace',fontSize:10,background:'#f8fafc',padding:10,borderRadius:6,marginBottom:12}}>
             QB_CLIENT_ID=your_client_id<br/>
             QB_CLIENT_SECRET=your_client_secret<br/>
-            QB_REDIRECT_URI=https://your-site.netlify.app/.netlify/functions/qb-auth?action=callback
+            QB_REDIRECT_URI (optional — auto-detected from site URL)
           </div>
           <div style={{marginBottom:8}}><strong>3. What gets synced:</strong></div>
           <div>&#8226; <strong>Customers</strong> &#8594; QB Customers (name, contact, address, order totals in notes)</div>
@@ -14935,7 +15218,7 @@ export default function App(){
       <div className="sidebar-user"><div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}><div><div style={{fontWeight:600,color:'#e2e8f0'}}>{cu.name}</div><div>{cu.role}</div></div><button onClick={handleLogout} style={{background:'none',border:'1px solid #475569',borderRadius:6,padding:'3px 8px',color:'#94a3b8',cursor:'pointer',fontSize:10}} title="Log out">↪ Out</button></div></div></div>
     <div className="main"><div className="topbar"><button className="mobile-menu-btn" onClick={()=>setMobileMenuOpen(true)}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button><h1>{eEst?eEst.id:eSO?eSO.id:selC?selC.name:selV?selV.name:(titles[pg]||'Dashboard')}</h1>
         <div style={{flex:1,maxWidth:400,margin:'0 20px',position:'relative'}}>
-          <div className="search-bar" style={{margin:0}}><Icon name="search"/><input placeholder="Search everything... (customers, orders, products)" value={gQ} onChange={e=>setGQ(e.target.value)} onFocus={()=>setGOpen(true)}/>{gQ&&<button onClick={()=>{setGQ('');setGOpen(false)}} style={{background:'none',border:'none',cursor:'pointer',padding:2}}><Icon name="x" size={14}/></button>}</div>
+          <div className="search-bar" style={{margin:0}}><Icon name="search"/><input placeholder="Search everything... (orders, jobs, POs, invoices, customers)" value={gQ} onChange={e=>setGQ(e.target.value)} onFocus={()=>setGOpen(true)}/>{gQ&&<button onClick={()=>{setGQ('');setGOpen(false)}} style={{background:'none',border:'none',cursor:'pointer',padding:2}}><Icon name="x" size={14}/></button>}</div>
           {gOpen&&gQ.length>=2&&(()=>{const s=gQ.toLowerCase();
             const rc=cust.filter(cc=>(cc.name+' '+cc.alpha_tag).toLowerCase().includes(s)).slice(0,4);
             const re=ests.filter(e=>(e.id+' '+e.memo).toLowerCase().includes(s)).slice(0,4);
@@ -14948,7 +15231,14 @@ export default function App(){
             const allPOs=[];sos.forEach(so=>{const c2=cust.find(x=>x.id===so.customer_id);safeItems(so).forEach(it=>{safePOs(it).forEach(po=>{if((po.po_id||'').toLowerCase().includes(s)||(po.vendor||'').toLowerCase().includes(s)){if(!allPOs.find(x=>x.po_id===po.po_id))allPOs.push({po_id:po.po_id,vendor:po.vendor,status:po.status||'waiting',so_id:so.id,so,customer:c2?.alpha_tag||''})}})})});
             submittedBatches.forEach(sb=>{if((sb.po_number||'').toLowerCase().includes(s)||(sb.vendor_name||'').toLowerCase().includes(s)){if(!allPOs.find(x=>x.po_id===sb.po_number))allPOs.push({po_id:sb.po_number,vendor:sb.vendor_name,status:sb.status||'waiting',so_id:(sb.source_pos||[])[0]?.so_id||'',so:sos.find(x=>x.id===((sb.source_pos||[])[0]?.so_id)),customer:(sb.source_pos||[])[0]?.customer||'',isBatch:true})}});
             const rpo=allPOs.slice(0,4);
-            const tot=rc.length+re.length+rs.length+rp.length+rpk.length+rpo.length;
+            // Build Jobs index from all SOs
+            const allJobs2=[];sos.forEach(so=>{const c2=cust.find(x=>x.id===so.customer_id);safeJobs(so).forEach((j,ji)=>{if((j.id||'').toLowerCase().includes(s)||(j.art_name||'').toLowerCase().includes(s)||(j.deco_type||'').toLowerCase().includes(s)||so.id.toLowerCase().includes(s)){if(!allJobs2.find(x=>x.id===j.id&&x.so_id===so.id))allJobs2.push({...j,so,so_id:so.id,ji,customer:c2?.alpha_tag||c2?.name||''})}})});
+            const rj=allJobs2.slice(0,4);
+            // Invoices
+            const ri=invs.filter(i=>(i.id+' '+(i.memo||'')+' '+(cust.find(c=>c.id===i.customer_id)?.name||'')).toLowerCase().includes(s)).slice(0,4);
+            // Vendors
+            const rv=vend.filter(v=>(v.name+' '+(v.rep_name||'')).toLowerCase().includes(s)).slice(0,4);
+            const tot=rc.length+re.length+rs.length+rp.length+rpk.length+rpo.length+rj.length+ri.length+rv.length;
             return tot>0&&<div style={{position:'absolute',top:'100%',left:0,right:0,background:'white',border:'1px solid #e2e8f0',borderRadius:8,boxShadow:'0 8px 24px rgba(0,0,0,0.12)',zIndex:60,maxHeight:350,overflow:'auto'}}>
               {rc.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Customers</div>
                 {rc.map(cc=><div key={cc.id} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>{setSelC(cc);setPg('customers');setGQ('');setGOpen(false)}}><Icon name="users" size={14}/><span style={{fontWeight:600}}>{cc.name}</span><span className="badge badge-gray">{cc.alpha_tag}</span></div>)}</>}
@@ -14962,6 +15252,12 @@ export default function App(){
                 {rpk.map(pk=>{const cc=cust.find(x=>x.id===pk.so?.customer_id);return<div key={pk.pick_id} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>{setESO(pk.so);setESOC(cc);setPg('orders');setGQ('');setGOpen(false)}}><Icon name="grid" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{pk.pick_id}</span><span>→ {pk.so_id}</span><span className={`badge ${pk.status==='pulled'?'badge-green':'badge-amber'}`}>{pk.status}</span></div>})}</>}
               {rpo.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Purchase Orders</div>
                 {rpo.map(po=><div key={po.po_id} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>{if(po.isBatch){setBatchScan(po.po_id);setPg('purchase_orders')}else if(po.so){const cc=cust.find(x=>x.id===po.so.customer_id);setESO(po.so);setESOC(cc);setPg('orders')}else{setPg('purchase_orders')};setGQ('');setGOpen(false)}}><Icon name="cart" size={14}/><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{po.po_id}</span><span>{po.vendor}</span>{po.so_id&&<span style={{color:'#64748b'}}>→ {po.so_id}</span>}<span className={`badge ${po.status==='received'?'badge-green':po.status==='partial'?'badge-amber':'badge-blue'}`}>{po.status}</span></div>)}</>}
+              {rj.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Jobs</div>
+                {rj.map(j=><div key={j.id+j.so_id} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>{const ji2=safeJobs(j.so).findIndex(jj=>jj.id===j.id);setESOTab('jobs');setESOScrollJob(ji2>=0?ji2:null);setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so.customer_id));setPg('orders');setGQ('');setGOpen(false)}}><Icon name="grid" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{j.id}</span><span>{j.art_name||j.deco_type}</span><span style={{color:'#64748b'}}>→ {j.so_id}</span></div>)}</>}
+              {ri.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Invoices</div>
+                {ri.map(inv=><div key={inv.id} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>{setInvF(f=>({...f,search:inv.id}));setPg('invoices');setGQ('');setGOpen(false)}}><Icon name="file" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{inv.id}</span><span>{cust.find(c=>c.id===inv.customer_id)?.name||''}</span><span className={`badge ${inv.status==='paid'?'badge-green':inv.status==='partial'?'badge-amber':'badge-blue'}`}>{inv.status}</span></div>)}</>}
+              {rv.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Vendors</div>
+                {rv.map(v=><div key={v.id} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>{setSelV(v);setPg('vendors');setGQ('');setGOpen(false)}}><Icon name="building" size={14}/><span style={{fontWeight:600}}>{v.name}</span>{v.rep_name&&<span style={{color:'#64748b',fontSize:11}}>{v.rep_name}</span>}</div>)}</>}
             </div>})()}
           {gOpen&&<div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:59}} onClick={()=>setGOpen(false)}/>}
         </div>
@@ -15221,3 +15517,6 @@ export default function App(){
     </div></div>}
   </div>);
 }
+
+// QB sync fix v2
+

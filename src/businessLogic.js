@@ -43,7 +43,7 @@ function dP(d, q, artFiles, cq) {
       if (art.deco_type === 'dtf') { const t = DTF[art.dtf_size || 0]; return { sell: d.sell_override || t.sell, cost: t.cost } } } }
   if (d.type === 'screen_print') { const u = d.underbase ? 1 + SP.ub : 1; return { sell: d.sell_override || rQ(spP(q, d.colors || 1, true) * u), cost: rQ(spP(q, d.colors || 1, false) * u) } }
   if (d.type === 'embroidery') return { sell: d.sell_override || emP(d.stitches || 8000, q, true), cost: emP(d.stitches || 8000, q, false) };
-  if (d.kind === 'numbers' || d.type === 'number_press') { const hasRoster = d._showRoster && d.roster && Object.values(d.roster).flat().some(v => v && v.trim()); const nq = hasRoster ? Object.values(d.roster).flat().filter(v => v && v.trim()).length : q; return { sell: d.sell_override || npP(nq || 1, d.two_color, true), cost: npP(nq || 1, d.two_color, false) } };
+  if (d.kind === 'numbers' || d.type === 'number_press') { const nq = d.roster ? Object.values(d.roster).flat().filter(v => v && v.trim()).length : 0; return { sell: d.sell_override || npP(nq || 1, d.two_color, true), cost: npP(nq || 1, d.two_color, false), _nq: nq } };
   if (d.kind === 'names') { const nc = d.names ? Object.values(d.names).flat().filter(v => v && v.trim()).length : 0; const se = safeNum(d.sell_override || d.sell_each || 6); const co = safeNum(d.cost_each || 3); return { sell: nc > 0 ? rQ(nc * se / q) : se, cost: nc > 0 ? rQ(nc * co / q) : co } };
   if (d.type === 'dtf') { const t = DTF[d.dtf_size || 0]; return { sell: d.sell_override || t.sell, cost: t.cost } }
   if (d.kind === 'outside_deco') return { sell: d.sell_override || safeNum(d.sell_each), cost: safeNum(d.cost_each) };
@@ -142,8 +142,9 @@ function calcTotals(o, cust) {
     safeDecos(it).forEach(d => {
       const cq = d.kind === 'art' && d.art_file_id ? artQty[d.art_file_id] : q;
       const dp = dP(d, q, af, cq);
-      rev += q * dp.sell;
-      cost += q * dp.cost;
+      const eq = dp._nq != null ? dp._nq : q;
+      rev += eq * dp.sell;
+      cost += eq * dp.cost;
     });
     (it.po_lines || []).filter(pl => pl.po_type === 'outside_deco').forEach(pl => {
       const poQty = Object.entries(pl).filter(([k, v]) => typeof v === 'number' && !['unit_cost'].includes(k)).reduce((a, [, v]) => a + v, 0);
@@ -171,7 +172,7 @@ function createInvoice(o, invSelItems, cust, artQty) {
         decoRev += qty * dp.sell;
       } else if (d.kind === 'numbers') {
         const dp = dP(d, qty, [], qty);
-        decoRev += qty * dp.sell;
+        decoRev += (dp._nq != null ? dp._nq : qty) * dp.sell;
       } else if (d.kind === 'names') {
         const dp = dP(d, qty, [], qty);
         decoRev += qty * dp.sell;
