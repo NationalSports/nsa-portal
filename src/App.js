@@ -12627,7 +12627,7 @@ export default function App(){
       for(let fi=0;fi<files.length;fi++){
         const file=files[fi];
         try{
-          const text=await extractPdfText(file);
+          const{fullText:text}=await extractPdfText(file);
           const bills=parseSupplierBill(text);// returns array of bills (one per invoice in the PDF)
           for(let bi=0;bi<bills.length;bi++){
             const parsed=bills[bi];
