@@ -321,7 +321,7 @@ const cloudUpload=async(file,folder='nsa-products')=>{const fd=new FormData();fd
 const fileUpload=async(file,folder='nsa-art-files')=>{const fd=new FormData();fd.append('file',file);fd.append('upload_preset',CLOUDINARY_PRESET);fd.append('folder',folder);const r=await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/auto/upload`,{method:'POST',body:fd});const d=await r.json();if(d.error)throw new Error(d.error.message);return d.secure_url};
 const isUrl=s=>typeof s==='string'&&(s.startsWith('http://')||s.startsWith('https://'));
 const fileDisplayName=f=>isUrl(f)?decodeURIComponent(f.split('/').pop().split('?')[0]):f;
-const openFile=f=>{if(isUrl(f)){window.open(f,'_blank')}else{nf('Legacy file: '+f+' — re-upload to enable downloads')}};
+const openFile=f=>{if(isUrl(f)){if(_isPdfUrl(f)&&f.includes('cloudinary.com')){const viewUrl=f.replace('/raw/upload/','/image/upload/').replace('/video/upload/','/image/upload/');window.open(viewUrl,'_blank')}else{window.open(f,'_blank')}}else{nf('Legacy file: '+f+' — re-upload to enable downloads')}};
 const _urlExt=u=>{if(!u||typeof u!=='string')return '';const clean=u.split('?')[0].split('#')[0];const m=clean.match(/\.(\w+)$/);return m?m[1].toLowerCase():''};
 const _isImgUrl=u=>{const e=_urlExt(u);return['png','jpg','jpeg','gif','webp','svg','bmp'].includes(e)};
 const _isPdfUrl=u=>_urlExt(u)==='pdf';
@@ -1701,6 +1701,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
   const[splitModal,setSplitModal]=useState(null);// {jIdx, mode:'received'|'sku'|null}
   const[artReqModal,setArtReqModal]=useState(null);// {jIdx, artist:'', instructions:'', files:[]}
   const[artRevisionNote,setArtRevisionNote]=useState('');
+  const[coachApprovalModal,setCoachApprovalModal]=useState(null);// {jIdx, contact, portalUrl, method, message}
 
   // Sync dirty state to parent dirtyRef
   React.useEffect(()=>{if(dirtyRef)dirtyRef.current=dirty},[dirty,dirtyRef]);
@@ -3627,7 +3628,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
               {mockups.length===0&&<div style={{padding:12,background:'#fff7ed',border:'1px dashed #fdba74',borderRadius:6,marginBottom:12,fontSize:12,color:'#9a3412'}}>No mockup files attached yet — check the Art Library tab for files.</div>}
               <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:10}}>
                 <button className="btn" style={{fontSize:13,padding:'8px 20px',background:'linear-gradient(135deg,#22c55e,#16a34a)',color:'white',border:'none',borderRadius:8,fontWeight:800,boxShadow:'0 2px 8px rgba(34,197,94,0.3)'}} onClick={()=>{updJob(ji,'art_status','production_files_needed');if(j.art_file_id){const afi=af.findIndex(a=>a.id===j.art_file_id);if(afi>=0)uArt(afi,'status','approved')}setArtRevisionNote('');nf('✅ Art approved — awaiting prod files')}}>✅ Approve Artwork</button>
-                <button className="btn" style={{fontSize:13,padding:'8px 20px',background:'linear-gradient(135deg,#3b82f6,#2563eb)',color:'white',border:'none',borderRadius:8,fontWeight:800,boxShadow:'0 2px 8px rgba(59,130,246,0.3)'}} onClick={()=>{const c2=ic||cust?.find?.(x=>x.id===o.customer_id);const ct=(c2?.contacts||[])[0]||{};const pUrl=c2?.alpha_tag?(window.location.origin+'/?portal='+c2.alpha_tag):'';if(pUrl){navigator.clipboard?.writeText(pUrl);nf('Portal link copied! Send to coach for approval.')}else{nf('No portal link — approve directly or set customer alpha tag','error')}}}>📤 Send to Coach</button>
+                <button className="btn" style={{fontSize:13,padding:'8px 20px',background:'linear-gradient(135deg,#3b82f6,#2563eb)',color:'white',border:'none',borderRadius:8,fontWeight:800,boxShadow:'0 2px 8px rgba(59,130,246,0.3)'}} onClick={()=>{const c2=ic||allCustomers?.find?.(x=>x.id===o.customer_id);const ct=(c2?.contacts||[])[0]||{};const pUrl=c2?.alpha_tag?(window.location.origin+'/?portal='+c2.alpha_tag):'';const defMsg='Hi '+(ct.name||'Coach')+',\n\nYour artwork mockup for "'+j.art_name+'" is ready for review!\n\nPlease review and approve it through your portal:\n'+(pUrl||'(portal link unavailable)')+'\n\nLet us know if you\'d like any changes.\n\n'+cu.name+'\nNational Sports Apparel';setCoachApprovalModal({jIdx:ji,contact:ct,portalUrl:pUrl,method:ct.phone?'text':'email',message:defMsg})}}>📤 Send to Coach</button>
               </div>
               <div style={{borderTop:'1px solid #fde68a',paddingTop:10}}>
                 <div style={{fontSize:11,fontWeight:700,color:'#92400e',marginBottom:4}}>Something wrong? Send it back to the artist:</div>
@@ -3892,6 +3893,60 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           <div className="modal-footer">
             <button className="btn btn-secondary" onClick={()=>setArtReqModal(null)}>Cancel</button>
             <button className="btn btn-primary" style={hasExistingReqs2?{background:'#6d28d9',borderColor:'#6d28d9'}:{}} disabled={!artReqModal.artist} onClick={submitArtReq2}>{hasExistingReqs2?'Send Update':'Send Art Request'}</button>
+          </div>
+        </div></div>
+      })()}
+      {coachApprovalModal&&(()=>{
+        const j3=jobs[coachApprovalModal.jIdx];if(!j3)return null;
+        const cam=coachApprovalModal;
+        const doSendCoach=(notifyMethod)=>{
+          if(notifyMethod==='email'&&cam.contact.email){
+            const subj=encodeURIComponent('Artwork ready for approval — '+j3.art_name);
+            const body=encodeURIComponent(cam.message);
+            window.open('mailto:'+cam.contact.email+'?subject='+subj+'&body='+body,'_blank');
+          }else if(notifyMethod==='text'&&cam.contact.phone){
+            const smsBody=encodeURIComponent(cam.message);
+            window.open('sms:'+cam.contact.phone+'?body='+smsBody,'_blank');
+          }
+          setCoachApprovalModal(null);
+          nf(notifyMethod==='none'?'Portal link ready — send manually':'Opening '+notifyMethod+' to coach...');
+        };
+        return<div className="modal-overlay" style={{zIndex:10001}} onClick={()=>setCoachApprovalModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:520}}>
+          <div className="modal-header" style={{background:'linear-gradient(135deg,#3b82f6,#2563eb)',color:'white'}}>
+            <h2 style={{color:'white',margin:0}}>Send to Coach for Approval</h2>
+            <button className="modal-close" style={{color:'white'}} onClick={()=>setCoachApprovalModal(null)}>×</button>
+          </div>
+          <div className="modal-body">
+            <div style={{padding:'10px 14px',background:'#faf5ff',borderRadius:8,border:'1px solid #e9d5ff',marginBottom:14}}>
+              <div style={{fontSize:13,fontWeight:700,color:'#6d28d9'}}>{j3.art_name}</div>
+              <div style={{fontSize:11,color:'#64748b'}}>{o.id}{o.memo?' — '+o.memo:''}</div>
+            </div>
+            <div style={{marginBottom:14}}>
+              <div className="form-label">How to notify the coach</div>
+              <div style={{display:'flex',gap:8,marginBottom:8}}>
+                <button className={`btn btn-sm ${cam.method==='email'?'btn-primary':'btn-secondary'}`} style={{flex:1}} onClick={()=>setCoachApprovalModal(m=>({...m,method:'email'}))}>Email{cam.contact.email?' — '+cam.contact.email:' (none on file)'}</button>
+                <button className={`btn btn-sm ${cam.method==='text'?'btn-primary':'btn-secondary'}`} style={{flex:1}} onClick={()=>setCoachApprovalModal(m=>({...m,method:'text'}))}>Text{cam.contact.phone?' — '+cam.contact.phone:' (none on file)'}</button>
+              </div>
+            </div>
+            {cam.portalUrl&&<div style={{marginBottom:14}}>
+              <div className="form-label">Portal Link</div>
+              <div style={{display:'flex',gap:6,alignItems:'center'}}>
+                <input className="form-input" readOnly value={cam.portalUrl} style={{flex:1,fontSize:11,background:'#f8fafc'}}/>
+                <button className="btn btn-sm btn-secondary" onClick={()=>{navigator.clipboard?.writeText(cam.portalUrl).then(()=>nf('Portal link copied!')).catch(()=>{window.prompt('Copy:',cam.portalUrl)})}}>Copy Link</button>
+              </div>
+              <div style={{fontSize:10,color:'#64748b',marginTop:4}}>Coach can review and approve artwork directly from this link</div>
+            </div>}
+            {!cam.portalUrl&&<div style={{padding:10,background:'#fef2f2',border:'1px solid #fecaca',borderRadius:6,marginBottom:14,fontSize:12,color:'#dc2626'}}>No portal link available — set the customer's alpha tag to enable the coach portal.</div>}
+            <div style={{marginBottom:12}}>
+              <div className="form-label">Message to Coach</div>
+              <textarea className="form-input" rows={6} value={cam.message} onChange={e=>setCoachApprovalModal(m=>({...m,message:e.target.value}))} style={{resize:'vertical',fontSize:12}}/>
+            </div>
+          </div>
+          <div className="modal-footer" style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+            <button className="btn btn-secondary" onClick={()=>setCoachApprovalModal(null)}>Cancel</button>
+            <button className="btn" style={{background:'linear-gradient(135deg,#3b82f6,#2563eb)',color:'white',border:'none',fontWeight:700,padding:'8px 20px'}} disabled={cam.method==='email'&&!cam.contact.email||cam.method==='text'&&!cam.contact.phone} onClick={()=>doSendCoach(cam.method)}>
+              {cam.method==='text'?'Send Text to Coach':'Send Email to Coach'}
+            </button>
           </div>
         </div></div>
       })()}
