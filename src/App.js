@@ -2097,6 +2097,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       {isSO&&<button className={`tab ${tab==='transactions'?'active':''}`} onClick={()=>setTab('transactions')}>Linked</button>}
       {isSO&&<button className={`tab ${tab==='jobs'?'active':''}`} onClick={()=>setTab('jobs')}>Jobs {(()=>{const jc=(o.jobs||[]).length;return jc>0?` (${jc})`:''})()}</button>}
       {isSO&&<button className={`tab ${tab==='firm_dates'?'active':''}`} onClick={()=>setTab('firm_dates')}>Firm Dates ({safeFirm(o).length})</button>}
+      {isSO&&<button className={`tab ${tab==='tracking'?'active':''}`} onClick={()=>setTab('tracking')}>Tracking</button>}
       {isSO&&<button className={`tab ${tab==='costs'?'active':''}`} onClick={()=>setTab('costs')} style={tab==='costs'?{background:'#166534',color:'white'}:{}}>💰 Costs</button>}
     </div>
 
@@ -2845,6 +2846,55 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         <div style={{padding:12,background:'#f8fafc',borderRadius:8}}><div style={{fontWeight:600,marginBottom:4}}>Purchase Orders</div><div style={{fontSize:12,color:'#94a3b8'}}>No POs linked yet (Phase 4)</div></div>
         <div style={{padding:12,background:'#f8fafc',borderRadius:8}}><div style={{fontWeight:600,marginBottom:4}}>Invoices</div><div style={{fontSize:12,color:'#94a3b8'}}>No invoices linked yet</div></div>
       </div></div></div>}
+
+    {/* TRACKING TAB */}
+    {isSO&&tab==='tracking'&&(()=>{
+      const trackUrl=tn=>{if(/^1Z/i.test(tn))return'https://www.ups.com/track?tracknum='+tn;if(/^(94|93|92|91)\d{18,}/.test(tn))return'https://tools.usps.com/go/TrackConfirmAction?tLabels='+tn;return'https://www.fedex.com/fedextrack/?trknbr='+tn};
+      const poData=[];
+      safeItems(o).forEach((item,idx)=>{(item.po_lines||[]).forEach((po,pi)=>{
+        const billed=po.billed||{};const received=po.received||{};const trackNums=po.tracking_numbers||[];const shipments=po.shipments||[];
+        const szKeys=Object.keys(po).filter(k=>!['status','po_id','received','shipments','cancelled','po_type','deco_vendor','deco_type','created_at','memo','notes','expected_date','billed','tracking_numbers','unit_cost','vendor'].includes(k)&&typeof po[k]==='number');
+        const totalOrdered=szKeys.reduce((a,sz)=>a+(po[sz]||0),0);const totalBilled=szKeys.reduce((a,sz)=>a+(billed[sz]||0),0);const totalReceived=szKeys.reduce((a,sz)=>a+(received[sz]||0),0);
+        if(totalOrdered>0)poData.push({item,po,szKeys,billed,received,trackNums,shipments,totalOrdered,totalBilled,totalReceived,
+          vendor:po.vendor||po.deco_vendor||'',expectedDate:po.expected_date||'',
+          shipDate:shipments.length>0?shipments[shipments.length-1].date:po.created_at||'',
+          status:totalReceived>=totalOrdered?'received':totalBilled>0?(totalReceived>0?'partial':'in_transit'):'waiting'});
+      })});
+      return<div className="card"><div className="card-header"><h2>Tracking & Billing</h2></div><div className="card-body">
+        {o._tracking_number&&<div style={{padding:12,background:'#f0fdf4',borderRadius:8,marginBottom:16,border:'1px solid #bbf7d0'}}>
+          <div style={{fontSize:10,fontWeight:700,color:'#166534',textTransform:'uppercase',marginBottom:6}}>Customer Shipment</div>
+          <div style={{display:'flex',gap:12,alignItems:'center',flexWrap:'wrap'}}>
+            <a href={o._tracking_url||trackUrl(o._tracking_number)} target="_blank" rel="noreferrer" style={{fontFamily:'monospace',fontWeight:700,color:'#166534',background:'#dcfce7',padding:'4px 10px',borderRadius:4,textDecoration:'none',fontSize:13}}>{o._tracking_number}</a>
+            {o._carrier&&<span style={{fontSize:12,color:'#166534'}}>via {o._carrier}</span>}
+            {o._ship_date&&<span style={{fontSize:12,color:'#64748b'}}>Shipped {o._ship_date}</span>}
+          </div>
+        </div>}
+        {poData.length===0?<div className="empty">No purchase orders on this SO</div>:
+        <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}>
+          <thead><tr style={{borderBottom:'2px solid #e2e8f0',textAlign:'left'}}>
+            <th style={{padding:'6px 8px',fontSize:10,color:'#64748b'}}>ITEM</th>
+            <th style={{padding:'6px 8px',fontSize:10,color:'#64748b'}}>PO</th>
+            <th style={{padding:'6px 8px',fontSize:10,color:'#64748b'}}>VENDOR</th>
+            <th style={{padding:'6px 8px',fontSize:10,color:'#64748b'}}>STATUS</th>
+            <th style={{padding:'6px 8px',fontSize:10,color:'#64748b'}}>TRACKING</th>
+            <th style={{padding:'6px 8px',fontSize:10,color:'#64748b'}}>SHIP DATE</th>
+            <th style={{padding:'6px 8px',fontSize:10,color:'#64748b'}}>EXPECTED</th>
+            <th style={{padding:'6px 8px',fontSize:10,color:'#64748b',textAlign:'center'}}>BILLED</th>
+            <th style={{padding:'6px 8px',fontSize:10,color:'#64748b',textAlign:'center'}}>RECEIVED</th>
+          </tr></thead>
+          <tbody>{poData.map((d,i)=><tr key={i} style={{borderBottom:'1px solid #f1f5f9'}}>
+            <td style={{padding:'6px 8px'}}><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{d.item.sku}</span> <span style={{color:'#64748b'}}>{d.item.color}</span></td>
+            <td style={{padding:'6px 8px',fontFamily:'monospace',fontWeight:600}}>{d.po.po_id}</td>
+            <td style={{padding:'6px 8px'}}>{d.vendor}</td>
+            <td style={{padding:'6px 8px'}}><span className={`badge ${d.status==='received'?'badge-green':d.status==='in_transit'?'badge-blue':d.status==='partial'?'badge-amber':'badge-gray'}`}>{d.status==='received'?'Received':d.status==='in_transit'?'In Transit':d.status==='partial'?'Partial':'Waiting'}</span></td>
+            <td style={{padding:'6px 8px'}}>{d.trackNums.length>0?<div style={{display:'flex',gap:4,flexWrap:'wrap'}}>{d.trackNums.map((tn,ti)=><a key={ti} href={trackUrl(tn)} target="_blank" rel="noreferrer" style={{fontFamily:'monospace',fontSize:11,fontWeight:700,color:'#1e40af',background:'#dbeafe',padding:'2px 6px',borderRadius:4,textDecoration:'none'}}>{tn}</a>)}</div>:<span style={{color:'#d1d5db'}}>—</span>}</td>
+            <td style={{padding:'6px 8px',color:'#475569'}}>{d.shipDate||<span style={{color:'#d1d5db'}}>—</span>}</td>
+            <td style={{padding:'6px 8px',color:'#475569'}}>{d.expectedDate||<span style={{color:'#d1d5db'}}>—</span>}</td>
+            <td style={{padding:'6px 8px',textAlign:'center',fontWeight:700,color:d.totalBilled>0?'#1e40af':'#d1d5db'}}>{d.totalBilled>0?d.totalBilled+'/'+d.totalOrdered:'—'}</td>
+            <td style={{padding:'6px 8px',textAlign:'center',fontWeight:700,color:d.totalReceived>0?'#166534':'#d1d5db'}}>{d.totalReceived>0?d.totalReceived+'/'+d.totalOrdered:'—'}</td>
+          </tr>)}</tbody>
+        </table>}
+      </div></div>})()}
 
     {/* FIRM DATES TAB */}
     {isSO&&tab==='firm_dates'&&<div className="card"><div className="card-header"><h2>Firm Date Requests</h2><button className="btn btn-sm btn-primary" onClick={()=>sv('firm_dates',[...safeFirm(o),{item_desc:'',date:'',approved:false}])}><Icon name="plus" size={12}/> Add</button></div>
@@ -12896,7 +12946,7 @@ export default function App(){
         if(itemSectionStart<0&&(/UPC\s*NUMBER/i.test(line)||/SUPPLIER\s*ITEM\s*NUMBER/i.test(line)||/QUANTITY\s*ORDERED.*QUANTITY\s*SHIPPED/i.test(line))){
           itemSectionStart=li+1;
         }
-        if(itemSectionStart>=0&&itemSectionEnd<0&&(/MERCHANDISE\s+TOTAL/i.test(line)||/SI\s+DOCUMENT\s+NUMBER/i.test(line)||/REPORT\s+PROBLEMS/i.test(line))){
+        if(itemSectionStart>=0&&itemSectionEnd<0&&(/MERCHANDISE\s+TOTAL/i.test(line)||/REPORT\s+PROBLEMS/i.test(line))){
           itemSectionEnd=li;
         }
       }
@@ -12937,6 +12987,8 @@ export default function App(){
           if(sizeMatch){size=sizeMatch[1].toUpperCase()}
           else if(colIdx.size!=null&&parts[colIdx.size]){size=parts[colIdx.size].trim().toUpperCase()}
           else{const nm=line.match(NUM_SZ_RE);if(nm)size=nm[1]}
+          // Detect half-size suffix (e.g. 10- means 10½) for numeric sizes
+          if(/^\d{1,2}$/.test(size)){const hre=new RegExp('\\b'+size+'\\s*[-–](?!\\d)');if(hre.test(line))size+='-'}
           let qty=0,unitPrice=0,extension=0;
 
           if(useColumns){
@@ -13043,6 +13095,8 @@ export default function App(){
         // Extract Document Number from the top of each page (skip SI DOCUMENT NUMBER)
         const pageDocNums=pages.map(pt=>{
           const topLines=pt.split('\n').slice(0,25);
+          // Detect continuation pages (Page 2 of N, Page 3 of N) — always attach to previous doc
+          for(const ln of topLines){const pgm=ln.match(/\bPage\s+(\d+)\s+of\s+\d+/i);if(pgm&&parseInt(pgm[1])>1)return ''}
           for(let li=0;li<topLines.length;li++){
             const ln=topLines[li];
             if(/SI\s+DOCUMENT\s+NUMBER/i.test(ln))continue;
