@@ -12872,6 +12872,7 @@ export default function App(){
             if(/MERCHANDISE|FREIGHT|DOCUMENT|SI UPCHARGE|REPORT|SI STORE/i.test(nl))break;
             if(!desc&&nl.length>3&&!/^\d[\d\s]*\d$/.test(nl)&&!SKU_RE.test(nl)){
               desc=nl.replace(/\t+/g,' ').trim();
+              desc=desc.replace(/^\d[\d ]{10,16}\d\s+/,'').trim();
               const cm=desc.match(/\b(BLACK|WHITE|RED|BLUE|GREEN|NAVY|GREY|GRAY|MAROON|GOLD|ORANGE|PURPLE|YELLOW|SCARLET|ROYAL|PINK|BROWN|TAN|CREAM|ONIX|CARBON|POWER|TEAM|CUSTOM)\b.*?(\/\s*[A-Z]+)?/i);
               if(cm)color=cm[0].trim();
             }
@@ -13883,7 +13884,7 @@ export default function App(){
                     onClick={()=>processBillPdfs(billImport.files)}>
                     {billImport.uploading?'Parsing...':'Parse '+billImport.files.length+' Bill(s)'}
                   </button>
-                  <button className="btn btn-secondary" onClick={()=>setBillImport({step:'upload',files:[],parsed:[],uploading:false})}>Clear</button>
+                  <button className="btn btn-secondary" onClick={()=>setBillImport({step:'upload',files:[],parsed:[],uploading:false,showRaw:{}})}>Clear</button>
                 </div>
               </>}
             </div>
@@ -13912,7 +13913,7 @@ export default function App(){
         {/* Review parsed bills */}
         {billImport.step==='review'&&<>
           <div style={{display:'flex',gap:8,marginBottom:12,alignItems:'center'}}>
-            <button className="btn btn-secondary" onClick={()=>setBillImport({step:'upload',files:[],parsed:[],uploading:false})}>← Upload More</button>
+            <button className="btn btn-secondary" onClick={()=>setBillImport({step:'upload',files:[],parsed:[],uploading:false,showRaw:{}})}>← Upload More</button>
             <span style={{fontSize:14,fontWeight:700,flex:1}}>{billImport.parsed.length} Bill(s) Parsed</span>
             <button className="btn btn-primary" style={{background:'#166534',borderColor:'#166534'}} disabled={billImport.uploading||!billImport.parsed.some(b=>b.selected&&!b.qbStatus)}
               onClick={pushBillsToQB}>
