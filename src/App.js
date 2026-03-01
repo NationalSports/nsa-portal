@@ -12745,7 +12745,8 @@ export default function App(){
 
       // ── PASS 2: Extract line items ONLY from item table section ──
       const SKU_RE=/\b([A-Z]{1,4}\d{3,6})\b/;
-      const SZ_RE=/\b(XXS|XS|YXS|YS|YM|YL|YXL|S|M|L|XL|2XL|3XL|4XL|5XL|OSFA)\b/i;
+      const SZ_RE=/\b(XXS|XS|YXS|YS|YM|YL|YXL|S|M|L|XL|2XL|3XL|4XL|5XL|6XL|MT|LT|XLT|OSFA)\b/i;
+      const NUM_SZ_RE=/\b(\d{1,2}(?:\.\d)?)\b/;
       const itemLines=[];
       const startIdx=itemSectionStart>=0?itemSectionStart:0;
       const endIdx=itemSectionEnd>0?itemSectionEnd:lines.length;
@@ -12761,6 +12762,7 @@ export default function App(){
           else if(/NET\s*(?:PRICE|COST)|^NET$/i.test(h))colIdx.netPrice=ci;
           else if(/UNIT\s*(?:PRICE|COST)|^LIST/i.test(h))colIdx.unitPrice=ci;
           else if(/EXTENSION|EXT\s*COST|^AMOUNT$/i.test(h))colIdx.extension=ci;
+          else if(/^SIZE$/i.test(h))colIdx.size=ci;
         });
         const useColumns=colIdx.extension!=null&&(colIdx.qtyShipped!=null||colIdx.qtyOrdered!=null);
 
@@ -12770,10 +12772,13 @@ export default function App(){
           const skuMatch=line.match(SKU_RE);
           if(!skuMatch)continue;
           const sku=skuMatch[1];
-          const sizeMatch=line.match(SZ_RE);
-          if(!sizeMatch)continue;
-          const size=sizeMatch[1].toUpperCase();
           const parts=line.split(/\t+/).map(p=>p.trim());
+          // Try named sizes first, then SIZE column, then numeric sizes, then empty
+          const sizeMatch=line.match(SZ_RE);
+          let size='';
+          if(sizeMatch){size=sizeMatch[1].toUpperCase()}
+          else if(colIdx.size!=null&&parts[colIdx.size]){size=parts[colIdx.size].trim().toUpperCase()}
+          else{const nm=line.match(NUM_SZ_RE);if(nm)size=nm[1]}
           let qty=0,unitPrice=0,extension=0;
 
           if(useColumns){
@@ -12811,7 +12816,7 @@ export default function App(){
           let desc='',color='';
           for(let j=i+1;j<Math.min(i+3,endIdx);j++){
             const nl=lines[j];
-            if(SKU_RE.test(nl)&&SZ_RE.test(nl))break;
+            if(SKU_RE.test(nl))break;
             if(/MERCHANDISE|FREIGHT|DOCUMENT|SI UPCHARGE|REPORT|SI STORE/i.test(nl))break;
             if(!desc&&nl.length>3&&!/^\d[\d\s]*\d$/.test(nl)&&!SKU_RE.test(nl)){
               desc=nl.replace(/\t+/g,' ').trim();
