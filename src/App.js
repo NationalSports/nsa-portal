@@ -359,12 +359,13 @@ const extractPdfText=async(file)=>{
   const ab=await file.arrayBuffer();
   const pdf=await window.pdfjsLib.getDocument({data:ab}).promise;
   let fullText='';
+  const pages=[];// per-page text for multi-document splitting
   for(let i=1;i<=pdf.numPages;i++){
     const page=await pdf.getPage(i);
     const content=await page.getTextContent();
     // Group text items into rows using Y position, then sort by X within each row
     const items=content.items.filter(it=>it.str.trim());
-    if(items.length===0)continue;
+    if(items.length===0){pages.push('');continue}
     // Build rows by grouping items with similar Y coordinates (within 5 units)
     const rows=[];
     items.forEach(it=>{
@@ -376,6 +377,7 @@ const extractPdfText=async(file)=>{
     });
     // Sort rows top-to-bottom (higher Y = higher on page in PDF coords)
     rows.sort((a,b)=>b.y-a.y);
+    let pageText='';
     rows.forEach(row=>{
       row.items.sort((a,b)=>a.x-b.x);
       // Join items — insert tab when horizontal gap suggests a new column
@@ -388,11 +390,12 @@ const extractPdfText=async(file)=>{
         }
         line+=it.str;
       });
-      fullText+=line+'\n';
+      pageText+=line+'\n';
     });
-    fullText+='\n';
+    pages.push(pageText);
+    fullText+=pageText+'\n';
   }
-  return fullText;
+  return{fullText,pages};
 };
 const parseNetSuitePdf=(text,docType)=>{
   const result={docNumber:'',date:'',customerName:'',terms:'',subtotal:0,tax:0,shipping:0,total:0,lineItems:[],rawText:text,confidence:'low',warnings:[]};
@@ -629,6 +632,30 @@ const parseNetSuitePdf=(text,docType)=>{
     else result.warnings.push('Missing document number or customer. Please verify the extracted data.');
   }
   return result;
+};
+// Split multi-invoice PDF into separate documents by document number
+const parseNetSuitePdfMulti=(pages,docType)=>{
+  const DOC_RE=/(?:Estimate|EST)[#\s:]*#?(EST-?\d+)|(?:Sales Order|SO)[#\s:]*#?(SO-?\d+)|(?:Purchase Order|PO)[#\s:]*#?(PO-?\d+)|(?:Invoice|INV)[#\s:]*#?(INV-?\d+)|#(EST\d+)|#(SO-?\d+)|#(PO-?\d+)|#(INV-?\d+)|(?:Estimate|Sales Order|Invoice|Purchase Order)\s*#?\s*(\d{3,})/i;
+  // Detect document number on each page
+  const pageDocNums=pages.map(pt=>{const m=pt.match(DOC_RE);return m?(m.find((v,i)=>i>0&&v)||''):''});
+  // Group pages by document number; pages without a doc number attach to the previous page's doc
+  const groups={};const order=[];
+  let currentDoc='__unknown__';
+  pageDocNums.forEach((dn,i)=>{
+    if(dn)currentDoc=dn;
+    if(!groups[currentDoc]){groups[currentDoc]=[];order.push(currentDoc)}
+    groups[currentDoc].push(pages[i]);
+  });
+  // If only one group, just parse normally (single document)
+  if(order.length<=1){
+    const allText=pages.join('\n');
+    return[parseNetSuitePdf(allText,docType)];
+  }
+  // Parse each group as a separate document
+  return order.map(docNum=>{
+    const text=groups[docNum].join('\n');
+    return parseNetSuitePdf(text,docType);
+  });
 };
 const Icon=({name,size=18})=>{const p={home:<path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>,users:<><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></>,building:<><path d="M6 22V4a2 2 0 012-2h8a2 2 0 012 2v18z"/><path d="M6 12H4a2 2 0 00-2 2v6a2 2 0 002 2h2"/><path d="M18 9h2a2 2 0 012 2v9a2 2 0 01-2 2h-2"/><path d="M10 6h4M10 10h4M10 14h4M10 18h4"/></>,package:<><path d="M16.5 9.4l-9-5.19M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/><path d="M3.27 6.96L12 12.01l8.73-5.05M12 22.08V12"/></>,box:<path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/>,search:<><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></>,plus:<path d="M12 5v14M5 12h14"/>,edit:<><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></>,upload:<><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></>,back:<polyline points="15 18 9 12 15 6"/>,mail:<><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></>,file:<><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></>,sortUp:<path d="M7 14l5-5 5 5"/>,sort:<><path d="M7 15l5 5 5-5"/><path d="M7 9l5-5 5 5"/></>,image:<><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></>,cart:<><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 002 1.61h9.72a2 2 0 002-1.61L23 6H6"/></>,dollar:<><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></>,grid:<><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></>,warehouse:<><path d="M22 8.35V20a2 2 0 01-2 2H4a2 2 0 01-2-2V8.35A2 2 0 013.26 6.5l8-3.2a2 2 0 011.48 0l8 3.2A2 2 0 0122 8.35z"/><path d="M6 18h12M6 14h12"/></>,trash:<><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></>,eye:<><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></>,alert:<><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></>,x:<><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>,check:<polyline points="20 6 9 17 4 12"/>,camera:<><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/><circle cx="12" cy="13" r="4"/></>,scan:<><path d="M3 7V5a2 2 0 012-2h2"/><path d="M17 3h2a2 2 0 012 2v2"/><path d="M21 17v2a2 2 0 01-2 2h-2"/><path d="M7 21H5a2 2 0 01-2-2v-2"/><line x1="7" y1="12" x2="17" y2="12"/></>,save:<><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></>,send:<><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></>};return<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{p[name]}</svg>};
 const DEFAULT_REPS=[
@@ -11996,7 +12023,7 @@ export default function App(){
 
   // NETSUITE IMPORT PAGE
   const[imp,setImp]=useState({step:'upload',raw:'',docType:'so',custId:'',parsed:[],decoLines:[],issues:[],questions:[],shipping:[],memo:'',poRef:'',
-    pdfFile:null,pdfText:'',pdfParsed:null,pdfLoading:false,pdfItems:[],linkedSoId:'',externalDocNum:'',importSource:'netsuite'});
+    pdfFile:null,pdfText:'',pdfParsed:null,pdfParsedAll:[],pdfSelectedIdx:0,pdfLoading:false,pdfItems:[],linkedSoId:'',externalDocNum:'',importSource:'netsuite'});
   const[impTab,setImpTab]=useState('orders');// orders|customers|vendors|products|bills
   const[bulkImp,setBulkImp]=useState({raw:'',parsed:[],issues:[],step:'paste'});// paste|review|done
   const[billImport,setBillImport]=useState({step:'upload',files:[],parsed:[],uploading:false,showRaw:{}});
@@ -12718,40 +12745,50 @@ export default function App(){
                   onDrop={async e=>{
                     e.preventDefault();e.currentTarget.style.borderColor='#22c55e';e.currentTarget.style.background='#f0fdf4';
                     const f=e.dataTransfer.files[0];if(!f)return;
-                    setImp(x=>({...x,pdfFile:f,pdfLoading:true,pdfText:'',pdfParsed:null}));
+                    setImp(x=>({...x,pdfFile:f,pdfLoading:true,pdfText:'',pdfParsed:null,pdfParsedAll:[],pdfSelectedIdx:0}));
                     try{
-                      const text=await extractPdfText(f);
-                      const parsed=parseNetSuitePdf(text,imp.docType);
+                      const{fullText,pages}=await extractPdfText(f);
+                      const allParsed=parseNetSuitePdfMulti(pages,imp.docType);
+                      const parsed=allParsed[0];
                       let detCustId=imp.custId;
                       if(parsed.customerName&&!detCustId){const det=detectCustomer(parsed.customerName);if(det)detCustId=det.id}
-                      setImp(x=>({...x,pdfLoading:false,pdfText:text,pdfParsed:parsed,
+                      setImp(x=>({...x,pdfLoading:false,pdfText:fullText,pdfParsed:parsed,pdfParsedAll:allParsed,pdfSelectedIdx:0,
                         externalDocNum:parsed.docNumber||x.externalDocNum,
                         memo:parsed.memo||x.memo||('Imported from NetSuite'+(parsed.docNumber?' #'+parsed.docNumber:'')),
                         custId:detCustId||x.custId}));
-                      nf('✅ PDF loaded — '+parsed.lineItems.length+' items detected');
+                      nf(allParsed.length>1
+                        ?'✅ PDF loaded — '+allParsed.length+' documents detected ('+allParsed.reduce((s,p)=>s+p.lineItems.length,0)+' total items)'
+                        :'✅ PDF loaded — '+parsed.lineItems.length+' items detected');
                     }catch(err){setImp(x=>({...x,pdfLoading:false}));nf('PDF parsing failed: '+err.message,'error')}
                   }}
                   onClick={()=>{
                     const input=document.createElement('input');input.type='file';input.accept='.pdf';
                     input.onchange=async(ev)=>{
                       const f=ev.target.files[0];if(!f)return;
-                      setImp(x=>({...x,pdfFile:f,pdfLoading:true,pdfText:'',pdfParsed:null}));
+                      setImp(x=>({...x,pdfFile:f,pdfLoading:true,pdfText:'',pdfParsed:null,pdfParsedAll:[],pdfSelectedIdx:0}));
                       try{
-                        const text=await extractPdfText(f);
-                        const parsed=parseNetSuitePdf(text,imp.docType);
+                        const{fullText,pages}=await extractPdfText(f);
+                        const allParsed=parseNetSuitePdfMulti(pages,imp.docType);
+                        const parsed=allParsed[0];
                         let detCustId=imp.custId;
                         if(parsed.customerName&&!detCustId){const det=detectCustomer(parsed.customerName);if(det)detCustId=det.id}
-                        setImp(x=>({...x,pdfLoading:false,pdfText:text,pdfParsed:parsed,
+                        setImp(x=>({...x,pdfLoading:false,pdfText:fullText,pdfParsed:parsed,pdfParsedAll:allParsed,pdfSelectedIdx:0,
                           externalDocNum:parsed.docNumber||x.externalDocNum,
                           memo:parsed.memo||x.memo||('Imported from NSA'+(parsed.docNumber?' #'+parsed.docNumber:'')),
                           custId:detCustId||x.custId}));
-                        nf('✅ PDF loaded — '+parsed.lineItems.length+' items detected');
+                        nf(allParsed.length>1
+                          ?'✅ PDF loaded — '+allParsed.length+' documents detected ('+allParsed.reduce((s,p)=>s+p.lineItems.length,0)+' total items)'
+                          :'✅ PDF loaded — '+parsed.lineItems.length+' items detected');
                       }catch(err){setImp(x=>({...x,pdfLoading:false}));nf('PDF parsing failed: '+err.message,'error')}
                     };input.click()}}>
                   {imp.pdfLoading?<div style={{color:'#3b82f6',fontWeight:600}}>⏳ Reading PDF...</div>
                   :imp.pdfFile?<div>
                     <div style={{fontSize:14,color:'#166534',fontWeight:700}}>✅ {imp.pdfFile.name}</div>
-                    <div style={{fontSize:11,color:'#64748b',marginTop:4}}>{imp.pdfParsed?.lineItems?.length||0} items detected · Click to replace</div>
+                    <div style={{fontSize:11,color:'#64748b',marginTop:4}}>
+                      {imp.pdfParsedAll.length>1
+                        ?imp.pdfParsedAll.length+' documents · '+imp.pdfParsedAll.reduce((s,p)=>s+p.lineItems.length,0)+' total items · Click to replace'
+                        :(imp.pdfParsed?.lineItems?.length||0)+' items detected · Click to replace'}
+                    </div>
                   </div>
                   :<div>
                     <div style={{fontSize:24,marginBottom:8}}>📄</div>
@@ -12814,6 +12851,26 @@ export default function App(){
               {/* PDF extraction summary */}
               {imp.pdfParsed&&<div style={{padding:10,background:'#eff6ff',borderRadius:6,fontSize:11,marginBottom:12}}>
                 <div style={{fontWeight:700,color:'#1e40af',marginBottom:4}}>📊 PDF Extraction Summary</div>
+                {/* Document selector for multi-invoice PDFs */}
+                {imp.pdfParsedAll.length>1&&<div style={{marginBottom:8}}>
+                  <div style={{fontSize:10,color:'#64748b',marginBottom:4}}>Multiple documents detected — select which to import:</div>
+                  <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
+                    {imp.pdfParsedAll.map((p,i)=><button key={i}
+                      className={`btn btn-sm ${imp.pdfSelectedIdx===i?'btn-primary':'btn-secondary'}`}
+                      style={{fontSize:10,padding:'2px 8px'}}
+                      onClick={()=>{
+                        const sel=imp.pdfParsedAll[i];
+                        let detCustId=imp.custId;
+                        if(sel.customerName&&!detCustId){const det=detectCustomer(sel.customerName);if(det)detCustId=det.id}
+                        setImp(x=>({...x,pdfSelectedIdx:i,pdfParsed:sel,
+                          externalDocNum:sel.docNumber||'',
+                          memo:sel.memo||'Imported from NetSuite'+(sel.docNumber?' #'+sel.docNumber:''),
+                          custId:detCustId||x.custId}));
+                      }}>
+                      {p.docNumber||'Doc '+(i+1)} ({p.lineItems.length} items)
+                    </button>)}
+                  </div>
+                </div>}
                 <div style={{display:'grid',gridTemplateColumns:'auto 1fr',gap:'2px 12px',color:'#475569'}}>
                   {imp.pdfParsed.docNumber&&<><span style={{fontWeight:600}}>Doc #:</span><span>{imp.pdfParsed.docNumber}</span></>}
                   {imp.pdfParsed.date&&<><span style={{fontWeight:600}}>Date:</span><span>{imp.pdfParsed.date}</span></>}
@@ -13159,7 +13216,7 @@ export default function App(){
                   setImp(x=>({...x,step:'save_products',_customItems:customItems.map(it=>({...it,_save:true}))}));
                 } else {
                   setImp({step:'upload',raw:'',docType:'so',custId:'',parsed:[],decoLines:[],issues:[],questions:[],shipping:[],memo:'',poRef:'',
-                    pdfFile:null,pdfText:'',pdfParsed:null,pdfLoading:false,pdfItems:[],linkedSoId:'',externalDocNum:'',importSource:'netsuite'});
+                    pdfFile:null,pdfText:'',pdfParsed:null,pdfParsedAll:[],pdfSelectedIdx:0,pdfLoading:false,pdfItems:[],linkedSoId:'',externalDocNum:'',importSource:'netsuite'});
                 }
               }}>
                 ✅ Create {imp.docType==='so'?'Sales Order':imp.docType==='est'?'Estimate':imp.docType==='po'?'Purchase Order':'Invoice'} ({keeping.length} items)
@@ -13196,7 +13253,7 @@ export default function App(){
             <div style={{display:'flex',gap:8,marginTop:16}}>
               <button className="btn btn-secondary" onClick={()=>{
                 setImp({step:'upload',raw:'',docType:'so',custId:'',parsed:[],decoLines:[],issues:[],questions:[],shipping:[],memo:'',poRef:'',
-                  pdfFile:null,pdfText:'',pdfParsed:null,pdfLoading:false,pdfItems:[],linkedSoId:'',externalDocNum:'',importSource:'netsuite'});
+                  pdfFile:null,pdfText:'',pdfParsed:null,pdfParsedAll:[],pdfSelectedIdx:0,pdfLoading:false,pdfItems:[],linkedSoId:'',externalDocNum:'',importSource:'netsuite'});
               }}>Skip</button>
               <button className="btn btn-primary" disabled={!(imp._customItems||[]).some(c=>c._save)} onClick={()=>{
                 const toSave=(imp._customItems||[]).filter(c=>c._save);
@@ -13209,7 +13266,7 @@ export default function App(){
                 setProd(prev=>[...prev,...newProds]);
                 nf('✅ '+newProds.length+' product'+(newProds.length!==1?'s':'')+' saved to catalog');
                 setImp({step:'upload',raw:'',docType:'so',custId:'',parsed:[],decoLines:[],issues:[],questions:[],shipping:[],memo:'',poRef:'',
-                  pdfFile:null,pdfText:'',pdfParsed:null,pdfLoading:false,pdfItems:[],linkedSoId:'',externalDocNum:'',importSource:'netsuite'});
+                  pdfFile:null,pdfText:'',pdfParsed:null,pdfParsedAll:[],pdfSelectedIdx:0,pdfLoading:false,pdfItems:[],linkedSoId:'',externalDocNum:'',importSource:'netsuite'});
               }}>Save {(imp._customItems||[]).filter(c=>c._save).length} Product{(imp._customItems||[]).filter(c=>c._save).length!==1?'s':''} to Catalog</button>
             </div>
           </div>
