@@ -257,11 +257,22 @@ const _dbSaveCustomer = async (c) => {
 const _dbSaveProduct = async (p) => {
   if(!supabase)return;
   try{
-    const{_inv,_alerts,_colors,image_url,back_image_url,qb_item_id,...prodRow}=p;
-    await supabase.from('products').upsert({...prodRow,_colors:_colors||null,image_front_url:image_url||prodRow.image_front_url||'',image_back_url:back_image_url||prodRow.image_back_url||''},{onConflict:'id'});
-    const allSizes=new Set([...Object.keys(_inv||{}),...Object.keys(_alerts||{})]);
+    const row={id:p.id,vendor_id:p.vendor_id||null,sku:p.sku,name:p.name,brand:p.brand||null,color:p.color||null,
+      category:p.category||null,retail_price:p.retail_price||0,nsa_cost:p.nsa_cost||0,
+      is_active:p.is_active!==false,available_sizes:p.available_sizes||[],_colors:p._colors||null,
+      image_front_url:p.image_url||p.image_front_url||null,image_back_url:p.back_image_url||p.image_back_url||null};
+    const{error}=await supabase.from('products').upsert(row,{onConflict:'id'});
+    if(error){
+      // If image columns don't exist, retry without them
+      if(error.message?.includes('image_front_url')||error.message?.includes('image_back_url')){
+        const{image_front_url,image_back_url,...rowNoImg}=row;
+        await supabase.from('products').upsert(rowNoImg,{onConflict:'id'});
+      }else{console.error('[DB] save product:',error.message)}
+    }
+    const _inv=p._inv||{};const _alerts=p._alerts||{};
+    const allSizes=new Set([...Object.keys(_inv),...Object.keys(_alerts)]);
     if(allSizes.size>0){
-      const rows=[...allSizes].map(sz=>({product_id:p.id,size:sz,quantity:(_inv||{})[sz]||0,alert_threshold:(_alerts||{})[sz]||null}));
+      const rows=[...allSizes].map(sz=>({product_id:p.id,size:sz,quantity:_inv[sz]||0,alert_threshold:_alerts[sz]||null}));
       await supabase.from('product_inventory').upsert(rows,{onConflict:'product_id,size'});
     }
   }catch(e){console.error('[DB] save product:',e)}
@@ -1949,7 +1960,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
     }
   },[syncJobs]);// eslint-disable-line
 
-  const fp=products.filter(p=>{if(!pS)return true;const q=pS.toLowerCase();return p.sku.toLowerCase().includes(q)||p.name.toLowerCase().includes(q)||p.brand?.toLowerCase().includes(q)});
+  const fp=products.filter(p=>{if(!pS)return true;const q=pS.toLowerCase();return p.sku.toLowerCase().includes(q)||p.name.toLowerCase().includes(q)||p.brand?.toLowerCase().includes(q)||p.color?.toLowerCase().includes(q)});
   const statusFlow=['need_order','waiting_receive','needs_pull','items_received','in_production','ready_to_invoice','complete'];
 
   return(<div>
@@ -2484,7 +2495,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       <button className="btn btn-secondary" style={{marginLeft:'auto'}} onClick={()=>setNsImport({step:'paste',raw:'',parsed:[],decoLines:[],issues:[]})} disabled={!cust}>📥 Import from NetSuite</button></div>
       :<div><div className="search-bar" style={{marginBottom:8}}><Icon name="search"/><input placeholder="Search SKU, name, brand..." value={pS} onChange={e=>setPS(e.target.value)} autoFocus/></div>
         <div style={{maxHeight:250,overflow:'auto'}}>{fp.slice(0,12).map(p=><div key={p.id} style={{padding:'10px 12px',borderBottom:'1px solid #f8fafc',cursor:'pointer',display:'flex',alignItems:'center',gap:10}} onClick={()=>addP(p)}>
-          <span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',background:'#dbeafe',padding:'2px 6px',borderRadius:3}}>{p.sku}</span><span style={{fontWeight:600}}>{p.name}</span><span className="badge badge-blue">{p.brand}</span>
+          <span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',background:'#dbeafe',padding:'2px 6px',borderRadius:3}}>{p.sku}</span><span style={{fontWeight:600}}>{p.name}</span>{p.color&&<span style={{fontSize:11,color:'#64748b'}}>— {p.color}</span>}<span className="badge badge-blue">{p.brand}</span>
           {p._colors&&<span style={{fontSize:10,color:'#7c3aed'}}>{p._colors.length} clr</span>}
           <span style={{marginLeft:'auto',fontSize:12,color:'#64748b'}}>${p.nsa_cost?.toFixed(2)}</span></div>)}</div>
         <button className="btn btn-sm btn-secondary" onClick={()=>{setShowAdd(false);setPS('')}} style={{marginTop:8}}>Cancel</button>
@@ -4015,7 +4026,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
               // Create production team issue for missing pieces
               if(discs.length>0){
                 const missingSummary=discs.map(d2=>d2.sku+' '+d2.size+': short '+(d2.expected-d2.actual)).join(', ');
-                const issue={id:'ISS-'+(issues.length+1001),status:'open',description:'Count-in discrepancy on '+j.id+' ('+j.art_name+'): '+missingSummary+(countDiscModal.notes?' — '+countDiscModal.notes:''),priority:'high',page:'jobs',viewing:o.id+' / '+j.id,reportedBy:cu?.name||'Unknown',role:cu?.role||'production',timestamp:new Date().toISOString(),recentErrors:[],resolvedAt:null,resolution:null};
+                const issue={id:'ISS-'+Date.now(),status:'open',description:'Count-in discrepancy on '+j.id+' ('+j.art_name+'): '+missingSummary+(countDiscModal.notes?' — '+countDiscModal.notes:''),priority:'high',page:'jobs',viewing:o.id+' / '+j.id,reported_by:cu?.name||'Unknown',role:cu?.role||'production',timestamp:new Date().toISOString(),recent_errors:[],resolved_at:null,resolution:null};
                 setIssues(prev=>[issue,...prev]);
                 nf('⚠️ Count-in recorded with discrepancies — Issue '+issue.id+' created for production team');
               } else {
@@ -6641,10 +6652,10 @@ export default function App(){
   const openIssueCount=issues.filter(i=>i.status==='open').length;
   const consoleErrors=React.useRef([]);
   React.useEffect(()=>{const orig=console.error;console.error=(...args)=>{consoleErrors.current=[{msg:args.map(a=>typeof a==='string'?a:JSON.stringify(a)).join(' '),ts:new Date().toISOString()},...consoleErrors.current].slice(0,5);orig.apply(console,args)};return()=>{console.error=orig}},[]);
-  const getIssueContext=()=>{const t=titles[pg]||pg;let viewing='';if(eEst)viewing='Editing '+eEst.id;else if(eSO)viewing='Editing '+eSO.id;else if(selC)viewing='Viewing customer: '+selC.name;else if(selV)viewing='Viewing vendor: '+selV.name;return{page:t,viewing,user:cu.name,role:cu.role,timestamp:new Date().toISOString(),recentErrors:consoleErrors.current.slice(0,5)}};
-  const submitIssue=()=>{if(!issueModal.desc.trim())return;const ctx=getIssueContext();const issue={id:'ISS-'+(issues.length+1001),status:'open',description:issueModal.desc.trim(),priority:issueModal.priority,page:ctx.page,viewing:ctx.viewing,reportedBy:ctx.user,role:ctx.role,timestamp:ctx.timestamp,recentErrors:ctx.recentErrors,resolvedAt:null,resolution:null};setIssues(prev=>[issue,...prev]);setIssueModal({open:false,desc:'',priority:'medium'});nf('Issue '+issue.id+' logged')};
-  const resolveIssue=(id,resolution)=>{setIssues(prev=>prev.map(i=>i.id===id?{...i,status:'resolved',resolution,resolvedAt:new Date().toISOString()}:i))};
-  const exportIssuesCSV=()=>{const hdr=['ID','Status','Priority','Description','Page','Context','Reported By','Role','Timestamp','Resolution','Resolved At'];const rows=issues.map(i=>[i.id,i.status,i.priority,'"'+i.description.replace(/"/g,'""')+'"',i.page,i.viewing||'',i.reportedBy,i.role,i.timestamp,i.resolution||'',i.resolvedAt||'']);const csv=[hdr.join(','),...rows.map(r=>r.join(','))].join('\n');const blob=new Blob([csv],{type:'text/csv'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='issues_export_'+new Date().toISOString().slice(0,10)+'.csv';a.click();URL.revokeObjectURL(url)};
+  const getIssueContext=()=>{const t=titles[pg]||pg;let viewing='';if(eEst)viewing='Editing '+eEst.id;else if(eSO)viewing='Editing '+eSO.id;else if(selC)viewing='Viewing customer: '+selC.name;else if(selV)viewing='Viewing vendor: '+selV.name;return{page:t,viewing,user:cu.name,role:cu.role,timestamp:new Date().toISOString(),recent_errors:consoleErrors.current.slice(0,5)}};
+  const submitIssue=()=>{if(!issueModal.desc.trim())return;const ctx=getIssueContext();const issue={id:'ISS-'+Date.now(),status:'open',description:issueModal.desc.trim(),priority:issueModal.priority,page:ctx.page,viewing:ctx.viewing,reported_by:ctx.user,role:ctx.role,timestamp:ctx.timestamp,recent_errors:ctx.recent_errors,resolved_at:null,resolution:null};setIssues(prev=>[issue,...prev]);setIssueModal({open:false,desc:'',priority:'medium'});nf('Issue '+issue.id+' logged')};
+  const resolveIssue=(id,resolution)=>{setIssues(prev=>prev.map(i=>i.id===id?{...i,status:'resolved',resolution,resolved_at:new Date().toISOString()}:i))};
+  const exportIssuesCSV=()=>{const hdr=['ID','Status','Priority','Description','Page','Context','Reported By','Role','Timestamp','Resolution','Resolved At'];const rows=issues.map(i=>[i.id,i.status,i.priority,'"'+i.description.replace(/"/g,'""')+'"',i.page,i.viewing||'',i.reported_by||i.reportedBy||'',i.role,i.timestamp,i.resolution||'',i.resolved_at||i.resolvedAt||'']);const csv=[hdr.join(','),...rows.map(r=>r.join(','))].join('\n');const blob=new Blob([csv],{type:'text/csv'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='issues_export_'+new Date().toISOString().slice(0,10)+'.csv';a.click();URL.revokeObjectURL(url)};
   // SO version history
   const[soHistory,setSOHistory]=useState(()=>loadState('so_history',{}));// {soId:[{ts,user,snapshot}]}
   const[msgs,setMsgs]=useState(()=>_migrated.msgs);const[cM,setCM]=useState({open:false,c:null});const[aM,setAM]=useState({open:false,p:null});
@@ -6770,7 +6781,7 @@ export default function App(){
         setInvs(prev=>_jsonEq(prev,d.invoices)?prev:d.invoices);
         if(d.messages.length)setMsgs(prev=>_jsonEq(prev,d.messages)?prev:d.messages);
         setCust(prev=>_jsonEq(prev,d.customers)?prev:d.customers);
-        if(d.products.length)setProd(prev=>_jsonEq(prev,d.products)?prev:d.products);
+        if(d.products.length)setProd(prev=>{if(_jsonEq(prev,d.products))return prev;const dbIds=new Set(d.products.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));return localOnly.length?[...d.products,...localOnly]:d.products});
         if(d.vendors.length)setVend(prev=>_jsonEq(prev,d.vendors)?prev:d.vendors);
         if(d.omg_stores.length)setOmgStores(prev=>_jsonEq(prev,d.omg_stores)?prev:d.omg_stores);
         if(d.issues?.length)setIssues(prev=>_jsonEq(prev,d.issues)?prev:d.issues);
@@ -6812,7 +6823,7 @@ export default function App(){
         setCust(prev=>changed(prev,d.customers)?d.customers:prev);
         if(d.messages.length)setMsgs(prev=>changed(prev,d.messages)?d.messages:prev);
         if(d.issues.length)setIssues(prev=>changed(prev,d.issues)?d.issues:prev);
-        if(d.products.length)setProd(prev=>changed(prev,d.products)?d.products:prev);
+        if(d.products.length)setProd(prev=>{if(!changed(prev,d.products))return prev;const dbIds=new Set(d.products.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));return localOnly.length?[...d.products,...localOnly]:d.products});
         // Refresh app_state keys (batch POs, inventory POs, etc.)
         const as=d.appState||{};
         if(as.inv_pos)setInvPOs(prev=>JSON.stringify(prev)!==JSON.stringify(as.inv_pos)?as.inv_pos:prev);
@@ -6918,7 +6929,7 @@ export default function App(){
   const[eEst,setEEst]=useState(null);const[eEstC,setEEstC]=useState(null);const[eSO,setESO]=useState(null);const[eSOC,setESOC]=useState(null);const[eSOTab,setESOTab]=useState(null);const[eSOScrollItem,setESOScrollItem]=useState(null);const[eSOScrollJob,setESOScrollJob]=useState(null);
   const[gQ,setGQ]=useState('');const[gOpen,setGOpen]=useState(false);const[mF,setMF]=useState('all');const[rF,setRF]=useState('all');const[pF,setPF]=useState({cat:'all',vnd:'all',stk:'all',clr:'all'});
   const[qPC,setQPC]=useState({open:false,mode:'single',items:[],bulkRaw:''});
-  const[poF,setPOF]=useState({status:'all',vendor:'all',search:'',sort:'date_desc'});
+  const[poF,setPOF]=useState({status:'all',vendor:'all',rep:'all',search:'',sort:'date_desc'});
   // OMG Team Stores
   const[omgFilter,setOmgFilter]=useState({rep:'all',status:'all',search:''});const[omgSel,setOmgSel]=useState(null);
   const[soF,setSOF]=useState({status:'all',rep:'all',search:'',sort:'date_desc'});
@@ -7250,6 +7261,11 @@ export default function App(){
       else if(days>=7&&days<14)todos.push({type:'follow_up',priority:1,msg:'⚠️ Estimate going cold ('+days+'d): '+(e.memo||e.id),detail:tag2+' · No response in '+days+' days',action:'Follow Up',role:'sales',est:e,estC:c2});
       else if(days>=14)todos.push({type:'follow_up',priority:0,msg:'🔴 Stale estimate ('+days+'d): '+(e.memo||e.id),detail:tag2+' · '+days+' days with no response',action:'Close or Re-send',role:'sales',est:e,estC:c2});
     });
+    // Open issues → show on to-do list for all users
+    issues.filter(i=>i.status==='open').forEach(i=>{
+      const pri=i.priority==='high'?0:i.priority==='medium'?1:2;
+      todos.push({type:'issue',priority:pri,msg:(i.priority==='high'?'🔴':'🟡')+' Issue: '+i.description.slice(0,80)+(i.description.length>80?'...':''),detail:(i.reported_by||i.reportedBy||'Unknown')+' · '+i.page+(i.viewing?' · '+i.viewing:''),action:'View Issue',role:'all',issueId:i.id});
+    });
     todos.sort((a,b)=>a.priority-b.priority);
 
     // Shared data builders
@@ -7282,7 +7298,7 @@ export default function App(){
       <div className="card"><div className="card-header"><h2>📋 To-Do ({todos.length})</h2></div>
         <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
           {todos.length===0?<div className="empty" style={{padding:20}}>All clear!</div>:
-          todos.slice(0,12).map((t,i)=><div key={i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer'}} onClick={()=>{if(t.so){if(t.type==='art'&&t.jobId){const jIdx=safeJobs(t.so).findIndex(jj=>jj.id===t.jobId);setESOTab('jobs');setESOScrollJob(jIdx>=0?jIdx:null)}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
+          todos.slice(0,12).map((t,i)=><div key={i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer'}} onClick={()=>{if(t.type==='issue'){setPg('settings')}else if(t.so){if(t.type==='art'&&t.jobId){const jIdx=safeJobs(t.so).findIndex(jj=>jj.id===t.jobId);setESOTab('jobs');setESOScrollJob(jIdx>=0?jIdx:null)}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
             <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}</div></div>
             <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:t.type==='art'?'#fef3c7':'#eff6ff',color:t.type==='art'?'#92400e':'#2563eb',fontWeight:600,whiteSpace:'nowrap'}}>{t.action}</span>
           </div>)}
@@ -9073,6 +9089,7 @@ export default function App(){
     let fPOs=dedupPOs;
     if(poF.status!=='all')fPOs=fPOs.filter(p=>p.status===poF.status);
     if(poF.vendor!=='all')fPOs=fPOs.filter(p=>p.vendor===poF.vendor);
+    if(poF.rep!=='all')fPOs=fPOs.filter(p=>p.so?.created_by===poF.rep);
     if(poF.search){const ss=poF.search.toLowerCase();fPOs=fPOs.filter(p=>p.po_id.toLowerCase().includes(ss)||p.vendor.toLowerCase().includes(ss)||p.so_id.toLowerCase().includes(ss)||p.customer.toLowerCase().includes(ss)||p.itemSku.toLowerCase().includes(ss)||p.itemName.toLowerCase().includes(ss)||p.memo.toLowerCase().includes(ss))}
     // Sort
     if(poF.sort==='date_desc')fPOs.sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||''));
@@ -9081,23 +9098,24 @@ export default function App(){
     else if(poF.sort==='po_id')fPOs.sort((a,b)=>a.po_id.localeCompare(b.po_id));
     else if(poF.sort==='customer')fPOs.sort((a,b)=>a.customer.localeCompare(b.customer));
     else if(poF.sort==='status')fPOs.sort((a,b)=>a.status.localeCompare(b.status));
+    else if(poF.sort==='rep')fPOs.sort((a,b)=>(REPS.find(r=>r.id===a.so?.created_by)?.name||'').localeCompare(REPS.find(r=>r.id===b.so?.created_by)?.name||''));
     // Stats
     const waitCount=dedupPOs.filter(p=>p.status==='waiting').length;
     const partCount=dedupPOs.filter(p=>p.status==='partial').length;
     const rcvdCount=dedupPOs.filter(p=>p.status==='received').length;
     const totalOpenUnits=dedupPOs.reduce((a,p)=>a+p.totalOpen,0);
-    const activeFilters=poF.status!=='all'||poF.vendor!=='all'||poF.search;
+    const activeFilters=poF.status!=='all'||poF.vendor!=='all'||poF.rep!=='all'||poF.search;
     return<>
       {/* Stat cards */}
-      <div className="stat-grid" style={{gridTemplateColumns:'repeat(4,1fr)',marginBottom:16}}>
+      <div className="stats-row">
         <div className="stat-card" style={{cursor:'pointer',outline:poF.status==='all'?'2px solid #2563eb':'none',borderRadius:8}} onClick={()=>setPOF(f=>({...f,status:'all'}))}>
-          <div className="stat-value">{dedupPOs.length}</div><div className="stat-label">Total POs</div></div>
+          <div className="stat-label">Total POs</div><div className="stat-value">{dedupPOs.length}</div></div>
         <div className="stat-card" style={{cursor:'pointer',outline:poF.status==='waiting'?'2px solid #d97706':'none',borderRadius:8}} onClick={()=>setPOF(f=>({...f,status:f.status==='waiting'?'all':'waiting'}))}>
-          <div className="stat-value" style={{color:'#d97706'}}>{waitCount}</div><div className="stat-label">Waiting</div></div>
+          <div className="stat-label">Waiting</div><div className="stat-value" style={{color:'#d97706'}}>{waitCount}</div></div>
         <div className="stat-card" style={{cursor:'pointer',outline:poF.status==='partial'?'2px solid #2563eb':'none',borderRadius:8}} onClick={()=>setPOF(f=>({...f,status:f.status==='partial'?'all':'partial'}))}>
-          <div className="stat-value" style={{color:'#2563eb'}}>{partCount}</div><div className="stat-label">Partial</div></div>
+          <div className="stat-label">Partial</div><div className="stat-value" style={{color:'#2563eb'}}>{partCount}</div></div>
         <div className="stat-card" style={{cursor:'pointer',outline:poF.status==='received'?'2px solid #059669':'none',borderRadius:8}} onClick={()=>setPOF(f=>({...f,status:f.status==='received'?'all':'received'}))}>
-          <div className="stat-value" style={{color:'#059669'}}>{rcvdCount}</div><div className="stat-label">Received</div></div>
+          <div className="stat-label">Received</div><div className="stat-value" style={{color:'#059669'}}>{rcvdCount}</div></div>
       </div>
       {/* Open units banner */}
       {totalOpenUnits>0&&<div style={{padding:'8px 16px',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:8,fontSize:13,fontWeight:600,color:'#92400e',marginBottom:12}}>
@@ -9109,9 +9127,11 @@ export default function App(){
         <div className="search-bar" style={{margin:0,flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search POs..." value={poF.search} onChange={e=>setPOF(f=>({...f,search:e.target.value}))}/>{poF.search&&<button onClick={()=>setPOF(f=>({...f,search:''}))} style={{background:'none',border:'none',cursor:'pointer'}}><Icon name="x" size={14}/></button>}</div>
         <select value={poF.vendor} onChange={e=>setPOF(f=>({...f,vendor:e.target.value}))} style={{padding:'6px 10px',borderRadius:6,border:'1px solid #e2e8f0',fontSize:12}}>
           <option value="all">All Vendors</option>{allVendors.map(v=><option key={v} value={v}>{v}</option>)}</select>
+        <select className="form-select" style={{width:140}} value={poF.rep} onChange={e=>setPOF(f=>({...f,rep:e.target.value}))}>
+          <option value="all">All Reps</option>{REPS.filter(r=>r.role==='rep'||r.role==='admin').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
         <select value={poF.sort} onChange={e=>setPOF(f=>({...f,sort:e.target.value}))} style={{padding:'6px 10px',borderRadius:6,border:'1px solid #e2e8f0',fontSize:12}}>
-          <option value="date_desc">Newest First</option><option value="date_asc">Oldest First</option><option value="vendor">Vendor</option><option value="po_id">PO Number</option><option value="customer">Customer</option><option value="status">Status</option></select>
-        {activeFilters&&<button className="btn btn-sm btn-secondary" onClick={()=>setPOF({status:'all',vendor:'all',search:'',sort:'date_desc'})} style={{fontSize:11}}>Clear Filters</button>}
+          <option value="date_desc">Newest First</option><option value="date_asc">Oldest First</option><option value="vendor">Vendor</option><option value="po_id">PO Number</option><option value="customer">Customer</option><option value="status">Status</option><option value="rep">Rep</option></select>
+        {activeFilters&&<button className="btn btn-sm btn-secondary" onClick={()=>setPOF({status:'all',vendor:'all',rep:'all',search:'',sort:'date_desc'})} style={{fontSize:11}}>Clear Filters</button>}
       </div>
       {/* Table */}
       <div className="card"><div className="card-body" style={{padding:0,overflow:'auto'}}>
@@ -16048,16 +16068,16 @@ export default function App(){
           <div style={{display:'flex',gap:16,fontSize:11,color:'#64748b',flexWrap:'wrap'}}>
             <span>Page: <strong>{issue.page}</strong></span>
             {issue.viewing&&<span>Context: <strong>{issue.viewing}</strong></span>}
-            <span>By: <strong>{issue.reportedBy}</strong> ({issue.role})</span>
+            <span>By: <strong>{issue.reported_by||issue.reportedBy}</strong> ({issue.role})</span>
             <span>{new Date(issue.timestamp).toLocaleString()}</span>
           </div>
-          {issue.recentErrors&&issue.recentErrors.length>0&&<details style={{marginTop:8}}>
-            <summary style={{fontSize:11,color:'#dc2626',cursor:'pointer'}}>Console errors at time of report ({issue.recentErrors.length})</summary>
+          {(issue.recent_errors||issue.recentErrors)&&(issue.recent_errors||issue.recentErrors).length>0&&<details style={{marginTop:8}}>
+            <summary style={{fontSize:11,color:'#dc2626',cursor:'pointer'}}>Console errors at time of report ({(issue.recent_errors||issue.recentErrors).length})</summary>
             <div style={{marginTop:4,padding:8,background:'#fef2f2',borderRadius:6,fontSize:10,fontFamily:'monospace',maxHeight:100,overflow:'auto'}}>
-              {issue.recentErrors.map((e,i)=><div key={i} style={{marginBottom:2}}>{e.msg}</div>)}
+              {(issue.recent_errors||issue.recentErrors).map((e,i)=><div key={i} style={{marginBottom:2}}>{e.msg}</div>)}
             </div>
           </details>}
-          {issue.resolution&&<div style={{marginTop:8,fontSize:11,color:'#16a34a'}}>Resolution: <strong>{issue.resolution==='wont_fix'?"Won't fix":'Resolved'}</strong> — {new Date(issue.resolvedAt).toLocaleString()}</div>}
+          {issue.resolution&&<div style={{marginTop:8,fontSize:11,color:'#16a34a'}}>Resolution: <strong>{issue.resolution==='wont_fix'?"Won't fix":'Resolved'}</strong> — {new Date(issue.resolved_at||issue.resolvedAt).toLocaleString()}</div>}
         </div>
       </div>)}
     </>};
