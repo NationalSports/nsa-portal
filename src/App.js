@@ -331,7 +331,8 @@ const cloudUpload=async(file,folder='nsa-products')=>{const fd=new FormData();fd
 const fileUpload=async(file,folder='nsa-art-files')=>{const fd=new FormData();fd.append('file',file);fd.append('upload_preset',CLOUDINARY_PRESET);fd.append('folder',folder);const r=await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/auto/upload`,{method:'POST',body:fd});const d=await r.json();if(d.error)throw new Error(d.error.message);return d.secure_url};
 const isUrl=s=>typeof s==='string'&&(s.startsWith('http://')||s.startsWith('https://'));
 const fileDisplayName=f=>isUrl(f)?decodeURIComponent(f.split('/').pop().split('?')[0]):f;
-const openFile=f=>{if(isUrl(f)){if(_isPdfUrl(f)){window.open('https://docs.google.com/gview?url='+encodeURIComponent(f)+'&embedded=true','_blank')}else{window.open(f,'_blank')}}else{nf('Legacy file: '+f+' — re-upload to enable downloads')}};
+const _isDownloadOnly=u=>{const e=_urlExt(u);return['ai','eps','dst','psd','tiff','tif','cdr'].includes(e)};
+const openFile=f=>{if(isUrl(f)){if(_isPdfUrl(f)){window.open('https://docs.google.com/gview?url='+encodeURIComponent(f)+'&embedded=true','_blank')}else if(_isDownloadOnly(f)){const a=document.createElement('a');a.href=f;a.download=decodeURIComponent(f.split('/').pop().split('?')[0]);a.target='_blank';a.rel='noopener';document.body.appendChild(a);a.click();document.body.removeChild(a)}else{window.open(f,'_blank')}}else{nf('Legacy file: '+f+' — re-upload to enable downloads')}};
 const _urlExt=u=>{if(!u||typeof u!=='string')return '';const clean=u.split('?')[0].split('#')[0];const m=clean.match(/\.(\w+)$/);return m?m[1].toLowerCase():''};
 const _isImgUrl=u=>{const e=_urlExt(u);return['png','jpg','jpeg','gif','webp','svg','bmp'].includes(e)};
 const _isPdfUrl=u=>_urlExt(u)==='pdf';
@@ -1570,12 +1571,30 @@ function getAddrs(cu,all){const a=[];const add=(c,l)=>{if(c.shipping_address_lin
 // SEND ESTIMATE MODAL
 function SendModal({isOpen,onClose,estimate,customer,onSend,docType}){
   const[body,setBody]=useState('');const[attachments,setAttachments]=useState([]);const[toEmails,setToEmails]=useState('');
+  const[sending,setSending]=useState(false);const[dragOver,setDragOver]=useState(false);
   const label=docType==='so'?'Sales Order':'Estimate';
   React.useEffect(()=>{if(isOpen&&customer){
     const emails=(customer?.contacts||[]).map(c=>c.email).filter(Boolean);
     setToEmails(emails.join(', '));
     setBody(`Hi ${(customer.contacts||[])[0]?.name||'Coach'},\n\nPlease find the attached ${label.toLowerCase()} for ${estimate?.memo||'your order'}. You can view ${docType==='so'?'it':'and approve it'} through your portal.\n\nPortal link: https://nsa-portal.netlify.app/?portal=${customer.alpha_tag}\n\nLet me know if you have any questions!\n\nSteve Peterson\nNational Sports Apparel`);
-    setAttachments([])}},[isOpen,customer,estimate,docType,label]);
+    setAttachments([]);setSending(false)}},[isOpen,customer,estimate,docType,label]);
+  const handleFiles=(files)=>{const newFiles=Array.from(files).map(f=>({name:f.name,size:(f.size/1024).toFixed(0)+' KB',file:f}));setAttachments(a=>[...a,...newFiles])};
+  const doSend=async()=>{
+    const emails=toEmails.split(',').map(e2=>e2.trim()).filter(Boolean);
+    if(emails.length===0){alert('Please enter at least one email address');return}
+    setSending(true);
+    const subject=`${label} ${estimate?.id} - ${estimate?.memo||''}`;
+    const portalUrl=customer?.alpha_tag?'https://nsa-portal.netlify.app/?portal='+customer.alpha_tag:'';
+    const htmlBody='<div style="font-family:sans-serif;font-size:14px;line-height:1.6">'+body.replace(/\n/g,'<br/>')+'</div>';
+    if(_brevoKey){
+      const toList=emails.map(e2=>({email:e2}));
+      const res=await sendBrevoEmail({to:toList,subject,htmlContent:htmlBody,senderName:'National Sports Apparel',senderEmail:'noreply@nationalsportsapparel.com'});
+      if(!res.ok){alert('Email send failed: '+(res.error||'Unknown error'));setSending(false);return}
+    }else{
+      const mailTo='mailto:'+emails[0]+'?subject='+encodeURIComponent(subject)+'&body='+encodeURIComponent(body);
+      window.open(mailTo,'_blank');
+    }
+    onSend();onClose()};
   if(!isOpen)return null;
   return(<div className="modal-overlay" onClick={onClose}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:650}}>
     <div className="modal-header"><h2>Send {label}</h2><button className="modal-close" onClick={onClose}>x</button></div>
@@ -1584,16 +1603,20 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType}){
       <div style={{marginBottom:12}}><label className="form-label">Subject</label><input className="form-input" value={`${label} ${estimate?.id} - ${estimate?.memo||''}`} readOnly style={{color:'#64748b'}}/></div>
       <div style={{marginBottom:12}}><label className="form-label">Message</label><textarea className="form-input" rows={8} value={body} onChange={e=>setBody(e.target.value)} style={{fontFamily:'inherit',resize:'vertical'}}/></div>
       <div style={{marginBottom:12}}><label className="form-label">Attachments</label>
-        <div style={{border:'2px dashed #d1d5db',borderRadius:8,padding:16,textAlign:'center',cursor:'pointer',background:'#fafafa'}} onClick={()=>setAttachments(a=>[...a,{name:`item_photo_${a.length+1}.jpg`,size:'245 KB'}])}>
+        <div style={{border:'2px dashed '+(dragOver?'#3b82f6':'#d1d5db'),borderRadius:8,padding:16,textAlign:'center',cursor:'pointer',background:dragOver?'#eff6ff':'#fafafa',transition:'all 0.15s'}}
+          onDragOver={e=>{e.preventDefault();e.stopPropagation();setDragOver(true)}}
+          onDragLeave={e=>{e.preventDefault();e.stopPropagation();setDragOver(false)}}
+          onDrop={e=>{e.preventDefault();e.stopPropagation();setDragOver(false);if(e.dataTransfer.files.length>0)handleFiles(e.dataTransfer.files)}}
+          onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.onchange=()=>{if(inp.files.length>0)handleFiles(inp.files)};inp.click()}}>
           <Icon name="upload" size={20}/><div style={{fontSize:12,color:'#64748b',marginTop:4}}>Drag & drop files here or click to browse</div>
           <div style={{fontSize:10,color:'#94a3b8'}}>Include product photos, mockups, or other files</div></div>
         {attachments.length>0&&<div style={{marginTop:8}}>{attachments.map((f,i)=><div key={i} style={{display:'flex',gap:8,alignItems:'center',padding:'4px 8px',background:'#f0fdf4',borderRadius:4,marginBottom:4}}>
           <Icon name="file" size={14}/><span style={{fontSize:12,flex:1}}>{f.name}</span><span style={{fontSize:10,color:'#94a3b8'}}>{f.size}</span>
           <button onClick={()=>setAttachments(a=>a.filter((_,x)=>x!==i))} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626'}}><Icon name="x" size={12}/></button></div>)}</div>}
       </div>
-      <div style={{padding:8,background:'#dbeafe',borderRadius:6,fontSize:11,color:'#1e40af'}}>📎 {label} PDF will be auto-attached | 🔗 Portal link included in message</div>
+      <div style={{padding:8,background:'#dbeafe',borderRadius:6,fontSize:11,color:'#1e40af'}}>📎 {label} PDF will be auto-attached | 🔗 Portal link included in message{!_brevoKey&&' | ⚠️ No Brevo API key — will open email client instead'}</div>
     </div>
-    <div className="modal-footer"><button className="btn btn-secondary" onClick={onClose}>Cancel</button><button className="btn btn-primary" onClick={()=>{onSend();onClose()}}><Icon name="send" size={14}/> Send {label}</button></div>
+    <div className="modal-footer"><button className="btn btn-secondary" onClick={onClose}>Cancel</button><button className="btn btn-primary" disabled={sending} onClick={doSend}><Icon name="send" size={14}/> {sending?'Sending...':'Send '+label}</button></div>
   </div></div>);
 }
 
@@ -3682,24 +3705,40 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
               </div>
               {mockups.length>0&&<div style={{marginBottom:12}}>
                 <div style={{fontSize:11,fontWeight:700,color:'#78350f',marginBottom:6}}>Review the mockup:</div>
-                <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-                  {mockups.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(url||f);
-                    return<div key={fi} style={{borderRadius:8,border:'2px solid #f59e0b',overflow:'hidden',background:'white',maxWidth:260,cursor:'pointer'}} onClick={()=>openFile(url)}>
-                      {_isImgUrl(url)?<img src={url} alt={name} style={{width:'100%',maxHeight:180,objectFit:'contain',display:'block'}}/>
-                      :_isPdfUrl(url)?<div style={{position:'relative'}}>
-                        {_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',maxHeight:180,objectFit:'contain',display:'block'}} onError={e=>{e.target.style.display='none';e.target.nextSibling.style.display='flex'}}/>:null}
-                        <div style={{display:_cloudinaryPdfThumb(url)?'none':'flex',flexDirection:'column',alignItems:'center',padding:16,gap:4}}>
-                          <span style={{fontSize:28}}>PDF</span><span style={{fontSize:11,color:'#1e40af'}}>{name}</span>
-                        </div>
-                      </div>
-                      :<div style={{display:'flex',alignItems:'center',gap:6,padding:'12px 14px'}}>
-                        <span style={{fontSize:16}}>📄</span><span style={{fontSize:12,fontWeight:600,color:'#1e40af'}}>{name}</span>
-                      </div>}
+                {/* Primary mockup — large */}
+                {(()=>{const url=typeof mockups[0]==='string'?mockups[0]:(mockups[0]?.url||'');const name=fileDisplayName(url||mockups[0]);
+                  return<div style={{borderRadius:10,border:'2px solid #f59e0b',overflow:'hidden',background:'white',marginBottom:8,cursor:'pointer'}} onClick={()=>openFile(url)}>
+                    {_isImgUrl(url)?<img src={url} alt={name} style={{width:'100%',maxHeight:450,objectFit:'contain',display:'block',background:'#fafafa'}}/>
+                    :_isPdfUrl(url)?<div style={{position:'relative'}}>
+                      {_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',maxHeight:450,objectFit:'contain',display:'block',background:'#fafafa'}} onError={e=>{e.target.style.display='none';e.target.nextSibling.style.display='flex'}}/>:null}
+                      <div style={{display:_cloudinaryPdfThumb(url)?'none':'flex',flexDirection:'column',alignItems:'center',padding:24,gap:4}}>
+                        <span style={{fontSize:36}}>PDF</span><span style={{fontSize:13,color:'#1e40af'}}>{name}</span></div></div>
+                    :<div style={{display:'flex',alignItems:'center',gap:6,padding:'14px 16px'}}>
+                      <span style={{fontSize:20}}>📄</span><span style={{fontSize:14,fontWeight:600,color:'#1e40af'}}>{name}</span></div>}
+                    <div style={{padding:'4px 10px',borderTop:'1px solid #fde68a',fontSize:11,color:'#92400e',fontWeight:600,display:'flex',justifyContent:'space-between'}}><span>{name}</span><span style={{color:'#2563eb'}}>Click to open full size</span></div>
+                  </div>})()}
+                {/* Additional mockups */}
+                {mockups.length>1&&<div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                  {mockups.slice(1).map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(url||f);
+                    return<div key={fi} style={{borderRadius:8,border:'1px solid #fde68a',overflow:'hidden',background:'white',maxWidth:200,cursor:'pointer'}} onClick={()=>openFile(url)}>
+                      {_isImgUrl(url)?<img src={url} alt={name} style={{width:'100%',maxHeight:150,objectFit:'contain',display:'block'}}/>
+                      :<div style={{display:'flex',alignItems:'center',gap:6,padding:'10px 14px'}}>
+                        <span style={{fontSize:16}}>📄</span><span style={{fontSize:12,fontWeight:600,color:'#1e40af'}}>{name}</span></div>}
                       <div style={{padding:'3px 8px',borderTop:'1px solid #fde68a',fontSize:10,color:'#92400e',fontWeight:600,textAlign:'center'}}>{name}</div>
                     </div>})}
-                </div>
+                </div>}
               </div>}
               {mockups.length===0&&<div style={{padding:12,background:'#fff7ed',border:'1px dashed #fdba74',borderRadius:6,marginBottom:12,fontSize:12,color:'#9a3412'}}>No mockup files attached yet — check the Art Library tab for files.</div>}
+              {/* Artist notes / messages */}
+              {(()=>{const artMsgs=(j.art_messages||[]).filter(m=>!m.is_system);const artFileNotes=artFile2?.notes;
+                return(artMsgs.length>0||artFileNotes)?<div style={{marginBottom:12,padding:'10px 14px',background:'#f0f9ff',border:'1px solid #bae6fd',borderRadius:8}}>
+                  <div style={{fontSize:11,fontWeight:700,color:'#0369a1',marginBottom:6}}>🎨 Artist Notes</div>
+                  {artFileNotes&&<div style={{fontSize:12,color:'#1e293b',marginBottom:6,padding:'6px 10px',background:'white',borderRadius:6,border:'1px solid #e0f2fe'}}>{artFileNotes}</div>}
+                  {artMsgs.map((m,mi)=><div key={mi} style={{fontSize:12,color:'#1e293b',marginBottom:4,padding:'6px 10px',background:'white',borderRadius:6,border:'1px solid #e0f2fe'}}>
+                    <span style={{fontWeight:600,color:'#0369a1'}}>{m.from_name}:</span> {m.text}
+                    <span style={{fontSize:10,color:'#94a3b8',marginLeft:6}}>{new Date(m.ts).toLocaleDateString()}</span>
+                  </div>)}
+                </div>:null})()}
               <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:10}}>
                 <button className="btn" style={{fontSize:13,padding:'8px 20px',background:'linear-gradient(135deg,#22c55e,#16a34a)',color:'white',border:'none',borderRadius:8,fontWeight:800,boxShadow:'0 2px 8px rgba(34,197,94,0.3)'}} onClick={()=>{updJob(ji,'art_status','production_files_needed');if(j.art_file_id){const afi=af.findIndex(a=>a.id===j.art_file_id);if(afi>=0)uArt(afi,'status','approved')}setArtRevisionNote('');nf('✅ Art approved — awaiting prod files')}}>✅ Approve Artwork</button>
                 <button className="btn" style={{fontSize:13,padding:'8px 20px',background:'linear-gradient(135deg,#3b82f6,#2563eb)',color:'white',border:'none',borderRadius:8,fontWeight:800,boxShadow:'0 2px 8px rgba(59,130,246,0.3)'}} onClick={()=>{const c2=ic||allCustomers?.find?.(x=>x.id===o.customer_id);const contacts=(c2?.contacts||[]).filter(ct2=>ct2.email||ct2.phone);const ct=contacts[0]||{};const pUrl=c2?.alpha_tag?(window.location.origin+'/?portal='+c2.alpha_tag):'';const defMsg='Hi '+(ct.name||'Coach')+',\n\nYour artwork mockup for "'+j.art_name+'" is ready for review!\n\nPlease review and approve it through your portal:\n'+(pUrl||'(portal link unavailable)')+'\n\nLet us know if you\'d like any changes.\n\n'+cu.name+'\nNational Sports Apparel';setCoachApprovalModal({jIdx:ji,contacts,contact:ct,portalUrl:pUrl,sendEmail:!!ct.email,sendText:!!ct.phone,checkedEmails:Object.fromEntries((c2?.contacts||[]).filter(ct2=>ct2.email).map(ct2=>[ct2.email,true])),customEmails:[],addingEmail:'',message:defMsg,sending:false})}}>📤 Send to Coach</button>
@@ -4375,6 +4414,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           <button className="modal-close" onClick={()=>setEditPick(null)}>x</button>
         </div></div>
       <div className="modal-body">
+        {/* Ship Destination */}
+        {pk.ship_dest&&pk.ship_dest!=='in_house'&&<div style={{padding:'10px 14px',marginBottom:12,borderRadius:8,border:'2px solid '+(pk.ship_dest==='ship_customer'?'#3b82f6':'#d97706'),background:pk.ship_dest==='ship_customer'?'#eff6ff':'#fffbeb'}}>
+          <div style={{fontSize:12,fontWeight:800,color:pk.ship_dest==='ship_customer'?'#1e40af':'#92400e'}}>{pk.ship_dest==='ship_customer'?'📦 Ship to Customer':'🚚 Ship to Deco'}</div>
+          {pk.ship_dest==='ship_customer'&&(()=>{const addr=addrs.find(a=>a.id===pk.ship_addr)||addrs[0];return addr?<div style={{fontSize:12,color:'#475569',marginTop:4}}>{addr.label}</div>:null})()}
+          {pk.ship_dest==='ship_deco'&&pk.deco_vendor&&<div style={{fontSize:12,color:'#475569',marginTop:4}}>Vendor: {pk.deco_vendor}</div>}
+        </div>}
+        {pk.ship_dest==='in_house'&&<div style={{padding:'8px 14px',marginBottom:12,borderRadius:8,border:'1px solid #e2e8f0',background:'#f8fafc'}}>
+          <div style={{fontSize:12,fontWeight:700,color:'#475569'}}>🏭 In-House Deco</div>
+        </div>}
         {/* Product info */}
         {item&&<div style={{padding:'8px 12px',background:'#f8fafc',borderRadius:6,marginBottom:12,display:'flex',gap:8,alignItems:'center'}}>
           <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:13}}>{item.sku}</span>
@@ -4410,7 +4458,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
             const w=window.open('','_blank','width=400,height=300');
             w.document.write('<html><head><title>'+pk.pick_id+'</title><style>body{font-family:sans-serif;padding:20px}h1{font-size:24px;margin:0}p{margin:4px 0;font-size:14px}.sz{font-size:16px;font-weight:bold}</style></head><body>');
             w.document.write('<div style="display:flex;gap:20px;align-items:flex-start"><img src="https://api.qrserver.com/v1/create-qr-code/?size=120x120&data='+encodeURIComponent(qrData)+'" width="120" height="120"/><div>');
-            w.document.write('<h1>'+pk.pick_id+'</h1><p>'+o.id+' — '+(cust?.name||'')+'</p><p><strong>'+(item?.sku||'')+' '+(item?.name||'')+'</strong></p><p>'+(item?.color||'')+' — '+pkTotal+' units</p>');
+            w.document.write('<h1>'+pk.pick_id+'</h1><p>'+o.id+' — '+(cust?.name||'')+'</p>');
+            if(pk.ship_dest&&pk.ship_dest!=='in_house'){const destLabel=pk.ship_dest==='ship_customer'?'SHIP TO CUSTOMER':'SHIP TO DECO'+(pk.deco_vendor?' — '+pk.deco_vendor:'');const addr=pk.ship_dest==='ship_customer'?(addrs.find(a=>a.id===pk.ship_addr)||addrs[0])?.label||'':'';w.document.write('<p style="background:#fffbeb;padding:8px;border:2px solid '+(pk.ship_dest==='ship_customer'?'#3b82f6':'#d97706')+';border-radius:6px;font-weight:bold;font-size:16px">'+destLabel+(addr?' — '+addr:'')+'</p>')}
+            w.document.write('<p><strong>'+(item?.sku||'')+' '+(item?.name||'')+'</strong></p><p>'+(item?.color||'')+' — '+pkTotal+' units</p>');
             w.document.write('<p class="sz">'+pkSzKeys.map(sz=>sz+': '+pk[sz]).join(' &nbsp; ')+'</p>');
             w.document.write('</div></div></body></html>');w.document.close();w.print();
           }}>🖨️ Print Label</button>
@@ -5099,9 +5149,10 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   </div></div>}
 
   {tab==='overview'&&<div className="card"><div className="card-header"><h2>Info</h2></div><div className="card-body">
-    <div className="form-row form-row-3"><div><div className="form-label">Billing</div><div style={{fontSize:13}}>{customer.billing_address_line1||'--'}<br/>{customer.billing_city}, {customer.billing_state} {customer.billing_zip}</div></div>
+    <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr',gap:12}}><div><div className="form-label">Billing</div><div style={{fontSize:13}}>{customer.billing_address_line1||'--'}<br/>{customer.billing_city}, {customer.billing_state} {customer.billing_zip}</div></div>
     <div><div className="form-label">Shipping</div><div style={{fontSize:13}}>{customer.shipping_address_line1||'--'}<br/>{customer.shipping_city}, {customer.shipping_state}</div></div>
-    <div><div className="form-label">Tax</div><div style={{fontSize:13}}>{customer.tax_exempt?<span style={{color:'#dc2626',fontWeight:700}}>TAX EXEMPT</span>:customer.tax_rate?(customer.tax_rate*100).toFixed(3)+'%':'No rate set'}</div></div></div>
+    <div><div className="form-label">Tax</div><div style={{fontSize:13}}>{customer.tax_exempt?<span style={{color:'#dc2626',fontWeight:700}}>TAX EXEMPT</span>:customer.tax_rate?(customer.tax_rate*100).toFixed(3)+'%':'No rate set'}</div></div>
+    <div><div className="form-label">Sales Rep</div><div style={{fontSize:13,fontWeight:600}}>{customer.primary_rep_id?REPS.find(r=>r.id===customer.primary_rep_id)?.name||'Unknown':'— Not assigned —'}</div></div></div>
   </div></div>}
   {tab==='artwork'&&<div className="card"><div className="card-body"><div className="empty">Customer art library — aggregates from SOs (Phase 3)</div></div></div>}
   {tab==='reporting'&&<div className="card"><div className="card-header"><h2>Reporting</h2><div style={{display:'flex',gap:4}}>{[['thisyear','This Year'],['lastyear','Last Year'],['rolling','Rolling 12'],['alltime','All']].map(([v,l])=><button key={v} className={`btn btn-sm ${rR===v?'btn-primary':'btn-secondary'}`} onClick={()=>setRR(v)}>{l}</button>)}</div></div>
@@ -5675,7 +5726,7 @@ function TaxCloudSettings({supabase,nf,cust,setCust}){
 }
 
 // MODALS
-function CustModal({isOpen,onClose,onSave,customer,parents}){
+function CustModal({isOpen,onClose,onSave,customer,parents,reps}){
   const b={parent_id:null,name:'',alpha_tag:'',contacts:[{name:'',email:'',phone:'',role:'Head Coach'}],shipping_city:'',shipping_state:'',adidas_ua_tier:'B',catalog_markup:1.65,payment_terms:'net30'};
   const[f,setF]=useState(customer||b);const[ct,setCt]=useState(customer?.parent_id?'sub':'parent');const[err,setErr]=useState({});const[tcLook,setTcLook]=useState({loading:false,msg:''});
   const doTcLookup=async(fields)=>{if(!supabase||!fields.shipping_state||!fields.shipping_zip)return null;try{return await invokeEdgeFn(supabase,'taxcloud-lookup',{address1:fields.shipping_address_line1||'',city:fields.shipping_city||'',state:fields.shipping_state,zip5:fields.shipping_zip})}catch(e){return{ok:false,error:'Error: '+e.message}}};
@@ -5691,9 +5742,10 @@ function CustModal({isOpen,onClose,onSave,customer,parents}){
   <div className="modal-body">
     <div style={{display:'flex',gap:8,marginBottom:16}}>{['parent','sub'].map(t=><button key={t} className={`btn btn-sm ${ct===t?'btn-primary':'btn-secondary'}`} onClick={()=>{setCt(t);if(t==='parent')sv('parent_id',null)}}>{t==='parent'?'Parent':'Sub'}</button>)}</div>
     {ct==='sub'&&<div style={{marginBottom:12}}><label className="form-label">Parent *</label><SearchSelect options={parents.map(p=>({value:p.id,label:`${p.name} (${p.alpha_tag})`}))} value={f.parent_id} onChange={v=>sv('parent_id',v)} placeholder="Search parent..."/></div>}
-    <div className="form-row form-row-3"><div><label className="form-label">Name *</label><input className="form-input" value={f.name} onChange={e=>sv('name',e.target.value)} style={err.n?{borderColor:'#dc2626'}:{}}/></div>
+    <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr',gap:12}}><div><label className="form-label">Name *</label><input className="form-input" value={f.name} onChange={e=>sv('name',e.target.value)} style={err.n?{borderColor:'#dc2626'}:{}}/></div>
       <div><label className="form-label">Alpha Tag *</label><input className="form-input" value={f.alpha_tag||''} onChange={e=>sv('alpha_tag',e.target.value)} style={err.a?{borderColor:'#dc2626'}:{}}/></div>
-      <div><label className="form-label">Terms</label><select className="form-select" value={f.payment_terms||'net30'} onChange={e=>sv('payment_terms',e.target.value)}><option value="prepay">Prepay</option><option value="net15">Net 15</option><option value="net30">Net 30</option><option value="net60">Net 60</option></select></div></div>
+      <div><label className="form-label">Terms</label><select className="form-select" value={f.payment_terms||'net30'} onChange={e=>sv('payment_terms',e.target.value)}><option value="prepay">Prepay</option><option value="net15">Net 15</option><option value="net30">Net 30</option><option value="net60">Net 60</option></select></div>
+      <div><label className="form-label">Rep</label><select className="form-select" value={f.primary_rep_id||''} onChange={e=>sv('primary_rep_id',e.target.value||null)}><option value="">— None —</option>{(reps||[]).filter(r=>(r.role==='rep'||r.role==='admin')&&r.is_active!==false).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select></div></div>
     <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginTop:8,marginBottom:6,textTransform:'uppercase'}}>Contacts</div>
     {(f.contacts||[]).map((c,i)=><div key={i} style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 100px auto',gap:6,marginBottom:6}}>
       <input className="form-input" placeholder="Name *" value={c.name} onChange={e=>upC(i,'name',e.target.value)}/>
@@ -6758,6 +6810,16 @@ export default function App(){
       }).catch(()=>{});
     nf('Connected to QuickBooks Online');
   },[dbLoading]);
+  // Handle ?so= deep link to open a specific sales order in a new tab
+  React.useEffect(()=>{
+    try{const p=new URLSearchParams(window.location.search);const soId=p.get('so');
+      if(soId&&sos.length>0&&!dbLoading){
+        const so=sos.find(s=>s.id===soId);
+        if(so){const c2=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c2);setPg('orders')}
+        const u=new URL(window.location);u.searchParams.delete('so');window.history.replaceState({},'',u);
+      }
+    }catch{}
+  },[sos,dbLoading]); // eslint-disable-line
   React.useEffect(()=>{_saveAppState('inv_pos',invPOs)},[invPOs]);
   React.useEffect(()=>{_saveAppState('inv_adj_log',invAdjLog)},[invAdjLog]);
   React.useEffect(()=>{_saveAppState('inv_po_counter',invPOCounter)},[invPOCounter]);
@@ -7561,7 +7623,7 @@ export default function App(){
   // CUSTOMERS
   function rCust(){
     if(selC)return<CustDetail customer={selC} allCustomers={cust} allOrders={aO} onBack={()=>setSelC(null)} onEdit={c=>{setCM({open:true,c});setCust(prev=>prev.map(pp=>pp.id===c.id?c:pp))}} onSelCust={c=>setSelC(c)} onNewEst={c=>newE(c)} sos={sos} msgs={msgs} cu={cu} onOpenSO={so=>{const c3=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c3);setPg('orders')}} onOpenEst={est=>{const c3=cust.find(cc=>cc.id===est.customer_id);setEEst(est);setEEstC(c3);setPg('estimates')}} ests={ests} onSaveSO={savSO} REPS={REPS}/>;
-    const f=pars.filter(p=>{if(rF!=='all'&&p.primary_rep_id!==rF)return false;if(q){const s=q.toLowerCase();return p.name.toLowerCase().includes(s)||p.alpha_tag?.toLowerCase().includes(s)||gK(p.id).some(c=>c.name.toLowerCase().includes(s))}return true});
+    const f=pars.filter(p=>{if(rF!=='all'&&p.primary_rep_id!==rF&&!gK(p.id).some(c=>c.primary_rep_id===rF))return false;if(q){const s=q.toLowerCase();return p.name.toLowerCase().includes(s)||p.alpha_tag?.toLowerCase().includes(s)||gK(p.id).some(c=>c.name.toLowerCase().includes(s))}return true});
     return(<><div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap'}}><div className="search-bar" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search..." value={q} onChange={e=>setQ(e.target.value)}/></div>
       <select className="form-select" style={{width:150}} value={rF} onChange={e=>setRF(e.target.value)}><option value="all">All Reps</option>{REPS.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
       <button className="btn btn-primary" onClick={()=>setCM({open:true,c:null})}><Icon name="plus" size={14}/> New</button></div>
@@ -7571,12 +7633,12 @@ export default function App(){
           <div style={{width:36,height:36,borderRadius:8,background:'#dbeafe',display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer'}} onClick={()=>setSelC(p)}><Icon name="building" size={18}/></div>
           <div style={{flex:1,cursor:'pointer'}} onClick={()=>setSelC(p)}>
             <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}><span style={{fontSize:15,fontWeight:700}}>{p.name}</span><span className="badge badge-blue">{p.alpha_tag}</span><span className="badge badge-green">Tier {p.adidas_ua_tier}</span></div>
-            <div style={{fontSize:12,color:'#94a3b8'}}>{(p.contacts||[])[0]?.name&&`${p.contacts[0].name} · `}{p.billing_city&&`${p.billing_city}, ${p.billing_state}`}</div></div>
+            <div style={{fontSize:12,color:'#94a3b8'}}>{(p.contacts||[])[0]?.name&&`${p.contacts[0].name} · `}{p.billing_city&&`${p.billing_city}, ${p.billing_state}`}{p.primary_rep_id&&` · ${REPS.find(r=>r.id===p.primary_rep_id)?.name||''}`}</div></div>
           {bal>0&&<div style={{textAlign:'right'}}><div style={{fontSize:16,fontWeight:800,color:'#dc2626'}}>${bal.toLocaleString()}</div></div>}
           <button className="btn btn-sm btn-secondary" onClick={e=>{e.stopPropagation();newE(p)}}><Icon name="file" size={12}/></button>
           <button className="btn btn-sm btn-secondary" onClick={e=>{e.stopPropagation();setCM({open:true,c:p})}}><Icon name="edit" size={12}/></button></div>
         {kids.length>0&&<div style={{borderTop:'1px solid #f1f5f9'}}>{kids.map(ch=><div key={ch.id} style={{padding:'8px 16px 8px 64px',display:'flex',alignItems:'center',gap:10,borderBottom:'1px solid #f8fafc',cursor:'pointer'}} onClick={()=>setSelC(ch)}>
-          <span style={{color:'#cbd5e1'}}>|_</span><span style={{fontSize:13,fontWeight:600}}>{ch.name}</span><span className="badge badge-gray">{ch.alpha_tag}</span><div style={{flex:1}}/>
+          <span style={{color:'#cbd5e1'}}>|_</span><span style={{fontSize:13,fontWeight:600}}>{ch.name}</span><span className="badge badge-gray">{ch.alpha_tag}</span>{ch.primary_rep_id&&ch.primary_rep_id!==p.primary_rep_id&&<span style={{fontSize:10,color:'#6d28d9',fontWeight:600}}>{REPS.find(r=>r.id===ch.primary_rep_id)?.name||''}</span>}<div style={{flex:1}}/>
           {(ch._ob||0)>0&&<span style={{fontSize:12,fontWeight:700,color:'#dc2626'}}>${ch._ob.toLocaleString()}</span>}</div>)}</div>}
       </div>)})}
     </>);};
@@ -11144,7 +11206,7 @@ export default function App(){
         <div className="card"><div className="card-body" style={{padding:0}}>
           <table style={{fontSize:11}}><thead><tr>
             <th style={{width:20}}></th><th>SO#</th><th>Customer</th><th>SKU</th><th>Item</th>
-            <th style={{textAlign:'center'}}>Need</th><th style={{textAlign:'center'}}>On Hand</th><th>Sizes to Pull</th><th>Rep</th><th style={{width:60}}></th>
+            <th style={{textAlign:'center'}}>Need</th><th style={{textAlign:'center'}}>On Hand</th><th>Sizes to Pull</th><th>Dest</th><th>Rep</th><th style={{width:60}}></th>
           </tr></thead><tbody>
           {fPull.map((t,ti)=><tr key={ti} style={{cursor:'pointer',background:t.urgent?'#fef2f2':'',borderLeft:t.urgent?'3px solid #dc2626':''}}
             onClick={()=>{setESOTab('items');setESOScrollItem(t.itemIdx);setESO(t.so);setESOC(cust.find(c2=>c2.id===t.so.customer_id));setPg('orders')}}>
@@ -11162,6 +11224,7 @@ export default function App(){
                 return<span key={s} style={{padding:'1px 4px',borderRadius:3,fontSize:9,fontWeight:700,
                   background:'#fef3c7',color:'#92400e',whiteSpace:'nowrap'}}>{s}:{need}</span>})}
             </div></td>
+            <td>{(()=>{const d=t.shipDest;const labels={in_house:'🏭 In-House',ship_customer:'📦 Customer',ship_deco:'🚚 Deco'};return<span style={{fontSize:9,padding:'2px 5px',borderRadius:4,fontWeight:600,background:d==='ship_customer'?'#dbeafe':d==='ship_deco'?'#fef3c7':'#f1f5f9',color:d==='ship_customer'?'#1e40af':d==='ship_deco'?'#92400e':'#64748b'}}>{labels[d]||'🏭 In-House'}</span>})()}</td>
             <td style={{fontSize:10,color:'#94a3b8'}}>{t.rep}</td>
             <td><button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px'}}
               onClick={e=>{e.stopPropagation();setESOTab('items');setESOScrollItem(t.itemIdx);setESO(t.so);setESOC(cust.find(c2=>c2.id===t.so.customer_id));setPg('orders')}}>
@@ -11448,7 +11511,8 @@ export default function App(){
       const rejection={by:cu.name,at:new Date().toISOString(),reason};
       const currentJobs=buildJobs(so);
       const updatedJobs=currentJobs.map(jj=>jj.id===j.id?{...jj,art_status:'art_in_progress',rejections:[...(jj.rejections||[]),rejection]}:jj);
-      savSO({...so,jobs:updatedJobs});
+      const updArt=safeArt(so).map(a=>a.id===j.art_file_id?{...a,status:'waiting_for_art'}:a);
+      savSO({...so,jobs:updatedJobs,art_files:updArt});
       nf('Art rejected — sent back to artist');
     };
     const updateArtRequest=(j,updates)=>{
@@ -11552,7 +11616,7 @@ export default function App(){
                   nf(autoStaged?.prod_status==='staging'?'Art complete — job moved to Ready for Production!':'Prod files uploaded — Art Complete!');
                 }else{moveArtStatus(j,'art_complete')}
               }}>Upload & Complete</button>}
-              <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px',marginLeft:'auto'}} onClick={e=>{e.stopPropagation();setESOTab('jobs');setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so?.customer_id));setPg('orders')}}>Open SO</button>
+              <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px',marginLeft:'auto'}} onClick={e=>{e.stopPropagation();window.open(window.location.origin+window.location.pathname+'?so='+j.soId,'_blank')}}>Open SO ↗</button>
             </div>
           </>}
 
@@ -11566,7 +11630,7 @@ export default function App(){
             {/* Mockup button — primary action, opens popup with approve/reject */}
             <button className="btn btn-sm" style={{fontSize:11,padding:'6px 12px',background:'linear-gradient(135deg,#1e40af,#7c3aed)',color:'white',border:'none',width:'100%',marginTop:4,fontWeight:700,borderRadius:6,display:'flex',alignItems:'center',justifyContent:'center',gap:6}} onClick={e=>{e.stopPropagation();setArtMockupModal(j);setArtMockupRevision('')}}>🖼️ View Mockup{j.art_status==='waiting_approval'&&<span style={{background:'#f59e0b',padding:'1px 6px',borderRadius:4,fontSize:9,marginLeft:4}}>Needs Approval</span>}</button>
             <div style={{display:'flex',gap:3,marginTop:6,flexWrap:'wrap'}}>
-              <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px',marginLeft:'auto'}} onClick={e=>{e.stopPropagation();setESOTab('jobs');setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so?.customer_id));setPg('orders')}}>Open SO</button>
+              <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px',marginLeft:'auto'}} onClick={e=>{e.stopPropagation();window.open(window.location.origin+window.location.pathname+'?so='+j.soId,'_blank')}}>Open SO ↗</button>
             </div>
           </>}
         </div>
@@ -12104,10 +12168,10 @@ export default function App(){
               {af&&(af.files||[]).length>0&&<div style={{marginTop:8}}>
                 <div style={{fontSize:11,fontWeight:700,color:'#1e40af',marginBottom:4}}>📁 Source Art Files</div>
                 <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-                  {(af.files||[]).map((f,i)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(url||f);
-                    return<div key={i} style={{padding:'6px 10px',background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:6,cursor:isUrl(url)?'pointer':'default',fontSize:11,fontWeight:600,color:'#1e40af',display:'flex',alignItems:'center',gap:4}} onClick={()=>isUrl(url)&&openFile(url)}>
+                  {(af.files||[]).map((f,i)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(url||f);const ext=_urlExt(url);
+                    return<div key={i} style={{padding:'6px 10px',background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:6,fontSize:11,fontWeight:600,color:'#1e40af',display:'flex',alignItems:'center',gap:4}}>
                       📁 {name}
-                      {isUrl(url)&&<a href={url} download style={{color:'#2563eb',fontSize:10,marginLeft:4}} onClick={e=>e.stopPropagation()}>⬇</a>}
+                      {isUrl(url)&&<button style={{background:'#2563eb',color:'white',border:'none',borderRadius:4,padding:'2px 8px',fontSize:10,fontWeight:700,cursor:'pointer',marginLeft:4}} onClick={()=>openFile(url)}>{_isDownloadOnly(url)?'⬇ Download':'Open'}</button>}
                     </div>})}
                 </div>
               </div>}
@@ -12118,27 +12182,43 @@ export default function App(){
               <div style={{fontSize:12,fontWeight:800,color:'#1e3a5f',marginBottom:10,display:'flex',alignItems:'center',gap:6}}>
                 <span style={{fontSize:16}}>🖼️</span> Artwork Files
               </div>
-              {mockupFiles.length>0?<div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:10}}>
-                {mockupFiles.map((f,i)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(url||f);const isPrimary=i===0;
-                  return<div key={i} style={{borderRadius:8,border:isPrimary?'2px solid #7c3aed':'1px solid #e2e8f0',overflow:'hidden',background:'white',maxWidth:280,position:'relative'}}>
-                    {isPrimary&&<div style={{position:'absolute',top:4,left:4,background:'#7c3aed',color:'white',fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:4,zIndex:1}}>MOCKUP</div>}
-                    {_isImgUrl(url)?<img src={url} alt={name} style={{width:'100%',maxHeight:200,objectFit:'contain',display:'block',cursor:'pointer'}} onClick={()=>openFile(url)}/>
+              {mockupFiles.length>0?<div style={{marginBottom:10}}>
+                {/* Primary mockup — large preview */}
+                {(()=>{const url=typeof mockupFiles[0]==='string'?mockupFiles[0]:(mockupFiles[0]?.url||'');const name=fileDisplayName(url||mockupFiles[0]);
+                  return<div style={{borderRadius:10,border:'2px solid #7c3aed',overflow:'hidden',background:'#f8fafc',marginBottom:10,position:'relative'}}>
+                    <div style={{position:'absolute',top:6,left:6,background:'#7c3aed',color:'white',fontSize:10,fontWeight:700,padding:'2px 8px',borderRadius:4,zIndex:1}}>PRIMARY MOCKUP</div>
+                    {_isImgUrl(url)?<img src={url} alt={name} style={{width:'100%',maxHeight:500,objectFit:'contain',display:'block',cursor:'pointer',background:'white'}} onClick={()=>openFile(url)}/>
                     :_isPdfUrl(url)?<div style={{position:'relative',cursor:'pointer'}} onClick={()=>openFile(url)}>
-                      {_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',maxHeight:200,objectFit:'contain',display:'block'}} onError={e=>{e.target.style.display='none';e.target.nextSibling.style.display='flex'}}/>:null}
-                      <div style={{display:_cloudinaryPdfThumb(url)?'none':'flex',flexDirection:'column',alignItems:'center',padding:20,gap:4}}>
-                        <span style={{fontSize:32}}>PDF</span><span style={{fontSize:11,color:'#1e40af'}}>{name}</span>
-                      </div>
+                      {_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',maxHeight:500,objectFit:'contain',display:'block',background:'white'}} onError={e=>{e.target.style.display='none';e.target.nextSibling.style.display='flex'}}/>:null}
+                      <div style={{display:_cloudinaryPdfThumb(url)?'none':'flex',flexDirection:'column',alignItems:'center',padding:30,gap:4}}>
+                        <span style={{fontSize:40}}>PDF</span><span style={{fontSize:13,color:'#1e40af'}}>{name}</span></div></div>
+                    :<div style={{display:'flex',alignItems:'center',gap:6,padding:'16px 20px',cursor:'pointer'}} onClick={()=>openFile(url)}>
+                      <span style={{fontSize:24}}>📄</span><span style={{fontSize:14,fontWeight:600,color:'#1e40af'}}>{name}</span></div>}
+                    <div style={{padding:'6px 10px',borderTop:'1px solid #e9d5ff',fontSize:11,color:'#64748b',display:'flex',alignItems:'center',gap:6}}>
+                      <span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',flex:1}}>{name}</span>
+                      <button className="btn btn-sm" style={{fontSize:10,padding:'2px 8px'}} onClick={()=>openFile(url)}>Open Full Size</button>
+                      <button style={{background:'none',border:'none',color:'#ef4444',cursor:'pointer',fontSize:14,padding:'0 2px',lineHeight:1}} onClick={()=>{if(window.confirm('Remove this file?'))handleArtFileDelete(url)}} title="Remove file">×</button>
                     </div>
+                  </div>})()}
+                {/* Additional files — smaller thumbnails */}
+                {mockupFiles.length>1&&<div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                {mockupFiles.slice(1).map((f,i)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(url||f);
+                  return<div key={i} style={{borderRadius:8,border:'1px solid #e2e8f0',overflow:'hidden',background:'white',maxWidth:200,position:'relative'}}>
+                    {_isImgUrl(url)?<img src={url} alt={name} style={{width:'100%',maxHeight:150,objectFit:'contain',display:'block',cursor:'pointer'}} onClick={()=>openFile(url)}/>
+                    :_isPdfUrl(url)?<div style={{position:'relative',cursor:'pointer'}} onClick={()=>openFile(url)}>
+                      {_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',maxHeight:150,objectFit:'contain',display:'block'}} onError={e=>{e.target.style.display='none';e.target.nextSibling.style.display='flex'}}/>:null}
+                      <div style={{display:_cloudinaryPdfThumb(url)?'none':'flex',flexDirection:'column',alignItems:'center',padding:20,gap:4}}>
+                        <span style={{fontSize:32}}>PDF</span><span style={{fontSize:11,color:'#1e40af'}}>{name}</span></div></div>
                     :<div style={{display:'flex',alignItems:'center',gap:6,padding:'10px 14px',cursor:'pointer'}} onClick={()=>openFile(url)}>
-                      <span style={{fontSize:16}}>📄</span><span style={{fontSize:12,fontWeight:600,color:'#1e40af'}}>{name}</span>
-                    </div>}
+                      <span style={{fontSize:16}}>📄</span><span style={{fontSize:12,fontWeight:600,color:'#1e40af'}}>{name}</span></div>}
                     <div style={{padding:'4px 8px',borderTop:'1px solid #f1f5f9',fontSize:10,color:'#64748b',display:'flex',alignItems:'center',gap:4}}>
                       <span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',flex:1}}>{name}</span>
-                      {!isPrimary&&<button className="btn btn-sm" style={{fontSize:8,padding:'1px 5px',background:'#7c3aed',color:'white',border:'none'}} onClick={()=>handleSetAsMockup(url)} title="Set as primary mockup">Set Mockup</button>}
+                      <button className="btn btn-sm" style={{fontSize:8,padding:'1px 5px',background:'#7c3aed',color:'white',border:'none'}} onClick={()=>handleSetAsMockup(url)} title="Set as primary mockup">Set Mockup</button>
                       <button className="btn btn-sm" style={{fontSize:8,padding:'1px 5px'}} onClick={()=>openFile(url)}>Open</button>
                       <button style={{background:'none',border:'none',color:'#ef4444',cursor:'pointer',fontSize:14,padding:'0 2px',lineHeight:1}} onClick={()=>{if(window.confirm('Remove this file?'))handleArtFileDelete(url)}} title="Remove file">×</button>
                     </div>
                   </div>})}
+                </div>}
               </div>:<div style={{padding:16,textAlign:'center',color:'#94a3b8',fontSize:12,background:'#f8fafc',borderRadius:8,border:'2px dashed #e2e8f0'}}>No artwork files uploaded yet</div>}
               {prodFilesL.length>0&&<><div style={{fontSize:11,fontWeight:700,color:'#92400e',marginTop:8,marginBottom:4}}>Production Files</div>
                 <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
@@ -16039,7 +16119,7 @@ export default function App(){
         <button onClick={()=>setDbError(null)} style={{background:'none',border:'none',color:'#991b1b',cursor:'pointer',fontWeight:800,fontSize:14}}>&#215;</button>
       </div>}
       <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='art'&&rArtist()}{pg==='production'&&rProd2()}{pg==='decoration'&&rDeco()}{pg==='warehouse'&&rWarehouse()}{pg==='purchase_orders'&&rPOs()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='team'&&rTeam()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='commissions'&&rCommissions()}{pg==='omg'&&rOMG()}{pg==='reports'&&rReports()}{pg==='issues'&&rIssues()}{pg==='import'&&rImport()}{pg==='qb'&&rQB()}{pg==='backup'&&rBackup()}{pg==='settings'&&rSettings()}</div></div>
-    <CustModal isOpen={cM.open} onClose={()=>setCM({open:false,c:null})} onSave={savC} customer={cM.c} parents={pars}/>
+    <CustModal isOpen={cM.open} onClose={()=>setCM({open:false,c:null})} onSave={savC} customer={cM.c} parents={pars} reps={REPS}/>
     <AdjModal isOpen={aM.open} onClose={()=>setAM({open:false,p:null})} product={aM.p} onSave={savI}/>
 
     {/* INVENTORY PO CREATE MODAL */}
