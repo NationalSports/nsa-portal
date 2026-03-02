@@ -1746,6 +1746,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
   const[showFirmReq,setShowFirmReq]=useState(false);const[firmReqDate,setFirmReqDate]=useState('');const[firmReqNote,setFirmReqNote]=useState('');
   const[showInvCreate,setShowInvCreate]=useState(false);const[invSelItems,setInvSelItems]=useState([]);const[invMemo,setInvMemo]=useState('');const[invType,setInvType]=useState('deposit');const[invDepositPct,setInvDepositPct]=useState(50);
   const[splitModal,setSplitModal]=useState(null);// {jIdx, mode:'received'|'sku'|null}
+  const[countDiscModal,setCountDiscModal]=useState(null);// {open,entries:[{sku,name,color,size,expected,actual}],notes}
   const[artReqModal,setArtReqModal]=useState(null);// {jIdx, artist:'', instructions:'', files:[]}
   const[artRevisionNote,setArtRevisionNote]=useState('');
   const[coachApprovalModal,setCoachApprovalModal]=useState(null);// {jIdx, contact, portalUrl, method, message}
@@ -3914,19 +3915,48 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
             <div className="card">
               <div className="card-header"><h2>📋 Count-In at Decoration</h2></div>
               <div className="card-body">
-                {j.counted_at?<div style={{padding:10,background:'#f0fdf4',borderRadius:6}}>
-                  <div style={{fontSize:12,fontWeight:700,color:'#166534'}}>✅ Counted In</div>
+                {j.counted_at?<div style={{padding:10,background:j.count_discrepancies?.length?'#fef2f2':'#f0fdf4',borderRadius:6}}>
+                  <div style={{fontSize:12,fontWeight:700,color:j.count_discrepancies?.length?'#dc2626':'#166534'}}>{j.count_discrepancies?.length?'⚠️ Counted In — Discrepancies Found':'✅ All Confirmed'}</div>
                   <div style={{fontSize:11,color:'#64748b'}}>{j.counted_by||'—'} · {j.counted_at}</div>
-                  {j.count_discrepancy&&<div style={{fontSize:11,color:'#dc2626',marginTop:4}}>⚠️ {j.count_discrepancy}</div>}
+                  {j.count_discrepancy&&<div style={{fontSize:11,color:'#dc2626',marginTop:4}}>Note: {j.count_discrepancy}</div>}
+                  {j.count_discrepancies?.length>0&&<div style={{marginTop:8}}>
+                    <div style={{fontSize:11,fontWeight:700,color:'#dc2626',marginBottom:4}}>Missing / Short Items:</div>
+                    <table style={{fontSize:11,width:'100%'}}><thead><tr><th style={{textAlign:'left'}}>SKU</th><th>Size</th><th style={{textAlign:'center'}}>Expected</th><th style={{textAlign:'center'}}>Actual</th><th style={{textAlign:'center'}}>Short</th></tr></thead>
+                    <tbody>{j.count_discrepancies.map((d2,di)=><tr key={di} style={{background:'#fef2f2'}}>
+                      <td style={{fontFamily:'monospace',fontWeight:600,color:'#1e40af'}}>{d2.sku}</td>
+                      <td style={{fontWeight:600}}>{d2.size}</td>
+                      <td style={{textAlign:'center'}}>{d2.expected}</td>
+                      <td style={{textAlign:'center',fontWeight:700,color:'#dc2626'}}>{d2.actual}</td>
+                      <td style={{textAlign:'center',fontWeight:700,color:'#dc2626'}}>{d2.expected-d2.actual}</td>
+                    </tr>)}</tbody></table>
+                  </div>}
                 </div>:<>
                   <div style={{fontSize:12,color:'#64748b',marginBottom:8}}>Confirm inventory received at decoration station</div>
-                  <div style={{marginBottom:8}}><input className="form-input" placeholder="Discrepancy notes (if any)" style={{fontSize:12}} value={jobNote} onChange={e=>setJobNote(e.target.value)}/></div>
-                  <button className="btn btn-sm btn-primary" onClick={()=>{
-                    updJob(ji,'counted_at',new Date().toLocaleString());
-                    updJob(ji,'counted_by',cu?.name||'Unknown');
-                    if(jobNote)updJob(ji,'count_discrepancy',jobNote);
-                    setJobNote('');nf('✅ Count-in recorded');
-                  }}>✅ Confirm Count-In</button>
+                  {/* SKU/Size summary for reference */}
+                  <div style={{marginBottom:10,background:'#f8fafc',borderRadius:6,padding:8}}>
+                    <div style={{fontSize:10,fontWeight:700,color:'#64748b',marginBottom:4}}>Expected Items:</div>
+                    {itemDetails.map((gi,gii)=>{const rowTotal=Object.values(gi.sizes||{}).reduce((a,v)=>a+safeNum(v),0);
+                      return<div key={gii} style={{fontSize:11,padding:'2px 0',display:'flex',gap:8,alignItems:'center'}}>
+                        <span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{gi.sku}</span>
+                        <span style={{color:'#64748b'}}>{gi.color||'—'}</span>
+                        <span style={{marginLeft:'auto',fontWeight:700}}>{rowTotal} pcs</span>
+                        <span style={{fontSize:9,color:'#94a3b8'}}>{Object.entries(gi.sizes||{}).filter(([,v])=>safeNum(v)>0).map(([sz,v])=>sz+':'+v).join(' ')}</span>
+                      </div>})}
+                  </div>
+                  <div style={{display:'flex',gap:8}}>
+                    <button className="btn btn-sm btn-primary" style={{background:'#166534',borderColor:'#166534'}} onClick={()=>{
+                      const upd=jobs.map((jj,i)=>i===ji?{...jj,counted_at:new Date().toLocaleString(),counted_by:cu?.name||'Unknown',count_discrepancies:[]}:jj);
+                      const updated={...o,jobs:upd,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);
+                      nf('✅ Count-in confirmed — all items match');
+                    }}>✅ All Confirmed</button>
+                    <button className="btn btn-sm btn-secondary" style={{color:'#dc2626',borderColor:'#fca5a5'}} onClick={()=>{
+                      // Build discrepancy modal data
+                      const entries=[];
+                      itemDetails.forEach(gi=>{Object.entries(gi.sizes||{}).filter(([,v])=>safeNum(v)>0).forEach(([sz,v])=>{
+                        entries.push({sku:gi.sku,name:gi.name,color:gi.color||'',size:sz,expected:safeNum(v),actual:safeNum(v)})})});
+                      setCountDiscModal({open:true,entries,notes:''});
+                    }}>Count Is Off</button>
+                  </div>
                 </>}
               </div>
             </div>
@@ -3939,6 +3969,48 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
             </div>
           </div>
         </div>
+      {/* Count Discrepancy Modal */}
+      {countDiscModal?.open&&<div className="modal-overlay" onClick={()=>setCountDiscModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:600}}>
+        <div className="modal-header" style={{background:'#fef2f2'}}><h2>⚠️ Count Discrepancy — {j.art_name||j.id}</h2><button className="modal-close" onClick={()=>setCountDiscModal(null)}>x</button></div>
+        <div className="modal-body">
+          <div style={{fontSize:12,color:'#64748b',marginBottom:12}}>Adjust the <strong>Actual</strong> count for any items that don't match the expected quantity. Items with discrepancies will be flagged for the production team.</div>
+          <div style={{maxHeight:350,overflow:'auto'}}>
+            <table style={{fontSize:12}}><thead><tr><th style={{textAlign:'left'}}>SKU</th><th>Color</th><th>Size</th><th style={{textAlign:'center'}}>Expected</th><th style={{textAlign:'center'}}>Actual</th><th style={{textAlign:'center'}}>Diff</th></tr></thead>
+            <tbody>{(countDiscModal.entries||[]).map((e,ei)=>{const diff=e.actual-e.expected;
+              return<tr key={ei} style={{background:diff<0?'#fef2f2':undefined}}>
+                <td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{e.sku}</td>
+                <td style={{fontSize:11,color:'#64748b'}}>{e.color}</td>
+                <td style={{fontWeight:600}}>{e.size}</td>
+                <td style={{textAlign:'center'}}>{e.expected}</td>
+                <td style={{textAlign:'center'}}><input type="number" min="0" className="form-input" style={{width:60,textAlign:'center',fontWeight:700,color:e.actual<e.expected?'#dc2626':'#166534'}} value={e.actual} onChange={ev=>setCountDiscModal(m=>({...m,entries:m.entries.map((x,xi)=>xi===ei?{...x,actual:parseInt(ev.target.value)||0}:x)}))}/></td>
+                <td style={{textAlign:'center',fontWeight:700,color:diff<0?'#dc2626':diff>0?'#d97706':'#166534'}}>{diff<0?diff:diff>0?'+'+diff:'✓'}</td>
+              </tr>})}</tbody></table>
+          </div>
+          <div style={{marginTop:12}}><label className="form-label">Notes</label><input className="form-input" placeholder="Additional notes about discrepancy..." value={countDiscModal.notes||''} onChange={e=>setCountDiscModal(m=>({...m,notes:e.target.value}))}/></div>
+          <div style={{display:'flex',gap:8,marginTop:16}}>
+            <button className="btn btn-primary" style={{background:'#dc2626',borderColor:'#dc2626'}} onClick={()=>{
+              const discs=(countDiscModal.entries||[]).filter(e=>e.actual!==e.expected).map(e=>({sku:e.sku,name:e.name,color:e.color,size:e.size,expected:e.expected,actual:e.actual}));
+              const upd=jobs.map((jj,i)=>i===ji?{...jj,
+                counted_at:new Date().toLocaleString(),counted_by:cu?.name||'Unknown',
+                count_discrepancies:discs,
+                count_discrepancy:countDiscModal.notes||(discs.length>0?discs.map(d2=>d2.sku+' '+d2.size+': expected '+d2.expected+' got '+d2.actual).join('; '):'')
+              }:jj);
+              const updated={...o,jobs:upd,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);
+              // Create production team issue for missing pieces
+              if(discs.length>0){
+                const missingSummary=discs.map(d2=>d2.sku+' '+d2.size+': short '+(d2.expected-d2.actual)).join(', ');
+                const issue={id:'ISS-'+(issues.length+1001),status:'open',description:'Count-in discrepancy on '+j.id+' ('+j.art_name+'): '+missingSummary+(countDiscModal.notes?' — '+countDiscModal.notes:''),priority:'high',page:'jobs',viewing:o.id+' / '+j.id,reportedBy:cu?.name||'Unknown',role:cu?.role||'production',timestamp:new Date().toISOString(),recentErrors:[],resolvedAt:null,resolution:null};
+                setIssues(prev=>[issue,...prev]);
+                nf('⚠️ Count-in recorded with discrepancies — Issue '+issue.id+' created for production team');
+              } else {
+                nf('✅ Count-in recorded');
+              }
+              setCountDiscModal(null);
+            }}>Submit Count-In with Discrepancies</button>
+            <button className="btn btn-secondary" onClick={()=>setCountDiscModal(null)}>Cancel</button>
+          </div>
+        </div>
+      </div></div>}
       {/* Art Request Modal (also needed in job detail view) */}
       {artReqModal&&(()=>{
         const j2=jobs[artReqModal.jIdx];if(!j2)return null;
@@ -6834,7 +6906,7 @@ export default function App(){
   // OMG Team Stores
   const[omgFilter,setOmgFilter]=useState({rep:'all',status:'all',search:''});const[omgSel,setOmgSel]=useState(null);
   const[soF,setSOF]=useState({status:'all',rep:'all',search:'',sort:'date_desc'});
-  const[iS,setIS]=useState({f:'value',d:'desc'});const[iF,setIF]=useState({cat:'all',vnd:'all'});
+  const[iS,setIS]=useState({f:'value',d:'desc'});const[iF,setIF]=useState({cat:'all',vnd:'all',clr:'all'});
   const dirtyRef=React.useRef(false);
   const[favSkus,setFavSkus]=useState(()=>{try{return JSON.parse(localStorage.getItem('nsa_fav_skus')||'[]')}catch{return[]}});
   const toggleFav=sku=>{setFavSkus(f=>{const n=f.includes(sku)?f.filter(s=>s!==sku):[...f,sku];try{localStorage.setItem('nsa_fav_skus',JSON.stringify(n))}catch{}return n})};
@@ -6898,8 +6970,8 @@ export default function App(){
     setProd(pp=>pp.map(x=>x.id===pid?{...x,_inv:inv}:x));nf('Inventory updated');
   };
   const newE=(c,product)=>{const mk=c?.catalog_markup||1.65;const items=[];
-    if(product){const au=product.brand==='Adidas'||product.brand==='Under Armour'||product.brand==='New Balance';const sell=au?rQ(product.retail_price*(1-(({A:0.4,B:0.35,C:0.3})[c?.adidas_ua_tier||'B']||0.35))):rQ(product.nsa_cost*mk);
-      items.push({product_id:product.id,sku:product.sku,name:product.name,brand:product.brand,color:product.color,nsa_cost:product.nsa_cost,retail_price:product.retail_price,unit_sell:sell,available_sizes:[...product.available_sizes],_colors:product._colors||null,sizes:{},decorations:[]})}
+    if(product){const au=product.brand==='Adidas'||product.brand==='Under Armour'||product.brand==='New Balance';const repCost=product.is_clearance&&product.clearance_cost!=null?product.clearance_cost:product.nsa_cost;const sell=au?rQ(product.retail_price*(1-(({A:0.4,B:0.35,C:0.3})[c?.adidas_ua_tier||'B']||0.35))):rQ(repCost*mk);
+      items.push({product_id:product.id,sku:product.sku,name:product.name,brand:product.brand,color:product.color,nsa_cost:repCost,retail_price:product.retail_price,unit_sell:sell,available_sizes:[...product.available_sizes],_colors:product._colors||null,sizes:{},decorations:[],_is_clearance:product.is_clearance||false})}
     const e={id:nextEstId(ests),customer_id:c?.id||null,memo:'',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:mk,shipping_type:'pct',shipping_value:5,ship_to_id:'default',email_status:null,art_files:[],items};setEEst(e);setEEstC(c||null);setPg('estimates')};
   const convertSO=est=>{const fourWeeks=new Date();fourWeeks.setDate(fourWeeks.getDate()+28);const defExp=fourWeeks.toISOString().split('T')[0];const so={id:nextSOId(sos),customer_id:est.customer_id,estimate_id:est.id,memo:est.memo,status:'need_order',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:est.default_markup,expected_date:defExp,production_notes:'',shipping_type:est.shipping_type,shipping_value:est.shipping_value,ship_to_id:est.ship_to_id,firm_dates:[],art_files:[...(est.art_files||[])],items:safeItems(est).map(it=>({...it,decorations:safeDecos(it).map(d=>({...d}))}))};
     setSOs(p=>[...p,so]);setEsts(p=>p.map(e=>e.id===est.id?{...e,status:'converted'}:e));setEEst(null);
@@ -6910,7 +6982,7 @@ export default function App(){
     ...invs.map(i=>({...i,type:'invoice'}))],[ests,sos,invs]);
   const fP=useMemo(()=>{let l=prod;if(q&&pg==='products'){const s=q.toLowerCase();l=l.filter(p=>p.sku.toLowerCase().includes(s)||p.name.toLowerCase().includes(s)||p.brand?.toLowerCase().includes(s)||p.color?.toLowerCase().includes(s))}
     if(pF.cat!=='all')l=l.filter(p=>p.category===pF.cat);if(pF.vnd!=='all')l=l.filter(p=>p.vendor_id===pF.vnd);if(pF.stk==='instock')l=l.filter(p=>Object.values(p._inv||{}).some(v=>v>0));if(pF.clr!=='all')l=l.filter(p=>p.color===pF.clr);return l},[prod,q,pF,pg]);
-  const iD=useMemo(()=>{let l=prod.filter(p=>Object.values(p._inv||{}).some(v=>v>0));if(iF.cat!=='all')l=l.filter(p=>p.category===iF.cat);if(iF.vnd!=='all')l=l.filter(p=>p.vendor_id===iF.vnd);
+  const iD=useMemo(()=>{let l=prod.filter(p=>Object.values(p._inv||{}).some(v=>v>0));if(iF.cat!=='all')l=l.filter(p=>p.category===iF.cat);if(iF.vnd!=='all')l=l.filter(p=>p.vendor_id===iF.vnd);if(iF.clr!=='all')l=l.filter(p=>p.color===iF.clr);
     if(iShowFav&&favSkus.length>0)l=l.filter(p=>favSkus.includes(p.sku));
     if(q&&pg==='inventory'){const s=q.toLowerCase();l=l.filter(p=>p.sku.toLowerCase().includes(s)||p.name.toLowerCase().includes(s))}
     const m=l.map(p=>{const t=Object.values(p._inv||{}).reduce((a,v)=>a+v,0);return{...p,_tQ:t,_tV:t*(p.nsa_cost||0)}});
@@ -7894,7 +7966,8 @@ export default function App(){
   <div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap'}}><div className="search-bar" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search..." value={q} onChange={e=>setQ(e.target.value)}/></div>
     <button className={`btn btn-sm ${iShowFav?'btn-primary':'btn-secondary'}`} style={{fontSize:11}} onClick={()=>setIShowFav(f=>!f)}>Favorites{favSkus.length>0?` (${favSkus.length})`:''}</button>
     <select className="form-select" style={{width:110}} value={iF.cat} onChange={e=>setIF(f=>({...f,cat:e.target.value}))}><option value="all">Category</option>{CATEGORIES.map(c=><option key={c}>{c}</option>)}</select>
-    <select className="form-select" style={{width:110}} value={iF.vnd} onChange={e=>setIF(f=>({...f,vnd:e.target.value}))}><option value="all">Vendor</option>{vend.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}</select></div>
+    <select className="form-select" style={{width:110}} value={iF.vnd} onChange={e=>setIF(f=>({...f,vnd:e.target.value}))}><option value="all">Vendor</option>{vend.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}</select>
+    <select className="form-select" style={{width:130}} value={iF.clr} onChange={e=>setIF(f=>({...f,clr:e.target.value}))}><option value="all">Color</option>{cols.map(c=><option key={c} value={c}>{c}</option>)}</select></div>
   <div className="card"><div className="card-body" style={{padding:0}}><table><thead><tr>
     <SortHeader label="SKU" field="sku" sortField={iS.f} sortDir={iS.d} onSort={f=>setIS(s=>({f,d:s.f===f&&s.d==='asc'?'desc':'asc'}))}/>
     <SortHeader label="Product" field="name" sortField={iS.f} sortDir={iS.d} onSort={f=>setIS(s=>({f,d:s.f===f&&s.d==='asc'?'desc':'asc'}))}/>
@@ -7904,13 +7977,71 @@ export default function App(){
     <th>Actions</th></tr></thead>
   <tbody>{iD.map(p=><tr key={p.id}>
     <td><div style={{display:'flex',alignItems:'center',gap:4}}><button style={{background:'none',border:'none',cursor:'pointer',fontSize:14,padding:0,color:favSkus.includes(p.sku)?'#f59e0b':'#d1d5db'}} onClick={()=>toggleFav(p.sku)}>{favSkus.includes(p.sku)?'★':'☆'}</button><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{p.sku}</span></div></td>
-    <td style={{fontSize:12}}>{p.name}<br/><span style={{color:'#94a3b8'}}>{p.color}</span></td>
+    <td style={{fontSize:12}}>{p.name}{p.is_clearance&&<span style={{marginLeft:4,padding:'1px 6px',borderRadius:4,fontSize:9,fontWeight:700,background:'#fef3c7',color:'#92400e'}}>CLEARANCE</span>}<br/><span style={{color:'#94a3b8'}}>{p.color}</span></td>
     <td><div style={{display:'flex',gap:2}}>{p.available_sizes.filter(sz=>showSz(sz,p._inv?.[sz])).map(sz=>{const v=p._inv?.[sz]||0;return<div key={sz} className={`size-cell ${v>10?'in-stock':v>0?'low-stock':'no-stock'}`} style={{minWidth:30,padding:'1px 3px'}}><div className="size-label" style={{fontSize:8}}>{sz}</div><div className="size-qty" style={{fontSize:11}}>{v}</div></div>})}</div></td>
     <td style={{fontWeight:800,fontSize:15,color:p._tQ<=10?'#d97706':'#166534'}}>{p._tQ}</td>
     <td style={{fontWeight:700}}>${p._tV.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
     <td><div style={{display:'flex',gap:4}}><button className="btn btn-sm btn-secondary" onClick={()=>newE(null,p)}>+EST</button>
       {isA&&<button className="btn btn-sm btn-secondary" onClick={()=>setAM({open:true,p})}>INV</button>}</div></td>
   </tr>)}</tbody></table></div></div></>);
+
+  // CLEARANCE ITEMS
+  const[clrSearch,setClrSearch]=useState('');
+  const[clrAddModal,setClrAddModal]=useState({open:false,search:''});
+  function rInvClearance(){
+    const clearanceProds=prod.filter(p=>p.is_clearance);
+    const nonClearance=prod.filter(p=>!p.is_clearance&&Object.values(p._inv||{}).some(v=>v>0));
+    const filtered=clearanceProds.filter(p=>{if(!clrSearch)return true;const s=clrSearch.toLowerCase();return p.sku.toLowerCase().includes(s)||p.name.toLowerCase().includes(s)||p.color?.toLowerCase().includes(s)});
+    const addFiltered=nonClearance.filter(p=>{if(!clrAddModal.search)return true;const s=clrAddModal.search.toLowerCase();return p.sku.toLowerCase().includes(s)||p.name.toLowerCase().includes(s)||p.color?.toLowerCase().includes(s)});
+    const markClearance=(pid,cost)=>{setProd(pp=>pp.map(x=>x.id===pid?{...x,is_clearance:true,clearance_cost:cost}:x));nf('Marked as clearance')};
+    const updateClearanceCost=(pid,cost)=>{setProd(pp=>pp.map(x=>x.id===pid?{...x,clearance_cost:cost}:x));nf('Clearance cost updated')};
+    const removeClearance=(pid)=>{setProd(pp=>pp.map(x=>x.id===pid?{...x,is_clearance:false,clearance_cost:undefined}:x));nf('Removed from clearance')};
+    return(<>
+      <div style={{padding:12,marginBottom:12,background:'#fffbeb',borderRadius:8,border:'1px solid #fde68a',fontSize:12,color:'#92400e'}}>
+        <strong>Clearance Items:</strong> When a product is marked as clearance, the rep cost is reduced to the clearance price you set. The item remains at full value (NSA Cost) in inventory for accounting purposes, but reps see improved margin when adding to estimates/orders.
+      </div>
+      <div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap',alignItems:'center'}}>
+        <div className="search-bar" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search clearance items..." value={clrSearch} onChange={e=>setClrSearch(e.target.value)}/></div>
+        <button className="btn btn-primary" onClick={()=>setClrAddModal({open:true,search:''})}>+ Add Clearance Item</button>
+      </div>
+      {filtered.length===0?<div className="card"><div className="card-body"><div className="empty" style={{padding:30}}>No clearance items. Click "+ Add Clearance Item" to mark inventory products for clearance pricing.</div></div></div>:
+      <div className="card"><div className="card-body" style={{padding:0}}>
+        <table><thead><tr><th>SKU</th><th>Product</th><th>Color</th><th style={{textAlign:'right'}}>NSA Cost</th><th style={{textAlign:'right'}}>Clearance Cost</th><th style={{textAlign:'right'}}>Rep Savings</th><th style={{textAlign:'center'}}>Stock</th><th style={{textAlign:'right'}}>Inv Value</th><th>Actions</th></tr></thead>
+        <tbody>{filtered.map(p=>{const tQ=Object.values(p._inv||{}).reduce((a,v)=>a+v,0);const savings=p.nsa_cost-(p.clearance_cost||0);const savPct=p.nsa_cost>0?Math.round(savings/p.nsa_cost*100):0;
+          return<tr key={p.id}>
+            <td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{p.sku}</td>
+            <td style={{fontSize:12}}>{p.name}</td>
+            <td style={{fontSize:11,color:'#64748b'}}>{p.color}</td>
+            <td style={{textAlign:'right',fontSize:12}}>${p.nsa_cost?.toFixed(2)}</td>
+            <td style={{textAlign:'right'}}><input className="form-input" type="number" step="0.01" style={{width:80,textAlign:'right',fontWeight:700,color:'#166534'}} value={p.clearance_cost??''} onChange={e=>updateClearanceCost(p.id,parseFloat(e.target.value)||0)}/></td>
+            <td style={{textAlign:'right',color:'#166534',fontWeight:600}}>${savings.toFixed(2)} <span style={{fontSize:9}}>({savPct}%)</span></td>
+            <td style={{textAlign:'center',fontWeight:700}}>{tQ}</td>
+            <td style={{textAlign:'right',fontSize:12}}>${(tQ*p.nsa_cost).toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+            <td><button className="btn btn-sm btn-secondary" style={{color:'#dc2626',borderColor:'#fca5a5'}} onClick={()=>removeClearance(p.id)}>Remove</button></td>
+          </tr>})}</tbody></table>
+      </div></div>}
+      {/* Add clearance modal */}
+      {clrAddModal.open&&<div className="modal-overlay" onClick={()=>setClrAddModal({open:false,search:''})}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:600}}>
+        <div className="modal-header"><h2>Add Clearance Item</h2><button className="modal-close" onClick={()=>setClrAddModal({open:false,search:''})}>x</button></div>
+        <div className="modal-body">
+          <div className="search-bar" style={{marginBottom:12}}><Icon name="search"/><input placeholder="Search products with inventory..." value={clrAddModal.search} onChange={e=>setClrAddModal(m=>({...m,search:e.target.value}))}/></div>
+          <div style={{maxHeight:400,overflow:'auto'}}>
+            <table><thead><tr><th>SKU</th><th>Product</th><th>Color</th><th style={{textAlign:'right'}}>NSA Cost</th><th style={{textAlign:'center'}}>Stock</th><th></th></tr></thead>
+            <tbody>{addFiltered.slice(0,50).map(p=>{const tQ=Object.values(p._inv||{}).reduce((a,v)=>a+v,0);
+              return<tr key={p.id}>
+                <td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',fontSize:12}}>{p.sku}</td>
+                <td style={{fontSize:12}}>{p.name}</td>
+                <td style={{fontSize:11,color:'#64748b'}}>{p.color}</td>
+                <td style={{textAlign:'right'}}>${p.nsa_cost?.toFixed(2)}</td>
+                <td style={{textAlign:'center',fontWeight:700}}>{tQ}</td>
+                <td><button className="btn btn-sm btn-primary" onClick={()=>{markClearance(p.id,rQ(p.nsa_cost*0.5));setClrAddModal({open:false,search:''});}}>Mark Clearance</button></td>
+              </tr>})}</tbody></table>
+            {addFiltered.length===0&&<div style={{padding:20,textAlign:'center',color:'#94a3b8'}}>No matching products with inventory</div>}
+          </div>
+        </div>
+      </div></div>}
+    </>);
+  };
 
   // INVENTORY CHANGE LOG
   function rInvLog(){
@@ -8082,10 +8213,12 @@ export default function App(){
     {invPOs.filter(p=>p.status==='ordered'||p.status==='partial').length>0&&<div className="stat-card" style={{borderColor:'#7c3aed'}}><div className="stat-label">Open POs</div><div className="stat-value" style={{color:'#7c3aed'}}>{invPOs.filter(p=>p.status==='ordered'||p.status==='partial').length}</div></div>}</div>
     <div className="tabs" style={{marginBottom:16}}>
       <button className={`tab ${invTab==='stock'?'active':''}`} onClick={()=>setInvTab('stock')}>Stock</button>
+      {isA&&<button className={`tab ${invTab==='clearance'?'active':''}`} onClick={()=>setInvTab('clearance')}>Clearance{prod.filter(p=>p.is_clearance).length>0?' ('+prod.filter(p=>p.is_clearance).length+')':''}</button>}
       <button className={`tab ${invTab==='log'?'active':''}`} onClick={()=>setInvTab('log')}>Change Log{invAdjLog.length>0?' ('+invAdjLog.length+')':''}</button>
       <button className={`tab ${invTab==='pos'?'active':''}`} onClick={()=>setInvTab('pos')}>Inventory POs{invPOs.length>0?' ('+invPOs.length+')':''}</button>
     </div>
     {invTab==='stock'&&rInvStock()}
+    {invTab==='clearance'&&isA&&rInvClearance()}
     {invTab==='log'&&rInvLog()}
     {invTab==='pos'&&rInvPOs()}
   </>);
@@ -9620,6 +9753,8 @@ export default function App(){
     const avgOrderSize=pipeline.length>0?Math.round(totalRev/pipeline.length):0;
 
     // Rep leaderboard
+    const _parseDtLB=(d)=>{if(!d)return null;const m2=d.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);if(!m2)return null;let y2=parseInt(m2[3]);if(y2<100)y2+=2000;return{m:parseInt(m2[1])-1,y:y2,d:parseInt(m2[2])}};
+    const _now=new Date();const _curM=_now.getMonth();const _curY=_now.getFullYear();const _curD=_now.getDate();
     const repData=REPS.filter(r=>r.role==='rep'||r.role==='admin').map(r=>{
       const rSOs=sos.filter(s=>s.created_by===r.id);const rEsts=ests.filter(e=>e.created_by===r.id);
       const rev=rSOs.reduce((a,s)=>a+soCalc(s).rev,0);const margin=rSOs.reduce((a,s)=>a+soCalc(s).margin,0);
@@ -9628,7 +9763,11 @@ export default function App(){
       const openAR=rInv.filter(i=>i.status!=='paid').reduce((a,i)=>a+(i.total-i.paid),0);
       const uniqueCusts=[...new Set(rSOs.map(s=>s.customer_id))].length;
       const convRate=rEsts.length>0?Math.round(rSOs.filter(s=>s.estimate_id).length/Math.max(1,rEsts.length)*100):0;
-      return{...r,rev,margin,soCount:rSOs.length,estCount:rEsts.length,collected,openAR,uniqueCusts,convRate,pct:rev>0?Math.round(margin/rev*100):0};
+      // MTD sales this year vs same month last year (through same day of month)
+      const mtdThis=rSOs.filter(s=>{const dt=_parseDtLB(s.created_at);return dt&&dt.y===_curY&&dt.m===_curM&&dt.d<=_curD}).reduce((a,s)=>a+soCalc(s).rev,0);
+      const mtdLast=rSOs.filter(s=>{const dt=_parseDtLB(s.created_at);return dt&&dt.y===_curY-1&&dt.m===_curM&&dt.d<=_curD}).reduce((a,s)=>a+soCalc(s).rev,0);
+      const mtdIncrease=mtdThis-mtdLast;const mtdPct=mtdLast>0?Math.round((mtdIncrease/mtdLast)*100):mtdThis>0?100:0;
+      return{...r,rev,margin,soCount:rSOs.length,estCount:rEsts.length,collected,openAR,uniqueCusts,convRate,pct:rev>0?Math.round(margin/rev*100):0,mtdThis,mtdLast,mtdIncrease,mtdPct};
     }).sort((a,b)=>b.rev-a.rev);
 
     // Customer health
@@ -9737,13 +9876,15 @@ export default function App(){
       {(rptTab==='overview'||rptTab==='reps')&&<div className="card" style={{marginBottom:12}}>
         <WH id="repLeaderboard" title="Rep Leaderboard" icon="🏆"/>
         {rptWidgets.repLeaderboard&&<div className="card-body" style={{padding:0}}>
-          <table><thead><tr><th>Rank</th><th>Rep</th><th>Revenue</th><th>Margin</th><th>SOs</th><th>Customers</th><th>Conv Rate</th><th>Collected</th><th>Open A/R</th><th></th></tr></thead>
+          <table><thead><tr><th>Rank</th><th>Rep</th><th>Revenue</th><th>Margin</th><th>MTD Sales</th><th>vs Last Yr</th><th>SOs</th><th>Customers</th><th>Conv Rate</th><th>Collected</th><th>Open A/R</th><th></th></tr></thead>
           <tbody>{repData.map((r,i)=>
             <tr key={r.id} style={{background:i===0?'#fefce8':undefined}}>
               <td style={{fontWeight:800,color:i===0?'#d97706':i===1?'#64748b':'#cd7c32',fontSize:16,textAlign:'center'}}>{i===0?'🥇':i===1?'🥈':i===2?'🥉':i+1}</td>
               <td style={{fontWeight:700}}>{r.name}</td>
               <td style={{fontWeight:700,color:'#1e40af',textAlign:'right'}}>${(r.rev/1000).toFixed(1)}k</td>
               <td style={{textAlign:'right',color:r.pct>=40?'#166534':'#d97706'}}>{r.pct}%</td>
+              <td style={{textAlign:'right',fontWeight:700}}>${(r.mtdThis/1000).toFixed(1)}k<div style={{fontSize:9,color:'#94a3b8',fontWeight:400}}>LY: ${(r.mtdLast/1000).toFixed(1)}k</div></td>
+              <td style={{textAlign:'center',fontWeight:700,color:r.mtdIncrease>0?'#166534':r.mtdIncrease<0?'#dc2626':'#94a3b8'}}>{r.mtdIncrease>0?'↑':r.mtdIncrease<0?'↓':'—'}{r.mtdIncrease!==0&&<><br/><span style={{fontSize:11}}>{r.mtdPct>0?'+':''}{r.mtdPct}%</span></>}</td>
               <td style={{textAlign:'center'}}>{r.soCount}</td>
               <td style={{textAlign:'center'}}>{r.uniqueCusts}</td>
               <td style={{textAlign:'center',fontWeight:600,color:r.convRate>=50?'#166534':'#d97706'}}>{r.convRate}%</td>
