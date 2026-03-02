@@ -408,8 +408,9 @@ const extractPdfText=async(file)=>{
   }
   return{fullText,pages};
 };
-const parseNetSuitePdf=(text,docType)=>{
-  const result={docNumber:'',date:'',customerName:'',terms:'',subtotal:0,tax:0,shipping:0,total:0,lineItems:[],rawText:text,confidence:'low',warnings:[]};
+const parseNetSuitePdf=(text,docType,products)=>{
+  const result={docNumber:'',date:'',customerName:'',terms:'',memo:'',subtotal:0,tax:0,shipping:0,total:0,lineItems:[],rawText:text,confidence:'low',warnings:[]};
+  const _products=products||[];
   const lines=text.split('\n').map(l=>l.trim()).filter(Boolean);
   const SZ_RE=/[-\s](XXS|XS|YXS|YS|YM|YL|YXL|S|M|L|XL|2XL|3XL|4XL|5XL|OSFA)$/i;
 
@@ -420,10 +421,19 @@ const parseNetSuitePdf=(text,docType)=>{
     /(?:Purchase Order|PO)[#\s:]*#?(PO-?\d+)/i,
     /(?:Invoice|INV)[#\s:]*#?(INV-?\d+)/i,
     /#(EST\d+)/i,/#(SO-?\d+)/i,/#(PO-?\d+)/i,/#(INV-?\d+)/i,
+    /(?:Estimate|Sales Order|Invoice|Purchase Order)\s*(?:#|No\.?|Number)\s*:?\s*(\d+)/i,
     /(?:Estimate|Sales Order|Invoice|Purchase Order)\s*#?\s*(\d{3,})/i,
-    /(?:Document|Transaction|Order)\s*#?\s*:?\s*(\d{3,})/i
+    /(?:Document|Transaction|Order)\s*(?:#|No\.?|Number)\s*:?\s*(\d+)/i
   ];
+  // For tab-separated text, also try extracting from lines like "Estimate #\t1234"
   for(const pat of docPatterns){const m=text.match(pat);if(m){result.docNumber=m[1];break}}
+  if(!result.docNumber){
+    for(const line of lines){
+      const tabMatch=line.match(/^(?:Estimate|Sales Order|Invoice|Purchase Order)\s*(?:#|No\.?|Number)\s*:?\t+(\d+)/i)
+        ||line.match(/^(?:Estimate|Sales Order|Invoice|Purchase Order)\s*#\s*\t+(\S+)/i);
+      if(tabMatch){result.docNumber=tabMatch[1];break}
+    }
+  }
 
   // ── Extract date ──
   const dateMatch=text.match(/(?:Date|Ordered|Created|Invoice Date|Transaction Date)[:\s]*(\d{1,2}\/\d{1,2}\/\d{2,4})/i)
@@ -433,6 +443,12 @@ const parseNetSuitePdf=(text,docType)=>{
   // ── Extract terms ──
   const termsMatch=text.match(/(?:Terms|Payment Terms)[:\s]*([^\n\t]+)/i);
   if(termsMatch)result.terms=termsMatch[1].trim();
+
+  // ── Extract memo ──
+  for(const line of lines){
+    const memoMatch=line.match(/^Memo[:\s]*\t+(.*)/i)||line.match(/^Memo[:\s]+(.+)/i);
+    if(memoMatch){const mv=memoMatch[1].trim();if(mv&&!/^(Terms|Date|Item|Quantity)/i.test(mv)){result.memo=mv;break}}
+  }
 
   // ── Extract customer/Bill To ──
   let custFound=false;
@@ -563,7 +579,7 @@ const parseNetSuitePdf=(text,docType)=>{
 
     // Fallback: if baseSku doesn't look like a product SKU, scan all parts for alphanumeric SKU (2 letters + 4 digits, e.g. EK0086)
     const ALPHA_SKU_RE=/\b([A-Za-z]{2}\d{4})\b/;
-    if(baseSku&&!/^[A-Za-z]{2}\d{4}/.test(baseSku)&&!prod.some(p=>p.sku.toLowerCase()===baseSku.toLowerCase())){
+    if(baseSku&&!/^[A-Za-z]{2}\d{4}/.test(baseSku)&&!_products.some(p=>p.sku.toLowerCase()===baseSku.toLowerCase())){
       for(let pi=0;pi<parts.length;pi++){const am=parts[pi].match(ALPHA_SKU_RE);if(am){baseSku=am[1].toUpperCase();fullSku=baseSku;break}}
       // Also check description line for SKU
       if(!/^[A-Za-z]{2}\d{4}/.test(baseSku)&&descLine){const dm=descLine.match(ALPHA_SKU_RE);if(dm){baseSku=dm[1].toUpperCase();fullSku=baseSku}}
@@ -659,7 +675,7 @@ const parseNetSuitePdf=(text,docType)=>{
   return result;
 };
 // Split multi-invoice PDF into separate documents by document number
-const parseNetSuitePdfMulti=(pages,docType)=>{
+const parseNetSuitePdfMulti=(pages,docType,products)=>{
   const DOC_RE=/(?:Estimate|EST)[#\s:]*#?(EST-?\d+)|(?:Sales Order|SO)[#\s:]*#?(SO-?\d+)|(?:Purchase Order|PO)[#\s:]*#?(PO-?\d+)|(?:Invoice|INV)[#\s:]*#?(INV-?\d+)|#(EST\d+)|#(SO-?\d+)|#(PO-?\d+)|#(INV-?\d+)|(?:Estimate|Sales Order|Invoice|Purchase Order)\s*#?\s*(\d{3,})/i;
   // Detect document number on each page
   const pageDocNums=pages.map(pt=>{const m=pt.match(DOC_RE);return m?(m.find((v,i)=>i>0&&v)||''):''});
@@ -674,12 +690,12 @@ const parseNetSuitePdfMulti=(pages,docType)=>{
   // If only one group, just parse normally (single document)
   if(order.length<=1){
     const allText=pages.join('\n');
-    return[parseNetSuitePdf(allText,docType)];
+    return[parseNetSuitePdf(allText,docType,products)];
   }
   // Parse each group as a separate document
   return order.map(docNum=>{
     const text=groups[docNum].join('\n');
-    return parseNetSuitePdf(text,docType);
+    return parseNetSuitePdf(text,docType,products);
   });
 };
 const Icon=({name,size=18})=>{const p={home:<path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>,users:<><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></>,building:<><path d="M6 22V4a2 2 0 012-2h8a2 2 0 012 2v18z"/><path d="M6 12H4a2 2 0 00-2 2v6a2 2 0 002 2h2"/><path d="M18 9h2a2 2 0 012 2v9a2 2 0 01-2 2h-2"/><path d="M10 6h4M10 10h4M10 14h4M10 18h4"/></>,package:<><path d="M16.5 9.4l-9-5.19M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/><path d="M3.27 6.96L12 12.01l8.73-5.05M12 22.08V12"/></>,box:<path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/>,search:<><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></>,plus:<path d="M12 5v14M5 12h14"/>,edit:<><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></>,upload:<><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></>,back:<polyline points="15 18 9 12 15 6"/>,mail:<><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></>,file:<><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></>,sortUp:<path d="M7 14l5-5 5 5"/>,sort:<><path d="M7 15l5 5 5-5"/><path d="M7 9l5-5 5 5"/></>,image:<><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></>,cart:<><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 002 1.61h9.72a2 2 0 002-1.61L23 6H6"/></>,dollar:<><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></>,grid:<><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></>,warehouse:<><path d="M22 8.35V20a2 2 0 01-2 2H4a2 2 0 01-2-2V8.35A2 2 0 013.26 6.5l8-3.2a2 2 0 011.48 0l8 3.2A2 2 0 0122 8.35z"/><path d="M6 18h12M6 14h12"/></>,trash:<><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></>,eye:<><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></>,alert:<><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></>,x:<><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>,check:<polyline points="20 6 9 17 4 12"/>,camera:<><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/><circle cx="12" cy="13" r="4"/></>,scan:<><path d="M3 7V5a2 2 0 012-2h2"/><path d="M17 3h2a2 2 0 012 2v2"/><path d="M21 17v2a2 2 0 01-2 2h-2"/><path d="M7 21H5a2 2 0 01-2-2v-2"/><line x1="7" y1="12" x2="17" y2="12"/></>,save:<><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></>,send:<><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></>};return<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{p[name]}</svg>};
@@ -5817,7 +5833,7 @@ function CustModal({isOpen,onClose,onSave,customer,parents,reps}){
     <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr',gap:12}}><div><label className="form-label">Name *</label><input className="form-input" value={f.name} onChange={e=>sv('name',e.target.value)} style={err.n?{borderColor:'#dc2626'}:{}}/></div>
       <div><label className="form-label">Alpha Tag *</label><input className="form-input" value={f.alpha_tag||''} onChange={e=>sv('alpha_tag',e.target.value)} style={err.a?{borderColor:'#dc2626'}:{}}/></div>
       <div><label className="form-label">Terms</label><select className="form-select" value={f.payment_terms||'net30'} onChange={e=>sv('payment_terms',e.target.value)}><option value="prepay">Prepay</option><option value="net15">Net 15</option><option value="net30">Net 30</option><option value="net60">Net 60</option></select></div>
-      <div><label className="form-label">Rep</label><select className="form-select" value={f.primary_rep_id||''} onChange={e=>sv('primary_rep_id',e.target.value||null)}><option value="">— None —</option>{(reps||[]).filter(r=>(r.role==='rep'||r.role==='admin')&&r.is_active!==false).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select></div></div>
+      <div><label className="form-label">Rep</label><select className="form-select" value={f.primary_rep_id||''} onChange={e=>sv('primary_rep_id',e.target.value||null)}><option value="">— None —</option>{(reps||[]).filter(r=>['rep','admin','gm','csr'].includes(r.role)&&r.is_active!==false).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select></div></div>
     <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginTop:8,marginBottom:6,textTransform:'uppercase'}}>Contacts</div>
     {(f.contacts||[]).map((c,i)=><div key={i} style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 100px auto',gap:6,marginBottom:6}}>
       <input className="form-input" placeholder="Name *" value={c.name} onChange={e=>upC(i,'name',e.target.value)}/>
@@ -5836,7 +5852,7 @@ function CustModal({isOpen,onClose,onSave,customer,parents,reps}){
     {tcLook.msg&&<div style={{fontSize:10,marginTop:3,color:tcLook.msg.includes('fail')||tcLook.msg.includes('Error')?'#dc2626':'#166534'}}>{tcLook.msg}</div>}
     {f.shipping_state&&APPAREL_EXEMPT.includes(f.shipping_state.toUpperCase())&&<div style={{fontSize:10,marginTop:3,color:'#7c3aed'}}>{f.shipping_state.toUpperCase()} does not tax apparel</div>}
     {f.shipping_state&&APPAREL_THRESHOLD.includes(f.shipping_state.toUpperCase())&&<div style={{fontSize:10,marginTop:3,color:'#b45309'}}>{f.shipping_state.toUpperCase()} exempts apparel under threshold</div>}</div>
-      <div style={{paddingTop:20}}><label style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer',fontSize:13}}><input type="checkbox" checked={f.tax_exempt||false} onChange={e=>sv('tax_exempt',e.target.checked)} style={{width:16,height:16}}/><span style={{fontWeight:600,color:f.tax_exempt?'#dc2626':'#166534'}}>{f.tax_exempt?'Tax Exempt':'Taxable (default)'}</span></label>{!f.tax_exempt&&<div style={{fontSize:10,color:'#64748b',marginTop:4,marginLeft:24}}>Tax will be applied normally. Check the box only if this customer is tax exempt.</div>}{f.tax_exempt&&<div style={{fontSize:10,color:'#dc2626',marginTop:4,marginLeft:24}}>No tax will be charged for this customer.</div>}</div></div>
+      <div style={{paddingTop:8}}><label className="form-label">Tax Status</label><div style={{display:'flex',gap:0,borderRadius:6,overflow:'hidden',border:'1px solid #d1d5db'}}><button type="button" style={{flex:1,padding:'8px 12px',fontSize:12,fontWeight:700,border:'none',cursor:'pointer',background:!f.tax_exempt?'#166534':'#f8fafc',color:!f.tax_exempt?'#fff':'#64748b',transition:'all 0.15s'}} onClick={()=>sv('tax_exempt',false)}>Taxable</button><button type="button" style={{flex:1,padding:'8px 12px',fontSize:12,fontWeight:700,border:'none',borderLeft:'1px solid #d1d5db',cursor:'pointer',background:f.tax_exempt?'#dc2626':'#f8fafc',color:f.tax_exempt?'#fff':'#64748b',transition:'all 0.15s'}} onClick={()=>sv('tax_exempt',true)}>Tax Exempt</button></div><div style={{fontSize:10,color:f.tax_exempt?'#dc2626':'#64748b',marginTop:4}}>{f.tax_exempt?'No sales tax will be charged for this customer.':'Standard — sales tax will apply based on rate above.'}</div></div></div>
   </div>
   {valMsg&&<div style={{padding:'6px 12px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:6,fontSize:11,color:'#dc2626',margin:'0 16px 8px'}}>{valMsg}</div>}
   <div className="modal-footer"><button className="btn btn-secondary" onClick={onClose}>Cancel</button><button className="btn btn-primary" disabled={tcLook.loading} onClick={async()=>{if(!ok())return;const dat={...f,id:f.id||'c'+Date.now(),parent_id:ct==='sub'?f.parent_id:null,is_active:true,_oe:f._oe||0,_os:f._os||0,_oi:f._oi||0,_ob:f._ob||0};try{if(!dat.tax_exempt&&!(dat.tax_rate>0)&&dat.shipping_state&&dat.shipping_zip&&supabase){setTcLook({loading:true,msg:'Looking up tax rate...'});const d=await doTcLookup(dat);if(d?.ok){dat.tax_rate=d.tax_rate}}}catch(e){console.error('[CustModal] TaxCloud lookup error:',e)}finally{setTcLook({loading:false,msg:''})}onSave(dat);onClose()}}>{tcLook.loading?'Saving...':'Save'}</button></div></div></div>);
@@ -13828,7 +13844,7 @@ export default function App(){
                     setImp(x=>({...x,pdfFile:f,pdfLoading:true,pdfText:'',pdfParsed:null,pdfParsedAll:[],pdfSelectedIdx:0}));
                     try{
                       const{fullText,pages}=await extractPdfText(f);
-                      const allParsed=parseNetSuitePdfMulti(pages,imp.docType);
+                      const allParsed=parseNetSuitePdfMulti(pages,imp.docType,prod);
                       const parsed=allParsed[0];
                       let detCustId=imp.custId;
                       if(parsed.customerName&&!detCustId){const det=detectCustomer(parsed.customerName);if(det)detCustId=det.id}
@@ -13848,7 +13864,7 @@ export default function App(){
                       setImp(x=>({...x,pdfFile:f,pdfLoading:true,pdfText:'',pdfParsed:null,pdfParsedAll:[],pdfSelectedIdx:0}));
                       try{
                         const{fullText,pages}=await extractPdfText(f);
-                        const allParsed=parseNetSuitePdfMulti(pages,imp.docType);
+                        const allParsed=parseNetSuitePdfMulti(pages,imp.docType,prod);
                         const parsed=allParsed[0];
                         let detCustId=imp.custId;
                         if(parsed.customerName&&!detCustId){const det=detectCustomer(parsed.customerName);if(det)detCustId=det.id}
