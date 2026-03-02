@@ -8403,6 +8403,68 @@ export default function App(){
   const[artTimeLogs,setArtTimeLogs]=useState(()=>loadState('art_time_logs',[]));// [{jobId,soId,person,clockIn,clockOut,minutes,artName,customer}]
   React.useEffect(()=>{_saveAppState('art_time_logs',artTimeLogs)},[artTimeLogs]);
   const[activeArtTimers,setActiveArtTimers]=useState({});// {soId|jobId:{person,clockIn,soId,artName,customer}}
+  const[idleSettings,setIdleSettings]=useState(()=>loadState('idle_settings',{warnMin:5,autoOutMin:10}));
+  React.useEffect(()=>{_saveAppState('idle_settings',idleSettings)},[idleSettings]);
+  // ── Idle / activity tracking for timers ──
+  const _lastActivity=useRef(Date.now());
+  const _idleAccum=useRef({});// {timerKey: totalIdleMs} — accumulates idle time per active timer
+  const _idleState=useRef('active');// 'active' | 'warned' | 'idle'
+  const[idleWarning,setIdleWarning]=useState(null);// null | {keys:[timerKey,...], since:timestamp}
+  const _idleSettingsRef=useRef({warnMin:5,autoOutMin:10});
+  _idleSettingsRef.current=idleSettings||{warnMin:5,autoOutMin:10};
+  const IDLE_WARN_MS=(_idleSettingsRef.current.warnMin||5)*60*1000;
+  const IDLE_AUTO_OUT_MS=(_idleSettingsRef.current.autoOutMin||10)*60*1000;
+
+  // Track mouse/keyboard/visibility activity silently
+  useEffect(()=>{
+    const touch=()=>{_lastActivity.current=Date.now();if(_idleState.current!=='active'){_idleState.current='active';setIdleWarning(null)}};
+    window.addEventListener('mousemove',touch);window.addEventListener('keydown',touch);window.addEventListener('mousedown',touch);window.addEventListener('scroll',touch,true);
+    const onVis=()=>{if(!document.hidden)touch()};
+    document.addEventListener('visibilitychange',onVis);
+    return()=>{window.removeEventListener('mousemove',touch);window.removeEventListener('keydown',touch);window.removeEventListener('mousedown',touch);window.removeEventListener('scroll',touch,true);document.removeEventListener('visibilitychange',onVis)};
+  },[]);
+
+  // Idle check interval — runs every 30s
+  useEffect(()=>{
+    const iv=setInterval(()=>{
+      const hasTimers=Object.keys(activeTimers).length>0||Object.keys(activeArtTimers).length>0;
+      if(!hasTimers){_idleState.current='active';_idleAccum.current={};setIdleWarning(null);return}
+      const gap=Date.now()-_lastActivity.current;
+      // Auto clock-out at 10 min idle
+      if(gap>=IDLE_AUTO_OUT_MS){
+        // Clock out all active production timers
+        Object.entries(activeTimers).forEach(([key,timer])=>{
+          const mins=Math.round((Date.now()-timer.clockIn)/60000);
+          const idleMins=Math.round(((_idleAccum.current[key]||0)+gap)/60000);
+          setJobTimeLogs(prev=>[...prev,{jobId:key.split('|')[1],soId:key.split('|')[0],person:timer.person,clockIn:new Date(timer.clockIn).toLocaleString(),clockOut:new Date().toLocaleString(),minutes:mins,idleMinutes:idleMins,autoClockOut:true}]);
+        });
+        if(Object.keys(activeTimers).length>0)setActiveTimers({});
+        // Clock out all active art timers
+        Object.entries(activeArtTimers).forEach(([key,timer])=>{
+          const mins=Math.round((Date.now()-timer.clockIn)/60000);
+          const idleMins=Math.round(((_idleAccum.current[key]||0)+gap)/60000);
+          setArtTimeLogs(prev=>[...prev,{jobId:key.split('|')[1],soId:key.split('|')[0],person:timer.person,clockIn:new Date(timer.clockIn).toLocaleString(),clockOut:new Date().toLocaleString(),minutes:mins,idleMinutes:idleMins,artName:timer.artName,customer:timer.customer,autoClockOut:true}]);
+        });
+        if(Object.keys(activeArtTimers).length>0)setActiveArtTimers({});
+        _idleState.current='active';_idleAccum.current={};setIdleWarning(null);
+        nf('Auto clocked out — 10 min inactive','warn');
+        return;
+      }
+      // Warn at 5 min idle
+      if(gap>=IDLE_WARN_MS&&_idleState.current==='active'){
+        _idleState.current='warned';
+        const keys=[...Object.keys(activeTimers),...Object.keys(activeArtTimers)];
+        setIdleWarning({keys,since:_lastActivity.current});
+      }
+      // Accumulate idle time when past the warning threshold
+      if(gap>=IDLE_WARN_MS){
+        const allKeys=[...Object.keys(activeTimers),...Object.keys(activeArtTimers)];
+        allKeys.forEach(k=>{_idleAccum.current[k]=(_idleAccum.current[k]||0)+30000});// add 30s each tick
+      }
+    },30000);
+    return()=>clearInterval(iv);
+  },[activeTimers,activeArtTimers]);// eslint-disable-line
+
   const[assignTo,setAssignTo]=useState({machine:'',person:'',shipMethod:''});
   const moveJobStatus=(j,newStatus)=>{
     // If moving to staging (In Line), prompt for assignment
@@ -8424,8 +8486,10 @@ export default function App(){
       const active=activeTimers[timerKey];
       if(active){
         const mins=Math.round((Date.now()-active.clockIn)/60000);
-        setJobTimeLogs(prev=>[...prev,{jobId:j.id,soId:j.soId,person:active.person,clockIn:new Date(active.clockIn).toLocaleString(),clockOut:new Date().toLocaleString(),minutes:mins}]);
+        const idleMins=Math.round((_idleAccum.current[timerKey]||0)/60000);
+        setJobTimeLogs(prev=>[...prev,{jobId:j.id,soId:j.soId,person:active.person,clockIn:new Date(active.clockIn).toLocaleString(),clockOut:new Date().toLocaleString(),minutes:mins,idleMinutes:idleMins}]);
         setActiveTimers(prev=>{const n={...prev};delete n[timerKey];return n});
+        delete _idleAccum.current[timerKey];
       }
     }
     const labels={hold:'Ready for Prod',staging:'In Line',in_process:'In Process',completed:'Completed',shipped:'Shipped'};
@@ -8597,8 +8661,10 @@ export default function App(){
                           <span style={{fontSize:9,color:'#64748b',marginLeft:'auto'}}>{Math.round((Date.now()-active.clockIn)/60000)}m</span>
                           <button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#dc2626',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();
                             const mins=Math.round((Date.now()-active.clockIn)/60000);
-                            setJobTimeLogs(prev=>[...prev,{jobId:j.id,soId:j.soId,person:active.person,clockIn:new Date(active.clockIn).toLocaleString(),clockOut:new Date().toLocaleString(),minutes:mins}]);
+                            const idleMins=Math.round((_idleAccum.current[timerKey]||0)/60000);
+                            setJobTimeLogs(prev=>[...prev,{jobId:j.id,soId:j.soId,person:active.person,clockIn:new Date(active.clockIn).toLocaleString(),clockOut:new Date().toLocaleString(),minutes:mins,idleMinutes:idleMins}]);
                             setActiveTimers(prev=>{const n={...prev};delete n[timerKey];return n});
+                            delete _idleAccum.current[timerKey];
                             nf('⏱️ '+active.person+' clocked out — '+mins+' min on '+j.id);
                           }}>Clock Out</button>
                         </>:<>
@@ -8643,6 +8709,34 @@ export default function App(){
             <td><button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#d97706',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();setProdJobModal({...j})}}>📋</button></td>
           </tr>})}
         </tbody></table>
+      </div></div>}
+
+      {/* Idle Warning — "Still working?" popup */}
+      {idleWarning&&<div className="modal-overlay" style={{zIndex:10000}}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:380}}>
+        <div className="modal-header" style={{background:'#fffbeb'}}><h2>⏱️ Still working?</h2></div>
+        <div className="modal-body" style={{textAlign:'center',padding:24}}>
+          <div style={{fontSize:40,marginBottom:12}}>💤</div>
+          <div style={{fontSize:14,fontWeight:700,color:'#92400e',marginBottom:8}}>No activity detected for {Math.round((Date.now()-idleWarning.since)/60000)} minutes</div>
+          <div style={{fontSize:12,color:'#64748b',marginBottom:16}}>Your timer{idleWarning.keys.length>1?'s are':' is'} still running. If you're away, you'll be automatically clocked out after 10 minutes of inactivity.</div>
+          <div style={{display:'flex',gap:8}}>
+            <button className="btn btn-primary" style={{flex:1,padding:'10px 16px',fontWeight:700}} onClick={()=>{_lastActivity.current=Date.now();_idleState.current='active';setIdleWarning(null)}}>Yes, I'm working</button>
+            <button className="btn btn-secondary" style={{flex:1,padding:'10px 16px',fontWeight:700}} onClick={()=>{
+              // Manual clock-out all timers
+              Object.entries(activeTimers).forEach(([key,timer])=>{
+                const mins=Math.round((Date.now()-timer.clockIn)/60000);
+                const idleMins=Math.round(((_idleAccum.current[key]||0)+(Date.now()-_lastActivity.current))/60000);
+                setJobTimeLogs(prev=>[...prev,{jobId:key.split('|')[1],soId:key.split('|')[0],person:timer.person,clockIn:new Date(timer.clockIn).toLocaleString(),clockOut:new Date().toLocaleString(),minutes:mins,idleMinutes:idleMins}]);
+              });
+              Object.entries(activeArtTimers).forEach(([key,timer])=>{
+                const mins=Math.round((Date.now()-timer.clockIn)/60000);
+                const idleMins=Math.round(((_idleAccum.current[key]||0)+(Date.now()-_lastActivity.current))/60000);
+                setArtTimeLogs(prev=>[...prev,{jobId:key.split('|')[1],soId:key.split('|')[0],person:timer.person,clockIn:new Date(timer.clockIn).toLocaleString(),clockOut:new Date().toLocaleString(),minutes:mins,idleMinutes:idleMins,artName:timer.artName,customer:timer.customer}]);
+              });
+              setActiveTimers({});setActiveArtTimers({});_idleState.current='active';_idleAccum.current={};setIdleWarning(null);
+              nf('All timers clocked out');
+            }}>Clock me out</button>
+          </div>
+        </div>
       </div></div>}
 
       {/* Assignment Modal — appears when moving to In Line */}
@@ -10182,30 +10276,33 @@ export default function App(){
           <WH id="artTime" title="Art Department Time" icon="🎨"/>
           {rptWidgets.artTime&&(()=>{
             const rates=laborRates;
-            const byPerson={};artTimeLogs.forEach(l=>{if(!byPerson[l.person])byPerson[l.person]={minutes:0,jobs:0,customers:new Set()};byPerson[l.person].minutes+=l.minutes;byPerson[l.person].jobs++;byPerson[l.person].customers.add(l.customer)});
-            const byJob={};artTimeLogs.forEach(l=>{const key=l.soId+'|'+l.artName;if(!byJob[key])byJob[key]={artName:l.artName,customer:l.customer,soId:l.soId,minutes:0,entries:0,people:new Set()};byJob[key].minutes+=l.minutes;byJob[key].entries++;byJob[key].people.add(l.person)});
+            const byPerson={};artTimeLogs.forEach(l=>{if(!byPerson[l.person])byPerson[l.person]={minutes:0,idleMinutes:0,jobs:0,customers:new Set(),autoOuts:0};byPerson[l.person].minutes+=l.minutes;byPerson[l.person].idleMinutes+=(l.idleMinutes||0);byPerson[l.person].jobs++;byPerson[l.person].customers.add(l.customer);if(l.autoClockOut)byPerson[l.person].autoOuts++});
+            const byJob={};artTimeLogs.forEach(l=>{const key=l.soId+'|'+l.artName;if(!byJob[key])byJob[key]={artName:l.artName,customer:l.customer,soId:l.soId,minutes:0,idleMinutes:0,entries:0,people:new Set()};byJob[key].minutes+=l.minutes;byJob[key].idleMinutes+=(l.idleMinutes||0);byJob[key].entries++;byJob[key].people.add(l.person)});
             const totalMins=artTimeLogs.reduce((a,l)=>a+l.minutes,0);
+            const totalIdleMins=artTimeLogs.reduce((a,l)=>a+(l.idleMinutes||0),0);
             const totalCost=Object.entries(byPerson).reduce((a,[person,d])=>a+d.minutes/60*(rates[person]||0),0);
+            const autoOuts=artTimeLogs.filter(l=>l.autoClockOut).length;
             return<div className="card-body">
               <div className="stats-row" style={{marginBottom:12}}>
                 <div className="stat-card"><div className="stat-label">Total Art Hours</div><div className="stat-value" style={{color:'#7c3aed'}}>{(totalMins/60).toFixed(1)}</div></div>
-                <div className="stat-card"><div className="stat-label">Total Entries</div><div className="stat-value">{artTimeLogs.length}</div></div>
-                <div className="stat-card"><div className="stat-label">Artists Active</div><div className="stat-value" style={{color:'#2563eb'}}>{Object.keys(byPerson).length}</div></div>
+                <div className="stat-card"><div className="stat-label">Active Hours</div><div className="stat-value" style={{color:'#166534'}}>{((totalMins-totalIdleMins)/60).toFixed(1)}</div></div>
+                <div className="stat-card"><div className="stat-label">Idle Hours</div><div className="stat-value" style={{color:totalIdleMins>0?'#dc2626':'#94a3b8'}}>{(totalIdleMins/60).toFixed(1)}</div>{autoOuts>0&&<div style={{fontSize:9,color:'#dc2626'}}>{autoOuts} auto clock-out{autoOuts!==1?'s':''}</div>}</div>
                 <div className="stat-card"><div className="stat-label">Labor Cost</div><div className="stat-value" style={{color:'#dc2626'}}>${totalCost.toFixed(2)}</div></div>
               </div>
               {/* By artist */}
               <div style={{fontSize:12,fontWeight:700,color:'#1e293b',marginBottom:6}}>By Artist</div>
-              <table style={{fontSize:12,marginBottom:16}}><thead><tr><th>Artist</th><th style={{textAlign:'right'}}>Hours</th><th style={{textAlign:'center'}}>Jobs</th><th style={{textAlign:'center'}}>Customers</th><th style={{textAlign:'right'}}>Rate</th><th style={{textAlign:'right'}}>Cost</th></tr></thead>
+              <table style={{fontSize:12,marginBottom:16}}><thead><tr><th>Artist</th><th style={{textAlign:'right'}}>Total Hrs</th><th style={{textAlign:'right'}}>Active</th><th style={{textAlign:'right',color:'#dc2626'}}>Idle</th><th style={{textAlign:'center'}}>Jobs</th><th style={{textAlign:'center'}}>Customers</th><th style={{textAlign:'right'}}>Rate</th><th style={{textAlign:'right'}}>Cost</th></tr></thead>
               <tbody>{Object.entries(byPerson).sort((a,b)=>b[1].minutes-a[1].minutes).map(([person,d])=>{
-                const rate=rates[person]||0;const cost=(d.minutes/60)*rate;
-                return<tr key={person}><td style={{fontWeight:600}}>{person}</td><td style={{textAlign:'right',fontWeight:700,color:'#7c3aed'}}>{(d.minutes/60).toFixed(1)}</td><td style={{textAlign:'center'}}>{d.jobs}</td><td style={{textAlign:'center'}}>{d.customers.size}</td><td style={{textAlign:'right',color:'#64748b'}}>${rate.toFixed(2)}</td><td style={{textAlign:'right',fontWeight:600,color:'#dc2626'}}>${cost.toFixed(2)}</td></tr>
+                const rate=rates[person]||0;const cost=(d.minutes/60)*rate;const activeMins=d.minutes-d.idleMinutes;const idlePct=d.minutes>0?Math.round(d.idleMinutes/d.minutes*100):0;
+                return<tr key={person}><td style={{fontWeight:600}}>{person}{d.autoOuts>0&&<span style={{fontSize:9,color:'#dc2626',marginLeft:4}} title={d.autoOuts+' auto clock-out(s)'}>({d.autoOuts} auto)</span>}</td><td style={{textAlign:'right',fontWeight:700,color:'#7c3aed'}}>{(d.minutes/60).toFixed(1)}</td><td style={{textAlign:'right',fontWeight:600,color:'#166534'}}>{(activeMins/60).toFixed(1)}</td><td style={{textAlign:'right',fontWeight:600,color:d.idleMinutes>0?'#dc2626':'#94a3b8'}}>{d.idleMinutes>0?(d.idleMinutes/60).toFixed(1)+'h ('+idlePct+'%)':'—'}</td><td style={{textAlign:'center'}}>{d.jobs}</td><td style={{textAlign:'center'}}>{d.customers.size}</td><td style={{textAlign:'right',color:'#64748b'}}>${rate.toFixed(2)}</td><td style={{textAlign:'right',fontWeight:600,color:'#dc2626'}}>${cost.toFixed(2)}</td></tr>
               })}</tbody></table>
               {/* By job */}
               <div style={{fontSize:12,fontWeight:700,color:'#1e293b',marginBottom:6}}>By Job</div>
-              <table style={{fontSize:12}}><thead><tr><th>Art Name</th><th>Customer</th><th>SO</th><th style={{textAlign:'right'}}>Hours</th><th style={{textAlign:'center'}}>Entries</th><th style={{textAlign:'center'}}>People</th><th style={{textAlign:'right'}}>Cost</th></tr></thead>
+              <table style={{fontSize:12}}><thead><tr><th>Art Name</th><th>Customer</th><th>SO</th><th style={{textAlign:'right'}}>Total Hrs</th><th style={{textAlign:'right'}}>Active</th><th style={{textAlign:'right',color:'#dc2626'}}>Idle</th><th style={{textAlign:'center'}}>Entries</th><th style={{textAlign:'center'}}>People</th><th style={{textAlign:'right'}}>Cost</th></tr></thead>
               <tbody>{Object.values(byJob).sort((a,b)=>b.minutes-a.minutes).slice(0,20).map((d,i)=>{
                 const cost=artTimeLogs.filter(l=>l.soId===d.soId&&l.artName===d.artName).reduce((a,l)=>a+(l.minutes/60)*(rates[l.person]||0),0);
-                return<tr key={i}><td style={{fontWeight:600,color:'#7c3aed'}}>{d.artName}</td><td>{d.customer}</td><td style={{fontSize:11,color:'#1e40af',fontWeight:600}}>{d.soId}</td><td style={{textAlign:'right',fontWeight:700}}>{(d.minutes/60).toFixed(1)}</td><td style={{textAlign:'center'}}>{d.entries}</td><td style={{textAlign:'center'}}>{d.people.size}</td><td style={{textAlign:'right',fontWeight:600,color:'#dc2626'}}>${cost.toFixed(2)}</td></tr>
+                const activeMins=d.minutes-d.idleMinutes;const idlePct=d.minutes>0?Math.round(d.idleMinutes/d.minutes*100):0;
+                return<tr key={i}><td style={{fontWeight:600,color:'#7c3aed'}}>{d.artName}</td><td>{d.customer}</td><td style={{fontSize:11,color:'#1e40af',fontWeight:600}}>{d.soId}</td><td style={{textAlign:'right',fontWeight:700}}>{(d.minutes/60).toFixed(1)}</td><td style={{textAlign:'right',color:'#166534'}}>{(activeMins/60).toFixed(1)}</td><td style={{textAlign:'right',color:d.idleMinutes>0?'#dc2626':'#94a3b8'}}>{d.idleMinutes>0?(d.idleMinutes/60).toFixed(1)+'h ('+idlePct+'%)':'—'}</td><td style={{textAlign:'center'}}>{d.entries}</td><td style={{textAlign:'center'}}>{d.people.size}</td><td style={{textAlign:'right',fontWeight:600,color:'#dc2626'}}>${cost.toFixed(2)}</td></tr>
               })}</tbody></table>
             </div>})()}
         </div>
@@ -10215,30 +10312,33 @@ export default function App(){
           <WH id="decoTime" title="Production/Decoration Time" icon="🖨️"/>
           {rptWidgets.decoTime&&(()=>{
             const rates=laborRates;
-            const byPerson={};jobTimeLogs.forEach(l=>{if(!byPerson[l.person])byPerson[l.person]={minutes:0,jobs:0};byPerson[l.person].minutes+=l.minutes;byPerson[l.person].jobs++});
-            const byJob={};jobTimeLogs.forEach(l=>{const key=l.soId+'|'+l.jobId;if(!byJob[key])byJob[key]={jobId:l.jobId,soId:l.soId,minutes:0,entries:0,people:new Set()};byJob[key].minutes+=l.minutes;byJob[key].entries++;byJob[key].people.add(l.person)});
+            const byPerson={};jobTimeLogs.forEach(l=>{if(!byPerson[l.person])byPerson[l.person]={minutes:0,idleMinutes:0,jobs:0,autoOuts:0};byPerson[l.person].minutes+=l.minutes;byPerson[l.person].idleMinutes+=(l.idleMinutes||0);byPerson[l.person].jobs++;if(l.autoClockOut)byPerson[l.person].autoOuts++});
+            const byJob={};jobTimeLogs.forEach(l=>{const key=l.soId+'|'+l.jobId;if(!byJob[key])byJob[key]={jobId:l.jobId,soId:l.soId,minutes:0,idleMinutes:0,entries:0,people:new Set()};byJob[key].minutes+=l.minutes;byJob[key].idleMinutes+=(l.idleMinutes||0);byJob[key].entries++;byJob[key].people.add(l.person)});
             const totalMins=jobTimeLogs.reduce((a,l)=>a+l.minutes,0);
+            const totalIdleMins=jobTimeLogs.reduce((a,l)=>a+(l.idleMinutes||0),0);
             const totalCost=Object.entries(byPerson).reduce((a,[person,d])=>a+d.minutes/60*(rates[person]||0),0);
+            const autoOuts=jobTimeLogs.filter(l=>l.autoClockOut).length;
             return<div className="card-body">
               <div className="stats-row" style={{marginBottom:12}}>
                 <div className="stat-card"><div className="stat-label">Total Prod Hours</div><div className="stat-value" style={{color:'#2563eb'}}>{(totalMins/60).toFixed(1)}</div></div>
-                <div className="stat-card"><div className="stat-label">Total Entries</div><div className="stat-value">{jobTimeLogs.length}</div></div>
-                <div className="stat-card"><div className="stat-label">Workers Active</div><div className="stat-value" style={{color:'#7c3aed'}}>{Object.keys(byPerson).length}</div></div>
+                <div className="stat-card"><div className="stat-label">Active Hours</div><div className="stat-value" style={{color:'#166534'}}>{((totalMins-totalIdleMins)/60).toFixed(1)}</div></div>
+                <div className="stat-card"><div className="stat-label">Idle Hours</div><div className="stat-value" style={{color:totalIdleMins>0?'#dc2626':'#94a3b8'}}>{(totalIdleMins/60).toFixed(1)}</div>{autoOuts>0&&<div style={{fontSize:9,color:'#dc2626'}}>{autoOuts} auto clock-out{autoOuts!==1?'s':''}</div>}</div>
                 <div className="stat-card"><div className="stat-label">Labor Cost</div><div className="stat-value" style={{color:'#dc2626'}}>${totalCost.toFixed(2)}</div></div>
               </div>
               {/* By worker */}
               <div style={{fontSize:12,fontWeight:700,color:'#1e293b',marginBottom:6}}>By Worker</div>
-              <table style={{fontSize:12,marginBottom:16}}><thead><tr><th>Worker</th><th style={{textAlign:'right'}}>Hours</th><th style={{textAlign:'center'}}>Jobs</th><th style={{textAlign:'right'}}>Rate</th><th style={{textAlign:'right'}}>Cost</th></tr></thead>
+              <table style={{fontSize:12,marginBottom:16}}><thead><tr><th>Worker</th><th style={{textAlign:'right'}}>Total Hrs</th><th style={{textAlign:'right'}}>Active</th><th style={{textAlign:'right',color:'#dc2626'}}>Idle</th><th style={{textAlign:'center'}}>Jobs</th><th style={{textAlign:'right'}}>Rate</th><th style={{textAlign:'right'}}>Cost</th></tr></thead>
               <tbody>{Object.entries(byPerson).sort((a,b)=>b[1].minutes-a[1].minutes).map(([person,d])=>{
-                const rate=rates[person]||0;const cost=(d.minutes/60)*rate;
-                return<tr key={person}><td style={{fontWeight:600}}>{person}</td><td style={{textAlign:'right',fontWeight:700,color:'#2563eb'}}>{(d.minutes/60).toFixed(1)}</td><td style={{textAlign:'center'}}>{d.jobs}</td><td style={{textAlign:'right',color:'#64748b'}}>${rate.toFixed(2)}</td><td style={{textAlign:'right',fontWeight:600,color:'#dc2626'}}>${cost.toFixed(2)}</td></tr>
+                const rate=rates[person]||0;const cost=(d.minutes/60)*rate;const activeMins=d.minutes-d.idleMinutes;const idlePct=d.minutes>0?Math.round(d.idleMinutes/d.minutes*100):0;
+                return<tr key={person}><td style={{fontWeight:600}}>{person}{d.autoOuts>0&&<span style={{fontSize:9,color:'#dc2626',marginLeft:4}}>({d.autoOuts} auto)</span>}</td><td style={{textAlign:'right',fontWeight:700,color:'#2563eb'}}>{(d.minutes/60).toFixed(1)}</td><td style={{textAlign:'right',fontWeight:600,color:'#166534'}}>{(activeMins/60).toFixed(1)}</td><td style={{textAlign:'right',fontWeight:600,color:d.idleMinutes>0?'#dc2626':'#94a3b8'}}>{d.idleMinutes>0?(d.idleMinutes/60).toFixed(1)+'h ('+idlePct+'%)':'—'}</td><td style={{textAlign:'center'}}>{d.jobs}</td><td style={{textAlign:'right',color:'#64748b'}}>${rate.toFixed(2)}</td><td style={{textAlign:'right',fontWeight:600,color:'#dc2626'}}>${cost.toFixed(2)}</td></tr>
               })}</tbody></table>
               {/* By SO */}
               <div style={{fontSize:12,fontWeight:700,color:'#1e293b',marginBottom:6}}>By Sales Order</div>
-              <table style={{fontSize:12}}><thead><tr><th>Job</th><th>SO</th><th style={{textAlign:'right'}}>Hours</th><th style={{textAlign:'center'}}>Entries</th><th style={{textAlign:'center'}}>People</th><th style={{textAlign:'right'}}>Cost</th></tr></thead>
+              <table style={{fontSize:12}}><thead><tr><th>Job</th><th>SO</th><th style={{textAlign:'right'}}>Total Hrs</th><th style={{textAlign:'right'}}>Active</th><th style={{textAlign:'right',color:'#dc2626'}}>Idle</th><th style={{textAlign:'center'}}>Entries</th><th style={{textAlign:'center'}}>People</th><th style={{textAlign:'right'}}>Cost</th></tr></thead>
               <tbody>{Object.values(byJob).sort((a,b)=>b.minutes-a.minutes).slice(0,20).map((d,i)=>{
                 const cost=jobTimeLogs.filter(l=>l.soId===d.soId&&l.jobId===d.jobId).reduce((a,l)=>a+(l.minutes/60)*(rates[l.person]||0),0);
-                return<tr key={i}><td style={{fontWeight:600,color:'#7c3aed'}}>{d.jobId}</td><td style={{fontSize:11,color:'#1e40af',fontWeight:600}}>{d.soId}</td><td style={{textAlign:'right',fontWeight:700}}>{(d.minutes/60).toFixed(1)}</td><td style={{textAlign:'center'}}>{d.entries}</td><td style={{textAlign:'center'}}>{d.people.size}</td><td style={{textAlign:'right',fontWeight:600,color:'#dc2626'}}>${cost.toFixed(2)}</td></tr>
+                const activeMins=d.minutes-d.idleMinutes;const idlePct=d.minutes>0?Math.round(d.idleMinutes/d.minutes*100):0;
+                return<tr key={i}><td style={{fontWeight:600,color:'#7c3aed'}}>{d.jobId}</td><td style={{fontSize:11,color:'#1e40af',fontWeight:600}}>{d.soId}</td><td style={{textAlign:'right',fontWeight:700}}>{(d.minutes/60).toFixed(1)}</td><td style={{textAlign:'right',color:'#166534'}}>{(activeMins/60).toFixed(1)}</td><td style={{textAlign:'right',color:d.idleMinutes>0?'#dc2626':'#94a3b8'}}>{d.idleMinutes>0?(d.idleMinutes/60).toFixed(1)+'h ('+idlePct+'%)':'—'}</td><td style={{textAlign:'center'}}>{d.entries}</td><td style={{textAlign:'center'}}>{d.people.size}</td><td style={{textAlign:'right',fontWeight:600,color:'#dc2626'}}>${cost.toFixed(2)}</td></tr>
               })}</tbody></table>
             </div>})()}
         </div>
@@ -10249,30 +10349,35 @@ export default function App(){
           {rptWidgets.laborSummary&&(()=>{
             const rates=laborRates;
             const artMins=artTimeLogs.reduce((a,l)=>a+l.minutes,0);const prodMins=jobTimeLogs.reduce((a,l)=>a+l.minutes,0);
+            const artIdleMins=artTimeLogs.reduce((a,l)=>a+(l.idleMinutes||0),0);const prodIdleMins=jobTimeLogs.reduce((a,l)=>a+(l.idleMinutes||0),0);
+            const totalIdleMins=artIdleMins+prodIdleMins;
             const artCost=artTimeLogs.reduce((a,l)=>a+(l.minutes/60)*(rates[l.person]||0),0);
             const prodCost=jobTimeLogs.reduce((a,l)=>a+(l.minutes/60)*(rates[l.person]||0),0);
             const allPeople=new Set([...artTimeLogs.map(l=>l.person),...jobTimeLogs.map(l=>l.person)]);
             const combined=[];allPeople.forEach(p=>{const aLogs=artTimeLogs.filter(l=>l.person===p);const pLogs=jobTimeLogs.filter(l=>l.person===p);
-              const aMins=aLogs.reduce((a,l)=>a+l.minutes,0);const pMins=pLogs.reduce((a,l)=>a+l.minutes,0);const rate=rates[p]||0;
-              combined.push({name:p,artMins:aMins,prodMins:pMins,totalMins:aMins+pMins,rate,cost:(aMins+pMins)/60*rate,artJobs:aLogs.length,prodJobs:pLogs.length})});
+              const aMins=aLogs.reduce((a,l)=>a+l.minutes,0);const pMins=pLogs.reduce((a,l)=>a+l.minutes,0);
+              const aIdle=aLogs.reduce((a,l)=>a+(l.idleMinutes||0),0);const pIdle=pLogs.reduce((a,l)=>a+(l.idleMinutes||0),0);
+              const rate=rates[p]||0;
+              combined.push({name:p,artMins:aMins,prodMins:pMins,totalMins:aMins+pMins,idleMins:aIdle+pIdle,rate,cost:(aMins+pMins)/60*rate,artJobs:aLogs.length,prodJobs:pLogs.length})});
             combined.sort((a,b)=>b.totalMins-a.totalMins);
             return<div className="card-body">
               <div className="stats-row" style={{marginBottom:12}}>
                 <div className="stat-card" style={{borderLeft:'3px solid #7c3aed'}}><div className="stat-label">Art Hours</div><div className="stat-value" style={{color:'#7c3aed'}}>{(artMins/60).toFixed(1)}</div><div style={{fontSize:10,color:'#dc2626'}}>${artCost.toFixed(2)}</div></div>
                 <div className="stat-card" style={{borderLeft:'3px solid #2563eb'}}><div className="stat-label">Production Hours</div><div className="stat-value" style={{color:'#2563eb'}}>{(prodMins/60).toFixed(1)}</div><div style={{fontSize:10,color:'#dc2626'}}>${prodCost.toFixed(2)}</div></div>
-                <div className="stat-card" style={{borderLeft:'3px solid #1e293b'}}><div className="stat-label">Total Hours</div><div className="stat-value">{((artMins+prodMins)/60).toFixed(1)}</div><div style={{fontSize:10,color:'#dc2626'}}>${(artCost+prodCost).toFixed(2)}</div></div>
-                <div className="stat-card" style={{borderLeft:'3px solid #dc2626'}}><div className="stat-label">Total Labor Cost</div><div className="stat-value" style={{color:'#dc2626'}}>${(artCost+prodCost).toFixed(2)}</div></div>
+                <div className="stat-card" style={{borderLeft:'3px solid #166534'}}><div className="stat-label">Active Hours</div><div className="stat-value" style={{color:'#166534'}}>{((artMins+prodMins-totalIdleMins)/60).toFixed(1)}</div></div>
+                <div className="stat-card" style={{borderLeft:'3px solid #dc2626'}}><div className="stat-label">Idle Hours</div><div className="stat-value" style={{color:totalIdleMins>0?'#dc2626':'#94a3b8'}}>{(totalIdleMins/60).toFixed(1)}</div><div style={{fontSize:10,color:'#64748b'}}>{(artMins+prodMins)>0?Math.round(totalIdleMins/(artMins+prodMins)*100):0}% of total</div></div>
               </div>
-              <table style={{fontSize:12}}><thead><tr><th>Person</th><th>Role</th><th style={{textAlign:'right'}}>Art Hrs</th><th style={{textAlign:'right'}}>Prod Hrs</th><th style={{textAlign:'right'}}>Total Hrs</th><th style={{textAlign:'right'}}>Rate</th><th style={{textAlign:'right'}}>Total Cost</th></tr></thead>
-              <tbody>{combined.map(p=><tr key={p.name}>
+              <table style={{fontSize:12}}><thead><tr><th>Person</th><th>Role</th><th style={{textAlign:'right'}}>Art Hrs</th><th style={{textAlign:'right'}}>Prod Hrs</th><th style={{textAlign:'right'}}>Total Hrs</th><th style={{textAlign:'right',color:'#dc2626'}}>Idle</th><th style={{textAlign:'right'}}>Rate</th><th style={{textAlign:'right'}}>Total Cost</th></tr></thead>
+              <tbody>{combined.map(p=>{const idlePct=p.totalMins>0?Math.round(p.idleMins/p.totalMins*100):0;return<tr key={p.name}>
                 <td style={{fontWeight:600}}>{p.name}</td>
                 <td style={{fontSize:11,color:'#64748b'}}>{p.artMins>0&&p.prodMins>0?'Art + Prod':p.artMins>0?'Art':'Production'}</td>
                 <td style={{textAlign:'right',color:'#7c3aed',fontWeight:600}}>{p.artMins>0?(p.artMins/60).toFixed(1):'—'}</td>
                 <td style={{textAlign:'right',color:'#2563eb',fontWeight:600}}>{p.prodMins>0?(p.prodMins/60).toFixed(1):'—'}</td>
                 <td style={{textAlign:'right',fontWeight:700}}>{(p.totalMins/60).toFixed(1)}</td>
+                <td style={{textAlign:'right',fontWeight:600,color:p.idleMins>0?'#dc2626':'#94a3b8'}}>{p.idleMins>0?(p.idleMins/60).toFixed(1)+'h ('+idlePct+'%)':'—'}</td>
                 <td style={{textAlign:'right',color:'#64748b'}}>${p.rate.toFixed(2)}/hr</td>
                 <td style={{textAlign:'right',fontWeight:700,color:'#dc2626'}}>${p.cost.toFixed(2)}</td>
-              </tr>)}</tbody></table>
+              </tr>})}</tbody></table>
             </div>})()}
         </div>
       </>}
@@ -11792,8 +11897,10 @@ export default function App(){
                 <button className="btn btn-sm" style={{fontSize:10,padding:'4px 10px',background:'linear-gradient(135deg,#1e40af,#7c3aed)',color:'white',border:'none',flex:1,fontWeight:600,borderRadius:6,display:'flex',alignItems:'center',justifyContent:'center',gap:4}} onClick={e=>{e.stopPropagation();setArtMockupModal(j);setArtMockupRevision('')}}>🖼️ Mockup</button>
                 {artActive?<button className="btn btn-sm" style={{fontSize:10,padding:'4px 10px',background:'#dc2626',color:'white',border:'none',flex:1,fontWeight:600,borderRadius:6,display:'flex',alignItems:'center',justifyContent:'center',gap:4}} onClick={e=>{e.stopPropagation();
                   const mins=Math.round((Date.now()-artActive.clockIn)/60000);
-                  setArtTimeLogs(prev=>[...prev,{jobId:j.id,soId:j.soId,person:artActive.person,clockIn:new Date(artActive.clockIn).toLocaleString(),clockOut:new Date().toLocaleString(),minutes:mins,artName:j.art_name||'',customer:j.customer||''}]);
+                  const idleMins=Math.round((_idleAccum.current[artTimerKey]||0)/60000);
+                  setArtTimeLogs(prev=>[...prev,{jobId:j.id,soId:j.soId,person:artActive.person,clockIn:new Date(artActive.clockIn).toLocaleString(),clockOut:new Date().toLocaleString(),minutes:mins,idleMinutes:idleMins,artName:j.art_name||'',customer:j.customer||''}]);
                   setActiveArtTimers(prev=>{const n={...prev};delete n[artTimerKey];return n});
+                  delete _idleAccum.current[artTimerKey];
                   nf('Art clock out: '+mins+' min logged');
                 }}>⏱️ Out ({Math.round((Date.now()-artActive.clockIn)/60000)}m)</button>
                 :<button className="btn btn-sm" style={{fontSize:10,padding:'4px 10px',background:'#166534',color:'white',border:'none',flex:1,fontWeight:600,borderRadius:6,display:'flex',alignItems:'center',justifyContent:'center',gap:4}} onClick={e=>{e.stopPropagation();
@@ -11890,8 +11997,10 @@ export default function App(){
                 <span style={{marginLeft:'auto',fontWeight:700,color:'#d97706',fontSize:13}}>{hrs>0?hrs+'h '+rm+'m':mins+'m'}</span>
                 <button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#dc2626',color:'white',border:'none'}} onClick={()=>{
                   const logMins=Math.round((Date.now()-timer.clockIn)/60000);
-                  setArtTimeLogs(prev=>[...prev,{jobId:key.split('|')[1],soId:key.split('|')[0],person:timer.person,clockIn:new Date(timer.clockIn).toLocaleString(),clockOut:new Date().toLocaleString(),minutes:logMins,artName:timer.artName,customer:timer.customer}]);
+                  const idleMins=Math.round((_idleAccum.current[key]||0)/60000);
+                  setArtTimeLogs(prev=>[...prev,{jobId:key.split('|')[1],soId:key.split('|')[0],person:timer.person,clockIn:new Date(timer.clockIn).toLocaleString(),clockOut:new Date().toLocaleString(),minutes:logMins,idleMinutes:idleMins,artName:timer.artName,customer:timer.customer}]);
                   setActiveArtTimers(prev=>{const n={...prev};delete n[key];return n});
+                  delete _idleAccum.current[key];
                   nf('Art clock out: '+logMins+' min logged');
                 }}>Clock Out</button>
               </div>})}
@@ -16174,6 +16283,29 @@ export default function App(){
 
             <div style={{marginTop:16,padding:10,background:'#f8fafc',borderRadius:6,fontSize:11,color:'#64748b'}}>
               Rates are used to calculate labor costs in the Reports → Time & Labor dashboard. Set $0 to exclude a person from cost calculations.
+            </div>
+          </div>
+        </div>
+
+        {/* Idle / Activity Tracking Settings */}
+        <div className="card" style={{marginTop:16}}>
+          <div className="card-header"><h3>Idle Detection & Activity Tracking</h3></div>
+          <div className="card-body">
+            <div style={{fontSize:12,color:'#64748b',marginBottom:14}}>When artists or production workers are clocked in, the system silently tracks mouse and keyboard activity. If no activity is detected, a warning popup appears and the timer will auto clock-out after the configured threshold.</div>
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,maxWidth:500}}>
+              <div>
+                <div className="form-label">"Still working?" warning (minutes)</div>
+                <input className="form-input" type="number" min="1" max="60" step="1" style={{width:100,fontSize:13}} value={idleSettings.warnMin||5} onChange={e=>setIdleSettings(prev=>({...prev,warnMin:Math.max(1,parseInt(e.target.value)||5)}))}/>
+                <div style={{fontSize:10,color:'#94a3b8',marginTop:4}}>Show popup after this many minutes of no mouse/keyboard activity</div>
+              </div>
+              <div>
+                <div className="form-label">Auto clock-out (minutes)</div>
+                <input className="form-input" type="number" min="2" max="120" step="1" style={{width:100,fontSize:13}} value={idleSettings.autoOutMin||10} onChange={e=>{const v=Math.max(2,parseInt(e.target.value)||10);setIdleSettings(prev=>({...prev,autoOutMin:Math.max(v,prev.warnMin+1)}))}}/>
+                <div style={{fontSize:10,color:'#94a3b8',marginTop:4}}>Automatically clock out all timers after this many minutes idle. Must be greater than warning time.</div>
+              </div>
+            </div>
+            <div style={{marginTop:14,padding:10,background:'#fffbeb',borderRadius:6,border:'1px solid #fde68a',fontSize:11,color:'#92400e'}}>
+              Activity data (idle vs active minutes) is recorded on every time entry and visible in Reports → Time & Labor. Artists are not notified of silent tracking — they only see the "Still working?" popup.
             </div>
           </div>
         </div>
