@@ -1933,7 +1933,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
     }
   },[syncJobs]);// eslint-disable-line
 
-  const fp=products.filter(p=>{if(!pS)return true;const q=pS.toLowerCase();return p.sku.toLowerCase().includes(q)||p.name.toLowerCase().includes(q)||p.brand?.toLowerCase().includes(q)});
+  const fp=products.filter(p=>{if(!pS)return true;const q=pS.toLowerCase();return p.sku.toLowerCase().includes(q)||p.name.toLowerCase().includes(q)||p.brand?.toLowerCase().includes(q)||p.color?.toLowerCase().includes(q)});
   const statusFlow=['need_order','waiting_receive','needs_pull','items_received','in_production','ready_to_invoice','complete'];
 
   return(<div>
@@ -2468,7 +2468,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       <button className="btn btn-secondary" style={{marginLeft:'auto'}} onClick={()=>setNsImport({step:'paste',raw:'',parsed:[],decoLines:[],issues:[]})} disabled={!cust}>📥 Import from NetSuite</button></div>
       :<div><div className="search-bar" style={{marginBottom:8}}><Icon name="search"/><input placeholder="Search SKU, name, brand..." value={pS} onChange={e=>setPS(e.target.value)} autoFocus/></div>
         <div style={{maxHeight:250,overflow:'auto'}}>{fp.slice(0,12).map(p=><div key={p.id} style={{padding:'10px 12px',borderBottom:'1px solid #f8fafc',cursor:'pointer',display:'flex',alignItems:'center',gap:10}} onClick={()=>addP(p)}>
-          <span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',background:'#dbeafe',padding:'2px 6px',borderRadius:3}}>{p.sku}</span><span style={{fontWeight:600}}>{p.name}</span><span className="badge badge-blue">{p.brand}</span>
+          <span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',background:'#dbeafe',padding:'2px 6px',borderRadius:3}}>{p.sku}</span><span style={{fontWeight:600}}>{p.name}</span>{p.color&&<span style={{fontSize:11,color:'#64748b'}}>— {p.color}</span>}<span className="badge badge-blue">{p.brand}</span>
           {p._colors&&<span style={{fontSize:10,color:'#7c3aed'}}>{p._colors.length} clr</span>}
           <span style={{marginLeft:'auto',fontSize:12,color:'#64748b'}}>${p.nsa_cost?.toFixed(2)}</span></div>)}</div>
         <button className="btn btn-sm btn-secondary" onClick={()=>{setShowAdd(false);setPS('')}} style={{marginTop:8}}>Cancel</button>
@@ -6902,7 +6902,7 @@ export default function App(){
   const[eEst,setEEst]=useState(null);const[eEstC,setEEstC]=useState(null);const[eSO,setESO]=useState(null);const[eSOC,setESOC]=useState(null);const[eSOTab,setESOTab]=useState(null);const[eSOScrollItem,setESOScrollItem]=useState(null);const[eSOScrollJob,setESOScrollJob]=useState(null);
   const[gQ,setGQ]=useState('');const[gOpen,setGOpen]=useState(false);const[mF,setMF]=useState('all');const[rF,setRF]=useState('all');const[pF,setPF]=useState({cat:'all',vnd:'all',stk:'all',clr:'all'});
   const[qPC,setQPC]=useState({open:false,mode:'single',items:[],bulkRaw:''});
-  const[poF,setPOF]=useState({status:'all',vendor:'all',search:'',sort:'date_desc'});
+  const[poF,setPOF]=useState({status:'all',vendor:'all',rep:'all',search:'',sort:'date_desc'});
   // OMG Team Stores
   const[omgFilter,setOmgFilter]=useState({rep:'all',status:'all',search:''});const[omgSel,setOmgSel]=useState(null);
   const[soF,setSOF]=useState({status:'all',rep:'all',search:'',sort:'date_desc'});
@@ -9057,6 +9057,7 @@ export default function App(){
     let fPOs=dedupPOs;
     if(poF.status!=='all')fPOs=fPOs.filter(p=>p.status===poF.status);
     if(poF.vendor!=='all')fPOs=fPOs.filter(p=>p.vendor===poF.vendor);
+    if(poF.rep!=='all')fPOs=fPOs.filter(p=>p.so?.created_by===poF.rep);
     if(poF.search){const ss=poF.search.toLowerCase();fPOs=fPOs.filter(p=>p.po_id.toLowerCase().includes(ss)||p.vendor.toLowerCase().includes(ss)||p.so_id.toLowerCase().includes(ss)||p.customer.toLowerCase().includes(ss)||p.itemSku.toLowerCase().includes(ss)||p.itemName.toLowerCase().includes(ss)||p.memo.toLowerCase().includes(ss))}
     // Sort
     if(poF.sort==='date_desc')fPOs.sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||''));
@@ -9065,23 +9066,24 @@ export default function App(){
     else if(poF.sort==='po_id')fPOs.sort((a,b)=>a.po_id.localeCompare(b.po_id));
     else if(poF.sort==='customer')fPOs.sort((a,b)=>a.customer.localeCompare(b.customer));
     else if(poF.sort==='status')fPOs.sort((a,b)=>a.status.localeCompare(b.status));
+    else if(poF.sort==='rep')fPOs.sort((a,b)=>(REPS.find(r=>r.id===a.so?.created_by)?.name||'').localeCompare(REPS.find(r=>r.id===b.so?.created_by)?.name||''));
     // Stats
     const waitCount=dedupPOs.filter(p=>p.status==='waiting').length;
     const partCount=dedupPOs.filter(p=>p.status==='partial').length;
     const rcvdCount=dedupPOs.filter(p=>p.status==='received').length;
     const totalOpenUnits=dedupPOs.reduce((a,p)=>a+p.totalOpen,0);
-    const activeFilters=poF.status!=='all'||poF.vendor!=='all'||poF.search;
+    const activeFilters=poF.status!=='all'||poF.vendor!=='all'||poF.rep!=='all'||poF.search;
     return<>
       {/* Stat cards */}
-      <div className="stat-grid" style={{gridTemplateColumns:'repeat(4,1fr)',marginBottom:16}}>
+      <div className="stats-row">
         <div className="stat-card" style={{cursor:'pointer',outline:poF.status==='all'?'2px solid #2563eb':'none',borderRadius:8}} onClick={()=>setPOF(f=>({...f,status:'all'}))}>
-          <div className="stat-value">{dedupPOs.length}</div><div className="stat-label">Total POs</div></div>
+          <div className="stat-label">Total POs</div><div className="stat-value">{dedupPOs.length}</div></div>
         <div className="stat-card" style={{cursor:'pointer',outline:poF.status==='waiting'?'2px solid #d97706':'none',borderRadius:8}} onClick={()=>setPOF(f=>({...f,status:f.status==='waiting'?'all':'waiting'}))}>
-          <div className="stat-value" style={{color:'#d97706'}}>{waitCount}</div><div className="stat-label">Waiting</div></div>
+          <div className="stat-label">Waiting</div><div className="stat-value" style={{color:'#d97706'}}>{waitCount}</div></div>
         <div className="stat-card" style={{cursor:'pointer',outline:poF.status==='partial'?'2px solid #2563eb':'none',borderRadius:8}} onClick={()=>setPOF(f=>({...f,status:f.status==='partial'?'all':'partial'}))}>
-          <div className="stat-value" style={{color:'#2563eb'}}>{partCount}</div><div className="stat-label">Partial</div></div>
+          <div className="stat-label">Partial</div><div className="stat-value" style={{color:'#2563eb'}}>{partCount}</div></div>
         <div className="stat-card" style={{cursor:'pointer',outline:poF.status==='received'?'2px solid #059669':'none',borderRadius:8}} onClick={()=>setPOF(f=>({...f,status:f.status==='received'?'all':'received'}))}>
-          <div className="stat-value" style={{color:'#059669'}}>{rcvdCount}</div><div className="stat-label">Received</div></div>
+          <div className="stat-label">Received</div><div className="stat-value" style={{color:'#059669'}}>{rcvdCount}</div></div>
       </div>
       {/* Open units banner */}
       {totalOpenUnits>0&&<div style={{padding:'8px 16px',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:8,fontSize:13,fontWeight:600,color:'#92400e',marginBottom:12}}>
@@ -9093,9 +9095,11 @@ export default function App(){
         <div className="search-bar" style={{margin:0,flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search POs..." value={poF.search} onChange={e=>setPOF(f=>({...f,search:e.target.value}))}/>{poF.search&&<button onClick={()=>setPOF(f=>({...f,search:''}))} style={{background:'none',border:'none',cursor:'pointer'}}><Icon name="x" size={14}/></button>}</div>
         <select value={poF.vendor} onChange={e=>setPOF(f=>({...f,vendor:e.target.value}))} style={{padding:'6px 10px',borderRadius:6,border:'1px solid #e2e8f0',fontSize:12}}>
           <option value="all">All Vendors</option>{allVendors.map(v=><option key={v} value={v}>{v}</option>)}</select>
+        <select className="form-select" style={{width:140}} value={poF.rep} onChange={e=>setPOF(f=>({...f,rep:e.target.value}))}>
+          <option value="all">All Reps</option>{REPS.filter(r=>r.role==='rep'||r.role==='admin').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
         <select value={poF.sort} onChange={e=>setPOF(f=>({...f,sort:e.target.value}))} style={{padding:'6px 10px',borderRadius:6,border:'1px solid #e2e8f0',fontSize:12}}>
-          <option value="date_desc">Newest First</option><option value="date_asc">Oldest First</option><option value="vendor">Vendor</option><option value="po_id">PO Number</option><option value="customer">Customer</option><option value="status">Status</option></select>
-        {activeFilters&&<button className="btn btn-sm btn-secondary" onClick={()=>setPOF({status:'all',vendor:'all',search:'',sort:'date_desc'})} style={{fontSize:11}}>Clear Filters</button>}
+          <option value="date_desc">Newest First</option><option value="date_asc">Oldest First</option><option value="vendor">Vendor</option><option value="po_id">PO Number</option><option value="customer">Customer</option><option value="status">Status</option><option value="rep">Rep</option></select>
+        {activeFilters&&<button className="btn btn-sm btn-secondary" onClick={()=>setPOF({status:'all',vendor:'all',rep:'all',search:'',sort:'date_desc'})} style={{fontSize:11}}>Clear Filters</button>}
       </div>
       {/* Table */}
       <div className="card"><div className="card-body" style={{padding:0,overflow:'auto'}}>
