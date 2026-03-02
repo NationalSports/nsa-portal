@@ -13020,7 +13020,11 @@ export default function App(){
         const acctRes=await qbApi('query',{query:"SELECT Id, Name, AccountType FROM Account WHERE AccountType IN ('Cost of Goods Sold','Expense') MAXRESULTS 200"});
         (acctRes?.QueryResponse?.Account||[]).forEach(a=>{acctMap[a.Name]={value:a.Id,name:a.Name}});
       }catch(e){console.warn('[QB] Account query failed:',e)}
-      const resolveAcct=(name)=>acctMap[name]||Object.values(acctMap).find(a=>a.name.toLowerCase()===name?.toLowerCase())||Object.values(acctMap)[0]||{name:name||'Expenses'};
+      if(!Object.keys(acctMap).length){
+        nf('Could not load QB expense accounts — check your QuickBooks connection','error');
+        setBillImport(x=>({...x,uploading:false}));return;
+      }
+      const resolveAcct=(name)=>acctMap[name]||Object.values(acctMap).find(a=>a.name.toLowerCase()===name?.toLowerCase())||Object.values(acctMap)[0];
       let success=0,failed=0;
       for(let bi=0;bi<billImport.parsed.length;bi++){
         const b=billImport.parsed[bi];if(!b.selected)continue;
@@ -14538,6 +14542,13 @@ export default function App(){
         const match=accts.find(a=>a.Name===acctName)||accts.find(a=>a.Name.toLowerCase()===acctName.toLowerCase())||accts[0];
         if(match)billAcctRef={value:match.Id,name:match.Name};
       }catch(e){console.warn('[QB] Account query failed:',e)}
+      if(!billAcctRef.value){
+        log.details.push('Could not resolve QB expense account — no matching account found');
+        log.status='error';
+        setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));
+        nf('Could not resolve QB expense account — check QuickBooks connection and account mapping','error');
+        setQbBillUploading(false);return;
+      }
       const amt=parseFloat(qbBillAmount);
       const qbBill={
         VendorRef:{value:qbVendorId},
