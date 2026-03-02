@@ -12981,7 +12981,7 @@ export default function App(){
         if(itemSectionStart<0&&(/UPC\s*NUMBER/i.test(line)||/SUPPLIER\s*ITEM\s*NUMBER/i.test(line)||/QUANTITY\s*ORDERED.*QUANTITY\s*SHIPPED/i.test(line))){
           itemSectionStart=li+1;
         }
-        if(itemSectionStart>=0&&itemSectionEnd<0&&(/MERCHANDISE\s+TOTAL/i.test(line)||/REPORT\s+PROBLEMS/i.test(line))){
+        if(itemSectionStart>=0&&(/MERCHANDISE\s+TOTAL/i.test(line)||/REPORT\s+PROBLEMS/i.test(line))){
           itemSectionEnd=li;
         }
       }
