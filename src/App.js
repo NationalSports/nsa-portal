@@ -13066,6 +13066,12 @@ export default function App(){
         // Dates
         {const m=line.match(/DOCUMENT\s+DATE[:\s]+([\d\/]+)/i);if(m&&!bill.doc_date)bill.doc_date=m[1]}
         {const m=line.match(/DUE\s+DATE[:\s]+([\d\/]+)/i);if(m&&!bill.due_date)bill.due_date=m[1]}
+        // Handle SI format: DUE DATE is a column header in the footer section, value on next line
+        if(!bill.due_date&&/DUE\s+DATE/i.test(line)&&/SI\s+DOCUMENT|TERMS\s+DISCOUNT|DISCOUNT\s+DATE|FREIGHT\s+ALLOW/i.test(line)){
+          const headers=line.split(/\t+/).map(h=>h.trim().toUpperCase());
+          const dueDateIdx=headers.findIndex(h=>/^DUE\s+DATE$/.test(h));
+          if(dueDateIdx>=0){for(let j=li+1;j<Math.min(li+3,lines.length);j++){const val=(lines[j].split(/\t+/)[dueDateIdx]||'').trim();if(/\d{1,2}\/\d{1,2}\/\d{2,4}/.test(val)){bill.due_date=val;break}}}
+        }
         if(!bill.ship_date){const m=line.match(/SHIP\s+DATE[:\s]+([\d\/]+)/i);if(m)bill.ship_date=m[1]}
         // Totals
         {const v=extractTotal(line,/MERCHANDISE\s+TOTAL/i,lines[li+1]);if(v!=null&&!bill.merchandise_total)bill.merchandise_total=v}
@@ -13376,6 +13382,7 @@ export default function App(){
         }
         const memo=['PO: '+bill.po_number,bill.tracking?'Tracking: '+bill.tracking:'',bill.doc_number?'Doc #'+bill.doc_number:''].filter(Boolean).join(' | ');
         const qbBill={VendorRef:{value:qbVendorId},TxnDate:bill.doc_date?bill.doc_date.replace(/(\d+)\/(\d+)\/(\d+)/,'20$3-$1-$2'):new Date().toISOString().slice(0,10),
+          DueDate:bill.due_date?bill.due_date.replace(/(\d+)\/(\d+)\/(\d+)/,'20$3-$1-$2'):undefined,
           DocNumber:bill.doc_number||bill.po_number||undefined,
           Line:lineItems,PrivateNote:memo};
         const billRes=await qbApi('upsert_bill',{bill:qbBill});
