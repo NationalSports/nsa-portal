@@ -558,7 +558,15 @@ const parseNetSuitePdf=(text,docType)=>{
     // Parse SKU — handles "JP4674 : JP4674-S" and "Screen 1"
     const skuColonParts=skuRaw.split(/\s*:\s*/);
     let baseSku=(skuColonParts[0]||skuRaw).trim();
-    const fullSku=(skuColonParts[1]||baseSku).trim();
+    let fullSku=(skuColonParts[1]||baseSku).trim();
+
+    // Fallback: if baseSku doesn't look like a product SKU, scan all parts for alphanumeric SKU (2 letters + 4 digits, e.g. EK0086)
+    const ALPHA_SKU_RE=/\b([A-Za-z]{2}\d{4})\b/;
+    if(baseSku&&!/^[A-Za-z]{2}\d{4}/.test(baseSku)&&!prod.some(p=>p.sku.toLowerCase()===baseSku.toLowerCase())){
+      for(let pi=0;pi<parts.length;pi++){const am=parts[pi].match(ALPHA_SKU_RE);if(am){baseSku=am[1].toUpperCase();fullSku=baseSku;break}}
+      // Also check description line for SKU
+      if(!/^[A-Za-z]{2}\d{4}/.test(baseSku)&&descLine){const dm=descLine.match(ALPHA_SKU_RE);if(dm){baseSku=dm[1].toUpperCase();fullSku=baseSku}}
+    }
 
     // Detect size suffix from fullSku
     const sizeMatch=fullSku.match(SZ_RE);
@@ -12552,6 +12560,7 @@ export default function App(){
   // NETSUITE IMPORT PAGE
   const[imp,setImp]=useState({step:'upload',raw:'',docType:'so',custId:'',parsed:[],decoLines:[],issues:[],questions:[],shipping:[],memo:'',poRef:'',
     pdfFile:null,pdfText:'',pdfParsed:null,pdfParsedAll:[],pdfSelectedIdx:0,pdfLoading:false,pdfItems:[],linkedSoId:'',externalDocNum:'',importSource:'netsuite'});
+  const[impNewCust,setImpNewCust]=useState(false);// show CustModal from import flow
   const[impTab,setImpTab]=useState('orders');// orders|customers|vendors|products|bills
   const[bulkImp,setBulkImp]=useState({raw:'',parsed:[],issues:[],step:'paste'});// paste|review|done
   const[billImport,setBillImport]=useState({step:'upload',files:[],parsed:[],uploading:false,showRaw:{}});
@@ -12576,8 +12585,14 @@ export default function App(){
       if(/^(screen\s*print|embroid|dtf|heat\s*trans|vinyl|sublim)/i.test(desc)||rawItem.toLowerCase().includes('screen')||rawItem.toLowerCase().includes('embroid')){
         decoLines.push({rawItem,desc,qty,rate,amount,poRef,_assignTo:'all'});return}
 
-      const skuParts=rawItem.split(/\s*:\s*/);const itemCode=skuParts[0]||rawItem;
-      const fullSku=skuParts[1]||itemCode;
+      const skuParts=rawItem.split(/\s*:\s*/);let itemCode=skuParts[0]||rawItem;
+      let fullSku=skuParts[1]||itemCode;
+      // Fallback: scan all columns for alphanumeric SKU (2 letters + 4 digits, e.g. EK0086) if itemCode doesn't match catalog
+      const ALPHA_SKU_RE_NS=/\b([A-Za-z]{2}\d{4})\b/;
+      if(itemCode&&!/^[A-Za-z]{2}\d{4}/.test(itemCode)&&!prod.some(p=>p.sku.toLowerCase()===itemCode.toLowerCase())){
+        for(const col of cols){const am=col.match(ALPHA_SKU_RE_NS);if(am){itemCode=am[1].toUpperCase();fullSku=itemCode;break}}
+        if(!/^[A-Za-z]{2}\d{4}/.test(itemCode)){const dm=desc.match(ALPHA_SKU_RE_NS);if(dm){itemCode=dm[1].toUpperCase();fullSku=itemCode}}
+      }
       const sizeMatch=fullSku.match(SZ_RE);
       let baseSku,size;
       if(sizeMatch){
@@ -13473,12 +13488,22 @@ export default function App(){
             <div className="card-body">
               <div style={{marginBottom:12}}>
                 <label className="form-label">Customer {imp.custId&&<span style={{color:'#22c55e',fontSize:10}}>✓ {imp.pdfParsed?.customerName?'Auto-detected':'Selected'}</span>}</label>
-                <select className="form-select" value={imp.custId} onChange={e=>setImp(x=>({...x,custId:e.target.value}))}>
-                  <option value="">Select customer...</option>
-                  {cust.filter(c=>c.is_active!==false).sort((a,b)=>a.name.localeCompare(b.name)).map(c=>
-                    <option key={c.id} value={c.id}>{c.name} ({c.alpha_tag})</option>)}
-                </select>
+                <div style={{display:'flex',gap:6}}>
+                  <select className="form-select" style={{flex:1}} value={imp.custId} onChange={e=>setImp(x=>({...x,custId:e.target.value}))}>
+                    <option value="">Select customer...</option>
+                    {cust.filter(c=>c.is_active!==false).sort((a,b)=>a.name.localeCompare(b.name)).map(c=>
+                      <option key={c.id} value={c.id}>{c.name} ({c.alpha_tag})</option>)}
+                  </select>
+                  <button className="btn btn-sm btn-secondary" style={{whiteSpace:'nowrap',fontSize:11}} onClick={()=>setImpNewCust(true)} title="Create a new customer account"><Icon name="plus" size={12}/> New</button>
+                </div>
+                {!imp.custId&&imp.pdfParsed?.customerName&&<div style={{padding:8,background:'#fef3c7',borderRadius:6,marginTop:6,fontSize:11,color:'#92400e',display:'flex',alignItems:'center',gap:6}}>
+                  <span style={{fontSize:14}}>⚠️</span>
+                  <div style={{flex:1}}>Customer "<strong>{imp.pdfParsed.customerName}</strong>" from document not recognized.
+                    <button style={{background:'none',border:'none',color:'#2563eb',cursor:'pointer',fontWeight:700,textDecoration:'underline',padding:'0 4px',fontSize:11}} onClick={()=>setImpNewCust(true)}>Create new account</button>
+                  </div>
+                </div>}
               </div>
+              <CustModal isOpen={impNewCust} onClose={()=>setImpNewCust(false)} onSave={(newC)=>{savC(newC);setImp(x=>({...x,custId:newC.id}));setImpNewCust(false);nf('Customer "'+newC.name+'" created and selected')}} customer={imp.pdfParsed?.customerName&&!imp.custId?{name:imp.pdfParsed.customerName,alpha_tag:imp.pdfParsed.customerName.replace(/[^a-zA-Z0-9 ]/g,'').trim().split(/\s+/).slice(0,2).map(w=>w[0]).join('').toUpperCase()}:null} parents={pars}/>
               {imp.custId&&(()=>{const c=cust.find(x=>x.id===imp.custId);if(!c)return null;
                 return<div style={{padding:10,background:'#f0fdf4',borderRadius:6,marginBottom:12}}>
                   <div style={{fontWeight:700}}>{c.name} <span className="badge badge-gray">{c.alpha_tag}</span></div>
