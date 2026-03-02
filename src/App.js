@@ -4010,7 +4010,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
               // Create production team issue for missing pieces
               if(discs.length>0){
                 const missingSummary=discs.map(d2=>d2.sku+' '+d2.size+': short '+(d2.expected-d2.actual)).join(', ');
-                const issue={id:'ISS-'+(issues.length+1001),status:'open',description:'Count-in discrepancy on '+j.id+' ('+j.art_name+'): '+missingSummary+(countDiscModal.notes?' — '+countDiscModal.notes:''),priority:'high',page:'jobs',viewing:o.id+' / '+j.id,reportedBy:cu?.name||'Unknown',role:cu?.role||'production',timestamp:new Date().toISOString(),recentErrors:[],resolvedAt:null,resolution:null};
+                const issue={id:'ISS-'+Date.now(),status:'open',description:'Count-in discrepancy on '+j.id+' ('+j.art_name+'): '+missingSummary+(countDiscModal.notes?' — '+countDiscModal.notes:''),priority:'high',page:'jobs',viewing:o.id+' / '+j.id,reported_by:cu?.name||'Unknown',role:cu?.role||'production',timestamp:new Date().toISOString(),recent_errors:[],resolved_at:null,resolution:null};
                 setIssues(prev=>[issue,...prev]);
                 nf('⚠️ Count-in recorded with discrepancies — Issue '+issue.id+' created for production team');
               } else {
@@ -6636,10 +6636,10 @@ export default function App(){
   const openIssueCount=issues.filter(i=>i.status==='open').length;
   const consoleErrors=React.useRef([]);
   React.useEffect(()=>{const orig=console.error;console.error=(...args)=>{consoleErrors.current=[{msg:args.map(a=>typeof a==='string'?a:JSON.stringify(a)).join(' '),ts:new Date().toISOString()},...consoleErrors.current].slice(0,5);orig.apply(console,args)};return()=>{console.error=orig}},[]);
-  const getIssueContext=()=>{const t=titles[pg]||pg;let viewing='';if(eEst)viewing='Editing '+eEst.id;else if(eSO)viewing='Editing '+eSO.id;else if(selC)viewing='Viewing customer: '+selC.name;else if(selV)viewing='Viewing vendor: '+selV.name;return{page:t,viewing,user:cu.name,role:cu.role,timestamp:new Date().toISOString(),recentErrors:consoleErrors.current.slice(0,5)}};
-  const submitIssue=()=>{if(!issueModal.desc.trim())return;const ctx=getIssueContext();const issue={id:'ISS-'+(issues.length+1001),status:'open',description:issueModal.desc.trim(),priority:issueModal.priority,page:ctx.page,viewing:ctx.viewing,reportedBy:ctx.user,role:ctx.role,timestamp:ctx.timestamp,recentErrors:ctx.recentErrors,resolvedAt:null,resolution:null};setIssues(prev=>[issue,...prev]);setIssueModal({open:false,desc:'',priority:'medium'});nf('Issue '+issue.id+' logged')};
-  const resolveIssue=(id,resolution)=>{setIssues(prev=>prev.map(i=>i.id===id?{...i,status:'resolved',resolution,resolvedAt:new Date().toISOString()}:i))};
-  const exportIssuesCSV=()=>{const hdr=['ID','Status','Priority','Description','Page','Context','Reported By','Role','Timestamp','Resolution','Resolved At'];const rows=issues.map(i=>[i.id,i.status,i.priority,'"'+i.description.replace(/"/g,'""')+'"',i.page,i.viewing||'',i.reportedBy,i.role,i.timestamp,i.resolution||'',i.resolvedAt||'']);const csv=[hdr.join(','),...rows.map(r=>r.join(','))].join('\n');const blob=new Blob([csv],{type:'text/csv'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='issues_export_'+new Date().toISOString().slice(0,10)+'.csv';a.click();URL.revokeObjectURL(url)};
+  const getIssueContext=()=>{const t=titles[pg]||pg;let viewing='';if(eEst)viewing='Editing '+eEst.id;else if(eSO)viewing='Editing '+eSO.id;else if(selC)viewing='Viewing customer: '+selC.name;else if(selV)viewing='Viewing vendor: '+selV.name;return{page:t,viewing,user:cu.name,role:cu.role,timestamp:new Date().toISOString(),recent_errors:consoleErrors.current.slice(0,5)}};
+  const submitIssue=()=>{if(!issueModal.desc.trim())return;const ctx=getIssueContext();const issue={id:'ISS-'+Date.now(),status:'open',description:issueModal.desc.trim(),priority:issueModal.priority,page:ctx.page,viewing:ctx.viewing,reported_by:ctx.user,role:ctx.role,timestamp:ctx.timestamp,recent_errors:ctx.recent_errors,resolved_at:null,resolution:null};setIssues(prev=>[issue,...prev]);setIssueModal({open:false,desc:'',priority:'medium'});nf('Issue '+issue.id+' logged')};
+  const resolveIssue=(id,resolution)=>{setIssues(prev=>prev.map(i=>i.id===id?{...i,status:'resolved',resolution,resolved_at:new Date().toISOString()}:i))};
+  const exportIssuesCSV=()=>{const hdr=['ID','Status','Priority','Description','Page','Context','Reported By','Role','Timestamp','Resolution','Resolved At'];const rows=issues.map(i=>[i.id,i.status,i.priority,'"'+i.description.replace(/"/g,'""')+'"',i.page,i.viewing||'',i.reported_by||i.reportedBy||'',i.role,i.timestamp,i.resolution||'',i.resolved_at||i.resolvedAt||'']);const csv=[hdr.join(','),...rows.map(r=>r.join(','))].join('\n');const blob=new Blob([csv],{type:'text/csv'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='issues_export_'+new Date().toISOString().slice(0,10)+'.csv';a.click();URL.revokeObjectURL(url)};
   // SO version history
   const[soHistory,setSOHistory]=useState(()=>loadState('so_history',{}));// {soId:[{ts,user,snapshot}]}
   const[msgs,setMsgs]=useState(()=>_migrated.msgs);const[cM,setCM]=useState({open:false,c:null});const[aM,setAM]=useState({open:false,p:null});
@@ -6765,7 +6765,7 @@ export default function App(){
         setInvs(prev=>_jsonEq(prev,d.invoices)?prev:d.invoices);
         if(d.messages.length)setMsgs(prev=>_jsonEq(prev,d.messages)?prev:d.messages);
         setCust(prev=>_jsonEq(prev,d.customers)?prev:d.customers);
-        if(d.products.length)setProd(prev=>_jsonEq(prev,d.products)?prev:d.products);
+        if(d.products.length)setProd(prev=>{if(_jsonEq(prev,d.products))return prev;const dbIds=new Set(d.products.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));return localOnly.length?[...d.products,...localOnly]:d.products});
         if(d.vendors.length)setVend(prev=>_jsonEq(prev,d.vendors)?prev:d.vendors);
         if(d.omg_stores.length)setOmgStores(prev=>_jsonEq(prev,d.omg_stores)?prev:d.omg_stores);
         if(d.issues?.length)setIssues(prev=>_jsonEq(prev,d.issues)?prev:d.issues);
@@ -6807,7 +6807,7 @@ export default function App(){
         setCust(prev=>changed(prev,d.customers)?d.customers:prev);
         if(d.messages.length)setMsgs(prev=>changed(prev,d.messages)?d.messages:prev);
         if(d.issues.length)setIssues(prev=>changed(prev,d.issues)?d.issues:prev);
-        if(d.products.length)setProd(prev=>changed(prev,d.products)?d.products:prev);
+        if(d.products.length)setProd(prev=>{if(!changed(prev,d.products))return prev;const dbIds=new Set(d.products.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));return localOnly.length?[...d.products,...localOnly]:d.products});
         // Refresh app_state keys (batch POs, inventory POs, etc.)
         const as=d.appState||{};
         if(as.inv_pos)setInvPOs(prev=>JSON.stringify(prev)!==JSON.stringify(as.inv_pos)?as.inv_pos:prev);
@@ -7245,6 +7245,11 @@ export default function App(){
       else if(days>=7&&days<14)todos.push({type:'follow_up',priority:1,msg:'⚠️ Estimate going cold ('+days+'d): '+(e.memo||e.id),detail:tag2+' · No response in '+days+' days',action:'Follow Up',role:'sales',est:e,estC:c2});
       else if(days>=14)todos.push({type:'follow_up',priority:0,msg:'🔴 Stale estimate ('+days+'d): '+(e.memo||e.id),detail:tag2+' · '+days+' days with no response',action:'Close or Re-send',role:'sales',est:e,estC:c2});
     });
+    // Open issues → show on to-do list for all users
+    issues.filter(i=>i.status==='open').forEach(i=>{
+      const pri=i.priority==='high'?0:i.priority==='medium'?1:2;
+      todos.push({type:'issue',priority:pri,msg:(i.priority==='high'?'🔴':'🟡')+' Issue: '+i.description.slice(0,80)+(i.description.length>80?'...':''),detail:(i.reported_by||i.reportedBy||'Unknown')+' · '+i.page+(i.viewing?' · '+i.viewing:''),action:'View Issue',role:'all',issueId:i.id});
+    });
     todos.sort((a,b)=>a.priority-b.priority);
 
     // Shared data builders
@@ -7277,7 +7282,7 @@ export default function App(){
       <div className="card"><div className="card-header"><h2>📋 To-Do ({todos.length})</h2></div>
         <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
           {todos.length===0?<div className="empty" style={{padding:20}}>All clear!</div>:
-          todos.slice(0,12).map((t,i)=><div key={i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer'}} onClick={()=>{if(t.so){if(t.type==='art'&&t.jobId){const jIdx=safeJobs(t.so).findIndex(jj=>jj.id===t.jobId);setESOTab('jobs');setESOScrollJob(jIdx>=0?jIdx:null)}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
+          todos.slice(0,12).map((t,i)=><div key={i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer'}} onClick={()=>{if(t.type==='issue'){setPg('settings')}else if(t.so){if(t.type==='art'&&t.jobId){const jIdx=safeJobs(t.so).findIndex(jj=>jj.id===t.jobId);setESOTab('jobs');setESOScrollJob(jIdx>=0?jIdx:null)}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
             <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}</div></div>
             <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:t.type==='art'?'#fef3c7':'#eff6ff',color:t.type==='art'?'#92400e':'#2563eb',fontWeight:600,whiteSpace:'nowrap'}}>{t.action}</span>
           </div>)}
@@ -16047,16 +16052,16 @@ export default function App(){
           <div style={{display:'flex',gap:16,fontSize:11,color:'#64748b',flexWrap:'wrap'}}>
             <span>Page: <strong>{issue.page}</strong></span>
             {issue.viewing&&<span>Context: <strong>{issue.viewing}</strong></span>}
-            <span>By: <strong>{issue.reportedBy}</strong> ({issue.role})</span>
+            <span>By: <strong>{issue.reported_by||issue.reportedBy}</strong> ({issue.role})</span>
             <span>{new Date(issue.timestamp).toLocaleString()}</span>
           </div>
-          {issue.recentErrors&&issue.recentErrors.length>0&&<details style={{marginTop:8}}>
-            <summary style={{fontSize:11,color:'#dc2626',cursor:'pointer'}}>Console errors at time of report ({issue.recentErrors.length})</summary>
+          {(issue.recent_errors||issue.recentErrors)&&(issue.recent_errors||issue.recentErrors).length>0&&<details style={{marginTop:8}}>
+            <summary style={{fontSize:11,color:'#dc2626',cursor:'pointer'}}>Console errors at time of report ({(issue.recent_errors||issue.recentErrors).length})</summary>
             <div style={{marginTop:4,padding:8,background:'#fef2f2',borderRadius:6,fontSize:10,fontFamily:'monospace',maxHeight:100,overflow:'auto'}}>
-              {issue.recentErrors.map((e,i)=><div key={i} style={{marginBottom:2}}>{e.msg}</div>)}
+              {(issue.recent_errors||issue.recentErrors).map((e,i)=><div key={i} style={{marginBottom:2}}>{e.msg}</div>)}
             </div>
           </details>}
-          {issue.resolution&&<div style={{marginTop:8,fontSize:11,color:'#16a34a'}}>Resolution: <strong>{issue.resolution==='wont_fix'?"Won't fix":'Resolved'}</strong> — {new Date(issue.resolvedAt).toLocaleString()}</div>}
+          {issue.resolution&&<div style={{marginTop:8,fontSize:11,color:'#16a34a'}}>Resolution: <strong>{issue.resolution==='wont_fix'?"Won't fix":'Resolved'}</strong> — {new Date(issue.resolved_at||issue.resolvedAt).toLocaleString()}</div>}
         </div>
       </div>)}
     </>};
