@@ -7655,6 +7655,9 @@ export default function App(){
     const pSOs=sos.filter(s=>s.items?.some(it=>it.product_id===product.id||it.sku===product.sku));
     const pJobs=[];pSOs.forEach(so=>{buildJobs(so).forEach(j=>{if(j.items?.some(gi=>gi.sku===product.sku))pJobs.push({...j,soId:so.id,soMemo:so.memo,customer:cust.find(c=>c.id===so.customer_id)})})});
     const pPOs=[];pSOs.forEach(so=>{so.items?.forEach(it=>{if(it.product_id===product.id||it.sku===product.sku){(it.po_lines||[]).forEach(po=>{pPOs.push({...po,soId:so.id,sku:it.sku,name:it.name,customer:cust.find(c=>c.id===so.customer_id)})})}})});
+    // Inventory POs (not tied to SOs)
+    const pInvPOs=invPOs.filter(po=>po.items?.some(it=>it.sku===product.sku));
+    const pStockPOs=stockPOs.filter(po=>po.items?.some(it=>it.sku===product.sku));
     const pInvs=invs.filter(inv=>pSOs.some(s=>s.id===inv.so_id));
     // Sales volume by month
     const parseDt=(d)=>{if(!d)return null;const m=d.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);if(!m)return null;let y=parseInt(m[3]);if(y<100)y+=2000;return{m:parseInt(m[1])-1,y}};
@@ -7669,7 +7672,7 @@ export default function App(){
     const totalUnits=monthlyData.reduce((a,m)=>a+m.units,0);const totalRev=monthlyData.reduce((a,m)=>a+m.revenue,0);const totalOrders=monthlyData.reduce((a,m)=>a+m.orders,0);
     const maxUnits=Math.max(...monthlyData.map(m=>m.units),1);
     const saveProduct=()=>{setProd(p=>p.map(x=>x.id===ep.id?ep:x));setEditing(false);nf('Product updated')};
-    const imgSave=(up)=>{setEp(up);_dbSaveProduct(up);nf('Image saved')};
+    const imgSave=(up)=>{setEp(up);setProd(p=>p.map(x=>x.id===up.id?up:x));nf('Image saved')};
     const nt=Object.values(ep._inv||{}).reduce((a,v2)=>a+v2,0);
     return(<div>
       <button className="btn btn-secondary" onClick={onBack} style={{marginBottom:12}}><Icon name="chevron-left" size={14}/> Products</button>
@@ -7736,8 +7739,8 @@ export default function App(){
 
       {/* Tabs */}
       <div style={{display:'flex',gap:4,marginBottom:12}}>
-        {[['history','Order History'],['sales','Sales Volume'],['estimates','Estimates'],['pos','POs'],['jobs','Jobs'],['invoices','Invoices']].map(([k,label])=>
-          <button key={k} className={`btn btn-sm ${tab===k?'btn-primary':'btn-secondary'}`} onClick={()=>setTab(k)}>{label}</button>)}
+        {[['history','Order History'],['sales','Sales Volume'],['estimates','Estimates'],['pos','POs'],['invpos','Inv POs'],['jobs','Jobs'],['invoices','Invoices']].map(([k,label])=>
+          <button key={k} className={`btn btn-sm ${tab===k?'btn-primary':'btn-secondary'}`} onClick={()=>setTab(k)}>{label} {k==='invpos'&&(pInvPOs.length+pStockPOs.length)>0?'('+( pInvPOs.length+pStockPOs.length)+')':''}</button>)}
       </div>
 
       {/* ORDER HISTORY (ALL) */}
@@ -7754,10 +7757,14 @@ export default function App(){
         ...pJobs.map(j=>({type:'Job',id:j.id,cust:j.customer,memo:j.art_name,qty:j.total_units,status:j.prod_status,date:null,badge:j.prod_status==='completed'?'badge-green':j.prod_status==='in_process'?'badge-amber':'badge-gray',
             onClick:()=>{const s=sos.find(x=>x.id===j.soId);if(s){setESO(s);setESOC(cust.find(x=>x.id===s.customer_id));setPg('orders');setSelP(null)}}})),
         ...pInvs.map(inv=>{const c=cust.find(x=>x.id===inv.customer_id);return{type:'Invoice',id:inv.id,cust:c,memo:inv.memo,qty:null,status:inv.status,date:inv.date,badge:inv.status==='paid'?'badge-green':inv.status==='open'?'badge-amber':'badge-gray',
-            onClick:()=>{setPg('invoices');setSelP(null)}}})
+            onClick:()=>{setPg('invoices');setSelP(null)}}}),
+        ...pInvPOs.map(po=>{const it=po.items?.find(i=>i.sku===product.sku);const qty=it?Object.values(it.sizes||{}).reduce((a,v2)=>a+v2,0):0;const rcvd=it?Object.values(it.received||{}).reduce((a,v2)=>a+v2,0):0;
+            return{type:'Inv PO',id:po.po_number||po.id,cust:null,memo:po.vendor_name+(po.memo?' · '+po.memo:''),qty,status:po.status==='received'?'received':rcvd>0?'partial':'waiting',date:po.created_at,badge:po.status==='received'?'badge-green':rcvd>0?'badge-amber':'badge-blue',onClick:()=>{}}}),
+        ...pStockPOs.map(po=>{const it=po.items?.find(i=>i.sku===product.sku);const qty=it?Object.values(it.sizes||{}).reduce((a,v2)=>a+v2,0):0;const rcvd=it?Object.values(it.received||{}).reduce((a,v2)=>a+v2,0):0;
+            return{type:'Stock PO',id:po.id,cust:null,memo:po.vendor_name+(po.notes?' · '+po.notes:''),qty,status:po.status==='received'?'received':rcvd>0?'partial':'waiting',date:po.created_at,badge:po.status==='received'?'badge-green':rcvd>0?'badge-amber':'badge-blue',onClick:()=>{setPg('warehouse');setWhTab('stockpo');setSelP(null)}}})
         ].sort((a,b)=>(b.date||'').localeCompare(a.date||'')).map((r,i)=>
           <tr key={i} style={{cursor:'pointer'}} onClick={r.onClick}>
-            <td><span className={`badge ${r.type==='Estimate'?'badge-amber':r.type==='SO'?'badge-blue':r.type==='PO'?'badge-purple':r.type==='Job'?'badge-gray':'badge-green'}`}>{r.type}</span></td>
+            <td><span className={`badge ${r.type==='Estimate'?'badge-amber':r.type==='SO'?'badge-blue':r.type==='PO'||r.type==='Inv PO'||r.type==='Stock PO'?'badge-purple':r.type==='Job'?'badge-gray':'badge-green'}`}>{r.type}</span></td>
             <td style={{fontWeight:700,color:'#1e40af'}}>{r.id}</td>
             <td>{r.cust?.name||'—'}</td>
             <td style={{fontSize:12}}>{r.memo}</td>
@@ -7765,7 +7772,7 @@ export default function App(){
             <td><span className={`badge ${r.badge}`}>{r.status}</span></td>
             <td style={{fontSize:11,color:'#64748b'}}>{r.date||'—'}</td>
           </tr>)}
-        {pEsts.length+pSOs.length+pPOs.length+pJobs.length+pInvs.length===0&&<tr><td colSpan={7} style={{textAlign:'center',color:'#94a3b8',padding:20}}>No orders found for this product</td></tr>}
+        {pEsts.length+pSOs.length+pPOs.length+pJobs.length+pInvs.length+pInvPOs.length+pStockPOs.length===0&&<tr><td colSpan={7} style={{textAlign:'center',color:'#94a3b8',padding:20}}>No orders found for this product</td></tr>}
         </tbody></table></div></div>}
 
       {/* SALES VOLUME TAB */}
@@ -7829,6 +7836,26 @@ export default function App(){
             <td>{ordQty}</td><td>{recQty}</td>
             <td style={{fontSize:11,color:'#64748b'}}>{po.created_at||'—'}</td></tr>})}
         {pPOs.length===0&&<tr><td colSpan={7} style={{textAlign:'center',color:'#94a3b8',padding:20}}>No purchase orders</td></tr>}
+        </tbody></table></div></div>}
+
+      {/* INV POs TAB */}
+      {tab==='invpos'&&<div className="card"><div className="card-header"><h3>Inventory POs ({pInvPOs.length+pStockPOs.length})</h3></div><div className="card-body" style={{padding:0}}>
+        <table><thead><tr><th>PO</th><th>Type</th><th>Vendor</th><th>Qty Ordered</th><th>Qty Received</th><th>Status</th><th>Date</th></tr></thead><tbody>
+        {pInvPOs.map((po,i)=>{const it=po.items?.find(x=>x.sku===product.sku);const qty=it?Object.values(it.sizes||{}).reduce((a,v2)=>a+v2,0):0;const rcvd=it?Object.values(it.received||{}).reduce((a,v2)=>a+v2,0):0;
+          return<tr key={'inv'+i}>
+            <td style={{fontWeight:700,color:'#7c3aed'}}>{po.po_id||po.id}</td><td><span className="badge badge-blue">Inv PO</span></td>
+            <td>{vend.find(v=>v.id===po.vendor_id)?.name||po.vendor||'—'}</td>
+            <td>{qty}</td><td>{rcvd}</td>
+            <td><span className={`badge ${po.status==='received'?'badge-green':po.status==='ordered'?'badge-amber':'badge-gray'}`}>{po.status||'draft'}</span></td>
+            <td style={{fontSize:11,color:'#64748b'}}>{po.created_at||'—'}</td></tr>})}
+        {pStockPOs.map((po,i)=>{const it=po.items?.find(x=>x.sku===product.sku);const qty=it?Object.values(it.sizes||{}).reduce((a,v2)=>a+v2,0):0;const rcvd=it?Object.values(it.received||{}).reduce((a,v2)=>a+v2,0):0;
+          return<tr key={'stk'+i}>
+            <td style={{fontWeight:700,color:'#7c3aed'}}>{po.po_id||po.id}</td><td><span className="badge badge-amber">Stock PO</span></td>
+            <td>{vend.find(v=>v.id===po.vendor_id)?.name||po.vendor||'—'}</td>
+            <td>{qty}</td><td>{rcvd}</td>
+            <td><span className={`badge ${po.status==='received'?'badge-green':po.status==='ordered'?'badge-amber':'badge-gray'}`}>{po.status||'draft'}</span></td>
+            <td style={{fontSize:11,color:'#64748b'}}>{po.created_at||'—'}</td></tr>})}
+        {pInvPOs.length+pStockPOs.length===0&&<tr><td colSpan={7} style={{textAlign:'center',color:'#94a3b8',padding:20}}>No inventory POs</td></tr>}
         </tbody></table></div></div>}
 
       {/* JOBS TAB */}
@@ -11026,6 +11053,30 @@ export default function App(){
                 </div>
               </div>
 
+              {/* QR Code / Print Label */}
+              <div style={{padding:'12px 16px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc',display:'flex',gap:12,alignItems:'center'}}>
+                {(()=>{const scanUrl=window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(poId);const qrUrl='https://api.qrserver.com/v1/create-qr-code/?size=100x100&data='+encodeURIComponent(scanUrl);
+                  return<><img src={qrUrl} alt="QR" style={{width:64,height:64,borderRadius:4,border:'1px solid #e2e8f0'}}/>
+                    <div style={{flex:1}}>
+                      <div style={{fontFamily:'monospace',fontWeight:900,fontSize:16,color:'#1e40af'}}>{poId}</div>
+                      <div style={{fontSize:11,color:'#64748b'}}>{vendorName} · {totalOrdered} units · {poItems.length} item{poItems.length!==1?'s':''}</div>
+                    </div>
+                    <button className="btn btn-sm btn-secondary" style={{fontSize:11,display:'flex',alignItems:'center',gap:4}} onClick={()=>{
+                      const w=window.open('','_blank','width=400,height=600');if(!w)return;
+                      w.document.write('<html><head><title>'+poId+'</title><style>@page{size:4in 6in;margin:0.2in}body{font-family:Arial,sans-serif;margin:0;padding:12px;width:3.6in}.po{font-size:28px;font-weight:900;font-family:monospace;letter-spacing:2px;text-align:center;margin:8px 0}table{width:100%;border-collapse:collapse;font-size:11px;margin-top:8px}th,td{border:1px solid #ccc;padding:3px 6px;text-align:left}th{background:#f0f0f0;font-weight:700}.footer{font-size:9px;color:#999;text-align:center;margin-top:8px;border-top:1px solid #ddd;padding-top:4px}</style></head><body>');
+                      w.document.write('<div style="text-align:center"><img src="'+qrUrl.replace('100x100','150x150')+'" width="120" height="120"/></div>');
+                      w.document.write('<div class="po">'+poId+'</div>');
+                      if(vendorName)w.document.write('<div style="text-align:center;font-size:12px;color:#666;margin-bottom:6px">'+vendorName+'</div>');
+                      w.document.write('<table><thead><tr><th>SKU</th><th>Product</th><th>Color</th><th>Sizes</th><th>Qty</th></tr></thead><tbody>');
+                      poItems.forEach(it=>{const szStr=it.szKeys.map(sz=>sz+':'+(it.ordered[sz]||0)).join(' ');const qty=it.szKeys.reduce((a,sz)=>a+(it.ordered[sz]||0),0);
+                        w.document.write('<tr><td style="font-weight:700">'+it.sku+'</td><td>'+it.name+'</td><td>'+(it.color||'—')+'</td><td style="font-size:10px;font-weight:700">'+szStr+'</td><td style="font-weight:700">'+qty+'</td></tr>')});
+                      w.document.write('</tbody></table>');
+                      w.document.write('<div style="text-align:right;font-size:14px;font-weight:900;margin-top:6px">TOTAL: '+totalOrdered+' units</div>');
+                      w.document.write('<div class="footer">NSA · '+new Date().toLocaleDateString()+' · Scan QR to open this PO</div>');
+                      w.document.write('</body></html>');w.document.close();setTimeout(()=>w.print(),400);
+                    }}>🖨️ Print Label</button></>})()}
+              </div>
+
               {/* Items with receiving inputs */}
               <div style={{padding:0}}>
                 {poItems.map((it,i)=>{
@@ -11367,7 +11418,8 @@ export default function App(){
                       <td style={{textAlign:'center',fontWeight:800}}>{itTotal}</td>
                     </tr>})}
                 </tbody></table>
-                {st!=='received'&&<div style={{display:'flex',gap:6,marginTop:8,borderTop:'1px solid #e2e8f0',paddingTop:6}}>
+                <div style={{display:'flex',gap:6,marginTop:8,borderTop:'1px solid #e2e8f0',paddingTop:6,flexWrap:'wrap'}}>
+                  {st!=='received'&&<>
                   <button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 10px'}}
                     onClick={()=>{setStockPOs(prev=>prev.map((p,i)=>i===pi?{...p,status:'received',items:p.items.map(it=>({...it,received:{...it.sizes}}))}:p));nf('✓ Marked '+po.id+' fully received')}}>✓ Mark All Received</button>
                   <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{
@@ -11375,8 +11427,25 @@ export default function App(){
                     const rcvd={};updated.split(',').forEach(p=>{const[sz,v]=p.trim().split(':');if(sz&&v)rcvd[sz.trim()]=parseInt(v)||0});
                     setStockPOs(prev=>prev.map((p,i)=>i===pi?{...p,status:'partial',items:p.items.map((it,ii)=>ii===0?{...it,received:{...(it.received||{}),...rcvd}}:it)}:p));
                     nf('Updated received quantities for '+po.id);
-                  }}>Partial Receive</button>
-                </div>}
+                  }}>Partial Receive</button></>}
+                  <button className="btn btn-sm btn-secondary" style={{fontSize:10,marginLeft:st==='received'?0:'auto'}} onClick={()=>{
+                    const w=window.open('','_blank','width=400,height=600');if(!w)return;
+                    const scanUrl=window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(po.id);
+                    const qrUrl='https://api.qrserver.com/v1/create-qr-code/?size=150x150&data='+encodeURIComponent(scanUrl);
+                    w.document.write('<html><head><title>'+po.id+'</title><style>@page{size:4in 6in;margin:0.2in}body{font-family:Arial,sans-serif;margin:0;padding:12px;width:3.6in}.po{font-size:28px;font-weight:900;font-family:monospace;letter-spacing:2px;text-align:center;margin:8px 0}table{width:100%;border-collapse:collapse;font-size:11px;margin-top:8px}th,td{border:1px solid #ccc;padding:3px 6px;text-align:left}th{background:#f0f0f0;font-weight:700}.footer{font-size:9px;color:#999;text-align:center;margin-top:8px;border-top:1px solid #ddd;padding-top:4px}</style></head><body>');
+                    w.document.write('<div style="text-align:center"><img src="'+qrUrl+'" width="120" height="120"/></div>');
+                    w.document.write('<div class="po">'+po.id+'</div>');
+                    if(po.vendor_name)w.document.write('<div style="text-align:center;font-size:12px;color:#666;margin-bottom:6px">'+po.vendor_name+'</div>');
+                    w.document.write('<table><thead><tr><th>SKU</th><th>Product</th><th>Color</th><th>Sizes</th><th>Qty</th></tr></thead><tbody>');
+                    po.items.forEach(it=>{const szStr=Object.entries(it.sizes||{}).filter(([,v])=>v>0).map(([sz,v])=>sz+':'+v).join(' ');const qty=Object.values(it.sizes||{}).reduce((a,v)=>a+v,0);
+                      w.document.write('<tr><td style="font-weight:700">'+it.sku+'</td><td>'+it.name+'</td><td>'+(it.color||'—')+'</td><td style="font-size:10px;font-weight:700">'+szStr+'</td><td style="font-weight:700">'+qty+'</td></tr>')});
+                    w.document.write('</tbody></table>');
+                    w.document.write('<div style="text-align:right;font-size:14px;font-weight:900;margin-top:6px">TOTAL: '+totalOrd+' units</div>');
+                    w.document.write('<div class="footer">NSA · '+new Date().toLocaleDateString()+' · Scan QR to open this PO</div>');
+                    w.document.write('</body></html>');w.document.close();setTimeout(()=>w.print(),400);
+                  }}>🖨️ Print Label</button>
+                  <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{setWhRecvPO(po.id);setWhTab('receive')}}>📱 Receive</button>
+                </div>
               </div>
             </div>})}
         </div>}
