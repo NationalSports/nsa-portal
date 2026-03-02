@@ -13070,7 +13070,7 @@ export default function App(){
               if(cm)color=cm[0].trim();
             }
           }
-          if(itemLines.some(it=>it.sku===sku&&it.size===size&&Math.abs(it.extension-extension)<0.01))continue;
+          if(itemLines.some(it=>it.sku===sku&&it.size===size&&it.qty===qty&&Math.abs(it.unit_price-unitPrice)<0.01&&Math.abs(it.extension-extension)<0.01&&it.desc===desc))continue;
           itemLines.push({sku,size,qty,unit_price:unitPrice,extension,desc,color});
         }
       }
@@ -13207,6 +13207,13 @@ export default function App(){
       const selected=billImport.parsed.filter(b=>b.selected);
       if(!selected.length){nf('No bills selected','error');return}
       setBillImport(x=>({...x,uploading:true}));
+      // Look up QB expense accounts so AccountRef includes the required value (ID)
+      let acctMap={};
+      try{
+        const acctRes=await qbApi('query',{query:"SELECT Id, Name, AccountType FROM Account WHERE AccountType IN ('Cost of Goods Sold','Expense') MAXRESULTS 200"});
+        (acctRes?.QueryResponse?.Account||[]).forEach(a=>{acctMap[a.Name]={value:a.Id,name:a.Name}});
+      }catch(e){console.warn('[QB] Account query failed:',e)}
+      const resolveAcct=(name)=>acctMap[name]||Object.values(acctMap).find(a=>a.name.toLowerCase()===name?.toLowerCase())||Object.values(acctMap)[0]||{name:name||'Expenses'};
       let success=0,failed=0;
       for(let bi=0;bi<billImport.parsed.length;bi++){
         const b=billImport.parsed[bi];if(!b.selected)continue;
@@ -13246,23 +13253,23 @@ export default function App(){
         if(bill.merchandise_total>0){
           lineItems.push({DetailType:'AccountBasedExpenseLineDetail',Amount:bill.merchandise_total,
             Description:'Merchandise — PO '+bill.po_number+(bill.items.length?' ('+bill.items.length+' items)':''),
-            AccountBasedExpenseLineDetail:{AccountRef:{name:qbConfig.mapping.cogs_account||'Cost of Goods Sold'}}});
+            AccountBasedExpenseLineDetail:{AccountRef:resolveAcct(qbConfig.mapping.cogs_account||'Cost of Goods Sold')}});
         }else if(amt>0&&!bill.freight){
           lineItems.push({DetailType:'AccountBasedExpenseLineDetail',Amount:amt,
             Description:'Vendor bill — PO '+bill.po_number,
-            AccountBasedExpenseLineDetail:{AccountRef:{name:qbConfig.mapping.cogs_account||'Cost of Goods Sold'}}});
+            AccountBasedExpenseLineDetail:{AccountRef:resolveAcct(qbConfig.mapping.cogs_account||'Cost of Goods Sold')}});
         }
         // Freight line
         if(bill.freight>0){
           lineItems.push({DetailType:'AccountBasedExpenseLineDetail',Amount:bill.freight,
             Description:'Freight charge — PO '+bill.po_number,
-            AccountBasedExpenseLineDetail:{AccountRef:{name:'Shipping and delivery expense'}}});
+            AccountBasedExpenseLineDetail:{AccountRef:resolveAcct(qbConfig.mapping.freight_account||'Shipping and delivery expense')}});
         }
         // SI Upcharge line
         if(bill.si_upcharge>0){
           lineItems.push({DetailType:'AccountBasedExpenseLineDetail',Amount:bill.si_upcharge,
             Description:'SI Upcharge — PO '+bill.po_number,
-            AccountBasedExpenseLineDetail:{AccountRef:{name:qbConfig.mapping.cogs_account||'Cost of Goods Sold'}}});
+            AccountBasedExpenseLineDetail:{AccountRef:resolveAcct(qbConfig.mapping.cogs_account||'Cost of Goods Sold')}});
         }
         if(lineItems.length===0){
           setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,qbStatus:'error',qbMsg:'No amounts to bill'}:p)}));
@@ -14715,13 +14722,21 @@ export default function App(){
         }
       }
 
-      // Create bill in QB
+      // Create bill in QB — look up account ID for AccountRef
+      let billAcctRef={name:qbConfig.mapping.cogs_account||'Cost of Goods Sold'};
+      try{
+        const acctRes=await qbApi('query',{query:"SELECT Id, Name, AccountType FROM Account WHERE AccountType IN ('Cost of Goods Sold','Expense') MAXRESULTS 200"});
+        const accts=acctRes?.QueryResponse?.Account||[];
+        const acctName=qbConfig.mapping.cogs_account||'Cost of Goods Sold';
+        const match=accts.find(a=>a.Name===acctName)||accts.find(a=>a.Name.toLowerCase()===acctName.toLowerCase())||accts[0];
+        if(match)billAcctRef={value:match.Id,name:match.Name};
+      }catch(e){console.warn('[QB] Account query failed:',e)}
       const amt=parseFloat(qbBillAmount);
       const qbBill={
         VendorRef:{value:qbVendorId},
         TxnDate:qbBillDate,
         Line:[{DetailType:'AccountBasedExpenseLineDetail',Amount:amt,Description:qbBillMemo||'Vendor bill from '+vendor.name,
-          AccountBasedExpenseLineDetail:{AccountRef:{name:qbConfig.mapping.ap_account||'Accounts Payable'}}}],
+          AccountBasedExpenseLineDetail:{AccountRef:billAcctRef}}],
         ...(qbBillMemo?{PrivateNote:qbBillMemo}:{}),
       };
       const billRes=await qbApi('upsert_bill',{bill:qbBill});
