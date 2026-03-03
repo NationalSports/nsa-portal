@@ -4,6 +4,7 @@ import './portal.css';
 import { createClient } from '@supabase/supabase-js';
 import { loadStripe } from '@stripe/stripe-js';
 import { Elements, PaymentElement, useStripe, useElements } from '@stripe/react-stripe-js';
+import * as XLSX from 'xlsx';
 
 // ─── Stripe Setup ───
 const _stripePk = process.env.REACT_APP_STRIPE_PK || '';
@@ -14288,7 +14289,7 @@ export default function App(){
         catalog_markup:['markup','multiplier'],
         payment_terms:['payment_terms','terms','net_terms'],
         tax_rate:['tax_rate','tax','sales_tax'],
-        primary_rep_id:['rep','rep_id','sales_rep'],
+        primary_rep_id:['rep','rep_id','sales_rep','rep_name','sales_rep_name'],
         account_type:['account_type','type','acct_type','parent_sub','parent_or_sub'],
         parent_name:['parent','parent_name','parent_account','parent_company','parent_school'],
         sku:['sku','item_number','style','item','part_number','style_number'],
@@ -14327,20 +14328,54 @@ export default function App(){
     // Import customers
     const importCustomers=()=>{
       const{parsed,colMap}=bulkImp;const added=[];const skipped=[];
+      // Helper: resolve rep name/ID to a valid team member ID
+      const resolveRepId=(val)=>{
+        if(!val)return cu.id;
+        const v=val.trim();
+        // Check if it's already a valid team member ID
+        if(REPS.find(r=>r.id===v))return v;
+        // Try matching by name (case-insensitive)
+        const byName=REPS.find(r=>r.name&&r.name.toLowerCase()===v.toLowerCase());
+        if(byName)return byName.id;
+        // Try partial match (first or last name)
+        const partial=REPS.find(r=>r.name&&(r.name.toLowerCase().includes(v.toLowerCase())||v.toLowerCase().includes(r.name.toLowerCase().split(' ')[0])));
+        if(partial)return partial.id;
+        return cu.id;// fallback to current user
+      };
+      // Helper: normalize payment terms to valid enum values
+      const normalizeTerms=(val)=>{
+        if(!val)return 'net30';
+        const v=val.trim().toLowerCase().replace(/\s+/g,'');
+        if(v==='prepay'||v==='cod'||v==='cash'||v==='dueuponfulfillment')return 'prepay';
+        if(v==='net15'||v==='15'||v==='net_15')return 'net15';
+        if(v==='net30'||v==='30'||v==='net_30')return 'net30';
+        if(v==='net60'||v==='60'||v==='net_60')return 'net60';
+        // Default to net30 for any unrecognized numeric value
+        const num=parseInt(v.replace(/\D/g,''));
+        if(num<=15)return 'net15';
+        if(num<=30)return 'net30';
+        if(num>30)return 'net60';
+        return 'net30';
+      };
       // Two passes: parents first, then subs (so parent IDs exist when subs reference them)
       const allExisting=[...cust];
-      // Pass 1: Import parents (account_type blank or 'parent', or no parent_name specified)
+      // Pass 1: Import parents (account_type 'parent' or no parent_name specified)
       parsed.forEach((row,i)=>{
         const name=(row[colMap.name]||'').trim();
         if(!name){skipped.push('Row '+(i+2)+': no name');return}
         if(allExisting.find(c=>c.name.toLowerCase()===name.toLowerCase())||added.find(c=>c.name.toLowerCase()===name.toLowerCase())){return}// handle in pass 2 dedup
         const acctType=(row[colMap.account_type]||'').trim().toLowerCase();
         const parentName=(row[colMap.parent_name]||'').trim();
-        if(acctType==='sub'&&parentName)return;// skip subs for pass 2
+        // Skip rows that have a parent_name — they are sub-accounts for pass 2
+        if(parentName)return;
+        // Also skip if explicitly marked as sub
+        if(acctType==='sub')return;
+        const rawTerms=row[colMap.payment_terms]||'';
+        const rawRep=row[colMap.primary_rep_id]||'';
         const c={
           id:'c-'+Date.now()+'-'+i,parent_id:null,name,
           alpha_tag:row[colMap.alpha_tag]||name.split(' ').map(w=>w[0]).join('').toUpperCase().slice(0,4),
-          contacts:row[colMap.contact_name]?[{name:row[colMap.contact_name],email:row[colMap.contact_email]||'',phone:row[colMap.contact_phone]||'',role:row[colMap.contact_role]||''}]:[],
+          contacts:row[colMap.contact_name]?[{name:row[colMap.contact_name],email:row[colMap.contact_email]||'',phone:row[colMap.contact_phone]||'',role:row[colMap.contact_role]||'Head Coach'}]:[],
           billing_address_line1:row[colMap.billing_address_line1]||'',billing_city:row[colMap.billing_city]||'',
           billing_state:row[colMap.billing_state]||'',billing_zip:row[colMap.billing_zip]||'',
           shipping_address_line1:row[colMap.shipping_address_line1]||row[colMap.billing_address_line1]||'',
@@ -14349,9 +14384,9 @@ export default function App(){
           shipping_zip:row[colMap.shipping_zip]||row[colMap.billing_zip]||'',
           adidas_ua_tier:row[colMap.adidas_ua_tier]||'B',
           catalog_markup:parseFloat(row[colMap.catalog_markup])||1.65,
-          payment_terms:row[colMap.payment_terms]||'net30',
+          payment_terms:normalizeTerms(rawTerms),
           tax_rate:parseFloat(row[colMap.tax_rate])||0,
-          primary_rep_id:row[colMap.primary_rep_id]||cu.id,
+          primary_rep_id:resolveRepId(rawRep),
           is_active:true,_oe:0,_os:0,_oi:0,_ob:0
         };
         added.push(c);
@@ -14373,10 +14408,12 @@ export default function App(){
           else{skipped.push(name+' — parent "'+parentName+'" not found');return}
         }
         const parent=parentId?allNow.find(c=>c.id===parentId):null;
+        const rawTerms=row[colMap.payment_terms]||'';
+        const rawRep=row[colMap.primary_rep_id]||'';
         const c={
           id:'c-'+Date.now()+'-sub-'+i,parent_id:parentId,name,
           alpha_tag:row[colMap.alpha_tag]||name.split(' ').map(w=>w[0]).join('').toUpperCase().slice(0,4),
-          contacts:row[colMap.contact_name]?[{name:row[colMap.contact_name],email:row[colMap.contact_email]||'',phone:row[colMap.contact_phone]||'',role:row[colMap.contact_role]||''}]:[],
+          contacts:row[colMap.contact_name]?[{name:row[colMap.contact_name],email:row[colMap.contact_email]||'',phone:row[colMap.contact_phone]||'',role:row[colMap.contact_role]||'Head Coach'}]:[],
           billing_address_line1:row[colMap.billing_address_line1]||parent?.billing_address_line1||'',
           billing_city:row[colMap.billing_city]||parent?.billing_city||'',
           billing_state:row[colMap.billing_state]||parent?.billing_state||'',
@@ -14387,9 +14424,9 @@ export default function App(){
           shipping_zip:row[colMap.shipping_zip]||row[colMap.billing_zip]||parent?.shipping_zip||'',
           adidas_ua_tier:row[colMap.adidas_ua_tier]||parent?.adidas_ua_tier||'B',
           catalog_markup:parseFloat(row[colMap.catalog_markup])||parent?.catalog_markup||1.65,
-          payment_terms:row[colMap.payment_terms]||parent?.payment_terms||'net30',
+          payment_terms:normalizeTerms(rawTerms)||parent?.payment_terms||'net30',
           tax_rate:parseFloat(row[colMap.tax_rate])||parent?.tax_rate||0,
-          primary_rep_id:row[colMap.primary_rep_id]||parent?.primary_rep_id||cu.id,
+          primary_rep_id:resolveRepId(rawRep)||parent?.primary_rep_id||cu.id,
           is_active:true,_oe:0,_os:0,_oi:0,_ob:0
         };
         added.push(c);
@@ -15513,15 +15550,20 @@ export default function App(){
 
               {/* Drop zone */}
               <div style={{padding:20,border:'2px dashed #d1d5db',borderRadius:8,textAlign:'center',color:'#64748b',fontSize:12,marginBottom:8,cursor:'pointer',transition:'all 0.2s'}}
-                onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#3b82f6';e.currentTarget.style.background='#eff6ff'}}
+                onDragEnter={e=>{e.preventDefault();e.stopPropagation()}}
+                onDragOver={e=>{e.preventDefault();e.stopPropagation();e.currentTarget.style.borderColor='#3b82f6';e.currentTarget.style.background='#eff6ff'}}
                 onDragLeave={e=>{e.currentTarget.style.borderColor='#d1d5db';e.currentTarget.style.background='transparent'}}
-                onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor='#d1d5db';e.currentTarget.style.background='transparent';
+                onDrop={e=>{e.preventDefault();e.stopPropagation();e.currentTarget.style.borderColor='#d1d5db';e.currentTarget.style.background='transparent';
                   const f=e.dataTransfer.files[0];if(!f)return;
-                  const reader=new FileReader();reader.onload=ev=>{setBulkImp(x=>({...x,raw:ev.target.result}));nf('✅ Loaded '+f.name)};reader.readAsText(f)}}
-                onClick={()=>{const input=document.createElement('input');input.type='file';input.accept='.csv,.tsv,.txt';
+                  const isXls=/\.xlsx?$/i.test(f.name);
+                  if(isXls){const reader=new FileReader();reader.onload=ev=>{try{const wb=XLSX.read(ev.target.result,{type:'array'});const ws=wb.Sheets[wb.SheetNames[0]];const csv=XLSX.utils.sheet_to_csv(ws);setBulkImp(x=>({...x,raw:csv}));nf('✅ Loaded '+f.name)}catch(err){nf('Failed to read Excel file: '+err.message,'error')}};reader.readAsArrayBuffer(f)}
+                  else{const reader=new FileReader();reader.onload=ev=>{setBulkImp(x=>({...x,raw:ev.target.result}));nf('✅ Loaded '+f.name)};reader.readAsText(f)}}}
+                onClick={()=>{const input=document.createElement('input');input.type='file';input.accept='.csv,.tsv,.txt,.xlsx,.xls';
                   input.onchange=ev=>{const f=ev.target.files[0];if(!f)return;
-                    const reader=new FileReader();reader.onload=e2=>{setBulkImp(x=>({...x,raw:e2.target.result}));nf('✅ Loaded '+f.name)};reader.readAsText(f)};input.click()}}>
-                📂 Drop CSV/TSV file here or click to browse
+                    const isXls=/\.xlsx?$/i.test(f.name);
+                    if(isXls){const reader=new FileReader();reader.onload=e2=>{try{const wb=XLSX.read(e2.target.result,{type:'array'});const ws=wb.Sheets[wb.SheetNames[0]];const csv=XLSX.utils.sheet_to_csv(ws);setBulkImp(x=>({...x,raw:csv}));nf('✅ Loaded '+f.name)}catch(err){nf('Failed to read Excel file: '+err.message,'error')}};reader.readAsArrayBuffer(f)}
+                    else{const reader=new FileReader();reader.onload=e2=>{setBulkImp(x=>({...x,raw:e2.target.result}));nf('✅ Loaded '+f.name)};reader.readAsText(f)}};input.click()}}>
+                📂 Drop CSV/TSV/Excel file here or click to browse
                 {bulkImp.raw&&<div style={{marginTop:6,color:'#22c55e',fontWeight:600}}>✅ {bulkImp.raw.replace(/\r\n?/g,'\n').split('\n').length-1} rows loaded</div>}
               </div>
 
