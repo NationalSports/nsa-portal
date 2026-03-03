@@ -11993,7 +11993,7 @@ export default function App(){
                           allItems.push({sku:item.sku,name:item.name,color:item.color||'',sizes:{...safeSizes(item)},soId,itemIdx:iIdx});
                         });
                       });
-                      setShipModal({grp,soMap:grp.soMap,boxes:[{items:allItems.length>0?allItems.map(it=>({...it,sizes:{...it.sizes}})):[],tracking_number:'',carrier:'fedex',weight:5,dimensions:{length:'',width:'',height:''},notes:''}]});
+                      setShipModal({grp,soMap:grp.soMap,availableItems:allItems,boxes:[{items:[],tracking_number:'',carrier:'fedex',weight:5,dimensions:{length:'',width:'',height:''},notes:''}]});
                     }}>📦 Create Shipment</button>
                   <button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 10px'}}
                     onClick={()=>{
@@ -12083,10 +12083,15 @@ export default function App(){
                         nf('Creating ShipStation label...');
                         const label=await createShipStationLabel(so,c2,box.items,box.weight,box.carrier,'fedex_ground',box.dimensions);
                         const b=[...shipModal.boxes];
-                        b[bi]={...b[bi],tracking_number:label.trackingNumber||'',carrier:label.carrierCode||box.carrier,label_url:label.labelData?.href||null,shipstation_shipment_id:label.shipmentId||null};
+                        const cost=label.shipmentCost||label.insuranceCost?parseFloat(label.shipmentCost||0)+parseFloat(label.insuranceCost||0):null;
+                        b[bi]={...b[bi],tracking_number:label.trackingNumber||'',carrier:label.carrierCode||box.carrier,label_url:label.labelData?.href||null,shipstation_shipment_id:label.shipmentId||null,shipping_cost:cost};
                         setShipModal({...shipModal,boxes:b});
-                        nf('✅ Label created! Tracking: '+(label.trackingNumber||'pending'));
-                        if(label.shipmentCost)nf('Label cost: $'+label.shipmentCost);
+                        // Save shipping cost to SO
+                        if(cost){
+                          const existingCost=safeNum(so._shipping_cost||so._shipstation_cost||0);
+                          setSOs(prev=>prev.map(s=>s.id===soId?{...s,_shipping_cost:existingCost+cost,_shipstation_cost:existingCost+cost}:s));
+                        }
+                        nf('✅ Label created! Tracking: '+(label.trackingNumber||'pending')+(cost?' · Cost: $'+cost.toFixed(2):''));
                       }catch(err){nf('Label creation failed: '+err.message,'error')}
                     }}>🏷️ Create Label</button>}
                 </div>
@@ -12125,8 +12130,64 @@ export default function App(){
                     </tr>})}</tbody>
                 </table>}
 
+                {/* Add items from available list */}
+                {(()=>{
+                  const avail=(shipModal.availableItems||[]).filter(ai=>{
+                    // Show items not yet fully added to ANY box
+                    const inBoxes=shipModal.boxes.reduce((a,bx)=>{
+                      const match=(bx.items||[]).find(bi2=>bi2.soId===ai.soId&&bi2.itemIdx===ai.itemIdx);
+                      if(match)Object.entries(match.sizes||{}).forEach(([sz,v])=>{a[sz]=(a[sz]||0)+v});
+                      return a;
+                    },{});
+                    const remaining=Object.entries(ai.sizes||{}).some(([sz,v])=>v>(inBoxes[sz]||0));
+                    return remaining;
+                  });
+                  if(avail.length===0)return null;
+                  return<div style={{marginTop:8,padding:8,background:'#eff6ff',borderRadius:6,border:'1px dashed #93c5fd'}}>
+                    <div style={{fontSize:10,fontWeight:700,color:'#1e40af',textTransform:'uppercase',marginBottom:6}}>Add items to this box</div>
+                    <table style={{width:'100%',fontSize:11,borderCollapse:'collapse'}}>
+                      <thead><tr style={{borderBottom:'1px solid #bfdbfe'}}>
+                        <th style={{padding:'3px 6px',textAlign:'left',fontSize:10,color:'#1e40af'}}>SO#</th>
+                        <th style={{padding:'3px 6px',textAlign:'left',fontSize:10,color:'#1e40af'}}>SKU</th>
+                        <th style={{padding:'3px 6px',textAlign:'left',fontSize:10,color:'#1e40af'}}>Item</th>
+                        <th style={{padding:'3px 6px',textAlign:'left',fontSize:10,color:'#1e40af'}}>Sizes</th>
+                        <th style={{padding:'3px 6px',textAlign:'center',fontSize:10,color:'#1e40af'}}>Qty</th>
+                        <th style={{width:60}}></th>
+                      </tr></thead>
+                      <tbody>{avail.map((ai,aii)=>{
+                        const inBoxes={};
+                        shipModal.boxes.forEach(bx=>{const match=(bx.items||[]).find(bi2=>bi2.soId===ai.soId&&bi2.itemIdx===ai.itemIdx);
+                          if(match)Object.entries(match.sizes||{}).forEach(([sz,v])=>{inBoxes[sz]=(inBoxes[sz]||0)+v})});
+                        const remainingSizes={};
+                        Object.entries(ai.sizes||{}).forEach(([sz,v])=>{const rem=v-(inBoxes[sz]||0);if(rem>0)remainingSizes[sz]=rem});
+                        const remQty=Object.values(remainingSizes).reduce((a,v)=>a+v,0);
+                        return<tr key={aii} style={{borderBottom:'1px solid #dbeafe'}}>
+                          <td style={{padding:'3px 6px',fontFamily:'monospace',fontSize:10,color:'#64748b'}}>{ai.soId}</td>
+                          <td style={{padding:'3px 6px',fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{ai.sku}</td>
+                          <td style={{padding:'3px 6px',fontSize:10}}>{ai.name}</td>
+                          <td style={{padding:'3px 6px',fontSize:10,color:'#475569'}}>{Object.entries(remainingSizes).map(([sz,v])=>sz+':'+v).join(' ')}</td>
+                          <td style={{padding:'3px 6px',textAlign:'center',fontWeight:700}}>{remQty}</td>
+                          <td style={{padding:'3px 6px'}}>
+                            <button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#2563eb',color:'white',border:'none',borderRadius:4}}
+                              onClick={()=>{
+                                const b=[...shipModal.boxes];
+                                const existing=(b[bi].items||[]).findIndex(x=>x.soId===ai.soId&&x.itemIdx===ai.itemIdx);
+                                if(existing>=0){
+                                  const merged={...b[bi].items[existing],sizes:{}};
+                                  Object.entries(ai.sizes||{}).forEach(([sz,v])=>{merged.sizes[sz]=(b[bi].items[existing].sizes[sz]||0)+(remainingSizes[sz]||0)});
+                                  b[bi]={...b[bi],items:b[bi].items.map((x,xi)=>xi===existing?merged:x)};
+                                } else {
+                                  b[bi]={...b[bi],items:[...(b[bi].items||[]),{sku:ai.sku,name:ai.name,color:ai.color||'',sizes:{...remainingSizes},soId:ai.soId,itemIdx:ai.itemIdx}]};
+                                }
+                                setShipModal({...shipModal,boxes:b});
+                              }}>+ Add</button>
+                          </td>
+                        </tr>})}</tbody>
+                    </table>
+                  </div>})()}
+
                 {/* Notes */}
-                <input className="form-input" placeholder="Box notes (optional)..." value={box.notes||''} style={{fontSize:11,padding:'3px 8px'}}
+                <input className="form-input" placeholder="Box notes (optional)..." value={box.notes||''} style={{fontSize:11,padding:'3px 8px',marginTop:8}}
                   onChange={e=>{const b=[...shipModal.boxes];b[bi]={...b[bi],notes:e.target.value};setShipModal({...shipModal,boxes:b})}}/>
 
                 {/* Per-box packing slip */}
@@ -12156,6 +12217,7 @@ export default function App(){
                     });
                     nf('🖨️ Packing slip for Box '+(bi+1));
                   }}>🖨️ Pack Slip</button>
+                  {box.shipping_cost&&<span style={{fontSize:10,fontWeight:700,color:'#166534',padding:'4px 8px',background:'#dcfce7',borderRadius:4}}>Ship cost: ${box.shipping_cost.toFixed(2)}</span>}
                   {box.label_url&&<a href={box.label_url} target="_blank" rel="noreferrer" className="btn btn-sm" style={{fontSize:10,textDecoration:'none',background:'#7c3aed',color:'white',border:'none',padding:'4px 10px'}}>🏷️ Print Label</a>}
                   {box.tracking_number&&!box.label_url&&<button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{
                     const trackUrl=box.tracking_number;
