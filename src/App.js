@@ -384,9 +384,9 @@ const _pick=(obj,cols)=>{const r={};cols.forEach(c=>{if(c in obj)r[c]=obj[c]});r
 const _estCols=['id','customer_id','memo','status','created_by','created_at','updated_at','default_markup','shipping_type','shipping_value','ship_to_id','email_status','email_opened_at','email_viewed_at','deleted_at'];
 const _soCols=['id','customer_id','estimate_id','memo','status','created_by','created_at','updated_at','expected_date','production_notes','shipping_type','shipping_value','ship_to_id','default_markup','omg_store_id','_shipstation_order_id','_shipping_status','_tracking_number','_carrier','_ship_date','_tracking_url','_shipped','_shipments','_shipping_cost','deleted_at'];
 const _itemCols=['product_id','sku','name','brand','color','nsa_cost','retail_price','unit_sell','sizes','available_sizes','_colors','no_deco','is_custom','custom_desc','custom_cost','custom_sell'];
-const _decoCols=['kind','position','type','art_file_id','art_tbd_type','tbd_colors','tbd_stitches','tbd_dtf_size','sell_override','sell_each','cost_each','underbase','two_color','colors','stitches','dtf_size','num_method','num_size','num_font','roster','names','names_list','vendor','deco_type','notes','custom_font_art_id','_showRoster','print_color','front_and_back','num_qty','name_qty'];
+const _decoCols=['kind','position','type','art_file_id','art_tbd_type','tbd_colors','tbd_stitches','tbd_dtf_size','sell_override','sell_each','cost_each','underbase','two_color','colors','stitches','dtf_size','num_method','num_size','num_size_back','num_font','roster','names','names_list','vendor','deco_type','notes','custom_font_art_id','_showRoster','print_color','front_and_back','num_qty','name_qty'];
 // Columns added in later migrations — may not exist in production DB yet; stripped on insert retry
-const _decoExtraCols=new Set(['print_color','front_and_back','num_qty','name_qty','num_font']);
+const _decoExtraCols=new Set(['print_color','front_and_back','num_qty','name_qty','num_font','num_size_back']);
 const _artCols=['id','name','deco_type','ink_colors','thread_colors','art_size','files','mockup_files','prod_files','notes','status','uploaded'];
 const _jobCols=['id','key','art_file_id','art_name','deco_type','positions','art_status','item_status','prod_status','total_units','fulfilled_units','split_from','created_at','assigned_machine','assigned_to','ship_method','items','_auto','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected'];
 const _custCols=['id','parent_id','name','alpha_tag','billing_address_line1','billing_address_line2','billing_city','billing_state','billing_zip','shipping_address_line1','shipping_address_line2','shipping_city','shipping_state','shipping_zip','adidas_ua_tier','catalog_markup','payment_terms','tax_rate','tax_exempt','primary_rep_id','notes','is_active','created_at','updated_at'];
@@ -2186,6 +2186,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           {isSO&&o.estimate_id&&onViewEstimate&&<div style={{fontSize:11,color:'#7c3aed'}}>From: <span style={{cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={()=>onViewEstimate(o.estimate_id)} title="Open source estimate">{o.estimate_id}</span></div>}
           {isE&&o.status==='converted'&&(()=>{const linkedSO=(allOrders||[]).find(s=>s.estimate_id===o.id);return linkedSO&&onViewSO?<div style={{fontSize:11,color:'#7c3aed'}}>Converted to: <span style={{cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={()=>onViewSO(linkedSO.id)} title="Open sales order">{linkedSO.id}</span></div>:null})()}
           <div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>By {REPS.find(r=>r.id===o.created_by)?.name} · {o.created_at}</div>
+          {cust?.alpha_tag&&<div style={{fontSize:11,marginTop:2}}><a href={'/?portal='+cust.alpha_tag} target="_blank" rel="noreferrer" style={{color:'#7c3aed',textDecoration:'none',fontWeight:500}}>🔗 Customer Portal</a></div>}
           {isSO&&(o._shipments||[]).length>0&&<div style={{padding:8,background:'#f0fdf4',borderRadius:6,marginTop:8}}>
             <strong>Shipped:</strong> {(o._shipments||[]).length} package{(o._shipments||[]).length!==1?'s':''} —{' '}
             {(o._shipments||[]).map((s,si)=>s.tracking_number?<a key={si} href={s.tracking_url||((/^1Z/i.test(s.tracking_number))?'https://www.ups.com/track?tracknum='+s.tracking_number:'https://www.fedex.com/fedextrack/?trknbr='+s.tracking_number)} target="_blank" rel="noreferrer" style={{fontFamily:'monospace',fontSize:11,marginRight:6}}>{s.tracking_number}</a>:<span key={si} style={{fontSize:11,color:'#94a3b8',marginRight:6}}>Box {si+1} (no tracking)</span>)}
@@ -2267,7 +2268,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                 decos.forEach(d=>{
                   const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);
                   const artF=af.find(a2=>a2.id===d.art_file_id);
-                  const decoLabel=(d.kind==='art'?(artF?.deco_type||d.art_tbd_type||'decoration'):d.kind==='numbers'?'Numbers ('+(d.num_method||'heat transfer').replace(/_/g,' ')+' '+(d.num_size||'4"')+(d.print_color?' — '+d.print_color:'')+')'+(d.front_and_back?' F+B':''):d.kind==='names'?'Names'+(d.print_color?' ('+d.print_color+')':''):d.kind==='outside_deco'?(d.deco_type||'Decoration'):'Decoration').replace(/_/g,' ');
+                  const decoLabel=(d.kind==='art'?(artF?.deco_type||d.art_tbd_type||'decoration'):d.kind==='numbers'?'Numbers ('+(d.num_method||'heat transfer').replace(/_/g,' ')+' '+(d.front_and_back?'F:'+(d.num_size||'4"')+' B:'+(d.num_size_back||d.num_size||'4"'):(d.num_size||'4"'))+(d.print_color?' — '+d.print_color:'')+')'+(d.front_and_back?' F+B':''):d.kind==='names'?'Names'+(d.print_color?' ('+d.print_color+')':''):d.kind==='outside_deco'?(d.deco_type||'Decoration'):'Decoration').replace(/_/g,' ');
                   const posLabel=d.position?' — '+d.position:'';
                   let numHtml='';
                   if(d.kind==='numbers'&&d.roster){const szOrd2=['XS','S','M','L','XL','2XL','3XL','4XL'];
@@ -2569,12 +2570,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
               <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:6}}>
                 <span style={{fontSize:12,fontWeight:600,color:'#64748b'}}>Method:</span>
                 <Bg options={[{value:'heat_transfer',label:'Heat Transfer'},{value:'embroidery',label:'Embroidery'},{value:'screen_print',label:'Screen Print'}]} value={nm} onChange={v=>{const ns=NUM_SZ[v]||[];const upd={...o.items[idx].decorations[di],num_method:v,num_size:ns[Math.min(2,ns.length-1)]||ns[0]||'4"',num_font:null,custom_font_art_id:null};uI(idx,'decorations',o.items[idx].decorations.map((dd,ii)=>ii===di?upd:dd))}}/>
-                <span style={{fontSize:12,fontWeight:600,color:'#64748b',marginLeft:4}}>Size:</span>
+                <span style={{fontSize:12,fontWeight:600,color:'#64748b',marginLeft:4}}>{deco.front_and_back?'Size (Front):':'Size:'}</span>
                 <Bg options={szOpts.map(s=>({value:s,label:s}))} value={deco.num_size||szOpts[0]} onChange={v=>uD(idx,di,'num_size',v)}/>
                 <label style={{fontSize:12,display:'flex',alignItems:'center',gap:4,marginLeft:4}}><input type="checkbox" checked={deco.two_color||false} onChange={e=>uD(idx,di,'two_color',e.target.checked)}/> 2-Color (+$3)</label>
                 <span style={{fontSize:12,fontWeight:600,color:'#64748b',marginLeft:4}}>Color:</span>
                 <input className="form-input" style={{width:90,fontSize:12,padding:'2px 6px'}} placeholder="e.g. White" value={deco.print_color||''} onChange={e=>uD(idx,di,'print_color',e.target.value)}/>
               </div>
+              {deco.front_and_back&&<div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:6}}>
+                <span style={{fontSize:12,fontWeight:600,color:'#64748b'}}>Size (Back):</span>
+                <Bg options={szOpts.map(s=>({value:s,label:s}))} value={deco.num_size_back||deco.num_size||szOpts[0]} onChange={v=>uD(idx,di,'num_size_back',v)}/>
+              </div>}
               {/* Font selection */}
               <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:6}}>
                 <span style={{fontSize:12,fontWeight:600,color:'#64748b'}}>Font:</span>
@@ -3877,7 +3882,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
             <tbody><tr style={{fontSize:10,color:'#64748b'}}>{szList.map(([sz])=>{const need=item.sizes[sz]||0;const inv=p?._inv?.[sz]||0;const picked=(item.pick_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const po=poCommitted(item.po_lines,sz);const open=Math.max(0,need-picked-po);return<td key={sz} style={{padding:'2px 8px',textAlign:'center'}}>open: {open} | inv: {inv}</td>})}<td/></tr>
             <tr>{szList.map(([sz,v])=>{const need=item.sizes[sz]||0;const inv=p?._inv?.[sz]||0;const picked=(item.pick_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const po=poCommitted(item.po_lines,sz);const open=Math.max(0,need-picked-po);return<td key={sz} style={{padding:'4px 8px',textAlign:'center'}}><input id={'pick-qty-'+vi+'-'+sz} style={{width:42,textAlign:'center',border:v<open?'2px solid #f59e0b':'1px solid #10b981',borderRadius:3,padding:'3px',fontSize:14,fontWeight:700,background:v<open?'#fef3c7':'#dcfce7'}} defaultValue={v}/></td>})}<td style={{padding:'4px 8px',textAlign:'center',fontWeight:800,fontSize:14}}>{q}</td></tr></tbody></table>
             {safeDecos(item).filter(d=>d.kind==='art').map((d,di)=>{const art=af.find(a=>a.id===d.art_file_id);return art?<div key={di} style={{fontSize:12,marginTop:6,padding:'4px 8px',background:'#f0fdf4',borderRadius:4}}>🎨 {art.name} — {art.deco_type} @ {d.position}{d.underbase?' [Underbase]':''}</div>:null})}
-            {safeDecos(item).filter(d=>d.kind==='numbers').map((d,di)=><div key={di} style={{fontSize:12,marginTop:4,padding:'4px 8px',background:'#f0f9ff',borderRadius:4}}>#️⃣ Numbers — {d.num_method} {d.num_size} @ {d.position}</div>)}
+            {safeDecos(item).filter(d=>d.kind==='numbers').map((d,di)=><div key={di} style={{fontSize:12,marginTop:4,padding:'4px 8px',background:'#f0f9ff',borderRadius:4}}>#️⃣ Numbers — {d.num_method} {d.front_and_back?'F:'+d.num_size+' B:'+(d.num_size_back||d.num_size):d.num_size} @ {d.position}{d.front_and_back?' (F+B)':''}</div>)}
           </div>})}
       </div>}
       <div className="modal-footer">
@@ -7055,7 +7060,7 @@ export default function App(){
           _dbLoadSuccess.current=true;
           _dbSnap.current={ests:d.estimates,sos:d.sales_orders,invs:d.invoices,msgs:d.messages,cust:d.customers,prod:d.products,vend:d.vendors,team:d.team,omg:d.omg_stores,issues:d.issues};
           setREPS(d.team.length?d.team:DEFAULT_REPS);setCust(d.customers);
-          if(d.vendors.length)setVend(d.vendors);setProd(d.products.length?d.products:prod);
+          if(d.vendors.length)setVend(d.vendors);setProd(prev=>{if(!d.products.length)return prev;const merged=d.products.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));return localOnly.length?[...merged,...localOnly]:merged});
           setEsts(d.estimates);setSOs(d.sales_orders);
           setInvs(d.invoices);setMsgs(d.messages.length?d.messages:msgs);
           if(d.omg_stores.length)setOmgStores(d.omg_stores);
@@ -7210,7 +7215,7 @@ export default function App(){
         setCust(prev=>changed(prev,d.customers)?d.customers:prev);
         if(d.messages.length)setMsgs(prev=>changed(prev,d.messages)?d.messages:prev);
         if(d.issues.length)setIssues(prev=>changed(prev,d.issues)?d.issues:prev);
-        if(d.products.length)setProd(prev=>{if(!changed(prev,d.products))return prev;const merged=d.products.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));return localOnly.length?[...merged,...localOnly]:merged});
+        if(d.products.length)setProd(prev=>{if(!changed(prev,d.products))return prev;const merged=d.products.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));return localOnly.length?[...merged,...localOnly]:merged});
         // Refresh app_state keys (batch POs, inventory POs, etc.)
         const as=d.appState||{};
         if(as.inv_pos)setInvPOs(prev=>JSON.stringify(prev)!==JSON.stringify(as.inv_pos)?as.inv_pos:prev);
@@ -8224,14 +8229,11 @@ export default function App(){
               <div style={{fontSize:10,fontWeight:700,color:'#64748b',marginBottom:4}}>Additional Images</div>
               <ImgGallery images={ep.images||[]} onUpdate={imgs=>setEp(x=>({...x,images:imgs}))} onError={e=>nf(e,'error')} maxImages={10}/>
             </div>
-            </>:<>
-            <div style={{display:'flex',gap:6}}>
-              {ep.image_url?<div style={{textAlign:'center'}}><img src={ep.image_url} alt="Front" style={{width:80,height:80,objectFit:'cover',borderRadius:6,border:'1px solid #e2e8f0'}}/><div style={{fontSize:9,color:'#64748b',fontWeight:600}}>Front</div></div>:null}
-              {ep.back_image_url?<div style={{textAlign:'center'}}><img src={ep.back_image_url} alt="Back" style={{width:80,height:80,objectFit:'cover',borderRadius:6,border:'1px solid #e2e8f0'}}/><div style={{fontSize:9,color:'#64748b',fontWeight:600}}>Back</div></div>:null}
-              {!ep.image_url&&!ep.back_image_url&&<div style={{width:80,height:80,borderRadius:6,border:'1px solid #e2e8f0',display:'flex',alignItems:'center',justifyContent:'center',background:'#f8fafc'}}><span style={{fontSize:18,opacity:0.3}}>📷</span></div>}
-            </div>
-            {(ep.images||[]).length>0&&<div style={{display:'flex',gap:4,flexWrap:'wrap'}}>{ep.images.map((url,i)=><img key={i} src={url} alt="" style={{width:36,height:36,objectFit:'cover',borderRadius:4,border:'1px solid #e2e8f0'}}/>)}</div>}
-            </>}
+            </>:(()=>{const primaryImg=ep.image_url||(ep.images&&ep.images[0])||null;const secondaryImgs=[ep.back_image_url,...(ep.images||[]).filter(u=>u!==primaryImg)].filter(Boolean);return<>
+            {primaryImg?<img src={primaryImg} alt="Primary" style={{width:170,height:170,objectFit:'cover',borderRadius:8,border:'1px solid #e2e8f0'}}/>
+            :<div style={{width:170,height:170,borderRadius:8,border:'1px solid #e2e8f0',display:'flex',alignItems:'center',justifyContent:'center',background:'#f8fafc'}}><span style={{fontSize:28,opacity:0.3}}>📷</span></div>}
+            {secondaryImgs.length>0&&<div style={{display:'flex',gap:4,flexWrap:'wrap'}}>{secondaryImgs.map((url,i)=><img key={i} src={url} alt="" style={{width:40,height:40,objectFit:'cover',borderRadius:4,border:'1px solid #e2e8f0'}}/>)}</div>}
+            </>})()}
           </div>
           <div style={{flex:1}}>
             {!editing?<>
@@ -8444,11 +8446,11 @@ export default function App(){
   <div className="card"><div className="card-body" style={{padding:0}}>
   {fP.map(p=>{const nt=Object.values(p._inv||{}).reduce((a,v)=>a+v,0);const au=p.brand==='Adidas'||p.brand==='Under Armour';
     return(<div key={p.id} style={{padding:'14px 16px',borderBottom:'1px solid #f1f5f9',cursor:'pointer'}} onClick={()=>setSelP(p)}><div style={{display:'flex',gap:14,alignItems:'flex-start'}}>
-      <div style={{display:'flex',gap:4,alignItems:'center'}} onClick={e=>e.stopPropagation()}>
-        {p.image_url?<img src={p.image_url} alt="" style={{width:48,height:48,objectFit:'cover',borderRadius:6,border:'1px solid #e2e8f0',flexShrink:0}}/>
-        :<div style={{width:48,height:48,borderRadius:6,border:'1px solid #e2e8f0',display:'flex',alignItems:'center',justifyContent:'center',background:'#f8fafc',flexShrink:0}}><span style={{fontSize:14,opacity:0.3}}>📷</span></div>}
+      <div style={{display:'flex',gap:4,alignItems:'center'}}>
+        {(()=>{const img=p.image_url||(p.images&&p.images[0])||null;return img?<img src={img} alt="" style={{width:48,height:48,objectFit:'cover',borderRadius:6,border:'1px solid #e2e8f0',flexShrink:0}}/>
+        :<div style={{width:48,height:48,borderRadius:6,border:'1px solid #e2e8f0',display:'flex',alignItems:'center',justifyContent:'center',background:'#f8fafc',flexShrink:0}}><span style={{fontSize:14,opacity:0.3}}>📷</span></div>})()}
         {p.back_image_url&&<img src={p.back_image_url} alt="" style={{width:48,height:48,objectFit:'cover',borderRadius:6,border:'1px solid #e2e8f0',flexShrink:0}}/>}
-        {(p.images||[]).length>0&&<span style={{fontSize:9,color:'#7c3aed',fontWeight:700,background:'#f5f3ff',padding:'2px 6px',borderRadius:4}}>+{(p.images||[]).length}</span>}
+        {(p.images||[]).length>1&&<span style={{fontSize:9,color:'#7c3aed',fontWeight:700,background:'#f5f3ff',padding:'2px 6px',borderRadius:4}}>+{(p.images||[]).length-1}</span>}
       </div>
       <div style={{flex:1}}>
         <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}><span style={{fontFamily:'monospace',fontWeight:800,background:'#dbeafe',padding:'2px 8px',borderRadius:3,color:'#1e40af'}}>{p.sku}</span><span style={{fontWeight:700}}>{p.name}</span>{p._colors&&<span style={{fontSize:10,color:'#7c3aed'}}>{p._colors.length} clr</span>}</div>
@@ -9273,7 +9275,8 @@ export default function App(){
             const rcvd=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
             fulSizes[sz]=Math.min(v,picked+rcvd);
           });
-          return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,fulSizes};
+          const prd=prod.find(pp=>pp.id===it.product_id||pp.sku===it.sku);
+          return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,fulSizes,image_url:prd?.image_url||(prd?.images&&prd.images[0])||'',images:prd?.images||[]};
         }).filter(Boolean);
         const allSizes=SZ_ORD.filter(sz=>itemDetails.some(it=>it.sizes[sz]>0));
         // Parse colors for display
@@ -9410,6 +9413,7 @@ export default function App(){
                 const rowTotal=Object.values(gi.sizes).reduce((a,v)=>a+v,0);
                 return<div key={gii} style={{marginBottom:gii<itemDetails.length-1?12:0}}>
                   <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
+                    {gi.image_url&&<img src={gi.image_url} alt="" style={{width:36,height:36,objectFit:'cover',borderRadius:4,border:'1px solid #e2e8f0',flexShrink:0}}/>}
                     <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:12}}>{gi.sku}</span>
                     <span style={{fontWeight:600,fontSize:13}}>{gi.name}</span>
                     <span style={{color:'#64748b',fontSize:12}}>({gi.color})</span>
@@ -12899,7 +12903,7 @@ export default function App(){
           const sizes={};
           Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{sizes[sz]=v});
           const prd=prod.find(pp=>pp.id===it.product_id||pp.sku===it.sku);
-          return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,image_url:prd?.image_url||'',back_image_url:prd?.back_image_url||''};
+          return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,image_url:prd?.image_url||(prd?.images&&prd.images[0])||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||'',images:prd?.images||[]};
         }).filter(Boolean);
         const allSizes=SZ_ORD.filter(sz=>itemDetails.some(it=>it.sizes[sz]>0));
 
@@ -12997,6 +13001,7 @@ export default function App(){
                 const rowTotal=Object.values(gi.sizes).reduce((a,v)=>a+v,0);
                 return<div key={gii} style={{marginBottom:gii<itemDetails.length-1?10:0}}>
                   <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
+                    {gi.image_url&&<img src={gi.image_url} alt="" style={{width:36,height:36,objectFit:'cover',borderRadius:4,border:'1px solid #e2e8f0',flexShrink:0}}/>}
                     <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:12}}>{gi.sku}</span>
                     <span style={{fontWeight:600,fontSize:13}}>{gi.name}</span>
                     <span style={{color:'#64748b',fontSize:12}}>({gi.color})</span>
@@ -13092,7 +13097,7 @@ export default function App(){
           const sizes={};
           Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{sizes[sz]=v});
           const prd=prod.find(pp=>pp.id===it.product_id||pp.sku===it.sku);
-          return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,image_url:prd?.image_url||'',back_image_url:prd?.back_image_url||''};
+          return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,image_url:prd?.image_url||(prd?.images&&prd.images[0])||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||'',images:prd?.images||[]};
         }).filter(Boolean);
         const allSizes=SZ_ORD.filter(sz=>itemDetails.some(it=>it.sizes[sz]>0));
 
@@ -13336,6 +13341,7 @@ export default function App(){
                 const rowTotal=Object.values(gi.sizes).reduce((a,v)=>a+v,0);
                 return<div key={gii} style={{marginBottom:gii<itemDetails.length-1?10:0}}>
                   <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
+                    {gi.image_url&&<img src={gi.image_url} alt="" style={{width:36,height:36,objectFit:'cover',borderRadius:4,border:'1px solid #e2e8f0',flexShrink:0}}/>}
                     <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:12}}>{gi.sku}</span>
                     <span style={{fontWeight:600,fontSize:12}}>{gi.name}</span>
                     {gi.color&&<span style={{color:'#64748b',fontSize:11}}>({gi.color})</span>}
