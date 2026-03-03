@@ -187,7 +187,7 @@ const _dbSaveEstimateInner = async (est) => {
       const{data:inserted,error:itemErr}=await supabase.from('estimate_items').insert({..._pick(itemData,_itemCols),estimate_id:est.id,item_index:idx}).select('id').single();
       if(itemErr){console.error('[DB] estimate_items insert failed:',itemErr.message,itemErr.details);decoFailed=true;continue}
       if(inserted&&decorations?.length){
-        const decoRows=decorations.map((d,di)=>({..._pick(d,_decoCols),estimate_item_id:inserted.id,deco_index:di}));
+        const decoRows=decorations.map((d,di)=>({..._pick(_sanitizeDeco(d),_decoCols),estimate_item_id:inserted.id,deco_index:di}));
         const{error:decoErr}=await supabase.from('estimate_item_decorations').insert(decoRows);
         if(decoErr){
           console.warn('[DB] estimate_item_decorations batch failed, retrying individually:',decoErr.message);
@@ -240,7 +240,7 @@ const _dbSaveSOInner = async (so) => {
       if(itemErr){console.error('[DB] so_items insert failed:',itemErr.message,itemErr.details);decoFailed=true;continue}
       if(!inserted)continue;
       if(decorations?.length){
-        const decoRows=decorations.map((d,di)=>({..._pick(d,_decoCols),so_item_id:inserted.id,deco_index:di}));
+        const decoRows=decorations.map((d,di)=>({..._pick(_sanitizeDeco(d),_decoCols),so_item_id:inserted.id,deco_index:di}));
         const{error:decoErr}=await supabase.from('so_item_decorations').insert(decoRows);
         if(decoErr){
           console.warn('[DB] so_item_decorations batch failed, retrying individually:',decoErr.message);
@@ -407,7 +407,9 @@ const _soCols=['id','customer_id','estimate_id','memo','status','created_by','cr
 const _itemCols=['product_id','sku','name','brand','color','nsa_cost','retail_price','unit_sell','sizes','available_sizes','_colors','no_deco','is_custom','custom_desc','custom_cost','custom_sell'];
 const _decoCols=['kind','position','type','art_file_id','art_tbd_type','tbd_colors','tbd_stitches','tbd_dtf_size','sell_override','sell_each','cost_each','underbase','two_color','colors','stitches','dtf_size','num_method','num_size','num_size_back','num_font','roster','names','names_list','vendor','deco_type','notes','custom_font_art_id','_showRoster','print_color','front_and_back','num_qty','name_qty'];
 // Columns added in later migrations — may not exist in production DB yet; stripped on insert retry
-const _decoExtraCols=new Set(['print_color','front_and_back','num_qty','name_qty','num_font','num_size_back']);
+const _decoExtraCols=new Set(['print_color','front_and_back','num_qty','name_qty','num_font','num_size_back','_showRoster']);
+// Sanitize decoration data before DB insert — strip UI-only placeholders that would violate constraints
+const _sanitizeDeco=(d)=>{const r={...d};if(r.custom_font_art_id&&r.custom_font_art_id==='pending')r.custom_font_art_id=null;if(r.art_file_id&&r.art_file_id==='__tbd')r.art_file_id=null;return r};
 const _artCols=['id','name','deco_type','ink_colors','thread_colors','art_size','files','mockup_files','prod_files','notes','status','uploaded'];
 const _jobCols=['id','key','art_file_id','art_name','deco_type','positions','art_status','item_status','prod_status','total_units','fulfilled_units','split_from','created_at','assigned_machine','assigned_to','ship_method','items','_auto','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected'];
 const _custCols=['id','parent_id','name','alpha_tag','billing_address_line1','billing_address_line2','billing_city','billing_state','billing_zip','shipping_address_line1','shipping_address_line2','shipping_city','shipping_state','shipping_zip','adidas_ua_tier','catalog_markup','payment_terms','tax_rate','tax_exempt','primary_rep_id','notes','is_active','created_at','updated_at'];
