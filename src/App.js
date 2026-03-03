@@ -87,7 +87,7 @@ const _dbLoad = async () => {
     // Customers: attach contacts array
     const customers=custRaw.map(c=>({...c,contacts:contacts.filter(ct=>ct.customer_id===c.id).sort((a,b)=>a.sort_order-b.sort_order).map(ct=>({name:ct.name,email:ct.email,phone:ct.phone,role:ct.role}))}));
     // Products: attach _inv and _alerts from product_inventory
-    const products=prodRaw.map(p=>{const invRows=prodInv.filter(pi=>pi.product_id===p.id);const _inv={};const _alerts={};invRows.forEach(r=>{_inv[r.size]=r.quantity;if(r.alert_threshold)_alerts[r.size]=r.alert_threshold});return{...p,image_url:p.image_url||p.image_front_url||'',back_image_url:p.back_image_url||p.image_back_url||'',images:p.images||[],_inv,_alerts}});
+    const products=prodRaw.map(p=>{const invRows=prodInv.filter(pi=>pi.product_id===p.id);const _inv={};const _alerts={};invRows.forEach(r=>{_inv[r.size]=r.quantity;if(r.alert_threshold)_alerts[r.size]=r.alert_threshold});return{...p,image_url:p.image_url||p.image_front_url||'',back_image_url:p.back_image_url||p.image_back_url||'',_inv,_alerts}});
     // Estimates: attach items (with decorations) and art_files
     const estimates=estRaw.map(est=>{
       const art_files=estArt.filter(a=>a.estimate_id===est.id).map(a=>({id:a.id,name:a.name,deco_type:a.deco_type,ink_colors:a.ink_colors,thread_colors:a.thread_colors,art_size:a.art_size,files:a.files||[],mockup_files:a.mockup_files||[],prod_files:a.prod_files||[],notes:a.notes,status:a.status,uploaded:a.uploaded}));
@@ -260,13 +260,12 @@ const _dbSaveProduct = async (p) => {
     const row={id:p.id,vendor_id:p.vendor_id||null,sku:p.sku,name:p.name,brand:p.brand||null,color:p.color||null,
       category:p.category||null,retail_price:p.retail_price||0,nsa_cost:p.nsa_cost||0,
       is_active:p.is_active!==false,available_sizes:p.available_sizes||[],_colors:p._colors||null,
-      image_front_url:p.image_url||p.image_front_url||null,image_back_url:p.back_image_url||p.image_back_url||null,
-      images:p.images||null};
+      image_front_url:p.image_url||p.image_front_url||null,image_back_url:p.back_image_url||p.image_back_url||null};
     const{error}=await supabase.from('products').upsert(row,{onConflict:'id'});
     if(error){
-      // If image/images columns don't exist, retry without them
-      if(error.message?.includes('image_front_url')||error.message?.includes('image_back_url')||error.message?.includes('images')){
-        const{image_front_url,image_back_url,images,...rowNoImg}=row;
+      // If image columns don't exist yet, retry without them
+      if(error.message?.includes('image_front_url')||error.message?.includes('image_back_url')){
+        const{image_front_url,image_back_url,...rowNoImg}=row;
         const{error:e2}=await supabase.from('products').upsert(rowNoImg,{onConflict:'id'});
         if(e2){console.error('[DB] save product (no img):',e2.message);if(_dbNotify)_dbNotify('Product save failed: '+e2.message,'error')}
       }else{console.error('[DB] save product:',error.message);if(_dbNotify)_dbNotify('Product save failed: '+error.message,'error')}
