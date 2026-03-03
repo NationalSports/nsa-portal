@@ -1280,7 +1280,7 @@ const convertSOToShipStation = (so, customer) => {
       taxAmount: null, shippingAmount: null, warehouseLocation: null,
       options: Object.entries(item.sizes).filter(([, qty]) => qty > 0)
         .map(([size, qty]) => ({ name: 'Size', value: `${size} (${qty})` })),
-      productId: item.product_id, fulfillmentSku: item.sku, adjustment: false, upc: null
+      productId: item.product_id ? parseInt(item.product_id.replace(/\D/g, ''), 10) || null : null, fulfillmentSku: item.sku, adjustment: false, upc: null
     };
   });
   return {
@@ -1315,8 +1315,10 @@ const convertSOToShipStation = (so, customer) => {
 };
 
 const pushSOToShipStation = async (so, customer) => {
-  if (so.status !== 'in_production') {
-    throw new Error('Only Sales Orders in "in_production" status can be shipped');
+  const shippableStatuses = ['in_production', 'ready_to_invoice', 'items_received'];
+  const soStatus = calcSOStatus(so);
+  if (!shippableStatuses.includes(so.status) && !shippableStatuses.includes(soStatus)) {
+    throw new Error('Only Sales Orders in production or ready to invoice status can be shipped');
   }
   const ssOrder = convertSOToShipStation(so, customer);
   return await shipStationCall('/orders/createorder', { method: 'POST', body: JSON.stringify(ssOrder) });
@@ -3936,8 +3938,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         sv('jobs',newJobs2);setSplitModal(null);nf('Custom split! '+splitId+' with '+splitTotal+' units');
       };
       const updJob=(jIdx,k,v)=>{sv('jobs',jobs.map((j,i)=>i===jIdx?{...j,[k]:v}:j))};
-      const prodStatuses=['hold','staging','in_process','completed','shipped'];
-      const prodLabels={hold:'On Hold',staging:'In Line',in_process:'In Process',completed:'Completed',shipped:'Shipped'};
+      const prodStatuses=['hold','staging','in_process','completed'];
+      const prodLabels={hold:'On Hold',staging:'In Line',in_process:'In Process',completed:'Completed'};
       const artLabels=ART_LABELS;
       const itemLabels={need_to_order:'Need to Order',partially_received:'Partially Received',items_received:'Items Received'};
 
@@ -7545,7 +7547,7 @@ export default function App(){
       // Completed deco jobs → ready to ship
       safeJobs(so).forEach(j=>{
         if(j.prod_status==='completed'){
-          shipTasks.push({so,soId:so.id,type:'deco_done',cName,alpha,rep,daysOut,urgent,
+          shipTasks.push({so,soId:so.id,type:'deco_done',job:j,cName,alpha,rep,daysOut,urgent,
             desc:j.art_name+' ('+j.deco_type?.replace(/_/g,' ')+')',units:j.total_units,
             shipMethod:j.ship_method||'pending'});
         }
@@ -7834,7 +7836,7 @@ export default function App(){
                   {prodDashFilter==='hold'&&j.item_status==='items_received'&&j.art_status==='art_complete'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#f59e0b',color:'white',border:'none'}} onClick={()=>moveJobStatus(j,'staging')}>→ In Line</button>}
                   {prodDashFilter==='staging'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#2563eb',color:'white',border:'none'}} onClick={()=>moveJobStatus(j,'in_process')}>→ In Process</button>}
                   {prodDashFilter==='in_process'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#166534',color:'white',border:'none'}} onClick={()=>moveJobStatus(j,'completed')}>✓ Done</button>}
-                  {prodDashFilter==='completed'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#6d28d9',color:'white',border:'none'}} onClick={()=>moveJobStatus(j,'shipped')}>📦 Ship</button>}
+                  {prodDashFilter==='completed'&&<span style={{fontSize:9,padding:'2px 6px',color:'#166534',fontWeight:600}}>✓ Done — ships from warehouse</span>}
                   <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px'}} onClick={()=>{setESOTab('jobs');setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so?.customer_id));setPg('orders')}}>Open</button>
                 </div>
               </div>
@@ -8667,7 +8669,7 @@ export default function App(){
       else{va=a.id;vb=b.id}
       return jobSortDir==='asc'?(va>vb?1:-1):(va<vb?1:-1)});
     const decoTypes=[...new Set(allJobs.map(j=>j.deco_type).filter(Boolean))];
-    const STATUSES=[['hold','Ready for Prod'],['staging','In Line'],['in_process','In Process'],['completed','Completed'],['shipped','Shipped']];
+    const STATUSES=[['hold','Ready for Prod'],['staging','In Line'],['in_process','In Process'],['completed','Completed']];
     const toggleStatus=st=>{setJobFilters(prev=>{const ss=prev.statuses.includes(st)?prev.statuses.filter(s=>s!==st):[...prev.statuses,st];return{...prev,statuses:ss}})};
     const setJF=(k,v)=>setJobFilters(prev=>({...prev,[k]:v}));
     const toggleSort=f=>{if(jobSortField===f)setJobSortDir(d=>d==='asc'?'desc':'asc');else{setJobSortField(f);setJobSortDir('asc')}};
@@ -8916,8 +8918,8 @@ export default function App(){
     });
     const filtered=prodFilter==='all'?allJobs:allJobs.filter(j=>j.so.created_by===prodFilter);
     const byDeco=prodDecoF==='all'?filtered:filtered.filter(j=>j.deco_type===prodDecoF);
-    const readyOnly=byDeco.filter(j=>j.prod_status!=='hold'||isJobReady(j,j.so));
-    const byStatus=prodStatF==='active'?readyOnly.filter(j=>j.prod_status!=='completed'&&j.prod_status!=='shipped'):prodStatF==='all'?readyOnly:readyOnly.filter(j=>j.prod_status===prodStatF);
+    const readyOnly=byDeco.filter(j=>j.prod_status!=='hold'||isJobReady(j,j.so)).filter(j=>j.prod_status!=='shipped');
+    const byStatus=prodStatF==='active'?readyOnly.filter(j=>j.prod_status!=='completed'):prodStatF==='all'?readyOnly:readyOnly.filter(j=>j.prod_status===prodStatF);
     const totalUnits=byStatus.reduce((a,j)=>a+j.total_units,0);
     const fulfilledUnits=byStatus.reduce((a,j)=>a+j.fulfilled_units,0);
     const needsArt=byStatus.filter(j=>j.art_status!=='art_complete').length;
@@ -8928,7 +8930,6 @@ export default function App(){
       {id:'staging',label:'In Line',color:'#d97706',bg:'#fffbeb'},
       {id:'in_process',label:'In Process',color:'#2563eb',bg:'#eff6ff'},
       {id:'completed',label:'Completed',color:'#166534',bg:'#f0fdf4'},
-      {id:'shipped',label:'Shipped',color:'#6b7280',bg:'#f9fafb'},
     ];
     return(<>
       <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:12,flexWrap:'wrap'}}>
@@ -9067,8 +9068,7 @@ export default function App(){
                     {col.id==='hold'&&<button className="btn btn-sm btn-primary" style={{fontSize:9,padding:'3px 8px'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'staging')}}>→ In Line</button>}
                     {col.id==='staging'&&<><button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'3px 8px'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'hold')}}>← Ready</button>{!j.assigned_to&&<button className="btn btn-sm" style={{fontSize:9,padding:'3px 8px',background:'#6d28d9',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();setAssignModal({job:j,soId:j.soId,targetStatus:'staging'});setAssignTo({machine:j.assigned_machine||'',person:''})}}>👤 Assign</button>}<button className="btn btn-sm btn-primary" style={{fontSize:9,padding:'3px 8px'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'in_process')}}>→ In Process</button></>}
                     {col.id==='in_process'&&<><button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'3px 8px'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'staging')}}>← In Line</button><button className="btn btn-sm btn-primary" style={{fontSize:9,padding:'3px 8px',background:'#166534',borderColor:'#166534'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'completed')}}>✓ Done</button></>}
-                    {col.id==='completed'&&<><button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'3px 8px'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'in_process')}}>← Back</button><button className="btn btn-sm btn-primary" style={{fontSize:9,padding:'3px 8px',background:'#6d28d9',borderColor:'#6d28d9'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'shipped')}}>📦 Ship</button></>}
-                    {col.id==='shipped'&&<button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'3px 8px'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'completed')}}>← Back</button>}
+                    {col.id==='completed'&&<button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'3px 8px'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'in_process')}}>← Back</button>}
                   </div>
                 </div>}
               </div>})}
@@ -11978,14 +11978,6 @@ export default function App(){
                   </tr>)}
                 </tbody></table>
                 <div style={{display:'flex',gap:6,marginTop:8,borderTop:'1px solid #e2e8f0',paddingTop:6}}>
-                  <input className="form-input" placeholder="Scan SKU to verify..." style={{flex:1,fontSize:11,padding:'4px 8px'}}
-                    onKeyDown={e=>{if(e.key==='Enter'){
-                      const sku=e.target.value.trim().toUpperCase();
-                      const match=grp.items.find(t=>(t.desc||'').toUpperCase().includes(sku)||(t.soId||'').toUpperCase().includes(sku));
-                      if(match)nf('✅ Verified: '+sku+' found in '+match.soId);
-                      else nf('❌ '+sku+' not found in this shipment','error');
-                      e.target.value='';
-                    }}}/>
                   <button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
                     onClick={()=>{
                       // Build ship modal with all items from this group, pre-populate one box with everything
@@ -12194,7 +12186,9 @@ export default function App(){
                     }));
                     if(soShipments.length>0){
                       const existing=so._shipments||[];
-                      const updated={...so,_shipments:[...existing,...soShipments],_shipped:true,_shipping_status:'shipped',
+                      // Auto-move completed jobs to shipped when warehouse confirms shipment
+                      const updatedJobs=safeJobs(so).map(jj=>jj.prod_status==='completed'?{...jj,prod_status:'shipped'}:jj);
+                      const updated={...so,jobs:updatedJobs,_shipments:[...existing,...soShipments],_shipped:true,_shipping_status:'shipped',
                         _tracking_number:soShipments[0].tracking_number||so._tracking_number||'',
                         _carrier:soShipments[0].carrier||so._carrier||'',
                         _ship_date:shipDate,
@@ -13382,6 +13376,19 @@ export default function App(){
     const inProcessJobs=active.filter(t=>t.prodStatus==='in_process');
     const waitingJobs=active.filter(t=>!t.isReady&&t.prodStatus!=='in_process');
 
+    // Completed jobs for the Completed tab (not shipped — those auto-fall off)
+    const completedDecoJobs=[];
+    sos.filter(so=>{const st=calcSOStatus(so);return st!=='complete'}).forEach(so=>{
+      const c=cust.find(x=>x.id===so.customer_id);const cName=c?.name||'Unknown';const alpha=c?.alpha_tag||'';
+      const rep=REPS.find(r=>r.id===so.created_by)?.name?.split(' ')[0]||'—';
+      const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
+      safeJobs(so).filter(j=>j.prod_status==='completed').forEach(j=>{
+        completedDecoJobs.push({so,soId:so.id,job:j,cName,alpha,rep,daysOut,
+          artName:j.art_name,decoType:j.deco_type,totalUnits:j.total_units,fulfilledUnits:j.fulfilled_units,
+          prodStatus:j.prod_status,machine:MACHINES.find(m=>m.id===j.assigned_machine)?.name,assignedTo:j.assigned_to});
+      });
+    });
+
     // Workload report data (admin/prod_manager only) — computed from ALL deco tasks, not role-filtered
     const workloadData=isAdmin?decorators.map(d=>{
       const dJobs=decoTasks.filter(t=>t.assignedTo===d.name&&t.prodStatus!=='completed'&&t.prodStatus!=='shipped');
@@ -13443,6 +13450,7 @@ export default function App(){
           {id:'ready',label:'Ready to Go',count:readyCount,border:'#22c55e',valColor:'#166534',units:readyJobs.reduce((a,t)=>a+t.totalUnits,0)},
           {id:'in_process',label:'In Process',count:inProcessCount,border:'#2563eb',valColor:'#2563eb',units:inProcessJobs.reduce((a,t)=>a+t.totalUnits,0)},
           ...(!isDecorator?[{id:'waiting',label:'Waiting (Art/Items)',count:waitingCount,border:'#d97706',valColor:'#d97706',units:waitingJobs.reduce((a,t)=>a+t.totalUnits,0)}]:[]),
+          {id:'completed',label:'Completed',count:completedDecoJobs.length,border:'#166534',valColor:'#166534',units:completedDecoJobs.reduce((a,t)=>a+t.totalUnits,0)},
         ].map(({id,label,count,border,valColor,units})=>
           <div key={id} className="stat-card" style={{borderLeft:'3px solid '+border,cursor:'pointer',outline:decoCardFilter===id?'2px solid '+border:'none',background:decoCardFilter===id?'#f8fafc':'white',transition:'all 0.15s'}} onClick={()=>setDecoCardFilter(f=>f===id?null:id)}>
             <div className="stat-label">{label}</div>
@@ -13458,8 +13466,8 @@ export default function App(){
 
       {/* Filtered job list when a stat card is clicked */}
       {decoCardFilter&&(()=>{
-        const cardJobs=decoCardFilter==='ready'?readyJobs:decoCardFilter==='in_process'?inProcessJobs:waitingJobs;
-        const cardLabel={ready:'Ready to Go',in_process:'In Process',waiting:'Waiting (Art/Items)'}[decoCardFilter];
+        const cardJobs=decoCardFilter==='ready'?readyJobs:decoCardFilter==='in_process'?inProcessJobs:decoCardFilter==='completed'?completedDecoJobs:waitingJobs;
+        const cardLabel={ready:'Ready to Go',in_process:'In Process',waiting:'Waiting (Art/Items)',completed:'Completed'}[decoCardFilter];
         return<div className="card" style={{marginBottom:12}}>
           <div className="card-header"><h2>{cardLabel} — {cardJobs.length} job{cardJobs.length!==1?'s':''}</h2><button className="btn btn-sm btn-secondary" onClick={()=>setDecoCardFilter(null)}>× Close</button></div>
           <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
@@ -13483,6 +13491,7 @@ export default function App(){
                   {decoCardFilter==='ready'&&t.prodStatus!=='staging'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#f59e0b',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();moveJobStatus({...t.job,soId:t.soId,so:t.so},'staging')}}>→ In Line</button>}
                   {decoCardFilter==='ready'&&t.prodStatus==='staging'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#2563eb',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();moveJobStatus({...t.job,soId:t.soId,so:t.so},'in_process')}}>→ Start</button>}
                   {decoCardFilter==='in_process'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#166534',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();moveJobStatus({...t.job,soId:t.soId,so:t.so},'completed')}}>✓ Done</button>}
+                  {decoCardFilter==='completed'&&<span style={{fontSize:9,padding:'2px 6px',color:'#166534',fontWeight:600}}>✓ Done — ready for warehouse</span>}
                   {decoCardFilter==='waiting'&&<div style={{fontSize:9,color:'#d97706',fontWeight:600}}>
                     {t.artStatus!=='art_complete'&&'Art pending'}{t.artStatus!=='art_complete'&&t.itemStatus!=='items_received'&&' + '}{t.itemStatus!=='items_received'&&'Items pending'}
                   </div>}
