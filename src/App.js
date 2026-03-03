@@ -420,8 +420,8 @@ const _dbSave = (table, data) => { if(supabase && data) supabase.from(table).ups
 // ─── Cloudinary Config ───
 const CLOUDINARY_CLOUD='dwlyljyuz';
 const CLOUDINARY_PRESET='ml_default_nsaportal';
-const cloudUpload=async(file,folder='nsa-products')=>{const fd=new FormData();fd.append('file',file);fd.append('upload_preset',CLOUDINARY_PRESET);fd.append('folder',folder);const resType=file.type?.startsWith('image/')?'image':'auto';const r=await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/${resType}/upload`,{method:'POST',body:fd});const d=await r.json();if(d.error)throw new Error(d.error.message);return d.secure_url};
-const fileUpload=async(file,folder='nsa-art-files')=>{const fd=new FormData();fd.append('file',file);fd.append('upload_preset',CLOUDINARY_PRESET);fd.append('folder',folder);const r=await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/auto/upload`,{method:'POST',body:fd});const d=await r.json();if(d.error)throw new Error(d.error.message);return d.secure_url};
+const cloudUpload=async(file,folder='nsa-products')=>{const fd=new FormData();fd.append('file',file);fd.append('upload_preset',CLOUDINARY_PRESET);fd.append('folder',folder);fd.append('use_filename','true');fd.append('unique_filename','true');const resType=file.type?.startsWith('image/')?'image':'auto';const r=await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/${resType}/upload`,{method:'POST',body:fd});const d=await r.json();if(d.error)throw new Error(d.error.message);return d.secure_url};
+const fileUpload=async(file,folder='nsa-art-files')=>{const fd=new FormData();fd.append('file',file);fd.append('upload_preset',CLOUDINARY_PRESET);fd.append('folder',folder);fd.append('use_filename','true');fd.append('unique_filename','true');const r=await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/auto/upload`,{method:'POST',body:fd});const d=await r.json();if(d.error)throw new Error(d.error.message);return d.secure_url};
 const isUrl=s=>typeof s==='string'&&(s.startsWith('http://')||s.startsWith('https://'));
 const fileDisplayName=f=>isUrl(f)?decodeURIComponent(f.split('/').pop().split('?')[0]):f;
 const _isDownloadOnly=u=>{const e=_urlExt(u);return['ai','eps','dst','psd','tiff','tif','cdr'].includes(e)};
@@ -8890,6 +8890,7 @@ export default function App(){
   const[artJobDetailMsg,setArtJobDetailMsg]=useState('');// message text in artist detail popup
   const[artJobDetailUploading,setArtJobDetailUploading]=useState(false);// upload in-progress flag
   const[artJobDetailEditColors,setArtJobDetailEditColors]=useState(null);// editing color string or null
+  const[artJobDetailEditSize,setArtJobDetailEditSize]=useState(null);// editing art size string or null
   const[artJobDetailApprovalMsg,setArtJobDetailApprovalMsg]=useState('');// message to include with approval send
   const[approvalNotifyModal,setApprovalNotifyModal]=useState(null);// {job,so,contact,method,message} for send-for-approval popup
   const[prodJobModal,setProdJobModal]=useState(null);// job object for production mockup view
@@ -13355,7 +13356,7 @@ export default function App(){
                       <span style={{fontSize:11,fontWeight:600,marginLeft:6}}>{gi.name}</span>
                       {gi.color&&<span style={{fontSize:10,color:'#64748b',marginLeft:4}}>({gi.color})</span>}
                     </div>
-                    <span style={{fontSize:10,color:itemMocks.length>0?'#166534':'#94a3b8',fontWeight:700,padding:'2px 6px',borderRadius:4,background:itemMocks.length>0?'#dcfce7':'#f1f5f9'}}>{itemMocks.length>0?itemMocks.length+' mockup'+(itemMocks.length>1?'s':''):'No mockup'}</span>
+                    <span style={{fontSize:10,color:itemMocks.length>0?'#166534':mockupFiles.length>0?'#1e40af':'#94a3b8',fontWeight:700,padding:'2px 6px',borderRadius:4,background:itemMocks.length>0?'#dcfce7':mockupFiles.length>0?'#dbeafe':'#f1f5f9'}}>{itemMocks.length>0?itemMocks.length+' mockup'+(itemMocks.length>1?'s':''):mockupFiles.length>0?'See general mockup':'No mockup'}</span>
                   </div>
                   {/* Mockup display + upload zone */}
                   <div style={{padding:10}}>
@@ -13410,15 +13411,21 @@ export default function App(){
                 const generalFiles=mockupFiles.filter(f=>{const u=typeof f==='string'?f:(f?.url||'');return!assignedUrls.has(u)});
                 if(generalFiles.length===0)return null;
                 return<div style={{marginTop:10}}>
-                  <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:4}}>General Files ({generalFiles.length})</div>
-                  <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                  <div style={{fontSize:12,fontWeight:700,color:'#2563eb',textTransform:'uppercase',marginBottom:6}}>General Mockup Files ({generalFiles.length})</div>
+                  <div style={{display:'flex',gap:10,flexWrap:'wrap'}}>
                     {generalFiles.map((f,i)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(url||f);
-                      return<div key={i} style={{borderRadius:6,border:'1px solid #e2e8f0',overflow:'hidden',background:'white',maxWidth:160}}>
-                        {_isImgUrl(url)?<img src={url} alt={name} style={{width:'100%',maxHeight:100,objectFit:'contain',display:'block',cursor:'pointer'}} onClick={()=>openFile(url)}/>
-                        :<div style={{padding:8,textAlign:'center',cursor:'pointer',fontSize:10,color:'#1e40af'}} onClick={()=>openFile(url)}>{name}</div>}
-                        <div style={{padding:'3px 6px',borderTop:'1px solid #f1f5f9',fontSize:9,color:'#64748b',display:'flex',alignItems:'center',gap:3}}>
-                          <span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{name}</span>
-                          <button style={{background:'none',border:'none',color:'#ef4444',cursor:'pointer',fontSize:12,padding:0}} onClick={()=>{if(window.confirm('Remove?'))handleArtFileDelete(url)}}>×</button>
+                      return<div key={i} style={{borderRadius:8,border:'2px solid #bfdbfe',overflow:'hidden',background:'white',minWidth:180,maxWidth:240}}>
+                        {_isImgUrl(url)?<img src={url} alt={name} style={{width:'100%',maxHeight:140,objectFit:'contain',display:'block',cursor:'pointer'}} onClick={()=>openFile(url)}/>
+                        :_isPdfUrl(url)?<div style={{position:'relative',cursor:'pointer'}} onClick={()=>openFile(url)}>
+                          {_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',maxHeight:140,objectFit:'contain',display:'block',background:'#f8fafc'}} onError={e=>{e.target.style.display='none';e.target.nextSibling.style.display='flex'}}/>:null}
+                          <div style={{display:_cloudinaryPdfThumb(url)?'none':'flex',flexDirection:'column',alignItems:'center',padding:20,gap:4}}>
+                            <span style={{fontSize:32}}>PDF</span><span style={{fontSize:12,fontWeight:600,color:'#1e40af'}}>{name}</span></div></div>
+                        :<div style={{padding:12,textAlign:'center',cursor:'pointer'}} onClick={()=>openFile(url)}>
+                          <span style={{fontSize:24}}>📄</span><div style={{fontSize:12,fontWeight:600,color:'#1e40af',marginTop:4}}>{name}</div></div>}
+                        <div style={{padding:'6px 10px',borderTop:'1px solid #dbeafe',background:'#eff6ff',display:'flex',alignItems:'center',gap:4}}>
+                          <span style={{fontSize:12,fontWeight:700,color:'#1e40af',flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{name}</span>
+                          <button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px'}} onClick={()=>openFile(url)}>Open</button>
+                          <button style={{background:'none',border:'none',color:'#ef4444',cursor:'pointer',fontSize:13,padding:'0 2px',lineHeight:1}} onClick={()=>{if(window.confirm('Remove?'))handleArtFileDelete(url)}} title="Remove">×</button>
                         </div>
                       </div>})}
                   </div>
@@ -13437,15 +13444,31 @@ export default function App(){
                   <div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{j.deco_type?.replace(/_/g,' ')||'—'}</div></div>
                 <div><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:2}}>Position(s)</div>
                   <div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{j.positions||'—'}</div></div>
-                <div><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:2}}>Art Size</div>
-                  <div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{af?.art_size||'—'}</div></div>
+                <div><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:2,display:'flex',alignItems:'center',gap:6}}>Art Size
+                    {artJobDetailEditSize===null?<button style={{background:'none',border:'none',color:'#7c3aed',fontSize:10,fontWeight:700,cursor:'pointer',padding:0}} onClick={()=>setArtJobDetailEditSize(af?.art_size||'')}>Edit</button>
+                    :<button style={{background:'none',border:'none',color:'#dc2626',fontSize:10,fontWeight:700,cursor:'pointer',padding:0}} onClick={()=>setArtJobDetailEditSize(null)}>Cancel</button>}
+                  </div>
+                  {artJobDetailEditSize!==null?<div style={{display:'flex',gap:4,alignItems:'center'}}>
+                    <input className="form-input" value={artJobDetailEditSize} onChange={e=>setArtJobDetailEditSize(e.target.value)} placeholder='e.g. 12" x 4"' style={{fontSize:13,fontWeight:600,width:140}}/>
+                    <button className="btn btn-sm" style={{fontSize:10,padding:'3px 10px',background:'#7c3aed',color:'white',border:'none',borderRadius:4,fontWeight:700}} onClick={()=>{
+                      const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
+                      const updArt=safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,art_size:artJobDetailEditSize.trim()}:a);
+                      savSO({...liveSO,art_files:updArt});
+                      const updatedAf=updArt.find(a=>a.id===j.art_file_id);
+                      setArtJobDetailModal({...j,artFile:updatedAf});
+                      setArtJobDetailEditSize(null);
+                      nf('Art size updated');
+                    }}>Save</button>
+                  </div>
+                  :<div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{af?.art_size||'—'}</div>}
+                </div>
               </div>
               {/* ─── Ink / Thread Colors (editable) ─── */}
-              <div style={{marginTop:10}}>
-                <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:4,display:'flex',alignItems:'center',gap:6}}>
-                  {isEmb?'Thread Colors':'Ink Colors'} {colorList.length>0&&<span>({colorList.length})</span>}
-                  {artJobDetailEditColors===null?<button style={{background:'none',border:'none',color:'#7c3aed',fontSize:10,fontWeight:700,cursor:'pointer',padding:0}} onClick={()=>setArtJobDetailEditColors(af?(af.ink_colors||af.thread_colors||''):'')}>Edit</button>
-                  :<button style={{background:'none',border:'none',color:'#dc2626',fontSize:10,fontWeight:700,cursor:'pointer',padding:0}} onClick={()=>setArtJobDetailEditColors(null)}>Cancel</button>}
+              <div style={{marginTop:14,padding:'12px 14px',background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0'}}>
+                <div style={{fontSize:12,fontWeight:800,color:'#1e3a5f',textTransform:'uppercase',marginBottom:8,display:'flex',alignItems:'center',gap:6}}>
+                  {isEmb?'🧵 Thread Colors':'🎨 Ink Colors'} {colorList.length>0&&<span style={{fontSize:11,fontWeight:600,color:'#64748b'}}>({colorList.length})</span>}
+                  {artJobDetailEditColors===null?<button style={{background:'none',border:'none',color:'#7c3aed',fontSize:11,fontWeight:700,cursor:'pointer',padding:'2px 6px',marginLeft:4}} onClick={()=>setArtJobDetailEditColors(af?(af.ink_colors||af.thread_colors||''):'')}>Edit</button>
+                  :<button style={{background:'none',border:'none',color:'#dc2626',fontSize:11,fontWeight:700,cursor:'pointer',padding:'2px 6px',marginLeft:4}} onClick={()=>setArtJobDetailEditColors(null)}>Cancel</button>}
                 </div>
                 {artJobDetailEditColors!==null?<div>
                   <textarea className="form-input" rows={2} value={artJobDetailEditColors} onChange={e=>setArtJobDetailEditColors(e.target.value)} placeholder={isEmb?'Thread colors (comma separated, e.g. 200C Red, Navy 2767)':'Ink/Pantone colors (comma separated, e.g. 200C Red, PMS 286)'} style={{fontSize:12,resize:'vertical',marginBottom:6}}/>
@@ -13460,16 +13483,16 @@ export default function App(){
                     nf('Colors updated');
                   }}>Save Colors</button>
                 </div>
-                :colorList.length>0?<div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
+                :colorList.length>0?<div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
                   {colorList.map((cl,i)=>{
                     const clLower=cl.toLowerCase();
                     const swatchColor=colorMap[cl]||Object.entries(colorMap).find(([k])=>clLower.includes(k.toLowerCase()))?.[1]||null;
-                    return<div key={i} style={{display:'flex',alignItems:'center',gap:4,padding:'4px 10px',background:'white',border:'1px solid #e2e8f0',borderRadius:6}}>
-                      <div style={{width:14,height:14,borderRadius:3,border:'1px solid #d1d5db',background:swatchColor||'linear-gradient(135deg,#f1f5f9,#e2e8f0)'}}/>
-                      <span style={{fontSize:11,fontWeight:600}}>{cl}</span>
+                    return<div key={i} style={{display:'flex',alignItems:'center',gap:8,padding:'8px 14px',background:'white',border:'2px solid '+(swatchColor||'#e2e8f0'),borderRadius:8,boxShadow:'0 1px 3px rgba(0,0,0,0.06)'}}>
+                      <div style={{width:24,height:24,borderRadius:6,border:'2px solid #d1d5db',background:swatchColor||'linear-gradient(135deg,#f1f5f9,#e2e8f0)',flexShrink:0}}/>
+                      <span style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{cl}</span>
                     </div>})}
                 </div>
-                :<div style={{fontSize:11,color:'#94a3b8',fontStyle:'italic'}}>No colors specified — click Edit to add {isEmb?'thread':'Pantone/ink'} colors</div>}
+                :<div style={{fontSize:12,color:'#94a3b8',fontStyle:'italic'}}>No colors specified — click Edit to add {isEmb?'thread':'Pantone/ink'} colors</div>}
               </div>
 
               {/* ─── Decoration Details (Numbers / Names) ─── */}
