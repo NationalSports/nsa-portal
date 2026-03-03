@@ -13187,9 +13187,19 @@ export default function App(){
             }
             // Re-fetch the latest SO from state to avoid stale data
             const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
-            // Add to mockup_files on the art file
-            const updArt=safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,mockup_files:[...(a.mockup_files||a.files||[]),...uploaded],status:'uploaded'}:a);
-            const updatedJobs=safeJobs(liveSO).map(jj=>jj.id===j.id?{...jj,art_status:jj.art_status==='needs_art'||jj.art_status==='art_requested'?'art_in_progress':jj.art_status}:jj);
+            const existingArt=safeArt(liveSO);
+            const hasMatch=j.art_file_id&&existingArt.some(a=>a.id===j.art_file_id);
+            // If no matching art file exists, create one so uploads have somewhere to attach
+            let updArt;
+            if(hasMatch){
+              updArt=existingArt.map(a=>a.id===j.art_file_id?{...a,mockup_files:[...(a.mockup_files||a.files||[]),...uploaded],status:'uploaded'}:a);
+            }else{
+              const newAf={id:j.art_file_id||('af-'+Date.now()),name:j.art_name||'Art',deco_type:j.deco_type||'screen_print',ink_colors:'',thread_colors:'',art_size:'',art_sizes:{},files:[],mockup_files:uploaded,item_mockups:{},prod_files:[],notes:'',status:'uploaded',uploaded:new Date().toLocaleDateString()};
+              updArt=[...existingArt,newAf];
+              // Update the job's art_file_id if it was null
+              if(!j.art_file_id)j.art_file_id=newAf.id;
+            }
+            const updatedJobs=safeJobs(liveSO).map(jj=>jj.id===j.id?{...jj,art_file_id:j.art_file_id,art_status:jj.art_status==='needs_art'||jj.art_status==='art_requested'?'art_in_progress':jj.art_status}:jj);
             savSO({...liveSO,art_files:updArt,jobs:updatedJobs});
             // Refresh modal with updated data
             const updatedAf=updArt.find(a=>a.id===j.art_file_id);
@@ -13210,12 +13220,21 @@ export default function App(){
               uploaded.push({url,name:f.name});
             }
             const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
-            const liveAf=safeArt(liveSO).find(a=>a.id===j.art_file_id)||af;
+            const existingArt=safeArt(liveSO);
+            const hasMatch=j.art_file_id&&existingArt.some(a=>a.id===j.art_file_id);
+            const liveAf=hasMatch?existingArt.find(a=>a.id===j.art_file_id):af;
             const curItemMockups=liveAf?.item_mockups||{};
             const updItemMockups={...curItemMockups,[sku]:[...(curItemMockups[sku]||[]),...uploaded]};
-            // Also add to mockup_files for backward compat
-            const updArt=safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,item_mockups:updItemMockups,mockup_files:[...(a.mockup_files||a.files||[]),...uploaded],status:'uploaded'}:a);
-            const updatedJobs=safeJobs(liveSO).map(jj=>jj.id===j.id?{...jj,art_status:jj.art_status==='needs_art'||jj.art_status==='art_requested'?'art_in_progress':jj.art_status}:jj);
+            let updArt;
+            if(hasMatch){
+              updArt=existingArt.map(a=>a.id===j.art_file_id?{...a,item_mockups:updItemMockups,mockup_files:[...(a.mockup_files||a.files||[]),...uploaded],status:'uploaded'}:a);
+            }else{
+              // Create art file if none exists for this job
+              const newAf={id:j.art_file_id||('af-'+Date.now()),name:j.art_name||'Art',deco_type:j.deco_type||'screen_print',ink_colors:'',thread_colors:'',art_size:'',art_sizes:{},files:[],mockup_files:uploaded,item_mockups:updItemMockups,prod_files:[],notes:'',status:'uploaded',uploaded:new Date().toLocaleDateString()};
+              updArt=[...existingArt,newAf];
+              if(!j.art_file_id)j.art_file_id=newAf.id;
+            }
+            const updatedJobs=safeJobs(liveSO).map(jj=>jj.id===j.id?{...jj,art_file_id:j.art_file_id,art_status:jj.art_status==='needs_art'||jj.art_status==='art_requested'?'art_in_progress':jj.art_status}:jj);
             savSO({...liveSO,art_files:updArt,jobs:updatedJobs});
             const updatedAf=updArt.find(a=>a.id===j.art_file_id);
             setArtJobDetailModal({...j,artFile:updatedAf,art_status:updatedJobs.find(jj=>jj.id===j.id)?.art_status||j.art_status});
