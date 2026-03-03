@@ -225,10 +225,12 @@ describe('Pricing Functions', () => {
       expect(result.sell).toBe(rT(expectedCost * SP.mk));
     });
 
-    test('art TBD with sell_override uses override', () => {
+    test('art TBD screen print ignores sell_override (sell tracks cost)', () => {
       const d = { kind: 'art', art_file_id: '__tbd', art_tbd_type: 'screen_print', sell_override: 15 };
       const result = dP(d, 48, [], 48);
-      expect(result.sell).toBe(15);
+      // sell_override is ignored for screen print — sell always derived from cost
+      const expectedCost = rQ(spP(48, 1, false));
+      expect(result.sell).toBe(rT(expectedCost * SP.mk));
     });
 
     test('numbers decoration pricing with no roster', () => {
