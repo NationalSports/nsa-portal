@@ -6942,15 +6942,14 @@ const BarcodeScanner=({onScan,onClose,placeholder='Scan barcode or QR code...'})
     try{
       const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment',width:{ideal:1280},height:{ideal:720}}});
       streamRef.current=stream;
-      if(videoRef.current){
-        videoRef.current.srcObject=stream;
-        // Wait for video stream to be ready before playing (required for Safari/iOS)
+      const v=videoRef.current;
+      if(v){
+        v.srcObject=stream;
         await new Promise((resolve)=>{
-          const v=videoRef.current;
           if(v.readyState>=v.HAVE_METADATA){resolve();return}
           v.onloadedmetadata=()=>resolve();
         });
-        await videoRef.current.play();
+        await v.play();
       }
       setActive(true);
       // Use native BarcodeDetector if available, otherwise use polyfill
@@ -6980,6 +6979,7 @@ const BarcodeScanner=({onScan,onClose,placeholder='Scan barcode or QR code...'})
   const stopCamera=()=>{
     scanningRef.current=false;
     if(streamRef.current){streamRef.current.getTracks().forEach(t=>t.stop());streamRef.current=null}
+    if(videoRef.current){videoRef.current.srcObject=null}
     setActive(false);
   };
 
@@ -6991,7 +6991,7 @@ const BarcodeScanner=({onScan,onClose,placeholder='Scan barcode or QR code...'})
   };
 
   return<div style={{background:'#0f172a',borderRadius:12,overflow:'hidden',border:'2px solid #334155'}}>
-    {/* Camera viewport */}
+    {/* Camera viewport — video always in DOM so ref is available when stream is assigned */}
     {active?<div style={{position:'relative',background:'#000'}}>
       <video ref={videoRef} style={{width:'100%',maxHeight:280,objectFit:'cover',display:'block'}} autoPlay playsInline muted/>
       {/* Scan overlay */}
@@ -7002,7 +7002,8 @@ const BarcodeScanner=({onScan,onClose,placeholder='Scan barcode or QR code...'})
         Point camera at barcode or QR code
       </div>
       <button onClick={stopCamera} style={{position:'absolute',top:8,right:8,background:'rgba(0,0,0,0.6)',border:'none',color:'white',borderRadius:8,padding:'4px 10px',cursor:'pointer',fontSize:12}}>Close Camera</button>
-    </div>:
+    </div>:<>
+    <video ref={videoRef} style={{display:'none'}} playsInline muted/>
     <div style={{padding:'20px',textAlign:'center'}}>
       {error?<div style={{color:'#f87171',fontSize:12,marginBottom:10}}>{error}</div>:
       <div style={{color:'#94a3b8',fontSize:12,marginBottom:10}}>Open the camera to scan barcodes/QR codes, or type manually below</div>}
@@ -7011,7 +7012,7 @@ const BarcodeScanner=({onScan,onClose,placeholder='Scan barcode or QR code...'})
         Open Camera
       </button>
       {null}
-    </div>}
+    </div></>}
     {/* Manual entry always available */}
     <div style={{padding:'10px 16px',borderTop:'1px solid #1e293b',display:'flex',gap:8}}>
       <input value={manualVal} onChange={e=>setManualVal(e.target.value)} onKeyDown={handleManual}
