@@ -166,7 +166,7 @@ const _dbSeed = async (d) => {
 // ─── Normalized Save Helpers ───
 const _dbSaveEstimate = async (est) => {
   if(!supabase)return;
-  return _dbSavingGuard(async()=>{try{
+  return _dbSavingGuard(async()=>{let decoFailed=false;try{
     const{items,art_files,...estRow}=est;
     await supabase.from('estimates').upsert(_pick(estRow,_estCols),{onConflict:'id'});
     // Delete old children — must delete grandchildren (decorations) BEFORE estimate_items due to FK constraints
@@ -181,21 +181,30 @@ const _dbSaveEstimate = async (est) => {
       const{error:afErr}=await supabase.from('estimate_art_files').upsert(art_files.map(a=>({..._pick(a,_artCols),estimate_id:est.id})),{onConflict:'estimate_id,id'});
       if(afErr)console.error('[DB] estimate_art_files upsert failed:',afErr.message,afErr.details);
     }
-    if(!items?.length)return;
+    if(!items?.length){_dbSaveFailedIds.delete(est.id);return true}
     for(let idx=0;idx<items.length;idx++){
       const{decorations,...itemData}=items[idx];
       const{data:inserted,error:itemErr}=await supabase.from('estimate_items').insert({..._pick(itemData,_itemCols),estimate_id:est.id,item_index:idx}).select('id').single();
-      if(itemErr){console.error('[DB] estimate_items insert failed:',itemErr.message,itemErr.details);continue}
+      if(itemErr){console.error('[DB] estimate_items insert failed:',itemErr.message,itemErr.details);decoFailed=true;continue}
       if(inserted&&decorations?.length){
-        const{error:decoErr}=await supabase.from('estimate_item_decorations').insert(decorations.map((d,di)=>({..._pick(d,_decoCols),estimate_item_id:inserted.id,deco_index:di})));
-        if(decoErr)console.error('[DB] estimate_item_decorations insert failed:',decoErr.message,decoErr.details);
+        const decoRows=decorations.map((d,di)=>({..._pick(d,_decoCols),estimate_item_id:inserted.id,deco_index:di}));
+        const{error:decoErr}=await supabase.from('estimate_item_decorations').insert(decoRows);
+        if(decoErr){
+          console.warn('[DB] estimate_item_decorations batch failed, retrying individually:',decoErr.message);
+          for(const row of decoRows){
+            const{error:rowErr}=await supabase.from('estimate_item_decorations').insert(row);
+            if(rowErr){decoFailed=true;console.error('[DB] estimate deco row failed:',rowErr.message,JSON.stringify(row))}
+          }
+        }
       }
     }
-  }catch(e){console.error('[DB] save estimate:',e)}});
+    if(decoFailed){_dbSaveFailedIds.add(est.id);return false}
+    _dbSaveFailedIds.delete(est.id);return true;
+  }catch(e){console.error('[DB] save estimate:',e);_dbSaveFailedIds.add(est.id);return false}});
 };
 const _dbSaveSO = async (so) => {
   if(!supabase)return;
-  return _dbSavingGuard(async()=>{try{
+  return _dbSavingGuard(async()=>{let decoFailed=false;try{
     const{items,art_files,firm_dates,jobs,...soRow}=so;
     await supabase.from('sales_orders').upsert(_pick(soRow,_soCols),{onConflict:'id'});
     // Delete old children — must delete grandchildren (decorations/picks/POs) BEFORE so_items due to FK constraints
@@ -216,16 +225,23 @@ const _dbSaveSO = async (so) => {
     }
     if(firm_dates?.length) await supabase.from('so_firm_dates').insert(firm_dates.map(f=>({...f,so_id:so.id})));
     if(jobs?.length) await supabase.from('so_jobs').insert(jobs.map(j=>({..._pick(j,_jobCols),so_id:so.id})));
-    if(!items?.length)return;
+    if(!items?.length){_dbSaveFailedIds.delete(so.id);return true}
     for(let idx=0;idx<items.length;idx++){
       const{decorations,pick_lines,po_lines,...itemData}=items[idx];
       // Separate size fields from pick_lines/po_lines back into sizes JSONB
       const{data:inserted,error:itemErr}=await supabase.from('so_items').insert({..._pick(itemData,_itemCols),so_id:so.id,item_index:idx}).select('id').single();
-      if(itemErr){console.error('[DB] so_items insert failed:',itemErr.message,itemErr.details);continue}
+      if(itemErr){console.error('[DB] so_items insert failed:',itemErr.message,itemErr.details);decoFailed=true;continue}
       if(!inserted)continue;
       if(decorations?.length){
-        const{error:decoErr}=await supabase.from('so_item_decorations').insert(decorations.map((d,di)=>({..._pick(d,_decoCols),so_item_id:inserted.id,deco_index:di})));
-        if(decoErr)console.error('[DB] so_item_decorations insert failed:',decoErr.message,decoErr.details);
+        const decoRows=decorations.map((d,di)=>({..._pick(d,_decoCols),so_item_id:inserted.id,deco_index:di}));
+        const{error:decoErr}=await supabase.from('so_item_decorations').insert(decoRows);
+        if(decoErr){
+          console.warn('[DB] so_item_decorations batch failed, retrying individually:',decoErr.message);
+          for(const row of decoRows){
+            const{error:rowErr}=await supabase.from('so_item_decorations').insert(row);
+            if(rowErr){decoFailed=true;console.error('[DB] so deco row failed:',rowErr.message,JSON.stringify(row))}
+          }
+        }
       }
       if(pick_lines?.length){
         const pickRows=pick_lines.map(pk=>{const{pick_id,status,created_at,memo,ship_dest,ship_addr,deco_vendor,...sizes}=pk;
@@ -240,7 +256,9 @@ const _dbSaveSO = async (so) => {
         if(poErr)console.error('[DB] so_item_po_lines insert failed:',poErr.message,poErr.details);
       }
     }
-  }catch(e){console.error('[DB] save SO:',e)}});
+    if(decoFailed){_dbSaveFailedIds.add(so.id);return false}
+    _dbSaveFailedIds.delete(so.id);return true;
+  }catch(e){console.error('[DB] save SO:',e);_dbSaveFailedIds.add(so.id);return false}});
 };
 const _dbSaveInvoice = async (inv) => {
   if(!supabase)return;
@@ -346,7 +364,9 @@ const _dbDeleteInvoice = async (id) => {
 };
 // Save-in-progress guard — prevents poll/realtime from loading partial data during delete-and-reinsert
 let _dbSavingCount=0;
-const _dbSavingGuard=async(fn)=>{_dbSavingCount++;try{await fn()}finally{_dbSavingCount--}};
+const _dbSavingGuard=async(fn)=>{_dbSavingCount++;try{return await fn()}finally{_dbSavingCount--}};
+// Track IDs of estimates/SOs whose save failed (decoration inserts) — prevents reload from overwriting local state
+const _dbSaveFailedIds=new Set();
 // Column whitelists — strip unknown fields before sending to Supabase (localStorage may have extra UI fields like vendor_id)
 const _pick=(obj,cols)=>{const r={};cols.forEach(c=>{if(c in obj)r[c]=obj[c]});return r};
 const _estCols=['id','customer_id','memo','status','created_by','created_at','updated_at','default_markup','shipping_type','shipping_value','ship_to_id','email_status','email_opened_at','email_viewed_at','deleted_at'];
@@ -7115,12 +7135,20 @@ export default function App(){
       let _rtTimer=null;
       const _jsonEq=(a,b)=>{try{return JSON.stringify(a)===JSON.stringify(b)}catch{return false}};
       const reloadAll=async()=>{const d=await _dbLoad();if(!d||!d.hasData)return;
+        // Preserve local versions of estimates/SOs whose decoration saves failed — don't let DB data overwrite them
+        const _mergeProtected=(dbArr,snapKey,setter)=>{
+          if(!_dbSaveFailedIds.size)return{snap:dbArr,apply:prev=>{const r=_jsonEq(prev,dbArr)?prev:dbArr;return r}};
+          return{snap:dbArr.map(e=>_dbSaveFailedIds.has(e.id)?(_dbSnap.current[snapKey]?.find(s=>s.id===e.id)||e):e),
+            apply:prev=>{const merged=dbArr.map(e=>_dbSaveFailedIds.has(e.id)?(prev.find(p=>p.id===e.id)||e):e);return _jsonEq(prev,merged)?prev:merged}};
+        };
+        const estMerge=_mergeProtected(d.estimates,'ests');
+        const soMerge=_mergeProtected(d.sales_orders,'sos');
         // Update snapshot before state — auto-save effects will diff against this
-        _dbSnap.current={ests:d.estimates,sos:d.sales_orders,invs:d.invoices,msgs:d.messages,cust:d.customers,prod:d.products,vend:d.vendors,team:d.team,omg:d.omg_stores,issues:d.issues};
+        _dbSnap.current={ests:estMerge.snap,sos:soMerge.snap,invs:d.invoices,msgs:d.messages,cust:d.customers,prod:d.products,vend:d.vendors,team:d.team,omg:d.omg_stores,issues:d.issues};
         // Use change detection to avoid triggering save effects needlessly
         if(d.team.length)setREPS(prev=>_jsonEq(prev,d.team)?prev:d.team);
-        setEsts(prev=>_jsonEq(prev,d.estimates)?prev:d.estimates);
-        setSOs(prev=>_jsonEq(prev,d.sales_orders)?prev:d.sales_orders);
+        setEsts(estMerge.apply);
+        setSOs(soMerge.apply);
         setInvs(prev=>_jsonEq(prev,d.invoices)?prev:d.invoices);
         if(d.messages.length)setMsgs(prev=>_jsonEq(prev,d.messages)?prev:d.messages);
         setCust(prev=>_jsonEq(prev,d.customers)?prev:d.customers);
@@ -7156,12 +7184,14 @@ export default function App(){
         if(!d||!d.hasData)return;
         // If initial load failed but polling recovered, re-enable Supabase writes
         if(!_dbLoadSuccess.current){_dbLoadSuccess.current=true;setDbError(null);console.log('[DB] Poll recovered — Supabase writes re-enabled')}
-        // Update snapshot before state — auto-save effects will diff against this
-        _dbSnap.current={ests:d.estimates,sos:d.sales_orders,invs:d.invoices,msgs:d.messages,cust:d.customers,prod:d.products,vend:d.vendors,team:d.team,omg:d.omg_stores,issues:d.issues};
-        // Use updated_at (or full JSON hash) to detect content changes, not just ID changes
+        // Preserve local versions of estimates/SOs whose decoration saves failed
         const changed=(prev,next)=>{if(prev.length!==next.length)return true;const pIds=prev.map(e=>e.id+':'+(e.updated_at||'')).sort().join(',');const nIds=next.map(e=>e.id+':'+(e.updated_at||'')).sort().join(',');return pIds!==nIds};
-        setEsts(prev=>changed(prev,d.estimates)?d.estimates:prev);
-        setSOs(prev=>changed(prev,d.sales_orders)?d.sales_orders:prev);
+        const pollEsts=_dbSaveFailedIds.size?d.estimates.map(e=>_dbSaveFailedIds.has(e.id)?(_dbSnap.current.ests?.find(s=>s.id===e.id)||e):e):d.estimates;
+        const pollSOs=_dbSaveFailedIds.size?d.sales_orders.map(s=>_dbSaveFailedIds.has(s.id)?(_dbSnap.current.sos?.find(x=>x.id===s.id)||s):s):d.sales_orders;
+        // Update snapshot before state — auto-save effects will diff against this
+        _dbSnap.current={ests:pollEsts,sos:pollSOs,invs:d.invoices,msgs:d.messages,cust:d.customers,prod:d.products,vend:d.vendors,team:d.team,omg:d.omg_stores,issues:d.issues};
+        setEsts(prev=>{if(_dbSaveFailedIds.size){const merged=d.estimates.map(e=>_dbSaveFailedIds.has(e.id)?(prev.find(p=>p.id===e.id)||e):e);return changed(prev,merged)?merged:prev}return changed(prev,d.estimates)?d.estimates:prev});
+        setSOs(prev=>{if(_dbSaveFailedIds.size){const merged=d.sales_orders.map(s=>_dbSaveFailedIds.has(s.id)?(prev.find(p=>p.id===s.id)||s):s);return changed(prev,merged)?merged:prev}return changed(prev,d.sales_orders)?d.sales_orders:prev});
         setInvs(prev=>changed(prev,d.invoices)?d.invoices:prev);
         setCust(prev=>changed(prev,d.customers)?d.customers:prev);
         if(d.messages.length)setMsgs(prev=>changed(prev,d.messages)?d.messages:prev);
