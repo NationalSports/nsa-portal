@@ -20,6 +20,7 @@ const safeJobs = (o) => safeArr(o?.jobs);
 
 // ── Pricing ──
 const rQ = v => Math.round(v * 4) / 4;
+const rT = v => Math.round(v * 10) / 10;
 const SP = { bk: [{ min: 1, max: 11 }, { min: 12, max: 23 }, { min: 24, max: 35 }, { min: 36, max: 47 }, { min: 48, max: 71 }, { min: 72, max: 107 }, { min: 108, max: 143 }, { min: 144, max: 215 }, { min: 216, max: 499 }, { min: 500, max: 99999 }], pr: { 0: [50, 60, 70, null, null], 1: [5, 6.5, 8, 9, null], 2: [3.5, 4.5, 6, 7, 8], 3: [3.2, 4.25, 4.75, 6, 7.5], 4: [2.95, 3.85, 4.25, 5, 6], 5: [2.75, 3.5, 3.95, 4.5, 5.25], 6: [2.5, 3.2, 3.7, 4, 4.75], 7: [2.25, 3, 3.5, 3.75, 4.25], 8: [2.1, 2.85, 3.1, 3.3, 4], 9: [1.9, 2.75, 2.9, 3.1, 3.75] }, mk: 1.5, ub: 0.15 };
 const EM = { sb: [10000, 15000, 20000, 999999], qb: [6, 24, 48, 99999], pr: [[8, 8.5, 8, 7.5], [9, 8.5, 8, 8], [10, 9.5, 9, 9], [12, 12.5, 12, 10]], mk: 1.6 };
 const NP = { bk: [10, 50, 99999], co: [4, 3, 3], se: [7, 6, 5], tc: 3 };
@@ -33,16 +34,16 @@ function dP(d, q, artFiles, cq) {
   const pq = cq || q;
   if (d.kind === 'art' && d.art_file_id && artFiles) {
     if (d.art_file_id === '__tbd') { const tType = d.art_tbd_type || 'screen_print';
-      if (tType === 'screen_print') { const nc = d.tbd_colors || 1; const u = d.underbase ? 1 + SP.ub : 1; return { sell: d.sell_override || rQ(spP(pq, nc, true) * u), cost: rQ(spP(pq, nc, false) * u) } }
-      if (tType === 'embroidery') return { sell: d.sell_override || emP(d.tbd_stitches || 8000, pq, true), cost: emP(d.tbd_stitches || 8000, pq, false) };
+      if (tType === 'screen_print') { const nc = d.tbd_colors || 1; const u = d.underbase ? 1 + SP.ub : 1; const c = rQ(spP(pq, nc, false) * u); return { sell: rT(c * SP.mk), cost: c } }
+      if (tType === 'embroidery') { const c = emP(d.tbd_stitches || 8000, pq, false); return { sell: rT(c * EM.mk), cost: c } }
       if (tType === 'heat_press' || tType === 'dtf') { const t = DTF[d.tbd_dtf_size || 0]; return { sell: d.sell_override || t.sell, cost: t.cost } };
       return { sell: d.sell_override || 0, cost: 0 } }
     const art = artFiles.find(a => a.id === d.art_file_id); if (art) {
-      if (art.deco_type === 'screen_print') { const nc = art.ink_colors ? art.ink_colors.split('\n').filter(l => l.trim()).length : 1; const u = d.underbase ? 1 + SP.ub : 1; return { sell: d.sell_override || rQ(spP(pq, nc, true) * u), cost: rQ(spP(pq, nc, false) * u) } }
-      if (art.deco_type === 'embroidery') return { sell: d.sell_override || emP(art.stitches || 8000, pq, true), cost: emP(art.stitches || 8000, pq, false) };
+      if (art.deco_type === 'screen_print') { const nc = art.ink_colors ? art.ink_colors.split('\n').filter(l => l.trim()).length : 1; const u = d.underbase ? 1 + SP.ub : 1; const c = rQ(spP(pq, nc, false) * u); return { sell: rT(c * SP.mk), cost: c } }
+      if (art.deco_type === 'embroidery') { const c = emP(art.stitches || 8000, pq, false); return { sell: rT(c * EM.mk), cost: c } }
       if (art.deco_type === 'dtf') { const t = DTF[art.dtf_size || 0]; return { sell: d.sell_override || t.sell, cost: t.cost } } } }
-  if (d.type === 'screen_print') { const u = d.underbase ? 1 + SP.ub : 1; return { sell: d.sell_override || rQ(spP(q, d.colors || 1, true) * u), cost: rQ(spP(q, d.colors || 1, false) * u) } }
-  if (d.type === 'embroidery') return { sell: d.sell_override || emP(d.stitches || 8000, q, true), cost: emP(d.stitches || 8000, q, false) };
+  if (d.type === 'screen_print') { const u = d.underbase ? 1 + SP.ub : 1; const c = rQ(spP(q, d.colors || 1, false) * u); return { sell: rT(c * SP.mk), cost: c } }
+  if (d.type === 'embroidery') { const c = emP(d.stitches || 8000, q, false); return { sell: rT(c * EM.mk), cost: c } }
   if (d.kind === 'numbers' || d.type === 'number_press') { const nq = d.roster ? Object.values(d.roster).flat().filter(v => v && v.trim()).length : 0; return { sell: d.sell_override || npP(nq || 1, d.two_color, true), cost: npP(nq || 1, d.two_color, false), _nq: nq } };
   if (d.kind === 'names') { const nc = d.names ? Object.values(d.names).flat().filter(v => v && v.trim()).length : 0; const se = safeNum(d.sell_override || d.sell_each || 6); const co = safeNum(d.cost_each || 3); return { sell: nc > 0 ? rQ(nc * se / q) : se, cost: nc > 0 ? rQ(nc * co / q) : co } };
   if (d.type === 'dtf') { const t = DTF[d.dtf_size || 0]; return { sell: d.sell_override || t.sell, cost: t.cost } }
@@ -289,7 +290,7 @@ module.exports = {
   // Safe accessors
   safe, safeArr, safeObj, safeNum, safeStr, safeSizes, safePicks, safePOs, safeDecos, safeItems, safeArt, safeJobs,
   // Pricing
-  rQ, spP, emP, npP, dP, DTF, SP, EM, NP,
+  rQ, rT, spP, emP, npP, dP, DTF, SP, EM, NP,
   // Business logic
   poCommitted, calcSOStatus, buildJobs, isJobReady, calcTotals, createInvoice,
   // QB sync

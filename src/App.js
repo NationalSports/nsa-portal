@@ -164,7 +164,7 @@ const _dbSeed = async (d) => {
   }
 };
 // ─── Normalized Save Helpers ───
-const _dbSaveEstimate = async (est) => {
+const _dbSaveEstimateInner = async (est) => {
   if(!supabase)return;
   return _dbSavingGuard(async()=>{let decoFailed=false;try{
     const{items,art_files,...estRow}=est;
@@ -187,13 +187,19 @@ const _dbSaveEstimate = async (est) => {
       const{data:inserted,error:itemErr}=await supabase.from('estimate_items').insert({..._pick(itemData,_itemCols),estimate_id:est.id,item_index:idx}).select('id').single();
       if(itemErr){console.error('[DB] estimate_items insert failed:',itemErr.message,itemErr.details);decoFailed=true;continue}
       if(inserted&&decorations?.length){
-        const decoRows=decorations.map((d,di)=>({..._pick(d,_decoCols),estimate_item_id:inserted.id,deco_index:di}));
+        const decoRows=decorations.map((d,di)=>({..._pick(_sanitizeDeco(d),_decoCols),estimate_item_id:inserted.id,deco_index:di}));
         const{error:decoErr}=await supabase.from('estimate_item_decorations').insert(decoRows);
         if(decoErr){
           console.warn('[DB] estimate_item_decorations batch failed, retrying individually:',decoErr.message);
           for(const row of decoRows){
             const{error:rowErr}=await supabase.from('estimate_item_decorations').insert(row);
-            if(rowErr){decoFailed=true;console.error('[DB] estimate deco row failed:',rowErr.message,JSON.stringify(row))}
+            if(rowErr){
+              // Strip columns from later migrations that may not exist in production DB
+              const coreRow={};Object.keys(row).forEach(k=>{if(!_decoExtraCols.has(k))coreRow[k]=row[k]});
+              const{error:coreErr}=await supabase.from('estimate_item_decorations').insert(coreRow);
+              if(coreErr){decoFailed=true;console.error('[DB] estimate deco row failed:',coreErr.message,JSON.stringify(row))}
+              else console.warn('[DB] estimate deco saved with core columns only (missing DB columns?):',Object.keys(row).filter(k=>_decoExtraCols.has(k)&&row[k]!=null))
+            }
           }
         }
       }
@@ -202,7 +208,8 @@ const _dbSaveEstimate = async (est) => {
     _dbSaveFailedIds.delete(est.id);return true;
   }catch(e){console.error('[DB] save estimate:',e);_dbSaveFailedIds.add(est.id);return false}});
 };
-const _dbSaveSO = async (so) => {
+const _dbSaveEstimate = (est) => _queuedEntitySave(est.id, est, _dbSaveEstimateInner);
+const _dbSaveSOInner = async (so) => {
   if(!supabase)return;
   return _dbSavingGuard(async()=>{let decoFailed=false;try{
     const{items,art_files,firm_dates,jobs,...soRow}=so;
@@ -233,13 +240,19 @@ const _dbSaveSO = async (so) => {
       if(itemErr){console.error('[DB] so_items insert failed:',itemErr.message,itemErr.details);decoFailed=true;continue}
       if(!inserted)continue;
       if(decorations?.length){
-        const decoRows=decorations.map((d,di)=>({..._pick(d,_decoCols),so_item_id:inserted.id,deco_index:di}));
+        const decoRows=decorations.map((d,di)=>({..._pick(_sanitizeDeco(d),_decoCols),so_item_id:inserted.id,deco_index:di}));
         const{error:decoErr}=await supabase.from('so_item_decorations').insert(decoRows);
         if(decoErr){
           console.warn('[DB] so_item_decorations batch failed, retrying individually:',decoErr.message);
           for(const row of decoRows){
             const{error:rowErr}=await supabase.from('so_item_decorations').insert(row);
-            if(rowErr){decoFailed=true;console.error('[DB] so deco row failed:',rowErr.message,JSON.stringify(row))}
+            if(rowErr){
+              // Strip columns from later migrations that may not exist in production DB
+              const coreRow={};Object.keys(row).forEach(k=>{if(!_decoExtraCols.has(k))coreRow[k]=row[k]});
+              const{error:coreErr}=await supabase.from('so_item_decorations').insert(coreRow);
+              if(coreErr){decoFailed=true;console.error('[DB] so deco row failed:',coreErr.message,JSON.stringify(row))}
+              else console.warn('[DB] so deco saved with core columns only (missing DB columns?):',Object.keys(row).filter(k=>_decoExtraCols.has(k)&&row[k]!=null))
+            }
           }
         }
       }
@@ -260,6 +273,7 @@ const _dbSaveSO = async (so) => {
     _dbSaveFailedIds.delete(so.id);return true;
   }catch(e){console.error('[DB] save SO:',e);_dbSaveFailedIds.add(so.id);return false}});
 };
+const _dbSaveSO = (so) => _queuedEntitySave(so.id, so, _dbSaveSOInner);
 const _dbSaveInvoice = async (inv) => {
   if(!supabase)return;
   try{
@@ -365,6 +379,25 @@ const _dbDeleteInvoice = async (id) => {
 // Save-in-progress guard — prevents poll/realtime from loading partial data during delete-and-reinsert
 let _dbSavingCount=0;
 const _dbSavingGuard=async(fn)=>{_dbSavingCount++;try{return await fn()}finally{_dbSavingCount--}};
+// Per-entity save queue — prevents concurrent saves for the same estimate/SO from racing.
+// When a save is in-progress and a newer version arrives, the newer version is queued.
+// After the current save finishes, only the LATEST queued version is saved (intermediate versions are skipped).
+const _dbSaveInFlight={};// id → true if a save is currently running
+const _dbSavePending={};// id → {data, saveFn} latest pending save data
+const _queuedEntitySave=async(id,data,saveFn)=>{
+  _dbSavePending[id]={data,saveFn};
+  if(_dbSaveInFlight[id])return;// save running — pending data will be picked up when it finishes
+  _dbSaveInFlight[id]=true;
+  let lastResult;
+  try{
+    while(_dbSavePending[id]){
+      const{data:toSave,saveFn:fn}=_dbSavePending[id];
+      delete _dbSavePending[id];
+      lastResult=await fn(toSave);
+    }
+  }finally{delete _dbSaveInFlight[id]}
+  return lastResult;
+};
 // Track IDs of estimates/SOs whose save failed (decoration inserts) — prevents reload from overwriting local state
 const _dbSaveFailedIds=new Set();
 // Column whitelists — strip unknown fields before sending to Supabase (localStorage may have extra UI fields like vendor_id)
@@ -372,7 +405,11 @@ const _pick=(obj,cols)=>{const r={};cols.forEach(c=>{if(c in obj)r[c]=obj[c]});r
 const _estCols=['id','customer_id','memo','status','created_by','created_at','updated_at','default_markup','shipping_type','shipping_value','ship_to_id','email_status','email_opened_at','email_viewed_at','deleted_at'];
 const _soCols=['id','customer_id','estimate_id','memo','status','created_by','created_at','updated_at','expected_date','production_notes','shipping_type','shipping_value','ship_to_id','default_markup','omg_store_id','_shipstation_order_id','_shipping_status','_tracking_number','_carrier','_ship_date','_tracking_url','_shipped','_shipments','_shipping_cost','deleted_at'];
 const _itemCols=['product_id','sku','name','brand','color','nsa_cost','retail_price','unit_sell','sizes','available_sizes','_colors','no_deco','is_custom','custom_desc','custom_cost','custom_sell'];
-const _decoCols=['kind','position','type','art_file_id','art_tbd_type','tbd_colors','tbd_stitches','tbd_dtf_size','sell_override','sell_each','cost_each','underbase','two_color','colors','stitches','dtf_size','num_method','num_size','num_size_back','roster','names','names_list','vendor','deco_type','notes','custom_font_art_id','_showRoster','print_color','front_and_back','num_qty','name_qty'];
+const _decoCols=['kind','position','type','art_file_id','art_tbd_type','tbd_colors','tbd_stitches','tbd_dtf_size','sell_override','sell_each','cost_each','underbase','two_color','colors','stitches','dtf_size','num_method','num_size','num_size_back','num_font','roster','names','names_list','vendor','deco_type','notes','custom_font_art_id','_showRoster','print_color','front_and_back','num_qty','name_qty'];
+// Columns that may not exist in production DB / schema cache — stripped on insert retry
+const _decoExtraCols=new Set(['print_color','front_and_back','num_qty','name_qty','num_font','num_size_back','_showRoster','custom_font_art_id']);
+// Sanitize decoration data before DB insert — strip UI-only placeholders that would violate constraints
+const _sanitizeDeco=(d)=>{const r={...d};if(r.custom_font_art_id&&r.custom_font_art_id==='pending')r.custom_font_art_id=null;if(r.art_file_id&&r.art_file_id==='__tbd')r.art_file_id=null;return r};
 const _artCols=['id','name','deco_type','ink_colors','thread_colors','art_size','files','mockup_files','item_mockups','prod_files','notes','status','uploaded'];
 const _jobCols=['id','key','art_file_id','art_name','deco_type','positions','art_status','item_status','prod_status','total_units','fulfilled_units','split_from','created_at','assigned_machine','assigned_to','ship_method','items','_auto','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected'];
 const _custCols=['id','parent_id','name','alpha_tag','billing_address_line1','billing_address_line2','billing_city','billing_state','billing_zip','shipping_address_line1','shipping_address_line2','shipping_city','shipping_state','shipping_zip','adidas_ua_tier','catalog_markup','payment_terms','tax_rate','tax_exempt','primary_rep_id','notes','is_active','created_at','updated_at'];
@@ -937,6 +974,7 @@ let POSITIONS=['Front Center','Back Center','Left Chest','Right Chest','Left Sle
 const EXTRA_SIZES=['XS','3XL','4XL','LT','XLT','2XLT','3XLT'];
 const SZ_ORD=['XS','S','M','L','XL','2XL','3XL','4XL','LT','XLT','2XLT','3XLT','OSFA'];
 const rQ=v=>Math.round(v*4)/4;
+const rT=v=>Math.round(v*10)/10;
 const showSz=(s,inv)=>{const c=['S','M','L','XL','2XL'];if(c.includes(s))return true;return!EXTRA_SIZES.includes(s)||(inv||0)>0};
 let SP={bk:[{min:1,max:11},{min:12,max:23},{min:24,max:35},{min:36,max:47},{min:48,max:71},{min:72,max:107},{min:108,max:143},{min:144,max:215},{min:216,max:499},{min:500,max:99999}],pr:{0:[50,60,70,null,null],1:[5,6.5,8,9,null],2:[3.5,4.5,6,7,8],3:[3.2,4.25,4.75,6,7.5],4:[2.95,3.85,4.25,5,6],5:[2.75,3.5,3.95,4.5,5.25],6:[2.5,3.2,3.7,4,4.75],7:[2.25,3,3.5,3.75,4.25],8:[2.1,2.85,3.1,3.3,4],9:[1.9,2.75,2.9,3.1,3.75]},mk:1.5,ub:0.15};
 let EM={sb:[10000,15000,20000,999999],qb:[6,24,48,99999],pr:[[8,8.5,8,7.5],[9,8.5,8,8],[10,9.5,9,9],[12,12.5,12,10]],mk:1.6};
@@ -947,23 +985,21 @@ function spP(q,c,s=true){const bi=SP.bk.findIndex(b=>q>=b.min&&q<=b.max);if(bi<0
 function emP(st,q,s=true){const si=EM.sb.findIndex(b=>st<=b);const qi=EM.qb.findIndex(b=>q<=b);if(si<0||qi<0)return 0;const v=EM.pr[si][qi];return s?v:rQ(v/EM.mk)}
 function npP(q,tw=false,s=true){const bi=NP.bk.findIndex(b=>q<=b);if(bi<0)return 0;return s?(NP.se[bi]+(tw?rQ(NP.tc*1.65):0)):(NP.co[bi]+(tw?NP.tc:0))}
 function dP(d,q,artFiles,cq){
-  // If pricing was locked at save time, return locked values
-  if(d.sell_override!=null&&d._cost_locked!=null){if(d.kind==='numbers'||d.type==='number_press'){const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:0;const fnq=d.front_and_back?nq*2:nq;return{sell:d.sell_override,cost:d._cost_locked,_nq:fnq}}return{sell:d.sell_override,cost:d._cost_locked}};
   const pq=cq||q;
   // Art-based decoration: get type from art file
   if(d.kind==='art'&&d.art_file_id&&artFiles){// Art TBD
     if(d.art_file_id==='__tbd'){const tType=d.art_tbd_type||'screen_print';
-      if(tType==='screen_print'){const nc=d.tbd_colors||1;const u=d.underbase?1+SP.ub:1;return{sell:d.sell_override||rQ(spP(pq,nc,true)*u),cost:rQ(spP(pq,nc,false)*u)}}
-      if(tType==='embroidery')return{sell:d.sell_override||emP(d.tbd_stitches||8000,pq,true),cost:emP(d.tbd_stitches||8000,pq,false)};
+      if(tType==='screen_print'){const nc=d.tbd_colors||1;const u=d.underbase?1+SP.ub:1;const c=rQ(spP(pq,nc,false)*u);return{sell:rT(c*SP.mk),cost:c}}
+      if(tType==='embroidery'){const c=emP(d.tbd_stitches||8000,pq,false);return{sell:rT(c*EM.mk),cost:c}}
       if(tType==='heat_press'||tType==='dtf'){const t=DTF[d.tbd_dtf_size||0];return{sell:d.sell_override||t.sell,cost:t.cost}};
       return{sell:d.sell_override||0,cost:0}}
     const art=artFiles.find(a=>a.id===d.art_file_id);if(art){
-    if(art.deco_type==='screen_print'){const nc=art.ink_colors?art.ink_colors.split('\n').filter(l=>l.trim()).length:1;const u=d.underbase?1+SP.ub:1;return{sell:d.sell_override||rQ(spP(pq,nc,true)*u),cost:rQ(spP(pq,nc,false)*u)}}
-    if(art.deco_type==='embroidery')return{sell:d.sell_override||emP(art.stitches||8000,pq,true),cost:emP(art.stitches||8000,pq,false)};
+    if(art.deco_type==='screen_print'){const nc=art.ink_colors?art.ink_colors.split('\n').filter(l=>l.trim()).length:1;const u=d.underbase?1+SP.ub:1;const c=rQ(spP(pq,nc,false)*u);return{sell:rT(c*SP.mk),cost:c}}
+    if(art.deco_type==='embroidery'){const c=emP(art.stitches||8000,pq,false);return{sell:rT(c*EM.mk),cost:c}}
     if(art.deco_type==='dtf'){const t=DTF[art.dtf_size||0];return{sell:d.sell_override||t.sell,cost:t.cost}}}}
   // Legacy/fallback type-based
-  if(d.type==='screen_print'){const u=d.underbase?1+SP.ub:1;return{sell:d.sell_override||rQ(spP(q,d.colors||1,true)*u),cost:rQ(spP(q,d.colors||1,false)*u)}}
-  if(d.type==='embroidery')return{sell:d.sell_override||emP(d.stitches||8000,q,true),cost:emP(d.stitches||8000,q,false)};
+  if(d.type==='screen_print'){const u=d.underbase?1+SP.ub:1;const c=rQ(spP(q,d.colors||1,false)*u);return{sell:rT(c*SP.mk),cost:c}}
+  if(d.type==='embroidery'){const c=emP(d.stitches||8000,q,false);return{sell:rT(c*EM.mk),cost:c}}
   // Numbers
   if(d.kind==='numbers'||d.type==='number_press'){const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:0;const useQty=nq||safeNum(d.num_qty)||0;const fnq=d.front_and_back?(useQty)*2:useQty;return{sell:d.sell_override||npP(useQty||1,d.two_color,true),cost:npP(useQty||1,d.two_color,false),_nq:fnq}};
   if(d.kind==='names'){const nc=d.names?Object.values(d.names).flat().filter(v=>v&&v.trim()).length:0;const useNc=nc||safeNum(d.name_qty)||0;const se=safeNum(d.sell_override||d.sell_each||6);const co=safeNum(d.cost_each||3);return{sell:useNc>0?rQ(useNc*se/q):se,cost:useNc>0?rQ(useNc*co/q):co}};
@@ -1998,7 +2034,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
   const addrs=useMemo(()=>getAddrs(cust,allCustomers),[cust,allCustomers]);
   const artQty=useMemo(()=>{const m={};safeItems(o).forEach(it=>{const q=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){m[d.art_file_id]=(m[d.art_file_id]||0)+q}})});return m},[o]);
   const totals=useMemo(()=>{let rev=0,cost=0;safeItems(o).forEach(it=>{const q=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);if(!q)return;rev+=q*safeNum(it.unit_sell);cost+=q*safeNum(it.nsa_cost);
-    safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:q;const dp=dP(d,q,af,cq);rev+=q*dp.sell;cost+=q*dp.cost});
+    safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:q;rev+=eq*dp.sell;cost+=eq*dp.cost});
     (it.po_lines||[]).filter(pl=>pl.po_type==='outside_deco').forEach(pl=>{const poQty=Object.entries(pl).filter(([k,v])=>typeof v==='number'&&!['unit_cost'].includes(k)).reduce((a,[,v])=>a+v,0);cost+=poQty*safeNum(pl.unit_cost)})});
     const ship=o.shipping_type==='pct'?rev*(o.shipping_value||0)/100:(o.shipping_value||0);const taxRate=cust?.tax_exempt?0:(cust?.tax_rate||0);const tax=rev*taxRate;
     return{rev,cost,ship,tax,taxRate,grand:rev+ship+tax,margin:rev-cost,pct:rev>0?((rev-cost)/rev*100):0}},[o,artQty,cust]); // eslint-disable-line
@@ -2481,7 +2517,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         {/* DECORATIONS */}
         <div style={{padding:'8px 18px 14px'}}>
           {safeDecos(item).map((deco,di)=>{const cq=deco.kind==='art'&&deco.art_file_id?artQty[deco.art_file_id]:qty;const dp=dP(deco,qty,af,cq);
-            const eq=dp._nq!=null?dp._nq:qty;const decoTotal=eq*(deco.sell_override||dp.sell);const decoCostTotal=eq*dp.cost;const decoMargin=decoTotal-decoCostTotal;const decoMPct=decoTotal>0?Math.round(decoMargin/decoTotal*100):0;
+            const eq=dp._nq!=null?dp._nq:qty;const decoTotal=eq*dp.sell;const decoCostTotal=eq*dp.cost;const decoMargin=decoTotal-decoCostTotal;const decoMPct=decoTotal>0?Math.round(decoMargin/decoTotal*100):0;
             const decoCardStyle={padding:'10px 12px',marginBottom:4,borderRadius:6,background:di%2===0?'#fafbfc':'#f8f9fb',borderLeft:'3px solid '+(deco.kind==='art'?'#3b82f6':deco.kind==='numbers'?'#22c55e':deco.kind==='names'?'#f59e0b':deco.kind==='outside_deco'?'#7c3aed':'#94a3b8')};
             if(deco.kind==='art'){const artF=af.find(f=>f.id===deco.art_file_id);const artIcon=artF?(artF.deco_type==='screen_print'?'🎨':artF.deco_type==='embroidery'?'🧵':'🔥'):'';
               return(<div key={di} style={decoCardStyle}>
@@ -2517,7 +2553,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                     <span style={{fontSize:10,padding:'2px 6px',borderRadius:4,background:artF.status==='approved'?'#dcfce7':'#fef3c7',color:artF.status==='approved'?'#166534':'#92400e'}}>{artF.status}</span></>}
                   <div style={{marginLeft:'auto',display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
                     <span style={{fontSize:11}}>Cost: <strong style={{color:'#dc2626'}}>${dp.cost.toFixed(2)}</strong></span>
-                    <span style={{fontSize:11}}>Sell: <$In value={deco.sell_override||dp.sell} onChange={v=>uD(idx,di,'sell_override',v)} w={50}/></span>
+                    <span style={{fontSize:11}}>Sell: <$In value={dp.sell} onChange={v=>uD(idx,di,'sell_override',v)} w={50}/></span>
                     <span style={{fontSize:10,color:decoMPct>0?'#166534':'#dc2626',fontWeight:600}}>{decoMPct}%</span>
                     <span style={{fontSize:11,color:'#475569',fontWeight:700}}>${decoTotal.toFixed(2)}</span>
                     <button onClick={()=>rmD(idx,di)} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626'}}><Icon name="x" size={14}/></button>
@@ -2548,7 +2584,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                 {filledNums===0&&<span style={{display:'inline-flex',alignItems:'center',gap:3,fontSize:11,color:'#64748b'}}>or Qty: <input type="number" min="0" style={{width:48,border:'1px solid #d1d5db',borderRadius:3,padding:'2px 4px',fontSize:12,fontWeight:600,textAlign:'center'}} value={deco.num_qty||''} placeholder="—" onChange={e=>uD(idx,di,'num_qty',parseInt(e.target.value)||0)}/></span>}
                 <div style={{marginLeft:'auto',display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
                   <span style={{fontSize:11}}>Cost: <strong style={{color:'#dc2626'}}>${dp.cost.toFixed(2)}</strong></span>
-                  <span style={{fontSize:11}}>Sell: <$In value={deco.sell_override||dp.sell} onChange={v=>uD(idx,di,'sell_override',v)} w={50}/></span>
+                  <span style={{fontSize:11}}>Sell: <$In value={dp.sell} onChange={v=>uD(idx,di,'sell_override',v)} w={50}/></span>
                   <span style={{fontSize:10,color:decoMPct>0?'#166534':'#dc2626',fontWeight:600}}>{decoMPct}%</span>
                   <span style={{fontSize:11,color:'#475569',fontWeight:700}}>${decoTotal.toFixed(2)}</span>
                   <button onClick={()=>rmD(idx,di)} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626'}}><Icon name="x" size={14}/></button>
@@ -2696,7 +2732,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
             </div>
             <div style={{display:'flex',gap:12,alignItems:'center'}}>
               <span style={{fontSize:11,color:'#64748b'}}>Garment: ${(qty*safeNum(item.unit_sell)).toFixed(2)}</span>
-              <span style={{fontSize:11,color:'#64748b'}}>Deco: ${(()=>{let d=0;safeDecos(item).forEach(dd=>{const cq2=dd.kind==='art'&&dd.art_file_id?artQty[dd.art_file_id]:qty;const dp2=dP(dd,qty,af,cq2);const eq2=dp2._nq!=null?dp2._nq:qty;d+=eq2*(dd.sell_override||dp2.sell)});return d.toFixed(2)})()}</span>
+              <span style={{fontSize:11,color:'#64748b'}}>Deco: ${(()=>{let d=0;safeDecos(item).forEach(dd=>{const cq2=dd.kind==='art'&&dd.art_file_id?artQty[dd.art_file_id]:qty;const dp2=dP(dd,qty,af,cq2);const eq2=dp2._nq!=null?dp2._nq:qty;d+=eq2*dp2.sell});return d.toFixed(2)})()}</span>
               <span style={{fontSize:12,fontWeight:800,color:'#1e40af'}}>All-In: ${iR.toFixed(2)}</span>
             </div>
           </div>}
@@ -5882,7 +5918,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         {(()=>{const pEsts=custEsts.filter(e=>e.status==='sent'||e.status==='draft'||e.status==='open');
           return pEsts.length>0&&<>
           <div style={{fontSize:13,fontWeight:800,color:'#d97706',marginBottom:10}}>📋 Estimates ({pEsts.length})</div>
-          {pEsts.map(est=>{const t=(est.items||[]).reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);let r=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const dp2=dP(d,qq,[],qq);r+=qq*dp2.sell});return a+r},0);
+          {pEsts.map(est=>{const t=(est.items||[]).reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);let r=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const dp2=dP(d,qq,[],qq);const eq2=dp2._nq!=null?dp2._nq:qq;r+=eq2*dp2.sell});return a+r},0);
             return<div key={est.id} style={{border:'1px solid #f59e0b',borderRadius:10,padding:14,marginBottom:10,background:'#fffbeb'}}>
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
                 <div><div style={{fontWeight:700,fontSize:14,color:'#92400e'}}>{est.memo||est.id}</div>
@@ -6420,7 +6456,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   if(estView){
     const est=estView;
     const eaf=safeArt(est);const _eAQ={};(est.items||[]).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_eAQ[d.art_file_id]=(_eAQ[d.art_file_id]||0)+q2}})});
-    const estTotal=(est.items||[]).reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);let r=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_eAQ[d.art_file_id]:qq;const dp2=dP(d,qq,eaf,cq);r+=qq*dp2.sell});return a+r},0);
+    const estTotal=(est.items||[]).reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);let r=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_eAQ[d.art_file_id]:qq;const dp2=dP(d,qq,eaf,cq);const eq2=dp2._nq!=null?dp2._nq:qq;r+=eq2*dp2.sell});return a+r},0);
     const canApprove=est.status==='sent'||est.status==='open';
     return<div style={{minHeight:'100vh',background:'#f1f5f9',display:'flex',justifyContent:'center',padding:'40px 16px'}}>
       <div style={{width:'100%',maxWidth:640,background:'white',borderRadius:16,boxShadow:'0 4px 24px rgba(0,0,0,0.08)',overflow:'hidden'}}>
@@ -6655,7 +6691,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           const estBadge=(st)=>({background:st==='sent'||st==='open'?'#fef3c7':st==='approved'?'#dcfce7':st==='converted'?'#dbeafe':'#f1f5f9',color:st==='sent'||st==='open'?'#92400e':st==='approved'?'#166534':st==='converted'?'#1e40af':'#64748b'});
           return allEsts.length>0&&<>
           <div style={{fontSize:13,fontWeight:800,color:'#d97706',marginBottom:10}}>📋 Estimates ({allEsts.length})</div>
-          {openEsts.length>0&&openEsts.map(est=>{const eaf=est.art_files||[];const _eAQ={};(est.items||[]).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_eAQ[d.art_file_id]=(_eAQ[d.art_file_id]||0)+q2}})});const t=(est.items||[]).reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);let r=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_eAQ[d.art_file_id]:qq;const dp2=dP(d,qq,eaf,cq);r+=qq*dp2.sell});return a+r},0);
+          {openEsts.length>0&&openEsts.map(est=>{const eaf=est.art_files||[];const _eAQ={};(est.items||[]).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_eAQ[d.art_file_id]=(_eAQ[d.art_file_id]||0)+q2}})});const t=(est.items||[]).reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);let r=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_eAQ[d.art_file_id]:qq;const dp2=dP(d,qq,eaf,cq);const eq2=dp2._nq!=null?dp2._nq:qq;r+=eq2*dp2.sell});return a+r},0);
             return<div key={est.id} style={{border:'2px solid #f59e0b',borderRadius:10,padding:14,marginBottom:10,background:'#fffbeb',cursor:'pointer'}} onClick={()=>setEstView(est)}>
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
                 <div><div style={{fontWeight:700,fontSize:14,color:'#92400e'}}>{est.memo||est.id}</div>
@@ -6667,7 +6703,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                 </div>
               </div></div>})}
           {(approvedEsts.length>0||pastEsts.length>0)&&<div style={{border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden',marginBottom:10}}>
-            {[...approvedEsts,...pastEsts].map((est,i,arr)=>{const eaf=est.art_files||[];const _eAQ={};(est.items||[]).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_eAQ[d.art_file_id]=(_eAQ[d.art_file_id]||0)+q2}})});const t=(est.items||[]).reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);let r=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_eAQ[d.art_file_id]:qq;const dp2=dP(d,qq,eaf,cq);r+=qq*dp2.sell});return a+r},0);
+            {[...approvedEsts,...pastEsts].map((est,i,arr)=>{const eaf=est.art_files||[];const _eAQ={};(est.items||[]).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_eAQ[d.art_file_id]=(_eAQ[d.art_file_id]||0)+q2}})});const t=(est.items||[]).reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);let r=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_eAQ[d.art_file_id]:qq;const dp2=dP(d,qq,eaf,cq);const eq2=dp2._nq!=null?dp2._nq:qq;r+=eq2*dp2.sell});return a+r},0);
               return<div key={est.id} style={{padding:'10px 14px',borderBottom:i<arr.length-1?'1px solid #f1f5f9':'none',display:'flex',justifyContent:'space-between',alignItems:'center',cursor:'pointer'}} onClick={()=>setEstView(est)}>
                 <div><span style={{fontWeight:600,fontSize:13}}>{est.memo||est.id}</span> <span style={{fontSize:11,color:'#94a3b8'}}>{est.id}</span>
                   <div style={{fontSize:10,color:'#64748b'}}>{est.created_at?.split(' ')[0]} · {(est.items||[]).length} item{(est.items||[]).length!==1?'s':''}</div></div>
@@ -7335,10 +7371,9 @@ export default function App(){
     const items=order.items.map(item=>{const qty=Object.values(item.sizes||{}).reduce((a,v)=>a+v,0)||1;
       const artQty={};safeDecos(item).forEach(d=>{if(d.kind==='art'&&d.art_file_id){const k=d.art_file_id;if(!artQty[k])artQty[k]=0;artQty[k]+=qty}});
       const decorations=safeDecos(item).map(d=>{
-        if(d.sell_override!=null&&d._cost_locked!=null)return d;// already locked
         const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:qty;
         const dp=dP(d,qty,af,cq);
-        return{...d,sell_override:d.sell_override??dp.sell,_cost_locked:d._cost_locked??dp.cost}});
+        return{...d,_cost_locked:dp.cost}});
       return{...item,decorations}});
     return{...order,items}};
   const savE=e=>{const e2=lockPrices(e.status==='draft'?{...e,status:'open'}:e);setEsts(p=>{const ex=p.find(x=>x.id===e2.id);return ex?p.map(x=>x.id===e2.id?e2:x):[...p,e2]});logChange(ests.find(x=>x.id===e2.id)?'updated':'created','Estimate',e2.id,e2.memo||'');return e2};
@@ -7356,7 +7391,7 @@ export default function App(){
       if(!hasInv){
         const _aq={};safeItems(sl).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_aq[d.art_file_id]=(_aq[d.art_file_id]||0)+q2}})});
         const saf=safeArt(sl);let total=0;
-        safeItems(sl).forEach(it=>{const qq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);total+=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qq;const dp2=dP(d,qq,saf,cq);total+=qq*dp2.sell})});
+        safeItems(sl).forEach(it=>{const qq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);total+=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qq;const dp2=dP(d,qq,saf,cq);const eq2=dp2._nq!=null?dp2._nq:qq;total+=eq2*dp2.sell})});
         if(sl.shipping_type==='pct')total+=total*(safeNum(sl.shipping_value)/100);else total+=safeNum(sl.shipping_value);
         const invId=nextInvId(invs);const today=new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'2-digit'});
         const dueDate=new Date();dueDate.setDate(dueDate.getDate()+30);const due=dueDate.toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'2-digit'});
@@ -7413,8 +7448,8 @@ export default function App(){
     const c=cust.find(x=>x.id===ne.customer_id);setEEst(ne);setEEstC(c);setPg('estimates');
     nf(canDeleteSO?`${ne.id} created from ${so.id} — SO deleted`:`${ne.id} created from ${so.id} — SO kept (has open POs/IFs/invoices)`)};
   const aO=useMemo(()=>[
-    ...ests.map(e=>{const _eAQ={};safeItems(e).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_eAQ[d.art_file_id]=(_eAQ[d.art_file_id]||0)+q2}})});const eaf=safeArt(e);const t=e.items?.reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((s,v)=>s+v,0);let r=qq*it.unit_sell;it.decorations?.forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_eAQ[d.art_file_id]:qq;const dp=dP(d,qq,eaf,cq);r+=qq*dp.sell});return a+r},0)||0;return{id:e.id,type:'estimate',customer_id:e.customer_id,date:e.created_at?.split(' ')[0],total:t,memo:e.memo,status:e.status}}),
-    ...sos.map(s=>{const _sAQ={};safeItems(s).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((ss,v)=>ss+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_sAQ[d.art_file_id]=(_sAQ[d.art_file_id]||0)+q2}})});const saf=safeArt(s);const t=s.items?.reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((ss,v)=>ss+v,0);let r=qq*(it.unit_sell||0);(it.decorations||[]).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_sAQ[d.art_file_id]:qq;const dp=dP(d,qq,saf,cq);r+=qq*dp.sell});return a+r},0)||0;return{id:s.id,type:'sales_order',customer_id:s.customer_id,date:s.created_at?.split(' ')[0],total:t,memo:s.memo,status:s.status}}),
+    ...ests.map(e=>{const _eAQ={};safeItems(e).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_eAQ[d.art_file_id]=(_eAQ[d.art_file_id]||0)+q2}})});const eaf=safeArt(e);const t=e.items?.reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((s,v)=>s+v,0);let r=qq*it.unit_sell;it.decorations?.forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_eAQ[d.art_file_id]:qq;const dp=dP(d,qq,eaf,cq);const eq=dp._nq!=null?dp._nq:qq;r+=eq*dp.sell});return a+r},0)||0;return{id:e.id,type:'estimate',customer_id:e.customer_id,date:e.created_at?.split(' ')[0],total:t,memo:e.memo,status:e.status}}),
+    ...sos.map(s=>{const _sAQ={};safeItems(s).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((ss,v)=>ss+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_sAQ[d.art_file_id]=(_sAQ[d.art_file_id]||0)+q2}})});const saf=safeArt(s);const t=s.items?.reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((ss,v)=>ss+v,0);let r=qq*(it.unit_sell||0);(it.decorations||[]).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_sAQ[d.art_file_id]:qq;const dp=dP(d,qq,saf,cq);const eq=dp._nq!=null?dp._nq:qq;r+=eq*dp.sell});return a+r},0)||0;return{id:s.id,type:'sales_order',customer_id:s.customer_id,date:s.created_at?.split(' ')[0],total:t,memo:s.memo,status:s.status}}),
     ...invs.map(i=>({...i,type:'invoice'}))],[ests,sos,invs]);
   const fP=useMemo(()=>{let l=prod;if(q&&pg==='products'){const s=q.toLowerCase();l=l.filter(p=>p.sku.toLowerCase().includes(s)||p.name.toLowerCase().includes(s)||p.brand?.toLowerCase().includes(s)||p.color?.toLowerCase().includes(s))}
     if(pF.cat!=='all')l=l.filter(p=>p.category===pF.cat);if(pF.vnd!=='all')l=l.filter(p=>p.vendor_id===pF.vnd);if(pF.stk==='instock')l=l.filter(p=>Object.values(p._inv||{}).some(v=>v>0));if(pF.clr!=='all')l=l.filter(p=>p.color===pF.clr);return l},[prod,q,pF,pg]);

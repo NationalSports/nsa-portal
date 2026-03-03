@@ -1,7 +1,7 @@
 /* eslint-disable */
 const {
   safe, safeArr, safeObj, safeNum, safeStr, safeSizes, safePicks, safePOs, safeDecos, safeItems, safeArt, safeJobs,
-  rQ, spP, emP, npP, dP, DTF,
+  rQ, rT, spP, emP, npP, dP, DTF, SP, EM,
   poCommitted, calcSOStatus, buildJobs, isJobReady, calcTotals, createInvoice,
   buildQBSalesOrder, buildQBInvoice,
   checkInventoryConflicts,
@@ -121,6 +121,16 @@ describe('Pricing Functions', () => {
     expect(rQ(1.88)).toBe(2);
   });
 
+  test('rT rounds to nearest 10 cents', () => {
+    expect(rT(1.14)).toBe(1.1);
+    expect(rT(1.15)).toBe(1.2);
+    expect(rT(1.24)).toBe(1.2);
+    expect(rT(1.25)).toBe(1.3);
+    expect(rT(3.375)).toBe(3.4);
+    expect(rT(4.125)).toBe(4.1);
+    expect(rT(8.4)).toBe(8.4);
+  });
+
   describe('Screen Print Pricing (spP)', () => {
     test('1 color, 1-11 qty = $50 sell', () => {
       expect(spP(1, 1, true)).toBe(50);
@@ -202,21 +212,25 @@ describe('Pricing Functions', () => {
       const artFiles = [makeArtFile({ deco_type: 'embroidery', stitches: 10000, ink_colors: '' })];
       const d = { kind: 'art', art_file_id: 'af1', position: 'Left Chest' };
       const result = dP(d, 24, artFiles, 24);
-      expect(result.sell).toBe(emP(10000, 24, true));
-      expect(result.cost).toBe(emP(10000, 24, false));
+      const expectedCost = emP(10000, 24, false);
+      expect(result.cost).toBe(expectedCost);
+      expect(result.sell).toBe(rT(expectedCost * EM.mk));
     });
 
     test('art TBD screen print defaults to 1 color', () => {
       const d = { kind: 'art', art_file_id: '__tbd', art_tbd_type: 'screen_print', tbd_colors: 1 };
       const result = dP(d, 48, [], 48);
-      // dP applies rQ() rounding: rQ(spP(48,1,true)*1) = rQ(2.95) = 3
-      expect(result.sell).toBe(rQ(spP(48, 1, true)));
+      // sell derived from cost * markup, rounded to 10 cents
+      const expectedCost = rQ(spP(48, 1, false));
+      expect(result.sell).toBe(rT(expectedCost * SP.mk));
     });
 
-    test('art TBD with sell_override uses override', () => {
+    test('art TBD screen print ignores sell_override (sell tracks cost)', () => {
       const d = { kind: 'art', art_file_id: '__tbd', art_tbd_type: 'screen_print', sell_override: 15 };
       const result = dP(d, 48, [], 48);
-      expect(result.sell).toBe(15);
+      // sell_override is ignored for screen print — sell always derived from cost
+      const expectedCost = rQ(spP(48, 1, false));
+      expect(result.sell).toBe(rT(expectedCost * SP.mk));
     });
 
     test('numbers decoration pricing with no roster', () => {
@@ -271,13 +285,36 @@ describe('Pricing Functions', () => {
       expect(result.cost).toBe(0);
     });
 
-    test('underbase adds 15% surcharge to screen print', () => {
+    test('underbase adds surcharge to screen print', () => {
       const artFiles = [makeArtFile({ ink_colors: 'PMS 123' })];
       const withUB = dP({ kind: 'art', art_file_id: 'af1', underbase: true }, 24, artFiles, 24);
       const withoutUB = dP({ kind: 'art', art_file_id: 'af1', underbase: false }, 24, artFiles, 24);
       expect(withUB.sell).toBeGreaterThan(withoutUB.sell);
-      // Should be approximately 15% more
-      expect(withUB.sell / withoutUB.sell).toBeCloseTo(1.15, 1);
+      expect(withUB.cost).toBeGreaterThan(withoutUB.cost);
+      // Cost should be approximately 15% more with underbase
+      expect(withUB.cost / withoutUB.cost).toBeCloseTo(1.15, 1);
+    });
+
+    test('screen print sell price drops when quantity increases (margin maintained)', () => {
+      const artFiles = [makeArtFile({ ink_colors: 'PMS 123\nPMS 456' })];
+      const d = { kind: 'art', art_file_id: 'af1', position: 'Front' };
+      const at24 = dP(d, 24, artFiles, 24);
+      const at48 = dP(d, 48, artFiles, 48);
+      // Both cost and sell should decrease with higher qty
+      expect(at48.cost).toBeLessThan(at24.cost);
+      expect(at48.sell).toBeLessThan(at24.sell);
+      // Margin % should be similar (within 2%)
+      const margin24 = (at24.sell - at24.cost) / at24.sell;
+      const margin48 = (at48.sell - at48.cost) / at48.sell;
+      expect(Math.abs(margin24 - margin48)).toBeLessThan(0.02);
+    });
+
+    test('sell price is rounded to nearest 10 cents', () => {
+      const artFiles = [makeArtFile({ ink_colors: 'PMS 123' })];
+      const d = { kind: 'art', art_file_id: 'af1', position: 'Front' };
+      const result = dP(d, 24, artFiles, 24);
+      // Sell should be a multiple of 0.10
+      expect(Math.round(result.sell * 10) / 10).toBe(result.sell);
     });
   });
 });
