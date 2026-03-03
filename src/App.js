@@ -8114,8 +8114,8 @@ export default function App(){
       return{month:MONTHS[mi],units,revenue,orders}});
     const totalUnits=monthlyData.reduce((a,m)=>a+m.units,0);const totalRev=monthlyData.reduce((a,m)=>a+m.revenue,0);const totalOrders=monthlyData.reduce((a,m)=>a+m.orders,0);
     const maxUnits=Math.max(...monthlyData.map(m=>m.units),1);
-    const saveProduct=()=>{setProd(p=>p.map(x=>x.id===ep.id?ep:x));setEditing(false);nf('Product updated')};
-    const imgSave=(up)=>{setEp(up);setProd(p=>p.map(x=>x.id===up.id?up:x));_dbSaveProduct(up);nf('Image saved')};
+    const saveProduct=()=>{setSelP(ep);setProd(p=>p.map(x=>x.id===ep.id?ep:x));setEditing(false);nf('Product updated')};
+    const imgSave=(up)=>{setEp(up);setSelP(up);setProd(p=>p.map(x=>x.id===up.id?up:x));_dbSaveProduct(up);nf('Image saved')};
     const nt=Object.values(ep._inv||{}).reduce((a,v2)=>a+v2,0);
     return(<div>
       <button className="btn btn-secondary" onClick={onBack} style={{marginBottom:12}}><Icon name="chevron-left" size={14}/> Products</button>
