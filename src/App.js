@@ -6942,7 +6942,16 @@ const BarcodeScanner=({onScan,onClose,placeholder='Scan barcode or QR code...'})
     try{
       const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment',width:{ideal:1280},height:{ideal:720}}});
       streamRef.current=stream;
-      if(videoRef.current){videoRef.current.srcObject=stream;videoRef.current.play()}
+      if(videoRef.current){
+        videoRef.current.srcObject=stream;
+        // Wait for video stream to be ready before playing (required for Safari/iOS)
+        await new Promise((resolve)=>{
+          const v=videoRef.current;
+          if(v.readyState>=v.HAVE_METADATA){resolve();return}
+          v.onloadedmetadata=()=>resolve();
+        });
+        await videoRef.current.play();
+      }
       setActive(true);
       // Use native BarcodeDetector if available, otherwise use polyfill
       const DetectorImpl='BarcodeDetector' in window?window.BarcodeDetector:BarcodeDetectorPolyfill;
@@ -6984,7 +6993,7 @@ const BarcodeScanner=({onScan,onClose,placeholder='Scan barcode or QR code...'})
   return<div style={{background:'#0f172a',borderRadius:12,overflow:'hidden',border:'2px solid #334155'}}>
     {/* Camera viewport */}
     {active?<div style={{position:'relative',background:'#000'}}>
-      <video ref={videoRef} style={{width:'100%',maxHeight:280,objectFit:'cover',display:'block'}} playsInline muted/>
+      <video ref={videoRef} style={{width:'100%',maxHeight:280,objectFit:'cover',display:'block'}} autoPlay playsInline muted/>
       {/* Scan overlay */}
       <div style={{position:'absolute',top:0,left:0,right:0,bottom:0,display:'flex',alignItems:'center',justifyContent:'center',pointerEvents:'none'}}>
         <div style={{width:200,height:200,border:'2px solid rgba(34,197,94,0.7)',borderRadius:12,boxShadow:'0 0 0 9999px rgba(0,0,0,0.3)'}}/>
