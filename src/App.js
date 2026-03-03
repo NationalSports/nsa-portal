@@ -332,7 +332,7 @@ const _pick=(obj,cols)=>{const r={};cols.forEach(c=>{if(c in obj)r[c]=obj[c]});r
 const _estCols=['id','customer_id','memo','status','created_by','created_at','updated_at','default_markup','shipping_type','shipping_value','ship_to_id','email_status','email_opened_at','email_viewed_at','deleted_at'];
 const _soCols=['id','customer_id','estimate_id','memo','status','created_by','created_at','updated_at','expected_date','production_notes','shipping_type','shipping_value','ship_to_id','default_markup','omg_store_id','_shipstation_order_id','_shipping_status','_tracking_number','_carrier','_ship_date','_tracking_url','_shipped','_shipments','_shipping_cost','deleted_at'];
 const _itemCols=['product_id','sku','name','brand','color','nsa_cost','retail_price','unit_sell','sizes','available_sizes','_colors','no_deco','is_custom','custom_desc','custom_cost','custom_sell'];
-const _decoCols=['kind','position','type','art_file_id','art_tbd_type','tbd_colors','tbd_stitches','tbd_dtf_size','sell_override','sell_each','cost_each','underbase','two_color','colors','stitches','dtf_size','num_method','num_size','roster','names','names_list','vendor','deco_type','notes','custom_font_art_id','_showRoster','print_color','front_and_back'];
+const _decoCols=['kind','position','type','art_file_id','art_tbd_type','tbd_colors','tbd_stitches','tbd_dtf_size','sell_override','sell_each','cost_each','underbase','two_color','colors','stitches','dtf_size','num_method','num_size','roster','names','names_list','vendor','deco_type','notes','custom_font_art_id','_showRoster','print_color','front_and_back','num_qty','name_qty'];
 const _jobCols=['id','key','art_file_id','art_name','deco_type','positions','art_status','item_status','prod_status','total_units','fulfilled_units','split_from','created_at','assigned_machine','assigned_to','ship_method','items','_auto','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected'];
 const _custCols=['id','parent_id','name','alpha_tag','billing_address_line1','billing_address_line2','billing_city','billing_state','billing_zip','shipping_address_line1','shipping_address_line2','shipping_city','shipping_state','shipping_zip','adidas_ua_tier','catalog_markup','payment_terms','tax_rate','tax_exempt','primary_rep_id','notes','is_active','created_at','updated_at'];
 // Legacy compat — keep old _dbSave for team_members and other simple tables
@@ -6584,7 +6584,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           const estBadge=(st)=>({background:st==='sent'||st==='open'?'#fef3c7':st==='approved'?'#dcfce7':st==='converted'?'#dbeafe':'#f1f5f9',color:st==='sent'||st==='open'?'#92400e':st==='approved'?'#166534':st==='converted'?'#1e40af':'#64748b'});
           return allEsts.length>0&&<>
           <div style={{fontSize:13,fontWeight:800,color:'#d97706',marginBottom:10}}>📋 Estimates ({allEsts.length})</div>
-          {openEsts.length>0&&openEsts.map(est=>{const t=(est.items||[]).reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);let r=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const dp2=dP(d,qq,[],qq);r+=qq*dp2.sell});return a+r},0);
+          {openEsts.length>0&&openEsts.map(est=>{const eaf=est.art_files||[];const _eAQ={};(est.items||[]).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_eAQ[d.art_file_id]=(_eAQ[d.art_file_id]||0)+q2}})});const t=(est.items||[]).reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);let r=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_eAQ[d.art_file_id]:qq;const dp2=dP(d,qq,eaf,cq);r+=qq*dp2.sell});return a+r},0);
             return<div key={est.id} style={{border:'2px solid #f59e0b',borderRadius:10,padding:14,marginBottom:10,background:'#fffbeb',cursor:'pointer'}} onClick={()=>setEstView(est)}>
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
                 <div><div style={{fontWeight:700,fontSize:14,color:'#92400e'}}>{est.memo||est.id}</div>
@@ -6596,7 +6596,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                 </div>
               </div></div>})}
           {(approvedEsts.length>0||pastEsts.length>0)&&<div style={{border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden',marginBottom:10}}>
-            {[...approvedEsts,...pastEsts].map((est,i,arr)=>{const t=(est.items||[]).reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);let r=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const dp2=dP(d,qq,[],qq);r+=qq*dp2.sell});return a+r},0);
+            {[...approvedEsts,...pastEsts].map((est,i,arr)=>{const eaf=est.art_files||[];const _eAQ={};(est.items||[]).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_eAQ[d.art_file_id]=(_eAQ[d.art_file_id]||0)+q2}})});const t=(est.items||[]).reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);let r=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_eAQ[d.art_file_id]:qq;const dp2=dP(d,qq,eaf,cq);r+=qq*dp2.sell});return a+r},0);
               return<div key={est.id} style={{padding:'10px 14px',borderBottom:i<arr.length-1?'1px solid #f1f5f9':'none',display:'flex',justifyContent:'space-between',alignItems:'center',cursor:'pointer'}} onClick={()=>setEstView(est)}>
                 <div><span style={{fontWeight:600,fontSize:13}}>{est.memo||est.id}</span> <span style={{fontSize:11,color:'#94a3b8'}}>{est.id}</span>
                   <div style={{fontSize:10,color:'#64748b'}}>{est.created_at?.split(' ')[0]} · {(est.items||[]).length} item{(est.items||[]).length!==1?'s':''}</div></div>
@@ -7312,10 +7312,24 @@ export default function App(){
     const ne={id:nextEstId(ests),customer_id:est.customer_id,memo:(est.memo||'')+' (copy)',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:est.default_markup,shipping_type:est.shipping_type,shipping_value:est.shipping_value,ship_to_id:est.ship_to_id,email_status:null,art_files:JSON.parse(JSON.stringify(est.art_files||[])),items:clonedItems};
     setEsts(p=>[...p,ne]);const c=cust.find(x=>x.id===ne.customer_id);setEEst(ne);setEEstC(c);setPg('estimates');nf(`${ne.id} copied from ${est.id}`)};
   const revertSOToEst=so=>{
+    // Check for open POs or IFs (pick lines) — if any exist, can't delete the SO
+    const hasOpenPOs=safeItems(so).some(it=>safePOs(it).some(po=>po.status!=='cancelled'));
+    const hasOpenIFs=safeItems(so).some(it=>safePicks(it).length>0);
+    const hasLinkedInvs=invs.some(i=>i.so_id===so.id);
+    const canDeleteSO=!hasOpenPOs&&!hasOpenIFs&&!hasLinkedInvs;
     const clonedItems=safeItems(so).map(it=>{const clone=JSON.parse(JSON.stringify(it));delete clone.pick_lines;delete clone.po_lines;return clone});
     const ne={id:nextEstId(ests),customer_id:so.customer_id,memo:so.memo||'',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:so.default_markup,shipping_type:so.shipping_type,shipping_value:so.shipping_value,ship_to_id:so.ship_to_id,email_status:null,art_files:JSON.parse(JSON.stringify(so.art_files||[])),items:clonedItems};
-    setEsts(p=>[...p,ne]);setSOs(p=>p.map(s=>s.id===so.id?{...s,status:'reverted',updated_at:new Date().toLocaleString()}:s));setESO(null);
-    const c=cust.find(x=>x.id===ne.customer_id);setEEst(ne);setEEstC(c);setPg('estimates');nf(`${ne.id} created from ${so.id} — SO marked as reverted`)};
+    // Re-open the parent estimate if it was converted
+    setEsts(p=>{const updated=p.map(e=>e.id===so.estimate_id?{...e,status:'draft',updated_at:new Date().toLocaleString()}:e);return[...updated,ne]});
+    if(canDeleteSO){
+      // Delete the SO entirely since no open POs, IFs, or invoices
+      setSOs(p=>p.filter(s=>s.id!==so.id));_dbDeleteSO(so.id);
+    }else{
+      setSOs(p=>p.map(s=>s.id===so.id?{...s,status:'reverted',updated_at:new Date().toLocaleString()}:s));
+    }
+    setESO(null);
+    const c=cust.find(x=>x.id===ne.customer_id);setEEst(ne);setEEstC(c);setPg('estimates');
+    nf(canDeleteSO?`${ne.id} created from ${so.id} — SO deleted`:`${ne.id} created from ${so.id} — SO kept (has open POs/IFs/invoices)`)};
   const aO=useMemo(()=>[
     ...ests.map(e=>{const _eAQ={};safeItems(e).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_eAQ[d.art_file_id]=(_eAQ[d.art_file_id]||0)+q2}})});const eaf=safeArt(e);const t=e.items?.reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((s,v)=>s+v,0);let r=qq*it.unit_sell;it.decorations?.forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_eAQ[d.art_file_id]:qq;const dp=dP(d,qq,eaf,cq);r+=qq*dp.sell});return a+r},0)||0;return{id:e.id,type:'estimate',customer_id:e.customer_id,date:e.created_at?.split(' ')[0],total:t,memo:e.memo,status:e.status}}),
     ...sos.map(s=>{const _sAQ={};safeItems(s).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((ss,v)=>ss+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_sAQ[d.art_file_id]=(_sAQ[d.art_file_id]||0)+q2}})});const saf=safeArt(s);const t=s.items?.reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((ss,v)=>ss+v,0);let r=qq*(it.unit_sell||0);(it.decorations||[]).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_sAQ[d.art_file_id]:qq;const dp=dP(d,qq,saf,cq);r+=qq*dp.sell});return a+r},0)||0;return{id:s.id,type:'sales_order',customer_id:s.customer_id,date:s.created_at?.split(' ')[0],total:t,memo:s.memo,status:s.status}}),
@@ -7952,7 +7966,7 @@ export default function App(){
 
   // ESTIMATES LIST
   function rEst(){
-    if(eEst)return<OrderEditor order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} onSave={e=>{const e2=savE(e);setEEst(e2)}} onBack={()=>setEEst(null)} onConvertSO={convertSO} onCopyEstimate={copyEstimate} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={canDelete?deleteEstimate:null} onNavInvoice={inv=>{setEEst(null);setPg('invoices');setInvF(f=>({...f,search:inv.id}))}} onSaveProduct={p=>setProd(prev=>[...prev,p])} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setEEst(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}else{nf('SO '+soId+' not found','error')}}}/>
+    if(eEst)return<OrderEditor order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} onSave={e=>{const e2=savE(e);setEEst(e2)}} onBack={()=>setEEst(null)} onConvertSO={convertSO} onCopyEstimate={copyEstimate} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={deleteEstimate} onNavInvoice={inv=>{setEEst(null);setPg('invoices');setInvF(f=>({...f,search:inv.id}))}} onSaveProduct={p=>setProd(prev=>[...prev,p])} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setEEst(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}else{nf('SO '+soId+' not found','error')}}}/>
     const fe=ests.filter(e=>!q||(e.id+' '+e.memo+' '+(cust.find(c=>c.id===e.customer_id)?.name||'')+' '+(cust.find(c=>c.id===e.customer_id)?.alpha_tag||'')).toLowerCase().includes(q.toLowerCase()));
     return(<><div style={{display:'flex',gap:8,marginBottom:16}}><div className="search-bar" style={{flex:1}}><Icon name="search"/><input placeholder="Search..." value={q} onChange={e=>setQ(e.target.value)}/></div>
       <button className="btn btn-primary" onClick={()=>newE(null)}><Icon name="plus" size={14}/> New Estimate</button></div>
