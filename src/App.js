@@ -168,7 +168,8 @@ const _dbSaveEstimateInner = async (est) => {
   if(!supabase)return;
   return _dbSavingGuard(async()=>{let decoFailed=false;try{
     const{items,art_files,...estRow}=est;
-    await supabase.from('estimates').upsert(_pick(estRow,_estCols),{onConflict:'id'});
+    const{error:estErr}=await supabase.from('estimates').upsert(_pick(estRow,_estCols),{onConflict:'id'});
+    if(estErr){console.error('[DB] estimates upsert failed:',estErr.message);decoFailed=true}
     // Delete old children — must delete grandchildren (decorations) BEFORE estimate_items due to FK constraints
     const oldItemIds=(await supabase.from('estimate_items').select('id').eq('estimate_id',est.id)).data?.map(i=>i.id)||[];
     if(oldItemIds.length){
@@ -211,9 +212,10 @@ const _dbSaveEstimateInner = async (est) => {
 const _dbSaveEstimate = (est) => _queuedEntitySave(est.id, est, _dbSaveEstimateInner);
 const _dbSaveSOInner = async (so) => {
   if(!supabase)return;
-  return _dbSavingGuard(async()=>{let decoFailed=false;try{
+  return _dbSavingGuard(async()=>{let saveFailed=false;try{
     const{items,art_files,firm_dates,jobs,...soRow}=so;
-    await supabase.from('sales_orders').upsert(_pick(soRow,_soCols),{onConflict:'id'});
+    const{error:soErr}=await supabase.from('sales_orders').upsert(_pick(soRow,_soCols),{onConflict:'id'});
+    if(soErr){console.error('[DB] sales_orders upsert failed:',soErr.message);saveFailed=true}
     // Delete old children — must delete grandchildren (decorations/picks/POs) BEFORE so_items due to FK constraints
     const oldItemIds=(await supabase.from('so_items').select('id').eq('so_id',so.id)).data?.map(i=>i.id)||[];
     if(oldItemIds.length){
@@ -228,16 +230,16 @@ const _dbSaveSOInner = async (so) => {
     await supabase.from('so_art_files').delete().eq('so_id',so.id);
     if(art_files?.length){
       const{error:afErr}=await supabase.from('so_art_files').upsert(art_files.map(a=>({..._pick(a,_artCols),so_id:so.id})),{onConflict:'so_id,id'});
-      if(afErr)console.error('[DB] so_art_files upsert failed:',afErr.message,afErr.details);
+      if(afErr){console.error('[DB] so_art_files upsert failed:',afErr.message,afErr.details);saveFailed=true}
     }
-    if(firm_dates?.length) await supabase.from('so_firm_dates').insert(firm_dates.map(f=>({...f,so_id:so.id})));
-    if(jobs?.length) await supabase.from('so_jobs').insert(jobs.map(j=>({..._pick(j,_jobCols),so_id:so.id})));
-    if(!items?.length){_dbSaveFailedIds.delete(so.id);return true}
+    if(firm_dates?.length){const{error:fdErr}=await supabase.from('so_firm_dates').insert(firm_dates.map(f=>({...f,so_id:so.id})));if(fdErr){console.error('[DB] so_firm_dates insert failed:',fdErr.message);saveFailed=true}}
+    if(jobs?.length){const{error:jobErr}=await supabase.from('so_jobs').insert(jobs.map(j=>({..._pick(j,_jobCols),so_id:so.id})));if(jobErr){console.error('[DB] so_jobs insert failed:',jobErr.message,jobErr.details);saveFailed=true}}
+    if(!items?.length){if(saveFailed){_dbSaveFailedIds.add(so.id);return false}_dbSaveFailedIds.delete(so.id);return true}
     for(let idx=0;idx<items.length;idx++){
       const{decorations,pick_lines,po_lines,...itemData}=items[idx];
       // Separate size fields from pick_lines/po_lines back into sizes JSONB
       const{data:inserted,error:itemErr}=await supabase.from('so_items').insert({..._pick(itemData,_itemCols),so_id:so.id,item_index:idx}).select('id').single();
-      if(itemErr){console.error('[DB] so_items insert failed:',itemErr.message,itemErr.details);decoFailed=true;continue}
+      if(itemErr){console.error('[DB] so_items insert failed:',itemErr.message,itemErr.details);saveFailed=true;continue}
       if(!inserted)continue;
       if(decorations?.length){
         const decoRows=decorations.map((d,di)=>({..._pick(_sanitizeDeco(d),_decoCols),so_item_id:inserted.id,deco_index:di}));
@@ -250,7 +252,7 @@ const _dbSaveSOInner = async (so) => {
               // Strip columns from later migrations that may not exist in production DB
               const coreRow={};Object.keys(row).forEach(k=>{if(!_decoExtraCols.has(k))coreRow[k]=row[k]});
               const{error:coreErr}=await supabase.from('so_item_decorations').insert(coreRow);
-              if(coreErr){decoFailed=true;console.error('[DB] so deco row failed:',coreErr.message,JSON.stringify(row))}
+              if(coreErr){saveFailed=true;console.error('[DB] so deco row failed:',coreErr.message,JSON.stringify(row))}
               else console.warn('[DB] so deco saved with core columns only (missing DB columns?):',Object.keys(row).filter(k=>_decoExtraCols.has(k)&&row[k]!=null))
             }
           }
@@ -269,7 +271,7 @@ const _dbSaveSOInner = async (so) => {
         if(poErr)console.error('[DB] so_item_po_lines insert failed:',poErr.message,poErr.details);
       }
     }
-    if(decoFailed){_dbSaveFailedIds.add(so.id);return false}
+    if(saveFailed){_dbSaveFailedIds.add(so.id);return false}
     _dbSaveFailedIds.delete(so.id);return true;
   }catch(e){console.error('[DB] save SO:',e);_dbSaveFailedIds.add(so.id);return false}});
 };
@@ -321,7 +323,7 @@ const _dbSaveProduct = async (p) => {
     // Always save product images to app_state as reliable backup (works even without image columns)
     const _imgF=p.image_url||p.image_front_url||null;const _imgB=p.back_image_url||p.image_back_url||null;const _imgG=p.images||null;
     if(_imgF||_imgB||(_imgG&&_imgG.length)){
-      await supabase.from('app_state').upsert({id:'_pimg_'+p.id,value:JSON.stringify({front:_imgF,back:_imgB,gallery:_imgG}),updated_at:new Date().toISOString()},{onConflict:'id'}).catch(()=>{});
+      try{await supabase.from('app_state').upsert({id:'_pimg_'+p.id,value:JSON.stringify({front:_imgF,back:_imgB,gallery:_imgG}),updated_at:new Date().toISOString()},{onConflict:'id'})}catch(_){}
     }
     const _inv=p._inv||{};const _alerts=p._alerts||{};
     const allSizes=new Set([...Object.keys(_inv),...Object.keys(_alerts)]);
@@ -405,9 +407,9 @@ const _pick=(obj,cols)=>{const r={};cols.forEach(c=>{if(c in obj)r[c]=obj[c]});r
 const _estCols=['id','customer_id','memo','status','created_by','created_at','updated_at','default_markup','shipping_type','shipping_value','ship_to_id','email_status','email_opened_at','email_viewed_at','deleted_at'];
 const _soCols=['id','customer_id','estimate_id','memo','status','created_by','created_at','updated_at','expected_date','production_notes','shipping_type','shipping_value','ship_to_id','default_markup','omg_store_id','_shipstation_order_id','_shipping_status','_tracking_number','_carrier','_ship_date','_tracking_url','_shipped','_shipments','_shipping_cost','deleted_at'];
 const _itemCols=['product_id','sku','name','brand','color','nsa_cost','retail_price','unit_sell','sizes','available_sizes','_colors','no_deco','is_custom','custom_desc','custom_cost','custom_sell'];
-const _decoCols=['kind','position','type','art_file_id','art_tbd_type','tbd_colors','tbd_stitches','tbd_dtf_size','sell_override','sell_each','cost_each','underbase','two_color','colors','stitches','dtf_size','num_method','num_size','num_size_back','num_font','roster','names','names_list','vendor','deco_type','notes','custom_font_art_id','_showRoster','print_color','front_and_back','num_qty','name_qty'];
+const _decoCols=['kind','position','type','art_file_id','art_tbd_type','tbd_colors','tbd_stitches','tbd_dtf_size','sell_override','sell_each','cost_each','underbase','two_color','colors','stitches','dtf_size','num_method','num_size','num_size_back','num_font','roster','names','names_list','vendor','deco_type','notes','custom_font_art_id','print_color','front_and_back','num_qty','name_qty'];
 // Columns that may not exist in production DB / schema cache — stripped on insert retry
-const _decoExtraCols=new Set(['print_color','front_and_back','num_qty','name_qty','num_font','num_size_back','_showRoster','custom_font_art_id']);
+const _decoExtraCols=new Set(['print_color','front_and_back','num_qty','name_qty','num_font','num_size_back','custom_font_art_id']);
 // Sanitize decoration data before DB insert — strip UI-only placeholders that would violate constraints
 const _sanitizeDeco=(d)=>{const r={...d};if(r.custom_font_art_id&&r.custom_font_art_id==='pending')r.custom_font_art_id=null;if(r.art_file_id&&r.art_file_id==='__tbd')r.art_file_id=null;return r};
 const _artCols=['id','name','deco_type','ink_colors','thread_colors','art_size','files','mockup_files','item_mockups','prod_files','notes','status','uploaded'];
