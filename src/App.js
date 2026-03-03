@@ -4120,7 +4120,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
               {mockups.length>0&&<div style={{marginBottom:12}}>
                 <div style={{fontSize:11,fontWeight:700,color:'#78350f',marginBottom:6}}>Review the mockup:</div>
                 {/* Primary mockup — large */}
-                {(()=>{const url=typeof mockups[0]==='string'?mockups[0]:(mockups[0]?.url||'');const name=fileDisplayName(url||mockups[0]);
+                {(()=>{const url=typeof mockups[0]==='string'?mockups[0]:(mockups[0]?.url||'');const name=fileDisplayName(mockups[0]);
                   return<div style={{borderRadius:10,border:'2px solid #f59e0b',overflow:'hidden',background:'white',marginBottom:8,cursor:'pointer'}} onClick={()=>openFile(url)}>
                     {_isImgUrl(url)?<img src={url} alt={name} style={{width:'100%',maxHeight:450,objectFit:'contain',display:'block',background:'#fafafa'}}/>
                     :_isPdfUrl(url)?<div style={{position:'relative'}}>
@@ -9397,7 +9397,7 @@ export default function App(){
                 <div style={{width:240,height:240,borderRadius:10,background:'white',border:'2px dashed #d1d5db',display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column',overflow:'hidden'}}>
                   {mockupFiles.length>0?<>
                     <div style={{fontSize:48,marginBottom:4}}>🖼️</div>
-                    <div style={{fontSize:11,fontWeight:700,color:'#1e40af'}}>{mockupFiles[0]}</div>
+                    <div style={{fontSize:11,fontWeight:700,color:'#1e40af'}}>{fileDisplayName(mockupFiles[0])}</div>
                     <div style={{fontSize:9,color:'#64748b',marginTop:2}}>Click to enlarge</div>
                   </>:<>
                     <div style={{fontSize:48,marginBottom:4}}>🎨</div>
@@ -13371,7 +13371,7 @@ export default function App(){
                   </div>
                   {/* Mockup display + upload zone */}
                   <div style={{padding:10}}>
-                    {primaryUrl?(()=>{const url=primaryUrl;const name=fileDisplayName(url);
+                    {primaryUrl?(()=>{const url=typeof primaryUrl==='string'?primaryUrl:(primaryUrl?.url||'');const name=fileDisplayName(primaryUrl);
                       return<div style={{display:'flex',gap:10,alignItems:'flex-start'}}>
                         <div style={{flex:1,borderRadius:8,border:'2px solid #7c3aed',overflow:'hidden',background:'white',position:'relative'}}>
                           <div style={{position:'absolute',top:4,left:4,background:'#7c3aed',color:'white',fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:3,zIndex:1}}>MOCKUP</div>
@@ -13390,7 +13390,7 @@ export default function App(){
                         </div>
                         {/* Extra mockups + upload zone for more */}
                         <div style={{width:130,display:'flex',flexDirection:'column',gap:6}}>
-                          {extraMocks.map((f,i)=>{const eu=typeof f==='string'?f:(f?.url||'');const en=fileDisplayName(eu);
+                          {extraMocks.map((f,i)=>{const eu=typeof f==='string'?f:(f?.url||'');const en=fileDisplayName(f);
                             return<div key={i} style={{borderRadius:6,border:'1px solid #e2e8f0',overflow:'hidden',background:'white',position:'relative'}}>
                               {_isImgUrl(eu)?<img src={eu} alt={en} style={{width:'100%',maxHeight:90,objectFit:'contain',display:'block',cursor:'pointer'}} onClick={()=>openFile(eu)}/>
                               :<div style={{padding:8,textAlign:'center',cursor:'pointer',fontSize:10,color:'#1e40af',fontWeight:600}} onClick={()=>openFile(eu)}>{en}</div>}
