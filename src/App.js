@@ -418,12 +418,12 @@ const _dbSave = (table, data) => { if(supabase && data) supabase.from(table).ups
 // ─── Cloudinary Config ───
 const CLOUDINARY_CLOUD='dwlyljyuz';
 const CLOUDINARY_PRESET='ml_default_nsaportal';
-const cloudUpload=async(file,folder='nsa-products')=>{const fd=new FormData();fd.append('file',file);fd.append('upload_preset',CLOUDINARY_PRESET);fd.append('folder',folder);fd.append('use_filename','true');fd.append('unique_filename','true');const resType=file.type?.startsWith('image/')?'image':'auto';const r=await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/${resType}/upload`,{method:'POST',body:fd});const d=await r.json();if(d.error)throw new Error(d.error.message);return d.secure_url};
-const fileUpload=async(file,folder='nsa-art-files')=>{const fd=new FormData();fd.append('file',file);fd.append('upload_preset',CLOUDINARY_PRESET);fd.append('folder',folder);fd.append('use_filename','true');fd.append('unique_filename','true');const r=await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/auto/upload`,{method:'POST',body:fd});const d=await r.json();if(d.error)throw new Error(d.error.message);return d.secure_url};
+const cloudUpload=async(file,folder='nsa-products')=>{const fd=new FormData();fd.append('file',file);fd.append('upload_preset',CLOUDINARY_PRESET);fd.append('folder',folder);const resType=file.type?.startsWith('image/')?'image':'auto';const r=await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/${resType}/upload`,{method:'POST',body:fd});const d=await r.json();if(d.error)throw new Error(d.error.message);return d.secure_url};
+const fileUpload=async(file,folder='nsa-art-files')=>{const fd=new FormData();fd.append('file',file);fd.append('upload_preset',CLOUDINARY_PRESET);fd.append('folder',folder);fd.append('filename_override',file.name);const r=await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/auto/upload`,{method:'POST',body:fd});const d=await r.json();if(d.error)throw new Error(d.error.message);return d.secure_url};
 const isUrl=s=>typeof s==='string'&&(s.startsWith('http://')||s.startsWith('https://'));
-const fileDisplayName=f=>isUrl(f)?decodeURIComponent(f.split('/').pop().split('?')[0]):f;
+const fileDisplayName=f=>{if(typeof f==='object'&&f?.name)return f.name;const s=typeof f==='string'?f:(f?.url||'');return isUrl(s)?decodeURIComponent(s.split('/').pop().split('?')[0]):s};
 const _isDownloadOnly=u=>{const e=_urlExt(u);return['ai','eps','dst','psd','tiff','tif','cdr'].includes(e)};
-const openFile=f=>{if(isUrl(f)){if(_isPdfUrl(f)){window.open('https://docs.google.com/gview?url='+encodeURIComponent(f)+'&embedded=true','_blank')}else if(_isDownloadOnly(f)){const a=document.createElement('a');a.href=f;a.download=decodeURIComponent(f.split('/').pop().split('?')[0]);a.target='_blank';a.rel='noopener';document.body.appendChild(a);a.click();document.body.removeChild(a)}else{window.open(f,'_blank')}}else{nf('Legacy file: '+f+' — re-upload to enable downloads')}};
+const openFile=f=>{const u=typeof f==='string'?f:(f?.url||'');if(isUrl(u)){if(_isPdfUrl(u)){window.open('https://docs.google.com/gview?url='+encodeURIComponent(u)+'&embedded=true','_blank')}else if(_isDownloadOnly(u)){const a=document.createElement('a');a.href=u;a.download=typeof f==='object'&&f?.name?f.name:decodeURIComponent(u.split('/').pop().split('?')[0]);a.target='_blank';a.rel='noopener';document.body.appendChild(a);a.click();document.body.removeChild(a)}else{window.open(u,'_blank')}}else if(u){nf('Legacy file: '+u+' — re-upload to enable downloads')}};
 const _urlExt=u=>{if(!u||typeof u!=='string')return '';const clean=u.split('?')[0].split('#')[0];const m=clean.match(/\.(\w+)$/);return m?m[1].toLowerCase():''};
 const _isImgUrl=u=>{const e=_urlExt(u);return['png','jpg','jpeg','gif','webp','svg','bmp'].includes(e)};
 const _isPdfUrl=u=>_urlExt(u)==='pdf';
@@ -3015,13 +3015,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                       <span style={{fontSize:10,fontWeight:700,color:'#2563eb'}}>📎 MOCKUP FILES</span>
                       <span style={{fontSize:9,color:'#94a3b8'}}>Shared with customer</span>
                     </div>
-                    <div style={{display:'flex',gap:4,flexWrap:'wrap',marginBottom:4}}>{(art.mockup_files||art.files||[]).map((fn,fi)=><span key={fi} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'3px 8px',background:'#dbeafe',borderRadius:4,fontSize:11,cursor:isUrl(fn)?'pointer':'default'}} onClick={()=>openFile(fn)} title={isUrl(fn)?'Click to open':'Legacy file — re-upload'}>
-                      <Icon name="file" size={10}/>{fileDisplayName(fn)}<button onClick={e=>{e.stopPropagation();const mf=[...(art.mockup_files||art.files||[])];mf.splice(fi,1);uArt(i,'mockup_files',mf);if(!art.mockup_files)uArt(i,'files',[])}} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:0}}><Icon name="x" size={10}/></button></span>)}</div>
+                    <div style={{display:'flex',gap:4,flexWrap:'wrap',marginBottom:4}}>{(art.mockup_files||art.files||[]).map((fn,fi)=>{const fnUrl=typeof fn==='string'?fn:(fn?.url||'');return<span key={fi} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'3px 8px',background:'#dbeafe',borderRadius:4,fontSize:11,cursor:isUrl(fnUrl)?'pointer':'default'}} onClick={()=>openFile(fn)} title={isUrl(fnUrl)?'Click to open':'Legacy file — re-upload'}>
+                      <Icon name="file" size={10}/>{fileDisplayName(fn)}<button onClick={e=>{e.stopPropagation();const mf=[...(art.mockup_files||art.files||[])];mf.splice(fi,1);uArt(i,'mockup_files',mf);if(!art.mockup_files)uArt(i,'files',[])}} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:0}}><Icon name="x" size={10}/></button></span>})}</div>
                     <div style={{border:'2px dashed #bfdbfe',borderRadius:6,padding:12,textAlign:'center',cursor:'pointer',background:'#eff6ff',transition:'all 0.15s'}}
-                      onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps';inp.multiple=true;inp.onchange=async()=>{for(const f of inp.files){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-mockups');const mf=[...(art.mockup_files||art.files||[]),url];uArt(i,'mockup_files',mf);if(!art.mockup_files)uArt(i,'files',[]);nf('✅ '+f.name+' uploaded')}catch(e){nf('Upload failed: '+e.message,'error')}}};inp.click()}}
+                      onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps';inp.multiple=true;inp.onchange=async()=>{for(const f of inp.files){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-mockups');const mf=[...(art.mockup_files||art.files||[]),{url,name:f.name}];uArt(i,'mockup_files',mf);if(!art.mockup_files)uArt(i,'files',[]);nf('✅ '+f.name+' uploaded')}catch(e){nf('Upload failed: '+e.message,'error')}}};inp.click()}}
                       onDragOver={e=>{e.preventDefault();e.stopPropagation();e.currentTarget.style.background='#dbeafe';e.currentTarget.style.borderColor='#3b82f6'}}
                       onDragLeave={e=>{e.preventDefault();e.stopPropagation();e.currentTarget.style.background='#eff6ff';e.currentTarget.style.borderColor='#bfdbfe'}}
-                      onDrop={async e=>{e.preventDefault();e.stopPropagation();e.currentTarget.style.background='#eff6ff';e.currentTarget.style.borderColor='#bfdbfe';const files=Array.from(e.dataTransfer.files);for(const f of files){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-mockups');const mf=[...(art.mockup_files||art.files||[]),url];uArt(i,'mockup_files',mf);if(!art.mockup_files)uArt(i,'files',[]);nf('✅ '+f.name+' uploaded')}catch(err){nf('Upload failed: '+err.message,'error')}}}}>
+                      onDrop={async e=>{e.preventDefault();e.stopPropagation();e.currentTarget.style.background='#eff6ff';e.currentTarget.style.borderColor='#bfdbfe';const files=Array.from(e.dataTransfer.files);for(const f of files){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-mockups');const mf=[...(art.mockup_files||art.files||[]),{url,name:f.name}];uArt(i,'mockup_files',mf);if(!art.mockup_files)uArt(i,'files',[]);nf('✅ '+f.name+' uploaded')}catch(err){nf('Upload failed: '+err.message,'error')}}}}>
                       <div style={{fontSize:11,color:'#2563eb',fontWeight:600}}><Icon name="upload" size={14}/> Drop mockup files here or click to browse</div>
                       <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>PDF, PNG, JPG, AI, EPS</div></div>
                   </div>
@@ -3031,13 +3031,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                       <span style={{fontSize:10,fontWeight:700,color:'#d97706'}}>🔧 PRODUCTION FILES</span>
                       <span style={{fontSize:9,color:'#94a3b8'}}>Internal — not shared with customer</span>
                     </div>
-                    <div style={{display:'flex',gap:4,flexWrap:'wrap',marginBottom:4}}>{(art.prod_files||[]).map((fn,fi)=><span key={fi} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'3px 8px',background:'#fef3c7',borderRadius:4,fontSize:11,cursor:isUrl(fn)?'pointer':'default'}} onClick={()=>openFile(fn)} title={isUrl(fn)?'Click to open':'Legacy file — re-upload'}>
-                      <Icon name="file" size={10}/>{fileDisplayName(fn)}<button onClick={e=>{e.stopPropagation();uArt(i,'prod_files',(art.prod_files||[]).filter((_,x)=>x!==fi))}} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:0}}><Icon name="x" size={10}/></button></span>)}</div>
+                    <div style={{display:'flex',gap:4,flexWrap:'wrap',marginBottom:4}}>{(art.prod_files||[]).map((fn,fi)=>{const fnUrl=typeof fn==='string'?fn:(fn?.url||'');return<span key={fi} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'3px 8px',background:'#fef3c7',borderRadius:4,fontSize:11,cursor:isUrl(fnUrl)?'pointer':'default'}} onClick={()=>openFile(fn)} title={isUrl(fnUrl)?'Click to open':'Legacy file — re-upload'}>
+                      <Icon name="file" size={10}/>{fileDisplayName(fn)}<button onClick={e=>{e.stopPropagation();uArt(i,'prod_files',(art.prod_files||[]).filter((_,x)=>x!==fi))}} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:0}}><Icon name="x" size={10}/></button></span>})}</div>
                     <div style={{border:'2px dashed #fde68a',borderRadius:6,padding:12,textAlign:'center',cursor:'pointer',background:'#fffbeb',transition:'all 0.15s'}}
-                      onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.pdf,.ai,.eps,.dst,.png,.jpg,.jpeg';inp.multiple=true;inp.onchange=async()=>{for(const f of inp.files){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-production');uArt(i,'prod_files',[...(art.prod_files||[]),url]);nf('✅ '+f.name+' uploaded')}catch(e){nf('Upload failed: '+e.message,'error')}}};inp.click()}}
+                      onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.pdf,.ai,.eps,.dst,.png,.jpg,.jpeg';inp.multiple=true;inp.onchange=async()=>{for(const f of inp.files){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-production');uArt(i,'prod_files',[...(art.prod_files||[]),{url,name:f.name}]);nf('✅ '+f.name+' uploaded')}catch(e){nf('Upload failed: '+e.message,'error')}}};inp.click()}}
                       onDragOver={e=>{e.preventDefault();e.stopPropagation();e.currentTarget.style.background='#fef3c7';e.currentTarget.style.borderColor='#f59e0b'}}
                       onDragLeave={e=>{e.preventDefault();e.stopPropagation();e.currentTarget.style.background='#fffbeb';e.currentTarget.style.borderColor='#fde68a'}}
-                      onDrop={async e=>{e.preventDefault();e.stopPropagation();e.currentTarget.style.background='#fffbeb';e.currentTarget.style.borderColor='#fde68a';const files=Array.from(e.dataTransfer.files);for(const f of files){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-production');uArt(i,'prod_files',[...(art.prod_files||[]),url]);nf('✅ '+f.name+' uploaded')}catch(err){nf('Upload failed: '+err.message,'error')}}}}>
+                      onDrop={async e=>{e.preventDefault();e.stopPropagation();e.currentTarget.style.background='#fffbeb';e.currentTarget.style.borderColor='#fde68a';const files=Array.from(e.dataTransfer.files);for(const f of files){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-production');uArt(i,'prod_files',[...(art.prod_files||[]),{url,name:f.name}]);nf('✅ '+f.name+' uploaded')}catch(err){nf('Upload failed: '+err.message,'error')}}}}>
                       <div style={{fontSize:11,color:'#d97706',fontWeight:600}}><Icon name="upload" size={14}/> Drop production files here or click to browse</div>
                       <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>DST, AI seps, PDF, PNG, JPG</div></div>
                   </div>
@@ -4129,7 +4129,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                   </div>})()}
                 {/* Additional mockups */}
                 {mockups.length>1&&<div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-                  {mockups.slice(1).map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(url||f);
+                  {mockups.slice(1).map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);
                     return<div key={fi} style={{borderRadius:8,border:'1px solid #fde68a',overflow:'hidden',background:'white',maxWidth:200,cursor:'pointer'}} onClick={()=>openFile(url)}>
                       {_isImgUrl(url)?<img src={url} alt={name} style={{width:'100%',maxHeight:150,objectFit:'contain',display:'block'}}/>
                       :<div style={{display:'flex',alignItems:'center',gap:6,padding:'10px 14px'}}>
@@ -5749,7 +5749,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
           {/* Mockup artwork display */}
           {mockupFiles2.length>0&&<div style={{marginBottom:16}}>
             <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:8}}>🖼️ Artwork Mockup</div>
-            {mockupFiles2.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(url||f);
+            {mockupFiles2.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);
               return<div key={fi} style={{borderRadius:10,border:'1px solid #e2e8f0',overflow:'hidden',background:'white',marginBottom:8}}>
                 {_isImgUrl(url)?<img src={url} alt={name} style={{width:'100%',maxHeight:500,objectFit:'contain',display:'block',cursor:'pointer'}} onClick={()=>openFile(url)}/>
                 :_isPdfUrl(url)?<div style={{position:'relative'}}>
@@ -6539,7 +6539,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           {/* ── Mockup Files ── */}
           {mockups.length>0&&<div style={{marginBottom:16}}>
             <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:8}}>Artwork Mockups</div>
-            {mockups.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(url||f);const isPdf=_isPdfUrl(url);const isImg=_isImgUrl(url);const thumb=isPdf?_cloudinaryPdfThumb(url):null;
+            {mockups.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);const isPdf=_isPdfUrl(url);const isImg=_isImgUrl(url);const thumb=isPdf?_cloudinaryPdfThumb(url):null;
               return<div key={fi} style={{border:'1px solid #e2e8f0',borderRadius:10,padding:10,marginBottom:8,cursor:isUrl(url)?'pointer':'default'}} onClick={()=>{if(isUrl(url))setLightbox(url)}}>
                 {isImg&&isUrl(url)&&<img src={url} alt={name} style={{width:'100%',borderRadius:8,marginBottom:6,maxHeight:400,objectFit:'contain',background:'#f8fafc'}}/>}
                 {isPdf&&thumb&&<img src={thumb} alt={name} style={{width:'100%',borderRadius:8,marginBottom:6,maxHeight:400,objectFit:'contain',background:'#f8fafc'}} onError={e=>{e.target.style.display='none'}}/>}
@@ -12951,7 +12951,7 @@ export default function App(){
             {/* Mockup image — large and prominent */}
             <div style={{background:'#f8fafc',padding:28,display:'flex',flexDirection:'column',alignItems:'center',borderBottom:'1px solid #e2e8f0'}}>
               {mockupFiles.length>0?<>
-                {mockupFiles.map((f,i)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(url||f);
+                {mockupFiles.map((f,i)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);
                   return<div key={i} style={{width:'100%',maxWidth:600,marginBottom:i<mockupFiles.length-1?12:0,borderRadius:12,background:'white',border:'1px solid #e2e8f0',overflow:'hidden'}}>
                     {_isImgUrl(url)?<img src={url} alt={name} style={{width:'100%',maxHeight:500,objectFit:'contain',display:'block',cursor:'pointer'}} onClick={()=>openFile(url)}/>
                     :_isPdfUrl(url)?<div style={{position:'relative'}}>
@@ -13139,7 +13139,7 @@ export default function App(){
           const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
           const liveAf=safeArt(liveSO).find(a=>a.id===j.art_file_id)||af;
           const curFiles=(liveAf?.mockup_files||liveAf?.files||[]);
-          const updFiles=curFiles.filter(f=>f!==fileUrl);
+          const updFiles=curFiles.filter(f=>(typeof f==='string'?f:(f?.url||''))!==fileUrl);
           const updArt=safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,mockup_files:updFiles}:a);
           savSO({...liveSO,art_files:updArt});
           const updatedAf=updArt.find(a=>a.id===j.art_file_id);
@@ -13151,7 +13151,8 @@ export default function App(){
           const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
           const liveAf=safeArt(liveSO).find(a=>a.id===j.art_file_id)||af;
           const curFiles=(liveAf?.mockup_files||liveAf?.files||[]);
-          const updFiles=[fileUrl,...curFiles.filter(f=>f!==fileUrl)];
+          const matchFile=curFiles.find(f=>(typeof f==='string'?f:(f?.url||''))===fileUrl)||fileUrl;
+          const updFiles=[matchFile,...curFiles.filter(f=>(typeof f==='string'?f:(f?.url||''))!==fileUrl)];
           const updArt=safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,mockup_files:updFiles}:a);
           savSO({...liveSO,art_files:updArt});
           const updatedAf=updArt.find(a=>a.id===j.art_file_id);
@@ -13162,22 +13163,22 @@ export default function App(){
         const handleArtUpload=async(files)=>{
           setArtJobDetailUploading(true);
           try{
-            const urls=[];
+            const uploaded=[];
             for(const f of files){
               nf('Uploading '+f.name+'...');
               const url=await fileUpload(f,'nsa-art-files');
-              urls.push(url);
+              uploaded.push({url,name:f.name});
             }
             // Re-fetch the latest SO from state to avoid stale data
             const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
             // Add to mockup_files on the art file
-            const updArt=safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,mockup_files:[...(a.mockup_files||a.files||[]),...urls],status:'uploaded'}:a);
+            const updArt=safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,mockup_files:[...(a.mockup_files||a.files||[]),...uploaded],status:'uploaded'}:a);
             const updatedJobs=safeJobs(liveSO).map(jj=>jj.id===j.id?{...jj,art_status:jj.art_status==='needs_art'||jj.art_status==='art_requested'?'art_in_progress':jj.art_status}:jj);
             savSO({...liveSO,art_files:updArt,jobs:updatedJobs});
             // Refresh modal with updated data
             const updatedAf=updArt.find(a=>a.id===j.art_file_id);
             setArtJobDetailModal({...j,artFile:updatedAf,art_status:updatedJobs.find(jj=>jj.id===j.id)?.art_status||j.art_status});
-            nf(urls.length+' file'+(urls.length>1?'s':'')+' uploaded!');
+            nf(uploaded.length+' file'+(uploaded.length>1?'s':'')+' uploaded!');
           }catch(err){nf('Upload failed: '+err.message,'error')}
           finally{setArtJobDetailUploading(false)}
         };
@@ -13186,23 +13187,23 @@ export default function App(){
         const handleItemMockupUpload=async(files,sku)=>{
           setArtJobDetailUploading(true);
           try{
-            const urls=[];
+            const uploaded=[];
             for(const f of files){
               nf('Uploading '+f.name+' for '+sku+'...');
               const url=await fileUpload(f,'nsa-art-files');
-              urls.push(url);
+              uploaded.push({url,name:f.name});
             }
             const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
             const liveAf=safeArt(liveSO).find(a=>a.id===j.art_file_id)||af;
             const curItemMockups=liveAf?.item_mockups||{};
-            const updItemMockups={...curItemMockups,[sku]:[...(curItemMockups[sku]||[]),...urls]};
+            const updItemMockups={...curItemMockups,[sku]:[...(curItemMockups[sku]||[]),...uploaded]};
             // Also add to mockup_files for backward compat
-            const updArt=safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,item_mockups:updItemMockups,mockup_files:[...(a.mockup_files||a.files||[]),...urls],status:'uploaded'}:a);
+            const updArt=safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,item_mockups:updItemMockups,mockup_files:[...(a.mockup_files||a.files||[]),...uploaded],status:'uploaded'}:a);
             const updatedJobs=safeJobs(liveSO).map(jj=>jj.id===j.id?{...jj,art_status:jj.art_status==='needs_art'||jj.art_status==='art_requested'?'art_in_progress':jj.art_status}:jj);
             savSO({...liveSO,art_files:updArt,jobs:updatedJobs});
             const updatedAf=updArt.find(a=>a.id===j.art_file_id);
             setArtJobDetailModal({...j,artFile:updatedAf,art_status:updatedJobs.find(jj=>jj.id===j.id)?.art_status||j.art_status});
-            nf(urls.length+' mockup'+(urls.length>1?'s':'')+' uploaded for '+sku);
+            nf(uploaded.length+' mockup'+(uploaded.length>1?'s':'')+' uploaded for '+sku);
           }catch(err){nf('Upload failed: '+err.message,'error')}
           finally{setArtJobDetailUploading(false)}
         };
@@ -13212,10 +13213,11 @@ export default function App(){
           const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
           const liveAf=safeArt(liveSO).find(a=>a.id===j.art_file_id)||af;
           const curItemMockups=liveAf?.item_mockups||{};
-          const updItemMockups={...curItemMockups,[sku]:(curItemMockups[sku]||[]).filter(f=>f!==fileUrl)};
+          const _fUrl=f=>(typeof f==='string'?f:(f?.url||''));
+          const updItemMockups={...curItemMockups,[sku]:(curItemMockups[sku]||[]).filter(f=>_fUrl(f)!==fileUrl)};
           // Also remove from mockup_files
           const curFiles=(liveAf?.mockup_files||liveAf?.files||[]);
-          const updArt=safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,item_mockups:updItemMockups,mockup_files:curFiles.filter(f=>f!==fileUrl)}:a);
+          const updArt=safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,item_mockups:updItemMockups,mockup_files:curFiles.filter(f=>_fUrl(f)!==fileUrl)}:a);
           savSO({...liveSO,art_files:updArt});
           const updatedAf=updArt.find(a=>a.id===j.art_file_id);
           setArtJobDetailModal({...j,artFile:updatedAf});
@@ -13226,18 +13228,18 @@ export default function App(){
         const handleProdFileUpload=async(files)=>{
           setArtJobDetailUploading(true);
           try{
-            const urls=[];
+            const uploaded=[];
             for(const f of files){
               nf('Uploading '+f.name+'...');
               const url=await fileUpload(f,'nsa-art-files');
-              urls.push(url);
+              uploaded.push({url,name:f.name});
             }
             const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
-            const updArt=safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,prod_files:[...(a.prod_files||[]),...urls]}:a);
+            const updArt=safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,prod_files:[...(a.prod_files||[]),...uploaded]}:a);
             savSO({...liveSO,art_files:updArt});
             const updatedAf=updArt.find(a=>a.id===j.art_file_id);
             setArtJobDetailModal({...j,artFile:updatedAf});
-            nf(urls.length+' production file'+(urls.length>1?'s':'')+' uploaded!');
+            nf(uploaded.length+' production file'+(uploaded.length>1?'s':'')+' uploaded!');
           }catch(err){nf('Upload failed: '+err.message,'error')}
           finally{setArtJobDetailUploading(false)}
         };
@@ -13325,7 +13327,7 @@ export default function App(){
               {af&&(af.files||[]).length>0&&<div style={{marginTop:8}}>
                 <div style={{fontSize:11,fontWeight:700,color:'#1e40af',marginBottom:4}}>📁 Source Art Files</div>
                 <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-                  {(af.files||[]).map((f,i)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(url||f);const ext=_urlExt(url);
+                  {(af.files||[]).map((f,i)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);const ext=_urlExt(url);
                     return<div key={i} style={{padding:'6px 10px',background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:6,fontSize:11,fontWeight:600,color:'#1e40af',display:'flex',alignItems:'center',gap:4}}>
                       📁 {name}
                       {isUrl(url)&&<button style={{background:'#2563eb',color:'white',border:'none',borderRadius:4,padding:'2px 8px',fontSize:10,fontWeight:700,cursor:'pointer',marginLeft:4}} onClick={()=>openFile(url)}>{_isDownloadOnly(url)?'⬇ Download':'Open'}</button>}
@@ -13405,13 +13407,13 @@ export default function App(){
                   </div>
                 </div>})}
               {/* General/shared mockup files (not assigned to specific items) */}
-              {(()=>{const assignedUrls=new Set(Object.values(af?.item_mockups||{}).flat());
+              {(()=>{const assignedUrls=new Set(Object.values(af?.item_mockups||{}).flat().map(f=>typeof f==='string'?f:(f?.url||'')));
                 const generalFiles=mockupFiles.filter(f=>{const u=typeof f==='string'?f:(f?.url||'');return!assignedUrls.has(u)});
                 if(generalFiles.length===0)return null;
                 return<div style={{marginTop:10}}>
                   <div style={{fontSize:12,fontWeight:700,color:'#2563eb',textTransform:'uppercase',marginBottom:6}}>General Mockup Files ({generalFiles.length})</div>
                   <div style={{display:'flex',gap:10,flexWrap:'wrap'}}>
-                    {generalFiles.map((f,i)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(url||f);
+                    {generalFiles.map((f,i)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);
                       return<div key={i} style={{borderRadius:8,border:'2px solid #bfdbfe',overflow:'hidden',background:'white',minWidth:180,maxWidth:240}}>
                         {_isImgUrl(url)?<img src={url} alt={name} style={{width:'100%',maxHeight:140,objectFit:'contain',display:'block',cursor:'pointer'}} onClick={()=>openFile(url)}/>
                         :_isPdfUrl(url)?<div style={{position:'relative',cursor:'pointer'}} onClick={()=>openFile(url)}>
@@ -13431,7 +13433,7 @@ export default function App(){
               {/* Production files: visible to artists, admins, prod managers — NOT decorators (they see mockup only) */}
               {prodFilesL.length>0&&cu.role!=='production'&&cu.role!=='prod_assistant'&&<><div style={{fontSize:11,fontWeight:700,color:'#92400e',marginTop:8,marginBottom:4}}>Production Files ({prodFilesL.length})</div>
                 <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-                  {prodFilesL.map((f,i)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(url||f);
+                  {prodFilesL.map((f,i)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);
                     return<div key={i} style={{padding:'6px 10px',background:'#fef3c7',border:'1px solid #fde68a',borderRadius:6,cursor:'pointer',fontSize:11,fontWeight:600,color:'#92400e',display:'flex',alignItems:'center',gap:4}}
                     onClick={()=>openFile(url)}>📁 {name}</div>})}
                 </div></>}
@@ -13607,12 +13609,12 @@ export default function App(){
               {prodFilesL.length>0&&<div style={{marginBottom:10}}>
                 <div style={{fontSize:11,fontWeight:700,color:'#92400e',marginBottom:4}}>Production Files ({prodFilesL.length})</div>
                 <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-                  {prodFilesL.map((f,i)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(url||f);
+                  {prodFilesL.map((f,i)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);
                     return<div key={i} style={{padding:'6px 10px',background:'#fef3c7',border:'1px solid #fde68a',borderRadius:6,cursor:'pointer',fontSize:11,fontWeight:600,color:'#92400e',display:'flex',alignItems:'center',gap:4}}
                       onClick={()=>openFile(url)}>📁 {name}
                       <button style={{background:'none',border:'none',color:'#dc2626',cursor:'pointer',fontSize:12,padding:'0 2px',lineHeight:1}} onClick={e=>{e.stopPropagation();if(window.confirm('Remove this production file?')){
                         const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
-                        const updArt=safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,prod_files:(a.prod_files||[]).filter(pf=>pf!==url)}:a);
+                        const updArt=safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,prod_files:(a.prod_files||[]).filter(pf=>(typeof pf==='string'?pf:(pf?.url||''))!==url)}:a);
                         savSO({...liveSO,art_files:updArt});
                         setArtJobDetailModal({...j,artFile:updArt.find(a=>a.id===j.art_file_id)});
                         nf('Production file removed');
