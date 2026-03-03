@@ -5498,7 +5498,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
 
   return(<div>
   <button className="btn btn-secondary" onClick={onBack} style={{marginBottom:12}}><Icon name="back" size={14}/> All Customers</button>
-  <div className="card" style={{marginBottom:16}}><div style={{padding:'20px 24px',display:'flex',gap:16,alignItems:'flex-start'}}>
+  <div className="card" style={{marginBottom:16,overflow:'visible'}}><div style={{padding:'20px 24px',display:'flex',gap:16,alignItems:'flex-start'}}>
   <div style={{width:56,height:56,borderRadius:12,background:'#dbeafe',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}><Icon name="building" size={28}/></div>
   <div style={{flex:1}}>
     <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}><span style={{fontSize:20,fontWeight:800}}>{customer.name}</span><span className="badge badge-blue">{customer.alpha_tag}</span><span className="badge badge-green">Tier {customer.adidas_ua_tier}</span><span className="badge badge-gray">{tl[customer.payment_terms]||'Net 30'}</span>
