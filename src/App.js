@@ -5464,10 +5464,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
 }
 
 // CUSTOMER DETAIL
-function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,cu,onOpenSO,onOpenEst,ests,onSaveSO,REPS,prod}){
+function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,cu,onOpenSO,onOpenEst,ests,onSaveSO,REPS,prod,onCopy,onDelete}){
   const[tab,setTab]=useState('activity');const[oF,setOF]=useState('all');const[sF,setSF]=useState('all');const[rR,setRR]=useState('thisyear');
   const[editContact,setEditContact]=useState(null);const[custLocal,setCustLocal]=useState(initCust);
   const[showInvEmail,setShowInvEmail]=useState(false);const[invEmailMsg,setInvEmailMsg]=useState('');const[showPortal,setShowPortal]=useState(false);
+  const[showActions,setShowActions]=useState(false);const[showStatement,setShowStatement]=useState(false);const[stmtEmail,setStmtEmail]=useState('');const[stmtMsg,setStmtMsg]=useState('');
   const[subsCollapsed,setSubsCollapsed]=useState(false);
   const[portalJobView,setPortalJobView]=useState(null);// {job,so} when viewing a job mockup
   const[portalComment,setPortalComment]=useState('');
@@ -5477,6 +5478,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   const[portalShowPay,setPortalShowPay]=useState(null);// null | 'all' | inv object
   const[portalPaySuccess,setPortalPaySuccess]=useState(null);
   React.useEffect(()=>setCustLocal(initCust),[initCust]);
+  React.useEffect(()=>{if(!showActions)return;const close=()=>setShowActions(false);document.addEventListener('click',close);return()=>document.removeEventListener('click',close)},[showActions]);
   const customer=custLocal;
   const isP=!customer.parent_id;const subs=isP?allCustomers.filter(c=>c.parent_id===customer.id):[];
   const tl={prepay:'Prepay',net15:'Net 15',net30:'Net 30',net60:'Net 60'};
@@ -5506,6 +5508,17 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       <button className="btn btn-sm btn-primary" onClick={()=>onNewEst(customer)}><Icon name="file" size={12}/> Estimate</button>
       <button className="btn btn-sm btn-secondary"><Icon name="mail" size={12}/> Email</button>
       <button className="btn btn-sm btn-secondary" onClick={()=>onEdit(customer)}><Icon name="edit" size={12}/> Edit</button>
+      <div style={{position:'relative'}}>
+        <button className="btn btn-sm btn-secondary" onClick={e=>{e.stopPropagation();setShowActions(!showActions)}} style={{fontSize:11}}>Actions ▾</button>
+        {showActions&&<div style={{position:'absolute',top:'100%',left:0,zIndex:999,background:'white',border:'1px solid #e2e8f0',borderRadius:8,boxShadow:'0 4px 12px rgba(0,0,0,.12)',minWidth:180,marginTop:4,overflow:'hidden'}} onClick={()=>setShowActions(false)}>
+          <div style={{padding:'8px 14px',cursor:'pointer',fontSize:12,display:'flex',alignItems:'center',gap:8,borderBottom:'1px solid #f1f5f9'}} className="hover-bg" onMouseEnter={e=>e.currentTarget.style.background='#f8fafc'} onMouseLeave={e=>e.currentTarget.style.background='transparent'}
+            onClick={()=>onCopy(customer)}><Icon name="copy" size={13}/> Copy Customer</div>
+          <div style={{padding:'8px 14px',cursor:'pointer',fontSize:12,display:'flex',alignItems:'center',gap:8,borderBottom:'1px solid #f1f5f9'}} onMouseEnter={e=>e.currentTarget.style.background='#f8fafc'} onMouseLeave={e=>e.currentTarget.style.background='transparent'}
+            onClick={()=>{const acct=(customer.contacts||[]).find(c=>c.role==='Accounting')||(customer.contacts||[])[0];setStmtEmail(acct?.email||'');setStmtMsg('Hi '+(acct?.name||'')+',\n\nPlease find your current account statement below with all open invoices and aging details.\n\nPlease let us know if you have any questions.\n\nThank you,\nNSA Team');setShowStatement(true)}}><Icon name="file" size={13}/> Send Statement</div>
+          <div style={{padding:'8px 14px',cursor:'pointer',fontSize:12,display:'flex',alignItems:'center',gap:8,color:'#dc2626'}} onMouseEnter={e=>e.currentTarget.style.background='#fef2f2'} onMouseLeave={e=>e.currentTarget.style.background='transparent'}
+            onClick={()=>onDelete(customer)}><Icon name="trash" size={13}/> Delete Customer</div>
+        </div>}
+      </div>
       {(customer._oi||0)>0&&<>
         <span style={{width:1,background:'#e2e8f0',margin:'0 2px'}}/>
         <button className="btn btn-sm" style={{background:'#dc2626',color:'white',fontSize:11}} onClick={()=>{setInvEmailMsg('Hi '+(customer.contacts||[])[0]?.name+',\n\nPlease find attached your open invoice(s). Let us know if you have any questions.\n\nThank you,\nNSA Team');setShowInvEmail(true)}}>📄 Email Invoices ({customer._oi})</button>
@@ -5719,6 +5732,55 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       <div className="modal-footer">
         <button className="btn btn-secondary" onClick={()=>setShowInvEmail(false)}>Cancel</button>
         <button className="btn btn-primary" style={{background:'#dc2626'}} onClick={()=>{setShowInvEmail(false);alert('📧 Invoice email sent to '+acctContact?.email+' with '+openInvs.length+' invoice(s)! (demo)')}}>📧 Send {openInvs.length} Invoice{openInvs.length>1?'s':''}</button>
+      </div>
+    </div></div>})()}
+
+  {/* SEND STATEMENT MODAL */}
+  {showStatement&&(()=>{
+    const allInvs=allOrders.filter(oo=>ids.includes(oo.customer_id)&&oo.type==='invoice');
+    const openInvs=allInvs.filter(i=>i.status==='open');
+    const totalDue=openInvs.reduce((a,inv)=>a+(inv.total||0)-(inv.paid||0),0);
+    const now=new Date();
+    const aging={current:0,over30:0,over60:0,over90:0};
+    openInvs.forEach(inv=>{const bal=(inv.total||0)-(inv.paid||0);const age=inv.date?Math.ceil((now-new Date(inv.date))/(1000*60*60*24)):0;if(age>90)aging.over90+=bal;else if(age>60)aging.over60+=bal;else if(age>30)aging.over30+=bal;else aging.current+=bal});
+    return<div className="modal-overlay" onClick={()=>setShowStatement(false)}><div className="modal" style={{maxWidth:640}} onClick={e=>e.stopPropagation()}>
+      <div className="modal-header"><h2>📋 Send Account Statement</h2><button className="modal-close" onClick={()=>setShowStatement(false)}>×</button></div>
+      <div className="modal-body">
+        {/* Customer info */}
+        <div style={{background:'#f8fafc',borderRadius:8,padding:12,marginBottom:14,display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+          <div><div style={{fontSize:16,fontWeight:700}}>{customer.name}</div><div style={{fontSize:12,color:'#64748b'}}>{customer.alpha_tag} · {tl[customer.payment_terms]||'Net 30'}</div></div>
+          <div style={{textAlign:'right'}}><div style={{fontSize:11,color:'#64748b'}}>Total Balance</div><div style={{fontSize:22,fontWeight:800,color:totalDue>0?'#dc2626':'#22c55e'}}>${totalDue.toLocaleString()}</div></div>
+        </div>
+        {/* Aging summary */}
+        <div style={{marginBottom:14}}>
+          <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:6}}>AGING SUMMARY</div>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr',gap:8}}>
+            <div style={{padding:10,background:'#f0fdf4',borderRadius:6,textAlign:'center'}}><div style={{fontSize:10,color:'#64748b'}}>Current</div><div style={{fontSize:16,fontWeight:700,color:'#16a34a'}}>${aging.current.toLocaleString()}</div></div>
+            <div style={{padding:10,background:aging.over30>0?'#fef3c7':'#f8fafc',borderRadius:6,textAlign:'center'}}><div style={{fontSize:10,color:'#64748b'}}>31-60 Days</div><div style={{fontSize:16,fontWeight:700,color:aging.over30>0?'#d97706':'#94a3b8'}}>${aging.over30.toLocaleString()}</div></div>
+            <div style={{padding:10,background:aging.over60>0?'#fed7aa':'#f8fafc',borderRadius:6,textAlign:'center'}}><div style={{fontSize:10,color:'#64748b'}}>61-90 Days</div><div style={{fontSize:16,fontWeight:700,color:aging.over60>0?'#ea580c':'#94a3b8'}}>${aging.over60.toLocaleString()}</div></div>
+            <div style={{padding:10,background:aging.over90>0?'#fecaca':'#f8fafc',borderRadius:6,textAlign:'center'}}><div style={{fontSize:10,color:'#64748b'}}>90+ Days</div><div style={{fontSize:16,fontWeight:700,color:aging.over90>0?'#dc2626':'#94a3b8'}}>${aging.over90.toLocaleString()}</div></div>
+          </div>
+        </div>
+        {/* Open invoices */}
+        <div style={{marginBottom:14}}>
+          <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:6}}>OPEN INVOICES ({openInvs.length})</div>
+          {openInvs.length>0?<div style={{border:'1px solid #e2e8f0',borderRadius:8,overflow:'hidden'}}>
+            <table style={{fontSize:12,marginBottom:0}}><thead><tr><th>Invoice</th><th>Date</th><th>Memo</th><th style={{textAlign:'right'}}>Total</th><th style={{textAlign:'right'}}>Paid</th><th style={{textAlign:'right'}}>Balance</th><th style={{textAlign:'right'}}>Age</th></tr></thead><tbody>
+            {openInvs.map(inv=>{const bal=(inv.total||0)-(inv.paid||0);const age=inv.date?Math.ceil((now-new Date(inv.date))/(1000*60*60*24)):0;
+              return<tr key={inv.id}><td style={{fontWeight:600,color:'#1e40af'}}>{inv.id}</td><td>{inv.date||'—'}</td><td style={{fontSize:11,color:'#64748b'}}>{inv.memo||'—'}</td><td style={{textAlign:'right'}}>${(inv.total||0).toLocaleString()}</td><td style={{textAlign:'right'}}>${(inv.paid||0).toLocaleString()}</td><td style={{textAlign:'right',fontWeight:700,color:'#dc2626'}}>${bal.toLocaleString()}</td><td style={{textAlign:'right',fontSize:11,color:age>60?'#dc2626':age>30?'#d97706':'#64748b'}}>{age}d</td></tr>})}
+            </tbody></table>
+          </div>:<div style={{padding:16,textAlign:'center',color:'#94a3b8',fontSize:13}}>No open invoices</div>}
+        </div>
+        {/* Send to */}
+        <div style={{marginBottom:10}}>
+          <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:4}}>SEND TO</div>
+          <input className="form-input" value={stmtEmail} onChange={e=>setStmtEmail(e.target.value)} placeholder="Email address" style={{marginBottom:6}}/>
+          <textarea className="form-input" rows={4} value={stmtMsg} onChange={e=>setStmtMsg(e.target.value)} style={{fontFamily:'inherit',fontSize:13}}/>
+        </div>
+      </div>
+      <div className="modal-footer">
+        <button className="btn btn-secondary" onClick={()=>setShowStatement(false)}>Cancel</button>
+        <button className="btn btn-primary" onClick={()=>{setShowStatement(false);alert('📧 Statement sent to '+stmtEmail+' with '+openInvs.length+' open invoice(s)! (demo)')}}>📧 Send Statement</button>
       </div>
     </div></div>})()}
 
@@ -8187,7 +8249,9 @@ export default function App(){
   };
   // CUSTOMERS
   function rCust(){
-    if(selC)return<CustDetail customer={selC} allCustomers={cust} allOrders={aO} onBack={()=>setSelC(null)} onEdit={c=>{setCM({open:true,c});setCust(prev=>prev.map(pp=>pp.id===c.id?c:pp))}} onSelCust={c=>setSelC(c)} onNewEst={c=>newE(c)} sos={sos} msgs={msgs} cu={cu} onOpenSO={so=>{const c3=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c3);setPg('orders')}} onOpenEst={est=>{const c3=cust.find(cc=>cc.id===est.customer_id);setEEst(est);setEEstC(c3);setPg('estimates')}} ests={ests} onSaveSO={savSO} REPS={REPS} prod={prod}/>;
+    if(selC)return<CustDetail customer={selC} allCustomers={cust} allOrders={aO} onBack={()=>setSelC(null)} onEdit={c=>{setCM({open:true,c});setCust(prev=>prev.map(pp=>pp.id===c.id?c:pp))}} onSelCust={c=>setSelC(c)} onNewEst={c=>newE(c)} sos={sos} msgs={msgs} cu={cu} onOpenSO={so=>{const c3=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c3);setPg('orders')}} onOpenEst={est=>{const c3=cust.find(cc=>cc.id===est.customer_id);setEEst(est);setEEstC(c3);setPg('estimates')}} ests={ests} onSaveSO={savSO} REPS={REPS} prod={prod}
+      onCopy={c=>{const copy={...c,id:'c'+Date.now(),name:c.name+' (Copy)',alpha_tag:'',contacts:(c.contacts||[]).map(ct=>({...ct})),_oe:0,_os:0,_oi:0,_ob:0};setCM({open:true,c:copy})}}
+      onDelete={c=>{const hasOrders=aO.some(o=>o.customer_id===c.id);const kids=cust.filter(ch=>ch.parent_id===c.id);if(hasOrders){alert('Cannot delete — this customer has existing orders. Deactivate instead.');return}if(kids.length>0&&!window.confirm(c.name+' has '+kids.length+' sub-account(s) that will also be deleted. Continue?'))return;if(!window.confirm('Delete "'+c.name+'"? This cannot be undone.'))return;const idsToDelete=[c.id,...kids.map(k=>k.id)];setCust(prev=>prev.filter(x=>!idsToDelete.includes(x.id)));idsToDelete.forEach(id=>{if(supabase){supabase.from('customer_contacts').delete().eq('customer_id',id).then(()=>supabase.from('customers').delete().eq('id',id))}});setSelC(null);nf('Customer deleted')}}/>;
     const f=pars.filter(p=>{if(rF!=='all'&&p.primary_rep_id!==rF&&!gK(p.id).some(c=>c.primary_rep_id===rF))return false;if(q){const s=q.toLowerCase();return p.name.toLowerCase().includes(s)||p.alpha_tag?.toLowerCase().includes(s)||gK(p.id).some(c=>c.name.toLowerCase().includes(s))}return true});
     return(<><div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap'}}><div className="search-bar" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search..." value={q} onChange={e=>setQ(e.target.value)}/></div>
       <select className="form-select" style={{width:150}} value={rF} onChange={e=>setRF(e.target.value)}><option value="all">All Reps</option>{REPS.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
@@ -14208,13 +14272,22 @@ export default function App(){
     const applyAnswer=(qi,val)=>setImp(x=>({...x,questions:x.questions.map((q,i)=>i===qi?{...q,answer:val}:q)}));
     const updItem=(pi,k,v)=>setImp(x=>({...x,parsed:x.parsed.map((p,i)=>i===pi?{...p,[k]:v}:p)}));
 
-    // Bulk CSV parser
+    // Bulk CSV parser (handles quoted fields with commas)
     const parseCSV=(text)=>{
       const lines=text.trim().replace(/\r\n?/g,'\n').split('\n');if(lines.length<2)return{rows:[],headers:[]};
       const sep=lines[0].includes('\t')?'\t':',';
-      const headers=lines[0].split(sep).map(h=>h.trim().replace(/^"|"$/g,'').toLowerCase().replace(/\s+/g,'_'));
+      const splitCSVLine=(line)=>{
+        const vals=[];let cur='';let inQ=false;
+        for(let j=0;j<line.length;j++){
+          const ch=line[j];
+          if(inQ){if(ch==='"'&&line[j+1]==='"'){cur+='"';j++}else if(ch==='"'){inQ=false}else{cur+=ch}}
+          else{if(ch==='"'){inQ=true}else if(ch===sep){vals.push(cur.trim());cur=''}else{cur+=ch}}
+        }
+        vals.push(cur.trim());return vals;
+      };
+      const headers=splitCSVLine(lines[0]).map(h=>h.replace(/^"|"$/g,'').toLowerCase().replace(/\s+/g,'_'));
       const rows=lines.slice(1).filter(l=>l.trim()).map(l=>{
-        const vals=l.split(sep).map(v=>v.trim().replace(/^"|"$/g,''));
+        const vals=splitCSVLine(l);
         const obj={};headers.forEach((h,i)=>{obj[h]=vals[i]||''});return obj;
       });
       return{rows,headers};
@@ -14392,7 +14465,7 @@ export default function App(){
         added.push(c);
       });
       // Pass 2: Import subs and link to parents
-      const allNow=[...allExisting,...added];
+      let allNow=[...allExisting,...added];
       parsed.forEach((row,i)=>{
         const name=(row[colMap.name]||'').trim();
         if(!name)return;
@@ -14400,12 +14473,25 @@ export default function App(){
         if(added.find(c=>c.name.toLowerCase()===name.toLowerCase()))return;// already added as parent
         const acctType=(row[colMap.account_type]||'').trim().toLowerCase();
         const parentName=(row[colMap.parent_name]||'').trim();
-        // Find parent by name in existing + newly added
+        // Find parent by name or alpha_tag in existing + newly added
         let parentId=null;
         if(parentName){
-          const parent=allNow.find(c=>c.name.toLowerCase()===parentName.toLowerCase());
-          if(parent)parentId=parent.id;
-          else{skipped.push(name+' — parent "'+parentName+'" not found');return}
+          const pLower=parentName.toLowerCase();
+          const parent=allNow.find(c=>c.name.toLowerCase()===pLower)||(allNow.find(c=>c.alpha_tag&&c.alpha_tag.toLowerCase()===pLower));
+          if(parent){parentId=parent.id}
+          else{
+            // Auto-create the parent account so subs can link to it
+            const autoParent={
+              id:'c-'+Date.now()+'-ap-'+i,parent_id:null,name:parentName,
+              alpha_tag:parentName.split(' ').map(w=>w[0]).join('').toUpperCase().slice(0,4),
+              contacts:[],
+              billing_address_line1:'',billing_city:'',billing_state:'',billing_zip:'',
+              shipping_address_line1:'',shipping_city:'',shipping_state:'',shipping_zip:'',
+              adidas_ua_tier:'B',catalog_markup:1.65,payment_terms:'net30',tax_rate:0,
+              primary_rep_id:cu.id,is_active:true,_oe:0,_os:0,_oi:0,_ob:0
+            };
+            added.push(autoParent);allNow.push(autoParent);parentId=autoParent.id;
+          }
         }
         const parent=parentId?allNow.find(c=>c.id===parentId):null;
         const rawTerms=row[colMap.payment_terms]||'';
