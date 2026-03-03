@@ -262,13 +262,7 @@ const _dbSaveProduct = async (p) => {
       is_active:p.is_active!==false,available_sizes:p.available_sizes||[],_colors:p._colors||null,
       image_front_url:p.image_url||p.image_front_url||null,image_back_url:p.back_image_url||p.image_back_url||null};
     const{error}=await supabase.from('products').upsert(row,{onConflict:'id'});
-    if(error){
-      // If image columns don't exist, retry without them
-      if(error.message?.includes('image_front_url')||error.message?.includes('image_back_url')){
-        const{image_front_url,image_back_url,...rowNoImg}=row;
-        await supabase.from('products').upsert(rowNoImg,{onConflict:'id'});
-      }else{console.error('[DB] save product:',error.message)}
-    }
+    if(error){console.error('[DB] save product:',error.message);if(_dbNotify)_dbNotify('Product save failed: '+error.message,'error')}
     const _inv=p._inv||{};const _alerts=p._alerts||{};
     const allSizes=new Set([...Object.keys(_inv),...Object.keys(_alerts)]);
     if(allSizes.size>0){
