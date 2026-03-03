@@ -4258,8 +4258,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                     {artF.thread_colors&&<div style={{marginTop:6}}><div className="form-label">Thread Colors</div><div style={{fontSize:13}}>{artF.thread_colors}</div></div>}
                     {artF.notes&&<div style={{marginTop:6}}><div className="form-label">Art Notes</div><div style={{fontSize:13,color:'#64748b'}}>{artF.notes}</div></div>}
                     {artF.files?.length>0&&<div style={{marginTop:6}}><div className="form-label">Files</div><div style={{fontSize:12}}>{artF.files.map((f,i)=><span key={i} className="badge badge-blue" style={{marginRight:4}}>{f}</span>)}</div></div>}
-                  </>:<div style={{padding:12,background:'#fef2f2',borderRadius:6,fontSize:12,color:'#dc2626'}}>
-                    {j.art_file_id?'Art file reference not found':'No art file assigned to this job'}
+                  </>:<div style={{padding:12,background:'#fffbeb',borderRadius:6,fontSize:12,color:'#b45309'}}>
+                    Artwork needs to be applied
                   </div>}
                 </div>
               </div>
