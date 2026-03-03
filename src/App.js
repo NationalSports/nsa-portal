@@ -793,7 +793,7 @@ const DEFAULT_REPS=[
 const NSA={name:'National Sports Apparel',legal:'National Sports Apparel LLC',phone:'(619) 555-0127',email:'team@nsa-teamwear.com',
   addr:'9340 Cabot Dr, Suite A',city:'San Diego',state:'CA',zip:'91941',
   fullAddr:'9340 Cabot Dr, Suite A, San Diego, CA 91941',
-  logo:'NSA',terms:'Net 30 from invoice date unless otherwise agreed.',
+  logo:'NSA',logoUrl:'/nsa-logo.svg',terms:'Net 30 from invoice date unless otherwise agreed.',
   depositTerms:'50% deposit required to begin production. Balance due upon completion.'};
 const ART_LABELS={needs_art:'Needs Art',art_requested:'Art Requested',art_in_progress:'In Progress',waiting_approval:'Waiting Approval',production_files_needed:'Prod Files Needed',art_complete:'Art Complete'};
 const ART_FILE_LABELS={waiting_for_art:'Waiting for Art',needs_approval:'Needs Approval',approved:'Approved / Needs Files'};
@@ -806,8 +806,10 @@ const PRINT_CSS=`
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:'Segoe UI',Helvetica,Arial,sans-serif;font-size:12px;color:#1a1a1a;padding:24px 32px;line-height:1.5}
 .header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;padding-bottom:12px;border-bottom:3px solid #1e3a5f}
-.logo{font-size:28px;font-weight:900;color:#1e3a5f;letter-spacing:-1px}
-.logo span{font-size:11px;font-weight:400;color:#666;display:block;letter-spacing:1px}
+.logo{display:flex;align-items:center;gap:10px}
+.logo img{height:40px}
+.logo .logo-text{font-size:28px;font-weight:900;color:#1e3a5f;letter-spacing:-1px}
+.logo .logo-text span{font-size:11px;font-weight:400;color:#666;display:block;letter-spacing:1px}
 .company-info{text-align:right;font-size:10px;color:#555;line-height:1.6}
 .doc-title{font-size:22px;font-weight:800;color:#1e3a5f;margin:12px 0 4px}
 .doc-subtitle{font-size:11px;color:#666;margin-bottom:12px}
@@ -838,7 +840,7 @@ const printDoc=({title,docNum,docType,headerRight,infoBoxes,tables,notes,footer,
   if(!w)return;
   let html='<!DOCTYPE html><html><head><title>'+docNum+' — '+title+'</title><style>'+PRINT_CSS+'</style></head><body>';
   // Header
-  html+='<div class="header"><div><div class="logo">'+NSA.logo+'<span>'+NSA.name+'</span></div></div>';
+  html+='<div class="header"><div><div class="logo"><img src="'+window.location.origin+NSA.logoUrl+'" alt="NSA"/><div class="logo-text">'+NSA.logo+'<span>'+NSA.name+'</span></div></div></div>';
   html+='<div class="company-info">'+NSA.fullAddr+'<br/>'+NSA.phone+' · '+NSA.email+'</div></div>';
   // Doc title
   html+='<div style="display:flex;justify-content:space-between;align-items:baseline">';
@@ -1801,7 +1803,7 @@ function LoginGate({onLogin,reps}){
       <div style={{width:480,padding:0}}>
         {/* Logo */}
         <div style={{textAlign:'center',marginBottom:32}}>
-          <div style={{fontSize:48,fontWeight:900,color:'white',letterSpacing:-2}}>NSA</div>
+          <img src={NSA.logoUrl} alt="National Sports Apparel" style={{height:70,marginBottom:8,filter:'brightness(0) invert(1)'}}/>
           <div style={{fontSize:13,color:'#94a3b8',letterSpacing:3,textTransform:'uppercase'}}>Portal</div>
         </div>
 
@@ -3773,7 +3775,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       </div>
       :<div className="modal-body">
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:16}}>
-          <div><div style={{fontSize:20,fontWeight:800}}>NATIONAL SPORTS APPAREL</div><div style={{fontSize:12,color:'#64748b'}}>Item Fulfillment</div></div>
+          <div style={{display:'flex',alignItems:'center',gap:10}}><img src={NSA.logoUrl} alt="NSA" style={{height:36}}/><div><div style={{fontSize:12,color:'#64748b'}}>Item Fulfillment</div></div></div>
           <div style={{textAlign:'right'}}><div style={{fontSize:18,fontWeight:800,color:'#1e40af'}}>{pickId}</div><div style={{fontSize:14,fontWeight:700,color:'#475569'}}>{o.id}</div><div style={{fontSize:12,color:'#64748b'}}>{new Date().toLocaleDateString()}</div></div></div>
         <hr style={{border:'2px solid #0f172a',marginBottom:12}}/>
         <div style={{display:'flex',gap:40,marginBottom:12}}><div><div style={{fontSize:10,fontWeight:700,color:'#64748b'}}>CUSTOMER</div><div style={{fontWeight:700}}>{cust?.name}</div><div style={{fontSize:12,color:'#64748b'}}>{cust?.alpha_tag}</div></div>
@@ -5778,7 +5780,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       <div style={{background:'linear-gradient(135deg,#1e3a5f,#2563eb)',color:'white',padding:'24px 28px',borderRadius:'12px 12px 0 0',position:'relative'}}>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
           <div>
-            <div style={{fontSize:11,opacity:0.7,letterSpacing:1,marginBottom:4}}>NATIONAL SPORTS APPAREL</div>
+            <img src="/nsa-logo.svg" alt="NSA" style={{height:32,filter:'brightness(0) invert(1)',marginBottom:6}}/>
             <div style={{fontSize:22,fontWeight:800}}>{customer.name}</div>
             <div style={{fontSize:13,opacity:0.8,marginTop:2}}>Customer Portal</div>
           </div>
@@ -6281,7 +6283,7 @@ function StripePaymentModal({invoices,customerName,customerEmail,alphaTag,onSucc
   return<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:9999,padding:16}}>
     <div style={{width:'100%',maxWidth:480,background:'white',borderRadius:16,boxShadow:'0 8px 32px rgba(0,0,0,0.2)',overflow:'hidden'}} onClick={e=>e.stopPropagation()}>
       <div style={{background:'linear-gradient(135deg,#059669,#22c55e)',color:'white',padding:'20px 24px'}}>
-        <div style={{fontSize:11,opacity:0.8,letterSpacing:1}}>NATIONAL SPORTS APPAREL</div>
+        <img src="/nsa-logo.svg" alt="NSA" style={{height:28,filter:'brightness(0) invert(1)',marginBottom:4}}/>
         <div style={{fontSize:20,fontWeight:800,marginTop:4}}>Secure Payment</div>
         <div style={{fontSize:13,opacity:0.8,marginTop:2}}>{customerName} · {invoiceIds}</div>
       </div>
@@ -6549,7 +6551,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
       <div style={{background:'linear-gradient(135deg,#1e3a5f,#2563eb)',color:'white',padding:'24px 28px',position:'relative'}}>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
           <div>
-            <div style={{fontSize:11,opacity:0.7,letterSpacing:1,marginBottom:4}}>NATIONAL SPORTS APPAREL</div>
+            <img src="/nsa-logo.svg" alt="NSA" style={{height:32,filter:'brightness(0) invert(1)',marginBottom:6}}/>
             <div style={{fontSize:22,fontWeight:800}}>{customer.name}</div>
             <div style={{fontSize:13,opacity:0.8,marginTop:2}}>Customer Portal</div>
           </div>
@@ -17122,7 +17124,7 @@ export default function App(){
 
   // LOADING GATE
   if(dbLoading)return<div style={{minHeight:'100vh',background:'linear-gradient(135deg,#0f172a 0%,#1e3a5f 50%,#0f172a 100%)',display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column',gap:16}}>
-    <div style={{fontSize:48,fontWeight:900,color:'white',letterSpacing:-2}}>NSA</div>
+    <img src={NSA.logoUrl} alt="NSA" style={{height:70,filter:'brightness(0) invert(1)'}}/>
     <div style={{fontSize:13,color:'#94a3b8',letterSpacing:3}}>Loading...</div></div>;
   // LOGIN GATE
   if(!cu)return<LoginGate onLogin={handleLogin} reps={REPS}/>;
@@ -17131,7 +17133,7 @@ export default function App(){
     {/* Mobile sidebar backdrop */}
     <div className={`sidebar-backdrop${mobileMenuOpen?' open':''}`} onClick={()=>setMobileMenuOpen(false)}/>
     <div className={`sidebar${mobileMenuOpen?' open':''}`}><div className="sidebar-logo" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-      <div>NSA<span>Portal</span></div>
+      <div style={{display:'flex',alignItems:'center',gap:8}}><img src={NSA.logoUrl} alt="NSA" style={{height:32,filter:'brightness(0) invert(1)'}}/></div>
       <button className="mobile-menu-btn" onClick={()=>setMobileMenuOpen(false)} style={{color:'#94a3b8',fontSize:20,background:'none',border:'none',cursor:'pointer',padding:4}}>x</button>
     </div>
       <nav className="sidebar-nav">{nav.map((item,i)=>{if(item.section)return<div key={i} className="sidebar-section">{item.section}</div>;
