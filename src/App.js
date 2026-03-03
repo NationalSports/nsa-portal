@@ -11472,6 +11472,7 @@ export default function App(){
   const[shipModal,setShipModal]=useState(null);
   const[decoSearch,setDecoSearch]=useState('');const[decoRepF,setDecoRepF]=useState('all');const[decoStatF,setDecoStatF]=useState('active');const[decoTypeF,setDecoTypeF]=useState('all');
   const[decoCardFilter,setDecoCardFilter]=useState(null);// null|'ready'|'in_process'|'waiting'
+  const[decoPersonF,setDecoPersonF]=useState('all');// filter by assigned decorator name
 
   function handleReceiveScan(val){
     if(!val)return;
@@ -13341,25 +13342,53 @@ export default function App(){
   // DECORATION DASHBOARD (separate from warehouse)
   function rDeco(){
     const{decoTasks}=buildWarehouseData();
+    const isAdmin=cu?.role==='admin'||cu?.role==='prod_manager'||cu?.role==='gm';
+    const isDecorator=cu?.role==='production'||cu?.role==='prod_assistant';
+    const decorators=REPS.filter(r=>r.role==='production'||r.role==='prod_assistant').filter(r=>r.is_active!==false);
+
+    // Sort all deco tasks by due date (earliest first), then urgent
+    const sortByDue=(a,b)=>{
+      const da=a.daysOut!=null?a.daysOut:9999;
+      const db=b.daysOut!=null?b.daysOut:9999;
+      return da-db;
+    };
+    decoTasks.sort(sortByDue);
+
+    // For decorators: only show jobs assigned to them AND fully ready for production
+    // For admin/prod_manager: show all jobs (with optional decorator filter)
+    const roleFiltered=isDecorator
+      ?decoTasks.filter(t=>t.assignedTo===cu?.name&&t.isReady)
+      :decoTasks;
+
     const filt=(arr)=>arr.filter(t=>{
       if(decoRepF!=='all'&&t.so?.created_by!==decoRepF)return false;
+      if(decoPersonF!=='all'&&t.assignedTo!==decoPersonF)return false;
       if(decoSearch){const s=decoSearch.toLowerCase();
         if(!(t.cName||'').toLowerCase().includes(s)&&!(t.artName||'').toLowerCase().includes(s)&&
-          !(t.soId||'').toLowerCase().includes(s))return false}
+          !(t.soId||'').toLowerCase().includes(s)&&!(t.assignedTo||'').toLowerCase().includes(s))return false}
       return true;
     });
-    const active=decoTasks.filter(t=>t.prodStatus!=='completed'&&t.prodStatus!=='shipped');
-    const completed=decoTasks.filter(t=>t.prodStatus==='completed');
-    const list=decoStatF==='active'?filt(active):decoStatF==='completed'?filt(completed):filt(decoTasks);
+    const active=roleFiltered.filter(t=>t.prodStatus!=='completed'&&t.prodStatus!=='shipped');
+    const list=filt(active);
     const readyCount=active.filter(t=>t.isReady).length;
     const inProcessCount=active.filter(t=>t.prodStatus==='in_process').length;
     const waitingCount=active.filter(t=>!t.isReady).length;
-    const allDecoTypes=[...new Set(decoTasks.map(t=>t.decoType).filter(Boolean))];
+    const allDecoTypes=[...new Set(roleFiltered.map(t=>t.decoType).filter(Boolean))];
     const filtered=decoTypeF==='all'?list:list.filter(t=>t.decoType===decoTypeF);
 
     const readyJobs=active.filter(t=>t.isReady);
     const inProcessJobs=active.filter(t=>t.prodStatus==='in_process');
     const waitingJobs=active.filter(t=>!t.isReady&&t.prodStatus!=='in_process');
+
+    // Workload report data (admin/prod_manager only) — computed from ALL deco tasks, not role-filtered
+    const workloadData=isAdmin?decorators.map(d=>{
+      const dJobs=decoTasks.filter(t=>t.assignedTo===d.name&&t.prodStatus!=='completed'&&t.prodStatus!=='shipped');
+      const dUnits=dJobs.reduce((a,t)=>a+t.totalUnits,0);
+      const readyN=dJobs.filter(t=>t.isReady).length;
+      const inProcN=dJobs.filter(t=>t.prodStatus==='in_process').length;
+      return{name:d.name,id:d.id,jobs:dJobs.length,units:dUnits,ready:readyN,inProcess:inProcN};
+    }):[];
+    const unassignedJobs=isAdmin?decoTasks.filter(t=>!t.assignedTo&&t.prodStatus!=='completed'&&t.prodStatus!=='shipped'):[];
 
     return(<>
       {/* Workflow guide */}
@@ -13379,12 +13408,39 @@ export default function App(){
         </React.Fragment>)}
       </div>
 
+      {/* Decorator Workload Report — Admin/Prod Manager only */}
+      {isAdmin&&<div className="card" style={{marginBottom:12,borderLeft:'3px solid #7c3aed'}}>
+        <div className="card-header" style={{background:'#f5f3ff'}}><h2>Decorator Workload</h2></div>
+        <div className="card-body" style={{padding:0}}>
+          <table style={{fontSize:12,width:'100%'}}><thead><tr>
+            <th>Decorator</th><th style={{textAlign:'center'}}>Jobs</th><th style={{textAlign:'center'}}>Units</th><th style={{textAlign:'center'}}>Ready</th><th style={{textAlign:'center'}}>In Process</th><th></th>
+          </tr></thead><tbody>
+            {workloadData.map(d=><tr key={d.id} style={{cursor:'pointer',background:decoPersonF===d.name?'#f5f3ff':'white'}} onClick={()=>setDecoPersonF(f=>f===d.name?'all':d.name)}>
+              <td style={{fontWeight:700,color:'#6d28d9'}}>{d.name}</td>
+              <td style={{textAlign:'center',fontWeight:700}}>{d.jobs}</td>
+              <td style={{textAlign:'center',fontWeight:700,color:'#1e40af'}}>{d.units}</td>
+              <td style={{textAlign:'center'}}><span style={{padding:'1px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:'#dcfce7',color:'#166534'}}>{d.ready}</span></td>
+              <td style={{textAlign:'center'}}><span style={{padding:'1px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:'#dbeafe',color:'#1e40af'}}>{d.inProcess}</span></td>
+              <td><button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px'}} onClick={e=>{e.stopPropagation();setDecoPersonF(f=>f===d.name?'all':d.name)}}>{decoPersonF===d.name?'Show All':'Filter'}</button></td>
+            </tr>)}
+            {unassignedJobs.length>0&&<tr style={{background:'#fef2f2'}}>
+              <td style={{fontWeight:700,color:'#dc2626'}}>Unassigned</td>
+              <td style={{textAlign:'center',fontWeight:700}}>{unassignedJobs.length}</td>
+              <td style={{textAlign:'center',fontWeight:700,color:'#dc2626'}}>{unassignedJobs.reduce((a,t)=>a+t.totalUnits,0)}</td>
+              <td style={{textAlign:'center'}}><span style={{padding:'1px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:'#fef3c7',color:'#92400e'}}>{unassignedJobs.filter(t=>t.isReady).length}</span></td>
+              <td style={{textAlign:'center'}}>—</td>
+              <td></td>
+            </tr>}
+          </tbody></table>
+        </div>
+      </div>}
+
       {/* Clickable Stats */}
       <div className="stats-row" style={{marginBottom:12}}>
         {[
           {id:'ready',label:'Ready to Go',count:readyCount,border:'#22c55e',valColor:'#166534',units:readyJobs.reduce((a,t)=>a+t.totalUnits,0)},
           {id:'in_process',label:'In Process',count:inProcessCount,border:'#2563eb',valColor:'#2563eb',units:inProcessJobs.reduce((a,t)=>a+t.totalUnits,0)},
-          {id:'waiting',label:'Waiting (Art/Items)',count:waitingCount,border:'#d97706',valColor:'#d97706',units:waitingJobs.reduce((a,t)=>a+t.totalUnits,0)},
+          ...(!isDecorator?[{id:'waiting',label:'Waiting (Art/Items)',count:waitingCount,border:'#d97706',valColor:'#d97706',units:waitingJobs.reduce((a,t)=>a+t.totalUnits,0)}]:[]),
         ].map(({id,label,count,border,valColor,units})=>
           <div key={id} className="stat-card" style={{borderLeft:'3px solid '+border,cursor:'pointer',outline:decoCardFilter===id?'2px solid '+border:'none',background:decoCardFilter===id?'#f8fafc':'white',transition:'all 0.15s'}} onClick={()=>setDecoCardFilter(f=>f===id?null:id)}>
             <div className="stat-label">{label}</div>
@@ -13436,14 +13492,12 @@ export default function App(){
 
       {/* Filters */}
       <div style={{display:'flex',gap:8,marginBottom:12,alignItems:'center',flexWrap:'wrap'}}>
-        <div style={{display:'flex',gap:2}}>
-          {[['active','Active'],['completed','Done'],['all','All']].map(([v,l])=>
-            <button key={v} className={`btn btn-sm ${decoStatF===v?'btn-primary':'btn-secondary'}`}
-              onClick={()=>setDecoStatF(v)}>{l}</button>)}
-        </div>
         <select className="form-select" style={{width:140,fontSize:11}} value={decoTypeF} onChange={e=>setDecoTypeF(e.target.value)}>
           <option value="all">All Deco Types</option>{allDecoTypes.map(d=><option key={d} value={d}>{d.replace(/_/g,' ')}</option>)}
         </select>
+        {isAdmin&&<select className="form-select" style={{width:140,fontSize:11}} value={decoPersonF} onChange={e=>setDecoPersonF(e.target.value)}>
+          <option value="all">All Decorators</option>{decorators.map(d=><option key={d.id} value={d.name}>{d.name}</option>)}
+        </select>}
         <select className="form-select" style={{width:140,fontSize:11}} value={decoRepF} onChange={e=>setDecoRepF(e.target.value)}>
           <option value="all">All Reps</option>{REPS.filter(r=>r.role==='rep'||r.role==='admin').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
         </select>
@@ -13462,7 +13516,7 @@ export default function App(){
             {Object.entries(activeTimers).map(([key,timer])=>{
               const[soId,jobId]=key.split('|');const mins=Math.round((Date.now()-timer.clockIn)/60000);
               return<div key={key} style={{display:'flex',alignItems:'center',gap:8,padding:'3px 0',fontSize:11}}>
-                <span style={{width:8,height:8,borderRadius:4,background:'#22c55e',animation:'pulse 2s infinite'}}/> 
+                <span style={{width:8,height:8,borderRadius:4,background:'#22c55e',animation:'pulse 2s infinite'}}/>
                 <span style={{fontWeight:700}}>{timer.person}</span>
                 <span style={{color:'#64748b'}}>on {jobId} ({soId})</span>
                 <span style={{marginLeft:'auto',fontWeight:700,color:'#d97706'}}>{mins}m</span>
@@ -13484,7 +13538,7 @@ export default function App(){
       </div>}
 
       {/* Job Cards */}
-      {filtered.length===0?<div className="empty" style={{padding:32,textAlign:'center'}}>No decoration jobs match your filters</div>:
+      {filtered.length===0?<div className="empty" style={{padding:32,textAlign:'center'}}>{isDecorator?'No jobs assigned to you right now':'No decoration jobs match your filters'}</div>:
       <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(320px,1fr))',gap:8}}>
         {filtered.map((t,ti)=>{
           const pct=t.totalUnits>0?Math.round(t.fulfilledUnits/t.totalUnits*100):0;
@@ -13500,6 +13554,9 @@ export default function App(){
                 <span style={{fontSize:13,fontWeight:800,color:'#1e293b',flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{t.cName}</span>
                 <span style={{fontSize:10,color:'#94a3b8'}}>{t.soId}</span>
               </div>
+              {/* Due date */}
+              {t.daysOut!=null&&<div style={{fontSize:10,color:t.urgent?'#dc2626':t.daysOut<=7?'#d97706':'#64748b',fontWeight:t.urgent?700:400,marginBottom:4}}>
+                Due: {t.so?.expected_date||'—'} ({t.daysOut}d {t.daysOut<0?'overdue':'out'})</div>}
               {/* Art + deco info */}
               <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:6}}>
                 <span style={{fontSize:12,fontWeight:700,color:'#7c3aed'}}>{t.artName}</span>
@@ -13529,6 +13586,9 @@ export default function App(){
               </div>
             </div>
           </div>})}
+      </div>}
+      {isDecorator&&<div style={{marginTop:8,padding:8,background:'#f5f3ff',borderRadius:6,fontSize:11,color:'#6d28d9'}}>
+        Only showing jobs assigned to you that are fully ready for production (all items checked in + artwork approved). Sorted by due date.
       </div>}
     </>);
   };
