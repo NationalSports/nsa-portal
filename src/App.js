@@ -94,14 +94,14 @@ const _dbLoad = async () => {
     const products=prodRaw.map(p=>{const invRows=prodInv.filter(pi=>pi.product_id===p.id);const _inv={};const _alerts={};invRows.forEach(r=>{_inv[r.size]=r.quantity;if(r.alert_threshold)_alerts[r.size]=r.alert_threshold});const _pimg=_pimgMap[p.id];return{...p,image_url:p.image_url||p.image_front_url||(_pimg&&_pimg.front)||'',back_image_url:p.back_image_url||p.image_back_url||(_pimg&&_pimg.back)||'',images:p.images||(_pimg&&_pimg.gallery)||[],_inv,_alerts}});
     // Estimates: attach items (with decorations) and art_files
     const estimates=estRaw.map(est=>{
-      const art_files=estArt.filter(a=>a.estimate_id===est.id).map(a=>({id:a.id,name:a.name,deco_type:a.deco_type,ink_colors:a.ink_colors,thread_colors:a.thread_colors,art_size:a.art_size,files:a.files||[],mockup_files:a.mockup_files||[],item_mockups:a.item_mockups||{},prod_files:a.prod_files||[],notes:a.notes,status:a.status,uploaded:a.uploaded}));
+      const art_files=estArt.filter(a=>a.estimate_id===est.id).map(a=>({id:a.id,name:a.name,deco_type:a.deco_type,ink_colors:a.ink_colors,thread_colors:a.thread_colors,art_size:a.art_size,art_sizes:a.art_sizes||{},files:a.files||[],mockup_files:a.mockup_files||[],item_mockups:a.item_mockups||{},prod_files:a.prod_files||[],notes:a.notes,status:a.status,uploaded:a.uploaded}));
       const items=estItems.filter(i=>i.estimate_id===est.id).sort((a,b)=>a.item_index-b.item_index).map(item=>{
         const decorations=estDecos.filter(d=>d.estimate_item_id===item.id).sort((a,b)=>a.deco_index-b.deco_index).map(d=>{const{id:_,estimate_item_id:__,deco_index:___,...rest}=d;return rest});
         const{id:_,estimate_id:__,item_index:___,...rest}=item;return{...rest,decorations}});
       return{...est,items,art_files}});
     // Sales Orders: attach items (with decorations, pick_lines, po_lines), art_files, firm_dates, jobs
     const sales_orders=soRaw.map(so=>{
-      const art_files=soArt.filter(a=>a.so_id===so.id).map(a=>({id:a.id,name:a.name,deco_type:a.deco_type,ink_colors:a.ink_colors,thread_colors:a.thread_colors,art_size:a.art_size,files:a.files||[],mockup_files:a.mockup_files||[],item_mockups:a.item_mockups||{},prod_files:a.prod_files||[],notes:a.notes,status:a.status,uploaded:a.uploaded}));
+      const art_files=soArt.filter(a=>a.so_id===so.id).map(a=>({id:a.id,name:a.name,deco_type:a.deco_type,ink_colors:a.ink_colors,thread_colors:a.thread_colors,art_size:a.art_size,art_sizes:a.art_sizes||{},files:a.files||[],mockup_files:a.mockup_files||[],item_mockups:a.item_mockups||{},prod_files:a.prod_files||[],notes:a.notes,status:a.status,uploaded:a.uploaded}));
       const firm_dates=soFirm.filter(f=>f.so_id===so.id).map(f=>({item_desc:f.item_desc,date:f.date,approved:f.approved}));
       const jobs=soJobs.filter(j=>j.so_id===so.id).map(j=>{const{so_id:_,...rest}=j;return rest});
       const items=soItems.filter(i=>i.so_id===so.id).sort((a,b)=>a.item_index-b.item_index).map(item=>{
@@ -416,7 +416,7 @@ const _decoCols=['kind','position','type','art_file_id','art_tbd_type','tbd_colo
 const _decoExtraCols=new Set(['print_color','front_and_back','num_qty','name_qty','num_font','num_size_back','custom_font_art_id']);
 // Sanitize decoration data before DB insert — strip UI-only placeholders that would violate constraints
 const _sanitizeDeco=(d)=>{const r={...d};if(r.custom_font_art_id&&r.custom_font_art_id==='pending')r.custom_font_art_id=null;if(r.art_file_id&&r.art_file_id==='__tbd')r.art_file_id=null;return r};
-const _artCols=['id','name','deco_type','ink_colors','thread_colors','art_size','files','mockup_files','item_mockups','prod_files','notes','status','uploaded'];
+const _artCols=['id','name','deco_type','ink_colors','thread_colors','art_size','art_sizes','files','mockup_files','item_mockups','prod_files','notes','status','uploaded'];
 const _jobCols=['id','key','art_file_id','art_name','deco_type','positions','art_status','item_status','prod_status','total_units','fulfilled_units','split_from','created_at','assigned_machine','assigned_to','ship_method','items','_auto','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected'];
 const _custCols=['id','parent_id','name','alpha_tag','billing_address_line1','billing_address_line2','billing_city','billing_state','billing_zip','shipping_address_line1','shipping_address_line2','shipping_city','shipping_state','shipping_zip','adidas_ua_tier','catalog_markup','payment_terms','tax_rate','tax_exempt','primary_rep_id','notes','is_active','created_at','updated_at'];
 // Legacy compat — keep old _dbSave for team_members and other simple tables
@@ -12781,11 +12781,13 @@ export default function App(){
             {af&&(()=>{const fSt=af.status==='uploaded'?'needs_approval':af.status||'waiting_for_art';return<span style={{padding:'1px 5px',borderRadius:6,fontSize:8,fontWeight:700,background:ART_FILE_SC[fSt]?.bg||'#f1f5f9',color:ART_FILE_SC[fSt]?.c||'#64748b'}}>{ART_FILE_LABELS[fSt]||fSt}</span>})()}
           </div>
           <div style={{fontSize:10,color:'#64748b',marginBottom:4}}>{j.deco_type?.replace(/_/g,' ')} · {j.soId} · {j.total_units}u</div>
-          {af&&<div style={{marginBottom:4}}>
-            {(af.mockup_files||af.files||[]).length>0&&<div style={{fontSize:9,color:'#2563eb'}}>{(af.mockup_files||af.files||[]).length} mockup file{(af.mockup_files||af.files||[]).length!==1?'s':''}</div>}
+          {af&&(()=>{const genMocks=(af.mockup_files||af.files||[]).length;const itemMocks=Object.values(af.item_mockups||{}).reduce((a,arr)=>a+(arr||[]).length,0);const totalMocks=Math.max(genMocks,itemMocks);
+            return<div style={{marginBottom:4}}>
+            {totalMocks>0&&<div style={{fontSize:9,color:'#166534',fontWeight:700,padding:'1px 5px',background:'#dcfce7',borderRadius:3,display:'inline-block',marginBottom:2}}>{totalMocks} mockup{totalMocks!==1?'s':''} uploaded</div>}
+            {totalMocks===0&&<div style={{fontSize:9,color:'#b45309',fontWeight:600}}>No mockups yet</div>}
             {(af.prod_files||[]).length>0&&<div style={{fontSize:9,color:'#d97706'}}>{af.prod_files.length} prod file{af.prod_files.length!==1?'s':''}</div>}
             {af.ink_colors&&<div style={{fontSize:9,color:'#64748b'}}>{af.ink_colors.split('\n').filter(l=>l.trim()).length} color(s): {af.ink_colors.split('\n').filter(l=>l.trim()).slice(0,3).join(', ')}</div>}
-          </div>}
+          </div>})()}
           {/* Rejections history */}
           {(j.rejections||[]).length>0&&<div style={{marginBottom:4,padding:'3px 6px',background:'#fef2f2',borderRadius:4,border:'1px solid #fecaca'}}>
             <div style={{fontSize:9,fontWeight:700,color:'#dc2626'}}>Rejected {j.rejections.length}x</div>
@@ -13128,8 +13130,11 @@ export default function App(){
                   <div style={{fontSize:15,fontWeight:700,color:'#0f172a'}}>{j.deco_type?.replace(/_/g,' ')||'—'}</div></div>
                 <div><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:2}}>Position(s)</div>
                   <div style={{fontSize:15,fontWeight:700,color:'#0f172a'}}>{j.positions||'—'}</div></div>
-                <div><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:2}}>Art Size</div>
-                  <div style={{fontSize:15,fontWeight:700,color:'#0f172a'}}>{af?.art_size||'—'}</div></div>
+                {(()=>{const posList2=(j.positions||'').split(',').map(p=>p.trim()).filter(Boolean);const artSizes2=af?.art_sizes||{};
+                  return posList2.length>1?posList2.map((pos,pi)=><div key={pi}><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:2}}>Art Size — {pos}</div>
+                    <div style={{fontSize:15,fontWeight:700,color:'#0f172a'}}>{artSizes2[pos]||(pi===0?af?.art_size:'')||'—'}</div></div>)
+                  :<div><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:2}}>Art Size</div>
+                    <div style={{fontSize:15,fontWeight:700,color:'#0f172a'}}>{af?.art_size||'—'}</div></div>})()}
               </div>
               {colorList.length>0&&<div style={{marginTop:14}}>
                 <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6}}>{isEmb?'Thread Colors':'Ink Colors / Pantones'} ({colorList.length})</div>
@@ -13397,16 +13402,22 @@ export default function App(){
           const updatedJobs=safeJobs(liveSO2).map(jj=>jj.id===j.id?{...jj,art_messages:updatedMsgs}:jj);
           savSO({...liveSO2,jobs:updatedJobs});
           setArtJobDetailModal({...j,art_messages:updatedMsgs});
+          // Also post as a regular SO message so it shows on Messages tab and rep dashboard
+          const soMsg={id:'m'+Date.now(),so_id:liveSO2.id,author_id:cu.id,text:'[Art — '+j.art_name+'] '+artJobDetailMsg.trim(),ts:new Date().toLocaleString(),read_by:[cu.id],dept:'art',tagged_members:rep?[rep.id]:[]};
+          setMsgs(prev=>[...prev,soMsg]);
           setArtJobDetailMsg('');
           nf('Message sent to '+(rep?.name||'rep'));
         };
 
         // Send for approval — sends directly to rep for review, with optional message
         const sendForApproval=()=>{
-          // Check that mockup files exist (general or per-item)
-          const hasItemMockups=Object.values(af?.item_mockups||{}).some(arr=>arr&&arr.length>0);
-          if(mockupFiles.length===0&&!hasItemMockups){nf('Upload a mockup before sending for approval','error');return}
+          // Re-fetch latest art file from sos state to avoid stale closure data
           const liveSO2=sos.find(s=>s.id===(j.soId||so.id))||so;
+          const liveAf=j.artFile||safeArt(liveSO2).find(f=>f.id===j.art_file_id)||af;
+          const liveMockups=(liveAf?.mockup_files||liveAf?.files||[]);
+          // Check that mockup files exist (general or per-item)
+          const hasItemMockups=Object.values(liveAf?.item_mockups||{}).some(arr=>arr&&arr.length>0);
+          if(liveMockups.length===0&&!hasItemMockups){nf('Upload a mockup before sending for approval','error');return}
           // Move to waiting_approval / needs_approval
           moveArtStatus(j,'waiting_approval');
           const msgs=[...artMessages];
@@ -13550,30 +13561,6 @@ export default function App(){
                     </div>}
                   </div>
                 </div>})}
-              {/* General/shared mockup files (not assigned to specific items) */}
-              {(()=>{const assignedUrls=new Set(Object.values(af?.item_mockups||{}).flat().map(f=>typeof f==='string'?f:(f?.url||'')));
-                const generalFiles=mockupFiles.filter(f=>{const u=typeof f==='string'?f:(f?.url||'');return!assignedUrls.has(u)});
-                if(generalFiles.length===0)return null;
-                return<div style={{marginTop:10}}>
-                  <div style={{fontSize:12,fontWeight:700,color:'#2563eb',textTransform:'uppercase',marginBottom:6}}>General Mockup Files ({generalFiles.length})</div>
-                  <div style={{display:'flex',gap:10,flexWrap:'wrap'}}>
-                    {generalFiles.map((f,i)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);
-                      return<div key={i} style={{borderRadius:8,border:'2px solid #bfdbfe',overflow:'hidden',background:'white',minWidth:180,maxWidth:240}}>
-                        {_isImgUrl(url)?<img src={url} alt={name} style={{width:'100%',maxHeight:140,objectFit:'contain',display:'block',cursor:'pointer'}} onClick={()=>openFile(url)}/>
-                        :_isPdfUrl(url)?<div style={{position:'relative',cursor:'pointer'}} onClick={()=>openFile(url)}>
-                          {_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',maxHeight:140,objectFit:'contain',display:'block',background:'#f8fafc'}} onError={e=>{e.target.style.display='none';e.target.nextSibling.style.display='flex'}}/>:null}
-                          <div style={{display:_cloudinaryPdfThumb(url)?'none':'flex',flexDirection:'column',alignItems:'center',padding:20,gap:4}}>
-                            <span style={{fontSize:32}}>PDF</span><span style={{fontSize:12,fontWeight:600,color:'#1e40af'}}>{name}</span></div></div>
-                        :<div style={{padding:12,textAlign:'center',cursor:'pointer'}} onClick={()=>openFile(url)}>
-                          <span style={{fontSize:24}}>📄</span><div style={{fontSize:12,fontWeight:600,color:'#1e40af',marginTop:4}}>{name}</div></div>}
-                        <div style={{padding:'6px 10px',borderTop:'1px solid #dbeafe',background:'#eff6ff',display:'flex',alignItems:'center',gap:4}}>
-                          <span style={{fontSize:12,fontWeight:700,color:'#1e40af',flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{name}</span>
-                          <button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px'}} onClick={()=>openFile(url)}>Open</button>
-                          <button style={{background:'none',border:'none',color:'#ef4444',cursor:'pointer',fontSize:13,padding:'0 2px',lineHeight:1}} onClick={()=>{if(window.confirm('Remove?'))handleArtFileDelete(url)}} title="Remove">×</button>
-                        </div>
-                      </div>})}
-                  </div>
-                </div>})()}
               {/* Production files: visible to artists, admins, prod managers — NOT decorators (they see mockup only) */}
               {prodFilesL.length>0&&cu.role!=='production'&&cu.role!=='prod_assistant'&&<><div style={{fontSize:11,fontWeight:700,color:'#92400e',marginTop:8,marginBottom:4}}>Production Files ({prodFilesL.length})</div>
                 <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
@@ -13588,24 +13575,42 @@ export default function App(){
                   <div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{j.deco_type?.replace(/_/g,' ')||'—'}</div></div>
                 <div><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:2}}>Position(s)</div>
                   <div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{j.positions||'—'}</div></div>
-                <div><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:2,display:'flex',alignItems:'center',gap:6}}>Art Size
+                {(()=>{const posList=(j.positions||'').split(',').map(p=>p.trim()).filter(Boolean);const artSizes=af?.art_sizes||{};
+                  const multiPos=posList.length>1;
+                  return multiPos?posList.map((pos,pi)=><div key={pi} style={pi>0?{gridColumn:'1 / -1'}:{}}>
+                    <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:2,display:'flex',alignItems:'center',gap:6}}>Art Size — {pos}
+                      {artJobDetailEditSize===null?<button style={{background:'none',border:'none',color:'#7c3aed',fontSize:10,fontWeight:700,cursor:'pointer',padding:0}} onClick={()=>{const init={};posList.forEach(p=>{init[p]=artSizes[p]||(p===posList[0]?af?.art_size:'')});setArtJobDetailEditSize(init)}}>Edit</button>
+                      :pi===0&&<button style={{background:'none',border:'none',color:'#dc2626',fontSize:10,fontWeight:700,cursor:'pointer',padding:0}} onClick={()=>setArtJobDetailEditSize(null)}>Cancel</button>}
+                    </div>
+                    {artJobDetailEditSize!==null&&typeof artJobDetailEditSize==='object'?<div style={{display:'flex',gap:4,alignItems:'center'}}>
+                      <input className="form-input" value={artJobDetailEditSize[pos]||''} onChange={e=>setArtJobDetailEditSize(prev=>({...prev,[pos]:e.target.value}))} placeholder='e.g. 12" x 4"' style={{fontSize:13,fontWeight:600,width:140}}/>
+                      {pi===posList.length-1&&<button className="btn btn-sm" style={{fontSize:10,padding:'3px 10px',background:'#7c3aed',color:'white',border:'none',borderRadius:4,fontWeight:700}} onClick={()=>{
+                        const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
+                        const sizeObj={};posList.forEach(p=>{if(artJobDetailEditSize[p]?.trim())sizeObj[p]=artJobDetailEditSize[p].trim()});
+                        const updArt=safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,art_sizes:sizeObj,art_size:Object.values(sizeObj).join(' / ')}:a);
+                        savSO({...liveSO,art_files:updArt});
+                        setArtJobDetailModal({...j,artFile:updArt.find(a=>a.id===j.art_file_id)});
+                        setArtJobDetailEditSize(null);nf('Art sizes updated');
+                      }}>Save</button>}
+                    </div>
+                    :<div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{artSizes[pos]||(pi===0?af?.art_size:'')||'—'}</div>}
+                  </div>)
+                  :<div><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:2,display:'flex',alignItems:'center',gap:6}}>Art Size
                     {artJobDetailEditSize===null?<button style={{background:'none',border:'none',color:'#7c3aed',fontSize:10,fontWeight:700,cursor:'pointer',padding:0}} onClick={()=>setArtJobDetailEditSize(af?.art_size||'')}>Edit</button>
                     :<button style={{background:'none',border:'none',color:'#dc2626',fontSize:10,fontWeight:700,cursor:'pointer',padding:0}} onClick={()=>setArtJobDetailEditSize(null)}>Cancel</button>}
                   </div>
-                  {artJobDetailEditSize!==null?<div style={{display:'flex',gap:4,alignItems:'center'}}>
+                  {artJobDetailEditSize!==null&&typeof artJobDetailEditSize==='string'?<div style={{display:'flex',gap:4,alignItems:'center'}}>
                     <input className="form-input" value={artJobDetailEditSize} onChange={e=>setArtJobDetailEditSize(e.target.value)} placeholder='e.g. 12" x 4"' style={{fontSize:13,fontWeight:600,width:140}}/>
                     <button className="btn btn-sm" style={{fontSize:10,padding:'3px 10px',background:'#7c3aed',color:'white',border:'none',borderRadius:4,fontWeight:700}} onClick={()=>{
                       const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
                       const updArt=safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,art_size:artJobDetailEditSize.trim()}:a);
                       savSO({...liveSO,art_files:updArt});
-                      const updatedAf=updArt.find(a=>a.id===j.art_file_id);
-                      setArtJobDetailModal({...j,artFile:updatedAf});
-                      setArtJobDetailEditSize(null);
-                      nf('Art size updated');
+                      setArtJobDetailModal({...j,artFile:updArt.find(a=>a.id===j.art_file_id)});
+                      setArtJobDetailEditSize(null);nf('Art size updated');
                     }}>Save</button>
                   </div>
                   :<div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{af?.art_size||'—'}</div>}
-                </div>
+                </div>})()}
               </div>
               {/* ─── Ink / Thread Colors (editable) ─── */}
               <div style={{marginTop:14,padding:'12px 14px',background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0'}}>
@@ -13778,21 +13783,7 @@ export default function App(){
               {prodFilesL.length>0&&<button className="btn" style={{marginTop:10,padding:'8px 20px',background:'linear-gradient(135deg,#22c55e,#16a34a)',color:'white',border:'none',borderRadius:8,fontSize:13,fontWeight:700,width:'100%'}}
                 onClick={()=>{moveArtStatus(j,'art_complete');setArtJobDetailModal(null);nf('Production files uploaded — Art Complete!')}}>✅ Mark Art Complete</button>}
             </div>
-            :<div style={{padding:'16px 20px',borderBottom:'1px solid #e2e8f0'}}>
-              <div style={{fontSize:12,fontWeight:800,color:'#1e3a5f',marginBottom:8,display:'flex',alignItems:'center',gap:6}}>
-                <span style={{fontSize:16}}>📤</span> Upload General Art Files
-                <span style={{fontSize:10,color:'#94a3b8',fontWeight:400}}>(not tied to a specific item)</span>
-              </div>
-              <div style={{padding:14,textAlign:'center',borderRadius:8,border:'2px dashed #a78bfa',background:'#faf5ff',cursor:artJobDetailUploading?'wait':'pointer',opacity:artJobDetailUploading?0.6:1}}
-                onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#7c3aed';e.currentTarget.style.background='#ede9fe'}}
-                onDragLeave={e=>{e.currentTarget.style.borderColor='#a78bfa';e.currentTarget.style.background='#faf5ff'}}
-                onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor='#a78bfa';e.currentTarget.style.background='#faf5ff';if(!artJobDetailUploading)handleArtUpload(Array.from(e.dataTransfer.files))}}
-                onClick={()=>{if(artJobDetailUploading)return;const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps,.dst,.svg';inp.onchange=()=>handleArtUpload(Array.from(inp.files));inp.click()}}>
-                {artJobDetailUploading?<><div style={{fontSize:20,marginBottom:2}}>⏳</div><div style={{fontSize:11,fontWeight:600,color:'#7c3aed'}}>Uploading...</div></>
-                :<><div style={{fontSize:20,marginBottom:2}}>📎</div><div style={{fontSize:11,fontWeight:600,color:'#7c3aed'}}>Drop files here or click to upload</div>
-                  <div style={{fontSize:9,color:'#94a3b8',marginTop:1}}>PDF, PNG, JPG, AI, EPS, DST, SVG</div></>}
-              </div>
-            </div>}
+            :null}
 
             {/* ─── Messages between Artist and Rep ─── */}
             <div style={{padding:'16px 20px'}}>
