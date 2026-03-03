@@ -9229,7 +9229,8 @@ export default function App(){
             const rcvd=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
             fulSizes[sz]=Math.min(v,picked+rcvd);
           });
-          return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,fulSizes};
+          const prd=prod.find(pp=>pp.id===it.product_id||pp.sku===it.sku);
+          return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,fulSizes,image_url:prd?.image_url||(prd?.images&&prd.images[0])||'',images:prd?.images||[]};
         }).filter(Boolean);
         const allSizes=SZ_ORD.filter(sz=>itemDetails.some(it=>it.sizes[sz]>0));
         // Parse colors for display
@@ -9366,6 +9367,7 @@ export default function App(){
                 const rowTotal=Object.values(gi.sizes).reduce((a,v)=>a+v,0);
                 return<div key={gii} style={{marginBottom:gii<itemDetails.length-1?12:0}}>
                   <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
+                    {gi.image_url&&<img src={gi.image_url} alt="" style={{width:36,height:36,objectFit:'cover',borderRadius:4,border:'1px solid #e2e8f0',flexShrink:0}}/>}
                     <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:12}}>{gi.sku}</span>
                     <span style={{fontWeight:600,fontSize:13}}>{gi.name}</span>
                     <span style={{color:'#64748b',fontSize:12}}>({gi.color})</span>
@@ -12855,7 +12857,7 @@ export default function App(){
           const sizes={};
           Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{sizes[sz]=v});
           const prd=prod.find(pp=>pp.id===it.product_id||pp.sku===it.sku);
-          return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,image_url:prd?.image_url||'',back_image_url:prd?.back_image_url||''};
+          return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,image_url:prd?.image_url||(prd?.images&&prd.images[0])||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||'',images:prd?.images||[]};
         }).filter(Boolean);
         const allSizes=SZ_ORD.filter(sz=>itemDetails.some(it=>it.sizes[sz]>0));
 
@@ -12953,6 +12955,7 @@ export default function App(){
                 const rowTotal=Object.values(gi.sizes).reduce((a,v)=>a+v,0);
                 return<div key={gii} style={{marginBottom:gii<itemDetails.length-1?10:0}}>
                   <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
+                    {gi.image_url&&<img src={gi.image_url} alt="" style={{width:36,height:36,objectFit:'cover',borderRadius:4,border:'1px solid #e2e8f0',flexShrink:0}}/>}
                     <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:12}}>{gi.sku}</span>
                     <span style={{fontWeight:600,fontSize:13}}>{gi.name}</span>
                     <span style={{color:'#64748b',fontSize:12}}>({gi.color})</span>
@@ -13048,7 +13051,7 @@ export default function App(){
           const sizes={};
           Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{sizes[sz]=v});
           const prd=prod.find(pp=>pp.id===it.product_id||pp.sku===it.sku);
-          return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,image_url:prd?.image_url||'',back_image_url:prd?.back_image_url||''};
+          return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,image_url:prd?.image_url||(prd?.images&&prd.images[0])||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||'',images:prd?.images||[]};
         }).filter(Boolean);
         const allSizes=SZ_ORD.filter(sz=>itemDetails.some(it=>it.sizes[sz]>0));
 
@@ -13292,6 +13295,7 @@ export default function App(){
                 const rowTotal=Object.values(gi.sizes).reduce((a,v)=>a+v,0);
                 return<div key={gii} style={{marginBottom:gii<itemDetails.length-1?10:0}}>
                   <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
+                    {gi.image_url&&<img src={gi.image_url} alt="" style={{width:36,height:36,objectFit:'cover',borderRadius:4,border:'1px solid #e2e8f0',flexShrink:0}}/>}
                     <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:12}}>{gi.sku}</span>
                     <span style={{fontWeight:600,fontSize:12}}>{gi.name}</span>
                     {gi.color&&<span style={{color:'#64748b',fontSize:11}}>({gi.color})</span>}
