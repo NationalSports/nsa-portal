@@ -8133,28 +8133,36 @@ export default function App(){
       return{month:MONTHS[mi],units,revenue,orders}});
     const totalUnits=monthlyData.reduce((a,m)=>a+m.units,0);const totalRev=monthlyData.reduce((a,m)=>a+m.revenue,0);const totalOrders=monthlyData.reduce((a,m)=>a+m.orders,0);
     const maxUnits=Math.max(...monthlyData.map(m=>m.units),1);
-    const saveProduct=()=>{setSelP(ep);setProd(p=>p.map(x=>x.id===ep.id?ep:x));setEditing(false);nf('Product updated')};
-    const imgSave=(up)=>{setEp(up);setSelP(up);setProd(p=>p.map(x=>x.id===up.id?up:x));_dbSaveProduct(up);nf('Image saved')};
+    const saveProduct=()=>{setProd(p=>p.map(x=>x.id===ep.id?ep:x));_dbSaveProduct(ep);setEditing(false);nf('Product updated')};
     const nt=Object.values(ep._inv||{}).reduce((a,v2)=>a+v2,0);
     return(<div>
       <button className="btn btn-secondary" onClick={onBack} style={{marginBottom:12}}><Icon name="chevron-left" size={14}/> Products</button>
       <div className="card" style={{marginBottom:16}}><div className="card-body">
         <div style={{display:'flex',gap:16,alignItems:'flex-start'}}>
           <div style={{display:'flex',flexDirection:'column',gap:6,alignItems:'center',minWidth:180}}>
+            {editing?<>
             <div style={{display:'flex',gap:6}}>
               <div style={{textAlign:'center'}}>
-                <ImgUpload url={ep.image_url} onUpload={u=>imgSave({...ep,image_url:u})} onError={e=>nf(e,'error')} size={80}/>
+                <ImgUpload url={ep.image_url} onUpload={u=>setEp(x=>({...x,image_url:u}))} onError={e=>nf(e,'error')} size={80}/>
                 <span style={{fontSize:9,color:'#64748b',fontWeight:600}}>Front</span>
               </div>
               <div style={{textAlign:'center'}}>
-                <ImgUpload url={ep.back_image_url} onUpload={u=>imgSave({...ep,back_image_url:u})} onError={e=>nf(e,'error')} size={80}/>
+                <ImgUpload url={ep.back_image_url} onUpload={u=>setEp(x=>({...x,back_image_url:u}))} onError={e=>nf(e,'error')} size={80}/>
                 <span style={{fontSize:9,color:'#64748b',fontWeight:600}}>Back</span>
               </div>
             </div>
             <div style={{width:'100%'}}>
               <div style={{fontSize:10,fontWeight:700,color:'#64748b',marginBottom:4}}>Additional Images</div>
-              <ImgGallery images={ep.images||[]} onUpdate={imgs=>imgSave({...ep,images:imgs})} onError={e=>nf(e,'error')} maxImages={10}/>
+              <ImgGallery images={ep.images||[]} onUpdate={imgs=>setEp(x=>({...x,images:imgs}))} onError={e=>nf(e,'error')} maxImages={10}/>
             </div>
+            </>:<>
+            <div style={{display:'flex',gap:6}}>
+              {ep.image_url?<div style={{textAlign:'center'}}><img src={ep.image_url} alt="Front" style={{width:80,height:80,objectFit:'cover',borderRadius:6,border:'1px solid #e2e8f0'}}/><div style={{fontSize:9,color:'#64748b',fontWeight:600}}>Front</div></div>:null}
+              {ep.back_image_url?<div style={{textAlign:'center'}}><img src={ep.back_image_url} alt="Back" style={{width:80,height:80,objectFit:'cover',borderRadius:6,border:'1px solid #e2e8f0'}}/><div style={{fontSize:9,color:'#64748b',fontWeight:600}}>Back</div></div>:null}
+              {!ep.image_url&&!ep.back_image_url&&<div style={{width:80,height:80,borderRadius:6,border:'1px solid #e2e8f0',display:'flex',alignItems:'center',justifyContent:'center',background:'#f8fafc'}}><span style={{fontSize:18,opacity:0.3}}>📷</span></div>}
+            </div>
+            {(ep.images||[]).length>0&&<div style={{display:'flex',gap:4,flexWrap:'wrap'}}>{ep.images.map((url,i)=><img key={i} src={url} alt="" style={{width:36,height:36,objectFit:'cover',borderRadius:4,border:'1px solid #e2e8f0'}}/>)}</div>}
+            </>}
           </div>
           <div style={{flex:1}}>
             {!editing?<>
@@ -8367,9 +8375,10 @@ export default function App(){
   <div className="card"><div className="card-body" style={{padding:0}}>
   {fP.map(p=>{const nt=Object.values(p._inv||{}).reduce((a,v)=>a+v,0);const au=p.brand==='Adidas'||p.brand==='Under Armour';
     return(<div key={p.id} style={{padding:'14px 16px',borderBottom:'1px solid #f1f5f9',cursor:'pointer'}} onClick={()=>setSelP(p)}><div style={{display:'flex',gap:14,alignItems:'flex-start'}}>
-      <div style={{display:'flex',gap:4,alignItems:'center'}}>
-        <ImgUpload url={p.image_url} onUpload={u=>{const up={...p,image_url:u};setProd(ps=>ps.map(x=>x.id===p.id?up:x));_dbSaveProduct(up);nf('Front image uploaded')}} onError={e=>nf(e,'error')} size={48}/>
-        <ImgUpload url={p.back_image_url} onUpload={u=>{const up={...p,back_image_url:u};setProd(ps=>ps.map(x=>x.id===p.id?up:x));_dbSaveProduct(up);nf('Back image uploaded')}} onError={e=>nf(e,'error')} size={48}/>
+      <div style={{display:'flex',gap:4,alignItems:'center'}} onClick={e=>e.stopPropagation()}>
+        {p.image_url?<img src={p.image_url} alt="" style={{width:48,height:48,objectFit:'cover',borderRadius:6,border:'1px solid #e2e8f0',flexShrink:0}}/>
+        :<div style={{width:48,height:48,borderRadius:6,border:'1px solid #e2e8f0',display:'flex',alignItems:'center',justifyContent:'center',background:'#f8fafc',flexShrink:0}}><span style={{fontSize:14,opacity:0.3}}>📷</span></div>}
+        {p.back_image_url&&<img src={p.back_image_url} alt="" style={{width:48,height:48,objectFit:'cover',borderRadius:6,border:'1px solid #e2e8f0',flexShrink:0}}/>}
         {(p.images||[]).length>0&&<span style={{fontSize:9,color:'#7c3aed',fontWeight:700,background:'#f5f3ff',padding:'2px 6px',borderRadius:4}}>+{(p.images||[]).length}</span>}
       </div>
       <div style={{flex:1}}>
