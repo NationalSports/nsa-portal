@@ -352,7 +352,7 @@ const _pick=(obj,cols)=>{const r={};cols.forEach(c=>{if(c in obj)r[c]=obj[c]});r
 const _estCols=['id','customer_id','memo','status','created_by','created_at','updated_at','default_markup','shipping_type','shipping_value','ship_to_id','email_status','email_opened_at','email_viewed_at','deleted_at'];
 const _soCols=['id','customer_id','estimate_id','memo','status','created_by','created_at','updated_at','expected_date','production_notes','shipping_type','shipping_value','ship_to_id','default_markup','omg_store_id','_shipstation_order_id','_shipping_status','_tracking_number','_carrier','_ship_date','_tracking_url','_shipped','_shipments','_shipping_cost','deleted_at'];
 const _itemCols=['product_id','sku','name','brand','color','nsa_cost','retail_price','unit_sell','sizes','available_sizes','_colors','no_deco','is_custom','custom_desc','custom_cost','custom_sell'];
-const _decoCols=['kind','position','type','art_file_id','art_tbd_type','tbd_colors','tbd_stitches','tbd_dtf_size','sell_override','sell_each','cost_each','underbase','two_color','colors','stitches','dtf_size','num_method','num_size','roster','names','names_list','vendor','deco_type','notes','custom_font_art_id','_showRoster','print_color','front_and_back','num_qty','name_qty'];
+const _decoCols=['kind','position','type','art_file_id','art_tbd_type','tbd_colors','tbd_stitches','tbd_dtf_size','sell_override','sell_each','cost_each','underbase','two_color','colors','stitches','dtf_size','num_method','num_size','num_size_back','roster','names','names_list','vendor','deco_type','notes','custom_font_art_id','_showRoster','print_color','front_and_back','num_qty','name_qty'];
 const _artCols=['id','name','deco_type','ink_colors','thread_colors','art_size','files','mockup_files','prod_files','notes','status','uploaded'];
 const _jobCols=['id','key','art_file_id','art_name','deco_type','positions','art_status','item_status','prod_status','total_units','fulfilled_units','split_from','created_at','assigned_machine','assigned_to','ship_method','items','_auto','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected'];
 const _custCols=['id','parent_id','name','alpha_tag','billing_address_line1','billing_address_line2','billing_city','billing_state','billing_zip','shipping_address_line1','shipping_address_line2','shipping_city','shipping_state','shipping_zip','adidas_ua_tier','catalog_markup','payment_terms','tax_rate','tax_exempt','primary_rep_id','notes','is_active','created_at','updated_at'];
@@ -2147,6 +2147,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           {isSO&&o.estimate_id&&onViewEstimate&&<div style={{fontSize:11,color:'#7c3aed'}}>From: <span style={{cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={()=>onViewEstimate(o.estimate_id)} title="Open source estimate">{o.estimate_id}</span></div>}
           {isE&&o.status==='converted'&&(()=>{const linkedSO=(allOrders||[]).find(s=>s.estimate_id===o.id);return linkedSO&&onViewSO?<div style={{fontSize:11,color:'#7c3aed'}}>Converted to: <span style={{cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={()=>onViewSO(linkedSO.id)} title="Open sales order">{linkedSO.id}</span></div>:null})()}
           <div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>By {REPS.find(r=>r.id===o.created_by)?.name} · {o.created_at}</div>
+          {cust?.alpha_tag&&<div style={{fontSize:11,marginTop:2}}><a href={'/?portal='+cust.alpha_tag} target="_blank" rel="noreferrer" style={{color:'#7c3aed',textDecoration:'none',fontWeight:500}}>🔗 Customer Portal</a></div>}
           {isSO&&(o._shipments||[]).length>0&&<div style={{padding:8,background:'#f0fdf4',borderRadius:6,marginTop:8}}>
             <strong>Shipped:</strong> {(o._shipments||[]).length} package{(o._shipments||[]).length!==1?'s':''} —{' '}
             {(o._shipments||[]).map((s,si)=>s.tracking_number?<a key={si} href={s.tracking_url||((/^1Z/i.test(s.tracking_number))?'https://www.ups.com/track?tracknum='+s.tracking_number:'https://www.fedex.com/fedextrack/?trknbr='+s.tracking_number)} target="_blank" rel="noreferrer" style={{fontFamily:'monospace',fontSize:11,marginRight:6}}>{s.tracking_number}</a>:<span key={si} style={{fontSize:11,color:'#94a3b8',marginRight:6}}>Box {si+1} (no tracking)</span>)}
@@ -2228,7 +2229,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                 decos.forEach(d=>{
                   const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);
                   const artF=af.find(a2=>a2.id===d.art_file_id);
-                  const decoLabel=(d.kind==='art'?(artF?.deco_type||d.art_tbd_type||'decoration'):d.kind==='numbers'?'Numbers ('+(d.num_method||'heat transfer').replace(/_/g,' ')+' '+(d.num_size||'4"')+(d.print_color?' — '+d.print_color:'')+')'+(d.front_and_back?' F+B':''):d.kind==='names'?'Names'+(d.print_color?' ('+d.print_color+')':''):d.kind==='outside_deco'?(d.deco_type||'Decoration'):'Decoration').replace(/_/g,' ');
+                  const decoLabel=(d.kind==='art'?(artF?.deco_type||d.art_tbd_type||'decoration'):d.kind==='numbers'?'Numbers ('+(d.num_method||'heat transfer').replace(/_/g,' ')+' '+(d.front_and_back?'F:'+(d.num_size||'4"')+' B:'+(d.num_size_back||d.num_size||'4"'):(d.num_size||'4"'))+(d.print_color?' — '+d.print_color:'')+')'+(d.front_and_back?' F+B':''):d.kind==='names'?'Names'+(d.print_color?' ('+d.print_color+')':''):d.kind==='outside_deco'?(d.deco_type||'Decoration'):'Decoration').replace(/_/g,' ');
                   const posLabel=d.position?' — '+d.position:'';
                   let numHtml='';
                   if(d.kind==='numbers'&&d.roster){const szOrd2=['XS','S','M','L','XL','2XL','3XL','4XL'];
@@ -2530,8 +2531,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
               <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:6}}>
                 <span style={{fontSize:12,fontWeight:600,color:'#64748b'}}>Method:</span>
                 <Bg options={[{value:'heat_transfer',label:'Heat Transfer'},{value:'embroidery',label:'Embroidery'},{value:'screen_print',label:'Screen Print'}]} value={nm} onChange={v=>{const ns=NUM_SZ[v]||[];const upd={...o.items[idx].decorations[di],num_method:v,num_size:ns[Math.min(2,ns.length-1)]||ns[0]||'4"',num_font:null,custom_font_art_id:null};uI(idx,'decorations',o.items[idx].decorations.map((dd,ii)=>ii===di?upd:dd))}}/>
+                {deco.front_and_back?<>
+                <span style={{fontSize:12,fontWeight:600,color:'#64748b',marginLeft:4}}>Size (Front):</span>
+                <Bg options={szOpts.map(s=>({value:s,label:s}))} value={deco.num_size||szOpts[0]} onChange={v=>uD(idx,di,'num_size',v)}/>
+                <span style={{fontSize:12,fontWeight:600,color:'#64748b',marginLeft:4}}>Size (Back):</span>
+                <Bg options={szOpts.map(s=>({value:s,label:s}))} value={deco.num_size_back||deco.num_size||szOpts[0]} onChange={v=>uD(idx,di,'num_size_back',v)}/>
+                </>:<>
                 <span style={{fontSize:12,fontWeight:600,color:'#64748b',marginLeft:4}}>Size:</span>
                 <Bg options={szOpts.map(s=>({value:s,label:s}))} value={deco.num_size||szOpts[0]} onChange={v=>uD(idx,di,'num_size',v)}/>
+                </>}
                 <label style={{fontSize:12,display:'flex',alignItems:'center',gap:4,marginLeft:4}}><input type="checkbox" checked={deco.two_color||false} onChange={e=>uD(idx,di,'two_color',e.target.checked)}/> 2-Color (+$3)</label>
                 <span style={{fontSize:12,fontWeight:600,color:'#64748b',marginLeft:4}}>Color:</span>
                 <input className="form-input" style={{width:90,fontSize:12,padding:'2px 6px'}} placeholder="e.g. White" value={deco.print_color||''} onChange={e=>uD(idx,di,'print_color',e.target.value)}/>
@@ -3838,7 +3846,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
             <tbody><tr style={{fontSize:10,color:'#64748b'}}>{szList.map(([sz])=>{const need=item.sizes[sz]||0;const inv=p?._inv?.[sz]||0;const picked=(item.pick_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const po=poCommitted(item.po_lines,sz);const open=Math.max(0,need-picked-po);return<td key={sz} style={{padding:'2px 8px',textAlign:'center'}}>open: {open} | inv: {inv}</td>})}<td/></tr>
             <tr>{szList.map(([sz,v])=>{const need=item.sizes[sz]||0;const inv=p?._inv?.[sz]||0;const picked=(item.pick_lines||[]).reduce((a,pk)=>a+(pk[sz]||0),0);const po=poCommitted(item.po_lines,sz);const open=Math.max(0,need-picked-po);return<td key={sz} style={{padding:'4px 8px',textAlign:'center'}}><input id={'pick-qty-'+vi+'-'+sz} style={{width:42,textAlign:'center',border:v<open?'2px solid #f59e0b':'1px solid #10b981',borderRadius:3,padding:'3px',fontSize:14,fontWeight:700,background:v<open?'#fef3c7':'#dcfce7'}} defaultValue={v}/></td>})}<td style={{padding:'4px 8px',textAlign:'center',fontWeight:800,fontSize:14}}>{q}</td></tr></tbody></table>
             {safeDecos(item).filter(d=>d.kind==='art').map((d,di)=>{const art=af.find(a=>a.id===d.art_file_id);return art?<div key={di} style={{fontSize:12,marginTop:6,padding:'4px 8px',background:'#f0fdf4',borderRadius:4}}>🎨 {art.name} — {art.deco_type} @ {d.position}{d.underbase?' [Underbase]':''}</div>:null})}
-            {safeDecos(item).filter(d=>d.kind==='numbers').map((d,di)=><div key={di} style={{fontSize:12,marginTop:4,padding:'4px 8px',background:'#f0f9ff',borderRadius:4}}>#️⃣ Numbers — {d.num_method} {d.num_size} @ {d.position}</div>)}
+            {safeDecos(item).filter(d=>d.kind==='numbers').map((d,di)=><div key={di} style={{fontSize:12,marginTop:4,padding:'4px 8px',background:'#f0f9ff',borderRadius:4}}>#️⃣ Numbers — {d.num_method} {d.front_and_back?'F:'+d.num_size+' B:'+(d.num_size_back||d.num_size):d.num_size} @ {d.position}{d.front_and_back?' (F+B)':''}</div>)}
           </div>})}
       </div>}
       <div className="modal-footer">
