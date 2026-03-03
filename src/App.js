@@ -2130,7 +2130,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       {cust&&<span style={{fontSize:12,fontWeight:600,color:'#1e40af',cursor:'pointer',textDecoration:'underline',textDecorationStyle:'dotted',textUnderlineOffset:2}} onClick={()=>{if(onNavCustomer&&cust)onNavCustomer(cust)}} title={'View '+cust.name}>{cust.name}</span>}
       <span style={{fontSize:11,color:'#94a3b8',flex:1}}>{o.memo||''}</span>
       {dirty&&<span style={{fontSize:10,color:'#d97706',fontWeight:600}}>● Unsaved</span>}
-      <button className="btn btn-sm btn-primary" onClick={()=>{const updated={...o,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setSaved(true);nf('Saved')}} style={{padding:'4px 14px',fontSize:11}}>✓ Save</button>
+      <button className="btn btn-sm btn-primary" onClick={()=>{
+        if(!cust){nf('Select a customer first','error');return}
+        if(!o.memo?.trim()){nf('Memo is required','error');return}
+        const validItems=safeItems(o).filter(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
+        if(validItems.length===0){nf('Add at least one item with sizes','error');return}
+        onSave(o);setSaved(true);setDirty(false);nf(`${isE?'Estimate':'SO'} saved`)}} style={{padding:'4px 14px',fontSize:11}}>✓ Save</button>
     </div>
     {/* HEADER */}
     <div className="card" style={{marginBottom:16,marginTop:8}}><div style={{padding:'16px 20px'}}>
