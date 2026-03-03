@@ -210,6 +210,8 @@ CREATE TABLE public.products (
   is_active BOOLEAN DEFAULT true,
   available_sizes JSONB DEFAULT '[]',
   _colors JSONB,
+  image_front_url TEXT,
+  image_back_url TEXT,
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now()
 );

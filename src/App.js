@@ -268,8 +268,8 @@ const _dbSaveProduct = async (p) => {
       if(error.message?.includes('image_front_url')||error.message?.includes('image_back_url')||error.message?.includes('images')){
         const{image_front_url,image_back_url,images,...rowNoImg}=row;
         const{error:e2}=await supabase.from('products').upsert(rowNoImg,{onConflict:'id'});
-        if(e2)console.error('[DB] save product (no img):',e2.message);
-      }else{console.error('[DB] save product:',error.message)}
+        if(e2){console.error('[DB] save product (no img):',e2.message);if(_dbNotify)_dbNotify('Product save failed: '+e2.message,'error')}
+      }else{console.error('[DB] save product:',error.message);if(_dbNotify)_dbNotify('Product save failed: '+error.message,'error')}
     }
     const _inv=p._inv||{};const _alerts=p._alerts||{};
     const allSizes=new Set([...Object.keys(_inv),...Object.keys(_alerts)]);
