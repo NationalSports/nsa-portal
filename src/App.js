@@ -875,8 +875,8 @@ function dP(d,q,artFiles,cq){
   if(d.type==='screen_print'){const u=d.underbase?1+SP.ub:1;return{sell:d.sell_override||rQ(spP(q,d.colors||1,true)*u),cost:rQ(spP(q,d.colors||1,false)*u)}}
   if(d.type==='embroidery')return{sell:d.sell_override||emP(d.stitches||8000,q,true),cost:emP(d.stitches||8000,q,false)};
   // Numbers
-  if(d.kind==='numbers'||d.type==='number_press'){const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:0;const fnq=d.front_and_back?nq*2:nq;return{sell:d.sell_override||npP(nq||1,d.two_color,true),cost:npP(nq||1,d.two_color,false),_nq:fnq}};
-  if(d.kind==='names'){const nc=d.names?Object.values(d.names).flat().filter(v=>v&&v.trim()).length:0;const se=safeNum(d.sell_override||d.sell_each||6);const co=safeNum(d.cost_each||3);return{sell:nc>0?rQ(nc*se/q):se,cost:nc>0?rQ(nc*co/q):co}};
+  if(d.kind==='numbers'||d.type==='number_press'){const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:0;const useQty=nq||safeNum(d.num_qty)||0;const fnq=d.front_and_back?(useQty)*2:useQty;return{sell:d.sell_override||npP(useQty||1,d.two_color,true),cost:npP(useQty||1,d.two_color,false),_nq:fnq}};
+  if(d.kind==='names'){const nc=d.names?Object.values(d.names).flat().filter(v=>v&&v.trim()).length:0;const useNc=nc||safeNum(d.name_qty)||0;const se=safeNum(d.sell_override||d.sell_each||6);const co=safeNum(d.cost_each||3);return{sell:useNc>0?rQ(useNc*se/q):se,cost:useNc>0?rQ(useNc*co/q):co}};
   if(d.type==='dtf'){const t=DTF[d.dtf_size||0];return{sell:d.sell_override||t.sell,cost:t.cost}}
   // Outside decoration — user-entered cost/sell
   if(d.kind==='outside_deco')return{sell:d.sell_override||safeNum(d.sell_each),cost:safeNum(d.cost_each)};
@@ -940,9 +940,9 @@ const buildJobs=(o)=>{
 const isJobReady=(j,o)=>{
   // Art must be approved
   if(j.art_status!=='art_complete')return false;
-  // Check prod files exist for this art
-  const af=safeArr(o?.art_files).find(f=>f.id===j.art_file_id);
-  if(af&&(af.prod_files||[]).length===0)return false;
+  // Check prod files exist for all art files in this job
+  const artIds=j._art_ids||[j.art_file_id].filter(Boolean);
+  for(const aid of artIds){const af=safeArr(o?.art_files).find(f=>f.id===aid);if(af&&(af.prod_files||[]).length===0)return false;}
   // Check items are received (picked or PO received) for this job's items
   let totalSz=0,fulfilledSz=0;
   (j.items||[]).forEach(gi=>{
@@ -1752,7 +1752,7 @@ function LoginGate({onLogin,reps}){
   );
 }
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack,onConvertSO,onCopyEstimate,onRevertToEst,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,allInvoices,batchPOs,onBatchPO,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onSaveProduct,onViewEstimate}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack,onConvertSO,onCopyEstimate,onRevertToEst,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,allInvoices,batchPOs,onBatchPO,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onSaveProduct,onViewEstimate,onViewSO}){
   const isE=mode==='estimate';const isSO=mode==='so';
   const[o,setO]=useState(order);const[cust,setCust]=useState(ic);const[pS,setPS]=useState('');const[showAdd,setShowAdd]=useState(false);
   const[tab,setTab]=useState(initTab||'items');const[dirty,setDirty]=useState(false);const[selJob,setSelJob]=useState(null);const[jobNote,setJobNote]=useState('');const[msgDept,setMsgDept]=useState('all');
@@ -1761,7 +1761,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
     React.useEffect(()=>{if(scrollToItem!=null){setTab('items');setTimeout(()=>{const el=document.getElementById('so-item-'+scrollToItem);if(el){el.scrollIntoView({behavior:'smooth',block:'center'});el.style.boxShadow='0 0 0 3px #3b82f6';setTimeout(()=>{el.style.boxShadow=''},2000)}},150)}},[scrollToItem]);
     React.useEffect(()=>{if(scrollToJob!=null){setTab('jobs');setSelJob(scrollToJob);setTimeout(()=>{const el=document.getElementById('so-job-'+scrollToJob);if(el){el.scrollIntoView({behavior:'smooth',block:'center'});el.style.boxShadow='0 0 0 3px #7c3aed';setTimeout(()=>{el.style.boxShadow=''},2000)}},200)}},[scrollToJob]);
     const origRef=React.useRef(JSON.stringify(o));
-    const markDirty=()=>setDirty(true);const[saved,setSaved]=useState(!!order.customer_id);const[showSend,setShowSend]=useState(false);const[showPick,setShowPick]=useState(false);const[pickId,setPickId]=useState(()=>{let max=4000;(allOrders||[]).concat([order]).forEach(so=>safeItems(so).forEach(it=>safePicks(it).forEach(pk=>{const m=parseInt((pk.pick_id||'').replace('IF-',''))||0;if(m>max)max=m})));return'IF-'+String(max+1)});const[showPO,setShowPO]=useState(null);const[poCounter,setPOCounter]=useState(()=>3001+Math.floor(Math.random()*100));
+    const markDirty=()=>setDirty(true);const[saved,setSaved]=useState(!!order.customer_id);const[showSend,setShowSend]=useState(false);const[showActionsDD,setShowActionsDD]=useState(false);const[showPick,setShowPick]=useState(false);const[pickId,setPickId]=useState(()=>{let max=4000;(allOrders||[]).concat([order]).forEach(so=>safeItems(so).forEach(it=>safePicks(it).forEach(pk=>{const m=parseInt((pk.pick_id||'').replace('IF-',''))||0;if(m>max)max=m})));return'IF-'+String(max+1)});const[showPO,setShowPO]=useState(null);const[poCounter,setPOCounter]=useState(()=>3001+Math.floor(Math.random()*100));
     const[pickNotes,setPickNotes]=useState('');const[pickShipDest,setPickShipDest]=useState('in_house');const[pickDecoVendor,setPickDecoVendor]=useState('');const[pickShipAddr,setPickShipAddr]=useState('default');
     const DECO_VENDORS=['Silver Screen','Olympic Embroidery','WePrintIt','Pacific Screen Print','Other'];
   const[showFirmReq,setShowFirmReq]=useState(false);const[firmReqDate,setFirmReqDate]=useState('');const[firmReqNote,setFirmReqNote]=useState('');
@@ -1858,35 +1858,63 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
     const ship=o.shipping_type==='pct'?rev*(o.shipping_value||0)/100:(o.shipping_value||0);const taxRate=cust?.tax_exempt?0:(cust?.tax_rate||0);const tax=rev*taxRate;
     return{rev,cost,ship,tax,taxRate,grand:rev+ship+tax,margin:rev-cost,pct:rev>0?((rev-cost)/rev*100):0}},[o,artQty,cust]); // eslint-disable-line
 
-  // AUTO-SYNC JOBS from decorations — one job per unique artwork across entire SO
+  // AUTO-SYNC JOBS from decorations — one job per unique decoration combination
+  // Items that share the exact same set of decorations are grouped into one job
   const syncJobs=useCallback(()=>{
-    const artJobs={};
+    // Step 1: Build a decoration signature per item (sorted list of job-producing decos)
+    const itemSigs=[];
     safeItems(o).forEach((it,ii)=>{
+      const decoParts=[];
       safeDecos(it).forEach((d,di)=>{
-        let jobKey,artName,artId,decoType,artSt;
         if(d.kind==='art'){
-          if(!d.art_file_id){
-            jobKey='unassigned_'+safeStr(d.position);
-            artName='Unassigned Art ('+safeStr(d.position)+')';artId=null;
-            decoType=d.deco_type||'screen_print';artSt='needs_art';
-          } else {
-            jobKey='art_'+d.art_file_id;
+          decoParts.push(d.art_file_id?'art_'+d.art_file_id+'@'+safeStr(d.position):'unassigned@'+safeStr(d.position));
+        } else if(d.kind==='numbers'){
+          decoParts.push('numbers_'+(d.num_method||'ht')+'@'+safeStr(d.position));
+        }
+      });
+      decoParts.sort();
+      const sig=decoParts.join('|')||'__no_deco';
+      if(sig!=='__no_deco')itemSigs.push({ii,it,sig,decoParts});
+    });
+    // Step 2: Group items by their decoration signature
+    const sigGroups={};
+    itemSigs.forEach(({ii,it,sig})=>{
+      if(!sigGroups[sig])sigGroups[sig]={sig,items:[]};
+      sigGroups[sig].items.push({ii,it});
+    });
+    // Step 3: Build jobs from each group
+    const jobMap={};
+    Object.values(sigGroups).forEach(grp=>{
+      const firstItem=grp.items[0].it;
+      // Collect decoration info from the first item (all items in the group share the same decos)
+      const positions=new Set();const artIds=[];const artNames=[];const decoTypes=[];let worstArtSt='art_complete';
+      safeDecos(firstItem).forEach(d=>{
+        if(d.kind==='art'){
+          positions.add(safeStr(d.position));
+          if(d.art_file_id){
             const artF=af.find(a=>a.id===d.art_file_id);
-            artName=artF?.name||'Unknown Art';artId=d.art_file_id;
-            decoType=artF?.deco_type||d.deco_type||'screen_print';
-            artSt=artF?.status==='approved'?(artF.prod_files?.length?'art_complete':'production_files_needed'):artF?.status==='needs_approval'?'waiting_approval':'needs_art';
+            artIds.push(d.art_file_id);
+            artNames.push(artF?.name||'Unknown Art');
+            decoTypes.push(artF?.deco_type||d.deco_type||'screen_print');
+            const st=artF?.status==='approved'?(artF.prod_files?.length?'art_complete':'production_files_needed'):artF?.status==='needs_approval'?'waiting_approval':'needs_art';
+            if(st!=='art_complete')worstArtSt=st;
+          } else {
+            artNames.push('Unassigned Art ('+safeStr(d.position)+')');
+            decoTypes.push(d.deco_type||'screen_print');
+            worstArtSt='needs_art';
           }
         } else if(d.kind==='numbers'){
-          jobKey='numbers_'+(d.num_method||'ht')+'_'+safeStr(d.position);
-          artName='Numbers — '+(d.num_method||'heat_transfer').replace(/_/g,' ');
-          artId=null;decoType=d.num_method||'heat_transfer';artSt='art_complete';
-        } else return;
-        if(!artJobs[jobKey]){
-          artJobs[jobKey]={key:jobKey,art_file_id:artId,art_name:artName,deco_type:decoType,
-            positions:new Set(),items:[],art_status:artSt,total_units:0,fulfilled_units:0};
+          positions.add(safeStr(d.position));
+          artNames.push('Numbers — '+(d.num_method||'heat_transfer').replace(/_/g,' '));
+          decoTypes.push(d.num_method||'heat_transfer');
         }
-        const job=artJobs[jobKey];
-        job.positions.add(safeStr(d.position));
+      });
+      const jobKey=grp.sig;
+      const job={key:jobKey,art_file_id:artIds[0]||null,art_name:artNames.join(' + '),
+        deco_type:decoTypes[0]||'screen_print',positions,items:[],art_status:worstArtSt,
+        total_units:0,fulfilled_units:0,_art_ids:artIds};
+      // Add each item in the group
+      grp.items.forEach(({ii,it})=>{
         const szEntries=Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0);
         let itemTotal=0,itemFulfilled=0;
         szEntries.forEach(([sz,v])=>{
@@ -1895,15 +1923,19 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           const rcvdQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
           itemFulfilled+=Math.min(v,pulledQ+rcvdQ);
         });
-        job.items.push({item_idx:ii,deco_idx:di,sku:it.sku||'—',name:safeStr(it.name)||'Unknown',color:safeStr(it.color),units:itemTotal,fulfilled:itemFulfilled});
+        // Include all deco indices for this item
+        const decoIdxs=[];
+        safeDecos(it).forEach((d,di)=>{if(d.kind==='art'||d.kind==='numbers')decoIdxs.push(di)});
+        job.items.push({item_idx:ii,deco_idx:decoIdxs[0]||0,deco_idxs:decoIdxs,sku:it.sku||'—',name:safeStr(it.name)||'Unknown',color:safeStr(it.color),units:itemTotal,fulfilled:itemFulfilled});
         job.total_units+=itemTotal;job.fulfilled_units+=itemFulfilled;
       });
+      jobMap[jobKey]=job;
     });
     // Build map of existing NON-split jobs keyed by job key (skip splits so they don't collide)
     const existingJobMap={};safeJobs(o).forEach(j=>{if(!j.split_from)existingJobMap[j.key||j.id]=j});
     const soNum=o.id?.replace('SO-','')||'0';
     let jIdx=1;
-    const newJobs=Object.values(artJobs).map(j=>{
+    const newJobs=Object.values(jobMap).map(j=>{
       const existing=existingJobMap[j.key];
       const itemSt=j.fulfilled_units>=j.total_units&&j.total_units>0?'items_received':j.fulfilled_units>0?'partially_received':'need_to_order';
       let prodSt=existing?.prod_status||'hold';
@@ -1927,6 +1959,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         art_requests:existing?.art_requests||[],art_messages:existing?.art_messages||[],
         assigned_artist:existing?.assigned_artist||null,rep_notes:existing?.rep_notes||null,
         rejections:existing?.rejections||null,
+        _art_ids:j._art_ids||[],
       };
     });
     // Preserve manually split jobs — they won't be auto-generated from decorations
@@ -1985,7 +2018,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           :<div><div style={{display:'flex',alignItems:'center',gap:6}}><span style={{fontSize:18,fontWeight:800}}>{cust.name}</span> <span style={{fontSize:14,color:'#64748b'}}>({cust.alpha_tag})</span>
             <button style={{background:'none',border:'none',cursor:'pointer',color:'#64748b',fontSize:10,textDecoration:'underline',padding:0}} onClick={()=>{if(window.confirm('Change customer for '+o.id+'? This will update pricing tier.'))selC(null);setCust(null)}}>change</button></div>
             <div style={{fontSize:13,color:'#64748b'}}>Tier {cust.adidas_ua_tier} | {o.default_markup||1.65}x | Tax: {cust.tax_rate?(cust.tax_rate*100).toFixed(3)+'%':'N/A'}</div></div>}
-          {isSO&&o.estimate_id&&<div style={{fontSize:11,color:'#7c3aed'}}>From: {o.estimate_id}</div>}
+          {isSO&&o.estimate_id&&onViewEstimate&&<div style={{fontSize:11,color:'#7c3aed'}}>From: <span style={{cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={()=>onViewEstimate(o.estimate_id)} title="Open source estimate">{o.estimate_id}</span></div>}
+          {isE&&o.status==='converted'&&(()=>{const linkedSO=(allOrders||[]).find(s=>s.estimate_id===o.id);return linkedSO&&onViewSO?<div style={{fontSize:11,color:'#7c3aed'}}>Converted to: <span style={{cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={()=>onViewSO(linkedSO.id)} title="Open sales order">{linkedSO.id}</span></div>:null})()}
           <div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>By {REPS.find(r=>r.id===o.created_by)?.name} · {o.created_at}</div>
           {isSO&&o._tracking_number&&<div style={{padding:8,background:'#f0fdf4',borderRadius:6,marginTop:8}}>
             <strong>Shipped:</strong> Tracking #{o._tracking_number} via {o._carrier} on {o._ship_date}
@@ -2028,7 +2062,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           const noPrice=validItems.find(it=>safeNum(it.unit_sell)<=0);
           if(noPrice){nf('Item '+(noPrice.sku||noPrice.name||'#?')+' needs a sell price','error');return}
           onSave(o);setSaved(true);setDirty(false);nf(`${isE?'Estimate':'SO'} saved`)}} style={{padding:'10px 28px',fontSize:16,fontWeight:800}}><Icon name="check" size={16}/> Save</button>
-        {isE&&saved&&<button className="btn btn-secondary" onClick={()=>setShowSend(true)}><Icon name="send" size={14}/> Send</button>}
         {isE&&saved&&(o.status==='sent'||o.status==='draft'||o.status==='open')&&<button className="btn btn-primary" style={{background:'#22c55e'}} onClick={()=>{sv('status','approved');onSave({...o,status:'approved'});nf('Estimate approved')}}><Icon name="check" size={14}/> Approve</button>}
         {isE&&o.status==='approved'&&<button className="btn btn-primary" style={{background:'#7c3aed'}} onClick={()=>{
           if(!cust){nf('Select a customer first','error');return}
@@ -2040,79 +2073,83 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           const noPrice=validItems.find(it=>safeNum(it.unit_sell)<=0);
           if(noPrice){nf('Item '+(noPrice.sku||noPrice.name||'#?')+' needs a sell price','error');return}
           onConvertSO(o)}}><Icon name="box" size={14}/> Convert to SO</button>}
-        {isE&&onCopyEstimate&&saved&&<button style={{fontSize:10,color:'#94a3b8',background:'none',border:'none',cursor:'pointer',textDecoration:'underline',padding:'4px 0'}} onClick={()=>{if(!window.confirm('Create a copy of this estimate?'))return;onCopyEstimate(o)}}>Copy Estimate</button>}
-        {isSO&&onRevertToEst&&<button style={{fontSize:10,color:'#94a3b8',background:'none',border:'none',cursor:'pointer',textDecoration:'underline',padding:'4px 0'}} onClick={()=>{if(!window.confirm('Revert '+o.id+' back to a new estimate? The SO will be marked as reverted.'))return;onRevertToEst(o)}}>Revert to Estimate</button>}
-        {/* Print Estimate or SO */}
-        <button className="btn btn-secondary" style={{fontSize:12}} onClick={()=>{
-          const items=safeItems(o).filter(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
-          const _pAQ={};items.forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'){_pAQ[d.art_file_id]=(_pAQ[d.art_file_id]||0)+q2}})});
-          const isRolled=(o.pricing_mode||'itemized')==='rolled_up';
-          const taxRate=cust?.tax_exempt?0:(cust?.tax_rate||0);
-          const rows=[];let subTotal=0;
-          items.forEach(it=>{
-            const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
-            const decos=safeDecos(it);
-            const decoSell=decos.reduce((a,d)=>{const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);return a+dp2.sell},0);
-            const szStr=SZ_ORD.filter(sz=>safeSizes(it)[sz]>0).map(sz=>safeSizes(it)[sz]+' '+sz).join(', ');
-            const unitPrice=isRolled?safeNum(it.unit_sell)+decoSell:safeNum(it.unit_sell);
-            const lineAmt=qty*unitPrice;subTotal+=lineAmt;
-            let itemDesc='<strong>'+it.sku+'</strong><br/>'+(it.name||'')+(it.color?' - '+it.color:'');
-            if(szStr)itemDesc+='<br/><span style="font-size:10px;color:#555">'+szStr+'</span>';
-            rows.push({cells:[{value:itemDesc},{value:qty,style:'text-align:center'},{value:'$'+unitPrice.toFixed(2),style:'text-align:right'},{value:'$'+lineAmt.toFixed(2),style:'text-align:right;font-weight:600'}]});
-            decos.forEach(d=>{
-              const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);
-              const artF=af.find(a2=>a2.id===d.art_file_id);
-              const decoLabel=(d.kind==='art'?(artF?.deco_type||d.art_tbd_type||'decoration'):d.kind==='numbers'?'Numbers ('+(d.num_method||'heat transfer').replace(/_/g,' ')+' '+(d.num_size||'4"')+(d.print_color?' — '+d.print_color:'')+')'+(d.front_and_back?' F+B':''):d.kind==='names'?'Names'+(d.print_color?' ('+d.print_color+')':''):d.kind==='outside_deco'?(d.deco_type||'Decoration'):'Decoration').replace(/_/g,' ');
-              const posLabel=d.position?' — '+d.position:'';
-              // Build number list for print
-              let numHtml='';
-              if(d.kind==='numbers'&&d.roster){const szOrd2=['XS','S','M','L','XL','2XL','3XL','4XL'];
-                const sorted=Object.entries(d.roster).sort((a,b)=>(szOrd2.indexOf(a[0])===-1?99:szOrd2.indexOf(a[0]))-(szOrd2.indexOf(b[0])===-1?99:szOrd2.indexOf(b[0])));
-                const szRows=sorted.filter(([,arr])=>(arr||[]).some(v=>v)).map(([sz,arr])=>'<tr><td style="font-weight:700;padding:1px 6px;font-size:10px">'+sz+'</td><td style="font-size:10px;padding:1px 4px">'+(arr||[]).filter(v=>v).join(', ')+'</td></tr>');
-                if(szRows.length>0)numHtml='<table style="margin:2px 0 0 20px;border-collapse:collapse">'+szRows.join('')+'</table>'}
-              if(d.kind==='names'&&d.names){const szOrd2=['XS','S','M','L','XL','2XL','3XL','4XL'];
-                const sorted=Object.entries(d.names).sort((a,b)=>(szOrd2.indexOf(a[0])===-1?99:szOrd2.indexOf(a[0]))-(szOrd2.indexOf(b[0])===-1?99:szOrd2.indexOf(b[0])));
-                const szRows=sorted.filter(([,arr])=>(arr||[]).some(v=>v)).map(([sz,arr])=>'<tr><td style="font-weight:700;padding:1px 6px;font-size:10px">'+sz+'</td><td style="font-size:10px;padding:1px 4px">'+(arr||[]).filter(v=>v).join(', ')+'</td></tr>');
-                if(szRows.length>0)numHtml='<table style="margin:2px 0 0 20px;border-collapse:collapse">'+szRows.join('')+'</table>'}
-              if(isRolled){
-                rows.push({cells:[{value:'<span style="padding-left:20px;color:#666;font-size:11px">'+decoLabel+posLabel+'</span>'+numHtml,style:'border-bottom:none'},{value:'',style:'border-bottom:none'},{value:'',style:'border-bottom:none'},{value:'',style:'border-bottom:none'}]});
-              }else{
-                const decoAmt=qty*dp2.sell;subTotal+=decoAmt;
-                rows.push({cells:[{value:'<span style="padding-left:20px;color:#666;font-size:11px">'+decoLabel+posLabel+'</span>'+numHtml},{value:qty,style:'text-align:center;color:#888;font-size:11px'},{value:'$'+dp2.sell.toFixed(2),style:'text-align:right;color:#888;font-size:11px'},{value:'$'+decoAmt.toFixed(2),style:'text-align:right;color:#888;font-size:11px'}]});
-              }
-            });
-          });
-          const shipAmt=o.shipping_type==='pct'?subTotal*(o.shipping_value||0)/100:(o.shipping_value||0);
-          const taxAmt=subTotal*taxRate;const total=subTotal+shipAmt+taxAmt;
-          if(shipAmt>0)rows.push({cells:[{value:'<strong>Shipping</strong>'},{value:1,style:'text-align:center'},{value:'$'+shipAmt.toFixed(2),style:'text-align:right'},{value:'$'+shipAmt.toFixed(2),style:'text-align:right'}]});
-          printDoc({
-            title:cust?.name||'Customer',docNum:o.id,docType:isE?'ESTIMATE':'SALES ORDER',
-            headerRight:'<div style="font-size:32px;font-weight:900;color:#1e3a5f">$'+total.toFixed(2)+'</div>'+(isE?'<div style="font-size:11px;color:#888">Expires: '+new Date(Date.now()+30*86400000).toLocaleDateString()+'</div>':''),
-            infoBoxes:[
-              {label:'Bill To',value:cust?.name||'—',sub:cust?.address||cust?.alpha_tag||''},
-              {label:isE?'Expires':'Expected',value:isE?new Date(Date.now()+30*86400000).toLocaleDateString():(o.expected_date||'TBD'),sub:'Exp. Close: '+new Date().toLocaleDateString()},
-              {label:'Sales Rep',value:REPS.find(r=>r.id===o.created_by)?.name||'—'},
-              {label:'Memo',value:o.memo||'—'},
-            ],
-            tables:[{headers:['Item','Qty','Rate','Amount'],aligns:['left','center','right','right'],
-              rows:[...rows,
-                {cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Subtotal</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'},{value:'<strong>$'+subTotal.toFixed(2)+'</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'}]},
-                ...(taxAmt>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'Tax ('+(taxRate*100).toFixed(3)+'%)',style:'text-align:right;border:none;font-size:11px'},{value:'$'+taxAmt.toFixed(2),style:'text-align:right;border:none'}]}]:[]),
-                {_class:'totals-row',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Total</strong>',style:'text-align:right'},{value:'<strong style="font-size:14px">$'+total.toFixed(2)+'</strong>',style:'text-align:right'}]},
-              ]}],
-            footer:isE?'This estimate is valid for 30 days. Prices subject to change. '+NSA.depositTerms:NSA.terms,
-            portalLink:cust?.alpha_tag?(window.location.origin+'?portal='+cust.alpha_tag):undefined
-          });
-        }}>🖨️ Print {isE?'Estimate':'SO'}</button>
-        {onDelete&&<button className="btn btn-sm" style={{background:'#dc2626',color:'white',border:'none',fontSize:11}} onClick={()=>onDelete(o.id)}><Icon name="trash" size={12}/> Delete</button>}
-        {isSO&&o.estimate_id&&onViewEstimate&&<button style={{fontSize:10,color:'#94a3b8',background:'none',border:'none',cursor:'pointer',textDecoration:'underline',padding:'4px 0'}} onClick={()=>onViewEstimate(o.estimate_id)} title="Open the source estimate">View Estimate</button>}
+        {/* Actions dropdown */}
+        <div style={{position:'relative'}}>
+          <button className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'6px 12px'}} onClick={()=>setShowActionsDD(!showActionsDD)}>Actions <span style={{fontSize:9}}>▾</span></button>
+          {showActionsDD&&<><div style={{position:'fixed',inset:0,zIndex:98}} onClick={()=>setShowActionsDD(false)}/><div style={{position:'absolute',top:'100%',left:0,marginTop:4,background:'white',border:'1px solid #e2e8f0',borderRadius:6,boxShadow:'0 4px 12px rgba(0,0,0,0.1)',zIndex:99,minWidth:160,overflow:'hidden'}}>
+            {saved&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);setShowSend(true)}} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="send" size={12}/> Send</button>}
+            <button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);
+              const items=safeItems(o).filter(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
+              const _pAQ={};items.forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'){_pAQ[d.art_file_id]=(_pAQ[d.art_file_id]||0)+q2}})});
+              const isRolled=(o.pricing_mode||'itemized')==='rolled_up';
+              const taxRate=cust?.tax_exempt?0:(cust?.tax_rate||0);
+              const rows=[];let subTotal=0;
+              items.forEach(it=>{
+                const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
+                const decos=safeDecos(it);
+                const decoSell=decos.reduce((a,d)=>{const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);return a+dp2.sell},0);
+                const szStr=SZ_ORD.filter(sz=>safeSizes(it)[sz]>0).map(sz=>safeSizes(it)[sz]+' '+sz).join(', ');
+                const unitPrice=isRolled?safeNum(it.unit_sell)+decoSell:safeNum(it.unit_sell);
+                const lineAmt=qty*unitPrice;subTotal+=lineAmt;
+                let itemDesc='<strong>'+it.sku+'</strong><br/>'+(it.name||'')+(it.color?' - '+it.color:'');
+                if(szStr)itemDesc+='<br/><span style="font-size:10px;color:#555">'+szStr+'</span>';
+                rows.push({cells:[{value:itemDesc},{value:qty,style:'text-align:center'},{value:'$'+unitPrice.toFixed(2),style:'text-align:right'},{value:'$'+lineAmt.toFixed(2),style:'text-align:right;font-weight:600'}]});
+                decos.forEach(d=>{
+                  const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);
+                  const artF=af.find(a2=>a2.id===d.art_file_id);
+                  const decoLabel=(d.kind==='art'?(artF?.deco_type||d.art_tbd_type||'decoration'):d.kind==='numbers'?'Numbers ('+(d.num_method||'heat transfer').replace(/_/g,' ')+' '+(d.num_size||'4"')+(d.print_color?' — '+d.print_color:'')+')'+(d.front_and_back?' F+B':''):d.kind==='names'?'Names'+(d.print_color?' ('+d.print_color+')':''):d.kind==='outside_deco'?(d.deco_type||'Decoration'):'Decoration').replace(/_/g,' ');
+                  const posLabel=d.position?' — '+d.position:'';
+                  let numHtml='';
+                  if(d.kind==='numbers'&&d.roster){const szOrd2=['XS','S','M','L','XL','2XL','3XL','4XL'];
+                    const sorted=Object.entries(d.roster).sort((a,b)=>(szOrd2.indexOf(a[0])===-1?99:szOrd2.indexOf(a[0]))-(szOrd2.indexOf(b[0])===-1?99:szOrd2.indexOf(b[0])));
+                    const szRows=sorted.filter(([,arr])=>(arr||[]).some(v=>v)).map(([sz,arr])=>'<tr><td style="font-weight:700;padding:1px 6px;font-size:10px">'+sz+'</td><td style="font-size:10px;padding:1px 4px">'+(arr||[]).filter(v=>v).join(', ')+'</td></tr>');
+                    if(szRows.length>0)numHtml='<table style="margin:2px 0 0 20px;border-collapse:collapse">'+szRows.join('')+'</table>'}
+                  if(d.kind==='names'&&d.names){const szOrd2=['XS','S','M','L','XL','2XL','3XL','4XL'];
+                    const sorted=Object.entries(d.names).sort((a,b)=>(szOrd2.indexOf(a[0])===-1?99:szOrd2.indexOf(a[0]))-(szOrd2.indexOf(b[0])===-1?99:szOrd2.indexOf(b[0])));
+                    const szRows=sorted.filter(([,arr])=>(arr||[]).some(v=>v)).map(([sz,arr])=>'<tr><td style="font-weight:700;padding:1px 6px;font-size:10px">'+sz+'</td><td style="font-size:10px;padding:1px 4px">'+(arr||[]).filter(v=>v).join(', ')+'</td></tr>');
+                    if(szRows.length>0)numHtml='<table style="margin:2px 0 0 20px;border-collapse:collapse">'+szRows.join('')+'</table>'}
+                  if(isRolled){
+                    rows.push({cells:[{value:'<span style="padding-left:20px;color:#666;font-size:11px">'+decoLabel+posLabel+'</span>'+numHtml,style:'border-bottom:none'},{value:'',style:'border-bottom:none'},{value:'',style:'border-bottom:none'},{value:'',style:'border-bottom:none'}]});
+                  }else{
+                    const decoAmt=qty*dp2.sell;subTotal+=decoAmt;
+                    rows.push({cells:[{value:'<span style="padding-left:20px;color:#666;font-size:11px">'+decoLabel+posLabel+'</span>'+numHtml},{value:qty,style:'text-align:center;color:#888;font-size:11px'},{value:'$'+dp2.sell.toFixed(2),style:'text-align:right;color:#888;font-size:11px'},{value:'$'+decoAmt.toFixed(2),style:'text-align:right;color:#888;font-size:11px'}]});
+                  }
+                });
+              });
+              const shipAmt=o.shipping_type==='pct'?subTotal*(o.shipping_value||0)/100:(o.shipping_value||0);
+              const taxAmt=subTotal*taxRate;const total=subTotal+shipAmt+taxAmt;
+              if(shipAmt>0)rows.push({cells:[{value:'<strong>Shipping</strong>'},{value:1,style:'text-align:center'},{value:'$'+shipAmt.toFixed(2),style:'text-align:right'},{value:'$'+shipAmt.toFixed(2),style:'text-align:right'}]});
+              printDoc({
+                title:cust?.name||'Customer',docNum:o.id,docType:isE?'ESTIMATE':'SALES ORDER',
+                headerRight:'<div style="font-size:32px;font-weight:900;color:#1e3a5f">$'+total.toFixed(2)+'</div>'+(isE?'<div style="font-size:11px;color:#888">Expires: '+new Date(Date.now()+30*86400000).toLocaleDateString()+'</div>':''),
+                infoBoxes:[
+                  {label:'Bill To',value:cust?.name||'—',sub:cust?.address||cust?.alpha_tag||''},
+                  {label:isE?'Expires':'Expected',value:isE?new Date(Date.now()+30*86400000).toLocaleDateString():(o.expected_date||'TBD'),sub:'Exp. Close: '+new Date().toLocaleDateString()},
+                  {label:'Sales Rep',value:REPS.find(r=>r.id===o.created_by)?.name||'—'},
+                  {label:'Memo',value:o.memo||'—'},
+                ],
+                tables:[{headers:['Item','Qty','Rate','Amount'],aligns:['left','center','right','right'],
+                  rows:[...rows,
+                    {cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Subtotal</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'},{value:'<strong>$'+subTotal.toFixed(2)+'</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'}]},
+                    ...(taxAmt>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'Tax ('+(taxRate*100).toFixed(3)+'%)',style:'text-align:right;border:none;font-size:11px'},{value:'$'+taxAmt.toFixed(2),style:'text-align:right;border:none'}]}]:[]),
+                    {_class:'totals-row',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Total</strong>',style:'text-align:right'},{value:'<strong style="font-size:14px">$'+total.toFixed(2)+'</strong>',style:'text-align:right'}]},
+                  ]}],
+                footer:isE?'This estimate is valid for 30 days. Prices subject to change. '+NSA.depositTerms:NSA.terms,
+                portalLink:cust?.alpha_tag?(window.location.origin+'?portal='+cust.alpha_tag):undefined
+              });
+            }} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}>🖨️ Print</button>
+            {isE&&onCopyEstimate&&saved&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);if(!window.confirm('Create a copy of this estimate?'))return;onCopyEstimate(o)}} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="file" size={12}/> Copy</button>}
+            {isSO&&onRevertToEst&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);if(!window.confirm('Revert '+o.id+' back to a new estimate? The SO will be marked as reverted.'))return;onRevertToEst(o)}} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="back" size={12}/> Revert to Estimate</button>}
+            {isSO&&o.estimate_id&&onViewEstimate&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);onViewEstimate(o.estimate_id)}} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="dollar" size={12}/> View Estimate</button>}
+            {onDelete&&<><div style={{borderTop:'1px solid #e2e8f0',margin:'2px 0'}}/><button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#dc2626',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);onDelete(o.id)}} onMouseEnter={e=>e.currentTarget.style.background='#fef2f2'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="trash" size={12}/> Delete</button>}</>}
+          </div></>}
+        </div>
       </div>
       {isSO&&<div style={{display:'flex',gap:6,marginTop:8}}>
         <button className="btn btn-secondary" onClick={()=>setShowPO('select')}><Icon name="cart" size={14}/> Create PO</button>
         <button className="btn btn-secondary" style={{color:'#dc2626',borderColor:'#fca5a5'}} onClick={()=>{
           setInvSelItems(safeItems(o).map((_,i)=>i));setInvMemo(o.memo||'');setInvType('deposit');setInvDepositPct(50);setShowInvCreate(true);
         }}><Icon name="dollar" size={14}/> Create Invoice</button>
-        {saved&&<button className="btn btn-secondary" onClick={()=>setShowSend(true)}><Icon name="send" size={14}/> Send</button>}
       </div>}
       {/* SHIPPING */}
       <div style={{display:'flex',gap:12,marginTop:12,alignItems:'end',flexWrap:'wrap',borderTop:'1px solid #f1f5f9',paddingTop:12}}>
@@ -2333,6 +2370,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
             const sizedQtys=Object.entries(item.sizes).filter(([,v])=>v>0).sort((a,b)=>{const ord=['XS','S','M','L','XL','2XL','3XL','4XL','LT','XLT','2XLT','3XLT'];return(ord.indexOf(a[0])===-1?99:ord.indexOf(a[0]))-(ord.indexOf(b[0])===-1?99:ord.indexOf(b[0]))});
             const roster=deco.roster||{};
             const filledNums=Object.values(roster).flat().filter(v=>v&&v.trim()).length;
+            const numQtyOverride=safeNum(deco.num_qty)||0;
+            const effectiveNumQty=filledNums||numQtyOverride;
             const showRoster=deco._showRoster||false;
             // Bball numbers: 0-5,10-15,20-25,30-35,40-45,50-55
             const BBALL_NUMS=[0,1,2,3,4,5,10,11,12,13,14,15,20,21,22,23,24,25,30,31,32,33,34,35,40,41,42,43,44,45,50,51,52,53,54,55];
@@ -2349,6 +2388,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                 <select className="form-select" style={{width:120,fontSize:12}} value={deco.position} onChange={e=>uD(idx,di,'position',e.target.value)}>{POSITIONS.map(p=><option key={p}>{p}</option>)}</select>
                 {deco.front_and_back&&<span style={{fontSize:10,padding:'2px 6px',borderRadius:4,background:'#7c3aed',color:'white',fontWeight:700}}>+ Back</span>}
                 <span style={{fontSize:11,color:filledNums>0?'#166534':'#64748b',fontWeight:filledNums>0?600:400}}>{filledNums}/{qty} assigned{deco.front_and_back?' (×2)':''}</span>
+                {filledNums===0&&<span style={{display:'inline-flex',alignItems:'center',gap:3,fontSize:11,color:'#64748b'}}>or Qty: <input type="number" min="0" style={{width:48,border:'1px solid #d1d5db',borderRadius:3,padding:'2px 4px',fontSize:12,fontWeight:600,textAlign:'center'}} value={deco.num_qty||''} placeholder="—" onChange={e=>uD(idx,di,'num_qty',parseInt(e.target.value)||0)}/></span>}
                 <div style={{marginLeft:'auto',display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
                   <span style={{fontSize:11}}>Cost: <strong style={{color:'#dc2626'}}>${dp.cost.toFixed(2)}</strong></span>
                   <span style={{fontSize:11}}>Sell: <$In value={deco.sell_override||dp.sell} onChange={v=>uD(idx,di,'sell_override',v)} w={50}/></span>
@@ -2451,6 +2491,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
               const sQ2=Object.entries(item.sizes).filter(([,v])=>v>0).sort((a,b)=>{const ord=['XS','S','M','L','XL','2XL','3XL','4XL'];return(ord.indexOf(a[0])===-1?99:ord.indexOf(a[0]))-(ord.indexOf(b[0])===-1?99:ord.indexOf(b[0]))});
               const nd=deco.names||{};const nSell=safeNum(deco.sell_override||deco.sell_each||6);const nCost=safeNum(deco.cost_each||3);
               const nCt=Object.values(nd).flat().filter(v=>v&&v.trim()).length;
+              const nameQtyOverride=safeNum(deco.name_qty)||0;
+              const effectiveNameQty=nCt||nameQtyOverride;
               return(<div key={di} style={decoCardStyle}>
               <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:6}}>
                 <span style={{fontSize:18}}>🏷️</span><span style={{fontWeight:700,fontSize:13}}>Names</span>
@@ -2459,7 +2501,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                 <input className="form-input" style={{width:90,fontSize:12,padding:'2px 6px'}} placeholder="e.g. White" value={deco.print_color||''} onChange={e=>uD(idx,di,'print_color',e.target.value)}/>
                 <div style={{marginLeft:'auto',display:'flex',gap:8,alignItems:'center'}}>
                   <span style={{fontSize:12}}>$/ea: <$In value={nSell} onChange={v=>uD(idx,di,'sell_override',v)} w={40}/></span>
-                  <span style={{fontSize:11,color:'#64748b'}}>{nCt} names = ${ (nCt*nSell).toFixed(2)}</span>
+                  <span style={{fontSize:11,color:'#64748b'}}>{effectiveNameQty} names = ${ (effectiveNameQty*nSell).toFixed(2)}</span>
+                  {nCt===0&&<span style={{display:'inline-flex',alignItems:'center',gap:3,fontSize:11,color:'#64748b'}}>Qty: <input type="number" min="0" style={{width:48,border:'1px solid #d1d5db',borderRadius:3,padding:'2px 4px',fontSize:12,fontWeight:600,textAlign:'center'}} value={deco.name_qty||''} placeholder="—" onChange={e=>uD(idx,di,'name_qty',parseInt(e.target.value)||0)}/></span>}
                   <button onClick={()=>rmD(idx,di)} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626'}}><Icon name="x" size={14}/></button>
                 </div></div>
               <div style={{padding:10,background:'#fffbeb',borderRadius:6,border:'1px dashed #f59e0b'}}
@@ -7697,7 +7740,7 @@ export default function App(){
 
   // ESTIMATES LIST
   function rEst(){
-    if(eEst)return<OrderEditor order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} onSave={e=>{const e2=savE(e);setEEst(e2)}} onBack={()=>setEEst(null)} onConvertSO={convertSO} onCopyEstimate={copyEstimate} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={canDelete?deleteEstimate:null} onNavInvoice={inv=>{setEEst(null);setPg('invoices');setInvF(f=>({...f,search:inv.id}))}} onSaveProduct={p=>setProd(prev=>[...prev,p])}/>
+    if(eEst)return<OrderEditor order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} onSave={e=>{const e2=savE(e);setEEst(e2)}} onBack={()=>setEEst(null)} onConvertSO={convertSO} onCopyEstimate={copyEstimate} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={canDelete?deleteEstimate:null} onNavInvoice={inv=>{setEEst(null);setPg('invoices');setInvF(f=>({...f,search:inv.id}))}} onSaveProduct={p=>setProd(prev=>[...prev,p])} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setEEst(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}else{nf('SO '+soId+' not found','error')}}}/>
     const fe=ests.filter(e=>!q||(e.id+' '+e.memo+' '+(cust.find(c=>c.id===e.customer_id)?.name||'')+' '+(cust.find(c=>c.id===e.customer_id)?.alpha_tag||'')).toLowerCase().includes(q.toLowerCase()));
     return(<><div style={{display:'flex',gap:8,marginBottom:16}}><div className="search-bar" style={{flex:1}}><Icon name="search"/><input placeholder="Search..." value={q} onChange={e=>setQ(e.target.value)}/></div>
       <button className="btn btn-primary" onClick={()=>newE(null)}><Icon name="plus" size={14}/> New Estimate</button></div>
@@ -8628,14 +8671,14 @@ export default function App(){
     });
     const filtered=prodFilter==='all'?allJobs:allJobs.filter(j=>j.so.created_by===prodFilter);
     const byDeco=prodDecoF==='all'?filtered:filtered.filter(j=>j.deco_type===prodDecoF);
-    const byStatus=prodStatF==='active'?byDeco.filter(j=>j.prod_status!=='completed'&&j.prod_status!=='shipped'):prodStatF==='not_ready'?byDeco.filter(j=>j.prod_status==='hold'&&!isJobReady(j,j.so)):prodStatF==='all'?byDeco:byDeco.filter(j=>j.prod_status===prodStatF);
+    const readyOnly=byDeco.filter(j=>j.prod_status!=='hold'||isJobReady(j,j.so));
+    const byStatus=prodStatF==='active'?readyOnly.filter(j=>j.prod_status!=='completed'&&j.prod_status!=='shipped'):prodStatF==='all'?readyOnly:readyOnly.filter(j=>j.prod_status===prodStatF);
     const totalUnits=byStatus.reduce((a,j)=>a+j.total_units,0);
     const fulfilledUnits=byStatus.reduce((a,j)=>a+j.fulfilled_units,0);
     const needsArt=byStatus.filter(j=>j.art_status!=='art_complete').length;
     const inProcess=byStatus.filter(j=>j.prod_status==='in_process').length;
     const allDecoTypes=[...new Set(allJobs.map(j=>j.deco_type).filter(Boolean))];
     const kanbanCols=[
-      {id:'not_ready',label:'Not Ready',color:'#94a3b8',bg:'#f8fafc',filter:j=>j.prod_status==='hold'&&!isJobReady(j,j.so)},
       {id:'hold',label:'Ready for Prod',color:'#6366f1',bg:'#eef2ff',filter:j=>j.prod_status==='hold'&&isJobReady(j,j.so)},
       {id:'staging',label:'In Line',color:'#d97706',bg:'#fffbeb'},
       {id:'in_process',label:'In Process',color:'#2563eb',bg:'#eff6ff'},
@@ -8645,7 +8688,7 @@ export default function App(){
     return(<>
       <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:12,flexWrap:'wrap'}}>
         <div style={{display:'flex',gap:4}}>
-          {[['active','Active'],['all','All'],['not_ready','Not Ready'],['hold','Ready'],['staging','In Line'],['in_process','In Process'],['completed','Done']].map(([v,l])=>
+          {[['active','Active'],['all','All'],['hold','Ready'],['staging','In Line'],['in_process','In Process'],['completed','Done']].map(([v,l])=>
             <button key={v} className={`btn btn-sm ${prodStatF===v?'btn-primary':'btn-secondary'}`} onClick={()=>setProdStatF(v)}>{l}</button>)}
         </div>
         <select className="form-select" style={{width:140,fontSize:11}} value={prodFilter} onChange={e=>setProdFilter(e.target.value)}>

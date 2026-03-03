@@ -83,35 +83,65 @@ function calcSOStatus(ord) {
   return 'need_order';
 }
 
-// ── Job Building ──
+// ── Job Building ── Groups items by their full decoration signature
 const buildJobs = (o) => {
   if (o?.jobs && o.jobs.length > 0) return o.jobs;
-  const artMap = {};
+  // Build decoration signature per item
+  const itemSigs = [];
   safeItems(o).forEach((it, idx) => {
     if (it.no_deco) return;
-    safeDecos(it).forEach((d, di) => {
-      if (d.kind !== 'art' || !d.art_file_id) return;
-      const key = 'art_' + d.art_file_id + '_' + d.position;
-      if (!artMap[key]) artMap[key] = { art_file_id: d.art_file_id, position: d.position, deco_type: null, items: [] };
-      artMap[key].items.push({ item_idx: idx, deco_idx: di, sku: it.sku, name: safeStr(it.name), color: it.color || '', units: Object.values(safeSizes(it)).reduce((a, v) => a + v, 0), fulfilled: 0 });
-      const af = safeArr(o?.art_files).find(f => f.id === d.art_file_id);
-      if (af) { artMap[key].deco_type = af.deco_type; artMap[key].art_name = af.name; artMap[key].art_status = af.status === 'approved' ? (af.prod_files?.length ? 'art_complete' : 'production_files_needed') : af.status === 'needs_approval' ? 'waiting_approval' : af.status === 'uploaded' ? 'waiting_approval' : 'needs_art' }
+    const parts = [];
+    safeDecos(it).forEach((d) => {
+      if (d.kind === 'art' && d.art_file_id) parts.push('art_' + d.art_file_id + '@' + (d.position || ''));
+      else if (d.kind === 'numbers') parts.push('numbers_' + (d.num_method || 'ht') + '@' + (d.position || ''));
     });
+    parts.sort();
+    const sig = parts.join('|');
+    if (sig) itemSigs.push({ idx, it, sig });
   });
-  return Object.entries(artMap).map(([key, v], idx) => {
-    const totalUnits = v.items.reduce((a, it) => a + it.units, 0);
-    return { id: o.id.replace('SO-', 'JOB-') + '-' + (idx + 1 < 10 ? '0' : '') + (idx + 1), key, art_file_id: v.art_file_id,
-      art_name: v.art_name || 'Unnamed', deco_type: v.deco_type || 'screen_print',
-      art_status: v.art_status || 'needs_art', item_status: 'need_to_order', prod_status: 'hold',
-      total_units: totalUnits, fulfilled_units: 0, split_from: null, items: v.items, _auto: true };
+  // Group by signature
+  const sigGroups = {};
+  itemSigs.forEach(({ idx, it, sig }) => {
+    if (!sigGroups[sig]) sigGroups[sig] = { sig, items: [] };
+    sigGroups[sig].items.push({ idx, it });
+  });
+  return Object.values(sigGroups).map((grp, gi) => {
+    const firstIt = grp.items[0].it;
+    const positions = new Set();
+    const artNames = []; const artIds = []; const decoTypes = [];
+    let worstArtSt = 'art_complete';
+    safeDecos(firstIt).forEach((d, di) => {
+      if (d.kind === 'art' && d.art_file_id) {
+        positions.add(d.position || '');
+        artIds.push(d.art_file_id);
+        const af = safeArr(o?.art_files).find(f => f.id === d.art_file_id);
+        if (af) { artNames.push(af.name || 'Unnamed'); decoTypes.push(af.deco_type || 'screen_print');
+          const st = af.status === 'approved' ? (af.prod_files?.length ? 'art_complete' : 'production_files_needed') : af.status === 'needs_approval' ? 'waiting_approval' : af.status === 'uploaded' ? 'waiting_approval' : 'needs_art';
+          if (st !== 'art_complete') worstArtSt = st;
+        } else { artNames.push('Unnamed'); decoTypes.push('screen_print'); worstArtSt = 'needs_art'; }
+      } else if (d.kind === 'numbers') {
+        positions.add(d.position || '');
+        artNames.push('Numbers — ' + (d.num_method || 'heat_transfer').replace(/_/g, ' '));
+        decoTypes.push(d.num_method || 'heat_transfer');
+      }
+    });
+    const items = grp.items.map(({ idx, it }) => {
+      const decoIdxs = []; safeDecos(it).forEach((d, di) => { if (d.kind === 'art' || d.kind === 'numbers') decoIdxs.push(di) });
+      return { item_idx: idx, deco_idx: decoIdxs[0] || 0, sku: it.sku, name: safeStr(it.name), color: it.color || '', units: Object.values(safeSizes(it)).reduce((a, v) => a + v, 0), fulfilled: 0 };
+    });
+    const totalUnits = items.reduce((a, it) => a + it.units, 0);
+    return { id: o.id.replace('SO-', 'JOB-') + '-' + (gi + 1 < 10 ? '0' : '') + (gi + 1), key: grp.sig, art_file_id: artIds[0] || null,
+      art_name: artNames.join(' + ') || 'Unnamed', deco_type: decoTypes[0] || 'screen_print',
+      art_status: worstArtSt, item_status: 'need_to_order', prod_status: 'hold',
+      total_units: totalUnits, fulfilled_units: 0, split_from: null, items, _auto: true };
   });
 };
 
 // ── Job Readiness Check ──
 const isJobReady = (j, o) => {
   if (j.art_status !== 'art_complete') return false;
-  const af = safeArr(o?.art_files).find(f => f.id === j.art_file_id);
-  if (af && (af.prod_files || []).length === 0) return false;
+  const artIds = j._art_ids || [j.art_file_id].filter(Boolean);
+  for (const aid of artIds) { const af = safeArr(o?.art_files).find(f => f.id === aid); if (af && (af.prod_files || []).length === 0) return false; }
   let totalSz = 0, fulfilledSz = 0;
   (j.items || []).forEach(gi => {
     const it = safeItems(o)[gi.item_idx]; if (!it) return;
