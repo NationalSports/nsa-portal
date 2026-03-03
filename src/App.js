@@ -84,10 +84,12 @@ const _dbLoad = async () => {
     const appStateRaw=d(rAppState);
     const appState={};appStateRaw.forEach(r=>{try{appState[r.id]=JSON.parse(r.value)}catch{appState[r.id]=r.value}});
     // ─── Reconstruct nested objects ───
+    // Product image backups from app_state (reliable fallback when image columns are missing)
+    const _pimgMap={};appStateRaw.filter(r=>r.id.startsWith('_pimg_')).forEach(r=>{try{_pimgMap[r.id.slice(6)]=JSON.parse(r.value)}catch{}});
     // Customers: attach contacts array
     const customers=custRaw.map(c=>({...c,contacts:contacts.filter(ct=>ct.customer_id===c.id).sort((a,b)=>a.sort_order-b.sort_order).map(ct=>({name:ct.name,email:ct.email,phone:ct.phone,role:ct.role}))}));
     // Products: attach _inv and _alerts from product_inventory
-    const products=prodRaw.map(p=>{const invRows=prodInv.filter(pi=>pi.product_id===p.id);const _inv={};const _alerts={};invRows.forEach(r=>{_inv[r.size]=r.quantity;if(r.alert_threshold)_alerts[r.size]=r.alert_threshold});return{...p,image_url:p.image_url||p.image_front_url||'',back_image_url:p.back_image_url||p.image_back_url||'',_inv,_alerts}});
+    const products=prodRaw.map(p=>{const invRows=prodInv.filter(pi=>pi.product_id===p.id);const _inv={};const _alerts={};invRows.forEach(r=>{_inv[r.size]=r.quantity;if(r.alert_threshold)_alerts[r.size]=r.alert_threshold});const _pimg=_pimgMap[p.id];return{...p,image_url:p.image_url||p.image_front_url||(_pimg&&_pimg.front)||'',back_image_url:p.back_image_url||p.image_back_url||(_pimg&&_pimg.back)||'',images:p.images||(_pimg&&_pimg.gallery)||[],_inv,_alerts}});
     // Estimates: attach items (with decorations) and art_files
     const estimates=estRaw.map(est=>{
       const art_files=estArt.filter(a=>a.estimate_id===est.id).map(a=>({id:a.id,name:a.name,deco_type:a.deco_type,ink_colors:a.ink_colors,thread_colors:a.thread_colors,art_size:a.art_size,files:a.files||[],mockup_files:a.mockup_files||[],prod_files:a.prod_files||[],notes:a.notes,status:a.status,uploaded:a.uploaded}));
@@ -263,12 +265,17 @@ const _dbSaveProduct = async (p) => {
       image_front_url:p.image_url||p.image_front_url||null,image_back_url:p.back_image_url||p.image_back_url||null};
     const{error}=await supabase.from('products').upsert(row,{onConflict:'id'});
     if(error){
-      // If image columns don't exist yet, retry without them
+      // If image columns don't exist yet, retry without them (product data still saves)
       if(error.message?.includes('image_front_url')||error.message?.includes('image_back_url')){
         const{image_front_url,image_back_url,...rowNoImg}=row;
         const{error:e2}=await supabase.from('products').upsert(rowNoImg,{onConflict:'id'});
         if(e2){console.error('[DB] save product (no img):',e2.message);if(_dbNotify)_dbNotify('Product save failed: '+e2.message,'error')}
       }else{console.error('[DB] save product:',error.message);if(_dbNotify)_dbNotify('Product save failed: '+error.message,'error')}
+    }
+    // Always save product images to app_state as reliable backup (works even without image columns)
+    const _imgF=p.image_url||p.image_front_url||null;const _imgB=p.back_image_url||p.image_back_url||null;const _imgG=p.images||null;
+    if(_imgF||_imgB||(_imgG&&_imgG.length)){
+      supabase.from('app_state').upsert({id:'_pimg_'+p.id,value:JSON.stringify({front:_imgF,back:_imgB,gallery:_imgG}),updated_at:new Date().toISOString()},{onConflict:'id'}).catch(()=>{});
     }
     const _inv=p._inv||{};const _alerts=p._alerts||{};
     const allSizes=new Set([...Object.keys(_inv),...Object.keys(_alerts)]);
