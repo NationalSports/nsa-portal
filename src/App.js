@@ -7081,7 +7081,7 @@ export default function App(){
         setInvs(prev=>_jsonEq(prev,d.invoices)?prev:d.invoices);
         if(d.messages.length)setMsgs(prev=>_jsonEq(prev,d.messages)?prev:d.messages);
         setCust(prev=>_jsonEq(prev,d.customers)?prev:d.customers);
-        if(d.products.length)setProd(prev=>{if(_jsonEq(prev,d.products))return prev;const dbIds=new Set(d.products.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));return localOnly.length?[...d.products,...localOnly]:d.products});
+        if(d.products.length)setProd(prev=>{if(_jsonEq(prev,d.products))return prev;const merged=d.products.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));return localOnly.length?[...merged,...localOnly]:merged});
         if(d.vendors.length)setVend(prev=>_jsonEq(prev,d.vendors)?prev:d.vendors);
         if(d.omg_stores.length)setOmgStores(prev=>_jsonEq(prev,d.omg_stores)?prev:d.omg_stores);
         if(d.issues?.length)setIssues(prev=>_jsonEq(prev,d.issues)?prev:d.issues);
@@ -7123,7 +7123,7 @@ export default function App(){
         setCust(prev=>changed(prev,d.customers)?d.customers:prev);
         if(d.messages.length)setMsgs(prev=>changed(prev,d.messages)?d.messages:prev);
         if(d.issues.length)setIssues(prev=>changed(prev,d.issues)?d.issues:prev);
-        if(d.products.length)setProd(prev=>{if(!changed(prev,d.products))return prev;const dbIds=new Set(d.products.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));return localOnly.length?[...d.products,...localOnly]:d.products});
+        if(d.products.length)setProd(prev=>{if(!changed(prev,d.products))return prev;const merged=d.products.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));return localOnly.length?[...merged,...localOnly]:merged});
         // Refresh app_state keys (batch POs, inventory POs, etc.)
         const as=d.appState||{};
         if(as.inv_pos)setInvPOs(prev=>JSON.stringify(prev)!==JSON.stringify(as.inv_pos)?as.inv_pos:prev);
@@ -8115,7 +8115,7 @@ export default function App(){
     const totalUnits=monthlyData.reduce((a,m)=>a+m.units,0);const totalRev=monthlyData.reduce((a,m)=>a+m.revenue,0);const totalOrders=monthlyData.reduce((a,m)=>a+m.orders,0);
     const maxUnits=Math.max(...monthlyData.map(m=>m.units),1);
     const saveProduct=()=>{setProd(p=>p.map(x=>x.id===ep.id?ep:x));setEditing(false);nf('Product updated')};
-    const imgSave=(up)=>{setEp(up);setProd(p=>p.map(x=>x.id===up.id?up:x));nf('Image saved')};
+    const imgSave=(up)=>{setEp(up);setProd(p=>p.map(x=>x.id===up.id?up:x));_dbSaveProduct(up);nf('Image saved')};
     const nt=Object.values(ep._inv||{}).reduce((a,v2)=>a+v2,0);
     return(<div>
       <button className="btn btn-secondary" onClick={onBack} style={{marginBottom:12}}><Icon name="chevron-left" size={14}/> Products</button>
@@ -8349,8 +8349,8 @@ export default function App(){
   {fP.map(p=>{const nt=Object.values(p._inv||{}).reduce((a,v)=>a+v,0);const au=p.brand==='Adidas'||p.brand==='Under Armour';
     return(<div key={p.id} style={{padding:'14px 16px',borderBottom:'1px solid #f1f5f9',cursor:'pointer'}} onClick={()=>setSelP(p)}><div style={{display:'flex',gap:14,alignItems:'flex-start'}}>
       <div style={{display:'flex',gap:4,alignItems:'center'}}>
-        <ImgUpload url={p.image_url} onUpload={u=>{setProd(ps=>ps.map(x=>x.id===p.id?{...x,image_url:u}:x));nf('Front image uploaded')}} onError={e=>nf(e,'error')} size={48}/>
-        <ImgUpload url={p.back_image_url} onUpload={u=>{setProd(ps=>ps.map(x=>x.id===p.id?{...x,back_image_url:u}:x));nf('Back image uploaded')}} onError={e=>nf(e,'error')} size={48}/>
+        <ImgUpload url={p.image_url} onUpload={u=>{const up={...p,image_url:u};setProd(ps=>ps.map(x=>x.id===p.id?up:x));_dbSaveProduct(up);nf('Front image uploaded')}} onError={e=>nf(e,'error')} size={48}/>
+        <ImgUpload url={p.back_image_url} onUpload={u=>{const up={...p,back_image_url:u};setProd(ps=>ps.map(x=>x.id===p.id?up:x));_dbSaveProduct(up);nf('Back image uploaded')}} onError={e=>nf(e,'error')} size={48}/>
         {(p.images||[]).length>0&&<span style={{fontSize:9,color:'#7c3aed',fontWeight:700,background:'#f5f3ff',padding:'2px 6px',borderRadius:4}}>+{(p.images||[]).length}</span>}
       </div>
       <div style={{flex:1}}>
