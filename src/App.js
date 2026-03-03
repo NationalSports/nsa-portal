@@ -4017,7 +4017,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
             const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
             fulSizes[sz]=Math.min(v,pQ+rQ);
           });
-          return{...gi,sizes,fulSizes,color:safeStr(it.color),brand:safeStr(it.brand)};
+          const prd=prod.find(pp=>pp.id===it.product_id||pp.sku===it.sku);
+          return{...gi,sizes,fulSizes,color:safeStr(it.color),brand:safeStr(it.brand),product_id:prd?.id||null,image_url:prd?.image_url||(prd?.images&&prd.images[0])||'',images:prd?.images||[]};
         });
         const allSizes=[...new Set(itemDetails.flatMap(gi=>Object.keys(gi.sizes||{})))];
         const sizeOrder=['YXS','YS','YM','YL','YXL','XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL'];
@@ -4255,12 +4256,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                 const rowTotal=Object.values(gi.sizes||{}).reduce((a,v)=>a+safeNum(v),0);
                 const fulTotal=Object.values(gi.fulSizes||{}).reduce((a,v)=>a+safeNum(v),0);
                 return<div key={gii} style={{padding:'12px 16px',borderBottom:gii<itemDetails.length-1?'1px solid #f1f5f9':'none'}}>
-                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
-                    <div><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',background:'#dbeafe',padding:'2px 6px',borderRadius:3,marginRight:6}}>{gi.sku}</span>
+                  <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:8}}>
+                    {gi.image_url?<img src={gi.image_url} alt="" style={{width:44,height:44,objectFit:'cover',borderRadius:6,border:'1px solid #e2e8f0',flexShrink:0}}/>
+                    :<ImgUpload url="" onUpload={u=>{if(gi.product_id){const up=prod.find(p=>p.id===gi.product_id);if(up){const updated={...up,image_url:u};setProd(p=>p.map(x=>x.id===up.id?updated:x));_dbSaveProduct(updated);nf('Product image saved')}}}} onError={e=>nf(e,'error')} size={44}/>}
+                    <div style={{flex:1}}>
+                      <div><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',background:'#dbeafe',padding:'2px 6px',borderRadius:3,marginRight:6}}>{gi.sku}</span>
                       <span style={{fontWeight:600}}>{gi.name||'Unknown'}</span>
                       <span style={{color:'#94a3b8',marginLeft:6}}>({gi.color||'—'})</span>
                       {gi.brand&&<span className="badge badge-gray" style={{marginLeft:6}}>{gi.brand}</span>}</div>
-                    <div style={{fontWeight:700,color:fulTotal>=rowTotal&&rowTotal>0?'#166534':'#64748b'}}>{fulTotal}/{rowTotal} units</div>
+                    </div>
+                    <div style={{fontWeight:700,color:fulTotal>=rowTotal&&rowTotal>0?'#166534':'#64748b',flexShrink:0}}>{fulTotal}/{rowTotal} units</div>
                   </div>
                   {/* Size grid */}
                   <div style={{overflowX:'auto'}}>
@@ -6476,7 +6481,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     const j=jobView.job;const so=jobView.so;
     const artFile=safeArt(so).find(a=>a.id===j.art_file_id);
     const mockups=(artFile?.mockup_files||artFile?.files||[]).filter(f=>f);
-    const items=(j.items||[]).map(gi=>{const it=safeItems(so)[gi.item_idx];return{...gi,brand:it?.brand||'',fullName:safeStr(it?.name)||gi.name}});
+    const items=(j.items||[]).map(gi=>{const it=safeItems(so)[gi.item_idx];const prd=it?prod.find(pp=>pp.id===it.product_id||pp.sku===it.sku):null;return{...gi,brand:it?.brand||'',fullName:safeStr(it?.name)||gi.name,image_url:prd?.image_url||(prd?.images&&prd.images[0])||''}});
     return<div style={{minHeight:'100vh',background:'#f1f5f9',display:'flex',justifyContent:'center',padding:'40px 16px'}}>
       {/* ── Lightbox overlay ── */}
       {lightbox&&<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.85)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center',padding:16}} onClick={()=>setLightbox(null)}>
@@ -6519,9 +6524,8 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:8}}>Garments</div>
           {items.map((gi,i)=>{const srcItem=safeItems(so)[gi.item_idx];const sizes=srcItem?Object.entries(safeSizes(srcItem)).filter(([,v])=>v>0).sort((a,b)=>{const o=SZ_ORD;return(o.indexOf(a[0])<0?99:o.indexOf(a[0]))-(o.indexOf(b[0])<0?99:o.indexOf(b[0]))}):[]; return<div key={i} style={{border:'1px solid #e2e8f0',borderRadius:10,padding:14,marginBottom:10}}>
             <div style={{display:'flex',gap:14,alignItems:'center'}}>
-              <div style={{width:48,height:48,background:'#f8fafc',borderRadius:8,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
-                <div style={{fontSize:20}}>👕</div>
-              </div>
+              {gi.image_url?<img src={gi.image_url} alt="" style={{width:48,height:48,objectFit:'cover',borderRadius:8,border:'1px solid #e2e8f0',flexShrink:0}}/>
+              :<div style={{width:48,height:48,background:'#f8fafc',borderRadius:8,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}><div style={{fontSize:20}}>👕</div></div>}
               <div style={{flex:1}}>
                 <div style={{fontWeight:700,fontSize:13}}>{gi.fullName}</div>
                 <div style={{fontSize:11,color:'#64748b'}}>{gi.sku} · {gi.color||'—'} {gi.brand&&'· '+gi.brand}</div>
@@ -9262,7 +9266,7 @@ export default function App(){
             fulSizes[sz]=Math.min(v,picked+rcvd);
           });
           const prd=prod.find(pp=>pp.id===it.product_id||pp.sku===it.sku);
-          return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,fulSizes,image_url:prd?.image_url||(prd?.images&&prd.images[0])||'',images:prd?.images||[]};
+          return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,fulSizes,product_id:prd?.id||null,image_url:prd?.image_url||(prd?.images&&prd.images[0])||'',images:prd?.images||[]};
         }).filter(Boolean);
         const allSizes=SZ_ORD.filter(sz=>itemDetails.some(it=>it.sizes[sz]>0));
         // Parse colors for display
@@ -9399,7 +9403,8 @@ export default function App(){
                 const rowTotal=Object.values(gi.sizes).reduce((a,v)=>a+v,0);
                 return<div key={gii} style={{marginBottom:gii<itemDetails.length-1?12:0}}>
                   <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
-                    {gi.image_url&&<img src={gi.image_url} alt="" style={{width:36,height:36,objectFit:'cover',borderRadius:4,border:'1px solid #e2e8f0',flexShrink:0}}/>}
+                    {gi.image_url?<img src={gi.image_url} alt="" style={{width:40,height:40,objectFit:'cover',borderRadius:4,border:'1px solid #e2e8f0',flexShrink:0}}/>
+                    :<ImgUpload url="" onUpload={u=>{if(gi.product_id){const up=prod.find(p=>p.id===gi.product_id);if(up){const updated={...up,image_url:u};setProd(p=>p.map(x=>x.id===up.id?updated:x));_dbSaveProduct(updated);nf('Product image saved')}}}} onError={e=>nf(e,'error')} size={40}/>}
                     <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:12}}>{gi.sku}</span>
                     <span style={{fontWeight:600,fontSize:13}}>{gi.name}</span>
                     <span style={{color:'#64748b',fontSize:12}}>({gi.color})</span>
@@ -12987,7 +12992,8 @@ export default function App(){
                 const rowTotal=Object.values(gi.sizes).reduce((a,v)=>a+v,0);
                 return<div key={gii} style={{marginBottom:gii<itemDetails.length-1?10:0}}>
                   <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
-                    {gi.image_url&&<img src={gi.image_url} alt="" style={{width:36,height:36,objectFit:'cover',borderRadius:4,border:'1px solid #e2e8f0',flexShrink:0}}/>}
+                    {gi.image_url?<img src={gi.image_url} alt="" style={{width:40,height:40,objectFit:'cover',borderRadius:4,border:'1px solid #e2e8f0',flexShrink:0}}/>
+                    :<ImgUpload url="" onUpload={u=>{if(gi.product_id){const up=prod.find(p=>p.id===gi.product_id);if(up){const updated={...up,image_url:u};setProd(p=>p.map(x=>x.id===up.id?updated:x));_dbSaveProduct(updated);nf('Product image saved')}}}} onError={e=>nf(e,'error')} size={40}/>}
                     <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:12}}>{gi.sku}</span>
                     <span style={{fontWeight:600,fontSize:13}}>{gi.name}</span>
                     <span style={{color:'#64748b',fontSize:12}}>({gi.color})</span>
@@ -13083,7 +13089,7 @@ export default function App(){
           const sizes={};
           Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{sizes[sz]=v});
           const prd=prod.find(pp=>pp.id===it.product_id||pp.sku===it.sku);
-          return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,image_url:prd?.image_url||(prd?.images&&prd.images[0])||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||'',images:prd?.images||[]};
+          return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,product_id:prd?.id||null,image_url:prd?.image_url||(prd?.images&&prd.images[0])||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||'',images:prd?.images||[]};
         }).filter(Boolean);
         const allSizes=SZ_ORD.filter(sz=>itemDetails.some(it=>it.sizes[sz]>0));
 
@@ -13327,7 +13333,8 @@ export default function App(){
                 const rowTotal=Object.values(gi.sizes).reduce((a,v)=>a+v,0);
                 return<div key={gii} style={{marginBottom:gii<itemDetails.length-1?10:0}}>
                   <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
-                    {gi.image_url&&<img src={gi.image_url} alt="" style={{width:36,height:36,objectFit:'cover',borderRadius:4,border:'1px solid #e2e8f0',flexShrink:0}}/>}
+                    {gi.image_url?<img src={gi.image_url} alt="" style={{width:40,height:40,objectFit:'cover',borderRadius:4,border:'1px solid #e2e8f0',flexShrink:0}}/>
+                    :<ImgUpload url="" onUpload={u=>{if(gi.product_id){const up=prod.find(p=>p.id===gi.product_id);if(up){const updated={...up,image_url:u};setProd(p=>p.map(x=>x.id===up.id?updated:x));_dbSaveProduct(updated);nf('Product image saved')}}}} onError={e=>nf(e,'error')} size={40}/>}
                     <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:12}}>{gi.sku}</span>
                     <span style={{fontWeight:600,fontSize:12}}>{gi.name}</span>
                     {gi.color&&<span style={{color:'#64748b',fontSize:11}}>({gi.color})</span>}
