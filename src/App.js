@@ -1848,7 +1848,7 @@ function LoginGate({onLogin,reps}){
   );
 }
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack,onConvertSO,onCopyEstimate,onRevertToEst,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,allInvoices,batchPOs,onBatchPO,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onSaveProduct,onViewEstimate,onViewSO}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack,onConvertSO,onCopyEstimate,onRevertToEst,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,allInvoices,batchPOs,onBatchPO,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onSaveProduct,onViewEstimate,onViewSO,returnToPage,onReturnToJob}){
   const isE=mode==='estimate';const isSO=mode==='so';
   const[o,setO]=useState(order);const[cust,setCust]=useState(ic);const[pS,setPS]=useState('');const[showAdd,setShowAdd]=useState(false);
   const[tab,setTab]=useState(initTab||'items');const[dirty,setDirty]=useState(false);const[selJob,setSelJob]=useState(null);const[jobNote,setJobNote]=useState('');const[msgDept,setMsgDept]=useState('all');
@@ -2094,6 +2094,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
     {/* Sticky header — appears when scrolling */}
     <div style={{position:'sticky',top:0,zIndex:40,background:'white',borderBottom:'1px solid #e2e8f0',padding:'8px 16px',marginBottom:0,display:'flex',alignItems:'center',gap:12,boxShadow:'0 1px 3px rgba(0,0,0,0.05)',flexWrap:'wrap'}}>
       <button className="btn btn-sm btn-secondary" onClick={()=>{if(dirty&&!window.confirm('You have unsaved changes. Leave without saving?'))return;onBack()}} style={{fontSize:10,padding:'4px 10px'}}><Icon name="back" size={12}/> Back</button>
+      {returnToPage&&onReturnToJob&&<button className="btn btn-sm" onClick={()=>{if(dirty&&!window.confirm('You have unsaved changes. Leave without saving?'))return;onReturnToJob()}} style={{fontSize:10,padding:'4px 10px',background:'#7c3aed',color:'white',border:'none',fontWeight:700}}>← Return to {returnToPage.page==='production'?'Production Board':'Decoration'}</button>}
       {isE&&onNewEstimate&&<button className="btn btn-sm btn-secondary" onClick={()=>{if(dirty&&!window.confirm('Unsaved changes. Continue?'))return;onNewEstimate()}} style={{fontSize:10,padding:'4px 10px'}}><Icon name="plus" size={12}/> New Est</button>}
       <span style={{fontWeight:800,color:'#1e40af',fontSize:14}}>{o.id}</span>
       {isSO&&<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:SC[o.status]?.bg||'#f1f5f9',color:SC[o.status]?.c||'#475569'}}>{o.status?.replace(/_/g,' ')}</span>}
@@ -3984,6 +3985,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                 <div style={{fontSize:24,fontWeight:800,color:pct>=100?'#166534':'#1e40af'}}>{j.fulfilled_units}/{j.total_units}</div>
                 <div style={{width:80,background:'#e2e8f0',borderRadius:4,height:6,marginTop:4}}><div style={{height:6,borderRadius:4,background:pct>=100?'#22c55e':pct>0?'#f59e0b':'#e2e8f0',width:pct+'%'}}/></div>
                 <div style={{fontSize:10,color:'#64748b',marginTop:2}}>{pct}% fulfilled</div>
+              </div>
+            </div>
+            {/* ── Shipping Method (Sales Rep selects at job level) ── */}
+            <div style={{padding:'8px 20px 12px',borderTop:'1px solid #f1f5f9'}}>
+              <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+                <span style={{fontSize:11,fontWeight:700,color:'#64748b'}}>How is this shipping?</span>
+                {[['ship_customer','📦 Ship to Customer'],['rep_delivery','🚗 Rep Delivery'],['customer_pickup','🏫 Customer Pickup'],['hold','⏸️ Hold']].map(([v,l])=>
+                  <button key={v} className={`btn btn-sm ${j.ship_method===v?'btn-primary':'btn-secondary'}`} style={{fontSize:10,padding:'3px 8px'}} onClick={()=>updJob(ji,'ship_method',j.ship_method===v?null:v)}>{l}</button>)}
               </div>
             </div>
             {/* ── Art Status Banners ── */}
@@ -7227,6 +7236,7 @@ export default function App(){
   React.useEffect(()=>{if(selC){const u=cust.find(c=>c.id===selC.id);if(u&&u!==selC)setSelC(u);else if(!u)setSelC(null)}},[cust]); // eslint-disable-line
   React.useEffect(()=>{if(selP){const u=prod.find(p=>p.id===selP.id);if(u&&u!==selP)setSelP(u);else if(!u)setSelP(null)}},[prod]); // eslint-disable-line
   const[eEst,setEEst]=useState(null);const[eEstC,setEEstC]=useState(null);const[eSO,setESO]=useState(null);const[eSOC,setESOC]=useState(null);const[eSOTab,setESOTab]=useState(null);const[eSOScrollItem,setESOScrollItem]=useState(null);const[eSOScrollJob,setESOScrollJob]=useState(null);
+  const[returnToPage,setReturnToPage]=useState(null);// {page:'production'|'decoration',jobData:obj} — for "Return to Job" nav
   const[gQ,setGQ]=useState('');const[gOpen,setGOpen]=useState(false);const[mF,setMF]=useState('all');const[rF,setRF]=useState('all');const[pF,setPF]=useState({cat:'all',vnd:'all',stk:'all',clr:'all'});
   const[qPC,setQPC]=useState({open:false,mode:'single',items:[],bulkRaw:''});
   const[poF,setPOF]=useState({status:'all',vendor:'all',rep:'all',search:'',sort:'date_desc'});
@@ -7845,7 +7855,7 @@ export default function App(){
                 <option value="">Assign...</option>
                 {decorators.map(d=><option key={d.id} value={d.name}>{d.name}</option>)}
               </select>
-              <button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#f59e0b',color:'white',border:'none'}} onClick={()=>{setAssignModal({job:j,targetStatus:'staging'});setAssignTo({machine:j.assigned_machine||'',person:j.assigned_to||'',shipMethod:j.ship_method||''})}}>→ In Line</button>
+              <button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#f59e0b',color:'white',border:'none'}} onClick={()=>{setAssignModal({job:j,targetStatus:'staging'});setAssignTo({machine:j.assigned_machine||'',person:j.assigned_to||''})}}>→ In Line</button>
             </div>
             <div style={{fontSize:10,color:'#64748b',marginTop:2}}>{j.cName} · {j.soId} · {j.rep}{j.expected?' · Due '+j.expected:''}</div>
           </div>)}
@@ -7983,7 +7993,7 @@ export default function App(){
 
   // SALES ORDERS LIST
   function rSO(){
-    if(eSO)return<OrderEditor order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} onSave={s=>{const locked=savSO(s);setESO(locked)}} onBack={()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null)}} onRevertToEst={revertSOToEst} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onNavInvoice={inv=>{setESO(null);setPg('invoices');setInvF(f=>({...f,search:inv.id}))}} onSaveProduct={p=>setProd(prev=>[...prev,p])} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}}/>
+    if(eSO)return<OrderEditor order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} onSave={s=>{const locked=savSO(s);setESO(locked)}} onBack={()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setReturnToPage(null)}} onRevertToEst={revertSOToEst} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onNavInvoice={inv=>{setESO(null);setPg('invoices');setInvF(f=>({...f,search:inv.id}))}} onSaveProduct={p=>setProd(prev=>[...prev,p])} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setPg(returnToPage.page==='production'?'production':'decoration');setReturnToPage(null)}:null}/>
     // Filter SOs
     let fSOs=[...sos];
     if(soF.status!=='all')fSOs=fSOs.filter(s=>calcSOStatus(s)===soF.status);
@@ -8838,20 +8848,20 @@ export default function App(){
     return()=>clearInterval(iv);
   },[activeTimers,activeArtTimers]);// eslint-disable-line
 
-  const[assignTo,setAssignTo]=useState({machine:'',person:'',shipMethod:''});
+  const[assignTo,setAssignTo]=useState({machine:'',person:''});
   const moveJobStatus=(j,newStatus)=>{
-    // If moving to staging (In Line), prompt for assignment
-    if(newStatus==='staging'&&j.prod_status!=='staging'){
+    // If moving to staging (In Line) or to in_process, prompt for assignment
+    if((newStatus==='staging'&&j.prod_status!=='staging')||(newStatus==='in_process'&&!j.assigned_to)){
       setAssignModal({job:j,soId:j.soId,targetStatus:newStatus});
-      setAssignTo({machine:j.assigned_machine||'',person:j.assigned_to||'',shipMethod:j.ship_method||''});
+      setAssignTo({machine:j.assigned_machine||'',person:j.assigned_to||''});
       return;
     }
-    applyJobMove(j,newStatus,j.assigned_machine||'',j.assigned_to||'',j.ship_method||'');
+    applyJobMove(j,newStatus,j.assigned_machine||'',j.assigned_to||'');
   };
-  const applyJobMove=(j,newStatus,machine,person,shipMethod)=>{
+  const applyJobMove=(j,newStatus,machine,person)=>{
     const so=sos.find(s=>s.id===j.soId);
     if(!so)return;
-    const updatedJobs=safeJobs(so).map(jj=>jj.id===j.id?{...jj,prod_status:newStatus,assigned_machine:machine||jj.assigned_machine,assigned_to:person||jj.assigned_to,ship_method:shipMethod||jj.ship_method}:jj);
+    const updatedJobs=safeJobs(so).map(jj=>jj.id===j.id?{...jj,prod_status:newStatus,assigned_machine:machine||jj.assigned_machine,assigned_to:person||jj.assigned_to}:jj);
     savSO({...so,jobs:updatedJobs});
     // Auto-clock-out if job moves to completed/shipped
     if(newStatus==='completed'||newStatus==='shipped'){
@@ -9017,9 +9027,9 @@ export default function App(){
                     <div style={{fontSize:10,color:'#7c3aed',cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={e=>{e.stopPropagation();
                       const jso=j.so;const jc=cust.find(c2=>c2.id===jso.customer_id);
                       const ji=safeJobs(jso).findIndex(jj=>jj.id===j.id);
-                      setESOTab('jobs');setESOScrollJob(ji>=0?ji:null);setESO(jso);setESOC(jc);setPg('orders');
+                      setReturnToPage({page:'production',jobData:{...j}});setESOTab('jobs');setESOScrollJob(ji>=0?ji:null);setESO(jso);setESOC(jc);setPg('orders');
                     }}>🔍 Open Job Detail</div>
-                    <div style={{fontSize:10,color:'#2563eb',cursor:'pointer',textDecoration:'underline'}} onClick={e=>{e.stopPropagation();setESOTab(null);setESOScrollJob(null);setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so.customer_id));setPg('orders')}}>→ Open {j.soId}</div>
+                    <div style={{fontSize:10,color:'#2563eb',cursor:'pointer',textDecoration:'underline'}} onClick={e=>{e.stopPropagation();setReturnToPage({page:'production',jobData:{...j}});setESOTab(null);setESOScrollJob(null);setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so.customer_id));setPg('orders')}}>→ Open {j.soId}</div>
                   </div>
 
                   {/* Time Tracking — clock in/out for active jobs */}
@@ -9044,11 +9054,10 @@ export default function App(){
                         </>:<>
                           <span style={{fontSize:9,color:'#64748b'}}>⏱️ {totalMins>0?totalMins+'m logged':'No time logged'}</span>
                           <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px',marginLeft:'auto'}} onClick={e=>{e.stopPropagation();
-                            const person=prompt('Who is working on this?',cu.name);
-                            if(!person)return;
+                            const person=j.assigned_to||cu.name;
                             setActiveTimers(prev=>({...prev,[timerKey]:{person,clockIn:Date.now(),soId:j.soId}}));
                             nf('⏱️ '+person+' clocked in on '+j.id);
-                          }}>Clock In</button>
+                          }}>Clock In{j.assigned_to?' ('+j.assigned_to+')':''}</button>
                         </>}
                       </div>
                     </div>})()}
@@ -9056,7 +9065,7 @@ export default function App(){
                   {/* Move buttons */}
                   <div style={{display:'flex',gap:4,flexWrap:'wrap',borderTop:'1px solid #e2e8f0',paddingTop:6}}>
                     {col.id==='hold'&&<button className="btn btn-sm btn-primary" style={{fontSize:9,padding:'3px 8px'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'staging')}}>→ In Line</button>}
-                    {col.id==='staging'&&<><button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'3px 8px'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'hold')}}>← Ready</button><button className="btn btn-sm btn-primary" style={{fontSize:9,padding:'3px 8px'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'in_process')}}>→ In Process</button></>}
+                    {col.id==='staging'&&<><button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'3px 8px'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'hold')}}>← Ready</button>{!j.assigned_to&&<button className="btn btn-sm" style={{fontSize:9,padding:'3px 8px',background:'#6d28d9',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();setAssignModal({job:j,soId:j.soId,targetStatus:'staging'});setAssignTo({machine:j.assigned_machine||'',person:''})}}>👤 Assign</button>}<button className="btn btn-sm btn-primary" style={{fontSize:9,padding:'3px 8px'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'in_process')}}>→ In Process</button></>}
                     {col.id==='in_process'&&<><button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'3px 8px'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'staging')}}>← In Line</button><button className="btn btn-sm btn-primary" style={{fontSize:9,padding:'3px 8px',background:'#166534',borderColor:'#166534'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'completed')}}>✓ Done</button></>}
                     {col.id==='completed'&&<><button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'3px 8px'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'in_process')}}>← Back</button><button className="btn btn-sm btn-primary" style={{fontSize:9,padding:'3px 8px',background:'#6d28d9',borderColor:'#6d28d9'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'shipped')}}>📦 Ship</button></>}
                     {col.id==='shipped'&&<button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'3px 8px'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'completed')}}>← Back</button>}
@@ -9149,23 +9158,16 @@ export default function App(){
               {REPS.filter(r=>r.role==='production').map(r=><option key={r.id} value={r.name}>{r.name}</option>)}
             </select>
           </div>
-          <div style={{marginBottom:12}}>
-            <label className="form-label">After Production — How is this shipping?</label>
-            <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-              {[['ship_customer','📦 Ship to Customer'],['rep_delivery','🚗 Rep Delivery'],['customer_pickup','🏫 Customer Pickup'],['hold','⏸️ Hold']].map(([v,l])=>
-                <button key={v} className={`btn btn-sm ${assignTo.shipMethod===v?'btn-primary':'btn-secondary'}`} style={{fontSize:11}} onClick={()=>setAssignTo(a=>({...a,shipMethod:a.shipMethod===v?'':v}))}>{l}</button>)}
-            </div>
-          </div>
         </div>
         <div className="modal-footer">
           <button className="btn btn-secondary" onClick={()=>{
-            applyJobMove(assignModal.job,assignModal.targetStatus,'','','');
+            applyJobMove(assignModal.job,assignModal.targetStatus,'','');
             setAssignModal(null);
           }}>Skip — Move Anyway</button>
           <button className="btn btn-primary" onClick={()=>{
-            applyJobMove(assignModal.job,assignModal.targetStatus,assignTo.machine,assignTo.person,assignTo.shipMethod);
+            applyJobMove(assignModal.job,assignModal.targetStatus,assignTo.machine,assignTo.person);
             setAssignModal(null);
-          }}>✓ Assign & Move to In Line</button>
+          }}>✓ Assign & Move</button>
         </div>
       </div></div>}
 
@@ -9373,7 +9375,7 @@ export default function App(){
             {/* Bottom action bar */}
             <div style={{padding:16,display:'flex',gap:8,borderTop:'1px solid #e2e8f0',background:'#f8fafc'}}>
               <button className="btn btn-primary" style={{background:'#d97706',borderColor:'#d97706'}} onClick={printProdPDF}>Print Production PDF</button>
-              <button className="btn btn-secondary" onClick={()=>{setESOTab('jobs');setESO(so);setESOC(c);setPg('orders');setProdJobModal(null)}}>Open Full Job</button>
+              <button className="btn btn-secondary" onClick={()=>{setReturnToPage({page:pg,jobData:{...j}});setESOTab('jobs');setESO(so);setESOC(c);setPg('orders');setProdJobModal(null)}}>Open Full Job</button>
               <button className="btn btn-secondary" style={{marginLeft:'auto'}} onClick={()=>{setProdJobModal(null);setProdJobLightbox(false)}}>Close</button>
             </div>
           </div>
@@ -13484,7 +13486,7 @@ export default function App(){
                   {decoCardFilter==='waiting'&&<div style={{fontSize:9,color:'#d97706',fontWeight:600}}>
                     {t.artStatus!=='art_complete'&&'Art pending'}{t.artStatus!=='art_complete'&&t.itemStatus!=='items_received'&&' + '}{t.itemStatus!=='items_received'&&'Items pending'}
                   </div>}
-                  <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px'}} onClick={e=>{e.stopPropagation();setESOTab('jobs');setESO(t.so);setESOC(cust.find(c2=>c2.id===t.so?.customer_id));setPg('orders')}}>Open</button>
+                  <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px'}} onClick={e=>{e.stopPropagation();setReturnToPage({page:'decoration',jobData:{...t.job,soId:t.soId}});setESOTab('jobs');setESO(t.so);setESOC(cust.find(c2=>c2.id===t.so?.customer_id));setPg('orders')}}>Open</button>
                 </div>
               </div>
             </div>})}
@@ -13542,10 +13544,14 @@ export default function App(){
       <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(320px,1fr))',gap:8}}>
         {filtered.map((t,ti)=>{
           const pct=t.totalUnits>0?Math.round(t.fulfilledUnits/t.totalUnits*100):0;
+          const decoTimerKey=t.soId+'|'+t.job.id;
+          const decoActive=activeTimers[decoTimerKey];
+          const decoLogs=jobTimeLogs.filter(l=>l.jobId===t.job.id&&l.soId===t.soId);
+          const decoTotalMins=decoLogs.reduce((a,l)=>a+(l.minutes||0),0);
           return<div key={ti} className="card" style={{
             border:t.isReady?'2px solid #22c55e':t.urgent?'2px solid #dc2626':'1px solid #e2e8f0',
             background:t.isReady?'#f0fdf4':t.prodStatus==='in_process'?'#eff6ff':'white',cursor:'pointer'}}
-            onClick={()=>{setESOTab('jobs');setESO(t.so);setESOC(cust.find(c2=>c2.id===t.so.customer_id));setPg('orders')}}>
+            onClick={()=>{setProdJobModal({...t.job,so:t.so,soId:t.soId,customer:t.cName,rep:t.rep,daysOut:t.daysOut})}}>
             <div style={{padding:'10px 12px'}}>
               {/* Header row */}
               <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:4}}>
@@ -13584,6 +13590,30 @@ export default function App(){
                 <span style={{fontSize:9,color:'#64748b'}}>{pct}%</span>
                 <span style={{fontSize:10,color:'#94a3b8',marginLeft:'auto'}}>{t.rep}</span>
               </div>
+              {/* Clock In/Out for decorators */}
+              {(t.prodStatus==='in_process'||t.prodStatus==='staging')&&<div style={{marginTop:6,background:decoActive?'#dcfce7':'#f8fafc',border:'1px solid '+(decoActive?'#86efac':'#e2e8f0'),borderRadius:6,padding:'4px 8px'}} onClick={e=>e.stopPropagation()}>
+                <div style={{display:'flex',alignItems:'center',gap:6}}>
+                  {decoActive?<>
+                    <span style={{fontSize:10,fontWeight:700,color:'#166534'}}>⏱️ {decoActive.person} clocked in</span>
+                    <span style={{fontSize:9,color:'#64748b',marginLeft:'auto'}}>{Math.round((Date.now()-decoActive.clockIn)/60000)}m</span>
+                    <button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#dc2626',color:'white',border:'none'}} onClick={()=>{
+                      const mins=Math.round((Date.now()-decoActive.clockIn)/60000);
+                      const idleMins=Math.round((_idleAccum.current[decoTimerKey]||0)/60000);
+                      setJobTimeLogs(prev=>[...prev,{jobId:t.job.id,soId:t.soId,person:decoActive.person,clockIn:new Date(decoActive.clockIn).toLocaleString(),clockOut:new Date().toLocaleString(),minutes:mins,idleMinutes:idleMins}]);
+                      setActiveTimers(prev=>{const n={...prev};delete n[decoTimerKey];return n});
+                      delete _idleAccum.current[decoTimerKey];
+                      nf('⏱️ '+decoActive.person+' clocked out — '+mins+' min on '+t.job.id);
+                    }}>Clock Out</button>
+                  </>:<>
+                    <span style={{fontSize:9,color:'#64748b'}}>⏱️ {decoTotalMins>0?decoTotalMins+'m logged':'No time logged'}</span>
+                    <button className="btn btn-sm btn-primary" style={{fontSize:9,padding:'2px 8px',marginLeft:'auto'}} onClick={()=>{
+                      const person=t.assignedTo||cu.name;
+                      setActiveTimers(prev=>({...prev,[decoTimerKey]:{person,clockIn:Date.now(),soId:t.soId}}));
+                      nf('⏱️ '+person+' clocked in on '+t.job.id);
+                    }}>Clock In{t.assignedTo?' ('+t.assignedTo+')':''}</button>
+                  </>}
+                </div>
+              </div>}
             </div>
           </div>})}
       </div>}
