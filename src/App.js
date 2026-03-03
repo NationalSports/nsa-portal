@@ -193,7 +193,13 @@ const _dbSaveEstimate = async (est) => {
           console.warn('[DB] estimate_item_decorations batch failed, retrying individually:',decoErr.message);
           for(const row of decoRows){
             const{error:rowErr}=await supabase.from('estimate_item_decorations').insert(row);
-            if(rowErr){decoFailed=true;console.error('[DB] estimate deco row failed:',rowErr.message,JSON.stringify(row))}
+            if(rowErr){
+              // Strip columns from later migrations that may not exist in production DB
+              const coreRow={};Object.keys(row).forEach(k=>{if(!_decoExtraCols.has(k))coreRow[k]=row[k]});
+              const{error:coreErr}=await supabase.from('estimate_item_decorations').insert(coreRow);
+              if(coreErr){decoFailed=true;console.error('[DB] estimate deco row failed:',coreErr.message,JSON.stringify(row))}
+              else console.warn('[DB] estimate deco saved with core columns only (missing DB columns?):',Object.keys(row).filter(k=>_decoExtraCols.has(k)&&row[k]!=null))
+            }
           }
         }
       }
@@ -239,7 +245,13 @@ const _dbSaveSO = async (so) => {
           console.warn('[DB] so_item_decorations batch failed, retrying individually:',decoErr.message);
           for(const row of decoRows){
             const{error:rowErr}=await supabase.from('so_item_decorations').insert(row);
-            if(rowErr){decoFailed=true;console.error('[DB] so deco row failed:',rowErr.message,JSON.stringify(row))}
+            if(rowErr){
+              // Strip columns from later migrations that may not exist in production DB
+              const coreRow={};Object.keys(row).forEach(k=>{if(!_decoExtraCols.has(k))coreRow[k]=row[k]});
+              const{error:coreErr}=await supabase.from('so_item_decorations').insert(coreRow);
+              if(coreErr){decoFailed=true;console.error('[DB] so deco row failed:',coreErr.message,JSON.stringify(row))}
+              else console.warn('[DB] so deco saved with core columns only (missing DB columns?):',Object.keys(row).filter(k=>_decoExtraCols.has(k)&&row[k]!=null))
+            }
           }
         }
       }
@@ -372,7 +384,9 @@ const _pick=(obj,cols)=>{const r={};cols.forEach(c=>{if(c in obj)r[c]=obj[c]});r
 const _estCols=['id','customer_id','memo','status','created_by','created_at','updated_at','default_markup','shipping_type','shipping_value','ship_to_id','email_status','email_opened_at','email_viewed_at','deleted_at'];
 const _soCols=['id','customer_id','estimate_id','memo','status','created_by','created_at','updated_at','expected_date','production_notes','shipping_type','shipping_value','ship_to_id','default_markup','omg_store_id','_shipstation_order_id','_shipping_status','_tracking_number','_carrier','_ship_date','_tracking_url','_shipped','_shipments','_shipping_cost','deleted_at'];
 const _itemCols=['product_id','sku','name','brand','color','nsa_cost','retail_price','unit_sell','sizes','available_sizes','_colors','no_deco','is_custom','custom_desc','custom_cost','custom_sell'];
-const _decoCols=['kind','position','type','art_file_id','art_tbd_type','tbd_colors','tbd_stitches','tbd_dtf_size','sell_override','sell_each','cost_each','underbase','two_color','colors','stitches','dtf_size','num_method','num_size','num_size_back','roster','names','names_list','vendor','deco_type','notes','custom_font_art_id','_showRoster','print_color','front_and_back','num_qty','name_qty'];
+const _decoCols=['kind','position','type','art_file_id','art_tbd_type','tbd_colors','tbd_stitches','tbd_dtf_size','sell_override','sell_each','cost_each','underbase','two_color','colors','stitches','dtf_size','num_method','num_size','num_size_back','num_font','roster','names','names_list','vendor','deco_type','notes','custom_font_art_id','_showRoster','print_color','front_and_back','num_qty','name_qty'];
+// Columns added in later migrations — may not exist in production DB yet; stripped on insert retry
+const _decoExtraCols=new Set(['print_color','front_and_back','num_qty','name_qty','num_font','num_size_back']);
 const _artCols=['id','name','deco_type','ink_colors','thread_colors','art_size','files','mockup_files','prod_files','notes','status','uploaded'];
 const _jobCols=['id','key','art_file_id','art_name','deco_type','positions','art_status','item_status','prod_status','total_units','fulfilled_units','split_from','created_at','assigned_machine','assigned_to','ship_method','items','_auto','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected'];
 const _custCols=['id','parent_id','name','alpha_tag','billing_address_line1','billing_address_line2','billing_city','billing_state','billing_zip','shipping_address_line1','shipping_address_line2','shipping_city','shipping_state','shipping_zip','adidas_ua_tier','catalog_markup','payment_terms','tax_rate','tax_exempt','primary_rep_id','notes','is_active','created_at','updated_at'];
