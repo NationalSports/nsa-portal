@@ -5,6 +5,7 @@ import { createClient } from '@supabase/supabase-js';
 import { loadStripe } from '@stripe/stripe-js';
 import { Elements, PaymentElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import * as XLSX from 'xlsx';
+import { BarcodeDetector as BarcodeDetectorPolyfill } from 'barcode-detector';
 
 // ─── Stripe Setup ───
 const _stripePk = process.env.REACT_APP_STRIPE_PK || '';
@@ -6881,16 +6882,11 @@ const BarcodeScanner=({onScan,onClose,placeholder='Scan barcode or QR code...'})
       streamRef.current=stream;
       if(videoRef.current){videoRef.current.srcObject=stream;videoRef.current.play()}
       setActive(true);
-      // Check BarcodeDetector support
-      if('BarcodeDetector' in window){
-        detectorRef.current=new window.BarcodeDetector({formats:['qr_code','code_128','code_39','ean_13','ean_8','upc_a','upc_e','codabar','itf']});
-        scanningRef.current=true;
-        scanLoop();
-      } else {
-        // BarcodeDetector not supported — stop camera and prompt manual entry
-        stopCamera();
-        setError('Barcode scanning not supported in this browser. Use manual entry below, or switch to Chrome for camera scanning.');
-      }
+      // Use native BarcodeDetector if available, otherwise use polyfill
+      const DetectorImpl='BarcodeDetector' in window?window.BarcodeDetector:BarcodeDetectorPolyfill;
+      detectorRef.current=new DetectorImpl({formats:['qr_code','code_128','code_39','ean_13','ean_8','upc_a','upc_e','codabar','itf']});
+      scanningRef.current=true;
+      scanLoop();
     }catch(err){
       if(err.name==='NotAllowedError')setError('Camera permission denied. Please allow camera access and try again.');
       else if(err.name==='NotFoundError')setError('No camera found. Use manual entry below.');
@@ -6943,7 +6939,7 @@ const BarcodeScanner=({onScan,onClose,placeholder='Scan barcode or QR code...'})
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/><circle cx="12" cy="13" r="4"/></svg>
         Open Camera
       </button>
-      {'BarcodeDetector' in window?null:<div style={{fontSize:10,color:'#64748b',marginTop:6}}>Tip: Use Chrome on Android/iOS for best barcode scanning support</div>}
+      {null}
     </div>}
     {/* Manual entry always available */}
     <div style={{padding:'10px 16px',borderTop:'1px solid #1e293b',display:'flex',gap:8}}>
