@@ -328,7 +328,7 @@ const _dbSavingGuard=async(fn)=>{_dbSavingCount++;try{await fn()}finally{_dbSavi
 // Column whitelists — strip unknown fields before sending to Supabase (localStorage may have extra UI fields like vendor_id)
 const _pick=(obj,cols)=>{const r={};cols.forEach(c=>{if(c in obj)r[c]=obj[c]});return r};
 const _estCols=['id','customer_id','memo','status','created_by','created_at','updated_at','default_markup','shipping_type','shipping_value','ship_to_id','email_status','email_opened_at','email_viewed_at','deleted_at'];
-const _soCols=['id','customer_id','estimate_id','memo','status','created_by','created_at','updated_at','expected_date','production_notes','shipping_type','shipping_value','ship_to_id','default_markup','omg_store_id','_shipstation_order_id','_shipping_status','_tracking_number','_carrier','_ship_date','_tracking_url','_shipped','deleted_at'];
+const _soCols=['id','customer_id','estimate_id','memo','status','created_by','created_at','updated_at','expected_date','production_notes','shipping_type','shipping_value','ship_to_id','default_markup','omg_store_id','_shipstation_order_id','_shipping_status','_tracking_number','_carrier','_ship_date','_tracking_url','_shipped','_shipments','_shipping_cost','deleted_at'];
 const _itemCols=['product_id','sku','name','brand','color','nsa_cost','retail_price','unit_sell','sizes','available_sizes','_colors','no_deco','is_custom','custom_desc','custom_cost','custom_sell'];
 const _decoCols=['kind','position','type','art_file_id','art_tbd_type','tbd_colors','tbd_stitches','tbd_dtf_size','sell_override','sell_each','cost_each','underbase','two_color','colors','stitches','dtf_size','num_method','num_size','roster','names','names_list','vendor','deco_type','notes','custom_font_art_id','_showRoster','print_color','front_and_back'];
 const _jobCols=['id','key','art_file_id','art_name','deco_type','positions','art_status','item_status','prod_status','total_units','fulfilled_units','split_from','created_at','assigned_machine','assigned_to','ship_method','items','_auto','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected'];
@@ -1293,6 +1293,56 @@ const fetchRecentShipments = async () => {
   return shipments?.shipments || [];
 };
 
+// Create a ShipStation label for an order
+const createShipStationLabel = async (so, customer, packageItems, weight, carrier, service) => {
+  // Ensure order exists in ShipStation first
+  let ssOrderId = so._shipstation_order_id;
+  if (!ssOrderId) {
+    const ssOrder = await pushSOToShipStation(so, customer);
+    ssOrderId = ssOrder.orderId;
+  }
+  const shipTo = customer.shipping_address_line1 ? {
+    name: customer.name, company: customer.name,
+    street1: customer.shipping_address_line1, street2: customer.shipping_address_line2 || '',
+    city: customer.shipping_city, state: customer.shipping_state,
+    postalCode: customer.shipping_zip, country: 'US', phone: customer.contacts?.[0]?.phone || ''
+  } : {
+    name: customer.name, company: customer.name,
+    street1: customer.billing_address_line1, street2: customer.billing_address_line2 || '',
+    city: customer.billing_city, state: customer.billing_state,
+    postalCode: customer.billing_zip, country: 'US', phone: customer.contacts?.[0]?.phone || ''
+  };
+  const labelPayload = {
+    orderId: ssOrderId, carrierCode: carrier || 'fedex', serviceCode: service || 'fedex_ground',
+    packageCode: 'package', confirmation: 'none', shipDate: new Date().toISOString().split('T')[0],
+    weight: { value: weight || 5, units: 'pounds' }, dimensions: null,
+    shipFrom: { name: 'National Sports Apparel', company: 'National Sports Apparel', street1: '', city: '', state: '', postalCode: '', country: 'US', phone: '' },
+    shipTo, insuranceOptions: { provider: null, insureShipment: false, insuredValue: 0 },
+    internationalOptions: null, advancedOptions: { customField1: `NSA-SO-${so.id}` },
+    testLabel: false
+  };
+  return await shipStationCall('/orders/createlabelfororder', { method: 'POST', body: JSON.stringify(labelPayload) });
+};
+
+// Fetch ShipStation rates for an order
+const fetchShipStationRates = async (customer, weight) => {
+  const shipTo = customer.shipping_address_line1 ? {
+    city: customer.shipping_city, state: customer.shipping_state,
+    postalCode: customer.shipping_zip, country: 'US'
+  } : {
+    city: customer.billing_city, state: customer.billing_state,
+    postalCode: customer.billing_zip, country: 'US'
+  };
+  const ratePayload = {
+    carrierCode: 'fedex', fromPostalCode: '90001',
+    toState: shipTo.state, toCountry: 'US', toPostalCode: shipTo.postalCode, toCity: shipTo.city,
+    weight: { value: weight || 5, units: 'pounds' }, confirmation: 'none', residential: true
+  };
+  try {
+    return await shipStationCall('/shipments/getrates', { method: 'POST', body: JSON.stringify(ratePayload) });
+  } catch { return []; }
+};
+
 // ─── OrderMyGear API Integration (via Netlify proxy to avoid CORS) ───
 const omgApiCall = async (endpoint, options = {}) => {
   try {
@@ -2027,7 +2077,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           {isSO&&o.estimate_id&&onViewEstimate&&<div style={{fontSize:11,color:'#7c3aed'}}>From: <span style={{cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={()=>onViewEstimate(o.estimate_id)} title="Open source estimate">{o.estimate_id}</span></div>}
           {isE&&o.status==='converted'&&(()=>{const linkedSO=(allOrders||[]).find(s=>s.estimate_id===o.id);return linkedSO&&onViewSO?<div style={{fontSize:11,color:'#7c3aed'}}>Converted to: <span style={{cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={()=>onViewSO(linkedSO.id)} title="Open sales order">{linkedSO.id}</span></div>:null})()}
           <div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>By {REPS.find(r=>r.id===o.created_by)?.name} · {o.created_at}</div>
-          {isSO&&o._tracking_number&&<div style={{padding:8,background:'#f0fdf4',borderRadius:6,marginTop:8}}>
+          {isSO&&(o._shipments||[]).length>0&&<div style={{padding:8,background:'#f0fdf4',borderRadius:6,marginTop:8}}>
+            <strong>Shipped:</strong> {(o._shipments||[]).length} package{(o._shipments||[]).length!==1?'s':''} —{' '}
+            {(o._shipments||[]).map((s,si)=>s.tracking_number?<a key={si} href={s.tracking_url||((/^1Z/i.test(s.tracking_number))?'https://www.ups.com/track?tracknum='+s.tracking_number:'https://www.fedex.com/fedextrack/?trknbr='+s.tracking_number)} target="_blank" rel="noreferrer" style={{fontFamily:'monospace',fontSize:11,marginRight:6}}>{s.tracking_number}</a>:<span key={si} style={{fontSize:11,color:'#94a3b8',marginRight:6}}>Box {si+1} (no tracking)</span>)}
+            <button className="btn btn-sm btn-secondary" style={{fontSize:10,marginLeft:4}} onClick={()=>setTab('tracking')}>View All</button>
+          </div>}
+          {isSO&&!(o._shipments||[]).length&&o._tracking_number&&<div style={{padding:8,background:'#f0fdf4',borderRadius:6,marginTop:8}}>
             <strong>Shipped:</strong> Tracking #{o._tracking_number} via {o._carrier} on {o._ship_date}
             {o._tracking_url&&<a href={o._tracking_url} target="_blank" rel="noreferrer" style={{marginLeft:8}}>Track Package</a>}
           </div>}
@@ -2037,7 +2092,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
             </button>
             {o._shipstation_order_id&&<button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>onCheckShipStatus(o.id)}>Check Shipping Status</button>}
           </div>}
-          {isSO&&o._shipstation_order_id&&!o._tracking_number&&<div style={{padding:6,background:'#eff6ff',borderRadius:6,marginTop:6,fontSize:11,color:'#1e40af'}}>
+          {isSO&&o._shipstation_order_id&&!o._tracking_number&&!(o._shipments||[]).length&&<div style={{padding:6,background:'#eff6ff',borderRadius:6,marginTop:6,fontSize:11,color:'#1e40af'}}>
             Submitted to ShipStation (ID: {o._shipstation_order_id})
             <button className="btn btn-sm btn-secondary" style={{marginLeft:8,fontSize:10}} onClick={()=>onCheckShipStatus&&onCheckShipStatus(o.id)}>Refresh Status</button>
           </div>}
@@ -2200,7 +2255,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       {isSO&&<button className={`tab ${tab==='transactions'?'active':''}`} onClick={()=>setTab('transactions')}>Linked</button>}
       {isSO&&<button className={`tab ${tab==='jobs'?'active':''}`} onClick={()=>setTab('jobs')}>Jobs {(()=>{const jc=(o.jobs||[]).length;return jc>0?` (${jc})`:''})()}</button>}
       {isSO&&<button className={`tab ${tab==='firm_dates'?'active':''}`} onClick={()=>setTab('firm_dates')}>Firm Dates ({safeFirm(o).length})</button>}
-      {isSO&&<button className={`tab ${tab==='tracking'?'active':''}`} onClick={()=>setTab('tracking')}>Tracking</button>}
+      {isSO&&<button className={`tab ${tab==='tracking'?'active':''}`} onClick={()=>setTab('tracking')}>Tracking {(()=>{const sc=(o._shipments||[]).length+(o._tracking_number?1:0);return sc>0?<span style={{background:'#166534',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:4}}>{sc}</span>:''})()}</button>}
       {isSO&&<button className={`tab ${tab==='costs'?'active':''}`} onClick={()=>setTab('costs')} style={tab==='costs'?{background:'#166534',color:'white'}:{}}>💰 Costs</button>}
     </div>
 
@@ -2986,51 +3041,156 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
     {/* TRACKING TAB */}
     {isSO&&tab==='tracking'&&(()=>{
       const trackUrl=tn=>{if(/^1Z/i.test(tn))return'https://www.ups.com/track?tracknum='+tn;if(/^(94|93|92|91)\d{18,}/.test(tn))return'https://tools.usps.com/go/TrackConfirmAction?tLabels='+tn;return'https://www.fedex.com/fedextrack/?trknbr='+tn};
+      const carrierLabel=c=>{if(!c)return'';const cl=c.toLowerCase();if(cl.includes('ups'))return'UPS';if(cl.includes('fedex'))return'FedEx';if(cl.includes('usps'))return'USPS';return c};
+      // Inbound PO data
       const poData=[];
       safeItems(o).forEach((item,idx)=>{(item.po_lines||[]).forEach((po,pi)=>{
         const billed=po.billed||{};const received=po.received||{};const trackNums=po.tracking_numbers||[];const shipments=po.shipments||[];
         const szKeys=Object.keys(po).filter(k=>!['status','po_id','received','shipments','cancelled','po_type','deco_vendor','deco_type','created_at','memo','notes','expected_date','billed','tracking_numbers','unit_cost','vendor'].includes(k)&&typeof po[k]==='number');
         const totalOrdered=szKeys.reduce((a,sz)=>a+(po[sz]||0),0);const totalBilled=szKeys.reduce((a,sz)=>a+(billed[sz]||0),0);const totalReceived=szKeys.reduce((a,sz)=>a+(received[sz]||0),0);
-        if(totalOrdered>0)poData.push({item,po,szKeys,billed,received,trackNums,shipments,totalOrdered,totalBilled,totalReceived,
+        if(totalOrdered>0)poData.push({item,itemIdx:idx,po,szKeys,billed,received,trackNums,shipments,totalOrdered,totalBilled,totalReceived,
           vendor:po.vendor||po.deco_vendor||'',expectedDate:po.expected_date||'',
           shipDate:shipments.length>0?shipments[shipments.length-1].date:po.created_at||'',
           status:totalReceived>=totalOrdered?'received':totalBilled>0?(totalReceived>0?'partial':'in_transit'):'waiting'});
       })});
-      return<div className="card"><div className="card-header"><h2>Tracking & Billing</h2></div><div className="card-body">
-        {o._tracking_number&&<div style={{padding:12,background:'#f0fdf4',borderRadius:8,marginBottom:16,border:'1px solid #bbf7d0'}}>
-          <div style={{fontSize:10,fontWeight:700,color:'#166534',textTransform:'uppercase',marginBottom:6}}>Customer Shipment</div>
-          <div style={{display:'flex',gap:12,alignItems:'center',flexWrap:'wrap'}}>
-            <a href={o._tracking_url||trackUrl(o._tracking_number)} target="_blank" rel="noreferrer" style={{fontFamily:'monospace',fontWeight:700,color:'#166534',background:'#dcfce7',padding:'4px 10px',borderRadius:4,textDecoration:'none',fontSize:13}}>{o._tracking_number}</a>
-            {o._carrier&&<span style={{fontSize:12,color:'#166534'}}>via {o._carrier}</span>}
-            {o._ship_date&&<span style={{fontSize:12,color:'#64748b'}}>Shipped {o._ship_date}</span>}
+      // Outbound shipments (multi-package)
+      const shipments=o._shipments||[];
+      const legacyShipment=o._tracking_number&&!shipments.find(s=>s.tracking_number===o._tracking_number);
+      const allOutbound=legacyShipment?[{id:'legacy',tracking_number:o._tracking_number,carrier:o._carrier||'',ship_date:o._ship_date||'',tracking_url:o._tracking_url||'',items:[],notes:'Legacy single-package shipment',created_by:o.created_by,created_at:o._ship_date||''},...shipments]:shipments;
+      const totalShippedUnits=allOutbound.reduce((a,s)=>(s.items||[]).reduce((a2,it)=>a2+Object.values(it.sizes||{}).reduce((a3,v)=>a3+v,0),0)+a,0);
+      // Shipping cost
+      const shipCost=safeNum(o._shipping_cost||o._shipstation_cost||0);
+      const freightCost=safeNum(o._inbound_freight||0);
+      const canEditCost=cu?.role==='admin'||cu?.role==='accounting'||cu?.role==='rep';
+
+      return<div style={{display:'grid',gap:16}}>
+        {/* ── OUTBOUND SHIPMENTS ── */}
+        <div className="card" style={{borderLeft:'3px solid #166534'}}>
+          <div className="card-header" style={{background:'linear-gradient(135deg,#f0fdf4,#dcfce7)'}}>
+            <div style={{display:'flex',alignItems:'center',gap:8}}>
+              <h2 style={{margin:0,color:'#166534'}}>Outbound Shipments</h2>
+              {allOutbound.length>0&&<span className="badge badge-green" style={{fontSize:11}}>{allOutbound.length} package{allOutbound.length!==1?'s':''} · {totalShippedUnits} units</span>}
+            </div>
           </div>
-        </div>}
-        {poData.length===0?<div className="empty">No purchase orders on this SO</div>:
-        <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}>
-          <thead><tr style={{borderBottom:'2px solid #e2e8f0',textAlign:'left'}}>
-            <th style={{padding:'6px 8px',fontSize:10,color:'#64748b'}}>ITEM</th>
-            <th style={{padding:'6px 8px',fontSize:10,color:'#64748b'}}>PO</th>
-            <th style={{padding:'6px 8px',fontSize:10,color:'#64748b'}}>VENDOR</th>
-            <th style={{padding:'6px 8px',fontSize:10,color:'#64748b'}}>STATUS</th>
-            <th style={{padding:'6px 8px',fontSize:10,color:'#64748b'}}>TRACKING</th>
-            <th style={{padding:'6px 8px',fontSize:10,color:'#64748b'}}>SHIP DATE</th>
-            <th style={{padding:'6px 8px',fontSize:10,color:'#64748b'}}>EXPECTED</th>
-            <th style={{padding:'6px 8px',fontSize:10,color:'#64748b',textAlign:'center'}}>BILLED</th>
-            <th style={{padding:'6px 8px',fontSize:10,color:'#64748b',textAlign:'center'}}>RECEIVED</th>
-          </tr></thead>
-          <tbody>{poData.map((d,i)=><tr key={i} style={{borderBottom:'1px solid #f1f5f9'}}>
-            <td style={{padding:'6px 8px'}}><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{d.item.sku}</span> <span style={{color:'#64748b'}}>{d.item.color}</span></td>
-            <td style={{padding:'6px 8px',fontFamily:'monospace',fontWeight:600}}>{d.po.po_id}</td>
-            <td style={{padding:'6px 8px'}}>{d.vendor}</td>
-            <td style={{padding:'6px 8px'}}><span className={`badge ${d.status==='received'?'badge-green':d.status==='in_transit'?'badge-blue':d.status==='partial'?'badge-amber':'badge-gray'}`}>{d.status==='received'?'Received':d.status==='in_transit'?'In Transit':d.status==='partial'?'Partial':'Waiting'}</span></td>
-            <td style={{padding:'6px 8px'}}>{d.trackNums.length>0?<div style={{display:'flex',gap:4,flexWrap:'wrap'}}>{d.trackNums.map((tn,ti)=><a key={ti} href={trackUrl(tn)} target="_blank" rel="noreferrer" style={{fontFamily:'monospace',fontSize:11,fontWeight:700,color:'#1e40af',background:'#dbeafe',padding:'2px 6px',borderRadius:4,textDecoration:'none'}}>{tn}</a>)}</div>:<span style={{color:'#d1d5db'}}>—</span>}</td>
-            <td style={{padding:'6px 8px',color:'#475569'}}>{d.shipDate||<span style={{color:'#d1d5db'}}>—</span>}</td>
-            <td style={{padding:'6px 8px',color:'#475569'}}>{d.expectedDate||<span style={{color:'#d1d5db'}}>—</span>}</td>
-            <td style={{padding:'6px 8px',textAlign:'center',fontWeight:700,color:d.totalBilled>0?'#1e40af':'#d1d5db'}}>{d.totalBilled>0?d.totalBilled+'/'+d.totalOrdered:'—'}</td>
-            <td style={{padding:'6px 8px',textAlign:'center',fontWeight:700,color:d.totalReceived>0?'#166534':'#d1d5db'}}>{d.totalReceived>0?d.totalReceived+'/'+d.totalOrdered:'—'}</td>
-          </tr>)}</tbody>
-        </table>}
-      </div></div>})()}
+          <div className="card-body">
+            {allOutbound.length===0?<div style={{padding:20,textAlign:'center',color:'#94a3b8'}}>
+              <div style={{fontSize:32,marginBottom:8}}>📦</div>
+              <div style={{fontSize:13,fontWeight:600}}>No outbound shipments yet</div>
+              <div style={{fontSize:11,marginTop:4}}>Packages are created from the Warehouse → Ready to Ship tab</div>
+            </div>:
+            <div style={{display:'grid',gap:12}}>
+              {allOutbound.map((shp,si)=>{
+                const shpUnits=(shp.items||[]).reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((a2,v)=>a2+v,0),0);
+                return<div key={shp.id||si} style={{padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0'}}>
+                  <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8,flexWrap:'wrap'}}>
+                    <span style={{fontSize:11,fontWeight:800,color:'#166534',background:'#dcfce7',padding:'2px 8px',borderRadius:4}}>Box {si+1}</span>
+                    {shp.tracking_number?<a href={shp.tracking_url||trackUrl(shp.tracking_number)} target="_blank" rel="noreferrer"
+                      style={{fontFamily:'monospace',fontWeight:700,color:'#166534',background:'#bbf7d0',padding:'3px 10px',borderRadius:4,textDecoration:'none',fontSize:12}}>
+                      {shp.tracking_number}</a>:<span style={{fontSize:11,color:'#d97706',fontWeight:600}}>No tracking yet</span>}
+                    {shp.carrier&&<span style={{fontSize:11,color:'#475569'}}>via {carrierLabel(shp.carrier)}</span>}
+                    {shp.ship_date&&<span style={{fontSize:11,color:'#64748b'}}>Shipped {shp.ship_date}</span>}
+                    {shpUnits>0&&<span style={{marginLeft:'auto',fontSize:11,fontWeight:700,color:'#166534'}}>{shpUnits} units</span>}
+                    {/* Edit tracking for reps/admin */}
+                    {canEditCost&&<button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px'}} onClick={()=>{
+                      const tn=prompt('Tracking number:',shp.tracking_number||'');if(tn===null)return;
+                      const carrier=prompt('Carrier (ups/fedex/usps):',shp.carrier||'');
+                      const updated=[...(o._shipments||[])];const idx=updated.findIndex(s=>s.id===shp.id);
+                      if(idx>=0){updated[idx]={...updated[idx],tracking_number:tn,carrier:carrier||'',tracking_url:trackUrl(tn),ship_date:updated[idx].ship_date||new Date().toLocaleDateString()};sv('_shipments',updated)}
+                      else if(shp.id==='legacy'){sv('_tracking_number',tn);sv('_carrier',carrier||o._carrier);sv('_tracking_url',trackUrl(tn))}
+                    }}>Edit</button>}
+                  </div>
+                  {/* Package contents */}
+                  {(shp.items||[]).length>0&&<table style={{width:'100%',fontSize:11,borderCollapse:'collapse'}}>
+                    <thead><tr style={{borderBottom:'1px solid #e2e8f0'}}>
+                      <th style={{padding:'4px 6px',textAlign:'left',fontSize:10,color:'#64748b'}}>SKU</th>
+                      <th style={{padding:'4px 6px',textAlign:'left',fontSize:10,color:'#64748b'}}>Item</th>
+                      <th style={{padding:'4px 6px',textAlign:'left',fontSize:10,color:'#64748b'}}>Color</th>
+                      <th style={{padding:'4px 6px',textAlign:'left',fontSize:10,color:'#64748b'}}>Sizes</th>
+                      <th style={{padding:'4px 6px',textAlign:'center',fontSize:10,color:'#64748b'}}>Qty</th>
+                    </tr></thead>
+                    <tbody>{(shp.items||[]).map((it,ii)=>{
+                      const szStr=Object.entries(it.sizes||{}).filter(([,v])=>v>0).map(([sz,v])=>sz+':'+v).join('  ');
+                      const itQty=Object.values(it.sizes||{}).reduce((a,v)=>a+v,0);
+                      return<tr key={ii} style={{borderBottom:'1px solid #f1f5f9'}}>
+                        <td style={{padding:'4px 6px',fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{it.sku}</td>
+                        <td style={{padding:'4px 6px'}}>{it.name}</td>
+                        <td style={{padding:'4px 6px',color:'#64748b'}}>{it.color||'—'}</td>
+                        <td style={{padding:'4px 6px',fontFamily:'monospace',fontSize:10,fontWeight:600}}>{szStr}</td>
+                        <td style={{padding:'4px 6px',textAlign:'center',fontWeight:700}}>{itQty}</td>
+                      </tr>})}</tbody>
+                  </table>}
+                  {shp.notes&&<div style={{fontSize:10,color:'#64748b',marginTop:4,fontStyle:'italic'}}>{shp.notes}</div>}
+                </div>})}
+            </div>}
+          </div>
+        </div>
+
+        {/* ── INBOUND (PO Tracking) ── */}
+        <div className="card" style={{borderLeft:'3px solid #2563eb'}}>
+          <div className="card-header" style={{background:'linear-gradient(135deg,#eff6ff,#dbeafe)'}}>
+            <h2 style={{margin:0,color:'#1e40af'}}>Inbound (Purchase Orders)</h2>
+          </div>
+          <div className="card-body">
+            {poData.length===0?<div style={{padding:20,textAlign:'center',color:'#94a3b8'}}>
+              <div style={{fontSize:13}}>No purchase orders on this SO</div>
+            </div>:
+            <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}>
+              <thead><tr style={{borderBottom:'2px solid #e2e8f0',textAlign:'left'}}>
+                <th style={{padding:'6px 8px',fontSize:10,color:'#64748b'}}>ITEM</th>
+                <th style={{padding:'6px 8px',fontSize:10,color:'#64748b'}}>PO</th>
+                <th style={{padding:'6px 8px',fontSize:10,color:'#64748b'}}>VENDOR</th>
+                <th style={{padding:'6px 8px',fontSize:10,color:'#64748b'}}>STATUS</th>
+                <th style={{padding:'6px 8px',fontSize:10,color:'#64748b'}}>TRACKING</th>
+                <th style={{padding:'6px 8px',fontSize:10,color:'#64748b'}}>SHIP DATE</th>
+                <th style={{padding:'6px 8px',fontSize:10,color:'#64748b'}}>EXPECTED</th>
+                <th style={{padding:'6px 8px',fontSize:10,color:'#64748b',textAlign:'center'}}>BILLED</th>
+                <th style={{padding:'6px 8px',fontSize:10,color:'#64748b',textAlign:'center'}}>RECEIVED</th>
+              </tr></thead>
+              <tbody>{poData.map((d,i)=><tr key={i} style={{borderBottom:'1px solid #f1f5f9'}}>
+                <td style={{padding:'6px 8px'}}><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{d.item.sku}</span> <span style={{color:'#64748b'}}>{d.item.color}</span></td>
+                <td style={{padding:'6px 8px',fontFamily:'monospace',fontWeight:600}}>{d.po.po_id}</td>
+                <td style={{padding:'6px 8px'}}>{d.vendor}</td>
+                <td style={{padding:'6px 8px'}}><span className={`badge ${d.status==='received'?'badge-green':d.status==='in_transit'?'badge-blue':d.status==='partial'?'badge-amber':'badge-gray'}`}>{d.status==='received'?'Received':d.status==='in_transit'?'In Transit':d.status==='partial'?'Partial':'Waiting'}</span></td>
+                <td style={{padding:'6px 8px'}}>{d.trackNums.length>0?<div style={{display:'flex',gap:4,flexWrap:'wrap'}}>{d.trackNums.map((tn,ti)=><a key={ti} href={trackUrl(tn)} target="_blank" rel="noreferrer" style={{fontFamily:'monospace',fontSize:11,fontWeight:700,color:'#1e40af',background:'#dbeafe',padding:'2px 6px',borderRadius:4,textDecoration:'none'}}>{tn}</a>)}</div>:<span style={{color:'#d1d5db'}}>—</span>}</td>
+                <td style={{padding:'6px 8px',color:'#475569'}}>{d.shipDate||<span style={{color:'#d1d5db'}}>—</span>}</td>
+                <td style={{padding:'6px 8px',color:'#475569'}}>{d.expectedDate||<span style={{color:'#d1d5db'}}>—</span>}</td>
+                <td style={{padding:'6px 8px',textAlign:'center',fontWeight:700,color:d.totalBilled>0?'#1e40af':'#d1d5db'}}>{d.totalBilled>0?d.totalBilled+'/'+d.totalOrdered:'—'}</td>
+                <td style={{padding:'6px 8px',textAlign:'center',fontWeight:700,color:d.totalReceived>0?'#166534':'#d1d5db'}}>{d.totalReceived>0?d.totalReceived+'/'+d.totalOrdered:'—'}</td>
+              </tr>)}</tbody>
+            </table>}
+          </div>
+        </div>
+
+        {/* ── SHIPPING COSTS ── */}
+        <div className="card" style={{borderLeft:'3px solid #d97706'}}>
+          <div className="card-header" style={{background:'linear-gradient(135deg,#fffbeb,#fef3c7)'}}>
+            <h2 style={{margin:0,color:'#92400e'}}>Shipping Costs</h2>
+          </div>
+          <div className="card-body">
+            <div style={{display:'flex',gap:16,flexWrap:'wrap',alignItems:'end'}}>
+              <div>
+                <label className="form-label">Outbound Shipping</label>
+                <div style={{display:'flex',alignItems:'center',gap:4}}>
+                  <$In value={o._shipping_cost||o._shipstation_cost||0} onChange={v=>{sv('_shipping_cost',v);sv('_shipstation_cost',v)}} w={100} disabled={!canEditCost}/>
+                  {allOutbound.length>0&&<span style={{fontSize:10,color:'#166534'}}>({allOutbound.length} package{allOutbound.length!==1?'s':''})</span>}
+                </div>
+              </div>
+              <div>
+                <label className="form-label">Inbound Freight</label>
+                <div style={{display:'flex',alignItems:'center',gap:4}}>
+                  <$In value={o._inbound_freight||0} onChange={v=>sv('_inbound_freight',v)} w={100} disabled={!canEditCost}/>
+                  <span style={{fontSize:10,color:'#94a3b8'}}>from supplier bills</span>
+                </div>
+              </div>
+              <div style={{padding:'8px 14px',background:(shipCost+freightCost)>0?'#fef2f2':'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0'}}>
+                <div style={{fontSize:9,fontWeight:700,color:'#64748b',textTransform:'uppercase'}}>Total Shipping Cost</div>
+                <div style={{fontSize:18,fontWeight:800,color:(shipCost+freightCost)>0?'#dc2626':'#94a3b8'}}>{(shipCost+freightCost)>0?'$'+(shipCost+freightCost).toFixed(2):'$0.00'}</div>
+              </div>
+            </div>
+            {!canEditCost&&<div style={{fontSize:10,color:'#94a3b8',marginTop:8}}>Only accounting, admin, or reps can edit shipping costs</div>}
+          </div>
+        </div>
+      </div>})()}
 
     {/* FIRM DATES TAB */}
     {isSO&&tab==='firm_dates'&&<div className="card"><div className="card-header"><h2>Firm Date Requests</h2><button className="btn btn-sm btn-primary" onClick={()=>sv('firm_dates',[...safeFirm(o),{item_desc:'',date:'',approved:false}])}><Icon name="plus" size={12}/> Add</button></div>
@@ -7168,7 +7328,7 @@ export default function App(){
     }
   };
 
-  // Auto-check for shipping updates every 10 minutes
+  // Auto-check for shipping updates every 10 minutes (supports multi-package)
   React.useEffect(() => {
     if (!ssConnected) return;
     const checkUpdates = async () => {
@@ -7178,8 +7338,13 @@ export default function App(){
         nsaShipments.forEach(shipment => {
           const soId = shipment.advancedOptions.customField1.replace('NSA-SO-', '');
           const existingSO = sos.find(s => s.id === soId);
-          if (existingSO && !existingSO._tracking_number) {
-            const updated = { ...existingSO, _tracking_number: shipment.trackingNumber, _carrier: shipment.carrierCode, _ship_date: shipment.shipDate, _tracking_url: shipment.trackingUrl, _shipped: true, _shipping_status: 'shipped', updated_at: new Date().toLocaleString() };
+          if (!existingSO) return;
+          const existingPkgs = existingSO._shipments || [];
+          const alreadyTracked = existingPkgs.some(p => p.tracking_number === shipment.trackingNumber) || existingSO._tracking_number === shipment.trackingNumber;
+          if (!alreadyTracked && shipment.trackingNumber) {
+            // Add as new shipment package
+            const newPkg = { id: 'SHP-SS-' + (shipment.shipmentId || Date.now()), tracking_number: shipment.trackingNumber, carrier: shipment.carrierCode || '', ship_date: shipment.shipDate || new Date().toLocaleDateString(), tracking_url: shipment.trackingUrl || '', shipstation_shipment_id: shipment.shipmentId || null, items: [], notes: 'Auto-detected from ShipStation', created_by: 'system', created_at: new Date().toLocaleString() };
+            const updated = { ...existingSO, _shipments: [...existingPkgs, newPkg], _shipped: true, _shipping_status: 'shipped', _tracking_number: existingSO._tracking_number || shipment.trackingNumber, _carrier: existingSO._carrier || shipment.carrierCode, _ship_date: existingSO._ship_date || shipment.shipDate, _tracking_url: existingSO._tracking_url || shipment.trackingUrl, updated_at: new Date().toLocaleString() };
             setSOs(prev => prev.map(s => s.id === soId ? updated : s));
           }
         });
@@ -11239,6 +11404,8 @@ export default function App(){
     {id:'PO-5001-NSA',vendor_id:'v1',vendor_name:'Adidas',status:'partial',created_at:'02/12/26',notes:'Restock pregame tees',items:[{sku:'JX4453',name:'Adidas Unisex Pregame Tee',color:'Team Power Red/White',sizes:{S:20,M:30,L:25,XL:15,'2XL':10},received:{S:20,M:30,L:0,XL:0,'2XL':0}}]},
     {id:'PO-5002-NSA',vendor_id:'v2',vendor_name:'Under Armour',status:'waiting',created_at:'02/18/26',notes:'Stock up on polos for spring',items:[{sku:'1370399',name:'Under Armour Team Polo',color:'Cardinal/White',sizes:{S:10,M:20,L:20,XL:15,'2XL':8},received:{}}]},
   ]);const[showStockPO,setShowStockPO]=useState(null);const[stockPOCounter,setStockPOCounter]=useState(5003);
+  // Ship package modal: {grp, soMap:{soId:so}, boxes:[{items:[{sku,name,color,sizes:{}}],tracking_number:'',carrier:'',weight:5,notes:''}]}
+  const[shipModal,setShipModal]=useState(null);
   const[decoSearch,setDecoSearch]=useState('');const[decoRepF,setDecoRepF]=useState('all');const[decoStatF,setDecoStatF]=useState('active');const[decoTypeF,setDecoTypeF]=useState('all');
   const[decoCardFilter,setDecoCardFilter]=useState(null);// null|'ready'|'in_process'|'waiting'
 
@@ -11713,11 +11880,15 @@ export default function App(){
           const byCustomer={};
           fShip.forEach(t=>{
             const key=t.cName+'|'+(t.shipMethod||'pending');
-            if(!byCustomer[key])byCustomer[key]={cName:t.cName,shipMethod:t.shipMethod,items:[],totalUnits:0,soIds:new Set()};
+            if(!byCustomer[key])byCustomer[key]={cName:t.cName,shipMethod:t.shipMethod,items:[],totalUnits:0,soIds:new Set(),soMap:{}};
             byCustomer[key].items.push(t);byCustomer[key].totalUnits+=t.units;byCustomer[key].soIds.add(t.soId);
+            byCustomer[key].soMap[t.soId]=t.so;
           });
           return<div style={{display:'grid',gap:10}}>
-            {Object.values(byCustomer).map((grp,gi)=><div key={gi} className="card" style={{borderLeft:'3px solid #166534'}}>
+            {Object.values(byCustomer).map((grp,gi)=>{
+              // Check what's already been shipped for these SOs
+              const existingShipments=Object.values(grp.soMap).reduce((a,so)=>a.concat(so._shipments||[]),[]);
+              return<div key={gi} className="card" style={{borderLeft:'3px solid #166534'}}>
               <div style={{padding:'10px 14px'}}>
                 <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}>
                   <span style={{fontSize:14,fontWeight:800}}>{grp.cName}</span>
@@ -11726,6 +11897,7 @@ export default function App(){
                     color:grp.shipMethod==='ship_customer'?'#1e40af':grp.shipMethod==='rep_delivery'?'#166534':grp.shipMethod==='customer_pickup'?'#92400e':'#dc2626'}}>
                     {grp.shipMethod==='ship_customer'?'📦 Ship':grp.shipMethod==='rep_delivery'?'🚗 Rep Delivery':grp.shipMethod==='customer_pickup'?'🏫 Pickup':'⚠️ Not set'}</span>
                   <span style={{fontSize:10,color:'#94a3b8'}}>{[...grp.soIds].join(', ')}</span>
+                  {existingShipments.length>0&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:600,background:'#dcfce7',color:'#166534'}}>{existingShipments.length} pkg shipped</span>}
                   <span style={{marginLeft:'auto',fontSize:12,fontWeight:800,color:'#166534'}}>{grp.totalUnits} units</span>
                   <span style={{fontSize:10,color:'#64748b'}}>{grp.items.length} item{grp.items.length!==1?'s':''}</span>
                 </div>
@@ -11747,10 +11919,28 @@ export default function App(){
                       else nf('❌ '+sku+' not found in this shipment','error');
                       e.target.value='';
                     }}}/>
+                  <button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
+                    onClick={()=>{
+                      // Build ship modal with all items from this group, pre-populate one box with everything
+                      const allItems=[];
+                      grp.items.forEach(t=>{
+                        const so=t.so;const soItems=safeItems(so);
+                        soItems.forEach((item,iIdx)=>{
+                          const qty=Object.values(safeSizes(item)).reduce((a,v)=>a+safeNum(v),0);
+                          if(qty<=0)return;
+                          // Check if this item is part of the ready-to-ship group (match by desc)
+                          const matchTask=grp.items.find(gi=>gi.soId===so.id&&gi.desc?.includes(item.sku));
+                          if(!matchTask&&!grp.items.find(gi=>gi.soId===so.id&&gi.desc?.includes(item.name)))return;
+                          allItems.push({sku:item.sku,name:item.name,color:item.color||'',sizes:{...safeSizes(item)},soId:so.id,itemIdx:iIdx});
+                        });
+                      });
+                      setShipModal({grp,soMap:grp.soMap,boxes:[{items:allItems.length>0?allItems.map(it=>({...it,sizes:{...it.sizes}})):[],tracking_number:'',carrier:'fedex',weight:5,notes:''}]});
+                    }}>📦 Create Shipment</button>
                   <button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 10px'}}
                     onClick={()=>{
+                      // Quick packing slip for entire group
                       printDoc({
-                        title:grp.cName,docNum:grp.items.map(t=>t.soId).filter((v,i,a)=>a.indexOf(v)===i).join(', '),
+                        title:grp.cName,docNum:[...grp.soIds].join(', '),
                         docType:'PACKING SLIP',showPricing:false,
                         headerRight:'<div style="font-size:14px;font-weight:700;color:#166534">'+grp.totalUnits+' Total Units</div><div style="font-size:11px;color:#666">Ship: '+(grp.shipMethod||'TBD')+'</div>',
                         infoBoxes:[
@@ -11759,22 +11949,200 @@ export default function App(){
                         ],
                         tables:[{
                           title:'Items in this Shipment',
-                          headers:['SO#','Item','Units','Type'],
-                          aligns:['left','left','center','left'],
-                          rows:grp.items.map(t=>({cells:[t.soId,t.desc,t.units,t.type==='deco_done'?'Decorated':'Plain']}))
+                          headers:['SO#','SKU','Item','Sizes','Qty'],
+                          aligns:['left','left','left','left','center'],
+                          rows:grp.items.map(t=>{
+                            const so=t.so;const soItem=safeItems(so).find(it=>t.desc?.includes(it.sku)||t.desc?.includes(it.name));
+                            const szStr=soItem?Object.entries(safeSizes(soItem)).filter(([,v])=>v>0).map(([sz,v])=>sz+':'+v).join(' '):'';
+                            return{cells:[t.soId,soItem?.sku||'',soItem?.name||t.desc,szStr,t.units]};
+                          })
                         }],
                         notes:'Please inspect all items upon receipt. Report any discrepancies within 48 hours.',
                         footer:'NO PRICING — Customer Copy'
                       });
                       nf('📦 Packing slip printed for '+grp.cName);
                     }}>🖨️ Pack Slip</button>
-                  <button className="btn btn-sm" style={{fontSize:10,background:'#1e40af',color:'white',border:'none',padding:'4px 10px'}}
-                    onClick={()=>{nf('📦 Marked shipped for '+grp.cName)}}>✓ Ship</button>
                 </div>
               </div>
-            </div>)}
+            </div>})}
           </div>})()}
         </>}
+
+        {/* ── SHIP PACKAGE MODAL ── */}
+        {shipModal&&<div className="modal-overlay" onClick={()=>setShipModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:800,maxHeight:'90vh',overflow:'auto'}}>
+          <div className="modal-header" style={{background:'linear-gradient(135deg,#166534,#22c55e)',color:'white'}}>
+            <h2 style={{margin:0,color:'white'}}>📦 Create Shipment — {shipModal.grp.cName}</h2>
+            <button className="modal-close" onClick={()=>setShipModal(null)} style={{color:'white'}}>×</button>
+          </div>
+          <div className="modal-body" style={{padding:16}}>
+            <div style={{fontSize:11,color:'#64748b',marginBottom:12}}>SOs: {[...shipModal.grp.soIds].join(', ')} · {shipModal.grp.totalUnits} total units</div>
+
+            {/* Boxes */}
+            {shipModal.boxes.map((box,bi)=>{
+              const boxUnits=(box.items||[]).reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((a2,v)=>a2+v,0),0);
+              return<div key={bi} style={{padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0',marginBottom:12}}>
+                <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:10}}>
+                  <span style={{fontSize:13,fontWeight:800,color:'#166534'}}>Box {bi+1}</span>
+                  <span style={{fontSize:11,fontWeight:600,color:'#475569'}}>{boxUnits} units</span>
+                  <div style={{marginLeft:'auto',display:'flex',gap:6,alignItems:'center'}}>
+                    <div style={{display:'flex',alignItems:'center',gap:4}}>
+                      <label style={{fontSize:10,color:'#64748b',fontWeight:600}}>Weight (lbs)</label>
+                      <input className="form-input" type="number" min="0.1" step="0.5" value={box.weight||5} style={{width:60,fontSize:11,padding:'3px 6px'}}
+                        onChange={e=>{const b=[...shipModal.boxes];b[bi]={...b[bi],weight:parseFloat(e.target.value)||5};setShipModal({...shipModal,boxes:b})}}/>
+                    </div>
+                    <select className="form-select" value={box.carrier||'fedex'} style={{width:100,fontSize:11,padding:'3px 6px'}}
+                      onChange={e=>{const b=[...shipModal.boxes];b[bi]={...b[bi],carrier:e.target.value};setShipModal({...shipModal,boxes:b})}}>
+                      <option value="fedex">FedEx</option><option value="ups">UPS</option><option value="usps">USPS</option><option value="other">Other</option>
+                    </select>
+                    {shipModal.boxes.length>1&&<button style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',fontSize:14,fontWeight:700}}
+                      onClick={()=>{const b=[...shipModal.boxes];b.splice(bi,1);setShipModal({...shipModal,boxes:b})}}>×</button>}
+                  </div>
+                </div>
+
+                {/* Tracking number */}
+                <div style={{display:'flex',gap:8,marginBottom:10,alignItems:'center'}}>
+                  <input className="form-input" placeholder="Tracking number (enter manually or create label below)" value={box.tracking_number||''}
+                    style={{flex:1,fontSize:11,fontFamily:'monospace',padding:'4px 8px'}}
+                    onChange={e=>{const b=[...shipModal.boxes];b[bi]={...b[bi],tracking_number:e.target.value};setShipModal({...shipModal,boxes:b})}}/>
+                  {ssConnected&&<button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 10px',whiteSpace:'nowrap'}}
+                    onClick={async()=>{
+                      try{
+                        const soId=Object.keys(shipModal.soMap)[0];const so=shipModal.soMap[soId];
+                        const c2=cust.find(cc=>cc.id===so?.customer_id);
+                        if(!c2){nf('No customer found','error');return}
+                        nf('Creating ShipStation label...');
+                        const label=await createShipStationLabel(so,c2,box.items,box.weight,box.carrier,'fedex_ground');
+                        const b=[...shipModal.boxes];
+                        b[bi]={...b[bi],tracking_number:label.trackingNumber||'',carrier:label.carrierCode||box.carrier,label_url:label.labelData?.href||null,shipstation_shipment_id:label.shipmentId||null};
+                        setShipModal({...shipModal,boxes:b});
+                        nf('✅ Label created! Tracking: '+(label.trackingNumber||'pending'));
+                        if(label.shipmentCost)nf('Label cost: $'+label.shipmentCost);
+                      }catch(err){nf('Label creation failed: '+err.message,'error')}
+                    }}>🏷️ Create Label</button>}
+                </div>
+
+                {/* Items in this box */}
+                <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6}}>Items in this box</div>
+                {(box.items||[]).length===0?<div style={{padding:12,textAlign:'center',color:'#94a3b8',fontSize:11}}>No items — add items from the list below</div>:
+                <table style={{width:'100%',fontSize:11,borderCollapse:'collapse',marginBottom:8}}>
+                  <thead><tr style={{borderBottom:'1px solid #e2e8f0'}}>
+                    <th style={{padding:'3px 6px',textAlign:'left',fontSize:10,color:'#64748b'}}>SKU</th>
+                    <th style={{padding:'3px 6px',textAlign:'left',fontSize:10,color:'#64748b'}}>Item</th>
+                    <th style={{padding:'3px 6px',textAlign:'left',fontSize:10,color:'#64748b'}}>Color</th>
+                    <th style={{padding:'3px 6px',textAlign:'left',fontSize:10,color:'#64748b'}}>Sizes (adjust per box)</th>
+                    <th style={{padding:'3px 6px',textAlign:'center',fontSize:10,color:'#64748b'}}>Qty</th>
+                    <th style={{width:30}}></th>
+                  </tr></thead>
+                  <tbody>{(box.items||[]).map((it,ii)=>{
+                    const itQty=Object.values(it.sizes||{}).reduce((a,v)=>a+v,0);
+                    return<tr key={ii} style={{borderBottom:'1px solid #f1f5f9'}}>
+                      <td style={{padding:'3px 6px',fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{it.sku}</td>
+                      <td style={{padding:'3px 6px',fontSize:10}}>{it.name}</td>
+                      <td style={{padding:'3px 6px',fontSize:10,color:'#64748b'}}>{it.color||'—'}</td>
+                      <td style={{padding:'3px 6px'}}>
+                        <div style={{display:'flex',gap:3,flexWrap:'wrap'}}>
+                          {Object.entries(it.sizes||{}).filter(([,v])=>v>0).map(([sz,v])=><div key={sz} style={{display:'flex',alignItems:'center',gap:2}}>
+                            <span style={{fontSize:9,color:'#64748b',fontWeight:600}}>{sz}</span>
+                            <input type="number" min="0" value={v} style={{width:32,fontSize:10,textAlign:'center',padding:'1px 2px',border:'1px solid #d1d5db',borderRadius:3}}
+                              onChange={e=>{const nv=parseInt(e.target.value)||0;const b=[...shipModal.boxes];const newSizes={...b[bi].items[ii].sizes,[sz]:nv};
+                                b[bi]={...b[bi],items:b[bi].items.map((x,xi)=>xi===ii?{...x,sizes:newSizes}:x)};setShipModal({...shipModal,boxes:b})}}/>
+                          </div>)}
+                        </div>
+                      </td>
+                      <td style={{padding:'3px 6px',textAlign:'center',fontWeight:700,fontSize:11}}>{itQty}</td>
+                      <td><button style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',fontSize:12}} onClick={()=>{
+                        const b=[...shipModal.boxes];b[bi]={...b[bi],items:b[bi].items.filter((_,xi)=>xi!==ii)};setShipModal({...shipModal,boxes:b})}}>×</button></td>
+                    </tr>})}</tbody>
+                </table>}
+
+                {/* Notes */}
+                <input className="form-input" placeholder="Box notes (optional)..." value={box.notes||''} style={{fontSize:11,padding:'3px 8px'}}
+                  onChange={e=>{const b=[...shipModal.boxes];b[bi]={...b[bi],notes:e.target.value};setShipModal({...shipModal,boxes:b})}}/>
+
+                {/* Per-box packing slip */}
+                <div style={{display:'flex',gap:6,marginTop:8}}>
+                  <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{
+                    const boxItems=box.items||[];
+                    printDoc({
+                      title:shipModal.grp.cName,docNum:[...shipModal.grp.soIds].join(', ')+' — Box '+(bi+1),
+                      docType:'PACKING SLIP',showPricing:false,
+                      headerRight:'<div style="font-size:14px;font-weight:700;color:#166534">'+boxUnits+' Units — Box '+(bi+1)+' of '+shipModal.boxes.length+'</div>'+(box.tracking_number?'<div style="font-size:11px;color:#666;font-family:monospace">'+box.tracking_number+'</div>':''),
+                      infoBoxes:[
+                        {label:'Ship To',value:shipModal.grp.cName},
+                        {label:'Ship Date',value:new Date().toLocaleDateString(),sub:(box.carrier||'fedex').toUpperCase()},
+                        ...(box.tracking_number?[{label:'Tracking',value:box.tracking_number}]:[]),
+                      ],
+                      tables:[{
+                        title:'Box '+(bi+1)+' Contents',
+                        headers:['SKU','Item','Color','Sizes','Qty'],
+                        aligns:['left','left','left','left','center'],
+                        rows:boxItems.map(it=>{
+                          const szStr=Object.entries(it.sizes||{}).filter(([,v])=>v>0).map(([sz,v])=>sz+':'+v).join('  ');
+                          return{cells:[it.sku,it.name,it.color||'—',szStr,Object.values(it.sizes||{}).reduce((a,v)=>a+v,0)]};
+                        })
+                      }],
+                      notes:'Please inspect all items upon receipt. Report any discrepancies within 48 hours.',
+                      footer:'NO PRICING — Customer Copy'
+                    });
+                    nf('🖨️ Packing slip for Box '+(bi+1));
+                  }}>🖨️ Pack Slip</button>
+                  {box.label_url&&<a href={box.label_url} target="_blank" rel="noreferrer" className="btn btn-sm btn-secondary" style={{fontSize:10,textDecoration:'none'}}>🏷️ Print Label</a>}
+                </div>
+              </div>})}
+
+            {/* Add box button */}
+            <button className="btn btn-sm btn-secondary" style={{marginBottom:16}}
+              onClick={()=>setShipModal({...shipModal,boxes:[...shipModal.boxes,{items:[],tracking_number:'',carrier:'fedex',weight:5,notes:''}]})}>+ Add Box</button>
+
+            {/* Actions */}
+            <div style={{display:'flex',gap:8,borderTop:'1px solid #e2e8f0',paddingTop:12}}>
+              <button className="btn btn-primary" style={{background:'#166534',borderColor:'#166534',fontWeight:800}}
+                onClick={()=>{
+                  // Validate: at least one box with items
+                  const hasItems=shipModal.boxes.some(b=>(b.items||[]).length>0);
+                  if(!hasItems){nf('Add at least one item to a box','error');return}
+                  // Save shipments to each SO
+                  const shipDate=new Date().toLocaleDateString();
+                  const trackUrl2=tn=>{if(/^1Z/i.test(tn))return'https://www.ups.com/track?tracknum='+tn;if(/^(94|93|92|91)\d{18,}/.test(tn))return'https://tools.usps.com/go/TrackConfirmAction?tLabels='+tn;return'https://www.fedex.com/fedextrack/?trknbr='+tn};
+                  const newShipments=shipModal.boxes.filter(b=>(b.items||[]).length>0).map((box,bi)=>({
+                    id:'SHP-'+Date.now()+'-'+(bi+1),
+                    tracking_number:box.tracking_number||'',
+                    carrier:box.carrier||'',
+                    ship_date:shipDate,
+                    tracking_url:box.tracking_number?trackUrl2(box.tracking_number):'',
+                    label_url:box.label_url||null,
+                    shipstation_shipment_id:box.shipstation_shipment_id||null,
+                    weight:box.weight||5,
+                    items:(box.items||[]).map(it=>({sku:it.sku,name:it.name,color:it.color||'',sizes:{...it.sizes}})),
+                    notes:box.notes||'',
+                    created_by:cu?.id||'',
+                    created_at:new Date().toLocaleString()
+                  }));
+                  // Group shipments by SO and update each
+                  Object.entries(shipModal.soMap).forEach(([soId,so])=>{
+                    const soShipments=newShipments.filter(s=>s.items.some(it=>{
+                      // Check if any items in this box came from this SO
+                      const boxItem=shipModal.boxes.flatMap(b=>b.items||[]).find(bi=>bi.sku===it.sku&&bi.soId===soId);
+                      return !!boxItem;
+                    }));
+                    if(soShipments.length>0){
+                      const existing=so._shipments||[];
+                      const updated={...so,_shipments:[...existing,...soShipments],_shipped:true,_shipping_status:'shipped',
+                        _tracking_number:soShipments[0].tracking_number||so._tracking_number||'',
+                        _carrier:soShipments[0].carrier||so._carrier||'',
+                        _ship_date:shipDate,
+                        _tracking_url:soShipments[0].tracking_url||so._tracking_url||'',
+                        updated_at:new Date().toLocaleString()};
+                      setSOs(prev=>prev.map(s=>s.id===soId?updated:s));
+                    }
+                  });
+                  nf('✅ Shipped! '+newShipments.length+' package'+(newShipments.length!==1?'s':'')+' for '+shipModal.grp.cName);
+                  setShipModal(null);
+                }}>✓ Confirm Shipment ({shipModal.boxes.filter(b=>(b.items||[]).length>0).length} box{shipModal.boxes.filter(b=>(b.items||[]).length>0).length!==1?'es':''})</button>
+              <button className="btn btn-secondary" onClick={()=>setShipModal(null)}>Cancel</button>
+            </div>
+          </div>
+        </div></div>}
       </>}
 
       {/* ── STOCK POs ── */}
