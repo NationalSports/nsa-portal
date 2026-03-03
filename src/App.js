@@ -13146,6 +13146,46 @@ export default function App(){
           finally{setArtJobDetailUploading(false)}
         };
 
+        // Upload handler for per-item mockups
+        const handleItemMockupUpload=async(files,sku)=>{
+          setArtJobDetailUploading(true);
+          try{
+            const urls=[];
+            for(const f of files){
+              nf('Uploading '+f.name+' for '+sku+'...');
+              const url=await fileUpload(f,'nsa-art-files');
+              urls.push(url);
+            }
+            const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
+            const liveAf=safeArt(liveSO).find(a=>a.id===j.art_file_id)||af;
+            const curItemMockups=liveAf?.item_mockups||{};
+            const updItemMockups={...curItemMockups,[sku]:[...(curItemMockups[sku]||[]),...urls]};
+            // Also add to mockup_files for backward compat
+            const updArt=safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,item_mockups:updItemMockups,mockup_files:[...(a.mockup_files||a.files||[]),...urls],status:'uploaded'}:a);
+            const updatedJobs=safeJobs(liveSO).map(jj=>jj.id===j.id?{...jj,art_status:jj.art_status==='needs_art'||jj.art_status==='art_requested'?'art_in_progress':jj.art_status}:jj);
+            savSO({...liveSO,art_files:updArt,jobs:updatedJobs});
+            const updatedAf=updArt.find(a=>a.id===j.art_file_id);
+            setArtJobDetailModal({...j,artFile:updatedAf,art_status:updatedJobs.find(jj=>jj.id===j.id)?.art_status||j.art_status});
+            nf(urls.length+' mockup'+(urls.length>1?'s':'')+' uploaded for '+sku);
+          }catch(err){nf('Upload failed: '+err.message,'error')}
+          finally{setArtJobDetailUploading(false)}
+        };
+
+        // Delete a per-item mockup
+        const handleItemMockupDelete=(fileUrl,sku)=>{
+          const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
+          const liveAf=safeArt(liveSO).find(a=>a.id===j.art_file_id)||af;
+          const curItemMockups=liveAf?.item_mockups||{};
+          const updItemMockups={...curItemMockups,[sku]:(curItemMockups[sku]||[]).filter(f=>f!==fileUrl)};
+          // Also remove from mockup_files
+          const curFiles=(liveAf?.mockup_files||liveAf?.files||[]);
+          const updArt=safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,item_mockups:updItemMockups,mockup_files:curFiles.filter(f=>f!==fileUrl)}:a);
+          savSO({...liveSO,art_files:updArt});
+          const updatedAf=updArt.find(a=>a.id===j.art_file_id);
+          setArtJobDetailModal({...j,artFile:updatedAf});
+          nf('Mockup removed from '+sku);
+        };
+
         // Upload handler for production files (when art is approved, needs prod files)
         const handleProdFileUpload=async(files)=>{
           setArtJobDetailUploading(true);
@@ -13181,8 +13221,9 @@ export default function App(){
 
         // Send for approval — sends directly to rep for review, with optional message
         const sendForApproval=()=>{
-          // Check that mockup files exist
-          if(mockupFiles.length===0){nf('Upload a mockup before sending for approval','error');return}
+          // Check that mockup files exist (general or per-item)
+          const hasItemMockups=Object.values(af?.item_mockups||{}).some(arr=>arr&&arr.length>0);
+          if(mockupFiles.length===0&&!hasItemMockups){nf('Upload a mockup before sending for approval','error');return}
           const liveSO2=sos.find(s=>s.id===(j.soId||so.id))||so;
           // Move to waiting_approval / needs_approval
           moveArtStatus(j,'waiting_approval');
@@ -13257,49 +13298,94 @@ export default function App(){
               </div>}
             </div>
 
-            {/* ─── Artwork Files ─── */}
+            {/* ─── Artwork Files (Per-Item Mockups) ─── */}
             <div style={{padding:'16px 20px',borderBottom:'1px solid #e2e8f0'}}>
               <div style={{fontSize:12,fontWeight:800,color:'#1e3a5f',marginBottom:10,display:'flex',alignItems:'center',gap:6}}>
-                <span style={{fontSize:16}}>🖼️</span> Artwork Files
+                <span style={{fontSize:16}}>🖼️</span> Mockups {itemDetails.length>1&&<span style={{fontSize:10,color:'#64748b',fontWeight:600}}>({itemDetails.length} items)</span>}
               </div>
-              {mockupFiles.length>0?<div style={{marginBottom:10}}>
-                {/* Primary mockup — large preview */}
-                {(()=>{const url=typeof mockupFiles[0]==='string'?mockupFiles[0]:(mockupFiles[0]?.url||'');const name=fileDisplayName(url||mockupFiles[0]);
-                  return<div style={{borderRadius:10,border:'2px solid #7c3aed',overflow:'hidden',background:'#f8fafc',marginBottom:10,position:'relative'}}>
-                    <div style={{position:'absolute',top:6,left:6,background:'#7c3aed',color:'white',fontSize:10,fontWeight:700,padding:'2px 8px',borderRadius:4,zIndex:1}}>PRIMARY MOCKUP</div>
-                    {_isImgUrl(url)?<img src={url} alt={name} style={{width:'100%',maxHeight:500,objectFit:'contain',display:'block',cursor:'pointer',background:'white'}} onClick={()=>openFile(url)}/>
-                    :_isPdfUrl(url)?<div style={{position:'relative',cursor:'pointer'}} onClick={()=>openFile(url)}>
-                      {_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',maxHeight:500,objectFit:'contain',display:'block',background:'white'}} onError={e=>{e.target.style.display='none';e.target.nextSibling.style.display='flex'}}/>:null}
-                      <div style={{display:_cloudinaryPdfThumb(url)?'none':'flex',flexDirection:'column',alignItems:'center',padding:30,gap:4}}>
-                        <span style={{fontSize:40}}>PDF</span><span style={{fontSize:13,color:'#1e40af'}}>{name}</span></div></div>
-                    :<div style={{display:'flex',alignItems:'center',gap:6,padding:'16px 20px',cursor:'pointer'}} onClick={()=>openFile(url)}>
-                      <span style={{fontSize:24}}>📄</span><span style={{fontSize:14,fontWeight:600,color:'#1e40af'}}>{name}</span></div>}
-                    <div style={{padding:'6px 10px',borderTop:'1px solid #e9d5ff',fontSize:11,color:'#64748b',display:'flex',alignItems:'center',gap:6}}>
-                      <span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',flex:1}}>{name}</span>
-                      <button className="btn btn-sm" style={{fontSize:10,padding:'2px 8px'}} onClick={()=>openFile(url)}>Open Full Size</button>
-                      <button style={{background:'none',border:'none',color:'#ef4444',cursor:'pointer',fontSize:14,padding:'0 2px',lineHeight:1}} onClick={()=>{if(window.confirm('Remove this file?'))handleArtFileDelete(url)}} title="Remove file">×</button>
+              {/* Per-item mockup cards */}
+              {itemDetails.map((gi,gii)=>{
+                const itemMocks=(af?.item_mockups?.[gi.sku]||[]);
+                const primaryUrl=itemMocks[0]||null;
+                const extraMocks=itemMocks.slice(1);
+                return<div key={gii} style={{marginBottom:gii<itemDetails.length-1?14:0,border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden',background:'#fafbfc'}}>
+                  {/* Item header */}
+                  <div style={{display:'flex',alignItems:'center',gap:8,padding:'8px 12px',background:'#f0f2f5',borderBottom:'1px solid #e2e8f0'}}>
+                    {gi.image_url?<img src={gi.image_url} alt="" style={{width:36,height:36,objectFit:'cover',borderRadius:4,border:'1px solid #e2e8f0'}}/>
+                    :<div style={{width:36,height:36,borderRadius:4,background:'#e2e8f0',display:'flex',alignItems:'center',justifyContent:'center',fontSize:14,color:'#94a3b8'}}>👕</div>}
+                    <div style={{flex:1}}>
+                      <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'1px 6px',borderRadius:3,fontSize:11}}>{gi.sku}</span>
+                      <span style={{fontSize:11,fontWeight:600,marginLeft:6}}>{gi.name}</span>
+                      {gi.color&&<span style={{fontSize:10,color:'#64748b',marginLeft:4}}>({gi.color})</span>}
                     </div>
-                  </div>})()}
-                {/* Additional files — smaller thumbnails */}
-                {mockupFiles.length>1&&<div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-                {mockupFiles.slice(1).map((f,i)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(url||f);
-                  return<div key={i} style={{borderRadius:8,border:'1px solid #e2e8f0',overflow:'hidden',background:'white',maxWidth:200,position:'relative'}}>
-                    {_isImgUrl(url)?<img src={url} alt={name} style={{width:'100%',maxHeight:150,objectFit:'contain',display:'block',cursor:'pointer'}} onClick={()=>openFile(url)}/>
-                    :_isPdfUrl(url)?<div style={{position:'relative',cursor:'pointer'}} onClick={()=>openFile(url)}>
-                      {_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',maxHeight:150,objectFit:'contain',display:'block'}} onError={e=>{e.target.style.display='none';e.target.nextSibling.style.display='flex'}}/>:null}
-                      <div style={{display:_cloudinaryPdfThumb(url)?'none':'flex',flexDirection:'column',alignItems:'center',padding:20,gap:4}}>
-                        <span style={{fontSize:32}}>PDF</span><span style={{fontSize:11,color:'#1e40af'}}>{name}</span></div></div>
-                    :<div style={{display:'flex',alignItems:'center',gap:6,padding:'10px 14px',cursor:'pointer'}} onClick={()=>openFile(url)}>
-                      <span style={{fontSize:16}}>📄</span><span style={{fontSize:12,fontWeight:600,color:'#1e40af'}}>{name}</span></div>}
-                    <div style={{padding:'4px 8px',borderTop:'1px solid #f1f5f9',fontSize:10,color:'#64748b',display:'flex',alignItems:'center',gap:4}}>
-                      <span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',flex:1}}>{name}</span>
-                      <button className="btn btn-sm" style={{fontSize:8,padding:'1px 5px',background:'#7c3aed',color:'white',border:'none'}} onClick={()=>handleSetAsMockup(url)} title="Set as primary mockup">Set Mockup</button>
-                      <button className="btn btn-sm" style={{fontSize:8,padding:'1px 5px'}} onClick={()=>openFile(url)}>Open</button>
-                      <button style={{background:'none',border:'none',color:'#ef4444',cursor:'pointer',fontSize:14,padding:'0 2px',lineHeight:1}} onClick={()=>{if(window.confirm('Remove this file?'))handleArtFileDelete(url)}} title="Remove file">×</button>
-                    </div>
-                  </div>})}
-                </div>}
-              </div>:<div style={{padding:16,textAlign:'center',color:'#94a3b8',fontSize:12,background:'#f8fafc',borderRadius:8,border:'2px dashed #e2e8f0'}}>No artwork files uploaded yet</div>}
+                    <span style={{fontSize:10,color:itemMocks.length>0?'#166534':'#94a3b8',fontWeight:700,padding:'2px 6px',borderRadius:4,background:itemMocks.length>0?'#dcfce7':'#f1f5f9'}}>{itemMocks.length>0?itemMocks.length+' mockup'+(itemMocks.length>1?'s':''):'No mockup'}</span>
+                  </div>
+                  {/* Mockup display + upload zone */}
+                  <div style={{padding:10}}>
+                    {primaryUrl?(()=>{const url=primaryUrl;const name=fileDisplayName(url);
+                      return<div style={{display:'flex',gap:10,alignItems:'flex-start'}}>
+                        <div style={{flex:1,borderRadius:8,border:'2px solid #7c3aed',overflow:'hidden',background:'white',position:'relative'}}>
+                          <div style={{position:'absolute',top:4,left:4,background:'#7c3aed',color:'white',fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:3,zIndex:1}}>MOCKUP</div>
+                          {_isImgUrl(url)?<img src={url} alt={name} style={{width:'100%',maxHeight:340,objectFit:'contain',display:'block',cursor:'pointer',background:'white'}} onClick={()=>openFile(url)}/>
+                          :_isPdfUrl(url)?<div style={{position:'relative',cursor:'pointer'}} onClick={()=>openFile(url)}>
+                            {_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',maxHeight:340,objectFit:'contain',display:'block',background:'white'}} onError={e=>{e.target.style.display='none';e.target.nextSibling.style.display='flex'}}/>:null}
+                            <div style={{display:_cloudinaryPdfThumb(url)?'none':'flex',flexDirection:'column',alignItems:'center',padding:24,gap:4}}>
+                              <span style={{fontSize:32}}>PDF</span><span style={{fontSize:11,color:'#1e40af'}}>{name}</span></div></div>
+                          :<div style={{display:'flex',alignItems:'center',gap:6,padding:'14px 16px',cursor:'pointer'}} onClick={()=>openFile(url)}>
+                            <span style={{fontSize:20}}>📄</span><span style={{fontSize:12,fontWeight:600,color:'#1e40af'}}>{name}</span></div>}
+                          <div style={{padding:'4px 8px',borderTop:'1px solid #e9d5ff',fontSize:10,color:'#64748b',display:'flex',alignItems:'center',gap:4}}>
+                            <span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',flex:1}}>{name}</span>
+                            <button className="btn btn-sm" style={{fontSize:9,padding:'1px 6px'}} onClick={()=>openFile(url)}>Open</button>
+                            <button style={{background:'none',border:'none',color:'#ef4444',cursor:'pointer',fontSize:13,padding:'0 2px',lineHeight:1}} onClick={()=>{if(window.confirm('Remove this mockup?'))handleItemMockupDelete(url,gi.sku)}} title="Remove">×</button>
+                          </div>
+                        </div>
+                        {/* Extra mockups + upload zone for more */}
+                        <div style={{width:130,display:'flex',flexDirection:'column',gap:6}}>
+                          {extraMocks.map((f,i)=>{const eu=typeof f==='string'?f:(f?.url||'');const en=fileDisplayName(eu);
+                            return<div key={i} style={{borderRadius:6,border:'1px solid #e2e8f0',overflow:'hidden',background:'white',position:'relative'}}>
+                              {_isImgUrl(eu)?<img src={eu} alt={en} style={{width:'100%',maxHeight:90,objectFit:'contain',display:'block',cursor:'pointer'}} onClick={()=>openFile(eu)}/>
+                              :<div style={{padding:8,textAlign:'center',cursor:'pointer',fontSize:10,color:'#1e40af',fontWeight:600}} onClick={()=>openFile(eu)}>{en}</div>}
+                              <div style={{padding:'2px 4px',borderTop:'1px solid #f1f5f9',display:'flex',gap:2,justifyContent:'center'}}>
+                                <button style={{background:'none',border:'none',color:'#ef4444',cursor:'pointer',fontSize:11,padding:0}} onClick={()=>{if(window.confirm('Remove?'))handleItemMockupDelete(eu,gi.sku)}}>×</button>
+                              </div>
+                            </div>})}
+                          <div style={{padding:8,textAlign:'center',borderRadius:6,border:'1px dashed #a78bfa',background:'#faf5ff',cursor:artJobDetailUploading?'wait':'pointer',fontSize:10}}
+                            onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#7c3aed'}}
+                            onDragLeave={e=>{e.currentTarget.style.borderColor='#a78bfa'}}
+                            onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor='#a78bfa';if(!artJobDetailUploading)handleItemMockupUpload(Array.from(e.dataTransfer.files),gi.sku)}}
+                            onClick={()=>{if(artJobDetailUploading)return;const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps,.svg';inp.onchange=()=>handleItemMockupUpload(Array.from(inp.files),gi.sku);inp.click()}}>
+                            <div style={{color:'#7c3aed',fontWeight:600}}>+ Add More</div>
+                          </div>
+                        </div>
+                      </div>})()
+                    :<div style={{padding:16,textAlign:'center',borderRadius:8,border:'2px dashed #a78bfa',background:'#faf5ff',cursor:artJobDetailUploading?'wait':'pointer'}}
+                      onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#7c3aed';e.currentTarget.style.background='#ede9fe'}}
+                      onDragLeave={e=>{e.currentTarget.style.borderColor='#a78bfa';e.currentTarget.style.background='#faf5ff'}}
+                      onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor='#a78bfa';e.currentTarget.style.background='#faf5ff';if(!artJobDetailUploading)handleItemMockupUpload(Array.from(e.dataTransfer.files),gi.sku)}}
+                      onClick={()=>{if(artJobDetailUploading)return;const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps,.svg';inp.onchange=()=>handleItemMockupUpload(Array.from(inp.files),gi.sku);inp.click()}}>
+                      {artJobDetailUploading?<div style={{fontSize:11,color:'#7c3aed',fontWeight:600}}>Uploading...</div>
+                      :<><div style={{fontSize:20,marginBottom:2}}>📎</div><div style={{fontSize:11,fontWeight:600,color:'#7c3aed'}}>Drop mockup for {gi.sku} here or click to upload</div></>}
+                    </div>}
+                  </div>
+                </div>})}
+              {/* General/shared mockup files (not assigned to specific items) */}
+              {(()=>{const assignedUrls=new Set(Object.values(af?.item_mockups||{}).flat());
+                const generalFiles=mockupFiles.filter(f=>{const u=typeof f==='string'?f:(f?.url||'');return!assignedUrls.has(u)});
+                if(generalFiles.length===0)return null;
+                return<div style={{marginTop:10}}>
+                  <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:4}}>General Files ({generalFiles.length})</div>
+                  <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                    {generalFiles.map((f,i)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(url||f);
+                      return<div key={i} style={{borderRadius:6,border:'1px solid #e2e8f0',overflow:'hidden',background:'white',maxWidth:160}}>
+                        {_isImgUrl(url)?<img src={url} alt={name} style={{width:'100%',maxHeight:100,objectFit:'contain',display:'block',cursor:'pointer'}} onClick={()=>openFile(url)}/>
+                        :<div style={{padding:8,textAlign:'center',cursor:'pointer',fontSize:10,color:'#1e40af'}} onClick={()=>openFile(url)}>{name}</div>}
+                        <div style={{padding:'3px 6px',borderTop:'1px solid #f1f5f9',fontSize:9,color:'#64748b',display:'flex',alignItems:'center',gap:3}}>
+                          <span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{name}</span>
+                          <button style={{background:'none',border:'none',color:'#ef4444',cursor:'pointer',fontSize:12,padding:0}} onClick={()=>{if(window.confirm('Remove?'))handleArtFileDelete(url)}}>×</button>
+                        </div>
+                      </div>})}
+                  </div>
+                </div>})()}
               {/* Production files: visible to artists, admins, prod managers — NOT decorators (they see mockup only) */}
               {prodFilesL.length>0&&cu.role!=='production'&&cu.role!=='prod_assistant'&&<><div style={{fontSize:11,fontWeight:700,color:'#92400e',marginTop:8,marginBottom:4}}>Production Files ({prodFilesL.length})</div>
                 <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
@@ -13490,16 +13576,17 @@ export default function App(){
             </div>
             :<div style={{padding:'16px 20px',borderBottom:'1px solid #e2e8f0'}}>
               <div style={{fontSize:12,fontWeight:800,color:'#1e3a5f',marginBottom:8,display:'flex',alignItems:'center',gap:6}}>
-                <span style={{fontSize:16}}>📤</span> Upload Updated Art
+                <span style={{fontSize:16}}>📤</span> Upload General Art Files
+                <span style={{fontSize:10,color:'#94a3b8',fontWeight:400}}>(not tied to a specific item)</span>
               </div>
-              <div style={{padding:20,textAlign:'center',borderRadius:8,border:'2px dashed #a78bfa',background:'#faf5ff',cursor:artJobDetailUploading?'wait':'pointer',opacity:artJobDetailUploading?0.6:1}}
+              <div style={{padding:14,textAlign:'center',borderRadius:8,border:'2px dashed #a78bfa',background:'#faf5ff',cursor:artJobDetailUploading?'wait':'pointer',opacity:artJobDetailUploading?0.6:1}}
                 onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#7c3aed';e.currentTarget.style.background='#ede9fe'}}
                 onDragLeave={e=>{e.currentTarget.style.borderColor='#a78bfa';e.currentTarget.style.background='#faf5ff'}}
                 onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor='#a78bfa';e.currentTarget.style.background='#faf5ff';if(!artJobDetailUploading)handleArtUpload(Array.from(e.dataTransfer.files))}}
                 onClick={()=>{if(artJobDetailUploading)return;const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps,.dst,.svg';inp.onchange=()=>handleArtUpload(Array.from(inp.files));inp.click()}}>
-                {artJobDetailUploading?<><div style={{fontSize:28,marginBottom:4}}>⏳</div><div style={{fontSize:12,fontWeight:600,color:'#7c3aed'}}>Uploading...</div></>
-                :<><div style={{fontSize:28,marginBottom:4}}>📎</div><div style={{fontSize:12,fontWeight:600,color:'#7c3aed'}}>Drop files here or click to upload</div>
-                  <div style={{fontSize:10,color:'#94a3b8',marginTop:2}}>Supports PDF, PNG, JPG, AI, EPS, DST, SVG</div></>}
+                {artJobDetailUploading?<><div style={{fontSize:20,marginBottom:2}}>⏳</div><div style={{fontSize:11,fontWeight:600,color:'#7c3aed'}}>Uploading...</div></>
+                :<><div style={{fontSize:20,marginBottom:2}}>📎</div><div style={{fontSize:11,fontWeight:600,color:'#7c3aed'}}>Drop files here or click to upload</div>
+                  <div style={{fontSize:9,color:'#94a3b8',marginTop:1}}>PDF, PNG, JPG, AI, EPS, DST, SVG</div></>}
               </div>
             </div>}
 
