@@ -182,7 +182,7 @@ const _dbSaveEstimateInner = async (est) => {
       const{error:afErr}=await supabase.from('estimate_art_files').upsert(art_files.map(a=>({..._pick(a,_artCols),estimate_id:est.id})),{onConflict:'estimate_id,id'});
       if(afErr)console.error('[DB] estimate_art_files upsert failed:',afErr.message,afErr.details);
     }
-    if(!items?.length){_dbSaveFailedIds.delete(est.id);return true}
+    if(!items?.length){_dbSaveFailedIds.delete(est.id);_persistFailedIds();return true}
     for(let idx=0;idx<items.length;idx++){
       const{decorations,...itemData}=items[idx];
       const{data:inserted,error:itemErr}=await supabase.from('estimate_items').insert({..._pick(itemData,_itemCols),estimate_id:est.id,item_index:idx}).select('id').single();
@@ -205,9 +205,9 @@ const _dbSaveEstimateInner = async (est) => {
         }
       }
     }
-    if(decoFailed){_dbSaveFailedIds.add(est.id);return false}
-    _dbSaveFailedIds.delete(est.id);return true;
-  }catch(e){console.error('[DB] save estimate:',e);_dbSaveFailedIds.add(est.id);return false}});
+    if(decoFailed){_dbSaveFailedIds.add(est.id);_persistFailedIds();if(_dbNotify)_dbNotify('Estimate save incomplete — some data may not have been saved to cloud','error');return false}
+    _dbSaveFailedIds.delete(est.id);_persistFailedIds();return true;
+  }catch(e){console.error('[DB] save estimate:',e);_dbSaveFailedIds.add(est.id);_persistFailedIds();if(_dbNotify)_dbNotify('Estimate save failed: '+e.message,'error');return false}});
 };
 const _dbSaveEstimate = (est) => _queuedEntitySave(est.id, est, _dbSaveEstimateInner);
 const _dbSaveSOInner = async (so) => {
@@ -234,7 +234,7 @@ const _dbSaveSOInner = async (so) => {
     }
     if(firm_dates?.length){const{error:fdErr}=await supabase.from('so_firm_dates').insert(firm_dates.map(f=>({...f,so_id:so.id})));if(fdErr){console.error('[DB] so_firm_dates insert failed:',fdErr.message);saveFailed=true}}
     if(jobs?.length){const{error:jobErr}=await supabase.from('so_jobs').insert(jobs.map(j=>({..._pick(j,_jobCols),so_id:so.id})));if(jobErr){console.error('[DB] so_jobs insert failed:',jobErr.message,jobErr.details);saveFailed=true}}
-    if(!items?.length){if(saveFailed){_dbSaveFailedIds.add(so.id);return false}_dbSaveFailedIds.delete(so.id);return true}
+    if(!items?.length){if(saveFailed){_dbSaveFailedIds.add(so.id);_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save incomplete — some data may not have been saved to cloud','error');return false}_dbSaveFailedIds.delete(so.id);_persistFailedIds();return true}
     for(let idx=0;idx<items.length;idx++){
       const{decorations,pick_lines,po_lines,...itemData}=items[idx];
       // Separate size fields from pick_lines/po_lines back into sizes JSONB
@@ -271,9 +271,9 @@ const _dbSaveSOInner = async (so) => {
         if(poErr)console.error('[DB] so_item_po_lines insert failed:',poErr.message,poErr.details);
       }
     }
-    if(saveFailed){_dbSaveFailedIds.add(so.id);return false}
-    _dbSaveFailedIds.delete(so.id);return true;
-  }catch(e){console.error('[DB] save SO:',e);_dbSaveFailedIds.add(so.id);return false}});
+    if(saveFailed){_dbSaveFailedIds.add(so.id);_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save incomplete — some data may not have been saved to cloud','error');return false}
+    _dbSaveFailedIds.delete(so.id);_persistFailedIds();return true;
+  }catch(e){console.error('[DB] save SO:',e);_dbSaveFailedIds.add(so.id);_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save failed: '+e.message,'error');return false}});
 };
 const _dbSaveSO = (so) => _queuedEntitySave(so.id, so, _dbSaveSOInner);
 const _dbSaveInvoice = async (inv) => {
@@ -400,8 +400,10 @@ const _queuedEntitySave=async(id,data,saveFn)=>{
   }finally{delete _dbSaveInFlight[id]}
   return lastResult;
 };
-// Track IDs of estimates/SOs whose save failed (decoration inserts) — prevents reload from overwriting local state
-const _dbSaveFailedIds=new Set();
+// Track IDs of estimates/SOs whose save failed — prevents reload/poll from overwriting local state
+// Persisted to localStorage so protection survives page refresh
+const _dbSaveFailedIds=new Set(JSON.parse(localStorage.getItem('nsa_save_failed_ids')||'[]'));
+const _persistFailedIds=()=>{try{localStorage.setItem('nsa_save_failed_ids',JSON.stringify([..._dbSaveFailedIds]))}catch{}};
 // Column whitelists — strip unknown fields before sending to Supabase (localStorage may have extra UI fields like vendor_id)
 const _pick=(obj,cols)=>{const r={};cols.forEach(c=>{if(c in obj)r[c]=obj[c]});return r};
 const _estCols=['id','customer_id','memo','status','created_by','created_at','updated_at','default_markup','shipping_type','shipping_value','ship_to_id','email_status','email_opened_at','email_viewed_at','deleted_at'];
@@ -7089,7 +7091,11 @@ export default function App(){
           _dbSnap.current={ests:d.estimates,sos:d.sales_orders,invs:d.invoices,msgs:d.messages,cust:d.customers,prod:d.products,vend:d.vendors,team:d.team,omg:d.omg_stores,issues:d.issues};
           setREPS(d.team.length?d.team:DEFAULT_REPS);setCust(d.customers);
           if(d.vendors.length)setVend(d.vendors);setProd(prev=>{if(!d.products.length)return prev;const merged=d.products.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));return localOnly.length?[...merged,...localOnly]:merged});
-          setEsts(d.estimates);setSOs(d.sales_orders);
+          // Preserve local versions of estimates/SOs whose save previously failed (persisted in localStorage)
+          if(_dbSaveFailedIds.size){
+            setEsts(prev=>d.estimates.map(e=>_dbSaveFailedIds.has(e.id)?(prev.find(p=>p.id===e.id)||e):e));
+            setSOs(prev=>d.sales_orders.map(s=>_dbSaveFailedIds.has(s.id)?(prev.find(p=>p.id===s.id)||s):s));
+          }else{setEsts(d.estimates);setSOs(d.sales_orders)}
           setInvs(d.invoices);setMsgs(d.messages.length?d.messages:msgs);
           if(d.omg_stores.length)setOmgStores(d.omg_stores);
           if(d.issues?.length)setIssues(d.issues);
@@ -7105,6 +7111,7 @@ export default function App(){
           if(as.inv_pos)setInvPOs(as.inv_pos);
           if(as.inv_adj_log)setInvAdjLog(as.inv_adj_log);
           if(as.inv_po_counter)setInvPOCounter(as.inv_po_counter);
+          if(_dbSaveFailedIds.size)console.warn('[DB] Loaded from Supabase — preserving local data for',_dbSaveFailedIds.size,'failed saves:',[ ..._dbSaveFailedIds]);
           console.log('[DB] Loaded from Supabase (normalized)');
         }else{
           // Supabase tables exist but are all empty — seed from localStorage
@@ -7130,7 +7137,7 @@ export default function App(){
               console.log('[DB] Seeded Supabase from localStorage');
             }catch(seedErr){console.error('[DB] Seed failed:',seedErr);
               // Clear the stuck lock so next browser can retry
-              await supabase.from('app_state').upsert({id:lockId,value:'"failed"',updated_at:new Date().toISOString()}).catch(()=>{});
+              try{await supabase.from('app_state').upsert({id:lockId,value:'"failed"',updated_at:new Date().toISOString()})}catch(_){}
             }
           }else{
             // Another browser is actively seeding (lock <30s old) — wait and reload
@@ -7278,6 +7285,8 @@ export default function App(){
   React.useEffect(()=>{_saveAppState('change_log',changeLog)},[changeLog]);
   React.useEffect(()=>{_saveAppState('so_history',soHistory)},[soHistory]);
   React.useEffect(()=>{_saveAppState('qb_config',qbConfig)},[qbConfig]);
+  // Warn user before closing/reloading if there are failed saves (data at risk of loss)
+  React.useEffect(()=>{const h=e=>{if(_dbSaveFailedIds.size>0||_dbSavingCount>0){e.preventDefault();e.returnValue=''}};window.addEventListener('beforeunload',h);return()=>window.removeEventListener('beforeunload',h)},[]);
   // Handle QB OAuth callback redirect
   React.useEffect(()=>{
     try{
