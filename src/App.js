@@ -800,7 +800,7 @@ const DEFAULT_REPS=[
 const NSA={name:'National Sports Apparel',legal:'National Sports Apparel LLC',phone:'(619) 555-0127',email:'team@nsa-teamwear.com',
   addr:'9340 Cabot Dr, Suite A',city:'San Diego',state:'CA',zip:'91941',
   fullAddr:'9340 Cabot Dr, Suite A, San Diego, CA 91941',
-  logo:'NSA',terms:'Net 30 from invoice date unless otherwise agreed.',
+  logo:'NSA',logoUrl:'/nsa-logo.svg',terms:'Net 30 from invoice date unless otherwise agreed.',
   depositTerms:'50% deposit required to begin production. Balance due upon completion.'};
 const ART_LABELS={needs_art:'Needs Art',art_requested:'Art Requested',art_in_progress:'In Progress',waiting_approval:'Waiting Approval',production_files_needed:'Prod Files Needed',art_complete:'Art Complete'};
 const ART_FILE_LABELS={waiting_for_art:'Waiting for Art',needs_approval:'Needs Approval',approved:'Approved / Needs Files'};
@@ -813,8 +813,10 @@ const PRINT_CSS=`
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:'Segoe UI',Helvetica,Arial,sans-serif;font-size:12px;color:#1a1a1a;padding:24px 32px;line-height:1.5}
 .header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;padding-bottom:12px;border-bottom:3px solid #1e3a5f}
-.logo{font-size:28px;font-weight:900;color:#1e3a5f;letter-spacing:-1px}
-.logo span{font-size:11px;font-weight:400;color:#666;display:block;letter-spacing:1px}
+.logo{display:flex;align-items:center;gap:10px}
+.logo img{height:40px}
+.logo .logo-text{font-size:28px;font-weight:900;color:#1e3a5f;letter-spacing:-1px}
+.logo .logo-text span{font-size:11px;font-weight:400;color:#666;display:block;letter-spacing:1px}
 .company-info{text-align:right;font-size:10px;color:#555;line-height:1.6}
 .doc-title{font-size:22px;font-weight:800;color:#1e3a5f;margin:12px 0 4px}
 .doc-subtitle{font-size:11px;color:#666;margin-bottom:12px}
@@ -845,7 +847,7 @@ const printDoc=({title,docNum,docType,headerRight,infoBoxes,tables,notes,footer,
   if(!w)return;
   let html='<!DOCTYPE html><html><head><title>'+docNum+' — '+title+'</title><style>'+PRINT_CSS+'</style></head><body>';
   // Header
-  html+='<div class="header"><div><div class="logo">'+NSA.logo+'<span>'+NSA.name+'</span></div></div>';
+  html+='<div class="header"><div><div class="logo"><img src="'+window.location.origin+NSA.logoUrl+'" alt="NSA"/><div class="logo-text">'+NSA.logo+'<span>'+NSA.name+'</span></div></div></div>';
   html+='<div class="company-info">'+NSA.fullAddr+'<br/>'+NSA.phone+' · '+NSA.email+'</div></div>';
   // Doc title
   html+='<div style="display:flex;justify-content:space-between;align-items:baseline">';
@@ -1343,7 +1345,7 @@ const fetchRecentShipments = async () => {
 };
 
 // Create a ShipStation label for an order
-const createShipStationLabel = async (so, customer, packageItems, weight, carrier, service) => {
+const createShipStationLabel = async (so, customer, packageItems, weight, carrier, service, dimensions) => {
   // Ensure order exists in ShipStation first
   let ssOrderId = so._shipstation_order_id;
   if (!ssOrderId) {
@@ -1364,7 +1366,10 @@ const createShipStationLabel = async (so, customer, packageItems, weight, carrie
   const labelPayload = {
     orderId: ssOrderId, carrierCode: carrier || 'fedex', serviceCode: service || 'fedex_ground',
     packageCode: 'package', confirmation: 'none', shipDate: new Date().toISOString().split('T')[0],
-    weight: { value: weight || 5, units: 'pounds' }, dimensions: null,
+    weight: { value: weight || 5, units: 'pounds' },
+    dimensions: dimensions && dimensions.length && dimensions.width && dimensions.height
+      ? { length: parseFloat(dimensions.length), width: parseFloat(dimensions.width), height: parseFloat(dimensions.height), units: 'inches' }
+      : null,
     shipFrom: { name: 'National Sports Apparel', company: 'National Sports Apparel', street1: '', city: '', state: '', postalCode: '', country: 'US', phone: '' },
     shipTo, insuranceOptions: { provider: null, insureShipment: false, insuredValue: 0 },
     internationalOptions: null, advancedOptions: { customField1: `NSA-SO-${so.id}` },
@@ -1805,7 +1810,7 @@ function LoginGate({onLogin,reps}){
       <div style={{width:480,padding:0}}>
         {/* Logo */}
         <div style={{textAlign:'center',marginBottom:32}}>
-          <div style={{fontSize:48,fontWeight:900,color:'white',letterSpacing:-2}}>NSA</div>
+          <img src={NSA.logoUrl} alt="National Sports Apparel" style={{height:70,marginBottom:8,filter:'brightness(0) invert(1)'}}/>
           <div style={{fontSize:13,color:'#94a3b8',letterSpacing:3,textTransform:'uppercase'}}>Portal</div>
         </div>
 
@@ -3778,7 +3783,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       </div>
       :<div className="modal-body">
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:16}}>
-          <div><div style={{fontSize:20,fontWeight:800}}>NATIONAL SPORTS APPAREL</div><div style={{fontSize:12,color:'#64748b'}}>Item Fulfillment</div></div>
+          <div style={{display:'flex',alignItems:'center',gap:10}}><img src={NSA.logoUrl} alt="NSA" style={{height:36}}/><div><div style={{fontSize:12,color:'#64748b'}}>Item Fulfillment</div></div></div>
           <div style={{textAlign:'right'}}><div style={{fontSize:18,fontWeight:800,color:'#1e40af'}}>{pickId}</div><div style={{fontSize:14,fontWeight:700,color:'#475569'}}>{o.id}</div><div style={{fontSize:12,color:'#64748b'}}>{new Date().toLocaleDateString()}</div></div></div>
         <hr style={{border:'2px solid #0f172a',marginBottom:12}}/>
         <div style={{display:'flex',gap:40,marginBottom:12}}><div><div style={{fontSize:10,fontWeight:700,color:'#64748b'}}>CUSTOMER</div><div style={{fontWeight:700}}>{cust?.name}</div><div style={{fontSize:12,color:'#64748b'}}>{cust?.alpha_tag}</div></div>
@@ -5791,7 +5796,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       <div style={{background:'linear-gradient(135deg,#1e3a5f,#2563eb)',color:'white',padding:'24px 28px',borderRadius:'12px 12px 0 0',position:'relative'}}>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
           <div>
-            <div style={{fontSize:11,opacity:0.7,letterSpacing:1,marginBottom:4}}>NATIONAL SPORTS APPAREL</div>
+            <img src="/nsa-logo.svg" alt="NSA" style={{height:32,filter:'brightness(0) invert(1)',marginBottom:6}}/>
             <div style={{fontSize:22,fontWeight:800}}>{customer.name}</div>
             <div style={{fontSize:13,opacity:0.8,marginTop:2}}>Customer Portal</div>
           </div>
@@ -6294,7 +6299,7 @@ function StripePaymentModal({invoices,customerName,customerEmail,alphaTag,onSucc
   return<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:9999,padding:16}}>
     <div style={{width:'100%',maxWidth:480,background:'white',borderRadius:16,boxShadow:'0 8px 32px rgba(0,0,0,0.2)',overflow:'hidden'}} onClick={e=>e.stopPropagation()}>
       <div style={{background:'linear-gradient(135deg,#059669,#22c55e)',color:'white',padding:'20px 24px'}}>
-        <div style={{fontSize:11,opacity:0.8,letterSpacing:1}}>NATIONAL SPORTS APPAREL</div>
+        <img src="/nsa-logo.svg" alt="NSA" style={{height:28,filter:'brightness(0) invert(1)',marginBottom:4}}/>
         <div style={{fontSize:20,fontWeight:800,marginTop:4}}>Secure Payment</div>
         <div style={{fontSize:13,opacity:0.8,marginTop:2}}>{customerName} · {invoiceIds}</div>
       </div>
@@ -6562,7 +6567,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
       <div style={{background:'linear-gradient(135deg,#1e3a5f,#2563eb)',color:'white',padding:'24px 28px',position:'relative'}}>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
           <div>
-            <div style={{fontSize:11,opacity:0.7,letterSpacing:1,marginBottom:4}}>NATIONAL SPORTS APPAREL</div>
+            <img src="/nsa-logo.svg" alt="NSA" style={{height:32,filter:'brightness(0) invert(1)',marginBottom:6}}/>
             <div style={{fontSize:22,fontWeight:800}}>{customer.name}</div>
             <div style={{fontSize:13,opacity:0.8,marginTop:2}}>Customer Portal</div>
           </div>
@@ -11996,20 +12001,19 @@ export default function App(){
                 <div style={{display:'flex',gap:6,marginTop:8,borderTop:'1px solid #e2e8f0',paddingTop:6}}>
                   <button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
                     onClick={()=>{
-                      // Build ship modal with all items from this group, pre-populate one box with everything
-                      const allItems=[];
-                      grp.items.forEach(t=>{
-                        const so=t.so;const soItems=safeItems(so);
-                        soItems.forEach((item,iIdx)=>{
+                      // Build ship modal with all items from SOs in this ready-to-ship group
+                      const allItems=[];const seen=new Set();
+                      Object.entries(grp.soMap).forEach(([soId,so])=>{
+                        safeItems(so).forEach((item,iIdx)=>{
+                          const key=soId+'|'+iIdx;
+                          if(seen.has(key))return;
                           const qty=Object.values(safeSizes(item)).reduce((a,v)=>a+safeNum(v),0);
                           if(qty<=0)return;
-                          // Check if this item is part of the ready-to-ship group (match by desc)
-                          const matchTask=grp.items.find(gi=>gi.soId===so.id&&gi.desc?.includes(item.sku));
-                          if(!matchTask&&!grp.items.find(gi=>gi.soId===so.id&&gi.desc?.includes(item.name)))return;
-                          allItems.push({sku:item.sku,name:item.name,color:item.color||'',sizes:{...safeSizes(item)},soId:so.id,itemIdx:iIdx});
+                          seen.add(key);
+                          allItems.push({sku:item.sku,name:item.name,color:item.color||'',sizes:{...safeSizes(item)},soId,itemIdx:iIdx});
                         });
                       });
-                      setShipModal({grp,soMap:grp.soMap,boxes:[{items:allItems.length>0?allItems.map(it=>({...it,sizes:{...it.sizes}})):[],tracking_number:'',carrier:'fedex',weight:5,notes:''}]});
+                      setShipModal({grp,soMap:grp.soMap,availableItems:allItems,boxes:[{items:[],tracking_number:'',carrier:'fedex',weight:5,dimensions:{length:'',width:'',height:''},notes:''}]});
                     }}>📦 Create Shipment</button>
                   <button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 10px'}}
                     onClick={()=>{
@@ -12059,11 +12063,22 @@ export default function App(){
                 <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:10}}>
                   <span style={{fontSize:13,fontWeight:800,color:'#166534'}}>Box {bi+1}</span>
                   <span style={{fontSize:11,fontWeight:600,color:'#475569'}}>{boxUnits} units</span>
-                  <div style={{marginLeft:'auto',display:'flex',gap:6,alignItems:'center'}}>
+                  <div style={{marginLeft:'auto',display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
                     <div style={{display:'flex',alignItems:'center',gap:4}}>
                       <label style={{fontSize:10,color:'#64748b',fontWeight:600}}>Weight (lbs)</label>
                       <input className="form-input" type="number" min="0.1" step="0.5" value={box.weight||5} style={{width:60,fontSize:11,padding:'3px 6px'}}
                         onChange={e=>{const b=[...shipModal.boxes];b[bi]={...b[bi],weight:parseFloat(e.target.value)||5};setShipModal({...shipModal,boxes:b})}}/>
+                    </div>
+                    <div style={{display:'flex',alignItems:'center',gap:3}}>
+                      <label style={{fontSize:10,color:'#64748b',fontWeight:600}}>Box (in)</label>
+                      <input className="form-input" type="number" min="1" placeholder="L" value={(box.dimensions||{}).length||''} style={{width:40,fontSize:11,padding:'3px 4px',textAlign:'center'}}
+                        onChange={e=>{const b=[...shipModal.boxes];b[bi]={...b[bi],dimensions:{...(b[bi].dimensions||{}),length:e.target.value}};setShipModal({...shipModal,boxes:b})}}/>
+                      <span style={{fontSize:10,color:'#94a3b8'}}>×</span>
+                      <input className="form-input" type="number" min="1" placeholder="W" value={(box.dimensions||{}).width||''} style={{width:40,fontSize:11,padding:'3px 4px',textAlign:'center'}}
+                        onChange={e=>{const b=[...shipModal.boxes];b[bi]={...b[bi],dimensions:{...(b[bi].dimensions||{}),width:e.target.value}};setShipModal({...shipModal,boxes:b})}}/>
+                      <span style={{fontSize:10,color:'#94a3b8'}}>×</span>
+                      <input className="form-input" type="number" min="1" placeholder="H" value={(box.dimensions||{}).height||''} style={{width:40,fontSize:11,padding:'3px 4px',textAlign:'center'}}
+                        onChange={e=>{const b=[...shipModal.boxes];b[bi]={...b[bi],dimensions:{...(b[bi].dimensions||{}),height:e.target.value}};setShipModal({...shipModal,boxes:b})}}/>
                     </div>
                     <select className="form-select" value={box.carrier||'fedex'} style={{width:100,fontSize:11,padding:'3px 6px'}}
                       onChange={e=>{const b=[...shipModal.boxes];b[bi]={...b[bi],carrier:e.target.value};setShipModal({...shipModal,boxes:b})}}>
@@ -12086,12 +12101,17 @@ export default function App(){
                         const c2=cust.find(cc=>cc.id===so?.customer_id);
                         if(!c2){nf('No customer found','error');return}
                         nf('Creating ShipStation label...');
-                        const label=await createShipStationLabel(so,c2,box.items,box.weight,box.carrier,'fedex_ground');
+                        const label=await createShipStationLabel(so,c2,box.items,box.weight,box.carrier,'fedex_ground',box.dimensions);
                         const b=[...shipModal.boxes];
-                        b[bi]={...b[bi],tracking_number:label.trackingNumber||'',carrier:label.carrierCode||box.carrier,label_url:label.labelData?.href||null,shipstation_shipment_id:label.shipmentId||null};
+                        const cost=label.shipmentCost||label.insuranceCost?parseFloat(label.shipmentCost||0)+parseFloat(label.insuranceCost||0):null;
+                        b[bi]={...b[bi],tracking_number:label.trackingNumber||'',carrier:label.carrierCode||box.carrier,label_url:label.labelData?.href||null,shipstation_shipment_id:label.shipmentId||null,shipping_cost:cost};
                         setShipModal({...shipModal,boxes:b});
-                        nf('✅ Label created! Tracking: '+(label.trackingNumber||'pending'));
-                        if(label.shipmentCost)nf('Label cost: $'+label.shipmentCost);
+                        // Save shipping cost to SO
+                        if(cost){
+                          const existingCost=safeNum(so._shipping_cost||so._shipstation_cost||0);
+                          setSOs(prev=>prev.map(s=>s.id===soId?{...s,_shipping_cost:existingCost+cost,_shipstation_cost:existingCost+cost}:s));
+                        }
+                        nf('✅ Label created! Tracking: '+(label.trackingNumber||'pending')+(cost?' · Cost: $'+cost.toFixed(2):''));
                       }catch(err){nf('Label creation failed: '+err.message,'error')}
                     }}>🏷️ Create Label</button>}
                 </div>
@@ -12130,8 +12150,64 @@ export default function App(){
                     </tr>})}</tbody>
                 </table>}
 
+                {/* Add items from available list */}
+                {(()=>{
+                  const avail=(shipModal.availableItems||[]).filter(ai=>{
+                    // Show items not yet fully added to ANY box
+                    const inBoxes=shipModal.boxes.reduce((a,bx)=>{
+                      const match=(bx.items||[]).find(bi2=>bi2.soId===ai.soId&&bi2.itemIdx===ai.itemIdx);
+                      if(match)Object.entries(match.sizes||{}).forEach(([sz,v])=>{a[sz]=(a[sz]||0)+v});
+                      return a;
+                    },{});
+                    const remaining=Object.entries(ai.sizes||{}).some(([sz,v])=>v>(inBoxes[sz]||0));
+                    return remaining;
+                  });
+                  if(avail.length===0)return null;
+                  return<div style={{marginTop:8,padding:8,background:'#eff6ff',borderRadius:6,border:'1px dashed #93c5fd'}}>
+                    <div style={{fontSize:10,fontWeight:700,color:'#1e40af',textTransform:'uppercase',marginBottom:6}}>Add items to this box</div>
+                    <table style={{width:'100%',fontSize:11,borderCollapse:'collapse'}}>
+                      <thead><tr style={{borderBottom:'1px solid #bfdbfe'}}>
+                        <th style={{padding:'3px 6px',textAlign:'left',fontSize:10,color:'#1e40af'}}>SO#</th>
+                        <th style={{padding:'3px 6px',textAlign:'left',fontSize:10,color:'#1e40af'}}>SKU</th>
+                        <th style={{padding:'3px 6px',textAlign:'left',fontSize:10,color:'#1e40af'}}>Item</th>
+                        <th style={{padding:'3px 6px',textAlign:'left',fontSize:10,color:'#1e40af'}}>Sizes</th>
+                        <th style={{padding:'3px 6px',textAlign:'center',fontSize:10,color:'#1e40af'}}>Qty</th>
+                        <th style={{width:60}}></th>
+                      </tr></thead>
+                      <tbody>{avail.map((ai,aii)=>{
+                        const inBoxes={};
+                        shipModal.boxes.forEach(bx=>{const match=(bx.items||[]).find(bi2=>bi2.soId===ai.soId&&bi2.itemIdx===ai.itemIdx);
+                          if(match)Object.entries(match.sizes||{}).forEach(([sz,v])=>{inBoxes[sz]=(inBoxes[sz]||0)+v})});
+                        const remainingSizes={};
+                        Object.entries(ai.sizes||{}).forEach(([sz,v])=>{const rem=v-(inBoxes[sz]||0);if(rem>0)remainingSizes[sz]=rem});
+                        const remQty=Object.values(remainingSizes).reduce((a,v)=>a+v,0);
+                        return<tr key={aii} style={{borderBottom:'1px solid #dbeafe'}}>
+                          <td style={{padding:'3px 6px',fontFamily:'monospace',fontSize:10,color:'#64748b'}}>{ai.soId}</td>
+                          <td style={{padding:'3px 6px',fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{ai.sku}</td>
+                          <td style={{padding:'3px 6px',fontSize:10}}>{ai.name}</td>
+                          <td style={{padding:'3px 6px',fontSize:10,color:'#475569'}}>{Object.entries(remainingSizes).map(([sz,v])=>sz+':'+v).join(' ')}</td>
+                          <td style={{padding:'3px 6px',textAlign:'center',fontWeight:700}}>{remQty}</td>
+                          <td style={{padding:'3px 6px'}}>
+                            <button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#2563eb',color:'white',border:'none',borderRadius:4}}
+                              onClick={()=>{
+                                const b=[...shipModal.boxes];
+                                const existing=(b[bi].items||[]).findIndex(x=>x.soId===ai.soId&&x.itemIdx===ai.itemIdx);
+                                if(existing>=0){
+                                  const merged={...b[bi].items[existing],sizes:{}};
+                                  Object.entries(ai.sizes||{}).forEach(([sz,v])=>{merged.sizes[sz]=(b[bi].items[existing].sizes[sz]||0)+(remainingSizes[sz]||0)});
+                                  b[bi]={...b[bi],items:b[bi].items.map((x,xi)=>xi===existing?merged:x)};
+                                } else {
+                                  b[bi]={...b[bi],items:[...(b[bi].items||[]),{sku:ai.sku,name:ai.name,color:ai.color||'',sizes:{...remainingSizes},soId:ai.soId,itemIdx:ai.itemIdx}]};
+                                }
+                                setShipModal({...shipModal,boxes:b});
+                              }}>+ Add</button>
+                          </td>
+                        </tr>})}</tbody>
+                    </table>
+                  </div>})()}
+
                 {/* Notes */}
-                <input className="form-input" placeholder="Box notes (optional)..." value={box.notes||''} style={{fontSize:11,padding:'3px 8px'}}
+                <input className="form-input" placeholder="Box notes (optional)..." value={box.notes||''} style={{fontSize:11,padding:'3px 8px',marginTop:8}}
                   onChange={e=>{const b=[...shipModal.boxes];b[bi]={...b[bi],notes:e.target.value};setShipModal({...shipModal,boxes:b})}}/>
 
                 {/* Per-box packing slip */}
@@ -12161,13 +12237,19 @@ export default function App(){
                     });
                     nf('🖨️ Packing slip for Box '+(bi+1));
                   }}>🖨️ Pack Slip</button>
-                  {box.label_url&&<a href={box.label_url} target="_blank" rel="noreferrer" className="btn btn-sm btn-secondary" style={{fontSize:10,textDecoration:'none'}}>🏷️ Print Label</a>}
+                  {box.shipping_cost&&<span style={{fontSize:10,fontWeight:700,color:'#166534',padding:'4px 8px',background:'#dcfce7',borderRadius:4}}>Ship cost: ${box.shipping_cost.toFixed(2)}</span>}
+                  {box.label_url&&<a href={box.label_url} target="_blank" rel="noreferrer" className="btn btn-sm" style={{fontSize:10,textDecoration:'none',background:'#7c3aed',color:'white',border:'none',padding:'4px 10px'}}>🏷️ Print Label</a>}
+                  {box.tracking_number&&!box.label_url&&<button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{
+                    const trackUrl=box.tracking_number;
+                    const carrierUrl=/^1Z/i.test(trackUrl)?'https://www.ups.com/track?tracknum='+trackUrl:/^(94|93|92|91)\d{18,}/.test(trackUrl)?'https://tools.usps.com/go/TrackConfirmAction?tLabels='+trackUrl:'https://www.fedex.com/fedextrack/?trknbr='+trackUrl;
+                    window.open(carrierUrl,'_blank');
+                  }}>📋 Track Package</button>}
                 </div>
               </div>})}
 
             {/* Add box button */}
             <button className="btn btn-sm btn-secondary" style={{marginBottom:16}}
-              onClick={()=>setShipModal({...shipModal,boxes:[...shipModal.boxes,{items:[],tracking_number:'',carrier:'fedex',weight:5,notes:''}]})}>+ Add Box</button>
+              onClick={()=>setShipModal({...shipModal,boxes:[...shipModal.boxes,{items:[],tracking_number:'',carrier:'fedex',weight:5,dimensions:{length:'',width:'',height:''},notes:''}]})}>+ Add Box</button>
 
             {/* Actions */}
             <div style={{display:'flex',gap:8,borderTop:'1px solid #e2e8f0',paddingTop:12}}>
@@ -17088,7 +17170,7 @@ export default function App(){
 
   // LOADING GATE
   if(dbLoading)return<div style={{minHeight:'100vh',background:'linear-gradient(135deg,#0f172a 0%,#1e3a5f 50%,#0f172a 100%)',display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column',gap:16}}>
-    <div style={{fontSize:48,fontWeight:900,color:'white',letterSpacing:-2}}>NSA</div>
+    <img src={NSA.logoUrl} alt="NSA" style={{height:70,filter:'brightness(0) invert(1)'}}/>
     <div style={{fontSize:13,color:'#94a3b8',letterSpacing:3}}>Loading...</div></div>;
   // LOGIN GATE
   if(!cu)return<LoginGate onLogin={handleLogin} reps={REPS}/>;
@@ -17097,7 +17179,7 @@ export default function App(){
     {/* Mobile sidebar backdrop */}
     <div className={`sidebar-backdrop${mobileMenuOpen?' open':''}`} onClick={()=>setMobileMenuOpen(false)}/>
     <div className={`sidebar${mobileMenuOpen?' open':''}`}><div className="sidebar-logo" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-      <div>NSA<span>Portal</span></div>
+      <div style={{display:'flex',alignItems:'center',gap:8}}><img src={NSA.logoUrl} alt="NSA" style={{height:32,filter:'brightness(0) invert(1)'}}/></div>
       <button className="mobile-menu-btn" onClick={()=>setMobileMenuOpen(false)} style={{color:'#94a3b8',fontSize:20,background:'none',border:'none',cursor:'pointer',padding:4}}>x</button>
     </div>
       <nav className="sidebar-nav">{nav.map((item,i)=>{if(item.section)return<div key={i} className="sidebar-section">{item.section}</div>;
