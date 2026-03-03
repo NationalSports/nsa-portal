@@ -4,6 +4,12 @@ ALTER TABLE public.so_item_decorations ADD COLUMN IF NOT EXISTS num_font TEXT;
 ALTER TABLE public.estimate_item_decorations ADD COLUMN IF NOT EXISTS num_size_back TEXT;
 ALTER TABLE public.so_item_decorations ADD COLUMN IF NOT EXISTS num_size_back TEXT;
 
+-- Ensure custom_font_art_id exists (may be missing from schema cache)
+ALTER TABLE public.estimate_item_decorations ADD COLUMN IF NOT EXISTS custom_font_art_id TEXT;
+ALTER TABLE public.so_item_decorations ADD COLUMN IF NOT EXISTS custom_font_art_id TEXT;
+ALTER TABLE public.estimate_item_decorations ADD COLUMN IF NOT EXISTS _showRoster BOOLEAN DEFAULT false;
+ALTER TABLE public.so_item_decorations ADD COLUMN IF NOT EXISTS _showRoster BOOLEAN DEFAULT false;
+
 -- Re-ensure columns from migrations 00013/00015 exist (idempotent safety net)
 ALTER TABLE public.estimate_item_decorations ADD COLUMN IF NOT EXISTS print_color TEXT;
 ALTER TABLE public.so_item_decorations ADD COLUMN IF NOT EXISTS print_color TEXT;
