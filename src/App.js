@@ -1336,7 +1336,7 @@ const fetchRecentShipments = async () => {
 };
 
 // Create a ShipStation label for an order
-const createShipStationLabel = async (so, customer, packageItems, weight, carrier, service) => {
+const createShipStationLabel = async (so, customer, packageItems, weight, carrier, service, dimensions) => {
   // Ensure order exists in ShipStation first
   let ssOrderId = so._shipstation_order_id;
   if (!ssOrderId) {
@@ -1357,7 +1357,10 @@ const createShipStationLabel = async (so, customer, packageItems, weight, carrie
   const labelPayload = {
     orderId: ssOrderId, carrierCode: carrier || 'fedex', serviceCode: service || 'fedex_ground',
     packageCode: 'package', confirmation: 'none', shipDate: new Date().toISOString().split('T')[0],
-    weight: { value: weight || 5, units: 'pounds' }, dimensions: null,
+    weight: { value: weight || 5, units: 'pounds' },
+    dimensions: dimensions && dimensions.length && dimensions.width && dimensions.height
+      ? { length: parseFloat(dimensions.length), width: parseFloat(dimensions.width), height: parseFloat(dimensions.height), units: 'inches' }
+      : null,
     shipFrom: { name: 'National Sports Apparel', company: 'National Sports Apparel', street1: '', city: '', state: '', postalCode: '', country: 'US', phone: '' },
     shipTo, insuranceOptions: { provider: null, insureShipment: false, insuredValue: 0 },
     internationalOptions: null, advancedOptions: { customField1: `NSA-SO-${so.id}` },
@@ -11978,20 +11981,19 @@ export default function App(){
                 <div style={{display:'flex',gap:6,marginTop:8,borderTop:'1px solid #e2e8f0',paddingTop:6}}>
                   <button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
                     onClick={()=>{
-                      // Build ship modal with all items from this group, pre-populate one box with everything
-                      const allItems=[];
-                      grp.items.forEach(t=>{
-                        const so=t.so;const soItems=safeItems(so);
-                        soItems.forEach((item,iIdx)=>{
+                      // Build ship modal with all items from SOs in this ready-to-ship group
+                      const allItems=[];const seen=new Set();
+                      Object.entries(grp.soMap).forEach(([soId,so])=>{
+                        safeItems(so).forEach((item,iIdx)=>{
+                          const key=soId+'|'+iIdx;
+                          if(seen.has(key))return;
                           const qty=Object.values(safeSizes(item)).reduce((a,v)=>a+safeNum(v),0);
                           if(qty<=0)return;
-                          // Check if this item is part of the ready-to-ship group (match by desc)
-                          const matchTask=grp.items.find(gi=>gi.soId===so.id&&gi.desc?.includes(item.sku));
-                          if(!matchTask&&!grp.items.find(gi=>gi.soId===so.id&&gi.desc?.includes(item.name)))return;
-                          allItems.push({sku:item.sku,name:item.name,color:item.color||'',sizes:{...safeSizes(item)},soId:so.id,itemIdx:iIdx});
+                          seen.add(key);
+                          allItems.push({sku:item.sku,name:item.name,color:item.color||'',sizes:{...safeSizes(item)},soId,itemIdx:iIdx});
                         });
                       });
-                      setShipModal({grp,soMap:grp.soMap,boxes:[{items:allItems.length>0?allItems.map(it=>({...it,sizes:{...it.sizes}})):[],tracking_number:'',carrier:'fedex',weight:5,notes:''}]});
+                      setShipModal({grp,soMap:grp.soMap,boxes:[{items:allItems.length>0?allItems.map(it=>({...it,sizes:{...it.sizes}})):[],tracking_number:'',carrier:'fedex',weight:5,dimensions:{length:'',width:'',height:''},notes:''}]});
                     }}>📦 Create Shipment</button>
                   <button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 10px'}}
                     onClick={()=>{
@@ -12041,11 +12043,22 @@ export default function App(){
                 <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:10}}>
                   <span style={{fontSize:13,fontWeight:800,color:'#166534'}}>Box {bi+1}</span>
                   <span style={{fontSize:11,fontWeight:600,color:'#475569'}}>{boxUnits} units</span>
-                  <div style={{marginLeft:'auto',display:'flex',gap:6,alignItems:'center'}}>
+                  <div style={{marginLeft:'auto',display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
                     <div style={{display:'flex',alignItems:'center',gap:4}}>
                       <label style={{fontSize:10,color:'#64748b',fontWeight:600}}>Weight (lbs)</label>
                       <input className="form-input" type="number" min="0.1" step="0.5" value={box.weight||5} style={{width:60,fontSize:11,padding:'3px 6px'}}
                         onChange={e=>{const b=[...shipModal.boxes];b[bi]={...b[bi],weight:parseFloat(e.target.value)||5};setShipModal({...shipModal,boxes:b})}}/>
+                    </div>
+                    <div style={{display:'flex',alignItems:'center',gap:3}}>
+                      <label style={{fontSize:10,color:'#64748b',fontWeight:600}}>Box (in)</label>
+                      <input className="form-input" type="number" min="1" placeholder="L" value={(box.dimensions||{}).length||''} style={{width:40,fontSize:11,padding:'3px 4px',textAlign:'center'}}
+                        onChange={e=>{const b=[...shipModal.boxes];b[bi]={...b[bi],dimensions:{...(b[bi].dimensions||{}),length:e.target.value}};setShipModal({...shipModal,boxes:b})}}/>
+                      <span style={{fontSize:10,color:'#94a3b8'}}>×</span>
+                      <input className="form-input" type="number" min="1" placeholder="W" value={(box.dimensions||{}).width||''} style={{width:40,fontSize:11,padding:'3px 4px',textAlign:'center'}}
+                        onChange={e=>{const b=[...shipModal.boxes];b[bi]={...b[bi],dimensions:{...(b[bi].dimensions||{}),width:e.target.value}};setShipModal({...shipModal,boxes:b})}}/>
+                      <span style={{fontSize:10,color:'#94a3b8'}}>×</span>
+                      <input className="form-input" type="number" min="1" placeholder="H" value={(box.dimensions||{}).height||''} style={{width:40,fontSize:11,padding:'3px 4px',textAlign:'center'}}
+                        onChange={e=>{const b=[...shipModal.boxes];b[bi]={...b[bi],dimensions:{...(b[bi].dimensions||{}),height:e.target.value}};setShipModal({...shipModal,boxes:b})}}/>
                     </div>
                     <select className="form-select" value={box.carrier||'fedex'} style={{width:100,fontSize:11,padding:'3px 6px'}}
                       onChange={e=>{const b=[...shipModal.boxes];b[bi]={...b[bi],carrier:e.target.value};setShipModal({...shipModal,boxes:b})}}>
@@ -12068,7 +12081,7 @@ export default function App(){
                         const c2=cust.find(cc=>cc.id===so?.customer_id);
                         if(!c2){nf('No customer found','error');return}
                         nf('Creating ShipStation label...');
-                        const label=await createShipStationLabel(so,c2,box.items,box.weight,box.carrier,'fedex_ground');
+                        const label=await createShipStationLabel(so,c2,box.items,box.weight,box.carrier,'fedex_ground',box.dimensions);
                         const b=[...shipModal.boxes];
                         b[bi]={...b[bi],tracking_number:label.trackingNumber||'',carrier:label.carrierCode||box.carrier,label_url:label.labelData?.href||null,shipstation_shipment_id:label.shipmentId||null};
                         setShipModal({...shipModal,boxes:b});
@@ -12143,13 +12156,18 @@ export default function App(){
                     });
                     nf('🖨️ Packing slip for Box '+(bi+1));
                   }}>🖨️ Pack Slip</button>
-                  {box.label_url&&<a href={box.label_url} target="_blank" rel="noreferrer" className="btn btn-sm btn-secondary" style={{fontSize:10,textDecoration:'none'}}>🏷️ Print Label</a>}
+                  {box.label_url&&<a href={box.label_url} target="_blank" rel="noreferrer" className="btn btn-sm" style={{fontSize:10,textDecoration:'none',background:'#7c3aed',color:'white',border:'none',padding:'4px 10px'}}>🏷️ Print Label</a>}
+                  {box.tracking_number&&!box.label_url&&<button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{
+                    const trackUrl=box.tracking_number;
+                    const carrierUrl=/^1Z/i.test(trackUrl)?'https://www.ups.com/track?tracknum='+trackUrl:/^(94|93|92|91)\d{18,}/.test(trackUrl)?'https://tools.usps.com/go/TrackConfirmAction?tLabels='+trackUrl:'https://www.fedex.com/fedextrack/?trknbr='+trackUrl;
+                    window.open(carrierUrl,'_blank');
+                  }}>📋 Track Package</button>}
                 </div>
               </div>})}
 
             {/* Add box button */}
             <button className="btn btn-sm btn-secondary" style={{marginBottom:16}}
-              onClick={()=>setShipModal({...shipModal,boxes:[...shipModal.boxes,{items:[],tracking_number:'',carrier:'fedex',weight:5,notes:''}]})}>+ Add Box</button>
+              onClick={()=>setShipModal({...shipModal,boxes:[...shipModal.boxes,{items:[],tracking_number:'',carrier:'fedex',weight:5,dimensions:{length:'',width:'',height:''},notes:''}]})}>+ Add Box</button>
 
             {/* Actions */}
             <div style={{display:'flex',gap:8,borderTop:'1px solid #e2e8f0',paddingTop:12}}>
