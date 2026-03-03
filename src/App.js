@@ -7016,7 +7016,7 @@ export default function App(){
           _dbLoadSuccess.current=true;
           _dbSnap.current={ests:d.estimates,sos:d.sales_orders,invs:d.invoices,msgs:d.messages,cust:d.customers,prod:d.products,vend:d.vendors,team:d.team,omg:d.omg_stores,issues:d.issues};
           setREPS(d.team.length?d.team:DEFAULT_REPS);setCust(d.customers);
-          if(d.vendors.length)setVend(d.vendors);setProd(d.products.length?d.products:prod);
+          if(d.vendors.length)setVend(d.vendors);setProd(prev=>{if(!d.products.length)return prev;const merged=d.products.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));return localOnly.length?[...merged,...localOnly]:merged});
           setEsts(d.estimates);setSOs(d.sales_orders);
           setInvs(d.invoices);setMsgs(d.messages.length?d.messages:msgs);
           if(d.omg_stores.length)setOmgStores(d.omg_stores);
@@ -7161,7 +7161,7 @@ export default function App(){
         setCust(prev=>changed(prev,d.customers)?d.customers:prev);
         if(d.messages.length)setMsgs(prev=>changed(prev,d.messages)?d.messages:prev);
         if(d.issues.length)setIssues(prev=>changed(prev,d.issues)?d.issues:prev);
-        if(d.products.length)setProd(prev=>{if(!changed(prev,d.products))return prev;const merged=d.products.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));return localOnly.length?[...merged,...localOnly]:merged});
+        if(d.products.length)setProd(prev=>{if(!changed(prev,d.products))return prev;const merged=d.products.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));return localOnly.length?[...merged,...localOnly]:merged});
         // Refresh app_state keys (batch POs, inventory POs, etc.)
         const as=d.appState||{};
         if(as.inv_pos)setInvPOs(prev=>JSON.stringify(prev)!==JSON.stringify(as.inv_pos)?as.inv_pos:prev);
@@ -8175,14 +8175,11 @@ export default function App(){
               <div style={{fontSize:10,fontWeight:700,color:'#64748b',marginBottom:4}}>Additional Images</div>
               <ImgGallery images={ep.images||[]} onUpdate={imgs=>setEp(x=>({...x,images:imgs}))} onError={e=>nf(e,'error')} maxImages={10}/>
             </div>
-            </>:<>
-            <div style={{display:'flex',gap:6}}>
-              {ep.image_url?<div style={{textAlign:'center'}}><img src={ep.image_url} alt="Front" style={{width:80,height:80,objectFit:'cover',borderRadius:6,border:'1px solid #e2e8f0'}}/><div style={{fontSize:9,color:'#64748b',fontWeight:600}}>Front</div></div>:null}
-              {ep.back_image_url?<div style={{textAlign:'center'}}><img src={ep.back_image_url} alt="Back" style={{width:80,height:80,objectFit:'cover',borderRadius:6,border:'1px solid #e2e8f0'}}/><div style={{fontSize:9,color:'#64748b',fontWeight:600}}>Back</div></div>:null}
-              {!ep.image_url&&!ep.back_image_url&&<div style={{width:80,height:80,borderRadius:6,border:'1px solid #e2e8f0',display:'flex',alignItems:'center',justifyContent:'center',background:'#f8fafc'}}><span style={{fontSize:18,opacity:0.3}}>📷</span></div>}
-            </div>
-            {(ep.images||[]).length>0&&<div style={{display:'flex',gap:4,flexWrap:'wrap'}}>{ep.images.map((url,i)=><img key={i} src={url} alt="" style={{width:36,height:36,objectFit:'cover',borderRadius:4,border:'1px solid #e2e8f0'}}/>)}</div>}
-            </>}
+            </>:(()=>{const primaryImg=ep.image_url||(ep.images&&ep.images[0])||null;const secondaryImgs=[ep.back_image_url,...(ep.images||[]).filter(u=>u!==primaryImg)].filter(Boolean);return<>
+            {primaryImg?<img src={primaryImg} alt="Primary" style={{width:170,height:170,objectFit:'cover',borderRadius:8,border:'1px solid #e2e8f0'}}/>
+            :<div style={{width:170,height:170,borderRadius:8,border:'1px solid #e2e8f0',display:'flex',alignItems:'center',justifyContent:'center',background:'#f8fafc'}}><span style={{fontSize:28,opacity:0.3}}>📷</span></div>}
+            {secondaryImgs.length>0&&<div style={{display:'flex',gap:4,flexWrap:'wrap'}}>{secondaryImgs.map((url,i)=><img key={i} src={url} alt="" style={{width:40,height:40,objectFit:'cover',borderRadius:4,border:'1px solid #e2e8f0'}}/>)}</div>}
+            </>})()}
           </div>
           <div style={{flex:1}}>
             {!editing?<>
@@ -8395,11 +8392,11 @@ export default function App(){
   <div className="card"><div className="card-body" style={{padding:0}}>
   {fP.map(p=>{const nt=Object.values(p._inv||{}).reduce((a,v)=>a+v,0);const au=p.brand==='Adidas'||p.brand==='Under Armour';
     return(<div key={p.id} style={{padding:'14px 16px',borderBottom:'1px solid #f1f5f9',cursor:'pointer'}} onClick={()=>setSelP(p)}><div style={{display:'flex',gap:14,alignItems:'flex-start'}}>
-      <div style={{display:'flex',gap:4,alignItems:'center'}} onClick={e=>e.stopPropagation()}>
-        {p.image_url?<img src={p.image_url} alt="" style={{width:48,height:48,objectFit:'cover',borderRadius:6,border:'1px solid #e2e8f0',flexShrink:0}}/>
-        :<div style={{width:48,height:48,borderRadius:6,border:'1px solid #e2e8f0',display:'flex',alignItems:'center',justifyContent:'center',background:'#f8fafc',flexShrink:0}}><span style={{fontSize:14,opacity:0.3}}>📷</span></div>}
+      <div style={{display:'flex',gap:4,alignItems:'center'}}>
+        {(()=>{const img=p.image_url||(p.images&&p.images[0])||null;return img?<img src={img} alt="" style={{width:48,height:48,objectFit:'cover',borderRadius:6,border:'1px solid #e2e8f0',flexShrink:0}}/>
+        :<div style={{width:48,height:48,borderRadius:6,border:'1px solid #e2e8f0',display:'flex',alignItems:'center',justifyContent:'center',background:'#f8fafc',flexShrink:0}}><span style={{fontSize:14,opacity:0.3}}>📷</span></div>})()}
         {p.back_image_url&&<img src={p.back_image_url} alt="" style={{width:48,height:48,objectFit:'cover',borderRadius:6,border:'1px solid #e2e8f0',flexShrink:0}}/>}
-        {(p.images||[]).length>0&&<span style={{fontSize:9,color:'#7c3aed',fontWeight:700,background:'#f5f3ff',padding:'2px 6px',borderRadius:4}}>+{(p.images||[]).length}</span>}
+        {(p.images||[]).length>1&&<span style={{fontSize:9,color:'#7c3aed',fontWeight:700,background:'#f5f3ff',padding:'2px 6px',borderRadius:4}}>+{(p.images||[]).length-1}</span>}
       </div>
       <div style={{flex:1}}>
         <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}><span style={{fontFamily:'monospace',fontWeight:800,background:'#dbeafe',padding:'2px 8px',borderRadius:3,color:'#1e40af'}}>{p.sku}</span><span style={{fontWeight:700}}>{p.name}</span>{p._colors&&<span style={{fontSize:10,color:'#7c3aed'}}>{p._colors.length} clr</span>}</div>
