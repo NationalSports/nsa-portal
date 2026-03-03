@@ -87,7 +87,7 @@ const _dbLoad = async () => {
     // Customers: attach contacts array
     const customers=custRaw.map(c=>({...c,contacts:contacts.filter(ct=>ct.customer_id===c.id).sort((a,b)=>a.sort_order-b.sort_order).map(ct=>({name:ct.name,email:ct.email,phone:ct.phone,role:ct.role}))}));
     // Products: attach _inv and _alerts from product_inventory
-    const products=prodRaw.map(p=>{const invRows=prodInv.filter(pi=>pi.product_id===p.id);const _inv={};const _alerts={};invRows.forEach(r=>{_inv[r.size]=r.quantity;if(r.alert_threshold)_alerts[r.size]=r.alert_threshold});return{...p,image_url:p.image_url||p.image_front_url||'',back_image_url:p.back_image_url||p.image_back_url||'',_inv,_alerts}});
+    const products=prodRaw.map(p=>{const invRows=prodInv.filter(pi=>pi.product_id===p.id);const _inv={};const _alerts={};invRows.forEach(r=>{_inv[r.size]=r.quantity;if(r.alert_threshold)_alerts[r.size]=r.alert_threshold});return{...p,image_url:p.image_url||p.image_front_url||'',back_image_url:p.back_image_url||p.image_back_url||'',images:p.images||[],_inv,_alerts}});
     // Estimates: attach items (with decorations) and art_files
     const estimates=estRaw.map(est=>{
       const art_files=estArt.filter(a=>a.estimate_id===est.id).map(a=>({id:a.id,name:a.name,deco_type:a.deco_type,ink_colors:a.ink_colors,thread_colors:a.thread_colors,art_size:a.art_size,files:a.files||[],mockup_files:a.mockup_files||[],prod_files:a.prod_files||[],notes:a.notes,status:a.status,uploaded:a.uploaded}));
@@ -260,13 +260,15 @@ const _dbSaveProduct = async (p) => {
     const row={id:p.id,vendor_id:p.vendor_id||null,sku:p.sku,name:p.name,brand:p.brand||null,color:p.color||null,
       category:p.category||null,retail_price:p.retail_price||0,nsa_cost:p.nsa_cost||0,
       is_active:p.is_active!==false,available_sizes:p.available_sizes||[],_colors:p._colors||null,
-      image_front_url:p.image_url||p.image_front_url||null,image_back_url:p.back_image_url||p.image_back_url||null};
+      image_front_url:p.image_url||p.image_front_url||null,image_back_url:p.back_image_url||p.image_back_url||null,
+      images:p.images||null};
     const{error}=await supabase.from('products').upsert(row,{onConflict:'id'});
     if(error){
-      // If image columns don't exist, retry without them
-      if(error.message?.includes('image_front_url')||error.message?.includes('image_back_url')){
-        const{image_front_url,image_back_url,...rowNoImg}=row;
-        await supabase.from('products').upsert(rowNoImg,{onConflict:'id'});
+      // If image/images columns don't exist, retry without them
+      if(error.message?.includes('image_front_url')||error.message?.includes('image_back_url')||error.message?.includes('images')){
+        const{image_front_url,image_back_url,images,...rowNoImg}=row;
+        const{error:e2}=await supabase.from('products').upsert(rowNoImg,{onConflict:'id'});
+        if(e2)console.error('[DB] save product (no img):',e2.message);
       }else{console.error('[DB] save product:',error.message)}
     }
     const _inv=p._inv||{};const _alerts=p._alerts||{};
@@ -361,6 +363,45 @@ const ImgUpload=({url,onUpload,size=48,onError})=>{const[drag,setDrag]=React.use
     :url?<img src={url} alt="" style={{width:'100%',height:'100%',objectFit:'cover'}} onError={e=>{e.target.style.display='none'}}/>
     :err?<span style={{fontSize:size>40?14:10,color:'#dc2626'}}>!</span>
     :<span style={{fontSize:size>40?18:12,opacity:0.3}}>📷</span>}
+  </div>};
+// Multi-image gallery with drag-and-drop (for product images)
+const ImgGallery=({images=[],onUpdate,onError,maxImages=10})=>{
+  const[uploading,setUploading]=React.useState(false);const[drag,setDrag]=React.useState(false);
+  const doUpload=async(files)=>{
+    const imgFiles=Array.from(files).filter(f=>f.type.startsWith('image/'));
+    if(imgFiles.length===0){if(onError)onError('Please select image files');return}
+    if((images||[]).length+imgFiles.length>maxImages){if(onError)onError('Max '+maxImages+' images');return}
+    setUploading(true);
+    const newUrls=[];
+    for(const f of imgFiles){
+      try{const u=await cloudUpload(f);newUrls.push(u)}catch(e){if(onError)onError('Upload failed: '+e.message)}
+    }
+    if(newUrls.length>0)onUpdate([...(images||[]),...newUrls]);
+    setUploading(false);
+  };
+  const removeImg=(idx)=>onUpdate((images||[]).filter((_,i)=>i!==idx));
+  const moveImg=(from,to)=>{const arr=[...(images||[])];const[item]=arr.splice(from,1);arr.splice(to,0,item);onUpdate(arr)};
+  return<div>
+    <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:6}}>
+      {(images||[]).map((url,i)=><div key={i} style={{width:72,height:72,borderRadius:6,border:'1px solid #e2e8f0',overflow:'hidden',position:'relative',background:'#f8fafc'}}>
+        <img src={url} alt="" style={{width:'100%',height:'100%',objectFit:'cover'}} onError={e=>{e.target.style.display='none'}}/>
+        <div style={{position:'absolute',top:0,right:0,display:'flex',gap:1}}>
+          {i>0&&<button style={{background:'rgba(0,0,0,0.5)',color:'white',border:'none',cursor:'pointer',fontSize:9,padding:'1px 3px',borderRadius:2}} onClick={()=>moveImg(i,i-1)}>◀</button>}
+          <button style={{background:'rgba(220,38,38,0.8)',color:'white',border:'none',cursor:'pointer',fontSize:10,padding:'1px 4px',borderRadius:2}} onClick={()=>removeImg(i)}>×</button>
+        </div>
+        <div style={{position:'absolute',bottom:0,left:0,background:'rgba(0,0,0,0.5)',color:'white',fontSize:8,padding:'1px 4px'}}>{i===0?'Primary':i+1}</div>
+      </div>)}
+    </div>
+    {/* Drop zone for adding images */}
+    <div style={{border:drag?'2px dashed #3b82f6':'2px dashed #d1d5db',borderRadius:8,padding:uploading?'8px':'12px 16px',textAlign:'center',
+      background:drag?'#eff6ff':'#fafafa',cursor:'pointer',transition:'all 0.15s'}}
+      onDragOver={e=>{e.preventDefault();setDrag(true)}} onDragLeave={()=>setDrag(false)}
+      onDrop={e=>{e.preventDefault();setDrag(false);doUpload(e.dataTransfer.files)}}
+      onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.accept='image/*';inp.multiple=true;inp.onchange=()=>doUpload(inp.files);inp.click()}}>
+      {uploading?<span style={{fontSize:11,color:'#3b82f6',fontWeight:600}}>Uploading...</span>
+      :<><div style={{fontSize:11,color:drag?'#2563eb':'#64748b',fontWeight:600}}>{drag?'Drop images here':'Click or drag & drop images'}</div>
+        <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>{(images||[]).length}/{maxImages} images · JPG, PNG, WebP</div></>}
+    </div>
   </div>};
 // ── PDF.js Setup (for NetSuite PDF import) ──
 const PDFJS_CDN='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174';
@@ -8067,12 +8108,21 @@ export default function App(){
       <button className="btn btn-secondary" onClick={onBack} style={{marginBottom:12}}><Icon name="chevron-left" size={14}/> Products</button>
       <div className="card" style={{marginBottom:16}}><div className="card-body">
         <div style={{display:'flex',gap:16,alignItems:'flex-start'}}>
-          <div style={{display:'flex',flexDirection:'column',gap:6,alignItems:'center'}}>
-            <ImgUpload url={ep.image_url} onUpload={u=>imgSave({...ep,image_url:u})} onError={e=>nf(e,'error')} size={100}/>
-            <span style={{fontSize:10,color:'#64748b',fontWeight:600}}>Front</span>
-            <ImgUpload url={ep.back_image_url} onUpload={u=>imgSave({...ep,back_image_url:u})} onError={e=>nf(e,'error')} size={100}/>
-            <span style={{fontSize:10,color:'#64748b',fontWeight:600}}>Back</span>
-            <span style={{fontSize:9,color:'#94a3b8',textAlign:'center',lineHeight:1.3}}>Click or drag<br/>& drop images</span>
+          <div style={{display:'flex',flexDirection:'column',gap:6,alignItems:'center',minWidth:180}}>
+            <div style={{display:'flex',gap:6}}>
+              <div style={{textAlign:'center'}}>
+                <ImgUpload url={ep.image_url} onUpload={u=>imgSave({...ep,image_url:u})} onError={e=>nf(e,'error')} size={80}/>
+                <span style={{fontSize:9,color:'#64748b',fontWeight:600}}>Front</span>
+              </div>
+              <div style={{textAlign:'center'}}>
+                <ImgUpload url={ep.back_image_url} onUpload={u=>imgSave({...ep,back_image_url:u})} onError={e=>nf(e,'error')} size={80}/>
+                <span style={{fontSize:9,color:'#64748b',fontWeight:600}}>Back</span>
+              </div>
+            </div>
+            <div style={{width:'100%'}}>
+              <div style={{fontSize:10,fontWeight:700,color:'#64748b',marginBottom:4}}>Additional Images</div>
+              <ImgGallery images={ep.images||[]} onUpdate={imgs=>imgSave({...ep,images:imgs})} onError={e=>nf(e,'error')} maxImages={10}/>
+            </div>
           </div>
           <div style={{flex:1}}>
             {!editing?<>
@@ -8285,9 +8335,10 @@ export default function App(){
   <div className="card"><div className="card-body" style={{padding:0}}>
   {fP.map(p=>{const nt=Object.values(p._inv||{}).reduce((a,v)=>a+v,0);const au=p.brand==='Adidas'||p.brand==='Under Armour';
     return(<div key={p.id} style={{padding:'14px 16px',borderBottom:'1px solid #f1f5f9',cursor:'pointer'}} onClick={()=>setSelP(p)}><div style={{display:'flex',gap:14,alignItems:'flex-start'}}>
-      <div style={{display:'flex',gap:4}}>
+      <div style={{display:'flex',gap:4,alignItems:'center'}}>
         <ImgUpload url={p.image_url} onUpload={u=>{setProd(ps=>ps.map(x=>x.id===p.id?{...x,image_url:u}:x));nf('Front image uploaded')}} onError={e=>nf(e,'error')} size={48}/>
         <ImgUpload url={p.back_image_url} onUpload={u=>{setProd(ps=>ps.map(x=>x.id===p.id?{...x,back_image_url:u}:x));nf('Back image uploaded')}} onError={e=>nf(e,'error')} size={48}/>
+        {(p.images||[]).length>0&&<span style={{fontSize:9,color:'#7c3aed',fontWeight:700,background:'#f5f3ff',padding:'2px 6px',borderRadius:4}}>+{(p.images||[]).length}</span>}
       </div>
       <div style={{flex:1}}>
         <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}><span style={{fontFamily:'monospace',fontWeight:800,background:'#dbeafe',padding:'2px 8px',borderRadius:3,color:'#1e40af'}}>{p.sku}</span><span style={{fontWeight:700}}>{p.name}</span>{p._colors&&<span style={{fontSize:10,color:'#7c3aed'}}>{p._colors.length} clr</span>}</div>
@@ -17115,16 +17166,21 @@ export default function App(){
             <div><label className="form-label">Retail Price</label><$In value={it.retail_price||0} onChange={v=>{const bn=it.brand||D_V.find(x=>x.id===it.vendor_id)?.name||'';const cat=it.category||'Tees';if(bn==='Adidas'){setQPC(x=>({...x,items:[{...x.items[0],retail_price:v,nsa_cost:Math.floor(v*(cat==='Custom'?0.4125:0.375)*100)/100}]}))}else if(bn==='Under Armour'){setQPC(x=>({...x,items:[{...x.items[0],retail_price:v,nsa_cost:Math.floor(v*0.425*100)/100}]}))}else{up('retail_price',v)}}}/></div>
             <div><label className="form-label">NSA Cost{(it.brand==='Adidas'||it.brand==='Under Armour')&&it.retail_price>0?<span style={{fontSize:9,color:'#16a34a',marginLeft:4}}>auto</span>:''}</label><$In value={it.nsa_cost||0} onChange={v=>{const bn=it.brand||D_V.find(x=>x.id===it.vendor_id)?.name||'';const cat=it.category||'Tees';if(bn==='Adidas'&&v>0){setQPC(x=>({...x,items:[{...x.items[0],nsa_cost:v,retail_price:Math.ceil(v/(cat==='Custom'?0.4125:0.375)*100)/100}]}))}else if(bn==='Under Armour'&&v>0){setQPC(x=>({...x,items:[{...x.items[0],nsa_cost:v,retail_price:Math.ceil(v/0.425*100)/100}]}))}else{up('nsa_cost',v)}}}/></div>
             <div style={{gridColumn:'1/3'}}><label className="form-label">Product Images</label>
-              <div style={{display:'flex',alignItems:'center',gap:10}}>
-                <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:2}}>
-                  <ImgUpload url={it.image_url} onUpload={v=>{up('image_url',v);nf('Front image uploaded')}} onError={e=>nf(e,'error')} size={64}/>
-                  <span style={{fontSize:9,color:'#64748b'}}>Front</span>
+              <div style={{display:'flex',gap:10,alignItems:'flex-start',flexWrap:'wrap'}}>
+                <div style={{display:'flex',gap:6}}>
+                  <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:2}}>
+                    <ImgUpload url={it.image_url} onUpload={v=>{up('image_url',v);nf('Front image uploaded')}} onError={e=>nf(e,'error')} size={64}/>
+                    <span style={{fontSize:9,color:'#64748b'}}>Front</span>
+                  </div>
+                  <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:2}}>
+                    <ImgUpload url={it.back_image_url} onUpload={v=>{up('back_image_url',v);nf('Back image uploaded')}} onError={e=>nf(e,'error')} size={64}/>
+                    <span style={{fontSize:9,color:'#64748b'}}>Back</span>
+                  </div>
                 </div>
-                <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:2}}>
-                  <ImgUpload url={it.back_image_url} onUpload={v=>{up('back_image_url',v);nf('Back image uploaded')}} onError={e=>nf(e,'error')} size={64}/>
-                  <span style={{fontSize:9,color:'#64748b'}}>Back</span>
+                <div style={{flex:1,minWidth:180}}>
+                  <div style={{fontSize:10,fontWeight:600,color:'#64748b',marginBottom:4}}>Additional Images</div>
+                  <ImgGallery images={it.images||[]} onUpdate={imgs=>up('images',imgs)} onError={e=>nf(e,'error')} maxImages={10}/>
                 </div>
-                <span style={{fontSize:11,color:'#94a3b8'}}>Click or drag & drop images</span>
               </div>
             </div>
             <div style={{gridColumn:'1/3'}}><label className="form-label">Available Sizes</label>
