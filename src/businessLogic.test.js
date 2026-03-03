@@ -745,7 +745,7 @@ describe('Job Building', () => {
     expect(jobs[0].items).toHaveLength(2);
   });
 
-  test('different art positions create separate jobs', () => {
+  test('same item with multiple decos creates one job (same decoration signature)', () => {
     const so = makeSO({
       items: [makeSOItem({
         sizes: { S: 10 },
@@ -754,6 +754,25 @@ describe('Job Building', () => {
           { kind: 'art', art_file_id: 'af1', position: 'Back' },
         ],
       })],
+      art_files: [makeArtFile()],
+      jobs: [],
+    });
+    const jobs = buildJobs(so);
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0].total_units).toBe(10);
+  });
+
+  test('items with different decoration sets create separate jobs', () => {
+    const so = makeSO({
+      items: [
+        makeSOItem({ sku: 'ITEM-1', sizes: { S: 5 }, decorations: [
+          { kind: 'art', art_file_id: 'af1', position: 'Front' },
+          { kind: 'art', art_file_id: 'af1', position: 'Back' },
+        ] }),
+        makeSOItem({ sku: 'ITEM-2', sizes: { M: 10 }, decorations: [
+          { kind: 'art', art_file_id: 'af1', position: 'Front' },
+        ] }),
+      ],
       art_files: [makeArtFile()],
       jobs: [],
     });
@@ -775,7 +794,7 @@ describe('Job Building', () => {
     expect(jobs).toHaveLength(0);
   });
 
-  test('number/name decorations do not generate jobs', () => {
+  test('number decorations generate jobs, name decorations do not', () => {
     const so = makeSO({
       items: [makeSOItem({
         sizes: { S: 10 },
@@ -787,7 +806,8 @@ describe('Job Building', () => {
       jobs: [],
     });
     const jobs = buildJobs(so);
-    expect(jobs).toHaveLength(0);
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0].art_name).toContain('Numbers');
   });
 
   test('art status from art file propagates to job', () => {
@@ -1247,8 +1267,8 @@ describe('Cross-Module Integration Scenarios', () => {
           makeSOItem({
             sku: 'SHIRT-2', sizes: { L: 5 },
             decorations: [
-              { kind: 'art', art_file_id: 'af1', position: 'Front' }, // same art, same position as SHIRT-1 → grouped
-              { kind: 'numbers', position: 'Back' }, // numbers don't create jobs
+              { kind: 'art', art_file_id: 'af1', position: 'Front' },
+              { kind: 'numbers', position: 'Back', num_method: 'heat_transfer' },
             ],
           }),
         ],
@@ -1259,15 +1279,16 @@ describe('Cross-Module Integration Scenarios', () => {
         jobs: [],
       });
       const jobs = buildJobs(so);
-      // af1 Front: grouped from SHIRT-1 and SHIRT-2 = 1 job
-      // af2 Back: only SHIRT-1 = 1 job
+      // SHIRT-1: art_af1@Front + art_af2@Back → one decoration signature
+      // SHIRT-2: art_af1@Front + numbers_ht@Back → different decoration signature
+      // = 2 separate jobs (different decoration combos)
       expect(jobs).toHaveLength(2);
-      const frontJob = jobs.find(j => j.art_file_id === 'af1');
-      const backJob = jobs.find(j => j.art_file_id === 'af2');
-      expect(frontJob.items).toHaveLength(2);
-      expect(frontJob.total_units).toBe(25); // 20 + 5
-      expect(backJob.items).toHaveLength(1);
-      expect(backJob.total_units).toBe(20); // only SHIRT-1
+      const shirt1Job = jobs.find(j => j.items.some(it => it.sku === 'SHIRT-1'));
+      const shirt2Job = jobs.find(j => j.items.some(it => it.sku === 'SHIRT-2'));
+      expect(shirt1Job.items).toHaveLength(1);
+      expect(shirt1Job.total_units).toBe(20);
+      expect(shirt2Job.items).toHaveLength(1);
+      expect(shirt2Job.total_units).toBe(5);
     });
   });
 });
