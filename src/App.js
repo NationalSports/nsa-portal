@@ -5,6 +5,7 @@ import { createClient } from '@supabase/supabase-js';
 import { loadStripe } from '@stripe/stripe-js';
 import { Elements, PaymentElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import * as XLSX from 'xlsx';
+import { BarcodeDetector as BarcodeDetectorPolyfill } from 'barcode-detector';
 
 // ─── Stripe Setup ───
 const _stripePk = process.env.REACT_APP_STRIPE_PK || '';
@@ -1100,7 +1101,7 @@ const D_C=[
 {id:'c3',parent_id:null,name:'Clovis Unified School District',alpha_tag:'CUSD',contacts:[{name:'District Office',email:'purchasing@clovisusd.k12.ca.us',phone:'559-555-0300',role:'Primary'}],billing_city:'Clovis',billing_state:'CA',shipping_city:'Clovis',shipping_state:'CA',adidas_ua_tier:'B',catalog_markup:1.65,payment_terms:'prepay',tax_rate:0.0863,primary_rep_id:'r5',is_active:true,_oe:2,_os:0,_oi:0,_ob:0},
 {id:'c3a',parent_id:'c3',name:'Clovis High Badminton',alpha_tag:'CHBad',contacts:[{name:'Coach Kim',email:'kim@clovisusd.k12.ca.us',phone:'',role:'Head Coach'}],shipping_city:'Clovis',shipping_state:'CA',adidas_ua_tier:'B',catalog_markup:1.65,payment_terms:'prepay',primary_rep_id:'r5',is_active:true,_oe:2,_os:0,_oi:0,_ob:0},
 ];
-const BATCH_VENDORS={'sss':{name:'S&S Activewear',threshold:200},'sanmar':{name:'SanMar',threshold:200},'richardson':{name:'Richardson',threshold:200},'momentec':{name:'Momentec',threshold:200},'a4':{name:'A4',threshold:200},'adidas':{name:'Adidas',threshold:500},'under armour':{name:'Under Armour',threshold:500}};
+const BATCH_VENDORS={'sss':{name:'S&S Activewear',threshold:200},'sanmar':{name:'SanMar',threshold:200},'richardson':{name:'Richardson',threshold:200},'momentec':{name:'Momentec',threshold:200},'a4':{name:'A4',threshold:200},'adidas':{name:'Adidas',threshold:0,batchOnly:true},'under armour':{name:'Under Armour',threshold:0,batchOnly:true}};
 const MACHINES=[
   {id:'auto_press',name:'Auto Press',type:'screen_print'},
   {id:'manual_press',name:'Manual Press',type:'screen_print'},
@@ -3791,8 +3792,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
             <div style={{display:'flex',alignItems:'center',gap:6}}>
               <span style={{fontSize:14}}>📦</span>
               <div style={{flex:1}}>
-                <div style={{fontSize:12,fontWeight:700,color:'#7c3aed'}}>Free shipping over ${batchConfig.threshold} — Batch eligible!</div>
-                {pendingBatches.length>0?<div style={{fontSize:11,color:'#6d28d9'}}>{pendingBatches.length} PO{pendingBatches.length!==1?'s':''} in queue · ${pendingBatchTotal.toFixed(2)} total {pendingBatchTotal>=batchConfig.threshold?'✅ Threshold met!':'· $'+(batchConfig.threshold-pendingBatchTotal).toFixed(2)+' more to free ship'}</div>
+                <div style={{fontSize:12,fontWeight:700,color:'#7c3aed'}}>{batchConfig.batchOnly?'Batch eligible — combine orders!':'Free shipping over $'+batchConfig.threshold+' — Batch eligible!'}</div>
+                {pendingBatches.length>0?<div style={{fontSize:11,color:'#6d28d9'}}>{pendingBatches.length} PO{pendingBatches.length!==1?'s':''} in queue · ${pendingBatchTotal.toFixed(2)} total {!batchConfig.batchOnly&&batchConfig.threshold>0?(pendingBatchTotal>=batchConfig.threshold?'✅ Threshold met!':'· $'+(batchConfig.threshold-pendingBatchTotal).toFixed(2)+' more to free ship'):''}</div>
                 :<div style={{fontSize:11,color:'#94a3b8'}}>No POs queued yet for {batchConfig.name}</div>}
               </div>
             </div>
@@ -6881,16 +6882,11 @@ const BarcodeScanner=({onScan,onClose,placeholder='Scan barcode or QR code...'})
       streamRef.current=stream;
       if(videoRef.current){videoRef.current.srcObject=stream;videoRef.current.play()}
       setActive(true);
-      // Check BarcodeDetector support
-      if('BarcodeDetector' in window){
-        detectorRef.current=new window.BarcodeDetector({formats:['qr_code','code_128','code_39','ean_13','ean_8','upc_a','upc_e','codabar','itf']});
-        scanningRef.current=true;
-        scanLoop();
-      } else {
-        // BarcodeDetector not supported — stop camera and prompt manual entry
-        stopCamera();
-        setError('Barcode scanning not supported in this browser. Use manual entry below, or switch to Chrome for camera scanning.');
-      }
+      // Use native BarcodeDetector if available, otherwise use polyfill
+      const DetectorImpl='BarcodeDetector' in window?window.BarcodeDetector:BarcodeDetectorPolyfill;
+      detectorRef.current=new DetectorImpl({formats:['qr_code','code_128','code_39','ean_13','ean_8','upc_a','upc_e','codabar','itf']});
+      scanningRef.current=true;
+      scanLoop();
     }catch(err){
       if(err.name==='NotAllowedError')setError('Camera permission denied. Please allow camera access and try again.');
       else if(err.name==='NotFoundError')setError('No camera found. Use manual entry below.');
@@ -6943,7 +6939,7 @@ const BarcodeScanner=({onScan,onClose,placeholder='Scan barcode or QR code...'})
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/><circle cx="12" cy="13" r="4"/></svg>
         Open Camera
       </button>
-      {'BarcodeDetector' in window?null:<div style={{fontSize:10,color:'#64748b',marginTop:6}}>Tip: Use Chrome on Android/iOS for best barcode scanning support</div>}
+      {null}
     </div>}
     {/* Manual entry always available */}
     <div style={{padding:'10px 16px',borderTop:'1px solid #1e293b',display:'flex',gap:8}}>
@@ -9669,6 +9665,42 @@ export default function App(){
       w.document.write('</body></html>');w.document.close();
       setTimeout(()=>w.print(),400);
     };
+    // Print separate labels per source PO within a batch (one page per SO box)
+    const printBatchSeparateLabels=(sourcePOs,poId,boxLabel)=>{
+      const w=window.open('','_blank','width=400,height=600');if(!w)return;
+      const scanUrl=window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(poId);
+      const qrData=encodeURIComponent(scanUrl);
+      const qrUrl='https://api.qrserver.com/v1/create-qr-code/?size=150x150&data='+qrData;
+      w.document.write('<html><head><title>Box Labels — '+poId+'</title><style>@page{size:4in 6in;margin:0.2in}body{font-family:Arial,sans-serif;margin:0;padding:0}');
+      w.document.write('.label-page{padding:12px;width:3.6in;page-break-after:always}');
+      w.document.write('.label-page:last-child{page-break-after:auto}');
+      w.document.write('.po{font-size:28px;font-weight:900;font-family:monospace;letter-spacing:2px;text-align:center;margin:8px 0}');
+      w.document.write('.box-label{font-size:14px;font-weight:700;text-align:center;color:#666;margin-bottom:4px}');
+      w.document.write('.so-label{font-size:16px;font-weight:900;text-align:center;color:#1e40af;margin-bottom:8px}');
+      w.document.write('table{width:100%;border-collapse:collapse;font-size:11px;margin-top:8px}th,td{border:1px solid #ccc;padding:3px 6px;text-align:left}th{background:#f0f0f0;font-weight:700}');
+      w.document.write('.sz{font-weight:700;font-size:10px}.footer{font-size:9px;color:#999;text-align:center;margin-top:8px;border-top:1px solid #ddd;padding-top:4px}');
+      w.document.write('</style></head><body>');
+      sourcePOs.forEach((sp,spi)=>{
+        w.document.write('<div class="label-page">');
+        w.document.write('<div style="text-align:center"><img src="'+qrUrl+'" width="120" height="120"/></div>');
+        w.document.write('<div class="po">'+poId+'</div>');
+        if(boxLabel)w.document.write('<div class="box-label">'+boxLabel+'</div>');
+        w.document.write('<div class="so-label">'+sp.so_id+(sp.customer?' — '+sp.customer:'')+'</div>');
+        w.document.write('<table><thead><tr><th>SKU</th><th>Product</th><th>Color</th><th>Sizes</th><th>Qty</th></tr></thead><tbody>');
+        sp.items.forEach(it=>{
+          const szStr=Object.entries(it.sizes||{}).filter(([,v])=>v>0).map(([sz,v])=>sz+':'+v).join(' ');
+          const qty=Object.values(it.sizes||{}).reduce((a,v)=>a+v,0);
+          w.document.write('<tr><td style="font-weight:700">'+it.sku+'</td><td>'+it.name+'</td><td>'+(it.color||'—')+'</td><td class="sz">'+szStr+'</td><td style="font-weight:700">'+qty+'</td></tr>');
+        });
+        w.document.write('</tbody></table>');
+        const spQty=sp.items.reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((a2,v)=>a2+v,0),0);
+        w.document.write('<div style="text-align:right;font-size:14px;font-weight:900;margin-top:6px">BOX TOTAL: '+spQty+' units</div>');
+        w.document.write('<div class="footer">NSA · '+new Date().toLocaleDateString()+' · Box '+(spi+1)+' of '+sourcePOs.length+' · '+poId+'</div>');
+        w.document.write('</div>');
+      });
+      w.document.write('</body></html>');w.document.close();
+      setTimeout(()=>w.print(),400);
+    };
 
     return(<>
       {/* Scan / Lookup bar */}
@@ -9755,10 +9787,15 @@ export default function App(){
           <div style={{padding:'12px 16px',borderTop:'2px solid #e2e8f0',display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:8}}>
             <div style={{display:'flex',gap:6}}>
               <button className="btn btn-sm btn-secondary" onClick={()=>{
-                const labelItems=poItems.map(it=>({sku:it.sku,name:it.name,color:it.color,sizes:it.sizes}));
-                printLabel(labelItems,poId,'RECEIVING — '+new Date().toLocaleDateString());
-                nf('🖨️ Label printed for '+poId);
-              }}>🖨️ Print Box Label (4×6)</button>
+                if(isBatch&&batchMatch.source_pos&&batchMatch.source_pos.length>1){
+                  printBatchSeparateLabels(batchMatch.source_pos,poId,'RECEIVING — '+new Date().toLocaleDateString());
+                  nf('🖨️ '+batchMatch.source_pos.length+' separate labels printed for '+poId);
+                } else {
+                  const labelItems=poItems.map(it=>({sku:it.sku,name:it.name,color:it.color,sizes:it.sizes}));
+                  printLabel(labelItems,poId,'RECEIVING — '+new Date().toLocaleDateString());
+                  nf('🖨️ Label printed for '+poId);
+                }
+              }}>🖨️ Print Box Labels (4×6)</button>
               <button className="btn btn-sm btn-secondary" onClick={()=>{navigator.clipboard?.writeText(poId);nf('Copied '+poId)}}>📋 Copy PO#</button>
             </div>
             <div style={{display:'flex',gap:6}}>
@@ -9784,9 +9821,13 @@ export default function App(){
                     savSO({...so,items:updItems,updated_at:new Date().toLocaleString()});
                   });
                   nf('✅ '+poId+' received — '+totalUnits+' units. SO items updated.');
-                  // Print label after receiving
-                  const labelItems=poItems.map(it2=>({sku:it2.sku,name:it2.name,color:it2.color,sizes:it2.sizes}));
-                  printLabel(labelItems,poId,'RECEIVED — '+new Date().toLocaleDateString());
+                  // Print label(s) after receiving — separate per source PO for batches
+                  if(isBatch&&batchMatch.source_pos&&batchMatch.source_pos.length>1){
+                    printBatchSeparateLabels(batchMatch.source_pos,poId,'RECEIVED — '+new Date().toLocaleDateString());
+                  } else {
+                    const labelItems=poItems.map(it2=>({sku:it2.sku,name:it2.name,color:it2.color,sizes:it2.sizes}));
+                    printLabel(labelItems,poId,'RECEIVED — '+new Date().toLocaleDateString());
+                  }
                 }}>✅ Confirm Received ({totalUnits} units)</button>}
             </div>
           </div>
@@ -9836,7 +9877,7 @@ export default function App(){
             <div><h2>{vg.name}</h2><div style={{fontSize:12,color:'#64748b'}}>{vg.pos.length} queued · {totalUnits} units</div></div>
             <div style={{textAlign:'right'}}>
               <div style={{fontSize:20,fontWeight:800,color:hitThreshold?'#166534':'#d97706'}}>${total.toFixed(2)}</div>
-              <div style={{fontSize:11,color:hitThreshold?'#166534':'#d97706',fontWeight:600}}>{hitThreshold?'✅ Free shipping!':'$'+(vg.threshold-total).toFixed(2)+' to free ship'}</div>
+              <div style={{fontSize:11,color:hitThreshold?'#166534':'#d97706',fontWeight:600}}>{vg.threshold>0?(hitThreshold?'✅ Free shipping!':'$'+(vg.threshold-total).toFixed(2)+' to free ship'):'Batch orders'}</div>
             </div>
           </div>
           <div className="card-body" style={{padding:0}}>
@@ -11825,19 +11866,46 @@ export default function App(){
                       <div style={{fontSize:11,color:'#64748b'}}>{vendorName} · {totalOrdered} units · {poItems.length} item{poItems.length!==1?'s':''}</div>
                     </div>
                     <button className="btn btn-sm btn-secondary" style={{fontSize:11,display:'flex',alignItems:'center',gap:4}} onClick={()=>{
-                      const w=window.open('','_blank','width=400,height=600');if(!w)return;
-                      w.document.write('<html><head><title>'+poId+'</title><style>@page{size:4in 6in;margin:0.2in}body{font-family:Arial,sans-serif;margin:0;padding:12px;width:3.6in}.po{font-size:28px;font-weight:900;font-family:monospace;letter-spacing:2px;text-align:center;margin:8px 0}table{width:100%;border-collapse:collapse;font-size:11px;margin-top:8px}th,td{border:1px solid #ccc;padding:3px 6px;text-align:left}th{background:#f0f0f0;font-weight:700}.footer{font-size:9px;color:#999;text-align:center;margin-top:8px;border-top:1px solid #ddd;padding-top:4px}</style></head><body>');
-                      w.document.write('<div style="text-align:center"><img src="'+qrUrl.replace('100x100','150x150')+'" width="120" height="120"/></div>');
-                      w.document.write('<div class="po">'+poId+'</div>');
-                      if(vendorName)w.document.write('<div style="text-align:center;font-size:12px;color:#666;margin-bottom:6px">'+vendorName+'</div>');
-                      w.document.write('<table><thead><tr><th>SKU</th><th>Product</th><th>Color</th><th>Sizes</th><th>Qty</th></tr></thead><tbody>');
-                      poItems.forEach(it=>{const szStr=it.szKeys.map(sz=>sz+':'+(it.ordered[sz]||0)).join(' ');const qty=it.szKeys.reduce((a,sz)=>a+(it.ordered[sz]||0),0);
-                        w.document.write('<tr><td style="font-weight:700">'+it.sku+'</td><td>'+it.name+'</td><td>'+(it.color||'—')+'</td><td style="font-size:10px;font-weight:700">'+szStr+'</td><td style="font-weight:700">'+qty+'</td></tr>')});
-                      w.document.write('</tbody></table>');
-                      w.document.write('<div style="text-align:right;font-size:14px;font-weight:900;margin-top:6px">TOTAL: '+totalOrdered+' units</div>');
-                      w.document.write('<div class="footer">NSA · '+new Date().toLocaleDateString()+' · Scan QR to open this PO</div>');
-                      w.document.write('</body></html>');w.document.close();setTimeout(()=>w.print(),400);
-                    }}>🖨️ Print Label</button></>})()}
+                      if(batchMatch&&batchMatch.source_pos&&batchMatch.source_pos.length>1){
+                        // Print separate labels per source PO for batch POs
+                        const w2=window.open('','_blank','width=400,height=600');if(!w2)return;
+                        w2.document.write('<html><head><title>Box Labels — '+poId+'</title><style>@page{size:4in 6in;margin:0.2in}body{font-family:Arial,sans-serif;margin:0;padding:0}');
+                        w2.document.write('.label-page{padding:12px;width:3.6in;page-break-after:always}.label-page:last-child{page-break-after:auto}');
+                        w2.document.write('.po{font-size:28px;font-weight:900;font-family:monospace;letter-spacing:2px;text-align:center;margin:8px 0}');
+                        w2.document.write('.so-label{font-size:16px;font-weight:900;text-align:center;color:#1e40af;margin-bottom:8px}');
+                        w2.document.write('table{width:100%;border-collapse:collapse;font-size:11px;margin-top:8px}th,td{border:1px solid #ccc;padding:3px 6px;text-align:left}th{background:#f0f0f0;font-weight:700}');
+                        w2.document.write('.footer{font-size:9px;color:#999;text-align:center;margin-top:8px;border-top:1px solid #ddd;padding-top:4px}</style></head><body>');
+                        batchMatch.source_pos.forEach((sp,spi)=>{
+                          w2.document.write('<div class="label-page">');
+                          w2.document.write('<div style="text-align:center"><img src="'+qrUrl.replace('100x100','150x150')+'" width="120" height="120"/></div>');
+                          w2.document.write('<div class="po">'+poId+'</div>');
+                          if(vendorName)w2.document.write('<div style="text-align:center;font-size:12px;color:#666;margin-bottom:4px">'+vendorName+'</div>');
+                          w2.document.write('<div class="so-label">'+sp.so_id+(sp.customer?' — '+sp.customer:'')+'</div>');
+                          w2.document.write('<table><thead><tr><th>SKU</th><th>Product</th><th>Color</th><th>Sizes</th><th>Qty</th></tr></thead><tbody>');
+                          sp.items.forEach(it=>{const szStr=Object.entries(it.sizes||{}).filter(([,v])=>v>0).map(([sz,v])=>sz+':'+v).join(' ');const qty=Object.values(it.sizes||{}).reduce((a,v)=>a+v,0);
+                            w2.document.write('<tr><td style="font-weight:700">'+it.sku+'</td><td>'+it.name+'</td><td>'+(it.color||'—')+'</td><td style="font-size:10px;font-weight:700">'+szStr+'</td><td style="font-weight:700">'+qty+'</td></tr>')});
+                          w2.document.write('</tbody></table>');
+                          const spQty=sp.items.reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((a2,v)=>a2+v,0),0);
+                          w2.document.write('<div style="text-align:right;font-size:14px;font-weight:900;margin-top:6px">BOX TOTAL: '+spQty+' units</div>');
+                          w2.document.write('<div class="footer">NSA · '+new Date().toLocaleDateString()+' · Box '+(spi+1)+' of '+batchMatch.source_pos.length+' · '+poId+'</div>');
+                          w2.document.write('</div>');
+                        });
+                        w2.document.write('</body></html>');w2.document.close();setTimeout(()=>w2.print(),400);
+                      } else {
+                        const w=window.open('','_blank','width=400,height=600');if(!w)return;
+                        w.document.write('<html><head><title>'+poId+'</title><style>@page{size:4in 6in;margin:0.2in}body{font-family:Arial,sans-serif;margin:0;padding:12px;width:3.6in}.po{font-size:28px;font-weight:900;font-family:monospace;letter-spacing:2px;text-align:center;margin:8px 0}table{width:100%;border-collapse:collapse;font-size:11px;margin-top:8px}th,td{border:1px solid #ccc;padding:3px 6px;text-align:left}th{background:#f0f0f0;font-weight:700}.footer{font-size:9px;color:#999;text-align:center;margin-top:8px;border-top:1px solid #ddd;padding-top:4px}</style></head><body>');
+                        w.document.write('<div style="text-align:center"><img src="'+qrUrl.replace('100x100','150x150')+'" width="120" height="120"/></div>');
+                        w.document.write('<div class="po">'+poId+'</div>');
+                        if(vendorName)w.document.write('<div style="text-align:center;font-size:12px;color:#666;margin-bottom:6px">'+vendorName+'</div>');
+                        w.document.write('<table><thead><tr><th>SKU</th><th>Product</th><th>Color</th><th>Sizes</th><th>Qty</th></tr></thead><tbody>');
+                        poItems.forEach(it=>{const szStr=it.szKeys.map(sz=>sz+':'+(it.ordered[sz]||0)).join(' ');const qty=it.szKeys.reduce((a,sz)=>a+(it.ordered[sz]||0),0);
+                          w.document.write('<tr><td style="font-weight:700">'+it.sku+'</td><td>'+it.name+'</td><td>'+(it.color||'—')+'</td><td style="font-size:10px;font-weight:700">'+szStr+'</td><td style="font-weight:700">'+qty+'</td></tr>')});
+                        w.document.write('</tbody></table>');
+                        w.document.write('<div style="text-align:right;font-size:14px;font-weight:900;margin-top:6px">TOTAL: '+totalOrdered+' units</div>');
+                        w.document.write('<div class="footer">NSA · '+new Date().toLocaleDateString()+' · Scan QR to open this PO</div>');
+                        w.document.write('</body></html>');w.document.close();setTimeout(()=>w.print(),400);
+                      }
+                    }}>🖨️ Print Labels</button></>})()}
               </div>
 
               {/* Items with receiving inputs */}
