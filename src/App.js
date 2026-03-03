@@ -1758,7 +1758,7 @@ function LoginGate({onLogin,reps}){
   );
 }
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack,onConvertSO,onCopyEstimate,onRevertToEst,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,allInvoices,batchPOs,onBatchPO,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onSaveProduct}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack,onConvertSO,onCopyEstimate,onRevertToEst,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,allInvoices,batchPOs,onBatchPO,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onSaveProduct,onViewEstimate}){
   const isE=mode==='estimate';const isSO=mode==='so';
   const[o,setO]=useState(order);const[cust,setCust]=useState(ic);const[pS,setPS]=useState('');const[showAdd,setShowAdd]=useState(false);
   const[tab,setTab]=useState(initTab||'items');const[dirty,setDirty]=useState(false);const[selJob,setSelJob]=useState(null);const[jobNote,setJobNote]=useState('');const[msgDept,setMsgDept]=useState('all');
@@ -2046,8 +2046,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           const noPrice=validItems.find(it=>safeNum(it.unit_sell)<=0);
           if(noPrice){nf('Item '+(noPrice.sku||noPrice.name||'#?')+' needs a sell price','error');return}
           onConvertSO(o)}}><Icon name="box" size={14}/> Convert to SO</button>}
-        {isE&&onCopyEstimate&&saved&&<button className="btn btn-secondary" style={{fontSize:12}} onClick={()=>{onCopyEstimate(o)}}>📋 Copy Estimate</button>}
-        {isSO&&onRevertToEst&&<button className="btn btn-secondary" style={{fontSize:12,color:'#d97706',borderColor:'#fbbf24'}} onClick={()=>{if(!window.confirm('Revert '+o.id+' back to a new estimate? The SO will be marked as reverted.'))return;onRevertToEst(o)}}>↩ Revert to Estimate</button>}
+        {isE&&onCopyEstimate&&saved&&<button style={{fontSize:10,color:'#94a3b8',background:'none',border:'none',cursor:'pointer',textDecoration:'underline',padding:'4px 0'}} onClick={()=>{if(!window.confirm('Create a copy of this estimate?'))return;onCopyEstimate(o)}}>Copy Estimate</button>}
+        {isSO&&onRevertToEst&&<button style={{fontSize:10,color:'#94a3b8',background:'none',border:'none',cursor:'pointer',textDecoration:'underline',padding:'4px 0'}} onClick={()=>{if(!window.confirm('Revert '+o.id+' back to a new estimate? The SO will be marked as reverted.'))return;onRevertToEst(o)}}>Revert to Estimate</button>}
         {/* Print Estimate or SO */}
         <button className="btn btn-secondary" style={{fontSize:12}} onClick={()=>{
           const items=safeItems(o).filter(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
@@ -2111,6 +2111,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           });
         }}>🖨️ Print {isE?'Estimate':'SO'}</button>
         {onDelete&&<button className="btn btn-sm" style={{background:'#dc2626',color:'white',border:'none',fontSize:11}} onClick={()=>onDelete(o.id)}><Icon name="trash" size={12}/> Delete</button>}
+        {isSO&&o.estimate_id&&onViewEstimate&&<button style={{fontSize:10,color:'#94a3b8',background:'none',border:'none',cursor:'pointer',textDecoration:'underline',padding:'4px 0'}} onClick={()=>onViewEstimate(o.estimate_id)} title="Open the source estimate">View Estimate</button>}
       </div>
       {isSO&&<div style={{display:'flex',gap:6,marginTop:8}}>
         <button className="btn btn-secondary" onClick={()=>setShowPO('select')}><Icon name="cart" size={14}/> Create PO</button>
@@ -2189,13 +2190,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                   :<span className="badge badge-gray">{item.color}</span>}
                 {item.is_custom&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:600}}>Custom</span>}
                 {isAU(item.brand)&&<span className="badge badge-blue">Tier {cust?.adidas_ua_tier}</span>}</div>
-              <div style={{display:'flex',alignItems:'center',gap:12,marginTop:4,flexWrap:'wrap'}}>
-                {/* Cost — editable for custom items */}
-                {item.is_custom?<span style={{fontSize:12,color:'#64748b'}}>Cost: <$In value={item.nsa_cost} onChange={v=>{uI(idx,'nsa_cost',v);if(!isAU(item.brand)&&v>0){uI(idx,'unit_sell',rQ(v*(o.default_markup||1.65)))}}}/></span>
-                  :<span style={{fontSize:12,color:'#64748b'}}>Cost: <strong>${item.nsa_cost?.toFixed(2)}</strong></span>}
-                {/* Retail — show for Adidas/UA, editable for custom items with those brands */}
-                {(isAU(item.brand)||item.retail_price>0)&&<span style={{fontSize:12,color:'#64748b'}}>Retail: {item.is_custom?<$In value={item.retail_price||0} onChange={v=>{uI(idx,'retail_price',v);if(isAU(item.brand)&&v>0){const costMult=item.brand==='Adidas'?0.375:0.425;const tier=tD[cust?.adidas_ua_tier||'B']||0.35;uI(idx,'nsa_cost',Math.floor(v*costMult*100)/100);uI(idx,'unit_sell',rQ(v*(1-tier)))}}}/>:<strong>${item.retail_price?.toFixed(2)}</strong>}</span>}
-                <span style={{fontSize:13}}>Sell: <$In value={item.unit_sell} onChange={v=>uI(idx,'unit_sell',v)}/>/ea</span>
+              <div style={{display:'flex',alignItems:'center',gap:8,marginTop:4,flexWrap:'wrap'}}>
+                <span style={{fontSize:13,fontWeight:600}}>Sell: <$In value={item.unit_sell} onChange={v=>uI(idx,'unit_sell',v)}/>/ea</span>
+                {item.is_custom&&<span style={{fontSize:12,color:'#64748b'}}>Cost: <$In value={item.nsa_cost} onChange={v=>{uI(idx,'nsa_cost',v);if(!isAU(item.brand)&&v>0){uI(idx,'unit_sell',rQ(v*(o.default_markup||1.65)))}}}/></span>}
+                {item.is_custom&&isAU(item.brand)&&<span style={{fontSize:12,color:'#64748b'}}>Retail: <$In value={item.retail_price||0} onChange={v=>{uI(idx,'retail_price',v);if(isAU(item.brand)&&v>0){const costMult=item.brand==='Adidas'?0.375:0.425;const tier=tD[cust?.adidas_ua_tier||'B']||0.35;uI(idx,'nsa_cost',Math.floor(v*costMult*100)/100);uI(idx,'unit_sell',rQ(v*(1-tier)))}}}/></span>}
                 {!isAU(item.brand)&&item.nsa_cost>0&&<span style={{fontSize:11,color:'#64748b'}}>({(item.unit_sell/item.nsa_cost).toFixed(2)}x)</span>}
                 {isAU(item.brand)&&item.nsa_cost>0&&<span style={{fontSize:11,color:item.unit_sell>item.nsa_cost?'#166534':'#dc2626'}}>({Math.round((item.unit_sell-item.nsa_cost)/item.unit_sell*100)}% margin)</span>}
               </div></div>
@@ -2232,10 +2230,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                 setShowPick([pickItem]);
               }}><Icon name="grid" size={14}/> Create IF</button>
               :<span style={{fontSize:10,color:'#d97706',fontStyle:'italic'}}>Need to order</span>})()}
-            <div style={{textAlign:'right',borderLeft:'1px solid #e2e8f0',paddingLeft:12,minWidth:140}}>
-              <div style={{fontSize:10,color:'#64748b',marginBottom:2}}>Cost ${iC.toLocaleString(undefined,{maximumFractionDigits:0})}</div>
-              <div style={{fontSize:10,color:'#64748b'}}>${qty>0?(iR/qty).toFixed(2):'-'}/ea</div>
+            <div style={{textAlign:'right',borderLeft:'1px solid #e2e8f0',paddingLeft:12}}>
               <span style={{fontSize:22,fontWeight:900,color:'#166534'}}>${iR.toLocaleString(undefined,{maximumFractionDigits:2})}</span>
+              <div style={{fontSize:10,color:'#64748b'}}>{qty} × ${qty>0?(iR/qty).toFixed(2):'-'}/ea</div>
             </div>
           </div>
         </div>
@@ -2384,7 +2381,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                 {nm==='heat_transfer'&&<>{!deco.custom_font_art_id?<><span style={{fontSize:12,color:'#475569'}}>Standard</span><button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>uD(idx,di,'custom_font_art_id','pending')}>Use Custom Font Art</button></>
                   :<><span style={{fontSize:11,color:'#7c3aed'}}>Custom font art</span><button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>uD(idx,di,'custom_font_art_id',null)}>× Clear</button></>}</>}
               </div>
-              {/* Toggle number assignment */}
+              {/* Front + Back toggle + number assignment */}
+              <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
+              <button className="btn btn-sm btn-secondary" style={{fontSize:11,background:deco.front_and_back?'#7c3aed':'#faf5ff',borderColor:'#c084fc',color:deco.front_and_back?'white':'#7c3aed',fontWeight:deco.front_and_back?700:400}} onClick={()=>{uD(idx,di,'front_and_back',!deco.front_and_back);nf(deco.front_and_back?'Front + Back OFF — single side':'Front + Back ON — qty doubled')}}>↕ Front + Back{deco.front_and_back?' ✓':''}</button>
               {!showRoster?<button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>uD(idx,di,'_showRoster',true)}>📋 Assign Numbers ({filledNums>0?filledNums+'/':''}{qty} pcs)</button>
               :<div style={{marginTop:6,padding:10,background:'#f8fafc',borderRadius:6,border:'1px dashed #d1d5db'}}
                 onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#3b82f6';e.currentTarget.style.background='#eff6ff'}}
@@ -2407,8 +2406,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                         <option value="">📋 Copy from...</option>
                         {otherNumDecos.map((nd,ni)=><option key={ni} value={ni}>{nd.sku} — {nd.position} ({Object.values(nd.roster).flat().filter(v=>v).length} #s)</option>)}
                       </select>})()}
-                    {/* Front + Back toggle — doubles quantity charged */}
-                    <button className="btn btn-sm btn-secondary" style={{fontSize:9,background:deco.front_and_back?'#7c3aed':'#faf5ff',borderColor:'#c084fc',color:deco.front_and_back?'white':'#7c3aed',fontWeight:deco.front_and_back?700:400}} onClick={()=>{uD(idx,di,'front_and_back',!deco.front_and_back);nf(deco.front_and_back?'Front + Back OFF — single side':'Front + Back ON — qty doubled')}}>↕ Front + Back{deco.front_and_back?' ✓':''}</button>
                     <button className="btn btn-sm btn-secondary" style={{fontSize:9,background:'#dbeafe',borderColor:'#93c5fd',color:'#1e40af'}} onClick={()=>autoFillNums('bball')}>🏀 BBall #s</button>
                     <button className="btn btn-sm btn-secondary" style={{fontSize:9,background:'#dcfce7',borderColor:'#86efac',color:'#166534'}} onClick={()=>autoFillNums('sequential')}>🔢 Small→Large</button>
                     <button className="btn btn-sm btn-secondary" style={{fontSize:9}} onClick={()=>{
@@ -2433,6 +2430,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                 </div>}
                 {filledNums>0&&<div style={{fontSize:10,color:'#64748b',marginTop:4}}>{filledNums}/{qty} assigned</div>}
               </div>}
+              </div>
             </div>)}
             // OUTSIDE DECORATION
             if(deco.kind==='outside_deco'){return(<div key={di} style={decoCardStyle}>
@@ -2492,10 +2490,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                   </div>})}</div>}
               </div></div>)}
             return null})}
-          {safeDecos(item).length>0&&<div style={{display:'flex',justifyContent:'flex-end',padding:'6px 12px',background:'#f0f9ff',borderRadius:6,marginTop:4,gap:16,alignItems:'center'}}>
-            <span style={{fontSize:11,color:'#64748b'}}>Garment: ${(qty*safeNum(item.unit_sell)).toFixed(2)}</span>
-            <span style={{fontSize:11,color:'#64748b'}}>Deco: ${(()=>{let d=0;safeDecos(item).forEach(dd=>{const cq2=dd.kind==='art'&&dd.art_file_id?artQty[dd.art_file_id]:qty;const dp2=dP(dd,qty,af,cq2);d+=qty*(dd.sell_override||dp2.sell)});return d.toFixed(2)})()}</span>
-            <span style={{fontSize:12,fontWeight:800,color:'#1e40af'}}>All-In: ${(()=>{let t=qty*safeNum(item.unit_sell);safeDecos(item).forEach(dd=>{const cq2=dd.kind==='art'&&dd.art_file_id?artQty[dd.art_file_id]:qty;const dp2=dP(dd,qty,af,cq2);t+=qty*(dd.sell_override||dp2.sell)});return t.toFixed(2)})()}</span>
+          {safeDecos(item).length>0&&<div style={{display:'flex',justifyContent:'space-between',padding:'6px 12px',background:'#f0f9ff',borderRadius:6,marginTop:4,alignItems:'center',flexWrap:'wrap',gap:8}}>
+            <div style={{display:'flex',gap:12,alignItems:'center',flexWrap:'wrap'}}>
+              <span style={{fontSize:11,color:'#64748b'}}>Cost: <strong>${item.nsa_cost?.toFixed(2)}</strong>/ea</span>
+              <span style={{fontSize:11,color:'#64748b'}}>Sell: <strong>${item.unit_sell?.toFixed(2)}</strong>/ea</span>
+              {(isAU(item.brand)||item.retail_price>0)&&<span style={{fontSize:11,color:'#64748b'}}>Retail: ${item.retail_price?.toFixed(2)}</span>}
+            </div>
+            <div style={{display:'flex',gap:12,alignItems:'center'}}>
+              <span style={{fontSize:11,color:'#64748b'}}>Garment: ${(qty*safeNum(item.unit_sell)).toFixed(2)}</span>
+              <span style={{fontSize:11,color:'#64748b'}}>Deco: ${(()=>{let d=0;safeDecos(item).forEach(dd=>{const cq2=dd.kind==='art'&&dd.art_file_id?artQty[dd.art_file_id]:qty;const dp2=dP(dd,qty,af,cq2);const eq2=dp2._nq!=null?dp2._nq:qty;d+=eq2*(dd.sell_override||dp2.sell)});return d.toFixed(2)})()}</span>
+              <span style={{fontSize:12,fontWeight:800,color:'#1e40af'}}>All-In: ${iR.toFixed(2)}</span>
+            </div>
           </div>}
           <div style={{display:'flex',gap:6,marginTop:8,alignItems:'center',flexWrap:'wrap'}}>
             <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>addArtDeco(idx)}><Icon name="image" size={12}/> + Add Art</button>
@@ -7698,7 +7703,7 @@ export default function App(){
 
   // ESTIMATES LIST
   function rEst(){
-    if(eEst)return<OrderEditor order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} onSave={e=>{const e2=savE(e);setEEst(e2)}} onBack={()=>setEEst(null)} onConvertSO={convertSO} onCopyEstimate={copyEstimate} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={canDelete?deleteEstimate:null} onNavInvoice={inv=>{setEEst(null);setPg('invoices');setInvF(f=>({...f,search:inv.id}))}} onSaveProduct={p=>setProd(prev=>[...prev,p])}/>;
+    if(eEst)return<OrderEditor order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} onSave={e=>{const e2=savE(e);setEEst(e2)}} onBack={()=>setEEst(null)} onConvertSO={convertSO} onCopyEstimate={copyEstimate} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={canDelete?deleteEstimate:null} onNavInvoice={inv=>{setEEst(null);setPg('invoices');setInvF(f=>({...f,search:inv.id}))}} onSaveProduct={p=>setProd(prev=>[...prev,p])}/>
     const fe=ests.filter(e=>!q||(e.id+' '+e.memo+' '+(cust.find(c=>c.id===e.customer_id)?.name||'')+' '+(cust.find(c=>c.id===e.customer_id)?.alpha_tag||'')).toLowerCase().includes(q.toLowerCase()));
     return(<><div style={{display:'flex',gap:8,marginBottom:16}}><div className="search-bar" style={{flex:1}}><Icon name="search"/><input placeholder="Search..." value={q} onChange={e=>setQ(e.target.value)}/></div>
       <button className="btn btn-primary" onClick={()=>newE(null)}><Icon name="plus" size={14}/> New Estimate</button></div>
@@ -7716,7 +7721,7 @@ export default function App(){
 
   // SALES ORDERS LIST
   function rSO(){
-    if(eSO)return<OrderEditor order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} onSave={s=>{const locked=savSO(s);setESO(locked)}} onBack={()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null)}} onRevertToEst={revertSOToEst} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onNavInvoice={inv=>{setESO(null);setPg('invoices');setInvF(f=>({...f,search:inv.id}))}} onSaveProduct={p=>setProd(prev=>[...prev,p])}/>;
+    if(eSO)return<OrderEditor order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} onSave={s=>{const locked=savSO(s);setESO(locked)}} onBack={()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null)}} onRevertToEst={revertSOToEst} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onNavInvoice={inv=>{setESO(null);setPg('invoices');setInvF(f=>({...f,search:inv.id}))}} onSaveProduct={p=>setProd(prev=>[...prev,p])} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}}/>
     // Filter SOs
     let fSOs=[...sos];
     if(soF.status!=='all')fSOs=fSOs.filter(s=>calcSOStatus(s)===soF.status);
