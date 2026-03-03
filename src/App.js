@@ -164,7 +164,7 @@ const _dbSeed = async (d) => {
   }
 };
 // ─── Normalized Save Helpers ───
-const _dbSaveEstimate = async (est) => {
+const _dbSaveEstimateInner = async (est) => {
   if(!supabase)return;
   return _dbSavingGuard(async()=>{let decoFailed=false;try{
     const{items,art_files,...estRow}=est;
@@ -208,7 +208,8 @@ const _dbSaveEstimate = async (est) => {
     _dbSaveFailedIds.delete(est.id);return true;
   }catch(e){console.error('[DB] save estimate:',e);_dbSaveFailedIds.add(est.id);return false}});
 };
-const _dbSaveSO = async (so) => {
+const _dbSaveEstimate = (est) => _queuedEntitySave(est.id, est, _dbSaveEstimateInner);
+const _dbSaveSOInner = async (so) => {
   if(!supabase)return;
   return _dbSavingGuard(async()=>{let decoFailed=false;try{
     const{items,art_files,firm_dates,jobs,...soRow}=so;
@@ -272,6 +273,7 @@ const _dbSaveSO = async (so) => {
     _dbSaveFailedIds.delete(so.id);return true;
   }catch(e){console.error('[DB] save SO:',e);_dbSaveFailedIds.add(so.id);return false}});
 };
+const _dbSaveSO = (so) => _queuedEntitySave(so.id, so, _dbSaveSOInner);
 const _dbSaveInvoice = async (inv) => {
   if(!supabase)return;
   try{
@@ -377,6 +379,25 @@ const _dbDeleteInvoice = async (id) => {
 // Save-in-progress guard — prevents poll/realtime from loading partial data during delete-and-reinsert
 let _dbSavingCount=0;
 const _dbSavingGuard=async(fn)=>{_dbSavingCount++;try{return await fn()}finally{_dbSavingCount--}};
+// Per-entity save queue — prevents concurrent saves for the same estimate/SO from racing.
+// When a save is in-progress and a newer version arrives, the newer version is queued.
+// After the current save finishes, only the LATEST queued version is saved (intermediate versions are skipped).
+const _dbSaveInFlight={};// id → true if a save is currently running
+const _dbSavePending={};// id → {data, saveFn} latest pending save data
+const _queuedEntitySave=async(id,data,saveFn)=>{
+  _dbSavePending[id]={data,saveFn};
+  if(_dbSaveInFlight[id])return;// save running — pending data will be picked up when it finishes
+  _dbSaveInFlight[id]=true;
+  let lastResult;
+  try{
+    while(_dbSavePending[id]){
+      const{data:toSave,saveFn:fn}=_dbSavePending[id];
+      delete _dbSavePending[id];
+      lastResult=await fn(toSave);
+    }
+  }finally{delete _dbSaveInFlight[id]}
+  return lastResult;
+};
 // Track IDs of estimates/SOs whose save failed (decoration inserts) — prevents reload from overwriting local state
 const _dbSaveFailedIds=new Set();
 // Column whitelists — strip unknown fields before sending to Supabase (localStorage may have extra UI fields like vendor_id)
