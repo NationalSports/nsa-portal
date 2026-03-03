@@ -275,7 +275,7 @@ const _dbSaveProduct = async (p) => {
     // Always save product images to app_state as reliable backup (works even without image columns)
     const _imgF=p.image_url||p.image_front_url||null;const _imgB=p.back_image_url||p.image_back_url||null;const _imgG=p.images||null;
     if(_imgF||_imgB||(_imgG&&_imgG.length)){
-      supabase.from('app_state').upsert({id:'_pimg_'+p.id,value:JSON.stringify({front:_imgF,back:_imgB,gallery:_imgG}),updated_at:new Date().toISOString()},{onConflict:'id'}).catch(()=>{});
+      await supabase.from('app_state').upsert({id:'_pimg_'+p.id,value:JSON.stringify({front:_imgF,back:_imgB,gallery:_imgG}),updated_at:new Date().toISOString()},{onConflict:'id'}).catch(()=>{});
     }
     const _inv=p._inv||{};const _alerts=p._alerts||{};
     const allSizes=new Set([...Object.keys(_inv),...Object.keys(_alerts)]);
@@ -7104,7 +7104,7 @@ export default function App(){
         setInvs(prev=>_jsonEq(prev,d.invoices)?prev:d.invoices);
         if(d.messages.length)setMsgs(prev=>_jsonEq(prev,d.messages)?prev:d.messages);
         setCust(prev=>_jsonEq(prev,d.customers)?prev:d.customers);
-        if(d.products.length)setProd(prev=>{if(_jsonEq(prev,d.products))return prev;const merged=d.products.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));return localOnly.length?[...merged,...localOnly]:merged});
+        if(d.products.length)setProd(prev=>{if(_jsonEq(prev,d.products))return prev;const merged=d.products.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));return localOnly.length?[...merged,...localOnly]:merged});
         if(d.vendors.length)setVend(prev=>_jsonEq(prev,d.vendors)?prev:d.vendors);
         if(d.omg_stores.length)setOmgStores(prev=>_jsonEq(prev,d.omg_stores)?prev:d.omg_stores);
         if(d.issues?.length)setIssues(prev=>_jsonEq(prev,d.issues)?prev:d.issues);
