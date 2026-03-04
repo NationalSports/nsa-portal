@@ -2070,8 +2070,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     setVendorInv(prev=>({...prev,[sku]:{sizes:{},price:{},loading:true,error:null}}));
     try{
       // S&S Products endpoint returns inventory + pricing per SKU
-      // Fetch by style to get all color/size combos
-      const data=await ssApiCall('/Products?style='+encodeURIComponent(sku));
+      // Use partNumber (brand's style#) — falls back to style (S&S internal#)
+      let data;
+      try{data=await ssApiCall('/Products?partNumber='+encodeURIComponent(sku))}
+      catch(e){data=await ssApiCall('/Products?style='+encodeURIComponent(sku))}
       const items=Array.isArray(data)?data:[data];
       // Build inventory map: for each item matching this sku, sum warehouse qty by size
       const sizeQty={};const sizePrice={};
@@ -2158,22 +2160,44 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
 
   const ssLiveSearch=useCallback(async(query)=>{
     if(!query||query.length<2){setSsResults([]);return}
-    // Check cache first
     const cacheKey=query.toLowerCase().trim();
     if(ssSearchCache.current[cacheKey]){setSsResults(ssSearchCache.current[cacheKey]);return}
     setSsSearching(true);
     try{
-      const data=await ssApiCall('/Products?style='+encodeURIComponent(query));
+      // First: get style info (title, partNumber) from Styles endpoint
+      // partNumber is the brand's actual style# (e.g. "8000" for Gildan DryBlend)
+      // styleName is S&S's internal style# which may differ from brand's
+      let styleInfo=null;
+      try{
+        const styles=await ssApiCall('/Styles?partNumber='+encodeURIComponent(query));
+        const sArr=Array.isArray(styles)?styles:styles?[styles]:[];
+        if(sArr.length>0)styleInfo=sArr[0];// {styleID, partNumber, brandName, styleName, title, ...}
+      }catch(e){console.log('[S&S] Styles lookup failed, falling back to Products',e)}
+
+      // Search Products by partNumber (brand's style#) — this is the correct search
+      // The partNumber param finds products by the brand's number, not S&S internal styleID
+      let data;
+      try{
+        data=await ssApiCall('/Products?partNumber='+encodeURIComponent(query));
+      }catch(e){
+        // Fallback: try by style (S&S internal number)
+        data=await ssApiCall('/Products?style='+encodeURIComponent(query));
+      }
       const items=Array.isArray(data)?data:data?[data]:[];
-      // Group by styleID+colorName → deduplicate into style/color groups
+      // Get title from style info, or build from brand + query
+      const productTitle=styleInfo?.title||'';
+      const partNum=styleInfo?.partNumber||query;
+      // Group by styleID+colorName → one entry per color
       const colorMap={};
       items.forEach(it=>{
         const key=(it.styleID||it.styleName||query)+'|'+(it.colorName||'');
         if(!colorMap[key])colorMap[key]={
-          styleID:it.styleID,styleName:it.styleName||it.brandName+' '+query,
-          brandName:it.brandName||'',colorName:it.colorName||'',
+          styleID:it.styleID,
+          styleName:productTitle||(it.brandName?(it.brandName+' '+partNum):it.styleName||partNum),
+          brandName:it.brandName||styleInfo?.brandName||'',
+          colorName:it.colorName||'',
           colorFrontImage:it.colorFrontImage||'',
-          sku:query,// base style
+          sku:partNum,// brand's style number (e.g. "8000"), not S&S internal
           customerPrice:parseFloat(it.customerPrice)||0,
           piecePrice:parseFloat(it.piecePrice)||0,
           sizes:[],totalQty:0
@@ -2182,7 +2206,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const qty=typeof it.qty==='number'?it.qty:parseInt(it.qty)||0;
         colorMap[key].sizes.push({sizeName:sz,qty,price:parseFloat(it.customerPrice)||parseFloat(it.piecePrice)||0});
         colorMap[key].totalQty+=qty;
-        // Use lowest price
         const p=parseFloat(it.customerPrice)||parseFloat(it.piecePrice)||0;
         if(p>0&&(colorMap[key].customerPrice===0||p<colorMap[key].customerPrice))colorMap[key].customerPrice=p;
       });
