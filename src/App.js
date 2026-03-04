@@ -11636,8 +11636,43 @@ export default function App(){
       });
     };
 
+    // Build promo cost lines from SOs with promo_applied
+    const buildPromoLines=(repFilter)=>{
+      return sos.filter(so=>{
+        if(!so.promo_applied)return false;
+        if(so.status==='deleted')return false;
+        if(repFilter&&repFilter!=='all')return so.created_by===repFilter;
+        return true;
+      }).map(so=>{
+        const c=cust.find(x=>x.id===so.customer_id);
+        const rep=REPS.find(r=>r.id===so.created_by);
+        const _aq={};safeItems(so).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_aq[d.art_file_id]=(_aq[d.art_file_id]||0)+q2}})});
+        const soAf=safeArt(so);let productCost=0,decoCost=0,promoRev=0;
+        safeItems(so).forEach(it=>{
+          const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);if(!qty)return;
+          if(it.is_promo){
+            productCost+=qty*safeNum(it.nsa_cost);
+            const sellP=safeNum(it.retail_price)||safeNum(it.nsa_cost)*2;promoRev+=qty*sellP;
+            safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qty;const dp2=dP(d,qty,soAf,cq);decoCost+=qty*dp2.cost;promoRev+=qty*rQ(dp2.sell*1.25)});
+            (it.po_lines||[]).filter(pl=>pl.po_type==='outside_deco').forEach(pl=>{const poQty=Object.entries(pl).filter(([k,v])=>typeof v==='number'&&!['unit_cost'].includes(k)).reduce((a,[,v])=>a+v,0);decoCost+=poQty*safeNum(pl.unit_cost)});
+          }
+        });
+        const totalRev=promoRev;const baseShip=so.shipping_type==='pct'?totalRev*(safeNum(so.shipping_value)/100):safeNum(so.shipping_value);
+        const shipCost=rQ(baseShip*1.25);
+        const totalCost=productCost+decoCost+shipCost;
+        const soDate=so.created_at?so.created_at.substring(0,10):'';
+        const soMonth=soDate?soDate.substring(0,7):'';
+        return{so,customer:c,rep,productCost:Math.round(productCost*100)/100,decoCost:Math.round(decoCost*100)/100,shipCost:Math.round(shipCost*100)/100,totalCost:Math.round(totalCost*100)/100,promoAmount:safeNum(so.promo_amount),soDate,soMonth,repId:so.created_by};
+      });
+    };
+
     const allLines=buildCommLines(isAdmin?q||'all':cu.id);
     const allPipeline=buildPipeline(isAdmin?q||'all':cu.id);
+    const allPromoLines=buildPromoLines(isAdmin?q||'all':cu.id);
+
+    // Filter promo lines by selected month
+    const monthPromoLines=allPromoLines.filter(l=>l.soMonth===commMonth);
+    const monthPromoCost=monthPromoLines.reduce((a,l)=>a+l.totalCost,0);
 
     // Filter by selected month for statement
     const monthLines=allLines.filter(l=>{
@@ -11647,6 +11682,8 @@ export default function App(){
     });
     const monthTotal=monthLines.reduce((a,l)=>a+l.commAmt,0);
     const monthGP=monthLines.reduce((a,l)=>a+l.gp.gp,0);
+    // Net commission after promo costs deducted
+    const monthNetComm=Math.round((monthTotal-monthPromoCost)*100)/100;
 
     // YTD
     const yr=new Date().getFullYear();
@@ -11654,6 +11691,9 @@ export default function App(){
     const ytdComm=ytdLines.reduce((a,l)=>a+l.commAmt,0);
     const ytdGP=ytdLines.reduce((a,l)=>a+l.gp.gp,0);
     const ytdRev=ytdLines.reduce((a,l)=>a+safeNum(l.inv.total),0);
+    const ytdPromoLines=allPromoLines.filter(l=>{const y=l.soDate?parseInt(l.soDate.substring(0,4)):0;return y===yr});
+    const ytdPromoCost=ytdPromoLines.reduce((a,l)=>a+l.totalCost,0);
+    const ytdNetComm=Math.round((ytdComm-ytdPromoCost)*100)/100;
 
     // By customer
     const byCust={};allLines.forEach(l=>{const cn=l.customer?.name||'Unknown';if(!byCust[cn])byCust[cn]={name:cn,gp:0,comm:0,invCount:0,rev:0};byCust[cn].gp+=l.gp.gp;byCust[cn].comm+=l.commAmt;byCust[cn].invCount++;byCust[cn].rev+=safeNum(l.inv.total)});
@@ -11677,16 +11717,17 @@ export default function App(){
             {salesReps.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
           </select></>}
         <div style={{display:'flex',gap:4,marginLeft:isAdmin?'auto':0}}>
-          {[['statement','Statement'],['pipeline','Pipeline'],['ytd','YTD'],['byCustomer','By Customer']].map(([id,label])=>
+          {[['statement','Statement'],['pipeline','Pipeline'],['promo','Promo'],['ytd','YTD'],['byCustomer','By Customer']].map(([id,label])=>
             <button key={id} className={`btn btn-sm ${commTab===id?'btn-primary':'btn-secondary'}`} onClick={()=>setCommTab(id)}>{label}</button>)}
         </div>
       </div>
 
       {/* Summary cards */}
       <div className="stats-row" style={{marginBottom:16}}>
-        <div className="stat-card"><div className="stat-label">This Month</div><div className="stat-value" style={{color:'#166534'}}>${monthTotal.toLocaleString(undefined,{maximumFractionDigits:2})}</div></div>
-        <div className="stat-card"><div className="stat-label">YTD Earned</div><div className="stat-value" style={{color:'#1e40af'}}>${ytdComm.toLocaleString(undefined,{maximumFractionDigits:2})}</div></div>
+        <div className="stat-card"><div className="stat-label">This Month</div><div className="stat-value" style={{color:'#166534'}}>${monthNetComm.toLocaleString(undefined,{maximumFractionDigits:2})}</div>{monthPromoCost>0&&<div style={{fontSize:10,color:'#dc2626',marginTop:2}}>−${monthPromoCost.toLocaleString()} promo</div>}</div>
+        <div className="stat-card"><div className="stat-label">YTD Earned</div><div className="stat-value" style={{color:'#1e40af'}}>${ytdNetComm.toLocaleString(undefined,{maximumFractionDigits:2})}</div>{ytdPromoCost>0&&<div style={{fontSize:10,color:'#dc2626',marginTop:2}}>−${ytdPromoCost.toLocaleString()} promo</div>}</div>
         <div className="stat-card"><div className="stat-label">Pipeline</div><div className="stat-value" style={{color:'#7c3aed'}}>${pipeTotal.toLocaleString(undefined,{maximumFractionDigits:2})}</div></div>
+        <div className="stat-card"><div className="stat-label">Promo Costs</div><div className="stat-value" style={{color:'#dc2626'}}>${ytdPromoCost.toLocaleString(undefined,{maximumFractionDigits:2})}</div><div style={{fontSize:10,color:'#94a3b8',marginTop:2}}>{allPromoLines.length} orders YTD</div></div>
         <div className="stat-card"><div className="stat-label">Avg GP%</div><div className="stat-value" style={{color:ytdRev>0&&(ytdGP/ytdRev*100)>=30?'#166534':'#d97706'}}>{ytdRev>0?Math.round(ytdGP/ytdRev*100):0}%</div></div>
       </div>
 
@@ -11729,6 +11770,18 @@ export default function App(){
               <td style={{textAlign:'right',fontSize:16,color:'#166534'}}>${monthTotal.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
               {isAdmin&&<td/>}
             </tr>
+            {monthPromoCost>0&&<tr style={{fontWeight:700,background:'#fef2f2',borderTop:'1px dashed #dc2626'}}>
+              <td colSpan={isAdmin?3:2} style={{color:'#dc2626'}}>PROMO COST DEDUCTION ({monthPromoLines.length} order{monthPromoLines.length!==1?'s':''})</td>
+              <td colSpan={4}></td>
+              <td style={{textAlign:'right',fontSize:14,color:'#dc2626'}}>−${monthPromoCost.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
+              {isAdmin&&<td/>}
+            </tr>}
+            {monthPromoCost>0&&<tr style={{fontWeight:800,background:'#f0fdf4',borderTop:'2px solid #166534'}}>
+              <td colSpan={isAdmin?3:2}>NET COMMISSION</td>
+              <td colSpan={4}></td>
+              <td style={{textAlign:'right',fontSize:16,color:monthNetComm>=0?'#166534':'#dc2626'}}>${monthNetComm.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
+              {isAdmin&&<td/>}
+            </tr>}
           </tbody></table>}
         </div>
       </div>}
@@ -11760,6 +11813,45 @@ export default function App(){
             </tr>
           </tbody></table>}
         </div>
+      </div>}
+
+      {/* PROMO COSTS TAB */}
+      {commTab==='promo'&&<div className="card">
+        <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+          <h2>Promo Order Costs</h2>
+          <div style={{display:'flex',gap:8,alignItems:'center'}}>
+            <button className="btn btn-sm btn-secondary" onClick={()=>{const[y,m]=commMonth.split('-').map(Number);const d=new Date(y,m-2,1);setCommMonth(d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'))}}>&#9664;</button>
+            <input type="month" className="form-input" style={{width:160}} value={commMonth} onChange={e=>setCommMonth(e.target.value)}/>
+            <button className="btn btn-sm btn-secondary" onClick={()=>{const[y,m]=commMonth.split('-').map(Number);const d=new Date(y,m,1);setCommMonth(d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'))}}>&#9654;</button>
+          </div>
+        </div>
+        <div className="card-body" style={{padding:0}}>
+          {monthPromoLines.length===0?<div style={{padding:40,textAlign:'center',color:'#94a3b8'}}>No promo orders this month</div>:
+          <table style={{fontSize:12}}><thead><tr>
+            <th>SO #</th><th>Customer</th>{isAdmin&&<th>Rep</th>}<th>Date</th><th style={{textAlign:'right'}}>Product Cost</th><th style={{textAlign:'right'}}>Deco Cost</th><th style={{textAlign:'right'}}>Shipping</th><th style={{textAlign:'right',fontWeight:800}}>Total Cost</th>
+          </tr></thead><tbody>
+            {monthPromoLines.map(l=><tr key={l.so.id}>
+              <td style={{fontWeight:700,color:'#1e40af'}}>{l.so.id}<div style={{fontSize:10,color:'#94a3b8'}}>{l.so.memo}</div></td>
+              <td>{l.customer?.name||'\u2014'}</td>
+              {isAdmin&&<td style={{fontSize:11}}>{l.rep?.name||'\u2014'}</td>}
+              <td style={{fontSize:11,color:'#64748b'}}>{l.soDate}</td>
+              <td style={{textAlign:'right',color:'#dc2626'}}>${l.productCost.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
+              <td style={{textAlign:'right',color:'#dc2626'}}>${l.decoCost.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
+              <td style={{textAlign:'right',color:'#dc2626'}}>${l.shipCost.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
+              <td style={{textAlign:'right',fontWeight:800,color:'#dc2626'}}>${l.totalCost.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
+            </tr>)}
+            <tr style={{fontWeight:800,background:'#fef2f2',borderTop:'2px solid #dc2626'}}>
+              <td colSpan={isAdmin?4:3}>TOTAL PROMO COSTS</td>
+              <td style={{textAlign:'right',color:'#dc2626'}}>${monthPromoLines.reduce((a,l)=>a+l.productCost,0).toLocaleString(undefined,{maximumFractionDigits:2})}</td>
+              <td style={{textAlign:'right',color:'#dc2626'}}>${monthPromoLines.reduce((a,l)=>a+l.decoCost,0).toLocaleString(undefined,{maximumFractionDigits:2})}</td>
+              <td style={{textAlign:'right',color:'#dc2626'}}>${monthPromoLines.reduce((a,l)=>a+l.shipCost,0).toLocaleString(undefined,{maximumFractionDigits:2})}</td>
+              <td style={{textAlign:'right',fontSize:14,color:'#dc2626'}}>${monthPromoCost.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
+            </tr>
+          </tbody></table>}
+        </div>
+        {monthPromoLines.length>0&&<div style={{padding:'12px 16px',background:'#fffbeb',borderTop:'1px solid #fde68a',fontSize:11,color:'#92400e'}}>
+          <strong>Impact on Commission:</strong> These costs are deducted from your monthly commission. This month: ${monthTotal.toLocaleString(undefined,{maximumFractionDigits:2})} earned &minus; ${monthPromoCost.toLocaleString(undefined,{maximumFractionDigits:2})} promo costs = <strong>${monthNetComm.toLocaleString(undefined,{maximumFractionDigits:2})} net commission</strong>
+        </div>}
       </div>}
 
       {/* YTD TAB */}
@@ -11838,7 +11930,7 @@ export default function App(){
 
       {/* Commission policy note */}
       <div style={{marginTop:16,padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0',fontSize:11,color:'#64748b'}}>
-        <strong>Commission Policy:</strong> 30% of gross profit on invoices paid within 90 days of invoice date. 15% on invoices paid after 90 days (50% penalty). Admin may click to restore full 30% on any late invoice. Gross profit = Revenue &minus; Product Cost &minus; Decoration Cost &minus; Outbound Shipping (ShipStation, default $0) &minus; Inbound Freight (Supplier Bills, manual override until integration live).
+        <strong>Commission Policy:</strong> 30% of gross profit on invoices paid within 90 days of invoice date. 15% on invoices paid after 90 days (50% penalty). Admin may click to restore full 30% on any late invoice. Gross profit = Revenue &minus; Product Cost &minus; Decoration Cost &minus; Outbound Shipping (ShipStation, default $0) &minus; Inbound Freight (Supplier Bills, manual override until integration live). <strong>Promo orders:</strong> Costs from promo orders (product, decoration, shipping) are deducted from monthly commission as they represent real costs with no customer revenue.
       </div>
     </>);
   };
