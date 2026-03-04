@@ -10344,11 +10344,14 @@ export default function App(){
               <div style={{flex:'0 0 280px',padding:20,background:'#f8fafc',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',borderRight:'1px solid #e2e8f0',cursor:'pointer'}}
                 onClick={()=>setProdJobLightbox(!prodJobLightbox)}>
                 <div style={{width:240,height:240,borderRadius:10,background:'white',border:'2px dashed #d1d5db',display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column',overflow:'hidden'}}>
-                  {mockupFiles.length>0?<>
-                    <div style={{fontSize:48,marginBottom:4}}>🖼️</div>
-                    <div style={{fontSize:11,fontWeight:700,color:'#1e40af'}}>{fileDisplayName(mockupFiles[0])}</div>
+                  {mockupFiles.length>0?(typeof mockupFiles[0]==='string'&&/\.(png|jpe?g|gif|webp|svg)(\?|$)/i.test(mockupFiles[0])?<>
+                    <img src={mockupFiles[0]} alt="Mockup" style={{maxWidth:'100%',maxHeight:210,objectFit:'contain'}}/>
                     <div style={{fontSize:9,color:'#64748b',marginTop:2}}>Click to enlarge</div>
                   </>:<>
+                    <div style={{fontSize:48,marginBottom:4}}>🖼️</div>
+                    <div style={{fontSize:11,fontWeight:700,color:'#1e40af',wordBreak:'break-all',padding:'0 8px',textAlign:'center'}}>{fileDisplayName(mockupFiles[0])}</div>
+                    <div style={{fontSize:9,color:'#64748b',marginTop:2}}>Click to enlarge</div>
+                  </>):<>
                     <div style={{fontSize:48,marginBottom:4}}>🎨</div>
                     <div style={{fontSize:11,color:'#94a3b8'}}>No mockup uploaded</div>
                   </>}
@@ -10467,13 +10470,15 @@ export default function App(){
         const mockupFiles2=(af?.mockup_files||af?.files||[]);
         return<div style={{position:'fixed',top:0,left:0,right:0,bottom:0,background:'rgba(0,0,0,0.85)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer'}}
           onClick={()=>setProdJobLightbox(false)}>
-          <div style={{maxWidth:'80vw',maxHeight:'80vh',background:'white',borderRadius:12,padding:24,textAlign:'center'}} onClick={e=>e.stopPropagation()}>
-            <div style={{fontSize:120,marginBottom:12}}>🖼️</div>
+          <div style={{maxWidth:'80vw',maxHeight:'80vh',background:'white',borderRadius:12,padding:24,textAlign:'center',overflow:'auto'}} onClick={e=>e.stopPropagation()}>
+            {mockupFiles2.length>0&&typeof mockupFiles2[0]==='string'&&/\.(png|jpe?g|gif|webp|svg)(\?|$)/i.test(mockupFiles2[0])?
+              <img src={mockupFiles2[0]} alt="Mockup" style={{maxWidth:'70vw',maxHeight:'60vh',objectFit:'contain',borderRadius:8,marginBottom:12}}/>
+              :<div style={{fontSize:120,marginBottom:12}}>🖼️</div>}
             <div style={{fontSize:18,fontWeight:800,color:'#1e40af',marginBottom:4}}>{prodJobModal.art_name}</div>
             <div style={{fontSize:13,color:'#64748b',marginBottom:8}}>{prodJobModal.deco_type?.replace(/_/g,' ')} · {prodJobModal.positions}</div>
             {mockupFiles2.length>0&&<div style={{display:'flex',gap:6,justifyContent:'center',flexWrap:'wrap'}}>
               {mockupFiles2.map((f,i)=><div key={i} style={{padding:'8px 16px',background:'#eff6ff',borderRadius:6,cursor:'pointer',fontSize:12,fontWeight:600,color:'#1e40af'}}
-                onClick={()=>openFile(f)}>{f}</div>)}
+                onClick={()=>openFile(f)}>{fileDisplayName(f)}</div>)}
             </div>}
             <button className="btn btn-secondary" style={{marginTop:16}} onClick={()=>setProdJobLightbox(false)}>Close</button>
           </div>
