@@ -192,7 +192,7 @@ const _dbSaveEstimateInner = async (est) => {
       let afRows=art_files.map(a=>({..._pick(a,_artCols),estimate_id:est.id}));
       const{error:afErr}=await supabase.from('estimate_art_files').upsert(afRows,{onConflict:'estimate_id,id'});
       if(afErr){
-        if(afErr.message?.includes('art_sizes')){
+        if(afErr.message?.includes('art_sizes')||afErr.message?.includes('garment_colors')||afErr.message?.includes('item_mockups')||afErr.message?.includes('schema cache')){
           const coreRows=afRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_artExtraCols.has(k))cr[k]=r[k]});return cr});
           const{error:afErr2}=await supabase.from('estimate_art_files').upsert(coreRows,{onConflict:'estimate_id,id'});
           if(afErr2)console.error('[DB] estimate_art_files upsert failed (core):',afErr2.message,afErr2.details);
@@ -276,7 +276,7 @@ const _dbSaveSOInner = async (so) => {
       let soAfRows=art_files.map(a=>({..._pick(a,_artCols),so_id:so.id}));
       const{error:afErr}=await supabase.from('so_art_files').upsert(soAfRows,{onConflict:'so_id,id'});
       if(afErr){
-        if(afErr.message?.includes('art_sizes')){
+        if(afErr.message?.includes('art_sizes')||afErr.message?.includes('garment_colors')||afErr.message?.includes('item_mockups')||afErr.message?.includes('schema cache')){
           const coreRows=soAfRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_artExtraCols.has(k))cr[k]=r[k]});return cr});
           const{error:afErr2}=await supabase.from('so_art_files').upsert(coreRows,{onConflict:'so_id,id'});
           if(afErr2){console.error('[DB] so_art_files upsert failed (core):',afErr2.message,afErr2.details);saveFailed=true}
@@ -543,7 +543,7 @@ const _sanitizeDeco=(d)=>{const r={...d};if(r.custom_font_art_id&&r.custom_font_
 const _msgCols=['id','so_id','author_id','text','ts','dept'];
 const _artCols=['id','name','deco_type','ink_colors','thread_colors','art_size','art_sizes','garment_colors','files','mockup_files','item_mockups','prod_files','notes','status','uploaded'];
 // Columns that may not exist in art file tables — stripped on retry
-const _artExtraCols=new Set(['art_sizes']);
+const _artExtraCols=new Set(['art_sizes','garment_colors','item_mockups']);
 // Columns that may not exist in so_jobs — stripped on retry
 const _jobExtraCols=new Set(['art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected']);
 const _jobCols=['id','key','art_file_id','art_name','deco_type','positions','art_status','item_status','prod_status','total_units','fulfilled_units','split_from','created_at','assigned_machine','assigned_to','ship_method','items','_auto','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected'];
