@@ -2032,6 +2032,76 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
   const[coachApprovalModal,setCoachApprovalModal]=useState(null);// {jIdx, contact, portalUrl, method, message}
   const[copySkuModal,setCopySkuModal]=useState(null);// {itemIdx, search:''}
 
+  // ─── Vendor Inventory Cache (S&S Activewear) ───
+  // Keyed by style (sku base), stores {sizes:{S:qty,M:qty,...}, price:{S:cost,...}, fetchedAt:timestamp}
+  const vendorInvCache=useRef({});
+  const[vendorInv,setVendorInv]=useState({});// {sku: {sizes:{S:qty,...}, loading:bool, error:str}}
+  const vendorInvFetching=useRef({});// track in-flight fetches
+
+  const fetchVendorInventory=useCallback(async(sku,vendorId)=>{
+    // Only fetch for S&S Activewear vendor items (or items whose product vendor is S&S)
+    const v=products.find(p=>p.id===vendorId||p.vendor_id===vendorId);
+    const vendor=(typeof vendorId==='string')?vendorId:null;
+    const prod2=products.find(p=>p.sku===sku);
+    const vId=vendor||prod2?.vendor_id;
+    // Find vendor record to check if it's an API vendor
+    const allVendors=D_V;// fallback
+    const vRec=allVendors.find(vv=>vv.id===vId);
+    if(!vRec||vRec.api_provider!=='ss_activewear')return;
+    // Use base style (sku without color suffix) as cache key
+    const cacheKey=sku;
+    // Check cache (valid for 10 minutes)
+    const cached=vendorInvCache.current[cacheKey];
+    if(cached&&(Date.now()-cached.fetchedAt)<600000){
+      setVendorInv(prev=>({...prev,[sku]:{sizes:cached.sizes,price:cached.price,loading:false,error:null}}));
+      return;
+    }
+    // Prevent duplicate fetches
+    if(vendorInvFetching.current[cacheKey])return;
+    vendorInvFetching.current[cacheKey]=true;
+    setVendorInv(prev=>({...prev,[sku]:{sizes:{},price:{},loading:true,error:null}}));
+    try{
+      // S&S Products endpoint returns inventory + pricing per SKU
+      // Fetch by style to get all color/size combos
+      const data=await ssApiCall('/Products?style='+encodeURIComponent(sku));
+      const items=Array.isArray(data)?data:[data];
+      // Build inventory map: for each item matching this sku, sum warehouse qty by size
+      const sizeQty={};const sizePrice={};
+      // S&S returns one entry per sku (color+size combo); filter to matching style+color
+      const prod3=products.find(p=>p.sku===sku);
+      const prodColor=prod3?.color?.toLowerCase()||'';
+      items.forEach(it=>{
+        // Match by colorName if we know the product color, otherwise aggregate all
+        const itColor=(it.colorName||'').toLowerCase();
+        if(prodColor&&itColor&&!itColor.includes(prodColor.split('/')[0].split(' ')[0].toLowerCase())&&!prodColor.includes(itColor.split('/')[0].split(' ')[0].toLowerCase()))return;
+        const sz=it.sizeName||'OSFA';
+        const qty=typeof it.qty==='number'?it.qty:parseInt(it.qty)||0;
+        sizeQty[sz]=(sizeQty[sz]||0)+qty;
+        if(it.customerPrice!=null)sizePrice[sz]=parseFloat(it.customerPrice)||parseFloat(it.piecePrice)||0;
+        else if(it.piecePrice!=null)sizePrice[sz]=parseFloat(it.piecePrice)||0;
+      });
+      const result={sizes:sizeQty,price:sizePrice,fetchedAt:Date.now()};
+      vendorInvCache.current[cacheKey]=result;
+      setVendorInv(prev=>({...prev,[sku]:{sizes:sizeQty,price:sizePrice,loading:false,error:null}}));
+    }catch(err){
+      console.error('[S&S] Inventory fetch failed for',sku,err);
+      setVendorInv(prev=>({...prev,[sku]:{sizes:{},price:{},loading:false,error:err.message}}));
+    }finally{
+      delete vendorInvFetching.current[cacheKey];
+    }
+  },[products]);
+
+  // Auto-fetch vendor inventory for all S&S items on the order
+  React.useEffect(()=>{
+    const items=safeItems(o);
+    items.forEach(item=>{
+      const vId=item.vendor_id||products.find(p=>p.id===item.product_id||p.sku===item.sku)?.vendor_id;
+      if(vId&&!vendorInv[item.sku]&&!vendorInvFetching.current[item.sku]){
+        fetchVendorInventory(item.sku,vId);
+      }
+    });
+  },[o.items?.length]);// only re-run when items are added/removed
+
   // Sync dirty state to parent dirtyRef
   React.useEffect(()=>{if(dirtyRef)dirtyRef.current=dirty},[dirty,dirtyRef]);
   // Adjust inventory when pick is pulled or un-pulled
@@ -2563,8 +2633,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
             {szs.map(sz=><div key={sz} style={{textAlign:'center',width:48}}><div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
               <input value={item.sizes[sz]||''} onChange={e=>uSz(idx,sz,e.target.value)} placeholder="0"
                 style={{width:42,textAlign:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'5px 2px',fontSize:15,fontWeight:700,color:(item.sizes[sz]||0)>0?'#0f172a':'#cbd5e1'}}/>
-              {(()=>{const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);const stk=p?._inv?.[sz];const need=item.sizes[sz]||0;return<div style={{fontSize:9,fontWeight:600,minHeight:13,color:stk==null?'transparent':stk<=0?'#dc2626':stk<need?'#ca8a04':'#166534'}}>{stk!=null?stk+' inv':'\u00A0'}</div>})()}</div>)}
+              {(()=>{const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);const stk=p?._inv?.[sz];const need=item.sizes[sz]||0;return<div style={{fontSize:9,fontWeight:600,minHeight:13,color:stk==null?'transparent':stk<=0?'#dc2626':stk<need?'#ca8a04':'#166534'}}>{stk!=null?stk+' inv':'\u00A0'}</div>})()}
+              {(()=>{const vi=vendorInv[item.sku];if(!vi||vi.loading)return vi?.loading?<div style={{fontSize:8,color:'#a78bfa',minHeight:11}}>...</div>:null;const vStk=vi.sizes?.[sz];if(vStk==null)return null;return<div style={{fontSize:8,fontWeight:700,minHeight:11,color:vStk<=0?'#dc2626':vStk<20?'#a78bfa':'#7c3aed'}} title={'S&S Activewear stock: '+vStk}>{vStk} ss</div>})()}</div>)}
             <div style={{textAlign:'center',marginLeft:4,padding:'0 10px',borderLeft:'2px solid #e2e8f0'}}><div style={{fontSize:10,fontWeight:700,color:'#1e40af'}}>TOT</div><div style={{fontSize:20,fontWeight:800,color:'#1e40af'}}>{qty}</div></div>
+            {(()=>{const vi=vendorInv[item.sku];const vId=item.vendor_id||products.find(p=>p.id===item.product_id||p.sku===item.sku)?.vendor_id;const vRec=D_V.find(vv=>vv.id===vId);
+              if(vRec?.api_provider==='ss_activewear')return<button title={vi?.error?'Error: '+vi.error+' — click to retry':'Refresh S&S inventory'} onClick={()=>{delete vendorInvCache.current[item.sku];delete vendorInvFetching.current[item.sku];setVendorInv(prev=>{const n={...prev};delete n[item.sku];return n});fetchVendorInventory(item.sku,vId)}} style={{background:'none',border:'1px solid #c4b5fd',borderRadius:4,cursor:'pointer',color:vi?.error?'#dc2626':'#7c3aed',padding:'2px 6px',fontSize:9,fontWeight:700,marginLeft:4,whiteSpace:'nowrap'}}>{vi?.loading?'...':vi?.error?'⚠ S&S':'↻ S&S'}</button>;return null})()}
             <div style={{position:'relative',marginLeft:4}}><button className="btn btn-sm btn-secondary" onClick={()=>setShowSzPicker(showSzPicker===idx?null:idx)} style={{fontSize:10}}>+ Size</button>
               {showSzPicker===idx&&addable.length>0&&<><div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:39}} onClick={()=>setShowSzPicker(null)}/><div style={{position:'absolute',top:'100%',left:0,background:'white',border:'1px solid #e2e8f0',borderRadius:6,boxShadow:'0 4px 12px rgba(0,0,0,0.1)',zIndex:40,padding:6,display:'flex',gap:3,flexWrap:'wrap',width:180}}>
                 {addable.map(sz=><button key={sz} className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 6px'}} onClick={()=>addSzToItem(idx,sz)}>{sz}</button>)}</div></>}
@@ -6462,7 +6535,12 @@ function VendDetail({vendor,onBack}){return(<div><button className="btn btn-seco
   <div style={{width:56,height:56,borderRadius:12,background:'#ede9fe',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}><Icon name="package" size={28}/></div>
   <div style={{flex:1}}><div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}><span style={{fontSize:20,fontWeight:800}}>{vendor.name}</span><span className={`badge ${vendor.vendor_type==='api'?'badge-purple':'badge-gray'}`}>{vendor.vendor_type==='api'?'API':'Upload'}</span><span className="badge badge-gray">{vendor.payment_terms?.replace('net','Net ')}</span>{vendor.nsa_carries_inventory&&<span className="badge badge-green">Stock</span>}</div>
     <div style={{fontSize:13,color:'#64748b',marginTop:4}}>{vendor.contact_email} {vendor.rep_name&&`| Rep: ${vendor.rep_name}`}</div>{vendor.notes&&<div style={{fontSize:12,color:'#94a3b8',marginTop:4}}>{vendor.notes}</div>}</div>
-  {(vendor._it||0)>0&&<div style={{textAlign:'right'}}><div style={{fontSize:11,color:'#dc2626',fontWeight:600}}>OWED</div><div style={{fontSize:24,fontWeight:800,color:'#dc2626'}}>${vendor._it.toLocaleString()}</div></div>}</div></div>
+  {(vendor._it||0)>0&&<div style={{textAlign:'right'}}><div style={{fontSize:11,color:'#dc2626',fontWeight:600}}>OWED</div><div style={{fontSize:24,fontWeight:800,color:'#dc2626'}}>${vendor._it.toLocaleString()}</div></div>}
+  {vendor.api_provider==='ss_activewear'&&<div style={{display:'flex',gap:6,marginTop:8}}>
+    <button className="btn btn-sm" style={{background:'#7c3aed',color:'white',fontSize:10,border:'none'}} onClick={async()=>{try{await testSSConnection();alert('S&S API connection successful!')}catch(e){alert('S&S API connection failed: '+e.message)}}}>Test API</button>
+    <button className="btn btn-sm" style={{background:'#2563eb',color:'white',fontSize:10,border:'none'}} onClick={async()=>{try{const r=await fetch('/.netlify/functions/ss-pricing-sync');const d=await r.json();alert('Pricing sync complete!\n\nSKUs checked: '+d.total_skus+'\nPrices updated: '+d.updated+(d.errors?.length?'\nErrors: '+d.errors.length:''))}catch(e){alert('Pricing sync failed: '+e.message)}}}>Sync Pricing Now</button>
+  </div>}
+  </div></div>
   <div className="stats-row"><div className="stat-card"><div className="stat-label">Invoices</div><div className="stat-value">{vendor._oi||0}</div></div><div className="stat-card"><div className="stat-label">Current</div><div className="stat-value" style={{color:'#166534'}}>${(vendor._ac||0).toLocaleString()}</div></div><div className="stat-card"><div className="stat-label">30 Day</div><div className="stat-value" style={{color:(vendor._a3||0)>0?'#d97706':''}}>${(vendor._a3||0).toLocaleString()}</div></div><div className="stat-card"><div className="stat-label">60+</div><div className="stat-value" style={{color:(vendor._a6||0)>0?'#dc2626':''}}>${((vendor._a6||0)+(vendor._a9||0)).toLocaleString()}</div></div></div>
   <div className="card"><div className="card-header"><h2>Purchase Orders</h2></div><div className="card-body"><div className="empty">PO tracking — Phase 4</div></div></div></div>)}
 
