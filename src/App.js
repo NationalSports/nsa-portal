@@ -310,7 +310,7 @@ const _dbSaveSO = (so) => _queuedEntitySave(so.id, so, _dbSaveSOInner);
 const _dbSaveInvoice = async (inv) => {
   if(!supabase)return;
   try{
-    const{payments,items,_qb_synced,_qb_id,so_id,date,paid,...invRow}=inv;
+    const{payments,items,_qb_synced,_qb_id,_age,_dd,_bal,_overdue,_rep,_cname,...invRow}=inv;
     await supabase.from('invoices').upsert(invRow,{onConflict:'id'});
     await supabase.from('invoice_payments').delete().eq('invoice_id',inv.id);
     if(payments?.length) await supabase.from('invoice_payments').insert(payments.map(p=>({...p,invoice_id:inv.id})));
@@ -2024,6 +2024,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
     const DECO_VENDORS=['Silver Screen','Olympic Embroidery','WePrintIt','Pacific Screen Print','Other'];
   const[showFirmReq,setShowFirmReq]=useState(false);const[firmReqDate,setFirmReqDate]=useState('');const[firmReqNote,setFirmReqNote]=useState('');
   const[showInvCreate,setShowInvCreate]=useState(false);const[invSelItems,setInvSelItems]=useState([]);const[invMemo,setInvMemo]=useState('');const[invType,setInvType]=useState('deposit');const[invDepositPct,setInvDepositPct]=useState(50);
+  const[invReview,setInvReview]=useState(null);const[invSendModal,setInvSendModal]=useState(false);const[invSendMsg,setInvSendMsg]=useState('');
   const[splitModal,setSplitModal]=useState(null);// {jIdx, mode:'received'|'sku'|null}
   const[countDiscModal,setCountDiscModal]=useState(null);// {open,entries:[{sku,name,color,size,expected,actual}],notes}
   const[artReqModal,setArtReqModal]=useState(null);// {jIdx, artist:'', instructions:'', files:[]}
@@ -3762,8 +3763,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       // For final: use full order total
       const activeItems=invType==='partial'?invSelItems:items.map((_,i)=>i);
       const selTotals=activeItems.reduce((acc,idx)=>{const t=itemTotals[idx];if(!t)return acc;return{items:acc.items+1,units:acc.units+t.qty,subtotal:acc.subtotal+t.total}},{items:0,units:0,subtotal:0});
-      const invShip=activeItems.length===items.length?totals.ship:0;
-      const invTax=activeItems.length===items.length?totals.tax:0;
+      // Prorate shipping & tax based on fraction of order being invoiced
+      const orderSubtotal=itemTotals.reduce((a,t)=>a+t.total,0)||1;
+      const selFraction=selTotals.subtotal/orderSubtotal;
+      const invShip=activeItems.length===items.length?totals.ship:Math.round(totals.ship*selFraction*100)/100;
+      const invTax=activeItems.length===items.length?totals.tax:Math.round(totals.tax*selFraction*100)/100;
       const fullTotal=selTotals.subtotal+invShip+invTax;
       const invTotal=invType==='deposit'?Math.round(fullTotal*invDepositPct/100*100)/100:fullTotal;
 
@@ -3899,11 +3903,156 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
             if(invType==='final'){const updated={...o,status:'complete',updated_at:new Date().toLocaleString()};setO(updated);onSave(updated)}
             setShowInvCreate(false);
             nf('Invoice '+inv.id+' created for $'+invTotal.toFixed(2)+(invType==='final'?' — SO marked complete':''));
-            // Navigate to invoice page
-            if(onNavInvoice)onNavInvoice(inv);
+            // Show invoice review page instead of navigating away
+            setInvReview({...inv,_customer:cust,_so:o,_lineItems:lineItems,_shipAmt:invShipAmt,_taxAmt:invTaxAmt});
+            const contact=(cust?.contacts||[])[0];
+            setInvSendMsg('Hi '+(contact?.name||'Coach')+',\n\nPlease find your invoice '+inv.id+' for $'+invTotal.toFixed(2)+'. Payment is due by '+dueDate+'.\n\nThank you,\nNSA Team');
           }}>{invType==='final'?'Create Final Invoice — Close SO':'Create '+invType.charAt(0).toUpperCase()+invType.slice(1)+' Invoice'} — ${invTotal.toFixed(2)}</button>
         </div>
       </div></div>})()}
+
+    {/* ═══ INVOICE REVIEW PAGE ═══ */}
+    {invReview&&(()=>{
+      const ir=invReview;const ic=ir._customer||cust;const irSO=ir._so||o;
+      const lineItems=ir._lineItems||ir.line_items||[];
+      const shipAmt=ir._shipAmt!=null?ir._shipAmt:(ir.shipping||0);
+      const taxAmt=ir._taxAmt!=null?ir._taxAmt:(ir.tax||0);
+      const bal=ir.total-(ir.paid||0);
+      const contact=(ic?.contacts||[])[0];
+      const printInvoice=()=>{
+        printDoc({title:ic?.name||'Customer',docNum:ir.id,docType:'INVOICE',
+          headerRight:'<div style="font-size:24px;font-weight:900;color:#dc2626">$'+ir.total.toLocaleString()+'</div>'
+            +'<div style="font-size:11px;color:#666">Balance Due: <strong style="color:#dc2626">$'+bal.toLocaleString()+'</strong></div>',
+          infoBoxes:[
+            {label:'Bill To',value:ic?.name||'—',sub:ic?.alpha_tag},
+            {label:'Invoice Date',value:ir.date||new Date().toLocaleDateString(),sub:ir.due_date?'Due: '+ir.due_date:''},
+            {label:'Sales Order',value:ir.so_id||'—',sub:ir.memo||''},
+            {label:'Payment Terms',value:ir.inv_type==='deposit'?(ir.deposit_pct||50)+'% Deposit':ir.inv_type==='partial'?'Partial Invoice':'Final Invoice',sub:''}
+          ],
+          tables:[{headers:['Description','Qty','Rate','Amount'],aligns:['left','center','right','right'],
+            rows:[
+              ...lineItems.map(li=>({cells:[li.desc,li.qty,'$'+safeNum(li.rate).toFixed(2),'$'+safeNum(li.amount).toFixed(2)]})),
+              ...(shipAmt>0?[{cells:[{value:'Shipping',style:'font-style:italic'},'','','$'+shipAmt.toFixed(2)]}]:[]),
+              ...(taxAmt>0?[{cells:[{value:'Tax',style:'font-style:italic'},'','','$'+taxAmt.toFixed(2)]}]:[]),
+              {_class:'totals-row',cells:['','','Total','$'+ir.total.toLocaleString()]}
+            ]}],
+          footer:ir.inv_type==='deposit'?NSA.depositTerms:NSA.terms});
+      };
+      return<div className="modal-overlay" onClick={()=>setInvReview(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:700,maxHeight:'90vh',overflow:'auto'}}>
+        <div className="modal-header" style={{background:'linear-gradient(135deg,#1e3a5f,#2563eb)',color:'white'}}>
+          <h2 style={{color:'white'}}>Invoice Created — {ir.id}</h2>
+          <button className="modal-close" style={{color:'white'}} onClick={()=>setInvReview(null)}>x</button>
+        </div>
+        <div className="modal-body" style={{padding:0}}>
+          {/* Invoice preview */}
+          <div style={{padding:20}}>
+            <div style={{display:'flex',justifyContent:'space-between',marginBottom:16}}>
+              <div>
+                <div style={{fontSize:22,fontWeight:900,color:'#1e3a5f'}}>INVOICE</div>
+                <div style={{fontSize:14,fontWeight:700,color:'#2563eb'}}>{ir.id}</div>
+              </div>
+              <div style={{textAlign:'right'}}>
+                <div style={{fontSize:11,color:'#64748b'}}>NSA · National Sports Apparel</div>
+                <div style={{fontSize:11,color:'#64748b'}}>{NSA.addr}</div>
+                <div style={{fontSize:11,color:'#64748b'}}>{NSA.city}, {NSA.state} {NSA.zip}</div>
+              </div>
+            </div>
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:12,marginBottom:16,padding:12,background:'#f8fafc',borderRadius:8}}>
+              <div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8',textTransform:'uppercase'}}>Bill To</div><div style={{fontSize:13,fontWeight:700}}>{ic?.name||'—'}</div>{ic?.alpha_tag&&<div style={{fontSize:11,color:'#64748b'}}>{ic.alpha_tag}</div>}</div>
+              <div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8',textTransform:'uppercase'}}>Date</div><div style={{fontSize:13,fontWeight:600}}>{ir.date||'—'}</div><div style={{fontSize:11,color:'#64748b'}}>Due: {ir.due_date||'—'}</div></div>
+              <div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8',textTransform:'uppercase'}}>Sales Order</div><div style={{fontSize:13,fontWeight:600}}>{ir.so_id||'—'}</div><div style={{fontSize:11,color:'#64748b'}}>{ir.memo||''}</div></div>
+            </div>
+            {/* Line items table */}
+            <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
+              <thead><tr style={{background:'#f1f5f9',borderBottom:'2px solid #e2e8f0'}}>
+                <th style={{padding:'8px 10px',textAlign:'left',fontWeight:700}}>Description</th>
+                <th style={{padding:'8px 10px',textAlign:'center',fontWeight:700,width:60}}>Qty</th>
+                <th style={{padding:'8px 10px',textAlign:'right',fontWeight:700,width:80}}>Rate</th>
+                <th style={{padding:'8px 10px',textAlign:'right',fontWeight:700,width:90}}>Amount</th>
+              </tr></thead>
+              <tbody>
+                {lineItems.map((li,i)=><tr key={i} style={{borderBottom:'1px solid #f1f5f9'}}>
+                  <td style={{padding:'8px 10px'}}>{li.desc}</td>
+                  <td style={{padding:'8px 10px',textAlign:'center'}}>{li.qty}</td>
+                  <td style={{padding:'8px 10px',textAlign:'right'}}>${safeNum(li.rate).toFixed(2)}</td>
+                  <td style={{padding:'8px 10px',textAlign:'right',fontWeight:600}}>${safeNum(li.amount).toFixed(2)}</td>
+                </tr>)}
+              </tbody>
+            </table>
+            {/* Totals */}
+            <div style={{marginTop:12,borderTop:'2px solid #e2e8f0',paddingTop:12,display:'flex',justifyContent:'flex-end'}}>
+              <div style={{width:220}}>
+                <div style={{display:'flex',justifyContent:'space-between',fontSize:12,marginBottom:4}}>
+                  <span style={{color:'#64748b'}}>Subtotal</span><span style={{fontWeight:600}}>${lineItems.reduce((a,l)=>a+safeNum(l.amount),0).toFixed(2)}</span>
+                </div>
+                {shipAmt>0&&<div style={{display:'flex',justifyContent:'space-between',fontSize:12,marginBottom:4}}>
+                  <span style={{color:'#64748b'}}>Shipping</span><span>${shipAmt.toFixed(2)}</span>
+                </div>}
+                {taxAmt>0&&<div style={{display:'flex',justifyContent:'space-between',fontSize:12,marginBottom:4}}>
+                  <span style={{color:'#64748b'}}>Tax</span><span>${taxAmt.toFixed(2)}</span>
+                </div>}
+                {ir.inv_type==='deposit'&&<div style={{display:'flex',justifyContent:'space-between',fontSize:12,marginBottom:4}}>
+                  <span style={{color:'#1e40af',fontWeight:600}}>Deposit ({ir.deposit_pct||50}%)</span><span style={{fontWeight:700,color:'#1e40af'}}>${ir.total.toFixed(2)}</span>
+                </div>}
+                <div style={{display:'flex',justifyContent:'space-between',fontSize:16,fontWeight:800,paddingTop:8,borderTop:'2px solid #1e3a5f',color:'#1e3a5f'}}>
+                  <span>Total Due</span><span>${ir.total.toFixed(2)}</span>
+                </div>
+              </div>
+            </div>
+            {ir.inv_type==='deposit'&&<div style={{marginTop:12,padding:10,background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:6,fontSize:11,color:'#1e40af'}}>{NSA.depositTerms}</div>}
+          </div>
+        </div>
+        <div className="modal-footer" style={{display:'flex',gap:8,justifyContent:'space-between',flexWrap:'wrap'}}>
+          <button className="btn btn-secondary" onClick={()=>{setInvReview(null);if(onNavInvoice)onNavInvoice(ir)}}>Go to Invoices</button>
+          <div style={{display:'flex',gap:8}}>
+            <button className="btn btn-secondary" onClick={printInvoice}>🖨️ Print Invoice</button>
+            <button className="btn btn-primary" style={{background:'#2563eb'}} onClick={()=>setInvSendModal(true)}>📧 Send to Coach</button>
+          </div>
+        </div>
+      </div></div>
+    })()}
+
+    {/* ═══ SEND TO COACH MODAL ═══ */}
+    {invSendModal&&invReview&&(()=>{
+      const ir=invReview;const ic=ir._customer||cust;
+      const contact=(ic?.contacts||[])[0];
+      const coachEmail=contact?.email||'';
+      return<div className="modal-overlay" style={{zIndex:10001}} onClick={()=>setInvSendModal(false)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:500}}>
+        <div className="modal-header"><h2>Send Invoice to Coach</h2><button className="modal-close" onClick={()=>setInvSendModal(false)}>x</button></div>
+        <div className="modal-body">
+          <div style={{marginBottom:12}}>
+            <label className="form-label">Sending to</label>
+            <div style={{padding:10,background:'#f8fafc',borderRadius:6,fontSize:13}}>
+              <div style={{fontWeight:700}}>{contact?.name||'Coach'}</div>
+              <div style={{fontSize:12,color:'#64748b'}}>{coachEmail||'No email on file'}</div>
+            </div>
+          </div>
+          <div style={{marginBottom:12}}>
+            <label className="form-label">Invoice</label>
+            <div style={{padding:8,background:'#eff6ff',borderRadius:6,fontSize:12,display:'flex',justifyContent:'space-between'}}>
+              <span style={{fontWeight:700,color:'#1e40af'}}>{ir.id}</span>
+              <span style={{fontWeight:700}}>${ir.total.toFixed(2)}</span>
+            </div>
+          </div>
+          <div style={{marginBottom:12}}>
+            <label className="form-label">Message to Coach</label>
+            <textarea className="form-input" rows={6} value={invSendMsg} onChange={e=>setInvSendMsg(e.target.value)} style={{fontSize:13,lineHeight:1.5}}/>
+          </div>
+        </div>
+        <div className="modal-footer">
+          <button className="btn btn-secondary" onClick={()=>setInvSendModal(false)}>Cancel</button>
+          <button className="btn btn-primary" style={{background:'#2563eb'}} disabled={!coachEmail} onClick={()=>{
+            setInvSendModal(false);
+            // Update invoice email status
+            onInv(prev=>prev.map(i=>i.id===ir.id?{...i,email_status:'sent',email_sent_at:new Date().toLocaleString()}:i));
+            nf('Invoice '+ir.id+' sent to '+coachEmail);
+            // Also post to messages
+            const soMsg={id:'m'+Date.now(),so_id:ir.so_id,author_id:cu.id,text:'[Invoice '+ir.id+'] Sent to '+(contact?.name||'coach')+' ('+coachEmail+')\n\n'+invSendMsg,ts:new Date().toLocaleString(),read_by:[cu.id],dept:'sales',tagged_members:[]};
+            if(onMsg)onMsg(prev=>[...prev,soMsg]);
+          }}>📧 Send Invoice{coachEmail?'':' (No email on file)'}</button>
+        </div>
+      </div></div>
+    })()}
 
     {showPO&&(()=>{
       // Vendor selection or PO form
@@ -6931,8 +7080,38 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   if(estView){
     const est=estView;
     const eaf=safeArt(est);const _eAQ={};(est.items||[]).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_eAQ[d.art_file_id]=(_eAQ[d.art_file_id]||0)+q2}})});
-    const estTotal=(est.items||[]).reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);let r=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_eAQ[d.art_file_id]:qq;const dp2=dP(d,qq,eaf,cq);const eq2=dp2._nq!=null?dp2._nq:qq;r+=eq2*dp2.sell});return a+r},0);
+    const estSubtotal=(est.items||[]).reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);let r=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_eAQ[d.art_file_id]:qq;const dp2=dP(d,qq,eaf,cq);const eq2=dp2._nq!=null?dp2._nq:qq;r+=eq2*dp2.sell});return a+r},0);
+    const estShip=est.shipping_type==='pct'?estSubtotal*(est.shipping_value||0)/100:(est.shipping_value||0);
+    const estTaxRate=customer?.tax_exempt?0:(customer?.tax_rate||0);
+    const estTax=estSubtotal*estTaxRate;
+    const estTotal=estSubtotal+estShip+estTax;
     const canApprove=est.status==='sent'||est.status==='open';
+    // Generate printable estimate PDF
+    const downloadEstPdf=()=>{
+      const w=window.open('','_blank','width=800,height=1000');if(!w)return;
+      let html='<!DOCTYPE html><html><head><title>'+est.id+' — Estimate</title><style>body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;color:#1e293b;padding:40px;max-width:700px;margin:0 auto}h1{font-size:24px;margin:0}h2{font-size:16px;margin:16px 0 8px;color:#1e3a5f;border-bottom:1px solid #e2e8f0;padding-bottom:4px}.item{border:1px solid #e2e8f0;border-radius:8px;padding:12px;margin-bottom:10px}.deco{font-size:12px;color:#64748b;padding:2px 0 2px 16px}.total-row{display:flex;justify-content:space-between;padding:6px 0}.total-row.grand{border-top:2px solid #1e3a5f;font-size:18px;font-weight:800;padding-top:10px;margin-top:6px}@media print{body{padding:20px}}</style></head><body>';
+      html+='<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:24px"><div><h1>Estimate</h1><div style="color:#64748b;font-size:13px">'+est.id+' · '+(est.created_at?.split(' ')[0]||'')+'</div><div style="font-size:14px;font-weight:700;margin-top:4px">'+(est.memo||'')+'</div></div>';
+      html+='<div style="text-align:right"><div style="font-size:11px;color:#64748b">Prepared for</div><div style="font-size:16px;font-weight:700">'+(customer?.name||'')+'</div>'+(rep?'<div style="font-size:11px;color:#64748b;margin-top:4px">Rep: '+rep.name+'</div>':'')+'</div></div>';
+      html+='<h2>Items</h2>';
+      (est.items||[]).forEach((it,i)=>{
+        const qty=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);const lineTotal=qty*safeNum(it.unit_sell);
+        html+='<div class="item"><div style="display:flex;justify-content:space-between"><div><strong>'+(safeStr(it.name)||'Item')+'</strong><div style="font-size:11px;color:#64748b">'+(it.sku||'')+' · '+(safeStr(it.color)||'—')+(it.brand?' · '+it.brand:'')+'</div></div>';
+        html+='<div style="text-align:right"><div style="font-weight:700">$'+lineTotal.toFixed(2)+'</div><div style="font-size:11px;color:#64748b">'+qty+' × $'+safeNum(it.unit_sell).toFixed(2)+'</div></div></div>';
+        const szEntries=Object.entries(safeSizes(it)).filter(([,v])=>v>0);
+        if(szEntries.length)html+='<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">'+szEntries.map(([sz,q])=>'<span style="background:#f1f5f9;padding:2px 6px;border-radius:4px;font-size:11px"><strong>'+sz+'</strong> '+q+'</span>').join('')+'</div>';
+        safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_eAQ[d.art_file_id]:qty;const dp2=dP(d,qty,eaf,cq);const eq2=dp2._nq!=null?dp2._nq:qty;const decoAmt=eq2*dp2.sell;
+          const label=d.kind==='numbers'?'Numbers':d.kind==='names'?'Names':(d.position||'Decoration');
+          html+='<div class="deco" style="display:flex;justify-content:space-between">'+label+(d.position&&d.kind!=='art'?' — '+d.position:'')+'<span style="font-weight:600">'+eq2+' × $'+dp2.sell.toFixed(2)+' = $'+decoAmt.toFixed(2)+'</span></div>'});
+        html+='</div>'});
+      html+='<div style="margin-top:16px;padding-top:12px;border-top:2px solid #e2e8f0">';
+      html+='<div class="total-row"><span>Subtotal</span><span style="font-weight:700">$'+estSubtotal.toFixed(2)+'</span></div>';
+      if(estShip>0)html+='<div class="total-row"><span>Shipping</span><span>$'+estShip.toFixed(2)+'</span></div>';
+      if(estTax>0)html+='<div class="total-row"><span>Tax ('+(estTaxRate*100).toFixed(2)+'%)</span><span>$'+estTax.toFixed(2)+'</span></div>';
+      html+='<div class="total-row grand"><span>Estimated Total</span><span>$'+estTotal.toFixed(2)+'</span></div></div>';
+      html+='<div style="text-align:center;margin-top:24px;font-size:11px;color:#94a3b8">National Sports Apparel · This estimate is valid for 30 days</div>';
+      html+='</body></html>';
+      w.document.write(html);w.document.close();setTimeout(()=>w.print(),350);
+    };
     return<div style={{minHeight:'100vh',background:'#f1f5f9',display:'flex',justifyContent:'center',padding:'40px 16px'}}>
       <div style={{width:'100%',maxWidth:640,background:'white',borderRadius:16,boxShadow:'0 4px 24px rgba(0,0,0,0.08)',overflow:'hidden'}}>
         <div style={{background:'linear-gradient(135deg,#92400e,#d97706)',color:'white',padding:'20px 24px',position:'relative'}}>
@@ -6948,6 +7127,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             <div style={{fontSize:12,color:'#64748b'}}>Estimated Total</div>
             <div style={{fontSize:36,fontWeight:800,color:'#92400e'}}>${estTotal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
             <span style={{padding:'3px 10px',borderRadius:10,fontSize:11,fontWeight:700,background:est.status==='approved'?'#dcfce7':est.status==='converted'?'#dbeafe':'#fef3c7',color:est.status==='approved'?'#166534':est.status==='converted'?'#1e40af':'#92400e'}}>{est.status==='converted'?'Converted to Order':est.status.charAt(0).toUpperCase()+est.status.slice(1)}</span>
+            <div style={{marginTop:10}}><button style={{background:'#1e3a5f',color:'white',border:'none',borderRadius:8,padding:'8px 20px',fontSize:13,fontWeight:700,cursor:'pointer'}} onClick={downloadEstPdf}>📄 Download Estimate PDF</button></div>
           </div>
           <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:8}}>Items</div>
           {(est.items||[]).map((it,i)=>{const qty=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);const lineTotal=qty*safeNum(it.unit_sell);const sizes=Object.entries(safeSizes(it)).filter(([,v])=>v>0).sort((a,b)=>{const o=SZ_ORD;return(o.indexOf(a[0])<0?99:o.indexOf(a[0]))-(o.indexOf(b[0])<0?99:o.indexOf(b[0]))});
@@ -6970,11 +7150,16 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                 </div>)}
               </div>}
               {safeDecos(it).length>0&&<div style={{fontSize:11,color:'#64748b',borderTop:'1px solid #f1f5f9',paddingTop:4}}>
-                {safeDecos(it).map((d,di)=>{const cq=d.kind==='art'&&d.art_file_id?_eAQ[d.art_file_id]:qty;const dp2=dP(d,qty,eaf,cq);const decoLine=qty*dp2.sell;return<div key={di} style={{display:'flex',justifyContent:'space-between'}}><span>{d.kind==='numbers'?'#️⃣':d.kind==='names'?'🏷️':'🎨'} {d.kind==='numbers'?'Numbers':d.kind==='names'?'Names':d.position||'Decoration'}{d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'?' · Art attached':''}{d.kind==='numbers'?' · '+d.position:''}{d.kind==='names'?' · '+d.position:''}</span>{decoLine>0&&<span style={{fontWeight:600}}>+${decoLine.toFixed(2)}</span>}</div>})}
+                {safeDecos(it).map((d,di)=>{const cq=d.kind==='art'&&d.art_file_id?_eAQ[d.art_file_id]:qty;const dp2=dP(d,qty,eaf,cq);const eq2=dp2._nq!=null?dp2._nq:qty;const decoLine=eq2*dp2.sell;return<div key={di} style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><span>{d.kind==='numbers'?'#️⃣':d.kind==='names'?'🏷️':'🎨'} {d.kind==='numbers'?'Numbers':d.kind==='names'?'Names':d.position||'Decoration'}{d.kind==='numbers'?' · '+d.position:''}{d.kind==='names'?' · '+d.position:''}</span>{decoLine>0&&<span style={{fontWeight:600}}>{eq2} × ${dp2.sell.toFixed(2)}/ea = +${decoLine.toFixed(2)}</span>}</div>})}
               </div>}
             </div>})}
-          <div style={{display:'flex',justifyContent:'space-between',padding:'12px 0',borderTop:'2px solid #e2e8f0',marginBottom:16}}>
-            <span style={{fontWeight:800}}>Estimated Total</span><span style={{fontWeight:800,fontSize:18,color:'#92400e'}}>${estTotal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
+          <div style={{borderTop:'2px solid #e2e8f0',paddingTop:12,marginBottom:16}}>
+            <div style={{display:'flex',justifyContent:'space-between',padding:'4px 0',fontSize:13}}><span>Subtotal</span><span style={{fontWeight:700}}>${estSubtotal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span></div>
+            {estShip>0&&<div style={{display:'flex',justifyContent:'space-between',padding:'4px 0',fontSize:13}}><span>Shipping</span><span>${estShip.toFixed(2)}</span></div>}
+            {estTax>0&&<div style={{display:'flex',justifyContent:'space-between',padding:'4px 0',fontSize:13}}><span>Tax ({(estTaxRate*100).toFixed(2)}%)</span><span>${estTax.toFixed(2)}</span></div>}
+            <div style={{display:'flex',justifyContent:'space-between',padding:'8px 0 4px',borderTop:'2px solid #1e3a5f',marginTop:6}}>
+              <span style={{fontWeight:800,fontSize:16}}>Estimated Total</span><span style={{fontWeight:800,fontSize:18,color:'#92400e'}}>${estTotal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
+            </div>
           </div>
           {canApprove&&<button style={{width:'100%',padding:'14px 20px',background:'#22c55e',color:'white',border:'none',borderRadius:10,fontSize:16,fontWeight:800,cursor:'pointer'}} onClick={()=>{
             if(onUpdateEsts){onUpdateEsts(prev=>prev.map(e=>e.id===est.id?{...e,status:'approved',approved_by:'Coach',approved_at:new Date().toISOString(),updated_at:new Date().toLocaleString()}:e))}
@@ -7166,7 +7351,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           const estBadge=(st)=>({background:st==='sent'||st==='open'?'#fef3c7':st==='approved'?'#dcfce7':st==='converted'?'#dbeafe':'#f1f5f9',color:st==='sent'||st==='open'?'#92400e':st==='approved'?'#166534':st==='converted'?'#1e40af':'#64748b'});
           return allEsts.length>0&&<>
           <div style={{fontSize:13,fontWeight:800,color:'#d97706',marginBottom:10}}>📋 Estimates ({allEsts.length})</div>
-          {openEsts.length>0&&openEsts.map(est=>{const eaf=est.art_files||[];const _eAQ={};(est.items||[]).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_eAQ[d.art_file_id]=(_eAQ[d.art_file_id]||0)+q2}})});const t=(est.items||[]).reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);let r=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_eAQ[d.art_file_id]:qq;const dp2=dP(d,qq,eaf,cq);const eq2=dp2._nq!=null?dp2._nq:qq;r+=eq2*dp2.sell});return a+r},0);
+          {openEsts.length>0&&openEsts.map(est=>{const eaf=est.art_files||[];const _eAQ={};(est.items||[]).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_eAQ[d.art_file_id]=(_eAQ[d.art_file_id]||0)+q2}})});const sub=(est.items||[]).reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);let r=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_eAQ[d.art_file_id]:qq;const dp2=dP(d,qq,eaf,cq);const eq2=dp2._nq!=null?dp2._nq:qq;r+=eq2*dp2.sell});return a+r},0);const _sh=est.shipping_type==='pct'?sub*(est.shipping_value||0)/100:(est.shipping_value||0);const _tr=customer?.tax_exempt?0:(customer?.tax_rate||0);const t=sub+_sh+sub*_tr;
             return<div key={est.id} style={{border:'2px solid #f59e0b',borderRadius:10,padding:14,marginBottom:10,background:'#fffbeb',cursor:'pointer'}} onClick={()=>setEstView(est)}>
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
                 <div><div style={{fontWeight:700,fontSize:14,color:'#92400e'}}>{est.memo||est.id}</div>
@@ -7178,7 +7363,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                 </div>
               </div></div>})}
           {(approvedEsts.length>0||pastEsts.length>0)&&<div style={{border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden',marginBottom:10}}>
-            {[...approvedEsts,...pastEsts].map((est,i,arr)=>{const eaf=est.art_files||[];const _eAQ={};(est.items||[]).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_eAQ[d.art_file_id]=(_eAQ[d.art_file_id]||0)+q2}})});const t=(est.items||[]).reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);let r=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_eAQ[d.art_file_id]:qq;const dp2=dP(d,qq,eaf,cq);const eq2=dp2._nq!=null?dp2._nq:qq;r+=eq2*dp2.sell});return a+r},0);
+            {[...approvedEsts,...pastEsts].map((est,i,arr)=>{const eaf=est.art_files||[];const _eAQ={};(est.items||[]).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_eAQ[d.art_file_id]=(_eAQ[d.art_file_id]||0)+q2}})});const sub=(est.items||[]).reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);let r=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_eAQ[d.art_file_id]:qq;const dp2=dP(d,qq,eaf,cq);const eq2=dp2._nq!=null?dp2._nq:qq;r+=eq2*dp2.sell});return a+r},0);const _sh=est.shipping_type==='pct'?sub*(est.shipping_value||0)/100:(est.shipping_value||0);const _tr=customer?.tax_exempt?0:(customer?.tax_rate||0);const t=sub+_sh+sub*_tr;
               return<div key={est.id} style={{padding:'10px 14px',borderBottom:i<arr.length-1?'1px solid #f1f5f9':'none',display:'flex',justifyContent:'space-between',alignItems:'center',cursor:'pointer'}} onClick={()=>setEstView(est)}>
                 <div><span style={{fontWeight:600,fontSize:13}}>{est.memo||est.id}</span> <span style={{fontSize:11,color:'#94a3b8'}}>{est.id}</span>
                   <div style={{fontSize:10,color:'#64748b'}}>{est.created_at?.split(' ')[0]} · {(est.items||[]).length} item{(est.items||[]).length!==1?'s':''}</div></div>
