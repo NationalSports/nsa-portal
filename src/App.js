@@ -330,7 +330,7 @@ const _dbSaveCustomer = async (c) => {
     custRow.updated_at=new Date().toISOString();
     if(!custRow.created_at)custRow.created_at=custRow.updated_at;
     const{error:custErr}=await supabase.from('customers').upsert(_pick(custRow,_custCols),{onConflict:'id'});
-    if(custErr){console.error('[DB] save customer upsert error:',custErr.message);if(_dbNotify)_dbNotify('Customer save failed: '+custErr.message,'error');return false}
+    if(custErr){console.error('[DB] save customer upsert error:',custErr.message);_dbSaveFailedIds.add(c.id);_persistFailedIds();if(_dbNotify)_dbNotify('Customer save failed: '+custErr.message,'error');return false}
     // Upsert contacts then delete removed ones (avoids DELETE+INSERT race condition)
     if(contacts?.length){
       const contactRows=contacts.map((ct,i)=>({customer_id:c.id,name:ct.name,email:ct.email,phone:ct.phone,role:ct.role,sort_order:i}));
@@ -348,8 +348,8 @@ const _dbSaveCustomer = async (c) => {
     }else{
       await supabase.from('customer_contacts').delete().eq('customer_id',c.id);
     }
-    console.log('[DB] Customer saved:',c.id,c.name);return true;
-  }catch(e){console.error('[DB] save customer:',e);if(_dbNotify)_dbNotify('Customer save failed: '+e.message,'error');return false}
+    _dbSaveFailedIds.delete(c.id);_persistFailedIds();console.log('[DB] Customer saved:',c.id,c.name);return true;
+  }catch(e){console.error('[DB] save customer:',e);_dbSaveFailedIds.add(c.id);_persistFailedIds();if(_dbNotify)_dbNotify('Customer save failed: '+e.message,'error');return false}
 };
 const _dbSaveProduct = async (p) => {
   if(!supabase)return;
@@ -364,8 +364,8 @@ const _dbSaveProduct = async (p) => {
       if(error.message?.includes('image_front_url')||error.message?.includes('image_back_url')){
         const{image_front_url,image_back_url,...rowNoImg}=row;
         const{error:e2}=await supabase.from('products').upsert(rowNoImg,{onConflict:'id'});
-        if(e2){console.error('[DB] save product (no img):',e2.message);if(_dbNotify)_dbNotify('Product save failed: '+e2.message,'error')}
-      }else{console.error('[DB] save product:',error.message);if(_dbNotify)_dbNotify('Product save failed: '+error.message,'error')}
+        if(e2){console.error('[DB] save product (no img):',e2.message);_dbSaveFailedIds.add(p.id);_persistFailedIds();if(_dbNotify)_dbNotify('Product save failed: '+e2.message,'error');return false}
+      }else{console.error('[DB] save product:',error.message);_dbSaveFailedIds.add(p.id);_persistFailedIds();if(_dbNotify)_dbNotify('Product save failed: '+error.message,'error');return false}
     }
     // Always save product images to app_state as reliable backup (works even without image columns)
     const _imgF=p.image_url||p.image_front_url||null;const _imgB=p.back_image_url||p.image_back_url||null;const _imgG=p.images||null;
@@ -378,7 +378,8 @@ const _dbSaveProduct = async (p) => {
       const rows=[...allSizes].map(sz=>({product_id:p.id,size:sz,quantity:_inv[sz]||0,alert_threshold:_alerts[sz]||null}));
       await supabase.from('product_inventory').upsert(rows,{onConflict:'product_id,size'});
     }
-  }catch(e){console.error('[DB] save product:',e)}
+    _dbSaveFailedIds.delete(p.id);_persistFailedIds();return true;
+  }catch(e){console.error('[DB] save product:',e);_dbSaveFailedIds.add(p.id);_persistFailedIds();return false}
 };
 const _dbSaveMessage = async (m) => {
   if(!supabase)return;
@@ -386,12 +387,14 @@ const _dbSaveMessage = async (m) => {
     const{read_by,tagged_members,...msgRow}=m;
     const row={...msgRow};
     if(tagged_members&&tagged_members.length>0)row.tagged_members=JSON.stringify(tagged_members);
-    await supabase.from('messages').upsert(row,{onConflict:'id'});
+    const{error}=await supabase.from('messages').upsert(row,{onConflict:'id'});
+    if(error){console.error('[DB] save message:',error.message);_dbSaveFailedIds.add(m.id);_persistFailedIds();return false}
     if(read_by?.length){
       const reads=read_by.map(uid=>({message_id:m.id,user_id:uid}));
       await supabase.from('message_reads').upsert(reads,{onConflict:'message_id,user_id'});
     }
-  }catch(e){console.error('[DB] save message:',e)}
+    _dbSaveFailedIds.delete(m.id);_persistFailedIds();return true;
+  }catch(e){console.error('[DB] save message:',e);_dbSaveFailedIds.add(m.id);_persistFailedIds();return false}
 };
 // ─── Delete Helpers ───
 const _dbDeleteEstimate = async (id) => {
@@ -7323,14 +7326,18 @@ export default function App(){
           // Supabase has data — use it as source of truth
           _dbLoadSuccess.current=true;
           _dbSnap.current={ests:d.estimates,sos:d.sales_orders,invs:d.invoices,msgs:d.messages,cust:d.customers,prod:d.products,vend:d.vendors,team:d.team,omg:d.omg_stores,issues:d.issues};
-          setREPS(d.team.length?d.team:DEFAULT_REPS);setCust(d.customers);
-          if(d.vendors.length)setVend(d.vendors);setProd(prev=>{if(!d.products.length)return prev;const merged=d.products.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));return localOnly.length?[...merged,...localOnly]:merged});
-          // Preserve local versions of estimates/SOs whose save previously failed (persisted in localStorage)
+          setREPS(d.team.length?d.team:DEFAULT_REPS);
+          // Preserve local versions of any entities whose save previously failed (persisted in localStorage)
+          if(_dbSaveFailedIds.size){
+            setCust(prev=>d.customers.map(c=>_dbSaveFailedIds.has(c.id)?(prev.find(p=>p.id===c.id)||c):c));
+          }else{setCust(d.customers)}
+          if(d.vendors.length)setVend(d.vendors);setProd(prev=>{if(!d.products.length)return prev;const base=_dbSaveFailedIds.size?d.products.map(dp=>_dbSaveFailedIds.has(dp.id)?(prev.find(p=>p.id===dp.id)||dp):dp):d.products;const merged=base.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));return localOnly.length?[...merged,...localOnly]:merged});
           if(_dbSaveFailedIds.size){
             setEsts(prev=>d.estimates.map(e=>_dbSaveFailedIds.has(e.id)?(prev.find(p=>p.id===e.id)||e):e));
             setSOs(prev=>d.sales_orders.map(s=>_dbSaveFailedIds.has(s.id)?(prev.find(p=>p.id===s.id)||s):s));
-          }else{setEsts(d.estimates);setSOs(d.sales_orders)}
-          setInvs(d.invoices);setMsgs(d.messages.length?d.messages:msgs);
+            setInvs(prev=>d.invoices.map(i=>_dbSaveFailedIds.has(i.id)?(prev.find(p=>p.id===i.id)||i):i));
+            setMsgs(prev=>{const base=d.messages.length?d.messages:prev;return base.map(m=>_dbSaveFailedIds.has(m.id)?(prev.find(p=>p.id===m.id)||m):m)});
+          }else{setEsts(d.estimates);setSOs(d.sales_orders);setInvs(d.invoices);setMsgs(d.messages.length?d.messages:msgs)}
           if(d.omg_stores.length)setOmgStores(d.omg_stores);
           if(d.issues?.length)setIssues(d.issues);
           // Load app_state key-value data (batch POs, changelog, etc.)
@@ -7435,16 +7442,19 @@ export default function App(){
         const estMerge=_mergeProtected(d.estimates,'ests');
         const soMerge=_mergeProtected(d.sales_orders,'sos');
         const invMerge=_mergeProtected(d.invoices,'invs');
+        const custMerge=_mergeProtected(d.customers,'cust');
+        const msgMerge=_mergeProtected(d.messages,'msgs');
+        const prodMerge=_mergeProtected(d.products,'prod');
         // Update snapshot before state — auto-save effects will diff against this
-        _dbSnap.current={ests:estMerge.snap,sos:soMerge.snap,invs:invMerge.snap,msgs:d.messages,cust:d.customers,prod:d.products,vend:d.vendors,team:d.team,omg:d.omg_stores,issues:d.issues};
+        _dbSnap.current={ests:estMerge.snap,sos:soMerge.snap,invs:invMerge.snap,msgs:msgMerge.snap,cust:custMerge.snap,prod:prodMerge.snap,vend:d.vendors,team:d.team,omg:d.omg_stores,issues:d.issues};
         // Use change detection to avoid triggering save effects needlessly
         if(d.team.length)setREPS(prev=>_jsonEq(prev,d.team)?prev:d.team);
         setEsts(estMerge.apply);
         setSOs(soMerge.apply);
         setInvs(invMerge.apply);
-        if(d.messages.length)setMsgs(prev=>_jsonEq(prev,d.messages)?prev:d.messages);
-        setCust(prev=>_jsonEq(prev,d.customers)?prev:d.customers);
-        if(d.products.length)setProd(prev=>{if(_jsonEq(prev,d.products))return prev;const merged=d.products.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));return localOnly.length?[...merged,...localOnly]:merged});
+        if(d.messages.length)setMsgs(msgMerge.apply);
+        setCust(custMerge.apply);
+        if(d.products.length)setProd(prev=>{const base=prodMerge.apply(prev);if(_jsonEq(base,prev))return prev;const merged=base.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));return localOnly.length?[...merged,...localOnly]:merged});
         if(d.vendors.length)setVend(prev=>_jsonEq(prev,d.vendors)?prev:d.vendors);
         if(d.omg_stores.length)setOmgStores(prev=>_jsonEq(prev,d.omg_stores)?prev:d.omg_stores);
         if(d.issues?.length)setIssues(prev=>_jsonEq(prev,d.issues)?prev:d.issues);
@@ -7484,15 +7494,18 @@ export default function App(){
         const pollEsts=_pollMerge(d.estimates,'ests');
         const pollSOs=_pollMerge(d.sales_orders,'sos');
         const pollInvs=_pollMerge(d.invoices,'invs');
+        const pollCust=_pollMerge(d.customers,'cust');
+        const pollMsgs=_pollMerge(d.messages,'msgs');
+        const pollProd=_pollMerge(d.products,'prod');
         // Update snapshot before state — auto-save effects will diff against this
-        _dbSnap.current={ests:pollEsts,sos:pollSOs,invs:pollInvs,msgs:d.messages,cust:d.customers,prod:d.products,vend:d.vendors,team:d.team,omg:d.omg_stores,issues:d.issues};
+        _dbSnap.current={ests:pollEsts,sos:pollSOs,invs:pollInvs,msgs:pollMsgs,cust:pollCust,prod:pollProd,vend:d.vendors,team:d.team,omg:d.omg_stores,issues:d.issues};
         setEsts(prev=>{if(_dbSaveFailedIds.size){const merged=d.estimates.map(e=>_dbSaveFailedIds.has(e.id)?(prev.find(p=>p.id===e.id)||e):e);return changed(prev,merged)?merged:prev}return changed(prev,d.estimates)?d.estimates:prev});
         setSOs(prev=>{if(_dbSaveFailedIds.size){const merged=d.sales_orders.map(s=>_dbSaveFailedIds.has(s.id)?(prev.find(p=>p.id===s.id)||s):s);return changed(prev,merged)?merged:prev}return changed(prev,d.sales_orders)?d.sales_orders:prev});
         setInvs(prev=>{if(_dbSaveFailedIds.size){const merged=d.invoices.map(i=>_dbSaveFailedIds.has(i.id)?(prev.find(p=>p.id===i.id)||i):i);return changed(prev,merged)?merged:prev}return changed(prev,d.invoices)?d.invoices:prev});
-        setCust(prev=>changed(prev,d.customers)?d.customers:prev);
-        if(d.messages.length)setMsgs(prev=>changed(prev,d.messages)?d.messages:prev);
+        setCust(prev=>{if(_dbSaveFailedIds.size){const merged=d.customers.map(c=>_dbSaveFailedIds.has(c.id)?(prev.find(p=>p.id===c.id)||c):c);return changed(prev,merged)?merged:prev}return changed(prev,d.customers)?d.customers:prev});
+        if(d.messages.length)setMsgs(prev=>{if(_dbSaveFailedIds.size){const merged=d.messages.map(m=>_dbSaveFailedIds.has(m.id)?(prev.find(p=>p.id===m.id)||m):m);return changed(prev,merged)?merged:prev}return changed(prev,d.messages)?d.messages:prev});
         if(d.issues.length)setIssues(prev=>changed(prev,d.issues)?d.issues:prev);
-        if(d.products.length)setProd(prev=>{if(!changed(prev,d.products))return prev;const merged=d.products.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));return localOnly.length?[...merged,...localOnly]:merged});
+        if(d.products.length)setProd(prev=>{const base=_dbSaveFailedIds.size?d.products.map(dp=>_dbSaveFailedIds.has(dp.id)?(prev.find(p=>p.id===dp.id)||dp):dp):d.products;if(!changed(prev,base))return prev;const merged=base.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));return localOnly.length?[...merged,...localOnly]:merged});
         // Refresh app_state keys (batch POs, inventory POs, etc.)
         const as=d.appState||{};
         if(as.inv_pos)setInvPOs(prev=>JSON.stringify(prev)!==JSON.stringify(as.inv_pos)?as.inv_pos:prev);
@@ -7529,6 +7542,26 @@ export default function App(){
   React.useEffect(()=>{_saveAppState('qb_config',qbConfig)},[qbConfig]);
   // Warn user before closing/reloading if there are failed saves (data at risk of loss)
   React.useEffect(()=>{const h=e=>{if(_dbSaveFailedIds.size>0||_dbSavingCount>0){e.preventDefault();e.returnValue=''}};window.addEventListener('beforeunload',h);return()=>window.removeEventListener('beforeunload',h)},[]);
+  // Background retry — every 60s, re-trigger saves for any entities with failed IDs
+  // Works by updating the snapshot to force _diffSave to detect a difference on the next state change
+  // This is a lightweight approach: no new save calls, just nudges the existing auto-save system
+  React.useEffect(()=>{
+    if(!supabase)return;
+    const retry=setInterval(()=>{
+      if(!_dbSaveFailedIds.size||!_initialLoadDone.current||!_dbLoadSuccess.current)return;
+      console.log('[DB] Retry: attempting re-save for',_dbSaveFailedIds.size,'failed IDs:',[ ..._dbSaveFailedIds]);
+      // For each failed ID, clear its snapshot entry so _diffSave will re-detect and re-save it
+      const snapKeys=['ests','sos','invs','cust','prod','msgs'];
+      snapKeys.forEach(key=>{
+        const snap=_dbSnap.current[key];if(!snap)return;
+        _dbSnap.current[key]=snap.map(s=>_dbSaveFailedIds.has(s.id)?{...s,_retry:Date.now()}:s);
+      });
+      // Trigger a minimal state update to kick off _diffSave effects
+      setEsts(prev=>[...prev]);setSOs(prev=>[...prev]);setInvs(prev=>[...prev]);
+      setCust(prev=>[...prev]);setProd(prev=>[...prev]);setMsgs(prev=>[...prev]);
+    },60000);
+    return()=>clearInterval(retry);
+  },[]);
   // Handle QB OAuth callback redirect
   React.useEffect(()=>{
     try{
