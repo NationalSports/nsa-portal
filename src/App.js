@@ -299,7 +299,7 @@ const _dbSaveSO = (so) => _queuedEntitySave(so.id, so, _dbSaveSOInner);
 const _dbSaveInvoice = async (inv) => {
   if(!supabase)return;
   try{
-    const{payments,items,_qb_synced,_qb_id,so_id,date,paid,...invRow}=inv;
+    const{payments,items,_qb_synced,_qb_id,_age,_dd,_bal,_overdue,_rep,_cname,...invRow}=inv;
     await supabase.from('invoices').upsert(invRow,{onConflict:'id'});
     await supabase.from('invoice_payments').delete().eq('invoice_id',inv.id);
     if(payments?.length) await supabase.from('invoice_payments').insert(payments.map(p=>({...p,invoice_id:inv.id})));
@@ -1971,6 +1971,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
     const DECO_VENDORS=['Silver Screen','Olympic Embroidery','WePrintIt','Pacific Screen Print','Other'];
   const[showFirmReq,setShowFirmReq]=useState(false);const[firmReqDate,setFirmReqDate]=useState('');const[firmReqNote,setFirmReqNote]=useState('');
   const[showInvCreate,setShowInvCreate]=useState(false);const[invSelItems,setInvSelItems]=useState([]);const[invMemo,setInvMemo]=useState('');const[invType,setInvType]=useState('deposit');const[invDepositPct,setInvDepositPct]=useState(50);
+  const[invReview,setInvReview]=useState(null);const[invSendModal,setInvSendModal]=useState(false);const[invSendMsg,setInvSendMsg]=useState('');
   const[splitModal,setSplitModal]=useState(null);// {jIdx, mode:'received'|'sku'|null}
   const[countDiscModal,setCountDiscModal]=useState(null);// {open,entries:[{sku,name,color,size,expected,actual}],notes}
   const[artReqModal,setArtReqModal]=useState(null);// {jIdx, artist:'', instructions:'', files:[]}
@@ -3546,8 +3547,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       // For final: use full order total
       const activeItems=invType==='partial'?invSelItems:items.map((_,i)=>i);
       const selTotals=activeItems.reduce((acc,idx)=>{const t=itemTotals[idx];if(!t)return acc;return{items:acc.items+1,units:acc.units+t.qty,subtotal:acc.subtotal+t.total}},{items:0,units:0,subtotal:0});
-      const invShip=activeItems.length===items.length?totals.ship:0;
-      const invTax=activeItems.length===items.length?totals.tax:0;
+      // Prorate shipping & tax based on fraction of order being invoiced
+      const orderSubtotal=itemTotals.reduce((a,t)=>a+t.total,0)||1;
+      const selFraction=selTotals.subtotal/orderSubtotal;
+      const invShip=activeItems.length===items.length?totals.ship:Math.round(totals.ship*selFraction*100)/100;
+      const invTax=activeItems.length===items.length?totals.tax:Math.round(totals.tax*selFraction*100)/100;
       const fullTotal=selTotals.subtotal+invShip+invTax;
       const invTotal=invType==='deposit'?Math.round(fullTotal*invDepositPct/100*100)/100:fullTotal;
 
@@ -3683,11 +3687,156 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
             if(invType==='final'){const updated={...o,status:'complete',updated_at:new Date().toLocaleString()};setO(updated);onSave(updated)}
             setShowInvCreate(false);
             nf('Invoice '+inv.id+' created for $'+invTotal.toFixed(2)+(invType==='final'?' — SO marked complete':''));
-            // Navigate to invoice page
-            if(onNavInvoice)onNavInvoice(inv);
+            // Show invoice review page instead of navigating away
+            setInvReview({...inv,_customer:cust,_so:o,_lineItems:lineItems,_shipAmt:invShipAmt,_taxAmt:invTaxAmt});
+            const contact=(cust?.contacts||[])[0];
+            setInvSendMsg('Hi '+(contact?.name||'Coach')+',\n\nPlease find your invoice '+inv.id+' for $'+invTotal.toFixed(2)+'. Payment is due by '+dueDate+'.\n\nThank you,\nNSA Team');
           }}>{invType==='final'?'Create Final Invoice — Close SO':'Create '+invType.charAt(0).toUpperCase()+invType.slice(1)+' Invoice'} — ${invTotal.toFixed(2)}</button>
         </div>
       </div></div>})()}
+
+    {/* ═══ INVOICE REVIEW PAGE ═══ */}
+    {invReview&&(()=>{
+      const ir=invReview;const ic=ir._customer||cust;const irSO=ir._so||o;
+      const lineItems=ir._lineItems||ir.line_items||[];
+      const shipAmt=ir._shipAmt!=null?ir._shipAmt:(ir.shipping||0);
+      const taxAmt=ir._taxAmt!=null?ir._taxAmt:(ir.tax||0);
+      const bal=ir.total-(ir.paid||0);
+      const contact=(ic?.contacts||[])[0];
+      const printInvoice=()=>{
+        printDoc({title:ic?.name||'Customer',docNum:ir.id,docType:'INVOICE',
+          headerRight:'<div style="font-size:24px;font-weight:900;color:#dc2626">$'+ir.total.toLocaleString()+'</div>'
+            +'<div style="font-size:11px;color:#666">Balance Due: <strong style="color:#dc2626">$'+bal.toLocaleString()+'</strong></div>',
+          infoBoxes:[
+            {label:'Bill To',value:ic?.name||'—',sub:ic?.alpha_tag},
+            {label:'Invoice Date',value:ir.date||new Date().toLocaleDateString(),sub:ir.due_date?'Due: '+ir.due_date:''},
+            {label:'Sales Order',value:ir.so_id||'—',sub:ir.memo||''},
+            {label:'Payment Terms',value:ir.inv_type==='deposit'?(ir.deposit_pct||50)+'% Deposit':ir.inv_type==='partial'?'Partial Invoice':'Final Invoice',sub:''}
+          ],
+          tables:[{headers:['Description','Qty','Rate','Amount'],aligns:['left','center','right','right'],
+            rows:[
+              ...lineItems.map(li=>({cells:[li.desc,li.qty,'$'+safeNum(li.rate).toFixed(2),'$'+safeNum(li.amount).toFixed(2)]})),
+              ...(shipAmt>0?[{cells:[{value:'Shipping',style:'font-style:italic'},'','','$'+shipAmt.toFixed(2)]}]:[]),
+              ...(taxAmt>0?[{cells:[{value:'Tax',style:'font-style:italic'},'','','$'+taxAmt.toFixed(2)]}]:[]),
+              {_class:'totals-row',cells:['','','Total','$'+ir.total.toLocaleString()]}
+            ]}],
+          footer:ir.inv_type==='deposit'?NSA.depositTerms:NSA.terms});
+      };
+      return<div className="modal-overlay" onClick={()=>setInvReview(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:700,maxHeight:'90vh',overflow:'auto'}}>
+        <div className="modal-header" style={{background:'linear-gradient(135deg,#1e3a5f,#2563eb)',color:'white'}}>
+          <h2 style={{color:'white'}}>Invoice Created — {ir.id}</h2>
+          <button className="modal-close" style={{color:'white'}} onClick={()=>setInvReview(null)}>x</button>
+        </div>
+        <div className="modal-body" style={{padding:0}}>
+          {/* Invoice preview */}
+          <div style={{padding:20}}>
+            <div style={{display:'flex',justifyContent:'space-between',marginBottom:16}}>
+              <div>
+                <div style={{fontSize:22,fontWeight:900,color:'#1e3a5f'}}>INVOICE</div>
+                <div style={{fontSize:14,fontWeight:700,color:'#2563eb'}}>{ir.id}</div>
+              </div>
+              <div style={{textAlign:'right'}}>
+                <div style={{fontSize:11,color:'#64748b'}}>NSA · National Sports Apparel</div>
+                <div style={{fontSize:11,color:'#64748b'}}>{NSA.addr}</div>
+                <div style={{fontSize:11,color:'#64748b'}}>{NSA.city}, {NSA.state} {NSA.zip}</div>
+              </div>
+            </div>
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:12,marginBottom:16,padding:12,background:'#f8fafc',borderRadius:8}}>
+              <div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8',textTransform:'uppercase'}}>Bill To</div><div style={{fontSize:13,fontWeight:700}}>{ic?.name||'—'}</div>{ic?.alpha_tag&&<div style={{fontSize:11,color:'#64748b'}}>{ic.alpha_tag}</div>}</div>
+              <div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8',textTransform:'uppercase'}}>Date</div><div style={{fontSize:13,fontWeight:600}}>{ir.date||'—'}</div><div style={{fontSize:11,color:'#64748b'}}>Due: {ir.due_date||'—'}</div></div>
+              <div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8',textTransform:'uppercase'}}>Sales Order</div><div style={{fontSize:13,fontWeight:600}}>{ir.so_id||'—'}</div><div style={{fontSize:11,color:'#64748b'}}>{ir.memo||''}</div></div>
+            </div>
+            {/* Line items table */}
+            <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
+              <thead><tr style={{background:'#f1f5f9',borderBottom:'2px solid #e2e8f0'}}>
+                <th style={{padding:'8px 10px',textAlign:'left',fontWeight:700}}>Description</th>
+                <th style={{padding:'8px 10px',textAlign:'center',fontWeight:700,width:60}}>Qty</th>
+                <th style={{padding:'8px 10px',textAlign:'right',fontWeight:700,width:80}}>Rate</th>
+                <th style={{padding:'8px 10px',textAlign:'right',fontWeight:700,width:90}}>Amount</th>
+              </tr></thead>
+              <tbody>
+                {lineItems.map((li,i)=><tr key={i} style={{borderBottom:'1px solid #f1f5f9'}}>
+                  <td style={{padding:'8px 10px'}}>{li.desc}</td>
+                  <td style={{padding:'8px 10px',textAlign:'center'}}>{li.qty}</td>
+                  <td style={{padding:'8px 10px',textAlign:'right'}}>${safeNum(li.rate).toFixed(2)}</td>
+                  <td style={{padding:'8px 10px',textAlign:'right',fontWeight:600}}>${safeNum(li.amount).toFixed(2)}</td>
+                </tr>)}
+              </tbody>
+            </table>
+            {/* Totals */}
+            <div style={{marginTop:12,borderTop:'2px solid #e2e8f0',paddingTop:12,display:'flex',justifyContent:'flex-end'}}>
+              <div style={{width:220}}>
+                <div style={{display:'flex',justifyContent:'space-between',fontSize:12,marginBottom:4}}>
+                  <span style={{color:'#64748b'}}>Subtotal</span><span style={{fontWeight:600}}>${lineItems.reduce((a,l)=>a+safeNum(l.amount),0).toFixed(2)}</span>
+                </div>
+                {shipAmt>0&&<div style={{display:'flex',justifyContent:'space-between',fontSize:12,marginBottom:4}}>
+                  <span style={{color:'#64748b'}}>Shipping</span><span>${shipAmt.toFixed(2)}</span>
+                </div>}
+                {taxAmt>0&&<div style={{display:'flex',justifyContent:'space-between',fontSize:12,marginBottom:4}}>
+                  <span style={{color:'#64748b'}}>Tax</span><span>${taxAmt.toFixed(2)}</span>
+                </div>}
+                {ir.inv_type==='deposit'&&<div style={{display:'flex',justifyContent:'space-between',fontSize:12,marginBottom:4}}>
+                  <span style={{color:'#1e40af',fontWeight:600}}>Deposit ({ir.deposit_pct||50}%)</span><span style={{fontWeight:700,color:'#1e40af'}}>${ir.total.toFixed(2)}</span>
+                </div>}
+                <div style={{display:'flex',justifyContent:'space-between',fontSize:16,fontWeight:800,paddingTop:8,borderTop:'2px solid #1e3a5f',color:'#1e3a5f'}}>
+                  <span>Total Due</span><span>${ir.total.toFixed(2)}</span>
+                </div>
+              </div>
+            </div>
+            {ir.inv_type==='deposit'&&<div style={{marginTop:12,padding:10,background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:6,fontSize:11,color:'#1e40af'}}>{NSA.depositTerms}</div>}
+          </div>
+        </div>
+        <div className="modal-footer" style={{display:'flex',gap:8,justifyContent:'space-between',flexWrap:'wrap'}}>
+          <button className="btn btn-secondary" onClick={()=>{setInvReview(null);if(onNavInvoice)onNavInvoice(ir)}}>Go to Invoices</button>
+          <div style={{display:'flex',gap:8}}>
+            <button className="btn btn-secondary" onClick={printInvoice}>🖨️ Print Invoice</button>
+            <button className="btn btn-primary" style={{background:'#2563eb'}} onClick={()=>setInvSendModal(true)}>📧 Send to Coach</button>
+          </div>
+        </div>
+      </div></div>
+    })()}
+
+    {/* ═══ SEND TO COACH MODAL ═══ */}
+    {invSendModal&&invReview&&(()=>{
+      const ir=invReview;const ic=ir._customer||cust;
+      const contact=(ic?.contacts||[])[0];
+      const coachEmail=contact?.email||'';
+      return<div className="modal-overlay" style={{zIndex:10001}} onClick={()=>setInvSendModal(false)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:500}}>
+        <div className="modal-header"><h2>Send Invoice to Coach</h2><button className="modal-close" onClick={()=>setInvSendModal(false)}>x</button></div>
+        <div className="modal-body">
+          <div style={{marginBottom:12}}>
+            <label className="form-label">Sending to</label>
+            <div style={{padding:10,background:'#f8fafc',borderRadius:6,fontSize:13}}>
+              <div style={{fontWeight:700}}>{contact?.name||'Coach'}</div>
+              <div style={{fontSize:12,color:'#64748b'}}>{coachEmail||'No email on file'}</div>
+            </div>
+          </div>
+          <div style={{marginBottom:12}}>
+            <label className="form-label">Invoice</label>
+            <div style={{padding:8,background:'#eff6ff',borderRadius:6,fontSize:12,display:'flex',justifyContent:'space-between'}}>
+              <span style={{fontWeight:700,color:'#1e40af'}}>{ir.id}</span>
+              <span style={{fontWeight:700}}>${ir.total.toFixed(2)}</span>
+            </div>
+          </div>
+          <div style={{marginBottom:12}}>
+            <label className="form-label">Message to Coach</label>
+            <textarea className="form-input" rows={6} value={invSendMsg} onChange={e=>setInvSendMsg(e.target.value)} style={{fontSize:13,lineHeight:1.5}}/>
+          </div>
+        </div>
+        <div className="modal-footer">
+          <button className="btn btn-secondary" onClick={()=>setInvSendModal(false)}>Cancel</button>
+          <button className="btn btn-primary" style={{background:'#2563eb'}} disabled={!coachEmail} onClick={()=>{
+            setInvSendModal(false);
+            // Update invoice email status
+            onInv(prev=>prev.map(i=>i.id===ir.id?{...i,email_status:'sent',email_sent_at:new Date().toLocaleString()}:i));
+            nf('Invoice '+ir.id+' sent to '+coachEmail);
+            // Also post to messages
+            const soMsg={id:'m'+Date.now(),so_id:ir.so_id,author_id:cu.id,text:'[Invoice '+ir.id+'] Sent to '+(contact?.name||'coach')+' ('+coachEmail+')\n\n'+invSendMsg,ts:new Date().toLocaleString(),read_by:[cu.id],dept:'sales',tagged_members:[]};
+            if(onMsg)onMsg(prev=>[...prev,soMsg]);
+          }}>📧 Send Invoice{coachEmail?'':' (No email on file)'}</button>
+        </div>
+      </div></div>
+    })()}
 
     {showPO&&(()=>{
       // Vendor selection or PO form
