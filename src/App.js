@@ -103,14 +103,14 @@ const _dbLoad = async () => {
     const products=prodRaw.map(p=>{const invRows=prodInv.filter(pi=>pi.product_id===p.id);const _inv={};const _alerts={};invRows.forEach(r=>{_inv[r.size]=r.quantity;if(r.alert_threshold)_alerts[r.size]=r.alert_threshold});const _pimg=_pimgMap[p.id];return{...p,image_url:p.image_url||p.image_front_url||(_pimg&&_pimg.front)||'',back_image_url:p.back_image_url||p.image_back_url||(_pimg&&_pimg.back)||'',images:p.images||(_pimg&&_pimg.gallery)||[],_inv,_alerts}});
     // Estimates: attach items (with decorations) and art_files
     const estimates=estRaw.map(est=>{
-      const art_files=estArt.filter(a=>a.estimate_id===est.id).map(a=>({id:a.id,name:a.name,deco_type:a.deco_type,ink_colors:a.ink_colors,thread_colors:a.thread_colors,art_size:a.art_size,art_sizes:a.art_sizes||{},files:a.files||[],mockup_files:a.mockup_files||[],item_mockups:a.item_mockups||{},prod_files:a.prod_files||[],notes:a.notes,status:a.status,uploaded:a.uploaded}));
+      const art_files=estArt.filter(a=>a.estimate_id===est.id).map(a=>({id:a.id,name:a.name,deco_type:a.deco_type,ink_colors:a.ink_colors,thread_colors:a.thread_colors,art_size:a.art_size,art_sizes:a.art_sizes||{},garment_colors:a.garment_colors||{},files:a.files||[],mockup_files:a.mockup_files||[],item_mockups:a.item_mockups||{},prod_files:a.prod_files||[],notes:a.notes,status:a.status,uploaded:a.uploaded}));
       const items=estItems.filter(i=>i.estimate_id===est.id).sort((a,b)=>a.item_index-b.item_index).map(item=>{
         const decorations=estDecos.filter(d=>d.estimate_item_id===item.id).sort((a,b)=>a.deco_index-b.deco_index).map(d=>{const{id:_,estimate_item_id:__,deco_index:___,...rest}=d;return rest});
         const{id:_,estimate_id:__,item_index:___,...rest}=item;return{...rest,decorations}});
       return{...est,items,art_files}});
     // Sales Orders: attach items (with decorations, pick_lines, po_lines), art_files, firm_dates, jobs
     const sales_orders=soRaw.map(so=>{
-      const art_files=soArt.filter(a=>a.so_id===so.id).map(a=>({id:a.id,name:a.name,deco_type:a.deco_type,ink_colors:a.ink_colors,thread_colors:a.thread_colors,art_size:a.art_size,art_sizes:a.art_sizes||{},files:a.files||[],mockup_files:a.mockup_files||[],item_mockups:a.item_mockups||{},prod_files:a.prod_files||[],notes:a.notes,status:a.status,uploaded:a.uploaded}));
+      const art_files=soArt.filter(a=>a.so_id===so.id).map(a=>({id:a.id,name:a.name,deco_type:a.deco_type,ink_colors:a.ink_colors,thread_colors:a.thread_colors,art_size:a.art_size,art_sizes:a.art_sizes||{},garment_colors:a.garment_colors||{},files:a.files||[],mockup_files:a.mockup_files||[],item_mockups:a.item_mockups||{},prod_files:a.prod_files||[],notes:a.notes,status:a.status,uploaded:a.uploaded}));
       const firm_dates=soFirm.filter(f=>f.so_id===so.id).map(f=>({item_desc:f.item_desc,date:f.date,approved:f.approved}));
       const jobs=soJobs.filter(j=>j.so_id===so.id).map(j=>{const{so_id:_,...rest}=j;return rest});
       const items=soItems.filter(i=>i.so_id===so.id).sort((a,b)=>a.item_index-b.item_index).map(item=>{
@@ -235,16 +235,36 @@ const _dbSaveSOInner = async (so) => {
       await supabase.from('so_item_po_lines').delete().in('so_item_id',oldItemIds);
     }
     await supabase.from('so_items').delete().eq('so_id',so.id);
-    await supabase.from('so_jobs').delete().eq('so_id',so.id);
+    // Sync jobs: upsert current jobs, delete removed ones (avoids DELETE+INSERT race condition)
+    if(jobs?.length){
+      const{error:jobErr}=await supabase.from('so_jobs').upsert(jobs.map(j=>({..._pick(j,_jobCols),so_id:so.id})),{onConflict:'so_id,id'});
+      if(jobErr){console.error('[DB] so_jobs upsert failed:',jobErr.message,jobErr.details);saveFailed=true}
+      // Delete jobs that no longer exist
+      const currentJobIds=jobs.map(j=>j.id).filter(Boolean);
+      if(currentJobIds.length){
+        const{data:existingJobs}=await supabase.from('so_jobs').select('id').eq('so_id',so.id);
+        const toDelete=(existingJobs||[]).filter(ej=>!currentJobIds.includes(ej.id)).map(ej=>ej.id);
+        if(toDelete.length)await supabase.from('so_jobs').delete().in('id',toDelete);
+      }
+    }else{
+      await supabase.from('so_jobs').delete().eq('so_id',so.id);
+    }
     await supabase.from('so_firm_dates').delete().eq('so_id',so.id);
-    // Sync art_files: delete removed, upsert current (whitelist columns to avoid unknown-column errors)
-    await supabase.from('so_art_files').delete().eq('so_id',so.id);
+    // Sync art_files: upsert current, delete removed (avoids DELETE+INSERT race condition)
     if(art_files?.length){
       const{error:afErr}=await supabase.from('so_art_files').upsert(art_files.map(a=>({..._pick(a,_artCols),so_id:so.id})),{onConflict:'so_id,id'});
       if(afErr){console.error('[DB] so_art_files upsert failed:',afErr.message,afErr.details);saveFailed=true}
+      // Delete art files that no longer exist
+      const currentAfIds=art_files.map(a=>a.id).filter(Boolean);
+      if(currentAfIds.length){
+        const{data:existingAfs}=await supabase.from('so_art_files').select('id').eq('so_id',so.id);
+        const toDeleteAf=(existingAfs||[]).filter(ea=>!currentAfIds.includes(ea.id)).map(ea=>ea.id);
+        if(toDeleteAf.length)await supabase.from('so_art_files').delete().in('id',toDeleteAf);
+      }
+    }else{
+      await supabase.from('so_art_files').delete().eq('so_id',so.id);
     }
     if(firm_dates?.length){const{error:fdErr}=await supabase.from('so_firm_dates').insert(firm_dates.map(f=>({...f,so_id:so.id})));if(fdErr){console.error('[DB] so_firm_dates insert failed:',fdErr.message);saveFailed=true}}
-    if(jobs?.length){const{error:jobErr}=await supabase.from('so_jobs').insert(jobs.map(j=>({..._pick(j,_jobCols),so_id:so.id})));if(jobErr){console.error('[DB] so_jobs insert failed:',jobErr.message,jobErr.details);saveFailed=true}}
     if(!items?.length){if(saveFailed){_dbSaveFailedIds.add(so.id);_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save incomplete — some data may not have been saved to cloud','error');return false}_dbSaveFailedIds.delete(so.id);_persistFailedIds();return true}
     for(let idx=0;idx<items.length;idx++){
       const{decorations,pick_lines,po_lines,...itemData}=items[idx];
@@ -467,7 +487,7 @@ const _decoCols=['kind','position','type','art_file_id','art_tbd_type','tbd_colo
 const _decoExtraCols=new Set(['print_color','front_and_back','num_qty','name_qty','num_font','num_size_back','custom_font_art_id']);
 // Sanitize decoration data before DB insert — strip UI-only placeholders that would violate constraints
 const _sanitizeDeco=(d)=>{const r={...d};if(r.custom_font_art_id&&r.custom_font_art_id==='pending')r.custom_font_art_id=null;if(r.art_file_id&&r.art_file_id==='__tbd')r.art_file_id=null;return r};
-const _artCols=['id','name','deco_type','ink_colors','thread_colors','art_size','art_sizes','files','mockup_files','item_mockups','prod_files','notes','status','uploaded'];
+const _artCols=['id','name','deco_type','ink_colors','thread_colors','art_size','art_sizes','garment_colors','files','mockup_files','item_mockups','prod_files','notes','status','uploaded'];
 const _jobCols=['id','key','art_file_id','art_name','deco_type','positions','art_status','item_status','prod_status','total_units','fulfilled_units','split_from','created_at','assigned_machine','assigned_to','ship_method','items','_auto','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected'];
 const _custCols=['id','parent_id','name','alpha_tag','billing_address_line1','billing_address_line2','billing_city','billing_state','billing_zip','shipping_address_line1','shipping_address_line2','shipping_city','shipping_state','shipping_zip','adidas_ua_tier','catalog_markup','payment_terms','tax_rate','tax_exempt','primary_rep_id','notes','is_active','created_at','updated_at'];
 // Legacy compat — keep old _dbSave for team_members and other simple tables
@@ -2191,12 +2211,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       });
       jobMap[jobKey]=job;
     });
-    // Build map of existing NON-split jobs keyed by job key (skip splits so they don't collide)
-    const existingJobMap={};safeJobs(o).forEach(j=>{if(!j.split_from)existingJobMap[j.key||j.id]=j});
+    // Build map of existing NON-split jobs keyed by job key AND by art_file_id (skip splits so they don't collide)
+    const existingJobMap={};const existingByArtId={};const existingById={};
+    safeJobs(o).forEach(j=>{if(!j.split_from){existingJobMap[j.key||j.id]=j;if(j.art_file_id)existingByArtId[j.art_file_id]=existingByArtId[j.art_file_id]||j;existingById[j.id]=j}});
     const soNum=o.id?.replace('SO-','')||'0';
     let jIdx=1;
     const newJobs=Object.values(jobMap).map(j=>{
-      const existing=existingJobMap[j.key];
+      // Try matching by key first, then by art_file_id as fallback to prevent data loss on key changes
+      const existing=existingJobMap[j.key]||(j.art_file_id?existingByArtId[j.art_file_id]:null);
       const itemSt=j.fulfilled_units>=j.total_units&&j.total_units>0?'items_received':j.fulfilled_units>0?'partially_received':'need_to_order';
       let prodSt=existing?.prod_status||'hold';
       const artFile=safeArr(o?.art_files).find(f=>f.id===j.art_file_id);
@@ -4255,7 +4277,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
               </div>
               <div style={{fontSize:12,color:'#1e3a8a',marginTop:4}}>The mockup will be sent to you for approval when ready.</div>
             </div>}
-            {j.art_status==='waiting_approval'&&(()=>{const artFile2=af.find(a=>a.id===j.art_file_id);const mockups=(artFile2?.mockup_files||artFile2?.files||[]);return<div style={{margin:'0 20px',padding:'16px',background:'linear-gradient(135deg,#fef3c7,#fffbeb)',border:'2px solid #fbbf24',borderRadius:10}}>
+            {j.art_status==='waiting_approval'&&(()=>{const artFile2=safeArt(o).find(a=>a.id===j.art_file_id);const mockups=(artFile2?.mockup_files||artFile2?.files||[]).concat(Object.values(artFile2?.item_mockups||{}).flat());return<div style={{margin:'0 20px',padding:'16px',background:'linear-gradient(135deg,#fef3c7,#fffbeb)',border:'2px solid #fbbf24',borderRadius:10}}>
               <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:10}}>
                 <span style={{fontSize:20}}>⚠️</span>
                 <span style={{fontWeight:800,fontSize:16,color:'#92400e'}}>Artwork Needs Your Approval</span>
@@ -13954,36 +13976,96 @@ export default function App(){
                   :<div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{af?.art_size||'—'}</div>}
                 </div>})()}
               </div>
-              {/* ─── Ink / Thread Colors (editable) ─── */}
+              {/* ─── Ink / Thread Colors — per garment per position ─── */}
               <div style={{marginTop:14,padding:'12px 14px',background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0'}}>
-                <div style={{fontSize:12,fontWeight:800,color:'#1e3a5f',textTransform:'uppercase',marginBottom:8,display:'flex',alignItems:'center',gap:6}}>
-                  {isEmb?'🧵 Thread Colors':'🎨 Ink Colors'} {colorList.length>0&&<span style={{fontSize:11,fontWeight:600,color:'#64748b'}}>({colorList.length})</span>}
-                  {artJobDetailEditColors===null?<button style={{background:'none',border:'none',color:'#7c3aed',fontSize:11,fontWeight:700,cursor:'pointer',padding:'2px 6px',marginLeft:4}} onClick={()=>setArtJobDetailEditColors(af?(af.ink_colors||af.thread_colors||''):'')}>Edit</button>
-                  :<button style={{background:'none',border:'none',color:'#dc2626',fontSize:11,fontWeight:700,cursor:'pointer',padding:'2px 6px',marginLeft:4}} onClick={()=>setArtJobDetailEditColors(null)}>Cancel</button>}
-                </div>
-                {artJobDetailEditColors!==null?<div>
-                  <textarea className="form-input" rows={2} value={artJobDetailEditColors} onChange={e=>setArtJobDetailEditColors(e.target.value)} placeholder={isEmb?'Thread colors (comma separated, e.g. 200C Red, Navy 2767)':'Ink/Pantone colors (comma separated, e.g. 200C Red, PMS 286)'} style={{fontSize:12,resize:'vertical',marginBottom:6}}/>
-                  <button className="btn btn-sm" style={{fontSize:10,padding:'3px 10px',background:'#7c3aed',color:'white',border:'none',borderRadius:4,fontWeight:700}} onClick={()=>{
+                {(()=>{
+                  const posList3=(j.positions||'').split(',').map(p=>p.trim()).filter(Boolean);
+                  const garmentColors=af?.garment_colors||{};
+                  const hasGarmentColors=Object.keys(garmentColors).length>0;
+                  const isEditing=artJobDetailEditColors!==null&&typeof artJobDetailEditColors==='object'&&artJobDetailEditColors._perGarment;
+                  // Init editing state: build per-garment per-position color arrays
+                  const startEdit=()=>{
+                    const init={_perGarment:true};
+                    itemDetails.forEach(gi=>{const gk=gi.sku+'|'+gi.color;
+                      init[gk]={};
+                      posList3.forEach(pos=>{
+                        init[gk][pos]=(garmentColors[gk]&&garmentColors[gk][pos])||colorList.map(c=>c)||[''];
+                      });
+                    });
+                    setArtJobDetailEditColors(init);
+                  };
+                  const saveColors=()=>{
                     const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
+                    const gc={};const allColors=new Set();
+                    Object.entries(artJobDetailEditColors).forEach(([gk,positions])=>{
+                      if(gk==='_perGarment')return;
+                      gc[gk]={};
+                      Object.entries(positions).forEach(([pos,colors])=>{
+                        gc[gk][pos]=colors.filter(c=>c.trim());
+                        colors.filter(c=>c.trim()).forEach(c=>allColors.add(c.trim()));
+                      });
+                    });
                     const colorField=isEmb?'thread_colors':'ink_colors';
-                    const updArt=safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,[colorField]:artJobDetailEditColors.trim()}:a);
+                    const updArt=safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,garment_colors:gc,[colorField]:[...allColors].join(', ')}:a);
                     savSO({...liveSO,art_files:updArt});
-                    const updatedAf=updArt.find(a=>a.id===j.art_file_id);
-                    setArtJobDetailModal({...j,artFile:updatedAf});
+                    setArtJobDetailModal({...j,artFile:updArt.find(a=>a.id===j.art_file_id)});
                     setArtJobDetailEditColors(null);
                     nf('Colors updated');
-                  }}>Save Colors</button>
+                  };
+                  return<>
+                <div style={{fontSize:12,fontWeight:800,color:'#1e3a5f',textTransform:'uppercase',marginBottom:8,display:'flex',alignItems:'center',gap:6}}>
+                  {isEmb?'🧵 Thread Colors':'🎨 Ink Colors'}
+                  {!isEditing?<button style={{background:'none',border:'none',color:'#7c3aed',fontSize:11,fontWeight:700,cursor:'pointer',padding:'2px 6px',marginLeft:4}} onClick={startEdit}>Edit</button>
+                  :<button style={{background:'none',border:'none',color:'#dc2626',fontSize:11,fontWeight:700,cursor:'pointer',padding:'2px 6px',marginLeft:4}} onClick={()=>setArtJobDetailEditColors(null)}>Cancel</button>}
+                </div>
+                {isEditing?<div>
+                  {itemDetails.map((gi,gii)=>{const gk=gi.sku+'|'+gi.color;const gColors=artJobDetailEditColors[gk]||{};
+                    return<div key={gii} style={{marginBottom:12,padding:10,background:'white',borderRadius:8,border:'1px solid #e2e8f0'}}>
+                      <div style={{fontSize:11,fontWeight:800,color:'#1e3a5f',marginBottom:6}}>{gi.sku} — {gi.color}</div>
+                      {posList3.map((pos,pi)=>{const colors=gColors[pos]||[''];
+                        return<div key={pi} style={{marginBottom:8}}>
+                          <div style={{fontSize:10,fontWeight:700,color:'#64748b',marginBottom:4}}>{pos}</div>
+                          <div style={{display:'flex',gap:4,flexWrap:'wrap',alignItems:'center'}}>
+                            {colors.map((c,ci)=><input key={ci} className="form-input" value={c} onChange={e=>{
+                              const upd={...artJobDetailEditColors};upd[gk]={...upd[gk]};upd[gk][pos]=[...colors];upd[gk][pos][ci]=e.target.value;setArtJobDetailEditColors(upd);
+                            }} placeholder="Color name" style={{fontSize:12,width:120,padding:'4px 8px'}}/>)}
+                            <button style={{background:'none',border:'1px dashed #a78bfa',color:'#7c3aed',borderRadius:4,padding:'3px 8px',fontSize:11,cursor:'pointer',fontWeight:700}} onClick={()=>{
+                              const upd={...artJobDetailEditColors};upd[gk]={...upd[gk]};upd[gk][pos]=[...colors,''];setArtJobDetailEditColors(upd);
+                            }}>+</button>
+                            {colors.length>1&&<button style={{background:'none',border:'none',color:'#dc2626',fontSize:13,cursor:'pointer',padding:'0 4px'}} onClick={()=>{
+                              const upd={...artJobDetailEditColors};upd[gk]={...upd[gk]};upd[gk][pos]=colors.slice(0,-1);setArtJobDetailEditColors(upd);
+                            }}>×</button>}
+                          </div>
+                        </div>})}
+                    </div>})}
+                  <button className="btn btn-sm" style={{fontSize:11,padding:'5px 14px',background:'#7c3aed',color:'white',border:'none',borderRadius:6,fontWeight:700}} onClick={saveColors}>Save Colors</button>
+                </div>
+                :hasGarmentColors?<div>
+                  {itemDetails.map((gi,gii)=>{const gk=gi.sku+'|'+gi.color;const gc=garmentColors[gk];if(!gc)return null;
+                    return<div key={gii} style={{marginBottom:10,padding:8,background:'white',borderRadius:8,border:'1px solid #e2e8f0'}}>
+                      <div style={{fontSize:11,fontWeight:800,color:'#1e3a5f',marginBottom:4}}>{gi.sku} — {gi.color}</div>
+                      {posList3.map((pos,pi)=>{const colors=gc[pos]||[];if(!colors.length)return null;
+                        return<div key={pi} style={{marginBottom:4}}>
+                          <div style={{fontSize:10,fontWeight:700,color:'#64748b',marginBottom:3}}>{pos}</div>
+                          <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                            {colors.map((cl,ci)=>{const swatchColor=colorMap[cl]||Object.entries(colorMap).find(([k])=>cl.toLowerCase().includes(k.toLowerCase()))?.[1]||null;
+                              return<div key={ci} style={{display:'flex',alignItems:'center',gap:6,padding:'5px 10px',background:'#f8fafc',border:'2px solid '+(swatchColor||'#e2e8f0'),borderRadius:6}}>
+                                <div style={{width:18,height:18,borderRadius:4,border:'1px solid #d1d5db',background:swatchColor||'linear-gradient(135deg,#f1f5f9,#e2e8f0)',flexShrink:0}}/>
+                                <span style={{fontSize:12,fontWeight:700,color:'#0f172a'}}>{cl}</span>
+                              </div>})}
+                          </div>
+                        </div>})}
+                    </div>})}
                 </div>
                 :colorList.length>0?<div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-                  {colorList.map((cl,i)=>{
-                    const clLower=cl.toLowerCase();
-                    const swatchColor=colorMap[cl]||Object.entries(colorMap).find(([k])=>clLower.includes(k.toLowerCase()))?.[1]||null;
-                    return<div key={i} style={{display:'flex',alignItems:'center',gap:8,padding:'8px 14px',background:'white',border:'2px solid '+(swatchColor||'#e2e8f0'),borderRadius:8,boxShadow:'0 1px 3px rgba(0,0,0,0.06)'}}>
-                      <div style={{width:24,height:24,borderRadius:6,border:'2px solid #d1d5db',background:swatchColor||'linear-gradient(135deg,#f1f5f9,#e2e8f0)',flexShrink:0}}/>
-                      <span style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{cl}</span>
+                  {colorList.map((cl,i)=>{const swatchColor=colorMap[cl]||Object.entries(colorMap).find(([k])=>cl.toLowerCase().includes(k.toLowerCase()))?.[1]||null;
+                    return<div key={i} style={{display:'flex',alignItems:'center',gap:6,padding:'5px 10px',background:'white',border:'2px solid '+(swatchColor||'#e2e8f0'),borderRadius:6}}>
+                      <div style={{width:18,height:18,borderRadius:4,border:'1px solid #d1d5db',background:swatchColor||'linear-gradient(135deg,#f1f5f9,#e2e8f0)',flexShrink:0}}/>
+                      <span style={{fontSize:12,fontWeight:700,color:'#0f172a'}}>{cl}</span>
                     </div>})}
                 </div>
                 :<div style={{fontSize:12,color:'#94a3b8',fontStyle:'italic'}}>No colors specified — click Edit to add {isEmb?'thread':'Pantone/ink'} colors</div>}
+              </>})()}
               </div>
 
               {/* ─── Decoration Details (Numbers / Names) ─── */}
