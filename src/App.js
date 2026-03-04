@@ -126,7 +126,7 @@ const _dbSeed = async (d) => {
   // Seed core tables — team_members MUST succeed first (customers FK to team_members)
   const teamIds=new Set((d.team||[]).map(t=>t.id));
   if(d.team?.length){const{error:tErr}=await supabase.from('team_members').upsert(d.team.map(t=>({id:t.id,name:t.name,role:t.role,email:t.email,phone:t.phone,is_active:t.is_active!==false})),{onConflict:'id'});if(tErr)console.error('[DB] seed team_members:',tErr.message)}
-  if(d.vendors?.length){const{error:vErr}=await supabase.from('vendors').upsert(d.vendors.map(v=>{const{_oi,_it,_ac,_a3,_a6,_a9,...rest}=v;return rest}),{onConflict:'id'});if(vErr)console.error('[DB] seed vendors:',vErr.message)}
+  if(d.vendors?.length){const{error:vErr}=await supabase.from('vendors').upsert(d.vendors.map(v=>_pick(v,_vendCols)),{onConflict:'id'});if(vErr)console.error('[DB] seed vendors:',vErr.message)}
   // Customers + contacts — use _pick to strip unknown cols, null out invalid FKs
   const custIds=new Set((d.customers||[]).map(c=>c.id));
   if(d.customers?.length){
@@ -158,7 +158,7 @@ const _dbSeed = async (d) => {
   }
   // Seed OMG stores
   if(d.omg_stores?.length){
-    await supabase.from('omg_stores').upsert(d.omg_stores.map(s=>{const{products,...rest}=s;return rest}),{onConflict:'id'});
+    await supabase.from('omg_stores').upsert(d.omg_stores.map(s=>_pick(s,_omgStoreCols)),{onConflict:'id'});
     const allProds=[];d.omg_stores.forEach(s=>(s.products||[]).forEach(p=>allProds.push({store_id:s.id,sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:p.deco_type,deco_cost:p.deco_cost,sizes:p.sizes})));
     if(allProds.length) await supabase.from('omg_store_products').insert(allProds);
   }
@@ -240,8 +240,15 @@ const _dbSaveSOInner = async (so) => {
     await supabase.from('so_items').delete().eq('so_id',so.id);
     // Sync jobs: upsert current jobs, delete removed ones (avoids DELETE+INSERT race condition)
     if(jobs?.length){
-      const{error:jobErr}=await supabase.from('so_jobs').upsert(jobs.map(j=>({..._pick(j,_jobCols),so_id:so.id})),{onConflict:'so_id,id'});
-      if(jobErr){console.error('[DB] so_jobs upsert failed:',jobErr.message,jobErr.details);saveFailed=true}
+      const jobRows=jobs.map(j=>({..._pick(j,_jobCols),so_id:so.id}));
+      const{error:jobErr}=await supabase.from('so_jobs').upsert(jobRows,{onConflict:'so_id,id'});
+      if(jobErr){
+        if(jobErr.message?.includes('schema cache')||jobErr.message?.includes('column')){
+          const coreRows=jobRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_jobExtraCols.has(k))cr[k]=r[k]});return cr});
+          const{error:jobErr2}=await supabase.from('so_jobs').upsert(coreRows,{onConflict:'so_id,id'});
+          if(jobErr2){console.error('[DB] so_jobs upsert failed (core):',jobErr2.message,jobErr2.details);saveFailed=true}
+        }else{console.error('[DB] so_jobs upsert failed:',jobErr.message,jobErr.details);saveFailed=true}
+      }
       // Delete jobs that no longer exist
       const currentJobIds=jobs.map(j=>j.id).filter(Boolean);
       if(currentJobIds.length){
@@ -274,7 +281,7 @@ const _dbSaveSOInner = async (so) => {
     }else{
       await supabase.from('so_art_files').delete().eq('so_id',so.id);
     }
-    if(firm_dates?.length){const{error:fdErr}=await supabase.from('so_firm_dates').insert(firm_dates.map(f=>({...f,so_id:so.id})));if(fdErr){console.error('[DB] so_firm_dates insert failed:',fdErr.message);saveFailed=true}}
+    if(firm_dates?.length){const{error:fdErr}=await supabase.from('so_firm_dates').insert(firm_dates.map(f=>({..._pick(f,_firmDateCols),so_id:so.id})));if(fdErr){console.error('[DB] so_firm_dates insert failed:',fdErr.message);saveFailed=true}}
     if(!items?.length){if(saveFailed){_dbSaveFailedIds.add(so.id);_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save incomplete — some data may not have been saved to cloud','error');return false}_dbSaveFailedIds.delete(so.id);_persistFailedIds();return true}
     for(let idx=0;idx<items.length;idx++){
       const{decorations,pick_lines,po_lines,...itemData}=items[idx];
@@ -484,8 +491,14 @@ const _msgCols=['id','so_id','author_id','text','ts','dept'];
 const _artCols=['id','name','deco_type','ink_colors','thread_colors','art_size','art_sizes','garment_colors','files','mockup_files','item_mockups','prod_files','notes','status','uploaded'];
 // Columns that may not exist in art file tables — stripped on retry
 const _artExtraCols=new Set(['art_sizes']);
+// Columns that may not exist in so_jobs — stripped on retry
+const _jobExtraCols=new Set(['art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected']);
 const _jobCols=['id','key','art_file_id','art_name','deco_type','positions','art_status','item_status','prod_status','total_units','fulfilled_units','split_from','created_at','assigned_machine','assigned_to','ship_method','items','_auto','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected'];
 const _custCols=['id','parent_id','name','alpha_tag','billing_address_line1','billing_address_line2','billing_city','billing_state','billing_zip','shipping_address_line1','shipping_address_line2','shipping_city','shipping_state','shipping_zip','adidas_ua_tier','catalog_markup','payment_terms','tax_rate','tax_exempt','primary_rep_id','notes','is_active','created_at','updated_at'];
+const _vendCols=['id','name','vendor_type','api_provider','nsa_carries_inventory','click_automation','is_active','contact_email','contact_phone','rep_name','payment_terms','notes'];
+const _firmDateCols=['item_desc','date','approved'];
+const _issueCols=['id','status','description','priority','page','viewing','reported_by','role','timestamp','resolved_at','resolution'];
+const _omgStoreCols=['id','store_name','customer_id','rep_id','status','open_date','close_date','orders','total_sales','fundraise_total','items_sold','unique_buyers'];
 // Legacy compat — keep old _dbSave for team_members and other simple tables
 const _dbSave = (table, data) => { if(supabase && data) supabase.from(table).upsert(Array.isArray(data)?data:[data], {onConflict:'id'}).then(r=>{if(r.error)console.error('[DB] save '+table+':', r.error.message)}) };
 // ─── Cloudinary Config ───
@@ -7390,7 +7403,7 @@ export default function App(){
             console.warn('[DB] Supabase tables empty — seeding from localStorage');
             try{
               await _dbSeed({team:REPS,customers:cust,vendors:vend,products:prod,estimates:ests,sales_orders:sos,invoices:invs,messages:msgs,omg_stores:omgStores,issues});
-              if(issues?.length) _dbSave('issues',issues);
+              if(issues?.length) _dbSave('issues',issues.map(i=>_pick(i,_issueCols)));
               const _as={batch_pos:batchPOs,submitted_batches:submittedBatches,batch_counter:batchCounter,change_log:changeLog,so_history:soHistory,qb_config:qbConfig,inv_pos:invPOs,inv_adj_log:invAdjLog,inv_po_counter:invPOCounter};
               for(const[k,v]of Object.entries(_as)){if(v!==undefined&&v!==null)_dbSave('app_state',[{id:k,value:JSON.stringify(v),updated_at:new Date().toISOString()}])}
               await supabase.from('app_state').upsert({id:lockId,value:'"done"',updated_at:new Date().toISOString()});
@@ -7425,7 +7438,7 @@ export default function App(){
               await supabase.from('app_state').upsert({id:lockId,value:'"seeding"',updated_at:new Date().toISOString()});
               try{
                 await _dbSeed({team:REPS,customers:cust,vendors:vend,products:prod,estimates:ests,sales_orders:sos,invoices:invs,messages:msgs,omg_stores:omgStores,issues});
-                if(issues?.length) _dbSave('issues',issues);
+                if(issues?.length) _dbSave('issues',issues.map(i=>_pick(i,_issueCols)));
                 const _as={batch_pos:batchPOs,submitted_batches:submittedBatches,batch_counter:batchCounter,change_log:changeLog,so_history:soHistory,qb_config:qbConfig,inv_pos:invPOs,inv_adj_log:invAdjLog,inv_po_counter:invPOCounter};
                 for(const[k,v]of Object.entries(_as)){if(v!==undefined&&v!==null)_dbSave('app_state',[{id:k,value:JSON.stringify(v),updated_at:new Date().toISOString()}])}
                 await supabase.from('app_state').upsert({id:lockId,value:'"done"',updated_at:new Date().toISOString()});
@@ -7543,14 +7556,14 @@ export default function App(){
   const _diffSave=(arr,snapKey,saveFn)=>{if(!_initialLoadDone.current||!_dbLoadSuccess.current){console.warn('[DB] _diffSave skipped for',snapKey,'— initialLoad:',_initialLoadDone.current,'dbSuccess:',_dbLoadSuccess.current);return}const snap=_dbSnap.current[snapKey]||[];const failedIds=new Set();arr.forEach(item=>{const old=snap.find(p=>p.id===item.id);if(!old||JSON.stringify(old)!==JSON.stringify(item)){const result=saveFn(item);if(result&&typeof result.then==='function')result.then(ok=>{if(ok===false){failedIds.add(item.id);const oldSnap=_dbSnap.current[snapKey]||[];_dbSnap.current[snapKey]=oldSnap.map(s=>s.id===item.id?(snap.find(p=>p.id===item.id)||s):s)}})}});_dbSnap.current[snapKey]=arr};
   React.useEffect(()=>{try{localStorage.setItem('nsa_reps',JSON.stringify(REPS))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.team||[];const changed=REPS.filter(r=>{const old=snap.find(p=>p.id===r.id);return!old||JSON.stringify(old)!==JSON.stringify(r)});if(changed.length)_dbSave('team_members',changed.map(r=>({id:r.id,name:r.name,role:r.role,email:r.email,phone:r.phone,is_active:r.is_active!==false})));_dbSnap.current.team=REPS}},[REPS]);
   React.useEffect(()=>{try{localStorage.setItem('nsa_cust',JSON.stringify(cust))}catch{};_diffSave(cust,'cust',c=>_dbSaveCustomer(c))},[cust]);
-  React.useEffect(()=>{try{localStorage.setItem('nsa_vend',JSON.stringify(vend))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.vend||[];const changed=vend.filter(v=>{const old=snap.find(p=>p.id===v.id);return!old||JSON.stringify(old)!==JSON.stringify(v)});if(changed.length)_dbSave('vendors',changed);_dbSnap.current.vend=vend}},[vend]);
+  React.useEffect(()=>{try{localStorage.setItem('nsa_vend',JSON.stringify(vend))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.vend||[];const changed=vend.filter(v=>{const old=snap.find(p=>p.id===v.id);return!old||JSON.stringify(old)!==JSON.stringify(v)});if(changed.length)_dbSave('vendors',changed.map(v=>_pick(v,_vendCols)));_dbSnap.current.vend=vend}},[vend]);
   React.useEffect(()=>{try{localStorage.setItem('nsa_prod',JSON.stringify(prod))}catch{};_diffSave(prod,'prod',p=>_dbSaveProduct(p))},[prod]);
   React.useEffect(()=>{try{localStorage.setItem('nsa_ests',JSON.stringify(ests))}catch{};_diffSave(ests,'ests',e=>_dbSaveEstimate(e))},[ests]);
   React.useEffect(()=>{try{localStorage.setItem('nsa_sos',JSON.stringify(sos))}catch{};_diffSave(sos,'sos',s=>_dbSaveSO(s))},[sos]);
   React.useEffect(()=>{try{localStorage.setItem('nsa_invs',JSON.stringify(invs))}catch{};_diffSave(invs,'invs',i=>_dbSaveInvoice(i))},[invs]);
   React.useEffect(()=>{try{localStorage.setItem('nsa_msgs',JSON.stringify(msgs))}catch{};_diffSave(msgs,'msgs',m=>_dbSaveMessage(m))},[msgs]);
-  React.useEffect(()=>{if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.omg||[];omgStores.forEach(s=>{const old=snap.find(p=>p.id===s.id);if(!old||JSON.stringify(old)!==JSON.stringify(s)){const{products,...rest}=s;_dbSave('omg_stores',[rest])}});_dbSnap.current.omg=omgStores}},[omgStores]);
-  React.useEffect(()=>{try{localStorage.setItem('nsa_issues',JSON.stringify(issues))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.issues||[];const changed=issues.filter(i=>{const old=snap.find(p=>p.id===i.id);return!old||JSON.stringify(old)!==JSON.stringify(i)});if(changed.length)_dbSave('issues',changed);_dbSnap.current.issues=issues}},[issues]);
+  React.useEffect(()=>{if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.omg||[];omgStores.forEach(s=>{const old=snap.find(p=>p.id===s.id);if(!old||JSON.stringify(old)!==JSON.stringify(s)){_dbSave('omg_stores',[_pick(s,_omgStoreCols)])}});_dbSnap.current.omg=omgStores}},[omgStores]);
+  React.useEffect(()=>{try{localStorage.setItem('nsa_issues',JSON.stringify(issues))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.issues||[];const changed=issues.filter(i=>{const old=snap.find(p=>p.id===i.id);return!old||JSON.stringify(old)!==JSON.stringify(i)});if(changed.length)_dbSave('issues',changed.map(i=>_pick(i,_issueCols)));_dbSnap.current.issues=issues}},[issues]);
   // Batch POs, submitted batches, changelog, SO history — sync to localStorage + Supabase app_state table
   const _saveAppState=(key,val)=>{try{localStorage.setItem('nsa_'+key,JSON.stringify(val))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current)_dbSave('app_state',[{id:key,value:JSON.stringify(val),updated_at:new Date().toISOString()}])};
   React.useEffect(()=>{_saveAppState('batch_pos',batchPOs)},[batchPOs]);
