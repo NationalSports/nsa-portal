@@ -2228,43 +2228,54 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     setSsSearching(true);
     try{
       // First: get style info (title, partNumber) from Styles endpoint
-      // partNumber is the brand's actual style# (e.g. "8000" for Gildan DryBlend)
-      // styleName is S&S's internal style# which may differ from brand's
       let styleInfo=null;
       try{
         const styles=await ssApiCall('/Styles?partNumber='+encodeURIComponent(query));
         const sArr=Array.isArray(styles)?styles:styles?[styles]:[];
-        if(sArr.length>0)styleInfo=sArr[0];// {styleID, partNumber, brandName, styleName, title, ...}
-      }catch(e){console.log('[S&S] Styles lookup failed, falling back to Products',e)}
+        if(sArr.length>0)styleInfo=sArr[0];
+      }catch(e){/* 404 = not found on S&S, that's ok */}
 
-      // Search Products by partNumber (brand's style#) — this is the correct search
-      // The partNumber param finds products by the brand's number, not S&S internal styleID
-      let data;
+      // Search Products by partNumber (brand's style#)
+      let items=[];
       try{
-        data=await ssApiCall('/Products?partNumber='+encodeURIComponent(query));
+        const data=await ssApiCall('/Products?partNumber='+encodeURIComponent(query));
+        items=Array.isArray(data)?data:data?[data]:[];
       }catch(e){
         // Fallback: try by style (S&S internal number)
-        data=await ssApiCall('/Products?style='+encodeURIComponent(query));
+        try{
+          const data2=await ssApiCall('/Products?style='+encodeURIComponent(query));
+          items=Array.isArray(data2)?data2:data2?[data2]:[];
+        }catch(e2){/* Both failed — item not on S&S */}
       }
-      const items=Array.isArray(data)?data:data?[data]:[];
-      // Get title from style info, or build from brand + query
+      if(!items.length){
+        // Cache empty result so we don't re-search
+        ssSearchCache.current[cacheKey]=[];
+        setSsResults([]);
+        return;
+      }
       const productTitle=styleInfo?.title||'';
       const partNum=styleInfo?.partNumber||query;
       // Group by styleID+colorName → one entry per color
       const colorMap={};
       items.forEach(it=>{
         const key=(it.styleID||it.styleName||query)+'|'+(it.colorName||'');
+        // Fix image URLs: ensure https and handle empty strings
+        let imgUrl=it.colorFrontImage||it.colorSideImage||'';
+        if(imgUrl&&imgUrl.startsWith('http://'))imgUrl=imgUrl.replace('http://','https://');
         if(!colorMap[key])colorMap[key]={
           styleID:it.styleID,
           styleName:productTitle||(it.brandName?(it.brandName+' '+partNum):it.styleName||partNum),
           brandName:it.brandName||styleInfo?.brandName||'',
           colorName:it.colorName||'',
-          colorFrontImage:it.colorFrontImage||'',
-          sku:partNum,// brand's style number (e.g. "8000"), not S&S internal
+          colorFrontImage:imgUrl,
+          styleImage:styleInfo?.styleImage||'',
+          sku:partNum,
           customerPrice:parseFloat(it.customerPrice)||0,
           piecePrice:parseFloat(it.piecePrice)||0,
           sizes:[],totalQty:0
         };
+        // Update image if we got a better one
+        if(imgUrl&&!colorMap[key].colorFrontImage)colorMap[key].colorFrontImage=imgUrl;
         const sz=it.sizeName||'OSFA';
         const qty=typeof it.qty==='number'?it.qty:parseInt(it.qty)||0;
         colorMap[key].sizes.push({sizeName:sz,qty,price:parseFloat(it.customerPrice)||parseFloat(it.piecePrice)||0});
@@ -3140,7 +3151,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               {!ssSearching&&ssResults.length>0&&<span style={{fontSize:10,color:'#8b5cf6'}}>{ssResults.length} results</span>}
             </div>
             {ssResults.slice(0,20).map((ss,si)=><div key={si} style={{padding:'8px 12px',borderBottom:'1px solid #f5f3ff',cursor:'pointer',display:'flex',alignItems:'center',gap:10,background:si%2===0?'#faf8ff':'white'}} onClick={()=>addSSProduct(ss)}>
-              {ss.colorFrontImage&&<img src={ss.colorFrontImage} alt="" style={{width:32,height:32,objectFit:'contain',borderRadius:4,background:'#f8fafc'}}/>}
+              {(ss.colorFrontImage||ss.styleImage)?<img src={ss.colorFrontImage||ss.styleImage} alt="" style={{width:32,height:32,objectFit:'contain',borderRadius:4,background:'#f8fafc'}} onError={e=>{e.target.style.display='none'}}/>:<div style={{width:32,height:32,borderRadius:4,background:'#ede9fe',display:'flex',alignItems:'center',justifyContent:'center',fontSize:10,color:'#7c3aed',fontWeight:700,flexShrink:0}}>SS</div>}
               <span style={{fontFamily:'monospace',fontWeight:700,color:'#7c3aed',background:'#ede9fe',padding:'2px 6px',borderRadius:3,fontSize:12}}>{ss.sku}</span>
               <span style={{fontWeight:600,fontSize:13}}>{ss.styleName}</span>
               {ss.colorName&&<span style={{fontSize:11,color:'#64748b'}}>— {ss.colorName}</span>}
@@ -6872,7 +6883,45 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   </div>)}
 
 // VENDOR DETAIL
-function VendDetail({vendor,onBack}){return(<div><button className="btn btn-secondary" onClick={onBack} style={{marginBottom:12}}><Icon name="back" size={14}/> All Vendors</button>
+function VendDetail({vendor,products,onUpdateProducts,onBack}){
+  const[syncing,setSyncing]=React.useState(false);
+  const syncSSPricing=async()=>{
+    if(!products||syncing)return;
+    setSyncing(true);
+    try{
+      // Find products belonging to this vendor
+      const vendProds=products.filter(p=>p.vendor_id===vendor.id);
+      if(!vendProds.length){alert('No products found for this vendor in catalog.\n\nS&S items added via live search get pricing automatically — no sync needed.');setSyncing(false);return}
+      const uniqueSkus=[...new Set(vendProds.map(p=>p.sku))];
+      let updated=0;const changes=[];const errors=[];
+      for(let i=0;i<uniqueSkus.length;i++){
+        const sku=uniqueSkus[i];
+        try{
+          // Rate limit
+          if(i>0)await new Promise(r=>setTimeout(r,1200));
+          let data;
+          try{data=await ssApiCall('/Products?partNumber='+encodeURIComponent(sku))}
+          catch(e){try{data=await ssApiCall('/Products?style='+encodeURIComponent(sku))}catch(e2){errors.push(sku+': not found on S&S');continue}}
+          const items=Array.isArray(data)?data:data?[data]:[];
+          const prices=items.map(it=>parseFloat(it.customerPrice)||parseFloat(it.piecePrice)||0).filter(p=>p>0);
+          if(!prices.length)continue;
+          const newCost=Math.min(...prices);
+          vendProds.filter(p=>p.sku===sku).forEach(prod=>{
+            if(Math.abs((prod.nsa_cost||0)-newCost)>0.005){
+              changes.push(sku+': $'+(prod.nsa_cost||0).toFixed(2)+' → $'+newCost.toFixed(2));
+              prod.nsa_cost=newCost;updated++;
+            }
+          });
+        }catch(err){errors.push(sku+': '+err.message)}
+      }
+      // Update products state
+      if(updated>0&&onUpdateProducts){
+        onUpdateProducts(prev=>prev.map(p=>{const match=vendProds.find(vp=>vp.id===p.id);return match?{...p,nsa_cost:match.nsa_cost}:p}));
+      }
+      alert('S&S Pricing Sync Complete\n\nSKUs checked: '+uniqueSkus.length+'\nPrices updated: '+updated+(changes.length?'\n\nChanges:\n'+changes.join('\n'):'')+(errors.length?'\n\nErrors:\n'+errors.join('\n'):''));
+    }catch(e){alert('Sync failed: '+e.message)}finally{setSyncing(false)}
+  };
+  return(<div><button className="btn btn-secondary" onClick={onBack} style={{marginBottom:12}}><Icon name="back" size={14}/> All Vendors</button>
   <div className="card" style={{marginBottom:16}}><div style={{padding:'20px 24px',display:'flex',gap:16,alignItems:'flex-start'}}>
   <div style={{width:56,height:56,borderRadius:12,background:'#ede9fe',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}><Icon name="package" size={28}/></div>
   <div style={{flex:1}}><div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}><span style={{fontSize:20,fontWeight:800}}>{vendor.name}</span><span className={`badge ${vendor.vendor_type==='api'?'badge-purple':'badge-gray'}`}>{vendor.vendor_type==='api'?'API':'Upload'}</span><span className="badge badge-gray">{vendor.payment_terms?.replace('net','Net ')}</span>{vendor.nsa_carries_inventory&&<span className="badge badge-green">Stock</span>}</div>
@@ -6880,7 +6929,7 @@ function VendDetail({vendor,onBack}){return(<div><button className="btn btn-seco
   {(vendor._it||0)>0&&<div style={{textAlign:'right'}}><div style={{fontSize:11,color:'#dc2626',fontWeight:600}}>OWED</div><div style={{fontSize:24,fontWeight:800,color:'#dc2626'}}>${vendor._it.toLocaleString()}</div></div>}
   {vendor.api_provider==='ss_activewear'&&<div style={{display:'flex',gap:6,marginTop:8}}>
     <button className="btn btn-sm" style={{background:'#7c3aed',color:'white',fontSize:10,border:'none'}} onClick={async()=>{try{await testSSConnection();alert('S&S API connection successful!')}catch(e){alert('S&S API connection failed: '+e.message)}}}>Test API</button>
-    <button className="btn btn-sm" style={{background:'#2563eb',color:'white',fontSize:10,border:'none'}} onClick={async()=>{try{const r=await fetch('/.netlify/functions/ss-pricing-sync');const txt=await r.text();let d;try{d=JSON.parse(txt)}catch{alert('Pricing sync error (HTTP '+r.status+'):\n'+txt.slice(0,200));return}if(d.error){alert('Pricing sync error: '+d.error);return}alert('Pricing sync complete!\n\nSKUs checked: '+(d.total_skus||0)+'\nPrices updated: '+(d.updated||0)+(d.message?'\n'+d.message:'')+(d.errors?.length?'\nErrors: '+d.errors.length:''))}catch(e){alert('Pricing sync failed: '+e.message)}}}>Sync Pricing Now</button>
+    <button className="btn btn-sm" style={{background:'#2563eb',color:'white',fontSize:10,border:'none',opacity:syncing?0.5:1}} disabled={syncing} onClick={syncSSPricing}>{syncing?'Syncing...':'Sync Pricing Now'}</button>
   </div>}
   </div></div>
   <div className="stats-row"><div className="stat-card"><div className="stat-label">Invoices</div><div className="stat-value">{vendor._oi||0}</div></div><div className="stat-card"><div className="stat-label">Current</div><div className="stat-value" style={{color:'#166534'}}>${(vendor._ac||0).toLocaleString()}</div></div><div className="stat-card"><div className="stat-label">30 Day</div><div className="stat-value" style={{color:(vendor._a3||0)>0?'#d97706':''}}>${(vendor._a3||0).toLocaleString()}</div></div><div className="stat-card"><div className="stat-label">60+</div><div className="stat-value" style={{color:(vendor._a6||0)>0?'#dc2626':''}}>${((vendor._a6||0)+(vendor._a9||0)).toLocaleString()}</div></div></div>
@@ -9108,7 +9157,7 @@ export default function App(){
     </>);};
 
   // VENDORS
-  function rVend(){if(selV)return<VendDetail vendor={selV} onBack={()=>setSelV(null)}/>;
+  function rVend(){if(selV)return<VendDetail vendor={selV} products={prod} onUpdateProducts={setProd} onBack={()=>setSelV(null)}/>;
     return(<><div className="stats-row"><div className="stat-card"><div className="stat-label">Vendors</div><div className="stat-value">{vend.length}</div></div><div className="stat-card"><div className="stat-label">API</div><div className="stat-value">{vend.filter(v=>v.vendor_type==='api').length}</div></div>
       {isA&&<div className="stat-card"><div className="stat-label">Open AP</div><div className="stat-value" style={{color:'#dc2626'}}>${vend.reduce((a,v)=>a+(v._it||0),0).toLocaleString()}</div></div>}</div>
     <div className="card"><div className="card-body" style={{padding:0}}><table><thead><tr><th>Vendor</th><th>Type</th><th>Contact</th><th>Terms</th>{isA&&<th>Owed</th>}<th>Status</th></tr></thead><tbody>
