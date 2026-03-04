@@ -2170,6 +2170,85 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
   const poCommitted=(poLines,sz)=>(poLines||[]).reduce((a,pk)=>{const ordered=pk[sz]||0;const cancelled=(pk.cancelled||{})[sz]||0;return a+(ordered-cancelled)},0);
   const[newAddr,setNewAddr]=useState('');const[showNA,setShowNA]=useState(false);const[showSzPicker,setShowSzPicker]=useState(null);const[showCustom,setShowCustom]=useState(false);const[custItem,setCustItem]=useState({vendor_id:'',name:'',sku:'CUSTOM',nsa_cost:0,unit_sell:0,retail_price:0,color:'',brand:'',saveToCatalog:false});
   const[nsImport,setNsImport]=useState(null);// {step:'paste'|'review'|'confirm', raw:'', parsed:[], decoMap:[], issues:[]}
+
+  // ─── Live S&S Product Search ───
+  const[ssResults,setSsResults]=useState([]);// grouped: [{style,styleName,brand,colors:[{colorName,sku,piecePrice,customerPrice,sizes:[{sizeName,qty}]}]}]
+  const[ssSearching,setSsSearching]=useState(false);
+  const ssSearchTimer=useRef(null);
+  const ssSearchCache=useRef({});// cache search results by query
+
+  const ssLiveSearch=useCallback(async(query)=>{
+    if(!query||query.length<2){setSsResults([]);return}
+    // Check cache first
+    const cacheKey=query.toLowerCase().trim();
+    if(ssSearchCache.current[cacheKey]){setSsResults(ssSearchCache.current[cacheKey]);return}
+    setSsSearching(true);
+    try{
+      const data=await ssApiCall('/Products?style='+encodeURIComponent(query));
+      const items=Array.isArray(data)?data:data?[data]:[];
+      // Group by styleID+colorName → deduplicate into style/color groups
+      const colorMap={};
+      items.forEach(it=>{
+        const key=(it.styleID||it.styleName||query)+'|'+(it.colorName||'');
+        if(!colorMap[key])colorMap[key]={
+          styleID:it.styleID,styleName:it.styleName||it.brandName+' '+query,
+          brandName:it.brandName||'',colorName:it.colorName||'',
+          colorFrontImage:it.colorFrontImage||'',
+          sku:query,// base style
+          customerPrice:parseFloat(it.customerPrice)||0,
+          piecePrice:parseFloat(it.piecePrice)||0,
+          sizes:[],totalQty:0
+        };
+        const sz=it.sizeName||'OSFA';
+        const qty=typeof it.qty==='number'?it.qty:parseInt(it.qty)||0;
+        colorMap[key].sizes.push({sizeName:sz,qty,price:parseFloat(it.customerPrice)||parseFloat(it.piecePrice)||0});
+        colorMap[key].totalQty+=qty;
+        // Use lowest price
+        const p=parseFloat(it.customerPrice)||parseFloat(it.piecePrice)||0;
+        if(p>0&&(colorMap[key].customerPrice===0||p<colorMap[key].customerPrice))colorMap[key].customerPrice=p;
+      });
+      const results=Object.values(colorMap);
+      ssSearchCache.current[cacheKey]=results;
+      setSsResults(results);
+    }catch(err){
+      console.error('[S&S] Search failed:',err);
+      setSsResults([]);
+    }finally{setSsSearching(false)}
+  },[]);
+
+  // Debounced S&S search when typing in Add Product search
+  React.useEffect(()=>{
+    if(ssSearchTimer.current)clearTimeout(ssSearchTimer.current);
+    if(!showAdd||!pS||pS.length<2){setSsResults([]);return}
+    // Only search S&S if few/no local results
+    const localCount=fp.length;
+    ssSearchTimer.current=setTimeout(()=>ssLiveSearch(pS),localCount>5?800:400);
+    return()=>{if(ssSearchTimer.current)clearTimeout(ssSearchTimer.current)};
+  },[pS,showAdd]);
+
+  // Add an S&S search result as a line item
+  const addSSProduct=(ssItem)=>{
+    const ssVendor=D_V.find(v=>v.api_provider==='ss_activewear');
+    const vId=ssVendor?.id||'v4';
+    const cost=ssItem.customerPrice||ssItem.piecePrice||0;
+    const sell=rQ(cost*(o.default_markup||1.65));
+    const availSizes=ssItem.sizes.map(s=>s.sizeName).sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
+    // Build initial vendor inventory from search results
+    const vInv={};ssItem.sizes.forEach(s=>{vInv[s.sizeName]=(vInv[s.sizeName]||0)+s.qty});
+    const newItem={
+      product_id:null,sku:ssItem.sku,name:ssItem.styleName,brand:ssItem.brandName,
+      vendor_id:vId,color:ssItem.colorName,nsa_cost:cost,retail_price:0,
+      unit_sell:sell,available_sizes:availSizes.length?availSizes:['S','M','L','XL','2XL'],
+      sizes:{},decorations:isE?[{kind:'art',art_file_id:'__tbd',art_tbd_type:'screen_print',position:'',sell_override:0}]:[],
+      is_custom:false,_ss_live:true
+    };
+    sv('items',[...o.items,newItem]);
+    // Pre-populate vendor inventory cache so it shows immediately
+    const sizePrice={};ssItem.sizes.forEach(s=>{sizePrice[s.sizeName]=s.price||cost});
+    vendorInvCache.current[ssItem.sku]={sizes:vInv,price:sizePrice,fetchedAt:Date.now()};
+    setVendorInv(prev=>({...prev,[ssItem.sku]:{sizes:vInv,price:sizePrice,loading:false,error:null}}));
+    setShowAdd(false);setPS('');setSsResults([]);
+  };
   const sv=(k,v)=>{setO(e=>({...e,[k]:v,updated_at:new Date().toLocaleString()}));setDirty(true)};
   const isAU=b=>b==='Adidas'||b==='Under Armour'||b==='New Balance';const tD={A:0.4,B:0.35,C:0.3};
   const selC=id=>{const c=allCustomers.find(x=>x.id===id);if(c){setCust(c);sv('customer_id',id);sv('default_markup',c.catalog_markup||1.65)}};
@@ -2982,13 +3061,35 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
       {!showAdd?<div style={{display:'flex',gap:6}}><button className="btn btn-primary" onClick={()=>setShowAdd(true)} disabled={!cust}><Icon name="plus" size={14}/> Add Product</button>
       <button className="btn btn-secondary" onClick={()=>setShowCustom(!showCustom)} disabled={!cust}><Icon name="plus" size={14}/> Custom Item</button>
       <button className="btn btn-secondary" style={{marginLeft:'auto'}} onClick={()=>setNsImport({step:'paste',raw:'',parsed:[],decoLines:[],issues:[]})} disabled={!cust}>📥 Import from NetSuite</button></div>
-      :<div><div className="search-bar" style={{marginBottom:8}}><Icon name="search"/><input placeholder="Search SKU, name, brand..." value={pS} onChange={e=>setPS(e.target.value)} autoFocus/></div>
-        <div style={{maxHeight:250,overflow:'auto'}}>{fp.slice(0,12).map(p=><div key={p.id} style={{padding:'10px 12px',borderBottom:'1px solid #f8fafc',cursor:'pointer',display:'flex',alignItems:'center',gap:10}} onClick={()=>addP(p)}>
+      :<div><div className="search-bar" style={{marginBottom:8}}><Icon name="search"/><input placeholder="Search SKU, name, brand... (searches S&S live too)" value={pS} onChange={e=>setPS(e.target.value)} autoFocus/></div>
+        <div style={{maxHeight:350,overflow:'auto'}}>
+          {fp.slice(0,12).map(p=><div key={p.id} style={{padding:'10px 12px',borderBottom:'1px solid #f8fafc',cursor:'pointer',display:'flex',alignItems:'center',gap:10}} onClick={()=>addP(p)}>
           <span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',background:'#dbeafe',padding:'2px 6px',borderRadius:3}}>{p.sku}</span><span style={{fontWeight:600}}>{p.name}</span>{p.color&&<span style={{fontSize:11,color:'#64748b'}}>— {p.color}</span>}<span className="badge badge-blue">{p.brand}</span>
           {p._colors&&<span style={{fontSize:10,color:'#7c3aed'}}>{p._colors.length} clr</span>}
-          <span style={{marginLeft:'auto',fontSize:12,color:'#64748b'}}>${p.nsa_cost?.toFixed(2)}</span></div>)}</div>
-        <button className="btn btn-sm btn-secondary" onClick={()=>{setShowAdd(false);setPS('')}} style={{marginTop:8}}>Cancel</button>
-        <button className="btn btn-sm btn-secondary" onClick={()=>{setShowAdd(false);setPS('');setShowCustom(true)}} style={{marginTop:8,marginLeft:4}}>+ Custom Item</button></div>}
+          <span style={{marginLeft:'auto',fontSize:12,color:'#64748b'}}>${p.nsa_cost?.toFixed(2)}</span></div>)}
+          {/* S&S Live Search Results */}
+          {pS.length>=2&&(ssSearching||ssResults.length>0)&&<>
+            <div style={{padding:'6px 12px',background:'#f5f3ff',borderTop:'2px solid #ddd6fe',borderBottom:'1px solid #ede9fe',display:'flex',alignItems:'center',gap:6}}>
+              <span style={{fontSize:10,fontWeight:800,color:'#7c3aed',textTransform:'uppercase',letterSpacing:1}}>S&S Activewear</span>
+              {ssSearching&&<span style={{fontSize:10,color:'#a78bfa'}}>Searching...</span>}
+              {!ssSearching&&ssResults.length>0&&<span style={{fontSize:10,color:'#8b5cf6'}}>{ssResults.length} results</span>}
+            </div>
+            {ssResults.slice(0,20).map((ss,si)=><div key={si} style={{padding:'8px 12px',borderBottom:'1px solid #f5f3ff',cursor:'pointer',display:'flex',alignItems:'center',gap:10,background:si%2===0?'#faf8ff':'white'}} onClick={()=>addSSProduct(ss)}>
+              {ss.colorFrontImage&&<img src={ss.colorFrontImage} alt="" style={{width:32,height:32,objectFit:'contain',borderRadius:4,background:'#f8fafc'}}/>}
+              <span style={{fontFamily:'monospace',fontWeight:700,color:'#7c3aed',background:'#ede9fe',padding:'2px 6px',borderRadius:3,fontSize:12}}>{ss.sku}</span>
+              <span style={{fontWeight:600,fontSize:13}}>{ss.styleName}</span>
+              {ss.colorName&&<span style={{fontSize:11,color:'#64748b'}}>— {ss.colorName}</span>}
+              <span style={{fontSize:10,padding:'1px 6px',borderRadius:3,background:'#ede9fe',color:'#6d28d9',fontWeight:600}}>{ss.brandName}</span>
+              <span style={{marginLeft:'auto',display:'flex',flexDirection:'column',alignItems:'flex-end'}}>
+                <span style={{fontSize:12,color:'#7c3aed',fontWeight:700}}>${ss.customerPrice?.toFixed(2)||ss.piecePrice?.toFixed(2)}</span>
+                <span style={{fontSize:9,color:ss.totalQty>0?'#7c3aed':'#dc2626',fontWeight:600}}>{ss.totalQty>0?ss.totalQty+' avail':'Out of stock'}</span>
+              </span>
+            </div>)}
+            {!ssSearching&&ssResults.length===0&&pS.length>=2&&<div style={{padding:'10px 12px',color:'#94a3b8',fontSize:12,fontStyle:'italic'}}>No S&S results for "{pS}"</div>}
+          </>}
+        </div>
+        <button className="btn btn-sm btn-secondary" onClick={()=>{setShowAdd(false);setPS('');setSsResults([])}} style={{marginTop:8}}>Cancel</button>
+        <button className="btn btn-sm btn-secondary" onClick={()=>{setShowAdd(false);setPS('');setSsResults([]);setShowCustom(true)}} style={{marginTop:8,marginLeft:4}}>+ Custom Item</button></div>}
     </div></div>
     {showCustom&&<div className="card" style={{marginTop:8,borderLeft:'3px solid #d97706'}}><div style={{padding:'14px 18px'}}>
       <div style={{fontWeight:700,marginBottom:8}}>✏️ Custom Item {custItem.name&&<span style={{fontWeight:400,fontSize:12,color:'#64748b'}}>— {custItem.name}</span>}</div>
