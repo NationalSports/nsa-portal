@@ -1387,3 +1387,189 @@ describe('Edge Cases', () => {
     expect(poCommitted(poLines, 'M')).toBe(35); // 30+5
   });
 });
+
+// ═══════════════════════════════════════════════
+// PROMO DOLLARS TESTS
+// ═══════════════════════════════════════════════
+const {
+  PROMO_DECO_MULT, PROMO_SHIP_MULT, calcPromoItemSell,
+  calcPromoTotals, calcPromoSpendAllocation,
+  getCurrentPromoPeriod, getPreviousPromoPeriod,
+} = require('./businessLogic');
+
+describe('Promo Dollars — calcPromoItemSell', () => {
+  test('returns retail_price when available', () => {
+    expect(calcPromoItemSell({ retail_price: 55.5, nsa_cost: 18.5, unit_sell: 33.3 })).toBe(55.5);
+  });
+
+  test('falls back to nsa_cost * 2.0 when no retail_price', () => {
+    expect(calcPromoItemSell({ retail_price: 0, nsa_cost: 10, unit_sell: 16.5 })).toBe(20);
+    expect(calcPromoItemSell({ nsa_cost: 4.5, unit_sell: 7.5 })).toBe(9);
+  });
+
+  test('handles missing fields safely', () => {
+    expect(calcPromoItemSell({})).toBe(0);
+    expect(calcPromoItemSell({ retail_price: null, nsa_cost: null })).toBe(0);
+  });
+});
+
+describe('Promo Dollars — calcPromoTotals', () => {
+  test('returns null when promo_applied is false', () => {
+    const o = makeSO({ promo_applied: false });
+    expect(calcPromoTotals(o, {})).toBeNull();
+  });
+
+  test('returns null when promo_applied is undefined', () => {
+    const o = makeSO({});
+    expect(calcPromoTotals(o, {})).toBeNull();
+  });
+
+  test('calculates promo totals for fully-promo order (Adidas items)', () => {
+    const o = {
+      promo_applied: true,
+      shipping_type: 'flat', shipping_value: 100,
+      items: [
+        { sku: 'ADI-1', brand: 'Adidas', nsa_cost: 18.5, retail_price: 55.5, unit_sell: 33.3,
+          sizes: { S: 5, M: 10 }, is_promo: true, decorations: [] },
+      ],
+      art_files: [],
+    };
+    const cust = { tax_rate: 0.0775 };
+    const result = calcPromoTotals(o, cust);
+
+    expect(result).not.toBeNull();
+    // 15 units * $55.50 retail = $832.50
+    expect(result.promoRev).toBe(832.5);
+    // Normal rev should be 0
+    expect(result.normalRev).toBe(0);
+    // Promo shipping = 100 * 1.0 (all promo) * 1.25 = $125
+    expect(result.promoShip).toBe(125);
+    // Promo amount = 832.5 + 125 = $957.50
+    expect(result.promoAmount).toBe(957.5);
+    // Customer pays $0
+    expect(result.customerPays).toBe(0);
+    // No tax on promo
+    expect(result.normalTax).toBe(0);
+  });
+
+  test('calculates promo totals with decorations (25% increase)', () => {
+    const o = {
+      promo_applied: true,
+      shipping_type: 'flat', shipping_value: 0,
+      items: [
+        { sku: 'ADI-1', brand: 'Adidas', nsa_cost: 18.5, retail_price: 55.5, unit_sell: 33.3,
+          sizes: { M: 24 }, is_promo: true,
+          decorations: [
+            { kind: 'art', art_file_id: 'af1', position: 'Front Center' }
+          ] },
+      ],
+      art_files: [{ id: 'af1', deco_type: 'screen_print', ink_colors: 'Navy\nWhite', status: 'approved' }],
+    };
+    const result = calcPromoTotals(o, {});
+    expect(result).not.toBeNull();
+    // Item rev: 24 * 55.5 = 1332
+    // Deco: spP(24, 2, true) = 4.5 for 2 colors at 24 qty, * 1.25 = 5.625, rounded to 5.75
+    // Deco rev: 24 * 5.75 = 138
+    // Total promo rev = 1332 + 138 = 1470
+    expect(result.promoRev).toBe(1332 + 24 * rQ(4.5 * PROMO_DECO_MULT));
+    expect(result.customerPays).toBe(0);
+  });
+
+  test('partial promo — mixed promo and non-promo items', () => {
+    const o = {
+      promo_applied: true,
+      shipping_type: 'flat', shipping_value: 100,
+      items: [
+        { sku: 'ADI-1', brand: 'Adidas', nsa_cost: 18.5, retail_price: 55.5, unit_sell: 33.3,
+          sizes: { M: 10 }, is_promo: true, decorations: [] },
+        { sku: 'PC61', brand: 'Port Company', nsa_cost: 2.85, retail_price: 0, unit_sell: 4.75,
+          sizes: { M: 10 }, is_promo: false, decorations: [] },
+      ],
+      art_files: [],
+    };
+    const cust = { tax_rate: 0.0775 };
+    const result = calcPromoTotals(o, cust);
+
+    expect(result).not.toBeNull();
+    // Promo: 10 * 55.5 = 555
+    expect(result.promoRev).toBe(555);
+    // Normal: 10 * 4.75 = 47.5
+    expect(result.normalRev).toBe(47.5);
+    // Normal tax: 47.5 * 0.0775 = 3.68125
+    expect(result.normalTax).toBeCloseTo(3.68, 1);
+    // Customer pays normal items + normal shipping portion + normal tax
+    expect(result.customerPays).toBeGreaterThan(0);
+  });
+
+  test('handles empty order', () => {
+    const o = { promo_applied: true, items: [], art_files: [] };
+    const result = calcPromoTotals(o, {});
+    expect(result).not.toBeNull();
+    expect(result.promoAmount).toBe(0);
+    expect(result.customerPays).toBe(0);
+  });
+});
+
+describe('Promo Dollars — calcPromoSpendAllocation', () => {
+  test('calculates spend-based promo allocation', () => {
+    const orders = [
+      { customer_id: 'c1', created_at: '2025-08-15', items: [{ sizes: { M: 10 }, unit_sell: 33 }] },
+      { customer_id: 'c1', created_at: '2025-10-01', items: [{ sizes: { L: 5 }, unit_sell: 50 }] },
+      { customer_id: 'c2', created_at: '2025-09-01', items: [{ sizes: { S: 20 }, unit_sell: 25 }] }, // different customer
+    ];
+    // 10% of c1 spend: (10*33 + 5*50) * 0.10 = (330+250)*0.10 = 58
+    expect(calcPromoSpendAllocation(orders, 'c1', '2025-07-01', '2025-12-31', 0.10)).toBe(58);
+  });
+
+  test('accepts array of customer IDs (parent + subs)', () => {
+    const orders = [
+      { customer_id: 'c1', created_at: '2025-08-15', items: [{ sizes: { M: 10 }, unit_sell: 20 }] },
+      { customer_id: 'c1-sub', created_at: '2025-09-01', items: [{ sizes: { L: 5 }, unit_sell: 40 }] },
+    ];
+    // 12% of combined: (200 + 200) * 0.12 = 48
+    expect(calcPromoSpendAllocation(orders, ['c1', 'c1-sub'], '2025-07-01', '2025-12-31', 0.12)).toBe(48);
+  });
+
+  test('filters by date range', () => {
+    const orders = [
+      { customer_id: 'c1', created_at: '2025-03-15', items: [{ sizes: { M: 10 }, unit_sell: 20 }] },
+      { customer_id: 'c1', created_at: '2025-09-01', items: [{ sizes: { M: 10 }, unit_sell: 20 }] },
+    ];
+    // Only H2 order matches
+    expect(calcPromoSpendAllocation(orders, 'c1', '2025-07-01', '2025-12-31', 0.10)).toBe(20);
+  });
+
+  test('returns 0 for no matching orders', () => {
+    expect(calcPromoSpendAllocation([], 'c1', '2025-01-01', '2025-06-30', 0.10)).toBe(0);
+  });
+});
+
+describe('Promo Dollars — period helpers', () => {
+  test('getCurrentPromoPeriod returns H1 for Jan-Jun', () => {
+    const p = getCurrentPromoPeriod('2026-03-15');
+    expect(p.start).toBe('2026-01-01');
+    expect(p.end).toBe('2026-06-30');
+    expect(p.label).toBe('H1 2026');
+  });
+
+  test('getCurrentPromoPeriod returns H2 for Jul-Dec', () => {
+    const p = getCurrentPromoPeriod('2026-09-01');
+    expect(p.start).toBe('2026-07-01');
+    expect(p.end).toBe('2026-12-31');
+    expect(p.label).toBe('H2 2026');
+  });
+
+  test('getPreviousPromoPeriod returns H2 of prior year when in H1', () => {
+    const p = getPreviousPromoPeriod('2026-03-15');
+    expect(p.start).toBe('2025-07-01');
+    expect(p.end).toBe('2025-12-31');
+    expect(p.label).toBe('H2 2025');
+  });
+
+  test('getPreviousPromoPeriod returns H1 of same year when in H2', () => {
+    const p = getPreviousPromoPeriod('2026-09-01');
+    expect(p.start).toBe('2026-01-01');
+    expect(p.end).toBe('2026-06-30');
+    expect(p.label).toBe('H1 2026');
+  });
+});

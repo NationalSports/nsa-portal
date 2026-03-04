@@ -265,6 +265,132 @@ function buildQBInvoice(inv, sos, cust, qbMapping) {
     account: qbMapping.ar_account };
 }
 
+// ── Promo Dollars Pricing ──
+// When promo is applied to an order:
+// - Adidas/UA/NB items: sell at retail_price (no tier discount)
+// - Other items: sell at retail_price if available, otherwise nsa_cost * 2.0
+// - Decoration sells increase by 25%
+// - Shipping on promo portion increases by 25%
+// - Tax = $0 on promo portion
+const PROMO_DECO_MULT = 1.25;
+const PROMO_SHIP_MULT = 1.25;
+
+function calcPromoItemSell(item) {
+  if (safeNum(item.retail_price) > 0) return safeNum(item.retail_price);
+  return safeNum(item.nsa_cost) * 2.0;
+}
+
+// Calculate promo-adjusted totals for an order
+// Returns { promoRev, promoShip, promoAmount, normalRev, normalShip, normalTax, customerPays }
+function calcPromoTotals(o, cust) {
+  if (!o.promo_applied) return null;
+
+  const artQty = {};
+  safeItems(o).forEach(it => {
+    const q = Object.values(safeSizes(it)).reduce((a, v) => a + safeNum(v), 0);
+    safeDecos(it).forEach(d => {
+      if (d.kind === 'art' && d.art_file_id) { artQty[d.art_file_id] = (artQty[d.art_file_id] || 0) + q }
+    });
+  });
+  const af = safeArt(o);
+  let promoRev = 0, promoCost = 0, normalRev = 0, normalCost = 0;
+
+  safeItems(o).forEach(it => {
+    const q = Object.values(safeSizes(it)).reduce((a, v) => a + safeNum(v), 0);
+    if (!q) return;
+
+    if (it.is_promo) {
+      const sellPrice = calcPromoItemSell(it);
+      promoRev += q * sellPrice;
+      promoCost += q * safeNum(it.nsa_cost);
+      safeDecos(it).forEach(d => {
+        const cq = d.kind === 'art' && d.art_file_id ? artQty[d.art_file_id] : q;
+        const dp = dP(d, q, af, cq);
+        const eq = dp._nq != null ? dp._nq : q;
+        promoRev += eq * rQ(dp.sell * PROMO_DECO_MULT);
+        promoCost += eq * dp.cost;
+      });
+    } else {
+      normalRev += q * safeNum(it.unit_sell);
+      normalCost += q * safeNum(it.nsa_cost);
+      safeDecos(it).forEach(d => {
+        const cq = d.kind === 'art' && d.art_file_id ? artQty[d.art_file_id] : q;
+        const dp = dP(d, q, af, cq);
+        const eq = dp._nq != null ? dp._nq : q;
+        normalRev += eq * dp.sell;
+        normalCost += eq * dp.cost;
+      });
+    }
+  });
+
+  // Shipping: promo portion gets 25% increase
+  const totalRev = promoRev + normalRev;
+  const baseShip = o.shipping_type === 'pct' ? totalRev * (o.shipping_value || 0) / 100 : (o.shipping_value || 0);
+  const promoPct = totalRev > 0 ? promoRev / totalRev : (promoRev > 0 ? 1 : 0);
+  const promoShip = rQ(baseShip * promoPct * PROMO_SHIP_MULT);
+  const normalShip = rQ(baseShip * (1 - promoPct));
+
+  // Tax: $0 on promo portion, normal tax on non-promo
+  const taxRate = cust?.tax_exempt ? 0 : (cust?.tax_rate || 0);
+  const normalTax = normalRev * taxRate;
+
+  // Promo amount consumed = promo item/deco revenue + promo shipping
+  const promoAmount = promoRev + promoShip;
+
+  // Customer pays only the non-promo portion
+  const customerPays = normalRev + normalShip + normalTax;
+
+  return {
+    promoRev, promoCost, promoShip, promoAmount,
+    normalRev, normalCost, normalShip, normalTax,
+    customerPays, totalCost: promoCost + normalCost
+  };
+}
+
+// Calculate promo allocation from spend over a date range
+// Returns the dollar amount to allocate as promo
+function calcPromoSpendAllocation(orders, customerIds, periodStart, periodEnd, percentage) {
+  const ids = Array.isArray(customerIds) ? customerIds : [customerIds];
+  const filtered = orders.filter(o => {
+    if (!ids.includes(o.customer_id)) return false;
+    const d = o.created_at || '';
+    return d >= periodStart && d <= periodEnd;
+  });
+  let totalRev = 0;
+  filtered.forEach(o => {
+    safeItems(o).forEach(it => {
+      const q = Object.values(safeSizes(it)).reduce((a, v) => a + safeNum(v), 0);
+      totalRev += q * safeNum(it.unit_sell);
+    });
+  });
+  return Math.round(totalRev * safeNum(percentage) * 100) / 100;
+}
+
+// Get the current promo period boundaries
+// Returns { start: 'YYYY-MM-DD', end: 'YYYY-MM-DD', label: 'H1 2026' }
+function getCurrentPromoPeriod(date) {
+  const d = date ? new Date(date) : new Date();
+  const y = d.getFullYear();
+  const m = d.getMonth(); // 0-11
+  if (m < 6) {
+    return { start: y + '-01-01', end: y + '-06-30', label: 'H1 ' + y };
+  } else {
+    return { start: y + '-07-01', end: y + '-12-31', label: 'H2 ' + y };
+  }
+}
+
+// Get previous promo period
+function getPreviousPromoPeriod(date) {
+  const d = date ? new Date(date) : new Date();
+  const y = d.getFullYear();
+  const m = d.getMonth();
+  if (m < 6) {
+    return { start: (y - 1) + '-07-01', end: (y - 1) + '-12-31', label: 'H2 ' + (y - 1) };
+  } else {
+    return { start: y + '-01-01', end: y + '-06-30', label: 'H1 ' + y };
+  }
+}
+
 // ── Inventory Helpers ──
 function checkInventoryConflicts(currentSO, item, newInv, allOrders) {
   const warnings = [];
@@ -293,6 +419,8 @@ module.exports = {
   rQ, rT, spP, emP, npP, dP, DTF, SP, EM, NP,
   // Business logic
   poCommitted, calcSOStatus, buildJobs, isJobReady, calcTotals, createInvoice,
+  // Promo dollars
+  PROMO_DECO_MULT, PROMO_SHIP_MULT, calcPromoItemSell, calcPromoTotals, calcPromoSpendAllocation, getCurrentPromoPeriod, getPreviousPromoPeriod,
   // QB sync
   buildQBSalesOrder, buildQBInvoice,
   // Inventory

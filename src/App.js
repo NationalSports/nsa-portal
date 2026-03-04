@@ -37,7 +37,8 @@ const _dbLoad = async () => {
     // Load all tables in parallel
     const [rTeam,rCust,rContacts,rVend,rProd,rProdInv,rEst,rEstArt,rEstItems,rEstDecos,
       rSO,rSOArt,rSOFirm,rSOItems,rSODecos,rSOPicks,rSOPOs,rSOJobs,
-      rInv,rInvPay,rInvItems,rMsg,rMsgReads,rOMG,rOMGProd,rIssues,rAppState] = await Promise.all([
+      rInv,rInvPay,rInvItems,rMsg,rMsgReads,rOMG,rOMGProd,rIssues,rAppState,
+      rPromoProg,rPromoPeriods,rPromoUsage] = await Promise.all([
       supabase.from('team_members').select('*').order('name').limit(10000),
       supabase.from('customers').select('*').order('name').limit(10000),
       supabase.from('customer_contacts').select('*').limit(10000),
@@ -65,6 +66,9 @@ const _dbLoad = async () => {
       supabase.from('omg_store_products').select('*').limit(10000),
       supabase.from('issues').select('*').limit(10000),
       supabase.from('app_state').select('*').limit(10000),
+      supabase.from('customer_promo_programs').select('*').limit(10000),
+      supabase.from('customer_promo_periods').select('*').limit(10000),
+      supabase.from('customer_promo_usage').select('*').limit(10000),
     ]);
     // Check for critical errors on core tables only (child tables may not exist yet — 404 is OK)
     const coreResults=[{n:'team_members',r:rTeam},{n:'customers',r:rCust},{n:'vendors',r:rVend},{n:'products',r:rProd},{n:'estimates',r:rEst},{n:'sales_orders',r:rSO},{n:'invoices',r:rInv},{n:'messages',r:rMsg},{n:'omg_stores',r:rOMG}];
@@ -82,6 +86,8 @@ const _dbLoad = async () => {
     const msgRaw=d(rMsg);const msgReads=d(rMsgReads);
     const omgRaw=d(rOMG);const omgProd=d(rOMGProd);
     const issues=d(rIssues);
+    // Promo data
+    const promoPrograms=d(rPromoProg);const promoPeriods=d(rPromoPeriods);const promoUsage=d(rPromoUsage);
     // Parse app_state key-value pairs
     const appStateRaw=d(rAppState);
     const appState={};appStateRaw.forEach(r=>{try{appState[r.id]=JSON.parse(r.value)}catch{appState[r.id]=r.value}});
@@ -89,7 +95,10 @@ const _dbLoad = async () => {
     // Product image backups from app_state (reliable fallback when image columns are missing)
     const _pimgMap={};appStateRaw.filter(r=>r.id.startsWith('_pimg_')).forEach(r=>{try{_pimgMap[r.id.slice(6)]=JSON.parse(r.value)}catch{}});
     // Customers: attach contacts array
-    const customers=custRaw.map(c=>({...c,contacts:contacts.filter(ct=>ct.customer_id===c.id).sort((a,b)=>a.sort_order-b.sort_order).map(ct=>({name:ct.name,email:ct.email,phone:ct.phone,role:ct.role}))}));
+    const customers=custRaw.map(c=>({...c,contacts:contacts.filter(ct=>ct.customer_id===c.id).sort((a,b)=>a.sort_order-b.sort_order).map(ct=>({name:ct.name,email:ct.email,phone:ct.phone,role:ct.role})),
+      promo_programs:promoPrograms.filter(pp=>pp.customer_id===c.id),
+      promo_periods:promoPeriods.filter(pp=>pp.customer_id===c.id),
+      promo_usage:promoUsage.filter(pu=>promoPeriods.filter(pp=>pp.customer_id===c.id).some(pp=>pp.id===pu.period_id))}));
     // Products: attach _inv and _alerts from product_inventory
     const products=prodRaw.map(p=>{const invRows=prodInv.filter(pi=>pi.product_id===p.id);const _inv={};const _alerts={};invRows.forEach(r=>{_inv[r.size]=r.quantity;if(r.alert_threshold)_alerts[r.size]=r.alert_threshold});const _pimg=_pimgMap[p.id];return{...p,image_url:p.image_url||p.image_front_url||(_pimg&&_pimg.front)||'',back_image_url:p.back_image_url||p.image_back_url||(_pimg&&_pimg.back)||'',images:p.images||(_pimg&&_pimg.gallery)||[],_inv,_alerts}});
     // Estimates: attach items (with decorations) and art_files
@@ -306,6 +315,48 @@ const _dbSaveCustomer = async (c) => {
     console.log('[DB] Customer saved:',c.id,c.name);return true;
   }catch(e){console.error('[DB] save customer:',e);if(_dbNotify)_dbNotify('Customer save failed: '+e.message,'error');return false}
 };
+const _dbSavePromoProgram = async (prog) => {
+  if(!supabase)return false;
+  try{
+    const{error}=await supabase.from('customer_promo_programs').upsert(prog,{onConflict:'id'});
+    if(error){console.error('[DB] save promo program:',error.message);return false}
+    return true;
+  }catch(e){console.error('[DB] save promo program:',e);return false}
+};
+const _dbDeletePromoProgram = async (id) => {
+  if(!supabase)return false;
+  try{
+    const{error}=await supabase.from('customer_promo_programs').delete().eq('id',id);
+    if(error){console.error('[DB] delete promo program:',error.message);return false}
+    return true;
+  }catch(e){console.error('[DB] delete promo program:',e);return false}
+};
+const _dbSavePromoPeriod = async (period) => {
+  if(!supabase)return false;
+  try{
+    const{error}=await supabase.from('customer_promo_periods').upsert(period,{onConflict:'id'});
+    if(error){console.error('[DB] save promo period:',error.message);return false}
+    return true;
+  }catch(e){console.error('[DB] save promo period:',e);return false}
+};
+const _dbSavePromoUsage = async (usage) => {
+  if(!supabase)return false;
+  try{
+    const{error}=await supabase.from('customer_promo_usage').insert(usage);
+    if(error){console.error('[DB] save promo usage:',error.message);return false}
+    return true;
+  }catch(e){console.error('[DB] save promo usage:',e);return false}
+};
+const _dbDeletePromoUsage = async (periodId, soId) => {
+  if(!supabase)return false;
+  try{
+    let q=supabase.from('customer_promo_usage').delete().eq('period_id',periodId);
+    if(soId)q=q.eq('so_id',soId);
+    const{error}=await q;
+    if(error){console.error('[DB] delete promo usage:',error.message);return false}
+    return true;
+  }catch(e){console.error('[DB] delete promo usage:',e);return false}
+};
 const _dbSaveProduct = async (p) => {
   if(!supabase)return;
   try{
@@ -408,9 +459,9 @@ const _dbSaveFailedIds=new Set(JSON.parse(localStorage.getItem('nsa_save_failed_
 const _persistFailedIds=()=>{try{localStorage.setItem('nsa_save_failed_ids',JSON.stringify([..._dbSaveFailedIds]))}catch{}};
 // Column whitelists — strip unknown fields before sending to Supabase (localStorage may have extra UI fields like vendor_id)
 const _pick=(obj,cols)=>{const r={};cols.forEach(c=>{if(c in obj)r[c]=obj[c]});return r};
-const _estCols=['id','customer_id','memo','status','created_by','created_at','updated_at','default_markup','shipping_type','shipping_value','ship_to_id','email_status','email_opened_at','email_viewed_at','deleted_at'];
-const _soCols=['id','customer_id','estimate_id','memo','status','created_by','created_at','updated_at','expected_date','production_notes','shipping_type','shipping_value','ship_to_id','default_markup','omg_store_id','_shipstation_order_id','_shipping_status','_tracking_number','_carrier','_ship_date','_tracking_url','_shipped','_shipments','_shipping_cost','deleted_at'];
-const _itemCols=['product_id','sku','name','brand','color','nsa_cost','retail_price','unit_sell','sizes','available_sizes','_colors','no_deco','is_custom','custom_desc','custom_cost','custom_sell'];
+const _estCols=['id','customer_id','memo','status','created_by','created_at','updated_at','default_markup','shipping_type','shipping_value','ship_to_id','email_status','email_opened_at','email_viewed_at','deleted_at','promo_applied','promo_amount'];
+const _soCols=['id','customer_id','estimate_id','memo','status','created_by','created_at','updated_at','expected_date','production_notes','shipping_type','shipping_value','ship_to_id','default_markup','omg_store_id','_shipstation_order_id','_shipping_status','_tracking_number','_carrier','_ship_date','_tracking_url','_shipped','_shipments','_shipping_cost','deleted_at','promo_applied','promo_amount'];
+const _itemCols=['product_id','sku','name','brand','color','nsa_cost','retail_price','unit_sell','sizes','available_sizes','_colors','no_deco','is_custom','custom_desc','custom_cost','custom_sell','is_promo'];
 const _decoCols=['kind','position','type','art_file_id','art_tbd_type','tbd_colors','tbd_stitches','tbd_dtf_size','sell_override','sell_each','cost_each','underbase','two_color','colors','stitches','dtf_size','num_method','num_size','num_size_back','num_font','roster','names','names_list','vendor','deco_type','notes','custom_font_art_id','print_color','front_and_back','num_qty','name_qty'];
 // Columns that may not exist in production DB / schema cache — stripped on insert retry
 const _decoExtraCols=new Set(['print_color','front_and_back','num_qty','name_qty','num_font','num_size_back','custom_font_art_id']);
@@ -1957,6 +2008,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
   const[countDiscModal,setCountDiscModal]=useState(null);// {open,entries:[{sku,name,color,size,expected,actual}],notes}
   const[artReqModal,setArtReqModal]=useState(null);// {jIdx, artist:'', instructions:'', files:[]}
   const[artRevisionNote,setArtRevisionNote]=useState('');
+  const[showPrevArt,setShowPrevArt]=useState(false);// Previous Artwork picker modal
   const[coachApprovalModal,setCoachApprovalModal]=useState(null);// {jIdx, contact, portalUrl, method, message}
   const[copySkuModal,setCopySkuModal]=useState(null);// {itemIdx, search:''}
 
@@ -2044,6 +2096,27 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
     (it.po_lines||[]).filter(pl=>pl.po_type==='outside_deco').forEach(pl=>{const poQty=Object.entries(pl).filter(([k,v])=>typeof v==='number'&&!['unit_cost'].includes(k)).reduce((a,[,v])=>a+v,0);cost+=poQty*safeNum(pl.unit_cost)})});
     const ship=o.shipping_type==='pct'?rev*(o.shipping_value||0)/100:(o.shipping_value||0);const taxRate=cust?.tax_exempt?0:(cust?.tax_rate||0);const tax=rev*taxRate;
     return{rev,cost,ship,tax,taxRate,grand:rev+ship+tax,margin:rev-cost,pct:rev>0?((rev-cost)/rev*100):0}},[o,artQty,cust]); // eslint-disable-line
+
+  // Promo totals — separate calc to not disturb existing totals
+  const promoTotals=useMemo(()=>{
+    if(!o.promo_applied)return null;
+    let promoRev=0,promoCost=0,normalRev=0,normalCost=0;
+    safeItems(o).forEach(it=>{const q=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);if(!q)return;
+      if(it.is_promo){
+        const sellP=safeNum(it.retail_price)||safeNum(it.nsa_cost)*2;promoRev+=q*sellP;promoCost+=q*safeNum(it.nsa_cost);
+        safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:q;promoRev+=eq*rQ(dp.sell*1.25);promoCost+=eq*dp.cost});
+      }else{
+        normalRev+=q*safeNum(it.unit_sell);normalCost+=q*safeNum(it.nsa_cost);
+        safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:q;normalRev+=eq*dp.sell;normalCost+=eq*dp.cost});
+      }});
+    const totalRev=promoRev+normalRev;
+    const baseShip=o.shipping_type==='pct'?totalRev*(o.shipping_value||0)/100:(o.shipping_value||0);
+    const promoPct=totalRev>0?promoRev/totalRev:(promoRev>0?1:0);
+    const promoShip=rQ(baseShip*promoPct*1.25);const normalShip=rQ(baseShip*(1-promoPct));
+    const taxRate=cust?.tax_exempt?0:(cust?.tax_rate||0);const normalTax=normalRev*taxRate;
+    const promoAmount=promoRev+promoShip;const customerPays=normalRev+normalShip+normalTax;
+    return{promoRev,promoCost,promoShip,promoAmount,normalRev,normalCost,normalShip,normalTax,customerPays};
+  },[o,artQty,cust,af]); // eslint-disable-line
 
   // AUTO-SYNC JOBS from decorations — one job per unique decoration combination
   // Items that share the exact same set of decorations are grouped into one job
@@ -2240,7 +2313,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
             ...(totals.ship>0?[{l:'SHIP',v:totals.ship,bg:'#f0f9ff',c:'#0369a1'}]:[]),
             ...(totals.tax>0?[{l:'TAX',v:totals.tax,bg:'#fefce8',c:'#a16207',s:(totals.taxRate*100).toFixed(3)+'%'}]:[]),
             ...(cust?.tax_exempt?[{l:'TAX',v:0,bg:'#fef2f2',c:'#dc2626',s:'EXEMPT'}]:[]),
-            {l:'TOTAL',v:totals.grand,bg:'#faf5ff',c:'#7c3aed'}].map(x=>
+            {l:'TOTAL',v:o.promo_applied&&promoTotals?promoTotals.customerPays:totals.grand,bg:o.promo_applied?'#dcfce7':'#faf5ff',c:o.promo_applied?'#166534':'#7c3aed'},
+            ...(o.promo_applied&&promoTotals?[{l:'PROMO $',v:promoTotals.promoAmount,bg:'#fef3c7',c:'#92400e',s:'deducted'}]:[])].map(x=>
             <div key={x.l} style={{textAlign:'center',padding:'8px 12px',background:x.bg,borderRadius:8,minWidth:72}}><div style={{fontSize:9,color:x.c,fontWeight:700}}>{x.l}</div><div style={{fontSize:17,fontWeight:800,color:x.c}}>${x.v.toLocaleString(undefined,{maximumFractionDigits:0})}</div>{x.s&&<div style={{fontSize:9,color:'#94a3b8'}}>{x.s}</div>}</div>)}</div>
       </div>
       <div style={{display:'flex',gap:8,marginTop:12,alignItems:'end',flexWrap:'wrap'}}>
@@ -2275,7 +2349,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
         {/* Actions dropdown */}
         <div style={{position:'relative'}}>
           <button className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'6px 12px'}} onClick={()=>setShowActionsDD(!showActionsDD)}>Actions <span style={{fontSize:9}}>▾</span></button>
-          {showActionsDD&&<><div style={{position:'fixed',inset:0,zIndex:98}} onClick={()=>setShowActionsDD(false)}/><div style={{position:'absolute',top:'100%',left:0,marginTop:4,background:'white',border:'1px solid #e2e8f0',borderRadius:6,boxShadow:'0 4px 12px rgba(0,0,0,0.1)',zIndex:99,minWidth:160,overflow:'hidden'}}>
+          {showActionsDD&&<><div style={{position:'fixed',inset:0,zIndex:98}} onClick={()=>setShowActionsDD(false)}/><div style={{position:'absolute',top:'100%',right:0,marginTop:4,background:'white',border:'1px solid #e2e8f0',borderRadius:6,boxShadow:'0 4px 12px rgba(0,0,0,0.1)',zIndex:99,minWidth:180,overflow:'hidden'}}>
             {saved&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);setShowSend(true)}} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="send" size={12}/> Send</button>}
             <button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);
               const items=safeItems(o).filter(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0);
@@ -2364,7 +2438,33 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
           :<div style={{display:'flex',gap:4}}><input className="form-input" placeholder="New address..." value={newAddr} onChange={e=>setNewAddr(e.target.value)} autoFocus style={{flex:1}}/><button className="btn btn-sm btn-primary" onClick={()=>{sv('ship_to_custom',newAddr);sv('ship_to_id','custom');setShowNA(false)}}>OK</button><button className="btn btn-sm btn-secondary" onClick={()=>setShowNA(false)}>×</button></div>}
         </div>
         <div style={{fontSize:12,color:'#64748b'}}>Tax: <strong>${totals.tax.toFixed(2)}</strong></div>
+        {/* Promo Funds Toggle */}
+        {cust&&<div style={{display:'flex',gap:6,alignItems:'center'}}>
+          {!o.promo_applied?<button className="btn btn-sm" style={{background:'#fef3c7',color:'#92400e',border:'1px solid #fde68a',fontSize:11,fontWeight:700}} onClick={()=>{
+            sv('promo_applied',true);
+            // Auto-mark all items as promo
+            sv('items',safeItems(o).map(it=>({...it,is_promo:true})));
+            nf('Promo mode enabled — all items set to retail pricing');
+          }}>💰 Apply Promo Funds</button>
+          :<>
+            <span style={{padding:'3px 10px',borderRadius:10,fontSize:11,fontWeight:700,background:'#fef3c7',color:'#92400e'}}>💰 PROMO ACTIVE</span>
+            <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{
+              sv('promo_applied',false);sv('promo_amount',0);
+              sv('items',safeItems(o).map(it=>({...it,is_promo:false})));
+              nf('Promo mode disabled');
+            }}>Remove Promo</button>
+          </>}
+        </div>}
       </div>
+      {/* Promo Summary */}
+      {o.promo_applied&&promoTotals&&<div style={{margin:'8px 0',padding:'10px 16px',background:'#fffbeb',borderRadius:8,border:'1px solid #fde68a',display:'flex',gap:16,alignItems:'center',flexWrap:'wrap'}}>
+        <span style={{fontSize:11,fontWeight:700,color:'#92400e'}}>💰 PROMO ORDER</span>
+        <span style={{fontSize:12}}>Promo Items: <strong style={{color:'#92400e'}}>${promoTotals.promoRev.toLocaleString(undefined,{maximumFractionDigits:2})}</strong> (retail + 25% deco)</span>
+        <span style={{fontSize:12}}>Promo Ship: <strong>${promoTotals.promoShip.toFixed(2)}</strong></span>
+        <span style={{fontSize:12,fontWeight:700,color:'#92400e'}}>Promo Total: ${promoTotals.promoAmount.toLocaleString(undefined,{maximumFractionDigits:2})}</span>
+        {promoTotals.normalRev>0&&<span style={{fontSize:12}}>Customer Pays: <strong style={{color:'#166534'}}>${promoTotals.customerPays.toFixed(2)}</strong></span>}
+        {promoTotals.normalRev===0&&<span style={{fontSize:12,fontWeight:700,color:'#166534'}}>$0.00 Order</span>}
+      </div>}
       {/* SO STATUS — fully auto-calculated from items/jobs */}
       {isSO&&(()=>{
         const autoSt=calcSOStatus(o);
@@ -2419,7 +2519,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
                   :item.is_custom?<input className="form-input" value={item.color||''} onChange={e=>uI(idx,'color',e.target.value)} style={{fontSize:12,width:100}} placeholder="Color"/>
                   :<span className="badge badge-gray">{item.color}</span>}
                 {item.is_custom&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:600}}>Custom</span>}
-                {isAU(item.brand)&&<span className="badge badge-blue">Tier {cust?.adidas_ua_tier}</span>}</div>
+                {isAU(item.brand)&&<span className="badge badge-blue">Tier {cust?.adidas_ua_tier}</span>}
+                {o.promo_applied&&<label style={{display:'inline-flex',alignItems:'center',gap:4,padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,cursor:'pointer',background:item.is_promo?'#fef3c7':'#f1f5f9',color:item.is_promo?'#92400e':'#94a3b8',border:item.is_promo?'1px solid #fde68a':'1px solid #e2e8f0'}}><input type="checkbox" checked={item.is_promo||false} onChange={e=>uI(idx,'is_promo',e.target.checked)} style={{width:12,height:12}}/> Promo{item.is_promo&&item.retail_price?' ($'+item.retail_price+')':''}</label>}</div>
               <div style={{display:'flex',alignItems:'center',gap:8,marginTop:4,flexWrap:'wrap'}}>
                 <span style={{fontSize:13,fontWeight:600}}>Sell: <$In value={item.unit_sell} onChange={v=>uI(idx,'unit_sell',v)}/>/ea</span>
                 {item.is_custom&&<span style={{fontSize:12,color:'#64748b'}}>Cost: <$In value={item.nsa_cost} onChange={v=>{uI(idx,'nsa_cost',v);if(!isAU(item.brand)&&v>0){uI(idx,'unit_sell',rQ(v*(o.default_markup||1.65)))}}}/></span>}
@@ -2989,7 +3090,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
     </>}
 
     {/* ART LIBRARY TAB */}
-    {tab==='art'&&<div className="card"><div className="card-header"><h2>Art Library</h2><div style={{display:'flex',gap:6}}>{dirty&&<button className="btn btn-sm btn-primary" onClick={()=>{const updated={...o,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setSaved(true);nf('Art saved')}} style={{background:'#166534',borderColor:'#166534'}}>Save</button>}<button className="btn btn-sm btn-primary" onClick={addArt}><Icon name="plus" size={12}/> New Art Group</button></div></div>
+    {tab==='art'&&<div className="card"><div className="card-header"><h2>Art Library</h2><div style={{display:'flex',gap:6}}>{dirty&&<button className="btn btn-sm btn-primary" onClick={()=>{const updated={...o,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setSaved(true);nf('Art saved')}} style={{background:'#166534',borderColor:'#166534'}}>Save</button>}<button className="btn btn-sm" style={{background:'#7c3aed',color:'white',border:'none',fontSize:11}} onClick={()=>setShowPrevArt(true)}>📂 Previous Artwork</button><button className="btn btn-sm btn-primary" onClick={addArt}><Icon name="plus" size={12}/> New Art Group</button></div></div>
       <div className="card-body">{af.length===0?<div className="empty">No art uploaded. Create art groups and add files.</div>:
         <div style={{display:'flex',flexDirection:'column',gap:12}}>
           {af.map((art,i)=>{const usedIn=safeItems(o).reduce((a,it)=>a+safeDecos(it).filter(d=>d.art_file_id===art.id).length,0);
@@ -3061,6 +3162,46 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
             </div>)})}
         </div>}
       </div></div>}
+
+    {/* PREVIOUS ARTWORK PICKER MODAL */}
+    {showPrevArt&&(()=>{
+      const custId=o.customer_id;const parentCust2=allCustomers.find(c=>c.id===custId);
+      const custIds2=parentCust2?.parent_id?[parentCust2.parent_id,custId,...allCustomers.filter(c=>c.parent_id===parentCust2.parent_id).map(c=>c.id)]:[custId,...allCustomers.filter(c=>c.parent_id===custId).map(c=>c.id)];
+      const prevArtList=[];
+      (allOrders||[]).filter(so=>custIds2.includes(so.customer_id)&&so.id!==o.id).forEach(so=>{
+        (so.art_files||[]).forEach(art=>{
+          if(!prevArtList.some(a=>a.name===art.name&&a.deco_type===art.deco_type))
+            prevArtList.push({...art,_so_id:so.id,_so_memo:so.memo||''});
+        });
+      });
+      return<div className="modal-overlay" onClick={()=>setShowPrevArt(false)}><div className="modal" style={{maxWidth:640}} onClick={e=>e.stopPropagation()}>
+        <div className="modal-header"><h2>📂 Previous Artwork</h2><button className="modal-close" onClick={()=>setShowPrevArt(false)}>×</button></div>
+        <div className="modal-body" style={{maxHeight:400,overflowY:'auto'}}>
+          {prevArtList.length===0?<div className="empty">No previous artwork found for this customer</div>:
+          <div style={{display:'flex',flexDirection:'column',gap:6}}>
+            {prevArtList.map((art,i)=>{
+              const alreadyAdded=af.some(a=>a.name===art.name&&a.deco_type===art.deco_type);
+              const mockups=(art.mockup_files||art.files||[]).filter(f=>f);
+              const firstMockup=mockups[0];const imgUrl=firstMockup?(typeof firstMockup==='string'?firstMockup:firstMockup.url):'';
+              return<div key={art.id+'-'+i} style={{padding:10,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0',display:'flex',gap:10,alignItems:'center'}}>
+                {imgUrl&&_isImgUrl(imgUrl)?<img src={imgUrl} alt="" style={{width:40,height:40,borderRadius:6,objectFit:'cover',flexShrink:0}}/>:
+                  <div style={{width:40,height:40,borderRadius:6,background:art.deco_type==='screen_print'?'#dbeafe':art.deco_type==='embroidery'?'#ede9fe':'#fef3c7',display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,flexShrink:0}}>{art.deco_type==='screen_print'?'🎨':art.deco_type==='embroidery'?'🧵':'🔥'}</div>}
+                <div style={{flex:1}}>
+                  <div style={{fontWeight:700,fontSize:13}}>{art.name||'Untitled'}</div>
+                  <div style={{fontSize:11,color:'#64748b'}}>{(art.deco_type||'').replace(/_/g,' ')}{art.ink_colors?' · '+art.ink_colors.split('\n').filter(l=>l.trim()).length+' color(s)':''}{art.thread_colors?' · '+art.thread_colors:''}</div>
+                  <div style={{fontSize:10,color:'#94a3b8'}}>{art._so_id} — {art._so_memo}</div>
+                </div>
+                {alreadyAdded?<span style={{fontSize:10,color:'#22c55e',fontWeight:600}}>Already added</span>:
+                <button className="btn btn-sm btn-primary" style={{fontSize:10}} onClick={()=>{
+                  const newArt={...art,id:'af'+Date.now(),uploaded:new Date().toLocaleDateString()};
+                  delete newArt._so_id;delete newArt._so_memo;
+                  sv('art_files',[...af,newArt]);
+                  nf('Added "'+art.name+'" from '+art._so_id);
+                }}>+ Add</button>}
+              </div>})}
+          </div>}
+        </div>
+      </div></div>})()}
 
     {/* MESSAGES TAB */}
     {isSO&&tab==='messages'&&(()=>{const soMsgs=(msgs||[]).filter(m=>m.so_id===o.id).sort((a,b)=>(a.ts||'').localeCompare(b.ts));
@@ -5465,12 +5606,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
 }
 
 // CUSTOMER DETAIL
-function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,cu,onOpenSO,onOpenEst,ests,onSaveSO,REPS,prod,onCopy,onDelete}){
+function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,cu,onOpenSO,onOpenEst,ests,onSaveSO,REPS,prod,onCopy,onDelete,onSavePromoProgram,onDeletePromoProgram,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,onRefreshCustomer}){
   const[tab,setTab]=useState('activity');const[oF,setOF]=useState('all');const[sF,setSF]=useState('all');const[rR,setRR]=useState('thisyear');
   const[editContact,setEditContact]=useState(null);const[custLocal,setCustLocal]=useState(initCust);
   const[showInvEmail,setShowInvEmail]=useState(false);const[invEmailMsg,setInvEmailMsg]=useState('');const[showPortal,setShowPortal]=useState(false);
   const[showActions,setShowActions]=useState(false);const[showStatement,setShowStatement]=useState(false);const[stmtEmail,setStmtEmail]=useState('');const[stmtMsg,setStmtMsg]=useState('');
   const[subsCollapsed,setSubsCollapsed]=useState(false);
+  // Promo state
+  const[promoEdit,setPromoEdit]=useState(null);// null or {type,fixed_amount,spend_percentage,notes,id?}
+  const[promoNewPeriod,setPromoNewPeriod]=useState(null);// null or {program_id,allocated,notes}
+  const[promoAdj,setPromoAdj]=useState(null);// null or {period_id,amount,description}
   const[portalJobView,setPortalJobView]=useState(null);// {job,so} when viewing a job mockup
   const[portalComment,setPortalComment]=useState('');
   const[portalContactEdit,setPortalContactEdit]=useState(null);
@@ -5535,7 +5680,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   {subs.map(sub=><div key={sub.id} style={{padding:'10px 18px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:8,cursor:'pointer'}} onClick={()=>onSelCust(sub)}>
     <span style={{color:'#cbd5e1'}}>|_</span><span style={{fontWeight:600,color:'#1e40af'}}>{sub.name}</span><span className="badge badge-gray">{sub.alpha_tag}</span><div style={{flex:1}}/>
     {(sub._ob||0)>0&&<span style={{fontSize:12,fontWeight:700,color:'#dc2626'}}>${sub._ob.toLocaleString()}</span>}</div>)}</div>}</div>}
-  <div className="tabs">{['activity','contacts','overview','artwork','reporting'].map(t=><button key={t} className={`tab ${tab===t?'active':''}`} onClick={()=>setTab(t)}>{t==='activity'?'Orders':t==='contacts'?'Contacts'+(customer.contacts?.length?' ('+customer.contacts.length+')':''):t[0].toUpperCase()+t.slice(1)}</button>)}</div>
+  <div className="tabs">{['activity','contacts','overview','promo','artwork','reporting'].map(t=><button key={t} className={`tab ${tab===t?'active':''}`} onClick={()=>setTab(t)}>{t==='activity'?'Orders':t==='contacts'?'Contacts'+(customer.contacts?.length?' ('+customer.contacts.length+')':''):t==='promo'?'Promo $'+(customer.promo_programs?.length?' ('+customer.promo_programs.length+')':''):t[0].toUpperCase()+t.slice(1)}</button>)}</div>
 
   {/* ORDERS TAB — with live SO status */}
   {tab==='activity'&&<>
@@ -5680,7 +5825,169 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     <div><div className="form-label">Tax</div><div style={{fontSize:13}}>{customer.tax_exempt?<span style={{color:'#dc2626',fontWeight:700}}>TAX EXEMPT</span>:customer.tax_rate?(customer.tax_rate*100).toFixed(3)+'%':'No rate set'}</div></div>
     <div><div className="form-label">Sales Rep</div><div style={{fontSize:13,fontWeight:600}}>{customer.primary_rep_id?REPS.find(r=>r.id===customer.primary_rep_id)?.name||'Unknown':'— Not assigned —'}</div></div></div>
   </div></div>}
-  {tab==='artwork'&&<div className="card"><div className="card-body"><div className="empty">Customer art library — aggregates from SOs (Phase 3)</div></div></div>}
+  {/* PROMO DOLLARS TAB */}
+  {tab==='promo'&&(()=>{
+    const programs=customer.promo_programs||[];const periods=customer.promo_periods||[];const usage=customer.promo_usage||[];
+    const now=new Date();const y=now.getFullYear();const m=now.getMonth();
+    const curPeriod=m<6?{start:y+'-01-01',end:y+'-06-30',label:'H1 '+y}:{start:y+'-07-01',end:y+'-12-31',label:'H2 '+y};
+    const curPeriods=periods.filter(p=>p.period_start===curPeriod.start);
+    const curBalance=curPeriods.reduce((a,p)=>a+(p.allocated||0)-(p.used||0),0);
+    const curAllocated=curPeriods.reduce((a,p)=>a+(p.allocated||0),0);
+    const curUsed=curPeriods.reduce((a,p)=>a+(p.used||0),0);
+    const pastPeriods=periods.filter(p=>p.period_start!==curPeriod.start).sort((a,b)=>b.period_start.localeCompare(a.period_start));
+    // Get parent customer for promo (promo belongs to parent, applies to subs)
+    const parentId=customer.parent_id||customer.id;
+    const parentCust=customer.parent_id?allCustomers.find(c=>c.id===customer.parent_id):customer;
+    return<div style={{display:'flex',flexDirection:'column',gap:12}}>
+      {/* Current Balance */}
+      <div className="card"><div className="card-header"><h2>Promo Balance — {curPeriod.label}</h2></div>
+        <div className="card-body">
+          <div className="stats-row">
+            <div className="stat-card"><div className="stat-label">Allocated</div><div className="stat-value" style={{color:'#2563eb'}}>${curAllocated.toLocaleString()}</div></div>
+            <div className="stat-card"><div className="stat-label">Used</div><div className="stat-value" style={{color:'#dc2626'}}>${curUsed.toLocaleString()}</div></div>
+            <div className="stat-card"><div className="stat-label">Remaining</div><div className="stat-value" style={{color:curBalance>0?'#166534':'#94a3b8'}}>${curBalance.toLocaleString()}</div></div>
+          </div>
+          {curPeriods.length>0&&<div style={{marginTop:12}}>
+            <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:6}}>USAGE THIS PERIOD</div>
+            {usage.filter(u=>curPeriods.some(p=>p.id===u.period_id)).length===0?<div style={{fontSize:12,color:'#94a3b8'}}>No promo used this period</div>:
+            <table style={{fontSize:12}}><thead><tr><th>Date</th><th>Order</th><th>Description</th><th>Amount</th></tr></thead><tbody>
+              {usage.filter(u=>curPeriods.some(p=>p.id===u.period_id)).sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||'')).map((u,i)=>
+                <tr key={i}><td style={{color:'#64748b'}}>{u.created_at?new Date(u.created_at).toLocaleDateString():'-'}</td><td style={{fontWeight:600,color:'#1e40af'}}>{u.so_id||u.estimate_id||'-'}</td><td>{u.description||'-'}</td><td style={{fontWeight:700,color:'#dc2626'}}>${(u.amount||0).toLocaleString()}</td></tr>)}
+            </tbody></table>}
+          </div>}
+          {/* Manual adjustment */}
+          {promoAdj?<div style={{marginTop:12,padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0'}}>
+            <div style={{fontSize:11,fontWeight:700,marginBottom:6}}>Manual Adjustment</div>
+            <div style={{display:'flex',gap:8,alignItems:'end',flexWrap:'wrap'}}>
+              <div><label className="form-label">Amount ($)</label><input className="form-input" type="number" style={{width:100}} value={promoAdj.amount||''} onChange={e=>setPromoAdj({...promoAdj,amount:parseFloat(e.target.value)||0})}/></div>
+              <div style={{flex:1}}><label className="form-label">Description</label><input className="form-input" value={promoAdj.description||''} onChange={e=>setPromoAdj({...promoAdj,description:e.target.value})}/></div>
+              <button className="btn btn-sm btn-primary" onClick={()=>{
+                if(!promoAdj.amount){nf('Enter an amount','error');return}
+                const pd=curPeriods[0];if(!pd){nf('No active period — create one first','error');return}
+                onSavePromoUsage({period_id:pd.id,amount:promoAdj.amount,description:promoAdj.description||'Manual adjustment',created_by:cu?.name||'System',so_id:null,estimate_id:null});
+                onSavePromoPeriod({...pd,used:(pd.used||0)+promoAdj.amount});
+                setPromoAdj(null);nf('Adjustment saved');
+              }}>Save</button>
+              <button className="btn btn-sm btn-secondary" onClick={()=>setPromoAdj(null)}>Cancel</button>
+            </div>
+          </div>:curPeriods.length>0&&<button className="btn btn-sm btn-secondary" style={{marginTop:8}} onClick={()=>setPromoAdj({period_id:curPeriods[0]?.id,amount:0,description:''})}>± Adjust Balance</button>}
+        </div>
+      </div>
+
+      {/* Programs */}
+      <div className="card"><div className="card-header"><h2>Promo Programs</h2><button className="btn btn-sm btn-primary" onClick={()=>setPromoEdit({type:'fixed',fixed_amount:0,spend_percentage:0.10,notes:'',id:null})}>+ Add Program</button></div>
+        <div className="card-body">
+          {programs.length===0&&!promoEdit&&<div className="empty">No promo programs configured</div>}
+          {programs.map(pg=><div key={pg.id} style={{padding:12,background:'#f8fafc',borderRadius:8,marginBottom:8,display:'flex',gap:12,alignItems:'center'}}>
+            <div style={{width:40,height:40,borderRadius:8,background:pg.type==='fixed'?'#dbeafe':'#dcfce7',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0}}>{pg.type==='fixed'?'💵':'📊'}</div>
+            <div style={{flex:1}}>
+              <div style={{fontWeight:700,fontSize:14}}>{pg.type==='fixed'?'Fixed: $'+(pg.fixed_amount||0).toLocaleString()+' / period':((pg.spend_percentage||0)*100)+'% of Spend'}</div>
+              {pg.notes&&<div style={{fontSize:11,color:'#64748b'}}>{pg.notes}</div>}
+              <div style={{fontSize:10,color:'#94a3b8'}}>Created {pg.created_at?new Date(pg.created_at).toLocaleDateString():'-'}</div>
+            </div>
+            <span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:pg.is_active?'#dcfce7':'#fee2e2',color:pg.is_active?'#166534':'#dc2626'}}>{pg.is_active?'Active':'Inactive'}</span>
+            <button className="btn btn-sm btn-secondary" onClick={()=>setPromoEdit({...pg})}>Edit</button>
+            <button className="btn btn-sm" style={{color:'#dc2626'}} onClick={()=>{if(window.confirm('Remove this promo program?'))onDeletePromoProgram(pg.id)}}>×</button>
+          </div>)}
+          {promoEdit&&<div style={{padding:14,background:'#fffbeb',borderRadius:8,border:'1px solid #fde68a',marginTop:8}}>
+            <div style={{display:'flex',gap:8,marginBottom:8,flexWrap:'wrap'}}>
+              <div><label className="form-label">Type</label>
+                <select className="form-select" value={promoEdit.type} onChange={e=>setPromoEdit({...promoEdit,type:e.target.value})}>
+                  <option value="fixed">Fixed Amount</option><option value="percent_of_spend">% of Spend</option></select></div>
+              {promoEdit.type==='fixed'&&<div><label className="form-label">Amount per Period ($)</label><input className="form-input" type="number" value={promoEdit.fixed_amount||''} onChange={e=>setPromoEdit({...promoEdit,fixed_amount:parseFloat(e.target.value)||0})}/></div>}
+              {promoEdit.type==='percent_of_spend'&&<div><label className="form-label">Percentage (%)</label><input className="form-input" type="number" step="1" value={(promoEdit.spend_percentage||0)*100} onChange={e=>setPromoEdit({...promoEdit,spend_percentage:(parseFloat(e.target.value)||0)/100})}/></div>}
+              <div style={{flex:1}}><label className="form-label">Notes</label><input className="form-input" value={promoEdit.notes||''} onChange={e=>setPromoEdit({...promoEdit,notes:e.target.value})}/></div>
+            </div>
+            <div style={{display:'flex',gap:6}}>
+              <button className="btn btn-sm btn-primary" onClick={()=>{
+                const prog={id:promoEdit.id||('pp'+Date.now()),customer_id:parentId,type:promoEdit.type,fixed_amount:promoEdit.fixed_amount||0,spend_percentage:promoEdit.spend_percentage||0,is_active:true,notes:promoEdit.notes||'',created_at:promoEdit.created_at||new Date().toISOString(),updated_at:new Date().toISOString()};
+                onSavePromoProgram(prog);setPromoEdit(null);
+              }}>{promoEdit.id?'Update':'Create'}</button>
+              <button className="btn btn-sm btn-secondary" onClick={()=>setPromoEdit(null)}>Cancel</button>
+            </div>
+          </div>}
+        </div>
+      </div>
+
+      {/* Allocate New Period */}
+      <div className="card"><div className="card-header"><h2>Allocate Period</h2>
+        {!promoNewPeriod&&<button className="btn btn-sm btn-primary" onClick={()=>setPromoNewPeriod({program_id:programs[0]?.id||'',allocated:0,notes:''})}>+ New Period</button>}
+      </div>
+      <div className="card-body">
+        {promoNewPeriod?<div style={{padding:12,background:'#eff6ff',borderRadius:8,border:'1px solid #bfdbfe'}}>
+          <div style={{display:'flex',gap:8,marginBottom:8,flexWrap:'wrap'}}>
+            <div><label className="form-label">Program</label>
+              <select className="form-select" value={promoNewPeriod.program_id||''} onChange={e=>setPromoNewPeriod({...promoNewPeriod,program_id:e.target.value})}>
+                <option value="">Select...</option>{programs.map(pg=><option key={pg.id} value={pg.id}>{pg.type==='fixed'?'Fixed $'+pg.fixed_amount:pg.spend_percentage*100+'% Spend'}</option>)}</select></div>
+            <div><label className="form-label">Period</label><select className="form-select" value={promoNewPeriod.period_label||curPeriod.label} onChange={e=>{
+              const parts=e.target.value.split(' ');const half=parts[0];const yr=parseInt(parts[1]);
+              const start=half==='H1'?yr+'-01-01':yr+'-07-01';const end=half==='H1'?yr+'-06-30':yr+'-12-31';
+              setPromoNewPeriod({...promoNewPeriod,period_label:e.target.value,period_start:start,period_end:end})}}>
+              {[curPeriod.label,m<6?'H2 '+y:'H1 '+(y+1),'H1 '+(y+1),'H2 '+(y+1)].map(l=><option key={l} value={l}>{l}</option>)}</select></div>
+            <div><label className="form-label">Allocated ($)</label><input className="form-input" type="number" style={{width:120}} value={promoNewPeriod.allocated||''} onChange={e=>setPromoNewPeriod({...promoNewPeriod,allocated:parseFloat(e.target.value)||0})}/></div>
+            <div style={{flex:1}}><label className="form-label">Notes</label><input className="form-input" value={promoNewPeriod.notes||''} onChange={e=>setPromoNewPeriod({...promoNewPeriod,notes:e.target.value})}/></div>
+          </div>
+          <div style={{display:'flex',gap:6}}>
+            <button className="btn btn-sm btn-primary" onClick={()=>{
+              if(!promoNewPeriod.allocated){nf('Enter an allocation amount','error');return}
+              const ps=promoNewPeriod.period_start||curPeriod.start;const pe=promoNewPeriod.period_end||curPeriod.end;
+              const period={id:'prd'+Date.now(),customer_id:parentId,program_id:promoNewPeriod.program_id||null,period_start:ps,period_end:pe,allocated:promoNewPeriod.allocated,used:0,notes:promoNewPeriod.notes||'',created_at:new Date().toISOString()};
+              onSavePromoPeriod(period);setPromoNewPeriod(null);nf('Period allocated: $'+promoNewPeriod.allocated);
+            }}>Allocate</button>
+            <button className="btn btn-sm btn-secondary" onClick={()=>setPromoNewPeriod(null)}>Cancel</button>
+          </div>
+        </div>:<div style={{fontSize:12,color:'#94a3b8'}}>Click "+ New Period" to allocate promo dollars for an upcoming period</div>}
+      </div></div>
+
+      {/* Past Periods */}
+      {pastPeriods.length>0&&<div className="card"><div className="card-header"><h2>Past Periods</h2></div><div className="card-body" style={{padding:0}}>
+        <table style={{fontSize:12}}><thead><tr><th>Period</th><th>Allocated</th><th>Used</th><th>Remaining</th><th>Status</th></tr></thead><tbody>
+          {pastPeriods.map(p=>{const rem=(p.allocated||0)-(p.used||0);return<tr key={p.id}>
+            <td style={{fontWeight:600}}>{p.period_start?.slice(0,7)} — {p.period_end?.slice(0,7)}</td>
+            <td>${(p.allocated||0).toLocaleString()}</td>
+            <td style={{color:'#dc2626'}}>${(p.used||0).toLocaleString()}</td>
+            <td style={{color:rem>0?'#166534':'#94a3b8'}}>${rem.toLocaleString()}</td>
+            <td><span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:rem>0?'#fef3c7':'#f1f5f9',color:rem>0?'#92400e':'#94a3b8'}}>{rem>0?'Unused $'+rem:'Fully Used'}</span></td>
+          </tr>})}
+        </tbody></table>
+      </div></div>}
+    </div>})()}
+
+  {/* ARTWORK TAB — aggregates from SOs */}
+  {tab==='artwork'&&(()=>{
+    const custArt=[];
+    custSOs.forEach(so=>{
+      (so.art_files||[]).forEach(art=>{
+        custArt.push({...art,so_id:so.id,so_memo:so.memo||''});
+      });
+    });
+    custEsts.forEach(est=>{
+      (est.art_files||[]).forEach(art=>{
+        if(!custArt.some(a=>a.name===art.name&&a.deco_type===art.deco_type))
+          custArt.push({...art,est_id:est.id,est_memo:est.memo||''});
+      });
+    });
+    const ART_FILE_SC2={waiting_for_art:{bg:'#f1f5f9',c:'#64748b'},needs_approval:{bg:'#fef3c7',c:'#92400e'},approved:{bg:'#dcfce7',c:'#166534'}};
+    return<div className="card"><div className="card-header"><h2>Artwork Library</h2><span style={{fontSize:12,color:'#64748b'}}>{custArt.length} art group(s)</span></div>
+      <div className="card-body">{custArt.length===0?<div className="empty">No artwork found across orders</div>:
+        <div style={{display:'flex',flexDirection:'column',gap:8}}>
+          {custArt.map((art,i)=>{
+            const mockups=(art.mockup_files||art.files||[]).filter(f=>f);
+            const firstMockup=mockups[0];const imgUrl=firstMockup?(typeof firstMockup==='string'?firstMockup:firstMockup.url):'';
+            return<div key={art.id+'-'+i} style={{padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0',display:'flex',gap:12,alignItems:'center'}}>
+              {imgUrl&&_isImgUrl(imgUrl)?<img src={imgUrl} alt="" style={{width:48,height:48,borderRadius:6,objectFit:'cover',flexShrink:0}}/>:
+                <div style={{width:48,height:48,borderRadius:6,background:art.deco_type==='screen_print'?'#dbeafe':art.deco_type==='embroidery'?'#ede9fe':'#fef3c7',display:'flex',alignItems:'center',justifyContent:'center',fontSize:20,flexShrink:0}}>{art.deco_type==='screen_print'?'🎨':art.deco_type==='embroidery'?'🧵':'🔥'}</div>}
+              <div style={{flex:1}}>
+                <div style={{fontWeight:700,fontSize:13}}>{art.name||'Untitled'}</div>
+                <div style={{fontSize:11,color:'#64748b'}}>{(art.deco_type||'').replace(/_/g,' ')}{art.ink_colors?' · '+art.ink_colors.split('\n').filter(l=>l.trim()).length+' color(s)':''}{art.thread_colors?' · Thread: '+art.thread_colors:''}{art.art_size?' · '+art.art_size:''}</div>
+                <div style={{fontSize:10,color:'#94a3b8',marginTop:2}}>{art.so_id?'SO: '+art.so_id:art.est_id?'EST: '+art.est_id:''}{art.so_memo?' — '+art.so_memo:art.est_memo?' — '+art.est_memo:''}</div>
+              </div>
+              <span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:(ART_FILE_SC2[art.status]||ART_FILE_SC2.waiting_for_art).bg,color:(ART_FILE_SC2[art.status]||ART_FILE_SC2.waiting_for_art).c}}>{(art.status||'waiting_for_art').replace(/_/g,' ')}</span>
+              {mockups.length>0&&<span style={{fontSize:10,color:'#2563eb'}}>{mockups.length} file(s)</span>}
+            </div>})}
+        </div>}
+      </div>
+    </div>})()}
   {tab==='reporting'&&<div className="card"><div className="card-header"><h2>Reporting</h2><div style={{display:'flex',gap:4}}>{[['thisyear','This Year'],['lastyear','Last Year'],['rolling','Rolling 12'],['alltime','All']].map(([v,l])=><button key={v} className={`btn btn-sm ${rR===v?'btn-primary':'btn-secondary'}`} onClick={()=>setRR(v)}>{l}</button>)}</div></div>
     <div className="card-body"><div className="stats-row"><div className="stat-card"><div className="stat-label">Revenue</div><div className="stat-value">{rR==='thisyear'?'$15,600':'$32,600'}</div></div><div className="stat-card"><div className="stat-label">Orders</div><div className="stat-value">{rR==='thisyear'?'4':'8'}</div></div><div className="stat-card"><div className="stat-label">Avg Order</div><div className="stat-value">{rR==='thisyear'?'$3,900':'$4,075'}</div></div></div></div></div>}
 
@@ -8256,6 +8563,12 @@ export default function App(){
   // CUSTOMERS
   function rCust(){
     if(selC)return<CustDetail customer={selC} allCustomers={cust} allOrders={aO} onBack={()=>setSelC(null)} onEdit={c=>{setCM({open:true,c});setCust(prev=>prev.map(pp=>pp.id===c.id?c:pp))}} onSelCust={c=>setSelC(c)} onNewEst={c=>newE(c)} sos={sos} msgs={msgs} cu={cu} onOpenSO={so=>{const c3=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c3);setPg('orders')}} onOpenEst={est=>{const c3=cust.find(cc=>cc.id===est.customer_id);setEEst(est);setEEstC(c3);setPg('estimates')}} ests={ests} onSaveSO={savSO} REPS={REPS} prod={prod}
+      onSavePromoProgram={async(prog)=>{await _dbSavePromoProgram(prog);const updated={...selC,promo_programs:[...(selC.promo_programs||[]).filter(p=>p.id!==prog.id),prog]};setSelC(updated);setCust(prev=>prev.map(c=>c.id===updated.id?updated:c));nf('Promo program saved')}}
+      onDeletePromoProgram={async(id)=>{await _dbDeletePromoProgram(id);const updated={...selC,promo_programs:(selC.promo_programs||[]).filter(p=>p.id!==id)};setSelC(updated);setCust(prev=>prev.map(c=>c.id===updated.id?updated:c));nf('Promo program removed')}}
+      onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const updated={...selC,promo_periods:[...(selC.promo_periods||[]).filter(p=>p.id!==period.id),period]};setSelC(updated);setCust(prev=>prev.map(c=>c.id===updated.id?updated:c));nf('Promo period saved')}}
+      onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const updated={...selC,promo_usage:[...(selC.promo_usage||[]),usage]};setSelC(updated);setCust(prev=>prev.map(c=>c.id===updated.id?updated:c))}}
+      onDeletePromoUsage={async(periodId,soId)=>{await _dbDeletePromoUsage(periodId,soId);const updated={...selC,promo_usage:(selC.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(!soId||u.so_id===soId)))};setSelC(updated);setCust(prev=>prev.map(c=>c.id===updated.id?updated:c))}}
+      onRefreshCustomer={c=>{setSelC(c);setCust(prev=>prev.map(pp=>pp.id===c.id?c:pp))}}
       onCopy={c=>{const copy={...c,id:'c'+Date.now(),name:c.name+' (Copy)',alpha_tag:'',contacts:(c.contacts||[]).map(ct=>({...ct})),_oe:0,_os:0,_oi:0,_ob:0};setCM({open:true,c:copy})}}
       onDelete={c=>{const hasOrders=aO.some(o=>o.customer_id===c.id);const kids=cust.filter(ch=>ch.parent_id===c.id);if(hasOrders){alert('Cannot delete — this customer has existing orders. Deactivate instead.');return}if(kids.length>0&&!window.confirm(c.name+' has '+kids.length+' sub-account(s) that will also be deleted. Continue?'))return;if(!window.confirm('Delete "'+c.name+'"? This cannot be undone.'))return;const idsToDelete=[c.id,...kids.map(k=>k.id)];setCust(prev=>prev.filter(x=>!idsToDelete.includes(x.id)));idsToDelete.forEach(id=>{if(supabase){supabase.from('customer_contacts').delete().eq('customer_id',id).then(()=>supabase.from('customers').delete().eq('id',id))}});setSelC(null);nf('Customer deleted')}}/>;
     const f=pars.filter(p=>{if(rF!=='all'&&p.primary_rep_id!==rF&&!gK(p.id).some(c=>c.primary_rep_id===rF))return false;if(q){const s=q.toLowerCase();return p.name.toLowerCase().includes(s)||p.alpha_tag?.toLowerCase().includes(s)||gK(p.id).some(c=>c.name.toLowerCase().includes(s))}return true});
