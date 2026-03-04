@@ -163,7 +163,7 @@ const _dbSeed = async (d) => {
   for(const inv of(d.invoices||[])){await _dbSaveInvoice(inv)}
   // Seed messages
   if(d.messages?.length){
-    await supabase.from('messages').upsert(d.messages.map(m=>{const{read_by,...rest}=m;return rest}),{onConflict:'id'});
+    await supabase.from('messages').upsert(d.messages.map(m=>_pick(m,_msgCols)),{onConflict:'id'});
     const reads=[];d.messages.forEach(m=>(m.read_by||[]).forEach(uid=>reads.push({message_id:m.id,user_id:uid})));
     if(reads.length) await supabase.from('message_reads').upsert(reads,{onConflict:'message_id,user_id'});
   }
@@ -189,8 +189,15 @@ const _dbSaveEstimateInner = async (est) => {
     await supabase.from('estimate_items').delete().eq('estimate_id',est.id);
     // Sync art_files: upsert current, delete removed (avoids DELETE+INSERT race condition)
     if(art_files?.length){
-      const{error:afErr}=await supabase.from('estimate_art_files').upsert(art_files.map(a=>({..._pick(a,_artCols),estimate_id:est.id})),{onConflict:'estimate_id,id'});
-      if(afErr)console.error('[DB] estimate_art_files upsert failed:',afErr.message,afErr.details);
+      let afRows=art_files.map(a=>({..._pick(a,_artCols),estimate_id:est.id}));
+      const{error:afErr}=await supabase.from('estimate_art_files').upsert(afRows,{onConflict:'estimate_id,id'});
+      if(afErr){
+        if(afErr.message?.includes('art_sizes')){
+          const coreRows=afRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_artExtraCols.has(k))cr[k]=r[k]});return cr});
+          const{error:afErr2}=await supabase.from('estimate_art_files').upsert(coreRows,{onConflict:'estimate_id,id'});
+          if(afErr2)console.error('[DB] estimate_art_files upsert failed (core):',afErr2.message,afErr2.details);
+        }else{console.error('[DB] estimate_art_files upsert failed:',afErr.message,afErr.details)}
+      }
       const currentAfIds=art_files.map(a=>a.id).filter(Boolean);
       if(currentAfIds.length){
         const{data:existingAfs}=await supabase.from('estimate_art_files').select('id').eq('estimate_id',est.id);
@@ -259,8 +266,15 @@ const _dbSaveSOInner = async (so) => {
     await supabase.from('so_firm_dates').delete().eq('so_id',so.id);
     // Sync art_files: upsert current, delete removed (avoids DELETE+INSERT race condition)
     if(art_files?.length){
-      const{error:afErr}=await supabase.from('so_art_files').upsert(art_files.map(a=>({..._pick(a,_artCols),so_id:so.id})),{onConflict:'so_id,id'});
-      if(afErr){console.error('[DB] so_art_files upsert failed:',afErr.message,afErr.details);saveFailed=true}
+      let soAfRows=art_files.map(a=>({..._pick(a,_artCols),so_id:so.id}));
+      const{error:afErr}=await supabase.from('so_art_files').upsert(soAfRows,{onConflict:'so_id,id'});
+      if(afErr){
+        if(afErr.message?.includes('art_sizes')){
+          const coreRows=soAfRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_artExtraCols.has(k))cr[k]=r[k]});return cr});
+          const{error:afErr2}=await supabase.from('so_art_files').upsert(coreRows,{onConflict:'so_id,id'});
+          if(afErr2){console.error('[DB] so_art_files upsert failed (core):',afErr2.message,afErr2.details);saveFailed=true}
+        }else{console.error('[DB] so_art_files upsert failed:',afErr.message,afErr.details);saveFailed=true}
+      }
       // Delete art files that no longer exist
       const currentAfIds=art_files.map(a=>a.id).filter(Boolean);
       if(currentAfIds.length){
@@ -437,13 +451,15 @@ const _dbSaveProduct = async (p) => {
 const _dbSaveMessage = async (m) => {
   if(!supabase)return;
   try{
-    const{read_by,tagged_members,...msgRow}=m;
-    const row={...msgRow};
-    if(tagged_members&&tagged_members.length>0)row.tagged_members=JSON.stringify(tagged_members);
+    const row=_pick(m,_msgCols);
     const{error}=await supabase.from('messages').upsert(row,{onConflict:'id'});
-    if(error){console.error('[DB] save message:',error.message);_dbSaveFailedIds.add(m.id);_persistFailedIds();return false}
-    if(read_by?.length){
-      const reads=read_by.map(uid=>({message_id:m.id,user_id:uid}));
+    if(error){
+      // FK violation on so_id means the SO hasn't been saved yet — skip silently and retry later
+      if(error.message?.includes('messages_so_id_fkey')){console.warn('[DB] message save deferred — SO not yet in DB:',m.so_id);_dbSaveFailedIds.add(m.id);_persistFailedIds();return false}
+      console.error('[DB] save message:',error.message);_dbSaveFailedIds.add(m.id);_persistFailedIds();return false;
+    }
+    if(m.read_by?.length){
+      const reads=m.read_by.map(uid=>({message_id:m.id,user_id:uid}));
       await supabase.from('message_reads').upsert(reads,{onConflict:'message_id,user_id'});
     }
     _dbSaveFailedIds.delete(m.id);_persistFailedIds();return true;
@@ -517,7 +533,10 @@ const _decoCols=['kind','position','type','art_file_id','art_tbd_type','tbd_colo
 const _decoExtraCols=new Set(['print_color','front_and_back','num_qty','name_qty','num_font','num_size_back','custom_font_art_id']);
 // Sanitize decoration data before DB insert — strip UI-only placeholders that would violate constraints
 const _sanitizeDeco=(d)=>{const r={...d};if(r.custom_font_art_id&&r.custom_font_art_id==='pending')r.custom_font_art_id=null;if(r.art_file_id&&r.art_file_id==='__tbd')r.art_file_id=null;return r};
+const _msgCols=['id','so_id','author_id','text','ts','dept'];
 const _artCols=['id','name','deco_type','ink_colors','thread_colors','art_size','art_sizes','garment_colors','files','mockup_files','item_mockups','prod_files','notes','status','uploaded'];
+// Columns that may not exist in art file tables — stripped on retry
+const _artExtraCols=new Set(['art_sizes']);
 const _jobCols=['id','key','art_file_id','art_name','deco_type','positions','art_status','item_status','prod_status','total_units','fulfilled_units','split_from','created_at','assigned_machine','assigned_to','ship_method','items','_auto','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected'];
 const _custCols=['id','parent_id','name','alpha_tag','billing_address_line1','billing_address_line2','billing_city','billing_state','billing_zip','shipping_address_line1','shipping_address_line2','shipping_city','shipping_state','shipping_zip','adidas_ua_tier','catalog_markup','payment_terms','tax_rate','tax_exempt','primary_rep_id','notes','is_active','created_at','updated_at'];
 // Legacy compat — keep old _dbSave for team_members and other simple tables
