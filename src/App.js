@@ -2132,12 +2132,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     vendorInvFetching.current[cacheKey]=true;
     setVendorInv(prev=>({...prev,[sku]:{sizes:{},price:{},loading:true,error:null}}));
     try{
-      // S&S Products endpoint returns inventory + pricing per SKU
-      // Use partNumber (brand's style#) — falls back to style (S&S internal#)
+      // S&S Products endpoint — ?style= is most flexible (accepts partNumber, styleID, brand name)
       let data;
-      try{data=await ssApiCall('/Products?partNumber='+encodeURIComponent(sku))}
-      catch(e){data=await ssApiCall('/Products?style='+encodeURIComponent(sku))}
-      const items=Array.isArray(data)?data:[data];
+      try{data=await ssApiCall('/Products?style='+encodeURIComponent(sku))}
+      catch(e){try{data=await ssApiCall('/Products?partNumber='+encodeURIComponent(sku))}catch(e2){throw e}}
+      const items=Array.isArray(data)?data:data?[data]:[];
       // Build inventory map: for each item matching this sku, sum warehouse qty by size
       const sizeQty={};const sizePrice={};
       // S&S returns one entry per sku (color+size combo); filter to matching style+color
@@ -2230,22 +2229,30 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // First: get style info (title, partNumber) from Styles endpoint
       let styleInfo=null;
       try{
-        const styles=await ssApiCall('/Styles?partNumber='+encodeURIComponent(query));
+        // ?style= on Styles accepts partNumber, styleID, or brand name
+        const styles=await ssApiCall('/Styles?style='+encodeURIComponent(query));
         const sArr=Array.isArray(styles)?styles:styles?[styles]:[];
         if(sArr.length>0)styleInfo=sArr[0];
       }catch(e){/* 404 = not found on S&S, that's ok */}
 
-      // Search Products by partNumber (brand's style#)
+      // Search Products — ?style= is the most flexible filter (accepts partNumber, styleID, brand name)
       let items=[];
       try{
-        const data=await ssApiCall('/Products?partNumber='+encodeURIComponent(query));
+        const data=await ssApiCall('/Products?style='+encodeURIComponent(query));
         items=Array.isArray(data)?data:data?[data]:[];
       }catch(e){
-        // Fallback: try by style (S&S internal number)
+        // Fallback: try zero-padded partNumber (S&S uses 5-digit part numbers like "01717")
         try{
-          const data2=await ssApiCall('/Products?style='+encodeURIComponent(query));
+          const padded=query.length<5?query.padStart(5,'0'):query;
+          const data2=await ssApiCall('/Products?partNumber='+encodeURIComponent(padded));
           items=Array.isArray(data2)?data2:data2?[data2]:[];
-        }catch(e2){/* Both failed — item not on S&S */}
+        }catch(e2){
+          // Last try: search by raw partNumber
+          try{
+            const data3=await ssApiCall('/Products?partNumber='+encodeURIComponent(query));
+            items=Array.isArray(data3)?data3:data3?[data3]:[];
+          }catch(e3){/* Not on S&S */}
+        }
       }
       if(!items.length){
         // Cache empty result so we don't re-search
@@ -6900,8 +6907,8 @@ function VendDetail({vendor,products,onUpdateProducts,onBack}){
           // Rate limit
           if(i>0)await new Promise(r=>setTimeout(r,1200));
           let data;
-          try{data=await ssApiCall('/Products?partNumber='+encodeURIComponent(sku))}
-          catch(e){try{data=await ssApiCall('/Products?style='+encodeURIComponent(sku))}catch(e2){errors.push(sku+': not found on S&S');continue}}
+          try{data=await ssApiCall('/Products?style='+encodeURIComponent(sku))}
+          catch(e){try{data=await ssApiCall('/Products?partNumber='+encodeURIComponent(sku))}catch(e2){errors.push(sku+': not found on S&S');continue}}
           const items=Array.isArray(data)?data:data?[data]:[];
           const prices=items.map(it=>parseFloat(it.customerPrice)||parseFloat(it.piecePrice)||0).filter(p=>p>0);
           if(!prices.length)continue;
