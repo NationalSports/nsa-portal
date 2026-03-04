@@ -8,127 +8,146 @@
 //
 // Environment variables required:
 //   SS_ACCOUNT_NUMBER, SS_API_KEY — S&S API credentials
-//   SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY — Supabase admin access
+//   REACT_APP_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY — Supabase access
 //
 // Can also be triggered manually via: GET /.netlify/functions/ss-pricing-sync
 
-const { createClient } = require('@supabase/supabase-js');
+// Helper: Supabase REST calls via fetch (no SDK needed)
+const sbFetch = async (path, { method = 'GET', body, sbUrl, sbKey } = {}) => {
+  const r = await fetch(`${sbUrl}/rest/v1/${path}`, {
+    method,
+    headers: {
+      'apikey': sbKey,
+      'Authorization': `Bearer ${sbKey}`,
+      'Content-Type': 'application/json',
+      'Prefer': method === 'PATCH' ? 'return=minimal' : 'return=representation',
+    },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  });
+  if (method === 'PATCH') return { ok: r.ok, status: r.status, error: r.ok ? null : await r.text() };
+  return r.json();
+};
 
 exports.handler = async (event) => {
   const ssAccount = process.env.SS_ACCOUNT_NUMBER;
   const ssKey = process.env.SS_API_KEY;
-  const sbUrl = process.env.SUPABASE_URL || process.env.REACT_APP_SUPABASE_URL;
+  const sbUrl = (process.env.REACT_APP_SUPABASE_URL || '').replace(/\/+$/, '');
   const sbKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.REACT_APP_SUPABASE_ANON_KEY;
 
   if (!ssAccount || !ssKey) {
-    return { statusCode: 500, body: JSON.stringify({ error: 'SS_ACCOUNT_NUMBER and SS_API_KEY required' }) };
+    return { statusCode: 500, headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ error: 'SS_ACCOUNT_NUMBER and SS_API_KEY not configured' }) };
   }
   if (!sbUrl || !sbKey) {
-    return { statusCode: 500, body: JSON.stringify({ error: 'SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY required' }) };
+    return { statusCode: 500, headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ error: 'REACT_APP_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY not configured' }) };
   }
 
-  const supabase = createClient(sbUrl, sbKey);
-  const auth = Buffer.from(`${ssAccount}:${ssKey}`).toString('base64');
+  const ssAuth = Buffer.from(`${ssAccount}:${ssKey}`).toString('base64');
+  const sb = { sbUrl, sbKey };
 
-  // 1. Get all S&S vendor IDs
-  const { data: vendors } = await supabase
-    .from('vendors')
-    .select('id')
-    .eq('api_provider', 'ss_activewear');
+  try {
+    // 1. Get all S&S vendor IDs
+    const vendors = await sbFetch('vendors?api_provider=eq.ss_activewear&select=id', sb);
+    if (!vendors?.length) {
+      return { statusCode: 200, headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'No S&S Activewear vendors found', updated: 0 }) };
+    }
 
-  if (!vendors?.length) {
-    return { statusCode: 200, body: JSON.stringify({ message: 'No S&S Activewear vendors found', updated: 0 }) };
-  }
+    const vendorIds = vendors.map(v => v.id);
 
-  const vendorIds = vendors.map(v => v.id);
+    // 2. Get all products for these vendors
+    const products = await sbFetch(
+      `products?vendor_id=in.(${vendorIds.map(id => `"${id}"`).join(',')})&select=id,sku,nsa_cost,vendor_id`,
+      sb
+    );
 
-  // 2. Get all products for these vendors
-  const { data: products } = await supabase
-    .from('products')
-    .select('id, sku, nsa_cost, vendor_id')
-    .in('vendor_id', vendorIds);
+    if (!products?.length) {
+      return { statusCode: 200, headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'No S&S products found', updated: 0 }) };
+    }
 
-  if (!products?.length) {
-    return { statusCode: 200, body: JSON.stringify({ message: 'No S&S products found', updated: 0 }) };
-  }
+    // 3. Fetch pricing from S&S for each unique SKU
+    const uniqueSkus = [...new Set(products.map(p => p.sku))];
+    let updated = 0;
+    const errors = [];
+    const changes = [];
 
-  // 3. Fetch pricing from S&S for each unique SKU (batch by style to reduce API calls)
-  const uniqueSkus = [...new Set(products.map(p => p.sku))];
-  let updated = 0;
-  const errors = [];
-  const changes = [];
+    for (let i = 0; i < uniqueSkus.length; i++) {
+      const sku = uniqueSkus[i];
+      try {
+        // Rate limit: 60 req/min — add delay between calls
+        if (i > 0) await new Promise(r => setTimeout(r, 1100));
 
-  for (const sku of uniqueSkus) {
-    try {
-      // Rate limit: 60 req/min — add small delay between calls
-      if (uniqueSkus.indexOf(sku) > 0) {
-        await new Promise(r => setTimeout(r, 1100)); // ~54 req/min to stay safe
-      }
+        const url = `https://api.ssactivewear.com/V2/Products?style=${encodeURIComponent(sku)}`;
+        const response = await fetch(url, {
+          headers: {
+            'Authorization': `Basic ${ssAuth}`,
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+          },
+        });
 
-      const url = `https://api.ssactivewear.com/V2/Products?style=${encodeURIComponent(sku)}`;
-      const response = await fetch(url, {
-        headers: {
-          'Authorization': `Basic ${auth}`,
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-        },
-      });
+        if (!response.ok) {
+          errors.push({ sku, error: `HTTP ${response.status}` });
+          continue;
+        }
 
-      if (!response.ok) {
-        errors.push({ sku, error: `HTTP ${response.status}` });
-        continue;
-      }
+        const data = await response.json();
+        const items = Array.isArray(data) ? data : [data];
+        if (!items.length) continue;
 
-      const data = await response.json();
-      const items = Array.isArray(data) ? data : [data];
+        // Use the lowest customerPrice or piecePrice as nsa_cost
+        const prices = items
+          .map(it => parseFloat(it.customerPrice) || parseFloat(it.piecePrice) || 0)
+          .filter(p => p > 0);
 
-      if (!items.length) continue;
+        if (!prices.length) continue;
 
-      // Use the lowest customerPrice or piecePrice as nsa_cost
-      const prices = items
-        .map(it => parseFloat(it.customerPrice) || parseFloat(it.piecePrice) || 0)
-        .filter(p => p > 0);
+        const newCost = Math.min(...prices);
+        const matchingProducts = products.filter(p => p.sku === sku);
 
-      if (!prices.length) continue;
+        for (const prod of matchingProducts) {
+          if (Math.abs((prod.nsa_cost || 0) - newCost) > 0.005) {
+            const result = await sbFetch(
+              `products?id=eq.${prod.id}`,
+              { method: 'PATCH', body: { nsa_cost: newCost }, ...sb }
+            );
 
-      const newCost = Math.min(...prices);
-      const matchingProducts = products.filter(p => p.sku === sku);
-
-      for (const prod of matchingProducts) {
-        // Only update if price actually changed (avoid unnecessary writes)
-        if (Math.abs((prod.nsa_cost || 0) - newCost) > 0.005) {
-          const { error } = await supabase
-            .from('products')
-            .update({ nsa_cost: newCost })
-            .eq('id', prod.id);
-
-          if (error) {
-            errors.push({ sku, error: error.message });
-          } else {
-            updated++;
-            changes.push({ sku, old: prod.nsa_cost, new: newCost });
+            if (result.error) {
+              errors.push({ sku, error: result.error });
+            } else {
+              updated++;
+              changes.push({ sku, old: prod.nsa_cost, new: newCost });
+            }
           }
         }
+      } catch (err) {
+        errors.push({ sku, error: err.message });
       }
-    } catch (err) {
-      errors.push({ sku, error: err.message });
     }
+
+    const result = {
+      message: 'S&S pricing sync complete',
+      total_skus: uniqueSkus.length,
+      updated,
+      changes,
+      errors: errors.length > 0 ? errors : undefined,
+      timestamp: new Date().toISOString(),
+    };
+
+    console.log('[SS-Pricing-Sync]', JSON.stringify(result));
+
+    return {
+      statusCode: 200,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(result),
+    };
+  } catch (err) {
+    return {
+      statusCode: 500,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ error: 'Sync failed: ' + err.message }),
+    };
   }
-
-  const result = {
-    message: `S&S pricing sync complete`,
-    total_skus: uniqueSkus.length,
-    updated,
-    changes,
-    errors: errors.length > 0 ? errors : undefined,
-    timestamp: new Date().toISOString(),
-  };
-
-  console.log('[SS-Pricing-Sync]', JSON.stringify(result));
-
-  return {
-    statusCode: 200,
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(result),
-  };
 };
