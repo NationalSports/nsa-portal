@@ -1429,7 +1429,8 @@ describe('Promo Dollars — calcPromoTotals', () => {
       promo_applied: true,
       shipping_type: 'flat', shipping_value: 100,
       items: [
-        { sku: 'ADI-1', brand: 'Adidas', nsa_cost: 18.5, retail_price: 55.5, unit_sell: 33.3,
+        // When promo is applied, unit_sell is set to retail_price, _pre_promo_sell stores original
+        { sku: 'ADI-1', brand: 'Adidas', nsa_cost: 18.5, retail_price: 55.5, unit_sell: 55.5, _pre_promo_sell: 33.3,
           sizes: { S: 5, M: 10 }, is_promo: true, decorations: [] },
       ],
       art_files: [],
@@ -1442,6 +1443,7 @@ describe('Promo Dollars — calcPromoTotals', () => {
     expect(result.promoRev).toBe(832.5);
     // Normal rev should be 0
     expect(result.normalRev).toBe(0);
+    // Shipping base uses original revenue: 15 * 33.3 = 499.5, but flat $100, so base = 100
     // Promo shipping = 100 * 1.0 (all promo) * 1.25 = $125
     expect(result.promoShip).toBe(125);
     // Promo amount = 832.5 + 125 = $957.50
@@ -1457,7 +1459,8 @@ describe('Promo Dollars — calcPromoTotals', () => {
       promo_applied: true,
       shipping_type: 'flat', shipping_value: 0,
       items: [
-        { sku: 'ADI-1', brand: 'Adidas', nsa_cost: 18.5, retail_price: 55.5, unit_sell: 33.3,
+        // unit_sell set to retail_price when promo applied, _pre_promo_sell stores original
+        { sku: 'ADI-1', brand: 'Adidas', nsa_cost: 18.5, retail_price: 55.5, unit_sell: 55.5, _pre_promo_sell: 33.3,
           sizes: { M: 24 }, is_promo: true,
           decorations: [
             { kind: 'art', art_file_id: 'af1', position: 'Front Center' }
@@ -1480,7 +1483,8 @@ describe('Promo Dollars — calcPromoTotals', () => {
       promo_applied: true,
       shipping_type: 'flat', shipping_value: 100,
       items: [
-        { sku: 'ADI-1', brand: 'Adidas', nsa_cost: 18.5, retail_price: 55.5, unit_sell: 33.3,
+        // unit_sell set to retail_price when promo applied, _pre_promo_sell stores original
+        { sku: 'ADI-1', brand: 'Adidas', nsa_cost: 18.5, retail_price: 55.5, unit_sell: 55.5, _pre_promo_sell: 33.3,
           sizes: { M: 10 }, is_promo: true, decorations: [] },
         { sku: 'PC61', brand: 'Port Company', nsa_cost: 2.85, retail_price: 0, unit_sell: 4.75,
           sizes: { M: 10 }, is_promo: false, decorations: [] },
@@ -1491,12 +1495,17 @@ describe('Promo Dollars — calcPromoTotals', () => {
     const result = calcPromoTotals(o, cust);
 
     expect(result).not.toBeNull();
-    // Promo: 10 * 55.5 = 555
+    // Promo: 10 * 55.5 (retail/unit_sell) = 555
     expect(result.promoRev).toBe(555);
     // Normal: 10 * 4.75 = 47.5
     expect(result.normalRev).toBe(47.5);
     // Normal tax: 47.5 * 0.0775 = 3.68125
     expect(result.normalTax).toBeCloseTo(3.68, 1);
+    // Shipping base uses original revenue: 10 * 33.3 + 10 * 4.75 = 333 + 47.5 = 380.5
+    // But flat $100, so base = 100
+    // promoPct based on original rev: 333/380.5 ≈ 0.8752
+    // promoShip = rQ(100 * 0.8752 * 1.25) = rQ(109.4) = 109.5
+    // normalShip = rQ(100 * 0.1248) = rQ(12.48) = 12.5
     // Customer pays normal items + normal shipping portion + normal tax
     expect(result.customerPays).toBeGreaterThan(0);
   });

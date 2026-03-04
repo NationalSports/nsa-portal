@@ -293,22 +293,25 @@ function calcPromoTotals(o, cust) {
     });
   });
   const af = safeArt(o);
-  let promoRev = 0, promoCost = 0, normalRev = 0, normalCost = 0;
+  let promoRev = 0, promoCost = 0, normalRev = 0, normalCost = 0, origPromoRev = 0;
 
   safeItems(o).forEach(it => {
     const q = Object.values(safeSizes(it)).reduce((a, v) => a + safeNum(v), 0);
     if (!q) return;
 
     if (it.is_promo) {
-      const sellPrice = calcPromoItemSell(it);
-      promoRev += q * sellPrice;
+      // unit_sell is already set to retail/MSRP when promo is applied
+      promoRev += q * safeNum(it.unit_sell);
       promoCost += q * safeNum(it.nsa_cost);
+      // Track original revenue (pre-promo sell) for shipping base
+      origPromoRev += q * safeNum(it._pre_promo_sell || it.unit_sell);
       safeDecos(it).forEach(d => {
         const cq = d.kind === 'art' && d.art_file_id ? artQty[d.art_file_id] : q;
         const dp = dP(d, q, af, cq);
         const eq = dp._nq != null ? dp._nq : q;
         promoRev += eq * rQ(dp.sell * PROMO_DECO_MULT);
         promoCost += eq * dp.cost;
+        origPromoRev += eq * dp.sell;
       });
     } else {
       normalRev += q * safeNum(it.unit_sell);
@@ -323,10 +326,10 @@ function calcPromoTotals(o, cust) {
     }
   });
 
-  // Shipping: promo portion gets 25% increase
-  const totalRev = promoRev + normalRev;
-  const baseShip = o.shipping_type === 'pct' ? totalRev * (o.shipping_value || 0) / 100 : (o.shipping_value || 0);
-  const promoPct = totalRev > 0 ? promoRev / totalRev : (promoRev > 0 ? 1 : 0);
+  // Shipping: use original (pre-promo) revenue for base to avoid inflation, then apply 25% to promo portion
+  const origTotalRev = origPromoRev + normalRev;
+  const baseShip = o.shipping_type === 'pct' ? origTotalRev * (o.shipping_value || 0) / 100 : (o.shipping_value || 0);
+  const promoPct = origTotalRev > 0 ? origPromoRev / origTotalRev : (promoRev > 0 ? 1 : 0);
   const promoShip = rQ(baseShip * promoPct * PROMO_SHIP_MULT);
   const normalShip = rQ(baseShip * (1 - promoPct));
 
