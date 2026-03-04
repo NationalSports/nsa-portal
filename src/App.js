@@ -2040,7 +2040,8 @@ function LoginGate({onLogin,reps}){
   );
 }
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack,onConvertSO,onCopyEstimate,onRevertToEst,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,allInvoices,batchPOs,onBatchPO,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onSaveProduct,onViewEstimate,onViewSO,returnToPage,onReturnToJob}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onBack,onConvertSO,onCopyEstimate,onRevertToEst,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,allInvoices,batchPOs,onBatchPO,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onSaveProduct,onViewEstimate,onViewSO,returnToPage,onReturnToJob}){
+  const vendorList=vendorsProp||D_V;// use DB-loaded vendors if available, fallback to defaults
   const isE=mode==='estimate';const isSO=mode==='so';
   const[o,setO]=useState(order);const[cust,setCust]=useState(ic);const[pS,setPS]=useState('');const[showAdd,setShowAdd]=useState(false);
   const[tab,setTab]=useState(initTab||'items');const[dirty,setDirty]=useState(false);const[selJob,setSelJob]=useState(null);const[jobNote,setJobNote]=useState('');const[msgDept,setMsgDept]=useState('all');
@@ -2064,21 +2065,28 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
   const[copySkuModal,setCopySkuModal]=useState(null);// {itemIdx, search:''}
 
   // ─── Vendor Inventory Cache (S&S Activewear) ───
+
+  // Check if item is from S&S (handles both local D_V and Supabase UUID vendors)
+  const isSSItem=useCallback((item)=>{
+    if(item._ss_live)return true;
+    const vId=item.vendor_id||products.find(p=>p.id===item.product_id||p.sku===item.sku)?.vendor_id;
+    if(!vId)return false;
+    // Check vendorList (DB-loaded or fallback D_V) by id
+    const vRec=vendorList.find(v=>v.id===vId);
+    if(vRec)return vRec.api_provider==='ss_activewear'||vRec.name==='S&S Activewear';
+    // Fallback: check brand name
+    if(item.brand==='S&S Activewear')return true;
+    return false;
+  },[products,vendorList]);
+
   // Keyed by style (sku base), stores {sizes:{S:qty,M:qty,...}, price:{S:cost,...}, fetchedAt:timestamp}
   const vendorInvCache=useRef({});
   const[vendorInv,setVendorInv]=useState({});// {sku: {sizes:{S:qty,...}, loading:bool, error:str}}
   const vendorInvFetching=useRef({});// track in-flight fetches
 
-  const fetchVendorInventory=useCallback(async(sku,vendorId)=>{
-    // Only fetch for S&S Activewear vendor items (or items whose product vendor is S&S)
-    const v=products.find(p=>p.id===vendorId||p.vendor_id===vendorId);
-    const vendor=(typeof vendorId==='string')?vendorId:null;
-    const prod2=products.find(p=>p.sku===sku);
-    const vId=vendor||prod2?.vendor_id;
-    // Find vendor record to check if it's an API vendor
-    const allVendors=D_V;// fallback
-    const vRec=allVendors.find(vv=>vv.id===vId);
-    if(!vRec||vRec.api_provider!=='ss_activewear')return;
+  const fetchVendorInventory=useCallback(async(sku,vendorId,item)=>{
+    // Only fetch for S&S Activewear vendor items
+    if(!isSSItem(item||{vendor_id:vendorId,sku}))return;
     // Use base style (sku without color suffix) as cache key
     const cacheKey=sku;
     // Check cache (valid for 10 minutes)
@@ -2126,9 +2134,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
   React.useEffect(()=>{
     const items=safeItems(o);
     items.forEach(item=>{
-      const vId=item.vendor_id||products.find(p=>p.id===item.product_id||p.sku===item.sku)?.vendor_id;
-      if(vId&&!vendorInv[item.sku]&&!vendorInvFetching.current[item.sku]){
-        fetchVendorInventory(item.sku,vId);
+      if(isSSItem(item)&&!vendorInv[item.sku]&&!vendorInvFetching.current[item.sku]){
+        fetchVendorInventory(item.sku,item.vendor_id,item);
       }
     });
   },[o.items?.length]);// only re-run when items are added/removed
@@ -2231,7 +2238,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
 
   // Add an S&S search result as a line item
   const addSSProduct=(ssItem)=>{
-    const ssVendor=D_V.find(v=>v.api_provider==='ss_activewear');
+    const ssVendor=vendorList.find(v=>v.api_provider==='ss_activewear'||v.name==='S&S Activewear');
     const vId=ssVendor?.id||'v4';
     const cost=ssItem.customerPrice||ssItem.piecePrice||0;
     const sell=rQ(cost*(o.default_markup||1.65));
@@ -2746,8 +2753,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,onSave,onBack
               {(()=>{const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);const stk=p?._inv?.[sz];const need=item.sizes[sz]||0;return<div style={{fontSize:9,fontWeight:600,minHeight:13,color:stk==null?'transparent':stk<=0?'#dc2626':stk<need?'#ca8a04':'#166534'}}>{stk!=null?stk+' inv':'\u00A0'}</div>})()}
               {(()=>{const vi=vendorInv[item.sku];if(!vi||vi.loading)return vi?.loading?<div style={{fontSize:8,color:'#a78bfa',minHeight:11}}>...</div>:null;const vStk=vi.sizes?.[sz];if(vStk==null)return null;return<div style={{fontSize:8,fontWeight:700,minHeight:11,color:vStk<=0?'#dc2626':vStk<20?'#a78bfa':'#7c3aed'}} title={'S&S Activewear stock: '+vStk}>{vStk} ss</div>})()}</div>)}
             <div style={{textAlign:'center',marginLeft:4,padding:'0 10px',borderLeft:'2px solid #e2e8f0'}}><div style={{fontSize:10,fontWeight:700,color:'#1e40af'}}>TOT</div><div style={{fontSize:20,fontWeight:800,color:'#1e40af'}}>{qty}</div></div>
-            {(()=>{const vi=vendorInv[item.sku];const vId=item.vendor_id||products.find(p=>p.id===item.product_id||p.sku===item.sku)?.vendor_id;const vRec=D_V.find(vv=>vv.id===vId);
-              if(vRec?.api_provider==='ss_activewear')return<button title={vi?.error?'Error: '+vi.error+' — click to retry':'Refresh S&S inventory'} onClick={()=>{delete vendorInvCache.current[item.sku];delete vendorInvFetching.current[item.sku];setVendorInv(prev=>{const n={...prev};delete n[item.sku];return n});fetchVendorInventory(item.sku,vId)}} style={{background:'none',border:'1px solid #c4b5fd',borderRadius:4,cursor:'pointer',color:vi?.error?'#dc2626':'#7c3aed',padding:'2px 6px',fontSize:9,fontWeight:700,marginLeft:4,whiteSpace:'nowrap'}}>{vi?.loading?'...':vi?.error?'⚠ S&S':'↻ S&S'}</button>;return null})()}
+            {(()=>{const vi=vendorInv[item.sku];
+              if(isSSItem(item))return<button title={vi?.error?'Error: '+vi.error+' — click to retry':'Refresh S&S inventory'} onClick={()=>{delete vendorInvCache.current[item.sku];delete vendorInvFetching.current[item.sku];setVendorInv(prev=>{const n={...prev};delete n[item.sku];return n});fetchVendorInventory(item.sku,item.vendor_id,item)}} style={{background:'none',border:'1px solid #c4b5fd',borderRadius:4,cursor:'pointer',color:vi?.error?'#dc2626':'#7c3aed',padding:'2px 6px',fontSize:9,fontWeight:700,marginLeft:4,whiteSpace:'nowrap'}}>{vi?.loading?'...':vi?.error?'⚠ S&S':'↻ S&S'}</button>;return null})()}
             <div style={{position:'relative',marginLeft:4}}><button className="btn btn-sm btn-secondary" onClick={()=>setShowSzPicker(showSzPicker===idx?null:idx)} style={{fontSize:10}}>+ Size</button>
               {showSzPicker===idx&&addable.length>0&&<><div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:39}} onClick={()=>setShowSzPicker(null)}/><div style={{position:'absolute',top:'100%',left:0,background:'white',border:'1px solid #e2e8f0',borderRadius:6,boxShadow:'0 4px 12px rgba(0,0,0,0.1)',zIndex:40,padding:6,display:'flex',gap:3,flexWrap:'wrap',width:180}}>
                 {addable.map(sz=><button key={sz} className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 6px'}} onClick={()=>addSzToItem(idx,sz)}>{sz}</button>)}</div></>}
@@ -6818,7 +6825,7 @@ function VendDetail({vendor,onBack}){return(<div><button className="btn btn-seco
   {(vendor._it||0)>0&&<div style={{textAlign:'right'}}><div style={{fontSize:11,color:'#dc2626',fontWeight:600}}>OWED</div><div style={{fontSize:24,fontWeight:800,color:'#dc2626'}}>${vendor._it.toLocaleString()}</div></div>}
   {vendor.api_provider==='ss_activewear'&&<div style={{display:'flex',gap:6,marginTop:8}}>
     <button className="btn btn-sm" style={{background:'#7c3aed',color:'white',fontSize:10,border:'none'}} onClick={async()=>{try{await testSSConnection();alert('S&S API connection successful!')}catch(e){alert('S&S API connection failed: '+e.message)}}}>Test API</button>
-    <button className="btn btn-sm" style={{background:'#2563eb',color:'white',fontSize:10,border:'none'}} onClick={async()=>{try{const r=await fetch('/.netlify/functions/ss-pricing-sync');const d=await r.json();alert('Pricing sync complete!\n\nSKUs checked: '+d.total_skus+'\nPrices updated: '+d.updated+(d.errors?.length?'\nErrors: '+d.errors.length:''))}catch(e){alert('Pricing sync failed: '+e.message)}}}>Sync Pricing Now</button>
+    <button className="btn btn-sm" style={{background:'#2563eb',color:'white',fontSize:10,border:'none'}} onClick={async()=>{try{const r=await fetch('/.netlify/functions/ss-pricing-sync');const txt=await r.text();let d;try{d=JSON.parse(txt)}catch{alert('Pricing sync error (HTTP '+r.status+'):\n'+txt.slice(0,200));return}if(d.error){alert('Pricing sync error: '+d.error);return}alert('Pricing sync complete!\n\nSKUs checked: '+(d.total_skus||0)+'\nPrices updated: '+(d.updated||0)+(d.message?'\n'+d.message:'')+(d.errors?.length?'\nErrors: '+d.errors.length:''))}catch(e){alert('Pricing sync failed: '+e.message)}}}>Sync Pricing Now</button>
   </div>}
   </div></div>
   <div className="stats-row"><div className="stat-card"><div className="stat-label">Invoices</div><div className="stat-value">{vendor._oi||0}</div></div><div className="stat-card"><div className="stat-label">Current</div><div className="stat-value" style={{color:'#166534'}}>${(vendor._ac||0).toLocaleString()}</div></div><div className="stat-card"><div className="stat-label">30 Day</div><div className="stat-value" style={{color:(vendor._a3||0)>0?'#d97706':''}}>${(vendor._a3||0).toLocaleString()}</div></div><div className="stat-card"><div className="stat-label">60+</div><div className="stat-value" style={{color:(vendor._a6||0)>0?'#dc2626':''}}>${((vendor._a6||0)+(vendor._a9||0)).toLocaleString()}</div></div></div>
@@ -8924,7 +8931,7 @@ export default function App(){
 
   // ESTIMATES LIST
   function rEst(){
-    if(eEst)return<OrderEditor order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} onSave={e=>{const e2=savE(e);setEEst(e2)}} onBack={()=>setEEst(null)} onConvertSO={convertSO} onCopyEstimate={copyEstimate} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={deleteEstimate} onNavInvoice={inv=>{setEEst(null);setPg('invoices');setInvF(f=>({...f,search:inv.id}))}} onSaveProduct={p=>{setProd(prev=>prev.some(x=>x.id===p.id)?prev.map(x=>x.id===p.id?p:x):[...prev,p]);_dbSaveProduct(p)}} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setEEst(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}else{nf('SO '+soId+' not found','error')}}}/>
+    if(eEst)return<OrderEditor order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} vendors={vend} onSave={e=>{const e2=savE(e);setEEst(e2)}} onBack={()=>setEEst(null)} onConvertSO={convertSO} onCopyEstimate={copyEstimate} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={deleteEstimate} onNavInvoice={inv=>{setEEst(null);setPg('invoices');setInvF(f=>({...f,search:inv.id}))}} onSaveProduct={p=>{setProd(prev=>prev.some(x=>x.id===p.id)?prev.map(x=>x.id===p.id?p:x):[...prev,p]);_dbSaveProduct(p)}} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setEEst(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}else{nf('SO '+soId+' not found','error')}}}/>
     const fe=ests.filter(e=>!q||(e.id+' '+e.memo+' '+(cust.find(c=>c.id===e.customer_id)?.name||'')+' '+(cust.find(c=>c.id===e.customer_id)?.alpha_tag||'')).toLowerCase().includes(q.toLowerCase()));
     return(<><div style={{display:'flex',gap:8,marginBottom:16}}><div className="search-bar" style={{flex:1}}><Icon name="search"/><input placeholder="Search..." value={q} onChange={e=>setQ(e.target.value)}/></div>
       <button className="btn btn-primary" onClick={()=>newE(null)}><Icon name="plus" size={14}/> New Estimate</button></div>
@@ -8942,7 +8949,7 @@ export default function App(){
 
   // SALES ORDERS LIST
   function rSO(){
-    if(eSO)return<OrderEditor order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} onSave={s=>{const locked=savSO(s);setESO(locked)}} onBack={()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setReturnToPage(null)}} onRevertToEst={revertSOToEst} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onNavInvoice={inv=>{setESO(null);setPg('invoices');setInvF(f=>({...f,search:inv.id}))}} onSaveProduct={p=>{setProd(prev=>prev.some(x=>x.id===p.id)?prev.map(x=>x.id===p.id?p:x):[...prev,p]);_dbSaveProduct(p)}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setPg(returnToPage.page==='production'?'production':'decoration');setReturnToPage(null)}:null}/>
+    if(eSO)return<OrderEditor order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} vendors={vend} onSave={s=>{const locked=savSO(s);setESO(locked)}} onBack={()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setReturnToPage(null)}} onRevertToEst={revertSOToEst} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onNavInvoice={inv=>{setESO(null);setPg('invoices');setInvF(f=>({...f,search:inv.id}))}} onSaveProduct={p=>{setProd(prev=>prev.some(x=>x.id===p.id)?prev.map(x=>x.id===p.id?p:x):[...prev,p]);_dbSaveProduct(p)}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setPg(returnToPage.page==='production'?'production':'decoration');setReturnToPage(null)}:null}/>
     // Filter SOs
     let fSOs=[...sos];
     if(soF.status!=='all')fSOs=fSOs.filter(s=>calcSOStatus(s)===soF.status);
