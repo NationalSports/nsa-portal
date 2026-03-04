@@ -14573,176 +14573,149 @@ export default function App(){
                     onClick={()=>openFile(url)}>📁 {name}</div>})}
                 </div></>}
 
-              {/* Decoration details + colors */}
-              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:12,marginTop:14}}>
-                <div><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:2}}>Method</div>
-                  <div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{j.deco_type?.replace(/_/g,' ')||'—'}</div></div>
-                <div><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:2}}>Position(s)</div>
-                  <div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{j.positions||'—'}</div></div>
-                {(()=>{const posList=(j.positions||'').split(',').map(p=>p.trim()).filter(Boolean);const artSizes=af?.art_sizes||{};
-                  const multiPos=posList.length>1;
-                  return multiPos?posList.map((pos,pi)=><div key={pi} style={pi>0?{gridColumn:'1 / -1'}:{}}>
-                    <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:2,display:'flex',alignItems:'center',gap:6}}>Art Size — {pos}
-                      {artJobDetailEditSize===null?<button style={{background:'none',border:'none',color:'#7c3aed',fontSize:10,fontWeight:700,cursor:'pointer',padding:0}} onClick={()=>{const init={};posList.forEach(p=>{init[p]=artSizes[p]||(p===posList[0]?af?.art_size:'')});setArtJobDetailEditSize(init)}}>Edit</button>
-                      :pi===0&&<button style={{background:'none',border:'none',color:'#dc2626',fontSize:10,fontWeight:700,cursor:'pointer',padding:0}} onClick={()=>setArtJobDetailEditSize(null)}>Cancel</button>}
-                    </div>
-                    {artJobDetailEditSize!==null&&typeof artJobDetailEditSize==='object'?<div style={{display:'flex',gap:4,alignItems:'center'}}>
-                      <input className="form-input" value={artJobDetailEditSize[pos]||''} onChange={e=>setArtJobDetailEditSize(prev=>({...prev,[pos]:e.target.value}))} placeholder='e.g. 12" x 4"' style={{fontSize:13,fontWeight:600,width:140}}/>
-                      {pi===posList.length-1&&<button className="btn btn-sm" style={{fontSize:10,padding:'3px 10px',background:'#7c3aed',color:'white',border:'none',borderRadius:4,fontWeight:700}} onClick={()=>{
-                        const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
-                        const sizeObj={};posList.forEach(p=>{if(artJobDetailEditSize[p]?.trim())sizeObj[p]=artJobDetailEditSize[p].trim()});
-                        const updArt=safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,art_sizes:sizeObj,art_size:Object.values(sizeObj).join(' / ')}:a);
-                        savSO({...liveSO,art_files:updArt});
-                        setArtJobDetailModal({...j,artFile:updArt.find(a=>a.id===j.art_file_id)});
-                        setArtJobDetailEditSize(null);nf('Art sizes updated');
-                      }}>Save</button>}
-                    </div>
-                    :<div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{artSizes[pos]||(pi===0?af?.art_size:'')||'—'}</div>}
-                  </div>)
-                  :<div><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:2,display:'flex',alignItems:'center',gap:6}}>Art Size
-                    {artJobDetailEditSize===null?<button style={{background:'none',border:'none',color:'#7c3aed',fontSize:10,fontWeight:700,cursor:'pointer',padding:0}} onClick={()=>setArtJobDetailEditSize(af?.art_size||'')}>Edit</button>
-                    :<button style={{background:'none',border:'none',color:'#dc2626',fontSize:10,fontWeight:700,cursor:'pointer',padding:0}} onClick={()=>setArtJobDetailEditSize(null)}>Cancel</button>}
-                  </div>
-                  {artJobDetailEditSize!==null&&typeof artJobDetailEditSize==='string'?<div style={{display:'flex',gap:4,alignItems:'center'}}>
-                    <input className="form-input" value={artJobDetailEditSize} onChange={e=>setArtJobDetailEditSize(e.target.value)} placeholder='e.g. 12" x 4"' style={{fontSize:13,fontWeight:600,width:140}}/>
-                    <button className="btn btn-sm" style={{fontSize:10,padding:'3px 10px',background:'#7c3aed',color:'white',border:'none',borderRadius:4,fontWeight:700}} onClick={()=>{
-                      const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
-                      const updArt=safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,art_size:artJobDetailEditSize.trim()}:a);
-                      savSO({...liveSO,art_files:updArt});
-                      setArtJobDetailModal({...j,artFile:updArt.find(a=>a.id===j.art_file_id)});
-                      setArtJobDetailEditSize(null);nf('Art size updated');
-                    }}>Save</button>
-                  </div>
-                  :<div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{af?.art_size||'—'}</div>}
-                </div>})()}
-              </div>
-              {/* ─── Ink / Thread Colors — per garment per position ─── */}
-              <div style={{marginTop:14,padding:'12px 14px',background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0'}}>
-                {(()=>{
-                  const posList3=(j.positions||'').split(',').map(p=>p.trim()).filter(Boolean);
-                  const garmentColors=af?.garment_colors||{};
-                  const hasGarmentColors=Object.keys(garmentColors).length>0;
-                  const isEditing=artJobDetailEditColors!==null&&typeof artJobDetailEditColors==='object'&&artJobDetailEditColors._perGarment;
-                  // Init editing state: build per-garment per-position color arrays
-                  const startEdit=()=>{
-                    const init={_perGarment:true};
-                    itemDetails.forEach(gi=>{const gk=gi.sku+'|'+gi.color;
-                      init[gk]={};
-                      posList3.forEach(pos=>{
-                        init[gk][pos]=(garmentColors[gk]&&garmentColors[gk][pos])||colorList.map(c=>c)||[''];
-                      });
-                    });
-                    setArtJobDetailEditColors(init);
-                  };
-                  const saveColors=()=>{
-                    const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
-                    const gc={};const allColors=new Set();
-                    Object.entries(artJobDetailEditColors).forEach(([gk,positions])=>{
-                      if(gk==='_perGarment')return;
-                      gc[gk]={};
-                      Object.entries(positions).forEach(([pos,colors])=>{
-                        gc[gk][pos]=colors.filter(c=>c.trim());
-                        colors.filter(c=>c.trim()).forEach(c=>allColors.add(c.trim()));
-                      });
-                    });
-                    const colorField=isEmb?'thread_colors':'ink_colors';
-                    const updArt=safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,garment_colors:gc,[colorField]:[...allColors].join(', ')}:a);
-                    savSO({...liveSO,art_files:updArt});
-                    setArtJobDetailModal({...j,artFile:updArt.find(a=>a.id===j.art_file_id)});
-                    setArtJobDetailEditColors(null);
-                    nf('Colors updated');
-                  };
-                  return<>
-                <div style={{fontSize:12,fontWeight:800,color:'#1e3a5f',textTransform:'uppercase',marginBottom:8,display:'flex',alignItems:'center',gap:6}}>
-                  {isEmb?'🧵 Thread Colors':'🎨 Ink Colors'}
-                  {!isEditing?<button style={{background:'none',border:'none',color:'#7c3aed',fontSize:11,fontWeight:700,cursor:'pointer',padding:'2px 6px',marginLeft:4}} onClick={startEdit}>Edit</button>
-                  :<button style={{background:'none',border:'none',color:'#dc2626',fontSize:11,fontWeight:700,cursor:'pointer',padding:'2px 6px',marginLeft:4}} onClick={()=>setArtJobDetailEditColors(null)}>Cancel</button>}
-                </div>
-                {isEditing?<div>
-                  {itemDetails.map((gi,gii)=>{const gk=gi.sku+'|'+gi.color;const gColors=artJobDetailEditColors[gk]||{};
-                    return<div key={gii} style={{marginBottom:12,padding:10,background:'white',borderRadius:8,border:'1px solid #e2e8f0'}}>
-                      <div style={{fontSize:11,fontWeight:800,color:'#1e3a5f',marginBottom:6}}>{gi.sku} — {gi.color}</div>
-                      {posList3.map((pos,pi)=>{const colors=gColors[pos]||[''];
-                        return<div key={pi} style={{marginBottom:8}}>
-                          <div style={{fontSize:10,fontWeight:700,color:'#64748b',marginBottom:4}}>{pos}</div>
-                          <div style={{display:'flex',gap:4,flexWrap:'wrap',alignItems:'center'}}>
-                            {colors.map((c,ci)=><input key={ci} className="form-input" value={c} onChange={e=>{
-                              const upd={...artJobDetailEditColors};upd[gk]={...upd[gk]};upd[gk][pos]=[...colors];upd[gk][pos][ci]=e.target.value;setArtJobDetailEditColors(upd);
-                            }} placeholder="Color name" style={{fontSize:12,width:120,padding:'4px 8px'}}/>)}
-                            <button style={{background:'none',border:'1px dashed #a78bfa',color:'#7c3aed',borderRadius:4,padding:'3px 8px',fontSize:11,cursor:'pointer',fontWeight:700}} onClick={()=>{
-                              const upd={...artJobDetailEditColors};upd[gk]={...upd[gk]};upd[gk][pos]=[...colors,''];setArtJobDetailEditColors(upd);
-                            }}>+</button>
-                            {colors.length>1&&<button style={{background:'none',border:'none',color:'#dc2626',fontSize:13,cursor:'pointer',padding:'0 4px'}} onClick={()=>{
-                              const upd={...artJobDetailEditColors};upd[gk]={...upd[gk]};upd[gk][pos]=colors.slice(0,-1);setArtJobDetailEditColors(upd);
-                            }}>×</button>}
-                          </div>
-                        </div>})}
-                    </div>})}
-                  <button className="btn btn-sm" style={{fontSize:11,padding:'5px 14px',background:'#7c3aed',color:'white',border:'none',borderRadius:6,fontWeight:700}} onClick={saveColors}>Save Colors</button>
-                </div>
-                :hasGarmentColors?<div>
-                  {itemDetails.map((gi,gii)=>{const gk=gi.sku+'|'+gi.color;const gc=garmentColors[gk];if(!gc)return null;
-                    return<div key={gii} style={{marginBottom:10,padding:8,background:'white',borderRadius:8,border:'1px solid #e2e8f0'}}>
-                      <div style={{fontSize:11,fontWeight:800,color:'#1e3a5f',marginBottom:4}}>{gi.sku} — {gi.color}</div>
-                      {posList3.map((pos,pi)=>{const colors=gc[pos]||[];if(!colors.length)return null;
-                        return<div key={pi} style={{marginBottom:4}}>
-                          <div style={{fontSize:10,fontWeight:700,color:'#64748b',marginBottom:3}}>{pos}</div>
-                          <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-                            {colors.map((cl,ci)=>{const swatchColor=colorMap[cl]||Object.entries(colorMap).find(([k])=>cl.toLowerCase().includes(k.toLowerCase()))?.[1]||null;
-                              return<div key={ci} style={{display:'flex',alignItems:'center',gap:6,padding:'5px 10px',background:'#f8fafc',border:'2px solid '+(swatchColor||'#e2e8f0'),borderRadius:6}}>
-                                <div style={{width:18,height:18,borderRadius:4,border:'1px solid #d1d5db',background:swatchColor||'linear-gradient(135deg,#f1f5f9,#e2e8f0)',flexShrink:0}}/>
-                                <span style={{fontSize:12,fontWeight:700,color:'#0f172a'}}>{cl}</span>
-                              </div>})}
-                          </div>
-                        </div>})}
-                    </div>})}
-                </div>
-                :colorList.length>0?<div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-                  {colorList.map((cl,i)=>{const swatchColor=colorMap[cl]||Object.entries(colorMap).find(([k])=>cl.toLowerCase().includes(k.toLowerCase()))?.[1]||null;
-                    return<div key={i} style={{display:'flex',alignItems:'center',gap:6,padding:'5px 10px',background:'white',border:'2px solid '+(swatchColor||'#e2e8f0'),borderRadius:6}}>
-                      <div style={{width:18,height:18,borderRadius:4,border:'1px solid #d1d5db',background:swatchColor||'linear-gradient(135deg,#f1f5f9,#e2e8f0)',flexShrink:0}}/>
-                      <span style={{fontSize:12,fontWeight:700,color:'#0f172a'}}>{cl}</span>
-                    </div>})}
-                </div>
-                :<div style={{fontSize:12,color:'#94a3b8',fontStyle:'italic'}}>No colors specified — click Edit to add {isEmb?'thread':'Pantone/ink'} colors</div>}
-              </>})()}
-              </div>
-
-              {/* ─── Decoration Details (Numbers / Names) ─── */}
+              {/* ─── Per-SKU Decoration Spec ─── */}
               {(()=>{
-                const decoDetails=[];
+                const posList3=(j.positions||'').split(',').map(p=>p.trim()).filter(Boolean);
+                const artSizes=af?.art_sizes||{};
+                const garmentColors=af?.garment_colors||{};
+                const hasGarmentColors=Object.keys(garmentColors).length>0;
+                const isEditing=artJobDetailEditColors!==null&&typeof artJobDetailEditColors==='object'&&artJobDetailEditColors._perGarment;
+                const startEdit=()=>{
+                  const init={_perGarment:true};
+                  itemDetails.forEach(gi=>{const gk=gi.sku+'|'+gi.color;
+                    init[gk]={};
+                    posList3.forEach(pos=>{
+                      init[gk][pos]=(garmentColors[gk]&&garmentColors[gk][pos])||colorList.map(c=>c)||[''];
+                    });
+                  });
+                  setArtJobDetailEditColors(init);
+                };
+                const saveColors=()=>{
+                  const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
+                  const gc={};const allColors=new Set();
+                  Object.entries(artJobDetailEditColors).forEach(([gk,positions])=>{
+                    if(gk==='_perGarment')return;
+                    gc[gk]={};
+                    Object.entries(positions).forEach(([pos,colors])=>{
+                      gc[gk][pos]=colors.filter(c=>c.trim());
+                      colors.filter(c=>c.trim()).forEach(c=>allColors.add(c.trim()));
+                    });
+                  });
+                  const colorField=isEmb?'thread_colors':'ink_colors';
+                  const updArt=safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,garment_colors:gc,[colorField]:[...allColors].join(', ')}:a);
+                  savSO({...liveSO,art_files:updArt});
+                  setArtJobDetailModal({...j,artFile:updArt.find(a=>a.id===j.art_file_id)});
+                  setArtJobDetailEditColors(null);
+                  nf('Colors updated');
+                };
+                // Collect per-item decorations from SO items
+                const perItemDecos={};
                 (j.items||[]).forEach(gi=>{
                   const it=safeItems(so)[gi.item_idx];if(!it)return;
+                  const key=it.sku+'|'+(it.color||'');
+                  if(!perItemDecos[key])perItemDecos[key]=[];
                   safeDecos(it).forEach(d=>{
-                    if(d.kind==='numbers'){
-                      decoDetails.push({kind:'numbers',position:d.position||'Back Center',method:(d.num_method||'heat_transfer').replace(/_/g,' '),
-                        sizeFront:d.num_size||'—',sizeBack:d.front_and_back?(d.num_size_back||d.num_size||'—'):null,
-                        twoColor:d.two_color||false,frontAndBack:d.front_and_back||false,sku:it.sku,color:it.color});
+                    if(d.kind==='art'){
+                      perItemDecos[key].push({kind:'art',position:d.position||'—',type:d.type||j.deco_type||'screen_print'});
+                    }else if(d.kind==='numbers'){
+                      perItemDecos[key].push({kind:'numbers',position:d.position||'Back Center',method:(d.num_method||'heat_transfer').replace(/_/g,' '),
+                        numSize:d.num_size||'—',numSizeBack:d.front_and_back?(d.num_size_back||d.num_size||'—'):null,
+                        numFont:d.num_font||'block',twoColor:d.two_color||false,frontAndBack:d.front_and_back||false,
+                        printColor:d.print_color||''});
                     }else if(d.kind==='names'){
-                      decoDetails.push({kind:'names',position:d.position||'Back Center',
-                        sellEach:d.sell_each||6,costEach:d.cost_each||3,
-                        frontAndBack:d.front_and_back||false,sku:it.sku,color:it.color});
+                      perItemDecos[key].push({kind:'names',position:d.position||'Back Center',frontAndBack:d.front_and_back||false});
                     }
                   });
                 });
-                if(decoDetails.length===0)return null;
-                // Deduplicate by kind+position+method+size
-                const seen=new Set();const unique=decoDetails.filter(d=>{const k=d.kind+d.position+(d.method||'')+(d.sizeFront||'');if(seen.has(k))return false;seen.add(k);return true});
-                return<div style={{marginTop:12,padding:'10px 14px',background:'#fffbeb',borderRadius:8,border:'1px solid #fde68a'}}>
-                  <div style={{fontSize:10,fontWeight:700,color:'#92400e',textTransform:'uppercase',marginBottom:6}}>Additional Decoration Details</div>
-                  {unique.map((d,i)=><div key={i} style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap',padding:'6px 0',borderTop:i>0?'1px solid #fef3c7':'none'}}>
-                    <span style={{padding:'2px 8px',borderRadius:4,fontSize:10,fontWeight:700,background:d.kind==='numbers'?'#dcfce7':'#fef3c7',color:d.kind==='numbers'?'#166534':'#92400e'}}>{d.kind==='numbers'?'#️⃣ Numbers':'ABC Names'}</span>
-                    <span style={{fontSize:11,fontWeight:600,color:'#1e293b'}}>{d.position}</span>
-                    {d.kind==='numbers'&&<>
-                      <span style={{fontSize:10,padding:'2px 6px',background:'#f0f9ff',borderRadius:4,color:'#1e40af',fontWeight:600}}>Method: {d.method}</span>
-                      <span style={{fontSize:10,padding:'2px 6px',background:'#f0f9ff',borderRadius:4,color:'#1e40af',fontWeight:600}}>Size: {d.sizeFront}{d.frontAndBack?' (Front) / '+(d.sizeBack)+' (Back)':''}</span>
-                      {d.twoColor&&<span style={{fontSize:10,padding:'2px 6px',background:'#fef2f2',borderRadius:4,color:'#dc2626',fontWeight:600}}>2-Color</span>}
-                      {d.frontAndBack&&<span style={{fontSize:10,padding:'2px 6px',background:'#ede9fe',borderRadius:4,color:'#6d28d9',fontWeight:600}}>Front + Back</span>}
-                    </>}
-                    {d.kind==='names'&&<>
-                      {d.frontAndBack&&<span style={{fontSize:10,padding:'2px 6px',background:'#ede9fe',borderRadius:4,color:'#6d28d9',fontWeight:600}}>Front + Back</span>}
-                    </>}
-                  </div>)}
+                return<div style={{marginTop:14}}>
+                  <div style={{fontSize:12,fontWeight:800,color:'#1e3a5f',textTransform:'uppercase',marginBottom:8,display:'flex',alignItems:'center',gap:6}}>
+                    📋 Decoration Spec by Item
+                    {!isEditing?<button style={{background:'none',border:'none',color:'#7c3aed',fontSize:11,fontWeight:700,cursor:'pointer',padding:'2px 6px',marginLeft:4}} onClick={startEdit}>{isEmb?'Edit Thread Colors':'Edit Ink Colors'}</button>
+                    :<button style={{background:'none',border:'none',color:'#dc2626',fontSize:11,fontWeight:700,cursor:'pointer',padding:'2px 6px',marginLeft:4}} onClick={()=>setArtJobDetailEditColors(null)}>Cancel</button>}
+                    {artJobDetailEditSize===null?<button style={{background:'none',border:'none',color:'#7c3aed',fontSize:11,fontWeight:700,cursor:'pointer',padding:'2px 6px'}} onClick={()=>{const init={};posList3.forEach(p=>{init[p]=artSizes[p]||(p===posList3[0]?af?.art_size:'')});setArtJobDetailEditSize(init)}}>Edit Sizes</button>
+                    :<button style={{background:'none',border:'none',color:'#dc2626',fontSize:11,fontWeight:700,cursor:'pointer',padding:'2px 6px'}} onClick={()=>setArtJobDetailEditSize(null)}>Cancel Sizes</button>}
+                  </div>
+                  {itemDetails.map((gi,gii)=>{
+                    const gk=gi.sku+'|'+gi.color;
+                    const gc=garmentColors[gk]||{};
+                    const decos=perItemDecos[gk]||[];
+                    const artDecos=decos.filter(d=>d.kind==='art');
+                    const numDecos=decos.filter(d=>d.kind==='numbers');
+                    const nameDecos=decos.filter(d=>d.kind==='names');
+                    const editColors=isEditing?(artJobDetailEditColors[gk]||{}):{};
+                    return<div key={gii} style={{marginBottom:10,padding:'10px 14px',background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0'}}>
+                      <div style={{fontSize:13,fontWeight:800,color:'#1e3a5f',marginBottom:8,display:'flex',alignItems:'center',gap:6}}>
+                        <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'1px 6px',borderRadius:3,fontSize:11}}>{gi.sku}</span>
+                        <span>{gi.name}</span>
+                        {gi.color&&<span style={{color:'#6d28d9',fontWeight:700}}>— {gi.color}</span>}
+                      </div>
+                      {/* Art deco positions */}
+                      {(artDecos.length>0?artDecos.map(d=>d.position):posList3).map((pos,pi)=>{
+                        const artDeco=artDecos.find(d=>d.position===pos);
+                        const method=(artDeco?.type||j.deco_type||'screen_print').replace(/_/g,' ');
+                        const size=artSizes[pos]||(pi===0?af?.art_size:'')||'';
+                        const posColors=gc[pos]||[];
+                        const editPosColors=editColors[pos]||[''];
+                        return<div key={pi} style={{display:'flex',alignItems:'baseline',gap:8,flexWrap:'wrap',padding:'5px 0',borderTop:pi>0?'1px solid #e9ecef':'none'}}>
+                          <span style={{fontSize:12,fontWeight:700,color:'#0f172a',minWidth:110}}>{pos}</span>
+                          <span style={{fontSize:11,color:'#475569',fontWeight:600}}>{method}</span>
+                          {artJobDetailEditSize!==null&&typeof artJobDetailEditSize==='object'?<div style={{display:'flex',gap:4,alignItems:'center'}}>
+                            <input className="form-input" value={artJobDetailEditSize[pos]||''} onChange={e=>setArtJobDetailEditSize(prev=>({...prev,[pos]:e.target.value}))} placeholder='Art size' style={{fontSize:11,fontWeight:600,width:100,padding:'2px 6px'}}/>
+                            {pi===posList3.length-1&&gii===itemDetails.length-1&&<button className="btn btn-sm" style={{fontSize:10,padding:'2px 8px',background:'#7c3aed',color:'white',border:'none',borderRadius:4,fontWeight:700}} onClick={()=>{
+                              const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
+                              const sizeObj={};posList3.forEach(p=>{if(artJobDetailEditSize[p]?.trim())sizeObj[p]=artJobDetailEditSize[p].trim()});
+                              const updArt=safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,art_sizes:sizeObj,art_size:Object.values(sizeObj).join(' / ')}:a);
+                              savSO({...liveSO,art_files:updArt});
+                              setArtJobDetailModal({...j,artFile:updArt.find(a=>a.id===j.art_file_id)});
+                              setArtJobDetailEditSize(null);nf('Art sizes updated');
+                            }}>Save</button>}
+                          </div>
+                          :<span style={{fontSize:11,color:'#64748b',fontWeight:600}}>{size||'—'}</span>}
+                          <span style={{fontSize:11,color:'#64748b'}}>—</span>
+                          {isEditing?<div style={{display:'flex',gap:4,flexWrap:'wrap',alignItems:'center'}}>
+                            {editPosColors.map((c,ci)=><input key={ci} className="form-input" value={c} onChange={e=>{
+                              const upd={...artJobDetailEditColors};upd[gk]={...upd[gk]};upd[gk][pos]=[...editPosColors];upd[gk][pos][ci]=e.target.value;setArtJobDetailEditColors(upd);
+                            }} placeholder="Color" style={{fontSize:11,width:100,padding:'2px 6px'}}/>)}
+                            <button style={{background:'none',border:'1px dashed #a78bfa',color:'#7c3aed',borderRadius:3,padding:'1px 6px',fontSize:10,cursor:'pointer',fontWeight:700}} onClick={()=>{
+                              const upd={...artJobDetailEditColors};upd[gk]={...upd[gk]};upd[gk][pos]=[...editPosColors,''];setArtJobDetailEditColors(upd);
+                            }}>+</button>
+                            {editPosColors.length>1&&<button style={{background:'none',border:'none',color:'#dc2626',fontSize:12,cursor:'pointer',padding:'0 3px'}} onClick={()=>{
+                              const upd={...artJobDetailEditColors};upd[gk]={...upd[gk]};upd[gk][pos]=editPosColors.slice(0,-1);setArtJobDetailEditColors(upd);
+                            }}>×</button>}
+                          </div>
+                          :posColors.length>0?<div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
+                            {posColors.map((cl,ci)=>{const sw=colorMap[cl]||Object.entries(colorMap).find(([k])=>cl.toLowerCase().includes(k.toLowerCase()))?.[1]||null;
+                              return<span key={ci} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'2px 8px',background:'white',border:'1px solid '+(sw||'#d1d5db'),borderRadius:4,fontSize:11,fontWeight:700,color:'#0f172a'}}>
+                                <span style={{width:12,height:12,borderRadius:3,background:sw||'#e2e8f0',border:'1px solid #d1d5db',flexShrink:0}}/>{cl}
+                              </span>})}
+                          </div>
+                          :<span style={{fontSize:11,color:'#94a3b8',fontStyle:'italic'}}>No colors</span>}
+                        </div>})}
+                      {/* Numbers */}
+                      {numDecos.map((nd,ni)=><div key={'n'+ni} style={{padding:'6px 0',borderTop:'1px solid #e9ecef'}}>
+                        <div style={{display:'flex',alignItems:'baseline',gap:8,flexWrap:'wrap'}}>
+                          <span style={{fontSize:12,fontWeight:700,color:'#166534',background:'#dcfce7',padding:'1px 8px',borderRadius:4}}>#️⃣ Numbers{nd.frontAndBack?' — Front + Back':''}</span>
+                        </div>
+                        {nd.frontAndBack?<div style={{paddingLeft:12,marginTop:4}}>
+                          <div style={{fontSize:11,color:'#1e293b',marginBottom:2}}>
+                            <span style={{fontWeight:700}}>Front</span> — {nd.numSize} — {nd.numFont} font{nd.printColor?' — '+nd.printColor:''}
+                          </div>
+                          <div style={{fontSize:11,color:'#1e293b'}}>
+                            <span style={{fontWeight:700}}>Back</span> — {nd.numSizeBack||nd.numSize} — {nd.numFont} font{nd.printColor?' — '+nd.printColor:''}
+                          </div>
+                        </div>
+                        :<div style={{paddingLeft:12,marginTop:4,fontSize:11,color:'#1e293b'}}>
+                          {nd.position} — {nd.numSize} — {nd.numFont} font — {nd.method}{nd.printColor?' — '+nd.printColor:''}
+                        </div>}
+                        {nd.twoColor&&<div style={{paddingLeft:12,marginTop:2}}><span style={{fontSize:10,padding:'1px 6px',background:'#fef2f2',borderRadius:3,color:'#dc2626',fontWeight:600}}>2-Color</span></div>}
+                      </div>)}
+                      {/* Names */}
+                      {nameDecos.map((nd,ni)=><div key={'nm'+ni} style={{display:'flex',alignItems:'baseline',gap:8,padding:'5px 0',borderTop:'1px solid #e9ecef'}}>
+                        <span style={{fontSize:12,fontWeight:700,color:'#92400e',background:'#fef3c7',padding:'1px 8px',borderRadius:4}}>ABC Names</span>
+                        {nd.frontAndBack&&<span style={{fontSize:10,color:'#6d28d9',fontWeight:600}}>Front + Back</span>}
+                      </div>)}
+                    </div>})}
+                  {isEditing&&<button className="btn btn-sm" style={{fontSize:11,padding:'5px 14px',background:'#7c3aed',color:'white',border:'none',borderRadius:6,fontWeight:700,marginTop:4}} onClick={saveColors}>Save Colors</button>}
                 </div>;
               })()}
             </div>
