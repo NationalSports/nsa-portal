@@ -187,11 +187,18 @@ const _dbSaveEstimateInner = async (est) => {
       await supabase.from('estimate_item_decorations').delete().in('estimate_item_id',oldItemIds);
     }
     await supabase.from('estimate_items').delete().eq('estimate_id',est.id);
-    // Sync art_files: delete removed, upsert current (whitelist columns to avoid unknown-column errors)
-    await supabase.from('estimate_art_files').delete().eq('estimate_id',est.id);
+    // Sync art_files: upsert current, delete removed (avoids DELETE+INSERT race condition)
     if(art_files?.length){
       const{error:afErr}=await supabase.from('estimate_art_files').upsert(art_files.map(a=>({..._pick(a,_artCols),estimate_id:est.id})),{onConflict:'estimate_id,id'});
       if(afErr)console.error('[DB] estimate_art_files upsert failed:',afErr.message,afErr.details);
+      const currentAfIds=art_files.map(a=>a.id).filter(Boolean);
+      if(currentAfIds.length){
+        const{data:existingAfs}=await supabase.from('estimate_art_files').select('id').eq('estimate_id',est.id);
+        const toDeleteAf=(existingAfs||[]).filter(ea=>!currentAfIds.includes(ea.id)).map(ea=>ea.id);
+        if(toDeleteAf.length)await supabase.from('estimate_art_files').delete().in('id',toDeleteAf);
+      }
+    }else{
+      await supabase.from('estimate_art_files').delete().eq('estimate_id',est.id);
     }
     if(!items?.length){_dbSaveFailedIds.delete(est.id);_persistFailedIds();return true}
     for(let idx=0;idx<items.length;idx++){
@@ -307,18 +314,24 @@ const _dbSaveSOInner = async (so) => {
   }catch(e){console.error('[DB] save SO:',e);_dbSaveFailedIds.add(so.id);_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save failed: '+e.message,'error');return false}});
 };
 const _dbSaveSO = (so) => _queuedEntitySave(so.id, so, _dbSaveSOInner);
+const _invCols=['id','customer_id','so_id','date','due_date','total','paid','memo','status','type','inv_type','deposit_pct','tax','tax_rate','tax_exempt','shipping','cc_fee','email_status','email_sent_at','line_items','qb_invoice_id','tc_reported','tc_tax','created_at','updated_at'];
 const _dbSaveInvoice = async (inv) => {
   if(!supabase)return;
-  try{
-    const{payments,items,_qb_synced,_qb_id,_age,_dd,_bal,_overdue,_rep,_cname,...invRow}=inv;
-    await supabase.from('invoices').upsert(invRow,{onConflict:'id'});
-    await supabase.from('invoice_payments').delete().eq('invoice_id',inv.id);
-    if(payments?.length) await supabase.from('invoice_payments').insert(payments.map(p=>({...p,invoice_id:inv.id})));
+  return _dbSavingGuard(async()=>{try{
+    const{payments,items,...rest}=inv;
+    const{error:invErr}=await supabase.from('invoices').upsert(_pick(rest,_invCols),{onConflict:'id'});
+    if(invErr){console.error('[DB] invoices upsert failed:',invErr.message);_dbSaveFailedIds.add(inv.id);_persistFailedIds();return false}
+    // Upsert payments instead of DELETE+INSERT to avoid race condition
+    if(payments?.length){
+      await supabase.from('invoice_payments').delete().eq('invoice_id',inv.id);
+      await supabase.from('invoice_payments').insert(payments.map(p=>({amount:p.amount,method:p.method,ref:p.ref,date:p.date,cc_fee:p.cc_fee,invoice_id:inv.id})));
+    }
     if(items?.length){
       await supabase.from('invoice_items').delete().eq('invoice_id',inv.id);
-      await supabase.from('invoice_items').insert(items.map(i=>({...i,invoice_id:inv.id})));
+      await supabase.from('invoice_items').insert(items.map(i=>({sku:i.sku,name:i.name,qty:i.qty,unit_price:i.unit_price,total:i.total,description:i.description,invoice_id:inv.id})));
     }
-  }catch(e){console.error('[DB] save invoice:',e)}
+    _dbSaveFailedIds.delete(inv.id);_persistFailedIds();return true;
+  }catch(e){console.error('[DB] save invoice:',e);_dbSaveFailedIds.add(inv.id);_persistFailedIds();return false}});
 };
 let _dbNotify=null; // set by App component for visible error toasts
 const _dbSaveCustomer = async (c) => {
@@ -329,9 +342,23 @@ const _dbSaveCustomer = async (c) => {
     if(!custRow.created_at)custRow.created_at=custRow.updated_at;
     const{error:custErr}=await supabase.from('customers').upsert(_pick(custRow,_custCols),{onConflict:'id'});
     if(custErr){console.error('[DB] save customer upsert error:',custErr.message);if(_dbNotify)_dbNotify('Customer save failed: '+custErr.message,'error');return false}
-    const{error:delErr}=await supabase.from('customer_contacts').delete().eq('customer_id',c.id);
-    if(delErr){console.error('[DB] delete contacts error:',delErr.message)}
-    if(contacts?.length){const{error:insErr}=await supabase.from('customer_contacts').insert(contacts.map((ct,i)=>({customer_id:c.id,name:ct.name,email:ct.email,phone:ct.phone,role:ct.role,sort_order:i})));if(insErr){console.error('[DB] insert contacts error:',insErr.message)}}
+    // Upsert contacts then delete removed ones (avoids DELETE+INSERT race condition)
+    if(contacts?.length){
+      const contactRows=contacts.map((ct,i)=>({customer_id:c.id,name:ct.name,email:ct.email,phone:ct.phone,role:ct.role,sort_order:i}));
+      const{error:ctErr}=await supabase.from('customer_contacts').upsert(contactRows,{onConflict:'customer_id,sort_order'});
+      if(ctErr){console.error('[DB] upsert contacts error:',ctErr.message);
+        // Fallback: DELETE+INSERT if upsert constraint doesn't exist
+        await supabase.from('customer_contacts').delete().eq('customer_id',c.id);
+        await supabase.from('customer_contacts').insert(contactRows);
+      }else{
+        // Delete contacts beyond current count
+        const{data:existingCts}=await supabase.from('customer_contacts').select('sort_order').eq('customer_id',c.id);
+        const toDelete=(existingCts||[]).filter(ec=>ec.sort_order>=contacts.length);
+        if(toDelete.length)await supabase.from('customer_contacts').delete().eq('customer_id',c.id).gte('sort_order',contacts.length);
+      }
+    }else{
+      await supabase.from('customer_contacts').delete().eq('customer_id',c.id);
+    }
     console.log('[DB] Customer saved:',c.id,c.name);return true;
   }catch(e){console.error('[DB] save customer:',e);if(_dbNotify)_dbNotify('Customer save failed: '+e.message,'error');return false}
 };
@@ -7849,7 +7876,10 @@ export default function App(){
     if(supabase){
       let _rtTimer=null;
       const _jsonEq=(a,b)=>{try{return JSON.stringify(a)===JSON.stringify(b)}catch{return false}};
-      const reloadAll=async()=>{const d=await _dbLoad();if(!d||!d.hasData)return;
+      const reloadAll=async()=>{
+        // Skip reload if saves are in-flight to prevent overwriting unsaved local changes
+        if(_dbSavingCount>0){console.log('[DB] Reload deferred — save in progress');_rtTimer=setTimeout(reloadAll,1000);return}
+        const d=await _dbLoad();if(!d||!d.hasData)return;
         // Preserve local versions of estimates/SOs whose decoration saves failed — don't let DB data overwrite them
         const _mergeProtected=(dbArr,snapKey,setter)=>{
           if(!_dbSaveFailedIds.size)return{snap:dbArr,apply:prev=>{const r=_jsonEq(prev,dbArr)?prev:dbArr;return r}};
@@ -7858,13 +7888,14 @@ export default function App(){
         };
         const estMerge=_mergeProtected(d.estimates,'ests');
         const soMerge=_mergeProtected(d.sales_orders,'sos');
+        const invMerge=_mergeProtected(d.invoices,'invs');
         // Update snapshot before state — auto-save effects will diff against this
-        _dbSnap.current={ests:estMerge.snap,sos:soMerge.snap,invs:d.invoices,msgs:d.messages,cust:d.customers,prod:d.products,vend:d.vendors,team:d.team,omg:d.omg_stores,issues:d.issues};
+        _dbSnap.current={ests:estMerge.snap,sos:soMerge.snap,invs:invMerge.snap,msgs:d.messages,cust:d.customers,prod:d.products,vend:d.vendors,team:d.team,omg:d.omg_stores,issues:d.issues};
         // Use change detection to avoid triggering save effects needlessly
         if(d.team.length)setREPS(prev=>_jsonEq(prev,d.team)?prev:d.team);
         setEsts(estMerge.apply);
         setSOs(soMerge.apply);
-        setInvs(prev=>_jsonEq(prev,d.invoices)?prev:d.invoices);
+        setInvs(invMerge.apply);
         if(d.messages.length)setMsgs(prev=>_jsonEq(prev,d.messages)?prev:d.messages);
         setCust(prev=>_jsonEq(prev,d.customers)?prev:d.customers);
         if(d.products.length)setProd(prev=>{if(_jsonEq(prev,d.products))return prev;const merged=d.products.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));return localOnly.length?[...merged,...localOnly]:merged});
@@ -7894,20 +7925,24 @@ export default function App(){
     if(!supabase)return;
     const poll=setInterval(async()=>{
       if(!_dbReady.current||!_initialLoadDone.current)return;
+      // Skip poll if saves are in-flight to prevent overwriting unsaved local changes
+      if(_dbSavingCount>0){console.log('[DB] Poll deferred — save in progress');return}
       try{
         const d=await _dbLoad();
         if(!d||!d.hasData)return;
         // If initial load failed but polling recovered, re-enable Supabase writes
         if(!_dbLoadSuccess.current){_dbLoadSuccess.current=true;setDbError(null);console.log('[DB] Poll recovered — Supabase writes re-enabled')}
-        // Preserve local versions of estimates/SOs whose decoration saves failed
+        // Preserve local versions of entities whose saves failed — don't let DB data overwrite them
         const changed=(prev,next)=>{if(prev.length!==next.length)return true;const pIds=prev.map(e=>e.id+':'+(e.updated_at||'')).sort().join(',');const nIds=next.map(e=>e.id+':'+(e.updated_at||'')).sort().join(',');return pIds!==nIds};
-        const pollEsts=_dbSaveFailedIds.size?d.estimates.map(e=>_dbSaveFailedIds.has(e.id)?(_dbSnap.current.ests?.find(s=>s.id===e.id)||e):e):d.estimates;
-        const pollSOs=_dbSaveFailedIds.size?d.sales_orders.map(s=>_dbSaveFailedIds.has(s.id)?(_dbSnap.current.sos?.find(x=>x.id===s.id)||s):s):d.sales_orders;
+        const _pollMerge=(dbArr,snapKey)=>_dbSaveFailedIds.size?dbArr.map(e=>_dbSaveFailedIds.has(e.id)?(_dbSnap.current[snapKey]?.find(s=>s.id===e.id)||e):e):dbArr;
+        const pollEsts=_pollMerge(d.estimates,'ests');
+        const pollSOs=_pollMerge(d.sales_orders,'sos');
+        const pollInvs=_pollMerge(d.invoices,'invs');
         // Update snapshot before state — auto-save effects will diff against this
-        _dbSnap.current={ests:pollEsts,sos:pollSOs,invs:d.invoices,msgs:d.messages,cust:d.customers,prod:d.products,vend:d.vendors,team:d.team,omg:d.omg_stores,issues:d.issues};
+        _dbSnap.current={ests:pollEsts,sos:pollSOs,invs:pollInvs,msgs:d.messages,cust:d.customers,prod:d.products,vend:d.vendors,team:d.team,omg:d.omg_stores,issues:d.issues};
         setEsts(prev=>{if(_dbSaveFailedIds.size){const merged=d.estimates.map(e=>_dbSaveFailedIds.has(e.id)?(prev.find(p=>p.id===e.id)||e):e);return changed(prev,merged)?merged:prev}return changed(prev,d.estimates)?d.estimates:prev});
         setSOs(prev=>{if(_dbSaveFailedIds.size){const merged=d.sales_orders.map(s=>_dbSaveFailedIds.has(s.id)?(prev.find(p=>p.id===s.id)||s):s);return changed(prev,merged)?merged:prev}return changed(prev,d.sales_orders)?d.sales_orders:prev});
-        setInvs(prev=>changed(prev,d.invoices)?d.invoices:prev);
+        setInvs(prev=>{if(_dbSaveFailedIds.size){const merged=d.invoices.map(i=>_dbSaveFailedIds.has(i.id)?(prev.find(p=>p.id===i.id)||i):i);return changed(prev,merged)?merged:prev}return changed(prev,d.invoices)?d.invoices:prev});
         setCust(prev=>changed(prev,d.customers)?d.customers:prev);
         if(d.messages.length)setMsgs(prev=>changed(prev,d.messages)?d.messages:prev);
         if(d.issues.length)setIssues(prev=>changed(prev,d.issues)?d.issues:prev);
