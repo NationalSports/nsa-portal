@@ -2726,7 +2726,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               });
             }} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}>🖨️ Print</button>
             {isE&&onCopyEstimate&&saved&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);if(!window.confirm('Create a copy of this estimate?'))return;onCopyEstimate(o)}} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="file" size={12}/> Copy</button>}
-            {isSO&&onRevertToEst&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);if(!window.confirm('Revert '+o.id+' back to a new estimate? The SO will be marked as reverted.'))return;onRevertToEst(o)}} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="back" size={12}/> Revert to Estimate</button>}
+            {isSO&&onRevertToEst&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);if(!window.confirm('Revert '+o.id+' back to estimate? The SO will be deleted and '+(o.estimate_id?'the original estimate reopened.':'a new estimate created.')))return;onRevertToEst(o)}} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="back" size={12}/> Revert to Estimate</button>}
             {isSO&&o.estimate_id&&onViewEstimate&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);onViewEstimate(o.estimate_id)}} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="dollar" size={12}/> View Estimate</button>}
             {onDelete&&<><div style={{borderTop:'1px solid #e2e8f0',margin:'2px 0'}}/><button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#dc2626',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);onDelete(o.id)}} onMouseEnter={e=>e.currentTarget.style.background='#fef2f2'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="trash" size={12}/> Delete</button>}</>}
           </div></>}
@@ -8485,24 +8485,31 @@ export default function App(){
     const ne={id:nextEstId(ests),customer_id:est.customer_id,memo:(est.memo||'')+' (copy)',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:est.default_markup,shipping_type:est.shipping_type,shipping_value:est.shipping_value,ship_to_id:est.ship_to_id,email_status:null,art_files:JSON.parse(JSON.stringify(est.art_files||[])),items:clonedItems};
     setEsts(p=>[...p,ne]);const c=cust.find(x=>x.id===ne.customer_id);setEEst(ne);setEEstC(c);setPg('estimates');nf(`${ne.id} copied from ${est.id}`)};
   const revertSOToEst=so=>{
-    // Check for open POs or IFs (pick lines) — if any exist, can't delete the SO
+    // Check for open POs or IFs (pick lines) — if any exist, block the revert
     const hasOpenPOs=safeItems(so).some(it=>safePOs(it).some(po=>po.status!=='cancelled'));
     const hasOpenIFs=safeItems(so).some(it=>safePicks(it).length>0);
     const hasLinkedInvs=invs.some(i=>i.so_id===so.id);
-    const canDeleteSO=!hasOpenPOs&&!hasOpenIFs&&!hasLinkedInvs;
+    if(hasOpenPOs||hasOpenIFs||hasLinkedInvs){nf('Cannot revert — SO has open POs, IFs, or invoices','error');return}
+    // Build clean items (no pick_lines/po_lines) and art_files from the SO
     const clonedItems=safeItems(so).map(it=>{const clone=JSON.parse(JSON.stringify(it));delete clone.pick_lines;delete clone.po_lines;return clone});
-    const ne={id:nextEstId(ests),customer_id:so.customer_id,memo:so.memo||'',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:so.default_markup,shipping_type:so.shipping_type,shipping_value:so.shipping_value,ship_to_id:so.ship_to_id,email_status:null,art_files:JSON.parse(JSON.stringify(so.art_files||[])),items:clonedItems};
-    // Re-open the parent estimate if it was converted
-    setEsts(p=>{const updated=p.map(e=>e.id===so.estimate_id?{...e,status:'draft',updated_at:new Date().toLocaleString()}:e);return[...updated,ne]});
-    if(canDeleteSO){
-      // Delete the SO entirely since no open POs, IFs, or invoices
-      setSOs(p=>p.filter(s=>s.id!==so.id));_dbDeleteSO(so.id);
+    const clonedArt=JSON.parse(JSON.stringify(so.art_files||[]));
+    // Try to reopen the original parent estimate
+    const parentEst=so.estimate_id?ests.find(e=>e.id===so.estimate_id):null;
+    let targetEst;
+    if(parentEst){
+      // Reopen the original estimate with SO's current items/art
+      targetEst={...parentEst,status:'draft',updated_at:new Date().toLocaleString(),items:clonedItems,art_files:clonedArt,memo:so.memo||parentEst.memo,default_markup:so.default_markup,shipping_type:so.shipping_type,shipping_value:so.shipping_value,ship_to_id:so.ship_to_id};
+      setEsts(p=>p.map(e=>e.id===parentEst.id?targetEst:e));
     }else{
-      setSOs(p=>p.map(s=>s.id===so.id?{...s,status:'reverted',updated_at:new Date().toLocaleString()}:s));
+      // No parent estimate — create a new one
+      targetEst={id:nextEstId(ests),customer_id:so.customer_id,memo:so.memo||'',status:'draft',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:so.default_markup,shipping_type:so.shipping_type,shipping_value:so.shipping_value,ship_to_id:so.ship_to_id,email_status:null,art_files:clonedArt,items:clonedItems};
+      setEsts(p=>[...p,targetEst]);
     }
+    // Delete the SO entirely
+    setSOs(p=>p.filter(s=>s.id!==so.id));_dbDeleteSO(so.id);
     setESO(null);
-    const c=cust.find(x=>x.id===ne.customer_id);setEEst(ne);setEEstC(c);setPg('estimates');
-    nf(canDeleteSO?`${ne.id} created from ${so.id} — SO deleted`:`${ne.id} created from ${so.id} — SO kept (has open POs/IFs/invoices)`)};
+    const c=cust.find(x=>x.id===targetEst.customer_id);setEEst(targetEst);setEEstC(c);setPg('estimates');
+    nf(parentEst?`Reopened ${targetEst.id} from ${so.id} — SO deleted`:`${targetEst.id} created from ${so.id} — SO deleted`)};
   const aO=useMemo(()=>[
     ...ests.map(e=>{const _eAQ={};safeItems(e).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_eAQ[d.art_file_id]=(_eAQ[d.art_file_id]||0)+q2}})});const eaf=safeArt(e);const t=e.items?.reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((s,v)=>s+v,0);let r=qq*it.unit_sell;it.decorations?.forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_eAQ[d.art_file_id]:qq;const dp=dP(d,qq,eaf,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?qq*2:qq);r+=eq*dp.sell});return a+r},0)||0;return{id:e.id,type:'estimate',customer_id:e.customer_id,date:e.created_at?.split(' ')[0],total:t,memo:e.memo,status:e.status}}),
     ...sos.map(s=>{const _sAQ={};safeItems(s).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((ss,v)=>ss+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_sAQ[d.art_file_id]=(_sAQ[d.art_file_id]||0)+q2}})});const saf=safeArt(s);const t=s.items?.reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((ss,v)=>ss+v,0);let r=qq*(it.unit_sell||0);(it.decorations||[]).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_sAQ[d.art_file_id]:qq;const dp=dP(d,qq,saf,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?qq*2:qq);r+=eq*dp.sell});return a+r},0)||0;return{id:s.id,type:'sales_order',customer_id:s.customer_id,date:s.created_at?.split(' ')[0],total:t,memo:s.memo,status:s.status}}),
