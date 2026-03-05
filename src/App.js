@@ -1612,7 +1612,7 @@ const fetchShipStationRates = async (customer, weight) => {
 };
 
 // ─── OrderMyGear API Integration (via Netlify proxy to avoid CORS) ───
-const omgApiCall = async (endpoint, options = {}) => {
+const omgApiCall = async (endpoint, options = {}, _retries = 0) => {
   try {
     const method = options.method || 'GET';
     const proxyUrl = `/.netlify/functions/omg-proxy?path=${encodeURIComponent(endpoint)}`;
@@ -1622,6 +1622,13 @@ const omgApiCall = async (endpoint, options = {}) => {
       ...(options.body ? { body: options.body } : {})
     });
     if (!response.ok) {
+      // Retry on 409 (conflict/rate limit) and 429 (too many requests) with backoff
+      if ((response.status === 409 || response.status === 429) && _retries < 3) {
+        const delay = (2 ** _retries) * 1000;
+        console.warn(`[OMG] ${response.status} on ${endpoint}, retrying in ${delay}ms (attempt ${_retries + 1}/3)`);
+        await new Promise(r => setTimeout(r, delay));
+        return omgApiCall(endpoint, options, _retries + 1);
+      }
       const errText = await response.text().catch(() => '');
       let msg;
       try { msg = JSON.parse(errText)?.error; } catch {}
@@ -1752,7 +1759,7 @@ const convertOMGStore = (omgResponse, nsaCustomers) => {
 
   return {
     id: `OMG-${resource.id}`, store_name: attrs.name || attrs.sale_code,
-    customer_id: matchedCustomer?.id || null, rep_id: matchedCustomer?.primary_rep_id || 'r1',
+    customer_id: matchedCustomer?.id || null, rep_id: matchedCustomer?.primary_rep_id || null,
     status: nsaStatus,
     open_date: attrs.opens_at ? new Date(attrs.opens_at).toLocaleDateString() : '',
     close_date: attrs.expires_at ? new Date(attrs.expires_at).toLocaleDateString() : '',
@@ -8623,10 +8630,17 @@ export default function App(){
     try {
       const omgStoresData = await fetchOMGStores();
       if (!omgStoresData?.data) { nf('No stores found in OMG API response', 'error'); return; }
-      // Use allSettled so one failed store doesn't abort the entire sync
-      const results = await Promise.allSettled(omgStoresData.data.map(store => fetchOMGStoreDetail(store.id)));
-      const detailedStores = results.filter(r => r.status === 'fulfilled' && r.value !== null).map(r => r.value);
-      const failedCount = results.length - detailedStores.length;
+      // Fetch store details in small batches to avoid OMG API rate limits (409s)
+      const detailedStores = [];
+      const batchSize = 2;
+      const stores = omgStoresData.data;
+      for (let i = 0; i < stores.length; i += batchSize) {
+        const batch = stores.slice(i, i + batchSize);
+        const results = await Promise.allSettled(batch.map(store => fetchOMGStoreDetail(store.id)));
+        results.forEach(r => { if (r.status === 'fulfilled' && r.value !== null) detailedStores.push(r.value); });
+        if (i + batchSize < stores.length) await new Promise(r => setTimeout(r, 500));
+      }
+      const failedCount = stores.length - detailedStores.length;
       const convertedStores = detailedStores.map(store => convertOMGStore(store, cust));
       // Merge: keep manual stores + update OMG stores by ID
       const manualStores = omgStores.filter(s => !s._omg_source);
