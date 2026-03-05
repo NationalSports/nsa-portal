@@ -2630,6 +2630,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {l:'TOTAL',v:o.promo_applied&&promoTotals?promoTotals.customerPays:totals.grand,bg:o.promo_applied?'#dcfce7':'#faf5ff',c:o.promo_applied?'#166534':'#7c3aed'},
             ...(o.promo_applied&&promoTotals?[{l:'PROMO $',v:promoTotals.promoAmount,bg:'#fef3c7',c:'#92400e',s:'deducted'}]:[])].map(x=>
             <div key={x.l} style={{textAlign:'center',padding:'8px 12px',background:x.bg,borderRadius:8,minWidth:72}}><div style={{fontSize:9,color:x.c,fontWeight:700}}>{x.l}</div><div style={{fontSize:17,fontWeight:800,color:x.c}}>${x.v.toLocaleString(undefined,{maximumFractionDigits:0})}</div>{x.s&&<div style={{fontSize:9,color:'#94a3b8'}}>{x.s}</div>}</div>)}</div>
+          {isSO&&(()=>{const actualShip=safeNum(o._shipping_cost||o._shipstation_cost||0);const quotedShip=o.shipping_type==='pct'?totals.rev*(o.shipping_value||0)/100:safeNum(o.shipping_value||0);const overage=actualShip-quotedShip;
+            return actualShip>0&&overage>0?<div style={{fontSize:10,padding:'4px 10px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:6,color:'#dc2626',fontWeight:600,marginTop:4}}>
+              ⚠️ Shipping cost ${actualShip.toFixed(2)} exceeds quoted ${quotedShip.toFixed(2)} by <strong>${overage.toFixed(2)}</strong>
+            </div>:null})()}
       </div>
       <div style={{display:'flex',gap:8,marginTop:12,alignItems:'end',flexWrap:'wrap'}}>
         <div style={{flex:1,minWidth:180}}><label className="form-label">Memo</label><input className="form-input" value={o.memo} onChange={e=>sv('memo',e.target.value)} style={{fontSize:14}}/></div>
@@ -3894,9 +3898,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const variance=totalActual-totalExpected;
         const hasActuals=costLines.some(l=>l.poCount>0);
         // Shipping & freight costs for GP calculation
-        const shipCostVal=safeNum(o._shipstation_cost||0);
+        const shipCostVal=safeNum(o._shipping_cost||o._shipstation_cost||0);
         const freightVal=safeNum(o._inbound_freight||0);
-        if(shipCostVal>0)costLines.push({category:'Shipping',sku:'—',name:'Outbound Shipping (ShipStation)',vendor:'ShipStation',qty:1,expected:shipCostVal,actual:shipCostVal,poCount:0,poIds:'',allReceived:true});
+        // Expected shipping = what the rep quoted on the SO (% of rev or flat $)
+        const quotedShipRev=costLines.filter(l=>l.category==='Blanks'||l.category==='Outside Deco'||l.category==='In-House Deco').reduce((a,l)=>a+l.expected,0);
+        const quotedShip=o.shipping_type==='pct'?totals.rev*(o.shipping_value||0)/100:safeNum(o.shipping_value||0);
+        if(shipCostVal>0||quotedShip>0)costLines.push({category:'Shipping',sku:'—',name:'Outbound Shipping (ShipStation)',vendor:'ShipStation',qty:1,expected:quotedShip,actual:shipCostVal,poCount:0,poIds:'',allReceived:true});
         if(freightVal>0)costLines.push({category:'Freight',sku:'—',name:'Inbound Freight (Supplier)',vendor:'Supplier',qty:1,expected:freightVal,actual:freightVal,poCount:0,poIds:'',allReceived:true});
         const cats={};costLines.forEach(l=>{if(!cats[l.category])cats[l.category]={expected:0,actual:0};cats[l.category].expected+=l.expected;cats[l.category].actual+=l.actual});
 
