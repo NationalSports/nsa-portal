@@ -1667,22 +1667,36 @@ const omgApiCall = async (endpoint, options = {}, _retries = 0) => {
 };
 
 const fetchOMGStores = async () => {
-  // Fetch all pages of stores from OMG API
-  // JSON:API pagination uses links.next to indicate more pages
+  // Fetch store list from OMG, then filter to open + recently closed (last 30 days)
+  // The list call is cheap — it's the per-store detail fetches that hit rate limits
   let allData = [], allIncluded = [];
   let endpoint = '/sales?include=organization';
   while (endpoint) {
     const resp = await omgApiCall(endpoint);
-    if (!resp?.data?.length) { if (!allData.length) return resp; break; }
+    if (!resp?.data?.length) break;
     allData = allData.concat(resp.data);
     if (resp.included) allIncluded = allIncluded.concat(resp.included);
-    // Follow JSON:API links.next for pagination (extract path from full URL)
     const nextUrl = resp.links?.next;
     if (nextUrl) {
       try { endpoint = new URL(nextUrl).pathname.replace(/^\/v1/, '') + new URL(nextUrl).search; }
       catch { endpoint = null; }
     } else { endpoint = null; }
   }
+
+  // Filter: keep open/pending/scheduled + closed/finalized/fulfilled within last 30 days
+  const thirtyDaysAgo = new Date(Date.now() - 30 * 86400000);
+  const total = allData.length;
+  allData = allData.filter(s => {
+    const status = s.attributes?.status;
+    if (status === 'open' || status === 'pending' || status === 'scheduled') return true;
+    if (['closed', 'finalized', 'fulfilled'].includes(status)) {
+      const closedAt = s.attributes?.expires_at || s.attributes?.closed_at;
+      return closedAt && new Date(closedAt) >= thirtyDaysAgo;
+    }
+    return false;
+  });
+  console.log(`[OMG] Filtered ${allData.length} relevant stores from ${total} total (open + closed <30 days)`);
+
   return { data: allData, included: allIncluded };
 };
 
