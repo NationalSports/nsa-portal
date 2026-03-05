@@ -547,8 +547,8 @@ const _artCols=['id','name','deco_type','ink_colors','thread_colors','art_size',
 // Columns that may not exist in art file tables — stripped on retry
 const _artExtraCols=new Set(['art_sizes','garment_colors','item_mockups']);
 // Columns that may not exist in so_jobs — stripped on retry
-const _jobExtraCols=new Set(['art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected']);
-const _jobCols=['id','key','art_file_id','art_name','deco_type','positions','art_status','item_status','prod_status','total_units','fulfilled_units','split_from','created_at','assigned_machine','assigned_to','ship_method','items','_auto','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected'];
+const _jobExtraCols=new Set(['art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at']);
+const _jobCols=['id','key','art_file_id','art_name','deco_type','positions','art_status','item_status','prod_status','total_units','fulfilled_units','split_from','created_at','assigned_machine','assigned_to','ship_method','items','_auto','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at'];
 const _custCols=['id','parent_id','name','alpha_tag','billing_address_line1','billing_address_line2','billing_city','billing_state','billing_zip','shipping_address_line1','shipping_address_line2','shipping_city','shipping_state','shipping_zip','adidas_ua_tier','catalog_markup','payment_terms','tax_rate','tax_exempt','primary_rep_id','notes','is_active','created_at','updated_at'];
 const _vendCols=['id','name','vendor_type','api_provider','nsa_carries_inventory','click_automation','is_active','contact_email','contact_phone','rep_name','payment_terms','notes'];
 const _firmDateCols=['item_desc','date','approved'];
@@ -2083,6 +2083,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const[o,setO]=useState(order);const[cust,setCust]=useState(ic);const[pS,setPS]=useState('');const[showAdd,setShowAdd]=useState(false);
   const[tab,setTab]=useState(initTab||'items');const[dirty,setDirty]=useState(false);const[selJob,setSelJob]=useState(null);const[jobNote,setJobNote]=useState('');const[msgDept,setMsgDept]=useState('all');
   const[mentionQuery,setMentionQuery]=useState(null);const[mentionIdx,setMentionIdx]=useState(0);const mentionRef=useRef(null);const msgInputRef=useRef(null);
+    // Sync from external updates (e.g., coach approval from portal) — merge job art_status + art_files
+    React.useEffect(()=>{if(order.updated_at&&order.updated_at!==o.updated_at){setO(prev=>{const extJobs=safeJobs(order);const mergedJobs=safeJobs(prev).map(j=>{const ext=extJobs.find(ej=>ej.id===j.id);if(ext&&(ext.art_status!==j.art_status||ext.coach_approved_at!==j.coach_approved_at||ext.coach_rejected!==j.coach_rejected)){return{...j,art_status:ext.art_status,coach_approved_at:ext.coach_approved_at,coach_rejected:ext.coach_rejected,rejections:ext.rejections,sent_to_coach_at:ext.sent_to_coach_at}}return j});return{...prev,jobs:mergedJobs,art_files:order.art_files,updated_at:order.updated_at}})}},[order.updated_at]);
     React.useEffect(()=>{if(initTab)setTab(initTab)},[initTab]);
     React.useEffect(()=>{if(scrollToItem!=null){setTab('items');setTimeout(()=>{const el=document.getElementById('so-item-'+scrollToItem);if(el){el.scrollIntoView({behavior:'smooth',block:'center'});el.style.boxShadow='0 0 0 3px #3b82f6';setTimeout(()=>{el.style.boxShadow=''},2000)}},150)}},[scrollToItem]);
     React.useEffect(()=>{if(scrollToJob!=null){setTab('jobs');setSelJob(scrollToJob);setTimeout(()=>{const el=document.getElementById('so-job-'+scrollToJob);if(el){el.scrollIntoView({behavior:'smooth',block:'center'});el.style.boxShadow='0 0 0 3px #7c3aed';setTimeout(()=>{el.style.boxShadow=''},2000)}},200)}},[scrollToJob]);
@@ -2529,6 +2531,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         art_requests:existing?.art_requests||[],art_messages:existing?.art_messages||[],
         assigned_artist:existing?.assigned_artist||null,rep_notes:existing?.rep_notes||null,
         rejections:existing?.rejections||null,
+        sent_to_coach_at:existing?.sent_to_coach_at||null,coach_approved_at:existing?.coach_approved_at||null,
+        coach_rejected:existing?.coach_rejected||null,
         _art_ids:j._art_ids||[],
       };
     });
@@ -4597,7 +4601,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         art_requests:j.art_requests?JSON.parse(JSON.stringify(j.art_requests)):[],
         art_messages:j.art_messages?JSON.parse(JSON.stringify(j.art_messages)):[],
         assigned_artist:j.assigned_artist||null,rep_notes:j.rep_notes||null,
-        rejections:j.rejections?JSON.parse(JSON.stringify(j.rejections)):null});
+        rejections:j.rejections?JSON.parse(JSON.stringify(j.rejections)):null,
+        sent_to_coach_at:j.sent_to_coach_at||null,coach_approved_at:j.coach_approved_at||null,coach_rejected:j.coach_rejected||null});
 
       // Split job by received — create partial job with received items
       const splitByReceived=(jIdx)=>{
@@ -4748,11 +4753,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               </div>
               <div style={{fontSize:12,color:'#1e3a8a',marginTop:4}}>The mockup will be sent to you for approval when ready.</div>
             </div>}
-            {j.art_status==='waiting_approval'&&(()=>{const artFile2=safeArt(o).find(a=>a.id===j.art_file_id);const mockups=(artFile2?.mockup_files||artFile2?.files||[]).concat(Object.values(artFile2?.item_mockups||{}).flat());return<div style={{margin:'0 20px',padding:'16px',background:'linear-gradient(135deg,#fef3c7,#fffbeb)',border:'2px solid #fbbf24',borderRadius:10}}>
+            {j.art_status==='waiting_approval'&&(()=>{const artFile2=safeArt(o).find(a=>a.id===j.art_file_id);const mockups=(artFile2?.mockup_files||artFile2?.files||[]).concat(Object.values(artFile2?.item_mockups||{}).flat());const _stca=j.sent_to_coach_at?new Date(j.sent_to_coach_at):null;return<div style={{margin:'0 20px',padding:'16px',background:_stca?'linear-gradient(135deg,#dbeafe,#eff6ff)':'linear-gradient(135deg,#fef3c7,#fffbeb)',border:'2px solid '+(_stca?'#93c5fd':'#fbbf24'),borderRadius:10}}>
               <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:10}}>
-                <span style={{fontSize:20}}>⚠️</span>
-                <span style={{fontWeight:800,fontSize:16,color:'#92400e'}}>Artwork Needs Your Approval</span>
+                <span style={{fontSize:20}}>{_stca?'📤':'⚠️'}</span>
+                <span style={{fontWeight:800,fontSize:16,color:_stca?'#1e40af':'#92400e'}}>{_stca?'Sent to Coach for Approval':'Artwork Needs Your Approval'}</span>
               </div>
+              {_stca&&<div style={{fontSize:12,color:'#1e40af',marginBottom:8,fontWeight:600}}>Sent {_stca.toLocaleDateString('en-US',{weekday:'short'})} {_stca.toLocaleDateString()} @ {_stca.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true})}</div>}
               {mockups.length>0&&<div style={{marginBottom:12}}>
                 <div style={{fontSize:11,fontWeight:700,color:'#78350f',marginBottom:6}}>Review the mockup:</div>
                 {/* Primary mockup — large */}
@@ -5160,6 +5166,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             window.open('sms:'+cam.contact.phone+'?body='+smsBody,'_blank');
             actions.push('text opened');
           }
+          // Record sent_to_coach_at timestamp on the job
+          const updJobs3=safeJobs(o).map((jj,i)=>i===coachApprovalModal.jIdx?{...jj,sent_to_coach_at:new Date().toISOString()}:jj);
+          const updated3={...o,jobs:updJobs3,updated_at:new Date().toLocaleString()};setO(updated3);onSave(updated3);setDirty(false);
           setCoachApprovalModal(null);
           nf(actions.length>0?'Sent to coach — '+actions.join(' + '):'No notification method selected');
         };
@@ -7324,7 +7333,8 @@ function StripePaymentModal({invoices,customerName,customerEmail,alphaTag,onSucc
 }
 
 // ─── STANDALONE COACH PORTAL ───
-function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onUpdateInvs,onUpdateSOs,onUpdateEsts,savSOFn}){
+function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onUpdateInvs,onUpdateSOs,onUpdateEsts,savSOFn,portalSettings}){
+  const _portalDisclaimer=portalSettings?.disclaimer||'';
   const[jobView,setJobView]=useState(null);
   const[invView,setInvView]=useState(null);
   const[estView,setEstView]=useState(null);
@@ -7512,7 +7522,12 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
 
           {/* ── Garments ── */}
           <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:8}}>Garments</div>
-          {items.map((gi,i)=>{const srcItem=safeItems(so)[gi.item_idx];const sizes=srcItem?Object.entries(safeSizes(srcItem)).filter(([,v])=>v>0).sort((a,b)=>{const o=SZ_ORD;return(o.indexOf(a[0])<0?99:o.indexOf(a[0]))-(o.indexOf(b[0])<0?99:o.indexOf(b[0]))}):[]; return<div key={i} style={{border:'1px solid #e2e8f0',borderRadius:10,padding:14,marginBottom:10}}>
+          {items.map((gi,i)=>{const srcItem=safeItems(so)[gi.item_idx];const sizes=srcItem?Object.entries(safeSizes(srcItem)).filter(([,v])=>v>0).sort((a,b)=>{const o2=SZ_ORD;return(o2.indexOf(a[0])<0?99:o2.indexOf(a[0]))-(o2.indexOf(b[0])<0?99:o2.indexOf(b[0]))}):[];
+            const numDecos=srcItem?safeDecos(srcItem).filter(d=>d.kind==='numbers'):[];
+            const nameDecos=srcItem?safeDecos(srcItem).filter(d=>d.kind==='names'):[];
+            const roster=numDecos.length>0?numDecos[0].roster:null;
+            const names=nameDecos.length>0?nameDecos[0].names:null;
+            return<div key={i} style={{border:'1px solid #e2e8f0',borderRadius:10,padding:14,marginBottom:10}}>
             <div style={{display:'flex',gap:14,alignItems:'center'}}>
               {gi.image_url?<img src={gi.image_url} alt="" style={{width:48,height:48,objectFit:'cover',borderRadius:8,border:'1px solid #e2e8f0',flexShrink:0}}/>
               :<div style={{width:48,height:48,background:'#f8fafc',borderRadius:8,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}><div style={{fontSize:20}}>👕</div></div>}
@@ -7528,9 +7543,24 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                 <div style={{fontSize:13,fontWeight:800,color:'#1e3a5f'}}>{qty}</div>
               </div>)}
             </div>}
+            {roster&&Object.keys(roster).length>0&&<div style={{marginTop:10,paddingTop:8,borderTop:'1px solid #f1f5f9'}}>
+              <div style={{fontSize:11,fontWeight:700,color:'#6d28d9',marginBottom:6}}>#️⃣ Numbers</div>
+              <div style={{display:'flex',flexWrap:'wrap',gap:4}}>
+                {Object.entries(roster).flatMap(([sz,nums])=>(nums||[]).filter(n=>n!=='').map((n,ni)=>
+                  <span key={sz+ni} style={{padding:'2px 8px',background:'#faf5ff',border:'1px solid #e9d5ff',borderRadius:4,fontSize:11,fontWeight:600,color:'#6d28d9'}}>{n}<span style={{fontSize:9,color:'#94a3b8',marginLeft:2}}>{sz}</span></span>))}
+              </div>
+            </div>}
+            {names&&Object.keys(names).length>0&&<div style={{marginTop:10,paddingTop:8,borderTop:'1px solid #f1f5f9'}}>
+              <div style={{fontSize:11,fontWeight:700,color:'#0369a1',marginBottom:6}}>🏷️ Names</div>
+              <div style={{display:'flex',flexWrap:'wrap',gap:4}}>
+                {Object.entries(names).flatMap(([sz,nms])=>(nms||[]).filter(n=>n!=='').map((n,ni)=>
+                  <span key={sz+ni} style={{padding:'2px 8px',background:'#f0f9ff',border:'1px solid #bae6fd',borderRadius:4,fontSize:11,fontWeight:600,color:'#0369a1'}}>{n}<span style={{fontSize:9,color:'#94a3b8',marginLeft:2}}>{sz}</span></span>))}
+              </div>
+            </div>}
           </div>})}
           {j.art_status==='waiting_approval'&&<div style={{border:'2px solid #f59e0b',background:'#fffbeb',borderRadius:10,padding:16,marginBottom:16}}>
             <div style={{fontWeight:700,color:'#92400e',marginBottom:10}}>⏳ This artwork needs your approval</div>
+            {_portalDisclaimer&&<div style={{padding:'10px 14px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:8,marginBottom:12,fontSize:12,color:'#991b1b',lineHeight:1.5}}><strong>⚠️ Important:</strong> {_portalDisclaimer}</div>}
             <div style={{marginBottom:10}}>
               <textarea className="form-input" rows={3} placeholder="Add feedback or comments (required for rejection)..." value={comment} onChange={e=>setComment(e.target.value)} style={{fontSize:12,resize:'vertical'}}/>
             </div>
@@ -8352,6 +8382,9 @@ export default function App(){
   React.useEffect(()=>{if(selC){const u=cust.find(c=>c.id===selC.id);if(u&&u!==selC)setSelC(u);else if(!u)setSelC(null)}},[cust]); // eslint-disable-line
   React.useEffect(()=>{if(selP){const u=prod.find(p=>p.id===selP.id);if(u&&u!==selP)setSelP(u);else if(!u)setSelP(null)}},[prod]); // eslint-disable-line
   const[eEst,setEEst]=useState(null);const[eEstC,setEEstC]=useState(null);const[eSO,setESO]=useState(null);const[eSOC,setESOC]=useState(null);const[eSOTab,setESOTab]=useState(null);const[eSOScrollItem,setESOScrollItem]=useState(null);const[eSOScrollJob,setESOScrollJob]=useState(null);
+  // Sync eSO from sos when external updates occur (e.g., coach approval via portal)
+  React.useEffect(()=>{if(eSO){const fresh=sos.find(s=>s.id===eSO.id);if(fresh&&fresh.updated_at!==eSO.updated_at){setESO(fresh)}}},[sos]);
+  React.useEffect(()=>{if(eEst){const fresh=ests.find(e=>e.id===eEst.id);if(fresh&&fresh.updated_at!==eEst.updated_at){setEEst(fresh)}}},[ests]);
   const[returnToPage,setReturnToPage]=useState(null);// {page:'production'|'decoration',jobData:obj} — for "Return to Job" nav
   const[gQ,setGQ]=useState('');const[gOpen,setGOpen]=useState(false);const[mF,setMF]=useState('all');const[rF,setRF]=useState('all');const[pF,setPF]=useState({cat:'all',vnd:'all',stk:'all',clr:'all'});
   const[qPC,setQPC]=useState({open:false,mode:'single',items:[],bulkRaw:''});
@@ -8690,7 +8723,8 @@ export default function App(){
     sos.forEach(so=>{
       const c=cust.find(x=>x.id===so.customer_id);const tag=c?.alpha_tag||so.id;
       buildJobs(so).forEach(j=>{
-        if(j.art_status==='waiting_approval')todos.push({type:'art',priority:2,msg:'⏳ Art awaiting approval: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,action:'Review art',role:'sales'});
+        if(j.art_status==='waiting_approval'){todos.push({type:'art',priority:2,msg:'⏳ Art awaiting approval: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,action:'Review art',role:'sales'});
+          if(j.sent_to_coach_at){const _fuDays=portalSettings?.followUpDays||3;const daysSinceSent=Math.floor((new Date()-new Date(j.sent_to_coach_at))/(1000*60*60*24));if(daysSinceSent>=_fuDays)todos.push({type:'coach_followup',priority:1,msg:'📞 Follow up on art approval ('+daysSinceSent+'d): '+j.art_name,detail:tag+' · '+so.id+' · Sent to coach '+daysSinceSent+' days ago',so,jobId:j.id,action:'Follow Up',role:'sales'})}}
         if(j.coach_approved_at&&(j.art_status==='production_files_needed'||j.art_status==='art_complete')){const daysAgo=Math.floor((new Date()-new Date(j.coach_approved_at))/(1000*60*60*24));if(daysAgo<=7)todos.push({type:'art_approved',priority:1,msg:'✅ Coach approved art: '+j.art_name,detail:tag+' · '+so.id+' · '+(daysAgo===0?'Today':daysAgo+' day'+(daysAgo!==1?'s':'')+' ago'),so,jobId:j.id,action:'Prep prod files',role:'sales'})}
         if(j.art_status==='art_requested'&&j.coach_rejected){const lastRej=(j.rejections||[]).slice(-1)[0];todos.push({type:'art_rejected',priority:1,msg:'❌ Coach rejected art: '+j.art_name,detail:tag+' · '+so.id+(lastRej?' · "'+lastRej.reason.slice(0,60)+(lastRej.reason.length>60?'...':'')+'"':''),so,jobId:j.id,action:'Review feedback',role:'sales'})}
         const ready=isJobReady(j,so);const onBoard=safeJobs(so).some(ej=>ej.id===j.id);
@@ -9921,6 +9955,8 @@ export default function App(){
   const[activeArtTimers,setActiveArtTimers]=useState({});// {soId|jobId:{person,clockIn,soId,artName,customer}}
   const[idleSettings,setIdleSettings]=useState(()=>loadState('idle_settings',{warnMin:5,autoOutMin:10}));
   React.useEffect(()=>{_saveAppState('idle_settings',idleSettings)},[idleSettings]);
+  const[portalSettings,setPortalSettings]=useState(()=>loadState('portal_settings',{followUpDays:3,disclaimer:'Please check all artwork, quantities, and personalization very closely. Once approved, this will be exactly what is printed.'}));
+  React.useEffect(()=>{_saveAppState('portal_settings',portalSettings)},[portalSettings]);
   // ── Idle / activity tracking for timers ──
   const _lastActivity=useRef(Date.now());
   const _idleAccum=useRef({});// {timerKey: totalIdleMs} — accumulates idle time per active timer
@@ -18457,7 +18493,7 @@ export default function App(){
       if(key==='CATEGORIES')CATEGORIES=val;if(key==='POSITIONS')POSITIONS=val;if(key==='CONTACT_ROLES')CONTACT_ROLES=val;
       nf('Settings saved')}catch{nf('Error saving','warn')}};
   function rSettings(){
-    const tabs=[['pricing','Decoration Pricing'],['tiers','Customer Tiers'],['lists','Lists & Options'],['terms','Terms & Policies'],['labor','Labor Rates'],['taxcloud','TaxCloud']];
+    const tabs=[['pricing','Decoration Pricing'],['tiers','Customer Tiers'],['lists','Lists & Options'],['terms','Terms & Policies'],['labor','Labor Rates'],['portal','Coach Portal'],['taxcloud','TaxCloud']];
     return(<>
       <div style={{display:'flex',gap:4,marginBottom:16,flexWrap:'wrap'}}>
         {tabs.map(([k,label])=><button key={k} className={`btn btn-sm ${settingsTab===k?'btn-primary':'btn-secondary'}`} onClick={()=>setSettingsTab(k)}>{label}</button>)}
@@ -18621,7 +18657,28 @@ export default function App(){
         </div></div>
       </>}
 
-      {/* LABOR RATES */}
+      {/* COACH PORTAL SETTINGS */}
+      {settingsTab==='portal'&&<>
+        <div className="card" style={{marginBottom:16}}><div className="card-header"><h3>Coach Portal Settings</h3></div><div className="card-body">
+          <div style={{marginBottom:16}}>
+            <label className="form-label">Follow-up Reminder (days)</label>
+            <div style={{fontSize:11,color:'#64748b',marginBottom:4}}>After this many days waiting for coach approval, a follow-up todo will appear on your dashboard.</div>
+            <input className="form-input" type="number" min="1" max="30" style={{width:80}} value={portalSettings.followUpDays||3} onChange={e=>{const v=parseInt(e.target.value)||3;setPortalSettings(p=>({...p,followUpDays:v}))}}/>
+          </div>
+          <div style={{marginBottom:16}}>
+            <label className="form-label">Approval Disclaimer Message</label>
+            <div style={{fontSize:11,color:'#64748b',marginBottom:4}}>This message appears on the coach portal above the approval buttons. Leave blank to hide.</div>
+            <textarea className="form-input" rows={3} value={portalSettings.disclaimer||''} onChange={e=>setPortalSettings(p=>({...p,disclaimer:e.target.value}))} style={{resize:'vertical',fontSize:12}} placeholder="e.g., Please check all artwork, quantities, and personalization very closely..."/>
+          </div>
+          <div style={{padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0'}}>
+            <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:4}}>Preview</div>
+            {portalSettings.disclaimer?<div style={{padding:'10px 14px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:8,fontSize:12,color:'#991b1b',lineHeight:1.5}}><strong>⚠️ Important:</strong> {portalSettings.disclaimer}</div>
+            :<div style={{fontSize:11,color:'#94a3b8',fontStyle:'italic'}}>No disclaimer set — nothing will show to coaches</div>}
+          </div>
+        </div></div>
+      </>}
+
+      {/* TAXCLOUD */}
       {settingsTab==='taxcloud'&&<>
         <TaxCloudSettings supabase={supabase} nf={nf} cust={cust} setCust={setCust}/>
       </>}
@@ -18792,7 +18849,7 @@ export default function App(){
       <div style={{fontSize:48,fontWeight:900,color:'#1e3a5f'}}>NSA</div>
       <div style={{fontSize:16,color:'#64748b'}}>Portal not found for "<strong>{_portalTag}</strong>"</div>
       <div style={{fontSize:13,color:'#94a3b8'}}>Please check the link with your NSA rep.</div></div>;
-    return<CoachPortal customer={_portalCust} allCustomers={cust} sos={sos} ests={ests} invs={invs} REPS={REPS} prod={prod} onUpdateInvs={setInvs} onUpdateSOs={setSOs} onUpdateEsts={setEsts} savSOFn={savSO}/>;
+    return<CoachPortal customer={_portalCust} allCustomers={cust} sos={sos} ests={ests} invs={invs} REPS={REPS} prod={prod} onUpdateInvs={setInvs} onUpdateSOs={setSOs} onUpdateEsts={setEsts} savSOFn={savSO} portalSettings={portalSettings}/>;
   }
 
   // LOADING GATE
