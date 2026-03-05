@@ -535,7 +535,7 @@ const _persistFailedIds=()=>{try{localStorage.setItem('nsa_save_failed_ids',JSON
 // Column whitelists — strip unknown fields before sending to Supabase (localStorage may have extra UI fields like vendor_id)
 const _pick=(obj,cols)=>{const r={};cols.forEach(c=>{if(c in obj)r[c]=obj[c]});return r};
 const _estCols=['id','customer_id','memo','status','created_by','created_at','updated_at','default_markup','shipping_type','shipping_value','ship_to_id','email_status','email_opened_at','email_viewed_at','deleted_at','promo_applied','promo_amount'];
-const _soCols=['id','customer_id','estimate_id','memo','status','created_by','created_at','updated_at','expected_date','production_notes','shipping_type','shipping_value','ship_to_id','default_markup','omg_store_id','_shipstation_order_id','_shipping_status','_tracking_number','_carrier','_ship_date','_tracking_url','_shipped','_shipments','_shipping_cost','deleted_at','promo_applied','promo_amount'];
+const _soCols=['id','customer_id','estimate_id','memo','status','created_by','created_at','updated_at','expected_date','production_notes','shipping_type','shipping_value','ship_to_id','default_markup','omg_store_id','_shipstation_order_id','_shipping_status','_tracking_number','_carrier','_ship_date','_tracking_url','_shipped','_shipments','_shipping_cost','deleted_at','promo_applied','promo_amount','ship_preference','ship_on_date'];
 const _itemCols=['product_id','sku','name','brand','color','nsa_cost','retail_price','unit_sell','sizes','available_sizes','_colors','no_deco','is_custom','custom_desc','custom_cost','custom_sell','is_promo','_pre_promo_sell'];
 const _decoCols=['kind','position','type','art_file_id','art_tbd_type','tbd_colors','tbd_stitches','tbd_dtf_size','sell_override','sell_each','cost_each','underbase','two_color','colors','stitches','dtf_size','num_method','num_size','num_size_back','num_font','roster','names','names_list','vendor','deco_type','notes','custom_font_art_id','print_color','front_and_back','reversible','num_qty','name_qty'];
 // Columns that may not exist in production DB / schema cache — stripped on insert retry
@@ -1536,10 +1536,10 @@ const convertSOToShipStation = (so, customer) => {
 };
 
 const pushSOToShipStation = async (so, customer) => {
-  const shippableStatuses = ['in_production', 'ready_to_invoice', 'items_received'];
+  const shippableStatuses = ['in_production', 'ready_to_invoice', 'items_received', 'waiting_receive', 'needs_pull', 'need_order', 'partial_received'];
   const soStatus = calcSOStatus(so);
-  if (!shippableStatuses.includes(so.status) && !shippableStatuses.includes(soStatus)) {
-    throw new Error('Only Sales Orders in production or ready to invoice status can be shipped');
+  if (!shippableStatuses.includes(so.status) && !shippableStatuses.includes(soStatus) && so.status !== 'complete') {
+    throw new Error('Only active Sales Orders can be shipped');
   }
   const ssOrder = convertSOToShipStation(so, customer);
   return await shipStationCall('/orders/createorder', { method: 'POST', body: JSON.stringify(ssOrder) });
@@ -2798,6 +2798,22 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               {stLabels[sf]||sf}</span>})}
           {o.status==='complete'&&autoSt!=='complete'&&<button className="btn btn-sm btn-secondary" style={{fontSize:9,marginLeft:4}} onClick={()=>sv('status',autoSt)}>↩️ Reset to Auto</button>}
         </div>})()}
+      {isSO&&<div style={{display:'flex',gap:12,marginTop:10,alignItems:'flex-end',flexWrap:'wrap'}}>
+        <div>
+          <label className="form-label" style={{fontSize:11}}>Ship Preference</label>
+          <div style={{display:'flex',gap:3,flexWrap:'wrap'}}>
+            {[{v:'ship_as_ready',l:'Ship as Ready',icon:'📦',desc:'Each IF/job ships as completed'},{v:'wait_complete',l:'Wait to Ship Complete',icon:'⏳',desc:'Wait for entire order to complete'},{v:'rep_delivery',l:'Rep Delivery',icon:'🚗',desc:'Rep delivers when jobs complete'},{v:'ship_on_date',l:'Ship on Date',icon:'📅',desc:'Hold until specific date'}].map(sp=>{
+              const cur=(o.ship_preference||'ship_as_ready')===sp.v;
+              return<button key={sp.v} className={`btn btn-sm ${cur?'btn-primary':'btn-secondary'}`}
+                style={{fontSize:10,padding:'3px 8px',whiteSpace:'nowrap'}} title={sp.desc}
+                onClick={()=>sv('ship_preference',sp.v)}>{sp.icon} {sp.l}</button>})}
+          </div>
+        </div>
+        {o.ship_preference==='ship_on_date'&&<div>
+          <label className="form-label" style={{fontSize:11}}>Ship Date</label>
+          <input type="date" className="form-input" style={{fontSize:11,padding:'4px 8px'}} value={o.ship_on_date||''} onChange={e=>sv('ship_on_date',e.target.value)}/>
+        </div>}
+      </div>}
       {isSO&&<div style={{marginTop:8}}><label className="form-label">Production Notes</label><input className="form-input" value={o.production_notes||''} onChange={e=>sv('production_notes',e.target.value)} placeholder="Internal notes..."/></div>}
     </div></div>
     {/* TABS */}
@@ -8683,19 +8699,27 @@ export default function App(){
               shipDest:picks.find(p=>p.ship_dest)?.ship_dest||'in_house'});
           }
         }
-        // No-deco items fully pulled → ready to ship
+        // No-deco items fully pulled → ready to ship (respecting ship preference)
         if((!item.decorations?.length||item.no_deco)&&totalPulled>=totalOrdered&&totalOrdered>0){
           const dest=picks.find(p=>p.ship_dest)?.ship_dest||'in_house';
-          shipTasks.push({so,soId:so.id,type:'no_deco',cName,alpha,rep,daysOut,urgent,
-            desc:item.sku+' · '+item.name,units:totalOrdered,shipMethod:dest});
+          const pref=so.ship_preference||'ship_as_ready';
+          const shipDateOk=pref!=='ship_on_date'||!so.ship_on_date||(new Date(so.ship_on_date)<=new Date());
+          if(pref!=='rep_delivery'&&pref!=='wait_complete'&&shipDateOk){
+            shipTasks.push({so,soId:so.id,type:'no_deco',cName,alpha,rep,daysOut,urgent,
+              desc:item.sku+' · '+item.name,units:totalOrdered,shipMethod:dest,shipPref:pref});
+          }
         }
       });
-      // Completed deco jobs → ready to ship
+      // Completed deco jobs → ready to ship (respecting ship preference)
+      const shipPref=so.ship_preference||'ship_as_ready';
+      const shipDateReady=shipPref!=='ship_on_date'||!so.ship_on_date||(new Date(so.ship_on_date)<=new Date());
       safeJobs(so).forEach(j=>{
         if(j.prod_status==='completed'){
-          shipTasks.push({so,soId:so.id,type:'deco_done',job:j,cName,alpha,rep,daysOut,urgent,
-            desc:j.art_name+' ('+j.deco_type?.replace(/_/g,' ')+')',units:j.total_units,
-            shipMethod:j.ship_method||'pending'});
+          if(shipPref!=='rep_delivery'&&shipPref!=='wait_complete'&&shipDateReady){
+            shipTasks.push({so,soId:so.id,type:'deco_done',job:j,cName,alpha,rep,daysOut,urgent,
+              desc:j.art_name+' ('+j.deco_type?.replace(/_/g,' ')+')',units:j.total_units,
+              shipMethod:j.ship_method||'pending',shipPref});
+          }
         }
         // Deco tasks
         if(j.prod_status!=='completed'&&j.prod_status!=='shipped'){
@@ -8706,6 +8730,22 @@ export default function App(){
             machine:MACHINES.find(m=>m.id===j.assigned_machine)?.name,assignedTo:j.assigned_to});
         }
       });
+    });
+    // Handle "wait_complete" SOs — add to shipTasks only if entire order is ready
+    sos.filter(so=>(so.ship_preference||'ship_as_ready')==='wait_complete'&&calcSOStatus(so)!=='complete').forEach(so=>{
+      const c=cust.find(x=>x.id===so.customer_id);const cName=c?.name||'Unknown';const alpha=c?.alpha_tag||'';
+      const rep=REPS.find(r=>r.id===so.created_by)?.name?.split(' ')[0]||'—';
+      const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
+      const urgent=daysOut!=null&&daysOut<=3;
+      const allItemsDone=safeItems(so).every(it=>{const szKeys=Object.keys(it.sizes||{}).filter(k=>SZ_ORD.includes(k)||(it.sizes[k]>0));
+        const tot=szKeys.reduce((a,s)=>a+(it.sizes[s]||0),0);if(tot===0)return true;
+        const pulled=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>szKeys.reduce((a2,s)=>a2+(pk[s]||0),a),0);return pulled>=tot});
+      const allJobsDone=safeJobs(so).every(j=>j.prod_status==='completed'||j.prod_status==='shipped');
+      if(allItemsDone&&allJobsDone&&(safeItems(so).length>0||safeJobs(so).length>0)){
+        const totalUnits=safeItems(so).reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((a2,v)=>a2+v,0),0);
+        shipTasks.push({so,soId:so.id,type:'wait_complete',cName,alpha,rep,daysOut,urgent,
+          desc:'Full order ready',units:totalUnits,shipMethod:'pending',shipPref:'wait_complete'});
+      }
     });
     const sortU=(a,b)=>{if(a.urgent&&!b.urgent)return -1;if(!a.urgent&&b.urgent)return 1;return(a.daysOut||999)-(b.daysOut||999)};
     pullTasks.sort(sortU);shipTasks.sort(sortU);decoTasks.sort(sortU);
@@ -8735,6 +8775,21 @@ export default function App(){
       if(so.expected_date){const dOut=Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24));
         if(dOut<=3&&dOut>=0&&calcSOStatus(so)!=='complete')todos.push({type:'deadline',priority:0,msg:'⚠️ Due in '+dOut+' day'+(dOut!==1?'s':'')+': '+(so.memo||so.id),detail:tag+' · '+so.expected_date,so,action:'Open SO',role:'all'})};
       if(calcSOStatus(so)==='need_order')todos.push({type:'order',priority:2,msg:'🛒 Items need ordering: '+(so.memo||so.id),detail:tag,so,action:'Create PO',role:'sales'});
+      // Rep delivery todos — notify rep when jobs complete
+      if(so.ship_preference==='rep_delivery'){
+        safeJobs(so).filter(j=>j.prod_status==='completed').forEach(j=>{
+          todos.push({type:'rep_delivery',priority:1,msg:'🚗 Ready for rep delivery: '+j.art_name,detail:tag+' · '+so.id+' · '+j.total_units+' units',so,action:'Pick up & deliver',role:'sales'});
+        });
+        // No-deco items fully pulled
+        safeItems(so).forEach(it=>{
+          if((!it.decorations?.length||it.no_deco)){
+            const szKeys=Object.keys(it.sizes||{}).filter(k=>SZ_ORD.includes(k)||(it.sizes[k]>0));
+            const tot=szKeys.reduce((a,s)=>a+(it.sizes[s]||0),0);
+            const pulled=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>szKeys.reduce((a2,s)=>a2+(pk[s]||0),a),0);
+            if(pulled>=tot&&tot>0)todos.push({type:'rep_delivery',priority:1,msg:'🚗 Ready for rep delivery: '+it.sku+' · '+it.name,detail:tag+' · '+so.id+' · '+tot+' units',so,action:'Pick up & deliver',role:'sales'});
+          }
+        });
+      }
     });
     // Coach-approved estimates → rep needs to convert to SO
     ests.filter(e=>e.status==='approved'&&e.approved_by==='Coach').forEach(e=>{
@@ -12795,7 +12850,7 @@ export default function App(){
   };
 
   // WAREHOUSE DASHBOARD
-  const[whTab,setWhTab]=useState('pull');const[whSearch,setWhSearch]=useState('');const[whRepF,setWhRepF]=useState('all');const[scanModalOpen,setScanModalOpen]=useState(false);const[whRecvPO,setWhRecvPO]=useState(null);const[whReceiving,setWhReceiving]=useState(false);
+  const[whTab,setWhTab]=useState('pull');const[whSearch,setWhSearch]=useState('');const[whRepF,setWhRepF]=useState('all');const[scanModalOpen,setScanModalOpen]=useState(false);const[whRecvPO,setWhRecvPO]=useState(null);const[whReceiving,setWhReceiving]=useState(false);const[whViewIF,setWhViewIF]=useState(null);
   const[stockPOs,setStockPOs]=useState([
     {id:'PO-5001-NSA',vendor_id:'v1',vendor_name:'Adidas',status:'partial',created_at:'02/12/26',notes:'Restock pregame tees',items:[{sku:'JX4453',name:'Adidas Unisex Pregame Tee',color:'Team Power Red/White',sizes:{S:20,M:30,L:25,XL:15,'2XL':10},received:{S:20,M:30,L:0,XL:0,'2XL':0}}]},
     {id:'PO-5002-NSA',vendor_id:'v2',vendor_name:'Under Armour',status:'waiting',created_at:'02/18/26',notes:'Stock up on polos for spring',items:[{sku:'1370399',name:'Under Armour Team Polo',color:'Cardinal/White',sizes:{S:10,M:20,L:20,XL:15,'2XL':8},received:{}}]},
@@ -12845,6 +12900,281 @@ export default function App(){
     ];
 
     return(<>
+      {/* ── IF DETAIL VIEW ── */}
+      {whViewIF&&(()=>{
+        const t=whViewIF;const so=t.so;const item=t.item;
+        const c=cust.find(x=>x.id===so.customer_id);
+        const picks=safePicks(item).filter(pk=>pk.status!=='pulled');
+        const allPicks=safePicks(item);
+        const activePick=picks[0];
+        const pickId=activePick?.pick_id||'IF';
+        const szKeys=Object.keys(item.sizes||{}).filter(k=>SZ_ORD.includes(k)||(item.sizes[k]>0)).sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
+        const p=prod.find(pp=>pp.sku===t.sku||pp.id===item.product_id);
+        const addrs2=c?getAddrs(c,cust):[];
+        const qrData=window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(pickId);
+        const shipDest=activePick?.ship_dest||t.shipDest||'in_house';
+        const showShipping=shipDest==='ship_customer'||shipDest==='ship_deco';
+
+        // Local shipping state stored on whViewIF
+        const boxes=t._boxes||[{weight:5,dimensions:{},carrier:'fedex',tracking_number:'',items:[{sku:item.sku,name:item.name,color:item.color||'',sizes:Object.fromEntries(szKeys.map(sz=>[(sz),Math.max(0,(item.sizes[sz]||0)-(t.pulled[sz]||0))]))}]}];
+        const setBoxes=newBoxes=>setWhViewIF(prev=>({...prev,_boxes:newBoxes}));
+
+        return<div style={{maxWidth:900,margin:'0 auto'}}>
+          {/* Back button */}
+          <div style={{marginBottom:12}}>
+            <button className="btn btn-sm btn-secondary" onClick={()=>setWhViewIF(null)} style={{fontSize:12,padding:'6px 14px'}}>
+              ← Back to Pull & Stage</button>
+          </div>
+
+          {/* Header */}
+          <div className="card" style={{marginBottom:12,borderLeft:'4px solid #d97706'}}>
+            <div style={{padding:'14px 18px',display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
+              <div style={{flex:1}}>
+                <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
+                  <span style={{fontSize:20,fontWeight:900,color:'#1e40af'}}>{pickId}</span>
+                  <span className={`badge ${activePick?.status==='pulled'?'badge-green':'badge-amber'}`} style={{fontSize:11}}>
+                    {activePick?.status==='pulled'?'✓ Pulled':'Needs Pull'}</span>
+                  {t.urgent&&<span style={{fontSize:11,padding:'2px 8px',borderRadius:8,background:'#fee2e2',color:'#dc2626',fontWeight:700}}>🔥 Rush — {t.daysOut}d</span>}
+                </div>
+                <div style={{display:'flex',gap:12,fontSize:12,color:'#64748b',flexWrap:'wrap'}}>
+                  <span>SO: <strong style={{color:'#1e40af',cursor:'pointer'}} onClick={()=>{setESOTab('items');setESOScrollItem(t.itemIdx);setESO(so);setESOC(c);setPg('orders')}}>{t.soId}</strong></span>
+                  <span>Customer: <strong style={{color:'#0f172a'}}>{t.cName}</strong></span>
+                  <span>Rep: {t.rep}</span>
+                  {activePick?.created_at&&<span>Created: {activePick.created_at}</span>}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Item details */}
+          <div className="card" style={{marginBottom:12}}>
+            <div style={{padding:'12px 18px'}}>
+              <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:8}}>Item Details</div>
+              <div style={{display:'flex',gap:10,alignItems:'center',marginBottom:12}}>
+                {p?.image_url&&<img src={p.image_url} alt="" style={{width:56,height:56,objectFit:'contain',borderRadius:6,border:'1px solid #e2e8f0'}}/>}
+                <div>
+                  <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                    <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:13}}>{t.sku}</span>
+                    <span style={{fontWeight:700,fontSize:14}}>{t.name}</span>
+                    {t.color&&<span className="badge badge-gray">{t.color}</span>}
+                    {t.brand&&<span style={{fontSize:11,color:'#64748b'}}>{t.brand}</span>}
+                  </div>
+                  <div style={{marginTop:4,fontSize:12,color:'#64748b'}}>
+                    Need to pull: <strong style={{color:'#d97706'}}>{t.needsPull} units</strong>
+                    {' · '}Total ordered: {t.totalOrdered}{' · '}Already pulled: {t.totalPulled}
+                  </div>
+                </div>
+              </div>
+
+              {/* Sizes grid */}
+              <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6}}>Sizes to Pull</div>
+              <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:12}}>
+                {szKeys.map(sz=>{
+                  const ordered=item.sizes[sz]||0;const pulled=t.pulled[sz]||0;const need=Math.max(0,ordered-pulled);
+                  const inv=p?._inv?.[sz]||0;
+                  if(ordered===0)return null;
+                  return<div key={sz} style={{textAlign:'center',minWidth:52,padding:'6px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:need>0?'#fffbeb':'#f0fdf4'}}>
+                    <div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
+                    <div style={{fontSize:18,fontWeight:800,color:need>0?'#d97706':'#166534'}}>{need>0?need:'✓'}</div>
+                    <div style={{fontSize:9,color:'#94a3b8'}}>of {ordered}</div>
+                    <div style={{fontSize:9,fontWeight:600,color:inv<=0?'#dc2626':inv<need?'#d97706':'#166534',marginTop:2}}>{inv} inv</div>
+                  </div>})}
+                <div style={{textAlign:'center',minWidth:52,padding:'6px 8px',borderRadius:6,border:'2px solid #e2e8f0',background:'#f8fafc'}}>
+                  <div style={{fontSize:10,fontWeight:700,color:'#64748b'}}>TOT</div>
+                  <div style={{fontSize:18,fontWeight:900,color:'#d97706'}}>{t.needsPull}</div>
+                  <div style={{fontSize:9,color:'#94a3b8'}}>of {t.totalOrdered}</div>
+                </div>
+              </div>
+
+              {/* All pick lines for this item */}
+              {allPicks.length>0&&<div style={{marginTop:8}}>
+                <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:4}}>Pick History</div>
+                {allPicks.map((pk,pi)=>{const st=pk.status||'pick';
+                  return<div key={pi} style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',marginBottom:4,padding:'4px 8px',borderRadius:4,background:st==='pulled'?'#f0fdf4':'#fffbeb'}}>
+                    <span style={{fontSize:11,fontWeight:700,color:st==='pulled'?'#166534':'#92400e',minWidth:56}}>{pk.pick_id||'PICK'}</span>
+                    {szKeys.map(sz=>{const v=pk[sz]||0;return<span key={sz} style={{minWidth:36,textAlign:'center',fontSize:11,fontWeight:v?700:400,color:v?'#0f172a':'#d1d5db'}}>{v||'—'}</span>})}
+                    <span style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:600,background:st==='pulled'?'#dcfce7':'#fef3c7',color:st==='pulled'?'#166534':'#92400e'}}>{st==='pulled'?'✓ Pulled':'Needs Pull'}</span>
+                    {pk.memo&&<span style={{fontSize:10,color:'#64748b',fontStyle:'italic'}}>{pk.memo}</span>}
+                  </div>})}
+              </div>}
+            </div>
+          </div>
+
+          {/* Ship Destination */}
+          <div className="card" style={{marginBottom:12,borderLeft:'3px solid '+(shipDest==='ship_customer'?'#3b82f6':shipDest==='ship_deco'?'#d97706':'#64748b')}}>
+            <div style={{padding:'12px 18px'}}>
+              <div style={{fontSize:12,fontWeight:800,color:shipDest==='ship_customer'?'#1e40af':shipDest==='ship_deco'?'#92400e':'#475569'}}>
+                {shipDest==='ship_customer'?'📦 Ship to Customer':shipDest==='ship_deco'?'🚚 Ship to Decorator':'🏭 In-House Deco'}</div>
+              {shipDest==='ship_customer'&&addrs2.length>0&&<div style={{fontSize:12,color:'#475569',marginTop:4}}>{addrs2[0]?.label}</div>}
+              {shipDest==='ship_deco'&&activePick?.deco_vendor&&<div style={{fontSize:12,color:'#475569',marginTop:4}}>Vendor: {activePick.deco_vendor}</div>}
+              {activePick?.memo&&<div style={{marginTop:6,fontSize:12,color:'#64748b'}}>📝 {activePick.memo}</div>}
+            </div>
+          </div>
+
+          {/* QR Code / Print Label */}
+          <div className="card" style={{marginBottom:12}}>
+            <div style={{padding:'12px 18px'}}>
+              <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:8}}>📋 Label / QR Code</div>
+              <div style={{display:'flex',gap:16,alignItems:'flex-start'}}>
+                <div style={{padding:8,background:'white',border:'1px solid #e2e8f0',borderRadius:6}}>
+                  <img src={'https://api.qrserver.com/v1/create-qr-code/?size=120x120&data='+encodeURIComponent(qrData)} alt="QR" style={{width:100,height:100,display:'block'}}/>
+                </div>
+                <div style={{flex:1,fontSize:12}}>
+                  <div style={{fontWeight:800,fontSize:16}}>{pickId}</div>
+                  <div style={{color:'#64748b'}}>{t.soId} — {t.cName}</div>
+                  <div style={{fontWeight:600}}>{t.sku} {t.name}</div>
+                  <div>{t.color} — {t.needsPull} units</div>
+                  <div style={{marginTop:4,fontFamily:'monospace',fontSize:11}}>{szKeys.filter(sz=>(item.sizes[sz]||0)-(t.pulled[sz]||0)>0).map(sz=>sz+':'+(Math.max(0,(item.sizes[sz]||0)-(t.pulled[sz]||0)))).join('  ')}</div>
+                </div>
+              </div>
+              <button className="btn btn-sm btn-secondary" style={{marginTop:8,fontSize:11}} onClick={()=>{
+                const w=window.open('','_blank','width=400,height=300');
+                w.document.write('<html><head><title>'+pickId+'</title><style>body{font-family:sans-serif;padding:20px}h1{font-size:24px;margin:0}p{margin:4px 0;font-size:14px}</style></head><body>');
+                w.document.write('<div style="display:flex;gap:20px;align-items:flex-start"><img src="https://api.qrserver.com/v1/create-qr-code/?size=120x120&data='+encodeURIComponent(qrData)+'" width="120" height="120"/><div>');
+                w.document.write('<h1>'+pickId+'</h1><p>'+t.soId+' — '+t.cName+'</p>');
+                if(shipDest!=='in_house'){const destLabel=shipDest==='ship_customer'?'SHIP TO CUSTOMER':'SHIP TO DECO'+(activePick?.deco_vendor?' — '+activePick.deco_vendor:'');w.document.write('<p style="background:#fffbeb;padding:8px;border:2px solid '+(shipDest==='ship_customer'?'#3b82f6':'#d97706')+';border-radius:6px;font-weight:bold;font-size:16px">'+destLabel+'</p>')}
+                w.document.write('<p><strong>'+t.sku+' '+t.name+'</strong></p><p>'+(t.color||'')+' — '+t.needsPull+' units</p>');
+                w.document.write('<p style="font-size:16px;font-weight:bold">'+szKeys.filter(sz=>(item.sizes[sz]||0)-(t.pulled[sz]||0)>0).map(sz=>sz+': '+Math.max(0,(item.sizes[sz]||0)-(t.pulled[sz]||0))).join(' &nbsp; ')+'</p>');
+                w.document.write('</div></div></body></html>');w.document.close();w.print();
+              }}>🖨️ Print Pick Label</button>
+            </div>
+          </div>
+
+          {/* Shipping Label Section — for ship_customer or ship_deco */}
+          {showShipping&&<div className="card" style={{marginBottom:12,borderLeft:'3px solid #166534'}}>
+            <div style={{padding:'14px 18px'}}>
+              <div style={{fontSize:13,fontWeight:800,color:'#166534',marginBottom:10}}>📦 Create Shipping Label</div>
+              <div style={{fontSize:11,color:'#64748b',marginBottom:12}}>
+                {shipDest==='ship_customer'?'Ship directly to customer':'Ship to decorator'}{addrs2.length>0?' — '+addrs2[0]?.addr:''}
+              </div>
+
+              {/* Boxes */}
+              {boxes.map((box,bi)=>{
+                const boxUnits=(box.items||[]).reduce((a,it2)=>a+Object.values(it2.sizes||{}).reduce((a2,v)=>a2+v,0),0);
+                return<div key={bi} style={{padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0',marginBottom:10}}>
+                  <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:10,flexWrap:'wrap'}}>
+                    <span style={{fontSize:13,fontWeight:800,color:'#166534'}}>Box {bi+1}</span>
+                    <span style={{fontSize:11,fontWeight:600,color:'#475569'}}>{boxUnits} units</span>
+                    <div style={{marginLeft:'auto',display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
+                      {boxes.length>1&&<button style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',fontSize:14,fontWeight:700}}
+                        onClick={()=>{const b=[...boxes];b.splice(bi,1);setBoxes(b)}}>×</button>}
+                    </div>
+                  </div>
+
+                  {/* Weight + Dimensions */}
+                  <div style={{display:'flex',gap:12,marginBottom:10,flexWrap:'wrap',alignItems:'flex-end'}}>
+                    <div>
+                      <label style={{fontSize:10,color:'#64748b',fontWeight:600,display:'block',marginBottom:2}}>Weight (lbs)</label>
+                      <input className="form-input" type="number" min="0.1" step="0.5" value={box.weight||5} style={{width:70,fontSize:12,padding:'5px 8px'}}
+                        onChange={e=>{const b=[...boxes];b[bi]={...b[bi],weight:parseFloat(e.target.value)||5};setBoxes(b)}}/>
+                    </div>
+                    <div>
+                      <label style={{fontSize:10,color:'#64748b',fontWeight:600,display:'block',marginBottom:2}}>Dimensions (in)</label>
+                      <div style={{display:'flex',alignItems:'center',gap:3}}>
+                        <input className="form-input" type="number" min="1" placeholder="L" value={(box.dimensions||{}).length||''} style={{width:50,fontSize:12,padding:'5px 6px',textAlign:'center'}}
+                          onChange={e=>{const b=[...boxes];b[bi]={...b[bi],dimensions:{...(b[bi].dimensions||{}),length:e.target.value}};setBoxes(b)}}/>
+                        <span style={{fontSize:10,color:'#94a3b8'}}>×</span>
+                        <input className="form-input" type="number" min="1" placeholder="W" value={(box.dimensions||{}).width||''} style={{width:50,fontSize:12,padding:'5px 6px',textAlign:'center'}}
+                          onChange={e=>{const b=[...boxes];b[bi]={...b[bi],dimensions:{...(b[bi].dimensions||{}),width:e.target.value}};setBoxes(b)}}/>
+                        <span style={{fontSize:10,color:'#94a3b8'}}>×</span>
+                        <input className="form-input" type="number" min="1" placeholder="H" value={(box.dimensions||{}).height||''} style={{width:50,fontSize:12,padding:'5px 6px',textAlign:'center'}}
+                          onChange={e=>{const b=[...boxes];b[bi]={...b[bi],dimensions:{...(b[bi].dimensions||{}),height:e.target.value}};setBoxes(b)}}/>
+                      </div>
+                    </div>
+                    <div>
+                      <label style={{fontSize:10,color:'#64748b',fontWeight:600,display:'block',marginBottom:2}}>Carrier</label>
+                      <select className="form-select" value={box.carrier||'fedex'} style={{width:110,fontSize:12,padding:'5px 8px'}}
+                        onChange={e=>{const b=[...boxes];b[bi]={...b[bi],carrier:e.target.value};setBoxes(b)}}>
+                        <option value="fedex">FedEx</option><option value="ups">UPS</option><option value="usps">USPS</option><option value="other">Other</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* Items in box */}
+                  <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:4}}>Items in this box</div>
+                  {(box.items||[]).map((it2,ii)=>{
+                    return<div key={ii} style={{display:'flex',gap:8,alignItems:'center',padding:'4px 0',flexWrap:'wrap'}}>
+                      <span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',fontSize:11}}>{it2.sku}</span>
+                      <span style={{fontSize:11,color:'#475569'}}>{it2.name}{it2.color?' · '+it2.color:''}</span>
+                      <div style={{display:'flex',gap:3,flexWrap:'wrap'}}>
+                        {Object.entries(it2.sizes||{}).filter(([,v])=>v>0).map(([sz,v])=><div key={sz} style={{display:'flex',alignItems:'center',gap:2}}>
+                          <span style={{fontSize:9,color:'#64748b',fontWeight:600}}>{sz}</span>
+                          <input type="number" min="0" value={v} style={{width:36,fontSize:11,textAlign:'center',padding:'2px 3px',border:'1px solid #d1d5db',borderRadius:3}}
+                            onChange={e=>{const nv=parseInt(e.target.value)||0;const b=[...boxes];const newSizes={...b[bi].items[ii].sizes,[sz]:nv};
+                              b[bi]={...b[bi],items:b[bi].items.map((x,xi)=>xi===ii?{...x,sizes:newSizes}:x)};setBoxes(b)}}/>
+                        </div>)}
+                      </div>
+                    </div>})}
+
+                  {/* Tracking number */}
+                  <div style={{display:'flex',gap:8,marginTop:10,alignItems:'center'}}>
+                    <input className="form-input" placeholder="Tracking number (enter manually or create label)" value={box.tracking_number||''}
+                      style={{flex:1,fontSize:12,fontFamily:'monospace',padding:'5px 8px'}}
+                      onChange={e=>{const b=[...boxes];b[bi]={...b[bi],tracking_number:e.target.value};setBoxes(b)}}/>
+                    {ssConnected&&<button className="btn btn-sm" style={{fontSize:11,background:'#7c3aed',color:'white',border:'none',padding:'5px 12px',whiteSpace:'nowrap'}}
+                      onClick={async()=>{
+                        try{
+                          if(!c){nf('No customer found','error');return}
+                          nf('Creating ShipStation label...');
+                          const label=await createShipStationLabel(so,c,box.items,box.weight,box.carrier,'fedex_ground',box.dimensions);
+                          const b=[...boxes];
+                          const cost=label.shipmentCost||label.insuranceCost?parseFloat(label.shipmentCost||0)+parseFloat(label.insuranceCost||0):null;
+                          b[bi]={...b[bi],tracking_number:label.trackingNumber||'',carrier:label.carrierCode||box.carrier,label_url:label.labelData?.href||null,shipping_cost:cost};
+                          setBoxes(b);
+                          if(cost){setSOs(prev=>prev.map(s=>s.id===so.id?{...s,_shipping_cost:(safeNum(s._shipping_cost)||0)+cost}:s))}
+                          nf('✅ Label created! Tracking: '+(label.trackingNumber||'pending')+(cost?' · Cost: $'+cost.toFixed(2):''));
+                        }catch(err){nf('Label creation failed: '+err.message,'error')}
+                      }}>🏷️ Create Label</button>}
+                  </div>
+                  {box.label_url&&<div style={{marginTop:6}}><a href={box.label_url} target="_blank" rel="noreferrer" className="btn btn-sm btn-secondary" style={{fontSize:11}}>📄 Download Label</a></div>}
+                  {box.shipping_cost&&<div style={{marginTop:4,fontSize:11,color:'#166534',fontWeight:600}}>Shipping cost: ${box.shipping_cost.toFixed(2)}</div>}
+                </div>})}
+
+              <button className="btn btn-sm btn-secondary" style={{fontSize:11,marginTop:4}} onClick={()=>{
+                setBoxes([...boxes,{weight:5,dimensions:{},carrier:'fedex',tracking_number:'',items:[{sku:item.sku,name:item.name,color:item.color||'',sizes:Object.fromEntries(szKeys.map(sz=>[sz,0]))}]}])}}>
+                + Add Box</button>
+            </div>
+          </div>}
+
+          {/* Actions */}
+          <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+            {activePick&&activePick.status!=='pulled'&&<button className="btn btn-primary" style={{fontSize:13,padding:'10px 24px',fontWeight:700}} onClick={()=>{
+              // Mark the active pick as pulled, update SO, adjust inventory
+              const updatedItems=safeItems(so).map((it2,ii)=>{
+                if(ii!==t.itemIdx)return it2;
+                const newPicks=(it2.pick_lines||[]).map(pk=>{
+                  if(pk.pick_id===activePick.pick_id&&pk.status!=='pulled')return{...pk,status:'pulled'};
+                  return pk;
+                });
+                return{...it2,pick_lines:newPicks};
+              });
+              const updatedSO={...so,items:updatedItems,updated_at:new Date().toLocaleString()};
+              // Adjust inventory (decrement)
+              if(p){
+                const newInv={...p._inv};
+                Object.entries(activePick).forEach(([k,v])=>{if(k!=='status'&&k!=='pick_id'&&k!=='created_at'&&k!=='memo'&&k!=='ship_dest'&&k!=='ship_addr'&&k!=='deco_vendor'&&typeof v==='number'&&v>0){newInv[k]=Math.max(0,(newInv[k]||0)-v)}});
+                setProd(pp=>pp.map(x=>x.id===p.id?{...x,_inv:newInv}:x));
+              }
+              savSO(updatedSO);
+              // Save shipment data if shipping boxes were configured
+              if(showShipping&&boxes.some(bx=>bx.tracking_number)){
+                const shipments=[...(updatedSO._shipments||[])];
+                boxes.filter(bx=>bx.tracking_number).forEach(bx=>{
+                  shipments.push({id:'SHP-'+Date.now()+'-'+Math.random().toString(36).slice(2,6),tracking_number:bx.tracking_number,carrier:bx.carrier||'fedex',
+                    ship_date:new Date().toLocaleDateString(),items:bx.items||[],weight:bx.weight,dimensions:bx.dimensions,
+                    created_by:cu?.id,created_at:new Date().toLocaleString()});
+                });
+                const withShipment={...updatedSO,_shipments:shipments};
+                savSO(withShipment);
+              }
+              nf('✅ '+pickId+' marked as pulled');setWhViewIF(null);
+            }}>✓ Mark as Pulled</button>}
+            <button className="btn btn-secondary" style={{fontSize:12,padding:'8px 16px'}} onClick={()=>{setESOTab('items');setESOScrollItem(t.itemIdx);setESO(so);setESOC(c);setPg('orders')}}>
+              Open Sales Order</button>
+          </div>
+        </div>})()}
+
+      {!whViewIF&&<>
       {/* Stats */}
       <div className="stats-row" style={{marginBottom:12}}>
         <div className="stat-card" style={{borderLeft:'3px solid #d97706'}}>
@@ -13242,7 +13572,7 @@ export default function App(){
             <th style={{textAlign:'center'}}>Need</th><th style={{textAlign:'center'}}>On Hand</th><th>Sizes to Pull</th><th>Dest</th><th>Rep</th><th style={{width:60}}></th>
           </tr></thead><tbody>
           {fPull.map((t,ti)=><tr key={ti} style={{cursor:'pointer',background:t.urgent?'#fef2f2':'',borderLeft:t.urgent?'3px solid #dc2626':''}}
-            onClick={()=>{setESOTab('items');setESOScrollItem(t.itemIdx);setESO(t.so);setESOC(cust.find(c2=>c2.id===t.so.customer_id));setPg('orders')}}>
+            onClick={()=>setWhViewIF(t)}>
             <td>{t.urgent&&<span title={'Due in '+t.daysOut+'d'}>🔥</span>}{t.noDeco&&<span title="No decoration">📦</span>}</td>
             <td style={{fontWeight:700,color:'#1e40af',whiteSpace:'nowrap'}}>{t.soId}</td>
             <td style={{fontWeight:600,maxWidth:140,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{t.cName}</td>
@@ -13260,7 +13590,7 @@ export default function App(){
             <td>{(()=>{const d=t.shipDest;const labels={in_house:'🏭 In-House',ship_customer:'📦 Customer',ship_deco:'🚚 Deco'};return<span style={{fontSize:9,padding:'2px 5px',borderRadius:4,fontWeight:600,background:d==='ship_customer'?'#dbeafe':d==='ship_deco'?'#fef3c7':'#f1f5f9',color:d==='ship_customer'?'#1e40af':d==='ship_deco'?'#92400e':'#64748b'}}>{labels[d]||'🏭 In-House'}</span>})()}</td>
             <td style={{fontSize:10,color:'#94a3b8'}}>{t.rep}</td>
             <td><button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px'}}
-              onClick={e=>{e.stopPropagation();setESOTab('items');setESOScrollItem(t.itemIdx);setESO(t.so);setESOC(cust.find(c2=>c2.id===t.so.customer_id));setPg('orders')}}>
+              onClick={e=>{e.stopPropagation();setWhViewIF(t)}}>
               Pick →</button></td>
           </tr>)}
           </tbody></table>
@@ -13756,6 +14086,7 @@ export default function App(){
           </div>
         </div></div>}
       </>}
+    </>}
     </>);
   };
 
@@ -18803,12 +19134,23 @@ export default function App(){
     // Check if it's an Item Fulfillment (IF-XXXX)
     if(upper.startsWith('IF-')){
       for(const so of sos){
-        for(const it of safeItems(so)){
+        const cc=cust.find(x=>x.id===so.customer_id);
+        const rep=REPS.find(r=>r.id===so.created_by)?.name?.split(' ')[0]||'—';
+        const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
+        const items=safeItems(so);
+        for(let ii=0;ii<items.length;ii++){
+          const it=items[ii];
           for(const pk of safePicks(it)){
             if((pk.pick_id||'').toUpperCase()===upper){
-              const cc=cust.find(x=>x.id===so.customer_id);
-              setESO(so);setESOC(cc);setESOTab('items');setPg('orders');
-              nf('Scanned: '+pk.pick_id+' — opened '+so.id);return;
+              const szKeys=Object.keys(it.sizes||{}).filter(k=>SZ_ORD.includes(k)||(it.sizes[k]>0));
+              const pulled={};safePicks(it).filter(pk2=>pk2.status==='pulled').forEach(pk2=>{szKeys.forEach(s=>{pulled[s]=(pulled[s]||0)+(pk2[s]||0)})});
+              const totalOrdered=szKeys.reduce((a,s)=>a+(it.sizes[s]||0),0);
+              const totalPulled=Object.values(pulled).reduce((a,v)=>a+v,0);
+              const task={so,soId:so.id,item:it,itemIdx:ii,cName:cc?.name||'Unknown',rep,daysOut,urgent:daysOut!=null&&daysOut<=3,
+                sku:it.sku,name:it.name,brand:it.brand||'',color:it.color||'',sizes:it.sizes,pulled,needsPull:totalOrdered-totalPulled,totalOrdered,totalPulled,szKeys,
+                shipDest:pk.ship_dest||'in_house'};
+              setWhViewIF(task);setPg('warehouse');setWhTab('pull');
+              nf('Scanned: '+pk.pick_id+' — opened IF detail');return;
             }
           }
         }
