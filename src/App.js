@@ -181,8 +181,13 @@ const _dbSaveEstimateInner = async (est) => {
   if(!supabase)return;
   return _dbSavingGuard(async()=>{let decoFailed=false;try{
     const{items,art_files,...estRow}=est;
-    const{error:estErr}=await supabase.from('estimates').upsert(_pick(estRow,_estCols),{onConflict:'id'});
-    if(estErr){console.error('[DB] estimates upsert failed:',estErr.message);decoFailed=true}
+    let{error:estErr}=await supabase.from('estimates').upsert(_pick(estRow,_estCols),{onConflict:'id'});
+    if(estErr){
+      const coreEstRow={};Object.keys(_pick(estRow,_estCols)).forEach(k=>{if(!_estExtraCols.has(k))coreEstRow[k]=_pick(estRow,_estCols)[k]});
+      const retry=await supabase.from('estimates').upsert(coreEstRow,{onConflict:'id'});
+      if(retry.error){console.error('[DB] estimates upsert failed:',retry.error.message);decoFailed=true}
+      else console.warn('[DB] estimate saved with core columns only')
+    }
     // Delete old children — must delete grandchildren (decorations) BEFORE estimate_items due to FK constraints
     const oldItemIds=(await supabase.from('estimate_items').select('id').eq('estimate_id',est.id)).data?.map(i=>i.id)||[];
     if(oldItemIds.length){
@@ -212,8 +217,15 @@ const _dbSaveEstimateInner = async (est) => {
     if(!items?.length){_dbSaveFailedIds.delete(est.id);_persistFailedIds();return true}
     for(let idx=0;idx<items.length;idx++){
       const{decorations,...itemData}=items[idx];
-      const{data:inserted,error:itemErr}=await supabase.from('estimate_items').insert({..._pick(itemData,_itemCols),estimate_id:est.id,item_index:idx}).select('id').single();
-      if(itemErr){console.error('[DB] estimate_items insert failed:',itemErr.message,itemErr.details);decoFailed=true;continue}
+      let itemRow={..._pick(itemData,_itemCols),estimate_id:est.id,item_index:idx};
+      let{data:inserted,error:itemErr}=await supabase.from('estimate_items').insert(itemRow).select('id').single();
+      if(itemErr){
+        // Retry with core columns only (strip columns from later migrations)
+        const coreItemRow={};Object.keys(itemRow).forEach(k=>{if(!_itemExtraCols.has(k))coreItemRow[k]=itemRow[k]});
+        const retry=await supabase.from('estimate_items').insert(coreItemRow).select('id').single();
+        if(retry.error){console.error('[DB] estimate_items insert failed:',retry.error.message,retry.error.details);decoFailed=true;continue}
+        else{inserted=retry.data;console.warn('[DB] estimate item saved with core columns only (missing DB columns?)')}
+      }
       if(inserted&&decorations?.length){
         const decoRows=decorations.map((d,di)=>({..._pick(_sanitizeDeco(d),_decoCols),estimate_item_id:inserted.id,deco_index:di}));
         const{error:decoErr}=await supabase.from('estimate_item_decorations').insert(decoRows);
@@ -241,8 +253,13 @@ const _dbSaveSOInner = async (so) => {
   if(!supabase)return;
   return _dbSavingGuard(async()=>{let saveFailed=false;try{
     const{items,art_files,firm_dates,jobs,...soRow}=so;
-    const{error:soErr}=await supabase.from('sales_orders').upsert(_pick(soRow,_soCols),{onConflict:'id'});
-    if(soErr){console.error('[DB] sales_orders upsert failed:',soErr.message);saveFailed=true}
+    let{error:soErr}=await supabase.from('sales_orders').upsert(_pick(soRow,_soCols),{onConflict:'id'});
+    if(soErr){
+      const coreSoRow={};Object.keys(_pick(soRow,_soCols)).forEach(k=>{if(!_soExtraCols.has(k))coreSoRow[k]=_pick(soRow,_soCols)[k]});
+      const retry=await supabase.from('sales_orders').upsert(coreSoRow,{onConflict:'id'});
+      if(retry.error){console.error('[DB] sales_orders upsert failed:',retry.error.message);saveFailed=true}
+      else console.warn('[DB] SO saved with core columns only')
+    }
     // Delete old children — must delete grandchildren (decorations/picks/POs) BEFORE so_items due to FK constraints
     const oldItemIds=(await supabase.from('so_items').select('id').eq('so_id',so.id)).data?.map(i=>i.id)||[];
     if(oldItemIds.length){
@@ -299,8 +316,14 @@ const _dbSaveSOInner = async (so) => {
     for(let idx=0;idx<items.length;idx++){
       const{decorations,pick_lines,po_lines,...itemData}=items[idx];
       // Separate size fields from pick_lines/po_lines back into sizes JSONB
-      const{data:inserted,error:itemErr}=await supabase.from('so_items').insert({..._pick(itemData,_itemCols),so_id:so.id,item_index:idx}).select('id').single();
-      if(itemErr){console.error('[DB] so_items insert failed:',itemErr.message,itemErr.details);saveFailed=true;continue}
+      let soItemRow={..._pick(itemData,_itemCols),so_id:so.id,item_index:idx};
+      let{data:inserted,error:itemErr}=await supabase.from('so_items').insert(soItemRow).select('id').single();
+      if(itemErr){
+        const coreItemRow={};Object.keys(soItemRow).forEach(k=>{if(!_itemExtraCols.has(k))coreItemRow[k]=soItemRow[k]});
+        const retry=await supabase.from('so_items').insert(coreItemRow).select('id').single();
+        if(retry.error){console.error('[DB] so_items insert failed:',retry.error.message,retry.error.details);saveFailed=true;continue}
+        else{inserted=retry.data;console.warn('[DB] so item saved with core columns only')}
+      }
       if(!inserted)continue;
       if(decorations?.length){
         const decoRows=decorations.map((d,di)=>({..._pick(_sanitizeDeco(d),_decoCols),so_item_id:inserted.id,deco_index:di}));
@@ -534,11 +557,14 @@ const _dbSaveFailedIds=new Set(JSON.parse(localStorage.getItem('nsa_save_failed_
 const _persistFailedIds=()=>{try{localStorage.setItem('nsa_save_failed_ids',JSON.stringify([..._dbSaveFailedIds]))}catch{}};
 // Column whitelists — strip unknown fields before sending to Supabase (localStorage may have extra UI fields like vendor_id)
 const _pick=(obj,cols)=>{const r={};cols.forEach(c=>{if(c in obj)r[c]=obj[c]});return r};
-const _estCols=['id','customer_id','memo','status','created_by','created_at','updated_at','default_markup','shipping_type','shipping_value','ship_to_id','email_status','email_opened_at','email_viewed_at','deleted_at','promo_applied','promo_amount'];
+const _estCols=['id','customer_id','memo','status','created_by','created_at','updated_at','default_markup','shipping_type','shipping_value','ship_to_id','email_status','email_opened_at','email_viewed_at','deleted_at','promo_applied','promo_amount','update_requests'];
 const _soCols=['id','customer_id','estimate_id','memo','status','created_by','created_at','updated_at','expected_date','production_notes','shipping_type','shipping_value','ship_to_id','default_markup','omg_store_id','_shipstation_order_id','_shipping_status','_tracking_number','_carrier','_ship_date','_tracking_url','_shipped','_shipments','_shipping_cost','deleted_at','promo_applied','promo_amount','ship_preference','ship_on_date'];
 const _itemCols=['product_id','sku','name','brand','color','nsa_cost','retail_price','unit_sell','sizes','available_sizes','_colors','no_deco','is_custom','custom_desc','custom_cost','custom_sell','is_promo','_pre_promo_sell'];
 const _decoCols=['kind','position','type','art_file_id','art_tbd_type','tbd_colors','tbd_stitches','tbd_dtf_size','sell_override','sell_each','cost_each','underbase','two_color','colors','stitches','dtf_size','num_method','num_size','num_size_back','num_font','roster','names','names_list','vendor','deco_type','notes','custom_font_art_id','print_color','front_and_back','reversible','num_qty','name_qty'];
 // Columns that may not exist in production DB / schema cache — stripped on insert retry
+const _itemExtraCols=new Set(['is_promo','_pre_promo_sell']);
+const _estExtraCols=new Set(['promo_applied','promo_amount','update_requests']);
+const _soExtraCols=new Set(['_shipping_cost','promo_applied','promo_amount','ship_preference','ship_on_date']);
 const _decoExtraCols=new Set(['print_color','front_and_back','reversible','num_qty','name_qty','num_font','num_size_back','custom_font_art_id']);
 // Sanitize decoration data before DB insert — strip UI-only placeholders that would violate constraints
 const _sanitizeDeco=(d)=>{const r={...d};if(r.custom_font_art_id&&r.custom_font_art_id==='pending')r.custom_font_art_id=null;if(r.art_file_id&&r.art_file_id==='__tbd')r.art_file_id=null;return r};
@@ -2586,6 +2612,22 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         if(validItems.length===0){nf('Add at least one item with sizes','error');return}
         onSave(o);setSaved(true);setDirty(false);nf(`${isE?'Estimate':'SO'} saved`)}} style={{padding:'4px 14px',fontSize:11}}>✓ Save</button>
     </div>
+    {/* UPDATE REQUESTS BANNER — shows when coach has requested changes */}
+    {isE&&(o.update_requests||[]).filter(r=>r.status==='pending').length>0&&<div style={{margin:'8px 0',padding:'12px 16px',background:'#fffbeb',border:'2px solid #f59e0b',borderRadius:10}}>
+      <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}><span style={{fontSize:16}}>📝</span><span style={{fontWeight:800,fontSize:14,color:'#92400e'}}>Coach Update Requests ({(o.update_requests||[]).filter(r=>r.status==='pending').length})</span></div>
+      {(o.update_requests||[]).filter(r=>r.status==='pending').map((req,ri)=><div key={ri} style={{padding:'8px 12px',background:'white',borderRadius:8,marginBottom:6,border:'1px solid #fde68a'}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
+          <div style={{flex:1}}>
+            <div style={{fontSize:12,color:'#92400e',fontWeight:600}}>{req.from} · {new Date(req.at).toLocaleDateString()}</div>
+            <div style={{fontSize:13,color:'#78350f',marginTop:2}}>{req.text}</div>
+          </div>
+          <div style={{display:'flex',gap:4,flexShrink:0,marginLeft:8}}>
+            <button className="btn btn-sm" style={{fontSize:10,background:'#3b82f6',color:'white',border:'none',padding:'3px 8px'}} onClick={()=>{const upd=(o.update_requests||[]).map(r=>r.id===req.id?{...r,status:'in_progress'}:r);const updated={...o,update_requests:upd,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setSaved(true);setDirty(false);nf('Marked as in progress')}}>Working</button>
+            <button className="btn btn-sm" style={{fontSize:10,background:'#22c55e',color:'white',border:'none',padding:'3px 8px'}} onClick={()=>{const upd=(o.update_requests||[]).map(r=>r.id===req.id?{...r,status:'completed',completed_at:new Date().toISOString()}:r);const updated={...o,update_requests:upd,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setSaved(true);setDirty(false);nf('Update request completed')}}>Done</button>
+          </div>
+        </div>
+      </div>)}
+    </div>}
     {/* HEADER */}
     <div className="card" style={{marginBottom:16,marginTop:8}}><div style={{padding:'16px 20px'}}>
       <div style={{display:'flex',gap:16,alignItems:'flex-start',flexWrap:'wrap'}}>
@@ -7364,6 +7406,8 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   const[comment,setComment]=useState('');
   const[contactEdit,setContactEdit]=useState(null);
   const[contactMsg,setContactMsg]=useState('');
+  const[updateRequestText,setUpdateRequestText]=useState('');
+  const[updateRequestSent,setUpdateRequestSent]=useState(false);
   const[showPay,setShowPay]=useState(null);// null | 'all' | inv object
   const[paySuccess,setPaySuccess]=useState(null);// {amount,fee,invoices}
   const[invs,setInvs]=useState(initInvs);
@@ -7488,10 +7532,35 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
               <span style={{fontWeight:800,fontSize:16}}>Estimated Total</span><span style={{fontWeight:800,fontSize:18,color:'#92400e'}}>${estTotal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
             </div>
           </div>
-          {canApprove&&<button style={{width:'100%',padding:'14px 20px',background:'#22c55e',color:'white',border:'none',borderRadius:10,fontSize:16,fontWeight:800,cursor:'pointer'}} onClick={()=>{
+          {canApprove&&<button style={{width:'100%',padding:'14px 20px',background:'#22c55e',color:'white',border:'none',borderRadius:10,fontSize:16,fontWeight:800,cursor:'pointer',marginBottom:10}} onClick={()=>{
             if(onUpdateEsts){onUpdateEsts(prev=>prev.map(e=>e.id===est.id?{...e,status:'approved',approved_by:'Coach',approved_at:new Date().toISOString(),updated_at:new Date().toLocaleString()}:e))}
             setEstView({...est,status:'approved'});
           }}>✅ Approve This Estimate</button>}
+          {canApprove&&<div style={{border:'1px solid #e2e8f0',borderRadius:10,padding:16,marginBottom:10}}>
+            <div style={{fontSize:13,fontWeight:700,color:'#1e3a5f',marginBottom:8}}>Need changes? Request updates from your rep</div>
+            {updateRequestSent?<div style={{textAlign:'center',padding:12,background:'#f0fdf4',borderRadius:8,color:'#166534',fontWeight:600}}>Your update request has been sent to your rep!</div>
+            :<>
+              <textarea style={{width:'100%',border:'1px solid #d1d5db',borderRadius:8,padding:10,fontSize:13,resize:'vertical',minHeight:60,fontFamily:'inherit',boxSizing:'border-box'}} placeholder="Tell your rep what you'd like changed (sizes, items, pricing, etc.)..." value={updateRequestText} onChange={e=>setUpdateRequestText(e.target.value)} rows={3}/>
+              <button style={{width:'100%',marginTop:8,padding:'12px 20px',background:updateRequestText.trim()?'#d97706':'#e5e7eb',color:updateRequestText.trim()?'white':'#9ca3af',border:'none',borderRadius:10,fontSize:14,fontWeight:700,cursor:updateRequestText.trim()?'pointer':'not-allowed'}} disabled={!updateRequestText.trim()} onClick={()=>{
+                if(!updateRequestText.trim())return;
+                const req={id:'UR-'+Date.now(),text:updateRequestText.trim(),from:'Coach',at:new Date().toISOString(),status:'pending'};
+                if(onUpdateEsts){onUpdateEsts(prev=>prev.map(e=>e.id===est.id?{...e,update_requests:[...(e.update_requests||[]),req],updated_at:new Date().toLocaleString()}:e))}
+                setEstView({...est,update_requests:[...(est.update_requests||[]),req]});
+                setUpdateRequestText('');setUpdateRequestSent(true);
+              }}>Request Updates</button>
+            </>}
+          </div>}
+          {(est.update_requests||[]).length>0&&<div style={{border:'1px solid #fde68a',background:'#fffbeb',borderRadius:10,padding:14,marginBottom:10}}>
+            <div style={{fontSize:12,fontWeight:700,color:'#92400e',marginBottom:8}}>Update Requests</div>
+            {(est.update_requests||[]).map((req,ri)=><div key={ri} style={{padding:'8px 0',borderBottom:ri<(est.update_requests||[]).length-1?'1px solid #fde68a':'none'}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                <span style={{fontSize:12,fontWeight:600,color:'#92400e'}}>{req.from}</span>
+                <span style={{fontSize:10,color:'#b45309'}}>{new Date(req.at).toLocaleDateString()}</span>
+              </div>
+              <div style={{fontSize:12,color:'#78350f',marginTop:2}}>{req.text}</div>
+              <span style={{fontSize:10,padding:'1px 6px',borderRadius:6,fontWeight:600,background:req.status==='completed'?'#dcfce7':req.status==='in_progress'?'#dbeafe':'#fef3c7',color:req.status==='completed'?'#166534':req.status==='in_progress'?'#1e40af':'#92400e'}}>{req.status==='completed'?'Done':req.status==='in_progress'?'In Progress':'Pending'}</span>
+            </div>)}
+          </div>}
           {est.status==='approved'&&<div style={{textAlign:'center',padding:12,background:'#f0fdf4',borderRadius:8,color:'#166534',fontWeight:700}}>✅ Approved — your rep will convert this to an order</div>}
           {est.status==='converted'&&<div style={{textAlign:'center',padding:12,background:'#dbeafe',borderRadius:8,color:'#1e40af',fontWeight:700}}>📦 This estimate has been converted to an active order</div>}
         </div>
@@ -7702,7 +7771,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           return allEsts.length>0&&<>
           <div style={{fontSize:13,fontWeight:800,color:'#d97706',marginBottom:10}}>📋 Estimates ({allEsts.length})</div>
           {openEsts.length>0&&openEsts.map(est=>{const eaf=est.art_files||[];const _eAQ={};(est.items||[]).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_eAQ[d.art_file_id]=(_eAQ[d.art_file_id]||0)+q2}})});const sub=(est.items||[]).reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);let r=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_eAQ[d.art_file_id]:qq;const dp2=dP(d,qq,eaf,cq);const eq2=dp2._nq!=null?dp2._nq:qq;r+=eq2*dp2.sell});return a+r},0);const _sh=est.shipping_type==='pct'?sub*(est.shipping_value||0)/100:(est.shipping_value||0);const _tr=customer?.tax_exempt?0:(customer?.tax_rate||0);const t=sub+_sh+sub*_tr;
-            return<div key={est.id} style={{border:'2px solid #f59e0b',borderRadius:10,padding:14,marginBottom:10,background:'#fffbeb',cursor:'pointer'}} onClick={()=>setEstView(est)}>
+            return<div key={est.id} style={{border:'2px solid #f59e0b',borderRadius:10,padding:14,marginBottom:10,background:'#fffbeb',cursor:'pointer'}} onClick={()=>{setEstView(est);setUpdateRequestSent(false);setUpdateRequestText('')}}>
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
                 <div><div style={{fontWeight:700,fontSize:14,color:'#92400e'}}>{est.memo||est.id}</div>
                   <div style={{fontSize:11,color:'#64748b'}}>{est.id} · {est.created_at?.split(' ')[0]} · {(est.items||[]).length} item{(est.items||[]).length!==1?'s':''}</div></div>
@@ -7714,7 +7783,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
               </div></div>})}
           {(approvedEsts.length>0||pastEsts.length>0)&&<div style={{border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden',marginBottom:10}}>
             {[...approvedEsts,...pastEsts].map((est,i,arr)=>{const eaf=est.art_files||[];const _eAQ={};(est.items||[]).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_eAQ[d.art_file_id]=(_eAQ[d.art_file_id]||0)+q2}})});const sub=(est.items||[]).reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);let r=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_eAQ[d.art_file_id]:qq;const dp2=dP(d,qq,eaf,cq);const eq2=dp2._nq!=null?dp2._nq:qq;r+=eq2*dp2.sell});return a+r},0);const _sh=est.shipping_type==='pct'?sub*(est.shipping_value||0)/100:(est.shipping_value||0);const _tr=customer?.tax_exempt?0:(customer?.tax_rate||0);const t=sub+_sh+sub*_tr;
-              return<div key={est.id} style={{padding:'10px 14px',borderBottom:i<arr.length-1?'1px solid #f1f5f9':'none',display:'flex',justifyContent:'space-between',alignItems:'center',cursor:'pointer'}} onClick={()=>setEstView(est)}>
+              return<div key={est.id} style={{padding:'10px 14px',borderBottom:i<arr.length-1?'1px solid #f1f5f9':'none',display:'flex',justifyContent:'space-between',alignItems:'center',cursor:'pointer'}} onClick={()=>{setEstView(est);setUpdateRequestSent(false);setUpdateRequestText('')}}>
                 <div><span style={{fontWeight:600,fontSize:13}}>{est.memo||est.id}</span> <span style={{fontSize:11,color:'#94a3b8'}}>{est.id}</span>
                   <div style={{fontSize:10,color:'#64748b'}}>{est.created_at?.split(' ')[0]} · {(est.items||[]).length} item{(est.items||[]).length!==1?'s':''}</div></div>
                 <div style={{display:'flex',alignItems:'center',gap:8}}>
@@ -8810,6 +8879,14 @@ export default function App(){
       const c2=cust.find(x=>x.id===e.customer_id);const tag2=c2?.alpha_tag||e.id;
       todos.push({type:'est_approved',priority:1,msg:'✅ Coach approved estimate: '+(e.memo||e.id),detail:tag2+' · Ready to convert to order',action:'Convert to SO',role:'sales',est:e,estC:c2});
     });
+    // Coach requested estimate updates → rep needs to review and update
+    ests.filter(e=>(e.update_requests||[]).some(r=>r.status==='pending')).forEach(e=>{
+      const c2=cust.find(x=>x.id===e.customer_id);const tag2=c2?.alpha_tag||e.id;
+      const pendingReqs=(e.update_requests||[]).filter(r=>r.status==='pending');
+      pendingReqs.forEach(req=>{
+        todos.push({type:'est_update_request',priority:1,msg:'📝 Coach requested estimate update: '+(e.memo||e.id),detail:tag2+' · "'+req.text.slice(0,80)+(req.text.length>80?'...':'')+'"',action:'Update Estimate',role:'sales',est:e,estC:c2,updateReqId:req.id});
+      });
+    });
     // Stale estimate follow-up alerts
     ests.filter(e=>e.status==='sent').forEach(e=>{
       const c2=cust.find(x=>x.id===e.customer_id);const tag2=c2?.alpha_tag||e.id;
@@ -8858,7 +8935,7 @@ export default function App(){
       <div className="card"><div className="card-header"><h2>📋 To-Do ({todos.length})</h2></div>
         <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
           {todos.length===0?<div className="empty" style={{padding:20}}>All clear!</div>:
-          todos.slice(0,12).map((t,i)=><div key={i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer'}} onClick={()=>{if(t.type==='issue'){setPg('settings')}else if(t.so){if(t.type==='art'&&t.jobId){const jIdx=safeJobs(t.so).findIndex(jj=>jj.id===t.jobId);setESOTab('jobs');setESOScrollJob(jIdx>=0?jIdx:null)}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
+          todos.slice(0,12).map((t,i)=><div key={i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer'}} onClick={()=>{if(t.type==='issue'){setPg('settings')}else if(t.type==='est_update_request'||t.type==='est_approved'||t.type==='follow_up'){if(t.est){setEEst(t.est);setEEstC(t.estC);setPg('estimates')}}else if(t.so){if(t.type==='art'&&t.jobId){const jIdx=safeJobs(t.so).findIndex(jj=>jj.id===t.jobId);setESOTab('jobs');setESOScrollJob(jIdx>=0?jIdx:null)}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
             <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}</div></div>
             <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:t.type==='art'?'#fef3c7':'#eff6ff',color:t.type==='art'?'#92400e':'#2563eb',fontWeight:600,whiteSpace:'nowrap'}}>{t.action}</span>
           </div>)}
@@ -8895,7 +8972,7 @@ export default function App(){
       <div className="card"><div className="card-header"><h2>🎯 My Action Items</h2></div>
         <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
           {todos.filter(t=>t.role==='sales'||t.role==='all').length===0?<div className="empty" style={{padding:20}}>Nothing pending!</div>:
-          todos.filter(t=>t.role==='sales'||t.role==='all').slice(0,12).map((t,i)=><div key={i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer'}} onClick={()=>{if(t.so){if(t.type==='art'&&t.jobId){const jIdx=safeJobs(t.so).findIndex(jj=>jj.id===t.jobId);setESOTab('jobs');setESOScrollJob(jIdx>=0?jIdx:null)}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
+          todos.filter(t=>t.role==='sales'||t.role==='all').slice(0,12).map((t,i)=><div key={i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer'}} onClick={()=>{if(t.type==='est_update_request'||t.type==='est_approved'||t.type==='follow_up'){if(t.est){setEEst(t.est);setEEstC(t.estC);setPg('estimates')}}else if(t.so){if(t.type==='art'&&t.jobId){const jIdx=safeJobs(t.so).findIndex(jj=>jj.id===t.jobId);setESOTab('jobs');setESOScrollJob(jIdx>=0?jIdx:null)}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
             <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}</div></div>
             <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:t.type==='art'?'#fef3c7':'#eff6ff',color:t.type==='art'?'#92400e':'#2563eb',fontWeight:600}}>{t.action}</span>
           </div>)}</div></div>
