@@ -477,16 +477,16 @@ const _dbSaveMessage = async (m) => {
 // ─── Delete Helpers ───
 const _dbDeleteEstimate = async (id) => {
   if(!supabase)return;
-  try{
+  return _dbSavingGuard(async()=>{try{
     await supabase.from('estimate_item_decorations').delete().in('estimate_item_id',(await supabase.from('estimate_items').select('id').eq('estimate_id',id)).data?.map(i=>i.id)||[]);
     await supabase.from('estimate_items').delete().eq('estimate_id',id);
     await supabase.from('estimate_art_files').delete().eq('estimate_id',id);
     await supabase.from('estimates').delete().eq('id',id);
-  }catch(e){console.error('[DB] delete estimate:',e)}
+  }catch(e){console.error('[DB] delete estimate:',e)}});
 };
 const _dbDeleteSO = async (id) => {
   if(!supabase)return;
-  try{
+  return _dbSavingGuard(async()=>{try{
     const itemIds=(await supabase.from('so_items').select('id').eq('so_id',id)).data?.map(i=>i.id)||[];
     await supabase.from('so_item_decorations').delete().in('so_item_id',itemIds);
     await supabase.from('so_item_pick_lines').delete().in('so_item_id',itemIds);
@@ -496,15 +496,15 @@ const _dbDeleteSO = async (id) => {
     await supabase.from('so_firm_dates').delete().eq('so_id',id);
     await supabase.from('so_jobs').delete().eq('so_id',id);
     await supabase.from('sales_orders').delete().eq('id',id);
-  }catch(e){console.error('[DB] delete SO:',e)}
+  }catch(e){console.error('[DB] delete SO:',e)}});
 };
 const _dbDeleteInvoice = async (id) => {
   if(!supabase)return;
-  try{
+  return _dbSavingGuard(async()=>{try{
     await supabase.from('invoice_payments').delete().eq('invoice_id',id);
     await supabase.from('invoice_items').delete().eq('invoice_id',id);
     await supabase.from('invoices').delete().eq('id',id);
-  }catch(e){console.error('[DB] delete invoice:',e)}
+  }catch(e){console.error('[DB] delete invoice:',e)}});
 };
 // Save-in-progress guard — prevents poll/realtime from loading partial data during delete-and-reinsert
 let _dbSavingCount=0;
