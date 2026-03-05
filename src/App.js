@@ -173,7 +173,7 @@ const _dbSeed = async (d) => {
   if(d.omg_stores?.length){
     await supabase.from('omg_stores').upsert(d.omg_stores.map(s=>_pick(s,_omgStoreCols)),{onConflict:'id'});
     const allProds=[];d.omg_stores.forEach(s=>(s.products||[]).forEach(p=>allProds.push({store_id:s.id,sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:p.deco_type,deco_cost:p.deco_cost,sizes:p.sizes})));
-    if(allProds.length) await supabase.from('omg_store_products').insert(allProds);
+    if(allProds.length) await supabase.from('omg_store_products').upsert(allProds,{onConflict:'store_id,sku'});
   }
 };
 // ─── Normalized Save Helpers ───
@@ -1633,13 +1633,27 @@ const omgApiCall = async (endpoint, options = {}) => {
   } catch (error) { console.error('[OMG] API call failed:', endpoint, error); throw error; }
 };
 
-const fetchOMGStores = async () => await omgApiCall('/sales?include=organization');
+const fetchOMGStores = async () => {
+  // Fetch all pages of stores from OMG API
+  let allData = [], allIncluded = [];
+  let page = 1;
+  while (true) {
+    const resp = await omgApiCall(`/sales?include=organization&page=${page}&per_page=50`);
+    if (!resp?.data?.length) { if (page === 1) return resp; break; }
+    allData = allData.concat(resp.data);
+    if (resp.included) allIncluded = allIncluded.concat(resp.included);
+    if (resp.data.length < 50) break;
+    page++;
+  }
+  return { data: allData, included: allIncluded };
+};
 
 const fetchOMGStoreDetail = async (saleId) => {
   const [saleData, orders] = await Promise.all([
-    omgApiCall(`/sales/${saleId}?include=organization`),
-    omgApiCall(`/orders?filter[relationships][sale]=${saleId}&include=sale,customer_info`)
+    omgApiCall(`/sales/${saleId}?include=organization`).catch(e => { console.warn('[OMG] Failed to fetch sale', saleId, e.message); return null; }),
+    omgApiCall(`/orders?filter[relationships][sale]=${saleId}&include=sale,customer_info`).catch(e => { console.warn('[OMG] Failed to fetch orders for sale', saleId, e.message); return null; })
   ]);
+  if (!saleData) return null;
   const orderList = orders?.data || [];
   // Fetch order products for each order to get real item/product data
   const orderProducts = await Promise.all(
@@ -8306,7 +8320,7 @@ export default function App(){
   React.useEffect(()=>{try{localStorage.setItem('nsa_sos',JSON.stringify(sos))}catch{};_diffSave(sos,'sos',s=>_dbSaveSO(s))},[sos]);
   React.useEffect(()=>{try{localStorage.setItem('nsa_invs',JSON.stringify(invs))}catch{};_diffSave(invs,'invs',i=>_dbSaveInvoice(i))},[invs]);
   React.useEffect(()=>{try{localStorage.setItem('nsa_msgs',JSON.stringify(msgs))}catch{};_diffSave(msgs,'msgs',m=>_dbSaveMessage(m))},[msgs]);
-  React.useEffect(()=>{if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.omg||[];omgStores.forEach(s=>{const old=snap.find(p=>p.id===s.id);if(!old||JSON.stringify(old)!==JSON.stringify(s)){_dbSave('omg_stores',[_pick(s,_omgStoreCols)])}});_dbSnap.current.omg=omgStores}},[omgStores]);
+  React.useEffect(()=>{try{localStorage.setItem('nsa_omg_stores',JSON.stringify(omgStores))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.omg||[];omgStores.forEach(s=>{const old=snap.find(p=>p.id===s.id);if(!old||JSON.stringify(old)!==JSON.stringify(s)){_dbSave('omg_stores',[_pick(s,_omgStoreCols)])}});_dbSnap.current.omg=omgStores}},[omgStores]);
   React.useEffect(()=>{try{localStorage.setItem('nsa_issues',JSON.stringify(issues))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.issues||[];const changed=issues.filter(i=>{const old=snap.find(p=>p.id===i.id);return!old||JSON.stringify(old)!==JSON.stringify(i)});if(changed.length)_dbSave('issues',changed.map(i=>_pick(i,_issueCols)));_dbSnap.current.issues=issues}},[issues]);
   // Batch POs, submitted batches, changelog, SO history — sync to localStorage + Supabase app_state table
   const _saveAppState=(key,val)=>{try{localStorage.setItem('nsa_'+key,JSON.stringify(val))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current)_dbSave('app_state',[{id:key,value:JSON.stringify(val),updated_at:new Date().toISOString()}])};
@@ -8604,12 +8618,20 @@ export default function App(){
     try {
       const omgStoresData = await fetchOMGStores();
       if (!omgStoresData?.data) { nf('No stores found in OMG API response', 'error'); return; }
-      const detailedStores = await Promise.all(omgStoresData.data.map(store => fetchOMGStoreDetail(store.id)));
+      // Use allSettled so one failed store doesn't abort the entire sync
+      const results = await Promise.allSettled(omgStoresData.data.map(store => fetchOMGStoreDetail(store.id)));
+      const detailedStores = results.filter(r => r.status === 'fulfilled' && r.value !== null).map(r => r.value);
+      const failedCount = results.length - detailedStores.length;
       const convertedStores = detailedStores.map(store => convertOMGStore(store, cust));
+      // Merge: keep manual stores + update OMG stores by ID
       const manualStores = omgStores.filter(s => !s._omg_source);
-      setOmgStores([...manualStores, ...convertedStores]);
+      const omgMap = new Map(convertedStores.map(s => [s.id, s]));
+      // Keep previously-synced OMG stores that weren't in this batch (e.g. closed stores not returned)
+      omgStores.filter(s => s._omg_source && !omgMap.has(s.id)).forEach(s => omgMap.set(s.id, s));
+      setOmgStores([...manualStores, ...omgMap.values()]);
       setOmgLastSync(new Date().toISOString());
-      nf('Synced ' + convertedStores.length + ' stores from OrderMyGear');
+      const msg = 'Synced ' + convertedStores.length + ' stores from OrderMyGear';
+      nf(failedCount > 0 ? msg + ` (${failedCount} failed — check console)` : msg);
     } catch (error) {
       console.error('[OMG] Sync failed:', error);
       nf('OMG sync failed: ' + error.message, 'error');
