@@ -1661,15 +1661,20 @@ const omgApiCall = async (endpoint, options = {}) => {
 
 const fetchOMGStores = async () => {
   // Fetch all pages of stores from OMG API
+  // JSON:API pagination uses links.next to indicate more pages
   let allData = [], allIncluded = [];
-  let page = 1;
-  while (true) {
-    const resp = await omgApiCall(`/sales?include=organization&page=${page}&per_page=50`);
-    if (!resp?.data?.length) { if (page === 1) return resp; break; }
+  let endpoint = '/sales?include=organization';
+  while (endpoint) {
+    const resp = await omgApiCall(endpoint);
+    if (!resp?.data?.length) { if (!allData.length) return resp; break; }
     allData = allData.concat(resp.data);
     if (resp.included) allIncluded = allIncluded.concat(resp.included);
-    if (resp.data.length < 50) break;
-    page++;
+    // Follow JSON:API links.next for pagination (extract path from full URL)
+    const nextUrl = resp.links?.next;
+    if (nextUrl) {
+      try { endpoint = new URL(nextUrl).pathname.replace(/^\/v1/, '') + new URL(nextUrl).search; }
+      catch { endpoint = null; }
+    } else { endpoint = null; }
   }
   return { data: allData, included: allIncluded };
 };
