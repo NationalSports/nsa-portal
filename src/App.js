@@ -15,10 +15,12 @@ catch(e) { console.warn('[Stripe] Init failed:', e.message); }
 
 // ─── Brevo Email Setup ───
 const _brevoKey = process.env.REACT_APP_BREVO_API_KEY || '';
-const sendBrevoEmail=async({to,subject,htmlContent,textContent,senderName,senderEmail})=>{
+const sendBrevoEmail=async({to,subject,htmlContent,textContent,senderName,senderEmail,attachment})=>{
   if(!_brevoKey){return{ok:false,error:'Brevo API key not configured (set REACT_APP_BREVO_API_KEY)'}}
-  try{const r=await fetch('https://api.brevo.com/v3/smtp/email',{method:'POST',headers:{'accept':'application/json','content-type':'application/json','api-key':_brevoKey},
-    body:JSON.stringify({sender:{name:senderName||'National Sports Apparel',email:senderEmail||'noreply@nationalsportsapparel.com'},to:Array.isArray(to)?to:[{email:to}],subject,htmlContent:htmlContent||undefined,textContent:textContent||undefined})});
+  try{const payload={sender:{name:senderName||'National Sports Apparel',email:senderEmail||'noreply@nationalsportsapparel.com'},to:Array.isArray(to)?to:[{email:to}],subject,htmlContent:htmlContent||undefined,textContent:textContent||undefined};
+    if(attachment&&attachment.length>0)payload.attachment=attachment;
+    const r=await fetch('https://api.brevo.com/v3/smtp/email',{method:'POST',headers:{'accept':'application/json','content-type':'application/json','api-key':_brevoKey},
+    body:JSON.stringify(payload)});
     const d=await r.json();if(!r.ok)return{ok:false,error:d.message||'Send failed'};return{ok:true,messageId:d.messageId}}
   catch(e){return{ok:false,error:e.message}}
 };
@@ -1929,7 +1931,10 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType}){
     const htmlBody='<div style="font-family:sans-serif;font-size:14px;line-height:1.6">'+body.replace(/\n/g,'<br/>')+'</div>';
     if(_brevoKey){
       const toList=emails.map(e2=>({email:e2}));
-      const res=await sendBrevoEmail({to:toList,subject,htmlContent:htmlBody,senderName:'National Sports Apparel',senderEmail:'noreply@nationalsportsapparel.com'});
+      // Convert file attachments to base64 for Brevo
+      const brevoAttachments=[];
+      for(const att of attachments){if(att.file){try{const b64=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result.split(',')[1]);reader.onerror=reject;reader.readAsDataURL(att.file)});brevoAttachments.push({name:att.name,content:b64})}catch(err){console.warn('Failed to read attachment:',att.name,err)}}}
+      const res=await sendBrevoEmail({to:toList,subject,htmlContent:htmlBody,senderName:'National Sports Apparel',senderEmail:'noreply@nationalsportsapparel.com',attachment:brevoAttachments.length>0?brevoAttachments:undefined});
       if(!res.ok){alert('Email send failed: '+(res.error||'Unknown error'));setSending(false);return}
     }else{
       const mailTo='mailto:'+emails[0]+'?subject='+encodeURIComponent(subject)+'&body='+encodeURIComponent(body);
@@ -6655,7 +6660,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
             <div style={{fontWeight:700,color:'#92400e',marginBottom:8}}>⏳ This artwork needs your approval</div>
             <div style={{display:'flex',gap:8}}>
               <button className="btn btn-sm" style={{background:'#22c55e',color:'white',flex:1,justifyContent:'center'}} onClick={()=>{
-                const artId=j.art_file_id;if(artId&&onSaveSO){const updJobs2=safeJobs(so).map(jj=>jj.id===j.id?{...jj,art_status:'production_files_needed'}:jj);const updatedSO={...so,art_files:(so.art_files||[]).map(af3=>af3.id===artId?{...af3,status:'approved'}:af3),jobs:updJobs2,updated_at:new Date().toLocaleString()};onSaveSO(updatedSO)}
+                const artId=j.art_file_id;if(artId&&onSaveSO){const updJobs2=safeJobs(so).map(jj=>jj.id===j.id?{...jj,art_status:'production_files_needed',coach_approved_at:new Date().toISOString()}:jj);const updatedSO={...so,art_files:(so.art_files||[]).map(af3=>af3.id===artId?{...af3,status:'approved'}:af3),jobs:updJobs2,updated_at:new Date().toLocaleString()};onSaveSO(updatedSO)}
                 setPortalJobView(null)}}>✅ Approve</button>
               <button className="btn btn-sm" style={{background:'#dc2626',color:'white',flex:1,justifyContent:'center'}} onClick={()=>{
                 if(portalComment.trim()){
@@ -7530,10 +7535,13 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
               <textarea className="form-input" rows={3} placeholder="Add feedback or comments (required for rejection)..." value={comment} onChange={e=>setComment(e.target.value)} style={{fontSize:12,resize:'vertical'}}/>
             </div>
             <div style={{display:'flex',gap:8}}>
-              <button className="btn btn-sm" style={{background:'#22c55e',color:'white',flex:1,justifyContent:'center',fontWeight:700,padding:'10px 16px'}} onClick={()=>{
+              <button className="btn btn-sm" style={{background:'#22c55e',color:'white',flex:1,justifyContent:'center',fontWeight:700,padding:'10px 16px'}} onClick={async()=>{
                 const liveSO=sos.find(s=>s.id===so.id);if(!liveSO)return;
-                const updSO={...liveSO,jobs:safeJobs(liveSO).map(jj=>jj.id===j.id?{...jj,art_status:'production_files_needed'}:jj),art_files:safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,status:'approved'}:a),updated_at:new Date().toLocaleString()};
+                const updSO={...liveSO,jobs:safeJobs(liveSO).map(jj=>jj.id===j.id?{...jj,art_status:'production_files_needed',coach_approved_at:new Date().toISOString()}:jj),art_files:safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,status:'approved'}:a),updated_at:new Date().toLocaleString()};
                 if(savSOFn)savSOFn(updSO);else if(onUpdateSOs)onUpdateSOs(prev=>prev.map(s=>s.id===so.id?updSO:s));
+                // Email the assigned rep
+                const rep=REPS.find(r=>r.id===liveSO.created_by);
+                if(rep?.email&&_brevoKey){sendBrevoEmail({to:[{email:rep.email}],subject:'✅ Art approved by coach — '+j.art_name+' ('+liveSO.id+')',htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6"><p>Great news! <strong>'+customer.name+'</strong> approved the artwork for <strong>'+j.art_name+'</strong>.</p><p>Order: '+liveSO.id+(liveSO.memo?' — '+liveSO.memo:'')+'</p><p>The job is now ready for production file prep.</p></div>',senderName:'NSA Portal',senderEmail:'noreply@nationalsportsapparel.com'})}
                 setJobView(null);
               }}>✅ Approve Artwork</button>
               <button className="btn btn-sm" style={{background:'#dc2626',color:'white',flex:1,justifyContent:'center',fontWeight:700,padding:'10px 16px'}} onClick={()=>{
@@ -8254,7 +8262,7 @@ export default function App(){
   React.useEffect(()=>{_saveAppState('so_history',soHistory)},[soHistory]);
   React.useEffect(()=>{_saveAppState('qb_config',qbConfig)},[qbConfig]);
   // Warn user before closing/reloading if there are failed saves (data at risk of loss)
-  React.useEffect(()=>{const h=e=>{if(_dbSaveFailedIds.size>0||_dbSavingCount>0){e.preventDefault();e.returnValue=''}};window.addEventListener('beforeunload',h);return()=>window.removeEventListener('beforeunload',h)},[]);
+  React.useEffect(()=>{const h=e=>{if(window.location.search.includes('portal='))return;if(_dbSaveFailedIds.size>0||_dbSavingCount>0){e.preventDefault();e.returnValue=''}};window.addEventListener('beforeunload',h);return()=>window.removeEventListener('beforeunload',h)},[]);
   // Background retry — every 60s, re-trigger saves for any entities with failed IDs
   // Works by updating the snapshot to force _diffSave to detect a difference on the next state change
   // This is a lightweight approach: no new save calls, just nudges the existing auto-save system
@@ -8683,6 +8691,7 @@ export default function App(){
       const c=cust.find(x=>x.id===so.customer_id);const tag=c?.alpha_tag||so.id;
       buildJobs(so).forEach(j=>{
         if(j.art_status==='waiting_approval')todos.push({type:'art',priority:2,msg:'⏳ Art awaiting approval: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,action:'Review art',role:'sales'});
+        if(j.coach_approved_at&&(j.art_status==='production_files_needed'||j.art_status==='art_complete')){const daysAgo=Math.floor((new Date()-new Date(j.coach_approved_at))/(1000*60*60*24));if(daysAgo<=7)todos.push({type:'art_approved',priority:1,msg:'✅ Coach approved art: '+j.art_name,detail:tag+' · '+so.id+' · '+(daysAgo===0?'Today':daysAgo+' day'+(daysAgo!==1?'s':'')+' ago'),so,jobId:j.id,action:'Prep prod files',role:'sales'})}
         if(j.art_status==='art_requested'&&j.coach_rejected){const lastRej=(j.rejections||[]).slice(-1)[0];todos.push({type:'art_rejected',priority:1,msg:'❌ Coach rejected art: '+j.art_name,detail:tag+' · '+so.id+(lastRej?' · "'+lastRej.reason.slice(0,60)+(lastRej.reason.length>60?'...':'')+'"':''),so,jobId:j.id,action:'Review feedback',role:'sales'})}
         const ready=isJobReady(j,so);const onBoard=safeJobs(so).some(ej=>ej.id===j.id);
         if(ready&&!onBoard)todos.push({type:'schedule',priority:1,msg:'🏭 Ready for production — send to board: '+j.art_name,detail:tag+' · '+j.id,so,action:'Open Jobs',role:'production'});
