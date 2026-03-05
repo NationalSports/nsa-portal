@@ -349,8 +349,8 @@ const _dbSaveSOInner = async (so) => {
         if(pickErr)console.error('[DB] so_item_pick_lines insert failed:',pickErr.message,pickErr.details);
       }
       if(po_lines?.length){
-        const poRows=po_lines.map(po=>{const{po_id,vendor,received,cancelled,shipments,status,created_at,expected_date,memo,po_type,deco_vendor,deco_type,unit_cost,...sizes}=po;
-          return{so_item_id:inserted.id,po_id,vendor,received:received||{},cancelled:cancelled||{},shipments:shipments||[],status,created_at,expected_date,memo,sizes:{...sizes,po_type:po_type||undefined,deco_vendor:deco_vendor||undefined,deco_type:deco_type||undefined,unit_cost:unit_cost||undefined}}});
+        const poRows=po_lines.map(po=>{const{po_id,vendor,received,cancelled,shipments,status,created_at,expected_date,memo,po_type,deco_vendor,deco_type,unit_cost,drop_ship,...sizes}=po;
+          return{so_item_id:inserted.id,po_id,vendor,received:received||{},cancelled:cancelled||{},shipments:shipments||[],status,created_at,expected_date,memo,sizes:{...sizes,po_type:po_type||undefined,deco_vendor:deco_vendor||undefined,deco_type:deco_type||undefined,unit_cost:unit_cost||undefined,drop_ship:drop_ship||undefined}}});
         const{error:poErr}=await supabase.from('so_item_po_lines').insert(poRows);
         if(poErr)console.error('[DB] so_item_po_lines insert failed:',poErr.message,poErr.details);
       }
@@ -2987,7 +2987,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         {isSO&&(item.po_lines||[]).length>0&&<div style={{padding:'4px 18px',borderBottom:'1px solid #f1f5f9'}}>
           {safePOs(item).map((po,pi)=>{
             const rcvd=po.received||{};const cncl=po.cancelled||{};
-            const szKeysAll=Object.keys(po).filter(k=>k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&typeof po[k]==='number');
+            const szKeysAll=Object.keys(po).filter(k=>k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='drop_ship'&&typeof po[k]==='number');
             const totalOrd=szKeysAll.reduce((a,sz)=>a+(po[sz]||0),0);
             const totalRcvd=szKeysAll.reduce((a,sz)=>a+(rcvd[sz]||0),0);
             const totalCncl=szKeysAll.reduce((a,sz)=>a+(cncl[sz]||0),0);
@@ -3008,6 +3008,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <span style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:600,marginLeft:4,
                 background:st==='received'?'#dcfce7':st==='partial'?'#fff7ed':'#fef3c7',
                 color:st==='received'?'#166534':st==='partial'?'#b45309':'#92400e'}}>{st==='received'?'✓ Received':st==='partial'?totalRcvd+'/'+(totalOrd-totalCncl)+' Rcvd':'Waiting'}</span>
+              {po.drop_ship&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:600,marginLeft:4,background:'#ede9fe',color:'#7c3aed'}}>Drop Ship</span>}
             </div>})}
         </div>}
         {/* BATCH PO QUEUE INDICATORS */}
@@ -3761,7 +3762,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const poData=[];
       safeItems(o).forEach((item,idx)=>{(item.po_lines||[]).forEach((po,pi)=>{
         const billed=po.billed||{};const received=po.received||{};const trackNums=po.tracking_numbers||[];const shipments=po.shipments||[];
-        const szKeys=Object.keys(po).filter(k=>!['status','po_id','received','shipments','cancelled','po_type','deco_vendor','deco_type','created_at','memo','notes','expected_date','billed','tracking_numbers','unit_cost','vendor'].includes(k)&&typeof po[k]==='number');
+        const szKeys=Object.keys(po).filter(k=>!['status','po_id','received','shipments','cancelled','po_type','deco_vendor','deco_type','created_at','memo','notes','expected_date','billed','tracking_numbers','unit_cost','vendor','drop_ship'].includes(k)&&typeof po[k]==='number');
         const totalOrdered=szKeys.reduce((a,sz)=>a+(po[sz]||0),0);const totalBilled=szKeys.reduce((a,sz)=>a+(billed[sz]||0),0);const totalReceived=szKeys.reduce((a,sz)=>a+(received[sz]||0),0);
         if(totalOrdered>0)poData.push({item,itemIdx:idx,po,szKeys,billed,received,trackNums,shipments,totalOrdered,totalBilled,totalReceived,
           vendor:po.vendor||po.deco_vendor||'',expectedDate:po.expected_date||'',
@@ -3865,7 +3866,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <td style={{padding:'6px 8px'}}><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{d.item.sku}</span> <span style={{color:'#64748b'}}>{d.item.color}</span></td>
                 <td style={{padding:'6px 8px',fontFamily:'monospace',fontWeight:600}}>{d.po.po_id}</td>
                 <td style={{padding:'6px 8px'}}>{d.vendor}</td>
-                <td style={{padding:'6px 8px'}}><span className={`badge ${d.status==='received'?'badge-green':d.status==='in_transit'?'badge-blue':d.status==='partial'?'badge-amber':'badge-gray'}`}>{d.status==='received'?'Received':d.status==='in_transit'?'In Transit':d.status==='partial'?'Partial':'Waiting'}</span></td>
+                <td style={{padding:'6px 8px'}}><span className={`badge ${d.status==='received'?'badge-green':d.status==='in_transit'?'badge-blue':d.status==='partial'?'badge-amber':'badge-gray'}`}>{d.status==='received'?'Received':d.status==='in_transit'?'In Transit':d.status==='partial'?'Partial':'Waiting'}</span>{d.po.drop_ship&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:600,marginLeft:4,background:'#ede9fe',color:'#7c3aed'}}>Drop Ship</span>}</td>
                 <td style={{padding:'6px 8px'}}>{d.trackNums.length>0?<div style={{display:'flex',gap:4,flexWrap:'wrap'}}>{d.trackNums.map((tn,ti)=><a key={ti} href={trackUrl(tn)} target="_blank" rel="noreferrer" style={{fontFamily:'monospace',fontSize:11,fontWeight:700,color:'#1e40af',background:'#dbeafe',padding:'2px 6px',borderRadius:4,textDecoration:'none'}}>{tn}</a>)}</div>:<span style={{color:'#d1d5db'}}>—</span>}</td>
                 <td style={{padding:'6px 8px',color:'#475569'}}>{d.shipDate||<span style={{color:'#d1d5db'}}>—</span>}</td>
                 <td style={{padding:'6px 8px',color:'#475569'}}>{d.expectedDate||<span style={{color:'#d1d5db'}}>—</span>}</td>
@@ -4449,6 +4450,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <option value="embroidery">Embroidery</option><option value="screen_print">Screen Print</option><option value="dtf">DTF</option><option value="heat_transfer">Heat Transfer</option><option value="sublimation">Sublimation</option></select></div>
               <div><label className="form-label">Expected Return</label><input className="form-input" type="date" id={'dpo-date-'+poId}/></div>
             </div>
+            <div style={{marginBottom:12}}><label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,cursor:'pointer'}}><input type="checkbox" id={'dpo-dropship-'+poId}/><span style={{fontWeight:600,color:'#7c3aed'}}>📦 Drop Ship</span><span style={{fontSize:11,color:'#64748b'}}>— Ships direct to school, skip warehouse receive</span></label></div>
             {allItems.map((it,vi)=>{const szList=Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).sort((a,b)=>(SZ_ORD.indexOf(a[0])===-1?99:SZ_ORD.indexOf(a[0]))-(SZ_ORD.indexOf(b[0])===-1?99:SZ_ORD.indexOf(b[0])));
               const soQ=szList.reduce((a,[,v])=>a+v,0);
               return<div key={vi} style={{padding:12,border:'1px solid #ede9fe',borderRadius:6,marginBottom:8,background:'#faf5ff'}}>
@@ -4473,9 +4475,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const decoType=document.getElementById('dpo-type-'+poId)?.value||'embroidery';
               const returnDate=document.getElementById('dpo-date-'+poId)?.value||'';
               const notes=document.getElementById('dpo-notes-'+poId)?.value||'';
+              const isDropShip=document.getElementById('dpo-dropship-'+poId)?.checked||false;
               let totalQty=0,totalCost=0;
               allItems.forEach((it,vi)=>{
-                const idx=it._idx;const poLine={po_id:poId,status:'waiting',po_type:'outside_deco',deco_vendor:decoVendor,deco_type:decoType,
+                const idx=it._idx;const poLine={po_id:poId,status:'waiting',po_type:'outside_deco',deco_vendor:decoVendor,deco_type:decoType,drop_ship:isDropShip||undefined,
                   expected_date:returnDate,created_at:new Date().toLocaleDateString(),memo:notes,received:{},shipments:[]};
                 const szList=Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0);
                 const unitCost=parseFloat(document.getElementById('dpo-cost-'+vi)?.value)||0;
@@ -4527,6 +4530,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <div><label className="form-label">PO Number</label><input className="form-input" value={poId} readOnly style={{color:'#1e40af',fontWeight:700}}/></div>
             <div><label className="form-label">Ship To</label><select className="form-select">{addrs.map(a=><option key={a.id}>{a.label}</option>)}</select></div>
             <div><label className="form-label">Expected Date</label><input className="form-input" type="date" id={'po-date-'+poId}/></div></div>
+          <div style={{marginBottom:12}}><label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,cursor:'pointer'}}><input type="checkbox" id={'po-dropship-'+poId}/><span style={{fontWeight:600,color:'#7c3aed'}}>📦 Drop Ship</span><span style={{fontSize:11,color:'#64748b'}}>— Ships direct to school/decorator, skip warehouse receive</span></label></div>
           {poItems.map((it,vi)=>{const soQ=Object.values(it.sizes).reduce((a,v)=>a+v,0);
             return<div key={vi} style={{padding:12,border:'1px solid #e2e8f0',borderRadius:6,marginBottom:8}}>
               <div style={{display:'flex',justifyContent:'space-between',marginBottom:8}}><div><span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',marginRight:8}}>{it.sku}</span><strong>{it.name}</strong> — {it.color}</div><div style={{fontWeight:700}}>SO Qty: {soQ} <span style={{color:'#dc2626',fontSize:12,marginLeft:6}}>Open: {it.totalOpen}</span></div></div>
@@ -4558,7 +4562,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const updatedItems=o.items.map(it=>({...it,pick_lines:[...(it.pick_lines||[])],po_lines:[...(it.po_lines||[])]}));
           poItems.forEach((pit,vi)=>{
             const idx=pit._idx;if(idx==null)return;
+            const isDropShip=document.getElementById('po-dropship-'+poId)?.checked||false;
             const poLine={po_id:poId,status:'waiting',created_at:new Date().toLocaleDateString(),memo:'',received:{},shipments:[]};
+            if(isDropShip)poLine.drop_ship=true;
             pit.openSizes.forEach(([sz,v])=>{
               const el=document.getElementById('po-qty-'+vi+'-'+sz);
               poLine[sz]=el?parseInt(el.value)||0:v;
@@ -5561,7 +5567,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const itemTotal=qty*it.unit_sell;
           allPickIds.push({id:pk.pick_id,status:pk.status||'pick',qty,lineIdx:i,pickIdx:pi,sku:it.sku,name:it.name,color:it.color,total:itemTotal,created_at:pk.created_at,memo:pk.memo})}});
         safePOs(it).forEach((po,pi)=>{if(po.po_id){
-          const szKeysP=Object.keys(po).filter(k=>k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='created_at'&&k!=='memo'&&k!=='po_type'&&k!=='deco_vendor'&&k!=='deco_type'&&typeof po[k]==='number');
+          const szKeysP=Object.keys(po).filter(k=>k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='created_at'&&k!=='memo'&&k!=='po_type'&&k!=='deco_vendor'&&k!=='deco_type'&&k!=='drop_ship'&&typeof po[k]==='number');
           const qty=szKeysP.reduce((a,sz)=>a+(po[sz]||0),0);
           const rcvdQty=szKeysP.reduce((a,sz)=>a+((po.received||{})[sz]||0),0);
           const openQty=szKeysP.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-((po.received||{})[sz]||0)-((po.cancelled||{})[sz]||0)),0);
@@ -5716,7 +5722,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const activeLine=allLines[activeLineIdx]||allLines[0];
       const po=o.items[activeLine.lineIdx]?.po_lines?.[activeLine.poIdx]||editPO.po;
       const item=o.items[activeLine.lineIdx];
-      const szKeys=Object.keys(po).filter(k=>k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='po_type'&&k!=='deco_vendor'&&k!=='deco_type'&&k!=='created_at'&&k!=='memo'&&k!=='notes'&&k!=='expected_date'&&k!=='billed'&&k!=='tracking_numbers'&&k!=='unit_cost'&&k!=='vendor'&&typeof po[k]==='number');
+      const szKeys=Object.keys(po).filter(k=>k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='po_type'&&k!=='deco_vendor'&&k!=='deco_type'&&k!=='created_at'&&k!=='memo'&&k!=='notes'&&k!=='expected_date'&&k!=='billed'&&k!=='tracking_numbers'&&k!=='unit_cost'&&k!=='vendor'&&k!=='drop_ship'&&typeof po[k]==='number');
       const received=po.received||{};const cancelled=po.cancelled||{};const billed=po.billed||{};
       const shipments=po.shipments||[];const trackingNums=po.tracking_numbers||[];
       const getRcvd=sz=>(received[sz]||0);
@@ -5995,7 +6001,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     {/* PO FULL PAGE VIEW */}
     {poFullPage&&(()=>{
       const{po,item,allLines,soId,soItems}=poFullPage;
-      const szKeys=Object.keys(po).filter(k=>k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='po_type'&&k!=='deco_vendor'&&k!=='deco_type'&&k!=='created_at'&&k!=='memo'&&k!=='notes'&&k!=='expected_date'&&k!=='unit_cost'&&typeof po[k]==='number');
+      const szKeys=Object.keys(po).filter(k=>k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='po_type'&&k!=='deco_vendor'&&k!=='deco_type'&&k!=='created_at'&&k!=='memo'&&k!=='notes'&&k!=='expected_date'&&k!=='unit_cost'&&k!=='drop_ship'&&typeof po[k]==='number');
       const received=po.received||{};const cancelled=po.cancelled||{};const shipments=po.shipments||[];
       const getRcvd=sz=>(received[sz]||0);const getCncl=sz=>(cancelled[sz]||0);const getOpen=sz=>Math.max(0,(po[sz]||0)-getRcvd(sz)-getCncl(sz));
       const totalOrdered=szKeys.reduce((a,sz)=>a+(po[sz]||0),0);const totalReceived=szKeys.reduce((a,sz)=>a+getRcvd(sz),0);
@@ -6007,7 +6013,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // Gather all items on this PO from the SO
       const poItems=(allLines||[{lineIdx:0}]).map(ln=>({item:soItems?.[ln.lineIdx],po:soItems?.[ln.lineIdx]?.po_lines?.find(p=>p.po_id===po.po_id)||po})).filter(x=>x.item);
       const grandTotal=poItems.reduce((a,{item:it,po:p})=>{
-        const sk=Object.keys(p).filter(k=>k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='po_type'&&k!=='deco_vendor'&&k!=='deco_type'&&k!=='created_at'&&k!=='memo'&&k!=='notes'&&k!=='expected_date'&&k!=='unit_cost'&&typeof p[k]==='number');
+        const sk=Object.keys(p).filter(k=>k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='po_type'&&k!=='deco_vendor'&&k!=='deco_type'&&k!=='created_at'&&k!=='memo'&&k!=='notes'&&k!=='expected_date'&&k!=='unit_cost'&&k!=='drop_ship'&&typeof p[k]==='number');
         const qty=sk.reduce((s,sz)=>s+(p[sz]||0),0);const uc=p.po_type==='outside_deco'?safeNum(p.unit_cost):safeNum(it.nsa_cost);return a+qty*uc},0);
       return<div style={{position:'fixed',top:0,left:0,right:0,bottom:0,background:'#f1f5f9',zIndex:9999,overflow:'auto'}}>
         <div style={{maxWidth:900,margin:'0 auto',padding:'24px 20px'}}>
@@ -6052,7 +6058,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 </tr></thead>
                 <tbody>
                   {poItems.map(({item:it,po:p},idx)=>{
-                    const sk=Object.keys(p).filter(k=>k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='po_type'&&k!=='deco_vendor'&&k!=='deco_type'&&k!=='created_at'&&k!=='memo'&&k!=='notes'&&k!=='expected_date'&&k!=='unit_cost'&&typeof p[k]==='number');
+                    const sk=Object.keys(p).filter(k=>k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='po_type'&&k!=='deco_vendor'&&k!=='deco_type'&&k!=='created_at'&&k!=='memo'&&k!=='notes'&&k!=='expected_date'&&k!=='unit_cost'&&k!=='drop_ship'&&typeof p[k]==='number');
                     const qty=sk.reduce((s,sz)=>s+(p[sz]||0),0);const uc=p.po_type==='outside_deco'?safeNum(p.unit_cost):safeNum(it.nsa_cost);
                     return<tr key={idx} style={{borderBottom:'1px solid #e2e8f0'}}>
                       <td style={{padding:'6px 8px',fontFamily:'monospace',fontWeight:800,color:'#1e40af'}}>{it.sku}</td>
@@ -6336,7 +6342,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
           });
           safePOs(it).forEach(po=>{
             if(!po.po_id)return;
-            const qty=Object.entries(po).filter(([k,v])=>k!=='status'&&k!=='po_id'&&k!=='vendor'&&k!=='created_at'&&k!=='memo'&&k!=='received'&&k!=='ship_dates'&&typeof v==='number'&&v>0).reduce((a,[,v])=>a+v,0);
+            const qty=Object.entries(po).filter(([k,v])=>k!=='status'&&k!=='po_id'&&k!=='vendor'&&k!=='created_at'&&k!=='memo'&&k!=='received'&&k!=='ship_dates'&&k!=='drop_ship'&&typeof v==='number'&&v>0).reduce((a,[,v])=>a+v,0);
             const cost=qty*(it.unit_cost||0);
             txns.push({id:po.po_id,type:'po',date:po.created_at||'',memo:it.name+' ('+it.sku+')'+' — '+(po.vendor||'Vendor'),customer_id:so.customer_id,total:cost>0?cost:null,status:po.status,so_id:so.id,_src:'po'});
           });
@@ -10781,7 +10787,7 @@ export default function App(){
     const allPOs=[];
     sos.forEach(so=>{const c2=cust.find(x=>x.id===so.customer_id);
       safeItems(so).forEach((it,idx)=>{safePOs(it).forEach((po,pli)=>{
-        const szKeys=Object.keys(po).filter(k=>!['status','po_id','received','shipments','cancelled','vendor','created_at','expected_date','memo','po_type','unit_cost'].includes(k)&&typeof po[k]==='number');
+        const szKeys=Object.keys(po).filter(k=>!['status','po_id','received','shipments','cancelled','vendor','created_at','expected_date','memo','po_type','unit_cost','drop_ship'].includes(k)&&typeof po[k]==='number');
         const totalOrd=szKeys.reduce((a,sz)=>a+(po[sz]||0),0);
         const rcvd=po.received||{};const cncl=po.cancelled||{};
         const totalRcvd=szKeys.reduce((a,sz)=>a+(rcvd[sz]||0),0);
@@ -13350,7 +13356,7 @@ export default function App(){
               const openPOs=[];
               submittedBatches.filter(sb=>sb.status!=='received').forEach(sb=>{
                 openPOs.push({id:sb.po_number,vendor:sb.vendor_name,units:sb.total_units,date:sb.submitted_at,type:'batch'})});
-              sos.forEach(so=>{safeItems(so).forEach(it=>{safePOs(it).forEach(po=>{
+              sos.forEach(so=>{safeItems(so).forEach(it=>{safePOs(it).filter(po=>!po.drop_ship).forEach(po=>{
                 const szKeys=Object.keys(po).filter(k=>typeof po[k]==='number'&&!['status'].includes(k));
                 const open=szKeys.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-((po.received||{})[sz]||0)-((po.cancelled||{})[sz]||0)),0);
                 if(open>0&&!openPOs.find(x=>x.id===po.po_id))openPOs.push({id:po.po_id||'—',vendor:po.vendor||'',units:open,date:po.created_at||'',type:'so'})
