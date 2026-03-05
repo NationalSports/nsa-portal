@@ -1583,6 +1583,7 @@ const fetchRecentShipments = async () => {
 };
 
 // Create a ShipStation label for an order
+const _ssCarrierMap = { 'UPS': { carrierCode: 'ups', serviceCode: 'ups_ground' }, 'FedEx': { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, 'USPS': { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
 const createShipStationLabel = async (so, customer, packageItems, weight, carrier, service, dimensions) => {
   // Ensure order exists in ShipStation first
   let ssOrderId = so._shipstation_order_id;
@@ -1601,14 +1602,15 @@ const createShipStationLabel = async (so, customer, packageItems, weight, carrie
     city: customer.billing_city, state: customer.billing_state,
     postalCode: customer.billing_zip, country: 'US', phone: customer.contacts?.[0]?.phone || ''
   };
+  const cm = _ssCarrierMap[carrier] || { carrierCode: carrier || 'fedex', serviceCode: service || 'fedex_ground' };
   const labelPayload = {
-    orderId: ssOrderId, carrierCode: carrier || 'fedex', serviceCode: service || 'fedex_ground',
+    orderId: ssOrderId, carrierCode: cm.carrierCode, serviceCode: cm.serviceCode,
     packageCode: 'package', confirmation: 'none', shipDate: new Date().toISOString().split('T')[0],
     weight: { value: weight || 5, units: 'pounds' },
     dimensions: dimensions && dimensions.length && dimensions.width && dimensions.height
       ? { length: parseFloat(dimensions.length), width: parseFloat(dimensions.width), height: parseFloat(dimensions.height), units: 'inches' }
       : null,
-    shipFrom: { name: 'National Sports Apparel', company: 'National Sports Apparel', street1: '', city: '', state: '', postalCode: '', country: 'US', phone: '' },
+    shipFrom: { name: NSA.name, company: NSA.name, street1: NSA.addr, city: NSA.city, state: NSA.state, postalCode: NSA.zip, country: 'US', phone: NSA.phone },
     shipTo, insuranceOptions: { provider: null, insureShipment: false, insuredValue: 0 },
     internationalOptions: null, advancedOptions: { customField1: `NSA-SO-${so.id}` },
     testLabel: false
@@ -13207,7 +13209,7 @@ export default function App(){
                         try{
                           if(!c){nf('No customer found','error');return}
                           nf('Creating ShipStation label...');
-                          const label=await createShipStationLabel(so,c,box.items,box.weight,box.carrier,'fedex_ground',box.dimensions);
+                          const label=await createShipStationLabel(so,c,box.items,box.weight,box.carrier,null,box.dimensions);
                           const b=[...boxes];
                           const cost=label.shipmentCost||label.insuranceCost?parseFloat(label.shipmentCost||0)+parseFloat(label.insuranceCost||0):null;
                           b[bi]={...b[bi],tracking_number:label.trackingNumber||'',carrier:label.carrierCode||box.carrier,label_url:label.labelData?.href||null,shipping_cost:cost};
