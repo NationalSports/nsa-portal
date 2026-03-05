@@ -565,7 +565,7 @@ const _decoCols=['kind','position','type','art_file_id','art_tbd_type','tbd_colo
 const _itemExtraCols=new Set(['is_promo','_pre_promo_sell']);
 const _estExtraCols=new Set(['promo_applied','promo_amount','update_requests']);
 const _soExtraCols=new Set(['_shipping_cost','promo_applied','promo_amount','ship_preference','ship_on_date']);
-const _decoExtraCols=new Set(['print_color','front_and_back','reversible','num_qty','name_qty','num_font','num_size_back','custom_font_art_id','deco_type']);
+const _decoExtraCols=new Set(['print_color','front_and_back','reversible','num_qty','name_qty','num_font','num_size_back','custom_font_art_id','deco_type','notes','vendor']);
 // Sanitize decoration data before DB insert — strip UI-only placeholders that would violate constraints
 const _sanitizeDeco=(d)=>{const r={...d};if(r.custom_font_art_id&&r.custom_font_art_id==='pending')r.custom_font_art_id=null;if(r.art_file_id&&r.art_file_id==='__tbd')r.art_file_id=null;return r};
 const _msgCols=['id','so_id','author_id','text','ts','dept'];
