@@ -44,7 +44,7 @@ function dP(d, q, artFiles, cq) {
       if (art.deco_type === 'dtf') { const t = DTF[art.dtf_size || 0]; return { sell: d.sell_override || t.sell, cost: t.cost } } } }
   if (d.type === 'screen_print') { const u = d.underbase ? 1 + SP.ub : 1; const c = rQ(spP(q, d.colors || 1, false) * u); return { sell: rT(c * SP.mk), cost: c } }
   if (d.type === 'embroidery') { const c = emP(d.stitches || 8000, q, false); return { sell: rT(c * EM.mk), cost: c } }
-  if (d.kind === 'numbers' || d.type === 'number_press') { const nq = d.roster ? Object.values(d.roster).flat().filter(v => v && v.trim()).length : 0; return { sell: d.sell_override || npP(nq || 1, d.two_color, true), cost: npP(nq || 1, d.two_color, false), _nq: nq } };
+  if (d.kind === 'numbers' || d.type === 'number_press') { const nq = d.roster ? Object.values(d.roster).flat().filter(v => v && v.trim()).length : 0; const mult = (d.front_and_back ? 2 : 1) * (d.reversible ? 2 : 1); return { sell: d.sell_override || npP(nq || 1, d.two_color, true), cost: npP(nq || 1, d.two_color, false), _nq: nq * mult } };
   if (d.kind === 'names') { const nc = d.names ? Object.values(d.names).flat().filter(v => v && v.trim()).length : 0; const se = safeNum(d.sell_override || d.sell_each || 6); const co = safeNum(d.cost_each || 3); return { sell: nc > 0 ? rQ(nc * se / q) : se, cost: nc > 0 ? rQ(nc * co / q) : co } };
   if (d.type === 'dtf') { const t = DTF[d.dtf_size || 0]; return { sell: d.sell_override || t.sell, cost: t.cost } }
   if (d.kind === 'outside_deco') return { sell: d.sell_override || safeNum(d.sell_each), cost: safeNum(d.cost_each) };
@@ -173,7 +173,7 @@ function calcTotals(o, cust) {
     safeDecos(it).forEach(d => {
       const cq = d.kind === 'art' && d.art_file_id ? artQty[d.art_file_id] : q;
       const dp = dP(d, q, af, cq);
-      const eq = dp._nq != null ? dp._nq : q;
+      const eq = dp._nq != null ? dp._nq : (d.reversible ? q * 2 : q);
       rev += eq * dp.sell;
       cost += eq * dp.cost;
     });
@@ -308,7 +308,7 @@ function calcPromoTotals(o, cust) {
       safeDecos(it).forEach(d => {
         const cq = d.kind === 'art' && d.art_file_id ? artQty[d.art_file_id] : q;
         const dp = dP(d, q, af, cq);
-        const eq = dp._nq != null ? dp._nq : q;
+        const eq = dp._nq != null ? dp._nq : (d.reversible ? q * 2 : q);
         promoRev += eq * rQ(dp.sell * PROMO_DECO_MULT);
         promoCost += eq * dp.cost;
         origPromoRev += eq * dp.sell;
@@ -319,7 +319,7 @@ function calcPromoTotals(o, cust) {
       safeDecos(it).forEach(d => {
         const cq = d.kind === 'art' && d.art_file_id ? artQty[d.art_file_id] : q;
         const dp = dP(d, q, af, cq);
-        const eq = dp._nq != null ? dp._nq : q;
+        const eq = dp._nq != null ? dp._nq : (d.reversible ? q * 2 : q);
         normalRev += eq * dp.sell;
         normalCost += eq * dp.cost;
       });
