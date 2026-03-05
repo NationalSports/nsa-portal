@@ -1686,16 +1686,23 @@ const fetchOMGStores = async () => {
   return { data: allData, included: allIncluded };
 };
 
-const fetchOMGStoreDetail = async (saleId) => {
-  const [saleData, orders] = await Promise.all([
-    omgApiCall(`/sales/${saleId}?include=organization`).catch(e => { console.warn('[OMG] Failed to fetch sale', saleId, e.message); return null; }),
-    omgApiCall(`/orders?filter[relationships][sale]=${saleId}&include=sale,customer_info`).catch(e => { console.warn('[OMG] Failed to fetch orders for sale', saleId, e.message); return null; })
-  ]);
-  if (!saleData) return null;
+const fetchOMGStoreDetail = async (saleResource, allIncluded) => {
+  // saleResource is from the initial /sales list — no need to re-fetch it
+  const saleId = saleResource.id;
+  const saleData = { data: saleResource, included: allIncluded };
+  // Fetch orders for this sale
+  const orders = await omgApiCall(`/orders?filter[sale_id]=${saleId}&include=customer_info`)
+    .catch(() => omgApiCall(`/orders?filter[relationships][sale]=${saleId}&include=sale,customer_info`))
+    .catch(e => { console.warn('[OMG] Failed to fetch orders for sale', saleId, e.message); return null; });
   const orderList = orders?.data || [];
-  // Fetch order products for each order to get real item/product data
+  // Fetch order products for each order — try filter variants, fall back gracefully
   const orderProducts = await Promise.all(
-    orderList.map(o => omgApiCall(`/order_products?filter[relationships][order]=${o.id}&include=product,product.images`).catch(() => ({ data: [], included: [] })))
+    orderList.map(o =>
+      omgApiCall(`/order_products?filter[order_id]=${o.id}&include=product`)
+        .catch(() => omgApiCall(`/order_products?filter[relationships][order]=${o.id}&include=product`))
+        .catch(() => omgApiCall(`/order_products?filter[order_id]=${o.id}`))
+        .catch(() => ({ data: [], included: [] }))
+    )
   );
   return { ...saleData, orders: orderList, orderProducts };
 };
@@ -8706,7 +8713,7 @@ export default function App(){
       const stores = omgStoresData.data;
       for (let i = 0; i < stores.length; i += batchSize) {
         const batch = stores.slice(i, i + batchSize);
-        const results = await Promise.allSettled(batch.map(store => fetchOMGStoreDetail(store.id)));
+        const results = await Promise.allSettled(batch.map(store => fetchOMGStoreDetail(store, omgStoresData.included || [])));
         results.forEach(r => { if (r.status === 'fulfilled' && r.value !== null) detailedStores.push(r.value); });
         if (i + batchSize < stores.length) await new Promise(r => setTimeout(r, 500));
       }
