@@ -13729,7 +13729,7 @@ export default function App(){
         {/* ── RECENT SHIPMENTS ── */}
         {(()=>{
           const recentShipments=[];
-          SOs.filter(so=>so._shipments&&so._shipments.length>0&&!so.deleted_at).forEach(so=>{
+          sos.filter(so=>so._shipments&&so._shipments.length>0&&!so.deleted_at).forEach(so=>{
             const c2=cust.find(cc=>cc.id===so.customer_id);
             (so._shipments||[]).forEach((shp,si)=>{
               recentShipments.push({...shp,soId:so.id,so,cName:c2?.name||'Unknown',boxIdx:si});
