@@ -9212,6 +9212,21 @@ export default function App(){
   // PRODUCT DETAIL VIEW
   const ProductDetail=({product,onBack})=>{
     const[ep,setEp]=useState({...product});const[editing,setEditing]=useState(false);const[tab,setTab]=useState('history');const[salesYr,setSalesYr]=useState(new Date().getFullYear());
+    const[autoSaved,setAutoSaved]=useState(false);
+    // Sync ep with product prop when inventory changes externally (e.g. AdjModal)
+    React.useEffect(()=>{if(!editing){setEp({...product})}else{setEp(prev=>({...prev,_inv:product._inv}))}},[product._inv]);
+    const epRef=React.useRef(ep);const editingRef=React.useRef(editing);
+    React.useEffect(()=>{epRef.current=ep},[ep]);
+    React.useEffect(()=>{editingRef.current=editing},[editing]);
+    // Auto-save: persist edits every 30s while in edit mode
+    React.useEffect(()=>{
+      if(!editing)return;
+      const doSave=()=>{if(editingRef.current){const cur=epRef.current;setProd(p=>p.map(x=>x.id===cur.id?cur:x));_dbSaveProduct(cur);setAutoSaved(true);setTimeout(()=>setAutoSaved(false),2000)}};
+      const iv=setInterval(doSave,30000);
+      const handleUnload=()=>doSave();
+      window.addEventListener('beforeunload',handleUnload);
+      return()=>{clearInterval(iv);window.removeEventListener('beforeunload',handleUnload);doSave()};
+    },[editing]);
     const v=vend.find(x=>x.id===ep.vendor_id);
     // Find all orders this product appears on
     const pEsts=ests.filter(e=>e.items?.some(it=>it.product_id===product.id||it.sku===product.sku));
@@ -9268,6 +9283,7 @@ export default function App(){
                 <span style={{fontFamily:'monospace',fontWeight:800,fontSize:18,background:'#dbeafe',padding:'2px 10px',borderRadius:4,color:'#1e40af'}}>{ep.sku}</span>
                 <span style={{fontSize:18,fontWeight:700}}>{ep.name}</span>
                 <button className="btn btn-sm btn-secondary" onClick={()=>setEditing(true)} style={{marginLeft:'auto'}}><Icon name="edit" size={12}/> Edit</button>
+                <button className="btn btn-sm" style={{background:'#f0fdf4',color:'#166534',border:'1px solid #bbf7d0',fontWeight:700}} onClick={()=>setAM({open:true,p:ep})}><Icon name="plus" size={12}/> Adjust Inventory</button>
               </div>
               <div style={{display:'flex',gap:12,flexWrap:'wrap',fontSize:13,color:'#64748b',marginBottom:8}}>
                 <span><span className="badge badge-blue">{ep.brand}</span></span>
@@ -9295,9 +9311,11 @@ export default function App(){
                 <div><label className="form-label">Retail Price</label><input className="form-input" type="number" step="0.01" value={ep.retail_price} onChange={e=>setEp(x=>({...x,retail_price:parseFloat(e.target.value)||0}))}/></div>
                 <div style={{gridColumn:'1/3'}}><label className="form-label">Available Sizes</label><input className="form-input" value={ep.available_sizes.join(', ')} onChange={e=>setEp(x=>({...x,available_sizes:e.target.value.split(',').map(s=>s.trim()).filter(Boolean)}))}/></div>
               </div>
-              <div style={{display:'flex',gap:8}}>
+              <div style={{display:'flex',gap:8,alignItems:'center'}}>
                 <button className="btn btn-primary" onClick={saveProduct}><Icon name="check" size={14}/> Save</button>
                 <button className="btn btn-secondary" onClick={()=>{setEp({...product});setEditing(false)}}>Cancel</button>
+                {autoSaved&&<span style={{fontSize:11,color:'#059669',fontWeight:600,marginLeft:8}}>Auto-saved</span>}
+                <span style={{fontSize:10,color:'#94a3b8',marginLeft:'auto'}}>Auto-saves every 30s</span>
               </div>
             </>}
           </div>
@@ -9463,7 +9481,7 @@ export default function App(){
 
   // PRODUCTS
   function rProd(){
-    if(selP)return<ProductDetail product={selP} onBack={()=>setSelP(null)}/>;
+    if(selP){const freshP=prod.find(x=>x.id===selP.id)||selP;return<ProductDetail product={freshP} onBack={()=>setSelP(null)}/>}
     return(<><div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap'}}>
     <div className="search-bar" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search..." value={q} onChange={e=>setQ(e.target.value)}/></div>
     <label style={{fontSize:12,display:'flex',alignItems:'center',gap:4}}><input type="checkbox" checked={pF.stk==='instock'} onChange={e=>setPF(f=>({...f,stk:e.target.checked?'instock':'all'}))}/> In Stock</label>
