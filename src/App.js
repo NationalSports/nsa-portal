@@ -1684,18 +1684,18 @@ const fetchOMGStores = async () => {
   }
 
   // Filter: keep open/pending/scheduled + closed/finalized/fulfilled within last 30 days
+  // Skip only old archived/closed stores; include anything with unknown status (safe default)
   const thirtyDaysAgo = new Date(Date.now() - 30 * 86400000);
   const total = allData.length;
+  const excludeOld = new Set(['closed', 'finalized', 'fulfilled', 'archived']);
   allData = allData.filter(s => {
-    const status = s.attributes?.status;
-    if (status === 'open' || status === 'pending' || status === 'scheduled') return true;
-    if (['closed', 'finalized', 'fulfilled'].includes(status)) {
-      const closedAt = s.attributes?.expires_at || s.attributes?.closed_at;
-      return closedAt && new Date(closedAt) >= thirtyDaysAgo;
-    }
-    return false;
+    const status = (s.attributes?.status || '').toLowerCase();
+    if (!excludeOld.has(status)) return true; // open, pending, scheduled, unknown — keep
+    // For closed-type statuses, keep if closed within last 30 days
+    const closedAt = s.attributes?.expires_at || s.attributes?.closed_at || s.attributes?.updated_at;
+    return closedAt && new Date(closedAt) >= thirtyDaysAgo;
   });
-  console.log(`[OMG] Filtered ${allData.length} relevant stores from ${total} total (open + closed <30 days)`);
+  console.log(`[OMG] Filtered ${allData.length} relevant stores from ${total} total (open + closed <30 days). Statuses seen:`, [...new Set(allData.map(s => s.attributes?.status))]);
 
   return { data: allData, included: allIncluded };
 };
