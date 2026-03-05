@@ -13718,6 +13718,38 @@ export default function App(){
               </div>
             </div>})}
           </div>})()}
+
+        {/* ── RECENT SHIPMENTS ── */}
+        {(()=>{
+          const recentShipments=[];
+          SOs.filter(so=>so._shipments&&so._shipments.length>0&&!so.deleted_at).forEach(so=>{
+            const c2=cust.find(cc=>cc.id===so.customer_id);
+            (so._shipments||[]).forEach((shp,si)=>{
+              recentShipments.push({...shp,soId:so.id,so,cName:c2?.name||'Unknown',boxIdx:si});
+            });
+          });
+          recentShipments.sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||''));
+          const recent=recentShipments.slice(0,20);
+          if(recent.length===0)return null;
+          return<div style={{marginTop:16}}>
+            <div style={{fontSize:12,fontWeight:800,color:'#475569',marginBottom:8,textTransform:'uppercase'}}>Recent Shipments</div>
+            <div style={{display:'grid',gap:6}}>
+              {recent.map((shp,si)=>{
+                const shpUnits=(shp.items||[]).reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((a2,v)=>a2+v,0),0);
+                return<div key={shp.id||si} className="card" style={{padding:'8px 12px',borderLeft:'3px solid #166534',cursor:'pointer'}}
+                  onClick={()=>{setESOTab('tracking');setESO(shp.so);setESOC(cust.find(c2=>c2.id===shp.so?.customer_id));setPg('orders')}}>
+                  <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+                    <span style={{fontSize:11,fontWeight:800,color:'#166534'}}>{shp.cName}</span>
+                    <span style={{fontSize:10,fontFamily:'monospace',color:'#1e40af'}}>{shp.soId}</span>
+                    {shp.tracking_number?<span style={{fontSize:10,fontFamily:'monospace',color:'#166534',background:'#dcfce7',padding:'1px 6px',borderRadius:3}}>{shp.tracking_number}</span>
+                      :<span style={{fontSize:10,color:'#d97706'}}>No tracking</span>}
+                    {shp.carrier&&<span style={{fontSize:9,color:'#64748b',textTransform:'uppercase'}}>{shp.carrier}</span>}
+                    {shpUnits>0&&<span style={{fontSize:10,fontWeight:700,color:'#475569'}}>{shpUnits} units</span>}
+                    <span style={{marginLeft:'auto',fontSize:9,color:'#94a3b8'}}>{shp.ship_date||shp.created_at||''}</span>
+                  </div>
+                </div>})}
+            </div>
+          </div>})()}
         </>}
 
         {/* ── SHIP PACKAGE MODAL ── */}
@@ -13785,6 +13817,9 @@ export default function App(){
                           setSOs(prev=>prev.map(s=>s.id===soId?{...s,_shipping_cost:existingCost+cost,_shipstation_cost:existingCost+cost}:s));
                         }
                         nf('✅ Label created! Tracking: '+(label.trackingNumber||'pending')+(cost?' · Cost: $'+cost.toFixed(2):''));
+                        // Auto-open label for printing
+                        const labelUrl=label.labelData?.href||null;
+                        if(labelUrl){const pw=window.open(labelUrl,'_blank');if(pw)setTimeout(()=>{try{pw.print()}catch(e){}},1500)}
                       }catch(err){nf('Label creation failed: '+err.message,'error')}
                     }}>🏷️ Create Label</button>}
                 </div>
@@ -13837,7 +13872,30 @@ export default function App(){
                   });
                   if(avail.length===0)return null;
                   return<div style={{marginTop:8,padding:8,background:'#eff6ff',borderRadius:6,border:'1px dashed #93c5fd'}}>
-                    <div style={{fontSize:10,fontWeight:700,color:'#1e40af',textTransform:'uppercase',marginBottom:6}}>Add items to this box</div>
+                    <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:6}}>
+                      <div style={{fontSize:10,fontWeight:700,color:'#1e40af',textTransform:'uppercase'}}>Add items to this box</div>
+                      <button className="btn btn-sm" style={{fontSize:9,padding:'2px 10px',background:'#166534',color:'white',border:'none',borderRadius:4,fontWeight:700}}
+                        onClick={()=>{
+                          const b=[...shipModal.boxes];
+                          avail.forEach(ai=>{
+                            const inBoxes={};
+                            shipModal.boxes.forEach(bx=>{const match=(bx.items||[]).find(bi2=>bi2.soId===ai.soId&&bi2.itemIdx===ai.itemIdx);
+                              if(match)Object.entries(match.sizes||{}).forEach(([sz,v])=>{inBoxes[sz]=(inBoxes[sz]||0)+v})});
+                            const remainingSizes={};
+                            Object.entries(ai.sizes||{}).forEach(([sz,v])=>{const rem=v-(inBoxes[sz]||0);if(rem>0)remainingSizes[sz]=rem});
+                            if(Object.keys(remainingSizes).length===0)return;
+                            const existing=(b[bi].items||[]).findIndex(x=>x.soId===ai.soId&&x.itemIdx===ai.itemIdx);
+                            if(existing>=0){
+                              const merged={...b[bi].items[existing],sizes:{}};
+                              Object.entries(ai.sizes||{}).forEach(([sz])=>{merged.sizes[sz]=(b[bi].items[existing].sizes[sz]||0)+(remainingSizes[sz]||0)});
+                              b[bi]={...b[bi],items:b[bi].items.map((x,xi)=>xi===existing?merged:x)};
+                            } else {
+                              b[bi]={...b[bi],items:[...(b[bi].items||[]),{sku:ai.sku,name:ai.name,color:ai.color||'',sizes:{...remainingSizes},soId:ai.soId,itemIdx:ai.itemIdx}]};
+                            }
+                          });
+                          setShipModal({...shipModal,boxes:b});
+                        }}>+ Add All</button>
+                    </div>
                     <table style={{width:'100%',fontSize:11,borderCollapse:'collapse'}}>
                       <thead><tr style={{borderBottom:'1px solid #bfdbfe'}}>
                         <th style={{padding:'3px 6px',textAlign:'left',fontSize:10,color:'#1e40af'}}>SO#</th>
