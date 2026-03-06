@@ -16,3 +16,6 @@ npm-debug.log*
 
 # supabase
 supabase/.temp/
+
+# test reports (generated)
+test-reports/
