@@ -8645,6 +8645,8 @@ export default function App(){
   React.useEffect(()=>{if(eSO){const c=cust.find(x=>x.id===eSO.customer_id);addRecent('order',eSO.id,eSO.id+(eSO.memo?' — '+eSO.memo:'')+(c?' ('+( c.alpha_tag||c.name)+')':''),eSO.customer_id)}},[eSO?.id]); // eslint-disable-line
   React.useEffect(()=>{if(eEst){const c=cust.find(x=>x.id===eEst.customer_id);addRecent('estimate',eEst.id,eEst.id+(eEst.memo?' — '+eEst.memo:'')+(c?' ('+(c.alpha_tag||c.name)+')':''),eEst.customer_id)}},[eEst?.id]); // eslint-disable-line
   React.useEffect(()=>{if(selC)addRecent('customer',selC.id,selC.name+(selC.alpha_tag?' ('+selC.alpha_tag+')':''))},[selC?.id]); // eslint-disable-line
+  React.useEffect(()=>{if(selV)addRecent('vendor',selV.id,selV.name)},[selV?.id]); // eslint-disable-line
+  React.useEffect(()=>{if(selP)addRecent('product',selP.id,(selP.sku||'')+' — '+selP.name)},[selP?.id]); // eslint-disable-line
 
   const[gQ,setGQ]=useState('');const[gOpen,setGOpen]=useState(false);
   // AI Search state
@@ -19720,13 +19722,15 @@ export default function App(){
             </div>
             {recentlyViewed.length===0&&<div style={{padding:'16px',textAlign:'center',color:'#94a3b8',fontSize:12}}>No recent records yet</div>}
             {recentlyViewed.map((r,i)=>{
-              const iconMap={order:'box',estimate:'dollar',customer:'users',invoice:'file',product:'package',job:'grid'};
+              const iconMap={order:'box',estimate:'dollar',customer:'users',invoice:'file',product:'package',job:'grid',vendor:'building'};
               const ago=((Date.now()-r.ts)/60000);const timeAgo=ago<1?'just now':ago<60?Math.floor(ago)+'m ago':ago<1440?Math.floor(ago/60)+'h ago':Math.floor(ago/1440)+'d ago';
               return<div key={r.kind+r.id} style={{padding:'8px 12px',cursor:'pointer',fontSize:12,display:'flex',gap:8,alignItems:'center',borderBottom:'1px solid #f1f5f9'}} onMouseEnter={e=>e.currentTarget.style.background='#f8fafc'} onMouseLeave={e=>e.currentTarget.style.background='transparent'} onClick={()=>{
                 setRecentOpen(false);
                 if(r.kind==='order'){const so=sos.find(s=>s.id===r.id);if(so){setESO(so);setESOC(cust.find(x=>x.id===so.customer_id));setPg('orders')}}
                 else if(r.kind==='estimate'){const est=ests.find(e=>e.id===r.id);if(est){setEEst(est);setEEstC(cust.find(x=>x.id===est.customer_id));setPg('estimates')}}
                 else if(r.kind==='customer'){const cc=cust.find(x=>x.id===r.id);if(cc){setSelC(cc);setPg('customers')}}
+                else if(r.kind==='vendor'){const vv=vend.find(x=>x.id===r.id);if(vv){setSelV(vv);setPg('vendors')}}
+                else if(r.kind==='product'){const pp=prod.find(x=>x.id===r.id);if(pp){setSelP(pp);setPg('products')}}
               }}>
                 <Icon name={iconMap[r.kind]||'file'} size={13}/>
                 <div style={{flex:1,minWidth:0}}><div style={{fontWeight:600,color:'#1e40af',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{r.label}</div></div>
