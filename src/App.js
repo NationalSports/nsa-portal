@@ -2429,7 +2429,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const ssLiveSearch=useCallback(async(query)=>{
     if(!query||query.length<2){setSsResults([]);return}
     const cacheKey=query.toLowerCase().trim();
-    if(ssSearchCache.current[cacheKey]){setSsResults(ssSearchCache.current[cacheKey]);return}
+    const cached=ssSearchCache.current[cacheKey];
+    if(cached&&(cached.length>0||cached._ts>Date.now()-30000)){setSsResults(cached.length?cached:[]);return}
     setSsSearching(true);
     try{
       // First: get style info (title, partNumber) from Styles endpoint
@@ -2473,8 +2474,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         }catch(e3){/* padded lookup failed */}
       }
       if(!items.length){
-        // Cache empty result so we don't re-search
-        ssSearchCache.current[cacheKey]=[];
+        // Cache empty result with TTL so we can retry after 30s
+        ssSearchCache.current[cacheKey]={length:0,_ts:Date.now()};
         setSsResults([]);
         return;
       }
@@ -2526,17 +2527,19 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const smLiveSearch=useCallback(async(query)=>{
     if(!query||query.length<2){setSmResults([]);return}
     const cacheKey=query.toLowerCase().trim();
-    if(smSearchCache.current[cacheKey]){setSmResults(smSearchCache.current[cacheKey]);return}
+    const cached=smSearchCache.current[cacheKey];
+    if(cached&&(cached.length>0||cached._ts>Date.now()-30000)){setSmResults(cached.length?cached:[]);return}
     setSmSearching(true);
     try{
-      // SanMar: search by style via product info service
-      const prodData=await sanmarGetProduct(query);
+      // SanMar: search by style via product info service (uppercase — SanMar is case-sensitive)
+      const q=query.toUpperCase().trim();
+      const prodData=await sanmarGetProduct(q);
       const items=prodData?.items||[];
-      if(!items.length){smSearchCache.current[cacheKey]=[];setSmResults([]);return}
+      if(!items.length){smSearchCache.current[cacheKey]={length:0,_ts:Date.now()};setSmResults([]);return}
       // Also fetch inventory for these items
       let invData={};
       try{
-        const inv=await sanmarGetInventory(query,'','');
+        const inv=await sanmarGetInventory(q,'','');
         (inv?.items||[]).forEach(it=>{
           const key=(it.color||it.colorName||'')+'|'+(it.size||it.labelSize||'');
           invData[key]=parseInt(it.totalQty||it.qty||it.quantity||0)||0;
