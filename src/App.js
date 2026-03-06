@@ -165,7 +165,7 @@ const _dbSeed = async (d) => {
   for(const inv of(d.invoices||[])){await _dbSaveInvoice(inv)}
   // Seed messages
   if(d.messages?.length){
-    await supabase.from('messages').upsert(d.messages.map(m=>{const p=_pick(m,_msgCols);const r={...p};if('text' in r){r.body=r.text;delete r.text;}if('ts' in r){r.created_at=r.ts;delete r.ts;}return r}),{onConflict:'id'});
+    await supabase.from('messages').upsert(d.messages.map(m=>_pick(m,_msgCols)),{onConflict:'id'});
     const reads=[];d.messages.forEach(m=>(m.read_by||[]).forEach(uid=>reads.push({message_id:m.id,user_id:uid})));
     if(reads.length) await supabase.from('message_reads').upsert(reads,{onConflict:'message_id,user_id'});
   }
@@ -483,11 +483,7 @@ const _dbSaveProduct = async (p) => {
 const _dbSaveMessage = async (m) => {
   if(!supabase)return;
   try{
-    const picked=_pick(m,_msgCols);
-    // Map app field names to DB column names: text→body, ts→created_at
-    const row={...picked};
-    if('text' in row){row.body=row.text;delete row.text;}
-    if('ts' in row){row.created_at=row.ts;delete row.ts;}
+    const row=_pick(m,_msgCols);
     const{error}=await supabase.from('messages').upsert(row,{onConflict:'id'});
     if(error){
       // FK violation on so_id means the SO hasn't been saved yet — skip silently and retry later
