@@ -132,12 +132,6 @@ tbody tr { cursor: pointer; }
 }
 .search-bar svg { color: #94a3b8; width: 16px; height: 16px; }
 
-/* AI Search spinner */
-.ai-search-spinner {
-  width: 24px; height: 24px; border: 3px solid #e9d5ff; border-top-color: #a855f7;
-  border-radius: 50%; animation: ai-spin 0.7s linear infinite; margin: 0 auto;
-}
-@keyframes ai-spin { to { transform: rotate(360deg); } }
 
 /* Tabs */
 .tabs { display: flex; gap: 0; border-bottom: 2px solid #e2e8f0; margin-bottom: 16px; }
