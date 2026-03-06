@@ -152,7 +152,7 @@ function buildBlocks(
       elements: [
         {
           type: "mrkdwn",
-          text: "Reply to this thread and it will post back to the SO in the portal.",
+          text: "Reply to this thread and it will post back to the portal.",
         },
       ],
     },
@@ -171,8 +171,11 @@ serve(async (req: Request) => {
     const soId: string = record.so_id;
     const authorId: string = record.author_id;
     const dept: string = record.dept || "all";
-    const body: string = record.body;
+    const body: string = record.body || record.text || "";
     const mentions: string[] = record.mentions || [];
+    const entityType: string = record.entity_type || "so";
+    const entityId: string = record.entity_id || soId;
+    const threadId: string | null = record.thread_id || null;
 
     // Get Slack token
     const token = await getSlackToken();
@@ -184,23 +187,47 @@ serve(async (req: Request) => {
 
     const portalUrl = await getPortalUrl();
 
-    // Look up SO details
-    const { data: so } = await supabase
-      .from("sales_orders")
-      .select("display_id, memo, customer_id, created_by")
-      .eq("id", soId)
-      .single();
+    // Look up entity details based on entity_type
+    let entityDisplayId = entityId;
+    let entityMemo = "";
+    let customerId = "";
+    let entityOwner = "";
 
-    if (!so) {
-      return new Response(JSON.stringify({ ok: false, error: "SO not found" }), { status: 200 });
+    if (entityType === "so" || entityType === "job") {
+      const lookupId = entityType === "so" ? entityId : soId;
+      const { data: so } = await supabase
+        .from("sales_orders")
+        .select("id, memo, customer_id, created_by")
+        .eq("id", lookupId)
+        .single();
+      if (so) {
+        entityDisplayId = so.id;
+        entityMemo = so.memo || "";
+        customerId = so.customer_id;
+        entityOwner = so.created_by;
+      }
+    } else if (entityType === "estimate") {
+      const { data: est } = await supabase
+        .from("estimates")
+        .select("id, memo, customer_id, created_by")
+        .eq("id", entityId)
+        .single();
+      if (est) {
+        entityDisplayId = est.id;
+        entityMemo = est.memo || "";
+        customerId = est.customer_id;
+        entityOwner = est.created_by;
+      }
+    }
+
+    if (!entityDisplayId) {
+      return new Response(JSON.stringify({ ok: false, error: "Entity not found" }), { status: 200 });
     }
 
     // Look up customer name
-    const { data: cust } = await supabase
-      .from("customers")
-      .select("name, alpha_tag")
-      .eq("id", so.customer_id)
-      .single();
+    const { data: cust } = customerId
+      ? await supabase.from("customers").select("name, alpha_tag").eq("id", customerId).single()
+      : { data: null };
 
     const customerName = cust?.alpha_tag || cust?.name || "Unknown";
 
@@ -239,15 +266,16 @@ serve(async (req: Request) => {
       }
     }
 
-    // 4. SO owner (the rep who created the SO) — always notify if not author
-    if (so.created_by && so.created_by !== authorId && !recipientIds.has(so.created_by)) {
-      recipientIds.add(so.created_by);
-      recipientReasons.set(so.created_by, "reply");
+    // 4. Entity owner (the rep who created it) — always notify if not author
+    if (entityOwner && entityOwner !== authorId && !recipientIds.has(entityOwner)) {
+      recipientIds.add(entityOwner);
+      recipientReasons.set(entityOwner, "reply");
     }
 
     // Send DMs
-    const blocks = buildBlocks(authorName, so.display_id, so.memo || "", customerName, dept, body, portalUrl);
-    const plainText = `${authorName} on ${so.display_id}: ${body}`;
+    const entityTypeLabel = entityType === "estimate" ? "Estimate" : entityType === "job" ? "Job" : "SO";
+    const blocks = buildBlocks(authorName, `${entityTypeLabel} ${entityDisplayId}`, entityMemo, customerName, dept, body, portalUrl);
+    const plainText = `${authorName} on ${entityTypeLabel} ${entityDisplayId}: ${body}`;
     const results: Array<{ userId: string; ok: boolean; error?: string }> = [];
 
     for (const userId of recipientIds) {

@@ -83,10 +83,10 @@ async function findOriginalMessage(channelId: string, threadTs: string) {
 
   if (!data) return null;
 
-  // Get the actual portal message to find the SO
+  // Get the actual portal message to find the entity
   const { data: msg } = await supabase
     .from("messages")
-    .select("id, so_id")
+    .select("id, so_id, entity_type, entity_id")
     .eq("id", data.message_id)
     .single();
 
@@ -97,7 +97,7 @@ async function findOriginalMessage(channelId: string, threadTs: string) {
 async function findMessageBySlackThread(channelId: string, threadTs: string) {
   const { data } = await supabase
     .from("messages")
-    .select("id, so_id")
+    .select("id, so_id, entity_type, entity_id")
     .eq("slack_channel", channelId)
     .eq("slack_ts", threadTs)
     .limit(1)
@@ -170,15 +170,19 @@ serve(async (req: Request) => {
       return new Response("ok", { status: 200 });
     }
 
-    // Insert the reply as a new portal message on the same SO
+    // Insert the reply as a new portal message on the same entity, threaded to the original
     const { data: newMsg, error } = await supabase
       .from("messages")
       .insert({
         so_id: originalMsg.so_id,
         author_id: portalUser.id,
         dept: "all",
-        body: replyText,
-        slack_ts: event.ts, // this reply's own ts
+        text: replyText,
+        ts: new Date().toLocaleString(),
+        entity_type: originalMsg.entity_type || "so",
+        entity_id: originalMsg.entity_id || originalMsg.so_id,
+        thread_id: originalMsg.id,
+        slack_ts: event.ts,
         slack_channel: channelId,
       })
       .select("id")
