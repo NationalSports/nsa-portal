@@ -576,8 +576,8 @@ const _soExtraCols=new Set(['_shipping_cost','promo_applied','promo_amount','shi
 const _decoExtraCols=new Set(['print_color','front_and_back','reversible','num_qty','name_qty','num_font','num_size_back','custom_font_art_id','deco_type','notes','vendor']);
 // Sanitize decoration data before DB insert — strip UI-only placeholders that would violate constraints
 const _sanitizeDeco=(d)=>{const r={...d};if(r.custom_font_art_id&&r.custom_font_art_id==='pending')r.custom_font_art_id=null;if(r.art_file_id&&r.art_file_id==='__tbd')r.art_file_id=null;return r};
-const _msgCols=['id','so_id','author_id','text','ts','dept','tagged_members'];
-const _msgExtraCols=new Set(['tagged_members']);
+const _msgCols=['id','so_id','author_id','text','ts','dept','tagged_members','entity_type','entity_id','thread_id'];
+const _msgExtraCols=new Set(['tagged_members','entity_type','entity_id','thread_id']);
 const _artCols=['id','name','deco_type','ink_colors','thread_colors','art_size','art_sizes','garment_colors','files','mockup_files','item_mockups','prod_files','notes','status','uploaded'];
 // Columns that may not exist in art file tables — stripped on retry
 const _artExtraCols=new Set(['art_sizes','garment_colors','item_mockups']);
@@ -1435,7 +1435,11 @@ const D_MSG=[
 {id:'m6',so_id:'SO-1045',author_id:'r1',text:'Waiting on Coach Davis for logo approval. Sent follow-up email.',ts:'02/13/26 3:00 PM',read_by:['r1'],tagged_members:[]},
 {id:'m7',so_id:'SO-1051',author_id:'r4',text:'@Mo - Crest file from coach is low-res. Need vector version.',ts:'02/15/26 11:00 AM',read_by:['r4'],tagged_members:['r7']},
 {id:'m8',so_id:'SO-1063',author_id:'r1',text:'UA says custom navy/gold will ship 3/1. Backordered on XL and 2XL. @Kellen Coates check warehouse stock.',ts:'02/16/26 4:30 PM',read_by:['r1'],tagged_members:['r5']},
-{id:'m9',so_id:'SO-1062',author_id:'r99',text:'This message is from a deleted rep — should still render.',ts:'02/17/26 9:00 AM',read_by:[],tagged_members:[]},
+{id:'m9',so_id:'SO-1062',author_id:'r99',text:'This message is from a deleted rep — should still render.',ts:'02/17/26 9:00 AM',read_by:[],tagged_members:[],entity_type:'so',entity_id:'SO-1062'},
+{id:'m10',so_id:null,author_id:'r1',text:'Need coach to confirm sleeve logo placement before we convert to SO.',ts:'02/18/26 10:00 AM',read_by:['r1'],tagged_members:[],entity_type:'estimate',entity_id:'EST-2101'},
+{id:'m11',so_id:null,author_id:'r4',text:'@Steve Peterson pricing approved by AD, ready to convert whenever.',ts:'02/19/26 2:30 PM',read_by:['r4'],tagged_members:['r1'],entity_type:'estimate',entity_id:'EST-2101'},
+{id:'m12',so_id:'SO-1042',author_id:'r5',text:'Got it, will check bin locations today.',ts:'02/11/26 10:00 AM',read_by:['r5'],tagged_members:[],entity_type:'so',entity_id:'SO-1042',thread_id:'m2'},
+{id:'m13',so_id:'SO-1042',author_id:'r1',text:'Thanks Kellen, let me know the count.',ts:'02/11/26 10:30 AM',read_by:['r1'],tagged_members:[],entity_type:'so',entity_id:'SO-1042',thread_id:'m2'},
 ];
 const D_INV=[
   {id:'INV-1042',type:'invoice',customer_id:'c1a',so_id:'SO-1042',date:'02/10/26',due_date:'03/12/26',total:2765,paid:0,memo:'Baseball Spring Season Full Package',status:'open',payments:[],cc_fee:0},
@@ -2212,7 +2216,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const vendorList=vendorsProp||D_V;// use DB-loaded vendors if available, fallback to defaults
   const isE=mode==='estimate';const isSO=mode==='so';
   const[o,setO]=useState(order);const[cust,setCust]=useState(ic);const[pS,setPS]=useState('');const[showAdd,setShowAdd]=useState(false);
-  const[tab,setTab]=useState(initTab||'items');const[dirty,setDirty]=useState(false);const[selJob,setSelJob]=useState(null);const[jobNote,setJobNote]=useState('');const[msgDept,setMsgDept]=useState('all');
+  const[tab,setTab]=useState(initTab||'items');const[dirty,setDirty]=useState(false);const[selJob,setSelJob]=useState(null);const[jobNote,setJobNote]=useState('');const[msgDept,setMsgDept]=useState('all');const[replyTo,setReplyTo]=useState(null);
   const[mentionQuery,setMentionQuery]=useState(null);const[mentionIdx,setMentionIdx]=useState(0);const mentionRef=useRef(null);const msgInputRef=useRef(null);
     // Sync from external updates (e.g., coach approval from portal) — merge job art_status + art_files
     React.useEffect(()=>{if(order.updated_at&&order.updated_at!==o.updated_at){setO(prev=>{const extJobs=safeJobs(order);const mergedJobs=safeJobs(prev).map(j=>{const ext=extJobs.find(ej=>ej.id===j.id);if(ext&&(ext.art_status!==j.art_status||ext.coach_approved_at!==j.coach_approved_at||ext.coach_rejected!==j.coach_rejected)){return{...j,art_status:ext.art_status,coach_approved_at:ext.coach_approved_at,coach_rejected:ext.coach_rejected,rejections:ext.rejections,sent_to_coach_at:ext.sent_to_coach_at}}return j});return{...prev,jobs:mergedJobs,art_files:order.art_files,updated_at:order.updated_at}})}},[order.updated_at]);
@@ -2976,7 +2980,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     <div className="tabs" style={{marginBottom:16}}>
       <button className={`tab ${tab==='items'?'active':''}`} onClick={()=>setTab('items')}>Line Items</button>
       <button className={`tab ${tab==='art'?'active':''}`} onClick={()=>setTab('art')}>Art Library ({af.length})</button>
-      {isSO&&<button className={`tab ${tab==='messages'?'active':''}`} onClick={()=>setTab('messages')}>Messages {(()=>{const unread=(msgs||[]).filter(m=>m.so_id===o.id&&!(m.read_by||[]).includes(cu.id)).length;return unread>0?<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:4}}>{unread}</span>:` (${(msgs||[]).filter(m=>m.so_id===o.id).length})`})()}</button>}
+      <button className={`tab ${tab==='messages'?'active':''}`} onClick={()=>setTab('messages')}>Messages {(()=>{const entityMsgs=(msgs||[]).filter(m=>(m.entity_id===o.id)||(m.so_id===o.id));const unread=entityMsgs.filter(m=>!(m.read_by||[]).includes(cu.id)).length;return unread>0?<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:4}}>{unread}</span>:` (${entityMsgs.length})`})()}</button>
       {isSO&&<button className={`tab ${tab==='transactions'?'active':''}`} onClick={()=>setTab('transactions')}>Linked</button>}
       {isSO&&<button className={`tab ${tab==='jobs'?'active':''}`} onClick={()=>setTab('jobs')}>Jobs {(()=>{const jc=(o.jobs||[]).length;return jc>0?` (${jc})`:''})()}</button>}
       {isSO&&<button className={`tab ${tab==='firm_dates'?'active':''}`} onClick={()=>setTab('firm_dates')}>Firm Dates ({safeFirm(o).length})</button>}
@@ -3733,7 +3737,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       </div></div>})()}
 
     {/* MESSAGES TAB */}
-    {isSO&&tab==='messages'&&(()=>{const soMsgs=(msgs||[]).filter(m=>m.so_id===o.id).sort((a,b)=>(a.ts||'').localeCompare(b.ts));
+    {tab==='messages'&&(()=>{const soMsgs=(msgs||[]).filter(m=>(m.entity_id===o.id)||(m.so_id===o.id)).sort((a,b)=>(a.ts||'').localeCompare(b.ts));const topMsgs=soMsgs.filter(m=>!m.thread_id);const getReplies=(tid)=>soMsgs.filter(m=>m.thread_id===tid);
       const DEPTS=[{id:'all',label:'All',color:'#64748b'},{id:'art',label:'Art',color:'#7c3aed'},{id:'production',label:'Production',color:'#2563eb'},{id:'warehouse',label:'Warehouse',color:'#d97706'},{id:'sales',label:'Sales',color:'#166534'},{id:'accounting',label:'Accounting',color:'#dc2626'}];
       const activeMembers=(REPS||[]).filter(r=>r.is_active!==false);
       const mentionMembers=mentionQuery!=null?activeMembers.filter(r=>r.name.toLowerCase().includes(mentionQuery.toLowerCase())).slice(0,6):[];
@@ -3790,36 +3794,51 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         if(e.key==='Enter'&&mentionQuery==null&&e.target.value.trim()){
           const text=e.target.value.trim();
           const tagged=extractTaggedIds(text);
-          const nm={id:'m'+Date.now(),so_id:o.id,author_id:cu.id,text,ts:new Date().toLocaleString(),read_by:[cu.id],dept:msgDept,tagged_members:tagged};
-          if(onMsg)onMsg([...msgs,nm]);e.target.value='';setMsgDept('all');setMentionQuery(null);nf(tagged.length?'Message sent — '+tagged.length+' member(s) tagged':'Message sent')}
+          const eType=isSO?'so':'estimate';
+          const nm={id:'m'+Date.now(),so_id:isSO?o.id:null,author_id:cu.id,text,ts:new Date().toLocaleString(),read_by:[cu.id],dept:msgDept,tagged_members:tagged,entity_type:eType,entity_id:o.id,thread_id:replyTo||null};
+          if(onMsg)onMsg([...msgs,nm]);e.target.value='';setMsgDept('all');setMentionQuery(null);setReplyTo(null);nf(tagged.length?'Message sent — '+tagged.length+' member(s) tagged':'Message sent')}
       };
       const sendMsg=()=>{
         const inp=msgInputRef.current;if(!inp||!inp.value.trim())return;
         const text=inp.value.trim();
         const tagged=extractTaggedIds(text);
-        const nm={id:'m'+Date.now(),so_id:o.id,author_id:cu.id,text,ts:new Date().toLocaleString(),read_by:[cu.id],dept:msgDept,tagged_members:tagged};
-        if(onMsg)onMsg([...msgs,nm]);inp.value='';setMsgDept('all');setMentionQuery(null);nf(tagged.length?'Message sent — '+tagged.length+' member(s) tagged':'Message sent');
+        const eType=isSO?'so':'estimate';
+        const nm={id:'m'+Date.now(),so_id:isSO?o.id:null,author_id:cu.id,text,ts:new Date().toLocaleString(),read_by:[cu.id],dept:msgDept,tagged_members:tagged,entity_type:eType,entity_id:o.id,thread_id:replyTo||null};
+        if(onMsg)onMsg([...msgs,nm]);inp.value='';setMsgDept('all');setMentionQuery(null);setReplyTo(null);nf(tagged.length?'Message sent — '+tagged.length+' member(s) tagged':'Message sent');
       };
-      return<div className="card"><div className="card-header"><h2>Messages</h2><span style={{fontSize:12,color:'#64748b'}}>{soMsgs.length} message(s)</span></div>
-        <div className="card-body">
-          <div style={{display:'flex',flexDirection:'column',gap:8,marginBottom:12,maxHeight:400,overflow:'auto'}}>
-            {soMsgs.length===0?<div className="empty">No messages yet. Start the conversation. Type @ to tag a team member.</div>:
-            soMsgs.map(m=>{const author=REPS.find(r=>r.id===m.author_id);const isMe=m.author_id===cu.id;const unread=!(m.read_by||[]).includes(cu.id);
-              const dept=DEPTS.find(d=>d.id===m.dept);const isTagged=(m.tagged_members||[]).includes(cu.id);
-              return<div key={m.id} style={{padding:'10px 14px',borderRadius:8,background:isTagged?'#fef3c7':isMe?'#dbeafe':'#f8fafc',border:unread?'2px solid #3b82f6':isTagged?'1px solid #f59e0b':'1px solid #e2e8f0',marginLeft:isMe?40:0,marginRight:isMe?0:40}}
-                onClick={()=>{if(unread&&onMsg){onMsg(msgs.map(mm=>mm.id===m.id?{...mm,read_by:[...(mm.read_by||[]),cu.id]}:mm))}}}>
-                <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
-                  <div style={{display:'flex',gap:6,alignItems:'center'}}>
-                    <span style={{fontSize:12,fontWeight:700,color:isMe?'#1e40af':'#475569'}}>{author?.name||'Unknown'}</span>
-                    {dept&&dept.id!=='all'&&<span style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:8,background:dept.color+'20',color:dept.color}}>@{dept.label}</span>}
-                    {isTagged&&<span style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:8,background:'#fef3c7',color:'#92400e'}}>Tagged you</span>}
-                  </div>
-                  <span style={{fontSize:10,color:'#94a3b8'}}>{m.ts}</span></div>
-                <div style={{fontSize:13,color:'#0f172a'}}>{renderMsgText(m.text,m.tagged_members)}</div>
-                {(m.tagged_members||[]).length>0&&<div style={{display:'flex',gap:4,marginTop:4,flexWrap:'wrap'}}>{(m.tagged_members||[]).map(tid=>{const tm=REPS.find(r=>r.id===tid);return tm?<span key={tid} style={{fontSize:9,padding:'1px 6px',borderRadius:8,background:'#dbeafe',color:'#1e40af',fontWeight:600}}>@{tm.name.split(' ')[0]}</span>:null})}</div>}
-                {unread&&<div style={{fontSize:9,color:'#3b82f6',marginTop:2}}>● New</div>}
-              </div>})}
+      const renderOneBubble=(m,indent)=>{const author=REPS.find(r=>r.id===m.author_id);const isMe=m.author_id===cu.id;const unread=!(m.read_by||[]).includes(cu.id);
+        const dept=DEPTS.find(d=>d.id===m.dept);const isTagged=(m.tagged_members||[]).includes(cu.id);const replies=getReplies(m.id);
+        return<div key={m.id} style={{marginLeft:indent?24:0}}>
+          <div style={{padding:'10px 14px',borderRadius:8,background:isTagged?'#fef3c7':isMe?'#dbeafe':'#f8fafc',border:unread?'2px solid #3b82f6':isTagged?'1px solid #f59e0b':'1px solid #e2e8f0',marginLeft:isMe?40:0,marginRight:isMe?0:40}}
+            onClick={()=>{if(unread&&onMsg){onMsg(msgs.map(mm=>mm.id===m.id?{...mm,read_by:[...(mm.read_by||[]),cu.id]}:mm))}}}>
+            <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
+              <div style={{display:'flex',gap:6,alignItems:'center'}}>
+                <span style={{fontSize:12,fontWeight:700,color:isMe?'#1e40af':'#475569'}}>{author?.name||'Unknown'}</span>
+                {dept&&dept.id!=='all'&&<span style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:8,background:dept.color+'20',color:dept.color}}>@{dept.label}</span>}
+                {isTagged&&<span style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:8,background:'#fef3c7',color:'#92400e'}}>Tagged you</span>}
+              </div>
+              <div style={{display:'flex',gap:6,alignItems:'center'}}>
+                <span style={{fontSize:10,color:'#94a3b8'}}>{m.ts}</span>
+                {!indent&&<button style={{fontSize:9,padding:'1px 6px',borderRadius:6,border:'1px solid #e2e8f0',background:replyTo===m.id?'#3b82f6':'white',color:replyTo===m.id?'white':'#64748b',cursor:'pointer'}} onClick={(e)=>{e.stopPropagation();setReplyTo(replyTo===m.id?null:m.id)}}>Reply{replies.length>0?` (${replies.length})`:''}</button>}
+              </div>
+            </div>
+            <div style={{fontSize:13,color:'#0f172a'}}>{renderMsgText(m.text,m.tagged_members)}</div>
+            {(m.tagged_members||[]).length>0&&<div style={{display:'flex',gap:4,marginTop:4,flexWrap:'wrap'}}>{(m.tagged_members||[]).map(tid=>{const tm=REPS.find(r=>r.id===tid);return tm?<span key={tid} style={{fontSize:9,padding:'1px 6px',borderRadius:8,background:'#dbeafe',color:'#1e40af',fontWeight:600}}>@{tm.name.split(' ')[0]}</span>:null})}</div>}
+            {unread&&<div style={{fontSize:9,color:'#3b82f6',marginTop:2}}>● New</div>}
           </div>
+          {replies.length>0&&<div style={{borderLeft:'2px solid #e2e8f0',marginLeft:12,marginTop:4,paddingLeft:0}}>{replies.map(r=>renderOneBubble(r,true))}</div>}
+        </div>};
+      return<div className="card"><div className="card-header"><h2>Messages</h2><span style={{fontSize:12,color:'#64748b'}}>{soMsgs.length} message(s){!isSO&&<span style={{marginLeft:8,fontSize:10,padding:'2px 8px',borderRadius:10,background:'#f0fdf4',color:'#166534',fontWeight:600}}>Estimate</span>}</span></div>
+        <div className="card-body">
+          <div style={{display:'flex',flexDirection:'column',gap:8,marginBottom:12,maxHeight:500,overflow:'auto'}}>
+            {topMsgs.length===0?<div className="empty">No messages yet. Start the conversation. Type @ to tag a team member.</div>:
+            topMsgs.map(m=>renderOneBubble(m,false))}
+          </div>
+          {/* Reply indicator */}
+          {replyTo&&<div style={{display:'flex',alignItems:'center',gap:8,padding:'6px 12px',background:'#eff6ff',borderRadius:8,marginBottom:8}}>
+            <span style={{fontSize:11,color:'#1e40af',fontWeight:600}}>Replying to {(()=>{const rm=soMsgs.find(mm=>mm.id===replyTo);const ra=REPS.find(r=>r.id===rm?.author_id);return ra?.name||'message'})()}</span>
+            <button style={{fontSize:10,padding:'1px 6px',borderRadius:4,border:'1px solid #bfdbfe',background:'white',color:'#64748b',cursor:'pointer',marginLeft:'auto'}} onClick={()=>setReplyTo(null)}>Cancel</button>
+          </div>}
           {/* Message input with department tag and @mention */}
           <div style={{display:'flex',gap:6,marginBottom:6,flexWrap:'wrap'}}>
             {DEPTS.map(d=><button key={d.id} style={{fontSize:10,padding:'2px 8px',borderRadius:10,border:'1px solid '+(msgDept===d.id?d.color:'#e2e8f0'),background:msgDept===d.id?d.color+'15':'white',color:msgDept===d.id?d.color:'#94a3b8',cursor:'pointer',fontWeight:600}} onClick={()=>setMsgDept(d.id)}>@{d.label}</button>)}
@@ -3833,9 +3852,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               </div>)}
             </div>}
             <div style={{display:'flex',gap:8}}>
-              <input ref={msgInputRef} className="form-input" placeholder="Type a message... (@ to tag someone)" style={{flex:1}}
+              <input ref={msgInputRef} className="form-input" placeholder={replyTo?'Type a reply... (@ to tag someone)':'Type a message... (@ to tag someone)'} style={{flex:1}}
                 onChange={handleMsgInput} onKeyDown={handleMsgKeyDown}/>
-              <button className="btn btn-primary" onClick={sendMsg}>Send</button>
+              <button className="btn btn-primary" onClick={sendMsg}>{replyTo?'Reply':'Send'}</button>
             </div>
           </div>
         </div></div>})()}
@@ -4176,7 +4195,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const msg={id:'m'+Date.now(),so_id:o.id,author_id:cu.id,
             text:'📌 FIRM DATE REQUEST: '+firmReqDate+(firmReqNote?' — '+firmReqNote:''),
             ts:new Date().toLocaleString(),read_by:[cu.id],
-            firm_request:true,firm_date:firmReqDate,tagged_members:[]};
+            firm_request:true,firm_date:firmReqDate,tagged_members:[],entity_type:'so',entity_id:o.id};
           onMsg(prev=>[...prev,msg]);
           // Add to firm_dates on the SO
           const fd=[...safeFirm(o),{item_desc:'Full Order',date:firmReqDate,approved:false,requested_by:cu.name,requested_at:new Date().toLocaleString(),note:firmReqNote}];
@@ -4483,7 +4502,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             onInv(prev=>prev.map(i=>i.id===ir.id?{...i,email_status:'sent',email_sent_at:new Date().toLocaleString()}:i));
             nf('Invoice '+ir.id+' sent to '+coachEmail);
             // Also post to messages
-            const soMsg={id:'m'+Date.now(),so_id:ir.so_id,author_id:cu.id,text:'[Invoice '+ir.id+'] Sent to '+(contact?.name||'coach')+' ('+coachEmail+')\n\n'+invSendMsg,ts:new Date().toLocaleString(),read_by:[cu.id],dept:'sales',tagged_members:[]};
+            const soMsg={id:'m'+Date.now(),so_id:ir.so_id,author_id:cu.id,text:'[Invoice '+ir.id+'] Sent to '+(contact?.name||'coach')+' ('+coachEmail+')\n\n'+invSendMsg,ts:new Date().toLocaleString(),read_by:[cu.id],dept:'sales',tagged_members:[],entity_type:'so',entity_id:ir.so_id};
             if(onMsg)onMsg(prev=>[...prev,soMsg]);
           }}>📧 Send Invoice{coachEmail?'':' (No email on file)'}</button>
         </div>
@@ -8619,7 +8638,7 @@ export default function App(){
   const[soBackPg,setSoBackPg]=useState(null);// page to return to when closing SO editor
   const prevPgRef=React.useRef(pg);
   React.useEffect(()=>{if(pg!==prevPgRef.current){if(pg==='orders')setSoBackPg(prevPgRef.current);else setSoBackPg(null);if(pg==='estimates')setEstBackPg(prevPgRef.current);else setEstBackPg(null);prevPgRef.current=pg}},[pg]);
-  const[gQ,setGQ]=useState('');const[gOpen,setGOpen]=useState(false);const[mF,setMF]=useState('all');const[mHideClosed,setMHideClosed]=useState(true);const[rF,setRF]=useState('all');const[pF,setPF]=useState({cat:'all',vnd:'all',stk:'all',clr:'all'});
+  const[gQ,setGQ]=useState('');const[gOpen,setGOpen]=useState(false);const[mF,setMF]=useState('all');const[mHideClosed,setMHideClosed]=useState(true);const[mEntityF,setMEntityF]=useState('all');const[rF,setRF]=useState('all');const[pF,setPF]=useState({cat:'all',vnd:'all',stk:'all',clr:'all'});
   const[qPC,setQPC]=useState({open:false,mode:'single',items:[],bulkRaw:''});
   const[poF,setPOF]=useState({status:'all',vendor:'all',rep:'all',search:'',sort:'date_desc'});
   // OMG Team Stores
@@ -15153,7 +15172,7 @@ export default function App(){
           savSO({...liveSO2,jobs:updatedJobs});
           setArtJobDetailModal({...j,art_messages:updatedMsgs});
           // Also post as a regular SO message so it shows on Messages tab and rep dashboard
-          const soMsg={id:'m'+Date.now(),so_id:liveSO2.id,author_id:cu.id,text:'[Art — '+j.art_name+'] '+artJobDetailMsg.trim(),ts:new Date().toLocaleString(),read_by:[cu.id],dept:'art',tagged_members:rep?[rep.id]:[]};
+          const soMsg={id:'m'+Date.now(),so_id:liveSO2.id,author_id:cu.id,text:'[Art — '+j.art_name+'] '+artJobDetailMsg.trim(),ts:new Date().toLocaleString(),read_by:[cu.id],dept:'art',tagged_members:rep?[rep.id]:[],entity_type:'so',entity_id:liveSO2.id};
           setMsgs(prev=>[...prev,soMsg]);
           setArtJobDetailMsg('');
           nf('Message sent to '+(rep?.name||'rep'));
@@ -17951,13 +17970,22 @@ export default function App(){
     </>);
   };
 
-  // MESSAGES PAGE
+  // MESSAGES PAGE — prominent hub for all entity messages with threading
   function rMsg(){const closedStatuses=new Set(['complete','shipped','closed']);
     const allMRaw=[...msgs].sort((a,b)=>(b.ts||'').localeCompare(a.ts));
-    const allM=mHideClosed?allMRaw.filter(m=>{const so=sos.find(s=>s.id===m.so_id);if(!so)return true;const cStatus=calcSOStatus(so);return!closedStatuses.has(cStatus)&&!closedStatuses.has(so.status)}):allMRaw;
-    const unread=allM.filter(m=>!(m.read_by||[]).includes(cu.id));
-    const mentions=allM.filter(m=>(m.tagged_members||[]).includes(cu.id));
-    const filtered=mF==='unread'?unread:mF==='mine'?allM.filter(m=>sos.some(s=>s.id===m.so_id&&s.created_by===cu.id)):mF==='mentions'?mentions:allM;
+    const allM=mHideClosed?allMRaw.filter(m=>{const so=sos.find(s=>s.id===m.so_id||s.id===m.entity_id);if(!so&&(m.entity_type||'so')==='so')return true;if(!so)return true;const cStatus=calcSOStatus(so);return!closedStatuses.has(cStatus)&&!closedStatuses.has(so.status)}):allMRaw;
+    // Entity type filter
+    const entityFiltered=mEntityF==='all'?allM:allM.filter(m=>(m.entity_type||'so')===mEntityF);
+    const unread=entityFiltered.filter(m=>!(m.read_by||[]).includes(cu.id));
+    const mentions=entityFiltered.filter(m=>(m.tagged_members||[]).includes(cu.id));
+    const filtered=mF==='unread'?unread:mF==='mine'?entityFiltered.filter(m=>sos.some(s=>(s.id===m.so_id||s.id===m.entity_id)&&s.created_by===cu.id)||ests.some(e=>e.id===m.entity_id&&e.created_by===cu.id)):mF==='mentions'?mentions:entityFiltered;
+    // Thread grouping: show only top-level, count replies
+    const topLevel=filtered.filter(m=>!m.thread_id);
+    const replyCount=(id)=>filtered.filter(m=>m.thread_id===id).length;
+    // Entity type stats
+    const soCount=allM.filter(m=>(m.entity_type||'so')==='so').length;
+    const estCount=allM.filter(m=>m.entity_type==='estimate').length;
+    const jobCount=allM.filter(m=>m.entity_type==='job').length;
     const activeMembers=(REPS||[]).filter(r=>r.is_active!==false);
     const renderMsgPageText=(text)=>{
       if(!text)return text;
@@ -17974,30 +18002,55 @@ export default function App(){
       if(last<text.length)parts.push({type:'text',value:text.slice(last)});
       return parts.map((p,i)=>p.type==='mention'?<span key={i} style={{background:'#dbeafe',color:'#1e40af',fontWeight:600,borderRadius:3,padding:'0 3px'}}>{p.value}</span>:<span key={i}>{p.value}</span>);
     };
-    return(<><div className="stats-row"><div className="stat-card"><div className="stat-label">Total</div><div className="stat-value">{allM.length}</div></div><div className="stat-card"><div className="stat-label">Unread</div><div className="stat-value" style={{color:unread.length>0?'#dc2626':''}}>{unread.length}</div></div><div className="stat-card"><div className="stat-label">Mentions</div><div className="stat-value" style={{color:mentions.length>0?'#d97706':''}}>{mentions.length}</div></div></div>
-    <div style={{display:'flex',gap:4,marginBottom:12}}>{[['all','All'],['unread','Unread'],['mentions','@ Mentions'],['mine','My SOs']].map(([v,l])=><button key={v} className={`btn btn-sm ${mF===v?'btn-primary':'btn-secondary'}`} onClick={()=>setMF(v)}>{l}{v==='mentions'&&mentions.filter(m=>!(m.read_by||[]).includes(cu.id)).length>0?' ('+mentions.filter(m=>!(m.read_by||[]).includes(cu.id)).length+')':''}</button>)}
+    const entityLabel=(m)=>{const t=m.entity_type||'so';return t==='so'?'Sales Order':t==='estimate'?'Estimate':t==='job'?'Job':t};
+    const entityColor=(m)=>{const t=m.entity_type||'so';return t==='so'?'#1e40af':t==='estimate'?'#7c3aed':t==='job'?'#166534':'#64748b'};
+    const entityBg=(m)=>{const t=m.entity_type||'so';return t==='so'?'#dbeafe':t==='estimate'?'#f5f3ff':t==='job'?'#dcfce7':'#f1f5f9'};
+    const navigateToEntity=(m)=>{
+      const eType=m.entity_type||'so';const eId=m.entity_id||m.so_id;
+      if(eType==='so'||eType==='job'){const so=sos.find(s=>s.id===eId||s.id===m.so_id);if(so){const c3=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c3);setESOTab('messages');setPg('orders')}}
+      else if(eType==='estimate'){const est=ests.find(e=>e.id===eId);if(est){const c3=cust.find(cc=>cc.id===est.customer_id);setEEst(est);setEEstC(c3);setPg('estimates')}}
+      setMsgs(msgs.map(mm=>mm.id===m.id?{...mm,read_by:[...new Set([...(mm.read_by||[]),cu.id])]}:mm));
+    };
+    return(<>
+    {/* Prominent stats row */}
+    <div className="stats-row">
+      <div className="stat-card" style={{borderLeft:'4px solid #3b82f6'}}><div className="stat-label">Total Messages</div><div className="stat-value">{allM.length}</div></div>
+      <div className="stat-card" style={{borderLeft:'4px solid #dc2626'}}><div className="stat-label">Unread</div><div className="stat-value" style={{color:unread.length>0?'#dc2626':''}}>{unread.length}</div></div>
+      <div className="stat-card" style={{borderLeft:'4px solid #d97706'}}><div className="stat-label">@ Mentions</div><div className="stat-value" style={{color:mentions.length>0?'#d97706':''}}>{mentions.length}</div></div>
+      <div className="stat-card" style={{borderLeft:'4px solid #7c3aed'}}><div className="stat-label">Threads</div><div className="stat-value">{topLevel.length}</div></div>
+    </div>
+    {/* Entity type filter row */}
+    <div style={{display:'flex',gap:4,marginBottom:8}}>
+      {[['all','All',allM.length,'#475569'],['so','Sales Orders',soCount,'#1e40af'],['estimate','Estimates',estCount,'#7c3aed'],['job','Jobs',jobCount,'#166534']].map(([v,l,c,clr])=><button key={v} style={{fontSize:11,padding:'4px 12px',borderRadius:20,border:'1px solid '+(mEntityF===v?clr:'#e2e8f0'),background:mEntityF===v?clr:'white',color:mEntityF===v?'white':clr,cursor:'pointer',fontWeight:600,display:'flex',gap:4,alignItems:'center'}} onClick={()=>setMEntityF(v)}>{l}<span style={{fontSize:9,opacity:0.8}}>{c}</span></button>)}
+    </div>
+    {/* Status filters */}
+    <div style={{display:'flex',gap:4,marginBottom:12}}>{[['all','All'],['unread','Unread'],['mentions','@ Mentions'],['mine','My Orders']].map(([v,l])=><button key={v} className={`btn btn-sm ${mF===v?'btn-primary':'btn-secondary'}`} onClick={()=>setMF(v)}>{l}{v==='mentions'&&mentions.filter(m=>!(m.read_by||[]).includes(cu.id)).length>0?' ('+mentions.filter(m=>!(m.read_by||[]).includes(cu.id)).length+')':''}</button>)}
       <button className={`btn btn-sm ${mHideClosed?'btn-primary':'btn-secondary'}`} onClick={()=>setMHideClosed(!mHideClosed)}>{mHideClosed?'Active Only':'All Orders'}</button>
       <button className="btn btn-sm btn-secondary" style={{marginLeft:'auto'}} onClick={()=>{setMsgs(msgs.map(m=>({...m,read_by:[...new Set([...(m.read_by||[]),cu.id])]})));nf('All marked read')}}>Mark All Read</button></div>
     <div className="card"><div className="card-body" style={{padding:0}}>
-      {filtered.length===0?<div className="empty" style={{padding:20}}>{mF==='mentions'?'No messages where you were tagged':'No messages'}</div>:
-      filtered.map(m=>{const author=REPS.find(r=>r.id===m.author_id);const so=sos.find(s=>s.id===m.so_id);const c2=cust.find(cc=>cc.id===so?.customer_id);const isUnread=!(m.read_by||[]).includes(cu.id);const isTagged=(m.tagged_members||[]).includes(cu.id);
-        return<div key={m.id} style={{padding:'12px 18px',borderBottom:'1px solid #f1f5f9',cursor:'pointer',background:isTagged&&isUnread?'#fef3c7':isUnread?'#eff6ff':'white'}}
-          onClick={()=>{if(so){const c3=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c3);setPg('orders')}setMsgs(msgs.map(mm=>mm.id===m.id?{...mm,read_by:[...new Set([...(mm.read_by||[]),cu.id])]}:mm))}}>
+      {topLevel.length===0?<div className="empty" style={{padding:20}}>{mF==='mentions'?'No messages where you were tagged':'No messages'}</div>:
+      topLevel.map(m=>{const author=REPS.find(r=>r.id===m.author_id);const so=sos.find(s=>s.id===m.so_id||s.id===m.entity_id);const est2=ests.find(e=>e.id===m.entity_id);const entity=so||est2;const c2=cust.find(cc=>cc.id===entity?.customer_id);const isUnread=!(m.read_by||[]).includes(cu.id);const isTagged=(m.tagged_members||[]).includes(cu.id);const rc=replyCount(m.id);
+        return<div key={m.id} style={{padding:'14px 18px',borderBottom:'1px solid #f1f5f9',cursor:'pointer',background:isTagged&&isUnread?'#fef3c7':isUnread?'#eff6ff':'white'}}
+          onClick={()=>navigateToEntity(m)}>
           <div style={{display:'flex',gap:12,alignItems:'flex-start'}}>
-            <div style={{width:36,height:36,borderRadius:18,background:isTagged?'#f59e0b':isUnread?'#3b82f6':'#e2e8f0',color:isTagged||isUnread?'white':'#64748b',display:'flex',alignItems:'center',justifyContent:'center',fontSize:13,fontWeight:700,flexShrink:0}}>{isTagged?'@':(author?.name||'?')[0]}</div>
+            <div style={{width:40,height:40,borderRadius:20,background:isTagged?'#f59e0b':isUnread?'#3b82f6':'#e2e8f0',color:isTagged||isUnread?'white':'#64748b',display:'flex',alignItems:'center',justifyContent:'center',fontSize:14,fontWeight:700,flexShrink:0}}>{isTagged?'@':(author?.name||'?')[0]}</div>
             <div style={{flex:1}}>
-              <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:2}}>
+              <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:3}}>
                 <span style={{fontWeight:700,fontSize:13}}>{author?.name}</span>
-                <span style={{fontSize:11,color:'#1e40af',fontWeight:600}}>{m.so_id}</span>
+                <span style={{fontSize:9,fontWeight:700,padding:'2px 8px',borderRadius:10,background:entityBg(m),color:entityColor(m)}}>{entityLabel(m)}</span>
+                <span style={{fontSize:11,color:entityColor(m),fontWeight:600}}>{m.entity_id||m.so_id}</span>
                 {c2&&<span style={{fontSize:11,color:'#64748b'}}>{c2.alpha_tag}</span>}
-                {so?.memo&&<span style={{fontSize:10,color:'#94a3b8'}}>— {so.memo}</span>}
+                {entity?.memo&&<span style={{fontSize:10,color:'#94a3b8'}}>— {entity.memo}</span>}
                 {isTagged&&<span style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:8,background:'#fef3c7',color:'#92400e'}}>Tagged you</span>}
                 <span style={{fontSize:10,color:'#94a3b8',marginLeft:'auto'}}>{m.ts}</span>
               </div>
               <div style={{fontSize:13,color:'#374151'}}>{renderMsgPageText(m.text)}</div>
-              {(m.tagged_members||[]).length>0&&<div style={{display:'flex',gap:4,marginTop:3,flexWrap:'wrap'}}>{(m.tagged_members||[]).map(tid=>{const tm=REPS.find(r=>r.id===tid);return tm?<span key={tid} style={{fontSize:9,padding:'1px 6px',borderRadius:8,background:'#dbeafe',color:'#1e40af',fontWeight:600}}>@{tm.name.split(' ')[0]}</span>:null})}</div>}
+              <div style={{display:'flex',gap:6,marginTop:4,alignItems:'center'}}>
+                {(m.tagged_members||[]).length>0&&<div style={{display:'flex',gap:4,flexWrap:'wrap'}}>{(m.tagged_members||[]).map(tid=>{const tm=REPS.find(r=>r.id===tid);return tm?<span key={tid} style={{fontSize:9,padding:'1px 6px',borderRadius:8,background:'#dbeafe',color:'#1e40af',fontWeight:600}}>@{tm.name.split(' ')[0]}</span>:null})}</div>}
+                {rc>0&&<span style={{fontSize:10,color:'#3b82f6',fontWeight:600,display:'flex',alignItems:'center',gap:3}}><span style={{fontSize:12}}>&#8627;</span> {rc} {rc===1?'reply':'replies'}</span>}
+              </div>
             </div>
-            {isUnread&&<div style={{width:8,height:8,borderRadius:4,background:isTagged?'#f59e0b':'#3b82f6',flexShrink:0,marginTop:6}}/>}
+            {isUnread&&<div style={{width:10,height:10,borderRadius:5,background:isTagged?'#f59e0b':'#3b82f6',flexShrink:0,marginTop:8}}/>}
           </div></div>})}</div></div></>)};
 
   // QUICKBOOKS ONLINE INTEGRATION
