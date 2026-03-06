@@ -132,6 +132,7 @@ tbody tr { cursor: pointer; }
 }
 .search-bar svg { color: #94a3b8; width: 16px; height: 16px; }
 
+
 /* Tabs */
 .tabs { display: flex; gap: 0; border-bottom: 2px solid #e2e8f0; margin-bottom: 16px; }
 .tab {
