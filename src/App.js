@@ -8638,7 +8638,9 @@ export default function App(){
   const[soBackPg,setSoBackPg]=useState(null);// page to return to when closing SO editor
   const prevPgRef=React.useRef(pg);
   React.useEffect(()=>{if(pg!==prevPgRef.current){if(pg==='orders')setSoBackPg(prevPgRef.current);else setSoBackPg(null);if(pg==='estimates')setEstBackPg(prevPgRef.current);else setEstBackPg(null);prevPgRef.current=pg}},[pg]);
-  const[gQ,setGQ]=useState('');const[gOpen,setGOpen]=useState(false);const[mF,setMF]=useState('all');const[mHideClosed,setMHideClosed]=useState(true);const[mEntityF,setMEntityF]=useState('all');const[rF,setRF]=useState('all');const[pF,setPF]=useState({cat:'all',vnd:'all',stk:'all',clr:'all'});
+  const[gQ,setGQ]=useState('');const[gOpen,setGOpen]=useState(false);
+  // AI Search state
+  const[aiMode,setAiMode]=useState(false);const[aiLoading,setAiLoading]=useState(false);const[aiResult,setAiResult]=useState(null);const[aiError,setAiError]=useState(null);const[mF,setMF]=useState('all');const[mHideClosed,setMHideClosed]=useState(true);const[mEntityF,setMEntityF]=useState('all');const[rF,setRF]=useState('all');const[pF,setPF]=useState({cat:'all',vnd:'all',stk:'all',clr:'all'});
   const[qPC,setQPC]=useState({open:false,mode:'single',items:[],bulkRaw:''});
   const[poF,setPOF]=useState({status:'all',vendor:'all',rep:'all',search:'',sort:'date_desc'});
   // OMG Team Stores
@@ -8652,6 +8654,31 @@ export default function App(){
   const[cu,setCu]=useState(()=>{try{const s=localStorage.getItem('nsa_user');return s?JSON.parse(s):null}catch{return null}});
   const handleLogin=(user)=>{setCu(user);try{localStorage.setItem('nsa_user',JSON.stringify(user))}catch{}};
   const handleLogout=()=>{setCu(null);try{localStorage.removeItem('nsa_user')}catch{}};
+
+  // ─── AI Search Handler ───
+  const handleAISearch=async(query)=>{
+    if(!query.trim())return;
+    setAiLoading(true);setAiError(null);setAiResult(null);setGOpen(true);
+    try{
+      // Build a compact context snapshot for Claude
+      const soSnap=sos.map(s=>{const c=cust.find(x=>x.id===s.customer_id);return{id:s.id,customer:c?.name||'',alpha:c?.alpha_tag||'',customer_id:s.customer_id,memo:s.memo||'',status:calcSOStatus(s),created:s.created_at,expected:s.expected_date||'',rep:REPS.find(r=>r.id===s.created_by)?.name||'',items:(s.items||[]).map(it=>it.name+' ('+it.sku+')').join(', ')}});
+      const estSnap=ests.map(e=>{const c=cust.find(x=>x.id===e.customer_id);return{id:e.id,customer:c?.name||'',alpha:c?.alpha_tag||'',customer_id:e.customer_id,memo:e.memo||'',status:e.status,created:e.created_at}});
+      const invSnap=invs.map(i=>{const c=cust.find(x=>x.id===i.customer_id);return{id:i.id,customer:c?.name||'',customer_id:i.customer_id,memo:i.memo||'',status:i.status,total:i.total,created:i.created_at,so_id:i.so_id||''}});
+      const custSnap=cust.map(c=>({id:c.id,name:c.name,alpha:c.alpha_tag||'',parent:c.parent_id?cust.find(x=>x.id===c.parent_id)?.name:''}));
+      const prodSnap=prod.slice(0,200).map(p=>({sku:p.sku,name:p.name,brand:p.brand||'',color:p.color||'',category:p.category||''}));
+      const jobSnap=[];sos.forEach(so=>{const c=cust.find(x=>x.id===so.customer_id);(so.jobs||[]).forEach(j=>{jobSnap.push({id:j.id,so_id:so.id,customer:c?.name||'',art_name:j.art_name||'',deco_type:j.deco_type||'',status:j.status||'',assigned:j.assigned_to||''})})});
+      const vendSnap=vend.map(v=>({id:v.id,name:v.name}));
+
+      const context=JSON.stringify({orders:soSnap,estimates:estSnap,invoices:invSnap,customers:custSnap,products:prodSnap,jobs:jobSnap.slice(0,200),vendors:vendSnap});
+
+      const resp=await fetch('/.netlify/functions/claude-search',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query,context})});
+      if(!resp.ok)throw new Error('Search failed ('+resp.status+')');
+      const data=await resp.json();
+      if(data.error)throw new Error(data.error);
+      setAiResult(data);
+    }catch(err){setAiError(err.message)}finally{setAiLoading(false)}
+  };
+
   const isA=cu?.role==='admin';
   const nf=(m,t='success')=>{setToast({msg:m,type:t});setTimeout(()=>setToast(null),3500)};_dbNotify=nf;
   const pars=useMemo(()=>cust.filter(c=>!c.parent_id),[cust]);const gK=useCallback(pid=>cust.filter(c=>c.parent_id===pid),[cust]);
@@ -19597,8 +19624,15 @@ export default function App(){
           onClick={()=>{if(dirtyRef.current&&!window.confirm('You have unsaved changes. Leave without saving?'))return;dirtyRef.current=false;setPg(item.id);setQ('');setSelC(null);setSelV(null);setEEst(null);setESO(null);setMobileMenuOpen(false)}}><Icon name={item.icon}/>{item.label}{item.id==='messages'&&mentionBadge>0&&<span style={{background:'#f59e0b',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:4}}>@{mentionBadge}</span>}{item.id==='messages'&&ubadge>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{ubadge}</span>}{item.id==='purchase_orders'&&(()=>{let wc=0;sos.forEach(so=>safeItems(so).forEach(it=>safePOs(it).forEach(po=>{const szKeys=Object.keys(po).filter(k=>typeof po[k]==='number'&&!['status'].includes(k));const open=szKeys.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-((po.received||{})[sz]||0)-((po.cancelled||{})[sz]||0)),0);if(open>0)wc++})));return wc>0?<span style={{background:'#d97706',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{wc}</span>:null})()}{item.id==='batch_pos'&&batchPOs.length>0&&<span style={{background:'#7c3aed',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{batchPOs.length}</span>}{item.id==='issues'&&openIssueCount>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{openIssueCount}</span>}</button>})}</nav>
       <div className="sidebar-user"><div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}><div><div style={{fontWeight:600,color:'#e2e8f0'}}>{cu.name}</div><div>{cu.role}</div></div><button onClick={handleLogout} style={{background:'none',border:'1px solid #475569',borderRadius:6,padding:'3px 8px',color:'#94a3b8',cursor:'pointer',fontSize:10}} title="Log out">↪ Out</button></div></div></div>
     <div className="main"><div className="topbar"><button className="mobile-menu-btn" onClick={()=>setMobileMenuOpen(true)}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button><h1>{eEst?eEst.id:eSO?eSO.id:selC?selC.name:selV?selV.name:(titles[pg]||'Dashboard')}</h1>
-        <div style={{flex:1,maxWidth:400,margin:'0 20px',position:'relative'}}>
-          <div className="search-bar" style={{margin:0}}><Icon name="search"/><input placeholder="Search everything... (orders, jobs, POs, invoices, customers)" value={gQ} onChange={e=>{setGQ(e.target.value);if(e.target.value.length>=2)setGOpen(true)}} onFocus={()=>{if(gQ.length>=2)setGOpen(true)}}/>{gQ&&<button onClick={()=>{setGQ('');setGOpen(false)}} style={{background:'none',border:'none',cursor:'pointer',padding:2}}><Icon name="x" size={14}/></button>}</div>
+        <div style={{flex:1,maxWidth:480,margin:'0 20px',position:'relative'}}>
+          <div className="search-bar" style={{margin:0,border:aiMode?'1.5px solid #a855f7':'1px solid #e2e8f0'}}>
+            {aiMode?<span style={{fontSize:14}}>&#10024;</span>:<Icon name="search"/>}
+            <input placeholder={aiMode?'Ask anything... "Servite basketball order from last year"':'Search everything... (orders, jobs, POs, invoices, customers)'} value={gQ} onChange={e=>{setGQ(e.target.value);if(!aiMode&&e.target.value.length>=2)setGOpen(true)}} onFocus={()=>{if(!aiMode&&gQ.length>=2)setGOpen(true)}} onKeyDown={e=>{if(aiMode&&e.key==='Enter'&&gQ.trim()){e.preventDefault();handleAISearch(gQ)}}}/>
+            {gQ&&<button onClick={()=>{setGQ('');setGOpen(false);setAiResult(null);setAiError(null)}} style={{background:'none',border:'none',cursor:'pointer',padding:2}}><Icon name="x" size={14}/></button>}
+            <button onClick={()=>{setAiMode(m=>!m);setAiResult(null);setAiError(null);setGOpen(false)}} title={aiMode?'Switch to regular search':'Switch to AI search'} style={{background:aiMode?'#a855f7':'#f1f5f9',border:'none',borderRadius:6,padding:'3px 8px',cursor:'pointer',fontSize:10,fontWeight:700,color:aiMode?'white':'#64748b',whiteSpace:'nowrap'}}>
+              {aiMode?'AI ON':'AI'}
+            </button>
+          </div>
           {gOpen&&gQ.length>=2&&(()=>{const s=gQ.toLowerCase();
             const rc=cust.filter(cc=>(cc.name+' '+cc.alpha_tag).toLowerCase().includes(s)).slice(0,4);
             const re=ests.filter(e=>{const cc=cust.find(x=>x.id===e.customer_id);return(e.id+' '+(e.memo||'')+' '+(cc?.name||'')+' '+(cc?.alpha_tag||'')).toLowerCase().includes(s)}).slice(0,4);
@@ -19639,7 +19673,34 @@ export default function App(){
               {rv.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Vendors</div>
                 {rv.map(v=><div key={v.id} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>{setSelV(v);setPg('vendors');setGQ('');setGOpen(false)}}><Icon name="building" size={14}/><span style={{fontWeight:600}}>{v.name}</span>{v.rep_name&&<span style={{color:'#64748b',fontSize:11}}>{v.rep_name}</span>}</div>)}</>}
             </div>})()}
-          {gOpen&&<div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:59}} onClick={()=>setGOpen(false)}/>}
+          {/* AI Search results dropdown */}
+          {aiMode&&gOpen&&(aiLoading||aiResult||aiError)&&<div style={{position:'absolute',top:'100%',left:0,right:0,background:'white',border:'1.5px solid #a855f7',borderRadius:8,boxShadow:'0 8px 24px rgba(168,85,247,0.15)',zIndex:60,maxHeight:400,overflow:'auto'}}>
+            {aiLoading&&<div style={{padding:'20px',textAlign:'center',color:'#a855f7'}}><div className="ai-search-spinner"/><div style={{fontSize:12,marginTop:8}}>Thinking...</div></div>}
+            {aiError&&<div style={{padding:'14px',color:'#dc2626',fontSize:13}}><strong>Error:</strong> {aiError}</div>}
+            {aiResult&&aiResult.type==='answer'&&<div style={{padding:'14px'}}><div style={{fontSize:10,fontWeight:700,color:'#a855f7',textTransform:'uppercase',marginBottom:6}}>&#10024; AI Answer</div><div style={{fontSize:13,lineHeight:1.5,color:'#334155',whiteSpace:'pre-wrap'}}>{aiResult.answer}</div></div>}
+            {aiResult&&aiResult.type==='results'&&<><div style={{padding:'8px 12px',fontSize:10,fontWeight:700,color:'#a855f7',textTransform:'uppercase',background:'#faf5ff'}}>&#10024; {aiResult.summary||'AI Results'}</div>
+              {(aiResult.results||[]).length===0&&<div style={{padding:'14px',fontSize:13,color:'#64748b'}}>No matching records found. Try rephrasing your search.</div>}
+              {(aiResult.results||[]).map((r,i)=>{
+                const iconMap={order:'box',estimate:'dollar',invoice:'file',customer:'users',product:'package',job:'grid',vendor:'building'};
+                const navTo=()=>{
+                  setGQ('');setGOpen(false);setAiResult(null);
+                  if(r.kind==='order'){const so=sos.find(s=>s.id===r.id);if(so){const cc=cust.find(x=>x.id===so.customer_id);setESO(so);setESOC(cc);setPg('orders')}}
+                  else if(r.kind==='estimate'){const est=ests.find(e=>e.id===r.id);if(est){const cc=cust.find(x=>x.id===est.customer_id);setEEst(est);setEEstC(cc);setPg('estimates')}}
+                  else if(r.kind==='invoice'){setInvF(f=>({...f,search:r.id}));setPg('invoices')}
+                  else if(r.kind==='customer'){const cc=cust.find(x=>x.id===r.id||x.name===r.title);if(cc){setSelC(cc);setPg('customers')}}
+                  else if(r.kind==='product'){const pp=prod.find(p=>p.sku===r.id||p.id===r.id);if(pp){setSelP(pp);setPg('products')}}
+                  else if(r.kind==='vendor'){const vv=vend.find(v=>v.id===r.id||v.name===r.title);if(vv){setSelV(vv);setPg('vendors')}}
+                  else if(r.kind==='job'){const so=sos.find(s=>s.id===r.id?.split('-J')[0]||safeJobs(s).some(j=>j.id===r.id));if(so){const cc=cust.find(x=>x.id===so.customer_id);setESOTab('jobs');setESO(so);setESOC(cc);setPg('orders')}}
+                };
+                return<div key={i} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'flex-start',borderBottom:'1px solid #f1f5f9'}} onClick={navTo} onMouseEnter={e=>e.currentTarget.style.background='#faf5ff'} onMouseLeave={e=>e.currentTarget.style.background='transparent'}>
+                  <Icon name={iconMap[r.kind]||'search'} size={14}/>
+                  <div style={{flex:1}}><div><span style={{fontWeight:700,color:'#1e40af'}}>{r.id}</span> <span style={{fontWeight:600}}>{r.title}</span></div>
+                  <div style={{fontSize:11,color:'#64748b',marginTop:2}}>{r.detail}</div></div>
+                  <span style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#f1f5f9',color:'#64748b',textTransform:'uppercase',whiteSpace:'nowrap'}}>{r.kind}</span>
+                </div>})}
+            </>}
+          </div>}
+          {gOpen&&<div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:59}} onClick={()=>{setGOpen(false);setAiResult(null)}}/>}
         </div>
         <div style={{display:'flex',gap:6,alignItems:'center'}}><button className="btn btn-sm" onClick={()=>setScanModalOpen(true)} style={{fontSize:11,background:'#0f172a',border:'1px solid #334155',color:'#22c55e',padding:'4px 8px'}} title="Scan barcode / QR code"><Icon name="scan" size={14}/></button><button className="btn btn-sm" onClick={()=>setIssueModal({open:true,desc:'',priority:'medium'})} style={{fontSize:11,background:'none',border:'1px solid #fca5a5',color:'#dc2626',position:'relative',padding:'4px 8px'}} title="Report an issue"><Icon name="alert" size={14}/>{openIssueCount>0&&<span style={{position:'absolute',top:-4,right:-4,background:'#dc2626',color:'white',borderRadius:10,padding:'0 5px',fontSize:9,minWidth:16,textAlign:'center',lineHeight:'16px'}}>{openIssueCount}</span>}</button><button className="btn btn-sm btn-primary" onClick={()=>newE(null)} style={{fontSize:11}}><Icon name="plus" size={12}/> Estimate</button><button className="btn btn-sm btn-secondary" onClick={()=>setCM({open:true,c:null})} style={{fontSize:11}}><Icon name="plus" size={12}/> Customer</button><button className="btn btn-sm btn-secondary" onClick={()=>setQPC({open:true,mode:'single',items:[{sku:'',name:'',brand:'',color:'',category:'Tees',retail_price:0,nsa_cost:0,available_sizes:['S','M','L','XL','2XL'],vendor_id:''}]})} style={{fontSize:11}}><Icon name="plus" size={12}/> Product</button></div></div>
       {dbError&&<div style={{padding:'10px 16px',background:'#fef2f2',border:'1px solid #fecaca',color:'#991b1b',fontSize:12,fontWeight:600,display:'flex',alignItems:'center',gap:8}}>
