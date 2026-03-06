@@ -1,0 +1,44 @@
+name: Business Logic Tests
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    # Daily at 7am Central Time (12pm UTC in winter, 1pm UTC in summer)
+    - cron: '0 12 * * *'
+  workflow_dispatch: # allows manual trigger from GitHub UI
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests and generate report
+        run: node scripts/run-tests.js
+        env:
+          CI: true
+
+      - name: Email report
+        if: always()
+        run: node scripts/email-report.js
+        env:
+          REACT_APP_BREVO_API_KEY: ${{ secrets.BREVO_API_KEY }}
+          TEST_REPORT_EMAIL: ${{ secrets.TEST_REPORT_EMAIL }}
+
+      - name: Upload report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report
+          path: test-reports/
+          retention-days: 30
