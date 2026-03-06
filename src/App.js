@@ -127,7 +127,7 @@ const _dbLoad = async () => {
       const items=invItems.filter(i=>i.invoice_id===inv.id).map(i=>({sku:i.sku,name:i.name,qty:i.qty,unit_price:i.unit_price,total:i.total,description:i.description}));
       return{...inv,payments,items:items.length?items:undefined}});
     // Messages: attach read_by array and parse tagged_members
-    const messages=msgRaw.map(m=>{const tm=m.tagged_members;return{...m,read_by:msgReads.filter(r=>r.message_id===m.id).map(r=>r.user_id),tagged_members:Array.isArray(tm)?tm:(typeof tm==='string'?(() => {try{return JSON.parse(tm)}catch{return[]}})():[])}});
+    const messages=msgRaw.map(m=>{const tm=m.tagged_members;const mapped={...m,text:m.body||m.text,ts:m.created_at||m.ts};delete mapped.body;return{...mapped,read_by:msgReads.filter(r=>r.message_id===m.id).map(r=>r.user_id),tagged_members:Array.isArray(tm)?tm:(typeof tm==='string'?(() => {try{return JSON.parse(tm)}catch{return[]}})():[])}});
     // OMG Stores: attach products
     const omg_stores=omgRaw.map(s=>({...s,products:omgProd.filter(p=>p.store_id===s.id).map(p=>({sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:p.deco_type,deco_cost:p.deco_cost,sizes:p.sizes||{}}))}));
     const hasData=(customers.length>0)||(sales_orders.length>0);
@@ -165,7 +165,7 @@ const _dbSeed = async (d) => {
   for(const inv of(d.invoices||[])){await _dbSaveInvoice(inv)}
   // Seed messages
   if(d.messages?.length){
-    await supabase.from('messages').upsert(d.messages.map(m=>_pick(m,_msgCols)),{onConflict:'id'});
+    await supabase.from('messages').upsert(d.messages.map(m=>{const p=_pick(m,_msgCols);const r={...p};if('text' in r){r.body=r.text;delete r.text;}if('ts' in r){r.created_at=r.ts;delete r.ts;}return r}),{onConflict:'id'});
     const reads=[];d.messages.forEach(m=>(m.read_by||[]).forEach(uid=>reads.push({message_id:m.id,user_id:uid})));
     if(reads.length) await supabase.from('message_reads').upsert(reads,{onConflict:'message_id,user_id'});
   }
@@ -483,7 +483,11 @@ const _dbSaveProduct = async (p) => {
 const _dbSaveMessage = async (m) => {
   if(!supabase)return;
   try{
-    const row=_pick(m,_msgCols);
+    const picked=_pick(m,_msgCols);
+    // Map app field names to DB column names: text→body, ts→created_at
+    const row={...picked};
+    if('text' in row){row.body=row.text;delete row.text;}
+    if('ts' in row){row.created_at=row.ts;delete row.ts;}
     const{error}=await supabase.from('messages').upsert(row,{onConflict:'id'});
     if(error){
       // FK violation on so_id means the SO hasn't been saved yet — skip silently and retry later
@@ -568,7 +572,7 @@ const _soExtraCols=new Set(['_shipping_cost','promo_applied','promo_amount','shi
 const _decoExtraCols=new Set(['print_color','front_and_back','reversible','num_qty','name_qty','num_font','num_size_back','custom_font_art_id','deco_type','notes','vendor']);
 // Sanitize decoration data before DB insert — strip UI-only placeholders that would violate constraints
 const _sanitizeDeco=(d)=>{const r={...d};if(r.custom_font_art_id&&r.custom_font_art_id==='pending')r.custom_font_art_id=null;if(r.art_file_id&&r.art_file_id==='__tbd')r.art_file_id=null;return r};
-const _msgCols=['id','so_id','author_id','text','ts','dept'];
+const _msgCols=['id','so_id','author_id','text','ts','dept','tagged_members'];
 const _artCols=['id','name','deco_type','ink_colors','thread_colors','art_size','art_sizes','garment_colors','files','mockup_files','item_mockups','prod_files','notes','status','uploaded'];
 // Columns that may not exist in art file tables — stripped on retry
 const _artExtraCols=new Set(['art_sizes','garment_colors','item_mockups']);
