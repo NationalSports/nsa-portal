@@ -492,7 +492,11 @@ const _dbSaveMessage = async (m) => {
     if(error){
       // FK violation on so_id means the SO hasn't been saved yet — skip silently and retry later
       if(error.message?.includes('messages_so_id_fkey')){console.warn('[DB] message save deferred — SO not yet in DB:',m.so_id);_dbSaveFailedIds.add(m.id);_persistFailedIds();return false}
-      console.error('[DB] save message:',error.message);_dbSaveFailedIds.add(m.id);_persistFailedIds();return false;
+      // Retry with core columns only (strip extra cols that may not exist)
+      const coreRow={};Object.keys(row).forEach(k=>{if(!_msgExtraCols.has(k))coreRow[k]=row[k]});
+      const retry=await supabase.from('messages').upsert(coreRow,{onConflict:'id'});
+      if(retry.error){console.error('[DB] save message:',retry.error.message);_dbSaveFailedIds.add(m.id);_persistFailedIds();return false}
+      else console.warn('[DB] message saved with core columns only');
     }
     if(m.read_by?.length){
       const reads=m.read_by.map(uid=>({message_id:m.id,user_id:uid}));
@@ -573,6 +577,7 @@ const _decoExtraCols=new Set(['print_color','front_and_back','reversible','num_q
 // Sanitize decoration data before DB insert — strip UI-only placeholders that would violate constraints
 const _sanitizeDeco=(d)=>{const r={...d};if(r.custom_font_art_id&&r.custom_font_art_id==='pending')r.custom_font_art_id=null;if(r.art_file_id&&r.art_file_id==='__tbd')r.art_file_id=null;return r};
 const _msgCols=['id','so_id','author_id','text','ts','dept','tagged_members'];
+const _msgExtraCols=new Set(['tagged_members']);
 const _artCols=['id','name','deco_type','ink_colors','thread_colors','art_size','art_sizes','garment_colors','files','mockup_files','item_mockups','prod_files','notes','status','uploaded'];
 // Columns that may not exist in art file tables — stripped on retry
 const _artExtraCols=new Set(['art_sizes','garment_colors','item_mockups']);
