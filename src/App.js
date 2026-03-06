@@ -1899,6 +1899,7 @@ const sanmarApiCall = async (service, action, params = {}) => {
     });
     const data = await response.json();
     if (!response.ok || data.error) {
+      console.error('[SanMar] API error details:', data.raw || data);
       throw new Error(data.error || `SanMar API error: ${response.status}`);
     }
     console.log('[SanMar] API response:', action, data);
@@ -2425,12 +2426,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const[ssSearching,setSsSearching]=useState(false);
   const ssSearchTimer=useRef(null);
   const ssSearchCache=useRef({});// cache search results by query
+  const ssSearchGen=useRef(0);// generation counter to discard stale results
 
   const ssLiveSearch=useCallback(async(query)=>{
     if(!query||query.length<2){setSsResults([]);return}
     const cacheKey=query.toLowerCase().trim();
     const cached=ssSearchCache.current[cacheKey];
     if(cached&&(cached.length>0||cached._ts>Date.now()-30000)){setSsResults(cached.length?cached:[]);return}
+    const gen=ssSearchGen.current;// track this search generation
     setSsSearching(true);
     try{
       // First: get style info (title, partNumber) from Styles endpoint
@@ -2476,7 +2479,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       if(!items.length){
         // Cache empty result with TTL so we can retry after 30s
         ssSearchCache.current[cacheKey]={length:0,_ts:Date.now()};
-        setSsResults([]);
+        if(gen===ssSearchGen.current)setSsResults([]);
         return;
       }
       const productTitle=styleInfo?.title||'';
@@ -2511,11 +2514,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       });
       const results=Object.values(colorMap);
       ssSearchCache.current[cacheKey]=results;
-      setSsResults(results);
+      if(gen===ssSearchGen.current)setSsResults(results);
     }catch(err){
       console.error('[S&S] Search failed:',err);
-      setSsResults([]);
-    }finally{setSsSearching(false)}
+      if(gen===ssSearchGen.current)setSsResults([]);
+    }finally{if(gen===ssSearchGen.current)setSsSearching(false)}
   },[]);
 
   // ─── Live SanMar Product Search ───
@@ -2523,19 +2526,21 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const[smSearching,setSmSearching]=useState(false);
   const smSearchTimer=useRef(null);
   const smSearchCache=useRef({});
+  const smSearchGen=useRef(0);
 
   const smLiveSearch=useCallback(async(query)=>{
     if(!query||query.length<2){setSmResults([]);return}
     const cacheKey=query.toLowerCase().trim();
     const cached=smSearchCache.current[cacheKey];
     if(cached&&(cached.length>0||cached._ts>Date.now()-30000)){setSmResults(cached.length?cached:[]);return}
+    const gen=smSearchGen.current;
     setSmSearching(true);
     try{
       // SanMar: search by style via product info service (uppercase — SanMar is case-sensitive)
       const q=query.toUpperCase().trim();
       const prodData=await sanmarGetProduct(q);
       const items=prodData?.items||[];
-      if(!items.length){smSearchCache.current[cacheKey]={length:0,_ts:Date.now()};setSmResults([]);return}
+      if(!items.length){smSearchCache.current[cacheKey]={length:0,_ts:Date.now()};if(gen===smSearchGen.current)setSmResults([]);return}
       // Also fetch inventory for these items
       let invData={};
       try{
@@ -2570,18 +2575,20 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       });
       const results=Object.values(colorMap);
       smSearchCache.current[cacheKey]=results;
-      setSmResults(results);
+      if(gen===smSearchGen.current)setSmResults(results);
     }catch(err){
       console.error('[SanMar] Search failed:',err);
-      setSmResults([]);
-    }finally{setSmSearching(false)}
+      if(gen===smSearchGen.current)setSmResults([]);
+    }finally{if(gen===smSearchGen.current)setSmSearching(false)}
   },[]);
 
   // Debounced S&S + SanMar search when typing in Add Product search
   React.useEffect(()=>{
     if(ssSearchTimer.current)clearTimeout(ssSearchTimer.current);
     if(smSearchTimer.current)clearTimeout(smSearchTimer.current);
-    if(!showAdd||!pS||pS.length<2){setSsResults([]);setSmResults([]);return}
+    if(!showAdd||!pS||pS.length<2){setSsResults([]);setSmResults([]);ssSearchGen.current++;smSearchGen.current++;return}
+    // Bump generation to discard in-flight results from previous keystrokes
+    ssSearchGen.current++;smSearchGen.current++;
     const localCount=fp.length;
     const delay=localCount>5?800:400;
     ssSearchTimer.current=setTimeout(()=>ssLiveSearch(pS),delay);

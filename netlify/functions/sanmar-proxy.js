@@ -22,7 +22,7 @@ const WSDL_MAP = {
 };
 
 // Build a SOAP envelope for common SanMar methods
-function buildSoapEnvelope(action, params, username, password) {
+function buildSoapEnvelope(action, params, customerNumber, username, password) {
   const paramXml = Object.entries(params)
     .map(([k, v]) => `<${k}>${escapeXml(String(v ?? ''))}</${k}>`)
     .join('');
@@ -33,7 +33,7 @@ function buildSoapEnvelope(action, params, username, password) {
   <soapenv:Body>
     <web:${action}>
       <arg0>
-        <sanMarCustomerNumber>${escapeXml(username)}</sanMarCustomerNumber>
+        <sanMarCustomerNumber>${escapeXml(customerNumber)}</sanMarCustomerNumber>
         <sanMarUserName>${escapeXml(username)}</sanMarUserName>
         <sanMarUserPassword>${escapeXml(password)}</sanMarUserPassword>
         ${paramXml}
@@ -121,6 +121,8 @@ exports.handler = async (event) => {
   const headers = { 'Content-Type': 'application/json' };
   const username = process.env.SANMAR_USERNAME;
   const password = process.env.SANMAR_PASSWORD;
+  // Customer number is often just the numeric part (e.g. "300767" from "300767-prod")
+  const customerNumber = process.env.SANMAR_CUSTOMER_NUMBER || username?.replace(/-.*$/, '') || username;
   if (!username || !password) {
     return { statusCode: 500, headers,
       body: JSON.stringify({ error: 'SANMAR_USERNAME and SANMAR_PASSWORD not configured in environment variables' }) };
@@ -142,15 +144,16 @@ exports.handler = async (event) => {
   if (event.body) {
     try {
       const parsed = JSON.parse(event.body);
-      soapBody = buildSoapEnvelope(action, parsed, username, password);
+      soapBody = buildSoapEnvelope(action, parsed, customerNumber, username, password);
     } catch {
       soapBody = event.body;
     }
   } else {
-    soapBody = buildSoapEnvelope(action, {}, username, password);
+    soapBody = buildSoapEnvelope(action, {}, customerNumber, username, password);
   }
 
   try {
+    console.log(`[SanMar] SOAP request: ${action} → ${baseUrl} (customer: ${customerNumber}, user: ${username})`);
     const response = await fetch(baseUrl, {
       method: 'POST',
       headers: {
@@ -161,19 +164,22 @@ exports.handler = async (event) => {
     });
 
     const xml = await response.text();
+    console.log(`[SanMar] SOAP response: ${response.status} (${xml.length} bytes)`);
 
     if (!response.ok) {
       // Try to extract fault from error XML
       const parsed = parseXmlToJson(xml);
+      console.error(`[SanMar] SOAP error: ${parsed.faultString || response.status}`, xml.slice(0, 800));
       return { statusCode: response.status, headers,
-        body: JSON.stringify({ error: parsed.faultString || `SanMar API error: ${response.status}`, raw: xml.slice(0, 500) }) };
+        body: JSON.stringify({ error: parsed.faultString || `SanMar API error: ${response.status}`, raw: xml.slice(0, 800) }) };
     }
 
     // Parse SOAP XML response into JSON
     const parsed = parseXmlToJson(xml);
     if (parsed.error) {
+      console.error(`[SanMar] SOAP fault:`, parsed.faultCode, parsed.faultString);
       return { statusCode: 500, headers,
-        body: JSON.stringify({ error: parsed.faultString || 'SOAP Fault', faultCode: parsed.faultCode }) };
+        body: JSON.stringify({ error: parsed.faultString || 'SOAP Fault', faultCode: parsed.faultCode, raw: xml.slice(0, 800) }) };
     }
 
     return {
