@@ -1885,7 +1885,7 @@ const convertOMGStore = (omgResponse, nsaCustomers) => {
   };
 };
 
-// ─── SanMar API Integration (via Netlify proxy — SOAP/XML) ───
+// ─── SanMar API Integration (via Netlify proxy — SOAP/XML → JSON) ───
 // Requires SANMAR_USERNAME + SANMAR_PASSWORD in Netlify env vars
 // Contact sanmarintegrations@sanmar.com for access
 const sanmarApiCall = async (service, action, params = {}) => {
@@ -1897,14 +1897,12 @@ const sanmarApiCall = async (service, action, params = {}) => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(params),
     });
-    if (!response.ok) {
-      const errText = await response.text().catch(() => '');
-      let msg; try { msg = JSON.parse(errText)?.error; } catch {}
-      throw new Error(msg || `SanMar API error: ${response.status}`);
+    const data = await response.json();
+    if (!response.ok || data.error) {
+      throw new Error(data.error || `SanMar API error: ${response.status}`);
     }
-    const xml = await response.text();
-    console.log('[SanMar] API response:', action, xml.slice(0, 500));
-    return xml;
+    console.log('[SanMar] API response:', action, data);
+    return data;
   } catch (error) { console.error('[SanMar] API call failed:', action, error); throw error; }
 };
 
@@ -2245,11 +2243,19 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     if(item._ss_live)return true;
     const vId=item.vendor_id||products.find(p=>p.id===item.product_id||p.sku===item.sku)?.vendor_id;
     if(!vId)return false;
-    // Check vendorList (DB-loaded or fallback D_V) by id
     const vRec=vendorList.find(v=>v.id===vId);
     if(vRec)return vRec.api_provider==='ss_activewear'||vRec.name==='S&S Activewear';
-    // Fallback: check brand name
     if(item.brand==='S&S Activewear')return true;
+    return false;
+  },[products,vendorList]);
+
+  // Check if item is from SanMar
+  const isSanMarItem=useCallback((item)=>{
+    if(item._sm_live)return true;
+    const vId=item.vendor_id||products.find(p=>p.id===item.product_id||p.sku===item.sku)?.vendor_id;
+    if(!vId)return false;
+    const vRec=vendorList.find(v=>v.id===vId);
+    if(vRec)return vRec.api_provider==='sanmar'||vRec.name==='SanMar';
     return false;
   },[products,vendorList]);
 
@@ -2259,65 +2265,115 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const vendorInvFetching=useRef({});// track in-flight fetches
 
   const fetchVendorInventory=useCallback(async(sku,vendorId,item)=>{
-    // Only fetch for S&S Activewear vendor items
-    if(!isSSItem(item||{vendor_id:vendorId,sku}))return;
-    // Use base style (sku without color suffix) as cache key
+    const itemRef=item||{vendor_id:vendorId,sku};
+    const isSS=isSSItem(itemRef);
+    const isSM=isSanMarItem(itemRef);
+    if(!isSS&&!isSM)return;
     const cacheKey=sku;
-    // Check cache (valid for 10 minutes)
     const cached=vendorInvCache.current[cacheKey];
     if(cached&&(Date.now()-cached.fetchedAt)<600000){
-      setVendorInv(prev=>({...prev,[sku]:{sizes:cached.sizes,price:cached.price,loading:false,error:null}}));
+      setVendorInv(prev=>({...prev,[sku]:{sizes:cached.sizes,price:cached.price,loading:false,error:null,source:cached.source}}));
       return;
     }
-    // Prevent duplicate fetches
     if(vendorInvFetching.current[cacheKey])return;
     vendorInvFetching.current[cacheKey]=true;
-    setVendorInv(prev=>({...prev,[sku]:{sizes:{},price:{},loading:true,error:null}}));
+    setVendorInv(prev=>({...prev,[sku]:{sizes:{},price:{},loading:true,error:null,source:isSM?'sm':'ss'}}));
     try{
-      // S&S Products endpoint — try styleID first (via Styles lookup), then ?style=, then zero-padded
-      let data;
-      try{
-        // Try Styles endpoint first to get reliable styleID
-        let sid=null;
-        try{const st=await ssApiCall('/Styles?style='+encodeURIComponent(sku));const sa=Array.isArray(st)?st:st?[st]:[];if(sa.length>0)sid=sa[0].styleID}catch(e){}
-        if(sid){data=await ssApiCall('/Products?styleID='+encodeURIComponent(sid))}
-        else{data=await ssApiCall('/Products?style='+encodeURIComponent(sku))}
-      }catch(e){
-        try{const padded=sku.length<5&&/^\d+$/.test(sku)?sku.padStart(5,'0'):sku;data=await ssApiCall('/Products?style='+encodeURIComponent(padded))}
-        catch(e2){throw e}
+      if(isSM){
+        // SanMar: fetch inventory + pricing via SOAP API (now returns JSON)
+        const prod3=products.find(p=>p.sku===sku);
+        const prodColor=prod3?.color||item?.color||'';
+        const sizeQty={};const sizePrice={};
+        // Fetch inventory — returns warehouse quantities
+        try{
+          const invData=await sanmarGetInventory(sku,prodColor,'');
+          // invData.items is array of inventory entries with warehouse quantities
+          const invItems=invData?.items||[];
+          invItems.forEach(it=>{
+            const sz=it.size||it.labelSize||'OSFA';
+            // SanMar returns quantities per warehouse; sum all warehouses
+            const qty=parseInt(it.totalQty||it.qty||it.quantity||0)||0;
+            // Also check individual warehouse fields
+            if(qty>0){sizeQty[sz]=(sizeQty[sz]||0)+qty}
+            else{
+              // Sum warehouse-level quantities if totalQty not present
+              let whTotal=0;
+              Object.entries(it).forEach(([k,v])=>{
+                if(/^(qty|warehouse|wh)/i.test(k)&&typeof v==='string'){const n=parseInt(v)||0;if(n>0)whTotal+=n}
+              });
+              if(whTotal>0)sizeQty[sz]=(sizeQty[sz]||0)+whTotal;
+            }
+          });
+        }catch(e){console.warn('[SanMar] Inventory fetch error for',sku,e.message)}
+        // Fetch pricing
+        try{
+          const prData=await sanmarGetPricing(sku,prodColor,'');
+          const prItems=prData?.items||[];
+          prItems.forEach(it=>{
+            const sz=it.size||it.labelSize||'OSFA';
+            const price=parseFloat(it.piecePrice||it.customerPrice||it.price||0);
+            if(price>0)sizePrice[sz]=price;
+          });
+        }catch(e){console.warn('[SanMar] Pricing fetch error for',sku,e.message)}
+        // If we got no inventory data from the inventory endpoint, try product info
+        if(Object.keys(sizeQty).length===0){
+          try{
+            const prodData=await sanmarGetProduct(sku,prodColor,'');
+            const prodItems=prodData?.items||[];
+            prodItems.forEach(it=>{
+              const sz=it.size||it.labelSize||'OSFA';
+              const qty=parseInt(it.inventoryQty||it.qty||0)||0;
+              if(qty>0)sizeQty[sz]=(sizeQty[sz]||0)+qty;
+              const price=parseFloat(it.piecePrice||it.customerPrice||0);
+              if(price>0&&!sizePrice[sz])sizePrice[sz]=price;
+            });
+          }catch(e){console.warn('[SanMar] Product info fetch error for',sku,e.message)}
+        }
+        const result={sizes:sizeQty,price:sizePrice,fetchedAt:Date.now(),source:'sm'};
+        vendorInvCache.current[cacheKey]=result;
+        setVendorInv(prev=>({...prev,[sku]:{sizes:sizeQty,price:sizePrice,loading:false,error:null,source:'sm'}}));
+      }else{
+        // S&S Activewear: fetch via REST API
+        let data;
+        try{
+          let sid=null;
+          try{const st=await ssApiCall('/Styles?style='+encodeURIComponent(sku));const sa=Array.isArray(st)?st:st?[st]:[];if(sa.length>0)sid=sa[0].styleID}catch(e){}
+          if(sid){data=await ssApiCall('/Products?styleID='+encodeURIComponent(sid))}
+          else{data=await ssApiCall('/Products?style='+encodeURIComponent(sku))}
+        }catch(e){
+          try{const padded=sku.length<5&&/^\d+$/.test(sku)?sku.padStart(5,'0'):sku;data=await ssApiCall('/Products?style='+encodeURIComponent(padded))}
+          catch(e2){throw e}
+        }
+        const items=Array.isArray(data)?data:data?[data]:[];
+        const sizeQty={};const sizePrice={};
+        const prod3=products.find(p=>p.sku===sku);
+        const prodColor=prod3?.color?.toLowerCase()||'';
+        items.forEach(it=>{
+          const itColor=(it.colorName||'').toLowerCase();
+          if(prodColor&&itColor&&!itColor.includes(prodColor.split('/')[0].split(' ')[0].toLowerCase())&&!prodColor.includes(itColor.split('/')[0].split(' ')[0].toLowerCase()))return;
+          const sz=it.sizeName||'OSFA';
+          const qty=typeof it.qty==='number'?it.qty:parseInt(it.qty)||0;
+          sizeQty[sz]=(sizeQty[sz]||0)+qty;
+          if(it.customerPrice!=null)sizePrice[sz]=parseFloat(it.customerPrice)||parseFloat(it.piecePrice)||0;
+          else if(it.piecePrice!=null)sizePrice[sz]=parseFloat(it.piecePrice)||0;
+        });
+        const result={sizes:sizeQty,price:sizePrice,fetchedAt:Date.now(),source:'ss'};
+        vendorInvCache.current[cacheKey]=result;
+        setVendorInv(prev=>({...prev,[sku]:{sizes:sizeQty,price:sizePrice,loading:false,error:null,source:'ss'}}));
       }
-      const items=Array.isArray(data)?data:data?[data]:[];
-      // Build inventory map: for each item matching this sku, sum warehouse qty by size
-      const sizeQty={};const sizePrice={};
-      // S&S returns one entry per sku (color+size combo); filter to matching style+color
-      const prod3=products.find(p=>p.sku===sku);
-      const prodColor=prod3?.color?.toLowerCase()||'';
-      items.forEach(it=>{
-        // Match by colorName if we know the product color, otherwise aggregate all
-        const itColor=(it.colorName||'').toLowerCase();
-        if(prodColor&&itColor&&!itColor.includes(prodColor.split('/')[0].split(' ')[0].toLowerCase())&&!prodColor.includes(itColor.split('/')[0].split(' ')[0].toLowerCase()))return;
-        const sz=it.sizeName||'OSFA';
-        const qty=typeof it.qty==='number'?it.qty:parseInt(it.qty)||0;
-        sizeQty[sz]=(sizeQty[sz]||0)+qty;
-        if(it.customerPrice!=null)sizePrice[sz]=parseFloat(it.customerPrice)||parseFloat(it.piecePrice)||0;
-        else if(it.piecePrice!=null)sizePrice[sz]=parseFloat(it.piecePrice)||0;
-      });
-      const result={sizes:sizeQty,price:sizePrice,fetchedAt:Date.now()};
-      vendorInvCache.current[cacheKey]=result;
-      setVendorInv(prev=>({...prev,[sku]:{sizes:sizeQty,price:sizePrice,loading:false,error:null}}));
     }catch(err){
-      console.error('[S&S] Inventory fetch failed for',sku,err);
-      setVendorInv(prev=>({...prev,[sku]:{sizes:{},price:{},loading:false,error:err.message}}));
+      console.error('[Vendor] Inventory fetch failed for',sku,err);
+      setVendorInv(prev=>({...prev,[sku]:{sizes:{},price:{},loading:false,error:err.message,source:isSM?'sm':'ss'}}));
     }finally{
       delete vendorInvFetching.current[cacheKey];
     }
   },[products]);
 
-  // Auto-fetch vendor inventory for all S&S items on the order
+  // Auto-fetch vendor inventory for all S&S and SanMar items on the order
   React.useEffect(()=>{
     const items=safeItems(o);
     items.forEach(item=>{
-      if(isSSItem(item)&&!vendorInv[item.sku]&&!vendorInvFetching.current[item.sku]){
+      if((isSSItem(item)||isSanMarItem(item))&&!vendorInv[item.sku]&&!vendorInvFetching.current[item.sku]){
         fetchVendorInventory(item.sku,item.vendor_id,item);
       }
     });
@@ -2461,15 +2517,96 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     }finally{setSsSearching(false)}
   },[]);
 
-  // Debounced S&S search when typing in Add Product search
+  // ─── Live SanMar Product Search ───
+  const[smResults,setSmResults]=useState([]);
+  const[smSearching,setSmSearching]=useState(false);
+  const smSearchTimer=useRef(null);
+  const smSearchCache=useRef({});
+
+  const smLiveSearch=useCallback(async(query)=>{
+    if(!query||query.length<2){setSmResults([]);return}
+    const cacheKey=query.toLowerCase().trim();
+    if(smSearchCache.current[cacheKey]){setSmResults(smSearchCache.current[cacheKey]);return}
+    setSmSearching(true);
+    try{
+      // SanMar: search by style via product info service
+      const prodData=await sanmarGetProduct(query);
+      const items=prodData?.items||[];
+      if(!items.length){smSearchCache.current[cacheKey]=[];setSmResults([]);return}
+      // Also fetch inventory for these items
+      let invData={};
+      try{
+        const inv=await sanmarGetInventory(query,'','');
+        (inv?.items||[]).forEach(it=>{
+          const key=(it.color||it.colorName||'')+'|'+(it.size||it.labelSize||'');
+          invData[key]=parseInt(it.totalQty||it.qty||it.quantity||0)||0;
+        });
+      }catch(e){/* inventory fetch optional */}
+      // Group by color
+      const colorMap={};
+      items.forEach(it=>{
+        const color=it.color||it.colorName||it.productColor||'';
+        const key=query+'|'+color;
+        if(!colorMap[key])colorMap[key]={
+          styleName:(it.brandName||it.brand||'')+' '+(it.productTitle||it.styleName||it.description||query),
+          brandName:it.brandName||it.brand||'',
+          colorName:color,
+          colorFrontImage:it.thumbUrl||it.imageUrl||it.productImage||'',
+          sku:it.uniqueKey||it.styleNumber||it.style||query,
+          customerPrice:parseFloat(it.piecePrice||it.price||it.customerPrice||0),
+          piecePrice:parseFloat(it.piecePrice||it.price||0),
+          sizes:[],totalQty:0,_source:'sm'
+        };
+        const sz=it.size||it.labelSize||it.sizeCode||'OSFA';
+        const invKey=color+'|'+sz;
+        const qty=invData[invKey]||parseInt(it.inventoryQty||it.qty||0)||0;
+        const price=parseFloat(it.piecePrice||it.price||it.customerPrice||0);
+        colorMap[key].sizes.push({sizeName:sz,qty,price});
+        colorMap[key].totalQty+=qty;
+        if(price>0&&(colorMap[key].customerPrice===0||price<colorMap[key].customerPrice))colorMap[key].customerPrice=price;
+      });
+      const results=Object.values(colorMap);
+      smSearchCache.current[cacheKey]=results;
+      setSmResults(results);
+    }catch(err){
+      console.error('[SanMar] Search failed:',err);
+      setSmResults([]);
+    }finally{setSmSearching(false)}
+  },[]);
+
+  // Debounced S&S + SanMar search when typing in Add Product search
   React.useEffect(()=>{
     if(ssSearchTimer.current)clearTimeout(ssSearchTimer.current);
-    if(!showAdd||!pS||pS.length<2){setSsResults([]);return}
-    // Only search S&S if few/no local results
+    if(smSearchTimer.current)clearTimeout(smSearchTimer.current);
+    if(!showAdd||!pS||pS.length<2){setSsResults([]);setSmResults([]);return}
     const localCount=fp.length;
-    ssSearchTimer.current=setTimeout(()=>ssLiveSearch(pS),localCount>5?800:400);
-    return()=>{if(ssSearchTimer.current)clearTimeout(ssSearchTimer.current)};
+    const delay=localCount>5?800:400;
+    ssSearchTimer.current=setTimeout(()=>ssLiveSearch(pS),delay);
+    smSearchTimer.current=setTimeout(()=>smLiveSearch(pS),delay+100);
+    return()=>{if(ssSearchTimer.current)clearTimeout(ssSearchTimer.current);if(smSearchTimer.current)clearTimeout(smSearchTimer.current)};
   },[pS,showAdd]);
+
+  // Add a SanMar search result as a line item
+  const addSanMarProduct=(smItem)=>{
+    const smVendor=vendorList.find(v=>v.api_provider==='sanmar'||v.name==='SanMar');
+    const vId=smVendor?.id||'v3';
+    const cost=smItem.customerPrice||smItem.piecePrice||0;
+    const sell=rQ(cost*(o.default_markup||1.65));
+    const availSizes=smItem.sizes.map(s=>s.sizeName).sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
+    const vInv={};smItem.sizes.forEach(s=>{vInv[s.sizeName]=(vInv[s.sizeName]||0)+s.qty});
+    const newItem={
+      product_id:null,sku:smItem.sku,name:smItem.styleName,brand:smItem.brandName,
+      vendor_id:vId,color:smItem.colorName,nsa_cost:cost,retail_price:0,
+      unit_sell:sell,available_sizes:availSizes.length?availSizes:['S','M','L','XL','2XL'],
+      sizes:{},decorations:isE?[{kind:'art',art_file_id:'__tbd',art_tbd_type:'screen_print',position:'',sell_override:0}]:[],
+      is_custom:false,_sm_live:true
+    };
+    sv('items',[...o.items,newItem]);
+    const sizePrice={};smItem.sizes.forEach(s=>{sizePrice[s.sizeName]=s.price||cost});
+    vendorInvCache.current[smItem.sku]={sizes:vInv,price:sizePrice,fetchedAt:Date.now(),source:'sm'};
+    setVendorInv(prev=>({...prev,[smItem.sku]:{sizes:vInv,price:sizePrice,loading:false,error:null,source:'sm'}}));
+    setShowAdd(false);setPS('');setSmResults([]);setSsResults([]);
+  };
 
   // Add an S&S search result as a line item
   const addSSProduct=(ssItem)=>{
@@ -3033,14 +3170,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <input value={item.sizes[sz]||''} onChange={e=>uSz(idx,sz,e.target.value)} placeholder="0"
                 style={{width:42,textAlign:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'5px 2px',fontSize:15,fontWeight:700,color:(item.sizes[sz]||0)>0?'#0f172a':'#cbd5e1'}}/>
               {(()=>{const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);const stk=p?._inv?.[sz];const need=item.sizes[sz]||0;return<div style={{fontSize:9,fontWeight:600,minHeight:13,color:stk==null?'transparent':stk<=0?'#dc2626':stk<need?'#ca8a04':'#166534'}}>{stk!=null?stk+' inv':'\u00A0'}</div>})()}
-              {(()=>{const vi=vendorInv[item.sku];if(!vi||vi.loading)return vi?.loading?<div style={{fontSize:8,color:'#a78bfa',minHeight:11}}>...</div>:null;const vStk=vi.sizes?.[sz];if(vStk==null)return null;return<div style={{fontSize:8,fontWeight:700,minHeight:11,color:vStk<=0?'#dc2626':vStk<20?'#a78bfa':'#7c3aed'}} title={'S&S Activewear stock: '+vStk}>{vStk} ss</div>})()}</div>)}
+              {(()=>{const vi=vendorInv[item.sku];if(!vi||vi.loading)return vi?.loading?<div style={{fontSize:8,color:'#a78bfa',minHeight:11}}>...</div>:null;const vStk=vi.sizes?.[sz];if(vStk==null)return null;const lbl=vi.source==='sm'?'sm':'ss';const clr=vi.source==='sm'?'#0891b2':'#7c3aed';return<div style={{fontSize:8,fontWeight:700,minHeight:11,color:vStk<=0?'#dc2626':vStk<20?clr:clr}} title={(vi.source==='sm'?'SanMar':'S&S Activewear')+' stock: '+vStk}>{vStk} {lbl}</div>})()}</div>)}
             <div style={{textAlign:'center',marginLeft:4,padding:'0 10px',borderLeft:'2px solid #e2e8f0'}}><div style={{fontSize:10,fontWeight:700,color:'#1e40af'}}>TOT</div>
               {isE&&szQty===0?<input value={item.est_qty||''} onChange={e=>uI(idx,'est_qty',e.target.value===''?0:parseInt(e.target.value)||0)} placeholder="0"
                 style={{width:48,textAlign:'center',fontSize:20,fontWeight:800,color:safeNum(item.est_qty)>0?'#1e40af':'#cbd5e1',border:'2px dashed #93c5fd',borderRadius:6,padding:'2px 0',background:'#eff6ff'}}/>
               :<div style={{fontSize:20,fontWeight:800,color:'#1e40af'}}>{qty}</div>}
             </div>
-            {(()=>{const vi=vendorInv[item.sku];
-              if(isSSItem(item))return<button title={vi?.error?'Error: '+vi.error+' — click to retry':'Refresh S&S inventory'} onClick={()=>{delete vendorInvCache.current[item.sku];delete vendorInvFetching.current[item.sku];setVendorInv(prev=>{const n={...prev};delete n[item.sku];return n});fetchVendorInventory(item.sku,item.vendor_id,item)}} style={{background:'none',border:'1px solid #c4b5fd',borderRadius:4,cursor:'pointer',color:vi?.error?'#dc2626':'#7c3aed',padding:'2px 6px',fontSize:9,fontWeight:700,marginLeft:4,whiteSpace:'nowrap'}}>{vi?.loading?'...':vi?.error?'⚠ S&S':'↻ S&S'}</button>;return null})()}
+            {(()=>{const vi=vendorInv[item.sku];const isSM=isSanMarItem(item);const isSS=isSSItem(item);
+              if(isSS||isSM){const lbl=isSM?'SM':'S&S';const clr=isSM?'#0891b2':'#7c3aed';const bdr=isSM?'#67e8f9':'#c4b5fd';return<button title={vi?.error?'Error: '+vi.error+' — click to retry':'Refresh '+(isSM?'SanMar':'S&S')+' inventory'} onClick={()=>{delete vendorInvCache.current[item.sku];delete vendorInvFetching.current[item.sku];setVendorInv(prev=>{const n={...prev};delete n[item.sku];return n});fetchVendorInventory(item.sku,item.vendor_id,item)}} style={{background:'none',border:'1px solid '+bdr,borderRadius:4,cursor:'pointer',color:vi?.error?'#dc2626':clr,padding:'2px 6px',fontSize:9,fontWeight:700,marginLeft:4,whiteSpace:'nowrap'}}>{vi?.loading?'...':vi?.error?'⚠ '+lbl:'↻ '+lbl}</button>}return null})()}
             <div style={{position:'relative',marginLeft:4}}><button className="btn btn-sm btn-secondary" onClick={()=>setShowSzPicker(showSzPicker===idx?null:idx)} style={{fontSize:10}}>+ Size</button>
               {showSzPicker===idx&&addable.length>0&&<><div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:39}} onClick={()=>setShowSzPicker(null)}/><div style={{position:'absolute',top:'100%',left:0,background:'white',border:'1px solid #e2e8f0',borderRadius:6,boxShadow:'0 4px 12px rgba(0,0,0,0.1)',zIndex:40,padding:6,display:'flex',gap:3,flexWrap:'wrap',width:180}}>
                 {addable.map(sz=><button key={sz} className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 6px'}} onClick={()=>addSzToItem(idx,sz)}>{sz}</button>)}</div></>}
@@ -3370,7 +3507,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       {!showAdd?<div style={{display:'flex',gap:6}}><button className="btn btn-primary" onClick={()=>setShowAdd(true)} disabled={!cust}><Icon name="plus" size={14}/> Add Product</button>
       <button className="btn btn-secondary" onClick={()=>setShowCustom(!showCustom)} disabled={!cust}><Icon name="plus" size={14}/> Custom Item</button>
       <button className="btn btn-secondary" style={{marginLeft:'auto'}} onClick={()=>setNsImport({step:'paste',raw:'',parsed:[],decoLines:[],issues:[]})} disabled={!cust}>📥 Import from NetSuite</button></div>
-      :<div><div className="search-bar" style={{marginBottom:8}}><Icon name="search"/><input placeholder="Search SKU, name, brand... (searches S&S live too)" value={pS} onChange={e=>setPS(e.target.value)} autoFocus/></div>
+      :<div><div className="search-bar" style={{marginBottom:8}}><Icon name="search"/><input placeholder="Search SKU, name, brand... (searches S&S + SanMar live)" value={pS} onChange={e=>setPS(e.target.value)} autoFocus/></div>
         <div style={{maxHeight:350,overflow:'auto'}}>
           {fp.slice(0,12).map(p=><div key={p.id} style={{padding:'10px 12px',borderBottom:'1px solid #f8fafc',cursor:'pointer',display:'flex',alignItems:'center',gap:10}} onClick={()=>addP(p)}>
           <span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',background:'#dbeafe',padding:'2px 6px',borderRadius:3}}>{p.sku}</span><span style={{fontWeight:600}}>{p.name}</span>{p.color&&<span style={{fontSize:11,color:'#64748b'}}>— {p.color}</span>}<span className="badge badge-blue">{p.brand}</span>
@@ -3396,9 +3533,29 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             </div>)}
             {!ssSearching&&ssResults.length===0&&pS.length>=2&&<div style={{padding:'10px 12px',color:'#94a3b8',fontSize:12,fontStyle:'italic'}}>No S&S results for "{pS}"</div>}
           </>}
+          {/* SanMar Live Search Results */}
+          {pS.length>=2&&(smSearching||smResults.length>0)&&<>
+            <div style={{padding:'6px 12px',background:'#ecfeff',borderTop:'2px solid #a5f3fc',borderBottom:'1px solid #cffafe',display:'flex',alignItems:'center',gap:6}}>
+              <span style={{fontSize:10,fontWeight:800,color:'#0891b2',textTransform:'uppercase',letterSpacing:1}}>SanMar</span>
+              {smSearching&&<span style={{fontSize:10,color:'#22d3ee'}}>Searching...</span>}
+              {!smSearching&&smResults.length>0&&<span style={{fontSize:10,color:'#0891b2'}}>{smResults.length} results</span>}
+            </div>
+            {smResults.slice(0,20).map((sm,si)=><div key={'sm'+si} style={{padding:'8px 12px',borderBottom:'1px solid #ecfeff',cursor:'pointer',display:'flex',alignItems:'center',gap:10,background:si%2===0?'#f0fdfa':'white'}} onClick={()=>addSanMarProduct(sm)}>
+              {sm.colorFrontImage?<img src={sm.colorFrontImage} alt="" style={{width:32,height:32,objectFit:'contain',borderRadius:4,background:'#f8fafc'}} onError={e=>{e.target.style.display='none'}}/>:<div style={{width:32,height:32,borderRadius:4,background:'#cffafe',display:'flex',alignItems:'center',justifyContent:'center',fontSize:10,color:'#0891b2',fontWeight:700,flexShrink:0}}>SM</div>}
+              <span style={{fontFamily:'monospace',fontWeight:700,color:'#0891b2',background:'#cffafe',padding:'2px 6px',borderRadius:3,fontSize:12}}>{sm.sku}</span>
+              <span style={{fontWeight:600,fontSize:13}}>{sm.styleName}</span>
+              {sm.colorName&&<span style={{fontSize:11,color:'#64748b'}}>— {sm.colorName}</span>}
+              <span style={{fontSize:10,padding:'1px 6px',borderRadius:3,background:'#cffafe',color:'#0e7490',fontWeight:600}}>{sm.brandName}</span>
+              <span style={{marginLeft:'auto',display:'flex',flexDirection:'column',alignItems:'flex-end'}}>
+                <span style={{fontSize:12,color:'#0891b2',fontWeight:700}}>${sm.customerPrice?.toFixed(2)||sm.piecePrice?.toFixed(2)}</span>
+                <span style={{fontSize:9,color:sm.totalQty>0?'#0891b2':'#dc2626',fontWeight:600}}>{sm.totalQty>0?sm.totalQty+' avail':'Check stock'}</span>
+              </span>
+            </div>)}
+            {!smSearching&&smResults.length===0&&pS.length>=2&&<div style={{padding:'10px 12px',color:'#94a3b8',fontSize:12,fontStyle:'italic'}}>No SanMar results for "{pS}"</div>}
+          </>}
         </div>
-        <button className="btn btn-sm btn-secondary" onClick={()=>{setShowAdd(false);setPS('');setSsResults([])}} style={{marginTop:8}}>Cancel</button>
-        <button className="btn btn-sm btn-secondary" onClick={()=>{setShowAdd(false);setPS('');setSsResults([]);setShowCustom(true)}} style={{marginTop:8,marginLeft:4}}>+ Custom Item</button></div>}
+        <button className="btn btn-sm btn-secondary" onClick={()=>{setShowAdd(false);setPS('');setSsResults([]);setSmResults([])}} style={{marginTop:8}}>Cancel</button>
+        <button className="btn btn-sm btn-secondary" onClick={()=>{setShowAdd(false);setPS('');setSsResults([]);setSmResults([]);setShowCustom(true)}} style={{marginTop:8,marginLeft:4}}>+ Custom Item</button></div>}
     </div></div>
     {showCustom&&<div className="card" style={{marginTop:8,borderLeft:'3px solid #d97706'}}><div style={{padding:'14px 18px'}}>
       <div style={{fontWeight:700,marginBottom:8}}>✏️ Custom Item {custItem.name&&<span style={{fontWeight:400,fontSize:12,color:'#64748b'}}>— {custItem.name}</span>}</div>
@@ -7212,6 +7369,39 @@ function VendDetail({vendor,products,onUpdateProducts,onBack}){
   {vendor.api_provider==='ss_activewear'&&<div style={{display:'flex',gap:6,marginTop:8}}>
     <button className="btn btn-sm" style={{background:'#7c3aed',color:'white',fontSize:10,border:'none'}} onClick={async()=>{try{await testSSConnection();alert('S&S API connection successful!')}catch(e){alert('S&S API connection failed: '+e.message)}}}>Test API</button>
     <button className="btn btn-sm" style={{background:'#2563eb',color:'white',fontSize:10,border:'none',opacity:syncing?0.5:1}} disabled={syncing} onClick={syncSSPricing}>{syncing?'Syncing...':'Sync Pricing Now'}</button>
+  </div>}
+  {vendor.api_provider==='sanmar'&&<div style={{display:'flex',gap:6,marginTop:8}}>
+    <button className="btn btn-sm" style={{background:'#0891b2',color:'white',fontSize:10,border:'none'}} onClick={async()=>{try{await testSanMarConnection();alert('SanMar API connection successful!')}catch(e){alert('SanMar API connection failed: '+e.message)}}}>Test API</button>
+    <button className="btn btn-sm" style={{background:'#0e7490',color:'white',fontSize:10,border:'none',opacity:syncing?0.5:1}} disabled={syncing} onClick={async()=>{
+      setSyncing(true);
+      try{
+        const vendProds=products.filter(p=>p.vendor_id===vendor.id);
+        const uniqueSkus=[...new Set(vendProds.map(p=>p.sku))];
+        let updated=0;const changes=[];const errors=[];
+        for(let i=0;i<uniqueSkus.length;i++){
+          const sku=uniqueSkus[i];
+          try{
+            if(i>0)await new Promise(r=>setTimeout(r,500));
+            const prData=await sanmarGetPricing(sku,'','');
+            const prItems=prData?.items||[];
+            const prices=prItems.map(it=>parseFloat(it.piecePrice||it.price||0)).filter(p=>p>0);
+            if(!prices.length)continue;
+            const newCost=Math.min(...prices);
+            const matching=vendProds.filter(p=>p.sku===sku);
+            for(const prod of matching){
+              if(Math.abs((prod.nsa_cost||0)-newCost)>0.005){
+                changes.push(sku+': $'+(prod.nsa_cost||0).toFixed(2)+' → $'+newCost.toFixed(2));
+                prod.nsa_cost=newCost;updated++;
+              }
+            }
+          }catch(e){errors.push(sku+': '+e.message)}
+        }
+        if(updated>0&&onUpdateProducts){
+          onUpdateProducts(prev=>prev.map(p=>{const match=vendProds.find(vp=>vp.id===p.id);return match?{...p,nsa_cost:match.nsa_cost}:p}));
+        }
+        alert('SanMar Pricing Sync Complete\n\nSKUs checked: '+uniqueSkus.length+'\nPrices updated: '+updated+(changes.length?'\n\nChanges:\n'+changes.join('\n'):'')+(errors.length?'\n\nErrors:\n'+errors.join('\n'):''));
+      }catch(e){alert('Sync failed: '+e.message)}finally{setSyncing(false)}
+    }}>{syncing?'Syncing...':'Sync Pricing Now'}</button>
   </div>}
   </div></div>
   <div className="stats-row"><div className="stat-card"><div className="stat-label">Invoices</div><div className="stat-value">{vendor._oi||0}</div></div><div className="stat-card"><div className="stat-label">Current</div><div className="stat-value" style={{color:'#166534'}}>${(vendor._ac||0).toLocaleString()}</div></div><div className="stat-card"><div className="stat-label">30 Day</div><div className="stat-value" style={{color:(vendor._a3||0)>0?'#d97706':''}}>${(vendor._a3||0).toLocaleString()}</div></div><div className="stat-card"><div className="stat-label">60+</div><div className="stat-value" style={{color:(vendor._a6||0)>0?'#dc2626':''}}>${((vendor._a6||0)+(vendor._a9||0)).toLocaleString()}</div></div></div>

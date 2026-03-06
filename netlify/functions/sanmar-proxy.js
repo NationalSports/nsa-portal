@@ -3,14 +3,15 @@
 // Docs: https://www.sanmar.com/resources/electronicintegration/integrationofferings
 //
 // Environment variables required:
-//   SANMAR_USERNAME  — your sanmar.com web user username
+//   SANMAR_USERNAME  — your sanmar.com web user username (account number e.g. 300767-prod)
 //   SANMAR_PASSWORD  — your sanmar.com web user password
 //
 // Query parameters:
 //   service  — which WSDL to call: 'product' | 'inventory' | 'pricing' | 'promostandards'
 //   action   — the SOAP action/method name (e.g. 'getProductInfoByStyleColorSize')
 //
-// Body: raw SOAP XML envelope (POST only), OR JSON with params that get wrapped automatically
+// Body: JSON with params that get wrapped in SOAP envelope automatically
+// Response: JSON (parsed from SOAP XML response)
 
 const WSDL_MAP = {
   product:        'https://ws.sanmar.com:8080/SanMarWebService/SanMarProductInfoServicePort',
@@ -46,11 +47,82 @@ function escapeXml(s) {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+function unescapeXml(s) {
+  return s.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'");
+}
+
+// Simple XML-to-JSON parser for SOAP responses (no external deps)
+// Extracts the SOAP Body content and converts elements to nested objects
+function parseXmlToJson(xml) {
+  // Strip SOAP envelope — extract Body content
+  const bodyMatch = xml.match(/<(?:soap(?:env)?:)?Body[^>]*>([\s\S]*?)<\/(?:soap(?:env)?:)?Body>/i);
+  const bodyXml = bodyMatch ? bodyMatch[1] : xml;
+
+  // Check for SOAP Fault
+  const faultMatch = bodyXml.match(/<(?:soap(?:env)?:)?Fault[^>]*>([\s\S]*?)<\/(?:soap(?:env)?:)?Fault>/i);
+  if (faultMatch) {
+    const faultStr = faultMatch[1];
+    const faultCode = extractTag(faultStr, 'faultcode') || extractTag(faultStr, 'faultCode');
+    const faultString = extractTag(faultStr, 'faultstring') || extractTag(faultStr, 'faultString');
+    return { error: true, faultCode, faultString };
+  }
+
+  return parseElement(bodyXml);
+}
+
+// Extract text content of a single XML tag
+function extractTag(xml, tag) {
+  const re = new RegExp('<(?:[\\w]+:)?' + tag + '[^>]*>([\\s\\S]*?)</(?:[\\w]+:)?' + tag + '>', 'i');
+  const m = xml.match(re);
+  return m ? unescapeXml(m[1].trim()) : null;
+}
+
+// Recursively parse XML elements into JSON
+function parseElement(xml) {
+  const result = {};
+  // Match all child elements (handles namespace prefixes)
+  const tagRe = /<([\w]+:)?([\w]+)([^>]*)>([\s\S]*?)<\/\1?\2>/g;
+  let match;
+  let hasChildren = false;
+
+  while ((match = tagRe.exec(xml)) !== null) {
+    hasChildren = true;
+    const tagName = match[2];
+    const content = match[4];
+
+    // Check if content has child elements
+    const hasSubElements = /<[\w:]+[^>]*>/.test(content);
+    const value = hasSubElements ? parseElement(content) : unescapeXml(content.trim());
+
+    // Handle repeated elements → array
+    if (result[tagName] !== undefined) {
+      if (!Array.isArray(result[tagName])) result[tagName] = [result[tagName]];
+      result[tagName].push(value);
+    } else {
+      result[tagName] = value;
+    }
+  }
+
+  // If no child elements found, check for "return" or "listResponse" arrays
+  // SanMar wraps responses in <return> elements
+  if (result.return !== undefined) {
+    // If single return, keep as-is; if multiple, already an array
+    return { items: Array.isArray(result.return) ? result.return : [result.return] };
+  }
+
+  if (result.listResponse !== undefined) {
+    return { items: Array.isArray(result.listResponse) ? result.listResponse : [result.listResponse] };
+  }
+
+  return hasChildren ? result : {};
+}
+
 exports.handler = async (event) => {
+  const headers = { 'Content-Type': 'application/json' };
   const username = process.env.SANMAR_USERNAME;
   const password = process.env.SANMAR_PASSWORD;
   if (!username || !password) {
-    return { statusCode: 500, headers: { 'Content-Type': 'application/json' },
+    return { statusCode: 500, headers,
       body: JSON.stringify({ error: 'SANMAR_USERNAME and SANMAR_PASSWORD not configured in environment variables' }) };
   }
 
@@ -58,22 +130,20 @@ exports.handler = async (event) => {
   const action = event.queryStringParameters?.action || '';
   const baseUrl = WSDL_MAP[service];
   if (!baseUrl) {
-    return { statusCode: 400, headers: { 'Content-Type': 'application/json' },
+    return { statusCode: 400, headers,
       body: JSON.stringify({ error: `Unknown service "${service}". Use: ${Object.keys(WSDL_MAP).join(', ')}` }) };
   }
   if (!action) {
-    return { statusCode: 400, headers: { 'Content-Type': 'application/json' },
+    return { statusCode: 400, headers,
       body: JSON.stringify({ error: 'Missing "action" query parameter (e.g. getProductInfoByStyleColorSize)' }) };
   }
 
   let soapBody;
   if (event.body) {
     try {
-      // If JSON body, auto-wrap in SOAP envelope
       const parsed = JSON.parse(event.body);
       soapBody = buildSoapEnvelope(action, parsed, username, password);
     } catch {
-      // Assume raw SOAP XML
       soapBody = event.body;
     }
   } else {
@@ -90,14 +160,28 @@ exports.handler = async (event) => {
       body: soapBody,
     });
 
-    const data = await response.text();
+    const xml = await response.text();
+
+    if (!response.ok) {
+      // Try to extract fault from error XML
+      const parsed = parseXmlToJson(xml);
+      return { statusCode: response.status, headers,
+        body: JSON.stringify({ error: parsed.faultString || `SanMar API error: ${response.status}`, raw: xml.slice(0, 500) }) };
+    }
+
+    // Parse SOAP XML response into JSON
+    const parsed = parseXmlToJson(xml);
+    if (parsed.error) {
+      return { statusCode: 500, headers,
+        body: JSON.stringify({ error: parsed.faultString || 'SOAP Fault', faultCode: parsed.faultCode }) };
+    }
+
     return {
-      statusCode: response.status,
-      headers: { 'Content-Type': 'application/xml' },
-      body: data,
+      statusCode: 200, headers,
+      body: JSON.stringify(parsed),
     };
   } catch (error) {
-    return { statusCode: 500, headers: { 'Content-Type': 'application/json' },
+    return { statusCode: 500, headers,
       body: JSON.stringify({ error: `SanMar API call failed: ${error.message}` }) };
   }
 };
