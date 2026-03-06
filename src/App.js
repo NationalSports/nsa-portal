@@ -165,7 +165,10 @@ const _dbSeed = async (d) => {
   for(const inv of(d.invoices||[])){await _dbSaveInvoice(inv)}
   // Seed messages
   if(d.messages?.length){
-    await supabase.from('messages').upsert(d.messages.map(m=>_pick(m,_msgCols)),{onConflict:'id'});
+    await supabase.from('messages').upsert(d.messages.map(m=>{const r=_pick(m,_msgCols);const core={};Object.keys(r).forEach(k=>{if(!_msgExtraCols.has(k))core[k]=r[k]});return core}),{onConflict:'id'});
+    // Try saving extra columns (tagged_members, entity fields) — silently fail if columns don't exist
+    const extras=d.messages.map(m=>{const r=_pick(m,_msgCols);const ex={id:m.id};_msgExtraCols.forEach(k=>{if(k in r&&r[k]!=null)ex[k]=r[k]});return ex}).filter(e=>Object.keys(e).length>1);
+    if(extras.length)await supabase.from('messages').upsert(extras,{onConflict:'id'}).then(r=>{if(r.error)console.warn('[DB] message extras skipped:',r.error.message)});
     const reads=[];d.messages.forEach(m=>(m.read_by||[]).forEach(uid=>reads.push({message_id:m.id,user_id:uid})));
     if(reads.length) await supabase.from('message_reads').upsert(reads,{onConflict:'message_id,user_id'});
   }
@@ -484,16 +487,17 @@ const _dbSaveMessage = async (m) => {
   if(!supabase)return;
   try{
     const row=_pick(m,_msgCols);
-    const{error}=await supabase.from('messages').upsert(row,{onConflict:'id'});
+    // Try core columns first (always exist), then full row if core succeeds we try extras
+    const coreRow={};Object.keys(row).forEach(k=>{if(!_msgExtraCols.has(k))coreRow[k]=row[k]});
+    const{error}=await supabase.from('messages').upsert(coreRow,{onConflict:'id'});
     if(error){
       // FK violation on so_id means the SO hasn't been saved yet — skip silently and retry later
       if(error.message?.includes('messages_so_id_fkey')){console.warn('[DB] message save deferred — SO not yet in DB:',m.so_id);_dbSaveFailedIds.add(m.id);_persistFailedIds();return false}
-      // Retry with core columns only (strip extra cols that may not exist)
-      const coreRow={};Object.keys(row).forEach(k=>{if(!_msgExtraCols.has(k))coreRow[k]=row[k]});
-      const retry=await supabase.from('messages').upsert(coreRow,{onConflict:'id'});
-      if(retry.error){console.error('[DB] save message:',retry.error.message);_dbSaveFailedIds.add(m.id);_persistFailedIds();return false}
-      else console.warn('[DB] message saved with core columns only');
+      console.error('[DB] save message:',error.message);_dbSaveFailedIds.add(m.id);_persistFailedIds();return false;
     }
+    // Try to save extra columns (tagged_members, entity_type, etc.) — silently ignore if columns don't exist yet
+    const extraRow={id:m.id};let hasExtra=false;_msgExtraCols.forEach(k=>{if(k in row&&row[k]!=null){extraRow[k]=row[k];hasExtra=true}});
+    if(hasExtra){await supabase.from('messages').upsert(extraRow,{onConflict:'id'}).then(r=>{if(r.error)console.warn('[DB] message extras skipped:',r.error.message)})}
     if(m.read_by?.length){
       const reads=m.read_by.map(uid=>({message_id:m.id,user_id:uid}));
       await supabase.from('message_reads').upsert(reads,{onConflict:'message_id,user_id'});
