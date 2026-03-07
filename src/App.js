@@ -9840,7 +9840,7 @@ export default function App(){
   // PRODUCT DETAIL VIEW
   // Store closure deps in a ref so the stable ProductDetail component can access fresh values
   const _pdCtx=React.useRef({});
-  _pdCtx.current={vend,cust,ests,sos,invPOs,stockPOs,invs,setProd,_dbSaveProduct,buildJobs,nf,setAM,setEEst,setEEstC,setESO,setESOC,setPg,setSelP,calcSOStatus,setWhTab,safeSizes,showSz,rQ,D_V,CATEGORIES};
+  // NOTE: _pdCtx.current is populated later (after setWhTab is declared) to avoid TDZ errors
   // Use useRef to create a stable component reference — defining components inside a parent
   // causes React to remount them on every parent re-render (losing state like editing mode)
   const _pdRef=React.useRef(null);
@@ -13388,6 +13388,8 @@ export default function App(){
     {id:'PO-5001-NSA',vendor_id:'v1',vendor_name:'Adidas',status:'partial',created_at:'02/12/26',notes:'Restock pregame tees',items:[{sku:'JX4453',name:'Adidas Unisex Pregame Tee',color:'Team Power Red/White',sizes:{S:20,M:30,L:25,XL:15,'2XL':10},received:{S:20,M:30,L:0,XL:0,'2XL':0}}]},
     {id:'PO-5002-NSA',vendor_id:'v2',vendor_name:'Under Armour',status:'waiting',created_at:'02/18/26',notes:'Stock up on polos for spring',items:[{sku:'1370399',name:'Under Armour Team Polo',color:'Cardinal/White',sizes:{S:10,M:20,L:20,XL:15,'2XL':8},received:{}}]},
   ]);const[showStockPO,setShowStockPO]=useState(null);const[stockPOCounter,setStockPOCounter]=useState(5003);
+  // Populate ProductDetail context ref — must be after setWhTab and stockPOs are declared
+  _pdCtx.current={vend,cust,ests,sos,invPOs,stockPOs,invs,setProd,_dbSaveProduct,buildJobs,nf,setAM,setEEst,setEEstC,setESO,setESOC,setPg,setSelP,calcSOStatus,setWhTab,safeSizes,showSz,rQ,D_V,CATEGORIES};
   // Ship package modal: {grp, soMap:{soId:so}, boxes:[{items:[{sku,name,color,sizes:{}}],tracking_number:'',carrier:'',weight:5,notes:''}]}
   const[shipModal,setShipModal]=useState(null);
   const[decoSearch,setDecoSearch]=useState('');const[decoRepF,setDecoRepF]=useState('all');const[decoStatF,setDecoStatF]=useState('active');const[decoTypeF,setDecoTypeF]=useState('all');
