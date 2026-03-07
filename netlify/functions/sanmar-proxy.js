@@ -58,12 +58,12 @@ function unescapeXml(s) {
 // Simple XML-to-JSON parser for SOAP responses (no external deps)
 // Extracts the SOAP Body content and converts elements to nested objects
 function parseXmlToJson(xml) {
-  // Strip SOAP envelope — extract Body content
-  const bodyMatch = xml.match(/<(?:soap(?:env)?:)?Body[^>]*>([\s\S]*?)<\/(?:soap(?:env)?:)?Body>/i);
+  // Strip SOAP envelope — extract Body content (handle any namespace prefix)
+  const bodyMatch = xml.match(/<(?:[\w-]+:)?Body[^>]*>([\s\S]*?)<\/(?:[\w-]+:)?Body>/i);
   const bodyXml = bodyMatch ? bodyMatch[1] : xml;
 
   // Check for SOAP Fault
-  const faultMatch = bodyXml.match(/<(?:soap(?:env)?:)?Fault[^>]*>([\s\S]*?)<\/(?:soap(?:env)?:)?Fault>/i);
+  const faultMatch = bodyXml.match(/<(?:[\w-]+:)?Fault[^>]*>([\s\S]*?)<\/(?:[\w-]+:)?Fault>/i);
   if (faultMatch) {
     const faultStr = faultMatch[1];
     const faultCode = extractTag(faultStr, 'faultcode') || extractTag(faultStr, 'faultCode');
