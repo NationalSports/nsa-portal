@@ -2436,29 +2436,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const gen=ssSearchGen.current;// track this search generation
     setSsSearching(true);
     try{
-      // First: get style info from Styles endpoint using keyword search
+      // Search Styles using keyword search (most reliable — finds "1717", "A230", brand names, etc.)
       let styleInfo=null;
       let styleMatches=[];
       try{
-        // Use ?search= for keyword search (finds "1717" → Comfort Colors 1717)
         const styles=await ssApiCall('/Styles?search='+encodeURIComponent(query));
         const sArr=Array.isArray(styles)?styles:styles?[styles]:[];
         if(sArr.length>0){styleInfo=sArr[0];styleMatches=sArr}
       }catch(e){/* search returned no results */}
-      // Fallback: try ?style= (exact match on partNumber/styleID/brandName)
-      if(!styleInfo){
-        try{
-          const styles2=await ssApiCall('/Styles?style='+encodeURIComponent(query));
-          const sArr2=Array.isArray(styles2)?styles2:styles2?[styles2]:[];
-          if(sArr2.length>0){styleInfo=sArr2[0];styleMatches=sArr2}
-        }catch(e){/* 404 = not found */}
-      }
 
-      // Search Products using the style IDs found
+      // Get Products for matched styles
       let items=[];
-      // Strategy 1: use styleIDs from Styles search (most reliable)
       if(styleMatches.length>0){
-        // Collect unique styleIDs from search results
         const styleIDs=[...new Set(styleMatches.map(s=>s.styleID).filter(Boolean))].slice(0,5);
         if(styleIDs.length){
           try{
@@ -2466,20 +2455,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             items=Array.isArray(data)?data:data?[data]:[];
           }catch(e){/* style lookup failed */}
         }
-      }
-      // Strategy 2: direct ?style= on Products
-      if(!items.length){
-        try{
-          const data=await ssApiCall('/Products?style='+encodeURIComponent(query));
-          items=Array.isArray(data)?data:data?[data]:[];
-        }catch(e){/* style lookup failed */}
-      }
-      // Strategy 3: try ?partnumber= on Products
-      if(!items.length){
-        try{
-          const data=await ssApiCall('/Products?partnumber='+encodeURIComponent(query));
-          items=Array.isArray(data)?data:data?[data]:[];
-        }catch(e){/* partnumber lookup failed */}
       }
       if(!items.length){
         // Cache empty result with TTL so we can retry after 30s
@@ -2499,7 +2474,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             styleID:sid,
             styleName:sInfo.title||(it.brandName?(it.brandName+' '+(sInfo.partNumber||it.styleName||query)):it.styleName||query),
             brandName:it.brandName||sInfo.brandName||'',
-            sku:sInfo.partNumber||it.styleName||query,
+            sku:query.toUpperCase(),
             styleImage:sInfo.styleImage||imgUrl||'',
             customerPrice:0,piecePrice:0,totalQty:0,
             colors:{},_source:'ss'
