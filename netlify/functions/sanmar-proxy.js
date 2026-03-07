@@ -71,7 +71,15 @@ function parseXmlToJson(xml) {
     return { error: true, faultCode, faultString };
   }
 
-  return parseElement(bodyXml);
+  const parsed = parseElement(bodyXml);
+
+  // Unwrap SOAP response wrapper (e.g. {getProductInfoByStyleColorSizeResponse: {items:[...]}})
+  const keys = Object.keys(parsed);
+  if (keys.length === 1 && typeof parsed[keys[0]] === 'object') {
+    return parsed[keys[0]];
+  }
+
+  return parsed;
 }
 
 // Extract text content of a single XML tag
