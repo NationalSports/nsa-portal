@@ -6541,6 +6541,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   const[portalInvView,setPortalInvView]=useState(null);// viewing an invoice detail
   const[portalShowPay,setPortalShowPay]=useState(null);// null | 'all' | inv object
   const[portalPaySuccess,setPortalPaySuccess]=useState(null);
+  const[portalApvOpen,setPortalApvOpen]=useState(false);
   React.useEffect(()=>setCustLocal(initCust),[initCust]);
   React.useEffect(()=>{if(!showActions)return;const close=()=>setShowActions(false);document.addEventListener('click',close);return()=>document.removeEventListener('click',close)},[showActions]);
   const customer=custLocal;
@@ -7309,6 +7310,25 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
             </div>
           </div>
         </>}
+
+        {/* Approved/Converted Estimates — collapsible at bottom */}
+        {(()=>{const apvEsts=custEsts.filter(e=>e.status==='approved'||e.status==='converted');
+          return apvEsts.length>0&&<div style={{marginTop:12}}>
+          <div style={{display:'flex',alignItems:'center',gap:6,cursor:'pointer',padding:'8px 0'}} onClick={()=>setPortalApvOpen(v=>!v)}>
+            <span style={{fontSize:12,color:'#64748b',transition:'transform 0.2s',display:'inline-block',transform:portalApvOpen?'rotate(90deg)':'rotate(0deg)'}}>›</span>
+            <span style={{fontSize:12,fontWeight:700,color:'#64748b'}}>Approved Estimates ({apvEsts.length})</span>
+          </div>
+          {portalApvOpen&&<div style={{paddingTop:4}}>
+            {apvEsts.map(est=>{const t=(est.items||[]).reduce((a,it)=>{const sqq=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);const qq=sqq>0?sqq:safeNum(it.est_qty);let r=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const dp2=dP(d,qq,[],qq);const eq2=dp2._nq!=null?dp2._nq:qq;r+=eq2*dp2.sell});return a+r},0);
+              return<div key={est.id} style={{border:'1px solid #e2e8f0',borderRadius:10,padding:14,marginBottom:8,background:'#f8fafc'}}>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                  <div><div style={{fontWeight:700,fontSize:14,color:'#374151'}}>{est.memo||est.id}</div>
+                    <div style={{fontSize:11,color:'#94a3b8'}}>{est.id} · {est.created_at?.split(' ')[0]} · {(est.items||[]).length} item{(est.items||[]).length!==1?'s':''}</div></div>
+                  <div style={{textAlign:'right'}}><div style={{fontSize:16,fontWeight:700,color:'#64748b'}}>${t.toLocaleString(undefined,{maximumFractionDigits:2})}</div>
+                    <span className={'badge '+(est.status==='approved'?'badge-green':'badge-gray')}>{est.status}</span></div>
+                </div></div>})}
+          </div>}
+        </div>})()}
 
         {/* Your rep */}
         <div style={{marginTop:20,padding:14,background:'#f8fafc',borderRadius:10}}>
