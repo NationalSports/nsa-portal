@@ -2550,7 +2550,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const ii=raw.productImageInfo||{};
         const pi=raw.productPriceInfo||{};
         const it={...bi,...ii,...pi,...raw};
-        const sid=it.uniqueKey||it.styleNumber||it.style||query;
+        const sid=it.style||it.styleNumber||query;
         const color=it.catalogColor||it.color||it.colorName||it.productColor||'';
         if(!styleMap[sid])styleMap[sid]={
           styleID:sid,
@@ -2559,7 +2559,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           sku:sid,
           styleImage:it.colorProductImageThumbnail||it.thumbnailImage||it.colorProductImage||it.productImage||'',
           customerPrice:0,piecePrice:0,totalQty:0,
-          colors:{},_source:'sm'
+          colors:{},_source:'sm',_availSizes:it.availableSizes||''
         };
         const cKey=sid+'|'+color;
         if(!styleMap[sid].colors[cKey])styleMap[sid].colors[cKey]={
@@ -2611,14 +2611,25 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const vId=vendor?.id||(isSM?'v3':'v4');
     const cost=color.customerPrice||color.piecePrice||0;
     const sell=rQ(cost*(o.default_markup||1.65));
-    const availSizes=color.sizes.map(s=>s.sizeName).sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
+    // Build available sizes: start with sizes from API, merge with catalog product sizes and standard sizes
+    const apiSizes=color.sizes.map(s=>s.sizeName);
+    // Try to match a catalog product for this SKU to get its full available_sizes
+    const catMatch=products.find(p=>p.sku===style.sku&&(!color.colorName||p.color===color.colorName))||products.find(p=>p.sku===style.sku);
+    const catSizes=catMatch?.available_sizes||[];
+    // SanMar provides availableSizes as comma-separated string
+    const smSizes=style._availSizes?style._availSizes.split(/[,;]\s*/).map(s=>s.trim()).filter(Boolean):[];
+    // Merge all sources; ensure standard sizes are always included for apparel
+    const STD_SIZES=['S','M','L','XL','2XL'];
+    let availSizes=[...new Set([...apiSizes,...catSizes,...smSizes,...STD_SIZES])];
+    availSizes=availSizes.sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
     const vInv={};color.sizes.forEach(s=>{vInv[s.sizeName]=(vInv[s.sizeName]||0)+s.qty});
     const newItem={
       product_id:null,sku:style.sku,name:style.styleName,brand:style.brandName,
       vendor_id:vId,color:color.colorName,nsa_cost:cost,retail_price:0,
       unit_sell:sell,available_sizes:availSizes.length?availSizes:['S','M','L','XL','2XL'],
       sizes:{},decorations:isE?[{kind:'art',art_file_id:'__tbd',art_tbd_type:'screen_print',position:'',sell_override:0}]:[],
-      is_custom:false,[isSM?'_sm_live':'_ss_live']:true
+      is_custom:false,[isSM?'_sm_live':'_ss_live']:true,
+      _colorImage:color.colorFrontImage||style.styleImage||''
     };
     sv('items',[...o.items,newItem]);
     const sizePrice={};color.sizes.forEach(s=>{sizePrice[s.sizeName]=s.price||cost});
