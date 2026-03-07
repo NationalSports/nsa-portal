@@ -6684,8 +6684,8 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       // Filter
       const filt=deduped.filter(t=>{
         if(oF!=='all'&&t.type!==oF)return false;
-        if(sF==='open')return['sent','draft','open','waiting','needs_pull','in_production','need_order','waiting_receive','partial'].includes(t.status);
-        if(sF==='closed')return['approved','paid','pulled','received','complete','completed','shipped','cancelled'].includes(t.status);
+        if(sF==='open')return['sent','draft','open','waiting','needs_pull','in_production','need_order','waiting_receive','partial'].includes(t.status)||(t.type==='estimate'&&t.status==='approved');
+        if(sF==='closed')return(t.type==='estimate'?['converted','cancelled']:['approved','paid','pulled','received','complete','completed','shipped','cancelled']).includes(t.status);
         return true;
       }).sort((a,b)=>(b.date||'').localeCompare(a.date||''));
 
@@ -7209,7 +7209,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         </div>}
 
         {/* Open Estimates */}
-        {(()=>{const pEsts=custEsts.filter(e=>e.status==='sent'||e.status==='draft'||e.status==='open');
+        {(()=>{const pEsts=custEsts.filter(e=>e.status==='sent'||e.status==='draft'||e.status==='open'||e.status==='approved');
           return pEsts.length>0&&<>
           <div style={{fontSize:13,fontWeight:800,color:'#d97706',marginBottom:10}}>📋 Estimates ({pEsts.length})</div>
           {pEsts.map(est=>{const t=(est.items||[]).reduce((a,it)=>{const sqq=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);const qq=sqq>0?sqq:safeNum(it.est_qty);let r=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const dp2=dP(d,qq,[],qq);const eq2=dp2._nq!=null?dp2._nq:qq;r+=eq2*dp2.sell});return a+r},0);
@@ -7312,11 +7312,11 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         </>}
 
         {/* Approved/Converted Estimates — collapsible at bottom */}
-        {(()=>{const apvEsts=custEsts.filter(e=>e.status==='approved'||e.status==='converted');
+        {(()=>{const apvEsts=custEsts.filter(e=>e.status==='converted');
           return apvEsts.length>0&&<div style={{marginTop:12}}>
           <div style={{display:'flex',alignItems:'center',gap:6,cursor:'pointer',padding:'8px 0'}} onClick={()=>setPortalApvOpen(v=>!v)}>
             <span style={{fontSize:12,color:'#64748b',transition:'transform 0.2s',display:'inline-block',transform:portalApvOpen?'rotate(90deg)':'rotate(0deg)'}}>›</span>
-            <span style={{fontSize:12,fontWeight:700,color:'#64748b'}}>Approved Estimates ({apvEsts.length})</span>
+            <span style={{fontSize:12,fontWeight:700,color:'#64748b'}}>Past Estimates ({apvEsts.length})</span>
           </div>
           {portalApvOpen&&<div style={{paddingTop:4}}>
             {apvEsts.map(est=>{const t=(est.items||[]).reduce((a,it)=>{const sqq=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);const qq=sqq>0?sqq:safeNum(it.est_qty);let r=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const dp2=dP(d,qq,[],qq);const eq2=dp2._nq!=null?dp2._nq:qq;r+=eq2*dp2.sell});return a+r},0);
