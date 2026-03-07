@@ -1921,7 +1921,7 @@ const sanmarGetInventory = async (style, color, size) =>
   await sanmarApiCall('inventory', 'getInventoryQtyForStyleColorSize', { style, color: color || '', size: size || '' });
 
 const sanmarGetPricing = async (style, color, size) =>
-  await sanmarApiCall('pricing', 'getSignInPricing', { style, color: color || '', size: size || '' });
+  await sanmarApiCall('pricing', 'getPricing', { style, color: color || '', size: size || '' });
 
 const testSanMarConnection = async () => {
   try { await sanmarGetProduct('PC61'); console.log('[SanMar] Connection test successful'); return true; }
@@ -2321,7 +2321,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           try{
             const prodData=await sanmarGetProduct(sku,prodColor,'');
             const prodItems=prodData?.items||[];
-            prodItems.forEach(it=>{
+            prodItems.forEach(raw=>{
+              const bi=raw.productBasicInfo||{};const pi=raw.productPriceInfo||{};
+              const it={...bi,...pi,...raw};
               const sz=it.size||it.labelSize||'OSFA';
               const qty=parseInt(it.inventoryQty||it.qty||0)||0;
               if(qty>0)sizeQty[sz]=(sizeQty[sz]||0)+qty;
@@ -2540,23 +2542,29 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         });
       }catch(e){/* inventory fetch optional */}
       // Group by style → one entry per style, with colors array inside
+      // SanMar items have nested sub-objects: productBasicInfo, productImageInfo, productPriceInfo
       const styleMap={};
-      items.forEach(it=>{
+      items.forEach(raw=>{
+        // Flatten nested SanMar product structure into a single object
+        const bi=raw.productBasicInfo||{};
+        const ii=raw.productImageInfo||{};
+        const pi=raw.productPriceInfo||{};
+        const it={...bi,...ii,...pi,...raw};
         const sid=it.uniqueKey||it.styleNumber||it.style||query;
-        const color=it.color||it.colorName||it.productColor||'';
+        const color=it.catalogColor||it.color||it.colorName||it.productColor||'';
         if(!styleMap[sid])styleMap[sid]={
           styleID:sid,
           styleName:(it.brandName||it.brand||'')+' '+(it.productTitle||it.styleName||it.description||query),
           brandName:it.brandName||it.brand||'',
           sku:sid,
-          styleImage:it.thumbUrl||it.imageUrl||it.productImage||'',
+          styleImage:it.colorProductImageThumbnail||it.thumbnailImage||it.colorProductImage||it.productImage||'',
           customerPrice:0,piecePrice:0,totalQty:0,
           colors:{},_source:'sm'
         };
         const cKey=sid+'|'+color;
         if(!styleMap[sid].colors[cKey])styleMap[sid].colors[cKey]={
           colorName:color,
-          colorFrontImage:it.thumbUrl||it.imageUrl||it.productImage||'',
+          colorFrontImage:it.colorProductImageThumbnail||it.colorProductImage||it.colorSwatchImage||it.productImage||'',
           customerPrice:parseFloat(it.piecePrice||it.price||it.customerPrice||0),
           piecePrice:parseFloat(it.piecePrice||it.price||0),
           sizes:[],totalQty:0
