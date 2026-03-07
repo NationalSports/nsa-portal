@@ -21,8 +21,8 @@ const WSDL_MAP = {
   invoice:        'https://ws.sanmar.com:8080/SanMarWebService/InvoicePort',
 };
 
-// Build a SOAP envelope for common SanMar methods
-// SanMar uses: product params in <arg0>, auth credentials in <arg1>
+// Build a SOAP envelope for SanMar methods that use complex-type args
+// Product & Pricing services: product params in <arg0>, auth credentials in <arg1>
 // Namespace: http://impl.webservice.integration.sanmar.com/
 function buildSoapEnvelope(action, params, customerNumber, username, password) {
   const paramXml = Object.entries(params)
@@ -42,6 +42,22 @@ function buildSoapEnvelope(action, params, customerNumber, username, password) {
         <sanMarUserName>${escapeXml(username)}</sanMarUserName>
         <sanMarUserPassword>${escapeXml(password)}</sanMarUserPassword>
       </arg1>
+    </impl:${action}>
+  </soapenv:Body>
+</soapenv:Envelope>`;
+}
+
+// Build a SOAP envelope for SanMar methods that use flat string args (e.g. inventory)
+// Inventory service: arg0=customerNumber, arg1=username, arg2=password, arg3=style, arg4=color, arg5=size
+function buildFlatArgSoapEnvelope(action, args) {
+  const argXml = args.map((val, i) => `<arg${i}>${escapeXml(String(val ?? ''))}</arg${i}>`).join('\n      ');
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
+                  xmlns:impl="http://impl.webservice.integration.sanmar.com/">
+  <soapenv:Header/>
+  <soapenv:Body>
+    <impl:${action}>
+      ${argXml}
     </impl:${action}>
   </soapenv:Body>
 </soapenv:Envelope>`;
@@ -115,10 +131,13 @@ function parseElement(xml) {
     }
   }
 
-  // If no child elements found, check for "return" or "listResponse" arrays
-  // SanMar wraps responses in <return> elements
+  // SanMar wraps responses in <return> which may contain <listResponse> elements
   if (result.return !== undefined) {
-    // If single return, keep as-is; if multiple, already an array
+    // Single <return> wrapping <listResponse> items (product/inventory pattern) → unwrap
+    if (!Array.isArray(result.return) && result.return.items) {
+      return result.return;
+    }
+    // Multiple <return> elements → treat each as an item
     return { items: Array.isArray(result.return) ? result.return : [result.return] };
   }
 
@@ -156,12 +175,24 @@ exports.handler = async (event) => {
   if (event.body) {
     try {
       const parsed = JSON.parse(event.body);
-      soapBody = buildSoapEnvelope(action, parsed, customerNumber, username, password);
+      if (service === 'inventory') {
+        // Inventory service uses flat string args: arg0=custNum, arg1=user, arg2=pass, arg3=style, arg4=color, arg5=size
+        soapBody = buildFlatArgSoapEnvelope(action, [
+          customerNumber, username, password,
+          parsed.style || '', parsed.color || '', parsed.size || ''
+        ]);
+      } else {
+        soapBody = buildSoapEnvelope(action, parsed, customerNumber, username, password);
+      }
     } catch {
       soapBody = event.body;
     }
   } else {
-    soapBody = buildSoapEnvelope(action, {}, customerNumber, username, password);
+    if (service === 'inventory') {
+      soapBody = buildFlatArgSoapEnvelope(action, [customerNumber, username, password, '', '', '']);
+    } else {
+      soapBody = buildSoapEnvelope(action, {}, customerNumber, username, password);
+    }
   }
 
   try {
@@ -192,6 +223,12 @@ exports.handler = async (event) => {
       console.error(`[SanMar] SOAP fault:`, parsed.faultCode, parsed.faultString);
       return { statusCode: 500, headers,
         body: JSON.stringify({ error: parsed.faultString || 'SOAP Fault', faultCode: parsed.faultCode, raw: xml.slice(0, 800) }) };
+    }
+    // SanMar responseBean includes errorOccured (their typo) flag
+    if (parsed.errorOccured === 'true' || parsed.errorOccurred === 'true') {
+      console.error(`[SanMar] API error:`, parsed.message);
+      return { statusCode: 400, headers,
+        body: JSON.stringify({ error: parsed.message || 'SanMar returned an error', ...parsed }) };
     }
 
     return {
