@@ -2436,45 +2436,50 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const gen=ssSearchGen.current;// track this search generation
     setSsSearching(true);
     try{
-      // First: get style info (title, partNumber) from Styles endpoint
+      // First: get style info from Styles endpoint using keyword search
       let styleInfo=null;
+      let styleMatches=[];
       try{
-        // ?style= on Styles accepts partNumber, styleID, or brand name
-        const styles=await ssApiCall('/Styles?style='+encodeURIComponent(query));
+        // Use ?search= for keyword search (finds "1717" → Comfort Colors 1717)
+        const styles=await ssApiCall('/Styles?search='+encodeURIComponent(query));
         const sArr=Array.isArray(styles)?styles:styles?[styles]:[];
-        if(sArr.length>0)styleInfo=sArr[0];
-      }catch(e){/* 404 = not found on S&S, that's ok */}
-
-      // Search Products — try multiple strategies to find the style
-      let items=[];
-      // Strategy 1: if Styles endpoint returned a styleID, use that (most reliable)
-      if(styleInfo?.styleID){
+        if(sArr.length>0){styleInfo=sArr[0];styleMatches=sArr}
+      }catch(e){/* search returned no results */}
+      // Fallback: try ?style= (exact match on partNumber/styleID/brandName)
+      if(!styleInfo){
         try{
-          const data=await ssApiCall('/Products?styleID='+encodeURIComponent(styleInfo.styleID));
-          items=Array.isArray(data)?data:data?[data]:[];
-        }catch(e){/* styleID lookup failed, try other approaches */}
+          const styles2=await ssApiCall('/Styles?style='+encodeURIComponent(query));
+          const sArr2=Array.isArray(styles2)?styles2:styles2?[styles2]:[];
+          if(sArr2.length>0){styleInfo=sArr2[0];styleMatches=sArr2}
+        }catch(e){/* 404 = not found */}
       }
-      // Strategy 2: ?style= filter (accepts partNumber, styleID, brand name)
+
+      // Search Products using the style IDs found
+      let items=[];
+      // Strategy 1: use styleIDs from Styles search (most reliable)
+      if(styleMatches.length>0){
+        // Collect unique styleIDs from search results
+        const styleIDs=[...new Set(styleMatches.map(s=>s.styleID).filter(Boolean))].slice(0,5);
+        if(styleIDs.length){
+          try{
+            const data=await ssApiCall('/Products?style='+encodeURIComponent(styleIDs.join(',')));
+            items=Array.isArray(data)?data:data?[data]:[];
+          }catch(e){/* style lookup failed */}
+        }
+      }
+      // Strategy 2: direct ?style= on Products
       if(!items.length){
         try{
           const data=await ssApiCall('/Products?style='+encodeURIComponent(query));
           items=Array.isArray(data)?data:data?[data]:[];
         }catch(e){/* style lookup failed */}
       }
-      // Strategy 3: if query is numeric, try as styleID directly on Products
-      if(!items.length&&/^\d+$/.test(query)){
+      // Strategy 3: try ?partnumber= on Products
+      if(!items.length){
         try{
-          const data2=await ssApiCall('/Products?styleID='+encodeURIComponent(query));
-          items=Array.isArray(data2)?data2:data2?[data2]:[];
-        }catch(e2){/* styleID lookup failed */}
-      }
-      // Strategy 4: try zero-padded style (S&S uses 5-digit part numbers like "01717")
-      if(!items.length&&/^\d+$/.test(query)&&query.length<5){
-        try{
-          const padded=query.padStart(5,'0');
-          const data3=await ssApiCall('/Products?style='+encodeURIComponent(padded));
-          items=Array.isArray(data3)?data3:data3?[data3]:[];
-        }catch(e3){/* padded lookup failed */}
+          const data=await ssApiCall('/Products?partnumber='+encodeURIComponent(query));
+          items=Array.isArray(data)?data:data?[data]:[];
+        }catch(e){/* partnumber lookup failed */}
       }
       if(!items.length){
         // Cache empty result with TTL so we can retry after 30s
@@ -2482,37 +2487,46 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         if(gen===ssSearchGen.current)setSsResults([]);
         return;
       }
-      const productTitle=styleInfo?.title||'';
-      const partNum=styleInfo?.partNumber||query;
-      // Group by styleID+colorName → one entry per color
-      const colorMap={};
+      // Group by style → one entry per style, with colors array inside
+      const styleMap={};
       items.forEach(it=>{
-        const key=(it.styleID||it.styleName||query)+'|'+(it.colorName||'');
-        // Fix image URLs: ensure https and handle empty strings
+        const sid=it.styleID||it.styleName||query;
         let imgUrl=it.colorFrontImage||it.colorSideImage||'';
         if(imgUrl&&imgUrl.startsWith('http://'))imgUrl=imgUrl.replace('http://','https://');
-        if(!colorMap[key])colorMap[key]={
-          styleID:it.styleID,
-          styleName:productTitle||(it.brandName?(it.brandName+' '+partNum):it.styleName||partNum),
-          brandName:it.brandName||styleInfo?.brandName||'',
-          colorName:it.colorName||'',
-          colorFrontImage:imgUrl,
-          styleImage:styleInfo?.styleImage||'',
-          sku:partNum,
+        if(!styleMap[sid]){
+          const sInfo=styleMatches.find(s=>String(s.styleID)===String(sid))||styleInfo||{};
+          styleMap[sid]={
+            styleID:sid,
+            styleName:sInfo.title||(it.brandName?(it.brandName+' '+(sInfo.partNumber||it.styleName||query)):it.styleName||query),
+            brandName:it.brandName||sInfo.brandName||'',
+            sku:sInfo.partNumber||it.styleName||query,
+            styleImage:sInfo.styleImage||imgUrl||'',
+            customerPrice:0,piecePrice:0,totalQty:0,
+            colors:{},_source:'ss'
+          };
+        }
+        const color=it.colorName||'';
+        const cKey=sid+'|'+color;
+        if(!styleMap[sid].colors[cKey])styleMap[sid].colors[cKey]={
+          colorName:color,colorFrontImage:imgUrl,
           customerPrice:parseFloat(it.customerPrice)||0,
           piecePrice:parseFloat(it.piecePrice)||0,
           sizes:[],totalQty:0
         };
-        // Update image if we got a better one
-        if(imgUrl&&!colorMap[key].colorFrontImage)colorMap[key].colorFrontImage=imgUrl;
+        const cEntry=styleMap[sid].colors[cKey];
+        if(imgUrl&&!cEntry.colorFrontImage)cEntry.colorFrontImage=imgUrl;
         const sz=it.sizeName||'OSFA';
         const qty=typeof it.qty==='number'?it.qty:parseInt(it.qty)||0;
-        colorMap[key].sizes.push({sizeName:sz,qty,price:parseFloat(it.customerPrice)||parseFloat(it.piecePrice)||0});
-        colorMap[key].totalQty+=qty;
         const p=parseFloat(it.customerPrice)||parseFloat(it.piecePrice)||0;
-        if(p>0&&(colorMap[key].customerPrice===0||p<colorMap[key].customerPrice))colorMap[key].customerPrice=p;
+        cEntry.sizes.push({sizeName:sz,qty,price:p});
+        cEntry.totalQty+=qty;
+        if(p>0&&(cEntry.customerPrice===0||p<cEntry.customerPrice))cEntry.customerPrice=p;
+        // Aggregate at style level
+        styleMap[sid].totalQty+=qty;
+        if(p>0&&(styleMap[sid].customerPrice===0||p<styleMap[sid].customerPrice))styleMap[sid].customerPrice=p;
       });
-      const results=Object.values(colorMap);
+      // Convert colors objects to arrays
+      const results=Object.values(styleMap).map(s=>({...s,colors:Object.values(s.colors)}));
       ssSearchCache.current[cacheKey]=results;
       if(gen===ssSearchGen.current)setSsResults(results);
     }catch(err){
@@ -2550,30 +2564,40 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           invData[key]=parseInt(it.totalQty||it.qty||it.quantity||0)||0;
         });
       }catch(e){/* inventory fetch optional */}
-      // Group by color
-      const colorMap={};
+      // Group by style → one entry per style, with colors array inside
+      const styleMap={};
       items.forEach(it=>{
+        const sid=it.uniqueKey||it.styleNumber||it.style||query;
         const color=it.color||it.colorName||it.productColor||'';
-        const key=query+'|'+color;
-        if(!colorMap[key])colorMap[key]={
+        if(!styleMap[sid])styleMap[sid]={
+          styleID:sid,
           styleName:(it.brandName||it.brand||'')+' '+(it.productTitle||it.styleName||it.description||query),
           brandName:it.brandName||it.brand||'',
+          sku:sid,
+          styleImage:it.thumbUrl||it.imageUrl||it.productImage||'',
+          customerPrice:0,piecePrice:0,totalQty:0,
+          colors:{},_source:'sm'
+        };
+        const cKey=sid+'|'+color;
+        if(!styleMap[sid].colors[cKey])styleMap[sid].colors[cKey]={
           colorName:color,
           colorFrontImage:it.thumbUrl||it.imageUrl||it.productImage||'',
-          sku:it.uniqueKey||it.styleNumber||it.style||query,
           customerPrice:parseFloat(it.piecePrice||it.price||it.customerPrice||0),
           piecePrice:parseFloat(it.piecePrice||it.price||0),
-          sizes:[],totalQty:0,_source:'sm'
+          sizes:[],totalQty:0
         };
+        const cEntry=styleMap[sid].colors[cKey];
         const sz=it.size||it.labelSize||it.sizeCode||'OSFA';
         const invKey=color+'|'+sz;
         const qty=invData[invKey]||parseInt(it.inventoryQty||it.qty||0)||0;
         const price=parseFloat(it.piecePrice||it.price||it.customerPrice||0);
-        colorMap[key].sizes.push({sizeName:sz,qty,price});
-        colorMap[key].totalQty+=qty;
-        if(price>0&&(colorMap[key].customerPrice===0||price<colorMap[key].customerPrice))colorMap[key].customerPrice=price;
+        cEntry.sizes.push({sizeName:sz,qty,price});
+        cEntry.totalQty+=qty;
+        if(price>0&&(cEntry.customerPrice===0||price<cEntry.customerPrice))cEntry.customerPrice=price;
+        styleMap[sid].totalQty+=qty;
+        if(price>0&&(styleMap[sid].customerPrice===0||price<styleMap[sid].customerPrice))styleMap[sid].customerPrice=price;
       });
-      const results=Object.values(colorMap);
+      const results=Object.values(styleMap).map(s=>({...s,colors:Object.values(s.colors)}));
       smSearchCache.current[cacheKey]=results;
       if(gen===smSearchGen.current)setSmResults(results);
     }catch(err){
@@ -2586,9 +2610,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   React.useEffect(()=>{
     if(ssSearchTimer.current)clearTimeout(ssSearchTimer.current);
     if(smSearchTimer.current)clearTimeout(smSearchTimer.current);
-    if(!showAdd||!pS||pS.length<2){setSsResults([]);setSmResults([]);ssSearchGen.current++;smSearchGen.current++;return}
+    if(!showAdd||!pS||pS.length<2){setSsResults([]);setSmResults([]);ssSearchGen.current++;smSearchGen.current++;setExpandedStyle(null);return}
     // Bump generation to discard in-flight results from previous keystrokes
-    ssSearchGen.current++;smSearchGen.current++;
+    ssSearchGen.current++;smSearchGen.current++;setExpandedStyle(null);
     const localCount=fp.length;
     const delay=localCount>5?800:400;
     ssSearchTimer.current=setTimeout(()=>ssLiveSearch(pS),delay);
@@ -2596,51 +2620,31 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     return()=>{if(ssSearchTimer.current)clearTimeout(ssSearchTimer.current);if(smSearchTimer.current)clearTimeout(smSearchTimer.current)};
   },[pS,showAdd]);
 
-  // Add a SanMar search result as a line item
-  const addSanMarProduct=(smItem)=>{
-    const smVendor=vendorList.find(v=>v.api_provider==='sanmar'||v.name==='SanMar');
-    const vId=smVendor?.id||'v3';
-    const cost=smItem.customerPrice||smItem.piecePrice||0;
+  // Add a vendor search result as a line item (works for both S&S and SanMar)
+  // style = the style-level result, color = the selected color from style.colors
+  const addSearchProduct=(style,color,source)=>{
+    const isSM=source==='sm';
+    const vendor=vendorList.find(v=>isSM?(v.api_provider==='sanmar'||v.name==='SanMar'):(v.api_provider==='ss_activewear'||v.name==='S&S Activewear'));
+    const vId=vendor?.id||(isSM?'v3':'v4');
+    const cost=color.customerPrice||color.piecePrice||0;
     const sell=rQ(cost*(o.default_markup||1.65));
-    const availSizes=smItem.sizes.map(s=>s.sizeName).sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
-    const vInv={};smItem.sizes.forEach(s=>{vInv[s.sizeName]=(vInv[s.sizeName]||0)+s.qty});
+    const availSizes=color.sizes.map(s=>s.sizeName).sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
+    const vInv={};color.sizes.forEach(s=>{vInv[s.sizeName]=(vInv[s.sizeName]||0)+s.qty});
     const newItem={
-      product_id:null,sku:smItem.sku,name:smItem.styleName,brand:smItem.brandName,
-      vendor_id:vId,color:smItem.colorName,nsa_cost:cost,retail_price:0,
+      product_id:null,sku:style.sku,name:style.styleName,brand:style.brandName,
+      vendor_id:vId,color:color.colorName,nsa_cost:cost,retail_price:0,
       unit_sell:sell,available_sizes:availSizes.length?availSizes:['S','M','L','XL','2XL'],
       sizes:{},decorations:isE?[{kind:'art',art_file_id:'__tbd',art_tbd_type:'screen_print',position:'',sell_override:0}]:[],
-      is_custom:false,_sm_live:true
+      is_custom:false,[isSM?'_sm_live':'_ss_live']:true
     };
     sv('items',[...o.items,newItem]);
-    const sizePrice={};smItem.sizes.forEach(s=>{sizePrice[s.sizeName]=s.price||cost});
-    vendorInvCache.current[smItem.sku]={sizes:vInv,price:sizePrice,fetchedAt:Date.now(),source:'sm'};
-    setVendorInv(prev=>({...prev,[smItem.sku]:{sizes:vInv,price:sizePrice,loading:false,error:null,source:'sm'}}));
-    setShowAdd(false);setPS('');setSmResults([]);setSsResults([]);
+    const sizePrice={};color.sizes.forEach(s=>{sizePrice[s.sizeName]=s.price||cost});
+    vendorInvCache.current[style.sku]={sizes:vInv,price:sizePrice,fetchedAt:Date.now(),source};
+    setVendorInv(prev=>({...prev,[style.sku]:{sizes:vInv,price:sizePrice,loading:false,error:null,source}}));
+    setShowAdd(false);setPS('');setSsResults([]);setSmResults([]);setExpandedStyle(null);
   };
-
-  // Add an S&S search result as a line item
-  const addSSProduct=(ssItem)=>{
-    const ssVendor=vendorList.find(v=>v.api_provider==='ss_activewear'||v.name==='S&S Activewear');
-    const vId=ssVendor?.id||'v4';
-    const cost=ssItem.customerPrice||ssItem.piecePrice||0;
-    const sell=rQ(cost*(o.default_markup||1.65));
-    const availSizes=ssItem.sizes.map(s=>s.sizeName).sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
-    // Build initial vendor inventory from search results
-    const vInv={};ssItem.sizes.forEach(s=>{vInv[s.sizeName]=(vInv[s.sizeName]||0)+s.qty});
-    const newItem={
-      product_id:null,sku:ssItem.sku,name:ssItem.styleName,brand:ssItem.brandName,
-      vendor_id:vId,color:ssItem.colorName,nsa_cost:cost,retail_price:0,
-      unit_sell:sell,available_sizes:availSizes.length?availSizes:['S','M','L','XL','2XL'],
-      sizes:{},decorations:isE?[{kind:'art',art_file_id:'__tbd',art_tbd_type:'screen_print',position:'',sell_override:0}]:[],
-      is_custom:false,_ss_live:true
-    };
-    sv('items',[...o.items,newItem]);
-    // Pre-populate vendor inventory cache so it shows immediately
-    const sizePrice={};ssItem.sizes.forEach(s=>{sizePrice[s.sizeName]=s.price||cost});
-    vendorInvCache.current[ssItem.sku]={sizes:vInv,price:sizePrice,fetchedAt:Date.now()};
-    setVendorInv(prev=>({...prev,[ssItem.sku]:{sizes:vInv,price:sizePrice,loading:false,error:null}}));
-    setShowAdd(false);setPS('');setSsResults([]);
-  };
+  // State for expanded style in search results (shows color picker)
+  const[expandedStyle,setExpandedStyle]=useState(null);// {key:'ss-0', style:{...}}
   const sv=(k,v)=>{setO(e=>({...e,[k]:v,updated_at:new Date().toLocaleString()}));setDirty(true)};
   const isAU=b=>b==='Adidas'||b==='Under Armour'||b==='New Balance';const tD={A:0.4,B:0.35,C:0.3};
   const selC=id=>{const c=allCustomers.find(x=>x.id===id);if(c){setCust(c);sv('customer_id',id);sv('default_markup',c.catalog_markup||1.65)}};
@@ -3528,19 +3532,30 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <div style={{padding:'6px 12px',background:'#f5f3ff',borderTop:'2px solid #ddd6fe',borderBottom:'1px solid #ede9fe',display:'flex',alignItems:'center',gap:6}}>
               <span style={{fontSize:10,fontWeight:800,color:'#7c3aed',textTransform:'uppercase',letterSpacing:1}}>S&S Activewear</span>
               {ssSearching&&<span style={{fontSize:10,color:'#a78bfa'}}>Searching...</span>}
-              {!ssSearching&&ssResults.length>0&&<span style={{fontSize:10,color:'#8b5cf6'}}>{ssResults.length} results</span>}
+              {!ssSearching&&ssResults.length>0&&<span style={{fontSize:10,color:'#8b5cf6'}}>{ssResults.length} style{ssResults.length!==1?'s':''}</span>}
             </div>
-            {ssResults.slice(0,20).map((ss,si)=><div key={si} style={{padding:'8px 12px',borderBottom:'1px solid #f5f3ff',cursor:'pointer',display:'flex',alignItems:'center',gap:10,background:si%2===0?'#faf8ff':'white'}} onClick={()=>addSSProduct(ss)}>
-              {(ss.colorFrontImage||ss.styleImage)?<img src={ss.colorFrontImage||ss.styleImage} alt="" style={{width:32,height:32,objectFit:'contain',borderRadius:4,background:'#f8fafc'}} onError={e=>{e.target.style.display='none'}}/>:<div style={{width:32,height:32,borderRadius:4,background:'#ede9fe',display:'flex',alignItems:'center',justifyContent:'center',fontSize:10,color:'#7c3aed',fontWeight:700,flexShrink:0}}>SS</div>}
-              <span style={{fontFamily:'monospace',fontWeight:700,color:'#7c3aed',background:'#ede9fe',padding:'2px 6px',borderRadius:3,fontSize:12}}>{ss.sku}</span>
-              <span style={{fontWeight:600,fontSize:13}}>{ss.styleName}</span>
-              {ss.colorName&&<span style={{fontSize:11,color:'#64748b'}}>— {ss.colorName}</span>}
-              <span style={{fontSize:10,padding:'1px 6px',borderRadius:3,background:'#ede9fe',color:'#6d28d9',fontWeight:600}}>{ss.brandName}</span>
-              <span style={{marginLeft:'auto',display:'flex',flexDirection:'column',alignItems:'flex-end'}}>
-                <span style={{fontSize:12,color:'#7c3aed',fontWeight:700}}>${ss.customerPrice?.toFixed(2)||ss.piecePrice?.toFixed(2)}</span>
-                <span style={{fontSize:9,color:ss.totalQty>0?'#7c3aed':'#dc2626',fontWeight:600}}>{ss.totalQty>0?ss.totalQty+' avail':'Out of stock'}</span>
-              </span>
-            </div>)}
+            {ssResults.slice(0,10).map((ss,si)=>{const eKey='ss-'+si;const isExp=expandedStyle===eKey;return<div key={si}>
+              <div style={{padding:'8px 12px',borderBottom:'1px solid #f5f3ff',cursor:'pointer',display:'flex',alignItems:'center',gap:10,background:isExp?'#ede9fe':si%2===0?'#faf8ff':'white'}} onClick={()=>setExpandedStyle(isExp?null:eKey)}>
+                {ss.styleImage?<img src={ss.styleImage} alt="" style={{width:32,height:32,objectFit:'contain',borderRadius:4,background:'#f8fafc'}} onError={e=>{e.target.style.display='none'}}/>:<div style={{width:32,height:32,borderRadius:4,background:'#ede9fe',display:'flex',alignItems:'center',justifyContent:'center',fontSize:10,color:'#7c3aed',fontWeight:700,flexShrink:0}}>SS</div>}
+                <span style={{fontFamily:'monospace',fontWeight:700,color:'#7c3aed',background:'#ede9fe',padding:'2px 6px',borderRadius:3,fontSize:12}}>{ss.sku}</span>
+                <span style={{fontWeight:600,fontSize:13}}>{ss.styleName}</span>
+                <span style={{fontSize:10,padding:'1px 6px',borderRadius:3,background:'#ede9fe',color:'#6d28d9',fontWeight:600}}>{ss.brandName}</span>
+                <span style={{fontSize:10,color:'#8b5cf6'}}>{ss.colors.length} color{ss.colors.length!==1?'s':''}</span>
+                <span style={{marginLeft:'auto',display:'flex',flexDirection:'column',alignItems:'flex-end'}}>
+                  <span style={{fontSize:12,color:'#7c3aed',fontWeight:700}}>from ${ss.customerPrice?.toFixed(2)}</span>
+                  <span style={{fontSize:9,color:ss.totalQty>0?'#7c3aed':'#dc2626',fontWeight:600}}>{ss.totalQty>0?ss.totalQty.toLocaleString()+' avail':'Out of stock'}</span>
+                </span>
+                <span style={{fontSize:12,color:'#7c3aed'}}>{isExp?'▲':'▼'}</span>
+              </div>
+              {isExp&&<div style={{background:'#faf8ff',borderBottom:'2px solid #ddd6fe',padding:'6px 12px',display:'flex',flexWrap:'wrap',gap:4,maxHeight:200,overflowY:'auto'}}>
+                {ss.colors.map((c,ci)=><div key={ci} style={{padding:'4px 8px',borderRadius:4,border:'1px solid #ddd6fe',background:'white',cursor:'pointer',fontSize:11,display:'flex',alignItems:'center',gap:4,minWidth:0}} onClick={()=>addSearchProduct(ss,c,'ss')} title={c.colorName+' — $'+c.customerPrice?.toFixed(2)+' ('+c.totalQty+' avail)'}>
+                  {c.colorFrontImage&&<img src={c.colorFrontImage} alt="" style={{width:20,height:20,objectFit:'contain',borderRadius:2}} onError={e=>{e.target.style.display='none'}}/>}
+                  <span style={{fontWeight:600,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',maxWidth:120}}>{c.colorName||'Default'}</span>
+                  <span style={{fontSize:9,color:'#7c3aed',whiteSpace:'nowrap'}}>${c.customerPrice?.toFixed(2)}</span>
+                  <span style={{fontSize:8,color:c.totalQty>0?'#22c55e':'#dc2626'}}>{c.totalQty>0?c.totalQty.toLocaleString():'OOS'}</span>
+                </div>)}
+              </div>}
+            </div>})}
             {!ssSearching&&ssResults.length===0&&pS.length>=2&&<div style={{padding:'10px 12px',color:'#94a3b8',fontSize:12,fontStyle:'italic'}}>No S&S results for "{pS}"</div>}
           </>}
           {/* SanMar Live Search Results */}
@@ -3548,19 +3563,30 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <div style={{padding:'6px 12px',background:'#ecfeff',borderTop:'2px solid #a5f3fc',borderBottom:'1px solid #cffafe',display:'flex',alignItems:'center',gap:6}}>
               <span style={{fontSize:10,fontWeight:800,color:'#0891b2',textTransform:'uppercase',letterSpacing:1}}>SanMar</span>
               {smSearching&&<span style={{fontSize:10,color:'#22d3ee'}}>Searching...</span>}
-              {!smSearching&&smResults.length>0&&<span style={{fontSize:10,color:'#0891b2'}}>{smResults.length} results</span>}
+              {!smSearching&&smResults.length>0&&<span style={{fontSize:10,color:'#0891b2'}}>{smResults.length} style{smResults.length!==1?'s':''}</span>}
             </div>
-            {smResults.slice(0,20).map((sm,si)=><div key={'sm'+si} style={{padding:'8px 12px',borderBottom:'1px solid #ecfeff',cursor:'pointer',display:'flex',alignItems:'center',gap:10,background:si%2===0?'#f0fdfa':'white'}} onClick={()=>addSanMarProduct(sm)}>
-              {sm.colorFrontImage?<img src={sm.colorFrontImage} alt="" style={{width:32,height:32,objectFit:'contain',borderRadius:4,background:'#f8fafc'}} onError={e=>{e.target.style.display='none'}}/>:<div style={{width:32,height:32,borderRadius:4,background:'#cffafe',display:'flex',alignItems:'center',justifyContent:'center',fontSize:10,color:'#0891b2',fontWeight:700,flexShrink:0}}>SM</div>}
-              <span style={{fontFamily:'monospace',fontWeight:700,color:'#0891b2',background:'#cffafe',padding:'2px 6px',borderRadius:3,fontSize:12}}>{sm.sku}</span>
-              <span style={{fontWeight:600,fontSize:13}}>{sm.styleName}</span>
-              {sm.colorName&&<span style={{fontSize:11,color:'#64748b'}}>— {sm.colorName}</span>}
-              <span style={{fontSize:10,padding:'1px 6px',borderRadius:3,background:'#cffafe',color:'#0e7490',fontWeight:600}}>{sm.brandName}</span>
-              <span style={{marginLeft:'auto',display:'flex',flexDirection:'column',alignItems:'flex-end'}}>
-                <span style={{fontSize:12,color:'#0891b2',fontWeight:700}}>${sm.customerPrice?.toFixed(2)||sm.piecePrice?.toFixed(2)}</span>
-                <span style={{fontSize:9,color:sm.totalQty>0?'#0891b2':'#dc2626',fontWeight:600}}>{sm.totalQty>0?sm.totalQty+' avail':'Check stock'}</span>
-              </span>
-            </div>)}
+            {smResults.slice(0,10).map((sm,si)=>{const eKey='sm-'+si;const isExp=expandedStyle===eKey;return<div key={'sm'+si}>
+              <div style={{padding:'8px 12px',borderBottom:'1px solid #ecfeff',cursor:'pointer',display:'flex',alignItems:'center',gap:10,background:isExp?'#cffafe':si%2===0?'#f0fdfa':'white'}} onClick={()=>setExpandedStyle(isExp?null:eKey)}>
+                {sm.styleImage?<img src={sm.styleImage} alt="" style={{width:32,height:32,objectFit:'contain',borderRadius:4,background:'#f8fafc'}} onError={e=>{e.target.style.display='none'}}/>:<div style={{width:32,height:32,borderRadius:4,background:'#cffafe',display:'flex',alignItems:'center',justifyContent:'center',fontSize:10,color:'#0891b2',fontWeight:700,flexShrink:0}}>SM</div>}
+                <span style={{fontFamily:'monospace',fontWeight:700,color:'#0891b2',background:'#cffafe',padding:'2px 6px',borderRadius:3,fontSize:12}}>{sm.sku}</span>
+                <span style={{fontWeight:600,fontSize:13}}>{sm.styleName}</span>
+                <span style={{fontSize:10,padding:'1px 6px',borderRadius:3,background:'#cffafe',color:'#0e7490',fontWeight:600}}>{sm.brandName}</span>
+                <span style={{fontSize:10,color:'#06b6d4'}}>{sm.colors.length} color{sm.colors.length!==1?'s':''}</span>
+                <span style={{marginLeft:'auto',display:'flex',flexDirection:'column',alignItems:'flex-end'}}>
+                  <span style={{fontSize:12,color:'#0891b2',fontWeight:700}}>from ${sm.customerPrice?.toFixed(2)}</span>
+                  <span style={{fontSize:9,color:sm.totalQty>0?'#0891b2':'#dc2626',fontWeight:600}}>{sm.totalQty>0?sm.totalQty.toLocaleString()+' avail':'Check stock'}</span>
+                </span>
+                <span style={{fontSize:12,color:'#0891b2'}}>{isExp?'▲':'▼'}</span>
+              </div>
+              {isExp&&<div style={{background:'#f0fdfa',borderBottom:'2px solid #a5f3fc',padding:'6px 12px',display:'flex',flexWrap:'wrap',gap:4,maxHeight:200,overflowY:'auto'}}>
+                {sm.colors.map((c,ci)=><div key={ci} style={{padding:'4px 8px',borderRadius:4,border:'1px solid #a5f3fc',background:'white',cursor:'pointer',fontSize:11,display:'flex',alignItems:'center',gap:4,minWidth:0}} onClick={()=>addSearchProduct(sm,c,'sm')} title={c.colorName+' — $'+c.customerPrice?.toFixed(2)+' ('+c.totalQty+' avail)'}>
+                  {c.colorFrontImage&&<img src={c.colorFrontImage} alt="" style={{width:20,height:20,objectFit:'contain',borderRadius:2}} onError={e=>{e.target.style.display='none'}}/>}
+                  <span style={{fontWeight:600,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',maxWidth:120}}>{c.colorName||'Default'}</span>
+                  <span style={{fontSize:9,color:'#0891b2',whiteSpace:'nowrap'}}>${c.customerPrice?.toFixed(2)}</span>
+                  <span style={{fontSize:8,color:c.totalQty>0?'#22c55e':'#dc2626'}}>{c.totalQty>0?c.totalQty.toLocaleString():'OOS'}</span>
+                </div>)}
+              </div>}
+            </div>})}
             {!smSearching&&smResults.length===0&&pS.length>=2&&<div style={{padding:'10px 12px',color:'#94a3b8',fontSize:12,fontStyle:'italic'}}>No SanMar results for "{pS}"</div>}
           </>}
         </div>

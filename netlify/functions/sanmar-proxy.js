@@ -22,23 +22,27 @@ const WSDL_MAP = {
 };
 
 // Build a SOAP envelope for common SanMar methods
+// SanMar uses: product params in <arg0>, auth credentials in <arg1>
+// Namespace: http://impl.webservice.integration.sanmar.com/
 function buildSoapEnvelope(action, params, customerNumber, username, password) {
   const paramXml = Object.entries(params)
     .map(([k, v]) => `<${k}>${escapeXml(String(v ?? ''))}</${k}>`)
     .join('');
   return `<?xml version="1.0" encoding="UTF-8"?>
 <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
-                  xmlns:web="http://ws.sanmar.com/">
+                  xmlns:impl="http://impl.webservice.integration.sanmar.com/">
   <soapenv:Header/>
   <soapenv:Body>
-    <web:${action}>
+    <impl:${action}>
       <arg0>
+        ${paramXml}
+      </arg0>
+      <arg1>
         <sanMarCustomerNumber>${escapeXml(customerNumber)}</sanMarCustomerNumber>
         <sanMarUserName>${escapeXml(username)}</sanMarUserName>
         <sanMarUserPassword>${escapeXml(password)}</sanMarUserPassword>
-        ${paramXml}
-      </arg0>
-    </web:${action}>
+      </arg1>
+    </impl:${action}>
   </soapenv:Body>
 </soapenv:Envelope>`;
 }
@@ -158,7 +162,7 @@ exports.handler = async (event) => {
       method: 'POST',
       headers: {
         'Content-Type': 'text/xml;charset=UTF-8',
-        'SOAPAction': action,
+        'SOAPAction': '""',
       },
       body: soapBody,
     });
