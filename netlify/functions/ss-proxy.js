@@ -30,7 +30,9 @@ exports.handler = async (event) => {
   }
 
   const path = event.queryStringParameters?.path || '/Styles';
-  const url = `https://api.ssactivewear.com/V2${path}`;
+  // Force JSON response format (Accept header alone is unreliable for some endpoints)
+  const separator = path.includes('?') ? '&' : '?';
+  const url = `https://api.ssactivewear.com/V2${path}${separator}mediatype=json`;
   const auth = Buffer.from(`${accountNumber}:${apiKey}`).toString('base64');
 
   try {
