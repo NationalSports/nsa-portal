@@ -36,7 +36,7 @@ body {
 .topbar {
   background: #fff; border-bottom: 1px solid #e2e8f0; padding: 0 24px;
   height: 52px; display: flex; align-items: center; justify-content: space-between;
-  position: sticky; top: 0; z-index: 40;
+  position: sticky; top: 0; z-index: 50;
 }
 .topbar h1 { font-size: 16px; font-weight: 700; color: #0f172a; }
 .content { padding: 20px 24px 80px; max-width: 1200px; }
