@@ -6541,6 +6541,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   const[portalInvView,setPortalInvView]=useState(null);// viewing an invoice detail
   const[portalShowPay,setPortalShowPay]=useState(null);// null | 'all' | inv object
   const[portalPaySuccess,setPortalPaySuccess]=useState(null);
+  const[portalApvOpen,setPortalApvOpen]=useState(false);
   React.useEffect(()=>setCustLocal(initCust),[initCust]);
   React.useEffect(()=>{if(!showActions)return;const close=()=>setShowActions(false);document.addEventListener('click',close);return()=>document.removeEventListener('click',close)},[showActions]);
   const customer=custLocal;
@@ -7309,6 +7310,25 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
             </div>
           </div>
         </>}
+
+        {/* Approved/Converted Estimates — collapsible at bottom */}
+        {(()=>{const apvEsts=custEsts.filter(e=>e.status==='approved'||e.status==='converted');
+          return apvEsts.length>0&&<div style={{marginTop:12}}>
+          <div style={{display:'flex',alignItems:'center',gap:6,cursor:'pointer',padding:'8px 0'}} onClick={()=>setPortalApvOpen(v=>!v)}>
+            <span style={{fontSize:12,color:'#64748b',transition:'transform 0.2s',display:'inline-block',transform:portalApvOpen?'rotate(90deg)':'rotate(0deg)'}}>›</span>
+            <span style={{fontSize:12,fontWeight:700,color:'#64748b'}}>Approved Estimates ({apvEsts.length})</span>
+          </div>
+          {portalApvOpen&&<div style={{paddingTop:4}}>
+            {apvEsts.map(est=>{const t=(est.items||[]).reduce((a,it)=>{const sqq=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);const qq=sqq>0?sqq:safeNum(it.est_qty);let r=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const dp2=dP(d,qq,[],qq);const eq2=dp2._nq!=null?dp2._nq:qq;r+=eq2*dp2.sell});return a+r},0);
+              return<div key={est.id} style={{border:'1px solid #e2e8f0',borderRadius:10,padding:14,marginBottom:8,background:'#f8fafc'}}>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                  <div><div style={{fontWeight:700,fontSize:14,color:'#374151'}}>{est.memo||est.id}</div>
+                    <div style={{fontSize:11,color:'#94a3b8'}}>{est.id} · {est.created_at?.split(' ')[0]} · {(est.items||[]).length} item{(est.items||[]).length!==1?'s':''}</div></div>
+                  <div style={{textAlign:'right'}}><div style={{fontSize:16,fontWeight:700,color:'#64748b'}}>${t.toLocaleString(undefined,{maximumFractionDigits:2})}</div>
+                    <span className={'badge '+(est.status==='approved'?'badge-green':'badge-gray')}>{est.status}</span></div>
+                </div></div>})}
+          </div>}
+        </div>})()}
 
         {/* Your rep */}
         <div style={{marginTop:20,padding:14,background:'#f8fafc',borderRadius:10}}>
@@ -9818,7 +9838,14 @@ export default function App(){
       <td><span className="badge badge-green">Active</span></td></tr>)}</tbody></table></div></div></>);};
 
   // PRODUCT DETAIL VIEW
-  const ProductDetail=({product,onBack})=>{
+  // Store closure deps in a ref so the stable ProductDetail component can access fresh values
+  const _pdCtx=React.useRef({});
+  _pdCtx.current={vend,cust,ests,sos,invPOs,stockPOs,invs,setProd,_dbSaveProduct,buildJobs,nf,setAM,setEEst,setEEstC,setESO,setESOC,setPg,setSelP,calcSOStatus,setWhTab,safeSizes,showSz,rQ,D_V,CATEGORIES};
+  // Use useRef to create a stable component reference — defining components inside a parent
+  // causes React to remount them on every parent re-render (losing state like editing mode)
+  const _pdRef=React.useRef(null);
+  if(!_pdRef.current){_pdRef.current=({product,onBack,ctx})=>{
+    const{vend,cust,ests,sos,invPOs,stockPOs,invs,setProd,_dbSaveProduct,buildJobs,nf,setAM,setEEst,setEEstC,setESO,setESOC,setPg,setSelP,calcSOStatus,setWhTab,safeSizes,showSz,rQ,D_V,CATEGORIES}=ctx.current;
     const[ep,setEp]=useState({...product});const[editing,setEditing]=useState(false);const[tab,setTab]=useState('history');const[salesYr,setSalesYr]=useState(new Date().getFullYear());
     const[autoSaved,setAutoSaved]=useState(false);
     // Sync ep with product prop when inventory changes externally (e.g. AdjModal)
@@ -9877,7 +9904,7 @@ export default function App(){
             </div>
             <div style={{width:'100%'}}>
               <div style={{fontSize:10,fontWeight:700,color:'#64748b',marginBottom:4}}>Additional Images</div>
-              <ImgGallery images={ep.images||[]} onUpdate={imgs=>setEp(x=>({...x,images:imgs}))} onError={e=>nf(e,'error')} maxImages={10}/>
+              <ImgGallery images={ep.images||[]} onUpdate={imgs=>{setEp(x=>{const oldImgs=x.images||[];const newUrls=imgs.filter(u=>!oldImgs.includes(u));if(newUrls.length===0)return{...x,images:imgs};let front=x.image_url,back=x.back_image_url;const extra=[...oldImgs];for(const u of newUrls){if(!front){front=u}else if(!back){back=u}else{extra.push(u)}}return{...x,image_url:front,back_image_url:back,images:extra}})}} onError={e=>nf(e,'error')} maxImages={10}/>
             </div>
             </>:(()=>{const primaryImg=ep.image_url||(ep.images&&ep.images[0])||null;const secondaryImgs=[ep.back_image_url,...(ep.images||[]).filter(u=>u!==primaryImg)].filter(Boolean);return<>
             {primaryImg?<img src={primaryImg} alt="Primary" style={{width:170,height:170,objectFit:'cover',borderRadius:8,border:'1px solid #e2e8f0'}}/>
@@ -10085,11 +10112,12 @@ export default function App(){
         {pInvs.length===0&&<tr><td colSpan={7} style={{textAlign:'center',color:'#94a3b8',padding:20}}>No invoices</td></tr>}
         </tbody></table></div></div>}
     </div>);
-  };
+  }}
+  const ProductDetail=_pdRef.current;
 
   // PRODUCTS
   function rProd(){
-    if(selP){const freshP=prod.find(x=>x.id===selP.id)||selP;return<ProductDetail product={freshP} onBack={()=>setSelP(null)}/>}
+    if(selP){const freshP=prod.find(x=>x.id===selP.id)||selP;return<ProductDetail product={freshP} onBack={()=>setSelP(null)} ctx={_pdCtx}/>}
     return(<><div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap'}}>
     <div className="search-bar" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search..." value={q} onChange={e=>setQ(e.target.value)}/></div>
     <label style={{fontSize:12,display:'flex',alignItems:'center',gap:4}}><input type="checkbox" checked={pF.stk==='instock'} onChange={e=>setPF(f=>({...f,stk:e.target.checked?'instock':'all'}))}/> In Stock</label>
