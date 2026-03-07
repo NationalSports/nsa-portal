@@ -9818,7 +9818,14 @@ export default function App(){
       <td><span className="badge badge-green">Active</span></td></tr>)}</tbody></table></div></div></>);};
 
   // PRODUCT DETAIL VIEW
-  const ProductDetail=({product,onBack})=>{
+  // Store closure deps in a ref so the stable ProductDetail component can access fresh values
+  const _pdCtx=React.useRef({});
+  _pdCtx.current={vend,cust,ests,sos,invPOs,stockPOs,invs,setProd,_dbSaveProduct,buildJobs,nf,setAM,setEEst,setEEstC,setESO,setESOC,setPg,setSelP,calcSOStatus,setWhTab,safeSizes,showSz,rQ,D_V,CATEGORIES};
+  // Use useRef to create a stable component reference — defining components inside a parent
+  // causes React to remount them on every parent re-render (losing state like editing mode)
+  const _pdRef=React.useRef(null);
+  if(!_pdRef.current){_pdRef.current=({product,onBack,ctx})=>{
+    const{vend,cust,ests,sos,invPOs,stockPOs,invs,setProd,_dbSaveProduct,buildJobs,nf,setAM,setEEst,setEEstC,setESO,setESOC,setPg,setSelP,calcSOStatus,setWhTab,safeSizes,showSz,rQ,D_V,CATEGORIES}=ctx.current;
     const[ep,setEp]=useState({...product});const[editing,setEditing]=useState(false);const[tab,setTab]=useState('history');const[salesYr,setSalesYr]=useState(new Date().getFullYear());
     const[autoSaved,setAutoSaved]=useState(false);
     // Sync ep with product prop when inventory changes externally (e.g. AdjModal)
@@ -9877,7 +9884,7 @@ export default function App(){
             </div>
             <div style={{width:'100%'}}>
               <div style={{fontSize:10,fontWeight:700,color:'#64748b',marginBottom:4}}>Additional Images</div>
-              <ImgGallery images={ep.images||[]} onUpdate={imgs=>setEp(x=>({...x,images:imgs}))} onError={e=>nf(e,'error')} maxImages={10}/>
+              <ImgGallery images={ep.images||[]} onUpdate={imgs=>{setEp(x=>{const oldImgs=x.images||[];const newUrls=imgs.filter(u=>!oldImgs.includes(u));if(newUrls.length===0)return{...x,images:imgs};let front=x.image_url,back=x.back_image_url;const extra=[...oldImgs];for(const u of newUrls){if(!front){front=u}else if(!back){back=u}else{extra.push(u)}}return{...x,image_url:front,back_image_url:back,images:extra}})}} onError={e=>nf(e,'error')} maxImages={10}/>
             </div>
             </>:(()=>{const primaryImg=ep.image_url||(ep.images&&ep.images[0])||null;const secondaryImgs=[ep.back_image_url,...(ep.images||[]).filter(u=>u!==primaryImg)].filter(Boolean);return<>
             {primaryImg?<img src={primaryImg} alt="Primary" style={{width:170,height:170,objectFit:'cover',borderRadius:8,border:'1px solid #e2e8f0'}}/>
@@ -10085,11 +10092,12 @@ export default function App(){
         {pInvs.length===0&&<tr><td colSpan={7} style={{textAlign:'center',color:'#94a3b8',padding:20}}>No invoices</td></tr>}
         </tbody></table></div></div>}
     </div>);
-  };
+  }}
+  const ProductDetail=_pdRef.current;
 
   // PRODUCTS
   function rProd(){
-    if(selP){const freshP=prod.find(x=>x.id===selP.id)||selP;return<ProductDetail product={freshP} onBack={()=>setSelP(null)}/>}
+    if(selP){const freshP=prod.find(x=>x.id===selP.id)||selP;return<ProductDetail product={freshP} onBack={()=>setSelP(null)} ctx={_pdCtx}/>}
     return(<><div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap'}}>
     <div className="search-bar" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search..." value={q} onChange={e=>setQ(e.target.value)}/></div>
     <label style={{fontSize:12,display:'flex',alignItems:'center',gap:4}}><input type="checkbox" checked={pF.stk==='instock'} onChange={e=>setPF(f=>({...f,stk:e.target.checked?'instock':'all'}))}/> In Stock</label>
