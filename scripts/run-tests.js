@@ -209,13 +209,16 @@ console.log(`   Summary: ${SUMMARY_REPORT}`);
 // Check if --email flag is present
 if (process.argv.includes('--email')) {
   console.log('\n📧 Sending email report...');
-  try {
-    require('./email-report.js')(html, { totalTests, passed, failed, now });
-    console.log('   Email sent successfully!');
-  } catch (e) {
-    console.error('   Email failed:', e.message);
-    console.log('   Make sure REACT_APP_BREVO_API_KEY is set in your .env file');
-  }
+  require('./email-report.js')(html, { totalTests, passed, failed, now })
+    .then(() => {
+      console.log('   Email sent successfully!');
+      process.exit(exitCode);
+    })
+    .catch(e => {
+      console.error('   Email failed:', e.message);
+      console.log('   Make sure REACT_APP_BREVO_API_KEY is set in your .env file');
+      process.exit(exitCode);
+    });
+} else {
+  process.exit(exitCode);
 }
-
-process.exit(exitCode);
