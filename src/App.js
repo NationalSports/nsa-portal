@@ -2530,7 +2530,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // SanMar: search by style via product info service (uppercase — SanMar is case-sensitive)
       const q=query.toUpperCase().trim();
       const prodData=await sanmarGetProduct(q);
-      const items=prodData?.items||[];
+      const rawItems=prodData?.items||[];
+      // Filter out bogus results: SanMar returns empty/partial items for styles it doesn't carry
+      const items=rawItems.filter(raw=>{
+        const bi=raw.productBasicInfo||raw;
+        const pi=raw.productPriceInfo||raw;
+        // Must have a real brand name AND a non-zero price — bogus results have neither
+        return !!(bi.brandName)&&parseFloat(pi.piecePrice||pi.casePrice||0)>0;
+      });
       if(!items.length){smSearchCache.current[cacheKey]={length:0,_ts:Date.now()};if(gen===smSearchGen.current)setSmResults([]);return}
       // Also fetch inventory for these items
       let invData={};
@@ -2580,7 +2587,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         styleMap[sid].totalQty+=qty;
         if(price>0&&(styleMap[sid].customerPrice===0||price<styleMap[sid].customerPrice))styleMap[sid].customerPrice=price;
       });
-      const results=Object.values(styleMap).map(s=>({...s,colors:Object.values(s.colors)}));
+      // Filter out styles with no price or no real colors (bogus SanMar results)
+      const results=Object.values(styleMap).map(s=>({...s,colors:Object.values(s.colors)})).filter(s=>s.customerPrice>0&&s.colors.length>0);
       smSearchCache.current[cacheKey]=results;
       if(gen===smSearchGen.current)setSmResults(results);
     }catch(err){
