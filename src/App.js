@@ -236,6 +236,7 @@ const _dbSaveEstimateInner = async (est) => {
         if(retry.error){console.error('[DB] estimate_items insert failed:',retry.error.message,retry.error.details);decoFailed=true;continue}
         else{inserted=retry.data;console.warn('[DB] estimate item saved with core columns only (missing DB columns?)')}
       }
+      if(!inserted){console.error('[DB] estimate_items insert returned no data for item',idx,'of',est.id);decoFailed=true;continue}
       if(inserted&&decorations?.length){
         const decoRows=decorations.map((d,di)=>({..._pick(_sanitizeDeco(d),_decoCols),estimate_item_id:inserted.id,deco_index:di}));
         const{error:decoErr}=await supabase.from('estimate_item_decorations').insert(decoRows);
@@ -336,7 +337,7 @@ const _dbSaveSOInner = async (so) => {
         if(retry.error){console.error('[DB] so_items insert failed:',retry.error.message,retry.error.details);saveFailed=true;continue}
         else{inserted=retry.data;console.warn('[DB] so item saved with core columns only')}
       }
-      if(!inserted)continue;
+      if(!inserted){console.error('[DB] so_items insert returned no data for item',idx,'of',so.id);saveFailed=true;continue}
       if(decorations?.length){
         const decoRows=decorations.map((d,di)=>({..._pick(_sanitizeDeco(d),_decoCols),so_item_id:inserted.id,deco_index:di}));
         const{error:decoErr}=await supabase.from('so_item_decorations').insert(decoRows);
@@ -9052,6 +9053,8 @@ export default function App(){
     const clonedItems=safeItems(est).map(it=>{const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];return clone});
     const so={id:nextSOId(sos),customer_id:est.customer_id,estimate_id:est.id,memo:est.memo,status:'need_order',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:est.default_markup,expected_date:defExp,production_notes:'',shipping_type:est.shipping_type,shipping_value:est.shipping_value,ship_to_id:est.ship_to_id,firm_dates:[],art_files:JSON.parse(JSON.stringify(est.art_files||[])),items:clonedItems};
     setSOs(p=>[...p,so]);setEsts(p=>p.map(e=>e.id===est.id?{...e,status:'converted'}:e));setEEst(null);
+    // Explicitly save to DB immediately — don't rely solely on useEffect chain
+    _dbSaveSO(so);
     const c=cust.find(x=>x.id===so.customer_id);setESO(so);setESOC(c);setPg('orders');nf(`${so.id} created from ${est.id}`)};
   const copyEstimate=est=>{
     const clonedItems=safeItems(est).map(it=>{const clone=JSON.parse(JSON.stringify(it));delete clone.pick_lines;delete clone.po_lines;return clone});
@@ -18136,6 +18139,8 @@ export default function App(){
                     ship_to_id:'default',firm_dates:[],art_files:[],items:newItems,
                     _ns_ref:imp.externalDocNum,_import_source:'netsuite'};
                   setSOs(prev=>[newSO,...prev]);setESO(newSO);setESOC(c);setPg('orders');
+                  // Explicitly save to DB immediately — don't rely solely on useEffect chain
+                  _dbSaveSO(newSO);
                   nf('✅ Imported SO with '+newItems.length+' items'+(imp.externalDocNum?' (NS #'+imp.externalDocNum+')':''));
                 } else if(imp.docType==='est'){
                   const newEst={id:nextEstId(ests),customer_id:imp.custId,memo:importMemo,status:'open',
@@ -18144,6 +18149,8 @@ export default function App(){
                     ship_to_id:'default',email_status:null,art_files:[],items:newItems,
                     _ns_ref:imp.externalDocNum,_import_source:'netsuite'};
                   setEsts(prev=>[newEst,...prev]);setEEst(newEst);setEEstC(c);setPg('estimates');
+                  // Explicitly save to DB immediately
+                  _dbSaveEstimate(newEst);
                   nf('✅ Imported Estimate with '+newItems.length+' items'+(imp.externalDocNum?' (NS #'+imp.externalDocNum+')':''));
                 } else if(imp.docType==='inv'){
                   const newInv={id:nextInvId(invs),so_id:imp.linkedSoId||null,customer_id:imp.custId,
@@ -18173,6 +18180,8 @@ export default function App(){
                       ship_to_id:'default',firm_dates:[],art_files:[],items:newItems,
                       _ns_ref:imp.externalDocNum,_import_source:'netsuite',_doc_type:'po'};
                     setSOs(prev=>[newSO,...prev]);setESO(newSO);setESOC(c);setPg('orders');
+                    // Explicitly save to DB immediately
+                    _dbSaveSO(newSO);
                     nf('✅ PO imported as SO with '+newItems.length+' items');
                   }
                 }
