@@ -9194,6 +9194,10 @@ export default function App(){
   const deleteSO = (soId) => {
     if(!canDelete)return nf('You do not have permission to delete','error');
     const so=sos.find(s=>s.id===soId);if(!so)return;
+    // Block deletion if SO has open POs or IFs
+    const hasOpenPOs=safeItems(so).some(it=>safePOs(it).some(po=>po.status!=='cancelled'));
+    const hasOpenIFs=safeItems(so).some(it=>safePicks(it).length>0);
+    if(hasOpenPOs||hasOpenIFs){const parts=[];if(hasOpenPOs)parts.push('POs');if(hasOpenIFs)parts.push('IFs');return nf('Cannot delete — SO has open '+parts.join(' and ')+'. Delete or cancel them first.','error')}
     // Check for linked invoices
     const linkedInvs=invs.filter(i=>i.so_id===soId);
     if(linkedInvs.length>0){
