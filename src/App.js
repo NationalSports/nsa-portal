@@ -1228,7 +1228,15 @@ const safeArt=(o)=>safeArr(o?.art_files);
 const safeJobs=(o)=>safeArr(o?.jobs);
 // Build jobs from SO — uses existing jobs array, or auto-generates from decorations
 const buildJobs=(o)=>{
-  if(o?.jobs&&o.jobs.length>0)return o.jobs;
+  if(o?.jobs&&o.jobs.length>0){
+    // Sync job art_status with art file status to prevent mismatches
+    return o.jobs.map(j=>{
+      const af=safeArt(o).find(f=>f.id===j.art_file_id);if(!af)return j;
+      if((af.status==='uploaded'||af.status==='needs_approval')&&(j.art_status==='needs_art'||j.art_status==='art_requested'))return{...j,art_status:'waiting_approval'};
+      if(af.status==='approved'&&(j.art_status==='needs_art'||j.art_status==='waiting_approval'))return{...j,art_status:(af.prod_files||[]).length?'art_complete':'production_files_needed'};
+      return j;
+    });
+  }
   // Auto-generate from art decorations on items
   const artMap={};
   safeItems(o).forEach((it,idx)=>{
