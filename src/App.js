@@ -467,16 +467,16 @@ const _dbSaveProduct = async (p) => {
   if(!supabase)return;
   try{
     const row={id:p.id,vendor_id:p.vendor_id||null,sku:p.sku,name:p.name,brand:p.brand||null,color:p.color||null,
-      category:p.category||null,retail_price:p.retail_price||0,nsa_cost:p.nsa_cost||0,
+      color_category:p.color_category||null,category:p.category||null,retail_price:p.retail_price||0,nsa_cost:p.nsa_cost||0,
       is_active:p.is_active!==false,available_sizes:p.available_sizes||[],_colors:p._colors||null,
       image_front_url:p.image_url||p.image_front_url||null,image_back_url:p.back_image_url||p.image_back_url||null};
     const{error}=await supabase.from('products').upsert(row,{onConflict:'id'});
     if(error){
       // If image columns don't exist yet, retry without them (product data still saves)
-      if(error.message?.includes('image_front_url')||error.message?.includes('image_back_url')){
-        const{image_front_url,image_back_url,...rowNoImg}=row;
-        const{error:e2}=await supabase.from('products').upsert(rowNoImg,{onConflict:'id'});
-        if(e2){console.error('[DB] save product (no img):',e2.message);_dbSaveFailedIds.add(p.id);_persistFailedIds();if(_dbNotify)_dbNotify('Product save failed: '+e2.message,'error');return false}
+      if(error.message?.includes('image_front_url')||error.message?.includes('image_back_url')||error.message?.includes('color_category')){
+        const{image_front_url,image_back_url,color_category,...rowNoExtra}=row;
+        const{error:e2}=await supabase.from('products').upsert(rowNoExtra,{onConflict:'id'});
+        if(e2){console.error('[DB] save product (no extra cols):',e2.message);_dbSaveFailedIds.add(p.id);_persistFailedIds();if(_dbNotify)_dbNotify('Product save failed: '+e2.message,'error');return false}
       }else{console.error('[DB] save product:',error.message);_dbSaveFailedIds.add(p.id);_persistFailedIds();if(_dbNotify)_dbNotify('Product save failed: '+error.message,'error');return false}
     }
     // Always save product images to app_state as reliable backup (works even without image columns)
@@ -1177,6 +1177,8 @@ const nextEstId=(ests)=>{const nums=(ests||[]).map(e=>{const m=(e.id||'').match(
 const nextSOId=(sos)=>{const nums=(sos||[]).map(s=>{const m=(s.id||'').match(/SO-(\d+)/);return m?parseInt(m[1]):0});const next=Math.max(_soSeq,...nums)+_gap();_soSeq=next;return'SO-'+next};
 const nextInvId=(invs)=>{const nums=(invs||[]).map(i=>{const m=(i.id||'').match(/INV-(\d+)/);return m?parseInt(m[1]):0});const next=Math.max(_invSeq,...nums)+_gap();_invSeq=next;return'INV-'+next};
 let CATEGORIES=['Tees','Hoodies','Polos','Shorts','1/4 Zips','Hats','Footwear','Jersey Tops','Jersey Bottoms','Balls'];
+const COLOR_CATEGORIES=['Black','White','Red','Navy','Royal','Dark Green','Cardinal','Maroon','Light Grey','Dark Grey','Vegas Gold','Athletic Gold','Orange'];
+const mapColorCategory=(color)=>{if(!color)return'';const c=color.toLowerCase();const m=[['black','Black'],['white','White'],['cardinal','Cardinal'],['maroon','Maroon'],['navy','Navy'],['royal','Royal'],['dark green','Dark Green'],['vegas gold','Vegas Gold'],['athletic gold','Athletic Gold'],['gold','Vegas Gold'],['light grey','Light Grey'],['light gray','Light Grey'],['heather','Light Grey'],['dark grey','Dark Grey'],['dark gray','Dark Grey'],['charcoal','Dark Grey'],['orange','Orange'],['red','Red']];for(const[k,v]of m){if(c.includes(k))return v}return'';};
 let CONTACT_ROLES=['Head Coach','Assistant','Accounting','Athletic Director','Primary','Other'];
 let POSITIONS=['Front Center','Back Center','Left Chest','Right Chest','Left Sleeve','Right Sleeve','Left Leg','Right Leg','Nape','Other'];
 const EXTRA_SIZES=['XS','3XL','4XL','LT','XLT','2XLT','3XLT'];
@@ -9159,7 +9161,7 @@ export default function App(){
   const isA=cu?.role==='admin';
   const nf=(m,t='success')=>{setToast({msg:m,type:t});setTimeout(()=>setToast(null),3500)};_dbNotify=nf;
   const pars=useMemo(()=>cust.filter(c=>!c.parent_id),[cust]);const gK=useCallback(pid=>cust.filter(c=>c.parent_id===pid),[cust]);
-  const cols=useMemo(()=>[...new Set(prod.map(p=>p.color).filter(Boolean))].sort(),[prod]);
+  const cols=useMemo(()=>COLOR_CATEGORIES,[]);
   const savC=c=>{console.log('[SAVE] Customer save triggered:',c.id,c.name,{tax_rate:c.tax_rate,contacts:c.contacts?.length,shipping_state:c.shipping_state});setCust(p=>{const e=p.find(x=>x.id===c.id);return e?p.map(x=>x.id===c.id?c:x):[...p,c]});nf('Saved')};
   // Lock decoration pricing on save so matrix changes don't affect existing orders
   const lockPrices=(order)=>{const af=order.art_files||[];
@@ -9257,8 +9259,8 @@ export default function App(){
     ...sos.map(s=>{const _sAQ={};safeItems(s).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((ss,v)=>ss+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_sAQ[d.art_file_id]=(_sAQ[d.art_file_id]||0)+q2}})});const saf=safeArt(s);const t=s.items?.reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((ss,v)=>ss+v,0);let r=qq*(it.unit_sell||0);(it.decorations||[]).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_sAQ[d.art_file_id]:qq;const dp=dP(d,qq,saf,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?qq*2:qq);r+=eq*dp.sell});return a+r},0)||0;return{id:s.id,type:'sales_order',customer_id:s.customer_id,date:s.created_at?.split(' ')[0],total:t,memo:s.memo,status:s.status}}),
     ...invs.map(i=>({...i,type:'invoice'}))],[ests,sos,invs]);
   const fP=useMemo(()=>{let l=prod;if(q&&pg==='products'){const s=q.toLowerCase();l=l.filter(p=>p.sku.toLowerCase().includes(s)||p.name.toLowerCase().includes(s)||p.brand?.toLowerCase().includes(s)||p.color?.toLowerCase().includes(s))}
-    if(pF.cat!=='all')l=l.filter(p=>p.category===pF.cat);if(pF.vnd!=='all')l=l.filter(p=>p.vendor_id===pF.vnd);if(pF.stk==='instock')l=l.filter(p=>Object.values(p._inv||{}).some(v=>v>0));if(pF.clr!=='all')l=l.filter(p=>p.color===pF.clr);return l},[prod,q,pF,pg]);
-  const iD=useMemo(()=>{let l=prod.filter(p=>Object.values(p._inv||{}).some(v=>v>0));if(iF.cat!=='all')l=l.filter(p=>p.category===iF.cat);if(iF.vnd!=='all')l=l.filter(p=>p.vendor_id===iF.vnd);if(iF.clr!=='all')l=l.filter(p=>p.color===iF.clr);
+    if(pF.cat!=='all')l=l.filter(p=>p.category===pF.cat);if(pF.vnd!=='all')l=l.filter(p=>p.vendor_id===pF.vnd);if(pF.stk==='instock')l=l.filter(p=>Object.values(p._inv||{}).some(v=>v>0));if(pF.clr!=='all')l=l.filter(p=>p.color_category===pF.clr);return l},[prod,q,pF,pg]);
+  const iD=useMemo(()=>{let l=prod.filter(p=>Object.values(p._inv||{}).some(v=>v>0));if(iF.cat!=='all')l=l.filter(p=>p.category===iF.cat);if(iF.vnd!=='all')l=l.filter(p=>p.vendor_id===iF.vnd);if(iF.clr!=='all')l=l.filter(p=>p.color_category===iF.clr);
     if(iShowFav&&favSkus.length>0)l=l.filter(p=>favSkus.includes(p.sku));
     if(q&&pg==='inventory'){const s=q.toLowerCase();l=l.filter(p=>p.sku.toLowerCase().includes(s)||p.name.toLowerCase().includes(s))}
     const m=l.map(p=>{const t=Object.values(p._inv||{}).reduce((a,v)=>a+v,0);return{...p,_tQ:t,_tV:t*(p.nsa_cost||0)}});
@@ -10357,7 +10359,7 @@ export default function App(){
   // causes React to remount them on every parent re-render (losing state like editing mode)
   const _pdRef=React.useRef(null);
   if(!_pdRef.current){_pdRef.current=({product,onBack,ctx})=>{
-    const{vend,cust,ests,sos,invPOs,stockPOs,invs,setProd,_dbSaveProduct,buildJobs,nf,setAM,setEEst,setEEstC,setESO,setESOC,setPg,setSelP,calcSOStatus,setWhTab,safeSizes,showSz,rQ,D_V,CATEGORIES}=ctx.current;
+    const{vend,cust,ests,sos,invPOs,stockPOs,invs,setProd,_dbSaveProduct,buildJobs,nf,setAM,setEEst,setEEstC,setESO,setESOC,setPg,setSelP,calcSOStatus,setWhTab,safeSizes,showSz,rQ,D_V,CATEGORIES,COLOR_CATEGORIES}=ctx.current;
     const[ep,setEp]=useState({...product});const[editing,setEditing]=useState(false);const[tab,setTab]=useState('history');const[salesYr,setSalesYr]=useState(new Date().getFullYear());
     const[autoSaved,setAutoSaved]=useState(false);
     // Sync ep with product prop when inventory changes externally (e.g. AdjModal)
@@ -10434,7 +10436,7 @@ export default function App(){
               </div>
               <div style={{display:'flex',gap:12,flexWrap:'wrap',fontSize:13,color:'#64748b',marginBottom:8}}>
                 <span><span className="badge badge-blue">{ep.brand}</span></span>
-                <span>{ep.color}</span>
+                <span>{ep.color}{ep.color_category&&<> (<strong>{ep.color_category}</strong>)</>}</span>
                 <span>Category: <strong>{ep.category}</strong></span>
                 {v&&<span>Vendor: <strong>{v.name}</strong></span>}
               </div>
@@ -10453,6 +10455,7 @@ export default function App(){
                 <div><label className="form-label">Brand</label><select className="form-select" value={ep.vendor_id} onChange={e=>{const vn=D_V.find(x=>x.id===e.target.value);setEp(x=>({...x,vendor_id:e.target.value,brand:vn?.name||x.brand}))}}><option value="">Select...</option>{D_V.map(vv=><option key={vv.id} value={vv.id}>{vv.name}</option>)}</select></div>
                 <div style={{gridColumn:'1/3'}}><label className="form-label">Name</label><input className="form-input" value={ep.name} onChange={e=>setEp(x=>({...x,name:e.target.value}))}/></div>
                 <div><label className="form-label">Color</label><input className="form-input" value={ep.color} onChange={e=>setEp(x=>({...x,color:e.target.value}))}/></div>
+                <div><label className="form-label">Color Category</label><select className="form-select" value={ep.color_category||''} onChange={e=>setEp(x=>({...x,color_category:e.target.value}))}><option value="">Select...</option>{COLOR_CATEGORIES.map(c=><option key={c}>{c}</option>)}</select></div>
                 <div><label className="form-label">Category</label><select className="form-select" value={ep.category} onChange={e=>setEp(x=>({...x,category:e.target.value}))}>{CATEGORIES.map(c=><option key={c}>{c}</option>)}</select></div>
                 <div><label className="form-label">NSA Cost</label><input className="form-input" type="number" step="0.01" value={ep.nsa_cost} onChange={e=>setEp(x=>({...x,nsa_cost:parseFloat(e.target.value)||0}))}/></div>
                 <div><label className="form-label">Retail Price</label><input className="form-input" type="number" step="0.01" value={ep.retail_price} onChange={e=>setEp(x=>({...x,retail_price:parseFloat(e.target.value)||0}))}/></div>
@@ -13982,7 +13985,7 @@ export default function App(){
     {id:'PO-5002-NSA',vendor_id:'v2',vendor_name:'Under Armour',status:'waiting',created_at:'02/18/26',notes:'Stock up on polos for spring',items:[{sku:'1370399',name:'Under Armour Team Polo',color:'Cardinal/White',sizes:{S:10,M:20,L:20,XL:15,'2XL':8},received:{}}]},
   ]);const[showStockPO,setShowStockPO]=useState(null);const[stockPOCounter,setStockPOCounter]=useState(5003);
   // Populate ProductDetail context ref — must be after setWhTab and stockPOs are declared
-  _pdCtx.current={vend,cust,ests,sos,invPOs,stockPOs,invs,setProd,_dbSaveProduct,buildJobs,nf,setAM,setEEst,setEEstC,setESO,setESOC,setPg,setSelP,calcSOStatus,setWhTab,safeSizes,showSz,rQ,D_V,CATEGORIES};
+  _pdCtx.current={vend,cust,ests,sos,invPOs,stockPOs,invs,setProd,_dbSaveProduct,buildJobs,nf,setAM,setEEst,setEEstC,setESO,setESOC,setPg,setSelP,calcSOStatus,setWhTab,safeSizes,showSz,rQ,D_V,CATEGORIES,COLOR_CATEGORIES};
   // Ship package modal: {grp, soMap:{soId:so}, boxes:[{items:[{sku,name,color,sizes:{}}],tracking_number:'',carrier:'',weight:5,notes:''}]}
   const[shipModal,setShipModal]=useState(null);
   const[decoSearch,setDecoSearch]=useState('');const[decoRepF,setDecoRepF]=useState('all');const[decoStatF,setDecoStatF]=useState('active');const[decoTypeF,setDecoTypeF]=useState('all');
@@ -18212,7 +18215,17 @@ export default function App(){
                   <option value="">Pick from catalog...</option>
                   {prod.map(p=><option key={p.id} value={p.sku}>{p.sku} — {p.name.slice(0,30)}</option>)}
                 </select>}
-                {q.answer==='create_product'&&<div style={{fontSize:10,color:'#7c3aed',fontWeight:600}}>Product will be created in catalog on import</div>}
+                {q.answer==='create_product'&&<div style={{marginTop:6}}>
+                  <div style={{fontSize:10,color:'#7c3aed',fontWeight:600,marginBottom:4}}>Product will be created in catalog on import</div>
+                  <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                    <select className="form-select" style={{fontSize:10,width:130}} value={(imp.parsed[q.idx]||{})._category||''} onChange={e=>updItem(q.idx,'_category',e.target.value)}>
+                      <option value="">Item Type...</option>{CATEGORIES.map(c=><option key={c}>{c}</option>)}
+                    </select>
+                    <select className="form-select" style={{fontSize:10,width:130}} value={(imp.parsed[q.idx]||{})._color_category||mapColorCategory((imp.parsed[q.idx]||{}).color||'')} onChange={e=>updItem(q.idx,'_color_category',e.target.value)}>
+                      <option value="">Color Category...</option>{COLOR_CATEGORIES.map(c=><option key={c}>{c}</option>)}
+                    </select>
+                  </div>
+                </div>}
               </div>}
               {q.type==='sku'&&<div style={{display:'flex',gap:6,alignItems:'center'}}>
                 <input className="form-input" value={q.answer||''} onChange={e=>applyAnswer(qi,e.target.value)} placeholder="Enter real SKU..." style={{width:120,fontSize:11}}/>
@@ -18310,8 +18323,9 @@ export default function App(){
                     const costMult2=it.brand==='Adidas'?0.375:(it.brand==='Under Armour'||it.brand==='New Balance')?0.425:0;
                     const retail=it._retail!=null?it._retail:(au?rQ(sell/(1-disc)):0);
                     const cost=au?rQ(retail*costMult2):rQ(sell/mk);const szKeys=Object.keys(it.sizes||{});
+                    const _cpColor=it._color!=null?it._color:(it.color||'');
                     const newProd={id:'p-'+Date.now()+'-'+pi,vendor_id:null,sku:it.sku,name:it._name!=null?it._name:it.name,brand:it.brand||'',
-                      color:it._color!=null?it._color:(it.color||''),category:'',retail_price:retail,nsa_cost:cost,
+                      color:_cpColor,color_category:it._color_category||mapColorCategory(_cpColor),category:it._category||'',retail_price:retail,nsa_cost:cost,
                       available_sizes:szKeys.length>0?szKeys.sort((a,b)=>SZ_ORD_I.indexOf(a)-SZ_ORD_I.indexOf(b)):['S','M','L','XL','2XL'],
                       is_active:true,_inv:{},_alerts:{}};
                     createdProducts.push(newProd);
