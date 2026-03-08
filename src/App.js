@@ -6299,7 +6299,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           </>}
 
           {/* Receive shipment form — not for drop ship POs */}
-          {hasOpen&&!isDropShip&&<div style={{marginTop:12,padding:12,border:'2px solid #22c55e',borderRadius:8,background:'#f0fdf4'}}>
+          {hasOpen&&!isDropShip&&<div key={'recv-'+activeLineIdx} style={{marginTop:12,padding:12,border:'2px solid #22c55e',borderRadius:8,background:'#f0fdf4'}}>
             <div style={{fontSize:12,fontWeight:700,color:'#166534',marginBottom:8}}>Receive Shipment</div>
             <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:8}}>
               <span style={{fontSize:11,fontWeight:600,color:'#64748b'}}>Date:</span>
