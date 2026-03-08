@@ -8655,7 +8655,7 @@ export default function App(){
           if(as.change_log)setChangeLog(as.change_log);
           if(as.so_history)setSOHistory(as.so_history);
           if(as.job_time_logs)setJobTimeLogs(as.job_time_logs);
-          if(as.qb_config)setQBConfig({...as.qb_config,sandbox:as.qb_config.sandbox===true&&as.qb_config.realm_id?false:as.qb_config.sandbox});
+          if(as.qb_config){const _qbDef={connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',access_token:'',refresh_token:'',realm_id:'',token_created_at:0,sandbox:false,mapping:{income_account:'Sales',cogs_account:'Cost of Goods Sold',deco_account:'Subcontractor - Decoration',ar_account:'Accounts Receivable',ap_account:'Accounts Payable',tax_account:'Sales Tax Payable'},syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}};setQBConfig({..._qbDef,...as.qb_config,mapping:{..._qbDef.mapping,...(as.qb_config.mapping||{})},syncLog:Array.isArray(as.qb_config.syncLog)?as.qb_config.syncLog:[],sandbox:as.qb_config.sandbox===true&&as.qb_config.realm_id?false:(as.qb_config.sandbox||false)})}
           if(as.inv_pos)setInvPOs(as.inv_pos);
           if(as.inv_adj_log)setInvAdjLog(as.inv_adj_log);
           if(as.inv_po_counter)setInvPOCounter(as.inv_po_counter);
@@ -8704,7 +8704,7 @@ export default function App(){
               if(as2.batch_pos)setBatchPOs(as2.batch_pos);if(as2.submitted_batches)setSubmittedBatches(as2.submitted_batches);
               if(as2.batch_counter)setBatchCounter(as2.batch_counter);if(as2.change_log)setChangeLog(as2.change_log);
               if(as2.so_history)setSOHistory(as2.so_history);if(as2.job_time_logs)setJobTimeLogs(as2.job_time_logs);
-              if(as2.qb_config)setQBConfig(as2.qb_config);if(as2.inv_pos)setInvPOs(as2.inv_pos);
+              if(as2.qb_config){const _qbDef={connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',access_token:'',refresh_token:'',realm_id:'',token_created_at:0,sandbox:false,mapping:{income_account:'Sales',cogs_account:'Cost of Goods Sold',deco_account:'Subcontractor - Decoration',ar_account:'Accounts Receivable',ap_account:'Accounts Payable',tax_account:'Sales Tax Payable'},syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}};setQBConfig({..._qbDef,...as2.qb_config,mapping:{..._qbDef.mapping,...(as2.qb_config.mapping||{})},syncLog:Array.isArray(as2.qb_config.syncLog)?as2.qb_config.syncLog:[]})}if(as2.inv_pos)setInvPOs(as2.inv_pos);
               if(as2.inv_adj_log)setInvAdjLog(as2.inv_adj_log);if(as2.inv_po_counter)setInvPOCounter(as2.inv_po_counter);
               console.log('[DB] Loaded from Supabase after seed by other browser');
             }else{
@@ -19501,7 +19501,7 @@ export default function App(){
                   <td style={{fontWeight:700,color:'#1e40af'}}>{so.id}</td>
                   <td>{qb.customerRef}</td><td>—</td>
                   <td style={{fontSize:10,color:'#64748b'}}>{qbConfig.mapping.income_account}</td>
-                  <td style={{textAlign:'right',fontWeight:700,color:'#166534'}}>${qb.total.toFixed(2)}</td>
+                  <td style={{textAlign:'right',fontWeight:700,color:'#166534'}}>${(Number(qb.total)||0).toFixed(2)}</td>
                   <td><span style={{fontSize:8,padding:'1px 4px',borderRadius:3,background:'#fef3c7',color:'#92400e',fontWeight:600}}>Pending</span></td>
                 </tr>})}
               {sos.map(so=>safeItems(so).map(it=>(it.po_lines||[]).filter(pl=>!poMap[pl.po_id]).map((pl,pi)=>{
@@ -19512,7 +19512,7 @@ export default function App(){
                   <td style={{fontWeight:700,color:pl.po_id?.startsWith('DPO')?'#7c3aed':'#1e40af'}}>{pl.po_id}</td>
                   <td>{qb.vendorRef}</td><td style={{fontSize:10,color:'#64748b'}}>{so.id}</td>
                   <td style={{fontSize:10,color:'#64748b'}}>{qb.account}</td>
-                  <td style={{textAlign:'right',fontWeight:700,color:'#dc2626'}}>${qb.total.toFixed(2)}</td>
+                  <td style={{textAlign:'right',fontWeight:700,color:'#dc2626'}}>${(Number(qb.total)||0).toFixed(2)}</td>
                   <td><span style={{fontSize:8,padding:'1px 4px',borderRadius:3,background:'#fef3c7',color:'#92400e',fontWeight:600}}>Pending</span></td>
                 </tr>}))).flat(2)}
               {unsyncedInvs.map(inv=>{const qb=buildQBInvoice(inv);
@@ -19521,7 +19521,7 @@ export default function App(){
                   <td style={{fontWeight:700,color:'#166534'}}>{inv.id}</td>
                   <td>{qb.customerRef}</td><td style={{fontSize:10,color:'#64748b'}}>{qb.soRef}</td>
                   <td style={{fontSize:10,color:'#64748b'}}>{qbConfig.mapping.ar_account}</td>
-                  <td style={{textAlign:'right',fontWeight:700,color:'#166534'}}>${qb.amount.toFixed(2)}</td>
+                  <td style={{textAlign:'right',fontWeight:700,color:'#166534'}}>${(Number(qb.amount)||0).toFixed(2)}</td>
                   <td><span style={{fontSize:8,padding:'1px 4px',borderRadius:3,background:'#fef3c7',color:'#92400e',fontWeight:600}}>Pending</span></td>
                 </tr>})}
             </tbody>
@@ -19533,16 +19533,16 @@ export default function App(){
       <div className="card">
         <div className="card-header"><h2>📜 Sync History</h2></div>
         <div className="card-body" style={{padding:0,maxHeight:300,overflow:'auto'}}>
-          {qbConfig.syncLog.length===0?<div className="empty" style={{padding:20}}>No sync history yet</div>:
-          qbConfig.syncLog.map((log,i)=><div key={i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9'}}>
+          {(qbConfig.syncLog||[]).length===0?<div className="empty" style={{padding:20}}>No sync history yet</div>:
+          (qbConfig.syncLog||[]).map((log,i)=><div key={i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9'}}>
             <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
               <span style={{fontSize:9,padding:'1px 5px',borderRadius:3,fontWeight:600,
                 background:log.status==='success'?'#dcfce7':log.status==='skipped'?'#f1f5f9':'#fef2f2',
-                color:log.status==='success'?'#166534':log.status==='skipped'?'#64748b':'#dc2626'}}>{log.status}</span>
-              <span style={{fontSize:11,fontWeight:700}}>{log.type==='all'?'Full Sync':log.type.replace(/_/g,' ')}</span>
-              <span style={{fontSize:10,color:'#94a3b8',marginLeft:'auto'}}>{log.ts}</span>
+                color:log.status==='success'?'#166534':log.status==='skipped'?'#64748b':'#dc2626'}}>{String(log.status||'')}</span>
+              <span style={{fontSize:11,fontWeight:700}}>{log.type==='all'?'Full Sync':String(log.type||'').replace(/_/g,' ')}</span>
+              <span style={{fontSize:10,color:'#94a3b8',marginLeft:'auto'}}>{String(log.ts||'')}</span>
             </div>
-            {log.details.map((d,di)=><div key={di} style={{fontSize:10,color:'#64748b',paddingLeft:8}}>• {d}</div>)}
+            {(log.details||[]).map((d,di)=><div key={di} style={{fontSize:10,color:'#64748b',paddingLeft:8}}>• {typeof d==='string'?d:JSON.stringify(d)}</div>)}
           </div>)}
         </div>
       </div>
@@ -19653,16 +19653,16 @@ export default function App(){
           <div className="card">
             <div className="card-header"><h2>Recent Bill Uploads</h2></div>
             <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
-              {qbConfig.syncLog.filter(l=>l.type==='bill_upload').length===0?
+              {(qbConfig.syncLog||[]).filter(l=>l.type==='bill_upload').length===0?
                 <div className="empty" style={{padding:20}}>No bills uploaded yet</div>:
-              qbConfig.syncLog.filter(l=>l.type==='bill_upload').map((log,i)=><div key={i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9'}}>
+              (qbConfig.syncLog||[]).filter(l=>l.type==='bill_upload').map((log,i)=><div key={i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9'}}>
                 <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
                   <span style={{fontSize:9,padding:'1px 5px',borderRadius:3,fontWeight:600,
                     background:log.status==='success'?'#dcfce7':'#fef2f2',
-                    color:log.status==='success'?'#166534':'#dc2626'}}>{log.status}</span>
-                  <span style={{fontSize:10,color:'#94a3b8'}}>{log.ts}</span>
+                    color:log.status==='success'?'#166534':'#dc2626'}}>{String(log.status||'')}</span>
+                  <span style={{fontSize:10,color:'#94a3b8'}}>{String(log.ts||'')}</span>
                 </div>
-                {log.details.map((d,di)=><div key={di} style={{fontSize:11,color:'#475569',paddingLeft:4}}>&#8226; {d}</div>)}
+                {(log.details||[]).map((d,di)=><div key={di} style={{fontSize:11,color:'#475569',paddingLeft:4}}>&#8226; {typeof d==='string'?d:JSON.stringify(d)}</div>)}
               </div>)}
             </div>
           </div>
@@ -19745,16 +19745,16 @@ export default function App(){
             {qbConfig.syncLog.length>0&&<button className="btn btn-sm btn-secondary" onClick={()=>setQBConfig(prev=>({...prev,syncLog:[]}))}>Clear Log</button>}
           </div>
           <div className="card-body" style={{padding:0,maxHeight:500,overflow:'auto'}}>
-            {qbConfig.syncLog.length===0?<div className="empty" style={{padding:20}}>No sync history yet</div>:
-            qbConfig.syncLog.map((log,i)=><div key={i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9'}}>
+            {(qbConfig.syncLog||[]).length===0?<div className="empty" style={{padding:20}}>No sync history yet</div>:
+            (qbConfig.syncLog||[]).map((log,i)=><div key={i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9'}}>
               <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
                 <span style={{fontSize:9,padding:'1px 5px',borderRadius:3,fontWeight:600,
                   background:log.status==='success'?'#dcfce7':log.status==='partial'?'#fef3c7':log.status==='skipped'?'#f1f5f9':'#fef2f2',
-                  color:log.status==='success'?'#166534':log.status==='partial'?'#92400e':log.status==='skipped'?'#64748b':'#dc2626'}}>{log.status}</span>
-                <span style={{fontSize:11,fontWeight:700}}>{log.type==='all'?'Full Sync':log.type.replace(/_/g,' ')}</span>
-                <span style={{fontSize:10,color:'#94a3b8',marginLeft:'auto'}}>{log.ts}</span>
+                  color:log.status==='success'?'#166534':log.status==='partial'?'#92400e':log.status==='skipped'?'#64748b':'#dc2626'}}>{String(log.status||'')}</span>
+                <span style={{fontSize:11,fontWeight:700}}>{log.type==='all'?'Full Sync':String(log.type||'').replace(/_/g,' ')}</span>
+                <span style={{fontSize:10,color:'#94a3b8',marginLeft:'auto'}}>{String(log.ts||'')}</span>
               </div>
-              {log.details.map((d,di)=><div key={di} style={{fontSize:10,color:'#64748b',paddingLeft:8}}>&#8226; {d}</div>)}
+              {(log.details||[]).map((d,di)=><div key={di} style={{fontSize:10,color:'#64748b',paddingLeft:8}}>&#8226; {typeof d==='string'?d:JSON.stringify(d)}</div>)}
             </div>)}
           </div>
         </div>
