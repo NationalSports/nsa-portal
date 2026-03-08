@@ -3765,8 +3765,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         <div style={{display:'flex',gap:8,marginBottom:12}}>
           <div style={{padding:8,background:'#f0fdf4',borderRadius:6,flex:1,textAlign:'center'}}>
             <div style={{fontSize:18,fontWeight:800,color:'#166534'}}>{nsImport.parsed.length}</div><div style={{fontSize:10,color:'#64748b'}}>Items Found</div></div>
-          <div style={{padding:8,background:'#ede9fe',borderRadius:6,flex:1,textAlign:'center'}}>
-            <div style={{fontSize:18,fontWeight:800,color:'#6d28d9'}}>{nsImport.decoLines.length}</div><div style={{fontSize:10,color:'#64748b'}}>Deco Lines</div></div>
           <div style={{padding:8,background:nsImport.issues.length?'#fef2f2':'#f8fafc',borderRadius:6,flex:1,textAlign:'center'}}>
             <div style={{fontSize:18,fontWeight:800,color:nsImport.issues.length?'#dc2626':'#94a3b8'}}>{nsImport.issues.length}</div><div style={{fontSize:10,color:'#64748b'}}>Issues</div></div>
         </div>
@@ -3797,18 +3795,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             </tr>})}</tbody></table>
         </div>
 
-        {nsImport.decoLines.length>0&&<>
-          <div style={{fontSize:12,fontWeight:700,color:'#7c3aed',marginTop:12,marginBottom:6}}>🎨 Decoration Lines — Assign to Items</div>
-          {nsImport.decoLines.map((d,di)=><div key={di} style={{padding:8,background:'#f8fafc',borderRadius:6,marginBottom:4,display:'flex',gap:8,alignItems:'center',fontSize:11}}>
-            <span style={{fontWeight:700}}>{d.desc}</span>
-            <span style={{color:'#64748b'}}>Qty: {d.qty} · ${d.rate?.toFixed(2)}/ea</span>
-            <select className="form-select" style={{width:200,fontSize:10}} value={d._assignTo||'all'} onChange={e=>{
-              const v=e.target.value;setNsImport(x=>({...x,decoLines:x.decoLines.map((dl,dli)=>dli===di?{...dl,_assignTo:v}:dl)}))}}>
-              <option value="all">Apply to all items</option>
-              {nsImport.parsed.filter(p=>!p._skip).map((p,pi)=><option key={pi} value={pi}>{p.sku} — {p.name?.slice(0,30)}</option>)}
-            </select>
-          </div>)}
-        </>}
+        {nsImport.decoLines.length>0&&<div style={{padding:8,background:'#f0f9ff',borderRadius:6,marginTop:12,fontSize:11,color:'#1e40af'}}>
+          ℹ️ {nsImport.decoLines.length} decoration line(s) detected but skipped — add decorations manually after import.
+        </div>}
 
         {(nsImport.shipping||[]).length>0&&<div style={{marginTop:8,fontSize:11,color:'#64748b'}}>📦 Shipping: {nsImport.shipping.map(s=>s.desc+' $'+s.amount?.toFixed(2)).join(', ')}</div>}
 
@@ -3818,20 +3807,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             // Convert parsed items to SO line items
             const keeping=nsImport.parsed.filter(p=>!p._skip);
             const newItems=keeping.map(p=>{
-              const au=isAU(p.brand);
+              const catMatch=prod.find(pr=>pr.sku===p.sku)||(p.sku.length>3?prod.find(pr=>pr.sku.toLowerCase()===p.sku.toLowerCase()):null);
+              const au=isAU(p.brand||(catMatch?.brand||''));
               const sell=p.rate||0;const cost=au?rQ(sell):rQ(sell/(o.default_markup||1.65));
               const retail=au?rQ(sell/(1-(tD[cust?.adidas_ua_tier||'B']||0.35))):0;
               const szKeys=Object.keys(p.sizes||{});
-              return{product_id:null,sku:p.sku,name:p.name,brand:p.brand,color:p.color,nsa_cost:cost,retail_price:retail,unit_sell:sell,
-                available_sizes:szKeys.length>0?szKeys:['S','M','L','XL','2XL'],sizes:p.sizes||{},decorations:[],
-                is_custom:p.is_custom||false,pick_lines:[],po_lines:[]};
-            });
-            // Apply deco lines
-            nsImport.decoLines.forEach(d=>{
-              const decoType=d.desc.toLowerCase().includes('embroid')?'embroidery':d.desc.toLowerCase().includes('dtf')?'dtf':'screen_print';
-              const deco={kind:'art',position:'Front Center',art_file_id:null,sell_override:d.rate||0,_imported_desc:d.desc};
-              if(d._assignTo==='all'||!d._assignTo){newItems.forEach(it=>{if(!it.decorations)it.decorations=[];it.decorations.push({...deco})})}
-              else{const idx=parseInt(d._assignTo);if(newItems[idx]){if(!newItems[idx].decorations)newItems[idx].decorations=[];newItems[idx].decorations.push({...deco})}}
+              return{product_id:catMatch?.id||null,sku:p.sku,name:catMatch?.name||p.name,brand:catMatch?.brand||p.brand,color:p.color||catMatch?.color||'',nsa_cost:catMatch?.nsa_cost||cost,retail_price:catMatch?.retail_price||retail,unit_sell:sell,
+                available_sizes:szKeys.length>0?szKeys:(catMatch?.available_sizes||['S','M','L','XL','2XL']),sizes:p.sizes||{},decorations:[],
+                is_custom:!catMatch&&(p.is_custom||false),pick_lines:[],po_lines:[]};
             });
             sv('items',[...o.items,...newItems]);
             if(nsImport.shipping?.length){const shipAmt=nsImport.shipping.reduce((a,s)=>a+s.amount,0);if(shipAmt>0){sv('shipping_type','flat');sv('shipping_value',shipAmt)}}
@@ -17758,11 +17741,14 @@ export default function App(){
               <div style={{marginBottom:12}}>
                 <label className="form-label">Customer {imp.custId&&<span style={{color:'#22c55e',fontSize:10}}>✓ {imp.pdfParsed?.customerName?'Auto-detected':'Selected'}</span>}</label>
                 <div style={{display:'flex',gap:6}}>
-                  <select className="form-select" style={{flex:1}} value={imp.custId} onChange={e=>setImp(x=>({...x,custId:e.target.value}))}>
-                    <option value="">Select customer...</option>
-                    {cust.filter(c=>c.is_active!==false).sort((a,b)=>a.name.localeCompare(b.name)).map(c=>
-                      <option key={c.id} value={c.id}>{c.name} ({c.alpha_tag})</option>)}
-                  </select>
+                  <div style={{flex:1}}>
+                    <SearchSelect
+                      options={cust.filter(c=>c.is_active!==false).sort((a,b)=>a.name.localeCompare(b.name)).map(c=>({value:c.id,label:c.name+' ('+c.alpha_tag+')'}))}
+                      value={imp.custId}
+                      onChange={v=>setImp(x=>({...x,custId:v}))}
+                      placeholder="Search customer..."
+                    />
+                  </div>
                   <button className="btn btn-sm btn-secondary" style={{whiteSpace:'nowrap',fontSize:11}} onClick={()=>setImpNewCust(true)} title="Create a new customer account"><Icon name="plus" size={12}/> New</button>
                 </div>
                 {!imp.custId&&imp.pdfParsed?.customerName&&<div style={{padding:8,background:'#fef3c7',borderRadius:6,marginTop:6,fontSize:11,color:'#92400e',display:'flex',alignItems:'center',gap:6}}>
@@ -17881,14 +17867,13 @@ export default function App(){
                     is_decoration:li.isDecoration||false,
                     decoType:li.decoType||null,
                     decoColors:li.colors||1,
-                    issues:catMatch?[]:['Not in catalog'],
+                    issues:catMatch?[]:['Not in catalog — create product or match manually'],
                     _pdfRaw:li.raw
                   };
                 });
 
-                // Separate decorations from products
+                // Separate decorations from products — drop decorations entirely (rep adds separately)
                 const products=pdfItems.filter(it=>!it.is_decoration);
-                const decorations=pdfItems.filter(it=>it.is_decoration);
 
                 const questions=[];
                 products.forEach((it,i)=>{
@@ -17896,9 +17881,7 @@ export default function App(){
                   if(!it.color)questions.push({idx:i,type:'color',msg:'What color is "'+it.sku+' — '+it.name.slice(0,40)+'"?',answer:''});
                 });
 
-                setImp(x=>({...x,step:questions.length>0?'questions':'review',parsed:products,decoLines:decorations.map(d=>({
-                  rawItem:d.sku,desc:d.name,rate:d.rate,amount:d.totalAmt,decoType:d.decoType||'screen_print',colors:d.decoColors||1,_assignTo:'all'
-                })),issues:[],questions,
+                setImp(x=>({...x,step:questions.length>0?'questions':'review',parsed:products,decoLines:[],issues:[],questions,
                   shipping:imp.pdfParsed.shipping>0?[{desc:'Shipping',amount:imp.pdfParsed.shipping,rate:imp.pdfParsed.shipping}]:[]
                 }));
               } else if(imp.raw.trim()){
@@ -17950,8 +17933,6 @@ export default function App(){
             <div style={{fontSize:22,fontWeight:800,color:'#1e40af'}}>{imp.parsed.filter(p=>p.catMatch).length}</div><div style={{fontSize:10}}>Matched</div></div>
           <div style={{padding:8,background:'#fef3c7',borderRadius:6,flex:1,textAlign:'center'}}>
             <div style={{fontSize:22,fontWeight:800,color:'#92400e'}}>{imp.parsed.filter(p=>!p.catMatch).length}</div><div style={{fontSize:10}}>Unmatched</div></div>
-          <div style={{padding:8,background:'#ede9fe',borderRadius:6,flex:1,textAlign:'center'}}>
-            <div style={{fontSize:22,fontWeight:800,color:'#6d28d9'}}>{imp.decoLines.length}</div><div style={{fontSize:10}}>Deco</div></div>
           <div style={{padding:8,background:imp.issues.length?'#fecaca':'#f8fafc',borderRadius:6,flex:1,textAlign:'center'}}>
             <div style={{fontSize:22,fontWeight:800,color:imp.issues.length?'#dc2626':'#94a3b8'}}>{imp.issues.length}</div><div style={{fontSize:10}}>Issues</div></div>
         </div>
@@ -17964,7 +17945,7 @@ export default function App(){
           <tbody>{imp.parsed.map((it,i)=><tr key={i} style={{background:it.catMatch?'#f0fdf4':it.is_custom?'#fffbeb':'#fef2f2'}}>
             <td style={{textAlign:'center'}}><input type="checkbox" checked={!it._skip} onChange={e=>updItem(i,'_skip',!e.target.checked)}/></td>
             <td style={{fontFamily:'monospace',fontWeight:700,color:it.catMatch?'#166534':'#dc2626'}}>{it.sku}</td>
-            <td>{it.catMatch?<span>✅ {it.name.slice(0,35)}</span>:it.name.slice(0,35)}</td>
+            <td>{it.catMatch?<span>✅ {it.name.slice(0,35)}</span>:<span>⚠️ {it.name.slice(0,35)}</span>}</td>
             <td style={{fontSize:10}}>{it.brand}</td>
             <td style={{fontSize:10}}>{it.color||<span style={{color:'#dc2626'}}>?</span>}</td>
             <td style={{textAlign:'right'}}>${it.rate?.toFixed(2)}</td>
@@ -17974,18 +17955,19 @@ export default function App(){
           </tr>)}</tbody></table>
         </div></div>
 
-        {imp.decoLines.length>0&&<div className="card" style={{marginBottom:12}}><div className="card-header"><h2>🎨 Decoration Lines</h2></div>
-          <div className="card-body" style={{padding:0}}>
-            <table style={{fontSize:11}}><thead><tr><th>Item</th><th>Description</th><th>Rate</th><th>Amount</th><th>Assign To</th></tr></thead>
-            <tbody>{imp.decoLines.map((d,di)=><tr key={di}>
-              <td>{d.rawItem}</td><td>{d.desc}</td><td>${d.rate?.toFixed(2)}</td><td>${d.amount?.toFixed(2)}</td>
-              <td><select className="form-select" style={{width:200,fontSize:10}} value={d._assignTo||'all'}
-                onChange={e=>setImp(x=>({...x,decoLines:x.decoLines.map((dl,dli)=>dli===di?{...dl,_assignTo:e.target.value}:dl)}))}>
-                <option value="all">All items</option>
-                {imp.parsed.map((p,pi)=><option key={pi} value={String(pi)}>{p.sku} — {p.name.slice(0,25)}</option>)}
-              </select></td>
-            </tr>)}</tbody></table>
-          </div></div>}
+        {(()=>{const unmatched=imp.parsed.filter(p=>!p.catMatch&&!p._skip);return unmatched.length>0?<div style={{padding:12,background:'#fef3c7',borderRadius:6,marginBottom:12,border:'1px solid #fde68a'}}>
+          <div style={{fontWeight:700,color:'#92400e',marginBottom:6}}>⚠️ {unmatched.length} item(s) not found in catalog</div>
+          <div style={{fontSize:11,color:'#78350f',marginBottom:8}}>These items need to be created as products before import, or kept as custom items. Use the "Clarify" step to resolve.</div>
+          {unmatched.map((it,i)=><div key={i} style={{display:'flex',alignItems:'center',gap:8,padding:'4px 0',fontSize:11}}>
+            <span style={{fontFamily:'monospace',fontWeight:700,color:'#92400e'}}>{it.sku}</span>
+            <span style={{color:'#78350f'}}>{it.name?.slice(0,40)}</span>
+            <span style={{fontSize:10,color:'#a16207'}}>Qty: {it.totalQty}</span>
+          </div>)}
+        </div>:null})()}
+
+        {imp.decoLines.length>0&&<div style={{padding:10,background:'#f0f9ff',borderRadius:6,marginBottom:12,fontSize:11,color:'#1e40af'}}>
+          ℹ️ {imp.decoLines.length} decoration line(s) detected in PDF but skipped — add decorations manually after import.
+        </div>}
 
         {imp.issues.length>0&&<div style={{marginBottom:12,padding:10,background:'#fef2f2',borderRadius:6}}>
           <div style={{fontWeight:700,color:'#dc2626',marginBottom:4}}>⚠️ Issues</div>
@@ -18006,14 +17988,16 @@ export default function App(){
           <div className="card-body">
             {imp.questions.map((q,qi)=><div key={qi} style={{padding:10,marginBottom:8,background:q.answer?'#f0fdf4':'#fffbeb',borderRadius:6,border:'1px solid '+(q.answer?'#bbf7d0':'#fde68a')}}>
               <div style={{fontWeight:600,fontSize:12,marginBottom:6}}>{q.msg}</div>
-              {q.type==='match'&&<div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
+              {q.type==='match'&&<div style={{display:'flex',gap:4,flexWrap:'wrap',alignItems:'center'}}>
                 <button className={`btn btn-sm ${q.answer==='match_catalog'?'btn-primary':'btn-secondary'}`} onClick={()=>applyAnswer(qi,'match_catalog')}>Match to Catalog</button>
-                <button className={`btn btn-sm ${q.answer==='custom'?'btn-primary':'btn-secondary'}`} onClick={()=>applyAnswer(qi,'custom')}>Keep as Custom</button>
+                <button className={`btn btn-sm ${q.answer==='create_product'?'btn-primary':'btn-secondary'}`} style={{background:q.answer==='create_product'?'#7c3aed':undefined,borderColor:q.answer==='create_product'?'#7c3aed':undefined,color:q.answer==='create_product'?'white':undefined}} onClick={()=>applyAnswer(qi,'create_product')}>Create Product</button>
+                <button className={`btn btn-sm ${q.answer==='custom'?'btn-primary':'btn-secondary'}`} onClick={()=>applyAnswer(qi,'custom')}>Import as Custom</button>
                 <button className={`btn btn-sm ${q.answer==='skip'?'btn-primary':'btn-secondary'}`} style={{background:q.answer==='skip'?'#dc2626':undefined,borderColor:q.answer==='skip'?'#dc2626':undefined}} onClick={()=>applyAnswer(qi,'skip')}>Skip</button>
                 {q.answer==='match_catalog'&&<select className="form-select" style={{fontSize:10,width:250}} onChange={e=>{if(e.target.value){applyAnswer(qi,e.target.value);const pm=prod.find(p=>p.sku===e.target.value);if(pm)updItem(q.idx,'catMatch',pm)}}}>
                   <option value="">Pick from catalog...</option>
                   {prod.map(p=><option key={p.id} value={p.sku}>{p.sku} — {p.name.slice(0,30)}</option>)}
                 </select>}
+                {q.answer==='create_product'&&<div style={{fontSize:10,color:'#7c3aed',fontWeight:600}}>Product will be created in catalog on import</div>}
               </div>}
               {q.type==='sku'&&<div style={{display:'flex',gap:6,alignItems:'center'}}>
                 <input className="form-input" value={q.answer||''} onChange={e=>applyAnswer(qi,e.target.value)} placeholder="Enter real SKU..." style={{width:120,fontSize:11}}/>
@@ -18098,20 +18082,32 @@ export default function App(){
             <div style={{display:'flex',gap:8}}>
               <button className="btn btn-secondary" onClick={()=>setImp(x=>({...x,step:'questions'}))}>← Back</button>
               <button className="btn btn-primary" style={{background:'#166534'}} onClick={()=>{
+                // Create new products for items marked "create_product"
+                const createdProducts=[];
+                keeping.forEach((it,pi)=>{
+                  const q=(imp.questions||[]).find(q2=>q2.idx===pi&&q2.type==='match'&&q2.answer==='create_product');
+                  if(q&&!it.catMatch){
+                    const au=isAUi(it.brand);const sell=it.rate||0;const cost=au?rQ(sell):rQ(sell/mk);
+                    const retail=au?rQ(sell/(1-disc)):0;const szKeys=Object.keys(it.sizes||{});
+                    const newProd={id:'p-'+Date.now()+'-'+pi,vendor_id:null,sku:it.sku,name:it.name,brand:it.brand||'',
+                      color:it.color||'',category:'',retail_price:retail,nsa_cost:cost,
+                      available_sizes:szKeys.length>0?szKeys.sort((a,b)=>SZ_ORD_I.indexOf(a)-SZ_ORD_I.indexOf(b)):['S','M','L','XL','2XL'],
+                      is_active:true,_inv:{},_alerts:{}};
+                    createdProducts.push(newProd);
+                    it.catMatch=newProd;it.is_custom=false;
+                  }
+                });
+                if(createdProducts.length>0){setProd(prev=>[...createdProducts,...prev]);nf(createdProducts.length+' new product(s) added to catalog')}
+
                 const newItems=keeping.map(it=>{
                   const au=isAUi(it.brand);const sell=it.rate||0;const cost=au?rQ(sell):rQ(sell/mk);
                   const retail=au?rQ(sell/(1-disc)):0;const szKeys=Object.keys(it.sizes||{});
                   return{product_id:it.catMatch?.id||null,sku:it.sku,name:it.catMatch?.name||it.name,brand:it.catMatch?.brand||it.brand,
-                    color:it.color||it.catMatch?.color||'',nsa_cost:cost,retail_price:retail,unit_sell:sell,
-                    available_sizes:szKeys.length>0?szKeys.sort((a,b)=>SZ_ORD_I.indexOf(a)-SZ_ORD_I.indexOf(b)):['S','M','L','XL','2XL'],
+                    color:it.color||it.catMatch?.color||'',nsa_cost:it.catMatch?.nsa_cost||cost,retail_price:it.catMatch?.retail_price||retail,unit_sell:sell,
+                    available_sizes:szKeys.length>0?szKeys.sort((a,b)=>SZ_ORD_I.indexOf(a)-SZ_ORD_I.indexOf(b)):(it.catMatch?.available_sizes||['S','M','L','XL','2XL']),
                     sizes:it.sizes||{OSFA:it.totalQty||1},decorations:[],is_custom:it.is_custom||false,pick_lines:[],po_lines:[]};
                 });
-                imp.decoLines.forEach(d=>{
-                  const deco={kind:'art',position:'Front Center',art_file_id:'__tbd',art_tbd_type:d.decoType||'screen_print',
-                    tbd_colors:d.colors||1,sell_override:d.rate||0,_ns_desc:d.desc||''};
-                  if(d._assignTo==='all')newItems.forEach(it=>it.decorations.push({...deco}));
-                  else{const idx=parseInt(d._assignTo);if(newItems[idx])newItems[idx].decorations.push({...deco})}
-                });
+                // Decorations intentionally not imported — rep adds them manually
                 const nsRef=imp.externalDocNum?'NS Ref: #'+imp.externalDocNum:'';
                 const now=new Date().toLocaleString();
                 const importMemo=imp.memo||('Imported from NetSuite'+(imp.externalDocNum?' #'+imp.externalDocNum:''));
