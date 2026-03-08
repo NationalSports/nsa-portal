@@ -8952,6 +8952,7 @@ export default function App(){
   const[poF,setPOF]=useState({status:'all',vendor:'all',rep:'all',search:'',sort:'date_desc'});
   // OMG Team Stores
   const[omgFilter,setOmgFilter]=useState({rep:'all',status:'all',search:''});const[omgSel,setOmgSel]=useState(null);
+  const[estF,setEstF]=useState({status:'open',rep:'_me_',search:'',sort:'date_desc'});
   const[soF,setSOF]=useState({status:'all',rep:'all',search:'',sort:'date_desc'});
   const[iS,setIS]=useState({f:'value',d:'desc'});const[iF,setIF]=useState({cat:'all',vnd:'all',clr:'all'});
   const dirtyRef=React.useRef(false);
@@ -9498,6 +9499,7 @@ export default function App(){
                 <div style={{fontSize:13,fontWeight:600}}>{t.title}</div>
                 <div style={{fontSize:11,color:'#64748b'}}>{isAssignedToMe?'From: '+creator?.name:'Assigned to: '+assignee?.name}{t.so_id?' · '+t.so_id:''}</div>
               </div>
+              {t.so_id&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#eff6ff',color:'#1e40af',border:'1px solid #bfdbfe',borderRadius:8,whiteSpace:'nowrap'}} onClick={ev=>{ev.stopPropagation();const so=sos.find(s=>s.id===t.so_id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')}else{nf(t.so_id+' not found','error')}}}>Open {t.so_id}</button>}
               <span style={{fontSize:9,padding:'2px 8px',borderRadius:8,background:t.priority<=1?'#fef2f2':'#eff6ff',color:t.priority<=1?'#dc2626':'#2563eb',fontWeight:600}}>{t.priority<=1?'High':'Normal'}</span>
               {t.comments?.length>0&&<span style={{fontSize:10,color:'#64748b'}}>{t.comments.length} comment{t.comments.length!==1?'s':''}</span>}
             </div>
@@ -9554,6 +9556,7 @@ export default function App(){
                 <div style={{fontSize:13,fontWeight:600}}>{t.title}</div>
                 <div style={{fontSize:11,color:'#64748b'}}>{isAssignedToMe?'From: '+creator?.name:'Assigned to: '+assignee?.name}{t.so_id?' · '+t.so_id:''}</div>
               </div>
+              {t.so_id&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#eff6ff',color:'#1e40af',border:'1px solid #bfdbfe',borderRadius:8,whiteSpace:'nowrap'}} onClick={ev=>{ev.stopPropagation();const so=sos.find(s=>s.id===t.so_id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')}else{nf(t.so_id+' not found','error')}}}>Open {t.so_id}</button>}
               <span style={{fontSize:9,padding:'2px 8px',borderRadius:8,background:t.priority<=1?'#fef2f2':'#eff6ff',color:t.priority<=1?'#dc2626':'#2563eb',fontWeight:600}}>{t.priority<=1?'High':'Normal'}</span>
               {t.comments?.length>0&&<span style={{fontSize:10,color:'#64748b'}}>{t.comments.length} comment{t.comments.length!==1?'s':''}</span>}
             </div>
@@ -9826,6 +9829,7 @@ export default function App(){
                 <div style={{fontSize:13,fontWeight:700,color:t.priority<=1?'#dc2626':'#1e293b'}}>{t.priority<=1?'! ':''}{t.title}</div>
                 <div style={{fontSize:11,color:'#64748b'}}>From: {creator?.name}{t.so_id?' · '+t.so_id:''}{t.description?' — '+t.description.slice(0,60):''}</div>
               </div>
+              {t.so_id&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#eff6ff',color:'#1e40af',border:'1px solid #bfdbfe',borderRadius:8,whiteSpace:'nowrap'}} onClick={ev=>{ev.stopPropagation();const so=sos.find(s=>s.id===t.so_id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')}else{nf(t.so_id+' not found','error')}}}>Open {t.so_id}</button>}
               {t.comments?.length>0&&<span style={{fontSize:10,color:'#3b82f6',fontWeight:600}}>{t.comments.length} comment{t.comments.length!==1?'s':''}</span>}
             </div>
           </div>})}
@@ -9889,16 +9893,18 @@ export default function App(){
             </select></div>
         </div>
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:12}}>
-          <div><label className="form-label">Customer (optional)</label>
+          <div><label className="form-label">SO # (optional)</label>
+            <select className="form-select" value={todoModal.so_id} onChange={e=>{const soId=e.target.value;const so=sos.find(s=>s.id===soId);setTodoModal(m=>({...m,so_id:soId,customer_id:so?so.customer_id:m.customer_id}))}}>
+              <option value="">None</option>
+              {sos.filter(s=>calcSOStatus(s)!=='complete').slice(0,50).map(s=>{const sc=cust.find(c=>c.id===s.customer_id);return<option key={s.id} value={s.id}>{s.id} — {sc?.alpha_tag||sc?.name||''}{s.memo?' · '+s.memo:''}</option>})}
+            </select></div>
+          <div><label className="form-label">Customer{todoModal.so_id?' (from SO)':' (optional)'}</label>
+            {todoModal.so_id?<input className="form-input" disabled value={(()=>{const sc=cust.find(c=>c.id===todoModal.customer_id);return sc?(sc.alpha_tag||sc.name):''})()}/>:
             <select className="form-select" value={todoModal.customer_id} onChange={e=>setTodoModal(m=>({...m,customer_id:e.target.value}))}>
               <option value="">None</option>
               {cust.filter(c=>c.is_active!==false).sort((a,b)=>(a.alpha_tag||a.name).localeCompare(b.alpha_tag||b.name)).map(c=><option key={c.id} value={c.id}>{c.alpha_tag||c.name}</option>)}
-            </select></div>
-          <div><label className="form-label">SO # (optional)</label>
-            <select className="form-select" value={todoModal.so_id} onChange={e=>setTodoModal(m=>({...m,so_id:e.target.value}))}>
-              <option value="">None</option>
-              {sos.filter(s=>!todoModal.customer_id||s.customer_id===todoModal.customer_id).filter(s=>calcSOStatus(s)!=='complete').slice(0,50).map(s=><option key={s.id} value={s.id}>{s.id}{s.memo?' — '+s.memo:''}</option>)}
-            </select></div>
+            </select>}
+          </div>
         </div>
       </div>
       <div className="modal-footer" style={{display:'flex',gap:8,justifyContent:'flex-end',padding:'12px 20px',borderTop:'1px solid #e2e8f0'}}>
@@ -9973,16 +9979,49 @@ export default function App(){
   // ESTIMATES LIST
   function rEst(){
     if(eEst)return<OrderEditor key={eEst.id} order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} vendors={vend} onSave={e=>{const e2=savE(e);setEEst(e2)}} onBack={()=>{setEEst(null);if(estBackPg){setPg(estBackPg);setEstBackPg(null)}}} onConvertSO={convertSO} onCopyEstimate={copyEstimate} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={deleteEstimate} onNavInvoice={inv=>{setEEst(null);setPg('invoices');setInvF(f=>({...f,search:inv.id}))}} onSaveProduct={p=>{setProd(prev=>prev.some(x=>x.id===p.id)?prev.map(x=>x.id===p.id?p:x):[...prev,p]);_dbSaveProduct(p)}} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setEEst(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}else{nf('SO '+soId+' not found','error')}}}/>
-    const fe=ests.filter(e=>!q||(e.id+' '+e.memo+' '+(cust.find(c=>c.id===e.customer_id)?.name||'')+' '+(cust.find(c=>c.id===e.customer_id)?.alpha_tag||'')).toLowerCase().includes(q.toLowerCase()));
-    return(<><div style={{display:'flex',gap:8,marginBottom:16}}><div className="search-bar" style={{flex:1}}><Icon name="search"/><input placeholder="Search..." value={q} onChange={e=>setQ(e.target.value)}/></div>
-      <button className="btn btn-primary" onClick={()=>newE(null)}><Icon name="plus" size={14}/> New Estimate</button></div>
-      <div className="stats-row"><div className="stat-card"><div className="stat-label">Total</div><div className="stat-value">{ests.length}</div></div><div className="stat-card"><div className="stat-label">Draft</div><div className="stat-value">{ests.filter(e=>e.status==='draft').length}</div></div><div className="stat-card"><div className="stat-label">Sent</div><div className="stat-value" style={{color:'#d97706'}}>{ests.filter(e=>e.status==='sent').length}</div></div><div className="stat-card"><div className="stat-label">Approved</div><div className="stat-value" style={{color:'#166534'}}>{ests.filter(e=>e.status==='approved').length}</div></div></div>
+    // Filter estimates
+    let fe=[...ests];
+    const estRepId=estF.rep==='_me_'?cu?.id:estF.rep;
+    if(estF.status==='open')fe=fe.filter(e=>e.status==='draft'||e.status==='open'||e.status==='sent');
+    else if(estF.status!=='all')fe=fe.filter(e=>e.status===estF.status);
+    if(estRepId&&estRepId!=='all')fe=fe.filter(e=>e.created_by===estRepId);
+    if(estF.search){const ss=estF.search.toLowerCase();fe=fe.filter(e=>(e.id+' '+(e.memo||'')+' '+(cust.find(c=>c.id===e.customer_id)?.name||'')+' '+(cust.find(c=>c.id===e.customer_id)?.alpha_tag||'')).toLowerCase().includes(ss))}
+    if(estF.sort==='date_desc')fe.sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||''));
+    else if(estF.sort==='date_asc')fe.sort((a,b)=>(a.created_at||'').localeCompare(b.created_at||''));
+    else if(estF.sort==='customer')fe.sort((a,b)=>{const ca=cust.find(x=>x.id===a.customer_id)?.name||'';const cb=cust.find(x=>x.id===b.customer_id)?.name||'';return ca.localeCompare(cb)});
+    const estActiveFilters=estF.status!=='open'||estF.rep!=='_me_'||estF.search;
+    const estStCounts={open:ests.filter(e=>e.status==='draft'||e.status==='open'||e.status==='sent').length,draft:ests.filter(e=>e.status==='draft').length,sent:ests.filter(e=>e.status==='sent').length,approved:ests.filter(e=>e.status==='approved').length,converted:ests.filter(e=>e.status==='converted').length};
+    return(<>
+      {/* Clickable status stat cards */}
+      <div className="stats-row">
+        <div className="stat-card" style={{cursor:'pointer',outline:estF.status==='all'?'2px solid #2563eb':'none',borderRadius:8}} onClick={()=>setEstF(f=>({...f,status:'all'}))}>
+          <div className="stat-label">Total</div><div className="stat-value">{ests.length}</div></div>
+        <div className="stat-card" style={{cursor:'pointer',outline:estF.status==='open'?'2px solid #d97706':'none',borderRadius:8}} onClick={()=>setEstF(f=>({...f,status:f.status==='open'?'all':'open'}))}>
+          <div className="stat-label">Open</div><div className="stat-value" style={{color:'#d97706'}}>{estStCounts.open}</div></div>
+        <div className="stat-card" style={{cursor:'pointer',outline:estF.status==='sent'?'2px solid #2563eb':'none',borderRadius:8}} onClick={()=>setEstF(f=>({...f,status:f.status==='sent'?'all':'sent'}))}>
+          <div className="stat-label">Sent</div><div className="stat-value" style={{color:'#2563eb'}}>{estStCounts.sent}</div></div>
+        <div className="stat-card" style={{cursor:'pointer',outline:estF.status==='approved'?'2px solid #166534':'none',borderRadius:8}} onClick={()=>setEstF(f=>({...f,status:f.status==='approved'?'all':'approved'}))}>
+          <div className="stat-label">Approved</div><div className="stat-value" style={{color:'#166534'}}>{estStCounts.approved}</div></div>
+        <div className="stat-card" style={{cursor:'pointer',outline:estF.status==='converted'?'2px solid #7c3aed':'none',borderRadius:8}} onClick={()=>setEstF(f=>({...f,status:f.status==='converted'?'all':'converted'}))}>
+          <div className="stat-label">Converted</div><div className="stat-value" style={{color:'#7c3aed'}}>{estStCounts.converted}</div></div>
+      </div>
+      {/* Filter bar */}
+      <div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap',alignItems:'center'}}>
+        <div className="search-bar" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search estimates, customers..." value={estF.search} onChange={e=>setEstF(f=>({...f,search:e.target.value}))}/></div>
+        <select className="form-select" style={{width:140}} value={estF.rep} onChange={e=>setEstF(f=>({...f,rep:e.target.value}))}>
+          <option value="all">All Reps</option><option value="_me_">My Estimates</option>{REPS.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
+        <select className="form-select" style={{width:150}} value={estF.sort} onChange={e=>setEstF(f=>({...f,sort:e.target.value}))}>
+          <option value="date_desc">Newest First</option><option value="date_asc">Oldest First</option><option value="customer">By Customer</option></select>
+        {estActiveFilters&&<button className="btn btn-sm btn-secondary" onClick={()=>setEstF({status:'open',rep:'_me_',search:'',sort:'date_desc'})}>✕ Reset</button>}
+        <span style={{fontSize:11,color:'#64748b'}}>{fe.length}{fe.length!==ests.length?' of '+ests.length:''} estimates</span>
+        <button className="btn btn-primary" onClick={()=>newE(null)}><Icon name="plus" size={14}/> New Estimate</button>
+      </div>
       <div className="card"><div className="card-body" style={{padding:0}}><table><thead><tr><th>ID</th><th>Customer</th><th>Memo</th><th>Items</th><th>Rep</th><th>Status</th><th>Email</th><th></th></tr></thead><tbody>
       {fe.map(e=>{const c=cust.find(x=>x.id===e.customer_id);const rep=REPS.find(r=>r.id===e.created_by);return(<tr key={e.id} style={{cursor:'pointer'}} onClick={()=>{setEEst(e);setEEstC(c)}}>
         <td style={{fontWeight:700,color:'#1e40af'}}>{e.id}</td><td>{c?<>{c.name} <span className="badge badge-gray">{c.alpha_tag}</span></>:'--'}</td>
         <td style={{fontSize:12}}>{e.memo}</td><td>{e.items?.length||0}</td>
         <td><span style={{fontSize:11,color:'#64748b'}}>{rep?.name?.split(' ')[0]||'—'}</span></td>
-        <td><span className={`badge ${e.status==='draft'||e.status==='open'?'badge-blue':e.status==='sent'?'badge-amber':e.status==='approved'?'badge-green':'badge-blue'}`}>{e.status}</span></td>
+        <td><span className={`badge ${e.status==='draft'||e.status==='open'?'badge-blue':e.status==='sent'?'badge-amber':e.status==='approved'?'badge-green':e.status==='converted'?'badge-purple':'badge-blue'}`}>{e.status}</span></td>
         <td><EmailBadge e={e}/></td>
         <td onClick={ev=>ev.stopPropagation()}>{e.status==='approved'&&<button className="btn btn-sm btn-primary" style={{background:'#7c3aed'}} onClick={()=>convertSO(e)}>→ SO</button>}{canDelete&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',color:'#dc2626',border:'1px solid #fca5a5',marginLeft:4,background:'white'}} onClick={()=>deleteEstimate(e.id)}><Icon name="trash" size={10}/></button>}</td>
       </tr>)})}</tbody></table></div></div></>);};
