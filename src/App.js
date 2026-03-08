@@ -915,13 +915,25 @@ const parseNetSuitePdf=(text,docType,products)=>{
     let color='';
     // NSA descriptions use both - and – (en-dash): "Adidas Creator Tee - Black - S" or "Pant – White Pins"
     const DASH=/\s*[-–—]\s*/;
+    const SIZE_WORDS=/^(?:XXS|XS|YXS|YS|YM|YL|YXL|S|M|L|XL|2XL|3XL|4XL|5XL|OSFA)$/i;
     const colorSizeMatch=description.match(/\s*[-–—]\s*([A-Za-z][A-Za-z\s,\/]+?)\s*[-–—]\s*(?:XXS|XS|YXS|YS|YM|YL|YXL|S|M|L|XL|2XL|3XL|4XL|5XL|OSFA)\s*$/i);
     if(colorSizeMatch)color=colorSizeMatch[1].trim();
     else{
       // Try: "Name – Color" or "Name – Color Variant" (no size at end)
       const colorOnly=description.match(/\s*[-–—]\s*([A-Za-z][A-Za-z\s,\/]+?)\s*$/);
-      if(colorOnly&&!/(?:color|print|press|emb|screen|knicker|regular)/i.test(colorOnly[1]))color=colorOnly[1].trim();
+      if(colorOnly&&!SIZE_WORDS.test(colorOnly[1].trim())&&!/(?:color|print|press|emb|screen|knicker|regular)/i.test(colorOnly[1]))color=colorOnly[1].trim();
     }
+    // Fallback: detect Color/Color patterns (e.g. "Black/White", "Power Red/White") embedded in description
+    if(!color){
+      const COLOR_ALT='Black|White|Navy|Red|Royal|Grey|Gray|Blue|Green|Maroon|Purple|Orange|Yellow|Pink|Brown|Scarlet|Cardinal|Gold|Silver|Charcoal|Onix|Burgundy|Teal|Cream|Tan|Power Red|Team Navy|Dark Green|Light Blue|Carbon|Collegiate Navy|Collegiate Royal';
+      // Pattern: "Description ColorA/ColorB - Size" or "Description ColorA/ColorB"
+      const slashColorMatch=description.match(new RegExp('\\b((?:'+COLOR_ALT+')\\s*\\/\\s*\\w+)','i'));
+      if(slashColorMatch)color=slashColorMatch[1].trim();
+      // Pattern: known color word at end after a space (no dash), e.g. "Hood Black/White"
+      if(!color){const kcm=description.replace(/\s*[-–—]\s*(?:XXS|XS|YXS|YS|YM|YL|YXL|S|M|L|XL|2XL|3XL|4XL|5XL|OSFA)\s*$/i,'').match(new RegExp('\\s('+COLOR_ALT+')\\s*$','i'));if(kcm)color=kcm[1].trim()}
+    }
+    // Simplify compound colors: "Black/White" → "Black", "Power Red/Wh" → "Power Red"
+    if(color&&color.includes('/'))color=color.split('/')[0].trim();
     // Clean product name (strip color/variant suffix from description)
     let productName=description;
     if(color){productName=description.replace(new RegExp('\\s*[-–—]\\s*'+color.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'.*$','i'),'').trim()}
@@ -16965,8 +16977,18 @@ export default function App(){
       } else {baseSku=itemCode;size=null}
 
       let color='';
+      const NS_SIZE_WORDS=/^(?:XXS|XS|YXS|YS|YM|YL|YXL|S|M|L|XL|2XL|3XL|4XL|5XL|OSFA)$/i;
       if(size){const cM=desc.match(/[-–]\s*([A-Za-z\s\/]+?)\s*[-–]\s*(?:XXS|XS|S|M|L|XL|2XL|3XL|4XL)/i);if(cM)color=cM[1].trim()}
-      if(!color){const cM2=desc.match(/[-–]\s*([A-Za-z\s\/,]+?)$/);if(cM2&&!sizeMatch)color=cM2[1].trim()}
+      if(!color){const cM2=desc.match(/[-–]\s*([A-Za-z\s\/,]+?)$/);if(cM2&&!sizeMatch&&!NS_SIZE_WORDS.test(cM2[1].trim()))color=cM2[1].trim()}
+      // Fallback: detect Color/Color patterns embedded in description without dash
+      if(!color){
+        const NS_COLOR_ALT='Black|White|Navy|Red|Royal|Grey|Gray|Blue|Green|Maroon|Purple|Orange|Yellow|Pink|Brown|Scarlet|Cardinal|Gold|Silver|Charcoal|Onix|Burgundy|Teal|Cream|Tan|Power Red|Team Navy|Dark Green|Light Blue|Carbon|Collegiate Navy|Collegiate Royal';
+        const scm=desc.match(new RegExp('\\b((?:'+NS_COLOR_ALT+')\\s*\\/\\s*\\w+)','i'));
+        if(scm)color=scm[1].trim();
+        if(!color){const kcm=desc.replace(/\s*[-–—]\s*(?:XXS|XS|YXS|YS|YM|YL|YXL|S|M|L|XL|2XL|3XL|4XL|5XL|OSFA)\s*$/i,'').match(new RegExp('\\s('+NS_COLOR_ALT+')\\s*$','i'));if(kcm)color=kcm[1].trim()}
+      }
+      // Simplify compound colors: "Black/White" → "Black"
+      if(color&&color.includes('/'))color=color.split('/')[0].trim();
 
       let brand='';
       if(priceLevel.toLowerCase().includes('adidas'))brand='Adidas';
@@ -18276,8 +18298,10 @@ export default function App(){
                 if(createdProducts.length>0){setProd(prev=>[...createdProducts,...prev]);nf(createdProducts.length+' new product(s) added to catalog')}
 
                 const newItems=keeping.map(it=>{
-                  const au=isAUi(it.brand);const sell=it.rate||0;const cost=au?rQ(sell):rQ(sell/mk);
-                  const retail=au?rQ(sell/(1-disc)):0;const szKeys=Object.keys(it.sizes||{});
+                  const au=isAUi(it.brand);const sell=it.rate||0;
+                  const retail=au?rQ(sell/(1-disc)):0;
+                  const costMult=it.brand==='Adidas'?0.375:(it.brand==='Under Armour'||it.brand==='New Balance')?0.425:0;
+                  const cost=au?rQ(retail*costMult):rQ(sell/mk);const szKeys=Object.keys(it.sizes||{});
                   return{product_id:it.catMatch?.id||null,sku:it.sku,name:it.catMatch?.name||it.name,brand:it.catMatch?.brand||it.brand,
                     color:it.color||it.catMatch?.color||'',nsa_cost:it.catMatch?.nsa_cost||cost,retail_price:it.catMatch?.retail_price||retail,unit_sell:sell,
                     available_sizes:szKeys.length>0?szKeys.sort((a,b)=>SZ_ORD_I.indexOf(a)-SZ_ORD_I.indexOf(b)):(it.catMatch?.available_sizes||['S','M','L','XL','2XL']),
@@ -18378,7 +18402,7 @@ export default function App(){
               <td style={{fontSize:10}}>{it.brand}</td>
               <td style={{fontSize:10}}>{it.color}</td>
               <td style={{textAlign:'right'}}>${(it.nsa_cost||0).toFixed(2)}</td>
-              <td style={{textAlign:'right'}}>${(it.retail_price||0).toFixed(2)}</td>
+              <td style={{textAlign:'right'}}><input type="number" step="0.01" min="0" className="form-input" style={{width:80,fontSize:11,textAlign:'right',padding:'2px 4px'}} value={it.retail_price||''} onChange={e=>{const retail=parseFloat(e.target.value)||0;setImp(x=>({...x,_customItems:x._customItems.map((c,ci)=>ci===i?{...c,retail_price:retail,nsa_cost:Math.round(retail*0.5*0.75*100)/100}:c)}))}}/></td>
               <td style={{fontSize:9}}>{(it.available_sizes||[]).join(', ')}</td>
             </tr>)}</tbody></table>
             <div style={{display:'flex',gap:8,marginTop:16}}>
