@@ -13927,17 +13927,18 @@ export default function App(){
               const totalPulling=szKeys.reduce((a,sz)=>a+(actualQtys[sz]||0),0);
               addWhAction({type:'pulled',pickId,soId:t.soId,customer:t.cName,sku:t.sku,name:t.name,color:t.color,sizes:pulledSizes,qty:totalPulling,by:cu?.id||'warehouse'});
               // Auto-print 4x6 box label
+              const labelQr=encodeURIComponent(window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(pickId));
               const w=window.open('','_blank','width=400,height=600');
-              if(w){w.document.write('<html><head><title>'+pickId+'</title><style>@page{size:4in 6in;margin:0}body{font-family:sans-serif;padding:16px;width:4in;height:6in;box-sizing:border-box;margin:0}h1{font-size:28px;margin:0 0 4px}h2{font-size:18px;margin:0 0 4px;font-weight:700}p{margin:3px 0;font-size:13px}.sizes{font-size:20px;font-weight:900;margin:10px 0;letter-spacing:1px}.sep{border-top:2px dashed #999;margin:10px 0}</style></head><body>');
-              w.document.write('<h1>'+pickId+'</h1>');
-              w.document.write('<p><strong>'+t.soId+'</strong> — '+t.cName+'</p>');
-              if(shipDest!=='in_house'){w.document.write('<div style="background:#fffbeb;padding:8px;border:2px solid '+(shipDest==='ship_customer'?'#3b82f6':'#d97706')+';border-radius:6px;font-weight:bold;font-size:16px;margin:6px 0">'+(shipDest==='ship_customer'?'SHIP TO CUSTOMER':'SHIP TO DECO'+(activePick?.deco_vendor?' — '+activePick.deco_vendor:''))+'</div>')}
+              if(w){w.document.write('<html><head><title>'+pickId+'</title><style>@page{size:4in 6in;margin:0}body{font-family:sans-serif;padding:12px 16px;width:4in;height:6in;box-sizing:border-box;margin:0;display:flex;flex-direction:column}.top{display:flex;justify-content:space-between;align-items:flex-start}.cname{font-size:32px;font-weight:900;margin:8px 0 4px;line-height:1.1}.sizes{font-size:24px;font-weight:900;margin:8px 0;letter-spacing:1px}.sep{border-top:3px dashed #999;margin:8px 0}.bot{margin-top:auto}</style></head><body>');
+              w.document.write('<div class="top"><div><div style="font-size:36px;font-weight:900;margin:0;line-height:1">'+pickId+'</div><div style="font-size:16px;font-weight:700;margin:4px 0">'+t.soId+'</div></div><img src="https://api.qrserver.com/v1/create-qr-code/?size=150x150&data='+labelQr+'" width="100" height="100"/></div>');
+              w.document.write('<div class="cname">'+t.cName+'</div>');
+              if(shipDest!=='in_house'){w.document.write('<div style="background:#fffbeb;padding:8px;border:3px solid '+(shipDest==='ship_customer'?'#3b82f6':'#d97706')+';border-radius:6px;font-weight:900;font-size:18px;margin:6px 0">'+(shipDest==='ship_customer'?'SHIP TO CUSTOMER':'SHIP TO DECO'+(activePick?.deco_vendor?' — '+activePick.deco_vendor:''))+'</div>')}
               w.document.write('<div class="sep"></div>');
-              w.document.write('<h2>'+t.sku+' '+t.name+'</h2>');
-              w.document.write('<p>'+(t.color||'')+' — '+totalPulling+' units</p>');
+              w.document.write('<div style="font-size:20px;font-weight:900;margin:0 0 4px">'+t.sku+' '+t.name+'</div>');
+              w.document.write('<div style="font-size:16px;font-weight:700">'+(t.color||'')+' — '+totalPulling+' units</div>');
               w.document.write('<div class="sizes">'+szKeys.filter(sz=>(actualQtys[sz]||0)>0).map(sz=>sz+': '+actualQtys[sz]).join(' &nbsp;&nbsp; ')+'</div>');
               w.document.write('<div class="sep"></div>');
-              w.document.write('<p style="font-size:11px;color:#666">Pulled: '+new Date().toLocaleString()+'</p>');
+              w.document.write('<div class="bot"><p style="font-size:11px;color:#666;margin:0">Pulled: '+new Date().toLocaleString()+'</p></div>');
               w.document.write('</body></html>');w.document.close();w.print()}
               nf('✅ '+pickId+' marked as pulled');setWhViewIF(null);
             }}>✓ Mark as Pulled</button>}
