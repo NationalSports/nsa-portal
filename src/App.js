@@ -14755,7 +14755,8 @@ export default function App(){
     const allArtJobs=[];
     sos.forEach(so=>{const c=cust.find(x=>x.id===so.customer_id);
       buildJobs(so).forEach(j=>{
-        if(j.art_status==='needs_art'&&!j.assigned_artist&&!(j.art_requests||[]).length)return;// skip truly untouched
+        const _af=safeArt(so).find(f=>f.id===j.art_file_id);
+        if(j.art_status==='needs_art'&&!j.assigned_artist&&!(j.art_requests||[]).length&&!(_af&&((_af.mockup_files||[]).length||(_af.files||[]).length||(_af.status&&_af.status!=='waiting_for_art'&&_af.status!=='needs_art'))))return;// skip truly untouched
         allArtJobs.push({...j,so,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',alpha:c?.alpha_tag||'',
           rep:REPS.find(r=>r.id===so.created_by)?.name||'—',repId:so.created_by,
           expected:so.expected_date,daysOut:so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null,
@@ -14779,7 +14780,8 @@ export default function App(){
     const artistMembers=REPS.filter(r=>(r.role==='art'||r.role==='artist'||r.role==='production')&&r.is_active!==false);
 
     const filtered=allArtJobs.filter(j=>{
-      if(artFilter!=='all'&&j.assigned_artist!==artFilter)return false;
+      if(artDashView==='artist'&&artFilter!=='all'&&j.assigned_artist!==artFilter)return false;
+      if(artDashView==='rep'&&artFilter!=='all'&&j.repId!==artFilter)return false;
       if(artSearch){const s=artSearch.toLowerCase();
         if(!(j.customer||'').toLowerCase().includes(s)&&!(j.art_name||'').toLowerCase().includes(s)&&
           !(j.soId||'').toLowerCase().includes(s)&&!(j.id||'').toLowerCase().includes(s))return false}
@@ -14835,7 +14837,7 @@ export default function App(){
     };
 
     // ─── Artist-only jobs (active, not complete) ───
-    const getArtFileStatus=(j)=>{const s=j.artFile?.status;return s==='uploaded'?'needs_approval':s||'waiting_for_art'};
+    const getArtFileStatus=(j)=>{const s=j.artFile?.status;return s==='uploaded'?'needs_approval':(!s||s==='needs_art')?'waiting_for_art':s};
     const artistJobs=filtered.filter(j=>j.art_status!=='art_complete');
     const artistCols=[
       {id:'waiting_for_art',label:'Waiting for Art',color:'#dc2626',bg:'#fef2f2',desc:'Needs artist attention'},
@@ -14846,6 +14848,7 @@ export default function App(){
 
     // ─── Rep view data — all jobs grouped by rep ───
     const repJobs=filtered.filter(j=>artDashView==='rep'?(cu.role==='admin'||j.repId===cu.id||artFilter!=='all'):true);
+    // Note: rep filtering by artFilter is now handled in filtered above
 
     // Card renderer shared between both views
     const renderArtCard=(j,view,col)=>{
@@ -14913,10 +14916,10 @@ export default function App(){
                 const so2=sos.find(s=>s.id===j.soId);if(!so2)return;
                 const mf=(j.artFile?.mockup_files||j.artFile?.files||[]);
                 if(mf.length===0){nf('Upload a mockup before sending for approval','error');return}
-                moveArtStatus(j,'waiting_approval');
                 const sysMsg={id:'AM-'+Date.now(),from_id:cu.id,from_name:cu.name,from_role:cu.role,text:'Mockup sent to rep for approval',ts:new Date().toISOString(),is_system:true};
-                const updJobs=safeJobs(so2).map(jj=>jj.id===j.id?{...jj,art_messages:[...(jj.art_messages||[]),sysMsg],art_status:'waiting_approval'}:jj);
-                savSO({...so2,art_files:safeArt(so2).map(a=>a.id===j.art_file_id?{...a,status:'needs_approval'}:a),jobs:updJobs});
+                const updJobs=buildJobs(so2).map(jj=>jj.id===j.id?{...jj,art_messages:[...(jj.art_messages||[]),sysMsg],art_status:'waiting_approval',assigned_artist:jj.assigned_artist||j.assigned_artist}:jj);
+                const updArt3=safeArt(so2).map(a=>a.id===j.art_file_id?{...a,status:'needs_approval'}:a);
+                savSO({...so2,art_files:updArt3,jobs:updJobs});
                 nf('Mockup sent to rep for approval')}}>Send to Rep</button>}
               {col?.id==='approved'&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#166534',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();
                 const so=sos.find(s=>s.id===j.soId);if(!so){nf('SO not found','error');return}
@@ -14956,10 +14959,10 @@ export default function App(){
       <div style={{display:'flex',gap:4,marginBottom:14,background:'#f8fafc',padding:6,borderRadius:8,border:'1px solid #e2e8f0'}}>
         <button className={`btn btn-sm ${artDashView==='artist'?'btn-primary':'btn-secondary'}`}
           style={{fontSize:12,padding:'6px 16px',background:artDashView==='artist'?'#7c3aed':'',borderColor:artDashView==='artist'?'#7c3aed':''}}
-          onClick={()=>setArtDashView('artist')}>🎨 Artist Workboard</button>
+          onClick={()=>{setArtDashView('artist');setArtFilter('all')}}>🎨 Artist Workboard</button>
         <button className={`btn btn-sm ${artDashView==='rep'?'btn-primary':'btn-secondary'}`}
           style={{fontSize:12,padding:'6px 16px',background:artDashView==='rep'?'#1e40af':'',borderColor:artDashView==='rep'?'#1e40af':''}}
-          onClick={()=>setArtDashView('rep')}>💼 Rep Art Tracker</button>
+          onClick={()=>{setArtDashView('rep');setArtFilter('all')}}>💼 Rep Art Tracker</button>
       </div>
 
       {/* Filters (shared) */}
@@ -15045,7 +15048,7 @@ export default function App(){
 
       {/* ═══ REP ART TRACKER ═══ */}
       {artDashView==='rep'&&(()=>{
-        const repFiltered=artDashView==='rep'&&artFilter!=='all'?repJobs.filter(j=>j.repId===artFilter):repJobs;
+        const repFiltered=repJobs;// rep filtering already applied in filtered
         const waitingForArt=repFiltered.filter(j=>getArtFileStatus(j)==='waiting_for_art');
         const waiting=repFiltered.filter(j=>getArtFileStatus(j)==='needs_approval');
         const prodFiles=repFiltered.filter(j=>getArtFileStatus(j)==='approved');
