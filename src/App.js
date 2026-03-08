@@ -8063,7 +8063,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             <div style={{display:'flex',gap:8}}>
               <button className="btn btn-sm" style={{background:'#22c55e',color:'white',flex:1,justifyContent:'center',fontWeight:700,padding:'10px 16px'}} onClick={async()=>{
                 const liveSO=sos.find(s=>s.id===so.id);if(!liveSO)return;
-                const updSO={...liveSO,jobs:safeJobs(liveSO).map(jj=>jj.id===j.id?{...jj,art_status:'production_files_needed',coach_approved_at:new Date().toISOString()}:jj),art_files:safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,status:'approved'}:a),updated_at:new Date().toLocaleString()};
+                const updSO={...liveSO,jobs:buildJobs(liveSO).map(jj=>jj.id===j.id?{...jj,art_status:'production_files_needed',coach_approved_at:new Date().toISOString()}:jj),art_files:safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,status:'approved'}:a),updated_at:new Date().toLocaleString()};
                 if(savSOFn)savSOFn(updSO);else if(onUpdateSOs)onUpdateSOs(prev=>prev.map(s=>s.id===so.id?updSO:s));
                 // Email the assigned rep
                 const rep=REPS.find(r=>r.id===liveSO.created_by);
@@ -8074,7 +8074,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                 if(!comment.trim()){alert('Please describe what changes you need.');return}
                 const liveSO=sos.find(s=>s.id===so.id);if(!liveSO)return;
                 const rej={reason:comment.trim(),by:'Coach',at:new Date().toISOString()};
-                const updSO={...liveSO,jobs:safeJobs(liveSO).map(jj=>jj.id===j.id?{...jj,art_status:'art_requested',coach_rejected:true,rejections:[...(jj.rejections||[]),rej]}:jj),art_files:safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,status:'waiting_for_art',notes:(a.notes?a.notes+'\n':'')+'Coach feedback: '+comment.trim()}:a),updated_at:new Date().toLocaleString()};
+                const updSO={...liveSO,jobs:buildJobs(liveSO).map(jj=>jj.id===j.id?{...jj,art_status:'art_requested',coach_rejected:true,rejections:[...(jj.rejections||[]),rej]}:jj),art_files:safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,status:'waiting_for_art',notes:(a.notes?a.notes+'\n':'')+'Coach feedback: '+comment.trim()}:a),updated_at:new Date().toLocaleString()};
                 if(savSOFn)savSOFn(updSO);else if(onUpdateSOs)onUpdateSOs(prev=>prev.map(s=>s.id===so.id?updSO:s));
                 setComment('');setJobView(null);
               }}>❌ Request Changes</button>
@@ -15363,8 +15363,16 @@ export default function App(){
         }).filter(Boolean);
         const allSizes=SZ_ORD.filter(sz=>itemDetails.some(it=>it.sizes[sz]>0));
 
-        // Art messages for this job (stored on the job)
-        const artMessages=j.art_messages||[];
+        // Art messages for this job (stored on the job) + SO message replies from rep
+        const artMsgsRaw=j.art_messages||[];
+        // Find SO messages related to this art job: art-tagged messages for this SO and their thread replies
+        const artPrefix='[Art — '+(j.art_name||'')+']';
+        const soArtMsgs=msgs.filter(m=>(m.so_id===so.id||m.entity_id===so.id)&&m.dept==='art'&&(m.text||'').startsWith(artPrefix));
+        const soArtIds=new Set(soArtMsgs.map(m=>m.id));
+        const soReplies=msgs.filter(m=>(m.so_id===so.id||m.entity_id===so.id)&&m.thread_id&&soArtIds.has(m.thread_id));
+        const toArtMsg=m=>{const a=REPS.find(r=>r.id===m.author_id);return{id:m.id,from_id:m.author_id,from_name:a?.name||'Unknown',from_role:a?.role||'rep',text:m.text,ts:m.ts,_fromSO:true}};
+        const artMsgIds=new Set(artMsgsRaw.map(m=>m.id));
+        const artMessages=[...artMsgsRaw,...soReplies.filter(m=>!artMsgIds.has(m.id)).map(toArtMsg)].sort((a,b)=>new Date(a.ts)-new Date(b.ts));
 
         // Delete file from artwork files
         const handleArtFileDelete=(fileUrl)=>{
@@ -15415,7 +15423,7 @@ export default function App(){
               // Update the job's art_file_id if it was null
               if(!j.art_file_id)j.art_file_id=newAf.id;
             }
-            const updatedJobs=safeJobs(liveSO).map(jj=>jj.id===j.id?{...jj,art_file_id:j.art_file_id,art_status:jj.art_status==='needs_art'||jj.art_status==='art_requested'?'art_in_progress':jj.art_status}:jj);
+            const updatedJobs=buildJobs(liveSO).map(jj=>jj.id===j.id?{...jj,art_file_id:j.art_file_id,art_status:jj.art_status==='needs_art'||jj.art_status==='art_requested'?'art_in_progress':jj.art_status}:jj);
             savSO({...liveSO,art_files:updArt,jobs:updatedJobs});
             // Refresh modal with updated data
             const updatedAf=updArt.find(a=>a.id===j.art_file_id);
@@ -15450,7 +15458,7 @@ export default function App(){
               updArt=[...existingArt,newAf];
               if(!j.art_file_id)j.art_file_id=newAf.id;
             }
-            const updatedJobs=safeJobs(liveSO).map(jj=>jj.id===j.id?{...jj,art_file_id:j.art_file_id,art_status:jj.art_status==='needs_art'||jj.art_status==='art_requested'?'art_in_progress':jj.art_status}:jj);
+            const updatedJobs=buildJobs(liveSO).map(jj=>jj.id===j.id?{...jj,art_file_id:j.art_file_id,art_status:jj.art_status==='needs_art'||jj.art_status==='art_requested'?'art_in_progress':jj.art_status}:jj);
             savSO({...liveSO,art_files:updArt,jobs:updatedJobs});
             const updatedAf=updArt.find(a=>a.id===j.art_file_id);
             setArtJobDetailModal({...j,artFile:updatedAf,art_status:updatedJobs.find(jj=>jj.id===j.id)?.art_status||j.art_status});
@@ -15501,7 +15509,7 @@ export default function App(){
           const msg={id:'AM-'+Date.now(),from_id:cu.id,from_name:cu.name,from_role:cu.role,text:artJobDetailMsg.trim(),ts:new Date().toISOString()};
           const updatedMsgs=[...artMessages,msg];
           const liveSO2=sos.find(s=>s.id===(j.soId||so.id))||so;
-          const updatedJobs=safeJobs(liveSO2).map(jj=>jj.id===j.id?{...jj,art_messages:updatedMsgs}:jj);
+          const updatedJobs=buildJobs(liveSO2).map(jj=>jj.id===j.id?{...jj,art_messages:updatedMsgs}:jj);
           savSO({...liveSO2,jobs:updatedJobs});
           setArtJobDetailModal({...j,art_messages:updatedMsgs});
           // Also post as a regular SO message so it shows on Messages tab and rep dashboard
@@ -15529,7 +15537,7 @@ export default function App(){
           }
           const sysMsg={id:'AM-'+(Date.now()+1),from_id:cu.id,from_name:cu.name,from_role:cu.role,text:'Mockup sent to rep for approval',ts:new Date().toISOString(),is_system:true};
           msgs.push(sysMsg);
-          const updJobs=safeJobs(liveSO2).map(jj=>jj.id===j.id?{...jj,art_messages:msgs,art_status:'waiting_approval'}:jj);
+          const updJobs=buildJobs(liveSO2).map(jj=>jj.id===j.id?{...jj,art_messages:msgs,art_status:'waiting_approval'}:jj);
           savSO({...liveSO2,art_files:safeArt(liveSO2).map(a=>a.id===j.art_file_id?{...a,status:'needs_approval'}:a),jobs:updJobs});
           setArtJobDetailModal(null);
           setArtJobDetailApprovalMsg('');
@@ -15980,7 +15988,7 @@ export default function App(){
           moveArtStatus(aj,'waiting_approval');
           const sysMsg={id:'AM-'+Date.now(),from_id:cu.id,from_name:cu.name,from_role:cu.role,text:'Sent artwork for approval'+(notifyMethod!=='none'?' — '+notifyMethod+' notification sent to '+(ac.name||'coach'):''),ts:new Date().toISOString(),is_system:true};
           const updMsgs=[...(aam||[]),sysMsg];
-          const updJobs=safeJobs(aso).map(jj=>jj.id===aj.id?{...jj,art_messages:updMsgs,art_status:'waiting_approval'}:jj);
+          const updJobs=buildJobs(aso).map(jj=>jj.id===aj.id?{...jj,art_messages:updMsgs,art_status:'waiting_approval'}:jj);
           savSO({...aso,art_files:safeArt(aso).map(a=>a.id===aj.art_file_id?{...a,status:'needs_approval'}:a),jobs:updJobs});
           // 2. Handle notification
           if(notifyMethod==='email'&&ac.email){
