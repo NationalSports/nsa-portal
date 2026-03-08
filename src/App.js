@@ -5307,11 +5307,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <div className="card-header"><h2>🎨 Artwork</h2></div>
             <div className="card-body">
               <div style={{display:'flex',gap:16,flexWrap:'wrap'}}>
-                <div style={{flex:'0 0 200px',background:'#f8fafc',border:'2px dashed #d1d5db',borderRadius:10,padding:30,textAlign:'center'}}>
-                  <div style={{fontSize:36,marginBottom:6}}>🖼️</div>
-                  <div style={{fontSize:12,fontWeight:600,color:'#64748b'}}>Mockup Preview</div>
-                  <div style={{fontSize:10,color:'#94a3b8',marginTop:4}}>Upload art files to see preview</div>
-                  {artF?.files?.length>0&&<div style={{fontSize:10,color:'#2563eb',marginTop:6}}>{artF.files.join(', ')}</div>}
+                <div style={{flex:'0 0 200px',background:'#f8fafc',border:'2px dashed #d1d5db',borderRadius:10,padding:10,textAlign:'center',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',minHeight:180}}>
+                  {(()=>{const mockUrl=(artF?.mockup_files||artF?.files||[]).map(f=>typeof f==='string'?f:f?.url||'').find(u=>isUrl(u));const prodImg=itemDetails.find(gi=>gi.image_url)?.image_url;const imgSrc=mockUrl||prodImg;return imgSrc?<>
+                    <img src={imgSrc} alt="Mockup" style={{maxWidth:'100%',maxHeight:160,objectFit:'contain',borderRadius:6}}/>
+                    <div style={{fontSize:10,fontWeight:600,color:'#64748b',marginTop:4}}>{mockUrl?'Mockup Preview':'Product Image'}</div>
+                  </>:<>
+                    <div style={{fontSize:36,marginBottom:6}}>🖼️</div>
+                    <div style={{fontSize:12,fontWeight:600,color:'#64748b'}}>Mockup Preview</div>
+                    <div style={{fontSize:10,color:'#94a3b8',marginTop:4}}>Upload art files to see preview</div>
+                  </>})()}
                 </div>
                 <div style={{flex:1,minWidth:200}}>
                   {artF?<>
