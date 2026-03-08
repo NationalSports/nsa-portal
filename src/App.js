@@ -8490,6 +8490,7 @@ export default function App(){
     syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}});
   const[qbTab,setQbTab]=useState('overview');
   const[qbSyncing,setQbSyncing]=useState(false);
+  const qbSyncAllRef=React.useRef(null);
   const[qbBillFile,setQbBillFile]=useState(null);
   const[qbBillVendor,setQbBillVendor]=useState('');
   const[qbBillAmount,setQbBillAmount]=useState('');
@@ -8838,6 +8839,19 @@ export default function App(){
   React.useEffect(()=>{_saveAppState('change_log',changeLog)},[changeLog]);
   React.useEffect(()=>{_saveAppState('so_history',soHistory)},[soHistory]);
   React.useEffect(()=>{_saveAppState('qb_config',qbConfig)},[qbConfig]);
+  // QB background auto-sync — runs even when not on QB page, using ref set by rQB()
+  React.useEffect(()=>{
+    if(!qbConfig.connected||qbConfig.autoSync==='manual')return;
+    const intervals={hourly:3600000,daily:86400000,realtime:300000};
+    const ms=intervals[qbConfig.autoSync];
+    if(!ms)return;
+    const id=setInterval(()=>{
+      if(qbSyncing||!qbSyncAllRef.current)return;
+      const last=qbConfig.lastSync?new Date(qbConfig.lastSync).getTime():0;
+      if(Date.now()-last>=ms)qbSyncAllRef.current();
+    },60000);// check every 60s
+    return()=>clearInterval(id);
+  },[qbConfig.connected,qbConfig.autoSync,qbSyncing]);
   // Warn user before closing/reloading if there are failed saves (data at risk of loss)
   React.useEffect(()=>{const h=e=>{if(window.location.search.includes('portal='))return;if(_dbSaveFailedIds.size>0){e.preventDefault();e.returnValue=''}};window.addEventListener('beforeunload',h);return()=>window.removeEventListener('beforeunload',h)},[]);
   // Background retry — every 60s, re-trigger saves for any entities with failed IDs
@@ -19255,6 +19269,25 @@ export default function App(){
       await syncPurchaseOrders();
       setQbSyncing(false);
     };
+
+    // Keep ref updated for background auto-sync
+    qbSyncAllRef.current=syncAll;
+
+    // ── AUTO-SYNC SCHEDULER ──
+    // Triggers syncAll based on the selected sync mode (hourly/daily/realtime)
+    React.useEffect(()=>{
+      if(!qbConfig.connected||qbConfig.autoSync==='manual'||qbSyncing)return;
+      const intervals={hourly:3600000,daily:86400000,realtime:300000};
+      const ms=intervals[qbConfig.autoSync];
+      if(!ms)return;
+      const last=qbConfig.lastSync?new Date(qbConfig.lastSync).getTime():0;
+      const elapsed=Date.now()-last;
+      // If overdue, sync now
+      if(elapsed>=ms){syncAll();return;}
+      // Otherwise schedule next sync
+      const tid=setTimeout(()=>syncAll(),ms-elapsed);
+      return()=>clearTimeout(tid);
+    },[qbConfig.connected,qbConfig.autoSync,qbConfig.lastSync]);
 
     // Build counts for overview
     const soMap=qbConfig.qbSOMap||{};
