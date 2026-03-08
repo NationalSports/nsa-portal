@@ -7330,9 +7330,9 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         {/* Completed orders */}
         {completedSOs.length>0&&<>
           <div style={{fontSize:13,fontWeight:800,color:'#166534',marginBottom:10,marginTop:16}}>✅ Completed Orders</div>
-          {completedSOs.slice(0,3).map(so=><div key={so.id} style={{padding:'10px 14px',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:8,display:'flex',justifyContent:'space-between'}}>
+          {completedSOs.slice(0,3).map(so=><div key={so.id} style={{padding:'10px 14px',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:8,display:'flex',justifyContent:'space-between',alignItems:'center',cursor:'pointer'}} onClick={()=>setSoView(so)}>
             <div><span style={{fontWeight:600}}>{so.memo||so.id}</span><span style={{fontSize:11,color:'#94a3b8',marginLeft:8}}>{so.id}</span></div>
-            <span className="badge badge-green">Complete</span></div>)}
+            <div style={{display:'flex',alignItems:'center',gap:8}}><span className="badge badge-green">Complete</span><span style={{color:'#94a3b8',fontSize:14}}>›</span></div></div>)}
         </>}
 
         {/* Open invoices with pay buttons */}
@@ -7854,6 +7854,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   const[jobView,setJobView]=useState(null);
   const[invView,setInvView]=useState(null);
   const[estView,setEstView]=useState(null);
+  const[soView,setSoView]=useState(null);
   const[comment,setComment]=useState('');
   const[contactEdit,setContactEdit]=useState(null);
   const[contactMsg,setContactMsg]=useState('');
@@ -8024,6 +8025,125 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     </div>
   }
 
+  // Order detail view
+  if(soView){
+    const so=soView;
+    const soAF=safeArt(so);
+    const _soAQ={};safeItems(so).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_soAQ[d.art_file_id]=(_soAQ[d.art_file_id]||0)+q2}})});
+    const soSubtotal=safeItems(so).reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);let r=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_soAQ[d.art_file_id]:qq;const dp2=dP(d,qq,soAF,cq);const eq2=dp2._nq!=null?dp2._nq:qq;r+=eq2*dp2.sell});return a+r},0);
+    const soShip=so.shipping_type==='pct'?soSubtotal*(so.shipping_value||0)/100:(so.shipping_value||0);
+    const soTaxRate=customer?.tax_exempt?0:(customer?.tax_rate||0);
+    const soTax=soSubtotal*soTaxRate;
+    const soTotal=soSubtotal+soShip+soTax;
+    let soTotalU=0,soFulU=0;
+    safeItems(so).forEach(it=>{Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{soTotalU+=v;const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);soFulU+=Math.min(v,pQ+rQ)})});
+    const soPct=soTotalU>0?Math.round(soFulU/soTotalU*100):0;
+    const soDaysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
+    const soJobsList=safeJobs(so);
+    const soShipments=so._shipments||[];
+    const soLegacy=so._tracking_number&&!soShipments.find(s=>s.tracking_number===so._tracking_number);
+    const soAllShipments=soLegacy?[{tracking_number:so._tracking_number,carrier:so._carrier||'',ship_date:so._ship_date||'',tracking_url:so._tracking_url||''},...soShipments]:soShipments;
+    return<div style={{minHeight:'100vh',background:'#f1f5f9',display:'flex',justifyContent:'center',padding:'40px 16px'}}>
+      {lightbox&&<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.85)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center',padding:16}} onClick={()=>setLightbox(null)}>
+        <button style={{position:'absolute',top:16,right:20,background:'rgba(255,255,255,0.15)',border:'none',color:'white',fontSize:28,borderRadius:'50%',width:44,height:44,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center'}} onClick={()=>setLightbox(null)}>×</button>
+        {_isImgUrl(lightbox)?<img src={lightbox} alt="Mockup" style={{maxWidth:'95vw',maxHeight:'90vh',objectFit:'contain',borderRadius:8}} onClick={e=>e.stopPropagation()}/>
+        :_isPdfUrl(lightbox)?<iframe title="PDF Preview" src={'https://docs.google.com/gview?url='+encodeURIComponent(lightbox)+'&embedded=true'} style={{width:'90vw',height:'90vh',border:'none',borderRadius:8,background:'white'}} onClick={e=>e.stopPropagation()}/>
+        :<div style={{color:'white',fontSize:16}} onClick={e=>e.stopPropagation()}>Cannot preview this file type</div>}
+      </div>}
+      <div style={{width:'100%',maxWidth:640,background:'white',borderRadius:16,boxShadow:'0 4px 24px rgba(0,0,0,0.08)',overflow:'hidden'}}>
+        <div style={{background:'linear-gradient(135deg,#1e3a5f,#2563eb)',color:'white',padding:'20px 24px',position:'relative'}}>
+          <button style={{position:'absolute',top:8,left:12,background:'rgba(255,255,255,0.15)',border:'none',color:'white',borderRadius:6,padding:'4px 10px',fontSize:12,cursor:'pointer'}} onClick={()=>setSoView(null)}>← Back</button>
+          <div style={{textAlign:'center',paddingTop:16}}>
+            <div style={{fontSize:10,opacity:0.6}}>ORDER</div>
+            <div style={{fontSize:20,fontWeight:800}}>{so.memo||so.id}</div>
+            <div style={{fontSize:12,opacity:0.8}}>{so.id} · {so.created_at?.split(' ')[0]}{so.expected_date?(' · Expected '+so.expected_date):''}</div>
+          </div>
+        </div>
+        <div style={{padding:'20px 24px'}}>
+          {/* Progress bar */}
+          <div style={{marginBottom:16}}>
+            <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
+              <span style={{fontSize:11,fontWeight:600,color:'#64748b'}}>Order Progress</span>
+              <span style={{fontSize:11,fontWeight:700,color:soPct>=100?'#166534':'#1e3a5f'}}>{soPct}%</span>
+            </div>
+            <div style={{background:'#e2e8f0',borderRadius:6,height:8,overflow:'hidden'}}>
+              <div style={{height:8,borderRadius:6,background:soPct>=100?'#22c55e':soPct>50?'#3b82f6':'#f59e0b',width:soPct+'%',transition:'width 0.3s'}}/></div>
+            {soDaysOut!=null&&<div style={{fontSize:11,color:soDaysOut<=7?'#dc2626':'#64748b',marginTop:4,textAlign:'right'}}>{soDaysOut>0?soDaysOut+' day'+(soDaysOut!==1?'s':'')+' out':soDaysOut===0?'Due today':'Overdue'}</div>}
+          </div>
+          {/* Line items */}
+          <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:8}}>Items</div>
+          {safeItems(so).map((it,ii)=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
+            let recvQ=0;Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);recvQ+=Math.min(v,pQ+rQ)});
+            let decoTotal=0;safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_soAQ[d.art_file_id]:qty;const dp2=dP(d,qty,soAF,cq);const eq2=dp2._nq!=null?dp2._nq:qty;decoTotal+=eq2*dp2.sell});
+            const lineTotal=qty*safeNum(it.unit_sell)+decoTotal;
+            return<div key={ii} style={{border:'1px solid #e2e8f0',borderRadius:10,padding:14,marginBottom:10}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:4}}>
+                <div style={{flex:1}}>
+                  <div style={{fontWeight:700,fontSize:13}}>{safeStr(it.name)||'Item'}</div>
+                  <div style={{fontSize:11,color:'#64748b'}}>{it.sku} · {safeStr(it.color)||'—'} {it.brand&&'· '+it.brand}</div>
+                </div>
+                <div style={{textAlign:'right'}}>
+                  <div style={{fontWeight:800,fontSize:14,color:'#1e3a5f'}}>${lineTotal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
+                  <div style={{fontSize:10,color:'#64748b'}}>{qty} units</div>
+                </div>
+              </div>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                <div style={{flex:1,background:'#f1f5f9',borderRadius:6,height:4,marginRight:10}}>
+                  <div style={{height:4,borderRadius:6,background:recvQ>=qty?'#22c55e':recvQ>0?'#3b82f6':'#e2e8f0',width:(qty>0?Math.round(recvQ/qty*100):0)+'%'}}/></div>
+                <span style={{fontSize:11,fontWeight:600,color:recvQ>=qty?'#166534':'#64748b',whiteSpace:'nowrap'}}>{recvQ} of {qty} received</span>
+              </div>
+            </div>})}
+          {/* Order totals */}
+          <div style={{borderTop:'2px solid #e2e8f0',paddingTop:12,marginBottom:16}}>
+            <div style={{display:'flex',justifyContent:'space-between',padding:'4px 0',fontSize:13}}><span>Subtotal</span><span style={{fontWeight:700}}>${soSubtotal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span></div>
+            {soShip>0&&<div style={{display:'flex',justifyContent:'space-between',padding:'4px 0',fontSize:13}}><span>Shipping</span><span>${soShip.toFixed(2)}</span></div>}
+            {soTax>0&&<div style={{display:'flex',justifyContent:'space-between',padding:'4px 0',fontSize:13}}><span>Tax ({(soTaxRate*100).toFixed(2)}%)</span><span>${soTax.toFixed(2)}</span></div>}
+            <div style={{display:'flex',justifyContent:'space-between',padding:'8px 0 4px',borderTop:'2px solid #1e3a5f',marginTop:6}}>
+              <span style={{fontWeight:800,fontSize:16}}>Total</span><span style={{fontWeight:800,fontSize:18,color:'#1e3a5f'}}>${soTotal.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
+            </div>
+          </div>
+          {/* Artwork & Decoration jobs */}
+          {soJobsList.length>0&&<>
+            <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:8}}>Artwork & Decoration</div>
+            {soJobsList.map(j=>{const artFile=soAF.find(a=>a.id===j.art_file_id);const mockups=(artFile?.mockup_files||artFile?.files||[]).filter(f=>f);const thumbUrl=mockups.length>0?(typeof mockups[0]==='string'?mockups[0]:(mockups[0]?.url||'')):null;const isImg=thumbUrl&&_isImgUrl(thumbUrl);const isPdf=thumbUrl&&_isPdfUrl(thumbUrl);const pdfThumb=isPdf?_cloudinaryPdfThumb(thumbUrl):null;
+              return<div key={j.id} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 12px',border:'1px solid '+(j.art_status==='waiting_approval'?'#f59e0b':'#e2e8f0'),background:j.art_status==='waiting_approval'?'#fffbeb':'#fafbfc',borderRadius:8,marginBottom:6,cursor:'pointer'}} onClick={()=>{setJobView({job:j,so});setComment('')}}>
+                {isImg&&isUrl(thumbUrl)?<img src={thumbUrl} alt="" style={{width:44,height:44,objectFit:'cover',borderRadius:6,flexShrink:0,border:'1px solid #e2e8f0'}}/>
+                :isPdf&&pdfThumb?<img src={pdfThumb} alt="" style={{width:44,height:44,objectFit:'cover',borderRadius:6,flexShrink:0,border:'1px solid #e2e8f0'}} onError={e=>{e.target.style.display='none'}}/>
+                :<div style={{width:44,height:44,borderRadius:6,background:j.art_status==='art_complete'?'#dcfce7':j.art_status==='waiting_approval'?'#fef3c7':'#fee2e2',display:'flex',alignItems:'center',justifyContent:'center',fontSize:20,flexShrink:0}}>
+                  {j.art_status==='art_complete'?'✅':j.art_status==='waiting_approval'?'⏳':'🎨'}</div>}
+                <div style={{flex:1}}>
+                  <div style={{fontWeight:600,fontSize:12}}>{j.art_name}</div>
+                  <div style={{fontSize:10,color:'#64748b'}}>{j.deco_type?.replace(/_/g,' ')} · {j.positions} · {(j.items||[]).length} garment{(j.items||[]).length!==1?'s':''}</div>
+                </div>
+                <div style={{textAlign:'right'}}>
+                  <span style={{padding:'2px 8px',borderRadius:10,fontSize:9,fontWeight:700,background:j.art_status==='art_complete'?'#dcfce7':j.art_status==='waiting_approval'?'#fef3c7':'#fee2e2',color:j.art_status==='art_complete'?'#166534':j.art_status==='waiting_approval'?'#92400e':'#dc2626'}}>{artLabelsP[j.art_status]}</span>
+                  {j.prod_status!=='hold'&&<div style={{fontSize:9,color:'#64748b',marginTop:2}}>{prodLabelsP[j.prod_status]}</div>}
+                </div>
+                <span style={{color:'#94a3b8',fontSize:14}}>›</span>
+              </div>})}
+          </>}
+          {/* Shipping / Tracking */}
+          {soAllShipments.length>0&&<div style={{marginTop:12}}>
+            <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:8}}>Shipping & Tracking</div>
+            {soAllShipments.map((shp,si)=><div key={si} style={{padding:'10px 12px',background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:8,marginBottom:6}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                <div>
+                  <div style={{fontSize:12,fontWeight:700,color:'#166534'}}>📦 {shp.carrier||'Package'} {soAllShipments.length>1?'#'+(si+1):''}</div>
+                  {shp.ship_date&&<div style={{fontSize:10,color:'#64748b'}}>Shipped {shp.ship_date}</div>}
+                </div>
+                {shp.tracking_number&&<a href={shp.tracking_url||((/^1Z/i.test(shp.tracking_number))?'https://www.ups.com/track?tracknum='+shp.tracking_number:'https://www.fedex.com/fedextrack/?trknbr='+shp.tracking_number)} target="_blank" rel="noreferrer" style={{fontSize:11,fontWeight:600,color:'#2563eb',textDecoration:'none'}}>Track →</a>}
+              </div>
+              {shp.tracking_number&&<div style={{fontSize:11,fontFamily:'monospace',color:'#64748b',marginTop:4}}>{shp.tracking_number}</div>}
+            </div>)}
+          </div>}
+          {/* Firm dates */}
+          {safeFirm(so).filter(f=>f.approved).length>0&&<div style={{marginTop:8,padding:'8px 12px',background:'#f0fdf4',borderRadius:8,fontSize:12,color:'#166534'}}>
+            📌 Firm date: {(safeFirm(so).filter(f=>f.approved)[0]||{}).date||"TBD"}</div>}
+        </div>
+      </div>
+    </div>
+  }
+
   // Job detail view
   if(jobView){
     const j=jobView.job;const so=jobView.so;
@@ -8040,7 +8160,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
       </div>}
       <div style={{width:'100%',maxWidth:640,background:'white',borderRadius:16,boxShadow:'0 4px 24px rgba(0,0,0,0.08)',overflow:'hidden'}}>
         <div style={{background:'linear-gradient(135deg,#1e3a5f,#2563eb)',color:'white',padding:'20px 24px',position:'relative'}}>
-          <button style={{position:'absolute',top:8,left:12,background:'rgba(255,255,255,0.15)',border:'none',color:'white',borderRadius:6,padding:'4px 10px',fontSize:12,cursor:'pointer'}} onClick={()=>setJobView(null)}>← Back</button>
+          <button style={{position:'absolute',top:8,left:12,background:'rgba(255,255,255,0.15)',border:'none',color:'white',borderRadius:6,padding:'4px 10px',fontSize:12,cursor:'pointer'}} onClick={()=>{const _backSO=soView?sos.find(s=>s.id===jobView.so.id):null;setJobView(null);if(_backSO)setSoView(_backSO)}}>← Back</button>
           <div style={{textAlign:'center',paddingTop:16}}>
             <div style={{fontSize:10,opacity:0.6}}>ARTWORK PROOF</div>
             <div style={{fontSize:18,fontWeight:800}}>{j.art_name}</div>
@@ -8262,16 +8382,19 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             const pct=totalU>0?Math.round(fulU/totalU*100):0;
             const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
             const soJobs=safeJobs(so);
-            return<div key={so.id} style={{border:'1px solid #e2e8f0',borderRadius:10,padding:16,marginBottom:12}}>
+            return<div key={so.id} style={{border:'1px solid #e2e8f0',borderRadius:10,padding:16,marginBottom:12,cursor:'pointer'}} onClick={()=>setSoView(so)}>
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:8}}>
                 <div>
                   <div style={{fontWeight:700,fontSize:15,color:'#1e3a5f'}}>{so.memo||so.id}</div>
                   <div style={{fontSize:11,color:'#64748b'}}>Order {so.id} · {so.created_at?.split(' ')[0]}</div>
                 </div>
-                {so.expected_date&&<div style={{textAlign:'right'}}>
-                  <div style={{fontSize:10,color:'#64748b'}}>EXPECTED</div>
-                  <div style={{fontSize:14,fontWeight:700,color:daysOut!=null&&daysOut<=7?'#dc2626':'#1e3a5f'}}>{so.expected_date}</div>
-                </div>}
+                <div style={{display:'flex',alignItems:'center',gap:8}}>
+                  {so.expected_date&&<div style={{textAlign:'right'}}>
+                    <div style={{fontSize:10,color:'#64748b'}}>EXPECTED</div>
+                    <div style={{fontSize:14,fontWeight:700,color:daysOut!=null&&daysOut<=7?'#dc2626':'#1e3a5f'}}>{so.expected_date}</div>
+                  </div>}
+                  <span style={{color:'#94a3b8',fontSize:14}}>›</span>
+                </div>
               </div>
               <div style={{marginBottom:10}}>
                 <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
@@ -8281,28 +8404,14 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                 <div style={{background:'#e2e8f0',borderRadius:6,height:8,overflow:'hidden'}}>
                   <div style={{height:8,borderRadius:6,background:pct>=100?'#22c55e':pct>50?'#3b82f6':'#f59e0b',width:pct+'%',transition:'width 0.3s'}}/></div>
               </div>
-              <div style={{fontSize:12,marginBottom:soJobs.length>0?10:0}}>
+              <div style={{fontSize:12}}>
                 {safeItems(so).map((it,ii)=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
                   return<div key={ii} style={{display:'flex',justifyContent:'space-between',padding:'4px 0',borderBottom:'1px solid #f8fafc'}}>
                     <span>{safeStr(it.name)||'Item'} <span style={{color:'#94a3b8'}}>({safeStr(it.color)||'—'})</span></span>
                     <span style={{fontWeight:600,color:'#64748b'}}>{qty} units</span></div>})}
               </div>
-              {soJobs.length>0&&<>
-                <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:6}}>🎨 Artwork & Decoration</div>
-                {soJobs.map(j=><div key={j.id} style={{display:'flex',alignItems:'center',gap:10,padding:'8px 10px',border:'1px solid '+(j.art_status==='waiting_approval'?'#f59e0b':'#e2e8f0'),background:j.art_status==='waiting_approval'?'#fffbeb':'#fafbfc',borderRadius:8,marginBottom:6,cursor:'pointer'}} onClick={()=>{setJobView({job:j,so});setComment('')}}>
-                  <div style={{width:36,height:36,borderRadius:6,background:j.art_status==='art_complete'?'#dcfce7':j.art_status==='waiting_approval'?'#fef3c7':'#fee2e2',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0}}>
-                    {j.art_status==='art_complete'?'✅':j.art_status==='waiting_approval'?'⏳':'🎨'}</div>
-                  <div style={{flex:1}}>
-                    <div style={{fontWeight:600,fontSize:12}}>{j.art_name}</div>
-                    <div style={{fontSize:10,color:'#64748b'}}>{j.deco_type?.replace(/_/g,' ')} · {j.positions} · {(j.items||[]).length} garment{(j.items||[]).length!==1?'s':''}</div>
-                  </div>
-                  <div style={{textAlign:'right'}}>
-                    <span style={{padding:'2px 8px',borderRadius:10,fontSize:9,fontWeight:700,background:j.art_status==='art_complete'?'#dcfce7':j.art_status==='waiting_approval'?'#fef3c7':'#fee2e2',color:j.art_status==='art_complete'?'#166534':j.art_status==='waiting_approval'?'#92400e':'#dc2626'}}>{artLabelsP[j.art_status]}</span>
-                    {j.prod_status!=='hold'&&<div style={{fontSize:9,color:'#64748b',marginTop:2}}>{prodLabelsP[j.prod_status]}</div>}
-                  </div>
-                  <span style={{color:'#94a3b8',fontSize:14}}>›</span>
-                </div>)}
-              </>}
+              {soJobs.filter(j=>j.art_status==='waiting_approval').length>0&&<div style={{marginTop:8,padding:'6px 10px',background:'#fffbeb',border:'1px solid #f59e0b',borderRadius:6,fontSize:11,color:'#92400e',fontWeight:600}}>
+                ⏳ {soJobs.filter(j=>j.art_status==='waiting_approval').length} artwork{soJobs.filter(j=>j.art_status==='waiting_approval').length!==1?'s':''} awaiting your approval</div>}
               {safeFirm(so).filter(f=>f.approved).length>0&&<div style={{marginTop:8,padding:'6px 10px',background:'#f0fdf4',borderRadius:6,fontSize:11,color:'#166534'}}>
                 📌 Firm date: {(safeFirm(so).filter(f=>f.approved)[0]||{}).date||"TBD"}</div>}
             </div>})}
@@ -8311,9 +8420,9 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         {/* Completed orders */}
         {completedSOs.length>0&&<>
           <div style={{fontSize:13,fontWeight:800,color:'#166534',marginBottom:10,marginTop:16}}>✅ Completed Orders</div>
-          {completedSOs.slice(0,3).map(so=><div key={so.id} style={{padding:'10px 14px',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:8,display:'flex',justifyContent:'space-between'}}>
+          {completedSOs.slice(0,3).map(so=><div key={so.id} style={{padding:'10px 14px',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:8,display:'flex',justifyContent:'space-between',alignItems:'center',cursor:'pointer'}} onClick={()=>setSoView(so)}>
             <div><span style={{fontWeight:600}}>{so.memo||so.id}</span><span style={{fontSize:11,color:'#94a3b8',marginLeft:8}}>{so.id}</span></div>
-            <span className="badge badge-green">Complete</span></div>)}
+            <div style={{display:'flex',alignItems:'center',gap:8}}><span className="badge badge-green">Complete</span><span style={{color:'#94a3b8',fontSize:14}}>›</span></div></div>)}
         </>}
 
         {/* Invoices — Open + Paid */}
