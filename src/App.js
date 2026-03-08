@@ -13384,6 +13384,8 @@ export default function App(){
 
   // WAREHOUSE DASHBOARD
   const[whTab,setWhTab]=useState('pull');const[whSearch,setWhSearch]=useState('');const[whRepF,setWhRepF]=useState('all');const[scanModalOpen,setScanModalOpen]=useState(false);const[whRecvPO,setWhRecvPO]=useState(null);const[whReceiving,setWhReceiving]=useState(false);const[whViewIF,setWhViewIF]=useState(null);
+  const[whRecentActions,setWhRecentActions]=useState(()=>{try{return JSON.parse(localStorage.getItem('nsa_wh_recent')||'[]')}catch{return[]}});
+  const addWhAction=(action)=>{setWhRecentActions(prev=>{const next=[{...action,ts:Date.now(),at:new Date().toLocaleString()},...prev].slice(0,50);try{localStorage.setItem('nsa_wh_recent',JSON.stringify(next))}catch{}return next})};
   const[stockPOs,setStockPOs]=useState([
     {id:'PO-5001-NSA',vendor_id:'v1',vendor_name:'Adidas',status:'partial',created_at:'02/12/26',notes:'Restock pregame tees',items:[{sku:'JX4453',name:'Adidas Unisex Pregame Tee',color:'Team Power Red/White',sizes:{S:20,M:30,L:25,XL:15,'2XL':10},received:{S:20,M:30,L:0,XL:0,'2XL':0}}]},
     {id:'PO-5002-NSA',vendor_id:'v2',vendor_name:'Under Armour',status:'waiting',created_at:'02/18/26',notes:'Stock up on polos for spring',items:[{sku:'1370399',name:'Under Armour Team Polo',color:'Cardinal/White',sizes:{S:10,M:20,L:20,XL:15,'2XL':8},received:{}}]},
@@ -13432,6 +13434,7 @@ export default function App(){
       {id:'deco',label:'🎨 Ready for Deco',count:fDeco.length,color:'#7c3aed'},
       {id:'ship',label:'📦 Ready to Ship',count:fShip.length,color:'#166534'},
       {id:'stockpo',label:'📋 Stock POs',count:openStockPOs.length,color:'#6366f1'},
+      {id:'recent',label:'🕐 Recent Actions',count:whRecentActions.length,color:'#475569'},
     ];
 
     return(<>
@@ -13453,6 +13456,9 @@ export default function App(){
         // Local shipping state stored on whViewIF
         const boxes=t._boxes||[{weight:5,dimensions:{},carrier:'fedex',tracking_number:'',items:[{sku:item.sku,name:item.name,color:item.color||'',sizes:Object.fromEntries(szKeys.map(sz=>[(sz),Math.max(0,(item.sizes[sz]||0)-(t.pulled[sz]||0))]))}]}];
         const setBoxes=newBoxes=>setWhViewIF(prev=>({...prev,_boxes:newBoxes}));
+        // Editable pull quantities — default to the pick line quantities (what was requested)
+        const pullQtys=t._pullQtys||(activePick?Object.fromEntries(szKeys.map(sz=>[sz,activePick[sz]||0])):{});
+        const setPullQtys=fn=>setWhViewIF(prev=>{const cur=prev._pullQtys||(activePick?Object.fromEntries(szKeys.map(sz=>[sz,activePick[sz]||0])):{});return{...prev,_pullQtys:typeof fn==='function'?fn(cur):fn}});
 
         return<div style={{maxWidth:900,margin:'0 auto'}}>
           {/* Back button */}
@@ -13506,19 +13512,31 @@ export default function App(){
               <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:12}}>
                 {szKeys.map(sz=>{
                   const ordered=item.sizes[sz]||0;const pulled=t.pulled[sz]||0;const need=Math.max(0,ordered-pulled);
-                  const inv=p?._inv?.[sz]||0;
+                  const inv=p?._inv?.[sz]||0;const pq=pullQtys[sz]||0;
                   if(ordered===0)return null;
-                  return<div key={sz} style={{textAlign:'center',minWidth:52,padding:'6px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:need>0?'#fffbeb':'#f0fdf4'}}>
-                    <div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
-                    <div style={{fontSize:18,fontWeight:800,color:need>0?'#d97706':'#166534'}}>{need>0?need:'✓'}</div>
-                    <div style={{fontSize:9,color:'#94a3b8'}}>of {ordered}</div>
-                    <div style={{fontSize:9,fontWeight:600,color:inv<=0?'#dc2626':inv<need?'#d97706':'#166534',marginTop:2}}>{inv} inv</div>
+                  return<div key={sz} style={{textAlign:'center',minWidth:62,padding:'8px 6px',borderRadius:8,border:need>0?'2px solid #d97706':'1px solid #e2e8f0',background:need>0?'#fffbeb':'#f0fdf4'}}>
+                    <div style={{fontSize:11,fontWeight:800,color:'#475569',marginBottom:2}}>{sz}</div>
+                    <div style={{fontSize:22,fontWeight:900,color:need>0?'#92400e':'#166534',lineHeight:1}}>{need>0?need:'✓'}</div>
+                    <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>need of {ordered}</div>
+                    {need>0&&activePick&&activePick.status!=='pulled'&&<>
+                      <div style={{borderTop:'1px solid #e2e8f0',margin:'6px 0 4px'}}/>
+                      <div style={{fontSize:9,fontWeight:600,color:'#64748b',marginBottom:2}}>Pulling</div>
+                      <input type="number" min={0} max={need} value={pq} style={{width:40,textAlign:'center',fontSize:14,fontWeight:800,border:'1px solid #cbd5e1',borderRadius:4,padding:'2px 0',color:pq<need?'#dc2626':'#166534'}}
+                        onChange={e=>{const v=Math.max(0,Math.min(need,parseInt(e.target.value)||0));setPullQtys(prev=>({...prev,[sz]:v}))}}/>
+                      <div style={{fontSize:8,color:inv<need?'#dc2626':'#94a3b8',marginTop:2}}>{inv} in stock</div>
+                    </>}
                   </div>})}
-                <div style={{textAlign:'center',minWidth:52,padding:'6px 8px',borderRadius:6,border:'2px solid #e2e8f0',background:'#f8fafc'}}>
-                  <div style={{fontSize:10,fontWeight:700,color:'#64748b'}}>TOT</div>
-                  <div style={{fontSize:18,fontWeight:900,color:'#d97706'}}>{t.needsPull}</div>
-                  <div style={{fontSize:9,color:'#94a3b8'}}>of {t.totalOrdered}</div>
-                </div>
+                {(()=>{const totPulling=szKeys.reduce((a,sz)=>a+(pullQtys[sz]||0),0);
+                  return<div style={{textAlign:'center',minWidth:62,padding:'8px 6px',borderRadius:8,border:'2px solid #e2e8f0',background:'#f8fafc'}}>
+                    <div style={{fontSize:11,fontWeight:800,color:'#64748b',marginBottom:2}}>TOT</div>
+                    <div style={{fontSize:22,fontWeight:900,color:'#d97706',lineHeight:1}}>{t.needsPull}</div>
+                    <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>of {t.totalOrdered}</div>
+                    {activePick&&activePick.status!=='pulled'&&<>
+                      <div style={{borderTop:'1px solid #e2e8f0',margin:'6px 0 4px'}}/>
+                      <div style={{fontSize:9,fontWeight:600,color:'#64748b',marginBottom:2}}>Pulling</div>
+                      <div style={{fontSize:14,fontWeight:800,color:totPulling<t.needsPull?'#dc2626':'#166534'}}>{totPulling}</div>
+                    </>}
+                  </div>})()}
               </div>
 
               {/* All pick lines for this item */}
@@ -13674,20 +13692,26 @@ export default function App(){
           {/* Actions */}
           <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
             {activePick&&activePick.status!=='pulled'&&<button className="btn btn-primary" style={{fontSize:13,padding:'10px 24px',fontWeight:700}} onClick={()=>{
-              // Mark the active pick as pulled, update SO, adjust inventory
+              // Mark the active pick as pulled with actual quantities, update SO, adjust inventory
+              const actualQtys=pullQtys;
               const updatedItems=safeItems(so).map((it2,ii)=>{
                 if(ii!==t.itemIdx)return it2;
                 const newPicks=(it2.pick_lines||[]).map(pk=>{
-                  if(pk.pick_id===activePick.pick_id&&pk.status!=='pulled')return{...pk,status:'pulled'};
+                  if(pk.pick_id===activePick.pick_id&&pk.status!=='pulled'){
+                    const updated={...pk,status:'pulled',pulled_at:new Date().toLocaleString()};
+                    // Update pick line with actual pulled quantities
+                    szKeys.forEach(sz=>{updated[sz]=actualQtys[sz]||0});
+                    return updated;
+                  }
                   return pk;
                 });
                 return{...it2,pick_lines:newPicks};
               });
               const updatedSO={...so,items:updatedItems,updated_at:new Date().toLocaleString()};
-              // Adjust inventory (decrement)
+              // Adjust inventory (decrement using actual pulled quantities)
               if(p){
                 const newInv={...p._inv};
-                Object.entries(activePick).forEach(([k,v])=>{if(k!=='status'&&k!=='pick_id'&&k!=='created_at'&&k!=='memo'&&k!=='ship_dest'&&k!=='ship_addr'&&k!=='deco_vendor'&&typeof v==='number'&&v>0){newInv[k]=Math.max(0,(newInv[k]||0)-v)}});
+                szKeys.forEach(sz=>{const v=actualQtys[sz]||0;if(v>0){newInv[sz]=Math.max(0,(newInv[sz]||0)-v)}});
                 setProd(pp=>pp.map(x=>x.id===p.id?{...x,_inv:newInv}:x));
               }
               savSO(updatedSO);
@@ -13702,6 +13726,23 @@ export default function App(){
                 const withShipment={...updatedSO,_shipments:shipments};
                 savSO(withShipment);
               }
+              // Log recent action
+              const pulledSizes=szKeys.filter(sz=>(actualQtys[sz]||0)>0).map(sz=>sz+':'+actualQtys[sz]).join(' ');
+              const totalPulling=szKeys.reduce((a,sz)=>a+(actualQtys[sz]||0),0);
+              addWhAction({type:'pulled',pickId,soId:t.soId,customer:t.cName,sku:t.sku,name:t.name,color:t.color,sizes:pulledSizes,qty:totalPulling,by:cu?.id||'warehouse'});
+              // Auto-print 4x6 box label
+              const w=window.open('','_blank','width=400,height=600');
+              if(w){w.document.write('<html><head><title>'+pickId+'</title><style>@page{size:4in 6in;margin:0}body{font-family:sans-serif;padding:16px;width:4in;height:6in;box-sizing:border-box;margin:0}h1{font-size:28px;margin:0 0 4px}h2{font-size:18px;margin:0 0 4px;font-weight:700}p{margin:3px 0;font-size:13px}.sizes{font-size:20px;font-weight:900;margin:10px 0;letter-spacing:1px}.sep{border-top:2px dashed #999;margin:10px 0}</style></head><body>');
+              w.document.write('<h1>'+pickId+'</h1>');
+              w.document.write('<p><strong>'+t.soId+'</strong> — '+t.cName+'</p>');
+              if(shipDest!=='in_house'){w.document.write('<div style="background:#fffbeb;padding:8px;border:2px solid '+(shipDest==='ship_customer'?'#3b82f6':'#d97706')+';border-radius:6px;font-weight:bold;font-size:16px;margin:6px 0">'+(shipDest==='ship_customer'?'SHIP TO CUSTOMER':'SHIP TO DECO'+(activePick?.deco_vendor?' — '+activePick.deco_vendor:''))+'</div>')}
+              w.document.write('<div class="sep"></div>');
+              w.document.write('<h2>'+t.sku+' '+t.name+'</h2>');
+              w.document.write('<p>'+(t.color||'')+' — '+totalPulling+' units</p>');
+              w.document.write('<div class="sizes">'+szKeys.filter(sz=>(actualQtys[sz]||0)>0).map(sz=>sz+': '+actualQtys[sz]).join(' &nbsp;&nbsp; ')+'</div>');
+              w.document.write('<div class="sep"></div>');
+              w.document.write('<p style="font-size:11px;color:#666">Pulled: '+new Date().toLocaleString()+'</p>');
+              w.document.write('</body></html>');w.document.close();w.print()}
               nf('✅ '+pickId+' marked as pulled');setWhViewIF(null);
             }}>✓ Mark as Pulled</button>}
             <button className="btn btn-secondary" style={{fontSize:12,padding:'8px 16px'}} onClick={()=>{setESOTab('items');setESOScrollItem(t.itemIdx);setESO(so);setESOC(c);setPg('orders')}}>
@@ -14678,6 +14719,29 @@ export default function App(){
             </div>
           </div>
         </div></div>}
+      </>}
+
+      {whTab==='recent'&&<>
+        <div style={{fontSize:13,color:'#64748b',marginBottom:12}}>Recent warehouse actions — pulls, receives, and other activity</div>
+        {whRecentActions.length===0&&<div style={{textAlign:'center',color:'#94a3b8',padding:40}}>No recent actions yet</div>}
+        {whRecentActions.map((a,i)=><div key={i} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 14px',background:i%2===0?'#fafbfc':'white',borderRadius:6,marginBottom:2,border:'1px solid #f1f5f9'}}>
+          <div style={{width:32,height:32,borderRadius:8,display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,flexShrink:0,
+            background:a.type==='pulled'?'#fef3c7':a.type==='received'?'#dbeafe':'#f1f5f9'}}>
+            {a.type==='pulled'?'📦':a.type==='received'?'📱':'⚡'}</div>
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
+              <span style={{fontWeight:700,fontSize:12,color:a.type==='pulled'?'#92400e':'#1e40af'}}>{a.pickId||a.poId||'Action'}</span>
+              <span style={{fontSize:11,color:'#475569'}}>{a.type==='pulled'?'Pulled':'Received'}</span>
+              <span style={{fontSize:11,fontWeight:600}}>{a.soId}</span>
+              <span style={{fontSize:11,color:'#64748b'}}>{a.customer}</span>
+            </div>
+            <div style={{fontSize:11,color:'#64748b',marginTop:2}}>{a.sku} {a.name} {a.color?' ('+a.color+')':''} — {a.qty} units — {a.sizes}</div>
+          </div>
+          <div style={{textAlign:'right',flexShrink:0}}>
+            <div style={{fontSize:10,color:'#94a3b8'}}>{a.at}</div>
+          </div>
+        </div>)}
+        {whRecentActions.length>0&&<button className="btn btn-sm btn-secondary" style={{marginTop:12,fontSize:11}} onClick={()=>{setWhRecentActions([]);try{localStorage.removeItem('nsa_wh_recent')}catch{}}}>Clear History</button>}
       </>}
     </>}
     </>);
