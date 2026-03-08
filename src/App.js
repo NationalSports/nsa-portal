@@ -604,10 +604,10 @@ const fileUpload=async(file,folder='nsa-art-files')=>{const fd=new FormData();fd
 const isUrl=s=>typeof s==='string'&&(s.startsWith('http://')||s.startsWith('https://'));
 const fileDisplayName=f=>{if(typeof f==='object'&&f?.name)return f.name;const s=typeof f==='string'?f:(f?.url||'');return isUrl(s)?decodeURIComponent(s.split('/').pop().split('?')[0]):s};
 const _isDownloadOnly=u=>{const e=_urlExt(u);return['ai','eps','dst','psd','tiff','tif','cdr'].includes(e)};
-const openFile=f=>{const u=typeof f==='string'?f:(f?.url||'');if(isUrl(u)){if(_isPdfUrl(u)){window.open('https://docs.google.com/gview?url='+encodeURIComponent(u)+'&embedded=true','_blank')}else if(_isDownloadOnly(u)){const a=document.createElement('a');a.href=u;a.download=typeof f==='object'&&f?.name?f.name:decodeURIComponent(u.split('/').pop().split('?')[0]);a.target='_blank';a.rel='noopener';document.body.appendChild(a);a.click();document.body.removeChild(a)}else{window.open(u,'_blank')}}else if(u){nf('Legacy file: '+u+' — re-upload to enable downloads')}};
+const openFile=f=>{const u=typeof f==='string'?f:(f?.url||'');if(isUrl(u)){if(_isPdfUrl(u,f)){window.open('https://docs.google.com/gview?url='+encodeURIComponent(u)+'&embedded=true','_blank')}else if(_isDownloadOnly(u)){const a=document.createElement('a');a.href=u;a.download=typeof f==='object'&&f?.name?f.name:decodeURIComponent(u.split('/').pop().split('?')[0]);a.target='_blank';a.rel='noopener';document.body.appendChild(a);a.click();document.body.removeChild(a)}else{window.open(u,'_blank')}}else if(u){nf('Legacy file: '+u+' — re-upload to enable downloads')}};
 const _urlExt=u=>{if(!u||typeof u!=='string')return '';const clean=u.split('?')[0].split('#')[0];const m=clean.match(/\.(\w+)$/);return m?m[1].toLowerCase():''};
-const _isImgUrl=u=>{const e=_urlExt(u);return['png','jpg','jpeg','gif','webp','svg','bmp'].includes(e)};
-const _isPdfUrl=u=>_urlExt(u)==='pdf';
+const _isImgUrl=(u,f)=>{const e=_urlExt(u);if(['png','jpg','jpeg','gif','webp','svg','bmp'].includes(e))return true;if(typeof f==='object'&&f?.type?.startsWith('image/'))return true;if(u&&typeof u==='string'&&u.includes('cloudinary.com')&&u.includes('/image/upload/'))return true;return false};
+const _isPdfUrl=(u,f)=>{if(_urlExt(u)==='pdf')return true;if(typeof f==='object'&&f?.type==='application/pdf')return true;if(typeof f==='string'&&f.endsWith('.pdf'))return true;return false};
 const _cloudinaryPdfThumb=u=>{if(!u||!u.includes('cloudinary.com'))return null;
   // Replace raw/upload with image/upload so transformations work, then add pg_1 transform
   let t=u.replace('/raw/upload/','/image/upload/').replace('/video/upload/','/image/upload/');
@@ -5188,9 +5188,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <div style={{fontSize:11,fontWeight:700,color:'#78350f',marginBottom:6}}>Review the mockup:</div>
                 {/* Primary mockup — large */}
                 {(()=>{const url=typeof mockups[0]==='string'?mockups[0]:(mockups[0]?.url||'');const name=fileDisplayName(mockups[0]);
-                  return<div style={{borderRadius:10,border:'2px solid #f59e0b',overflow:'hidden',background:'white',marginBottom:8,cursor:'pointer'}} onClick={()=>openFile(url)}>
-                    {_isImgUrl(url)?<img src={url} alt={name} style={{width:'100%',maxHeight:450,objectFit:'contain',display:'block',background:'#fafafa'}}/>
-                    :_isPdfUrl(url)?<div style={{position:'relative'}}>
+                  return<div style={{borderRadius:10,border:'2px solid #f59e0b',overflow:'hidden',background:'white',marginBottom:8,cursor:'pointer'}} onClick={()=>openFile(mockups[0])}>
+                    {_isImgUrl(url,mockups[0])?<img src={url} alt={name} style={{width:'100%',maxHeight:450,objectFit:'contain',display:'block',background:'#fafafa'}}/>
+                    :_isPdfUrl(url,mockups[0])?<div style={{position:'relative'}}>
                       {_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',maxHeight:450,objectFit:'contain',display:'block',background:'#fafafa'}} onError={e=>{e.target.style.display='none';e.target.nextSibling.style.display='flex'}}/>:null}
                       <div style={{display:_cloudinaryPdfThumb(url)?'none':'flex',flexDirection:'column',alignItems:'center',padding:24,gap:4}}>
                         <span style={{fontSize:36}}>PDF</span><span style={{fontSize:13,color:'#1e40af'}}>{name}</span></div></div>
@@ -5201,8 +5201,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 {/* Additional mockups */}
                 {mockups.length>1&&<div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
                   {mockups.slice(1).map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);
-                    return<div key={fi} style={{borderRadius:8,border:'1px solid #fde68a',overflow:'hidden',background:'white',maxWidth:200,cursor:'pointer'}} onClick={()=>openFile(url)}>
-                      {_isImgUrl(url)?<img src={url} alt={name} style={{width:'100%',maxHeight:150,objectFit:'contain',display:'block'}}/>
+                    return<div key={fi} style={{borderRadius:8,border:'1px solid #fde68a',overflow:'hidden',background:'white',maxWidth:200,cursor:'pointer'}} onClick={()=>openFile(f)}>
+                      {_isImgUrl(url,f)?<img src={url} alt={name} style={{width:'100%',maxHeight:150,objectFit:'contain',display:'block'}}/>
+                      :_isPdfUrl(url,f)?<div style={{position:'relative'}}>
+                        {_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',maxHeight:150,objectFit:'contain',display:'block',background:'#fafafa'}} onError={e=>{e.target.style.display='none';e.target.nextSibling&&(e.target.nextSibling.style.display='flex')}}/>:null}
+                        <div style={{display:_cloudinaryPdfThumb(url)?'none':'flex',flexDirection:'column',alignItems:'center',padding:16,gap:4}}>
+                          <span style={{fontSize:24}}>📄</span><span style={{fontSize:11,color:'#1e40af'}}>{name}</span></div></div>
                       :<div style={{display:'flex',alignItems:'center',gap:6,padding:'10px 14px'}}>
                         <span style={{fontSize:16}}>📄</span><span style={{fontSize:12,fontWeight:600,color:'#1e40af'}}>{name}</span></div>}
                       <div style={{padding:'3px 8px',borderTop:'1px solid #fde68a',fontSize:10,color:'#92400e',fontWeight:600,textAlign:'center'}}>{name}</div>
@@ -15220,9 +15224,10 @@ export default function App(){
             <div style={{fontSize:8,color:'#94a3b8'}}>by {j.rejections[j.rejections.length-1].by} · {new Date(j.rejections[j.rejections.length-1].at).toLocaleDateString()}</div>
           </div>}
           {/* Art request notes if any */}
-          {(j.art_requests||[]).length>0&&<div style={{marginBottom:4,padding:'3px 6px',background:'#f8fafc',borderRadius:4,fontSize:9,color:'#475569'}}>
-            📝 {j.art_requests[j.art_requests.length-1].instructions?.slice(0,80)}{j.art_requests[j.art_requests.length-1].instructions?.length>80?'...':''}
-          </div>}
+          {(j.art_requests||[]).length>0&&(()=>{const lr=j.art_requests[j.art_requests.length-1];return<div style={{marginBottom:4,padding:'3px 6px',background:'#f8fafc',borderRadius:4}}>
+            {lr.instructions&&<div style={{fontSize:9,color:'#475569'}}>📝 {lr.instructions.slice(0,80)}{lr.instructions.length>80?'...':''}</div>}
+            {(lr.files||[]).length>0&&<div style={{display:'flex',gap:3,flexWrap:'wrap',marginTop:2}}>{lr.files.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=typeof f==='string'?fileDisplayName(f):(f?.name||fileDisplayName(f?.url||''));return<span key={fi} style={{fontSize:8,fontWeight:600,padding:'1px 4px',borderRadius:3,background:_isImgUrl(url,f)?'#dbeafe':_isPdfUrl(url,f)?'#fef3c7':'#f1f5f9',color:_isImgUrl(url,f)?'#1e40af':_isPdfUrl(url,f)?'#92400e':'#64748b'}}>{_isImgUrl(url,f)?'🖼️':_isPdfUrl(url,f)?'📄':'📁'} {name.slice(0,20)}{name.length>20?'…':''}</span>})}</div>}
+          </div>})()}
 
           {/* ─── ARTIST VIEW: artist-facing actions ─── */}
           {view==='artist'&&<>
@@ -15922,11 +15927,19 @@ export default function App(){
               {/* Reference files from art request */}
               {latestReq?.files?.length>0&&<div style={{marginTop:8}}>
                 <div style={{fontSize:11,fontWeight:700,color:'#6d28d9',marginBottom:4}}>📎 Reference Files from Rep</div>
-                <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
                   {latestReq.files.map((f,i)=>{const url=typeof f==='string'?f:(f?.url||'');const name=typeof f==='string'?fileDisplayName(f):(f?.name||fileDisplayName(f?.url||''));
-                    return<div key={i} style={{padding:'6px 10px',background:'white',border:'1px solid #e9d5ff',borderRadius:6,cursor:isUrl(url)?'pointer':'default',fontSize:11,fontWeight:600,color:'#6d28d9',display:'flex',alignItems:'center',gap:4}} onClick={()=>isUrl(url)&&openFile(url)}>
-                      {_isImgUrl(url)?'🖼️':_isPdfUrl(url)?'📄':'📁'} {name}
-                      {isUrl(url)&&<a href={url} download style={{color:'#2563eb',fontSize:10,marginLeft:4}} onClick={e=>e.stopPropagation()}>⬇</a>}
+                    return<div key={i} style={{borderRadius:8,border:'1px solid #e9d5ff',overflow:'hidden',background:'white',maxWidth:220,cursor:isUrl(url)?'pointer':'default'}} onClick={()=>isUrl(url)&&openFile(f)}>
+                      {_isImgUrl(url,f)?<img src={url} alt={name} style={{width:'100%',maxHeight:160,objectFit:'contain',display:'block',background:'#fafafa'}}/>
+                      :_isPdfUrl(url,f)?<div style={{position:'relative'}}>
+                        {_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',maxHeight:160,objectFit:'contain',display:'block',background:'#fafafa'}} onError={e=>{e.target.style.display='none';e.target.nextSibling&&(e.target.nextSibling.style.display='flex')}}/>:null}
+                        <div style={{display:_cloudinaryPdfThumb(url)?'none':'flex',flexDirection:'column',alignItems:'center',padding:16,gap:4}}>
+                          <span style={{fontSize:24}}>📄</span><span style={{fontSize:11,color:'#6d28d9'}}>{name}</span></div></div>
+                      :<div style={{display:'flex',alignItems:'center',gap:6,padding:'10px 14px'}}>
+                        <span style={{fontSize:16}}>📁</span><span style={{fontSize:11,fontWeight:600,color:'#6d28d9'}}>{name}</span></div>}
+                      <div style={{padding:'3px 8px',borderTop:'1px solid #e9d5ff',fontSize:10,color:'#6d28d9',fontWeight:600,display:'flex',justifyContent:'space-between',alignItems:'center'}}><span>{name.length>25?name.slice(0,25)+'…':name}</span>
+                        {isUrl(url)&&<a href={url} download style={{color:'#2563eb',fontSize:10}} onClick={e=>e.stopPropagation()}>⬇</a>}
+                      </div>
                     </div>})}
                 </div>
               </div>}
