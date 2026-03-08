@@ -19039,7 +19039,7 @@ export default function App(){
         const qRes=await qbApi('query',{query:"SELECT Id, DisplayName, CompanyName, SyncToken FROM Customer MAXRESULTS 1000"});
         existingQBCusts=qRes?.QueryResponse?.Customer||[];
       }catch(e){console.warn('[QB] Customer query failed:',e)}
-      for(const c of cust.filter(c=>c.is_active!==false)){
+      for(const c of cust.filter(c=>c.is_active!==false&&!c.deleted_at)){
         // Calculate totals
         const custSOs=sos.filter(s=>s.customer_id===c.id);
         const totalRevenue=invs.filter(i=>i.customer_id===c.id).reduce((a,i)=>a+(i.total||0),0);
@@ -19066,13 +19066,14 @@ export default function App(){
           ...(qbId?{Id:qbId,sparse:true}:{}),
           ...(syncToken?{SyncToken:syncToken}:{}),
         };
-        const res=await qbApi('upsert_customer',{customer:qbCustomer});
+        let res;
+        try{res=await qbApi('upsert_customer',{customer:qbCustomer})}catch(e){log.details.push(c.name+' — FAILED: '+e.message);log.status='partial';continue}
         if(res?.Customer?.Id){
           custQBMap[c.id]=res.Customer.Id;
           log.details.push(c.name+' → QB #'+res.Customer.Id);synced++;
         }else{
           if(qbId)custQBMap[c.id]=qbId;
-          log.details.push(c.name+' — FAILED: '+(res?.Fault?.Error?.[0]?.Detail||'unknown error'));log.status='partial';
+          const errDetail=res?.Fault?.Error?.[0]?.Detail||res?.Fault?.Error?.[0]?.Message||res?.error||res?.message||(res?JSON.stringify(res).slice(0,120):'empty response');log.details.push(c.name+' — FAILED: '+errDetail);log.status='partial';
         }
       }
       // Include customers that already had QB IDs from previous syncs
@@ -19132,7 +19133,7 @@ export default function App(){
       const log={ts:new Date().toLocaleString(),type:'inventory',status:'success',details:[]};
       let synced=0;
       // Look up QB account IDs by name (required by QB API)
-      let incomeAcctRef=null,expenseAcctRef=null;
+      let incomeAcctRef=null,expenseAcctRef=null;let acctLookupError=null;
       try{
         const acctRes=await qbApi('query',{query:"SELECT Id, Name, AccountType, AccountSubType FROM Account WHERE AccountType IN ('Income','Cost of Goods Sold','Expense') MAXRESULTS 200"});
         const accts=acctRes?.QueryResponse?.Account||[];
@@ -19143,9 +19144,13 @@ export default function App(){
         const expenseAcct=accts.find(a=>a.Name===expenseName)||accts.find(a=>a.AccountSubType==='SuppliesMaterialsCogs')||accts.find(a=>a.AccountType==='Cost of Goods Sold')||accts.find(a=>a.AccountType==='Expense');
         if(incomeAcct)incomeAcctRef={value:incomeAcct.Id,name:incomeAcct.Name};
         if(expenseAcct)expenseAcctRef={value:expenseAcct.Id,name:expenseAcct.Name};
-      }catch(e){console.error('[QB] Account lookup failed:',e)}
+        if(!incomeAcct||!expenseAcct){
+          const availNames=accts.map(a=>a.Name+' ('+a.AccountType+')').join(', ');
+          acctLookupError='Found '+accts.length+' accounts but none matched. Looking for Income="'+incomeName+'" and Expense="'+expenseName+'". Available: '+(availNames||'none')+'. Update your QB Account Mapping in settings to match your Chart of Accounts.';
+        }
+      }catch(e){console.error('[QB] Account lookup failed:',e);acctLookupError='QB API error during account lookup: '+e.message}
       if(!incomeAcctRef||!expenseAcctRef){
-        log.status='error';log.details.push('Could not find QB accounts for Income ("'+(qbConfig.mapping.income_account||'Sales')+'") or Expense ("'+(qbConfig.mapping.cogs_account||'Cost of Goods Sold')+'"). Check your QB Chart of Accounts.');
+        log.status='error';log.details.push(acctLookupError||'Could not find QB accounts for Income ("'+(qbConfig.mapping.income_account||'Sales')+'") or Expense ("'+(qbConfig.mapping.cogs_account||'Cost of Goods Sold')+'"). Check your QB Chart of Accounts.');
         setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));nf('Inventory sync failed — QB accounts not found','error');setQbSyncing(false);return{};
       }
       // Look up asset account for Inventory type items
