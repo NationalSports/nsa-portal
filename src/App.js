@@ -5246,7 +5246,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <div style={{fontSize:11,fontWeight:600,color:'#64748b',marginLeft:8}}>Artist:</div>
               <select className="form-select" style={{width:130,fontSize:11}} value={j.assigned_artist||''} onChange={e=>updJob(ji,'assigned_artist',e.target.value)}>
                 <option value="">Unassigned</option>
-                {REPS.filter(r=>r.role==='art'||r.role==='artist'||r.role==='production'||r.role==='admin').filter(r=>r.is_active!==false).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
+                {REPS.filter(r=>r.role==='art'||r.role==='artist').filter(r=>r.is_active!==false).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
               <div style={{fontSize:11,fontWeight:600,color:'#64748b',marginLeft:8}}>Production:</div>
               {j.prod_status==='hold'&&!canProduce&&!canOverride?<span style={{fontSize:11,color:'#94a3b8'}}>Waiting items/art</span>
               :<><select className="form-select" style={{width:150,fontSize:11}} value={j.prod_status} onChange={e=>updJob(ji,'prod_status',e.target.value)}>
@@ -6619,7 +6619,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
         const jobs=so.jobs||[];
         const subC=allCustomers.find(c=>c.id===so.customer_id);
-        const rep=REPS.find(r=>r.id===so.created_by);
+        const rep=REPS.find(r=>r.id===(subC?.primary_rep_id||so.created_by));
         const jobArtLabels={needs_art:'Needs Art',waiting_approval:'Wait Approval',art_complete:'Art ✓'};
         const jobProdLabels={hold:'Ready',staging:'In Line',in_process:'In Process',completed:'Done',shipped:'Shipped'};
         const jobItemLabels={need_to_order:'Need Order',partially_received:'Partial',items_received:'Received'};
@@ -9209,7 +9209,7 @@ export default function App(){
     const pullTasks=[];const shipTasks=[];const decoTasks=[];
     sos.filter(so=>{const st=calcSOStatus(so);return st!=='complete'}).forEach(so=>{
       const c=cust.find(x=>x.id===so.customer_id);const cName=c?.name||'Unknown';const alpha=c?.alpha_tag||'';
-      const rep=REPS.find(r=>r.id===so.created_by)?.name?.split(' ')[0]||'—';
+      const rep=REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name?.split(' ')[0]||'—';
       const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
       const urgent=daysOut!=null&&daysOut<=3;
 
@@ -9267,7 +9267,7 @@ export default function App(){
     // Handle "wait_complete" SOs — add to shipTasks only if entire order is ready
     sos.filter(so=>(so.ship_preference||'ship_as_ready')==='wait_complete'&&calcSOStatus(so)!=='complete').forEach(so=>{
       const c=cust.find(x=>x.id===so.customer_id);const cName=c?.name||'Unknown';const alpha=c?.alpha_tag||'';
-      const rep=REPS.find(r=>r.id===so.created_by)?.name?.split(' ')[0]||'—';
+      const rep=REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name?.split(' ')[0]||'—';
       const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
       const urgent=daysOut!=null&&daysOut<=3;
       const allItemsDone=safeItems(so).every(it=>{const szKeys=Object.keys(it.sizes||{}).filter(k=>SZ_ORD.includes(k)||(it.sizes[k]>0));
@@ -9965,7 +9965,7 @@ export default function App(){
       </div>
 
     <div className="card"><div className="card-body" style={{padding:0}}><table><thead><tr><th>SO</th><th>Customer</th><th>Memo</th><th>Expected</th><th>Rep</th><th>Art</th><th>Items</th><th>Msgs</th><th>Ship</th><th>Status</th>{canDelete&&<th></th>}</tr></thead><tbody>
-    {fSOs.map(so=>{const c=cust.find(x=>x.id===so.customer_id);const ac=(so.art_files||[]).length;const aa=(so.art_files||[]).filter(f=>f.status==='approved').length;const rep=REPS.find(r=>r.id===so.created_by);
+    {fSOs.map(so=>{const c=cust.find(x=>x.id===so.customer_id);const ac=(so.art_files||[]).length;const aa=(so.art_files||[]).filter(f=>f.status==='approved').length;const rep=REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by));
       // Item fulfillment progress (for Items column)
       const allItems=so.items||[];let totalSz=0,pickedSz=0,poSz=0,rcvdSz=0;
       allItems.forEach(it=>{Object.entries(it.sizes).filter(([,v])=>v>0).forEach(([sz,v])=>{totalSz+=v;
@@ -10613,7 +10613,7 @@ export default function App(){
     const allJobs=[];
     sos.forEach(so=>{const c=cust.find(x=>x.id===so.customer_id);
       buildJobs(so).forEach(j=>{allJobs.push({...j,so,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',alpha:c?.alpha_tag||'',
-        repId:so.created_by,rep:REPS.find(r=>r.id===so.created_by)?.name||'—',
+        repId:c?.primary_rep_id||so.created_by,rep:REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name||'—',
         expected:so.expected_date,daysOut:so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null})})});
     // Apply filters
     let fj=allJobs;
@@ -10880,12 +10880,12 @@ export default function App(){
       const c=cust.find(x=>x.id===so.customer_id);
       safeJobs(so).forEach(j=>{
         allJobs.push({...j,so,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',alpha:c?.alpha_tag||'',
-          rep:REPS.find(r=>r.id===so.created_by)?.name?.split(' ')[0]||'—',
+          rep:REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name?.split(' ')[0]||'—',
           expected:so.expected_date,daysOut:so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null,
         });
       });
     });
-    const filtered=prodFilter==='all'?allJobs:allJobs.filter(j=>j.so.created_by===prodFilter);
+    const filtered=prodFilter==='all'?allJobs:allJobs.filter(j=>{const cc=cust.find(x=>x.id===j.so.customer_id);return(cc?.primary_rep_id||j.so.created_by)===prodFilter});
     const byDeco=prodDecoF==='all'?filtered:filtered.filter(j=>j.deco_type===prodDecoF);
     const readyOnly=byDeco.filter(j=>j.prod_status!=='hold'||isJobReady(j,j.so)).filter(j=>j.prod_status!=='shipped');
     const byStatus=prodStatF==='active'?readyOnly.filter(j=>j.prod_status!=='completed'):prodStatF==='all'?readyOnly:readyOnly.filter(j=>j.prod_status===prodStatF);
@@ -11175,7 +11175,7 @@ export default function App(){
             {label:'Customer',value:c?.name||j.customer||'Unknown',sub:c?.alpha_tag||''},
             {label:'Sales Order',value:so.id,sub:so.memo||''},
             {label:'Expected Date',value:so.expected_date||'TBD',sub:j.daysOut!=null?(j.daysOut<=0?'PAST DUE':j.daysOut+' days out'):''},
-            {label:'Rep',value:j.rep||REPS.find(r=>r.id===so.created_by)?.name||'—'},
+            {label:'Rep',value:j.rep||REPS.find(r=>r.id===(cust.find(x=>x.id===so.customer_id)?.primary_rep_id||so.created_by))?.name||'—'},
           ];
           const decoInfo=[
             {label:'Decoration',value:j.deco_type?.replace(/_/g,' ')||'—'},
@@ -12614,7 +12614,7 @@ export default function App(){
           <WH id="prodThroughput" title="Production Throughput" icon="🏭"/>
           {rptWidgets.prodThroughput&&(()=>{
             const allJobs=[];sos.forEach(so=>{const c=cust.find(x=>x.id===so.customer_id);
-              buildJobs(so).forEach(j=>allJobs.push({...j,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',rep:REPS.find(r=>r.id===so.created_by)?.name||'—'}))});
+              buildJobs(so).forEach(j=>allJobs.push({...j,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',rep:REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name||'—'}))});
             const hold=allJobs.filter(j=>j.prod_status==='hold').length;const staging=allJobs.filter(j=>j.prod_status==='staging').length;
             const inProcess=allJobs.filter(j=>j.prod_status==='in_process').length;const completed=allJobs.filter(j=>j.prod_status==='completed').length;
             const shipped=allJobs.filter(j=>j.prod_status==='shipped').length;
@@ -13106,11 +13106,11 @@ export default function App(){
       return sos.filter(so=>{
         if(!so.promo_applied)return false;
         if(so.status==='deleted')return false;
-        if(repFilter&&repFilter!=='all')return so.created_by===repFilter;
+        if(repFilter&&repFilter!=='all'){const cc=cust.find(x=>x.id===so.customer_id);return(cc?.primary_rep_id||so.created_by)===repFilter}
         return true;
       }).map(so=>{
         const c=cust.find(x=>x.id===so.customer_id);
-        const rep=REPS.find(r=>r.id===so.created_by);
+        const rep=REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by));
         const _aq={};safeItems(so).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_aq[d.art_file_id]=(_aq[d.art_file_id]||0)+q2}})});
         const soAf=safeArt(so);let productCost=0,decoCost=0,promoRev=0;
         safeItems(so).forEach(it=>{
@@ -14954,7 +14954,7 @@ export default function App(){
         const _af=safeArt(so).find(f=>f.id===j.art_file_id);
         if(j.art_status==='needs_art'&&!j.assigned_artist&&!(j.art_requests||[]).length&&!(_af&&((_af.mockup_files||[]).length||(_af.files||[]).length||(_af.status&&_af.status!=='waiting_for_art'&&_af.status!=='needs_art'))))return;// skip truly untouched
         allArtJobs.push({...j,so,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',alpha:c?.alpha_tag||'',
-          rep:REPS.find(r=>r.id===so.created_by)?.name||'—',repId:so.created_by,
+          rep:REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name||'—',repId:c?.primary_rep_id||so.created_by,
           expected:so.expected_date,daysOut:so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null,
           artFile:safeArt(so).find(f=>f.id===j.art_file_id)});
       });
@@ -14966,14 +14966,14 @@ export default function App(){
         const af=safeArt(so).find(f=>f.id===j.art_file_id);
         if(af&&(af.prod_files||[]).length===0){
           allArtJobs.push({...j,art_status:'production_files_needed',_overrideStatus:true,so,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',alpha:c?.alpha_tag||'',
-            rep:REPS.find(r=>r.id===so.created_by)?.name||'—',repId:so.created_by,
+            rep:REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name||'—',repId:c?.primary_rep_id||so.created_by,
             expected:so.expected_date,daysOut:so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null,
             artFile:af});
         }
       });
     });
 
-    const artistMembers=REPS.filter(r=>(r.role==='art'||r.role==='artist'||r.role==='production')&&r.is_active!==false);
+    const artistMembers=REPS.filter(r=>(r.role==='art'||r.role==='artist')&&r.is_active!==false);
 
     const filtered=allArtJobs.filter(j=>{
       if(artDashView==='artist'&&artFilter!=='all'&&j.assigned_artist!==artFilter)return false;
@@ -15549,7 +15549,7 @@ export default function App(){
           'Silver':'#C0C0C0','Royal':'#4169e1','Cardinal':'#8C1515','Green':'#166534','Orange':'#EA580C',
           'Navy 2767':'#001f3f','PMS 286':'#0033A0','PMS 032':'#EF3340','PMS 877':'#C0C0C0'};
         const artist=REPS.find(r=>r.id===j.assigned_artist);
-        const rep=REPS.find(r=>r.id===so.created_by);
+        const rep=REPS.find(r=>r.id===(cust.find(x=>x.id===so.customer_id)?.primary_rep_id||so.created_by));
         const latestReq=(j.art_requests||[]).length>0?j.art_requests[j.art_requests.length-1]:null;
 
         // Build size grid
@@ -16251,7 +16251,7 @@ export default function App(){
     const{decoTasks}=buildWarehouseData();
     const isAdmin=cu?.role==='admin'||cu?.role==='prod_manager'||cu?.role==='gm';
     const isDecorator=cu?.role==='production'||cu?.role==='prod_assistant';
-    const decorators=REPS.filter(r=>r.role==='production'||r.role==='prod_assistant').filter(r=>r.is_active!==false);
+    const decorators=REPS.filter(r=>r.role==='production').filter(r=>r.is_active!==false);
 
     // Sort all deco tasks by due date (earliest first), then urgent
     const sortByDue=(a,b)=>{
@@ -16291,7 +16291,7 @@ export default function App(){
     const completedDecoJobs=[];
     sos.filter(so=>{const st=calcSOStatus(so);return st!=='complete'}).forEach(so=>{
       const c=cust.find(x=>x.id===so.customer_id);const cName=c?.name||'Unknown';const alpha=c?.alpha_tag||'';
-      const rep=REPS.find(r=>r.id===so.created_by)?.name?.split(' ')[0]||'—';
+      const rep=REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name?.split(' ')[0]||'—';
       const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
       safeJobs(so).filter(j=>j.prod_status==='completed').forEach(j=>{
         completedDecoJobs.push({so,soId:so.id,job:j,cName,alpha,rep,daysOut,
@@ -19980,7 +19980,7 @@ export default function App(){
 
             {/* Artist Rates */}
             <div style={{fontSize:13,fontWeight:700,color:'#6d28d9',marginBottom:8,borderBottom:'2px solid #ede9fe',paddingBottom:4}}>Art Department</div>
-            {REPS.filter(r=>(r.role==='art'||r.role==='artist'||r.role==='production')&&r.is_active!==false).map(r=>
+            {REPS.filter(r=>(r.role==='art'||r.role==='artist')&&r.is_active!==false).map(r=>
               <div key={r.id} style={{display:'flex',alignItems:'center',gap:12,padding:'6px 0',borderBottom:'1px solid #f1f5f9'}}>
                 <span style={{fontWeight:600,fontSize:13,minWidth:140}}>{r.name}</span>
                 <span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#ede9fe',color:'#6d28d9'}}>{r.role}</span>
@@ -19993,8 +19993,8 @@ export default function App(){
                 {laborRates[r.name]>0&&<span style={{fontSize:10,color:'#22c55e',fontWeight:600}}>${((laborRates[r.name]||0)/60).toFixed(3)}/min</span>}
               </div>
             )}
-            {REPS.filter(r=>(r.role==='art'||r.role==='artist'||r.role==='production')&&r.is_active!==false).length===0&&
-              <div style={{fontSize:11,color:'#94a3b8',padding:8}}>No artists/production team found. Add team members in Team Directory with role "art" or "production".</div>}
+            {REPS.filter(r=>(r.role==='art'||r.role==='artist')&&r.is_active!==false).length===0&&
+              <div style={{fontSize:11,color:'#94a3b8',padding:8}}>No artists found. Add team members in Team Directory with role "art".</div>}
 
             {/* Decorator/Production Rates */}
             <div style={{fontSize:13,fontWeight:700,color:'#2563eb',marginTop:16,marginBottom:8,borderBottom:'2px solid #dbeafe',paddingBottom:4}}>Decoration / Production Staff</div>
@@ -20075,7 +20075,7 @@ export default function App(){
     if(upper.startsWith('IF-')){
       for(const so of sos){
         const cc=cust.find(x=>x.id===so.customer_id);
-        const rep=REPS.find(r=>r.id===so.created_by)?.name?.split(' ')[0]||'—';
+        const rep=REPS.find(r=>r.id===(cc?.primary_rep_id||so.created_by))?.name?.split(' ')[0]||'—';
         const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
         const items=safeItems(so);
         for(let ii=0;ii<items.length;ii++){
