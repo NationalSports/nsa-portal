@@ -18298,8 +18298,10 @@ export default function App(){
                 if(createdProducts.length>0){setProd(prev=>[...createdProducts,...prev]);nf(createdProducts.length+' new product(s) added to catalog')}
 
                 const newItems=keeping.map(it=>{
-                  const au=isAUi(it.brand);const sell=it.rate||0;const cost=au?rQ(sell):rQ(sell/mk);
-                  const retail=au?rQ(sell/(1-disc)):0;const szKeys=Object.keys(it.sizes||{});
+                  const au=isAUi(it.brand);const sell=it.rate||0;
+                  const retail=au?rQ(sell/(1-disc)):0;
+                  const costMult=it.brand==='Adidas'?0.375:(it.brand==='Under Armour'||it.brand==='New Balance')?0.425:0;
+                  const cost=au?rQ(retail*costMult):rQ(sell/mk);const szKeys=Object.keys(it.sizes||{});
                   return{product_id:it.catMatch?.id||null,sku:it.sku,name:it.catMatch?.name||it.name,brand:it.catMatch?.brand||it.brand,
                     color:it.color||it.catMatch?.color||'',nsa_cost:it.catMatch?.nsa_cost||cost,retail_price:it.catMatch?.retail_price||retail,unit_sell:sell,
                     available_sizes:szKeys.length>0?szKeys.sort((a,b)=>SZ_ORD_I.indexOf(a)-SZ_ORD_I.indexOf(b)):(it.catMatch?.available_sizes||['S','M','L','XL','2XL']),
