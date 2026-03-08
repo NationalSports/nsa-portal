@@ -40,6 +40,8 @@ try {
   );
 } catch (err) {
   rawOutput = (err.stdout || '') + '\n' + (err.stderr || '');
+  // react-scripts test --json can exit non-zero even when all tests pass (known issue).
+  // Store the raw exit code; we'll override it below if the JSON report shows all tests passed.
   exitCode = err.status || 1;
 }
 
@@ -84,6 +86,12 @@ if (results && results.testResults) {
     });
     suiteResults.push(suiteData);
   });
+}
+
+// Determine exit code from actual results: if all tests passed, exit 0 regardless of
+// the process exit code (react-scripts test --json may exit non-zero spuriously in CI).
+if (results && results.testResults && failed === 0 && totalTests > 0) {
+  exitCode = 0;
 }
 
 // Console summary
