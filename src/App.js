@@ -18261,9 +18261,9 @@ export default function App(){
                 const cost=au?rQ(retail*costMult):rQ(sell/mk);
                 return<tr key={i}>
                   <td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{it.sku}</td>
-                  <td>{it.catMatch?<span style={{color:'#166534'}}>✅ {(it.name||'').slice(0,35)}</span>:(it.name||'').slice(0,35)}</td>
+                  <td><input className="form-input" style={{fontSize:11,padding:'2px 4px',width:'100%',minWidth:120}} value={it._name!=null?it._name:(it.name||'')} onChange={e=>{const v=e.target.value;const pi=it._pi;setImp(x=>({...x,parsed:x.parsed.map((p,j)=>j===pi?{...p,_name:v}:p)}))}}/></td>
                   <td style={{fontSize:10}}>{it.brand}</td>
-                  <td style={{fontSize:10}}>{it.color}</td>
+                  <td><input className="form-input" style={{fontSize:10,padding:'2px 4px',width:90}} value={it._color!=null?it._color:(it.color||'')} onChange={e=>{const v=e.target.value;const pi=it._pi;setImp(x=>({...x,parsed:x.parsed.map((p,j)=>j===pi?{...p,_color:v}:p)}))}}/></td>
                   <td style={{textAlign:'right'}}>{au?<input type="number" step="0.01" min="0" className="form-input" style={{width:75,fontSize:11,textAlign:'right',padding:'2px 4px'}} value={retail||''} onChange={e=>{const v=parseFloat(e.target.value)||0;const pi=it._pi;setImp(x=>({...x,parsed:x.parsed.map((p,j)=>j===pi?{...p,_retail:v}:p)}))}}/>:<span style={{color:'#94a3b8'}}>—</span>}</td>
                   <td style={{textAlign:'right'}}>${cost.toFixed(2)}</td>
                   <td style={{textAlign:'right',fontWeight:600}}>${sell.toFixed(2)}</td>
@@ -18293,8 +18293,8 @@ export default function App(){
                     const costMult2=it.brand==='Adidas'?0.375:(it.brand==='Under Armour'||it.brand==='New Balance')?0.425:0;
                     const retail=it._retail!=null?it._retail:(au?rQ(sell/(1-disc)):0);
                     const cost=au?rQ(retail*costMult2):rQ(sell/mk);const szKeys=Object.keys(it.sizes||{});
-                    const newProd={id:'p-'+Date.now()+'-'+pi,vendor_id:null,sku:it.sku,name:it.name,brand:it.brand||'',
-                      color:it.color||'',category:'',retail_price:retail,nsa_cost:cost,
+                    const newProd={id:'p-'+Date.now()+'-'+pi,vendor_id:null,sku:it.sku,name:it._name!=null?it._name:it.name,brand:it.brand||'',
+                      color:it._color!=null?it._color:(it.color||''),category:'',retail_price:retail,nsa_cost:cost,
                       available_sizes:szKeys.length>0?szKeys.sort((a,b)=>SZ_ORD_I.indexOf(a)-SZ_ORD_I.indexOf(b)):['S','M','L','XL','2XL'],
                       is_active:true,_inv:{},_alerts:{}};
                     createdProducts.push(newProd);
@@ -18308,8 +18308,10 @@ export default function App(){
                   const costMult=it.brand==='Adidas'?0.375:(it.brand==='Under Armour'||it.brand==='New Balance')?0.425:0;
                   const retail=it._retail!=null?it._retail:(au?rQ(sell/(1-disc)):0);
                   const cost=au?rQ(retail*costMult):rQ(sell/mk);const szKeys=Object.keys(it.sizes||{});
-                  return{product_id:it.catMatch?.id||null,sku:it.sku,name:it.catMatch?.name||it.name,brand:it.catMatch?.brand||it.brand,
-                    color:it.color||it.catMatch?.color||'',nsa_cost:it.catMatch?.nsa_cost||cost,retail_price:it.catMatch?.retail_price||retail,unit_sell:sell,
+                  const itemName=it._name!=null?it._name:(it.catMatch?.name||it.name);
+                  const itemColor=it._color!=null?it._color:(it.color||it.catMatch?.color||'');
+                  return{product_id:it.catMatch?.id||null,sku:it.sku,name:itemName,brand:it.catMatch?.brand||it.brand,
+                    color:itemColor,nsa_cost:it.catMatch?.nsa_cost||cost,retail_price:it.catMatch?.retail_price||retail,unit_sell:sell,
                     available_sizes:szKeys.length>0?szKeys.sort((a,b)=>SZ_ORD_I.indexOf(a)-SZ_ORD_I.indexOf(b)):(it.catMatch?.available_sizes||['S','M','L','XL','2XL']),
                     sizes:it.sizes||{OSFA:it.totalQty||1},decorations:[],is_custom:it.is_custom||false,pick_lines:[],po_lines:[]};
                 });
