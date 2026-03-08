@@ -19455,22 +19455,6 @@ export default function App(){
     // Keep ref updated for background auto-sync
     qbSyncAllRef.current=syncAll;
 
-    // ── AUTO-SYNC SCHEDULER ──
-    // Triggers syncAll based on the selected sync mode (hourly/daily/realtime)
-    React.useEffect(()=>{
-      if(!qbConfig.connected||qbConfig.autoSync==='manual'||qbSyncing)return;
-      const intervals={hourly:3600000,daily:86400000,realtime:300000};
-      const ms=intervals[qbConfig.autoSync];
-      if(!ms)return;
-      const last=qbConfig.lastSync?new Date(qbConfig.lastSync).getTime():0;
-      const elapsed=Date.now()-last;
-      // If overdue, sync now
-      if(elapsed>=ms){syncAll();return;}
-      // Otherwise schedule next sync
-      const tid=setTimeout(()=>syncAll(),ms-elapsed);
-      return()=>clearTimeout(tid);
-    },[qbConfig.connected,qbConfig.autoSync,qbConfig.lastSync]);
-
     // Build counts for overview
     const soMap=qbConfig.qbSOMap||{};
     const poMap=qbConfig.qbPOMap||{};
