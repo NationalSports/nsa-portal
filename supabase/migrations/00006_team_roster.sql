@@ -10,7 +10,7 @@ alter table public.user_profiles
 
 alter table public.user_profiles
   add constraint user_profiles_role_check
-  check (role in ('admin','gm','rep','csr','artist','production','warehouse','accounting'));
+  check (role in ('admin','gm','rep','csr','artist','art','production','prod_manager','prod_assistant','warehouse','accounting'));
 
 -- ─── 2. Remove demo users ───────────────────────────────────
 
@@ -61,8 +61,8 @@ insert into public.user_profiles (id, full_name, role, pin) values
   ('00000000-0000-0000-0000-000000000062', 'Fransisco Moreno',    'production', null),
   ('00000000-0000-0000-0000-000000000063', 'Griselda Franco',     'production', null),
   ('00000000-0000-0000-0000-000000000064', 'Luiz Acosta',         'production', null),
-  ('00000000-0000-0000-0000-000000000065', 'Claudia Hernandez',   'production', null),
-  ('00000000-0000-0000-0000-000000000066', 'Roberto Rivas',       'production', null);
+  ('00000000-0000-0000-0000-000000000065', 'Claudia Hernandez',   'prod_assistant', null),
+  ('00000000-0000-0000-0000-000000000066', 'Roberto Rivas',       'prod_assistant', null);
 
 -- ─── 4. RLS policy updates for 'accounting' role ─────────────
 -- Accounting gets CSR-level access + invoice/payment write access.
