@@ -9288,7 +9288,8 @@ export default function App(){
   // Helper: get rep ID for a customer (from customer.primary_rep_id or SO created_by)
   const getRepForCustomer=(custId)=>{const c=cust.find(x=>x.id===custId);return c?.primary_rep_id||null};
   // Helper: get CSR IDs assigned to a rep
-  const getCsrsForRep=(repId)=>repCsrAssignments.filter(a=>a.rep_id===repId&&a.is_active!==false).map(a=>a.csr_id);
+  const getCsrsForRep=(repId)=>repCsrAssignments.filter(a=>a.rep_id===repId&&a.is_active!==false).sort((a,b)=>(b.is_primary?1:0)-(a.is_primary?1:0)).map(a=>a.csr_id);
+  const getPrimaryCsrForRep=(repId)=>{const a=repCsrAssignments.find(a=>a.rep_id===repId&&a.is_active!==false&&a.is_primary);return a?a.csr_id:getCsrsForRep(repId)[0]||null};
   // Helper: get rep IDs that a CSR is assigned to
   const getRepsForCsr=(csrId)=>repCsrAssignments.filter(a=>a.csr_id===csrId&&a.is_active!==false).map(a=>a.rep_id);
   // Helper: check if current user should see a todo for a given customer/SO
@@ -9431,6 +9432,7 @@ export default function App(){
           {todos.length===0?<div className="empty" style={{padding:20}}>All clear!</div>:
           todos.slice(0,12).map((t,i)=><div key={i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer'}} onClick={()=>{if(t.type==='issue'){setPg('settings')}else if(t.type==='est_update_request'||t.type==='est_approved'||t.type==='follow_up'){if(t.est){setEEst(t.est);setEEstC(t.estC);setPg('estimates')}}else if(t.so){if(t.type==='art'&&t.jobId){const jIdx=safeJobs(t.so).findIndex(jj=>jj.id===t.jobId);setESOTab('jobs');setESOScrollJob(jIdx>=0?jIdx:null)}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
             <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}</div></div>
+            <button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#f0f9ff',color:'#0891b2',border:'1px solid #a5f3fc',borderRadius:8,whiteSpace:'nowrap',marginRight:4}} onClick={e=>{e.stopPropagation();setTodoModal({open:true,title:t.msg.replace(/^[^\w]*/,''),description:t.detail||'',assigned_to:getCsrsForRep(t.repId||cu.id)[0]||'',so_id:t.so?.id||'',customer_id:t.so?.customer_id||t.est?.customer_id||'',priority:t.priority<=1?1:2})}}>Assign</button>
             <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:t.type==='art'?'#fef3c7':'#eff6ff',color:t.type==='art'?'#92400e':'#2563eb',fontWeight:600,whiteSpace:'nowrap'}}>{t.action}</span>
           </div>)}
         </div></div>
@@ -9447,11 +9449,32 @@ export default function App(){
             </div>})}
         </div></div>
     </div>
+    {/* Assigned Tasks for Admin */}
+    {myAssignedTodos.length>0&&<div className="card" style={{marginBottom:16}}>
+      <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+        <h2>📌 Assigned Tasks ({myAssignedTodos.length})</h2>
+        <button className="btn btn-sm btn-primary" onClick={()=>setTodoModal({open:true,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2})}>+ New Task</button>
+      </div>
+      <div className="card-body" style={{padding:0,maxHeight:300,overflow:'auto'}}>
+        {myAssignedTodos.map(t=>{const assignee=REPS.find(r=>r.id===t.assigned_to);const creator=REPS.find(r=>r.id===t.created_by);const isAssignedToMe=t.assigned_to===cu.id;
+          return<div key={t.id} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',background:isAssignedToMe?'#fef3c7':'white',cursor:'pointer'}} onClick={()=>setTodoDetailId(t.id)}>
+            <div style={{display:'flex',alignItems:'center',gap:8}}>
+              <div style={{flex:1}}>
+                <div style={{fontSize:13,fontWeight:600}}>{t.title}</div>
+                <div style={{fontSize:11,color:'#64748b'}}>{isAssignedToMe?'From: '+creator?.name:'Assigned to: '+assignee?.name}{t.so_id?' · '+t.so_id:''}</div>
+              </div>
+              <span style={{fontSize:9,padding:'2px 8px',borderRadius:8,background:t.priority<=1?'#fef2f2':'#eff6ff',color:t.priority<=1?'#dc2626':'#2563eb',fontWeight:600}}>{t.priority<=1?'High':'Normal'}</span>
+              {t.comments?.length>0&&<span style={{fontSize:10,color:'#64748b'}}>{t.comments.length} comment{t.comments.length!==1?'s':''}</span>}
+            </div>
+          </div>})}
+      </div>
+    </div>}
     <div className="card" style={{marginBottom:16}}><div className="card-header"><h2>Quick Actions</h2></div><div className="card-body" style={{display:'flex',gap:8,flexWrap:'wrap'}}>
       <button className="btn btn-primary" onClick={()=>newE(null)}><Icon name="file" size={14}/> New Estimate</button>
       <button className="btn btn-secondary" onClick={()=>{setPg('customers');setCM({open:true,c:null})}}><Icon name="plus" size={14}/> New Customer</button>
       <button className="btn btn-secondary" onClick={()=>setPg('production')}><Icon name="grid" size={14}/> Prod Board</button>
-      <button className="btn btn-secondary" onClick={()=>setPg('messages')}><Icon name="mail" size={14}/> Messages</button></div></div>
+      <button className="btn btn-secondary" onClick={()=>setPg('messages')}><Icon name="mail" size={14}/> Messages</button>
+      <button className="btn btn-secondary" onClick={()=>setTodoModal({open:true,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2})}>📌 Assign Task</button></div></div>
     </>}
 
     {/* ═══ SALES REP VIEW ═══ */}
@@ -9469,6 +9492,7 @@ export default function App(){
           {myTodos.filter(t=>t.role==='sales'||t.role==='all').length===0?<div className="empty" style={{padding:20}}>Nothing pending!</div>:
           myTodos.filter(t=>t.role==='sales'||t.role==='all').slice(0,12).map((t,i)=><div key={i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer'}} onClick={()=>{if(t.type==='est_update_request'||t.type==='est_approved'||t.type==='follow_up'){if(t.est){setEEst(t.est);setEEstC(t.estC);setPg('estimates')}}else if(t.so){if(t.type==='art'&&t.jobId){const jIdx=safeJobs(t.so).findIndex(jj=>jj.id===t.jobId);setESOTab('jobs');setESOScrollJob(jIdx>=0?jIdx:null)}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
             <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}{t.repId&&cu.role!=='rep'?<span style={{marginLeft:6,fontSize:10,color:'#2563eb'}}>({REPS.find(r=>r.id===t.repId)?.name?.split(' ')[0]||''})</span>:''}</div></div>
+            <button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#f0f9ff',color:'#0891b2',border:'1px solid #a5f3fc',borderRadius:8,whiteSpace:'nowrap',marginRight:4}} onClick={e=>{e.stopPropagation();setTodoModal({open:true,title:t.msg.replace(/^[^\w]*/,''),description:t.detail||'',assigned_to:getCsrsForRep(t.repId||cu.id)[0]||'',so_id:t.so?.id||'',customer_id:t.so?.customer_id||t.est?.customer_id||'',priority:t.priority<=1?1:2})}}>Assign</button>
             <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:t.type==='art'?'#fef3c7':'#eff6ff',color:t.type==='art'?'#92400e':'#2563eb',fontWeight:600}}>{t.action}</span>
           </div>)}</div></div>
       <div className="card"><div className="card-header"><h2>📊 My Pipeline</h2></div>
@@ -9810,7 +9834,19 @@ export default function App(){
           <div><label className="form-label">Assign To *</label>
             <select className="form-select" value={todoModal.assigned_to} onChange={e=>setTodoModal(m=>({...m,assigned_to:e.target.value}))}>
               <option value="">Select person...</option>
-              {REPS.filter(r=>r.is_active!==false&&(r.role==='csr'||r.role==='rep'||r.role==='admin')).map(r=><option key={r.id} value={r.id}>{r.name} ({r.role})</option>)}
+              {(()=>{
+                const isAdminGm=cu.role==='admin'||cu.role==='gm';
+                if(isAdminGm){return REPS.filter(r=>r.is_active!==false&&(r.role==='csr'||r.role==='rep'||r.role==='admin')).map(r=><option key={r.id} value={r.id}>{r.name} ({r.role}){getPrimaryCsrForRep(cu.id)===r.id?' ★':''}</option>)}
+                const myCsrIds=getCsrsForRep(cu.id);
+                const myCsrs=REPS.filter(r=>myCsrIds.includes(r.id)&&r.is_active!==false);
+                const otherReps=REPS.filter(r=>r.is_active!==false&&r.role==='rep'&&r.id!==cu.id);
+                const otherCsrs=REPS.filter(r=>r.is_active!==false&&r.role==='csr'&&!myCsrIds.includes(r.id));
+                return[
+                  myCsrs.length>0&&<optgroup key="my-csrs" label="My CSRs">{myCsrs.map(r=><option key={r.id} value={r.id}>{r.name}{getPrimaryCsrForRep(cu.id)===r.id?' ★ Primary':''}</option>)}</optgroup>,
+                  otherReps.length>0&&<optgroup key="other-reps" label="Other Reps">{otherReps.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</optgroup>,
+                  otherCsrs.length>0&&<optgroup key="other-csrs" label="Other CSRs">{otherCsrs.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</optgroup>
+                ];
+              })()}
             </select></div>
           <div><label className="form-label">Priority</label>
             <select className="form-select" value={todoModal.priority} onChange={e=>setTodoModal(m=>({...m,priority:+e.target.value}))}>
@@ -12331,7 +12367,7 @@ export default function App(){
       {/* Report controls */}
       <div style={{display:'flex',gap:8,marginBottom:12,alignItems:'center',flexWrap:'wrap'}}>
         <div style={{display:'flex',gap:4}}>
-          {[['overview','📊 Overview'],['pipeline','💰 Pipeline'],['customers','👥 Customers'],['products','📦 Products'],['reps','🏆 Reps'],['production','🏭 Production'],['time','⏱️ Time & Labor'],['sales_tax','🧾 Sales Tax']].map(([v,l])=>
+          {[['overview','📊 Overview'],['pipeline','💰 Pipeline'],['customers','👥 Customers'],['products','📦 Products'],['reps','🏆 Reps'],['production','🏭 Production'],['time','⏱️ Time & Labor'],['sales_tax','🧾 Sales Tax'],['csr_tasks','📌 CSR Tasks']].map(([v,l])=>
             <button key={v} className={`btn btn-sm ${rptTab===v?'btn-primary':'btn-secondary'}`} onClick={()=>setRptTab(v)}>{l}</button>)}
         </div>
         <select className="form-select" style={{width:140,fontSize:11}} value={rptRep} onChange={e=>setRptRep(e.target.value)}>
@@ -13003,6 +13039,85 @@ export default function App(){
             <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
               {exemptCusts.map(c=><span key={c.id} style={{padding:'4px 10px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:6,fontSize:12,fontWeight:600,color:'#dc2626'}}>{c.name} ({c.shipping_state||'?'})</span>)}
             </div>}
+          </div>
+        </div>
+        </>})()}
+
+      {/* ═══ CSR Tasks Report ═══ */}
+      {rptTab==='csr_tasks'&&(()=>{
+        const csrMembers=REPS.filter(r=>r.role==='csr'&&r.is_active!==false);
+        const allTasks=assignedTodos;
+        const csrStats=csrMembers.map(csrM=>{
+          const assigned=allTasks.filter(t=>t.assigned_to===csrM.id);
+          const open=assigned.filter(t=>t.status==='open');
+          const completed=assigned.filter(t=>t.status==='completed'||t.status==='done');
+          const created=allTasks.filter(t=>t.created_by===csrM.id);
+          const assignedReps=repCsrAssignments.filter(a=>a.csr_id===csrM.id&&a.is_active!==false);
+          const primaryOf=assignedReps.filter(a=>a.is_primary).map(a=>REPS.find(r=>r.id===a.rep_id)?.name?.split(' ')[0]||'?');
+          const secondaryOf=assignedReps.filter(a=>!a.is_primary).map(a=>REPS.find(r=>r.id===a.rep_id)?.name?.split(' ')[0]||'?');
+          const avgTime=completed.length>0?completed.reduce((a,t)=>{const c=new Date(t.updated_at||t.created_at);const s=new Date(t.created_at);return a+(c-s)},0)/completed.length/3600000:null;
+          return{id:csrM.id,name:csrM.name,open:open.length,completed:completed.length,total:assigned.length,created:created.length,primaryOf,secondaryOf,avgHours:avgTime,highPriority:open.filter(t=>t.priority<=1).length};
+        }).sort((a,b)=>b.total-a.total);
+        const totalOpen=csrStats.reduce((a,s)=>a+s.open,0);
+        const totalCompleted=csrStats.reduce((a,s)=>a+s.completed,0);
+        const totalTasks=allTasks.length;
+        return<>
+        <div className="stats-row" style={{marginBottom:16}}>
+          <div className="stat-card"><div className="stat-label">Total Tasks</div><div className="stat-value">{totalTasks}</div></div>
+          <div className="stat-card"><div className="stat-label">Open</div><div className="stat-value" style={{color:'#d97706'}}>{totalOpen}</div></div>
+          <div className="stat-card"><div className="stat-label">Completed</div><div className="stat-value" style={{color:'#166534'}}>{totalCompleted}</div></div>
+          <div className="stat-card"><div className="stat-label">Active CSRs</div><div className="stat-value" style={{color:'#2563eb'}}>{csrMembers.length}</div></div>
+        </div>
+        <div className="card" style={{marginBottom:12}}>
+          <div className="card-header"><h2 style={{margin:0,fontSize:14}}>📌 CSR Task Summary</h2></div>
+          <div className="card-body">
+            {csrStats.length===0?<div className="empty">No CSRs found.</div>:
+            <table style={{fontSize:12,width:'100%'}}><thead><tr><th>CSR</th><th>Primary For</th><th>Also Supports</th><th style={{textAlign:'center'}}>Open</th><th style={{textAlign:'center'}}>High Priority</th><th style={{textAlign:'center'}}>Completed</th><th style={{textAlign:'center'}}>Total Assigned</th><th style={{textAlign:'center'}}>Created by CSR</th><th style={{textAlign:'right'}}>Avg Completion (hrs)</th></tr></thead>
+            <tbody>{csrStats.map(s=><tr key={s.id}>
+              <td style={{fontWeight:700}}>{s.name}</td>
+              <td style={{fontSize:11}}>{s.primaryOf.length>0?s.primaryOf.join(', '):<span style={{color:'#94a3b8'}}>None</span>}</td>
+              <td style={{fontSize:11,color:'#64748b'}}>{s.secondaryOf.length>0?s.secondaryOf.join(', '):'—'}</td>
+              <td style={{textAlign:'center',fontWeight:700,color:s.open>0?'#d97706':'#166534'}}>{s.open}</td>
+              <td style={{textAlign:'center',color:s.highPriority>0?'#dc2626':'#94a3b8',fontWeight:s.highPriority>0?700:400}}>{s.highPriority}</td>
+              <td style={{textAlign:'center',color:'#166534'}}>{s.completed}</td>
+              <td style={{textAlign:'center'}}>{s.total}</td>
+              <td style={{textAlign:'center',color:'#64748b'}}>{s.created}</td>
+              <td style={{textAlign:'right',color:'#64748b'}}>{s.avgHours!==null?s.avgHours.toFixed(1):'—'}</td>
+            </tr>)}</tbody></table>}
+          </div>
+        </div>
+        <div className="card" style={{marginBottom:12}}>
+          <div className="card-header"><h2 style={{margin:0,fontSize:14}}>📋 All Open Tasks</h2></div>
+          <div className="card-body">
+            {allTasks.filter(t=>t.status==='open').length===0?<div className="empty">No open tasks.</div>:
+            <table style={{fontSize:12,width:'100%'}}><thead><tr><th>Task</th><th>Assigned To</th><th>Created By</th><th>SO</th><th>Priority</th><th>Created</th><th>Comments</th></tr></thead>
+            <tbody>{allTasks.filter(t=>t.status==='open').sort((a,b)=>(a.priority||2)-(b.priority||2)).map(t=>{
+              const assignee=REPS.find(r=>r.id===t.assigned_to);const creator=REPS.find(r=>r.id===t.created_by);
+              return<tr key={t.id} style={{cursor:'pointer'}} onClick={()=>setTodoDetailId(t.id)}>
+                <td style={{fontWeight:600}}>{t.title}</td>
+                <td>{assignee?.name||'?'}</td>
+                <td style={{color:'#64748b'}}>{creator?.name||'?'}</td>
+                <td style={{color:'#2563eb'}}>{t.so_id||'—'}</td>
+                <td><span style={{fontSize:10,padding:'1px 6px',borderRadius:6,background:t.priority<=1?'#fef2f2':'#eff6ff',color:t.priority<=1?'#dc2626':'#2563eb',fontWeight:600}}>{t.priority===0?'Urgent':t.priority===1?'High':'Normal'}</span></td>
+                <td style={{fontSize:10,color:'#94a3b8'}}>{t.created_at?new Date(t.created_at).toLocaleDateString():''}</td>
+                <td style={{textAlign:'center',color:'#64748b'}}>{(t.comments||[]).length||''}</td>
+              </tr>})}</tbody></table>}
+          </div>
+        </div>
+        <div className="card" style={{marginBottom:12}}>
+          <div className="card-header"><h2 style={{margin:0,fontSize:14}}>✅ Recently Completed</h2></div>
+          <div className="card-body">
+            {allTasks.filter(t=>t.status==='completed'||t.status==='done').length===0?<div className="empty">No completed tasks yet.</div>:
+            <table style={{fontSize:12,width:'100%'}}><thead><tr><th>Task</th><th>Completed By</th><th>Created By</th><th>SO</th><th>Completed</th></tr></thead>
+            <tbody>{allTasks.filter(t=>t.status==='completed'||t.status==='done').sort((a,b)=>new Date(b.updated_at||0)-new Date(a.updated_at||0)).slice(0,25).map(t=>{
+              const assignee=REPS.find(r=>r.id===t.assigned_to);const creator=REPS.find(r=>r.id===t.created_by);
+              return<tr key={t.id}>
+                <td>{t.title}</td>
+                <td>{assignee?.name||'?'}</td>
+                <td style={{color:'#64748b'}}>{creator?.name||'?'}</td>
+                <td style={{color:'#2563eb'}}>{t.so_id||'—'}</td>
+                <td style={{fontSize:10,color:'#94a3b8'}}>{t.updated_at?new Date(t.updated_at).toLocaleDateString():''}</td>
+              </tr>})}</tbody></table>}
           </div>
         </div>
         </>})()}
@@ -19636,7 +19751,7 @@ export default function App(){
             <td style={{fontWeight:700,fontSize:13}}>{m.name}</td>
             <td><span className={`badge ${roleBadge[m.role]||'badge-gray'}`}>{roles[m.role]||m.role}</span></td>
             {g.role==='rep'&&<td style={{fontSize:11}}>
-              {assignedCsrs.length>0?assignedCsrs.map(a=>{const csrM=REPS.find(r=>r.id===a.csr_id);return<span key={a.id} style={{display:'inline-block',padding:'1px 6px',marginRight:4,background:'#dcfce7',color:'#166534',borderRadius:8,fontSize:10,fontWeight:600}}>{csrM?.name?.split(' ')[0]||'?'}</span>}):<span style={{color:'#94a3b8'}}>None</span>}
+              {assignedCsrs.length>0?assignedCsrs.map(a=>{const csrM=REPS.find(r=>r.id===a.csr_id);return<span key={a.id} style={{display:'inline-block',padding:'1px 6px',marginRight:4,background:a.is_primary?'#fef3c7':'#dcfce7',color:a.is_primary?'#92400e':'#166534',borderRadius:8,fontSize:10,fontWeight:600}}>{a.is_primary?'★ ':''}{csrM?.name?.split(' ')[0]||'?'}</span>}):<span style={{color:'#94a3b8'}}>None</span>}
             </td>}
             <td style={{fontSize:11,color:'#64748b'}}>{m.email||'—'}</td>
             <td style={{fontSize:11,color:'#64748b'}}>{m.phone||'—'}</td>
@@ -19683,20 +19798,25 @@ export default function App(){
           {/* CSR Assignment — only for reps */}
           {editMember.role==='rep'&&<div style={{marginBottom:16}}>
             <label className="form-label" style={{marginBottom:8}}>Assigned CSR(s)</label>
-            <div style={{fontSize:11,color:'#64748b',marginBottom:6}}>CSRs assigned to this rep will see their customers' messages and todos, and can receive task assignments.</div>
+            <div style={{fontSize:11,color:'#64748b',marginBottom:6}}>CSRs assigned to this rep will see their customers' messages and todos, and can receive task assignments. Click the star to set a primary CSR (default for task assignments).</div>
             <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
               {REPS.filter(r=>r.role==='csr'&&r.is_active!==false).map(csrMember=>{
-                const isAssigned=repCsrAssignments.some(a=>a.rep_id===editMember.id&&a.csr_id===csrMember.id&&a.is_active!==false);
-                return<label key={csrMember.id} style={{fontSize:11,display:'flex',alignItems:'center',gap:4,padding:'4px 10px',background:isAssigned?'#dcfce7':'#f8fafc',borderRadius:6,cursor:'pointer',border:'1px solid '+(isAssigned?'#86efac':'#e2e8f0')}}>
+                const assignment=repCsrAssignments.find(a=>a.rep_id===editMember.id&&a.csr_id===csrMember.id&&a.is_active!==false);
+                const isAssigned=!!assignment;
+                const isPrimary=assignment?.is_primary===true;
+                return<label key={csrMember.id} style={{fontSize:11,display:'flex',alignItems:'center',gap:4,padding:'4px 10px',background:isAssigned?'#dcfce7':'#f8fafc',borderRadius:6,cursor:'pointer',border:'1px solid '+(isPrimary?'#fbbf24':isAssigned?'#86efac':'#e2e8f0')}}>
                   <input type="checkbox" checked={isAssigned} onChange={()=>{
                     if(isAssigned){
-                      setRepCsrAssignments(prev=>prev.map(a=>a.rep_id===editMember.id&&a.csr_id===csrMember.id?{...a,is_active:false,updated_at:new Date().toISOString()}:a));
+                      setRepCsrAssignments(prev=>prev.map(a=>a.rep_id===editMember.id&&a.csr_id===csrMember.id?{...a,is_active:false,is_primary:false,updated_at:new Date().toISOString()}:a));
                     }else{
                       const existing=repCsrAssignments.find(a=>a.rep_id===editMember.id&&a.csr_id===csrMember.id);
-                      if(existing){setRepCsrAssignments(prev=>prev.map(a=>a.id===existing.id?{...a,is_active:true,updated_at:new Date().toISOString()}:a))}
-                      else{setRepCsrAssignments(prev=>[...prev,{id:'rca-'+Date.now()+'-'+Math.random().toString(36).slice(2,6),rep_id:editMember.id,csr_id:csrMember.id,is_active:true,created_at:new Date().toISOString(),updated_at:new Date().toISOString()}])}
+                      const hasAny=repCsrAssignments.some(a=>a.rep_id===editMember.id&&a.is_active!==false);
+                      if(existing){setRepCsrAssignments(prev=>prev.map(a=>a.id===existing.id?{...a,is_active:true,is_primary:!hasAny,updated_at:new Date().toISOString()}:a))}
+                      else{setRepCsrAssignments(prev=>[...prev,{id:'rca-'+Date.now()+'-'+Math.random().toString(36).slice(2,6),rep_id:editMember.id,csr_id:csrMember.id,is_active:true,is_primary:!hasAny,created_at:new Date().toISOString(),updated_at:new Date().toISOString()}])}
                     }
-                  }}/>{csrMember.name}</label>})}
+                  }}/>{csrMember.name}
+                  {isAssigned&&<span title={isPrimary?'Primary CSR':'Set as primary'} style={{cursor:'pointer',fontSize:14,color:isPrimary?'#f59e0b':'#d1d5db',marginLeft:2}} onClick={e=>{e.preventDefault();e.stopPropagation();setRepCsrAssignments(prev=>prev.map(a=>a.rep_id===editMember.id?{...a,is_primary:a.csr_id===csrMember.id&&a.is_active!==false,updated_at:new Date().toISOString()}:a))}}>&#9733;</span>}
+                </label>})}
             </div>
           </div>}
 
