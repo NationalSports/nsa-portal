@@ -5054,7 +5054,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           prod_status:'hold',created_at:new Date().toLocaleDateString()};
         const remainJob={...j,total_units:j.total_units-rcvdTotal,fulfilled_units:Math.max(0,j.fulfilled_units-rcvdTotal),item_status:'need_to_order'};
         const newJobs2=[...jobs];newJobs2.splice(jIdx,1,remainJob,splitJob2);
-        sv('jobs',newJobs2);setSplitModal(null);nf('Split! '+splitId+' ready with '+rcvdTotal+' units');
+        const updated={...o,jobs:newJobs2,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setSplitModal(null);nf('Split! '+splitId+' ready with '+rcvdTotal+' units');
       };
 
       // Split job by SKU — separate into one job per garment
@@ -5073,7 +5073,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           prod_status:'hold',created_at:new Date().toLocaleDateString()};
         const remainJob={...j,items:keepItems,total_units:keepUnits,fulfilled_units:keepFul};
         const newJobs2=[...jobs];newJobs2.splice(jIdx,1,remainJob,splitJob2);
-        sv('jobs',newJobs2);setSplitModal(null);nf('Split by SKU! '+splitId+' with '+splitItems.length+' garment(s)');
+        const updated={...o,jobs:newJobs2,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setSplitModal(null);nf('Split by SKU! '+splitId+' with '+splitItems.length+' garment(s)');
       };
       // Custom split — split specific unit counts per item/size
       const splitCustom=(jIdx,splitQtys)=>{
@@ -5102,7 +5102,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const remainJob={...j,items:keepItems,total_units:keepItems.reduce((a,gi)=>a+gi.units,0),
           fulfilled_units:keepItems.reduce((a,gi)=>a+(gi.fulfilled||0),0)};
         const newJobs2=[...jobs];newJobs2.splice(jIdx,1,remainJob,splitJob2);
-        sv('jobs',newJobs2);setSplitModal(null);nf('Custom split! '+splitId+' with '+splitTotal+' units');
+        const updated={...o,jobs:newJobs2,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setSplitModal(null);nf('Custom split! '+splitId+' with '+splitTotal+' units');
       };
       const updJob=(jIdx,k,v)=>{sv('jobs',jobs.map((j,i)=>i===jIdx?{...j,[k]:v}:j))};
       const prodStatuses=['hold','staging','in_process','completed'];
