@@ -1237,7 +1237,7 @@ const buildJobs=(o)=>{
     return o.jobs.map(j=>{
       const af=safeArt(o).find(f=>f.id===j.art_file_id);if(!af)return j;
       if((af.status==='uploaded'||af.status==='needs_approval')&&(j.art_status==='needs_art'||j.art_status==='art_requested'))return{...j,art_status:'waiting_approval'};
-      if(af.status==='approved'&&(j.art_status==='needs_art'||j.art_status==='waiting_approval'))return{...j,art_status:(af.prod_files||[]).length?'art_complete':'production_files_needed'};
+      if(af.status==='approved'&&(j.art_status==='needs_art'||j.art_status==='art_requested'||j.art_status==='waiting_approval'||j.art_status==='art_in_progress'))return{...j,art_status:(af.prod_files||[]).length?'art_complete':'production_files_needed'};
       return j;
     });
   }
@@ -5705,7 +5705,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <td style={{fontWeight:700}}>{j.fulfilled_units}/{j.total_units}
                 <div style={{width:50,background:'#e2e8f0',borderRadius:3,height:4,marginTop:2}}><div style={{height:4,borderRadius:3,background:pct>=100?'#22c55e':pct>0?'#f59e0b':'#e2e8f0',width:pct+'%'}}/></div></td>
               <td><span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:SC[j.item_status]?.bg,color:SC[j.item_status]?.c}}>{itemLabels[j.item_status]}</span></td>
-              <td><select style={{fontSize:10,padding:'2px 4px',borderRadius:4,border:'1px solid #e2e8f0',fontWeight:600,background:SC[j.art_status]?.bg,color:SC[j.art_status]?.c}} value={j.art_status} onChange={e=>{e.stopPropagation();updJob(ji,'art_status',e.target.value)}}>
+              <td><select style={{fontSize:10,padding:'2px 4px',borderRadius:4,border:'1px solid #e2e8f0',fontWeight:600,background:SC[j.art_status]?.bg,color:SC[j.art_status]?.c}} value={j.art_status} onChange={e=>{e.stopPropagation();const ns=e.target.value;if(ns==='art_complete'){const artF2=af.find(a=>a.id===j.art_file_id);if(artF2&&(artF2.prod_files||[]).length===0){nf('Upload production files first','error');return}}const updJobs=safeJobs(o).map((jj,i2)=>{if(i2!==ji)return jj;const upd={...jj,art_status:ns};if(ns==='art_complete'&&jj.item_status==='items_received'&&(jj.prod_status==='hold'||!jj.prod_status))upd.prod_status='staging';return upd});const afSt=ns==='waiting_approval'?'needs_approval':(ns==='production_files_needed'||ns==='art_complete')?'approved':(ns==='needs_art'||ns==='art_requested')?'waiting_for_art':ns==='art_in_progress'?'waiting_for_art':null;const updArt2=afSt&&j.art_file_id?af.map(a=>a.id===j.art_file_id?{...a,status:afSt}:a):af;const updated={...o,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false)}}>
                 {Object.entries(artLabels).map(([k,v])=><option key={k} value={k}>{v}</option>)}</select></td>
               <td>{j.prod_status==='hold'&&!canProduce&&!canOverride2?<span style={{fontSize:10,color:'#94a3b8',fontStyle:'italic'}}>Waiting items/art</span>
                 :<select style={{fontSize:10,padding:'2px 4px',borderRadius:4,border:'1px solid #e2e8f0',fontWeight:600,background:SC[j.prod_status]?.bg||'#f1f5f9',color:SC[j.prod_status]?.c||'#475569'}} value={j.prod_status} onChange={e=>{e.stopPropagation();updJob(ji,'prod_status',e.target.value)}}>
@@ -15104,6 +15104,7 @@ export default function App(){
       buildJobs(so).forEach(j=>{
         const _af=safeArt(so).find(f=>f.id===j.art_file_id);
         if(j.art_status==='needs_art'&&!j.assigned_artist&&!(j.art_requests||[]).length&&!(_af&&((_af.mockup_files||[]).length||(_af.files||[]).length||(_af.status&&_af.status!=='waiting_for_art'&&_af.status!=='needs_art'))))return;// skip truly untouched
+        if(j.art_status==='art_complete'&&_af&&(_af.prod_files||[]).length===0)return;// handled in second pass as production_files_needed
         allArtJobs.push({...j,so,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',alpha:c?.alpha_tag||'',
           rep:REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name||'—',repId:c?.primary_rep_id||so.created_by,
           expected:so.expected_date,daysOut:so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null,
