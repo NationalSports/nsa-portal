@@ -8788,7 +8788,7 @@ export default function App(){
   React.useEffect(()=>{_saveAppState('so_history',soHistory)},[soHistory]);
   React.useEffect(()=>{_saveAppState('qb_config',qbConfig)},[qbConfig]);
   // Warn user before closing/reloading if there are failed saves (data at risk of loss)
-  React.useEffect(()=>{const h=e=>{if(window.location.search.includes('portal='))return;if(_dbSaveFailedIds.size>0||_dbSavingCount>0){e.preventDefault();e.returnValue=''}};window.addEventListener('beforeunload',h);return()=>window.removeEventListener('beforeunload',h)},[]);
+  React.useEffect(()=>{const h=e=>{if(window.location.search.includes('portal='))return;if(_dbSaveFailedIds.size>0){e.preventDefault();e.returnValue=''}};window.addEventListener('beforeunload',h);return()=>window.removeEventListener('beforeunload',h)},[]);
   // Background retry — every 60s, re-trigger saves for any entities with failed IDs
   // Works by updating the snapshot to force _diffSave to detect a difference on the next state change
   // This is a lightweight approach: no new save calls, just nudges the existing auto-save system
