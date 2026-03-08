@@ -4873,7 +4873,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           poItems.forEach((pit,vi)=>{
             const idx=pit._idx;if(idx==null)return;
             const isDropShip=document.getElementById('po-dropship-'+poId)?.checked||false;
-            const poLine={po_id:poId,status:'waiting',created_at:new Date().toLocaleDateString(),memo:'',received:{},shipments:[]};
+            const poLine={po_id:poId,vendor:vn,status:'waiting',created_at:new Date().toLocaleDateString(),memo:'',received:{},shipments:[]};
             if(isDropShip)poLine.drop_ship=true;
             pit.openSizes.forEach(([sz,v])=>{
               const el=document.getElementById('po-qty-'+vi+'-'+sz);
@@ -11602,7 +11602,7 @@ export default function App(){
                   const updatedItems=safeItems(so).map(it=>({...it,po_lines:[...(it.po_lines||[])]}));
                   bp.items.forEach(bpIt=>{
                     const idx=bpIt.item_idx;if(idx==null||!updatedItems[idx])return;
-                    const poLine={po_id:poNum,status:'waiting',created_at:new Date().toLocaleDateString(),memo:'Batch: '+vg.pos.map(b=>b.so_id).join('+'),received:{},shipments:[]};
+                    const poLine={po_id:poNum,vendor:vg.name,status:'waiting',created_at:new Date().toLocaleDateString(),memo:'Batch: '+vg.pos.map(b=>b.so_id).join('+'),received:{},shipments:[]};
                     Object.entries(bpIt.sizes).forEach(([sz,v])=>{if(v>0)poLine[sz]=v});
                     updatedItems[idx].po_lines=[...updatedItems[idx].po_lines,poLine];
                   });
@@ -13764,7 +13764,7 @@ export default function App(){
               sos.forEach(so=>{safeItems(so).forEach(it=>{safePOs(it).filter(po=>!po.drop_ship).forEach(po=>{
                 const szKeys=Object.keys(po).filter(k=>typeof po[k]==='number'&&!['status'].includes(k));
                 const open=szKeys.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-((po.received||{})[sz]||0)-((po.cancelled||{})[sz]||0)),0);
-                if(open>0&&!openPOs.find(x=>x.id===po.po_id))openPOs.push({id:po.po_id||'—',vendor:po.vendor||'',units:open,date:po.created_at||'',type:'so'})
+                if(open>0&&!openPOs.find(x=>x.id===po.po_id))openPOs.push({id:po.po_id||'—',vendor:po.vendor||po.deco_vendor||D_V.find(v=>v.id===it.vendor_id)?.name||it.brand||'',units:open,date:po.created_at||'',type:'so'})
               })})});
               invPOs.filter(p=>p.status!=='received'&&p.status!=='cancelled').forEach(po=>{
                 const units=po.items.reduce((a,it)=>a+Object.values(it.sizes).reduce((a2,v)=>a2+v,0)-Object.values(it.received||{}).reduce((a2,v)=>a2+v,0),0);
@@ -15688,7 +15688,7 @@ export default function App(){
                         const artDeco=artDecos.find(d=>d.position===pos);
                         const method=(artDeco?.type||j.deco_type||'screen_print').replace(/_/g,' ');
                         const size=artSizes[pos]||(pi===0?af?.art_size:'')||'';
-                        const posColors=gc[pos]||[];
+                        const posColors=gc[pos]||(colorList.length>0?colorList:[]);
                         const editPosColors=editColors[pos]||[''];
                         return<div key={pi} style={{display:'flex',alignItems:'baseline',gap:8,flexWrap:'wrap',padding:'5px 0',borderTop:pi>0?'1px solid #e9ecef':'none'}}>
                           <span style={{fontSize:12,fontWeight:700,color:'#0f172a',minWidth:110}}>{pos}</span>
