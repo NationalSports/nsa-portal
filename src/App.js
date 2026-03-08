@@ -1064,63 +1064,72 @@ const ART_FILE_SC={waiting_for_art:{bg:'#fef2f2',c:'#dc2626'},needs_approval:{bg
 // ═══════════════════════════════════════════════
 const PRINT_CSS=`
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:'Segoe UI',Helvetica,Arial,sans-serif;font-size:12px;color:#1a1a1a;padding:24px 32px;line-height:1.5}
-.header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;padding-bottom:12px;border-bottom:3px solid #1e3a5f}
-.logo{display:flex;align-items:center;gap:10px}
-.logo img{height:40px}
-.logo .logo-text{font-size:28px;font-weight:900;color:#1e3a5f;letter-spacing:-1px}
-.logo .logo-text span{font-size:11px;font-weight:400;color:#666;display:block;letter-spacing:1px}
-.company-info{text-align:right;font-size:10px;color:#555;line-height:1.6}
-.doc-title{font-size:22px;font-weight:800;color:#1e3a5f;margin:12px 0 4px}
-.doc-subtitle{font-size:11px;color:#666;margin-bottom:12px}
-.info-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px}
-.info-box{padding:10px 12px;background:#f8f9fa;border-radius:6px;border:1px solid #e8e8e8}
-.info-box .label{font-size:9px;font-weight:700;color:#888;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:2px}
-.info-box .value{font-size:13px;font-weight:700;color:#1a1a1a}
-.info-box .sub{font-size:10px;color:#666;margin-top:2px}
-table{width:100%;border-collapse:collapse;margin:10px 0}
-th{background:#f0f2f5;padding:7px 8px;text-align:left;font-size:10px;font-weight:700;color:#555;text-transform:uppercase;letter-spacing:0.3px;border-bottom:2px solid #d0d5dd}
-td{padding:6px 8px;border-bottom:1px solid #eee;font-size:11px}
-.sz-table th,.sz-table td{text-align:center;padding:4px 6px;font-size:10px;min-width:32px}
+body{font-family:'Segoe UI',Helvetica,Arial,sans-serif;font-size:11px;color:#1a1a1a;padding:20px 28px;line-height:1.4}
+.header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;padding-bottom:10px;border-bottom:2px solid #ccc}
+.logo{display:flex;align-items:center;gap:8px}
+.logo img{height:50px}
+.co-addr{font-size:11px;color:#333;line-height:1.4}
+.co-addr strong{display:block;font-size:12px}
+.doc-id{text-align:right}
+.doc-id .doc-type{font-size:28px;font-weight:800;color:#333}
+.doc-id .doc-num{font-size:14px;color:#333;font-weight:700}
+.doc-id .doc-date{font-size:11px;color:#666}
+.bill-total{display:flex;justify-content:space-between;align-items:flex-start;margin:12px 0;gap:20px}
+.bill-to{flex:1}
+.bill-to .label{font-size:10px;font-weight:700;color:#333;background:#e8e8e8;padding:3px 6px;display:inline-block;margin-bottom:4px}
+.bill-to .value{font-size:12px;color:#1a1a1a;line-height:1.5}
+.total-box{background:#e8e8e8;padding:12px 20px;min-width:200px}
+.total-box .tl{font-size:13px;font-weight:800;color:#333}
+.total-box .ta{font-size:36px;font-weight:900;color:#1a1a1a;margin:4px 0}
+.total-box .ts{font-size:11px;color:#666}
+.info-row{display:flex;border:1px solid #ccc;margin-bottom:10px}
+.info-cell{flex:1;padding:4px 8px;border-right:1px solid #ccc}
+.info-cell:last-child{border-right:none}
+.info-cell .label{font-size:9px;font-weight:700;color:#333;background:#e8e8e8;padding:1px 4px;display:inline-block;margin-bottom:2px}
+.info-cell .value{font-size:11px;color:#1a1a1a}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th{background:#e8e8e8;padding:5px 8px;text-align:left;font-size:10px;font-weight:700;color:#333;border:1px solid #ccc}
+td{padding:5px 8px;border-bottom:1px solid #ddd;font-size:11px}
+.sz-table th,.sz-table td{text-align:center;padding:3px 5px;font-size:10px;min-width:30px}
 .sz-table td.has-qty{font-weight:800;color:#1e3a5f;background:#eef2ff}
-.totals-row td{font-weight:800;border-top:2px solid #1e3a5f;font-size:12px}
-.notes{margin-top:12px;padding:10px 12px;background:#fffbe6;border-radius:6px;border:1px solid #f0e6b8;font-size:11px}
+.totals-row td{font-weight:800;border-top:2px solid #333;font-size:12px}
+.notes{margin-top:8px;padding:8px 10px;background:#fffbe6;border:1px solid #f0e6b8;font-size:10px}
 .notes .label{font-weight:700;color:#8b6914;margin-bottom:2px}
-.footer{margin-top:20px;padding-top:10px;border-top:1px solid #ddd;font-size:9px;color:#999;display:flex;justify-content:space-between}
+.footer{margin-top:14px;padding-top:8px;border-top:1px solid #ddd;font-size:8px;color:#999;display:flex;justify-content:space-between}
 .amount{text-align:right;font-weight:700}
-.highlight{background:#eef6ee;color:#166534}
-.badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:9px;font-weight:700}
+.highlight{background:#e8e8e8;color:#166534}
+.badge{display:inline-block;padding:2px 6px;border-radius:10px;font-size:9px;font-weight:700}
 .no-price td:nth-child(n+5){display:none}.no-price th:nth-child(n+5){display:none}
-@media print{body{padding:12px 18px}.header{border-bottom-color:#000}th{background:#f0f0f0!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
-@page{margin:0.5in;size:letter}
+.sep-line{border-top:2px solid #c00;margin:2px 0}
+@media print{body{padding:14px 20px}th{background:#e8e8e8!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}.total-box{background:#e8e8e8!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}.info-cell .label,.bill-to .label{background:#e8e8e8!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+@page{margin:0.4in;size:letter}
 `;
 
 const printDoc=({title,docNum,docType,headerRight,infoBoxes,tables,notes,footer,showPricing=true})=>{
   const w=window.open('','_blank','width=800,height=1000');
   if(!w)return;
   let html='<!DOCTYPE html><html><head><title>'+docNum+' — '+title+'</title><style>'+PRINT_CSS+'</style></head><body>';
-  // Header
-  html+='<div class="header"><div><div class="logo"><img src="'+window.location.origin+NSA.logoUrl+'" alt="NSA"/><div class="logo-text">'+NSA.logo+'<span>'+NSA.name+'</span></div></div></div>';
-  html+='<div class="company-info">'+NSA.fullAddr+'<br/>'+NSA.phone+' · '+NSA.email+'</div></div>';
-  // Doc title
-  html+='<div style="display:flex;justify-content:space-between;align-items:baseline">';
-  html+='<div class="doc-title">'+docType+'</div>';
-  if(headerRight)html+='<div style="text-align:right">'+headerRight+'</div>';
+  // Header — logo+address left, doc type+number+date right
+  html+='<div class="header"><div class="logo"><img src="'+window.location.origin+NSA.logoUrl+'" alt="NSA"/><div class="co-addr"><strong>'+NSA.legal+'</strong>'+NSA.fullAddr+'<br/>United States</div></div>';
+  html+='<div class="doc-id"><div class="doc-type">'+docType+'</div><div class="doc-num">#'+docNum+'</div><div class="doc-date">'+new Date().toLocaleDateString()+'</div></div></div>';
+  // Bill To + Total box row
+  const billTo=infoBoxes?.find(b=>b.label==='Bill To'||b.label==='Vendor');
+  html+='<div class="bill-total">';
+  if(billTo){html+='<div class="bill-to"><div class="label">'+billTo.label+'</div><div class="value"><strong>'+billTo.value+'</strong>'+(billTo.sub?'<br/>'+billTo.sub:'')+'</div></div>';}
+  if(headerRight){html+='<div class="total-box"><div class="tl">TOTAL</div>'+headerRight+'</div>';}
   html+='</div>';
-  html+='<div class="doc-subtitle">#'+docNum+' · '+new Date().toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'})+'</div>';
-  // Info boxes
-  if(infoBoxes){
-    html+='<div class="info-grid">';
-    infoBoxes.forEach(b=>{
-      html+='<div class="info-box"><div class="label">'+b.label+'</div><div class="value">'+b.value+'</div>';
-      if(b.sub)html+='<div class="sub">'+b.sub+'</div>';
-      html+='</div>';
+  // Info row — remaining info boxes as horizontal cells
+  const otherBoxes=(infoBoxes||[]).filter(b=>b!==billTo);
+  if(otherBoxes.length){
+    html+='<div class="info-row">';
+    otherBoxes.forEach(b=>{
+      html+='<div class="info-cell"><div class="label">'+b.label+'</div><div class="value">'+b.value+(b.sub?'<br/><span style="font-size:10px;color:#666">'+b.sub+'</span>':'')+'</div></div>';
     });
     html+='</div>';
   }
   // Tables
   if(tables){tables.forEach(t=>{
-    if(t.title)html+='<div style="font-weight:700;font-size:12px;color:#1e3a5f;margin:12px 0 4px;border-bottom:1px solid #eee;padding-bottom:3px">'+t.title+'</div>';
+    if(t.title)html+='<div style="font-weight:700;font-size:11px;color:#333;margin:8px 0 3px;border-bottom:1px solid #ddd;padding-bottom:2px">'+t.title+'</div>';
     html+='<table class="'+(t.className||'')+'">';
     if(t.headers){html+='<thead><tr>';t.headers.forEach((h,i)=>{
       const align=t.aligns?.[i]||'left';html+='<th style="text-align:'+align+'">'+h+'</th>'});
@@ -1133,12 +1142,13 @@ const printDoc=({title,docNum,docType,headerRight,infoBoxes,tables,notes,footer,
         html+='<td style="text-align:'+align+';'+(c.style||'')+'">'+(c.value!==undefined?c.value:c)+'</td>'});
       html+='</tr>'});
     html+='</tbody></table>';
+    html+='<div class="sep-line"></div>';
   })}
   // Notes
   if(notes)html+='<div class="notes"><div class="label">Notes</div>'+notes+'</div>';
   // Footer
+  if(footer)html+='<div style="font-size:9px;color:#888;margin-top:8px">'+footer+'</div>';
   html+='<div class="footer"><span>'+NSA.name+' · '+NSA.fullAddr+'</span><span>Printed '+(new Date().toLocaleString())+'</span></div>';
-  if(footer)html+='<div style="font-size:10px;color:#888;margin-top:6px">'+footer+'</div>';
   html+='</body></html>';
   w.document.write(html);w.document.close();
   setTimeout(()=>w.print(),350);
@@ -3026,7 +3036,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               if(shipAmt>0)rows.push({cells:[{value:'<strong>Shipping</strong>'},{value:1,style:'text-align:center'},{value:'$'+shipAmt.toFixed(2),style:'text-align:right'},{value:'$'+shipAmt.toFixed(2),style:'text-align:right'}]});
               printDoc({
                 title:cust?.name||'Customer',docNum:o.id,docType:isE?'ESTIMATE':'SALES ORDER',
-                headerRight:'<div style="font-size:32px;font-weight:900;color:#1e3a5f">$'+total.toFixed(2)+'</div>'+(isE?'<div style="font-size:11px;color:#888">Expires: '+new Date(Date.now()+30*86400000).toLocaleDateString()+'</div>':''),
+                headerRight:'<div class="ta">$'+total.toFixed(2)+'</div>'+(isE?'<div class="ts">Expires: '+new Date(Date.now()+30*86400000).toLocaleDateString()+'</div>':''),
                 infoBoxes:[
                   {label:'Bill To',value:cust?.name||'—',sub:cust?.address||cust?.alpha_tag||''},
                   {label:isE?'Expires':'Expected',value:isE?new Date(Date.now()+30*86400000).toLocaleDateString():(o.expected_date||'TBD'),sub:'Exp. Close: '+new Date().toLocaleDateString()},
@@ -4576,8 +4586,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const contact=(ic?.contacts||[])[0];
       const printInvoice=()=>{
         printDoc({title:ic?.name||'Customer',docNum:ir.id,docType:'INVOICE',
-          headerRight:'<div style="font-size:24px;font-weight:900;color:#dc2626">$'+ir.total.toLocaleString()+'</div>'
-            +'<div style="font-size:11px;color:#666">Balance Due: <strong style="color:#dc2626">$'+bal.toLocaleString()+'</strong></div>',
+          headerRight:'<div class="ta">$'+ir.total.toLocaleString()+'</div>'
+            +'<div class="ts">Balance Due: <strong>$'+bal.toLocaleString()+'</strong></div>',
           infoBoxes:[
             {label:'Bill To',value:ic?.name||'—',sub:ic?.alpha_tag},
             {label:'Invoice Date',value:ir.date||new Date().toLocaleDateString(),sub:ir.due_date?'Due: '+ir.due_date:''},
@@ -6280,7 +6290,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               printDoc({
                 title:vendor,docNum:po.po_id,
                 docType:isDPO?'DECORATION PURCHASE ORDER':'PURCHASE ORDER',
-                headerRight:'<div style="font-size:11px;color:#666">Status: <strong>'+(poStatus==='received'?'Received':poStatus==='partial'?'Partial':'Open')+'</strong></div>',
+                headerRight:'<div class="ta" style="font-size:18px">Status: '+(poStatus==='received'?'Received':poStatus==='partial'?'Partial':'Open')+'</div>',
                 infoBoxes:[
                   {label:'Vendor',value:vendor,sub:isDPO?(po.deco_type||'').replace(/_/g,' '):undefined},
                   {label:'Ship To',value:NSA.name,sub:NSA.fullAddr},
@@ -7866,31 +7876,36 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     const estTax=estSubtotal*estTaxRate;
     const estTotal=estSubtotal+estShip+estTax;
     const canApprove=est.status==='sent'||est.status==='open';
-    // Generate printable estimate PDF
+    // Generate printable estimate PDF — uses shared printDoc for consistent style
     const downloadEstPdf=()=>{
-      const w=window.open('','_blank','width=800,height=1000');if(!w)return;
-      let html='<!DOCTYPE html><html><head><title>'+est.id+' — Estimate</title><style>body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;color:#1e293b;padding:40px;max-width:700px;margin:0 auto}h1{font-size:24px;margin:0}h2{font-size:16px;margin:16px 0 8px;color:#1e3a5f;border-bottom:1px solid #e2e8f0;padding-bottom:4px}.item{border:1px solid #e2e8f0;border-radius:8px;padding:12px;margin-bottom:10px}.deco{font-size:12px;color:#64748b;padding:2px 0 2px 16px}.total-row{display:flex;justify-content:space-between;padding:6px 0}.total-row.grand{border-top:2px solid #1e3a5f;font-size:18px;font-weight:800;padding-top:10px;margin-top:6px}@media print{body{padding:20px}}</style></head><body>';
-      html+='<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:24px"><div><h1>Estimate</h1><div style="color:#64748b;font-size:13px">'+est.id+' · '+(est.created_at?.split(' ')[0]||'')+'</div><div style="font-size:14px;font-weight:700;margin-top:4px">'+(est.memo||'')+'</div></div>';
-      html+='<div style="text-align:right"><div style="font-size:11px;color:#64748b">Prepared for</div><div style="font-size:16px;font-weight:700">'+(customer?.name||'')+'</div>'+(rep?'<div style="font-size:11px;color:#64748b;margin-top:4px">Rep: '+rep.name+'</div>':'')+'</div></div>';
-      html+='<h2>Items</h2>';
+      const rows=[];
       (est.items||[]).forEach((it,i)=>{
         const qty=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);const lineTotal=qty*safeNum(it.unit_sell);
-        html+='<div class="item"><div style="display:flex;justify-content:space-between"><div><strong>'+(safeStr(it.name)||'Item')+'</strong><div style="font-size:11px;color:#64748b">'+(it.sku||'')+' · '+(safeStr(it.color)||'—')+(it.brand?' · '+it.brand:'')+'</div></div>';
-        html+='<div style="text-align:right"><div style="font-weight:700">$'+lineTotal.toFixed(2)+'</div><div style="font-size:11px;color:#64748b">'+qty+' × $'+safeNum(it.unit_sell).toFixed(2)+'</div></div></div>';
-        const szEntries=Object.entries(safeSizes(it)).filter(([,v])=>v>0);
-        if(szEntries.length)html+='<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">'+szEntries.map(([sz,q])=>'<span style="background:#f1f5f9;padding:2px 6px;border-radius:4px;font-size:11px"><strong>'+sz+'</strong> '+q+'</span>').join('')+'</div>';
+        const szText=Object.entries(safeSizes(it)).filter(([,v])=>v>0).map(([sz,q])=>sz+':'+q).join(' ');
+        rows.push({cells:['<strong>'+(it.sku||'')+'</strong> '+(safeStr(it.name)||'Item')+'<br/><span style="font-size:10px;color:#666">'+(safeStr(it.color)||'—')+(szText?' — '+szText:'')+'</span>',qty,'$'+safeNum(it.unit_sell).toFixed(2),'$'+lineTotal.toFixed(2)]});
         safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_eAQ[d.art_file_id]:qty;const dp2=dP(d,qty,eaf,cq);const eq2=dp2._nq!=null?dp2._nq:qty;const decoAmt=eq2*dp2.sell;
           const label=d.kind==='numbers'?'Numbers':d.kind==='names'?'Names':(d.position||'Decoration');
-          html+='<div class="deco" style="display:flex;justify-content:space-between">'+label+(d.position&&d.kind!=='art'?' — '+d.position:'')+'<span style="font-weight:600">'+eq2+' × $'+dp2.sell.toFixed(2)+' = $'+decoAmt.toFixed(2)+'</span></div>'});
-        html+='</div>'});
-      html+='<div style="margin-top:16px;padding-top:12px;border-top:2px solid #e2e8f0">';
-      html+='<div class="total-row"><span>Subtotal</span><span style="font-weight:700">$'+estSubtotal.toFixed(2)+'</span></div>';
-      if(estShip>0)html+='<div class="total-row"><span>Shipping</span><span>$'+estShip.toFixed(2)+'</span></div>';
-      if(estTax>0)html+='<div class="total-row"><span>Tax ('+(estTaxRate*100).toFixed(2)+'%)</span><span>$'+estTax.toFixed(2)+'</span></div>';
-      html+='<div class="total-row grand"><span>Estimated Total</span><span>$'+estTotal.toFixed(2)+'</span></div></div>';
-      html+='<div style="text-align:center;margin-top:24px;font-size:11px;color:#94a3b8">National Sports Apparel · This estimate is valid for 30 days</div>';
-      html+='</body></html>';
-      w.document.write(html);w.document.close();setTimeout(()=>w.print(),350);
+          rows.push({cells:['<span style="padding-left:16px;color:#666;font-size:10px">'+label+(d.position&&d.kind!=='art'?' — '+d.position:'')+'</span>',eq2,'$'+dp2.sell.toFixed(2),'$'+decoAmt.toFixed(2)]});
+        });
+      });
+      if(estShip>0)rows.push({cells:[{value:'<strong>Shipping</strong>'},'','','$'+estShip.toFixed(2)]});
+      printDoc({
+        title:customer?.name||'Customer',docNum:est.id,docType:'ESTIMATE',
+        headerRight:'<div class="ta">$'+estTotal.toFixed(2)+'</div><div class="ts">Expires: '+new Date(Date.now()+30*86400000).toLocaleDateString()+'</div>',
+        infoBoxes:[
+          {label:'Bill To',value:customer?.name||'—',sub:customer?.address||customer?.alpha_tag||''},
+          {label:'Expires',value:new Date(Date.now()+30*86400000).toLocaleDateString(),sub:'Exp. Close: '+(est.created_at?.split(' ')[0]||new Date().toLocaleDateString())},
+          {label:'Sales Rep',value:rep?.name||'—'},
+          {label:'Estimate',value:est.id,sub:est.memo||''},
+        ],
+        tables:[{headers:['Item','Qty','Rate','Amount'],aligns:['left','center','right','right'],
+          rows:[...rows,
+            {cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Subtotal</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:6px'},{value:'<strong>$'+estSubtotal.toFixed(2)+'</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:6px'}]},
+            ...(estTax>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'Tax ('+(estTaxRate*100).toFixed(2)+'%)',style:'text-align:right;border:none;font-size:10px'},{value:'$'+estTax.toFixed(2),style:'text-align:right;border:none'}]}]:[]),
+            {_class:'totals-row',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Total</strong>',style:'text-align:right'},{value:'<strong>$'+estTotal.toFixed(2)+'</strong>',style:'text-align:right'}]},
+          ]}],
+        footer:'This estimate is valid for 30 days. Prices subject to change. '+NSA.depositTerms
+      });
     };
     return<div style={{minHeight:'100vh',background:'#f1f5f9',display:'flex',justifyContent:'center',padding:'40px 16px'}}>
       <div style={{width:'100%',maxWidth:640,background:'white',borderRadius:16,boxShadow:'0 4px 24px rgba(0,0,0,0.08)',overflow:'hidden'}}>
@@ -11250,7 +11265,7 @@ export default function App(){
             tables.push({title:'Production Files',headers:['Type','Filename'],aligns:['left','left'],rows:fileRows});
           }
           printDoc({title:j.customer||'Job',docNum:j.id,docType:'Production Job Sheet',
-            headerRight:'<div style="font-size:16px;font-weight:800;color:#1e3a5f">'+j.total_units+' UNITS</div><div style="font-size:10px;color:#666">'+j.deco_type?.replace(/_/g,' ')+'</div>',
+            headerRight:'<div class="ta" style="font-size:20px">'+j.total_units+' UNITS</div><div class="ts">'+j.deco_type?.replace(/_/g,' ')+'</div>',
             infoBoxes,tables,
             notes:j.notes||(so.production_notes?'SO Notes: '+so.production_notes:null),
             showPricing:false});
@@ -12157,8 +12172,8 @@ export default function App(){
                 const taxAmt=inv.tax||0;
                 printDoc({
                   title:ic?.name||'Customer',docNum:inv.id,docType:'INVOICE',
-                  headerRight:'<div style="font-size:24px;font-weight:900;color:'+(inv._bal>0?'#dc2626':'#166534')+'">$'+inv.total.toLocaleString()+'</div>'
-                    +'<div style="font-size:11px;color:#666">Balance Due: <strong style="color:'+(inv._bal>0?'#dc2626':'#166534')+'">$'+inv._bal.toLocaleString()+'</strong></div>',
+                  headerRight:'<div class="ta">$'+inv.total.toLocaleString()+'</div>'
+                    +'<div class="ts">Balance Due: <strong>$'+inv._bal.toLocaleString()+'</strong></div>',
                   infoBoxes:[
                     {label:'Bill To',value:ic?.name||'—',sub:ic?.alpha_tag},
                     {label:'Invoice Date',value:inv.date||new Date().toLocaleDateString(),sub:inv.due_date?'Due: '+inv.due_date:''},
@@ -14042,17 +14057,18 @@ export default function App(){
               const totalPulling=szKeys.reduce((a,sz)=>a+(actualQtys[sz]||0),0);
               addWhAction({type:'pulled',pickId,soId:t.soId,customer:t.cName,sku:t.sku,name:t.name,color:t.color,sizes:pulledSizes,qty:totalPulling,by:cu?.id||'warehouse'});
               // Auto-print 4x6 box label
+              const labelQr=encodeURIComponent(window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(pickId));
               const w=window.open('','_blank','width=400,height=600');
-              if(w){w.document.write('<html><head><title>'+pickId+'</title><style>@page{size:4in 6in;margin:0}body{font-family:sans-serif;padding:16px;width:4in;height:6in;box-sizing:border-box;margin:0}h1{font-size:28px;margin:0 0 4px}h2{font-size:18px;margin:0 0 4px;font-weight:700}p{margin:3px 0;font-size:13px}.sizes{font-size:20px;font-weight:900;margin:10px 0;letter-spacing:1px}.sep{border-top:2px dashed #999;margin:10px 0}</style></head><body>');
-              w.document.write('<h1>'+pickId+'</h1>');
-              w.document.write('<p><strong>'+t.soId+'</strong> — '+t.cName+'</p>');
-              if(shipDest!=='in_house'){w.document.write('<div style="background:#fffbeb;padding:8px;border:2px solid '+(shipDest==='ship_customer'?'#3b82f6':'#d97706')+';border-radius:6px;font-weight:bold;font-size:16px;margin:6px 0">'+(shipDest==='ship_customer'?'SHIP TO CUSTOMER':'SHIP TO DECO'+(activePick?.deco_vendor?' — '+activePick.deco_vendor:''))+'</div>')}
+              if(w){w.document.write('<html><head><title>'+pickId+'</title><style>@page{size:4in 6in;margin:0}body{font-family:sans-serif;padding:12px 16px;width:4in;height:6in;box-sizing:border-box;margin:0;display:flex;flex-direction:column}.top{display:flex;justify-content:space-between;align-items:flex-start}.cname{font-size:32px;font-weight:900;margin:8px 0 4px;line-height:1.1}.sizes{font-size:24px;font-weight:900;margin:8px 0;letter-spacing:1px}.sep{border-top:3px dashed #999;margin:8px 0}.bot{margin-top:auto}</style></head><body>');
+              w.document.write('<div class="top"><div><div style="font-size:36px;font-weight:900;margin:0;line-height:1">'+pickId+'</div><div style="font-size:16px;font-weight:700;margin:4px 0">'+t.soId+'</div></div><img src="https://api.qrserver.com/v1/create-qr-code/?size=150x150&data='+labelQr+'" width="100" height="100"/></div>');
+              w.document.write('<div class="cname">'+t.cName+'</div>');
+              if(shipDest!=='in_house'){w.document.write('<div style="background:#fffbeb;padding:8px;border:3px solid '+(shipDest==='ship_customer'?'#3b82f6':'#d97706')+';border-radius:6px;font-weight:900;font-size:18px;margin:6px 0">'+(shipDest==='ship_customer'?'SHIP TO CUSTOMER':'SHIP TO DECO'+(activePick?.deco_vendor?' — '+activePick.deco_vendor:''))+'</div>')}
               w.document.write('<div class="sep"></div>');
-              w.document.write('<h2>'+t.sku+' '+t.name+'</h2>');
-              w.document.write('<p>'+(t.color||'')+' — '+totalPulling+' units</p>');
+              w.document.write('<div style="font-size:20px;font-weight:900;margin:0 0 4px">'+t.sku+' '+t.name+'</div>');
+              w.document.write('<div style="font-size:16px;font-weight:700">'+(t.color||'')+' — '+totalPulling+' units</div>');
               w.document.write('<div class="sizes">'+szKeys.filter(sz=>(actualQtys[sz]||0)>0).map(sz=>sz+': '+actualQtys[sz]).join(' &nbsp;&nbsp; ')+'</div>');
               w.document.write('<div class="sep"></div>');
-              w.document.write('<p style="font-size:11px;color:#666">Pulled: '+new Date().toLocaleString()+'</p>');
+              w.document.write('<div class="bot"><p style="font-size:11px;color:#666;margin:0">Pulled: '+new Date().toLocaleString()+'</p></div>');
               w.document.write('</body></html>');w.document.close();w.print()}
               nf('✅ '+pickId+' marked as pulled');setWhViewIF(null);
             }}>✓ Mark as Pulled</button>}
@@ -14574,7 +14590,7 @@ export default function App(){
                       printDoc({
                         title:grp.cName,docNum:[...grp.soIds].join(', '),
                         docType:'PACKING SLIP',showPricing:false,
-                        headerRight:'<div style="font-size:14px;font-weight:700;color:#166534">'+grp.totalUnits+' Total Units</div><div style="font-size:11px;color:#666">Ship: '+(grp.shipMethod||'TBD')+'</div>',
+                        headerRight:'<div class="ta" style="font-size:20px">'+grp.totalUnits+' Total Units</div><div class="ts">Ship: '+(grp.shipMethod||'TBD')+'</div>',
                         infoBoxes:[
                           {label:'Ship To',value:grp.cName,sub:grp.items[0]?.so?.ship_to_id==='default'?'Default address on file':'Custom address'},
                           {label:'Ship Date',value:new Date().toLocaleDateString(),sub:'Method: '+(grp.shipMethod||'Ground')},
@@ -14828,7 +14844,7 @@ export default function App(){
                     printDoc({
                       title:shipModal.grp.cName,docNum:[...shipModal.grp.soIds].join(', ')+' — Box '+(bi+1),
                       docType:'PACKING SLIP',showPricing:false,
-                      headerRight:'<div style="font-size:14px;font-weight:700;color:#166534">'+boxUnits+' Units — Box '+(bi+1)+' of '+shipModal.boxes.length+'</div>'+(box.tracking_number?'<div style="font-size:11px;color:#666;font-family:monospace">'+box.tracking_number+'</div>':''),
+                      headerRight:'<div class="ta" style="font-size:18px">'+boxUnits+' Units — Box '+(bi+1)+' of '+shipModal.boxes.length+'</div>'+(box.tracking_number?'<div class="ts" style="font-family:monospace">'+box.tracking_number+'</div>':''),
                       infoBoxes:[
                         {label:'Ship To',value:shipModal.grp.cName},
                         {label:'Ship Date',value:new Date().toLocaleDateString(),sub:(box.carrier||'fedex').toUpperCase()},
