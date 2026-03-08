@@ -6309,7 +6309,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <span style={{fontSize:11,fontWeight:600,color:'#64748b',width:40}}>Qty:</span>
               {szKeys.filter(sz=>getOpen(sz)>0).map(sz=><div key={sz} style={{textAlign:'center'}}>
                 <div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
-                <input id={'po-recv-'+sz} style={{width:42,textAlign:'center',border:'1px solid #22c55e',borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700,background:'white'}} defaultValue={getOpen(sz)}/>
+                <input id={'po-recv-'+sz} style={{width:42,textAlign:'center',border:'1px solid #22c55e',borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700,background:'white'}} defaultValue={getOpen(sz)} onChange={e=>{const v=parseInt(e.target.value)||0;e.target.style.borderColor=v>getOpen(sz)?'#dc2626':'#22c55e';e.target.style.background=v>getOpen(sz)?'#fef2f2':'white'}}/>
                 <div style={{fontSize:9,color:'#64748b'}}>{getOpen(sz)} open</div>
               </div>)}
             </div>
@@ -6325,6 +6325,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               });
               const hasShipQty=Object.entries(shipment).some(([k,v])=>k!=='date'&&v>0);
               if(!hasShipQty){nf('Enter quantities to receive','error');return}
+              // Check for over-receive (misship warning)
+              const overSizes=[];
+              szKeys.filter(sz=>getOpen(sz)>0).forEach(sz=>{
+                const el=document.getElementById('po-recv-'+sz);
+                const qty=el?parseInt(el.value)||0:0;
+                if(qty>getOpen(sz))overSizes.push(sz+': receiving '+qty+' but only '+getOpen(sz)+' open');
+              });
+              if(overSizes.length>0&&!window.confirm('⚠️ MISSHIP WARNING — Receiving more than ordered:\n\n'+overSizes.join('\n')+'\n\nProceed anyway?'))return;
               const newShipments=[...shipments,shipment];
               const newTotalOpen=szKeys.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-(newReceived[sz]||0)-getCncl(sz)),0);
               const newStatus=newTotalOpen<=0&&(totalReceived+Object.values(newReceived).reduce((a,v)=>a+v,0))>0?'received':newTotalOpen>0?'partial':'waiting';
