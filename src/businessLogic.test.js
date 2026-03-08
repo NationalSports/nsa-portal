@@ -3,6 +3,7 @@ const {
   safe, safeArr, safeObj, safeNum, safeStr, safeSizes, safePicks, safePOs, safeDecos, safeItems, safeArt, safeJobs,
   rQ, rT, spP, emP, npP, dP, DTF, SP, EM,
   poCommitted, calcSOStatus, buildJobs, isJobReady, calcTotals, createInvoice,
+  isBookingOrder, bookingDaysUntilShip, isBookingActive,
   buildQBSalesOrder, buildQBInvoice,
   checkInventoryConflicts,
 } = require('./businessLogic');
@@ -1580,5 +1581,131 @@ describe('Promo Dollars — period helpers', () => {
     expect(p.start).toBe('2026-01-01');
     expect(p.end).toBe('2026-06-30');
     expect(p.label).toBe('H1 2026');
+  });
+});
+
+// ═══════════════════════════════════════════════
+// BOOKING ORDER TESTS
+// ═══════════════════════════════════════════════
+describe('Booking Orders', () => {
+  test('isBookingOrder returns true for booking orders', () => {
+    expect(isBookingOrder({ order_type: 'booking' })).toBe(true);
+    expect(isBookingOrder({ order_type: 'at_once' })).toBe(false);
+    expect(isBookingOrder({})).toBe(false);
+    expect(isBookingOrder(null)).toBe(false);
+  });
+
+  test('bookingDaysUntilShip calculates days correctly', () => {
+    const futureDate = new Date();
+    futureDate.setDate(futureDate.getDate() + 50);
+    const result = bookingDaysUntilShip({ expected_ship_date: futureDate.toISOString().split('T')[0] });
+    expect(result).toBe(50);
+  });
+
+  test('bookingDaysUntilShip returns null when no ship date', () => {
+    expect(bookingDaysUntilShip({})).toBeNull();
+    expect(bookingDaysUntilShip({ expected_ship_date: null })).toBeNull();
+  });
+
+  test('isBookingActive returns true for non-booking orders', () => {
+    expect(isBookingActive({ order_type: 'at_once' })).toBe(true);
+    expect(isBookingActive({})).toBe(true);
+  });
+
+  test('isBookingActive returns true when booking is confirmed', () => {
+    expect(isBookingActive({ order_type: 'booking', booking_confirmed: true })).toBe(true);
+  });
+
+  test('isBookingActive returns false when ship date is far out', () => {
+    const farDate = new Date();
+    farDate.setDate(farDate.getDate() + 200);
+    expect(isBookingActive({
+      order_type: 'booking',
+      booking_confirmed: false,
+      expected_ship_date: farDate.toISOString().split('T')[0],
+      booking_alert_days: 100,
+    })).toBe(false);
+  });
+
+  test('isBookingActive returns true when within alert threshold', () => {
+    const closeDate = new Date();
+    closeDate.setDate(closeDate.getDate() + 80);
+    expect(isBookingActive({
+      order_type: 'booking',
+      booking_confirmed: false,
+      expected_ship_date: closeDate.toISOString().split('T')[0],
+      booking_alert_days: 100,
+    })).toBe(true);
+  });
+
+  test('isBookingActive respects custom alert threshold', () => {
+    const date = new Date();
+    date.setDate(date.getDate() + 110);
+    // Default 100 days: should be inactive
+    expect(isBookingActive({
+      order_type: 'booking',
+      booking_confirmed: false,
+      expected_ship_date: date.toISOString().split('T')[0],
+      booking_alert_days: 100,
+    })).toBe(false);
+    // Custom 120 days: should be active
+    expect(isBookingActive({
+      order_type: 'booking',
+      booking_confirmed: false,
+      expected_ship_date: date.toISOString().split('T')[0],
+      booking_alert_days: 120,
+    })).toBe(true);
+  });
+
+  test('calcSOStatus returns booking for inactive booking orders', () => {
+    const farDate = new Date();
+    farDate.setDate(farDate.getDate() + 200);
+    const so = makeSO({
+      order_type: 'booking',
+      booking_confirmed: false,
+      expected_ship_date: farDate.toISOString().split('T')[0],
+      booking_alert_days: 100,
+    });
+    expect(calcSOStatus(so)).toBe('booking');
+  });
+
+  test('calcSOStatus returns normal status for confirmed booking orders', () => {
+    const farDate = new Date();
+    farDate.setDate(farDate.getDate() + 200);
+    const so = makeSO({
+      order_type: 'booking',
+      booking_confirmed: true,
+      expected_ship_date: farDate.toISOString().split('T')[0],
+      booking_alert_days: 100,
+    });
+    expect(calcSOStatus(so)).toBe('need_order');
+  });
+
+  test('calcSOStatus returns normal status when booking is within threshold', () => {
+    const closeDate = new Date();
+    closeDate.setDate(closeDate.getDate() + 80);
+    const so = makeSO({
+      order_type: 'booking',
+      booking_confirmed: false,
+      expected_ship_date: closeDate.toISOString().split('T')[0],
+      booking_alert_days: 100,
+    });
+    expect(calcSOStatus(so)).toBe('need_order');
+  });
+
+  test('calcSOStatus returns booking when no ship date set', () => {
+    const so = makeSO({
+      order_type: 'booking',
+      booking_confirmed: false,
+      expected_ship_date: null,
+    });
+    expect(calcSOStatus(so)).toBe('booking');
+  });
+
+  test('at-once orders are unaffected by booking logic', () => {
+    const so = makeSO({ order_type: 'at_once' });
+    expect(calcSOStatus(so)).toBe('need_order');
+    const so2 = makeSO(); // no order_type set
+    expect(calcSOStatus(so2)).toBe('need_order');
   });
 });

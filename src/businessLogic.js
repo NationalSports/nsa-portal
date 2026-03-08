@@ -54,8 +54,29 @@ function dP(d, q, artFiles, cq) {
 // ── PO Committed ──
 const poCommitted = (poLines, sz) => (poLines || []).reduce((a, pk) => { const ordered = pk[sz] || 0; const cancelled = (pk.cancelled || {})[sz] || 0; return a + (ordered - cancelled) }, 0);
 
+// ── Booking Order Helpers ──
+function isBookingOrder(ord) {
+  return ord?.order_type === 'booking';
+}
+
+function bookingDaysUntilShip(ord) {
+  if (!ord?.expected_ship_date) return null;
+  return Math.ceil((new Date(ord.expected_ship_date) - new Date()) / (1000 * 60 * 60 * 24));
+}
+
+function isBookingActive(ord) {
+  if (!isBookingOrder(ord)) return true;
+  if (ord.booking_confirmed) return true;
+  const days = bookingDaysUntilShip(ord);
+  const threshold = safeNum(ord.booking_alert_days) || 100;
+  return days !== null && days <= threshold;
+}
+
 // ── SO Status Calculation ──
 function calcSOStatus(ord) {
+  // Booking orders stay in 'booking' status until confirmed or within 100 days of ship
+  if (isBookingOrder(ord) && !isBookingActive(ord)) return 'booking';
+
   let totalSz = 0, coveredSz = 0, fulfilledSz = 0;
   safeItems(ord).forEach(it => {
     Object.entries(safeSizes(it)).filter(([, v]) => safeNum(v) > 0).forEach(([sz, v]) => {
@@ -422,6 +443,8 @@ module.exports = {
   rQ, rT, spP, emP, npP, dP, DTF, SP, EM, NP,
   // Business logic
   poCommitted, calcSOStatus, buildJobs, isJobReady, calcTotals, createInvoice,
+  // Booking orders
+  isBookingOrder, bookingDaysUntilShip, isBookingActive,
   // Promo dollars
   PROMO_DECO_MULT, PROMO_SHIP_MULT, calcPromoItemSell, calcPromoTotals, calcPromoSpendAllocation, getCurrentPromoPeriod, getPreviousPromoPeriod,
   // QB sync

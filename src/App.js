@@ -575,7 +575,7 @@ const _persistFailedIds=()=>{try{localStorage.setItem('nsa_save_failed_ids',JSON
 // Column whitelists — strip unknown fields before sending to Supabase (localStorage may have extra UI fields like vendor_id)
 const _pick=(obj,cols)=>{const r={};cols.forEach(c=>{if(c in obj)r[c]=obj[c]});return r};
 const _estCols=['id','customer_id','memo','status','created_by','created_at','updated_at','default_markup','shipping_type','shipping_value','ship_to_id','email_status','email_opened_at','email_viewed_at','deleted_at','promo_applied','promo_amount','update_requests'];
-const _soCols=['id','customer_id','estimate_id','memo','status','created_by','created_at','updated_at','expected_date','production_notes','shipping_type','shipping_value','ship_to_id','default_markup','omg_store_id','_shipstation_order_id','_shipping_status','_tracking_number','_carrier','_ship_date','_tracking_url','_shipped','_shipments','_shipping_cost','deleted_at','promo_applied','promo_amount','ship_preference','ship_on_date'];
+const _soCols=['id','customer_id','estimate_id','memo','status','created_by','created_at','updated_at','expected_date','production_notes','shipping_type','shipping_value','ship_to_id','default_markup','omg_store_id','_shipstation_order_id','_shipping_status','_tracking_number','_carrier','_ship_date','_tracking_url','_shipped','_shipments','_shipping_cost','deleted_at','promo_applied','promo_amount','ship_preference','ship_on_date','order_type','expected_ship_date','booking_confirmed','booking_confirmed_at','booking_confirmed_by','booking_alert_days'];
 const _itemCols=['product_id','sku','name','brand','color','nsa_cost','retail_price','unit_sell','sizes','available_sizes','_colors','no_deco','is_custom','custom_desc','custom_cost','custom_sell','is_promo','_pre_promo_sell','est_qty'];
 const _decoCols=['kind','position','type','art_file_id','art_tbd_type','tbd_colors','tbd_stitches','tbd_dtf_size','sell_override','sell_each','cost_each','underbase','two_color','colors','stitches','dtf_size','num_method','num_size','num_size_back','num_font','roster','names','names_list','vendor','deco_type','notes','custom_font_art_id','print_color','front_and_back','reversible','num_qty','name_qty'];
 // Columns that may not exist in production DB / schema cache — stripped on insert retry
@@ -1204,7 +1204,7 @@ function dP(d,q,artFiles,cq){
   return{sell:0,cost:0}}
 const SC={
   // SO statuses (5)
-  need_order:{bg:'#fef3c7',c:'#92400e'},waiting_receive:{bg:'#dbeafe',c:'#1e40af'},needs_pull:{bg:'#fef9c3',c:'#a16207'},items_received:{bg:'#d1fae5',c:'#065f46'},complete:{bg:'#dcfce7',c:'#166534'},in_production:{bg:'#ede9fe',c:'#6d28d9'},ready_to_invoice:{bg:'#fef0c7',c:'#c2410c'},reverted:{bg:'#fef3c7',c:'#d97706'},
+  booking:{bg:'#e0e7ff',c:'#4338ca'},need_order:{bg:'#fef3c7',c:'#92400e'},waiting_receive:{bg:'#dbeafe',c:'#1e40af'},needs_pull:{bg:'#fef9c3',c:'#a16207'},items_received:{bg:'#d1fae5',c:'#065f46'},complete:{bg:'#dcfce7',c:'#166534'},in_production:{bg:'#ede9fe',c:'#6d28d9'},ready_to_invoice:{bg:'#fef0c7',c:'#c2410c'},reverted:{bg:'#fef3c7',c:'#d97706'},
   // Job item statuses
   need_to_order:{bg:'#fef3c7',c:'#92400e'},partially_received:{bg:'#fef9c3',c:'#854d0e'},items_received:{bg:'#d1fae5',c:'#065f46'},
   // Job production statuses
@@ -1451,6 +1451,25 @@ const D_SO=[
         {item_idx:0,deco_idx:0,sku:'1370399',name:'Under Armour Team Polo',color:'Navy/Gold',units:32,fulfilled:32},
         {item_idx:1,deco_idx:0,sku:'1376844',name:'Under Armour Tech Short',color:'Navy',units:32,fulfilled:32},
       ]},
+  ]},
+// SO-1070: BOOKING ORDER — Fall 2026 Football. 6+ months out, not yet in pipeline.
+{id:'SO-1070',customer_id:'c1a',memo:'Fall 2026 Football Full Package — Adidas',status:'need_order',created_by:'r1',created_at:'03/01/26 9:00 AM',updated_at:'03/01/26',expected_date:null,production_notes:'Booking order — Adidas Fall 2026 line. Coach wants full package.',shipping_type:'flat',shipping_value:65,ship_to_id:'default',firm_dates:[],
+  order_type:'booking',expected_ship_date:'2026-08-15',booking_confirmed:false,booking_confirmed_at:null,booking_confirmed_by:null,booking_alert_days:100,
+  art_files:[],items:[
+    {sku:'JX4453',name:'Adidas Unisex Pregame Tee',brand:'Adidas',color:'Team Navy/White',nsa_cost:18.5,retail_price:55.5,unit_sell:33.3,product_id:'p1',
+      sizes:{S:10,M:25,L:20,XL:12,'2XL':5},available_sizes:['S','M','L','XL','2XL'],
+      pick_lines:[],po_lines:[],decorations:[{kind:'art',position:'Front Center',art_file_id:null,sell_override:null}]},
+    {sku:'HF7245',name:'Adidas Team Issue Hoodie',brand:'Adidas',color:'Team Navy/White',nsa_cost:28.5,retail_price:85,unit_sell:51,product_id:'p2',
+      sizes:{S:5,M:12,L:10,XL:8,'2XL':3},available_sizes:['S','M','L','XL','2XL'],
+      pick_lines:[],po_lines:[],decorations:[{kind:'art',position:'Left Chest',art_file_id:null,sell_override:null}]},
+  ]},
+// SO-1071: BOOKING ORDER — close to threshold, should trigger confirmation todo
+{id:'SO-1071',customer_id:'c2a',memo:'UA Fall Lacrosse Booking — Under Armour',status:'need_order',created_by:'r4',created_at:'02/20/26 2:00 PM',updated_at:'02/20/26',expected_date:null,production_notes:'Under Armour booking for fall season.',shipping_type:'pct',shipping_value:5,ship_to_id:'default',firm_dates:[],
+  order_type:'booking',expected_ship_date:'2026-06-10',booking_confirmed:false,booking_confirmed_at:null,booking_confirmed_by:null,booking_alert_days:100,
+  art_files:[],items:[
+    {sku:'1370399',name:'Under Armour Team Polo',brand:'Under Armour',color:'Red/White',nsa_cost:22,retail_price:65,unit_sell:42,product_id:'p4',
+      sizes:{M:6,L:8,XL:4,'2XL':2},available_sizes:['S','M','L','XL','2XL'],
+      pick_lines:[],po_lines:[],decorations:[{kind:'art',position:'Left Chest',art_file_id:null,sell_override:null}]},
   ]},
 ];
 const D_MSG=[
@@ -2130,6 +2149,13 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType}){
 // UNIFIED ORDER EDITOR
 // Auto-calculate SO status from items
 function calcSOStatus(ord){
+  // Booking orders stay in 'booking' status until confirmed or within alert threshold of ship date
+  if(ord?.order_type==='booking'&&!ord.booking_confirmed){
+    if(!ord.expected_ship_date)return'booking';
+    const daysOut=Math.ceil((new Date(ord.expected_ship_date)-new Date())/(1000*60*60*24));
+    const threshold=ord.booking_alert_days||100;
+    if(daysOut>threshold)return'booking';
+  }
   // Fully automatic SO status based on item + job state
   let totalSz=0,coveredSz=0,fulfilledSz=0;
   safeItems(ord).forEach(it=>{
@@ -2927,6 +2953,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4,flexWrap:'wrap'}}><span style={{fontSize:22,fontWeight:800,color:'#1e40af'}}>{o.id}</span>
             {isE&&<span className={`badge ${o.status==='draft'||o.status==='open'?'badge-blue':o.status==='sent'?'badge-amber':o.status==='approved'?'badge-green':'badge-blue'}`}>{o.status}</span>}
             {isSO&&<span style={{padding:'3px 10px',borderRadius:12,fontSize:12,fontWeight:700,background:SC[o.status]?.bg||'#f1f5f9',color:SC[o.status]?.c||'#475569'}}>{o.status?.replace(/_/g,' ')}</span>}
+            {isSO&&o.order_type==='booking'&&<span style={{padding:'3px 10px',borderRadius:12,fontSize:12,fontWeight:700,background:'#e0e7ff',color:'#4338ca'}}>Booking{o.booking_confirmed?' (Confirmed)':''}</span>}
             {isE&&<EmailBadge e={o}/>}</div>
           {!cust?<div style={{marginBottom:8}}><label className="form-label">Select Customer *</label><SearchSelect options={allCustomers.map(c=>({value:c.id,label:`${c.name} (${c.alpha_tag})`}))} value={o.customer_id} onChange={selC} placeholder="Search customer..."/></div>
           :<div><div style={{display:'flex',alignItems:'center',gap:6}}><span style={{fontSize:18,fontWeight:800}}>{cust.name}</span> <span style={{fontSize:14,color:'#64748b'}}>({cust.alpha_tag})</span>
@@ -2972,11 +2999,29 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       <div style={{display:'flex',gap:8,marginTop:12,alignItems:'end',flexWrap:'wrap'}}>
         <div style={{flex:1,minWidth:180}}><label className="form-label">Memo</label><input className="form-input" value={o.memo} onChange={e=>sv('memo',e.target.value)} style={{fontSize:14}}/></div>
         {isE&&<div style={{width:70}}><label className="form-label">Markup</label><input className="form-input" type="number" step="0.05" value={o.default_markup} onChange={e=>{const m=parseFloat(e.target.value)||1.65;sv('default_markup',m);sv('items',safeItems(o).map(it=>isAU(it.brand)?it:{...it,unit_sell:rQ(it.nsa_cost*m)}))}}/></div>}
+        {isSO&&<div style={{width:120}}>
+          <label className="form-label">Order Type</label>
+          <select className="form-select" value={o.order_type||'at_once'} onChange={e=>{sv('order_type',e.target.value);if(e.target.value==='at_once'){sv('expected_ship_date',null);sv('booking_confirmed',false);sv('booking_alert_days',100)}}}>
+            <option value="at_once">At-Once</option><option value="booking">Booking</option></select>
+        </div>}
         {isSO&&<div style={{width:140}}>
-          <label className="form-label">Expected</label>
+          <label className="form-label">{o.order_type==='booking'?'Expected':'Expected'}</label>
           <input className="form-input" type="date" value={o.expected_date||''} onChange={e=>sv('expected_date',e.target.value)}/>
           <button style={{fontSize:10,marginTop:4,padding:'3px 8px',borderRadius:4,background:'#f5f3ff',border:'1px solid #ddd6fe',color:'#7c3aed',cursor:'pointer',fontWeight:600,display:'flex',alignItems:'center',gap:3}} onClick={()=>{setFirmReqDate(o.expected_date||'');setFirmReqNote('');setShowFirmReq(true)}}>📌 Request Firm Date</button>
         </div>}
+        {isSO&&o.order_type==='booking'&&<div style={{width:140}}>
+          <label className="form-label">Ship Date</label>
+          <input className="form-input" type="date" value={o.expected_ship_date||''} onChange={e=>sv('expected_ship_date',e.target.value)}/>
+        </div>}
+        {isSO&&o.order_type==='booking'&&<div style={{width:80}}>
+          <label className="form-label">Alert Days</label>
+          <input className="form-input" type="number" min="60" max="180" value={o.booking_alert_days||100} onChange={e=>sv('booking_alert_days',parseInt(e.target.value)||100)}/>
+          <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>before ship</div>
+        </div>}
+        {isSO&&o.order_type==='booking'&&!o.booking_confirmed&&<div style={{alignSelf:'end'}}>
+          <button style={{fontSize:11,padding:'6px 12px',borderRadius:6,background:'#059669',border:'none',color:'white',cursor:'pointer',fontWeight:700}} onClick={()=>{if(!window.confirm('Confirm this booking order with coach? It will enter the active pipeline.'))return;sv('booking_confirmed',true);sv('booking_confirmed_at',new Date().toISOString());sv('booking_confirmed_by',cu?.id||'');nf('Booking order confirmed — entering pipeline')}}>Confirm with Coach</button>
+        </div>}
+        {isSO&&o.order_type==='booking'&&o.booking_confirmed&&<div style={{alignSelf:'end',fontSize:11,color:'#059669',fontWeight:600,padding:'6px 0'}}>Confirmed</div>}
         <button className="btn btn-primary" onClick={()=>{
           if(!cust){nf('Select a customer first','error');return}
           if(!o.memo?.trim()){nf('Memo is required','error');return}
@@ -9038,7 +9083,7 @@ export default function App(){
   const convertSO=est=>{const fourWeeks=new Date();fourWeeks.setDate(fourWeeks.getDate()+28);const defExp=fourWeeks.toISOString().split('T')[0];
     // Deep clone items+decorations so nested objects (roster, names, art refs) are fully independent
     const clonedItems=safeItems(est).map(it=>{const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];return clone});
-    const so={id:nextSOId(sos),customer_id:est.customer_id,estimate_id:est.id,memo:est.memo,status:'need_order',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:est.default_markup,expected_date:defExp,production_notes:'',shipping_type:est.shipping_type,shipping_value:est.shipping_value,ship_to_id:est.ship_to_id,firm_dates:[],art_files:JSON.parse(JSON.stringify(est.art_files||[])),items:clonedItems};
+    const so={id:nextSOId(sos),customer_id:est.customer_id,estimate_id:est.id,memo:est.memo,status:'need_order',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:est.default_markup,expected_date:defExp,production_notes:'',shipping_type:est.shipping_type,shipping_value:est.shipping_value,ship_to_id:est.ship_to_id,firm_dates:[],art_files:JSON.parse(JSON.stringify(est.art_files||[])),items:clonedItems,order_type:'at_once',expected_ship_date:null,booking_confirmed:false,booking_confirmed_at:null,booking_confirmed_by:null,booking_alert_days:100};
     setSOs(p=>[...p,so]);setEsts(p=>p.map(e=>e.id===est.id?{...e,status:'converted'}:e));setEEst(null);
     const c=cust.find(x=>x.id===so.customer_id);setESO(so);setESOC(c);setPg('orders');nf(`${so.id} created from ${est.id}`)};
   const copyEstimate=est=>{
@@ -9261,7 +9306,7 @@ export default function App(){
   // Shared data builder for warehouse + deco + dashboard pages
   function buildWarehouseData(){
     const pullTasks=[];const shipTasks=[];const decoTasks=[];
-    sos.filter(so=>{const st=calcSOStatus(so);return st!=='complete'}).forEach(so=>{
+    sos.filter(so=>{const st=calcSOStatus(so);return st!=='complete'&&st!=='booking'}).forEach(so=>{
       const c=cust.find(x=>x.id===so.customer_id);const cName=c?.name||'Unknown';const alpha=c?.alpha_tag||'';
       const rep=REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name?.split(' ')[0]||'—';
       const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
@@ -9392,6 +9437,11 @@ export default function App(){
       if(so.expected_date){const dOut=Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24));
         if(dOut<=3&&dOut>=0&&calcSOStatus(so)!=='complete')todos.push({type:'deadline',priority:0,msg:'⚠️ Due in '+dOut+' day'+(dOut!==1?'s':'')+': '+(so.memo||so.id),detail:tag+' · '+so.expected_date,so,action:'Open SO',role:'all'})};
       if(calcSOStatus(so)==='need_order')todos.push({type:'order',priority:2,msg:'🛒 Items need ordering: '+(so.memo||so.id),detail:tag,so,action:'Create PO',role:'sales'});
+      // Booking order confirmation todo — fires when within alert threshold of expected ship date
+      if(so.order_type==='booking'&&!so.booking_confirmed&&so.expected_ship_date){
+        const shipDaysOut=Math.ceil((new Date(so.expected_ship_date)-new Date())/(1000*60*60*24));
+        const alertThreshold=so.booking_alert_days||100;
+        if(shipDaysOut<=alertThreshold&&shipDaysOut>=0)todos.push({type:'booking_confirm',priority:1,msg:'📋 Confirm booking order with coach: '+(so.memo||so.id),detail:tag+' · Ships '+so.expected_ship_date+' ('+shipDaysOut+' days out)',so,action:'Confirm Order',role:'sales'})}
       // Rep delivery todos — notify rep when jobs complete
       if(so.ship_preference==='rep_delivery'){
         safeJobs(so).filter(j=>j.prod_status==='completed').forEach(j=>{
@@ -9552,7 +9602,7 @@ export default function App(){
           </div>)}</div></div>
       <div className="card"><div className="card-header"><h2>📊 My Pipeline</h2></div>
         <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
-          {sos.filter(s=>s.created_by===cu.id&&calcSOStatus(s)!=='complete').slice(0,10).map(so=>{const c=cust.find(x=>x.id===so.customer_id);const st=calcSOStatus(so);
+          {sos.filter(s=>s.created_by===cu.id&&calcSOStatus(s)!=='complete'&&calcSOStatus(s)!=='booking').slice(0,10).map(so=>{const c=cust.find(x=>x.id===so.customer_id);const st=calcSOStatus(so);
             return<div key={so.id} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',cursor:'pointer'}} onClick={()=>{setESO(so);setESOC(c);setPg('orders')}}>
               <div style={{display:'flex',justifyContent:'space-between'}}>
                 <span style={{fontWeight:700,fontSize:12}}>{c?.alpha_tag||c?.name} — {so.memo||so.id}</span>
@@ -10059,7 +10109,7 @@ export default function App(){
     else if(soF.sort==='expected')fSOs.sort((a,b)=>(a.expected_date||'9999').localeCompare(b.expected_date||'9999'));
     else if(soF.sort==='customer')fSOs.sort((a,b)=>{const ca=cust.find(x=>x.id===a.customer_id)?.name||'';const cb=cust.find(x=>x.id===b.customer_id)?.name||'';return ca.localeCompare(cb)});
     // Status counts using actual so.status
-    const stCounts={need_order:sos.filter(s=>calcSOStatus(s)==='need_order').length,waiting_receive:sos.filter(s=>calcSOStatus(s)==='waiting_receive').length,items_received:sos.filter(s=>calcSOStatus(s)==='items_received').length,in_production:sos.filter(s=>calcSOStatus(s)==='in_production').length,ready_to_invoice:sos.filter(s=>calcSOStatus(s)==='ready_to_invoice').length,complete:sos.filter(s=>calcSOStatus(s)==='complete').length};
+    const stCounts={booking:sos.filter(s=>calcSOStatus(s)==='booking').length,need_order:sos.filter(s=>calcSOStatus(s)==='need_order').length,waiting_receive:sos.filter(s=>calcSOStatus(s)==='waiting_receive').length,items_received:sos.filter(s=>calcSOStatus(s)==='items_received').length,in_production:sos.filter(s=>calcSOStatus(s)==='in_production').length,ready_to_invoice:sos.filter(s=>calcSOStatus(s)==='ready_to_invoice').length,complete:sos.filter(s=>calcSOStatus(s)==='complete').length};
     const activeFilters=soF.status!=='all'||soF.rep!=='all'||soF.search;
 
     return(<>
@@ -10067,6 +10117,8 @@ export default function App(){
       <div className="stats-row">
         <div className="stat-card" style={{cursor:'pointer',outline:soF.status==='all'?'2px solid #2563eb':'none',borderRadius:8}} onClick={()=>setSOF(f=>({...f,status:'all'}))}>
           <div className="stat-label">Total</div><div className="stat-value">{sos.length}</div></div>
+        {stCounts.booking>0&&<div className="stat-card" style={{cursor:'pointer',outline:soF.status==='booking'?'2px solid #4338ca':'none',borderRadius:8}} onClick={()=>setSOF(f=>({...f,status:f.status==='booking'?'all':'booking'}))}>
+          <div className="stat-label">Booking</div><div className="stat-value" style={{color:'#4338ca'}}>{stCounts.booking}</div></div>}
         <div className="stat-card" style={{cursor:'pointer',outline:soF.status==='need_order'?'2px solid #d97706':'none',borderRadius:8}} onClick={()=>setSOF(f=>({...f,status:f.status==='need_order'?'all':'need_order'}))}>
           <div className="stat-label">Need Order</div><div className="stat-value" style={{color:'#d97706'}}>{stCounts.need_order}</div></div>
         <div className="stat-card" style={{cursor:'pointer',outline:soF.status==='waiting_receive'?'2px solid #2563eb':'none',borderRadius:8}} onClick={()=>setSOF(f=>({...f,status:f.status==='waiting_receive'?'all':'waiting_receive'}))}>
@@ -10104,9 +10156,9 @@ export default function App(){
       const itemStatus=totalSz===0?null:fulfilledSz>=totalSz?'received':fulfilledSz>0?'partial':poSz>0?'on_order':'needs_items';
       // Status badge uses the actual SO status field (what the user set)
       const displayStatus=calcSOStatus(so);
-      const statusLabel={need_order:'Need to Order',waiting_receive:'Waiting to Receive',needs_pull:'Needs Pull',items_received:'Items Received',in_production:'In Production',ready_to_invoice:'Ready to Invoice',complete:'Complete'}[displayStatus]||displayStatus.replace(/_/g,' ');
+      const statusLabel={booking:'Booking',need_order:'Need to Order',waiting_receive:'Waiting to Receive',needs_pull:'Needs Pull',items_received:'Items Received',in_production:'In Production',ready_to_invoice:'Ready to Invoice',complete:'Complete'}[displayStatus]||displayStatus.replace(/_/g,' ');
       return(<tr key={so.id} style={{cursor:'pointer'}} onClick={()=>{setESO(so);setESOC(c)}}>
-      <td style={{fontWeight:700,color:'#1e40af'}}>{so.id}</td><td>{c?.name} <span className="badge badge-gray">{c?.alpha_tag}</span></td><td style={{fontSize:12}}>{so.memo}</td><td>{so.expected_date||'--'}</td>
+      <td style={{fontWeight:700,color:'#1e40af'}}>{so.id}{so.order_type==='booking'&&<span style={{fontSize:8,marginLeft:4,padding:'1px 4px',borderRadius:4,background:'#e0e7ff',color:'#4338ca',fontWeight:700,verticalAlign:'middle'}}>B</span>}</td><td>{c?.name} <span className="badge badge-gray">{c?.alpha_tag}</span></td><td style={{fontSize:12}}>{so.memo}</td><td>{so.order_type==='booking'&&so.expected_ship_date?<span>{so.expected_ship_date}<div style={{fontSize:9,color:'#94a3b8'}}>ship date</div></span>:(so.expected_date||'--')}</td>
       <td><span style={{fontSize:11,color:'#64748b'}}>{rep?.name?.split(' ')[0]||'\u2014'}</span></td>
       <td>{ac>0?<span style={{fontSize:11}}>{aa}/{ac} \u2713</span>:<span style={{fontSize:11,color:'#d97706'}}>\u2014</span>}</td>
       <td>{itemStatus&&<span style={{fontSize:10,fontWeight:600,padding:'2px 6px',borderRadius:4,
@@ -16507,7 +16559,7 @@ export default function App(){
 
     // Completed jobs for the Completed tab (not shipped — those auto-fall off)
     const completedDecoJobs=[];
-    sos.filter(so=>{const st=calcSOStatus(so);return st!=='complete'}).forEach(so=>{
+    sos.filter(so=>{const st=calcSOStatus(so);return st!=='complete'&&st!=='booking'}).forEach(so=>{
       const c=cust.find(x=>x.id===so.customer_id);const cName=c?.name||'Unknown';const alpha=c?.alpha_tag||'';
       const rep=REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name?.split(' ')[0]||'—';
       const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
