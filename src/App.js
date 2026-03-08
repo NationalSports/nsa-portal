@@ -4141,7 +4141,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const poData=[];
       safeItems(o).forEach((item,idx)=>{(item.po_lines||[]).forEach((po,pi)=>{
         const billed=po.billed||{};const received=po.received||{};const trackNums=po.tracking_numbers||[];const shipments=po.shipments||[];
-        const szKeys=Object.keys(po).filter(k=>!['status','po_id','received','shipments','cancelled','po_type','deco_vendor','deco_type','created_at','memo','notes','expected_date','billed','tracking_numbers','unit_cost','vendor','drop_ship'].includes(k)&&typeof po[k]==='number');
+        const szKeys=Object.keys(po).filter(k=>!['status','po_id','received','shipments','cancelled','po_type','deco_vendor','deco_type','created_at','memo','notes','expected_date','billed','tracking_numbers','unit_cost','vendor','drop_ship'].includes(k)&&typeof po[k]==='number').sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
         const totalOrdered=szKeys.reduce((a,sz)=>a+(po[sz]||0),0);const totalBilled=szKeys.reduce((a,sz)=>a+(billed[sz]||0),0);const totalReceived=szKeys.reduce((a,sz)=>a+(received[sz]||0),0);
         if(totalOrdered>0)poData.push({item,itemIdx:idx,po,szKeys,billed,received,trackNums,shipments,totalOrdered,totalBilled,totalReceived,
           vendor:po.vendor||po.deco_vendor||'',expectedDate:po.expected_date||'',
@@ -6129,7 +6129,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const activeLine=allLines[activeLineIdx]||allLines[0];
       const po=o.items[activeLine.lineIdx]?.po_lines?.[activeLine.poIdx]||editPO.po;
       const item=o.items[activeLine.lineIdx];
-      const szKeys=Object.keys(po).filter(k=>k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='po_type'&&k!=='deco_vendor'&&k!=='deco_type'&&k!=='created_at'&&k!=='memo'&&k!=='notes'&&k!=='expected_date'&&k!=='billed'&&k!=='tracking_numbers'&&k!=='unit_cost'&&k!=='vendor'&&k!=='drop_ship'&&typeof po[k]==='number');
+      const szKeys=Object.keys(po).filter(k=>k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='po_type'&&k!=='deco_vendor'&&k!=='deco_type'&&k!=='created_at'&&k!=='memo'&&k!=='notes'&&k!=='expected_date'&&k!=='billed'&&k!=='tracking_numbers'&&k!=='unit_cost'&&k!=='vendor'&&k!=='drop_ship'&&typeof po[k]==='number').sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
       const received=po.received||{};const cancelled=po.cancelled||{};const billed=po.billed||{};
       const shipments=po.shipments||[];const trackingNums=po.tracking_numbers||[];
       const getRcvd=sz=>(received[sz]||0);
@@ -6418,7 +6418,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     {/* PO FULL PAGE VIEW */}
     {poFullPage&&(()=>{
       const{po,item,allLines,soId,soItems}=poFullPage;
-      const szKeys=Object.keys(po).filter(k=>k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='po_type'&&k!=='deco_vendor'&&k!=='deco_type'&&k!=='created_at'&&k!=='memo'&&k!=='notes'&&k!=='expected_date'&&k!=='unit_cost'&&k!=='drop_ship'&&typeof po[k]==='number');
+      const szKeys=Object.keys(po).filter(k=>k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='po_type'&&k!=='deco_vendor'&&k!=='deco_type'&&k!=='created_at'&&k!=='memo'&&k!=='notes'&&k!=='expected_date'&&k!=='unit_cost'&&k!=='drop_ship'&&typeof po[k]==='number').sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
       const received=po.received||{};const cancelled=po.cancelled||{};const shipments=po.shipments||[];
       const getRcvd=sz=>(received[sz]||0);const getCncl=sz=>(cancelled[sz]||0);const getOpen=sz=>Math.max(0,(po[sz]||0)-getRcvd(sz)-getCncl(sz));
       const totalOrdered=szKeys.reduce((a,sz)=>a+(po[sz]||0),0);const totalReceived=szKeys.reduce((a,sz)=>a+getRcvd(sz),0);
@@ -11702,7 +11702,7 @@ export default function App(){
     const allPOs=[];
     sos.forEach(so=>{const c2=cust.find(x=>x.id===so.customer_id);
       safeItems(so).forEach((it,idx)=>{safePOs(it).forEach((po,pli)=>{
-        const szKeys=Object.keys(po).filter(k=>!['status','po_id','received','shipments','cancelled','vendor','created_at','expected_date','memo','po_type','unit_cost','drop_ship'].includes(k)&&typeof po[k]==='number');
+        const szKeys=Object.keys(po).filter(k=>!['status','po_id','received','shipments','cancelled','vendor','created_at','expected_date','memo','po_type','unit_cost','drop_ship'].includes(k)&&typeof po[k]==='number').sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
         const totalOrd=szKeys.reduce((a,sz)=>a+(po[sz]||0),0);
         const rcvd=po.received||{};const cncl=po.cancelled||{};
         const totalRcvd=szKeys.reduce((a,sz)=>a+(rcvd[sz]||0),0);
