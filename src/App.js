@@ -40,7 +40,8 @@ const _dbLoad = async () => {
     const [rTeam,rCust,rContacts,rVend,rProd,rProdInv,rEst,rEstArt,rEstItems,rEstDecos,
       rSO,rSOArt,rSOFirm,rSOItems,rSODecos,rSOPicks,rSOPOs,rSOJobs,
       rInv,rInvPay,rInvItems,rMsg,rMsgReads,rOMG,rOMGProd,rIssues,rAppState,
-      rPromoProg,rPromoPeriods,rPromoUsage] = await Promise.all([
+      rPromoProg,rPromoPeriods,rPromoUsage,
+      rRepCsr,rAssignedTodos,rTodoComments] = await Promise.all([
       supabase.from('team_members').select('*').order('name').limit(10000),
       supabase.from('customers').select('*').order('name').limit(10000),
       supabase.from('customer_contacts').select('*').limit(10000),
@@ -71,6 +72,9 @@ const _dbLoad = async () => {
       supabase.from('customer_promo_programs').select('*').limit(10000),
       supabase.from('customer_promo_periods').select('*').limit(10000),
       supabase.from('customer_promo_usage').select('*').limit(10000),
+      supabase.from('rep_csr_assignments').select('*').limit(10000),
+      supabase.from('assigned_todos').select('*').limit(10000),
+      supabase.from('todo_comments').select('*').limit(10000),
     ]);
     // Check for critical errors on core tables only (child tables may not exist yet — 404 is OK)
     const coreResults=[{n:'team_members',r:rTeam},{n:'customers',r:rCust},{n:'vendors',r:rVend},{n:'products',r:rProd},{n:'estimates',r:rEst},{n:'sales_orders',r:rSO},{n:'invoices',r:rInv},{n:'messages',r:rMsg},{n:'omg_stores',r:rOMG}];
@@ -90,6 +94,7 @@ const _dbLoad = async () => {
     const issues=d(rIssues);
     // Promo data
     const promoPrograms=d(rPromoProg);const promoPeriods=d(rPromoPeriods);const promoUsage=d(rPromoUsage);
+    const repCsrAssignments=d(rRepCsr);const assignedTodos=d(rAssignedTodos).map(t=>({...t,comments:d(rTodoComments).filter(c=>c.todo_id===t.id).sort((a,b)=>(a.created_at||'').localeCompare(b.created_at))}));
     // Parse app_state key-value pairs
     const appStateRaw=d(rAppState);
     const appState={};appStateRaw.forEach(r=>{try{appState[r.id]=JSON.parse(r.value)}catch{appState[r.id]=r.value}});
@@ -131,7 +136,7 @@ const _dbLoad = async () => {
     // OMG Stores: attach products
     const omg_stores=omgRaw.map(s=>({...s,products:omgProd.filter(p=>p.store_id===s.id).map(p=>({sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:p.deco_type,deco_cost:p.deco_cost,sizes:p.sizes||{}}))}));
     const hasData=(customers.length>0)||(sales_orders.length>0);
-    return{team,customers,vendors,products,estimates,sales_orders,invoices,messages,omg_stores,issues,appState,hasData};
+    return{team,customers,vendors,products,estimates,sales_orders,invoices,messages,omg_stores,issues,appState,hasData,repCsrAssignments,assignedTodos};
   }catch(e){console.error('[DB] Load failed:',e);return null}
 };
 const _dbSeed = async (d) => {
@@ -8545,6 +8550,11 @@ export default function App(){
   const[issueFilter,setIssueFilter]=useState('all');// all|open|resolved
   const[editMember,setEditMember]=useState(null);
   const[showInactive,setShowInactive]=useState(false);
+  // Rep-CSR assignments and assigned todos
+  const[repCsrAssignments,setRepCsrAssignments]=useState([]);
+  const[assignedTodos,setAssignedTodos]=useState([]);
+  const[todoModal,setTodoModal]=useState({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2});
+  const[todoDetailId,setTodoDetailId]=useState(null);
   const openIssueCount=issues.filter(i=>i.status==='open').length;
   const consoleErrors=React.useRef([]);
   React.useEffect(()=>{const orig=console.error;console.error=(...args)=>{consoleErrors.current=[{msg:args.map(a=>typeof a==='string'?a:JSON.stringify(a)).join(' '),ts:new Date().toISOString()},...consoleErrors.current].slice(0,5);orig.apply(console,args)};return()=>{console.error=orig}},[]);
@@ -8587,6 +8597,8 @@ export default function App(){
           }else{setEsts(d.estimates);setSOs(d.sales_orders);setInvs(d.invoices);setMsgs(d.messages.length?d.messages:msgs)}
           if(d.omg_stores.length)setOmgStores(d.omg_stores);
           if(d.issues?.length)setIssues(d.issues);
+          if(d.repCsrAssignments?.length)setRepCsrAssignments(d.repCsrAssignments);
+          if(d.assignedTodos?.length)setAssignedTodos(d.assignedTodos);
           // Load app_state key-value data (batch POs, changelog, etc.)
           const as=d.appState||{};
           if(as.batch_pos)setBatchPOs(as.batch_pos);
@@ -8779,6 +8791,10 @@ export default function App(){
   React.useEffect(()=>{try{localStorage.setItem('nsa_msgs',JSON.stringify(msgs))}catch{};_diffSave(msgs,'msgs',m=>_dbSaveMessage(m))},[msgs]);
   React.useEffect(()=>{try{localStorage.setItem('nsa_omg_stores',JSON.stringify(omgStores))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.omg||[];omgStores.forEach(s=>{const old=snap.find(p=>p.id===s.id);if(!old||JSON.stringify(old)!==JSON.stringify(s)){_dbSave('omg_stores',[_pick(s,_omgStoreCols)])}});_dbSnap.current.omg=omgStores}},[omgStores]);
   React.useEffect(()=>{try{localStorage.setItem('nsa_issues',JSON.stringify(issues))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.issues||[];const changed=issues.filter(i=>{const old=snap.find(p=>p.id===i.id);return!old||JSON.stringify(old)!==JSON.stringify(i)});if(changed.length)_dbSave('issues',changed.map(i=>_pick(i,_issueCols)));_dbSnap.current.issues=issues}},[issues]);
+  // Rep-CSR assignments auto-save
+  React.useEffect(()=>{if(!_initialLoadDone.current||!_dbLoadSuccess.current)return;const snap=_dbSnap.current.repCsr||[];const changed=repCsrAssignments.filter(a=>{const old=snap.find(p=>p.id===a.id);return!old||JSON.stringify(old)!==JSON.stringify(a)});if(changed.length)_dbSave('rep_csr_assignments',changed);_dbSnap.current.repCsr=repCsrAssignments},[repCsrAssignments]);
+  // Assigned todos auto-save
+  React.useEffect(()=>{if(!_initialLoadDone.current||!_dbLoadSuccess.current)return;const snap=_dbSnap.current.assignedTodos||[];assignedTodos.forEach(t=>{const old=snap.find(p=>p.id===t.id);if(!old||JSON.stringify(old)!==JSON.stringify(t)){const{comments,...row}=t;_dbSave('assigned_todos',[row]);if(comments?.length){const oldComments=old?.comments||[];const newComments=comments.filter(c=>!oldComments.find(oc=>oc.id===c.id));if(newComments.length)_dbSave('todo_comments',newComments)}}});_dbSnap.current.assignedTodos=assignedTodos},[assignedTodos]);
   // Batch POs, submitted batches, changelog, SO history — sync to localStorage + Supabase app_state table
   const _saveAppState=(key,val)=>{try{localStorage.setItem('nsa_'+key,JSON.stringify(val))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current)_dbSave('app_state',[{id:key,value:JSON.stringify(val),updated_at:new Date().toISOString()}])};
   React.useEffect(()=>{_saveAppState('batch_pos',batchPOs)},[batchPOs]);
@@ -8896,7 +8912,7 @@ export default function App(){
   React.useEffect(()=>{if(selV)addRecent('vendor',selV.id,selV.name)},[selV?.id]); // eslint-disable-line
   React.useEffect(()=>{if(selP)addRecent('product',selP.id,(selP.sku||'')+' — '+selP.name)},[selP?.id]); // eslint-disable-line
 
-  const[gQ,setGQ]=useState('');const[gOpen,setGOpen]=useState(false);const[mF,setMF]=useState('all');const[mHideClosed,setMHideClosed]=useState(true);const[mEntityF,setMEntityF]=useState('all');const[rF,setRF]=useState('all');const[pF,setPF]=useState({cat:'all',vnd:'all',stk:'all',clr:'all'});
+  const[gQ,setGQ]=useState('');const[gOpen,setGOpen]=useState(false);const[mF,setMF]=useState('mine');const[mHideClosed,setMHideClosed]=useState(true);const[mEntityF,setMEntityF]=useState('all');const[rF,setRF]=useState('all');const[pF,setPF]=useState({cat:'all',vnd:'all',stk:'all',clr:'all'});
   const[qPC,setQPC]=useState({open:false,mode:'single',items:[],bulkRaw:''});
   const[poF,setPOF]=useState({status:'all',vendor:'all',rep:'all',search:'',sort:'date_desc'});
   // OMG Team Stores
@@ -9269,16 +9285,45 @@ export default function App(){
     return{pullTasks,shipTasks,decoTasks};
   };
 
+  // Helper: get rep ID for a customer (from customer.primary_rep_id or SO created_by)
+  const getRepForCustomer=(custId)=>{const c=cust.find(x=>x.id===custId);return c?.primary_rep_id||null};
+  // Helper: get CSR IDs assigned to a rep
+  const getCsrsForRep=(repId)=>repCsrAssignments.filter(a=>a.rep_id===repId&&a.is_active!==false).map(a=>a.csr_id);
+  // Helper: get rep IDs that a CSR is assigned to
+  const getRepsForCsr=(csrId)=>repCsrAssignments.filter(a=>a.csr_id===csrId&&a.is_active!==false).map(a=>a.rep_id);
+  // Helper: check if current user should see a todo for a given customer/SO
+  const isMyTodo=(repId)=>{
+    if(!cu)return true;
+    if(cu.role==='admin'||cu.role==='gm')return true;
+    if(cu.role==='rep')return repId===cu.id;
+    if(cu.role==='csr'){const myReps=getRepsForCsr(cu.id);return myReps.includes(repId)}
+    return true;
+  };
+
   // DASHBOARD
   function rDash(){
-    // Unread messages for this user
-    const unreadMsgs=(msgs||[]).filter(m=>!(m.read_by||[]).includes(cu?.id));
+    // Unread messages for this user — person-specific filtering
+    const allUnread=(msgs||[]).filter(m=>!(m.read_by||[]).includes(cu?.id));
+    // Filter messages to person's scope: tagged directly, from their dept, or for their rep's customers
+    const isMyMsg=(m)=>{
+      if((m.tagged_members||[]).includes(cu?.id))return true;// directly tagged
+      if(m.author_id===cu?.id)return true;// own messages
+      if(cu.role==='admin'||cu.role==='gm')return true;
+      const so=sos.find(s=>s.id===m.so_id||s.id===m.entity_id);
+      if(!so)return cu.role==='admin'||cu.role==='gm';
+      const c=cust.find(x=>x.id===so.customer_id);
+      const msgRepId=c?.primary_rep_id||so.created_by;
+      if(cu.role==='rep')return msgRepId===cu.id;
+      if(cu.role==='csr'){const myReps=getRepsForCsr(cu.id);return myReps.length===0||myReps.includes(msgRepId)}
+      return true;
+    };
+    const unreadMsgs=allUnread.filter(isMyMsg);
     const unreadMentions=unreadMsgs.filter(m=>(m.tagged_members||[]).includes(cu?.id));
     const myUnread=unreadMsgs.sort((a,b)=>{const aTag=(a.tagged_members||[]).includes(cu?.id)?0:1;const bTag=(b.tagged_members||[]).includes(cu?.id)?0:1;if(aTag!==bTag)return aTag-bTag;return(b.ts||'').localeCompare(a.ts)}).slice(0,10);
     // Build to-do items from jobs and SOs
     const todos=[];
     sos.forEach(so=>{
-      const c=cust.find(x=>x.id===so.customer_id);const tag=c?.alpha_tag||so.id;
+      const c=cust.find(x=>x.id===so.customer_id);const tag=c?.alpha_tag||so.id;const _repId=c?.primary_rep_id||so.created_by;
       buildJobs(so).forEach(j=>{
         if(j.art_status==='waiting_approval'){todos.push({type:'art',priority:2,msg:'⏳ Art awaiting approval: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,action:'Review art',role:'sales'});
           if(j.sent_to_coach_at){const _fuDays=portalSettings?.followUpDays||3;const daysSinceSent=Math.floor((new Date()-new Date(j.sent_to_coach_at))/(1000*60*60*24));if(daysSinceSent>=_fuDays)todos.push({type:'coach_followup',priority:1,msg:'📞 Follow up on art approval ('+daysSinceSent+'d): '+j.art_name,detail:tag+' · '+so.id+' · Sent to coach '+daysSinceSent+' days ago',so,jobId:j.id,action:'Follow Up',role:'sales'})}}
@@ -9338,6 +9383,21 @@ export default function App(){
       todos.push({type:'issue',priority:pri,msg:(i.priority==='high'?'🔴':'🟡')+' Issue: '+i.description.slice(0,80)+(i.description.length>80?'...':''),detail:(i.reported_by||i.reportedBy||'Unknown')+' · '+i.page+(i.viewing?' · '+i.viewing:''),action:'View Issue',role:'all',issueId:i.id});
     });
     todos.sort((a,b)=>a.priority-b.priority);
+    // Attach repId to each todo based on customer's primary_rep_id
+    todos.forEach(t=>{
+      if(t.so){const c=cust.find(x=>x.id===t.so.customer_id);t.repId=c?.primary_rep_id||t.so.created_by}
+      else if(t.est){const c=cust.find(x=>x.id===t.est.customer_id);t.repId=c?.primary_rep_id||t.est.created_by}
+    });
+    // Filter to person-specific: reps see their customers' todos, CSRs see their assigned reps' todos
+    const myTodos=todos.filter(t=>{
+      if(cu.role==='admin'||cu.role==='gm')return true;
+      if(t.role==='all')return true;
+      if(cu.role==='rep')return t.repId===cu.id;
+      if(cu.role==='csr'){const myReps=getRepsForCsr(cu.id);return myReps.length===0||myReps.includes(t.repId)}
+      return true;
+    });
+    // Get assigned todos for this user (manually created)
+    const myAssignedTodos=assignedTodos.filter(t=>t.status==='open'&&(t.assigned_to===cu.id||t.created_by===cu.id));
 
     // Shared data builders
     const{pullTasks,shipTasks,decoTasks}=buildWarehouseData();
@@ -9399,15 +9459,16 @@ export default function App(){
     <div className="stats-row">
       <div className="stat-card"><div className="stat-label">My Open Estimates</div><div className="stat-value" style={{color:'#d97706'}}>{ests.filter(e=>(e.status==='draft'||e.status==='open'||e.status==='sent')&&e.created_by===cu.id).length}</div></div>
       <div className="stat-card"><div className="stat-label">My Active SOs</div><div className="stat-value" style={{color:'#2563eb'}}>{sos.filter(s=>s.created_by===cu.id&&calcSOStatus(s)!=='complete').length}</div></div>
-      <div className="stat-card"><div className="stat-label">Pending Approvals</div><div className="stat-value" style={{color:'#7c3aed'}}>{todos.filter(t=>t.type==='art').length}</div></div>
-      <div className="stat-card"><div className="stat-label">Due This Week</div><div className="stat-value" style={{color:'#dc2626'}}>{todos.filter(t=>t.type==='deadline').length}</div></div>
+      <div className="stat-card"><div className="stat-label">Pending Approvals</div><div className="stat-value" style={{color:'#7c3aed'}}>{myTodos.filter(t=>t.type==='art').length}</div></div>
+      <div className="stat-card"><div className="stat-label">Due This Week</div><div className="stat-value" style={{color:'#dc2626'}}>{myTodos.filter(t=>t.type==='deadline').length}</div></div>
+      <div className="stat-card"><div className="stat-label">Assigned Tasks</div><div className="stat-value" style={{color:'#0891b2'}}>{myAssignedTodos.length}</div></div>
     </div>
     <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
-      <div className="card"><div className="card-header"><h2>🎯 My Action Items</h2></div>
+      <div className="card"><div className="card-header"><h2>🎯 My Action Items ({myTodos.filter(t=>t.role==='sales'||t.role==='all').length})</h2></div>
         <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
-          {todos.filter(t=>t.role==='sales'||t.role==='all').length===0?<div className="empty" style={{padding:20}}>Nothing pending!</div>:
-          todos.filter(t=>t.role==='sales'||t.role==='all').slice(0,12).map((t,i)=><div key={i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer'}} onClick={()=>{if(t.type==='est_update_request'||t.type==='est_approved'||t.type==='follow_up'){if(t.est){setEEst(t.est);setEEstC(t.estC);setPg('estimates')}}else if(t.so){if(t.type==='art'&&t.jobId){const jIdx=safeJobs(t.so).findIndex(jj=>jj.id===t.jobId);setESOTab('jobs');setESOScrollJob(jIdx>=0?jIdx:null)}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
-            <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}</div></div>
+          {myTodos.filter(t=>t.role==='sales'||t.role==='all').length===0?<div className="empty" style={{padding:20}}>Nothing pending!</div>:
+          myTodos.filter(t=>t.role==='sales'||t.role==='all').slice(0,12).map((t,i)=><div key={i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer'}} onClick={()=>{if(t.type==='est_update_request'||t.type==='est_approved'||t.type==='follow_up'){if(t.est){setEEst(t.est);setEEstC(t.estC);setPg('estimates')}}else if(t.so){if(t.type==='art'&&t.jobId){const jIdx=safeJobs(t.so).findIndex(jj=>jj.id===t.jobId);setESOTab('jobs');setESOScrollJob(jIdx>=0?jIdx:null)}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
+            <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}{t.repId&&cu.role!=='rep'?<span style={{marginLeft:6,fontSize:10,color:'#2563eb'}}>({REPS.find(r=>r.id===t.repId)?.name?.split(' ')[0]||''})</span>:''}</div></div>
             <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:t.type==='art'?'#fef3c7':'#eff6ff',color:t.type==='art'?'#92400e':'#2563eb',fontWeight:600}}>{t.action}</span>
           </div>)}</div></div>
       <div className="card"><div className="card-header"><h2>📊 My Pipeline</h2></div>
@@ -9420,12 +9481,34 @@ export default function App(){
               </div></div>})}
         </div></div>
     </div>
-    <div className="card"><div className="card-header"><h2>Quick Actions</h2></div><div className="card-body" style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+    {/* Assigned Todos Card */}
+    {myAssignedTodos.length>0&&<div className="card" style={{marginBottom:16}}>
+      <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+        <h2>📌 Assigned Tasks ({myAssignedTodos.length})</h2>
+        <button className="btn btn-sm btn-primary" onClick={()=>setTodoModal({open:true,title:'',description:'',assigned_to:getCsrsForRep(cu.id)[0]||'',so_id:'',customer_id:'',priority:2})}>+ New Task</button>
+      </div>
+      <div className="card-body" style={{padding:0,maxHeight:300,overflow:'auto'}}>
+        {myAssignedTodos.map(t=>{const assignee=REPS.find(r=>r.id===t.assigned_to);const creator=REPS.find(r=>r.id===t.created_by);const isAssignedToMe=t.assigned_to===cu.id;
+          return<div key={t.id} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',background:isAssignedToMe?'#fef3c7':'white',cursor:'pointer'}} onClick={()=>setTodoDetailId(t.id)}>
+            <div style={{display:'flex',alignItems:'center',gap:8}}>
+              <div style={{flex:1}}>
+                <div style={{fontSize:13,fontWeight:600}}>{t.title}</div>
+                <div style={{fontSize:11,color:'#64748b'}}>{isAssignedToMe?'From: '+creator?.name:'Assigned to: '+assignee?.name}{t.so_id?' · '+t.so_id:''}</div>
+              </div>
+              <span style={{fontSize:9,padding:'2px 8px',borderRadius:8,background:t.priority<=1?'#fef2f2':'#eff6ff',color:t.priority<=1?'#dc2626':'#2563eb',fontWeight:600}}>{t.priority<=1?'High':'Normal'}</span>
+              {t.comments?.length>0&&<span style={{fontSize:10,color:'#64748b'}}>{t.comments.length} comment{t.comments.length!==1?'s':''}</span>}
+            </div>
+          </div>})}
+      </div>
+    </div>}
+    <div className="card" style={{marginBottom:16}}><div className="card-header"><h2>Quick Actions</h2></div><div className="card-body" style={{display:'flex',gap:8,flexWrap:'wrap'}}>
       <button className="btn btn-primary" onClick={()=>newE(null)}>📝 New Estimate</button>
       <button className="btn btn-secondary" onClick={()=>setPg('orders')}>📋 My Orders</button>
       <button className="btn btn-secondary" onClick={()=>setPg('omg')}>🏪 OMG Stores</button>
       <button className="btn btn-secondary" onClick={()=>setPg('invoices')}>💰 Invoices</button>
-      <button className="btn btn-secondary" onClick={()=>setPg('commissions')}>💵 My Commissions</button></div></div>
+      <button className="btn btn-secondary" onClick={()=>setPg('commissions')}>💵 My Commissions</button>
+      {(cu.role==='rep'||cu.role==='admin')&&<button className="btn btn-secondary" onClick={()=>setTodoModal({open:true,title:'',description:'',assigned_to:getCsrsForRep(cu.id)[0]||'',so_id:'',customer_id:'',priority:2})}>📌 Assign Task to CSR</button>}
+    </div></div>
     </>}
 
     {/* ═══ WAREHOUSE VIEW ═══ */}
@@ -9669,10 +9752,26 @@ export default function App(){
     {dashView==='csr'&&<>
     <div className="stats-row">
       <div className="stat-card"><div className="stat-label">Unread Msgs</div><div className="stat-value" style={{color:'#dc2626'}}>{unreadMsgs.length}</div></div>
-      <div className="stat-card"><div className="stat-label">Active SOs</div><div className="stat-value" style={{color:'#2563eb'}}>{sos.filter(s=>calcSOStatus(s)!=='complete').length}</div></div>
-      <div className="stat-card"><div className="stat-label">Pending Invoices</div><div className="stat-value" style={{color:'#d97706'}}>{invs.filter(i=>i.status!=='paid').length}</div></div>
-      <div className="stat-card"><div className="stat-label">Due This Week</div><div className="stat-value" style={{color:'#dc2626'}}>{todos.filter(t=>t.type==='deadline').length}</div></div>
+      <div className="stat-card"><div className="stat-label">My Reps' SOs</div><div className="stat-value" style={{color:'#2563eb'}}>{(()=>{const myReps=getRepsForCsr(cu.id);return sos.filter(s=>{const c=cust.find(x=>x.id===s.customer_id);return calcSOStatus(s)!=='complete'&&(myReps.length===0||myReps.includes(c?.primary_rep_id||s.created_by))}).length})()}</div></div>
+      <div className="stat-card"><div className="stat-label">Assigned Tasks</div><div className="stat-value" style={{color:'#0891b2'}}>{myAssignedTodos.length}</div></div>
+      <div className="stat-card"><div className="stat-label">Due This Week</div><div className="stat-value" style={{color:'#dc2626'}}>{myTodos.filter(t=>t.type==='deadline').length}</div></div>
     </div>
+    {/* Assigned Tasks for CSR — highlighted */}
+    {myAssignedTodos.length>0&&<div className="card" style={{marginBottom:16,borderLeft:'4px solid #0891b2'}}>
+      <div className="card-header"><h2>📌 My Assigned Tasks ({myAssignedTodos.length})</h2></div>
+      <div className="card-body" style={{padding:0,maxHeight:300,overflow:'auto'}}>
+        {myAssignedTodos.map(t=>{const creator=REPS.find(r=>r.id===t.created_by);const isAssignedToMe=t.assigned_to===cu.id;
+          return<div key={t.id} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',background:isAssignedToMe?'#ecfdf5':'white',cursor:'pointer'}} onClick={()=>setTodoDetailId(t.id)}>
+            <div style={{display:'flex',alignItems:'center',gap:8}}>
+              <div style={{flex:1}}>
+                <div style={{fontSize:13,fontWeight:700,color:t.priority<=1?'#dc2626':'#1e293b'}}>{t.priority<=1?'! ':''}{t.title}</div>
+                <div style={{fontSize:11,color:'#64748b'}}>From: {creator?.name}{t.so_id?' · '+t.so_id:''}{t.description?' — '+t.description.slice(0,60):''}</div>
+              </div>
+              {t.comments?.length>0&&<span style={{fontSize:10,color:'#3b82f6',fontWeight:600}}>{t.comments.length} comment{t.comments.length!==1?'s':''}</span>}
+            </div>
+          </div>})}
+      </div>
+    </div>}
     <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
       <div className="card"><div className="card-header"><h2>💬 Messages</h2><button className="btn btn-sm btn-secondary" onClick={()=>setPg('messages')}>All →</button></div>
         <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
@@ -9698,6 +9797,103 @@ export default function App(){
       <button className="btn btn-secondary" onClick={()=>setPg('invoices')}>💰 Invoices</button>
       <button className="btn btn-secondary" onClick={()=>setPg('customers')}>👥 Customers</button></div></div>
     </>}
+
+    {/* ═══ CREATE TODO MODAL ═══ */}
+    {todoModal.open&&<div className="modal-overlay" onClick={()=>setTodoModal(m=>({...m,open:false}))}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:520}}>
+      <div className="modal-header"><h2>📌 Assign Task</h2><button className="modal-close" onClick={()=>setTodoModal(m=>({...m,open:false}))}>×</button></div>
+      <div className="modal-body">
+        <div style={{marginBottom:12}}><label className="form-label">Title *</label>
+          <input className="form-input" value={todoModal.title} onChange={e=>setTodoModal(m=>({...m,title:e.target.value}))} placeholder="e.g. Order blanks for CSM"/></div>
+        <div style={{marginBottom:12}}><label className="form-label">Description</label>
+          <textarea className="form-input" rows={3} value={todoModal.description} onChange={e=>setTodoModal(m=>({...m,description:e.target.value}))} placeholder="Details..."/></div>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:12}}>
+          <div><label className="form-label">Assign To *</label>
+            <select className="form-select" value={todoModal.assigned_to} onChange={e=>setTodoModal(m=>({...m,assigned_to:e.target.value}))}>
+              <option value="">Select person...</option>
+              {REPS.filter(r=>r.is_active!==false&&(r.role==='csr'||r.role==='rep'||r.role==='admin')).map(r=><option key={r.id} value={r.id}>{r.name} ({r.role})</option>)}
+            </select></div>
+          <div><label className="form-label">Priority</label>
+            <select className="form-select" value={todoModal.priority} onChange={e=>setTodoModal(m=>({...m,priority:+e.target.value}))}>
+              <option value={0}>Urgent</option><option value={1}>High</option><option value={2}>Normal</option><option value={3}>Low</option>
+            </select></div>
+        </div>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:12}}>
+          <div><label className="form-label">Customer (optional)</label>
+            <select className="form-select" value={todoModal.customer_id} onChange={e=>setTodoModal(m=>({...m,customer_id:e.target.value}))}>
+              <option value="">None</option>
+              {cust.filter(c=>c.is_active!==false).sort((a,b)=>(a.alpha_tag||a.name).localeCompare(b.alpha_tag||b.name)).map(c=><option key={c.id} value={c.id}>{c.alpha_tag||c.name}</option>)}
+            </select></div>
+          <div><label className="form-label">SO # (optional)</label>
+            <select className="form-select" value={todoModal.so_id} onChange={e=>setTodoModal(m=>({...m,so_id:e.target.value}))}>
+              <option value="">None</option>
+              {sos.filter(s=>!todoModal.customer_id||s.customer_id===todoModal.customer_id).filter(s=>calcSOStatus(s)!=='complete').slice(0,50).map(s=><option key={s.id} value={s.id}>{s.id}{s.memo?' — '+s.memo:''}</option>)}
+            </select></div>
+        </div>
+      </div>
+      <div className="modal-footer" style={{display:'flex',gap:8,justifyContent:'flex-end',padding:'12px 20px',borderTop:'1px solid #e2e8f0'}}>
+        <button className="btn btn-secondary" onClick={()=>setTodoModal(m=>({...m,open:false}))}>Cancel</button>
+        <button className="btn btn-primary" disabled={!todoModal.title.trim()||!todoModal.assigned_to} onClick={()=>{
+          const newTodo={id:'todo-'+Date.now(),title:todoModal.title.trim(),description:todoModal.description.trim(),created_by:cu.id,assigned_to:todoModal.assigned_to,so_id:todoModal.so_id||null,customer_id:todoModal.customer_id||null,priority:todoModal.priority,status:'open',created_at:new Date().toISOString(),updated_at:new Date().toISOString(),comments:[]};
+          setAssignedTodos(prev=>[newTodo,...prev]);
+          setTodoModal({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2});
+          nf('Task assigned to '+(REPS.find(r=>r.id===todoModal.assigned_to)?.name||''))
+        }}>Assign Task</button>
+      </div>
+    </div></div>}
+
+    {/* ═══ TODO DETAIL MODAL (view, comment, complete) ═══ */}
+    {todoDetailId&&(()=>{const td=assignedTodos.find(t=>t.id===todoDetailId);if(!td)return null;
+      const creator=REPS.find(r=>r.id===td.created_by);const assignee=REPS.find(r=>r.id===td.assigned_to);
+      const soRef=td.so_id?sos.find(s=>s.id===td.so_id):null;const custRef=td.customer_id?cust.find(c=>c.id===td.customer_id):null;
+      return<div className="modal-overlay" onClick={()=>setTodoDetailId(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
+        <div className="modal-header"><h2>📌 {td.title}</h2><button className="modal-close" onClick={()=>setTodoDetailId(null)}>×</button></div>
+        <div className="modal-body">
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:12,fontSize:12}}>
+            <div><span style={{color:'#64748b'}}>Created by:</span> <strong>{creator?.name}</strong></div>
+            <div><span style={{color:'#64748b'}}>Assigned to:</span> <strong>{assignee?.name}</strong></div>
+            {custRef&&<div><span style={{color:'#64748b'}}>Customer:</span> {custRef.alpha_tag||custRef.name}</div>}
+            {soRef&&<div><span style={{color:'#64748b'}}>SO:</span> <span style={{color:'#1e40af',cursor:'pointer'}} onClick={()=>{setTodoDetailId(null);setESO(soRef);setESOC(cust.find(c=>c.id===soRef.customer_id));setPg('orders')}}>{soRef.id}</span></div>}
+            <div><span style={{color:'#64748b'}}>Priority:</span> <span style={{color:td.priority<=1?'#dc2626':'#2563eb',fontWeight:600}}>{['Urgent','High','Normal','Low'][td.priority]||'Normal'}</span></div>
+            <div><span style={{color:'#64748b'}}>Status:</span> <span style={{fontWeight:600,color:td.status==='open'?'#d97706':'#166534'}}>{td.status}</span></div>
+          </div>
+          {td.description&&<div style={{padding:10,background:'#f8fafc',borderRadius:6,fontSize:13,marginBottom:12,border:'1px solid #e2e8f0'}}>{td.description}</div>}
+          {/* Comments */}
+          <div style={{marginBottom:12}}>
+            <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:6}}>Comments ({(td.comments||[]).length})</div>
+            {(td.comments||[]).map(c=>{const auth=REPS.find(r=>r.id===c.author_id);
+              return<div key={c.id} style={{padding:'8px 10px',marginBottom:4,background:c.author_id===cu.id?'#dbeafe':'#f1f5f9',borderRadius:6,fontSize:12}}>
+                <div style={{fontWeight:600,marginBottom:2}}>{auth?.name||'Unknown'} <span style={{fontWeight:400,color:'#94a3b8',fontSize:10}}>{c.created_at?new Date(c.created_at).toLocaleString():''}</span></div>
+                <div>{c.text}</div>
+              </div>})}
+            {td.status==='open'&&<div style={{display:'flex',gap:6,marginTop:8}}>
+              <input className="form-input" placeholder="Add a comment or question..." style={{flex:1,fontSize:12}} id="_todo_comment_input"
+                onKeyDown={e=>{if(e.key==='Enter'&&e.target.value.trim()){
+                  const text=e.target.value.trim();const newComment={id:'tc-'+Date.now(),todo_id:td.id,author_id:cu.id,text,created_at:new Date().toISOString()};
+                  setAssignedTodos(prev=>prev.map(t=>t.id===td.id?{...t,comments:[...(t.comments||[]),newComment],updated_at:new Date().toISOString()}:t));
+                  e.target.value='';nf('Comment added')}}}/>
+              <button className="btn btn-sm btn-secondary" onClick={()=>{const inp=document.getElementById('_todo_comment_input');if(inp?.value?.trim()){
+                const text=inp.value.trim();const newComment={id:'tc-'+Date.now(),todo_id:td.id,author_id:cu.id,text,created_at:new Date().toISOString()};
+                setAssignedTodos(prev=>prev.map(t=>t.id===td.id?{...t,comments:[...(t.comments||[]),newComment],updated_at:new Date().toISOString()}:t));
+                inp.value='';nf('Comment added')}}}>Send</button>
+            </div>}
+          </div>
+          {/* Complete with note */}
+          {td.status==='open'&&<div style={{borderTop:'1px solid #e2e8f0',paddingTop:12}}>
+            <div style={{fontSize:12,fontWeight:700,color:'#166534',marginBottom:6}}>Mark Complete</div>
+            <div style={{display:'flex',gap:6}}>
+              <input className="form-input" placeholder="Completion note (optional)..." style={{flex:1,fontSize:12}} id="_todo_complete_note"/>
+              <button className="btn btn-primary" style={{background:'#166534',borderColor:'#166534'}} onClick={()=>{
+                const note=document.getElementById('_todo_complete_note')?.value?.trim()||'';
+                setAssignedTodos(prev=>prev.map(t=>t.id===td.id?{...t,status:'completed',completed_at:new Date().toISOString(),completed_by:cu.id,completion_note:note,updated_at:new Date().toISOString()}:t));
+                setTodoDetailId(null);nf('Task completed!')}}>Complete</button>
+            </div>
+          </div>}
+          {td.status==='completed'&&<div style={{background:'#f0fdf4',padding:10,borderRadius:6,border:'1px solid #bbf7d0',fontSize:12}}>
+            <strong>Completed</strong> by {REPS.find(r=>r.id===td.completed_by)?.name||'Unknown'}{td.completion_note?' — '+td.completion_note:''}
+            <div style={{fontSize:10,color:'#64748b'}}>{td.completed_at?new Date(td.completed_at).toLocaleString():''}</div>
+          </div>}
+        </div>
+      </div></div>})()}
 
     </>)};
 
@@ -18245,9 +18441,24 @@ export default function App(){
     const allM=mHideClosed?allMRaw.filter(m=>{const so=sos.find(s=>s.id===m.so_id||s.id===m.entity_id);if(!so&&(m.entity_type||'so')==='so')return true;if(!so)return true;const cStatus=calcSOStatus(so);return!closedStatuses.has(cStatus)&&!closedStatuses.has(so.status)}):allMRaw;
     // Entity type filter
     const entityFiltered=mEntityF==='all'?allM:allM.filter(m=>(m.entity_type||'so')===mEntityF);
+    // Person-specific message filter: show messages for user's customers (rep) or assigned reps' customers (CSR)
+    const _isMsgForMe=(m)=>{
+      if((m.tagged_members||[]).includes(cu.id))return true;
+      if(m.author_id===cu.id)return true;
+      if(cu.role==='admin'||cu.role==='gm')return true;
+      const so=sos.find(s=>s.id===m.so_id||s.id===m.entity_id);
+      const est2=ests.find(e=>e.id===m.entity_id);
+      const entity=so||est2;
+      if(!entity)return true;
+      const c=cust.find(x=>x.id===entity.customer_id);
+      const msgRepId=c?.primary_rep_id||(so?.created_by)||(est2?.created_by);
+      if(cu.role==='rep')return msgRepId===cu.id;
+      if(cu.role==='csr'){const myReps=getRepsForCsr(cu.id);return myReps.length===0||myReps.includes(msgRepId)}
+      return true;
+    };
     const unread=entityFiltered.filter(m=>!(m.read_by||[]).includes(cu.id));
     const mentions=entityFiltered.filter(m=>(m.tagged_members||[]).includes(cu.id));
-    const filtered=mF==='unread'?unread:mF==='mine'?entityFiltered.filter(m=>sos.some(s=>(s.id===m.so_id||s.id===m.entity_id)&&s.created_by===cu.id)||ests.some(e=>e.id===m.entity_id&&e.created_by===cu.id)):mF==='mentions'?mentions:entityFiltered;
+    const filtered=mF==='unread'?unread:mF==='mine'?entityFiltered.filter(_isMsgForMe):mF==='mentions'?mentions:entityFiltered;
     // Thread grouping: show only top-level, count replies
     const topLevel=filtered.filter(m=>!m.thread_id);
     const replyCount=(id)=>filtered.filter(m=>m.thread_id===id).length;
@@ -18293,7 +18504,7 @@ export default function App(){
       {[['all','All',allM.length,'#475569'],['so','Sales Orders',soCount,'#1e40af'],['estimate','Estimates',estCount,'#7c3aed'],['job','Jobs',jobCount,'#166534']].map(([v,l,c,clr])=><button key={v} style={{fontSize:11,padding:'4px 12px',borderRadius:20,border:'1px solid '+(mEntityF===v?clr:'#e2e8f0'),background:mEntityF===v?clr:'white',color:mEntityF===v?'white':clr,cursor:'pointer',fontWeight:600,display:'flex',gap:4,alignItems:'center'}} onClick={()=>setMEntityF(v)}>{l}<span style={{fontSize:9,opacity:0.8}}>{c}</span></button>)}
     </div>
     {/* Status filters */}
-    <div style={{display:'flex',gap:4,marginBottom:12}}>{[['all','All'],['unread','Unread'],['mentions','@ Mentions'],['mine','My Orders']].map(([v,l])=><button key={v} className={`btn btn-sm ${mF===v?'btn-primary':'btn-secondary'}`} onClick={()=>setMF(v)}>{l}{v==='mentions'&&mentions.filter(m=>!(m.read_by||[]).includes(cu.id)).length>0?' ('+mentions.filter(m=>!(m.read_by||[]).includes(cu.id)).length+')':''}</button>)}
+    <div style={{display:'flex',gap:4,marginBottom:12}}>{[['all','All'],['unread','Unread'],['mentions','@ Mentions'],['mine','My Messages']].map(([v,l])=><button key={v} className={`btn btn-sm ${mF===v?'btn-primary':'btn-secondary'}`} onClick={()=>setMF(v)}>{l}{v==='mentions'&&mentions.filter(m=>!(m.read_by||[]).includes(cu.id)).length>0?' ('+mentions.filter(m=>!(m.read_by||[]).includes(cu.id)).length+')':''}</button>)}
       <button className={`btn btn-sm ${mHideClosed?'btn-primary':'btn-secondary'}`} onClick={()=>setMHideClosed(!mHideClosed)}>{mHideClosed?'Active Only':'All Orders'}</button>
       <button className="btn btn-sm btn-secondary" style={{marginLeft:'auto'}} onClick={()=>{setMsgs(msgs.map(m=>({...m,read_by:[...new Set([...(m.read_by||[]),cu.id])]})));nf('All marked read')}}>Mark All Read</button></div>
     <div className="card"><div className="card-body" style={{padding:0}}>
@@ -19343,11 +19554,15 @@ export default function App(){
           <span className={`badge ${roleBadge[g.role]||'badge-gray'}`}>{g.members.length}</span>
         </div>
         <div className="card-body" style={{padding:0}}>
-          <table style={{fontSize:12}}><thead><tr><th style={{width:44}}></th><th>Name</th><th>Role</th><th>Email</th><th>Phone</th><th>Page Access</th>{isAdmin&&<th></th>}</tr></thead>
-          <tbody>{g.members.map(m=><tr key={m.id}>
+          <table style={{fontSize:12}}><thead><tr><th style={{width:44}}></th><th>Name</th><th>Role</th>{g.role==='rep'&&<th>Assigned CSR</th>}<th>Email</th><th>Phone</th><th>Page Access</th>{isAdmin&&<th></th>}</tr></thead>
+          <tbody>{g.members.map(m=>{const assignedCsrs=repCsrAssignments.filter(a=>a.rep_id===m.id&&a.is_active!==false);
+            return<tr key={m.id}>
             <td><div style={{width:34,height:34,borderRadius:17,background:avatarColors[m.role]||'#64748b',color:'white',display:'flex',alignItems:'center',justifyContent:'center',fontSize:12,fontWeight:700}}>{initials(m.name)}</div></td>
             <td style={{fontWeight:700,fontSize:13}}>{m.name}</td>
             <td><span className={`badge ${roleBadge[m.role]||'badge-gray'}`}>{roles[m.role]||m.role}</span></td>
+            {g.role==='rep'&&<td style={{fontSize:11}}>
+              {assignedCsrs.length>0?assignedCsrs.map(a=>{const csrM=REPS.find(r=>r.id===a.csr_id);return<span key={a.id} style={{display:'inline-block',padding:'1px 6px',marginRight:4,background:'#dcfce7',color:'#166534',borderRadius:8,fontSize:10,fontWeight:600}}>{csrM?.name?.split(' ')[0]||'?'}</span>}):<span style={{color:'#94a3b8'}}>None</span>}
+            </td>}
             <td style={{fontSize:11,color:'#64748b'}}>{m.email||'—'}</td>
             <td style={{fontSize:11,color:'#64748b'}}>{m.phone||'—'}</td>
             <td style={{fontSize:10,color:'#94a3b8'}}>{(m.access||DEFAULT_ACCESS[m.role]||[]).length} pages</td>
@@ -19355,7 +19570,7 @@ export default function App(){
               <button className="btn btn-sm btn-secondary" style={{fontSize:9,marginRight:4}} onClick={()=>setEditMember({...m,access:m.access||DEFAULT_ACCESS[m.role]||[]})}>✏️ Edit</button>
               {m.id!==cu.id&&<button className="btn btn-sm" style={{fontSize:9,color:'#dc2626',background:'#fef2f2',border:'1px solid #fecaca'}} onClick={()=>deactivateMember(m.id)}>Deactivate</button>}
             </td>}
-          </tr>)}</tbody></table>
+          </tr>})}</tbody></table>
         </div>
       </div>)}
 
@@ -19389,6 +19604,26 @@ export default function App(){
             <div><label className="form-label">Phone</label>
               <input className="form-input" value={editMember.phone||''} onChange={e=>setEditMember(x=>({...x,phone:e.target.value}))} placeholder="(619) 555-0000"/></div>
           </div>
+
+          {/* CSR Assignment — only for reps */}
+          {editMember.role==='rep'&&<div style={{marginBottom:16}}>
+            <label className="form-label" style={{marginBottom:8}}>Assigned CSR(s)</label>
+            <div style={{fontSize:11,color:'#64748b',marginBottom:6}}>CSRs assigned to this rep will see their customers' messages and todos, and can receive task assignments.</div>
+            <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
+              {REPS.filter(r=>r.role==='csr'&&r.is_active!==false).map(csrMember=>{
+                const isAssigned=repCsrAssignments.some(a=>a.rep_id===editMember.id&&a.csr_id===csrMember.id&&a.is_active!==false);
+                return<label key={csrMember.id} style={{fontSize:11,display:'flex',alignItems:'center',gap:4,padding:'4px 10px',background:isAssigned?'#dcfce7':'#f8fafc',borderRadius:6,cursor:'pointer',border:'1px solid '+(isAssigned?'#86efac':'#e2e8f0')}}>
+                  <input type="checkbox" checked={isAssigned} onChange={()=>{
+                    if(isAssigned){
+                      setRepCsrAssignments(prev=>prev.map(a=>a.rep_id===editMember.id&&a.csr_id===csrMember.id?{...a,is_active:false,updated_at:new Date().toISOString()}:a));
+                    }else{
+                      const existing=repCsrAssignments.find(a=>a.rep_id===editMember.id&&a.csr_id===csrMember.id);
+                      if(existing){setRepCsrAssignments(prev=>prev.map(a=>a.id===existing.id?{...a,is_active:true,updated_at:new Date().toISOString()}:a))}
+                      else{setRepCsrAssignments(prev=>[...prev,{id:'rca-'+Date.now()+'-'+Math.random().toString(36).slice(2,6),rep_id:editMember.id,csr_id:csrMember.id,is_active:true,created_at:new Date().toISOString(),updated_at:new Date().toISOString()}])}
+                    }
+                  }}/>{csrMember.name}</label>})}
+            </div>
+          </div>}
 
           {/* Page Access */}
           <div style={{marginBottom:16}}>
