@@ -2066,8 +2066,8 @@ const testRichardsonConnection = async () => {
 };
 
 // ─── Momentec Brands API Integration (via Netlify proxy) ───
-// Requires MOMENTEC_API_KEY + MOMENTEC_API_BASE_URL in Netlify env vars
-// Docs may require dealer login: https://www.momentecbrands.com/api
+// HCL Commerce REST API — catalog endpoints are public, no auth required
+// Proxy rewrites paths under /wcs/resources/store/{storeId}/
 const momentecApiCall = async (endpoint, options = {}) => {
   try {
     const method = options.method || 'GET';
@@ -2088,11 +2088,23 @@ const momentecApiCall = async (endpoint, options = {}) => {
   } catch (error) { console.error('[Momentec] API call failed:', endpoint, error); throw error; }
 };
 
-const momentecGetProducts = async () => await momentecApiCall('/products');
-const momentecGetInventory = async () => await momentecApiCall('/inventory');
+const momentecGetProducts = async (pageSize = 50, pageNumber = 1) =>
+  await momentecApiCall(`/productview/bySearchTerm/*?pageSize=${pageSize}&pageNumber=${pageNumber}`);
+
+const momentecGetProductById = async (productId) =>
+  await momentecApiCall(`/productview/byId/${productId}`);
+
+const momentecGetProductsByCategory = async (categoryId, pageSize = 50, pageNumber = 1) =>
+  await momentecApiCall(`/productview/byCategory/${categoryId}?pageSize=${pageSize}&pageNumber=${pageNumber}`);
+
+const momentecSearchProducts = async (term, pageSize = 50, pageNumber = 1) =>
+  await momentecApiCall(`/productview/bySearchTerm/${encodeURIComponent(term)}?pageSize=${pageSize}&pageNumber=${pageNumber}`);
+
+const momentecGetCategories = async () =>
+  await momentecApiCall('/categoryview/@top?depthAndLimit=11,11');
 
 const testMomentecConnection = async () => {
-  try { await momentecApiCall('/products?limit=1'); console.log('[Momentec] Connection test successful'); return true; }
+  try { await momentecApiCall('/productview/bySearchTerm/*?pageSize=1'); console.log('[Momentec] Connection test successful'); return true; }
   catch (error) { console.error('[Momentec] Connection test failed:', error); return false; }
 };
 
