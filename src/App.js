@@ -9504,8 +9504,8 @@ export default function App(){
               shipMethod:j.ship_method||'pending',shipPref});
           }
         }
-        // Deco tasks — only show jobs that have hit the production board (not hold)
-        if(j.prod_status!=='completed'&&j.prod_status!=='shipped'&&j.prod_status!=='hold'){
+        // Deco tasks
+        if(j.prod_status!=='completed'&&j.prod_status!=='shipped'){
           const isReady=j.art_status==='art_complete'&&j.item_status==='items_received';
           decoTasks.push({so,soId:so.id,job:j,cName,alpha,rep,daysOut,urgent,
             artName:j.art_name,decoType:j.deco_type,totalUnits:j.total_units,fulfilledUnits:j.fulfilled_units,
@@ -16784,10 +16784,11 @@ export default function App(){
     decoTasks.sort(sortByDue);
 
     // For decorators: only show jobs assigned to them AND fully ready for production
-    // For admin/prod_manager: show all jobs (with optional decorator filter)
+    // For admin/prod_manager: show all jobs that have hit the production board (exclude hold)
+    const boardTasks=decoTasks.filter(t=>t.prodStatus!=='hold');
     const roleFiltered=isDecorator
-      ?decoTasks.filter(t=>t.assignedTo===cu?.name&&t.isReady)
-      :decoTasks;
+      ?boardTasks.filter(t=>t.assignedTo===cu?.name&&t.isReady)
+      :boardTasks;
 
     const filt=(arr)=>arr.filter(t=>{
       if(decoRepF!=='all'&&t.so?.created_by!==decoRepF)return false;
