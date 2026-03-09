@@ -582,7 +582,7 @@ const _decoCols=['kind','position','type','art_file_id','art_tbd_type','tbd_colo
 // Columns that may not exist in production DB / schema cache — stripped on insert retry
 const _itemExtraCols=new Set(['is_promo','_pre_promo_sell','est_qty']);
 const _estExtraCols=new Set(['promo_applied','promo_amount','update_requests']);
-const _soExtraCols=new Set(['_shipping_cost','promo_applied','promo_amount','ship_preference','ship_on_date']);
+const _soExtraCols=new Set(['_shipping_cost','promo_applied','promo_amount','ship_preference','ship_on_date','order_type','expected_ship_date','booking_confirmed','booking_confirmed_at','booking_confirmed_by','booking_alert_days']);
 const _decoExtraCols=new Set(['print_color','front_and_back','reversible','num_qty','name_qty','num_font','num_size_back','custom_font_art_id','deco_type','notes','vendor']);
 // Sanitize decoration data before DB insert — strip UI-only placeholders that would violate constraints
 const _sanitizeDeco=(d)=>{const r={...d};if(r.custom_font_art_id&&r.custom_font_art_id==='pending')r.custom_font_art_id=null;if(r.art_file_id&&r.art_file_id==='__tbd')r.art_file_id=null;return r};
