@@ -9269,7 +9269,7 @@ export default function App(){
   React.useEffect(()=>{if(selV)addRecent('vendor',selV.id,selV.name)},[selV?.id]); // eslint-disable-line
   React.useEffect(()=>{if(selP)addRecent('product',selP.id,(selP.sku||'')+' — '+selP.name)},[selP?.id]); // eslint-disable-line
 
-  const[gQ,setGQ]=useState('');const[gOpen,setGOpen]=useState(false);const[mF,setMF]=useState('mine');const[mHideClosed,setMHideClosed]=useState(true);const[mEntityF,setMEntityF]=useState('all');const[rF,setRF]=useState('all');const[pF,setPF]=useState({cat:'all',vnd:'all',stk:'all',clr:'all'});
+  const[gQ,setGQ]=useState('');const[gOpen,setGOpen]=useState(false);const[mF,setMF]=useState('mine');const[mHideClosed,setMHideClosed]=useState(true);const[mEntityF,setMEntityF]=useState('all');const[mThread,setMThread]=useState(null);const mThreadInputRef=useRef(null);const[mThreadMentionQuery,setMThreadMentionQuery]=useState(null);const[mThreadMentionIdx,setMThreadMentionIdx]=useState(0);const[mThreadDept,setMThreadDept]=useState('all');const[rF,setRF]=useState('all');const[pF,setPF]=useState({cat:'all',vnd:'all',stk:'all',clr:'all'});
   const[qPC,setQPC]=useState({open:false,mode:'single',items:[],bulkRaw:''});
   const[poF,setPOF]=useState({status:'all',vendor:'all',rep:'all',search:'',sort:'date_desc'});
   // OMG Team Stores
@@ -19257,6 +19257,52 @@ export default function App(){
       else if(eType==='estimate'){const est=ests.find(e=>e.id===eId);if(est){const c3=cust.find(cc=>cc.id===est.customer_id);setEEst(est);setEEstC(c3);setPg('estimates')}}
       setMsgs(msgs.map(mm=>mm.id===m.id?{...mm,read_by:[...new Set([...(mm.read_by||[]),cu.id])]}:mm));
     };
+    const openThread=(m)=>{
+      setMThread(m.id);setMThreadDept('all');setMThreadMentionQuery(null);setMThreadMentionIdx(0);
+      // Mark parent + all replies as read
+      const replyIds=new Set(allM.filter(mm=>mm.thread_id===m.id).map(mm=>mm.id));
+      const toMark=new Set([m.id,...replyIds]);
+      const needsUpdate=[...toMark].some(id=>{const mm=msgs.find(x=>x.id===id);return mm&&!(mm.read_by||[]).includes(cu.id)});
+      if(needsUpdate){setMsgs(msgs.map(mm=>toMark.has(mm.id)?{...mm,read_by:[...new Set([...(mm.read_by||[]),cu.id])]}:mm))}
+    };
+    const DEPTS=[{id:'all',label:'All',color:'#64748b'},{id:'art',label:'Art',color:'#7c3aed'},{id:'production',label:'Production',color:'#2563eb'},{id:'warehouse',label:'Warehouse',color:'#d97706'},{id:'sales',label:'Sales',color:'#166534'},{id:'accounting',label:'Accounting',color:'#dc2626'}];
+    const threadExtractTaggedIds=(text)=>{
+      const ids=[];const regex=/@(\w[\w\s]*?)(?=\s@|\s*$|[.,!?;:]|\s(?=[^@]))/g;let match;
+      while((match=regex.exec(text))!==null){const name=match[1].trim();const member=activeMembers.find(r=>r.name.toLowerCase()===name.toLowerCase()||r.name.split(' ')[0].toLowerCase()===name.toLowerCase());if(member&&!ids.includes(member.id))ids.push(member.id)}
+      return ids;
+    };
+    const threadInsertMention=(member)=>{
+      const inp=mThreadInputRef.current;if(!inp)return;
+      const val=inp.value;const pos=inp.selectionStart;const before=val.slice(0,pos);const after=val.slice(pos);
+      const atIdx=before.lastIndexOf('@');
+      if(atIdx>=0){inp.value=before.slice(0,atIdx)+'@'+member.name+' '+after;const newPos=atIdx+member.name.length+2;inp.setSelectionRange(newPos,newPos)}
+      setMThreadMentionQuery(null);setMThreadMentionIdx(0);inp.focus();
+    };
+    const threadHandleInput=(e)=>{
+      const val=e.target.value;const pos=e.target.selectionStart;const before=val.slice(0,pos);const atIdx=before.lastIndexOf('@');
+      if(atIdx>=0){const afterAt=before.slice(atIdx+1);if(!afterAt.includes('\n')&&afterAt.length<=30&&!/\s{2}/.test(afterAt)){setMThreadMentionQuery(afterAt);setMThreadMentionIdx(0)}else{setMThreadMentionQuery(null)}}
+      else{setMThreadMentionQuery(null)}
+    };
+    const threadMentionMembers=mThreadMentionQuery!=null?activeMembers.filter(r=>r.name.toLowerCase().includes(mThreadMentionQuery.toLowerCase())).slice(0,6):[];
+    const threadSendReply=()=>{
+      const inp=mThreadInputRef.current;if(!inp||!inp.value.trim())return;
+      const text=inp.value.trim();const tagged=threadExtractTaggedIds(text);
+      const parentMsg=allM.find(mm=>mm.id===mThread);if(!parentMsg)return;
+      const nm={id:'m'+Date.now(),so_id:parentMsg.so_id||null,author_id:cu.id,text,ts:new Date().toLocaleString(),read_by:[cu.id],dept:mThreadDept,tagged_members:tagged,entity_type:parentMsg.entity_type||'so',entity_id:parentMsg.entity_id||parentMsg.so_id,thread_id:mThread};
+      setMsgs([...msgs,nm]);inp.value='';setMThreadDept('all');setMThreadMentionQuery(null);nf(tagged.length?'Reply sent — '+tagged.length+' member(s) tagged':'Reply sent');
+    };
+    const threadHandleKeyDown=(e)=>{
+      if(mThreadMentionQuery!=null&&threadMentionMembers.length>0){
+        if(e.key==='ArrowDown'){e.preventDefault();setMThreadMentionIdx(i=>(i+1)%threadMentionMembers.length);return}
+        if(e.key==='ArrowUp'){e.preventDefault();setMThreadMentionIdx(i=>(i-1+threadMentionMembers.length)%threadMentionMembers.length);return}
+        if(e.key==='Tab'||e.key==='Enter'){e.preventDefault();threadInsertMention(threadMentionMembers[mThreadMentionIdx]);return}
+        if(e.key==='Escape'){setMThreadMentionQuery(null);return}
+      }
+      if(e.key==='Enter'&&mThreadMentionQuery==null&&e.target.value.trim()){threadSendReply()}
+    };
+    // Thread view
+    const threadMsg=mThread?allM.find(mm=>mm.id===mThread):null;
+    const threadReplies=mThread?allM.filter(mm=>mm.thread_id===mThread).sort((a,b)=>(a.ts||'').localeCompare(b.ts)):[];
     return(<>
     {/* Prominent stats row */}
     <div className="stats-row">
@@ -19273,22 +19319,24 @@ export default function App(){
     <div style={{display:'flex',gap:4,marginBottom:12}}>{[['all','All'],['unread','Unread'],['mentions','@ Mentions'],['mine','My Messages']].map(([v,l])=><button key={v} className={`btn btn-sm ${mF===v?'btn-primary':'btn-secondary'}`} onClick={()=>setMF(v)}>{l}{v==='mentions'&&mentions.filter(m=>!(m.read_by||[]).includes(cu.id)).length>0?' ('+mentions.filter(m=>!(m.read_by||[]).includes(cu.id)).length+')':''}</button>)}
       <button className={`btn btn-sm ${mHideClosed?'btn-primary':'btn-secondary'}`} onClick={()=>setMHideClosed(!mHideClosed)}>{mHideClosed?'Active Only':'All Orders'}</button>
       <button className="btn btn-sm btn-secondary" style={{marginLeft:'auto'}} onClick={()=>{setMsgs(msgs.map(m=>({...m,read_by:[...new Set([...(m.read_by||[]),cu.id])]})));nf('All marked read')}}>Mark All Read</button></div>
-    <div className="card"><div className="card-body" style={{padding:0}}>
+    <div style={{display:'flex',gap:16}}>
+    {/* Message list */}
+    <div className="card" style={{flex:mThread?'0 0 45%':'1',transition:'flex 0.2s'}}><div className="card-body" style={{padding:0}}>
       {topLevel.length===0?<div className="empty" style={{padding:20}}>{mF==='mentions'?'No messages where you were tagged':'No messages'}</div>:
       topLevel.map(m=>{const author=REPS.find(r=>r.id===m.author_id);const so=sos.find(s=>s.id===m.so_id||s.id===m.entity_id);const est2=ests.find(e=>e.id===m.entity_id);const entity=so||est2;const c2=cust.find(cc=>cc.id===entity?.customer_id);const isUnread=!(m.read_by||[]).includes(cu.id);const isTagged=(m.tagged_members||[]).includes(cu.id);const rc=replyCount(m.id);
-        return<div key={m.id} style={{padding:'14px 18px',borderBottom:'1px solid #f1f5f9',cursor:'pointer',background:isTagged&&isUnread?'#fef3c7':isUnread?'#eff6ff':'white'}}
-          onClick={()=>navigateToEntity(m)}>
+        return<div key={m.id} style={{padding:'14px 18px',borderBottom:'1px solid #f1f5f9',cursor:'pointer',background:mThread===m.id?'#e0e7ff':isTagged&&isUnread?'#fef3c7':isUnread?'#eff6ff':'white'}}
+          onClick={()=>openThread(m)}>
           <div style={{display:'flex',gap:12,alignItems:'flex-start'}}>
             <div style={{width:40,height:40,borderRadius:20,background:isTagged?'#f59e0b':isUnread?'#3b82f6':'#e2e8f0',color:isTagged||isUnread?'white':'#64748b',display:'flex',alignItems:'center',justifyContent:'center',fontSize:14,fontWeight:700,flexShrink:0}}>{isTagged?'@':(author?.name||'?')[0]}</div>
-            <div style={{flex:1}}>
-              <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:3}}>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:3,flexWrap:'wrap'}}>
                 <span style={{fontWeight:700,fontSize:13}}>{author?.name}</span>
                 <span style={{fontSize:9,fontWeight:700,padding:'2px 8px',borderRadius:10,background:entityBg(m),color:entityColor(m)}}>{entityLabel(m)}</span>
                 <span style={{fontSize:11,color:entityColor(m),fontWeight:600}}>{m.entity_id||m.so_id}</span>
                 {c2&&<span style={{fontSize:11,color:'#64748b'}}>{c2.alpha_tag}</span>}
-                {entity?.memo&&<span style={{fontSize:10,color:'#94a3b8'}}>— {entity.memo}</span>}
+                {entity?.memo&&<span style={{fontSize:10,color:'#94a3b8',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>— {entity.memo}</span>}
                 {isTagged&&<span style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:8,background:'#fef3c7',color:'#92400e'}}>Tagged you</span>}
-                <span style={{fontSize:10,color:'#94a3b8',marginLeft:'auto'}}>{m.ts}</span>
+                <span style={{fontSize:10,color:'#94a3b8',marginLeft:'auto',whiteSpace:'nowrap'}}>{m.ts}</span>
               </div>
               <div style={{fontSize:13,color:'#374151'}}>{renderMsgPageText(m.text)}</div>
               <div style={{display:'flex',gap:6,marginTop:4,alignItems:'center'}}>
@@ -19297,7 +19345,67 @@ export default function App(){
               </div>
             </div>
             {isUnread&&<div style={{width:10,height:10,borderRadius:5,background:isTagged?'#f59e0b':'#3b82f6',flexShrink:0,marginTop:8}}/>}
-          </div></div>})}</div></div></>)};
+          </div></div>})}</div></div>
+    {/* Thread panel */}
+    {mThread&&threadMsg&&<div className="card" style={{flex:'0 0 53%',display:'flex',flexDirection:'column',maxHeight:'calc(100vh - 260px)'}}>
+      <div className="card-header" style={{display:'flex',alignItems:'center',gap:8,borderBottom:'1px solid #e2e8f0',flexShrink:0}}>
+        <button style={{fontSize:16,background:'none',border:'none',cursor:'pointer',color:'#64748b',padding:'2px 6px',borderRadius:4}} onClick={()=>setMThread(null)} title="Close thread">&times;</button>
+        <h2 style={{margin:0,fontSize:14}}>Thread</h2>
+        <span style={{fontSize:11,color:'#64748b'}}>{threadReplies.length} {threadReplies.length===1?'reply':'replies'}</span>
+        <button style={{fontSize:10,padding:'3px 10px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:'#1e40af',cursor:'pointer',fontWeight:600,marginLeft:'auto'}} onClick={()=>navigateToEntity(threadMsg)}>Open {entityLabel(threadMsg)}</button>
+      </div>
+      <div className="card-body" style={{flex:1,overflow:'auto',padding:16,display:'flex',flexDirection:'column',gap:10}}>
+        {/* Parent message */}
+        {(()=>{const author=REPS.find(r=>r.id===threadMsg.author_id);const isMe=threadMsg.author_id===cu.id;
+          return<div style={{padding:'12px 14px',borderRadius:8,background:isMe?'#dbeafe':'#f8fafc',border:'2px solid #3b82f6'}}>
+            <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
+              <div style={{display:'flex',gap:6,alignItems:'center'}}>
+                <span style={{fontSize:12,fontWeight:700,color:isMe?'#1e40af':'#475569'}}>{author?.name||'Unknown'}</span>
+                <span style={{fontSize:9,fontWeight:700,padding:'2px 8px',borderRadius:10,background:entityBg(threadMsg),color:entityColor(threadMsg)}}>{entityLabel(threadMsg)}</span>
+                <span style={{fontSize:10,color:entityColor(threadMsg),fontWeight:600}}>{threadMsg.entity_id||threadMsg.so_id}</span>
+              </div>
+              <span style={{fontSize:10,color:'#94a3b8'}}>{threadMsg.ts}</span>
+            </div>
+            <div style={{fontSize:13,color:'#0f172a'}}>{renderMsgPageText(threadMsg.text)}</div>
+            {(threadMsg.tagged_members||[]).length>0&&<div style={{display:'flex',gap:4,marginTop:4,flexWrap:'wrap'}}>{(threadMsg.tagged_members||[]).map(tid=>{const tm=REPS.find(r=>r.id===tid);return tm?<span key={tid} style={{fontSize:9,padding:'1px 6px',borderRadius:8,background:'#dbeafe',color:'#1e40af',fontWeight:600}}>@{tm.name.split(' ')[0]}</span>:null})}</div>}
+          </div>})()}
+        {/* Divider */}
+        {threadReplies.length>0&&<div style={{display:'flex',alignItems:'center',gap:8,margin:'4px 0'}}><div style={{flex:1,height:1,background:'#e2e8f0'}}/><span style={{fontSize:10,color:'#94a3b8',fontWeight:600}}>{threadReplies.length} {threadReplies.length===1?'reply':'replies'}</span><div style={{flex:1,height:1,background:'#e2e8f0'}}/></div>}
+        {/* Replies */}
+        {threadReplies.map(r=>{const author=REPS.find(rep=>rep.id===r.author_id);const isMe=r.author_id===cu.id;const unread=!(r.read_by||[]).includes(cu.id);const dept=DEPTS.find(d=>d.id===r.dept);
+          return<div key={r.id} style={{padding:'10px 14px',borderRadius:8,background:isMe?'#dbeafe':'#f8fafc',border:unread?'2px solid #3b82f6':'1px solid #e2e8f0',marginLeft:isMe?24:0,marginRight:isMe?0:24}}>
+            <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
+              <div style={{display:'flex',gap:6,alignItems:'center'}}>
+                <span style={{fontSize:12,fontWeight:700,color:isMe?'#1e40af':'#475569'}}>{author?.name||'Unknown'}</span>
+                {dept&&dept.id!=='all'&&<span style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:8,background:dept.color+'20',color:dept.color}}>@{dept.label}</span>}
+              </div>
+              <span style={{fontSize:10,color:'#94a3b8'}}>{r.ts}</span>
+            </div>
+            <div style={{fontSize:13,color:'#0f172a'}}>{renderMsgPageText(r.text)}</div>
+            {(r.tagged_members||[]).length>0&&<div style={{display:'flex',gap:4,marginTop:4,flexWrap:'wrap'}}>{(r.tagged_members||[]).map(tid=>{const tm=REPS.find(rep=>rep.id===tid);return tm?<span key={tid} style={{fontSize:9,padding:'1px 6px',borderRadius:8,background:'#dbeafe',color:'#1e40af',fontWeight:600}}>@{tm.name.split(' ')[0]}</span>:null})}</div>}
+          </div>})}
+      </div>
+      {/* Reply input */}
+      <div style={{borderTop:'1px solid #e2e8f0',padding:12,flexShrink:0}}>
+        <div style={{display:'flex',gap:4,marginBottom:6,flexWrap:'wrap'}}>
+          {DEPTS.map(d=><button key={d.id} style={{fontSize:9,padding:'2px 6px',borderRadius:10,border:'1px solid '+(mThreadDept===d.id?d.color:'#e2e8f0'),background:mThreadDept===d.id?d.color+'15':'white',color:mThreadDept===d.id?d.color:'#94a3b8',cursor:'pointer',fontWeight:600}} onClick={()=>setMThreadDept(d.id)}>@{d.label}</button>)}
+        </div>
+        <div style={{position:'relative'}}>
+          {mThreadMentionQuery!=null&&threadMentionMembers.length>0&&<div style={{position:'absolute',bottom:'100%',left:0,right:0,background:'white',border:'1px solid #e2e8f0',borderRadius:8,boxShadow:'0 4px 12px rgba(0,0,0,0.15)',maxHeight:180,overflow:'auto',zIndex:50,marginBottom:4}}>
+            {threadMentionMembers.map((m,i)=><div key={m.id} style={{padding:'6px 10px',cursor:'pointer',background:i===mThreadMentionIdx?'#eff6ff':'white',display:'flex',alignItems:'center',gap:8,borderBottom:'1px solid #f1f5f9'}}
+              onMouseEnter={()=>setMThreadMentionIdx(i)} onClick={()=>threadInsertMention(m)}>
+              <div style={{width:24,height:24,borderRadius:12,background:'#3b82f6',color:'white',display:'flex',alignItems:'center',justifyContent:'center',fontSize:10,fontWeight:700,flexShrink:0}}>{(m.name||'?')[0]}</div>
+              <div><div style={{fontSize:11,fontWeight:600}}>{m.name}</div><div style={{fontSize:9,color:'#94a3b8'}}>{m.role}</div></div>
+            </div>)}
+          </div>}
+          <div style={{display:'flex',gap:8}}>
+            <input ref={mThreadInputRef} className="form-input" placeholder="Type a reply... (@ to tag someone)" style={{flex:1}} onChange={threadHandleInput} onKeyDown={threadHandleKeyDown}/>
+            <button className="btn btn-primary" onClick={threadSendReply}>Reply</button>
+          </div>
+        </div>
+      </div>
+    </div>}
+    </div></>)};
 
   // QUICKBOOKS ONLINE INTEGRATION
   function rQB(){
