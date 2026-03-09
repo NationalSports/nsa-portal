@@ -614,9 +614,10 @@ const _urlExt=u=>{if(!u||typeof u!=='string')return '';const clean=u.split('?')[
 const _isImgUrl=(u,f)=>{if(_isPdfUrl(u,f))return false;const e=_urlExt(u);if(['png','jpg','jpeg','gif','webp','svg','bmp'].includes(e))return true;if(typeof f==='object'&&f?.type?.startsWith('image/'))return true;if(u&&typeof u==='string'&&u.includes('cloudinary.com')&&u.includes('/image/upload/'))return true;return false};
 const _isPdfUrl=(u,f)=>{if(_urlExt(u)==='pdf')return true;if(typeof f==='object'&&f?.type==='application/pdf')return true;if(typeof f==='string'&&f.endsWith('.pdf'))return true;return false};
 const _cloudinaryPdfThumb=u=>{if(!u||!u.includes('cloudinary.com'))return null;
-  // Replace raw/upload with image/upload so transformations work, then add pg_1 transform
+  // Cloudinary auto-renders page 1 of PDFs via /image/upload/ — use that directly
   let t=u.replace('/raw/upload/','/image/upload/').replace('/video/upload/','/image/upload/');
-  return t.replace('/image/upload/','/image/upload/w_600,pg_1,f_jpg/')};
+  // Try without heavy transforms first; Cloudinary renders PDFs as images natively on /image/upload/
+  return t};
 const ImgUpload=({url,onUpload,size=48,onError})=>{const[drag,setDrag]=React.useState(false);const[uploading,setUploading]=React.useState(false);const[err,setErr]=React.useState(false);
   const doUpload=async(file)=>{if(!file||!file.type.startsWith('image/')){if(onError)onError('Please select an image file');return}setUploading(true);setErr(false);try{const u=await cloudUpload(file);onUpload(u)}catch(e){console.error('Upload failed',e);setErr(true);if(onError)onError('Upload failed: '+e.message)}finally{setUploading(false)}};
   return<div style={{width:size,height:size,borderRadius:6,border:err?'2px solid #dc2626':drag?'2px solid #3b82f6':'1px solid #e2e8f0',background:drag?'#eff6ff':err?'#fef2f2':'#f8fafc',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,cursor:'pointer',overflow:'hidden',position:'relative'}}
