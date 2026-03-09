@@ -207,7 +207,7 @@ const _dbSaveEstimateInner = async (est) => {
       let afRows=art_files.map(a=>({..._pick(a,_artCols),estimate_id:est.id}));
       const{error:afErr}=await supabase.from('estimate_art_files').upsert(afRows,{onConflict:'estimate_id,id'});
       if(afErr){
-        if(afErr.message?.includes('art_sizes')||afErr.message?.includes('garment_colors')||afErr.message?.includes('item_mockups')||afErr.message?.includes('schema cache')){
+        if(afErr.message?.includes('art_sizes')||afErr.message?.includes('garment_colors')||afErr.message?.includes('item_mockups')||afErr.message?.includes('schema cache')||afErr.code==='PGRST204'||afErr.message?.includes('not found')){
           console.warn('[DB] Art file columns missing in schema, retrying without extras:',afErr.message);
           const coreRows=afRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_artExtraCols.has(k))cr[k]=r[k]});return cr});
           const{error:afErr2}=await supabase.from('estimate_art_files').upsert(coreRows,{onConflict:'estimate_id,id'});
@@ -284,7 +284,7 @@ const _dbSaveSOInner = async (so) => {
       const jobRows=jobs.map(j=>({..._pick(j,_jobCols),so_id:so.id}));
       const{error:jobErr}=await supabase.from('so_jobs').upsert(jobRows,{onConflict:'so_id,id'});
       if(jobErr){
-        if(jobErr.message?.includes('schema cache')||jobErr.message?.includes('column')){
+        if(jobErr.message?.includes('schema cache')||jobErr.message?.includes('column')||jobErr.code==='PGRST204'||jobErr.message?.includes('not found')){
           const coreRows=jobRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_jobExtraCols.has(k))cr[k]=r[k]});return cr});
           const{error:jobErr2}=await supabase.from('so_jobs').upsert(coreRows,{onConflict:'so_id,id'});
           if(jobErr2){console.error('[DB] so_jobs upsert failed (core):',jobErr2.message,jobErr2.details);saveFailed=true}
@@ -306,7 +306,7 @@ const _dbSaveSOInner = async (so) => {
       let soAfRows=art_files.map(a=>({..._pick(a,_artCols),so_id:so.id}));
       const{error:afErr}=await supabase.from('so_art_files').upsert(soAfRows,{onConflict:'so_id,id'});
       if(afErr){
-        if(afErr.message?.includes('art_sizes')||afErr.message?.includes('garment_colors')||afErr.message?.includes('item_mockups')||afErr.message?.includes('schema cache')){
+        if(afErr.message?.includes('art_sizes')||afErr.message?.includes('garment_colors')||afErr.message?.includes('item_mockups')||afErr.message?.includes('schema cache')||afErr.code==='PGRST204'||afErr.message?.includes('not found')){
           console.warn('[DB] Art file columns missing in schema, retrying without extras:',afErr.message);
           const coreRows=soAfRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_artExtraCols.has(k))cr[k]=r[k]});return cr});
           const{error:afErr2}=await supabase.from('so_art_files').upsert(coreRows,{onConflict:'so_id,id'});
