@@ -16390,7 +16390,10 @@ export default function App(){
                   if(!perItemDecos[key])perItemDecos[key]=[];
                   safeDecos(it).forEach(d=>{
                     if(d.kind==='art'){
-                      perItemDecos[key].push({kind:'art',position:d.position||'—',type:d.type||j.deco_type||'screen_print',reversible:d.reversible||false});
+                      const dAf=d.art_file_id?safeArt(so).find(a=>a.id===d.art_file_id):null;
+                      const dType=d.type||dAf?.deco_type||j.deco_type||'screen_print';
+                      const dColors=(dAf?(dAf.ink_colors||dAf.thread_colors||''):'').split(/[,\n]/).map(c=>c.trim()).filter(Boolean);
+                      perItemDecos[key].push({kind:'art',position:d.position||'—',type:dType,reversible:d.reversible||false,artFile:dAf,colors:dColors,size:dAf?.art_size||''});
                     }else if(d.kind==='numbers'){
                       perItemDecos[key].push({kind:'numbers',position:d.position||'Back Center',method:(d.num_method||'heat_transfer').replace(/_/g,' '),
                         numSize:d.num_size||'—',numSizeBack:d.front_and_back?(d.num_size_back||d.num_size||'—'):null,
@@ -16427,8 +16430,9 @@ export default function App(){
                       {(artDecos.length>0?artDecos.map(d=>d.position):posList3).map((pos,pi)=>{
                         const artDeco=artDecos.find(d=>d.position===pos);
                         const method=(artDeco?.type||j.deco_type||'screen_print').replace(/_/g,' ');
-                        const size=artSizes[pos]||(pi===0?af?.art_size:'')||'';
-                        const posColors=gc[pos]||(colorList.length>0?colorList:[]);
+                        const size=artSizes[pos]||(artDeco?.size)||(pi===0?af?.art_size:'')||'';
+                        const decoColors=artDeco?.colors||[];
+                        const posColors=gc[pos]||(decoColors.length>0?decoColors:colorList.length>0?colorList:[]);
                         const editPosColors=editColors[pos]||[''];
                         return<div key={pi} style={{display:'flex',alignItems:'baseline',gap:8,flexWrap:'wrap',padding:'5px 0',borderTop:pi>0?'1px solid #e9ecef':'none'}}>
                           <span style={{fontSize:12,fontWeight:700,color:'#0f172a',minWidth:110}}>{pos}</span>
