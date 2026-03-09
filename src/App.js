@@ -5276,7 +5276,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               </div>
               <div style={{fontSize:12,color:'#1e3a8a',marginTop:4}}>The mockup will be sent to you for approval when ready.</div>
             </div>}
-            {j.art_status==='waiting_approval'&&(()=>{const artFile2=safeArt(o).find(a=>a.id===j.art_file_id);const mockups=(artFile2?.mockup_files||artFile2?.files||[]).concat(Object.values(artFile2?.item_mockups||{}).flat());const _stca=j.sent_to_coach_at?new Date(j.sent_to_coach_at):null;return<div style={{margin:'0 20px',padding:'16px',background:_stca?'linear-gradient(135deg,#dbeafe,#eff6ff)':'linear-gradient(135deg,#fef3c7,#fffbeb)',border:'2px solid '+(_stca?'#93c5fd':'#fbbf24'),borderRadius:10}}>
+            {j.art_status==='waiting_approval'&&(()=>{const artFile2=safeArt(o).find(a=>a.id===j.art_file_id);const _mf=(artFile2?.mockup_files||artFile2?.files||[]);const _im=Object.values(artFile2?.item_mockups||{}).flat();const _seen=new Set();const mockups=[..._mf,..._im].filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seen.has(u))return false;_seen.add(u);return true});const _stca=j.sent_to_coach_at?new Date(j.sent_to_coach_at):null;return<div style={{margin:'0 20px',padding:'16px',background:_stca?'linear-gradient(135deg,#dbeafe,#eff6ff)':'linear-gradient(135deg,#fef3c7,#fffbeb)',border:'2px solid '+(_stca?'#93c5fd':'#fbbf24'),borderRadius:10}}>
               <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:10}}>
                 <span style={{fontSize:20}}>{_stca?'📤':'⚠️'}</span>
                 <span style={{fontWeight:800,fontSize:16,color:_stca?'#1e40af':'#92400e'}}>{_stca?'Sent to Coach for Approval':'Artwork Needs Your Approval'}</span>
@@ -5604,8 +5604,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       {/* Art Request Modal (also needed in job detail view) */}
       {artReqModal&&(()=>{
         const j2=jobs[artReqModal.jIdx];if(!j2)return null;
-        const artF2=safeArt(o).find(a=>a.id===j2.art_file_id);
-        const existingFiles2=(artF2?.mockup_files||[]).concat(artF2?.prod_files||[]);
+        const _artIds2=(j2._art_ids||[j2.art_file_id]).filter(Boolean);
+        const existingFiles2=_artIds2.flatMap(aid=>{const af=safeArt(o).find(a=>a.id===aid);return(af?.mockup_files||[]).concat(af?.prod_files||[])});
         const artists2=REPS.filter(r=>r.role==='art');
         const submitArtReq2=()=>{
           const req={id:'AR-'+Date.now(),artist:artReqModal.artist,artist_name:(artists2.find(a=>a.id===artReqModal.artist)||{}).name||'',instructions:artReqModal.instructions,files:artReqModal.files||[],existing_files:existingFiles2.map(f=>f.name||f),status:'requested',created_at:new Date().toISOString(),created_by:cu.name};
@@ -5927,8 +5927,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       {/* Art Request Modal */}
       {artReqModal&&(()=>{
         const j=jobs[artReqModal.jIdx];if(!j)return null;
-        const artF=safeArt(o).find(a=>a.id===j.art_file_id);
-        const existingFiles=(artF?.mockup_files||[]).concat(artF?.prod_files||[]);
+        const _artIds=(j._art_ids||[j.art_file_id]).filter(Boolean);
+        const existingFiles=_artIds.flatMap(aid=>{const af=safeArt(o).find(a=>a.id===aid);return(af?.mockup_files||[]).concat(af?.prod_files||[])});
         const artists=REPS.filter(r=>r.role==='art');
         const hasExistingReqs=(j.art_requests||[]).length>0;
         const activeReq=(j.art_requests||[]).find(r=>r.status==='in_progress'||r.status==='requested');
