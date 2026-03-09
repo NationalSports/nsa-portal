@@ -1,33 +1,38 @@
 // Netlify serverless function to proxy Momentec Brands API calls (avoids CORS)
-// Momentec API docs may require dealer login — check https://www.momentecbrands.com/api
+// Momentec uses HCL Commerce REST API — catalog endpoints are public (no auth required)
 //
-// Environment variables required:
-//   MOMENTEC_API_KEY      — API key or bearer token (TBD)
-//   MOMENTEC_API_BASE_URL — base URL (default: https://www.momentecbrands.com/api)
+// Environment variables (optional):
+//   MOMENTEC_API_KEY      — dealer API key for authenticated endpoints (orders, pricing tiers)
+//   MOMENTEC_STORE_ID     — HCL Commerce store ID (default: 10251)
 //
 // Query parameters:
-//   path — the API endpoint path (e.g. /products, /inventory)
+//   path — the API endpoint path after /wcs/resources/store/{storeId}
+//          e.g. /productview/bySearchTerm/*?pageSize=50
+//               /productview/byId/10032
+//               /productview/byCategory/3074457345616683170
+//               /categoryview/@top?depthAndLimit=11,11
+
+const BASE_URL = 'https://www.momentecbrands.com';
 
 exports.handler = async (event) => {
   const apiKey = process.env.MOMENTEC_API_KEY;
-  const baseUrl = (process.env.MOMENTEC_API_BASE_URL || 'https://www.momentecbrands.com/api').replace(/\/+$/, '');
+  const storeId = process.env.MOMENTEC_STORE_ID || '10251';
+  const path = event.queryStringParameters?.path || '/productview/bySearchTerm/*?pageSize=50';
 
-  if (!apiKey) {
-    return { statusCode: 500, headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ error: 'MOMENTEC_API_KEY not configured in environment variables' }) };
-  }
-
-  const path = event.queryStringParameters?.path || '/products';
-  const url = `${baseUrl}${path}`;
+  const url = `${BASE_URL}/wcs/resources/store/${storeId}${path}`;
 
   try {
+    const headers = {
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+    };
+    if (apiKey) {
+      headers['Authorization'] = `Bearer ${apiKey}`;
+    }
+
     const response = await fetch(url, {
       method: event.httpMethod === 'POST' ? 'POST' : 'GET',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-      },
+      headers,
       redirect: 'manual',
       ...(event.body ? { body: event.body } : {}),
     });
@@ -35,14 +40,14 @@ exports.handler = async (event) => {
     if (response.status >= 300 && response.status < 400) {
       const location = response.headers.get('location') || '';
       return { statusCode: 502, headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ error: `Momentec API redirected to ${location}. Check MOMENTEC_API_BASE_URL. Tried: ${url}` }) };
+        body: JSON.stringify({ error: `Momentec API redirected to ${location}. Tried: ${url}` }) };
     }
 
     const data = await response.text();
 
     if (data.trimStart().startsWith('<')) {
       return { statusCode: 502, headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ error: `Momentec API returned HTML instead of JSON. Check MOMENTEC_API_BASE_URL. Tried: ${url}` }) };
+        body: JSON.stringify({ error: `Momentec API returned HTML instead of JSON. Tried: ${url}` }) };
     }
 
     return {
