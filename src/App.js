@@ -2930,7 +2930,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
 
   return(<div>
     {/* Sticky header — appears when scrolling */}
-    <div style={{position:'sticky',top:0,zIndex:40,background:'white',borderBottom:'1px solid #e2e8f0',padding:'8px 16px',marginBottom:0,display:'flex',alignItems:'center',gap:12,boxShadow:'0 1px 3px rgba(0,0,0,0.05)',flexWrap:'wrap'}}>
+    <div style={{position:'sticky',top:52,zIndex:40,background:'white',borderBottom:'1px solid #e2e8f0',padding:'8px 16px',marginBottom:0,display:'flex',alignItems:'center',gap:12,boxShadow:'0 1px 3px rgba(0,0,0,0.05)',flexWrap:'wrap'}}>
       <button className="btn btn-sm btn-secondary" onClick={()=>{if(dirty&&!window.confirm('You have unsaved changes. Leave without saving?'))return;onBack()}} style={{fontSize:10,padding:'4px 10px'}}><Icon name="back" size={12}/> Back</button>
       {returnToPage&&onReturnToJob&&<button className="btn btn-sm" onClick={()=>{if(dirty&&!window.confirm('You have unsaved changes. Leave without saving?'))return;onReturnToJob()}} style={{fontSize:10,padding:'4px 10px',background:'#7c3aed',color:'white',border:'none',fontWeight:700}}>← Return to {returnToPage.page==='production'?'Production Board':'Decoration'}</button>}
       {isE&&onNewEstimate&&<button className="btn btn-sm btn-secondary" onClick={()=>{if(dirty&&!window.confirm('Unsaved changes. Continue?'))return;onNewEstimate()}} style={{fontSize:10,padding:'4px 10px'}}><Icon name="plus" size={12}/> New Est</button>}
@@ -2944,7 +2944,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         if(!o.memo?.trim()){nf('Memo is required','error');return}
         const validItems=safeItems(o).filter(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return sq>0||safeNum(it.est_qty)>0});
         if(validItems.length===0){nf('Add at least one item with quantities','error');return}
-        onSave(o);setSaved(true);setDirty(false);nf(`${isE?'Estimate':'SO'} saved`)}} style={{padding:'4px 14px',fontSize:11}}>✓ Save</button>
+        onSave(o);setSaved(true);setDirty(false);nf(`${isE?'Estimate':'SO'} saved`)}} style={{padding:'6px 20px',fontSize:13,fontWeight:700}}><Icon name="check" size={14}/> Save</button>
     </div>
     {/* UPDATE REQUESTS BANNER — shows when coach has requested changes */}
     {isE&&(o.update_requests||[]).filter(r=>r.status==='pending').length>0&&<div style={{margin:'8px 0',padding:'12px 16px',background:'#fffbeb',border:'2px solid #f59e0b',borderRadius:10}}>
@@ -4126,14 +4126,40 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         </div></div>})()}
 
         {/* LINKED TRANSACTIONS TAB */}
-    {isSO&&tab==='transactions'&&<div className="card"><div className="card-header"><h2>Linked Transactions</h2></div><div className="card-body">
+    {isSO&&tab==='transactions'&&(()=>{
+      const linkedPOs=[];safeItems(o).forEach(it=>{safePOs(it).forEach(po=>{if(po.po_id&&!linkedPOs.find(x=>x.po_id===po.po_id)){const szKeys=Object.keys(po).filter(k=>!['status','po_id','received','shipments','cancelled','vendor','created_at','expected_date','memo','po_type','unit_cost','drop_ship','deco_vendor','deco_type','notes','billed','tracking_numbers'].includes(k)&&typeof po[k]==='number');const totalOrd=szKeys.reduce((a,sz)=>a+(po[sz]||0),0);const rcvd=po.received||{};const totalRcvd=szKeys.reduce((a,sz)=>a+(rcvd[sz]||0),0);linkedPOs.push({po_id:po.po_id,vendor:po.vendor||po.deco_vendor||'',totalOrd,totalRcvd,status:totalRcvd>=totalOrd&&totalOrd>0?'received':totalRcvd>0?'partial':'waiting',created_at:po.created_at||''})}})});
+      const linkedIFs=[];safeItems(o).forEach(it=>{safePicks(it).forEach(pk=>{if(pk.pick_id&&!linkedIFs.find(x=>x.pick_id===pk.pick_id)){const szKeys=Object.keys(pk).filter(k=>!['pick_id','status','created_at','memo','ship_dest','ship_addr','deco_vendor','notes'].includes(k)&&typeof pk[k]==='number');const totalQty=szKeys.reduce((a,sz)=>a+(pk[sz]||0),0);linkedIFs.push({pick_id:pk.pick_id,status:pk.status||'pick',totalQty,created_at:pk.created_at||'',memo:pk.memo||''})}})});
+      const linkedInvs=(allInvoices||[]).filter(inv=>inv.so_id===o.id);
+      return<div className="card"><div className="card-header"><h2>Linked Transactions</h2></div><div className="card-body">
       <div style={{display:'flex',flexDirection:'column',gap:8}}>
-        {o.estimate_id&&<div style={{display:'flex',gap:12,alignItems:'center',padding:12,background:'#faf5ff',borderRadius:8,border:'1px solid #e9d5ff'}}>
+        {o.estimate_id&&<div style={{display:'flex',gap:12,alignItems:'center',padding:12,background:'#faf5ff',borderRadius:8,border:'1px solid #e9d5ff',cursor:onViewEstimate?'pointer':'default'}} onClick={()=>onViewEstimate&&onViewEstimate(o.estimate_id)}>
           <div style={{width:40,height:40,background:'#ede9fe',borderRadius:8,display:'flex',alignItems:'center',justifyContent:'center'}}><Icon name="dollar" size={20}/></div>
-          <div><div style={{fontWeight:700,color:'#7c3aed'}}>{o.estimate_id}</div><div style={{fontSize:12,color:'#64748b'}}>Source Estimate</div></div><span className="badge badge-green">Converted</span></div>}
-        <div style={{padding:12,background:'#f8fafc',borderRadius:8}}><div style={{fontWeight:600,marginBottom:4}}>Purchase Orders</div><div style={{fontSize:12,color:'#94a3b8'}}>No POs linked yet (Phase 4)</div></div>
-        <div style={{padding:12,background:'#f8fafc',borderRadius:8}}><div style={{fontWeight:600,marginBottom:4}}>Invoices</div><div style={{fontSize:12,color:'#94a3b8'}}>No invoices linked yet</div></div>
-      </div></div></div>}
+          <div><div style={{fontWeight:700,color:'#7c3aed',textDecoration:'underline',textDecorationStyle:'dotted'}}>{o.estimate_id}</div><div style={{fontSize:12,color:'#64748b'}}>Source Estimate</div></div><span className="badge badge-green">Converted</span></div>}
+        <div style={{padding:12,background:'#f8fafc',borderRadius:8}}><div style={{fontWeight:600,marginBottom:4}}>Item Fulfillments</div>
+          {linkedIFs.length===0?<div style={{fontSize:12,color:'#94a3b8'}}>No item fulfillments yet</div>:
+          linkedIFs.map(pk=><div key={pk.pick_id} style={{display:'flex',gap:10,alignItems:'center',padding:'6px 0',borderBottom:'1px solid #f1f5f9',cursor:'pointer'}} onClick={()=>setTab('items')}>
+            <span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',fontSize:12}}>{pk.pick_id}</span>
+            <span className={`badge ${pk.status==='pulled'?'badge-green':'badge-amber'}`} style={{fontSize:10}}>{pk.status}</span>
+            <span style={{fontSize:11,color:'#64748b'}}>{pk.totalQty} units</span>
+            {pk.memo&&<span style={{fontSize:11,color:'#94a3b8'}}>{pk.memo}</span>}
+          </div>)}</div>
+        <div style={{padding:12,background:'#f8fafc',borderRadius:8}}><div style={{fontWeight:600,marginBottom:4}}>Purchase Orders</div>
+          {linkedPOs.length===0?<div style={{fontSize:12,color:'#94a3b8'}}>No purchase orders yet</div>:
+          linkedPOs.map(po=><div key={po.po_id} style={{display:'flex',gap:10,alignItems:'center',padding:'6px 0',borderBottom:'1px solid #f1f5f9',cursor:'pointer'}} onClick={()=>setTab('items')}>
+            <span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',fontSize:12}}>{po.po_id}</span>
+            <span style={{fontSize:11,color:'#64748b'}}>{po.vendor}</span>
+            <span className={`badge ${po.status==='received'?'badge-green':po.status==='partial'?'badge-amber':'badge-blue'}`} style={{fontSize:10}}>{po.status==='received'?'Received':po.status==='partial'?'Partial':'Waiting'}</span>
+            <span style={{fontSize:11,color:'#64748b'}}>{po.totalRcvd}/{po.totalOrd} received</span>
+          </div>)}</div>
+        <div style={{padding:12,background:'#f8fafc',borderRadius:8}}><div style={{fontWeight:600,marginBottom:4}}>Invoices</div>
+          {linkedInvs.length===0?<div style={{fontSize:12,color:'#94a3b8'}}>No invoices linked yet</div>:
+          linkedInvs.map(inv=><div key={inv.id} style={{display:'flex',gap:10,alignItems:'center',padding:'6px 0',borderBottom:'1px solid #f1f5f9',cursor:onNavInvoice?'pointer':'default'}} onClick={()=>onNavInvoice&&onNavInvoice(inv)}>
+            <span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',fontSize:12}}>{inv.id}</span>
+            <span style={{fontSize:11,color:'#64748b'}}>${(inv.total||0).toLocaleString()}</span>
+            <span className={`badge ${inv.status==='paid'?'badge-green':inv.status==='partial'?'badge-amber':'badge-blue'}`} style={{fontSize:10}}>{inv.status==='paid'?'Paid':inv.status==='partial'?'Partial':'Open'}</span>
+            {inv.date&&<span style={{fontSize:11,color:'#94a3b8'}}>{inv.date}</span>}
+          </div>)}</div>
+      </div></div></div>})()}
 
     {/* TRACKING TAB */}
     {isSO&&tab==='tracking'&&(()=>{
@@ -10233,12 +10259,13 @@ export default function App(){
         <span style={{fontSize:11,color:'#64748b'}}>{fe.length}{fe.length!==ests.length?' of '+ests.length:''} estimates</span>
         <button className="btn btn-primary" onClick={()=>newE(null)}><Icon name="plus" size={14}/> New Estimate</button>
       </div>
-      <div className="card"><div className="card-body" style={{padding:0}}><table><thead><tr><th>ID</th><th>Customer</th><th>Memo</th><th>Items</th><th>Rep</th><th>Status</th><th>Email</th><th></th></tr></thead><tbody>
-      {fe.map(e=>{const c=cust.find(x=>x.id===e.customer_id);const rep=REPS.find(r=>r.id===e.created_by);return(<tr key={e.id} style={{cursor:'pointer'}} onClick={()=>{setEEst(e);setEEstC(c)}}>
+      <div className="card"><div className="card-body" style={{padding:0}}><table><thead><tr><th>ID</th><th>Customer</th><th>Memo</th><th>Items</th><th>Rep</th><th>Status</th><th>SO</th><th>Email</th><th></th></tr></thead><tbody>
+      {fe.map(e=>{const c=cust.find(x=>x.id===e.customer_id);const rep=REPS.find(r=>r.id===e.created_by);const linkedSO=e.status==='converted'?sos.find(s=>s.estimate_id===e.id):null;return(<tr key={e.id} style={{cursor:'pointer'}} onClick={()=>{setEEst(e);setEEstC(c)}}>
         <td style={{fontWeight:700,color:'#1e40af'}}>{e.id}</td><td>{c?<>{c.name} <span className="badge badge-gray">{c.alpha_tag}</span></>:'--'}</td>
         <td style={{fontSize:12}}>{e.memo}</td><td>{e.items?.length||0}</td>
         <td><span style={{fontSize:11,color:'#64748b'}}>{rep?.name?.split(' ')[0]||'—'}</span></td>
         <td><span className={`badge ${e.status==='draft'||e.status==='open'?'badge-blue':e.status==='sent'?'badge-amber':e.status==='approved'?'badge-green':e.status==='converted'?'badge-purple':'badge-blue'}`}>{e.status}</span></td>
+        <td onClick={ev=>ev.stopPropagation()}>{linkedSO?<span style={{color:'#1e40af',fontWeight:600,fontSize:11,cursor:'pointer',textDecoration:'underline'}} onClick={()=>{const cc=cust.find(x=>x.id===linkedSO.customer_id);setESO(linkedSO);setESOC(cc);setPg('orders')}}>{linkedSO.id}</span>:<span style={{color:'#94a3b8',fontSize:11}}>—</span>}</td>
         <td><EmailBadge e={e}/></td>
         <td onClick={ev=>ev.stopPropagation()}>{e.status==='approved'&&<button className="btn btn-sm btn-primary" style={{background:'#7c3aed'}} onClick={()=>convertSO(e)}>→ SO</button>}{canDelete&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',color:'#dc2626',border:'1px solid #fca5a5',marginLeft:4,background:'white'}} onClick={()=>deleteEstimate(e.id)}><Icon name="trash" size={10}/></button>}</td>
       </tr>)})}</tbody></table></div></div></>);};
