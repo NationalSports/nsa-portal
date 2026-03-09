@@ -8740,8 +8740,8 @@ const BarcodeScanner=({onScan,onClose,placeholder='Scan barcode or QR code...'})
   };
 
   return<div style={{background:'#0f172a',borderRadius:12,overflow:'hidden',border:'2px solid #334155'}}>
-    {/* Camera viewport — video always in DOM so ref is available when stream is assigned */}
-    {active?<div style={{position:'relative',background:'#000'}}>
+    {/* Single video element always in DOM so ref/stream survive re-renders */}
+    <div style={{position:'relative',background:'#000',display:active?'block':'none'}}>
       <video ref={videoRef} style={{width:'100%',maxHeight:280,objectFit:'cover',display:'block'}} autoPlay playsInline muted/>
       {/* Scan overlay */}
       <div style={{position:'absolute',top:0,left:0,right:0,bottom:0,display:'flex',alignItems:'center',justifyContent:'center',pointerEvents:'none'}}>
@@ -8751,17 +8751,15 @@ const BarcodeScanner=({onScan,onClose,placeholder='Scan barcode or QR code...'})
         Point camera at barcode or QR code
       </div>
       <button onClick={stopCamera} style={{position:'absolute',top:8,right:8,background:'rgba(0,0,0,0.6)',border:'none',color:'white',borderRadius:8,padding:'4px 10px',cursor:'pointer',fontSize:12}}>Close Camera</button>
-    </div>:<>
-    <video ref={videoRef} style={{display:'none'}} playsInline muted/>
-    <div style={{padding:'20px',textAlign:'center'}}>
+    </div>
+    {!active&&<div style={{padding:'20px',textAlign:'center'}}>
       {error?<div style={{color:'#f87171',fontSize:12,marginBottom:10}}>{error}</div>:
       <div style={{color:'#94a3b8',fontSize:12,marginBottom:10}}>Open the camera to scan barcodes/QR codes, or type manually below</div>}
       <button onClick={startCamera} style={{background:'#22c55e',color:'white',border:'none',borderRadius:8,padding:'10px 24px',fontSize:14,fontWeight:700,cursor:'pointer',display:'inline-flex',alignItems:'center',gap:8}}>
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/><circle cx="12" cy="13" r="4"/></svg>
         Open Camera
       </button>
-      {null}
-    </div></>}
+    </div>}
     {/* Manual entry always available */}
     <div style={{padding:'10px 16px',borderTop:'1px solid #1e293b',display:'flex',gap:8}}>
       <input value={manualVal} onChange={e=>setManualVal(e.target.value)} onKeyDown={handleManual}
