@@ -9504,8 +9504,8 @@ export default function App(){
               shipMethod:j.ship_method||'pending',shipPref});
           }
         }
-        // Deco tasks
-        if(j.prod_status!=='completed'&&j.prod_status!=='shipped'){
+        // Deco tasks — only show jobs that have hit the production board (not hold)
+        if(j.prod_status!=='completed'&&j.prod_status!=='shipped'&&j.prod_status!=='hold'){
           const isReady=j.art_status==='art_complete'&&j.item_status==='items_received';
           decoTasks.push({so,soId:so.id,job:j,cName,alpha,rep,daysOut,urgent,
             artName:j.art_name,decoType:j.deco_type,totalUnits:j.total_units,fulfilledUnits:j.fulfilled_units,
@@ -13989,7 +13989,7 @@ export default function App(){
   };
 
   // WAREHOUSE DASHBOARD
-  const[whTab,setWhTab]=useState('pull');const[whSearch,setWhSearch]=useState('');const[whRepF,setWhRepF]=useState('all');const[scanModalOpen,setScanModalOpen]=useState(false);const[whRecvPO,setWhRecvPO]=useState(null);const[whReceiving,setWhReceiving]=useState(false);const[whViewIF,setWhViewIF]=useState(null);
+  const[whTab,setWhTab]=useState('pull');const[whSearch,setWhSearch]=useState('');const[whRepF,setWhRepF]=useState('all');const[scanModalOpen,setScanModalOpen]=useState(false);const[whRecvPO,setWhRecvPO]=useState(null);const[whReceiving,setWhReceiving]=useState(false);const[whViewIF,setWhViewIF]=useState(null);const[whPulling,setWhPulling]=useState(false);
   const[whRecentActions,setWhRecentActions]=useState(()=>{try{return JSON.parse(localStorage.getItem('nsa_wh_recent')||'[]')}catch{return[]}});
   const addWhAction=(action)=>{setWhRecentActions(prev=>{const next=[{...action,ts:Date.now(),at:new Date().toLocaleString()},...prev].slice(0,50);try{localStorage.setItem('nsa_wh_recent',JSON.stringify(next))}catch{}return next})};
   const[stockPOs,setStockPOs]=useState([
@@ -14297,7 +14297,8 @@ export default function App(){
 
           {/* Actions */}
           <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-            {activePick&&activePick.status!=='pulled'&&<button className="btn btn-primary" style={{fontSize:13,padding:'10px 24px',fontWeight:700}} onClick={()=>{
+            {activePick&&activePick.status!=='pulled'&&<button className="btn btn-primary" disabled={whPulling} style={{fontSize:13,padding:'10px 24px',fontWeight:700,opacity:whPulling?0.6:1}} onClick={()=>{
+              if(whPulling)return;setWhPulling(true);
               // Mark the active pick as pulled with actual quantities, update SO, adjust inventory
               const actualQtys=pullQtys;
               const updatedItems=safeItems(so).map((it2,ii)=>{
@@ -14350,8 +14351,8 @@ export default function App(){
               w.document.write('<div class="sep"></div>');
               w.document.write('<div class="bot"><p style="font-size:11px;color:#666;margin:0">Pulled: '+new Date().toLocaleString()+'</p></div>');
               w.document.write('</body></html>');w.document.close();w.print()}
-              nf('✅ '+pickId+' marked as pulled');setWhViewIF(null);
-            }}>✓ Mark as Pulled</button>}
+              nf('✅ '+pickId+' marked as pulled');setWhPulling(false);setWhViewIF(null);
+            }}>{whPulling?'Saving...':'✓ Mark as Pulled'}</button>}
             <button className="btn btn-secondary" style={{fontSize:12,padding:'8px 16px'}} onClick={()=>{setESOTab('items');setESOScrollItem(t.itemIdx);setESO(so);setESOC(c);setPg('orders')}}>
               Open Sales Order</button>
           </div>
@@ -14730,7 +14731,52 @@ export default function App(){
                   }
 
                   setWhReceiving(false);
-                  if(anyReceived){nf('Received '+totalQtyReceived+' unit'+(totalQtyReceived!==1?'s':'')+' on '+poId);setWhRecvPO(null)}
+                  if(anyReceived){nf('Received '+totalQtyReceived+' unit'+(totalQtyReceived!==1?'s':'')+' on '+poId);
+                    // Auto-print 4x6 label on receive (same as IF pull label)
+                    const scanUrl=window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(poId);
+                    const qrUrl='https://api.qrserver.com/v1/create-qr-code/?size=150x150&data='+encodeURIComponent(scanUrl);
+                    if(batchMatch&&batchMatch.source_pos&&batchMatch.source_pos.length>1){
+                      const w2=window.open('','_blank','width=400,height=600');if(w2){
+                        w2.document.write('<html><head><title>Box Labels — '+poId+'</title><style>@page{size:4in 6in;margin:0.2in}body{font-family:Arial,sans-serif;margin:0;padding:0}');
+                        w2.document.write('.label-page{padding:12px;width:3.6in;page-break-after:always}.label-page:last-child{page-break-after:auto}');
+                        w2.document.write('.po{font-size:28px;font-weight:900;font-family:monospace;letter-spacing:2px;text-align:center;margin:8px 0}');
+                        w2.document.write('.so-label{font-size:16px;font-weight:900;text-align:center;color:#1e40af;margin-bottom:8px}');
+                        w2.document.write('table{width:100%;border-collapse:collapse;font-size:11px;margin-top:8px}th,td{border:1px solid #ccc;padding:3px 6px;text-align:left}th{background:#f0f0f0;font-weight:700}');
+                        w2.document.write('.footer{font-size:9px;color:#999;text-align:center;margin-top:8px;border-top:1px solid #ddd;padding-top:4px}</style></head><body>');
+                        batchMatch.source_pos.forEach((sp,spi)=>{
+                          w2.document.write('<div class="label-page">');
+                          w2.document.write('<div style="text-align:center"><img src="'+qrUrl+'" width="120" height="120"/></div>');
+                          w2.document.write('<div class="po">'+poId+'</div>');
+                          w2.document.write('<div style="text-align:center;font-size:14px;font-weight:700;color:#22c55e;margin-bottom:4px">RECEIVED — '+new Date().toLocaleDateString()+'</div>');
+                          w2.document.write('<div class="so-label">'+sp.so_id+(sp.customer?' — '+sp.customer:'')+'</div>');
+                          w2.document.write('<table><thead><tr><th>SKU</th><th>Product</th><th>Color</th><th>Sizes</th><th>Qty</th></tr></thead><tbody>');
+                          sp.items.forEach(it=>{const szStr=Object.entries(it.sizes||{}).filter(([,v])=>v>0).map(([sz,v])=>sz+':'+v).join(' ');const qty=Object.values(it.sizes||{}).reduce((a,v)=>a+v,0);
+                            w2.document.write('<tr><td style="font-weight:700">'+it.sku+'</td><td>'+it.name+'</td><td>'+(it.color||'—')+'</td><td style="font-size:10px;font-weight:700">'+szStr+'</td><td style="font-weight:700">'+qty+'</td></tr>')});
+                          w2.document.write('</tbody></table>');
+                          const spQty=sp.items.reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((a2,v)=>a2+v,0),0);
+                          w2.document.write('<div style="text-align:right;font-size:14px;font-weight:900;margin-top:6px">BOX TOTAL: '+spQty+' units</div>');
+                          w2.document.write('<div class="footer">NSA · '+new Date().toLocaleDateString()+' · Box '+(spi+1)+' of '+batchMatch.source_pos.length+' · '+poId+'</div>');
+                          w2.document.write('</div>');
+                        });
+                        w2.document.write('</body></html>');w2.document.close();setTimeout(()=>w2.print(),400);
+                      }
+                    } else {
+                      const w=window.open('','_blank','width=400,height=600');if(w){
+                        w.document.write('<html><head><title>'+poId+'</title><style>@page{size:4in 6in;margin:0.2in}body{font-family:Arial,sans-serif;margin:0;padding:12px;width:3.6in}.po{font-size:28px;font-weight:900;font-family:monospace;letter-spacing:2px;text-align:center;margin:8px 0}table{width:100%;border-collapse:collapse;font-size:11px;margin-top:8px}th,td{border:1px solid #ccc;padding:3px 6px;text-align:left}th{background:#f0f0f0;font-weight:700}.footer{font-size:9px;color:#999;text-align:center;margin-top:8px;border-top:1px solid #ddd;padding-top:4px}</style></head><body>');
+                        w.document.write('<div style="text-align:center"><img src="'+qrUrl+'" width="120" height="120"/></div>');
+                        w.document.write('<div class="po">'+poId+'</div>');
+                        w.document.write('<div style="text-align:center;font-size:14px;font-weight:700;color:#22c55e;margin-bottom:6px">RECEIVED — '+new Date().toLocaleDateString()+'</div>');
+                        if(vendorName)w.document.write('<div style="text-align:center;font-size:12px;color:#666;margin-bottom:6px">'+vendorName+'</div>');
+                        w.document.write('<table><thead><tr><th>SKU</th><th>Product</th><th>Color</th><th>Sizes</th><th>Qty</th></tr></thead><tbody>');
+                        poItems.forEach(it=>{const szStr=it.szKeys.map(sz=>sz+':'+(it.ordered[sz]||0)).join(' ');const qty=it.szKeys.reduce((a,sz)=>a+(it.ordered[sz]||0),0);
+                          w.document.write('<tr><td style="font-weight:700">'+it.sku+'</td><td>'+it.name+'</td><td>'+(it.color||'—')+'</td><td style="font-size:10px;font-weight:700">'+szStr+'</td><td style="font-weight:700">'+qty+'</td></tr>')});
+                        w.document.write('</tbody></table>');
+                        w.document.write('<div style="text-align:right;font-size:14px;font-weight:900;margin-top:6px">TOTAL: '+totalQtyReceived+' units</div>');
+                        w.document.write('<div class="footer">NSA · '+new Date().toLocaleDateString()+' · Scan QR to open this PO</div>');
+                        w.document.write('</body></html>');w.document.close();setTimeout(()=>w.print(),400);
+                      }
+                    }
+                    setWhRecvPO(null)}
                   else{const allAlreadyDone=totalOpen<=0;nf(allAlreadyDone?'All items on '+poId+' already fully received':'Enter at least one quantity to receive','error')}
                 }}>{whReceiving?'Saving...':'✓ Confirm Received'}</button>
               </div>}
