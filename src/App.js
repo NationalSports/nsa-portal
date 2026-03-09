@@ -609,9 +609,9 @@ const fileUpload=async(file,folder='nsa-art-files')=>{const fd=new FormData();fd
 const isUrl=s=>typeof s==='string'&&(s.startsWith('http://')||s.startsWith('https://'));
 const fileDisplayName=f=>{if(typeof f==='object'&&f?.name)return f.name;const s=typeof f==='string'?f:(f?.url||'');return isUrl(s)?decodeURIComponent(s.split('/').pop().split('?')[0]):s};
 const _isDownloadOnly=u=>{const e=_urlExt(u);return['ai','eps','dst','psd','tiff','tif','cdr'].includes(e)};
-const openFile=f=>{const u=typeof f==='string'?f:(f?.url||'');if(isUrl(u)){if(_isPdfUrl(u,f)){let pdfUrl=u;if(pdfUrl.includes('cloudinary.com'))pdfUrl=pdfUrl.replace('/image/upload/','/raw/upload/').replace('/video/upload/','/raw/upload/');window.open('https://docs.google.com/gview?url='+encodeURIComponent(pdfUrl)+'&embedded=true','_blank')}else if(_isDownloadOnly(u)){const a=document.createElement('a');a.href=u;a.download=typeof f==='object'&&f?.name?f.name:decodeURIComponent(u.split('/').pop().split('?')[0]);a.target='_blank';a.rel='noopener';document.body.appendChild(a);a.click();document.body.removeChild(a)}else{window.open(u,'_blank')}}else if(u){nf('Legacy file: '+u+' — re-upload to enable downloads')}};
+const openFile=f=>{const u=typeof f==='string'?f:(f?.url||'');if(isUrl(u)){if(_isPdfUrl(u,f)){let pdfUrl=u;if(pdfUrl.includes('cloudinary.com')){pdfUrl=pdfUrl.replace('/image/upload/','/raw/upload/').replace('/video/upload/','/raw/upload/')}window.open(pdfUrl,'_blank')}else if(_isDownloadOnly(u)){const a=document.createElement('a');a.href=u;a.download=typeof f==='object'&&f?.name?f.name:decodeURIComponent(u.split('/').pop().split('?')[0]);a.target='_blank';a.rel='noopener';document.body.appendChild(a);a.click();document.body.removeChild(a)}else{window.open(u,'_blank')}}else if(u){nf('Legacy file: '+u+' — re-upload to enable downloads')}};
 const _urlExt=u=>{if(!u||typeof u!=='string')return '';const clean=u.split('?')[0].split('#')[0];const m=clean.match(/\.(\w+)$/);return m?m[1].toLowerCase():''};
-const _isImgUrl=(u,f)=>{const e=_urlExt(u);if(['png','jpg','jpeg','gif','webp','svg','bmp'].includes(e))return true;if(typeof f==='object'&&f?.type?.startsWith('image/'))return true;if(u&&typeof u==='string'&&u.includes('cloudinary.com')&&u.includes('/image/upload/'))return true;return false};
+const _isImgUrl=(u,f)=>{if(_isPdfUrl(u,f))return false;const e=_urlExt(u);if(['png','jpg','jpeg','gif','webp','svg','bmp'].includes(e))return true;if(typeof f==='object'&&f?.type?.startsWith('image/'))return true;if(u&&typeof u==='string'&&u.includes('cloudinary.com')&&u.includes('/image/upload/'))return true;return false};
 const _isPdfUrl=(u,f)=>{if(_urlExt(u)==='pdf')return true;if(typeof f==='object'&&f?.type==='application/pdf')return true;if(typeof f==='string'&&f.endsWith('.pdf'))return true;return false};
 const _cloudinaryPdfThumb=u=>{if(!u||!u.includes('cloudinary.com'))return null;
   // Replace raw/upload with image/upload so transformations work, then add pg_1 transform
@@ -1273,7 +1273,7 @@ const buildJobs=(o)=>{
   });
   const jobs=Object.entries(artMap).map(([key,v],idx)=>{
     const totalUnits=v.items.reduce((a,it)=>a+it.units,0);
-    const positions=[...new Set(v.items.map(it=>{const d=safeDecos(safeItems(o)[it.item_idx])?.[it.deco_idx];return d?.position||''}).filter(Boolean))].join(', ');
+    const positions=[...new Set(v.items.map(it=>{const d=safeDecos(safeItems(o)[it.item_idx])?.[it.deco_idx];return d?.position||'Front Center'}))].join(', ');
     return{id:o.id.replace('SO-','JOB-')+'-'+(idx+1<10?'0':'')+(idx+1),key,art_file_id:v.art_file_id,
       art_name:v.art_name||'Unnamed',deco_type:v.deco_type||'screen_print',positions,
       art_status:v.art_status||'needs_art',item_status:'need_to_order',prod_status:'hold',
@@ -16393,7 +16393,7 @@ export default function App(){
                       const dAf=d.art_file_id?safeArt(so).find(a=>a.id===d.art_file_id):null;
                       const dType=d.type||dAf?.deco_type||j.deco_type||'screen_print';
                       const dColors=(dAf?(dAf.ink_colors||dAf.thread_colors||''):'').split(/[,\n]/).map(c=>c.trim()).filter(Boolean);
-                      perItemDecos[key].push({kind:'art',position:d.position||dAf?.position||'—',type:dType,reversible:d.reversible||false,underbase:d.underbase||false,artFile:dAf,colors:dColors,size:dAf?.art_size||'',artName:dAf?.name||dAf?.title||''});
+                      perItemDecos[key].push({kind:'art',position:d.position||'Front Center',type:dType,reversible:d.reversible||false,underbase:d.underbase||false,artFile:dAf,colors:dColors,size:dAf?.art_size||'',artName:dAf?.name||dAf?.title||''});
                     }else if(d.kind==='numbers'){
                       perItemDecos[key].push({kind:'numbers',position:d.position||'Back Center',method:(d.num_method||'heat_transfer').replace(/_/g,' '),
                         numSize:d.num_size||'—',numSizeBack:d.front_and_back?(d.num_size_back||d.num_size||'—'):null,
@@ -16427,7 +16427,7 @@ export default function App(){
                         {gi.color&&<span style={{color:'#6d28d9',fontWeight:700}}>— {gi.color}</span>}
                       </div>
                       {/* Art deco positions */}
-                      {(artDecos.length>0?artDecos.map((d,di)=>d.position==='—'?(posList3[di]||d.position):d.position):posList3).map((pos,pi)=>{
+                      {(artDecos.length>0?artDecos.map(d=>d.position):posList3).map((pos,pi)=>{
                         const artDeco=artDecos[pi]||artDecos.find(d=>d.position===pos);
                         const method=(artDeco?.type||j.deco_type||'screen_print').replace(/_/g,' ');
                         const size=artSizes[pos]||(artDeco?.size)||(pi===0?af?.art_size:'')||'';
@@ -16435,7 +16435,7 @@ export default function App(){
                         const posColors=gc[pos]||(decoColors.length>0?decoColors:colorList.length>0?colorList:[]);
                         const editPosColors=editColors[pos]||[''];
                         return<div key={pi} style={{display:'flex',alignItems:'baseline',gap:8,flexWrap:'wrap',padding:'5px 0',borderTop:pi>0?'1px solid #e9ecef':'none'}}>
-                          <span style={{fontSize:12,fontWeight:700,color:'#0f172a',minWidth:110}}>{pos==='—'?'—':pos}</span>
+                          <span style={{fontSize:12,fontWeight:700,color:'#0f172a',minWidth:110}}>{pos}</span>
                           {artDeco?.artFile&&<span style={{fontSize:10,fontWeight:700,color:'#7c3aed',background:'#f5f3ff',padding:'1px 6px',borderRadius:3}}>{artDeco.artFile.title||artDeco.artFile.name||'—'}</span>}
                           <span style={{fontSize:11,color:'#475569',fontWeight:600}}>{method}</span>
                           {artDeco?.underbase&&<span style={{fontSize:10,fontWeight:700,color:'#92400e',background:'#fef3c7',padding:'1px 6px',borderRadius:3,border:'1px solid #fbbf24'}}>Underbase</span>}
