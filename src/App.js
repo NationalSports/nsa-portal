@@ -15361,7 +15361,14 @@ export default function App(){
     sos.forEach(so=>{const c=cust.find(x=>x.id===so.customer_id);
       buildJobs(so).forEach(j=>{
         const _af=safeArt(so).find(f=>f.id===j.art_file_id);
-        if(j.art_status==='needs_art'&&!j.assigned_artist&&!(j.art_requests||[]).length&&!(_af&&((_af.mockup_files||[]).length||(_af.files||[]).length||(_af.status&&_af.status!=='waiting_for_art'&&_af.status!=='needs_art'))))return;// skip truly untouched
+        // Skip jobs that haven't been explicitly submitted for art — only show on art dashboard if:
+        // 1) Art was requested (Request Art button clicked), or 2) artist assigned, or 3) in active artist workflow,
+        // 4) or art is approved but needs prod files (repeat art scenario)
+        const hasArtRequest=(j.art_requests||[]).length>0;
+        const hasArtist=!!j.assigned_artist;
+        const inArtistWorkflow=j.art_status==='art_requested'||j.art_status==='art_in_progress';
+        const needsProdFiles=j.art_status==='production_files_needed';
+        if(!hasArtRequest&&!hasArtist&&!inArtistWorkflow&&!needsProdFiles)return;// skip — art not yet requested for this job
         if(j.art_status==='art_complete'&&_af&&(_af.prod_files||[]).length===0)return;// handled in second pass as production_files_needed
         allArtJobs.push({...j,so,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',alpha:c?.alpha_tag||'',
           rep:REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name||'—',repId:c?.primary_rep_id||so.created_by,
