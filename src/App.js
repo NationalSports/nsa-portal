@@ -15441,7 +15441,7 @@ export default function App(){
     };
 
     // ─── Artist-only jobs (active, not complete) ───
-    const getArtFileStatus=(j)=>{const s=j.artFile?.status;return s==='uploaded'?'needs_approval':(!s||s==='needs_art')?'waiting_for_art':s};
+    const getArtFileStatus=(j)=>{if(j.art_status==='art_requested'||j.art_status==='art_in_progress')return'waiting_for_art';const s=j.artFile?.status;return s==='uploaded'?'needs_approval':(!s||s==='needs_art')?'waiting_for_art':s};
     const artistJobs=filtered.filter(j=>j.art_status!=='art_complete');
     const artistCols=[
       {id:'waiting_for_art',label:'Waiting for Art',color:'#dc2626',bg:'#fef2f2',desc:'Needs artist attention'},
