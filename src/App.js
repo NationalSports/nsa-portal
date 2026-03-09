@@ -16393,7 +16393,7 @@ export default function App(){
                       const dAf=d.art_file_id?safeArt(so).find(a=>a.id===d.art_file_id):null;
                       const dType=d.type||dAf?.deco_type||j.deco_type||'screen_print';
                       const dColors=(dAf?(dAf.ink_colors||dAf.thread_colors||''):'').split(/[,\n]/).map(c=>c.trim()).filter(Boolean);
-                      perItemDecos[key].push({kind:'art',position:d.position||'—',type:dType,reversible:d.reversible||false,artFile:dAf,colors:dColors,size:dAf?.art_size||''});
+                      perItemDecos[key].push({kind:'art',position:d.position||dAf?.position||'—',type:dType,reversible:d.reversible||false,artFile:dAf,colors:dColors,size:dAf?.art_size||'',artName:dAf?.name||dAf?.title||''});
                     }else if(d.kind==='numbers'){
                       perItemDecos[key].push({kind:'numbers',position:d.position||'Back Center',method:(d.num_method||'heat_transfer').replace(/_/g,' '),
                         numSize:d.num_size||'—',numSizeBack:d.front_and_back?(d.num_size_back||d.num_size||'—'):null,
@@ -16427,15 +16427,16 @@ export default function App(){
                         {gi.color&&<span style={{color:'#6d28d9',fontWeight:700}}>— {gi.color}</span>}
                       </div>
                       {/* Art deco positions */}
-                      {(artDecos.length>0?artDecos.map(d=>d.position):posList3).map((pos,pi)=>{
-                        const artDeco=artDecos.find(d=>d.position===pos);
+                      {(artDecos.length>0?artDecos.map((d,di)=>d.position==='—'?(posList3[di]||d.position):d.position):posList3).map((pos,pi)=>{
+                        const artDeco=artDecos[pi]||artDecos.find(d=>d.position===pos);
                         const method=(artDeco?.type||j.deco_type||'screen_print').replace(/_/g,' ');
                         const size=artSizes[pos]||(artDeco?.size)||(pi===0?af?.art_size:'')||'';
                         const decoColors=artDeco?.colors||[];
                         const posColors=gc[pos]||(decoColors.length>0?decoColors:colorList.length>0?colorList:[]);
                         const editPosColors=editColors[pos]||[''];
                         return<div key={pi} style={{display:'flex',alignItems:'baseline',gap:8,flexWrap:'wrap',padding:'5px 0',borderTop:pi>0?'1px solid #e9ecef':'none'}}>
-                          <span style={{fontSize:12,fontWeight:700,color:'#0f172a',minWidth:110}}>{pos}</span>
+                          <span style={{fontSize:12,fontWeight:700,color:'#0f172a',minWidth:110}}>{pos==='—'?'—':pos}</span>
+                          {artDeco?.artFile&&<span style={{fontSize:10,fontWeight:700,color:'#7c3aed',background:'#f5f3ff',padding:'1px 6px',borderRadius:3}}>{artDeco.artFile.title||artDeco.artFile.name||'—'}</span>}
                           <span style={{fontSize:11,color:'#475569',fontWeight:600}}>{method}</span>
                           {artJobDetailEditSize!==null&&typeof artJobDetailEditSize==='object'?<div style={{display:'flex',gap:4,alignItems:'center'}}>
                             <input className="form-input" value={artJobDetailEditSize[pos]||''} onChange={e=>setArtJobDetailEditSize(prev=>({...prev,[pos]:e.target.value}))} placeholder='Art size' style={{fontSize:11,fontWeight:600,width:100,padding:'2px 6px'}}/>
