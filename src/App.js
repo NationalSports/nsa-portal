@@ -1249,8 +1249,10 @@ const buildJobs=(o)=>{
     // Sync job art_status with art file status to prevent mismatches
     return o.jobs.map(j=>{
       const af=safeArt(o).find(f=>f.id===j.art_file_id);if(!af)return j;
-      if((af.status==='uploaded'||af.status==='needs_approval')&&(j.art_status==='needs_art'||j.art_status==='art_requested'))return{...j,art_status:'waiting_approval'};
-      if(af.status==='approved'&&(j.art_status==='needs_art'||j.art_status==='art_requested'||j.art_status==='waiting_approval'||j.art_status==='art_in_progress'))return{...j,art_status:(af.prod_files||[]).length?'art_complete':'production_files_needed'};
+      // Only auto-sync if job is NOT in an active artist workflow (art_requested/art_in_progress mean an artist is working on it)
+      const inArtistWorkflow=j.art_status==='art_requested'||j.art_status==='art_in_progress';
+      if((af.status==='uploaded'||af.status==='needs_approval')&&j.art_status==='needs_art')return{...j,art_status:'waiting_approval'};
+      if(af.status==='approved'&&!inArtistWorkflow&&(j.art_status==='needs_art'||j.art_status==='waiting_approval'))return{...j,art_status:(af.prod_files||[]).length?'art_complete':'production_files_needed'};
       return j;
     });
   }
@@ -5577,7 +5579,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const artists2=REPS.filter(r=>r.role==='art');
         const submitArtReq2=()=>{
           const req={id:'AR-'+Date.now(),artist:artReqModal.artist,artist_name:(artists2.find(a=>a.id===artReqModal.artist)||{}).name||'',instructions:artReqModal.instructions,files:artReqModal.files||[],existing_files:existingFiles2.map(f=>f.name||f),status:'requested',created_at:new Date().toISOString(),created_by:cu.name};
-          const updatedJobs=jobs.map((jj,i)=>i===artReqModal.jIdx?{...jj,art_requests:[...(jj.art_requests||[]),req],art_status:jj.art_status==='needs_art'?'art_requested':jj.art_status,assigned_artist:artReqModal.artist||jj.assigned_artist}:jj);
+          const updatedJobs=jobs.map((jj,i)=>i===artReqModal.jIdx?{...jj,art_requests:[...(jj.art_requests||[]),req],art_status:(jj.art_status==='needs_art'||jj.art_status==='waiting_approval'||jj.art_status==='production_files_needed')?'art_requested':jj.art_status,assigned_artist:artReqModal.artist||jj.assigned_artist}:jj);
           const updated={...o,jobs:updatedJobs,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setArtReqModal(null);nf('Art request sent to '+(artists2.find(a=>a.id===artReqModal.artist)||{}).name||'artist');
         };
         const hasExistingReqs2=(j2.art_requests||[]).length>0;
@@ -5902,7 +5904,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const activeReq=(j.art_requests||[]).find(r=>r.status==='in_progress'||r.status==='requested');
         const submitArtReq=()=>{
           const req={id:'AR-'+Date.now(),artist:artReqModal.artist,artist_name:(artists.find(a=>a.id===artReqModal.artist)||{}).name||'',instructions:artReqModal.instructions,files:artReqModal.files||[],existing_files:existingFiles.map(f=>f.name||f),status:'requested',created_at:new Date().toISOString(),created_by:cu.name};
-          const updatedJobs=jobs.map((jj,i)=>i===artReqModal.jIdx?{...jj,art_requests:[...(jj.art_requests||[]),req],art_status:jj.art_status==='needs_art'?'art_requested':jj.art_status,assigned_artist:artReqModal.artist||jj.assigned_artist}:jj);
+          const updatedJobs=jobs.map((jj,i)=>i===artReqModal.jIdx?{...jj,art_requests:[...(jj.art_requests||[]),req],art_status:(jj.art_status==='needs_art'||jj.art_status==='waiting_approval'||jj.art_status==='production_files_needed')?'art_requested':jj.art_status,assigned_artist:artReqModal.artist||jj.assigned_artist}:jj);
           const updated={...o,jobs:updatedJobs,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setArtReqModal(null);nf('Art request sent to '+(artists.find(a=>a.id===artReqModal.artist)||{}).name||'artist');
         };
         return<div className="modal-overlay" onClick={()=>setArtReqModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
@@ -15441,7 +15443,14 @@ export default function App(){
     };
 
     // ─── Artist-only jobs (active, not complete) ───
-    const getArtFileStatus=(j)=>{if(j.art_status==='art_requested'||j.art_status==='art_in_progress')return'waiting_for_art';const s=j.artFile?.status;return s==='uploaded'?'needs_approval':(!s||s==='needs_art')?'waiting_for_art':s};
+    const getArtFileStatus=(j)=>{
+      // Job-level art_status takes priority for dashboard column placement
+      if(j.art_status==='art_requested'||j.art_status==='art_in_progress')return'waiting_for_art';
+      if(j.art_status==='waiting_approval')return'needs_approval';
+      if(j.art_status==='production_files_needed')return'approved';
+      // Fallback to art file status
+      const s=j.artFile?.status;return s==='uploaded'?'needs_approval':(!s||s==='needs_art')?'waiting_for_art':s;
+    };
     const artistJobs=filtered.filter(j=>j.art_status!=='art_complete');
     const artistCols=[
       {id:'waiting_for_art',label:'Waiting for Art',color:'#dc2626',bg:'#fef2f2',desc:'Needs artist attention'},
