@@ -5576,8 +5576,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       {/* Art Request Modal (also needed in job detail view) */}
       {artReqModal&&(()=>{
         const j2=jobs[artReqModal.jIdx];if(!j2)return null;
-        const artF2=safeArt(o).find(a=>a.id===j2.art_file_id);
-        const existingFiles2=(artF2?.mockup_files||[]).concat(artF2?.prod_files||[]);
+        const _artIds2=(j2._art_ids||[j2.art_file_id]).filter(Boolean);
+        const existingFiles2=_artIds2.flatMap(aid=>{const af=safeArt(o).find(a=>a.id===aid);return(af?.mockup_files||[]).concat(af?.prod_files||[])});
         const artists2=REPS.filter(r=>r.role==='art');
         const submitArtReq2=()=>{
           const req={id:'AR-'+Date.now(),artist:artReqModal.artist,artist_name:(artists2.find(a=>a.id===artReqModal.artist)||{}).name||'',instructions:artReqModal.instructions,files:artReqModal.files||[],existing_files:existingFiles2.map(f=>f.name||f),status:'requested',created_at:new Date().toISOString(),created_by:cu.name};
@@ -5899,8 +5899,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       {/* Art Request Modal */}
       {artReqModal&&(()=>{
         const j=jobs[artReqModal.jIdx];if(!j)return null;
-        const artF=safeArt(o).find(a=>a.id===j.art_file_id);
-        const existingFiles=(artF?.mockup_files||[]).concat(artF?.prod_files||[]);
+        const _artIds=(j._art_ids||[j.art_file_id]).filter(Boolean);
+        const existingFiles=_artIds.flatMap(aid=>{const af=safeArt(o).find(a=>a.id===aid);return(af?.mockup_files||[]).concat(af?.prod_files||[])});
         const artists=REPS.filter(r=>r.role==='art');
         const hasExistingReqs=(j.art_requests||[]).length>0;
         const activeReq=(j.art_requests||[]).find(r=>r.status==='in_progress'||r.status==='requested');
