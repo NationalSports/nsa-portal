@@ -2698,7 +2698,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     setMtSearching(true);
     try{
       const data=await momentecSearchProducts(query,50,1);
-      const entries=data?.CatalogEntryView||[];
+      const rawEntries=data?.CatalogEntryView||[];
+      // Filter results to those whose partNumber or name actually match the search term
+      const qLower=query.toLowerCase().trim();
+      const entries=rawEntries.filter(e=>{
+        const pn=(e.partNumber||'').toLowerCase();
+        const nm=(e.name||'').toLowerCase();
+        return pn.includes(qLower)||nm.includes(qLower);
+      });
       if(!entries.length){mtSearchCache.current[cacheKey]={length:0,_ts:Date.now()};if(gen===mtSearchGen.current)setMtResults([]);return}
       // Group by partNumber (style) — each entry is a style with colors/sizes in detail view
       const styleMap={};
