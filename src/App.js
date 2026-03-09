@@ -8950,6 +8950,15 @@ export default function App(){
     return()=>{cancelled=true;channels.forEach(ch=>supabase?.removeChannel(ch))};
   },[]);
 
+  // ─── Auto-heal orphaned "converted" estimates (no matching SO exists) ───
+  React.useEffect(()=>{
+    if(dbLoading)return;
+    const orphaned=ests.filter(e=>e.status==='converted'&&!sos.some(s=>s.estimate_id===e.id));
+    if(orphaned.length){
+      orphaned.forEach(e=>console.warn('[DB] Auto-healing orphaned estimate',e.id,'— no linked SO found, reverting to approved'));
+      setEsts(prev=>prev.map(e=>e.status==='converted'&&!sos.some(s=>s.estimate_id===e.id)?{...e,status:'approved',updated_at:new Date().toLocaleString()}:e));
+    }
+  },[dbLoading]); // eslint-disable-line react-hooks/exhaustive-deps
   // ─── Supabase polling: refresh from DB every 30 seconds so all users stay in sync ───
   React.useEffect(()=>{
     if(!supabase)return;
@@ -9403,6 +9412,8 @@ export default function App(){
     if(!window.confirm('Delete sales order '+soId+'? This cannot be undone.'))return;
     // Remove SO from state
     setSOs(prev=>prev.filter(s=>s.id!==soId));
+    // Reopen source estimate if it was marked as converted
+    if(so.estimate_id){setEsts(prev=>prev.map(e=>e.id===so.estimate_id&&e.status==='converted'?{...e,status:'approved',updated_at:new Date().toLocaleString()}:e))}
     // Delete linked unpaid invoices and update their status
     if(linkedInvs.length>0){
       setInvs(prev=>prev.filter(i=>i.so_id!==soId||i.paid>0));
