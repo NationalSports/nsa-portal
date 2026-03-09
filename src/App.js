@@ -2682,26 +2682,69 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     }finally{if(gen===smSearchGen.current)setSmSearching(false)}
   },[]);
 
-  // Debounced S&S + SanMar search when typing in Add Product search
+  // ─── Live Momentec Product Search ───
+  const[mtResults,setMtResults]=useState([]);
+  const[mtSearching,setMtSearching]=useState(false);
+  const mtSearchTimer=useRef(null);
+  const mtSearchCache=useRef({});
+  const mtSearchGen=useRef(0);
+
+  const mtLiveSearch=useCallback(async(query)=>{
+    if(!query||query.length<2){setMtResults([]);return}
+    const cacheKey=query.toLowerCase().trim();
+    const cached=mtSearchCache.current[cacheKey];
+    if(cached&&(cached.length>0||cached._ts>Date.now()-30000)){setMtResults(cached.length?cached:[]);return}
+    const gen=mtSearchGen.current;
+    setMtSearching(true);
+    try{
+      const data=await momentecSearchProducts(query,50,1);
+      const entries=data?.CatalogEntryView||[];
+      if(!entries.length){mtSearchCache.current[cacheKey]={length:0,_ts:Date.now()};if(gen===mtSearchGen.current)setMtResults([]);return}
+      // Group by partNumber (style) — each entry is a style with colors/sizes in detail view
+      const styleMap={};
+      for(const e of entries){
+        const sku=e.partNumber||'';
+        if(!styleMap[sku]){
+          const price=parseFloat(e.Price?.[0]?.priceValue||0);
+          styleMap[sku]={sku,styleName:e.name||sku,brandName:e.manufacturer||'Momentec',
+            styleImage:e.thumbnail||e.fullImage||'',
+            colors:[{colorName:'Default',sku,piecePrice:price,customerPrice:price,
+              colorFrontImage:e.thumbnail||e.fullImage||'',sizes:[],totalQty:0}],
+            _mtId:e.uniqueID,_mtPrice:price};
+        }
+      }
+      const results=Object.values(styleMap);
+      mtSearchCache.current[cacheKey]=results;
+      if(gen===mtSearchGen.current)setMtResults(results);
+    }catch(err){
+      console.error('[Momentec] Search failed:',err);
+      if(gen===mtSearchGen.current)setMtResults([]);
+    }finally{if(gen===mtSearchGen.current)setMtSearching(false)}
+  },[]);
+
+  // Debounced S&S + SanMar + Momentec search when typing in Add Product search
   React.useEffect(()=>{
     if(ssSearchTimer.current)clearTimeout(ssSearchTimer.current);
     if(smSearchTimer.current)clearTimeout(smSearchTimer.current);
-    if(!showAdd||!pS||pS.length<2){setSsResults([]);setSmResults([]);ssSearchGen.current++;smSearchGen.current++;setExpandedStyle(null);return}
+    if(mtSearchTimer.current)clearTimeout(mtSearchTimer.current);
+    if(!showAdd||!pS||pS.length<2){setSsResults([]);setSmResults([]);setMtResults([]);ssSearchGen.current++;smSearchGen.current++;mtSearchGen.current++;setExpandedStyle(null);return}
     // Bump generation to discard in-flight results from previous keystrokes
-    ssSearchGen.current++;smSearchGen.current++;setExpandedStyle(null);
+    ssSearchGen.current++;smSearchGen.current++;mtSearchGen.current++;setExpandedStyle(null);
     const localCount=fp.length;
     const delay=localCount>5?800:400;
     ssSearchTimer.current=setTimeout(()=>ssLiveSearch(pS),delay);
     smSearchTimer.current=setTimeout(()=>smLiveSearch(pS),delay+100);
-    return()=>{if(ssSearchTimer.current)clearTimeout(ssSearchTimer.current);if(smSearchTimer.current)clearTimeout(smSearchTimer.current)};
+    mtSearchTimer.current=setTimeout(()=>mtLiveSearch(pS),delay+200);
+    return()=>{if(ssSearchTimer.current)clearTimeout(ssSearchTimer.current);if(smSearchTimer.current)clearTimeout(smSearchTimer.current);if(mtSearchTimer.current)clearTimeout(mtSearchTimer.current)};
   },[pS,showAdd]);
 
-  // Add a vendor search result as a line item (works for both S&S and SanMar)
+  // Add a vendor search result as a line item (works for S&S, SanMar, and Momentec)
   // style = the style-level result, color = the selected color from style.colors
   const addSearchProduct=(style,color,source)=>{
     const isSM=source==='sm';
-    const vendor=vendorList.find(v=>isSM?(v.api_provider==='sanmar'||v.name==='SanMar'):(v.api_provider==='ss_activewear'||v.name==='S&S Activewear'));
-    const vId=vendor?.id||(isSM?'v3':'v4');
+    const isMT=source==='mt';
+    const vendor=vendorList.find(v=>isMT?(v.api_provider==='momentec'||v.name==='Momentec'):isSM?(v.api_provider==='sanmar'||v.name==='SanMar'):(v.api_provider==='ss_activewear'||v.name==='S&S Activewear'));
+    const vId=vendor?.id||(isMT?'v8':isSM?'v3':'v4');
     const cost=color.customerPrice||color.piecePrice||0;
     const sell=rQ(cost*(o.default_markup||1.65));
     // Build available sizes: start with sizes from API, merge with catalog product sizes and standard sizes
@@ -2716,19 +2759,20 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     let availSizes=[...new Set([...apiSizes,...catSizes,...smSizes,...STD_SIZES])];
     availSizes=availSizes.sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
     const vInv={};color.sizes.forEach(s=>{vInv[s.sizeName]=(vInv[s.sizeName]||0)+s.qty});
+    const liveFlag=isMT?'_mt_live':isSM?'_sm_live':'_ss_live';
     const newItem={
       product_id:null,sku:style.sku,name:style.styleName,brand:style.brandName,
       vendor_id:vId,color:color.colorName,nsa_cost:cost,retail_price:0,
       unit_sell:sell,available_sizes:availSizes.length?availSizes:['S','M','L','XL','2XL'],
       sizes:{},decorations:isE?[{kind:'art',art_file_id:'__tbd',art_tbd_type:'screen_print',position:'',sell_override:0}]:[],
-      is_custom:false,[isSM?'_sm_live':'_ss_live']:true,
+      is_custom:false,[liveFlag]:true,
       _colorImage:color.colorFrontImage||style.styleImage||''
     };
     sv('items',[...o.items,newItem]);
     const sizePrice={};color.sizes.forEach(s=>{sizePrice[s.sizeName]=s.price||cost});
     vendorInvCache.current[style.sku]={sizes:vInv,price:sizePrice,fetchedAt:Date.now(),source};
     setVendorInv(prev=>({...prev,[style.sku]:{sizes:vInv,price:sizePrice,loading:false,error:null,source}}));
-    setShowAdd(false);setPS('');setSsResults([]);setSmResults([]);setExpandedStyle(null);
+    setShowAdd(false);setPS('');setSsResults([]);setSmResults([]);setMtResults([]);setMtResults([]);setExpandedStyle(null);
   };
   // State for expanded style in search results (shows color picker)
   const[expandedStyle,setExpandedStyle]=useState(null);// {key:'ss-0', style:{...}}
@@ -3695,9 +3739,36 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             </div>})}
             {!smSearching&&smResults.length===0&&pS.length>=2&&<div style={{padding:'10px 12px',color:'#94a3b8',fontSize:12,fontStyle:'italic'}}>No SanMar results for "{pS}"</div>}
           </>}
+          {/* Momentec Live Search Results */}
+          {pS.length>=2&&(mtSearching||mtResults.length>0)&&<>
+            <div style={{padding:'6px 12px',background:'#fef3c7',borderTop:'2px solid #fcd34d',borderBottom:'1px solid #fde68a',display:'flex',alignItems:'center',gap:6}}>
+              <span style={{fontSize:10,fontWeight:800,color:'#b45309',textTransform:'uppercase',letterSpacing:1}}>Momentec</span>
+              {mtSearching&&<span style={{fontSize:10,color:'#d97706'}}>Searching...</span>}
+              {!mtSearching&&mtResults.length>0&&<span style={{fontSize:10,color:'#b45309'}}>{mtResults.length} style{mtResults.length!==1?'s':''}</span>}
+            </div>
+            {mtResults.slice(0,10).map((mt,mi)=>{const eKey='mt-'+mi;const isExp=expandedStyle===eKey;return<div key={'mt'+mi}>
+              <div style={{padding:'8px 12px',borderBottom:'1px solid #fef3c7',cursor:'pointer',display:'flex',alignItems:'center',gap:10,background:isExp?'#fde68a':mi%2===0?'#fffbeb':'white'}} onClick={()=>setExpandedStyle(isExp?null:eKey)}>
+                {mt.styleImage?<img src={mt.styleImage} alt="" style={{width:32,height:32,objectFit:'contain',borderRadius:4,background:'#f8fafc'}} onError={e=>{e.target.style.display='none'}}/>:<div style={{width:32,height:32,borderRadius:4,background:'#fde68a',display:'flex',alignItems:'center',justifyContent:'center',fontSize:10,color:'#b45309',fontWeight:700,flexShrink:0}}>MT</div>}
+                <span style={{fontFamily:'monospace',fontWeight:700,color:'#b45309',background:'#fde68a',padding:'2px 6px',borderRadius:3,fontSize:12}}>{mt.sku}</span>
+                <span style={{fontWeight:600,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',flex:1}}>{mt.styleName}</span>
+                <span style={{fontSize:11,color:'#92400e',background:'#fef3c7',padding:'1px 6px',borderRadius:3}}>{mt.brandName}</span>
+                {mt.colors.length>0&&<span style={{fontSize:10,color:'#b45309'}}>{mt.colors.length} color{mt.colors.length!==1?'s':''}</span>}
+                <span style={{fontWeight:700,color:'#b45309',fontSize:13,marginLeft:'auto'}}>from ${mt._mtPrice?.toFixed(2)}</span>
+                <span style={{fontSize:14,color:'#d97706'}}>{isExp?'▲':'▼'}</span>
+              </div>
+              {isExp&&<div style={{padding:'6px 12px 10px',background:'#fffbeb',display:'flex',flexWrap:'wrap',gap:6}}>
+                {mt.colors.map((c,ci)=><div key={ci} style={{padding:'6px 10px',borderRadius:6,border:'1px solid #fcd34d',background:'white',cursor:'pointer',display:'flex',alignItems:'center',gap:6,fontSize:12,minWidth:100}} onClick={()=>addSearchProduct(mt,c,'mt')}>
+                  {c.colorFrontImage&&<img src={c.colorFrontImage} alt="" style={{width:24,height:24,objectFit:'contain',borderRadius:3}} onError={e=>{e.target.style.display='none'}}/>}
+                  <span style={{fontWeight:600,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',maxWidth:120}}>{c.colorName||'Default'}</span>
+                  <span style={{fontSize:9,color:'#b45309',whiteSpace:'nowrap'}}>${c.customerPrice?.toFixed(2)}</span>
+                </div>)}
+              </div>}
+            </div>})}
+            {!mtSearching&&mtResults.length===0&&pS.length>=2&&<div style={{padding:'10px 12px',color:'#94a3b8',fontSize:12,fontStyle:'italic'}}>No Momentec results for "{pS}"</div>}
+          </>}
         </div>
-        <button className="btn btn-sm btn-secondary" onClick={()=>{setShowAdd(false);setPS('');setSsResults([]);setSmResults([])}} style={{marginTop:8}}>Cancel</button>
-        <button className="btn btn-sm btn-secondary" onClick={()=>{setShowAdd(false);setPS('');setSsResults([]);setSmResults([]);setShowCustom(true)}} style={{marginTop:8,marginLeft:4}}>+ Custom Item</button></div>}
+        <button className="btn btn-sm btn-secondary" onClick={()=>{setShowAdd(false);setPS('');setSsResults([]);setSmResults([]);setMtResults([])}} style={{marginTop:8}}>Cancel</button>
+        <button className="btn btn-sm btn-secondary" onClick={()=>{setShowAdd(false);setPS('');setSsResults([]);setSmResults([]);setMtResults([]);setShowCustom(true)}} style={{marginTop:8,marginLeft:4}}>+ Custom Item</button></div>}
     </div></div>
     {showCustom&&<div className="card" style={{marginTop:8,borderLeft:'3px solid #d97706'}}><div style={{padding:'14px 18px'}}>
       <div style={{fontWeight:700,marginBottom:8}}>✏️ Custom Item {custItem.name&&<span style={{fontWeight:400,fontSize:12,color:'#64748b'}}>— {custItem.name}</span>}</div>
