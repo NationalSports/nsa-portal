@@ -4900,8 +4900,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <div style={{display:'flex',alignItems:'center',gap:6}}>
               <span style={{fontSize:14}}>📦</span>
               <div style={{flex:1}}>
-                <div style={{fontSize:12,fontWeight:700,color:'#7c3aed'}}>{batchConfig.batchOnly?'Batch eligible — combine orders!':'Free shipping over $'+batchConfig.threshold+' — Batch eligible!'}</div>
-                {pendingBatches.length>0?<div style={{fontSize:11,color:'#6d28d9'}}>{pendingBatches.length} PO{pendingBatches.length!==1?'s':''} in queue · ${pendingBatchTotal.toFixed(2)} total {!batchConfig.batchOnly&&batchConfig.threshold>0?(pendingBatchTotal>=batchConfig.threshold?'✅ Threshold met!':'· $'+(batchConfig.threshold-pendingBatchTotal).toFixed(2)+' more to free ship'):''}</div>
+                <div style={{fontSize:12,fontWeight:700,color:'#7c3aed'}}>{batchConfig.threshold===0?'Consider batching PO if small order':'Free shipping over $'+batchConfig.threshold+' — Batch eligible!'}</div>
+                {pendingBatches.length>0?<div style={{fontSize:11,color:'#6d28d9'}}>{pendingBatches.length} PO{pendingBatches.length!==1?'s':''} in queue · ${pendingBatchTotal.toFixed(2)} total {batchConfig.threshold>0?(pendingBatchTotal>=batchConfig.threshold?'✅ Threshold met!':'· $'+(batchConfig.threshold-pendingBatchTotal).toFixed(2)+' more to free ship'):''}</div>
                 :<div style={{fontSize:11,color:'#94a3b8'}}>No POs queued yet for {batchConfig.name}</div>}
               </div>
             </div>
