@@ -1250,6 +1250,8 @@ const buildJobs=(o)=>{
   if(o?.jobs&&o.jobs.length>0){
     // Sync job art_status with art file status to prevent mismatches
     return o.jobs.map(j=>{
+      // Reconstruct _art_ids from item decorations if not present
+      if(!j._art_ids&&j.items){const ids=new Set();j.items.forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(it)safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id)ids.add(d.art_file_id)})});if(ids.size>0)j={...j,_art_ids:[...ids]}}
       const af=safeArt(o).find(f=>f.id===j.art_file_id);if(!af)return j;
       // Only auto-sync if job is NOT in an active artist workflow (art_requested/art_in_progress mean an artist is working on it)
       const inArtistWorkflow=j.art_status==='art_requested'||j.art_status==='art_in_progress';
@@ -15801,11 +15803,13 @@ export default function App(){
         const so=j.so||sos.find(s=>s.id===j.soId);
         if(!so)return null;
         const c2=cust.find(x=>x.id===so.customer_id);
-        const af=j.artFile||safeArt(so).find(f=>f.id===j.art_file_id);
+        const allArtIds2=j._art_ids||[j.art_file_id].filter(Boolean);
+        const allArtFiles2=allArtIds2.map(aid=>safeArt(so).find(f=>f.id===aid)).filter(Boolean);
+        const af=j.artFile||allArtFiles2[0]||null;
         const mockupFiles=(af?.mockup_files||af?.files||[]);
         const prodFilesL=(af?.prod_files||[]);
         const colorList=af?(af.ink_colors||af.thread_colors||'').split(/[,\n]/).map(c3=>c3.trim()).filter(Boolean):[];
-        const isEmb=af?.deco_type==='embroidery';
+        const isEmb=allArtFiles2.some(a=>a.deco_type==='embroidery');
         const colorMap={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000',
           'Silver':'#C0C0C0','Royal':'#4169e1','Cardinal':'#8C1515','Green':'#166534','Orange':'#EA580C',
           'Navy 2767':'#001f3f','PMS 286':'#0033A0','PMS 032':'#EF3340','PMS 877':'#C0C0C0'};
@@ -15995,11 +15999,14 @@ export default function App(){
         const so=j.so||sos.find(s=>s.id===j.soId);
         if(!so)return null;
         const c2=cust.find(x=>x.id===so.customer_id);
-        const af=j.artFile||safeArt(so).find(f=>f.id===j.art_file_id);
+        const allArtIds=j._art_ids||[j.art_file_id].filter(Boolean);
+        const allArtFiles=allArtIds.map(aid=>safeArt(so).find(f=>f.id===aid)).filter(Boolean);
+        const af=j.artFile||allArtFiles[0]||null;
+        const additionalArtFiles=allArtFiles.slice(1);
         const mockupFiles=(af?.mockup_files||af?.files||[]);
         const prodFilesL=(af?.prod_files||[]);
         const colorList=af?(af.ink_colors||af.thread_colors||'').split(/[,\n]/).map(c3=>c3.trim()).filter(Boolean):[];
-        const isEmb=af?.deco_type==='embroidery';
+        const isEmb=allArtFiles.some(a=>a.deco_type==='embroidery');
         const colorMap={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000',
           'Silver':'#C0C0C0','Royal':'#4169e1','Cardinal':'#8C1515','Green':'#166534','Orange':'#EA580C',
           'Navy 2767':'#001f3f','PMS 286':'#0033A0','PMS 032':'#EF3340','PMS 877':'#C0C0C0'};
@@ -16262,6 +16269,35 @@ export default function App(){
                 </div>
               </div>}
             </div>
+
+            {/* ─── Additional Art Files (multi-art jobs) ─── */}
+            {additionalArtFiles.length>0&&<div style={{padding:'16px 20px',borderBottom:'1px solid #e2e8f0',background:'#faf5ff'}}>
+              <div style={{fontSize:12,fontWeight:800,color:'#6d28d9',marginBottom:10,display:'flex',alignItems:'center',gap:6}}>
+                <span style={{fontSize:16}}>🎨</span> Additional Art ({additionalArtFiles.length})
+              </div>
+              {additionalArtFiles.map((extraAf,efi)=>{
+                const eMocks=(extraAf.mockup_files||extraAf.files||[]);
+                const eColors=(extraAf.ink_colors||extraAf.thread_colors||'').split(/[,\n]/).map(c3=>c3.trim()).filter(Boolean);
+                const eIsEmb=extraAf.deco_type==='embroidery';
+                return<div key={extraAf.id||efi} style={{padding:12,background:'white',borderRadius:8,border:'1px solid #e9d5ff',marginBottom:efi<additionalArtFiles.length-1?10:0}}>
+                  <div style={{display:'flex',gap:12,alignItems:'flex-start'}}>
+                    {eMocks.length>0&&(()=>{const url=typeof eMocks[0]==='string'?eMocks[0]:(eMocks[0]?.url||'');
+                      return _isImgUrl(url)?<img src={url} alt="" style={{width:80,height:80,objectFit:'contain',borderRadius:6,border:'1px solid #e2e8f0',background:'white',cursor:'pointer',flexShrink:0}} onClick={()=>openFile(url)}/>
+                      :<div style={{width:80,height:80,borderRadius:6,background:'#f1f5f9',display:'flex',alignItems:'center',justifyContent:'center',fontSize:24,flexShrink:0,cursor:'pointer'}} onClick={()=>openFile(url)}>{eIsEmb?'🧵':'🎨'}</div>})()}
+                    <div style={{flex:1}}>
+                      <div style={{fontWeight:700,fontSize:14,color:'#1e293b'}}>{extraAf.name||'Untitled'}</div>
+                      <div style={{fontSize:11,color:'#64748b',marginTop:2}}>{(extraAf.deco_type||'screen_print').replace(/_/g,' ')}{extraAf.art_size?' · '+extraAf.art_size:''}</div>
+                      {eColors.length>0&&<div style={{marginTop:4,display:'flex',gap:4,flexWrap:'wrap'}}>{eColors.map((c3,ci)=>{
+                        const hex=colorMap[c3]||colorMap[c3.replace(/\d+C?\s*/,'').trim()]||null;
+                        return<span key={ci} style={{fontSize:10,fontWeight:600,padding:'1px 6px',borderRadius:4,background:hex?hex+'22':'#f1f5f9',color:hex||'#475569',border:'1px solid '+(hex||'#e2e8f0')}}>{c3}</span>})}</div>}
+                      {extraAf.status&&<div style={{marginTop:4}}><span style={{fontSize:10,fontWeight:600,padding:'2px 6px',borderRadius:4,background:ART_FILE_SC[extraAf.status]?.bg||'#f1f5f9',color:ART_FILE_SC[extraAf.status]?.c||'#64748b'}}>{ART_FILE_LABELS[extraAf.status]||extraAf.status}</span></div>}
+                      {extraAf.notes&&<div style={{fontSize:11,color:'#475569',marginTop:4,fontStyle:'italic'}}>{extraAf.notes}</div>}
+                      {(extraAf.files||[]).length>0&&<div style={{marginTop:6,display:'flex',gap:4,flexWrap:'wrap'}}>{(extraAf.files||[]).map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);
+                        return<div key={fi} style={{padding:'3px 8px',background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:4,fontSize:10,fontWeight:600,color:'#1e40af',cursor:isUrl(url)?'pointer':'default'}} onClick={()=>isUrl(url)&&openFile(url)}>📁 {name}</div>})}</div>}
+                    </div>
+                  </div>
+                </div>})}
+            </div>}
 
             {/* ─── Artwork Files (Per-Item Mockups) ─── */}
             <div style={{padding:'16px 20px',borderBottom:'1px solid #e2e8f0'}}>

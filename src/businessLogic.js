@@ -153,7 +153,7 @@ const buildJobs = (o) => {
     });
     const totalUnits = items.reduce((a, it) => a + it.units, 0);
     return { id: o.id.replace('SO-', 'JOB-') + '-' + (gi + 1 < 10 ? '0' : '') + (gi + 1), key: grp.sig, art_file_id: artIds[0] || null,
-      art_name: artNames.join(' + ') || 'Unnamed', deco_type: decoTypes[0] || 'screen_print',
+      _art_ids: artIds, art_name: artNames.join(' + ') || 'Unnamed', deco_type: decoTypes[0] || 'screen_print',
       art_status: worstArtSt, item_status: 'need_to_order', prod_status: 'hold',
       total_units: totalUnits, fulfilled_units: 0, split_from: null, items, _auto: true };
   });
