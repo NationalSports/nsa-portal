@@ -19260,7 +19260,8 @@ export default function App(){
               if(imp.pdfParsed&&imp.pdfParsed.lineItems.length>0){
                 const pdfItems=imp.pdfParsed.lineItems.map((li,idx)=>{
                   const baseSku=li.sku;
-                  const catMatch=prod.find(p=>p.sku===baseSku)||(baseSku.length>3?prod.find(p=>p.sku.toLowerCase()===baseSku.toLowerCase()):null);
+                  const _skuNorm=s=>(s||'').toLowerCase().replace(/[\s-]/g,'');
+                  const catMatch=prod.find(p=>p.sku===baseSku)||(baseSku.length>3?prod.find(p=>p.sku.toLowerCase()===baseSku.toLowerCase()):null)||(baseSku.length>3?prod.find(p=>_skuNorm(p.sku)===_skuNorm(baseSku)):null);
                   const sizes=li.sizes&&Object.keys(li.sizes).length>0?li.sizes:{OSFA:li.quantity};
 
                   let brand=catMatch?.brand||'';
@@ -19546,10 +19547,16 @@ export default function App(){
                   const cost=au?rQ(retail*costMult):rQ(sell/mk);const szKeys=Object.keys(it.sizes||{});
                   const itemName=it._name!=null?it._name:(it.catMatch?.name||it.name);
                   const itemColor=it._color!=null?it._color:(it.color||it.catMatch?.color||'');
+                  // Always include standard sizes S-2XL so the size grid shows all columns
+                  const STD_SZ=['S','M','L','XL','2XL'];
+                  const mergedSizes={...it.sizes||{}};
+                  const hasApparel=szKeys.some(s=>STD_SZ.includes(s)||SZ_ORD.slice(0,6).includes(s));
+                  if(hasApparel||szKeys.length===0){STD_SZ.forEach(s=>{if(!(s in mergedSizes))mergedSizes[s]=0})}
+                  const mergedAvail=[...new Set([...(hasApparel?STD_SZ:[]),...szKeys,...(it.catMatch?.available_sizes||[])])].sort((a,b)=>SZ_ORD_I.indexOf(a)-SZ_ORD_I.indexOf(b));
                   return{product_id:it.catMatch?.id||null,sku:it.sku,name:itemName,brand:it.catMatch?.brand||it.brand,
                     color:itemColor,nsa_cost:it.catMatch?.nsa_cost||cost,retail_price:it.catMatch?.retail_price||retail,unit_sell:sell,
-                    available_sizes:szKeys.length>0?szKeys.sort((a,b)=>SZ_ORD_I.indexOf(a)-SZ_ORD_I.indexOf(b)):(it.catMatch?.available_sizes||['S','M','L','XL','2XL']),
-                    sizes:it.sizes||{OSFA:it.totalQty||1},decorations:[],is_custom:it.is_custom||false,pick_lines:[],po_lines:[]};
+                    available_sizes:mergedAvail.length>0?mergedAvail:['S','M','L','XL','2XL'],
+                    sizes:Object.keys(mergedSizes).length>0?mergedSizes:{OSFA:it.totalQty||1},decorations:[],is_custom:it.is_custom||false,pick_lines:[],po_lines:[]};
                 });
                 // Decorations intentionally not imported — rep adds them manually
                 const nsRef=imp.externalDocNum?'NS Ref: #'+imp.externalDocNum:'';
@@ -19610,7 +19617,8 @@ export default function App(){
                     nf('✅ PO imported as SO with '+newItems.length+' items');
                   }
                 }
-                const customItems=newItems.filter(it=>it.is_custom&&!it.product_id);
+                const _skuN2=s=>(s||'').toLowerCase().replace(/[\s-]/g,'');
+                const customItems=newItems.filter(it=>it.is_custom&&!it.product_id&&!prod.some(p=>p.sku===it.sku||_skuN2(p.sku)===_skuN2(it.sku)));
                 if(customItems.length>0){
                   setImp(x=>({...x,step:'save_products',_customItems:customItems.map(it=>({...it,_save:true}))}));
                 } else {
