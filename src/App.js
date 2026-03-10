@@ -11426,43 +11426,36 @@ export default function App(){
   // Idle check interval — runs every 30s
   useEffect(()=>{
     const iv=setInterval(()=>{
-      const hasTimers=Object.keys(activeTimers).length>0||Object.keys(activeArtTimers).length>0;
-      if(!hasTimers){_idleState.current='active';_idleAccum.current={};setIdleWarning(null);return}
+      // Idle tracking only applies to art timers, not decorators/production
+      const hasArtTimers=Object.keys(activeArtTimers).length>0;
+      if(!hasArtTimers){_idleState.current='active';_idleAccum.current={};setIdleWarning(null);return}
       const gap=Date.now()-_lastActivity.current;
-      // Auto clock-out at 10 min idle
+      // Auto clock-out at 10 min idle — art timers only
       if(gap>=IDLE_AUTO_OUT_MS){
-        // Clock out all active production timers
-        Object.entries(activeTimers).forEach(([key,timer])=>{
-          const mins=Math.round((Date.now()-timer.clockIn)/60000);
-          const idleMins=Math.round(((_idleAccum.current[key]||0)+gap)/60000);
-          setJobTimeLogs(prev=>[...prev,{jobId:key.split('|')[1],soId:key.split('|')[0],person:timer.person,clockIn:new Date(timer.clockIn).toLocaleString(),clockOut:new Date().toLocaleString(),minutes:mins,idleMinutes:idleMins,autoClockOut:true}]);
-        });
-        if(Object.keys(activeTimers).length>0)setActiveTimers({});
-        // Clock out all active art timers
         Object.entries(activeArtTimers).forEach(([key,timer])=>{
           const mins=Math.round((Date.now()-timer.clockIn)/60000);
           const idleMins=Math.round(((_idleAccum.current[key]||0)+gap)/60000);
           setArtTimeLogs(prev=>[...prev,{jobId:key.split('|')[1],soId:key.split('|')[0],person:timer.person,clockIn:new Date(timer.clockIn).toLocaleString(),clockOut:new Date().toLocaleString(),minutes:mins,idleMinutes:idleMins,artName:timer.artName,customer:timer.customer,autoClockOut:true}]);
         });
-        if(Object.keys(activeArtTimers).length>0)setActiveArtTimers({});
+        setActiveArtTimers({});
         _idleState.current='active';_idleAccum.current={};setIdleWarning(null);
         nf('Auto clocked out — 10 min inactive','warn');
         return;
       }
-      // Warn at 5 min idle
+      // Warn at 5 min idle — art timers only
       if(gap>=IDLE_WARN_MS&&_idleState.current==='active'){
         _idleState.current='warned';
-        const keys=[...Object.keys(activeTimers),...Object.keys(activeArtTimers)];
+        const keys=[...Object.keys(activeArtTimers)];
         setIdleWarning({keys,since:_lastActivity.current});
       }
-      // Accumulate idle time when past the warning threshold
+      // Accumulate idle time when past the warning threshold — art timers only
       if(gap>=IDLE_WARN_MS){
-        const allKeys=[...Object.keys(activeTimers),...Object.keys(activeArtTimers)];
+        const allKeys=[...Object.keys(activeArtTimers)];
         allKeys.forEach(k=>{_idleAccum.current[k]=(_idleAccum.current[k]||0)+30000});// add 30s each tick
       }
     },30000);
     return()=>clearInterval(iv);
-  },[activeTimers,activeArtTimers]);// eslint-disable-line
+  },[activeArtTimers]);// eslint-disable-line — idle tracking only for art timers
 
   const[assignTo,setAssignTo]=useState({machine:'',person:''});
   const moveJobStatus=(j,newStatus)=>{
@@ -11727,19 +11720,14 @@ export default function App(){
           <div style={{display:'flex',gap:8}}>
             <button className="btn btn-primary" style={{flex:1,padding:'10px 16px',fontWeight:700}} onClick={()=>{_lastActivity.current=Date.now();_idleState.current='active';setIdleWarning(null)}}>Yes, I'm working</button>
             <button className="btn btn-secondary" style={{flex:1,padding:'10px 16px',fontWeight:700}} onClick={()=>{
-              // Manual clock-out all timers
-              Object.entries(activeTimers).forEach(([key,timer])=>{
-                const mins=Math.round((Date.now()-timer.clockIn)/60000);
-                const idleMins=Math.round(((_idleAccum.current[key]||0)+(Date.now()-_lastActivity.current))/60000);
-                setJobTimeLogs(prev=>[...prev,{jobId:key.split('|')[1],soId:key.split('|')[0],person:timer.person,clockIn:new Date(timer.clockIn).toLocaleString(),clockOut:new Date().toLocaleString(),minutes:mins,idleMinutes:idleMins}]);
-              });
+              // Manual clock-out art timers only (idle tracking doesn't apply to decorators)
               Object.entries(activeArtTimers).forEach(([key,timer])=>{
                 const mins=Math.round((Date.now()-timer.clockIn)/60000);
                 const idleMins=Math.round(((_idleAccum.current[key]||0)+(Date.now()-_lastActivity.current))/60000);
                 setArtTimeLogs(prev=>[...prev,{jobId:key.split('|')[1],soId:key.split('|')[0],person:timer.person,clockIn:new Date(timer.clockIn).toLocaleString(),clockOut:new Date().toLocaleString(),minutes:mins,idleMinutes:idleMins,artName:timer.artName,customer:timer.customer}]);
               });
-              setActiveTimers({});setActiveArtTimers({});_idleState.current='active';_idleAccum.current={};setIdleWarning(null);
-              nf('All timers clocked out');
+              setActiveArtTimers({});_idleState.current='active';_idleAccum.current={};setIdleWarning(null);
+              nf('Art timers clocked out');
             }}>Clock me out</button>
           </div>
         </div>
