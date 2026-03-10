@@ -2095,6 +2095,9 @@ const momentecGetProducts = async (pageSize = 50, pageNumber = 1) =>
 const momentecGetProductById = async (productId) =>
   await momentecApiCall(`/productview/byId/${productId}`);
 
+const momentecGetProductByPartNumber = async (partNumber) =>
+  await momentecApiCall(`/productview/byPartNumber/${encodeURIComponent(partNumber)}`);
+
 const momentecGetProductsByCategory = async (categoryId, pageSize = 50, pageNumber = 1) =>
   await momentecApiCall(`/productview/byCategory/${categoryId}?pageSize=${pageSize}&pageNumber=${pageNumber}`);
 
@@ -2715,42 +2718,52 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       };
       // Helper: extract color name from attributes array
       const getColor=(e)=>{
-        if(e.attributes){for(const a of e.attributes){const n=(a.name||'').toLowerCase();if(n==='color'||n==='colour'){const vals=a.values||a.Values||[];if(vals.length)return vals.map(v=>v.value||v.Value||v).join('/')}}}
+        if(e.attributes){for(const a of e.attributes){const n=(a.name||a.identifier||'').toLowerCase();if(n==='color'||n==='colour'||n==='clr'){const vals=a.values||a.Values||[];if(vals.length)return vals.map(v=>v.value||v.Value||v.identifier||v).join('/')}}}
         return '';
       };
-      // Group by base style — strip variant suffixes from partNumber (e.g. 510000-NAVY-M → 510000)
-      const styleMap={};
+      // Collect unique base part numbers from search results (limit to first 10)
+      const baseSkus=[];const seenBase=new Set();
       for(const e of entries){
         const fullSku=e.partNumber||'';
-        // For ItemBean entries with hyphenated SKUs, derive base SKU; for ProductBean use as-is
         const isItem=e.catalogEntryTypeCode==='ItemBean';
         const baseSku=isItem&&fullSku.includes('-')?fullSku.split('-')[0]:fullSku;
-        const price=getPrice(e);
-        const colorName=getColor(e)||'';
-        if(!styleMap[baseSku]){
-          styleMap[baseSku]={sku:baseSku,styleName:e.name||baseSku,brandName:e.manufacturer||'Momentec',
-            styleImage:e.thumbnail||e.fullImage||'',
-            colors:{},_mtId:e.uniqueID,_mtPrice:price>0?price:0};
-        }
+        if(!seenBase.has(baseSku)){seenBase.add(baseSku);baseSkus.push({baseSku,entry:e})}
+      }
+      // Fetch full product details for each base SKU (prices, colors, child SKUs)
+      const detailPromises=baseSkus.slice(0,10).map(async({baseSku,entry})=>{
+        try{const d=await momentecGetProductByPartNumber(baseSku);return{baseSku,entry,detail:d?.CatalogEntryView?.[0]||null}}
+        catch(e){return{baseSku,entry,detail:null}}
+      });
+      const details=await Promise.all(detailPromises);
+      if(gen!==mtSearchGen.current)return;// stale
+      // Build style map from detailed results
+      const styleMap={};
+      for(const{baseSku,entry,detail}of details){
+        const src=detail||entry;// prefer detail if available
+        const price=getPrice(src);
+        styleMap[baseSku]={sku:baseSku,styleName:src.name||entry.name||baseSku,brandName:src.manufacturer||entry.manufacturer||'Momentec',
+          styleImage:src.thumbnail||src.fullImage||entry.thumbnail||entry.fullImage||'',
+          colors:{},_mtId:src.uniqueID||entry.uniqueID,_mtPrice:price>0?price:0};
         const style=styleMap[baseSku];
-        if(price>0&&(style._mtPrice===0||price<style._mtPrice))style._mtPrice=price;
-        if(!style.styleImage&&(e.thumbnail||e.fullImage))style.styleImage=e.thumbnail||e.fullImage;
-        // Add color entry (group variants by color)
-        const cKey=colorName||'Default';
-        if(!style.colors[cKey]){
-          style.colors[cKey]={colorName:cKey,sku:fullSku,piecePrice:price,customerPrice:price,
-            colorFrontImage:e.thumbnail||e.fullImage||'',sizes:[],totalQty:0};
-        }else{const c=style.colors[cKey];if(price>0&&(c.customerPrice===0||price<c.customerPrice)){c.customerPrice=price;c.piecePrice=price}}
-        // Also process child sKUs if present (ProductBean entries)
-        if(e.sKUs&&Array.isArray(e.sKUs)){for(const sk of e.sKUs){
-          const skPrice=getPrice(sk);const skColor=getColor(sk)||'Default';
-          const skImg=sk.thumbnail||sk.fullImage||'';
-          if(!style.colors[skColor]){
-            style.colors[skColor]={colorName:skColor,sku:sk.partNumber||fullSku,piecePrice:skPrice,customerPrice:skPrice,
-              colorFrontImage:skImg||style.styleImage,sizes:[],totalQty:0};
-          }else{const c=style.colors[skColor];if(skPrice>0&&(c.customerPrice===0||skPrice<c.customerPrice)){c.customerPrice=skPrice;c.piecePrice=skPrice}if(skImg&&!c.colorFrontImage)c.colorFrontImage=skImg}
-          if(skPrice>0&&(style._mtPrice===0||skPrice<style._mtPrice))style._mtPrice=skPrice;
-        }}
+        // Process child sKUs from detailed response for colors
+        const skus=src.sKUs||detail?.sKUs||[];
+        if(skus.length){
+          for(const sk of skus){
+            const skPrice=getPrice(sk);const skColor=getColor(sk)||'Default';
+            const skImg=sk.thumbnail||sk.fullImage||'';
+            if(!style.colors[skColor]){
+              style.colors[skColor]={colorName:skColor,sku:sk.partNumber||baseSku,piecePrice:skPrice,customerPrice:skPrice,
+                colorFrontImage:skImg||style.styleImage,sizes:[],totalQty:0};
+            }else{const c=style.colors[skColor];if(skPrice>0&&(c.customerPrice===0||skPrice<c.customerPrice)){c.customerPrice=skPrice;c.piecePrice=skPrice}if(skImg&&!c.colorFrontImage)c.colorFrontImage=skImg}
+            if(skPrice>0&&(style._mtPrice===0||skPrice<style._mtPrice))style._mtPrice=skPrice;
+          }
+        }
+        // If no child SKUs found, add single color from attributes or default
+        if(!Object.keys(style.colors).length){
+          const colorName=getColor(src)||'Default';
+          style.colors[colorName]={colorName,sku:baseSku,piecePrice:price,customerPrice:price,
+            colorFrontImage:style.styleImage,sizes:[],totalQty:0};
+        }
       }
       // Convert colors map to array
       for(const k of Object.keys(styleMap)){styleMap[k].colors=Object.values(styleMap[k].colors)}
@@ -3797,9 +3810,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <span style={{fontWeight:700,color:'#b45309',fontSize:13,marginLeft:'auto'}}>from ${mt._mtPrice?.toFixed(2)}</span>
                 <span style={{fontSize:14,color:'#d97706'}}>{isExp?'▲':'▼'}</span>
               </div>
-              {isExp&&<div style={{padding:'6px 12px 10px',background:'#fffbeb',display:'flex',flexWrap:'wrap',gap:6}}>
-                {mt.colors.map((c,ci)=><div key={ci} style={{padding:'6px 10px',borderRadius:6,border:'1px solid #fcd34d',background:'white',cursor:'pointer',display:'flex',alignItems:'center',gap:6,fontSize:12,minWidth:100}} onClick={()=>addSearchProduct(mt,c,'mt')}>
-                  {c.colorFrontImage&&<img src={c.colorFrontImage} alt="" style={{width:24,height:24,objectFit:'contain',borderRadius:3}} onError={e=>{e.target.style.display='none'}}/>}
+              {isExp&&<div style={{background:'#fffbeb',borderBottom:'2px solid #fcd34d',padding:'6px 12px',display:'flex',flexWrap:'wrap',gap:4,maxHeight:200,overflowY:'auto'}}>
+                {mt.colors.map((c,ci)=><div key={ci} style={{padding:'4px 8px',borderRadius:4,border:'1px solid #fcd34d',background:'white',cursor:'pointer',fontSize:11,display:'flex',alignItems:'center',gap:4,minWidth:0}} onClick={()=>addSearchProduct(mt,c,'mt')} title={c.colorName+' — $'+c.customerPrice?.toFixed(2)}>
+                  {c.colorFrontImage&&<img src={c.colorFrontImage} alt="" style={{width:20,height:20,objectFit:'contain',borderRadius:2}} onError={e=>{e.target.style.display='none'}}/>}
                   <span style={{fontWeight:600,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',maxWidth:120}}>{c.colorName||'Default'}</span>
                   <span style={{fontSize:9,color:'#b45309',whiteSpace:'nowrap'}}>${c.customerPrice?.toFixed(2)}</span>
                 </div>)}
