@@ -2902,37 +2902,49 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     return{promoRev,promoCost,promoShip,promoAmount,normalRev,normalCost,normalShip,normalTax,customerPays};
   },[o,artQty,cust,af]); // eslint-disable-line
 
-  // AUTO-SYNC JOBS from decorations — one job per unique decoration combination
-  // Items that share the exact same set of decorations are grouped into one job
+  // AUTO-SYNC JOBS from decorations — one job per unique decoration combination per deco type
+  // Items that share the exact same set of decorations AND deco type are grouped into one job
+  // Different deco types (e.g. screen_print vs embroidery) always create separate jobs
   const syncJobs=useCallback(()=>{
-    // Step 1: Build a decoration signature per item (sorted list of job-producing decos)
+    // Step 1: Build decoration entries per item, grouped by deco type
+    // Each item may produce multiple entries if it has decorations with different deco types
     const itemSigs=[];
     safeItems(o).forEach((it,ii)=>{
-      const decoParts=[];
+      // First, classify each decoration by its resolved deco type
+      const decosByType={};
       safeDecos(it).forEach((d,di)=>{
         if(d.kind==='art'){
-          decoParts.push(d.art_file_id?'art_'+d.art_file_id+'@'+safeStr(d.position):'unassigned@'+safeStr(d.position));
+          const artF=d.art_file_id?af.find(a=>a.id===d.art_file_id):null;
+          const dt=artF?.deco_type||d.deco_type||'screen_print';
+          const part=d.art_file_id?'art_'+d.art_file_id+'@'+safeStr(d.position):'unassigned@'+safeStr(d.position);
+          if(!decosByType[dt])decosByType[dt]=[];
+          decosByType[dt].push({part,d,di});
         } else if(d.kind==='numbers'){
-          decoParts.push('numbers_'+(d.num_method||'ht')+'@'+safeStr(d.position));
+          const dt=d.num_method||'heat_transfer';
+          const part='numbers_'+dt+'@'+safeStr(d.position);
+          if(!decosByType[dt])decosByType[dt]=[];
+          decosByType[dt].push({part,d,di});
         }
       });
-      decoParts.sort();
-      const sig=decoParts.join('|')||'__no_deco';
-      if(sig!=='__no_deco')itemSigs.push({ii,it,sig,decoParts});
+      // Create one signature entry per deco type group
+      Object.entries(decosByType).forEach(([dt,decos])=>{
+        const parts=decos.map(x=>x.part).sort();
+        const sig=dt+'::'+parts.join('|');
+        itemSigs.push({ii,it,sig,decos,decoType:dt});
+      });
     });
-    // Step 2: Group items by their decoration signature
+    // Step 2: Group items by their decoration signature (now split by deco type)
     const sigGroups={};
-    itemSigs.forEach(({ii,it,sig})=>{
-      if(!sigGroups[sig])sigGroups[sig]={sig,items:[]};
-      sigGroups[sig].items.push({ii,it});
+    itemSigs.forEach(({ii,it,sig,decos,decoType})=>{
+      if(!sigGroups[sig])sigGroups[sig]={sig,items:[],decoType};
+      sigGroups[sig].items.push({ii,it,decos});
     });
     // Step 3: Build jobs from each group
     const jobMap={};
     Object.values(sigGroups).forEach(grp=>{
-      const firstItem=grp.items[0].it;
-      // Collect decoration info from the first item (all items in the group share the same decos)
+      const firstEntry=grp.items[0];
       const positions=new Set();const artIds=[];const artNames=[];const decoTypes=[];let worstArtSt='art_complete';
-      safeDecos(firstItem).forEach(d=>{
+      firstEntry.decos.forEach(({d})=>{
         if(d.kind==='art'){
           positions.add(safeStr(d.position));
           if(d.art_file_id){
@@ -2958,7 +2970,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         deco_type:decoTypes[0]||'screen_print',positions,items:[],art_status:worstArtSt,
         total_units:0,fulfilled_units:0,_art_ids:artIds};
       // Add each item in the group
-      grp.items.forEach(({ii,it})=>{
+      grp.items.forEach(({ii,it,decos})=>{
         const szEntries=Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0);
         let itemTotal=0,itemFulfilled=0;
         szEntries.forEach(([sz,v])=>{
@@ -2967,9 +2979,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const rcvdQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
           itemFulfilled+=Math.min(v,pulledQ+rcvdQ);
         });
-        // Include all deco indices for this item
-        const decoIdxs=[];
-        safeDecos(it).forEach((d,di)=>{if(d.kind==='art'||d.kind==='numbers')decoIdxs.push(di)});
+        const decoIdxs=decos.map(x=>x.di);
         job.items.push({item_idx:ii,deco_idx:decoIdxs[0]||0,deco_idxs:decoIdxs,sku:it.sku||'—',name:safeStr(it.name)||'Unknown',color:safeStr(it.color),units:itemTotal,fulfilled:itemFulfilled});
         job.total_units+=itemTotal;job.fulfilled_units+=itemFulfilled;
       });
@@ -5947,7 +5957,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 {j.split_from&&<div style={{fontSize:9,color:'#7c3aed'}}>split from {j.split_from}</div>}
                 {j.counted_at&&<div style={{fontSize:9,color:'#166534'}}>✅ counted</div>}</td>
               <td><div style={{display:'flex',gap:6,alignItems:'center'}}><span style={{fontWeight:600}}>{j.art_name}</span>{(()=>{const afs=j.art_file_id&&af.find(a=>a.id===j.art_file_id);const fSt=afs?(afs.status==='uploaded'?'needs_approval':afs.status||'waiting_for_art'):null;return fSt?<span style={{padding:'1px 6px',borderRadius:8,fontSize:9,fontWeight:600,background:ART_FILE_SC[fSt]?.bg||'#f1f5f9',color:ART_FILE_SC[fSt]?.c||'#64748b'}}>{ART_FILE_LABELS[fSt]||fSt}</span>:null})()}</div>
-                <div style={{fontSize:10,color:'#64748b'}}>{j.deco_type?.replace(/_/g,' ')} · {j.positions}</div></td>
+                {(()=>{const firstGi=(j.items||[])[0];const jIt=firstGi?safeItems(o)[firstGi.item_idx]:null;
+                  const jDecos=jIt?safeDecos(jIt).filter(d=>d.kind==='art'||d.kind==='numbers'):[];
+                  if(jDecos.length>1)return<div style={{fontSize:10,color:'#64748b'}}>{jDecos.map((d,di)=>{
+                    const artF2=d.art_file_id?af.find(a=>a.id===d.art_file_id):null;const dt=artF2?.deco_type||d.deco_type||'screen_print';
+                    return<div key={di}>{dt.replace(/_/g,' ')} · {d.position||'—'}</div>}).reduce((a,v)=>[...a,v],[])}</div>;
+                  return<div style={{fontSize:10,color:'#64748b'}}>{j.deco_type?.replace(/_/g,' ')} · {j.positions}</div>})()}</td>
               <td style={{fontSize:11}}>{(j.items||[]).length} garment{(j.items||[]).length!==1?'s':''}</td>
               <td style={{fontWeight:700}}>{j.fulfilled_units}/{j.total_units}
                 <div style={{width:50,background:'#e2e8f0',borderRadius:3,height:4,marginTop:2}}><div style={{height:4,borderRadius:3,background:pct>=100?'#22c55e':pct>0?'#f59e0b':'#e2e8f0',width:pct+'%'}}/></div></td>
@@ -11774,6 +11789,15 @@ export default function App(){
         if(!so)return null;
         const c=cust.find(x=>x.id===so.customer_id);
         const af=safeArt(so).find(f=>f.id===j.art_file_id);
+        const allArtFiles=(j._art_ids||[j.art_file_id].filter(Boolean)).map(aid=>safeArt(so).find(f=>f.id===aid)).filter(Boolean);
+        // Build per-location decoration details from the first item's decorations
+        const decoLocations=(()=>{const firstGi=(j.items||[])[0];const it=firstGi?safeItems(so)[firstGi.item_idx]:null;if(!it)return[];
+          return safeDecos(it).filter(d=>d.kind==='art'||d.kind==='numbers').map(d=>{
+            const artF=d.art_file_id?safeArt(so).find(f=>f.id===d.art_file_id):null;
+            const dt=artF?.deco_type||d.deco_type||'screen_print';
+            const colors=(artF?(artF.ink_colors||artF.thread_colors||''):'').split(/[,\n]/).map(c2=>c2.trim()).filter(Boolean);
+            return{position:d.position||'—',deco_type:dt,art_name:artF?.name||d.art_name||'Unnamed',art_size:artF?.art_size||'—',colors,isEmb:dt==='embroidery'};
+          })})();
         const machine=MACHINES.find(m=>m.id===j.assigned_machine);
         const itemDetails=(j.items||[]).map(gi=>{
           const it=safeItems(so)[gi.item_idx];if(!it)return null;
@@ -11880,41 +11904,49 @@ export default function App(){
                 {mockupFiles.length>1&&<div style={{fontSize:10,color:'#64748b',marginTop:6}}>+{mockupFiles.length-1} more file{mockupFiles.length>2?'s':''}</div>}
               </div>
 
-              {/* Decoration Details */}
+              {/* Decoration Details — per-location breakdown */}
               <div style={{flex:1,padding:20}}>
                 <div style={{fontSize:14,fontWeight:800,color:'#1e3a5f',marginBottom:12}}>Decoration Details</div>
-                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+                {decoLocations.length>0?decoLocations.map((loc,li)=>{
+                  const colorMap2={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000',
+                    'Silver':'#C0C0C0','Royal':'#4169e1','Cardinal':'#8C1515','Green':'#166534','Orange':'#EA580C',
+                    'Navy 2767':'#001f3f','PMS 286':'#0033A0','PMS 032':'#EF3340','PMS 877':'#C0C0C0'};
+                  return<div key={li} style={{marginBottom:li<decoLocations.length-1?14:0,padding:li>0?'12px 0 0':0,borderTop:li>0?'1px solid #e2e8f0':'none'}}>
+                    <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+                      <div><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:2}}>Location</div>
+                        <div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{loc.position}</div></div>
+                      <div><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:2}}>Deco Type</div>
+                        <div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{loc.deco_type?.replace(/_/g,' ')||'—'}</div></div>
+                      <div><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:2}}>Art Size</div>
+                        <div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{loc.art_size}</div></div>
+                      {li===0&&<div><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:2}}>Total Units</div>
+                        <div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{j.total_units}</div></div>}
+                    </div>
+                    {loc.colors.length>0&&<div style={{marginTop:8}}>
+                      <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:4}}>{loc.isEmb?'Thread Colors':'Ink Colors'} ({loc.colors.length})</div>
+                      <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                        {loc.colors.map((cl,i)=>{
+                          const clLower=cl.toLowerCase();
+                          const swatchColor=colorMap2[cl]||Object.entries(colorMap2).find(([k])=>clLower.includes(k.toLowerCase()))?.[1]||null;
+                          return<div key={i} style={{display:'flex',alignItems:'center',gap:6,padding:'4px 10px',background:'white',border:'1px solid #e2e8f0',borderRadius:6}}>
+                            <div style={{width:16,height:16,borderRadius:3,border:'1px solid #d1d5db',background:swatchColor||'linear-gradient(135deg,#f1f5f9,#e2e8f0)'}}/>
+                            <span style={{fontSize:12,fontWeight:600}}>{cl}</span>
+                          </div>})}
+                      </div>
+                    </div>}
+                  </div>})
+                :<div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
                   <div><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:2}}>Method</div>
                     <div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{j.deco_type?.replace(/_/g,' ')||'—'}</div></div>
                   <div><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:2}}>Position(s)</div>
                     <div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{(j.positions||'').replace(/^,\s*/,'')||'—'}</div></div>
-                  <div><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:2}}>Art Size</div>
-                    <div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{af?.art_size||'—'}</div></div>
                   <div><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:2}}>Total Units</div>
                     <div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{j.total_units}</div></div>
-                  {machine&&<div><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:2}}>Machine</div>
-                    <div style={{fontSize:14,fontWeight:700,color:'#92400e'}}>{machine.name}</div></div>}
-                  {j.assigned_to&&<div><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:2}}>Assigned To</div>
-                    <div style={{fontSize:14,fontWeight:700,color:'#6d28d9'}}>{j.assigned_to}</div></div>}
-                </div>
-
-                {/* Colors / Pantones */}
-                {colorList.length>0&&<div style={{marginTop:14}}>
-                  <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6}}>{isEmb?'Thread Colors':'Ink Colors / Pantones'} ({colorList.length})</div>
-                  <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-                    {colorList.map((cl,i)=>{
-                      // Try to render color swatches for known Pantone names
-                      const colorMap={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000',
-                        'Silver':'#C0C0C0','Royal':'#4169e1','Cardinal':'#8C1515','Green':'#166534','Orange':'#EA580C',
-                        'Navy 2767':'#001f3f','PMS 286':'#0033A0','PMS 032':'#EF3340','PMS 877':'#C0C0C0'};
-                      const clLower=cl.toLowerCase();
-                      const swatchColor=colorMap[cl]||Object.entries(colorMap).find(([k])=>clLower.includes(k.toLowerCase()))?.[1]||null;
-                      return<div key={i} style={{display:'flex',alignItems:'center',gap:6,padding:'4px 10px',background:'white',border:'1px solid #e2e8f0',borderRadius:6}}>
-                        <div style={{width:16,height:16,borderRadius:3,border:'1px solid #d1d5db',background:swatchColor||'linear-gradient(135deg,#f1f5f9,#e2e8f0)'}}/>
-                        <span style={{fontSize:12,fontWeight:600}}>{cl}</span>
-                      </div>})}
-                  </div>
                 </div>}
+                {machine&&<div style={{marginTop:10}}><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:2}}>Machine</div>
+                  <div style={{fontSize:14,fontWeight:700,color:'#92400e'}}>{machine.name}</div></div>}
+                {j.assigned_to&&<div style={{marginTop:6}}><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:2}}>Assigned To</div>
+                  <div style={{fontSize:14,fontWeight:700,color:'#6d28d9'}}>{j.assigned_to}</div></div>}
               </div>
             </div>
 
@@ -11987,18 +12019,21 @@ export default function App(){
       {/* Lightbox — full-size mockup image */}
       {prodJobLightbox&&prodJobModal&&(()=>{
         const so=prodJobModal.so||sos.find(s=>s.id===prodJobModal.soId);
-        const af=so?safeArt(so).find(f=>f.id===prodJobModal.art_file_id):null;
-        const mockupFiles2=(af?.mockup_files||af?.files||[]);
+        const allArtIds=prodJobModal._art_ids||[prodJobModal.art_file_id].filter(Boolean);
+        const allMockups=[];
+        allArtIds.forEach(aid=>{const artF=so?safeArt(so).find(f=>f.id===aid):null;(artF?.mockup_files||artF?.files||[]).forEach(f=>allMockups.push(f))});
+        // Find first displayable image
+        const firstImg=(()=>{for(const f of allMockups){const u=typeof f==='string'?f:(f?.url||'');if(_isImgUrl(u,f))return u;const pt=_isPdfUrl(u,f)?_cloudinaryPdfThumb(u):null;if(pt)return pt}return null})();
         return<div style={{position:'fixed',top:0,left:0,right:0,bottom:0,background:'rgba(0,0,0,0.85)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer'}}
           onClick={()=>setProdJobLightbox(false)}>
           <div style={{maxWidth:'80vw',maxHeight:'80vh',background:'white',borderRadius:12,padding:24,textAlign:'center',overflow:'auto'}} onClick={e=>e.stopPropagation()}>
-            {mockupFiles2.length>0&&typeof mockupFiles2[0]==='string'&&/\.(png|jpe?g|gif|webp|svg)(\?|$)/i.test(mockupFiles2[0])?
-              <img src={mockupFiles2[0]} alt="Mockup" style={{maxWidth:'70vw',maxHeight:'60vh',objectFit:'contain',borderRadius:8,marginBottom:12}}/>
+            {firstImg?
+              <img src={firstImg} alt="Mockup" style={{maxWidth:'70vw',maxHeight:'60vh',objectFit:'contain',borderRadius:8,marginBottom:12}}/>
               :<div style={{fontSize:120,marginBottom:12}}>🖼️</div>}
             <div style={{fontSize:18,fontWeight:800,color:'#1e40af',marginBottom:4}}>{prodJobModal.art_name}</div>
             <div style={{fontSize:13,color:'#64748b',marginBottom:8}}>{prodJobModal.deco_type?.replace(/_/g,' ')} · {prodJobModal.positions}</div>
-            {mockupFiles2.length>0&&<div style={{display:'flex',gap:6,justifyContent:'center',flexWrap:'wrap'}}>
-              {mockupFiles2.map((f,i)=><div key={i} style={{padding:'8px 16px',background:'#eff6ff',borderRadius:6,cursor:'pointer',fontSize:12,fontWeight:600,color:'#1e40af'}}
+            {allMockups.length>0&&<div style={{display:'flex',gap:6,justifyContent:'center',flexWrap:'wrap'}}>
+              {allMockups.map((f,i)=><div key={i} style={{padding:'8px 16px',background:'#eff6ff',borderRadius:6,cursor:'pointer',fontSize:12,fontWeight:600,color:'#1e40af'}}
                 onClick={()=>openFile(f)}>{fileDisplayName(f)}</div>)}
             </div>}
             <button className="btn btn-secondary" style={{marginTop:16}} onClick={()=>setProdJobLightbox(false)}>Close</button>
