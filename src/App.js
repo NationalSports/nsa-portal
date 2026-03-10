@@ -19522,7 +19522,8 @@ export default function App(){
                 const au=isAUi(it.brand);
                 const sell=it.rate||0;
                 const costMult=it.brand==='Adidas'?0.375:(it.brand==='Under Armour'||it.brand==='New Balance')?0.425:0;
-                const retail=it._retail!=null?it._retail:(au?rQ(sell/(1-disc)):0);
+                const adiRetailDiv=0.6;// Adidas contract: always 40% off MSRP
+                const retail=it._retail!=null?it._retail:(it.brand==='Adidas'?rQ(sell/adiRetailDiv):au?rQ(sell/(1-disc)):0);
                 const cost=au?rQ(retail*costMult):rQ(sell/mk);
                 return<tr key={i}>
                   <td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{it.sku}</td>
@@ -19556,7 +19557,8 @@ export default function App(){
                   if(q&&!it.catMatch){
                     const au=isAUi(it.brand);const sell=it.rate||0;
                     const costMult2=it.brand==='Adidas'?0.375:(it.brand==='Under Armour'||it.brand==='New Balance')?0.425:0;
-                    const retail=it._retail!=null?it._retail:(au?rQ(sell/(1-disc)):0);
+                    const adiRetailDiv2=0.6;// Adidas contract: always 40% off MSRP
+                    const retail=it._retail!=null?it._retail:(it.brand==='Adidas'?rQ(sell/adiRetailDiv2):au?rQ(sell/(1-disc)):0);
                     const cost=au?rQ(retail*costMult2):rQ(sell/mk);const szKeys=Object.keys(it.sizes||{});
                     const _cpColor=it._color!=null?it._color:(it.color||'');
                     const newProd={id:'p-'+Date.now()+'-'+pi,vendor_id:null,sku:it.sku,name:it._name!=null?it._name:it.name,brand:it.brand||'',
@@ -19572,7 +19574,8 @@ export default function App(){
                 const newItems=keeping.map(it=>{
                   const au=isAUi(it.brand);const sell=it.rate||0;
                   const costMult=it.brand==='Adidas'?0.375:(it.brand==='Under Armour'||it.brand==='New Balance')?0.425:0;
-                  const retail=it._retail!=null?it._retail:(au?rQ(sell/(1-disc)):0);
+                  const adiRetailDiv=0.6;// Adidas contract: always 40% off MSRP
+                  const retail=it._retail!=null?it._retail:(it.brand==='Adidas'?rQ(sell/adiRetailDiv):au?rQ(sell/(1-disc)):0);
                   const cost=au?rQ(retail*costMult):rQ(sell/mk);const szKeys=Object.keys(it.sizes||{});
                   const itemName=it._name!=null?it._name:(it.catMatch?.name||it.name);
                   const itemColor=it._color!=null?it._color:(it.color||it.catMatch?.color||'');
