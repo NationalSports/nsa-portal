@@ -4315,7 +4315,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     {/* TRACKING TAB */}
     {isSO&&tab==='tracking'&&(()=>{
       const trackUrl=tn=>{if(/^1Z/i.test(tn))return'https://www.ups.com/track?tracknum='+tn;if(/^(94|93|92|91)\d{18,}/.test(tn))return'https://tools.usps.com/go/TrackConfirmAction?tLabels='+tn;return'https://www.fedex.com/fedextrack/?trknbr='+tn};
-      const carrierLabel=c=>{if(!c)return'';const cl=c.toLowerCase();if(cl.includes('ups'))return'UPS';if(cl.includes('fedex'))return'FedEx';if(cl.includes('usps'))return'USPS';return c};
+      const carrierLabel=c=>{if(!c)return'';const cl=c.toLowerCase();if(cl==='rep_delivery')return'Rep Delivery';if(cl.includes('ups'))return'UPS';if(cl.includes('fedex'))return'FedEx';if(cl.includes('usps'))return'USPS';return c};
       // Inbound PO data
       const poData=[];
       safeItems(o).forEach((item,idx)=>{(item.po_lines||[]).forEach((po,pi)=>{
@@ -5416,6 +5416,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 </div>
                 <div style={{fontSize:15,fontWeight:700,marginTop:4}}>{j.art_name}</div>
                 <div style={{fontSize:12,color:'#64748b'}}>{j.deco_type?.replace(/_/g,' ')} · {j.positions} · {(j.items||[]).length} garment{(j.items||[]).length!==1?'s':''}</div>
+                {(()=>{const jobItemIdxs=new Set((j.items||[]).map(it=>it.item_idx));
+                  const siblings=safeJobs(o).filter(j2=>j2.id!==j.id&&(j2.items||[]).some(it=>jobItemIdxs.has(it.item_idx)));
+                  if(siblings.length===0)return null;
+                  return<div style={{fontSize:10,marginTop:3,padding:'3px 8px',background:'#fef3c7',borderRadius:4,border:'1px solid #fde68a',color:'#92400e'}}>
+                    Multi-job item: {siblings.map(s=><span key={s.id} style={{fontWeight:700}}>{s.art_name||s.deco_type?.replace(/_/g,' ')} <span style={{padding:'1px 4px',borderRadius:3,fontSize:9,background:s.prod_status==='completed'||s.prod_status==='shipped'?'#dcfce7':'#fee2e2',color:s.prod_status==='completed'||s.prod_status==='shipped'?'#166534':'#dc2626'}}>{prodLabels[s.prod_status]||s.prod_status}</span></span>).reduce((acc,el,i)=>i===0?[el]:[...acc,<span key={'sep-'+i}> · </span>,el],[])}
+                  </div>})()}
                 {j.split_from&&<div style={{fontSize:11,color:'#7c3aed',marginTop:2}}>✂️ Split from {j.split_from}</div>}
               </div>
               <div style={{textAlign:'right'}}>
@@ -9955,17 +9961,26 @@ export default function App(){
         }
       });
       // Completed deco jobs → ready to ship (respecting ship preference)
+      // Multi-job workflow: only ship after ALL jobs on the same item(s) are completed/shipped
       const shipPref=so.ship_preference||'ship_as_ready';
       const shipDateReady=shipPref!=='ship_on_date'||!so.ship_on_date||(new Date(so.ship_on_date)<=new Date());
-      safeJobs(so).forEach(j=>{
+      const allJobs=safeJobs(so);
+      allJobs.forEach(j=>{
         if(j.prod_status==='completed'){
-          if(shipPref!=='rep_delivery'&&shipPref!=='wait_complete'&&shipDateReady){
+          // Check if all sibling jobs (sharing any item_idx) are also done
+          const jobItemIdxs=new Set((j.items||[]).map(it=>it.item_idx));
+          const siblingJobs=allJobs.filter(j2=>j2.id!==j.id&&(j2.items||[]).some(it=>jobItemIdxs.has(it.item_idx)));
+          const allSiblingsDone=siblingJobs.every(j2=>j2.prod_status==='completed'||j2.prod_status==='shipped');
+          if(!allSiblingsDone){
+            // Sibling jobs still in progress — this item stays in production queue, not ready to ship
+            // But add to deco tasks so production knows it's waiting for the next job
+          } else if(shipPref!=='rep_delivery'&&shipPref!=='wait_complete'&&shipDateReady){
             shipTasks.push({so,soId:so.id,type:'deco_done',job:j,cName,alpha,rep,daysOut,urgent,
               desc:j.art_name+' ('+j.deco_type?.replace(/_/g,' ')+')',units:j.total_units,
               shipMethod:j.ship_method||'pending',shipPref});
           }
         }
-        // Deco tasks
+        // Deco tasks — include jobs waiting for sibling completion
         if(j.prod_status!=='completed'&&j.prod_status!=='shipped'){
           const isReady=j.art_status==='art_complete'&&j.item_status==='items_received';
           decoTasks.push({so,soId:so.id,job:j,cName,alpha,rep,daysOut,urgent,
@@ -11646,7 +11661,19 @@ export default function App(){
       }
     }
     const labels={hold:'Ready for Prod',staging:'In Line',in_process:'In Process',completed:'Completed',shipped:'Shipped'};
-    nf('🏭 '+j.id+' → '+labels[newStatus]+(machine?' · '+MACHINES.find(m=>m.id===machine)?.name:'')+(person?' · '+person:''));
+    // Check for sibling jobs when completing — notify if more jobs needed before shipping
+    if(newStatus==='completed'){
+      const jobItemIdxs=new Set((j.items||[]).map(it=>it.item_idx));
+      const siblingJobs=updatedJobs.filter(j2=>j2.id!==j.id&&(j2.items||[]).some(it=>jobItemIdxs.has(it.item_idx))&&j2.prod_status!=='completed'&&j2.prod_status!=='shipped');
+      if(siblingJobs.length>0){
+        const names=siblingJobs.map(j2=>j2.art_name||j2.deco_type?.replace(/_/g,' ')||'Job').join(', ');
+        nf('🏭 '+j.id+' completed! Still needs: '+names+' before shipping','warning');
+      } else {
+        nf('🏭 '+j.id+' → Completed — ready to ship!'+(machine?' · '+MACHINES.find(m=>m.id===machine)?.name:'')+(person?' · '+person:''));
+      }
+    } else {
+      nf('🏭 '+j.id+' → '+labels[newStatus]+(machine?' · '+MACHINES.find(m=>m.id===machine)?.name:'')+(person?' · '+person:''));
+    }
   };
   const[showColPicker,setShowColPicker]=useState(false);
   const ALL_PROD_COLS=[
@@ -15177,7 +15204,7 @@ export default function App(){
                       <label style={{fontSize:10,color:'#64748b',fontWeight:600,display:'block',marginBottom:2}}>Carrier</label>
                       <select className="form-select" value={box.carrier||'fedex'} style={{width:110,fontSize:12,padding:'5px 8px'}}
                         onChange={e=>{const b=[...boxes];b[bi]={...b[bi],carrier:e.target.value};setBoxes(b)}}>
-                        <option value="fedex">FedEx</option><option value="ups">UPS</option><option value="usps">USPS</option><option value="other">Other</option>
+                        <option value="fedex">FedEx</option><option value="ups">UPS</option><option value="usps">USPS</option><option value="rep_delivery">Rep Delivery</option><option value="other">Other</option>
                       </select>
                     </div>
                   </div>
@@ -16054,15 +16081,17 @@ export default function App(){
                     </div>
                     <select className="form-select" value={box.carrier||'fedex'} style={{width:100,fontSize:11,padding:'3px 6px'}}
                       onChange={e=>{const b=[...shipModal.boxes];b[bi]={...b[bi],carrier:e.target.value};setShipModal({...shipModal,boxes:b})}}>
-                      <option value="fedex">FedEx</option><option value="ups">UPS</option><option value="usps">USPS</option><option value="other">Other</option>
+                      <option value="fedex">FedEx</option><option value="ups">UPS</option><option value="usps">USPS</option><option value="rep_delivery">Rep Delivery</option><option value="other">Other</option>
                     </select>
                     {shipModal.boxes.length>1&&<button style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',fontSize:14,fontWeight:700}}
                       onClick={()=>{const b=[...shipModal.boxes];b.splice(bi,1);setShipModal({...shipModal,boxes:b})}}>×</button>}
                   </div>
                 </div>
 
-                {/* Tracking number */}
-                <div style={{display:'flex',gap:8,marginBottom:10,alignItems:'center'}}>
+                {/* Tracking number (hidden for rep delivery) */}
+                {box.carrier==='rep_delivery'?<div style={{padding:'6px 10px',background:'#eff6ff',borderRadius:6,fontSize:11,color:'#1e40af',fontWeight:600,marginBottom:10}}>
+                  Rep will hand-deliver this package — no tracking needed
+                </div>:<div style={{display:'flex',gap:8,marginBottom:10,alignItems:'center'}}>
                   <input className="form-input" placeholder="Tracking number (enter manually or create label below)" value={box.tracking_number||''}
                     style={{flex:1,fontSize:11,fontFamily:'monospace',padding:'4px 8px'}}
                     onChange={e=>{const b=[...shipModal.boxes];b[bi]={...b[bi],tracking_number:e.target.value};setShipModal({...shipModal,boxes:b})}}/>
@@ -16091,7 +16120,7 @@ export default function App(){
                         if(labelDownload){const pw=window.open(labelDownload,'_blank');if(pw)setTimeout(()=>{try{pw.print()}catch(e){}},1500)}
                       }catch(err){nf('Label creation failed: '+err.message,'error')}
                     }}>🏷️ Create Label</button>}
-                </div>
+                </div>}
 
                 {/* Items in this box */}
                 <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6}}>Items in this box</div>
