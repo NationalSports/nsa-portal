@@ -11510,9 +11510,10 @@ export default function App(){
         const c=cust.find(x=>x.id===so.customer_id);
         const af=safeArt(so).find(f=>f.id===j.art_file_id);
         const allArtFiles=(j._art_ids||[j.art_file_id].filter(Boolean)).map(aid=>safeArt(so).find(f=>f.id===aid)).filter(Boolean);
-        // Build per-location decoration details from the first item's decorations
+        // Build per-location decoration details — only decorations belonging to THIS job's deco_type
         const decoLocations=(()=>{const firstGi=(j.items||[])[0];const it=firstGi?safeItems(so)[firstGi.item_idx]:null;if(!it)return[];
-          return safeDecos(it).filter(d=>d.kind==='art'||d.kind==='numbers').map(d=>{
+          const jobDecoIdxs=firstGi.deco_idxs||[firstGi.deco_idx];
+          return safeDecos(it).filter((d,di)=>(d.kind==='art'||d.kind==='numbers')&&jobDecoIdxs.includes(di)).map(d=>{
             const artF=d.art_file_id?safeArt(so).find(f=>f.id===d.art_file_id):null;
             const dt=artF?.deco_type||d.deco_type||'screen_print';
             const colors=(artF?(artF.ink_colors||artF.thread_colors||''):'').split(/[,\n]/).map(c2=>c2.trim()).filter(Boolean);
@@ -11532,13 +11533,13 @@ export default function App(){
           return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,fulSizes,product_id:prd?.id||null,image_url:prd?.image_url||(prd?.images&&prd.images[0])||'',images:prd?.images||[]};
         }).filter(Boolean);
         const allSizes=SZ_ORD.filter(sz=>itemDetails.some(it=>it.sizes[sz]>0));
-        // Parse colors for display
-        const colorList=af?(af.ink_colors||af.thread_colors||'').split(/[,\n]/).map(c2=>c2.trim()).filter(Boolean):[];
-        const isEmb=af?.deco_type==='embroidery';
-        const isSP=af?.deco_type==='screen_print';
-        // Mockup files
-        const mockupFiles=(af?.mockup_files||af?.files||[]);
-        const prodFiles=(af?.prod_files||[]);
+        // Parse colors for display — use job's deco_type for labels
+        const colorList=allArtFiles.flatMap(a=>(a.ink_colors||a.thread_colors||'').split(/[,\n]/).map(c2=>c2.trim()).filter(Boolean));
+        const isEmb=j.deco_type==='embroidery';
+        const isSP=j.deco_type==='screen_print';
+        // Mockup files — aggregate from all art files in this job
+        const mockupFiles=allArtFiles.flatMap(a=>a?.mockup_files||a?.files||[]);
+        const prodFiles=allArtFiles.flatMap(a=>a?.prod_files||[]);
 
         // Print Production PDF
         const printProdPDF=()=>{
