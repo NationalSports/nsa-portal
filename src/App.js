@@ -2298,8 +2298,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const[preexistingPO,setPreexistingPO]=useState(false);const[preexistingPOId,setPreexistingPOId]=useState('');const[poExcluded,setPOExcluded]=useState({});
     const DECO_VENDORS=['Silver Screen','Olympic Embroidery','WePrintIt','Pacific Screen Print','Other'];
   const[showFirmReq,setShowFirmReq]=useState(false);const[firmReqDate,setFirmReqDate]=useState('');const[firmReqNote,setFirmReqNote]=useState('');
-  const[showInvCreate,setShowInvCreate]=useState(false);const[invSelItems,setInvSelItems]=useState([]);const[invMemo,setInvMemo]=useState('');const[invType,setInvType]=useState('deposit');const[invDepositPct,setInvDepositPct]=useState(50);
-  const[invReview,setInvReview]=useState(null);const[invSendModal,setInvSendModal]=useState(false);const[invSendMsg,setInvSendMsg]=useState('');
+  const[showInvCreate,setShowInvCreate]=useState(false);const[invSelItems,setInvSelItems]=useState([]);const[invMemo,setInvMemo]=useState('');const[invType,setInvType]=useState('final');const[invDepositPct,setInvDepositPct]=useState(50);
+  const[invReview,setInvReview]=useState(null);const[invSendModal,setInvSendModal]=useState(false);const[invSendMsg,setInvSendMsg]=useState('');const[invSendTo,setInvSendTo]=useState('');const[invSendCustomEmail,setInvSendCustomEmail]=useState('');
   const[splitModal,setSplitModal]=useState(null);// {jIdx, mode:'received'|'sku'|null}
   const[countDiscModal,setCountDiscModal]=useState(null);// {open,entries:[{sku,name,color,size,expected,actual}],notes}
   const[artReqModal,setArtReqModal]=useState(null);// {jIdx, artist:'', instructions:'', files:[]}
@@ -4739,7 +4739,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           <button className="btn btn-secondary" onClick={()=>{setInvReview(null);if(onNavInvoice)onNavInvoice(ir)}}>Go to Invoices</button>
           <div style={{display:'flex',gap:8}}>
             <button className="btn btn-secondary" onClick={printInvoice}>🖨️ Print Invoice</button>
-            <button className="btn btn-primary" style={{background:'#2563eb'}} onClick={()=>setInvSendModal(true)}>📧 Send to Coach</button>
+            <button className="btn btn-primary" style={{background:'#2563eb'}} onClick={()=>{setInvSendTo('');setInvSendCustomEmail('');setInvSendModal(true)}}>📧 Send to Coach</button>
           </div>
         </div>
       </div></div>
@@ -4748,17 +4748,20 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     {/* ═══ SEND TO COACH MODAL ═══ */}
     {invSendModal&&invReview&&(()=>{
       const ir=invReview;const ic=ir._customer||cust;
-      const contact=(ic?.contacts||[])[0];
-      const coachEmail=contact?.email||'';
+      const contacts=(ic?.contacts||[]).filter(c=>c.email);
+      const resolvedEmail=invSendTo==='__custom__'?invSendCustomEmail:invSendTo||(contacts[0]?.email||'');
+      const resolvedName=invSendTo==='__custom__'?invSendCustomEmail:(contacts.find(c=>c.email===invSendTo)||contacts[0])?.name||'Coach';
       return<div className="modal-overlay" style={{zIndex:10001}} onClick={()=>setInvSendModal(false)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:500}}>
         <div className="modal-header"><h2>Send Invoice to Coach</h2><button className="modal-close" onClick={()=>setInvSendModal(false)}>x</button></div>
         <div className="modal-body">
           <div style={{marginBottom:12}}>
             <label className="form-label">Sending to</label>
-            <div style={{padding:10,background:'#f8fafc',borderRadius:6,fontSize:13}}>
-              <div style={{fontWeight:700}}>{contact?.name||'Coach'}</div>
-              <div style={{fontSize:12,color:'#64748b'}}>{coachEmail||'No email on file'}</div>
-            </div>
+            <select className="form-input" value={invSendTo||contacts[0]?.email||''} onChange={e=>{setInvSendTo(e.target.value);if(e.target.value!=='__custom__')setInvSendCustomEmail('')}} style={{fontSize:13,marginBottom:invSendTo==='__custom__'?8:0}}>
+              {contacts.map(c=><option key={c.email} value={c.email}>{c.name||'Contact'} — {c.email}{c.role?' ('+c.role+')':''}</option>)}
+              {contacts.length===0&&<option value="" disabled>No contacts with email on file</option>}
+              <option value="__custom__">Enter a different email...</option>
+            </select>
+            {invSendTo==='__custom__'&&<input className="form-input" type="email" placeholder="Enter email address" value={invSendCustomEmail} onChange={e=>setInvSendCustomEmail(e.target.value)} style={{fontSize:13}}/>}
           </div>
           <div style={{marginBottom:12}}>
             <label className="form-label">Invoice</label>
@@ -4774,15 +4777,29 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         </div>
         <div className="modal-footer">
           <button className="btn btn-secondary" onClick={()=>setInvSendModal(false)}>Cancel</button>
-          <button className="btn btn-primary" style={{background:'#2563eb'}} disabled={!coachEmail} onClick={()=>{
+          <button className="btn btn-primary" style={{background:'#2563eb'}} disabled={!resolvedEmail} onClick={async()=>{
             setInvSendModal(false);
+            const toEmail=resolvedEmail;
+            const toName=resolvedName;
+            // Actually send via Brevo
+            const res=await sendBrevoEmail({
+              to:[{email:toEmail,name:toName}],
+              subject:'Invoice '+ir.id+' — $'+ir.total.toFixed(2)+' from National Sports Apparel',
+              htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6">'+invSendMsg.replace(/\n/g,'<br>')+'</div>',
+              senderName:cu.name||'National Sports Apparel',
+              senderEmail:'noreply@nationalsportsapparel.com'
+            });
+            if(res.ok){
+              nf('Invoice '+ir.id+' sent to '+toEmail);
+            }else{
+              nf('Failed to send invoice: '+(res.error||'Unknown error'),'error');
+            }
             // Update invoice email status
             onInv(prev=>prev.map(i=>i.id===ir.id?{...i,email_status:'sent',email_sent_at:new Date().toLocaleString()}:i));
-            nf('Invoice '+ir.id+' sent to '+coachEmail);
             // Also post to messages
-            const soMsg={id:'m'+Date.now(),so_id:ir.so_id,author_id:cu.id,text:'[Invoice '+ir.id+'] Sent to '+(contact?.name||'coach')+' ('+coachEmail+')\n\n'+invSendMsg,ts:new Date().toLocaleString(),read_by:[cu.id],dept:'sales',tagged_members:[],entity_type:'so',entity_id:ir.so_id};
+            const soMsg={id:'m'+Date.now(),so_id:ir.so_id,author_id:cu.id,text:'[Invoice '+ir.id+'] Sent to '+toName+' ('+toEmail+')\n\n'+invSendMsg,ts:new Date().toLocaleString(),read_by:[cu.id],dept:'sales',tagged_members:[],entity_type:'so',entity_id:ir.so_id};
             if(onMsg)onMsg(prev=>[...prev,soMsg]);
-          }}>📧 Send Invoice{coachEmail?'':' (No email on file)'}</button>
+          }}>📧 Send Invoice{resolvedEmail?'':' (No email)'}</button>
         </div>
       </div></div>
     })()}
