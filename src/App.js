@@ -17086,109 +17086,45 @@ export default function App(){
         </div>
       </div>}
 
-      {/* Job Cards */}
+      {/* Job Cards — compact clickable rows that open full popup */}
       {filtered.length===0?<div className="empty" style={{padding:32,textAlign:'center'}}>{isDecorator?'No jobs assigned to you right now':'No decoration jobs match your filters'}</div>:
-      <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(320px,1fr))',gap:8}}>
+      <div style={{display:'flex',flexDirection:'column',gap:4}}>
         {filtered.map((t,ti)=>{
           const pct=t.totalUnits>0?Math.round(t.fulfilledUnits/t.totalUnits*100):0;
           const decoTimerKey=t.soId+'|'+t.job.id;
           const decoActive=activeTimers[decoTimerKey];
-          const decoLogs=jobTimeLogs.filter(l=>l.jobId===t.job.id&&l.soId===t.soId);
-          const decoTotalMins=decoLogs.reduce((a,l)=>a+(l.minutes||0),0);
-          // Get mockup thumbnail and color/location info for this card
-          const _cardArt=(()=>{const so=t.so;if(!so)return{thumb:null,colors:[],positions:[],artSize:''};
-            const artIds=t.job._art_ids||[t.job.art_file_id].filter(Boolean);
-            const artFiles=artIds.map(aid=>safeArt(so).find(f=>f.id===aid)).filter(Boolean);
-            const mockups=artFiles.flatMap(a=>a?.mockup_files||a?.files||[]);
-            const f0=mockups[0];const u0=f0?(typeof f0==='string'?f0:(f0?.url||'')):'';
-            const thumb=_isImgUrl(u0,f0)?u0:_isPdfUrl(u0,f0)?_cloudinaryPdfThumb(u0):null;
-            const colors=artFiles.flatMap(a=>(a.ink_colors||a.thread_colors||'').split(/[,\n]/).map(c2=>c2.trim()).filter(Boolean));
-            const positions=(t.job.positions||'').split(',').map(p=>p.trim()).filter(Boolean);
-            const artSize=artFiles[0]?.art_size||'';
-            return{thumb,colors,positions,artSize};
-          })();
           return<div key={ti} className="card" style={{
             border:t.isReady?'2px solid #22c55e':t.urgent?'2px solid #dc2626':'1px solid #e2e8f0',
-            background:t.isReady?'#f0fdf4':t.prodStatus==='in_process'?'#eff6ff':'white',cursor:'pointer'}}
+            background:decoActive?'#dcfce7':t.isReady?'#f0fdf4':t.prodStatus==='in_process'?'#eff6ff':'white',cursor:'pointer',padding:'8px 12px'}}
             onClick={()=>{setProdJobModal({...t.job,so:t.so,soId:t.soId,customer:t.cName,rep:t.rep,daysOut:t.daysOut})}}>
-            <div style={{display:'flex',gap:0}}>
-              {/* Mockup thumbnail on left side of card */}
-              <div style={{flex:'0 0 90px',background:'#f1f5f9',display:'flex',alignItems:'center',justifyContent:'center',borderRight:'1px solid #e2e8f0',minHeight:120}}>
-                {_cardArt.thumb?<img src={_cardArt.thumb} alt="" style={{width:'100%',height:'100%',objectFit:'cover',maxHeight:160}}/>
-                  :<div style={{textAlign:'center',padding:8}}><div style={{fontSize:28,opacity:0.4}}>🎨</div><div style={{fontSize:8,color:'#94a3b8'}}>No mockup</div></div>}
-              </div>
-              <div style={{flex:1,padding:'10px 12px'}}>
-              {/* Header row */}
-              <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:4}}>
-                {t.urgent&&<span style={{fontSize:9,fontWeight:800,color:'#dc2626',background:'#fef2f2',padding:'1px 5px',borderRadius:3}}>🔥 {t.daysOut}d</span>}
-                {t.isReady&&!t.urgent&&<span style={{fontSize:9,fontWeight:800,color:'#166534',background:'#dcfce7',padding:'1px 5px',borderRadius:3}}>✅ READY</span>}
-                <span style={{fontSize:13,fontWeight:800,color:'#1e293b',flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{t.cName}</span>
-                <span style={{fontSize:10,color:'#94a3b8'}}>{t.soId}</span>
-              </div>
+            <div style={{display:'flex',alignItems:'center',gap:10}}>
+              {/* Status indicator */}
+              {t.urgent&&<span style={{fontSize:9,fontWeight:800,color:'#dc2626',background:'#fef2f2',padding:'1px 5px',borderRadius:3,whiteSpace:'nowrap'}}>🔥 {t.daysOut}d</span>}
+              {t.isReady&&!t.urgent&&<span style={{fontSize:9,fontWeight:800,color:'#166534',background:'#dcfce7',padding:'1px 5px',borderRadius:3}}>✅</span>}
+              {/* Customer */}
+              <span style={{fontSize:13,fontWeight:800,color:'#1e293b',minWidth:120,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{t.cName}</span>
+              {/* SO ID */}
+              <span style={{fontSize:10,color:'#94a3b8',whiteSpace:'nowrap'}}>{t.soId}</span>
               {/* Due date */}
-              {t.daysOut!=null&&<div style={{fontSize:10,color:t.urgent?'#dc2626':t.daysOut<=7?'#d97706':'#64748b',fontWeight:t.urgent?700:400,marginBottom:4}}>
-                Due: {t.so?.expected_date||'—'} ({t.daysOut}d {t.daysOut<0?'overdue':'out'})</div>}
-              {/* Art + deco info */}
-              <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:4}}>
-                <span style={{fontSize:12,fontWeight:700,color:'#7c3aed'}}>{t.artName}</span>
-                <span style={{fontSize:9,padding:'1px 5px',borderRadius:3,fontWeight:600,
-                  background:t.decoType==='embroidery'?'#f3e8ff':t.decoType==='screen_print'?'#dbeafe':t.decoType==='dtf'?'#fef3c7':'#f1f5f9',
-                  color:t.decoType==='embroidery'?'#6b21a8':t.decoType==='screen_print'?'#1e40af':t.decoType==='dtf'?'#92400e':'#475569'}}>
-                  {t.decoType?.replace(/_/g,' ')}</span>
-              </div>
-              {/* Location, Size, Colors summary — visible at a glance */}
-              <div style={{display:'flex',gap:4,flexWrap:'wrap',marginBottom:4}}>
-                {_cardArt.positions.length>0&&_cardArt.positions.map((p,i)=><span key={i} style={{fontSize:9,fontWeight:700,padding:'1px 5px',borderRadius:3,background:'#eff6ff',color:'#1e40af',border:'1px solid #bfdbfe'}}>{p}</span>)}
-                {_cardArt.artSize&&<span style={{fontSize:9,fontWeight:700,padding:'1px 5px',borderRadius:3,background:'#f0fdf4',color:'#166534',border:'1px solid #bbf7d0'}}>{_cardArt.artSize}</span>}
-                {_cardArt.colors.length>0&&<span style={{fontSize:9,fontWeight:600,padding:'1px 5px',borderRadius:3,background:'#fefce8',color:'#854d0e',border:'1px solid #fde68a'}}>{_cardArt.colors.length} color{_cardArt.colors.length!==1?'s':''}</span>}
-              </div>
-              {/* Color names inline */}
-              {_cardArt.colors.length>0&&<div style={{fontSize:9,color:'#64748b',marginBottom:4,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{_cardArt.colors.join(' · ')}</div>}
-              {/* Status badges */}
-              <div style={{display:'flex',gap:3,flexWrap:'wrap',marginBottom:4}}>
-                <span style={{padding:'1px 5px',borderRadius:4,fontSize:8,fontWeight:700,background:SC[t.artStatus]?.bg,color:SC[t.artStatus]?.c}}>
-                  {t.artStatus==='art_complete'?'✅ Art':'⏳ Art'}</span>
-                <span style={{padding:'1px 5px',borderRadius:4,fontSize:8,fontWeight:700,background:SC[t.itemStatus]?.bg,color:SC[t.itemStatus]?.c}}>
-                  {t.itemStatus==='items_received'?'✅ Items':'⏳ Items'}</span>
-                <span style={{padding:'1px 5px',borderRadius:4,fontSize:8,fontWeight:700,background:SC[t.prodStatus]?.bg,color:SC[t.prodStatus]?.c}}>
-                  {t.prodStatus==='hold'?'⏸ Hold':t.prodStatus==='staging'?'📋 In Line':t.prodStatus==='in_process'?'🖨️ Running':'✓ '+t.prodStatus}</span>
-                {t.machine&&<span style={{fontSize:8,fontWeight:700,padding:'1px 5px',borderRadius:4,background:'#fef3c7',color:'#92400e'}}>🖨️ {t.machine}</span>}
-                {t.assignedTo&&<span style={{fontSize:8,fontWeight:700,padding:'1px 5px',borderRadius:4,background:'#ede9fe',color:'#6d28d9'}}>👤 {t.assignedTo}</span>}
-              </div>
+              {t.daysOut!=null&&<span style={{fontSize:10,color:t.urgent?'#dc2626':t.daysOut<=7?'#d97706':'#64748b',fontWeight:t.urgent?700:400,whiteSpace:'nowrap'}}>
+                {t.daysOut}d {t.daysOut<0?'overdue':'out'}</span>}
+              {/* Art name */}
+              <span style={{fontSize:11,fontWeight:700,color:'#7c3aed',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',maxWidth:180}}>{t.artName}</span>
+              {/* Deco type badge */}
+              <span style={{fontSize:9,padding:'1px 5px',borderRadius:3,fontWeight:600,whiteSpace:'nowrap',
+                background:t.decoType==='embroidery'?'#f3e8ff':t.decoType==='screen_print'?'#dbeafe':t.decoType==='dtf'?'#fef3c7':'#f1f5f9',
+                color:t.decoType==='embroidery'?'#6b21a8':t.decoType==='screen_print'?'#1e40af':t.decoType==='dtf'?'#92400e':'#475569'}}>
+                {t.decoType?.replace(/_/g,' ')}</span>
               {/* Progress */}
-              <div style={{display:'flex',alignItems:'center',gap:6}}>
-                <span style={{fontSize:12,fontWeight:800,color:pct>=100?'#166534':'#7c3aed'}}>{t.fulfilledUnits}/{t.totalUnits}</span>
-                <div style={{flex:1,background:'#e2e8f0',borderRadius:3,height:4,overflow:'hidden'}}>
+              <div style={{display:'flex',alignItems:'center',gap:4,marginLeft:'auto',whiteSpace:'nowrap'}}>
+                {decoActive&&<span style={{fontSize:9,fontWeight:700,color:'#166534'}}>⏱️ {decoActive.person}</span>}
+                {t.assignedTo&&!decoActive&&<span style={{fontSize:9,fontWeight:600,color:'#6d28d9'}}>👤 {t.assignedTo}</span>}
+                <span style={{fontSize:11,fontWeight:800,color:pct>=100?'#166534':'#7c3aed'}}>{t.fulfilledUnits}/{t.totalUnits}</span>
+                <div style={{width:50,background:'#e2e8f0',borderRadius:3,height:4,overflow:'hidden'}}>
                   <div style={{height:4,borderRadius:3,background:pct>=100?'#22c55e':pct>50?'#3b82f6':'#f59e0b',width:pct+'%'}}/></div>
                 <span style={{fontSize:9,color:'#64748b'}}>{pct}%</span>
-                <span style={{fontSize:10,color:'#94a3b8',marginLeft:'auto'}}>{t.rep}</span>
               </div>
-              {/* Clock In/Out for decorators */}
-              {(t.prodStatus==='in_process'||t.prodStatus==='staging')&&<div style={{marginTop:6,background:decoActive?'#dcfce7':'#f8fafc',border:'1px solid '+(decoActive?'#86efac':'#e2e8f0'),borderRadius:6,padding:'4px 8px'}} onClick={e=>e.stopPropagation()}>
-                <div style={{display:'flex',alignItems:'center',gap:6}}>
-                  {decoActive?<>
-                    <span style={{fontSize:10,fontWeight:700,color:'#166534'}}>⏱️ {decoActive.person} clocked in</span>
-                    <span style={{fontSize:9,color:'#64748b',marginLeft:'auto'}}>{Math.round((Date.now()-decoActive.clockIn)/60000)}m</span>
-                    <button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#dc2626',color:'white',border:'none'}} onClick={()=>{
-                      const mins=Math.round((Date.now()-decoActive.clockIn)/60000);
-                      const idleMins=Math.round((_idleAccum.current[decoTimerKey]||0)/60000);
-                      setJobTimeLogs(prev=>[...prev,{jobId:t.job.id,soId:t.soId,person:decoActive.person,clockIn:new Date(decoActive.clockIn).toLocaleString(),clockOut:new Date().toLocaleString(),minutes:mins,idleMinutes:idleMins}]);
-                      setActiveTimers(prev=>{const n={...prev};delete n[decoTimerKey];return n});
-                      delete _idleAccum.current[decoTimerKey];
-                      nf('⏱️ '+decoActive.person+' clocked out — '+mins+' min on '+t.job.id);
-                    }}>Clock Out</button>
-                  </>:<>
-                    <span style={{fontSize:9,color:'#64748b'}}>⏱️ {decoTotalMins>0?decoTotalMins+'m logged':'No time logged'}</span>
-                    <button className="btn btn-sm btn-primary" style={{fontSize:9,padding:'2px 8px',marginLeft:'auto'}} onClick={()=>{
-                      const person=t.assignedTo||cu.name;
-                      setActiveTimers(prev=>({...prev,[decoTimerKey]:{person,clockIn:Date.now(),soId:t.soId}}));
-                      nf('⏱️ '+person+' clocked in on '+t.job.id);
-                    }}>Clock In{t.assignedTo?' ('+t.assignedTo+')':''}</button>
-                  </>}
-                </div>
-              </div>}
             </div>
-            </div>{/* end flex wrapper */}
           </div>})}
       </div>}
       {isDecorator&&<div style={{marginTop:8,padding:8,background:'#f5f3ff',borderRadius:6,fontSize:11,color:'#6d28d9'}}>
