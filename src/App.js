@@ -6866,6 +6866,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   const[portalContactMsg,setPortalContactMsg]=useState('');
   const[portalInvView,setPortalInvView]=useState(null);// viewing an invoice detail
   const[portalShowPay,setPortalShowPay]=useState(null);// null | 'all' | inv object
+  const[portalPayLoading,setPortalPayLoading]=useState(false);// loading state for pay button
   const[portalPaySuccess,setPortalPaySuccess]=useState(null);
   const[portalApvOpen,setPortalApvOpen]=useState(false);
   React.useEffect(()=>setCustLocal(initCust),[initCust]);
@@ -7462,6 +7463,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     // Invoice detail view inside portal
     if(portalInvView){
       const inv=portalInvView;const bal=(inv.total||0)-(inv.paid||0);
+      const linkedSO=inv.so_id?custSOs.find(s=>s.id===inv.so_id):null;
       return<div className="modal-overlay" onClick={()=>setShowPortal(false)}><div className="modal" style={{maxWidth:550,maxHeight:'90vh',overflow:'auto'}} onClick={e=>e.stopPropagation()}>
         <div style={{background:'linear-gradient(135deg,#991b1b,#dc2626)',color:'white',padding:'20px 24px',borderRadius:'12px 12px 0 0',position:'relative'}}>
           <button style={{position:'absolute',top:8,left:12,background:'rgba(255,255,255,0.15)',border:'none',color:'white',borderRadius:6,padding:'4px 10px',fontSize:12,cursor:'pointer'}} onClick={()=>setPortalInvView(null)}>← Back</button>
@@ -7478,19 +7480,55 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
             <div style={{fontSize:36,fontWeight:800,color:'#dc2626'}}>${bal.toLocaleString()}</div>
             {inv.paid>0&&<div style={{fontSize:12,color:'#64748b'}}>Paid: ${inv.paid.toLocaleString()} of ${inv.total.toLocaleString()}</div>}
           </div>
-          {/* Line items */}
-          {inv.items?.length>0&&<div style={{marginBottom:16}}>
+          {/* Order details from linked sales order */}
+          {linkedSO&&<div style={{marginBottom:16,border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden'}}>
+            <div style={{padding:'10px 14px',background:'#f8fafc',borderBottom:'1px solid #e2e8f0',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+              <div style={{fontSize:12,fontWeight:700,color:'#1e3a5f'}}>📦 Order Details — {linkedSO.memo||linkedSO.id}</div>
+              <span style={{fontSize:10,color:'#64748b'}}>{linkedSO.id}</span>
+            </div>
+            {safeItems(linkedSO).map((it,ii)=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const sizes=Object.entries(safeSizes(it)).filter(([,v])=>v>0);
+              return<div key={ii} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9'}}>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
+                  <div>
+                    <div style={{fontWeight:600,fontSize:13}}>{safeStr(it.name)||'Item'}</div>
+                    <div style={{fontSize:11,color:'#64748b'}}>{it.sku} · {safeStr(it.color)||'—'}</div>
+                  </div>
+                  <div style={{textAlign:'right'}}>
+                    <div style={{fontWeight:700,fontSize:13}}>{qty} units</div>
+                    <div style={{fontSize:10,color:'#64748b'}}>${safeNum(it.unit_sell).toFixed(2)}/ea</div>
+                  </div>
+                </div>
+                {sizes.length>0&&<div style={{display:'flex',gap:4,flexWrap:'wrap',marginTop:6}}>
+                  {sizes.sort((a,b)=>{const o=SZ_ORD;return(o.indexOf(a[0])<0?99:o.indexOf(a[0]))-(o.indexOf(b[0])<0?99:o.indexOf(b[0]))}).map(([sz,q])=><div key={sz} style={{textAlign:'center',padding:'2px 5px',background:'#f1f5f9',borderRadius:4,minWidth:28}}>
+                    <div style={{fontSize:8,fontWeight:700,color:'#64748b'}}>{sz}</div>
+                    <div style={{fontSize:11,fontWeight:700,color:'#1e3a5f'}}>{q}</div>
+                  </div>)}
+                </div>}
+              </div>})}
+            {linkedSO.expected_date&&<div style={{padding:'8px 14px',background:'#f8fafc',fontSize:11,color:'#64748b',display:'flex',justifyContent:'space-between'}}>
+              <span>Expected Date</span><span style={{fontWeight:600,color:'#1e3a5f'}}>{linkedSO.expected_date}</span>
+            </div>}
+          </div>}
+          {/* Invoice line items */}
+          {inv.items?.length>0&&!linkedSO&&<div style={{marginBottom:16}}>
             <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:6}}>Items</div>
             {inv.items.map((li,i)=><div key={i} style={{display:'flex',justifyContent:'space-between',padding:'8px 0',borderBottom:'1px solid #f1f5f9'}}>
               <div><div style={{fontWeight:600,fontSize:13}}>{li.name||li.sku}</div><div style={{fontSize:11,color:'#64748b'}}>{li.qty} × ${safeNum(li.unit_sell).toFixed(2)}</div></div>
               <div style={{fontWeight:700,fontSize:13}}>${(li.qty*safeNum(li.unit_sell)).toFixed(2)}</div>
             </div>)}
           </div>}
+          {inv.items?.length>0&&linkedSO&&<div style={{marginBottom:16}}>
+            <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:6}}>Invoice Line Items</div>
+            {inv.items.map((li,i)=><div key={i} style={{display:'flex',justifyContent:'space-between',padding:'6px 0',borderBottom:'1px solid #f1f5f9'}}>
+              <div><div style={{fontWeight:600,fontSize:12}}>{li.name||li.sku}</div><div style={{fontSize:10,color:'#64748b'}}>{li.qty} × ${safeNum(li.unit_sell).toFixed(2)}</div></div>
+              <div style={{fontWeight:700,fontSize:12}}>${(li.qty*safeNum(li.unit_sell)).toFixed(2)}</div>
+            </div>)}
+          </div>}
           <div style={{display:'flex',justifyContent:'space-between',padding:'12px 0',borderTop:'2px solid #e2e8f0'}}>
             <span style={{fontWeight:800}}>Total</span><span style={{fontWeight:800,fontSize:18,color:'#dc2626'}}>${inv.total?.toLocaleString()}</span>
           </div>
-          {bal>0&&<button style={{width:'100%',marginTop:16,padding:'14px 20px',background:'#22c55e',color:'white',border:'none',borderRadius:10,fontSize:16,fontWeight:800,cursor:'pointer'}} onClick={()=>setPortalShowPay(inv)}>
-            💳 Pay ${bal.toLocaleString()}
+          {bal>0&&<button style={{width:'100%',marginTop:16,padding:'14px 20px',background:portalPayLoading?'#86efac':'#22c55e',color:'white',border:'none',borderRadius:10,fontSize:16,fontWeight:800,cursor:portalPayLoading?'wait':'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:10,opacity:portalPayLoading?0.8:1,transition:'all 0.2s'}} disabled={portalPayLoading} onClick={()=>{setPortalPayLoading(true);setPortalShowPay(inv)}}>
+            {portalPayLoading?<><span style={{display:'inline-block',width:18,height:18,border:'3px solid rgba(255,255,255,0.3)',borderTop:'3px solid white',borderRadius:'50%',animation:'spin 0.8s linear infinite'}}/>Opening secure checkout...</>:<>💳 Pay ${bal.toLocaleString()}</>}
           </button>}
           {bal<=0&&<div style={{textAlign:'center',padding:12,background:'#f0fdf4',borderRadius:8,color:'#166534',fontWeight:700}}>✅ Paid in Full</div>}
         </div>
@@ -7524,8 +7562,8 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
 
         {/* Pay Now button */}
         {totalDue>0&&<div style={{marginBottom:16}}>
-          <button style={{width:'100%',padding:'14px 20px',background:'#22c55e',color:'white',border:'none',borderRadius:10,fontSize:16,fontWeight:800,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:10}} onClick={()=>setPortalShowPay('all')}>
-            💳 Pay Now — ${totalDue.toLocaleString()}
+          <button style={{width:'100%',padding:'14px 20px',background:portalPayLoading?'#86efac':'#22c55e',color:'white',border:'none',borderRadius:10,fontSize:16,fontWeight:800,cursor:portalPayLoading?'wait':'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:10,opacity:portalPayLoading?0.8:1,transition:'all 0.2s'}} disabled={portalPayLoading} onClick={()=>{setPortalPayLoading(true);setPortalShowPay('all')}}>
+            {portalPayLoading?<><span style={{display:'inline-block',width:18,height:18,border:'3px solid rgba(255,255,255,0.3)',borderTop:'3px solid white',borderRadius:'50%',animation:'spin 0.8s linear infinite'}}/>Opening secure checkout...</>:<>💳 Pay Now — ${totalDue.toLocaleString()}</>}
           </button>
           <div style={{display:'flex',justifyContent:'center',gap:12,marginTop:6}}>
             <span style={{fontSize:10,color:'#94a3b8'}}>💳 Credit Card</span>
@@ -7606,14 +7644,6 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
             </div>})}
         </>}
 
-        {/* Completed orders */}
-        {completedSOs.length>0&&<>
-          <div style={{fontSize:13,fontWeight:800,color:'#166534',marginBottom:10,marginTop:16}}>✅ Completed Orders</div>
-          {completedSOs.slice(0,3).map(so=><div key={so.id} style={{padding:'10px 14px',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:8,display:'flex',justifyContent:'space-between',alignItems:'center',cursor:'pointer'}} onClick={()=>setSoView(so)}>
-            <div><span style={{fontWeight:600}}>{so.memo||so.id}</span><span style={{fontSize:11,color:'#94a3b8',marginLeft:8}}>{so.id}</span></div>
-            <div style={{display:'flex',alignItems:'center',gap:8}}><span className="badge badge-green">Complete</span><span style={{color:'#94a3b8',fontSize:14}}>›</span></div></div>)}
-        </>}
-
         {/* Open invoices with pay buttons */}
         {openInvs.length>0&&<>
           <div style={{fontSize:13,fontWeight:800,color:'#dc2626',marginBottom:10,marginTop:16}}>💰 Open Invoices</div>
@@ -7635,6 +7665,14 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
               <span style={{fontSize:20,fontWeight:800,color:'#dc2626'}}>${totalDue.toLocaleString()}</span>
             </div>
           </div>
+        </>}
+
+        {/* Completed orders — below invoices for reference */}
+        {completedSOs.length>0&&<>
+          <div style={{fontSize:13,fontWeight:800,color:'#166534',marginBottom:10,marginTop:16}}>✅ Completed Orders</div>
+          {completedSOs.slice(0,3).map(so=><div key={so.id} style={{padding:'10px 14px',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:8,display:'flex',justifyContent:'space-between',alignItems:'center',cursor:'pointer'}} onClick={()=>setSoView(so)}>
+            <div><span style={{fontWeight:600}}>{so.memo||so.id}</span><span style={{fontSize:11,color:'#94a3b8',marginLeft:8}}>{so.id}</span></div>
+            <div style={{display:'flex',alignItems:'center',gap:8}}><span className="badge badge-green">Complete</span><span style={{color:'#94a3b8',fontSize:14}}>›</span></div></div>)}
         </>}
 
         {/* Approved/Converted Estimates — collapsible at bottom */}
@@ -7691,8 +7729,8 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       customerName={customer.name}
       customerEmail={(customer.contacts||[])[0]?.email||''}
       alphaTag={customer.alpha_tag}
-      onSuccess={(result)=>{setPortalPaySuccess({amount:result.amount,fee:result.fee,invoices:result.invoices});setPortalShowPay(null);setPortalInvView(null)}}
-      onClose={()=>setPortalShowPay(null)}
+      onSuccess={(result)=>{setPortalPaySuccess({amount:result.amount,fee:result.fee,invoices:result.invoices});setPortalShowPay(null);setPortalInvView(null);setPortalPayLoading(false)}}
+      onClose={()=>{setPortalShowPay(null);setPortalPayLoading(false)}}
     />}
     </div>})()}
 
@@ -8140,6 +8178,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   const[updateRequestText,setUpdateRequestText]=useState('');
   const[updateRequestSent,setUpdateRequestSent]=useState(false);
   const[showPay,setShowPay]=useState(null);// null | 'all' | inv object
+  const[payLoading,setPayLoading]=useState(false);// loading state for pay button feedback
   const[paySuccess,setPaySuccess]=useState(null);// {amount,fee,invoices}
   const[invs,setInvs]=useState(initInvs);
   const[lightbox,setLightbox]=useState(null);// url string for lightbox overlay
@@ -8175,7 +8214,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     setInvs(updater);
     if(onUpdateInvs)onUpdateInvs(updater);// persist to parent → Supabase + localStorage + QB sync
     setPaySuccess({amount:result.amount,fee:result.fee,invoices:result.invoices});
-    setShowPay(null);setInvView(null);
+    setShowPay(null);setInvView(null);setPayLoading(false);
   };
 
   // Estimate detail view
@@ -8545,6 +8584,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   // Invoice detail view
   if(invView){
     const inv=invView;const bal=(inv.total||0)-(inv.paid||0);
+    const linkedSO=inv.so_id?custSOs.find(s=>s.id===inv.so_id):null;
     return<div style={{minHeight:'100vh',background:'#f1f5f9',display:'flex',justifyContent:'center',padding:'40px 16px'}}>
       <div style={{width:'100%',maxWidth:550,background:'white',borderRadius:16,boxShadow:'0 4px 24px rgba(0,0,0,0.08)',overflow:'hidden'}}>
         <div style={{background:'linear-gradient(135deg,#991b1b,#dc2626)',color:'white',padding:'20px 24px',position:'relative'}}>
@@ -8561,18 +8601,55 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             <div style={{fontSize:36,fontWeight:800,color:'#dc2626'}}>${bal.toLocaleString()}</div>
             {inv.paid>0&&<div style={{fontSize:12,color:'#64748b'}}>Paid: ${inv.paid.toLocaleString()} of ${inv.total.toLocaleString()}</div>}
           </div>
-          {inv.items?.length>0&&<div style={{marginBottom:16}}>
+          {/* Order details from linked sales order */}
+          {linkedSO&&<div style={{marginBottom:16,border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden'}}>
+            <div style={{padding:'10px 14px',background:'#f8fafc',borderBottom:'1px solid #e2e8f0',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+              <div style={{fontSize:12,fontWeight:700,color:'#1e3a5f'}}>📦 Order Details — {linkedSO.memo||linkedSO.id}</div>
+              <span style={{fontSize:10,color:'#64748b'}}>{linkedSO.id}</span>
+            </div>
+            {safeItems(linkedSO).map((it,ii)=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const sizes=Object.entries(safeSizes(it)).filter(([,v])=>v>0);
+              return<div key={ii} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9'}}>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
+                  <div>
+                    <div style={{fontWeight:600,fontSize:13}}>{safeStr(it.name)||'Item'}</div>
+                    <div style={{fontSize:11,color:'#64748b'}}>{it.sku} · {safeStr(it.color)||'—'}</div>
+                  </div>
+                  <div style={{textAlign:'right'}}>
+                    <div style={{fontWeight:700,fontSize:13}}>{qty} units</div>
+                    <div style={{fontSize:10,color:'#64748b'}}>${safeNum(it.unit_sell).toFixed(2)}/ea</div>
+                  </div>
+                </div>
+                {sizes.length>0&&<div style={{display:'flex',gap:4,flexWrap:'wrap',marginTop:6}}>
+                  {sizes.sort((a,b)=>{const o=SZ_ORD;return(o.indexOf(a[0])<0?99:o.indexOf(a[0]))-(o.indexOf(b[0])<0?99:o.indexOf(b[0]))}).map(([sz,q])=><div key={sz} style={{textAlign:'center',padding:'2px 5px',background:'#f1f5f9',borderRadius:4,minWidth:28}}>
+                    <div style={{fontSize:8,fontWeight:700,color:'#64748b'}}>{sz}</div>
+                    <div style={{fontSize:11,fontWeight:700,color:'#1e3a5f'}}>{q}</div>
+                  </div>)}
+                </div>}
+              </div>})}
+            {linkedSO.expected_date&&<div style={{padding:'8px 14px',background:'#f8fafc',fontSize:11,color:'#64748b',display:'flex',justifyContent:'space-between'}}>
+              <span>Expected Date</span><span style={{fontWeight:600,color:'#1e3a5f'}}>{linkedSO.expected_date}</span>
+            </div>}
+          </div>}
+          {/* Invoice line items (if no linked SO or for reference) */}
+          {inv.items?.length>0&&!linkedSO&&<div style={{marginBottom:16}}>
             <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:6}}>Items</div>
             {inv.items.map((li,i)=><div key={i} style={{display:'flex',justifyContent:'space-between',padding:'8px 0',borderBottom:'1px solid #f1f5f9'}}>
               <div><div style={{fontWeight:600,fontSize:13}}>{li.name||li.sku}</div><div style={{fontSize:11,color:'#64748b'}}>{li.qty} × ${safeNum(li.unit_sell).toFixed(2)}</div></div>
               <div style={{fontWeight:700,fontSize:13}}>${(li.qty*safeNum(li.unit_sell)).toFixed(2)}</div>
             </div>)}
           </div>}
+          {inv.items?.length>0&&linkedSO&&<div style={{marginBottom:16}}>
+            <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:6}}>Invoice Line Items</div>
+            {inv.items.map((li,i)=><div key={i} style={{display:'flex',justifyContent:'space-between',padding:'6px 0',borderBottom:'1px solid #f1f5f9'}}>
+              <div><div style={{fontWeight:600,fontSize:12}}>{li.name||li.sku}</div><div style={{fontSize:10,color:'#64748b'}}>{li.qty} × ${safeNum(li.unit_sell).toFixed(2)}</div></div>
+              <div style={{fontWeight:700,fontSize:12}}>${(li.qty*safeNum(li.unit_sell)).toFixed(2)}</div>
+            </div>)}
+          </div>}
           <div style={{display:'flex',justifyContent:'space-between',padding:'12px 0',borderTop:'2px solid #e2e8f0'}}>
             <span style={{fontWeight:800}}>Total</span><span style={{fontWeight:800,fontSize:18,color:'#dc2626'}}>${inv.total?.toLocaleString()}</span>
           </div>
-          {bal>0&&<button style={{width:'100%',marginTop:16,padding:'14px 20px',background:'#22c55e',color:'white',border:'none',borderRadius:10,fontSize:16,fontWeight:800,cursor:'pointer'}} onClick={()=>setShowPay(inv)}>
-            💳 Pay ${bal.toLocaleString()}
+          {bal>0&&<button style={{width:'100%',marginTop:16,padding:'14px 20px',background:payLoading?'#86efac':'#22c55e',color:'white',border:'none',borderRadius:10,fontSize:16,fontWeight:800,cursor:payLoading?'wait':'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:10,opacity:payLoading?0.8:1,transition:'all 0.2s'}} disabled={payLoading} onClick={()=>{setPayLoading(true);setShowPay(inv)}}>
+            {payLoading?<><span style={{display:'inline-block',width:18,height:18,border:'3px solid rgba(255,255,255,0.3)',borderTop:'3px solid white',borderRadius:'50%',animation:'spin 0.8s linear infinite'}}/>Opening secure checkout...</>:<>💳 Pay ${bal.toLocaleString()}</>}
           </button>}
           {bal<=0&&<div style={{textAlign:'center',padding:12,background:'#f0fdf4',borderRadius:8,color:'#166534',fontWeight:700}}>✅ Paid in Full</div>}
         </div>
@@ -8607,8 +8684,8 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
 
         {/* Pay Now button */}
         {totalDue>0&&<div style={{marginBottom:16}}>
-          <button style={{width:'100%',padding:'14px 20px',background:'#22c55e',color:'white',border:'none',borderRadius:10,fontSize:16,fontWeight:800,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:10}} onClick={()=>setShowPay('all')}>
-            💳 Pay Now — ${totalDue.toLocaleString()}
+          <button style={{width:'100%',padding:'14px 20px',background:payLoading?'#86efac':'#22c55e',color:'white',border:'none',borderRadius:10,fontSize:16,fontWeight:800,cursor:payLoading?'wait':'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:10,opacity:payLoading?0.8:1,transition:'all 0.2s'}} disabled={payLoading} onClick={()=>{setPayLoading(true);setShowPay('all')}}>
+            {payLoading?<><span style={{display:'inline-block',width:18,height:18,border:'3px solid rgba(255,255,255,0.3)',borderTop:'3px solid white',borderRadius:'50%',animation:'spin 0.8s linear infinite'}}/>Opening secure checkout...</>:<>💳 Pay Now — ${totalDue.toLocaleString()}</>}
           </button>
           <div style={{display:'flex',justifyContent:'center',gap:12,marginTop:6}}>
             <span style={{fontSize:10,color:'#94a3b8'}}>💳 Credit Card</span>
@@ -8696,14 +8773,6 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             </div>})}
         </>}
 
-        {/* Completed orders */}
-        {completedSOs.length>0&&<>
-          <div style={{fontSize:13,fontWeight:800,color:'#166534',marginBottom:10,marginTop:16}}>✅ Completed Orders</div>
-          {completedSOs.slice(0,3).map(so=><div key={so.id} style={{padding:'10px 14px',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:8,display:'flex',justifyContent:'space-between',alignItems:'center',cursor:'pointer'}} onClick={()=>setSoView(so)}>
-            <div><span style={{fontWeight:600}}>{so.memo||so.id}</span><span style={{fontSize:11,color:'#94a3b8',marginLeft:8}}>{so.id}</span></div>
-            <div style={{display:'flex',alignItems:'center',gap:8}}><span className="badge badge-green">Complete</span><span style={{color:'#94a3b8',fontSize:14}}>›</span></div></div>)}
-        </>}
-
         {/* Invoices — Open + Paid */}
         {custInvs.length>0&&<>
           {openInvs.length>0&&<>
@@ -8717,7 +8786,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                   </div>
                   <div style={{display:'flex',alignItems:'center',gap:8}}>
                     <span style={{fontWeight:800,fontSize:16,color:'#dc2626'}}>${bal.toLocaleString()}</span>
-                    <button className="btn btn-sm" style={{background:'#22c55e',color:'white',fontSize:10}} onClick={e=>{e.stopPropagation();setShowPay(inv)}}>Pay</button>
+                    <button className="btn btn-sm" style={{background:'#22c55e',color:'white',fontSize:10}} onClick={e=>{e.stopPropagation();setPayLoading(true);setShowPay(inv)}}>Pay</button>
                     <span style={{color:'#94a3b8',fontSize:14}}>›</span>
                   </div>
                 </div>})}
@@ -8742,6 +8811,14 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                 </div>)}
             </div>
           </>}
+        </>}
+
+        {/* Completed orders — below invoices for reference */}
+        {completedSOs.length>0&&<>
+          <div style={{fontSize:13,fontWeight:800,color:'#166534',marginBottom:10,marginTop:16}}>✅ Completed Orders</div>
+          {completedSOs.slice(0,3).map(so=><div key={so.id} style={{padding:'10px 14px',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:8,display:'flex',justifyContent:'space-between',alignItems:'center',cursor:'pointer'}} onClick={()=>setSoView(so)}>
+            <div><span style={{fontWeight:600}}>{so.memo||so.id}</span><span style={{fontSize:11,color:'#94a3b8',marginLeft:8}}>{so.id}</span></div>
+            <div style={{display:'flex',alignItems:'center',gap:8}}><span className="badge badge-green">Complete</span><span style={{color:'#94a3b8',fontSize:14}}>›</span></div></div>)}
         </>}
 
         {/* Your rep */}
@@ -8781,7 +8858,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
       customerEmail={contactEmail}
       alphaTag={customer.alpha_tag}
       onSuccess={handlePaymentSuccess}
-      onClose={()=>setShowPay(null)}
+      onClose={()=>{setShowPay(null);setPayLoading(false)}}
     />}
   </div>
 }
