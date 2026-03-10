@@ -8581,12 +8581,21 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             {inv.paid>0&&<div style={{fontSize:12,color:'#64748b'}}>Paid: ${inv.paid.toLocaleString()} of ${inv.total.toLocaleString()}</div>}
           </div>
           {/* Order details from linked sales order */}
-          {linkedSO&&<div style={{marginBottom:16,border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden'}}>
+          {linkedSO&&(()=>{const soAF=linkedSO.art_files||[];const soJobs=safeJobs(linkedSO);
+            const itemSubtotal=safeItems(linkedSO).reduce((a,it)=>{const qty=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);return a+qty*safeNum(it.unit_sell)},0);
+            const shipAmt=inv.shipping!=null?inv.shipping:(linkedSO.shipping_type==='pct'?itemSubtotal*(linkedSO.shipping_value||0)/100:(linkedSO.shipping_value||0));
+            const taxAmt=inv.tax||0;
+            return<div style={{marginBottom:16,border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden'}}>
             <div style={{padding:'10px 14px',background:'#f8fafc',borderBottom:'1px solid #e2e8f0',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
               <div style={{fontSize:12,fontWeight:700,color:'#1e3a5f'}}>📦 Order Details — {linkedSO.memo||linkedSO.id}</div>
               <span style={{fontSize:10,color:'#64748b'}}>{linkedSO.id}</span>
             </div>
             {safeItems(linkedSO).map((it,ii)=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const sizes=Object.entries(safeSizes(it)).filter(([,v])=>v>0);
+              const decos=safeDecos(it).filter(d=>d.type||d.deco_type||d.kind);
+              const decoLabels=decos.map(d=>{const t=d.type||d.deco_type||d.kind||'';const pos=d.position||'';return(t.charAt(0).toUpperCase()+t.slice(1).replace(/_/g,' '))+(pos?' — '+pos:'')}).filter(Boolean);
+              const matchedJobs=soJobs.filter(j=>(j.items||[]).some(ji=>ji===it.id||ji===ii)||(!j.items&&soAF.some(af=>af.id===j.art_file_id&&decos.some(d=>d.art_file_id===af.id))));
+              const jobDecoLabels=matchedJobs.map(j=>{const t=j.deco_type||'';return(t.charAt(0).toUpperCase()+t.slice(1).replace(/_/g,' '))+(j.art_name?' — '+j.art_name:'')}).filter(Boolean);
+              const allDecoLabels=[...new Set([...decoLabels,...jobDecoLabels])];
               return<div key={ii} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9'}}>
                 <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
                   <div>
@@ -8598,6 +8607,9 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                     <div style={{fontSize:10,color:'#64748b'}}>${safeNum(it.unit_sell).toFixed(2)}/ea</div>
                   </div>
                 </div>
+                {allDecoLabels.length>0&&<div style={{display:'flex',gap:4,flexWrap:'wrap',marginTop:6}}>
+                  {allDecoLabels.map((label,di)=><span key={di} style={{padding:'2px 8px',background:'#ede9fe',color:'#6d28d9',borderRadius:6,fontSize:10,fontWeight:600}}>{label}</span>)}
+                </div>}
                 {sizes.length>0&&<div style={{display:'flex',gap:4,flexWrap:'wrap',marginTop:6}}>
                   {sizes.sort((a,b)=>{const o=SZ_ORD;return(o.indexOf(a[0])<0?99:o.indexOf(a[0]))-(o.indexOf(b[0])<0?99:o.indexOf(b[0]))}).map(([sz,q])=><div key={sz} style={{textAlign:'center',padding:'2px 5px',background:'#f1f5f9',borderRadius:4,minWidth:28}}>
                     <div style={{fontSize:8,fontWeight:700,color:'#64748b'}}>{sz}</div>
@@ -8608,7 +8620,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             {linkedSO.expected_date&&<div style={{padding:'8px 14px',background:'#f8fafc',fontSize:11,color:'#64748b',display:'flex',justifyContent:'space-between'}}>
               <span>Expected Date</span><span style={{fontWeight:600,color:'#1e3a5f'}}>{linkedSO.expected_date}</span>
             </div>}
-          </div>}
+          </div>})()}
           {/* Invoice line items (if no linked SO or for reference) */}
           {inv.items?.length>0&&!linkedSO&&<div style={{marginBottom:16}}>
             <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:6}}>Items</div>
@@ -8624,6 +8636,23 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
               <div style={{fontWeight:700,fontSize:12}}>${(li.qty*safeNum(li.unit_sell)).toFixed(2)}</div>
             </div>)}
           </div>}
+          {/* Cost breakdown: subtotal, shipping, tax */}
+          {(()=>{const _sub=(inv.total||0)-(inv.shipping||0)-(inv.tax||0);
+            const _ship=inv.shipping||0;const _tax=inv.tax||0;
+            const soForShip=linkedSO;
+            const computedShip=_ship===0&&soForShip?(soForShip.shipping_type==='pct'?_sub*(soForShip.shipping_value||0)/100:(soForShip.shipping_value||0)):_ship;
+            const showBreakdown=computedShip>0||_tax>0;
+            return showBreakdown&&<div style={{marginBottom:4}}>
+              <div style={{display:'flex',justifyContent:'space-between',padding:'6px 0',fontSize:13,color:'#64748b'}}>
+                <span>Subtotal</span><span>${_sub.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
+              </div>
+              {computedShip>0&&<div style={{display:'flex',justifyContent:'space-between',padding:'6px 0',fontSize:13,color:'#64748b'}}>
+                <span>Shipping</span><span>${computedShip.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
+              </div>}
+              {_tax>0&&<div style={{display:'flex',justifyContent:'space-between',padding:'6px 0',fontSize:13,color:'#64748b'}}>
+                <span>Tax</span><span>${_tax.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
+              </div>}
+            </div>})()}
           <div style={{display:'flex',justifyContent:'space-between',padding:'12px 0',borderTop:'2px solid #e2e8f0'}}>
             <span style={{fontWeight:800}}>Total</span><span style={{fontWeight:800,fontSize:18,color:'#dc2626'}}>${inv.total?.toLocaleString()}</span>
           </div>
@@ -8673,14 +8702,13 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           </div>
         </div>}
 
-        {/* Estimates — All */}
+        {/* Estimates — Open/Approved only (active estimates needing attention) */}
         {(()=>{const openEsts=custEsts.filter(e=>e.status==='sent'||e.status==='open');
           const approvedEsts=custEsts.filter(e=>e.status==='approved');
-          const pastEsts=custEsts.filter(e=>e.status==='converted'||e.status==='draft');
-          const allEsts=[...openEsts,...approvedEsts,...pastEsts];
+          const activeEsts=[...openEsts,...approvedEsts];
           const estBadge=(st)=>({background:st==='sent'||st==='open'?'#fef3c7':st==='approved'?'#dcfce7':st==='converted'?'#dbeafe':'#f1f5f9',color:st==='sent'||st==='open'?'#92400e':st==='approved'?'#166534':st==='converted'?'#1e40af':'#64748b'});
-          return allEsts.length>0&&<>
-          <div style={{fontSize:13,fontWeight:800,color:'#d97706',marginBottom:10}}>📋 Estimates ({allEsts.length})</div>
+          return activeEsts.length>0&&<>
+          <div style={{fontSize:13,fontWeight:800,color:'#d97706',marginBottom:10}}>📋 Estimates ({activeEsts.length})</div>
           {openEsts.length>0&&openEsts.map(est=>{const eaf=est.art_files||[];const _eAQ={};(est.items||[]).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_eAQ[d.art_file_id]=(_eAQ[d.art_file_id]||0)+q2}})});const sub=(est.items||[]).reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);let r=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_eAQ[d.art_file_id]:qq;const dp2=dP(d,qq,eaf,cq);const eq2=dp2._nq!=null?dp2._nq:qq;r+=eq2*dp2.sell});return a+r},0);const _sh=est.shipping_type==='pct'?sub*(est.shipping_value||0)/100:(est.shipping_value||0);const _tr=customer?.tax_exempt?0:(customer?.tax_rate||0);const t=sub+_sh+sub*_tr;
             return<div key={est.id} style={{border:'2px solid #f59e0b',borderRadius:10,padding:14,marginBottom:10,background:'#fffbeb',cursor:'pointer'}} onClick={()=>{setEstView(est);setUpdateRequestSent(false);setUpdateRequestText('')}}>
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
@@ -8692,15 +8720,15 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                   <span style={{color:'#94a3b8',fontSize:14}}>›</span>
                 </div>
               </div></div>})}
-          {(approvedEsts.length>0||pastEsts.length>0)&&<div style={{border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden',marginBottom:10}}>
-            {[...approvedEsts,...pastEsts].map((est,i,arr)=>{const eaf=est.art_files||[];const _eAQ={};(est.items||[]).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_eAQ[d.art_file_id]=(_eAQ[d.art_file_id]||0)+q2}})});const sub=(est.items||[]).reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);let r=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_eAQ[d.art_file_id]:qq;const dp2=dP(d,qq,eaf,cq);const eq2=dp2._nq!=null?dp2._nq:qq;r+=eq2*dp2.sell});return a+r},0);const _sh=est.shipping_type==='pct'?sub*(est.shipping_value||0)/100:(est.shipping_value||0);const _tr=customer?.tax_exempt?0:(customer?.tax_rate||0);const t=sub+_sh+sub*_tr;
+          {approvedEsts.length>0&&<div style={{border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden',marginBottom:10}}>
+            {approvedEsts.map((est,i,arr)=>{const eaf=est.art_files||[];const _eAQ={};(est.items||[]).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_eAQ[d.art_file_id]=(_eAQ[d.art_file_id]||0)+q2}})});const sub=(est.items||[]).reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);let r=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_eAQ[d.art_file_id]:qq;const dp2=dP(d,qq,eaf,cq);const eq2=dp2._nq!=null?dp2._nq:qq;r+=eq2*dp2.sell});return a+r},0);const _sh=est.shipping_type==='pct'?sub*(est.shipping_value||0)/100:(est.shipping_value||0);const _tr=customer?.tax_exempt?0:(customer?.tax_rate||0);const t=sub+_sh+sub*_tr;
               return<div key={est.id} style={{padding:'10px 14px',borderBottom:i<arr.length-1?'1px solid #f1f5f9':'none',display:'flex',justifyContent:'space-between',alignItems:'center',cursor:'pointer'}} onClick={()=>{setEstView(est);setUpdateRequestSent(false);setUpdateRequestText('')}}>
                 <div><span style={{fontWeight:600,fontSize:13}}>{est.memo||est.id}</span> <span style={{fontSize:11,color:'#94a3b8'}}>{est.id}</span>
                   <div style={{fontSize:10,color:'#64748b'}}>{est.created_at?.split(' ')[0]} · {(est.items||[]).length} item{(est.items||[]).length!==1?'s':''}</div></div>
                 <div style={{display:'flex',alignItems:'center',gap:8}}>
                   <div style={{textAlign:'right'}}>
                     <div style={{fontWeight:700,fontSize:13}}>${t.toLocaleString(undefined,{maximumFractionDigits:2})}</div>
-                    <span style={{padding:'2px 8px',borderRadius:10,fontSize:9,fontWeight:700,...estBadge(est.status)}}>{est.status==='converted'?'Converted':est.status.charAt(0).toUpperCase()+est.status.slice(1)}</span>
+                    <span style={{padding:'2px 8px',borderRadius:10,fontSize:9,fontWeight:700,...estBadge(est.status)}}>{est.status.charAt(0).toUpperCase()+est.status.slice(1)}</span>
                   </div>
                   <span style={{color:'#94a3b8',fontSize:14}}>›</span>
                 </div>
@@ -8799,6 +8827,27 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             <div><span style={{fontWeight:600}}>{so.memo||so.id}</span><span style={{fontSize:11,color:'#94a3b8',marginLeft:8}}>{so.id}</span></div>
             <div style={{display:'flex',alignItems:'center',gap:8}}><span className="badge badge-green">Complete</span><span style={{color:'#94a3b8',fontSize:14}}>›</span></div></div>)}
         </>}
+
+        {/* Past Estimates — converted/draft, de-emphasized at bottom */}
+        {(()=>{const pastEsts=custEsts.filter(e=>e.status==='converted'||e.status==='draft');
+          const estBadge=(st)=>({background:st==='converted'?'#dbeafe':'#f1f5f9',color:st==='converted'?'#1e40af':'#64748b'});
+          return pastEsts.length>0&&<>
+          <div style={{fontSize:13,fontWeight:800,color:'#94a3b8',marginBottom:10,marginTop:16}}>📋 Past Estimates ({pastEsts.length})</div>
+          <div style={{border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden',marginBottom:10,opacity:0.75}}>
+            {pastEsts.map((est,i,arr)=>{const eaf=est.art_files||[];const _eAQ={};(est.items||[]).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_eAQ[d.art_file_id]=(_eAQ[d.art_file_id]||0)+q2}})});const sub=(est.items||[]).reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);let r=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_eAQ[d.art_file_id]:qq;const dp2=dP(d,qq,eaf,cq);const eq2=dp2._nq!=null?dp2._nq:qq;r+=eq2*dp2.sell});return a+r},0);const _sh=est.shipping_type==='pct'?sub*(est.shipping_value||0)/100:(est.shipping_value||0);const _tr=customer?.tax_exempt?0:(customer?.tax_rate||0);const t=sub+_sh+sub*_tr;
+              return<div key={est.id} style={{padding:'10px 14px',borderBottom:i<arr.length-1?'1px solid #f1f5f9':'none',display:'flex',justifyContent:'space-between',alignItems:'center',cursor:'pointer'}} onClick={()=>{setEstView(est);setUpdateRequestSent(false);setUpdateRequestText('')}}>
+                <div><span style={{fontWeight:600,fontSize:13}}>{est.memo||est.id}</span> <span style={{fontSize:11,color:'#94a3b8'}}>{est.id}</span>
+                  <div style={{fontSize:10,color:'#64748b'}}>{est.created_at?.split(' ')[0]} · {(est.items||[]).length} item{(est.items||[]).length!==1?'s':''}</div></div>
+                <div style={{display:'flex',alignItems:'center',gap:8}}>
+                  <div style={{textAlign:'right'}}>
+                    <div style={{fontWeight:700,fontSize:13}}>${t.toLocaleString(undefined,{maximumFractionDigits:2})}</div>
+                    <span style={{padding:'2px 8px',borderRadius:10,fontSize:9,fontWeight:700,...estBadge(est.status)}}>{est.status==='converted'?'Converted':est.status.charAt(0).toUpperCase()+est.status.slice(1)}</span>
+                  </div>
+                  <span style={{color:'#94a3b8',fontSize:14}}>›</span>
+                </div>
+              </div>})}
+          </div>
+          </>})()}
 
         {/* Your rep */}
         <div style={{marginTop:20,padding:14,background:'#f8fafc',borderRadius:10}}>
