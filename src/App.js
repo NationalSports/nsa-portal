@@ -11199,6 +11199,15 @@ export default function App(){
     if(!so)return;
     const updatedJobs=safeJobs(so).map(jj=>jj.id===j.id?{...jj,prod_status:newStatus,assigned_machine:machine||jj.assigned_machine,assigned_to:person||jj.assigned_to}:jj);
     savSO({...so,jobs:updatedJobs});
+    // Auto-clock-in when moving to in_process
+    if(newStatus==='in_process'){
+      const timerKey=j.soId+'|'+j.id;
+      if(!activeTimers[timerKey]){
+        const decoratorName=person||j.assigned_to||cu?.name||'Unknown';
+        setActiveTimers(prev=>({...prev,[timerKey]:{person:decoratorName,clockIn:Date.now(),soId:j.soId}}));
+        _idleAccum.current[timerKey]=0;
+      }
+    }
     // Auto-clock-out if job moves to completed/shipped
     if(newStatus==='completed'||newStatus==='shipped'){
       const timerKey=j.soId+'|'+j.id;
@@ -11253,7 +11262,7 @@ export default function App(){
     const filtered=prodFilter==='all'?allJobs:allJobs.filter(j=>{const cc=cust.find(x=>x.id===j.so.customer_id);return(cc?.primary_rep_id||j.so.created_by)===prodFilter});
     const byDeco=prodDecoF==='all'?filtered:filtered.filter(j=>j.deco_type===prodDecoF);
     const readyOnly=byDeco.filter(j=>j.prod_status!=='hold'||isJobReady(j,j.so)).filter(j=>j.prod_status!=='shipped');
-    const byStatus=prodStatF==='active'?readyOnly.filter(j=>j.prod_status!=='completed'):prodStatF==='all'?readyOnly:readyOnly.filter(j=>j.prod_status===prodStatF);
+    const byStatus=prodStatF==='active'?readyOnly:prodStatF==='all'?readyOnly:readyOnly.filter(j=>j.prod_status===prodStatF);
     const totalUnits=byStatus.reduce((a,j)=>a+j.total_units,0);
     const fulfilledUnits=byStatus.reduce((a,j)=>a+j.fulfilled_units,0);
     const needsArt=byStatus.filter(j=>j.art_status!=='art_complete').length;
@@ -12685,7 +12694,7 @@ export default function App(){
   // REPORTS & ANALYTICS PAGE
   const[rptTab,setRptTab]=useState('overview');
   const[rptRep,setRptRep]=useState('all');
-  const[rptWidgets,setRptWidgets]=useState({pipeline:true,repLeaderboard:true,custHealth:true,productMix:true,convFunnel:true,margins:true,seasonality:true,retention:true,omgStores:true,atRisk:true,lowMargin:true,prodThroughput:true,artTime:true,decoTime:true,laborSummary:true});
+  const[rptWidgets,setRptWidgets]=useState({pipeline:true,repLeaderboard:true,custHealth:true,productMix:true,convFunnel:true,margins:true,seasonality:true,retention:true,omgStores:true,atRisk:true,lowMargin:true,prodThroughput:true,decoWorkload:true,artTime:true,decoTime:true,laborSummary:true});
   const[commOverrides,setCommOverrides]=useState({});// {invoiceId: true} = admin approved full commission on late invoice
   const[commMonth,setCommMonth]=useState(()=>{const d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')});
   const[commTab,setCommTab]=useState('statement');// statement, pipeline, ytd, byCustomer
@@ -13087,6 +13096,42 @@ export default function App(){
                 <span>Fulfilled: <strong style={{color:'#22c55e'}}>{fulfilledUnits.toLocaleString()}</strong></span>
                 <span>Fulfillment Rate: <strong style={{color:totalUnits>0&&fulfilledUnits/totalUnits>=0.5?'#22c55e':'#d97706'}}>{totalUnits>0?Math.round(fulfilledUnits/totalUnits*100):0}%</strong></span>
               </div>
+            </div>})()}
+        </div>
+
+        {/* Decorator Workload */}
+        <div className="card" style={{marginBottom:12,borderLeft:'3px solid #7c3aed'}}>
+          <WH id="decoWorkload" title="Decorator Workload" icon="👤"/>
+          {rptWidgets.decoWorkload&&(()=>{
+            const decorators=REPS.filter(r=>r.role==='production').filter(r=>r.is_active!==false);
+            const{decoTasks}=buildWarehouseData();
+            const wData=decorators.map(d=>{
+              const dJobs=decoTasks.filter(t=>t.assignedTo===d.name&&t.prodStatus!=='completed'&&t.prodStatus!=='shipped');
+              const dUnits=dJobs.reduce((a,t)=>a+t.totalUnits,0);
+              const readyN=dJobs.filter(t=>t.isReady).length;
+              const inProcN=dJobs.filter(t=>t.prodStatus==='in_process').length;
+              return{name:d.name,id:d.id,jobs:dJobs.length,units:dUnits,ready:readyN,inProcess:inProcN};
+            });
+            const unassigned=decoTasks.filter(t=>!t.assignedTo&&t.prodStatus!=='completed'&&t.prodStatus!=='shipped');
+            return<div className="card-body" style={{padding:0}}>
+              <table style={{fontSize:12,width:'100%'}}><thead><tr>
+                <th>Decorator</th><th style={{textAlign:'center'}}>Jobs</th><th style={{textAlign:'center'}}>Units</th><th style={{textAlign:'center'}}>Ready</th><th style={{textAlign:'center'}}>In Process</th>
+              </tr></thead><tbody>
+                {wData.map(d=><tr key={d.id}>
+                  <td style={{fontWeight:700,color:'#6d28d9'}}>{d.name}</td>
+                  <td style={{textAlign:'center',fontWeight:700}}>{d.jobs}</td>
+                  <td style={{textAlign:'center',fontWeight:700,color:'#1e40af'}}>{d.units}</td>
+                  <td style={{textAlign:'center'}}><span style={{padding:'1px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:'#dcfce7',color:'#166534'}}>{d.ready}</span></td>
+                  <td style={{textAlign:'center'}}><span style={{padding:'1px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:'#dbeafe',color:'#1e40af'}}>{d.inProcess}</span></td>
+                </tr>)}
+                {unassigned.length>0&&<tr style={{background:'#fef2f2'}}>
+                  <td style={{fontWeight:700,color:'#dc2626'}}>Unassigned</td>
+                  <td style={{textAlign:'center',fontWeight:700}}>{unassigned.length}</td>
+                  <td style={{textAlign:'center',fontWeight:700,color:'#dc2626'}}>{unassigned.reduce((a,t)=>a+t.totalUnits,0)}</td>
+                  <td style={{textAlign:'center'}}><span style={{padding:'1px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:'#fef3c7',color:'#92400e'}}>{unassigned.filter(t=>t.isReady).length}</span></td>
+                  <td style={{textAlign:'center'}}>—</td>
+                </tr>}
+              </tbody></table>
             </div>})()}
         </div>
       </>}
@@ -16955,32 +17000,7 @@ export default function App(){
         </React.Fragment>)}
       </div>
 
-      {/* Decorator Workload Report — Admin/Prod Manager only */}
-      {isAdmin&&<div className="card" style={{marginBottom:12,borderLeft:'3px solid #7c3aed'}}>
-        <div className="card-header" style={{background:'#f5f3ff'}}><h2>Decorator Workload</h2></div>
-        <div className="card-body" style={{padding:0}}>
-          <table style={{fontSize:12,width:'100%'}}><thead><tr>
-            <th>Decorator</th><th style={{textAlign:'center'}}>Jobs</th><th style={{textAlign:'center'}}>Units</th><th style={{textAlign:'center'}}>Ready</th><th style={{textAlign:'center'}}>In Process</th><th></th>
-          </tr></thead><tbody>
-            {workloadData.map(d=><tr key={d.id} style={{cursor:'pointer',background:decoPersonF===d.name?'#f5f3ff':'white'}} onClick={()=>setDecoPersonF(f=>f===d.name?'all':d.name)}>
-              <td style={{fontWeight:700,color:'#6d28d9'}}>{d.name}</td>
-              <td style={{textAlign:'center',fontWeight:700}}>{d.jobs}</td>
-              <td style={{textAlign:'center',fontWeight:700,color:'#1e40af'}}>{d.units}</td>
-              <td style={{textAlign:'center'}}><span style={{padding:'1px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:'#dcfce7',color:'#166534'}}>{d.ready}</span></td>
-              <td style={{textAlign:'center'}}><span style={{padding:'1px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:'#dbeafe',color:'#1e40af'}}>{d.inProcess}</span></td>
-              <td><button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px'}} onClick={e=>{e.stopPropagation();setDecoPersonF(f=>f===d.name?'all':d.name)}}>{decoPersonF===d.name?'Show All':'Filter'}</button></td>
-            </tr>)}
-            {unassignedJobs.length>0&&<tr style={{background:'#fef2f2'}}>
-              <td style={{fontWeight:700,color:'#dc2626'}}>Unassigned</td>
-              <td style={{textAlign:'center',fontWeight:700}}>{unassignedJobs.length}</td>
-              <td style={{textAlign:'center',fontWeight:700,color:'#dc2626'}}>{unassignedJobs.reduce((a,t)=>a+t.totalUnits,0)}</td>
-              <td style={{textAlign:'center'}}><span style={{padding:'1px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:'#fef3c7',color:'#92400e'}}>{unassignedJobs.filter(t=>t.isReady).length}</span></td>
-              <td style={{textAlign:'center'}}>—</td>
-              <td></td>
-            </tr>}
-          </tbody></table>
-        </div>
-      </div>}
+      {/* Decorator Workload Report moved to Reports section */}
 
       {/* Clickable Stats */}
       <div className="stats-row" style={{marginBottom:12}}>
@@ -17130,6 +17150,29 @@ export default function App(){
       {isDecorator&&<div style={{marginTop:8,padding:8,background:'#f5f3ff',borderRadius:6,fontSize:11,color:'#6d28d9'}}>
         Only showing jobs assigned to you that are fully ready for production (all items checked in + artwork approved). Sorted by due date.
       </div>}
+
+      {/* Completed Jobs History for Decorators */}
+      {isDecorator&&(()=>{
+        const myCompleted=completedDecoJobs.filter(t=>t.assignedTo===cu?.name);
+        if(myCompleted.length===0)return null;
+        return<div className="card" style={{marginTop:16,borderLeft:'3px solid #166534'}}>
+          <div className="card-header" style={{background:'#f0fdf4'}}><h2 style={{color:'#166534'}}>My Completed Jobs ({myCompleted.length})</h2></div>
+          <div className="card-body" style={{padding:0,maxHeight:300,overflow:'auto'}}>
+            {myCompleted.map((t,ti)=>{const pct=t.totalUnits>0?Math.round(t.fulfilledUnits/t.totalUnits*100):0;
+              return<div key={ti} style={{padding:'8px 12px',borderBottom:'1px solid #f1f5f9',cursor:'pointer',display:'flex',alignItems:'center',gap:8}}
+                onClick={()=>{setProdJobModal({...t.job,so:t.so,soId:t.soId,customer:t.cName,rep:t.rep,daysOut:t.daysOut})}}>
+                <span style={{fontSize:9,fontWeight:800,color:'#166534',background:'#dcfce7',padding:'1px 5px',borderRadius:3}}>✓</span>
+                <span style={{fontWeight:700,fontSize:12,minWidth:100}}>{t.cName}</span>
+                <span style={{fontSize:10,color:'#94a3b8'}}>{t.soId}</span>
+                <span style={{fontSize:11,fontWeight:700,color:'#7c3aed'}}>{t.artName}</span>
+                <span style={{fontSize:9,padding:'1px 5px',borderRadius:3,fontWeight:600,
+                  background:t.decoType==='embroidery'?'#f3e8ff':t.decoType==='screen_print'?'#dbeafe':'#fef3c7',
+                  color:t.decoType==='embroidery'?'#6b21a8':t.decoType==='screen_print'?'#1e40af':'#92400e'}}>
+                  {t.decoType?.replace(/_/g,' ')}</span>
+                <span style={{marginLeft:'auto',fontWeight:700,fontSize:11,color:'#166534'}}>{t.fulfilledUnits}/{t.totalUnits}</span>
+              </div>})}
+          </div>
+        </div>})()}
     </>);
   };
 
