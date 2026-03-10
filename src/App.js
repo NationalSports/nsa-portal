@@ -11107,12 +11107,15 @@ export default function App(){
   const[approvalNotifyModal,setApprovalNotifyModal]=useState(null);// {job,so,contact,method,message} for send-for-approval popup
   const[prodJobModal,setProdJobModal]=useState(null);// job object for production mockup view
   const[prodJobLightbox,setProdJobLightbox]=useState(false);// lightbox for mockup image
+  const[prodLightboxIdx,setProdLightboxIdx]=useState(0);// index of current mockup in lightbox gallery
+  const[prodLightboxZoom,setProdLightboxZoom]=useState(1);// zoom level for lightbox
   const[prodView,setProdView]=useState('board');const[prodFilter,setProdFilter]=useState('all');const[expandedJob,setExpandedJob]=useState(null);
   const[prodSort,setProdSort]=useState({f:'expected',d:'asc'});const[prodStatF,setProdStatF]=useState('active');const[prodDecoF,setProdDecoF]=useState('all');
   const[assignModal,setAssignModal]=useState(null);// {job, soId, targetStatus}
   const[jobTimeLogs,setJobTimeLogs]=useState(()=>loadState('job_time_logs',[]));// [{jobId,soId,person,clockIn,clockOut,minutes,dept:'production'}]
   React.useEffect(()=>{_saveAppState('job_time_logs',jobTimeLogs)},[jobTimeLogs]);
-  const[activeTimers,setActiveTimers]=useState({});// {jobId:{person,clockIn,soId}}
+  const[activeTimers,setActiveTimers]=useState(()=>loadState('active_timers',{}));// {jobId:{person,clockIn,soId}}
+  React.useEffect(()=>{_saveAppState('active_timers',activeTimers)},[activeTimers]);
   // Art time tracking — separate logs for artist work
   const[artTimeLogs,setArtTimeLogs]=useState(()=>loadState('art_time_logs',[]));// [{jobId,soId,person,clockIn,clockOut,minutes,artName,customer}]
   React.useEffect(()=>{_saveAppState('art_time_logs',artTimeLogs)},[artTimeLogs]);
@@ -11609,66 +11612,85 @@ export default function App(){
             </div>
           </div>
           <div className="modal-body" style={{padding:0}}>
-            {/* Top section: Mockup + Decoration Details side by side */}
-            <div style={{display:'flex',gap:0,borderBottom:'1px solid #e2e8f0'}}>
-              {/* Mockup Image */}
-              <div style={{flex:'0 0 280px',padding:20,background:'#f8fafc',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',borderRight:'1px solid #e2e8f0',cursor:'pointer'}}
-                onClick={()=>setProdJobLightbox(!prodJobLightbox)}>
-                <div style={{width:240,height:240,borderRadius:10,background:'white',border:'2px dashed #d1d5db',display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column',overflow:'hidden'}}>
-                  {(()=>{if(mockupFiles.length===0)return<><div style={{fontSize:48,marginBottom:4}}>🎨</div><div style={{fontSize:11,color:'#94a3b8'}}>No mockup uploaded</div></>;
-                    const f0=mockupFiles[0];const u0=typeof f0==='string'?f0:(f0?.url||'');
-                    const isImg=_isImgUrl(u0,f0);const isPdf=_isPdfUrl(u0,f0);const pdfThumb=isPdf?_cloudinaryPdfThumb(u0):null;
-                    const imgSrc=isImg?u0:pdfThumb;
-                    return imgSrc?<><img src={imgSrc} alt="Mockup" style={{maxWidth:'100%',maxHeight:210,objectFit:'contain'}}/><div style={{fontSize:9,color:'#64748b',marginTop:2}}>Click to enlarge</div></>
-                      :<><div style={{fontSize:48,marginBottom:4}}>📄</div><div style={{fontSize:11,fontWeight:700,color:'#1e40af',wordBreak:'break-all',padding:'0 8px',textAlign:'center'}}>{fileDisplayName(f0)}</div><div style={{fontSize:9,color:'#64748b',marginTop:2}}>Click to enlarge</div></>})()}
-                </div>
-                {mockupFiles.length>1&&<div style={{fontSize:10,color:'#64748b',marginTop:6}}>+{mockupFiles.length-1} more file{mockupFiles.length>2?'s':''}</div>}
+            {/* BIG Mockup Preview — full width, prominent */}
+            <div style={{background:'#0f172a',padding:24,borderBottom:'2px solid #334155',cursor:'pointer',position:'relative'}}
+              onClick={()=>{setProdLightboxIdx(0);setProdLightboxZoom(1);setProdJobLightbox(true)}}>
+              <div style={{display:'flex',alignItems:'center',justifyContent:'center',minHeight:340,borderRadius:12,background:'#1e293b',border:'2px solid #334155',overflow:'hidden',position:'relative'}}>
+                {(()=>{if(mockupFiles.length===0)return<div style={{textAlign:'center',padding:40}}><div style={{fontSize:64,marginBottom:8}}>🎨</div><div style={{fontSize:14,color:'#94a3b8'}}>No mockup uploaded</div></div>;
+                  const f0=mockupFiles[0];const u0=typeof f0==='string'?f0:(f0?.url||'');
+                  const isImg=_isImgUrl(u0,f0);const isPdf=_isPdfUrl(u0,f0);const pdfThumb=isPdf?_cloudinaryPdfThumb(u0):null;
+                  const imgSrc=isImg?u0:pdfThumb;
+                  return imgSrc?<img src={imgSrc} alt="Mockup" style={{maxWidth:'100%',maxHeight:340,objectFit:'contain',display:'block',margin:'0 auto'}}/>
+                    :<div style={{textAlign:'center',padding:40}}><div style={{fontSize:64,marginBottom:8}}>📄</div><div style={{fontSize:14,fontWeight:700,color:'#93c5fd',wordBreak:'break-all'}}>{fileDisplayName(f0)}</div></div>})()}
               </div>
+              <div style={{position:'absolute',bottom:32,right:32,background:'rgba(59,130,246,0.9)',color:'white',padding:'6px 14px',borderRadius:8,fontSize:12,fontWeight:700,display:'flex',alignItems:'center',gap:6}}>
+                🔍 Click to Zoom
+              </div>
+              {mockupFiles.length>1&&<div style={{display:'flex',gap:8,justifyContent:'center',marginTop:12}}>
+                {mockupFiles.slice(0,6).map((f,i)=>{const u=typeof f==='string'?f:(f?.url||'');const isImg=_isImgUrl(u,f);const isPdf=_isPdfUrl(u,f);const thumb=isImg?u:isPdf?_cloudinaryPdfThumb(u):null;
+                  return<div key={i} style={{width:56,height:56,borderRadius:6,border:'2px solid #475569',overflow:'hidden',background:'#334155',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center'}}
+                    onClick={e=>{e.stopPropagation();setProdLightboxIdx(i);setProdLightboxZoom(1);setProdJobLightbox(true)}}>
+                    {thumb?<img src={thumb} alt="" style={{width:'100%',height:'100%',objectFit:'cover'}}/>:<span style={{fontSize:9,color:'#94a3b8',textAlign:'center',padding:2}}>{fileDisplayName(f)}</span>}
+                  </div>})}
+                {mockupFiles.length>6&&<div style={{width:56,height:56,borderRadius:6,border:'2px solid #475569',background:'#334155',display:'flex',alignItems:'center',justifyContent:'center',color:'#94a3b8',fontSize:11,fontWeight:700}}>+{mockupFiles.length-6}</div>}
+              </div>}
+            </div>
 
-              {/* Decoration Details — per-location breakdown */}
-              <div style={{flex:1,padding:20}}>
-                <div style={{fontSize:14,fontWeight:800,color:'#1e3a5f',marginBottom:12}}>Decoration Details</div>
-                {decoLocations.length>0?decoLocations.map((loc,li)=>{
-                  const colorMap2={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000',
-                    'Silver':'#C0C0C0','Royal':'#4169e1','Cardinal':'#8C1515','Green':'#166534','Orange':'#EA580C',
-                    'Navy 2767':'#001f3f','PMS 286':'#0033A0','PMS 032':'#EF3340','PMS 877':'#C0C0C0'};
-                  return<div key={li} style={{marginBottom:li<decoLocations.length-1?14:0,padding:li>0?'12px 0 0':0,borderTop:li>0?'1px solid #e2e8f0':'none'}}>
-                    <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
-                      <div><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:2}}>Location</div>
-                        <div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{loc.position}</div></div>
-                      <div><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:2}}>Deco Type</div>
-                        <div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{loc.deco_type?.replace(/_/g,' ')||'—'}</div></div>
-                      <div><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:2}}>Art Size</div>
-                        <div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{loc.art_size}</div></div>
-                      {li===0&&<div><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:2}}>Total Units</div>
-                        <div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{j.total_units}</div></div>}
+            {/* Decoration Details — per-location breakdown, BIG and clear */}
+            <div style={{padding:24,borderBottom:'2px solid #e2e8f0',background:'#f8fafc'}}>
+              <div style={{fontSize:18,fontWeight:800,color:'#0f172a',marginBottom:16,borderBottom:'2px solid #3b82f6',paddingBottom:8}}>Decoration Details</div>
+              {decoLocations.length>0?decoLocations.map((loc,li)=>{
+                const colorMap2={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000',
+                  'Silver':'#C0C0C0','Royal':'#4169e1','Cardinal':'#8C1515','Green':'#166534','Orange':'#EA580C',
+                  'Navy 2767':'#001f3f','PMS 286':'#0033A0','PMS 032':'#EF3340','PMS 877':'#C0C0C0','Maroon':'#800000',
+                  'Kelly Green':'#4CBB17','Forest Green':'#228B22','Charcoal':'#36454F','Vegas Gold':'#C5B358','Columbia Blue':'#9BDDFF',
+                  'Scarlet':'#FF2400','Purple':'#6B21A8','Brown':'#8B4513','Pink':'#FF69B4','Yellow':'#FFD700','Cream':'#FFFDD0','Tan':'#D2B48C',
+                  'Athletic Gold':'#FFB81C','Texas Orange':'#BF5700','Burnt Orange':'#CC5500','Teal':'#008080','Cyan':'#00FFFF','Lime':'#32CD32'};
+                return<div key={li} style={{marginBottom:li<decoLocations.length-1?20:0,padding:16,background:'white',borderRadius:10,border:'1px solid #e2e8f0',boxShadow:'0 1px 3px rgba(0,0,0,0.06)'}}>
+                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:16,marginBottom:12}}>
+                    <div style={{background:'#eff6ff',borderRadius:8,padding:12}}>
+                      <div style={{fontSize:11,fontWeight:700,color:'#3b82f6',textTransform:'uppercase',marginBottom:4,letterSpacing:1}}>Location</div>
+                      <div style={{fontSize:20,fontWeight:800,color:'#0f172a'}}>{loc.position}</div></div>
+                    <div style={{background:loc.isEmb?'#f5f3ff':'#dbeafe',borderRadius:8,padding:12}}>
+                      <div style={{fontSize:11,fontWeight:700,color:loc.isEmb?'#7c3aed':'#2563eb',textTransform:'uppercase',marginBottom:4,letterSpacing:1}}>Deco Type</div>
+                      <div style={{fontSize:20,fontWeight:800,color:'#0f172a'}}>{loc.deco_type?.replace(/_/g,' ')||'—'}</div></div>
+                    <div style={{background:'#f0fdf4',borderRadius:8,padding:12}}>
+                      <div style={{fontSize:11,fontWeight:700,color:'#166534',textTransform:'uppercase',marginBottom:4,letterSpacing:1}}>Art Size</div>
+                      <div style={{fontSize:20,fontWeight:800,color:'#0f172a'}}>{loc.art_size}</div></div>
+                  </div>
+                  {li===0&&<div style={{background:'#fef3c7',borderRadius:8,padding:12,marginBottom:12}}>
+                    <div style={{fontSize:11,fontWeight:700,color:'#92400e',textTransform:'uppercase',marginBottom:4,letterSpacing:1}}>Total Units</div>
+                    <div style={{fontSize:24,fontWeight:800,color:'#92400e'}}>{j.total_units}</div></div>}
+                  {loc.colors.length>0&&<div>
+                    <div style={{fontSize:13,fontWeight:700,color:'#1e293b',marginBottom:8,textTransform:'uppercase',letterSpacing:0.5}}>{loc.isEmb?'Thread Colors':'Ink Colors'} — {loc.colors.length} color{loc.colors.length!==1?'s':''}</div>
+                    <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                      {loc.colors.map((cl,i)=>{
+                        const clLower=cl.toLowerCase();
+                        const swatchColor=colorMap2[cl]||Object.entries(colorMap2).find(([k])=>clLower.includes(k.toLowerCase()))?.[1]||null;
+                        return<div key={i} style={{display:'flex',alignItems:'center',gap:8,padding:'8px 14px',background:'white',border:'2px solid #e2e8f0',borderRadius:8,boxShadow:'0 1px 2px rgba(0,0,0,0.05)'}}>
+                          <div style={{width:24,height:24,borderRadius:4,border:'2px solid #d1d5db',background:swatchColor||'linear-gradient(135deg,#f1f5f9,#e2e8f0)',boxShadow:swatchColor?'inset 0 1px 2px rgba(255,255,255,0.3)':'none'}}/>
+                          <span style={{fontSize:14,fontWeight:700,color:'#1e293b'}}>{cl}</span>
+                        </div>})}
                     </div>
-                    {loc.colors.length>0&&<div style={{marginTop:8}}>
-                      <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:4}}>{loc.isEmb?'Thread Colors':'Ink Colors'} ({loc.colors.length})</div>
-                      <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-                        {loc.colors.map((cl,i)=>{
-                          const clLower=cl.toLowerCase();
-                          const swatchColor=colorMap2[cl]||Object.entries(colorMap2).find(([k])=>clLower.includes(k.toLowerCase()))?.[1]||null;
-                          return<div key={i} style={{display:'flex',alignItems:'center',gap:6,padding:'4px 10px',background:'white',border:'1px solid #e2e8f0',borderRadius:6}}>
-                            <div style={{width:16,height:16,borderRadius:3,border:'1px solid #d1d5db',background:swatchColor||'linear-gradient(135deg,#f1f5f9,#e2e8f0)'}}/>
-                            <span style={{fontSize:12,fontWeight:600}}>{cl}</span>
-                          </div>})}
-                      </div>
-                    </div>}
-                  </div>})
-                :<div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
-                  <div><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:2}}>Method</div>
-                    <div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{j.deco_type?.replace(/_/g,' ')||'—'}</div></div>
-                  <div><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:2}}>Position(s)</div>
-                    <div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{(j.positions||'').replace(/^,\s*/,'')||'—'}</div></div>
-                  <div><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:2}}>Total Units</div>
-                    <div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{j.total_units}</div></div>
-                </div>}
-                {machine&&<div style={{marginTop:10}}><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:2}}>Machine</div>
-                  <div style={{fontSize:14,fontWeight:700,color:'#92400e'}}>{machine.name}</div></div>}
-                {j.assigned_to&&<div style={{marginTop:6}}><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:2}}>Assigned To</div>
-                  <div style={{fontSize:14,fontWeight:700,color:'#6d28d9'}}>{j.assigned_to}</div></div>}
-              </div>
+                  </div>}
+                </div>})
+              :<div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:16}}>
+                <div style={{background:'#eff6ff',borderRadius:8,padding:12}}>
+                  <div style={{fontSize:11,fontWeight:700,color:'#3b82f6',textTransform:'uppercase',marginBottom:4,letterSpacing:1}}>Method</div>
+                  <div style={{fontSize:20,fontWeight:800,color:'#0f172a'}}>{j.deco_type?.replace(/_/g,' ')||'—'}</div></div>
+                <div style={{background:'#f0fdf4',borderRadius:8,padding:12}}>
+                  <div style={{fontSize:11,fontWeight:700,color:'#166534',textTransform:'uppercase',marginBottom:4,letterSpacing:1}}>Position(s)</div>
+                  <div style={{fontSize:20,fontWeight:800,color:'#0f172a'}}>{(j.positions||'').replace(/^,\s*/,'')||'—'}</div></div>
+                <div style={{background:'#fef3c7',borderRadius:8,padding:12}}>
+                  <div style={{fontSize:11,fontWeight:700,color:'#92400e',textTransform:'uppercase',marginBottom:4,letterSpacing:1}}>Total Units</div>
+                  <div style={{fontSize:24,fontWeight:800,color:'#92400e'}}>{j.total_units}</div></div>
+              </div>}
+              {machine&&<div style={{marginTop:12,background:'#fff7ed',borderRadius:8,padding:12,display:'inline-block'}}>
+                <div style={{fontSize:11,fontWeight:700,color:'#c2410c',textTransform:'uppercase',marginBottom:4,letterSpacing:1}}>Machine</div>
+                <div style={{fontSize:18,fontWeight:800,color:'#9a3412'}}>{machine.name}</div></div>}
+              {j.assigned_to&&<div style={{marginTop:8,background:'#f5f3ff',borderRadius:8,padding:12,display:'inline-block',marginLeft:machine?12:0}}>
+                <div style={{fontSize:11,fontWeight:700,color:'#7c3aed',textTransform:'uppercase',marginBottom:4,letterSpacing:1}}>Assigned To</div>
+                <div style={{fontSize:18,fontWeight:800,color:'#6d28d9'}}>{j.assigned_to}</div></div>}
             </div>
 
             {/* SKUs & Quantities */}
@@ -11737,28 +11759,58 @@ export default function App(){
         </div></div>
       })()}
 
-      {/* Lightbox — full-size mockup image */}
+      {/* Lightbox — full-size zoomable mockup viewer with gallery */}
       {prodJobLightbox&&prodJobModal&&(()=>{
         const so=prodJobModal.so||sos.find(s=>s.id===prodJobModal.soId);
         const allArtIds=prodJobModal._art_ids||[prodJobModal.art_file_id].filter(Boolean);
         const allMockups=[];
         allArtIds.forEach(aid=>{const artF=so?safeArt(so).find(f=>f.id===aid):null;(artF?.mockup_files||artF?.files||[]).forEach(f=>allMockups.push(f))});
-        // Find first displayable image
-        const firstImg=(()=>{for(const f of allMockups){const u=typeof f==='string'?f:(f?.url||'');if(_isImgUrl(u,f))return u;const pt=_isPdfUrl(u,f)?_cloudinaryPdfThumb(u):null;if(pt)return pt}return null})();
-        return<div style={{position:'fixed',top:0,left:0,right:0,bottom:0,background:'rgba(0,0,0,0.85)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer'}}
-          onClick={()=>setProdJobLightbox(false)}>
-          <div style={{maxWidth:'80vw',maxHeight:'80vh',background:'white',borderRadius:12,padding:24,textAlign:'center',overflow:'auto'}} onClick={e=>e.stopPropagation()}>
-            {firstImg?
-              <img src={firstImg} alt="Mockup" style={{maxWidth:'70vw',maxHeight:'60vh',objectFit:'contain',borderRadius:8,marginBottom:12}}/>
-              :<div style={{fontSize:120,marginBottom:12}}>🖼️</div>}
-            <div style={{fontSize:18,fontWeight:800,color:'#1e40af',marginBottom:4}}>{prodJobModal.art_name}</div>
-            <div style={{fontSize:13,color:'#64748b',marginBottom:8}}>{prodJobModal.deco_type?.replace(/_/g,' ')} · {prodJobModal.positions}</div>
-            {allMockups.length>0&&<div style={{display:'flex',gap:6,justifyContent:'center',flexWrap:'wrap'}}>
-              {allMockups.map((f,i)=><div key={i} style={{padding:'8px 16px',background:'#eff6ff',borderRadius:6,cursor:'pointer',fontSize:12,fontWeight:600,color:'#1e40af'}}
-                onClick={()=>openFile(f)}>{fileDisplayName(f)}</div>)}
-            </div>}
-            <button className="btn btn-secondary" style={{marginTop:16}} onClick={()=>setProdJobLightbox(false)}>Close</button>
+        const idx=Math.min(prodLightboxIdx,allMockups.length-1);
+        const curFile=allMockups[idx];
+        const curUrl=curFile?(typeof curFile==='string'?curFile:(curFile?.url||'')):'';
+        const curIsImg=_isImgUrl(curUrl,curFile);const curIsPdf=_isPdfUrl(curUrl,curFile);
+        const curSrc=curIsImg?curUrl:curIsPdf?_cloudinaryPdfThumb(curUrl):null;
+        const zoom=prodLightboxZoom;
+        return<div style={{position:'fixed',top:0,left:0,right:0,bottom:0,background:'rgba(0,0,0,0.92)',zIndex:9999,display:'flex',flexDirection:'column'}}
+          onClick={()=>{setProdJobLightbox(false);setProdLightboxZoom(1)}}>
+          {/* Top bar */}
+          <div style={{display:'flex',alignItems:'center',padding:'12px 20px',background:'rgba(0,0,0,0.5)',flexShrink:0}} onClick={e=>e.stopPropagation()}>
+            <div style={{flex:1}}>
+              <div style={{fontSize:16,fontWeight:800,color:'white'}}>{prodJobModal.art_name}</div>
+              <div style={{fontSize:12,color:'#94a3b8'}}>{prodJobModal.deco_type?.replace(/_/g,' ')} · {prodJobModal.positions} · {allMockups.length} file{allMockups.length!==1?'s':''}</div>
+            </div>
+            <div style={{display:'flex',gap:8,alignItems:'center'}}>
+              {/* Zoom controls */}
+              <button style={{background:'rgba(255,255,255,0.15)',border:'none',color:'white',padding:'6px 12px',borderRadius:6,cursor:'pointer',fontSize:14,fontWeight:700}} onClick={()=>setProdLightboxZoom(z=>Math.max(0.5,z-0.5))}>-</button>
+              <span style={{color:'white',fontSize:13,fontWeight:700,minWidth:50,textAlign:'center'}}>{Math.round(zoom*100)}%</span>
+              <button style={{background:'rgba(255,255,255,0.15)',border:'none',color:'white',padding:'6px 12px',borderRadius:6,cursor:'pointer',fontSize:14,fontWeight:700}} onClick={()=>setProdLightboxZoom(z=>Math.min(5,z+0.5))}>+</button>
+              <button style={{background:'rgba(255,255,255,0.15)',border:'none',color:'white',padding:'6px 12px',borderRadius:6,cursor:'pointer',fontSize:12,fontWeight:600,marginLeft:8}} onClick={()=>setProdLightboxZoom(1)}>Reset</button>
+              {curFile&&<button style={{background:'#3b82f6',border:'none',color:'white',padding:'6px 14px',borderRadius:6,cursor:'pointer',fontSize:12,fontWeight:600,marginLeft:8}} onClick={()=>openFile(curFile)}>Download</button>}
+              <button style={{background:'rgba(255,255,255,0.2)',border:'none',color:'white',width:36,height:36,borderRadius:8,cursor:'pointer',fontSize:20,fontWeight:700,marginLeft:12,display:'flex',alignItems:'center',justifyContent:'center'}} onClick={()=>{setProdJobLightbox(false);setProdLightboxZoom(1)}}>x</button>
+            </div>
           </div>
+          {/* Main image area */}
+          <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',overflow:'auto',position:'relative'}} onClick={e=>e.stopPropagation()}
+            onWheel={e=>{e.preventDefault();setProdLightboxZoom(z=>Math.min(5,Math.max(0.5,z+(e.deltaY<0?0.25:-0.25))))}}>
+            {/* Prev button */}
+            {allMockups.length>1&&<button style={{position:'absolute',left:16,top:'50%',transform:'translateY(-50%)',background:'rgba(255,255,255,0.2)',border:'none',color:'white',width:48,height:48,borderRadius:24,cursor:'pointer',fontSize:24,fontWeight:700,zIndex:2}}
+              onClick={()=>{setProdLightboxIdx(i=>i<=0?allMockups.length-1:i-1);setProdLightboxZoom(1)}}>&#8249;</button>}
+            {curSrc?
+              <img src={curSrc} alt="Mockup" style={{maxWidth:zoom<=1?'90vw':'none',maxHeight:zoom<=1?'80vh':'none',width:zoom>1?(zoom*60)+'vw':'auto',height:'auto',objectFit:'contain',transition:'transform 0.15s ease',cursor:zoom<3?'zoom-in':'zoom-out',userSelect:'none'}}
+                onClick={()=>setProdLightboxZoom(z=>z<3?z+1:1)} draggable={false}/>
+              :<div style={{textAlign:'center',padding:60}}><div style={{fontSize:120,marginBottom:16}}>📄</div><div style={{fontSize:18,fontWeight:700,color:'white',wordBreak:'break-all'}}>{curFile?fileDisplayName(curFile):'No file'}</div></div>}
+            {/* Next button */}
+            {allMockups.length>1&&<button style={{position:'absolute',right:16,top:'50%',transform:'translateY(-50%)',background:'rgba(255,255,255,0.2)',border:'none',color:'white',width:48,height:48,borderRadius:24,cursor:'pointer',fontSize:24,fontWeight:700,zIndex:2}}
+              onClick={()=>{setProdLightboxIdx(i=>i>=allMockups.length-1?0:i+1);setProdLightboxZoom(1)}}>&#8250;</button>}
+          </div>
+          {/* Thumbnail strip */}
+          {allMockups.length>1&&<div style={{display:'flex',gap:8,justifyContent:'center',padding:'12px 20px',background:'rgba(0,0,0,0.5)',flexShrink:0}} onClick={e=>e.stopPropagation()}>
+            {allMockups.map((f,i)=>{const u=typeof f==='string'?f:(f?.url||'');const isImg=_isImgUrl(u,f);const isPdf=_isPdfUrl(u,f);const thumb=isImg?u:isPdf?_cloudinaryPdfThumb(u):null;
+              return<div key={i} style={{width:64,height:64,borderRadius:8,border:i===idx?'3px solid #3b82f6':'2px solid #475569',overflow:'hidden',background:'#1e293b',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',opacity:i===idx?1:0.6,transition:'all 0.15s'}}
+                onClick={()=>{setProdLightboxIdx(i);setProdLightboxZoom(1)}}>
+                {thumb?<img src={thumb} alt="" style={{width:'100%',height:'100%',objectFit:'cover'}}/>:<span style={{fontSize:9,color:'#94a3b8',textAlign:'center',padding:4}}>{fileDisplayName(f)}</span>}
+              </div>})}
+          </div>}
         </div>
       })()}
     </>);
@@ -17043,11 +17095,29 @@ export default function App(){
           const decoActive=activeTimers[decoTimerKey];
           const decoLogs=jobTimeLogs.filter(l=>l.jobId===t.job.id&&l.soId===t.soId);
           const decoTotalMins=decoLogs.reduce((a,l)=>a+(l.minutes||0),0);
+          // Get mockup thumbnail and color/location info for this card
+          const _cardArt=(()=>{const so=t.so;if(!so)return{thumb:null,colors:[],positions:[],artSize:''};
+            const artIds=t.job._art_ids||[t.job.art_file_id].filter(Boolean);
+            const artFiles=artIds.map(aid=>safeArt(so).find(f=>f.id===aid)).filter(Boolean);
+            const mockups=artFiles.flatMap(a=>a?.mockup_files||a?.files||[]);
+            const f0=mockups[0];const u0=f0?(typeof f0==='string'?f0:(f0?.url||'')):'';
+            const thumb=_isImgUrl(u0,f0)?u0:_isPdfUrl(u0,f0)?_cloudinaryPdfThumb(u0):null;
+            const colors=artFiles.flatMap(a=>(a.ink_colors||a.thread_colors||'').split(/[,\n]/).map(c2=>c2.trim()).filter(Boolean));
+            const positions=(t.job.positions||'').split(',').map(p=>p.trim()).filter(Boolean);
+            const artSize=artFiles[0]?.art_size||'';
+            return{thumb,colors,positions,artSize};
+          })();
           return<div key={ti} className="card" style={{
             border:t.isReady?'2px solid #22c55e':t.urgent?'2px solid #dc2626':'1px solid #e2e8f0',
             background:t.isReady?'#f0fdf4':t.prodStatus==='in_process'?'#eff6ff':'white',cursor:'pointer'}}
             onClick={()=>{setProdJobModal({...t.job,so:t.so,soId:t.soId,customer:t.cName,rep:t.rep,daysOut:t.daysOut})}}>
-            <div style={{padding:'10px 12px'}}>
+            <div style={{display:'flex',gap:0}}>
+              {/* Mockup thumbnail on left side of card */}
+              <div style={{flex:'0 0 90px',background:'#f1f5f9',display:'flex',alignItems:'center',justifyContent:'center',borderRight:'1px solid #e2e8f0',minHeight:120}}>
+                {_cardArt.thumb?<img src={_cardArt.thumb} alt="" style={{width:'100%',height:'100%',objectFit:'cover',maxHeight:160}}/>
+                  :<div style={{textAlign:'center',padding:8}}><div style={{fontSize:28,opacity:0.4}}>🎨</div><div style={{fontSize:8,color:'#94a3b8'}}>No mockup</div></div>}
+              </div>
+              <div style={{flex:1,padding:'10px 12px'}}>
               {/* Header row */}
               <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:4}}>
                 {t.urgent&&<span style={{fontSize:9,fontWeight:800,color:'#dc2626',background:'#fef2f2',padding:'1px 5px',borderRadius:3}}>🔥 {t.daysOut}d</span>}
@@ -17059,15 +17129,23 @@ export default function App(){
               {t.daysOut!=null&&<div style={{fontSize:10,color:t.urgent?'#dc2626':t.daysOut<=7?'#d97706':'#64748b',fontWeight:t.urgent?700:400,marginBottom:4}}>
                 Due: {t.so?.expected_date||'—'} ({t.daysOut}d {t.daysOut<0?'overdue':'out'})</div>}
               {/* Art + deco info */}
-              <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:6}}>
+              <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:4}}>
                 <span style={{fontSize:12,fontWeight:700,color:'#7c3aed'}}>{t.artName}</span>
                 <span style={{fontSize:9,padding:'1px 5px',borderRadius:3,fontWeight:600,
                   background:t.decoType==='embroidery'?'#f3e8ff':t.decoType==='screen_print'?'#dbeafe':t.decoType==='dtf'?'#fef3c7':'#f1f5f9',
                   color:t.decoType==='embroidery'?'#6b21a8':t.decoType==='screen_print'?'#1e40af':t.decoType==='dtf'?'#92400e':'#475569'}}>
                   {t.decoType?.replace(/_/g,' ')}</span>
               </div>
+              {/* Location, Size, Colors summary — visible at a glance */}
+              <div style={{display:'flex',gap:4,flexWrap:'wrap',marginBottom:4}}>
+                {_cardArt.positions.length>0&&_cardArt.positions.map((p,i)=><span key={i} style={{fontSize:9,fontWeight:700,padding:'1px 5px',borderRadius:3,background:'#eff6ff',color:'#1e40af',border:'1px solid #bfdbfe'}}>{p}</span>)}
+                {_cardArt.artSize&&<span style={{fontSize:9,fontWeight:700,padding:'1px 5px',borderRadius:3,background:'#f0fdf4',color:'#166534',border:'1px solid #bbf7d0'}}>{_cardArt.artSize}</span>}
+                {_cardArt.colors.length>0&&<span style={{fontSize:9,fontWeight:600,padding:'1px 5px',borderRadius:3,background:'#fefce8',color:'#854d0e',border:'1px solid #fde68a'}}>{_cardArt.colors.length} color{_cardArt.colors.length!==1?'s':''}</span>}
+              </div>
+              {/* Color names inline */}
+              {_cardArt.colors.length>0&&<div style={{fontSize:9,color:'#64748b',marginBottom:4,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{_cardArt.colors.join(' · ')}</div>}
               {/* Status badges */}
-              <div style={{display:'flex',gap:3,flexWrap:'wrap',marginBottom:6}}>
+              <div style={{display:'flex',gap:3,flexWrap:'wrap',marginBottom:4}}>
                 <span style={{padding:'1px 5px',borderRadius:4,fontSize:8,fontWeight:700,background:SC[t.artStatus]?.bg,color:SC[t.artStatus]?.c}}>
                   {t.artStatus==='art_complete'?'✅ Art':'⏳ Art'}</span>
                 <span style={{padding:'1px 5px',borderRadius:4,fontSize:8,fontWeight:700,background:SC[t.itemStatus]?.bg,color:SC[t.itemStatus]?.c}}>
@@ -17110,6 +17188,7 @@ export default function App(){
                 </div>
               </div>}
             </div>
+            </div>{/* end flex wrapper */}
           </div>})}
       </div>}
       {isDecorator&&<div style={{marginTop:8,padding:8,background:'#f5f3ff',borderRadius:6,fontSize:11,color:'#6d28d9'}}>
