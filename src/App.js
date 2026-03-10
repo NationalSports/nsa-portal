@@ -6,6 +6,7 @@ import { loadStripe } from '@stripe/stripe-js';
 import { Elements, PaymentElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import * as XLSX from 'xlsx';
 import { BarcodeDetector as BarcodeDetectorPolyfill } from 'barcode-detector';
+import { createWorker } from 'tesseract.js';
 
 // ─── Stripe Setup ───
 const _stripePk = process.env.REACT_APP_STRIPE_PK || '';
@@ -8736,14 +8737,46 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   </div>
 }
 
+// ─── PO NUMBER EXTRACTION FROM OCR TEXT ───
+const extractPOFromText=(text)=>{
+  if(!text)return null;
+  // Patterns to match PO numbers on shipping labels:
+  // "PO-NO : 0902323374", "PO-NO: 0902323374"
+  // "TEAM/CUSTOMER PO : PO7540 EXP", "Cust PO#: PO7770 CSM SP"
+  // "PO: 7775GBHSTEN-JB", "PO#: 12345", "PO 12345"
+  // "SalesOrder#:SO-158374470", "RO12173689"
+  const lines=text.split('\n');
+  for(const line of lines){
+    const l=line.trim();
+    // Match "PO-NO" or "PO NO" followed by separator and value
+    let m=l.match(/PO[\s-]*NO\s*[:#=]\s*(\S+)/i);
+    if(m)return m[1].replace(/[.,]+$/,'');
+    // Match "Cust PO#" or "CUSTOMER PO" or "TEAM/CUSTOMER PO" followed by value
+    m=l.match(/(?:CUST(?:OMER)?|TEAM\/CUSTOMER)\s*PO\s*#?\s*[:#=]\s*(.+)/i);
+    if(m)return m[1].trim().replace(/[.,]+$/,'');
+    // Match "PO#:" or "PO:" followed by value
+    m=l.match(/\bPO\s*#?\s*[:#=]\s*(.+)/i);
+    if(m){const v=m[1].trim();if(v.length>=4)return v.replace(/[.,]+$/,'')}
+    // Match "SalesOrder#:" pattern
+    m=l.match(/Sales\s*Order\s*#?\s*[:#=]\s*(\S+)/i);
+    if(m)return m[1].replace(/[.,]+$/,'');
+  }
+  return null;
+};
+
 // ─── BARCODE / QR CAMERA SCANNER ───
 const BarcodeScanner=({onScan,onClose,placeholder='Scan barcode or QR code...'})=>{
   const videoRef=useRef(null);const streamRef=useRef(null);const scanningRef=useRef(false);
   const[active,setActive]=useState(false);const[error,setError]=useState(null);const[manualVal,setManualVal]=useState('');
   const detectorRef=useRef(null);
+  const[scanMode,setScanMode]=useState('barcode');// 'barcode' | 'text'
+  const[ocrStatus,setOcrStatus]=useState('');// OCR progress status
+  const[ocrResults,setOcrResults]=useState([]);// extracted PO numbers from OCR
+  const ocrBusyRef=useRef(false);
+  const canvasRef=useRef(null);
 
   const startCamera=async()=>{
-    setError(null);
+    setError(null);setOcrResults([]);setOcrStatus('');
     try{
       const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment',width:{ideal:1280},height:{ideal:720}}});
       streamRef.current=stream;
@@ -8757,11 +8790,12 @@ const BarcodeScanner=({onScan,onClose,placeholder='Scan barcode or QR code...'})
         await v.play();
       }
       setActive(true);
-      // Use native BarcodeDetector if available, otherwise use polyfill
-      const DetectorImpl='BarcodeDetector' in window?window.BarcodeDetector:BarcodeDetectorPolyfill;
-      detectorRef.current=new DetectorImpl({formats:['qr_code','code_128','code_39','ean_13','ean_8','upc_a','upc_e','codabar','itf']});
+      if(scanMode==='barcode'){
+        const DetectorImpl='BarcodeDetector' in window?window.BarcodeDetector:BarcodeDetectorPolyfill;
+        detectorRef.current=new DetectorImpl({formats:['qr_code','code_128','code_39','ean_13','ean_8','upc_a','upc_e','codabar','itf']});
+      }
       scanningRef.current=true;
-      scanLoop();
+      if(scanMode==='barcode')scanLoop();
     }catch(err){
       if(err.name==='NotAllowedError')setError('Camera permission denied. Please allow camera access and try again.');
       else if(err.name==='NotFoundError')setError('No camera found. Use manual entry below.');
@@ -8781,37 +8815,119 @@ const BarcodeScanner=({onScan,onClose,placeholder='Scan barcode or QR code...'})
     requestAnimationFrame(()=>setTimeout(scanLoop,150));
   };
 
+  // Capture a frame from video for OCR
+  const captureFrame=()=>{
+    const v=videoRef.current;
+    if(!v||!v.videoWidth)return null;
+    let canvas=canvasRef.current;
+    if(!canvas){canvas=document.createElement('canvas');canvasRef.current=canvas}
+    canvas.width=v.videoWidth;canvas.height=v.videoHeight;
+    const ctx=canvas.getContext('2d');
+    ctx.drawImage(v,0,0);
+    return canvas;
+  };
+
+  // Run OCR on current camera frame
+  const runOCR=async()=>{
+    if(ocrBusyRef.current)return;
+    ocrBusyRef.current=true;
+    setOcrStatus('Reading text...');setOcrResults([]);
+    try{
+      const canvas=captureFrame();
+      if(!canvas){setOcrStatus('No camera frame available');ocrBusyRef.current=false;return}
+      const worker=await createWorker('eng');
+      const{data:{text}}=await worker.recognize(canvas);
+      await worker.terminate();
+      if(!text||!text.trim()){setOcrStatus('No text detected — try adjusting angle');ocrBusyRef.current=false;return}
+      // Extract PO numbers from OCR text
+      const po=extractPOFromText(text);
+      if(po){
+        setOcrResults([po]);setOcrStatus('Found PO: '+po);
+      }else{
+        // Show raw text so user can pick out the PO
+        const lines=text.split('\n').map(l=>l.trim()).filter(l=>l.length>2);
+        setOcrResults(lines.slice(0,10));
+        setOcrStatus('No PO pattern found — select a line or try again');
+      }
+    }catch(err){
+      console.warn('[OCR] error:',err?.message||err);
+      setOcrStatus('OCR error: '+(err?.message||'Unknown error'));
+    }
+    ocrBusyRef.current=false;
+  };
+
   const stopCamera=()=>{
     scanningRef.current=false;
     if(streamRef.current){streamRef.current.getTracks().forEach(t=>t.stop());streamRef.current=null}
     if(videoRef.current){videoRef.current.srcObject=null}
-    setActive(false);
+    setActive(false);setOcrStatus('');setOcrResults([]);
   };
 
   // Cleanup on unmount
   React.useEffect(()=>()=>{scanningRef.current=false;if(streamRef.current){streamRef.current.getTracks().forEach(t=>t.stop())};},[]);
+
+  // Restart camera when mode changes while active
+  const prevMode=useRef(scanMode);
+  React.useEffect(()=>{
+    if(prevMode.current!==scanMode&&active){stopCamera();setTimeout(()=>startCamera(),200)}
+    prevMode.current=scanMode;
+  },[scanMode]);// eslint-disable-line react-hooks/exhaustive-deps
 
   const handleManual=(e)=>{
     if(e.key==='Enter'&&manualVal.trim()){onScan(manualVal.trim());setManualVal('')}
   };
 
   return<div style={{background:'#0f172a',borderRadius:12,overflow:'hidden',border:'2px solid #334155'}}>
+    {/* Mode toggle */}
+    <div style={{display:'flex',borderBottom:'1px solid #1e293b'}}>
+      <button onClick={()=>setScanMode('barcode')} style={{flex:1,padding:'8px 0',fontSize:12,fontWeight:700,cursor:'pointer',border:'none',
+        background:scanMode==='barcode'?'#1e293b':'transparent',color:scanMode==='barcode'?'#22c55e':'#64748b',borderBottom:scanMode==='barcode'?'2px solid #22c55e':'2px solid transparent'}}>
+        Barcode Scan
+      </button>
+      <button onClick={()=>setScanMode('text')} style={{flex:1,padding:'8px 0',fontSize:12,fontWeight:700,cursor:'pointer',border:'none',
+        background:scanMode==='text'?'#1e293b':'transparent',color:scanMode==='text'?'#f59e0b':'#64748b',borderBottom:scanMode==='text'?'2px solid #f59e0b':'2px solid transparent'}}>
+        PO Text Scan
+      </button>
+    </div>
     {/* Single video element always in DOM so ref/stream survive re-renders */}
     <div style={{position:'relative',background:'#000',display:active?'block':'none'}}>
       <video ref={videoRef} style={{width:'100%',maxHeight:280,objectFit:'cover',display:'block'}} autoPlay playsInline muted/>
       {/* Scan overlay */}
       <div style={{position:'absolute',top:0,left:0,right:0,bottom:0,display:'flex',alignItems:'center',justifyContent:'center',pointerEvents:'none'}}>
-        <div style={{width:200,height:200,border:'2px solid rgba(34,197,94,0.7)',borderRadius:12,boxShadow:'0 0 0 9999px rgba(0,0,0,0.3)'}}/>
+        <div style={{width:scanMode==='text'?280:200,height:scanMode==='text'?160:200,
+          border:scanMode==='text'?'2px solid rgba(245,158,11,0.7)':'2px solid rgba(34,197,94,0.7)',borderRadius:12,boxShadow:'0 0 0 9999px rgba(0,0,0,0.3)'}}/>
       </div>
-      <div style={{position:'absolute',bottom:8,left:0,right:0,textAlign:'center',color:'#22c55e',fontSize:11,fontWeight:600,textShadow:'0 1px 3px rgba(0,0,0,0.8)'}}>
-        Point camera at barcode or QR code
+      <div style={{position:'absolute',bottom:scanMode==='text'?40:8,left:0,right:0,textAlign:'center',
+        color:scanMode==='text'?'#f59e0b':'#22c55e',fontSize:11,fontWeight:600,textShadow:'0 1px 3px rgba(0,0,0,0.8)'}}>
+        {scanMode==='text'?'Point camera at PO label, then tap Capture':'Point camera at barcode or QR code'}
       </div>
+      {scanMode==='text'&&<button onClick={runOCR} disabled={ocrBusyRef.current}
+        style={{position:'absolute',bottom:8,left:'50%',transform:'translateX(-50)',background:ocrBusyRef.current?'#475569':'#f59e0b',
+          color:ocrBusyRef.current?'#94a3b8':'#000',border:'none',borderRadius:8,padding:'6px 24px',cursor:ocrBusyRef.current?'default':'pointer',fontSize:13,fontWeight:700}}>
+        {ocrBusyRef.current?'Reading...':'Capture & Read'}
+      </button>}
       <button onClick={stopCamera} style={{position:'absolute',top:8,right:8,background:'rgba(0,0,0,0.6)',border:'none',color:'white',borderRadius:8,padding:'4px 10px',cursor:'pointer',fontSize:12}}>Close Camera</button>
     </div>
+    {/* OCR results */}
+    {scanMode==='text'&&active&&(ocrStatus||ocrResults.length>0)&&<div style={{padding:'8px 12px',borderBottom:'1px solid #1e293b'}}>
+      {ocrStatus&&<div style={{fontSize:11,color:ocrResults.length===1?'#22c55e':'#f59e0b',marginBottom:ocrResults.length>1?6:0,fontWeight:600}}>{ocrStatus}</div>}
+      {ocrResults.length===1&&<button onClick={()=>{const v=ocrResults[0];stopCamera();onScan(v)}}
+        style={{marginTop:4,width:'100%',background:'#22c55e',color:'#000',border:'none',borderRadius:6,padding:'8px',fontSize:13,fontWeight:700,cursor:'pointer'}}>
+        Use: {ocrResults[0]}
+      </button>}
+      {ocrResults.length>1&&<div style={{maxHeight:120,overflowY:'auto'}}>
+        {ocrResults.map((line,i)=><button key={i} onClick={()=>{stopCamera();onScan(line)}}
+          style={{display:'block',width:'100%',textAlign:'left',background:'#1e293b',color:'#e2e8f0',border:'1px solid #334155',borderRadius:4,padding:'4px 8px',marginBottom:2,fontSize:11,fontFamily:'monospace',cursor:'pointer',':hover':{background:'#334155'}}}>
+          {line}
+        </button>)}
+      </div>}
+    </div>}
     {!active&&<div style={{padding:'20px',textAlign:'center'}}>
       {error?<div style={{color:'#f87171',fontSize:12,marginBottom:10}}>{error}</div>:
-      <div style={{color:'#94a3b8',fontSize:12,marginBottom:10}}>Open the camera to scan barcodes/QR codes, or type manually below</div>}
-      <button onClick={startCamera} style={{background:'#22c55e',color:'white',border:'none',borderRadius:8,padding:'10px 24px',fontSize:14,fontWeight:700,cursor:'pointer',display:'inline-flex',alignItems:'center',gap:8}}>
+      <div style={{color:'#94a3b8',fontSize:12,marginBottom:10}}>
+        {scanMode==='text'?'Open the camera to scan PO text from shipping labels':'Open the camera to scan barcodes/QR codes, or type manually below'}
+      </div>}
+      <button onClick={startCamera} style={{background:scanMode==='text'?'#f59e0b':'#22c55e',color:scanMode==='text'?'#000':'white',border:'none',borderRadius:8,padding:'10px 24px',fontSize:14,fontWeight:700,cursor:'pointer',display:'inline-flex',alignItems:'center',gap:8}}>
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/><circle cx="12" cy="13" r="4"/></svg>
         Open Camera
       </button>
