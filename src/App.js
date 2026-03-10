@@ -15297,23 +15297,50 @@ export default function App(){
                   <button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 10px'}}
                     onClick={()=>{
                       // Quick packing slip for entire group
+                      // Resolve shipping address from customer
+                      const firstSO=Object.values(grp.soMap)[0];
+                      const shipCust=cust.find(c2=>c2.id===firstSO?.customer_id);
+                      const shipAddrSub=(()=>{
+                        if(firstSO?.ship_to_id==='custom'&&firstSO?.ship_to_custom)return firstSO.ship_to_custom;
+                        if(shipCust?.shipping_address_line1){
+                          let a=shipCust.shipping_address_line1;
+                          if(shipCust.shipping_address_line2)a+='<br/>'+shipCust.shipping_address_line2;
+                          a+='<br/>'+(shipCust.shipping_city||'')+', '+(shipCust.shipping_state||'')+' '+(shipCust.shipping_zip||'');
+                          return a;
+                        }
+                        if(shipCust?.billing_address_line1){
+                          let a=shipCust.billing_address_line1;
+                          if(shipCust.billing_address_line2)a+='<br/>'+shipCust.billing_address_line2;
+                          a+='<br/>'+(shipCust.billing_city||'')+', '+(shipCust.billing_state||'')+' '+(shipCust.billing_zip||'');
+                          return a;
+                        }
+                        return 'Default address on file';
+                      })();
+                      // Build rows with full item detail (SKU + sizes)
+                      const packRows=[];
+                      [...grp.soIds].forEach(soId=>{
+                        const so=grp.soMap[soId];if(!so)return;
+                        safeItems(so).forEach(item=>{
+                          const szObj=safeSizes(item);
+                          const totalQty=Object.values(szObj).reduce((a,v)=>a+safeNum(v),0);
+                          if(totalQty<=0)return;
+                          const szStr=Object.entries(szObj).filter(([,v])=>v>0).map(([sz,v])=>sz+': '+v).join('  ');
+                          packRows.push({cells:[soId,item.sku||'',item.name||'',szStr,totalQty]});
+                        });
+                      });
                       printDoc({
                         title:grp.cName,docNum:[...grp.soIds].join(', '),
                         docType:'PACKING SLIP',showPricing:false,
                         headerRight:'<div class="ta" style="font-size:20px">'+grp.totalUnits+' Total Units</div><div class="ts">Ship: '+(grp.shipMethod||'TBD')+'</div>',
                         infoBoxes:[
-                          {label:'Ship To',value:grp.cName,sub:grp.items[0]?.so?.ship_to_id==='default'?'Default address on file':'Custom address'},
+                          {label:'Ship To',value:grp.cName,sub:shipAddrSub},
                           {label:'Ship Date',value:new Date().toLocaleDateString(),sub:'Method: '+(grp.shipMethod||'Ground')},
                         ],
                         tables:[{
                           title:'Items in this Shipment',
                           headers:['SO#','SKU','Item','Sizes','Qty'],
                           aligns:['left','left','left','left','center'],
-                          rows:grp.items.map(t=>{
-                            const so=t.so;const soItem=safeItems(so).find(it=>t.desc?.includes(it.sku)||t.desc?.includes(it.name));
-                            const szStr=soItem?Object.entries(safeSizes(soItem)).filter(([,v])=>v>0).map(([sz,v])=>sz+':'+v).join(' '):'';
-                            return{cells:[t.soId,soItem?.sku||'',soItem?.name||t.desc,szStr,t.units]};
-                          })
+                          rows:packRows
                         }],
                         notes:'Please inspect all items upon receipt. Report any discrepancies within 48 hours.',
                         footer:'NO PRICING — Customer Copy'
@@ -15551,12 +15578,31 @@ export default function App(){
                 <div style={{display:'flex',gap:6,marginTop:8}}>
                   <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{
                     const boxItems=box.items||[];
+                    // Resolve shipping address for per-box slip
+                    const boxFirstSO=Object.values(shipModal.soMap||shipModal.grp.soMap||{})[0];
+                    const boxCust=cust.find(c2=>c2.id===boxFirstSO?.customer_id);
+                    const boxAddrSub=(()=>{
+                      if(boxFirstSO?.ship_to_id==='custom'&&boxFirstSO?.ship_to_custom)return boxFirstSO.ship_to_custom;
+                      if(boxCust?.shipping_address_line1){
+                        let a=boxCust.shipping_address_line1;
+                        if(boxCust.shipping_address_line2)a+='<br/>'+boxCust.shipping_address_line2;
+                        a+='<br/>'+(boxCust.shipping_city||'')+', '+(boxCust.shipping_state||'')+' '+(boxCust.shipping_zip||'');
+                        return a;
+                      }
+                      if(boxCust?.billing_address_line1){
+                        let a=boxCust.billing_address_line1;
+                        if(boxCust.billing_address_line2)a+='<br/>'+boxCust.billing_address_line2;
+                        a+='<br/>'+(boxCust.billing_city||'')+', '+(boxCust.billing_state||'')+' '+(boxCust.billing_zip||'');
+                        return a;
+                      }
+                      return '';
+                    })();
                     printDoc({
                       title:shipModal.grp.cName,docNum:[...shipModal.grp.soIds].join(', ')+' — Box '+(bi+1),
                       docType:'PACKING SLIP',showPricing:false,
                       headerRight:'<div class="ta" style="font-size:18px">'+boxUnits+' Units — Box '+(bi+1)+' of '+shipModal.boxes.length+'</div>'+(box.tracking_number?'<div class="ts" style="font-family:monospace">'+box.tracking_number+'</div>':''),
                       infoBoxes:[
-                        {label:'Ship To',value:shipModal.grp.cName},
+                        {label:'Ship To',value:shipModal.grp.cName,sub:boxAddrSub},
                         {label:'Ship Date',value:new Date().toLocaleDateString(),sub:(box.carrier||'fedex').toUpperCase()},
                         ...(box.tracking_number?[{label:'Tracking',value:box.tracking_number}]:[]),
                       ],
