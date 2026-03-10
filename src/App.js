@@ -4426,7 +4426,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               </tr></thead>
               <tbody>{poData.map((d,i)=><tr key={i} style={{borderBottom:'1px solid #f1f5f9'}}>
                 <td style={{padding:'6px 8px'}}><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{d.item.sku}</span> <span style={{color:'#64748b'}}>{d.item.color}</span></td>
-                <td style={{padding:'6px 8px',fontFamily:'monospace',fontWeight:600}}>{d.po.po_id}</td>
+                <td style={{padding:'6px 8px',fontFamily:'monospace',fontWeight:600}}><span style={{cursor:'pointer',color:'#1e40af',textDecoration:'underline'}} onClick={()=>{
+                  const allLines=safeItems(o).map((it2,idx2)=>({lineIdx:idx2})).filter(ln=>safeItems(o)[ln.lineIdx]?.po_lines?.some(p=>p.po_id===d.po.po_id));
+                  setPoFullPage({po:d.po,item:d.item,allLines,soId:o.id,soItems:o.items});
+                }}>{d.po.po_id}</span></td>
                 <td style={{padding:'6px 8px'}}>{d.vendor}</td>
                 <td style={{padding:'6px 8px'}}><span className={`badge ${d.status==='received'||d.status==='shipped'?'badge-green':d.status==='in_transit'?'badge-blue':d.status==='partial'?'badge-amber':'badge-gray'}`}>{d.status==='shipped'?'Shipped':d.status==='received'?'Received':d.status==='in_transit'?'In Transit':d.status==='partial'?'Partial':'Waiting'}</span>{d.po.drop_ship&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:600,marginLeft:4,background:'#ede9fe',color:'#7c3aed'}}>Drop Ship</span>}</td>
                 <td style={{padding:'6px 8px'}}>{d.trackNums.length>0?<div style={{display:'flex',gap:4,flexWrap:'wrap'}}>{d.trackNums.map((tn,ti)=><a key={ti} href={trackUrl(tn)} target="_blank" rel="noreferrer" style={{fontFamily:'monospace',fontSize:11,fontWeight:700,color:'#1e40af',background:'#dbeafe',padding:'2px 6px',borderRadius:4,textDecoration:'none'}}>{tn}</a>)}</div>:<span style={{color:'#d1d5db'}}>—</span>}</td>
@@ -6755,6 +6758,32 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>{trackNumsFP.map((tn,ti)=><a key={ti} href={trackUrl(tn)} target="_blank" rel="noreferrer" style={{fontFamily:'monospace',fontSize:13,fontWeight:700,color:'#1e40af',background:'#dbeafe',padding:'4px 12px',borderRadius:6,textDecoration:'none',display:'inline-block'}}>{tn}</a>)}</div>
             </div>
           </div>})()}
+
+          {/* Billing Details from Supplier Bills */}
+          {(()=>{const allBillDetails=poItems.flatMap(({item:it,po:p})=>(p._bill_details||[]).map(bd=>({...bd,sku:it.sku,name:it.name,color:it.color})));
+            return allBillDetails.length>0?<div className="card" style={{marginBottom:16,borderLeft:'3px solid #6366f1'}}>
+              <div className="card-header" style={{background:'#eef2ff'}}><h2 style={{color:'#4338ca'}}>Billing Details ({allBillDetails.length})</h2></div>
+              <div className="card-body">
+                <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}>
+                  <thead><tr style={{borderBottom:'2px solid #e2e8f0'}}>
+                    <th style={{padding:'6px 8px',textAlign:'left',fontSize:10,color:'#64748b'}}>DATE</th>
+                    <th style={{padding:'6px 8px',textAlign:'left',fontSize:10,color:'#64748b'}}>DOC #</th>
+                    <th style={{padding:'6px 8px',textAlign:'left',fontSize:10,color:'#64748b'}}>ITEM</th>
+                    <th style={{padding:'6px 8px',textAlign:'left',fontSize:10,color:'#64748b'}}>SIZES BILLED</th>
+                    <th style={{padding:'6px 8px',textAlign:'left',fontSize:10,color:'#64748b'}}>TRACKING</th>
+                  </tr></thead>
+                  <tbody>{allBillDetails.map((bd,bi)=>{const szStr=Object.entries(bd.sizes||{}).filter(([,v])=>v>0).sort(([a],[b])=>SZ_ORD.indexOf(a)-SZ_ORD.indexOf(b)).map(([s,q])=>s+':'+q).join('  ');
+                    const bdQty=Object.values(bd.sizes||{}).reduce((a,v)=>a+v,0);
+                    return<tr key={bi} style={{borderBottom:'1px solid #f1f5f9'}}>
+                      <td style={{padding:'6px 8px',fontWeight:600}}>{bd.date||'—'}</td>
+                      <td style={{padding:'6px 8px',fontFamily:'monospace',color:'#6366f1'}}>{bd.doc||'—'}</td>
+                      <td style={{padding:'6px 8px'}}><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{bd.sku}</span> <span style={{color:'#64748b'}}>{bd.color}</span></td>
+                      <td style={{padding:'6px 8px'}}><span style={{fontFamily:'monospace',fontWeight:600}}>{szStr}</span><span style={{fontSize:10,color:'#94a3b8',marginLeft:6}}>({bdQty} units)</span></td>
+                      <td style={{padding:'6px 8px'}}>{bd.tracking?<span style={{fontFamily:'monospace',fontSize:11,fontWeight:600,color:'#1e40af',background:'#dbeafe',padding:'2px 6px',borderRadius:4}}>{bd.tracking}</span>:'—'}</td>
+                    </tr>})}</tbody>
+                </table>
+              </div>
+            </div>:null})()}
 
           {/* Shipment History */}
           {shipments.length>0&&<div className="card" style={{marginBottom:16}}>
@@ -12263,7 +12292,7 @@ export default function App(){
         const totalCncl=szKeys.reduce((a,sz)=>a+(cncl[sz]||0),0);
         const totalOpen=szKeys.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-(rcvd[sz]||0)-(cncl[sz]||0)),0);
         const st=totalOpen<=0&&totalRcvd>0?'received':totalRcvd>0?'partial':'waiting';
-        allPOs.push({po_id:po.po_id||`${so.id}-PO-${pli+1}`,vendor:po.vendor||'',status:st,so_id:so.id,so,customer:c2?.alpha_tag||c2?.name||'',soMemo:so.memo,itemSku:it.sku||'',itemName:it.name||'',totalOrd,totalRcvd,totalCncl,totalOpen,created_at:po.created_at||so.created_at||'',expected_date:po.expected_date||'',memo:po.memo||'',source:'so'})
+        allPOs.push({po_id:po.po_id||`${so.id}-PO-${pli+1}`,vendor:po.vendor||'',status:st,so_id:so.id,so,customer:c2?.alpha_tag||c2?.name||'',soMemo:so.memo,itemSku:it.sku||'',itemName:it.name||'',totalOrd,totalRcvd,totalCncl,totalOpen,created_at:po.created_at||so.created_at||'',expected_date:po.expected_date||'',memo:po.memo||'',source:'so',lineIdx:idx})
       })})});
     // Add submitted batches
     submittedBatches.forEach(sb=>{
@@ -12325,7 +12354,12 @@ export default function App(){
         <table className="data-table">
           <thead><tr><th style={{cursor:'pointer'}} onClick={()=>setPOF(f=>({...f,sort:f.sort==='po_id'?'date_desc':'po_id'}))}>PO #</th><th style={{cursor:'pointer'}} onClick={()=>setPOF(f=>({...f,sort:f.sort==='vendor'?'date_desc':'vendor'}))}>Vendor</th><th style={{cursor:'pointer'}} onClick={()=>setPOF(f=>({...f,sort:f.sort==='customer'?'date_desc':'customer'}))}>Customer</th><th>SO</th><th>Item</th><th style={{textAlign:'right'}}>Ordered</th><th style={{textAlign:'right'}}>Received</th><th style={{textAlign:'right'}}>Open</th><th style={{cursor:'pointer'}} onClick={()=>setPOF(f=>({...f,sort:f.sort==='status'?'date_desc':'status'}))}>Status</th><th>Date</th><th>Expected</th></tr></thead>
           <tbody>{fPOs.length===0?<tr><td colSpan={11} style={{textAlign:'center',color:'#94a3b8',padding:32}}>No purchase orders{activeFilters?' match filters':' found'}</td></tr>:
-            fPOs.map((po,i)=><tr key={po.po_id+'-'+i} style={{cursor:'pointer'}} onClick={()=>{if(po.so){const cc=cust.find(x=>x.id===po.so.customer_id);setESO(po.so);setESOC(cc);setPg('orders')}}}>
+            fPOs.map((po,i)=><tr key={po.po_id+'-'+i} style={{cursor:'pointer'}} onClick={()=>{if(po.so){
+              const soObj=po.so;const soIt=safeItems(soObj);const allLines=soIt.map((_,idx)=>({lineIdx:idx})).filter(ln=>soIt[ln.lineIdx]?.po_lines?.some(p=>p.po_id===po.po_id));
+              const poLine=soIt[po.lineIdx]?.po_lines?.find(p=>p.po_id===po.po_id);
+              if(poLine){setPoFullPage({po:poLine,item:soIt[po.lineIdx],allLines,soId:soObj.id,soItems:soIt})}
+              else{const cc=cust.find(x=>x.id===soObj.customer_id);setESO(soObj);setESOC(cc);setPg('orders')}
+            }}}>
               <td><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{po.po_id}</span>{po.source==='batch'&&<span className="badge badge-purple" style={{marginLeft:4,fontSize:9}}>Batch</span>}</td>
               <td>{po.vendor}</td>
               <td>{po.customer}</td>
