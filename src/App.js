@@ -3131,7 +3131,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {l:'TOTAL',v:o.promo_applied&&promoTotals?promoTotals.customerPays:totals.grand,bg:o.promo_applied?'#dcfce7':'#faf5ff',c:o.promo_applied?'#166534':'#7c3aed'},
             ...(o.promo_applied&&promoTotals?[{l:'PROMO $',v:promoTotals.promoAmount,bg:'#fef3c7',c:'#92400e',s:'deducted'}]:[])].map(x=>
             <div key={x.l} style={{textAlign:'center',padding:'8px 12px',background:x.bg,borderRadius:8,minWidth:72}}><div style={{fontSize:9,color:x.c,fontWeight:700}}>{x.l}</div><div style={{fontSize:17,fontWeight:800,color:x.c}}>${x.v.toLocaleString(undefined,{maximumFractionDigits:0})}</div>{x.s&&<div style={{fontSize:9,color:'#94a3b8'}}>{x.s}</div>}</div>)}</div>
-          {isSO&&(()=>{const actualShip=safeNum(o._shipping_cost||o._shipstation_cost||0);const quotedShip=o.shipping_type==='pct'?totals.rev*(o.shipping_value||0)/100:safeNum(o.shipping_value||0);const overage=actualShip-quotedShip;
+          {isSO&&(()=>{const actualShip=safeNum(o._shipping_cost||o._shipstation_cost||0)||(o._shipments||[]).reduce((a,s)=>a+safeNum(s.shipping_cost||0),0);const quotedShip=o.shipping_type==='pct'?totals.rev*(o.shipping_value||0)/100:safeNum(o.shipping_value||0);const overage=actualShip-quotedShip;
             return actualShip>0&&overage>0?<div style={{fontSize:10,padding:'4px 10px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:6,color:'#dc2626',fontWeight:600,marginTop:4}}>
               ⚠️ Shipping cost ${actualShip.toFixed(2)} exceeds quoted ${quotedShip.toFixed(2)} by <strong>${overage.toFixed(2)}</strong>
             </div>:null})()}
@@ -4332,8 +4332,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const legacyShipment=o._tracking_number&&!shipments.find(s=>s.tracking_number===o._tracking_number);
       const allOutbound=legacyShipment?[{id:'legacy',tracking_number:o._tracking_number,carrier:o._carrier||'',ship_date:o._ship_date||'',tracking_url:o._tracking_url||'',items:[],notes:'Legacy single-package shipment',created_by:o.created_by,created_at:o._ship_date||''},...shipments]:shipments;
       const totalShippedUnits=allOutbound.reduce((a,s)=>(s.items||[]).reduce((a2,it)=>a2+Object.values(it.sizes||{}).reduce((a3,v)=>a3+v,0),0)+a,0);
-      // Shipping cost
-      const shipCost=safeNum(o._shipping_cost||o._shipstation_cost||0);
+      // Shipping cost — use SO field, fallback to sum from shipment records
+      const shipCostFromShipments=allOutbound.reduce((a,s)=>a+safeNum(s.shipping_cost||0),0);
+      const shipCost=safeNum(o._shipping_cost||o._shipstation_cost||0)||shipCostFromShipments;
       const freightCost=safeNum(o._inbound_freight||0);
       const canEditCost=cu?.role==='admin'||cu?.role==='accounting'||cu?.role==='rep';
 
@@ -4363,6 +4364,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                       {shp.tracking_number}</a>:<span style={{fontSize:11,color:'#d97706',fontWeight:600}}>No tracking yet</span>}
                     {shp.carrier&&<span style={{fontSize:11,color:'#475569'}}>via {carrierLabel(shp.carrier)}</span>}
                     {shp.ship_date&&<span style={{fontSize:11,color:'#64748b'}}>Shipped {shp.ship_date}</span>}
+                    {safeNum(shp.shipping_cost)>0&&<span style={{fontSize:10,fontWeight:700,color:'#166534',background:'#dcfce7',padding:'2px 8px',borderRadius:4}}>${safeNum(shp.shipping_cost).toFixed(2)}</span>}
+                    {shp.label_url&&<button style={{fontSize:9,background:'#7c3aed',color:'white',border:'none',padding:'3px 8px',borderRadius:4,fontWeight:700,cursor:'pointer'}}
+                      onClick={()=>{const pw=window.open(shp.label_url,'_blank');if(pw)setTimeout(()=>{try{pw.print()}catch(e){}},1500)}}>Print Label</button>}
                     {shpUnits>0&&<span style={{marginLeft:'auto',fontSize:11,fontWeight:700,color:'#166534'}}>{shpUnits} units</span>}
                     {/* Edit tracking for reps/admin */}
                     {canEditCost&&<button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px'}} onClick={()=>{
@@ -4523,8 +4527,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const totalActual=costLines.reduce((a,l)=>a+l.actual,0);
         const variance=totalActual-totalExpected;
         const hasActuals=costLines.some(l=>l.poCount>0);
-        // Shipping & freight costs for GP calculation
-        const shipCostVal=safeNum(o._shipping_cost||o._shipstation_cost||0);
+        // Shipping & freight costs for GP calculation — fallback to summing shipment records
+        const shipCostFromRecs=(o._shipments||[]).reduce((a,s)=>a+safeNum(s.shipping_cost||0),0);
+        const shipCostVal=safeNum(o._shipping_cost||o._shipstation_cost||0)||shipCostFromRecs;
         const freightVal=safeNum(o._inbound_freight||0);
         // Expected shipping = what the rep quoted on the SO (% of rev or flat $)
         const quotedShipRev=costLines.filter(l=>l.category==='Blanks'||l.category==='Outside Deco'||l.category==='In-House Deco').reduce((a,l)=>a+l.expected,0);
@@ -13885,8 +13890,8 @@ export default function App(){
       });
       // Shipping revenue (charged to customer)
       const shipRev=so.shipping_type==='pct'?rev*(safeNum(so.shipping_value)/100):safeNum(so.shipping_value);
-      // Outbound shipping cost — placeholder for ShipStation (defaults $0)
-      const shipCost=safeNum(so._shipstation_cost||0);
+      // Outbound shipping cost from ShipStation — fallback to shipment records
+      const shipCost=safeNum(so._shipping_cost||so._shipstation_cost||0)||(so._shipments||[]).reduce((a,s)=>a+safeNum(s.shipping_cost||0),0);
       // Inbound freight from supplier bills tied to SO (manual override field)
       const inboundFreight=safeNum(so._inbound_freight||0);
       const totalRev=rev+shipRev;const totalCost=cost+shipCost+inboundFreight;
@@ -14468,11 +14473,14 @@ export default function App(){
     const fPull=filt(pullTasks);const fShip=filt(shipTasks);
     const readyForDeco=decoTasks.filter(t=>t.isReady);const fDeco=filt(readyForDeco);
     const openStockPOs=stockPOs.filter(p=>p.status!=='received');
+    // Count awaiting pickup shipments for tab badge
+    const awaitingPickupCount=(()=>{let c=0;sos.filter(so=>so._shipments&&so._shipments.length>0&&!so.deleted_at).forEach(so=>{(so._shipments||[]).forEach(shp=>{if(shp.tracking_number&&!shp.carrier_picked_up)c++})});return c})();
     const tabs=[
       {id:'receive',label:'📱 Scan to Receive',count:0,color:'#2563eb'},
       {id:'pull',label:'🏗️ Pull & Stage',count:fPull.length,color:'#d97706'},
       {id:'deco',label:'🎨 Ready for Deco',count:fDeco.length,color:'#7c3aed'},
       {id:'ship',label:'📦 Ready to Ship',count:fShip.length,color:'#166534'},
+      {id:'pickup',label:'🚚 Awaiting Pickup',count:awaitingPickupCount,color:'#d97706'},
       {id:'stockpo',label:'📋 Stock POs',count:openStockPOs.length,color:'#6366f1'},
       {id:'recent',label:'🕐 Recent Actions',count:whRecentActions.length,color:'#475569'},
     ];
@@ -15803,6 +15811,7 @@ export default function App(){
                     tracking_url:box.tracking_number?trackUrl2(box.tracking_number):'',
                     label_url:box.label_url||null,
                     shipstation_shipment_id:box.shipstation_shipment_id||null,
+                    shipping_cost:box.shipping_cost||0,
                     weight:box.weight||5,
                     items:(box.items||[]).map(it=>({sku:it.sku,name:it.name,color:it.color||'',sizes:{...it.sizes}})),
                     notes:box.notes||'',
@@ -15841,6 +15850,50 @@ export default function App(){
             </div>
           </div>
         </div></div>}
+      </>}
+
+      {/* ── AWAITING PICKUP TAB ── */}
+      {whTab==='pickup'&&<>
+        {(()=>{
+          const awaitingPickup=[];
+          sos.filter(so=>so._shipments&&so._shipments.length>0&&!so.deleted_at).forEach(so=>{
+            const c2=cust.find(cc=>cc.id===so.customer_id);
+            (so._shipments||[]).forEach((shp,si)=>{
+              if(shp.tracking_number&&!shp.carrier_picked_up){
+                awaitingPickup.push({...shp,soId:so.id,so,cName:c2?.name||'Unknown',boxIdx:si});
+              }
+            });
+          });
+          awaitingPickup.sort((a,b)=>(a.created_at||'').localeCompare(b.created_at||''));
+          if(awaitingPickup.length===0)return<div className="empty" style={{padding:32,textAlign:'center'}}>No packages awaiting pickup</div>;
+          return<div style={{display:'grid',gap:8}}>
+            {awaitingPickup.map((shp,si)=>{
+              const shpUnits=(shp.items||[]).reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((a2,v)=>a2+v,0),0);
+              return<div key={shp.id||si} className="card" style={{padding:'10px 14px',borderLeft:'3px solid #d97706'}}>
+                <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+                  <span style={{fontSize:12,fontWeight:800,color:'#92400e'}}>{shp.cName}</span>
+                  <span style={{fontSize:10,fontFamily:'monospace',color:'#1e40af',cursor:'pointer'}} onClick={()=>{setESOTab('tracking');setESO(shp.so);setESOC(cust.find(c2=>c2.id===shp.so?.customer_id));setPg('orders')}}>{shp.soId}</span>
+                  {shp.tracking_number&&<a href={shp.tracking_url||('#')} target="_blank" rel="noreferrer" style={{fontSize:10,fontFamily:'monospace',color:'#166534',background:'#dcfce7',padding:'2px 8px',borderRadius:3,textDecoration:'none'}}>{shp.tracking_number}</a>}
+                  {shp.carrier&&<span style={{fontSize:10,color:'#64748b',textTransform:'uppercase'}}>{shp.carrier}</span>}
+                  {shpUnits>0&&<span style={{fontSize:10,fontWeight:700,color:'#475569'}}>{shpUnits} units</span>}
+                  {safeNum(shp.shipping_cost)>0&&<span style={{fontSize:10,fontWeight:700,color:'#166534',background:'#dcfce7',padding:'2px 8px',borderRadius:4}}>${safeNum(shp.shipping_cost).toFixed(2)}</span>}
+                  <span style={{fontSize:9,color:'#94a3b8'}}>{shp.ship_date||shp.created_at||''}</span>
+                  <div style={{marginLeft:'auto',display:'flex',gap:6}}>
+                    {shp.label_url&&<button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
+                      onClick={()=>{const pw=window.open(shp.label_url,'_blank');if(pw)setTimeout(()=>{try{pw.print()}catch(e){}},1500)}}>Print Label</button>}
+                    <button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
+                      onClick={()=>{
+                        const updatedShipments=(shp.so._shipments||[]).map(s=>s.id===shp.id?{...s,carrier_picked_up:true,pickup_date:new Date().toLocaleString()}:s);
+                        savSO({...shp.so,_shipments:updatedShipments});
+                        nf('Confirmed pickup for '+shp.cName);
+                      }}>Confirm Picked Up</button>
+                  </div>
+                </div>
+                {(shp.items||[]).length>0&&<div style={{marginTop:6,fontSize:10,color:'#64748b'}}>
+                  {(shp.items||[]).map((it,ii)=><span key={ii} style={{marginRight:8}}><strong>{it.sku}</strong> {it.name} — {Object.entries(it.sizes||{}).filter(([,v])=>v>0).map(([sz,v])=>sz+':'+v).join(' ')}</span>)}
+                </div>}
+              </div>})}
+          </div>})()}
       </>}
 
       {/* ── STOCK POs ── */}
