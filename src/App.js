@@ -2880,7 +2880,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       jIdx++;
       return{
         id,key:j.key,art_file_id:j.art_file_id,art_name:j.art_name,deco_type:j.deco_type,
-        positions:[...j.positions].join(', '),items:j.items,
+        positions:[...j.positions].filter(Boolean).join(', '),items:j.items,
         art_status:existing?.art_status||j.art_status,item_status:itemSt,prod_status:prodSt,
         total_units:j.total_units,fulfilled_units:j.fulfilled_units,
         assigned_machine:existing?.assigned_machine||null,assigned_to:existing?.assigned_to||null,
@@ -5350,10 +5350,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   const w=window.open('','_blank','width=700,height=900');
                   w.document.write('<html><head><title>'+j.id+' — '+j.art_name+'</title><style>body{font-family:sans-serif;padding:24px;font-size:13px}h1{font-size:20px;margin:0 0 4px}h2{font-size:14px;margin:16px 0 8px;border-bottom:1px solid #ccc;padding-bottom:4px}table{width:100%;border-collapse:collapse;margin:8px 0}th,td{border:1px solid #ddd;padding:6px 8px;text-align:center;font-size:12px}th{background:#f0f0f0;font-weight:700}.badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700}.info{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:8px 0}.info div{padding:8px;background:#f8f8f8;border-radius:4px}.label{font-size:10px;color:#666;font-weight:600;text-transform:uppercase}@media print{body{padding:12px}}</style></head><body>');
                   w.document.write('<h1>'+j.id+' — '+j.art_name+'</h1>');
-                  w.document.write('<p>'+j.deco_type?.replace(/_/g,' ')+' · '+j.positions+' · '+j.total_units+' total units</p>');
+                  w.document.write('<p>'+j.deco_type?.replace(/_/g,' ')+' · '+(j.positions||'').replace(/^,\s*/,'')+' · '+j.total_units+' total units</p>');
                   w.document.write('<p>SO: '+o.id+' — '+(o.memo||'')+'</p>');
+                  // Mockup image at top
+                  const _jsMocks=(artF?.mockup_files||artF?.files||[]).filter(f=>f);
+                  const _jsMockUrl=(()=>{for(const f of _jsMocks){const u=typeof f==='string'?f:(f?.url||'');if(_isImgUrl(u,f))return u;const pt=_isPdfUrl(u,f)?_cloudinaryPdfThumb(u):null;if(pt)return pt}return itemDetails.find(gi=>gi.image_url&&_isImgUrl(gi.image_url))?.image_url||null})();
+                  if(_jsMockUrl){w.document.write('<div style="text-align:center;margin:12px 0;padding:16px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px"><img src="'+_jsMockUrl+'" style="max-width:100%;max-height:350px;object-fit:contain;border-radius:6px"/><div style="font-size:10px;color:#666;margin-top:4px">Mockup Preview</div></div>')}
                   w.document.write('<div class="info"><div><div class="label">Art Status</div>'+artLabels[j.art_status]+'</div><div><div class="label">Item Status</div>'+itemLabels[j.item_status]+'</div><div><div class="label">Production</div>'+prodLabels[j.prod_status]+'</div><div><div class="label">Fulfilled</div>'+j.fulfilled_units+'/'+j.total_units+' ('+pct+'%)</div></div>');
-                  if(artF){w.document.write('<h2>Art Details</h2><div class="info"><div><div class="label">Deco Type</div>'+(artF.deco_type||'—')+'</div><div><div class="label">Art Size</div>'+(artF.art_size||'—')+'</div><div><div class="label">Ink Colors</div>'+(artF.ink_colors||'—')+'</div><div><div class="label">Thread Colors</div>'+(artF.thread_colors||'—')+'</div></div>')}
+                  if(artF){w.document.write('<h2>Art Details</h2><div class="info"><div><div class="label">Deco Type</div>'+(artF.deco_type?.replace(/_/g,' ')||'—')+'</div><div><div class="label">Art Size</div>'+(artF.art_size||'—')+'</div><div><div class="label">Ink Colors</div>'+(artF.ink_colors||'—')+'</div><div><div class="label">Thread Colors</div>'+(artF.thread_colors||'—')+'</div></div>')}
                   w.document.write('<h2>Items & Sizes</h2>');
                   itemDetails.forEach(gi=>{
                     w.document.write('<p style="margin:12px 0 4px;font-weight:700">'+gi.sku+' — '+(gi.name||'Unknown')+' ('+gi.color+')</p>');
@@ -5368,6 +5372,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     w.document.write('<td style="font-weight:700;color:'+(fulT>=rowT?'green':'orange')+'">'+fulT+'</td></tr>');
                     w.document.write('</tbody></table>');
                   });
+                  // Production files
+                  const _jsProdFiles=(artF?.prod_files||[]).filter(f=>f);
+                  if(_jsProdFiles.length>0||_jsMocks.length>0){
+                    w.document.write('<h2>Production Files</h2><table><thead><tr><th style="text-align:left">Type</th><th style="text-align:left">Filename</th></tr></thead><tbody>');
+                    _jsProdFiles.forEach(f=>{w.document.write('<tr><td>Production</td><td>'+fileDisplayName(f)+'</td></tr>')});
+                    _jsMocks.forEach(f=>{w.document.write('<tr><td>Mockup</td><td>'+fileDisplayName(f)+'</td></tr>')});
+                    w.document.write('</tbody></table>');
+                  }
                   if(j.notes){w.document.write('<h2>Notes</h2><p>'+j.notes+'</p>')}
                   w.document.write('<div style="margin-top:24px;padding-top:12px;border-top:1px solid #ccc;font-size:10px;color:#999">Printed '+new Date().toLocaleString()+' · NSA Portal</div>');
                   w.document.write('</body></html>');w.document.close();w.print();
@@ -5380,17 +5392,21 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           <div className="card" style={{marginBottom:12}}>
             <div className="card-header"><h2>🎨 Artwork</h2></div>
             <div className="card-body">
+              {/* Big mockup at top */}
+              {(()=>{const allMocks=(artF?.mockup_files||artF?.files||[]).filter(f=>f);
+                const firstFile=allMocks[0];const fUrl=firstFile?(typeof firstFile==='string'?firstFile:(firstFile?.url||'')):'';
+                const isImg=fUrl&&_isImgUrl(fUrl,firstFile);const isPdf=fUrl&&_isPdfUrl(fUrl,firstFile);
+                const pdfThumb=isPdf?_cloudinaryPdfThumb(fUrl):null;const prodImg=itemDetails.find(gi=>gi.image_url)?.image_url;
+                const imgSrc=isImg?fUrl:pdfThumb||(prodImg&&_isImgUrl(prodImg)?prodImg:null);
+                return imgSrc?<div style={{textAlign:'center',marginBottom:16,background:'#f8fafc',borderRadius:10,padding:16,border:'1px solid #e2e8f0'}}>
+                  <img src={imgSrc} alt="Mockup" style={{maxWidth:'100%',maxHeight:360,objectFit:'contain',borderRadius:8}}/>
+                  <div style={{fontSize:11,fontWeight:600,color:'#64748b',marginTop:6}}>{isImg||pdfThumb?'Mockup Preview':'Product Image'}{allMocks.length>1?' · +'+String(allMocks.length-1)+' more file'+(allMocks.length>2?'s':''):''}</div>
+                </div>:allMocks.length>0?<div style={{textAlign:'center',marginBottom:16,background:'#f8fafc',borderRadius:10,padding:16,border:'1px solid #e2e8f0'}}>
+                  <div style={{fontSize:36,marginBottom:4}}>📄</div>
+                  <div style={{fontSize:12,fontWeight:700,color:'#1e40af'}}>{fileDisplayName(firstFile)}</div>
+                  <div style={{fontSize:10,color:'#64748b',marginTop:4}}>{allMocks.length} mockup file{allMocks.length!==1?'s':''}</div>
+                </div>:null})()}
               <div style={{display:'flex',gap:16,flexWrap:'wrap'}}>
-                <div style={{flex:'0 0 200px',background:'#f8fafc',border:'2px dashed #d1d5db',borderRadius:10,padding:10,textAlign:'center',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',minHeight:180}}>
-                  {(()=>{const mockUrl=(artF?.mockup_files||artF?.files||[]).map(f=>typeof f==='string'?f:f?.url||'').find(u=>isUrl(u));const prodImg=itemDetails.find(gi=>gi.image_url)?.image_url;const imgSrc=mockUrl||prodImg;return imgSrc?<>
-                    <img src={imgSrc} alt="Mockup" style={{maxWidth:'100%',maxHeight:160,objectFit:'contain',borderRadius:6}}/>
-                    <div style={{fontSize:10,fontWeight:600,color:'#64748b',marginTop:4}}>{mockUrl?'Mockup Preview':'Product Image'}</div>
-                  </>:<>
-                    <div style={{fontSize:36,marginBottom:6}}>🖼️</div>
-                    <div style={{fontSize:12,fontWeight:600,color:'#64748b'}}>Mockup Preview</div>
-                    <div style={{fontSize:10,color:'#94a3b8',marginTop:4}}>Upload art files to see preview</div>
-                  </>})()}
-                </div>
                 <div style={{flex:1,minWidth:200}}>
                   {artF?<>
                     <div className="form-row form-row-2">
@@ -5402,7 +5418,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     {artF.ink_colors&&<div style={{marginTop:10}}><div className="form-label">Ink Colors</div><div style={{fontSize:13}}>{artF.ink_colors}</div></div>}
                     {artF.thread_colors&&<div style={{marginTop:6}}><div className="form-label">Thread Colors</div><div style={{fontSize:13}}>{artF.thread_colors}</div></div>}
                     {artF.notes&&<div style={{marginTop:6}}><div className="form-label">Art Notes</div><div style={{fontSize:13,color:'#64748b'}}>{artF.notes}</div></div>}
-                    {artF.files?.length>0&&<div style={{marginTop:6}}><div className="form-label">Files</div><div style={{fontSize:12}}>{artF.files.map((f,i)=><span key={i} className="badge badge-blue" style={{marginRight:4}}>{f}</span>)}</div></div>}
+                    {artF.files?.length>0&&<div style={{marginTop:6}}><div className="form-label">Files</div><div style={{fontSize:12}}>{artF.files.map((f,i)=><span key={i} className="badge badge-blue" style={{marginRight:4}}>{typeof f==='string'?f:fileDisplayName(f)}</span>)}</div></div>}
                   </>:<div style={{padding:12,background:'#fffbeb',borderRadius:6,fontSize:12,color:'#b45309'}}>
                     Artwork needs to be applied
                   </div>}
@@ -11510,7 +11526,7 @@ export default function App(){
           ];
           const decoInfo=[
             {label:'Decoration',value:j.deco_type?.replace(/_/g,' ')||'—'},
-            {label:'Position(s)',value:j.positions||'—'},
+            {label:'Position(s)',value:(j.positions||'').replace(/^,\s*/,'')||'—'},
             {label:'Art Size',value:af?.art_size||'—'},
             {label:isEmb?'Thread Colors':'Ink Colors',value:colorList.join(', ')||'—'},
           ];
@@ -11540,14 +11556,19 @@ export default function App(){
           // Production files list
           if(prodFiles.length>0||mockupFiles.length>0){
             const fileRows=[];
-            prodFiles.forEach(f=>fileRows.push({cells:['Production',f]}));
-            mockupFiles.forEach(f=>fileRows.push({cells:['Mockup',f]}));
+            prodFiles.forEach(f=>fileRows.push({cells:['Production',fileDisplayName(f)]}));
+            mockupFiles.forEach(f=>fileRows.push({cells:['Mockup',fileDisplayName(f)]}));
             tables.push({title:'Production Files',headers:['Type','Filename'],aligns:['left','left'],rows:fileRows});
           }
+          // Find a displayable mockup image URL for the PDF
+          const _pdfMockUrl=(()=>{const mf=(af?.mockup_files||af?.files||[]).filter(f=>f);
+            for(const f of mf){const u=typeof f==='string'?f:(f?.url||'');if(_isImgUrl(u,f))return u;const pt=_isPdfUrl(u,f)?_cloudinaryPdfThumb(u):null;if(pt)return pt}
+            return itemDetails.find(gi=>gi.image_url&&_isImgUrl(gi.image_url))?.image_url||null})();
+          const _pdfMockHtml=_pdfMockUrl?'<div style="text-align:center;margin:8px 0 12px;padding:12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px"><img src="'+_pdfMockUrl+'" style="max-width:100%;max-height:300px;object-fit:contain;border-radius:6px"/><div style="font-size:9px;color:#666;margin-top:4px">Mockup Preview</div></div>':'';
           printDoc({title:j.customer||'Job',docNum:j.id,docType:'Production Job Sheet',
             headerRight:'<div class="ta" style="font-size:20px">'+j.total_units+' UNITS</div><div class="ts">'+j.deco_type?.replace(/_/g,' ')+'</div>',
             infoBoxes,tables,
-            notes:j.notes||(so.production_notes?'SO Notes: '+so.production_notes:null),
+            notes:(_pdfMockHtml||'')+(j.notes||(so.production_notes?'SO Notes: '+so.production_notes:'')||''),
             showPricing:false});
         };
 
@@ -11569,17 +11590,12 @@ export default function App(){
               <div style={{flex:'0 0 280px',padding:20,background:'#f8fafc',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',borderRight:'1px solid #e2e8f0',cursor:'pointer'}}
                 onClick={()=>setProdJobLightbox(!prodJobLightbox)}>
                 <div style={{width:240,height:240,borderRadius:10,background:'white',border:'2px dashed #d1d5db',display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column',overflow:'hidden'}}>
-                  {mockupFiles.length>0?(typeof mockupFiles[0]==='string'&&/\.(png|jpe?g|gif|webp|svg)(\?|$)/i.test(mockupFiles[0])?<>
-                    <img src={mockupFiles[0]} alt="Mockup" style={{maxWidth:'100%',maxHeight:210,objectFit:'contain'}}/>
-                    <div style={{fontSize:9,color:'#64748b',marginTop:2}}>Click to enlarge</div>
-                  </>:<>
-                    <div style={{fontSize:48,marginBottom:4}}>🖼️</div>
-                    <div style={{fontSize:11,fontWeight:700,color:'#1e40af',wordBreak:'break-all',padding:'0 8px',textAlign:'center'}}>{fileDisplayName(mockupFiles[0])}</div>
-                    <div style={{fontSize:9,color:'#64748b',marginTop:2}}>Click to enlarge</div>
-                  </>):<>
-                    <div style={{fontSize:48,marginBottom:4}}>🎨</div>
-                    <div style={{fontSize:11,color:'#94a3b8'}}>No mockup uploaded</div>
-                  </>}
+                  {(()=>{if(mockupFiles.length===0)return<><div style={{fontSize:48,marginBottom:4}}>🎨</div><div style={{fontSize:11,color:'#94a3b8'}}>No mockup uploaded</div></>;
+                    const f0=mockupFiles[0];const u0=typeof f0==='string'?f0:(f0?.url||'');
+                    const isImg=_isImgUrl(u0,f0);const isPdf=_isPdfUrl(u0,f0);const pdfThumb=isPdf?_cloudinaryPdfThumb(u0):null;
+                    const imgSrc=isImg?u0:pdfThumb;
+                    return imgSrc?<><img src={imgSrc} alt="Mockup" style={{maxWidth:'100%',maxHeight:210,objectFit:'contain'}}/><div style={{fontSize:9,color:'#64748b',marginTop:2}}>Click to enlarge</div></>
+                      :<><div style={{fontSize:48,marginBottom:4}}>📄</div><div style={{fontSize:11,fontWeight:700,color:'#1e40af',wordBreak:'break-all',padding:'0 8px',textAlign:'center'}}>{fileDisplayName(f0)}</div><div style={{fontSize:9,color:'#64748b',marginTop:2}}>Click to enlarge</div></>})()}
                 </div>
                 {mockupFiles.length>1&&<div style={{fontSize:10,color:'#64748b',marginTop:6}}>+{mockupFiles.length-1} more file{mockupFiles.length>2?'s':''}</div>}
               </div>
@@ -11591,7 +11607,7 @@ export default function App(){
                   <div><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:2}}>Method</div>
                     <div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{j.deco_type?.replace(/_/g,' ')||'—'}</div></div>
                   <div><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:2}}>Position(s)</div>
-                    <div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{j.positions||'—'}</div></div>
+                    <div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{(j.positions||'').replace(/^,\s*/,'')||'—'}</div></div>
                   <div><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:2}}>Art Size</div>
                     <div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{af?.art_size||'—'}</div></div>
                   <div><div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:2}}>Total Units</div>
@@ -11659,12 +11675,12 @@ export default function App(){
               {prodFiles.length===0&&mockupFiles.length===0?<div style={{color:'#94a3b8',fontSize:12}}>No files attached</div>
               :<div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
                 {prodFiles.map((f,i)=><div key={'p'+i} style={{display:'flex',alignItems:'center',gap:6,padding:'8px 14px',background:'#fef3c7',border:'1px solid #fde68a',borderRadius:8,cursor:'pointer'}}
-                  onClick={()=>openFile(f)} title={'Production: '+f}>
+                  onClick={()=>openFile(f)} title={'Production: '+fileDisplayName(f)}>
                   <span style={{fontSize:16}}>📁</span>
                   <div><div style={{fontSize:12,fontWeight:700,color:'#92400e'}}>{fileDisplayName(f)}</div><div style={{fontSize:9,color:'#b45309'}}>Production File</div></div>
                 </div>)}
                 {mockupFiles.map((f,i)=><div key={'m'+i} style={{display:'flex',alignItems:'center',gap:6,padding:'8px 14px',background:'#dbeafe',border:'1px solid #93c5fd',borderRadius:8,cursor:'pointer'}}
-                  onClick={()=>openFile(f)} title={'Mockup: '+f}>
+                  onClick={()=>openFile(f)} title={'Mockup: '+fileDisplayName(f)}>
                   <span style={{fontSize:16}}>🖼️</span>
                   <div><div style={{fontSize:12,fontWeight:700,color:'#1e40af'}}>{fileDisplayName(f)}</div><div style={{fontSize:9,color:'#3b82f6'}}>Mockup File</div></div>
                 </div>)}
