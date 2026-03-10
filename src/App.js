@@ -12466,10 +12466,44 @@ export default function App(){
       const so=sos.find(s=>s.id===inv.so_id);
       const repObj=so?REPS.find(r=>r.id===so.created_by):null;
       const bal=inv.total-(inv.paid||0);
-      const lineItems=inv.line_items||[];
+      const storedLineItems=inv.line_items||[];
+      // Fallback: compute line items from SO when not stored on invoice
+      const soComputedItems=(!storedLineItems.length&&so)?safeItems(so).map(it=>{
+        const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);if(!qty)return null;
+        const af=safeArt(so);const aqMap={};safeItems(so).forEach(sit=>{const sq2=Object.values(safeSizes(sit)).reduce((a2,v2)=>a2+safeNum(v2),0);safeDecos(sit).forEach(d2=>{if(d2.kind==='art'&&d2.art_file_id){aqMap[d2.art_file_id]=(aqMap[d2.art_file_id]||0)+sq2}})});
+        const decos=safeDecos(it);
+        const decoDetails=decos.map(d=>{
+          const cq=d.kind==='art'&&d.art_file_id?aqMap[d.art_file_id]:qty;
+          const dp=dP(d,qty,af,cq);
+          const artFile=d.kind==='art'&&d.art_file_id?af.find(a=>a.id===d.art_file_id):null;
+          const decoType=artFile?artFile.deco_type:d.kind==='numbers'?'numbers':d.kind==='names'?'names':d.kind==='outside_deco'?(d.deco_type||'outside'):(d.type||d.kind||'');
+          const decoLabel=decoType==='screen_print'?'Screen Print':decoType==='embroidery'?'Embroidery':decoType==='dtf'?'DTF/Heat Press':decoType==='heat_press'?'Heat Press':decoType==='numbers'?'Numbers':decoType==='names'?'Names':decoType==='outside_deco'||decoType==='outside'?'Outside Deco':decoType;
+          return{kind:d.kind,type:decoType,label:decoLabel,position:d.position||'',artName:artFile?.name||'',sell:dp.sell,cost:dp.cost,nq:dp._nq};
+        });
+        const decoSell=decoDetails.reduce((a,dd)=>a+dd.sell,0);
+        return{desc:it.sku+' '+it.name+(it.color?' — '+it.color:''),qty,rate:safeNum(it.unit_sell)+decoSell,amount:qty*(safeNum(it.unit_sell)+decoSell),
+          _unitSell:safeNum(it.unit_sell),_decoSell:decoSell,_decos:decoDetails,_sku:it.sku,_name:it.name,_color:it.color}}).filter(Boolean):[];
+      const lineItems=storedLineItems.length>0?storedLineItems:soComputedItems;
       const shipAmt=inv.shipping||0;
       const taxAmt=inv.tax||0;
       const subtotal=lineItems.reduce((a,li)=>a+safeNum(li.amount),0);
+      // Build decoration details from SO for display
+      const soDecoDetails=so?safeItems(so).map((it,idx)=>{
+        const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);if(!qty)return null;
+        const af=safeArt(so);const aqMap={};safeItems(so).forEach(sit=>{const sq2=Object.values(safeSizes(sit)).reduce((a2,v2)=>a2+safeNum(v2),0);safeDecos(sit).forEach(d2=>{if(d2.kind==='art'&&d2.art_file_id){aqMap[d2.art_file_id]=(aqMap[d2.art_file_id]||0)+sq2}})});
+        const decos=safeDecos(it).map(d=>{
+          const cq=d.kind==='art'&&d.art_file_id?aqMap[d.art_file_id]:qty;
+          const dp=dP(d,qty,af,cq);
+          const artFile=d.kind==='art'&&d.art_file_id?af.find(a=>a.id===d.art_file_id):null;
+          const decoType=artFile?artFile.deco_type:d.kind==='numbers'?'numbers':d.kind==='names'?'names':d.kind==='outside_deco'?(d.deco_type||'outside'):(d.type||d.kind||'');
+          const decoLabel=decoType==='screen_print'?'Screen Print':decoType==='embroidery'?'Embroidery':decoType==='dtf'?'DTF/Heat Press':decoType==='heat_press'?'Heat Press':decoType==='numbers'?'Numbers':decoType==='names'?'Names':decoType==='outside_deco'||decoType==='outside'?'Outside Deco':decoType;
+          const colors=artFile?.ink_colors?artFile.ink_colors.split('\n').filter(l=>l.trim()):[];
+          return{kind:d.kind,type:decoType,label:decoLabel,position:d.position||'',artName:artFile?.name||d.art_tbd_type||'',sell:dp.sell,cost:dp.cost,
+            colors,stitches:artFile?.stitches,dtfSize:artFile?.dtf_size,twoColor:d.two_color,numMethod:d.num_method,numSize:d.num_size,vendor:d.vendor,notes:d.notes};
+        });
+        if(!decos.length)return null;
+        return{sku:it.sku,name:it.name,color:it.color,qty,decos};
+      }).filter(Boolean):[];
       const dd=dueDays(inv.due_date);
       const overdue=dd!==null&&dd<0&&inv.status!=='paid';
       const contacts=(ic?.contacts||[]).filter(c=>c.email);
@@ -12535,7 +12569,12 @@ export default function App(){
                   ]}],footer:inv.inv_type==='deposit'?NSA.depositTerms:NSA.terms});
               }}>Print</button>
             {lineItems.length>=2&&inv.status!=='paid'&&<button className="btn btn-sm" style={{fontSize:12,padding:'6px 14px',background:'#7c3aed',color:'white',border:'none'}}
-              onClick={()=>setSplitModal({inv,selItems:[],memo:inv.memo||''})}>Split Invoice</button>}
+              onClick={()=>{
+                // If line_items not stored on invoice, populate from computed items before splitting
+                const invForSplit=storedLineItems.length>0?inv:{...inv,line_items:lineItems};
+                if(!storedLineItems.length&&lineItems.length>0){setInvs(prev=>prev.map(i=>i.id===inv.id?{...i,line_items:lineItems}:i))}
+                setSplitModal({inv:invForSplit,selItems:[],memo:inv.memo||''});
+              }}>Split Invoice</button>}
             {canDelete&&<button className="btn btn-sm" style={{fontSize:12,padding:'6px 14px',color:'#dc2626',border:'1px solid #fca5a5',background:'white',marginLeft:'auto'}}
               onClick={()=>{deleteInvoice(inv.id);setViewInvoice(null)}}>Delete</button>}
           </div>
@@ -12564,7 +12603,7 @@ export default function App(){
             </div>
 
             {/* Line items table */}
-            <div style={{fontSize:11,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6}}>Line Items</div>
+            <div style={{fontSize:11,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6}}>Line Items{!storedLineItems.length&&lineItems.length>0&&<span style={{fontWeight:400,fontStyle:'italic',marginLeft:6,textTransform:'none'}}>(from Sales Order)</span>}</div>
             <table style={{width:'100%',borderCollapse:'collapse',fontSize:13}}>
               <thead><tr style={{background:'#f8fafc',borderBottom:'2px solid #e2e8f0'}}>
                 <th style={{padding:'10px 12px',textAlign:'left',fontWeight:700}}>Description</th>
@@ -12573,12 +12612,30 @@ export default function App(){
                 <th style={{padding:'10px 12px',textAlign:'right',fontWeight:700,width:100}}>Amount</th>
               </tr></thead>
               <tbody>
-                {lineItems.map((li,i)=><tr key={i} style={{borderBottom:'1px solid #f1f5f9'}}>
-                  <td style={{padding:'10px 12px'}}>{li.desc}</td>
-                  <td style={{padding:'10px 12px',textAlign:'center'}}>{li.qty}</td>
-                  <td style={{padding:'10px 12px',textAlign:'right'}}>${safeNum(li.rate).toFixed(2)}</td>
-                  <td style={{padding:'10px 12px',textAlign:'right',fontWeight:600}}>${safeNum(li.amount).toFixed(2)}</td>
-                </tr>)}
+                {lineItems.map((li,i)=><React.Fragment key={i}>
+                  <tr style={{borderBottom:li._decos&&li._decos.length>0?'none':'1px solid #f1f5f9'}}>
+                    <td style={{padding:'10px 12px',fontWeight:600}}>{li.desc}</td>
+                    <td style={{padding:'10px 12px',textAlign:'center'}}>{li.qty}</td>
+                    <td style={{padding:'10px 12px',textAlign:'right'}}>${safeNum(li.rate).toFixed(2)}</td>
+                    <td style={{padding:'10px 12px',textAlign:'right',fontWeight:600}}>${safeNum(li.amount).toFixed(2)}</td>
+                  </tr>
+                  {li._decos&&li._decos.length>0&&<tr style={{borderBottom:'1px solid #f1f5f9'}}>
+                    <td colSpan={4} style={{padding:'2px 12px 10px 24px'}}>
+                      <div style={{fontSize:11,color:'#64748b'}}>
+                        <span style={{fontWeight:600}}>Product:</span> ${safeNum(li._unitSell).toFixed(2)}/ea
+                        {li._decos.map((dd,di)=><span key={di} style={{marginLeft:10}}>
+                          <span style={{display:'inline-block',padding:'1px 5px',borderRadius:4,fontSize:9,fontWeight:700,marginRight:3,
+                            background:dd.type==='screen_print'?'#dbeafe':dd.type==='embroidery'?'#fce7f3':dd.type==='dtf'||dd.type==='heat_press'?'#fef3c7':dd.type==='numbers'?'#e0e7ff':dd.type==='names'?'#ede9fe':'#f1f5f9',
+                            color:dd.type==='screen_print'?'#1e40af':dd.type==='embroidery'?'#be185d':dd.type==='dtf'||dd.type==='heat_press'?'#92400e':dd.type==='numbers'?'#4338ca':dd.type==='names'?'#6d28d9':'#64748b'}}>
+                            {dd.label}</span>
+                          {dd.position&&<span>{dd.position}</span>}
+                          {dd.artName&&<span> — {dd.artName}</span>}
+                          <span style={{fontWeight:600}}> +${dd.sell.toFixed(2)}/ea</span>
+                        </span>)}
+                      </div>
+                    </td>
+                  </tr>}
+                </React.Fragment>)}
                 {lineItems.length===0&&<tr><td colSpan={4} style={{padding:20,textAlign:'center',color:'#94a3b8',fontSize:12}}>No line items recorded</td></tr>}
               </tbody>
             </table>
@@ -12602,6 +12659,38 @@ export default function App(){
                   <span>Balance Due</span><span>${bal.toLocaleString()}</span></div>}
               </div>
             </div>
+
+            {/* Decoration Details from SO */}
+            {soDecoDetails.length>0&&<>
+              <div style={{fontSize:11,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6,marginTop:20}}>Decoration Details</div>
+              <div style={{border:'1px solid #e2e8f0',borderRadius:8,overflow:'hidden'}}>
+                {soDecoDetails.map((item,ii)=><div key={ii} style={{borderBottom:ii<soDecoDetails.length-1?'1px solid #e2e8f0':'none'}}>
+                  <div style={{padding:'10px 14px',background:'#f8fafc',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                    <div style={{fontWeight:700,fontSize:13}}>{item.sku} {item.name}{item.color?' — '+item.color:''}</div>
+                    <div style={{fontSize:11,color:'#64748b'}}>Qty: {item.qty}</div>
+                  </div>
+                  {item.decos.map((d,di)=><div key={di} style={{padding:'8px 14px 8px 24px',display:'flex',alignItems:'flex-start',gap:10,borderTop:'1px solid #f1f5f9'}}>
+                    <span style={{display:'inline-block',padding:'2px 8px',borderRadius:4,fontSize:10,fontWeight:700,whiteSpace:'nowrap',
+                      background:d.type==='screen_print'?'#dbeafe':d.type==='embroidery'?'#fce7f3':d.type==='dtf'||d.type==='heat_press'?'#fef3c7':d.type==='numbers'?'#e0e7ff':d.type==='names'?'#ede9fe':'#f1f5f9',
+                      color:d.type==='screen_print'?'#1e40af':d.type==='embroidery'?'#be185d':d.type==='dtf'||d.type==='heat_press'?'#92400e':d.type==='numbers'?'#4338ca':d.type==='names'?'#6d28d9':'#64748b'}}>
+                      {d.label}</span>
+                    <div style={{flex:1,fontSize:12}}>
+                      <div style={{fontWeight:600}}>{d.position}{d.artName?' — '+d.artName:''}</div>
+                      <div style={{color:'#64748b',fontSize:11,marginTop:2}}>
+                        {d.colors&&d.colors.length>0&&<span>{d.colors.length} color{d.colors.length>1?'s':''}: {d.colors.join(', ')} · </span>}
+                        {d.stitches&&<span>{d.stitches.toLocaleString()} stitches · </span>}
+                        {d.dtfSize!=null&&<span>Size: {['Small','Medium','Large','XL','Oversized'][d.dtfSize]||d.dtfSize} · </span>}
+                        {d.twoColor&&<span>Two-color · </span>}
+                        {d.numMethod&&<span>{d.numMethod.replace(/_/g,' ')} {d.numSize||''} · </span>}
+                        {d.vendor&&<span>Vendor: {d.vendor} · </span>}
+                        {d.notes&&<span>{d.notes} · </span>}
+                        Sell: ${d.sell.toFixed(2)}/ea
+                      </div>
+                    </div>
+                  </div>)}
+                </div>)}
+              </div>
+            </>}
           </div>
         </div>
 
