@@ -1606,7 +1606,7 @@ const convertSOToShipStation = (so, customer) => {
       taxAmount: null, shippingAmount: null, warehouseLocation: null,
       options: Object.entries(item.sizes).filter(([, qty]) => qty > 0)
         .map(([size, qty]) => ({ name: 'Size', value: `${size} (${qty})` })),
-      productId: item.product_id ? parseInt(item.product_id.replace(/\D/g, ''), 10) || null : null, fulfillmentSku: item.sku, adjustment: false, upc: null
+      productId: item.product_id ? (() => { const id = parseInt(item.product_id.replace(/\D/g, ''), 10); return id && id <= 2147483647 ? id : null; })() : null, fulfillmentSku: item.sku, adjustment: false, upc: null
     };
   });
   return {
