@@ -15425,11 +15425,15 @@ export default function App(){
                     {shp.carrier&&<span style={{fontSize:9,color:'#64748b',textTransform:'uppercase'}}>{shp.carrier}</span>}
                     {shpUnits>0&&<span style={{fontSize:10,fontWeight:700,color:'#475569'}}>{shpUnits} units</span>}
                     <span style={{fontSize:9,color:'#94a3b8'}}>{shp.ship_date||shp.created_at||''}</span>
-                    <button style={{marginLeft:'auto',fontSize:9,background:'#166534',color:'white',border:'none',padding:'3px 8px',borderRadius:4,fontWeight:700,cursor:'pointer'}}
-                      onClick={()=>{
-                        const updatedShipments=(shp.so._shipments||[]).map(s=>s.id===shp.id?{...s,carrier_picked_up:true,pickup_date:new Date().toLocaleString()}:s);
-                        savSO({...shp.so,_shipments:updatedShipments});
-                      }}>Confirm Picked Up</button>
+                    <div style={{marginLeft:'auto',display:'flex',gap:4}}>
+                      {shp.label_url&&<button style={{fontSize:9,background:'#7c3aed',color:'white',border:'none',padding:'3px 8px',borderRadius:4,fontWeight:700,cursor:'pointer'}}
+                        onClick={()=>{const pw=window.open(shp.label_url,'_blank');if(pw)setTimeout(()=>{try{pw.print()}catch(e){}},1500)}}>Print Label</button>}
+                      <button style={{fontSize:9,background:'#166534',color:'white',border:'none',padding:'3px 8px',borderRadius:4,fontWeight:700,cursor:'pointer'}}
+                        onClick={()=>{
+                          const updatedShipments=(shp.so._shipments||[]).map(s=>s.id===shp.id?{...s,carrier_picked_up:true,pickup_date:new Date().toLocaleString()}:s);
+                          savSO({...shp.so,_shipments:updatedShipments});
+                        }}>Confirm Picked Up</button>
+                    </div>
                   </div>
                 </div>})}
             </div>
@@ -15557,7 +15561,10 @@ export default function App(){
                         const label=await createShipStationLabel(so,c2,box.items,box.weight,box.carrier,'fedex_ground',box.dimensions);
                         const b=[...shipModal.boxes];
                         const cost=label.shipmentCost||label.insuranceCost?parseFloat(label.shipmentCost||0)+parseFloat(label.insuranceCost||0):null;
-                        b[bi]={...b[bi],tracking_number:label.trackingNumber||'',carrier:label.carrierCode||box.carrier,label_url:label.labelData?.href||null,shipstation_shipment_id:label.shipmentId||null,shipping_cost:cost};
+                        // ShipStation returns labelData as base64 PDF string or labelDownload as URL
+                        const labelUrl=label.labelData?(typeof label.labelData==='string'&&label.labelData.length>200?'data:application/pdf;base64,'+label.labelData:label.labelData?.href||null):null;
+                        const labelDownload=label.labelDownload||labelUrl||null;
+                        b[bi]={...b[bi],tracking_number:label.trackingNumber||'',carrier:label.carrierCode||box.carrier,label_url:labelDownload,shipstation_shipment_id:label.shipmentId||null,shipping_cost:cost};
                         setShipModal({...shipModal,boxes:b});
                         // Save shipping cost to SO
                         if(cost){
@@ -15566,8 +15573,7 @@ export default function App(){
                         }
                         nf('✅ Label created! Tracking: '+(label.trackingNumber||'pending')+(cost?' · Cost: $'+cost.toFixed(2):''));
                         // Auto-open label for printing
-                        const labelUrl=label.labelData?.href||null;
-                        if(labelUrl){const pw=window.open(labelUrl,'_blank');if(pw)setTimeout(()=>{try{pw.print()}catch(e){}},1500)}
+                        if(labelDownload){const pw=window.open(labelDownload,'_blank');if(pw)setTimeout(()=>{try{pw.print()}catch(e){}},1500)}
                       }catch(err){nf('Label creation failed: '+err.message,'error')}
                     }}>🏷️ Create Label</button>}
                 </div>
@@ -15735,9 +15741,23 @@ export default function App(){
                     });
                     nf('🖨️ Packing slip for Box '+(bi+1));
                   }}>🖨️ Pack Slip</button>
-                  {box.shipping_cost&&<span style={{fontSize:10,fontWeight:700,color:'#166534',padding:'4px 8px',background:'#dcfce7',borderRadius:4}}>Ship cost: ${box.shipping_cost.toFixed(2)}</span>}
-                  {box.label_url&&<a href={box.label_url} target="_blank" rel="noreferrer" className="btn btn-sm" style={{fontSize:10,textDecoration:'none',background:'#7c3aed',color:'white',border:'none',padding:'4px 10px'}}>🏷️ Print Label</a>}
-                  {box.tracking_number&&!box.label_url&&<button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{
+                  {box.shipping_cost!=null&&<span style={{fontSize:10,fontWeight:700,color:'#166534',padding:'4px 8px',background:'#dcfce7',borderRadius:4}}>Ship cost: ${(box.shipping_cost||0).toFixed(2)}</span>}
+                  {box.label_url&&<button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
+                    onClick={()=>{const pw=window.open(box.label_url,'_blank');if(pw)setTimeout(()=>{try{pw.print()}catch(e){}},1500)}}>🏷️ Print Label</button>}
+                  {!box.label_url&&box.shipstation_shipment_id&&ssConnected&&<button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 10px'}}
+                    onClick={async()=>{
+                      try{
+                        nf('Fetching label from ShipStation...');
+                        const resp=await shipStationCall('/shipments?shipmentId='+box.shipstation_shipment_id,{method:'GET'});
+                        const shp=(resp.shipments||[])[0];
+                        const lUrl=shp?.labelDownload||shp?.labelData||(typeof shp?.labelData==='string'&&shp.labelData.length>200?'data:application/pdf;base64,'+shp.labelData:null);
+                        if(lUrl){
+                          const b=[...shipModal.boxes];b[bi]={...b[bi],label_url:lUrl};setShipModal({...shipModal,boxes:b});
+                          const pw=window.open(lUrl,'_blank');if(pw)setTimeout(()=>{try{pw.print()}catch(e){}},1500);
+                        } else {nf('Label not available from ShipStation','error')}
+                      }catch(err){nf('Failed to fetch label: '+err.message,'error')}
+                    }}>🏷️ Fetch & Print Label</button>}
+                  {box.tracking_number&&<button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{
                     const trackUrl=box.tracking_number;
                     const carrierUrl=/^1Z/i.test(trackUrl)?'https://www.ups.com/track?tracknum='+trackUrl:/^(94|93|92|91)\d{18,}/.test(trackUrl)?'https://tools.usps.com/go/TrackConfirmAction?tLabels='+trackUrl:'https://www.fedex.com/fedextrack/?trknbr='+trackUrl;
                     window.open(carrierUrl,'_blank');
