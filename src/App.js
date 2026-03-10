@@ -583,7 +583,7 @@ const _decoCols=['kind','position','type','art_file_id','art_tbd_type','tbd_colo
 // Columns that may not exist in production DB / schema cache — stripped on insert retry
 const _itemExtraCols=new Set(['is_promo','_pre_promo_sell','est_qty']);
 const _estExtraCols=new Set(['promo_applied','promo_amount','update_requests']);
-const _soExtraCols=new Set(['_shipping_cost','promo_applied','promo_amount','ship_preference','ship_on_date','order_type','expected_ship_date','booking_confirmed','booking_confirmed_at','booking_confirmed_by','booking_alert_days']);
+const _soExtraCols=new Set(['_shipping_cost','_shipstation_cost','_inbound_freight','promo_applied','promo_amount','ship_preference','ship_on_date','order_type','expected_ship_date','booking_confirmed','booking_confirmed_at','booking_confirmed_by','booking_alert_days']);
 const _decoExtraCols=new Set(['print_color','front_and_back','reversible','num_qty','name_qty','num_font','num_size_back','custom_font_art_id','deco_type','notes','vendor']);
 // Sanitize decoration data before DB insert — strip UI-only placeholders that would violate constraints
 const _sanitizeDeco=(d)=>{const r={...d};if(r.custom_font_art_id&&r.custom_font_art_id==='pending')r.custom_font_art_id=null;if(r.art_file_id&&r.art_file_id==='__tbd')r.art_file_id=null;return r};
@@ -4488,11 +4488,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           if(!qty)return;
           const expectedBlank=qty*safeNum(it.nsa_cost);
           const blankPOs=(it.po_lines||[]).filter(pl=>pl.po_type!=='outside_deco');
-          const actualBlank=blankPOs.length>0?blankPOs.reduce((a,pl)=>{
-            const poQty=Object.entries(pl).filter(([k,v])=>typeof v==='number'&&safeSizes(it)[k]!==undefined).reduce((a2,[,v])=>a2+v,0);
-            return a+poQty*safeNum(it.nsa_cost)},0):0;
+          const poBlankQty=blankPOs.reduce((a,pl)=>{
+            return a+Object.entries(pl).filter(([k,v])=>typeof v==='number'&&safeSizes(it)[k]!==undefined).reduce((a2,[,v])=>a2+v,0)},0);
+          // Include inventory picks in actual cost (already-owned stock still has cost basis)
+          const pickQty=safePicks(it).reduce((a,pk)=>a+Object.entries(pk).filter(([k,v])=>typeof v==='number'&&safeSizes(it)[k]!==undefined).reduce((a2,[,v])=>a2+v,0),0);
+          const accountedQty=poBlankQty+pickQty;
+          const hasActual=blankPOs.length>0||pickQty>0;
+          const actualBlank=hasActual?accountedQty*safeNum(it.nsa_cost):0;
           costLines.push({category:'Blanks',sku:it.sku,name:it.name,vendor:D_V.find(v=>v.id===it.vendor_id)?.name||it.brand||'—',
-            qty,expected:expectedBlank,actual:actualBlank,poCount:blankPOs.length,
+            qty,expected:expectedBlank,actual:actualBlank,poCount:blankPOs.length+(pickQty>0?1:0),
             poIds:blankPOs.map(p=>p.po_id).filter(Boolean).join(', '),
             allReceived:blankPOs.length>0&&blankPOs.every(p=>p.status==='received')});
           safeDecos(it).forEach(d=>{
@@ -4583,8 +4587,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <div>
                 <label className="form-label">Outbound Shipping (ShipStation)</label>
                 <div style={{display:'flex',alignItems:'center',gap:4}}>
-                  <$In value={o._shipstation_cost||0} onChange={v=>sv('_shipstation_cost',v)} w={90}/>
-                  <span style={{fontSize:10,color:'#94a3b8'}}>default $0 until integration</span>
+                  <$In value={o._shipstation_cost||o._shipping_cost||0} onChange={v=>{sv('_shipstation_cost',v);sv('_shipping_cost',v)}} w={90}/>
+                  <span style={{fontSize:10,color:'#94a3b8'}}>auto-filled from ShipStation labels</span>
                 </div>
               </div>
               <div>
@@ -15816,13 +15820,18 @@ export default function App(){
                       const existing=so._shipments||[];
                       // Auto-move completed jobs to shipped when warehouse confirms shipment
                       const updatedJobs=safeJobs(so).map(jj=>jj.prod_status==='completed'?{...jj,prod_status:'shipped'}:jj);
+                      // Compute total shipping cost from all boxes for this SO
+                      const boxShipCost=shipModal.boxes.reduce((a,bx)=>a+(bx.shipping_cost||0),0);
+                      const existingShipCost=safeNum(so._shipping_cost||so._shipstation_cost||0);
+                      const totalShipCost=existingShipCost+boxShipCost;
                       const updated={...so,jobs:updatedJobs,_shipments:[...existing,...soShipments],_shipped:true,_shipping_status:'shipped',
                         _tracking_number:soShipments[0].tracking_number||so._tracking_number||'',
                         _carrier:soShipments[0].carrier||so._carrier||'',
                         _ship_date:shipDate,
                         _tracking_url:soShipments[0].tracking_url||so._tracking_url||'',
+                        _shipping_cost:totalShipCost,_shipstation_cost:totalShipCost,
                         updated_at:new Date().toLocaleString()};
-                      setSOs(prev=>prev.map(s=>s.id===soId?updated:s));
+                      savSO(updated);
                     }
                   });
                   nf('✅ Shipped! '+newShipments.length+' package'+(newShipments.length!==1?'s':'')+' for '+shipModal.grp.cName);
