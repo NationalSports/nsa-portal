@@ -14407,6 +14407,7 @@ export default function App(){
 
   // WAREHOUSE DASHBOARD
   const[whTab,setWhTab]=useState('pull');const[whSearch,setWhSearch]=useState('');const[whRepF,setWhRepF]=useState('all');const[scanModalOpen,setScanModalOpen]=useState(false);const[whRecvPO,setWhRecvPO]=useState(null);const[whReceiving,setWhReceiving]=useState(false);const[whViewIF,setWhViewIF]=useState(null);const[whPulling,setWhPulling]=useState(false);
+  const[shippedCustF,setShippedCustF]=useState('all');const[shippedDateF,setShippedDateF]=useState('all');
   const[whRecentActions,setWhRecentActions]=useState(()=>{try{return JSON.parse(localStorage.getItem('nsa_wh_recent')||'[]')}catch{return[]}});
   const addWhAction=(action)=>{setWhRecentActions(prev=>{const next=[{...action,ts:Date.now(),at:new Date().toLocaleString()},...prev].slice(0,50);try{localStorage.setItem('nsa_wh_recent',JSON.stringify(next))}catch{}return next})};
   const[stockPOs,setStockPOs]=useState([
@@ -15301,15 +15302,28 @@ export default function App(){
                   <span style={{marginLeft:'auto',fontSize:12,fontWeight:800,color:'#166534'}}>{grp.totalUnits} units</span>
                   <span style={{fontSize:10,color:'#64748b'}}>{grp.items.length} item{grp.items.length!==1?'s':''}</span>
                 </div>
-                <table style={{fontSize:11,width:'100%'}}><tbody>
-                  {grp.items.map((t,ti)=><tr key={ti} style={{cursor:'pointer',borderBottom:'1px solid #f1f5f9'}}
-                    onClick={()=>{setESOTab(null);setESO(t.so);setESOC(cust.find(c2=>c2.id===t.so.customer_id));setPg('orders')}}>
-                    <td style={{padding:'4px 0',fontWeight:700,color:'#1e40af',whiteSpace:'nowrap',width:80}}>{t.soId}</td>
-                    <td style={{fontSize:10,color:'#475569'}}>{t.desc}</td>
-                    <td style={{textAlign:'center',fontWeight:700,width:50}}>{t.units}</td>
-                    <td style={{width:40}}>{t.urgent&&<span>🔥</span>}</td>
-                  </tr>)}
-                </tbody></table>
+                {/* Detailed item list per SO */}
+                {[...grp.soIds].map(soId=>{const so=grp.soMap[soId];if(!so)return null;
+                  return<div key={soId} style={{marginBottom:6}}>
+                    <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:2}}>
+                      <span style={{fontSize:10,fontWeight:700,color:'#1e40af',cursor:'pointer',textDecoration:'underline'}}
+                        onClick={()=>{setESOTab(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}}>{soId}</span>
+                      {grp.items.find(t=>t.soId===soId)?.urgent&&<span style={{fontSize:10}}>🔥</span>}
+                    </div>
+                    <table style={{fontSize:11,width:'100%',borderCollapse:'collapse'}}><tbody>
+                      {safeItems(so).map((item,ii)=>{
+                        const szObj=safeSizes(item);
+                        const totalQty=Object.values(szObj).reduce((a,v)=>a+safeNum(v),0);
+                        if(totalQty<=0)return null;
+                        const szStr=Object.entries(szObj).filter(([,v])=>v>0).map(([sz,v])=>sz+':'+v).join('  ');
+                        return<tr key={ii} style={{borderBottom:'1px solid #f1f5f9'}}>
+                          <td style={{padding:'3px 0',fontWeight:700,whiteSpace:'nowrap',width:80,color:'#334155'}}>{item.sku}</td>
+                          <td style={{fontSize:10,color:'#475569'}}>{item.name}{item.color?' · '+item.color:''}</td>
+                          <td style={{fontSize:9,color:'#64748b',fontFamily:'monospace'}}>{szStr}</td>
+                          <td style={{textAlign:'center',fontWeight:700,width:40}}>{totalQty}</td>
+                        </tr>})}
+                    </tbody></table>
+                  </div>})}
                 <div style={{display:'flex',gap:6,marginTop:8,borderTop:'1px solid #e2e8f0',paddingTop:6}}>
                   <button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
                     onClick={()=>{
@@ -15385,22 +15399,90 @@ export default function App(){
             </div>})}
           </div>})()}
 
-        {/* ── RECENT SHIPMENTS ── */}
+        {/* ── AWAITING PICKUP ── */}
         {(()=>{
-          const recentShipments=[];
+          const awaitingPickup=[];
           sos.filter(so=>so._shipments&&so._shipments.length>0&&!so.deleted_at).forEach(so=>{
             const c2=cust.find(cc=>cc.id===so.customer_id);
             (so._shipments||[]).forEach((shp,si)=>{
-              recentShipments.push({...shp,soId:so.id,so,cName:c2?.name||'Unknown',boxIdx:si});
+              if(shp.tracking_number&&!shp.carrier_picked_up){
+                awaitingPickup.push({...shp,soId:so.id,so,cName:c2?.name||'Unknown',boxIdx:si});
+              }
             });
           });
-          recentShipments.sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||''));
-          const recent=recentShipments.slice(0,20);
-          if(recent.length===0)return null;
+          awaitingPickup.sort((a,b)=>(a.created_at||'').localeCompare(b.created_at||''));
+          if(awaitingPickup.length===0)return null;
           return<div style={{marginTop:16}}>
-            <div style={{fontSize:12,fontWeight:800,color:'#475569',marginBottom:8,textTransform:'uppercase'}}>Recent Shipments</div>
+            <div style={{fontSize:12,fontWeight:800,color:'#d97706',marginBottom:8,textTransform:'uppercase'}}>Awaiting Carrier Pickup ({awaitingPickup.length})</div>
             <div style={{display:'grid',gap:6}}>
-              {recent.map((shp,si)=>{
+              {awaitingPickup.map((shp,si)=>{
+                const shpUnits=(shp.items||[]).reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((a2,v)=>a2+v,0),0);
+                return<div key={shp.id||si} className="card" style={{padding:'8px 12px',borderLeft:'3px solid #d97706'}}>
+                  <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+                    <span style={{fontSize:11,fontWeight:800,color:'#92400e'}}>{shp.cName}</span>
+                    <span style={{fontSize:10,fontFamily:'monospace',color:'#1e40af'}}>{shp.soId}</span>
+                    {shp.tracking_number&&<span style={{fontSize:10,fontFamily:'monospace',color:'#92400e',background:'#fef3c7',padding:'1px 6px',borderRadius:3}}>{shp.tracking_number}</span>}
+                    {shp.carrier&&<span style={{fontSize:9,color:'#64748b',textTransform:'uppercase'}}>{shp.carrier}</span>}
+                    {shpUnits>0&&<span style={{fontSize:10,fontWeight:700,color:'#475569'}}>{shpUnits} units</span>}
+                    <span style={{fontSize:9,color:'#94a3b8'}}>{shp.ship_date||shp.created_at||''}</span>
+                    <button style={{marginLeft:'auto',fontSize:9,background:'#166534',color:'white',border:'none',padding:'3px 8px',borderRadius:4,fontWeight:700,cursor:'pointer'}}
+                      onClick={()=>{
+                        const updatedShipments=(shp.so._shipments||[]).map(s=>s.id===shp.id?{...s,carrier_picked_up:true,pickup_date:new Date().toLocaleString()}:s);
+                        savSO({...shp.so,_shipments:updatedShipments});
+                      }}>Confirm Picked Up</button>
+                  </div>
+                </div>})}
+            </div>
+          </div>})()}
+
+        {/* ── SHIPPED (picked up by carrier) ── */}
+        {(()=>{
+          const allShipped=[];
+          sos.filter(so=>so._shipments&&so._shipments.length>0&&!so.deleted_at).forEach(so=>{
+            const c2=cust.find(cc=>cc.id===so.customer_id);
+            (so._shipments||[]).forEach((shp,si)=>{
+              if(shp.carrier_picked_up){
+                allShipped.push({...shp,soId:so.id,so,cName:c2?.name||'Unknown',boxIdx:si});
+              }
+            });
+          });
+          allShipped.sort((a,b)=>(b.pickup_date||b.created_at||'').localeCompare(a.pickup_date||a.created_at||''));
+          if(allShipped.length===0)return null;
+          // Get unique customers for filter
+          const shipCusts=[...new Set(allShipped.map(s=>s.cName))].sort();
+          // Date filter
+          const now=new Date();const today=now.toISOString().split('T')[0];
+          const weekAgo=new Date(now-7*86400000).toISOString().split('T')[0];
+          const monthAgo=new Date(now-30*86400000).toISOString().split('T')[0];
+          const filtered=allShipped.filter(shp=>{
+            if(shippedCustF!=='all'&&shp.cName!==shippedCustF)return false;
+            if(shippedDateF!=='all'){
+              const d=(shp.pickup_date||shp.ship_date||shp.created_at||'');
+              const ds=new Date(d).toISOString().split('T')[0];
+              if(shippedDateF==='today'&&ds!==today)return false;
+              if(shippedDateF==='week'&&ds<weekAgo)return false;
+              if(shippedDateF==='month'&&ds<monthAgo)return false;
+            }
+            return true;
+          });
+          return<div style={{marginTop:16}}>
+            <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8,flexWrap:'wrap'}}>
+              <span style={{fontSize:12,fontWeight:800,color:'#475569',textTransform:'uppercase'}}>Shipped ({filtered.length})</span>
+              <select value={shippedCustF} onChange={e=>setShippedCustF(e.target.value)}
+                style={{fontSize:10,padding:'2px 6px',borderRadius:4,border:'1px solid #cbd5e1'}}>
+                <option value="all">All Customers</option>
+                {shipCusts.map(c=><option key={c} value={c}>{c}</option>)}
+              </select>
+              <select value={shippedDateF} onChange={e=>setShippedDateF(e.target.value)}
+                style={{fontSize:10,padding:'2px 6px',borderRadius:4,border:'1px solid #cbd5e1'}}>
+                <option value="all">All Time</option>
+                <option value="today">Today</option>
+                <option value="week">Last 7 Days</option>
+                <option value="month">Last 30 Days</option>
+              </select>
+            </div>
+            <div style={{display:'grid',gap:6}}>
+              {filtered.slice(0,50).map((shp,si)=>{
                 const shpUnits=(shp.items||[]).reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((a2,v)=>a2+v,0),0);
                 return<div key={shp.id||si} className="card" style={{padding:'8px 12px',borderLeft:'3px solid #166534',cursor:'pointer'}}
                   onClick={()=>{setESOTab('tracking');setESO(shp.so);setESOC(cust.find(c2=>c2.id===shp.so?.customer_id));setPg('orders')}}>
@@ -15411,7 +15493,7 @@ export default function App(){
                       :<span style={{fontSize:10,color:'#d97706'}}>No tracking</span>}
                     {shp.carrier&&<span style={{fontSize:9,color:'#64748b',textTransform:'uppercase'}}>{shp.carrier}</span>}
                     {shpUnits>0&&<span style={{fontSize:10,fontWeight:700,color:'#475569'}}>{shpUnits} units</span>}
-                    <span style={{marginLeft:'auto',fontSize:9,color:'#94a3b8'}}>{shp.ship_date||shp.created_at||''}</span>
+                    <span style={{marginLeft:'auto',fontSize:9,color:'#94a3b8'}}>{shp.pickup_date||shp.ship_date||shp.created_at||''}</span>
                   </div>
                 </div>})}
             </div>
