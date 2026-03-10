@@ -2098,7 +2098,7 @@ const momentecGetProductsByCategory = async (categoryId, pageSize = 50, pageNumb
   await momentecApiCall(`/productview/byCategory/${categoryId}?pageSize=${pageSize}&pageNumber=${pageNumber}`);
 
 const momentecSearchProducts = async (term, pageSize = 50, pageNumber = 1) =>
-  await momentecApiCall(`/productview/bySearchTerm/${encodeURIComponent(term)}?pageSize=${pageSize}&pageNumber=${pageNumber}`);
+  await momentecApiCall(`/productview/bySearchTerm/${encodeURIComponent(term)}*?pageSize=${pageSize}&pageNumber=${pageNumber}`);
 
 const momentecGetCategories = async () =>
   await momentecApiCall('/categoryview/@top?depthAndLimit=11,11');
@@ -2707,19 +2707,52 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         return pn.includes(qLower)||nm.includes(qLower);
       });
       if(!entries.length){mtSearchCache.current[cacheKey]={length:0,_ts:Date.now()};if(gen===mtSearchGen.current)setMtResults([]);return}
-      // Group by partNumber (style) — each entry is a style with colors/sizes in detail view
+      // Helper: extract best price from an HCL Commerce entry
+      const getPrice=(e)=>{
+        if(e.Price&&e.Price.length){for(const p of e.Price){const v=parseFloat(p.SKUPriceValue||p.priceValue);if(v>0)return v}}
+        const f=parseFloat(e.offerPrice||e.listPrice||e.salePrice||0);return f>0?f:0;
+      };
+      // Helper: extract color name from attributes array
+      const getColor=(e)=>{
+        if(e.attributes){for(const a of e.attributes){const n=(a.name||'').toLowerCase();if(n==='color'||n==='colour'){const vals=a.values||a.Values||[];if(vals.length)return vals.map(v=>v.value||v.Value||v).join('/')}}}
+        return '';
+      };
+      // Group by base style — strip variant suffixes from partNumber (e.g. 510000-NAVY-M → 510000)
       const styleMap={};
       for(const e of entries){
-        const sku=e.partNumber||'';
-        if(!styleMap[sku]){
-          const price=parseFloat(e.Price?.[0]?.priceValue||0);
-          styleMap[sku]={sku,styleName:e.name||sku,brandName:e.manufacturer||'Momentec',
+        const fullSku=e.partNumber||'';
+        // For ItemBean entries with hyphenated SKUs, derive base SKU; for ProductBean use as-is
+        const isItem=e.catalogEntryTypeCode==='ItemBean';
+        const baseSku=isItem&&fullSku.includes('-')?fullSku.split('-')[0]:fullSku;
+        const price=getPrice(e);
+        const colorName=getColor(e)||'';
+        if(!styleMap[baseSku]){
+          styleMap[baseSku]={sku:baseSku,styleName:e.name||baseSku,brandName:e.manufacturer||'Momentec',
             styleImage:e.thumbnail||e.fullImage||'',
-            colors:[{colorName:'Default',sku,piecePrice:price,customerPrice:price,
-              colorFrontImage:e.thumbnail||e.fullImage||'',sizes:[],totalQty:0}],
-            _mtId:e.uniqueID,_mtPrice:price};
+            colors:{},_mtId:e.uniqueID,_mtPrice:price>0?price:0};
         }
+        const style=styleMap[baseSku];
+        if(price>0&&(style._mtPrice===0||price<style._mtPrice))style._mtPrice=price;
+        if(!style.styleImage&&(e.thumbnail||e.fullImage))style.styleImage=e.thumbnail||e.fullImage;
+        // Add color entry (group variants by color)
+        const cKey=colorName||'Default';
+        if(!style.colors[cKey]){
+          style.colors[cKey]={colorName:cKey,sku:fullSku,piecePrice:price,customerPrice:price,
+            colorFrontImage:e.thumbnail||e.fullImage||'',sizes:[],totalQty:0};
+        }else{const c=style.colors[cKey];if(price>0&&(c.customerPrice===0||price<c.customerPrice)){c.customerPrice=price;c.piecePrice=price}}
+        // Also process child sKUs if present (ProductBean entries)
+        if(e.sKUs&&Array.isArray(e.sKUs)){for(const sk of e.sKUs){
+          const skPrice=getPrice(sk);const skColor=getColor(sk)||'Default';
+          const skImg=sk.thumbnail||sk.fullImage||'';
+          if(!style.colors[skColor]){
+            style.colors[skColor]={colorName:skColor,sku:sk.partNumber||fullSku,piecePrice:skPrice,customerPrice:skPrice,
+              colorFrontImage:skImg||style.styleImage,sizes:[],totalQty:0};
+          }else{const c=style.colors[skColor];if(skPrice>0&&(c.customerPrice===0||skPrice<c.customerPrice)){c.customerPrice=skPrice;c.piecePrice=skPrice}if(skImg&&!c.colorFrontImage)c.colorFrontImage=skImg}
+          if(skPrice>0&&(style._mtPrice===0||skPrice<style._mtPrice))style._mtPrice=skPrice;
+        }}
       }
+      // Convert colors map to array
+      for(const k of Object.keys(styleMap)){styleMap[k].colors=Object.values(styleMap[k].colors)}
       const results=Object.values(styleMap);
       mtSearchCache.current[cacheKey]=results;
       if(gen===mtSearchGen.current)setMtResults(results);
