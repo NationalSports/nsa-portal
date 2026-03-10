@@ -105,34 +105,47 @@ function calcSOStatus(ord) {
   return 'need_order';
 }
 
-// ── Job Building ── Groups items by their full decoration signature
+// ── Job Building ── Groups items by their full decoration signature, split by deco type
+// Different deco types (e.g. screen_print vs embroidery) always create separate jobs
 const buildJobs = (o) => {
   if (o?.jobs && o.jobs.length > 0) return o.jobs;
-  // Build decoration signature per item
+  // Build decoration entries per item, grouped by deco type
   const itemSigs = [];
   safeItems(o).forEach((it, idx) => {
     if (it.no_deco) return;
-    const parts = [];
-    safeDecos(it).forEach((d) => {
-      if (d.kind === 'art' && d.art_file_id) parts.push('art_' + d.art_file_id + '@' + (d.position || ''));
-      else if (d.kind === 'numbers') parts.push('numbers_' + (d.num_method || 'ht') + '@' + (d.position || ''));
+    const decosByType = {};
+    safeDecos(it).forEach((d, di) => {
+      if (d.kind === 'art' && d.art_file_id) {
+        const artF = safeArr(o?.art_files).find(f => f.id === d.art_file_id);
+        const dt = artF?.deco_type || d.deco_type || 'screen_print';
+        const part = 'art_' + d.art_file_id + '@' + (d.position || '');
+        if (!decosByType[dt]) decosByType[dt] = [];
+        decosByType[dt].push({ part, d, di });
+      } else if (d.kind === 'numbers') {
+        const dt = d.num_method || 'heat_transfer';
+        const part = 'numbers_' + dt + '@' + (d.position || '');
+        if (!decosByType[dt]) decosByType[dt] = [];
+        decosByType[dt].push({ part, d, di });
+      }
     });
-    parts.sort();
-    const sig = parts.join('|');
-    if (sig) itemSigs.push({ idx, it, sig });
+    Object.entries(decosByType).forEach(([dt, decos]) => {
+      const parts = decos.map(x => x.part).sort();
+      const sig = dt + '::' + parts.join('|');
+      if (sig) itemSigs.push({ idx, it, sig, decos });
+    });
   });
   // Group by signature
   const sigGroups = {};
-  itemSigs.forEach(({ idx, it, sig }) => {
+  itemSigs.forEach(({ idx, it, sig, decos }) => {
     if (!sigGroups[sig]) sigGroups[sig] = { sig, items: [] };
-    sigGroups[sig].items.push({ idx, it });
+    sigGroups[sig].items.push({ idx, it, decos });
   });
   return Object.values(sigGroups).map((grp, gi) => {
-    const firstIt = grp.items[0].it;
+    const firstEntry = grp.items[0];
     const positions = new Set();
     const artNames = []; const artIds = []; const decoTypes = [];
     let worstArtSt = 'art_complete';
-    safeDecos(firstIt).forEach((d, di) => {
+    firstEntry.decos.forEach(({ d }) => {
       if (d.kind === 'art' && d.art_file_id) {
         positions.add(d.position || '');
         artIds.push(d.art_file_id);
@@ -147,8 +160,8 @@ const buildJobs = (o) => {
         decoTypes.push(d.num_method || 'heat_transfer');
       }
     });
-    const items = grp.items.map(({ idx, it }) => {
-      const decoIdxs = []; safeDecos(it).forEach((d, di) => { if (d.kind === 'art' || d.kind === 'numbers') decoIdxs.push(di) });
+    const items = grp.items.map(({ idx, it, decos }) => {
+      const decoIdxs = decos.map(x => x.di);
       return { item_idx: idx, deco_idx: decoIdxs[0] || 0, sku: it.sku, name: safeStr(it.name), color: it.color || '', units: Object.values(safeSizes(it)).reduce((a, v) => a + v, 0), fulfilled: 0 };
     });
     const totalUnits = items.reduce((a, it) => a + it.units, 0);
