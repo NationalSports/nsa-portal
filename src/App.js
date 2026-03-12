@@ -2353,6 +2353,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const[showInvCreate,setShowInvCreate]=useState(false);const[invSelItems,setInvSelItems]=useState([]);const[invMemo,setInvMemo]=useState('');const[invType,setInvType]=useState('final');const[invDepositPct,setInvDepositPct]=useState(50);const[invBilling,setInvBilling]=useState('');
   const[invReview,setInvReview]=useState(null);const[invSendModal,setInvSendModal]=useState(false);const[invSendMsg,setInvSendMsg]=useState('');const[invSendTo,setInvSendTo]=useState('');const[invSendCustomEmail,setInvSendCustomEmail]=useState('');
   const[splitModal,setSplitModal]=useState(null);// {jIdx, mode:'received'|'sku'|null}
+  const[jobWizard,setJobWizard]=useState(null);// {groups: [{name,deco_type,items:[...]},...]} — Job Setup Wizard
   const[countDiscModal,setCountDiscModal]=useState(null);// {open,entries:[{sku,name,color,size,expected,actual}],notes}
   const[artReqModal,setArtReqModal]=useState(null);// {jIdx, artist:'', instructions:'', files:[]}
   const[artRevisionNote,setArtRevisionNote]=useState('');
@@ -6174,7 +6175,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // Draft jobs & wizard state
       const draftJobs=jobs.filter(j=>j.prod_status==='draft'||j._draft);
       const activeJobs=jobs.filter(j=>j.prod_status!=='draft'&&!j._draft);
-      const[jobWizard,setJobWizard]=useState(null);// {groups: [{name,deco_type,items:[...]},...]}
       const DECO_LABELS_W={screen_print:'Screen Print',embroidery:'Embroidery',heat_transfer:'Heat Transfer',dtg:'DTG',sublimation:'Sublimation',vinyl:'Vinyl',patch:'Patch'};
       const openJobWizard=()=>{
         // Build groups from all decorated items, grouped by deco type
