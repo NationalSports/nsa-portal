@@ -3633,15 +3633,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 uD(idx,di,'roster',nr);if(nn!==null&&nameCt>0){const ndi=safeDecos(item).findIndex(dd=>dd.kind==='names');if(ndi>=0)uD(idx,ndi,'names',nn)}
                 nf(numCt+' numbers'+(nameCt>0?' + '+nameCt+' names':'')+' imported')};reader.readAsText(f)};inp.click()}}>📤 Upload Roster</button>
               <button className="btn btn-sm btn-secondary" style={{fontSize:11,background:'#eff6ff',borderColor:'#93c5fd',color:'#1e40af'}} onClick={()=>{let csv='Size,Number,Name\n';sizedQtys.forEach(([sz,sqty])=>{for(let i=0;i<sqty;i++)csv+=sz+',,\n'});const blob=new Blob([csv],{type:'text/csv'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='roster_template_'+(item.sku||'item')+'.csv';a.click();URL.revokeObjectURL(url)}}>📥 Download Template</button>
-              {isSO&&<button className="btn btn-sm btn-secondary" style={{fontSize:11,background:'#fef3c7',borderColor:'#fbbf24',color:'#92400e'}} onClick={async()=>{
+              <button className="btn btn-sm btn-secondary" style={{fontSize:11,background:'#fef3c7',borderColor:'#fbbf24',color:'#92400e'}} onClick={async()=>{
                 const coachEmail=prompt('Coach email address:');if(!coachEmail||!coachEmail.includes('@'))return;
                 const coachName=prompt('Coach name (optional):')||'Coach';
                 const linkData=btoa(JSON.stringify({so:o.id,sku:item.sku||'CUSTOM',item:item.name||'Item',color:item.color||'',sizes:item.sizes,rep_email:cu?.email||'',rep_name:cu?.name||'',coach_name:coachName}));
                 const rosterUrl=window.location.origin+'/roster.html?d='+linkData;
-                try{const res=await sendBrevoEmail({to:[{email:coachEmail,name:coachName}],subject:'Roster Number Assignment — '+o.id+' '+item.name,
-                  htmlContent:'<div style="font-family:sans-serif;max-width:600px;margin:0 auto"><div style="background:linear-gradient(135deg,#1e3a5f,#2563eb);color:white;padding:20px;border-radius:8px 8px 0 0;text-align:center"><h2 style="margin:0">🏈 Roster Number Request</h2></div><div style="background:white;padding:20px;border:1px solid #e2e8f0;border-radius:0 0 8px 8px"><p>Hi '+coachName+',</p><p>'+(cu?.name||'Your sales rep')+' at National Sports Apparel needs jersey numbers assigned for <strong>'+item.name+'</strong> ('+o.id+').</p><p>Please click the button below to assign numbers to each size:</p><p style="text-align:center;margin:20px 0"><a href="'+rosterUrl+'" style="display:inline-block;padding:14px 32px;background:#2563eb;color:white;text-decoration:none;border-radius:8px;font-weight:700;font-size:16px">Assign Numbers →</a></p><p style="color:#64748b;font-size:12px">If the button doesn\'t work, copy this link: '+rosterUrl+'</p></div></div>',
+                try{const res=await sendBrevoEmail({to:[{email:coachEmail,name:coachName}],subject:'Roster Number Assignment — '+(o.id||'Order')+' '+item.name,
+                  htmlContent:'<div style="font-family:sans-serif;max-width:600px;margin:0 auto"><div style="background:linear-gradient(135deg,#1e3a5f,#2563eb);color:white;padding:20px;border-radius:8px 8px 0 0;text-align:center"><h2 style="margin:0">🏈 Roster Number Request</h2></div><div style="background:white;padding:20px;border:1px solid #e2e8f0;border-radius:0 0 8px 8px"><p>Hi '+coachName+',</p><p>'+(cu?.name||'Your sales rep')+' at National Sports Apparel needs jersey numbers assigned for <strong>'+item.name+'</strong> ('+(o.id||'Order')+').</p><p>Please click the button below to assign numbers to each size:</p><p style="text-align:center;margin:20px 0"><a href="'+rosterUrl+'" style="display:inline-block;padding:14px 32px;background:#2563eb;color:white;text-decoration:none;border-radius:8px;font-weight:700;font-size:16px">Assign Numbers →</a></p><p style="color:#64748b;font-size:12px">If the button doesn\'t work, copy this link: '+rosterUrl+'</p></div></div>',
                   senderName:cu?.name||'National Sports Apparel',senderEmail:'noreply@nationalsportsapparel.com'});
-                  if(res.ok)nf('Roster request sent to '+coachEmail);else nf('Failed to send: '+(res.error||'Unknown error'),'error')}catch(e){nf('Error: '+e.message,'error')}}}>📧 Send to Coach</button>}</>
+                  if(res.ok)nf('Roster request sent to '+coachEmail);else nf('Failed to send: '+(res.error||'Unknown error'),'error')}catch(e){nf('Error: '+e.message,'error')}}}>📧 Send to Coach</button></>
 
               :<div style={{marginTop:6,padding:10,background:'#f8fafc',borderRadius:6,border:'1px dashed #d1d5db'}}
                 onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#3b82f6';e.currentTarget.style.background='#eff6ff'}}
@@ -3666,10 +3666,31 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                       </select>})()}
                     <button className="btn btn-sm btn-secondary" style={{fontSize:9,background:'#dbeafe',borderColor:'#93c5fd',color:'#1e40af'}} onClick={()=>autoFillNums('bball')}>🏀 BBall #s</button>
                     <button className="btn btn-sm btn-secondary" style={{fontSize:9,background:'#dcfce7',borderColor:'#86efac',color:'#166534'}} onClick={()=>autoFillNums('sequential')}>🔢 Small→Large</button>
+                    <button className="btn btn-sm btn-secondary" style={{fontSize:9,background:'#ecfdf5',borderColor:'#6ee7b7',color:'#065f46'}} onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.csv,.xlsx,.xls,.txt';inp.onchange=()=>{const f=inp.files[0];if(!f)return;const reader=new FileReader();reader.onload=ev=>{const lines=ev.target.result.split('\n').filter(l=>l.trim());if(lines.length<2){nf('CSV appears empty','error');return}
+                      const hdr=lines[0].toLowerCase();const hasHeader=hdr.includes('size');const dataLines=hasHeader?lines.slice(1):lines;
+                      const cols=lines[0].split(',');const numColIdx=cols.findIndex(c=>c.trim().toLowerCase()==='number'||c.trim().toLowerCase()==='#'||c.trim().toLowerCase()==='num');
+                      const nameColIdx=cols.findIndex(c=>c.trim().toLowerCase()==='name'||c.trim().toLowerCase()==='player');
+                      const nr={...roster};let numCt=0;const namesDeco=safeDecos(item).find((dd,ddi)=>dd.kind==='names'&&ddi!==di);const nn=namesDeco?{...(namesDeco.names||{})}:null;let nameCt=0;
+                      dataLines.forEach(line=>{const parts=line.split(',').map(s=>s.trim());const sz=parts[0];if(!sz||!item.sizes[sz]||item.sizes[sz]<=0)return;
+                        const num=numColIdx>=1?parts[numColIdx]:parts[1]||'';
+                        const name=nameColIdx>=1?parts[nameColIdx]:(parts.length>=3?parts[2]:'');
+                        if(num){if(!nr[sz])nr[sz]=Array(item.sizes[sz]||0).fill('');const ei=nr[sz].findIndex(v=>!v);if(ei>=0){nr[sz][ei]=num;numCt++}}
+                        if(name&&nn!==null){if(!nn[sz])nn[sz]=Array(item.sizes[sz]||0).fill('');const ei=nn[sz].findIndex(v=>!v);if(ei>=0){nn[sz][ei]=name;nameCt++}}});
+                      uD(idx,di,'roster',nr);if(nn!==null&&nameCt>0){const ndi=safeDecos(item).findIndex(dd=>dd.kind==='names');if(ndi>=0)uD(idx,ndi,'names',nn)}
+                      nf(numCt+' numbers'+(nameCt>0?' + '+nameCt+' names':'')+' imported')};reader.readAsText(f)};inp.click()}}>📤 Upload Roster</button>
+                    <button className="btn btn-sm btn-secondary" style={{fontSize:9,background:'#fef3c7',borderColor:'#fbbf24',color:'#92400e'}} onClick={async()=>{
+                      const coachEmail=prompt('Coach email address:');if(!coachEmail||!coachEmail.includes('@'))return;
+                      const coachName=prompt('Coach name (optional):')||'Coach';
+                      const linkData=btoa(JSON.stringify({so:o.id,sku:item.sku||'CUSTOM',item:item.name||'Item',color:item.color||'',sizes:item.sizes,rep_email:cu?.email||'',rep_name:cu?.name||'',coach_name:coachName}));
+                      const rosterUrl=window.location.origin+'/roster.html?d='+linkData;
+                      try{const res=await sendBrevoEmail({to:[{email:coachEmail,name:coachName}],subject:'Roster Number Assignment — '+(o.id||'Order')+' '+item.name,
+                        htmlContent:'<div style="font-family:sans-serif;max-width:600px;margin:0 auto"><div style="background:linear-gradient(135deg,#1e3a5f,#2563eb);color:white;padding:20px;border-radius:8px 8px 0 0;text-align:center"><h2 style="margin:0">🏈 Roster Number Request</h2></div><div style="background:white;padding:20px;border:1px solid #e2e8f0;border-radius:0 0 8px 8px"><p>Hi '+coachName+',</p><p>'+(cu?.name||'Your sales rep')+' at National Sports Apparel needs jersey numbers assigned for <strong>'+item.name+'</strong> ('+(o.id||'Order')+').</p><p>Please click the button below to assign numbers to each size:</p><p style="text-align:center;margin:20px 0"><a href="'+rosterUrl+'" style="display:inline-block;padding:14px 32px;background:#2563eb;color:white;text-decoration:none;border-radius:8px;font-weight:700;font-size:16px">Assign Numbers →</a></p><p style="color:#64748b;font-size:12px">If the button doesn\'t work, copy this link: '+rosterUrl+'</p></div></div>',
+                        senderName:cu?.name||'National Sports Apparel',senderEmail:'noreply@nationalsportsapparel.com'});
+                        if(res.ok)nf('Roster request sent to '+coachEmail);else nf('Failed to send: '+(res.error||'Unknown error'),'error')}catch(e){nf('Error: '+e.message,'error')}}}>📧 Send to Coach</button>
                     <button className="btn btn-sm btn-secondary" style={{fontSize:9}} onClick={()=>{
-                      let csv='Size,Number\n';sizedQtys.forEach(([sz,sqty])=>{for(let i=0;i<sqty;i++)csv+=sz+',\n'});
+                      let csv='Size,Number,Name\n';sizedQtys.forEach(([sz,sqty])=>{for(let i=0;i<sqty;i++)csv+=sz+',,\n'});
                       const blob=new Blob([csv],{type:'text/csv'});const url=URL.createObjectURL(blob);
-                      const a=document.createElement('a');a.href=url;a.download='number_template_'+item.sku+'.csv';a.click();URL.revokeObjectURL(url)}}>📥 Template</button>
+                      const a=document.createElement('a');a.href=url;a.download='roster_template_'+(item.sku||'item')+'.csv';a.click();URL.revokeObjectURL(url)}}>📥 Template</button>
                     <button className="btn btn-sm btn-secondary" style={{fontSize:9}} onClick={()=>{
                       const csv=prompt('Paste (Size,Number per line):\nM,12\nL,34');
                       if(csv){const nr={...roster};csv.split('\n').forEach(line=>{const[sz,num]=line.split(',').map(s=>s.trim());
