@@ -16,9 +16,10 @@ catch(e) { console.warn('[Stripe] Init failed:', e.message); }
 
 // ─── Brevo Email Setup ───
 const _brevoKey = process.env.REACT_APP_BREVO_API_KEY || '';
-const sendBrevoEmail=async({to,subject,htmlContent,textContent,senderName,senderEmail,attachment})=>{
+const sendBrevoEmail=async({to,subject,htmlContent,textContent,senderName,senderEmail,replyTo,attachment})=>{
   if(!_brevoKey){return{ok:false,error:'Brevo API key not configured (set REACT_APP_BREVO_API_KEY)'}}
   try{const payload={sender:{name:senderName||'National Sports Apparel',email:senderEmail||'noreply@nationalsportsapparel.com'},to:Array.isArray(to)?to:[{email:to}],subject,htmlContent:htmlContent||undefined,textContent:textContent||undefined};
+    if(replyTo)payload.replyTo={email:replyTo.email,name:replyTo.name||senderName||'National Sports Apparel'};
     if(attachment&&attachment.length>0)payload.attachment=attachment;
     const r=await fetch('https://api.brevo.com/v3/smtp/email',{method:'POST',headers:{'accept':'application/json','content-type':'application/json','api-key':_brevoKey},
     body:JSON.stringify(payload)});
@@ -2146,7 +2147,7 @@ function getAddrs(cu,all){const a=[];const add=(c,l)=>{if(c.shipping_address_lin
   else{all.filter(c=>c.parent_id===cu.id).forEach(s=>add(s,s.alpha_tag))}return a}
 
 // SEND ESTIMATE MODAL
-function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachmentHtml}){
+function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachmentHtml,repUser}){
   const[body,setBody]=useState('');const[attachments,setAttachments]=useState([]);const[toEmails,setToEmails]=useState('');
   const[sending,setSending]=useState(false);const[dragOver,setDragOver]=useState(false);
   const label=docType==='so'?'Sales Order':'Estimate';
@@ -2172,7 +2173,7 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
       if(buildAttachmentHtml){try{const docHtml=buildAttachmentHtml();const docB64=btoa(unescape(encodeURIComponent(docHtml)));brevoAttachments.push({name:(estimate?.id||'document')+'.html',content:docB64})}catch(err){console.warn('Failed to build PDF attachment:',err)}}
       // Convert file attachments to base64 for Brevo
       for(const att of attachments){if(att.file){try{const b64=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result.split(',')[1]);reader.onerror=reject;reader.readAsDataURL(att.file)});brevoAttachments.push({name:att.name,content:b64})}catch(err){console.warn('Failed to read attachment:',att.name,err)}}}
-      const res=await sendBrevoEmail({to:toList,subject,htmlContent:htmlBody,senderName:'National Sports Apparel',senderEmail:'noreply@nationalsportsapparel.com',attachment:brevoAttachments.length>0?brevoAttachments:undefined});
+      const res=await sendBrevoEmail({to:toList,subject,htmlContent:htmlBody,senderName:repUser?.name||'National Sports Apparel',senderEmail:'noreply@nationalsportsapparel.com',replyTo:repUser?.email?{email:repUser.email,name:repUser.name}:undefined,attachment:brevoAttachments.length>0?brevoAttachments:undefined});
       if(!res.ok){alert('Email send failed: '+(res.error||'Unknown error'));setSending(false);return}
     }else{
       const mailTo='mailto:'+emails[0]+'?subject='+encodeURIComponent(subject)+'&body='+encodeURIComponent(body);
@@ -3653,7 +3654,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 const rosterUrl=window.location.origin+'/roster.html?d='+linkData;
                 try{const res=await sendBrevoEmail({to:[{email:coachEmail,name:coachName}],subject:'Roster Number Assignment — '+(o.id||'Order')+' '+item.name,
                   htmlContent:'<div style="font-family:sans-serif;max-width:600px;margin:0 auto"><div style="background:linear-gradient(135deg,#1e3a5f,#2563eb);color:white;padding:20px;border-radius:8px 8px 0 0;text-align:center"><h2 style="margin:0">🏈 Roster Number Request</h2></div><div style="background:white;padding:20px;border:1px solid #e2e8f0;border-radius:0 0 8px 8px"><p>Hi '+coachName+',</p><p>'+(cu?.name||'Your sales rep')+' at National Sports Apparel needs jersey numbers assigned for <strong>'+item.name+'</strong> ('+(o.id||'Order')+').</p><p>Please click the button below to assign numbers to each size:</p><p style="text-align:center;margin:20px 0"><a href="'+rosterUrl+'" style="display:inline-block;padding:14px 32px;background:#2563eb;color:white;text-decoration:none;border-radius:8px;font-weight:700;font-size:16px">Assign Numbers →</a></p><p style="color:#64748b;font-size:12px">If the button doesn\'t work, copy this link: '+rosterUrl+'</p></div></div>',
-                  senderName:cu?.name||'National Sports Apparel',senderEmail:'noreply@nationalsportsapparel.com'});
+                  senderName:cu?.name||'National Sports Apparel',senderEmail:'noreply@nationalsportsapparel.com',replyTo:cu?.email?{email:cu.email,name:cu.name}:undefined});
                   if(res.ok)nf('Roster request sent to '+coachEmail);else nf('Failed to send: '+(res.error||'Unknown error'),'error')}catch(e){nf('Error: '+e.message,'error')}}}>📧 Send to Coach</button></>
 
               :<div style={{marginTop:6,padding:10,background:'#f8fafc',borderRadius:6,border:'1px dashed #d1d5db'}}
@@ -3698,7 +3699,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                       const rosterUrl=window.location.origin+'/roster.html?d='+linkData;
                       try{const res=await sendBrevoEmail({to:[{email:coachEmail,name:coachName}],subject:'Roster Number Assignment — '+(o.id||'Order')+' '+item.name,
                         htmlContent:'<div style="font-family:sans-serif;max-width:600px;margin:0 auto"><div style="background:linear-gradient(135deg,#1e3a5f,#2563eb);color:white;padding:20px;border-radius:8px 8px 0 0;text-align:center"><h2 style="margin:0">🏈 Roster Number Request</h2></div><div style="background:white;padding:20px;border:1px solid #e2e8f0;border-radius:0 0 8px 8px"><p>Hi '+coachName+',</p><p>'+(cu?.name||'Your sales rep')+' at National Sports Apparel needs jersey numbers assigned for <strong>'+item.name+'</strong> ('+(o.id||'Order')+').</p><p>Please click the button below to assign numbers to each size:</p><p style="text-align:center;margin:20px 0"><a href="'+rosterUrl+'" style="display:inline-block;padding:14px 32px;background:#2563eb;color:white;text-decoration:none;border-radius:8px;font-weight:700;font-size:16px">Assign Numbers →</a></p><p style="color:#64748b;font-size:12px">If the button doesn\'t work, copy this link: '+rosterUrl+'</p></div></div>',
-                        senderName:cu?.name||'National Sports Apparel',senderEmail:'noreply@nationalsportsapparel.com'});
+                        senderName:cu?.name||'National Sports Apparel',senderEmail:'noreply@nationalsportsapparel.com',replyTo:cu?.email?{email:cu.email,name:cu.name}:undefined});
                         if(res.ok)nf('Roster request sent to '+coachEmail);else nf('Failed to send: '+(res.error||'Unknown error'),'error')}catch(e){nf('Error: '+e.message,'error')}}}>📧 Send to Coach</button>
                     <button className="btn btn-sm btn-secondary" style={{fontSize:9}} onClick={()=>{
                       let csv='Size,Number,Name\n';sizedQtys.forEach(([sz,sqty])=>{for(let i=0;i<sqty;i++)csv+=sz+',,\n'});
@@ -4743,7 +4744,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           ...(taxAmt>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'Tax ('+(taxRate*100).toFixed(3)+'%)',style:'text-align:right;border:none;font-size:11px'},{value:'$'+taxAmt.toFixed(2),style:'text-align:right;border:none'}]}]:[]),
           {_class:'totals-row',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Total</strong>',style:'text-align:right'},{value:'<strong style="font-size:14px">$'+total.toFixed(2)+'</strong>',style:'text-align:right'}]}]}],
         footer:isE?'This estimate is valid for 30 days. Prices subject to change. '+NSA.depositTerms:NSA.terms});
-    }} onSend={()=>{if(isE&&o.status!=='approved'&&o.status!=='converted'){sv('status','sent');sv('email_status','sent');onSave({...o,status:'sent',email_status:'sent'});nf('Estimate sent!')}else{sv('email_status','sent');onSave({...o,email_status:'sent'});nf((isE?'Estimate':'Sales Order')+' sent!')}}}/>
+    }} repUser={cu} onSend={()=>{if(isE&&o.status!=='approved'&&o.status!=='converted'){sv('status','sent');sv('email_status','sent');onSave({...o,status:'sent',email_status:'sent'});nf('Estimate sent!')}else{sv('email_status','sent');onSave({...o,email_status:'sent'});nf((isE?'Estimate':'Sales Order')+' sent!')}}}/>
 
     {/* FIRM DATE REQUEST MODAL */}
     {showFirmReq&&<div className="modal-overlay" onClick={()=>setShowFirmReq(false)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:500}}>
@@ -5115,7 +5116,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               subject:'Invoice '+ir.id+' — $'+ir.total.toFixed(2)+' from National Sports Apparel',
               htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6">'+invSendMsg.replace(/\n/g,'<br>')+'</div>',
               senderName:cu.name||'National Sports Apparel',
-              senderEmail:'noreply@nationalsportsapparel.com'
+              senderEmail:'noreply@nationalsportsapparel.com',
+              replyTo:cu?.email?{email:cu.email,name:cu.name}:undefined
             });
             if(res.ok){
               nf('Invoice '+ir.id+' sent to '+toEmail);
@@ -6032,7 +6034,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               setCoachApprovalModal(m=>({...m,sending:true}));
               const htmlMsg=cam.message.replace(/\n/g,'<br/>');
               const toList=allTargets.map(em=>({email:em}));
-              const res=await sendBrevoEmail({to:toList,subject:'Artwork ready for approval — '+j3.art_name,htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6">'+htmlMsg+'</div>',senderName:cu.name||'National Sports Apparel',senderEmail:'noreply@nationalsportsapparel.com'});
+              const res=await sendBrevoEmail({to:toList,subject:'Artwork ready for approval — '+j3.art_name,htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6">'+htmlMsg+'</div>',senderName:cu.name||'National Sports Apparel',senderEmail:'noreply@nationalsportsapparel.com',replyTo:cu?.email?{email:cu.email,name:cu.name}:undefined});
               if(res.ok){actions.push('email sent to '+allTargets.join(', '))}else{nf('Email failed: '+res.error,'error');setCoachApprovalModal(m=>({...m,sending:false}));return}
             }else{
               const subj=encodeURIComponent('Artwork ready for approval — '+j3.art_name);
@@ -8894,7 +8896,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                 if(savSOFn)savSOFn(updSO);else if(onUpdateSOs)onUpdateSOs(prev=>prev.map(s=>s.id===so.id?updSO:s));
                 // Email the assigned rep
                 const rep=REPS.find(r=>r.id===liveSO.created_by);
-                if(rep?.email&&_brevoKey){sendBrevoEmail({to:[{email:rep.email}],subject:'✅ Art approved by coach — '+j.art_name+' ('+liveSO.id+')',htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6"><p>Great news! <strong>'+customer.name+'</strong> approved the artwork for <strong>'+j.art_name+'</strong>.</p><p>Order: '+liveSO.id+(liveSO.memo?' — '+liveSO.memo:'')+'</p><p>The job is now ready for production file prep.</p></div>',senderName:'NSA Portal',senderEmail:'noreply@nationalsportsapparel.com'})}
+                if(rep?.email&&_brevoKey){sendBrevoEmail({to:[{email:rep.email}],subject:'✅ Art approved by coach — '+j.art_name+' ('+liveSO.id+')',htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6"><p>Great news! <strong>'+customer.name+'</strong> approved the artwork for <strong>'+j.art_name+'</strong>.</p><p>Order: '+liveSO.id+(liveSO.memo?' — '+liveSO.memo:'')+'</p><p>The job is now ready for production file prep.</p></div>',senderName:'NSA Portal',senderEmail:'noreply@nationalsportsapparel.com',replyTo:rep.email?{email:rep.email,name:rep.name}:undefined})}
                 setJobView(null);
               }}>✅ Approve Artwork</button>
               <button className="btn btn-sm" style={{background:'#dc2626',color:'white',flex:1,justifyContent:'center',fontWeight:700,padding:'10px 16px'}} onClick={()=>{
@@ -13609,7 +13611,7 @@ export default function App(){
                 const toEmail=resolvedEmail;
                 const res=await sendBrevoEmail({to:[{email:toEmail,name:toEmail}],subject:'Invoice '+si.inv.id+' — $'+si.inv.total.toFixed(2)+' from National Sports Apparel',
                   htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6">'+si.msg.replace(/\n/g,'<br>')+'</div>',
-                  senderName:cu.name||'National Sports Apparel',senderEmail:'noreply@nationalsportsapparel.com'});
+                  senderName:cu.name||'National Sports Apparel',senderEmail:'noreply@nationalsportsapparel.com',replyTo:cu?.email?{email:cu.email,name:cu.name}:undefined});
                 if(res.ok){nf('Invoice '+si.inv.id+' sent to '+toEmail)}else{nf('Failed to send: '+(res.error||'Unknown error'),'error')}
                 setInvs(prev=>prev.map(i=>i.id===si.inv.id?{...i,email_status:'sent',email_sent_at:new Date().toLocaleString()}:i));
               }}>Send Invoice</button>
