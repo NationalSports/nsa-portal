@@ -5830,7 +5830,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     {artF.ink_colors&&<div style={{marginTop:10}}><div className="form-label">Ink Colors</div><div style={{fontSize:13}}>{artF.ink_colors}</div></div>}
                     {artF.thread_colors&&<div style={{marginTop:6}}><div className="form-label">Thread Colors</div><div style={{fontSize:13}}>{artF.thread_colors}</div></div>}
                     {artF.notes&&<div style={{marginTop:6}}><div className="form-label">Art Notes</div><div style={{fontSize:13,color:'#64748b'}}>{artF.notes}</div></div>}
-                    {artF.files?.length>0&&<div style={{marginTop:6}}><div className="form-label">Files</div><div style={{fontSize:12}}>{artF.files.map((f,i)=><span key={i} className="badge badge-blue" style={{marginRight:4}}>{typeof f==='string'?f:fileDisplayName(f)}</span>)}</div></div>}
+                    {(()=>{const allF=[...(artF.files||[]),...(artF.mockup_files||[])];const seen=new Set();const unique=allF.filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||seen.has(u))return false;seen.add(u);return true});
+                      return unique.length>0?<div style={{marginTop:6}}><div className="form-label">Files</div><div style={{fontSize:12}}>{unique.map((f,i)=><span key={i} className="badge badge-blue" style={{marginRight:4,cursor:isUrl(typeof f==='string'?f:(f?.url||''))?'pointer':'default'}} onClick={()=>{const u=typeof f==='string'?f:(f?.url||'');if(isUrl(u))openFile(u)}}>{typeof f==='string'?f:fileDisplayName(f)}</span>)}</div></div>:null})()}
                   </>:<div style={{padding:12,background:'#fffbeb',borderRadius:6,fontSize:12,color:'#b45309'}}>
                     Artwork needs to be applied
                   </div>}
@@ -17929,17 +17930,20 @@ export default function App(){
                     </div>})}
                 </div>
               </div>}
-              {/* Source art files from art library */}
-              {af&&(af.files||[]).length>0&&<div style={{marginTop:8}}>
-                <div style={{fontSize:11,fontWeight:700,color:'#1e40af',marginBottom:4}}>📁 Source Art Files</div>
+              {/* All rep-uploaded files from art library (source files + mockup files) */}
+              {af&&(()=>{const allRepFiles=[...(af.files||[]),...(af.mockup_files||[])];
+                const seen=new Set();const unique=allRepFiles.filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||seen.has(u))return false;seen.add(u);return true});
+                if(unique.length===0)return null;
+                return<div style={{marginTop:8}}>
+                <div style={{fontSize:11,fontWeight:700,color:'#1e40af',marginBottom:4}}>📁 Rep Uploaded Files ({unique.length})</div>
                 <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-                  {(af.files||[]).map((f,i)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);const ext=_urlExt(url);
+                  {unique.map((f,i)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);
                     return<div key={i} style={{padding:'6px 10px',background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:6,fontSize:11,fontWeight:600,color:'#1e40af',display:'flex',alignItems:'center',gap:4}}>
                       📁 {name}
                       {isUrl(url)&&<button style={{background:'#2563eb',color:'white',border:'none',borderRadius:4,padding:'2px 8px',fontSize:10,fontWeight:700,cursor:'pointer',marginLeft:4}} onClick={()=>openFile(url)}>{_isDownloadOnly(url)?'⬇ Download':'Open'}</button>}
                     </div>})}
                 </div>
-              </div>}
+              </div>})()}
             </div>
 
             {/* ─── Additional Art Files (multi-art jobs) ─── */}
