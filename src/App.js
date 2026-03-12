@@ -2150,17 +2150,18 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
   const[body,setBody]=useState('');const[attachments,setAttachments]=useState([]);const[toEmails,setToEmails]=useState('');
   const[sending,setSending]=useState(false);const[dragOver,setDragOver]=useState(false);
   const label=docType==='so'?'Sales Order':'Estimate';
-  const prevOpenRef=React.useRef(false);
+  const prevOpenRef=React.useRef(false);const sendingRef=React.useRef(false);
   React.useEffect(()=>{if(isOpen&&!prevOpenRef.current&&customer){
     const emails=(customer?.contacts||[]).map(c=>c.email).filter(Boolean);
     setToEmails(emails.join(', '));
     setBody(`Hi ${(customer.contacts||[])[0]?.name||'Coach'},\n\nPlease find the attached ${label.toLowerCase()} for ${estimate?.memo||'your order'}. You can view ${docType==='so'?'it':'and approve it'} through your portal.\n\nPortal link: https://nsa-portal.netlify.app/?portal=${customer.alpha_tag}\n\nLet me know if you have any questions!\n\nSteve Peterson\nNational Sports Apparel`);
-    setAttachments([]);setSending(false)}prevOpenRef.current=isOpen},[isOpen,customer,estimate,docType,label]);
+    setAttachments([]);setSending(false);sendingRef.current=false}prevOpenRef.current=isOpen},[isOpen,customer,estimate,docType,label]);
   const handleFiles=(files)=>{const newFiles=Array.from(files).map(f=>({name:f.name,size:(f.size/1024).toFixed(0)+' KB',file:f}));setAttachments(a=>[...a,...newFiles])};
   const doSend=async()=>{
+    if(sendingRef.current)return;// prevent double send
     const emails=toEmails.split(',').map(e2=>e2.trim()).filter(Boolean);
     if(emails.length===0){alert('Please enter at least one email address');return}
-    setSending(true);
+    sendingRef.current=true;setSending(true);
     const subject=`${label} ${estimate?.id} - ${estimate?.memo||''}`;
     const portalUrl=customer?.alpha_tag?'https://nsa-portal.netlify.app/?portal='+customer.alpha_tag:'';
     const htmlBody='<div style="font-family:sans-serif;font-size:14px;line-height:1.6">'+body.replace(/\n/g,'<br/>')+'</div>';
