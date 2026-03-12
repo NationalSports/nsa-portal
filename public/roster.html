@@ -20,7 +20,15 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .tool-btn:hover{background:#eff6ff;border-color:#93c5fd;color:#1e40af}
 .tool-btn.active{background:#dbeafe;border-color:#3b82f6;color:#1e40af}
 .stats{margin-left:auto;font-size:12px;font-weight:700;color:#1e40af}
-.sz-section{margin-bottom:16px}
+.sz-section{margin-bottom:8px}
+.sz-row{display:flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid #e2e8f0;border-radius:6px;flex-wrap:wrap}
+.sz-row .sz-lbl{font-weight:700;font-size:13px;color:#1e40af;min-width:42px}
+.sz-row .sz-cnt{font-size:10px;color:#64748b;min-width:28px}
+.sz-row .num-input-sm{width:40px;border:1px solid #d1d5db;border-radius:4px;padding:4px 2px;font-size:12px;font-weight:700;text-align:center}
+.sz-row .num-input-sm:focus{outline:none;border-color:#3b82f6;box-shadow:0 0 0 2px rgba(59,130,246,0.15)}
+.sz-row .num-input-sm.filled{background:#dbeafe;border-color:#93c5fd}
+.sz-row .sz-qty-edit{margin-left:auto;display:flex;align-items:center;gap:4px;font-size:10px;color:#64748b}
+.sz-row .sz-qty-edit input{width:36px;text-align:center;border:1px solid #d1d5db;border-radius:3px;padding:2px;font-size:11px;font-weight:600}
 .sz-header{display:flex;align-items:center;gap:8px;padding:8px 12px;background:#eff6ff;border-radius:8px 8px 0 0;border:1px solid #bfdbfe;border-bottom:none}
 .sz-label{font-weight:700;font-size:14px;color:#1e40af;min-width:60px}
 .sz-qty{font-size:12px;color:#64748b}
@@ -185,28 +193,46 @@ function renderSizes(){
   const container=document.getElementById('sizeRows');
   container.innerHTML='';
   const sorted=Object.entries(sizes).sort((a,b)=>(sizeOrder.indexOf(a[0])===-1?99:sizeOrder.indexOf(a[0]))-(sizeOrder.indexOf(b[0])===-1?99:sizeOrder.indexOf(b[0])));
-  sorted.forEach(([sz,data])=>{
-    const filled=data.numbers.filter(v=>v).length;
-    const sec=document.createElement('div');sec.className='sz-section';
-    sec.innerHTML='<div class="sz-header"><span class="sz-label">'+esc(sz)+'</span><span class="sz-qty">'+data.qty+' jerseys</span>'
-      +'<span class="sz-filled" style="color:'+(filled>=data.qty?'#166534':filled>0?'#d97706':'#94a3b8')+'">'+filled+'/'+data.qty+'</span>'
-      +'<div class="sz-edit"><span>Qty:</span><input type="number" min="0" max="99" value="'+data.qty+'" onchange="updateQty(\''+esc(sz)+'\',this.value)"/></div></div>';
-    const body=document.createElement('div');body.className='sz-body';
-    for(let i=0;i<data.qty;i++){
-      const row=document.createElement('div');row.className='num-row';
-      const hasFill=data.numbers[i]?'filled':'';
-      let html='<span class="num-idx">'+(i+1)+'</span>'
-        +'<input class="num-input '+hasFill+'" placeholder="#" value="'+esc(data.numbers[i]||'')+'" data-sz="'+esc(sz)+'" data-i="'+i+'" data-field="number" oninput="updateVal(this)"/>';
-      if(showNames){
-        html+='<span class="name-label">Name:</span>'
-          +'<input class="name-input" placeholder="Optional" value="'+esc(data.names[i]||'')+'" data-sz="'+esc(sz)+'" data-i="'+i+'" data-field="name" oninput="updateVal(this)"/>';
+  if(!showNames){
+    // CONDENSED VIEW: size label + inline number inputs on one row
+    sorted.forEach(([sz,data])=>{
+      const filled=data.numbers.filter(v=>v).length;
+      const sec=document.createElement('div');sec.className='sz-section';
+      const row=document.createElement('div');row.className='sz-row';
+      let html='<span class="sz-lbl">'+esc(sz)+'</span>'
+        +'<span class="sz-cnt" style="color:'+(filled>=data.qty?'#166534':filled>0?'#d97706':'#94a3b8')+'">'+filled+'/'+data.qty+'</span>';
+      for(let i=0;i<data.qty;i++){
+        const hasFill=data.numbers[i]?'filled':'';
+        html+='<input class="num-input-sm '+hasFill+'" placeholder="#" value="'+esc(data.numbers[i]||'')+'" data-sz="'+esc(sz)+'" data-i="'+i+'" data-field="number" oninput="updateVal(this)"/>';
       }
+      html+='<span class="sz-qty-edit">Qty:<input type="number" min="0" max="99" value="'+data.qty+'" onchange="updateQty(\''+esc(sz)+'\',this.value)"/></span>';
       row.innerHTML=html;
-      body.appendChild(row);
-    }
-    sec.appendChild(body);
-    container.appendChild(sec);
-  });
+      sec.appendChild(row);
+      container.appendChild(sec);
+    });
+  }else{
+    // EXPANDED VIEW: one row per player with number + name
+    sorted.forEach(([sz,data])=>{
+      const filled=data.numbers.filter(v=>v).length;
+      const sec=document.createElement('div');sec.className='sz-section';
+      sec.innerHTML='<div class="sz-header"><span class="sz-label">'+esc(sz)+'</span><span class="sz-qty">'+data.qty+' jerseys</span>'
+        +'<span class="sz-filled" style="color:'+(filled>=data.qty?'#166534':filled>0?'#d97706':'#94a3b8')+'">'+filled+'/'+data.qty+'</span>'
+        +'<div class="sz-edit"><span>Qty:</span><input type="number" min="0" max="99" value="'+data.qty+'" onchange="updateQty(\''+esc(sz)+'\',this.value)"/></div></div>';
+      const body=document.createElement('div');body.className='sz-body';
+      for(let i=0;i<data.qty;i++){
+        const row=document.createElement('div');row.className='num-row';
+        const hasFill=data.numbers[i]?'filled':'';
+        let html='<span class="num-idx">'+(i+1)+'</span>'
+          +'<input class="num-input '+hasFill+'" placeholder="#" value="'+esc(data.numbers[i]||'')+'" data-sz="'+esc(sz)+'" data-i="'+i+'" data-field="number" oninput="updateVal(this)"/>'
+          +'<span class="name-label">Name:</span>'
+          +'<input class="name-input" placeholder="Player name" value="'+esc(data.names[i]||'')+'" data-sz="'+esc(sz)+'" data-i="'+i+'" data-field="name" oninput="updateVal(this)"/>';
+        row.innerHTML=html;
+        body.appendChild(row);
+      }
+      sec.appendChild(body);
+      container.appendChild(sec);
+    });
+  }
 }
 
 function updateVal(el){
@@ -229,6 +255,7 @@ function updateQty(sz,val){
 async function submitRoster(){
   const allNums=Object.values(sizes).flatMap(d=>d.numbers).filter(v=>v);
   if(allNums.length===0){showToast('Please enter at least one number',true);return}
+  if(!DATA.rep_email){showToast('No rep email in link — ask your rep for a new roster link',true);return}
   const btn=document.getElementById('submitBtn');
   btn.disabled=true;btn.textContent='Submitting...';
   const hasNames=Object.values(sizes).flatMap(d=>d.names).some(v=>v);
@@ -254,12 +281,15 @@ async function submitRoster(){
         csv:csv
       })
     });
-    const result=await res.json();
+    let result;
+    try{result=await res.json()}catch(e2){result={ok:false,error:'Invalid response from server'}}
     if(result.ok){
       document.getElementById('form').style.display='none';
       document.getElementById('done').style.display='block';
     }else{
-      showToast('Submit failed: '+(result.error||'Unknown error'),true);
+      const errMsg=result.error||'Unknown error';
+      if(errMsg.includes('Missing required')){showToast('Submit failed: rep email missing from link. Ask your rep for a new roster link.',true)}
+      else{showToast('Submit failed: '+errMsg,true)}
       btn.disabled=false;btn.textContent='Submit Roster';
     }
   }catch(e){
