@@ -14,10 +14,17 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .card{background:white;border-radius:0 0 12px 12px;padding:24px;box-shadow:0 4px 24px rgba(0,0,0,0.08)}
 .info{display:flex;gap:16px;flex-wrap:wrap;margin-bottom:20px;padding:12px;background:#f8fafc;border-radius:8px;border:1px solid #e2e8f0}
 .info-item{font-size:13px}.info-item strong{color:#475569;font-size:11px;display:block;margin-bottom:2px}
+.toolbar{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:16px;padding:10px 12px;background:#f8fafc;border-radius:8px;border:1px solid #e2e8f0}
+.toolbar .lbl{font-size:11px;color:#64748b;font-weight:600}
+.tool-btn{padding:5px 10px;border:1px solid #d1d5db;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;background:white;color:#475569;transition:all 0.15s}
+.tool-btn:hover{background:#eff6ff;border-color:#93c5fd;color:#1e40af}
+.tool-btn.active{background:#dbeafe;border-color:#3b82f6;color:#1e40af}
+.stats{margin-left:auto;font-size:12px;font-weight:700;color:#1e40af}
 .sz-section{margin-bottom:16px}
 .sz-header{display:flex;align-items:center;gap:8px;padding:8px 12px;background:#eff6ff;border-radius:8px 8px 0 0;border:1px solid #bfdbfe;border-bottom:none}
 .sz-label{font-weight:700;font-size:14px;color:#1e40af;min-width:60px}
 .sz-qty{font-size:12px;color:#64748b}
+.sz-filled{font-size:11px;font-weight:600;margin-left:4px}
 .sz-edit{display:flex;align-items:center;gap:6px;margin-left:auto;font-size:11px;color:#64748b}
 .sz-edit input{width:48px;text-align:center;border:1px solid #d1d5db;border-radius:4px;padding:3px;font-size:12px;font-weight:600}
 .sz-body{border:1px solid #e2e8f0;border-radius:0 0 8px 8px;padding:10px 12px}
@@ -26,6 +33,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .num-idx{font-size:10px;color:#94a3b8;width:20px;text-align:right;flex-shrink:0}
 .num-input{width:60px;border:1px solid #d1d5db;border-radius:4px;padding:5px 8px;font-size:14px;font-weight:700;text-align:center}
 .num-input:focus{outline:none;border-color:#3b82f6;box-shadow:0 0 0 2px rgba(59,130,246,0.15)}
+.num-input.filled{background:#dbeafe;border-color:#93c5fd}
 .name-input{flex:1;border:1px solid #d1d5db;border-radius:4px;padding:5px 8px;font-size:13px;min-width:100px}
 .name-input:focus{outline:none;border-color:#3b82f6;box-shadow:0 0 0 2px rgba(59,130,246,0.15)}
 .name-label{font-size:10px;color:#94a3b8;flex-shrink:0}
@@ -54,7 +62,15 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
     <div id="loading" style="text-align:center;padding:40px;color:#64748b">Loading roster request...</div>
     <div id="form" style="display:none">
       <div class="info" id="infoBar"></div>
-      <p style="font-size:13px;color:#475569;margin-bottom:16px">Please enter the <strong>jersey number</strong> for each player. Names are optional. You can adjust quantities per size if needed.</p>
+      <p style="font-size:13px;color:#475569;margin-bottom:16px">Please enter the <strong>jersey number</strong> for each player. You can adjust quantities per size if needed.</p>
+      <div class="toolbar" id="toolbar">
+        <span class="lbl">Quick Fill:</span>
+        <button class="tool-btn" onclick="autoFill('bball')" title="Auto-fill basketball numbers (0-55 using digits 0-5)">🏀 BBall #s</button>
+        <button class="tool-btn" onclick="autoFill('sequential')" title="Sequential numbers from smallest to largest size">🔢 Small→Large</button>
+        <button class="tool-btn" onclick="toggleNames()" id="namesBtn">📝 Add Names</button>
+        <button class="tool-btn" onclick="clearAll()" style="color:#dc2626;border-color:#fca5a5">Clear</button>
+        <span class="stats" id="statsLabel">0/0 assigned</span>
+      </div>
       <div id="sizeRows"></div>
       <div class="actions">
         <button class="btn btn-primary" id="submitBtn" onclick="submitRoster()">Submit Roster</button>
@@ -78,6 +94,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 <script>
 let DATA=null;
 let sizes={};// {S:{qty:10,numbers:['','',..],names:['','',...]}, ...}
+let showNames=false;
+const sizeOrder=['XS','S','M','L','XL','2XL','3XL','4XL','LT','XLT','2XLT','3XLT'];
 
 function showToast(msg,isError){
   const t=document.getElementById('toast');
@@ -92,21 +110,18 @@ function init(){
     if(!d){document.getElementById('loading').style.display='none';document.getElementById('expired').style.display='block';return}
     DATA=JSON.parse(atob(d));
     if(!DATA||!DATA.sizes){document.getElementById('loading').style.display='none';document.getElementById('expired').style.display='block';return}
-    // Set header
     document.getElementById('headerSub').textContent=(DATA.item||'Jersey')+' — '+(DATA.so||'Order');
-    // Info bar
     const info=document.getElementById('infoBar');
     info.innerHTML='<div class="info-item"><strong>Order</strong>'+esc(DATA.so||'')+'</div>'
       +'<div class="info-item"><strong>Item</strong>'+esc(DATA.item||'')+'</div>'
       +'<div class="info-item"><strong>SKU</strong>'+esc(DATA.sku||'')+'</div>'
       +'<div class="info-item"><strong>Color</strong>'+esc(DATA.color||'')+'</div>';
-    // Build size rows
-    const sizeOrder=['XS','S','M','L','XL','2XL','3XL','4XL','LT','XLT','2XLT','3XLT'];
     const sortedSizes=Object.entries(DATA.sizes).filter(([,v])=>v>0).sort((a,b)=>(sizeOrder.indexOf(a[0])===-1?99:sizeOrder.indexOf(a[0]))-(sizeOrder.indexOf(b[0])===-1?99:sizeOrder.indexOf(b[0])));
     sortedSizes.forEach(([sz,qty])=>{
       sizes[sz]={qty,numbers:Array(qty).fill(''),names:Array(qty).fill('')};
     });
     renderSizes();
+    updateStats();
     document.getElementById('loading').style.display='none';
     document.getElementById('form').style.display='block';
   }catch(e){
@@ -118,22 +133,75 @@ function init(){
 
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
 
+function updateStats(){
+  const total=Object.values(sizes).reduce((a,d)=>a+d.qty,0);
+  const filled=Object.values(sizes).flatMap(d=>d.numbers).filter(v=>v).length;
+  document.getElementById('statsLabel').textContent=filled+'/'+total+' assigned';
+  document.getElementById('statsLabel').style.color=filled>=total?'#166534':'#1e40af';
+}
+
+function toggleNames(){
+  showNames=!showNames;
+  const btn=document.getElementById('namesBtn');
+  btn.classList.toggle('active',showNames);
+  btn.textContent=showNames?'📝 Hide Names':'📝 Add Names';
+  renderSizes();
+}
+
+function autoFill(mode){
+  if(mode==='bball'){
+    // Basketball numbers: 0-5,10-15,20-25,30-35,40-45,50-55
+    const bballNums=[];
+    for(let tens=0;tens<=5;tens++){for(let ones=0;ones<=5;ones++){bballNums.push(String(tens*10+ones))}}
+    let idx=0;
+    const sorted=Object.entries(sizes).sort((a,b)=>(sizeOrder.indexOf(a[0])===-1?99:sizeOrder.indexOf(a[0]))-(sizeOrder.indexOf(b[0])===-1?99:sizeOrder.indexOf(b[0])));
+    sorted.forEach(([sz,data])=>{
+      for(let i=0;i<data.qty;i++){
+        if(!data.numbers[i]&&idx<bballNums.length){data.numbers[i]=bballNums[idx];idx++}
+      }
+    });
+  }else if(mode==='sequential'){
+    let num=0;
+    const sorted=Object.entries(sizes).sort((a,b)=>(sizeOrder.indexOf(a[0])===-1?99:sizeOrder.indexOf(a[0]))-(sizeOrder.indexOf(b[0])===-1?99:sizeOrder.indexOf(b[0])));
+    sorted.forEach(([sz,data])=>{
+      for(let i=0;i<data.qty;i++){
+        if(!data.numbers[i]){data.numbers[i]=String(num);num++}
+      }
+    });
+  }
+  renderSizes();
+  updateStats();
+  showToast(mode==='bball'?'Basketball numbers filled':'Sequential numbers filled');
+}
+
+function clearAll(){
+  Object.values(sizes).forEach(d=>{d.numbers.fill('');d.names.fill('')});
+  renderSizes();
+  updateStats();
+  showToast('Cleared all numbers');
+}
+
 function renderSizes(){
   const container=document.getElementById('sizeRows');
   container.innerHTML='';
-  const sizeOrder=['XS','S','M','L','XL','2XL','3XL','4XL','LT','XLT','2XLT','3XLT'];
   const sorted=Object.entries(sizes).sort((a,b)=>(sizeOrder.indexOf(a[0])===-1?99:sizeOrder.indexOf(a[0]))-(sizeOrder.indexOf(b[0])===-1?99:sizeOrder.indexOf(b[0])));
   sorted.forEach(([sz,data])=>{
+    const filled=data.numbers.filter(v=>v).length;
     const sec=document.createElement('div');sec.className='sz-section';
     sec.innerHTML='<div class="sz-header"><span class="sz-label">'+esc(sz)+'</span><span class="sz-qty">'+data.qty+' jerseys</span>'
+      +'<span class="sz-filled" style="color:'+(filled>=data.qty?'#166534':filled>0?'#d97706':'#94a3b8')+'">'+filled+'/'+data.qty+'</span>'
       +'<div class="sz-edit"><span>Qty:</span><input type="number" min="0" max="99" value="'+data.qty+'" onchange="updateQty(\''+esc(sz)+'\',this.value)"/></div></div>';
     const body=document.createElement('div');body.className='sz-body';
     for(let i=0;i<data.qty;i++){
       const row=document.createElement('div');row.className='num-row';
-      row.innerHTML='<span class="num-idx">'+(i+1)+'</span>'
-        +'<input class="num-input" placeholder="#" value="'+esc(data.numbers[i]||'')+'" data-sz="'+esc(sz)+'" data-i="'+i+'" data-field="number" onchange="updateVal(this)"/>'
-        +'<span class="name-label">Name:</span>'
-        +'<input class="name-input" placeholder="Optional" value="'+esc(data.names[i]||'')+'" data-sz="'+esc(sz)+'" data-i="'+i+'" data-field="name" onchange="updateVal(this)"/>';
+      const hasFill=data.numbers[i]?'filled':'';
+      let html='<span class="num-idx">'+(i+1)+'</span>'
+        +'<input class="num-input '+hasFill+'" placeholder="#" value="'+esc(data.numbers[i]||'')+'" data-sz="'+esc(sz)+'" data-i="'+i+'" data-field="number" oninput="updateVal(this)"/>';
+      if(showNames){
+        html+='<span class="name-label">Name:</span>'
+          +'<input class="name-input" placeholder="Optional" value="'+esc(data.names[i]||'')+'" data-sz="'+esc(sz)+'" data-i="'+i+'" data-field="name" oninput="updateVal(this)"/>';
+      }
+      row.innerHTML=html;
       body.appendChild(row);
     }
     sec.appendChild(body);
@@ -143,7 +211,7 @@ function renderSizes(){
 
 function updateVal(el){
   const sz=el.dataset.sz,i=parseInt(el.dataset.i),field=el.dataset.field;
-  if(field==='number')sizes[sz].numbers[i]=el.value.trim();
+  if(field==='number'){sizes[sz].numbers[i]=el.value.trim();el.classList.toggle('filled',!!el.value.trim());updateStats()}
   else sizes[sz].names[i]=el.value.trim();
 }
 
@@ -155,18 +223,16 @@ function updateQty(sz,val){
   while(numbers.length<newQty){numbers.push('');names.push('')}
   sizes[sz]={qty:newQty,numbers,names};
   renderSizes();
+  updateStats();
 }
 
 async function submitRoster(){
-  // Validate at least some numbers filled
   const allNums=Object.values(sizes).flatMap(d=>d.numbers).filter(v=>v);
   if(allNums.length===0){showToast('Please enter at least one number',true);return}
   const btn=document.getElementById('submitBtn');
   btn.disabled=true;btn.textContent='Submitting...';
-  // Build CSV
   const hasNames=Object.values(sizes).flatMap(d=>d.names).some(v=>v);
   let csv=hasNames?'Size,Number,Name\n':'Size,Number\n';
-  const sizeOrder=['XS','S','M','L','XL','2XL','3XL','4XL','LT','XLT','2XLT','3XLT'];
   Object.entries(sizes).sort((a,b)=>(sizeOrder.indexOf(a[0])===-1?99:sizeOrder.indexOf(a[0]))-(sizeOrder.indexOf(b[0])===-1?99:sizeOrder.indexOf(b[0]))).forEach(([sz,data])=>{
     for(let i=0;i<data.qty;i++){
       const num=data.numbers[i]||'';
