@@ -2530,7 +2530,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const[editPick,setEditPick]=useState(null);const[editPO,setEditPO]=useState(null);const[editBatchPO,setEditBatchPO]=useState(null);const[poFullPage,setPoFullPage]=useState(null);
   // Helper: effective PO committed qty for a size (ordered minus cancelled)
   const poCommitted=(poLines,sz)=>(poLines||[]).reduce((a,pk)=>{const ordered=pk[sz]||0;const cancelled=(pk.cancelled||{})[sz]||0;return a+(ordered-cancelled)},0);
-  const[newAddr,setNewAddr]=useState('');const[showNA,setShowNA]=useState(false);const[showSzPicker,setShowSzPicker]=useState(null);const[showCustom,setShowCustom]=useState(false);const[custItem,setCustItem]=useState({vendor_id:'',name:'',sku:'CUSTOM',nsa_cost:0,unit_sell:0,retail_price:0,color:'',brand:'',saveToCatalog:false});
+  const[newAddr,setNewAddr]=useState('');const[showNA,setShowNA]=useState(false);const[showSzPicker,setShowSzPicker]=useState(null);const[showCustom,setShowCustom]=useState(false);const[custItem,setCustItem]=useState({vendor_id:'',name:'',sku:'CUSTOM',nsa_cost:0,unit_sell:0,retail_price:0,color:'',brand:'',saveToCatalog:false,image_url:'',images:[]});
   const[nsImport,setNsImport]=useState(null);// {step:'paste'|'review'|'confirm', raw:'', parsed:[], decoMap:[], issues:[]}
 
   // ─── Live S&S Product Search ───
@@ -3881,15 +3881,29 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               </span>}
             </div></div>
         </>})()}
+      {/* Image Upload Section */}
+      <div style={{marginBottom:10,padding:10,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0'}}>
+        <div style={{fontSize:11,fontWeight:700,color:'#475569',marginBottom:6}}>Product Images <span style={{fontWeight:400,color:'#94a3b8'}}>(for art mocks & catalog)</span></div>
+        <div style={{display:'flex',gap:12,alignItems:'flex-start'}}>
+          <div style={{flexShrink:0}}>
+            <div style={{fontSize:9,fontWeight:600,color:'#64748b',marginBottom:2}}>Front Image</div>
+            <ImgUpload url={custItem.image_url} onUpload={u=>setCustItem(x=>({...x,image_url:u}))} onError={e=>nf(e,'error')} size={72}/>
+          </div>
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{fontSize:9,fontWeight:600,color:'#64748b',marginBottom:2}}>Additional Images</div>
+            <ImgGallery images={custItem.images||[]} onUpdate={imgs=>setCustItem(x=>({...x,images:imgs}))} onError={e=>nf(e,'error')} maxImages={5}/>
+          </div>
+        </div>
+      </div>
       <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
         <button className="btn btn-primary" disabled={!custItem.name} onClick={()=>{const brandName=D_V.find(v=>v.id===custItem.vendor_id)?.name||'Custom';
-          const newItem={product_id:null,sku:custItem.sku||'CUSTOM',name:custItem.name,brand:brandName,vendor_id:custItem.vendor_id,color:custItem.color,nsa_cost:custItem.nsa_cost,retail_price:custItem.retail_price||0,unit_sell:custItem.unit_sell,available_sizes:['S','M','L','XL','2XL'],sizes:{},decorations:isE?[{kind:'art',art_file_id:'__tbd',art_tbd_type:'screen_print',position:'',sell_override:0}]:[],is_custom:true};
+          const newItem={product_id:null,sku:custItem.sku||'CUSTOM',name:custItem.name,brand:brandName,vendor_id:custItem.vendor_id,color:custItem.color,nsa_cost:custItem.nsa_cost,retail_price:custItem.retail_price||0,unit_sell:custItem.unit_sell,available_sizes:['S','M','L','XL','2XL'],sizes:{},decorations:isE?[{kind:'art',art_file_id:'__tbd',art_tbd_type:'screen_print',position:'',sell_override:0}]:[],is_custom:true,image_url:custItem.image_url||'',images:custItem.images||[]};
           if(custItem.saveToCatalog&&onSaveProduct&&custItem.sku&&custItem.sku!=='CUSTOM'){
             const newProd={id:'p'+Date.now(),vendor_id:custItem.vendor_id||null,sku:custItem.sku,name:custItem.name,brand:brandName,color:custItem.color||'',
-              category:'Tees',retail_price:custItem.retail_price||0,nsa_cost:custItem.nsa_cost||0,available_sizes:['S','M','L','XL','2XL'],is_active:true,_inv:{},image_url:'',back_image_url:''};
+              category:'Tees',retail_price:custItem.retail_price||0,nsa_cost:custItem.nsa_cost||0,available_sizes:['S','M','L','XL','2XL'],is_active:true,_inv:{},image_url:custItem.image_url||'',back_image_url:'',images:custItem.images||[]};
             onSaveProduct(newProd);newItem.product_id=newProd.id;nf('Item saved to product catalog')}
           sv('items',[...o.items,newItem]);
-          setShowCustom(false);setCustItem({vendor_id:'',name:'',sku:'CUSTOM',nsa_cost:0,unit_sell:0,retail_price:0,color:'',brand:'',saveToCatalog:false})}}>Add Item</button>
+          setShowCustom(false);setCustItem({vendor_id:'',name:'',sku:'CUSTOM',nsa_cost:0,unit_sell:0,retail_price:0,color:'',brand:'',saveToCatalog:false,image_url:'',images:[]})}}>Add Item</button>
         <button className="btn btn-secondary" onClick={()=>setShowCustom(false)}>Cancel</button>
         {onSaveProduct&&<label style={{display:'flex',alignItems:'center',gap:6,cursor:'pointer',fontSize:11,color:'#475569',marginLeft:8}}>
           <input type="checkbox" checked={custItem.saveToCatalog||false} onChange={e=>setCustItem(x=>({...x,saveToCatalog:e.target.checked}))} style={{width:14,height:14}}/>
