@@ -594,7 +594,7 @@ const _artCols=['id','name','deco_type','ink_colors','thread_colors','art_size',
 const _artExtraCols=new Set(['art_sizes','garment_colors','item_mockups']);
 // Columns that may not exist in so_jobs — stripped on retry
 const _jobExtraCols=new Set(['art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at']);
-const _jobCols=['id','key','art_file_id','art_name','deco_type','positions','art_status','item_status','prod_status','total_units','fulfilled_units','split_from','created_at','assigned_machine','assigned_to','ship_method','items','_auto','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at'];
+const _jobCols=['id','key','art_file_id','_art_ids','_draft','art_name','deco_type','positions','art_status','item_status','prod_status','total_units','fulfilled_units','split_from','created_at','assigned_machine','assigned_to','ship_method','items','_auto','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at'];
 const _custCols=['id','parent_id','name','alpha_tag','billing_address_line1','billing_address_line2','billing_city','billing_state','billing_zip','shipping_address_line1','shipping_address_line2','shipping_city','shipping_state','shipping_zip','adidas_ua_tier','catalog_markup','payment_terms','tax_rate','tax_exempt','primary_rep_id','notes','is_active','created_at','updated_at'];
 const _vendCols=['id','name','vendor_type','api_provider','nsa_carries_inventory','click_automation','is_active','contact_email','contact_phone','rep_name','payment_terms','notes'];
 const _firmDateCols=['item_desc','date','approved'];
@@ -3008,7 +3008,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     });
     // Build map of existing NON-split jobs keyed by job key AND by art_file_id (skip splits so they don't collide)
     const existingJobMap={};const existingByArtId={};const existingById={};
-    safeJobs(o).forEach(j=>{if(!j.split_from){existingJobMap[j.key||j.id]=j;if(j.art_file_id)existingByArtId[j.art_file_id]=existingByArtId[j.art_file_id]||j;existingById[j.id]=j}});
+    safeJobs(o).forEach(j=>{if(!j.split_from){existingJobMap[j.key||j.id]=j;const jArtIds=j._art_ids||[j.art_file_id].filter(Boolean);jArtIds.forEach(aid=>{existingByArtId[aid]=existingByArtId[aid]||j});existingById[j.id]=j}});
     const soNum=o.id?.replace('SO-','')||'0';
     let jIdx=1;
     const newJobs=Object.values(jobMap).map(j=>{
@@ -3018,7 +3018,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       let prodSt=existing?.prod_status||'hold';
       const artFile=safeArr(o?.art_files).find(f=>f.id===j.art_file_id);
       const hasProdFiles=!artFile||(artFile.prod_files||[]).length>0;
-      if(itemSt==='items_received'&&j.art_status==='art_complete'&&hasProdFiles&&prodSt==='hold')prodSt='staging';
+      if(itemSt==='items_received'&&j.art_status==='art_complete'&&hasProdFiles&&prodSt==='hold'&&!j._draft)prodSt='staging';
       const id=existing?.id||('JOB-'+soNum+'-'+String(jIdx).padStart(2,'0'));
       jIdx++;
       return{
@@ -5297,7 +5297,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // Split job modal state is at component level (splitModal/setSplitModal)
 
       // Helper: copy art-related fields from parent job to split job
-      const _artFields=j=>({art_file_id:j.art_file_id,art_name:j.art_name,art_status:j.art_status,deco_type:j.deco_type,positions:j.positions,
+      const _artFields=j=>({art_file_id:j.art_file_id,_art_ids:j._art_ids||null,art_name:j.art_name,art_status:j.art_status,deco_type:j.deco_type,positions:j.positions,
         art_requests:j.art_requests?JSON.parse(JSON.stringify(j.art_requests)):[],
         art_messages:j.art_messages?JSON.parse(JSON.stringify(j.art_messages)):[],
         assigned_artist:j.assigned_artist||null,rep_notes:j.rep_notes||null,
@@ -5538,14 +5538,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {/* Status controls */}
             <div style={{padding:'10px 20px',borderTop:'1px solid #f1f5f9',display:'flex',gap:12,alignItems:'center',flexWrap:'wrap'}}>
               <div style={{fontSize:11,fontWeight:600,color:'#64748b'}}>Art:</div>
-              <select className="form-select" style={{width:150,fontSize:11}} value={j.art_status} onChange={e=>{const ns=e.target.value;if(ns==='art_complete'){const artF2=af.find(a=>a.id===j.art_file_id);if(artF2&&(artF2.prod_files||[]).length===0){nf('Upload production files first','error');return}}const updJobs=safeJobs(o).map((jj,i2)=>{if(i2!==ji)return jj;const upd={...jj,art_status:ns};if(ns==='art_complete'&&jj.item_status==='items_received'&&(jj.prod_status==='hold'||!jj.prod_status))upd.prod_status='staging';return upd});const afSt=ns==='waiting_approval'?'needs_approval':(ns==='production_files_needed'||ns==='art_complete')?'approved':(ns==='needs_art'||ns==='art_requested')?'waiting_for_art':ns==='art_in_progress'?'waiting_for_art':null;const updArt2=afSt&&j.art_file_id?af.map(a=>a.id===j.art_file_id?{...a,status:afSt}:a):af;const updated={...o,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false)}}>
+              <select className="form-select" style={{width:150,fontSize:11}} value={j.art_status} onChange={e=>{const ns=e.target.value;const artIds=j._art_ids||[j.art_file_id].filter(Boolean);if(ns==='art_complete'){const missingProd=artIds.some(aid=>{const af2=af.find(a=>a.id===aid);return af2&&(af2.prod_files||[]).length===0});if(missingProd){nf('Upload production files for all art first','error');return}}const updJobs=safeJobs(o).map((jj,i2)=>{if(i2!==ji)return jj;const upd={...jj,art_status:ns};if(ns==='art_complete'&&jj.item_status==='items_received'&&jj.prod_status==='hold'&&!jj._draft&&jj.prod_status!=='draft')upd.prod_status='staging';return upd});const afSt=ns==='waiting_approval'?'needs_approval':(ns==='production_files_needed'||ns==='art_complete')?'approved':(ns==='needs_art'||ns==='art_requested')?'waiting_for_art':ns==='art_in_progress'?'waiting_for_art':null;const updArt2=afSt?af.map(a=>artIds.includes(a.id)?{...a,status:afSt}:a):af;const updated={...o,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false)}}>
                 {Object.entries(artLabels).map(([k,v])=><option key={k} value={k}>{v}</option>)}</select>
-              {(()=>{if(!j.art_file_id||j.art_file_id==='__tbd')return null;const hasReqs=(j.art_requests||[]).length>0;const activeReq=(j.art_requests||[]).find(r=>r.status==='in_progress'||r.status==='requested');
+              {(()=>{const _artIds3=j._art_ids||[j.art_file_id].filter(Boolean);if(_artIds3.length===0||(_artIds3.length===1&&_artIds3[0]==='__tbd'))return null;const hasReqs=(j.art_requests||[]).length>0;const activeReq=(j.art_requests||[]).find(r=>r.status==='in_progress'||r.status==='requested');
                 return<>{hasReqs&&<span style={{padding:'2px 8px',borderRadius:10,fontSize:9,fontWeight:700,background:activeReq?'#fef3c7':'#dcfce7',color:activeReq?'#92400e':'#166534',marginRight:4,animation:activeReq?'pulse 2s infinite':'none'}}>
                   {activeReq?(activeReq.status==='in_progress'?'Art In Progress':'Art Requested'):'Art Complete'}</span>}
                 <button className="btn btn-sm" style={{fontSize:10,background:hasReqs?'#6d28d9':'#be185d',color:'white',border:'none',padding:'3px 8px'}} onClick={()=>setArtReqModal({jIdx:ji,artist:j.assigned_artist||'',instructions:'',files:[]})}>
                   {hasReqs?'Update Art Request':'🎨 Request Art'}</button></>})()}
-              {(j.art_status==='waiting_approval')&&<button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'3px 8px'}} onClick={()=>{const updJobs=safeJobs(o).map((jj,i2)=>i2===ji?{...jj,art_status:'production_files_needed'}:jj);const updArt2=j.art_file_id?af.map(a=>a.id===j.art_file_id?{...a,status:'approved'}:a):af;const updated={...o,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);nf('Art approved — awaiting prod files')}}>Approve Art</button>}
+              {(j.art_status==='waiting_approval')&&<button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'3px 8px'}} onClick={()=>{const updJobs=safeJobs(o).map((jj,i2)=>i2===ji?{...jj,art_status:'production_files_needed'}:jj);const _appArtIds=j._art_ids||[j.art_file_id].filter(Boolean);const updArt2=_appArtIds.length>0?af.map(a=>_appArtIds.includes(a.id)?{...a,status:'approved'}:a):af;const updated={...o,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);nf('Art approved — awaiting prod files')}}>Approve Art</button>}
               <div style={{fontSize:11,fontWeight:600,color:'#64748b',marginLeft:8}}>Artist:</div>
               <select className="form-select" style={{width:130,fontSize:11}} value={j.assigned_artist||''} onChange={e=>updJob(ji,'assigned_artist',e.target.value)}>
                 <option value="">Unassigned</option>
@@ -6132,13 +6132,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <td style={{fontWeight:700}}>{j.fulfilled_units}/{j.total_units}
                 <div style={{width:50,background:'#e2e8f0',borderRadius:3,height:4,marginTop:2}}><div style={{height:4,borderRadius:3,background:pct>=100?'#22c55e':pct>0?'#f59e0b':'#e2e8f0',width:pct+'%'}}/></div></td>
               <td><span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:SC[j.item_status]?.bg,color:SC[j.item_status]?.c}}>{itemLabels[j.item_status]}</span></td>
-              <td><select style={{fontSize:10,padding:'2px 4px',borderRadius:4,border:'1px solid #e2e8f0',fontWeight:600,background:SC[j.art_status]?.bg,color:SC[j.art_status]?.c}} value={j.art_status} onChange={e=>{e.stopPropagation();const ns=e.target.value;if(ns==='art_complete'){const artF2=af.find(a=>a.id===j.art_file_id);if(artF2&&(artF2.prod_files||[]).length===0){nf('Upload production files first','error');return}}const updJobs=safeJobs(o).map((jj,i2)=>{if(i2!==ji)return jj;const upd={...jj,art_status:ns};if(ns==='art_complete'&&jj.item_status==='items_received'&&(jj.prod_status==='hold'||!jj.prod_status))upd.prod_status='staging';return upd});const afSt=ns==='waiting_approval'?'needs_approval':(ns==='production_files_needed'||ns==='art_complete')?'approved':(ns==='needs_art'||ns==='art_requested')?'waiting_for_art':ns==='art_in_progress'?'waiting_for_art':null;const updArt2=afSt&&j.art_file_id?af.map(a=>a.id===j.art_file_id?{...a,status:afSt}:a):af;const updated={...o,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false)}}>
+              <td><select style={{fontSize:10,padding:'2px 4px',borderRadius:4,border:'1px solid #e2e8f0',fontWeight:600,background:SC[j.art_status]?.bg,color:SC[j.art_status]?.c}} value={j.art_status} onChange={e=>{e.stopPropagation();const ns=e.target.value;const artIds=j._art_ids||[j.art_file_id].filter(Boolean);if(ns==='art_complete'){const missingProd=artIds.some(aid=>{const af2=af.find(a=>a.id===aid);return af2&&(af2.prod_files||[]).length===0});if(missingProd){nf('Upload production files for all art first','error');return}}const updJobs=safeJobs(o).map((jj,i2)=>{if(i2!==ji)return jj;const upd={...jj,art_status:ns};if(ns==='art_complete'&&jj.item_status==='items_received'&&jj.prod_status==='hold'&&!jj._draft&&jj.prod_status!=='draft')upd.prod_status='staging';return upd});const afSt=ns==='waiting_approval'?'needs_approval':(ns==='production_files_needed'||ns==='art_complete')?'approved':(ns==='needs_art'||ns==='art_requested')?'waiting_for_art':ns==='art_in_progress'?'waiting_for_art':null;const updArt2=afSt?af.map(a=>artIds.includes(a.id)?{...a,status:afSt}:a):af;const updated={...o,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false)}}>
                 {Object.entries(artLabels).map(([k,v])=><option key={k} value={k}>{v}</option>)}</select></td>
               <td>{j.prod_status==='hold'&&!canProduce&&!canOverride2?<span style={{fontSize:10,color:'#94a3b8',fontStyle:'italic'}}>Waiting items/art</span>
                 :<select style={{fontSize:10,padding:'2px 4px',borderRadius:4,border:'1px solid #e2e8f0',fontWeight:600,background:SC[j.prod_status]?.bg||'#f1f5f9',color:SC[j.prod_status]?.c||'#475569'}} value={j.prod_status} onChange={e=>{e.stopPropagation();updJob(ji,'prod_status',e.target.value)}}>
                   {prodStatuses.map(ps=><option key={ps} value={ps}>{prodLabels[ps]}</option>)}</select>}</td>
               <td style={{whiteSpace:'nowrap'}}>
-                {(()=>{if(!j.art_file_id||j.art_file_id==='__tbd')return null;const hasReqs=(j.art_requests||[]).length>0;const activeReq=(j.art_requests||[]).find(r=>r.status==='in_progress'||r.status==='requested');
+                {(()=>{const _artIds4=j._art_ids||[j.art_file_id].filter(Boolean);if(_artIds4.length===0||(_artIds4.length===1&&_artIds4[0]==='__tbd'))return null;const hasReqs=(j.art_requests||[]).length>0;const activeReq=(j.art_requests||[]).find(r=>r.status==='in_progress'||r.status==='requested');
                   return<>{hasReqs&&activeReq&&<span style={{fontSize:8,padding:'1px 5px',borderRadius:8,fontWeight:700,background:'#fef3c7',color:'#92400e',marginRight:3}}>{activeReq.status==='in_progress'?'In Progress':'Requested'}</span>}
                   <button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:hasReqs?'#6d28d9':'#be185d',color:'white',borderRadius:4,marginRight:3}} onClick={e=>{e.stopPropagation();setArtReqModal({jIdx:ji,artist:j.assigned_artist||'',instructions:'',files:[]})}} title={hasReqs?'Update art request':'Request art from artist'}>{hasReqs?'Update Art':'🎨 Request Art'}</button></>})()}
                 {canSplit&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#7c3aed',color:'white',borderRadius:4}} onClick={e=>{e.stopPropagation();setSplitModal({jIdx:ji,mode:null,selectedSkus:[]})}} title="Split job">✂️ Split</button>}
@@ -8658,7 +8658,8 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             <div style={{display:'flex',gap:8}}>
               <button className="btn btn-sm" style={{background:'#22c55e',color:'white',flex:1,justifyContent:'center',fontWeight:700,padding:'10px 16px'}} onClick={async()=>{
                 const liveSO=sos.find(s=>s.id===so.id);if(!liveSO)return;
-                const updSO={...liveSO,jobs:buildJobs(liveSO).map(jj=>jj.id===j.id?{...jj,art_status:'production_files_needed',coach_approved_at:new Date().toISOString()}:jj),art_files:safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,status:'approved'}:a),updated_at:new Date().toLocaleString()};
+                const jArtIds=j._art_ids||[j.art_file_id].filter(Boolean);
+                const updSO={...liveSO,jobs:(liveSO.jobs||safeJobs(liveSO)).map(jj=>jj.id===j.id?{...jj,art_status:'production_files_needed',coach_approved_at:new Date().toISOString()}:jj),art_files:safeArt(liveSO).map(a=>jArtIds.includes(a.id)?{...a,status:'approved'}:a),updated_at:new Date().toLocaleString()};
                 if(savSOFn)savSOFn(updSO);else if(onUpdateSOs)onUpdateSOs(prev=>prev.map(s=>s.id===so.id?updSO:s));
                 // Email the assigned rep
                 const rep=REPS.find(r=>r.id===liveSO.created_by);
@@ -8669,7 +8670,8 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                 if(!comment.trim()){alert('Please describe what changes you need.');return}
                 const liveSO=sos.find(s=>s.id===so.id);if(!liveSO)return;
                 const rej={reason:comment.trim(),by:'Coach',at:new Date().toISOString()};
-                const updSO={...liveSO,jobs:buildJobs(liveSO).map(jj=>jj.id===j.id?{...jj,art_status:'art_requested',coach_rejected:true,rejections:[...(jj.rejections||[]),rej]}:jj),art_files:safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,status:'waiting_for_art',notes:(a.notes?a.notes+'\n':'')+'Coach feedback: '+comment.trim()}:a),updated_at:new Date().toLocaleString()};
+                const rArtIds=j._art_ids||[j.art_file_id].filter(Boolean);
+                const updSO={...liveSO,jobs:(liveSO.jobs||safeJobs(liveSO)).map(jj=>jj.id===j.id?{...jj,art_status:'art_requested',coach_rejected:true,rejections:[...(jj.rejections||[]),rej]}:jj),art_files:safeArt(liveSO).map(a=>rArtIds.includes(a.id)?{...a,status:'waiting_for_art',notes:(a.notes?a.notes+'\n':'')+'Coach feedback: '+comment.trim()}:a),updated_at:new Date().toLocaleString()};
                 if(savSOFn)savSOFn(updSO);else if(onUpdateSOs)onUpdateSOs(prev=>prev.map(s=>s.id===so.id?updSO:s));
                 setComment('');setJobView(null);
               }}>❌ Request Changes</button>
@@ -16279,7 +16281,7 @@ export default function App(){
         if(jj.id!==j.id)return jj;
         const upd={...jj,art_status:newStatus,assigned_artist:jj.assigned_artist||j.assigned_artist};
         // Auto-move to production staging when art complete + items received
-        if(newStatus==='art_complete'&&jj.item_status==='items_received'&&(jj.prod_status==='hold'||!jj.prod_status)){upd.prod_status='staging'}
+        if(newStatus==='art_complete'&&jj.item_status==='items_received'&&(jj.prod_status==='hold'||!jj.prod_status)&&!jj._draft&&jj.prod_status!=='draft'){upd.prod_status='staging'}
         return upd;
       });
       let updArt=safeArt(so);
@@ -16415,7 +16417,7 @@ export default function App(){
                   const ext=j.deco_type==='embroidery'?'.dst':j.deco_type==='screen_print'?'_seps.ai':'.pdf';
                   const fn=(j.art_name||'art').replace(/\s+/g,'_')+'_FINAL'+ext;
                   const updArt=[...safeArt(so)];updArt[afIdx]={...updArt[afIdx],prod_files:[...(updArt[afIdx].prod_files||[]),fn]};
-                  const updJobs=safeJobs(so).map(jj=>{if(jj.id!==j.id)return jj;const upd={...jj,art_status:'art_complete'};if(jj.item_status==='items_received'&&(jj.prod_status==='hold'||!jj.prod_status))upd.prod_status='staging';return upd});
+                  const updJobs=safeJobs(so).map(jj=>{if(jj.id!==j.id)return jj;const upd={...jj,art_status:'art_complete'};if(jj.item_status==='items_received'&&(jj.prod_status==='hold'||!jj.prod_status)&&!jj._draft&&jj.prod_status!=='draft')upd.prod_status='staging';return upd});
                   savSO({...so,art_files:updArt,jobs:updJobs});
                   const autoStaged=updJobs.find(jj=>jj.id===j.id);
                   nf(autoStaged?.prod_status==='staging'?'Art complete — job moved to Ready for Production!':'Prod files uploaded — Art Complete!');
