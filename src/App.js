@@ -376,12 +376,19 @@ const _dbSaveSOInner = async (so) => {
 };
 const _dbSaveSO = (so) => _queuedEntitySave(so.id, so, _dbSaveSOInner);
 const _invCols=['id','customer_id','so_id','date','due_date','total','paid','memo','status','type','inv_type','deposit_pct','tax','tax_rate','tax_exempt','shipping','cc_fee','email_status','email_sent_at','line_items','qb_invoice_id','tc_reported','tc_tax','created_at','updated_at','billing_name','billing_address'];
+const _invExtraCols=new Set(['qb_invoice_id','tc_reported','tc_tax','billing_name','billing_address']);
 const _dbSaveInvoice = async (inv) => {
   if(!supabase)return;
   return _dbSavingGuard(async()=>{try{
     const{payments,items,...rest}=inv;
-    const{error:invErr}=await supabase.from('invoices').upsert(_pick(rest,_invCols),{onConflict:'id'});
-    if(invErr){console.error('[DB] invoices upsert failed:',invErr.message);_dbSaveFailedIds.add(inv.id);_persistFailedIds();return false}
+    let invRow=_pick(rest,_invCols);
+    const{error:invErr}=await supabase.from('invoices').upsert(invRow,{onConflict:'id'});
+    if(invErr){
+      console.warn('[DB] invoices upsert failed, retrying without extra cols:',invErr.message);
+      const coreRow={};Object.keys(invRow).forEach(k=>{if(!_invExtraCols.has(k))coreRow[k]=invRow[k]});
+      const{error:invErr2}=await supabase.from('invoices').upsert(coreRow,{onConflict:'id'});
+      if(invErr2){console.error('[DB] invoices upsert failed (core):',invErr2.message);_dbSaveFailedIds.add(inv.id);_persistFailedIds();return false}
+    }
     // Upsert payments instead of DELETE+INSERT to avoid race condition
     if(payments?.length){
       await supabase.from('invoice_payments').delete().eq('invoice_id',inv.id);
@@ -594,7 +601,7 @@ const _artCols=['id','name','deco_type','ink_colors','thread_colors','art_size',
 // Columns that may not exist in art file tables — stripped on retry
 const _artExtraCols=new Set(['art_sizes','garment_colors','item_mockups']);
 // Columns that may not exist in so_jobs — stripped on retry
-const _jobExtraCols=new Set(['art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at']);
+const _jobExtraCols=new Set(['_art_ids','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at']);
 const _jobCols=['id','key','art_file_id','_art_ids','_draft','art_name','deco_type','positions','art_status','item_status','prod_status','total_units','fulfilled_units','split_from','created_at','assigned_machine','assigned_to','ship_method','items','_auto','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at'];
 const _custCols=['id','parent_id','name','alpha_tag','billing_address_line1','billing_address_line2','billing_city','billing_state','billing_zip','shipping_address_line1','shipping_address_line2','shipping_city','shipping_state','shipping_zip','adidas_ua_tier','catalog_markup','payment_terms','tax_rate','tax_exempt','primary_rep_id','notes','is_active','created_at','updated_at','alt_billing_addresses'];
 const _vendCols=['id','name','vendor_type','api_provider','nsa_carries_inventory','click_automation','is_active','contact_email','contact_phone','rep_name','payment_terms','notes'];
