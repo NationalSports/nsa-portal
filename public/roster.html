@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Roster Assignment — National Sports Apparel</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f1f5f9;min-height:100vh;color:#1e293b}
+.container{max-width:720px;margin:0 auto;padding:20px}
+.header{background:linear-gradient(135deg,#1e3a5f,#2563eb);color:white;padding:24px;border-radius:12px 12px 0 0;text-align:center}
+.header h1{font-size:20px;margin-bottom:4px}
+.header .sub{font-size:13px;opacity:0.85}
+.card{background:white;border-radius:0 0 12px 12px;padding:24px;box-shadow:0 4px 24px rgba(0,0,0,0.08)}
+.info{display:flex;gap:16px;flex-wrap:wrap;margin-bottom:20px;padding:12px;background:#f8fafc;border-radius:8px;border:1px solid #e2e8f0}
+.info-item{font-size:13px}.info-item strong{color:#475569;font-size:11px;display:block;margin-bottom:2px}
+.sz-section{margin-bottom:16px}
+.sz-header{display:flex;align-items:center;gap:8px;padding:8px 12px;background:#eff6ff;border-radius:8px 8px 0 0;border:1px solid #bfdbfe;border-bottom:none}
+.sz-label{font-weight:700;font-size:14px;color:#1e40af;min-width:60px}
+.sz-qty{font-size:12px;color:#64748b}
+.sz-edit{display:flex;align-items:center;gap:6px;margin-left:auto;font-size:11px;color:#64748b}
+.sz-edit input{width:48px;text-align:center;border:1px solid #d1d5db;border-radius:4px;padding:3px;font-size:12px;font-weight:600}
+.sz-body{border:1px solid #e2e8f0;border-radius:0 0 8px 8px;padding:10px 12px}
+.num-row{display:flex;gap:6px;align-items:center;padding:4px 0;border-bottom:1px solid #f1f5f9}
+.num-row:last-child{border-bottom:none}
+.num-idx{font-size:10px;color:#94a3b8;width:20px;text-align:right;flex-shrink:0}
+.num-input{width:60px;border:1px solid #d1d5db;border-radius:4px;padding:5px 8px;font-size:14px;font-weight:700;text-align:center}
+.num-input:focus{outline:none;border-color:#3b82f6;box-shadow:0 0 0 2px rgba(59,130,246,0.15)}
+.name-input{flex:1;border:1px solid #d1d5db;border-radius:4px;padding:5px 8px;font-size:13px;min-width:100px}
+.name-input:focus{outline:none;border-color:#3b82f6;box-shadow:0 0 0 2px rgba(59,130,246,0.15)}
+.name-label{font-size:10px;color:#94a3b8;flex-shrink:0}
+.actions{margin-top:20px;display:flex;gap:8px;justify-content:center;flex-wrap:wrap}
+.btn{padding:12px 32px;border:none;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer;transition:all 0.15s}
+.btn-primary{background:#2563eb;color:white}.btn-primary:hover{background:#1d4ed8}
+.btn-primary:disabled{background:#94a3b8;cursor:not-allowed}
+.btn-secondary{background:#f1f5f9;color:#475569;border:1px solid #e2e8f0}.btn-secondary:hover{background:#e2e8f0}
+.toast{position:fixed;top:20px;right:20px;background:#166534;color:white;padding:12px 20px;border-radius:8px;font-size:13px;font-weight:600;z-index:999;display:none;box-shadow:0 4px 12px rgba(0,0,0,0.15)}
+.toast.error{background:#dc2626}
+.toast.show{display:block;animation:fadeIn 0.3s}
+@keyframes fadeIn{from{opacity:0;transform:translateY(-10px)}to{opacity:1;transform:translateY(0)}}
+.submitted{text-align:center;padding:40px 20px}
+.submitted h2{color:#166534;font-size:22px;margin-bottom:8px}
+.submitted p{color:#64748b;font-size:14px}
+.note{font-size:12px;color:#64748b;text-align:center;margin-top:12px;font-style:italic}
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1>🏈 Roster Number Assignment</h1>
+    <div class="sub" id="headerSub">Loading...</div>
+  </div>
+  <div class="card" id="mainCard">
+    <div id="loading" style="text-align:center;padding:40px;color:#64748b">Loading roster request...</div>
+    <div id="form" style="display:none">
+      <div class="info" id="infoBar"></div>
+      <p style="font-size:13px;color:#475569;margin-bottom:16px">Please enter the <strong>jersey number</strong> for each player. Names are optional. You can adjust quantities per size if needed.</p>
+      <div id="sizeRows"></div>
+      <div class="actions">
+        <button class="btn btn-primary" id="submitBtn" onclick="submitRoster()">Submit Roster</button>
+      </div>
+      <div class="note">Numbers will be sent to your sales rep for processing.</div>
+    </div>
+    <div id="done" class="submitted" style="display:none">
+      <div style="font-size:48px;margin-bottom:12px">✅</div>
+      <h2>Roster Submitted!</h2>
+      <p>Your numbers have been sent to your sales rep. They'll apply them to your order.</p>
+    </div>
+    <div id="expired" style="display:none;text-align:center;padding:40px">
+      <div style="font-size:48px;margin-bottom:12px">⚠️</div>
+      <h2 style="color:#d97706">Invalid or Expired Link</h2>
+      <p style="color:#64748b;font-size:14px">This roster request link is not valid. Please contact your sales rep for a new link.</p>
+    </div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+let DATA=null;
+let sizes={};// {S:{qty:10,numbers:['','',..],names:['','',...]}, ...}
+
+function showToast(msg,isError){
+  const t=document.getElementById('toast');
+  t.textContent=msg;t.className='toast show'+(isError?' error':'');
+  setTimeout(()=>t.className='toast',3000);
+}
+
+function init(){
+  try{
+    const params=new URLSearchParams(window.location.search);
+    const d=params.get('d');
+    if(!d){document.getElementById('loading').style.display='none';document.getElementById('expired').style.display='block';return}
+    DATA=JSON.parse(atob(d));
+    if(!DATA||!DATA.sizes){document.getElementById('loading').style.display='none';document.getElementById('expired').style.display='block';return}
+    // Set header
+    document.getElementById('headerSub').textContent=(DATA.item||'Jersey')+' — '+(DATA.so||'Order');
+    // Info bar
+    const info=document.getElementById('infoBar');
+    info.innerHTML='<div class="info-item"><strong>Order</strong>'+esc(DATA.so||'')+'</div>'
+      +'<div class="info-item"><strong>Item</strong>'+esc(DATA.item||'')+'</div>'
+      +'<div class="info-item"><strong>SKU</strong>'+esc(DATA.sku||'')+'</div>'
+      +'<div class="info-item"><strong>Color</strong>'+esc(DATA.color||'')+'</div>';
+    // Build size rows
+    const sizeOrder=['XS','S','M','L','XL','2XL','3XL','4XL','LT','XLT','2XLT','3XLT'];
+    const sortedSizes=Object.entries(DATA.sizes).filter(([,v])=>v>0).sort((a,b)=>(sizeOrder.indexOf(a[0])===-1?99:sizeOrder.indexOf(a[0]))-(sizeOrder.indexOf(b[0])===-1?99:sizeOrder.indexOf(b[0])));
+    sortedSizes.forEach(([sz,qty])=>{
+      sizes[sz]={qty,numbers:Array(qty).fill(''),names:Array(qty).fill('')};
+    });
+    renderSizes();
+    document.getElementById('loading').style.display='none';
+    document.getElementById('form').style.display='block';
+  }catch(e){
+    console.error(e);
+    document.getElementById('loading').style.display='none';
+    document.getElementById('expired').style.display='block';
+  }
+}
+
+function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
+
+function renderSizes(){
+  const container=document.getElementById('sizeRows');
+  container.innerHTML='';
+  const sizeOrder=['XS','S','M','L','XL','2XL','3XL','4XL','LT','XLT','2XLT','3XLT'];
+  const sorted=Object.entries(sizes).sort((a,b)=>(sizeOrder.indexOf(a[0])===-1?99:sizeOrder.indexOf(a[0]))-(sizeOrder.indexOf(b[0])===-1?99:sizeOrder.indexOf(b[0])));
+  sorted.forEach(([sz,data])=>{
+    const sec=document.createElement('div');sec.className='sz-section';
+    sec.innerHTML='<div class="sz-header"><span class="sz-label">'+esc(sz)+'</span><span class="sz-qty">'+data.qty+' jerseys</span>'
+      +'<div class="sz-edit"><span>Qty:</span><input type="number" min="0" max="99" value="'+data.qty+'" onchange="updateQty(\''+esc(sz)+'\',this.value)"/></div></div>';
+    const body=document.createElement('div');body.className='sz-body';
+    for(let i=0;i<data.qty;i++){
+      const row=document.createElement('div');row.className='num-row';
+      row.innerHTML='<span class="num-idx">'+(i+1)+'</span>'
+        +'<input class="num-input" placeholder="#" value="'+esc(data.numbers[i]||'')+'" data-sz="'+esc(sz)+'" data-i="'+i+'" data-field="number" onchange="updateVal(this)"/>'
+        +'<span class="name-label">Name:</span>'
+        +'<input class="name-input" placeholder="Optional" value="'+esc(data.names[i]||'')+'" data-sz="'+esc(sz)+'" data-i="'+i+'" data-field="name" onchange="updateVal(this)"/>';
+      body.appendChild(row);
+    }
+    sec.appendChild(body);
+    container.appendChild(sec);
+  });
+}
+
+function updateVal(el){
+  const sz=el.dataset.sz,i=parseInt(el.dataset.i),field=el.dataset.field;
+  if(field==='number')sizes[sz].numbers[i]=el.value.trim();
+  else sizes[sz].names[i]=el.value.trim();
+}
+
+function updateQty(sz,val){
+  const newQty=Math.max(0,Math.min(99,parseInt(val)||0));
+  const old=sizes[sz];
+  const numbers=old.numbers.slice(0,newQty);
+  const names=old.names.slice(0,newQty);
+  while(numbers.length<newQty){numbers.push('');names.push('')}
+  sizes[sz]={qty:newQty,numbers,names};
+  renderSizes();
+}
+
+async function submitRoster(){
+  // Validate at least some numbers filled
+  const allNums=Object.values(sizes).flatMap(d=>d.numbers).filter(v=>v);
+  if(allNums.length===0){showToast('Please enter at least one number',true);return}
+  const btn=document.getElementById('submitBtn');
+  btn.disabled=true;btn.textContent='Submitting...';
+  // Build CSV
+  const hasNames=Object.values(sizes).flatMap(d=>d.names).some(v=>v);
+  let csv=hasNames?'Size,Number,Name\n':'Size,Number\n';
+  const sizeOrder=['XS','S','M','L','XL','2XL','3XL','4XL','LT','XLT','2XLT','3XLT'];
+  Object.entries(sizes).sort((a,b)=>(sizeOrder.indexOf(a[0])===-1?99:sizeOrder.indexOf(a[0]))-(sizeOrder.indexOf(b[0])===-1?99:sizeOrder.indexOf(b[0]))).forEach(([sz,data])=>{
+    for(let i=0;i<data.qty;i++){
+      const num=data.numbers[i]||'';
+      const name=data.names[i]||'';
+      if(hasNames)csv+=sz+','+num+','+name+'\n';
+      else csv+=sz+','+num+'\n';
+    }
+  });
+  try{
+    const res=await fetch('/.netlify/functions/roster-submit',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        rep_email:DATA.rep_email,
+        rep_name:DATA.rep_name||'',
+        so:DATA.so||'',
+        sku:DATA.sku||'',
+        item:DATA.item||'',
+        coach_name:DATA.coach_name||'Coach',
+        csv:csv
+      })
+    });
+    const result=await res.json();
+    if(result.ok){
+      document.getElementById('form').style.display='none';
+      document.getElementById('done').style.display='block';
+    }else{
+      showToast('Submit failed: '+(result.error||'Unknown error'),true);
+      btn.disabled=false;btn.textContent='Submit Roster';
+    }
+  }catch(e){
+    showToast('Network error — please try again',true);
+    btn.disabled=false;btn.textContent='Submit Roster';
+  }
+}
+
+init();
+</script>
+</body>
+</html>
