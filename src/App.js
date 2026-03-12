@@ -2150,11 +2150,12 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
   const[body,setBody]=useState('');const[attachments,setAttachments]=useState([]);const[toEmails,setToEmails]=useState('');
   const[sending,setSending]=useState(false);const[dragOver,setDragOver]=useState(false);
   const label=docType==='so'?'Sales Order':'Estimate';
-  React.useEffect(()=>{if(isOpen&&customer){
+  const prevOpenRef=React.useRef(false);
+  React.useEffect(()=>{if(isOpen&&!prevOpenRef.current&&customer){
     const emails=(customer?.contacts||[]).map(c=>c.email).filter(Boolean);
     setToEmails(emails.join(', '));
     setBody(`Hi ${(customer.contacts||[])[0]?.name||'Coach'},\n\nPlease find the attached ${label.toLowerCase()} for ${estimate?.memo||'your order'}. You can view ${docType==='so'?'it':'and approve it'} through your portal.\n\nPortal link: https://nsa-portal.netlify.app/?portal=${customer.alpha_tag}\n\nLet me know if you have any questions!\n\nSteve Peterson\nNational Sports Apparel`);
-    setAttachments([]);setSending(false)}},[isOpen,customer,estimate,docType,label]);
+    setAttachments([]);setSending(false)}prevOpenRef.current=isOpen},[isOpen,customer,estimate,docType,label]);
   const handleFiles=(files)=>{const newFiles=Array.from(files).map(f=>({name:f.name,size:(f.size/1024).toFixed(0)+' KB',file:f}));setAttachments(a=>[...a,...newFiles])};
   const doSend=async()=>{
     const emails=toEmails.split(',').map(e2=>e2.trim()).filter(Boolean);
