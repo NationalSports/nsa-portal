@@ -2345,6 +2345,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const markDirty=()=>setDirty(true);const[saved,setSaved]=useState(!!order.customer_id);const[showSend,setShowSend]=useState(false);const[showActionsDD,setShowActionsDD]=useState(false);const[showPick,setShowPick]=useState(false);const[pickId,setPickId]=useState(()=>{let max=4000;(allOrders||[]).concat([order]).forEach(so=>safeItems(so).forEach(it=>safePicks(it).forEach(pk=>{const m=parseInt((pk.pick_id||'').replace('IF-',''))||0;if(m>max)max=m})));return'IF-'+String(max+1)});const[showPO,setShowPO]=useState(null);const[poCounter,setPOCounter]=useState(()=>{let max=3000;(allOrders||[]).concat([order]).forEach(so=>safeItems(so).forEach(it=>safePOs(it).forEach(po=>{const m=parseInt((po.po_id||'').replace('PO-',''))||0;if(m>max)max=m})));return max+1});
     const[pickNotes,setPickNotes]=useState('');const[pickShipDest,setPickShipDest]=useState('in_house');const[pickDecoVendor,setPickDecoVendor]=useState('');const[pickShipAddr,setPickShipAddr]=useState('default');
     const[rosterSendModal,setRosterSendModal]=useState(null);// {idx,di,item,rosterUrl,linkData}
+    const[rsmTo,setRsmTo]=useState('');const[rsmCustom,setRsmCustom]=useState('');const[rsmName,setRsmName]=useState('Coach');const[rsmSending,setRsmSending]=useState(false);const[rsmCopied,setRsmCopied]=useState(false);
+    React.useEffect(()=>{if(rosterSendModal){const contacts=(cust?.contacts||[]).filter(c=>c.email);setRsmTo(contacts.length>0?contacts[0].email:'');setRsmCustom('');setRsmName(contacts.length>0?(contacts[0].name||'Coach'):'Coach');setRsmSending(false);setRsmCopied(false)}},[rosterSendModal]);
     const[preexistingPO,setPreexistingPO]=useState(false);const[preexistingPOId,setPreexistingPOId]=useState('');const[poExcluded,setPOExcluded]=useState({});
     const DECO_VENDORS=['Silver Screen','Olympic Embroidery','WePrintIt','Pacific Screen Print','Other'];
   const[showFirmReq,setShowFirmReq]=useState(false);const[firmReqDate,setFirmReqDate]=useState('');const[firmReqNote,setFirmReqNote]=useState('');
@@ -4744,11 +4746,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
 
     {/* ROSTER SEND TO COACH MODAL */}
     {rosterSendModal&&(()=>{const rsm=rosterSendModal;const contacts=(cust?.contacts||[]).filter(c=>c.email);
-      const[rsmTo,setRsmTo]=React.useState(contacts.length>0?contacts[0].email:'');
-      const[rsmCustom,setRsmCustom]=React.useState('');
-      const[rsmName,setRsmName]=React.useState(contacts.length>0?(contacts[0].name||'Coach'):'Coach');
-      const[rsmSending,setRsmSending]=React.useState(false);
-      const[rsmCopied,setRsmCopied]=React.useState(false);
       const resolvedEmail=rsmTo==='_custom'?rsmCustom:rsmTo;
       const doRsmSend=async()=>{
         if(!resolvedEmail||!resolvedEmail.includes('@')){nf('Enter a valid email','error');return}
