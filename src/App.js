@@ -3093,6 +3093,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         if(validItems.length===0){nf('Add at least one item with quantities','error');return}
         onSave(o);setSaved(true);setDirty(false);nf(`${isE?'Estimate':'SO'} saved`)}} style={{padding:'6px 20px',fontSize:13,fontWeight:700}}><Icon name="check" size={14}/> Save</button>
     </div>
+    {/* COACH APPROVED BANNER */}
+    {isE&&o.status==='approved'&&o.approved_by==='Coach'&&<div style={{margin:'8px 0',padding:'12px 16px',background:'#f0fdf4',border:'2px solid #22c55e',borderRadius:10}}>
+      <div style={{display:'flex',alignItems:'center',gap:8}}>
+        <span style={{fontSize:16}}>✅</span>
+        <div style={{flex:1}}>
+          <span style={{fontWeight:800,fontSize:14,color:'#166534'}}>Coach Approved This Estimate</span>
+          {o.approved_at&&<span style={{fontSize:11,color:'#15803d',marginLeft:8}}>{new Date(o.approved_at).toLocaleDateString()}</span>}
+        </div>
+        {onConvertSO&&<button className="btn btn-sm" style={{fontSize:11,background:'#166534',color:'white',border:'none',padding:'4px 12px',fontWeight:700}} onClick={()=>{const validItems=safeItems(o).filter(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return sq>0||safeNum(it.est_qty)>0});if(validItems.length===0){nf('Add items first','error');return}onConvertSO(o)}}>Convert to Sales Order</button>}
+      </div>
+    </div>}
     {/* UPDATE REQUESTS BANNER — shows when coach has requested changes */}
     {isE&&(o.update_requests||[]).filter(r=>r.status==='pending').length>0&&<div style={{margin:'8px 0',padding:'12px 16px',background:'#fffbeb',border:'2px solid #f59e0b',borderRadius:10}}>
       <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}><span style={{fontSize:16}}>📝</span><span style={{fontWeight:800,fontSize:14,color:'#92400e'}}>Coach Update Requests ({(o.update_requests||[]).filter(r=>r.status==='pending').length})</span></div>
