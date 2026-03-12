@@ -9977,6 +9977,19 @@ export default function App(){
       }).catch(()=>{});
     nf('Connected to QuickBooks Online');
   },[dbLoading]);
+  // Proactive QB token refresh on load — if connected with expired access token, try refreshing
+  React.useEffect(()=>{
+    if(dbLoading||!qbConfig.connected||!qbConfig.refresh_token||_pendingQBTokens.current)return;
+    const tokenAge=Date.now()-(qbConfig.token_created_at||0);
+    if(tokenAge>3300000){// >55 min = expired or stale
+      fetch('/.netlify/functions/qb-auth',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({action:'refresh',refresh_token:qbConfig.refresh_token})})
+        .then(r=>r.json()).then(d=>{
+          if(d.access_token){setQBConfig(prev=>({...prev,access_token:d.access_token,refresh_token:d.refresh_token||prev.refresh_token,token_created_at:Date.now()}));console.log('[QB] Token refreshed on load')}
+          else{setQBConfig(prev=>({...prev,connected:false}));console.warn('[QB] Refresh failed — token may be expired')}
+        }).catch(e=>{console.warn('[QB] Refresh error on load:',e);setQBConfig(prev=>({...prev,connected:false}))});
+    }
+  },[dbLoading]); // eslint-disable-line
   // Handle ?so= deep link to open a specific sales order in a new tab
   React.useEffect(()=>{
     try{const p=new URLSearchParams(window.location.search);const soId=p.get('so');
@@ -19496,77 +19509,77 @@ export default function App(){
           DueDate:bill.due_date?bill.due_date.replace(/(\d+)\/(\d+)\/(\d+)/,'20$3-$1-$2'):undefined,
           DocNumber:bill.doc_number||bill.po_number||undefined,
           Line:lineItems,PrivateNote:memo};
+        // Update matched PO with billed quantities and tracking — do this BEFORE QB push
+        // so tracking/billed data is saved to the SO even if QB push fails
+        if(bill.matchedPOSource==='batch'&&bill.matchedPO){
+          const batchId=bill.matchedPO.id||bill.matchedPO.po_number;
+          const billedSizes={};
+          bill.items.forEach(it=>{if(it.size&&it.qty)billedSizes[it.size]=(billedSizes[it.size]||0)+it.qty});
+          setSubmittedBatches(prev=>prev.map(sb=>{
+            if((sb.id||sb.po_number)!==batchId)return sb;
+            const existingBilled=sb.billed||{};
+            const newBilled={...existingBilled};
+            Object.entries(billedSizes).forEach(([sz,qty])=>{newBilled[sz]=(newBilled[sz]||0)+qty});
+            const trackNums=[...(sb.tracking_numbers||[])];
+            if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
+            return{...sb,billed:newBilled,tracking_numbers:trackNums,bill_doc_number:bill.doc_number,bill_date:bill.doc_date};
+          }));
+        }
+        if(bill.matchedPOSource==='inv_po'&&bill.matchedPO){
+          const poId=bill.matchedPO.id;
+          const billedSizes={};
+          bill.items.forEach(it=>{if(it.size&&it.qty)billedSizes[it.size]=(billedSizes[it.size]||0)+it.qty});
+          setInvPOs(prev=>prev.map(po=>{
+            if(po.id!==poId)return po;
+            const existingBilled=po.billed||{};
+            const newBilled={...existingBilled};
+            Object.entries(billedSizes).forEach(([sz,qty])=>{newBilled[sz]=(newBilled[sz]||0)+qty});
+            const trackNums=[...(po.tracking_numbers||[])];
+            if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
+            return{...po,billed:newBilled,tracking_numbers:trackNums};
+          }));
+        }
+        if(bill.matchedPOSource==='so_po'&&bill.matchedPO){
+          const soId=bill.matchedPO.so_id||bill.matchedPO.so?.id;
+          const poId=bill.matchedPO.po_id;
+          if(soId){
+            const billedBySku={};
+            bill.items.forEach(it=>{if(it.size&&it.qty){const sk=(it.sku||'').toUpperCase();if(!billedBySku[sk])billedBySku[sk]={};billedBySku[sk][it.size]=(billedBySku[sk][it.size]||0)+it.qty}});
+            const billFreight=safeNum(bill.freight||0);
+            setSOs(prev=>{
+              const freshSO=prev.find(s=>s.id===soId);
+              if(!freshSO)return prev;
+              const prevFreight=safeNum(freshSO._inbound_freight||0);
+              const updatedSO={...freshSO,
+                _inbound_freight:Math.round((prevFreight+billFreight)*100)/100,
+                items:(freshSO.items||[]).map(it=>{
+                const matchPO=it.po_lines?.find(po=>po.po_id===poId);
+                if(!matchPO)return it;
+                const itemSku=(it.sku||'').toUpperCase();
+                const itemBilled=billedBySku[itemSku]||{};
+                return{...it,po_lines:it.po_lines.map(po=>{
+                  if(po.po_id!==poId)return po;
+                  const existingBilled=po.billed||{};
+                  const newBilled={...existingBilled};
+                  Object.entries(itemBilled).forEach(([sz,qty])=>{newBilled[sz]=(newBilled[sz]||0)+qty});
+                  const trackNums=[...(po.tracking_numbers||[])];
+                  if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
+                  return{...po,billed:newBilled,tracking_numbers:trackNums,
+                    _bill_details:[...(po._bill_details||[]),{doc:bill.doc_number,date:bill.doc_date,sizes:{...itemBilled},tracking:bill.tracking}]};
+                })};
+              }),updated_at:new Date().toLocaleString()};
+              _dbSaveSO(updatedSO);
+              return prev.map(s=>s.id===soId?updatedSO:s);
+            });
+          }
+        }
+        // Now push to QuickBooks
         const billRes=await qbApi('upsert_bill',{bill:qbBill});
         if(billRes?.Bill?.Id){
           const log={ts:new Date().toLocaleString(),type:'bill_upload',status:'success',
             details:['Bill created: '+vendorName+' $'+amt.toFixed(2)+' → QB Bill #'+billRes.Bill.Id,'PO: '+bill.po_number,bill.items.length+' line items, Freight: $'+bill.freight.toFixed(2)]};
           setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));
           setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,qbStatus:'success',qbMsg:'QB Bill #'+billRes.Bill.Id}:p)}));
-          // Update matched PO with billed quantities and tracking
-          if(bill.matchedPOSource==='batch'&&bill.matchedPO){
-            const batchId=bill.matchedPO.id||bill.matchedPO.po_number;
-            const billedSizes={};
-            bill.items.forEach(it=>{if(it.size&&it.qty)billedSizes[it.size]=(billedSizes[it.size]||0)+it.qty});
-            setSubmittedBatches(prev=>prev.map(sb=>{
-              if((sb.id||sb.po_number)!==batchId)return sb;
-              const existingBilled=sb.billed||{};
-              const newBilled={...existingBilled};
-              Object.entries(billedSizes).forEach(([sz,qty])=>{newBilled[sz]=(newBilled[sz]||0)+qty});
-              const trackNums=[...(sb.tracking_numbers||[])];
-              if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
-              return{...sb,billed:newBilled,tracking_numbers:trackNums,bill_doc_number:bill.doc_number,bill_date:bill.doc_date};
-            }));
-          }
-          if(bill.matchedPOSource==='inv_po'&&bill.matchedPO){
-            const poId=bill.matchedPO.id;
-            const billedSizes={};
-            bill.items.forEach(it=>{if(it.size&&it.qty)billedSizes[it.size]=(billedSizes[it.size]||0)+it.qty});
-            setInvPOs(prev=>prev.map(po=>{
-              if(po.id!==poId)return po;
-              const existingBilled=po.billed||{};
-              const newBilled={...existingBilled};
-              Object.entries(billedSizes).forEach(([sz,qty])=>{newBilled[sz]=(newBilled[sz]||0)+qty});
-              const trackNums=[...(po.tracking_numbers||[])];
-              if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
-              return{...po,billed:newBilled,tracking_numbers:trackNums};
-            }));
-          }
-          if(bill.matchedPOSource==='so_po'&&bill.matchedPO){
-            const soId=bill.matchedPO.so_id||bill.matchedPO.so?.id;
-            const poId=bill.matchedPO.po_id;
-            if(soId){
-              // Build per-SKU billed sizes so each SO item only gets its own quantities
-              const billedBySku={};
-              bill.items.forEach(it=>{if(it.size&&it.qty){const sk=(it.sku||'').toUpperCase();if(!billedBySku[sk])billedBySku[sk]={};billedBySku[sk][it.size]=(billedBySku[sk][it.size]||0)+it.qty}});
-              const billFreight=safeNum(bill.freight||0);
-              // Use setSOs with callback to get fresh state (avoids stale reference)
-              setSOs(prev=>{
-                const freshSO=prev.find(s=>s.id===soId);
-                if(!freshSO)return prev;
-                const prevFreight=safeNum(freshSO._inbound_freight||0);
-                const updatedSO={...freshSO,
-                  _inbound_freight:Math.round((prevFreight+billFreight)*100)/100,
-                  items:(freshSO.items||[]).map(it=>{
-                  const matchPO=it.po_lines?.find(po=>po.po_id===poId);
-                  if(!matchPO)return it;
-                  const itemSku=(it.sku||'').toUpperCase();
-                  const itemBilled=billedBySku[itemSku]||{};
-                  return{...it,po_lines:it.po_lines.map(po=>{
-                    if(po.po_id!==poId)return po;
-                    const existingBilled=po.billed||{};
-                    const newBilled={...existingBilled};
-                    Object.entries(itemBilled).forEach(([sz,qty])=>{newBilled[sz]=(newBilled[sz]||0)+qty});
-                    const trackNums=[...(po.tracking_numbers||[])];
-                    if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
-                    return{...po,billed:newBilled,tracking_numbers:trackNums,
-                      _bill_details:[...(po._bill_details||[]),{doc:bill.doc_number,date:bill.doc_date,sizes:{...itemBilled},tracking:bill.tracking}]};
-                  })};
-                }),updated_at:new Date().toLocaleString()};
-                _dbSaveSO(updatedSO);
-                return prev.map(s=>s.id===soId?updatedSO:s);
-              });
-            }
-          }
           success++;
         }else{
           setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,qbStatus:'error',qbMsg:billRes?.Fault?.Error?.[0]?.Detail||'Unknown error'}:p)}));
@@ -20349,6 +20362,16 @@ export default function App(){
 
       {/* BILLS TAB — Supplier Bill PDF Upload & Parse */}
       {impTab==='bills'&&<>
+        {/* QB Connection Status Banner */}
+        <div style={{marginBottom:12,padding:'10px 16px',borderRadius:8,display:'flex',alignItems:'center',gap:10,
+          background:qbConfig.connected?'#f0fdf4':'#fef3c7',border:'1px solid '+(qbConfig.connected?'#bbf7d0':'#fde68a')}}>
+          <span style={{fontSize:16}}>{qbConfig.connected?'✅':'⚠️'}</span>
+          <span style={{fontSize:12,fontWeight:600,color:qbConfig.connected?'#166534':'#92400e'}}>
+            {qbConfig.connected?'QuickBooks Connected'+(qbConfig.companyName?' — '+qbConfig.companyName:''):'QuickBooks Not Connected — bills will be saved locally but NOT pushed to QB'}
+          </span>
+          {!qbConfig.connected&&<button className="btn btn-sm" style={{marginLeft:'auto',fontSize:11,background:'#2CA01C',color:'white',border:'none',padding:'4px 12px',borderRadius:6,fontWeight:700,cursor:'pointer'}} onClick={connectQB}>Connect QB</button>}
+          {qbConfig.connected&&(()=>{const age=Date.now()-(qbConfig.token_created_at||0);return age>3300000?<span style={{marginLeft:'auto',fontSize:10,color:'#d97706',fontWeight:600}}>Token may be stale — <button style={{background:'none',border:'none',color:'#2563eb',cursor:'pointer',fontSize:10,fontWeight:700,textDecoration:'underline'}} onClick={connectQB}>Reconnect</button></span>:null})()}
+        </div>
         {billImport.step==='upload'&&<div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}}>
           <div className="card">
             <div className="card-header"><h2>Upload Supplier Bills (PDF)</h2></div>
@@ -20557,7 +20580,9 @@ export default function App(){
                 <td style={{padding:'6px 12px',textAlign:'right',fontWeight:700,color:'#166534'}}>{sb.parsed?.doc_total?'$'+sb.parsed.doc_total.toFixed(2):'—'}</td>
                 <td style={{padding:'6px 12px',textAlign:'right',color:'#64748b'}}>{sb.parsed?.freight?'$'+sb.parsed.freight.toFixed(2):'—'}</td>
                 <td style={{padding:'6px 12px',textAlign:'center'}}>{sb.parsed?.items?.length||0}</td>
-                <td style={{padding:'6px 12px'}}>{sb.qbStatus==='success'?<span style={{color:'#166534',fontWeight:700}}>Pushed</span>:sb.qbStatus==='error'?<span style={{color:'#dc2626',fontWeight:700}}>Failed</span>:<span style={{color:'#94a3b8'}}>Not pushed</span>}</td>
+                <td style={{padding:'6px 12px'}}>{sb.qbStatus==='success'?<span style={{color:'#166534',fontWeight:700}}>Pushed{sb.qbMsg?' · '+sb.qbMsg:''}</span>:sb.qbStatus==='error'?<span style={{color:'#dc2626',fontWeight:700}}>Failed{sb.qbMsg?' · '+sb.qbMsg:''}</span>:<span style={{color:'#94a3b8'}}>Not pushed</span>}
+                  {sb.qbStatus!=='success'&&<button style={{marginLeft:6,fontSize:9,padding:'2px 8px',background:'#eff6ff',border:'1px solid #93c5fd',borderRadius:4,color:'#1e40af',fontWeight:700,cursor:'pointer'}}
+                    onClick={()=>{setBillImport({step:'review',files:[],parsed:[{...sb,selected:true,qbStatus:null,matchedPO:null,matchedPOSource:null}],uploading:false,showRaw:{}});nf('Bill loaded for re-push — click "Push to QuickBooks"')}}>Re-push</button>}</td>
                 <td style={{padding:'6px 12px',fontSize:10,color:'#94a3b8'}}>{sb.uploadedAt||'—'}</td>
               </tr>)}</tbody>
             </table>
@@ -21493,9 +21518,12 @@ export default function App(){
                 <div style={{fontSize:12,color:'#64748b'}}>Company: {qbConfig.companyName||'Connected'} · Realm: {qbConfig.realm_id} · Last sync: {qbConfig.lastSync||'Never'}</div>:
                 <div style={{fontSize:12,color:'#92400e'}}>Connect your QBO account to sync customers, invoices, bills, and inventory</div>}
             </div>
-            {qbConfig.connected?
-              <button className="btn btn-secondary" style={{color:'#dc2626'}} onClick={disconnectQB}>Disconnect</button>:
-              <button className="btn btn-primary" style={{background:'#2CA01C',borderColor:'#2CA01C',padding:'10px 20px',fontSize:14,fontWeight:700}} onClick={connectQB}>Connect to QuickBooks</button>}
+            <div style={{display:'flex',gap:6}}>
+              {qbConfig.connected&&<button className="btn btn-secondary" style={{fontSize:12}} onClick={connectQB}>Reconnect</button>}
+              {qbConfig.connected?
+                <button className="btn btn-secondary" style={{color:'#dc2626',fontSize:12}} onClick={disconnectQB}>Disconnect</button>:
+                <button className="btn btn-primary" style={{background:'#2CA01C',borderColor:'#2CA01C',padding:'10px 20px',fontSize:14,fontWeight:700}} onClick={connectQB}>Connect to QuickBooks</button>}
+            </div>
           </div>
         </div>
       </div>
