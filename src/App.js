@@ -822,15 +822,16 @@ const parseNetSuitePdf=(text,docType,products)=>{
   let headerIdx=-1;
   for(let i=0;i<lines.length;i++){
     const l=lines[i].toLowerCase();
-    if((l.includes('quantity')||l.includes('qty'))&&(l.includes('item')||l.includes('sku'))&&(l.includes('amount')||l.includes('rate'))){
+    if((l.includes('quantity')||l.includes('qty'))&&(l.includes('item')||l.includes('sku')||l.includes('description'))&&(l.includes('amount')||l.includes('rate')||l.includes('price')||l.includes('extension'))){
       headerIdx=i;break;
     }
   }
 
-  const isEndMarker=l=>/^(Subtotal|Total$|Tax\b|Discount|Thank you|Comments|Notes$|Memo$|Terms$)/i.test(l.replace(/\t.*/,'').trim());
+  const isEndMarker=l=>{const t=l.replace(/\t.*/,'').trim();return/^(Subtotal|Total$|Tax\b|Discount|Thank you|Comments|Notes$|Memo$|Terms$|Merchandise\s*Total|Document\s*Total|Report\s*Problems)/i.test(t)};
+  const isMetadataLine=l=>{const lo=l.toLowerCase();return/\b(weight\s*\(lb\)|shipment\s*method|ship\s*date|terms\s*of\s*(payment|delivery)|document\s*(number|date)|rqst\s*ship\s*date)/i.test(lo)};
   // Detect page breaks and repeated headers from multi-page PDFs (skip, don't end)
   const isPageBreak=l=>{const t=l.replace(/\t.*/,'').trim();return/^Page\s+\d/i.test(t)};
-  const isRepeatedHeader=l=>{const lo=l.toLowerCase();return(lo.includes('quantity')||lo.includes('qty'))&&(lo.includes('item')||lo.includes('sku'))&&(lo.includes('amount')||lo.includes('rate'))};
+  const isRepeatedHeader=l=>{const lo=l.toLowerCase();return(lo.includes('quantity')||lo.includes('qty'))&&(lo.includes('item')||lo.includes('sku')||lo.includes('description'))&&(lo.includes('amount')||lo.includes('rate')||lo.includes('price')||lo.includes('extension'))};
   // Check if a line starts with a quantity number (item data line vs description line)
   const isItemLine=line=>{
     const p=line.split('\t')[0]?.trim();
@@ -844,7 +845,7 @@ const parseNetSuitePdf=(text,docType,products)=>{
     while(i<lines.length){
       const line=lines[i];
       if(isEndMarker(line))break;
-      if(!line.trim()||isPageBreak(line)||isRepeatedHeader(line)){i++;continue}
+      if(!line.trim()||isPageBreak(line)||isRepeatedHeader(line)||isMetadataLine(line)){i++;continue}
 
       if(isItemLine(line)){
         // This is a data line (qty/sku/rate/amount) — next non-empty line is description
@@ -869,7 +870,7 @@ const parseNetSuitePdf=(text,docType,products)=>{
     // No header — try scanning for qty-starting lines
     result.warnings.push('Could not detect item table header — trying pattern-based parsing');
     for(let i=0;i<lines.length;i++){
-      if(isEndMarker(lines[i])||isPageBreak(lines[i])||isRepeatedHeader(lines[i]))continue;
+      if(isEndMarker(lines[i])||isPageBreak(lines[i])||isRepeatedHeader(lines[i])||isMetadataLine(lines[i]))continue;
       if(isItemLine(lines[i])){
         let descLine='';
         if(i+1<lines.length&&!isItemLine(lines[i+1])&&!isEndMarker(lines[i+1])){
@@ -947,6 +948,9 @@ const parseNetSuitePdf=(text,docType,products)=>{
     let productName=description;
     if(color){productName=description.replace(new RegExp('\\s*[-–—]\\s*'+color.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'.*$','i'),'').trim()}
 
+    // Skip metadata lines mistakenly parsed as items (weight, shipment info from supplier header)
+    const skipMeta=/^(weight\s*\(|shipment\s*method|ship\s*date|rqst\s*ship|terms\s*of\s*(payment|delivery)|document\s*(number|date))/i;
+    if(skipMeta.test(baseSku)||skipMeta.test(description)||(skuRaw&&skipMeta.test(skuRaw))){return}
     // Detect shipping lines
     if(/^shipping$/i.test(baseSku)||/^shipping$/i.test(description)){
       result.shipping+=amount||rate;return;
@@ -19762,7 +19766,7 @@ export default function App(){
                 <label className="form-label">Link to Sales Order (optional)</label>
                 <select className="form-select" value={imp.linkedSoId||''} onChange={e=>setImp(x=>({...x,linkedSoId:e.target.value}))}>
                   <option value="">None — standalone PO</option>
-                  {sos.filter(s=>s.status!=='cancelled').sort((a,b)=>(b.id||'').localeCompare(a.id||'')).map(s=>{
+                  {sos.filter(s=>s.status!=='cancelled'&&s.status!=='closed'&&(!imp.custId||s.customer_id===imp.custId)).sort((a,b)=>(b.id||'').localeCompare(a.id||'')).map(s=>{
                     const sc=cust.find(c=>c.id===s.customer_id);
                     return<option key={s.id} value={s.id}>{s.id} — {sc?.name||'Unknown'} — {s.memo||'No memo'}</option>})}
                 </select>
