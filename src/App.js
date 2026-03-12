@@ -364,8 +364,10 @@ const _dbSaveSOInner = async (so) => {
         if(pickErr)console.error('[DB] so_item_pick_lines insert failed:',pickErr.message,pickErr.details);
       }
       if(po_lines?.length){
-        const poRows=po_lines.map(po=>{const{po_id,vendor,received,cancelled,shipments,status,created_at,expected_date,memo,po_type,deco_vendor,deco_type,unit_cost,drop_ship,...sizes}=po;
-          return{so_item_id:inserted.id,po_id,vendor,received:received||{},cancelled:cancelled||{},shipments:shipments||[],status,created_at,expected_date,memo,sizes:{...sizes,po_type:po_type||undefined,deco_vendor:deco_vendor||undefined,deco_type:deco_type||undefined,unit_cost:unit_cost||undefined,drop_ship:drop_ship||undefined}}});
+        const poRows=po_lines.map(po=>{const{po_id,vendor,received,cancelled,shipments,status,created_at,expected_date,memo,po_type,deco_vendor,deco_type,unit_cost,drop_ship,billed,tracking_numbers,_bill_details,_bill_cost,...sizes}=po;
+          return{so_item_id:inserted.id,po_id,vendor,received:received||{},cancelled:cancelled||{},shipments:shipments||[],status,created_at,expected_date,memo,
+            billed:billed||{},tracking_numbers:tracking_numbers||[],
+            sizes:{...sizes,po_type:po_type||undefined,deco_vendor:deco_vendor||undefined,deco_type:deco_type||undefined,unit_cost:unit_cost||undefined,drop_ship:drop_ship||undefined,_bill_details:_bill_details||undefined,_bill_cost:_bill_cost||undefined}}});
         const{error:poErr}=await supabase.from('so_item_po_lines').insert(poRows);
         if(poErr)console.error('[DB] so_item_po_lines insert failed:',poErr.message,poErr.details);
       }
@@ -4525,39 +4527,76 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {poData.length===0?<div style={{padding:20,textAlign:'center',color:'#94a3b8'}}>
               <div style={{fontSize:13}}>No purchase orders on this SO</div>
             </div>:
-            <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}>
-              <thead><tr style={{borderBottom:'2px solid #e2e8f0',textAlign:'left'}}>
-                <th style={{padding:'6px 8px',fontSize:10,color:'#64748b'}}>ITEM</th>
-                <th style={{padding:'6px 8px',fontSize:10,color:'#64748b'}}>PO</th>
-                <th style={{padding:'6px 8px',fontSize:10,color:'#64748b'}}>VENDOR</th>
-                <th style={{padding:'6px 8px',fontSize:10,color:'#64748b'}}>STATUS</th>
-                <th style={{padding:'6px 8px',fontSize:10,color:'#64748b'}}>TRACKING</th>
-                <th style={{padding:'6px 8px',fontSize:10,color:'#64748b'}}>SHIP DATE</th>
-                <th style={{padding:'6px 8px',fontSize:10,color:'#64748b'}}>EXPECTED</th>
-                <th style={{padding:'6px 8px',fontSize:10,color:'#64748b',textAlign:'center'}}>BILLED</th>
-                <th style={{padding:'6px 8px',fontSize:10,color:'#64748b',textAlign:'center'}}>RECEIVED</th>
-              </tr></thead>
-              <tbody>{poData.map((d,i)=><tr key={i} style={{borderBottom:'1px solid #f1f5f9'}}>
-                <td style={{padding:'6px 8px'}}><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{d.item.sku}</span> <span style={{color:'#64748b'}}>{d.item.color}</span></td>
-                <td style={{padding:'6px 8px',fontFamily:'monospace',fontWeight:600}}><span style={{cursor:'pointer',color:'#1e40af',textDecoration:'underline'}} onClick={()=>{
-                  const allLines=safeItems(o).map((it2,idx2)=>({lineIdx:idx2})).filter(ln=>safeItems(o)[ln.lineIdx]?.po_lines?.some(p=>p.po_id===d.po.po_id));
-                  setPoFullPage({po:d.po,item:d.item,allLines,soId:o.id,soItems:o.items});
-                }}>{d.po.po_id}</span></td>
-                <td style={{padding:'6px 8px'}}>{d.vendor}</td>
-                <td style={{padding:'6px 8px'}}><span className={`badge ${d.status==='received'||d.status==='shipped'?'badge-green':d.status==='in_transit'?'badge-blue':d.status==='partial'?'badge-amber':'badge-gray'}`}>{d.status==='shipped'?'Shipped':d.status==='received'?'Received':d.status==='in_transit'?'In Transit':d.status==='partial'?'Partial':'Waiting'}</span>{d.po.drop_ship&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:600,marginLeft:4,background:'#ede9fe',color:'#7c3aed'}}>Drop Ship</span>}</td>
-                <td style={{padding:'6px 8px'}}>{d.trackNums.length>0?<div style={{display:'flex',gap:4,flexWrap:'wrap'}}>{d.trackNums.map((tn,ti)=><a key={ti} href={trackUrl(tn)} target="_blank" rel="noreferrer" style={{fontFamily:'monospace',fontSize:11,fontWeight:700,color:'#1e40af',background:'#dbeafe',padding:'2px 6px',borderRadius:4,textDecoration:'none'}}>{tn}</a>)}</div>:<span style={{color:'#d1d5db'}}>—</span>}</td>
-                <td style={{padding:'6px 8px',color:'#475569'}}>{d.shipDate||<span style={{color:'#d1d5db'}}>—</span>}</td>
-                <td style={{padding:'6px 8px',color:'#475569'}}>{d.expectedDate||<span style={{color:'#d1d5db'}}>—</span>}</td>
-                <td style={{padding:'6px 8px',textAlign:'center',fontWeight:700,color:d.totalBilled>0?'#1e40af':'#d1d5db'}}>
-                  {d.totalBilled>0?<div>
-                    <div>{d.totalBilled}/{d.totalOrdered}</div>
-                    <div style={{fontSize:9,fontWeight:500,color:'#6366f1',whiteSpace:'nowrap'}}>{d.szKeys.filter(sz=>(d.billed[sz]||0)>0).map(sz=>sz+':'+d.billed[sz]).join(' ')}</div>
-                    {(d.po._bill_details||[]).length>0&&<div style={{fontSize:8,color:'#94a3b8',marginTop:1}}>{(d.po._bill_details||[]).map((bd,bi)=><div key={bi}>{bd.date||''} {Object.entries(bd.sizes||{}).map(([s,q])=>s+':'+q).join(' ')}</div>)}</div>}
-                  </div>:'—'}
-                </td>
-                <td style={{padding:'6px 8px',textAlign:'center',fontWeight:700,color:d.totalReceived>0?'#166534':'#d1d5db'}}>{d.totalReceived>0?d.totalReceived+'/'+d.totalOrdered:'—'}</td>
-              </tr>)}</tbody>
-            </table>}
+            <div style={{display:'grid',gap:12}}>
+            {poData.map((d,i)=>{
+              const billDetails=d.po._bill_details||[];
+              return<div key={i} style={{background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0',overflow:'hidden'}}>
+                {/* PO Header */}
+                <div style={{padding:'10px 12px',display:'flex',alignItems:'center',gap:8,flexWrap:'wrap',borderBottom:'1px solid #e2e8f0',background:'white'}}>
+                  <span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{d.item.sku}</span>
+                  <span style={{color:'#64748b',fontSize:11}}>{d.item.color}</span>
+                  <span style={{fontSize:10,color:'#475569'}}>·</span>
+                  <span style={{cursor:'pointer',color:'#1e40af',textDecoration:'underline',fontFamily:'monospace',fontWeight:600}} onClick={()=>{
+                    const allLines=safeItems(o).map((it2,idx2)=>({lineIdx:idx2})).filter(ln=>safeItems(o)[ln.lineIdx]?.po_lines?.some(p=>p.po_id===d.po.po_id));
+                    setPoFullPage({po:d.po,item:d.item,allLines,soId:o.id,soItems:o.items});
+                  }}>{d.po.po_id}</span>
+                  <span style={{fontSize:11,color:'#64748b'}}>{d.vendor}</span>
+                  <span className={`badge ${d.status==='received'||d.status==='shipped'?'badge-green':d.status==='in_transit'?'badge-blue':d.status==='partial'?'badge-amber':'badge-gray'}`}>{d.status==='shipped'?'Shipped':d.status==='received'?'Received':d.status==='in_transit'?'In Transit':d.status==='partial'?'Partial':'Waiting'}</span>
+                  {d.po.drop_ship&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:600,background:'#ede9fe',color:'#7c3aed'}}>Drop Ship</span>}
+                  {safeNum(d.po._bill_cost)>0&&<span style={{fontSize:10,fontWeight:700,color:'#166534',background:'#dcfce7',padding:'2px 8px',borderRadius:4}}>Merchandise: ${safeNum(d.po._bill_cost).toFixed(2)}</span>}
+                  {d.expectedDate&&<span style={{marginLeft:'auto',fontSize:10,color:'#64748b'}}>Expected: {d.expectedDate}</span>}
+                </div>
+                {/* Size breakdown table */}
+                <table style={{width:'100%',fontSize:11,borderCollapse:'collapse'}}>
+                  <thead><tr style={{borderBottom:'1px solid #e2e8f0',background:'#f1f5f9'}}>
+                    <th style={{padding:'5px 10px',textAlign:'left',fontSize:10,color:'#64748b',fontWeight:700}}>SIZE</th>
+                    <th style={{padding:'5px 10px',textAlign:'center',fontSize:10,color:'#64748b',fontWeight:700}}>ORDERED</th>
+                    <th style={{padding:'5px 10px',textAlign:'center',fontSize:10,color:'#64748b',fontWeight:700}}>BILLED</th>
+                    <th style={{padding:'5px 10px',textAlign:'center',fontSize:10,color:'#64748b',fontWeight:700}}>RECEIVED</th>
+                    <th style={{padding:'5px 10px',textAlign:'left',fontSize:10,color:'#64748b',fontWeight:700}}>SHIPMENTS</th>
+                  </tr></thead>
+                  <tbody>
+                    {d.szKeys.map(sz=>{
+                      const ordered=d.po[sz]||0;const billed=d.billed[sz]||0;const received=(d.received[sz]||0);
+                      // Find shipments that include this size from bill details
+                      const sizeShipments=billDetails.filter(bd=>(bd.sizes||{})[sz]>0);
+                      return<tr key={sz} style={{borderBottom:'1px solid #f1f5f9'}}>
+                        <td style={{padding:'5px 10px',fontWeight:700,fontFamily:'monospace',fontSize:12}}>{sz}</td>
+                        <td style={{padding:'5px 10px',textAlign:'center',fontWeight:600}}>{ordered}</td>
+                        <td style={{padding:'5px 10px',textAlign:'center',fontWeight:700,color:billed>=ordered&&ordered>0?'#166534':billed>0?'#d97706':'#d1d5db'}}>{billed>0?billed:'—'}</td>
+                        <td style={{padding:'5px 10px',textAlign:'center',fontWeight:700,color:received>=ordered&&ordered>0?'#166534':received>0?'#d97706':'#d1d5db'}}>{received>0?received:'—'}</td>
+                        <td style={{padding:'5px 10px'}}>
+                          {sizeShipments.length>0?<div style={{display:'flex',flexDirection:'column',gap:2}}>
+                            {sizeShipments.map((bd,bi)=><div key={bi} style={{display:'flex',alignItems:'center',gap:6,fontSize:10}}>
+                              <span style={{color:'#64748b'}}>{bd.date||''}</span>
+                              <span style={{fontWeight:700,color:'#1e40af'}}>{bd.sizes[sz]} units</span>
+                              {bd.tracking&&<a href={trackUrl(bd.tracking)} target="_blank" rel="noreferrer" style={{fontFamily:'monospace',fontSize:10,fontWeight:700,color:'#1e40af',background:'#dbeafe',padding:'1px 5px',borderRadius:3,textDecoration:'none'}}>{bd.tracking}</a>}
+                              {bd.doc&&<span style={{fontSize:9,color:'#94a3b8'}}>Doc #{bd.doc}</span>}
+                            </div>)}
+                          </div>:<span style={{color:'#d1d5db',fontSize:10}}>—</span>}
+                        </td>
+                      </tr>})}
+                    {/* Totals row */}
+                    <tr style={{borderTop:'2px solid #e2e8f0',background:'#f8fafc'}}>
+                      <td style={{padding:'5px 10px',fontWeight:800,fontSize:10,color:'#64748b'}}>TOTAL</td>
+                      <td style={{padding:'5px 10px',textAlign:'center',fontWeight:800}}>{d.totalOrdered}</td>
+                      <td style={{padding:'5px 10px',textAlign:'center',fontWeight:800,color:d.totalBilled>=d.totalOrdered&&d.totalOrdered>0?'#166534':d.totalBilled>0?'#d97706':'#d1d5db'}}>{d.totalBilled>0?d.totalBilled:'—'}</td>
+                      <td style={{padding:'5px 10px',textAlign:'center',fontWeight:800,color:d.totalReceived>=d.totalOrdered?'#166534':d.totalReceived>0?'#d97706':'#d1d5db'}}>{d.totalReceived>0?d.totalReceived:'—'}</td>
+                      <td style={{padding:'5px 10px'}}>
+                        {d.trackNums.length>0&&<div style={{display:'flex',gap:4,flexWrap:'wrap'}}>{d.trackNums.map((tn,ti)=><a key={ti} href={trackUrl(tn)} target="_blank" rel="noreferrer" style={{fontFamily:'monospace',fontSize:10,fontWeight:700,color:'#1e40af',background:'#dbeafe',padding:'2px 6px',borderRadius:4,textDecoration:'none'}}>{tn}</a>)}</div>}
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>})}
+            </div>}
+            {/* Inbound cost summary */}
+            {(()=>{const totalMerch=poData.reduce((a,d)=>a+safeNum(d.po._bill_cost||0),0);
+              return(totalMerch>0||freightCost>0)?<div style={{display:'flex',gap:12,marginTop:12,padding:'10px 12px',background:'#f0fdf4',borderRadius:8,border:'1px solid #bbf7d0',flexWrap:'wrap'}}>
+                {totalMerch>0&&<div><span style={{fontSize:10,color:'#64748b',fontWeight:600}}>Total Merchandise Billed:</span> <span style={{fontSize:13,fontWeight:800,color:'#166534'}}>${totalMerch.toFixed(2)}</span></div>}
+                {freightCost>0&&<div><span style={{fontSize:10,color:'#64748b',fontWeight:600}}>Inbound Freight:</span> <span style={{fontSize:13,fontWeight:800,color:'#166534'}}>${freightCost.toFixed(2)}</span></div>}
+                {(totalMerch>0||freightCost>0)&&<div><span style={{fontSize:10,color:'#64748b',fontWeight:600}}>Total Inbound Cost:</span> <span style={{fontSize:13,fontWeight:800,color:'#0f172a'}}>${(totalMerch+freightCost).toFixed(2)}</span></div>}
+              </div>:null})()}
           </div>
         </div>
 
@@ -4620,7 +4659,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const pickQty=safePicks(it).reduce((a,pk)=>a+Object.entries(pk).filter(([k,v])=>typeof v==='number'&&safeSizes(it)[k]!==undefined).reduce((a2,[,v])=>a2+v,0),0);
           const accountedQty=poBlankQty+pickQty;
           const hasActual=blankPOs.length>0||pickQty>0;
-          const actualBlank=hasActual?accountedQty*safeNum(it.nsa_cost):0;
+          // Use actual billed cost from supplier bills when available, else fall back to qty*nsa_cost
+          const billedCostFromPOs=blankPOs.reduce((a,pl)=>a+safeNum(pl._bill_cost||0),0);
+          const actualBlank=billedCostFromPOs>0?billedCostFromPOs+(pickQty*safeNum(it.nsa_cost)):(hasActual?accountedQty*safeNum(it.nsa_cost):0);
           costLines.push({category:'Blanks',sku:it.sku,name:it.name,vendor:D_V.find(v=>v.id===it.vendor_id)?.name||it.brand||'—',
             qty,expected:expectedBlank,actual:actualBlank,poCount:blankPOs.length+(pickQty>0?1:0),
             poIds:blankPOs.map(p=>p.po_id).filter(Boolean).join(', '),
@@ -19471,6 +19512,7 @@ export default function App(){
       }
       const resolveAcct=(name)=>acctMap[name]||Object.values(acctMap).find(a=>a.name.toLowerCase()===name?.toLowerCase())||Object.values(acctMap)[0];
       let success=0,failed=0;
+      const qbResults={};// Track QB status locally to avoid stale closure issue
       for(let bi=0;bi<billImport.parsed.length;bi++){
         const b=billImport.parsed[bi];if(!b.selected)continue;
         const bill=b.parsed;
@@ -19570,8 +19612,8 @@ export default function App(){
           const soId=bill.matchedPO.so_id||bill.matchedPO.so?.id;
           const poId=bill.matchedPO.po_id;
           if(soId){
-            const billedBySku={};
-            bill.items.forEach(it=>{if(it.size&&it.qty){const sk=(it.sku||'').toUpperCase();if(!billedBySku[sk])billedBySku[sk]={};billedBySku[sk][it.size]=(billedBySku[sk][it.size]||0)+it.qty}});
+            const billedBySku={};const costBySku={};
+            bill.items.forEach(it=>{if(it.size&&it.qty){const sk=(it.sku||'').toUpperCase();if(!billedBySku[sk])billedBySku[sk]={};billedBySku[sk][it.size]=(billedBySku[sk][it.size]||0)+it.qty;if(!costBySku[sk])costBySku[sk]=0;costBySku[sk]+=safeNum(it.extension||0)||(safeNum(it.unit_price||0)*it.qty)}});
             const billFreight=safeNum(bill.freight||0);
             setSOs(prev=>{
               const freshSO=prev.find(s=>s.id===soId);
@@ -19591,8 +19633,11 @@ export default function App(){
                   Object.entries(itemBilled).forEach(([sz,qty])=>{newBilled[sz]=(newBilled[sz]||0)+qty});
                   const trackNums=[...(po.tracking_numbers||[])];
                   if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
+                  const itemCost=costBySku[itemSku]||0;
+                  const prevBillCost=safeNum(po._bill_cost||0);
                   return{...po,billed:newBilled,tracking_numbers:trackNums,
-                    _bill_details:[...(po._bill_details||[]),{doc:bill.doc_number,date:bill.doc_date,sizes:{...itemBilled},tracking:bill.tracking}]};
+                    _bill_cost:Math.round((prevBillCost+itemCost)*100)/100,
+                    _bill_details:[...(po._bill_details||[]),{doc:bill.doc_number,date:bill.doc_date,sizes:{...itemBilled},tracking:bill.tracking,cost:itemCost}]};
                 })};
               }),updated_at:new Date().toLocaleString()};
               _dbSaveSO(updatedSO);
@@ -19607,18 +19652,21 @@ export default function App(){
             details:['Bill created: '+vendorName+' $'+amt.toFixed(2)+' → QB Bill #'+billRes.Bill.Id,'PO: '+bill.po_number,bill.items.length+' line items, Freight: $'+bill.freight.toFixed(2)]};
           setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));
           setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,qbStatus:'success',qbMsg:'QB Bill #'+billRes.Bill.Id}:p)}));
+          qbResults[b.id]={qbStatus:'success',qbMsg:'QB Bill #'+billRes.Bill.Id};
           success++;
         }else{
-          setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,qbStatus:'error',qbMsg:billRes?.Fault?.Error?.[0]?.Detail||'Unknown error'}:p)}));
+          const errMsg=billRes?.Fault?.Error?.[0]?.Detail||'Unknown error';
+          setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,qbStatus:'error',qbMsg:errMsg}:p)}));
+          qbResults[b.id]={qbStatus:'error',qbMsg:errMsg};
           failed++;
         }
       }
       setBillImport(x=>({...x,uploading:false}));
-      // Persist QB status to savedBills history
+      // Persist QB status to savedBills history (use local qbResults to avoid stale closure)
       setSavedBills(prev=>{
         const updated=prev.map(sb=>{
-          const match=billImport.parsed.find(p=>p.id===sb.id);
-          if(match&&match.qbStatus)return{...sb,qbStatus:match.qbStatus,qbMsg:match.qbMsg||''};
+          const result=qbResults[sb.id];
+          if(result)return{...sb,qbStatus:result.qbStatus,qbMsg:result.qbMsg||''};
           return sb;
         });
         try{localStorage.setItem('nsa_saved_bills',JSON.stringify(updated))}catch{};
