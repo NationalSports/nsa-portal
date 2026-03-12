@@ -5,8 +5,12 @@ exports.handler = async (event) => {
   if (event.httpMethod !== 'POST') return { statusCode: 405, headers, body: JSON.stringify({ ok: false, error: 'Method not allowed' }) };
 
   try {
-    const { rep_email, rep_name, so, sku, item, coach_name, csv } = JSON.parse(event.body || '{}');
-    if (!rep_email || !csv) return { statusCode: 400, headers, body: JSON.stringify({ ok: false, error: 'Missing required fields' }) };
+    const body = JSON.parse(event.body || '{}');
+    const { rep_email, rep_name, so, sku, item, coach_name, csv } = body;
+    if (!rep_email || !csv) {
+      console.log('Missing fields - rep_email:', !!rep_email, 'csv:', !!csv, 'keys:', Object.keys(body));
+      return { statusCode: 400, headers, body: JSON.stringify({ ok: false, error: 'Missing required fields: ' + (!rep_email ? 'rep_email ' : '') + (!csv ? 'csv' : '') }) };
+    }
 
     const brevoKey = process.env.BREVO_API_KEY || process.env.REACT_APP_BREVO_API_KEY || '';
     if (!brevoKey) return { statusCode: 500, headers, body: JSON.stringify({ ok: false, error: 'Email not configured' }) };
