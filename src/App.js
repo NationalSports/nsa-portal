@@ -16,9 +16,10 @@ catch(e) { console.warn('[Stripe] Init failed:', e.message); }
 
 // ─── Brevo Email Setup ───
 const _brevoKey = process.env.REACT_APP_BREVO_API_KEY || '';
-const sendBrevoEmail=async({to,subject,htmlContent,textContent,senderName,senderEmail,attachment})=>{
+const sendBrevoEmail=async({to,subject,htmlContent,textContent,senderName,senderEmail,replyTo,attachment})=>{
   if(!_brevoKey){return{ok:false,error:'Brevo API key not configured (set REACT_APP_BREVO_API_KEY)'}}
   try{const payload={sender:{name:senderName||'National Sports Apparel',email:senderEmail||'noreply@nationalsportsapparel.com'},to:Array.isArray(to)?to:[{email:to}],subject,htmlContent:htmlContent||undefined,textContent:textContent||undefined};
+    if(replyTo)payload.replyTo={email:replyTo.email,name:replyTo.name||senderName||'National Sports Apparel'};
     if(attachment&&attachment.length>0)payload.attachment=attachment;
     const r=await fetch('https://api.brevo.com/v3/smtp/email',{method:'POST',headers:{'accept':'application/json','content-type':'application/json','api-key':_brevoKey},
     body:JSON.stringify(payload)});
@@ -1123,20 +1124,15 @@ td{padding:5px 8px;border-bottom:1px solid #ddd;font-size:11px}
 @page{margin:0.4in;size:letter}
 `;
 
-const printDoc=({title,docNum,docType,headerRight,infoBoxes,tables,notes,footer,showPricing=true})=>{
-  const w=window.open('','_blank','width=800,height=1000');
-  if(!w)return;
+const buildDocHtml=({title,docNum,docType,headerRight,infoBoxes,tables,notes,footer,showPricing=true})=>{
   let html='<!DOCTYPE html><html><head><title>'+docNum+' — '+title+'</title><style>'+PRINT_CSS+'</style></head><body>';
-  // Header — logo+address left, doc type+number+date right
   html+='<div class="header"><div class="logo"><img src="'+window.location.origin+NSA.logoUrl+'" alt="NSA"/><div class="co-addr"><strong>'+NSA.legal+'</strong>'+NSA.fullAddr+'<br/>United States</div></div>';
   html+='<div class="doc-id"><div class="doc-type">'+docType+'</div><div class="doc-num">#'+docNum+'</div><div class="doc-date">'+new Date().toLocaleDateString()+'</div></div></div>';
-  // Bill To + Total box row
   const billTo=infoBoxes?.find(b=>b.label==='Bill To'||b.label==='Vendor');
   html+='<div class="bill-total">';
   if(billTo){html+='<div class="bill-to"><div class="label">'+billTo.label+'</div><div class="value"><strong>'+billTo.value+'</strong>'+(billTo.sub?'<br/>'+billTo.sub:'')+'</div></div>';}
   if(headerRight){html+='<div class="total-box"><div class="tl">TOTAL</div>'+headerRight+'</div>';}
   html+='</div>';
-  // Info row — remaining info boxes as horizontal cells
   const otherBoxes=(infoBoxes||[]).filter(b=>b!==billTo);
   if(otherBoxes.length){
     html+='<div class="info-row">';
@@ -1145,7 +1141,6 @@ const printDoc=({title,docNum,docType,headerRight,infoBoxes,tables,notes,footer,
     });
     html+='</div>';
   }
-  // Tables
   if(tables){tables.forEach(t=>{
     if(t.title)html+='<div style="font-weight:700;font-size:11px;color:#333;margin:8px 0 3px;border-bottom:1px solid #ddd;padding-bottom:2px">'+t.title+'</div>';
     html+='<table class="'+(t.className||'')+'">';
@@ -1162,12 +1157,16 @@ const printDoc=({title,docNum,docType,headerRight,infoBoxes,tables,notes,footer,
     html+='</tbody></table>';
     html+='<div class="sep-line"></div>';
   })}
-  // Notes
   if(notes)html+='<div class="notes"><div class="label">Notes</div>'+notes+'</div>';
-  // Footer
   if(footer)html+='<div style="font-size:9px;color:#888;margin-top:8px">'+footer+'</div>';
   html+='<div class="footer"><span>'+NSA.name+' · '+NSA.fullAddr+'</span><span>Printed '+(new Date().toLocaleString())+'</span></div>';
   html+='</body></html>';
+  return html;
+};
+const printDoc=(opts)=>{
+  const html=buildDocHtml(opts);
+  const w=window.open('','_blank','width=800,height=1000');
+  if(!w)return;
   w.document.write(html);w.document.close();
   setTimeout(()=>w.print(),350);
 };
@@ -2148,29 +2147,33 @@ function getAddrs(cu,all){const a=[];const add=(c,l)=>{if(c.shipping_address_lin
   else{all.filter(c=>c.parent_id===cu.id).forEach(s=>add(s,s.alpha_tag))}return a}
 
 // SEND ESTIMATE MODAL
-function SendModal({isOpen,onClose,estimate,customer,onSend,docType}){
+function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachmentHtml,repUser}){
   const[body,setBody]=useState('');const[attachments,setAttachments]=useState([]);const[toEmails,setToEmails]=useState('');
   const[sending,setSending]=useState(false);const[dragOver,setDragOver]=useState(false);
   const label=docType==='so'?'Sales Order':'Estimate';
-  React.useEffect(()=>{if(isOpen&&customer){
+  const prevOpenRef=React.useRef(false);const sendingRef=React.useRef(false);
+  React.useEffect(()=>{if(isOpen&&!prevOpenRef.current&&customer){
     const emails=(customer?.contacts||[]).map(c=>c.email).filter(Boolean);
     setToEmails(emails.join(', '));
     setBody(`Hi ${(customer.contacts||[])[0]?.name||'Coach'},\n\nPlease find the attached ${label.toLowerCase()} for ${estimate?.memo||'your order'}. You can view ${docType==='so'?'it':'and approve it'} through your portal.\n\nPortal link: https://nsa-portal.netlify.app/?portal=${customer.alpha_tag}\n\nLet me know if you have any questions!\n\nSteve Peterson\nNational Sports Apparel`);
-    setAttachments([]);setSending(false)}},[isOpen,customer,estimate,docType,label]);
+    setAttachments([]);setSending(false);sendingRef.current=false}prevOpenRef.current=isOpen},[isOpen,customer,estimate,docType,label]);
   const handleFiles=(files)=>{const newFiles=Array.from(files).map(f=>({name:f.name,size:(f.size/1024).toFixed(0)+' KB',file:f}));setAttachments(a=>[...a,...newFiles])};
   const doSend=async()=>{
+    if(sendingRef.current)return;// prevent double send
     const emails=toEmails.split(',').map(e2=>e2.trim()).filter(Boolean);
     if(emails.length===0){alert('Please enter at least one email address');return}
-    setSending(true);
+    sendingRef.current=true;setSending(true);
     const subject=`${label} ${estimate?.id} - ${estimate?.memo||''}`;
     const portalUrl=customer?.alpha_tag?'https://nsa-portal.netlify.app/?portal='+customer.alpha_tag:'';
     const htmlBody='<div style="font-family:sans-serif;font-size:14px;line-height:1.6">'+body.replace(/\n/g,'<br/>')+'</div>';
     if(_brevoKey){
       const toList=emails.map(e2=>({email:e2}));
-      // Convert file attachments to base64 for Brevo
+      // Auto-attach estimate/SO PDF as HTML
       const brevoAttachments=[];
+      if(buildAttachmentHtml){try{const docHtml=buildAttachmentHtml();const docB64=btoa(unescape(encodeURIComponent(docHtml)));brevoAttachments.push({name:(estimate?.id||'document')+'.html',content:docB64})}catch(err){console.warn('Failed to build PDF attachment:',err)}}
+      // Convert file attachments to base64 for Brevo
       for(const att of attachments){if(att.file){try{const b64=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result.split(',')[1]);reader.onerror=reject;reader.readAsDataURL(att.file)});brevoAttachments.push({name:att.name,content:b64})}catch(err){console.warn('Failed to read attachment:',att.name,err)}}}
-      const res=await sendBrevoEmail({to:toList,subject,htmlContent:htmlBody,senderName:'National Sports Apparel',senderEmail:'noreply@nationalsportsapparel.com',attachment:brevoAttachments.length>0?brevoAttachments:undefined});
+      const res=await sendBrevoEmail({to:toList,subject,htmlContent:htmlBody,senderName:repUser?.name||'National Sports Apparel',senderEmail:'noreply@nationalsportsapparel.com',replyTo:repUser?.email?{email:repUser.email,name:repUser.name}:undefined,attachment:brevoAttachments.length>0?brevoAttachments:undefined});
       if(!res.ok){alert('Email send failed: '+(res.error||'Unknown error'));setSending(false);return}
     }else{
       const mailTo='mailto:'+emails[0]+'?subject='+encodeURIComponent(subject)+'&body='+encodeURIComponent(body);
@@ -2320,7 +2323,7 @@ function LoginGate({onLogin,reps}){
   );
 }
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onBack,onConvertSO,onCopyEstimate,onRevertToEst,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,allInvoices,batchPOs,onBatchPO,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onSaveProduct,onViewEstimate,onViewSO,returnToPage,onReturnToJob}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onBack,onConvertSO,onCopyEstimate,onRevertToEst,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,allInvoices,batchPOs,onBatchPO,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onSaveProduct,onViewEstimate,onViewSO,returnToPage,onReturnToJob,onAssignTodo}){
   const vendorList=vendorsProp||D_V;// use DB-loaded vendors if available, fallback to defaults
   const isE=mode==='estimate';const isSO=mode==='so';
   const[o,setO]=useState(order);const[cust,setCust]=useState(ic);const[pS,setPS]=useState('');const[showAdd,setShowAdd]=useState(false);
@@ -3091,6 +3094,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         if(validItems.length===0){nf('Add at least one item with quantities','error');return}
         onSave(o);setSaved(true);setDirty(false);nf(`${isE?'Estimate':'SO'} saved`)}} style={{padding:'6px 20px',fontSize:13,fontWeight:700}}><Icon name="check" size={14}/> Save</button>
     </div>
+    {/* COACH APPROVED BANNER */}
+    {isE&&o.status==='approved'&&o.approved_by==='Coach'&&<div style={{margin:'8px 0',padding:'12px 16px',background:'#f0fdf4',border:'2px solid #22c55e',borderRadius:10}}>
+      <div style={{display:'flex',alignItems:'center',gap:8}}>
+        <span style={{fontSize:16}}>✅</span>
+        <div style={{flex:1}}>
+          <span style={{fontWeight:800,fontSize:14,color:'#166534'}}>Coach Approved This Estimate</span>
+          {o.approved_at&&<span style={{fontSize:11,color:'#15803d',marginLeft:8}}>{new Date(o.approved_at).toLocaleDateString()}</span>}
+        </div>
+        {onConvertSO&&<button className="btn btn-sm" style={{fontSize:11,background:'#166534',color:'white',border:'none',padding:'4px 12px',fontWeight:700}} onClick={()=>{const validItems=safeItems(o).filter(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return sq>0||safeNum(it.est_qty)>0});if(validItems.length===0){nf('Add items first','error');return}onConvertSO(o)}}>Convert to Sales Order</button>}
+      </div>
+    </div>}
     {/* UPDATE REQUESTS BANNER — shows when coach has requested changes */}
     {isE&&(o.update_requests||[]).filter(r=>r.status==='pending').length>0&&<div style={{margin:'8px 0',padding:'12px 16px',background:'#fffbeb',border:'2px solid #f59e0b',borderRadius:10}}>
       <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}><span style={{fontSize:16}}>📝</span><span style={{fontWeight:800,fontSize:14,color:'#92400e'}}>Coach Update Requests ({(o.update_requests||[]).filter(r=>r.status==='pending').length})</span></div>
@@ -3101,7 +3115,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <div style={{fontSize:13,color:'#78350f',marginTop:2}}>{req.text}</div>
           </div>
           <div style={{display:'flex',gap:4,flexShrink:0,marginLeft:8}}>
-            <button className="btn btn-sm" style={{fontSize:10,background:'#3b82f6',color:'white',border:'none',padding:'3px 8px'}} onClick={()=>{const upd=(o.update_requests||[]).map(r=>r.id===req.id?{...r,status:'in_progress'}:r);const updated={...o,update_requests:upd,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setSaved(true);setDirty(false);nf('Marked as in progress')}}>Working</button>
+            <button className="btn btn-sm" style={{fontSize:10,background:'#3b82f6',color:'white',border:'none',padding:'3px 8px'}} onClick={()=>{if(onAssignTodo){onAssignTodo({title:'Coach update request: '+(o.memo||o.id),description:req.text,so_id:'',customer_id:o.customer_id||'',priority:1})}const upd=(o.update_requests||[]).map(r=>r.id===req.id?{...r,status:'in_progress'}:r);const updated={...o,update_requests:upd,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setSaved(true);setDirty(false);nf('Assigned to CSR')}}>Assign to CSR</button>
             <button className="btn btn-sm" style={{fontSize:10,background:'#22c55e',color:'white',border:'none',padding:'3px 8px'}} onClick={()=>{const upd=(o.update_requests||[]).map(r=>r.id===req.id?{...r,status:'completed',completed_at:new Date().toISOString()}:r);const updated={...o,update_requests:upd,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setSaved(true);setDirty(false);nf('Update request completed')}}>Done</button>
           </div>
         </div>
@@ -3640,7 +3654,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 const rosterUrl=window.location.origin+'/roster.html?d='+linkData;
                 try{const res=await sendBrevoEmail({to:[{email:coachEmail,name:coachName}],subject:'Roster Number Assignment — '+(o.id||'Order')+' '+item.name,
                   htmlContent:'<div style="font-family:sans-serif;max-width:600px;margin:0 auto"><div style="background:linear-gradient(135deg,#1e3a5f,#2563eb);color:white;padding:20px;border-radius:8px 8px 0 0;text-align:center"><h2 style="margin:0">🏈 Roster Number Request</h2></div><div style="background:white;padding:20px;border:1px solid #e2e8f0;border-radius:0 0 8px 8px"><p>Hi '+coachName+',</p><p>'+(cu?.name||'Your sales rep')+' at National Sports Apparel needs jersey numbers assigned for <strong>'+item.name+'</strong> ('+(o.id||'Order')+').</p><p>Please click the button below to assign numbers to each size:</p><p style="text-align:center;margin:20px 0"><a href="'+rosterUrl+'" style="display:inline-block;padding:14px 32px;background:#2563eb;color:white;text-decoration:none;border-radius:8px;font-weight:700;font-size:16px">Assign Numbers →</a></p><p style="color:#64748b;font-size:12px">If the button doesn\'t work, copy this link: '+rosterUrl+'</p></div></div>',
-                  senderName:cu?.name||'National Sports Apparel',senderEmail:'noreply@nationalsportsapparel.com'});
+                  senderName:cu?.name||'National Sports Apparel',senderEmail:'noreply@nationalsportsapparel.com',replyTo:cu?.email?{email:cu.email,name:cu.name}:undefined});
                   if(res.ok)nf('Roster request sent to '+coachEmail);else nf('Failed to send: '+(res.error||'Unknown error'),'error')}catch(e){nf('Error: '+e.message,'error')}}}>📧 Send to Coach</button></>
 
               :<div style={{marginTop:6,padding:10,background:'#f8fafc',borderRadius:6,border:'1px dashed #d1d5db'}}
@@ -3685,7 +3699,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                       const rosterUrl=window.location.origin+'/roster.html?d='+linkData;
                       try{const res=await sendBrevoEmail({to:[{email:coachEmail,name:coachName}],subject:'Roster Number Assignment — '+(o.id||'Order')+' '+item.name,
                         htmlContent:'<div style="font-family:sans-serif;max-width:600px;margin:0 auto"><div style="background:linear-gradient(135deg,#1e3a5f,#2563eb);color:white;padding:20px;border-radius:8px 8px 0 0;text-align:center"><h2 style="margin:0">🏈 Roster Number Request</h2></div><div style="background:white;padding:20px;border:1px solid #e2e8f0;border-radius:0 0 8px 8px"><p>Hi '+coachName+',</p><p>'+(cu?.name||'Your sales rep')+' at National Sports Apparel needs jersey numbers assigned for <strong>'+item.name+'</strong> ('+(o.id||'Order')+').</p><p>Please click the button below to assign numbers to each size:</p><p style="text-align:center;margin:20px 0"><a href="'+rosterUrl+'" style="display:inline-block;padding:14px 32px;background:#2563eb;color:white;text-decoration:none;border-radius:8px;font-weight:700;font-size:16px">Assign Numbers →</a></p><p style="color:#64748b;font-size:12px">If the button doesn\'t work, copy this link: '+rosterUrl+'</p></div></div>',
-                        senderName:cu?.name||'National Sports Apparel',senderEmail:'noreply@nationalsportsapparel.com'});
+                        senderName:cu?.name||'National Sports Apparel',senderEmail:'noreply@nationalsportsapparel.com',replyTo:cu?.email?{email:cu.email,name:cu.name}:undefined});
                         if(res.ok)nf('Roster request sent to '+coachEmail);else nf('Failed to send: '+(res.error||'Unknown error'),'error')}catch(e){nf('Error: '+e.message,'error')}}}>📧 Send to Coach</button>
                     <button className="btn btn-sm btn-secondary" style={{fontSize:9}} onClick={()=>{
                       let csv='Size,Number,Name\n';sizedQtys.forEach(([sz,sqty])=>{for(let i=0;i<sqty;i++)csv+=sz+',,\n'});
@@ -4700,7 +4714,37 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           </div>
         </div></div>})()}
 
-    <SendModal isOpen={showSend} onClose={()=>setShowSend(false)} estimate={o} customer={cust} docType={isE?'estimate':'so'} onSend={()=>{if(isE&&o.status!=='approved'&&o.status!=='converted'){sv('status','sent');sv('email_status','sent');onSave({...o,status:'sent',email_status:'sent'});nf('Estimate sent!')}else{sv('email_status','sent');onSave({...o,email_status:'sent'});nf((isE?'Estimate':'Sales Order')+' sent!')}}}/>
+    <SendModal isOpen={showSend} onClose={()=>setShowSend(false)} estimate={o} customer={cust} docType={isE?'estimate':'so'} buildAttachmentHtml={()=>{
+      const items=safeItems(o).filter(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return sq>0||safeNum(it.est_qty)>0});
+      const _pAQ={};items.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'){_pAQ[d.art_file_id]=(_pAQ[d.art_file_id]||0)+q2}})});
+      const isRolled=(o.pricing_mode||'itemized')==='rolled_up';const taxRate=cust?.tax_exempt?0:(cust?.tax_rate||0);
+      const rows=[];let subTotal=0;
+      items.forEach(it=>{
+        const sqq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const qty=sqq>0?sqq:safeNum(it.est_qty);
+        const decos=safeDecos(it);const decoSell=decos.reduce((a,d)=>{const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);return a+dp2.sell},0);
+        const szStr=SZ_ORD.filter(sz=>safeSizes(it)[sz]>0).map(sz=>safeSizes(it)[sz]+' '+sz).join(', ');
+        const unitPrice=isRolled?safeNum(it.unit_sell)+decoSell:safeNum(it.unit_sell);const lineAmt=qty*unitPrice;subTotal+=lineAmt;
+        let itemDesc='<strong>'+it.sku+'</strong><br/>'+(it.name||'')+(it.color?' - '+it.color:'');
+        if(szStr)itemDesc+='<br/><span style="font-size:10px;color:#555">'+szStr+'</span>';
+        rows.push({cells:[{value:itemDesc},{value:qty,style:'text-align:center'},{value:'$'+unitPrice.toFixed(2),style:'text-align:right'},{value:'$'+lineAmt.toFixed(2),style:'text-align:right;font-weight:600'}]});
+        if(!isRolled){decos.forEach(d=>{
+          const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);const artF=af.find(a2=>a2.id===d.art_file_id);
+          const decoLabel=(d.kind==='art'?(artF?.deco_type||d.art_tbd_type||'decoration'):d.kind==='numbers'?'Numbers ('+(d.num_method||'heat transfer').replace(/_/g,' ')+' '+(d.front_and_back?'F:'+(d.num_size||'4"')+' B:'+(d.num_size_back||d.num_size||'4"'):(d.num_size||'4"'))+(d.print_color?' — '+d.print_color:'')+')'+(d.front_and_back?' F+B':''):d.kind==='names'?'Names'+(d.print_color?' ('+d.print_color+')':''):d.kind==='outside_deco'?(d.deco_type||'Decoration'):'Decoration').replace(/_/g,' ');
+          const posLabel=d.position?' — '+d.position:'';const decoAmt=qty*dp2.sell;subTotal+=decoAmt;
+          rows.push({cells:[{value:'<span style="padding-left:20px;color:#666;font-size:11px">'+decoLabel+posLabel+'</span>'},{value:qty,style:'text-align:center;color:#888;font-size:11px'},{value:'$'+dp2.sell.toFixed(2),style:'text-align:right;color:#888;font-size:11px'},{value:'$'+decoAmt.toFixed(2),style:'text-align:right;color:#888;font-size:11px'}]});
+        })}
+      });
+      const shipAmt=o.shipping_type==='pct'?subTotal*(o.shipping_value||0)/100:(o.shipping_value||0);const taxAmt=subTotal*taxRate;const total=subTotal+shipAmt+taxAmt;
+      if(shipAmt>0)rows.push({cells:[{value:'<strong>Shipping</strong>'},{value:1,style:'text-align:center'},{value:'$'+shipAmt.toFixed(2),style:'text-align:right'},{value:'$'+shipAmt.toFixed(2),style:'text-align:right'}]});
+      return buildDocHtml({title:cust?.name||'Customer',docNum:o.id,docType:isE?'ESTIMATE':'SALES ORDER',
+        headerRight:'<div class="ta">$'+total.toFixed(2)+'</div>'+(isE?'<div class="ts">Expires: '+new Date(Date.now()+30*86400000).toLocaleDateString()+'</div>':''),
+        infoBoxes:[{label:'Bill To',value:cust?.name||'—',sub:cust?.address||cust?.alpha_tag||''},{label:isE?'Expires':'Expected',value:isE?new Date(Date.now()+30*86400000).toLocaleDateString():(o.expected_date||'TBD'),sub:'Exp. Close: '+new Date().toLocaleDateString()},{label:'Sales Rep',value:REPS.find(r=>r.id===o.created_by)?.name||'—'},{label:'Memo',value:o.memo||'—'}],
+        tables:[{headers:['Item','Qty','Rate','Amount'],aligns:['left','center','right','right'],rows:[...rows,
+          {cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Subtotal</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'},{value:'<strong>$'+subTotal.toFixed(2)+'</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'}]},
+          ...(taxAmt>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'Tax ('+(taxRate*100).toFixed(3)+'%)',style:'text-align:right;border:none;font-size:11px'},{value:'$'+taxAmt.toFixed(2),style:'text-align:right;border:none'}]}]:[]),
+          {_class:'totals-row',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Total</strong>',style:'text-align:right'},{value:'<strong style="font-size:14px">$'+total.toFixed(2)+'</strong>',style:'text-align:right'}]}]}],
+        footer:isE?'This estimate is valid for 30 days. Prices subject to change. '+NSA.depositTerms:NSA.terms});
+    }} repUser={cu} onSend={()=>{if(isE&&o.status!=='approved'&&o.status!=='converted'){sv('status','sent');sv('email_status','sent');onSave({...o,status:'sent',email_status:'sent'});nf('Estimate sent!')}else{sv('email_status','sent');onSave({...o,email_status:'sent'});nf((isE?'Estimate':'Sales Order')+' sent!')}}}/>
 
     {/* FIRM DATE REQUEST MODAL */}
     {showFirmReq&&<div className="modal-overlay" onClick={()=>setShowFirmReq(false)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:500}}>
@@ -5072,7 +5116,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               subject:'Invoice '+ir.id+' — $'+ir.total.toFixed(2)+' from National Sports Apparel',
               htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6">'+invSendMsg.replace(/\n/g,'<br>')+'</div>',
               senderName:cu.name||'National Sports Apparel',
-              senderEmail:'noreply@nationalsportsapparel.com'
+              senderEmail:'noreply@nationalsportsapparel.com',
+              replyTo:cu?.email?{email:cu.email,name:cu.name}:undefined
             });
             if(res.ok){
               nf('Invoice '+ir.id+' sent to '+toEmail);
@@ -5989,7 +6034,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               setCoachApprovalModal(m=>({...m,sending:true}));
               const htmlMsg=cam.message.replace(/\n/g,'<br/>');
               const toList=allTargets.map(em=>({email:em}));
-              const res=await sendBrevoEmail({to:toList,subject:'Artwork ready for approval — '+j3.art_name,htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6">'+htmlMsg+'</div>',senderName:cu.name||'National Sports Apparel',senderEmail:'noreply@nationalsportsapparel.com'});
+              const res=await sendBrevoEmail({to:toList,subject:'Artwork ready for approval — '+j3.art_name,htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6">'+htmlMsg+'</div>',senderName:cu.name||'National Sports Apparel',senderEmail:'noreply@nationalsportsapparel.com',replyTo:cu?.email?{email:cu.email,name:cu.name}:undefined});
               if(res.ok){actions.push('email sent to '+allTargets.join(', '))}else{nf('Email failed: '+res.error,'error');setCoachApprovalModal(m=>({...m,sending:false}));return}
             }else{
               const subj=encodeURIComponent('Artwork ready for approval — '+j3.art_name);
@@ -8851,7 +8896,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                 if(savSOFn)savSOFn(updSO);else if(onUpdateSOs)onUpdateSOs(prev=>prev.map(s=>s.id===so.id?updSO:s));
                 // Email the assigned rep
                 const rep=REPS.find(r=>r.id===liveSO.created_by);
-                if(rep?.email&&_brevoKey){sendBrevoEmail({to:[{email:rep.email}],subject:'✅ Art approved by coach — '+j.art_name+' ('+liveSO.id+')',htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6"><p>Great news! <strong>'+customer.name+'</strong> approved the artwork for <strong>'+j.art_name+'</strong>.</p><p>Order: '+liveSO.id+(liveSO.memo?' — '+liveSO.memo:'')+'</p><p>The job is now ready for production file prep.</p></div>',senderName:'NSA Portal',senderEmail:'noreply@nationalsportsapparel.com'})}
+                if(rep?.email&&_brevoKey){sendBrevoEmail({to:[{email:rep.email}],subject:'✅ Art approved by coach — '+j.art_name+' ('+liveSO.id+')',htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6"><p>Great news! <strong>'+customer.name+'</strong> approved the artwork for <strong>'+j.art_name+'</strong>.</p><p>Order: '+liveSO.id+(liveSO.memo?' — '+liveSO.memo:'')+'</p><p>The job is now ready for production file prep.</p></div>',senderName:'NSA Portal',senderEmail:'noreply@nationalsportsapparel.com',replyTo:rep.email?{email:rep.email,name:rep.name}:undefined})}
                 setJobView(null);
               }}>✅ Approve Artwork</button>
               <button className="btn btn-sm" style={{background:'#dc2626',color:'white',flex:1,justifyContent:'center',fontWeight:700,padding:'10px 16px'}} onClick={()=>{
@@ -10957,7 +11002,7 @@ export default function App(){
 
   // ESTIMATES LIST
   function rEst(){
-    if(eEst)return<OrderEditor key={eEst.id} order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} vendors={vend} onSave={e=>{const e2=savE(e);setEEst(e2)}} onBack={()=>{setEEst(null);if(estBackPg){setPg(estBackPg);setEstBackPg(null)}}} onConvertSO={convertSO} onCopyEstimate={copyEstimate} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={deleteEstimate} onNavInvoice={inv=>{setEEst(null);setPg('invoices');setInvF(f=>({...f,search:inv.id}))}} onSaveProduct={p=>{setProd(prev=>prev.some(x=>x.id===p.id)?prev.map(x=>x.id===p.id?p:x):[...prev,p]);_dbSaveProduct(p)}} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setEEst(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}else{nf('SO '+soId+' not found','error')}}}/>
+    if(eEst)return<OrderEditor key={eEst.id} order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} vendors={vend} onSave={e=>{const e2=savE(e);setEEst(e2)}} onBack={()=>{setEEst(null);if(estBackPg){setPg(estBackPg);setEstBackPg(null)}}} onConvertSO={convertSO} onCopyEstimate={copyEstimate} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={deleteEstimate} onNavInvoice={inv=>{setEEst(null);setPg('invoices');setInvF(f=>({...f,search:inv.id}))}} onSaveProduct={p=>{setProd(prev=>prev.some(x=>x.id===p.id)?prev.map(x=>x.id===p.id?p:x):[...prev,p]);_dbSaveProduct(p)}} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setEEst(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}else{nf('SO '+soId+' not found','error')}}} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eEst?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:csrId,so_id:t.so_id||'',customer_id:t.customer_id||eEst?.customer_id||'',priority:t.priority||1})}}/>
     // Filter estimates
     let fe=[...ests];
     const estRepId=estF.rep==='_me_'?cu?.id:estF.rep;
@@ -11009,7 +11054,7 @@ export default function App(){
 
   // SALES ORDERS LIST
   function rSO(){
-    if(eSO)return<OrderEditor key={eSO.id} order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} vendors={vend} onSave={s=>{const locked=savSO(s);setESO(locked)}} onBack={()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onNavInvoice={inv=>{setESO(null);setPg('invoices');setInvF(f=>({...f,search:inv.id}))}} onSaveProduct={p=>{setProd(prev=>prev.some(x=>x.id===p.id)?prev.map(x=>x.id===p.id?p:x):[...prev,p]);_dbSaveProduct(p)}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setPg(returnToPage.page==='production'?'production':'decoration');setReturnToPage(null)}:null}/>
+    if(eSO)return<OrderEditor key={eSO.id} order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} vendors={vend} onSave={s=>{const locked=savSO(s);setESO(locked)}} onBack={()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onNavInvoice={inv=>{setESO(null);setPg('invoices');setInvF(f=>({...f,search:inv.id}))}} onSaveProduct={p=>{setProd(prev=>prev.some(x=>x.id===p.id)?prev.map(x=>x.id===p.id?p:x):[...prev,p]);_dbSaveProduct(p)}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setPg(returnToPage.page==='production'?'production':'decoration');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:csrId,so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1})}}/>
     // Filter SOs
     let fSOs=[...sos];
     if(soF.status!=='all')fSOs=fSOs.filter(s=>calcSOStatus(s)===soF.status);
@@ -13566,7 +13611,7 @@ export default function App(){
                 const toEmail=resolvedEmail;
                 const res=await sendBrevoEmail({to:[{email:toEmail,name:toEmail}],subject:'Invoice '+si.inv.id+' — $'+si.inv.total.toFixed(2)+' from National Sports Apparel',
                   htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6">'+si.msg.replace(/\n/g,'<br>')+'</div>',
-                  senderName:cu.name||'National Sports Apparel',senderEmail:'noreply@nationalsportsapparel.com'});
+                  senderName:cu.name||'National Sports Apparel',senderEmail:'noreply@nationalsportsapparel.com',replyTo:cu?.email?{email:cu.email,name:cu.name}:undefined});
                 if(res.ok){nf('Invoice '+si.inv.id+' sent to '+toEmail)}else{nf('Failed to send: '+(res.error||'Unknown error'),'error')}
                 setInvs(prev=>prev.map(i=>i.id===si.inv.id?{...i,email_status:'sent',email_sent_at:new Date().toLocaleString()}:i));
               }}>Send Invoice</button>
