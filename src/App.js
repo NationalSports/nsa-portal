@@ -5813,7 +5813,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   <div style={{fontSize:36,marginBottom:4}}>📄</div>
                   <div style={{fontSize:12,fontWeight:700,color:'#1e40af'}}>{fileDisplayName(firstFile)}</div>
                   <div style={{fontSize:10,color:'#64748b',marginTop:4}}>{allMocks.length} mockup file{allMocks.length!==1?'s':''}</div>
-                </div>:null})()}
+                </div>:<div style={{textAlign:'center',marginBottom:16,background:'#f8fafc',borderRadius:10,padding:24,border:'1px dashed #cbd5e1'}}>
+                  <div style={{fontSize:36,marginBottom:6,opacity:0.4}}>🎨</div>
+                  <div style={{fontSize:13,fontWeight:600,color:'#94a3b8'}}>Waiting for Art</div>
+                  <div style={{fontSize:11,color:'#cbd5e1',marginTop:4}}>Mockup will appear here once artwork is uploaded</div>
+                </div>})()}
               <div style={{display:'flex',gap:16,flexWrap:'wrap'}}>
                 <div style={{flex:1,minWidth:200}}>
                   {artF?<>
