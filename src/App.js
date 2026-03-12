@@ -5829,7 +5829,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   <div style={{fontSize:36,marginBottom:4}}>📄</div>
                   <div style={{fontSize:12,fontWeight:700,color:'#1e40af'}}>{fileDisplayName(firstFile)}</div>
                   <div style={{fontSize:10,color:'#64748b',marginTop:4}}>{allMocks.length} mockup file{allMocks.length!==1?'s':''}</div>
-                </div>:null})()}
+                </div>:<div style={{textAlign:'center',marginBottom:16,background:'#f8fafc',borderRadius:10,padding:24,border:'1px dashed #cbd5e1'}}>
+                  <div style={{fontSize:36,marginBottom:6,opacity:0.4}}>🎨</div>
+                  <div style={{fontSize:13,fontWeight:600,color:'#94a3b8'}}>Waiting for Art</div>
+                  <div style={{fontSize:11,color:'#cbd5e1',marginTop:4}}>Mockup will appear here once artwork is uploaded</div>
+                </div>})()}
               <div style={{display:'flex',gap:16,flexWrap:'wrap'}}>
                 <div style={{flex:1,minWidth:200}}>
                   {artF?<>
@@ -5848,6 +5852,25 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   </div>}
                 </div>
               </div>
+              {/* Numbers details for artist */}
+              {(()=>{const numDecos=[];
+                (j.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return;
+                  safeDecos(it).forEach(d=>{if(d.kind==='numbers')numDecos.push(d)})});
+                if(numDecos.length===0)return null;
+                const d0=numDecos[0];// Use first numbers deco as representative
+                return<div style={{marginTop:12,padding:12,background:'#f0fdf4',borderRadius:8,border:'1px solid #bbf7d0'}}>
+                  <div style={{fontSize:12,fontWeight:700,color:'#166534',marginBottom:8}}>#️⃣ Numbers Info</div>
+                  <div style={{display:'flex',gap:16,flexWrap:'wrap',fontSize:12}}>
+                    <div><span style={{color:'#64748b',fontWeight:600}}>Method:</span> {(d0.num_method||'heat_transfer').replace(/_/g,' ')}</div>
+                    <div><span style={{color:'#64748b',fontWeight:600}}>{d0.front_and_back?'Front Size:':'Size:'}</span> {d0.num_size||'—'}</div>
+                    {d0.front_and_back&&<div><span style={{color:'#64748b',fontWeight:600}}>Back Size:</span> {d0.num_size_back||d0.num_size||'—'}</div>}
+                    {d0.num_font&&<div><span style={{color:'#64748b',fontWeight:600}}>Font:</span> {d0.num_font}</div>}
+                    {d0.print_color&&<div><span style={{color:'#64748b',fontWeight:600}}>Color:</span> {d0.print_color}</div>}
+                    {d0.front_and_back&&<div><span style={{padding:'2px 6px',borderRadius:4,background:'#7c3aed',color:'white',fontSize:10,fontWeight:700}}>Front + Back</span></div>}
+                    {d0.reversible&&<div><span style={{padding:'2px 6px',borderRadius:4,background:'#f59e0b',color:'white',fontSize:10,fontWeight:700}}>Reversible</span></div>}
+                    {d0.two_color&&<div><span style={{padding:'2px 6px',borderRadius:4,background:'#3b82f6',color:'white',fontSize:10,fontWeight:700}}>2-Color</span></div>}
+                  </div>
+                </div>})()}
             </div>
           </div>
 
