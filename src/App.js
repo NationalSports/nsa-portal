@@ -1224,7 +1224,7 @@ const SC={
   // Job item statuses
   need_to_order:{bg:'#fef3c7',c:'#92400e'},partially_received:{bg:'#fef9c3',c:'#854d0e'},items_received:{bg:'#d1fae5',c:'#065f46'},
   // Job production statuses
-  staging:{bg:'#fef3c7',c:'#92400e'},in_process:{bg:'#dbeafe',c:'#1e40af'},completed:{bg:'#dcfce7',c:'#166534'},shipped:{bg:'#ede9fe',c:'#6d28d9'},
+  draft:{bg:'#fef9c3',c:'#a16207'},staging:{bg:'#fef3c7',c:'#92400e'},in_process:{bg:'#dbeafe',c:'#1e40af'},completed:{bg:'#dcfce7',c:'#166534'},shipped:{bg:'#ede9fe',c:'#6d28d9'},
   // Job art statuses
   needs_art:{bg:'#fef2f2',c:'#dc2626'},art_requested:{bg:'#fce7f3',c:'#be185d'},art_in_progress:{bg:'#dbeafe',c:'#1e40af'},waiting_approval:{bg:'#fef3c7',c:'#92400e'},production_files_needed:{bg:'#fef9c3',c:'#854d0e'},art_complete:{bg:'#dcfce7',c:'#166534'},
   // Art file statuses
@@ -1246,42 +1246,63 @@ const safeDecos=(it)=>safeArr(it?.decorations);
 const safeItems=(o)=>safeArr(o?.items);
 const safeArt=(o)=>safeArr(o?.art_files);
 const safeJobs=(o)=>safeArr(o?.jobs);
-// Build jobs from SO — uses existing jobs array, or auto-generates from decorations
+// Build jobs from SO — uses existing jobs array, or auto-generates drafts from decorations
 const buildJobs=(o)=>{
   if(o?.jobs&&o.jobs.length>0){
     // Sync job art_status with art file status to prevent mismatches
     return o.jobs.map(j=>{
       // Reconstruct _art_ids from item decorations if not present
       if(!j._art_ids&&j.items){const ids=new Set();j.items.forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(it)safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id)ids.add(d.art_file_id)})});if(ids.size>0)j={...j,_art_ids:[...ids]}}
-      const af=safeArt(o).find(f=>f.id===j.art_file_id);if(!af)return j;
-      // Only auto-sync if job is NOT in an active artist workflow (art_requested/art_in_progress mean an artist is working on it)
-      const inArtistWorkflow=j.art_status==='art_requested'||j.art_status==='art_in_progress';
-      if((af.status==='uploaded'||af.status==='needs_approval')&&j.art_status==='needs_art')return{...j,art_status:'waiting_approval'};
-      if(af.status==='approved'&&!inArtistWorkflow&&(j.art_status==='needs_art'||j.art_status==='waiting_approval'))return{...j,art_status:(af.prod_files||[]).length?'art_complete':'production_files_needed'};
+      // For multi-art jobs, check ALL art files
+      const artIds=j._art_ids||[j.art_file_id].filter(Boolean);
+      if(artIds.length>0){
+        const allApproved=artIds.every(aid=>{const af=safeArt(o).find(f=>f.id===aid);return af&&af.status==='approved'});
+        const allHaveProdFiles=artIds.every(aid=>{const af=safeArt(o).find(f=>f.id===aid);return af&&(af.prod_files||[]).length>0});
+        const anyUploaded=artIds.some(aid=>{const af=safeArt(o).find(f=>f.id===aid);return af&&(af.status==='uploaded'||af.status==='needs_approval')});
+        const inArtistWorkflow=j.art_status==='art_requested'||j.art_status==='art_in_progress';
+        if(!inArtistWorkflow){
+          if(allApproved&&allHaveProdFiles&&j.art_status!=='art_complete')j={...j,art_status:'art_complete'};
+          else if(allApproved&&!allHaveProdFiles)j={...j,art_status:'production_files_needed'};
+          else if(anyUploaded&&j.art_status==='needs_art')j={...j,art_status:'waiting_approval'};
+        }
+      } else {
+        const af=safeArt(o).find(f=>f.id===j.art_file_id);if(!af)return j;
+        const inArtistWorkflow=j.art_status==='art_requested'||j.art_status==='art_in_progress';
+        if((af.status==='uploaded'||af.status==='needs_approval')&&j.art_status==='needs_art')return{...j,art_status:'waiting_approval'};
+        if(af.status==='approved'&&!inArtistWorkflow&&(j.art_status==='needs_art'||j.art_status==='waiting_approval'))return{...j,art_status:(af.prod_files||[]).length?'art_complete':'production_files_needed'};
+      }
       return j;
     });
   }
-  // Auto-generate from art decorations on items
-  const artMap={};
+  // Auto-generate DRAFT jobs grouped by decoration type
+  const decoTypeMap={};
   safeItems(o).forEach((it,idx)=>{
-    if(it.no_deco)return;// Skip blank items
+    if(it.no_deco)return;
     safeDecos(it).forEach((d,di)=>{
       if(d.kind!=='art'||!d.art_file_id)return;
-      const key='art_'+d.art_file_id+'_'+d.position;
-      if(!artMap[key])artMap[key]={art_file_id:d.art_file_id,position:d.position,deco_type:null,items:[]};
-      artMap[key].items.push({item_idx:idx,deco_idx:di,sku:it.sku,name:safeStr(it.name),color:it.color||'',units:Object.values(safeSizes(it)).reduce((a,v)=>a+v,0),fulfilled:0});
       const af=safeArr(o?.art_files).find(f=>f.id===d.art_file_id);
-      if(af){artMap[key].deco_type=af.deco_type;artMap[key].art_name=af.name;artMap[key].art_status=af.status==='approved'?'art_complete':af.status==='uploaded'?'waiting_approval':'needs_art'}
+      const decoType=af?.deco_type||d.deco_type||'screen_print';
+      if(!decoTypeMap[decoType])decoTypeMap[decoType]={deco_type:decoType,items:[],art_ids:new Set(),positions:new Set()};
+      decoTypeMap[decoType].items.push({item_idx:idx,deco_idx:di,sku:it.sku,name:safeStr(it.name),color:it.color||'',units:Object.values(safeSizes(it)).reduce((a,v)=>a+v,0),fulfilled:0,art_file_id:d.art_file_id});
+      decoTypeMap[decoType].art_ids.add(d.art_file_id);
+      decoTypeMap[decoType].positions.add(d.position||'Front Center');
     });
   });
-  const jobs=Object.entries(artMap).map(([key,v],idx)=>{
+  const DECO_LABELS={screen_print:'Screen Print',embroidery:'Embroidery',heat_transfer:'Heat Transfer',dtg:'DTG',sublimation:'Sublimation',vinyl:'Vinyl',patch:'Patch'};
+  const jobs=Object.entries(decoTypeMap).map(([dt,v],idx)=>{
     const totalUnits=v.items.reduce((a,it)=>a+it.units,0);
-    const positions=[...new Set(v.items.map(it=>{const d=safeDecos(safeItems(o)[it.item_idx])?.[it.deco_idx];return d?.position||'Front Center'}))].join(', ');
-    return{id:o.id.replace('SO-','JOB-')+'-'+(idx+1<10?'0':'')+(idx+1),key,art_file_id:v.art_file_id,
-      art_name:v.art_name||'Unnamed',deco_type:v.deco_type||'screen_print',positions,
-      art_status:v.art_status||'needs_art',item_status:'need_to_order',prod_status:'hold',
+    const artIds=[...v.art_ids];
+    // Compute art status from all referenced art files
+    const allApproved=artIds.every(aid=>{const af=safeArt(o).find(f=>f.id===aid);return af&&af.status==='approved'});
+    const allHaveProdFiles=artIds.every(aid=>{const af=safeArt(o).find(f=>f.id===aid);return af&&(af.prod_files||[]).length>0});
+    const anyUploaded=artIds.some(aid=>{const af=safeArt(o).find(f=>f.id===aid);return af&&(af.status==='uploaded'||af.status==='needs_approval')});
+    const artStatus=allApproved&&allHaveProdFiles?'art_complete':allApproved?'production_files_needed':anyUploaded?'waiting_approval':'needs_art';
+    return{id:o.id.replace('SO-','JOB-')+'-'+(idx+1<10?'0':'')+(idx+1),key:'deco_'+dt,
+      art_file_id:artIds[0]||null,_art_ids:artIds,
+      art_name:DECO_LABELS[dt]||dt.replace(/_/g,' '),deco_type:dt,positions:[...v.positions].join(', '),
+      art_status:artStatus,item_status:'need_to_order',prod_status:'draft',
       total_units:totalUnits,fulfilled_units:0,split_from:null,created_at:o.created_at?.split(' ')[0]||'',
-      items:v.items,_auto:true};
+      items:v.items,_auto:true,_draft:true};
   });
   return jobs;
 };
@@ -2205,8 +2226,8 @@ function calcSOStatus(ord){
     });
   });
   if(totalSz===0)return'need_order';
-  // Check jobs on the board
-  const boardJobs=safeJobs(ord);
+  // Check jobs on the board (exclude drafts from status calculation)
+  const boardJobs=safeJobs(ord).filter(j=>j.prod_status!=='draft');
   const hasJobs=boardJobs.length>0;
   const allJobsShipped=hasJobs&&boardJobs.every(j=>j.prod_status==='shipped');
   const allJobsDone=hasJobs&&boardJobs.every(j=>j.prod_status==='completed'||j.prod_status==='shipped');
@@ -5355,8 +5376,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const updated={...o,jobs:newJobs2,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setSplitModal(null);nf('Custom split! '+splitId+' with '+splitTotal+' units');
       };
       const updJob=(jIdx,k,v)=>{sv('jobs',jobs.map((j,i)=>i===jIdx?{...j,[k]:v}:j))};
-      const prodStatuses=['hold','staging','in_process','completed'];
-      const prodLabels={hold:'On Hold',staging:'In Line',in_process:'In Process',completed:'Completed'};
+      const prodStatuses=['draft','hold','staging','in_process','completed'];
+      const prodLabels={draft:'Draft',hold:'On Hold',staging:'In Line',in_process:'In Process',completed:'Completed'};
       const artLabels=ART_LABELS;
       const itemLabels={need_to_order:'Need to Order',partially_received:'Partially Received',items_received:'Items Received'};
 
@@ -5954,13 +5975,142 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       })()}
       </>}
 
+      // Draft jobs & wizard state
+      const draftJobs=jobs.filter(j=>j.prod_status==='draft'||j._draft);
+      const activeJobs=jobs.filter(j=>j.prod_status!=='draft'&&!j._draft);
+      const[jobWizard,setJobWizard]=useState(null);// {groups: [{name,deco_type,items:[...]},...]}
+      const DECO_LABELS_W={screen_print:'Screen Print',embroidery:'Embroidery',heat_transfer:'Heat Transfer',dtg:'DTG',sublimation:'Sublimation',vinyl:'Vinyl',patch:'Patch'};
+      const openJobWizard=()=>{
+        // Build groups from all decorated items, grouped by deco type
+        const dtMap={};
+        safeItems(o).forEach((it,idx)=>{
+          if(it.no_deco)return;
+          safeDecos(it).forEach((d,di)=>{
+            if(d.kind!=='art'||!d.art_file_id)return;
+            const af2=safeArr(o?.art_files).find(f=>f.id===d.art_file_id);
+            const dt=af2?.deco_type||d.deco_type||'screen_print';
+            if(!dtMap[dt])dtMap[dt]={name:DECO_LABELS_W[dt]||dt.replace(/_/g,' '),deco_type:dt,items:[]};
+            dtMap[dt].items.push({item_idx:idx,deco_idx:di,sku:it.sku,name:safeStr(it.name),color:it.color||'',
+              units:Object.values(safeSizes(it)).reduce((a,v)=>a+v,0),fulfilled:0,art_file_id:d.art_file_id,
+              art_name:af2?.name||'',position:d.position||'Front Center'});
+          });
+        });
+        setJobWizard({groups:Object.values(dtMap)});
+      };
+      const wizActivate=(groups,activateAll)=>{
+        const newJobs=[];
+        groups.forEach((g,gi)=>{
+          if(g.items.length===0)return;
+          const artIds=[...new Set(g.items.map(it=>it.art_file_id).filter(Boolean))];
+          const allApproved=artIds.every(aid=>{const af2=safeArt(o).find(f=>f.id===aid);return af2&&af2.status==='approved'});
+          const allProdFiles=artIds.every(aid=>{const af2=safeArt(o).find(f=>f.id===aid);return af2&&(af2.prod_files||[]).length>0});
+          const anyUploaded=artIds.some(aid=>{const af2=safeArt(o).find(f=>f.id===aid);return af2&&(af2.status==='uploaded'||af2.status==='needs_approval')});
+          const artStatus=allApproved&&allProdFiles?'art_complete':allApproved?'production_files_needed':anyUploaded?'waiting_approval':'needs_art';
+          const totalUnits=g.items.reduce((a,it)=>a+it.units,0);
+          const positions=[...new Set(g.items.map(it=>it.position))].join(', ');
+          newJobs.push({
+            id:o.id.replace('SO-','JOB-')+'-'+(gi+1<10?'0':'')+(gi+1),
+            key:'deco_'+g.deco_type+'_'+(gi+1),
+            art_file_id:artIds[0]||null,_art_ids:artIds,
+            art_name:g.name,deco_type:g.deco_type,positions,
+            art_status:artStatus,item_status:'need_to_order',
+            prod_status:activateAll?'hold':'draft',
+            total_units:totalUnits,fulfilled_units:0,split_from:null,
+            created_at:new Date().toLocaleDateString(),
+            items:g.items.map(({item_idx,deco_idx,sku,name,color,units,fulfilled})=>({item_idx,deco_idx,sku,name,color,units,fulfilled:fulfilled||0}))
+          });
+        });
+        const updated={...o,jobs:newJobs,updated_at:new Date().toLocaleString()};
+        setO(updated);onSave(updated);setDirty(false);setJobWizard(null);
+        nf(activateAll?'Jobs activated and sent to production!':'Draft jobs saved — activate when ready');
+      };
+
+      // Job Setup Wizard Modal
+      if(jobWizard)return<div className="card"><div className="card-header" style={{background:'linear-gradient(135deg,#7c3aed,#a78bfa)',color:'white'}}>
+        <h2 style={{color:'white',margin:0}}>Job Setup Wizard</h2>
+      </div><div className="card-body" style={{padding:16}}>
+        <div style={{fontSize:12,color:'#64748b',marginBottom:16}}>Organize items into production jobs. Items are grouped by decoration type. You can rename jobs, move items between groups, or create new groups.</div>
+        {jobWizard.groups.map((g,gi)=><div key={gi} style={{padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0',marginBottom:12}}>
+          <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}>
+            <span style={{fontSize:10,fontWeight:700,color:'white',background:'#7c3aed',padding:'2px 8px',borderRadius:4,textTransform:'uppercase'}}>{g.deco_type.replace(/_/g,' ')}</span>
+            <input className="form-input" value={g.name} style={{fontSize:13,fontWeight:700,padding:'4px 8px',flex:1}}
+              onChange={e=>{const gs=[...jobWizard.groups];gs[gi]={...gs[gi],name:e.target.value};setJobWizard({...jobWizard,groups:gs})}}/>
+            <span style={{fontSize:11,fontWeight:700,color:'#475569'}}>{g.items.reduce((a,it)=>a+it.units,0)} units</span>
+            {jobWizard.groups.length>1&&g.items.length===0&&<button style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',fontSize:14,fontWeight:700}}
+              onClick={()=>{const gs=[...jobWizard.groups];gs.splice(gi,1);setJobWizard({...jobWizard,groups:gs})}}>×</button>}
+          </div>
+          {g.items.length===0?<div style={{padding:12,textAlign:'center',color:'#94a3b8',fontSize:11}}>No items — drag items here or remove this group</div>:
+          <table style={{width:'100%',fontSize:11,borderCollapse:'collapse'}}>
+            <thead><tr style={{borderBottom:'1px solid #e2e8f0'}}>
+              <th style={{padding:'3px 6px',textAlign:'left',fontSize:10,color:'#64748b'}}>SKU</th>
+              <th style={{padding:'3px 6px',textAlign:'left',fontSize:10,color:'#64748b'}}>Item</th>
+              <th style={{padding:'3px 6px',textAlign:'left',fontSize:10,color:'#64748b'}}>Art</th>
+              <th style={{padding:'3px 6px',textAlign:'left',fontSize:10,color:'#64748b'}}>Position</th>
+              <th style={{padding:'3px 6px',textAlign:'center',fontSize:10,color:'#64748b'}}>Units</th>
+              <th style={{padding:'3px 6px',textAlign:'right',fontSize:10,color:'#64748b'}}>Move to</th>
+            </tr></thead>
+            <tbody>{g.items.map((it,ii)=><tr key={ii} style={{borderBottom:'1px solid #f1f5f9'}}>
+              <td style={{padding:'3px 6px',fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{it.sku}</td>
+              <td style={{padding:'3px 6px'}}>{it.name} <span style={{color:'#94a3b8'}}>{it.color}</span></td>
+              <td style={{padding:'3px 6px',fontSize:10,color:'#64748b'}}>{it.art_name||'—'}</td>
+              <td style={{padding:'3px 6px',fontSize:10,color:'#64748b'}}>{it.position}</td>
+              <td style={{padding:'3px 6px',textAlign:'center',fontWeight:700}}>{it.units}</td>
+              <td style={{padding:'3px 6px',textAlign:'right'}}>
+                <select style={{fontSize:10,padding:'1px 4px',border:'1px solid #d1d5db',borderRadius:3}} value="" onChange={e=>{
+                  const val=e.target.value;
+                  if(val==='new'){
+                    const gs=jobWizard.groups.map(gg=>({...gg,items:[...gg.items]}));
+                    gs[gi].items.splice(ii,1);
+                    gs.push({name:'New Job',deco_type:g.deco_type,items:[it]});
+                    setJobWizard({...jobWizard,groups:gs});return;
+                  }
+                  const targetGi=parseInt(val);if(isNaN(targetGi))return;
+                  const gs=jobWizard.groups.map(gg=>({...gg,items:[...gg.items]}));
+                  gs[gi].items.splice(ii,1);gs[targetGi].items.push(it);
+                  setJobWizard({...jobWizard,groups:gs});
+                }}>
+                  <option value="">Move...</option>
+                  {jobWizard.groups.map((g2,g2i)=>g2i!==gi?<option key={g2i} value={g2i}>{g2.name}</option>:null)}
+                  <option value="new">+ New Group</option>
+                </select>
+              </td>
+            </tr>)}</tbody>
+          </table>}
+        </div>)}
+        <div style={{display:'flex',gap:6,marginBottom:16}}>
+          <button className="btn btn-sm btn-secondary" onClick={()=>{
+            const gs=[...jobWizard.groups,{name:'New Job',deco_type:jobWizard.groups[0]?.deco_type||'screen_print',items:[]}];
+            setJobWizard({...jobWizard,groups:gs});
+          }}>+ Add Group</button>
+        </div>
+        <div style={{display:'flex',gap:8,borderTop:'1px solid #e2e8f0',paddingTop:12}}>
+          <button className="btn btn-primary" style={{background:'#166534',borderColor:'#166534',fontWeight:800}}
+            onClick={()=>wizActivate(jobWizard.groups,true)}>Activate All & Send to Production</button>
+          <button className="btn btn-secondary" style={{fontWeight:700}}
+            onClick={()=>wizActivate(jobWizard.groups,false)}>Save as Drafts</button>
+          <button className="btn btn-secondary" onClick={()=>setJobWizard(null)}>Cancel</button>
+        </div>
+      </div></div>;
+
+      // Draft jobs banner
+      const hasDrafts=draftJobs.length>0;
+
       return<div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-        <h2>Production Jobs ({jobs.length})</h2>
+        <h2>Production Jobs ({activeJobs.length}{hasDrafts?' + '+draftJobs.length+' drafts':''})</h2>
         <div style={{display:'flex',gap:6}}>
+          <button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 12px',fontWeight:700}} onClick={openJobWizard}>Set Up Jobs</button>
           <button className="btn btn-sm btn-secondary" onClick={refreshJobs}><Icon name="check" size={12}/> Sync Status</button>
         </div>
       </div><div className="card-body" style={{padding:0}}>
-        {jobs.length===0&&<div style={{padding:24,textAlign:'center',color:'#94a3b8'}}>No decorations assigned yet. Add artwork or numbers to items and jobs will appear automatically.</div>}
+        {hasDrafts&&<div style={{padding:'10px 16px',background:'#fef9c3',borderBottom:'1px solid #fde68a',display:'flex',alignItems:'center',gap:8}}>
+          <span style={{fontSize:12,fontWeight:700,color:'#a16207'}}>{draftJobs.length} draft job{draftJobs.length!==1?'s':''} need review</span>
+          <span style={{fontSize:11,color:'#92400e'}}>— Draft jobs won't appear on the production board until activated</span>
+          <button className="btn btn-sm" style={{marginLeft:'auto',fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 12px',fontWeight:700}}
+            onClick={()=>{const newJobs=jobs.map(j=>j.prod_status==='draft'||j._draft?{...j,prod_status:'hold',_draft:false}:j);
+              const updated={...o,jobs:newJobs,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);nf('All draft jobs activated!')}}>Activate All</button>
+          <button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 10px',fontWeight:700}} onClick={openJobWizard}>Edit Jobs</button>
+        </div>}
+        {jobs.length===0&&<div style={{padding:24,textAlign:'center',color:'#94a3b8'}}>No decorations assigned yet. Add artwork to items, then click "Set Up Jobs" to create production jobs.</div>}
         {jobs.length>0&&<table style={{fontSize:12}}><thead><tr><th>Job ID</th><th>Artwork / Decoration</th><th>Items</th><th>Units</th><th>Items Status</th><th>Art</th><th>Production</th><th></th></tr></thead><tbody>
           {jobs.map((j,ji)=>{
             const canProduce=j.item_status==='items_received'&&j.art_status==='art_complete';const canOverride2=cu.role==='admin'||cu.role==='production'||cu.role==='prod_manager'||cu.role==='gm';
@@ -9826,7 +9976,7 @@ export default function App(){
         if(j.prod_status==='completed'){
           // Check if all sibling jobs (sharing any item_idx) are also done
           const jobItemIdxs=new Set((j.items||[]).map(it=>it.item_idx));
-          const siblingJobs=allJobs.filter(j2=>j2.id!==j.id&&(j2.items||[]).some(it=>jobItemIdxs.has(it.item_idx)));
+          const siblingJobs=allJobs.filter(j2=>j2.id!==j.id&&j2.prod_status!=='draft'&&(j2.items||[]).some(it=>jobItemIdxs.has(it.item_idx)));
           const allSiblingsDone=siblingJobs.every(j2=>j2.prod_status==='completed'||j2.prod_status==='shipped');
           if(!allSiblingsDone){
             // Sibling jobs still in progress — this item stays in production queue, not ready to ship
@@ -9856,8 +10006,8 @@ export default function App(){
       const allItemsDone=safeItems(so).every(it=>{const szKeys=Object.keys(it.sizes||{}).filter(k=>SZ_ORD.includes(k)||(it.sizes[k]>0));
         const tot=szKeys.reduce((a,s)=>a+(it.sizes[s]||0),0);if(tot===0)return true;
         const pulled=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>szKeys.reduce((a2,s)=>a2+(pk[s]||0),a),0);return pulled>=tot});
-      const allJobsDone=safeJobs(so).every(j=>j.prod_status==='completed'||j.prod_status==='shipped');
-      if(allItemsDone&&allJobsDone&&(safeItems(so).length>0||safeJobs(so).length>0)){
+      const allJobsDone=safeJobs(so).filter(j=>j.prod_status!=='draft').every(j=>j.prod_status==='completed'||j.prod_status==='shipped');
+      if(allItemsDone&&allJobsDone&&(safeItems(so).length>0||safeJobs(so).filter(j=>j.prod_status!=='draft').length>0)){
         const totalUnits=safeItems(so).reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((a2,v)=>a2+v,0),0);
         shipTasks.push({so,soId:so.id,type:'wait_complete',cName,alpha,rep,daysOut,urgent,
           desc:'Full order ready',units:totalUnits,shipMethod:'pending',shipPref:'wait_complete'});
@@ -11278,7 +11428,7 @@ export default function App(){
     // Build flat jobs list
     const allJobs=[];
     sos.forEach(so=>{const c=cust.find(x=>x.id===so.customer_id);
-      buildJobs(so).forEach(j=>{allJobs.push({...j,so,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',alpha:c?.alpha_tag||'',
+      buildJobs(so).filter(j=>j.prod_status!=='draft').forEach(j=>{allJobs.push({...j,so,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',alpha:c?.alpha_tag||'',
         repId:c?.primary_rep_id||so.created_by,rep:REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name||'—',
         expected:so.expected_date,daysOut:so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null})})});
     // Apply filters
