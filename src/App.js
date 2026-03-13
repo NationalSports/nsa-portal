@@ -10567,58 +10567,58 @@ export default function App(){
     const omgId = store._omg_id;
     if (!omgId) return store;
     try {
-      // Fetch sale with includes — try getting orders sideloaded
+      // Fetch sale metadata (organization only — include=orders returns 400)
       let saleResp;
-      let orders = [];
       let included = [];
-
-      // Try include=orders first, fall back to organization only
-      for (const inc of ['orders,order_products,organization', 'orders,organization', 'organization']) {
-        try {
-          saleResp = await omgApiCall(`/sales/${omgId}?include=${inc}`);
-          included = saleResp?.included || [];
-          const incOrders = included.filter(i => i.type === 'orders' || i.type === 'order');
-          if (incOrders.length > 0) {
-            orders = incOrders;
-            console.log(`[OMG] Found ${orders.length} orders via include=${inc}`);
-            break;
-          }
-          if (inc === 'organization') break;
-        } catch (e) {
-          console.log(`[OMG] include=${inc} failed:`, e.message);
-        }
+      try {
+        saleResp = await omgApiCall(`/sales/${omgId}?include=organization`);
+        included = saleResp?.included || [];
+      } catch (e) {
+        console.log('[OMG] Sale fetch failed, using basic:', e.message);
+        try { saleResp = await omgApiCall(`/sales/${omgId}`); } catch { saleResp = null; }
       }
-
       const saleResource = saleResp?.data || { id: omgId, attributes: {} };
-      // Log all attributes for debugging
-      console.log('[OMG] Sale detail attributes:', JSON.stringify(saleResource.attributes));
-      console.log('[OMG] Sale detail relationships:', Object.keys(saleResource.relationships || {}));
-      console.log('[OMG] Included types:', [...new Set(included.map(i => i.type))]);
+      console.log('[OMG] Sale detail attributes:', Object.keys(saleResource.attributes || {}));
 
-      // If no orders from includes, try separate endpoints
-      let detail;
-      if (orders.length === 0) {
-        detail = await fetchOMGStoreDetail(saleResource, included);
-      } else {
-        const orderProducts = included.filter(i => i.type === 'order_products' || i.type === 'order_product' || i.type === 'line_items');
-        detail = { data: saleResource, included, orders, orderProducts: orderProducts.length > 0 ? [{ data: orderProducts, included }] : [] };
+      // Fetch orders directly via /orders endpoint (the only working approach)
+      let orders = [];
+      try {
+        const ordersResp = await omgApiCall(`/orders?filter[sale_id]=${omgId}`);
+        orders = ordersResp?.data || [];
+        console.log(`[OMG] Found ${orders.length} orders via filter[sale_id]`);
+      } catch {
+        // If filter doesn't work, fetch all and filter client-side
+        try {
+          const allResp = await omgApiCall('/orders');
+          const allOrders = allResp?.data || [];
+          orders = allOrders.filter(o => {
+            const saleId = o.relationships?.sale?.data?.id || o.attributes?.sale_id;
+            return saleId === omgId;
+          });
+          console.log(`[OMG] Found ${orders.length} orders (client-side filter from ${allOrders.length})`);
+        } catch (e2) { console.warn('[OMG] Could not fetch orders:', e2.message); }
       }
 
+      const detail = { data: saleResource, included, orders, orderProducts: [] };
       const updated = { ...convertOMGStore(detail, cust), _details_loaded: true };
 
-      // Check for aggregate data in sale attributes
+      // Compute totals from order attributes
+      if (orders.length > 0 && updated.total_sales === 0) {
+        let salesTotal = 0;
+        orders.forEach(o => {
+          const oa = o.attributes || {};
+          salesTotal += parseFloat(oa.total || oa.order_total || oa.subtotal || oa.amount || 0);
+        });
+        if (salesTotal > 0) updated.total_sales = salesTotal;
+      }
+
+      // Check sale attributes for aggregate data
       const attrs = saleResource.attributes || {};
       for (const [k, v] of Object.entries(attrs)) {
         if (/order.*count|num.*order|total.*order/i.test(k) && v) updated.orders = parseInt(v) || updated.orders;
         if (/revenue|total.*sale|sales.*total|total.*earned/i.test(k) && v) updated.total_sales = parseFloat(v) || updated.total_sales;
         if (/fundrais/i.test(k) && v) updated.fundraise_total = parseFloat(v) || updated.fundraise_total;
-        if (/item.*count|total.*item/i.test(k) && v) updated.items_sold = parseInt(v) || updated.items_sold;
-        if (/buyer.*count|customer.*count/i.test(k) && v) updated.unique_buyers = parseInt(v) || updated.unique_buyers;
       }
-
-      // Check relationship linkage counts
-      const orderRel = saleResource.relationships?.orders?.data;
-      if (Array.isArray(orderRel) && orderRel.length > 0 && !updated.orders) updated.orders = orderRel.length;
 
       setOmgStores(prev => prev.map(s => s.id === store.id ? updated : s));
       return updated;
@@ -10993,19 +10993,64 @@ export default function App(){
         const incTypes = [...new Set((omgStoresData.included || []).map(i => i.type))];
         console.log('[OMG] Included resource types:', incTypes);
       }
-      // Convert store list data (no order details yet — those load on-demand)
+      // Fetch all orders and group by sale to populate store totals
+      let allOrders = [];
+      try {
+        let page = 1, hasMore = true;
+        while (hasMore && page <= 20) {
+          const ordersResp = await omgApiCall(`/orders?page=${page}`);
+          const batch = ordersResp?.data || [];
+          if (batch.length === 0) break;
+          allOrders = allOrders.concat(batch);
+          if (page === 1 && batch.length > 0) {
+            console.log('[OMG] Sample order attributes:', Object.keys(batch[0].attributes || {}));
+            console.log('[OMG] Sample order relationships:', Object.keys(batch[0].relationships || {}));
+            console.log('[OMG] Sample order attrs:', JSON.stringify(batch[0].attributes));
+          }
+          // Stop if we got fewer than a full page (no more data)
+          if (batch.length < 100) break;
+          page++;
+        }
+        console.log(`[OMG] Fetched ${allOrders.length} total orders across ${page} page(s)`);
+      } catch (e) {
+        console.warn('[OMG] Could not fetch orders:', e.message);
+      }
+
+      // Group orders by sale_id
+      const ordersBySale = {};
+      allOrders.forEach(o => {
+        const saleId = o.relationships?.sale?.data?.id || o.attributes?.sale_id;
+        if (saleId) {
+          if (!ordersBySale[saleId]) ordersBySale[saleId] = [];
+          ordersBySale[saleId].push(o);
+        }
+      });
+      console.log('[OMG] Orders grouped by sale:', Object.keys(ordersBySale).length, 'sales with orders');
+
+      // Convert store list data and populate with order data
       const convertedStores = stores.map(store => {
-        const basic = { data: store, included: omgStoresData.included || [], orders: [], orderProducts: [] };
+        const saleOrders = ordersBySale[store.id] || [];
+        const basic = { data: store, included: omgStoresData.included || [], orders: saleOrders, orderProducts: [] };
         const converted = convertOMGStore(basic, cust);
         // Check sale attributes for aggregate data (in case API provides it)
         const attrs = store.attributes || {};
         for (const [k, v] of Object.entries(attrs)) {
-          if (/order.*count|num.*order|total.*order/i.test(k) && v) converted.orders = parseInt(v) || 0;
-          if (/revenue|total.*sale|sales.*total|total.*earned/i.test(k) && v) converted.total_sales = parseFloat(v) || 0;
-          if (/fundrais/i.test(k) && v) converted.fundraise_total = parseFloat(v) || 0;
+          if (/order.*count|num.*order|total.*order/i.test(k) && v) converted.orders = parseInt(v) || converted.orders;
+          if (/revenue|total.*sale|sales.*total|total.*earned/i.test(k) && v) converted.total_sales = parseFloat(v) || converted.total_sales;
+          if (/fundrais/i.test(k) && v) converted.fundraise_total = parseFloat(v) || converted.fundraise_total;
         }
+        // Use order count from relationship linkage if available
         const orderRel = store.relationships?.orders?.data;
-        if (Array.isArray(orderRel)) converted.orders = orderRel.length;
+        if (Array.isArray(orderRel) && orderRel.length > converted.orders) converted.orders = orderRel.length;
+        // Compute totals from order attributes if we have orders
+        if (saleOrders.length > 0 && converted.total_sales === 0) {
+          let salesTotal = 0;
+          saleOrders.forEach(o => {
+            const oa = o.attributes || {};
+            salesTotal += parseFloat(oa.total || oa.order_total || oa.subtotal || oa.amount || 0);
+          });
+          if (salesTotal > 0) converted.total_sales = salesTotal;
+        }
         converted._details_loaded = false;
         return converted;
       });
@@ -11020,10 +11065,8 @@ export default function App(){
     } finally { setOmgSyncing(false); }
   };
 
-  // Note: The OMG Pop-up Stores API (app.ordermygear.com/v1) only exposes sale metadata.
-  // Order/product data is NOT available through this API — the sale resource only has
-  // relationships: source, group, organization, assigned_user (no orders).
-  // Order details must be viewed in the OMG admin UI at team.ordermygear.com/admin/sales/{id}.
+  // Note: The OMG API /orders endpoint returns orders with a `sale` relationship,
+  // which we fetch during sync to populate order counts and totals per store.
 
   // ─── Delete Handlers (with cascade status updates) ───
   const canDelete = cu && (cu.role==='admin'||cu.role==='rep'||cu.role==='csr');
