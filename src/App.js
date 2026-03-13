@@ -10456,6 +10456,9 @@ export default function App(){
   React.useEffect(()=>{try{localStorage.setItem('nsa_msgs',JSON.stringify(msgs))}catch{};_diffSave(msgs,'msgs',m=>_dbSaveMessage(m))},[msgs]);
   React.useEffect(()=>{try{localStorage.setItem('nsa_omg_stores',JSON.stringify(omgStores))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.omg||[];omgStores.forEach(s=>{const old=snap.find(p=>p.id===s.id);if(!old||JSON.stringify(old)!==JSON.stringify(s)){_dbSave('omg_stores',[_pick(s,_omgStoreCols)])}});_dbSnap.current.omg=omgStores}},[omgStores]);
 
+  // Notification helper — defined early so callbacks below can reference it
+  const nf=(m,t='success')=>{setToast({msg:m,type:t});setTimeout(()=>setToast(null),3500)};_dbNotify=nf;
+
   // Load full details (orders + products) for a single OMG store on-demand
   const loadOMGStoreDetail = async (store) => {
     if (store._details_loaded) return store;
@@ -10581,8 +10584,6 @@ export default function App(){
     },60000);
     return()=>clearInterval(retry);
   },[]);
-  // Notification helper — defined early so useEffect callbacks below can reference it
-  const nf=(m,t='success')=>{setToast({msg:m,type:t});setTimeout(()=>setToast(null),3500)};_dbNotify=nf;
   // Handle QB OAuth callback redirect
   React.useEffect(()=>{
     try{
