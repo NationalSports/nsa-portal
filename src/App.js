@@ -19490,10 +19490,83 @@ export default function App(){
         }
       }
       setBillImport(x=>({...x,parsed:results,step:'review',uploading:false}));
+      // Apply billed quantities, tracking, and freight to matched SOs immediately
+      results.forEach(r=>{if(r.parsed?.matchedPOSource)applyBillToSO(r.parsed)});
       // Auto-save to history
       const toSave=results.map(r=>({id:r.id,file:r.file,parsed:{...r.parsed,rawText:undefined},uploadedAt:r.uploadedAt,qbStatus:null}));
       setSavedBills(prev=>{const updated=[...toSave,...prev].slice(0,200);try{localStorage.setItem('nsa_saved_bills',JSON.stringify(updated))}catch{};return updated});
       nf(results.length+' bill(s) parsed from '+files.length+' PDF(s)');
+    };
+
+    // Apply parsed bill data (billed sizes, tracking, freight) to matched SO/PO
+    const applyBillToSO=(bill)=>{
+      if(bill._applied)return;
+      bill._applied=true;
+      if(bill.matchedPOSource==='batch'&&bill.matchedPO){
+        const batchId=bill.matchedPO.id||bill.matchedPO.po_number;
+        const billedSizes={};
+        bill.items.forEach(it=>{if(it.size&&it.qty)billedSizes[it.size]=(billedSizes[it.size]||0)+it.qty});
+        setSubmittedBatches(prev=>prev.map(sb=>{
+          if((sb.id||sb.po_number)!==batchId)return sb;
+          const existingBilled=sb.billed||{};
+          const newBilled={...existingBilled};
+          Object.entries(billedSizes).forEach(([sz,qty])=>{newBilled[sz]=(newBilled[sz]||0)+qty});
+          const trackNums=[...(sb.tracking_numbers||[])];
+          if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
+          return{...sb,billed:newBilled,tracking_numbers:trackNums,bill_doc_number:bill.doc_number,bill_date:bill.doc_date};
+        }));
+      }
+      if(bill.matchedPOSource==='inv_po'&&bill.matchedPO){
+        const poId=bill.matchedPO.id;
+        const billedSizes={};
+        bill.items.forEach(it=>{if(it.size&&it.qty)billedSizes[it.size]=(billedSizes[it.size]||0)+it.qty});
+        setInvPOs(prev=>prev.map(po=>{
+          if(po.id!==poId)return po;
+          const existingBilled=po.billed||{};
+          const newBilled={...existingBilled};
+          Object.entries(billedSizes).forEach(([sz,qty])=>{newBilled[sz]=(newBilled[sz]||0)+qty});
+          const trackNums=[...(po.tracking_numbers||[])];
+          if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
+          return{...po,billed:newBilled,tracking_numbers:trackNums};
+        }));
+      }
+      if(bill.matchedPOSource==='so_po'&&bill.matchedPO){
+        const soId=bill.matchedPO.so_id||bill.matchedPO.so?.id;
+        const poId=bill.matchedPO.po_id;
+        if(soId){
+          const billedBySku={};const costBySku={};
+          bill.items.forEach(it=>{if(it.size&&it.qty){const sk=(it.sku||'').toUpperCase();if(!billedBySku[sk])billedBySku[sk]={};billedBySku[sk][it.size]=(billedBySku[sk][it.size]||0)+it.qty;if(!costBySku[sk])costBySku[sk]=0;costBySku[sk]+=safeNum(it.extension||0)||(safeNum(it.unit_price||0)*it.qty)}});
+          const billFreight=safeNum(bill.freight||0);
+          setSOs(prev=>{
+            const freshSO=prev.find(s=>s.id===soId);
+            if(!freshSO)return prev;
+            const prevFreight=safeNum(freshSO._inbound_freight||0);
+            const updatedSO={...freshSO,
+              _inbound_freight:Math.round((prevFreight+billFreight)*100)/100,
+              items:(freshSO.items||[]).map(it=>{
+              const matchPO=it.po_lines?.find(po=>po.po_id===poId);
+              if(!matchPO)return it;
+              const itemSku=(it.sku||'').toUpperCase();
+              const itemBilled=billedBySku[itemSku]||{};
+              return{...it,po_lines:it.po_lines.map(po=>{
+                if(po.po_id!==poId)return po;
+                const existingBilled=po.billed||{};
+                const newBilled={...existingBilled};
+                Object.entries(itemBilled).forEach(([sz,qty])=>{newBilled[sz]=(newBilled[sz]||0)+qty});
+                const trackNums=[...(po.tracking_numbers||[])];
+                if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
+                const itemCost=costBySku[itemSku]||0;
+                const prevBillCost=safeNum(po._bill_cost||0);
+                return{...po,billed:newBilled,tracking_numbers:trackNums,
+                  _bill_cost:Math.round((prevBillCost+itemCost)*100)/100,
+                  _bill_details:[...(po._bill_details||[]),{doc:bill.doc_number,date:bill.doc_date,sizes:{...itemBilled},tracking:bill.tracking,cost:itemCost}]};
+              })};
+            }),updated_at:new Date().toLocaleString()};
+            _dbSaveSO(updatedSO);
+            return prev.map(s=>s.id===soId?updatedSO:s);
+          });
+        }
+      }
     };
 
     // Push bills to QuickBooks
@@ -19579,73 +19652,9 @@ export default function App(){
           DueDate:bill.due_date?bill.due_date.replace(/(\d+)\/(\d+)\/(\d+)/,'20$3-$1-$2'):undefined,
           DocNumber:bill.doc_number||bill.po_number||undefined,
           Line:lineItems,PrivateNote:memo};
-        // Update matched PO with billed quantities and tracking — do this BEFORE QB push
-        // so tracking/billed data is saved to the SO even if QB push fails
-        if(bill.matchedPOSource==='batch'&&bill.matchedPO){
-          const batchId=bill.matchedPO.id||bill.matchedPO.po_number;
-          const billedSizes={};
-          bill.items.forEach(it=>{if(it.size&&it.qty)billedSizes[it.size]=(billedSizes[it.size]||0)+it.qty});
-          setSubmittedBatches(prev=>prev.map(sb=>{
-            if((sb.id||sb.po_number)!==batchId)return sb;
-            const existingBilled=sb.billed||{};
-            const newBilled={...existingBilled};
-            Object.entries(billedSizes).forEach(([sz,qty])=>{newBilled[sz]=(newBilled[sz]||0)+qty});
-            const trackNums=[...(sb.tracking_numbers||[])];
-            if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
-            return{...sb,billed:newBilled,tracking_numbers:trackNums,bill_doc_number:bill.doc_number,bill_date:bill.doc_date};
-          }));
-        }
-        if(bill.matchedPOSource==='inv_po'&&bill.matchedPO){
-          const poId=bill.matchedPO.id;
-          const billedSizes={};
-          bill.items.forEach(it=>{if(it.size&&it.qty)billedSizes[it.size]=(billedSizes[it.size]||0)+it.qty});
-          setInvPOs(prev=>prev.map(po=>{
-            if(po.id!==poId)return po;
-            const existingBilled=po.billed||{};
-            const newBilled={...existingBilled};
-            Object.entries(billedSizes).forEach(([sz,qty])=>{newBilled[sz]=(newBilled[sz]||0)+qty});
-            const trackNums=[...(po.tracking_numbers||[])];
-            if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
-            return{...po,billed:newBilled,tracking_numbers:trackNums};
-          }));
-        }
-        if(bill.matchedPOSource==='so_po'&&bill.matchedPO){
-          const soId=bill.matchedPO.so_id||bill.matchedPO.so?.id;
-          const poId=bill.matchedPO.po_id;
-          if(soId){
-            const billedBySku={};const costBySku={};
-            bill.items.forEach(it=>{if(it.size&&it.qty){const sk=(it.sku||'').toUpperCase();if(!billedBySku[sk])billedBySku[sk]={};billedBySku[sk][it.size]=(billedBySku[sk][it.size]||0)+it.qty;if(!costBySku[sk])costBySku[sk]=0;costBySku[sk]+=safeNum(it.extension||0)||(safeNum(it.unit_price||0)*it.qty)}});
-            const billFreight=safeNum(bill.freight||0);
-            setSOs(prev=>{
-              const freshSO=prev.find(s=>s.id===soId);
-              if(!freshSO)return prev;
-              const prevFreight=safeNum(freshSO._inbound_freight||0);
-              const updatedSO={...freshSO,
-                _inbound_freight:Math.round((prevFreight+billFreight)*100)/100,
-                items:(freshSO.items||[]).map(it=>{
-                const matchPO=it.po_lines?.find(po=>po.po_id===poId);
-                if(!matchPO)return it;
-                const itemSku=(it.sku||'').toUpperCase();
-                const itemBilled=billedBySku[itemSku]||{};
-                return{...it,po_lines:it.po_lines.map(po=>{
-                  if(po.po_id!==poId)return po;
-                  const existingBilled=po.billed||{};
-                  const newBilled={...existingBilled};
-                  Object.entries(itemBilled).forEach(([sz,qty])=>{newBilled[sz]=(newBilled[sz]||0)+qty});
-                  const trackNums=[...(po.tracking_numbers||[])];
-                  if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
-                  const itemCost=costBySku[itemSku]||0;
-                  const prevBillCost=safeNum(po._bill_cost||0);
-                  return{...po,billed:newBilled,tracking_numbers:trackNums,
-                    _bill_cost:Math.round((prevBillCost+itemCost)*100)/100,
-                    _bill_details:[...(po._bill_details||[]),{doc:bill.doc_number,date:bill.doc_date,sizes:{...itemBilled},tracking:bill.tracking,cost:itemCost}]};
-                })};
-              }),updated_at:new Date().toLocaleString()};
-              _dbSaveSO(updatedSO);
-              return prev.map(s=>s.id===soId?updatedSO:s);
-            });
-          }
-        }
+        // Apply billed quantities, tracking, and freight to matched SO/PO
+        // (uses shared applyBillToSO — skips if already applied at parse time)
+        if(!bill._applied)applyBillToSO(bill);
         // Now push to QuickBooks
         const billRes=await qbApi('upsert_bill',{bill:qbBill});
         if(billRes?.Bill?.Id){
