@@ -5702,6 +5702,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const canOverride=cu.role==="admin"||cu.role==="production"||cu.role==="prod_manager"||cu.role==="gm";
         const pct=j.total_units>0?Math.round(j.fulfilled_units/j.total_units*100):0;
         const artF=safeArt(o).find(a=>a.id===j.art_file_id);
+        const allArtFiles=(j._art_ids||[j.art_file_id].filter(Boolean)).map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);
         // Get full size breakdowns per item
         const itemDetails=(j.items||[]).map(gi=>{
           const it=safeItems(o)[gi.item_idx];if(!it)return{...gi,sizes:{},fulSizes:{}};
@@ -5799,29 +5800,36 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 </div>
               </div>}
               {mockups.length===0&&<div style={{padding:12,background:'#fff7ed',border:'1px dashed #fdba74',borderRadius:6,marginBottom:12,fontSize:12,color:'#9a3412'}}>No mockup files attached yet — check the Art Library tab for files.</div>}
-              {/* Artwork details — pantones, sizes, locations */}
-              {artFile2&&(()=>{const _colorList2=(artFile2.ink_colors||artFile2.thread_colors||'').split(/[,\n]/).map(c3=>c3.trim()).filter(Boolean);const _isEmb2=artFile2.deco_type==='embroidery';
-                const _decoPositions=new Set();const _numDecos2=[];(j.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(it)safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id===j.art_file_id&&d.position)_decoPositions.add(d.position);if(d.kind==='numbers')_numDecos2.push(d)})});
-                const _posList=_decoPositions.size>0?[..._decoPositions]:(j.positions||'').split(',').map(p=>p.trim()).filter(Boolean);const _artSizes2=artFile2.art_sizes||{};const _nd2=_numDecos2[0];
+              {/* Artwork details — per-art breakdown with correct locations */}
+              {(()=>{const _allArt2=(j._art_ids||[j.art_file_id].filter(Boolean)).map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);
+                const _numDecos2=[];(j.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(it)safeDecos(it).forEach(d=>{if(d.kind==='numbers')_numDecos2.push(d)})});
+                const _nd2=_numDecos2[0];
                 const _colorMap2={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000','Silver':'#C0C0C0','Royal':'#4169e1','Cardinal':'#8C1515','Green':'#166534','Orange':'#EA580C','Navy 2767':'#001f3f','PMS 286':'#0033A0','PMS 032':'#EF3340','PMS 877':'#C0C0C0','Maroon':'#800000'};
-                return<div style={{marginBottom:12,padding:'12px 14px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8}}>
-                  <div style={{fontSize:11,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:8,letterSpacing:0.5}}>Artwork Details</div>
-                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10,marginBottom:_colorList2.length>0||_nd2?10:0}}>
-                    <div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8'}}>Method</div><div style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{artFile2.deco_type?.replace(/_/g,' ')||'—'}</div></div>
-                    <div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8'}}>Location{_posList.length>1?'s':''}</div><div style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{_posList.join(', ')||'—'}</div></div>
-                    {_posList.length<=1?<div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8'}}>Art Size</div><div style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{artFile2.art_size||'—'}</div></div>
-                    :_posList.map((pos,pi)=><div key={pi}><div style={{fontSize:10,fontWeight:600,color:'#94a3b8'}}>Size — {pos}</div><div style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{_artSizes2[pos]||(pi===0?artFile2.art_size:'')||'—'}</div></div>)}
-                  </div>
-                  {_colorList2.length>0&&<div style={{marginBottom:_nd2?10:0}}>
-                    <div style={{fontSize:10,fontWeight:600,color:'#94a3b8',marginBottom:4}}>{_isEmb2?'Thread Colors':'Ink Colors / Pantones'} ({_colorList2.length})</div>
-                    <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-                      {_colorList2.map((cl,i)=>{const clLower=cl.toLowerCase();const sw=_colorMap2[cl]||Object.entries(_colorMap2).find(([k])=>clLower.includes(k.toLowerCase()))?.[1]||null;
-                        return<div key={i} style={{display:'flex',alignItems:'center',gap:5,padding:'3px 10px',background:'white',border:'1px solid #e2e8f0',borderRadius:6}}>
-                          <div style={{width:14,height:14,borderRadius:3,border:'1px solid #d1d5db',background:sw||'linear-gradient(135deg,#f1f5f9,#e2e8f0)'}}/>
-                          <span style={{fontSize:11,fontWeight:600}}>{cl}</span></div>})}
-                    </div>
-                  </div>}
-                  {_nd2&&<div>
+                if(_allArt2.length===0)return null;
+                return<div style={{marginBottom:12}}>
+                  {_allArt2.map((af3,afi)=>{
+                    const _dp3=new Set();(j.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(it)safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id===af3.id&&d.position)_dp3.add(d.position)})});
+                    const _pl3=_dp3.size>0?[..._dp3]:[];const _as3=af3.art_sizes||{};
+                    const _cl3=(af3.ink_colors||af3.thread_colors||'').split(/[,\n]/).map(c3=>c3.trim()).filter(Boolean);const _isE3=af3.deco_type==='embroidery';
+                    return<div key={afi} style={{marginBottom:afi<_allArt2.length-1?8:0,padding:'12px 14px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8}}>
+                      <div style={{fontSize:11,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:8,letterSpacing:0.5}}>{af3.name||'Art '+(afi+1)}</div>
+                      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10,marginBottom:_cl3.length>0?10:0}}>
+                        <div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8'}}>Method</div><div style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{af3.deco_type?.replace(/_/g,' ')||'—'}</div></div>
+                        <div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8'}}>Location{_pl3.length>1?'s':''}</div><div style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{_pl3.join(', ')||'—'}</div></div>
+                        {_pl3.length<=1?<div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8'}}>Art Size</div><div style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{af3.art_size||'—'}</div></div>
+                        :_pl3.map((pos,pi)=><div key={pi}><div style={{fontSize:10,fontWeight:600,color:'#94a3b8'}}>Size — {pos}</div><div style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{_as3[pos]||(pi===0?af3.art_size:'')||'—'}</div></div>)}
+                      </div>
+                      {_cl3.length>0&&<div>
+                        <div style={{fontSize:10,fontWeight:600,color:'#94a3b8',marginBottom:4}}>{_isE3?'Thread Colors':'Ink Colors / Pantones'} ({_cl3.length})</div>
+                        <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                          {_cl3.map((cl,i)=>{const clL=cl.toLowerCase();const sw=_colorMap2[cl]||Object.entries(_colorMap2).find(([k])=>clL.includes(k.toLowerCase()))?.[1]||null;
+                            return<div key={i} style={{display:'flex',alignItems:'center',gap:5,padding:'3px 10px',background:'white',border:'1px solid #e2e8f0',borderRadius:6}}>
+                              <div style={{width:14,height:14,borderRadius:3,border:'1px solid #d1d5db',background:sw||'linear-gradient(135deg,#f1f5f9,#e2e8f0)'}}/>
+                              <span style={{fontSize:11,fontWeight:600}}>{cl}</span></div>})}
+                        </div>
+                      </div>}
+                    </div>})}
+                  {_nd2&&<div style={{padding:'12px 14px',background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:8,marginTop:8}}>
                     <div style={{fontSize:10,fontWeight:600,color:'#94a3b8',marginBottom:4}}>Numbers</div>
                     <div style={{display:'flex',gap:12,flexWrap:'wrap',fontSize:12}}>
                       <span><strong>{(_nd2.num_method||'heat_transfer').replace(/_/g,' ')}</strong></span>
@@ -5940,15 +5948,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           <div className="card" style={{marginBottom:12}}>
             <div className="card-header"><h2>🎨 Artwork</h2></div>
             <div className="card-body">
-              {/* Big mockup at top */}
-              {(()=>{const allMocks=(artF?.mockup_files||artF?.files||[]).filter(f=>f);
+              {/* Big mockup at top — no product image fallback */}
+              {(()=>{const allMocks=allArtFiles.flatMap(a=>(a?.mockup_files||a?.files||[]).filter(f=>f));
                 const firstFile=allMocks[0];const fUrl=firstFile?(typeof firstFile==='string'?firstFile:(firstFile?.url||'')):'';
                 const isImg=fUrl&&_isImgUrl(fUrl,firstFile);const isPdf=fUrl&&_isPdfUrl(fUrl,firstFile);
-                const pdfThumb=isPdf?_cloudinaryPdfThumb(fUrl):null;const prodImg=itemDetails.find(gi=>gi.image_url)?.image_url;
-                const imgSrc=isImg?fUrl:pdfThumb||(prodImg&&_isImgUrl(prodImg)?prodImg:null);
+                const pdfThumb=isPdf?_cloudinaryPdfThumb(fUrl):null;
+                const imgSrc=isImg?fUrl:pdfThumb;
                 return imgSrc?<div style={{textAlign:'center',marginBottom:16,background:'#f8fafc',borderRadius:10,padding:16,border:'1px solid #e2e8f0'}}>
                   <img src={imgSrc} alt="Mockup" style={{maxWidth:'100%',maxHeight:360,objectFit:'contain',borderRadius:8}}/>
-                  <div style={{fontSize:11,fontWeight:600,color:'#64748b',marginTop:6}}>{isImg||pdfThumb?'Mockup Preview':'Product Image'}{allMocks.length>1?' · +'+String(allMocks.length-1)+' more file'+(allMocks.length>2?'s':''):''}</div>
+                  <div style={{fontSize:11,fontWeight:600,color:'#64748b',marginTop:6}}>Mockup Preview{allMocks.length>1?' · +'+String(allMocks.length-1)+' more file'+(allMocks.length>2?'s':''):''}</div>
                 </div>:allMocks.length>0?<div style={{textAlign:'center',marginBottom:16,background:'#f8fafc',borderRadius:10,padding:16,border:'1px solid #e2e8f0'}}>
                   <div style={{fontSize:36,marginBottom:4}}>📄</div>
                   <div style={{fontSize:12,fontWeight:700,color:'#1e40af'}}>{fileDisplayName(firstFile)}</div>
@@ -5958,25 +5966,38 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   <div style={{fontSize:13,fontWeight:600,color:'#94a3b8'}}>Waiting for Art</div>
                   <div style={{fontSize:11,color:'#cbd5e1',marginTop:4}}>Mockup will appear here once artwork is uploaded</div>
                 </div>})()}
-              <div style={{display:'flex',gap:16,flexWrap:'wrap'}}>
-                <div style={{flex:1,minWidth:200}}>
-                  {artF?<>
-                    <div className="form-row form-row-2">
-                      <div><div className="form-label">Art File</div><div style={{fontSize:13,fontWeight:600}}>{artF.name}</div></div>
-                      <div><div className="form-label">Deco Method</div><div style={{fontSize:13}}>{artF.deco_type?.replace(/_/g,' ')||'—'}</div></div>
-                      <div><div className="form-label">Art Size</div><div style={{fontSize:13}}>{artF.art_size||'—'}</div></div>
-                      <div><div className="form-label">Art File Status</div><div style={{fontSize:13}}>{(()=>{const fSt=artF.status==='uploaded'?'needs_approval':artF.status||'waiting_for_art';return<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:ART_FILE_SC[fSt]?.bg||'#f1f5f9',color:ART_FILE_SC[fSt]?.c||'#64748b'}}>{ART_FILE_LABELS[fSt]||fSt}</span>})()}</div></div>
+              {/* Per-art detail sections */}
+              {allArtFiles.length>0?allArtFiles.map((af2,afi)=>{
+                const _dp3=new Set();(j.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(it)safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id===af2.id&&d.position)_dp3.add(d.position)})});
+                const _pl3=_dp3.size>0?[..._dp3]:[];const _as3=af2.art_sizes||{};
+                const _cl3=(af2.ink_colors||af2.thread_colors||'').split(/[,\n]/).map(c3=>c3.trim()).filter(Boolean);const _isE3=af2.deco_type==='embroidery';
+                const _cm3={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000','Silver':'#C0C0C0','Royal':'#4169e1','Cardinal':'#8C1515','Green':'#166534','Orange':'#EA580C','Navy 2767':'#001f3f','PMS 286':'#0033A0','PMS 032':'#EF3340','PMS 877':'#C0C0C0','Maroon':'#800000'};
+                const fSt3=af2.status==='uploaded'?'needs_approval':af2.status||'waiting_for_art';
+                return<div key={afi} style={{marginBottom:12,padding:'14px 16px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:10}}>
+                  <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:10}}>
+                    <div style={{fontSize:13,fontWeight:700,color:'#1e3a5f'}}>{af2.name||'Art '+(afi+1)}</div>
+                    <span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:ART_FILE_SC[fSt3]?.bg||'#f1f5f9',color:ART_FILE_SC[fSt3]?.c||'#64748b'}}>{ART_FILE_LABELS[fSt3]||fSt3}</span>
+                  </div>
+                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10,marginBottom:_cl3.length>0?10:0}}>
+                    <div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8'}}>Method</div><div style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{af2.deco_type?.replace(/_/g,' ')||'—'}</div></div>
+                    <div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8'}}>Location{_pl3.length>1?'s':''}</div><div style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{_pl3.join(', ')||'—'}</div></div>
+                    {_pl3.length<=1?<div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8'}}>Art Size</div><div style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{af2.art_size||'—'}</div></div>
+                    :_pl3.map((pos,pi)=><div key={pi}><div style={{fontSize:10,fontWeight:600,color:'#94a3b8'}}>Size — {pos}</div><div style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{_as3[pos]||(pi===0?af2.art_size:'')||'—'}</div></div>)}
+                  </div>
+                  {_cl3.length>0&&<div style={{marginBottom:af2.notes?8:0}}>
+                    <div style={{fontSize:10,fontWeight:600,color:'#94a3b8',marginBottom:4}}>{_isE3?'Thread Colors':'Ink Colors / Pantones'} ({_cl3.length})</div>
+                    <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                      {_cl3.map((cl,i)=>{const clL=cl.toLowerCase();const sw=_cm3[cl]||Object.entries(_cm3).find(([k])=>clL.includes(k.toLowerCase()))?.[1]||null;
+                        return<div key={i} style={{display:'flex',alignItems:'center',gap:5,padding:'3px 10px',background:'white',border:'1px solid #e2e8f0',borderRadius:6}}>
+                          <div style={{width:14,height:14,borderRadius:3,border:'1px solid #d1d5db',background:sw||'linear-gradient(135deg,#f1f5f9,#e2e8f0)'}}/>
+                          <span style={{fontSize:11,fontWeight:600}}>{cl}</span></div>})}
                     </div>
-                    {artF.ink_colors&&<div style={{marginTop:10}}><div className="form-label">Ink Colors</div><div style={{fontSize:13}}>{artF.ink_colors}</div></div>}
-                    {artF.thread_colors&&<div style={{marginTop:6}}><div className="form-label">Thread Colors</div><div style={{fontSize:13}}>{artF.thread_colors}</div></div>}
-                    {artF.notes&&<div style={{marginTop:6}}><div className="form-label">Art Notes</div><div style={{fontSize:13,color:'#64748b'}}>{artF.notes}</div></div>}
-                    {(()=>{const allF=[...(artF.files||[]),...(artF.mockup_files||[])];const seen=new Set();const unique=allF.filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||seen.has(u))return false;seen.add(u);return true});
-                      return unique.length>0?<div style={{marginTop:6}}><div className="form-label">Files</div><div style={{fontSize:12}}>{unique.map((f,i)=><span key={i} className="badge badge-blue" style={{marginRight:4,cursor:isUrl(typeof f==='string'?f:(f?.url||''))?'pointer':'default'}} onClick={()=>{const u=typeof f==='string'?f:(f?.url||'');if(isUrl(u))openFile(u)}}>{typeof f==='string'?f:fileDisplayName(f)}</span>)}</div></div>:null})()}
-                  </>:<div style={{padding:12,background:'#fffbeb',borderRadius:6,fontSize:12,color:'#b45309'}}>
-                    Artwork needs to be applied
                   </div>}
-                </div>
-              </div>
+                  {af2.notes&&<div style={{fontSize:12,color:'#64748b'}}>{af2.notes}</div>}
+                  {(()=>{const allF=[...(af2.files||[]),...(af2.mockup_files||[]),...(af2.prod_files||[])];const seen=new Set();const unique=allF.filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||seen.has(u))return false;seen.add(u);return true});
+                    return unique.length>0?<div style={{marginTop:8}}><div style={{fontSize:10,fontWeight:600,color:'#94a3b8',marginBottom:4}}>Files</div><div style={{display:'flex',gap:4,flexWrap:'wrap'}}>{unique.map((f,i)=><span key={i} className="badge badge-blue" style={{marginRight:4,cursor:isUrl(typeof f==='string'?f:(f?.url||''))?'pointer':'default',fontSize:10}} onClick={()=>{const u=typeof f==='string'?f:(f?.url||'');if(isUrl(u))openFile(u)}}>{typeof f==='string'?f:fileDisplayName(f)}</span>)}</div></div>:null})()}
+                </div>})
+              :<div style={{padding:12,background:'#fffbeb',borderRadius:6,fontSize:12,color:'#b45309'}}>Artwork needs to be applied</div>}
               {/* Numbers details for artist */}
               {(()=>{const numDecos=[];
                 (j.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return;
