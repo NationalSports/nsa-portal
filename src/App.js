@@ -10791,7 +10791,7 @@ export default function App(){
       setOmgSel(updated);setOmgDetailLoading(false);
     }).catch(e=>{console.error('[OMG] Detail load failed:',e);setOmgDetailLoading(false)});
   },[omgSel?.id]); // eslint-disable-line react-hooks/exhaustive-deps
-  const[estF,setEstF]=useState({status:'open',rep:'_me_',search:'',sort:'date_desc'});
+  const[estF,setEstF]=useState({status:'open',rep:'all',search:'',sort:'date_desc'});
   const[soF,setSOF]=useState({status:'all',rep:'all',search:'',sort:'date_desc'});
   const[iS,setIS]=useState({f:'value',d:'desc'});const[iF,setIF]=useState({cat:'all',vnd:'all',clr:'all'});
   const dirtyRef=React.useRef(false);
@@ -11921,7 +11921,7 @@ export default function App(){
     if(estF.sort==='date_desc')fe.sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||''));
     else if(estF.sort==='date_asc')fe.sort((a,b)=>(a.created_at||'').localeCompare(b.created_at||''));
     else if(estF.sort==='customer')fe.sort((a,b)=>{const ca=cust.find(x=>x.id===a.customer_id)?.name||'';const cb=cust.find(x=>x.id===b.customer_id)?.name||'';return ca.localeCompare(cb)});
-    const estActiveFilters=estF.status!=='open'||estF.rep!=='_me_'||estF.search;
+    const estActiveFilters=estF.status!=='open'||estF.rep!=='all'||estF.search;
     const estStCounts={open:ests.filter(e=>e.status==='draft'||e.status==='open'||e.status==='sent').length,draft:ests.filter(e=>e.status==='draft').length,sent:ests.filter(e=>e.status==='sent').length,approved:ests.filter(e=>e.status==='approved').length,converted:ests.filter(e=>e.status==='converted').length};
     return(<>
       {/* Clickable status stat cards */}
@@ -11944,7 +11944,7 @@ export default function App(){
           <option value="all">All Reps</option><option value="_me_">My Estimates</option>{REPS.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
         <select className="form-select" style={{width:150}} value={estF.sort} onChange={e=>setEstF(f=>({...f,sort:e.target.value}))}>
           <option value="date_desc">Newest First</option><option value="date_asc">Oldest First</option><option value="customer">By Customer</option></select>
-        {estActiveFilters&&<button className="btn btn-sm btn-secondary" onClick={()=>setEstF({status:'open',rep:'_me_',search:'',sort:'date_desc'})}>✕ Reset</button>}
+        {estActiveFilters&&<button className="btn btn-sm btn-secondary" onClick={()=>setEstF({status:'open',rep:'all',search:'',sort:'date_desc'})}>✕ Reset</button>}
         <span style={{fontSize:11,color:'#64748b'}}>{fe.length}{fe.length!==ests.length?' of '+ests.length:''} estimates</span>
         <button className="btn btn-primary" onClick={()=>newE(null)}><Icon name="plus" size={14}/> New Estimate</button>
       </div>
