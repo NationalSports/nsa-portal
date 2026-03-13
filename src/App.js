@@ -10482,7 +10482,7 @@ export default function App(){
   // Sync eSO from sos when external updates occur (e.g., coach approval via portal)
   React.useEffect(()=>{if(eSO){const fresh=sos.find(s=>s.id===eSO.id);if(fresh&&fresh.updated_at!==eSO.updated_at){setESO(fresh)}}},[sos]);
   React.useEffect(()=>{if(eEst){const fresh=ests.find(e=>e.id===eEst.id);if(fresh&&fresh.updated_at!==eEst.updated_at){setEEst(fresh)}}},[ests]);
-  const[returnToPage,setReturnToPage]=useState(null);// {page:'production'|'decoration',jobData:obj} — for "Return to Job" nav
+  const[returnToPage,setReturnToPage]=useState(null);// {page:'production',jobData:obj} — for "Return to Job" nav
   const[estBackPg,setEstBackPg]=useState(null);// page to return to when closing estimate editor
   const[soBackPg,setSoBackPg]=useState(null);// page to return to when closing SO editor
   const prevPgRef=React.useRef(pg);
@@ -11337,7 +11337,7 @@ export default function App(){
           </div></div>
 
         {/* Active Timers */}
-        <div className="card"><div className="card-header"><h2>⏱️ Clocked In Now</h2><button className="btn btn-sm btn-secondary" onClick={()=>setPg('decoration')}>Deco Page →</button></div>
+        <div className="card"><div className="card-header"><h2>⏱️ Clocked In Now</h2><button className="btn btn-sm btn-secondary" onClick={()=>setPg('production')}>Prod Board →</button></div>
           <div className="card-body" style={{padding:0,maxHeight:350,overflow:'auto'}}>
             {Object.entries(activeTimers).length>0?Object.entries(activeTimers).map(([key,timer])=>{const[soId,jobId]=key.split('|');
               return<div key={key} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:8}}>
@@ -11617,7 +11617,7 @@ export default function App(){
 
   // SALES ORDERS LIST
   function rSO(){
-    if(eSO)return<OrderEditor key={eSO.id} order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} vendors={vend} onSave={s=>{const locked=savSO(s);setESO(locked)}} onBack={()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onNavInvoice={inv=>{setESO(null);setPg('invoices');setInvF(f=>({...f,search:inv.id}))}} onSaveProduct={p=>{setProd(prev=>prev.some(x=>x.id===p.id)?prev.map(x=>x.id===p.id?p:x):[...prev,p]);_dbSaveProduct(p)}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setPg(returnToPage.page==='production'?'production':'decoration');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:csrId,so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1})}}/>
+    if(eSO)return<OrderEditor key={eSO.id} order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} vendors={vend} onSave={s=>{const locked=savSO(s);setESO(locked)}} onBack={()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onNavInvoice={inv=>{setESO(null);setPg('invoices');setInvF(f=>({...f,search:inv.id}))}} onSaveProduct={p=>{setProd(prev=>prev.some(x=>x.id===p.id)?prev.map(x=>x.id===p.id?p:x):[...prev,p]);_dbSaveProduct(p)}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:csrId,so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1})}}/>
     // Filter SOs
     let fSOs=[...sos];
     if(soF.status!=='all')fSOs=fSOs.filter(s=>calcSOStatus(s)===soF.status);
@@ -12592,6 +12592,9 @@ export default function App(){
   const[roleView,setRoleView]=useState(()=>{try{return localStorage.getItem('nsa_role_view')||'sales'}catch{return'sales'}});
   const changeRoleView=v=>{setRoleView(v);try{localStorage.setItem('nsa_role_view',v)}catch{}};
   function rProd2(){
+    const isAdmin=cu?.role==='admin'||cu?.role==='prod_manager'||cu?.role==='gm';
+    const isDecorator=cu?.role==='production'||cu?.role==='prod_assistant';
+    const decorators=REPS.filter(r=>r.role==='production').filter(r=>r.is_active!==false);
     // Build flat list of SAVED jobs only (must be explicitly on SO.jobs[])
     const allJobs=[];
     sos.forEach(so=>{
@@ -12606,7 +12609,9 @@ export default function App(){
     const filtered=prodFilter==='all'?allJobs:allJobs.filter(j=>{const cc=cust.find(x=>x.id===j.so.customer_id);return(cc?.primary_rep_id||j.so.created_by)===prodFilter});
     const byDeco=prodDecoF==='all'?filtered:filtered.filter(j=>j.deco_type===prodDecoF);
     const readyOnly=byDeco.filter(j=>j.prod_status!=='hold'||isJobReady(j,j.so)).filter(j=>j.prod_status!=='shipped');
-    const byStatus=prodStatF==='active'?readyOnly:prodStatF==='all'?readyOnly:readyOnly.filter(j=>j.prod_status===prodStatF);
+    // Decorator filtering: decorators see all Ready for Prod, but only their assigned jobs in In Line/In Process/Completed
+    const roleFiltered=isDecorator?readyOnly.filter(j=>(j.prod_status==='hold'&&isJobReady(j,j.so))||j.assigned_to===cu?.name):readyOnly;
+    const byStatus=prodStatF==='active'?roleFiltered:prodStatF==='all'?roleFiltered:roleFiltered.filter(j=>j.prod_status===prodStatF);
     const totalUnits=byStatus.reduce((a,j)=>a+j.total_units,0);
     const fulfilledUnits=byStatus.reduce((a,j)=>a+j.fulfilled_units,0);
     const needsArt=byStatus.filter(j=>j.art_status!=='art_complete').length;
@@ -12630,11 +12635,17 @@ export default function App(){
         <select className="form-select" style={{width:150,fontSize:11}} value={prodDecoF} onChange={e=>setProdDecoF(e.target.value)}>
           <option value="all">All Deco Types</option>{allDecoTypes.map(d=><option key={d} value={d}>{d.replace(/_/g,' ')}</option>)}
         </select>
+        {isAdmin&&<select className="form-select" style={{width:150,fontSize:11}} value={prodFilter==='all'?'all':prodFilter} onChange={e=>{const v=e.target.value;if(v.startsWith('deco_')){setProdFilter('all');setProdDecoF('all')}else{setProdFilter(v)}}}>
+          <option value="all">All Decorators</option>{decorators.map(d=><option key={d.id} value={d.name}>{d.name}</option>)}
+        </select>}
         <div style={{marginLeft:'auto',display:'flex',gap:4}}>
           <button className={`btn btn-sm ${prodView==='board'?'btn-primary':'btn-secondary'}`} onClick={()=>setProdView('board')}>Board</button>
           <button className={`btn btn-sm ${prodView==='list'?'btn-primary':'btn-secondary'}`} onClick={()=>setProdView('list')}>List</button>
         </div>
       </div>
+      {isDecorator&&<div style={{marginBottom:8,padding:8,background:'#f5f3ff',borderRadius:6,fontSize:11,color:'#6d28d9'}}>
+        Showing all jobs in Ready for Prod. In Line, In Process, and Completed show only jobs assigned to you.
+      </div>}
       <div className="stats-row">
         <div className="stat-card"><div className="stat-label">Total Jobs</div><div className="stat-value">{byStatus.length}</div></div>
         <div className="stat-card"><div className="stat-label">Total Units</div><div className="stat-value">{totalUnits}</div></div>
@@ -12642,6 +12653,39 @@ export default function App(){
         <div className="stat-card"><div className="stat-label">Needs Art</div><div className="stat-value" style={{color:needsArt>0?'#d97706':''}}>{needsArt}</div></div>
         <div className="stat-card"><div className="stat-label">In Process</div><div className="stat-value" style={{color:'#2563eb'}}>{inProcess}</div></div>
       </div>
+      {/* Decorator Time Tracking — decorators see only their timers */}
+      {(()=>{
+        const myTimers=isDecorator?Object.entries(activeTimers).filter(([,t])=>t.person===cu?.name):Object.entries(activeTimers);
+        const myLogs=isDecorator?jobTimeLogs.filter(l=>l.person===cu?.name):jobTimeLogs;
+        if(myTimers.length===0&&myLogs.length===0)return null;
+        return<div className="card" style={{marginBottom:12,borderLeft:'3px solid #f59e0b'}}>
+          <div style={{padding:'10px 14px'}}>
+            <div style={{fontSize:12,fontWeight:700,color:'#92400e',marginBottom:6}}>⏱️ {isDecorator?'My Time Tracking':'Time Tracking'}</div>
+            {myTimers.length>0&&<div style={{marginBottom:8}}>
+              <div style={{fontSize:10,fontWeight:600,color:'#166534',marginBottom:4}}>ACTIVE NOW:</div>
+              {myTimers.map(([key,timer])=>{
+                const[soId,jobId]=key.split('|');const mins=Math.round((Date.now()-timer.clockIn)/60000);
+                return<div key={key} style={{display:'flex',alignItems:'center',gap:8,padding:'3px 0',fontSize:11}}>
+                  <span style={{width:8,height:8,borderRadius:4,background:'#22c55e',animation:'pulse 2s infinite'}}/>
+                  <span style={{fontWeight:700}}>{timer.person}</span>
+                  <span style={{color:'#64748b'}}>on {jobId} ({soId})</span>
+                  <span style={{marginLeft:'auto',fontWeight:700,color:'#d97706'}}>{mins}m</span>
+                </div>})}
+            </div>}
+            {myLogs.length>0&&<div>
+              <div style={{fontSize:10,fontWeight:600,color:'#64748b',marginBottom:4}}>RECENT LOGS:</div>
+              {myLogs.slice(-5).reverse().map((log,i)=><div key={i} style={{display:'flex',gap:8,fontSize:10,color:'#475569',padding:'2px 0'}}>
+                <span style={{fontWeight:600}}>{log.person}</span>
+                <span>{log.jobId}</span>
+                <span style={{color:'#94a3b8'}}>{log.clockOut}</span>
+                <span style={{marginLeft:'auto',fontWeight:700,color:'#7c3aed'}}>{log.minutes}m</span>
+              </div>)}
+              <div style={{fontSize:10,color:'#64748b',marginTop:4,borderTop:'1px solid #f1f5f9',paddingTop:4}}>
+                Total logged: <strong>{myLogs.reduce((a,l)=>a+l.minutes,0)} min</strong> ({(myLogs.reduce((a,l)=>a+l.minutes,0)/60).toFixed(1)} hrs)
+              </div>
+            </div>}
+          </div>
+        </div>})()}
       {prodView==='board'&&<div style={{display:'flex',gap:12,overflowX:'auto',paddingBottom:12}}>
         {kanbanCols.map(col=>{const colJobs=col.filter?byStatus.filter(col.filter):byStatus.filter(j=>j.prod_status===col.id);
           return<div key={col.id} style={{minWidth:220,flex:1,background:col.bg,borderRadius:8,padding:8}}>
@@ -12780,29 +12824,6 @@ export default function App(){
         </tbody></table>
       </div></div>}
 
-      {/* Idle Warning — "Still working?" popup */}
-      {idleWarning&&<div className="modal-overlay" style={{zIndex:10000}}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:380}}>
-        <div className="modal-header" style={{background:'#fffbeb'}}><h2>⏱️ Still working?</h2></div>
-        <div className="modal-body" style={{textAlign:'center',padding:24}}>
-          <div style={{fontSize:40,marginBottom:12}}>💤</div>
-          <div style={{fontSize:14,fontWeight:700,color:'#92400e',marginBottom:8}}>No activity detected for {Math.round((Date.now()-idleWarning.since)/60000)} minutes</div>
-          <div style={{fontSize:12,color:'#64748b',marginBottom:16}}>Your timer{idleWarning.keys.length>1?'s are':' is'} still running. If you're away, you'll be automatically clocked out after 10 minutes of inactivity.</div>
-          <div style={{display:'flex',gap:8}}>
-            <button className="btn btn-primary" style={{flex:1,padding:'10px 16px',fontWeight:700}} onClick={()=>{_lastActivity.current=Date.now();_idleState.current='active';setIdleWarning(null)}}>Yes, I'm working</button>
-            <button className="btn btn-secondary" style={{flex:1,padding:'10px 16px',fontWeight:700}} onClick={()=>{
-              // Manual clock-out art timers only (idle tracking doesn't apply to decorators)
-              Object.entries(activeArtTimers).forEach(([key,timer])=>{
-                const mins=Math.round((Date.now()-timer.clockIn)/60000);
-                const idleMins=Math.round(((_idleAccum.current[key]||0)+(Date.now()-_lastActivity.current))/60000);
-                setArtTimeLogs(prev=>[...prev,{jobId:key.split('|')[1],soId:key.split('|')[0],person:timer.person,clockIn:new Date(timer.clockIn).toLocaleString(),clockOut:new Date().toLocaleString(),minutes:mins,idleMinutes:idleMins,artName:timer.artName,customer:timer.customer}]);
-              });
-              setActiveArtTimers({});_idleState.current='active';_idleAccum.current={};setIdleWarning(null);
-              nf('Art timers clocked out');
-            }}>Clock me out</button>
-          </div>
-        </div>
-      </div></div>}
-
       {/* Assignment Modal — appears when moving to In Line */}
       {assignModal&&<div className="modal-overlay" onClick={()=>setAssignModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:420}}>
         <div className="modal-header" style={{background:'#fffbeb'}}><h2>📋 Assign to Machine / Person</h2><button className="modal-close" onClick={()=>setAssignModal(null)}>×</button></div>
@@ -12841,15 +12862,13 @@ export default function App(){
           </div>
         </div>
         <div className="modal-footer">
-          <button className="btn btn-secondary" onClick={()=>{
-            applyJobMove(assignModal.job,assignModal.targetStatus,'','');
-            setAssignModal(null);
-          }}>Skip — Move Anyway</button>
-          <button className="btn btn-primary" onClick={()=>{
+          <button className="btn btn-secondary" onClick={()=>setAssignModal(null)}>Cancel</button>
+          <button className="btn btn-primary" disabled={!assignTo.person} onClick={()=>{
             applyJobMove(assignModal.job,assignModal.targetStatus,assignTo.machine,assignTo.person);
             setAssignModal(null);
           }}>✓ Assign & Move</button>
         </div>
+        {!assignTo.person&&<div style={{padding:'4px 14px 8px',fontSize:11,color:'#dc2626',fontWeight:600}}>A decorator must be assigned to move to In Line.</div>}
       </div></div>}
 
       {/* ═══ PRODUCTION MOCKUP VIEW — full job detail for decorators ═══ */}
@@ -14667,7 +14686,7 @@ export default function App(){
       {/* Report controls */}
       <div style={{display:'flex',gap:8,marginBottom:12,alignItems:'center',flexWrap:'wrap'}}>
         <div style={{display:'flex',gap:4}}>
-          {[['overview','📊 Overview'],['pipeline','💰 Pipeline'],['customers','👥 Customers'],['products','📦 Products'],['reps','🏆 Reps'],['production','🏭 Production'],['time','⏱️ Time & Labor'],['sales_tax','🧾 Sales Tax'],['csr_tasks','📌 CSR Tasks']].map(([v,l])=>
+          {[['overview','📊 Overview'],['pipeline','💰 Pipeline'],['customers','👥 Customers'],['products','📦 Products'],['reps','🏆 Reps'],['production','🏭 Production'],['decorator','👤 Decorator'],['time','⏱️ Time & Labor'],['sales_tax','🧾 Sales Tax'],['csr_tasks','📌 CSR Tasks']].map(([v,l])=>
             <button key={v} className={`btn btn-sm ${rptTab===v?'btn-primary':'btn-secondary'}`} onClick={()=>setRptTab(v)}>{l}</button>)}
         </div>
         <select className="form-select" style={{width:140,fontSize:11}} value={rptRep} onChange={e=>setRptRep(e.target.value)}>
@@ -15027,6 +15046,117 @@ export default function App(){
             </div>})()}
         </div>
       </>}
+
+      {/* ═══ DECORATOR TAB ═══ */}
+      {(rptTab==='decorator')&&(()=>{
+        const isAdminRpt=cu?.role==='admin'||cu?.role==='prod_manager'||cu?.role==='gm';
+        const isDecoratorRpt=cu?.role==='production'||cu?.role==='prod_assistant';
+        const allDecorators=REPS.filter(r=>r.role==='production').filter(r=>r.is_active!==false);
+        const{decoTasks}=buildWarehouseData();
+        // Completed jobs
+        const completedDecoJobs=[];
+        sos.filter(so=>{const st=calcSOStatus(so);return st!=='complete'&&st!=='booking'}).forEach(so=>{
+          const c=cust.find(x=>x.id===so.customer_id);const cName=c?.name||'Unknown';
+          const rep=REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name?.split(' ')[0]||'—';
+          const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
+          safeJobs(so).filter(j=>j.prod_status==='completed').forEach(j=>{
+            completedDecoJobs.push({so,soId:so.id,job:j,cName,rep,daysOut,
+              artName:j.art_name,decoType:j.deco_type,totalUnits:j.total_units,fulfilledUnits:j.fulfilled_units,
+              prodStatus:j.prod_status,machine:MACHINES.find(m=>m.id===j.assigned_machine)?.name,assignedTo:j.assigned_to});
+          });
+        });
+        const personFilter=isDecoratorRpt?cu?.name:(decoPersonF!=='all'?decoPersonF:'all');
+        const myCompleted=personFilter==='all'?completedDecoJobs:completedDecoJobs.filter(t=>t.assignedTo===personFilter);
+        const myLogs=personFilter==='all'?jobTimeLogs:jobTimeLogs.filter(l=>l.person===personFilter);
+        const totalMins=myLogs.reduce((a,l)=>a+(l.minutes||0),0);
+        const totalUnitsCompleted=myCompleted.reduce((a,t)=>a+t.totalUnits,0);
+        // Items per day — group logs by date
+        const logsByDate={};myLogs.forEach(l=>{const d=l.clockOut?.split(',')[0]||'Unknown';if(!logsByDate[d])logsByDate[d]={mins:0,jobs:0};logsByDate[d].mins+=l.minutes;logsByDate[d].jobs++});
+        // Workload per decorator (admin only)
+        const workloadData=isAdminRpt?allDecorators.map(d=>{
+          const dJobs=decoTasks.filter(t=>t.assignedTo===d.name&&t.prodStatus!=='completed'&&t.prodStatus!=='shipped');
+          const dUnits=dJobs.reduce((a,t)=>a+t.totalUnits,0);
+          const readyN=dJobs.filter(t=>t.isReady).length;
+          const inProcN=dJobs.filter(t=>t.prodStatus==='in_process').length;
+          const dCompleted=completedDecoJobs.filter(t=>t.assignedTo===d.name);
+          const dLogs=jobTimeLogs.filter(l=>l.person===d.name);
+          const dMins=dLogs.reduce((a,l)=>a+(l.minutes||0),0);
+          return{name:d.name,id:d.id,jobs:dJobs.length,units:dUnits,ready:readyN,inProcess:inProcN,completed:dCompleted.length,completedUnits:dCompleted.reduce((a,t)=>a+t.totalUnits,0),totalMins:dMins};
+        }):[];
+        const unassigned=isAdminRpt?decoTasks.filter(t=>!t.assignedTo&&t.prodStatus!=='completed'&&t.prodStatus!=='shipped'):[];
+        return<>
+          {/* Admin: decorator filter */}
+          {isAdminRpt&&<div style={{marginBottom:12}}>
+            <select className="form-select" style={{width:180,fontSize:11}} value={decoPersonF} onChange={e=>setDecoPersonF(e.target.value)}>
+              <option value="all">All Decorators</option>{allDecorators.map(d=><option key={d.id} value={d.name}>{d.name}</option>)}
+            </select>
+          </div>}
+          {/* KPI */}
+          <div className="stats-row" style={{marginBottom:16}}>
+            <div className="stat-card"><div className="stat-label">Completed Jobs</div><div className="stat-value" style={{color:'#166534'}}>{myCompleted.length}</div></div>
+            <div className="stat-card"><div className="stat-label">Units Completed</div><div className="stat-value" style={{color:'#1e40af'}}>{totalUnitsCompleted}</div></div>
+            <div className="stat-card"><div className="stat-label">Time Logged</div><div className="stat-value" style={{color:'#7c3aed'}}>{(totalMins/60).toFixed(1)}h</div></div>
+            <div className="stat-card"><div className="stat-label">Units/Hour</div><div className="stat-value" style={{color:'#d97706'}}>{totalMins>0?(totalUnitsCompleted/(totalMins/60)).toFixed(1):'—'}</div></div>
+          </div>
+          {/* Admin: Workload per Decorator */}
+          {isAdminRpt&&<div className="card" style={{marginBottom:12,borderLeft:'3px solid #7c3aed'}}>
+            <div className="card-header"><h2>👤 Decorator Workload (Units)</h2></div>
+            <div className="card-body" style={{padding:0}}>
+              <table style={{fontSize:12,width:'100%'}}><thead><tr>
+                <th>Decorator</th><th style={{textAlign:'center'}}>Active Jobs</th><th style={{textAlign:'center'}}>Active Units</th><th style={{textAlign:'center'}}>Ready</th><th style={{textAlign:'center'}}>In Process</th><th style={{textAlign:'center'}}>Completed</th><th style={{textAlign:'center'}}>Comp. Units</th><th style={{textAlign:'right'}}>Hours</th>
+              </tr></thead><tbody>
+                {workloadData.map(d=><tr key={d.id}>
+                  <td style={{fontWeight:700,color:'#6d28d9'}}>{d.name}</td>
+                  <td style={{textAlign:'center',fontWeight:700}}>{d.jobs}</td>
+                  <td style={{textAlign:'center',fontWeight:700,color:'#1e40af'}}>{d.units}</td>
+                  <td style={{textAlign:'center'}}><span style={{padding:'1px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:'#dcfce7',color:'#166534'}}>{d.ready}</span></td>
+                  <td style={{textAlign:'center'}}><span style={{padding:'1px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:'#dbeafe',color:'#1e40af'}}>{d.inProcess}</span></td>
+                  <td style={{textAlign:'center',fontWeight:600,color:'#166534'}}>{d.completed}</td>
+                  <td style={{textAlign:'center',fontWeight:700}}>{d.completedUnits}</td>
+                  <td style={{textAlign:'right',color:'#7c3aed',fontWeight:600}}>{(d.totalMins/60).toFixed(1)}</td>
+                </tr>)}
+                {unassigned.length>0&&<tr style={{background:'#fef2f2'}}>
+                  <td style={{fontWeight:700,color:'#dc2626'}}>Unassigned</td>
+                  <td style={{textAlign:'center',fontWeight:700}}>{unassigned.length}</td>
+                  <td style={{textAlign:'center',fontWeight:700,color:'#dc2626'}}>{unassigned.reduce((a,t)=>a+t.totalUnits,0)}</td>
+                  <td colSpan="5" style={{textAlign:'center',color:'#dc2626',fontSize:10}}>Needs assignment</td>
+                </tr>}
+              </tbody></table>
+            </div>
+          </div>}
+          {/* Time Logs by Day */}
+          {Object.keys(logsByDate).length>0&&<div className="card" style={{marginBottom:12}}>
+            <div className="card-header"><h2>⏱️ Time Logs by Day</h2></div>
+            <div className="card-body" style={{padding:0}}>
+              <table style={{fontSize:12,width:'100%'}}><thead><tr><th>Date</th><th style={{textAlign:'center'}}>Sessions</th><th style={{textAlign:'right'}}>Hours</th></tr></thead>
+              <tbody>{Object.entries(logsByDate).reverse().slice(0,14).map(([d,v])=>
+                <tr key={d}><td style={{fontWeight:600}}>{d}</td><td style={{textAlign:'center'}}>{v.jobs}</td><td style={{textAlign:'right',fontWeight:700,color:'#7c3aed'}}>{(v.mins/60).toFixed(1)}</td></tr>
+              )}</tbody></table>
+            </div>
+          </div>}
+          {/* Completed Jobs History */}
+          <div className="card" style={{marginBottom:12,borderLeft:'3px solid #166534'}}>
+            <div className="card-header" style={{background:'#f0fdf4'}}><h2 style={{color:'#166534'}}>{isDecoratorRpt?'My':''}Completed Jobs ({myCompleted.length})</h2></div>
+            <div className="card-body" style={{padding:0,maxHeight:500,overflow:'auto'}}>
+              {myCompleted.length===0?<div className="empty" style={{padding:20}}>No completed jobs yet</div>:
+              <table style={{fontSize:12,width:'100%'}}><thead><tr><th>Customer</th><th>SO</th><th>Art</th><th>Type</th>{isAdminRpt&&<th>Decorator</th>}<th style={{textAlign:'center'}}>Units</th><th>Machine</th></tr></thead>
+              <tbody>{myCompleted.map((t,ti)=>
+                <tr key={ti} style={{cursor:'pointer'}} onClick={()=>{setProdJobModal({...t.job,so:t.so,soId:t.soId,customer:t.cName,rep:t.rep,daysOut:t.daysOut})}}>
+                  <td style={{fontWeight:700}}>{t.cName}</td>
+                  <td style={{fontSize:11,color:'#64748b'}}>{t.soId}</td>
+                  <td style={{fontWeight:600,color:'#7c3aed'}}>{t.artName}</td>
+                  <td><span style={{padding:'1px 5px',borderRadius:3,fontSize:9,fontWeight:600,
+                    background:t.decoType==='embroidery'?'#f3e8ff':t.decoType==='screen_print'?'#dbeafe':'#fef3c7',
+                    color:t.decoType==='embroidery'?'#6b21a8':t.decoType==='screen_print'?'#1e40af':'#92400e'}}>
+                    {t.decoType?.replace(/_/g,' ')}</span></td>
+                  {isAdminRpt&&<td style={{fontSize:11,color:'#6d28d9',fontWeight:600}}>{t.assignedTo||'—'}</td>}
+                  <td style={{textAlign:'center',fontWeight:700}}>{t.fulfilledUnits}/{t.totalUnits}</td>
+                  <td style={{fontSize:11,color:'#64748b'}}>{t.machine||'—'}</td>
+                </tr>
+              )}</tbody></table>}
+            </div>
+          </div>
+        </>})()}
 
       {/* ═══ TIME & LABOR TAB ═══ */}
       {(rptTab==='time')&&<>
@@ -22528,7 +22658,6 @@ export default function App(){
       {id:'jobs',label:'Jobs'},
       {id:'art',label:'Art Dashboard'},
       {id:'production',label:'Production Board'},
-      {id:'decoration',label:'Decoration'},
       {id:'warehouse',label:'Warehouse'},
       {id:'batch_pos',label:'Batch POs'},
       {id:'customers',label:'Customers'},
@@ -22548,11 +22677,11 @@ export default function App(){
       rep:['dashboard','estimates','orders','invoices','omg','customers','messages','commissions','reports','products','art'],
       csr:['dashboard','estimates','orders','invoices','customers','messages','products','inventory'],
       accounting:['dashboard','invoices','customers','reports','qb'],
-      warehouse:['dashboard','orders','warehouse','batch_pos','inventory','production','decoration'],
-      prod_manager:['dashboard','orders','jobs','art','production','decoration','warehouse','inventory','batch_pos'],
-      prod_assistant:['dashboard','orders','jobs','production','decoration','warehouse','inventory'],
-      production:['dashboard','orders','jobs','art','production','decoration','warehouse','inventory'],
-      artist:['dashboard','orders','art','jobs','production','decoration'],
+      warehouse:['dashboard','orders','warehouse','batch_pos','inventory','production'],
+      prod_manager:['dashboard','orders','jobs','art','production','warehouse','inventory','batch_pos','reports'],
+      prod_assistant:['dashboard','orders','jobs','production','warehouse','inventory','reports'],
+      production:['dashboard','orders','jobs','art','production','warehouse','inventory','reports'],
+      artist:['dashboard','orders','art','jobs','production'],
     };
 
     const activeReps=REPS.filter(r=>r.is_active!==false);
@@ -23037,8 +23166,8 @@ export default function App(){
     </>)};
 
     // NAV
-  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'messages',label:'Messages',icon:'mail'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'art',label:'Art Dashboard',icon:'image'},{id:'production',label:'Prod Board',icon:'package'},{id:'decoration',label:'Decoration',icon:'image'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'purchase_orders',label:'Purchase Orders',icon:'cart'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{id:'team',label:'Team',icon:'users'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'Analytics'},{id:'reports',label:'Reports',icon:'dollar'},{id:'commissions',label:'Commissions',icon:'dollar',roles:['admin','rep']},{section:'System'},{id:'issues',label:'Issues',icon:'alert'},{id:'import',label:'Import / Upload',icon:'upload'},{id:'qb',label:'QuickBooks Sync',icon:'dollar'},{id:'backup',label:'Backup & Data',icon:'save'},{id:'settings',label:'Settings',icon:'grid',roles:['admin']}];
-  const titles={dashboard:'Dashboard',reports:'Reports & Analytics',commissions:'Commissions',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',omg:'OMG Team Stores',jobs:'Jobs',art:'Art Dashboard',production:'Production Board',decoration:'Decoration',warehouse:'Warehouse',purchase_orders:'Purchase Orders',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',team:'Team Directory',products:'Products',inventory:'Inventory',messages:'Messages',issues:'Issues',import:'Import / Upload',qb:'QuickBooks Online',backup:'Backup & Data',settings:'Settings'};
+  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'messages',label:'Messages',icon:'mail'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'art',label:'Art Dashboard',icon:'image'},{id:'production',label:'Prod Board',icon:'package'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'purchase_orders',label:'Purchase Orders',icon:'cart'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{id:'team',label:'Team',icon:'users'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'Analytics'},{id:'reports',label:'Reports',icon:'dollar'},{id:'commissions',label:'Commissions',icon:'dollar',roles:['admin','rep']},{section:'System'},{id:'issues',label:'Issues',icon:'alert'},{id:'import',label:'Import / Upload',icon:'upload'},{id:'qb',label:'QuickBooks Sync',icon:'dollar'},{id:'backup',label:'Backup & Data',icon:'save'},{id:'settings',label:'Settings',icon:'grid',roles:['admin']}];
+  const titles={dashboard:'Dashboard',reports:'Reports & Analytics',commissions:'Commissions',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',omg:'OMG Team Stores',jobs:'Jobs',art:'Art Dashboard',production:'Production Board',warehouse:'Warehouse',purchase_orders:'Purchase Orders',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',team:'Team Directory',products:'Products',inventory:'Inventory',messages:'Messages',issues:'Issues',import:'Import / Upload',qb:'QuickBooks Online',backup:'Backup & Data',settings:'Settings'};
   // ─── SCAN RESULT HANDLER ───
   function handleScanResult(val){
     if(!val)return;
@@ -23228,7 +23357,28 @@ export default function App(){
         <span style={{fontSize:16}}>&#9888;</span><span style={{flex:1}}>{dbError}</span>
         <button onClick={()=>setDbError(null)} style={{background:'none',border:'none',color:'#991b1b',cursor:'pointer',fontWeight:800,fontSize:14}}>&#215;</button>
       </div>}
-      <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='art'&&rArtist()}{pg==='production'&&rProd2()}{pg==='decoration'&&rDeco()}{pg==='warehouse'&&rWarehouse()}{pg==='purchase_orders'&&rPOs()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='team'&&rTeam()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='commissions'&&rCommissions()}{pg==='omg'&&rOMG()}{pg==='reports'&&rReports()}{pg==='issues'&&rIssues()}{pg==='import'&&rImport()}{pg==='qb'&&rQB()}{pg==='backup'&&rBackup()}{pg==='settings'&&rSettings()}</div></div>
+      <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='art'&&rArtist()}{pg==='production'&&rProd2()}{pg==='warehouse'&&rWarehouse()}{pg==='purchase_orders'&&rPOs()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='team'&&rTeam()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='commissions'&&rCommissions()}{pg==='omg'&&rOMG()}{pg==='reports'&&rReports()}{pg==='issues'&&rIssues()}{pg==='import'&&rImport()}{pg==='qb'&&rQB()}{pg==='backup'&&rBackup()}{pg==='settings'&&rSettings()}</div></div>
+    {/* Idle Warning — art timers only (global, not tied to any specific page) */}
+    {idleWarning&&<div className="modal-overlay" style={{zIndex:10000}}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:380}}>
+      <div className="modal-header" style={{background:'#fffbeb'}}><h2>⏱️ Still working?</h2></div>
+      <div className="modal-body" style={{textAlign:'center',padding:24}}>
+        <div style={{fontSize:40,marginBottom:12}}>💤</div>
+        <div style={{fontSize:14,fontWeight:700,color:'#92400e',marginBottom:8}}>No activity detected for {Math.round((Date.now()-idleWarning.since)/60000)} minutes</div>
+        <div style={{fontSize:12,color:'#64748b',marginBottom:16}}>Your timer{idleWarning.keys.length>1?'s are':' is'} still running. If you're away, you'll be automatically clocked out after 10 minutes of inactivity.</div>
+        <div style={{display:'flex',gap:8}}>
+          <button className="btn btn-primary" style={{flex:1,padding:'10px 16px',fontWeight:700}} onClick={()=>{_lastActivity.current=Date.now();_idleState.current='active';setIdleWarning(null)}}>Yes, I'm working</button>
+          <button className="btn btn-secondary" style={{flex:1,padding:'10px 16px',fontWeight:700}} onClick={()=>{
+            Object.entries(activeArtTimers).forEach(([key,timer])=>{
+              const mins=Math.round((Date.now()-timer.clockIn)/60000);
+              const idleMins=Math.round(((_idleAccum.current[key]||0)+(Date.now()-_lastActivity.current))/60000);
+              setArtTimeLogs(prev=>[...prev,{jobId:key.split('|')[1],soId:key.split('|')[0],person:timer.person,clockIn:new Date(timer.clockIn).toLocaleString(),clockOut:new Date().toLocaleString(),minutes:mins,idleMinutes:idleMins,artName:timer.artName,customer:timer.customer}]);
+            });
+            setActiveArtTimers({});_idleState.current='active';_idleAccum.current={};setIdleWarning(null);
+            nf('Art timers clocked out');
+          }}>Clock me out</button>
+        </div>
+      </div>
+    </div></div>}
     <CustModal isOpen={cM.open} onClose={()=>setCM({open:false,c:null})} onSave={savC} customer={cM.c} parents={pars} reps={REPS}/>
     <AdjModal isOpen={aM.open} onClose={()=>setAM({open:false,p:null})} product={aM.p} onSave={savI}/>
 
