@@ -364,8 +364,10 @@ const _dbSaveSOInner = async (so) => {
         if(pickErr)console.error('[DB] so_item_pick_lines insert failed:',pickErr.message,pickErr.details);
       }
       if(po_lines?.length){
-        const poRows=po_lines.map(po=>{const{po_id,vendor,received,cancelled,shipments,status,created_at,expected_date,memo,po_type,deco_vendor,deco_type,unit_cost,drop_ship,...sizes}=po;
-          return{so_item_id:inserted.id,po_id,vendor,received:received||{},cancelled:cancelled||{},shipments:shipments||[],status,created_at,expected_date,memo,sizes:{...sizes,po_type:po_type||undefined,deco_vendor:deco_vendor||undefined,deco_type:deco_type||undefined,unit_cost:unit_cost||undefined,drop_ship:drop_ship||undefined}}});
+        const poRows=po_lines.map(po=>{const{po_id,vendor,received,cancelled,shipments,status,created_at,expected_date,memo,po_type,deco_vendor,deco_type,unit_cost,drop_ship,billed,tracking_numbers,_bill_details,_bill_cost,...sizes}=po;
+          return{so_item_id:inserted.id,po_id,vendor,received:received||{},cancelled:cancelled||{},shipments:shipments||[],status,created_at,expected_date,memo,
+            billed:billed||{},tracking_numbers:tracking_numbers||[],
+            sizes:{...sizes,po_type:po_type||undefined,deco_vendor:deco_vendor||undefined,deco_type:deco_type||undefined,unit_cost:unit_cost||undefined,drop_ship:drop_ship||undefined,_bill_details:_bill_details||undefined,_bill_cost:_bill_cost||undefined}}});
         const{error:poErr}=await supabase.from('so_item_po_lines').insert(poRows);
         if(poErr)console.error('[DB] so_item_po_lines insert failed:',poErr.message,poErr.details);
       }
@@ -822,15 +824,16 @@ const parseNetSuitePdf=(text,docType,products)=>{
   let headerIdx=-1;
   for(let i=0;i<lines.length;i++){
     const l=lines[i].toLowerCase();
-    if((l.includes('quantity')||l.includes('qty'))&&(l.includes('item')||l.includes('sku'))&&(l.includes('amount')||l.includes('rate'))){
+    if((l.includes('quantity')||l.includes('qty'))&&(l.includes('item')||l.includes('sku')||l.includes('description'))&&(l.includes('amount')||l.includes('rate')||l.includes('price')||l.includes('extension'))){
       headerIdx=i;break;
     }
   }
 
-  const isEndMarker=l=>/^(Subtotal|Total$|Tax\b|Discount|Thank you|Comments|Notes$|Memo$|Terms$)/i.test(l.replace(/\t.*/,'').trim());
+  const isEndMarker=l=>{const t=l.replace(/\t.*/,'').trim();return/^(Subtotal|Total$|Tax\b|Discount|Thank you|Comments|Notes$|Memo$|Terms$|Merchandise\s*Total|Document\s*Total|Report\s*Problems)/i.test(t)};
+  const isMetadataLine=l=>{const lo=l.toLowerCase();return/\b(weight\s*\(lb\)|shipment\s*method|ship\s*date|terms\s*of\s*(payment|delivery)|document\s*(number|date)|rqst\s*ship\s*date)/i.test(lo)};
   // Detect page breaks and repeated headers from multi-page PDFs (skip, don't end)
   const isPageBreak=l=>{const t=l.replace(/\t.*/,'').trim();return/^Page\s+\d/i.test(t)};
-  const isRepeatedHeader=l=>{const lo=l.toLowerCase();return(lo.includes('quantity')||lo.includes('qty'))&&(lo.includes('item')||lo.includes('sku'))&&(lo.includes('amount')||lo.includes('rate'))};
+  const isRepeatedHeader=l=>{const lo=l.toLowerCase();return(lo.includes('quantity')||lo.includes('qty'))&&(lo.includes('item')||lo.includes('sku')||lo.includes('description'))&&(lo.includes('amount')||lo.includes('rate')||lo.includes('price')||lo.includes('extension'))};
   // Check if a line starts with a quantity number (item data line vs description line)
   const isItemLine=line=>{
     const p=line.split('\t')[0]?.trim();
@@ -844,7 +847,7 @@ const parseNetSuitePdf=(text,docType,products)=>{
     while(i<lines.length){
       const line=lines[i];
       if(isEndMarker(line))break;
-      if(!line.trim()||isPageBreak(line)||isRepeatedHeader(line)){i++;continue}
+      if(!line.trim()||isPageBreak(line)||isRepeatedHeader(line)||isMetadataLine(line)){i++;continue}
 
       if(isItemLine(line)){
         // This is a data line (qty/sku/rate/amount) — next non-empty line is description
@@ -869,7 +872,7 @@ const parseNetSuitePdf=(text,docType,products)=>{
     // No header — try scanning for qty-starting lines
     result.warnings.push('Could not detect item table header — trying pattern-based parsing');
     for(let i=0;i<lines.length;i++){
-      if(isEndMarker(lines[i])||isPageBreak(lines[i])||isRepeatedHeader(lines[i]))continue;
+      if(isEndMarker(lines[i])||isPageBreak(lines[i])||isRepeatedHeader(lines[i])||isMetadataLine(lines[i]))continue;
       if(isItemLine(lines[i])){
         let descLine='';
         if(i+1<lines.length&&!isItemLine(lines[i+1])&&!isEndMarker(lines[i+1])){
@@ -947,6 +950,9 @@ const parseNetSuitePdf=(text,docType,products)=>{
     let productName=description;
     if(color){productName=description.replace(new RegExp('\\s*[-–—]\\s*'+color.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'.*$','i'),'').trim()}
 
+    // Skip metadata lines mistakenly parsed as items (weight, shipment info from supplier header)
+    const skipMeta=/^(weight\s*\(|shipment\s*method|ship\s*date|rqst\s*ship|terms\s*of\s*(payment|delivery)|document\s*(number|date))/i;
+    if(skipMeta.test(baseSku)||skipMeta.test(description)||(skuRaw&&skipMeta.test(skuRaw))){return}
     // Detect shipping lines
     if(/^shipping$/i.test(baseSku)||/^shipping$/i.test(description)){
       result.shipping+=amount||rate;return;
@@ -2332,6 +2338,7 @@ function LoginGate({onLogin,reps}){
 
 function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onBack,onConvertSO,onCopyEstimate,onRevertToEst,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,allInvoices,batchPOs,onBatchPO,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onSaveProduct,onViewEstimate,onViewSO,returnToPage,onReturnToJob,onAssignTodo}){
   const vendorList=vendorsProp||D_V;// use DB-loaded vendors if available, fallback to defaults
+  const cuEmail=(cu?.email)||(REPS||[]).find(r=>r.id===cu?.id)?.email||'';
   const isE=mode==='estimate';const isSO=mode==='so';
   const[o,setO]=useState(order);const[cust,setCust]=useState(ic);const[pS,setPS]=useState('');const[showAdd,setShowAdd]=useState(false);
   const[tab,setTab]=useState(initTab||'items');const[dirty,setDirty]=useState(false);const[selJob,setSelJob]=useState(null);const[jobNote,setJobNote]=useState('');const[msgDept,setMsgDept]=useState('all');const[replyTo,setReplyTo]=useState(null);
@@ -3645,7 +3652,22 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <button className="btn btn-sm btn-secondary" style={{fontSize:11,background:deco.front_and_back?'#7c3aed':'#faf5ff',borderColor:'#c084fc',color:deco.front_and_back?'white':'#7c3aed',fontWeight:deco.front_and_back?700:400}} onClick={()=>{uD(idx,di,'front_and_back',!deco.front_and_back);nf(deco.front_and_back?'Front + Back OFF — single side':'Front + Back ON — qty doubled')}}>↕ Front + Back{deco.front_and_back?' ✓':''}</button>
               <button className="btn btn-sm btn-secondary" style={{fontSize:11,background:deco.reversible?'#0891b2':'#ecfeff',borderColor:'#67e8f9',color:deco.reversible?'white':'#0891b2',fontWeight:deco.reversible?700:400}} onClick={()=>{uD(idx,di,'reversible',!deco.reversible);nf(deco.reversible?'Reversible OFF':'Reversible ON — qty doubled')}}>🔄 Reversible{deco.reversible?' ✓':''}</button>
               {!showRoster?<><button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>uD(idx,di,'_showRoster',true)}>📋 Assign Numbers ({filledNums>0?filledNums+'/':''}{qty} pcs)</button>
-              <button className="btn btn-sm btn-secondary" style={{fontSize:11,background:'#ecfdf5',borderColor:'#6ee7b7',color:'#065f46'}} onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.csv,.xlsx,.xls,.txt';inp.onchange=()=>{const f=inp.files[0];if(!f)return;const reader=new FileReader();reader.onload=ev=>{const lines=ev.target.result.split('\n').filter(l=>l.trim());if(lines.length<2){nf('CSV appears empty','error');return}
+              <button className="btn btn-sm btn-secondary" style={{fontSize:11,background:'#ecfdf5',borderColor:'#6ee7b7',color:'#065f46'}}
+                onDragOver={e=>{e.preventDefault();e.currentTarget.style.background='#d1fae5';e.currentTarget.style.borderColor='#34d399'}}
+                onDragLeave={e=>{e.currentTarget.style.background='#ecfdf5';e.currentTarget.style.borderColor='#6ee7b7'}}
+                onDrop={e=>{e.preventDefault();e.currentTarget.style.background='#ecfdf5';e.currentTarget.style.borderColor='#6ee7b7';const f=e.dataTransfer.files[0];if(!f)return;const reader=new FileReader();reader.onload=ev=>{const lines=ev.target.result.split('\n').filter(l=>l.trim());if(lines.length<2){nf('CSV appears empty','error');return}
+                const hdr=lines[0].toLowerCase();const hasHeader=hdr.includes('size');const dataLines=hasHeader?lines.slice(1):lines;
+                const cols=lines[0].split(',');const numColIdx=cols.findIndex(c=>c.trim().toLowerCase()==='number'||c.trim().toLowerCase()==='#'||c.trim().toLowerCase()==='num');
+                const nameColIdx=cols.findIndex(c=>c.trim().toLowerCase()==='name'||c.trim().toLowerCase()==='player');
+                const nr={...roster};let numCt=0;const namesDeco=safeDecos(item).find((dd,ddi)=>dd.kind==='names'&&ddi!==di);const nn=namesDeco?{...(namesDeco.names||{})}:null;let nameCt=0;
+                dataLines.forEach(line=>{const parts=line.split(',').map(s=>s.trim());const sz=parts[0];if(!sz||!item.sizes[sz]||item.sizes[sz]<=0)return;
+                  const num=numColIdx>=1?parts[numColIdx]:parts[1]||'';
+                  const name=nameColIdx>=1?parts[nameColIdx]:(parts.length>=3?parts[2]:'');
+                  if(num){if(!nr[sz])nr[sz]=Array(item.sizes[sz]||0).fill('');const ei=nr[sz].findIndex(v=>!v);if(ei>=0){nr[sz][ei]=num;numCt++}}
+                  if(name&&nn!==null){if(!nn[sz])nn[sz]=Array(item.sizes[sz]||0).fill('');const ei=nn[sz].findIndex(v=>!v);if(ei>=0){nn[sz][ei]=name;nameCt++}}});
+                uD(idx,di,'roster',nr);if(nn!==null&&nameCt>0){const ndi=safeDecos(item).findIndex(dd=>dd.kind==='names');if(ndi>=0)uD(idx,ndi,'names',nn)}
+                nf(numCt+' numbers'+(nameCt>0?' + '+nameCt+' names':'')+' imported')};reader.readAsText(f)}}
+                onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.csv,.xlsx,.xls,.txt';inp.onchange=()=>{const f=inp.files[0];if(!f)return;const reader=new FileReader();reader.onload=ev=>{const lines=ev.target.result.split('\n').filter(l=>l.trim());if(lines.length<2){nf('CSV appears empty','error');return}
                 const hdr=lines[0].toLowerCase();const hasHeader=hdr.includes('size');const dataLines=hasHeader?lines.slice(1):lines;
                 const cols=lines[0].split(',');const numColIdx=cols.findIndex(c=>c.trim().toLowerCase()==='number'||c.trim().toLowerCase()==='#'||c.trim().toLowerCase()==='num');
                 const nameColIdx=cols.findIndex(c=>c.trim().toLowerCase()==='name'||c.trim().toLowerCase()==='player');
@@ -3659,7 +3681,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 nf(numCt+' numbers'+(nameCt>0?' + '+nameCt+' names':'')+' imported')};reader.readAsText(f)};inp.click()}}>📤 Upload Roster</button>
               <button className="btn btn-sm btn-secondary" style={{fontSize:11,background:'#eff6ff',borderColor:'#93c5fd',color:'#1e40af'}} onClick={()=>{let csv='Size,Number,Name\n';sizedQtys.forEach(([sz,sqty])=>{for(let i=0;i<sqty;i++)csv+=sz+',,\n'});const blob=new Blob([csv],{type:'text/csv'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='roster_template_'+(item.sku||'item')+'.csv';a.click();URL.revokeObjectURL(url)}}>📥 Download Template</button>
               <button className="btn btn-sm btn-secondary" style={{fontSize:11,background:'#fef3c7',borderColor:'#fbbf24',color:'#92400e'}} onClick={()=>{
-                const linkData=btoa(JSON.stringify({so:o.id,sku:item.sku||'CUSTOM',item:item.name||'Item',color:item.color||'',sizes:item.sizes,rep_email:cu?.email||'',rep_name:cu?.name||'',coach_name:'Coach'}));
+                const linkData=btoa(JSON.stringify({so:o.id,sku:item.sku||'CUSTOM',item:item.name||'Item',color:item.color||'',sizes:item.sizes,rep_email:cuEmail,rep_name:cu?.name||'',coach_name:'Coach'}));
                 setRosterSendModal({idx,di,item,linkData,rosterUrl:window.location.origin+'/roster.html?d='+linkData})}}>📧 Send to Coach</button></>
 
               :<div style={{marginTop:6,padding:10,background:'#f8fafc',borderRadius:6,border:'1px dashed #d1d5db'}}
@@ -3698,7 +3720,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                       uD(idx,di,'roster',nr);if(nn!==null&&nameCt>0){const ndi=safeDecos(item).findIndex(dd=>dd.kind==='names');if(ndi>=0)uD(idx,ndi,'names',nn)}
                       nf(numCt+' numbers'+(nameCt>0?' + '+nameCt+' names':'')+' imported')};reader.readAsText(f)};inp.click()}}>📤 Upload Roster</button>
                     <button className="btn btn-sm btn-secondary" style={{fontSize:9,background:'#fef3c7',borderColor:'#fbbf24',color:'#92400e'}} onClick={()=>{
-                      const linkData=btoa(JSON.stringify({so:o.id,sku:item.sku||'CUSTOM',item:item.name||'Item',color:item.color||'',sizes:item.sizes,rep_email:cu?.email||'',rep_name:cu?.name||'',coach_name:'Coach'}));
+                      const linkData=btoa(JSON.stringify({so:o.id,sku:item.sku||'CUSTOM',item:item.name||'Item',color:item.color||'',sizes:item.sizes,rep_email:cuEmail,rep_name:cu?.name||'',coach_name:'Coach'}));
                       setRosterSendModal({idx,di,item,linkData,rosterUrl:window.location.origin+'/roster.html?d='+linkData})}}>📧 Send to Coach</button>
                     <button className="btn btn-sm btn-secondary" style={{fontSize:9}} onClick={()=>{
                       let csv='Size,Number,Name\n';sizedQtys.forEach(([sz,sqty])=>{for(let i=0;i<sqty;i++)csv+=sz+',,\n'});
@@ -4505,39 +4527,77 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {poData.length===0?<div style={{padding:20,textAlign:'center',color:'#94a3b8'}}>
               <div style={{fontSize:13}}>No purchase orders on this SO</div>
             </div>:
-            <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}>
-              <thead><tr style={{borderBottom:'2px solid #e2e8f0',textAlign:'left'}}>
-                <th style={{padding:'6px 8px',fontSize:10,color:'#64748b'}}>ITEM</th>
-                <th style={{padding:'6px 8px',fontSize:10,color:'#64748b'}}>PO</th>
-                <th style={{padding:'6px 8px',fontSize:10,color:'#64748b'}}>VENDOR</th>
-                <th style={{padding:'6px 8px',fontSize:10,color:'#64748b'}}>STATUS</th>
-                <th style={{padding:'6px 8px',fontSize:10,color:'#64748b'}}>TRACKING</th>
-                <th style={{padding:'6px 8px',fontSize:10,color:'#64748b'}}>SHIP DATE</th>
-                <th style={{padding:'6px 8px',fontSize:10,color:'#64748b'}}>EXPECTED</th>
-                <th style={{padding:'6px 8px',fontSize:10,color:'#64748b',textAlign:'center'}}>BILLED</th>
-                <th style={{padding:'6px 8px',fontSize:10,color:'#64748b',textAlign:'center'}}>RECEIVED</th>
-              </tr></thead>
-              <tbody>{poData.map((d,i)=><tr key={i} style={{borderBottom:'1px solid #f1f5f9'}}>
-                <td style={{padding:'6px 8px'}}><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{d.item.sku}</span> <span style={{fontWeight:600}}>{d.item.name||''}</span> <span style={{color:'#64748b'}}>({d.item.color||'—'})</span></td>
-                <td style={{padding:'6px 8px',fontFamily:'monospace',fontWeight:600}}><span style={{cursor:'pointer',color:'#1e40af',textDecoration:'underline'}} onClick={()=>{
-                  const allLines=safeItems(o).map((it2,idx2)=>({lineIdx:idx2})).filter(ln=>safeItems(o)[ln.lineIdx]?.po_lines?.some(p=>p.po_id===d.po.po_id));
-                  setPoFullPage({po:d.po,item:d.item,allLines,soId:o.id,soItems:o.items});
-                }}>{d.po.po_id}</span></td>
-                <td style={{padding:'6px 8px'}}>{d.vendor}</td>
-                <td style={{padding:'6px 8px'}}><span className={`badge ${d.status==='received'||d.status==='shipped'?'badge-green':d.status==='in_transit'?'badge-blue':d.status==='partial'?'badge-amber':'badge-gray'}`}>{d.status==='shipped'?'Shipped':d.status==='received'?'Received':d.status==='in_transit'?'In Transit':d.status==='partial'?'Partial':'Waiting'}</span>{d.po.drop_ship&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:600,marginLeft:4,background:'#ede9fe',color:'#7c3aed'}}>Drop Ship</span>}</td>
-                <td style={{padding:'6px 8px'}}>{d.trackNums.length>0?<div style={{display:'flex',gap:4,flexWrap:'wrap'}}>{d.trackNums.map((tn,ti)=><a key={ti} href={trackUrl(tn)} target="_blank" rel="noreferrer" style={{fontFamily:'monospace',fontSize:11,fontWeight:700,color:'#1e40af',background:'#dbeafe',padding:'2px 6px',borderRadius:4,textDecoration:'none'}}>{tn}</a>)}</div>:<span style={{color:'#d1d5db'}}>—</span>}</td>
-                <td style={{padding:'6px 8px',color:'#475569'}}>{d.shipDate||<span style={{color:'#d1d5db'}}>—</span>}</td>
-                <td style={{padding:'6px 8px',color:'#475569'}}>{d.expectedDate||<span style={{color:'#d1d5db'}}>—</span>}</td>
-                <td style={{padding:'6px 8px',textAlign:'center',fontWeight:700,color:d.totalBilled>0?'#1e40af':'#d1d5db'}}>
-                  {d.totalBilled>0?<div>
-                    <div>{d.totalBilled}/{d.totalOrdered}</div>
-                    <div style={{fontSize:9,fontWeight:500,color:'#6366f1',whiteSpace:'nowrap'}}>{d.szKeys.filter(sz=>(d.billed[sz]||0)>0).map(sz=>sz+':'+d.billed[sz]).join(' ')}</div>
-                    {(d.po._bill_details||[]).length>0&&<div style={{fontSize:8,color:'#94a3b8',marginTop:1}}>{(d.po._bill_details||[]).map((bd,bi)=><div key={bi}>{bd.date||''} {Object.entries(bd.sizes||{}).map(([s,q])=>s+':'+q).join(' ')}</div>)}</div>}
-                  </div>:'—'}
-                </td>
-                <td style={{padding:'6px 8px',textAlign:'center',fontWeight:700,color:d.totalReceived>0?'#166534':'#d1d5db'}}>{d.totalReceived>0?d.totalReceived+'/'+d.totalOrdered:'—'}</td>
-              </tr>)}</tbody>
-            </table>}
+            <div style={{display:'grid',gap:12}}>
+            {poData.map((d,i)=>{
+              const billDetails=d.po._bill_details||[];
+              return<div key={i} style={{background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0',overflow:'hidden'}}>
+                {/* PO Header */}
+                <div style={{padding:'10px 12px',display:'flex',alignItems:'center',gap:8,flexWrap:'wrap',borderBottom:'1px solid #e2e8f0',background:'white'}}>
+                  <span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{d.item.sku}</span>
+                  <span style={{fontWeight:600,fontSize:11}}>{d.item.name||''}</span>
+                  <span style={{color:'#64748b',fontSize:11}}>{d.item.color}</span>
+                  <span style={{fontSize:10,color:'#475569'}}>·</span>
+                  <span style={{cursor:'pointer',color:'#1e40af',textDecoration:'underline',fontFamily:'monospace',fontWeight:600}} onClick={()=>{
+                    const allLines=safeItems(o).map((it2,idx2)=>({lineIdx:idx2})).filter(ln=>safeItems(o)[ln.lineIdx]?.po_lines?.some(p=>p.po_id===d.po.po_id));
+                    setPoFullPage({po:d.po,item:d.item,allLines,soId:o.id,soItems:o.items});
+                  }}>{d.po.po_id}</span>
+                  <span style={{fontSize:11,color:'#64748b'}}>{d.vendor}</span>
+                  <span className={`badge ${d.status==='received'||d.status==='shipped'?'badge-green':d.status==='in_transit'?'badge-blue':d.status==='partial'?'badge-amber':'badge-gray'}`}>{d.status==='shipped'?'Shipped':d.status==='received'?'Received':d.status==='in_transit'?'In Transit':d.status==='partial'?'Partial':'Waiting'}</span>
+                  {d.po.drop_ship&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:600,background:'#ede9fe',color:'#7c3aed'}}>Drop Ship</span>}
+                  {safeNum(d.po._bill_cost)>0&&<span style={{fontSize:10,fontWeight:700,color:'#166534',background:'#dcfce7',padding:'2px 8px',borderRadius:4}}>Merchandise: ${safeNum(d.po._bill_cost).toFixed(2)}</span>}
+                  {d.expectedDate&&<span style={{marginLeft:'auto',fontSize:10,color:'#64748b'}}>Expected: {d.expectedDate}</span>}
+                </div>
+                {/* Size breakdown table */}
+                <table style={{width:'100%',fontSize:11,borderCollapse:'collapse'}}>
+                  <thead><tr style={{borderBottom:'1px solid #e2e8f0',background:'#f1f5f9'}}>
+                    <th style={{padding:'5px 10px',textAlign:'left',fontSize:10,color:'#64748b',fontWeight:700}}>SIZE</th>
+                    <th style={{padding:'5px 10px',textAlign:'center',fontSize:10,color:'#64748b',fontWeight:700}}>ORDERED</th>
+                    <th style={{padding:'5px 10px',textAlign:'center',fontSize:10,color:'#64748b',fontWeight:700}}>BILLED</th>
+                    <th style={{padding:'5px 10px',textAlign:'center',fontSize:10,color:'#64748b',fontWeight:700}}>RECEIVED</th>
+                    <th style={{padding:'5px 10px',textAlign:'left',fontSize:10,color:'#64748b',fontWeight:700}}>SHIPMENTS</th>
+                  </tr></thead>
+                  <tbody>
+                    {d.szKeys.map(sz=>{
+                      const ordered=d.po[sz]||0;const billed=d.billed[sz]||0;const received=(d.received[sz]||0);
+                      // Find shipments that include this size from bill details
+                      const sizeShipments=billDetails.filter(bd=>(bd.sizes||{})[sz]>0);
+                      return<tr key={sz} style={{borderBottom:'1px solid #f1f5f9'}}>
+                        <td style={{padding:'5px 10px',fontWeight:700,fontFamily:'monospace',fontSize:12}}>{sz}</td>
+                        <td style={{padding:'5px 10px',textAlign:'center',fontWeight:600}}>{ordered}</td>
+                        <td style={{padding:'5px 10px',textAlign:'center',fontWeight:700,color:billed>=ordered&&ordered>0?'#166534':billed>0?'#d97706':'#d1d5db'}}>{billed>0?billed:'—'}</td>
+                        <td style={{padding:'5px 10px',textAlign:'center',fontWeight:700,color:received>=ordered&&ordered>0?'#166534':received>0?'#d97706':'#d1d5db'}}>{received>0?received:'—'}</td>
+                        <td style={{padding:'5px 10px'}}>
+                          {sizeShipments.length>0?<div style={{display:'flex',flexDirection:'column',gap:2}}>
+                            {sizeShipments.map((bd,bi)=><div key={bi} style={{display:'flex',alignItems:'center',gap:6,fontSize:10}}>
+                              <span style={{color:'#64748b'}}>{bd.date||''}</span>
+                              <span style={{fontWeight:700,color:'#1e40af'}}>{bd.sizes[sz]} units</span>
+                              {bd.tracking&&<a href={trackUrl(bd.tracking)} target="_blank" rel="noreferrer" style={{fontFamily:'monospace',fontSize:10,fontWeight:700,color:'#1e40af',background:'#dbeafe',padding:'1px 5px',borderRadius:3,textDecoration:'none'}}>{bd.tracking}</a>}
+                              {bd.doc&&<span style={{fontSize:9,color:'#94a3b8'}}>Doc #{bd.doc}</span>}
+                            </div>)}
+                          </div>:<span style={{color:'#d1d5db',fontSize:10}}>—</span>}
+                        </td>
+                      </tr>})}
+                    {/* Totals row */}
+                    <tr style={{borderTop:'2px solid #e2e8f0',background:'#f8fafc'}}>
+                      <td style={{padding:'5px 10px',fontWeight:800,fontSize:10,color:'#64748b'}}>TOTAL</td>
+                      <td style={{padding:'5px 10px',textAlign:'center',fontWeight:800}}>{d.totalOrdered}</td>
+                      <td style={{padding:'5px 10px',textAlign:'center',fontWeight:800,color:d.totalBilled>=d.totalOrdered&&d.totalOrdered>0?'#166534':d.totalBilled>0?'#d97706':'#d1d5db'}}>{d.totalBilled>0?d.totalBilled:'—'}</td>
+                      <td style={{padding:'5px 10px',textAlign:'center',fontWeight:800,color:d.totalReceived>=d.totalOrdered?'#166534':d.totalReceived>0?'#d97706':'#d1d5db'}}>{d.totalReceived>0?d.totalReceived:'—'}</td>
+                      <td style={{padding:'5px 10px'}}>
+                        {d.trackNums.length>0&&<div style={{display:'flex',gap:4,flexWrap:'wrap'}}>{d.trackNums.map((tn,ti)=><a key={ti} href={trackUrl(tn)} target="_blank" rel="noreferrer" style={{fontFamily:'monospace',fontSize:10,fontWeight:700,color:'#1e40af',background:'#dbeafe',padding:'2px 6px',borderRadius:4,textDecoration:'none'}}>{tn}</a>)}</div>}
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>})}
+            </div>}
+            {/* Inbound cost summary */}
+            {(()=>{const totalMerch=poData.reduce((a,d)=>a+safeNum(d.po._bill_cost||0),0);
+              return(totalMerch>0||freightCost>0)?<div style={{display:'flex',gap:12,marginTop:12,padding:'10px 12px',background:'#f0fdf4',borderRadius:8,border:'1px solid #bbf7d0',flexWrap:'wrap'}}>
+                {totalMerch>0&&<div><span style={{fontSize:10,color:'#64748b',fontWeight:600}}>Total Merchandise Billed:</span> <span style={{fontSize:13,fontWeight:800,color:'#166534'}}>${totalMerch.toFixed(2)}</span></div>}
+                {freightCost>0&&<div><span style={{fontSize:10,color:'#64748b',fontWeight:600}}>Inbound Freight:</span> <span style={{fontSize:13,fontWeight:800,color:'#166534'}}>${freightCost.toFixed(2)}</span></div>}
+                {(totalMerch>0||freightCost>0)&&<div><span style={{fontSize:10,color:'#64748b',fontWeight:600}}>Total Inbound Cost:</span> <span style={{fontSize:13,fontWeight:800,color:'#0f172a'}}>${(totalMerch+freightCost).toFixed(2)}</span></div>}
+              </div>:null})()}
           </div>
         </div>
 
@@ -4600,7 +4660,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const pickQty=safePicks(it).reduce((a,pk)=>a+Object.entries(pk).filter(([k,v])=>typeof v==='number'&&safeSizes(it)[k]!==undefined).reduce((a2,[,v])=>a2+v,0),0);
           const accountedQty=poBlankQty+pickQty;
           const hasActual=blankPOs.length>0||pickQty>0;
-          const actualBlank=hasActual?accountedQty*safeNum(it.nsa_cost):0;
+          // Use actual billed cost from supplier bills when available, else fall back to qty*nsa_cost
+          const billedCostFromPOs=blankPOs.reduce((a,pl)=>a+safeNum(pl._bill_cost||0),0);
+          const actualBlank=billedCostFromPOs>0?billedCostFromPOs+(pickQty*safeNum(it.nsa_cost)):(hasActual?accountedQty*safeNum(it.nsa_cost):0);
           costLines.push({category:'Blanks',sku:it.sku,name:it.name,vendor:D_V.find(v=>v.id===it.vendor_id)?.name||it.brand||'—',
             qty,expected:expectedBlank,actual:actualBlank,poCount:blankPOs.length+(pickQty>0?1:0),
             poIds:blankPOs.map(p=>p.po_id).filter(Boolean).join(', '),
@@ -4751,11 +4813,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const doRsmSend=async()=>{
         if(!resolvedEmail||!resolvedEmail.includes('@')){nf('Enter a valid email','error');return}
         setRsmSending(true);
-        const linkData=btoa(JSON.stringify({so:o.id,sku:rsm.item.sku||'CUSTOM',item:rsm.item.name||'Item',color:rsm.item.color||'',sizes:rsm.item.sizes,rep_email:cu?.email||'',rep_name:cu?.name||'',coach_name:rsmName}));
+        const linkData=btoa(JSON.stringify({so:o.id,sku:rsm.item.sku||'CUSTOM',item:rsm.item.name||'Item',color:rsm.item.color||'',sizes:rsm.item.sizes,rep_email:cuEmail,rep_name:cu?.name||'',coach_name:rsmName}));
         const rosterUrl=window.location.origin+'/roster.html?d='+linkData;
         try{const res=await sendBrevoEmail({to:[{email:resolvedEmail,name:rsmName}],subject:'Roster Number Assignment — '+(o.id||'Order')+' '+(rsm.item.name||'Item'),
           htmlContent:'<div style="font-family:sans-serif;max-width:600px;margin:0 auto"><div style="background:linear-gradient(135deg,#1e3a5f,#2563eb);color:white;padding:20px;border-radius:8px 8px 0 0;text-align:center"><h2 style="margin:0">🏈 Roster Number Request</h2></div><div style="background:white;padding:20px;border:1px solid #e2e8f0;border-radius:0 0 8px 8px"><p>Hi '+rsmName+',</p><p>'+(cu?.name||'Your sales rep')+' at National Sports Apparel needs jersey numbers assigned for <strong>'+(rsm.item.name||'Item')+'</strong> ('+(o.id||'Order')+').</p><p>Please click the button below to assign numbers to each size:</p><p style="text-align:center;margin:20px 0"><a href="'+rosterUrl+'" style="display:inline-block;padding:14px 32px;background:#2563eb;color:white;text-decoration:none;border-radius:8px;font-weight:700;font-size:16px">Assign Numbers →</a></p><p style="color:#64748b;font-size:12px">If the button doesn\'t work, copy this link: '+rosterUrl+'</p></div></div>',
-          senderName:cu?.name||'National Sports Apparel',senderEmail:'noreply@nationalsportsapparel.com',replyTo:cu?.email?{email:cu.email,name:cu.name}:undefined});
+          senderName:cu?.name||'National Sports Apparel',senderEmail:'noreply@nationalsportsapparel.com',replyTo:cuEmail?{email:cuEmail,name:cu?.name}:undefined});
           if(res.ok){nf('Roster request sent to '+resolvedEmail);setRosterSendModal(null)}else{nf('Failed: '+(res.error||'Unknown'),'error')}}catch(e){nf('Error: '+e.message,'error')}
         setRsmSending(false)};
       return<div className="modal-overlay" onClick={()=>setRosterSendModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:500}}>
@@ -9981,6 +10043,19 @@ export default function App(){
       }).catch(()=>{});
     nf('Connected to QuickBooks Online');
   },[dbLoading]);
+  // Proactive QB token refresh on load — if connected with expired access token, try refreshing
+  React.useEffect(()=>{
+    if(dbLoading||!qbConfig.connected||!qbConfig.refresh_token||_pendingQBTokens.current)return;
+    const tokenAge=Date.now()-(qbConfig.token_created_at||0);
+    if(tokenAge>3300000){// >55 min = expired or stale
+      fetch('/.netlify/functions/qb-auth',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({action:'refresh',refresh_token:qbConfig.refresh_token})})
+        .then(r=>r.json()).then(d=>{
+          if(d.access_token){setQBConfig(prev=>({...prev,access_token:d.access_token,refresh_token:d.refresh_token||prev.refresh_token,token_created_at:Date.now()}));console.log('[QB] Token refreshed on load')}
+          else{setQBConfig(prev=>({...prev,connected:false}));console.warn('[QB] Refresh failed — token may be expired')}
+        }).catch(e=>{console.warn('[QB] Refresh error on load:',e);setQBConfig(prev=>({...prev,connected:false}))});
+    }
+  },[dbLoading]); // eslint-disable-line
   // Handle ?so= deep link to open a specific sales order in a new tab
   React.useEffect(()=>{
     try{const p=new URLSearchParams(window.location.search);const soId=p.get('so');
@@ -19438,6 +19513,7 @@ export default function App(){
       }
       const resolveAcct=(name)=>acctMap[name]||Object.values(acctMap).find(a=>a.name.toLowerCase()===name?.toLowerCase())||Object.values(acctMap)[0];
       let success=0,failed=0;
+      const qbResults={};// Track QB status locally to avoid stale closure issue
       for(let bi=0;bi<billImport.parsed.length;bi++){
         const b=billImport.parsed[bi];if(!b.selected)continue;
         const bill=b.parsed;
@@ -19503,89 +19579,95 @@ export default function App(){
           DueDate:bill.due_date?bill.due_date.replace(/(\d+)\/(\d+)\/(\d+)/,'20$3-$1-$2'):undefined,
           DocNumber:bill.doc_number||bill.po_number||undefined,
           Line:lineItems,PrivateNote:memo};
+        // Update matched PO with billed quantities and tracking — do this BEFORE QB push
+        // so tracking/billed data is saved to the SO even if QB push fails
+        if(bill.matchedPOSource==='batch'&&bill.matchedPO){
+          const batchId=bill.matchedPO.id||bill.matchedPO.po_number;
+          const billedSizes={};
+          bill.items.forEach(it=>{if(it.size&&it.qty)billedSizes[it.size]=(billedSizes[it.size]||0)+it.qty});
+          setSubmittedBatches(prev=>prev.map(sb=>{
+            if((sb.id||sb.po_number)!==batchId)return sb;
+            const existingBilled=sb.billed||{};
+            const newBilled={...existingBilled};
+            Object.entries(billedSizes).forEach(([sz,qty])=>{newBilled[sz]=(newBilled[sz]||0)+qty});
+            const trackNums=[...(sb.tracking_numbers||[])];
+            if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
+            return{...sb,billed:newBilled,tracking_numbers:trackNums,bill_doc_number:bill.doc_number,bill_date:bill.doc_date};
+          }));
+        }
+        if(bill.matchedPOSource==='inv_po'&&bill.matchedPO){
+          const poId=bill.matchedPO.id;
+          const billedSizes={};
+          bill.items.forEach(it=>{if(it.size&&it.qty)billedSizes[it.size]=(billedSizes[it.size]||0)+it.qty});
+          setInvPOs(prev=>prev.map(po=>{
+            if(po.id!==poId)return po;
+            const existingBilled=po.billed||{};
+            const newBilled={...existingBilled};
+            Object.entries(billedSizes).forEach(([sz,qty])=>{newBilled[sz]=(newBilled[sz]||0)+qty});
+            const trackNums=[...(po.tracking_numbers||[])];
+            if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
+            return{...po,billed:newBilled,tracking_numbers:trackNums};
+          }));
+        }
+        if(bill.matchedPOSource==='so_po'&&bill.matchedPO){
+          const soId=bill.matchedPO.so_id||bill.matchedPO.so?.id;
+          const poId=bill.matchedPO.po_id;
+          if(soId){
+            const billedBySku={};const costBySku={};
+            bill.items.forEach(it=>{if(it.size&&it.qty){const sk=(it.sku||'').toUpperCase();if(!billedBySku[sk])billedBySku[sk]={};billedBySku[sk][it.size]=(billedBySku[sk][it.size]||0)+it.qty;if(!costBySku[sk])costBySku[sk]=0;costBySku[sk]+=safeNum(it.extension||0)||(safeNum(it.unit_price||0)*it.qty)}});
+            const billFreight=safeNum(bill.freight||0);
+            setSOs(prev=>{
+              const freshSO=prev.find(s=>s.id===soId);
+              if(!freshSO)return prev;
+              const prevFreight=safeNum(freshSO._inbound_freight||0);
+              const updatedSO={...freshSO,
+                _inbound_freight:Math.round((prevFreight+billFreight)*100)/100,
+                items:(freshSO.items||[]).map(it=>{
+                const matchPO=it.po_lines?.find(po=>po.po_id===poId);
+                if(!matchPO)return it;
+                const itemSku=(it.sku||'').toUpperCase();
+                const itemBilled=billedBySku[itemSku]||{};
+                return{...it,po_lines:it.po_lines.map(po=>{
+                  if(po.po_id!==poId)return po;
+                  const existingBilled=po.billed||{};
+                  const newBilled={...existingBilled};
+                  Object.entries(itemBilled).forEach(([sz,qty])=>{newBilled[sz]=(newBilled[sz]||0)+qty});
+                  const trackNums=[...(po.tracking_numbers||[])];
+                  if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
+                  const itemCost=costBySku[itemSku]||0;
+                  const prevBillCost=safeNum(po._bill_cost||0);
+                  return{...po,billed:newBilled,tracking_numbers:trackNums,
+                    _bill_cost:Math.round((prevBillCost+itemCost)*100)/100,
+                    _bill_details:[...(po._bill_details||[]),{doc:bill.doc_number,date:bill.doc_date,sizes:{...itemBilled},tracking:bill.tracking,cost:itemCost}]};
+                })};
+              }),updated_at:new Date().toLocaleString()};
+              _dbSaveSO(updatedSO);
+              return prev.map(s=>s.id===soId?updatedSO:s);
+            });
+          }
+        }
+        // Now push to QuickBooks
         const billRes=await qbApi('upsert_bill',{bill:qbBill});
         if(billRes?.Bill?.Id){
           const log={ts:new Date().toLocaleString(),type:'bill_upload',status:'success',
             details:['Bill created: '+vendorName+' $'+amt.toFixed(2)+' → QB Bill #'+billRes.Bill.Id,'PO: '+bill.po_number,bill.items.length+' line items, Freight: $'+bill.freight.toFixed(2)]};
           setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));
           setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,qbStatus:'success',qbMsg:'QB Bill #'+billRes.Bill.Id}:p)}));
-          // Update matched PO with billed quantities and tracking
-          if(bill.matchedPOSource==='batch'&&bill.matchedPO){
-            const batchId=bill.matchedPO.id||bill.matchedPO.po_number;
-            const billedSizes={};
-            bill.items.forEach(it=>{if(it.size&&it.qty)billedSizes[it.size]=(billedSizes[it.size]||0)+it.qty});
-            setSubmittedBatches(prev=>prev.map(sb=>{
-              if((sb.id||sb.po_number)!==batchId)return sb;
-              const existingBilled=sb.billed||{};
-              const newBilled={...existingBilled};
-              Object.entries(billedSizes).forEach(([sz,qty])=>{newBilled[sz]=(newBilled[sz]||0)+qty});
-              const trackNums=[...(sb.tracking_numbers||[])];
-              if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
-              return{...sb,billed:newBilled,tracking_numbers:trackNums,bill_doc_number:bill.doc_number,bill_date:bill.doc_date};
-            }));
-          }
-          if(bill.matchedPOSource==='inv_po'&&bill.matchedPO){
-            const poId=bill.matchedPO.id;
-            const billedSizes={};
-            bill.items.forEach(it=>{if(it.size&&it.qty)billedSizes[it.size]=(billedSizes[it.size]||0)+it.qty});
-            setInvPOs(prev=>prev.map(po=>{
-              if(po.id!==poId)return po;
-              const existingBilled=po.billed||{};
-              const newBilled={...existingBilled};
-              Object.entries(billedSizes).forEach(([sz,qty])=>{newBilled[sz]=(newBilled[sz]||0)+qty});
-              const trackNums=[...(po.tracking_numbers||[])];
-              if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
-              return{...po,billed:newBilled,tracking_numbers:trackNums};
-            }));
-          }
-          if(bill.matchedPOSource==='so_po'&&bill.matchedPO){
-            const soId=bill.matchedPO.so_id||bill.matchedPO.so?.id;
-            const poId=bill.matchedPO.po_id;
-            if(soId){
-              // Build per-SKU billed sizes so each SO item only gets its own quantities
-              const billedBySku={};
-              bill.items.forEach(it=>{if(it.size&&it.qty){const sk=(it.sku||'').toUpperCase();if(!billedBySku[sk])billedBySku[sk]={};billedBySku[sk][it.size]=(billedBySku[sk][it.size]||0)+it.qty}});
-              const billFreight=safeNum(bill.freight||0);
-              // Use setSOs with callback to get fresh state (avoids stale reference)
-              setSOs(prev=>{
-                const freshSO=prev.find(s=>s.id===soId);
-                if(!freshSO)return prev;
-                const prevFreight=safeNum(freshSO._inbound_freight||0);
-                const updatedSO={...freshSO,
-                  _inbound_freight:Math.round((prevFreight+billFreight)*100)/100,
-                  items:(freshSO.items||[]).map(it=>{
-                  const matchPO=it.po_lines?.find(po=>po.po_id===poId);
-                  if(!matchPO)return it;
-                  const itemSku=(it.sku||'').toUpperCase();
-                  const itemBilled=billedBySku[itemSku]||{};
-                  return{...it,po_lines:it.po_lines.map(po=>{
-                    if(po.po_id!==poId)return po;
-                    const existingBilled=po.billed||{};
-                    const newBilled={...existingBilled};
-                    Object.entries(itemBilled).forEach(([sz,qty])=>{newBilled[sz]=(newBilled[sz]||0)+qty});
-                    const trackNums=[...(po.tracking_numbers||[])];
-                    if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
-                    return{...po,billed:newBilled,tracking_numbers:trackNums,
-                      _bill_details:[...(po._bill_details||[]),{doc:bill.doc_number,date:bill.doc_date,sizes:{...itemBilled},tracking:bill.tracking}]};
-                  })};
-                }),updated_at:new Date().toLocaleString()};
-                _dbSaveSO(updatedSO);
-                return prev.map(s=>s.id===soId?updatedSO:s);
-              });
-            }
-          }
+          qbResults[b.id]={qbStatus:'success',qbMsg:'QB Bill #'+billRes.Bill.Id};
           success++;
         }else{
-          setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,qbStatus:'error',qbMsg:billRes?.Fault?.Error?.[0]?.Detail||'Unknown error'}:p)}));
+          const errMsg=billRes?.Fault?.Error?.[0]?.Detail||'Unknown error';
+          setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,qbStatus:'error',qbMsg:errMsg}:p)}));
+          qbResults[b.id]={qbStatus:'error',qbMsg:errMsg};
           failed++;
         }
       }
       setBillImport(x=>({...x,uploading:false}));
-      // Persist QB status to savedBills history
+      // Persist QB status to savedBills history (use local qbResults to avoid stale closure)
       setSavedBills(prev=>{
         const updated=prev.map(sb=>{
-          const match=billImport.parsed.find(p=>p.id===sb.id);
-          if(match&&match.qbStatus)return{...sb,qbStatus:match.qbStatus,qbMsg:match.qbMsg||''};
+          const result=qbResults[sb.id];
+          if(result)return{...sb,qbStatus:result.qbStatus,qbMsg:result.qbMsg||''};
           return sb;
         });
         try{localStorage.setItem('nsa_saved_bills',JSON.stringify(updated))}catch{};
@@ -19750,7 +19832,7 @@ export default function App(){
                 <label className="form-label">Link to Sales Order (optional)</label>
                 <select className="form-select" value={imp.linkedSoId||''} onChange={e=>setImp(x=>({...x,linkedSoId:e.target.value}))}>
                   <option value="">None — standalone PO</option>
-                  {sos.filter(s=>s.status!=='cancelled').sort((a,b)=>(b.id||'').localeCompare(a.id||'')).map(s=>{
+                  {sos.filter(s=>s.status!=='cancelled'&&s.status!=='closed'&&(!imp.custId||s.customer_id===imp.custId)).sort((a,b)=>(b.id||'').localeCompare(a.id||'')).map(s=>{
                     const sc=cust.find(c=>c.id===s.customer_id);
                     return<option key={s.id} value={s.id}>{s.id} — {sc?.name||'Unknown'} — {s.memo||'No memo'}</option>})}
                 </select>
@@ -20356,6 +20438,16 @@ export default function App(){
 
       {/* BILLS TAB — Supplier Bill PDF Upload & Parse */}
       {impTab==='bills'&&<>
+        {/* QB Connection Status Banner */}
+        <div style={{marginBottom:12,padding:'10px 16px',borderRadius:8,display:'flex',alignItems:'center',gap:10,
+          background:qbConfig.connected?'#f0fdf4':'#fef3c7',border:'1px solid '+(qbConfig.connected?'#bbf7d0':'#fde68a')}}>
+          <span style={{fontSize:16}}>{qbConfig.connected?'✅':'⚠️'}</span>
+          <span style={{fontSize:12,fontWeight:600,color:qbConfig.connected?'#166534':'#92400e'}}>
+            {qbConfig.connected?'QuickBooks Connected'+(qbConfig.companyName?' — '+qbConfig.companyName:''):'QuickBooks Not Connected — bills will be saved locally but NOT pushed to QB'}
+          </span>
+          {!qbConfig.connected&&<button className="btn btn-sm" style={{marginLeft:'auto',fontSize:11,background:'#2CA01C',color:'white',border:'none',padding:'4px 12px',borderRadius:6,fontWeight:700,cursor:'pointer'}} onClick={connectQB}>Connect QB</button>}
+          {qbConfig.connected&&(()=>{const age=Date.now()-(qbConfig.token_created_at||0);return age>3300000?<span style={{marginLeft:'auto',fontSize:10,color:'#d97706',fontWeight:600}}>Token may be stale — <button style={{background:'none',border:'none',color:'#2563eb',cursor:'pointer',fontSize:10,fontWeight:700,textDecoration:'underline'}} onClick={connectQB}>Reconnect</button></span>:null})()}
+        </div>
         {billImport.step==='upload'&&<div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}}>
           <div className="card">
             <div className="card-header"><h2>Upload Supplier Bills (PDF)</h2></div>
@@ -20564,7 +20656,9 @@ export default function App(){
                 <td style={{padding:'6px 12px',textAlign:'right',fontWeight:700,color:'#166534'}}>{sb.parsed?.doc_total?'$'+sb.parsed.doc_total.toFixed(2):'—'}</td>
                 <td style={{padding:'6px 12px',textAlign:'right',color:'#64748b'}}>{sb.parsed?.freight?'$'+sb.parsed.freight.toFixed(2):'—'}</td>
                 <td style={{padding:'6px 12px',textAlign:'center'}}>{sb.parsed?.items?.length||0}</td>
-                <td style={{padding:'6px 12px'}}>{sb.qbStatus==='success'?<span style={{color:'#166534',fontWeight:700}}>Pushed</span>:sb.qbStatus==='error'?<span style={{color:'#dc2626',fontWeight:700}}>Failed</span>:<span style={{color:'#94a3b8'}}>Not pushed</span>}</td>
+                <td style={{padding:'6px 12px'}}>{sb.qbStatus==='success'?<span style={{color:'#166534',fontWeight:700}}>Pushed{sb.qbMsg?' · '+sb.qbMsg:''}</span>:sb.qbStatus==='error'?<span style={{color:'#dc2626',fontWeight:700}}>Failed{sb.qbMsg?' · '+sb.qbMsg:''}</span>:<span style={{color:'#94a3b8'}}>Not pushed</span>}
+                  {sb.qbStatus!=='success'&&<button style={{marginLeft:6,fontSize:9,padding:'2px 8px',background:'#eff6ff',border:'1px solid #93c5fd',borderRadius:4,color:'#1e40af',fontWeight:700,cursor:'pointer'}}
+                    onClick={()=>{setBillImport({step:'review',files:[],parsed:[{...sb,selected:true,qbStatus:null,matchedPO:null,matchedPOSource:null}],uploading:false,showRaw:{}});nf('Bill loaded for re-push — click "Push to QuickBooks"')}}>Re-push</button>}</td>
                 <td style={{padding:'6px 12px',fontSize:10,color:'#94a3b8'}}>{sb.uploadedAt||'—'}</td>
               </tr>)}</tbody>
             </table>
@@ -21500,9 +21594,12 @@ export default function App(){
                 <div style={{fontSize:12,color:'#64748b'}}>Company: {qbConfig.companyName||'Connected'} · Realm: {qbConfig.realm_id} · Last sync: {qbConfig.lastSync||'Never'}</div>:
                 <div style={{fontSize:12,color:'#92400e'}}>Connect your QBO account to sync customers, invoices, bills, and inventory</div>}
             </div>
-            {qbConfig.connected?
-              <button className="btn btn-secondary" style={{color:'#dc2626'}} onClick={disconnectQB}>Disconnect</button>:
-              <button className="btn btn-primary" style={{background:'#2CA01C',borderColor:'#2CA01C',padding:'10px 20px',fontSize:14,fontWeight:700}} onClick={connectQB}>Connect to QuickBooks</button>}
+            <div style={{display:'flex',gap:6}}>
+              {qbConfig.connected&&<button className="btn btn-secondary" style={{fontSize:12}} onClick={connectQB}>Reconnect</button>}
+              {qbConfig.connected?
+                <button className="btn btn-secondary" style={{color:'#dc2626',fontSize:12}} onClick={disconnectQB}>Disconnect</button>:
+                <button className="btn btn-primary" style={{background:'#2CA01C',borderColor:'#2CA01C',padding:'10px 20px',fontSize:14,fontWeight:700}} onClick={connectQB}>Connect to QuickBooks</button>}
+            </div>
           </div>
         </div>
       </div>
