@@ -614,10 +614,10 @@ const _persistFailedIds=()=>{try{localStorage.setItem('nsa_save_failed_ids',JSON
 const _pick=(obj,cols)=>{const r={};cols.forEach(c=>{if(c in obj)r[c]=obj[c]});return r};
 const _estCols=['id','customer_id','memo','status','created_by','created_at','updated_at','default_markup','shipping_type','shipping_value','ship_to_id','email_status','email_opened_at','email_viewed_at','deleted_at','promo_applied','promo_amount','update_requests'];
 const _soCols=['id','customer_id','estimate_id','memo','status','created_by','created_at','updated_at','expected_date','production_notes','shipping_type','shipping_value','ship_to_id','default_markup','omg_store_id','_shipstation_order_id','_shipping_status','_tracking_number','_carrier','_ship_date','_tracking_url','_shipped','_shipments','_shipping_cost','_shipstation_cost','_inbound_freight','deleted_at','promo_applied','promo_amount','ship_preference','ship_on_date','order_type','expected_ship_date','booking_confirmed','booking_confirmed_at','booking_confirmed_by','booking_alert_days','po_number'];
-const _itemCols=['product_id','sku','name','brand','color','nsa_cost','retail_price','unit_sell','sizes','available_sizes','_colors','no_deco','is_custom','custom_desc','custom_cost','custom_sell','is_promo','_pre_promo_sell','est_qty'];
+const _itemCols=['product_id','sku','name','brand','color','nsa_cost','retail_price','unit_sell','sizes','available_sizes','_colors','no_deco','is_custom','custom_desc','custom_cost','custom_sell','is_promo','_pre_promo_sell','est_qty','size_availability'];
 const _decoCols=['kind','position','type','art_file_id','art_tbd_type','tbd_colors','tbd_stitches','tbd_dtf_size','sell_override','sell_each','cost_each','underbase','two_color','colors','stitches','dtf_size','num_method','num_size','num_size_back','num_font','roster','names','names_list','vendor','deco_type','notes','custom_font_art_id','print_color','front_and_back','reversible','num_qty','name_qty'];
 // Columns that may not exist in production DB / schema cache — stripped on insert retry
-const _itemExtraCols=new Set(['is_promo','_pre_promo_sell','est_qty']);
+const _itemExtraCols=new Set(['is_promo','_pre_promo_sell','est_qty','size_availability']);
 const _estExtraCols=new Set(['promo_applied','promo_amount','update_requests']);
 const _soExtraCols=new Set(['_shipping_cost','_shipstation_cost','_inbound_freight','promo_applied','promo_amount','ship_preference','ship_on_date','order_type','expected_ship_date','booking_confirmed','booking_confirmed_at','booking_confirmed_by','booking_alert_days','po_number']);
 const _decoExtraCols=new Set(['print_color','front_and_back','reversible','num_qty','name_qty','num_font','num_size_back','custom_font_art_id','deco_type','notes','vendor']);
@@ -3537,6 +3537,23 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             </div>
           </div>
         </div>
+        {/* SIZE AVAILABILITY DATES */}
+        {(()=>{const sa=item.size_availability||{};const hasAny=Object.keys(sa).length>0;const activeSizes=szs.filter(sz=>(item.sizes[sz]||0)>0);
+          if(activeSizes.length===0)return null;
+          return<div style={{padding:'4px 18px',borderBottom:'1px solid #f1f5f9'}}>
+            <label style={{display:'flex',alignItems:'center',gap:6,cursor:'pointer',fontSize:11,color:'#64748b'}}>
+              <input type="checkbox" checked={hasAny} onChange={e=>{if(e.target.checked){uI(idx,'size_availability',{[activeSizes[0]]:''});} else {uI(idx,'size_availability',{})}}}/>
+              <span style={{fontWeight:600}}>Some sizes not available until later?</span>
+            </label>
+            {hasAny&&<div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:6,padding:'8px 10px',background:'#fffbeb',borderRadius:6,border:'1px solid #fde68a'}}>
+              {activeSizes.map(sz=><div key={sz} style={{display:'flex',flexDirection:'column',gap:2,alignItems:'center'}}>
+                <span style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</span>
+                <input type="date" value={sa[sz]||''} onChange={e=>{const nsa={...sa};if(e.target.value){nsa[sz]=e.target.value}else{delete nsa[sz]}uI(idx,'size_availability',nsa)}}
+                  style={{fontSize:10,border:'1px solid #fbbf24',borderRadius:4,padding:'2px 4px',width:110,background:sa[sz]?'#fef3c7':'white'}}/>
+              </div>)}
+              <div style={{fontSize:10,color:'#92400e',alignSelf:'center',marginLeft:4}}>Leave blank for sizes available now</div>
+            </div>}
+          </div>})()}
         {/* FULFILLMENT LINES */}
         {isSO&&(item.pick_lines||[]).length>0&&<div style={{padding:'4px 18px',borderBottom:'1px solid #f1f5f9'}}>
           {safePicks(item).map((pk,pi)=>{const st=pk.status||'pick';
@@ -8803,11 +8820,17 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                 </div>
               </div>
               {sizes.length>0&&<div style={{display:'flex',gap:4,flexWrap:'wrap',marginBottom:6}}>
-                {sizes.map(([sz,q])=><div key={sz} style={{textAlign:'center',padding:'3px 6px',background:'#f8fafc',borderRadius:5,minWidth:32}}>
+                {sizes.map(([sz,q])=>{const avail=(it.size_availability||{})[sz];return<div key={sz} style={{textAlign:'center',padding:'3px 6px',background:avail?'#fffbeb':'#f8fafc',borderRadius:5,minWidth:32,border:avail?'1px solid #fde68a':'none'}}>
                   <div style={{fontSize:9,fontWeight:700,color:'#64748b'}}>{sz}</div>
                   <div style={{fontSize:12,fontWeight:800,color:'#1e3a5f'}}>{q}</div>
-                </div>)}
+                  {avail&&<div style={{fontSize:8,color:'#92400e',fontWeight:600,whiteSpace:'nowrap'}}>Avail {new Date(avail+'T00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'})}</div>}
+                </div>})}
               </div>}
+              {(()=>{const sa=it.size_availability||{};const delayed=Object.entries(sa).filter(([sz,d])=>d&&(it.sizes||{})[sz]>0);
+                if(delayed.length===0)return null;
+                return<div style={{fontSize:10,color:'#92400e',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:5,padding:'4px 8px',marginBottom:6}}>
+                  ⏳ Some sizes available later: {delayed.map(([sz,d])=>sz+' ('+new Date(d+'T00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'})+')').join(', ')}
+                </div>})()}
               {safeDecos(it).length>0&&<div style={{fontSize:11,color:'#64748b',borderTop:'1px solid #f1f5f9',paddingTop:4}}>
                 {safeDecos(it).map((d,di)=>{const cq=d.kind==='art'&&d.art_file_id?_eAQ[d.art_file_id]:qty;const dp2=dP(d,qty,eaf,cq);const eq2=dp2._nq!=null?dp2._nq:qty;const decoLine=eq2*dp2.sell;
                   const artF2=d.art_file_id?eaf.find(a2=>a2.id===d.art_file_id):null;const artColors=artF2?.ink_colors?artF2.ink_colors.split('\n').filter(l=>l.trim()).length:0;
