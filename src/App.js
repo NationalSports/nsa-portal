@@ -19294,7 +19294,7 @@ export default function App(){
         if(!bill.ship_date){const m=line.match(/SHIP\s+DATE[:\s]+([\d\/]+)/i);if(m)bill.ship_date=m[1]}
         // Totals
         {const v=extractTotal(line,/MERCHANDISE\s+TOTAL/i,lines[li+1]);if(v!=null&&!bill.merchandise_total)bill.merchandise_total=v}
-        {const v=extractTotal(line,/FREIGHT\s+CHARGE/i,lines[li+1]);if(v!=null&&!bill.freight)bill.freight=v}
+        {const v=extractTotal(line,/FREIGHT\s+CHARGE|FREIGHT\s+TOTAL|^FREIGHT\b|SHIPPING\s+(?:CHARGE|TOTAL|COST)|DELIVERY\s+CHARGE/i,lines[li+1]);if(v!=null&&!bill.freight)bill.freight=v}
         {const v=extractTotal(line,/SI\s+UPCHARGE/i,lines[li+1]);if(v!=null&&!bill.si_upcharge)bill.si_upcharge=v}
         {const v=extractTotal(line,/DOCUMENT\s+TOTAL/i,lines[li+1]);if(v!=null&&!bill.doc_total)bill.doc_total=v}
         // Item table boundaries
@@ -19399,6 +19399,11 @@ export default function App(){
         const itemsSum=bill.items.reduce((a,it)=>a+it.extension,0);
         if(Math.abs(itemsSum-bill.merchandise_total)>1){
           bill.warnings.push('Item total ($'+itemsSum.toFixed(2)+') differs from merchandise total ($'+bill.merchandise_total.toFixed(2)+')')}}
+      // Infer freight from doc_total - merchandise_total - si_upcharge if not explicitly found
+      if(!bill.freight&&bill.doc_total&&bill.merchandise_total&&bill.doc_total>bill.merchandise_total){
+        const diff=Math.round((bill.doc_total-bill.merchandise_total-(bill.si_upcharge||0))*100)/100;
+        if(diff>0&&diff<bill.merchandise_total*0.5){bill.freight=diff;bill.warnings.push('Freight $'+diff.toFixed(2)+' inferred from doc total minus merchandise')}
+      }
       if(!bill.po_number)bill.warnings.push('PO number not found');
       if(!bill.doc_total&&!bill.merchandise_total)bill.warnings.push('Could not detect totals');
       if(bill.items.length===0&&itemSectionStart>=0)bill.warnings.push('No line items detected in item table — check raw text');
