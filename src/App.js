@@ -7840,7 +7840,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     const artGroups={};allArt.forEach(a=>{const key=(a.name||'').toLowerCase()+'||'+(a.deco_type||'');if(!artGroups[key])artGroups[key]={art:a,instances:[]};artGroups[key].instances.push(a)});
     const groups=Object.values(artGroups);
     // Helper: save customer art
-    const saveCustArt=(newArtFiles)=>{const newCust={...customer,art_files:newArtFiles};setCustLocal(newCust);onEdit(newCust)};
+    const saveCustArt=(newArtFiles)=>{const newCust={...customer,art_files:newArtFiles};setCustLocal(newCust);onRefreshCustomer(newCust)};
     const ownArt=customer.art_files||[];
     const addCustArt=()=>{const newId='caf'+Date.now();saveCustArt([...ownArt,{id:newId,name:'',deco_type:'screen_print',ink_colors:'',thread_colors:'',art_size:'',files:[],mockup_files:[],prod_files:[],notes:'',status:'waiting_for_art',uploaded:new Date().toLocaleDateString()}]);setCustArtExpanded(newId)};
     const uCustArt=(i,k,v)=>{saveCustArt(ownArt.map((a,x)=>x===i?{...a,[k]:v}:a))};
