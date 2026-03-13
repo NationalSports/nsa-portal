@@ -7,6 +7,7 @@ import { Elements, PaymentElement, useStripe, useElements } from '@stripe/react-
 import * as XLSX from 'xlsx';
 import { BarcodeDetector as BarcodeDetectorPolyfill } from 'barcode-detector';
 import { createWorker } from 'tesseract.js';
+import html2pdf from 'html2pdf.js';
 
 // ─── Stripe Setup ───
 const _stripePk = process.env.REACT_APP_STRIPE_PK || '';
@@ -2294,9 +2295,16 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
     const htmlBody='<div style="font-family:sans-serif;font-size:14px;line-height:1.6">'+body.replace(/\n/g,'<br/>')+'</div>';
     if(_brevoKey){
       const toList=emails.map(e2=>({email:e2}));
-      // Auto-attach estimate/SO PDF as HTML
+      // Auto-attach estimate/SO as PDF
       const brevoAttachments=[];
-      if(buildAttachmentHtml){try{const docHtml=buildAttachmentHtml();const docB64=btoa(unescape(encodeURIComponent(docHtml)));brevoAttachments.push({name:(estimate?.id||'document')+'.html',content:docB64})}catch(err){console.warn('Failed to build PDF attachment:',err)}}
+      if(buildAttachmentHtml){try{
+        const docHtml=buildAttachmentHtml();
+        const container=document.createElement('div');container.innerHTML=docHtml;container.style.position='absolute';container.style.left='-9999px';container.style.width='800px';document.body.appendChild(container);
+        const pdfBlob=await html2pdf().set({margin:0.3,filename:(estimate?.id||'document')+'.pdf',image:{type:'jpeg',quality:0.95},html2canvas:{scale:2,useCORS:true},jsPDF:{unit:'in',format:'letter',orientation:'portrait'}}).from(container).outputPdf('blob');
+        document.body.removeChild(container);
+        const pdfB64=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result.split(',')[1]);reader.onerror=reject;reader.readAsDataURL(pdfBlob)});
+        brevoAttachments.push({name:(estimate?.id||'document')+'.pdf',content:pdfB64});
+      }catch(err){console.warn('Failed to build PDF attachment:',err)}}
       // Convert file attachments to base64 for Brevo
       for(const att of attachments){if(att.file){try{const b64=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result.split(',')[1]);reader.onerror=reject;reader.readAsDataURL(att.file)});brevoAttachments.push({name:att.name,content:b64})}catch(err){console.warn('Failed to read attachment:',att.name,err)}}}
       const res=await sendBrevoEmail({to:toList,subject,htmlContent:htmlBody,senderName:repUser?.name||'National Sports Apparel',senderEmail:'noreply@nationalsportsapparel.com',replyTo:repUser?.email?{email:repUser.email,name:repUser.name}:undefined,attachment:brevoAttachments.length>0?brevoAttachments:undefined});
