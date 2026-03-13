@@ -650,7 +650,7 @@ const _artCols=['id','name','deco_type','ink_colors','thread_colors','art_size',
 const _artExtraCols=new Set(['art_sizes','garment_colors','item_mockups']);
 // Columns that may not exist in so_jobs — stripped on retry
 const _jobExtraCols=new Set(['_art_ids','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at','coach_email_opened_at']);
-const _jobCols=['id','key','art_file_id','_art_ids','_draft','art_name','deco_type','positions','art_status','item_status','prod_status','total_units','fulfilled_units','split_from','created_at','assigned_machine','assigned_to','ship_method','items','_auto','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at','coach_email_opened_at'];
+const _jobCols=['id','key','art_file_id','_art_ids','_draft','art_name','deco_type','positions','art_status','item_status','prod_status','total_units','fulfilled_units','split_from','created_at','assigned_machine','assigned_to','ship_method','items','_auto','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at','coach_email_opened_at','run_order','run1_done','run2_done'];
 const _custCols=['id','parent_id','name','alpha_tag','billing_address_line1','billing_address_line2','billing_city','billing_state','billing_zip','shipping_address_line1','shipping_address_line2','shipping_city','shipping_state','shipping_zip','adidas_ua_tier','catalog_markup','payment_terms','tax_rate','tax_exempt','primary_rep_id','notes','is_active','created_at','updated_at','alt_billing_addresses','art_files'];
 const _vendCols=['id','name','vendor_type','api_provider','nsa_carries_inventory','click_automation','is_active','contact_email','contact_phone','rep_name','payment_terms','notes'];
 const _firmDateCols=['item_desc','date','approved'];
@@ -1385,6 +1385,23 @@ const isJobReady=(j,o)=>{
     });
   });
   return totalSz>0&&fulfilledSz>=totalSz;
+};
+// Check if a job is dual-run (has both art/screen/emb AND numbers decorations)
+const isDualRunJob=(j,o)=>{
+  const firstGi=(j.items||[])[0];if(!firstGi)return false;
+  const it=safeItems(o)[firstGi.item_idx];if(!it)return false;
+  const decoIdxs=firstGi.deco_idxs||[firstGi.deco_idx];
+  const decos=safeDecos(it).filter((d,di)=>decoIdxs.includes(di));
+  const hasArt=decos.some(d=>d.kind==='art');
+  const hasNums=decos.some(d=>d.kind==='numbers');
+  return hasArt&&hasNums;
+};
+// Get run labels for a dual-run job based on run_order
+const getRunLabels=(j)=>{
+  const ro=j.run_order; // 'art_first' or 'numbers_first'
+  if(ro==='numbers_first')return{run1:'Numbers',run2:'Artwork'};
+  if(ro==='art_first')return{run1:'Artwork',run2:'Numbers'};
+  return null; // not yet chosen
 };
 const safeFirm=(o)=>safeArr(o?.firm_dates);
 
@@ -3202,6 +3219,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         sent_to_coach_at:existing?.sent_to_coach_at||null,coach_approved_at:existing?.coach_approved_at||null,coach_email_opened_at:existing?.coach_email_opened_at||null,
         coach_rejected:existing?.coach_rejected||null,
         _art_ids:j._art_ids||[],
+        // Preserve dual-run order fields
+        run_order:existing?.run_order||null,run1_done:existing?.run1_done||false,run2_done:existing?.run2_done||false,
       };
     });
     // Preserve manually split jobs — they won't be auto-generated from decorations
@@ -11093,7 +11112,7 @@ export default function App(){
       buildJobs(so).forEach(j=>{
         if(j.art_status==='waiting_approval'){todos.push({type:'art',priority:2,msg:'⏳ Art awaiting approval: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,action:'Review art',role:'sales'});
           if(j.sent_to_coach_at){const _fuDays=portalSettings?.followUpDays||3;const daysSinceSent=Math.floor((new Date()-new Date(j.sent_to_coach_at))/(1000*60*60*24));if(daysSinceSent>=_fuDays)todos.push({type:'coach_followup',priority:1,msg:'📞 Follow up on art approval ('+daysSinceSent+'d): '+j.art_name,detail:tag+' · '+so.id+' · Sent to coach '+daysSinceSent+' days ago',so,jobId:j.id,action:'Follow Up',role:'sales'})}}
-        if(j.coach_approved_at&&(j.art_status==='production_files_needed'||j.art_status==='art_complete')){const daysAgo=Math.floor((new Date()-new Date(j.coach_approved_at))/(1000*60*60*24));if(daysAgo<=7)todos.push({type:'art_approved',priority:1,msg:'✅ Coach approved art: '+j.art_name,detail:tag+' · '+so.id+' · '+(daysAgo===0?'Today':daysAgo+' day'+(daysAgo!==1?'s':'')+' ago'),so,jobId:j.id,action:'Prep prod files',role:'sales'})}
+        if(j.coach_approved_at&&j.art_status==='production_files_needed'){const daysAgo=Math.floor((new Date()-new Date(j.coach_approved_at))/(1000*60*60*24));if(daysAgo<=7)todos.push({type:'art_approved',priority:1,msg:'✅ Coach approved art: '+j.art_name,detail:tag+' · '+so.id+' · '+(daysAgo===0?'Today':daysAgo+' day'+(daysAgo!==1?'s':'')+' ago'),so,jobId:j.id,action:'Prep prod files',role:'sales'})}
         if(j.art_status==='art_requested'&&j.coach_rejected){const lastRej=(j.rejections||[]).slice(-1)[0];todos.push({type:'art_rejected',priority:1,msg:'❌ Coach rejected art: '+j.art_name,detail:tag+' · '+so.id+(lastRej?' · "'+lastRej.reason.slice(0,60)+(lastRej.reason.length>60?'...':'')+'"':''),so,jobId:j.id,action:'Review feedback',role:'sales'})}
         const ready=isJobReady(j,so);const onBoard=safeJobs(so).some(ej=>ej.id===j.id);
         if(ready&&!onBoard)todos.push({type:'schedule',priority:1,msg:'🏭 Ready for production — send to board: '+j.art_name,detail:tag+' · '+j.id,so,action:'Open Jobs',role:'production'});
@@ -12714,6 +12733,12 @@ export default function App(){
       nf('🏭 '+j.id+' → '+labels[newStatus]+(machine?' · '+MACHINES.find(m=>m.id===machine)?.name:'')+(person?' · '+person:''));
     }
   };
+  // Update a job field (for run order, marking runs done, etc.)
+  const updateJobField=(j,fields)=>{
+    const so=sos.find(s=>s.id===j.soId);if(!so)return;
+    const updatedJobs=safeJobs(so).map(jj=>jj.id===j.id?{...jj,...fields}:jj);
+    savSO({...so,jobs:updatedJobs});
+  };
   const[showColPicker,setShowColPicker]=useState(false);
   const ALL_PROD_COLS=[
     {id:'so',label:'SO',default:true},
@@ -12845,6 +12870,35 @@ export default function App(){
                       color:j.ship_method==='ship_customer'?'#1e40af':j.ship_method==='rep_delivery'?'#166534':j.ship_method==='customer_pickup'?'#92400e':'#64748b'}}>
                       {j.ship_method==='ship_customer'?'📦 Ship':j.ship_method==='rep_delivery'?'🚗 Rep':j.ship_method==='customer_pickup'?'🏫 Pickup':'⏸️ Hold'}</span>}
                   </div>
+
+                  {/* Dual-run: art + numbers run order */}
+                  {isDualRunJob(j,j.so)&&<div style={{background:'#faf5ff',border:'1px solid #e9d5ff',borderRadius:6,padding:'6px 8px',marginBottom:6}}>
+                    {!j.run_order?<div>
+                      <div style={{fontSize:9,fontWeight:700,color:'#6d28d9',marginBottom:4}}>SELECT RUN ORDER</div>
+                      <div style={{display:'flex',gap:4}}>
+                        <button className="btn btn-sm" style={{fontSize:9,padding:'3px 8px',background:'#7c3aed',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();updateJobField(j,{run_order:'art_first',run1_done:false,run2_done:false});nf('Run order: Artwork first')}}>Artwork First</button>
+                        <button className="btn btn-sm" style={{fontSize:9,padding:'3px 8px',background:'#22c55e',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();updateJobField(j,{run_order:'numbers_first',run1_done:false,run2_done:false});nf('Run order: Numbers first')}}>Numbers First</button>
+                      </div>
+                    </div>:(()=>{const rl=getRunLabels(j);return<div>
+                      <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:4}}>
+                        <span style={{fontSize:9,fontWeight:700,color:'#6d28d9'}}>RUN ORDER</span>
+                        {!j.run1_done&&<button style={{fontSize:8,color:'#94a3b8',cursor:'pointer',background:'none',border:'none',padding:0,marginLeft:'auto',textDecoration:'underline'}} onClick={e=>{e.stopPropagation();updateJobField(j,{run_order:j.run_order==='art_first'?'numbers_first':'art_first'});nf('Switched to '+(j.run_order==='art_first'?'Numbers':'Artwork')+' first')}}>Switch</button>}
+                      </div>
+                      <div style={{display:'flex',gap:6}}>
+                        <div style={{flex:1,padding:'4px 6px',borderRadius:4,background:j.run1_done?'#dcfce7':'#eff6ff',border:'1px solid '+(j.run1_done?'#86efac':'#93c5fd')}}>
+                          <div style={{fontSize:8,fontWeight:700,color:j.run1_done?'#166534':'#1e40af'}}>RUN 1: {rl.run1}</div>
+                          <div style={{fontSize:10,fontWeight:800,color:j.run1_done?'#166534':'#1e40af'}}>{j.run1_done?'Done':'Current'}</div>
+                        </div>
+                        <div style={{flex:1,padding:'4px 6px',borderRadius:4,background:j.run2_done?'#dcfce7':j.run1_done?'#eff6ff':'#f8fafc',border:'1px solid '+(j.run2_done?'#86efac':j.run1_done?'#93c5fd':'#e2e8f0')}}>
+                          <div style={{fontSize:8,fontWeight:700,color:j.run2_done?'#166534':j.run1_done?'#1e40af':'#94a3b8'}}>RUN 2: {rl.run2}</div>
+                          <div style={{fontSize:10,fontWeight:800,color:j.run2_done?'#166534':j.run1_done?'#1e40af':'#94a3b8'}}>{j.run2_done?'Done':j.run1_done?'Current':'Pending'}</div>
+                        </div>
+                      </div>
+                      {/* Mark run done buttons */}
+                      {!j.run1_done&&<button className="btn btn-sm" style={{fontSize:9,padding:'3px 8px',marginTop:4,background:'#166534',color:'white',border:'none',width:'100%'}} onClick={e=>{e.stopPropagation();updateJobField(j,{run1_done:true});nf(rl.run1+' run complete — starting '+rl.run2)}}>Mark {rl.run1} Done</button>}
+                      {j.run1_done&&!j.run2_done&&<button className="btn btn-sm" style={{fontSize:9,padding:'3px 8px',marginTop:4,background:'#166534',color:'white',border:'none',width:'100%'}} onClick={e=>{e.stopPropagation();updateJobField(j,{run2_done:true});nf(rl.run2+' run complete — job fully decorated')}}>Mark {rl.run2} Done</button>}
+                    </div>})()}
+                  </div>}
 
                   {/* Units + progress */}
                   <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
@@ -13236,6 +13290,34 @@ export default function App(){
                 <div style={{fontSize:11,fontWeight:700,color:'#7c3aed',textTransform:'uppercase',marginBottom:4,letterSpacing:1}}>Assigned To</div>
                 <div style={{fontSize:18,fontWeight:800,color:'#6d28d9'}}>{j.assigned_to}</div></div>}
             </div>
+
+            {/* Dual-Run Order — art + numbers */}
+            {isDualRunJob(j,so)&&<div style={{padding:20,borderBottom:'2px solid #e2e8f0',background:'#faf5ff'}}>
+              <div style={{fontSize:18,fontWeight:800,color:'#0f172a',marginBottom:16,borderBottom:'2px solid #7c3aed',paddingBottom:8}}>Run Order</div>
+              {!j.run_order?<div style={{textAlign:'center',padding:16}}>
+                <div style={{fontSize:13,color:'#6d28d9',fontWeight:700,marginBottom:12}}>This job has both Artwork and Numbers. Select which to run first:</div>
+                <div style={{display:'flex',gap:12,justifyContent:'center'}}>
+                  <button className="btn" style={{padding:'12px 24px',fontSize:14,fontWeight:800,background:'#7c3aed',color:'white',border:'none',borderRadius:8}} onClick={()=>{updateJobField(j,{run_order:'art_first',run1_done:false,run2_done:false});nf('Run order: Artwork first')}}>Artwork First</button>
+                  <button className="btn" style={{padding:'12px 24px',fontSize:14,fontWeight:800,background:'#22c55e',color:'white',border:'none',borderRadius:8}} onClick={()=>{updateJobField(j,{run_order:'numbers_first',run1_done:false,run2_done:false});nf('Run order: Numbers first')}}>Numbers First</button>
+                </div>
+              </div>:(()=>{const rl=getRunLabels(j);return<div>
+                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:12}}>
+                  <div style={{padding:16,borderRadius:10,background:j.run1_done?'#dcfce7':'#eff6ff',border:'2px solid '+(j.run1_done?'#86efac':'#3b82f6')}}>
+                    <div style={{fontSize:11,fontWeight:700,color:j.run1_done?'#166534':'#1e40af',textTransform:'uppercase',letterSpacing:1,marginBottom:4}}>Run 1</div>
+                    <div style={{fontSize:20,fontWeight:800,color:j.run1_done?'#166534':'#1e40af'}}>{rl.run1}</div>
+                    <div style={{fontSize:12,fontWeight:700,color:j.run1_done?'#166534':'#3b82f6',marginTop:4}}>{j.run1_done?'Completed':'In Progress'}</div>
+                    {!j.run1_done&&<button className="btn" style={{marginTop:8,padding:'8px 16px',fontSize:12,fontWeight:800,background:'#166534',color:'white',border:'none',borderRadius:6,width:'100%'}} onClick={()=>{updateJobField(j,{run1_done:true});nf(rl.run1+' run complete — starting '+rl.run2)}}>Mark {rl.run1} Done</button>}
+                  </div>
+                  <div style={{padding:16,borderRadius:10,background:j.run2_done?'#dcfce7':j.run1_done?'#eff6ff':'#f8fafc',border:'2px solid '+(j.run2_done?'#86efac':j.run1_done?'#3b82f6':'#e2e8f0')}}>
+                    <div style={{fontSize:11,fontWeight:700,color:j.run2_done?'#166534':j.run1_done?'#1e40af':'#94a3b8',textTransform:'uppercase',letterSpacing:1,marginBottom:4}}>Run 2</div>
+                    <div style={{fontSize:20,fontWeight:800,color:j.run2_done?'#166534':j.run1_done?'#1e40af':'#94a3b8'}}>{rl.run2}</div>
+                    <div style={{fontSize:12,fontWeight:700,color:j.run2_done?'#166534':j.run1_done?'#3b82f6':'#94a3b8',marginTop:4}}>{j.run2_done?'Completed':j.run1_done?'In Progress':'Pending'}</div>
+                    {j.run1_done&&!j.run2_done&&<button className="btn" style={{marginTop:8,padding:'8px 16px',fontSize:12,fontWeight:800,background:'#166534',color:'white',border:'none',borderRadius:6,width:'100%'}} onClick={()=>{updateJobField(j,{run2_done:true});nf(rl.run2+' run complete — job fully decorated')}}>Mark {rl.run2} Done</button>}
+                  </div>
+                </div>
+                {!j.run1_done&&<button style={{fontSize:11,color:'#7c3aed',cursor:'pointer',background:'none',border:'none',padding:0,textDecoration:'underline',fontWeight:600}} onClick={()=>{updateJobField(j,{run_order:j.run_order==='art_first'?'numbers_first':'art_first'});nf('Switched to '+(j.run_order==='art_first'?'Numbers':'Artwork')+' first')}}>Switch run order</button>}
+              </div>})()}
+            </div>}
 
             {/* SKUs & Quantities */}
             <div style={{padding:20,borderBottom:'1px solid #e2e8f0'}}>
