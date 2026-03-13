@@ -1911,19 +1911,48 @@ const fetchOMGStores = async () => {
 const fetchOMGStoreDetail = async (saleResource, allIncluded) => {
   const saleId = saleResource.id;
   const saleData = { data: saleResource, included: allIncluded };
-  // Fetch orders using nested resource URL first, then filter-based fallback
-  const orders = await omgApiCall(`/sales/${saleId}/orders?include=customer_info`)
-    .catch(() => omgApiCall(`/orders?filter[sale_id]=${saleId}&include=customer_info`))
-    .catch(e => { console.warn('[OMG] Failed to fetch orders for sale', saleId, e.message); return null; });
+
+  // Try multiple endpoint patterns for orders
+  const orderEndpoints = [
+    `/sales/${saleId}/orders?include=customer_info`,
+    `/sales/${saleId}/orders`,
+    `/orders?filter[sale_id]=${saleId}&include=customer_info`,
+    `/orders?filter[sale_id]=${saleId}`,
+    `/orders?sale_id=${saleId}`,
+  ];
+  let orders = null;
+  for (const ep of orderEndpoints) {
+    try {
+      orders = await omgApiCall(ep);
+      if (orders?.data?.length > 0) {
+        console.log(`[OMG] Sale ${saleId}: ${orders.data.length} orders via ${ep}`);
+        break;
+      }
+    } catch (e) {
+      console.log(`[OMG] Orders endpoint failed: ${ep} — ${e.message}`);
+    }
+  }
   const orderList = orders?.data || [];
-  console.log(`[OMG] Sale ${saleId}: ${orderList.length} orders`);
-  // Fetch order products — try nested resource URL, then filter-based
+  if (orderList.length === 0) console.warn(`[OMG] Sale ${saleId}: no orders found from any endpoint`);
+
+  // Try multiple endpoint patterns for order products
   const orderProducts = await Promise.all(
-    orderList.map(o =>
-      omgApiCall(`/orders/${o.id}/order_products?include=product`)
-        .catch(() => omgApiCall(`/order_products?filter[order_id]=${o.id}&include=product`))
-        .catch(() => ({ data: [], included: [] }))
-    )
+    orderList.map(async (o) => {
+      const productEndpoints = [
+        `/orders/${o.id}/order_products?include=product`,
+        `/orders/${o.id}/order_products`,
+        `/order_products?filter[order_id]=${o.id}&include=product`,
+        `/order_products?filter[order_id]=${o.id}`,
+        `/order_products?order_id=${o.id}`,
+      ];
+      for (const ep of productEndpoints) {
+        try {
+          const resp = await omgApiCall(ep);
+          if (resp?.data) return resp;
+        } catch { /* try next */ }
+      }
+      return { data: [], included: [] };
+    })
   );
   const totalProducts = orderProducts.reduce((a, r) => a + (r?.data?.length || 0), 0);
   console.log(`[OMG] Sale ${saleId}: ${totalProducts} order products across ${orderList.length} orders`);
@@ -10146,7 +10175,7 @@ export default function App(){
   const[qPC,setQPC]=useState({open:false,mode:'single',items:[],bulkRaw:''});
   const[poF,setPOF]=useState({status:'all',vendor:'all',rep:'all',search:'',sort:'date_desc'});
   // OMG Team Stores
-  const[omgFilter,setOmgFilter]=useState({rep:'all',status:'all',search:''});const[omgSel,setOmgSel]=useState(null);const[omgDetailLoading,setOmgDetailLoading]=useState(false);
+  const[omgFilter,setOmgFilter]=useState({rep:'all',status:'all',search:'',dateRange:'30d'});const[omgSel,setOmgSel]=useState(null);const[omgDetailLoading,setOmgDetailLoading]=useState(false);
   const[estF,setEstF]=useState({status:'open',rep:'_me_',search:'',sort:'date_desc'});
   const[soF,setSOF]=useState({status:'all',rep:'all',search:'',sort:'date_desc'});
   const[iS,setIS]=useState({f:'value',d:'desc'});const[iF,setIF]=useState({cat:'all',vnd:'all',clr:'all'});
@@ -10342,13 +10371,26 @@ export default function App(){
       const omgStoresData = await fetchOMGStores();
       if (!omgStoresData?.data) { nf('No stores found in OMG API response', 'error'); return; }
       const stores = omgStoresData.data;
+      // Log first store's full data to help debug what fields are available
+      if (stores.length > 0) console.log('[OMG] Sample store attributes:', JSON.stringify(stores[0].attributes), 'relationships:', Object.keys(stores[0].relationships || {}));
       // Convert store list data (no order details yet — those load on-demand)
       const convertedStores = stores.map(store => {
         const basic = { data: store, included: omgStoresData.included || [], orders: [], orderProducts: [] };
         const converted = convertOMGStore(basic, cust);
-        // Use order count from relationship data if available
+        // Try to extract summary data from the sale resource attributes
+        const attrs = store.attributes || {};
         const orderRel = store.relationships?.orders?.data;
         if (Array.isArray(orderRel)) converted.orders = orderRel.length;
+        // Common OMG fields for totals (check what the API provides)
+        if (attrs.orders_count) converted.orders = attrs.orders_count;
+        if (attrs.order_count) converted.orders = attrs.order_count;
+        if (attrs.total_revenue) converted.total_sales = parseFloat(attrs.total_revenue) || 0;
+        if (attrs.total_earned) converted.total_sales = parseFloat(attrs.total_earned) || 0;
+        if (attrs.revenue) converted.total_sales = parseFloat(attrs.revenue) || 0;
+        if (attrs.fundraise_amount) converted.fundraise_total = parseFloat(attrs.fundraise_amount) || 0;
+        if (attrs.fundraise_total) converted.fundraise_total = parseFloat(attrs.fundraise_total) || 0;
+        if (attrs.items_count) converted.items_sold = attrs.items_count;
+        if (attrs.buyers_count) converted.unique_buyers = attrs.buyers_count;
         converted._details_loaded = false;
         return converted;
       });
@@ -15415,6 +15457,13 @@ export default function App(){
       if(omgFilter.status!=='all'&&s.status!==omgFilter.status)return false;
       if(omgFilter.search){const q=omgFilter.search.toLowerCase();const c=cust.find(x=>x.id===s.customer_id);
         if(!(s.store_name+' '+s.id+' '+(c?.name||'')+' '+(c?.alpha_tag||'')).toLowerCase().includes(q))return false}
+      // Date range filter — based on open_date or close_date
+      if(omgFilter.dateRange!=='all'){
+        const days={'30d':30,'90d':90,'6m':180,'1y':365}[omgFilter.dateRange]||30;
+        const cutoff=new Date(Date.now()-days*86400000);
+        const storeDate=s.close_date?new Date(s.close_date):s.open_date?new Date(s.open_date):null;
+        if(!storeDate||storeDate<cutoff)return false;
+      }
       return true;
     });
     const totalSales=filtered.reduce((a,s)=>a+s.total_sales,0);
@@ -15546,6 +15595,13 @@ export default function App(){
         <div className="search-bar" style={{flex:1,maxWidth:300}}><Icon name="search"/><input placeholder="Search stores..." value={omgFilter.search} onChange={e=>setOmgFilter(x=>({...x,search:e.target.value}))}/></div>
         <select className="form-select" style={{width:130,fontSize:11}} value={omgFilter.rep} onChange={e=>setOmgFilter(x=>({...x,rep:e.target.value}))}>
           <option value="all">All Reps</option>{REPS.filter(r=>r.role==='rep'||r.role==='admin').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
+        <select className="form-select" style={{width:130,fontSize:11}} value={omgFilter.dateRange} onChange={e=>setOmgFilter(x=>({...x,dateRange:e.target.value}))}>
+          <option value="30d">Last 30 Days</option>
+          <option value="90d">Last 90 Days</option>
+          <option value="6m">Last 6 Months</option>
+          <option value="1y">Last Year</option>
+          <option value="all">All Time</option>
+        </select>
         <div style={{display:'flex',gap:4}}>
           {[['all','All'],['open','Open'],['closed','Closed'],['draft','Draft']].map(([v,l])=>
             <button key={v} className={`btn btn-sm ${omgFilter.status===v?'btn-primary':'btn-secondary'}`} onClick={()=>setOmgFilter(x=>({...x,status:v}))}>{l}</button>)}
