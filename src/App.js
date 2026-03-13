@@ -3181,7 +3181,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       let prodSt=existing?.prod_status||'hold';
       const artFile=safeArr(o?.art_files).find(f=>f.id===j.art_file_id);
       const hasProdFiles=!artFile||(artFile.prod_files||[]).length>0;
-      if(itemSt==='items_received'&&j.art_status==='art_complete'&&hasProdFiles&&prodSt==='hold'&&!j._draft)prodSt='staging';
+      // Jobs stay in 'hold' (Ready for Prod) until warehouse manually moves them to production
       const id=existing?.id||('JOB-'+soNum+'-'+String(jIdx).padStart(2,'0'));
       jIdx++;
       return{
@@ -17804,7 +17804,7 @@ export default function App(){
         if(jj.id!==j.id)return jj;
         const upd={...jj,art_status:newStatus,assigned_artist:jj.assigned_artist||j.assigned_artist};
         // Auto-move to production staging when art complete + items received
-        if(newStatus==='art_complete'&&jj.item_status==='items_received'&&(jj.prod_status==='hold'||!jj.prod_status)&&!jj._draft&&jj.prod_status!=='draft'){upd.prod_status='staging'}
+        // Jobs stay in 'hold' (Ready for Prod) — warehouse moves them to In Line manually
         return upd;
       });
       let updArt=safeArt(so);
@@ -17813,7 +17813,7 @@ export default function App(){
         if(afSt)updArt=updArt.map(a=>a.id===j.art_file_id?{...a,status:afSt}:a);
       }
       savSO({...so,art_files:updArt,jobs:updatedJobs});
-      if(newStatus==='art_complete'){const autoStaged=updatedJobs.find(jj=>jj.id===j.id);if(autoStaged?.prod_status==='staging')nf('Art complete — job moved to Ready for Production!');else nf('Art status → '+ART_LABELS[newStatus])}
+      if(newStatus==='art_complete'){nf('Art complete — job is Ready for Production!')}
       else nf('Art status → '+ART_LABELS[newStatus]);
     };
     const assignArtist=(j,artistId)=>{
@@ -17940,10 +17940,9 @@ export default function App(){
                   const ext=j.deco_type==='embroidery'?'.dst':j.deco_type==='screen_print'?'_seps.ai':'.pdf';
                   const fn=(j.art_name||'art').replace(/\s+/g,'_')+'_FINAL'+ext;
                   const updArt=[...safeArt(so)];updArt[afIdx]={...updArt[afIdx],prod_files:[...(updArt[afIdx].prod_files||[]),fn]};
-                  const updJobs=safeJobs(so).map(jj=>{if(jj.id!==j.id)return jj;const upd={...jj,art_status:'art_complete'};if(jj.item_status==='items_received'&&(jj.prod_status==='hold'||!jj.prod_status)&&!jj._draft&&jj.prod_status!=='draft')upd.prod_status='staging';return upd});
+                  const updJobs=safeJobs(so).map(jj=>{if(jj.id!==j.id)return jj;return{...jj,art_status:'art_complete'}});
                   savSO({...so,art_files:updArt,jobs:updJobs});
-                  const autoStaged=updJobs.find(jj=>jj.id===j.id);
-                  nf(autoStaged?.prod_status==='staging'?'Art complete — job moved to Ready for Production!':'Prod files uploaded — Art Complete!');
+                  nf('Prod files uploaded — Art Complete!');
                 }else{moveArtStatus(j,'art_complete')}
               }}>Upload & Complete</button>}
               <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px',marginLeft:'auto'}} onClick={e=>{e.stopPropagation();window.open(window.location.origin+window.location.pathname+'?so='+j.soId,'_blank')}}>Open SO ↗</button>
