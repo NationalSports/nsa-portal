@@ -10328,6 +10328,16 @@ export default function App(){
   React.useEffect(()=>{try{localStorage.setItem('nsa_invs',JSON.stringify(invs))}catch{};_diffSave(invs,'invs',i=>_dbSaveInvoice(i))},[invs]);
   React.useEffect(()=>{try{localStorage.setItem('nsa_msgs',JSON.stringify(msgs))}catch{};_diffSave(msgs,'msgs',m=>_dbSaveMessage(m))},[msgs]);
   React.useEffect(()=>{try{localStorage.setItem('nsa_omg_stores',JSON.stringify(omgStores))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.omg||[];omgStores.forEach(s=>{const old=snap.find(p=>p.id===s.id);if(!old||JSON.stringify(old)!==JSON.stringify(s)){_dbSave('omg_stores',[_pick(s,_omgStoreCols)])}});_dbSnap.current.omg=omgStores}},[omgStores]);
+
+  // Auto-load OMG store details when a store is selected
+  React.useEffect(()=>{
+    if(!omgSel||omgSel._details_loaded||omgDetailLoading||!omgSel._omg_id)return;
+    setOmgDetailLoading(true);
+    console.log('[OMG] Auto-loading details for store', omgSel.id, omgSel._omg_id);
+    loadOMGStoreDetail(omgSel).then(updated=>{
+      setOmgSel(updated);setOmgDetailLoading(false);
+    }).catch(e=>{console.error('[OMG] Detail load failed:',e);setOmgDetailLoading(false)});
+  },[omgSel?.id]); // eslint-disable-line react-hooks/exhaustive-deps
   React.useEffect(()=>{try{localStorage.setItem('nsa_issues',JSON.stringify(issues))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.issues||[];const changed=issues.filter(i=>{const old=snap.find(p=>p.id===i.id);return!old||JSON.stringify(old)!==JSON.stringify(i)});if(changed.length)_dbSave('issues',changed.map(i=>_pick(i,_issueCols)));_dbSnap.current.issues=issues}},[issues]);
   // Rep-CSR assignments auto-save
   React.useEffect(()=>{if(!_initialLoadDone.current||!_dbLoadSuccess.current)return;const snap=_dbSnap.current.repCsr||[];const changed=repCsrAssignments.filter(a=>{const old=snap.find(p=>p.id===a.id);return!old||JSON.stringify(old)!==JSON.stringify(a)});if(changed.length)_dbSave('rep_csr_assignments',changed);_dbSnap.current.repCsr=repCsrAssignments},[repCsrAssignments]);
@@ -15778,11 +15788,6 @@ export default function App(){
     // Store detail view
     if(omgSel){
       const s=omgSel;const c=cust.find(x=>x.id===s.customer_id);const rep=REPS.find(r=>r.id===s.rep_id);
-      // Load details on-demand if not yet loaded
-      if(!s._details_loaded && !omgDetailLoading && s._omg_id){
-        setOmgDetailLoading(true);
-        loadOMGStoreDetail(s).then(updated => { setOmgSel(updated); setOmgDetailLoading(false); }).catch(() => setOmgDetailLoading(false));
-      }
       const totalCost=s.products.reduce((a,p)=>{const q=Object.values(p.sizes).reduce((a2,v)=>a2+v,0);return a+q*(p.cost+p.deco_cost)},0);
       const totalRetail=s.products.reduce((a,p)=>{const q=Object.values(p.sizes).reduce((a2,v)=>a2+v,0);return a+q*p.retail},0);
       const margin=totalRetail-totalCost;const pct=totalRetail>0?Math.round(margin/totalRetail*100):0;
@@ -15842,7 +15847,13 @@ export default function App(){
             {omgDetailLoading && !s._details_loaded ? (
               <div style={{padding:24,textAlign:'center',color:'#64748b',fontSize:13}}>Loading order details from OMG...</div>
             ) : s.products.length === 0 ? (
-              <div style={{padding:24,textAlign:'center',color:'#94a3b8',fontSize:13}}>No product data available{!s._details_loaded && ' — click Sync to reload'}</div>
+              <div style={{padding:24,textAlign:'center',color:'#94a3b8',fontSize:13}}>
+                {s._details_loaded ? 'No product data returned from OMG API' : 'Details not yet loaded'}
+                {!s._details_loaded && !omgDetailLoading && <button className="btn btn-sm btn-primary" style={{marginLeft:8}} onClick={()=>{
+                  setOmgDetailLoading(true);
+                  loadOMGStoreDetail(s).then(u=>{setOmgSel(u);setOmgDetailLoading(false)}).catch(()=>setOmgDetailLoading(false));
+                }}>Load Details</button>}
+              </div>
             ) : (
             <table><thead><tr><th>SKU</th><th>Product</th><th>Color</th><th>Deco</th><th>Retail</th><th>Cost</th><th>Deco $</th><th>Sizes</th><th>Units</th><th>Revenue</th><th>Margin</th></tr></thead>
             <tbody>{s.products.map((p,i)=>{const q=Object.values(p.sizes).reduce((a,v)=>a+v,0);const rev=q*p.retail;const cost=q*(p.cost+p.deco_cost);const mg=rev-cost;
