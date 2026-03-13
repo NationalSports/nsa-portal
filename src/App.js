@@ -629,8 +629,8 @@ const _artCols=['id','name','deco_type','ink_colors','thread_colors','art_size',
 // Columns that may not exist in art file tables — stripped on retry
 const _artExtraCols=new Set(['art_sizes','garment_colors','item_mockups']);
 // Columns that may not exist in so_jobs — stripped on retry
-const _jobExtraCols=new Set(['_art_ids','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at']);
-const _jobCols=['id','key','art_file_id','_art_ids','_draft','art_name','deco_type','positions','art_status','item_status','prod_status','total_units','fulfilled_units','split_from','created_at','assigned_machine','assigned_to','ship_method','items','_auto','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at'];
+const _jobExtraCols=new Set(['_art_ids','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at','coach_email_opened_at']);
+const _jobCols=['id','key','art_file_id','_art_ids','_draft','art_name','deco_type','positions','art_status','item_status','prod_status','total_units','fulfilled_units','split_from','created_at','assigned_machine','assigned_to','ship_method','items','_auto','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at','coach_email_opened_at'];
 const _custCols=['id','parent_id','name','alpha_tag','billing_address_line1','billing_address_line2','billing_city','billing_state','billing_zip','shipping_address_line1','shipping_address_line2','shipping_city','shipping_state','shipping_zip','adidas_ua_tier','catalog_markup','payment_terms','tax_rate','tax_exempt','primary_rep_id','notes','is_active','created_at','updated_at','alt_billing_addresses','art_files'];
 const _vendCols=['id','name','vendor_type','api_provider','nsa_carries_inventory','click_automation','is_active','contact_email','contact_phone','rep_name','payment_terms','notes'];
 const _firmDateCols=['item_desc','date','approved'];
@@ -646,9 +646,11 @@ const fileUpload=async(file,folder='nsa-art-files')=>{const fd=new FormData();fd
 const isUrl=s=>typeof s==='string'&&(s.startsWith('http://')||s.startsWith('https://'));
 const fileDisplayName=f=>{if(typeof f==='object'&&f?.name)return f.name;const s=typeof f==='string'?f:(f?.url||'');return isUrl(s)?decodeURIComponent(s.split('/').pop().split('?')[0]):s};
 const _isDownloadOnly=u=>{const e=_urlExt(u);return['ai','eps','dst','psd','tiff','tif','cdr'].includes(e)};
+const _isDisplayableFile=(u,f)=>_isImgUrl(u,f)||_isPdfUrl(u,f);
+const _filterDisplayable=files=>(files||[]).filter(f=>{const u=typeof f==='string'?f:(f?.url||'');return u&&_isDisplayableFile(u,f)});
 const openFile=f=>{const u=typeof f==='string'?f:(f?.url||'');if(isUrl(u)){if(_isPdfUrl(u,f)){window.open(u,'_blank')}else if(_isDownloadOnly(u)){const a=document.createElement('a');a.href=u;a.download=typeof f==='object'&&f?.name?f.name:decodeURIComponent(u.split('/').pop().split('?')[0]);a.target='_blank';a.rel='noopener';document.body.appendChild(a);a.click();document.body.removeChild(a)}else{window.open(u,'_blank')}}else if(u){nf('Legacy file: '+u+' — re-upload to enable downloads')}};
 const _urlExt=u=>{if(!u||typeof u!=='string')return '';const clean=u.split('?')[0].split('#')[0];const m=clean.match(/\.(\w+)$/);return m?m[1].toLowerCase():''};
-const _isImgUrl=(u,f)=>{if(_isPdfUrl(u,f))return false;const e=_urlExt(u);if(['png','jpg','jpeg','gif','webp','svg','bmp'].includes(e))return true;if(typeof f==='object'&&f?.type?.startsWith('image/'))return true;if(u&&typeof u==='string'&&u.includes('cloudinary.com')&&u.includes('/image/upload/'))return true;return false};
+const _isImgUrl=(u,f)=>{if(_isPdfUrl(u,f))return false;const e=_urlExt(u);if(_isDownloadOnly(u))return false;if(['png','jpg','jpeg','gif','webp','svg','bmp'].includes(e))return true;if(typeof f==='object'&&f?.type?.startsWith('image/'))return true;if(u&&typeof u==='string'&&u.includes('cloudinary.com')&&u.includes('/image/upload/'))return true;return false};
 const _isPdfUrl=(u,f)=>{if(_urlExt(u)==='pdf')return true;if(typeof f==='object'&&f?.type==='application/pdf')return true;if(typeof f==='string'&&f.endsWith('.pdf'))return true;return false};
 const _cloudinaryPdfThumb=u=>{if(!u||!u.includes('cloudinary.com'))return null;
   // Force Cloudinary to render page 1 as PNG via /image/upload/ with pg_1,f_png transform
@@ -1805,127 +1807,71 @@ const omgApiCall = async (endpoint, options = {}, _retries = 0) => {
 };
 
 const fetchOMGStores = async () => {
-  // Fetch only relevant stores: open + recently closed (last 30 days)
-  // Uses API-level status filtering to avoid paginating through hundreds of old stores
-  let allData = [], allIncluded = [];
-
-  // Helper: fetch all pages for a given endpoint
-  const fetchAllPages = async (baseEndpoint) => {
-    const data = [], included = [];
-    const firstResp = await omgApiCall(baseEndpoint);
-    if (!firstResp?.data?.length) return { data, included };
-    data.push(...firstResp.data);
-    if (firstResp.included) included.push(...firstResp.included);
-    const pageSize = firstResp.data.length;
-    console.log(`[OMG] ${baseEndpoint} — page 1: ${pageSize} stores`);
-    // Paginate if we got a full page
-    if (pageSize >= 25) {
-      if (firstResp.links?.next) {
-        let nextUrl = firstResp.links.next;
-        while (nextUrl) {
-          try {
-            const ep = new URL(nextUrl).pathname.replace(/^\/v1/, '') + new URL(nextUrl).search;
-            const resp = await omgApiCall(ep);
-            if (!resp?.data?.length) break;
-            data.push(...resp.data);
-            if (resp.included) included.push(...resp.included);
-            nextUrl = resp.links?.next || null;
-          } catch { break; }
-        }
-      } else {
-        // Try offset/limit pagination (the format that worked in the original code)
-        let offset = pageSize;
-        for (let p = 0; p < 20; p++) {
-          try {
-            const sep = baseEndpoint.includes('?') ? '&' : '?';
-            const resp = await omgApiCall(`${baseEndpoint}${sep}offset=${offset}&limit=${pageSize}`);
-            if (!resp?.data?.length) break;
-            data.push(...resp.data);
-            if (resp.included) included.push(...resp.included);
-            if (resp.data.length < pageSize) break;
-            offset += resp.data.length;
-          } catch { break; }
-        }
-      }
-    }
-    return { data, included };
-  };
-
-  // 1) Fetch open/active stores (the main ones we care about)
-  const statuses = ['open', 'pending', 'scheduled'];
-  for (const status of statuses) {
-    try {
-      const result = await fetchAllPages(`/sales?include=organization&filter[status]=${status}`);
-      allData.push(...result.data);
-      allIncluded.push(...result.included);
-    } catch (e) {
-      console.warn(`[OMG] Failed to fetch ${status} stores:`, e.message);
-    }
-  }
-  console.log(`[OMG] Open/active stores fetched: ${allData.length}`);
-
-  // 2) Fetch closed stores, then filter to last 30 days client-side
-  const closedStatuses = ['closed', 'finalized', 'fulfilled'];
+  // Fetch only relevant stores: truly open (expires_at in future) + closed within last 30 days
+  // Single API call — no heavy pagination or per-status queries
   const thirtyDaysAgo = new Date(Date.now() - 30 * 86400000);
-  for (const status of closedStatuses) {
-    try {
-      const result = await fetchAllPages(`/sales?include=organization&filter[status]=${status}`);
-      const recent = result.data.filter(s => {
-        const closedAt = s.attributes?.expires_at || s.attributes?.closed_at || s.attributes?.updated_at;
-        return closedAt && new Date(closedAt) >= thirtyDaysAgo;
-      });
-      allData.push(...recent);
-      allIncluded.push(...result.included);
-      console.log(`[OMG] ${status}: ${result.data.length} total, ${recent.length} within last 30 days`);
-    } catch (e) {
-      console.warn(`[OMG] Failed to fetch ${status} stores:`, e.message);
+  const now = new Date();
+
+  // Fetch page 1 of stores (the API returns ~100 per page)
+  const resp = await omgApiCall('/sales?include=organization');
+  if (!resp?.data?.length) return resp;
+  let allData = resp.data;
+  let allIncluded = resp.included || [];
+  console.log(`[OMG] Fetched ${allData.length} stores. Statuses:`, [...new Set(allData.map(s => s.attributes?.status))]);
+
+  // Filter to only relevant stores:
+  // - "open" status AND expires_at in the future (truly open, not just never-closed old stores)
+  // - "closed/finalized/fulfilled" with expires_at within last 30 days
+  // - "pending/scheduled" (upcoming stores)
+  const closedStatuses = new Set(['closed', 'finalized', 'fulfilled', 'archived']);
+  allData = allData.filter(s => {
+    const status = (s.attributes?.status || '').toLowerCase();
+    const expiresAt = s.attributes?.expires_at;
+    const opensAt = s.attributes?.opens_at;
+
+    // Pending/scheduled — always keep
+    if (status === 'pending' || status === 'scheduled') return true;
+
+    // Open — only keep if expires_at is in the future (filters out old "open" stores from 2016)
+    if (status === 'open') {
+      if (!expiresAt) return true; // no expiry = keep it
+      return new Date(expiresAt) >= now;
     }
-  }
 
-  // 3) If status filtering returned nothing, fall back to unfiltered fetch (API may not support filter[status])
-  if (allData.length === 0) {
-    console.warn('[OMG] Status-filtered fetches returned no data — falling back to unfiltered fetch');
-    const fallback = await fetchAllPages('/sales?include=organization');
-    if (fallback.data.length > 0) {
-      const excludeOld = new Set(['closed', 'finalized', 'fulfilled', 'archived']);
-      allData = fallback.data.filter(s => {
-        const st = (s.attributes?.status || '').toLowerCase();
-        if (!excludeOld.has(st)) return true;
-        const closedAt = s.attributes?.expires_at || s.attributes?.closed_at || s.attributes?.updated_at;
-        return closedAt && new Date(closedAt) >= thirtyDaysAgo;
-      });
-      allIncluded = fallback.included;
-      console.log(`[OMG] Fallback: filtered ${allData.length} relevant stores from ${fallback.data.length} total`);
+    // Closed statuses — only keep if closed within last 30 days
+    if (closedStatuses.has(status)) {
+      const closedAt = expiresAt || s.attributes?.closed_at || s.attributes?.updated_at;
+      return closedAt && new Date(closedAt) >= thirtyDaysAgo;
     }
-  }
 
-  // Deduplicate by store ID (in case a store appeared in multiple status queries)
-  const seen = new Map();
-  allData.forEach(s => { if (!seen.has(s.id)) seen.set(s.id, s); });
-  allData = [...seen.values()];
+    // Unknown status — keep if it has a recent date
+    const anyDate = expiresAt || opensAt || s.attributes?.updated_at;
+    return anyDate && new Date(anyDate) >= thirtyDaysAgo;
+  });
 
-  console.log(`[OMG] Total relevant stores: ${allData.length}. Statuses:`, [...new Set(allData.map(s => s.attributes?.status))]);
+  console.log(`[OMG] After filtering: ${allData.length} relevant stores. Statuses:`, [...new Set(allData.map(s => s.attributes?.status))]);
   return { data: allData, included: allIncluded };
 };
 
 const fetchOMGStoreDetail = async (saleResource, allIncluded) => {
-  // saleResource is from the initial /sales list — no need to re-fetch it
   const saleId = saleResource.id;
   const saleData = { data: saleResource, included: allIncluded };
-  // Fetch orders for this sale
-  const orders = await omgApiCall(`/orders?filter[sale_id]=${saleId}&include=customer_info`)
-    .catch(() => omgApiCall(`/orders?filter[relationships][sale]=${saleId}&include=sale,customer_info`))
+  // Fetch orders using nested resource URL first, then filter-based fallback
+  const orders = await omgApiCall(`/sales/${saleId}/orders?include=customer_info`)
+    .catch(() => omgApiCall(`/orders?filter[sale_id]=${saleId}&include=customer_info`))
     .catch(e => { console.warn('[OMG] Failed to fetch orders for sale', saleId, e.message); return null; });
   const orderList = orders?.data || [];
-  // Fetch order products for each order — try filter variants, fall back gracefully
+  console.log(`[OMG] Sale ${saleId}: ${orderList.length} orders`);
+  // Fetch order products — try nested resource URL, then filter-based
   const orderProducts = await Promise.all(
     orderList.map(o =>
-      omgApiCall(`/order_products?filter[order_id]=${o.id}&include=product`)
-        .catch(() => omgApiCall(`/order_products?filter[relationships][order]=${o.id}&include=product`))
-        .catch(() => omgApiCall(`/order_products?filter[order_id]=${o.id}`))
+      omgApiCall(`/orders/${o.id}/order_products?include=product`)
+        .catch(() => omgApiCall(`/order_products?filter[order_id]=${o.id}&include=product`))
         .catch(() => ({ data: [], included: [] }))
     )
   );
+  const totalProducts = orderProducts.reduce((a, r) => a + (r?.data?.length || 0), 0);
+  console.log(`[OMG] Sale ${saleId}: ${totalProducts} order products across ${orderList.length} orders`);
   return { ...saleData, orders: orderList, orderProducts };
 };
 
@@ -2417,6 +2363,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const[artRevisionNote,setArtRevisionNote]=useState('');
   const[showPrevArt,setShowPrevArt]=useState(false);// Previous Artwork picker modal
   const[coachApprovalModal,setCoachApprovalModal]=useState(null);// {jIdx, contact, portalUrl, method, message}
+  const[mockupLightbox,setMockupLightbox]=useState(null);// url string for image lightbox overlay
   const[copySkuModal,setCopySkuModal]=useState(null);// {itemIdx, search:''}
 
   // ─── Vendor Inventory Cache (S&S Activewear) ───
@@ -3108,7 +3055,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         art_requests:existing?.art_requests||[],art_messages:existing?.art_messages||[],
         assigned_artist:existing?.assigned_artist||null,rep_notes:existing?.rep_notes||null,
         rejections:existing?.rejections||null,
-        sent_to_coach_at:existing?.sent_to_coach_at||null,coach_approved_at:existing?.coach_approved_at||null,
+        sent_to_coach_at:existing?.sent_to_coach_at||null,coach_approved_at:existing?.coach_approved_at||null,coach_email_opened_at:existing?.coach_email_opened_at||null,
         coach_rejected:existing?.coach_rejected||null,
         _art_ids:j._art_ids||[],
       };
@@ -3146,6 +3093,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const statusFlow=['need_order','waiting_receive','needs_pull','items_received','in_production','ready_to_invoice','complete'];
 
   return(<div>
+    {/* ── Mockup lightbox overlay ── */}
+    {mockupLightbox&&<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.85)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center',padding:16}} onClick={()=>setMockupLightbox(null)}>
+      <button style={{position:'absolute',top:16,right:20,background:'rgba(255,255,255,0.15)',border:'none',color:'white',fontSize:28,borderRadius:'50%',width:44,height:44,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center'}} onClick={()=>setMockupLightbox(null)}>×</button>
+      {_isImgUrl(mockupLightbox)?<img src={mockupLightbox} alt="Mockup" style={{maxWidth:'95vw',maxHeight:'90vh',objectFit:'contain',borderRadius:8}} onClick={e=>e.stopPropagation()}/>
+      :_isPdfUrl(mockupLightbox)?<iframe title="PDF Preview" src={'https://docs.google.com/gview?url='+encodeURIComponent(mockupLightbox)+'&embedded=true'} style={{width:'90vw',height:'90vh',border:'none',borderRadius:8,background:'white'}} onClick={e=>e.stopPropagation()}/>
+      :<div style={{color:'white',fontSize:16}} onClick={e=>e.stopPropagation()}>Cannot preview this file type</div>}
+    </div>}
     {/* Sticky header — appears when scrolling */}
     <div style={{position:'sticky',top:52,zIndex:40,background:'white',borderBottom:'1px solid #e2e8f0',padding:'8px 16px',marginBottom:0,display:'flex',alignItems:'center',gap:12,boxShadow:'0 1px 3px rgba(0,0,0,0.05)',flexWrap:'wrap'}}>
       <button className="btn btn-sm btn-secondary" onClick={()=>{if(dirty&&!window.confirm('You have unsaved changes. Leave without saving?'))return;onBack()}} style={{fontSize:10,padding:'4px 10px'}}><Icon name="back" size={12}/> Back</button>
@@ -5623,7 +5577,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         art_messages:j.art_messages?JSON.parse(JSON.stringify(j.art_messages)):[],
         assigned_artist:j.assigned_artist||null,rep_notes:j.rep_notes||null,
         rejections:j.rejections?JSON.parse(JSON.stringify(j.rejections)):null,
-        sent_to_coach_at:j.sent_to_coach_at||null,coach_approved_at:j.coach_approved_at||null,coach_rejected:j.coach_rejected||null});
+        sent_to_coach_at:j.sent_to_coach_at||null,coach_approved_at:j.coach_approved_at||null,coach_rejected:j.coach_rejected||null,coach_email_opened_at:j.coach_email_opened_at||null});
 
       // Split job by received — create partial job with received items
       const splitByReceived=(jIdx)=>{
@@ -5780,42 +5734,66 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               </div>
               <div style={{fontSize:12,color:'#1e3a8a',marginTop:4}}>The mockup will be sent to you for approval when ready.</div>
             </div>}
-            {j.art_status==='waiting_approval'&&(()=>{const artFile2=safeArt(o).find(a=>a.id===j.art_file_id);const _mf=(artFile2?.mockup_files||artFile2?.files||[]);const _im=Object.values(artFile2?.item_mockups||{}).flat();const _seen=new Set();const mockups=[..._mf,..._im].filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seen.has(u))return false;_seen.add(u);return true});const _stca=j.sent_to_coach_at?new Date(j.sent_to_coach_at):null;return<div style={{margin:'0 20px',padding:'16px',background:_stca?'linear-gradient(135deg,#dbeafe,#eff6ff)':'linear-gradient(135deg,#fef3c7,#fffbeb)',border:'2px solid '+(_stca?'#93c5fd':'#fbbf24'),borderRadius:10}}>
+            {j.art_status==='waiting_approval'&&(()=>{const artFile2=safeArt(o).find(a=>a.id===j.art_file_id);const _mf=_filterDisplayable(artFile2?.mockup_files||artFile2?.files||[]);const _im=_filterDisplayable(Object.values(artFile2?.item_mockups||{}).flat());const _seen=new Set();const mockups=[..._mf,..._im].filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seen.has(u))return false;_seen.add(u);return true});const _stca=j.sent_to_coach_at?new Date(j.sent_to_coach_at):null;return<div style={{margin:'0 20px',padding:'16px',background:_stca?'linear-gradient(135deg,#dbeafe,#eff6ff)':'linear-gradient(135deg,#fef3c7,#fffbeb)',border:'2px solid '+(_stca?'#93c5fd':'#fbbf24'),borderRadius:10}}>
               <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:10}}>
                 <span style={{fontSize:20}}>{_stca?'📤':'⚠️'}</span>
                 <span style={{fontWeight:800,fontSize:16,color:_stca?'#1e40af':'#92400e'}}>{_stca?'Sent to Coach for Approval':'Artwork Needs Your Approval'}</span>
               </div>
-              {_stca&&<div style={{fontSize:12,color:'#1e40af',marginBottom:8,fontWeight:600}}>Sent {_stca.toLocaleDateString('en-US',{weekday:'short'})} {_stca.toLocaleDateString()} @ {_stca.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true})}</div>}
+              {_stca&&<div style={{fontSize:12,color:'#1e40af',marginBottom:8,fontWeight:600}}>
+                Sent {_stca.toLocaleDateString('en-US',{weekday:'short'})} {_stca.toLocaleDateString()} @ {_stca.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true})}
+                {j.coach_email_opened_at?<span style={{marginLeft:8,padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:'#dbeafe',color:'#1e40af'}}>Viewed {new Date(j.coach_email_opened_at).toLocaleDateString()} @ {new Date(j.coach_email_opened_at).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true})}</span>
+                :<span style={{marginLeft:8,padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:'#fef3c7',color:'#92400e'}}>Not yet viewed</span>}
+              </div>}
               {mockups.length>0&&<div style={{marginBottom:12}}>
-                <div style={{fontSize:11,fontWeight:700,color:'#78350f',marginBottom:6}}>Review the mockup:</div>
-                {/* Primary mockup — large */}
-                {(()=>{const url=typeof mockups[0]==='string'?mockups[0]:(mockups[0]?.url||'');const name=fileDisplayName(mockups[0]);
-                  return<div style={{borderRadius:10,border:'2px solid #f59e0b',overflow:'hidden',background:'white',marginBottom:8,cursor:'pointer'}} onClick={()=>openFile(mockups[0])}>
-                    {_isImgUrl(url,mockups[0])?<img src={url} alt={name} style={{width:'100%',maxHeight:450,objectFit:'contain',display:'block',background:'#fafafa'}}/>
-                    :_isPdfUrl(url,mockups[0])?<div style={{position:'relative'}}>
-                      {_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',maxHeight:450,objectFit:'contain',display:'block',background:'#fafafa'}} onError={e=>{e.target.style.display='none';e.target.nextSibling.style.display='flex'}}/>:null}
-                      <div style={{display:_cloudinaryPdfThumb(url)?'none':'flex',flexDirection:'column',alignItems:'center',padding:24,gap:4}}>
-                        <span style={{fontSize:36}}>PDF</span><span style={{fontSize:13,color:'#1e40af'}}>{name}</span></div></div>
-                    :<div style={{display:'flex',alignItems:'center',gap:6,padding:'14px 16px'}}>
-                      <span style={{fontSize:20}}>📄</span><span style={{fontSize:14,fontWeight:600,color:'#1e40af'}}>{name}</span></div>}
-                    <div style={{padding:'4px 10px',borderTop:'1px solid #fde68a',fontSize:11,color:'#92400e',fontWeight:600,display:'flex',justifyContent:'space-between'}}><span>{name}</span><span style={{color:'#2563eb'}}>Click to open full size</span></div>
-                  </div>})()}
-                {/* Additional mockups */}
-                {mockups.length>1&&<div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-                  {mockups.slice(1).map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);
-                    return<div key={fi} style={{borderRadius:8,border:'1px solid #fde68a',overflow:'hidden',background:'white',maxWidth:200,cursor:'pointer'}} onClick={()=>openFile(f)}>
-                      {_isImgUrl(url,f)?<img src={url} alt={name} style={{width:'100%',maxHeight:150,objectFit:'contain',display:'block'}}/>
-                      :_isPdfUrl(url,f)?<div style={{position:'relative'}}>
-                        {_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',maxHeight:150,objectFit:'contain',display:'block',background:'#fafafa'}} onError={e=>{e.target.style.display='none';e.target.nextSibling&&(e.target.nextSibling.style.display='flex')}}/>:null}
-                        <div style={{display:_cloudinaryPdfThumb(url)?'none':'flex',flexDirection:'column',alignItems:'center',padding:16,gap:4}}>
-                          <span style={{fontSize:24}}>📄</span><span style={{fontSize:11,color:'#1e40af'}}>{name}</span></div></div>
-                      :<div style={{display:'flex',alignItems:'center',gap:6,padding:'10px 14px'}}>
-                        <span style={{fontSize:16}}>📄</span><span style={{fontSize:12,fontWeight:600,color:'#1e40af'}}>{name}</span></div>}
-                      <div style={{padding:'3px 8px',borderTop:'1px solid #fde68a',fontSize:10,color:'#92400e',fontWeight:600,textAlign:'center'}}>{name}</div>
+                <div style={{fontSize:11,fontWeight:700,color:'#78350f',marginBottom:6}}>Review the mockup{mockups.length>1?'s':''}:</div>
+                <div style={{display:'grid',gridTemplateColumns:mockups.length>1?'1fr 1fr':'1fr',gap:8}}>
+                  {mockups.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);
+                    return<div key={fi} style={{borderRadius:10,border:'2px solid #f59e0b',overflow:'hidden',background:'white',cursor:'pointer'}} onClick={()=>setMockupLightbox(url)}>
+                      {_isImgUrl(url,f)?<img src={url} alt={name} style={{width:'100%',height:300,objectFit:'contain',display:'block',background:'#fafafa'}}/>
+                      :_isPdfUrl(url,f)?<div style={{position:'relative',height:300,display:'flex',alignItems:'center',justifyContent:'center',background:'#fafafa'}}>
+                        {_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',height:300,objectFit:'contain',display:'block'}} onError={e=>{e.target.style.display='none';e.target.nextSibling&&(e.target.nextSibling.style.display='flex')}}/>:null}
+                        <div style={{display:_cloudinaryPdfThumb(url)?'none':'flex',flexDirection:'column',alignItems:'center',gap:4}}>
+                          <span style={{fontSize:36}}>PDF</span><span style={{fontSize:13,color:'#1e40af'}}>{name}</span></div></div>
+                      :<div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:6,height:300,background:'#fafafa'}}>
+                        <span style={{fontSize:20}}>📄</span><span style={{fontSize:14,fontWeight:600,color:'#1e40af'}}>{name}</span></div>}
+                      <div style={{padding:'4px 10px',borderTop:'1px solid #fde68a',fontSize:11,color:'#92400e',fontWeight:600,display:'flex',justifyContent:'space-between'}}><span>{name}</span><span style={{color:'#2563eb'}}>Click to enlarge</span></div>
                     </div>})}
-                </div>}
+                </div>
               </div>}
               {mockups.length===0&&<div style={{padding:12,background:'#fff7ed',border:'1px dashed #fdba74',borderRadius:6,marginBottom:12,fontSize:12,color:'#9a3412'}}>No mockup files attached yet — check the Art Library tab for files.</div>}
+              {/* Artwork details — pantones, sizes, locations */}
+              {artFile2&&(()=>{const _colorList2=(artFile2.ink_colors||artFile2.thread_colors||'').split(/[,\n]/).map(c3=>c3.trim()).filter(Boolean);const _isEmb2=artFile2.deco_type==='embroidery';
+                const _decoPositions=new Set();const _numDecos2=[];(j.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(it)safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id===j.art_file_id&&d.position)_decoPositions.add(d.position);if(d.kind==='numbers')_numDecos2.push(d)})});
+                const _posList=_decoPositions.size>0?[..._decoPositions]:(j.positions||'').split(',').map(p=>p.trim()).filter(Boolean);const _artSizes2=artFile2.art_sizes||{};const _nd2=_numDecos2[0];
+                const _colorMap2={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000','Silver':'#C0C0C0','Royal':'#4169e1','Cardinal':'#8C1515','Green':'#166534','Orange':'#EA580C','Navy 2767':'#001f3f','PMS 286':'#0033A0','PMS 032':'#EF3340','PMS 877':'#C0C0C0','Maroon':'#800000'};
+                return<div style={{marginBottom:12,padding:'12px 14px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8}}>
+                  <div style={{fontSize:11,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:8,letterSpacing:0.5}}>Artwork Details</div>
+                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10,marginBottom:_colorList2.length>0||_nd2?10:0}}>
+                    <div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8'}}>Method</div><div style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{artFile2.deco_type?.replace(/_/g,' ')||'—'}</div></div>
+                    <div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8'}}>Location{_posList.length>1?'s':''}</div><div style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{_posList.join(', ')||'—'}</div></div>
+                    {_posList.length<=1?<div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8'}}>Art Size</div><div style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{artFile2.art_size||'—'}</div></div>
+                    :_posList.map((pos,pi)=><div key={pi}><div style={{fontSize:10,fontWeight:600,color:'#94a3b8'}}>Size — {pos}</div><div style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{_artSizes2[pos]||(pi===0?artFile2.art_size:'')||'—'}</div></div>)}
+                  </div>
+                  {_colorList2.length>0&&<div style={{marginBottom:_nd2?10:0}}>
+                    <div style={{fontSize:10,fontWeight:600,color:'#94a3b8',marginBottom:4}}>{_isEmb2?'Thread Colors':'Ink Colors / Pantones'} ({_colorList2.length})</div>
+                    <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                      {_colorList2.map((cl,i)=>{const clLower=cl.toLowerCase();const sw=_colorMap2[cl]||Object.entries(_colorMap2).find(([k])=>clLower.includes(k.toLowerCase()))?.[1]||null;
+                        return<div key={i} style={{display:'flex',alignItems:'center',gap:5,padding:'3px 10px',background:'white',border:'1px solid #e2e8f0',borderRadius:6}}>
+                          <div style={{width:14,height:14,borderRadius:3,border:'1px solid #d1d5db',background:sw||'linear-gradient(135deg,#f1f5f9,#e2e8f0)'}}/>
+                          <span style={{fontSize:11,fontWeight:600}}>{cl}</span></div>})}
+                    </div>
+                  </div>}
+                  {_nd2&&<div>
+                    <div style={{fontSize:10,fontWeight:600,color:'#94a3b8',marginBottom:4}}>Numbers</div>
+                    <div style={{display:'flex',gap:12,flexWrap:'wrap',fontSize:12}}>
+                      <span><strong>{(_nd2.num_method||'heat_transfer').replace(/_/g,' ')}</strong></span>
+                      <span>Size: <strong>{_nd2.num_size||'—'}</strong></span>
+                      {_nd2.front_and_back&&<span>Back: <strong>{_nd2.num_size_back||_nd2.num_size||'—'}</strong></span>}
+                      {_nd2.print_color&&<span>Color: <strong>{_nd2.print_color}</strong></span>}
+                      {_nd2.front_and_back&&<span style={{padding:'1px 6px',borderRadius:4,background:'#7c3aed',color:'white',fontSize:10,fontWeight:700}}>Front + Back</span>}
+                    </div>
+                  </div>}
+                </div>})()}
               {/* Artist notes / messages */}
               {(()=>{const artMsgs=(j.art_messages||[]).filter(m=>!m.is_system);const artFileNotes=artFile2?.notes;
                 return(artMsgs.length>0||artFileNotes)?<div style={{marginBottom:12,padding:'10px 14px',background:'#f0f9ff',border:'1px solid #bae6fd',borderRadius:8}}>
@@ -7384,6 +7362,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   const[portalPayLoading,setPortalPayLoading]=useState(false);// loading state for pay button
   const[portalPaySuccess,setPortalPaySuccess]=useState(null);
   const[portalApvOpen,setPortalApvOpen]=useState(false);
+  const[mockupLightbox,setMockupLightbox]=useState(null);// url string for image lightbox overlay
   React.useEffect(()=>setCustLocal(initCust),[initCust]);
   React.useEffect(()=>{if(!showActions)return;const close=()=>setShowActions(false);document.addEventListener('click',close);return()=>document.removeEventListener('click',close)},[showActions]);
   const customer=custLocal;
@@ -7403,6 +7382,13 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   const custUnread=(msgs||[]).filter(m=>custSOs.some(s=>s.id===m.so_id)&&!(m.read_by||[]).includes(cu?.id||'')).length;
 
   return(<div>
+  {/* ── Mockup lightbox overlay ── */}
+  {mockupLightbox&&<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.85)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center',padding:16}} onClick={()=>setMockupLightbox(null)}>
+    <button style={{position:'absolute',top:16,right:20,background:'rgba(255,255,255,0.15)',border:'none',color:'white',fontSize:28,borderRadius:'50%',width:44,height:44,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center'}} onClick={()=>setMockupLightbox(null)}>×</button>
+    {_isImgUrl(mockupLightbox)?<img src={mockupLightbox} alt="Mockup" style={{maxWidth:'95vw',maxHeight:'90vh',objectFit:'contain',borderRadius:8}} onClick={e=>e.stopPropagation()}/>
+    :_isPdfUrl(mockupLightbox)?<iframe title="PDF Preview" src={'https://docs.google.com/gview?url='+encodeURIComponent(mockupLightbox)+'&embedded=true'} style={{width:'90vw',height:'90vh',border:'none',borderRadius:8,background:'white'}} onClick={e=>e.stopPropagation()}/>
+    :<div style={{color:'white',fontSize:16}} onClick={e=>e.stopPropagation()}>Cannot preview this file type</div>}
+  </div>}
   <button className="btn btn-secondary" onClick={onBack} style={{marginBottom:12}}><Icon name="back" size={14}/> All Customers</button>
   <div className="card" style={{marginBottom:16,overflow:'visible'}}><div style={{padding:'20px 24px',display:'flex',gap:16,alignItems:'flex-start'}}>
   <div style={{width:56,height:56,borderRadius:12,background:'#dbeafe',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}><Icon name="building" size={28}/></div>
@@ -8010,7 +7996,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     if(portalJobView){
       const j=portalJobView.job;const so=portalJobView.so;
       const af2=safeArt(so).find(a=>a.id===j.art_file_id);
-      const mockupFiles2=(af2?.mockup_files||af2?.files||[]);
+      const mockupFiles2=_filterDisplayable(af2?.mockup_files||af2?.files||[]);
       const items=(j.items||[]).map(gi=>{const it=safeItems(so)[gi.item_idx];const prd2=prod.find(pp=>pp.id===it?.product_id||pp.sku===it?.sku);return{...gi,brand:it?.brand||'',fullName:safeStr(it?.name)||gi.name,image_url:prd2?.image_url||'',back_image_url:prd2?.back_image_url||''}});
       return<div className="modal-overlay" onClick={()=>setShowPortal(false)}><div className="modal" style={{maxWidth:700,maxHeight:'90vh',overflow:'auto'}} onClick={e=>e.stopPropagation()}>
         <div style={{background:'linear-gradient(135deg,#1e3a5f,#2563eb)',color:'white',padding:'20px 24px',borderRadius:'12px 12px 0 0',position:'relative'}}>
@@ -8028,16 +8014,16 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
             <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:8}}>🖼️ Artwork Mockup</div>
             {mockupFiles2.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);
               return<div key={fi} style={{borderRadius:10,border:'1px solid #e2e8f0',overflow:'hidden',background:'white',marginBottom:8}}>
-                {_isImgUrl(url)?<img src={url} alt={name} style={{width:'100%',maxHeight:500,objectFit:'contain',display:'block',cursor:'pointer'}} onClick={()=>openFile(url)}/>
+                {_isImgUrl(url)?<img src={url} alt={name} style={{width:'100%',maxHeight:500,objectFit:'contain',display:'block',cursor:'pointer'}} onClick={()=>setMockupLightbox(url)}/>
                 :_isPdfUrl(url)?<div style={{position:'relative'}}>
                   {_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',maxHeight:500,objectFit:'contain',display:'block'}} onError={e=>{e.target.style.display='none';e.target.nextSibling.style.display='flex'}}/>:null}
                   <div style={{display:_cloudinaryPdfThumb(url)?'none':'flex',flexDirection:'column',alignItems:'center',padding:40,gap:8}}>
                     <span style={{fontSize:48}}>PDF</span>
                     <span style={{fontSize:13,fontWeight:600,color:'#1e40af'}}>{name}</span>
                   </div>
-                  <button className="btn btn-sm" style={{position:'absolute',bottom:8,right:8,fontSize:11,background:'#1e40af',color:'white',border:'none',padding:'6px 14px',borderRadius:6}} onClick={()=>openFile(url)}>Open PDF</button>
+                  <button className="btn btn-sm" style={{position:'absolute',bottom:8,right:8,fontSize:11,background:'#1e40af',color:'white',border:'none',padding:'6px 14px',borderRadius:6}} onClick={()=>setMockupLightbox(url)}>Open PDF</button>
                 </div>
-                :<div style={{display:'flex',alignItems:'center',gap:8,padding:20,cursor:'pointer'}} onClick={()=>openFile(url)}>
+                :<div style={{display:'flex',alignItems:'center',gap:8,padding:20,cursor:'pointer'}} onClick={()=>setMockupLightbox(url)}>
                   <span style={{fontSize:32}}>📄</span><span style={{fontSize:14,fontWeight:600,color:'#1e40af'}}>{name}</span>
                 </div>}
               </div>})}
@@ -8046,6 +8032,42 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
             <div style={{fontSize:36,marginBottom:6}}>🎨</div>
             <div style={{fontSize:13,color:'#94a3b8',fontWeight:600}}>Artwork mockup is being prepared</div>
           </div>}
+
+          {/* Artwork details — pantones, sizes, locations */}
+          {af2&&(()=>{const _cl2=(af2.ink_colors||af2.thread_colors||'').split(/[,\n]/).map(c3=>c3.trim()).filter(Boolean);const _isE2=af2.deco_type==='embroidery';
+            const _dp2=new Set();const numDecos2=[];(j.items||[]).forEach(gi=>{const it=safeItems(so)[gi.item_idx];if(it)safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id===j.art_file_id&&d.position)_dp2.add(d.position);if(d.kind==='numbers')numDecos2.push(d)})});
+            const _pl2=_dp2.size>0?[..._dp2]:(j.positions||'').split(',').map(p=>p.trim()).filter(Boolean);const _as2=af2.art_sizes||{};
+            const _cm2={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000','Silver':'#C0C0C0','Royal':'#4169e1','Cardinal':'#8C1515','Green':'#166534','Orange':'#EA580C','Navy 2767':'#001f3f','PMS 286':'#0033A0','PMS 032':'#EF3340','PMS 877':'#C0C0C0','Maroon':'#800000'};
+            const nd=numDecos2[0];
+            return<div style={{marginBottom:16,padding:'14px 16px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:10}}>
+              <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:10}}>Artwork Details</div>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:10}}>
+                <div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8'}}>Method</div><div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{af2.deco_type?.replace(/_/g,' ')||'—'}</div></div>
+                <div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8'}}>Location{_pl2.length>1?'s':''}</div><div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{_pl2.join(', ')||'—'}</div></div>
+                {_pl2.length<=1?<div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8'}}>Art Size</div><div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{af2.art_size||'—'}</div></div>
+                :_pl2.map((pos,pi)=><div key={pi}><div style={{fontSize:10,fontWeight:600,color:'#94a3b8'}}>Size — {pos}</div><div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{_as2[pos]||(pi===0?af2.art_size:'')||'—'}</div></div>)}
+                <div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8'}}>Total Units</div><div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{(j.items||[]).reduce((a,gi)=>a+(gi.units||0),0)}</div></div>
+              </div>
+              {_cl2.length>0&&<div style={{marginBottom:nd?10:0}}>
+                <div style={{fontSize:10,fontWeight:600,color:'#94a3b8',marginBottom:4}}>{_isE2?'Thread Colors':'Ink Colors / Pantones'} ({_cl2.length})</div>
+                <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                  {_cl2.map((cl,i)=>{const clL=cl.toLowerCase();const sw=_cm2[cl]||Object.entries(_cm2).find(([k])=>clL.includes(k.toLowerCase()))?.[1]||null;
+                    return<div key={i} style={{display:'flex',alignItems:'center',gap:5,padding:'3px 10px',background:'white',border:'1px solid #e2e8f0',borderRadius:6}}>
+                      <div style={{width:14,height:14,borderRadius:3,border:'1px solid #d1d5db',background:sw||'linear-gradient(135deg,#f1f5f9,#e2e8f0)'}}/>
+                      <span style={{fontSize:11,fontWeight:600}}>{cl}</span></div>})}
+                </div>
+              </div>}
+              {nd&&<div>
+                <div style={{fontSize:10,fontWeight:600,color:'#94a3b8',marginBottom:4}}>Numbers</div>
+                <div style={{display:'flex',gap:12,flexWrap:'wrap',fontSize:12}}>
+                  <span><strong>{(nd.num_method||'heat_transfer').replace(/_/g,' ')}</strong></span>
+                  <span>Size: <strong>{nd.num_size||'—'}</strong></span>
+                  {nd.front_and_back&&<span>Back: <strong>{nd.num_size_back||nd.num_size||'—'}</strong></span>}
+                  {nd.print_color&&<span>Color: <strong>{nd.print_color}</strong></span>}
+                  {nd.front_and_back&&<span style={{padding:'1px 6px',borderRadius:4,background:'#7c3aed',color:'white',fontSize:10,fontWeight:700}}>Front + Back</span>}
+                </div>
+              </div>}
+            </div>})()}
 
           {/* Per-item garments */}
           <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:8}}>👕 Garments</div>
@@ -8281,19 +8303,25 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
               {/* Clickable jobs — artwork proofs */}
               {soJobs.length>0&&<>
                 <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:6}}>🎨 Artwork & Decoration</div>
-                {soJobs.map(j=><div key={j.id} style={{display:'flex',alignItems:'center',gap:10,padding:'8px 10px',border:'1px solid '+(j.art_status==='waiting_approval'?'#f59e0b':'#e2e8f0'),background:j.art_status==='waiting_approval'?'#fffbeb':'#fafbfc',borderRadius:8,marginBottom:6,cursor:'pointer'}} onClick={()=>{setPortalJobView({job:j,so});setPortalComment('')}}>
-                  <div style={{width:36,height:36,borderRadius:6,background:j.art_status==='art_complete'?'#dcfce7':j.art_status==='waiting_approval'?'#fef3c7':'#fee2e2',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0}}>
-                    {j.art_status==='art_complete'?'✅':j.art_status==='waiting_approval'?'⏳':'🎨'}</div>
-                  <div style={{flex:1}}>
-                    <div style={{fontWeight:600,fontSize:12}}>{j.art_name}</div>
-                    <div style={{fontSize:10,color:'#64748b'}}>{j.deco_type?.replace(/_/g,' ')} · {j.positions} · {(j.items||[]).length} garment{(j.items||[]).length!==1?'s':''}</div>
-                  </div>
-                  <div style={{textAlign:'right'}}>
+                {soJobs.map(j=>{const _paf=safeArt(so).find(a=>a.id===j.art_file_id);const _pmf=_filterDisplayable(_paf?.mockup_files||_paf?.files||[]);
+                  return<div key={j.id} style={{border:'1px solid '+(j.art_status==='waiting_approval'?'#f59e0b':'#e2e8f0'),background:j.art_status==='waiting_approval'?'#fffbeb':'#fafbfc',borderRadius:8,marginBottom:6,overflow:'hidden',cursor:'pointer'}} onClick={()=>{setPortalJobView({job:j,so});setPortalComment('')}}>
+                  {_pmf.length>0&&<div style={{display:'grid',gridTemplateColumns:_pmf.length>1?'1fr 1fr':'1fr',gap:2,background:'#f1f5f9'}}>
+                    {_pmf.map((f,fi)=>{const _u=typeof f==='string'?f:(f?.url||'');const _ii=_isImgUrl(_u,f);const _ip=_isPdfUrl(_u,f);const _pt=_ip?_cloudinaryPdfThumb(_u):null;
+                      return<div key={fi} style={{background:'white'}}>
+                        {_ii&&isUrl(_u)?<img src={_u} alt="" style={{width:'100%',height:_pmf.length>1?100:150,objectFit:'contain',display:'block',background:'#fafafa'}}/>
+                        :_ip&&_pt?<img src={_pt} alt="" style={{width:'100%',height:_pmf.length>1?100:150,objectFit:'contain',display:'block',background:'#fafafa'}} onError={e=>{e.target.style.display='none'}}/>
+                        :<div style={{height:_pmf.length>1?100:150,display:'flex',alignItems:'center',justifyContent:'center',background:'#f8fafc'}}><span style={{fontSize:24}}>📄</span></div>}
+                      </div>})}
+                  </div>}
+                  <div style={{display:'flex',alignItems:'center',gap:10,padding:'8px 10px'}}>
+                    <div style={{flex:1}}>
+                      <div style={{fontWeight:600,fontSize:12}}>{j.art_name}</div>
+                      <div style={{fontSize:10,color:'#64748b'}}>{j.deco_type?.replace(/_/g,' ')} · {j.positions} · {(j.items||[]).length} garment{(j.items||[]).length!==1?'s':''}</div>
+                    </div>
                     <span style={{padding:'2px 8px',borderRadius:10,fontSize:9,fontWeight:700,background:j.art_status==='art_complete'?'#dcfce7':j.art_status==='waiting_approval'?'#fef3c7':'#fee2e2',color:j.art_status==='art_complete'?'#166534':j.art_status==='waiting_approval'?'#92400e':'#dc2626'}}>{artLabelsP[j.art_status]}</span>
-                    {j.prod_status!=='hold'&&<div style={{fontSize:9,color:'#64748b',marginTop:2}}>{prodLabelsP[j.prod_status]}</div>}
+                    <span style={{color:'#94a3b8',fontSize:14}}>›</span>
                   </div>
-                  <span style={{color:'#94a3b8',fontSize:14}}>›</span>
-                </div>)}
+                </div>})}
               </>}
               {safeFirm(so).filter(f=>f.approved).length>0&&<div style={{marginTop:8,padding:'6px 10px',background:'#f0fdf4',borderRadius:6,fontSize:11,color:'#166534'}}>
                 📌 Firm date: {(safeFirm(so).filter(f=>f.approved)[0]||{}).date||"TBD"}</div>}
@@ -9101,21 +9129,27 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           {/* Artwork & Decoration jobs */}
           {soJobsList.length>0&&<>
             <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:8}}>Artwork & Decoration</div>
-            {soJobsList.map(j=>{const artFile=soAF.find(a=>a.id===j.art_file_id);const mockups=(artFile?.mockup_files||artFile?.files||[]).filter(f=>f);const thumbUrl=mockups.length>0?(typeof mockups[0]==='string'?mockups[0]:(mockups[0]?.url||'')):null;const isImg=thumbUrl&&_isImgUrl(thumbUrl);const isPdf=thumbUrl&&_isPdfUrl(thumbUrl);const pdfThumb=isPdf?_cloudinaryPdfThumb(thumbUrl):null;
-              return<div key={j.id} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 12px',border:'1px solid '+(j.art_status==='waiting_approval'?'#f59e0b':'#e2e8f0'),background:j.art_status==='waiting_approval'?'#fffbeb':'#fafbfc',borderRadius:8,marginBottom:6,cursor:'pointer'}} onClick={()=>{setJobView({job:j,so});setComment('')}}>
-                {isImg&&isUrl(thumbUrl)?<img src={thumbUrl} alt="" style={{width:44,height:44,objectFit:'cover',borderRadius:6,flexShrink:0,border:'1px solid #e2e8f0'}}/>
-                :isPdf&&pdfThumb?<img src={pdfThumb} alt="" style={{width:44,height:44,objectFit:'cover',borderRadius:6,flexShrink:0,border:'1px solid #e2e8f0'}} onError={e=>{e.target.style.display='none'}}/>
-                :<div style={{width:44,height:44,borderRadius:6,background:j.art_status==='art_complete'?'#dcfce7':j.art_status==='waiting_approval'?'#fef3c7':'#fee2e2',display:'flex',alignItems:'center',justifyContent:'center',fontSize:20,flexShrink:0}}>
-                  {j.art_status==='art_complete'?'✅':j.art_status==='waiting_approval'?'⏳':'🎨'}</div>}
-                <div style={{flex:1}}>
-                  <div style={{fontWeight:600,fontSize:12}}>{j.art_name}</div>
-                  <div style={{fontSize:10,color:'#64748b'}}>{j.deco_type?.replace(/_/g,' ')} · {j.positions} · {(j.items||[]).length} garment{(j.items||[]).length!==1?'s':''}</div>
-                </div>
-                <div style={{textAlign:'right'}}>
+            {soJobsList.map(j=>{const artFile=soAF.find(a=>a.id===j.art_file_id);const mockups=_filterDisplayable(artFile?.mockup_files||artFile?.files||[]);
+              const _clickJob=()=>{setJobView({job:j,so});setComment('');if(j.sent_to_coach_at&&!j.coach_email_opened_at){const liveSO2=sos.find(s=>s.id===so.id);if(liveSO2){const updSO2={...liveSO2,jobs:(liveSO2.jobs||safeJobs(liveSO2)).map(jj=>jj.id===j.id?{...jj,coach_email_opened_at:new Date().toISOString()}:jj),updated_at:new Date().toLocaleString()};if(savSOFn)savSOFn(updSO2);else if(onUpdateSOs)onUpdateSOs(prev=>prev.map(s=>s.id===so.id?updSO2:s))}}};
+              return<div key={j.id} style={{border:'1px solid '+(j.art_status==='waiting_approval'?'#f59e0b':'#e2e8f0'),background:j.art_status==='waiting_approval'?'#fffbeb':'#fafbfc',borderRadius:10,marginBottom:8,overflow:'hidden',cursor:'pointer'}} onClick={_clickJob}>
+                {/* Mockup thumbnails — show all images in a grid */}
+                {mockups.length>0&&<div style={{display:'grid',gridTemplateColumns:mockups.length>1?'1fr 1fr':'1fr',gap:2,background:'#f1f5f9'}}>
+                  {mockups.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const isImg=_isImgUrl(url,f);const isPdf=_isPdfUrl(url,f);const pdfThumb=isPdf?_cloudinaryPdfThumb(url):null;
+                    return<div key={fi} style={{background:'white'}}>
+                      {isImg&&isUrl(url)?<img src={url} alt="" style={{width:'100%',height:mockups.length>1?140:200,objectFit:'contain',display:'block',background:'#fafafa'}}/>
+                      :isPdf&&pdfThumb?<img src={pdfThumb} alt="" style={{width:'100%',height:mockups.length>1?140:200,objectFit:'contain',display:'block',background:'#fafafa'}} onError={e=>{e.target.style.display='none'}}/>
+                      :<div style={{height:mockups.length>1?140:200,display:'flex',alignItems:'center',justifyContent:'center',background:'#f8fafc'}}><span style={{fontSize:32}}>📄</span></div>}
+                    </div>})}
+                </div>}
+                {/* Job info bar */}
+                <div style={{display:'flex',alignItems:'center',gap:10,padding:'10px 12px'}}>
+                  <div style={{flex:1}}>
+                    <div style={{fontWeight:600,fontSize:13}}>{j.art_name}</div>
+                    <div style={{fontSize:10,color:'#64748b'}}>{j.deco_type?.replace(/_/g,' ')} · {j.positions} · {(j.items||[]).length} garment{(j.items||[]).length!==1?'s':''}</div>
+                  </div>
                   <span style={{padding:'2px 8px',borderRadius:10,fontSize:9,fontWeight:700,background:j.art_status==='art_complete'?'#dcfce7':j.art_status==='waiting_approval'?'#fef3c7':'#fee2e2',color:j.art_status==='art_complete'?'#166534':j.art_status==='waiting_approval'?'#92400e':'#dc2626'}}>{artLabelsP[j.art_status]}</span>
-                  {j.prod_status!=='hold'&&<div style={{fontSize:9,color:'#64748b',marginTop:2}}>{prodLabelsP[j.prod_status]}</div>}
+                  <span style={{color:'#94a3b8',fontSize:14}}>›</span>
                 </div>
-                <span style={{color:'#94a3b8',fontSize:14}}>›</span>
               </div>})}
           </>}
           {/* Shipping / Tracking */}
@@ -9144,7 +9178,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   if(jobView){
     const j=jobView.job;const so=jobView.so;
     const artFile=safeArt(so).find(a=>a.id===j.art_file_id);
-    const mockups=(artFile?.mockup_files||artFile?.files||[]).filter(f=>f);
+    const mockups=_filterDisplayable(artFile?.mockup_files||artFile?.files||[]);
     const items=(j.items||[]).map(gi=>{const it=safeItems(so)[gi.item_idx];const prd=it?prod.find(pp=>pp.id===it.product_id||pp.sku===it.sku):null;return{...gi,brand:it?.brand||'',fullName:safeStr(it?.name)||gi.name,image_url:prd?.image_url||(prd?.images&&prd.images[0])||''}});
     return<div style={{minHeight:'100vh',background:'#f1f5f9',display:'flex',justifyContent:'center',padding:'40px 16px'}}>
       {/* ── Lightbox overlay ── */}
@@ -9183,6 +9217,41 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             <div style={{fontSize:12,color:'#9a3412',fontWeight:600}}>Mockup files haven't been uploaded yet</div>
             <div style={{fontSize:11,color:'#c2410c',marginTop:2}}>Your rep will upload mockups once artwork is ready for review</div>
           </div>}
+
+          {/* ── Artwork details — pantones, sizes, locations ── */}
+          {artFile&&(()=>{const _cl3=(artFile.ink_colors||artFile.thread_colors||'').split(/[,\n]/).map(c3=>c3.trim()).filter(Boolean);const _isE3=artFile.deco_type==='embroidery';
+            const _dp3=new Set();const numDecos3=[];(j.items||[]).forEach(gi=>{const it2=safeItems(so)[gi.item_idx];if(it2)safeDecos(it2).forEach(d=>{if(d.kind==='art'&&d.art_file_id===j.art_file_id&&d.position)_dp3.add(d.position);if(d.kind==='numbers')numDecos3.push(d)})});
+            const _pl3=_dp3.size>0?[..._dp3]:(j.positions||'').split(',').map(p=>p.trim()).filter(Boolean);const _as3=artFile.art_sizes||{};
+            const _cm3={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000','Silver':'#C0C0C0','Royal':'#4169e1','Cardinal':'#8C1515','Green':'#166534','Orange':'#EA580C','Navy 2767':'#001f3f','PMS 286':'#0033A0','PMS 032':'#EF3340','PMS 877':'#C0C0C0','Maroon':'#800000'};
+            const nd3=numDecos3[0];
+            return<div style={{marginBottom:16,padding:'14px 16px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:10}}>
+              <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:10}}>Artwork Details</div>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:10}}>
+                <div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8'}}>Method</div><div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{artFile.deco_type?.replace(/_/g,' ')||'—'}</div></div>
+                <div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8'}}>Location{_pl3.length>1?'s':''}</div><div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{_pl3.join(', ')||'—'}</div></div>
+                {_pl3.length<=1?<div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8'}}>Art Size</div><div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{artFile.art_size||'—'}</div></div>
+                :_pl3.map((pos,pi)=><div key={pi}><div style={{fontSize:10,fontWeight:600,color:'#94a3b8'}}>Size — {pos}</div><div style={{fontSize:14,fontWeight:700,color:'#0f172a'}}>{_as3[pos]||(pi===0?artFile.art_size:'')||'—'}</div></div>)}
+              </div>
+              {_cl3.length>0&&<div style={{marginBottom:nd3?10:0}}>
+                <div style={{fontSize:10,fontWeight:600,color:'#94a3b8',marginBottom:4}}>{_isE3?'Thread Colors':'Ink Colors / Pantones'} ({_cl3.length})</div>
+                <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                  {_cl3.map((cl,i)=>{const clL=cl.toLowerCase();const sw=_cm3[cl]||Object.entries(_cm3).find(([k])=>clL.includes(k.toLowerCase()))?.[1]||null;
+                    return<div key={i} style={{display:'flex',alignItems:'center',gap:5,padding:'3px 10px',background:'white',border:'1px solid #e2e8f0',borderRadius:6}}>
+                      <div style={{width:14,height:14,borderRadius:3,border:'1px solid #d1d5db',background:sw||'linear-gradient(135deg,#f1f5f9,#e2e8f0)'}}/>
+                      <span style={{fontSize:11,fontWeight:600}}>{cl}</span></div>})}
+                </div>
+              </div>}
+              {nd3&&<div>
+                <div style={{fontSize:10,fontWeight:600,color:'#94a3b8',marginBottom:4}}>Numbers</div>
+                <div style={{display:'flex',gap:12,flexWrap:'wrap',fontSize:12}}>
+                  <span><strong>{(nd3.num_method||'heat_transfer').replace(/_/g,' ')}</strong></span>
+                  <span>Size: <strong>{nd3.num_size||'—'}</strong></span>
+                  {nd3.front_and_back&&<span>Back: <strong>{nd3.num_size_back||nd3.num_size||'—'}</strong></span>}
+                  {nd3.print_color&&<span>Color: <strong>{nd3.print_color}</strong></span>}
+                  {nd3.front_and_back&&<span style={{padding:'1px 6px',borderRadius:4,background:'#7c3aed',color:'white',fontSize:10,fontWeight:700}}>Front + Back</span>}
+                </div>
+              </div>}
+            </div>})()}
 
           {/* ── Garments ── */}
           <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:8}}>Garments</div>
@@ -10306,7 +10375,7 @@ export default function App(){
   const[qPC,setQPC]=useState({open:false,mode:'single',items:[],bulkRaw:''});
   const[poF,setPOF]=useState({status:'all',vendor:'all',rep:'all',search:'',sort:'date_desc'});
   // OMG Team Stores
-  const[omgFilter,setOmgFilter]=useState({rep:'all',status:'all',search:''});const[omgSel,setOmgSel]=useState(null);
+  const[omgFilter,setOmgFilter]=useState({rep:'all',status:'all',search:''});const[omgSel,setOmgSel]=useState(null);const[omgDetailLoading,setOmgDetailLoading]=useState(false);
   const[estF,setEstF]=useState({status:'open',rep:'_me_',search:'',sort:'date_desc'});
   const[soF,setSOF]=useState({status:'all',rep:'all',search:'',sort:'date_desc'});
   const[iS,setIS]=useState({f:'value',d:'desc'});const[iF,setIF]=useState({cat:'all',vnd:'all',clr:'all'});
@@ -10494,36 +10563,57 @@ export default function App(){
   }, [ssConnected, sos]);
 
   // ─── OMG Sync Handler ───
+  // Lightweight sync: fetches store list only (no order/product details).
+  // Details are loaded on-demand when user clicks into a store.
   const syncOMGStores = async () => {
     setOmgSyncing(true);
     try {
       const omgStoresData = await fetchOMGStores();
       if (!omgStoresData?.data) { nf('No stores found in OMG API response', 'error'); return; }
-      // Fetch store details in small batches to avoid OMG API rate limits (409s)
-      const detailedStores = [];
-      const batchSize = 2;
       const stores = omgStoresData.data;
-      for (let i = 0; i < stores.length; i += batchSize) {
-        const batch = stores.slice(i, i + batchSize);
-        const results = await Promise.allSettled(batch.map(store => fetchOMGStoreDetail(store, omgStoresData.included || [])));
-        results.forEach(r => { if (r.status === 'fulfilled' && r.value !== null) detailedStores.push(r.value); });
-        if (i + batchSize < stores.length) await new Promise(r => setTimeout(r, 500));
-      }
-      const failedCount = stores.length - detailedStores.length;
-      const convertedStores = detailedStores.map(store => convertOMGStore(store, cust));
+      // Convert store list data (no order details yet — those load on-demand)
+      const convertedStores = stores.map(store => {
+        const basic = { data: store, included: omgStoresData.included || [], orders: [], orderProducts: [] };
+        const converted = convertOMGStore(basic, cust);
+        // Use order count from relationship data if available
+        const orderRel = store.relationships?.orders?.data;
+        if (Array.isArray(orderRel)) converted.orders = orderRel.length;
+        converted._details_loaded = false;
+        return converted;
+      });
       // Merge: keep manual stores + update OMG stores by ID
       const manualStores = omgStores.filter(s => !s._omg_source);
       const omgMap = new Map(convertedStores.map(s => [s.id, s]));
-      // Keep previously-synced OMG stores that weren't in this batch (e.g. closed stores not returned)
+      // Keep previously-synced OMG stores that weren't in this batch (e.g. old closed stores)
       omgStores.filter(s => s._omg_source && !omgMap.has(s.id)).forEach(s => omgMap.set(s.id, s));
       setOmgStores([...manualStores, ...omgMap.values()]);
       setOmgLastSync(new Date().toISOString());
-      const msg = 'Synced ' + convertedStores.length + ' stores from OrderMyGear';
-      nf(failedCount > 0 ? msg + ` (${failedCount} failed — check console)` : msg);
+      nf('Synced ' + convertedStores.length + ' stores from OrderMyGear');
     } catch (error) {
       console.error('[OMG] Sync failed:', error);
       nf('OMG sync failed: ' + error.message, 'error');
     } finally { setOmgSyncing(false); }
+  };
+
+  // Load full details (orders + products) for a single store on-demand
+  const loadOMGStoreDetail = async (store) => {
+    if (store._details_loaded) return store;
+    const omgId = store._omg_id;
+    if (!omgId) return store;
+    try {
+      // Re-fetch sale resource to get fresh data + included org
+      const saleResp = await omgApiCall(`/sales/${omgId}?include=organization`);
+      const saleResource = saleResp?.data || { id: omgId, attributes: {} };
+      const detail = await fetchOMGStoreDetail(saleResource, saleResp?.included || []);
+      const updated = { ...convertOMGStore(detail, cust), _details_loaded: true };
+      // Update in omgStores state
+      setOmgStores(prev => prev.map(s => s.id === store.id ? updated : s));
+      return updated;
+    } catch (e) {
+      console.error('[OMG] Failed to load detail for store', store.id, e);
+      nf('Failed to load store details: ' + e.message, 'error');
+      return store;
+    }
   };
 
   // ─── Delete Handlers (with cascade status updates) ───
@@ -15566,6 +15656,11 @@ export default function App(){
     // Store detail view
     if(omgSel){
       const s=omgSel;const c=cust.find(x=>x.id===s.customer_id);const rep=REPS.find(r=>r.id===s.rep_id);
+      // Load details on-demand if not yet loaded
+      if(!s._details_loaded && !omgDetailLoading && s._omg_id){
+        setOmgDetailLoading(true);
+        loadOMGStoreDetail(s).then(updated => { setOmgSel(updated); setOmgDetailLoading(false); }).catch(() => setOmgDetailLoading(false));
+      }
       const totalCost=s.products.reduce((a,p)=>{const q=Object.values(p.sizes).reduce((a2,v)=>a2+v,0);return a+q*(p.cost+p.deco_cost)},0);
       const totalRetail=s.products.reduce((a,p)=>{const q=Object.values(p.sizes).reduce((a2,v)=>a2+v,0);return a+q*p.retail},0);
       const margin=totalRetail-totalCost;const pct=totalRetail>0?Math.round(margin/totalRetail*100):0;
@@ -15622,6 +15717,11 @@ export default function App(){
 
         <div className="card" style={{marginBottom:12}}><div className="card-header"><h2>📦 Store Products</h2></div>
           <div className="card-body" style={{padding:0}}>
+            {omgDetailLoading && !s._details_loaded ? (
+              <div style={{padding:24,textAlign:'center',color:'#64748b',fontSize:13}}>Loading order details from OMG...</div>
+            ) : s.products.length === 0 ? (
+              <div style={{padding:24,textAlign:'center',color:'#94a3b8',fontSize:13}}>No product data available{!s._details_loaded && ' — click Sync to reload'}</div>
+            ) : (
             <table><thead><tr><th>SKU</th><th>Product</th><th>Color</th><th>Deco</th><th>Retail</th><th>Cost</th><th>Deco $</th><th>Sizes</th><th>Units</th><th>Revenue</th><th>Margin</th></tr></thead>
             <tbody>{s.products.map((p,i)=>{const q=Object.values(p.sizes).reduce((a,v)=>a+v,0);const rev=q*p.retail;const cost=q*(p.cost+p.deco_cost);const mg=rev-cost;
               const catP=prod.find(cp=>cp.sku===p.sku);
@@ -15634,8 +15734,9 @@ export default function App(){
                 <td style={{fontSize:9}}>{Object.entries(p.sizes).map(([sz,q2])=>sz+':'+q2).join(' ')}</td>
                 <td style={{fontWeight:700,textAlign:'center'}}>{q}</td>
                 <td style={{textAlign:'right',fontWeight:600}}>${rev.toLocaleString()}</td>
-                <td style={{textAlign:'right',color:mg>0?'#166534':'#dc2626'}}>${mg.toLocaleString()} <span style={{fontSize:9}}>({Math.round(mg/rev*100)}%)</span></td>
+                <td style={{textAlign:'right',color:mg>0?'#166534':'#dc2626'}}>${mg.toLocaleString()} <span style={{fontSize:9}}>({rev>0?Math.round(mg/rev*100):0}%)</span></td>
               </tr>})}</tbody></table>
+            )}
           </div>
         </div>
 
@@ -19609,14 +19710,14 @@ export default function App(){
           const invMatch=invPOs.find(p=>p.po_number&&p.po_number.toLowerCase().replace(/\s+/g,'')===poLc);
           if(invMatch){bill.matchedPO=invMatch;bill.matchedPOSource='inv_po'}
         }
-        // Also search SO item PO lines (match by po_id or memo)
+        // Also search SO item PO lines (match by po_id or memo — use startsWith to handle suffixed PO IDs like "PO4133 OLUF")
         if(!bill.matchedPO){
           for(const so of sos){
             for(const it of (so.items||[])){
               for(const po of (it.po_lines||[])){
                 const pid=(po.po_id||'').toLowerCase().replace(/\s+/g,'');
                 const pmemo=(po.memo||'').toLowerCase().replace(/\s+/g,'');
-                if(pid===poLc||pmemo.includes(poLc)){
+                if(pid===poLc||pid.startsWith(poLc)||pmemo.includes(poLc)){
                   bill.matchedPO={so_id:so.id,po_id:po.po_id,po,item:it,so};
                   bill.matchedPOSource='so_po';
                   break;
@@ -19714,6 +19815,50 @@ export default function App(){
     };
 
     // Apply parsed bill data (billed sizes, tracking, freight) to matched SO/PO
+    // Helper: apply freight from a bill to one or more SOs by ID
+    const _applyFreightToSOs=(bill,soIds)=>{
+      const billFreight=safeNum(bill.freight||0);
+      if(!billFreight||!soIds.length)return;
+      const poLc=(bill.po_number||'').toLowerCase().replace(/\s+/g,'');
+      const billedBySku={};const costBySku={};
+      bill.items.forEach(it=>{if(it.size&&it.qty){const sk=(it.sku||'').toUpperCase();if(!billedBySku[sk])billedBySku[sk]={};billedBySku[sk][it.size]=(billedBySku[sk][it.size]||0)+it.qty;if(!costBySku[sk])costBySku[sk]=0;costBySku[sk]+=safeNum(it.extension||0)||(safeNum(it.unit_price||0)*it.qty)}});
+      // Split freight evenly across matched SOs
+      const perSOFreight=Math.round(billFreight/soIds.length*100)/100;
+      setSOs(prev=>{
+        let changed=false;
+        const next=prev.map(s=>{
+          if(!soIds.includes(s.id))return s;
+          changed=true;
+          const prevFreight=safeNum(s._inbound_freight||0);
+          // Find PO lines on this SO whose po_id starts with the bill PO number
+          const updatedItems=(s.items||[]).map(it=>{
+            const matchPO=it.po_lines?.find(po=>{const pid=(po.po_id||'').toLowerCase().replace(/\s+/g,'');return pid===poLc||pid.startsWith(poLc)});
+            if(!matchPO)return it;
+            const itemSku=(it.sku||'').toUpperCase();
+            const itemBilled=billedBySku[itemSku]||{};
+            return{...it,po_lines:it.po_lines.map(po=>{
+              const pid=(po.po_id||'').toLowerCase().replace(/\s+/g,'');
+              if(pid!==poLc&&!pid.startsWith(poLc))return po;
+              const existingBilled=po.billed||{};
+              const newBilled={...existingBilled};
+              Object.entries(itemBilled).forEach(([sz,qty])=>{newBilled[sz]=(newBilled[sz]||0)+qty});
+              const trackNums=[...(po.tracking_numbers||[])];
+              if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
+              const itemCost=costBySku[itemSku]||0;
+              const prevBillCost=safeNum(po._bill_cost||0);
+              return{...po,billed:newBilled,tracking_numbers:trackNums,
+                _bill_cost:Math.round((prevBillCost+itemCost)*100)/100,
+                _bill_details:[...(po._bill_details||[]),{doc:bill.doc_number,date:bill.doc_date,sizes:{...itemBilled},tracking:bill.tracking,cost:itemCost}]};
+            })};
+          });
+          const updatedSO={...s,_inbound_freight:Math.round((prevFreight+perSOFreight)*100)/100,items:updatedItems,updated_at:new Date().toLocaleString()};
+          _dbSaveSO(updatedSO);
+          return updatedSO;
+        });
+        return changed?next:prev;
+      });
+    };
+
     const applyBillToSO=(bill)=>{
       if(bill._applied)return;
       bill._applied=true;
@@ -19721,8 +19866,14 @@ export default function App(){
         const batchId=bill.matchedPO.id||bill.matchedPO.po_number;
         const billedSizes={};
         bill.items.forEach(it=>{if(it.size&&it.qty)billedSizes[it.size]=(billedSizes[it.size]||0)+it.qty});
+        // Find SO IDs from the batch's source_pos
+        const batchSoIds=(bill.matchedPO.source_pos||[]).map(sp=>sp.so_id).filter(Boolean);
+        // Also check single so_id field
+        if(!batchSoIds.length&&bill.matchedPO.so_id)batchSoIds.push(bill.matchedPO.so_id);
         setSubmittedBatches(prev=>prev.map(sb=>{
           if((sb.id||sb.po_number)!==batchId)return sb;
+          // Grab SO IDs from the stored batch if matchedPO didn't have them
+          if(!batchSoIds.length)(sb.source_pos||[]).forEach(sp=>{if(sp.so_id)batchSoIds.push(sp.so_id)});
           const existingBilled=sb.billed||{};
           const newBilled={...existingBilled};
           Object.entries(billedSizes).forEach(([sz,qty])=>{newBilled[sz]=(newBilled[sz]||0)+qty});
@@ -19730,6 +19881,8 @@ export default function App(){
           if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
           return{...sb,billed:newBilled,tracking_numbers:trackNums,bill_doc_number:bill.doc_number,bill_date:bill.doc_date};
         }));
+        // Apply freight to the associated SOs
+        if(batchSoIds.length)_applyFreightToSOs(bill,batchSoIds);
       }
       if(bill.matchedPOSource==='inv_po'&&bill.matchedPO){
         const poId=bill.matchedPO.id;
@@ -19744,43 +19897,20 @@ export default function App(){
           if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
           return{...po,billed:newBilled,tracking_numbers:trackNums};
         }));
+        // Inv POs aren't tied to SOs, but try to find matching SO PO lines by PO number
+        if(bill.freight){
+          const poLc=(bill.po_number||'').toLowerCase().replace(/\s+/g,'');
+          const matchedSoIds=[];
+          sos.forEach(so=>{(so.items||[]).forEach(it=>{(it.po_lines||[]).forEach(po=>{
+            const pid=(po.po_id||'').toLowerCase().replace(/\s+/g,'');
+            if(pid===poLc||pid.startsWith(poLc)){if(!matchedSoIds.includes(so.id))matchedSoIds.push(so.id)}
+          })})});
+          if(matchedSoIds.length)_applyFreightToSOs(bill,matchedSoIds);
+        }
       }
       if(bill.matchedPOSource==='so_po'&&bill.matchedPO){
         const soId=bill.matchedPO.so_id||bill.matchedPO.so?.id;
-        const poId=bill.matchedPO.po_id;
-        if(soId){
-          const billedBySku={};const costBySku={};
-          bill.items.forEach(it=>{if(it.size&&it.qty){const sk=(it.sku||'').toUpperCase();if(!billedBySku[sk])billedBySku[sk]={};billedBySku[sk][it.size]=(billedBySku[sk][it.size]||0)+it.qty;if(!costBySku[sk])costBySku[sk]=0;costBySku[sk]+=safeNum(it.extension||0)||(safeNum(it.unit_price||0)*it.qty)}});
-          const billFreight=safeNum(bill.freight||0);
-          setSOs(prev=>{
-            const freshSO=prev.find(s=>s.id===soId);
-            if(!freshSO)return prev;
-            const prevFreight=safeNum(freshSO._inbound_freight||0);
-            const updatedSO={...freshSO,
-              _inbound_freight:Math.round((prevFreight+billFreight)*100)/100,
-              items:(freshSO.items||[]).map(it=>{
-              const matchPO=it.po_lines?.find(po=>po.po_id===poId);
-              if(!matchPO)return it;
-              const itemSku=(it.sku||'').toUpperCase();
-              const itemBilled=billedBySku[itemSku]||{};
-              return{...it,po_lines:it.po_lines.map(po=>{
-                if(po.po_id!==poId)return po;
-                const existingBilled=po.billed||{};
-                const newBilled={...existingBilled};
-                Object.entries(itemBilled).forEach(([sz,qty])=>{newBilled[sz]=(newBilled[sz]||0)+qty});
-                const trackNums=[...(po.tracking_numbers||[])];
-                if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
-                const itemCost=costBySku[itemSku]||0;
-                const prevBillCost=safeNum(po._bill_cost||0);
-                return{...po,billed:newBilled,tracking_numbers:trackNums,
-                  _bill_cost:Math.round((prevBillCost+itemCost)*100)/100,
-                  _bill_details:[...(po._bill_details||[]),{doc:bill.doc_number,date:bill.doc_date,sizes:{...itemBilled},tracking:bill.tracking,cost:itemCost}]};
-              })};
-            }),updated_at:new Date().toLocaleString()};
-            _dbSaveSO(updatedSO);
-            return prev.map(s=>s.id===soId?updatedSO:s);
-          });
-        }
+        if(soId)_applyFreightToSOs(bill,[soId]);
       }
     };
 
