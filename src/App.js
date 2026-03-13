@@ -436,8 +436,14 @@ const _dbSaveCustomer = async (c) => {
     const{contacts,_oe,_os,_oi,_ob,...custRow}=c;
     custRow.updated_at=new Date().toISOString();
     if(!custRow.created_at)custRow.created_at=custRow.updated_at;
-    const{error:custErr}=await supabase.from('customers').upsert(_pick(custRow,_custCols),{onConflict:'id'});
-    if(custErr){console.error('[DB] save customer upsert error:',custErr.message);_dbSaveFailedIds.add(c.id);_persistFailedIds();if(_dbNotify)_dbNotify('Customer save failed: '+custErr.message,'error');return false}
+    let{error:custErr}=await supabase.from('customers').upsert(_pick(custRow,_custCols),{onConflict:'id'});
+    if(custErr){
+      // Retry without art_files if column doesn't exist yet
+      const coreCols=_custCols.filter(c2=>c2!=='art_files');
+      const retry=await supabase.from('customers').upsert(_pick(custRow,coreCols),{onConflict:'id'});
+      if(retry.error){console.error('[DB] save customer upsert error:',retry.error.message);_dbSaveFailedIds.add(c.id);_persistFailedIds();if(_dbNotify)_dbNotify('Customer save failed: '+retry.error.message,'error');return false}
+      else{console.warn('[DB] customer saved without art_files column (run migration 00027)')}
+    }
     // Upsert contacts then delete removed ones (avoids DELETE+INSERT race condition)
     if(contacts?.length){
       const contactRows=contacts.map((ct,i)=>({customer_id:c.id,name:ct.name,email:ct.email,phone:ct.phone,role:ct.role,sort_order:i}));
