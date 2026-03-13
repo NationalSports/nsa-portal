@@ -1796,6 +1796,71 @@ const omgApiCall = async (endpoint, options = {}, _retries = 0) => {
   } catch (error) { console.error('[OMG] API call failed:', endpoint, error); throw error; }
 };
 
+// ─── Temporary API Probe (diagnostic) ───
+const probeOMGEndpoints = async () => {
+  const endpoints = [
+    '/orders',
+    '/orders?limit=1',
+    '/order_products',
+    '/order_products?limit=1',
+    '/line_items',
+    '/products',
+    '/products?limit=1',
+    '/customers',
+    '/customer_infos',
+    '/invoices',
+    '/shipments',
+    '/reports',
+    '/sale_products',
+    '/sale_items',
+  ];
+  const results = {};
+  for (const ep of endpoints) {
+    try {
+      const data = await omgApiCall(ep);
+      results[ep] = { status: 'ok', keys: Object.keys(data || {}), meta: data?.meta, recordCount: Array.isArray(data?.data) ? data.data.length : (data?.data ? 1 : 0) };
+      if (data?.data?.[0]) results[ep].sampleType = data.data[0].type;
+      if (data?.data?.[0]?.attributes) results[ep].sampleAttrs = Object.keys(data.data[0].attributes);
+      if (data?.data?.[0]?.relationships) results[ep].sampleRels = Object.keys(data.data[0].relationships);
+    } catch (err) {
+      results[ep] = { status: 'error', message: err.message };
+    }
+  }
+  // Now probe include params on a known sale
+  let saleId = null;
+  try {
+    const salesResp = await omgApiCall('/sales?limit=1');
+    if (salesResp?.data?.length > 0) saleId = salesResp.data[0].id;
+  } catch (err) {
+    results['sale lookup'] = { status: 'error', message: err.message };
+  }
+  if (saleId) {
+    const includeEndpoints = [
+      `/sales/${saleId}?include=orders`,
+      `/sales/${saleId}?include=line_items`,
+      `/sales/${saleId}?include=order_items`,
+      `/sales/${saleId}?include=products`,
+      `/sales/${saleId}?include=sale_products`,
+      `/sales/${saleId}?include=orders,line_items,products`,
+    ];
+    for (const ep of includeEndpoints) {
+      try {
+        const data = await omgApiCall(ep);
+        const incTypes = data?.included ? [...new Set(data.included.map(i => i.type))] : [];
+        results[ep] = { status: 'ok', includedTypes: incTypes, includedCount: data?.included?.length || 0 };
+      } catch (err) {
+        results[ep] = { status: 'error', message: err.message };
+      }
+    }
+  }
+  console.log('=== OMG API PROBE RESULTS ===');
+  for (const [ep, res] of Object.entries(results)) {
+    console.log(`[PROBE] ${ep}:`, JSON.stringify(res));
+  }
+  console.log('=== END PROBE ===');
+  alert('Probe complete — check browser console for results.');
+};
+
 const fetchOMGStores = async () => {
   // Strategy: try multiple approaches to get recent/open stores without
   // paginating through thousands of old ones.
@@ -1930,9 +1995,55 @@ const fetchOMGStores = async () => {
   return { data: allData, included: allIncluded };
 };
 
-// Note: OMG Pop-up Stores API does not expose order/product endpoints.
-// Sale relationships are: source, group, organization, assigned_user (no orders).
-// Order data must be viewed in OMG admin: team.ordermygear.com/admin/sales/{id}
+// Fetch order/product details for a single OMG store
+const fetchOMGStoreDetail = async (saleResource, allIncluded) => {
+  const saleId = saleResource.id;
+  const saleCode = saleResource.attributes?.sale_code || '';
+  const saleData = { data: saleResource, included: allIncluded };
+
+  // Try multiple endpoint patterns for orders
+  const orderEndpoints = [
+    `/sales/${saleId}/orders`,
+    `/sales/${saleId}/orders?include=customer_info`,
+    `/orders?filter[sale_id]=${saleId}`,
+    `/orders?filter[sale_id]=${saleId}&include=customer_info`,
+    `/orders?sale_id=${saleId}`,
+    ...(saleCode ? [`/orders?filter[sale_code]=${saleCode}`] : []),
+  ];
+  let orders = null;
+  for (const ep of orderEndpoints) {
+    try {
+      orders = await omgApiCall(ep);
+      if (orders?.data) {
+        console.log(`[OMG] Sale ${saleId} (${saleCode}): ${orders.data.length} orders via ${ep}`);
+        break;
+      }
+    } catch (e) {
+      console.log(`[OMG] Orders endpoint failed: ${ep} — ${e.message}`);
+    }
+  }
+  const orderList = orders?.data || [];
+
+  // Try to get order products for each order
+  const orderProducts = await Promise.all(
+    orderList.map(async (o) => {
+      const productEndpoints = [
+        `/orders/${o.id}/order_products?include=product`,
+        `/orders/${o.id}/order_products`,
+        `/order_products?filter[order_id]=${o.id}&include=product`,
+        `/order_products?filter[order_id]=${o.id}`,
+      ];
+      for (const ep of productEndpoints) {
+        try {
+          const resp = await omgApiCall(ep);
+          if (resp?.data) return resp;
+        } catch { /* try next */ }
+      }
+      return { data: [], included: [] };
+    })
+  );
+  return { ...saleData, orders: orderList, orderProducts };
+};
 
 // Convert OMG JSON:API response to NSA store format
 // OMG API v1 returns: { data: { id, type, attributes: {...}, relationships: {...} }, included: [...] }
@@ -10348,8 +10459,83 @@ export default function App(){
   React.useEffect(()=>{try{localStorage.setItem('nsa_msgs',JSON.stringify(msgs))}catch{};_diffSave(msgs,'msgs',m=>_dbSaveMessage(m))},[msgs]);
   React.useEffect(()=>{try{localStorage.setItem('nsa_omg_stores',JSON.stringify(omgStores))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.omg||[];omgStores.forEach(s=>{const old=snap.find(p=>p.id===s.id);if(!old||JSON.stringify(old)!==JSON.stringify(s)){_dbSave('omg_stores',[_pick(s,_omgStoreCols)])}});_dbSnap.current.omg=omgStores}},[omgStores]);
 
-  // Note: OMG API does not expose order/product data, so no detail auto-loading needed.
-  // Order details should be viewed in the OMG admin UI.
+  // Load full details (orders + products) for a single OMG store on-demand
+  const loadOMGStoreDetail = async (store) => {
+    if (store._details_loaded) return store;
+    const omgId = store._omg_id;
+    if (!omgId) return store;
+    try {
+      // Fetch sale with includes — try getting orders sideloaded
+      let saleResp;
+      let orders = [];
+      let included = [];
+
+      // Try include=orders first, fall back to organization only
+      for (const inc of ['orders,order_products,organization', 'orders,organization', 'organization']) {
+        try {
+          saleResp = await omgApiCall(`/sales/${omgId}?include=${inc}`);
+          included = saleResp?.included || [];
+          const incOrders = included.filter(i => i.type === 'orders' || i.type === 'order');
+          if (incOrders.length > 0) {
+            orders = incOrders;
+            console.log(`[OMG] Found ${orders.length} orders via include=${inc}`);
+            break;
+          }
+          if (inc === 'organization') break;
+        } catch (e) {
+          console.log(`[OMG] include=${inc} failed:`, e.message);
+        }
+      }
+
+      const saleResource = saleResp?.data || { id: omgId, attributes: {} };
+      // Log all attributes for debugging
+      console.log('[OMG] Sale detail attributes:', JSON.stringify(saleResource.attributes));
+      console.log('[OMG] Sale detail relationships:', Object.keys(saleResource.relationships || {}));
+      console.log('[OMG] Included types:', [...new Set(included.map(i => i.type))]);
+
+      // If no orders from includes, try separate endpoints
+      let detail;
+      if (orders.length === 0) {
+        detail = await fetchOMGStoreDetail(saleResource, included);
+      } else {
+        const orderProducts = included.filter(i => i.type === 'order_products' || i.type === 'order_product' || i.type === 'line_items');
+        detail = { data: saleResource, included, orders, orderProducts: orderProducts.length > 0 ? [{ data: orderProducts, included }] : [] };
+      }
+
+      const updated = { ...convertOMGStore(detail, cust), _details_loaded: true };
+
+      // Check for aggregate data in sale attributes
+      const attrs = saleResource.attributes || {};
+      for (const [k, v] of Object.entries(attrs)) {
+        if (/order.*count|num.*order|total.*order/i.test(k) && v) updated.orders = parseInt(v) || updated.orders;
+        if (/revenue|total.*sale|sales.*total|total.*earned/i.test(k) && v) updated.total_sales = parseFloat(v) || updated.total_sales;
+        if (/fundrais/i.test(k) && v) updated.fundraise_total = parseFloat(v) || updated.fundraise_total;
+        if (/item.*count|total.*item/i.test(k) && v) updated.items_sold = parseInt(v) || updated.items_sold;
+        if (/buyer.*count|customer.*count/i.test(k) && v) updated.unique_buyers = parseInt(v) || updated.unique_buyers;
+      }
+
+      // Check relationship linkage counts
+      const orderRel = saleResource.relationships?.orders?.data;
+      if (Array.isArray(orderRel) && orderRel.length > 0 && !updated.orders) updated.orders = orderRel.length;
+
+      setOmgStores(prev => prev.map(s => s.id === store.id ? updated : s));
+      return updated;
+    } catch (e) {
+      console.error('[OMG] Failed to load detail for store', store.id, e);
+      nf('Failed to load store details: ' + e.message, 'error');
+      return store;
+    }
+  };
+
+  // Auto-load OMG store details when a store is selected
+  React.useEffect(()=>{
+    if(!omgSel||omgSel._details_loaded||omgDetailLoading||!omgSel._omg_id)return;
+    setOmgDetailLoading(true);
+    console.log('[OMG] Auto-loading details for store', omgSel.id, omgSel._omg_id);
+    loadOMGStoreDetail(omgSel).then(updated=>{
+      setOmgSel(updated);setOmgDetailLoading(false);
+    }).catch(e=>{console.error('[OMG] Detail load failed:',e);setOmgDetailLoading(false)});
+  },[omgSel?.id]); // eslint-disable-line react-hooks/exhaustive-deps
   React.useEffect(()=>{try{localStorage.setItem('nsa_issues',JSON.stringify(issues))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.issues||[];const changed=issues.filter(i=>{const old=snap.find(p=>p.id===i.id);return!old||JSON.stringify(old)!==JSON.stringify(i)});if(changed.length)_dbSave('issues',changed.map(i=>_pick(i,_issueCols)));_dbSnap.current.issues=issues}},[issues]);
   // Rep-CSR assignments auto-save
   React.useEffect(()=>{if(!_initialLoadDone.current||!_dbLoadSuccess.current)return;const snap=_dbSnap.current.repCsr||[];const changed=repCsrAssignments.filter(a=>{const old=snap.find(p=>p.id===a.id);return!old||JSON.stringify(old)!==JSON.stringify(a)});if(changed.length)_dbSave('rep_csr_assignments',changed);_dbSnap.current.repCsr=repCsrAssignments},[repCsrAssignments]);
@@ -10717,10 +10903,19 @@ export default function App(){
         console.log('[OMG] Included resource types:', incTypes);
       }
       // Convert store list data (no order details yet — those load on-demand)
-      // Convert store list data — OMG API only provides sale metadata, not order/product data
       const convertedStores = stores.map(store => {
         const basic = { data: store, included: omgStoresData.included || [], orders: [], orderProducts: [] };
         const converted = convertOMGStore(basic, cust);
+        // Check sale attributes for aggregate data (in case API provides it)
+        const attrs = store.attributes || {};
+        for (const [k, v] of Object.entries(attrs)) {
+          if (/order.*count|num.*order|total.*order/i.test(k) && v) converted.orders = parseInt(v) || 0;
+          if (/revenue|total.*sale|sales.*total|total.*earned/i.test(k) && v) converted.total_sales = parseFloat(v) || 0;
+          if (/fundrais/i.test(k) && v) converted.fundraise_total = parseFloat(v) || 0;
+        }
+        const orderRel = store.relationships?.orders?.data;
+        if (Array.isArray(orderRel)) converted.orders = orderRel.length;
+        converted._details_loaded = false;
         return converted;
       });
       // Replace OMG stores entirely — only keep manual (non-synced) stores
@@ -15871,11 +16066,16 @@ export default function App(){
       }
       return true;
     });
-    // Note: OMG API doesn't provide order/sales data, so no aggregate totals available
+    const totalSales=filtered.reduce((a,s)=>a+(s.total_sales||0),0);
+    const totalFund=filtered.reduce((a,s)=>a+(s.fundraise_total||0),0);
+    const totalOrders=filtered.reduce((a,s)=>a+(s.orders||0),0);
 
     // Store detail view
     if(omgSel){
       const s=omgSel;const c=cust.find(x=>x.id===s.customer_id);const rep=REPS.find(r=>r.id===s.rep_id);
+      const totalCost=(s.products||[]).reduce((a,p)=>{const q=Object.values(p.sizes||{}).reduce((a2,v)=>a2+v,0);return a+q*(p.cost+p.deco_cost)},0);
+      const totalRetail=(s.products||[]).reduce((a,p)=>{const q=Object.values(p.sizes||{}).reduce((a2,v)=>a2+v,0);return a+q*p.retail},0);
+      const margin=totalRetail-totalCost;const pct=totalRetail>0?Math.round(margin/totalRetail*100):0;
 
       return(<>
         <button className="btn btn-sm btn-secondary" onClick={()=>setOmgSel(null)} style={{marginBottom:12}}>← Back to All Stores</button>
@@ -15911,20 +16111,46 @@ export default function App(){
           </div>
         </div></div>
 
-        {/* Order/Sales data notice — OMG API doesn't expose orders */}
-        <div className="card" style={{marginBottom:12,borderLeft:'3px solid #f59e0b'}}>
-          <div className="card-body" style={{padding:16}}>
-            <div style={{display:'flex',alignItems:'center',gap:12}}>
-              <span style={{fontSize:20}}>📊</span>
-              <div style={{flex:1}}>
-                <div style={{fontWeight:700,fontSize:13,color:'#92400e',marginBottom:4}}>Order & Sales Data</div>
-                <div style={{fontSize:12,color:'#64748b'}}>The OMG API provides store info only — order details, sales totals, and product data must be viewed in the OMG admin dashboard.</div>
+        <div className="stats-row" style={{marginBottom:12}}>
+          <div className="stat-card"><div className="stat-label">Orders</div><div className="stat-value">{s.orders||0}</div></div>
+          <div className="stat-card"><div className="stat-label">Total Sales</div><div className="stat-value" style={{color:'#1e40af'}}>${(s.total_sales||0).toLocaleString()}</div></div>
+          <div className="stat-card"><div className="stat-label">Fundraise</div><div className="stat-value" style={{color:'#166534'}}>${(s.fundraise_total||0).toLocaleString()}</div></div>
+          <div className="stat-card"><div className="stat-label">NSA Cost</div><div className="stat-value" style={{color:'#d97706'}}>${totalCost.toLocaleString()}</div></div>
+          <div className="stat-card"><div className="stat-label">Margin</div><div className="stat-value" style={{color:pct>=30?'#166534':'#dc2626'}}>{pct}%</div></div>
+        </div>
+
+        <div className="card" style={{marginBottom:12}}><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+          <h2>📦 Store Products</h2>
+          <a href={`https://team.ordermygear.com/admin/sales/${s._omg_id}`} target="_blank" rel="noopener noreferrer"
+            style={{fontSize:11,color:'#2563eb',textDecoration:'none',fontWeight:600}}>View in OMG Admin →</a>
+        </div>
+          <div className="card-body" style={{padding:0}}>
+            {omgDetailLoading && !s._details_loaded ? (
+              <div style={{padding:24,textAlign:'center',color:'#64748b',fontSize:13}}>Loading order details from OMG...</div>
+            ) : (s.products||[]).length === 0 ? (
+              <div style={{padding:24,textAlign:'center',color:'#94a3b8',fontSize:13}}>
+                {s._details_loaded ? 'No product data returned from OMG API' : 'Product details load when store data is available'}
+                {!s._details_loaded && !omgDetailLoading && s._omg_id && <button className="btn btn-sm btn-primary" style={{marginLeft:8}} onClick={()=>{
+                  setOmgDetailLoading(true);
+                  loadOMGStoreDetail(s).then(u=>{setOmgSel(u);setOmgDetailLoading(false)}).catch(()=>setOmgDetailLoading(false));
+                }}>Load Details</button>}
               </div>
-              <a href={`https://team.ordermygear.com/admin/sales/${s._omg_id}`} target="_blank" rel="noopener noreferrer"
-                className="btn btn-primary" style={{whiteSpace:'nowrap',fontSize:12}}>
-                View Orders in OMG
-              </a>
-            </div>
+            ) : (
+            <table><thead><tr><th>SKU</th><th>Product</th><th>Color</th><th>Deco</th><th>Retail</th><th>Cost</th><th>Deco $</th><th>Sizes</th><th>Units</th><th>Revenue</th><th>Margin</th></tr></thead>
+            <tbody>{(s.products||[]).map((p,i)=>{const q=Object.values(p.sizes||{}).reduce((a,v)=>a+v,0);const rev=q*p.retail;const cost=q*(p.cost+p.deco_cost);const mg=rev-cost;
+              const catP=prod.find(cp=>cp.sku===p.sku);
+              return<tr key={i}>
+                <td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{p.sku} {catP&&<span style={{fontSize:8,color:'#22c55e'}}>✓</span>}</td>
+                <td>{p.name}</td><td style={{fontSize:11}}>{p.color}</td>
+                <td><span style={{fontSize:9,padding:'1px 5px',borderRadius:4,background:p.deco_type==='screen_print'?'#dbeafe':'#ede9fe',
+                  color:p.deco_type==='screen_print'?'#1e40af':'#6d28d9'}}>{(p.deco_type||'').replace(/_/g,' ')}</span></td>
+                <td style={{textAlign:'right'}}>${p.retail}</td><td style={{textAlign:'right'}}>${p.cost}</td><td style={{textAlign:'right'}}>${p.deco_cost}</td>
+                <td style={{fontSize:9}}>{Object.entries(p.sizes||{}).map(([sz,q2])=>sz+':'+q2).join(' ')}</td>
+                <td style={{fontWeight:700,textAlign:'center'}}>{q}</td>
+                <td style={{textAlign:'right',fontWeight:600}}>${rev.toLocaleString()}</td>
+                <td style={{textAlign:'right',color:mg>0?'#166534':'#dc2626'}}>${mg.toLocaleString()} <span style={{fontSize:9}}>({rev>0?Math.round(mg/rev*100):0}%)</span></td>
+              </tr>})}</tbody></table>
+            )}
           </div>
         </div>
 
@@ -15955,6 +16181,9 @@ export default function App(){
         <button className="btn btn-primary" onClick={syncOMGStores} disabled={omgSyncing} style={{fontSize:12}}>
           {omgSyncing ? 'Syncing...' : 'Sync from OMG'}
         </button>
+        <button className="btn btn-secondary" onClick={probeOMGEndpoints} style={{fontSize:12}}>
+          Probe API
+        </button>
         <div style={{fontSize:11,color:'#64748b'}}>
           Last synced: {omgLastSync ? new Date(omgLastSync).toLocaleString() : 'Never'}
         </div>
@@ -15981,10 +16210,10 @@ export default function App(){
       {/* Stats */}
       <div className="stats-row" style={{marginBottom:12}}>
         <div className="stat-card"><div className="stat-label">Total Stores</div><div className="stat-value">{filtered.length}</div></div>
-        <div className="stat-card"><div className="stat-label">Open Now</div><div className="stat-value" style={{color:'#22c55e'}}>{filtered.filter(s=>s.status==='open').length}</div></div>
-        <div className="stat-card"><div className="stat-label">Closed</div><div className="stat-value" style={{color:'#1e40af'}}>{filtered.filter(s=>s.status==='closed').length}</div></div>
-        <div className="stat-card"><div className="stat-label">Pulled to SO</div><div className="stat-value" style={{color:'#166534'}}>{filtered.filter(s=>sos.some(so=>so.omg_store_id===s.id)).length}</div></div>
-        <div className="stat-card"><div className="stat-label">Needs Pull</div><div className="stat-value" style={{color:'#d97706'}}>{filtered.filter(s=>s.status==='closed'&&!sos.some(so=>so.omg_store_id===s.id)).length}</div></div>
+        <div className="stat-card"><div className="stat-label">Total Sales</div><div className="stat-value" style={{color:'#1e40af'}}>${(totalSales/1000).toFixed(1)}k</div></div>
+        <div className="stat-card"><div className="stat-label">Fundraised</div><div className="stat-value" style={{color:'#166534'}}>${(totalFund/1000).toFixed(1)}k</div></div>
+        <div className="stat-card"><div className="stat-label">Orders</div><div className="stat-value">{totalOrders}</div></div>
+        <div className="stat-card"><div className="stat-label">Open Now</div><div className="stat-value" style={{color:'#d97706'}}>{filtered.filter(s=>s.status==='open').length}</div></div>
       </div>
 
       {/* Store cards */}
@@ -16003,10 +16232,15 @@ export default function App(){
                   color:s.status==='open'?'#166534':s.status==='closed'?'#1e40af':'#94a3b8'}}>{s.status}</span>
               </div>
               {s.open_date&&<div style={{fontSize:10,color:'#94a3b8',marginBottom:8}}>📅 {s.open_date} → {s.close_date}</div>}
-              <div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:2}}>
-                <span style={{fontSize:10,padding:'2px 6px',background:'#eff6ff',borderRadius:4,color:'#1e40af'}}>{s.channel_type||'pop-up'}</span>
-                {s.subdomain&&<span style={{fontSize:10,color:'#94a3b8'}}>{s.subdomain}</span>}
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:6}}>
+                <div style={{textAlign:'center',padding:6,background:'#f8fafc',borderRadius:4}}>
+                  <div style={{fontSize:16,fontWeight:800,color:'#1e40af'}}>${(s.total_sales||0).toLocaleString()}</div><div style={{fontSize:9,color:'#64748b'}}>Sales</div></div>
+                <div style={{textAlign:'center',padding:6,background:'#f0fdf4',borderRadius:4}}>
+                  <div style={{fontSize:16,fontWeight:800,color:'#166534'}}>{s.orders||0}</div><div style={{fontSize:9,color:'#64748b'}}>Orders</div></div>
+                <div style={{textAlign:'center',padding:6,background:'#fef3c7',borderRadius:4}}>
+                  <div style={{fontSize:16,fontWeight:800,color:'#92400e'}}>${(s.fundraise_total||0).toLocaleString()}</div><div style={{fontSize:9,color:'#64748b'}}>Fundraised</div></div>
               </div>
+              <div style={{marginTop:6,fontSize:10,color:'#64748b'}}>{s.products?.length||0} products · {s.items_sold||0} items sold · {s.unique_buyers||0} buyers</div>
               {s.status==='closed'&&!sos.some(so=>so.omg_store_id===s.id)&&<div style={{marginTop:6,padding:4,background:'#fef3c7',borderRadius:4,fontSize:10,color:'#92400e',fontWeight:600,textAlign:'center'}}>
                 ⚠️ Ready to pull — not yet converted to SO</div>}
               {sos.some(so=>so.omg_store_id===s.id)&&<div style={{marginTop:6,padding:4,background:'#dcfce7',borderRadius:4,fontSize:10,color:'#166534',fontWeight:600,textAlign:'center'}}>
