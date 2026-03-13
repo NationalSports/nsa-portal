@@ -10324,6 +10324,8 @@ export default function App(){
     },60000);
     return()=>clearInterval(retry);
   },[]);
+  // Notification helper — defined early so useEffect callbacks below can reference it
+  const nf=(m,t='success')=>{setToast({msg:m,type:t});setTimeout(()=>setToast(null),3500)};_dbNotify=nf;
   // Handle QB OAuth callback redirect
   React.useEffect(()=>{
     try{
@@ -10441,7 +10443,6 @@ export default function App(){
   const handleLogout=()=>{setCu(null);try{localStorage.removeItem('nsa_user')}catch{}};
 
   const isA=cu?.role==='admin';
-  const nf=(m,t='success')=>{setToast({msg:m,type:t});setTimeout(()=>setToast(null),3500)};_dbNotify=nf;
   const pars=useMemo(()=>cust.filter(c=>!c.parent_id),[cust]);const gK=useCallback(pid=>cust.filter(c=>c.parent_id===pid),[cust]);
   const cols=useMemo(()=>COLOR_CATEGORIES,[]);
   const savC=c=>{console.log('[SAVE] Customer save triggered:',c.id,c.name,{tax_rate:c.tax_rate,contacts:c.contacts?.length,shipping_state:c.shipping_state});setCust(p=>{const e=p.find(x=>x.id===c.id);return e?p.map(x=>x.id===c.id?c:x):[...p,c]});nf('Saved')};
