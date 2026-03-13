@@ -29,15 +29,17 @@ const sendBrevoEmail=async({to,subject,htmlContent,textContent,senderName,sender
 };
 
 // ─── Brevo SMS Setup ───
+const _brevoSmsSender=process.env.REACT_APP_BREVO_SMS_SENDER||'NatSportsAp';
 const sendBrevoSms=async({to,content,sender})=>{
   if(!_brevoKey){return{ok:false,error:'Brevo API key not configured'}}
   try{
     const phone=to.replace(/[^\d+]/g,'');
-    const formatted=phone.startsWith('+')?phone:'+1'+phone.replace(/^1/,'');
-    const payload={type:'transactional',unicodeEnabled:true,sender:sender||'NSA',recipient:formatted,content};
-    const r=await fetch('https://api.brevo.com/v3/transactionalSMS/sms',{method:'POST',headers:{'accept':'application/json','content-type':'application/json','api-key':_brevoKey},
+    if(phone.length<10)return{ok:false,error:'Invalid phone number'};
+    const formatted=phone.startsWith('+')?phone:(phone.startsWith('1')&&phone.length===11?'+'+phone:'+1'+phone);
+    const payload={type:'transactional',unicodeEnabled:false,sender:sender||_brevoSmsSender,recipient:formatted,content:content.substring(0,160),organisationPrefix:'NSA'};
+    const r=await fetch('https://api.brevo.com/v3/transactionalSMS/send',{method:'POST',headers:{'accept':'application/json','content-type':'application/json','api-key':_brevoKey},
     body:JSON.stringify(payload)});
-    const d=await r.json();if(!r.ok)return{ok:false,error:d.message||'SMS send failed'};return{ok:true,messageId:d.messageId,reference:d.reference}}
+    const d=await r.json();if(!r.ok)return{ok:false,error:d.message||d.code||'SMS send failed ('+r.status+')'};return{ok:true,messageId:d.messageId,reference:d.reference}}
   catch(e){return{ok:false,error:e.message}}
 };
 
@@ -2298,12 +2300,34 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
       const brevoAttachments=[];
       if(buildAttachmentHtml){try{
         const docHtml=buildAttachmentHtml();
-        // Use iframe to render full HTML document with styles intact
-        const iframe=document.createElement('iframe');iframe.style.cssText='position:absolute;left:-9999px;width:800px;height:1200px;border:none';document.body.appendChild(iframe);
-        const iDoc=iframe.contentDocument||iframe.contentWindow.document;iDoc.open();iDoc.write(docHtml);iDoc.close();
+        // Extract <style> and <body>, override flex→table for html2canvas compatibility
+        const styleMatch=docHtml.match(/<style>([\s\S]*?)<\/style>/);
+        const bodyMatch=docHtml.match(/<body>([\s\S]*?)<\/body>/);
+        const pdfFixCss=`
+          .header{display:table!important;width:100%!important;table-layout:fixed}
+          .header>*{display:table-cell!important;vertical-align:top!important}
+          .logo{width:55%!important;display:table-cell!important}
+          .logo img{height:50px;vertical-align:middle;margin-right:8px;float:left}
+          .doc-id{width:45%!important;display:table-cell!important;text-align:right!important}
+          .bill-total{display:table!important;width:100%!important;table-layout:fixed}
+          .bill-total>*{display:table-cell!important;vertical-align:top!important}
+          .total-box{width:200px!important;text-align:left!important}
+          .info-row{display:table!important;width:100%!important;table-layout:fixed}
+          .info-cell{display:table-cell!important;vertical-align:top!important}
+          .footer{display:table!important;width:100%!important}
+          .footer>*{display:table-cell!important}
+          .footer>*:last-child{text-align:right!important}
+        `;
+        const container=document.createElement('div');
+        container.style.cssText='position:absolute;left:-9999px;top:0;width:800px;background:white;font-family:Segoe UI,Helvetica,Arial,sans-serif;font-size:11px;color:#1a1a1a;padding:20px 28px;line-height:1.4';
+        const styleEl=document.createElement('style');
+        styleEl.textContent=(styleMatch?styleMatch[1]:'')+pdfFixCss;
+        container.appendChild(styleEl);
+        const bodyDiv=document.createElement('div');bodyDiv.innerHTML=bodyMatch?bodyMatch[1]:docHtml;container.appendChild(bodyDiv);
+        document.body.appendChild(container);
         await new Promise(r=>setTimeout(r,500));// allow images/fonts to load
-        const pdfBlob=await html2pdf().set({margin:0.3,filename:(estimate?.id||'document')+'.pdf',image:{type:'jpeg',quality:0.95},html2canvas:{scale:2,useCORS:true,logging:false},jsPDF:{unit:'in',format:'letter',orientation:'portrait'}}).from(iDoc.body).outputPdf('blob');
-        document.body.removeChild(iframe);
+        const pdfBlob=await html2pdf().set({margin:[0.4,0.4,0.4,0.4],filename:(estimate?.id||'document')+'.pdf',image:{type:'jpeg',quality:0.98},html2canvas:{scale:2,useCORS:true,logging:false,backgroundColor:'#ffffff'},jsPDF:{unit:'in',format:'letter',orientation:'portrait'}}).from(bodyDiv).outputPdf('blob');
+        document.body.removeChild(container);
         const pdfB64=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result.split(',')[1]);reader.onerror=reject;reader.readAsDataURL(pdfBlob)});
         brevoAttachments.push({name:(estimate?.id||'document')+'.pdf',content:pdfB64});
       }catch(err){console.warn('Failed to build PDF attachment:',err)}}
