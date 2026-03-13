@@ -10399,15 +10399,6 @@ export default function App(){
   React.useEffect(()=>{try{localStorage.setItem('nsa_msgs',JSON.stringify(msgs))}catch{};_diffSave(msgs,'msgs',m=>_dbSaveMessage(m))},[msgs]);
   React.useEffect(()=>{try{localStorage.setItem('nsa_omg_stores',JSON.stringify(omgStores))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.omg||[];omgStores.forEach(s=>{const old=snap.find(p=>p.id===s.id);if(!old||JSON.stringify(old)!==JSON.stringify(s)){_dbSave('omg_stores',[_pick(s,_omgStoreCols)])}});_dbSnap.current.omg=omgStores}},[omgStores]);
 
-  // Auto-load OMG store details when a store is selected
-  React.useEffect(()=>{
-    if(!omgSel||omgSel._details_loaded||omgDetailLoading||!omgSel._omg_id)return;
-    setOmgDetailLoading(true);
-    console.log('[OMG] Auto-loading details for store', omgSel.id, omgSel._omg_id);
-    loadOMGStoreDetail(omgSel).then(updated=>{
-      setOmgSel(updated);setOmgDetailLoading(false);
-    }).catch(e=>{console.error('[OMG] Detail load failed:',e);setOmgDetailLoading(false)});
-  },[omgSel?.id]); // eslint-disable-line react-hooks/exhaustive-deps
   React.useEffect(()=>{try{localStorage.setItem('nsa_issues',JSON.stringify(issues))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.issues||[];const changed=issues.filter(i=>{const old=snap.find(p=>p.id===i.id);return!old||JSON.stringify(old)!==JSON.stringify(i)});if(changed.length)_dbSave('issues',changed.map(i=>_pick(i,_issueCols)));_dbSnap.current.issues=issues}},[issues]);
   // Rep-CSR assignments auto-save
   React.useEffect(()=>{if(!_initialLoadDone.current||!_dbLoadSuccess.current)return;const snap=_dbSnap.current.repCsr||[];const changed=repCsrAssignments.filter(a=>{const old=snap.find(p=>p.id===a.id);return!old||JSON.stringify(old)!==JSON.stringify(a)});if(changed.length)_dbSave('rep_csr_assignments',changed);_dbSnap.current.repCsr=repCsrAssignments},[repCsrAssignments]);
@@ -10563,6 +10554,15 @@ export default function App(){
   const[poF,setPOF]=useState({status:'all',vendor:'all',rep:'all',search:'',sort:'date_desc'});
   // OMG Team Stores
   const[omgFilter,setOmgFilter]=useState({rep:'all',status:'all',search:'',dateRange:'30d'});const[omgSel,setOmgSel]=useState(null);const[omgDetailLoading,setOmgDetailLoading]=useState(false);
+  // Auto-load OMG store details when a store is selected
+  React.useEffect(()=>{
+    if(!omgSel||omgSel._details_loaded||omgDetailLoading||!omgSel._omg_id)return;
+    setOmgDetailLoading(true);
+    console.log('[OMG] Auto-loading details for store', omgSel.id, omgSel._omg_id);
+    loadOMGStoreDetail(omgSel).then(updated=>{
+      setOmgSel(updated);setOmgDetailLoading(false);
+    }).catch(e=>{console.error('[OMG] Detail load failed:',e);setOmgDetailLoading(false)});
+  },[omgSel?.id]); // eslint-disable-line react-hooks/exhaustive-deps
   const[estF,setEstF]=useState({status:'open',rep:'_me_',search:'',sort:'date_desc'});
   const[soF,setSOF]=useState({status:'all',rep:'all',search:'',sort:'date_desc'});
   const[iS,setIS]=useState({f:'value',d:'desc'});const[iF,setIF]=useState({cat:'all',vnd:'all',clr:'all'});
