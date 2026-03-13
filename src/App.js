@@ -36,7 +36,7 @@ const sendBrevoSms=async({to,content,sender})=>{
     const phone=to.replace(/[^\d+]/g,'');
     if(phone.length<10)return{ok:false,error:'Invalid phone number'};
     const formatted=phone.startsWith('+')?phone:(phone.startsWith('1')&&phone.length===11?'+'+phone:'+1'+phone);
-    const payload={type:'transactional',unicodeEnabled:false,sender:sender||_brevoSmsSender,recipient:formatted,content:content.substring(0,160),organisationPrefix:'NSA'};
+    const payload={type:'transactional',unicodeEnabled:false,sender:sender||_brevoSmsSender,recipient:formatted,content:content.substring(0,160),tag:'invoice'};
     const r=await fetch('https://api.brevo.com/v3/transactionalSMS/send',{method:'POST',headers:{'accept':'application/json','content-type':'application/json','api-key':_brevoKey},
     body:JSON.stringify(payload)});
     const d=await r.json();if(!r.ok)return{ok:false,error:d.message||d.code||'SMS send failed ('+r.status+')'};return{ok:true,messageId:d.messageId,reference:d.reference}}
@@ -420,7 +420,7 @@ const _dbSaveSOInner = async (so) => {
 };
 const _dbSaveSO = (so) => _queuedEntitySave(so.id, so, _dbSaveSOInner);
 const _invCols=['id','customer_id','so_id','date','due_date','total','paid','memo','status','type','inv_type','deposit_pct','tax','tax_rate','tax_exempt','shipping','cc_fee','email_status','email_sent_at','email_opened_at','follow_up_at','sent_history','line_items','qb_invoice_id','tc_reported','tc_tax','created_at','updated_at','billing_name','billing_address'];
-const _invExtraCols=new Set(['qb_invoice_id','tc_reported','tc_tax','billing_name','billing_address']);
+const _invExtraCols=new Set(['qb_invoice_id','tc_reported','tc_tax','billing_name','billing_address','email_sent_at','email_opened_at','follow_up_at','sent_history']);
 const _dbSaveInvoice = async (inv) => {
   if(!supabase)return;
   return _dbSavingGuard(async()=>{try{
@@ -5387,7 +5387,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             // Show invoice review page instead of navigating away
             setInvReview({...inv,_customer:cust,_so:o,_lineItems:lineItems,_shipAmt:invShipAmt,_taxAmt:invTaxAmt});
             const contact=(cust?.contacts||[])[0];
-            setInvSendMsg('Hi '+(contact?.name||'Coach')+',\n\nPlease find your invoice '+inv.id+' for $'+invTotal.toFixed(2)+'. Payment is due by '+dueDate+'.\n\nThank you,\nNSA Team');
+            const invPortalUrl=cust?.alpha_tag?'https://nsa-portal.netlify.app/?portal='+cust.alpha_tag:'';
+            setInvSendMsg('Hi '+(contact?.name||'Coach')+',\n\nPlease find the attached invoice '+inv.id+' for $'+invTotal.toFixed(2)+'. Payment is due by '+dueDate+'.'+(invPortalUrl?'\n\nYou can also view your invoice through your portal:\n'+invPortalUrl:'')+'\n\nThank you,\nNSA Team');
             setInvSmsPhone(contact?.phone||'');setInvSmsEnabled(!!contact?.phone);setInvFollowUpDays(portalSettings?.invFollowUpDays||7);
             setInvSmsMsg('Hi '+(contact?.name||'Coach')+', your invoice '+inv.id+' for $'+invTotal.toFixed(2)+' is ready. Due by '+dueDate+'. View: https://nsa-portal.netlify.app/?portal='+(cust?.alpha_tag||''));
           }}>{invType==='final'?'Create Final Invoice — Close SO':'Create '+invType.charAt(0).toUpperCase()+invType.slice(1)+' Invoice'} — ${invTotal.toFixed(2)}</button>
@@ -5553,14 +5554,46 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             setInvSendModal(false);
             const toEmail=resolvedEmail;
             const toName=resolvedName;
-            // Actually send via Brevo
+            // Build PDF attachment
+            const irBillName=ir.billing_name||ic?.name||'—';const irBal=ir.total-(ir.paid||0);
+            const irPoNum=ir._po_number||irSO?.po_number;
+            const brevoAttachments=[];
+            try{
+              const docHtml=buildDocHtml({title:irBillName,docNum:ir.id,docType:'INVOICE',
+                headerRight:'<div class="ta">$'+ir.total.toLocaleString()+'</div><div class="ts">Balance Due: <strong>$'+irBal.toLocaleString()+'</strong></div>'+(irPoNum?'<div style="font-size:11px;margin-top:4px;font-family:monospace;font-weight:700;color:#1e40af">PO# '+irPoNum+'</div>':''),
+                infoBoxes:[{label:'Bill To',value:irBillName},{label:'Invoice Date',value:ir.date||'—',sub:ir.due_date?'Due: '+ir.due_date:''},{label:'Sales Order',value:ir.so_id||'—',sub:ir.memo||''},{label:'Payment Terms',value:ir.inv_type==='deposit'?(ir.deposit_pct||50)+'% Deposit':'Final Invoice',sub:''}],
+                tables:[{headers:['Description','Qty','Rate','Amount'],aligns:['left','center','right','right'],rows:[
+                  ...lineItems.map(li=>({cells:[li.desc,li.qty,'$'+safeNum(li.rate).toFixed(2),'$'+safeNum(li.amount).toFixed(2)]})),
+                  ...(shipAmt>0?[{cells:[{value:'Shipping',style:'font-style:italic'},'','','$'+shipAmt.toFixed(2)]}]:[]),
+                  ...(taxAmt>0?[{cells:[{value:'Tax',style:'font-style:italic'},'','','$'+taxAmt.toFixed(2)]}]:[]),
+                  {_class:'totals-row',cells:['','','Total','$'+ir.total.toLocaleString()]},
+                  ...(ir.paid>0?[{cells:['','',{value:'Paid',style:'color:#166534'},'$'+ir.paid.toLocaleString()]}]:[]),
+                  ...(irBal>0?[{_style:'background:#fef2f2',cells:['','',{value:'<strong>Balance Due</strong>',style:'color:#dc2626'},'<strong style="color:#dc2626;font-size:14px">$'+irBal.toLocaleString()+'</strong>']}]:[])
+                ]}],footer:ir.inv_type==='deposit'?NSA.depositTerms:NSA.terms});
+              const styleMatch=docHtml.match(/<style>([\s\S]*?)<\/style>/);const bodyMatch=docHtml.match(/<body>([\s\S]*?)<\/body>/);
+              const pdfFixCss='.header{display:table!important;width:100%!important;table-layout:fixed}.header>*{display:table-cell!important;vertical-align:top!important}.logo{width:55%!important}.logo img{height:50px;vertical-align:middle;margin-right:8px;float:left}.doc-id{width:45%!important;text-align:right!important}.bill-total{display:table!important;width:100%!important;table-layout:fixed}.bill-total>*{display:table-cell!important;vertical-align:top!important}.total-box{width:200px!important;text-align:left!important}.info-row{display:table!important;width:100%!important;table-layout:fixed}.info-cell{display:table-cell!important;vertical-align:top!important}.footer{display:table!important;width:100%!important}.footer>*{display:table-cell!important}.footer>*:last-child{text-align:right!important}';
+              const container=document.createElement('div');container.style.cssText='position:absolute;left:-9999px;top:0;width:800px;background:white;font-family:Segoe UI,Helvetica,Arial,sans-serif;font-size:11px;color:#1a1a1a;padding:20px 28px;line-height:1.4';
+              const styleEl=document.createElement('style');styleEl.textContent=(styleMatch?styleMatch[1]:'')+pdfFixCss;container.appendChild(styleEl);
+              const bodyDiv=document.createElement('div');bodyDiv.innerHTML=bodyMatch?bodyMatch[1]:docHtml;container.appendChild(bodyDiv);
+              document.body.appendChild(container);await new Promise(r=>setTimeout(r,500));
+              const pdfBlob=await html2pdf().set({margin:[0.4,0.4,0.4,0.4],filename:ir.id+'.pdf',image:{type:'jpeg',quality:0.98},html2canvas:{scale:2,useCORS:true,logging:false,backgroundColor:'#ffffff'},jsPDF:{unit:'in',format:'letter',orientation:'portrait'}}).from(bodyDiv).outputPdf('blob');
+              document.body.removeChild(container);
+              const pdfB64=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result.split(',')[1]);reader.onerror=reject;reader.readAsDataURL(pdfBlob)});
+              brevoAttachments.push({name:ir.id+'.pdf',content:pdfB64});
+            }catch(err){console.warn('Failed to build invoice PDF:',err)}
+            // Build email with portal link
+            const portalUrl=ic?.alpha_tag?'https://nsa-portal.netlify.app/?portal='+ic.alpha_tag:'';
+            const emailHtml='<div style="font-family:sans-serif;font-size:14px;line-height:1.6">'+invSendMsg.replace(/\n/g,'<br>')
+              +(portalUrl?'<br/><br/><a href="'+portalUrl+'" style="display:inline-block;padding:10px 20px;background:#2563eb;color:white;text-decoration:none;border-radius:6px;font-weight:600">View Invoice in Portal</a>':'')
+              +'</div>';
             const res=await sendBrevoEmail({
               to:[{email:toEmail,name:toName}],
               subject:'Invoice '+ir.id+' — $'+ir.total.toFixed(2)+' from National Sports Apparel',
-              htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6">'+invSendMsg.replace(/\n/g,'<br>')+'</div>',
+              htmlContent:emailHtml,
               senderName:cu.name||'National Sports Apparel',
               senderEmail:'noreply@nationalsportsapparel.com',
-              replyTo:cu?.email?{email:cu.email,name:cu.name}:undefined
+              replyTo:cu?.email?{email:cu.email,name:cu.name}:undefined,
+              attachment:brevoAttachments.length>0?brevoAttachments:undefined
             });
             if(res.ok){
               nf('Invoice '+ir.id+' sent to '+toEmail);
@@ -5569,12 +5602,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             }
             // Send SMS if enabled
             if(invSmsEnabled&&invSmsPhone&&_brevoKey){
-              const smsRes=await sendBrevoSms({to:invSmsPhone,content:invSmsMsg.substring(0,160),sender:'NSA'});
-              if(smsRes.ok){nf('Text sent to '+invSmsPhone)}else{console.warn('SMS failed:',smsRes.error)}
+              const smsRes=await sendBrevoSms({to:invSmsPhone,content:invSmsMsg.substring(0,160)});
+              if(smsRes.ok){nf('Text sent to '+invSmsPhone)}else{nf('SMS failed: '+(smsRes.error||'Unknown'),'error')}
             }
             // Update invoice email status with follow-up and history
             const invNow=new Date().toLocaleString();const invFuAt=invFollowUpDays?new Date(Date.now()+invFollowUpDays*86400000).toISOString():null;
-            const invHist={sent_at:invNow,sent_by:cu.name||cu.id,to:toEmail,type:'invoice'};
+            const invHist={sent_at:invNow,sent_by:cu.name||cu.id,to:toEmail,type:'invoice',methods:['email',...(invSmsEnabled?['sms']:[])]};
             onInv(prev=>prev.map(i=>i.id===ir.id?{...i,email_status:'sent',email_sent_at:invNow,follow_up_at:invFuAt,sent_history:[...(i.sent_history||[]),invHist]}:i));
             // Also post to messages
             const soMsg={id:'m'+Date.now(),so_id:ir.so_id,author_id:cu.id,text:'[Invoice '+ir.id+'] Sent to '+toName+' ('+toEmail+')'+(invSmsEnabled&&invSmsPhone?' + SMS to '+invSmsPhone:'')+'\n\n'+invSendMsg,ts:new Date().toLocaleString(),read_by:[cu.id],dept:'sales',tagged_members:[],entity_type:'so',entity_id:ir.so_id};
@@ -10864,12 +10897,15 @@ export default function App(){
       const hasInv=invs.some(iv=>iv.so_id===sl.id);
       if(!hasInv){
         const _aq={};safeItems(sl).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_aq[d.art_file_id]=(_aq[d.art_file_id]||0)+q2}})});
-        const saf=safeArt(sl);let total=0;
-        safeItems(sl).forEach(it=>{const qq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);total+=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qq;const dp2=dP(d,qq,saf,cq);const eq2=dp2._nq!=null?dp2._nq:qq;total+=eq2*dp2.sell})});
-        if(sl.shipping_type==='pct')total+=total*(safeNum(sl.shipping_value)/100);else total+=safeNum(sl.shipping_value);
+        const saf=safeArt(sl);let subtotal=0;
+        safeItems(sl).forEach(it=>{const qq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);subtotal+=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qq;const dp2=dP(d,qq,saf,cq);const eq2=dp2._nq!=null?dp2._nq:qq;subtotal+=eq2*dp2.sell})});
+        const autoShip=sl.shipping_type==='pct'?Math.round(subtotal*(safeNum(sl.shipping_value)/100)*100)/100:Math.round(safeNum(sl.shipping_value)*100)/100;
+        const autoCust=cust.find(c=>c.id===sl.customer_id);const autoTaxRate=autoCust?.tax_exempt?0:(autoCust?.tax_rate||0);
+        const autoTax=Math.round(subtotal*autoTaxRate/100*100)/100;
+        const total=subtotal+autoShip+autoTax;
         const invId=nextInvId(invs);const today=new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'2-digit'});
         const dueDate=new Date();dueDate.setDate(dueDate.getDate()+30);const due=dueDate.toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'2-digit'});
-        const newInv={id:invId,type:'invoice',customer_id:sl.customer_id,so_id:sl.id,date:today,due_date:due,total:rQ(total),paid:0,memo:sl.memo||'',status:'open',payments:[],cc_fee:0};
+        const newInv={id:invId,type:'invoice',customer_id:sl.customer_id,so_id:sl.id,date:today,due_date:due,total:rQ(total),paid:0,memo:sl.memo||'',status:'open',payments:[],cc_fee:0,shipping:autoShip,tax:autoTax,tax_rate:autoTaxRate,tax_exempt:autoCust?.tax_exempt||false};
         setInvs(prev2=>[newInv,...prev2]);
         nf('Auto-generated invoice '+invId+' for $'+rQ(total).toLocaleString());
       }
@@ -14451,7 +14487,8 @@ export default function App(){
             <button className="btn btn-sm btn-secondary" style={{fontSize:12,padding:'6px 14px'}}
               onClick={()=>{
                 const contact=contacts[0];
-                const msg='Hi '+(contact?.name||'Coach')+',\n\nPlease find your invoice '+inv.id+' for $'+inv.total.toFixed(2)+'. Payment is due by '+(inv.due_date||'—')+'.\n\nThank you,\nNSA Team';
+                const portalUrl=ic?.alpha_tag?'https://nsa-portal.netlify.app/?portal='+ic.alpha_tag:'';
+                const msg='Hi '+(contact?.name||'Coach')+',\n\nPlease find the attached invoice '+inv.id+' for $'+inv.total.toFixed(2)+'. Payment is due by '+(inv.due_date||'—')+'.'+(portalUrl?'\n\nYou can also view your invoice through your portal:\n'+portalUrl:'')+'\n\nThank you,\nNSA Team';
                 const smsText='Hi '+(contact?.name||'Coach')+', your invoice '+inv.id+' for $'+inv.total.toFixed(2)+' is ready. Due by '+(inv.due_date||'—')+'. View: https://nsa-portal.netlify.app/?portal='+(ic?.alpha_tag||'');
                 setInvSendModalDirect({inv,email:contact?.email||'',customEmail:'',msg,sendTo:contact?.email||'',smsEnabled:!!contact?.phone,smsPhone:contact?.phone||'',smsMsg:smsText,followUpDays:portalSettings?.invFollowUpDays||7});
               }}>Send Invoice</button>
@@ -14524,30 +14561,37 @@ export default function App(){
                 <th style={{padding:'10px 12px',textAlign:'right',fontWeight:700,width:100}}>Amount</th>
               </tr></thead>
               <tbody>
-                {lineItems.map((li,i)=><React.Fragment key={i}>
-                  <tr style={{borderBottom:li._decos&&li._decos.length>0?'none':'1px solid #f1f5f9'}}>
+                {lineItems.map((li,i)=>{
+                  const matchDeco=soDecoDetails.find(sd=>sd.sku&&li.desc&&li.desc.startsWith(sd.sku));
+                  return<React.Fragment key={i}>
+                  <tr style={{borderBottom:(matchDeco||li._decos?.length)?'none':'1px solid #f1f5f9'}}>
                     <td style={{padding:'10px 12px',fontWeight:600}}>{li.desc}</td>
                     <td style={{padding:'10px 12px',textAlign:'center'}}>{li.qty}</td>
                     <td style={{padding:'10px 12px',textAlign:'right'}}>${safeNum(li.rate).toFixed(2)}</td>
                     <td style={{padding:'10px 12px',textAlign:'right',fontWeight:600}}>${safeNum(li.amount).toFixed(2)}</td>
                   </tr>
-                  {li._decos&&li._decos.length>0&&<tr style={{borderBottom:'1px solid #f1f5f9'}}>
-                    <td colSpan={4} style={{padding:'2px 12px 10px 24px'}}>
-                      <div style={{fontSize:11,color:'#64748b'}}>
-                        <span style={{fontWeight:600}}>Product:</span> ${safeNum(li._unitSell).toFixed(2)}/ea
-                        {li._decos.map((dd,di)=><span key={di} style={{marginLeft:10}}>
-                          <span style={{display:'inline-block',padding:'1px 5px',borderRadius:4,fontSize:9,fontWeight:700,marginRight:3,
-                            background:dd.type==='screen_print'?'#dbeafe':dd.type==='embroidery'?'#fce7f3':dd.type==='dtf'||dd.type==='heat_press'?'#fef3c7':dd.type==='numbers'?'#e0e7ff':dd.type==='names'?'#ede9fe':'#f1f5f9',
-                            color:dd.type==='screen_print'?'#1e40af':dd.type==='embroidery'?'#be185d':dd.type==='dtf'||dd.type==='heat_press'?'#92400e':dd.type==='numbers'?'#4338ca':dd.type==='names'?'#6d28d9':'#64748b'}}>
-                            {dd.label}</span>
-                          {dd.position&&<span>{dd.position}</span>}
-                          {dd.artName&&<span> — {dd.artName}</span>}
-                          <span style={{fontWeight:600}}> +${dd.sell.toFixed(2)}/ea</span>
-                        </span>)}
+                  {(matchDeco?matchDeco.decos:li._decos||[]).map((dd,di)=><tr key={'d'+di} style={{borderBottom:di===(matchDeco?matchDeco.decos:li._decos||[]).length-1?'1px solid #f1f5f9':'none'}}>
+                    <td colSpan={4} style={{padding:'3px 12px 3px 32px'}}>
+                      <div style={{display:'flex',alignItems:'center',gap:8,fontSize:11}}>
+                        <span style={{display:'inline-block',padding:'1px 6px',borderRadius:4,fontSize:9,fontWeight:700,whiteSpace:'nowrap',
+                          background:dd.type==='screen_print'?'#dbeafe':dd.type==='embroidery'?'#fce7f3':dd.type==='dtf'||dd.type==='heat_press'?'#fef3c7':dd.type==='numbers'?'#e0e7ff':dd.type==='names'?'#ede9fe':'#f1f5f9',
+                          color:dd.type==='screen_print'?'#1e40af':dd.type==='embroidery'?'#be185d':dd.type==='dtf'||dd.type==='heat_press'?'#92400e':dd.type==='numbers'?'#4338ca':dd.type==='names'?'#6d28d9':'#64748b'}}>
+                          {dd.label}</span>
+                        <span style={{color:'#334155',fontWeight:600}}>{dd.position}{dd.artName?' — '+dd.artName:''}</span>
+                        <span style={{color:'#64748b'}}>
+                          {dd.colors&&dd.colors.length>0&&<span>{dd.colors.length} color{dd.colors.length>1?'s':''}: {dd.colors.join(', ')} · </span>}
+                          {dd.stitches&&<span>{dd.stitches.toLocaleString()} stitches · </span>}
+                          {dd.dtfSize!=null&&<span>Size: {['Small','Medium','Large','XL','Oversized'][dd.dtfSize]||dd.dtfSize} · </span>}
+                          {dd.twoColor&&<span>Two-color · </span>}
+                          {dd.numMethod&&<span>{dd.numMethod.replace(/_/g,' ')} {dd.numSize||''} · </span>}
+                          {dd.vendor&&<span>Vendor: {dd.vendor} · </span>}
+                          {dd.notes&&<span>{dd.notes} · </span>}
+                        </span>
+                        <span style={{fontWeight:600,color:'#334155',marginLeft:'auto'}}>+${dd.sell.toFixed(2)}/ea</span>
                       </div>
                     </td>
-                  </tr>}
-                </React.Fragment>)}
+                  </tr>)}
+                </React.Fragment>})}
                 {lineItems.length===0&&<tr><td colSpan={4} style={{padding:20,textAlign:'center',color:'#94a3b8',fontSize:12}}>No line items recorded</td></tr>}
               </tbody>
             </table>
@@ -14572,37 +14616,6 @@ export default function App(){
               </div>
             </div>
 
-            {/* Decoration Details from SO */}
-            {soDecoDetails.length>0&&<>
-              <div style={{fontSize:11,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6,marginTop:20}}>Decoration Details</div>
-              <div style={{border:'1px solid #e2e8f0',borderRadius:8,overflow:'hidden'}}>
-                {soDecoDetails.map((item,ii)=><div key={ii} style={{borderBottom:ii<soDecoDetails.length-1?'1px solid #e2e8f0':'none'}}>
-                  <div style={{padding:'10px 14px',background:'#f8fafc',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-                    <div style={{fontWeight:700,fontSize:13}}>{item.sku} {item.name}{item.color?' — '+item.color:''}</div>
-                    <div style={{fontSize:11,color:'#64748b'}}>Qty: {item.qty}</div>
-                  </div>
-                  {item.decos.map((d,di)=><div key={di} style={{padding:'8px 14px 8px 24px',display:'flex',alignItems:'flex-start',gap:10,borderTop:'1px solid #f1f5f9'}}>
-                    <span style={{display:'inline-block',padding:'2px 8px',borderRadius:4,fontSize:10,fontWeight:700,whiteSpace:'nowrap',
-                      background:d.type==='screen_print'?'#dbeafe':d.type==='embroidery'?'#fce7f3':d.type==='dtf'||d.type==='heat_press'?'#fef3c7':d.type==='numbers'?'#e0e7ff':d.type==='names'?'#ede9fe':'#f1f5f9',
-                      color:d.type==='screen_print'?'#1e40af':d.type==='embroidery'?'#be185d':d.type==='dtf'||d.type==='heat_press'?'#92400e':d.type==='numbers'?'#4338ca':d.type==='names'?'#6d28d9':'#64748b'}}>
-                      {d.label}</span>
-                    <div style={{flex:1,fontSize:12}}>
-                      <div style={{fontWeight:600}}>{d.position}{d.artName?' — '+d.artName:''}</div>
-                      <div style={{color:'#64748b',fontSize:11,marginTop:2}}>
-                        {d.colors&&d.colors.length>0&&<span>{d.colors.length} color{d.colors.length>1?'s':''}: {d.colors.join(', ')} · </span>}
-                        {d.stitches&&<span>{d.stitches.toLocaleString()} stitches · </span>}
-                        {d.dtfSize!=null&&<span>Size: {['Small','Medium','Large','XL','Oversized'][d.dtfSize]||d.dtfSize} · </span>}
-                        {d.twoColor&&<span>Two-color · </span>}
-                        {d.numMethod&&<span>{d.numMethod.replace(/_/g,' ')} {d.numSize||''} · </span>}
-                        {d.vendor&&<span>Vendor: {d.vendor} · </span>}
-                        {d.notes&&<span>{d.notes} · </span>}
-                        Sell: ${d.sell.toFixed(2)}/ea
-                      </div>
-                    </div>
-                  </div>)}
-                </div>)}
-              </div>
-            </>}
           </div>
         </div>
 
@@ -14769,14 +14782,53 @@ export default function App(){
               <button className="btn btn-primary" style={{background:'#2563eb'}} disabled={!resolvedEmail} onClick={async()=>{
                 setInvSendModalDirect(null);
                 const toEmail=resolvedEmail;
-                const res=await sendBrevoEmail({to:[{email:toEmail,name:toEmail}],subject:'Invoice '+si.inv.id+' — $'+si.inv.total.toFixed(2)+' from National Sports Apparel',
-                  htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6">'+si.msg.replace(/\n/g,'<br>')+'</div>',
-                  senderName:cu.name||'National Sports Apparel',senderEmail:'noreply@nationalsportsapparel.com',replyTo:cu?.email?{email:cu.email,name:cu.name}:undefined});
-                if(res.ok){nf('Invoice '+si.inv.id+' sent to '+toEmail)}else{nf('Failed to send: '+(res.error||'Unknown error'),'error')}
+                const siInv=si.inv;const siSo=sos.find(s=>s.id===siInv.so_id);const siCust=cust.find(c=>c.id===siInv.customer_id);
+                const siBillName=siInv.billing_name||siCust?.name||'—';
+                const siBal=siInv.total-(siInv.paid||0);
+                const siShip=siInv.shipping||0;const siTax=siInv.tax||0;
+                const siRepObj=siSo?REPS.find(r=>r.id===siSo.created_by):null;
+                const siPoNum=siInv._po_number||siSo?.po_number;
+                // Compute line items for PDF
+                const siStoredLi=siInv.line_items||[];
+                const siLi=siStoredLi.length>0?siStoredLi:(siSo?safeItems(siSo).map(it=>{const qq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);if(!qq)return null;const aq2={};safeItems(siSo).forEach(sit=>{const sq2=Object.values(safeSizes(sit)).reduce((a2,v2)=>a2+safeNum(v2),0);safeDecos(sit).forEach(d2=>{if(d2.kind==='art'&&d2.art_file_id){aq2[d2.art_file_id]=(aq2[d2.art_file_id]||0)+sq2}})});const ds=safeDecos(it).reduce((a,d)=>{const cq=d.kind==='art'&&d.art_file_id?aq2[d.art_file_id]:qq;return a+dP(d,qq,safeArt(siSo),cq).sell},0);return{desc:it.sku+' '+it.name+(it.color?' — '+it.color:''),qty:qq,rate:safeNum(it.unit_sell)+ds,amount:qq*(safeNum(it.unit_sell)+ds)}}).filter(Boolean):[]);
+                // Build PDF attachment
+                const brevoAttachments=[];
+                try{
+                  const docHtml=buildDocHtml({title:siBillName,docNum:siInv.id,docType:'INVOICE',
+                    headerRight:'<div class="ta">$'+siInv.total.toLocaleString()+'</div><div class="ts">Balance Due: <strong>$'+siBal.toLocaleString()+'</strong></div>'+(siPoNum?'<div style="font-size:11px;margin-top:4px;font-family:monospace;font-weight:700;color:#1e40af">PO# '+siPoNum+'</div>':''),
+                    infoBoxes:[{label:'Bill To',value:siBillName},{label:'Invoice Date',value:siInv.date||'—',sub:siInv.due_date?'Due: '+siInv.due_date:''},{label:'Sales Order',value:siInv.so_id||'—',sub:siInv.memo||''},{label:'Payment Terms',value:siInv.inv_type==='deposit'?(siInv.deposit_pct||50)+'% Deposit':'Final Invoice',sub:'Rep: '+(siRepObj?.name||'—')}],
+                    tables:[{headers:['Description','Qty','Rate','Amount'],aligns:['left','center','right','right'],rows:[
+                      ...siLi.map(li=>({cells:[li.desc,li.qty,'$'+safeNum(li.rate).toFixed(2),'$'+safeNum(li.amount).toFixed(2)]})),
+                      ...(siShip>0?[{cells:[{value:'Shipping',style:'font-style:italic'},'','','$'+siShip.toFixed(2)]}]:[]),
+                      ...(siTax>0?[{cells:[{value:'Tax',style:'font-style:italic'},'','','$'+siTax.toFixed(2)]}]:[]),
+                      {_class:'totals-row',cells:['','','Total','$'+siInv.total.toLocaleString()]},
+                      ...(siInv.paid>0?[{cells:['','',{value:'Paid',style:'color:#166534'},'$'+siInv.paid.toLocaleString()]}]:[]),
+                      ...(siBal>0?[{_style:'background:#fef2f2',cells:['','',{value:'<strong>Balance Due</strong>',style:'color:#dc2626'},'<strong style="color:#dc2626;font-size:14px">$'+siBal.toLocaleString()+'</strong>']}]:[])
+                    ]}],footer:siInv.inv_type==='deposit'?NSA.depositTerms:NSA.terms});
+                  const styleMatch=docHtml.match(/<style>([\s\S]*?)<\/style>/);const bodyMatch=docHtml.match(/<body>([\s\S]*?)<\/body>/);
+                  const pdfFixCss='.header{display:table!important;width:100%!important;table-layout:fixed}.header>*{display:table-cell!important;vertical-align:top!important}.logo{width:55%!important}.logo img{height:50px;vertical-align:middle;margin-right:8px;float:left}.doc-id{width:45%!important;text-align:right!important}.bill-total{display:table!important;width:100%!important;table-layout:fixed}.bill-total>*{display:table-cell!important;vertical-align:top!important}.total-box{width:200px!important;text-align:left!important}.info-row{display:table!important;width:100%!important;table-layout:fixed}.info-cell{display:table-cell!important;vertical-align:top!important}.footer{display:table!important;width:100%!important}.footer>*{display:table-cell!important}.footer>*:last-child{text-align:right!important}';
+                  const container=document.createElement('div');container.style.cssText='position:absolute;left:-9999px;top:0;width:800px;background:white;font-family:Segoe UI,Helvetica,Arial,sans-serif;font-size:11px;color:#1a1a1a;padding:20px 28px;line-height:1.4';
+                  const styleEl=document.createElement('style');styleEl.textContent=(styleMatch?styleMatch[1]:'')+pdfFixCss;container.appendChild(styleEl);
+                  const bodyDiv=document.createElement('div');bodyDiv.innerHTML=bodyMatch?bodyMatch[1]:docHtml;container.appendChild(bodyDiv);
+                  document.body.appendChild(container);await new Promise(r=>setTimeout(r,500));
+                  const pdfBlob=await html2pdf().set({margin:[0.4,0.4,0.4,0.4],filename:siInv.id+'.pdf',image:{type:'jpeg',quality:0.98},html2canvas:{scale:2,useCORS:true,logging:false,backgroundColor:'#ffffff'},jsPDF:{unit:'in',format:'letter',orientation:'portrait'}}).from(bodyDiv).outputPdf('blob');
+                  document.body.removeChild(container);
+                  const pdfB64=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result.split(',')[1]);reader.onerror=reject;reader.readAsDataURL(pdfBlob)});
+                  brevoAttachments.push({name:siInv.id+'.pdf',content:pdfB64});
+                }catch(err){console.warn('Failed to build invoice PDF:',err)}
+                // Build email with portal link
+                const portalUrl=siCust?.alpha_tag?'https://nsa-portal.netlify.app/?portal='+siCust.alpha_tag:'';
+                const emailHtml='<div style="font-family:sans-serif;font-size:14px;line-height:1.6">'+si.msg.replace(/\n/g,'<br>')
+                  +(portalUrl?'<br/><br/><a href="'+portalUrl+'" style="display:inline-block;padding:10px 20px;background:#2563eb;color:white;text-decoration:none;border-radius:6px;font-weight:600">View Invoice in Portal</a>':'')
+                  +'</div>';
+                const res=await sendBrevoEmail({to:[{email:toEmail,name:toEmail}],subject:'Invoice '+siInv.id+' — $'+siInv.total.toFixed(2)+' from National Sports Apparel',
+                  htmlContent:emailHtml,senderName:cu.name||'National Sports Apparel',senderEmail:'noreply@nationalsportsapparel.com',replyTo:cu?.email?{email:cu.email,name:cu.name}:undefined,
+                  attachment:brevoAttachments.length>0?brevoAttachments:undefined});
+                if(res.ok){nf('Invoice '+siInv.id+' sent to '+toEmail)}else{nf('Failed to send: '+(res.error||'Unknown error'),'error')}
                 // Send SMS if enabled
                 if(si.smsEnabled&&si.smsPhone&&_brevoKey){
-                  const smsRes=await sendBrevoSms({to:si.smsPhone,content:(si.smsMsg||'').substring(0,160),sender:'NSA'});
-                  if(smsRes.ok){nf('Text sent to '+si.smsPhone)}else{console.warn('SMS failed:',smsRes.error)}
+                  const smsRes=await sendBrevoSms({to:si.smsPhone,content:(si.smsMsg||'').substring(0,160)});
+                  if(smsRes.ok){nf('Text sent to '+si.smsPhone)}else{nf('SMS failed: '+(smsRes.error||'Unknown'),'error')}
                 }
                 const fuAt=si.followUpDays?new Date(Date.now()+si.followUpDays*86400000).toISOString():null;
                 const histEntry={sent_at:new Date().toISOString(),sent_by:cu.name||cu.id,type:'invoice',methods:['email',...(si.smsEnabled?['sms']:[])],to:toEmail};
