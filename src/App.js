@@ -3181,7 +3181,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       let prodSt=existing?.prod_status||'hold';
       const artFile=safeArr(o?.art_files).find(f=>f.id===j.art_file_id);
       const hasProdFiles=!artFile||(artFile.prod_files||[]).length>0;
-      if(itemSt==='items_received'&&j.art_status==='art_complete'&&hasProdFiles&&prodSt==='hold'&&!j._draft)prodSt='staging';
+      // Jobs stay in 'hold' (Ready for Prod) until warehouse manually moves them to production
       const id=existing?.id||('JOB-'+soNum+'-'+String(jIdx).padStart(2,'0'));
       jIdx++;
       return{
@@ -13038,6 +13038,17 @@ export default function App(){
         // Mockup files — aggregate from all art files in this job
         const mockupFiles=allArtFiles.flatMap(a=>a?.mockup_files||a?.files||[]);
         const prodFiles=allArtFiles.flatMap(a=>a?.prod_files||[]);
+        // Numbers & Names roster data — extract from item decorations
+        const numbersData=(()=>{const results=[];(j.items||[]).forEach(gi=>{
+          const it=safeItems(so)[gi.item_idx];if(!it)return;
+          const numDecos=safeDecos(it).filter(d=>d.kind==='numbers');
+          const nameDecos=safeDecos(it).filter(d=>d.kind==='names');
+          const nd=numDecos[0];const nameD=nameDecos[0];
+          if(!nd&&!nameD)return;
+          const sizes=Object.entries(safeSizes(it)).filter(([,v])=>v>0).sort((a,b)=>(SZ_ORD.indexOf(a[0])<0?99:SZ_ORD.indexOf(a[0]))-(SZ_ORD.indexOf(b[0])<0?99:SZ_ORD.indexOf(b[0])));
+          const roster=nd?.roster||null;const names=nameD?.names||null;
+          results.push({sku:it.sku||gi.sku,color:it.color||gi.color||'',nd,nameD,roster,names,sizes:sizes.map(([sz])=>sz),sizeQtys:Object.fromEntries(sizes)});
+        });return results})();
 
         // Print Production PDF
         const printProdPDF=()=>{
@@ -13083,11 +13094,41 @@ export default function App(){
             mockupFiles.forEach(f=>fileRows.push({cells:['Mockup',fileDisplayName(f)]}));
             tables.push({title:'Production Files',headers:['Type','Filename'],aligns:['left','left'],rows:fileRows});
           }
-          // Find a displayable mockup image URL for the PDF
-          const _pdfMockUrl=(()=>{const mf=(af?.mockup_files||af?.files||[]).filter(f=>f);
-            for(const f of mf){const u=typeof f==='string'?f:(f?.url||'');if(_isImgUrl(u,f))return u;const pt=_isPdfUrl(u,f)?_cloudinaryPdfThumb(u):null;if(pt)return pt}
-            return itemDetails.find(gi=>gi.image_url&&_isImgUrl(gi.image_url))?.image_url||null})();
-          const _pdfMockHtml=_pdfMockUrl?'<div style="text-align:center;margin:8px 0 12px;padding:12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px"><img src="'+_pdfMockUrl+'" style="max-width:100%;max-height:300px;object-fit:contain;border-radius:6px"/><div style="font-size:9px;color:#666;margin-top:4px">Mockup Preview</div></div>':'';
+          // Numbers roster table for PDF
+          numbersData.forEach(nd2=>{
+            if(!nd2.roster||Object.keys(nd2.roster).length===0)return;
+            const numInfo=[];
+            if(nd2.nd){
+              numInfo.push({cells:['Method',{value:'<strong>'+(nd2.nd.num_method||'heat_transfer').replace(/_/g,' ')+'</strong>'}]});
+              numInfo.push({cells:['Number Size',{value:'<strong>'+(nd2.nd.num_size||'—')+'</strong>'}]});
+              if(nd2.nd.front_and_back)numInfo.push({cells:['Back Size',{value:'<strong>'+(nd2.nd.num_size_back||nd2.nd.num_size||'—')+'</strong>'}]});
+              if(nd2.nd.print_color)numInfo.push({cells:['Color',{value:'<strong>'+nd2.nd.print_color+'</strong>'}]});
+              if(nd2.nd.num_font)numInfo.push({cells:['Font',{value:'<strong>'+nd2.nd.num_font+'</strong>'}]});
+              if(nd2.nd.front_and_back)numInfo.push({cells:['Placement',{value:'<strong>Front + Back</strong>'}]});
+            }
+            if(numInfo.length>0)tables.push({title:'Number Details'+(nd2.sku?' — '+nd2.sku:''),headers:['Property','Value'],aligns:['left','left'],rows:numInfo});
+            // Number list by size
+            const numRows=[];
+            nd2.sizes.forEach(sz=>{const nums=(nd2.roster[sz]||[]).filter(n=>n!=='');
+              if(nums.length>0)numRows.push({cells:[sz,nums.sort((a,b)=>Number(a)-Number(b)).join(', ')]});
+            });
+            if(numRows.length>0)tables.push({title:'Number List'+(nd2.sku?' — '+nd2.sku:''),headers:['Size','Numbers'],aligns:['left','left'],rows:numRows});
+          });
+          // Names roster table for PDF
+          numbersData.forEach(nd2=>{
+            if(!nd2.names||Object.keys(nd2.names).length===0)return;
+            const nameRows=[];
+            nd2.sizes.forEach(sz=>{const nms=(nd2.names[sz]||[]).filter(n=>n!=='');
+              if(nms.length>0)nameRows.push({cells:[sz,nms.join(', ')]});
+            });
+            if(nameRows.length>0)tables.push({title:'Names List'+(nd2.sku?' — '+nd2.sku:''),headers:['Size','Names'],aligns:['left','left'],rows:nameRows});
+          });
+          // Find displayable mockup image URLs for the PDF — show all mockups
+          const _pdfMockUrls=(()=>{const urls=[];const mf=mockupFiles.filter(f=>f);
+            for(const f of mf){const u=typeof f==='string'?f:(f?.url||'');if(_isImgUrl(u,f)){urls.push(u)}else{const pt=_isPdfUrl(u,f)?_cloudinaryPdfThumb(u):null;if(pt)urls.push(pt)}}
+            if(urls.length===0){const fallback=itemDetails.find(gi=>gi.image_url&&_isImgUrl(gi.image_url))?.image_url;if(fallback)urls.push(fallback)}
+            return urls})();
+          const _pdfMockHtml=_pdfMockUrls.length>0?'<div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin:8px 0 12px;padding:12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px">'+_pdfMockUrls.map(u=>'<img src="'+u+'" style="max-width:'+(_pdfMockUrls.length>1?'48%':'100%')+';max-height:300px;object-fit:contain;border-radius:6px"/>').join('')+'<div style="font-size:9px;color:#666;margin-top:4px;width:100%;text-align:center">Mockup Preview</div></div>':'';
           printDoc({title:j.customer||'Job',docNum:j.id,docType:'Production Job Sheet',
             headerRight:'<div class="ta" style="font-size:20px">'+j.total_units+' UNITS</div><div class="ts">'+j.deco_type?.replace(/_/g,' ')+'</div>',
             infoBoxes,tables,
@@ -13107,29 +13148,38 @@ export default function App(){
             </div>
           </div>
           <div className="modal-body" style={{padding:0}}>
-            {/* BIG Mockup Preview — full width, prominent */}
-            <div style={{background:'#0f172a',padding:24,borderBottom:'2px solid #334155',cursor:'pointer',position:'relative'}}
-              onClick={()=>{setProdLightboxIdx(0);setProdLightboxZoom(1);setProdJobLightbox(true)}}>
-              <div style={{display:'flex',alignItems:'center',justifyContent:'center',minHeight:340,borderRadius:12,background:'#1e293b',border:'2px solid #334155',overflow:'hidden',position:'relative'}}>
-                {(()=>{if(mockupFiles.length===0)return<div style={{textAlign:'center',padding:40}}><div style={{fontSize:64,marginBottom:8}}>🎨</div><div style={{fontSize:14,color:'#94a3b8'}}>No mockup uploaded</div></div>;
-                  const f0=mockupFiles[0];const u0=typeof f0==='string'?f0:(f0?.url||'');
-                  const isImg=_isImgUrl(u0,f0);const isPdf=_isPdfUrl(u0,f0);const pdfThumb=isPdf?_cloudinaryPdfThumb(u0):null;
-                  const imgSrc=isImg?u0:pdfThumb;
-                  return imgSrc?<img src={imgSrc} alt="Mockup" style={{maxWidth:'100%',maxHeight:340,objectFit:'contain',display:'block',margin:'0 auto'}}/>
-                    :<div style={{textAlign:'center',padding:40}}><div style={{fontSize:64,marginBottom:8}}>📄</div><div style={{fontSize:14,fontWeight:700,color:'#93c5fd',wordBreak:'break-all'}}>{fileDisplayName(f0)}</div></div>})()}
-              </div>
-              <div style={{position:'absolute',bottom:32,right:32,background:'rgba(59,130,246,0.9)',color:'white',padding:'6px 14px',borderRadius:8,fontSize:12,fontWeight:700,display:'flex',alignItems:'center',gap:6}}>
-                🔍 Click to Zoom
-              </div>
-              {mockupFiles.length>1&&<div style={{display:'flex',gap:8,justifyContent:'center',marginTop:12}}>
-                {mockupFiles.slice(0,6).map((f,i)=>{const u=typeof f==='string'?f:(f?.url||'');const isImg=_isImgUrl(u,f);const isPdf=_isPdfUrl(u,f);const thumb=isImg?u:isPdf?_cloudinaryPdfThumb(u):null;
-                  return<div key={i} style={{width:56,height:56,borderRadius:6,border:'2px solid #475569',overflow:'hidden',background:'#334155',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center'}}
-                    onClick={e=>{e.stopPropagation();setProdLightboxIdx(i);setProdLightboxZoom(1);setProdJobLightbox(true)}}>
-                    {thumb?<img src={thumb} alt="" style={{width:'100%',height:'100%',objectFit:'cover'}}/>:<span style={{fontSize:9,color:'#94a3b8',textAlign:'center',padding:2}}>{fileDisplayName(f)}</span>}
+            {/* Mockup Preview — equal-size grid for multiple, large single */}
+            <div style={{background:'#0f172a',padding:24,borderBottom:'2px solid #334155',position:'relative'}}>
+              {mockupFiles.length===0?<div style={{textAlign:'center',padding:40,minHeight:200}}><div style={{fontSize:64,marginBottom:8}}>🎨</div><div style={{fontSize:14,color:'#94a3b8'}}>No mockup uploaded</div></div>
+              :<div style={{display:'grid',gridTemplateColumns:mockupFiles.length===1?'1fr':mockupFiles.length===2?'1fr 1fr':mockupFiles.length===3?'1fr 1fr 1fr':'1fr 1fr',gap:12}}>
+                {mockupFiles.map((f,i)=>{const u=typeof f==='string'?f:(f?.url||'');const isImg=_isImgUrl(u,f);const isPdf=_isPdfUrl(u,f);const pdfThumb=isPdf?_cloudinaryPdfThumb(u):null;const imgSrc=isImg?u:pdfThumb;
+                  return<div key={i} style={{borderRadius:12,background:'#1e293b',border:'2px solid #334155',overflow:'hidden',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',minHeight:mockupFiles.length===1?400:260}}
+                    onClick={()=>{setProdLightboxIdx(i);setProdLightboxZoom(1);setProdJobLightbox(true)}}>
+                    {imgSrc?<img src={imgSrc} alt={'Mockup '+(i+1)} style={{width:'100%',height:'100%',objectFit:'contain',display:'block',padding:8}}/>
+                    :<div style={{textAlign:'center',padding:24}}><div style={{fontSize:48,marginBottom:8}}>📄</div><div style={{fontSize:13,fontWeight:700,color:'#93c5fd',wordBreak:'break-all'}}>{fileDisplayName(f)}</div></div>}
                   </div>})}
-                {mockupFiles.length>6&&<div style={{width:56,height:56,borderRadius:6,border:'2px solid #475569',background:'#334155',display:'flex',alignItems:'center',justifyContent:'center',color:'#94a3b8',fontSize:11,fontWeight:700}}>+{mockupFiles.length-6}</div>}
+              </div>}
+              {mockupFiles.length>0&&<div style={{textAlign:'right',marginTop:8}}>
+                <span style={{background:'rgba(59,130,246,0.9)',color:'white',padding:'6px 14px',borderRadius:8,fontSize:12,fontWeight:700,cursor:'pointer'}}
+                  onClick={()=>{setProdLightboxIdx(0);setProdLightboxZoom(1);setProdJobLightbox(true)}}>Click to Zoom</span>
               </div>}
             </div>
+
+            {/* Production & Art Files — directly below mockups */}
+            {(prodFiles.length>0||mockupFiles.length>0)&&<div style={{padding:16,borderBottom:'2px solid #e2e8f0',background:'#1e293b'}}>
+              <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                {prodFiles.map((f,i)=><div key={'p'+i} style={{display:'flex',alignItems:'center',gap:6,padding:'8px 14px',background:'#fef3c7',border:'1px solid #fde68a',borderRadius:8,cursor:'pointer'}}
+                  onClick={()=>openFile(f)} title={'Production: '+fileDisplayName(f)}>
+                  <span style={{fontSize:16}}>📁</span>
+                  <div><div style={{fontSize:12,fontWeight:700,color:'#92400e'}}>{fileDisplayName(f)}</div><div style={{fontSize:9,color:'#b45309'}}>Production File</div></div>
+                </div>)}
+                {mockupFiles.map((f,i)=><div key={'m'+i} style={{display:'flex',alignItems:'center',gap:6,padding:'8px 14px',background:'#dbeafe',border:'1px solid #93c5fd',borderRadius:8,cursor:'pointer'}}
+                  onClick={()=>openFile(f)} title={'Mockup: '+fileDisplayName(f)}>
+                  <span style={{fontSize:16}}>🖼️</span>
+                  <div><div style={{fontSize:12,fontWeight:700,color:'#1e40af'}}>{fileDisplayName(f)}</div><div style={{fontSize:9,color:'#3b82f6'}}>Mockup File</div></div>
+                </div>)}
+              </div>
+            </div>}
 
             {/* Decoration Details — per-location breakdown, BIG and clear */}
             <div style={{padding:24,borderBottom:'2px solid #e2e8f0',background:'#f8fafc'}}>
@@ -13219,23 +13269,48 @@ export default function App(){
                 </div>})}
             </div>
 
-            {/* Production Files */}
-            <div style={{padding:20,borderBottom:'1px solid #e2e8f0'}}>
-              <div style={{fontSize:14,fontWeight:800,color:'#1e3a5f',marginBottom:10}}>Production Files</div>
-              {prodFiles.length===0&&mockupFiles.length===0?<div style={{color:'#94a3b8',fontSize:12}}>No files attached</div>
-              :<div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-                {prodFiles.map((f,i)=><div key={'p'+i} style={{display:'flex',alignItems:'center',gap:6,padding:'8px 14px',background:'#fef3c7',border:'1px solid #fde68a',borderRadius:8,cursor:'pointer'}}
-                  onClick={()=>openFile(f)} title={'Production: '+fileDisplayName(f)}>
-                  <span style={{fontSize:16}}>📁</span>
-                  <div><div style={{fontSize:12,fontWeight:700,color:'#92400e'}}>{fileDisplayName(f)}</div><div style={{fontSize:9,color:'#b45309'}}>Production File</div></div>
-                </div>)}
-                {mockupFiles.map((f,i)=><div key={'m'+i} style={{display:'flex',alignItems:'center',gap:6,padding:'8px 14px',background:'#dbeafe',border:'1px solid #93c5fd',borderRadius:8,cursor:'pointer'}}
-                  onClick={()=>openFile(f)} title={'Mockup: '+fileDisplayName(f)}>
-                  <span style={{fontSize:16}}>🖼️</span>
-                  <div><div style={{fontSize:12,fontWeight:700,color:'#1e40af'}}>{fileDisplayName(f)}</div><div style={{fontSize:9,color:'#3b82f6'}}>Mockup File</div></div>
-                </div>)}
-              </div>}
-            </div>
+            {/* Numbers & Names Roster */}
+            {numbersData.length>0&&numbersData.some(nd2=>nd2.nd||nd2.roster||nd2.names)&&<div style={{padding:20,borderBottom:'1px solid #e2e8f0'}}>
+              <div style={{fontSize:18,fontWeight:800,color:'#0f172a',marginBottom:16,borderBottom:'2px solid #7c3aed',paddingBottom:8}}>Numbers & Names</div>
+              {numbersData.map((nd2,ndi)=><div key={ndi} style={{marginBottom:ndi<numbersData.length-1?16:0}}>
+                {numbersData.length>1&&<div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:8}}>{nd2.sku} ({nd2.color})</div>}
+                {/* Number details info */}
+                {nd2.nd&&<div style={{display:'flex',gap:10,flexWrap:'wrap',fontSize:13,marginBottom:12,padding:12,background:'#faf5ff',borderRadius:8,border:'1px solid #e9d5ff'}}>
+                  <span><strong style={{color:'#6d28d9'}}>{(nd2.nd.num_method||'heat_transfer').replace(/_/g,' ')}</strong></span>
+                  <span>Size: <strong>{nd2.nd.num_size||'—'}</strong></span>
+                  {nd2.nd.front_and_back&&<span>Back: <strong>{nd2.nd.num_size_back||nd2.nd.num_size||'—'}</strong></span>}
+                  {nd2.nd.print_color&&<span>Color: <strong>{nd2.nd.print_color}</strong></span>}
+                  {nd2.nd.num_font&&<span>Font: <strong>{nd2.nd.num_font}</strong></span>}
+                  {nd2.nd.front_and_back&&<span style={{padding:'2px 8px',borderRadius:4,background:'#7c3aed',color:'white',fontSize:11,fontWeight:700}}>Front + Back</span>}
+                </div>}
+                {/* Number list by size */}
+                {nd2.roster&&Object.keys(nd2.roster).length>0&&<div style={{marginBottom:nd2.names?12:0}}>
+                  <div style={{fontSize:13,fontWeight:700,color:'#6d28d9',marginBottom:8}}>Number List</div>
+                  {nd2.sizes.map(sz=>{const nums=(nd2.roster[sz]||[]).filter(n=>n!=='');
+                    if(nums.length===0)return null;
+                    return<div key={sz} style={{marginBottom:8}}>
+                      <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:4}}>{sz} ({nums.length})</div>
+                      <div style={{display:'flex',flexWrap:'wrap',gap:4}}>
+                        {nums.sort((a,b)=>Number(a)-Number(b)).map((n,ni)=>
+                          <span key={ni} style={{display:'inline-block',minWidth:36,textAlign:'center',padding:'4px 8px',background:'#faf5ff',border:'1px solid #e9d5ff',borderRadius:6,fontSize:14,fontWeight:700,color:'#6d28d9'}}>{n}</span>)}
+                      </div>
+                    </div>})}
+                </div>}
+                {/* Names list by size */}
+                {nd2.names&&Object.keys(nd2.names).length>0&&<div>
+                  <div style={{fontSize:13,fontWeight:700,color:'#0369a1',marginBottom:8}}>Names List</div>
+                  {nd2.sizes.map(sz=>{const nms=(nd2.names[sz]||[]).filter(n=>n!=='');
+                    if(nms.length===0)return null;
+                    return<div key={sz} style={{marginBottom:8}}>
+                      <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:4}}>{sz} ({nms.length})</div>
+                      <div style={{display:'flex',flexWrap:'wrap',gap:4}}>
+                        {nms.map((n,ni)=>
+                          <span key={ni} style={{padding:'4px 10px',background:'#f0f9ff',border:'1px solid #bae6fd',borderRadius:6,fontSize:13,fontWeight:600,color:'#0369a1'}}>{n}</span>)}
+                      </div>
+                    </div>})}
+                </div>}
+              </div>)}
+            </div>}
 
             {/* Notes */}
             {(j.notes||so.production_notes)&&<div style={{padding:20,background:'#fffbe6'}}>
@@ -17804,7 +17879,7 @@ export default function App(){
         if(jj.id!==j.id)return jj;
         const upd={...jj,art_status:newStatus,assigned_artist:jj.assigned_artist||j.assigned_artist};
         // Auto-move to production staging when art complete + items received
-        if(newStatus==='art_complete'&&jj.item_status==='items_received'&&(jj.prod_status==='hold'||!jj.prod_status)&&!jj._draft&&jj.prod_status!=='draft'){upd.prod_status='staging'}
+        // Jobs stay in 'hold' (Ready for Prod) — warehouse moves them to In Line manually
         return upd;
       });
       let updArt=safeArt(so);
@@ -17813,7 +17888,7 @@ export default function App(){
         if(afSt)updArt=updArt.map(a=>a.id===j.art_file_id?{...a,status:afSt}:a);
       }
       savSO({...so,art_files:updArt,jobs:updatedJobs});
-      if(newStatus==='art_complete'){const autoStaged=updatedJobs.find(jj=>jj.id===j.id);if(autoStaged?.prod_status==='staging')nf('Art complete — job moved to Ready for Production!');else nf('Art status → '+ART_LABELS[newStatus])}
+      if(newStatus==='art_complete'){nf('Art complete — job is Ready for Production!')}
       else nf('Art status → '+ART_LABELS[newStatus]);
     };
     const assignArtist=(j,artistId)=>{
@@ -17940,10 +18015,9 @@ export default function App(){
                   const ext=j.deco_type==='embroidery'?'.dst':j.deco_type==='screen_print'?'_seps.ai':'.pdf';
                   const fn=(j.art_name||'art').replace(/\s+/g,'_')+'_FINAL'+ext;
                   const updArt=[...safeArt(so)];updArt[afIdx]={...updArt[afIdx],prod_files:[...(updArt[afIdx].prod_files||[]),fn]};
-                  const updJobs=safeJobs(so).map(jj=>{if(jj.id!==j.id)return jj;const upd={...jj,art_status:'art_complete'};if(jj.item_status==='items_received'&&(jj.prod_status==='hold'||!jj.prod_status)&&!jj._draft&&jj.prod_status!=='draft')upd.prod_status='staging';return upd});
+                  const updJobs=safeJobs(so).map(jj=>{if(jj.id!==j.id)return jj;return{...jj,art_status:'art_complete'}});
                   savSO({...so,art_files:updArt,jobs:updJobs});
-                  const autoStaged=updJobs.find(jj=>jj.id===j.id);
-                  nf(autoStaged?.prod_status==='staging'?'Art complete — job moved to Ready for Production!':'Prod files uploaded — Art Complete!');
+                  nf('Prod files uploaded — Art Complete!');
                 }else{moveArtStatus(j,'art_complete')}
               }}>Upload & Complete</button>}
               <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px',marginLeft:'auto'}} onClick={e=>{e.stopPropagation();window.open(window.location.origin+window.location.pathname+'?so='+j.soId,'_blank')}}>Open SO ↗</button>
