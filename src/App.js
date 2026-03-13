@@ -587,7 +587,7 @@ const _persistFailedIds=()=>{try{localStorage.setItem('nsa_save_failed_ids',JSON
 // Column whitelists — strip unknown fields before sending to Supabase (localStorage may have extra UI fields like vendor_id)
 const _pick=(obj,cols)=>{const r={};cols.forEach(c=>{if(c in obj)r[c]=obj[c]});return r};
 const _estCols=['id','customer_id','memo','status','created_by','created_at','updated_at','default_markup','shipping_type','shipping_value','ship_to_id','email_status','email_opened_at','email_viewed_at','deleted_at','promo_applied','promo_amount','update_requests'];
-const _soCols=['id','customer_id','estimate_id','memo','status','created_by','created_at','updated_at','expected_date','production_notes','shipping_type','shipping_value','ship_to_id','default_markup','omg_store_id','_shipstation_order_id','_shipping_status','_tracking_number','_carrier','_ship_date','_tracking_url','_shipped','_shipments','_shipping_cost','deleted_at','promo_applied','promo_amount','ship_preference','ship_on_date','order_type','expected_ship_date','booking_confirmed','booking_confirmed_at','booking_confirmed_by','booking_alert_days','po_number'];
+const _soCols=['id','customer_id','estimate_id','memo','status','created_by','created_at','updated_at','expected_date','production_notes','shipping_type','shipping_value','ship_to_id','default_markup','omg_store_id','_shipstation_order_id','_shipping_status','_tracking_number','_carrier','_ship_date','_tracking_url','_shipped','_shipments','_shipping_cost','_inbound_freight','deleted_at','promo_applied','promo_amount','ship_preference','ship_on_date','order_type','expected_ship_date','booking_confirmed','booking_confirmed_at','booking_confirmed_by','booking_alert_days','po_number'];
 const _itemCols=['product_id','sku','name','brand','color','nsa_cost','retail_price','unit_sell','sizes','available_sizes','_colors','no_deco','is_custom','custom_desc','custom_cost','custom_sell','is_promo','_pre_promo_sell','est_qty'];
 const _decoCols=['kind','position','type','art_file_id','art_tbd_type','tbd_colors','tbd_stitches','tbd_dtf_size','sell_override','sell_each','cost_each','underbase','two_color','colors','stitches','dtf_size','num_method','num_size','num_size_back','num_font','roster','names','names_list','vendor','deco_type','notes','custom_font_art_id','print_color','front_and_back','reversible','num_qty','name_qty'];
 // Columns that may not exist in production DB / schema cache — stripped on insert retry
@@ -4534,6 +4534,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 {/* PO Header */}
                 <div style={{padding:'10px 12px',display:'flex',alignItems:'center',gap:8,flexWrap:'wrap',borderBottom:'1px solid #e2e8f0',background:'white'}}>
                   <span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{d.item.sku}</span>
+                  <span style={{fontWeight:600,fontSize:11}}>{d.item.name||''}</span>
                   <span style={{color:'#64748b',fontSize:11}}>{d.item.color}</span>
                   <span style={{fontSize:10,color:'#475569'}}>·</span>
                   <span style={{cursor:'pointer',color:'#1e40af',textDecoration:'underline',fontFamily:'monospace',fontWeight:600}} onClick={()=>{
