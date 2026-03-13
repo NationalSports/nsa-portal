@@ -12711,13 +12711,12 @@ export default function App(){
 
                   {/* Open SO / Job links */}
                   <div style={{display:'flex',gap:8,marginBottom:6}}>
-                    <div style={{fontSize:10,color:'#d97706',cursor:'pointer',textDecoration:'underline',fontWeight:700}} onClick={e=>{e.stopPropagation();setProdJobModal({...j})}}>📋 Production Sheet</div>
-                    <div style={{fontSize:10,color:'#7c3aed',cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={e=>{e.stopPropagation();
+                    <div style={{fontSize:10,color:'#d97706',cursor:'pointer',textDecoration:'underline',fontWeight:800}} onClick={e=>{e.stopPropagation();setProdJobModal({...j})}}>📋 Production Sheet</div>
+                    <div style={{fontSize:10,color:'#7c3aed',cursor:'pointer',textDecoration:'underline',fontWeight:800}} onClick={e=>{e.stopPropagation();
                       const jso=j.so;const jc=cust.find(c2=>c2.id===jso.customer_id);
                       const ji=safeJobs(jso).findIndex(jj=>jj.id===j.id);
                       setReturnToPage({page:'production',jobData:{...j}});setESOTab('jobs');setESOScrollJob(ji>=0?ji:null);setESO(jso);setESOC(jc);setPg('orders');
                     }}>🔍 Open Job Detail</div>
-                    <div style={{fontSize:10,color:'#2563eb',cursor:'pointer',textDecoration:'underline'}} onClick={e=>{e.stopPropagation();setReturnToPage({page:'production',jobData:{...j}});setESOTab(null);setESOScrollJob(null);setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so.customer_id));setPg('orders')}}>→ Open {j.soId}</div>
                   </div>
 
                   {/* Time Tracking — clock in/out for active jobs */}
@@ -13001,22 +13000,22 @@ export default function App(){
             </div>
           </div>
           <div className="modal-body" style={{padding:0}}>
-            {/* Mockup Preview — equal-size grid for multiple, large single */}
-            <div style={{background:'#0f172a',padding:24,borderBottom:'2px solid #334155',position:'relative'}}>
-              {mockupFiles.length===0?<div style={{textAlign:'center',padding:40,minHeight:200}}><div style={{fontSize:64,marginBottom:8}}>🎨</div><div style={{fontSize:14,color:'#94a3b8'}}>No mockup uploaded</div></div>
-              :<div style={{display:'grid',gridTemplateColumns:mockupFiles.length===1?'1fr':mockupFiles.length===2?'1fr 1fr':mockupFiles.length===3?'1fr 1fr 1fr':'1fr 1fr',gap:12}}>
-                {mockupFiles.map((f,i)=>{const u=typeof f==='string'?f:(f?.url||'');const isImg=_isImgUrl(u,f);const isPdf=_isPdfUrl(u,f);const pdfThumb=isPdf?_cloudinaryPdfThumb(u):null;const imgSrc=isImg?u:pdfThumb;
-                  return<div key={i} style={{borderRadius:12,background:'#1e293b',border:'2px solid #334155',overflow:'hidden',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',minHeight:mockupFiles.length===1?400:260}}
+            {/* Mockup Preview — only show actual images (no .ai files), equal-size grid */}
+            {(()=>{const dispMocks=mockupFiles.map((f,i)=>({f,i,u:typeof f==='string'?f:(f?.url||'')})).filter(({u,f})=>_isImgUrl(u,f)||_isPdfUrl(u,f));
+              return<div style={{background:'#0f172a',padding:24,borderBottom:'2px solid #334155',position:'relative'}}>
+              {dispMocks.length===0?<div style={{textAlign:'center',padding:40,minHeight:200}}><div style={{fontSize:64,marginBottom:8}}>🎨</div><div style={{fontSize:14,color:'#94a3b8'}}>No mockup images</div></div>
+              :<div style={{display:'grid',gridTemplateColumns:dispMocks.length===1?'1fr':dispMocks.length===2?'1fr 1fr':dispMocks.length===3?'1fr 1fr 1fr':'1fr 1fr',gap:12}}>
+                {dispMocks.map(({f,i,u})=>{const isImg=_isImgUrl(u,f);const isPdf=_isPdfUrl(u,f);const pdfThumb=isPdf?_cloudinaryPdfThumb(u):null;const imgSrc=isImg?u:pdfThumb;
+                  return<div key={i} style={{borderRadius:12,background:'#1e293b',border:'2px solid #334155',overflow:'hidden',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',minHeight:dispMocks.length===1?400:260}}
                     onClick={()=>{setProdLightboxIdx(i);setProdLightboxZoom(1);setProdJobLightbox(true)}}>
-                    {imgSrc?<img src={imgSrc} alt={'Mockup '+(i+1)} style={{width:'100%',height:'100%',objectFit:'contain',display:'block',padding:8}}/>
-                    :<div style={{textAlign:'center',padding:24}}><div style={{fontSize:48,marginBottom:8}}>📄</div><div style={{fontSize:13,fontWeight:700,color:'#93c5fd',wordBreak:'break-all'}}>{fileDisplayName(f)}</div></div>}
+                    <img src={imgSrc} alt={'Mockup '+(i+1)} style={{width:'100%',height:'100%',objectFit:'contain',display:'block',padding:8}}/>
                   </div>})}
               </div>}
-              {mockupFiles.length>0&&<div style={{textAlign:'right',marginTop:8}}>
+              {dispMocks.length>0&&<div style={{textAlign:'right',marginTop:8}}>
                 <span style={{background:'rgba(59,130,246,0.9)',color:'white',padding:'6px 14px',borderRadius:8,fontSize:12,fontWeight:700,cursor:'pointer'}}
                   onClick={()=>{setProdLightboxIdx(0);setProdLightboxZoom(1);setProdJobLightbox(true)}}>Click to Zoom</span>
               </div>}
-            </div>
+            </div>})()}
 
             {/* Production & Art Files — directly below mockups */}
             {(prodFiles.length>0||mockupFiles.length>0)&&<div style={{padding:16,borderBottom:'2px solid #e2e8f0',background:'#1e293b'}}>
