@@ -631,7 +631,7 @@ const _artExtraCols=new Set(['art_sizes','garment_colors','item_mockups']);
 // Columns that may not exist in so_jobs — stripped on retry
 const _jobExtraCols=new Set(['_art_ids','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at','coach_email_opened_at']);
 const _jobCols=['id','key','art_file_id','_art_ids','_draft','art_name','deco_type','positions','art_status','item_status','prod_status','total_units','fulfilled_units','split_from','created_at','assigned_machine','assigned_to','ship_method','items','_auto','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at','coach_email_opened_at'];
-const _custCols=['id','parent_id','name','alpha_tag','billing_address_line1','billing_address_line2','billing_city','billing_state','billing_zip','shipping_address_line1','shipping_address_line2','shipping_city','shipping_state','shipping_zip','adidas_ua_tier','catalog_markup','payment_terms','tax_rate','tax_exempt','primary_rep_id','notes','is_active','created_at','updated_at','alt_billing_addresses'];
+const _custCols=['id','parent_id','name','alpha_tag','billing_address_line1','billing_address_line2','billing_city','billing_state','billing_zip','shipping_address_line1','shipping_address_line2','shipping_city','shipping_state','shipping_zip','adidas_ua_tier','catalog_markup','payment_terms','tax_rate','tax_exempt','primary_rep_id','notes','is_active','created_at','updated_at','alt_billing_addresses','art_files'];
 const _vendCols=['id','name','vendor_type','api_provider','nsa_carries_inventory','click_automation','is_active','contact_email','contact_phone','rep_name','payment_terms','notes'];
 const _firmDateCols=['item_desc','date','approved'];
 const _issueCols=['id','status','description','priority','page','viewing','reported_by','role','timestamp','resolved_at','resolution'];
@@ -7347,6 +7347,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   const[editContact,setEditContact]=useState(null);const[custLocal,setCustLocal]=useState(initCust);
   const[showInvEmail,setShowInvEmail]=useState(false);const[invEmailMsg,setInvEmailMsg]=useState('');const[showPortal,setShowPortal]=useState(false);
   const[showActions,setShowActions]=useState(false);const[showStatement,setShowStatement]=useState(false);const[stmtEmail,setStmtEmail]=useState('');const[stmtMsg,setStmtMsg]=useState('');
+  const[custArtDetail,setCustArtDetail]=useState(null);
   const[subsCollapsed,setSubsCollapsed]=useState(false);
   // Promo state
   const[promoEdit,setPromoEdit]=useState(null);// null or {type,fixed_amount,spend_percentage,notes,id?}
@@ -7699,41 +7700,182 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       </div></div>}
     </div>})()}
 
-  {/* ARTWORK TAB — aggregates from SOs */}
+  {/* ARTWORK TAB — customer library + aggregated from SOs/Estimates */}
   {tab==='artwork'&&(()=>{
-    const custArt=[];
-    custSOs.forEach(so=>{
-      (so.art_files||[]).forEach(art=>{
-        custArt.push({...art,so_id:so.id,so_memo:so.memo||''});
-      });
-    });
-    custEsts.forEach(est=>{
-      (est.art_files||[]).forEach(art=>{
-        if(!custArt.some(a=>a.name===art.name&&a.deco_type===art.deco_type))
-          custArt.push({...art,est_id:est.id,est_memo:est.memo||''});
-      });
-    });
-    const ART_FILE_SC2={waiting_for_art:{bg:'#f1f5f9',c:'#64748b'},needs_approval:{bg:'#fef3c7',c:'#92400e'},approved:{bg:'#dcfce7',c:'#166534'}};
-    return<div className="card"><div className="card-header"><h2>Artwork Library</h2><span style={{fontSize:12,color:'#64748b'}}>{custArt.length} art group(s)</span></div>
-      <div className="card-body">{custArt.length===0?<div className="empty">No artwork found across orders</div>:
-        <div style={{display:'flex',flexDirection:'column',gap:8}}>
-          {custArt.map((art,i)=>{
-            const mockups=_filterDisplayable(art.mockup_files||art.files||[]);
-            const firstMockup=mockups[0];const imgUrl=firstMockup?(typeof firstMockup==='string'?firstMockup:firstMockup.url):'';
-            return<div key={art.id+'-'+i} style={{padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0',display:'flex',gap:12,alignItems:'center'}}>
-              {imgUrl&&_isImgUrl(imgUrl)?<img src={imgUrl} alt="" style={{width:48,height:48,borderRadius:6,objectFit:'cover',flexShrink:0}}/>:
-                <div style={{width:48,height:48,borderRadius:6,background:art.deco_type==='screen_print'?'#dbeafe':art.deco_type==='embroidery'?'#ede9fe':'#fef3c7',display:'flex',alignItems:'center',justifyContent:'center',fontSize:20,flexShrink:0}}>{art.deco_type==='screen_print'?'🎨':art.deco_type==='embroidery'?'🧵':'🔥'}</div>}
+    // Aggregate art: customer-level library + parent library + SO/Estimate art
+    const custOwnArt=(customer.art_files||[]).map(a=>({...a,_src:'library',_srcLabel:'Customer Library'}));
+    const parentCust2=customer.parent_id?allCustomers.find(c=>c.id===customer.parent_id):null;
+    const parentArt=parentCust2?(parentCust2.art_files||[]).map(a=>({...a,_src:'parent',_srcLabel:parentCust2.alpha_tag||parentCust2.name||'Parent'})):[];
+    const orderArt=[];
+    custSOs.forEach(so=>{(so.art_files||[]).forEach(art=>{orderArt.push({...art,_src:'so',_srcLabel:so.id+(so.memo?' — '+so.memo:''),_so_id:so.id,_so_memo:so.memo||''})})});
+    custEsts.forEach(est=>{(est.art_files||[]).forEach(art=>{if(!orderArt.some(a=>a.name===art.name&&a.deco_type===art.deco_type))orderArt.push({...art,_src:'est',_srcLabel:est.id+(est.memo?' — '+est.memo:''),_est_id:est.id,_est_memo:est.memo||''})})});
+    const allArt=[...custOwnArt,...parentArt,...orderArt];
+    // Group by art name+deco_type to find usage across orders
+    const artGroups={};allArt.forEach(a=>{const key=(a.name||'').toLowerCase()+'||'+(a.deco_type||'');if(!artGroups[key])artGroups[key]={art:a,instances:[]};artGroups[key].instances.push(a)});
+    const groups=Object.values(artGroups);
+    // Helper: save customer art
+    const saveCustArt=(newArtFiles)=>{const newCust={...customer,art_files:newArtFiles};setCustLocal(newCust);onEdit(newCust)};
+    const ownArt=customer.art_files||[];
+    const addCustArt=()=>{saveCustArt([...ownArt,{id:'caf'+Date.now(),name:'',deco_type:'screen_print',ink_colors:'',thread_colors:'',art_size:'',files:[],mockup_files:[],prod_files:[],notes:'',status:'waiting_for_art',uploaded:new Date().toLocaleDateString()}])};
+    const uCustArt=(i,k,v)=>{saveCustArt(ownArt.map((a,x)=>x===i?{...a,[k]:v}:a))};
+    const rmCustArt=(i)=>{saveCustArt(ownArt.filter((_,x)=>x!==i))};
+    return<div className="card"><div className="card-header"><h2>Artwork Library</h2><div style={{display:'flex',gap:6,alignItems:'center'}}><span style={{fontSize:12,color:'#64748b'}}>{groups.length} art group(s)</span><button className="btn btn-sm btn-primary" onClick={addCustArt}><Icon name="plus" size={12}/> Add Art</button></div></div>
+      <div className="card-body">
+      {/* Customer-level art editor (editable) */}
+      {ownArt.length>0&&<div style={{marginBottom:16}}>
+        <div style={{fontSize:11,fontWeight:700,color:'#2563eb',marginBottom:8,textTransform:'uppercase'}}>Customer Library</div>
+        <div style={{display:'flex',flexDirection:'column',gap:10}}>
+          {ownArt.map((art,i)=>{const mockups=(art.mockup_files||art.files||[]).filter(f=>f);const firstMockup=mockups[0];const imgUrl=firstMockup?(typeof firstMockup==='string'?firstMockup:firstMockup.url):'';
+            const afSt=art.status==='uploaded'?'needs_approval':art.status||'waiting_for_art';
+            return<div key={art.id||i} style={{padding:14,background:'#f8fafc',borderRadius:8,border:afSt==='approved'?'2px solid #22c55e':afSt==='needs_approval'?'2px solid #f59e0b':'1px solid #e2e8f0'}}>
+              <div style={{display:'flex',gap:12,alignItems:'flex-start'}}>
+                {/* Preview */}
+                {imgUrl&&_isImgUrl(imgUrl)?<img src={imgUrl} alt="" style={{width:72,height:72,borderRadius:8,objectFit:'cover',flexShrink:0,cursor:'pointer'}} onClick={()=>openFile(firstMockup)}/>:
+                  <div style={{width:72,height:72,borderRadius:8,background:art.deco_type==='screen_print'?'#dbeafe':art.deco_type==='embroidery'?'#ede9fe':'#fef3c7',display:'flex',alignItems:'center',justifyContent:'center',fontSize:28,flexShrink:0}}>{art.deco_type==='screen_print'?'🎨':art.deco_type==='embroidery'?'🧵':'🔥'}</div>}
+                <div style={{flex:1}}>
+                  <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:6}}>
+                    <input className="form-input" value={art.name} onChange={e=>uCustArt(i,'name',e.target.value)} placeholder="Art group name..." style={{fontWeight:700,fontSize:14,flex:1}}/>
+                    <select style={{padding:'2px 8px',borderRadius:10,fontSize:11,fontWeight:600,flexShrink:0,border:'1px solid #e2e8f0',background:(ART_FILE_SC[afSt]||ART_FILE_SC.waiting_for_art).bg,color:(ART_FILE_SC[afSt]||ART_FILE_SC.waiting_for_art).c,cursor:'pointer'}} value={afSt} onChange={e=>uCustArt(i,'status',e.target.value)}>
+                      <option value="waiting_for_art">Waiting for Art</option><option value="needs_approval">Needs Approval</option><option value="approved">Approved</option></select>
+                  </div>
+                  <div style={{marginBottom:6}}><span style={{fontSize:11,fontWeight:600,color:'#64748b',marginRight:6}}>Type:</span>
+                    <Bg options={[{value:'screen_print',label:'Screen Print'},{value:'embroidery',label:'Embroidery'},{value:'dtf',label:'DTF'}]} value={art.deco_type} onChange={v=>uCustArt(i,'deco_type',v)}/></div>
+                  <div style={{display:'flex',gap:8,marginBottom:6,flexWrap:'wrap'}}>
+                    {(art.deco_type==='screen_print'||art.deco_type==='dtf')&&<div style={{flex:1,minWidth:150}}><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Ink Colors (one per line)</label><textarea className="form-input" rows={2} value={art.ink_colors||''} onChange={e=>uCustArt(i,'ink_colors',e.target.value)} placeholder={"Navy PMS 289\nGold PMS 124\nWhite"} style={{fontSize:12,resize:'vertical'}}/>{art.ink_colors&&<div style={{fontSize:10,color:'#1e40af',marginTop:2}}>{art.ink_colors.split('\n').filter(l=>l.trim()).length} color(s)</div>}</div>}
+                    {art.deco_type==='embroidery'&&<div style={{flex:1,minWidth:150}}><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Thread Colors</label><input className="form-input" value={art.thread_colors||''} onChange={e=>uCustArt(i,'thread_colors',e.target.value)} placeholder="e.g. Navy 2767, White" style={{fontSize:12}}/></div>}
+                    <div style={{width:120}}><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Size</label><input className="form-input" value={art.art_size||''} onChange={e=>uCustArt(i,'art_size',e.target.value)} placeholder='e.g. 12" x 4"' style={{fontSize:12}}/></div>
+                  </div>
+                  {/* Mockup files */}
+                  <div style={{marginBottom:6}}>
+                    <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:4}}><span style={{fontSize:10,fontWeight:700,color:'#2563eb'}}>MOCKUP FILES</span></div>
+                    <div style={{display:'flex',gap:4,flexWrap:'wrap',marginBottom:4}}>{mockups.map((fn,fi)=>{const fnUrl=typeof fn==='string'?fn:(fn?.url||'');return<span key={fi} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'3px 8px',background:'#dbeafe',borderRadius:4,fontSize:11,cursor:isUrl(fnUrl)?'pointer':'default'}} onClick={()=>openFile(fn)}>
+                      <Icon name="file" size={10}/>{fileDisplayName(fn)}<button onClick={e=>{e.stopPropagation();const mf=[...mockups];mf.splice(fi,1);uCustArt(i,'mockup_files',mf);if(!art.mockup_files)uCustArt(i,'files',[])}} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:0}}><Icon name="x" size={10}/></button></span>})}</div>
+                    <div style={{border:'2px dashed #bfdbfe',borderRadius:6,padding:10,textAlign:'center',cursor:'pointer',background:'#eff6ff'}}
+                      onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps';inp.multiple=true;inp.onchange=async()=>{let acc=[...mockups];for(const f of inp.files){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-mockups');acc=[...acc,{url,name:f.name}];uCustArt(i,'mockup_files',acc);if(!art.mockup_files)uCustArt(i,'files',[]);nf(f.name+' uploaded')}catch(e){nf('Upload failed: '+e.message,'error')}}};inp.click()}}
+                      onDragOver={e=>{e.preventDefault();e.currentTarget.style.background='#dbeafe';e.currentTarget.style.borderColor='#3b82f6'}}
+                      onDragLeave={e=>{e.currentTarget.style.background='#eff6ff';e.currentTarget.style.borderColor='#bfdbfe'}}
+                      onDrop={async e=>{e.preventDefault();e.currentTarget.style.background='#eff6ff';e.currentTarget.style.borderColor='#bfdbfe';let acc=[...mockups];for(const f of Array.from(e.dataTransfer.files)){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-mockups');acc=[...acc,{url,name:f.name}];uCustArt(i,'mockup_files',acc);if(!art.mockup_files)uCustArt(i,'files',[]);nf(f.name+' uploaded')}catch(err){nf('Upload failed: '+err.message,'error')}}}}>
+                      <div style={{fontSize:11,color:'#2563eb',fontWeight:600}}>Drop mockup files or click to browse</div>
+                      <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>PDF, PNG, JPG, AI, EPS</div></div>
+                  </div>
+                  {/* Prod files */}
+                  <div style={{marginBottom:6}}>
+                    <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:4}}><span style={{fontSize:10,fontWeight:700,color:'#d97706'}}>PRODUCTION FILES</span><span style={{fontSize:9,color:'#94a3b8'}}>Internal only</span></div>
+                    <div style={{display:'flex',gap:4,flexWrap:'wrap',marginBottom:4}}>{(art.prod_files||[]).map((fn,fi)=>{const fnUrl=typeof fn==='string'?fn:(fn?.url||'');return<span key={fi} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'3px 8px',background:'#fef3c7',borderRadius:4,fontSize:11,cursor:isUrl(fnUrl)?'pointer':'default'}} onClick={()=>openFile(fn)}>
+                      <Icon name="file" size={10}/>{fileDisplayName(fn)}<button onClick={e=>{e.stopPropagation();uCustArt(i,'prod_files',(art.prod_files||[]).filter((_,x)=>x!==fi))}} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:0}}><Icon name="x" size={10}/></button></span>})}</div>
+                    <div style={{border:'2px dashed #fde68a',borderRadius:6,padding:10,textAlign:'center',cursor:'pointer',background:'#fffbeb'}}
+                      onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.pdf,.ai,.eps,.dst,.png,.jpg,.jpeg';inp.multiple=true;inp.onchange=async()=>{let acc=[...(art.prod_files||[])];for(const f of inp.files){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-production');acc=[...acc,{url,name:f.name}];uCustArt(i,'prod_files',acc);nf(f.name+' uploaded')}catch(e){nf('Upload failed: '+e.message,'error')}}};inp.click()}}
+                      onDragOver={e=>{e.preventDefault();e.currentTarget.style.background='#fef3c7';e.currentTarget.style.borderColor='#f59e0b'}}
+                      onDragLeave={e=>{e.currentTarget.style.background='#fffbeb';e.currentTarget.style.borderColor='#fde68a'}}
+                      onDrop={async e=>{e.preventDefault();e.currentTarget.style.background='#fffbeb';e.currentTarget.style.borderColor='#fde68a';let acc=[...(art.prod_files||[])];for(const f of Array.from(e.dataTransfer.files)){nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-production');acc=[...acc,{url,name:f.name}];uCustArt(i,'prod_files',acc);nf(f.name+' uploaded')}catch(err){nf('Upload failed: '+err.message,'error')}}}}>
+                      <div style={{fontSize:11,color:'#d97706',fontWeight:600}}>Drop production files or click to browse</div>
+                      <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>DST, AI seps, PDF, PNG, JPG</div></div>
+                  </div>
+                  <input className="form-input" value={art.notes||''} onChange={e=>uCustArt(i,'notes',e.target.value)} placeholder="Notes..." style={{fontSize:12}}/>
+                </div>
+                <div style={{display:'flex',flexDirection:'column',gap:4,flexShrink:0}}>
+                  <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>rmCustArt(i)}><Icon name="trash" size={10}/></button>
+                </div>
+              </div>
+            </div>})}
+        </div>
+      </div>}
+      {/* Parent library (read-only) */}
+      {parentArt.length>0&&<div style={{marginBottom:16}}>
+        <div style={{fontSize:11,fontWeight:700,color:'#7c3aed',marginBottom:8,textTransform:'uppercase'}}>From {parentCust2?.alpha_tag||parentCust2?.name||'Parent'}</div>
+        <div style={{display:'flex',flexDirection:'column',gap:6}}>
+          {parentArt.map((art,i)=>{const mockups=(art.mockup_files||art.files||[]).filter(f=>f);const firstMockup=mockups[0];const imgUrl=firstMockup?(typeof firstMockup==='string'?firstMockup:firstMockup.url):'';
+            return<div key={'p'+i} style={{padding:10,background:'#faf5ff',borderRadius:8,border:'1px solid #ede9fe',display:'flex',gap:10,alignItems:'center',cursor:'pointer'}} onClick={()=>setCustArtDetail(art)}>
+              {imgUrl&&_isImgUrl(imgUrl)?<img src={imgUrl} alt="" style={{width:56,height:56,borderRadius:6,objectFit:'cover',flexShrink:0}}/>:
+                <div style={{width:56,height:56,borderRadius:6,background:art.deco_type==='screen_print'?'#dbeafe':art.deco_type==='embroidery'?'#ede9fe':'#fef3c7',display:'flex',alignItems:'center',justifyContent:'center',fontSize:22,flexShrink:0}}>{art.deco_type==='screen_print'?'🎨':art.deco_type==='embroidery'?'🧵':'🔥'}</div>}
               <div style={{flex:1}}>
                 <div style={{fontWeight:700,fontSize:13}}>{art.name||'Untitled'}</div>
-                <div style={{fontSize:11,color:'#64748b'}}>{(art.deco_type||'').replace(/_/g,' ')}{art.ink_colors?' · '+art.ink_colors.split('\n').filter(l=>l.trim()).length+' color(s)':''}{art.thread_colors?' · Thread: '+art.thread_colors:''}{art.art_size?' · '+art.art_size:''}</div>
-                <div style={{fontSize:10,color:'#94a3b8',marginTop:2}}>{art.so_id?'SO: '+art.so_id:art.est_id?'EST: '+art.est_id:''}{art.so_memo?' — '+art.so_memo:art.est_memo?' — '+art.est_memo:''}</div>
+                <div style={{fontSize:11,color:'#64748b'}}>{(art.deco_type||'').replace(/_/g,' ')}{art.ink_colors?' · '+art.ink_colors.split('\n').filter(l=>l.trim()).length+' color(s)':''}{art.art_size?' · '+art.art_size:''}</div>
+                <div style={{fontSize:10,color:'#7c3aed'}}>From {parentCust2?.alpha_tag||parentCust2?.name}</div>
               </div>
-              <span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:(ART_FILE_SC2[art.status]||ART_FILE_SC2.waiting_for_art).bg,color:(ART_FILE_SC2[art.status]||ART_FILE_SC2.waiting_for_art).c}}>{(art.status||'waiting_for_art').replace(/_/g,' ')}</span>
+              <span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:(ART_FILE_SC[art.status]||ART_FILE_SC.waiting_for_art).bg,color:(ART_FILE_SC[art.status]||ART_FILE_SC.waiting_for_art).c}}>{(art.status||'waiting_for_art').replace(/_/g,' ')}</span>
               {mockups.length>0&&<span style={{fontSize:10,color:'#2563eb'}}>{mockups.length} file(s)</span>}
             </div>})}
-        </div>}
+        </div>
+      </div>}
+      {/* Order art (from SOs/Estimates) */}
+      {orderArt.length>0&&<div>
+        <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:8,textTransform:'uppercase'}}>From Orders</div>
+        <div style={{display:'flex',flexDirection:'column',gap:6}}>
+          {orderArt.map((art,i)=>{const mockups=(art.mockup_files||art.files||[]).filter(f=>f);const firstMockup=mockups[0];const imgUrl=firstMockup?(typeof firstMockup==='string'?firstMockup:firstMockup.url):'';
+            // Find all orders using this art
+            const usedOnSOs=[];custSOs.forEach(so=>{(so.art_files||[]).forEach(a=>{if(a.name===art.name&&a.deco_type===art.deco_type){const items=[];(so.items||[]).forEach((it,ii)=>{(it.decorations||[]).forEach(d=>{if(d.art_file_id===a.id)items.push({sku:it.sku,name:it.name,position:d.position,deco_type:d.deco_type||a.deco_type})})});usedOnSOs.push({so_id:so.id,memo:so.memo,status:so.status,items})}})});
+            // Collect all mockup versions across orders
+            const allMockups=[];const seen=new Set();
+            artGroups[(art.name||'').toLowerCase()+'||'+(art.deco_type||'')]?.instances.forEach(inst=>{(inst.mockup_files||inst.files||[]).filter(f=>f).forEach(f=>{const url=typeof f==='string'?f:(f?.url||'');if(url&&!seen.has(url)){seen.add(url);allMockups.push({file:f,url,src:inst._srcLabel})}})});
+            return<div key={'o'+i} style={{padding:10,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0',cursor:'pointer'}} onClick={()=>setCustArtDetail({...art,_usedOnSOs:usedOnSOs,_allMockups:allMockups})}>
+              <div style={{display:'flex',gap:10,alignItems:'center'}}>
+                {imgUrl&&_isImgUrl(imgUrl)?<img src={imgUrl} alt="" style={{width:56,height:56,borderRadius:6,objectFit:'cover',flexShrink:0}}/>:
+                  <div style={{width:56,height:56,borderRadius:6,background:art.deco_type==='screen_print'?'#dbeafe':art.deco_type==='embroidery'?'#ede9fe':'#fef3c7',display:'flex',alignItems:'center',justifyContent:'center',fontSize:22,flexShrink:0}}>{art.deco_type==='screen_print'?'🎨':art.deco_type==='embroidery'?'🧵':'🔥'}</div>}
+                <div style={{flex:1}}>
+                  <div style={{fontWeight:700,fontSize:13}}>{art.name||'Untitled'}</div>
+                  <div style={{fontSize:11,color:'#64748b'}}>{(art.deco_type||'').replace(/_/g,' ')}{art.ink_colors?' · '+art.ink_colors.split('\n').filter(l=>l.trim()).length+' color(s)':''}{art.thread_colors?' · '+art.thread_colors:''}{art.art_size?' · '+art.art_size:''}</div>
+                  <div style={{fontSize:10,color:'#94a3b8',marginTop:2}}>{art._srcLabel}</div>
+                </div>
+                <div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:4}}>
+                  <span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:(ART_FILE_SC[art.status]||ART_FILE_SC.waiting_for_art).bg,color:(ART_FILE_SC[art.status]||ART_FILE_SC.waiting_for_art).c}}>{(art.status||'waiting_for_art').replace(/_/g,' ')}</span>
+                  {allMockups.length>0&&<span style={{fontSize:10,color:'#2563eb'}}>{allMockups.length} file(s)</span>}
+                  {usedOnSOs.length>0&&<span style={{fontSize:10,color:'#64748b'}}>{usedOnSOs.length} order(s)</span>}
+                </div>
+              </div>
+            </div>})}
+        </div>
+      </div>}
+      {allArt.length===0&&<div className="empty">No artwork found. Click "Add Art" to create art groups for this customer.</div>}
       </div>
     </div>})()}
+  {/* ART DETAIL MODAL */}
+  {custArtDetail&&(()=>{const art=custArtDetail;const allMockups=art._allMockups||[];const usedOnSOs=art._usedOnSOs||[];
+    // If no precomputed data, compute it
+    const mockups=allMockups.length>0?allMockups:(art.mockup_files||art.files||[]).filter(f=>f).map(f=>({file:f,url:typeof f==='string'?f:(f?.url||''),src:art._srcLabel||''}));
+    return<div className="modal-overlay" onClick={()=>setCustArtDetail(null)}><div className="modal" style={{maxWidth:700,maxHeight:'90vh',overflow:'auto'}} onClick={e=>e.stopPropagation()}>
+      <div className="modal-header"><h2>{art.name||'Untitled'}</h2><button className="modal-close" onClick={()=>setCustArtDetail(null)}>x</button></div>
+      <div className="modal-body">
+        {/* Art details */}
+        <div style={{display:'flex',gap:12,marginBottom:16,padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0',flexWrap:'wrap'}}>
+          <div><span style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Type</span><div style={{fontSize:13,fontWeight:600}}>{(art.deco_type||'').replace(/_/g,' ')||'—'}</div></div>
+          {art.art_size&&<div><span style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Size</span><div style={{fontSize:13,fontWeight:600}}>{art.art_size}</div></div>}
+          {art.ink_colors&&<div><span style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Colors</span><div style={{fontSize:12}}>{art.ink_colors.split('\n').filter(l=>l.trim()).map((c,ci)=><div key={ci} style={{fontWeight:600}}>{c.trim()}</div>)}</div></div>}
+          {art.thread_colors&&<div><span style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Thread</span><div style={{fontSize:13,fontWeight:600}}>{art.thread_colors}</div></div>}
+          <div><span style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Status</span><div><span style={{padding:'2px 8px',borderRadius:10,fontSize:11,fontWeight:600,background:(ART_FILE_SC[art.status]||ART_FILE_SC.waiting_for_art).bg,color:(ART_FILE_SC[art.status]||ART_FILE_SC.waiting_for_art).c}}>{(art.status||'waiting_for_art').replace(/_/g,' ')}</span></div></div>
+        </div>
+        {/* All mockup versions */}
+        {mockups.length>0&&<div style={{marginBottom:16}}>
+          <div style={{fontSize:12,fontWeight:700,color:'#1e40af',marginBottom:8}}>Mockup Files ({mockups.length})</div>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(140px,1fr))',gap:8}}>
+            {mockups.map((m,mi)=>{const url=m.url;return<div key={mi} style={{borderRadius:8,border:'1px solid #e2e8f0',overflow:'hidden',background:'white',cursor:'pointer'}} onClick={()=>openFile(m.file||url)}>
+              {_isImgUrl(url)?<img src={url} alt="" style={{width:'100%',height:120,objectFit:'contain',display:'block',background:'#f8fafc'}}/>
+              :_isPdfUrl(url)?<div style={{height:120,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',background:'#f8fafc'}}>{_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt="" style={{maxHeight:100,objectFit:'contain'}} onError={e=>{e.target.style.display='none'}}/>:<span style={{fontSize:32}}>PDF</span>}</div>
+              :<div style={{height:120,display:'flex',alignItems:'center',justifyContent:'center',background:'#f8fafc',fontSize:28}}>📄</div>}
+              <div style={{padding:'4px 6px',fontSize:9,color:'#64748b',borderTop:'1px solid #f1f5f9'}}>{fileDisplayName(m.file||url)}<br/><span style={{color:'#94a3b8'}}>{m.src}</span></div>
+            </div>})}
+          </div>
+        </div>}
+        {/* Jobs / orders that used this art */}
+        {usedOnSOs.length>0&&<div>
+          <div style={{fontSize:12,fontWeight:700,color:'#1e40af',marginBottom:8}}>Used on {usedOnSOs.length} Order(s)</div>
+          <div style={{display:'flex',flexDirection:'column',gap:6}}>
+            {usedOnSOs.map((u,ui)=><div key={ui} style={{padding:10,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0'}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4}}>
+                <div><span style={{fontWeight:700,fontSize:13,color:'#1e40af',cursor:'pointer',textDecoration:'underline'}} onClick={()=>{setCustArtDetail(null);onOpenSO(u.so_id)}}>{u.so_id}</span><span style={{fontSize:11,color:'#64748b',marginLeft:6}}>{u.memo}</span></div>
+                <span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:u.status==='complete'?'#dcfce7':'#dbeafe',color:u.status==='complete'?'#166534':'#1e40af'}}>{(u.status||'open').replace(/_/g,' ')}</span>
+              </div>
+              {u.items.length>0&&<div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
+                {u.items.map((it,ii)=><span key={ii} style={{fontSize:10,padding:'2px 6px',background:'#e2e8f0',borderRadius:4,color:'#475569'}}>{it.sku||it.name} · {(it.deco_type||art.deco_type||'').replace(/_/g,' ')} · {it.position||'—'}</span>)}
+              </div>}
+            </div>)}
+          </div>
+        </div>}
+        {usedOnSOs.length===0&&art._src==='library'&&<div style={{fontSize:11,color:'#94a3b8',fontStyle:'italic'}}>Not yet used on any orders</div>}
+        {art.notes&&<div style={{marginTop:12,fontSize:12,color:'#64748b',padding:8,background:'#f1f5f9',borderRadius:6}}>Notes: {art.notes}</div>}
+      </div>
+      <div className="modal-footer"><button className="btn btn-secondary" onClick={()=>setCustArtDetail(null)}>Close</button></div>
+    </div></div>})()}
   {tab==='reporting'&&<div className="card"><div className="card-header"><h2>Reporting</h2><div style={{display:'flex',gap:4}}>{[['thisyear','This Year'],['lastyear','Last Year'],['rolling','Rolling 12'],['alltime','All']].map(([v,l])=><button key={v} className={`btn btn-sm ${rR===v?'btn-primary':'btn-secondary'}`} onClick={()=>setRR(v)}>{l}</button>)}</div></div>
     <div className="card-body"><div className="stats-row"><div className="stat-card"><div className="stat-label">Revenue</div><div className="stat-value">{rR==='thisyear'?'$15,600':'$32,600'}</div></div><div className="stat-card"><div className="stat-label">Orders</div><div className="stat-value">{rR==='thisyear'?'4':'8'}</div></div><div className="stat-card"><div className="stat-label">Avg Order</div><div className="stat-value">{rR==='thisyear'?'$3,900':'$4,075'}</div></div></div></div></div>}
 
