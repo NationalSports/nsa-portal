@@ -2401,6 +2401,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const markDirty=()=>setDirty(true);const[saved,setSaved]=useState(!!order.customer_id);const[showSend,setShowSend]=useState(false);const[showActionsDD,setShowActionsDD]=useState(false);const[showPick,setShowPick]=useState(false);const[pickId,setPickId]=useState(()=>{let max=4000;(allOrders||[]).concat([order]).forEach(so=>safeItems(so).forEach(it=>safePicks(it).forEach(pk=>{const m=parseInt((pk.pick_id||'').replace('IF-',''))||0;if(m>max)max=m})));return'IF-'+String(max+1)});const[showPO,setShowPO]=useState(null);const[poCounter,setPOCounter]=useState(()=>{let max=3000;(allOrders||[]).concat([order]).forEach(so=>safeItems(so).forEach(it=>safePOs(it).forEach(po=>{const m=parseInt((po.po_id||'').replace('PO-',''))||0;if(m>max)max=m})));return max+1});
     const[pickNotes,setPickNotes]=useState('');const[pickShipDest,setPickShipDest]=useState('in_house');const[pickDecoVendor,setPickDecoVendor]=useState('');const[pickShipAddr,setPickShipAddr]=useState('default');
     const[rosterSendModal,setRosterSendModal]=useState(null);// {idx,di,item,rosterUrl,linkData}
+    const[rosterUploadModal,setRosterUploadModal]=useState(null);// {idx,di,item,roster,sizedQtys}
+    const[rosterUploadDragOver,setRosterUploadDragOver]=useState(false);
     const[rsmTo,setRsmTo]=useState('');const[rsmCustom,setRsmCustom]=useState('');const[rsmName,setRsmName]=useState('Coach');const[rsmSending,setRsmSending]=useState(false);const[rsmCopied,setRsmCopied]=useState(false);
     React.useEffect(()=>{if(rosterSendModal){const contacts=(cust?.contacts||[]).filter(c=>c.email);setRsmTo(contacts.length>0?contacts[0].email:'');setRsmCustom('');setRsmName(contacts.length>0?(contacts[0].name||'Coach'):'Coach');setRsmSending(false);setRsmCopied(false)}},[rosterSendModal]);
     const[preexistingPO,setPreexistingPO]=useState(false);const[preexistingPOId,setPreexistingPOId]=useState('');const[poExcluded,setPOExcluded]=useState({});
@@ -3702,51 +3704,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <button className="btn btn-sm btn-secondary" style={{fontSize:11,background:deco.reversible?'#0891b2':'#ecfeff',borderColor:'#67e8f9',color:deco.reversible?'white':'#0891b2',fontWeight:deco.reversible?700:400}} onClick={()=>{uD(idx,di,'reversible',!deco.reversible);nf(deco.reversible?'Reversible OFF':'Reversible ON — qty doubled')}}>🔄 Reversible{deco.reversible?' ✓':''}</button>
               {!showRoster?<><button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>uD(idx,di,'_showRoster',true)}>📋 Assign Numbers ({filledNums>0?filledNums+'/':''}{qty} pcs)</button>
               <button className="btn btn-sm btn-secondary" style={{fontSize:11,background:'#ecfdf5',borderColor:'#6ee7b7',color:'#065f46'}}
-                onDragOver={e=>{e.preventDefault();e.currentTarget.style.background='#d1fae5';e.currentTarget.style.borderColor='#34d399'}}
-                onDragLeave={e=>{e.currentTarget.style.background='#ecfdf5';e.currentTarget.style.borderColor='#6ee7b7'}}
-                onDrop={e=>{e.preventDefault();e.currentTarget.style.background='#ecfdf5';e.currentTarget.style.borderColor='#6ee7b7';const f=e.dataTransfer.files[0];if(!f)return;const reader=new FileReader();reader.onload=ev=>{const lines=ev.target.result.split('\n').filter(l=>l.trim());if(lines.length<2){nf('CSV appears empty','error');return}
-                const hdr=lines[0].toLowerCase();const hasHeader=hdr.includes('size');const dataLines=hasHeader?lines.slice(1):lines;
-                const cols=lines[0].split(',');const numColIdx=cols.findIndex(c=>c.trim().toLowerCase()==='number'||c.trim().toLowerCase()==='#'||c.trim().toLowerCase()==='num');
-                const nameColIdx=cols.findIndex(c=>c.trim().toLowerCase()==='name'||c.trim().toLowerCase()==='player');
-                const nr={...roster};let numCt=0;const namesDeco=safeDecos(item).find((dd,ddi)=>dd.kind==='names'&&ddi!==di);const nn=namesDeco?{...(namesDeco.names||{})}:null;let nameCt=0;
-                dataLines.forEach(line=>{const parts=line.split(',').map(s=>s.trim());const sz=parts[0];if(!sz||!item.sizes[sz]||item.sizes[sz]<=0)return;
-                  const num=numColIdx>=1?parts[numColIdx]:parts[1]||'';
-                  const name=nameColIdx>=1?parts[nameColIdx]:(parts.length>=3?parts[2]:'');
-                  if(num){if(!nr[sz])nr[sz]=Array(item.sizes[sz]||0).fill('');const ei=nr[sz].findIndex(v=>!v);if(ei>=0){nr[sz][ei]=num;numCt++}}
-                  if(name&&nn!==null){if(!nn[sz])nn[sz]=Array(item.sizes[sz]||0).fill('');const ei=nn[sz].findIndex(v=>!v);if(ei>=0){nn[sz][ei]=name;nameCt++}}});
-                uD(idx,di,'roster',nr);if(nn!==null&&nameCt>0){const ndi=safeDecos(item).findIndex(dd=>dd.kind==='names');if(ndi>=0)uD(idx,ndi,'names',nn)}
-                nf(numCt+' numbers'+(nameCt>0?' + '+nameCt+' names':'')+' imported')};reader.readAsText(f)}}
-                onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.csv,.xlsx,.xls,.txt';inp.onchange=()=>{const f=inp.files[0];if(!f)return;const reader=new FileReader();reader.onload=ev=>{const lines=ev.target.result.split('\n').filter(l=>l.trim());if(lines.length<2){nf('CSV appears empty','error');return}
-                const hdr=lines[0].toLowerCase();const hasHeader=hdr.includes('size');const dataLines=hasHeader?lines.slice(1):lines;
-                const cols=lines[0].split(',');const numColIdx=cols.findIndex(c=>c.trim().toLowerCase()==='number'||c.trim().toLowerCase()==='#'||c.trim().toLowerCase()==='num');
-                const nameColIdx=cols.findIndex(c=>c.trim().toLowerCase()==='name'||c.trim().toLowerCase()==='player');
-                const nr={...roster};let numCt=0;const namesDeco=safeDecos(item).find((dd,ddi)=>dd.kind==='names'&&ddi!==di);const nn=namesDeco?{...(namesDeco.names||{})}:null;let nameCt=0;
-                dataLines.forEach(line=>{const parts=line.split(',').map(s=>s.trim());const sz=parts[0];if(!sz||!item.sizes[sz]||item.sizes[sz]<=0)return;
-                  const num=numColIdx>=1?parts[numColIdx]:parts[1]||'';
-                  const name=nameColIdx>=1?parts[nameColIdx]:(parts.length>=3?parts[2]:'');
-                  if(num){if(!nr[sz])nr[sz]=Array(item.sizes[sz]||0).fill('');const ei=nr[sz].findIndex(v=>!v);if(ei>=0){nr[sz][ei]=num;numCt++}}
-                  if(name&&nn!==null){if(!nn[sz])nn[sz]=Array(item.sizes[sz]||0).fill('');const ei=nn[sz].findIndex(v=>!v);if(ei>=0){nn[sz][ei]=name;nameCt++}}});
-                uD(idx,di,'roster',nr);if(nn!==null&&nameCt>0){const ndi=safeDecos(item).findIndex(dd=>dd.kind==='names');if(ndi>=0)uD(idx,ndi,'names',nn)}
-                nf(numCt+' numbers'+(nameCt>0?' + '+nameCt+' names':'')+' imported')};reader.readAsText(f)};inp.click()}}>📤 Upload Roster</button>
+                onClick={()=>setRosterUploadModal({idx,di,item,roster,sizedQtys})}>📤 Upload Roster</button>
               <button className="btn btn-sm btn-secondary" style={{fontSize:11,background:'#eff6ff',borderColor:'#93c5fd',color:'#1e40af'}} onClick={()=>{let csv='Size,Number,Name\n';sizedQtys.forEach(([sz,sqty])=>{for(let i=0;i<sqty;i++)csv+=sz+',,\n'});const blob=new Blob([csv],{type:'text/csv'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='roster_template_'+(item.sku||'item')+'.csv';a.click();URL.revokeObjectURL(url)}}>📥 Download Template</button>
               <button className="btn btn-sm btn-secondary" style={{fontSize:11,background:'#fef3c7',borderColor:'#fbbf24',color:'#92400e'}} onClick={()=>{
                 const linkData=btoa(JSON.stringify({so:o.id,sku:item.sku||'CUSTOM',item:item.name||'Item',color:item.color||'',sizes:item.sizes,rep_email:cuEmail,rep_name:cu?.name||'',coach_name:'Coach'}));
                 setRosterSendModal({idx,di,item,linkData,rosterUrl:window.location.origin+'/roster.html?d='+linkData})}}>📧 Send to Coach</button></>
 
-              :<div style={{marginTop:6,padding:10,background:'#f8fafc',borderRadius:6,border:'1px dashed #d1d5db'}}
-                onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#3b82f6';e.currentTarget.style.background='#eff6ff'}}
-                onDragLeave={e=>{e.currentTarget.style.borderColor='#d1d5db';e.currentTarget.style.background='#f8fafc'}}
-                onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor='#d1d5db';e.currentTarget.style.background='#f8fafc';
-                  const f=e.dataTransfer.files[0];if(!f)return;const reader=new FileReader();
-                  reader.onload=ev=>{const lines=ev.target.result.split('\n').filter(l=>l.trim());
-                    const nr={...roster};let ct=0;
-                    lines.forEach(line=>{if(line.toLowerCase().startsWith('size'))return;
-                      const parts=line.split(',').map(s=>s.trim());const[sz,num]=parts;
-                      if(sz&&num&&item.sizes[sz]>0){if(!nr[sz])nr[sz]=Array(item.sizes[sz]||0).fill('');
-                        const ei=nr[sz].findIndex(v=>!v);if(ei>=0){nr[sz][ei]=num;ct++}}});
-                    uD(idx,di,'roster',nr);nf(ct+' numbers imported')};reader.readAsText(f)}}>
+              :<div style={{marginTop:6,padding:10,background:'#f8fafc',borderRadius:6,border:'1px dashed #d1d5db'}}>
                 <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}}>
-                  <div style={{fontSize:11,fontWeight:600,color:'#64748b'}}>Number Assignment <span style={{fontWeight:400,fontSize:10}}>(drag CSV here)</span></div>
+                  <div style={{fontSize:11,fontWeight:600,color:'#64748b'}}>Number Assignment</div>
                   <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
                     {/* Copy numbers from other item's number deco */}
                     {(()=>{const otherNumDecos=[];safeItems(o).forEach((oit,oi)=>{if(oi===idx)return;safeDecos(oit).forEach(od=>{if(od.kind==='numbers'&&od.roster&&Object.values(od.roster).flat().some(v=>v)){otherNumDecos.push({itemIdx:oi,sku:oit.sku,name:oit.name,position:od.position,roster:od.roster})}})});
@@ -3756,18 +3722,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                       </select>})()}
                     <button className="btn btn-sm btn-secondary" style={{fontSize:9,background:'#dbeafe',borderColor:'#93c5fd',color:'#1e40af'}} onClick={()=>autoFillNums('bball')}>🏀 BBall #s</button>
                     <button className="btn btn-sm btn-secondary" style={{fontSize:9,background:'#dcfce7',borderColor:'#86efac',color:'#166534'}} onClick={()=>autoFillNums('sequential')}>🔢 Small→Large</button>
-                    <button className="btn btn-sm btn-secondary" style={{fontSize:9,background:'#ecfdf5',borderColor:'#6ee7b7',color:'#065f46'}} onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.csv,.xlsx,.xls,.txt';inp.onchange=()=>{const f=inp.files[0];if(!f)return;const reader=new FileReader();reader.onload=ev=>{const lines=ev.target.result.split('\n').filter(l=>l.trim());if(lines.length<2){nf('CSV appears empty','error');return}
-                      const hdr=lines[0].toLowerCase();const hasHeader=hdr.includes('size');const dataLines=hasHeader?lines.slice(1):lines;
-                      const cols=lines[0].split(',');const numColIdx=cols.findIndex(c=>c.trim().toLowerCase()==='number'||c.trim().toLowerCase()==='#'||c.trim().toLowerCase()==='num');
-                      const nameColIdx=cols.findIndex(c=>c.trim().toLowerCase()==='name'||c.trim().toLowerCase()==='player');
-                      const nr={...roster};let numCt=0;const namesDeco=safeDecos(item).find((dd,ddi)=>dd.kind==='names'&&ddi!==di);const nn=namesDeco?{...(namesDeco.names||{})}:null;let nameCt=0;
-                      dataLines.forEach(line=>{const parts=line.split(',').map(s=>s.trim());const sz=parts[0];if(!sz||!item.sizes[sz]||item.sizes[sz]<=0)return;
-                        const num=numColIdx>=1?parts[numColIdx]:parts[1]||'';
-                        const name=nameColIdx>=1?parts[nameColIdx]:(parts.length>=3?parts[2]:'');
-                        if(num){if(!nr[sz])nr[sz]=Array(item.sizes[sz]||0).fill('');const ei=nr[sz].findIndex(v=>!v);if(ei>=0){nr[sz][ei]=num;numCt++}}
-                        if(name&&nn!==null){if(!nn[sz])nn[sz]=Array(item.sizes[sz]||0).fill('');const ei=nn[sz].findIndex(v=>!v);if(ei>=0){nn[sz][ei]=name;nameCt++}}});
-                      uD(idx,di,'roster',nr);if(nn!==null&&nameCt>0){const ndi=safeDecos(item).findIndex(dd=>dd.kind==='names');if(ndi>=0)uD(idx,ndi,'names',nn)}
-                      nf(numCt+' numbers'+(nameCt>0?' + '+nameCt+' names':'')+' imported')};reader.readAsText(f)};inp.click()}}>📤 Upload Roster</button>
+                    <button className="btn btn-sm btn-secondary" style={{fontSize:9,background:'#ecfdf5',borderColor:'#6ee7b7',color:'#065f46'}} onClick={()=>setRosterUploadModal({idx,di,item,roster,sizedQtys})}>📤 Upload Roster</button>
                     <button className="btn btn-sm btn-secondary" style={{fontSize:9,background:'#fef3c7',borderColor:'#fbbf24',color:'#92400e'}} onClick={()=>{
                       const linkData=btoa(JSON.stringify({so:o.id,sku:item.sku||'CUSTOM',item:item.name||'Item',color:item.color||'',sizes:item.sizes,rep_email:cuEmail,rep_name:cu?.name||'',coach_name:'Coach'}));
                       setRosterSendModal({idx,di,item,linkData,rosterUrl:window.location.origin+'/roster.html?d='+linkData})}}>📧 Send to Coach</button>
@@ -4855,6 +4810,50 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           {_class:'totals-row',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Total</strong>',style:'text-align:right'},{value:'<strong style="font-size:14px">$'+total.toFixed(2)+'</strong>',style:'text-align:right'}]}]}],
         footer:isE?'This estimate is valid for 30 days. Prices subject to change. '+NSA.depositTerms:NSA.terms});
     }} repUser={cu} onSend={()=>{if(isE&&o.status!=='approved'&&o.status!=='converted'){sv('status','sent');sv('email_status','sent');onSave({...o,status:'sent',email_status:'sent'});nf('Estimate sent!')}else{sv('email_status','sent');onSave({...o,email_status:'sent'});nf((isE?'Estimate':'Sales Order')+' sent!')}}}/>
+
+    {/* ROSTER UPLOAD DRAG & DROP MODAL */}
+    {rosterUploadModal&&(()=>{const rum=rosterUploadModal;
+      const processFile=(f)=>{if(!f)return;const reader=new FileReader();reader.onload=ev=>{const lines=ev.target.result.split('\n').filter(l=>l.trim());if(lines.length<2){nf('CSV appears empty','error');return}
+        const hdr=lines[0].toLowerCase();const hasHeader=hdr.includes('size');const dataLines=hasHeader?lines.slice(1):lines;
+        const cols=lines[0].split(',');const numColIdx=cols.findIndex(c=>c.trim().toLowerCase()==='number'||c.trim().toLowerCase()==='#'||c.trim().toLowerCase()==='num');
+        const nameColIdx=cols.findIndex(c=>c.trim().toLowerCase()==='name'||c.trim().toLowerCase()==='player');
+        const nr={...(rum.roster||{})};let numCt=0;const namesDeco=safeDecos(rum.item).find((dd,ddi)=>dd.kind==='names'&&ddi!==rum.di);const nn=namesDeco?{...(namesDeco.names||{})}:null;let nameCt=0;
+        dataLines.forEach(line=>{const parts=line.split(',').map(s=>s.trim());const sz=parts[0];if(!sz||!rum.item.sizes[sz]||rum.item.sizes[sz]<=0)return;
+          const num=numColIdx>=1?parts[numColIdx]:parts[1]||'';
+          const name=nameColIdx>=1?parts[nameColIdx]:(parts.length>=3?parts[2]:'');
+          if(num){if(!nr[sz])nr[sz]=Array(rum.item.sizes[sz]||0).fill('');const ei=nr[sz].findIndex(v=>!v);if(ei>=0){nr[sz][ei]=num;numCt++}}
+          if(name&&nn!==null){if(!nn[sz])nn[sz]=Array(rum.item.sizes[sz]||0).fill('');const ei=nn[sz].findIndex(v=>!v);if(ei>=0){nn[sz][ei]=name;nameCt++}}});
+        uD(rum.idx,rum.di,'roster',nr);if(nn!==null&&nameCt>0){const ndi=safeDecos(rum.item).findIndex(dd=>dd.kind==='names');if(ndi>=0)uD(rum.idx,ndi,'names',nn)}
+        nf(numCt+' numbers'+(nameCt>0?' + '+nameCt+' names':'')+' imported');setRosterUploadModal(null);setRosterUploadDragOver(false)};reader.readAsText(f)};
+      return<div className="modal-overlay" onClick={()=>{setRosterUploadModal(null);setRosterUploadDragOver(false)}}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:520}}>
+        <div className="modal-header"><h2>📤 Upload Roster</h2><button className="modal-close" onClick={()=>{setRosterUploadModal(null);setRosterUploadDragOver(false)}}>x</button></div>
+        <div className="modal-body">
+          <div style={{padding:10,background:'#f8fafc',borderRadius:6,marginBottom:16,fontSize:12}}>
+            <strong>{rum.item.sku||'Item'}</strong> · {rum.item.name||''} · {rum.item.color||''} · {rum.sizedQtys.map(([sz,q])=>sz+'('+q+')').join(', ')}
+          </div>
+          <div
+            onDragOver={e=>{e.preventDefault();setRosterUploadDragOver(true)}}
+            onDragLeave={e=>{e.preventDefault();setRosterUploadDragOver(false)}}
+            onDrop={e=>{e.preventDefault();setRosterUploadDragOver(false);processFile(e.dataTransfer.files[0])}}
+            onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.csv,.xlsx,.xls,.txt';inp.onchange=()=>processFile(inp.files[0]);inp.click()}}
+            style={{border:'2px dashed '+(rosterUploadDragOver?'#2563eb':'#cbd5e1'),borderRadius:12,padding:'40px 20px',textAlign:'center',cursor:'pointer',
+              background:rosterUploadDragOver?'#eff6ff':'#f8fafc',transition:'all 0.2s ease'}}>
+            <div style={{fontSize:36,marginBottom:8}}>{rosterUploadDragOver?'📥':'📂'}</div>
+            <div style={{fontSize:14,fontWeight:600,color:rosterUploadDragOver?'#2563eb':'#334155',marginBottom:4}}>
+              {rosterUploadDragOver?'Drop file here':'Drag & drop your roster file here'}
+            </div>
+            <div style={{fontSize:12,color:'#94a3b8',marginBottom:12}}>or click to browse</div>
+            <div style={{fontSize:11,color:'#94a3b8'}}>Accepts .csv, .xlsx, .xls, .txt</div>
+          </div>
+          <div style={{marginTop:16,padding:10,background:'#f0fdf4',borderRadius:6,border:'1px solid #bbf7d0',fontSize:11,color:'#166534'}}>
+            <strong>Expected format:</strong> Size, Number, Name (one per line)<br/>
+            <span style={{color:'#64748b'}}>Example: M,12,John Smith</span>
+          </div>
+        </div>
+        <div className="modal-footer">
+          <button className="btn btn-secondary" onClick={()=>{setRosterUploadModal(null);setRosterUploadDragOver(false)}}>Cancel</button>
+        </div>
+      </div></div>})()}
 
     {/* ROSTER SEND TO COACH MODAL */}
     {rosterSendModal&&(()=>{const rsm=rosterSendModal;const contacts=(cust?.contacts||[]).filter(c=>c.email);
