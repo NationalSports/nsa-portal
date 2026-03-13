@@ -3537,23 +3537,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             </div>
           </div>
         </div>
-        {/* SIZE AVAILABILITY DATES */}
-        {(()=>{const sa=item.size_availability||{};const hasAny=Object.keys(sa).length>0;const activeSizes=szs.filter(sz=>(item.sizes[sz]||0)>0);
-          if(activeSizes.length===0)return null;
-          return<div style={{padding:'4px 18px',borderBottom:'1px solid #f1f5f9'}}>
-            <label style={{display:'flex',alignItems:'center',gap:6,cursor:'pointer',fontSize:11,color:'#64748b'}}>
-              <input type="checkbox" checked={hasAny} onChange={e=>{if(e.target.checked){uI(idx,'size_availability',{[activeSizes[0]]:''});} else {uI(idx,'size_availability',{})}}}/>
-              <span style={{fontWeight:600}}>Some sizes not available until later?</span>
-            </label>
-            {hasAny&&<div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:6,padding:'8px 10px',background:'#fffbeb',borderRadius:6,border:'1px solid #fde68a'}}>
-              {activeSizes.map(sz=><div key={sz} style={{display:'flex',flexDirection:'column',gap:2,alignItems:'center'}}>
-                <span style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</span>
-                <input type="date" value={sa[sz]||''} onChange={e=>{const nsa={...sa};if(e.target.value){nsa[sz]=e.target.value}else{delete nsa[sz]}uI(idx,'size_availability',nsa)}}
-                  style={{fontSize:10,border:'1px solid #fbbf24',borderRadius:4,padding:'2px 4px',width:110,background:sa[sz]?'#fef3c7':'white'}}/>
-              </div>)}
-              <div style={{fontSize:10,color:'#92400e',alignSelf:'center',marginLeft:4}}>Leave blank for sizes available now</div>
-            </div>}
-          </div>})()}
         {/* FULFILLMENT LINES */}
         {isSO&&(item.pick_lines||[]).length>0&&<div style={{padding:'4px 18px',borderBottom:'1px solid #f1f5f9'}}>
           {safePicks(item).map((pk,pi)=>{const st=pk.status||'pick';
@@ -3846,10 +3829,24 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>addNumDeco(idx)}>#️⃣ + Numbers</button>
             <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>addNameDeco(idx)}>🏷️ + Names</button>
             <button className="btn btn-sm btn-secondary" style={{fontSize:11,background:'#faf5ff',borderColor:'#ddd6fe',color:'#7c3aed'}} onClick={()=>addOutsideDeco(idx)}>🎨 + Outside Deco</button>
+            {(()=>{const sa=item.size_availability||{};const hasAny=Object.keys(sa).length>0;const activeSizes=szs.filter(sz=>(item.sizes[sz]||0)>0);
+              if(activeSizes.length===0)return null;
+              return<button className="btn btn-sm btn-secondary" style={{fontSize:11,background:hasAny?'#fef3c7':'white',borderColor:hasAny?'#fbbf24':'#d1d5db',color:hasAny?'#92400e':'#64748b'}} onClick={()=>{if(!hasAny){uI(idx,'size_availability',{[activeSizes[0]]:''})}else{uI(idx,'_showAvail',!item._showAvail)}}}>⏳ Later Avail{hasAny?' ✓':''}</button>})()}
             {safeDecos(item).length===0&&!item.no_deco&&qty>0&&<button className="btn btn-sm" style={{background:'#fef3c7',color:'#92400e',border:'1px solid #f59e0b',fontSize:10}} onClick={()=>uI(idx,'no_deco',true)}>✓ No Deco (Blank)</button>}
             {item.no_deco&&<span style={{fontSize:10,padding:'3px 8px',borderRadius:4,background:'#f1f5f9',color:'#64748b',fontWeight:600,display:'flex',alignItems:'center',gap:4}}>🚫 No Decoration <button onClick={()=>uI(idx,'no_deco',false)} style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',fontSize:12,padding:0,marginLeft:2}}>✕</button></span>}
             {safeDecos(item).length===0&&!item.no_deco&&qty>0&&<span style={{fontSize:10,color:'#dc2626',fontWeight:600}}>⚠️ No deco assigned</span>}
           </div>
+          {(()=>{const sa=item.size_availability||{};const hasAny=Object.keys(sa).length>0;const activeSizes=szs.filter(sz=>(item.sizes[sz]||0)>0);
+            if(!hasAny||activeSizes.length===0)return null;
+            return<div style={{display:'flex',gap:6,flexWrap:'wrap',marginTop:6,padding:'6px 10px',background:'#fffbeb',borderRadius:6,border:'1px solid #fde68a',alignItems:'center'}}>
+              <span style={{fontSize:10,fontWeight:600,color:'#92400e'}}>⏳ Available:</span>
+              {activeSizes.map(sz=><div key={sz} style={{display:'flex',alignItems:'center',gap:3}}>
+                <span style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</span>
+                <input type="date" value={sa[sz]||''} onChange={e=>{const nsa={...sa};if(e.target.value){nsa[sz]=e.target.value}else{delete nsa[sz];if(Object.keys(nsa).length===0){uI(idx,'size_availability',{});return}}uI(idx,'size_availability',nsa)}}
+                  style={{fontSize:10,border:'1px solid #fbbf24',borderRadius:4,padding:'1px 3px',width:105,background:sa[sz]?'#fef3c7':'white'}}/>
+              </div>)}
+              <button onClick={()=>uI(idx,'size_availability',{})} style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',fontSize:11,padding:0,marginLeft:'auto'}}>✕ Clear</button>
+            </div>})()}
         </div>
       </div>)})}
     {/* ADD PRODUCT */}
