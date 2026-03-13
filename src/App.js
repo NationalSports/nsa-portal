@@ -1910,22 +1910,28 @@ const fetchOMGStores = async () => {
 
 const fetchOMGStoreDetail = async (saleResource, allIncluded) => {
   const saleId = saleResource.id;
+  const saleCode = saleResource.attributes?.sale_code || '';
   const saleData = { data: saleResource, included: allIncluded };
 
-  // Try multiple endpoint patterns for orders
+  // Try multiple endpoint patterns for orders (using both ID and sale_code)
   const orderEndpoints = [
     `/sales/${saleId}/orders?include=customer_info`,
     `/sales/${saleId}/orders`,
     `/orders?filter[sale_id]=${saleId}&include=customer_info`,
     `/orders?filter[sale_id]=${saleId}`,
     `/orders?sale_id=${saleId}`,
+    ...(saleCode ? [
+      `/orders?filter[sale_code]=${saleCode}`,
+      `/orders?sale_code=${saleCode}`,
+      `/orders?filter[sale]=${saleId}`,
+    ] : []),
   ];
   let orders = null;
   for (const ep of orderEndpoints) {
     try {
       orders = await omgApiCall(ep);
-      if (orders?.data?.length > 0) {
-        console.log(`[OMG] Sale ${saleId}: ${orders.data.length} orders via ${ep}`);
+      if (orders?.data) {
+        console.log(`[OMG] Sale ${saleId} (${saleCode}): ${orders.data.length} orders via ${ep}`);
         break;
       }
     } catch (e) {
@@ -1933,7 +1939,7 @@ const fetchOMGStoreDetail = async (saleResource, allIncluded) => {
     }
   }
   const orderList = orders?.data || [];
-  if (orderList.length === 0) console.warn(`[OMG] Sale ${saleId}: no orders found from any endpoint`);
+  if (orderList.length === 0) console.warn(`[OMG] Sale ${saleId} (${saleCode}): no orders from any endpoint`);
 
   // Try multiple endpoint patterns for order products
   const orderProducts = await Promise.all(
@@ -15456,7 +15462,7 @@ export default function App(){
       if(omgFilter.rep!=='all'&&s.rep_id!==omgFilter.rep)return false;
       if(omgFilter.status!=='all'&&s.status!==omgFilter.status)return false;
       if(omgFilter.search){const q=omgFilter.search.toLowerCase();const c=cust.find(x=>x.id===s.customer_id);
-        if(!(s.store_name+' '+s.id+' '+(c?.name||'')+' '+(c?.alpha_tag||'')).toLowerCase().includes(q))return false}
+        if(!(s.store_name+' '+s.id+' '+(c?.name||'')+' '+(c?.alpha_tag||'')+' '+(s._omg_sale_code||'')).toLowerCase().includes(q))return false}
       // Date range filter — based on open_date or close_date
       if(omgFilter.dateRange!=='all'){
         const days={'30d':30,'90d':90,'6m':180,'1y':365}[omgFilter.dateRange]||30;
@@ -15489,7 +15495,7 @@ export default function App(){
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
             <div>
               <div style={{fontSize:20,fontWeight:800}}>{s.store_name}</div>
-              <div style={{fontSize:13,color:'#64748b'}}>{c?.name} ({c?.alpha_tag}) · Rep: {rep?.name} · {s.id}{s._omg_sale_code&&<span> · Code: <b>{s._omg_sale_code}</b></span>}</div>
+              <div style={{fontSize:13,color:'#64748b'}}>{s._omg_sale_code&&<span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',marginRight:6}}>{s._omg_sale_code}</span>}{c?.name} ({c?.alpha_tag}) · Rep: {rep?.name} · {s.id}</div>
               {s._omg_id&&<div style={{fontSize:12,marginTop:2,display:'flex',gap:10}}>
                 <a href={`https://team.ordermygear.com/admin/sales/${s._omg_id}`} target="_blank" rel="noopener noreferrer" style={{color:'#2563eb',textDecoration:'none',fontWeight:600}}>🔗 OMG Admin</a>
                 {s.subdomain&&<a href={`https://${s.subdomain}.ordermygear.com`} target="_blank" rel="noopener noreferrer" style={{color:'#64748b',textDecoration:'none'}}>🌐 {s.subdomain}.ordermygear.com</a>}
@@ -15625,7 +15631,7 @@ export default function App(){
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:6}}>
                 <div>
                   <div style={{fontSize:14,fontWeight:800}}>{s.store_name}</div>
-                  <div style={{fontSize:11,color:'#64748b'}}>{c?.name} · {rep?.name?.split(' ')[0]}{s._omg_sale_code&&<span> · <b>{s._omg_sale_code}</b></span>}</div>
+                  <div style={{fontSize:11,color:'#64748b'}}>{s._omg_sale_code&&<span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',marginRight:4}}>{s._omg_sale_code}</span>}{c?.name} · {rep?.name?.split(' ')[0]}</div>
                   {s._omg_id&&<a href={`https://team.ordermygear.com/admin/sales/${s._omg_id}`} target="_blank" rel="noopener noreferrer" onClick={e=>e.stopPropagation()} style={{fontSize:10,color:'#2563eb',textDecoration:'none',fontWeight:600}}>🔗 OMG Admin</a>}
                 </div>
                 <span style={{padding:'2px 8px',borderRadius:8,fontSize:10,fontWeight:700,
