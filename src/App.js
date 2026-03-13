@@ -1805,83 +1805,106 @@ const omgApiCall = async (endpoint, options = {}, _retries = 0) => {
 };
 
 const fetchOMGStores = async () => {
-  // Fetch ALL pages of stores from OMG, then filter to relevant ones
+  // Fetch only relevant stores: open + recently closed (last 30 days)
+  // Uses API-level status filtering to avoid paginating through hundreds of old stores
   let allData = [], allIncluded = [];
 
-  // Page 1 — no pagination params (always works)
-  const firstResp = await omgApiCall('/sales?include=organization');
-  if (!firstResp?.data?.length) return firstResp;
-  allData = firstResp.data;
-  if (firstResp.included) allIncluded = firstResp.included;
-  const pageSize = firstResp.data.length;
-  console.log(`[OMG] Page 1: ${pageSize} stores. links:`, firstResp.links, 'meta:', firstResp.meta);
-
-  // If we got a full page, there are likely more — try pagination
-  if (pageSize >= 25) {
-    // Check for links.next first (standard JSON:API)
-    if (firstResp.links?.next) {
-      let nextUrl = firstResp.links.next;
-      while (nextUrl) {
-        try {
-          const ep = new URL(nextUrl).pathname.replace(/^\/v1/, '') + new URL(nextUrl).search;
-          const resp = await omgApiCall(ep);
-          if (!resp?.data?.length) break;
-          allData = allData.concat(resp.data);
-          if (resp.included) allIncluded = allIncluded.concat(resp.included);
-          nextUrl = resp.links?.next || null;
-        } catch { break; }
-      }
-    } else {
-      // No links.next — try manual pagination with different param formats
-      const formats = [
-        (p) => `/sales?include=organization&page[number]=${p}&page[size]=${pageSize}`,
-        (p) => `/sales?include=organization&page=${p}&per_page=${pageSize}`,
-        (p) => `/sales?include=organization&page=${p}`,
-        (p) => `/sales?include=organization&offset=${p * pageSize}&limit=${pageSize}`,
-      ];
-      for (const fmt of formats) {
-        try {
-          const testResp = await omgApiCall(fmt(2));
-          if (testResp?.data?.length && JSON.stringify(testResp.data[0]?.id) !== JSON.stringify(allData[0]?.id)) {
-            // This format works and returns different data — use it
-            allData = allData.concat(testResp.data);
-            if (testResp.included) allIncluded = allIncluded.concat(testResp.included);
-            console.log(`[OMG] Page 2 OK with: ${fmt(2)} (${testResp.data.length} stores)`);
-            let page = 3;
-            while (testResp.data.length >= pageSize && page < 20) {
-              try {
-                const resp = await omgApiCall(fmt(page));
-                if (!resp?.data?.length) break;
-                allData = allData.concat(resp.data);
-                if (resp.included) allIncluded = allIncluded.concat(resp.included);
-                if (resp.data.length < pageSize) break;
-                page++;
-              } catch { break; }
-            }
-            break;
-          }
-        } catch (e) {
-          console.warn(`[OMG] Pagination format failed: ${fmt(2)}`, e.message);
-          continue;
+  // Helper: fetch all pages for a given endpoint
+  const fetchAllPages = async (baseEndpoint) => {
+    const data = [], included = [];
+    const firstResp = await omgApiCall(baseEndpoint);
+    if (!firstResp?.data?.length) return { data, included };
+    data.push(...firstResp.data);
+    if (firstResp.included) included.push(...firstResp.included);
+    const pageSize = firstResp.data.length;
+    console.log(`[OMG] ${baseEndpoint} — page 1: ${pageSize} stores`);
+    // Paginate if we got a full page
+    if (pageSize >= 25) {
+      if (firstResp.links?.next) {
+        let nextUrl = firstResp.links.next;
+        while (nextUrl) {
+          try {
+            const ep = new URL(nextUrl).pathname.replace(/^\/v1/, '') + new URL(nextUrl).search;
+            const resp = await omgApiCall(ep);
+            if (!resp?.data?.length) break;
+            data.push(...resp.data);
+            if (resp.included) included.push(...resp.included);
+            nextUrl = resp.links?.next || null;
+          } catch { break; }
+        }
+      } else {
+        // Try offset/limit pagination (the format that worked in the original code)
+        let offset = pageSize;
+        for (let p = 0; p < 20; p++) {
+          try {
+            const sep = baseEndpoint.includes('?') ? '&' : '?';
+            const resp = await omgApiCall(`${baseEndpoint}${sep}offset=${offset}&limit=${pageSize}`);
+            if (!resp?.data?.length) break;
+            data.push(...resp.data);
+            if (resp.included) included.push(...resp.included);
+            if (resp.data.length < pageSize) break;
+            offset += resp.data.length;
+          } catch { break; }
         }
       }
     }
+    return { data, included };
+  };
+
+  // 1) Fetch open/active stores (the main ones we care about)
+  const statuses = ['open', 'pending', 'scheduled'];
+  for (const status of statuses) {
+    try {
+      const result = await fetchAllPages(`/sales?include=organization&filter[status]=${status}`);
+      allData.push(...result.data);
+      allIncluded.push(...result.included);
+    } catch (e) {
+      console.warn(`[OMG] Failed to fetch ${status} stores:`, e.message);
+    }
+  }
+  console.log(`[OMG] Open/active stores fetched: ${allData.length}`);
+
+  // 2) Fetch closed stores, then filter to last 30 days client-side
+  const closedStatuses = ['closed', 'finalized', 'fulfilled'];
+  const thirtyDaysAgo = new Date(Date.now() - 30 * 86400000);
+  for (const status of closedStatuses) {
+    try {
+      const result = await fetchAllPages(`/sales?include=organization&filter[status]=${status}`);
+      const recent = result.data.filter(s => {
+        const closedAt = s.attributes?.expires_at || s.attributes?.closed_at || s.attributes?.updated_at;
+        return closedAt && new Date(closedAt) >= thirtyDaysAgo;
+      });
+      allData.push(...recent);
+      allIncluded.push(...result.included);
+      console.log(`[OMG] ${status}: ${result.data.length} total, ${recent.length} within last 30 days`);
+    } catch (e) {
+      console.warn(`[OMG] Failed to fetch ${status} stores:`, e.message);
+    }
   }
 
-  console.log(`[OMG] Total stores fetched: ${allData.length}`);
+  // 3) If status filtering returned nothing, fall back to unfiltered fetch (API may not support filter[status])
+  if (allData.length === 0) {
+    console.warn('[OMG] Status-filtered fetches returned no data — falling back to unfiltered fetch');
+    const fallback = await fetchAllPages('/sales?include=organization');
+    if (fallback.data.length > 0) {
+      const excludeOld = new Set(['closed', 'finalized', 'fulfilled', 'archived']);
+      allData = fallback.data.filter(s => {
+        const st = (s.attributes?.status || '').toLowerCase();
+        if (!excludeOld.has(st)) return true;
+        const closedAt = s.attributes?.expires_at || s.attributes?.closed_at || s.attributes?.updated_at;
+        return closedAt && new Date(closedAt) >= thirtyDaysAgo;
+      });
+      allIncluded = fallback.included;
+      console.log(`[OMG] Fallback: filtered ${allData.length} relevant stores from ${fallback.data.length} total`);
+    }
+  }
 
-  // Filter: keep open/pending/scheduled + closed within last 30 days
-  const thirtyDaysAgo = new Date(Date.now() - 30 * 86400000);
-  const total = allData.length;
-  const excludeOld = new Set(['closed', 'finalized', 'fulfilled', 'archived']);
-  allData = allData.filter(s => {
-    const status = (s.attributes?.status || '').toLowerCase();
-    if (!excludeOld.has(status)) return true;
-    const closedAt = s.attributes?.expires_at || s.attributes?.closed_at || s.attributes?.updated_at;
-    return closedAt && new Date(closedAt) >= thirtyDaysAgo;
-  });
-  console.log(`[OMG] Filtered ${allData.length} relevant stores from ${total} total. Statuses:`, [...new Set(allData.map(s => s.attributes?.status))]);
+  // Deduplicate by store ID (in case a store appeared in multiple status queries)
+  const seen = new Map();
+  allData.forEach(s => { if (!seen.has(s.id)) seen.set(s.id, s); });
+  allData = [...seen.values()];
 
+  console.log(`[OMG] Total relevant stores: ${allData.length}. Statuses:`, [...new Set(allData.map(s => s.attributes?.status))]);
   return { data: allData, included: allIncluded };
 };
 
