@@ -19470,14 +19470,14 @@ export default function App(){
           const invMatch=invPOs.find(p=>p.po_number&&p.po_number.toLowerCase().replace(/\s+/g,'')===poLc);
           if(invMatch){bill.matchedPO=invMatch;bill.matchedPOSource='inv_po'}
         }
-        // Also search SO item PO lines (match by po_id or memo)
+        // Also search SO item PO lines (match by po_id or memo — use startsWith to handle suffixed PO IDs like "PO4133 OLUF")
         if(!bill.matchedPO){
           for(const so of sos){
             for(const it of (so.items||[])){
               for(const po of (it.po_lines||[])){
                 const pid=(po.po_id||'').toLowerCase().replace(/\s+/g,'');
                 const pmemo=(po.memo||'').toLowerCase().replace(/\s+/g,'');
-                if(pid===poLc||pmemo.includes(poLc)){
+                if(pid===poLc||pid.startsWith(poLc)||pmemo.includes(poLc)){
                   bill.matchedPO={so_id:so.id,po_id:po.po_id,po,item:it,so};
                   bill.matchedPOSource='so_po';
                   break;
@@ -19575,6 +19575,50 @@ export default function App(){
     };
 
     // Apply parsed bill data (billed sizes, tracking, freight) to matched SO/PO
+    // Helper: apply freight from a bill to one or more SOs by ID
+    const _applyFreightToSOs=(bill,soIds)=>{
+      const billFreight=safeNum(bill.freight||0);
+      if(!billFreight||!soIds.length)return;
+      const poLc=(bill.po_number||'').toLowerCase().replace(/\s+/g,'');
+      const billedBySku={};const costBySku={};
+      bill.items.forEach(it=>{if(it.size&&it.qty){const sk=(it.sku||'').toUpperCase();if(!billedBySku[sk])billedBySku[sk]={};billedBySku[sk][it.size]=(billedBySku[sk][it.size]||0)+it.qty;if(!costBySku[sk])costBySku[sk]=0;costBySku[sk]+=safeNum(it.extension||0)||(safeNum(it.unit_price||0)*it.qty)}});
+      // Split freight evenly across matched SOs
+      const perSOFreight=Math.round(billFreight/soIds.length*100)/100;
+      setSOs(prev=>{
+        let changed=false;
+        const next=prev.map(s=>{
+          if(!soIds.includes(s.id))return s;
+          changed=true;
+          const prevFreight=safeNum(s._inbound_freight||0);
+          // Find PO lines on this SO whose po_id starts with the bill PO number
+          const updatedItems=(s.items||[]).map(it=>{
+            const matchPO=it.po_lines?.find(po=>{const pid=(po.po_id||'').toLowerCase().replace(/\s+/g,'');return pid===poLc||pid.startsWith(poLc)});
+            if(!matchPO)return it;
+            const itemSku=(it.sku||'').toUpperCase();
+            const itemBilled=billedBySku[itemSku]||{};
+            return{...it,po_lines:it.po_lines.map(po=>{
+              const pid=(po.po_id||'').toLowerCase().replace(/\s+/g,'');
+              if(pid!==poLc&&!pid.startsWith(poLc))return po;
+              const existingBilled=po.billed||{};
+              const newBilled={...existingBilled};
+              Object.entries(itemBilled).forEach(([sz,qty])=>{newBilled[sz]=(newBilled[sz]||0)+qty});
+              const trackNums=[...(po.tracking_numbers||[])];
+              if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
+              const itemCost=costBySku[itemSku]||0;
+              const prevBillCost=safeNum(po._bill_cost||0);
+              return{...po,billed:newBilled,tracking_numbers:trackNums,
+                _bill_cost:Math.round((prevBillCost+itemCost)*100)/100,
+                _bill_details:[...(po._bill_details||[]),{doc:bill.doc_number,date:bill.doc_date,sizes:{...itemBilled},tracking:bill.tracking,cost:itemCost}]};
+            })};
+          });
+          const updatedSO={...s,_inbound_freight:Math.round((prevFreight+perSOFreight)*100)/100,items:updatedItems,updated_at:new Date().toLocaleString()};
+          _dbSaveSO(updatedSO);
+          return updatedSO;
+        });
+        return changed?next:prev;
+      });
+    };
+
     const applyBillToSO=(bill)=>{
       if(bill._applied)return;
       bill._applied=true;
@@ -19582,8 +19626,14 @@ export default function App(){
         const batchId=bill.matchedPO.id||bill.matchedPO.po_number;
         const billedSizes={};
         bill.items.forEach(it=>{if(it.size&&it.qty)billedSizes[it.size]=(billedSizes[it.size]||0)+it.qty});
+        // Find SO IDs from the batch's source_pos
+        const batchSoIds=(bill.matchedPO.source_pos||[]).map(sp=>sp.so_id).filter(Boolean);
+        // Also check single so_id field
+        if(!batchSoIds.length&&bill.matchedPO.so_id)batchSoIds.push(bill.matchedPO.so_id);
         setSubmittedBatches(prev=>prev.map(sb=>{
           if((sb.id||sb.po_number)!==batchId)return sb;
+          // Grab SO IDs from the stored batch if matchedPO didn't have them
+          if(!batchSoIds.length)(sb.source_pos||[]).forEach(sp=>{if(sp.so_id)batchSoIds.push(sp.so_id)});
           const existingBilled=sb.billed||{};
           const newBilled={...existingBilled};
           Object.entries(billedSizes).forEach(([sz,qty])=>{newBilled[sz]=(newBilled[sz]||0)+qty});
@@ -19591,6 +19641,8 @@ export default function App(){
           if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
           return{...sb,billed:newBilled,tracking_numbers:trackNums,bill_doc_number:bill.doc_number,bill_date:bill.doc_date};
         }));
+        // Apply freight to the associated SOs
+        if(batchSoIds.length)_applyFreightToSOs(bill,batchSoIds);
       }
       if(bill.matchedPOSource==='inv_po'&&bill.matchedPO){
         const poId=bill.matchedPO.id;
@@ -19605,43 +19657,20 @@ export default function App(){
           if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
           return{...po,billed:newBilled,tracking_numbers:trackNums};
         }));
+        // Inv POs aren't tied to SOs, but try to find matching SO PO lines by PO number
+        if(bill.freight){
+          const poLc=(bill.po_number||'').toLowerCase().replace(/\s+/g,'');
+          const matchedSoIds=[];
+          sos.forEach(so=>{(so.items||[]).forEach(it=>{(it.po_lines||[]).forEach(po=>{
+            const pid=(po.po_id||'').toLowerCase().replace(/\s+/g,'');
+            if(pid===poLc||pid.startsWith(poLc)){if(!matchedSoIds.includes(so.id))matchedSoIds.push(so.id)}
+          })})});
+          if(matchedSoIds.length)_applyFreightToSOs(bill,matchedSoIds);
+        }
       }
       if(bill.matchedPOSource==='so_po'&&bill.matchedPO){
         const soId=bill.matchedPO.so_id||bill.matchedPO.so?.id;
-        const poId=bill.matchedPO.po_id;
-        if(soId){
-          const billedBySku={};const costBySku={};
-          bill.items.forEach(it=>{if(it.size&&it.qty){const sk=(it.sku||'').toUpperCase();if(!billedBySku[sk])billedBySku[sk]={};billedBySku[sk][it.size]=(billedBySku[sk][it.size]||0)+it.qty;if(!costBySku[sk])costBySku[sk]=0;costBySku[sk]+=safeNum(it.extension||0)||(safeNum(it.unit_price||0)*it.qty)}});
-          const billFreight=safeNum(bill.freight||0);
-          setSOs(prev=>{
-            const freshSO=prev.find(s=>s.id===soId);
-            if(!freshSO)return prev;
-            const prevFreight=safeNum(freshSO._inbound_freight||0);
-            const updatedSO={...freshSO,
-              _inbound_freight:Math.round((prevFreight+billFreight)*100)/100,
-              items:(freshSO.items||[]).map(it=>{
-              const matchPO=it.po_lines?.find(po=>po.po_id===poId);
-              if(!matchPO)return it;
-              const itemSku=(it.sku||'').toUpperCase();
-              const itemBilled=billedBySku[itemSku]||{};
-              return{...it,po_lines:it.po_lines.map(po=>{
-                if(po.po_id!==poId)return po;
-                const existingBilled=po.billed||{};
-                const newBilled={...existingBilled};
-                Object.entries(itemBilled).forEach(([sz,qty])=>{newBilled[sz]=(newBilled[sz]||0)+qty});
-                const trackNums=[...(po.tracking_numbers||[])];
-                if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
-                const itemCost=costBySku[itemSku]||0;
-                const prevBillCost=safeNum(po._bill_cost||0);
-                return{...po,billed:newBilled,tracking_numbers:trackNums,
-                  _bill_cost:Math.round((prevBillCost+itemCost)*100)/100,
-                  _bill_details:[...(po._bill_details||[]),{doc:bill.doc_number,date:bill.doc_date,sizes:{...itemBilled},tracking:bill.tracking,cost:itemCost}]};
-              })};
-            }),updated_at:new Date().toLocaleString()};
-            _dbSaveSO(updatedSO);
-            return prev.map(s=>s.id===soId?updatedSO:s);
-          });
-        }
+        if(soId)_applyFreightToSOs(bill,[soId]);
       }
     };
 
