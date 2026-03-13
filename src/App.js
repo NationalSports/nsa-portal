@@ -1584,38 +1584,8 @@ const D_INV=[
   {id:'INV-1061',type:'invoice',customer_id:'c1b',so_id:'SO-1045',date:'02/12/26',due_date:'03/14/26',total:1890,paid:945,memo:'Football Practice Gear — Partial',status:'partial',payments:[{amount:945,method:'venmo',ref:'@OLu-Athletics',date:'02/20/26'}],cc_fee:0},
 ];
 
-// OMG TEAM STORES DEMO DATA
-const D_OMG=[
-  {id:'OMG-1001',store_name:'OLu Baseball Spring 2026',customer_id:'c1a',rep_id:'r1',status:'closed',open_date:'01/15/26',close_date:'02/10/26',
-    orders:12,total_sales:4250,fundraise_total:425,items_sold:87,unique_buyers:12,
-    products:[
-      {sku:'JX4453',name:'Adidas Pregame Tee',color:'Team Power Red/White',retail:32,cost:18.50,deco_type:'screen_print',deco_cost:3,sizes:{S:3,M:8,L:12,XL:10,'2XL':4}},
-      {sku:'HF7245',name:'Adidas Team Issue Hoodie',color:'Team Power Red/White',retail:65,cost:28.50,deco_type:'screen_print',deco_cost:5,sizes:{S:2,M:5,L:8,XL:6,'2XL':3}},
-      {sku:'112',name:'Richardson Trucker Cap',color:'Red/White',retail:25,cost:4.50,deco_type:'embroidery',deco_cost:6,sizes:{OSFA:26}}
-    ]},
-  {id:'OMG-1002',store_name:'St. Francis Football Fan Shop',customer_id:'c2',rep_id:'r4',status:'open',open_date:'02/01/26',close_date:'03/01/26',
-    orders:8,total_sales:2890,fundraise_total:289,items_sold:54,unique_buyers:8,
-    products:[
-      {sku:'PC61',name:'Port & Company Essential Tee',color:'Navy',retail:18,cost:2.85,deco_type:'screen_print',deco_cost:3,sizes:{S:4,M:10,L:12,XL:8,'2XL':3}},
-      {sku:'K500',name:'Port Authority Silk Touch Polo',color:'Navy',retail:35,cost:8.20,deco_type:'embroidery',deco_cost:8,sizes:{M:2,L:4,XL:3,'2XL':2}},
-      {sku:'112',name:'Richardson Trucker Cap',color:'Navy/White',retail:25,cost:4.50,deco_type:'embroidery',deco_cost:6,sizes:{OSFA:6}}
-    ]},
-  {id:'OMG-1003',store_name:'OLu Football Booster Store',customer_id:'c1b',rep_id:'r1',status:'closed',open_date:'01/20/26',close_date:'02/15/26',
-    orders:18,total_sales:6720,fundraise_total:672,items_sold:142,unique_buyers:18,
-    products:[
-      {sku:'JX4453',name:'Adidas Pregame Tee',color:'Navy/White',retail:32,cost:18.50,deco_type:'screen_print',deco_cost:3,sizes:{S:5,M:15,L:22,XL:18,'2XL':8}},
-      {sku:'EK0100',name:'Adidas Team 1/4 Zip',color:'Team Navy/White',retail:55,cost:25,deco_type:'embroidery',deco_cost:8,sizes:{S:3,M:8,L:12,XL:10,'2XL':5}},
-      {sku:'1376844',name:'Under Armour Tech Short',color:'Navy',retail:32,cost:15.50,deco_type:'screen_print',deco_cost:3,sizes:{S:2,M:6,L:10,XL:8,'2XL':4}},
-      {sku:'112',name:'Richardson Trucker Cap',color:'Navy/White',retail:25,cost:4.50,deco_type:'embroidery',deco_cost:6,sizes:{OSFA:6}}
-    ]},
-  {id:'OMG-1004',store_name:'Clovis Badminton Fundraiser',customer_id:'c3a',rep_id:'r5',status:'open',open_date:'02/10/26',close_date:'03/10/26',
-    orders:3,total_sales:480,fundraise_total:48,items_sold:9,unique_buyers:3,
-    products:[
-      {sku:'PC61',name:'Port & Company Essential Tee',color:'Black',retail:18,cost:2.85,deco_type:'screen_print',deco_cost:3,sizes:{M:3,L:3,XL:3}}
-    ]},
-  {id:'OMG-1005',store_name:'OLu Track & Field Store',customer_id:'c1c',rep_id:'r1',status:'draft',open_date:'',close_date:'',
-    orders:0,total_sales:0,fundraise_total:0,items_sold:0,unique_buyers:0,products:[]},
-];
+// OMG TEAM STORES — no demo data, populated by OMG API sync
+const D_OMG=[];
 
 // ─── ShipStation API Integration (via Netlify proxy to avoid CORS) ───
 const shipStationCall = async (endpoint, options = {}) => {
@@ -1813,70 +1783,136 @@ const omgApiCall = async (endpoint, options = {}, _retries = 0) => {
 };
 
 const fetchOMGStores = async () => {
-  // Fetch all stores via pagination, then filter to relevant ones
-  // (open with future expires_at + closed within last 30 days)
+  // Strategy: try multiple approaches to get recent/open stores without
+  // paginating through thousands of old ones.
   const thirtyDaysAgo = new Date(Date.now() - 30 * 86400000);
   const now = new Date();
+
+  const isRelevant = (s) => {
+    const status = (s.attributes?.status || '').toLowerCase();
+    const expiresAt = s.attributes?.expires_at;
+    const opensAt = s.attributes?.opens_at;
+    if (status === 'pending' || status === 'scheduled') return true;
+    if (status === 'open') return !expiresAt || new Date(expiresAt) >= now;
+    if (['closed', 'finalized', 'fulfilled', 'archived'].includes(status)) {
+      const closedAt = expiresAt || s.attributes?.closed_at || s.attributes?.updated_at;
+      return closedAt && new Date(closedAt) >= thirtyDaysAgo;
+    }
+    const anyDate = expiresAt || opensAt || s.attributes?.updated_at;
+    return anyDate && new Date(anyDate) >= thirtyDaysAgo;
+  };
+
+  // Helper: fetch one page
+  const fetchPage = async (endpoint) => {
+    const resp = await omgApiCall(endpoint);
+    return { data: resp?.data || [], included: resp?.included || [] };
+  };
+
   let allData = [], allIncluded = [];
 
-  // Page 1
-  const firstResp = await omgApiCall('/sales?include=organization');
-  if (!firstResp?.data?.length) return firstResp;
-  allData = firstResp.data;
-  if (firstResp.included) allIncluded = firstResp.included;
-  const pageSize = firstResp.data.length;
-  console.log(`[OMG] Page 1: ${pageSize} stores. Statuses:`, [...new Set(allData.map(s => s.attributes?.status))]);
+  // Approach 1: Try sorting newest-first (avoids paginating through old stores)
+  const sortFormats = [
+    '/sales?include=organization&sort=-expires_at',
+    '/sales?include=organization&sort=-created_at',
+    '/sales?include=organization&sort=-id',
+  ];
+  for (const url of sortFormats) {
+    try {
+      const resp = await fetchPage(url);
+      if (resp.data.length > 0) {
+        // Check if it's actually sorted differently than default (oldest-first)
+        const firstExpires = resp.data[0]?.attributes?.expires_at;
+        const isRecent = firstExpires && new Date(firstExpires) > thirtyDaysAgo;
+        if (isRecent) {
+          console.log(`[OMG] Sort worked (${url}): ${resp.data.length} stores, first expires: ${firstExpires}`);
+          allData = resp.data;
+          allIncluded = resp.included;
+          // Paginate a few more pages to be safe
+          if (resp.data.length >= 25) {
+            let offset = resp.data.length;
+            for (let p = 0; p < 5; p++) {
+              try {
+                const next = await fetchPage(`${url}&offset=${offset}&limit=${resp.data.length}`);
+                if (!next.data.length) break;
+                allData = allData.concat(next.data);
+                allIncluded = allIncluded.concat(next.included);
+                // Stop if all stores on this page are old
+                const anyRelevant = next.data.some(isRelevant);
+                if (!anyRelevant) { console.log(`[OMG] Page ${p + 3}: all old, stopping`); break; }
+                if (next.data.length < resp.data.length) break;
+                offset += next.data.length;
+              } catch { break; }
+            }
+          }
+          break;
+        }
+      }
+    } catch (e) {
+      console.log(`[OMG] Sort format failed: ${url} — ${e.message}`);
+    }
+  }
 
-  // Paginate with offset/limit (the format this API supports)
-  if (pageSize >= 25) {
-    let offset = pageSize;
-    for (let p = 0; p < 50; p++) {
+  // Approach 2: If sorting didn't work, try filter[status]=open
+  if (allData.length === 0) {
+    console.log('[OMG] Sort approaches failed, trying filter[status]');
+    for (const status of ['open', 'pending', 'scheduled']) {
       try {
-        const resp = await omgApiCall(`/sales?include=organization&offset=${offset}&limit=${pageSize}`);
-        if (!resp?.data?.length) break;
-        allData = allData.concat(resp.data);
-        if (resp.included) allIncluded = allIncluded.concat(resp.included);
-        console.log(`[OMG] Page ${p + 2}: ${resp.data.length} stores (offset=${offset})`);
-        if (resp.data.length < pageSize) break;
-        offset += resp.data.length;
-      } catch (e) {
-        console.warn('[OMG] Pagination stopped:', e.message);
-        break;
+        const resp = await fetchPage(`/sales?include=organization&filter[status]=${status}`);
+        if (resp.data.length > 0) {
+          console.log(`[OMG] filter[status]=${status}: ${resp.data.length} stores`);
+          allData = allData.concat(resp.data);
+          allIncluded = allIncluded.concat(resp.included);
+        }
+      } catch { /* skip */ }
+    }
+    // Also try recently closed
+    try {
+      const resp = await fetchPage('/sales?include=organization&filter[status]=closed');
+      if (resp.data.length > 0) {
+        const recent = resp.data.filter(isRelevant);
+        console.log(`[OMG] filter[status]=closed: ${resp.data.length} total, ${recent.length} recent`);
+        allData = allData.concat(recent);
+        allIncluded = allIncluded.concat(resp.included);
+      }
+    } catch { /* skip */ }
+  }
+
+  // Approach 3: Last resort — paginate unfiltered but cap at 10 pages
+  if (allData.length === 0) {
+    console.log('[OMG] Filter approaches failed, paginating unfiltered (max 10 pages)');
+    const first = await fetchPage('/sales?include=organization');
+    allData = first.data;
+    allIncluded = first.included;
+    const pageSize = first.data.length;
+    if (pageSize >= 25) {
+      let offset = pageSize;
+      for (let p = 0; p < 9; p++) {
+        try {
+          const resp = await fetchPage(`/sales?include=organization&offset=${offset}&limit=${pageSize}`);
+          if (!resp.data.length) break;
+          allData = allData.concat(resp.data);
+          allIncluded = allIncluded.concat(resp.included);
+          // Stop early if we found relevant stores
+          if (allData.some(isRelevant)) {
+            console.log(`[OMG] Found relevant stores on page ${p + 2}, stopping pagination`);
+            break;
+          }
+          if (resp.data.length < pageSize) break;
+          offset += resp.data.length;
+        } catch { break; }
       }
     }
   }
 
-  console.log(`[OMG] Total fetched: ${allData.length} stores. Statuses:`, [...new Set(allData.map(s => s.attributes?.status))]);
+  // Deduplicate
+  const seen = new Map();
+  allData.forEach(s => { if (!seen.has(s.id)) seen.set(s.id, s); });
+  allData = [...seen.values()];
 
-  // Filter to only relevant stores
-  const closedStatuses = new Set(['closed', 'finalized', 'fulfilled', 'archived']);
+  // Filter to relevant stores only
   const total = allData.length;
-  allData = allData.filter(s => {
-    const status = (s.attributes?.status || '').toLowerCase();
-    const expiresAt = s.attributes?.expires_at;
-    const opensAt = s.attributes?.opens_at;
-
-    // Pending/scheduled — always keep
-    if (status === 'pending' || status === 'scheduled') return true;
-
-    // Open — only keep if expires_at is in the future (filters out old never-closed stores)
-    if (status === 'open') {
-      if (!expiresAt) return true;
-      return new Date(expiresAt) >= now;
-    }
-
-    // Closed statuses — only keep if closed within last 30 days
-    if (closedStatuses.has(status)) {
-      const closedAt = expiresAt || s.attributes?.closed_at || s.attributes?.updated_at;
-      return closedAt && new Date(closedAt) >= thirtyDaysAgo;
-    }
-
-    // Unknown status — keep if recent
-    const anyDate = expiresAt || opensAt || s.attributes?.updated_at;
-    return anyDate && new Date(anyDate) >= thirtyDaysAgo;
-  });
-
-  console.log(`[OMG] After filtering: ${allData.length} relevant stores from ${total}. Statuses:`, [...new Set(allData.map(s => s.attributes?.status))]);
+  allData = allData.filter(isRelevant);
+  console.log(`[OMG] Result: ${allData.length} relevant stores from ${total} fetched. Statuses:`, [...new Set(allData.map(s => s.attributes?.status))]);
   return { data: allData, included: allIncluded };
 };
 
@@ -10628,12 +10664,9 @@ export default function App(){
         converted._details_loaded = false;
         return converted;
       });
-      // Merge: keep manual stores + update OMG stores by ID
+      // Replace OMG stores entirely — only keep manual (non-synced) stores
       const manualStores = omgStores.filter(s => !s._omg_source);
-      const omgMap = new Map(convertedStores.map(s => [s.id, s]));
-      // Keep previously-synced OMG stores that weren't in this batch (e.g. old closed stores)
-      omgStores.filter(s => s._omg_source && !omgMap.has(s.id)).forEach(s => omgMap.set(s.id, s));
-      setOmgStores([...manualStores, ...omgMap.values()]);
+      setOmgStores([...manualStores, ...convertedStores]);
       setOmgLastSync(new Date().toISOString());
       nf('Synced ' + convertedStores.length + ' stores from OrderMyGear');
     } catch (error) {
