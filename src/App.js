@@ -27,6 +27,19 @@ const sendBrevoEmail=async({to,subject,htmlContent,textContent,senderName,sender
   catch(e){return{ok:false,error:e.message}}
 };
 
+// ─── Brevo SMS Setup ───
+const sendBrevoSms=async({to,content,sender})=>{
+  if(!_brevoKey){return{ok:false,error:'Brevo API key not configured'}}
+  try{
+    const phone=to.replace(/[^\d+]/g,'');
+    const formatted=phone.startsWith('+')?phone:'+1'+phone.replace(/^1/,'');
+    const payload={type:'transactional',unicodeEnabled:true,sender:sender||'NSA',recipient:formatted,content};
+    const r=await fetch('https://api.brevo.com/v3/transactionalSMS/sms',{method:'POST',headers:{'accept':'application/json','content-type':'application/json','api-key':_brevoKey},
+    body:JSON.stringify(payload)});
+    const d=await r.json();if(!r.ok)return{ok:false,error:d.message||'SMS send failed'};return{ok:true,messageId:d.messageId,reference:d.reference}}
+  catch(e){return{ok:false,error:e.message}}
+};
+
 // ─── Supabase Setup ───
 const _sbUrl = process.env.REACT_APP_SUPABASE_URL || '';
 const _sbKey = process.env.REACT_APP_SUPABASE_ANON_KEY || '';
@@ -2256,12 +2269,18 @@ function getAddrs(cu,all){const a=[];const add=(c,l)=>{if(c.shipping_address_lin
 function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachmentHtml,repUser}){
   const[body,setBody]=useState('');const[attachments,setAttachments]=useState([]);const[toEmails,setToEmails]=useState('');
   const[sending,setSending]=useState(false);const[dragOver,setDragOver]=useState(false);
+  const[smsEnabled,setSmsEnabled]=useState(false);const[smsPhone,setSmsPhone]=useState('');const[smsMsg,setSmsMsg]=useState('');
   const label=docType==='so'?'Sales Order':'Estimate';
   const prevOpenRef=React.useRef(false);const sendingRef=React.useRef(false);
   React.useEffect(()=>{if(isOpen&&!prevOpenRef.current&&customer){
     const emails=(customer?.contacts||[]).map(c=>c.email).filter(Boolean);
+    const primaryContact=(customer.contacts||[])[0];
     setToEmails(emails.join(', '));
-    setBody(`Hi ${(customer.contacts||[])[0]?.name||'Coach'},\n\nPlease find the attached ${label.toLowerCase()} for ${estimate?.memo||'your order'}. You can view ${docType==='so'?'it':'and approve it'} through your portal.\n\nPortal link: https://nsa-portal.netlify.app/?portal=${customer.alpha_tag}\n\nLet me know if you have any questions!\n\nSteve Peterson\nNational Sports Apparel`);
+    setBody(`Hi ${primaryContact?.name||'Coach'},\n\nPlease find the attached ${label.toLowerCase()} for ${estimate?.memo||'your order'}. You can view ${docType==='so'?'it':'and approve it'} through your portal.\n\nPortal link: https://nsa-portal.netlify.app/?portal=${customer.alpha_tag}\n\nLet me know if you have any questions!\n\nSteve Peterson\nNational Sports Apparel`);
+    setSmsPhone(primaryContact?.phone||'');
+    const portalUrl2=customer?.alpha_tag?'https://nsa-portal.netlify.app/?portal='+customer.alpha_tag:'';
+    setSmsMsg('Hi '+(primaryContact?.name||'Coach')+', your '+label.toLowerCase()+' for '+(estimate?.memo||'your order')+' is ready. View it here: '+portalUrl2);
+    setSmsEnabled(!!primaryContact?.phone);
     setAttachments([]);setSending(false);sendingRef.current=false}prevOpenRef.current=isOpen},[isOpen,customer,estimate,docType,label]);
   const handleFiles=(files)=>{const newFiles=Array.from(files).map(f=>({name:f.name,size:(f.size/1024).toFixed(0)+' KB',file:f}));setAttachments(a=>[...a,...newFiles])};
   const doSend=async()=>{
@@ -2285,6 +2304,11 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
       const mailTo='mailto:'+emails[0]+'?subject='+encodeURIComponent(subject)+'&body='+encodeURIComponent(body);
       window.open(mailTo,'_blank');
     }
+    // Send SMS notification if enabled
+    if(smsEnabled&&smsPhone&&_brevoKey){
+      const smsRes=await sendBrevoSms({to:smsPhone,content:smsMsg.substring(0,160),sender:'NSA'});
+      if(!smsRes.ok){console.warn('SMS send failed:',smsRes.error)}
+    }
     onSend();onClose()};
   if(!isOpen)return null;
   return(<div className="modal-overlay" onClick={onClose}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:650}}>
@@ -2304,6 +2328,18 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
         {attachments.length>0&&<div style={{marginTop:8}}>{attachments.map((f,i)=><div key={i} style={{display:'flex',gap:8,alignItems:'center',padding:'4px 8px',background:'#f0fdf4',borderRadius:4,marginBottom:4}}>
           <Icon name="file" size={14}/><span style={{fontSize:12,flex:1}}>{f.name}</span><span style={{fontSize:10,color:'#94a3b8'}}>{f.size}</span>
           <button onClick={()=>setAttachments(a=>a.filter((_,x)=>x!==i))} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626'}}><Icon name="x" size={12}/></button></div>)}</div>}
+      </div>
+      {/* SMS Toggle */}
+      <div style={{marginBottom:12,padding:12,background:smsEnabled?'#f0fdf4':'#f8fafc',border:'1px solid '+(smsEnabled?'#86efac':'#e2e8f0'),borderRadius:8}}>
+        <label style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer',marginBottom:smsEnabled?10:0}}>
+          <input type="checkbox" checked={smsEnabled} onChange={e=>setSmsEnabled(e.target.checked)} style={{width:16,height:16,accentColor:'#22c55e'}}/>
+          <span style={{fontWeight:700,fontSize:13,color:smsEnabled?'#166534':'#64748b'}}>Also Text Coach</span>
+          {_brevoKey&&<span style={{fontSize:9,padding:'1px 6px',borderRadius:4,background:'#dcfce7',color:'#166534',fontWeight:600}}>Sends directly</span>}
+        </label>
+        {smsEnabled&&<div>
+          <div style={{marginBottom:8}}><label className="form-label" style={{fontSize:11}}>Phone</label><input className="form-input" value={smsPhone} onChange={e=>setSmsPhone(e.target.value)} placeholder="Phone number" style={{fontSize:12}}/></div>
+          <div><label className="form-label" style={{fontSize:11}}>Text Message <span style={{color:'#94a3b8',fontWeight:400}}>({smsMsg.length}/160)</span></label><textarea className="form-input" rows={2} value={smsMsg} onChange={e=>setSmsMsg(e.target.value)} maxLength={160} style={{fontSize:12,resize:'vertical'}}/></div>
+        </div>}
       </div>
       <div style={{padding:8,background:'#dbeafe',borderRadius:6,fontSize:11,color:'#1e40af'}}>📎 {label} PDF will be auto-attached | 🔗 Portal link included in message{!_brevoKey&&' | ⚠️ No Brevo API key — will open email client instead'}</div>
     </div>
@@ -2454,6 +2490,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const[showFirmReq,setShowFirmReq]=useState(false);const[firmReqDate,setFirmReqDate]=useState('');const[firmReqNote,setFirmReqNote]=useState('');
   const[showInvCreate,setShowInvCreate]=useState(false);const[invSelItems,setInvSelItems]=useState([]);const[invMemo,setInvMemo]=useState('');const[invType,setInvType]=useState('final');const[invDepositPct,setInvDepositPct]=useState(50);const[invBilling,setInvBilling]=useState('');
   const[invReview,setInvReview]=useState(null);const[invSendModal,setInvSendModal]=useState(false);const[invSendMsg,setInvSendMsg]=useState('');const[invSendTo,setInvSendTo]=useState('');const[invSendCustomEmail,setInvSendCustomEmail]=useState('');
+  const[invSmsEnabled,setInvSmsEnabled]=useState(false);const[invSmsPhone,setInvSmsPhone]=useState('');const[invSmsMsg,setInvSmsMsg]=useState('');
   const[splitModal,setSplitModal]=useState(null);// {jIdx, mode:'received'|'sku'|null}
   const[jobWizard,setJobWizard]=useState(null);// {groups: [{name,deco_type,items:[...]},...]} — Job Setup Wizard
   const[countDiscModal,setCountDiscModal]=useState(null);// {open,entries:[{sku,name,color,size,expected,actual}],notes}
@@ -5199,6 +5236,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             setInvReview({...inv,_customer:cust,_so:o,_lineItems:lineItems,_shipAmt:invShipAmt,_taxAmt:invTaxAmt});
             const contact=(cust?.contacts||[])[0];
             setInvSendMsg('Hi '+(contact?.name||'Coach')+',\n\nPlease find your invoice '+inv.id+' for $'+invTotal.toFixed(2)+'. Payment is due by '+dueDate+'.\n\nThank you,\nNSA Team');
+            setInvSmsPhone(contact?.phone||'');setInvSmsEnabled(!!contact?.phone);
+            setInvSmsMsg('Hi '+(contact?.name||'Coach')+', your invoice '+inv.id+' for $'+invTotal.toFixed(2)+' is ready. Due by '+dueDate+'. View: https://nsa-portal.netlify.app/?portal='+(cust?.alpha_tag||''));
           }}>{invType==='final'?'Create Final Invoice — Close SO':'Create '+invType.charAt(0).toUpperCase()+invType.slice(1)+' Invoice'} — ${invTotal.toFixed(2)}</button>
         </div>
       </div></div>})()}
@@ -5335,6 +5374,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <label className="form-label">Message to Coach</label>
             <textarea className="form-input" rows={6} value={invSendMsg} onChange={e=>setInvSendMsg(e.target.value)} style={{fontSize:13,lineHeight:1.5}}/>
           </div>
+          {/* SMS Toggle */}
+          <div style={{marginBottom:12,padding:12,background:invSmsEnabled?'#f0fdf4':'#f8fafc',border:'1px solid '+(invSmsEnabled?'#86efac':'#e2e8f0'),borderRadius:8}}>
+            <label style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer',marginBottom:invSmsEnabled?10:0}}>
+              <input type="checkbox" checked={invSmsEnabled} onChange={e=>setInvSmsEnabled(e.target.checked)} style={{width:16,height:16,accentColor:'#22c55e'}}/>
+              <span style={{fontWeight:700,fontSize:13,color:invSmsEnabled?'#166534':'#64748b'}}>Also Text Coach</span>
+              {_brevoKey&&<span style={{fontSize:9,padding:'1px 6px',borderRadius:4,background:'#dcfce7',color:'#166534',fontWeight:600}}>Sends directly</span>}
+            </label>
+            {invSmsEnabled&&<div>
+              <div style={{marginBottom:8}}><label className="form-label" style={{fontSize:11}}>Phone</label><input className="form-input" value={invSmsPhone} onChange={e=>setInvSmsPhone(e.target.value)} placeholder="Phone number" style={{fontSize:12}}/></div>
+              <div><label className="form-label" style={{fontSize:11}}>Text Message <span style={{color:'#94a3b8',fontWeight:400}}>({invSmsMsg.length}/160)</span></label><textarea className="form-input" rows={2} value={invSmsMsg} onChange={e=>setInvSmsMsg(e.target.value)} maxLength={160} style={{fontSize:12,resize:'vertical'}}/></div>
+            </div>}
+          </div>
         </div>
         <div className="modal-footer">
           <button className="btn btn-secondary" onClick={()=>setInvSendModal(false)}>Cancel</button>
@@ -5356,10 +5407,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             }else{
               nf('Failed to send invoice: '+(res.error||'Unknown error'),'error');
             }
+            // Send SMS if enabled
+            if(invSmsEnabled&&invSmsPhone&&_brevoKey){
+              const smsRes=await sendBrevoSms({to:invSmsPhone,content:invSmsMsg.substring(0,160),sender:'NSA'});
+              if(smsRes.ok){nf('Text sent to '+invSmsPhone)}else{console.warn('SMS failed:',smsRes.error)}
+            }
             // Update invoice email status
             onInv(prev=>prev.map(i=>i.id===ir.id?{...i,email_status:'sent',email_sent_at:new Date().toLocaleString()}:i));
             // Also post to messages
-            const soMsg={id:'m'+Date.now(),so_id:ir.so_id,author_id:cu.id,text:'[Invoice '+ir.id+'] Sent to '+toName+' ('+toEmail+')\n\n'+invSendMsg,ts:new Date().toLocaleString(),read_by:[cu.id],dept:'sales',tagged_members:[],entity_type:'so',entity_id:ir.so_id};
+            const soMsg={id:'m'+Date.now(),so_id:ir.so_id,author_id:cu.id,text:'[Invoice '+ir.id+'] Sent to '+toName+' ('+toEmail+')'+(invSmsEnabled&&invSmsPhone?' + SMS to '+invSmsPhone:'')+'\n\n'+invSendMsg,ts:new Date().toLocaleString(),read_by:[cu.id],dept:'sales',tagged_members:[],entity_type:'so',entity_id:ir.so_id};
             if(onMsg)onMsg(prev=>[...prev,soMsg]);
           }}>📧 Send Invoice{resolvedEmail?'':' (No email)'}</button>
         </div>
@@ -6311,9 +6367,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             }
           }
           if(cam.sendText&&cam.contact.phone){
-            const smsBody=encodeURIComponent(cam.message);
-            window.open('sms:'+cam.contact.phone+'?body='+smsBody,'_blank');
-            actions.push('text opened');
+            if(_brevoKey){
+              const smsRes=await sendBrevoSms({to:cam.contact.phone,content:cam.message.substring(0,160),sender:'NSA'});
+              if(smsRes.ok){actions.push('text sent to '+cam.contact.phone)}else{nf('SMS failed: '+smsRes.error,'error')}
+            }else{
+              const smsBody=encodeURIComponent(cam.message);
+              window.open('sms:'+cam.contact.phone+'?body='+smsBody,'_blank');
+              actions.push('text opened');
+            }
           }
           // Record sent_to_coach_at timestamp on the job
           const updJobs3=safeJobs(o).map((jj,i)=>i===coachApprovalModal.jIdx?{...jj,sent_to_coach_at:new Date().toISOString()}:jj);
@@ -6363,7 +6424,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <label style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer'}}>
                 <input type="checkbox" checked={cam.sendText} onChange={e=>setCoachApprovalModal(m=>({...m,sendText:e.target.checked}))} style={{width:16,height:16,accentColor:'#22c55e'}}/>
                 <span style={{fontWeight:700,fontSize:13,color:cam.sendText?'#166534':'#64748b'}}>Text Coach</span>
-                {cam.contact.phone?<span style={{fontSize:11,color:'#64748b'}}>{cam.contact.phone}</span>:<span style={{fontSize:11,color:'#dc2626'}}>No phone on file</span>}
+                {cam.contact.phone?<><span style={{fontSize:11,color:'#64748b'}}>{cam.contact.phone}</span>{_brevoKey&&<span style={{fontSize:9,padding:'1px 6px',borderRadius:4,background:'#dcfce7',color:'#166534',fontWeight:600,marginLeft:4}}>Sends directly</span>}</>:<span style={{fontSize:11,color:'#dc2626'}}>No phone on file</span>}
               </label>
             </div>
 
@@ -13882,7 +13943,8 @@ export default function App(){
               onClick={()=>{
                 const contact=contacts[0];
                 const msg='Hi '+(contact?.name||'Coach')+',\n\nPlease find your invoice '+inv.id+' for $'+inv.total.toFixed(2)+'. Payment is due by '+(inv.due_date||'—')+'.\n\nThank you,\nNSA Team';
-                setInvSendModalDirect({inv,email:contact?.email||'',customEmail:'',msg,sendTo:contact?.email||''});
+                const smsText='Hi '+(contact?.name||'Coach')+', your invoice '+inv.id+' for $'+inv.total.toFixed(2)+' is ready. Due by '+(inv.due_date||'—')+'. View: https://nsa-portal.netlify.app/?portal='+(ic?.alpha_tag||'');
+                setInvSendModalDirect({inv,email:contact?.email||'',customEmail:'',msg,sendTo:contact?.email||'',smsEnabled:!!contact?.phone,smsPhone:contact?.phone||'',smsMsg:smsText});
               }}>Send Invoice</button>
             <button className="btn btn-sm btn-secondary" style={{fontSize:12,padding:'6px 14px'}}
               onClick={()=>{
@@ -14161,6 +14223,18 @@ export default function App(){
               </div>
               <div style={{marginBottom:12}}><label className="form-label">Message</label>
                 <textarea className="form-input" rows={6} value={si.msg} onChange={e=>setInvSendModalDirect(s=>({...s,msg:e.target.value}))} style={{lineHeight:1.5}}/></div>
+              {/* SMS Toggle */}
+              <div style={{marginBottom:12,padding:12,background:si.smsEnabled?'#f0fdf4':'#f8fafc',border:'1px solid '+(si.smsEnabled?'#86efac':'#e2e8f0'),borderRadius:8}}>
+                <label style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer',marginBottom:si.smsEnabled?10:0}}>
+                  <input type="checkbox" checked={si.smsEnabled||false} onChange={e=>setInvSendModalDirect(s=>({...s,smsEnabled:e.target.checked}))} style={{width:16,height:16,accentColor:'#22c55e'}}/>
+                  <span style={{fontWeight:700,fontSize:13,color:si.smsEnabled?'#166534':'#64748b'}}>Also Text Coach</span>
+                  {_brevoKey&&<span style={{fontSize:9,padding:'1px 6px',borderRadius:4,background:'#dcfce7',color:'#166534',fontWeight:600}}>Sends directly</span>}
+                </label>
+                {si.smsEnabled&&<div>
+                  <div style={{marginBottom:8}}><label className="form-label" style={{fontSize:11}}>Phone</label><input className="form-input" value={si.smsPhone||''} onChange={e=>setInvSendModalDirect(s=>({...s,smsPhone:e.target.value}))} placeholder="Phone number" style={{fontSize:12}}/></div>
+                  <div><label className="form-label" style={{fontSize:11}}>Text Message <span style={{color:'#94a3b8',fontWeight:400}}>({(si.smsMsg||'').length}/160)</span></label><textarea className="form-input" rows={2} value={si.smsMsg||''} onChange={e=>setInvSendModalDirect(s=>({...s,smsMsg:e.target.value}))} maxLength={160} style={{fontSize:12,resize:'vertical'}}/></div>
+                </div>}
+              </div>
             </div>
             <div className="modal-footer">
               <button className="btn btn-secondary" onClick={()=>setInvSendModalDirect(null)}>Cancel</button>
@@ -14171,6 +14245,11 @@ export default function App(){
                   htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6">'+si.msg.replace(/\n/g,'<br>')+'</div>',
                   senderName:cu.name||'National Sports Apparel',senderEmail:'noreply@nationalsportsapparel.com',replyTo:cu?.email?{email:cu.email,name:cu.name}:undefined});
                 if(res.ok){nf('Invoice '+si.inv.id+' sent to '+toEmail)}else{nf('Failed to send: '+(res.error||'Unknown error'),'error')}
+                // Send SMS if enabled
+                if(si.smsEnabled&&si.smsPhone&&_brevoKey){
+                  const smsRes=await sendBrevoSms({to:si.smsPhone,content:(si.smsMsg||'').substring(0,160),sender:'NSA'});
+                  if(smsRes.ok){nf('Text sent to '+si.smsPhone)}else{console.warn('SMS failed:',smsRes.error)}
+                }
                 setInvs(prev=>prev.map(i=>i.id===si.inv.id?{...i,email_status:'sent',email_sent_at:new Date().toLocaleString()}:i));
               }}>Send Invoice</button>
             </div>
