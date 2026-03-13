@@ -1,9 +1,8 @@
-// Fix production TDZ crash — disable minification entirely to eliminate Terser as cause.
+// Keep scope hoisting off as a safety measure for this large single-file app.
 module.exports = {
   webpack: {
     configure: (config) => {
       config.optimization.concatenateModules = false;
-      config.optimization.minimize = false;
       return config;
     }
   }
