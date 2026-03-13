@@ -652,7 +652,7 @@ const _artCols=['id','name','deco_type','ink_colors','thread_colors','art_size',
 const _artExtraCols=new Set(['art_sizes','garment_colors','item_mockups']);
 // Columns that may not exist in so_jobs — stripped on retry
 const _jobExtraCols=new Set(['_art_ids','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at','coach_email_opened_at','follow_up_at','sent_history']);
-const _jobCols=['id','key','art_file_id','_art_ids','_draft','art_name','deco_type','positions','art_status','item_status','prod_status','total_units','fulfilled_units','split_from','created_at','assigned_machine','assigned_to','ship_method','items','_auto','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at','coach_email_opened_at','follow_up_at','sent_history'];
+const _jobCols=['id','key','art_file_id','_art_ids','_draft','art_name','deco_type','positions','art_status','item_status','prod_status','total_units','fulfilled_units','split_from','created_at','assigned_machine','assigned_to','ship_method','items','_auto','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at','coach_email_opened_at','follow_up_at','sent_history','run_order','run1_done','run2_done'];
 const _custCols=['id','parent_id','name','alpha_tag','billing_address_line1','billing_address_line2','billing_city','billing_state','billing_zip','shipping_address_line1','shipping_address_line2','shipping_city','shipping_state','shipping_zip','adidas_ua_tier','catalog_markup','payment_terms','tax_rate','tax_exempt','primary_rep_id','notes','is_active','created_at','updated_at','alt_billing_addresses','art_files'];
 const _vendCols=['id','name','vendor_type','api_provider','nsa_carries_inventory','click_automation','is_active','contact_email','contact_phone','rep_name','payment_terms','notes'];
 const _firmDateCols=['item_desc','date','approved'];
@@ -670,7 +670,7 @@ const fileDisplayName=f=>{if(typeof f==='object'&&f?.name)return f.name;const s=
 const _isDownloadOnly=u=>{const e=_urlExt(u);return['ai','eps','dst','psd','tiff','tif','cdr'].includes(e)};
 const _isDisplayableFile=(u,f)=>_isImgUrl(u,f)||_isPdfUrl(u,f);
 const _filterDisplayable=files=>(files||[]).filter(f=>{const u=typeof f==='string'?f:(f?.url||'');return u&&_isDisplayableFile(u,f)});
-const openFile=f=>{const u=typeof f==='string'?f:(f?.url||'');if(isUrl(u)){if(_isPdfUrl(u,f)){window.open(u,'_blank')}else if(_isDownloadOnly(u)){const a=document.createElement('a');a.href=u;a.download=typeof f==='object'&&f?.name?f.name:decodeURIComponent(u.split('/').pop().split('?')[0]);a.target='_blank';a.rel='noopener';document.body.appendChild(a);a.click();document.body.removeChild(a)}else{window.open(u,'_blank')}}else if(u){nf('Legacy file: '+u+' — re-upload to enable downloads')}};
+const openFile=f=>{const u=typeof f==='string'?f:(f?.url||'');if(isUrl(u)){if(_isPdfUrl(u,f)){window.open(u,'_blank')}else if(_isDownloadOnly(u)){const a=document.createElement('a');a.href=u;a.download=typeof f==='object'&&f?.name?f.name:decodeURIComponent(u.split('/').pop().split('?')[0]);a.target='_blank';a.rel='noopener';document.body.appendChild(a);a.click();document.body.removeChild(a)}else{window.open(u,'_blank')}}else if(u){if(_dbNotify)_dbNotify('Legacy file: '+u+' — re-upload to enable downloads')}};
 const _urlExt=u=>{if(!u||typeof u!=='string')return '';const clean=u.split('?')[0].split('#')[0];const m=clean.match(/\.(\w+)$/);return m?m[1].toLowerCase():''};
 const _isImgUrl=(u,f)=>{if(_isPdfUrl(u,f))return false;const e=_urlExt(u);if(_isDownloadOnly(u))return false;if(['png','jpg','jpeg','gif','webp','svg','bmp'].includes(e))return true;if(typeof f==='object'&&f?.type?.startsWith('image/'))return true;if(u&&typeof u==='string'&&u.includes('cloudinary.com')&&u.includes('/image/upload/'))return true;return false};
 const _isPdfUrl=(u,f)=>{if(_urlExt(u)==='pdf')return true;if(typeof f==='object'&&f?.type==='application/pdf')return true;if(typeof f==='string'&&f.endsWith('.pdf'))return true;return false};
@@ -1388,6 +1388,23 @@ const isJobReady=(j,o)=>{
   });
   return totalSz>0&&fulfilledSz>=totalSz;
 };
+// Check if a job is dual-run (has both art/screen/emb AND numbers decorations)
+const isDualRunJob=(j,o)=>{
+  const firstGi=(j.items||[])[0];if(!firstGi)return false;
+  const it=safeItems(o)[firstGi.item_idx];if(!it)return false;
+  const decoIdxs=firstGi.deco_idxs||[firstGi.deco_idx];
+  const decos=safeDecos(it).filter((d,di)=>decoIdxs.includes(di));
+  const hasArt=decos.some(d=>d.kind==='art');
+  const hasNums=decos.some(d=>d.kind==='numbers');
+  return hasArt&&hasNums;
+};
+// Get run labels for a dual-run job based on run_order
+const getRunLabels=(j)=>{
+  const ro=j.run_order; // 'art_first' or 'numbers_first'
+  if(ro==='numbers_first')return{run1:'Numbers',run2:'Artwork'};
+  if(ro==='art_first')return{run1:'Artwork',run2:'Numbers'};
+  return null; // not yet chosen
+};
 const safeFirm=(o)=>safeArr(o?.firm_dates);
 
 // DATA
@@ -1798,6 +1815,71 @@ const omgApiCall = async (endpoint, options = {}, _retries = 0) => {
   } catch (error) { console.error('[OMG] API call failed:', endpoint, error); throw error; }
 };
 
+// ─── Temporary API Probe (diagnostic) ───
+const probeOMGEndpoints = async () => {
+  const endpoints = [
+    '/orders',
+    '/orders?limit=1',
+    '/order_products',
+    '/order_products?limit=1',
+    '/line_items',
+    '/products',
+    '/products?limit=1',
+    '/customers',
+    '/customer_infos',
+    '/invoices',
+    '/shipments',
+    '/reports',
+    '/sale_products',
+    '/sale_items',
+  ];
+  const results = {};
+  for (const ep of endpoints) {
+    try {
+      const data = await omgApiCall(ep);
+      results[ep] = { status: 'ok', keys: Object.keys(data || {}), meta: data?.meta, recordCount: Array.isArray(data?.data) ? data.data.length : (data?.data ? 1 : 0) };
+      if (data?.data?.[0]) results[ep].sampleType = data.data[0].type;
+      if (data?.data?.[0]?.attributes) results[ep].sampleAttrs = Object.keys(data.data[0].attributes);
+      if (data?.data?.[0]?.relationships) results[ep].sampleRels = Object.keys(data.data[0].relationships);
+    } catch (err) {
+      results[ep] = { status: 'error', message: err.message };
+    }
+  }
+  // Now probe include params on a known sale
+  let saleId = null;
+  try {
+    const salesResp = await omgApiCall('/sales?limit=1');
+    if (salesResp?.data?.length > 0) saleId = salesResp.data[0].id;
+  } catch (err) {
+    results['sale lookup'] = { status: 'error', message: err.message };
+  }
+  if (saleId) {
+    const includeEndpoints = [
+      `/sales/${saleId}?include=orders`,
+      `/sales/${saleId}?include=line_items`,
+      `/sales/${saleId}?include=order_items`,
+      `/sales/${saleId}?include=products`,
+      `/sales/${saleId}?include=sale_products`,
+      `/sales/${saleId}?include=orders,line_items,products`,
+    ];
+    for (const ep of includeEndpoints) {
+      try {
+        const data = await omgApiCall(ep);
+        const incTypes = data?.included ? [...new Set(data.included.map(i => i.type))] : [];
+        results[ep] = { status: 'ok', includedTypes: incTypes, includedCount: data?.included?.length || 0 };
+      } catch (err) {
+        results[ep] = { status: 'error', message: err.message };
+      }
+    }
+  }
+  console.log('=== OMG API PROBE RESULTS ===');
+  for (const [ep, res] of Object.entries(results)) {
+    console.log(`[PROBE] ${ep}:`, JSON.stringify(res));
+  }
+  console.log('=== END PROBE ===');
+  alert('Probe complete — check browser console for results.');
+};
+
 const fetchOMGStores = async () => {
   // Strategy: try multiple approaches to get recent/open stores without
   // paginating through thousands of old ones.
@@ -1932,23 +2014,20 @@ const fetchOMGStores = async () => {
   return { data: allData, included: allIncluded };
 };
 
+// Fetch order/product details for a single OMG store
 const fetchOMGStoreDetail = async (saleResource, allIncluded) => {
   const saleId = saleResource.id;
   const saleCode = saleResource.attributes?.sale_code || '';
   const saleData = { data: saleResource, included: allIncluded };
 
-  // Try multiple endpoint patterns for orders (using both ID and sale_code)
+  // Try multiple endpoint patterns for orders
   const orderEndpoints = [
-    `/sales/${saleId}/orders?include=customer_info`,
     `/sales/${saleId}/orders`,
-    `/orders?filter[sale_id]=${saleId}&include=customer_info`,
+    `/sales/${saleId}/orders?include=customer_info`,
     `/orders?filter[sale_id]=${saleId}`,
+    `/orders?filter[sale_id]=${saleId}&include=customer_info`,
     `/orders?sale_id=${saleId}`,
-    ...(saleCode ? [
-      `/orders?filter[sale_code]=${saleCode}`,
-      `/orders?sale_code=${saleCode}`,
-      `/orders?filter[sale]=${saleId}`,
-    ] : []),
+    ...(saleCode ? [`/orders?filter[sale_code]=${saleCode}`] : []),
   ];
   let orders = null;
   for (const ep of orderEndpoints) {
@@ -1963,9 +2042,8 @@ const fetchOMGStoreDetail = async (saleResource, allIncluded) => {
     }
   }
   const orderList = orders?.data || [];
-  if (orderList.length === 0) console.warn(`[OMG] Sale ${saleId} (${saleCode}): no orders from any endpoint`);
 
-  // Try multiple endpoint patterns for order products
+  // Try to get order products for each order
   const orderProducts = await Promise.all(
     orderList.map(async (o) => {
       const productEndpoints = [
@@ -1973,7 +2051,6 @@ const fetchOMGStoreDetail = async (saleResource, allIncluded) => {
         `/orders/${o.id}/order_products`,
         `/order_products?filter[order_id]=${o.id}&include=product`,
         `/order_products?filter[order_id]=${o.id}`,
-        `/order_products?order_id=${o.id}`,
       ];
       for (const ep of productEndpoints) {
         try {
@@ -1984,8 +2061,6 @@ const fetchOMGStoreDetail = async (saleResource, allIncluded) => {
       return { data: [], included: [] };
     })
   );
-  const totalProducts = orderProducts.reduce((a, r) => a + (r?.data?.length || 0), 0);
-  console.log(`[OMG] Sale ${saleId}: ${totalProducts} order products across ${orderList.length} orders`);
   return { ...saleData, orders: orderList, orderProducts };
 };
 
@@ -3217,7 +3292,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       let prodSt=existing?.prod_status||'hold';
       const artFile=safeArr(o?.art_files).find(f=>f.id===j.art_file_id);
       const hasProdFiles=!artFile||(artFile.prod_files||[]).length>0;
-      if(itemSt==='items_received'&&j.art_status==='art_complete'&&hasProdFiles&&prodSt==='hold'&&!j._draft)prodSt='staging';
+      // Jobs stay in 'hold' (Ready for Prod) until warehouse manually moves them to production
       const id=existing?.id||('JOB-'+soNum+'-'+String(jIdx).padStart(2,'0'));
       jIdx++;
       return{
@@ -3238,6 +3313,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         sent_to_coach_at:existing?.sent_to_coach_at||null,coach_approved_at:existing?.coach_approved_at||null,coach_email_opened_at:existing?.coach_email_opened_at||null,
         coach_rejected:existing?.coach_rejected||null,
         _art_ids:j._art_ids||[],
+        // Preserve dual-run order fields
+        run_order:existing?.run_order||null,run1_done:existing?.run1_done||false,run2_done:existing?.run2_done||false,
       };
     });
     // Preserve manually split jobs — they won't be auto-generated from decorations
@@ -10480,6 +10557,78 @@ export default function App(){
   React.useEffect(()=>{try{localStorage.setItem('nsa_invs',JSON.stringify(invs))}catch{};_diffSave(invs,'invs',i=>_dbSaveInvoice(i))},[invs]);
   React.useEffect(()=>{try{localStorage.setItem('nsa_msgs',JSON.stringify(msgs))}catch{};_diffSave(msgs,'msgs',m=>_dbSaveMessage(m))},[msgs]);
   React.useEffect(()=>{try{localStorage.setItem('nsa_omg_stores',JSON.stringify(omgStores))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.omg||[];omgStores.forEach(s=>{const old=snap.find(p=>p.id===s.id);if(!old||JSON.stringify(old)!==JSON.stringify(s)){_dbSave('omg_stores',[_pick(s,_omgStoreCols)])}});_dbSnap.current.omg=omgStores}},[omgStores]);
+
+  // Notification helper — defined early so callbacks below can reference it
+  const nf=(m,t='success')=>{setToast({msg:m,type:t});setTimeout(()=>setToast(null),3500)};_dbNotify=nf;
+
+  // Load full details (orders + products) for a single OMG store on-demand
+  const loadOMGStoreDetail = async (store) => {
+    if (store._details_loaded) return store;
+    const omgId = store._omg_id;
+    if (!omgId) return store;
+    try {
+      // Fetch sale with includes — try getting orders sideloaded
+      let saleResp;
+      let orders = [];
+      let included = [];
+
+      // Try include=orders first, fall back to organization only
+      for (const inc of ['orders,order_products,organization', 'orders,organization', 'organization']) {
+        try {
+          saleResp = await omgApiCall(`/sales/${omgId}?include=${inc}`);
+          included = saleResp?.included || [];
+          const incOrders = included.filter(i => i.type === 'orders' || i.type === 'order');
+          if (incOrders.length > 0) {
+            orders = incOrders;
+            console.log(`[OMG] Found ${orders.length} orders via include=${inc}`);
+            break;
+          }
+          if (inc === 'organization') break;
+        } catch (e) {
+          console.log(`[OMG] include=${inc} failed:`, e.message);
+        }
+      }
+
+      const saleResource = saleResp?.data || { id: omgId, attributes: {} };
+      // Log all attributes for debugging
+      console.log('[OMG] Sale detail attributes:', JSON.stringify(saleResource.attributes));
+      console.log('[OMG] Sale detail relationships:', Object.keys(saleResource.relationships || {}));
+      console.log('[OMG] Included types:', [...new Set(included.map(i => i.type))]);
+
+      // If no orders from includes, try separate endpoints
+      let detail;
+      if (orders.length === 0) {
+        detail = await fetchOMGStoreDetail(saleResource, included);
+      } else {
+        const orderProducts = included.filter(i => i.type === 'order_products' || i.type === 'order_product' || i.type === 'line_items');
+        detail = { data: saleResource, included, orders, orderProducts: orderProducts.length > 0 ? [{ data: orderProducts, included }] : [] };
+      }
+
+      const updated = { ...convertOMGStore(detail, cust), _details_loaded: true };
+
+      // Check for aggregate data in sale attributes
+      const attrs = saleResource.attributes || {};
+      for (const [k, v] of Object.entries(attrs)) {
+        if (/order.*count|num.*order|total.*order/i.test(k) && v) updated.orders = parseInt(v) || updated.orders;
+        if (/revenue|total.*sale|sales.*total|total.*earned/i.test(k) && v) updated.total_sales = parseFloat(v) || updated.total_sales;
+        if (/fundrais/i.test(k) && v) updated.fundraise_total = parseFloat(v) || updated.fundraise_total;
+        if (/item.*count|total.*item/i.test(k) && v) updated.items_sold = parseInt(v) || updated.items_sold;
+        if (/buyer.*count|customer.*count/i.test(k) && v) updated.unique_buyers = parseInt(v) || updated.unique_buyers;
+      }
+
+      // Check relationship linkage counts
+      const orderRel = saleResource.relationships?.orders?.data;
+      if (Array.isArray(orderRel) && orderRel.length > 0 && !updated.orders) updated.orders = orderRel.length;
+
+      setOmgStores(prev => prev.map(s => s.id === store.id ? updated : s));
+      return updated;
+    } catch (e) {
+      console.error('[OMG] Failed to load detail for store', store.id, e);
+      nf('Failed to load store details: ' + e.message, 'error');
+      return store;
+    }
+  };
+
   React.useEffect(()=>{try{localStorage.setItem('nsa_issues',JSON.stringify(issues))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.issues||[];const changed=issues.filter(i=>{const old=snap.find(p=>p.id===i.id);return!old||JSON.stringify(old)!==JSON.stringify(i)});if(changed.length)_dbSave('issues',changed.map(i=>_pick(i,_issueCols)));_dbSnap.current.issues=issues}},[issues]);
   // Rep-CSR assignments auto-save
   React.useEffect(()=>{if(!_initialLoadDone.current||!_dbLoadSuccess.current)return;const snap=_dbSnap.current.repCsr||[];const changed=repCsrAssignments.filter(a=>{const old=snap.find(p=>p.id===a.id);return!old||JSON.stringify(old)!==JSON.stringify(a)});if(changed.length)_dbSave('rep_csr_assignments',changed);_dbSnap.current.repCsr=repCsrAssignments},[repCsrAssignments]);
@@ -10633,6 +10782,15 @@ export default function App(){
   const[poF,setPOF]=useState({status:'all',vendor:'all',rep:'all',search:'',sort:'date_desc'});
   // OMG Team Stores
   const[omgFilter,setOmgFilter]=useState({rep:'all',status:'all',search:'',dateRange:'30d'});const[omgSel,setOmgSel]=useState(null);const[omgDetailLoading,setOmgDetailLoading]=useState(false);
+  // Auto-load OMG store details when a store is selected
+  React.useEffect(()=>{
+    if(!omgSel||omgSel._details_loaded||omgDetailLoading||!omgSel._omg_id)return;
+    setOmgDetailLoading(true);
+    console.log('[OMG] Auto-loading details for store', omgSel.id, omgSel._omg_id);
+    loadOMGStoreDetail(omgSel).then(updated=>{
+      setOmgSel(updated);setOmgDetailLoading(false);
+    }).catch(e=>{console.error('[OMG] Detail load failed:',e);setOmgDetailLoading(false)});
+  },[omgSel?.id]); // eslint-disable-line react-hooks/exhaustive-deps
   const[estF,setEstF]=useState({status:'open',rep:'_me_',search:'',sort:'date_desc'});
   const[soF,setSOF]=useState({status:'all',rep:'all',search:'',sort:'date_desc'});
   const[iS,setIS]=useState({f:'value',d:'desc'});const[iF,setIF]=useState({cat:'all',vnd:'all',clr:'all'});
@@ -10645,7 +10803,6 @@ export default function App(){
   const handleLogout=()=>{setCu(null);try{localStorage.removeItem('nsa_user')}catch{}};
 
   const isA=cu?.role==='admin';
-  const nf=(m,t='success')=>{setToast({msg:m,type:t});setTimeout(()=>setToast(null),3500)};_dbNotify=nf;
   const pars=useMemo(()=>cust.filter(c=>!c.parent_id),[cust]);const gK=useCallback(pid=>cust.filter(c=>c.parent_id===pid),[cust]);
   const cols=useMemo(()=>COLOR_CATEGORIES,[]);
   const savC=c=>{console.log('[SAVE] Customer save triggered:',c.id,c.name,{tax_rate:c.tax_rate,contacts:c.contacts?.length,shipping_state:c.shipping_state});setCust(p=>{const e=p.find(x=>x.id===c.id);return e?p.map(x=>x.id===c.id?c:x):[...p,c]});nf('Saved')};
@@ -10829,25 +10986,26 @@ export default function App(){
       if (!omgStoresData?.data) { nf('No stores found in OMG API response', 'error'); return; }
       const stores = omgStoresData.data;
       // Log first store's full data to help debug what fields are available
-      if (stores.length > 0) console.log('[OMG] Sample store attributes:', JSON.stringify(stores[0].attributes), 'relationships:', Object.keys(stores[0].relationships || {}));
+      if (stores.length > 0) {
+        console.log('[OMG] Sample store ALL attributes:', JSON.stringify(stores[0].attributes));
+        console.log('[OMG] Sample store ALL relationship keys:', Object.keys(stores[0].relationships || {}));
+        // Log all included resource types
+        const incTypes = [...new Set((omgStoresData.included || []).map(i => i.type))];
+        console.log('[OMG] Included resource types:', incTypes);
+      }
       // Convert store list data (no order details yet — those load on-demand)
       const convertedStores = stores.map(store => {
         const basic = { data: store, included: omgStoresData.included || [], orders: [], orderProducts: [] };
         const converted = convertOMGStore(basic, cust);
-        // Try to extract summary data from the sale resource attributes
+        // Check sale attributes for aggregate data (in case API provides it)
         const attrs = store.attributes || {};
+        for (const [k, v] of Object.entries(attrs)) {
+          if (/order.*count|num.*order|total.*order/i.test(k) && v) converted.orders = parseInt(v) || 0;
+          if (/revenue|total.*sale|sales.*total|total.*earned/i.test(k) && v) converted.total_sales = parseFloat(v) || 0;
+          if (/fundrais/i.test(k) && v) converted.fundraise_total = parseFloat(v) || 0;
+        }
         const orderRel = store.relationships?.orders?.data;
         if (Array.isArray(orderRel)) converted.orders = orderRel.length;
-        // Common OMG fields for totals (check what the API provides)
-        if (attrs.orders_count) converted.orders = attrs.orders_count;
-        if (attrs.order_count) converted.orders = attrs.order_count;
-        if (attrs.total_revenue) converted.total_sales = parseFloat(attrs.total_revenue) || 0;
-        if (attrs.total_earned) converted.total_sales = parseFloat(attrs.total_earned) || 0;
-        if (attrs.revenue) converted.total_sales = parseFloat(attrs.revenue) || 0;
-        if (attrs.fundraise_amount) converted.fundraise_total = parseFloat(attrs.fundraise_amount) || 0;
-        if (attrs.fundraise_total) converted.fundraise_total = parseFloat(attrs.fundraise_total) || 0;
-        if (attrs.items_count) converted.items_sold = attrs.items_count;
-        if (attrs.buyers_count) converted.unique_buyers = attrs.buyers_count;
         converted._details_loaded = false;
         return converted;
       });
@@ -10862,26 +11020,10 @@ export default function App(){
     } finally { setOmgSyncing(false); }
   };
 
-  // Load full details (orders + products) for a single store on-demand
-  const loadOMGStoreDetail = async (store) => {
-    if (store._details_loaded) return store;
-    const omgId = store._omg_id;
-    if (!omgId) return store;
-    try {
-      // Re-fetch sale resource to get fresh data + included org
-      const saleResp = await omgApiCall(`/sales/${omgId}?include=organization`);
-      const saleResource = saleResp?.data || { id: omgId, attributes: {} };
-      const detail = await fetchOMGStoreDetail(saleResource, saleResp?.included || []);
-      const updated = { ...convertOMGStore(detail, cust), _details_loaded: true };
-      // Update in omgStores state
-      setOmgStores(prev => prev.map(s => s.id === store.id ? updated : s));
-      return updated;
-    } catch (e) {
-      console.error('[OMG] Failed to load detail for store', store.id, e);
-      nf('Failed to load store details: ' + e.message, 'error');
-      return store;
-    }
-  };
+  // Note: The OMG Pop-up Stores API (app.ordermygear.com/v1) only exposes sale metadata.
+  // Order/product data is NOT available through this API — the sale resource only has
+  // relationships: source, group, organization, assigned_user (no orders).
+  // Order details must be viewed in the OMG admin UI at team.ordermygear.com/admin/sales/{id}.
 
   // ─── Delete Handlers (with cascade status updates) ───
   const canDelete = cu && (cu.role==='admin'||cu.role==='rep'||cu.role==='csr');
@@ -12727,6 +12869,12 @@ export default function App(){
       nf('🏭 '+j.id+' → '+labels[newStatus]+(machine?' · '+MACHINES.find(m=>m.id===machine)?.name:'')+(person?' · '+person:''));
     }
   };
+  // Update a job field (for run order, marking runs done, etc.)
+  const updateJobField=(j,fields)=>{
+    const so=sos.find(s=>s.id===j.soId);if(!so)return;
+    const updatedJobs=safeJobs(so).map(jj=>jj.id===j.id?{...jj,...fields}:jj);
+    savSO({...so,jobs:updatedJobs});
+  };
   const[showColPicker,setShowColPicker]=useState(false);
   const ALL_PROD_COLS=[
     {id:'so',label:'SO',default:true},
@@ -12859,6 +13007,35 @@ export default function App(){
                       {j.ship_method==='ship_customer'?'📦 Ship':j.ship_method==='rep_delivery'?'🚗 Rep':j.ship_method==='customer_pickup'?'🏫 Pickup':'⏸️ Hold'}</span>}
                   </div>
 
+                  {/* Dual-run: art + numbers run order */}
+                  {isDualRunJob(j,j.so)&&<div style={{background:'#faf5ff',border:'1px solid #e9d5ff',borderRadius:6,padding:'6px 8px',marginBottom:6}}>
+                    {!j.run_order?<div>
+                      <div style={{fontSize:9,fontWeight:700,color:'#6d28d9',marginBottom:4}}>SELECT RUN ORDER</div>
+                      <div style={{display:'flex',gap:4}}>
+                        <button className="btn btn-sm" style={{fontSize:9,padding:'3px 8px',background:'#7c3aed',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();updateJobField(j,{run_order:'art_first',run1_done:false,run2_done:false});nf('Run order: Artwork first')}}>Artwork First</button>
+                        <button className="btn btn-sm" style={{fontSize:9,padding:'3px 8px',background:'#22c55e',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();updateJobField(j,{run_order:'numbers_first',run1_done:false,run2_done:false});nf('Run order: Numbers first')}}>Numbers First</button>
+                      </div>
+                    </div>:(()=>{const rl=getRunLabels(j);return<div>
+                      <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:4}}>
+                        <span style={{fontSize:9,fontWeight:700,color:'#6d28d9'}}>RUN ORDER</span>
+                        {!j.run1_done&&<button style={{fontSize:8,color:'#94a3b8',cursor:'pointer',background:'none',border:'none',padding:0,marginLeft:'auto',textDecoration:'underline'}} onClick={e=>{e.stopPropagation();updateJobField(j,{run_order:j.run_order==='art_first'?'numbers_first':'art_first'});nf('Switched to '+(j.run_order==='art_first'?'Numbers':'Artwork')+' first')}}>Switch</button>}
+                      </div>
+                      <div style={{display:'flex',gap:6}}>
+                        <div style={{flex:1,padding:'4px 6px',borderRadius:4,background:j.run1_done?'#dcfce7':'#eff6ff',border:'1px solid '+(j.run1_done?'#86efac':'#93c5fd')}}>
+                          <div style={{fontSize:8,fontWeight:700,color:j.run1_done?'#166534':'#1e40af'}}>RUN 1: {rl.run1}</div>
+                          <div style={{fontSize:10,fontWeight:800,color:j.run1_done?'#166534':'#1e40af'}}>{j.run1_done?'Done':'Current'}</div>
+                        </div>
+                        <div style={{flex:1,padding:'4px 6px',borderRadius:4,background:j.run2_done?'#dcfce7':j.run1_done?'#eff6ff':'#f8fafc',border:'1px solid '+(j.run2_done?'#86efac':j.run1_done?'#93c5fd':'#e2e8f0')}}>
+                          <div style={{fontSize:8,fontWeight:700,color:j.run2_done?'#166534':j.run1_done?'#1e40af':'#94a3b8'}}>RUN 2: {rl.run2}</div>
+                          <div style={{fontSize:10,fontWeight:800,color:j.run2_done?'#166534':j.run1_done?'#1e40af':'#94a3b8'}}>{j.run2_done?'Done':j.run1_done?'Current':'Pending'}</div>
+                        </div>
+                      </div>
+                      {/* Mark run done buttons */}
+                      {!j.run1_done&&<button className="btn btn-sm" style={{fontSize:9,padding:'3px 8px',marginTop:4,background:'#166534',color:'white',border:'none',width:'100%'}} onClick={e=>{e.stopPropagation();updateJobField(j,{run1_done:true});nf(rl.run1+' run complete — starting '+rl.run2)}}>Mark {rl.run1} Done</button>}
+                      {j.run1_done&&!j.run2_done&&<button className="btn btn-sm" style={{fontSize:9,padding:'3px 8px',marginTop:4,background:'#166534',color:'white',border:'none',width:'100%'}} onClick={e=>{e.stopPropagation();updateJobField(j,{run2_done:true});nf(rl.run2+' run complete — job fully decorated')}}>Mark {rl.run2} Done</button>}
+                    </div>})()}
+                  </div>}
+
                   {/* Units + progress */}
                   <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
                     <span style={{fontSize:13,fontWeight:800,color:pct>=100?'#166534':'#1e40af'}}>{j.fulfilled_units}/{j.total_units}</span>
@@ -12871,13 +13048,12 @@ export default function App(){
 
                   {/* Open SO / Job links */}
                   <div style={{display:'flex',gap:8,marginBottom:6}}>
-                    <div style={{fontSize:10,color:'#d97706',cursor:'pointer',textDecoration:'underline',fontWeight:700}} onClick={e=>{e.stopPropagation();setProdJobModal({...j})}}>📋 Production Sheet</div>
-                    <div style={{fontSize:10,color:'#7c3aed',cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={e=>{e.stopPropagation();
+                    <div style={{fontSize:10,color:'#d97706',cursor:'pointer',textDecoration:'underline',fontWeight:800}} onClick={e=>{e.stopPropagation();setProdJobModal({...j})}}>📋 Production Sheet</div>
+                    <div style={{fontSize:10,color:'#7c3aed',cursor:'pointer',textDecoration:'underline',fontWeight:800}} onClick={e=>{e.stopPropagation();
                       const jso=j.so;const jc=cust.find(c2=>c2.id===jso.customer_id);
                       const ji=safeJobs(jso).findIndex(jj=>jj.id===j.id);
                       setReturnToPage({page:'production',jobData:{...j}});setESOTab('jobs');setESOScrollJob(ji>=0?ji:null);setESO(jso);setESOC(jc);setPg('orders');
                     }}>🔍 Open Job Detail</div>
-                    <div style={{fontSize:10,color:'#2563eb',cursor:'pointer',textDecoration:'underline'}} onClick={e=>{e.stopPropagation();setReturnToPage({page:'production',jobData:{...j}});setESOTab(null);setESOScrollJob(null);setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so.customer_id));setPg('orders')}}>→ Open {j.soId}</div>
                   </div>
 
                   {/* Time Tracking — clock in/out for active jobs */}
@@ -13051,6 +13227,17 @@ export default function App(){
         // Mockup files — aggregate from all art files in this job
         const mockupFiles=allArtFiles.flatMap(a=>a?.mockup_files||a?.files||[]);
         const prodFiles=allArtFiles.flatMap(a=>a?.prod_files||[]);
+        // Numbers & Names roster data — extract from item decorations
+        const numbersData=(()=>{const results=[];(j.items||[]).forEach(gi=>{
+          const it=safeItems(so)[gi.item_idx];if(!it)return;
+          const numDecos=safeDecos(it).filter(d=>d.kind==='numbers');
+          const nameDecos=safeDecos(it).filter(d=>d.kind==='names');
+          const nd=numDecos[0];const nameD=nameDecos[0];
+          if(!nd&&!nameD)return;
+          const sizes=Object.entries(safeSizes(it)).filter(([,v])=>v>0).sort((a,b)=>(SZ_ORD.indexOf(a[0])<0?99:SZ_ORD.indexOf(a[0]))-(SZ_ORD.indexOf(b[0])<0?99:SZ_ORD.indexOf(b[0])));
+          const roster=nd?.roster||null;const names=nameD?.names||null;
+          results.push({sku:it.sku||gi.sku,color:it.color||gi.color||'',nd,nameD,roster,names,sizes:sizes.map(([sz])=>sz),sizeQtys:Object.fromEntries(sizes)});
+        });return results})();
 
         // Print Production PDF
         const printProdPDF=()=>{
@@ -13096,11 +13283,41 @@ export default function App(){
             mockupFiles.forEach(f=>fileRows.push({cells:['Mockup',fileDisplayName(f)]}));
             tables.push({title:'Production Files',headers:['Type','Filename'],aligns:['left','left'],rows:fileRows});
           }
-          // Find a displayable mockup image URL for the PDF
-          const _pdfMockUrl=(()=>{const mf=(af?.mockup_files||af?.files||[]).filter(f=>f);
-            for(const f of mf){const u=typeof f==='string'?f:(f?.url||'');if(_isImgUrl(u,f))return u;const pt=_isPdfUrl(u,f)?_cloudinaryPdfThumb(u):null;if(pt)return pt}
-            return itemDetails.find(gi=>gi.image_url&&_isImgUrl(gi.image_url))?.image_url||null})();
-          const _pdfMockHtml=_pdfMockUrl?'<div style="text-align:center;margin:8px 0 12px;padding:12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px"><img src="'+_pdfMockUrl+'" style="max-width:100%;max-height:300px;object-fit:contain;border-radius:6px"/><div style="font-size:9px;color:#666;margin-top:4px">Mockup Preview</div></div>':'';
+          // Numbers roster table for PDF
+          numbersData.forEach(nd2=>{
+            if(!nd2.roster||Object.keys(nd2.roster).length===0)return;
+            const numInfo=[];
+            if(nd2.nd){
+              numInfo.push({cells:['Method',{value:'<strong>'+(nd2.nd.num_method||'heat_transfer').replace(/_/g,' ')+'</strong>'}]});
+              numInfo.push({cells:['Number Size',{value:'<strong>'+(nd2.nd.num_size||'—')+'</strong>'}]});
+              if(nd2.nd.front_and_back)numInfo.push({cells:['Back Size',{value:'<strong>'+(nd2.nd.num_size_back||nd2.nd.num_size||'—')+'</strong>'}]});
+              if(nd2.nd.print_color)numInfo.push({cells:['Color',{value:'<strong>'+nd2.nd.print_color+'</strong>'}]});
+              if(nd2.nd.num_font)numInfo.push({cells:['Font',{value:'<strong>'+nd2.nd.num_font+'</strong>'}]});
+              if(nd2.nd.front_and_back)numInfo.push({cells:['Placement',{value:'<strong>Front + Back</strong>'}]});
+            }
+            if(numInfo.length>0)tables.push({title:'Number Details'+(nd2.sku?' — '+nd2.sku:''),headers:['Property','Value'],aligns:['left','left'],rows:numInfo});
+            // Number list by size
+            const numRows=[];
+            nd2.sizes.forEach(sz=>{const nums=(nd2.roster[sz]||[]).filter(n=>n!=='');
+              if(nums.length>0)numRows.push({cells:[sz,nums.sort((a,b)=>Number(a)-Number(b)).join(', ')]});
+            });
+            if(numRows.length>0)tables.push({title:'Number List'+(nd2.sku?' — '+nd2.sku:''),headers:['Size','Numbers'],aligns:['left','left'],rows:numRows});
+          });
+          // Names roster table for PDF
+          numbersData.forEach(nd2=>{
+            if(!nd2.names||Object.keys(nd2.names).length===0)return;
+            const nameRows=[];
+            nd2.sizes.forEach(sz=>{const nms=(nd2.names[sz]||[]).filter(n=>n!=='');
+              if(nms.length>0)nameRows.push({cells:[sz,nms.join(', ')]});
+            });
+            if(nameRows.length>0)tables.push({title:'Names List'+(nd2.sku?' — '+nd2.sku:''),headers:['Size','Names'],aligns:['left','left'],rows:nameRows});
+          });
+          // Find displayable mockup image URLs for the PDF — show all mockups
+          const _pdfMockUrls=(()=>{const urls=[];const mf=mockupFiles.filter(f=>f);
+            for(const f of mf){const u=typeof f==='string'?f:(f?.url||'');if(_isImgUrl(u,f)){urls.push(u)}else{const pt=_isPdfUrl(u,f)?_cloudinaryPdfThumb(u):null;if(pt)urls.push(pt)}}
+            if(urls.length===0){const fallback=itemDetails.find(gi=>gi.image_url&&_isImgUrl(gi.image_url))?.image_url;if(fallback)urls.push(fallback)}
+            return urls})();
+          const _pdfMockHtml=_pdfMockUrls.length>0?'<div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin:8px 0 12px;padding:12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px">'+_pdfMockUrls.map(u=>'<img src="'+u+'" style="max-width:'+(_pdfMockUrls.length>1?'48%':'100%')+';max-height:300px;object-fit:contain;border-radius:6px"/>').join('')+'<div style="font-size:9px;color:#666;margin-top:4px;width:100%;text-align:center">Mockup Preview</div></div>':'';
           printDoc({title:j.customer||'Job',docNum:j.id,docType:'Production Job Sheet',
             headerRight:'<div class="ta" style="font-size:20px">'+j.total_units+' UNITS</div><div class="ts">'+j.deco_type?.replace(/_/g,' ')+'</div>',
             infoBoxes,tables,
@@ -13120,29 +13337,38 @@ export default function App(){
             </div>
           </div>
           <div className="modal-body" style={{padding:0}}>
-            {/* BIG Mockup Preview — full width, prominent */}
-            <div style={{background:'#0f172a',padding:24,borderBottom:'2px solid #334155',cursor:'pointer',position:'relative'}}
-              onClick={()=>{setProdLightboxIdx(0);setProdLightboxZoom(1);setProdJobLightbox(true)}}>
-              <div style={{display:'flex',alignItems:'center',justifyContent:'center',minHeight:340,borderRadius:12,background:'#1e293b',border:'2px solid #334155',overflow:'hidden',position:'relative'}}>
-                {(()=>{if(mockupFiles.length===0)return<div style={{textAlign:'center',padding:40}}><div style={{fontSize:64,marginBottom:8}}>🎨</div><div style={{fontSize:14,color:'#94a3b8'}}>No mockup uploaded</div></div>;
-                  const f0=mockupFiles[0];const u0=typeof f0==='string'?f0:(f0?.url||'');
-                  const isImg=_isImgUrl(u0,f0);const isPdf=_isPdfUrl(u0,f0);const pdfThumb=isPdf?_cloudinaryPdfThumb(u0):null;
-                  const imgSrc=isImg?u0:pdfThumb;
-                  return imgSrc?<img src={imgSrc} alt="Mockup" style={{maxWidth:'100%',maxHeight:340,objectFit:'contain',display:'block',margin:'0 auto'}}/>
-                    :<div style={{textAlign:'center',padding:40}}><div style={{fontSize:64,marginBottom:8}}>📄</div><div style={{fontSize:14,fontWeight:700,color:'#93c5fd',wordBreak:'break-all'}}>{fileDisplayName(f0)}</div></div>})()}
-              </div>
-              <div style={{position:'absolute',bottom:32,right:32,background:'rgba(59,130,246,0.9)',color:'white',padding:'6px 14px',borderRadius:8,fontSize:12,fontWeight:700,display:'flex',alignItems:'center',gap:6}}>
-                🔍 Click to Zoom
-              </div>
-              {mockupFiles.length>1&&<div style={{display:'flex',gap:8,justifyContent:'center',marginTop:12}}>
-                {mockupFiles.slice(0,6).map((f,i)=>{const u=typeof f==='string'?f:(f?.url||'');const isImg=_isImgUrl(u,f);const isPdf=_isPdfUrl(u,f);const thumb=isImg?u:isPdf?_cloudinaryPdfThumb(u):null;
-                  return<div key={i} style={{width:56,height:56,borderRadius:6,border:'2px solid #475569',overflow:'hidden',background:'#334155',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center'}}
-                    onClick={e=>{e.stopPropagation();setProdLightboxIdx(i);setProdLightboxZoom(1);setProdJobLightbox(true)}}>
-                    {thumb?<img src={thumb} alt="" style={{width:'100%',height:'100%',objectFit:'cover'}}/>:<span style={{fontSize:9,color:'#94a3b8',textAlign:'center',padding:2}}>{fileDisplayName(f)}</span>}
+            {/* Mockup Preview — only show actual images (no .ai files), equal-size grid */}
+            {(()=>{const dispMocks=mockupFiles.map((f,i)=>({f,i,u:typeof f==='string'?f:(f?.url||'')})).filter(({u,f})=>_isImgUrl(u,f)||_isPdfUrl(u,f));
+              return<div style={{background:'#0f172a',padding:24,borderBottom:'2px solid #334155',position:'relative'}}>
+              {dispMocks.length===0?<div style={{textAlign:'center',padding:40,minHeight:200}}><div style={{fontSize:64,marginBottom:8}}>🎨</div><div style={{fontSize:14,color:'#94a3b8'}}>No mockup images</div></div>
+              :<div style={{display:'grid',gridTemplateColumns:dispMocks.length===1?'1fr':dispMocks.length===2?'1fr 1fr':dispMocks.length===3?'1fr 1fr 1fr':'1fr 1fr',gap:12}}>
+                {dispMocks.map(({f,i,u})=>{const isImg=_isImgUrl(u,f);const isPdf=_isPdfUrl(u,f);const pdfThumb=isPdf?_cloudinaryPdfThumb(u):null;const imgSrc=isImg?u:pdfThumb;
+                  return<div key={i} style={{borderRadius:12,background:'#1e293b',border:'2px solid #334155',overflow:'hidden',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',minHeight:dispMocks.length===1?400:260}}
+                    onClick={()=>{setProdLightboxIdx(i);setProdLightboxZoom(1);setProdJobLightbox(true)}}>
+                    <img src={imgSrc} alt={'Mockup '+(i+1)} style={{width:'100%',height:'100%',objectFit:'contain',display:'block',padding:8}}/>
                   </div>})}
-                {mockupFiles.length>6&&<div style={{width:56,height:56,borderRadius:6,border:'2px solid #475569',background:'#334155',display:'flex',alignItems:'center',justifyContent:'center',color:'#94a3b8',fontSize:11,fontWeight:700}}>+{mockupFiles.length-6}</div>}
               </div>}
-            </div>
+              {dispMocks.length>0&&<div style={{textAlign:'right',marginTop:8}}>
+                <span style={{background:'rgba(59,130,246,0.9)',color:'white',padding:'6px 14px',borderRadius:8,fontSize:12,fontWeight:700,cursor:'pointer'}}
+                  onClick={()=>{setProdLightboxIdx(0);setProdLightboxZoom(1);setProdJobLightbox(true)}}>Click to Zoom</span>
+              </div>}
+            </div>})()}
+
+            {/* Production & Art Files — directly below mockups */}
+            {(prodFiles.length>0||mockupFiles.length>0)&&<div style={{padding:16,borderBottom:'2px solid #e2e8f0',background:'#1e293b'}}>
+              <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                {prodFiles.map((f,i)=><div key={'p'+i} style={{display:'flex',alignItems:'center',gap:6,padding:'8px 14px',background:'#fef3c7',border:'1px solid #fde68a',borderRadius:8,cursor:'pointer'}}
+                  onClick={()=>openFile(f)} title={'Production: '+fileDisplayName(f)}>
+                  <span style={{fontSize:16}}>📁</span>
+                  <div><div style={{fontSize:12,fontWeight:700,color:'#92400e'}}>{fileDisplayName(f)}</div><div style={{fontSize:9,color:'#b45309'}}>Production File</div></div>
+                </div>)}
+                {mockupFiles.map((f,i)=><div key={'m'+i} style={{display:'flex',alignItems:'center',gap:6,padding:'8px 14px',background:'#dbeafe',border:'1px solid #93c5fd',borderRadius:8,cursor:'pointer'}}
+                  onClick={()=>openFile(f)} title={'Mockup: '+fileDisplayName(f)}>
+                  <span style={{fontSize:16}}>🖼️</span>
+                  <div><div style={{fontSize:12,fontWeight:700,color:'#1e40af'}}>{fileDisplayName(f)}</div><div style={{fontSize:9,color:'#3b82f6'}}>Mockup File</div></div>
+                </div>)}
+              </div>
+            </div>}
 
             {/* Decoration Details — per-location breakdown, BIG and clear */}
             <div style={{padding:24,borderBottom:'2px solid #e2e8f0',background:'#f8fafc'}}>
@@ -13201,6 +13427,34 @@ export default function App(){
                 <div style={{fontSize:18,fontWeight:800,color:'#6d28d9'}}>{j.assigned_to}</div></div>}
             </div>
 
+            {/* Dual-Run Order — art + numbers */}
+            {isDualRunJob(j,so)&&<div style={{padding:20,borderBottom:'2px solid #e2e8f0',background:'#faf5ff'}}>
+              <div style={{fontSize:18,fontWeight:800,color:'#0f172a',marginBottom:16,borderBottom:'2px solid #7c3aed',paddingBottom:8}}>Run Order</div>
+              {!j.run_order?<div style={{textAlign:'center',padding:16}}>
+                <div style={{fontSize:13,color:'#6d28d9',fontWeight:700,marginBottom:12}}>This job has both Artwork and Numbers. Select which to run first:</div>
+                <div style={{display:'flex',gap:12,justifyContent:'center'}}>
+                  <button className="btn" style={{padding:'12px 24px',fontSize:14,fontWeight:800,background:'#7c3aed',color:'white',border:'none',borderRadius:8}} onClick={()=>{updateJobField(j,{run_order:'art_first',run1_done:false,run2_done:false});nf('Run order: Artwork first')}}>Artwork First</button>
+                  <button className="btn" style={{padding:'12px 24px',fontSize:14,fontWeight:800,background:'#22c55e',color:'white',border:'none',borderRadius:8}} onClick={()=>{updateJobField(j,{run_order:'numbers_first',run1_done:false,run2_done:false});nf('Run order: Numbers first')}}>Numbers First</button>
+                </div>
+              </div>:(()=>{const rl=getRunLabels(j);return<div>
+                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:12}}>
+                  <div style={{padding:16,borderRadius:10,background:j.run1_done?'#dcfce7':'#eff6ff',border:'2px solid '+(j.run1_done?'#86efac':'#3b82f6')}}>
+                    <div style={{fontSize:11,fontWeight:700,color:j.run1_done?'#166534':'#1e40af',textTransform:'uppercase',letterSpacing:1,marginBottom:4}}>Run 1</div>
+                    <div style={{fontSize:20,fontWeight:800,color:j.run1_done?'#166534':'#1e40af'}}>{rl.run1}</div>
+                    <div style={{fontSize:12,fontWeight:700,color:j.run1_done?'#166534':'#3b82f6',marginTop:4}}>{j.run1_done?'Completed':'In Progress'}</div>
+                    {!j.run1_done&&<button className="btn" style={{marginTop:8,padding:'8px 16px',fontSize:12,fontWeight:800,background:'#166534',color:'white',border:'none',borderRadius:6,width:'100%'}} onClick={()=>{updateJobField(j,{run1_done:true});nf(rl.run1+' run complete — starting '+rl.run2)}}>Mark {rl.run1} Done</button>}
+                  </div>
+                  <div style={{padding:16,borderRadius:10,background:j.run2_done?'#dcfce7':j.run1_done?'#eff6ff':'#f8fafc',border:'2px solid '+(j.run2_done?'#86efac':j.run1_done?'#3b82f6':'#e2e8f0')}}>
+                    <div style={{fontSize:11,fontWeight:700,color:j.run2_done?'#166534':j.run1_done?'#1e40af':'#94a3b8',textTransform:'uppercase',letterSpacing:1,marginBottom:4}}>Run 2</div>
+                    <div style={{fontSize:20,fontWeight:800,color:j.run2_done?'#166534':j.run1_done?'#1e40af':'#94a3b8'}}>{rl.run2}</div>
+                    <div style={{fontSize:12,fontWeight:700,color:j.run2_done?'#166534':j.run1_done?'#3b82f6':'#94a3b8',marginTop:4}}>{j.run2_done?'Completed':j.run1_done?'In Progress':'Pending'}</div>
+                    {j.run1_done&&!j.run2_done&&<button className="btn" style={{marginTop:8,padding:'8px 16px',fontSize:12,fontWeight:800,background:'#166534',color:'white',border:'none',borderRadius:6,width:'100%'}} onClick={()=>{updateJobField(j,{run2_done:true});nf(rl.run2+' run complete — job fully decorated')}}>Mark {rl.run2} Done</button>}
+                  </div>
+                </div>
+                {!j.run1_done&&<button style={{fontSize:11,color:'#7c3aed',cursor:'pointer',background:'none',border:'none',padding:0,textDecoration:'underline',fontWeight:600}} onClick={()=>{updateJobField(j,{run_order:j.run_order==='art_first'?'numbers_first':'art_first'});nf('Switched to '+(j.run_order==='art_first'?'Numbers':'Artwork')+' first')}}>Switch run order</button>}
+              </div>})()}
+            </div>}
+
             {/* SKUs & Quantities */}
             <div style={{padding:20,borderBottom:'1px solid #e2e8f0'}}>
               <div style={{fontSize:14,fontWeight:800,color:'#1e3a5f',marginBottom:10}}>SKUs & Quantities</div>
@@ -13232,23 +13486,48 @@ export default function App(){
                 </div>})}
             </div>
 
-            {/* Production Files */}
-            <div style={{padding:20,borderBottom:'1px solid #e2e8f0'}}>
-              <div style={{fontSize:14,fontWeight:800,color:'#1e3a5f',marginBottom:10}}>Production Files</div>
-              {prodFiles.length===0&&mockupFiles.length===0?<div style={{color:'#94a3b8',fontSize:12}}>No files attached</div>
-              :<div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-                {prodFiles.map((f,i)=><div key={'p'+i} style={{display:'flex',alignItems:'center',gap:6,padding:'8px 14px',background:'#fef3c7',border:'1px solid #fde68a',borderRadius:8,cursor:'pointer'}}
-                  onClick={()=>openFile(f)} title={'Production: '+fileDisplayName(f)}>
-                  <span style={{fontSize:16}}>📁</span>
-                  <div><div style={{fontSize:12,fontWeight:700,color:'#92400e'}}>{fileDisplayName(f)}</div><div style={{fontSize:9,color:'#b45309'}}>Production File</div></div>
-                </div>)}
-                {mockupFiles.map((f,i)=><div key={'m'+i} style={{display:'flex',alignItems:'center',gap:6,padding:'8px 14px',background:'#dbeafe',border:'1px solid #93c5fd',borderRadius:8,cursor:'pointer'}}
-                  onClick={()=>openFile(f)} title={'Mockup: '+fileDisplayName(f)}>
-                  <span style={{fontSize:16}}>🖼️</span>
-                  <div><div style={{fontSize:12,fontWeight:700,color:'#1e40af'}}>{fileDisplayName(f)}</div><div style={{fontSize:9,color:'#3b82f6'}}>Mockup File</div></div>
-                </div>)}
-              </div>}
-            </div>
+            {/* Numbers & Names Roster */}
+            {numbersData.length>0&&numbersData.some(nd2=>nd2.nd||nd2.roster||nd2.names)&&<div style={{padding:20,borderBottom:'1px solid #e2e8f0'}}>
+              <div style={{fontSize:18,fontWeight:800,color:'#0f172a',marginBottom:16,borderBottom:'2px solid #7c3aed',paddingBottom:8}}>Numbers & Names</div>
+              {numbersData.map((nd2,ndi)=><div key={ndi} style={{marginBottom:ndi<numbersData.length-1?16:0}}>
+                {numbersData.length>1&&<div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:8}}>{nd2.sku} ({nd2.color})</div>}
+                {/* Number details info */}
+                {nd2.nd&&<div style={{display:'flex',gap:10,flexWrap:'wrap',fontSize:13,marginBottom:12,padding:12,background:'#faf5ff',borderRadius:8,border:'1px solid #e9d5ff'}}>
+                  <span><strong style={{color:'#6d28d9'}}>{(nd2.nd.num_method||'heat_transfer').replace(/_/g,' ')}</strong></span>
+                  <span>Size: <strong>{nd2.nd.num_size||'—'}</strong></span>
+                  {nd2.nd.front_and_back&&<span>Back: <strong>{nd2.nd.num_size_back||nd2.nd.num_size||'—'}</strong></span>}
+                  {nd2.nd.print_color&&<span>Color: <strong>{nd2.nd.print_color}</strong></span>}
+                  {nd2.nd.num_font&&<span>Font: <strong>{nd2.nd.num_font}</strong></span>}
+                  {nd2.nd.front_and_back&&<span style={{padding:'2px 8px',borderRadius:4,background:'#7c3aed',color:'white',fontSize:11,fontWeight:700}}>Front + Back</span>}
+                </div>}
+                {/* Number list by size */}
+                {nd2.roster&&Object.keys(nd2.roster).length>0&&<div style={{marginBottom:nd2.names?12:0}}>
+                  <div style={{fontSize:13,fontWeight:700,color:'#6d28d9',marginBottom:8}}>Number List</div>
+                  {nd2.sizes.map(sz=>{const nums=(nd2.roster[sz]||[]).filter(n=>n!=='');
+                    if(nums.length===0)return null;
+                    return<div key={sz} style={{marginBottom:8}}>
+                      <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:4}}>{sz} ({nums.length})</div>
+                      <div style={{display:'flex',flexWrap:'wrap',gap:4}}>
+                        {nums.sort((a,b)=>Number(a)-Number(b)).map((n,ni)=>
+                          <span key={ni} style={{display:'inline-block',minWidth:36,textAlign:'center',padding:'4px 8px',background:'#faf5ff',border:'1px solid #e9d5ff',borderRadius:6,fontSize:14,fontWeight:700,color:'#6d28d9'}}>{n}</span>)}
+                      </div>
+                    </div>})}
+                </div>}
+                {/* Names list by size */}
+                {nd2.names&&Object.keys(nd2.names).length>0&&<div>
+                  <div style={{fontSize:13,fontWeight:700,color:'#0369a1',marginBottom:8}}>Names List</div>
+                  {nd2.sizes.map(sz=>{const nms=(nd2.names[sz]||[]).filter(n=>n!=='');
+                    if(nms.length===0)return null;
+                    return<div key={sz} style={{marginBottom:8}}>
+                      <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:4}}>{sz} ({nms.length})</div>
+                      <div style={{display:'flex',flexWrap:'wrap',gap:4}}>
+                        {nms.map((n,ni)=>
+                          <span key={ni} style={{padding:'4px 10px',background:'#f0f9ff',border:'1px solid #bae6fd',borderRadius:6,fontSize:13,fontWeight:600,color:'#0369a1'}}>{n}</span>)}
+                      </div>
+                    </div>})}
+                </div>}
+              </div>)}
+            </div>}
 
             {/* Notes */}
             {(j.notes||so.production_notes)&&<div style={{padding:20,background:'#fffbe6'}}>
@@ -15991,20 +16270,15 @@ export default function App(){
       }
       return true;
     });
-    const totalSales=filtered.reduce((a,s)=>a+s.total_sales,0);
-    const totalFund=filtered.reduce((a,s)=>a+s.fundraise_total,0);
-    const totalOrders=filtered.reduce((a,s)=>a+s.orders,0);
+    const totalSales=filtered.reduce((a,s)=>a+(s.total_sales||0),0);
+    const totalFund=filtered.reduce((a,s)=>a+(s.fundraise_total||0),0);
+    const totalOrders=filtered.reduce((a,s)=>a+(s.orders||0),0);
 
     // Store detail view
     if(omgSel){
       const s=omgSel;const c=cust.find(x=>x.id===s.customer_id);const rep=REPS.find(r=>r.id===s.rep_id);
-      // Load details on-demand if not yet loaded
-      if(!s._details_loaded && !omgDetailLoading && s._omg_id){
-        setOmgDetailLoading(true);
-        loadOMGStoreDetail(s).then(updated => { setOmgSel(updated); setOmgDetailLoading(false); }).catch(() => setOmgDetailLoading(false));
-      }
-      const totalCost=s.products.reduce((a,p)=>{const q=Object.values(p.sizes).reduce((a2,v)=>a2+v,0);return a+q*(p.cost+p.deco_cost)},0);
-      const totalRetail=s.products.reduce((a,p)=>{const q=Object.values(p.sizes).reduce((a2,v)=>a2+v,0);return a+q*p.retail},0);
+      const totalCost=(s.products||[]).reduce((a,p)=>{const q=Object.values(p.sizes||{}).reduce((a2,v)=>a2+v,0);return a+q*(p.cost+p.deco_cost)},0);
+      const totalRetail=(s.products||[]).reduce((a,p)=>{const q=Object.values(p.sizes||{}).reduce((a2,v)=>a2+v,0);return a+q*p.retail},0);
       const margin=totalRetail-totalCost;const pct=totalRetail>0?Math.round(margin/totalRetail*100):0;
 
       return(<>
@@ -16026,54 +16300,56 @@ export default function App(){
               </div>
             </div>
             {s.status==='closed'&&!sos.some(so=>so.omg_store_id===s.id)&&<button className="btn btn-primary" style={{background:'#166534'}} onClick={()=>{
-              // PULL FROM OMG → Create SO
+              // Create a new SO linked to this OMG store — user adds items manually from OMG admin data
               if(sos.some(so=>so.omg_store_id===s.id)){nf('Already pulled — SO exists for this store','error');return}
-              const newItems=s.products.map((p,pi)=>{
-                const catP=prod.find(cp=>cp.sku===p.sku);
-                return{product_id:catP?.id||null,sku:p.sku||'ITEM-'+pi,name:p.name||'Product',brand:catP?.brand||'',color:p.color||'',
-                  nsa_cost:safeNum(p.cost),retail_price:catP?.retail_price||safeNum(p.retail),unit_sell:safeNum(p.retail),
-                  available_sizes:Object.keys(p.sizes||{}),sizes:{...(p.sizes||{})},
-                  decorations:p.deco_type?[{kind:'art',position:'Front Center',art_file_id:'__tbd',art_tbd_type:p.deco_type,sell_override:safeNum(p.deco_cost)||0}]:[],
-                  is_custom:false,pick_lines:[],po_lines:[]};
-              });
-              const generatedId=nextSOId(sos);console.log('GENERATED SO ID:',generatedId);
-              const newSO={id:generatedId,customer_id:s.customer_id,memo:'OMG Store Pull: '+s.store_name,status:'need_order',
+              const generatedId=nextSOId(sos);
+              const newSO={id:generatedId,customer_id:s.customer_id,memo:'OMG Store: '+s.store_name+(s._omg_sale_code?' ('+s._omg_sale_code+')':''),status:'need_order',
                 created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),
-                expected_date:'',production_notes:'Pulled from OMG store '+s.id+'. Orders: '+s.orders+', Buyers: '+s.unique_buyers,
-                shipping_type:'flat',shipping_value:0,ship_to_id:'default',firm_dates:[],art_files:[],jobs:[],items:newItems,omg_store_id:s.id};
+                expected_date:'',production_notes:'Linked to OMG store '+s.id+'. View orders at: team.ordermygear.com/admin/sales/'+s._omg_id,
+                shipping_type:'flat',shipping_value:0,ship_to_id:'default',firm_dates:[],art_files:[],jobs:[],items:[],omg_store_id:s.id};
               setSOs(prev=>[newSO,...prev]);setESO(newSO);setESOC(c||null);setPg('orders');
-              nf('🎉 Pulled '+newItems.length+' items from '+s.store_name+' into new SO');
-            }}>🔄 Pull to Sales Order</button>}
+              nf('Created SO for '+s.store_name+' — add items from OMG admin');
+            }}>📋 Create Sales Order</button>}
             {s.status==='closed'&&sos.some(so=>so.omg_store_id===s.id)&&<div style={{padding:'6px 12px',background:'#f0fdf4',borderRadius:6,fontSize:11,color:'#166534',fontWeight:600}}>
               ✅ Already pulled → {sos.find(so=>so.omg_store_id===s.id)?.id}</div>}
           </div>
         </div></div>
 
         <div className="stats-row" style={{marginBottom:12}}>
-          <div className="stat-card"><div className="stat-label">Orders</div><div className="stat-value">{s.orders}</div></div>
-          <div className="stat-card"><div className="stat-label">Total Sales</div><div className="stat-value" style={{color:'#1e40af'}}>${s.total_sales.toLocaleString()}</div></div>
-          <div className="stat-card"><div className="stat-label">Fundraise</div><div className="stat-value" style={{color:'#166534'}}>${s.fundraise_total.toLocaleString()}</div></div>
+          <div className="stat-card"><div className="stat-label">Orders</div><div className="stat-value">{s.orders||0}</div></div>
+          <div className="stat-card"><div className="stat-label">Total Sales</div><div className="stat-value" style={{color:'#1e40af'}}>${(s.total_sales||0).toLocaleString()}</div></div>
+          <div className="stat-card"><div className="stat-label">Fundraise</div><div className="stat-value" style={{color:'#166534'}}>${(s.fundraise_total||0).toLocaleString()}</div></div>
           <div className="stat-card"><div className="stat-label">NSA Cost</div><div className="stat-value" style={{color:'#d97706'}}>${totalCost.toLocaleString()}</div></div>
           <div className="stat-card"><div className="stat-label">Margin</div><div className="stat-value" style={{color:pct>=30?'#166534':'#dc2626'}}>{pct}%</div></div>
         </div>
 
-        <div className="card" style={{marginBottom:12}}><div className="card-header"><h2>📦 Store Products</h2></div>
+        <div className="card" style={{marginBottom:12}}><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+          <h2>📦 Store Products</h2>
+          <a href={`https://team.ordermygear.com/admin/sales/${s._omg_id}`} target="_blank" rel="noopener noreferrer"
+            style={{fontSize:11,color:'#2563eb',textDecoration:'none',fontWeight:600}}>View in OMG Admin →</a>
+        </div>
           <div className="card-body" style={{padding:0}}>
             {omgDetailLoading && !s._details_loaded ? (
               <div style={{padding:24,textAlign:'center',color:'#64748b',fontSize:13}}>Loading order details from OMG...</div>
-            ) : s.products.length === 0 ? (
-              <div style={{padding:24,textAlign:'center',color:'#94a3b8',fontSize:13}}>No product data available{!s._details_loaded && ' — click Sync to reload'}</div>
+            ) : (s.products||[]).length === 0 ? (
+              <div style={{padding:24,textAlign:'center',color:'#94a3b8',fontSize:13}}>
+                {s._details_loaded ? 'No product data returned from OMG API' : 'Product details load when store data is available'}
+                {!s._details_loaded && !omgDetailLoading && s._omg_id && <button className="btn btn-sm btn-primary" style={{marginLeft:8}} onClick={()=>{
+                  setOmgDetailLoading(true);
+                  loadOMGStoreDetail(s).then(u=>{setOmgSel(u);setOmgDetailLoading(false)}).catch(()=>setOmgDetailLoading(false));
+                }}>Load Details</button>}
+              </div>
             ) : (
             <table><thead><tr><th>SKU</th><th>Product</th><th>Color</th><th>Deco</th><th>Retail</th><th>Cost</th><th>Deco $</th><th>Sizes</th><th>Units</th><th>Revenue</th><th>Margin</th></tr></thead>
-            <tbody>{s.products.map((p,i)=>{const q=Object.values(p.sizes).reduce((a,v)=>a+v,0);const rev=q*p.retail;const cost=q*(p.cost+p.deco_cost);const mg=rev-cost;
+            <tbody>{(s.products||[]).map((p,i)=>{const q=Object.values(p.sizes||{}).reduce((a,v)=>a+v,0);const rev=q*p.retail;const cost=q*(p.cost+p.deco_cost);const mg=rev-cost;
               const catP=prod.find(cp=>cp.sku===p.sku);
               return<tr key={i}>
                 <td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{p.sku} {catP&&<span style={{fontSize:8,color:'#22c55e'}}>✓</span>}</td>
                 <td>{p.name}</td><td style={{fontSize:11}}>{p.color}</td>
                 <td><span style={{fontSize:9,padding:'1px 5px',borderRadius:4,background:p.deco_type==='screen_print'?'#dbeafe':'#ede9fe',
-                  color:p.deco_type==='screen_print'?'#1e40af':'#6d28d9'}}>{p.deco_type.replace(/_/g,' ')}</span></td>
+                  color:p.deco_type==='screen_print'?'#1e40af':'#6d28d9'}}>{(p.deco_type||'').replace(/_/g,' ')}</span></td>
                 <td style={{textAlign:'right'}}>${p.retail}</td><td style={{textAlign:'right'}}>${p.cost}</td><td style={{textAlign:'right'}}>${p.deco_cost}</td>
-                <td style={{fontSize:9}}>{Object.entries(p.sizes).map(([sz,q2])=>sz+':'+q2).join(' ')}</td>
+                <td style={{fontSize:9}}>{Object.entries(p.sizes||{}).map(([sz,q2])=>sz+':'+q2).join(' ')}</td>
                 <td style={{fontWeight:700,textAlign:'center'}}>{q}</td>
                 <td style={{textAlign:'right',fontWeight:600}}>${rev.toLocaleString()}</td>
                 <td style={{textAlign:'right',color:mg>0?'#166534':'#dc2626'}}>${mg.toLocaleString()} <span style={{fontSize:9}}>({rev>0?Math.round(mg/rev*100):0}%)</span></td>
@@ -16088,12 +16364,11 @@ export default function App(){
             <div style={{display:'grid',gap:12}}>
               {[
                 {n:1,title:'Store Closes in OMG',desc:'Wait for the store close date. All orders are finalized and no more changes can be made.',icon:'🔒'},
-                {n:2,title:'Review Store Data',desc:'Click into the store above to verify all products, sizes, quantities, and pricing. Check that fundraise amounts are correct.',icon:'👀'},
-                {n:3,title:'Pull to Sales Order',desc:'Click "🔄 Pull to Sales Order" button. This creates a new SO with all items, sizes, deco already filled in. Cost and sell prices carry over from the store.',icon:'📋'},
-                {n:4,title:'Review the New SO',desc:'The SO opens automatically. Verify items, update any pricing, add art files, and adjust shipping. Products matched to the catalog show ✓.',icon:'✏️'},
-                {n:5,title:'Create POs for Inventory',desc:'Go to each item and create Purchase Orders for any blanks not in stock. Use Batch PO for efficiency.',icon:'🛒'},
-                {n:6,title:'Production & Decoration',desc:'Once items are received, send jobs to the Production Board. Art should already be assigned from the store setup.',icon:'🏭'},
-                {n:7,title:'Invoice & Ship',desc:'After production is complete, create invoice from the SO and arrange shipping to the customer.',icon:'📦'},
+                {n:2,title:'Review Orders in OMG Admin',desc:'Click "View Orders in OMG" above to see all orders, products, sizes, quantities and pricing in the OMG dashboard.',icon:'👀'},
+                {n:3,title:'Create Sales Order',desc:'Create a new Sales Order in the NSA portal with the store\'s items. Add products, sizes, deco, and pricing from the OMG order data.',icon:'📋'},
+                {n:4,title:'Create POs for Inventory',desc:'Go to each item and create Purchase Orders for any blanks not in stock. Use Batch PO for efficiency.',icon:'🛒'},
+                {n:5,title:'Production & Decoration',desc:'Once items are received, send jobs to the Production Board. Art should already be assigned from the store setup.',icon:'🏭'},
+                {n:6,title:'Invoice & Ship',desc:'After production is complete, create invoice from the SO and arrange shipping to the customer.',icon:'📦'},
               ].map(step=><div key={step.n} style={{display:'flex',gap:12,alignItems:'flex-start'}}>
                 <div style={{width:36,height:36,borderRadius:18,background:'#eff6ff',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:800,color:'#1e40af',flexShrink:0,fontSize:14}}>{step.n}</div>
                 <div><div style={{fontWeight:700,fontSize:13}}>{step.icon} {step.title}</div><div style={{fontSize:12,color:'#64748b'}}>{step.desc}</div></div>
@@ -16109,6 +16384,9 @@ export default function App(){
       <div style={{display:'flex',gap:8,marginBottom:12,alignItems:'center'}}>
         <button className="btn btn-primary" onClick={syncOMGStores} disabled={omgSyncing} style={{fontSize:12}}>
           {omgSyncing ? 'Syncing...' : 'Sync from OMG'}
+        </button>
+        <button className="btn btn-secondary" onClick={probeOMGEndpoints} style={{fontSize:12}}>
+          Probe API
         </button>
         <div style={{fontSize:11,color:'#64748b'}}>
           Last synced: {omgLastSync ? new Date(omgLastSync).toLocaleString() : 'Never'}
@@ -16160,13 +16438,13 @@ export default function App(){
               {s.open_date&&<div style={{fontSize:10,color:'#94a3b8',marginBottom:8}}>📅 {s.open_date} → {s.close_date}</div>}
               <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:6}}>
                 <div style={{textAlign:'center',padding:6,background:'#f8fafc',borderRadius:4}}>
-                  <div style={{fontSize:16,fontWeight:800,color:'#1e40af'}}>${s.total_sales.toLocaleString()}</div><div style={{fontSize:9,color:'#64748b'}}>Sales</div></div>
+                  <div style={{fontSize:16,fontWeight:800,color:'#1e40af'}}>${(s.total_sales||0).toLocaleString()}</div><div style={{fontSize:9,color:'#64748b'}}>Sales</div></div>
                 <div style={{textAlign:'center',padding:6,background:'#f0fdf4',borderRadius:4}}>
-                  <div style={{fontSize:16,fontWeight:800,color:'#166534'}}>{s.orders}</div><div style={{fontSize:9,color:'#64748b'}}>Orders</div></div>
+                  <div style={{fontSize:16,fontWeight:800,color:'#166534'}}>{s.orders||0}</div><div style={{fontSize:9,color:'#64748b'}}>Orders</div></div>
                 <div style={{textAlign:'center',padding:6,background:'#fef3c7',borderRadius:4}}>
-                  <div style={{fontSize:16,fontWeight:800,color:'#92400e'}}>${s.fundraise_total.toLocaleString()}</div><div style={{fontSize:9,color:'#64748b'}}>Fundraised</div></div>
+                  <div style={{fontSize:16,fontWeight:800,color:'#92400e'}}>${(s.fundraise_total||0).toLocaleString()}</div><div style={{fontSize:9,color:'#64748b'}}>Fundraised</div></div>
               </div>
-              <div style={{marginTop:6,fontSize:10,color:'#64748b'}}>{s.products.length} products · {s.items_sold} items sold · {s.unique_buyers} buyers</div>
+              <div style={{marginTop:6,fontSize:10,color:'#64748b'}}>{s.products?.length||0} products · {s.items_sold||0} items sold · {s.unique_buyers||0} buyers</div>
               {s.status==='closed'&&!sos.some(so=>so.omg_store_id===s.id)&&<div style={{marginTop:6,padding:4,background:'#fef3c7',borderRadius:4,fontSize:10,color:'#92400e',fontWeight:600,textAlign:'center'}}>
                 ⚠️ Ready to pull — not yet converted to SO</div>}
               {sos.some(so=>so.omg_store_id===s.id)&&<div style={{marginTop:6,padding:4,background:'#dcfce7',borderRadius:4,fontSize:10,color:'#166534',fontWeight:600,textAlign:'center'}}>
@@ -17853,7 +18131,7 @@ export default function App(){
         if(jj.id!==j.id)return jj;
         const upd={...jj,art_status:newStatus,assigned_artist:jj.assigned_artist||j.assigned_artist};
         // Auto-move to production staging when art complete + items received
-        if(newStatus==='art_complete'&&jj.item_status==='items_received'&&(jj.prod_status==='hold'||!jj.prod_status)&&!jj._draft&&jj.prod_status!=='draft'){upd.prod_status='staging'}
+        // Jobs stay in 'hold' (Ready for Prod) — warehouse moves them to In Line manually
         return upd;
       });
       let updArt=safeArt(so);
@@ -17862,7 +18140,7 @@ export default function App(){
         if(afSt)updArt=updArt.map(a=>a.id===j.art_file_id?{...a,status:afSt}:a);
       }
       savSO({...so,art_files:updArt,jobs:updatedJobs});
-      if(newStatus==='art_complete'){const autoStaged=updatedJobs.find(jj=>jj.id===j.id);if(autoStaged?.prod_status==='staging')nf('Art complete — job moved to Ready for Production!');else nf('Art status → '+ART_LABELS[newStatus])}
+      if(newStatus==='art_complete'){nf('Art complete — job is Ready for Production!')}
       else nf('Art status → '+ART_LABELS[newStatus]);
     };
     const assignArtist=(j,artistId)=>{
@@ -17989,10 +18267,9 @@ export default function App(){
                   const ext=j.deco_type==='embroidery'?'.dst':j.deco_type==='screen_print'?'_seps.ai':'.pdf';
                   const fn=(j.art_name||'art').replace(/\s+/g,'_')+'_FINAL'+ext;
                   const updArt=[...safeArt(so)];updArt[afIdx]={...updArt[afIdx],prod_files:[...(updArt[afIdx].prod_files||[]),fn]};
-                  const updJobs=safeJobs(so).map(jj=>{if(jj.id!==j.id)return jj;const upd={...jj,art_status:'art_complete'};if(jj.item_status==='items_received'&&(jj.prod_status==='hold'||!jj.prod_status)&&!jj._draft&&jj.prod_status!=='draft')upd.prod_status='staging';return upd});
+                  const updJobs=safeJobs(so).map(jj=>{if(jj.id!==j.id)return jj;return{...jj,art_status:'art_complete'}});
                   savSO({...so,art_files:updArt,jobs:updJobs});
-                  const autoStaged=updJobs.find(jj=>jj.id===j.id);
-                  nf(autoStaged?.prod_status==='staging'?'Art complete — job moved to Ready for Production!':'Prod files uploaded — Art Complete!');
+                  nf('Prod files uploaded — Art Complete!');
                 }else{moveArtStatus(j,'art_complete')}
               }}>Upload & Complete</button>}
               <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px',marginLeft:'auto'}} onClick={e=>{e.stopPropagation();window.open(window.location.origin+window.location.pathname+'?so='+j.soId,'_blank')}}>Open SO ↗</button>
