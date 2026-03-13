@@ -1807,23 +1807,44 @@ const omgApiCall = async (endpoint, options = {}, _retries = 0) => {
 };
 
 const fetchOMGStores = async () => {
-  // Fetch only relevant stores: truly open (expires_at in future) + closed within last 30 days
-  // Single API call — no heavy pagination or per-status queries
+  // Fetch all stores via pagination, then filter to relevant ones
+  // (open with future expires_at + closed within last 30 days)
   const thirtyDaysAgo = new Date(Date.now() - 30 * 86400000);
   const now = new Date();
+  let allData = [], allIncluded = [];
 
-  // Fetch page 1 of stores (the API returns ~100 per page)
-  const resp = await omgApiCall('/sales?include=organization');
-  if (!resp?.data?.length) return resp;
-  let allData = resp.data;
-  let allIncluded = resp.included || [];
-  console.log(`[OMG] Fetched ${allData.length} stores. Statuses:`, [...new Set(allData.map(s => s.attributes?.status))]);
+  // Page 1
+  const firstResp = await omgApiCall('/sales?include=organization');
+  if (!firstResp?.data?.length) return firstResp;
+  allData = firstResp.data;
+  if (firstResp.included) allIncluded = firstResp.included;
+  const pageSize = firstResp.data.length;
+  console.log(`[OMG] Page 1: ${pageSize} stores. Statuses:`, [...new Set(allData.map(s => s.attributes?.status))]);
 
-  // Filter to only relevant stores:
-  // - "open" status AND expires_at in the future (truly open, not just never-closed old stores)
-  // - "closed/finalized/fulfilled" with expires_at within last 30 days
-  // - "pending/scheduled" (upcoming stores)
+  // Paginate with offset/limit (the format this API supports)
+  if (pageSize >= 25) {
+    let offset = pageSize;
+    for (let p = 0; p < 50; p++) {
+      try {
+        const resp = await omgApiCall(`/sales?include=organization&offset=${offset}&limit=${pageSize}`);
+        if (!resp?.data?.length) break;
+        allData = allData.concat(resp.data);
+        if (resp.included) allIncluded = allIncluded.concat(resp.included);
+        console.log(`[OMG] Page ${p + 2}: ${resp.data.length} stores (offset=${offset})`);
+        if (resp.data.length < pageSize) break;
+        offset += resp.data.length;
+      } catch (e) {
+        console.warn('[OMG] Pagination stopped:', e.message);
+        break;
+      }
+    }
+  }
+
+  console.log(`[OMG] Total fetched: ${allData.length} stores. Statuses:`, [...new Set(allData.map(s => s.attributes?.status))]);
+
+  // Filter to only relevant stores
   const closedStatuses = new Set(['closed', 'finalized', 'fulfilled', 'archived']);
+  const total = allData.length;
   allData = allData.filter(s => {
     const status = (s.attributes?.status || '').toLowerCase();
     const expiresAt = s.attributes?.expires_at;
@@ -1832,9 +1853,9 @@ const fetchOMGStores = async () => {
     // Pending/scheduled — always keep
     if (status === 'pending' || status === 'scheduled') return true;
 
-    // Open — only keep if expires_at is in the future (filters out old "open" stores from 2016)
+    // Open — only keep if expires_at is in the future (filters out old never-closed stores)
     if (status === 'open') {
-      if (!expiresAt) return true; // no expiry = keep it
+      if (!expiresAt) return true;
       return new Date(expiresAt) >= now;
     }
 
@@ -1844,12 +1865,12 @@ const fetchOMGStores = async () => {
       return closedAt && new Date(closedAt) >= thirtyDaysAgo;
     }
 
-    // Unknown status — keep if it has a recent date
+    // Unknown status — keep if recent
     const anyDate = expiresAt || opensAt || s.attributes?.updated_at;
     return anyDate && new Date(anyDate) >= thirtyDaysAgo;
   });
 
-  console.log(`[OMG] After filtering: ${allData.length} relevant stores. Statuses:`, [...new Set(allData.map(s => s.attributes?.status))]);
+  console.log(`[OMG] After filtering: ${allData.length} relevant stores from ${total}. Statuses:`, [...new Set(allData.map(s => s.attributes?.status))]);
   return { data: allData, included: allIncluded };
 };
 
