@@ -1805,127 +1805,71 @@ const omgApiCall = async (endpoint, options = {}, _retries = 0) => {
 };
 
 const fetchOMGStores = async () => {
-  // Fetch only relevant stores: open + recently closed (last 30 days)
-  // Uses API-level status filtering to avoid paginating through hundreds of old stores
-  let allData = [], allIncluded = [];
-
-  // Helper: fetch all pages for a given endpoint
-  const fetchAllPages = async (baseEndpoint) => {
-    const data = [], included = [];
-    const firstResp = await omgApiCall(baseEndpoint);
-    if (!firstResp?.data?.length) return { data, included };
-    data.push(...firstResp.data);
-    if (firstResp.included) included.push(...firstResp.included);
-    const pageSize = firstResp.data.length;
-    console.log(`[OMG] ${baseEndpoint} — page 1: ${pageSize} stores`);
-    // Paginate if we got a full page
-    if (pageSize >= 25) {
-      if (firstResp.links?.next) {
-        let nextUrl = firstResp.links.next;
-        while (nextUrl) {
-          try {
-            const ep = new URL(nextUrl).pathname.replace(/^\/v1/, '') + new URL(nextUrl).search;
-            const resp = await omgApiCall(ep);
-            if (!resp?.data?.length) break;
-            data.push(...resp.data);
-            if (resp.included) included.push(...resp.included);
-            nextUrl = resp.links?.next || null;
-          } catch { break; }
-        }
-      } else {
-        // Try offset/limit pagination (the format that worked in the original code)
-        let offset = pageSize;
-        for (let p = 0; p < 20; p++) {
-          try {
-            const sep = baseEndpoint.includes('?') ? '&' : '?';
-            const resp = await omgApiCall(`${baseEndpoint}${sep}offset=${offset}&limit=${pageSize}`);
-            if (!resp?.data?.length) break;
-            data.push(...resp.data);
-            if (resp.included) included.push(...resp.included);
-            if (resp.data.length < pageSize) break;
-            offset += resp.data.length;
-          } catch { break; }
-        }
-      }
-    }
-    return { data, included };
-  };
-
-  // 1) Fetch open/active stores (the main ones we care about)
-  const statuses = ['open', 'pending', 'scheduled'];
-  for (const status of statuses) {
-    try {
-      const result = await fetchAllPages(`/sales?include=organization&filter[status]=${status}`);
-      allData.push(...result.data);
-      allIncluded.push(...result.included);
-    } catch (e) {
-      console.warn(`[OMG] Failed to fetch ${status} stores:`, e.message);
-    }
-  }
-  console.log(`[OMG] Open/active stores fetched: ${allData.length}`);
-
-  // 2) Fetch closed stores, then filter to last 30 days client-side
-  const closedStatuses = ['closed', 'finalized', 'fulfilled'];
+  // Fetch only relevant stores: truly open (expires_at in future) + closed within last 30 days
+  // Single API call — no heavy pagination or per-status queries
   const thirtyDaysAgo = new Date(Date.now() - 30 * 86400000);
-  for (const status of closedStatuses) {
-    try {
-      const result = await fetchAllPages(`/sales?include=organization&filter[status]=${status}`);
-      const recent = result.data.filter(s => {
-        const closedAt = s.attributes?.expires_at || s.attributes?.closed_at || s.attributes?.updated_at;
-        return closedAt && new Date(closedAt) >= thirtyDaysAgo;
-      });
-      allData.push(...recent);
-      allIncluded.push(...result.included);
-      console.log(`[OMG] ${status}: ${result.data.length} total, ${recent.length} within last 30 days`);
-    } catch (e) {
-      console.warn(`[OMG] Failed to fetch ${status} stores:`, e.message);
+  const now = new Date();
+
+  // Fetch page 1 of stores (the API returns ~100 per page)
+  const resp = await omgApiCall('/sales?include=organization');
+  if (!resp?.data?.length) return resp;
+  let allData = resp.data;
+  let allIncluded = resp.included || [];
+  console.log(`[OMG] Fetched ${allData.length} stores. Statuses:`, [...new Set(allData.map(s => s.attributes?.status))]);
+
+  // Filter to only relevant stores:
+  // - "open" status AND expires_at in the future (truly open, not just never-closed old stores)
+  // - "closed/finalized/fulfilled" with expires_at within last 30 days
+  // - "pending/scheduled" (upcoming stores)
+  const closedStatuses = new Set(['closed', 'finalized', 'fulfilled', 'archived']);
+  allData = allData.filter(s => {
+    const status = (s.attributes?.status || '').toLowerCase();
+    const expiresAt = s.attributes?.expires_at;
+    const opensAt = s.attributes?.opens_at;
+
+    // Pending/scheduled — always keep
+    if (status === 'pending' || status === 'scheduled') return true;
+
+    // Open — only keep if expires_at is in the future (filters out old "open" stores from 2016)
+    if (status === 'open') {
+      if (!expiresAt) return true; // no expiry = keep it
+      return new Date(expiresAt) >= now;
     }
-  }
 
-  // 3) If status filtering returned nothing, fall back to unfiltered fetch (API may not support filter[status])
-  if (allData.length === 0) {
-    console.warn('[OMG] Status-filtered fetches returned no data — falling back to unfiltered fetch');
-    const fallback = await fetchAllPages('/sales?include=organization');
-    if (fallback.data.length > 0) {
-      const excludeOld = new Set(['closed', 'finalized', 'fulfilled', 'archived']);
-      allData = fallback.data.filter(s => {
-        const st = (s.attributes?.status || '').toLowerCase();
-        if (!excludeOld.has(st)) return true;
-        const closedAt = s.attributes?.expires_at || s.attributes?.closed_at || s.attributes?.updated_at;
-        return closedAt && new Date(closedAt) >= thirtyDaysAgo;
-      });
-      allIncluded = fallback.included;
-      console.log(`[OMG] Fallback: filtered ${allData.length} relevant stores from ${fallback.data.length} total`);
+    // Closed statuses — only keep if closed within last 30 days
+    if (closedStatuses.has(status)) {
+      const closedAt = expiresAt || s.attributes?.closed_at || s.attributes?.updated_at;
+      return closedAt && new Date(closedAt) >= thirtyDaysAgo;
     }
-  }
 
-  // Deduplicate by store ID (in case a store appeared in multiple status queries)
-  const seen = new Map();
-  allData.forEach(s => { if (!seen.has(s.id)) seen.set(s.id, s); });
-  allData = [...seen.values()];
+    // Unknown status — keep if it has a recent date
+    const anyDate = expiresAt || opensAt || s.attributes?.updated_at;
+    return anyDate && new Date(anyDate) >= thirtyDaysAgo;
+  });
 
-  console.log(`[OMG] Total relevant stores: ${allData.length}. Statuses:`, [...new Set(allData.map(s => s.attributes?.status))]);
+  console.log(`[OMG] After filtering: ${allData.length} relevant stores. Statuses:`, [...new Set(allData.map(s => s.attributes?.status))]);
   return { data: allData, included: allIncluded };
 };
 
 const fetchOMGStoreDetail = async (saleResource, allIncluded) => {
-  // saleResource is from the initial /sales list — no need to re-fetch it
   const saleId = saleResource.id;
   const saleData = { data: saleResource, included: allIncluded };
-  // Fetch orders for this sale
-  const orders = await omgApiCall(`/orders?filter[sale_id]=${saleId}&include=customer_info`)
-    .catch(() => omgApiCall(`/orders?filter[relationships][sale]=${saleId}&include=sale,customer_info`))
+  // Fetch orders using nested resource URL first, then filter-based fallback
+  const orders = await omgApiCall(`/sales/${saleId}/orders?include=customer_info`)
+    .catch(() => omgApiCall(`/orders?filter[sale_id]=${saleId}&include=customer_info`))
     .catch(e => { console.warn('[OMG] Failed to fetch orders for sale', saleId, e.message); return null; });
   const orderList = orders?.data || [];
-  // Fetch order products for each order — try filter variants, fall back gracefully
+  console.log(`[OMG] Sale ${saleId}: ${orderList.length} orders`);
+  // Fetch order products — try nested resource URL, then filter-based
   const orderProducts = await Promise.all(
     orderList.map(o =>
-      omgApiCall(`/order_products?filter[order_id]=${o.id}&include=product`)
-        .catch(() => omgApiCall(`/order_products?filter[relationships][order]=${o.id}&include=product`))
-        .catch(() => omgApiCall(`/order_products?filter[order_id]=${o.id}`))
+      omgApiCall(`/orders/${o.id}/order_products?include=product`)
+        .catch(() => omgApiCall(`/order_products?filter[order_id]=${o.id}&include=product`))
         .catch(() => ({ data: [], included: [] }))
     )
   );
+  const totalProducts = orderProducts.reduce((a, r) => a + (r?.data?.length || 0), 0);
+  console.log(`[OMG] Sale ${saleId}: ${totalProducts} order products across ${orderList.length} orders`);
   return { ...saleData, orders: orderList, orderProducts };
 };
 
@@ -10145,7 +10089,7 @@ export default function App(){
   const[qPC,setQPC]=useState({open:false,mode:'single',items:[],bulkRaw:''});
   const[poF,setPOF]=useState({status:'all',vendor:'all',rep:'all',search:'',sort:'date_desc'});
   // OMG Team Stores
-  const[omgFilter,setOmgFilter]=useState({rep:'all',status:'all',search:''});const[omgSel,setOmgSel]=useState(null);
+  const[omgFilter,setOmgFilter]=useState({rep:'all',status:'all',search:''});const[omgSel,setOmgSel]=useState(null);const[omgDetailLoading,setOmgDetailLoading]=useState(false);
   const[estF,setEstF]=useState({status:'open',rep:'_me_',search:'',sort:'date_desc'});
   const[soF,setSOF]=useState({status:'all',rep:'all',search:'',sort:'date_desc'});
   const[iS,setIS]=useState({f:'value',d:'desc'});const[iF,setIF]=useState({cat:'all',vnd:'all',clr:'all'});
@@ -10333,36 +10277,57 @@ export default function App(){
   }, [ssConnected, sos]);
 
   // ─── OMG Sync Handler ───
+  // Lightweight sync: fetches store list only (no order/product details).
+  // Details are loaded on-demand when user clicks into a store.
   const syncOMGStores = async () => {
     setOmgSyncing(true);
     try {
       const omgStoresData = await fetchOMGStores();
       if (!omgStoresData?.data) { nf('No stores found in OMG API response', 'error'); return; }
-      // Fetch store details in small batches to avoid OMG API rate limits (409s)
-      const detailedStores = [];
-      const batchSize = 2;
       const stores = omgStoresData.data;
-      for (let i = 0; i < stores.length; i += batchSize) {
-        const batch = stores.slice(i, i + batchSize);
-        const results = await Promise.allSettled(batch.map(store => fetchOMGStoreDetail(store, omgStoresData.included || [])));
-        results.forEach(r => { if (r.status === 'fulfilled' && r.value !== null) detailedStores.push(r.value); });
-        if (i + batchSize < stores.length) await new Promise(r => setTimeout(r, 500));
-      }
-      const failedCount = stores.length - detailedStores.length;
-      const convertedStores = detailedStores.map(store => convertOMGStore(store, cust));
+      // Convert store list data (no order details yet — those load on-demand)
+      const convertedStores = stores.map(store => {
+        const basic = { data: store, included: omgStoresData.included || [], orders: [], orderProducts: [] };
+        const converted = convertOMGStore(basic, cust);
+        // Use order count from relationship data if available
+        const orderRel = store.relationships?.orders?.data;
+        if (Array.isArray(orderRel)) converted.orders = orderRel.length;
+        converted._details_loaded = false;
+        return converted;
+      });
       // Merge: keep manual stores + update OMG stores by ID
       const manualStores = omgStores.filter(s => !s._omg_source);
       const omgMap = new Map(convertedStores.map(s => [s.id, s]));
-      // Keep previously-synced OMG stores that weren't in this batch (e.g. closed stores not returned)
+      // Keep previously-synced OMG stores that weren't in this batch (e.g. old closed stores)
       omgStores.filter(s => s._omg_source && !omgMap.has(s.id)).forEach(s => omgMap.set(s.id, s));
       setOmgStores([...manualStores, ...omgMap.values()]);
       setOmgLastSync(new Date().toISOString());
-      const msg = 'Synced ' + convertedStores.length + ' stores from OrderMyGear';
-      nf(failedCount > 0 ? msg + ` (${failedCount} failed — check console)` : msg);
+      nf('Synced ' + convertedStores.length + ' stores from OrderMyGear');
     } catch (error) {
       console.error('[OMG] Sync failed:', error);
       nf('OMG sync failed: ' + error.message, 'error');
     } finally { setOmgSyncing(false); }
+  };
+
+  // Load full details (orders + products) for a single store on-demand
+  const loadOMGStoreDetail = async (store) => {
+    if (store._details_loaded) return store;
+    const omgId = store._omg_id;
+    if (!omgId) return store;
+    try {
+      // Re-fetch sale resource to get fresh data + included org
+      const saleResp = await omgApiCall(`/sales/${omgId}?include=organization`);
+      const saleResource = saleResp?.data || { id: omgId, attributes: {} };
+      const detail = await fetchOMGStoreDetail(saleResource, saleResp?.included || []);
+      const updated = { ...convertOMGStore(detail, cust), _details_loaded: true };
+      // Update in omgStores state
+      setOmgStores(prev => prev.map(s => s.id === store.id ? updated : s));
+      return updated;
+    } catch (e) {
+      console.error('[OMG] Failed to load detail for store', store.id, e);
+      nf('Failed to load store details: ' + e.message, 'error');
+      return store;
+    }
   };
 
   // ─── Delete Handlers (with cascade status updates) ───
@@ -15405,6 +15370,11 @@ export default function App(){
     // Store detail view
     if(omgSel){
       const s=omgSel;const c=cust.find(x=>x.id===s.customer_id);const rep=REPS.find(r=>r.id===s.rep_id);
+      // Load details on-demand if not yet loaded
+      if(!s._details_loaded && !omgDetailLoading && s._omg_id){
+        setOmgDetailLoading(true);
+        loadOMGStoreDetail(s).then(updated => { setOmgSel(updated); setOmgDetailLoading(false); }).catch(() => setOmgDetailLoading(false));
+      }
       const totalCost=s.products.reduce((a,p)=>{const q=Object.values(p.sizes).reduce((a2,v)=>a2+v,0);return a+q*(p.cost+p.deco_cost)},0);
       const totalRetail=s.products.reduce((a,p)=>{const q=Object.values(p.sizes).reduce((a2,v)=>a2+v,0);return a+q*p.retail},0);
       const margin=totalRetail-totalCost;const pct=totalRetail>0?Math.round(margin/totalRetail*100):0;
@@ -15461,6 +15431,11 @@ export default function App(){
 
         <div className="card" style={{marginBottom:12}}><div className="card-header"><h2>📦 Store Products</h2></div>
           <div className="card-body" style={{padding:0}}>
+            {omgDetailLoading && !s._details_loaded ? (
+              <div style={{padding:24,textAlign:'center',color:'#64748b',fontSize:13}}>Loading order details from OMG...</div>
+            ) : s.products.length === 0 ? (
+              <div style={{padding:24,textAlign:'center',color:'#94a3b8',fontSize:13}}>No product data available{!s._details_loaded && ' — click Sync to reload'}</div>
+            ) : (
             <table><thead><tr><th>SKU</th><th>Product</th><th>Color</th><th>Deco</th><th>Retail</th><th>Cost</th><th>Deco $</th><th>Sizes</th><th>Units</th><th>Revenue</th><th>Margin</th></tr></thead>
             <tbody>{s.products.map((p,i)=>{const q=Object.values(p.sizes).reduce((a,v)=>a+v,0);const rev=q*p.retail;const cost=q*(p.cost+p.deco_cost);const mg=rev-cost;
               const catP=prod.find(cp=>cp.sku===p.sku);
@@ -15473,8 +15448,9 @@ export default function App(){
                 <td style={{fontSize:9}}>{Object.entries(p.sizes).map(([sz,q2])=>sz+':'+q2).join(' ')}</td>
                 <td style={{fontWeight:700,textAlign:'center'}}>{q}</td>
                 <td style={{textAlign:'right',fontWeight:600}}>${rev.toLocaleString()}</td>
-                <td style={{textAlign:'right',color:mg>0?'#166534':'#dc2626'}}>${mg.toLocaleString()} <span style={{fontSize:9}}>({Math.round(mg/rev*100)}%)</span></td>
+                <td style={{textAlign:'right',color:mg>0?'#166534':'#dc2626'}}>${mg.toLocaleString()} <span style={{fontSize:9}}>({rev>0?Math.round(mg/rev*100):0}%)</span></td>
               </tr>})}</tbody></table>
+            )}
           </div>
         </div>
 
