@@ -2245,9 +2245,12 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
       const brevoAttachments=[];
       if(buildAttachmentHtml){try{
         const docHtml=buildAttachmentHtml();
-        const container=document.createElement('div');container.innerHTML=docHtml;container.style.position='absolute';container.style.left='-9999px';container.style.width='800px';document.body.appendChild(container);
-        const pdfBlob=await html2pdf().set({margin:0.3,filename:(estimate?.id||'document')+'.pdf',image:{type:'jpeg',quality:0.95},html2canvas:{scale:2,useCORS:true},jsPDF:{unit:'in',format:'letter',orientation:'portrait'}}).from(container).outputPdf('blob');
-        document.body.removeChild(container);
+        // Use iframe to render full HTML document with styles intact
+        const iframe=document.createElement('iframe');iframe.style.cssText='position:absolute;left:-9999px;width:800px;height:1200px;border:none';document.body.appendChild(iframe);
+        const iDoc=iframe.contentDocument||iframe.contentWindow.document;iDoc.open();iDoc.write(docHtml);iDoc.close();
+        await new Promise(r=>setTimeout(r,500));// allow images/fonts to load
+        const pdfBlob=await html2pdf().set({margin:0.3,filename:(estimate?.id||'document')+'.pdf',image:{type:'jpeg',quality:0.95},html2canvas:{scale:2,useCORS:true,logging:false},jsPDF:{unit:'in',format:'letter',orientation:'portrait'}}).from(iDoc.body).outputPdf('blob');
+        document.body.removeChild(iframe);
         const pdfB64=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result.split(',')[1]);reader.onerror=reject;reader.readAsDataURL(pdfBlob)});
         brevoAttachments.push({name:(estimate?.id||'document')+'.pdf',content:pdfB64});
       }catch(err){console.warn('Failed to build PDF attachment:',err)}}
