@@ -125,7 +125,12 @@ const _dbLoad = async () => {
       const items=soItems.filter(i=>i.so_id===so.id).sort((a,b)=>a.item_index-b.item_index).map(item=>{
         const decorations=soDecos.filter(d=>d.so_item_id===item.id).sort((a,b)=>a.deco_index-b.deco_index).map(d=>{const{id:_,so_item_id:__,deco_index:___,...rest}=d;return rest});
         const pick_lines=soPicks.filter(pk=>pk.so_item_id===item.id).map(pk=>{const{id:_,so_item_id:__,...rest}=pk;const sizes=rest.sizes||{};delete rest.sizes;return{...rest,...sizes}});
-        const po_lines=soPOs.filter(po=>po.so_item_id===item.id).map(po=>{const{id:_,so_item_id:__,...rest}=po;const sizes=rest.sizes||{};delete rest.sizes;return{...rest,...sizes}});
+        const po_lines=soPOs.filter(po=>po.so_item_id===item.id).map(po=>{const{id:_,so_item_id:__,...rest}=po;const sizes=rest.sizes||{};delete rest.sizes;
+          // Recover billed/tracking_numbers from sizes JSONB if they were stored as fallback
+          const recovered={...rest,...sizes};
+          if(sizes._billed&&!recovered.billed){recovered.billed=sizes._billed;delete recovered._billed}
+          if(sizes._tracking_numbers&&!recovered.tracking_numbers){recovered.tracking_numbers=sizes._tracking_numbers;delete recovered._tracking_numbers}
+          return recovered});
         const{id:_,so_id:__,item_index:___,...rest}=item;return{...rest,decorations,pick_lines,po_lines}});
       return{...so,items,art_files,firm_dates,jobs}});
     // Invoices: attach payments and items
@@ -361,7 +366,13 @@ const _dbSaveSOInner = async (so) => {
         const pickRows=pick_lines.map(pk=>{const{pick_id,status,created_at,memo,ship_dest,ship_addr,deco_vendor,...sizes}=pk;
           return{so_item_id:inserted.id,pick_id,status,created_at,memo,ship_dest,ship_addr,deco_vendor,sizes}});
         const{error:pickErr}=await supabase.from('so_item_pick_lines').insert(pickRows);
-        if(pickErr)console.error('[DB] so_item_pick_lines insert failed:',pickErr.message,pickErr.details);
+        if(pickErr){
+          console.warn('[DB] so_item_pick_lines batch failed, retrying individually:',pickErr.message);
+          for(const row of pickRows){
+            const{error:rowErr}=await supabase.from('so_item_pick_lines').insert(row);
+            if(rowErr){saveFailed=true;console.error('[DB] so_item_pick_lines row failed:',rowErr.message)}
+          }
+        }
       }
       if(po_lines?.length){
         const poRows=po_lines.map(po=>{const{po_id,vendor,received,cancelled,shipments,status,created_at,expected_date,memo,po_type,deco_vendor,deco_type,unit_cost,drop_ship,billed,tracking_numbers,_bill_details,_bill_cost,...sizes}=po;
@@ -369,7 +380,21 @@ const _dbSaveSOInner = async (so) => {
             billed:billed||{},tracking_numbers:tracking_numbers||[],
             sizes:{...sizes,po_type:po_type||undefined,deco_vendor:deco_vendor||undefined,deco_type:deco_type||undefined,unit_cost:unit_cost||undefined,drop_ship:drop_ship||undefined,_bill_details:_bill_details||undefined,_bill_cost:_bill_cost||undefined}}});
         const{error:poErr}=await supabase.from('so_item_po_lines').insert(poRows);
-        if(poErr)console.error('[DB] so_item_po_lines insert failed:',poErr.message,poErr.details);
+        if(poErr){
+          console.warn('[DB] so_item_po_lines batch insert failed, retrying with core columns:',poErr.message);
+          // Retry individually, stripping newer columns (billed/tracking_numbers) into sizes JSONB if DB columns don't exist
+          for(const row of poRows){
+            const{error:rowErr}=await supabase.from('so_item_po_lines').insert(row);
+            if(rowErr){
+              // Strip billed/tracking_numbers into sizes JSONB as fallback
+              const{billed:b,tracking_numbers:tn,...coreRow}=row;
+              const fallbackRow={...coreRow,sizes:{...(coreRow.sizes||{}),_billed:b||{},_tracking_numbers:tn||[]}};
+              const{error:coreErr}=await supabase.from('so_item_po_lines').insert(fallbackRow);
+              if(coreErr){saveFailed=true;console.error('[DB] so_item_po_lines row failed:',coreErr.message,JSON.stringify(row))}
+              else console.warn('[DB] PO line saved with billed/tracking in sizes JSONB (missing DB columns?)')
+            }
+          }
+        }
       }
     }
     if(saveFailed){_dbSaveFailedIds.add(so.id);_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save incomplete — some data may not have been saved to cloud','error');return false}
