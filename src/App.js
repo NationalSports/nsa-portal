@@ -379,21 +379,22 @@ const _dbSaveSOInner = async (so) => {
           return{so_item_id:inserted.id,po_id,vendor,received:received||{},cancelled:cancelled||{},shipments:shipments||[],status,created_at,expected_date,memo,
             billed:billed||{},tracking_numbers:tracking_numbers||[],
             sizes:{...sizes,po_type:po_type||undefined,deco_vendor:deco_vendor||undefined,deco_type:deco_type||undefined,unit_cost:unit_cost||undefined,drop_ship:drop_ship||undefined,_bill_details:_bill_details||undefined,_bill_cost:_bill_cost||undefined}}});
+        // Try with all columns first; if 'billed' column missing, retry with core columns only
+        const corePoRows=poRows.map(row=>{
+          const{billed:b,tracking_numbers:tn,...coreRow}=row;
+          return{...coreRow,sizes:{...(coreRow.sizes||{}),_billed:b||{},_tracking_numbers:tn||[]}}});
         const{error:poErr}=await supabase.from('so_item_po_lines').insert(poRows);
         if(poErr){
-          console.warn('[DB] so_item_po_lines batch insert failed, retrying with core columns:',poErr.message);
-          // Retry individually, stripping newer columns (billed/tracking_numbers) into sizes JSONB if DB columns don't exist
-          for(const row of poRows){
-            const{error:rowErr}=await supabase.from('so_item_po_lines').insert(row);
-            if(rowErr){
-              // Strip billed/tracking_numbers into sizes JSONB as fallback
-              const{billed:b,tracking_numbers:tn,...coreRow}=row;
-              const fallbackRow={...coreRow,sizes:{...(coreRow.sizes||{}),_billed:b||{},_tracking_numbers:tn||[]}};
-              const{error:coreErr}=await supabase.from('so_item_po_lines').insert(fallbackRow);
-              if(coreErr){saveFailed=true;console.error('[DB] so_item_po_lines row failed:',coreErr.message,JSON.stringify(row))}
-              else console.warn('[DB] PO line saved with billed/tracking in sizes JSONB (missing DB columns?)')
+          console.warn('[DB] so_item_po_lines insert failed ('+poErr.message+'), retrying without billed/tracking_numbers columns');
+          const{error:coreErr}=await supabase.from('so_item_po_lines').insert(corePoRows);
+          if(coreErr){
+            // Last resort: insert individually
+            console.warn('[DB] so_item_po_lines core batch failed, retrying individually:',coreErr.message);
+            for(const row of corePoRows){
+              const{error:rowErr}=await supabase.from('so_item_po_lines').insert(row);
+              if(rowErr){saveFailed=true;console.error('[DB] so_item_po_lines row failed:',rowErr.message)}
             }
-          }
+          } else console.warn('[DB] PO lines saved without billed/tracking_numbers columns (stored in sizes JSONB)')
         }
       }
     }
