@@ -1819,9 +1819,22 @@ const probeOMGEndpoints = async () => {
     try {
       const data = await omgApiCall(ep);
       results[ep] = { status: 'ok', keys: Object.keys(data || {}), meta: data?.meta, recordCount: Array.isArray(data?.data) ? data.data.length : (data?.data ? 1 : 0) };
-      if (data?.data?.[0]) results[ep].sampleType = data.data[0].type;
+      if (data?.data?.[0]) {
+        results[ep].sampleType = data.data[0].type;
+        results[ep].sampleId = data.data[0].id;
+      }
       if (data?.data?.[0]?.attributes) results[ep].sampleAttrs = Object.keys(data.data[0].attributes);
-      if (data?.data?.[0]?.relationships) results[ep].sampleRels = Object.keys(data.data[0].relationships);
+      if (data?.data?.[0]?.relationships) {
+        results[ep].sampleRels = Object.keys(data.data[0].relationships);
+        // For orders, log relationship values to see how they link to sales
+        if (ep.startsWith('/orders')) {
+          const rels = data.data[0].relationships;
+          results[ep].sampleRelValues = {};
+          for (const [k, v] of Object.entries(rels)) {
+            results[ep].sampleRelValues[k] = v?.data ? { type: v.data.type, id: v.data.id } : v;
+          }
+        }
+      }
     } catch (err) {
       results[ep] = { status: 'error', message: err.message };
     }
@@ -10478,19 +10491,39 @@ export default function App(){
       const saleResource = saleResp?.data || { id: omgId, attributes: {} };
       console.log('[OMG] Sale detail attributes:', Object.keys(saleResource.attributes || {}));
 
-      // Fetch orders directly via /orders endpoint (the only working approach)
+      // Fetch orders — try filter first, then client-side match
       let orders = [];
-      try {
-        const ordersResp = await omgApiCall(`/orders?filter[sale_id]=${omgId}`);
-        orders = ordersResp?.data || [];
-        console.log(`[OMG] Found ${orders.length} orders via filter[sale_id]`);
-      } catch {
-        // If filter doesn't work, fetch all and filter client-side
+      const filterEndpoints = [
+        `/orders?filter[sale_id]=${omgId}`,
+        `/orders?filter[sale]=${omgId}`,
+        `/orders?sale_id=${omgId}`,
+        `/sales/${omgId}/orders`,
+      ];
+      for (const ep of filterEndpoints) {
+        try {
+          const resp = await omgApiCall(ep);
+          if (resp?.data?.length > 0) {
+            orders = resp.data;
+            console.log(`[OMG] Found ${orders.length} orders via ${ep}`);
+            break;
+          }
+        } catch (e) { console.log(`[OMG] ${ep} failed: ${e.message}`); }
+      }
+      // Fallback: fetch all orders and match client-side
+      if (orders.length === 0) {
         try {
           const allResp = await omgApiCall('/orders');
           const allOrders = allResp?.data || [];
+          if (allOrders.length > 0) {
+            console.log('[OMG] Detail: sample order rels:', JSON.stringify(allOrders[0].relationships || {}));
+            console.log('[OMG] Detail: looking for sale_id:', omgId);
+          }
           orders = allOrders.filter(o => {
-            const saleId = o.relationships?.sale?.data?.id || o.attributes?.sale_id;
+            const rels = o.relationships || {};
+            const attrs = o.attributes || {};
+            const saleId = rels.sale?.data?.id || rels.pop_up_store?.data?.id
+              || rels.fundraiser?.data?.id || rels.store?.data?.id
+              || attrs.sale_id || attrs.pop_up_store_id || attrs.fundraiser_id || attrs.store_id;
             return saleId === omgId;
           });
           console.log(`[OMG] Found ${orders.length} orders (client-side filter from ${allOrders.length})`);
@@ -10901,9 +10934,10 @@ export default function App(){
           if (batch.length === 0) break;
           allOrders = allOrders.concat(batch);
           if (page === 1 && batch.length > 0) {
+            console.log('[OMG] Sample order FULL:', JSON.stringify(batch[0]));
+            console.log('[OMG] Sample order type:', batch[0].type);
             console.log('[OMG] Sample order attributes:', Object.keys(batch[0].attributes || {}));
-            console.log('[OMG] Sample order relationships:', Object.keys(batch[0].relationships || {}));
-            console.log('[OMG] Sample order attrs:', JSON.stringify(batch[0].attributes));
+            console.log('[OMG] Sample order relationships:', JSON.stringify(batch[0].relationships || {}));
           }
           // Stop if we got fewer than a full page (no more data)
           if (batch.length < 100) break;
@@ -10914,16 +10948,30 @@ export default function App(){
         console.warn('[OMG] Could not fetch orders:', e.message);
       }
 
-      // Group orders by sale_id
+      // Group orders by sale_id — try multiple relationship patterns
       const ordersBySale = {};
+      let matchedCount = 0;
       allOrders.forEach(o => {
-        const saleId = o.relationships?.sale?.data?.id || o.attributes?.sale_id;
+        // Try all possible ways the order might reference a sale
+        const rels = o.relationships || {};
+        const attrs = o.attributes || {};
+        const saleId = rels.sale?.data?.id
+          || rels.pop_up_store?.data?.id
+          || rels.fundraiser?.data?.id
+          || rels.store?.data?.id
+          || attrs.sale_id
+          || attrs.pop_up_store_id
+          || attrs.fundraiser_id
+          || attrs.store_id;
         if (saleId) {
           if (!ordersBySale[saleId]) ordersBySale[saleId] = [];
           ordersBySale[saleId].push(o);
+          matchedCount++;
         }
       });
-      console.log('[OMG] Orders grouped by sale:', Object.keys(ordersBySale).length, 'sales with orders');
+      console.log('[OMG] Orders matched to sales:', matchedCount, '/', allOrders.length);
+      console.log('[OMG] Unique sale IDs from orders:', Object.keys(ordersBySale));
+      console.log('[OMG] Store sale IDs:', stores.map(s => s.id));
 
       // Convert store list data and populate with order data
       const convertedStores = stores.map(store => {
