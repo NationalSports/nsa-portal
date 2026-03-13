@@ -10573,15 +10573,6 @@ export default function App(){
     }
   };
 
-  // Auto-load OMG store details when a store is selected
-  React.useEffect(()=>{
-    if(!omgSel||omgSel._details_loaded||omgDetailLoading||!omgSel._omg_id)return;
-    setOmgDetailLoading(true);
-    console.log('[OMG] Auto-loading details for store', omgSel.id, omgSel._omg_id);
-    loadOMGStoreDetail(omgSel).then(updated=>{
-      setOmgSel(updated);setOmgDetailLoading(false);
-    }).catch(e=>{console.error('[OMG] Detail load failed:',e);setOmgDetailLoading(false)});
-  },[omgSel?.id]); // eslint-disable-line react-hooks/exhaustive-deps
   React.useEffect(()=>{try{localStorage.setItem('nsa_issues',JSON.stringify(issues))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.issues||[];const changed=issues.filter(i=>{const old=snap.find(p=>p.id===i.id);return!old||JSON.stringify(old)!==JSON.stringify(i)});if(changed.length)_dbSave('issues',changed.map(i=>_pick(i,_issueCols)));_dbSnap.current.issues=issues}},[issues]);
   // Rep-CSR assignments auto-save
   React.useEffect(()=>{if(!_initialLoadDone.current||!_dbLoadSuccess.current)return;const snap=_dbSnap.current.repCsr||[];const changed=repCsrAssignments.filter(a=>{const old=snap.find(p=>p.id===a.id);return!old||JSON.stringify(old)!==JSON.stringify(a)});if(changed.length)_dbSave('rep_csr_assignments',changed);_dbSnap.current.repCsr=repCsrAssignments},[repCsrAssignments]);
