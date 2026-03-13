@@ -1925,13 +1925,14 @@ const fetchOMGStoreDetail = async (saleResource, allIncluded) => {
   const orderEndpoints = [
     `/sales/${saleId}/orders?include=customer_info`,
     `/sales/${saleId}/orders`,
+    `/sales/${saleId}/relationships/orders`,
     `/orders?filter[sale_id]=${saleId}&include=customer_info`,
     `/orders?filter[sale_id]=${saleId}`,
     `/orders?sale_id=${saleId}`,
+    `/orders?filter[sale]=${saleId}`,
     ...(saleCode ? [
       `/orders?filter[sale_code]=${saleCode}`,
       `/orders?sale_code=${saleCode}`,
-      `/orders?filter[sale]=${saleId}`,
     ] : []),
   ];
   let orders = null;
@@ -10687,7 +10688,13 @@ export default function App(){
       if (!omgStoresData?.data) { nf('No stores found in OMG API response', 'error'); return; }
       const stores = omgStoresData.data;
       // Log first store's full data to help debug what fields are available
-      if (stores.length > 0) console.log('[OMG] Sample store attributes:', JSON.stringify(stores[0].attributes), 'relationships:', Object.keys(stores[0].relationships || {}));
+      if (stores.length > 0) {
+        console.log('[OMG] Sample store ALL attributes:', JSON.stringify(stores[0].attributes));
+        console.log('[OMG] Sample store ALL relationship keys:', Object.keys(stores[0].relationships || {}));
+        // Log all included resource types
+        const incTypes = [...new Set((omgStoresData.included || []).map(i => i.type))];
+        console.log('[OMG] Included resource types:', incTypes);
+      }
       // Convert store list data (no order details yet — those load on-demand)
       const convertedStores = stores.map(store => {
         const basic = { data: store, included: omgStoresData.included || [], orders: [], orderProducts: [] };
@@ -10726,11 +10733,76 @@ export default function App(){
     const omgId = store._omg_id;
     if (!omgId) return store;
     try {
-      // Re-fetch sale resource to get fresh data + included org
-      const saleResp = await omgApiCall(`/sales/${omgId}?include=organization`);
+      // Strategy 1: Try include=orders on the sale endpoint (JSON:API sideloading)
+      let saleResp;
+      let orders = [];
+      let orderProducts = [];
+      let included = [];
+
+      // Try fetching sale with orders included
+      const includePatterns = [
+        'orders,orders.order_products,organization',
+        'orders,organization',
+        'organization',
+      ];
+      for (const inc of includePatterns) {
+        try {
+          saleResp = await omgApiCall(`/sales/${omgId}?include=${inc}`);
+          included = saleResp?.included || [];
+          // Extract orders from included resources
+          const includedOrders = included.filter(i => i.type === 'orders' || i.type === 'order');
+          if (includedOrders.length > 0) {
+            orders = includedOrders;
+            console.log(`[OMG] Found ${orders.length} orders via include=${inc}`);
+            // Extract order_products from included too
+            orderProducts = included.filter(i => i.type === 'order_products' || i.type === 'order_product' || i.type === 'line_items' || i.type === 'line_item');
+            break;
+          }
+          if (inc === 'organization') break; // Last fallback, don't need to try more
+        } catch (e) {
+          console.log(`[OMG] include=${inc} failed:`, e.message);
+        }
+      }
+
       const saleResource = saleResp?.data || { id: omgId, attributes: {} };
-      const detail = await fetchOMGStoreDetail(saleResource, saleResp?.included || []);
-      const updated = { ...convertOMGStore(detail, cust), _details_loaded: true };
+      // Log ALL attributes and relationships for debugging
+      console.log('[OMG] Sale detail attributes:', JSON.stringify(saleResource.attributes));
+      console.log('[OMG] Sale detail relationships:', JSON.stringify(Object.keys(saleResource.relationships || {})));
+      console.log('[OMG] Included types:', [...new Set(included.map(i => i.type))]);
+
+      // If no orders found via include, try separate endpoints
+      if (orders.length === 0) {
+        const detail = await fetchOMGStoreDetail(saleResource, included);
+        orders = detail.orders || [];
+        orderProducts = detail.orderProducts || [];
+      }
+
+      // Build the detail object
+      const detailData = { data: saleResource, included, orders, orderProducts: orderProducts.length > 0 ? [{ data: orderProducts, included }] : [] };
+
+      // Also check sale attributes for aggregate data
+      const attrs = saleResource.attributes || {};
+      const updated = { ...convertOMGStore(detailData, cust), _details_loaded: true };
+
+      // Override with attribute-level aggregates if available (check all possible field names)
+      const possibleOrderCount = attrs.orders_count || attrs.order_count || attrs.num_orders || attrs.total_orders;
+      const possibleRevenue = attrs.total_revenue || attrs.total_earned || attrs.revenue || attrs.total_sales || attrs.sales_total || attrs.gross_revenue;
+      const possibleItems = attrs.items_count || attrs.total_items || attrs.items_sold || attrs.total_quantity;
+      const possibleBuyers = attrs.buyers_count || attrs.unique_buyers || attrs.total_buyers || attrs.customer_count;
+      const possibleFundraise = attrs.fundraise_amount || attrs.fundraise_total || attrs.fundraised;
+
+      if (possibleOrderCount) updated.orders = parseInt(possibleOrderCount) || 0;
+      if (possibleRevenue) updated.total_sales = parseFloat(possibleRevenue) || 0;
+      if (possibleItems) updated.items_sold = parseInt(possibleItems) || 0;
+      if (possibleBuyers) updated.unique_buyers = parseInt(possibleBuyers) || 0;
+      if (possibleFundraise) updated.fundraise_total = parseFloat(possibleFundraise) || 0;
+
+      // If orders came from relationships data (resource linkage), count them
+      const orderRel = saleResource.relationships?.orders?.data;
+      if (Array.isArray(orderRel) && orderRel.length > 0 && updated.orders === 0) {
+        updated.orders = orderRel.length;
+      }
+
       // Update in omgStores state
       setOmgStores(prev => prev.map(s => s.id === store.id ? updated : s));
       return updated;
