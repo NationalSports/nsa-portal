@@ -5745,53 +5745,52 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 :<span style={{marginLeft:8,padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:'#fef3c7',color:'#92400e'}}>Not yet viewed</span>}
               </div>}
               {mockups.length>0&&<div style={{marginBottom:12}}>
-                <div style={{fontSize:11,fontWeight:700,color:'#78350f',marginBottom:6}}>Review the mockup:</div>
-                {/* Primary mockup — large */}
-                {(()=>{const url=typeof mockups[0]==='string'?mockups[0]:(mockups[0]?.url||'');const name=fileDisplayName(mockups[0]);
-                  return<div style={{borderRadius:10,border:'2px solid #f59e0b',overflow:'hidden',background:'white',marginBottom:8,cursor:'pointer'}} onClick={()=>setMockupLightbox(url)}>
-                    {_isImgUrl(url,mockups[0])?<img src={url} alt={name} style={{width:'100%',maxHeight:450,objectFit:'contain',display:'block',background:'#fafafa'}}/>
-                    :_isPdfUrl(url,mockups[0])?<div style={{position:'relative'}}>
-                      {_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',maxHeight:450,objectFit:'contain',display:'block',background:'#fafafa'}} onError={e=>{e.target.style.display='none';e.target.nextSibling.style.display='flex'}}/>:null}
-                      <div style={{display:_cloudinaryPdfThumb(url)?'none':'flex',flexDirection:'column',alignItems:'center',padding:24,gap:4}}>
-                        <span style={{fontSize:36}}>PDF</span><span style={{fontSize:13,color:'#1e40af'}}>{name}</span></div></div>
-                    :<div style={{display:'flex',alignItems:'center',gap:6,padding:'14px 16px'}}>
-                      <span style={{fontSize:20}}>📄</span><span style={{fontSize:14,fontWeight:600,color:'#1e40af'}}>{name}</span></div>}
-                    <div style={{padding:'4px 10px',borderTop:'1px solid #fde68a',fontSize:11,color:'#92400e',fontWeight:600,display:'flex',justifyContent:'space-between'}}><span>{name}</span><span style={{color:'#2563eb'}}>Click to enlarge</span></div>
-                  </div>})()}
-                {/* Additional mockups */}
-                {mockups.length>1&&<div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-                  {mockups.slice(1).map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);
-                    return<div key={fi} style={{borderRadius:8,border:'1px solid #fde68a',overflow:'hidden',background:'white',maxWidth:200,cursor:'pointer'}} onClick={()=>setMockupLightbox(url)}>
-                      {_isImgUrl(url,f)?<img src={url} alt={name} style={{width:'100%',maxHeight:150,objectFit:'contain',display:'block'}}/>
-                      :_isPdfUrl(url,f)?<div style={{position:'relative'}}>
-                        {_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',maxHeight:150,objectFit:'contain',display:'block',background:'#fafafa'}} onError={e=>{e.target.style.display='none';e.target.nextSibling&&(e.target.nextSibling.style.display='flex')}}/>:null}
-                        <div style={{display:_cloudinaryPdfThumb(url)?'none':'flex',flexDirection:'column',alignItems:'center',padding:16,gap:4}}>
-                          <span style={{fontSize:24}}>📄</span><span style={{fontSize:11,color:'#1e40af'}}>{name}</span></div></div>
-                      :<div style={{display:'flex',alignItems:'center',gap:6,padding:'10px 14px'}}>
-                        <span style={{fontSize:16}}>📄</span><span style={{fontSize:12,fontWeight:600,color:'#1e40af'}}>{name}</span></div>}
-                      <div style={{padding:'3px 8px',borderTop:'1px solid #fde68a',fontSize:10,color:'#92400e',fontWeight:600,textAlign:'center'}}>{name}</div>
+                <div style={{fontSize:11,fontWeight:700,color:'#78350f',marginBottom:6}}>Review the mockup{mockups.length>1?'s':''}:</div>
+                <div style={{display:'grid',gridTemplateColumns:mockups.length>1?'1fr 1fr':'1fr',gap:8}}>
+                  {mockups.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);
+                    return<div key={fi} style={{borderRadius:10,border:'2px solid #f59e0b',overflow:'hidden',background:'white',cursor:'pointer'}} onClick={()=>setMockupLightbox(url)}>
+                      {_isImgUrl(url,f)?<img src={url} alt={name} style={{width:'100%',height:300,objectFit:'contain',display:'block',background:'#fafafa'}}/>
+                      :_isPdfUrl(url,f)?<div style={{position:'relative',height:300,display:'flex',alignItems:'center',justifyContent:'center',background:'#fafafa'}}>
+                        {_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',height:300,objectFit:'contain',display:'block'}} onError={e=>{e.target.style.display='none';e.target.nextSibling&&(e.target.nextSibling.style.display='flex')}}/>:null}
+                        <div style={{display:_cloudinaryPdfThumb(url)?'none':'flex',flexDirection:'column',alignItems:'center',gap:4}}>
+                          <span style={{fontSize:36}}>PDF</span><span style={{fontSize:13,color:'#1e40af'}}>{name}</span></div></div>
+                      :<div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:6,height:300,background:'#fafafa'}}>
+                        <span style={{fontSize:20}}>📄</span><span style={{fontSize:14,fontWeight:600,color:'#1e40af'}}>{name}</span></div>}
+                      <div style={{padding:'4px 10px',borderTop:'1px solid #fde68a',fontSize:11,color:'#92400e',fontWeight:600,display:'flex',justifyContent:'space-between'}}><span>{name}</span><span style={{color:'#2563eb'}}>Click to enlarge</span></div>
                     </div>})}
-                </div>}
+                </div>
               </div>}
               {mockups.length===0&&<div style={{padding:12,background:'#fff7ed',border:'1px dashed #fdba74',borderRadius:6,marginBottom:12,fontSize:12,color:'#9a3412'}}>No mockup files attached yet — check the Art Library tab for files.</div>}
               {/* Artwork details — pantones, sizes, locations */}
-              {artFile2&&(()=>{const _colorList2=(artFile2.ink_colors||artFile2.thread_colors||'').split(/[,\n]/).map(c3=>c3.trim()).filter(Boolean);const _isEmb2=artFile2.deco_type==='embroidery';const _posList=(j.positions||'').split(',').map(p=>p.trim()).filter(Boolean);const _artSizes2=artFile2.art_sizes||{};
+              {artFile2&&(()=>{const _colorList2=(artFile2.ink_colors||artFile2.thread_colors||'').split(/[,\n]/).map(c3=>c3.trim()).filter(Boolean);const _isEmb2=artFile2.deco_type==='embroidery';
+                const _decoPositions=new Set();const _numDecos2=[];(j.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(it)safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id===j.art_file_id&&d.position)_decoPositions.add(d.position);if(d.kind==='numbers')_numDecos2.push(d)})});
+                const _posList=_decoPositions.size>0?[..._decoPositions]:(j.positions||'').split(',').map(p=>p.trim()).filter(Boolean);const _artSizes2=artFile2.art_sizes||{};const _nd2=_numDecos2[0];
                 const _colorMap2={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000','Silver':'#C0C0C0','Royal':'#4169e1','Cardinal':'#8C1515','Green':'#166534','Orange':'#EA580C','Navy 2767':'#001f3f','PMS 286':'#0033A0','PMS 032':'#EF3340','PMS 877':'#C0C0C0','Maroon':'#800000'};
                 return<div style={{marginBottom:12,padding:'12px 14px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8}}>
                   <div style={{fontSize:11,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:8,letterSpacing:0.5}}>Artwork Details</div>
-                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10,marginBottom:_colorList2.length>0?10:0}}>
+                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10,marginBottom:_colorList2.length>0||_nd2?10:0}}>
                     <div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8'}}>Method</div><div style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{artFile2.deco_type?.replace(/_/g,' ')||'—'}</div></div>
                     <div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8'}}>Location{_posList.length>1?'s':''}</div><div style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{_posList.join(', ')||'—'}</div></div>
                     {_posList.length<=1?<div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8'}}>Art Size</div><div style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{artFile2.art_size||'—'}</div></div>
                     :_posList.map((pos,pi)=><div key={pi}><div style={{fontSize:10,fontWeight:600,color:'#94a3b8'}}>Size — {pos}</div><div style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{_artSizes2[pos]||(pi===0?artFile2.art_size:'')||'—'}</div></div>)}
                   </div>
-                  {_colorList2.length>0&&<div>
+                  {_colorList2.length>0&&<div style={{marginBottom:_nd2?10:0}}>
                     <div style={{fontSize:10,fontWeight:600,color:'#94a3b8',marginBottom:4}}>{_isEmb2?'Thread Colors':'Ink Colors / Pantones'} ({_colorList2.length})</div>
                     <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
                       {_colorList2.map((cl,i)=>{const clLower=cl.toLowerCase();const sw=_colorMap2[cl]||Object.entries(_colorMap2).find(([k])=>clLower.includes(k.toLowerCase()))?.[1]||null;
                         return<div key={i} style={{display:'flex',alignItems:'center',gap:5,padding:'3px 10px',background:'white',border:'1px solid #e2e8f0',borderRadius:6}}>
                           <div style={{width:14,height:14,borderRadius:3,border:'1px solid #d1d5db',background:sw||'linear-gradient(135deg,#f1f5f9,#e2e8f0)'}}/>
                           <span style={{fontSize:11,fontWeight:600}}>{cl}</span></div>})}
+                    </div>
+                  </div>}
+                  {_nd2&&<div>
+                    <div style={{fontSize:10,fontWeight:600,color:'#94a3b8',marginBottom:4}}>Numbers</div>
+                    <div style={{display:'flex',gap:12,flexWrap:'wrap',fontSize:12}}>
+                      <span><strong>{(_nd2.num_method||'heat_transfer').replace(/_/g,' ')}</strong></span>
+                      <span>Size: <strong>{_nd2.num_size||'—'}</strong></span>
+                      {_nd2.front_and_back&&<span>Back: <strong>{_nd2.num_size_back||_nd2.num_size||'—'}</strong></span>}
+                      {_nd2.print_color&&<span>Color: <strong>{_nd2.print_color}</strong></span>}
+                      {_nd2.front_and_back&&<span style={{padding:'1px 6px',borderRadius:4,background:'#7c3aed',color:'white',fontSize:10,fontWeight:700}}>Front + Back</span>}
                     </div>
                   </div>}
                 </div>})()}
@@ -7893,9 +7892,10 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
           </div>}
 
           {/* Artwork details — pantones, sizes, locations */}
-          {af2&&(()=>{const _cl2=(af2.ink_colors||af2.thread_colors||'').split(/[,\n]/).map(c3=>c3.trim()).filter(Boolean);const _isE2=af2.deco_type==='embroidery';const _pl2=(j.positions||'').split(',').map(p=>p.trim()).filter(Boolean);const _as2=af2.art_sizes||{};
+          {af2&&(()=>{const _cl2=(af2.ink_colors||af2.thread_colors||'').split(/[,\n]/).map(c3=>c3.trim()).filter(Boolean);const _isE2=af2.deco_type==='embroidery';
+            const _dp2=new Set();const numDecos2=[];(j.items||[]).forEach(gi=>{const it=safeItems(so)[gi.item_idx];if(it)safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id===j.art_file_id&&d.position)_dp2.add(d.position);if(d.kind==='numbers')numDecos2.push(d)})});
+            const _pl2=_dp2.size>0?[..._dp2]:(j.positions||'').split(',').map(p=>p.trim()).filter(Boolean);const _as2=af2.art_sizes||{};
             const _cm2={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000','Silver':'#C0C0C0','Royal':'#4169e1','Cardinal':'#8C1515','Green':'#166534','Orange':'#EA580C','Navy 2767':'#001f3f','PMS 286':'#0033A0','PMS 032':'#EF3340','PMS 877':'#C0C0C0','Maroon':'#800000'};
-            const numDecos2=[];(j.items||[]).forEach(gi=>{const it=safeItems(so)[gi.item_idx];if(it)safeDecos(it).forEach(d=>{if(d.kind==='numbers')numDecos2.push(d)})});
             const nd=numDecos2[0];
             return<div style={{marginBottom:16,padding:'14px 16px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:10}}>
               <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:10}}>Artwork Details</div>
@@ -8161,21 +8161,24 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
               {/* Clickable jobs — artwork proofs */}
               {soJobs.length>0&&<>
                 <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:6}}>🎨 Artwork & Decoration</div>
-                {soJobs.map(j=>{const _paf=safeArt(so).find(a=>a.id===j.art_file_id);const _pmf=_filterDisplayable(_paf?.mockup_files||_paf?.files||[]);const _ptu=_pmf.length>0?(typeof _pmf[0]==='string'?_pmf[0]:(_pmf[0]?.url||'')):null;const _ptIsImg=_ptu&&_isImgUrl(_ptu);const _ptIsPdf=_ptu&&_isPdfUrl(_ptu);const _ptThumb=_ptIsPdf?_cloudinaryPdfThumb(_ptu):null;
-                  return<div key={j.id} style={{display:'flex',alignItems:'center',gap:10,padding:'8px 10px',border:'1px solid '+(j.art_status==='waiting_approval'?'#f59e0b':'#e2e8f0'),background:j.art_status==='waiting_approval'?'#fffbeb':'#fafbfc',borderRadius:8,marginBottom:6,cursor:'pointer'}} onClick={()=>{setPortalJobView({job:j,so});setPortalComment('')}}>
-                  {_ptIsImg&&isUrl(_ptu)?<img src={_ptu} alt="" style={{width:36,height:36,objectFit:'cover',borderRadius:6,flexShrink:0,border:'1px solid #e2e8f0'}}/>
-                  :_ptIsPdf&&_ptThumb?<img src={_ptThumb} alt="" style={{width:36,height:36,objectFit:'cover',borderRadius:6,flexShrink:0,border:'1px solid #e2e8f0'}} onError={e=>{e.target.style.display='none'}}/>
-                  :<div style={{width:36,height:36,borderRadius:6,background:j.art_status==='art_complete'?'#dcfce7':j.art_status==='waiting_approval'?'#fef3c7':'#fee2e2',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0}}>
-                    {j.art_status==='art_complete'?'✅':j.art_status==='waiting_approval'?'⏳':'🎨'}</div>}
-                  <div style={{flex:1}}>
-                    <div style={{fontWeight:600,fontSize:12}}>{j.art_name}</div>
-                    <div style={{fontSize:10,color:'#64748b'}}>{j.deco_type?.replace(/_/g,' ')} · {j.positions} · {(j.items||[]).length} garment{(j.items||[]).length!==1?'s':''}</div>
-                  </div>
-                  <div style={{textAlign:'right'}}>
+                {soJobs.map(j=>{const _paf=safeArt(so).find(a=>a.id===j.art_file_id);const _pmf=_filterDisplayable(_paf?.mockup_files||_paf?.files||[]);
+                  return<div key={j.id} style={{border:'1px solid '+(j.art_status==='waiting_approval'?'#f59e0b':'#e2e8f0'),background:j.art_status==='waiting_approval'?'#fffbeb':'#fafbfc',borderRadius:8,marginBottom:6,overflow:'hidden',cursor:'pointer'}} onClick={()=>{setPortalJobView({job:j,so});setPortalComment('')}}>
+                  {_pmf.length>0&&<div style={{display:'grid',gridTemplateColumns:_pmf.length>1?'1fr 1fr':'1fr',gap:2,background:'#f1f5f9'}}>
+                    {_pmf.map((f,fi)=>{const _u=typeof f==='string'?f:(f?.url||'');const _ii=_isImgUrl(_u,f);const _ip=_isPdfUrl(_u,f);const _pt=_ip?_cloudinaryPdfThumb(_u):null;
+                      return<div key={fi} style={{background:'white'}}>
+                        {_ii&&isUrl(_u)?<img src={_u} alt="" style={{width:'100%',height:_pmf.length>1?100:150,objectFit:'contain',display:'block',background:'#fafafa'}}/>
+                        :_ip&&_pt?<img src={_pt} alt="" style={{width:'100%',height:_pmf.length>1?100:150,objectFit:'contain',display:'block',background:'#fafafa'}} onError={e=>{e.target.style.display='none'}}/>
+                        :<div style={{height:_pmf.length>1?100:150,display:'flex',alignItems:'center',justifyContent:'center',background:'#f8fafc'}}><span style={{fontSize:24}}>📄</span></div>}
+                      </div>})}
+                  </div>}
+                  <div style={{display:'flex',alignItems:'center',gap:10,padding:'8px 10px'}}>
+                    <div style={{flex:1}}>
+                      <div style={{fontWeight:600,fontSize:12}}>{j.art_name}</div>
+                      <div style={{fontSize:10,color:'#64748b'}}>{j.deco_type?.replace(/_/g,' ')} · {j.positions} · {(j.items||[]).length} garment{(j.items||[]).length!==1?'s':''}</div>
+                    </div>
                     <span style={{padding:'2px 8px',borderRadius:10,fontSize:9,fontWeight:700,background:j.art_status==='art_complete'?'#dcfce7':j.art_status==='waiting_approval'?'#fef3c7':'#fee2e2',color:j.art_status==='art_complete'?'#166534':j.art_status==='waiting_approval'?'#92400e':'#dc2626'}}>{artLabelsP[j.art_status]}</span>
-                    {j.prod_status!=='hold'&&<div style={{fontSize:9,color:'#64748b',marginTop:2}}>{prodLabelsP[j.prod_status]}</div>}
+                    <span style={{color:'#94a3b8',fontSize:14}}>›</span>
                   </div>
-                  <span style={{color:'#94a3b8',fontSize:14}}>›</span>
                 </div>})}
               </>}
               {safeFirm(so).filter(f=>f.approved).length>0&&<div style={{marginTop:8,padding:'6px 10px',background:'#f0fdf4',borderRadius:6,fontSize:11,color:'#166534'}}>
@@ -8984,21 +8987,27 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           {/* Artwork & Decoration jobs */}
           {soJobsList.length>0&&<>
             <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:8}}>Artwork & Decoration</div>
-            {soJobsList.map(j=>{const artFile=soAF.find(a=>a.id===j.art_file_id);const mockups=_filterDisplayable(artFile?.mockup_files||artFile?.files||[]);const thumbUrl=mockups.length>0?(typeof mockups[0]==='string'?mockups[0]:(mockups[0]?.url||'')):null;const isImg=thumbUrl&&_isImgUrl(thumbUrl);const isPdf=thumbUrl&&_isPdfUrl(thumbUrl);const pdfThumb=isPdf?_cloudinaryPdfThumb(thumbUrl):null;
-              return<div key={j.id} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 12px',border:'1px solid '+(j.art_status==='waiting_approval'?'#f59e0b':'#e2e8f0'),background:j.art_status==='waiting_approval'?'#fffbeb':'#fafbfc',borderRadius:8,marginBottom:6,cursor:'pointer'}} onClick={()=>{setJobView({job:j,so});setComment('');if(j.sent_to_coach_at&&!j.coach_email_opened_at){const liveSO2=sos.find(s=>s.id===so.id);if(liveSO2){const updSO2={...liveSO2,jobs:(liveSO2.jobs||safeJobs(liveSO2)).map(jj=>jj.id===j.id?{...jj,coach_email_opened_at:new Date().toISOString()}:jj),updated_at:new Date().toLocaleString()};if(savSOFn)savSOFn(updSO2);else if(onUpdateSOs)onUpdateSOs(prev=>prev.map(s=>s.id===so.id?updSO2:s))}}}}>
-                {isImg&&isUrl(thumbUrl)?<img src={thumbUrl} alt="" style={{width:44,height:44,objectFit:'cover',borderRadius:6,flexShrink:0,border:'1px solid #e2e8f0'}}/>
-                :isPdf&&pdfThumb?<img src={pdfThumb} alt="" style={{width:44,height:44,objectFit:'cover',borderRadius:6,flexShrink:0,border:'1px solid #e2e8f0'}} onError={e=>{e.target.style.display='none'}}/>
-                :<div style={{width:44,height:44,borderRadius:6,background:j.art_status==='art_complete'?'#dcfce7':j.art_status==='waiting_approval'?'#fef3c7':'#fee2e2',display:'flex',alignItems:'center',justifyContent:'center',fontSize:20,flexShrink:0}}>
-                  {j.art_status==='art_complete'?'✅':j.art_status==='waiting_approval'?'⏳':'🎨'}</div>}
-                <div style={{flex:1}}>
-                  <div style={{fontWeight:600,fontSize:12}}>{j.art_name}</div>
-                  <div style={{fontSize:10,color:'#64748b'}}>{j.deco_type?.replace(/_/g,' ')} · {j.positions} · {(j.items||[]).length} garment{(j.items||[]).length!==1?'s':''}</div>
-                </div>
-                <div style={{textAlign:'right'}}>
+            {soJobsList.map(j=>{const artFile=soAF.find(a=>a.id===j.art_file_id);const mockups=_filterDisplayable(artFile?.mockup_files||artFile?.files||[]);
+              const _clickJob=()=>{setJobView({job:j,so});setComment('');if(j.sent_to_coach_at&&!j.coach_email_opened_at){const liveSO2=sos.find(s=>s.id===so.id);if(liveSO2){const updSO2={...liveSO2,jobs:(liveSO2.jobs||safeJobs(liveSO2)).map(jj=>jj.id===j.id?{...jj,coach_email_opened_at:new Date().toISOString()}:jj),updated_at:new Date().toLocaleString()};if(savSOFn)savSOFn(updSO2);else if(onUpdateSOs)onUpdateSOs(prev=>prev.map(s=>s.id===so.id?updSO2:s))}}};
+              return<div key={j.id} style={{border:'1px solid '+(j.art_status==='waiting_approval'?'#f59e0b':'#e2e8f0'),background:j.art_status==='waiting_approval'?'#fffbeb':'#fafbfc',borderRadius:10,marginBottom:8,overflow:'hidden',cursor:'pointer'}} onClick={_clickJob}>
+                {/* Mockup thumbnails — show all images in a grid */}
+                {mockups.length>0&&<div style={{display:'grid',gridTemplateColumns:mockups.length>1?'1fr 1fr':'1fr',gap:2,background:'#f1f5f9'}}>
+                  {mockups.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const isImg=_isImgUrl(url,f);const isPdf=_isPdfUrl(url,f);const pdfThumb=isPdf?_cloudinaryPdfThumb(url):null;
+                    return<div key={fi} style={{background:'white'}}>
+                      {isImg&&isUrl(url)?<img src={url} alt="" style={{width:'100%',height:mockups.length>1?140:200,objectFit:'contain',display:'block',background:'#fafafa'}}/>
+                      :isPdf&&pdfThumb?<img src={pdfThumb} alt="" style={{width:'100%',height:mockups.length>1?140:200,objectFit:'contain',display:'block',background:'#fafafa'}} onError={e=>{e.target.style.display='none'}}/>
+                      :<div style={{height:mockups.length>1?140:200,display:'flex',alignItems:'center',justifyContent:'center',background:'#f8fafc'}}><span style={{fontSize:32}}>📄</span></div>}
+                    </div>})}
+                </div>}
+                {/* Job info bar */}
+                <div style={{display:'flex',alignItems:'center',gap:10,padding:'10px 12px'}}>
+                  <div style={{flex:1}}>
+                    <div style={{fontWeight:600,fontSize:13}}>{j.art_name}</div>
+                    <div style={{fontSize:10,color:'#64748b'}}>{j.deco_type?.replace(/_/g,' ')} · {j.positions} · {(j.items||[]).length} garment{(j.items||[]).length!==1?'s':''}</div>
+                  </div>
                   <span style={{padding:'2px 8px',borderRadius:10,fontSize:9,fontWeight:700,background:j.art_status==='art_complete'?'#dcfce7':j.art_status==='waiting_approval'?'#fef3c7':'#fee2e2',color:j.art_status==='art_complete'?'#166534':j.art_status==='waiting_approval'?'#92400e':'#dc2626'}}>{artLabelsP[j.art_status]}</span>
-                  {j.prod_status!=='hold'&&<div style={{fontSize:9,color:'#64748b',marginTop:2}}>{prodLabelsP[j.prod_status]}</div>}
+                  <span style={{color:'#94a3b8',fontSize:14}}>›</span>
                 </div>
-                <span style={{color:'#94a3b8',fontSize:14}}>›</span>
               </div>})}
           </>}
           {/* Shipping / Tracking */}
@@ -9068,9 +9077,10 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           </div>}
 
           {/* ── Artwork details — pantones, sizes, locations ── */}
-          {artFile&&(()=>{const _cl3=(artFile.ink_colors||artFile.thread_colors||'').split(/[,\n]/).map(c3=>c3.trim()).filter(Boolean);const _isE3=artFile.deco_type==='embroidery';const _pl3=(j.positions||'').split(',').map(p=>p.trim()).filter(Boolean);const _as3=artFile.art_sizes||{};
+          {artFile&&(()=>{const _cl3=(artFile.ink_colors||artFile.thread_colors||'').split(/[,\n]/).map(c3=>c3.trim()).filter(Boolean);const _isE3=artFile.deco_type==='embroidery';
+            const _dp3=new Set();const numDecos3=[];(j.items||[]).forEach(gi=>{const it2=safeItems(so)[gi.item_idx];if(it2)safeDecos(it2).forEach(d=>{if(d.kind==='art'&&d.art_file_id===j.art_file_id&&d.position)_dp3.add(d.position);if(d.kind==='numbers')numDecos3.push(d)})});
+            const _pl3=_dp3.size>0?[..._dp3]:(j.positions||'').split(',').map(p=>p.trim()).filter(Boolean);const _as3=artFile.art_sizes||{};
             const _cm3={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000','Silver':'#C0C0C0','Royal':'#4169e1','Cardinal':'#8C1515','Green':'#166534','Orange':'#EA580C','Navy 2767':'#001f3f','PMS 286':'#0033A0','PMS 032':'#EF3340','PMS 877':'#C0C0C0','Maroon':'#800000'};
-            const numDecos3=[];(j.items||[]).forEach(gi=>{const it2=safeItems(so)[gi.item_idx];if(it2)safeDecos(it2).forEach(d=>{if(d.kind==='numbers')numDecos3.push(d)})});
             const nd3=numDecos3[0];
             return<div style={{marginBottom:16,padding:'14px 16px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:10}}>
               <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:10}}>Artwork Details</div>
