@@ -29,15 +29,17 @@ const sendBrevoEmail=async({to,subject,htmlContent,textContent,senderName,sender
 };
 
 // ─── Brevo SMS Setup ───
+const _brevoSmsSender=process.env.REACT_APP_BREVO_SMS_SENDER||'NatSportsAp';
 const sendBrevoSms=async({to,content,sender})=>{
   if(!_brevoKey){return{ok:false,error:'Brevo API key not configured'}}
   try{
     const phone=to.replace(/[^\d+]/g,'');
-    const formatted=phone.startsWith('+')?phone:'+1'+phone.replace(/^1/,'');
-    const payload={type:'transactional',unicodeEnabled:true,sender:sender||'NSA',recipient:formatted,content};
-    const r=await fetch('https://api.brevo.com/v3/transactionalSMS/sms',{method:'POST',headers:{'accept':'application/json','content-type':'application/json','api-key':_brevoKey},
+    if(phone.length<10)return{ok:false,error:'Invalid phone number'};
+    const formatted=phone.startsWith('+')?phone:(phone.startsWith('1')&&phone.length===11?'+'+phone:'+1'+phone);
+    const payload={type:'transactional',unicodeEnabled:false,sender:sender||_brevoSmsSender,recipient:formatted,content:content.substring(0,160),tag:'invoice'};
+    const r=await fetch('https://api.brevo.com/v3/transactionalSMS/send',{method:'POST',headers:{'accept':'application/json','content-type':'application/json','api-key':_brevoKey},
     body:JSON.stringify(payload)});
-    const d=await r.json();if(!r.ok)return{ok:false,error:d.message||'SMS send failed'};return{ok:true,messageId:d.messageId,reference:d.reference}}
+    const d=await r.json();if(!r.ok)return{ok:false,error:d.message||d.code||'SMS send failed ('+r.status+')'};return{ok:true,messageId:d.messageId,reference:d.reference}}
   catch(e){return{ok:false,error:e.message}}
 };
 
@@ -417,8 +419,8 @@ const _dbSaveSOInner = async (so) => {
   }catch(e){console.error('[DB] save SO:',e);_dbSaveFailedIds.add(so.id);_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save failed: '+e.message,'error');return false}});
 };
 const _dbSaveSO = (so) => _queuedEntitySave(so.id, so, _dbSaveSOInner);
-const _invCols=['id','customer_id','so_id','date','due_date','total','paid','memo','status','type','inv_type','deposit_pct','tax','tax_rate','tax_exempt','shipping','cc_fee','email_status','email_sent_at','line_items','qb_invoice_id','tc_reported','tc_tax','created_at','updated_at','billing_name','billing_address'];
-const _invExtraCols=new Set(['qb_invoice_id','tc_reported','tc_tax','billing_name','billing_address']);
+const _invCols=['id','customer_id','so_id','date','due_date','total','paid','memo','status','type','inv_type','deposit_pct','tax','tax_rate','tax_exempt','shipping','cc_fee','email_status','email_sent_at','email_opened_at','follow_up_at','sent_history','line_items','qb_invoice_id','tc_reported','tc_tax','created_at','updated_at','billing_name','billing_address'];
+const _invExtraCols=new Set(['qb_invoice_id','tc_reported','tc_tax','billing_name','billing_address','email_status','email_sent_at','email_opened_at','follow_up_at','sent_history']);
 const _dbSaveInvoice = async (inv) => {
   if(!supabase)return;
   return _dbSavingGuard(async()=>{try{
@@ -632,13 +634,13 @@ const _dbSaveFailedIds=new Set(JSON.parse(localStorage.getItem('nsa_save_failed_
 const _persistFailedIds=()=>{try{localStorage.setItem('nsa_save_failed_ids',JSON.stringify([..._dbSaveFailedIds]))}catch{}};
 // Column whitelists — strip unknown fields before sending to Supabase (localStorage may have extra UI fields like vendor_id)
 const _pick=(obj,cols)=>{const r={};cols.forEach(c=>{if(c in obj)r[c]=obj[c]});return r};
-const _estCols=['id','customer_id','memo','status','created_by','created_at','updated_at','default_markup','shipping_type','shipping_value','ship_to_id','email_status','email_opened_at','email_viewed_at','deleted_at','promo_applied','promo_amount','update_requests'];
+const _estCols=['id','customer_id','memo','status','created_by','created_at','updated_at','default_markup','shipping_type','shipping_value','ship_to_id','email_status','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history','deleted_at','promo_applied','promo_amount','update_requests'];
 const _soCols=['id','customer_id','estimate_id','memo','status','created_by','created_at','updated_at','expected_date','production_notes','shipping_type','shipping_value','ship_to_id','default_markup','omg_store_id','_shipstation_order_id','_shipping_status','_tracking_number','_carrier','_ship_date','_tracking_url','_shipped','_shipments','_shipping_cost','_shipstation_cost','_inbound_freight','deleted_at','promo_applied','promo_amount','ship_preference','ship_on_date','order_type','expected_ship_date','booking_confirmed','booking_confirmed_at','booking_confirmed_by','booking_alert_days','po_number'];
 const _itemCols=['product_id','sku','name','brand','color','nsa_cost','retail_price','unit_sell','sizes','available_sizes','_colors','no_deco','is_custom','custom_desc','custom_cost','custom_sell','is_promo','_pre_promo_sell','est_qty','size_availability'];
 const _decoCols=['kind','position','type','art_file_id','art_tbd_type','tbd_colors','tbd_stitches','tbd_dtf_size','sell_override','sell_each','cost_each','underbase','two_color','colors','stitches','dtf_size','num_method','num_size','num_size_back','num_font','roster','names','names_list','vendor','deco_type','notes','custom_font_art_id','print_color','front_and_back','reversible','num_qty','name_qty'];
 // Columns that may not exist in production DB / schema cache — stripped on insert retry
 const _itemExtraCols=new Set(['is_promo','_pre_promo_sell','est_qty','size_availability']);
-const _estExtraCols=new Set(['promo_applied','promo_amount','update_requests']);
+const _estExtraCols=new Set(['promo_applied','promo_amount','update_requests','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history']);
 const _soExtraCols=new Set(['_shipping_cost','_shipstation_cost','_inbound_freight','promo_applied','promo_amount','ship_preference','ship_on_date','order_type','expected_ship_date','booking_confirmed','booking_confirmed_at','booking_confirmed_by','booking_alert_days','po_number']);
 const _decoExtraCols=new Set(['print_color','front_and_back','reversible','num_qty','name_qty','num_font','num_size_back','custom_font_art_id','deco_type','notes','vendor']);
 // Sanitize decoration data before DB insert — strip UI-only placeholders that would violate constraints
@@ -649,8 +651,8 @@ const _artCols=['id','name','deco_type','ink_colors','thread_colors','art_size',
 // Columns that may not exist in art file tables — stripped on retry
 const _artExtraCols=new Set(['art_sizes','garment_colors','item_mockups']);
 // Columns that may not exist in so_jobs — stripped on retry
-const _jobExtraCols=new Set(['_art_ids','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at','coach_email_opened_at']);
-const _jobCols=['id','key','art_file_id','_art_ids','_draft','art_name','deco_type','positions','art_status','item_status','prod_status','total_units','fulfilled_units','split_from','created_at','assigned_machine','assigned_to','ship_method','items','_auto','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at','coach_email_opened_at'];
+const _jobExtraCols=new Set(['_art_ids','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at','coach_email_opened_at','follow_up_at','sent_history','run_order','run1_done','run2_done']);
+const _jobCols=['id','key','art_file_id','_art_ids','_draft','art_name','deco_type','positions','art_status','item_status','prod_status','total_units','fulfilled_units','split_from','created_at','assigned_machine','assigned_to','ship_method','items','_auto','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at','coach_email_opened_at','follow_up_at','sent_history','run_order','run1_done','run2_done'];
 const _custCols=['id','parent_id','name','alpha_tag','billing_address_line1','billing_address_line2','billing_city','billing_state','billing_zip','shipping_address_line1','shipping_address_line2','shipping_city','shipping_state','shipping_zip','adidas_ua_tier','catalog_markup','payment_terms','tax_rate','tax_exempt','primary_rep_id','notes','is_active','created_at','updated_at','alt_billing_addresses','art_files'];
 const _vendCols=['id','name','vendor_type','api_provider','nsa_carries_inventory','click_automation','is_active','contact_email','contact_phone','rep_name','payment_terms','notes'];
 const _firmDateCols=['item_desc','date','approved'];
@@ -1130,11 +1132,12 @@ const DEFAULT_REPS=[
   {id:'00000000-0000-0000-0000-000000000070',name:'Mo',role:'art'},
   {id:'00000000-0000-0000-0000-000000000071',name:'Erik',role:'art'},
 ];
-const NSA={name:'National Sports Apparel',legal:'National Sports Apparel LLC',phone:'(619) 555-0127',email:'team@nsa-teamwear.com',
+const NSA_DEFAULTS={name:'National Sports Apparel',legal:'National Sports Apparel LLC',phone:'(619) 555-0127',email:'team@nsa-teamwear.com',
   addr:'9340 Cabot Dr, Suite A',city:'San Diego',state:'CA',zip:'91941',
   fullAddr:'9340 Cabot Dr, Suite A, San Diego, CA 91941',
   logo:'NSA',logoUrl:'/nsa-logo.svg',terms:'Net 30 from invoice date unless otherwise agreed.',
   depositTerms:'50% deposit required to begin production. Balance due upon completion.'};
+let NSA={...NSA_DEFAULTS};
 const ART_LABELS={needs_art:'Needs Art',art_requested:'Art Requested',art_in_progress:'In Progress',waiting_approval:'Waiting Approval',production_files_needed:'Prod Files Needed',art_complete:'Art Complete'};
 const ART_FILE_LABELS={waiting_for_art:'Waiting for Art',needs_approval:'Needs Approval',approved:'Approved / Needs Files'};
 const ART_FILE_SC={waiting_for_art:{bg:'#fef2f2',c:'#dc2626'},needs_approval:{bg:'#fef3c7',c:'#92400e'},approved:{bg:'#dcfce7',c:'#166534'}};
@@ -1385,6 +1388,23 @@ const isJobReady=(j,o)=>{
     });
   });
   return totalSz>0&&fulfilledSz>=totalSz;
+};
+// Check if a job is dual-run (has both art/screen/emb AND numbers decorations)
+const isDualRunJob=(j,o)=>{
+  const firstGi=(j.items||[])[0];if(!firstGi)return false;
+  const it=safeItems(o)[firstGi.item_idx];if(!it)return false;
+  const decoIdxs=firstGi.deco_idxs||[firstGi.deco_idx];
+  const decos=safeDecos(it).filter((d,di)=>decoIdxs.includes(di));
+  const hasArt=decos.some(d=>d.kind==='art');
+  const hasNums=decos.some(d=>d.kind==='numbers');
+  return hasArt&&hasNums;
+};
+// Get run labels for a dual-run job based on run_order
+const getRunLabels=(j)=>{
+  const ro=j.run_order; // 'art_first' or 'numbers_first'
+  if(ro==='numbers_first')return{run1:'Numbers',run2:'Artwork'};
+  if(ro==='art_first')return{run1:'Artwork',run2:'Numbers'};
+  return null; // not yet chosen
 };
 const safeFirm=(o)=>safeArr(o?.firm_dates);
 
@@ -2338,10 +2358,11 @@ function getAddrs(cu,all){const a=[];const add=(c,l)=>{if(c.shipping_address_lin
   else{all.filter(c=>c.parent_id===cu.id).forEach(s=>add(s,s.alpha_tag))}return a}
 
 // SEND ESTIMATE MODAL
-function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachmentHtml,repUser}){
+function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachmentHtml,repUser,defaultFollowUpDays}){
   const[body,setBody]=useState('');const[attachments,setAttachments]=useState([]);const[toEmails,setToEmails]=useState('');
   const[sending,setSending]=useState(false);const[dragOver,setDragOver]=useState(false);
   const[smsEnabled,setSmsEnabled]=useState(false);const[smsPhone,setSmsPhone]=useState('');const[smsMsg,setSmsMsg]=useState('');
+  const[followUpDays,setFollowUpDays]=useState(defaultFollowUpDays||7);
   const label=docType==='so'?'Sales Order':'Estimate';
   const prevOpenRef=React.useRef(false);const sendingRef=React.useRef(false);
   React.useEffect(()=>{if(isOpen&&!prevOpenRef.current&&customer){
@@ -2352,7 +2373,7 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
     setSmsPhone(primaryContact?.phone||'');
     const portalUrl2=customer?.alpha_tag?'https://nsa-portal.netlify.app/?portal='+customer.alpha_tag:'';
     setSmsMsg('Hi '+(primaryContact?.name||'Coach')+', your '+label.toLowerCase()+' for '+(estimate?.memo||'your order')+' is ready. View it here: '+portalUrl2);
-    setSmsEnabled(!!primaryContact?.phone);
+    setSmsEnabled(!!primaryContact?.phone);setFollowUpDays(defaultFollowUpDays||7);
     setAttachments([]);setSending(false);sendingRef.current=false}prevOpenRef.current=isOpen},[isOpen,customer,estimate,docType,label]);
   const handleFiles=(files)=>{const newFiles=Array.from(files).map(f=>({name:f.name,size:(f.size/1024).toFixed(0)+' KB',file:f}));setAttachments(a=>[...a,...newFiles])};
   const doSend=async()=>{
@@ -2369,8 +2390,33 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
       const brevoAttachments=[];
       if(buildAttachmentHtml){try{
         const docHtml=buildAttachmentHtml();
-        const container=document.createElement('div');container.innerHTML=docHtml;container.style.position='absolute';container.style.left='-9999px';container.style.width='800px';document.body.appendChild(container);
-        const pdfBlob=await html2pdf().set({margin:0.3,filename:(estimate?.id||'document')+'.pdf',image:{type:'jpeg',quality:0.95},html2canvas:{scale:2,useCORS:true},jsPDF:{unit:'in',format:'letter',orientation:'portrait'}}).from(container).outputPdf('blob');
+        // Extract <style> and <body>, override flex→table for html2canvas compatibility
+        const styleMatch=docHtml.match(/<style>([\s\S]*?)<\/style>/);
+        const bodyMatch=docHtml.match(/<body>([\s\S]*?)<\/body>/);
+        const pdfFixCss=`
+          .header{display:table!important;width:100%!important;table-layout:fixed}
+          .header>*{display:table-cell!important;vertical-align:top!important}
+          .logo{width:55%!important;display:table-cell!important}
+          .logo img{height:50px;vertical-align:middle;margin-right:8px;float:left}
+          .doc-id{width:45%!important;display:table-cell!important;text-align:right!important}
+          .bill-total{display:table!important;width:100%!important;table-layout:fixed}
+          .bill-total>*{display:table-cell!important;vertical-align:top!important}
+          .total-box{width:200px!important;text-align:left!important}
+          .info-row{display:table!important;width:100%!important;table-layout:fixed}
+          .info-cell{display:table-cell!important;vertical-align:top!important}
+          .footer{display:table!important;width:100%!important}
+          .footer>*{display:table-cell!important}
+          .footer>*:last-child{text-align:right!important}
+        `;
+        const container=document.createElement('div');
+        container.style.cssText='position:absolute;left:-9999px;top:0;width:800px;background:white;font-family:Segoe UI,Helvetica,Arial,sans-serif;font-size:11px;color:#1a1a1a;padding:20px 28px;line-height:1.4';
+        const styleEl=document.createElement('style');
+        styleEl.textContent=(styleMatch?styleMatch[1]:'')+pdfFixCss;
+        container.appendChild(styleEl);
+        const bodyDiv=document.createElement('div');bodyDiv.innerHTML=bodyMatch?bodyMatch[1]:docHtml;container.appendChild(bodyDiv);
+        document.body.appendChild(container);
+        await new Promise(r=>setTimeout(r,500));// allow images/fonts to load
+        const pdfBlob=await html2pdf().set({margin:[0.4,0.4,0.4,0.4],filename:(estimate?.id||'document')+'.pdf',image:{type:'jpeg',quality:0.98},html2canvas:{scale:2,useCORS:true,logging:false,backgroundColor:'#ffffff'},jsPDF:{unit:'in',format:'letter',orientation:'portrait'}}).from(bodyDiv).outputPdf('blob');
         document.body.removeChild(container);
         const pdfB64=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result.split(',')[1]);reader.onerror=reject;reader.readAsDataURL(pdfBlob)});
         brevoAttachments.push({name:(estimate?.id||'document')+'.pdf',content:pdfB64});
@@ -2385,10 +2431,10 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
     }
     // Send SMS notification if enabled
     if(smsEnabled&&smsPhone&&_brevoKey){
-      const smsRes=await sendBrevoSms({to:smsPhone,content:smsMsg.substring(0,160),sender:'NSA'});
-      if(!smsRes.ok){console.warn('SMS send failed:',smsRes.error)}
+      const smsRes=await sendBrevoSms({to:smsPhone,content:smsMsg.substring(0,160)});
+      if(smsRes.ok){if(_notify)_notify('Text sent to '+smsPhone)}else{if(_notify)_notify('SMS failed: '+(smsRes.error||'Unknown'),'error');console.warn('SMS send failed:',smsRes.error)}
     }
-    onSend();onClose()};
+    onSend({followUpDays});onClose()};
   if(!isOpen)return null;
   return(<div className="modal-overlay" onClick={onClose}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:650}}>
     <div className="modal-header"><h2>Send {label}</h2><button className="modal-close" onClick={onClose}>x</button></div>
@@ -2419,6 +2465,14 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
           <div style={{marginBottom:8}}><label className="form-label" style={{fontSize:11}}>Phone</label><input className="form-input" value={smsPhone} onChange={e=>setSmsPhone(e.target.value)} placeholder="Phone number" style={{fontSize:12}}/></div>
           <div><label className="form-label" style={{fontSize:11}}>Text Message <span style={{color:'#94a3b8',fontWeight:400}}>({smsMsg.length}/160)</span></label><textarea className="form-input" rows={2} value={smsMsg} onChange={e=>setSmsMsg(e.target.value)} maxLength={160} style={{fontSize:12,resize:'vertical'}}/></div>
         </div>}
+      </div>
+      {/* Follow-up reminder */}
+      <div style={{marginBottom:12,padding:10,background:'#faf5ff',border:'1px solid #e9d5ff',borderRadius:8,display:'flex',alignItems:'center',gap:10}}>
+        <span style={{fontSize:12,fontWeight:700,color:'#6d28d9'}}>Follow up in</span>
+        <select className="form-input" value={followUpDays} onChange={e=>setFollowUpDays(parseInt(e.target.value))} style={{width:70,fontSize:12,padding:'4px 6px'}}>
+          {[1,2,3,5,7,10,14,21,30].map(d=><option key={d} value={d}>{d}</option>)}
+        </select>
+        <span style={{fontSize:12,color:'#6d28d9'}}>days if no response</span>
       </div>
       <div style={{padding:8,background:'#dbeafe',borderRadius:6,fontSize:11,color:'#1e40af'}}>📎 {label} PDF will be auto-attached | 🔗 Portal link included in message{!_brevoKey&&' | ⚠️ No Brevo API key — will open email client instead'}</div>
     </div>
@@ -2544,7 +2598,7 @@ function LoginGate({onLogin,reps}){
   );
 }
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onBack,onConvertSO,onCopyEstimate,onRevertToEst,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,allInvoices,batchPOs,onBatchPO,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onSaveProduct,onViewEstimate,onViewSO,returnToPage,onReturnToJob,onAssignTodo}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onBack,onConvertSO,onCopyEstimate,onRevertToEst,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,allInvoices,batchPOs,onBatchPO,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onSaveProduct,onViewEstimate,onViewSO,returnToPage,onReturnToJob,onAssignTodo,portalSettings}){
   const vendorList=vendorsProp||D_V;// use DB-loaded vendors if available, fallback to defaults
   const cuEmail=(cu?.email)||(REPS||[]).find(r=>r.id===cu?.id)?.email||'';
   const isE=mode==='estimate';const isSO=mode==='so';
@@ -2570,6 +2624,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const[showInvCreate,setShowInvCreate]=useState(false);const[invSelItems,setInvSelItems]=useState([]);const[invMemo,setInvMemo]=useState('');const[invType,setInvType]=useState('final');const[invDepositPct,setInvDepositPct]=useState(50);const[invBilling,setInvBilling]=useState('');
   const[invReview,setInvReview]=useState(null);const[invSendModal,setInvSendModal]=useState(false);const[invSendMsg,setInvSendMsg]=useState('');const[invSendTo,setInvSendTo]=useState('');const[invSendCustomEmail,setInvSendCustomEmail]=useState('');
   const[invSmsEnabled,setInvSmsEnabled]=useState(false);const[invSmsPhone,setInvSmsPhone]=useState('');const[invSmsMsg,setInvSmsMsg]=useState('');
+  const[invFollowUpDays,setInvFollowUpDays]=useState(7);
   const[splitModal,setSplitModal]=useState(null);// {jIdx, mode:'received'|'sku'|null}
   const[jobWizard,setJobWizard]=useState(null);// {groups: [{name,deco_type,items:[...]},...]} — Job Setup Wizard
   const[countDiscModal,setCountDiscModal]=useState(null);// {open,entries:[{sku,name,color,size,expected,actual}],notes}
@@ -3272,6 +3327,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         sent_to_coach_at:existing?.sent_to_coach_at||null,coach_approved_at:existing?.coach_approved_at||null,coach_email_opened_at:existing?.coach_email_opened_at||null,
         coach_rejected:existing?.coach_rejected||null,
         _art_ids:j._art_ids||[],
+        // Preserve dual-run order fields
+        run_order:existing?.run_order||null,run1_done:existing?.run1_done||false,run2_done:existing?.run2_done||false,
       };
     });
     // Preserve manually split jobs — they won't be auto-generated from decorations
@@ -3367,6 +3424,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {isSO&&<span style={{padding:'3px 10px',borderRadius:12,fontSize:12,fontWeight:700,background:SC[o.status]?.bg||'#f1f5f9',color:SC[o.status]?.c||'#475569'}}>{o.status?.replace(/_/g,' ')}</span>}
             {isSO&&o.order_type==='booking'&&<span style={{padding:'3px 10px',borderRadius:12,fontSize:12,fontWeight:700,background:'#e0e7ff',color:'#4338ca'}}>Booking{o.booking_confirmed?' (Confirmed)':''}</span>}
             {isE&&<EmailBadge e={o}/>}</div>
+          {isE&&(o.sent_history||[]).length>0&&<div style={{marginTop:6,padding:'8px 12px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8}}>
+            <div style={{fontSize:11,fontWeight:700,color:'#475569',marginBottom:4}}>Send History</div>
+            {(o.sent_history||[]).map((h,hi)=><div key={hi} style={{fontSize:11,color:'#64748b',display:'flex',alignItems:'center',gap:6,marginBottom:2}}>
+              <span style={{color:'#2563eb'}}>✉️</span>
+              <span>{new Date(h.sent_at).toLocaleDateString()} @ {new Date(h.sent_at).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true})}</span>
+              <span style={{color:'#94a3b8'}}>by {h.sent_by}</span>
+              {h.methods&&<span style={{fontSize:9,padding:'1px 5px',borderRadius:4,background:'#eff6ff',color:'#1e40af'}}>{h.methods.join(', ')}</span>}
+              {h.to&&<span style={{fontSize:9,color:'#94a3b8'}}>→ {h.to}</span>}
+            </div>)}
+            {o.email_opened_at&&<div style={{fontSize:11,color:'#1e40af',marginTop:4,fontWeight:600}}>👁️ Opened: {o.email_opened_at}</div>}
+            {o.follow_up_at&&<div style={{fontSize:11,color:'#92400e',marginTop:2}}>⏰ Follow-up: {new Date(o.follow_up_at).toLocaleDateString()}{new Date(o.follow_up_at)<new Date()?' (overdue)':''}</div>}
+          </div>}
           {!cust?<div style={{marginBottom:8}}><label className="form-label">Select Customer *</label><SearchSelect options={allCustomers.map(c=>({value:c.id,label:`${c.name} (${c.alpha_tag})`}))} value={o.customer_id} onChange={selC} placeholder="Search customer..."/></div>
           :<div><div style={{display:'flex',alignItems:'center',gap:6}}><span style={{fontSize:18,fontWeight:800}}>{cust.name}</span> <span style={{fontSize:14,color:'#64748b'}}>({cust.alpha_tag})</span>
             <button style={{background:'none',border:'none',cursor:'pointer',color:'#64748b',fontSize:10,textDecoration:'underline',padding:0}} onClick={()=>{if(window.confirm('Change customer for '+o.id+'? This will update pricing tier.'))selC(null);setCust(null)}}>change</button></div>
@@ -3476,9 +3545,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 const szStr=SZ_ORD.filter(sz=>safeSizes(it)[sz]>0).map(sz=>safeSizes(it)[sz]+' '+sz).join(', ');
                 const unitPrice=isRolled?safeNum(it.unit_sell)+decoSell:safeNum(it.unit_sell);
                 const lineAmt=qty*unitPrice;subTotal+=lineAmt;
-                let itemDesc='<strong>'+it.sku+'</strong><br/>'+(it.name||'')+(it.color?' - '+it.color:'');
+                let itemDesc='<strong>'+(it.sku||'')+'</strong><br/>'+(it.name||'')+(it.color?' - '+it.color:'');
                 if(szStr)itemDesc+='<br/><span style="font-size:10px;color:#555">'+szStr+'</span>';
-                rows.push({cells:[{value:itemDesc},{value:qty,style:'text-align:center'},{value:'$'+unitPrice.toFixed(2),style:'text-align:right'},{value:'$'+lineAmt.toFixed(2),style:'text-align:right;font-weight:600'}]});
+                rows.push({cells:[{value:qty,style:'text-align:center'},{value:itemDesc},{value:'',style:'text-align:center'},{value:taxRate>0?'Yes':'No',style:'text-align:center'},{value:'$'+unitPrice.toFixed(2),style:'text-align:right'},{value:'$'+lineAmt.toFixed(2),style:'text-align:right;font-weight:600'}]});
                 decos.forEach(d=>{
                   const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);
                   const artF=af.find(a2=>a2.id===d.art_file_id);
@@ -3494,30 +3563,33 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     const szRows=sorted.filter(([,arr])=>(arr||[]).some(v=>v)).map(([sz,arr])=>'<tr><td style="font-weight:700;padding:1px 6px;font-size:10px">'+sz+'</td><td style="font-size:10px;padding:1px 4px">'+(arr||[]).filter(v=>v).join(', ')+'</td></tr>');
                     if(szRows.length>0)numHtml='<table style="margin:2px 0 0 20px;border-collapse:collapse">'+szRows.join('')+'</table>'}
                   if(isRolled){
-                    rows.push({cells:[{value:'<span style="padding-left:20px;color:#666;font-size:11px">'+decoLabel+posLabel+'</span>'+numHtml,style:'border-bottom:none'},{value:'',style:'border-bottom:none'},{value:'',style:'border-bottom:none'},{value:'',style:'border-bottom:none'}]});
+                    rows.push({cells:[{value:'',style:'text-align:center;border-bottom:none'},{value:'<span style="padding-left:20px;color:#666;font-size:11px">'+decoLabel+posLabel+'</span>'+numHtml,style:'border-bottom:none'},{value:'',style:'border-bottom:none'},{value:'',style:'border-bottom:none'},{value:'',style:'border-bottom:none'},{value:'',style:'border-bottom:none'}]});
                   }else{
                     const decoAmt=qty*dp2.sell;subTotal+=decoAmt;
-                    rows.push({cells:[{value:'<span style="padding-left:20px;color:#666;font-size:11px">'+decoLabel+posLabel+'</span>'+numHtml},{value:qty,style:'text-align:center;color:#888;font-size:11px'},{value:'$'+dp2.sell.toFixed(2),style:'text-align:right;color:#888;font-size:11px'},{value:'$'+decoAmt.toFixed(2),style:'text-align:right;color:#888;font-size:11px'}]});
+                    rows.push({cells:[{value:qty,style:'text-align:center;color:#888;font-size:11px'},{value:'<span style="padding-left:20px;color:#666;font-size:11px">'+decoLabel+posLabel+'</span>'+numHtml},{value:'',style:'text-align:center'},{value:'',style:'text-align:center'},{value:'$'+dp2.sell.toFixed(2),style:'text-align:right;color:#888;font-size:11px'},{value:'$'+decoAmt.toFixed(2),style:'text-align:right;color:#888;font-size:11px'}]});
                   }
                 });
               });
               const shipAmt=o.shipping_type==='pct'?subTotal*(o.shipping_value||0)/100:(o.shipping_value||0);
               const taxAmt=subTotal*taxRate;const total=subTotal+shipAmt+taxAmt;
-              if(shipAmt>0)rows.push({cells:[{value:'<strong>Shipping</strong>'},{value:1,style:'text-align:center'},{value:'$'+shipAmt.toFixed(2),style:'text-align:right'},{value:'$'+shipAmt.toFixed(2),style:'text-align:right'}]});
+              if(shipAmt>0)rows.push({cells:[{value:1,style:'text-align:center'},{value:'<strong>Shipping</strong><br/><span style="font-size:10px;color:#555">Shipping</span>'},{value:'',style:'text-align:center'},{value:'No',style:'text-align:center'},{value:'$'+shipAmt.toFixed(2),style:'text-align:right'},{value:'$'+shipAmt.toFixed(2),style:'text-align:right'}]});
+              const ddBillAddr=cust?.shipping_address_line1?cust.shipping_address_line1+(cust.shipping_city?'<br/>'+cust.shipping_city+(cust.shipping_state?' '+cust.shipping_state:'')+(cust.shipping_zip?' '+cust.shipping_zip:''):'')+'<br/>United States':(cust?.billing_address_line1?cust.billing_address_line1+(cust.billing_city?'<br/>'+cust.billing_city+(cust.billing_state?' '+cust.billing_state:'')+(cust.billing_zip?' '+cust.billing_zip:''):'')+'<br/>United States':'');
               printDoc({
                 title:cust?.name||'Customer',docNum:o.id,docType:isE?'ESTIMATE':'SALES ORDER',
                 headerRight:'<div class="ta">$'+total.toFixed(2)+'</div>'+(isE?'<div class="ts">Expires: '+new Date(Date.now()+30*86400000).toLocaleDateString()+'</div>':''),
                 infoBoxes:[
-                  {label:'Bill To',value:cust?.name||'—',sub:cust?.address||cust?.alpha_tag||''},
-                  {label:isE?'Expires':'Expected',value:isE?new Date(Date.now()+30*86400000).toLocaleDateString():(o.expected_date||'TBD'),sub:'Exp. Close: '+new Date().toLocaleDateString()},
+                  {label:'Bill To',value:cust?.name||'—',sub:(cust?.alpha_tag?cust.alpha_tag+'<br/>':'')+(ddBillAddr||'')},
+                  {label:isE?'Expires':'Expected',value:isE?new Date(Date.now()+30*86400000).toLocaleDateString():(o.expected_date||'TBD')},
+                  {label:'Exp. Close',value:new Date().toLocaleDateString()},
                   {label:'Sales Rep',value:REPS.find(r=>r.id===o.created_by)?.name||'—'},
+                  {label:isE?'Estimate':'Sales Order',value:o.id},
                   {label:'Memo',value:o.memo||'—'},
                 ],
-                tables:[{headers:['Item','Qty','Rate','Amount'],aligns:['left','center','right','right'],
+                tables:[{headers:['Quantity','Item','Options','Tax','Rate','Amount'],aligns:['center','left','center','center','right','right'],
                   rows:[...rows,
-                    {cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Subtotal</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'},{value:'<strong>$'+subTotal.toFixed(2)+'</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'}]},
-                    ...(taxAmt>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'Tax ('+(taxRate*100).toFixed(3)+'%)',style:'text-align:right;border:none;font-size:11px'},{value:'$'+taxAmt.toFixed(2),style:'text-align:right;border:none'}]}]:[]),
-                    {_class:'totals-row',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Total</strong>',style:'text-align:right'},{value:'<strong style="font-size:14px">$'+total.toFixed(2)+'</strong>',style:'text-align:right'}]},
+                    {cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Subtotal</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'},{value:'<strong>$'+subTotal.toFixed(2)+'</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'}]},
+                    ...(taxAmt>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Tax ('+(taxRate*100).toFixed(3)+'%)</strong>',style:'text-align:right;border:none'},{value:'$'+taxAmt.toFixed(2),style:'text-align:right;border:none'}]}]:[]),
+                    {_class:'totals-row',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Total</strong>',style:'text-align:right'},{value:'<strong style="font-size:14px">$'+total.toFixed(2)+'</strong>',style:'text-align:right'}]},
                   ]}],
                 footer:isE?'This estimate is valid for 30 days. Prices subject to change. '+NSA.depositTerms:NSA.terms,
                 portalLink:cust?.alpha_tag?(window.location.origin+'?portal='+cust.alpha_tag):undefined
@@ -4982,27 +5054,33 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const decos=safeDecos(it);const decoSell=decos.reduce((a,d)=>{const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);return a+dp2.sell},0);
         const szStr=SZ_ORD.filter(sz=>safeSizes(it)[sz]>0).map(sz=>safeSizes(it)[sz]+' '+sz).join(', ');
         const unitPrice=isRolled?safeNum(it.unit_sell)+decoSell:safeNum(it.unit_sell);const lineAmt=qty*unitPrice;subTotal+=lineAmt;
-        let itemDesc='<strong>'+it.sku+'</strong><br/>'+(it.name||'')+(it.color?' - '+it.color:'');
+        let itemDesc='<strong>'+(it.sku||'')+'</strong><br/>'+(it.name||'')+(it.color?' - '+it.color:'');
         if(szStr)itemDesc+='<br/><span style="font-size:10px;color:#555">'+szStr+'</span>';
-        rows.push({cells:[{value:itemDesc},{value:qty,style:'text-align:center'},{value:'$'+unitPrice.toFixed(2),style:'text-align:right'},{value:'$'+lineAmt.toFixed(2),style:'text-align:right;font-weight:600'}]});
+        rows.push({cells:[{value:qty,style:'text-align:center'},{value:itemDesc},{value:'',style:'text-align:center'},{value:taxRate>0?'Yes':'No',style:'text-align:center'},{value:'$'+unitPrice.toFixed(2),style:'text-align:right'},{value:'$'+lineAmt.toFixed(2),style:'text-align:right;font-weight:600'}]});
         if(!isRolled){decos.forEach(d=>{
           const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);const artF=af.find(a2=>a2.id===d.art_file_id);
           const decoLabel=(d.kind==='art'?(artF?.deco_type||d.art_tbd_type||'decoration'):d.kind==='numbers'?'Numbers ('+(d.num_method||'heat transfer').replace(/_/g,' ')+' '+(d.front_and_back?'F:'+(d.num_size||'4"')+' B:'+(d.num_size_back||d.num_size||'4"'):(d.num_size||'4"'))+(d.print_color?' — '+d.print_color:'')+')'+(d.front_and_back?' F+B':''):d.kind==='names'?'Names'+(d.print_color?' ('+d.print_color+')':''):d.kind==='outside_deco'?(d.deco_type||'Decoration'):'Decoration').replace(/_/g,' ');
           const posLabel=d.position?' — '+d.position:'';const decoAmt=qty*dp2.sell;subTotal+=decoAmt;
-          rows.push({cells:[{value:'<span style="padding-left:20px;color:#666;font-size:11px">'+decoLabel+posLabel+'</span>'},{value:qty,style:'text-align:center;color:#888;font-size:11px'},{value:'$'+dp2.sell.toFixed(2),style:'text-align:right;color:#888;font-size:11px'},{value:'$'+decoAmt.toFixed(2),style:'text-align:right;color:#888;font-size:11px'}]});
+          rows.push({cells:[{value:qty,style:'text-align:center;color:#888;font-size:11px'},{value:'<span style="padding-left:20px;color:#666;font-size:11px">'+decoLabel+posLabel+'</span>'},{value:'',style:'text-align:center'},{value:'',style:'text-align:center'},{value:'$'+dp2.sell.toFixed(2),style:'text-align:right;color:#888;font-size:11px'},{value:'$'+decoAmt.toFixed(2),style:'text-align:right;color:#888;font-size:11px'}]});
         })}
       });
       const shipAmt=o.shipping_type==='pct'?subTotal*(o.shipping_value||0)/100:(o.shipping_value||0);const taxAmt=subTotal*taxRate;const total=subTotal+shipAmt+taxAmt;
-      if(shipAmt>0)rows.push({cells:[{value:'<strong>Shipping</strong>'},{value:1,style:'text-align:center'},{value:'$'+shipAmt.toFixed(2),style:'text-align:right'},{value:'$'+shipAmt.toFixed(2),style:'text-align:right'}]});
+      if(shipAmt>0)rows.push({cells:[{value:1,style:'text-align:center'},{value:'<strong>Shipping</strong><br/><span style="font-size:10px;color:#555">Shipping</span>'},{value:'',style:'text-align:center'},{value:'No',style:'text-align:center'},{value:'$'+shipAmt.toFixed(2),style:'text-align:right'},{value:'$'+shipAmt.toFixed(2),style:'text-align:right'}]});
+      const billAddr=cust?.shipping_address_line1?cust.shipping_address_line1+(cust.shipping_city?'<br/>'+cust.shipping_city+(cust.shipping_state?' '+cust.shipping_state:'')+(cust.shipping_zip?' '+cust.shipping_zip:''):'')+'<br/>United States':(cust?.billing_address_line1?cust.billing_address_line1+(cust.billing_city?'<br/>'+cust.billing_city+(cust.billing_state?' '+cust.billing_state:'')+(cust.billing_zip?' '+cust.billing_zip:''):'')+'<br/>United States':'');
       return buildDocHtml({title:cust?.name||'Customer',docNum:o.id,docType:isE?'ESTIMATE':'SALES ORDER',
         headerRight:'<div class="ta">$'+total.toFixed(2)+'</div>'+(isE?'<div class="ts">Expires: '+new Date(Date.now()+30*86400000).toLocaleDateString()+'</div>':''),
-        infoBoxes:[{label:'Bill To',value:cust?.name||'—',sub:cust?.address||cust?.alpha_tag||''},{label:isE?'Expires':'Expected',value:isE?new Date(Date.now()+30*86400000).toLocaleDateString():(o.expected_date||'TBD'),sub:'Exp. Close: '+new Date().toLocaleDateString()},{label:'Sales Rep',value:REPS.find(r=>r.id===o.created_by)?.name||'—'},{label:'Memo',value:o.memo||'—'}],
-        tables:[{headers:['Item','Qty','Rate','Amount'],aligns:['left','center','right','right'],rows:[...rows,
-          {cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Subtotal</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'},{value:'<strong>$'+subTotal.toFixed(2)+'</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'}]},
-          ...(taxAmt>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'Tax ('+(taxRate*100).toFixed(3)+'%)',style:'text-align:right;border:none;font-size:11px'},{value:'$'+taxAmt.toFixed(2),style:'text-align:right;border:none'}]}]:[]),
-          {_class:'totals-row',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Total</strong>',style:'text-align:right'},{value:'<strong style="font-size:14px">$'+total.toFixed(2)+'</strong>',style:'text-align:right'}]}]}],
+        infoBoxes:[{label:'Bill To',value:cust?.name||'—',sub:(cust?.alpha_tag?cust.alpha_tag+'<br/>':'')+(billAddr||'')},{label:isE?'Expires':'Expected',value:isE?new Date(Date.now()+30*86400000).toLocaleDateString():(o.expected_date||'TBD')},{label:'Exp. Close',value:new Date().toLocaleDateString()},{label:'Sales Rep',value:REPS.find(r=>r.id===o.created_by)?.name||'—'},{label:isE?'Estimate':'Sales Order',value:o.id},{label:'Memo',value:o.memo||'—'}],
+        tables:[{headers:['Quantity','Item','Options','Tax','Rate','Amount'],aligns:['center','left','center','center','right','right'],rows:[...rows,
+          {cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Subtotal</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'},{value:'<strong>$'+subTotal.toFixed(2)+'</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'}]},
+          ...(taxAmt>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Tax ('+(taxRate*100).toFixed(3)+'%)</strong>',style:'text-align:right;border:none'},{value:'$'+taxAmt.toFixed(2),style:'text-align:right;border:none'}]}]:[]),
+          {_class:'totals-row',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Total</strong>',style:'text-align:right'},{value:'<strong style="font-size:14px">$'+total.toFixed(2)+'</strong>',style:'text-align:right'}]}]}],
         footer:isE?'This estimate is valid for 30 days. Prices subject to change. '+NSA.depositTerms:NSA.terms});
-    }} repUser={cu} onSend={()=>{if(isE&&o.status!=='approved'&&o.status!=='converted'){sv('status','sent');sv('email_status','sent');onSave({...o,status:'sent',email_status:'sent'});nf('Estimate sent!')}else{sv('email_status','sent');onSave({...o,email_status:'sent'});nf((isE?'Estimate':'Sales Order')+' sent!')}}}/>
+    }} repUser={cu} defaultFollowUpDays={portalSettings?.estFollowUpDays||portalSettings?.followUpDays||7} onSend={({followUpDays:fuDays}={})=>{
+      const now=new Date().toLocaleString();const fuAt=fuDays?new Date(Date.now()+fuDays*86400000).toISOString():null;
+      const histEntry={sent_at:now,sent_by:cu.name||cu.id,type:isE?'estimate':'so'};
+      const updates={email_status:'sent',email_sent_at:now,follow_up_at:fuAt,sent_history:[...(o.sent_history||[]),histEntry]};
+      if(isE&&o.status!=='approved'&&o.status!=='converted'){sv('status','sent');Object.entries(updates).forEach(([k,v])=>sv(k,v));onSave({...o,status:'sent',...updates});nf('Estimate sent!')}
+      else{Object.entries(updates).forEach(([k,v])=>sv(k,v));onSave({...o,...updates});nf((isE?'Estimate':'Sales Order')+' sent!')}}}/>
 
     {/* ROSTER UPLOAD DRAG & DROP MODAL */}
     {rosterUploadModal&&(()=>{const rum=rosterUploadModal;
@@ -5314,8 +5392,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             // Show invoice review page instead of navigating away
             setInvReview({...inv,_customer:cust,_so:o,_lineItems:lineItems,_shipAmt:invShipAmt,_taxAmt:invTaxAmt});
             const contact=(cust?.contacts||[])[0];
-            setInvSendMsg('Hi '+(contact?.name||'Coach')+',\n\nPlease find your invoice '+inv.id+' for $'+invTotal.toFixed(2)+'. Payment is due by '+dueDate+'.\n\nThank you,\nNSA Team');
-            setInvSmsPhone(contact?.phone||'');setInvSmsEnabled(!!contact?.phone);
+            const invPortalUrl=cust?.alpha_tag?'https://nsa-portal.netlify.app/?portal='+cust.alpha_tag:'';
+            setInvSendMsg('Hi '+(contact?.name||'Coach')+',\n\nPlease find the attached invoice '+inv.id+' for $'+invTotal.toFixed(2)+'. Payment is due by '+dueDate+'.'+(invPortalUrl?'\n\nYou can also view your invoice through your portal:\n'+invPortalUrl:'')+'\n\nThank you,\nNSA Team');
+            setInvSmsPhone(contact?.phone||'');setInvSmsEnabled(!!contact?.phone);setInvFollowUpDays(portalSettings?.invFollowUpDays||7);
             setInvSmsMsg('Hi '+(contact?.name||'Coach')+', your invoice '+inv.id+' for $'+invTotal.toFixed(2)+' is ready. Due by '+dueDate+'. View: https://nsa-portal.netlify.app/?portal='+(cust?.alpha_tag||''));
           }}>{invType==='final'?'Create Final Invoice — Close SO':'Create '+invType.charAt(0).toUpperCase()+invType.slice(1)+' Invoice'} — ${invTotal.toFixed(2)}</button>
         </div>
@@ -5465,6 +5544,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <div><label className="form-label" style={{fontSize:11}}>Text Message <span style={{color:'#94a3b8',fontWeight:400}}>({invSmsMsg.length}/160)</span></label><textarea className="form-input" rows={2} value={invSmsMsg} onChange={e=>setInvSmsMsg(e.target.value)} maxLength={160} style={{fontSize:12,resize:'vertical'}}/></div>
             </div>}
           </div>
+          {/* Follow-up reminder */}
+          <div style={{padding:10,background:'#faf5ff',border:'1px solid #e9d5ff',borderRadius:8,display:'flex',alignItems:'center',gap:10}}>
+            <span style={{fontSize:12,fontWeight:700,color:'#6d28d9'}}>Follow up in</span>
+            <select className="form-input" value={invFollowUpDays} onChange={e=>setInvFollowUpDays(parseInt(e.target.value))} style={{width:70,fontSize:12,padding:'4px 6px'}}>
+              {[1,2,3,5,7,10,14,21,30].map(d=><option key={d} value={d}>{d}</option>)}
+            </select>
+            <span style={{fontSize:12,color:'#6d28d9'}}>days if no response</span>
+          </div>
         </div>
         <div className="modal-footer">
           <button className="btn btn-secondary" onClick={()=>setInvSendModal(false)}>Cancel</button>
@@ -5472,14 +5559,46 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             setInvSendModal(false);
             const toEmail=resolvedEmail;
             const toName=resolvedName;
-            // Actually send via Brevo
+            // Build PDF attachment
+            const irBillName=ir.billing_name||ic?.name||'—';const irBal=ir.total-(ir.paid||0);
+            const irPoNum=ir._po_number||irSO?.po_number;
+            const brevoAttachments=[];
+            try{
+              const docHtml=buildDocHtml({title:irBillName,docNum:ir.id,docType:'INVOICE',
+                headerRight:'<div class="ta">$'+ir.total.toLocaleString()+'</div><div class="ts">Balance Due: <strong>$'+irBal.toLocaleString()+'</strong></div>'+(irPoNum?'<div style="font-size:11px;margin-top:4px;font-family:monospace;font-weight:700;color:#1e40af">PO# '+irPoNum+'</div>':''),
+                infoBoxes:[{label:'Bill To',value:irBillName},{label:'Invoice Date',value:ir.date||'—',sub:ir.due_date?'Due: '+ir.due_date:''},{label:'Sales Order',value:ir.so_id||'—',sub:ir.memo||''},{label:'Payment Terms',value:ir.inv_type==='deposit'?(ir.deposit_pct||50)+'% Deposit':'Final Invoice',sub:''}],
+                tables:[{headers:['Description','Qty','Rate','Amount'],aligns:['left','center','right','right'],rows:[
+                  ...lineItems.map(li=>({cells:[li.desc,li.qty,'$'+safeNum(li.rate).toFixed(2),'$'+safeNum(li.amount).toFixed(2)]})),
+                  ...(shipAmt>0?[{cells:[{value:'Shipping',style:'font-style:italic'},'','','$'+shipAmt.toFixed(2)]}]:[]),
+                  ...(taxAmt>0?[{cells:[{value:'Tax',style:'font-style:italic'},'','','$'+taxAmt.toFixed(2)]}]:[]),
+                  {_class:'totals-row',cells:['','','Total','$'+ir.total.toLocaleString()]},
+                  ...(ir.paid>0?[{cells:['','',{value:'Paid',style:'color:#166534'},'$'+ir.paid.toLocaleString()]}]:[]),
+                  ...(irBal>0?[{_style:'background:#fef2f2',cells:['','',{value:'<strong>Balance Due</strong>',style:'color:#dc2626'},'<strong style="color:#dc2626;font-size:14px">$'+irBal.toLocaleString()+'</strong>']}]:[])
+                ]}],footer:ir.inv_type==='deposit'?NSA.depositTerms:NSA.terms});
+              const styleMatch=docHtml.match(/<style>([\s\S]*?)<\/style>/);const bodyMatch=docHtml.match(/<body>([\s\S]*?)<\/body>/);
+              const pdfFixCss='.header{display:table!important;width:100%!important;table-layout:fixed}.header>*{display:table-cell!important;vertical-align:top!important}.logo{width:55%!important}.logo img{height:50px;vertical-align:middle;margin-right:8px;float:left}.doc-id{width:45%!important;text-align:right!important}.bill-total{display:table!important;width:100%!important;table-layout:fixed}.bill-total>*{display:table-cell!important;vertical-align:top!important}.total-box{width:200px!important;text-align:left!important}.info-row{display:table!important;width:100%!important;table-layout:fixed}.info-cell{display:table-cell!important;vertical-align:top!important}.footer{display:table!important;width:100%!important}.footer>*{display:table-cell!important}.footer>*:last-child{text-align:right!important}';
+              const container=document.createElement('div');container.style.cssText='position:absolute;left:-9999px;top:0;width:800px;background:white;font-family:Segoe UI,Helvetica,Arial,sans-serif;font-size:11px;color:#1a1a1a;padding:20px 28px;line-height:1.4';
+              const styleEl=document.createElement('style');styleEl.textContent=(styleMatch?styleMatch[1]:'')+pdfFixCss;container.appendChild(styleEl);
+              const bodyDiv=document.createElement('div');bodyDiv.innerHTML=bodyMatch?bodyMatch[1]:docHtml;container.appendChild(bodyDiv);
+              document.body.appendChild(container);await new Promise(r=>setTimeout(r,500));
+              const pdfBlob=await html2pdf().set({margin:[0.4,0.4,0.4,0.4],filename:ir.id+'.pdf',image:{type:'jpeg',quality:0.98},html2canvas:{scale:2,useCORS:true,logging:false,backgroundColor:'#ffffff'},jsPDF:{unit:'in',format:'letter',orientation:'portrait'}}).from(bodyDiv).outputPdf('blob');
+              document.body.removeChild(container);
+              const pdfB64=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result.split(',')[1]);reader.onerror=reject;reader.readAsDataURL(pdfBlob)});
+              brevoAttachments.push({name:ir.id+'.pdf',content:pdfB64});
+            }catch(err){console.warn('Failed to build invoice PDF:',err)}
+            // Build email with portal link
+            const portalUrl=ic?.alpha_tag?'https://nsa-portal.netlify.app/?portal='+ic.alpha_tag:'';
+            const emailHtml='<div style="font-family:sans-serif;font-size:14px;line-height:1.6">'+invSendMsg.replace(/\n/g,'<br>')
+              +(portalUrl?'<br/><br/><a href="'+portalUrl+'" style="display:inline-block;padding:10px 20px;background:#2563eb;color:white;text-decoration:none;border-radius:6px;font-weight:600">View Invoice in Portal</a>':'')
+              +'</div>';
             const res=await sendBrevoEmail({
               to:[{email:toEmail,name:toName}],
               subject:'Invoice '+ir.id+' — $'+ir.total.toFixed(2)+' from National Sports Apparel',
-              htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6">'+invSendMsg.replace(/\n/g,'<br>')+'</div>',
+              htmlContent:emailHtml,
               senderName:cu.name||'National Sports Apparel',
               senderEmail:'noreply@nationalsportsapparel.com',
-              replyTo:cu?.email?{email:cu.email,name:cu.name}:undefined
+              replyTo:cu?.email?{email:cu.email,name:cu.name}:undefined,
+              attachment:brevoAttachments.length>0?brevoAttachments:undefined
             });
             if(res.ok){
               nf('Invoice '+ir.id+' sent to '+toEmail);
@@ -5488,11 +5607,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             }
             // Send SMS if enabled
             if(invSmsEnabled&&invSmsPhone&&_brevoKey){
-              const smsRes=await sendBrevoSms({to:invSmsPhone,content:invSmsMsg.substring(0,160),sender:'NSA'});
-              if(smsRes.ok){nf('Text sent to '+invSmsPhone)}else{console.warn('SMS failed:',smsRes.error)}
+              const smsRes=await sendBrevoSms({to:invSmsPhone,content:invSmsMsg.substring(0,160)});
+              if(smsRes.ok){nf('Text sent to '+invSmsPhone)}else{nf('SMS failed: '+(smsRes.error||'Unknown'),'error')}
             }
-            // Update invoice email status
-            onInv(prev=>prev.map(i=>i.id===ir.id?{...i,email_status:'sent',email_sent_at:new Date().toLocaleString()}:i));
+            // Update invoice email status with follow-up and history
+            const invNow=new Date().toLocaleString();const invFuAt=invFollowUpDays?new Date(Date.now()+invFollowUpDays*86400000).toISOString():null;
+            const invHist={sent_at:invNow,sent_by:cu.name||cu.id,to:toEmail,type:'invoice',methods:['email',...(invSmsEnabled?['sms']:[])]};
+            onInv(prev=>prev.map(i=>i.id===ir.id?{...i,email_status:'sent',email_sent_at:invNow,follow_up_at:invFuAt,sent_history:[...(i.sent_history||[]),invHist]}:i));
             // Also post to messages
             const soMsg={id:'m'+Date.now(),so_id:ir.so_id,author_id:cu.id,text:'[Invoice '+ir.id+'] Sent to '+toName+' ('+toEmail+')'+(invSmsEnabled&&invSmsPhone?' + SMS to '+invSmsPhone:'')+'\n\n'+invSendMsg,ts:new Date().toLocaleString(),read_by:[cu.id],dept:'sales',tagged_members:[],entity_type:'so',entity_id:ir.so_id};
             if(onMsg)onMsg(prev=>[...prev,soMsg]);
@@ -5988,6 +6109,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 Sent {_stca.toLocaleDateString('en-US',{weekday:'short'})} {_stca.toLocaleDateString()} @ {_stca.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true})}
                 {j.coach_email_opened_at?<span style={{marginLeft:8,padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:'#dbeafe',color:'#1e40af'}}>Viewed {new Date(j.coach_email_opened_at).toLocaleDateString()} @ {new Date(j.coach_email_opened_at).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true})}</span>
                 :<span style={{marginLeft:8,padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:'#fef3c7',color:'#92400e'}}>Not yet viewed</span>}
+                {j.follow_up_at&&<span style={{marginLeft:8,padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:new Date(j.follow_up_at)<new Date()?'#fef2f2':'#fffbeb',color:new Date(j.follow_up_at)<new Date()?'#dc2626':'#92400e'}}>⏰ Follow-up {new Date(j.follow_up_at).toLocaleDateString()}{new Date(j.follow_up_at)<new Date()?' (overdue)':''}</span>}
+              </div>}
+              {(j.sent_history||[]).length>1&&<div style={{marginTop:4}}>
+                <div style={{fontSize:10,fontWeight:700,color:'#475569',marginBottom:2}}>All Sends:</div>
+                {(j.sent_history||[]).map((h,hi)=><div key={hi} style={{fontSize:10,color:'#64748b',marginBottom:1}}>
+                  {new Date(h.sent_at).toLocaleDateString()} @ {new Date(h.sent_at).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true})}
+                  {' by '+(h.sent_by||'—')}
+                  {h.methods&&<span style={{fontSize:9,padding:'0 4px',marginLeft:4,borderRadius:3,background:'#eff6ff',color:'#1e40af'}}>{h.methods.join(', ')}</span>}
+                </div>)}
               </div>}
               {mockups.length>0&&<div style={{marginBottom:12}}>
                 <div style={{fontSize:11,fontWeight:700,color:'#78350f',marginBottom:6}}>Review the mockup{mockups.length>1?'s':''}:</div>
@@ -6058,7 +6188,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 </div>:null})()}
               <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:10}}>
                 <button className="btn" style={{fontSize:13,padding:'8px 20px',background:'linear-gradient(135deg,#22c55e,#16a34a)',color:'white',border:'none',borderRadius:8,fontWeight:800,boxShadow:'0 2px 8px rgba(34,197,94,0.3)'}} onClick={()=>{const updJobs=safeJobs(o).map((jj,i2)=>i2===ji?{...jj,art_status:'production_files_needed'}:jj);const updArt2=j.art_file_id?af.map(a=>a.id===j.art_file_id?{...a,status:'approved'}:a):af;const updated={...o,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setArtRevisionNote('');nf('✅ Art approved — awaiting prod files')}}>✅ Approve Artwork</button>
-                <button className="btn" style={{fontSize:13,padding:'8px 20px',background:'linear-gradient(135deg,#3b82f6,#2563eb)',color:'white',border:'none',borderRadius:8,fontWeight:800,boxShadow:'0 2px 8px rgba(59,130,246,0.3)'}} onClick={()=>{const c2=ic||allCustomers?.find?.(x=>x.id===o.customer_id);const contacts=(c2?.contacts||[]).filter(ct2=>ct2.email||ct2.phone);const ct=contacts[0]||{};const pUrl=c2?.alpha_tag?(window.location.origin+'/?portal='+c2.alpha_tag):'';const defMsg='Hi '+(ct.name||'Coach')+',\n\nYour artwork mockup for "'+j.art_name+'" is ready for review!\n\nPlease review and approve it through your portal:\n'+(pUrl||'(portal link unavailable)')+'\n\nLet us know if you\'d like any changes.\n\n'+cu.name+'\nNational Sports Apparel';setCoachApprovalModal({jIdx:ji,contacts,contact:ct,portalUrl:pUrl,sendEmail:!!ct.email,sendText:!!ct.phone,checkedEmails:Object.fromEntries((c2?.contacts||[]).filter(ct2=>ct2.email).map(ct2=>[ct2.email,true])),customEmails:[],addingEmail:'',message:defMsg,sending:false})}}>📤 Send to Coach</button>
+                <button className="btn" style={{fontSize:13,padding:'8px 20px',background:'linear-gradient(135deg,#3b82f6,#2563eb)',color:'white',border:'none',borderRadius:8,fontWeight:800,boxShadow:'0 2px 8px rgba(59,130,246,0.3)'}} onClick={()=>{const c2=ic||allCustomers?.find?.(x=>x.id===o.customer_id);const contacts=(c2?.contacts||[]).filter(ct2=>ct2.email||ct2.phone);const ct=contacts[0]||{};const pUrl=c2?.alpha_tag?(window.location.origin+'/?portal='+c2.alpha_tag):'';const defMsg='Hi '+(ct.name||'Coach')+',\n\nYour artwork mockup for "'+j.art_name+'" is ready for review!\n\nPlease review and approve it through your portal:\n'+(pUrl||'(portal link unavailable)')+'\n\nLet us know if you\'d like any changes.\n\n'+cu.name+'\nNational Sports Apparel';setCoachApprovalModal({jIdx:ji,contacts,contact:ct,portalUrl:pUrl,sendEmail:!!ct.email,sendText:!!ct.phone,checkedEmails:Object.fromEntries((c2?.contacts||[]).filter(ct2=>ct2.email).map(ct2=>[ct2.email,true])),customEmails:[],addingEmail:'',message:defMsg,sending:false,followUpDays:portalSettings?.followUpDays||7})}}>📤 Send to Coach</button>
               </div>
               <div style={{borderTop:'1px solid #fde68a',paddingTop:10}}>
                 <div style={{fontSize:11,fontWeight:700,color:'#92400e',marginBottom:4}}>Something wrong? Send it back to the artist:</div>
@@ -6447,7 +6577,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           }
           if(cam.sendText&&cam.contact.phone){
             if(_brevoKey){
-              const smsRes=await sendBrevoSms({to:cam.contact.phone,content:cam.message.substring(0,160),sender:'NSA'});
+              const smsRes=await sendBrevoSms({to:cam.contact.phone,content:cam.message.substring(0,160)});
               if(smsRes.ok){actions.push('text sent to '+cam.contact.phone)}else{nf('SMS failed: '+smsRes.error,'error')}
             }else{
               const smsBody=encodeURIComponent(cam.message);
@@ -6455,8 +6585,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               actions.push('text opened');
             }
           }
-          // Record sent_to_coach_at timestamp on the job
-          const updJobs3=safeJobs(o).map((jj,i)=>i===coachApprovalModal.jIdx?{...jj,sent_to_coach_at:new Date().toISOString()}:jj);
+          // Record sent_to_coach_at timestamp, follow-up, and history on the job
+          const fuAt=cam.followUpDays?new Date(Date.now()+cam.followUpDays*86400000).toISOString():null;
+          const histEntry={sent_at:new Date().toISOString(),sent_by:cu.name||cu.id,type:'art_approval',methods:actions};
+          const updJobs3=safeJobs(o).map((jj,i)=>i===coachApprovalModal.jIdx?{...jj,sent_to_coach_at:new Date().toISOString(),follow_up_at:fuAt,sent_history:[...(jj.sent_history||[]),histEntry]}:jj);
           const updated3={...o,jobs:updJobs3,updated_at:new Date().toLocaleString()};setO(updated3);onSave(updated3);setDirty(false);
           setCoachApprovalModal(null);
           nf(actions.length>0?'Sent to coach — '+actions.join(' + '):'No notification method selected');
@@ -6522,6 +6654,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <div style={{marginBottom:12}}>
               <div className="form-label" style={{fontSize:11}}>Message</div>
               <textarea className="form-input" rows={6} value={cam.message} onChange={e=>setCoachApprovalModal(m=>({...m,message:e.target.value}))} style={{resize:'vertical',fontSize:12}}/>
+            </div>
+            {/* ── Follow-up ── */}
+            <div style={{padding:10,background:'#faf5ff',border:'1px solid #e9d5ff',borderRadius:8,display:'flex',alignItems:'center',gap:10}}>
+              <span style={{fontSize:12,fontWeight:700,color:'#6d28d9'}}>Follow up in</span>
+              <select className="form-input" value={cam.followUpDays||7} onChange={e=>setCoachApprovalModal(m=>({...m,followUpDays:parseInt(e.target.value)}))} style={{width:70,fontSize:12,padding:'4px 6px'}}>
+                {[1,2,3,5,7,10,14,21,30].map(d=><option key={d} value={d}>{d}</option>)}
+              </select>
+              <span style={{fontSize:12,color:'#6d28d9'}}>days if no response</span>
             </div>
           </div>
           <div className="modal-footer" style={{display:'flex',gap:8,flexWrap:'wrap'}}>
@@ -9148,32 +9288,35 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     const canApprove=est.status==='sent'||est.status==='open';
     // Generate printable estimate PDF — uses shared printDoc for consistent style
     const downloadEstPdf=()=>{
-      const rows=[];
+      const rows=[];const eTaxRate=customer?.tax_exempt?0:(customer?.tax_rate||0);
       (est.items||[]).forEach((it,i)=>{
         const qty=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);const lineTotal=qty*safeNum(it.unit_sell);
         const szText=Object.entries(safeSizes(it)).filter(([,v])=>v>0).map(([sz,q])=>sz+':'+q).join(' ');
-        rows.push({cells:['<strong>'+(it.sku||'')+'</strong> '+(safeStr(it.name)||'Item')+'<br/><span style="font-size:10px;color:#666">'+(safeStr(it.color)||'—')+(szText?' — '+szText:'')+'</span>',qty,'$'+safeNum(it.unit_sell).toFixed(2),'$'+lineTotal.toFixed(2)]});
+        rows.push({cells:[{value:qty,style:'text-align:center'},{value:'<strong>'+(it.sku||'')+'</strong><br/>'+(safeStr(it.name)||'Item')+(it.color?' - '+it.color:'')+(szText?'<br/><span style="font-size:10px;color:#555">'+szText+'</span>':'')},{value:'',style:'text-align:center'},{value:eTaxRate>0?'Yes':'No',style:'text-align:center'},{value:'$'+safeNum(it.unit_sell).toFixed(2),style:'text-align:right'},{value:'$'+lineTotal.toFixed(2),style:'text-align:right;font-weight:600'}]});
         safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_eAQ[d.art_file_id]:qty;const dp2=dP(d,qty,eaf,cq);const eq2=dp2._nq!=null?dp2._nq:qty;const decoAmt=eq2*dp2.sell;
           const artF2=d.art_file_id?eaf.find(a2=>a2.id===d.art_file_id):null;const artColors2=artF2?.ink_colors?artF2.ink_colors.split('\n').filter(l=>l.trim()).length:0;
           const label=d.kind==='numbers'?'Numbers — '+(d.position||'')+(d.front_and_back?' (Front + Back)':''):d.kind==='names'?'Names — '+(d.position||'')+(d.front_and_back?' (Front + Back)':''):(d.position||'Decoration')+(artColors2?' — '+artColors2+' Color'+(artColors2>1?'s':''):'')+(artF2?.deco_type?' — '+(artF2.deco_type||'').replace(/_/g,' '):'');
-          rows.push({cells:['<span style="padding-left:16px;color:#666;font-size:10px">'+label+'</span>',eq2,'$'+dp2.sell.toFixed(2),'$'+decoAmt.toFixed(2)]});
+          rows.push({cells:[{value:eq2,style:'text-align:center;color:#888;font-size:11px'},{value:'<span style="padding-left:16px;color:#666;font-size:10px">'+label+'</span>'},{value:'',style:'text-align:center'},{value:'',style:'text-align:center'},{value:'$'+dp2.sell.toFixed(2),style:'text-align:right;color:#888;font-size:11px'},{value:'$'+decoAmt.toFixed(2),style:'text-align:right;color:#888;font-size:11px'}]});
         });
       });
-      if(estShip>0)rows.push({cells:[{value:'<strong>Shipping</strong>'},'','','$'+estShip.toFixed(2)]});
+      if(estShip>0)rows.push({cells:[{value:1,style:'text-align:center'},{value:'<strong>Shipping</strong><br/><span style="font-size:10px;color:#555">Shipping</span>'},{value:'',style:'text-align:center'},{value:'No',style:'text-align:center'},{value:'$'+estShip.toFixed(2),style:'text-align:right'},{value:'$'+estShip.toFixed(2),style:'text-align:right'}]});
+      const eBillAddr=customer?.shipping_address_line1?customer.shipping_address_line1+(customer.shipping_city?'<br/>'+customer.shipping_city+(customer.shipping_state?' '+customer.shipping_state:'')+(customer.shipping_zip?' '+customer.shipping_zip:''):'')+'<br/>United States':(customer?.billing_address_line1?customer.billing_address_line1+(customer.billing_city?'<br/>'+customer.billing_city+(customer.billing_state?' '+customer.billing_state:'')+(customer.billing_zip?' '+customer.billing_zip:''):'')+'<br/>United States':'');
       printDoc({
         title:customer?.name||'Customer',docNum:est.id,docType:'ESTIMATE',
         headerRight:'<div class="ta">$'+estTotal.toFixed(2)+'</div><div class="ts">Expires: '+new Date(Date.now()+30*86400000).toLocaleDateString()+'</div>',
         infoBoxes:[
-          {label:'Bill To',value:customer?.name||'—',sub:customer?.address||customer?.alpha_tag||''},
-          {label:'Expires',value:new Date(Date.now()+30*86400000).toLocaleDateString(),sub:'Exp. Close: '+(est.created_at?.split(' ')[0]||new Date().toLocaleDateString())},
+          {label:'Bill To',value:customer?.name||'—',sub:(customer?.alpha_tag?customer.alpha_tag+'<br/>':'')+(eBillAddr||'')},
+          {label:'Expires',value:new Date(Date.now()+30*86400000).toLocaleDateString()},
+          {label:'Exp. Close',value:est.created_at?.split(' ')[0]||new Date().toLocaleDateString()},
           {label:'Sales Rep',value:rep?.name||'—'},
-          {label:'Estimate',value:est.id,sub:est.memo||''},
+          {label:'Estimate',value:est.id},
+          {label:'Memo',value:est.memo||'—'},
         ],
-        tables:[{headers:['Item','Qty','Rate','Amount'],aligns:['left','center','right','right'],
+        tables:[{headers:['Quantity','Item','Options','Tax','Rate','Amount'],aligns:['center','left','center','center','right','right'],
           rows:[...rows,
-            {cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Subtotal</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:6px'},{value:'<strong>$'+estSubtotal.toFixed(2)+'</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:6px'}]},
-            ...(estTax>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'Tax ('+(estTaxRate*100).toFixed(2)+'%)',style:'text-align:right;border:none;font-size:10px'},{value:'$'+estTax.toFixed(2),style:'text-align:right;border:none'}]}]:[]),
-            {_class:'totals-row',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Total</strong>',style:'text-align:right'},{value:'<strong>$'+estTotal.toFixed(2)+'</strong>',style:'text-align:right'}]},
+            {cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Subtotal</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:6px'},{value:'<strong>$'+estSubtotal.toFixed(2)+'</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:6px'}]},
+            ...(estTax>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Tax ('+(estTaxRate*100).toFixed(2)+'%)</strong>',style:'text-align:right;border:none'},{value:'$'+estTax.toFixed(2),style:'text-align:right;border:none'}]}]:[]),
+            {_class:'totals-row',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Total</strong>',style:'text-align:right'},{value:'<strong>$'+estTotal.toFixed(2)+'</strong>',style:'text-align:right'}]},
           ]}],
         footer:'This estimate is valid for 30 days. Prices subject to change. '+NSA.depositTerms
       });
@@ -10259,11 +10402,11 @@ export default function App(){
           }else{setCust(d.customers)}
           if(d.vendors.length)setVend(d.vendors);setProd(prev=>{if(!d.products.length)return prev;const base=_dbSaveFailedIds.size?d.products.map(dp=>_dbSaveFailedIds.has(dp.id)?(prev.find(p=>p.id===dp.id)||dp):dp):d.products;const merged=base.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));return localOnly.length?[...merged,...localOnly]:merged});
           if(_dbSaveFailedIds.size){
-            setEsts(prev=>d.estimates.map(e=>_dbSaveFailedIds.has(e.id)?(prev.find(p=>p.id===e.id)||e):e));
-            setSOs(prev=>d.sales_orders.map(s=>_dbSaveFailedIds.has(s.id)?(prev.find(p=>p.id===s.id)||s):s));
-            setInvs(prev=>d.invoices.map(i=>_dbSaveFailedIds.has(i.id)?(prev.find(p=>p.id===i.id)||i):i));
+            setEsts(prev=>d.estimates.map(e=>{if(_dbSaveFailedIds.has(e.id))return prev.find(p=>p.id===e.id)||e;const local=prev.find(p=>p.id===e.id);if(local?.items?.length&&(!e.items||!e.items.length))return{...e,items:local.items,art_files:local.art_files||e.art_files};return e}));
+            setSOs(prev=>d.sales_orders.map(s=>{if(_dbSaveFailedIds.has(s.id))return prev.find(p=>p.id===s.id)||s;const local=prev.find(p=>p.id===s.id);if(!local)return s;const merged={...s};if(local.jobs?.length&&(!s.jobs||!s.jobs.length))merged.jobs=local.jobs;if(local.items?.length&&(!s.items||!s.items.length))merged.items=local.items;if(local.art_files?.length&&(!s.art_files||!s.art_files.length))merged.art_files=local.art_files;return merged.jobs!==s.jobs||merged.items!==s.items||merged.art_files!==s.art_files?merged:s}));
+            setInvs(prev=>d.invoices.map(i=>{if(_dbSaveFailedIds.has(i.id))return prev.find(p=>p.id===i.id)||i;const local=prev.find(p=>p.id===i.id);if(local?.payments?.length&&(!i.payments||!i.payments.length))return{...i,payments:local.payments};return i}));
             setMsgs(prev=>{const base=d.messages.length?d.messages:prev;return base.map(m=>_dbSaveFailedIds.has(m.id)?(prev.find(p=>p.id===m.id)||m):m)});
-          }else{setEsts(d.estimates);setSOs(d.sales_orders);setInvs(d.invoices);setMsgs(d.messages.length?d.messages:msgs)}
+          }else{setEsts(prev=>d.estimates.map(e=>{const local=prev.find(p=>p.id===e.id);if(local?.items?.length&&(!e.items||!e.items.length))return{...e,items:local.items,art_files:local.art_files||e.art_files};return e}));setSOs(prev=>d.sales_orders.map(s=>{const local=prev.find(p=>p.id===s.id);if(!local)return s;const merged={...s};if(local.jobs?.length&&(!s.jobs||!s.jobs.length))merged.jobs=local.jobs;if(local.items?.length&&(!s.items||!s.items.length))merged.items=local.items;if(local.art_files?.length&&(!s.art_files||!s.art_files.length))merged.art_files=local.art_files;return merged.jobs!==s.jobs||merged.items!==s.items||merged.art_files!==s.art_files?merged:s}));setInvs(prev=>d.invoices.map(i=>{const local=prev.find(p=>p.id===i.id);if(local?.payments?.length&&(!i.payments||!i.payments.length))return{...i,payments:local.payments};return i}));setMsgs(d.messages.length?d.messages:msgs)}
           if(d.omg_stores.length)setOmgStores(d.omg_stores);
           if(d.issues?.length)setIssues(d.issues);
           if(d.repCsrAssignments?.length)setRepCsrAssignments(d.repCsrAssignments);
@@ -10280,6 +10423,7 @@ export default function App(){
           if(as.inv_pos)setInvPOs(as.inv_pos);
           if(as.inv_adj_log)setInvAdjLog(as.inv_adj_log);
           if(as.inv_po_counter)setInvPOCounter(as.inv_po_counter);
+          if(as.company_info){const ci={...NSA_DEFAULTS,...as.company_info};ci.fullAddr=ci.addr+', '+ci.city+', '+ci.state+' '+ci.zip;Object.assign(NSA,ci);setCompanyInfo(ci)}
           if(_dbSaveFailedIds.size)console.warn('[DB] Loaded from Supabase — preserving local data for',_dbSaveFailedIds.size,'failed saves:',[ ..._dbSaveFailedIds]);
           console.log('[DB] Loaded from Supabase (normalized)');
         }else{
@@ -10300,7 +10444,7 @@ export default function App(){
             try{
               await _dbSeed({team:REPS,customers:cust,vendors:vend,products:prod,estimates:ests,sales_orders:sos,invoices:invs,messages:msgs,omg_stores:omgStores,issues});
               if(issues?.length) _dbSave('issues',issues.map(i=>_pick(i,_issueCols)));
-              const _as={batch_pos:batchPOs,submitted_batches:submittedBatches,batch_counter:batchCounter,change_log:changeLog,so_history:soHistory,qb_config:qbConfig,inv_pos:invPOs,inv_adj_log:invAdjLog,inv_po_counter:invPOCounter};
+              const _as={batch_pos:batchPOs,submitted_batches:submittedBatches,batch_counter:batchCounter,change_log:changeLog,so_history:soHistory,qb_config:qbConfig,inv_pos:invPOs,inv_adj_log:invAdjLog,inv_po_counter:invPOCounter,company_info:companyInfo};
               for(const[k,v]of Object.entries(_as)){if(v!==undefined&&v!==null)_dbSave('app_state',[{id:k,value:JSON.stringify(v),updated_at:new Date().toISOString()}])}
               await supabase.from('app_state').upsert({id:lockId,value:'"done"',updated_at:new Date().toISOString()});
               console.log('[DB] Seeded Supabase from localStorage');
@@ -10327,6 +10471,7 @@ export default function App(){
               if(as2.so_history)setSOHistory(as2.so_history);if(as2.job_time_logs)setJobTimeLogs(as2.job_time_logs);
               if(as2.qb_config){const _qbDef={connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',access_token:'',refresh_token:'',realm_id:'',token_created_at:0,sandbox:false,mapping:{income_account:'Sales',cogs_account:'Cost of Goods Sold',deco_account:'Subcontractor - Decoration',ar_account:'Accounts Receivable',ap_account:'Accounts Payable',tax_account:'Sales Tax Payable'},syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}};setQBConfig({..._qbDef,...as2.qb_config,mapping:{..._qbDef.mapping,...(as2.qb_config.mapping||{})},syncLog:Array.isArray(as2.qb_config.syncLog)?as2.qb_config.syncLog:[]})}if(as2.inv_pos)setInvPOs(as2.inv_pos);
               if(as2.inv_adj_log)setInvAdjLog(as2.inv_adj_log);if(as2.inv_po_counter)setInvPOCounter(as2.inv_po_counter);
+              if(as2.company_info){const ci={...NSA_DEFAULTS,...as2.company_info};ci.fullAddr=ci.addr+', '+ci.city+', '+ci.state+' '+ci.zip;Object.assign(NSA,ci);setCompanyInfo(ci)}
               console.log('[DB] Loaded from Supabase after seed by other browser');
             }else{
               // Other browser's seed also failed — this browser tries to seed
@@ -10335,7 +10480,7 @@ export default function App(){
               try{
                 await _dbSeed({team:REPS,customers:cust,vendors:vend,products:prod,estimates:ests,sales_orders:sos,invoices:invs,messages:msgs,omg_stores:omgStores,issues});
                 if(issues?.length) _dbSave('issues',issues.map(i=>_pick(i,_issueCols)));
-                const _as={batch_pos:batchPOs,submitted_batches:submittedBatches,batch_counter:batchCounter,change_log:changeLog,so_history:soHistory,qb_config:qbConfig,inv_pos:invPOs,inv_adj_log:invAdjLog,inv_po_counter:invPOCounter};
+                const _as={batch_pos:batchPOs,submitted_batches:submittedBatches,batch_counter:batchCounter,change_log:changeLog,so_history:soHistory,qb_config:qbConfig,inv_pos:invPOs,inv_adj_log:invAdjLog,inv_po_counter:invPOCounter,company_info:companyInfo};
                 for(const[k,v]of Object.entries(_as)){if(v!==undefined&&v!==null)_dbSave('app_state',[{id:k,value:JSON.stringify(v),updated_at:new Date().toISOString()}])}
                 await supabase.from('app_state').upsert({id:lockId,value:'"done"',updated_at:new Date().toISOString()});
                 console.log('[DB] Seeded Supabase from localStorage (fallback)');
@@ -10393,6 +10538,7 @@ export default function App(){
         if(as.inv_po_counter)setInvPOCounter(prev=>as.inv_po_counter===prev?prev:as.inv_po_counter);
         if(as.submitted_batches)setSubmittedBatches(prev=>_jsonEq(prev,as.submitted_batches)?prev:as.submitted_batches);
         if(as.batch_pos)setBatchPOs(prev=>_jsonEq(prev,as.batch_pos)?prev:as.batch_pos);
+        if(as.company_info)setCompanyInfo(prev=>{const ci={...NSA_DEFAULTS,...as.company_info};ci.fullAddr=ci.addr+', '+ci.city+', '+ci.state+' '+ci.zip;if(_jsonEq(prev,ci))return prev;Object.assign(NSA,ci);return ci});
       };
       // Debounce realtime events — coalesce rapid-fire changes into a single reload
       const debouncedReload=()=>{if(_rtTimer)clearTimeout(_rtTimer);_rtTimer=setTimeout(reloadAll,2000)};
@@ -10436,9 +10582,9 @@ export default function App(){
         const pollProd=_pollMerge(d.products,'prod');
         // Update snapshot before state — auto-save effects will diff against this
         _dbSnap.current={ests:pollEsts,sos:pollSOs,invs:pollInvs,msgs:pollMsgs,cust:pollCust,prod:pollProd,vend:d.vendors,team:d.team,omg:d.omg_stores,issues:d.issues};
-        setEsts(prev=>{if(_dbSaveFailedIds.size){const merged=d.estimates.map(e=>_dbSaveFailedIds.has(e.id)?(prev.find(p=>p.id===e.id)||e):e);return changed(prev,merged)?merged:prev}return changed(prev,d.estimates)?d.estimates:prev});
-        setSOs(prev=>{if(_dbSaveFailedIds.size){const merged=d.sales_orders.map(s=>_dbSaveFailedIds.has(s.id)?(prev.find(p=>p.id===s.id)||s):s);return changed(prev,merged)?merged:prev}return changed(prev,d.sales_orders)?d.sales_orders:prev});
-        setInvs(prev=>{if(_dbSaveFailedIds.size){const merged=d.invoices.map(i=>_dbSaveFailedIds.has(i.id)?(prev.find(p=>p.id===i.id)||i):i);return changed(prev,merged)?merged:prev}return changed(prev,d.invoices)?d.invoices:prev});
+        setEsts(prev=>{const mergeEst=e=>{const local=prev.find(p=>p.id===e.id);if(local?.items?.length&&(!e.items||!e.items.length))return{...e,items:local.items,art_files:local.art_files||e.art_files};return e};if(_dbSaveFailedIds.size){const merged=d.estimates.map(e=>_dbSaveFailedIds.has(e.id)?(prev.find(p=>p.id===e.id)||e):mergeEst(e));return changed(prev,merged)?merged:prev}const merged2=d.estimates.map(mergeEst);return changed(prev,merged2)?merged2:prev});
+        setSOs(prev=>{const mergeSO=s=>{const local=prev.find(p=>p.id===s.id);if(!local)return s;const m={...s};if(local.jobs?.length&&(!s.jobs||!s.jobs.length))m.jobs=local.jobs;if(local.items?.length&&(!s.items||!s.items.length))m.items=local.items;if(local.art_files?.length&&(!s.art_files||!s.art_files.length))m.art_files=local.art_files;return m.jobs!==s.jobs||m.items!==s.items||m.art_files!==s.art_files?m:s};if(_dbSaveFailedIds.size){const merged=d.sales_orders.map(s=>_dbSaveFailedIds.has(s.id)?(prev.find(p=>p.id===s.id)||s):mergeSO(s));return changed(prev,merged)?merged:prev}const merged2=d.sales_orders.map(mergeSO);return changed(prev,merged2)?merged2:prev});
+        setInvs(prev=>{const mergeInv=i=>{const local=prev.find(p=>p.id===i.id);if(local?.payments?.length&&(!i.payments||!i.payments.length))return{...i,payments:local.payments};return i};if(_dbSaveFailedIds.size){const merged=d.invoices.map(i=>_dbSaveFailedIds.has(i.id)?(prev.find(p=>p.id===i.id)||i):mergeInv(i));return changed(prev,merged)?merged:prev}const merged2=d.invoices.map(mergeInv);return changed(prev,merged2)?merged2:prev});
         setCust(prev=>{if(_dbSaveFailedIds.size){const merged=d.customers.map(c=>_dbSaveFailedIds.has(c.id)?(prev.find(p=>p.id===c.id)||c):c);return changed(prev,merged)?merged:prev}return changed(prev,d.customers)?d.customers:prev});
         if(d.messages.length)setMsgs(prev=>{if(_dbSaveFailedIds.size){const merged=d.messages.map(m=>_dbSaveFailedIds.has(m.id)?(prev.find(p=>p.id===m.id)||m):m);return changed(prev,merged)?merged:prev}return changed(prev,d.messages)?d.messages:prev});
         if(d.issues.length)setIssues(prev=>changed(prev,d.issues)?d.issues:prev);
@@ -10450,6 +10596,7 @@ export default function App(){
         if(as.inv_po_counter)setInvPOCounter(prev=>as.inv_po_counter!==prev?as.inv_po_counter:prev);
         if(as.submitted_batches)setSubmittedBatches(prev=>JSON.stringify(prev)!==JSON.stringify(as.submitted_batches)?as.submitted_batches:prev);
         if(as.batch_pos)setBatchPOs(prev=>JSON.stringify(prev)!==JSON.stringify(as.batch_pos)?as.batch_pos:prev);
+        if(as.company_info)setCompanyInfo(prev=>{const ci={...NSA_DEFAULTS,...as.company_info};ci.fullAddr=ci.addr+', '+ci.city+', '+ci.state+' '+ci.zip;if(JSON.stringify(prev)===JSON.stringify(ci))return prev;Object.assign(NSA,ci);return ci});
       }catch(e){console.warn('[DB] Poll failed:',e.message)}
     },30000);
     return()=>clearInterval(poll);
@@ -10696,7 +10843,7 @@ export default function App(){
   // Sync eSO from sos when external updates occur (e.g., coach approval via portal)
   React.useEffect(()=>{if(eSO){const fresh=sos.find(s=>s.id===eSO.id);if(fresh&&fresh.updated_at!==eSO.updated_at){setESO(fresh)}}},[sos]);
   React.useEffect(()=>{if(eEst){const fresh=ests.find(e=>e.id===eEst.id);if(fresh&&fresh.updated_at!==eEst.updated_at){setEEst(fresh)}}},[ests]);
-  const[returnToPage,setReturnToPage]=useState(null);// {page:'production'|'decoration',jobData:obj} — for "Return to Job" nav
+  const[returnToPage,setReturnToPage]=useState(null);// {page:'production',jobData:obj} — for "Return to Job" nav
   const[estBackPg,setEstBackPg]=useState(null);// page to return to when closing estimate editor
   const[soBackPg,setSoBackPg]=useState(null);// page to return to when closing SO editor
   const prevPgRef=React.useRef(pg);
@@ -10725,7 +10872,7 @@ export default function App(){
       setOmgSel(updated);setOmgDetailLoading(false);
     }).catch(e=>{console.error('[OMG] Detail load failed:',e);setOmgDetailLoading(false)});
   },[omgSel?.id]); // eslint-disable-line react-hooks/exhaustive-deps
-  const[estF,setEstF]=useState({status:'open',rep:'_me_',search:'',sort:'date_desc'});
+  const[estF,setEstF]=useState({status:'open',rep:'all',search:'',sort:'date_desc'});
   const[soF,setSOF]=useState({status:'all',rep:'all',search:'',sort:'date_desc'});
   const[iS,setIS]=useState({f:'value',d:'desc'});const[iF,setIF]=useState({cat:'all',vnd:'all',clr:'all'});
   const dirtyRef=React.useRef(false);
@@ -10765,12 +10912,15 @@ export default function App(){
       const hasInv=invs.some(iv=>iv.so_id===sl.id);
       if(!hasInv){
         const _aq={};safeItems(sl).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_aq[d.art_file_id]=(_aq[d.art_file_id]||0)+q2}})});
-        const saf=safeArt(sl);let total=0;
-        safeItems(sl).forEach(it=>{const qq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);total+=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qq;const dp2=dP(d,qq,saf,cq);const eq2=dp2._nq!=null?dp2._nq:qq;total+=eq2*dp2.sell})});
-        if(sl.shipping_type==='pct')total+=total*(safeNum(sl.shipping_value)/100);else total+=safeNum(sl.shipping_value);
+        const saf=safeArt(sl);let subtotal=0;
+        safeItems(sl).forEach(it=>{const qq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);subtotal+=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qq;const dp2=dP(d,qq,saf,cq);const eq2=dp2._nq!=null?dp2._nq:qq;subtotal+=eq2*dp2.sell})});
+        const autoShip=sl.shipping_type==='pct'?Math.round(subtotal*(safeNum(sl.shipping_value)/100)*100)/100:Math.round(safeNum(sl.shipping_value)*100)/100;
+        const autoCust=cust.find(c=>c.id===sl.customer_id);const autoTaxRate=autoCust?.tax_exempt?0:(autoCust?.tax_rate||0);
+        const autoTax=Math.round(subtotal*autoTaxRate/100*100)/100;
+        const total=subtotal+autoShip+autoTax;
         const invId=nextInvId(invs);const today=new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'2-digit'});
         const dueDate=new Date();dueDate.setDate(dueDate.getDate()+30);const due=dueDate.toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'2-digit'});
-        const newInv={id:invId,type:'invoice',customer_id:sl.customer_id,so_id:sl.id,date:today,due_date:due,total:rQ(total),paid:0,memo:sl.memo||'',status:'open',payments:[],cc_fee:0};
+        const newInv={id:invId,type:'invoice',customer_id:sl.customer_id,so_id:sl.id,date:today,due_date:due,total:rQ(total),paid:0,memo:sl.memo||'',status:'open',payments:[],cc_fee:0,shipping:autoShip,tax:autoTax,tax_rate:autoTaxRate,tax_exempt:autoCust?.tax_exempt||false};
         setInvs(prev2=>[newInv,...prev2]);
         nf('Auto-generated invoice '+invId+' for $'+rQ(total).toLocaleString());
       }
@@ -11344,7 +11494,7 @@ export default function App(){
       const c=cust.find(x=>x.id===so.customer_id);const tag=c?.alpha_tag||so.id;const _repId=c?.primary_rep_id||so.created_by;
       buildJobs(so).forEach(j=>{
         if(j.art_status==='waiting_approval'){todos.push({type:'art',priority:2,msg:'⏳ Art awaiting approval: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,action:'Review art',role:'sales'});
-          if(j.sent_to_coach_at){const _fuDays=portalSettings?.followUpDays||3;const daysSinceSent=Math.floor((new Date()-new Date(j.sent_to_coach_at))/(1000*60*60*24));if(daysSinceSent>=_fuDays)todos.push({type:'coach_followup',priority:1,msg:'📞 Follow up on art approval ('+daysSinceSent+'d): '+j.art_name,detail:tag+' · '+so.id+' · Sent to coach '+daysSinceSent+' days ago',so,jobId:j.id,action:'Follow Up',role:'sales'})}}
+          if(j.sent_to_coach_at){const _fuAt=j.follow_up_at?new Date(j.follow_up_at):null;const _fuDays=portalSettings?.followUpDays||7;const daysSinceSent=Math.floor((new Date()-new Date(j.sent_to_coach_at))/(1000*60*60*24));const isDue=_fuAt?new Date()>=_fuAt:daysSinceSent>=_fuDays;if(isDue)todos.push({type:'coach_followup',priority:1,msg:'📞 Follow up on art approval ('+daysSinceSent+'d): '+j.art_name,detail:tag+' · '+so.id+' · Sent to coach '+daysSinceSent+' days ago',so,jobId:j.id,action:'Follow Up',role:'sales'})}}
         if(j.coach_approved_at&&(j.art_status==='production_files_needed'||j.art_status==='art_complete')){const daysAgo=Math.floor((new Date()-new Date(j.coach_approved_at))/(1000*60*60*24));if(daysAgo<=7)todos.push({type:'art_approved',priority:1,msg:'✅ Coach approved art: '+j.art_name,detail:tag+' · '+so.id+' · '+(daysAgo===0?'Today':daysAgo+' day'+(daysAgo!==1?'s':'')+' ago'),so,jobId:j.id,action:'Prep prod files',role:'sales'})}
         if(j.art_status==='art_requested'&&j.coach_rejected){const lastRej=(j.rejections||[]).slice(-1)[0];todos.push({type:'art_rejected',priority:1,msg:'❌ Coach rejected art: '+j.art_name,detail:tag+' · '+so.id+(lastRej?' · "'+lastRej.reason.slice(0,60)+(lastRej.reason.length>60?'...':'')+'"':''),so,jobId:j.id,action:'Review feedback',role:'sales'})}
         const ready=isJobReady(j,so);const onBoard=safeJobs(so).some(ej=>ej.id===j.id);
@@ -11389,9 +11539,16 @@ export default function App(){
         todos.push({type:'est_update_request',priority:1,msg:'📝 Coach requested estimate update: '+(e.memo||e.id),detail:tag2+' · "'+req.text.slice(0,80)+(req.text.length>80?'...':'')+'"',action:'Update Estimate',role:'sales',est:e,estC:c2,updateReqId:req.id});
       });
     });
-    // Stale estimate follow-up alerts
+    // Stale estimate follow-up alerts (uses follow_up_at when set, falls back to days-since-sent)
     ests.filter(e=>e.status==='sent').forEach(e=>{
       const c2=cust.find(x=>x.id===e.customer_id);const tag2=c2?.alpha_tag||e.id;
+      // If follow_up_at is set and due, show specific follow-up todo
+      if(e.follow_up_at&&new Date()>=new Date(e.follow_up_at)){
+        const sentDate=e.email_sent_at||e.updated_at||e.created_at;
+        const daysSince=sentDate?Math.floor((new Date()-new Date(sentDate))/(1000*60*60*24)):0;
+        todos.push({type:'follow_up',priority:1,msg:'⏰ Follow up on estimate ('+daysSince+'d): '+(e.memo||e.id),detail:tag2+' · Follow-up due '+new Date(e.follow_up_at).toLocaleDateString(),action:'Follow Up',role:'sales',est:e,estC:c2});
+        return;
+      }
       const sentDate=e.updated_at||e.created_at;if(!sentDate)return;
       const m=sentDate.match(/(\d{2})\/(\d{2})\/(\d{2})/);
       const d=m?new Date('20'+m[3],m[1]-1,m[2]):new Date(sentDate);
@@ -11399,6 +11556,12 @@ export default function App(){
       if(days>=3&&days<7)todos.push({type:'follow_up',priority:2,msg:'📧 Follow up on estimate ('+days+'d): '+(e.memo||e.id),detail:tag2+' · Sent '+days+' days ago',action:'Follow Up',role:'sales',est:e,estC:c2});
       else if(days>=7&&days<14)todos.push({type:'follow_up',priority:1,msg:'⚠️ Estimate going cold ('+days+'d): '+(e.memo||e.id),detail:tag2+' · No response in '+days+' days',action:'Follow Up',role:'sales',est:e,estC:c2});
       else if(days>=14)todos.push({type:'follow_up',priority:0,msg:'🔴 Stale estimate ('+days+'d): '+(e.memo||e.id),detail:tag2+' · '+days+' days with no response',action:'Close or Re-send',role:'sales',est:e,estC:c2});
+    });
+    // Invoice follow-up alerts (uses follow_up_at when set)
+    invs.filter(i=>i.status!=='paid'&&i.follow_up_at&&new Date()>=new Date(i.follow_up_at)).forEach(inv2=>{
+      const c2=cust.find(x=>x.id===inv2.customer_id);const tag2=c2?.alpha_tag||inv2.id;
+      const daysSince=inv2.email_sent_at?Math.floor((new Date()-new Date(inv2.email_sent_at))/(1000*60*60*24)):0;
+      todos.push({type:'inv_followup',priority:1,msg:'⏰ Follow up on invoice '+inv2.id+' ('+daysSince+'d): $'+safeNum(inv2.total).toFixed(2),detail:tag2+' · Follow-up due '+new Date(inv2.follow_up_at).toLocaleDateString(),action:'Follow Up',role:'sales'});
     });
     // Open issues → show on to-do list for all users
     issues.filter(i=>i.status==='open').forEach(i=>{
@@ -11736,7 +11899,7 @@ export default function App(){
           </div></div>
 
         {/* Active Timers */}
-        <div className="card"><div className="card-header"><h2>⏱️ Clocked In Now</h2><button className="btn btn-sm btn-secondary" onClick={()=>setPg('decoration')}>Deco Page →</button></div>
+        <div className="card"><div className="card-header"><h2>⏱️ Clocked In Now</h2><button className="btn btn-sm btn-secondary" onClick={()=>setPg('production')}>Prod Board →</button></div>
           <div className="card-body" style={{padding:0,maxHeight:350,overflow:'auto'}}>
             {Object.entries(activeTimers).length>0?Object.entries(activeTimers).map(([key,timer])=>{const[soId,jobId]=key.split('|');
               return<div key={key} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:8}}>
@@ -11964,7 +12127,7 @@ export default function App(){
 
   // ESTIMATES LIST
   function rEst(){
-    if(eEst)return<OrderEditor key={eEst.id} order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} vendors={vend} onSave={e=>{const e2=savE(e);setEEst(e2)}} onBack={()=>{setEEst(null);if(estBackPg){setPg(estBackPg);setEstBackPg(null)}}} onConvertSO={convertSO} onCopyEstimate={copyEstimate} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={deleteEstimate} onNavInvoice={inv=>{setEEst(null);setPg('invoices');setInvF(f=>({...f,search:inv.id}))}} onSaveProduct={p=>{setProd(prev=>prev.some(x=>x.id===p.id)?prev.map(x=>x.id===p.id?p:x):[...prev,p]);_dbSaveProduct(p)}} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setEEst(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}else{nf('SO '+soId+' not found','error')}}} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eEst?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:csrId,so_id:t.so_id||'',customer_id:t.customer_id||eEst?.customer_id||'',priority:t.priority||1})}}/>
+    if(eEst)return<OrderEditor key={eEst.id} order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} vendors={vend} onSave={e=>{const e2=savE(e);setEEst(e2)}} onBack={()=>{setEEst(null);if(estBackPg){setPg(estBackPg);setEstBackPg(null)}}} onConvertSO={convertSO} onCopyEstimate={copyEstimate} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={deleteEstimate} onNavInvoice={inv=>{setEEst(null);setPg('invoices');setInvF(f=>({...f,search:inv.id}))}} onSaveProduct={p=>{setProd(prev=>prev.some(x=>x.id===p.id)?prev.map(x=>x.id===p.id?p:x):[...prev,p]);_dbSaveProduct(p)}} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setEEst(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}else{nf('SO '+soId+' not found','error')}}} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eEst?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:csrId,so_id:t.so_id||'',customer_id:t.customer_id||eEst?.customer_id||'',priority:t.priority||1})}} portalSettings={portalSettings}/>
     // Filter estimates
     let fe=[...ests];
     const estRepId=estF.rep==='_me_'?cu?.id:estF.rep;
@@ -11975,7 +12138,7 @@ export default function App(){
     if(estF.sort==='date_desc')fe.sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||''));
     else if(estF.sort==='date_asc')fe.sort((a,b)=>(a.created_at||'').localeCompare(b.created_at||''));
     else if(estF.sort==='customer')fe.sort((a,b)=>{const ca=cust.find(x=>x.id===a.customer_id)?.name||'';const cb=cust.find(x=>x.id===b.customer_id)?.name||'';return ca.localeCompare(cb)});
-    const estActiveFilters=estF.status!=='open'||estF.rep!=='_me_'||estF.search;
+    const estActiveFilters=estF.status!=='open'||estF.rep!=='all'||estF.search;
     const estStCounts={open:ests.filter(e=>e.status==='draft'||e.status==='open'||e.status==='sent').length,draft:ests.filter(e=>e.status==='draft').length,sent:ests.filter(e=>e.status==='sent').length,approved:ests.filter(e=>e.status==='approved').length,converted:ests.filter(e=>e.status==='converted').length};
     return(<>
       {/* Clickable status stat cards */}
@@ -11998,7 +12161,7 @@ export default function App(){
           <option value="all">All Reps</option><option value="_me_">My Estimates</option>{REPS.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
         <select className="form-select" style={{width:150}} value={estF.sort} onChange={e=>setEstF(f=>({...f,sort:e.target.value}))}>
           <option value="date_desc">Newest First</option><option value="date_asc">Oldest First</option><option value="customer">By Customer</option></select>
-        {estActiveFilters&&<button className="btn btn-sm btn-secondary" onClick={()=>setEstF({status:'open',rep:'_me_',search:'',sort:'date_desc'})}>✕ Reset</button>}
+        {estActiveFilters&&<button className="btn btn-sm btn-secondary" onClick={()=>setEstF({status:'open',rep:'all',search:'',sort:'date_desc'})}>✕ Reset</button>}
         <span style={{fontSize:11,color:'#64748b'}}>{fe.length}{fe.length!==ests.length?' of '+ests.length:''} estimates</span>
         <button className="btn btn-primary" onClick={()=>newE(null)}><Icon name="plus" size={14}/> New Estimate</button>
       </div>
@@ -12016,7 +12179,7 @@ export default function App(){
 
   // SALES ORDERS LIST
   function rSO(){
-    if(eSO)return<OrderEditor key={eSO.id} order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} vendors={vend} onSave={s=>{const locked=savSO(s);setESO(locked)}} onBack={()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onNavInvoice={inv=>{setESO(null);setPg('invoices');setInvF(f=>({...f,search:inv.id}))}} onSaveProduct={p=>{setProd(prev=>prev.some(x=>x.id===p.id)?prev.map(x=>x.id===p.id?p:x):[...prev,p]);_dbSaveProduct(p)}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setPg(returnToPage.page==='production'?'production':'decoration');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:csrId,so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1})}}/>
+    if(eSO)return<OrderEditor key={eSO.id} order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} vendors={vend} onSave={s=>{const locked=savSO(s);setESO(locked)}} onBack={()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onNavInvoice={inv=>{setESO(null);setPg('invoices');setInvF(f=>({...f,search:inv.id}))}} onSaveProduct={p=>{setProd(prev=>prev.some(x=>x.id===p.id)?prev.map(x=>x.id===p.id?p:x):[...prev,p]);_dbSaveProduct(p)}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:csrId,so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1})}} portalSettings={portalSettings}/>
     // Filter SOs
     let fSOs=[...sos];
     if(soF.status!=='all')fSOs=fSOs.filter(s=>calcSOStatus(s)===soF.status);
@@ -12860,8 +13023,10 @@ export default function App(){
   const[activeArtTimers,setActiveArtTimers]=useState({});// {soId|jobId:{person,clockIn,soId,artName,customer}}
   const[idleSettings,setIdleSettings]=useState(()=>loadState('idle_settings',{warnMin:5,autoOutMin:10}));
   React.useEffect(()=>{_saveAppState('idle_settings',idleSettings)},[idleSettings]);
-  const[portalSettings,setPortalSettings]=useState(()=>loadState('portal_settings',{followUpDays:3,disclaimer:'Please check all artwork, quantities, and personalization very closely. Once approved, this will be exactly what is printed.'}));
+  const[portalSettings,setPortalSettings]=useState(()=>loadState('portal_settings',{followUpDays:7,estFollowUpDays:7,invFollowUpDays:7,disclaimer:'Please check all artwork, quantities, and personalization very closely. Once approved, this will be exactly what is printed.'}));
   React.useEffect(()=>{_saveAppState('portal_settings',portalSettings)},[portalSettings]);
+  const[companyInfo,setCompanyInfo]=useState(()=>{const saved=loadState('company_info',null);if(saved){Object.assign(NSA,{...NSA_DEFAULTS,...saved,fullAddr:(saved.addr||NSA_DEFAULTS.addr)+', '+(saved.city||NSA_DEFAULTS.city)+', '+(saved.state||NSA_DEFAULTS.state)+' '+(saved.zip||NSA_DEFAULTS.zip)})}return{...NSA}});
+  React.useEffect(()=>{Object.assign(NSA,{...companyInfo,fullAddr:companyInfo.addr+', '+companyInfo.city+', '+companyInfo.state+' '+companyInfo.zip});_saveAppState('company_info',companyInfo)},[companyInfo]);
   // ── Idle / activity tracking for timers ──
   const _lastActivity=useRef(Date.now());
   const _idleAccum=useRef({});// {timerKey: totalIdleMs} — accumulates idle time per active timer
@@ -12966,6 +13131,12 @@ export default function App(){
       nf('🏭 '+j.id+' → '+labels[newStatus]+(machine?' · '+MACHINES.find(m=>m.id===machine)?.name:'')+(person?' · '+person:''));
     }
   };
+  // Update a job field (for run order, marking runs done, etc.)
+  const updateJobField=(j,fields)=>{
+    const so=sos.find(s=>s.id===j.soId);if(!so)return;
+    const updatedJobs=safeJobs(so).map(jj=>jj.id===j.id?{...jj,...fields}:jj);
+    savSO({...so,jobs:updatedJobs});
+  };
   const[showColPicker,setShowColPicker]=useState(false);
   const ALL_PROD_COLS=[
     {id:'so',label:'SO',default:true},
@@ -12991,6 +13162,9 @@ export default function App(){
   const[roleView,setRoleView]=useState(()=>{try{return localStorage.getItem('nsa_role_view')||'sales'}catch{return'sales'}});
   const changeRoleView=v=>{setRoleView(v);try{localStorage.setItem('nsa_role_view',v)}catch{}};
   function rProd2(){
+    const isAdmin=cu?.role==='admin'||cu?.role==='prod_manager'||cu?.role==='gm';
+    const isDecorator=cu?.role==='production'||cu?.role==='prod_assistant';
+    const decorators=REPS.filter(r=>r.role==='production').filter(r=>r.is_active!==false);
     // Build flat list of SAVED jobs only (must be explicitly on SO.jobs[])
     const allJobs=[];
     sos.forEach(so=>{
@@ -13005,7 +13179,9 @@ export default function App(){
     const filtered=prodFilter==='all'?allJobs:allJobs.filter(j=>{const cc=cust.find(x=>x.id===j.so.customer_id);return(cc?.primary_rep_id||j.so.created_by)===prodFilter});
     const byDeco=prodDecoF==='all'?filtered:filtered.filter(j=>j.deco_type===prodDecoF);
     const readyOnly=byDeco.filter(j=>j.prod_status!=='hold'||isJobReady(j,j.so)).filter(j=>j.prod_status!=='shipped');
-    const byStatus=prodStatF==='active'?readyOnly:prodStatF==='all'?readyOnly:readyOnly.filter(j=>j.prod_status===prodStatF);
+    // Decorator filtering: decorators see all Ready for Prod, but only their assigned jobs in In Line/In Process/Completed
+    const roleFiltered=isDecorator?readyOnly.filter(j=>(j.prod_status==='hold'&&isJobReady(j,j.so))||j.assigned_to===cu?.name):readyOnly;
+    const byStatus=prodStatF==='active'?roleFiltered:prodStatF==='all'?roleFiltered:roleFiltered.filter(j=>j.prod_status===prodStatF);
     const totalUnits=byStatus.reduce((a,j)=>a+j.total_units,0);
     const fulfilledUnits=byStatus.reduce((a,j)=>a+j.fulfilled_units,0);
     const needsArt=byStatus.filter(j=>j.art_status!=='art_complete').length;
@@ -13029,11 +13205,17 @@ export default function App(){
         <select className="form-select" style={{width:150,fontSize:11}} value={prodDecoF} onChange={e=>setProdDecoF(e.target.value)}>
           <option value="all">All Deco Types</option>{allDecoTypes.map(d=><option key={d} value={d}>{d.replace(/_/g,' ')}</option>)}
         </select>
+        {isAdmin&&<select className="form-select" style={{width:150,fontSize:11}} value={prodFilter==='all'?'all':prodFilter} onChange={e=>{const v=e.target.value;if(v.startsWith('deco_')){setProdFilter('all');setProdDecoF('all')}else{setProdFilter(v)}}}>
+          <option value="all">All Decorators</option>{decorators.map(d=><option key={d.id} value={d.name}>{d.name}</option>)}
+        </select>}
         <div style={{marginLeft:'auto',display:'flex',gap:4}}>
           <button className={`btn btn-sm ${prodView==='board'?'btn-primary':'btn-secondary'}`} onClick={()=>setProdView('board')}>Board</button>
           <button className={`btn btn-sm ${prodView==='list'?'btn-primary':'btn-secondary'}`} onClick={()=>setProdView('list')}>List</button>
         </div>
       </div>
+      {isDecorator&&<div style={{marginBottom:8,padding:8,background:'#f5f3ff',borderRadius:6,fontSize:11,color:'#6d28d9'}}>
+        Showing all jobs in Ready for Prod. In Line, In Process, and Completed show only jobs assigned to you.
+      </div>}
       <div className="stats-row">
         <div className="stat-card"><div className="stat-label">Total Jobs</div><div className="stat-value">{byStatus.length}</div></div>
         <div className="stat-card"><div className="stat-label">Total Units</div><div className="stat-value">{totalUnits}</div></div>
@@ -13041,6 +13223,39 @@ export default function App(){
         <div className="stat-card"><div className="stat-label">Needs Art</div><div className="stat-value" style={{color:needsArt>0?'#d97706':''}}>{needsArt}</div></div>
         <div className="stat-card"><div className="stat-label">In Process</div><div className="stat-value" style={{color:'#2563eb'}}>{inProcess}</div></div>
       </div>
+      {/* Decorator Time Tracking — decorators see only their timers */}
+      {(()=>{
+        const myTimers=isDecorator?Object.entries(activeTimers).filter(([,t])=>t.person===cu?.name):Object.entries(activeTimers);
+        const myLogs=isDecorator?jobTimeLogs.filter(l=>l.person===cu?.name):jobTimeLogs;
+        if(myTimers.length===0&&myLogs.length===0)return null;
+        return<div className="card" style={{marginBottom:12,borderLeft:'3px solid #f59e0b'}}>
+          <div style={{padding:'10px 14px'}}>
+            <div style={{fontSize:12,fontWeight:700,color:'#92400e',marginBottom:6}}>⏱️ {isDecorator?'My Time Tracking':'Time Tracking'}</div>
+            {myTimers.length>0&&<div style={{marginBottom:8}}>
+              <div style={{fontSize:10,fontWeight:600,color:'#166534',marginBottom:4}}>ACTIVE NOW:</div>
+              {myTimers.map(([key,timer])=>{
+                const[soId,jobId]=key.split('|');const mins=Math.round((Date.now()-timer.clockIn)/60000);
+                return<div key={key} style={{display:'flex',alignItems:'center',gap:8,padding:'3px 0',fontSize:11}}>
+                  <span style={{width:8,height:8,borderRadius:4,background:'#22c55e',animation:'pulse 2s infinite'}}/>
+                  <span style={{fontWeight:700}}>{timer.person}</span>
+                  <span style={{color:'#64748b'}}>on {jobId} ({soId})</span>
+                  <span style={{marginLeft:'auto',fontWeight:700,color:'#d97706'}}>{mins}m</span>
+                </div>})}
+            </div>}
+            {myLogs.length>0&&<div>
+              <div style={{fontSize:10,fontWeight:600,color:'#64748b',marginBottom:4}}>RECENT LOGS:</div>
+              {myLogs.slice(-5).reverse().map((log,i)=><div key={i} style={{display:'flex',gap:8,fontSize:10,color:'#475569',padding:'2px 0'}}>
+                <span style={{fontWeight:600}}>{log.person}</span>
+                <span>{log.jobId}</span>
+                <span style={{color:'#94a3b8'}}>{log.clockOut}</span>
+                <span style={{marginLeft:'auto',fontWeight:700,color:'#7c3aed'}}>{log.minutes}m</span>
+              </div>)}
+              <div style={{fontSize:10,color:'#64748b',marginTop:4,borderTop:'1px solid #f1f5f9',paddingTop:4}}>
+                Total logged: <strong>{myLogs.reduce((a,l)=>a+l.minutes,0)} min</strong> ({(myLogs.reduce((a,l)=>a+l.minutes,0)/60).toFixed(1)} hrs)
+              </div>
+            </div>}
+          </div>
+        </div>})()}
       {prodView==='board'&&<div style={{display:'flex',gap:12,overflowX:'auto',paddingBottom:12}}>
         {kanbanCols.map(col=>{const colJobs=col.filter?byStatus.filter(col.filter):byStatus.filter(j=>j.prod_status===col.id);
           return<div key={col.id} style={{minWidth:220,flex:1,background:col.bg,borderRadius:8,padding:8}}>
@@ -13098,38 +13313,34 @@ export default function App(){
                       {j.ship_method==='ship_customer'?'📦 Ship':j.ship_method==='rep_delivery'?'🚗 Rep':j.ship_method==='customer_pickup'?'🏫 Pickup':'⏸️ Hold'}</span>}
                   </div>
 
-                  {/* RUN ORDER — show sibling jobs sharing the same items */}
-                  {(()=>{
-                    const jobItemIdxs=new Set((j.items||[]).map(it=>it.item_idx));
-                    const siblings=safeJobs(j.so).filter(j2=>j2.id!==j.id&&(j2.items||[]).some(it=>jobItemIdxs.has(it.item_idx)));
-                    if(siblings.length===0)return null;
-                    const allRuns=[j,...siblings].sort((a,b)=>(a.prod_status==='completed'||a.prod_status==='shipped'?0:1)-(b.prod_status==='completed'||b.prod_status==='shipped'?0:1));
-                    return<div style={{background:'#fef3c7',border:'1px solid #fde68a',borderRadius:6,padding:'6px 8px',marginBottom:6}}>
-                      <div style={{fontSize:9,fontWeight:800,color:'#92400e',marginBottom:4,textTransform:'uppercase',letterSpacing:0.5}}>RUN ORDER</div>
-                      <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
-                        {allRuns.map((run,ri)=>{
-                          const isDone=run.prod_status==='completed'||run.prod_status==='shipped';
-                          const isCurrent=run.id===j.id;
-                          const runLabel=run.art_name||run.deco_type?.replace(/_/g,' ')||'Job';
-                          return<div key={run.id} style={{flex:1,minWidth:80,padding:'4px 6px',borderRadius:4,
-                            border:isCurrent?'2px solid #2563eb':isDone?'2px solid #22c55e':'1px solid #e2e8f0',
-                            background:isCurrent?'#eff6ff':isDone?'#f0fdf4':'white'}}>
-                            <div style={{fontSize:8,fontWeight:700,color:'#64748b'}}>RUN {ri+1}: {runLabel}</div>
-                            <div style={{fontSize:10,fontWeight:800,color:isDone?'#166534':isCurrent?'#2563eb':'#94a3b8'}}>{isDone?'Done':isCurrent?'Current':'Pending'}</div>
-                          </div>})}
+                  {/* Dual-run: art + numbers run order */}
+                  {isDualRunJob(j,j.so)&&<div style={{background:'#faf5ff',border:'1px solid #e9d5ff',borderRadius:6,padding:'6px 8px',marginBottom:6}}>
+                    {!j.run_order?<div>
+                      <div style={{fontSize:9,fontWeight:700,color:'#6d28d9',marginBottom:4}}>SELECT RUN ORDER</div>
+                      <div style={{display:'flex',gap:4}}>
+                        <button className="btn btn-sm" style={{fontSize:9,padding:'3px 8px',background:'#7c3aed',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();updateJobField(j,{run_order:'art_first',run1_done:false,run2_done:false});nf('Run order: Artwork first')}}>Artwork First</button>
+                        <button className="btn btn-sm" style={{fontSize:9,padding:'3px 8px',background:'#22c55e',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();updateJobField(j,{run_order:'numbers_first',run1_done:false,run2_done:false});nf('Run order: Numbers first')}}>Numbers First</button>
                       </div>
-                      {/* Mark current run done button */}
-                      {col.id==='in_process'&&<button className="btn btn-sm" style={{width:'100%',marginTop:4,fontSize:9,padding:'4px 8px',background:'#d97706',color:'white',border:'none',fontWeight:700}} onClick={e=>{e.stopPropagation();
-                        const nextSibling=siblings.find(s=>s.prod_status!=='completed'&&s.prod_status!=='shipped');
-                        if(nextSibling){
-                          applyJobMove(j,'completed',j.assigned_machine||'',j.assigned_to||'');
-                          setAssignModal({job:{...nextSibling,soId:j.soId,so:j.so},soId:j.soId,targetStatus:'staging'});
-                          setAssignTo({machine:'',person:''});
-                        } else {
-                          moveJobStatus(j,'completed');
-                        }
-                      }}>Mark {j.art_name||j.deco_type?.replace(/_/g,' ')} Done</button>}
+                    </div>:(()=>{const rl=getRunLabels(j);return<div>
+                      <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:4}}>
+                        <span style={{fontSize:9,fontWeight:700,color:'#6d28d9'}}>RUN ORDER</span>
+                        {!j.run1_done&&<button style={{fontSize:8,color:'#94a3b8',cursor:'pointer',background:'none',border:'none',padding:0,marginLeft:'auto',textDecoration:'underline'}} onClick={e=>{e.stopPropagation();updateJobField(j,{run_order:j.run_order==='art_first'?'numbers_first':'art_first'});nf('Switched to '+(j.run_order==='art_first'?'Numbers':'Artwork')+' first')}}>Switch</button>}
+                      </div>
+                      <div style={{display:'flex',gap:6}}>
+                        <div style={{flex:1,padding:'4px 6px',borderRadius:4,background:j.run1_done?'#dcfce7':'#eff6ff',border:'1px solid '+(j.run1_done?'#86efac':'#93c5fd')}}>
+                          <div style={{fontSize:8,fontWeight:700,color:j.run1_done?'#166534':'#1e40af'}}>RUN 1: {rl.run1}</div>
+                          <div style={{fontSize:10,fontWeight:800,color:j.run1_done?'#166534':'#1e40af'}}>{j.run1_done?'Done':'Current'}</div>
+                        </div>
+                        <div style={{flex:1,padding:'4px 6px',borderRadius:4,background:j.run2_done?'#dcfce7':j.run1_done?'#eff6ff':'#f8fafc',border:'1px solid '+(j.run2_done?'#86efac':j.run1_done?'#93c5fd':'#e2e8f0')}}>
+                          <div style={{fontSize:8,fontWeight:700,color:j.run2_done?'#166534':j.run1_done?'#1e40af':'#94a3b8'}}>RUN 2: {rl.run2}</div>
+                          <div style={{fontSize:10,fontWeight:800,color:j.run2_done?'#166534':j.run1_done?'#1e40af':'#94a3b8'}}>{j.run2_done?'Done':j.run1_done?'Current':'Pending'}</div>
+                        </div>
+                      </div>
+                      {/* Mark run done — reassign to another decorator and move back to In Line */}
+                      {!j.run1_done&&<button className="btn btn-sm" style={{fontSize:9,padding:'3px 8px',marginTop:4,background:'#166534',color:'white',border:'none',width:'100%'}} onClick={e=>{e.stopPropagation();updateJobField(j,{run1_done:true});applyJobMove(j,'staging',j.assigned_machine||'',j.assigned_to||'');setAssignModal({job:j,soId:j.soId,targetStatus:'staging'});setAssignTo({machine:j.assigned_machine||'',person:''});nf(rl.run1+' done — reassign for '+rl.run2)}}>Mark {rl.run1} Done</button>}
+                      {j.run1_done&&!j.run2_done&&<button className="btn btn-sm" style={{fontSize:9,padding:'3px 8px',marginTop:4,background:'#166534',color:'white',border:'none',width:'100%'}} onClick={e=>{e.stopPropagation();updateJobField(j,{run2_done:true});nf(rl.run2+' run complete — job fully decorated')}}>Mark {rl.run2} Done</button>}
                     </div>})()}
+                  </div>}
 
                   {/* Units + progress */}
                   <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
@@ -13212,29 +13423,6 @@ export default function App(){
         </tbody></table>
       </div></div>}
 
-      {/* Idle Warning — "Still working?" popup */}
-      {idleWarning&&<div className="modal-overlay" style={{zIndex:10000}}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:380}}>
-        <div className="modal-header" style={{background:'#fffbeb'}}><h2>⏱️ Still working?</h2></div>
-        <div className="modal-body" style={{textAlign:'center',padding:24}}>
-          <div style={{fontSize:40,marginBottom:12}}>💤</div>
-          <div style={{fontSize:14,fontWeight:700,color:'#92400e',marginBottom:8}}>No activity detected for {Math.round((Date.now()-idleWarning.since)/60000)} minutes</div>
-          <div style={{fontSize:12,color:'#64748b',marginBottom:16}}>Your timer{idleWarning.keys.length>1?'s are':' is'} still running. If you're away, you'll be automatically clocked out after 10 minutes of inactivity.</div>
-          <div style={{display:'flex',gap:8}}>
-            <button className="btn btn-primary" style={{flex:1,padding:'10px 16px',fontWeight:700}} onClick={()=>{_lastActivity.current=Date.now();_idleState.current='active';setIdleWarning(null)}}>Yes, I'm working</button>
-            <button className="btn btn-secondary" style={{flex:1,padding:'10px 16px',fontWeight:700}} onClick={()=>{
-              // Manual clock-out art timers only (idle tracking doesn't apply to decorators)
-              Object.entries(activeArtTimers).forEach(([key,timer])=>{
-                const mins=Math.round((Date.now()-timer.clockIn)/60000);
-                const idleMins=Math.round(((_idleAccum.current[key]||0)+(Date.now()-_lastActivity.current))/60000);
-                setArtTimeLogs(prev=>[...prev,{jobId:key.split('|')[1],soId:key.split('|')[0],person:timer.person,clockIn:new Date(timer.clockIn).toLocaleString(),clockOut:new Date().toLocaleString(),minutes:mins,idleMinutes:idleMins,artName:timer.artName,customer:timer.customer}]);
-              });
-              setActiveArtTimers({});_idleState.current='active';_idleAccum.current={};setIdleWarning(null);
-              nf('Art timers clocked out');
-            }}>Clock me out</button>
-          </div>
-        </div>
-      </div></div>}
-
       {/* Assignment Modal — appears when moving to In Line */}
       {assignModal&&<div className="modal-overlay" onClick={()=>setAssignModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:420}}>
         <div className="modal-header" style={{background:'#fffbeb'}}><h2>📋 Assign to Machine / Person</h2><button className="modal-close" onClick={()=>setAssignModal(null)}>×</button></div>
@@ -13273,15 +13461,13 @@ export default function App(){
           </div>
         </div>
         <div className="modal-footer">
-          <button className="btn btn-secondary" onClick={()=>{
-            applyJobMove(assignModal.job,assignModal.targetStatus,'','');
-            setAssignModal(null);
-          }}>Skip — Move Anyway</button>
-          <button className="btn btn-primary" onClick={()=>{
+          <button className="btn btn-secondary" onClick={()=>setAssignModal(null)}>Cancel</button>
+          <button className="btn btn-primary" disabled={!assignTo.person} onClick={()=>{
             applyJobMove(assignModal.job,assignModal.targetStatus,assignTo.machine,assignTo.person);
             setAssignModal(null);
           }}>✓ Assign & Move</button>
         </div>
+        {!assignTo.person&&<div style={{padding:'4px 14px 8px',fontSize:11,color:'#dc2626',fontWeight:600}}>A decorator must be assigned to move to In Line.</div>}
       </div></div>}
 
       {/* ═══ PRODUCTION MOCKUP VIEW — full job detail for decorators ═══ */}
@@ -13521,6 +13707,34 @@ export default function App(){
                 <div style={{fontSize:11,fontWeight:700,color:'#7c3aed',textTransform:'uppercase',marginBottom:4,letterSpacing:1}}>Assigned To</div>
                 <div style={{fontSize:18,fontWeight:800,color:'#6d28d9'}}>{j.assigned_to}</div></div>}
             </div>
+
+            {/* Dual-Run Order — art + numbers */}
+            {isDualRunJob(j,so)&&<div style={{padding:20,borderBottom:'2px solid #e2e8f0',background:'#faf5ff'}}>
+              <div style={{fontSize:18,fontWeight:800,color:'#0f172a',marginBottom:16,borderBottom:'2px solid #7c3aed',paddingBottom:8}}>Run Order</div>
+              {!j.run_order?<div style={{textAlign:'center',padding:16}}>
+                <div style={{fontSize:13,color:'#6d28d9',fontWeight:700,marginBottom:12}}>This job has both Artwork and Numbers. Select which to run first:</div>
+                <div style={{display:'flex',gap:12,justifyContent:'center'}}>
+                  <button className="btn" style={{padding:'12px 24px',fontSize:14,fontWeight:800,background:'#7c3aed',color:'white',border:'none',borderRadius:8}} onClick={()=>{updateJobField(j,{run_order:'art_first',run1_done:false,run2_done:false});nf('Run order: Artwork first')}}>Artwork First</button>
+                  <button className="btn" style={{padding:'12px 24px',fontSize:14,fontWeight:800,background:'#22c55e',color:'white',border:'none',borderRadius:8}} onClick={()=>{updateJobField(j,{run_order:'numbers_first',run1_done:false,run2_done:false});nf('Run order: Numbers first')}}>Numbers First</button>
+                </div>
+              </div>:(()=>{const rl=getRunLabels(j);return<div>
+                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:12}}>
+                  <div style={{padding:16,borderRadius:10,background:j.run1_done?'#dcfce7':'#eff6ff',border:'2px solid '+(j.run1_done?'#86efac':'#3b82f6')}}>
+                    <div style={{fontSize:11,fontWeight:700,color:j.run1_done?'#166534':'#1e40af',textTransform:'uppercase',letterSpacing:1,marginBottom:4}}>Run 1</div>
+                    <div style={{fontSize:20,fontWeight:800,color:j.run1_done?'#166534':'#1e40af'}}>{rl.run1}</div>
+                    <div style={{fontSize:12,fontWeight:700,color:j.run1_done?'#166534':'#3b82f6',marginTop:4}}>{j.run1_done?'Completed':'In Progress'}</div>
+                    {!j.run1_done&&<button className="btn" style={{marginTop:8,padding:'8px 16px',fontSize:12,fontWeight:800,background:'#166534',color:'white',border:'none',borderRadius:6,width:'100%'}} onClick={()=>{updateJobField(j,{run1_done:true});nf(rl.run1+' run complete — starting '+rl.run2)}}>Mark {rl.run1} Done</button>}
+                  </div>
+                  <div style={{padding:16,borderRadius:10,background:j.run2_done?'#dcfce7':j.run1_done?'#eff6ff':'#f8fafc',border:'2px solid '+(j.run2_done?'#86efac':j.run1_done?'#3b82f6':'#e2e8f0')}}>
+                    <div style={{fontSize:11,fontWeight:700,color:j.run2_done?'#166534':j.run1_done?'#1e40af':'#94a3b8',textTransform:'uppercase',letterSpacing:1,marginBottom:4}}>Run 2</div>
+                    <div style={{fontSize:20,fontWeight:800,color:j.run2_done?'#166534':j.run1_done?'#1e40af':'#94a3b8'}}>{rl.run2}</div>
+                    <div style={{fontSize:12,fontWeight:700,color:j.run2_done?'#166534':j.run1_done?'#3b82f6':'#94a3b8',marginTop:4}}>{j.run2_done?'Completed':j.run1_done?'In Progress':'Pending'}</div>
+                    {j.run1_done&&!j.run2_done&&<button className="btn" style={{marginTop:8,padding:'8px 16px',fontSize:12,fontWeight:800,background:'#166534',color:'white',border:'none',borderRadius:6,width:'100%'}} onClick={()=>{updateJobField(j,{run2_done:true});nf(rl.run2+' run complete — job fully decorated')}}>Mark {rl.run2} Done</button>}
+                  </div>
+                </div>
+                {!j.run1_done&&<button style={{fontSize:11,color:'#7c3aed',cursor:'pointer',background:'none',border:'none',padding:0,textDecoration:'underline',fontWeight:600}} onClick={()=>{updateJobField(j,{run_order:j.run_order==='art_first'?'numbers_first':'art_first'});nf('Switched to '+(j.run_order==='art_first'?'Numbers':'Artwork')+' first')}}>Switch run order</button>}
+              </div>})()}
+            </div>}
 
             {/* SKUs & Quantities */}
             <div style={{padding:20,borderBottom:'1px solid #e2e8f0'}}>
@@ -14383,6 +14597,22 @@ export default function App(){
             </div>
           </div>
 
+          {/* Sent History */}
+          {((inv.sent_history||[]).length>0||inv.email_sent_at)&&<div className="card-body" style={{padding:'12px 24px',borderBottom:'1px solid #e2e8f0'}}>
+            <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap',marginBottom:4}}>
+              <span style={{fontSize:12,fontWeight:700,color:'#475569'}}>Send History</span>
+              {inv.email_status==='sent'&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:10,background:'#fef3c7',color:'#92400e',fontWeight:600}}>✉️ Sent</span>}
+              {inv.email_status==='opened'&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:10,background:'#dbeafe',color:'#1e40af',fontWeight:600}}>👁️ Opened {inv.email_opened_at||''}</span>}
+              {inv.follow_up_at&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:10,background:new Date(inv.follow_up_at)<new Date()?'#fef2f2':'#fffbeb',color:new Date(inv.follow_up_at)<new Date()?'#dc2626':'#92400e',fontWeight:600}}>⏰ Follow-up {new Date(inv.follow_up_at).toLocaleDateString()}{new Date(inv.follow_up_at)<new Date()?' (overdue)':''}</span>}
+            </div>
+            {(inv.sent_history||[]).length>0?(inv.sent_history||[]).map((h,hi)=><div key={hi} style={{fontSize:11,color:'#64748b',display:'flex',alignItems:'center',gap:6,marginBottom:2}}>
+              <span style={{color:'#2563eb'}}>✉️</span>
+              <span>{new Date(h.sent_at).toLocaleDateString()} @ {new Date(h.sent_at).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true})}</span>
+              <span style={{color:'#94a3b8'}}>by {h.sent_by}</span>
+              {h.methods&&<span style={{fontSize:9,padding:'1px 5px',borderRadius:4,background:'#eff6ff',color:'#1e40af'}}>{h.methods.join(', ')}</span>}
+              {h.to&&<span style={{fontSize:9,color:'#94a3b8'}}>→ {h.to}</span>}
+            </div>):<div style={{fontSize:11,color:'#64748b'}}>Sent {inv.email_sent_at}</div>}
+          </div>}
           {/* Action buttons */}
           <div className="card-body" style={{padding:'12px 24px',borderBottom:'1px solid #e2e8f0',display:'flex',gap:8,flexWrap:'wrap'}}>
             {inv.status!=='paid'&&<button className="btn btn-sm" style={{background:'#166534',color:'white',border:'none',fontSize:12,padding:'6px 14px'}}
@@ -14392,9 +14622,10 @@ export default function App(){
             <button className="btn btn-sm btn-secondary" style={{fontSize:12,padding:'6px 14px'}}
               onClick={()=>{
                 const contact=contacts[0];
-                const msg='Hi '+(contact?.name||'Coach')+',\n\nPlease find your invoice '+inv.id+' for $'+inv.total.toFixed(2)+'. Payment is due by '+(inv.due_date||'—')+'.\n\nThank you,\nNSA Team';
+                const portalUrl=ic?.alpha_tag?'https://nsa-portal.netlify.app/?portal='+ic.alpha_tag:'';
+                const msg='Hi '+(contact?.name||'Coach')+',\n\nPlease find the attached invoice '+inv.id+' for $'+inv.total.toFixed(2)+'. Payment is due by '+(inv.due_date||'—')+'.'+(portalUrl?'\n\nYou can also view your invoice through your portal:\n'+portalUrl:'')+'\n\nThank you,\nNSA Team';
                 const smsText='Hi '+(contact?.name||'Coach')+', your invoice '+inv.id+' for $'+inv.total.toFixed(2)+' is ready. Due by '+(inv.due_date||'—')+'. View: https://nsa-portal.netlify.app/?portal='+(ic?.alpha_tag||'');
-                setInvSendModalDirect({inv,email:contact?.email||'',customEmail:'',msg,sendTo:contact?.email||'',smsEnabled:!!contact?.phone,smsPhone:contact?.phone||'',smsMsg:smsText});
+                setInvSendModalDirect({inv,email:contact?.email||'',customEmail:'',msg,sendTo:contact?.email||'',smsEnabled:!!contact?.phone,smsPhone:contact?.phone||'',smsMsg:smsText,followUpDays:portalSettings?.invFollowUpDays||7});
               }}>Send Invoice</button>
             <button className="btn btn-sm btn-secondary" style={{fontSize:12,padding:'6px 14px'}}
               onClick={()=>{
@@ -14465,30 +14696,37 @@ export default function App(){
                 <th style={{padding:'10px 12px',textAlign:'right',fontWeight:700,width:100}}>Amount</th>
               </tr></thead>
               <tbody>
-                {lineItems.map((li,i)=><React.Fragment key={i}>
-                  <tr style={{borderBottom:li._decos&&li._decos.length>0?'none':'1px solid #f1f5f9'}}>
+                {lineItems.map((li,i)=>{
+                  const matchDeco=soDecoDetails.find(sd=>sd.sku&&li.desc&&li.desc.startsWith(sd.sku));
+                  return<React.Fragment key={i}>
+                  <tr style={{borderBottom:(matchDeco||li._decos?.length)?'none':'1px solid #f1f5f9'}}>
                     <td style={{padding:'10px 12px',fontWeight:600}}>{li.desc}</td>
                     <td style={{padding:'10px 12px',textAlign:'center'}}>{li.qty}</td>
                     <td style={{padding:'10px 12px',textAlign:'right'}}>${safeNum(li.rate).toFixed(2)}</td>
                     <td style={{padding:'10px 12px',textAlign:'right',fontWeight:600}}>${safeNum(li.amount).toFixed(2)}</td>
                   </tr>
-                  {li._decos&&li._decos.length>0&&<tr style={{borderBottom:'1px solid #f1f5f9'}}>
-                    <td colSpan={4} style={{padding:'2px 12px 10px 24px'}}>
-                      <div style={{fontSize:11,color:'#64748b'}}>
-                        <span style={{fontWeight:600}}>Product:</span> ${safeNum(li._unitSell).toFixed(2)}/ea
-                        {li._decos.map((dd,di)=><span key={di} style={{marginLeft:10}}>
-                          <span style={{display:'inline-block',padding:'1px 5px',borderRadius:4,fontSize:9,fontWeight:700,marginRight:3,
-                            background:dd.type==='screen_print'?'#dbeafe':dd.type==='embroidery'?'#fce7f3':dd.type==='dtf'||dd.type==='heat_press'?'#fef3c7':dd.type==='numbers'?'#e0e7ff':dd.type==='names'?'#ede9fe':'#f1f5f9',
-                            color:dd.type==='screen_print'?'#1e40af':dd.type==='embroidery'?'#be185d':dd.type==='dtf'||dd.type==='heat_press'?'#92400e':dd.type==='numbers'?'#4338ca':dd.type==='names'?'#6d28d9':'#64748b'}}>
-                            {dd.label}</span>
-                          {dd.position&&<span>{dd.position}</span>}
-                          {dd.artName&&<span> — {dd.artName}</span>}
-                          <span style={{fontWeight:600}}> +${dd.sell.toFixed(2)}/ea</span>
-                        </span>)}
+                  {(matchDeco?matchDeco.decos:li._decos||[]).map((dd,di)=><tr key={'d'+di} style={{borderBottom:di===(matchDeco?matchDeco.decos:li._decos||[]).length-1?'1px solid #f1f5f9':'none'}}>
+                    <td colSpan={4} style={{padding:'3px 12px 3px 32px'}}>
+                      <div style={{display:'flex',alignItems:'center',gap:8,fontSize:11}}>
+                        <span style={{display:'inline-block',padding:'1px 6px',borderRadius:4,fontSize:9,fontWeight:700,whiteSpace:'nowrap',
+                          background:dd.type==='screen_print'?'#dbeafe':dd.type==='embroidery'?'#fce7f3':dd.type==='dtf'||dd.type==='heat_press'?'#fef3c7':dd.type==='numbers'?'#e0e7ff':dd.type==='names'?'#ede9fe':'#f1f5f9',
+                          color:dd.type==='screen_print'?'#1e40af':dd.type==='embroidery'?'#be185d':dd.type==='dtf'||dd.type==='heat_press'?'#92400e':dd.type==='numbers'?'#4338ca':dd.type==='names'?'#6d28d9':'#64748b'}}>
+                          {dd.label}</span>
+                        <span style={{color:'#334155',fontWeight:600}}>{dd.position}{dd.artName?' — '+dd.artName:''}</span>
+                        <span style={{color:'#64748b'}}>
+                          {dd.colors&&dd.colors.length>0&&<span>{dd.colors.length} color{dd.colors.length>1?'s':''}: {dd.colors.join(', ')} · </span>}
+                          {dd.stitches&&<span>{dd.stitches.toLocaleString()} stitches · </span>}
+                          {dd.dtfSize!=null&&<span>Size: {['Small','Medium','Large','XL','Oversized'][dd.dtfSize]||dd.dtfSize} · </span>}
+                          {dd.twoColor&&<span>Two-color · </span>}
+                          {dd.numMethod&&<span>{dd.numMethod.replace(/_/g,' ')} {dd.numSize||''} · </span>}
+                          {dd.vendor&&<span>Vendor: {dd.vendor} · </span>}
+                          {dd.notes&&<span>{dd.notes} · </span>}
+                        </span>
+                        <span style={{fontWeight:600,color:'#334155',marginLeft:'auto'}}>+${dd.sell.toFixed(2)}/ea</span>
                       </div>
                     </td>
-                  </tr>}
-                </React.Fragment>)}
+                  </tr>)}
+                </React.Fragment>})}
                 {lineItems.length===0&&<tr><td colSpan={4} style={{padding:20,textAlign:'center',color:'#94a3b8',fontSize:12}}>No line items recorded</td></tr>}
               </tbody>
             </table>
@@ -14513,37 +14751,6 @@ export default function App(){
               </div>
             </div>
 
-            {/* Decoration Details from SO */}
-            {soDecoDetails.length>0&&<>
-              <div style={{fontSize:11,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6,marginTop:20}}>Decoration Details</div>
-              <div style={{border:'1px solid #e2e8f0',borderRadius:8,overflow:'hidden'}}>
-                {soDecoDetails.map((item,ii)=><div key={ii} style={{borderBottom:ii<soDecoDetails.length-1?'1px solid #e2e8f0':'none'}}>
-                  <div style={{padding:'10px 14px',background:'#f8fafc',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-                    <div style={{fontWeight:700,fontSize:13}}>{item.sku} {item.name}{item.color?' — '+item.color:''}</div>
-                    <div style={{fontSize:11,color:'#64748b'}}>Qty: {item.qty}</div>
-                  </div>
-                  {item.decos.map((d,di)=><div key={di} style={{padding:'8px 14px 8px 24px',display:'flex',alignItems:'flex-start',gap:10,borderTop:'1px solid #f1f5f9'}}>
-                    <span style={{display:'inline-block',padding:'2px 8px',borderRadius:4,fontSize:10,fontWeight:700,whiteSpace:'nowrap',
-                      background:d.type==='screen_print'?'#dbeafe':d.type==='embroidery'?'#fce7f3':d.type==='dtf'||d.type==='heat_press'?'#fef3c7':d.type==='numbers'?'#e0e7ff':d.type==='names'?'#ede9fe':'#f1f5f9',
-                      color:d.type==='screen_print'?'#1e40af':d.type==='embroidery'?'#be185d':d.type==='dtf'||d.type==='heat_press'?'#92400e':d.type==='numbers'?'#4338ca':d.type==='names'?'#6d28d9':'#64748b'}}>
-                      {d.label}</span>
-                    <div style={{flex:1,fontSize:12}}>
-                      <div style={{fontWeight:600}}>{d.position}{d.artName?' — '+d.artName:''}</div>
-                      <div style={{color:'#64748b',fontSize:11,marginTop:2}}>
-                        {d.colors&&d.colors.length>0&&<span>{d.colors.length} color{d.colors.length>1?'s':''}: {d.colors.join(', ')} · </span>}
-                        {d.stitches&&<span>{d.stitches.toLocaleString()} stitches · </span>}
-                        {d.dtfSize!=null&&<span>Size: {['Small','Medium','Large','XL','Oversized'][d.dtfSize]||d.dtfSize} · </span>}
-                        {d.twoColor&&<span>Two-color · </span>}
-                        {d.numMethod&&<span>{d.numMethod.replace(/_/g,' ')} {d.numSize||''} · </span>}
-                        {d.vendor&&<span>Vendor: {d.vendor} · </span>}
-                        {d.notes&&<span>{d.notes} · </span>}
-                        Sell: ${d.sell.toFixed(2)}/ea
-                      </div>
-                    </div>
-                  </div>)}
-                </div>)}
-              </div>
-            </>}
           </div>
         </div>
 
@@ -14685,22 +14892,82 @@ export default function App(){
                   <div><label className="form-label" style={{fontSize:11}}>Text Message <span style={{color:'#94a3b8',fontWeight:400}}>({(si.smsMsg||'').length}/160)</span></label><textarea className="form-input" rows={2} value={si.smsMsg||''} onChange={e=>setInvSendModalDirect(s=>({...s,smsMsg:e.target.value}))} maxLength={160} style={{fontSize:12,resize:'vertical'}}/></div>
                 </div>}
               </div>
+              {/* Follow-up selector */}
+              <div style={{marginBottom:12,padding:12,background:'#fffbeb',border:'1px solid #fde68a',borderRadius:8}}>
+                <label style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
+                  <span style={{fontWeight:700,fontSize:13,color:'#92400e'}}>Follow-up Reminder</span>
+                </label>
+                <div style={{display:'flex',alignItems:'center',gap:8}}>
+                  <select className="form-input" value={si.followUpDays||0} onChange={e=>setInvSendModalDirect(s=>({...s,followUpDays:parseInt(e.target.value)}))} style={{fontSize:12,width:'auto'}}>
+                    <option value={0}>No follow-up</option>
+                    <option value={3}>3 days</option>
+                    <option value={5}>5 days</option>
+                    <option value={7}>7 days</option>
+                    <option value={10}>10 days</option>
+                    <option value={14}>14 days</option>
+                    <option value={21}>21 days</option>
+                    <option value={30}>30 days</option>
+                  </select>
+                  <span style={{fontSize:11,color:'#92400e'}}>Create todo if no response</span>
+                </div>
+              </div>
             </div>
             <div className="modal-footer">
               <button className="btn btn-secondary" onClick={()=>setInvSendModalDirect(null)}>Cancel</button>
               <button className="btn btn-primary" style={{background:'#2563eb'}} disabled={!resolvedEmail} onClick={async()=>{
                 setInvSendModalDirect(null);
                 const toEmail=resolvedEmail;
-                const res=await sendBrevoEmail({to:[{email:toEmail,name:toEmail}],subject:'Invoice '+si.inv.id+' — $'+si.inv.total.toFixed(2)+' from National Sports Apparel',
-                  htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6">'+si.msg.replace(/\n/g,'<br>')+'</div>',
-                  senderName:cu.name||'National Sports Apparel',senderEmail:'noreply@nationalsportsapparel.com',replyTo:cu?.email?{email:cu.email,name:cu.name}:undefined});
-                if(res.ok){nf('Invoice '+si.inv.id+' sent to '+toEmail)}else{nf('Failed to send: '+(res.error||'Unknown error'),'error')}
+                const siInv=si.inv;const siSo=sos.find(s=>s.id===siInv.so_id);const siCust=cust.find(c=>c.id===siInv.customer_id);
+                const siBillName=siInv.billing_name||siCust?.name||'—';
+                const siBal=siInv.total-(siInv.paid||0);
+                const siShip=siInv.shipping||0;const siTax=siInv.tax||0;
+                const siRepObj=siSo?REPS.find(r=>r.id===siSo.created_by):null;
+                const siPoNum=siInv._po_number||siSo?.po_number;
+                // Compute line items for PDF
+                const siStoredLi=siInv.line_items||[];
+                const siLi=siStoredLi.length>0?siStoredLi:(siSo?safeItems(siSo).map(it=>{const qq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);if(!qq)return null;const aq2={};safeItems(siSo).forEach(sit=>{const sq2=Object.values(safeSizes(sit)).reduce((a2,v2)=>a2+safeNum(v2),0);safeDecos(sit).forEach(d2=>{if(d2.kind==='art'&&d2.art_file_id){aq2[d2.art_file_id]=(aq2[d2.art_file_id]||0)+sq2}})});const ds=safeDecos(it).reduce((a,d)=>{const cq=d.kind==='art'&&d.art_file_id?aq2[d.art_file_id]:qq;return a+dP(d,qq,safeArt(siSo),cq).sell},0);return{desc:it.sku+' '+it.name+(it.color?' — '+it.color:''),qty:qq,rate:safeNum(it.unit_sell)+ds,amount:qq*(safeNum(it.unit_sell)+ds)}}).filter(Boolean):[]);
+                // Build PDF attachment
+                const brevoAttachments=[];
+                try{
+                  const docHtml=buildDocHtml({title:siBillName,docNum:siInv.id,docType:'INVOICE',
+                    headerRight:'<div class="ta">$'+siInv.total.toLocaleString()+'</div><div class="ts">Balance Due: <strong>$'+siBal.toLocaleString()+'</strong></div>'+(siPoNum?'<div style="font-size:11px;margin-top:4px;font-family:monospace;font-weight:700;color:#1e40af">PO# '+siPoNum+'</div>':''),
+                    infoBoxes:[{label:'Bill To',value:siBillName},{label:'Invoice Date',value:siInv.date||'—',sub:siInv.due_date?'Due: '+siInv.due_date:''},{label:'Sales Order',value:siInv.so_id||'—',sub:siInv.memo||''},{label:'Payment Terms',value:siInv.inv_type==='deposit'?(siInv.deposit_pct||50)+'% Deposit':'Final Invoice',sub:'Rep: '+(siRepObj?.name||'—')}],
+                    tables:[{headers:['Description','Qty','Rate','Amount'],aligns:['left','center','right','right'],rows:[
+                      ...siLi.map(li=>({cells:[li.desc,li.qty,'$'+safeNum(li.rate).toFixed(2),'$'+safeNum(li.amount).toFixed(2)]})),
+                      ...(siShip>0?[{cells:[{value:'Shipping',style:'font-style:italic'},'','','$'+siShip.toFixed(2)]}]:[]),
+                      ...(siTax>0?[{cells:[{value:'Tax',style:'font-style:italic'},'','','$'+siTax.toFixed(2)]}]:[]),
+                      {_class:'totals-row',cells:['','','Total','$'+siInv.total.toLocaleString()]},
+                      ...(siInv.paid>0?[{cells:['','',{value:'Paid',style:'color:#166534'},'$'+siInv.paid.toLocaleString()]}]:[]),
+                      ...(siBal>0?[{_style:'background:#fef2f2',cells:['','',{value:'<strong>Balance Due</strong>',style:'color:#dc2626'},'<strong style="color:#dc2626;font-size:14px">$'+siBal.toLocaleString()+'</strong>']}]:[])
+                    ]}],footer:siInv.inv_type==='deposit'?NSA.depositTerms:NSA.terms});
+                  const styleMatch=docHtml.match(/<style>([\s\S]*?)<\/style>/);const bodyMatch=docHtml.match(/<body>([\s\S]*?)<\/body>/);
+                  const pdfFixCss='.header{display:table!important;width:100%!important;table-layout:fixed}.header>*{display:table-cell!important;vertical-align:top!important}.logo{width:55%!important}.logo img{height:50px;vertical-align:middle;margin-right:8px;float:left}.doc-id{width:45%!important;text-align:right!important}.bill-total{display:table!important;width:100%!important;table-layout:fixed}.bill-total>*{display:table-cell!important;vertical-align:top!important}.total-box{width:200px!important;text-align:left!important}.info-row{display:table!important;width:100%!important;table-layout:fixed}.info-cell{display:table-cell!important;vertical-align:top!important}.footer{display:table!important;width:100%!important}.footer>*{display:table-cell!important}.footer>*:last-child{text-align:right!important}';
+                  const container=document.createElement('div');container.style.cssText='position:absolute;left:-9999px;top:0;width:800px;background:white;font-family:Segoe UI,Helvetica,Arial,sans-serif;font-size:11px;color:#1a1a1a;padding:20px 28px;line-height:1.4';
+                  const styleEl=document.createElement('style');styleEl.textContent=(styleMatch?styleMatch[1]:'')+pdfFixCss;container.appendChild(styleEl);
+                  const bodyDiv=document.createElement('div');bodyDiv.innerHTML=bodyMatch?bodyMatch[1]:docHtml;container.appendChild(bodyDiv);
+                  document.body.appendChild(container);await new Promise(r=>setTimeout(r,500));
+                  const pdfBlob=await html2pdf().set({margin:[0.4,0.4,0.4,0.4],filename:siInv.id+'.pdf',image:{type:'jpeg',quality:0.98},html2canvas:{scale:2,useCORS:true,logging:false,backgroundColor:'#ffffff'},jsPDF:{unit:'in',format:'letter',orientation:'portrait'}}).from(bodyDiv).outputPdf('blob');
+                  document.body.removeChild(container);
+                  const pdfB64=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result.split(',')[1]);reader.onerror=reject;reader.readAsDataURL(pdfBlob)});
+                  brevoAttachments.push({name:siInv.id+'.pdf',content:pdfB64});
+                }catch(err){console.warn('Failed to build invoice PDF:',err)}
+                // Build email with portal link
+                const portalUrl=siCust?.alpha_tag?'https://nsa-portal.netlify.app/?portal='+siCust.alpha_tag:'';
+                const emailHtml='<div style="font-family:sans-serif;font-size:14px;line-height:1.6">'+si.msg.replace(/\n/g,'<br>')
+                  +(portalUrl?'<br/><br/><a href="'+portalUrl+'" style="display:inline-block;padding:10px 20px;background:#2563eb;color:white;text-decoration:none;border-radius:6px;font-weight:600">View Invoice in Portal</a>':'')
+                  +'</div>';
+                const res=await sendBrevoEmail({to:[{email:toEmail,name:toEmail}],subject:'Invoice '+siInv.id+' — $'+siInv.total.toFixed(2)+' from National Sports Apparel',
+                  htmlContent:emailHtml,senderName:cu.name||'National Sports Apparel',senderEmail:'noreply@nationalsportsapparel.com',replyTo:cu?.email?{email:cu.email,name:cu.name}:undefined,
+                  attachment:brevoAttachments.length>0?brevoAttachments:undefined});
+                if(res.ok){nf('Invoice '+siInv.id+' sent to '+toEmail)}else{nf('Failed to send: '+(res.error||'Unknown error'),'error')}
                 // Send SMS if enabled
                 if(si.smsEnabled&&si.smsPhone&&_brevoKey){
-                  const smsRes=await sendBrevoSms({to:si.smsPhone,content:(si.smsMsg||'').substring(0,160),sender:'NSA'});
-                  if(smsRes.ok){nf('Text sent to '+si.smsPhone)}else{console.warn('SMS failed:',smsRes.error)}
+                  const smsRes=await sendBrevoSms({to:si.smsPhone,content:(si.smsMsg||'').substring(0,160)});
+                  if(smsRes.ok){nf('Text sent to '+si.smsPhone)}else{nf('SMS failed: '+(smsRes.error||'Unknown'),'error')}
                 }
-                setInvs(prev=>prev.map(i=>i.id===si.inv.id?{...i,email_status:'sent',email_sent_at:new Date().toLocaleString()}:i));
+                const fuAt=si.followUpDays?new Date(Date.now()+si.followUpDays*86400000).toISOString():null;
+                const histEntry={sent_at:new Date().toISOString(),sent_by:cu.name||cu.id,type:'invoice',methods:['email',...(si.smsEnabled?['sms']:[])],to:toEmail};
+                setInvs(prev=>prev.map(i=>i.id===si.inv.id?{...i,email_status:'sent',email_sent_at:new Date().toLocaleString(),follow_up_at:fuAt,sent_history:[...(i.sent_history||[]),histEntry]}:i));
               }}>Send Invoice</button>
             </div>
           </div></div>})()}
@@ -15099,7 +15366,7 @@ export default function App(){
       {/* Report controls */}
       <div style={{display:'flex',gap:8,marginBottom:12,alignItems:'center',flexWrap:'wrap'}}>
         <div style={{display:'flex',gap:4}}>
-          {[['overview','📊 Overview'],['pipeline','💰 Pipeline'],['customers','👥 Customers'],['products','📦 Products'],['reps','🏆 Reps'],['production','🏭 Production'],['time','⏱️ Time & Labor'],['sales_tax','🧾 Sales Tax'],['csr_tasks','📌 CSR Tasks']].map(([v,l])=>
+          {[['overview','📊 Overview'],['pipeline','💰 Pipeline'],['customers','👥 Customers'],['products','📦 Products'],['reps','🏆 Reps'],['production','🏭 Production'],['decorator','👤 Decorator'],['time','⏱️ Time & Labor'],['sales_tax','🧾 Sales Tax'],['csr_tasks','📌 CSR Tasks']].map(([v,l])=>
             <button key={v} className={`btn btn-sm ${rptTab===v?'btn-primary':'btn-secondary'}`} onClick={()=>setRptTab(v)}>{l}</button>)}
         </div>
         <select className="form-select" style={{width:140,fontSize:11}} value={rptRep} onChange={e=>setRptRep(e.target.value)}>
@@ -15459,6 +15726,117 @@ export default function App(){
             </div>})()}
         </div>
       </>}
+
+      {/* ═══ DECORATOR TAB ═══ */}
+      {(rptTab==='decorator')&&(()=>{
+        const isAdminRpt=cu?.role==='admin'||cu?.role==='prod_manager'||cu?.role==='gm';
+        const isDecoratorRpt=cu?.role==='production'||cu?.role==='prod_assistant';
+        const allDecorators=REPS.filter(r=>r.role==='production').filter(r=>r.is_active!==false);
+        const{decoTasks}=buildWarehouseData();
+        // Completed jobs
+        const completedDecoJobs=[];
+        sos.filter(so=>{const st=calcSOStatus(so);return st!=='complete'&&st!=='booking'}).forEach(so=>{
+          const c=cust.find(x=>x.id===so.customer_id);const cName=c?.name||'Unknown';
+          const rep=REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name?.split(' ')[0]||'—';
+          const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
+          safeJobs(so).filter(j=>j.prod_status==='completed').forEach(j=>{
+            completedDecoJobs.push({so,soId:so.id,job:j,cName,rep,daysOut,
+              artName:j.art_name,decoType:j.deco_type,totalUnits:j.total_units,fulfilledUnits:j.fulfilled_units,
+              prodStatus:j.prod_status,machine:MACHINES.find(m=>m.id===j.assigned_machine)?.name,assignedTo:j.assigned_to});
+          });
+        });
+        const personFilter=isDecoratorRpt?cu?.name:(decoPersonF!=='all'?decoPersonF:'all');
+        const myCompleted=personFilter==='all'?completedDecoJobs:completedDecoJobs.filter(t=>t.assignedTo===personFilter);
+        const myLogs=personFilter==='all'?jobTimeLogs:jobTimeLogs.filter(l=>l.person===personFilter);
+        const totalMins=myLogs.reduce((a,l)=>a+(l.minutes||0),0);
+        const totalUnitsCompleted=myCompleted.reduce((a,t)=>a+t.totalUnits,0);
+        // Items per day — group logs by date
+        const logsByDate={};myLogs.forEach(l=>{const d=l.clockOut?.split(',')[0]||'Unknown';if(!logsByDate[d])logsByDate[d]={mins:0,jobs:0};logsByDate[d].mins+=l.minutes;logsByDate[d].jobs++});
+        // Workload per decorator (admin only)
+        const workloadData=isAdminRpt?allDecorators.map(d=>{
+          const dJobs=decoTasks.filter(t=>t.assignedTo===d.name&&t.prodStatus!=='completed'&&t.prodStatus!=='shipped');
+          const dUnits=dJobs.reduce((a,t)=>a+t.totalUnits,0);
+          const readyN=dJobs.filter(t=>t.isReady).length;
+          const inProcN=dJobs.filter(t=>t.prodStatus==='in_process').length;
+          const dCompleted=completedDecoJobs.filter(t=>t.assignedTo===d.name);
+          const dLogs=jobTimeLogs.filter(l=>l.person===d.name);
+          const dMins=dLogs.reduce((a,l)=>a+(l.minutes||0),0);
+          return{name:d.name,id:d.id,jobs:dJobs.length,units:dUnits,ready:readyN,inProcess:inProcN,completed:dCompleted.length,completedUnits:dCompleted.reduce((a,t)=>a+t.totalUnits,0),totalMins:dMins};
+        }):[];
+        const unassigned=isAdminRpt?decoTasks.filter(t=>!t.assignedTo&&t.prodStatus!=='completed'&&t.prodStatus!=='shipped'):[];
+        return<>
+          {/* Admin: decorator filter */}
+          {isAdminRpt&&<div style={{marginBottom:12}}>
+            <select className="form-select" style={{width:180,fontSize:11}} value={decoPersonF} onChange={e=>setDecoPersonF(e.target.value)}>
+              <option value="all">All Decorators</option>{allDecorators.map(d=><option key={d.id} value={d.name}>{d.name}</option>)}
+            </select>
+          </div>}
+          {/* KPI */}
+          <div className="stats-row" style={{marginBottom:16}}>
+            <div className="stat-card"><div className="stat-label">Completed Jobs</div><div className="stat-value" style={{color:'#166534'}}>{myCompleted.length}</div></div>
+            <div className="stat-card"><div className="stat-label">Units Completed</div><div className="stat-value" style={{color:'#1e40af'}}>{totalUnitsCompleted}</div></div>
+            <div className="stat-card"><div className="stat-label">Time Logged</div><div className="stat-value" style={{color:'#7c3aed'}}>{(totalMins/60).toFixed(1)}h</div></div>
+            <div className="stat-card"><div className="stat-label">Units/Hour</div><div className="stat-value" style={{color:'#d97706'}}>{totalMins>0?(totalUnitsCompleted/(totalMins/60)).toFixed(1):'—'}</div></div>
+          </div>
+          {/* Admin: Workload per Decorator */}
+          {isAdminRpt&&<div className="card" style={{marginBottom:12,borderLeft:'3px solid #7c3aed'}}>
+            <div className="card-header"><h2>👤 Decorator Workload (Units)</h2></div>
+            <div className="card-body" style={{padding:0}}>
+              <table style={{fontSize:12,width:'100%'}}><thead><tr>
+                <th>Decorator</th><th style={{textAlign:'center'}}>Active Jobs</th><th style={{textAlign:'center'}}>Active Units</th><th style={{textAlign:'center'}}>Ready</th><th style={{textAlign:'center'}}>In Process</th><th style={{textAlign:'center'}}>Completed</th><th style={{textAlign:'center'}}>Comp. Units</th><th style={{textAlign:'right'}}>Hours</th>
+              </tr></thead><tbody>
+                {workloadData.map(d=><tr key={d.id}>
+                  <td style={{fontWeight:700,color:'#6d28d9'}}>{d.name}</td>
+                  <td style={{textAlign:'center',fontWeight:700}}>{d.jobs}</td>
+                  <td style={{textAlign:'center',fontWeight:700,color:'#1e40af'}}>{d.units}</td>
+                  <td style={{textAlign:'center'}}><span style={{padding:'1px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:'#dcfce7',color:'#166534'}}>{d.ready}</span></td>
+                  <td style={{textAlign:'center'}}><span style={{padding:'1px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:'#dbeafe',color:'#1e40af'}}>{d.inProcess}</span></td>
+                  <td style={{textAlign:'center',fontWeight:600,color:'#166534'}}>{d.completed}</td>
+                  <td style={{textAlign:'center',fontWeight:700}}>{d.completedUnits}</td>
+                  <td style={{textAlign:'right',color:'#7c3aed',fontWeight:600}}>{(d.totalMins/60).toFixed(1)}</td>
+                </tr>)}
+                {unassigned.length>0&&<tr style={{background:'#fef2f2'}}>
+                  <td style={{fontWeight:700,color:'#dc2626'}}>Unassigned</td>
+                  <td style={{textAlign:'center',fontWeight:700}}>{unassigned.length}</td>
+                  <td style={{textAlign:'center',fontWeight:700,color:'#dc2626'}}>{unassigned.reduce((a,t)=>a+t.totalUnits,0)}</td>
+                  <td colSpan="5" style={{textAlign:'center',color:'#dc2626',fontSize:10}}>Needs assignment</td>
+                </tr>}
+              </tbody></table>
+            </div>
+          </div>}
+          {/* Time Logs by Day */}
+          {Object.keys(logsByDate).length>0&&<div className="card" style={{marginBottom:12}}>
+            <div className="card-header"><h2>⏱️ Time Logs by Day</h2></div>
+            <div className="card-body" style={{padding:0}}>
+              <table style={{fontSize:12,width:'100%'}}><thead><tr><th>Date</th><th style={{textAlign:'center'}}>Sessions</th><th style={{textAlign:'right'}}>Hours</th></tr></thead>
+              <tbody>{Object.entries(logsByDate).reverse().slice(0,14).map(([d,v])=>
+                <tr key={d}><td style={{fontWeight:600}}>{d}</td><td style={{textAlign:'center'}}>{v.jobs}</td><td style={{textAlign:'right',fontWeight:700,color:'#7c3aed'}}>{(v.mins/60).toFixed(1)}</td></tr>
+              )}</tbody></table>
+            </div>
+          </div>}
+          {/* Completed Jobs History */}
+          <div className="card" style={{marginBottom:12,borderLeft:'3px solid #166534'}}>
+            <div className="card-header" style={{background:'#f0fdf4'}}><h2 style={{color:'#166534'}}>{isDecoratorRpt?'My':''}Completed Jobs ({myCompleted.length})</h2></div>
+            <div className="card-body" style={{padding:0,maxHeight:500,overflow:'auto'}}>
+              {myCompleted.length===0?<div className="empty" style={{padding:20}}>No completed jobs yet</div>:
+              <table style={{fontSize:12,width:'100%'}}><thead><tr><th>Customer</th><th>SO</th><th>Art</th><th>Type</th>{isAdminRpt&&<th>Decorator</th>}<th style={{textAlign:'center'}}>Units</th><th>Machine</th></tr></thead>
+              <tbody>{myCompleted.map((t,ti)=>
+                <tr key={ti} style={{cursor:'pointer'}} onClick={()=>{setProdJobModal({...t.job,so:t.so,soId:t.soId,customer:t.cName,rep:t.rep,daysOut:t.daysOut})}}>
+                  <td style={{fontWeight:700}}>{t.cName}</td>
+                  <td style={{fontSize:11,color:'#64748b'}}>{t.soId}</td>
+                  <td style={{fontWeight:600,color:'#7c3aed'}}>{t.artName}</td>
+                  <td><span style={{padding:'1px 5px',borderRadius:3,fontSize:9,fontWeight:600,
+                    background:t.decoType==='embroidery'?'#f3e8ff':t.decoType==='screen_print'?'#dbeafe':'#fef3c7',
+                    color:t.decoType==='embroidery'?'#6b21a8':t.decoType==='screen_print'?'#1e40af':'#92400e'}}>
+                    {t.decoType?.replace(/_/g,' ')}</span></td>
+                  {isAdminRpt&&<td style={{fontSize:11,color:'#6d28d9',fontWeight:600}}>{t.assignedTo||'—'}</td>}
+                  <td style={{textAlign:'center',fontWeight:700}}>{t.fulfilledUnits}/{t.totalUnits}</td>
+                  <td style={{fontSize:11,color:'#64748b'}}>{t.machine||'—'}</td>
+                </tr>
+              )}</tbody></table>}
+            </div>
+          </div>
+        </>})()}
 
       {/* ═══ TIME & LABOR TAB ═══ */}
       {(rptTab==='time')&&<>
@@ -19754,7 +20132,7 @@ export default function App(){
 
       if(rawItem.toUpperCase()==='ITEM'||desc.toUpperCase()==='DESCRIPTION')return;
       if(rawItem.toLowerCase().includes('shipping')||desc.toLowerCase().includes('shipping')){shipping.push({desc,amount,rate});return}
-      if(/^(screen\s*print|embroid|dtf|heat\s*trans|vinyl|sublim)/i.test(desc)||rawItem.toLowerCase().includes('screen')||rawItem.toLowerCase().includes('embroid')){
+      if(/^(screen\s*print|embroid|dtf|heat\s*trans|vinyl|sublim)/i.test(desc)||rawItem.toLowerCase().includes('screen')||rawItem.toLowerCase().includes('embroid')||/^emb[-\s]/i.test(rawItem)){
         decoLines.push({rawItem,desc,qty,rate,amount,poRef,_assignTo:'all'});return}
 
       const skuParts=rawItem.split(/\s*:\s*/);let itemCode=skuParts[0]||rawItem;
@@ -22163,6 +22541,42 @@ export default function App(){
       setQbSyncing(false);
     };
 
+    // ── SYNC: Pull paid status FROM QB back to portal ──
+    const syncPaidFromQB=async()=>{
+      setQbSyncing(true);
+      const log={ts:new Date().toLocaleString(),type:'paid_sync',status:'success',details:[]};
+      let updated=0;
+      const linkedInvs=invs.filter(i=>i.qb_invoice_id&&i.status!=='paid');
+      if(linkedInvs.length===0){log.details.push('No open QB-linked invoices to check');setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));nf('No open invoices to sync');setQbSyncing(false);return}
+      try{
+        // Query QB for all invoices and their balance
+        const qbIds=linkedInvs.map(i=>i.qb_invoice_id);
+        const res=await qbApi('query',{query:"SELECT Id, DocNumber, Balance, TotalAmt FROM Invoice WHERE Id IN ('"+qbIds.join("','")+"')"});
+        const qbInvList=res?.QueryResponse?.Invoice||[];
+        const qbMap={};qbInvList.forEach(qi=>{qbMap[qi.Id]=qi});
+        for(const inv of linkedInvs){
+          const qbInv=qbMap[inv.qb_invoice_id];
+          if(!qbInv){log.details.push((inv.display_id||inv.id)+' — not found in QB');continue}
+          const qbBalance=safeNum(qbInv.Balance);
+          const qbTotal=safeNum(qbInv.TotalAmt);
+          const qbPaid=qbTotal-qbBalance;
+          const portalPaid=safeNum(inv.paid);
+          if(qbPaid>portalPaid){
+            const newStatus=qbBalance<=0?'paid':qbPaid>0?'partial':'open';
+            const pmt={amount:rQ(qbPaid-portalPaid),method:'qb_sync',ref:'QB Payment Sync',date:new Date().toLocaleDateString()};
+            setInvs(prev=>prev.map(ii=>ii.id===inv.id?{...ii,paid:rQ(qbPaid),status:newStatus,payments:[...(ii.payments||[]),pmt]}:ii));
+            log.details.push((inv.display_id||inv.id)+' — marked '+newStatus+' (QB paid $'+qbPaid.toFixed(2)+')');updated++;
+          }else{
+            log.details.push((inv.display_id||inv.id)+' — already up to date');
+          }
+        }
+      }catch(e){log.status='error';log.details.push('QB query failed: '+e.message)}
+      log.details.unshift(updated+'/'+linkedInvs.length+' invoices updated from QB');
+      setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
+      nf(updated+' invoices updated from QB');
+      setQbSyncing(false);
+    };
+
     // ── SYNC: Inventory (totals per product as non-inventory items) ──
     const syncInventory=async()=>{
       setQbSyncing(true);
@@ -22489,6 +22903,7 @@ export default function App(){
       const prodQBMap=await syncInventory();
       await syncSalesOrders(custQBMap,prodQBMap);
       await syncInvoices(custQBMap,prodQBMap);
+      await syncPaidFromQB();
       await syncPurchaseOrders();
       setQbSyncing(false);
     };
@@ -22649,6 +23064,7 @@ export default function App(){
                 <button className="btn btn-secondary" disabled={qbSyncing} onClick={syncCustomers}>Customers</button>
                 <button className="btn btn-secondary" disabled={qbSyncing} onClick={syncSalesOrders}>Sales Orders</button>
                 <button className="btn btn-secondary" disabled={qbSyncing} onClick={syncInvoices}>Invoices</button>
+                <button className="btn btn-secondary" disabled={qbSyncing} onClick={syncPaidFromQB}>Paid from QB</button>
                 <button className="btn btn-secondary" disabled={qbSyncing} onClick={syncPurchaseOrders}>POs</button>
                 <button className="btn btn-secondary" disabled={qbSyncing} onClick={syncInventory}>Inventory</button>
               </div>
@@ -22659,7 +23075,7 @@ export default function App(){
             <div className="card-body" style={{fontSize:12,color:'#475569'}}>
               <div style={{marginBottom:4}}>&#8226; <strong>Customers</strong> — name, contact, address, order totals in notes</div>
               <div style={{marginBottom:4}}>&#8226; <strong>Sales Orders</strong> — line items + decoration as QB Estimates</div>
-              <div style={{marginBottom:4}}>&#8226; <strong>Invoices</strong> — invoice total as single line item, payments applied</div>
+              <div style={{marginBottom:4}}>&#8226; <strong>Invoices</strong> — invoice total as single line item, payments applied; paid status syncs back from QB</div>
               <div style={{marginBottom:4}}>&#8226; <strong>Purchase Orders</strong> — blank goods + outside deco POs to vendors</div>
               <div style={{marginBottom:4}}>&#8226; <strong>Bills</strong> — upload vendor bills (PDF/image) directly to QB with amounts</div>
               <div>&#8226; <strong>Inventory</strong> — product totals (qty + cost value) as non-inventory items</div>
@@ -22778,7 +23194,10 @@ export default function App(){
         <div className="card" style={{marginBottom:16}}>
           <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
             <h2>Invoice Sync ({unsyncedInvs.length} pending)</h2>
-            <button className="btn btn-primary btn-sm" disabled={qbSyncing} onClick={syncInvoices}>{qbSyncing?'Syncing...':'Sync Invoices'}</button>
+            <div style={{display:'flex',gap:6}}>
+              <button className="btn btn-primary btn-sm" disabled={qbSyncing} onClick={syncPaidFromQB}>{qbSyncing?'Syncing...':'Sync Paid from QB'}</button>
+              <button className="btn btn-secondary btn-sm" disabled={qbSyncing} onClick={syncInvoices}>{qbSyncing?'Syncing...':'Push Invoices to QB'}</button>
+            </div>
           </div>
           <div className="card-body" style={{padding:0,maxHeight:500,overflow:'auto'}}>
             <table style={{fontSize:11}}>
@@ -22999,7 +23418,6 @@ export default function App(){
       {id:'jobs',label:'Jobs'},
       {id:'art',label:'Art Dashboard'},
       {id:'production',label:'Production Board'},
-      {id:'decoration',label:'Decoration'},
       {id:'warehouse',label:'Warehouse'},
       {id:'batch_pos',label:'Batch POs'},
       {id:'customers',label:'Customers'},
@@ -23019,11 +23437,11 @@ export default function App(){
       rep:['dashboard','estimates','orders','invoices','omg','customers','messages','commissions','reports','products','art'],
       csr:['dashboard','estimates','orders','invoices','customers','messages','products','inventory'],
       accounting:['dashboard','invoices','customers','reports','qb'],
-      warehouse:['dashboard','orders','warehouse','batch_pos','inventory','production','decoration'],
-      prod_manager:['dashboard','orders','jobs','art','production','decoration','warehouse','inventory','batch_pos'],
-      prod_assistant:['dashboard','orders','jobs','production','decoration','warehouse','inventory'],
-      production:['dashboard','orders','jobs','art','production','decoration','warehouse','inventory'],
-      artist:['dashboard','orders','art','jobs','production','decoration'],
+      warehouse:['dashboard','orders','warehouse','batch_pos','inventory','production'],
+      prod_manager:['dashboard','orders','jobs','art','production','warehouse','inventory','batch_pos','reports'],
+      prod_assistant:['dashboard','orders','jobs','production','warehouse','inventory','reports'],
+      production:['dashboard','orders','jobs','art','production','warehouse','inventory','reports'],
+      artist:['dashboard','orders','art','jobs','production'],
     };
 
     const activeReps=REPS.filter(r=>r.is_active!==false);
@@ -23230,11 +23648,60 @@ export default function App(){
       if(key==='CATEGORIES')CATEGORIES=val;if(key==='POSITIONS')POSITIONS=val;if(key==='CONTACT_ROLES')CONTACT_ROLES=val;
       nf('Settings saved')}catch{nf('Error saving','warn')}};
   function rSettings(){
-    const tabs=[['pricing','Decoration Pricing'],['tiers','Customer Tiers'],['lists','Lists & Options'],['terms','Terms & Policies'],['labor','Labor Rates'],['portal','Coach Portal'],['taxcloud','TaxCloud']];
+    const tabs=[['company','Company Info'],['pricing','Decoration Pricing'],['tiers','Customer Tiers'],['lists','Lists & Options'],['terms','Terms & Policies'],['labor','Labor Rates'],['portal','Coach Portal'],['taxcloud','TaxCloud']];
     return(<>
       <div style={{display:'flex',gap:4,marginBottom:16,flexWrap:'wrap'}}>
         {tabs.map(([k,label])=><button key={k} className={`btn btn-sm ${settingsTab===k?'btn-primary':'btn-secondary'}`} onClick={()=>setSettingsTab(k)}>{label}</button>)}
       </div>
+
+      {/* COMPANY INFO */}
+      {settingsTab==='company'&&<>
+        <div className="card" style={{marginBottom:16}}>
+          <div className="card-header"><h3>Company Information</h3></div>
+          <div className="card-body">
+            <div style={{fontSize:12,color:'#64748b',marginBottom:16}}>Update your company details below. Changes will apply to all PDFs (estimates, invoices, sales orders, purchase orders), the online coach portal, email footers, and shipping labels.</div>
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,maxWidth:700}}>
+              <div><label className="form-label">Company Name</label><input className="form-input" value={companyInfo.name} onChange={e=>setCompanyInfo(prev=>({...prev,name:e.target.value}))}/></div>
+              <div><label className="form-label">Legal Name</label><input className="form-input" value={companyInfo.legal} onChange={e=>setCompanyInfo(prev=>({...prev,legal:e.target.value}))}/></div>
+              <div><label className="form-label">Phone</label><input className="form-input" value={companyInfo.phone} onChange={e=>setCompanyInfo(prev=>({...prev,phone:e.target.value}))}/></div>
+              <div><label className="form-label">Email</label><input className="form-input" value={companyInfo.email} onChange={e=>setCompanyInfo(prev=>({...prev,email:e.target.value}))}/></div>
+              <div style={{gridColumn:'1/-1'}}><label className="form-label">Street Address</label><input className="form-input" value={companyInfo.addr} onChange={e=>setCompanyInfo(prev=>({...prev,addr:e.target.value}))}/></div>
+              <div><label className="form-label">City</label><input className="form-input" value={companyInfo.city} onChange={e=>setCompanyInfo(prev=>({...prev,city:e.target.value}))}/></div>
+              <div style={{display:'flex',gap:12}}>
+                <div style={{flex:1}}><label className="form-label">State</label><input className="form-input" value={companyInfo.state} onChange={e=>setCompanyInfo(prev=>({...prev,state:e.target.value}))}/></div>
+                <div style={{flex:1}}><label className="form-label">ZIP</label><input className="form-input" value={companyInfo.zip} onChange={e=>setCompanyInfo(prev=>({...prev,zip:e.target.value}))}/></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div className="card" style={{marginBottom:16}}>
+          <div className="card-header"><h3>Logo</h3></div>
+          <div className="card-body">
+            <div style={{fontSize:12,color:'#64748b',marginBottom:12}}>Enter a URL for your company logo. This logo appears on all printed documents (estimates, invoices, POs) and the online coach portal.</div>
+            <div style={{display:'flex',gap:16,alignItems:'flex-start',maxWidth:700}}>
+              <div style={{flex:1}}>
+                <label className="form-label">Logo URL</label>
+                <input className="form-input" value={companyInfo.logoUrl} placeholder="/nsa-logo.svg or https://..." onChange={e=>setCompanyInfo(prev=>({...prev,logoUrl:e.target.value}))}/>
+                <div style={{fontSize:10,color:'#94a3b8',marginTop:4}}>Use a path like /logo.svg for files in your public folder, or a full URL (https://...) for external images.</div>
+              </div>
+              {companyInfo.logoUrl&&<div style={{border:'1px solid #e2e8f0',borderRadius:8,padding:12,background:'#f8fafc',textAlign:'center',minWidth:120}}>
+                <div style={{fontSize:10,color:'#94a3b8',marginBottom:6}}>Preview</div>
+                <img src={companyInfo.logoUrl} alt="Logo preview" style={{maxHeight:60,maxWidth:160}} onError={e=>{e.target.style.display='none'}} onLoad={e=>{e.target.style.display='inline'}}/>
+              </div>}
+            </div>
+          </div>
+        </div>
+        <div className="card" style={{marginBottom:16}}>
+          <div className="card-header"><h3>Default Terms</h3></div>
+          <div className="card-body">
+            <div style={{maxWidth:700}}>
+              <div style={{marginBottom:12}}><label className="form-label">Invoice / SO Terms</label><textarea className="form-input" rows={2} value={companyInfo.terms} onChange={e=>setCompanyInfo(prev=>({...prev,terms:e.target.value}))}/></div>
+              <div><label className="form-label">Deposit Terms</label><textarea className="form-input" rows={2} value={companyInfo.depositTerms} onChange={e=>setCompanyInfo(prev=>({...prev,depositTerms:e.target.value}))}/></div>
+            </div>
+          </div>
+        </div>
+        <button className="btn btn-secondary btn-sm" onClick={()=>{if(window.confirm('Reset all company info to defaults?')){setCompanyInfo({...NSA_DEFAULTS});nf('Company info reset to defaults')}}}>Reset to Defaults</button>
+      </>}
 
       {/* DECORATION PRICING */}
       {settingsTab==='pricing'&&<>
@@ -23398,9 +23865,19 @@ export default function App(){
       {settingsTab==='portal'&&<>
         <div className="card" style={{marginBottom:16}}><div className="card-header"><h3>Coach Portal Settings</h3></div><div className="card-body">
           <div style={{marginBottom:16}}>
-            <label className="form-label">Follow-up Reminder (days)</label>
-            <div style={{fontSize:11,color:'#64748b',marginBottom:4}}>After this many days waiting for coach approval, a follow-up todo will appear on your dashboard.</div>
-            <input className="form-input" type="number" min="1" max="30" style={{width:80}} value={portalSettings.followUpDays||3} onChange={e=>{const v=parseInt(e.target.value)||3;setPortalSettings(p=>({...p,followUpDays:v}))}}/>
+            <label className="form-label">Art Approval Follow-up (days)</label>
+            <div style={{fontSize:11,color:'#64748b',marginBottom:4}}>Default days before a follow-up todo appears for art approvals sent to coaches.</div>
+            <input className="form-input" type="number" min="1" max="60" style={{width:80}} value={portalSettings.followUpDays||7} onChange={e=>{const v=parseInt(e.target.value)||7;setPortalSettings(p=>({...p,followUpDays:v}))}}/>
+          </div>
+          <div style={{marginBottom:16}}>
+            <label className="form-label">Estimate Follow-up (days)</label>
+            <div style={{fontSize:11,color:'#64748b',marginBottom:4}}>Default days before a follow-up todo appears for sent estimates.</div>
+            <input className="form-input" type="number" min="1" max="60" style={{width:80}} value={portalSettings.estFollowUpDays||7} onChange={e=>{const v=parseInt(e.target.value)||7;setPortalSettings(p=>({...p,estFollowUpDays:v}))}}/>
+          </div>
+          <div style={{marginBottom:16}}>
+            <label className="form-label">Invoice Follow-up (days)</label>
+            <div style={{fontSize:11,color:'#64748b',marginBottom:4}}>Default days before a follow-up todo appears for sent invoices.</div>
+            <input className="form-input" type="number" min="1" max="60" style={{width:80}} value={portalSettings.invFollowUpDays||7} onChange={e=>{const v=parseInt(e.target.value)||7;setPortalSettings(p=>({...p,invFollowUpDays:v}))}}/>
           </div>
           <div style={{marginBottom:16}}>
             <label className="form-label">Approval Disclaimer Message</label>
@@ -23508,8 +23985,8 @@ export default function App(){
     </>)};
 
     // NAV
-  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'messages',label:'Messages',icon:'mail'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'art',label:'Art Dashboard',icon:'image'},{id:'production',label:'Prod Board',icon:'package'},{id:'decoration',label:'Decoration',icon:'image'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'purchase_orders',label:'Purchase Orders',icon:'cart'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{id:'team',label:'Team',icon:'users'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'Analytics'},{id:'reports',label:'Reports',icon:'dollar'},{id:'commissions',label:'Commissions',icon:'dollar',roles:['admin','rep']},{section:'System'},{id:'issues',label:'Issues',icon:'alert'},{id:'import',label:'Import / Upload',icon:'upload'},{id:'qb',label:'QuickBooks Sync',icon:'dollar'},{id:'backup',label:'Backup & Data',icon:'save'},{id:'settings',label:'Settings',icon:'grid',roles:['admin']}];
-  const titles={dashboard:'Dashboard',reports:'Reports & Analytics',commissions:'Commissions',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',omg:'OMG Team Stores',jobs:'Jobs',art:'Art Dashboard',production:'Production Board',decoration:'Decoration',warehouse:'Warehouse',purchase_orders:'Purchase Orders',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',team:'Team Directory',products:'Products',inventory:'Inventory',messages:'Messages',issues:'Issues',import:'Import / Upload',qb:'QuickBooks Online',backup:'Backup & Data',settings:'Settings'};
+  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'messages',label:'Messages',icon:'mail'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'art',label:'Art Dashboard',icon:'image'},{id:'production',label:'Prod Board',icon:'package'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'purchase_orders',label:'Purchase Orders',icon:'cart'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{id:'team',label:'Team',icon:'users'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'Analytics'},{id:'reports',label:'Reports',icon:'dollar'},{id:'commissions',label:'Commissions',icon:'dollar',roles:['admin','rep']},{section:'System'},{id:'issues',label:'Issues',icon:'alert'},{id:'import',label:'Import / Upload',icon:'upload'},{id:'qb',label:'QuickBooks Sync',icon:'dollar'},{id:'backup',label:'Backup & Data',icon:'save'},{id:'settings',label:'Settings',icon:'grid',roles:['admin']}];
+  const titles={dashboard:'Dashboard',reports:'Reports & Analytics',commissions:'Commissions',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',omg:'OMG Team Stores',jobs:'Jobs',art:'Art Dashboard',production:'Production Board',warehouse:'Warehouse',purchase_orders:'Purchase Orders',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',team:'Team Directory',products:'Products',inventory:'Inventory',messages:'Messages',issues:'Issues',import:'Import / Upload',qb:'QuickBooks Online',backup:'Backup & Data',settings:'Settings'};
   // ─── SCAN RESULT HANDLER ───
   function handleScanResult(val){
     if(!val)return;
@@ -23699,7 +24176,28 @@ export default function App(){
         <span style={{fontSize:16}}>&#9888;</span><span style={{flex:1}}>{dbError}</span>
         <button onClick={()=>setDbError(null)} style={{background:'none',border:'none',color:'#991b1b',cursor:'pointer',fontWeight:800,fontSize:14}}>&#215;</button>
       </div>}
-      <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='art'&&rArtist()}{pg==='production'&&rProd2()}{pg==='decoration'&&rDeco()}{pg==='warehouse'&&rWarehouse()}{pg==='purchase_orders'&&rPOs()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='team'&&rTeam()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='commissions'&&rCommissions()}{pg==='omg'&&rOMG()}{pg==='reports'&&rReports()}{pg==='issues'&&rIssues()}{pg==='import'&&rImport()}{pg==='qb'&&rQB()}{pg==='backup'&&rBackup()}{pg==='settings'&&rSettings()}</div></div>
+      <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='art'&&rArtist()}{pg==='production'&&rProd2()}{pg==='warehouse'&&rWarehouse()}{pg==='purchase_orders'&&rPOs()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='team'&&rTeam()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='commissions'&&rCommissions()}{pg==='omg'&&rOMG()}{pg==='reports'&&rReports()}{pg==='issues'&&rIssues()}{pg==='import'&&rImport()}{pg==='qb'&&rQB()}{pg==='backup'&&rBackup()}{pg==='settings'&&rSettings()}</div></div>
+    {/* Idle Warning — art timers only (global, not tied to any specific page) */}
+    {idleWarning&&<div className="modal-overlay" style={{zIndex:10000}}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:380}}>
+      <div className="modal-header" style={{background:'#fffbeb'}}><h2>⏱️ Still working?</h2></div>
+      <div className="modal-body" style={{textAlign:'center',padding:24}}>
+        <div style={{fontSize:40,marginBottom:12}}>💤</div>
+        <div style={{fontSize:14,fontWeight:700,color:'#92400e',marginBottom:8}}>No activity detected for {Math.round((Date.now()-idleWarning.since)/60000)} minutes</div>
+        <div style={{fontSize:12,color:'#64748b',marginBottom:16}}>Your timer{idleWarning.keys.length>1?'s are':' is'} still running. If you're away, you'll be automatically clocked out after 10 minutes of inactivity.</div>
+        <div style={{display:'flex',gap:8}}>
+          <button className="btn btn-primary" style={{flex:1,padding:'10px 16px',fontWeight:700}} onClick={()=>{_lastActivity.current=Date.now();_idleState.current='active';setIdleWarning(null)}}>Yes, I'm working</button>
+          <button className="btn btn-secondary" style={{flex:1,padding:'10px 16px',fontWeight:700}} onClick={()=>{
+            Object.entries(activeArtTimers).forEach(([key,timer])=>{
+              const mins=Math.round((Date.now()-timer.clockIn)/60000);
+              const idleMins=Math.round(((_idleAccum.current[key]||0)+(Date.now()-_lastActivity.current))/60000);
+              setArtTimeLogs(prev=>[...prev,{jobId:key.split('|')[1],soId:key.split('|')[0],person:timer.person,clockIn:new Date(timer.clockIn).toLocaleString(),clockOut:new Date().toLocaleString(),minutes:mins,idleMinutes:idleMins,artName:timer.artName,customer:timer.customer}]);
+            });
+            setActiveArtTimers({});_idleState.current='active';_idleAccum.current={};setIdleWarning(null);
+            nf('Art timers clocked out');
+          }}>Clock me out</button>
+        </div>
+      </div>
+    </div></div>}
     <CustModal isOpen={cM.open} onClose={()=>setCM({open:false,c:null})} onSave={savC} customer={cM.c} parents={pars} reps={REPS}/>
     <AdjModal isOpen={aM.open} onClose={()=>setAM({open:false,p:null})} product={aM.p} onSave={savI}/>
 
