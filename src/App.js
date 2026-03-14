@@ -11088,6 +11088,19 @@ export default function App(){
           console.log('[OMG] Sample order attr values:', JSON.stringify(allOrders[0].attributes));
         }
         console.log(`[OMG] Fetched ${allOrders.length} total orders`);
+        // Show order structure as alert so user doesn't need to scroll console
+        if (allOrders.length > 0) {
+          const sample = allOrders[0];
+          const attrKeys = Object.keys(sample.attributes || {});
+          const relKeys = Object.keys(sample.relationships || {});
+          const numericAttrs = {};
+          for (const [k, v] of Object.entries(sample.attributes || {})) {
+            if (typeof v === 'number' || (typeof v === 'string' && !isNaN(parseFloat(v)) && v.length < 20)) {
+              numericAttrs[k] = v;
+            }
+          }
+          alert(`ORDER STRUCTURE (${allOrders.length} orders)\n\nType: ${sample.type}\nID: ${sample.id}\n\nAttributes: ${attrKeys.join(', ')}\n\nNumeric values: ${JSON.stringify(numericAttrs)}\n\nRelationships: ${relKeys.join(', ')}\n\nRel values: ${JSON.stringify(Object.fromEntries(relKeys.map(k => [k, sample.relationships[k]?.data?.id || sample.relationships[k]?.data])))}`);
+        }
       } catch (e) {
         console.warn('[OMG] Could not fetch orders:', e.message);
       }
