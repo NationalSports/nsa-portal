@@ -13336,8 +13336,8 @@ export default function App(){
                           <div style={{fontSize:10,fontWeight:800,color:j.run2_done?'#166534':j.run1_done?'#1e40af':'#94a3b8'}}>{j.run2_done?'Done':j.run1_done?'Current':'Pending'}</div>
                         </div>
                       </div>
-                      {/* Mark run done buttons */}
-                      {!j.run1_done&&<button className="btn btn-sm" style={{fontSize:9,padding:'3px 8px',marginTop:4,background:'#166534',color:'white',border:'none',width:'100%'}} onClick={e=>{e.stopPropagation();updateJobField(j,{run1_done:true});nf(rl.run1+' run complete — starting '+rl.run2)}}>Mark {rl.run1} Done</button>}
+                      {/* Mark run done — reassign to another decorator and move back to In Line */}
+                      {!j.run1_done&&<button className="btn btn-sm" style={{fontSize:9,padding:'3px 8px',marginTop:4,background:'#166534',color:'white',border:'none',width:'100%'}} onClick={e=>{e.stopPropagation();updateJobField(j,{run1_done:true});applyJobMove(j,'staging',j.assigned_machine||'',j.assigned_to||'');setAssignModal({job:j,soId:j.soId,targetStatus:'staging'});setAssignTo({machine:j.assigned_machine||'',person:''});nf(rl.run1+' done — reassign for '+rl.run2)}}>Mark {rl.run1} Done</button>}
                       {j.run1_done&&!j.run2_done&&<button className="btn btn-sm" style={{fontSize:9,padding:'3px 8px',marginTop:4,background:'#166534',color:'white',border:'none',width:'100%'}} onClick={e=>{e.stopPropagation();updateJobField(j,{run2_done:true});nf(rl.run2+' run complete — job fully decorated')}}>Mark {rl.run2} Done</button>}
                     </div>})()}
                   </div>}
