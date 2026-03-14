@@ -22427,6 +22427,42 @@ export default function App(){
       setQbSyncing(false);
     };
 
+    // ── SYNC: Pull paid status FROM QB back to portal ──
+    const syncPaidFromQB=async()=>{
+      setQbSyncing(true);
+      const log={ts:new Date().toLocaleString(),type:'paid_sync',status:'success',details:[]};
+      let updated=0;
+      const linkedInvs=invs.filter(i=>i.qb_invoice_id&&i.status!=='paid');
+      if(linkedInvs.length===0){log.details.push('No open QB-linked invoices to check');setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));nf('No open invoices to sync');setQbSyncing(false);return}
+      try{
+        // Query QB for all invoices and their balance
+        const qbIds=linkedInvs.map(i=>i.qb_invoice_id);
+        const res=await qbApi('query',{query:"SELECT Id, DocNumber, Balance, TotalAmt FROM Invoice WHERE Id IN ('"+qbIds.join("','")+"')"});
+        const qbInvList=res?.QueryResponse?.Invoice||[];
+        const qbMap={};qbInvList.forEach(qi=>{qbMap[qi.Id]=qi});
+        for(const inv of linkedInvs){
+          const qbInv=qbMap[inv.qb_invoice_id];
+          if(!qbInv){log.details.push((inv.display_id||inv.id)+' — not found in QB');continue}
+          const qbBalance=safeNum(qbInv.Balance);
+          const qbTotal=safeNum(qbInv.TotalAmt);
+          const qbPaid=qbTotal-qbBalance;
+          const portalPaid=safeNum(inv.paid);
+          if(qbPaid>portalPaid){
+            const newStatus=qbBalance<=0?'paid':qbPaid>0?'partial':'open';
+            const pmt={amount:rQ(qbPaid-portalPaid),method:'qb_sync',ref:'QB Payment Sync',date:new Date().toLocaleDateString()};
+            setInvs(prev=>prev.map(ii=>ii.id===inv.id?{...ii,paid:rQ(qbPaid),status:newStatus,payments:[...(ii.payments||[]),pmt]}:ii));
+            log.details.push((inv.display_id||inv.id)+' — marked '+newStatus+' (QB paid $'+qbPaid.toFixed(2)+')');updated++;
+          }else{
+            log.details.push((inv.display_id||inv.id)+' — already up to date');
+          }
+        }
+      }catch(e){log.status='error';log.details.push('QB query failed: '+e.message)}
+      log.details.unshift(updated+'/'+linkedInvs.length+' invoices updated from QB');
+      setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
+      nf(updated+' invoices updated from QB');
+      setQbSyncing(false);
+    };
+
     // ── SYNC: Inventory (totals per product as non-inventory items) ──
     const syncInventory=async()=>{
       setQbSyncing(true);
@@ -22753,6 +22789,7 @@ export default function App(){
       const prodQBMap=await syncInventory();
       await syncSalesOrders(custQBMap,prodQBMap);
       await syncInvoices(custQBMap,prodQBMap);
+      await syncPaidFromQB();
       await syncPurchaseOrders();
       setQbSyncing(false);
     };
@@ -22913,6 +22950,7 @@ export default function App(){
                 <button className="btn btn-secondary" disabled={qbSyncing} onClick={syncCustomers}>Customers</button>
                 <button className="btn btn-secondary" disabled={qbSyncing} onClick={syncSalesOrders}>Sales Orders</button>
                 <button className="btn btn-secondary" disabled={qbSyncing} onClick={syncInvoices}>Invoices</button>
+                <button className="btn btn-secondary" disabled={qbSyncing} onClick={syncPaidFromQB}>Paid from QB</button>
                 <button className="btn btn-secondary" disabled={qbSyncing} onClick={syncPurchaseOrders}>POs</button>
                 <button className="btn btn-secondary" disabled={qbSyncing} onClick={syncInventory}>Inventory</button>
               </div>
@@ -22923,7 +22961,7 @@ export default function App(){
             <div className="card-body" style={{fontSize:12,color:'#475569'}}>
               <div style={{marginBottom:4}}>&#8226; <strong>Customers</strong> — name, contact, address, order totals in notes</div>
               <div style={{marginBottom:4}}>&#8226; <strong>Sales Orders</strong> — line items + decoration as QB Estimates</div>
-              <div style={{marginBottom:4}}>&#8226; <strong>Invoices</strong> — invoice total as single line item, payments applied</div>
+              <div style={{marginBottom:4}}>&#8226; <strong>Invoices</strong> — invoice total as single line item, payments applied; paid status syncs back from QB</div>
               <div style={{marginBottom:4}}>&#8226; <strong>Purchase Orders</strong> — blank goods + outside deco POs to vendors</div>
               <div style={{marginBottom:4}}>&#8226; <strong>Bills</strong> — upload vendor bills (PDF/image) directly to QB with amounts</div>
               <div>&#8226; <strong>Inventory</strong> — product totals (qty + cost value) as non-inventory items</div>
@@ -23042,7 +23080,10 @@ export default function App(){
         <div className="card" style={{marginBottom:16}}>
           <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
             <h2>Invoice Sync ({unsyncedInvs.length} pending)</h2>
-            <button className="btn btn-primary btn-sm" disabled={qbSyncing} onClick={syncInvoices}>{qbSyncing?'Syncing...':'Sync Invoices'}</button>
+            <div style={{display:'flex',gap:6}}>
+              <button className="btn btn-primary btn-sm" disabled={qbSyncing} onClick={syncPaidFromQB}>{qbSyncing?'Syncing...':'Sync Paid from QB'}</button>
+              <button className="btn btn-secondary btn-sm" disabled={qbSyncing} onClick={syncInvoices}>{qbSyncing?'Syncing...':'Push Invoices to QB'}</button>
+            </div>
           </div>
           <div className="card-body" style={{padding:0,maxHeight:500,overflow:'auto'}}>
             <table style={{fontSize:11}}>
