@@ -11070,25 +11070,19 @@ export default function App(){
         console.log('[OMG] Included resource types:', incTypes);
       }
       // Fetch all orders and group by sale to populate store totals
+      // Note: /orders works without params but fails with ?page=N (400 error)
       let allOrders = [];
       try {
-        let page = 1, hasMore = true;
-        while (hasMore && page <= 20) {
-          const ordersResp = await omgApiCall(`/orders?page=${page}`);
-          const batch = ordersResp?.data || [];
-          if (batch.length === 0) break;
-          allOrders = allOrders.concat(batch);
-          if (page === 1 && batch.length > 0) {
-            console.log('[OMG] Sample order FULL:', JSON.stringify(batch[0]));
-            console.log('[OMG] Sample order type:', batch[0].type);
-            console.log('[OMG] Sample order attributes:', Object.keys(batch[0].attributes || {}));
-            console.log('[OMG] Sample order relationships:', JSON.stringify(batch[0].relationships || {}));
-          }
-          // Stop if we got fewer than a full page (no more data)
-          if (batch.length < 100) break;
-          page++;
+        const ordersResp = await omgApiCall('/orders');
+        allOrders = ordersResp?.data || [];
+        if (allOrders.length > 0) {
+          console.log('[OMG] Sample order FULL:', JSON.stringify(allOrders[0]));
+          console.log('[OMG] Sample order type:', allOrders[0].type);
+          console.log('[OMG] Sample order attributes:', Object.keys(allOrders[0].attributes || {}));
+          console.log('[OMG] Sample order relationships:', JSON.stringify(allOrders[0].relationships || {}));
+          console.log('[OMG] Sample order attr values:', JSON.stringify(allOrders[0].attributes));
         }
-        console.log(`[OMG] Fetched ${allOrders.length} total orders across ${page} page(s)`);
+        console.log(`[OMG] Fetched ${allOrders.length} total orders`);
       } catch (e) {
         console.warn('[OMG] Could not fetch orders:', e.message);
       }
