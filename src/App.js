@@ -1132,11 +1132,12 @@ const DEFAULT_REPS=[
   {id:'00000000-0000-0000-0000-000000000070',name:'Mo',role:'art'},
   {id:'00000000-0000-0000-0000-000000000071',name:'Erik',role:'art'},
 ];
-const NSA={name:'National Sports Apparel',legal:'National Sports Apparel LLC',phone:'(619) 555-0127',email:'team@nsa-teamwear.com',
+const NSA_DEFAULTS={name:'National Sports Apparel',legal:'National Sports Apparel LLC',phone:'(619) 555-0127',email:'team@nsa-teamwear.com',
   addr:'9340 Cabot Dr, Suite A',city:'San Diego',state:'CA',zip:'91941',
   fullAddr:'9340 Cabot Dr, Suite A, San Diego, CA 91941',
   logo:'NSA',logoUrl:'/nsa-logo.svg',terms:'Net 30 from invoice date unless otherwise agreed.',
   depositTerms:'50% deposit required to begin production. Balance due upon completion.'};
+let NSA={...NSA_DEFAULTS};
 const ART_LABELS={needs_art:'Needs Art',art_requested:'Art Requested',art_in_progress:'In Progress',waiting_approval:'Waiting Approval',production_files_needed:'Prod Files Needed',art_complete:'Art Complete'};
 const ART_FILE_LABELS={waiting_for_art:'Waiting for Art',needs_approval:'Needs Approval',approved:'Approved / Needs Files'};
 const ART_FILE_SC={waiting_for_art:{bg:'#fef2f2',c:'#dc2626'},needs_approval:{bg:'#fef3c7',c:'#92400e'},approved:{bg:'#dcfce7',c:'#166534'}};
@@ -10422,6 +10423,7 @@ export default function App(){
           if(as.inv_pos)setInvPOs(as.inv_pos);
           if(as.inv_adj_log)setInvAdjLog(as.inv_adj_log);
           if(as.inv_po_counter)setInvPOCounter(as.inv_po_counter);
+          if(as.company_info){const ci={...NSA_DEFAULTS,...as.company_info};ci.fullAddr=ci.addr+', '+ci.city+', '+ci.state+' '+ci.zip;Object.assign(NSA,ci);setCompanyInfo(ci)}
           if(_dbSaveFailedIds.size)console.warn('[DB] Loaded from Supabase — preserving local data for',_dbSaveFailedIds.size,'failed saves:',[ ..._dbSaveFailedIds]);
           console.log('[DB] Loaded from Supabase (normalized)');
         }else{
@@ -10442,7 +10444,7 @@ export default function App(){
             try{
               await _dbSeed({team:REPS,customers:cust,vendors:vend,products:prod,estimates:ests,sales_orders:sos,invoices:invs,messages:msgs,omg_stores:omgStores,issues});
               if(issues?.length) _dbSave('issues',issues.map(i=>_pick(i,_issueCols)));
-              const _as={batch_pos:batchPOs,submitted_batches:submittedBatches,batch_counter:batchCounter,change_log:changeLog,so_history:soHistory,qb_config:qbConfig,inv_pos:invPOs,inv_adj_log:invAdjLog,inv_po_counter:invPOCounter};
+              const _as={batch_pos:batchPOs,submitted_batches:submittedBatches,batch_counter:batchCounter,change_log:changeLog,so_history:soHistory,qb_config:qbConfig,inv_pos:invPOs,inv_adj_log:invAdjLog,inv_po_counter:invPOCounter,company_info:companyInfo};
               for(const[k,v]of Object.entries(_as)){if(v!==undefined&&v!==null)_dbSave('app_state',[{id:k,value:JSON.stringify(v),updated_at:new Date().toISOString()}])}
               await supabase.from('app_state').upsert({id:lockId,value:'"done"',updated_at:new Date().toISOString()});
               console.log('[DB] Seeded Supabase from localStorage');
@@ -10469,6 +10471,7 @@ export default function App(){
               if(as2.so_history)setSOHistory(as2.so_history);if(as2.job_time_logs)setJobTimeLogs(as2.job_time_logs);
               if(as2.qb_config){const _qbDef={connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',access_token:'',refresh_token:'',realm_id:'',token_created_at:0,sandbox:false,mapping:{income_account:'Sales',cogs_account:'Cost of Goods Sold',deco_account:'Subcontractor - Decoration',ar_account:'Accounts Receivable',ap_account:'Accounts Payable',tax_account:'Sales Tax Payable'},syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}};setQBConfig({..._qbDef,...as2.qb_config,mapping:{..._qbDef.mapping,...(as2.qb_config.mapping||{})},syncLog:Array.isArray(as2.qb_config.syncLog)?as2.qb_config.syncLog:[]})}if(as2.inv_pos)setInvPOs(as2.inv_pos);
               if(as2.inv_adj_log)setInvAdjLog(as2.inv_adj_log);if(as2.inv_po_counter)setInvPOCounter(as2.inv_po_counter);
+              if(as2.company_info){const ci={...NSA_DEFAULTS,...as2.company_info};ci.fullAddr=ci.addr+', '+ci.city+', '+ci.state+' '+ci.zip;Object.assign(NSA,ci);setCompanyInfo(ci)}
               console.log('[DB] Loaded from Supabase after seed by other browser');
             }else{
               // Other browser's seed also failed — this browser tries to seed
@@ -10477,7 +10480,7 @@ export default function App(){
               try{
                 await _dbSeed({team:REPS,customers:cust,vendors:vend,products:prod,estimates:ests,sales_orders:sos,invoices:invs,messages:msgs,omg_stores:omgStores,issues});
                 if(issues?.length) _dbSave('issues',issues.map(i=>_pick(i,_issueCols)));
-                const _as={batch_pos:batchPOs,submitted_batches:submittedBatches,batch_counter:batchCounter,change_log:changeLog,so_history:soHistory,qb_config:qbConfig,inv_pos:invPOs,inv_adj_log:invAdjLog,inv_po_counter:invPOCounter};
+                const _as={batch_pos:batchPOs,submitted_batches:submittedBatches,batch_counter:batchCounter,change_log:changeLog,so_history:soHistory,qb_config:qbConfig,inv_pos:invPOs,inv_adj_log:invAdjLog,inv_po_counter:invPOCounter,company_info:companyInfo};
                 for(const[k,v]of Object.entries(_as)){if(v!==undefined&&v!==null)_dbSave('app_state',[{id:k,value:JSON.stringify(v),updated_at:new Date().toISOString()}])}
                 await supabase.from('app_state').upsert({id:lockId,value:'"done"',updated_at:new Date().toISOString()});
                 console.log('[DB] Seeded Supabase from localStorage (fallback)');
@@ -10535,6 +10538,7 @@ export default function App(){
         if(as.inv_po_counter)setInvPOCounter(prev=>as.inv_po_counter===prev?prev:as.inv_po_counter);
         if(as.submitted_batches)setSubmittedBatches(prev=>_jsonEq(prev,as.submitted_batches)?prev:as.submitted_batches);
         if(as.batch_pos)setBatchPOs(prev=>_jsonEq(prev,as.batch_pos)?prev:as.batch_pos);
+        if(as.company_info)setCompanyInfo(prev=>{const ci={...NSA_DEFAULTS,...as.company_info};ci.fullAddr=ci.addr+', '+ci.city+', '+ci.state+' '+ci.zip;if(_jsonEq(prev,ci))return prev;Object.assign(NSA,ci);return ci});
       };
       // Debounce realtime events — coalesce rapid-fire changes into a single reload
       const debouncedReload=()=>{if(_rtTimer)clearTimeout(_rtTimer);_rtTimer=setTimeout(reloadAll,2000)};
@@ -10592,6 +10596,7 @@ export default function App(){
         if(as.inv_po_counter)setInvPOCounter(prev=>as.inv_po_counter!==prev?as.inv_po_counter:prev);
         if(as.submitted_batches)setSubmittedBatches(prev=>JSON.stringify(prev)!==JSON.stringify(as.submitted_batches)?as.submitted_batches:prev);
         if(as.batch_pos)setBatchPOs(prev=>JSON.stringify(prev)!==JSON.stringify(as.batch_pos)?as.batch_pos:prev);
+        if(as.company_info)setCompanyInfo(prev=>{const ci={...NSA_DEFAULTS,...as.company_info};ci.fullAddr=ci.addr+', '+ci.city+', '+ci.state+' '+ci.zip;if(JSON.stringify(prev)===JSON.stringify(ci))return prev;Object.assign(NSA,ci);return ci});
       }catch(e){console.warn('[DB] Poll failed:',e.message)}
     },30000);
     return()=>clearInterval(poll);
@@ -12899,6 +12904,8 @@ export default function App(){
   React.useEffect(()=>{_saveAppState('idle_settings',idleSettings)},[idleSettings]);
   const[portalSettings,setPortalSettings]=useState(()=>loadState('portal_settings',{followUpDays:7,estFollowUpDays:7,invFollowUpDays:7,disclaimer:'Please check all artwork, quantities, and personalization very closely. Once approved, this will be exactly what is printed.'}));
   React.useEffect(()=>{_saveAppState('portal_settings',portalSettings)},[portalSettings]);
+  const[companyInfo,setCompanyInfo]=useState(()=>{const saved=loadState('company_info',null);if(saved){Object.assign(NSA,{...NSA_DEFAULTS,...saved,fullAddr:(saved.addr||NSA_DEFAULTS.addr)+', '+(saved.city||NSA_DEFAULTS.city)+', '+(saved.state||NSA_DEFAULTS.state)+' '+(saved.zip||NSA_DEFAULTS.zip)})}return{...NSA}});
+  React.useEffect(()=>{Object.assign(NSA,{...companyInfo,fullAddr:companyInfo.addr+', '+companyInfo.city+', '+companyInfo.state+' '+companyInfo.zip});_saveAppState('company_info',companyInfo)},[companyInfo]);
   // ── Idle / activity tracking for timers ──
   const _lastActivity=useRef(Date.now());
   const _idleAccum=useRef({});// {timerKey: totalIdleMs} — accumulates idle time per active timer
@@ -23479,11 +23486,60 @@ export default function App(){
       if(key==='CATEGORIES')CATEGORIES=val;if(key==='POSITIONS')POSITIONS=val;if(key==='CONTACT_ROLES')CONTACT_ROLES=val;
       nf('Settings saved')}catch{nf('Error saving','warn')}};
   function rSettings(){
-    const tabs=[['pricing','Decoration Pricing'],['tiers','Customer Tiers'],['lists','Lists & Options'],['terms','Terms & Policies'],['labor','Labor Rates'],['portal','Coach Portal'],['taxcloud','TaxCloud']];
+    const tabs=[['company','Company Info'],['pricing','Decoration Pricing'],['tiers','Customer Tiers'],['lists','Lists & Options'],['terms','Terms & Policies'],['labor','Labor Rates'],['portal','Coach Portal'],['taxcloud','TaxCloud']];
     return(<>
       <div style={{display:'flex',gap:4,marginBottom:16,flexWrap:'wrap'}}>
         {tabs.map(([k,label])=><button key={k} className={`btn btn-sm ${settingsTab===k?'btn-primary':'btn-secondary'}`} onClick={()=>setSettingsTab(k)}>{label}</button>)}
       </div>
+
+      {/* COMPANY INFO */}
+      {settingsTab==='company'&&<>
+        <div className="card" style={{marginBottom:16}}>
+          <div className="card-header"><h3>Company Information</h3></div>
+          <div className="card-body">
+            <div style={{fontSize:12,color:'#64748b',marginBottom:16}}>Update your company details below. Changes will apply to all PDFs (estimates, invoices, sales orders, purchase orders), the online coach portal, email footers, and shipping labels.</div>
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,maxWidth:700}}>
+              <div><label className="form-label">Company Name</label><input className="form-input" value={companyInfo.name} onChange={e=>setCompanyInfo(prev=>({...prev,name:e.target.value}))}/></div>
+              <div><label className="form-label">Legal Name</label><input className="form-input" value={companyInfo.legal} onChange={e=>setCompanyInfo(prev=>({...prev,legal:e.target.value}))}/></div>
+              <div><label className="form-label">Phone</label><input className="form-input" value={companyInfo.phone} onChange={e=>setCompanyInfo(prev=>({...prev,phone:e.target.value}))}/></div>
+              <div><label className="form-label">Email</label><input className="form-input" value={companyInfo.email} onChange={e=>setCompanyInfo(prev=>({...prev,email:e.target.value}))}/></div>
+              <div style={{gridColumn:'1/-1'}}><label className="form-label">Street Address</label><input className="form-input" value={companyInfo.addr} onChange={e=>setCompanyInfo(prev=>({...prev,addr:e.target.value}))}/></div>
+              <div><label className="form-label">City</label><input className="form-input" value={companyInfo.city} onChange={e=>setCompanyInfo(prev=>({...prev,city:e.target.value}))}/></div>
+              <div style={{display:'flex',gap:12}}>
+                <div style={{flex:1}}><label className="form-label">State</label><input className="form-input" value={companyInfo.state} onChange={e=>setCompanyInfo(prev=>({...prev,state:e.target.value}))}/></div>
+                <div style={{flex:1}}><label className="form-label">ZIP</label><input className="form-input" value={companyInfo.zip} onChange={e=>setCompanyInfo(prev=>({...prev,zip:e.target.value}))}/></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div className="card" style={{marginBottom:16}}>
+          <div className="card-header"><h3>Logo</h3></div>
+          <div className="card-body">
+            <div style={{fontSize:12,color:'#64748b',marginBottom:12}}>Enter a URL for your company logo. This logo appears on all printed documents (estimates, invoices, POs) and the online coach portal.</div>
+            <div style={{display:'flex',gap:16,alignItems:'flex-start',maxWidth:700}}>
+              <div style={{flex:1}}>
+                <label className="form-label">Logo URL</label>
+                <input className="form-input" value={companyInfo.logoUrl} placeholder="/nsa-logo.svg or https://..." onChange={e=>setCompanyInfo(prev=>({...prev,logoUrl:e.target.value}))}/>
+                <div style={{fontSize:10,color:'#94a3b8',marginTop:4}}>Use a path like /logo.svg for files in your public folder, or a full URL (https://...) for external images.</div>
+              </div>
+              {companyInfo.logoUrl&&<div style={{border:'1px solid #e2e8f0',borderRadius:8,padding:12,background:'#f8fafc',textAlign:'center',minWidth:120}}>
+                <div style={{fontSize:10,color:'#94a3b8',marginBottom:6}}>Preview</div>
+                <img src={companyInfo.logoUrl} alt="Logo preview" style={{maxHeight:60,maxWidth:160}} onError={e=>{e.target.style.display='none'}} onLoad={e=>{e.target.style.display='inline'}}/>
+              </div>}
+            </div>
+          </div>
+        </div>
+        <div className="card" style={{marginBottom:16}}>
+          <div className="card-header"><h3>Default Terms</h3></div>
+          <div className="card-body">
+            <div style={{maxWidth:700}}>
+              <div style={{marginBottom:12}}><label className="form-label">Invoice / SO Terms</label><textarea className="form-input" rows={2} value={companyInfo.terms} onChange={e=>setCompanyInfo(prev=>({...prev,terms:e.target.value}))}/></div>
+              <div><label className="form-label">Deposit Terms</label><textarea className="form-input" rows={2} value={companyInfo.depositTerms} onChange={e=>setCompanyInfo(prev=>({...prev,depositTerms:e.target.value}))}/></div>
+            </div>
+          </div>
+        </div>
+        <button className="btn btn-secondary btn-sm" onClick={()=>{if(window.confirm('Reset all company info to defaults?')){setCompanyInfo({...NSA_DEFAULTS});nf('Company info reset to defaults')}}}>Reset to Defaults</button>
+      </>}
 
       {/* DECORATION PRICING */}
       {settingsTab==='pricing'&&<>
