@@ -10638,65 +10638,68 @@ export default function App(){
       const saleResource = saleResp?.data || { id: omgId, attributes: {} };
       console.log('[OMG] Sale detail attributes:', Object.keys(saleResource.attributes || {}));
 
-      // Fetch orders — try filter first, then client-side match
-      let orders = [];
-      const filterEndpoints = [
-        `/orders?filter[sale_id]=${omgId}`,
-        `/orders?filter[sale]=${omgId}`,
-        `/orders?sale_id=${omgId}`,
-        `/sales/${omgId}/orders`,
-      ];
-      for (const ep of filterEndpoints) {
+      // Fetch all orders via cursor pagination, then filter to this sale
+      let allOrders = [];
+      try {
+        let cursor = null;
+        for (let batch = 0; batch < 50; batch++) {
+          const url = cursor ? `/orders?page[after]=${cursor}` : '/orders';
+          const resp = await omgApiCall(url);
+          const data = resp?.data || [];
+          if (data.length === 0) break;
+          allOrders = allOrders.concat(data);
+          const lastItem = data[data.length - 1];
+          const nextCursor = lastItem?.meta?.page?.cursor;
+          if (!nextCursor || data.length < 100) break;
+          cursor = nextCursor;
+        }
+      } catch (e) { console.warn('[OMG] Could not fetch orders:', e.message); }
+      const orders = allOrders.filter(o => o.relationships?.sale?.data?.id === omgId);
+      console.log(`[OMG] Found ${orders.length} orders for ${omgId} (from ${allOrders.length} total)`);
+
+      // Fetch order_products for dollar amounts
+      let orderProducts = [];
+      if (orders.length > 0) {
+        const orderIds = new Set(orders.map(o => o.id));
         try {
-          const resp = await omgApiCall(ep);
-          if (resp?.data?.length > 0) {
-            orders = resp.data;
-            console.log(`[OMG] Found ${orders.length} orders via ${ep}`);
-            break;
+          let cursor = null;
+          let allOPs = [];
+          for (let batch = 0; batch < 50; batch++) {
+            const url = cursor ? `/order_products?page[after]=${cursor}` : '/order_products';
+            const resp = await omgApiCall(url);
+            const data = resp?.data || [];
+            if (data.length === 0) break;
+            allOPs = allOPs.concat(data);
+            const lastItem = data[data.length - 1];
+            const nextCursor = lastItem?.meta?.page?.cursor;
+            if (!nextCursor || data.length < 100) break;
+            cursor = nextCursor;
           }
-        } catch (e) { console.log(`[OMG] ${ep} failed: ${e.message}`); }
-      }
-      // Fallback: fetch all orders and match client-side
-      if (orders.length === 0) {
-        try {
-          const allResp = await omgApiCall('/orders');
-          const allOrders = allResp?.data || [];
-          if (allOrders.length > 0) {
-            console.log('[OMG] Detail: sample order rels:', JSON.stringify(allOrders[0].relationships || {}));
-            console.log('[OMG] Detail: looking for sale_id:', omgId);
-          }
-          orders = allOrders.filter(o => {
-            const rels = o.relationships || {};
-            const attrs = o.attributes || {};
-            const saleId = rels.sale?.data?.id || rels.pop_up_store?.data?.id
-              || rels.fundraiser?.data?.id || rels.store?.data?.id
-              || attrs.sale_id || attrs.pop_up_store_id || attrs.fundraiser_id || attrs.store_id;
-            return saleId === omgId;
-          });
-          console.log(`[OMG] Found ${orders.length} orders (client-side filter from ${allOrders.length})`);
-        } catch (e2) { console.warn('[OMG] Could not fetch orders:', e2.message); }
+          orderProducts = allOPs.filter(op => orderIds.has(op.relationships?.order?.data?.id));
+          console.log(`[OMG] Found ${orderProducts.length} order_products for this sale (from ${allOPs.length} total)`);
+        } catch (e) { console.warn('[OMG] Could not fetch order_products:', e.message); }
       }
 
-      const detail = { data: saleResource, included, orders, orderProducts: [] };
+      const detail = { data: saleResource, included, orders, orderProducts: orderProducts.length > 0 ? [{ data: orderProducts, included: [] }] : [] };
       const updated = { ...convertOMGStore(detail, cust), _details_loaded: true };
 
-      // Compute totals from order attributes
+      // Compute totals from order_products if convertOMGStore didn't get them
       if (orders.length > 0 && updated.total_sales === 0) {
-        let salesTotal = 0;
-        orders.forEach(o => {
-          const oa = o.attributes || {};
-          salesTotal += parseFloat(oa.total || oa.order_total || oa.subtotal || oa.amount || 0);
+        let salesTotal = 0, totalItems = 0;
+        orderProducts.forEach(op => {
+          const a = op.attributes || {};
+          const qty = parseInt(a.quantity || a.qty || 0);
+          const price = parseFloat(a.price || a.unit_price || a.base_price || a.total || 0);
+          totalItems += qty;
+          salesTotal += price * qty;
         });
         if (salesTotal > 0) updated.total_sales = salesTotal;
+        if (totalItems > 0) updated.items_sold = totalItems;
       }
 
-      // Check sale attributes for aggregate data
-      const attrs = saleResource.attributes || {};
-      for (const [k, v] of Object.entries(attrs)) {
-        if (/order.*count|num.*order|total.*order/i.test(k) && v) updated.orders = parseInt(v) || updated.orders;
-        if (/revenue|total.*sale|sales.*total|total.*earned/i.test(k) && v) updated.total_sales = parseFloat(v) || updated.total_sales;
-        if (/fundrais/i.test(k) && v) updated.fundraise_total = parseFloat(v) || updated.fundraise_total;
-      }
+      // Count unique buyers
+      const buyerIds = new Set(orders.map(o => o.relationships?.customer_info?.data?.id).filter(Boolean));
+      if (buyerIds.size > 0) updated.unique_buyers = buyerIds.size;
 
       setOmgStores(prev => prev.map(s => s.id === store.id ? updated : s));
       return updated;
@@ -11074,86 +11077,197 @@ export default function App(){
         const incTypes = [...new Set((omgStoresData.included || []).map(i => i.type))];
         console.log('[OMG] Included resource types:', incTypes);
       }
-      // Fetch all orders and group by sale to populate store totals
-      // Note: /orders works without params but fails with ?page=N (400 error)
+      // Fetch ALL orders using cursor-based pagination
       let allOrders = [];
       try {
-        const ordersResp = await omgApiCall('/orders');
-        allOrders = ordersResp?.data || [];
-        if (allOrders.length > 0) {
-          console.log('[OMG] Sample order FULL:', JSON.stringify(allOrders[0]));
-          console.log('[OMG] Sample order type:', allOrders[0].type);
-          console.log('[OMG] Sample order attributes:', Object.keys(allOrders[0].attributes || {}));
-          console.log('[OMG] Sample order relationships:', JSON.stringify(allOrders[0].relationships || {}));
-          console.log('[OMG] Sample order attr values:', JSON.stringify(allOrders[0].attributes));
+        // First batch — no cursor
+        const firstResp = await omgApiCall('/orders');
+        const firstBatch = firstResp?.data || [];
+        allOrders = firstBatch;
+        if (firstBatch.length > 0) {
+          console.log('[OMG] Sample order attrs:', Object.keys(firstBatch[0].attributes || {}));
+          console.log('[OMG] Sample order rels:', Object.keys(firstBatch[0].relationships || {}));
+          // Log top-level response keys for pagination clues
+          console.log('[OMG] Orders response keys:', Object.keys(firstResp || {}));
+          if (firstResp?.meta) console.log('[OMG] Orders response meta:', JSON.stringify(firstResp.meta));
+          if (firstResp?.links) console.log('[OMG] Orders response links:', JSON.stringify(firstResp.links));
         }
-        console.log(`[OMG] Fetched ${allOrders.length} total orders`);
-        // Show order structure as alert so user doesn't need to scroll console
-        if (allOrders.length > 0) {
-          const sample = allOrders[0];
-          const attrKeys = Object.keys(sample.attributes || {});
-          const relKeys = Object.keys(sample.relationships || {});
-          const numericAttrs = {};
-          for (const [k, v] of Object.entries(sample.attributes || {})) {
-            if (typeof v === 'number' || (typeof v === 'string' && !isNaN(parseFloat(v)) && v.length < 20)) {
-              numericAttrs[k] = v;
+        // Try cursor pagination if first batch is full (100 records)
+        if (firstBatch.length >= 100) {
+          const lastCursor = firstBatch[firstBatch.length - 1]?.meta?.page?.cursor;
+          console.log('[OMG] Last cursor from batch 1:', lastCursor);
+          // Try multiple pagination formats
+          const paginationFormats = [
+            `/orders?page[after]=${lastCursor}`,
+            `/orders?cursor=${lastCursor}`,
+            `/orders?after=${lastCursor}`,
+            `/orders?page[cursor]=${lastCursor}`,
+            `/orders?offset=100`,
+            `/orders?page[offset]=100`,
+            `/orders?page[number]=2`,
+          ];
+          let workingFormat = null;
+          for (const url of paginationFormats) {
+            try {
+              const resp = await omgApiCall(url);
+              const data = resp?.data || [];
+              console.log(`[OMG] Pagination test ${url}: ${data.length} results`);
+              if (data.length > 0) {
+                // Check if these are actually different records
+                const firstId = data[0]?.id;
+                const isDuplicate = firstBatch.some(o => o.id === firstId);
+                if (!isDuplicate) {
+                  workingFormat = url.replace(lastCursor, 'CURSOR').replace('100', 'OFFSET');
+                  allOrders = allOrders.concat(data);
+                  console.log(`[OMG] Pagination works with: ${workingFormat}`);
+                  // Continue paginating with this format
+                  if (data.length >= 100) {
+                    let nextCursor = data[data.length - 1]?.meta?.page?.cursor;
+                    let offset = 200;
+                    for (let page = 2; page < 50; page++) {
+                      let nextUrl;
+                      if (workingFormat.includes('CURSOR') && nextCursor) {
+                        nextUrl = workingFormat.replace('CURSOR', nextCursor);
+                      } else if (workingFormat.includes('OFFSET')) {
+                        nextUrl = workingFormat.replace('OFFSET', String(offset));
+                        offset += 100;
+                      } else break;
+                      try {
+                        const nextResp = await omgApiCall(nextUrl);
+                        const nextData = nextResp?.data || [];
+                        if (nextData.length === 0) break;
+                        allOrders = allOrders.concat(nextData);
+                        nextCursor = nextData[nextData.length - 1]?.meta?.page?.cursor;
+                        if (nextData.length < 100) break;
+                      } catch { break; }
+                    }
+                  }
+                  break;
+                } else {
+                  console.log(`[OMG] ${url}: returned duplicate data`);
+                }
+              }
+            } catch (e) {
+              console.log(`[OMG] Pagination failed: ${url} — ${e.message}`);
             }
           }
-          alert(`ORDER STRUCTURE (${allOrders.length} orders)\n\nType: ${sample.type}\nID: ${sample.id}\n\nAttributes: ${attrKeys.join(', ')}\n\nNumeric values: ${JSON.stringify(numericAttrs)}\n\nRelationships: ${relKeys.join(', ')}\n\nRel values: ${JSON.stringify(Object.fromEntries(relKeys.map(k => [k, sample.relationships[k]?.data?.id || sample.relationships[k]?.data])))}`);
+          if (!workingFormat) console.warn('[OMG] No pagination format worked — limited to 100 orders');
         }
+        console.log(`[OMG] Fetched ${allOrders.length} total orders`);
       } catch (e) {
         console.warn('[OMG] Could not fetch orders:', e.message);
       }
 
-      // Group orders by sale_id — try multiple relationship patterns
+      // Also fetch order_products for dollar amounts (orders have no price data)
+      let allOrderProducts = [];
+      try {
+        const firstResp = await omgApiCall('/order_products');
+        allOrderProducts = firstResp?.data || [];
+        if (allOrderProducts.length > 0) {
+          console.log('[OMG] Sample order_product attrs:', Object.keys(allOrderProducts[0].attributes || {}));
+          console.log('[OMG] Sample order_product attr values:', JSON.stringify(allOrderProducts[0].attributes));
+          console.log('[OMG] Sample order_product rels:', Object.keys(allOrderProducts[0].relationships || {}));
+          if (firstResp?.links) console.log('[OMG] Order_products links:', JSON.stringify(firstResp.links));
+        }
+        // Paginate using same approach as orders
+        if (allOrderProducts.length >= 100) {
+          const lastCursor = allOrderProducts[allOrderProducts.length - 1]?.meta?.page?.cursor;
+          // Try formats that worked for orders, plus fallbacks
+          const formats = [
+            lastCursor && `/order_products?page[after]=${lastCursor}`,
+            `/order_products?offset=100`,
+            lastCursor && `/order_products?cursor=${lastCursor}`,
+          ].filter(Boolean);
+          for (const url of formats) {
+            try {
+              const resp = await omgApiCall(url);
+              const data = resp?.data || [];
+              if (data.length > 0 && !allOrderProducts.some(o => o.id === data[0].id)) {
+                allOrderProducts = allOrderProducts.concat(data);
+                console.log(`[OMG] Order_products page 2: ${data.length} via ${url}`);
+                // Continue paginating
+                let nextCursor = data[data.length - 1]?.meta?.page?.cursor;
+                let offset = 200;
+                for (let p = 2; p < 50 && data.length >= 100; p++) {
+                  const isOffset = url.includes('offset');
+                  const nextUrl = isOffset
+                    ? `/order_products?offset=${offset}`
+                    : nextCursor ? url.replace(lastCursor, nextCursor) : null;
+                  if (!nextUrl) break;
+                  try {
+                    const r = await omgApiCall(nextUrl);
+                    const d = r?.data || [];
+                    if (d.length === 0) break;
+                    allOrderProducts = allOrderProducts.concat(d);
+                    nextCursor = d[d.length - 1]?.meta?.page?.cursor;
+                    offset += 100;
+                    if (d.length < 100) break;
+                  } catch { break; }
+                }
+                break;
+              }
+            } catch (e) { console.log(`[OMG] order_products pagination: ${url} — ${e.message}`); }
+          }
+        }
+        console.log(`[OMG] Fetched ${allOrderProducts.length} total order_products`);
+      } catch (e) {
+        console.warn('[OMG] Could not fetch order_products:', e.message);
+      }
+
+      // Group orders by sale_id
       const ordersBySale = {};
-      let matchedCount = 0;
       allOrders.forEach(o => {
-        // Try all possible ways the order might reference a sale
-        const rels = o.relationships || {};
-        const attrs = o.attributes || {};
-        const saleId = rels.sale?.data?.id
-          || rels.pop_up_store?.data?.id
-          || rels.fundraiser?.data?.id
-          || rels.store?.data?.id
-          || attrs.sale_id
-          || attrs.pop_up_store_id
-          || attrs.fundraiser_id
-          || attrs.store_id;
+        const saleId = o.relationships?.sale?.data?.id;
         if (saleId) {
           if (!ordersBySale[saleId]) ordersBySale[saleId] = [];
           ordersBySale[saleId].push(o);
-          matchedCount++;
         }
       });
-      console.log('[OMG] Orders matched to sales:', matchedCount, '/', allOrders.length);
-      console.log('[OMG] Unique sale IDs from orders:', Object.keys(ordersBySale));
-      console.log('[OMG] Store sale IDs:', stores.map(s => s.id));
 
-      // Convert store list data and populate with order data
+      // Map order_products to orders for dollar amounts
+      const orderProductsByOrder = {};
+      allOrderProducts.forEach(op => {
+        const orderId = op.relationships?.order?.data?.id;
+        if (orderId) {
+          if (!orderProductsByOrder[orderId]) orderProductsByOrder[orderId] = [];
+          orderProductsByOrder[orderId].push(op);
+        }
+      });
+
+      // Compute totals per sale from order_products
+      const saleTotals = {};
+      for (const [saleId, orders] of Object.entries(ordersBySale)) {
+        let totalItems = 0, totalSales = 0;
+        orders.forEach(o => {
+          const ops = orderProductsByOrder[o.id] || [];
+          ops.forEach(op => {
+            const a = op.attributes || {};
+            const qty = parseInt(a.quantity || a.qty || 0);
+            const price = parseFloat(a.price || a.unit_price || a.base_price || a.total || 0);
+            totalItems += qty;
+            totalSales += price * qty;
+          });
+        });
+        saleTotals[saleId] = { totalItems, totalSales, orderCount: orders.length };
+      }
+      console.log('[OMG] Orders matched to', Object.keys(ordersBySale).length, 'sales from', allOrders.length, 'orders');
+      console.log('[OMG] Order products matched to', Object.keys(orderProductsByOrder).length, 'orders from', allOrderProducts.length, 'order_products');
+
+      // Convert store list data and populate with order + order_product data
       const convertedStores = stores.map(store => {
         const saleOrders = ordersBySale[store.id] || [];
         const basic = { data: store, included: omgStoresData.included || [], orders: saleOrders, orderProducts: [] };
         const converted = convertOMGStore(basic, cust);
-        // Check sale attributes for aggregate data (in case API provides it)
-        const attrs = store.attributes || {};
-        for (const [k, v] of Object.entries(attrs)) {
-          if (/order.*count|num.*order|total.*order/i.test(k) && v) converted.orders = parseInt(v) || converted.orders;
-          if (/revenue|total.*sale|sales.*total|total.*earned/i.test(k) && v) converted.total_sales = parseFloat(v) || converted.total_sales;
-          if (/fundrais/i.test(k) && v) converted.fundraise_total = parseFloat(v) || converted.fundraise_total;
+        // Apply computed totals from order_products
+        const totals = saleTotals[store.id];
+        if (totals) {
+          converted.orders = totals.orderCount;
+          if (totals.totalSales > 0) converted.total_sales = totals.totalSales;
+          if (totals.totalItems > 0) converted.items_sold = totals.totalItems;
         }
-        // Use order count from relationship linkage if available
-        const orderRel = store.relationships?.orders?.data;
-        if (Array.isArray(orderRel) && orderRel.length > converted.orders) converted.orders = orderRel.length;
-        // Compute totals from order attributes if we have orders
-        if (saleOrders.length > 0 && converted.total_sales === 0) {
-          let salesTotal = 0;
-          saleOrders.forEach(o => {
-            const oa = o.attributes || {};
-            salesTotal += parseFloat(oa.total || oa.order_total || oa.subtotal || oa.amount || 0);
-          });
-          if (salesTotal > 0) converted.total_sales = salesTotal;
-        }
+        // Count unique buyers from order customer_info relationships
+        const buyerIds = new Set(saleOrders.map(o => o.relationships?.customer_info?.data?.id).filter(Boolean));
+        if (buyerIds.size > 0) converted.unique_buyers = buyerIds.size;
         converted._details_loaded = false;
         return converted;
       });
