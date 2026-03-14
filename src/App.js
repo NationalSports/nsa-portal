@@ -13098,6 +13098,39 @@ export default function App(){
                       {j.ship_method==='ship_customer'?'📦 Ship':j.ship_method==='rep_delivery'?'🚗 Rep':j.ship_method==='customer_pickup'?'🏫 Pickup':'⏸️ Hold'}</span>}
                   </div>
 
+                  {/* RUN ORDER — show sibling jobs sharing the same items */}
+                  {(()=>{
+                    const jobItemIdxs=new Set((j.items||[]).map(it=>it.item_idx));
+                    const siblings=safeJobs(j.so).filter(j2=>j2.id!==j.id&&(j2.items||[]).some(it=>jobItemIdxs.has(it.item_idx)));
+                    if(siblings.length===0)return null;
+                    const allRuns=[j,...siblings].sort((a,b)=>(a.prod_status==='completed'||a.prod_status==='shipped'?0:1)-(b.prod_status==='completed'||b.prod_status==='shipped'?0:1));
+                    return<div style={{background:'#fef3c7',border:'1px solid #fde68a',borderRadius:6,padding:'6px 8px',marginBottom:6}}>
+                      <div style={{fontSize:9,fontWeight:800,color:'#92400e',marginBottom:4,textTransform:'uppercase',letterSpacing:0.5}}>RUN ORDER</div>
+                      <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
+                        {allRuns.map((run,ri)=>{
+                          const isDone=run.prod_status==='completed'||run.prod_status==='shipped';
+                          const isCurrent=run.id===j.id;
+                          const runLabel=run.art_name||run.deco_type?.replace(/_/g,' ')||'Job';
+                          return<div key={run.id} style={{flex:1,minWidth:80,padding:'4px 6px',borderRadius:4,
+                            border:isCurrent?'2px solid #2563eb':isDone?'2px solid #22c55e':'1px solid #e2e8f0',
+                            background:isCurrent?'#eff6ff':isDone?'#f0fdf4':'white'}}>
+                            <div style={{fontSize:8,fontWeight:700,color:'#64748b'}}>RUN {ri+1}: {runLabel}</div>
+                            <div style={{fontSize:10,fontWeight:800,color:isDone?'#166534':isCurrent?'#2563eb':'#94a3b8'}}>{isDone?'Done':isCurrent?'Current':'Pending'}</div>
+                          </div>})}
+                      </div>
+                      {/* Mark current run done button */}
+                      {col.id==='in_process'&&<button className="btn btn-sm" style={{width:'100%',marginTop:4,fontSize:9,padding:'4px 8px',background:'#d97706',color:'white',border:'none',fontWeight:700}} onClick={e=>{e.stopPropagation();
+                        const nextSibling=siblings.find(s=>s.prod_status!=='completed'&&s.prod_status!=='shipped');
+                        if(nextSibling){
+                          applyJobMove(j,'completed',j.assigned_machine||'',j.assigned_to||'');
+                          setAssignModal({job:{...nextSibling,soId:j.soId,so:j.so},soId:j.soId,targetStatus:'staging'});
+                          setAssignTo({machine:'',person:''});
+                        } else {
+                          moveJobStatus(j,'completed');
+                        }
+                      }}>Mark {j.art_name||j.deco_type?.replace(/_/g,' ')} Done</button>}
+                    </div>})()}
+
                   {/* Units + progress */}
                   <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
                     <span style={{fontSize:13,fontWeight:800,color:pct>=100?'#166534':'#1e40af'}}>{j.fulfilled_units}/{j.total_units}</span>
