@@ -11798,7 +11798,7 @@ export default function App(){
     // Build to-do items from jobs and SOs
     const todos=[];
     sos.forEach(so=>{
-      const c=cust.find(x=>x.id===so.customer_id);const tag=c?.alpha_tag||so.id;const _repId=c?.primary_rep_id||so.created_by;
+      const c=cust.find(x=>x.id===so.customer_id);const tag=c?.name||c?.alpha_tag||so.id;const _repId=c?.primary_rep_id||so.created_by;
       buildJobs(so).forEach(j=>{
         if(j.art_status==='waiting_approval'){todos.push({type:'art',priority:2,msg:'⏳ Art awaiting approval: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,action:'Review art',role:'sales'});
           if(j.sent_to_coach_at){const _fuAt=j.follow_up_at?new Date(j.follow_up_at):null;const _fuDays=portalSettings?.followUpDays||7;const daysSinceSent=Math.floor((new Date()-new Date(j.sent_to_coach_at))/(1000*60*60*24));const isDue=_fuAt?new Date()>=_fuAt:daysSinceSent>=_fuDays;if(isDue)todos.push({type:'coach_followup',priority:1,msg:'📞 Follow up on art approval ('+daysSinceSent+'d): '+j.art_name,detail:tag+' · '+so.id+' · Sent to coach '+daysSinceSent+' days ago',so,jobId:j.id,action:'Follow Up',role:'sales'})}}
@@ -11835,7 +11835,7 @@ export default function App(){
     });
     // Coach-approved estimates → rep needs to convert to SO
     ests.filter(e=>e.status==='approved'&&e.approved_by==='Coach').forEach(e=>{
-      const c2=cust.find(x=>x.id===e.customer_id);const tag2=c2?.alpha_tag||e.id;
+      const c2=cust.find(x=>x.id===e.customer_id);const tag2=c2?.name||c2?.alpha_tag||e.id;
       if(c2?.payment_terms==='prepay'){
         todos.push({type:'deposit_needed',priority:1,msg:'💳 Deposit required before ordering: '+(e.memo||e.id),detail:tag2+' · Prepay customer — collect deposit to convert to SO',action:'Collect Deposit',role:'csr',est:e,estC:c2});
         todos.push({type:'deposit_needed',priority:1,msg:'💳 Deposit required before ordering: '+(e.memo||e.id),detail:tag2+' · Prepay customer — collect deposit to convert to SO',action:'Collect Deposit',role:'sales',est:e,estC:c2});
@@ -11845,7 +11845,7 @@ export default function App(){
     });
     // Coach requested estimate updates → rep needs to review and update
     ests.filter(e=>(e.update_requests||[]).some(r=>r.status==='pending')).forEach(e=>{
-      const c2=cust.find(x=>x.id===e.customer_id);const tag2=c2?.alpha_tag||e.id;
+      const c2=cust.find(x=>x.id===e.customer_id);const tag2=c2?.name||c2?.alpha_tag||e.id;
       const pendingReqs=(e.update_requests||[]).filter(r=>r.status==='pending');
       pendingReqs.forEach(req=>{
         todos.push({type:'est_update_request',priority:1,msg:'📝 Coach requested estimate update: '+(e.memo||e.id),detail:tag2+' · "'+req.text.slice(0,80)+(req.text.length>80?'...':'')+'"',action:'Update Estimate',role:'sales',est:e,estC:c2,updateReqId:req.id});
@@ -11853,7 +11853,7 @@ export default function App(){
     });
     // Stale estimate follow-up alerts (uses follow_up_at when set, falls back to days-since-sent)
     ests.filter(e=>e.status==='sent').forEach(e=>{
-      const c2=cust.find(x=>x.id===e.customer_id);const tag2=c2?.alpha_tag||e.id;
+      const c2=cust.find(x=>x.id===e.customer_id);const tag2=c2?.name||c2?.alpha_tag||e.id;
       // If follow_up_at is set and due, show specific follow-up todo
       if(e.follow_up_at&&new Date()>=new Date(e.follow_up_at)){
         const sentDate=e.email_sent_at||e.updated_at||e.created_at;
@@ -11871,7 +11871,7 @@ export default function App(){
     });
     // Invoice follow-up alerts (uses follow_up_at when set)
     invs.filter(i=>i.status!=='paid'&&i.follow_up_at&&new Date()>=new Date(i.follow_up_at)).forEach(inv2=>{
-      const c2=cust.find(x=>x.id===inv2.customer_id);const tag2=c2?.alpha_tag||inv2.id;
+      const c2=cust.find(x=>x.id===inv2.customer_id);const tag2=c2?.name||c2?.alpha_tag||inv2.id;
       const daysSince=inv2.email_sent_at?Math.floor((new Date()-new Date(inv2.email_sent_at))/(1000*60*60*24)):0;
       todos.push({type:'inv_followup',priority:1,msg:'⏰ Follow up on invoice '+inv2.id+' ('+daysSince+'d): $'+safeNum(inv2.total).toFixed(2),detail:tag2+' · Follow-up due '+new Date(inv2.follow_up_at).toLocaleDateString(),action:'Follow Up',role:'sales'});
     });
@@ -11879,7 +11879,7 @@ export default function App(){
     invs.filter(i=>i.status==='paid'&&i.payments?.length).forEach(inv2=>{
       const lastPay=inv2.payments[inv2.payments.length-1];if(!lastPay?.date)return;
       const payDate=new Date(lastPay.date);const daysAgo=Math.floor((new Date()-payDate)/(1000*60*60*24));
-      if(daysAgo<=7){const c2=cust.find(x=>x.id===inv2.customer_id);const tag2=c2?.alpha_tag||inv2.id;
+      if(daysAgo<=7){const c2=cust.find(x=>x.id===inv2.customer_id);const tag2=c2?.name||c2?.alpha_tag||inv2.id;
         todos.push({type:'inv_paid',priority:3,msg:'💰 Invoice paid: '+inv2.id+' — $'+safeNum(inv2.total).toFixed(2),detail:tag2+(inv2.memo?' · '+inv2.memo:'')+' · '+lastPay.method+(daysAgo===0?' · Today':' · '+daysAgo+'d ago'),so:inv2.so_id?sos.find(s=>s.id===inv2.so_id):null,action:'View',role:'sales',isNotification:true})}
     });
     // Open issues → show on to-do list for all users
