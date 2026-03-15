@@ -2665,7 +2665,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     React.useEffect(()=>{if(scrollToItem!=null){setTab('items');setTimeout(()=>{const el=document.getElementById('so-item-'+scrollToItem);if(el){el.scrollIntoView({behavior:'smooth',block:'center'});el.style.boxShadow='0 0 0 3px #3b82f6';setTimeout(()=>{el.style.boxShadow=''},2000)}},150)}},[scrollToItem]);
     React.useEffect(()=>{if(scrollToJob!=null){setTab('jobs');setSelJob(scrollToJob);setTimeout(()=>{const el=document.getElementById('so-job-'+scrollToJob);if(el){el.scrollIntoView({behavior:'smooth',block:'center'});el.style.boxShadow='0 0 0 3px #7c3aed';setTimeout(()=>{el.style.boxShadow=''},2000)}},200)}},[scrollToJob]);
     const origRef=React.useRef(JSON.stringify(o));
-    const markDirty=()=>setDirty(true);const[saved,setSaved]=useState(!!order.customer_id);const[showSend,setShowSend]=useState(false);const[showActionsDD,setShowActionsDD]=useState(false);const[showPick,setShowPick]=useState(false);const[pickId,setPickId]=useState(()=>{let max=4000;(allOrders||[]).concat([order]).forEach(so=>safeItems(so).forEach(it=>safePicks(it).forEach(pk=>{const m=parseInt((pk.pick_id||'').replace('IF-',''))||0;if(m>max)max=m})));return'IF-'+String(max+1)});const[showPO,setShowPO]=useState(null);const[poCounter,setPOCounter]=useState(()=>{let max=3000;(allOrders||[]).concat([order]).forEach(so=>safeItems(so).forEach(it=>safePOs(it).forEach(po=>{const m=parseInt((po.po_id||'').replace('PO-',''))||0;if(m>max)max=m})));return max+1});
+    const markDirty=()=>setDirty(true);const[saved,setSaved]=useState(!!order.customer_id);const[showSend,setShowSend]=useState(false);const[showActionsDD,setShowActionsDD]=useState(false);const actionsRef=useRef(null);const[showPick,setShowPick]=useState(false);const[pickId,setPickId]=useState(()=>{let max=4000;(allOrders||[]).concat([order]).forEach(so=>safeItems(so).forEach(it=>safePicks(it).forEach(pk=>{const m=parseInt((pk.pick_id||'').replace('IF-',''))||0;if(m>max)max=m})));return'IF-'+String(max+1)});const[showPO,setShowPO]=useState(null);const[poCounter,setPOCounter]=useState(()=>{let max=3000;(allOrders||[]).concat([order]).forEach(so=>safeItems(so).forEach(it=>safePOs(it).forEach(po=>{const m=parseInt((po.po_id||'').replace('PO-',''))||0;if(m>max)max=m})));return max+1});
     const[pickNotes,setPickNotes]=useState('');const[pickShipDest,setPickShipDest]=useState('in_house');const[pickDecoVendor,setPickDecoVendor]=useState('');const[pickShipAddr,setPickShipAddr]=useState('default');
     const[rosterSendModal,setRosterSendModal]=useState(null);// {idx,di,item,rosterUrl,linkData}
     const[rosterUploadModal,setRosterUploadModal]=useState(null);// {idx,di,item,roster,sizedQtys}
@@ -3584,8 +3584,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           onConvertSO(o)}}><Icon name="box" size={14}/> Convert to SO</button>}
         {/* Actions dropdown */}
         <div style={{position:'relative'}}>
-          <button className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'6px 12px'}} onClick={()=>setShowActionsDD(!showActionsDD)}>Actions <span style={{fontSize:9}}>▾</span></button>
-          {showActionsDD&&<><div style={{position:'fixed',inset:0,zIndex:98}} onClick={()=>setShowActionsDD(false)}/><div style={{position:'absolute',top:'100%',right:0,marginTop:4,background:'white',border:'1px solid #e2e8f0',borderRadius:6,boxShadow:'0 4px 12px rgba(0,0,0,0.1)',zIndex:99,minWidth:180,overflow:'visible'}}>
+          <button ref={actionsRef} className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'6px 12px'}} onClick={()=>setShowActionsDD(!showActionsDD)}>Actions <span style={{fontSize:9}}>▾</span></button>
+          {showActionsDD&&(()=>{const r=actionsRef.current?.getBoundingClientRect();return<><div style={{position:'fixed',inset:0,zIndex:98}} onClick={()=>setShowActionsDD(false)}/><div style={{position:'fixed',top:(r?r.bottom+4:0),right:(r?window.innerWidth-r.right:0),background:'white',border:'1px solid #e2e8f0',borderRadius:6,boxShadow:'0 4px 12px rgba(0,0,0,0.1)',zIndex:99,minWidth:180}}>
             {saved&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);setShowSend(true)}} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="send" size={12}/> Send</button>}
             <button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);
               const items=safeItems(o).filter(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return sq>0||safeNum(it.est_qty)>0});
@@ -3655,7 +3655,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {isSO&&onRevertToEst&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);if(!window.confirm('Revert '+o.id+' back to estimate? The SO will be deleted and '+(o.estimate_id?'the original estimate reopened.':'a new estimate created.')))return;onRevertToEst(o)}} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="back" size={12}/> Revert to Estimate</button>}
             {isSO&&o.estimate_id&&onViewEstimate&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);onViewEstimate(o.estimate_id)}} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="dollar" size={12}/> View Estimate</button>}
             {(isE||onDelete)&&<><div style={{borderTop:'1px solid #e2e8f0',margin:'2px 0'}}/><button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#dc2626',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);if(onDelete){onDelete(o.id)}else{nf('Delete not available','error')}}} onMouseEnter={e=>e.currentTarget.style.background='#fef2f2'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="trash" size={12}/> Delete</button></>}
-          </div></>}
+          </div></>})()}
         </div>
       </div>
       {isSO&&<div style={{display:'flex',gap:6,marginTop:8}}>
@@ -10705,12 +10705,12 @@ export default function App(){
             setMsgs(prev=>{const base=d.messages.length?d.messages:prev;return base.map(m=>_dbSaveFailedIds.has(m.id)?(prev.find(p=>p.id===m.id)||m):m)});
           }else{setEsts(prev=>d.estimates.map(e=>{const local=prev.find(p=>p.id===e.id);if(local?.items?.length&&(!e.items||!e.items.length))return{...e,items:local.items,art_files:local.art_files||e.art_files};return e}));setSOs(prev=>d.sales_orders.map(s=>{const local=prev.find(p=>p.id===s.id);if(!local)return s;const merged={...s};if(local.jobs?.length&&(!s.jobs||!s.jobs.length))merged.jobs=local.jobs;if(local.items?.length&&(!s.items||!s.items.length))merged.items=local.items;if(local.art_files?.length&&(!s.art_files||!s.art_files.length))merged.art_files=local.art_files;return merged.jobs!==s.jobs||merged.items!==s.items||merged.art_files!==s.art_files?merged:s}));setInvs(prev=>d.invoices.map(i=>{const local=prev.find(p=>p.id===i.id);if(local?.payments?.length&&(!i.payments||!i.payments.length))return{...i,payments:local.payments};return i}));setMsgs(d.messages.length?d.messages:msgs)}
           if(d.omg_stores.length)setOmgStores(d.omg_stores);
-          if(d.issues?.length)setIssues(d.issues);
-          if(d.quote_requests?.length)setQuoteRequests(d.quote_requests);
-          if(d.repCsrAssignments?.length)setRepCsrAssignments(d.repCsrAssignments);
-          if(d.assignedTodos?.length)setAssignedTodos(d.assignedTodos);
-          if(d.decoVendors?.length)setDecoVendors(d.decoVendors);
-          if(d.decoVendorPricing?.length)setDecoVendorPricing(d.decoVendorPricing);
+          setIssues(d.issues||[]);
+          if(d.quote_requests)setQuoteRequests(d.quote_requests);
+          if(d.repCsrAssignments)setRepCsrAssignments(d.repCsrAssignments);
+          if(d.assignedTodos)setAssignedTodos(d.assignedTodos);
+          if(d.decoVendors)setDecoVendors(d.decoVendors);
+          if(d.decoVendorPricing)setDecoVendorPricing(d.decoVendorPricing);
           // Load app_state key-value data (batch POs, changelog, etc.)
           const as=d.appState||{};
           if(as.batch_pos)setBatchPOs(as.batch_pos);
@@ -10764,7 +10764,7 @@ export default function App(){
               setEsts(d2.estimates);setSOs(d2.sales_orders);
               setInvs(d2.invoices);setMsgs(d2.messages.length?d2.messages:msgs);
               if(d2.omg_stores.length)setOmgStores(d2.omg_stores);
-              if(d2.issues?.length)setIssues(d2.issues);
+              setIssues(d2.issues||[]);
               const as2=d2.appState||{};
               if(as2.batch_pos)setBatchPOs(as2.batch_pos);if(as2.submitted_batches)setSubmittedBatches(as2.submitted_batches);
               if(as2.batch_counter)setBatchCounter(as2.batch_counter);if(as2.change_log)setChangeLog(as2.change_log);
@@ -10830,9 +10830,9 @@ export default function App(){
         if(d.products.length)setProd(prev=>{const base=prodMerge.apply(prev);if(_jsonEq(base,prev))return prev;const merged=base.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));return localOnly.length?[...merged,...localOnly]:merged});
         if(d.vendors.length)setVend(prev=>_jsonEq(prev,d.vendors)?prev:d.vendors);
         if(d.omg_stores.length)setOmgStores(prev=>_jsonEq(prev,d.omg_stores)?prev:d.omg_stores);
-        if(d.issues?.length)setIssues(prev=>_jsonEq(prev,d.issues)?prev:d.issues);
-        if(d.decoVendors?.length)setDecoVendors(prev=>_jsonEq(prev,d.decoVendors)?prev:d.decoVendors);
-        if(d.decoVendorPricing?.length)setDecoVendorPricing(prev=>_jsonEq(prev,d.decoVendorPricing)?prev:d.decoVendorPricing);
+        setIssues(prev=>{const v=d.issues||[];return _jsonEq(prev,v)?prev:v});
+        if(d.decoVendors)setDecoVendors(prev=>_jsonEq(prev,d.decoVendors)?prev:d.decoVendors);
+        if(d.decoVendorPricing)setDecoVendorPricing(prev=>_jsonEq(prev,d.decoVendorPricing)?prev:d.decoVendorPricing);
         // Refresh app_state keys
         const as=d.appState||{};
         if(as.inv_pos)setInvPOs(prev=>_jsonEq(prev,as.inv_pos)?prev:as.inv_pos);
@@ -11798,7 +11798,7 @@ export default function App(){
     // Build to-do items from jobs and SOs
     const todos=[];
     sos.forEach(so=>{
-      const c=cust.find(x=>x.id===so.customer_id);const tag=c?.alpha_tag||so.id;const _repId=c?.primary_rep_id||so.created_by;
+      const c=cust.find(x=>x.id===so.customer_id);const tag=c?.name||c?.alpha_tag||so.id;const _repId=c?.primary_rep_id||so.created_by;
       buildJobs(so).forEach(j=>{
         if(j.art_status==='waiting_approval'){todos.push({type:'art',priority:2,msg:'⏳ Art awaiting approval: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,action:'Review art',role:'sales'});
           if(j.sent_to_coach_at){const _fuAt=j.follow_up_at?new Date(j.follow_up_at):null;const _fuDays=portalSettings?.followUpDays||7;const daysSinceSent=Math.floor((new Date()-new Date(j.sent_to_coach_at))/(1000*60*60*24));const isDue=_fuAt?new Date()>=_fuAt:daysSinceSent>=_fuDays;if(isDue)todos.push({type:'coach_followup',priority:1,msg:'📞 Follow up on art approval ('+daysSinceSent+'d): '+j.art_name,detail:tag+' · '+so.id+' · Sent to coach '+daysSinceSent+' days ago',so,jobId:j.id,action:'Follow Up',role:'sales'})}}
@@ -11835,7 +11835,7 @@ export default function App(){
     });
     // Coach-approved estimates → rep needs to convert to SO
     ests.filter(e=>e.status==='approved'&&e.approved_by==='Coach').forEach(e=>{
-      const c2=cust.find(x=>x.id===e.customer_id);const tag2=c2?.alpha_tag||e.id;
+      const c2=cust.find(x=>x.id===e.customer_id);const tag2=c2?.name||c2?.alpha_tag||e.id;
       if(c2?.payment_terms==='prepay'){
         todos.push({type:'deposit_needed',priority:1,msg:'💳 Deposit required before ordering: '+(e.memo||e.id),detail:tag2+' · Prepay customer — collect deposit to convert to SO',action:'Collect Deposit',role:'csr',est:e,estC:c2});
         todos.push({type:'deposit_needed',priority:1,msg:'💳 Deposit required before ordering: '+(e.memo||e.id),detail:tag2+' · Prepay customer — collect deposit to convert to SO',action:'Collect Deposit',role:'sales',est:e,estC:c2});
@@ -11845,7 +11845,7 @@ export default function App(){
     });
     // Coach requested estimate updates → rep needs to review and update
     ests.filter(e=>(e.update_requests||[]).some(r=>r.status==='pending')).forEach(e=>{
-      const c2=cust.find(x=>x.id===e.customer_id);const tag2=c2?.alpha_tag||e.id;
+      const c2=cust.find(x=>x.id===e.customer_id);const tag2=c2?.name||c2?.alpha_tag||e.id;
       const pendingReqs=(e.update_requests||[]).filter(r=>r.status==='pending');
       pendingReqs.forEach(req=>{
         todos.push({type:'est_update_request',priority:1,msg:'📝 Coach requested estimate update: '+(e.memo||e.id),detail:tag2+' · "'+req.text.slice(0,80)+(req.text.length>80?'...':'')+'"',action:'Update Estimate',role:'sales',est:e,estC:c2,updateReqId:req.id});
@@ -11853,7 +11853,7 @@ export default function App(){
     });
     // Stale estimate follow-up alerts (uses follow_up_at when set, falls back to days-since-sent)
     ests.filter(e=>e.status==='sent').forEach(e=>{
-      const c2=cust.find(x=>x.id===e.customer_id);const tag2=c2?.alpha_tag||e.id;
+      const c2=cust.find(x=>x.id===e.customer_id);const tag2=c2?.name||c2?.alpha_tag||e.id;
       // If follow_up_at is set and due, show specific follow-up todo
       if(e.follow_up_at&&new Date()>=new Date(e.follow_up_at)){
         const sentDate=e.email_sent_at||e.updated_at||e.created_at;
@@ -11871,7 +11871,7 @@ export default function App(){
     });
     // Invoice follow-up alerts (uses follow_up_at when set)
     invs.filter(i=>i.status!=='paid'&&i.follow_up_at&&new Date()>=new Date(i.follow_up_at)).forEach(inv2=>{
-      const c2=cust.find(x=>x.id===inv2.customer_id);const tag2=c2?.alpha_tag||inv2.id;
+      const c2=cust.find(x=>x.id===inv2.customer_id);const tag2=c2?.name||c2?.alpha_tag||inv2.id;
       const daysSince=inv2.email_sent_at?Math.floor((new Date()-new Date(inv2.email_sent_at))/(1000*60*60*24)):0;
       todos.push({type:'inv_followup',priority:1,msg:'⏰ Follow up on invoice '+inv2.id+' ('+daysSince+'d): $'+safeNum(inv2.total).toFixed(2),detail:tag2+' · Follow-up due '+new Date(inv2.follow_up_at).toLocaleDateString(),action:'Follow Up',role:'sales'});
     });
@@ -11879,11 +11879,11 @@ export default function App(){
     invs.filter(i=>i.status==='paid'&&i.payments?.length).forEach(inv2=>{
       const lastPay=inv2.payments[inv2.payments.length-1];if(!lastPay?.date)return;
       const payDate=new Date(lastPay.date);const daysAgo=Math.floor((new Date()-payDate)/(1000*60*60*24));
-      if(daysAgo<=7){const c2=cust.find(x=>x.id===inv2.customer_id);const tag2=c2?.alpha_tag||inv2.id;
+      if(daysAgo<=7){const c2=cust.find(x=>x.id===inv2.customer_id);const tag2=c2?.name||c2?.alpha_tag||inv2.id;
         todos.push({type:'inv_paid',priority:3,msg:'💰 Invoice paid: '+inv2.id+' — $'+safeNum(inv2.total).toFixed(2),detail:tag2+(inv2.memo?' · '+inv2.memo:'')+' · '+lastPay.method+(daysAgo===0?' · Today':' · '+daysAgo+'d ago'),so:inv2.so_id?sos.find(s=>s.id===inv2.so_id):null,action:'View',role:'sales',isNotification:true})}
     });
-    // Open issues → show on to-do list for all users
-    issues.filter(i=>i.status==='open').forEach(i=>{
+    // Open issues → show on to-do list for top admin (Steve) only
+    if(cu?.id==='00000000-0000-0000-0000-000000000001')issues.filter(i=>i.status==='open').forEach(i=>{
       const pri=i.priority==='high'?0:i.priority==='medium'?1:2;
       todos.push({type:'issue',priority:pri,msg:(i.priority==='high'?'🔴':'🟡')+' Issue: '+i.description.slice(0,80)+(i.description.length>80?'...':''),detail:(i.reported_by||i.reportedBy||'Unknown')+' · '+i.page+(i.viewing?' · '+i.viewing:''),action:'View Issue',role:'all',issueId:i.id});
     });
