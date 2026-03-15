@@ -22648,10 +22648,17 @@ export default function App(){
       return false;
     };
     const unread=entityFiltered.filter(m=>!(m.read_by||[]).includes(cu.id));
-    const mentions=entityFiltered.filter(m=>(m.tagged_members||[]).includes(cu.id));
+    const _isMentioned=(m)=>{
+      if((m.tagged_members||[]).includes(cu.id))return true;
+      // Also check message text for @mentions (handles imported/legacy messages without tagged_members)
+      if(m.text){const t=m.text.toLowerCase();const fn=(cu.name||'').split(' ')[0].toLowerCase();const full=(cu.name||'').toLowerCase();if(fn&&(t.includes('@'+fn)||t.includes('@'+full)))return true}
+      return false;
+    };
+    const mentions=entityFiltered.filter(_isMentioned);
     const filtered=mF==='unread'?unread:mF==='mine'?entityFiltered.filter(_isMsgForMe):mF==='mentions'?mentions:entityFiltered;
-    // Thread grouping: show only top-level, count replies
-    const topLevel=filtered.filter(m=>!m.thread_id);
+    // Thread grouping: show only top-level; for mentions, also surface parent if tagged in a reply
+    const mentionThreadIds=mF==='mentions'?new Set(filtered.filter(m=>m.thread_id).map(m=>m.thread_id)):null;
+    const topLevel=mF==='mentions'?[...filtered.filter(m=>!m.thread_id),...entityFiltered.filter(m=>!m.thread_id&&mentionThreadIds.has(m.id)&&!filtered.includes(m))]:filtered.filter(m=>!m.thread_id);
     const replyCount=(id)=>filtered.filter(m=>m.thread_id===id).length;
     // Entity type stats
     const soCount=allM.filter(m=>(m.entity_type||'so')==='so').length;
