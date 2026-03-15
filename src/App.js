@@ -1850,6 +1850,7 @@ const fetchShipStationRates = async (customer, weight) => {
 //   3. Construct cursor from last record ID: btoa(JSON.stringify({id})) (fallback for orders)
 const omgFetchAllPages = async (endpoint, maxPages = 50) => {
   let allData = [];
+  const seenIds = new Set();
   // Extract base path without query for building pagination URLs
   const basePath = endpoint.split('?')[0];
   const baseQuery = endpoint.includes('?') ? '&' + endpoint.split('?')[1] : '';
@@ -1858,12 +1859,14 @@ const omgFetchAllPages = async (endpoint, maxPages = 50) => {
     const resp = await omgApiCall(nextUrl);
     const data = resp?.data || [];
     if (data.length === 0) break;
-    // Duplicate check: if first record was already fetched, stop
-    if (page > 0 && data[0]?.id && allData.some(d => d.id === data[0].id)) {
-      console.warn(`[OMG] Duplicate data on page ${page + 1}, stopping`);
+    // Deduplicate: constructed cursors can be inclusive (first record = last of prev page)
+    const newRecords = data.filter(d => !seenIds.has(d.id));
+    if (newRecords.length === 0) {
+      console.warn(`[OMG] All records on page ${page + 1} are duplicates, stopping`);
       break;
     }
-    allData = allData.concat(data);
+    newRecords.forEach(d => seenIds.add(d.id));
+    allData = allData.concat(newRecords);
     if (data.length < 100) break; // last page
     // Determine next page URL
     // Strategy 1: links.next from response
