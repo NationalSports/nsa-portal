@@ -16943,8 +16943,9 @@ export default function App(){
     const ytdNetComm=Math.round((ytdComm-ytdPromoCost)*100)/100;
 
     // By customer
-    const byCust={};allLines.forEach(l=>{const cn=l.customer?.name||'Unknown';if(!byCust[cn])byCust[cn]={name:cn,gp:0,comm:0,invCount:0,rev:0};byCust[cn].gp+=l.gp.gp;byCust[cn].comm+=l.commAmt;byCust[cn].invCount++;byCust[cn].rev+=safeNum(l.inv.total)});
-    const custList=Object.values(byCust).sort((a,b)=>b.comm-a.comm);
+    const byCust={};allLines.forEach(l=>{const cn=l.customer?.name||'Unknown';if(!byCust[cn])byCust[cn]={name:cn,gp:0,comm:0,invCount:0,rev:0,pipeRev:0,pipeGP:0,pipeComm:0,pipeCount:0};byCust[cn].gp+=l.gp.gp;byCust[cn].comm+=l.commAmt;byCust[cn].invCount++;byCust[cn].rev+=safeNum(l.inv.total)});
+    allPipeline.forEach(l=>{const cn=l.customer?.name||'Unknown';if(!byCust[cn])byCust[cn]={name:cn,gp:0,comm:0,invCount:0,rev:0,pipeRev:0,pipeGP:0,pipeComm:0,pipeCount:0};byCust[cn].pipeRev+=l.balance;byCust[cn].pipeGP+=l.gp.gp;byCust[cn].pipeComm+=l.expComm;byCust[cn].pipeCount++});
+    const custList=Object.values(byCust).sort((a,b)=>(b.comm+b.pipeComm)-(a.comm+a.pipeComm));
 
     // Monthly breakdown for YTD chart
     const monthlyData={};ytdLines.forEach(l=>{const m=String(l.paidDate.getMonth()+1).padStart(2,'0');if(!monthlyData[m])monthlyData[m]={month:m,gp:0,comm:0,count:0};monthlyData[m].gp+=l.gp.gp;monthlyData[m].comm+=l.commAmt;monthlyData[m].count++});
@@ -17159,7 +17160,7 @@ export default function App(){
         <div className="card-body" style={{padding:0}}>
           {custList.length===0?<div style={{padding:40,textAlign:'center',color:'#94a3b8'}}>No commission data</div>:
           <table style={{fontSize:12}}><thead><tr>
-            <th>Customer</th><th style={{textAlign:'center'}}>Invoices</th><th style={{textAlign:'right'}}>Revenue</th><th style={{textAlign:'right'}}>Gross Profit</th><th style={{textAlign:'center'}}>GP%</th><th style={{textAlign:'right'}}>Commission</th>
+            <th>Customer</th><th style={{textAlign:'center'}}>Invoices</th><th style={{textAlign:'right'}}>Revenue</th><th style={{textAlign:'right'}}>Gross Profit</th><th style={{textAlign:'center'}}>GP%</th><th style={{textAlign:'right'}}>Earned</th><th style={{textAlign:'center'}}>Pipeline</th><th style={{textAlign:'right'}}>Pipe Rev</th><th style={{textAlign:'right'}}>Pipe Comm</th><th style={{textAlign:'right'}}>Total</th>
           </tr></thead><tbody>
             {custList.map(c=><tr key={c.name}>
               <td style={{fontWeight:700}}>{c.name}</td>
@@ -17168,6 +17169,10 @@ export default function App(){
               <td style={{textAlign:'right',color:'#166534'}}>${c.gp.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
               <td style={{textAlign:'center'}}><span style={{padding:'2px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:c.rev>0&&c.gp/c.rev>=0.3?'#dcfce7':'#fef3c7',color:c.rev>0&&c.gp/c.rev>=0.3?'#166534':'#92400e'}}>{c.rev>0?Math.round(c.gp/c.rev*100):0}%</span></td>
               <td style={{textAlign:'right',fontWeight:800,color:'#166534'}}>${c.comm.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
+              <td style={{textAlign:'center',color:'#7c3aed'}}>{c.pipeCount||'\u2014'}</td>
+              <td style={{textAlign:'right',color:'#7c3aed'}}>{c.pipeRev?'$'+c.pipeRev.toLocaleString():'\u2014'}</td>
+              <td style={{textAlign:'right',fontWeight:700,color:'#7c3aed'}}>{c.pipeComm?'$'+c.pipeComm.toLocaleString(undefined,{maximumFractionDigits:2}):'\u2014'}</td>
+              <td style={{textAlign:'right',fontWeight:800,color:'#1e40af'}}>${(c.comm+c.pipeComm).toLocaleString(undefined,{maximumFractionDigits:2})}</td>
             </tr>)}
             <tr style={{fontWeight:800,background:'#f0f9ff',borderTop:'2px solid #1e40af'}}>
               <td>TOTAL</td>
@@ -17175,7 +17180,11 @@ export default function App(){
               <td style={{textAlign:'right'}}>${custList.reduce((a,c)=>a+c.rev,0).toLocaleString()}</td>
               <td style={{textAlign:'right',color:'#166534'}}>${custList.reduce((a,c)=>a+c.gp,0).toLocaleString(undefined,{maximumFractionDigits:0})}</td>
               <td></td>
-              <td style={{textAlign:'right',fontSize:14,color:'#166534'}}>${custList.reduce((a,c)=>a+c.comm,0).toLocaleString(undefined,{maximumFractionDigits:2})}</td>
+              <td style={{textAlign:'right',color:'#166534'}}>${custList.reduce((a,c)=>a+c.comm,0).toLocaleString(undefined,{maximumFractionDigits:2})}</td>
+              <td style={{textAlign:'center',color:'#7c3aed'}}>{custList.reduce((a,c)=>a+c.pipeCount,0)}</td>
+              <td style={{textAlign:'right',color:'#7c3aed'}}>${custList.reduce((a,c)=>a+c.pipeRev,0).toLocaleString()}</td>
+              <td style={{textAlign:'right',color:'#7c3aed'}}>${custList.reduce((a,c)=>a+c.pipeComm,0).toLocaleString(undefined,{maximumFractionDigits:2})}</td>
+              <td style={{textAlign:'right',fontSize:14,color:'#1e40af'}}>${custList.reduce((a,c)=>a+c.comm+c.pipeComm,0).toLocaleString(undefined,{maximumFractionDigits:2})}</td>
             </tr>
           </tbody></table>}
         </div>
