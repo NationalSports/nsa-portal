@@ -16995,7 +16995,7 @@ export default function App(){
             <th>Invoice</th><th>Customer</th>{isAdmin&&<th>Rep</th>}<th style={{textAlign:'right'}}>Revenue</th><th style={{textAlign:'right'}}>Cost</th><th style={{textAlign:'right'}}>Gross Profit</th><th style={{textAlign:'center'}}>Days</th><th style={{textAlign:'center'}}>Rate</th><th style={{textAlign:'right'}}>Commission</th>{isAdmin&&<th></th>}
           </tr></thead><tbody>
             {monthLines.map(l=><tr key={l.inv.id} style={{background:l.isLate&&!l.overridden?'#fef2f2':''}}>
-              <td style={{fontWeight:700,color:'#1e40af'}}>{l.inv.id}<div style={{fontSize:10,color:'#94a3b8'}}>{l.inv.date}</div></td>
+              <td style={{fontWeight:700,color:'#1e40af',cursor:'pointer'}} onClick={()=>{if(l.so){setESO(l.so);setESOC(l.customer);setPg('orders')}}}>{l.inv.id}<div style={{fontSize:10,color:'#94a3b8'}}>{l.inv.date}</div></td>
               <td>{l.customer?.name||'\u2014'}<div style={{fontSize:10,color:'#94a3b8'}}>{l.inv.memo}</div></td>
               {isAdmin&&<td style={{fontSize:11}}>{l.rep?.name||'\u2014'}</td>}
               <td style={{textAlign:'right'}}>${safeNum(l.inv.total).toLocaleString()}</td>
@@ -17046,7 +17046,7 @@ export default function App(){
               const stLabel={need_order:'Need Order',waiting_receive:'Waiting',items_received:'Items In',needs_pull:'Needs Pull',in_production:'In Prod',ready_to_invoice:'Ready Inv',complete:'Complete',booking:'Booking'};
               const isSOLine=l.type==='so';
               return<tr key={isSOLine?l.so.id:l.inv.id} style={{background:l.willBeLate?'#fef2f2':!isSOLine&&l.daysOpen>60?'#fffbeb':''}}>
-              <td style={{fontWeight:700,color:isSOLine?'#7c3aed':'#1e40af'}}>{isSOLine?l.so.id:l.inv.id}<div style={{fontSize:10,color:'#94a3b8'}}>{isSOLine?l.so.created_at:l.inv.date}</div></td>
+              <td style={{fontWeight:700,color:isSOLine?'#7c3aed':'#1e40af',cursor:'pointer'}} onClick={()=>{if(l.so){setESO(l.so);setESOC(l.customer);setPg('orders')}}}>{isSOLine?l.so.id:l.inv.id}<div style={{fontSize:10,color:'#94a3b8'}}>{isSOLine?l.so.created_at:l.inv.date}</div></td>
               <td>{l.customer?.name||'\u2014'}<div style={{fontSize:10,color:'#94a3b8'}}>{isSOLine?l.so.memo:l.inv.memo}</div></td>
               {isAdmin&&<td style={{fontSize:11}}>{l.rep?.name||'\u2014'}</td>}
               <td style={{textAlign:'center'}}>{isSOLine?<span style={{padding:'2px 6px',borderRadius:8,fontSize:9,fontWeight:600,background:'#ede9fe',color:'#6d28d9'}}>{stLabel[l.soStatus]||l.soStatus}</span>:<span style={{padding:'2px 6px',borderRadius:8,fontSize:9,fontWeight:600,background:'#dbeafe',color:'#1e40af'}}>Invoiced</span>}</td>
@@ -17085,7 +17085,7 @@ export default function App(){
             <th>SO #</th><th>Customer</th>{isAdmin&&<th>Rep</th>}<th>Date</th><th style={{textAlign:'right'}}>Product Cost</th><th style={{textAlign:'right'}}>Deco Cost</th><th style={{textAlign:'right'}}>Shipping</th><th style={{textAlign:'right',fontWeight:800}}>Total Cost</th>
           </tr></thead><tbody>
             {monthPromoLines.map(l=><tr key={l.so.id}>
-              <td style={{fontWeight:700,color:'#1e40af'}}>{l.so.id}<div style={{fontSize:10,color:'#94a3b8'}}>{l.so.memo}</div></td>
+              <td style={{fontWeight:700,color:'#1e40af',cursor:'pointer'}} onClick={()=>{setESO(l.so);setESOC(l.customer);setPg('orders')}}>{l.so.id}<div style={{fontSize:10,color:'#94a3b8'}}>{l.so.memo}</div></td>
               <td>{l.customer?.name||'\u2014'}</td>
               {isAdmin&&<td style={{fontSize:11}}>{l.rep?.name||'\u2014'}</td>}
               <td style={{fontSize:11,color:'#64748b'}}>{l.soDate}</td>
