@@ -10642,6 +10642,7 @@ export default function App(){
   const[dcStitches,setDcStitches]=useState(8000);
   const[dcTwoColor,setDcTwoColor]=useState(false);
   const[numRows,setNumRows]=useState(()=>{const r=[];for(let i=0;i<30;i++)r.push({number:'',size:''});return r});
+  const[numPaste,setNumPaste]=useState('');
   const[issueModal,setIssueModal]=useState({open:false,desc:'',priority:'medium'});
   const[issueFilter,setIssueFilter]=useState('all');// all|open|resolved
   const[editMember,setEditMember]=useState(null);
@@ -24651,14 +24652,16 @@ export default function App(){
       {/* ═══ NUMBERS LIST ═══ */}
       {stTab==='numbers'&&(()=>{
         const SZS=['XS','S','M','L','XL','2XL','3XL','4XL','YXS','YS','YM','YL','YXL'];
+        const SZ_ALIAS={'2X':'2XL','3X':'3XL','4X':'4XL','XXL':'2XL','XXXL':'3XL'};
+        const normSz=(s)=>{const u=s.toUpperCase().trim();return SZ_ALIAS[u]||u};
         const filled=numRows.filter(r=>r.number.toString().trim()&&r.size.trim());
         const summary={};SZS.forEach(s=>{summary[s]={count:0,numbers:[]}});
-        filled.forEach(r=>{const sz=r.size.toUpperCase().trim();if(summary[sz]){summary[sz].count++;summary[sz].numbers.push(r.number.toString().trim())}});
+        filled.forEach(r=>{const sz=normSz(r.size);if(summary[sz]){summary[sz].count++;summary[sz].numbers.push(r.number.toString().trim())}});
         const activeSizes=SZS.filter(s=>summary[s].count>0);
         const totalPieces=filled.length;
         const updateRow=(i,field,val)=>setNumRows(prev=>prev.map((r,ri)=>ri===i?{...r,[field]:val}:r));
         const addRows=()=>setNumRows(prev=>[...prev,...Array(10).fill(null).map(()=>({number:'',size:''}))]);
-        const clearAll=()=>{const r=[];for(let i=0;i<30;i++)r.push({number:'',size:''});setNumRows(r)};
+        const clearAll=()=>{const r=[];for(let i=0;i<30;i++)r.push({number:'',size:''});setNumRows(r);setNumPaste('')};
         const copyOutput=()=>{
           const lines=[];
           lines.push(totalPieces+' / Total : Numbers');
@@ -24667,13 +24670,66 @@ export default function App(){
         };
         const copyGrid=()=>{
           const hdr=['Number','Size'].join('\t');
-          const rows=filled.map(r=>r.number+'\t'+r.size.toUpperCase());
+          const rows=filled.map(r=>r.number+'\t'+normSz(r.size));
           navigator.clipboard.writeText([hdr,...rows].join('\n'));nf('Grid copied!');
+        };
+        // Parse pasted data — supports vertical (sizes as headers, numbers below) and horizontal (number,size pairs)
+        const parsePaste=()=>{
+          const raw=numPaste.trim();if(!raw){nf('Nothing to parse','warn');return}
+          const lines=raw.split('\n').map(l=>l.trim()).filter(Boolean);
+          const parsed=[];
+          // Detect vertical format: first line has size headers
+          const firstParts=lines[0].split(/[\t,]+/).map(s=>s.trim()).filter(Boolean);
+          const isSzHeader=firstParts.length>=2&&firstParts.every(p=>SZS.includes(normSz(p)));
+          if(isSzHeader){
+            // Vertical format: row 0 = size headers, subsequent rows = numbers under each column
+            const headers=firstParts.map(p=>normSz(p));
+            for(let li=1;li<lines.length;li++){
+              const parts=lines[li].split(/[\t,]+/).map(s=>s.trim());
+              for(let ci=0;ci<headers.length;ci++){
+                const v=parts[ci]||'';
+                if(v&&/^\d+$/.test(v))parsed.push({number:v,size:headers[ci]});
+              }
+            }
+          }else{
+            // Try horizontal: "number,size" or "number size" pairs, one per line or multiple per line
+            lines.forEach(line=>{
+              // Try "number,size" or "number\tsize" format
+              const parts=line.split(/[\t,]+/).map(s=>s.trim()).filter(Boolean);
+              if(parts.length===2){
+                const[a,b]=parts;
+                if(/^\d+$/.test(a)&&SZS.includes(normSz(b))){parsed.push({number:a,size:normSz(b)});return}
+                if(/^\d+$/.test(b)&&SZS.includes(normSz(a))){parsed.push({number:b,size:normSz(a)});return}
+              }
+              // Try space-separated "number size"
+              const sm=line.match(/^(\d+)\s+(YXS|YS|YM|YL|YXL|XS|S|M|L|XL|2XL?|3XL?|4XL?|XXL|XXXL)$/i);
+              if(sm){parsed.push({number:sm[1],size:normSz(sm[2])});return}
+              // Try "size number" format
+              const sm2=line.match(/^(YXS|YS|YM|YL|YXL|XS|S|M|L|XL|2XL?|3XL?|4XL?|XXL|XXXL)\s+(\d+)$/i);
+              if(sm2){parsed.push({number:sm2[2],size:normSz(sm2[1])});return}
+            });
+          }
+          if(!parsed.length){nf('Could not parse. Try vertical format (sizes as column headers with numbers below) or "number, size" pairs.','warn');return}
+          // Pad to at least 30 rows
+          while(parsed.length<30)parsed.push({number:'',size:''});
+          setNumRows(parsed);setNumPaste('');nf(parsed.filter(r=>r.number).length+' numbers parsed!');
         };
         return<div className="card">
           <div className="card-header"><h2>Numbers List</h2></div>
           <div className="card-body" style={{padding:16}}>
-            <p style={{fontSize:13,color:'#64748b',margin:'0 0 12px'}}>Enter player/jersey numbers and their sizes. The summary on the right will show how many of each size and which numbers are assigned to each.</p>
+            <p style={{fontSize:13,color:'#64748b',margin:'0 0 12px'}}>Enter player/jersey numbers and their sizes, or paste from a coach's email/spreadsheet. The summary shows how many of each size and which numbers are assigned.</p>
+            {/* Paste area */}
+            <div style={{background:'#fffbeb',border:'1px solid #fde68a',borderRadius:6,padding:12,marginBottom:16}}>
+              <div style={{fontSize:12,fontWeight:700,color:'#92400e',marginBottom:6}}>Paste from Coach</div>
+              <p style={{fontSize:11,color:'#78716c',margin:'0 0 8px'}}>Supports vertical format (sizes as column headers, numbers listed below) or horizontal pairs (e.g. "1,S" or "1 S" per line).</p>
+              <textarea className="form-input" value={numPaste} onChange={e=>setNumPaste(e.target.value)}
+                placeholder={"Vertical format:\nS\tM\tL\tXL\n1\t4\t14\t16\n2\t8\t28\t41\n3\t12\t37\t51\n\nOR horizontal:\n1,S\n4,M\n14,L\n16,XL"}
+                rows={5} style={{width:'100%',fontFamily:'monospace',fontSize:11,resize:'vertical',marginBottom:8}}/>
+              <div style={{display:'flex',gap:8}}>
+                <button className="btn btn-primary btn-sm" style={{fontSize:11}} onClick={parsePaste}>Parse & Load</button>
+                <button className="btn btn-secondary btn-sm" style={{fontSize:11}} onClick={()=>setNumPaste('')}>Clear</button>
+              </div>
+            </div>
             <div style={{display:'flex',gap:24,flexWrap:'wrap'}}>
               {/* Input Grid */}
               <div style={{flex:'0 0 280px'}}>
@@ -24699,7 +24755,7 @@ export default function App(){
                   <h3 style={{fontSize:14,margin:0}}>Summary</h3>
                   {filled.length>0&&<button className="btn btn-primary btn-sm" style={{fontSize:11}} onClick={copyOutput}>Copy Summary</button>}
                 </div>
-                {filled.length===0?<div style={{padding:24,textAlign:'center',color:'#94a3b8',fontSize:13}}>Enter numbers and sizes on the left to see the summary.</div>:
+                {filled.length===0?<div style={{padding:24,textAlign:'center',color:'#94a3b8',fontSize:13}}>Enter numbers and sizes on the left or paste from a coach above.</div>:
                 <div>
                   <div style={{background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:6,padding:12,marginBottom:12}}>
                     <div style={{fontSize:16,fontWeight:800,color:'#166534'}}>{totalPieces} Total Pieces</div>
