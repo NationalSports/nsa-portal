@@ -36,6 +36,10 @@ export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,
   const[showSearch,setShowSearch]=useState(false);
   const[detail,setDetail]=useState(null); // {type:'order'|'estimate'|'customer'|'invoice'|'message',data:{...}}
   const[moreMenu,setMoreMenu]=useState(false);
+  const[ordersFilter,setOrdersFilter]=useState('active');
+  const[estsFilter,setEstsFilter]=useState('pending');
+  const[custQ,setCustQ]=useState('');
+  const[moreSubPage,setMoreSubPage]=useState(null);
 
   // Derived data
   const unreadMsgs=useMemo(()=>msgs.filter(m=>!(m.read_by||[]).includes(cu.id)).length,[msgs,cu.id]);
@@ -310,18 +314,18 @@ export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,
   };
 
   // ─── ORDERS TAB ───
+  const filteredOrders=useMemo(()=>{
+    let list=sos;
+    if(ordersFilter==='active')list=sos.filter(s=>!['completed','shipped','cancelled'].includes(s.status||''));
+    else if(ordersFilter==='completed')list=sos.filter(s=>['completed','shipped'].includes(s.status||''));
+    return list.sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||''));
+  },[sos,ordersFilter]);
   const renderOrders=()=>{
-    const[filter,setFilter]=useState('active');
-    const filtered=useMemo(()=>{
-      let list=sos;
-      if(filter==='active')list=sos.filter(s=>!['completed','shipped','cancelled'].includes(s.status||''));
-      else if(filter==='completed')list=sos.filter(s=>['completed','shipped'].includes(s.status||''));
-      return list.sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||''));
-    },[sos,filter]);
+    const filtered=filteredOrders;
     return<div className="mp-page">
       <div className="mp-page-title">Sales Orders</div>
       <div className="mp-filter-row">
-        {['active','all','completed'].map(f=><button key={f} className={`mp-filter-btn${filter===f?' active':''}`} onClick={()=>setFilter(f)}>{f==='active'?'Active':f==='all'?'All':'Completed'}</button>)}
+        {['active','all','completed'].map(f=><button key={f} className={`mp-filter-btn${ordersFilter===f?' active':''}`} onClick={()=>setOrdersFilter(f)}>{f==='active'?'Active':f==='all'?'All':'Completed'}</button>)}
       </div>
       <div className="mp-count">{filtered.length} order{filtered.length!==1?'s':''}</div>
       {filtered.map(so=>{
@@ -347,18 +351,18 @@ export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,
   };
 
   // ─── ESTIMATES TAB ───
+  const filteredEsts=useMemo(()=>{
+    let list=ests;
+    if(estsFilter==='pending')list=ests.filter(e=>['draft','pending','sent'].includes(e.status||'draft'));
+    else if(estsFilter==='won')list=ests.filter(e=>e.status==='won'||e.status==='approved');
+    return list.sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||''));
+  },[ests,estsFilter]);
   const renderEstimates=()=>{
-    const[filter,setFilter]=useState('pending');
-    const filtered=useMemo(()=>{
-      let list=ests;
-      if(filter==='pending')list=ests.filter(e=>['draft','pending','sent'].includes(e.status||'draft'));
-      else if(filter==='won')list=ests.filter(e=>e.status==='won'||e.status==='approved');
-      return list.sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||''));
-    },[ests,filter]);
+    const filtered=filteredEsts;
     return<div className="mp-page">
       <div className="mp-page-title">Estimates</div>
       <div className="mp-filter-row">
-        {['pending','all','won'].map(f=><button key={f} className={`mp-filter-btn${filter===f?' active':''}`} onClick={()=>setFilter(f)}>{f==='pending'?'Pending':f==='all'?'All':'Won'}</button>)}
+        {['pending','all','won'].map(f=><button key={f} className={`mp-filter-btn${estsFilter===f?' active':''}`} onClick={()=>setEstsFilter(f)}>{f==='pending'?'Pending':f==='all'?'All':'Won'}</button>)}
       </div>
       <div className="mp-count">{filtered.length} estimate{filtered.length!==1?'s':''}</div>
       {filtered.map(est=>{
@@ -383,19 +387,19 @@ export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,
   };
 
   // ─── CUSTOMERS TAB ───
+  const filteredCust=useMemo(()=>{
+    let list=cust;
+    if(custQ.length>=2){const s=custQ.toLowerCase();list=list.filter(c=>(c.name+' '+(c.alpha_tag||'')+' '+(c.email||'')+' '+(c.phone||'')).toLowerCase().includes(s))}
+    return list.sort((a,b)=>a.name.localeCompare(b.name));
+  },[cust,custQ]);
   const renderCustomers=()=>{
-    const[cq,setCQ]=useState('');
-    const filtered=useMemo(()=>{
-      let list=cust;
-      if(cq.length>=2){const s=cq.toLowerCase();list=list.filter(c=>(c.name+' '+(c.alpha_tag||'')+' '+(c.email||'')+' '+(c.phone||'')).toLowerCase().includes(s))}
-      return list.sort((a,b)=>a.name.localeCompare(b.name));
-    },[cust,cq]);
+    const filtered=filteredCust;
     return<div className="mp-page">
       <div className="mp-page-title">Customers</div>
       <div className="mp-search-inline">
         <MIcon name="search" size={16}/>
-        <input placeholder="Search customers..." value={cq} onChange={e=>setCQ(e.target.value)} className="mp-search-input"/>
-        {cq&&<button onClick={()=>setCQ('')} className="mp-clear-btn"><MIcon name="x" size={14}/></button>}
+        <input placeholder="Search customers..." value={custQ} onChange={e=>setCustQ(e.target.value)} className="mp-search-input"/>
+        {custQ&&<button onClick={()=>setCustQ('')} className="mp-clear-btn"><MIcon name="x" size={14}/></button>}
       </div>
       <div className="mp-count">{filtered.length} customer{filtered.length!==1?'s':''}</div>
       {filtered.slice(0,50).map(cc=>{
@@ -417,7 +421,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,
 
   // ─── MORE TAB ───
   const renderMore=()=>{
-    const[subPage,setSubPage]=useState(null);
+    const subPage=moreSubPage;const setSubPage=setMoreSubPage;
     if(subPage==='messages'){
       const sorted=msgs.sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||'')).slice(0,30);
       return<div className="mp-page">
@@ -628,7 +632,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,
     {/* Bottom tab bar */}
     <div className="mp-tabbar">
       {[{id:'home',icon:'home',label:'Home'},{id:'orders',icon:'box',label:'Orders'},{id:'estimates',icon:'dollar',label:'Estimates'},{id:'customers',icon:'users',label:'Customers'},{id:'more',icon:'menu',label:'More'}].map(t=>
-        <button key={t.id} className={`mp-tab${tab===t.id?' active':''}`} onClick={()=>{setTab(t.id);setDetail(null)}}>
+        <button key={t.id} className={`mp-tab${tab===t.id?' active':''}`} onClick={()=>{setTab(t.id);setDetail(null);setMoreSubPage(null)}}>
           <MIcon name={t.icon} size={20}/>
           <span className="mp-tab-label">{t.label}</span>
           {t.id==='more'&&unreadMsgs>0&&<span className="mp-tab-badge">{unreadMsgs}</span>}
