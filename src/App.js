@@ -10997,25 +10997,44 @@ export default function App(){
       const saleResource = saleResp?.data || { id: omgId, attributes: {} };
       console.log('[OMG] Sale detail attributes:', Object.keys(saleResource.attributes || {}));
 
-      // Fetch orders, order_products, and products (prices are on products, not order_products)
-      let allOrders = [];
+      // Use nested endpoint for this sale's orders and global fetch for order_products + products
+      let orders = [];
       let allOrderProducts = [];
       let allProducts = [];
-      try { allOrders = await omgFetchAllPages('/orders'); } catch (e) { console.warn('[OMG] Could not fetch orders:', e.message); }
+      try {
+        const resp = await omgApiCall(`/sales/${omgId}/orders`);
+        orders = resp?.data || [];
+        // Paginate if needed
+        if (orders.length >= 100) {
+          const moreOrders = await omgFetchAllPages(`/sales/${omgId}/orders`);
+          orders = moreOrders;
+        }
+      } catch (e) { console.warn('[OMG] Could not fetch sale orders:', e.message); }
       try { allOrderProducts = await omgFetchAllPages('/order_products'); } catch (e) { console.warn('[OMG] Could not fetch order_products:', e.message); }
       try { allProducts = await omgFetchAllPages('/products'); } catch (e) { console.warn('[OMG] Could not fetch products:', e.message); }
 
-      // Filter to this sale
-      const orders = allOrders.filter(o => o.relationships?.sale?.data?.id === omgId);
-      const orderIds = new Set(orders.map(o => o.id));
-      const orderProducts = allOrderProducts.filter(op => orderIds.has(op.relationships?.order?.data?.id));
-      // Also get products that belong to this sale (for price lookup + product details)
-      const saleProducts = allProducts.filter(p => p.relationships?.sale?.data?.id === omgId);
-      console.log(`[OMG] Detail: ${orders.length} orders, ${orderProducts.length} order_products, ${saleProducts.length} products for sale ${omgId}`);
-
-      // Build product price map
+      // Build product map for prices
       const productMap = {};
       allProducts.forEach(p => { productMap[p.id] = p.attributes || {}; });
+
+      // Filter order_products to this sale's orders
+      const orderIds = new Set(orders.map(o => o.id));
+      let orderProducts = allOrderProducts.filter(op => orderIds.has(op.relationships?.order?.data?.id));
+
+      // Fallback: if no orders from nested endpoint, use product→sale chain
+      if (orderProducts.length === 0) {
+        const saleProductIds = new Set(allProducts.filter(p => p.relationships?.sale?.data?.id === omgId).map(p => p.id));
+        orderProducts = allOrderProducts.filter(op => saleProductIds.has(op.relationships?.product?.data?.id));
+        // Derive order IDs from these order_products
+        orderProducts.forEach(op => {
+          const oid = op.relationships?.order?.data?.id;
+          if (oid) orderIds.add(oid);
+        });
+      }
+
+      // Get products for this sale (for detail view product list)
+      const saleProducts = allProducts.filter(p => p.relationships?.sale?.data?.id === omgId);
+      console.log(`[OMG] Detail: ${orders.length} orders, ${orderProducts.length} order_products, ${saleProducts.length} products for sale ${omgId}`);
 
       // Build included array from products (since include= param returns 400)
       const productIncluded = saleProducts.map(p => ({ id: p.id, type: 'products', attributes: p.attributes, relationships: p.relationships }));
@@ -11023,7 +11042,7 @@ export default function App(){
       const detail = { data: saleResource, included: [...included, ...productIncluded], orders, orderProducts: orderProducts.length > 0 ? [{ data: orderProducts, included: productIncluded }] : [] };
       const updated = { ...convertOMGStore(detail, cust), _details_loaded: true };
 
-      // Always compute totals from order_products + products (convertOMGStore may miss prices)
+      // Compute totals from order_products + products
       let salesTotal = 0, totalItems = 0;
       orderProducts.forEach(op => {
         const qty = parseInt(op.attributes?.quantity || 0);
@@ -11035,6 +11054,7 @@ export default function App(){
       });
       if (salesTotal > 0) updated.total_sales = salesTotal;
       if (totalItems > 0) updated.items_sold = totalItems;
+      if (orders.length > 0) updated.orders = orders.length;
 
       // Count unique buyers
       const buyerIds = new Set(orders.map(o => o.relationships?.customer_info?.data?.id).filter(Boolean));
@@ -11421,127 +11441,81 @@ export default function App(){
         const incTypes = [...new Set((omgStoresData.included || []).map(i => i.type))];
         console.log('[OMG] Included resource types:', incTypes);
       }
-      // Fetch orders, order_products, AND products (for prices since order_products don't have price attrs)
-      let allOrders = [];
+      // ── Strategy: use order_products→product→sale chain for totals ──
+      // order_products pagination works reliably; products have base_price + sale relationship
+      // For order/buyer counts, use nested endpoint: /sales/{id}/orders (scoped per store)
       let allOrderProducts = [];
       let allProducts = [];
-      try { allOrders = await omgFetchAllPages('/orders'); } catch (e) { console.warn('[OMG] Could not fetch orders:', e.message); }
       try { allOrderProducts = await omgFetchAllPages('/order_products'); } catch (e) { console.warn('[OMG] Could not fetch order_products:', e.message); }
       try { allProducts = await omgFetchAllPages('/products'); } catch (e) { console.warn('[OMG] Could not fetch products:', e.message); }
 
-      // Build product price map: product_id → { base_price, cogs, name, style, sale_id }
+      // Build product map: product_id → { base_price, sale_id, ... }
       const productMap = {};
       allProducts.forEach(p => {
         const a = p.attributes || {};
         productMap[p.id] = {
-          base_price: parseFloat(a.base_price || 0),
-          cogs: parseFloat(a.cogs || 0),
+          base_price: parseFloat(a.base_price || 0), cogs: parseFloat(a.cogs || 0),
           name: a.name || '', style: a.style || '',
           sale_id: p.relationships?.sale?.data?.id || null
         };
       });
-      console.log(`[OMG] Built product map: ${Object.keys(productMap).length} products`);
 
-      // Group orders by sale_id
-      const ordersBySale = {};
-      allOrders.forEach(o => {
-        const saleId = o.relationships?.sale?.data?.id;
-        if (saleId) {
-          if (!ordersBySale[saleId]) ordersBySale[saleId] = [];
-          ordersBySale[saleId].push(o);
-        }
-      });
-
-      // Map order_products to orders
-      const orderProductsByOrder = {};
-      allOrderProducts.forEach(op => {
-        const orderId = op.relationships?.order?.data?.id;
-        if (orderId) {
-          if (!orderProductsByOrder[orderId]) orderProductsByOrder[orderId] = [];
-          orderProductsByOrder[orderId].push(op);
-        }
-      });
-
-      // Compute totals per sale using products for prices
+      // Compute totals per sale via: order_product → product (price + sale_id)
       const saleTotals = {};
-      for (const [saleId, orders] of Object.entries(ordersBySale)) {
-        let totalItems = 0, totalSales = 0;
-        orders.forEach(o => {
-          const ops = orderProductsByOrder[o.id] || [];
-          ops.forEach(op => {
-            const a = op.attributes || {};
-            const qty = parseInt(a.quantity || 0);
-            // Get price from the product resource (order_products don't have price attrs)
-            const productId = op.relationships?.product?.data?.id;
-            const product = productId ? productMap[productId] : null;
-            const price = product ? product.base_price : parseFloat(a.price || a.unit_price || a.base_price || 0);
-            totalItems += qty;
-            totalSales += price * qty;
-          });
-        });
-        saleTotals[saleId] = { totalItems, totalSales, orderCount: orders.length };
-      }
-
-      // Fallback: also compute totals via products.sale relationship (in case orders pagination missed some)
-      // Products have a direct sale relationship, so we can count items from order_products→product→sale
       allOrderProducts.forEach(op => {
         const productId = op.relationships?.product?.data?.id;
         const product = productId ? productMap[productId] : null;
         if (!product?.sale_id) return;
         const saleId = product.sale_id;
-        if (!saleTotals[saleId]) saleTotals[saleId] = { totalItems: 0, totalSales: 0, orderCount: 0 };
-        // Only add if not already counted via orders path (check by seeing if this sale had orders)
-        if (!ordersBySale[saleId]) {
-          const qty = parseInt(op.attributes?.quantity || 0);
-          saleTotals[saleId].totalItems += qty;
-          saleTotals[saleId].totalSales += (product.base_price || 0) * qty;
-          // Track unique order IDs for order count
-          const orderId = op.relationships?.order?.data?.id;
-          if (orderId) {
-            if (!saleTotals[saleId]._orderIds) saleTotals[saleId]._orderIds = new Set();
-            saleTotals[saleId]._orderIds.add(orderId);
-            saleTotals[saleId].orderCount = saleTotals[saleId]._orderIds.size;
-          }
+        if (!saleTotals[saleId]) saleTotals[saleId] = { totalItems: 0, totalSales: 0, orderCount: 0, _orderIds: new Set() };
+        const qty = parseInt(op.attributes?.quantity || 0);
+        saleTotals[saleId].totalItems += qty;
+        saleTotals[saleId].totalSales += (product.base_price || 0) * qty;
+        const orderId = op.relationships?.order?.data?.id;
+        if (orderId) {
+          saleTotals[saleId]._orderIds.add(orderId);
+          saleTotals[saleId].orderCount = saleTotals[saleId]._orderIds.size;
         }
       });
 
-      // Diagnostic: show what's linking and what's not
-      const storeIds = new Set(stores.map(s => s.id));
-      const orderSaleIds = new Set(Object.keys(ordersBySale));
-      const productSaleIds = new Set(allProducts.map(p => p.relationships?.sale?.data?.id).filter(Boolean));
-      const matchedViaOrders = [...storeIds].filter(id => orderSaleIds.has(id));
-      const matchedViaProducts = [...storeIds].filter(id => productSaleIds.has(id));
-      console.log('[OMG] DIAGNOSTIC:',
-        '| Stores:', storeIds.size, 'IDs:', [...storeIds].slice(0, 5),
-        '| Order sale IDs:', orderSaleIds.size, 'sample:', [...orderSaleIds].slice(0, 5),
-        '| Product sale IDs:', productSaleIds.size, 'sample:', [...productSaleIds].slice(0, 5),
-        '| Stores matched via orders:', matchedViaOrders.length,
-        '| Stores matched via products:', matchedViaProducts.length);
-      console.log('[OMG] Sales with totals:', Object.keys(saleTotals).length,
-        '| Orders by sale:', Object.keys(ordersBySale).length,
-        '| Total orders:', allOrders.length, '| Total OPs:', allOrderProducts.length, '| Total products:', allProducts.length);
-      if (allOrderProducts.length > 0) {
-        const sampleOP = allOrderProducts[0];
-        const sampleProductId = sampleOP.relationships?.product?.data?.id;
-        const sampleProduct = sampleProductId ? productMap[sampleProductId] : null;
-        console.log('[OMG] Sample OP→product chain:', { op_id: sampleOP.id, product_id: sampleProductId, product_found: !!sampleProduct, product_sale_id: sampleProduct?.sale_id, base_price: sampleProduct?.base_price, qty: sampleOP.attributes?.quantity });
-      }
+      console.log('[OMG] Totals computed for', Object.keys(saleTotals).length, 'sales from',
+        allOrderProducts.length, 'order_products and', allProducts.length, 'products');
 
-      // Convert store list data and populate with order + order_product data
+      // For each store, fetch orders via nested endpoint for buyer count
+      // Do this in parallel with a concurrency limit
+      const storeOrderPromises = stores.map(async store => {
+        try {
+          const resp = await omgApiCall(`/sales/${store.id}/orders`);
+          return { saleId: store.id, orders: resp?.data || [] };
+        } catch {
+          return { saleId: store.id, orders: [] };
+        }
+      });
+      const storeOrderResults = await Promise.all(storeOrderPromises);
+      const ordersBySale = {};
+      storeOrderResults.forEach(({ saleId, orders }) => {
+        if (orders.length > 0) ordersBySale[saleId] = orders;
+      });
+      console.log('[OMG] Fetched orders for', Object.keys(ordersBySale).length, 'stores via /sales/{id}/orders');
+
+      // Convert store list data and populate with computed totals
       const convertedStores = stores.map(store => {
         const saleOrders = ordersBySale[store.id] || [];
         const basic = { data: store, included: omgStoresData.included || [], orders: saleOrders, orderProducts: [] };
         const converted = convertOMGStore(basic, cust);
-        // Apply computed totals
+        // Apply computed totals from order_products→product chain
         const totals = saleTotals[store.id];
         if (totals) {
-          converted.orders = totals.orderCount;
+          if (totals.orderCount > 0) converted.orders = totals.orderCount;
           if (totals.totalSales > 0) converted.total_sales = totals.totalSales;
           if (totals.totalItems > 0) converted.items_sold = totals.totalItems;
         }
-        // Count unique buyers from order customer_info relationships
-        const buyerIds = new Set(saleOrders.map(o => o.relationships?.customer_info?.data?.id).filter(Boolean));
-        if (buyerIds.size > 0) converted.unique_buyers = buyerIds.size;
+        // Override order count from nested endpoint if we got real orders
+        if (saleOrders.length > 0) {
+          converted.orders = saleOrders.length;
+          const buyerIds = new Set(saleOrders.map(o => o.relationships?.customer_info?.data?.id).filter(Boolean));
+          if (buyerIds.size > 0) converted.unique_buyers = buyerIds.size;
+        }
         converted._details_loaded = false;
         return converted;
       });
