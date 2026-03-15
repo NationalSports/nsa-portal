@@ -12428,11 +12428,9 @@ export default function App(){
                 if(isAdminGm){return REPS.filter(r=>r.is_active!==false&&(r.role==='csr'||r.role==='rep'||r.role==='admin')).map(r=><option key={r.id} value={r.id}>{r.name} ({r.role}){getPrimaryCsrForRep(cu.id)===r.id?' ★':''}</option>)}
                 const myCsrIds=getCsrsForRep(cu.id);
                 const myCsrs=REPS.filter(r=>myCsrIds.includes(r.id)&&r.is_active!==false);
-                const otherReps=REPS.filter(r=>r.is_active!==false&&r.role==='rep'&&r.id!==cu.id);
                 const otherCsrs=REPS.filter(r=>r.is_active!==false&&r.role==='csr'&&!myCsrIds.includes(r.id));
                 return[
                   myCsrs.length>0&&<optgroup key="my-csrs" label="My CSRs">{myCsrs.map(r=><option key={r.id} value={r.id}>{r.name}{getPrimaryCsrForRep(cu.id)===r.id?' ★ Primary':''}</option>)}</optgroup>,
-                  otherReps.length>0&&<optgroup key="other-reps" label="Other Reps">{otherReps.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</optgroup>,
                   otherCsrs.length>0&&<optgroup key="other-csrs" label="Other CSRs">{otherCsrs.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</optgroup>
                 ];
               })()}
@@ -22620,20 +22618,28 @@ export default function App(){
     const allM=mHideClosed?allMRaw.filter(m=>{const so=sos.find(s=>s.id===m.so_id||s.id===m.entity_id);if(!so&&(m.entity_type||'so')==='so')return true;if(!so)return true;const cStatus=calcSOStatus(so);return!closedStatuses.has(cStatus)&&!closedStatuses.has(so.status)}):allMRaw;
     // Entity type filter
     const entityFiltered=mEntityF==='all'?allM:allM.filter(m=>(m.entity_type||'so')===mEntityF);
-    // Person-specific message filter: show messages for user's customers (rep) or assigned reps' customers (CSR)
+    // Person-specific message filter: role-based filtering
     const _isMsgForMe=(m)=>{
+      // Everyone sees messages they are tagged in or authored
       if((m.tagged_members||[]).includes(cu.id))return true;
       if(m.author_id===cu.id)return true;
-      if(cu.role==='admin'||cu.role==='gm')return true;
+      // Warehouse: see @warehouse dept messages or personally tagged (already handled above)
+      if(cu.role==='warehouse')return m.dept==='warehouse';
+      // For roles that care about customer/rep assignment:
       const so=sos.find(s=>s.id===m.so_id||s.id===m.entity_id);
       const est2=ests.find(e=>e.id===m.entity_id);
       const entity=so||est2;
-      if(!entity)return true;
+      if(!entity)return false;
       const c=cust.find(x=>x.id===entity.customer_id);
       const msgRepId=c?.primary_rep_id||(so?.created_by)||(est2?.created_by);
+      // Admin/GM: see their customer orders + tagged (tagged handled above)
+      if(cu.role==='admin'||cu.role==='gm')return msgRepId===cu.id;
+      // Rep: see messages on their customer orders
       if(cu.role==='rep')return msgRepId===cu.id;
+      // CSR: see messages on orders where their assigned rep is involved
       if(cu.role==='csr'){const myReps=getRepsForCsr(cu.id);return myReps.length===0||myReps.includes(msgRepId)}
-      return true;
+      // Other roles: only tagged/authored (already handled above)
+      return false;
     };
     const unread=entityFiltered.filter(m=>!(m.read_by||[]).includes(cu.id));
     const mentions=entityFiltered.filter(m=>(m.tagged_members||[]).includes(cu.id));
@@ -22746,7 +22752,7 @@ export default function App(){
                 <span style={{fontWeight:700,fontSize:13}}>{author?.name}</span>
                 <span style={{fontSize:9,fontWeight:700,padding:'2px 8px',borderRadius:10,background:entityBg(m),color:entityColor(m)}}>{entityLabel(m)}</span>
                 <span style={{fontSize:11,color:entityColor(m),fontWeight:600}}>{m.entity_id||m.so_id}</span>
-                {c2&&<span style={{fontSize:11,color:'#64748b'}}>{c2.alpha_tag}</span>}
+                {c2&&<span style={{fontSize:11,color:'#475569',fontWeight:600}}>{c2.name}</span>}
                 {entity?.memo&&<span style={{fontSize:10,color:'#94a3b8',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>— {entity.memo}</span>}
                 {isTagged&&<span style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:8,background:'#fef3c7',color:'#92400e'}}>Tagged you</span>}
                 <span style={{fontSize:10,color:'#94a3b8',marginLeft:'auto',whiteSpace:'nowrap'}}>{m.ts}</span>
