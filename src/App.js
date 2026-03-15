@@ -11017,6 +11017,35 @@ export default function App(){
   React.useEffect(()=>{if(!_initialLoadDone.current||!_dbLoadSuccess.current)return;const snap=_dbSnap.current.repCsr||[];const changed=repCsrAssignments.filter(a=>{const old=snap.find(p=>p.id===a.id);return!old||JSON.stringify(old)!==JSON.stringify(a)});if(changed.length)_dbSave('rep_csr_assignments',changed);_dbSnap.current.repCsr=repCsrAssignments},[repCsrAssignments]);
   // Assigned todos auto-save
   React.useEffect(()=>{if(!_initialLoadDone.current||!_dbLoadSuccess.current)return;const snap=_dbSnap.current.assignedTodos||[];assignedTodos.forEach(t=>{const old=snap.find(p=>p.id===t.id);if(!old||JSON.stringify(old)!==JSON.stringify(t)){const{comments,...row}=t;_dbSave('assigned_todos',[row]);if(comments?.length){const oldComments=old?.comments||[];const newComments=comments.filter(c=>!oldComments.find(oc=>oc.id===c.id));if(newComments.length)_dbSave('todo_comments',newComments)}}});_dbSnap.current.assignedTodos=assignedTodos},[assignedTodos]);
+  // Auto-complete assigned todos when the underlying action is fulfilled
+  React.useEffect(()=>{if(!_initialLoadDone.current)return;
+    const now=new Date().toISOString();
+    let changed=false;
+    setAssignedTodos(prev=>prev.map(t=>{
+      if(t.status!=='open')return t;
+      // "Items need ordering" tasks — auto-complete when SO is no longer need_order
+      if(t.so_id&&t.title&&/items need ordering/i.test(t.title)){
+        const so=sos.find(s=>s.id===t.so_id);
+        if(so&&calcSOStatus(so)!=='need_order'){changed=true;return{...t,status:'completed',completed_at:now,completed_by:'system',completion_note:'Auto-completed: items have been ordered',updated_at:now}}
+      }
+      // "Deposit required" tasks — auto-complete when estimate is converted to SO
+      if(t.title&&/deposit required/i.test(t.title)){
+        const estId=t.title.match(/(EST-\d+|E-\d+)/i)?.[1];
+        if(estId){const est=ests.find(e=>e.id===estId);if(est&&est.status==='converted'){changed=true;return{...t,status:'completed',completed_at:now,completed_by:'system',completion_note:'Auto-completed: estimate converted to SO',updated_at:now}}}
+      }
+      // "Coach approved estimate" tasks — auto-complete when estimate is converted
+      if(t.title&&/coach approved estimate/i.test(t.title)){
+        const estId=t.title.match(/(EST-\d+|E-\d+)/i)?.[1];
+        if(estId){const est=ests.find(e=>e.id===estId);if(est&&est.status==='converted'){changed=true;return{...t,status:'completed',completed_at:now,completed_by:'system',completion_note:'Auto-completed: estimate converted to SO',updated_at:now}}}
+      }
+      // "Confirm booking order" tasks — auto-complete when booking is confirmed
+      if(t.so_id&&t.title&&/confirm booking/i.test(t.title)){
+        const so=sos.find(s=>s.id===t.so_id);
+        if(so&&so.booking_confirmed){changed=true;return{...t,status:'completed',completed_at:now,completed_by:'system',completion_note:'Auto-completed: booking confirmed',updated_at:now}}
+      }
+      return t;
+    }));
+  },[sos,ests]);
   // Batch POs, submitted batches, changelog, SO history — sync to localStorage + Supabase app_state table
   const _saveAppState=(key,val)=>{try{localStorage.setItem('nsa_'+key,JSON.stringify(val))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current)_dbSave('app_state',[{id:key,value:JSON.stringify(val),updated_at:new Date().toISOString()}])};
   React.useEffect(()=>{_saveAppState('batch_pos',batchPOs)},[batchPOs]);
