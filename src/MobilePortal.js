@@ -30,7 +30,7 @@ const timeAgo=(d)=>{if(!d)return'';const ms=Date.now()-new Date(d).getTime();con
 // ═══════════════════════════════════════════
 // MOBILE PORTAL COMPONENT
 // ═══════════════════════════════════════════
-export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,assignedTodos=[],onLogout,onSwitchDesktop,onNewEstimate,nf}){
+export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,assignedTodos=[],onLogout,onSwitchDesktop,onSaveEstimate,nextEstId,nf}){
   const[tab,setTab]=useState('home');
   const[q,setQ]=useState('');
   const[showSearch,setShowSearch]=useState(false);
@@ -44,6 +44,12 @@ export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,
   const[invsSort,setInvsSort]=useState('newest');
   const[custQ,setCustQ]=useState('');
   const[moreSubPage,setMoreSubPage]=useState(null);
+  // New estimate form
+  const[newEst,setNewEst]=useState(null); // null = not creating, object = in progress
+  const[newEstCustQ,setNewEstCustQ]=useState('');
+  const[newEstProdQ,setNewEstProdQ]=useState('');
+  const[newEstStep,setNewEstStep]=useState('customer'); // customer | details | items | sizes
+  const[newEstEditItem,setNewEstEditItem]=useState(null); // index of item being edited for sizes
   // Messages filter
   const[msgFilter,setMsgFilter]=useState('for_me');
 
@@ -268,6 +274,162 @@ export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,
     </div>;
   };
 
+  // ─── HELPER: round to quarter ───
+  const rQ=v=>Math.round(v*4)/4;
+
+  // ─── NEW ESTIMATE FORM ───
+  const startNewEstimate=()=>{
+    setNewEst({customer_id:null,memo:'',items:[]});
+    setNewEstStep('customer');setNewEstCustQ('');setNewEstProdQ('');setNewEstEditItem(null);
+  };
+  const addItemToEst=(p)=>{
+    const cc=newEst.customer_id?custObj(newEst.customer_id):null;
+    const mk=cc?.catalog_markup||1.65;
+    const au=p.brand==='Adidas'||p.brand==='Under Armour'||p.brand==='New Balance';
+    const repCost=p.is_clearance&&p.clearance_cost!=null?p.clearance_cost:p.nsa_cost;
+    const sell=au?rQ(p.retail_price*(1-(({A:0.4,B:0.35,C:0.3})[cc?.adidas_ua_tier||'B']||0.35))):rQ(repCost*mk);
+    const item={product_id:p.id,sku:p.sku,name:p.name,brand:p.brand,color:p.color,nsa_cost:repCost,retail_price:p.retail_price,unit_sell:sell,available_sizes:[...(p.available_sizes||['S','M','L','XL','2XL'])],sizes:{},decorations:[]};
+    setNewEst(e=>({...e,items:[...e.items,item]}));
+    setNewEstProdQ('');
+    setNewEstEditItem(newEst.items.length); // open size editor for new item
+    setNewEstStep('sizes');
+  };
+  const saveNewEstimate=()=>{
+    if(!newEst||!onSaveEstimate)return;
+    const cc=newEst.customer_id?custObj(newEst.customer_id):null;
+    const mk=cc?.catalog_markup||1.65;
+    const est={id:nextEstId(),customer_id:newEst.customer_id,memo:newEst.memo,status:'draft',created_by:cu.id,
+      created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:mk,
+      shipping_type:'pct',shipping_value:5,ship_to_id:'default',email_status:null,art_files:[],items:newEst.items};
+    const saved=onSaveEstimate(est);
+    setNewEst(null);
+    if(nf)nf(saved.id+' created');
+    setDetail({type:'estimate',data:saved});
+  };
+
+  const renderNewEstimate=()=>{
+    // Step 1: Pick customer
+    if(newEstStep==='customer'){
+      const s=newEstCustQ.toLowerCase();
+      const matches=s.length>=2?cust.filter(c=>(c.name+' '+(c.alpha_tag||'')).toLowerCase().includes(s)).slice(0,20):cust.slice(0,20);
+      return<div className="mp-detail">
+        <div className="mp-detail-header">
+          <button className="mp-back-btn" onClick={()=>setNewEst(null)}><MIcon name="x" size={22}/></button>
+          <div style={{flex:1}}><div className="mp-detail-id">New Estimate</div><div className="mp-detail-sub">Step 1: Select Customer</div></div>
+        </div>
+        <div className="mp-detail-body">
+          <div className="mp-search-inline">
+            <MIcon name="search" size={16}/>
+            <input autoFocus placeholder="Search customers..." value={newEstCustQ} onChange={e=>setNewEstCustQ(e.target.value)} className="mp-search-input"/>
+            {newEstCustQ&&<button onClick={()=>setNewEstCustQ('')} className="mp-clear-btn"><MIcon name="x" size={14}/></button>}
+          </div>
+          <button className="mp-list-card" style={{textAlign:'center',color:'#64748b',fontWeight:600,fontSize:13,border:'1px dashed #cbd5e1'}} onClick={()=>{setNewEst(e=>({...e,customer_id:null}));setNewEstStep('details')}}>
+            Skip — No Customer
+          </button>
+          {matches.map(cc=><div key={cc.id} className="mp-list-card" onClick={()=>{setNewEst(e=>({...e,customer_id:cc.id}));setNewEstStep('details')}}>
+            <div style={{fontWeight:700,fontSize:14}}>{cc.name}</div>
+            {cc.alpha_tag&&<div style={{fontSize:12,color:'#64748b'}}>{cc.alpha_tag}</div>}
+          </div>)}
+        </div>
+      </div>;
+    }
+    // Step 2: Memo + items list
+    if(newEstStep==='details'||newEstStep==='items'){
+      const cc=newEst.customer_id?custObj(newEst.customer_id):null;
+      const s=newEstProdQ.toLowerCase();
+      const prodMatches=s.length>=2?prod.filter(p=>(p.sku+' '+p.name+' '+(p.brand||'')+' '+(p.color||'')).toLowerCase().includes(s)).slice(0,15):[];
+      return<div className="mp-detail">
+        <div className="mp-detail-header">
+          <button className="mp-back-btn" onClick={()=>{if(newEst.items.length===0)setNewEstStep('customer');else if(!window.confirm('Discard this estimate?'))return;else setNewEst(null)}}><MIcon name="back" size={22}/></button>
+          <div style={{flex:1}}><div className="mp-detail-id">New Estimate</div><div className="mp-detail-sub">{cc?.name||'No Customer'}</div></div>
+          {newEst.items.length>0&&<button style={{background:'#16a34a',color:'white',border:'none',borderRadius:8,padding:'8px 16px',fontWeight:700,fontSize:13,cursor:'pointer'}} onClick={saveNewEstimate}>Save</button>}
+        </div>
+        <div className="mp-detail-body">
+          <div style={{marginBottom:12}}>
+            <div style={{fontSize:12,fontWeight:600,color:'#64748b',marginBottom:4}}>Memo / Description</div>
+            <input value={newEst.memo} onChange={e=>setNewEst(x=>({...x,memo:e.target.value}))} placeholder="e.g. Fall season jerseys" className="mp-search-input" style={{background:'white',border:'1px solid #e2e8f0',borderRadius:8,padding:'10px 12px',width:'100%',boxSizing:'border-box',fontSize:16}}/>
+          </div>
+          {/* Existing items */}
+          {newEst.items.length>0&&<>
+            <div className="mp-section-title">Items ({newEst.items.length})</div>
+            {newEst.items.map((it,idx)=>{
+              const qty=Object.values(it.sizes||{}).reduce((a,v)=>a+v,0);
+              return<div key={idx} className="mp-item-card">
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
+                  <div style={{flex:1,minWidth:0}} onClick={()=>{setNewEstEditItem(idx);setNewEstStep('sizes')}}>
+                    <div style={{fontWeight:700,fontSize:14}}>{it.name||it.sku}</div>
+                    <div style={{fontSize:12,color:'#64748b'}}>{it.sku}{it.color?' · '+it.color:''}</div>
+                    {qty>0&&<div className="mp-size-row" style={{marginTop:4}}>
+                      {Object.entries(it.sizes||{}).filter(([,v])=>v>0).map(([sz,v])=>
+                        <div key={sz} className="mp-size-chip"><span className="mp-size-label">{sz}</span><span className="mp-size-qty">{v}</span></div>)}
+                    </div>}
+                    {qty===0&&<div style={{fontSize:12,color:'#d97706',marginTop:4}}>Tap to set sizes</div>}
+                  </div>
+                  <div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:4}}>
+                    <div style={{fontWeight:700}}>{qty} pcs</div>
+                    <button onClick={()=>setNewEst(e=>({...e,items:e.items.filter((_,i)=>i!==idx)}))} style={{background:'none',border:'none',color:'#dc2626',fontSize:11,cursor:'pointer',padding:0}}>Remove</button>
+                  </div>
+                </div>
+              </div>})}
+          </>}
+          {/* Add product search */}
+          <div className="mp-section-title" style={{marginTop:16}}>Add Product</div>
+          <div className="mp-search-inline">
+            <MIcon name="search" size={16}/>
+            <input placeholder="Search products by name, SKU..." value={newEstProdQ} onChange={e=>{setNewEstProdQ(e.target.value);setNewEstStep('items')}} className="mp-search-input"/>
+            {newEstProdQ&&<button onClick={()=>setNewEstProdQ('')} className="mp-clear-btn"><MIcon name="x" size={14}/></button>}
+          </div>
+          {prodMatches.map(p=><div key={p.id} className="mp-list-card" onClick={()=>addItemToEst(p)}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontWeight:700,fontSize:13}}>{p.name}</div>
+                <div style={{fontSize:12,color:'#64748b'}}>{p.sku}{p.color?' · '+p.color:''}{p.brand?' · '+p.brand:''}</div>
+              </div>
+              <div style={{fontSize:12,fontWeight:700,color:'#16a34a',flexShrink:0}}>{fmtMoney(p.retail_price)}</div>
+            </div>
+          </div>)}
+          {newEstProdQ.length>=2&&prodMatches.length===0&&<div style={{textAlign:'center',color:'#94a3b8',padding:16,fontSize:13}}>No products found</div>}
+        </div>
+      </div>;
+    }
+    // Step 3: Size editor for a specific item
+    if(newEstStep==='sizes'&&newEstEditItem!=null){
+      const item=newEst.items[newEstEditItem];
+      if(!item){setNewEstStep('details');return null}
+      const sizes=item.available_sizes||['S','M','L','XL','2XL'];
+      const updateSize=(sz,val)=>{
+        const v=Math.max(0,parseInt(val)||0);
+        setNewEst(e=>{const items=[...e.items];const it={...items[newEstEditItem],sizes:{...items[newEstEditItem].sizes,[sz]:v}};items[newEstEditItem]=it;return{...e,items}});
+      };
+      const totalQty=Object.values(item.sizes||{}).reduce((a,v)=>a+v,0);
+      return<div className="mp-detail">
+        <div className="mp-detail-header">
+          <button className="mp-back-btn" onClick={()=>{setNewEstStep('details');setNewEstEditItem(null)}}><MIcon name="back" size={22}/></button>
+          <div style={{flex:1}}><div className="mp-detail-id">{item.name||item.sku}</div><div className="mp-detail-sub">{item.sku}{item.color?' · '+item.color:''} — {totalQty} pcs</div></div>
+          <button style={{background:'#1e40af',color:'white',border:'none',borderRadius:8,padding:'8px 16px',fontWeight:700,fontSize:13,cursor:'pointer'}} onClick={()=>{setNewEstStep('details');setNewEstEditItem(null)}}>Done</button>
+        </div>
+        <div className="mp-detail-body">
+          <div style={{fontSize:13,fontWeight:600,color:'#334155',marginBottom:12}}>Enter quantity per size:</div>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(100px,1fr))',gap:8}}>
+            {sizes.map(sz=><div key={sz} style={{background:'white',border:'1px solid #e2e8f0',borderRadius:10,padding:'8px 10px',textAlign:'center'}}>
+              <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:4}}>{sz}</div>
+              <input type="number" inputMode="numeric" min="0" value={item.sizes?.[sz]||''} onChange={e=>updateSize(sz,e.target.value)} placeholder="0"
+                style={{width:'100%',textAlign:'center',border:'1px solid #e2e8f0',borderRadius:6,padding:'8px 4px',fontSize:18,fontWeight:700,boxSizing:'border-box'}}/>
+            </div>)}
+          </div>
+          <div style={{marginTop:16,display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+            <div style={{fontSize:14,fontWeight:700}}>Total: {totalQty} pcs</div>
+            {item.unit_sell>0&&<div style={{fontSize:13,color:'#64748b'}}>{fmtMoney(item.unit_sell)} ea · {fmtMoney(totalQty*item.unit_sell)} total</div>}
+          </div>
+        </div>
+      </div>;
+    }
+    return null;
+  };
+
+  // ─── NEW ESTIMATE GATE ───
+  if(newEst)return renderNewEstimate();
+
   // ─── RENDER DETAIL ROUTER ───
   if(detail){
     if(detail.type==='order')return renderOrderDetail(detail.data);
@@ -291,7 +453,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,
           <div className="mp-stat-num">{stats.activeOrders}</div><div className="mp-stat-label">Active Orders</div>
         </div>
         <div className="mp-stat-card" onClick={()=>setTab('messages')}>
-          <div className="mp-stat-num" style={unreadForMeCount>0?{color:'#dc2626'}:{}}>{unreadForMeCount}</div><div className="mp-stat-label">Messages for Me</div>
+          <div className="mp-stat-num" style={unreadForMeCount>0?{color:'#dc2626'}:{}}>{unreadForMeCount}</div><div className="mp-stat-label">Messages</div>
         </div>
         <div className="mp-stat-card">
           <div className="mp-stat-num">{stats.openInvoices}</div><div className="mp-stat-label">Open Invoices</div>
@@ -737,7 +899,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,
       <button className={`mp-tab${tab==='orders'?' active':''}`} onClick={()=>{setTab('orders');setDetail(null);setMoreSubPage(null)}}>
         <MIcon name="box" size={20}/><span className="mp-tab-label">Orders</span>
       </button>
-      <button className="mp-tab mp-tab-new" onClick={onNewEstimate}>
+      <button className="mp-tab mp-tab-new" onClick={startNewEstimate}>
         <div className="mp-tab-new-btn"><MIcon name="plus" size={22}/></div>
         <span className="mp-tab-label">New Est.</span>
       </button>
