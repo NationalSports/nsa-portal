@@ -3874,8 +3874,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                       <option value="">Select CW...</option>{artF.color_ways.map((cw,ci)=><option key={cw.id} value={cw.id}>CW {ci+1}{cw.garment_color?' - '+cw.garment_color:''} ({cw.inks.filter(c=>c.trim()).length}c)</option>)}</select>
                     :artF.ink_colors?<span style={{fontSize:11,color:'#64748b'}}>{artF.ink_colors.split('\n').filter(l=>l.trim()).length} color(s)</span>
                     :artF.thread_colors?<span style={{fontSize:11,color:'#64748b'}}>Thread: {artF.thread_colors}</span>:null}
-                    {artF.art_size&&<span style={{fontSize:11,color:'#94a3b8'}}>{artF.art_size}</span>}
-                    <span style={{fontSize:10,padding:'2px 6px',borderRadius:4,background:artF.status==='approved'?'#dcfce7':'#fef3c7',color:artF.status==='approved'?'#166534':'#92400e'}}>{artF.status}</span></>}
+                    {artF.art_size&&<span style={{fontSize:11,color:'#94a3b8'}}>{artF.art_size}</span>}</>}
                   <div style={{marginLeft:'auto',display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
                     <span style={{fontSize:11}}>Cost: <strong style={{color:'#dc2626'}}>${dp.cost.toFixed(2)}</strong></span>
                     <span style={{fontSize:11}}>Sell: <$In value={promoDecoSell} onChange={v=>uD(idx,di,'sell_override',item.is_promo&&o.promo_applied?rQ(v/1.25):v)} w={50}/></span>
@@ -3885,6 +3884,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     <button onClick={()=>rmD(idx,di)} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626'}}><Icon name="x" size={14}/></button>
                   </div></div>
                   <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',marginTop:4}}>
+                    {artF&&<span style={{fontSize:10,padding:'2px 6px',borderRadius:4,background:artF.status==='approved'?'#dcfce7':'#fef3c7',color:artF.status==='approved'?'#166534':'#92400e',fontWeight:600}}>{(artF.status||'').replace(/_/g,' ')}</span>}
                     <span style={{fontSize:11,fontWeight:600,color:'#94a3b8'}}>Upcharges:</span>
                     {artF&&artF.deco_type==='screen_print'&&<label style={{fontSize:11,display:'flex',alignItems:'center',gap:3,padding:'2px 6px',background:deco.underbase?'#fef3c7':'#f1f5f9',borderRadius:4,cursor:'pointer',border:'1px solid '+(deco.underbase?'#fbbf24':'#e2e8f0')}}><input type="checkbox" checked={deco.underbase||false} onChange={e=>uD(idx,di,'underbase',e.target.checked)}/> Underbase</label>}
                     <label style={{fontSize:11,display:'flex',alignItems:'center',gap:3,padding:'2px 6px',background:deco.reversible?'#ecfeff':'#f1f5f9',borderRadius:4,cursor:'pointer',border:'1px solid '+(deco.reversible?'#67e8f9':'#e2e8f0')}}><input type="checkbox" checked={deco.reversible||false} onChange={e=>{uD(idx,di,'reversible',e.target.checked);nf(e.target.checked?'Reversible ON — qty doubled':'Reversible OFF')}}/> Reversible (×2)</label>
