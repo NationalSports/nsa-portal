@@ -59,7 +59,8 @@ const _dbLoad = async () => {
       rSO,rSOArt,rSOFirm,rSOItems,rSODecos,rSOPicks,rSOPOs,rSOJobs,
       rInv,rInvPay,rInvItems,rMsg,rMsgReads,rOMG,rOMGProd,rIssues,rAppState,
       rPromoProg,rPromoPeriods,rPromoUsage,
-      rRepCsr,rAssignedTodos,rTodoComments] = await Promise.all([
+      rRepCsr,rAssignedTodos,rTodoComments,
+      rDecoVendors,rDecoVendorPricing] = await Promise.all([
       supabase.from('team_members').select('*').order('name').limit(10000),
       supabase.from('customers').select('*').order('name').limit(10000),
       supabase.from('customer_contacts').select('*').limit(10000),
@@ -93,6 +94,8 @@ const _dbLoad = async () => {
       supabase.from('rep_csr_assignments').select('*').limit(10000),
       supabase.from('assigned_todos').select('*').limit(10000),
       supabase.from('todo_comments').select('*').limit(10000),
+      supabase.from('deco_vendors').select('*').order('name').limit(10000),
+      supabase.from('deco_vendor_pricing').select('*').limit(10000),
     ]);
     // Check for critical errors on core tables only (child tables may not exist yet — 404 is OK)
     const coreResults=[{n:'team_members',r:rTeam},{n:'customers',r:rCust},{n:'vendors',r:rVend},{n:'products',r:rProd},{n:'estimates',r:rEst},{n:'sales_orders',r:rSO},{n:'invoices',r:rInv},{n:'messages',r:rMsg},{n:'omg_stores',r:rOMG}];
@@ -113,6 +116,7 @@ const _dbLoad = async () => {
     // Promo data
     const promoPrograms=d(rPromoProg);const promoPeriods=d(rPromoPeriods);const promoUsage=d(rPromoUsage);
     const repCsrAssignments=d(rRepCsr);const assignedTodos=d(rAssignedTodos).map(t=>({...t,comments:d(rTodoComments).filter(c=>c.todo_id===t.id).sort((a,b)=>(a.created_at||'').localeCompare(b.created_at))}));
+    const decoVendors=d(rDecoVendors);const decoVendorPricing=d(rDecoVendorPricing);
     // Parse app_state key-value pairs
     const appStateRaw=d(rAppState);
     const appState={};appStateRaw.forEach(r=>{try{appState[r.id]=JSON.parse(r.value)}catch{appState[r.id]=r.value}});
@@ -159,7 +163,7 @@ const _dbLoad = async () => {
     // OMG Stores: attach products
     const omg_stores=omgRaw.map(s=>({...s,products:omgProd.filter(p=>p.store_id===s.id).map(p=>({sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:p.deco_type,deco_cost:p.deco_cost,sizes:p.sizes||{}}))}));
     const hasData=(customers.length>0)||(sales_orders.length>0);
-    return{team,customers,vendors,products,estimates,sales_orders,invoices,messages,omg_stores,issues,appState,hasData,repCsrAssignments,assignedTodos};
+    return{team,customers,vendors,products,estimates,sales_orders,invoices,messages,omg_stores,issues,appState,hasData,repCsrAssignments,assignedTodos,decoVendors,decoVendorPricing};
   }catch(e){console.error('[DB] Load failed:',e);return null}
 };
 const _dbSeed = async (d) => {
@@ -1250,6 +1254,35 @@ const SZ_ORD=['XS','S','M','L','XL','2XL','3XL','4XL','LT','XLT','2XLT','3XLT','
 const rQ=v=>Math.round(v*4)/4;
 const rT=v=>Math.round(v*10)/10;
 const showSz=(s,inv)=>{const c=['S','M','L','XL','2XL'];if(c.includes(s))return true;return!EXTRA_SIZES.includes(s)||(inv||0)>0};
+// Deco vendor price lookup: (pricingList, vendorName, decoType, params) => cost per piece or null
+// params: {qty, stitches, colors, underbase, fleece, mesh, dtf_size}
+const _decoVendorPrice=(pricingList,vendorId,decoType,params={})=>{
+  const p=pricingList.find(pr=>pr.deco_vendor_id===vendorId&&pr.deco_type===decoType);
+  if(!p||!p.pricing_tiers?.tiers?.length)return null;
+  const qty=params.qty||1;const tiers=p.pricing_tiers.tiers;
+  let tier=null;
+  if(decoType==='embroidery'){
+    const st=params.stitches||0;
+    tier=tiers.find(t=>st>=t.min_stitches&&st<=(t.max_stitches||999999));
+  }else if(decoType==='screen_print'){
+    const colors=params.colors||1;
+    tier=tiers.find(t=>t.colors===colors)||tiers[tiers.length-1];
+  }else if(decoType==='dtf'){
+    tier=tiers.find(t=>t.size_key===params.dtf_size)||tiers[0];
+  }
+  if(!tier||!tier.qty_breaks?.length)return null;
+  const qb=tier.qty_breaks.slice().sort((a,b)=>a.min_qty-b.min_qty);
+  let price=qb[0]?.price||0;
+  for(const b of qb){if(qty>=b.min_qty)price=b.price}
+  // Apply upcharges for screen print
+  if(decoType==='screen_print'&&p.upcharges){
+    if(params.underbase&&p.upcharges.underbase)price*=(1+p.upcharges.underbase);
+    if(params.fleece&&p.upcharges.fleece)price*=(1+p.upcharges.fleece);
+    if(params.mesh&&p.upcharges.mesh)price*=(1+p.upcharges.mesh);
+    price=Math.round(price*100)/100;
+  }
+  return price;
+};
 let SP={bk:[{min:1,max:11},{min:12,max:23},{min:24,max:35},{min:36,max:47},{min:48,max:71},{min:72,max:107},{min:108,max:143},{min:144,max:215},{min:216,max:499},{min:500,max:99999}],pr:{0:[50,60,70,null,null],1:[5,6.5,8,9,null],2:[3.5,4.5,6,7,8],3:[3.2,4.25,4.75,6,7.5],4:[2.95,3.85,4.25,5,6],5:[2.75,3.5,3.95,4.5,5.25],6:[2.5,3.2,3.7,4,4.75],7:[2.25,3,3.5,3.75,4.25],8:[2.1,2.85,3.1,3.3,4],9:[1.9,2.75,2.9,3.1,3.75]},mk:1.5,ub:0.15};
 let EM={sb:[10000,15000,20000,999999],qb:[6,24,48,99999],pr:[[8,8.5,8,7.5],[9,8.5,8,8],[10,9.5,9,9],[12,12.5,12,10]],mk:1.6};
 let NP={bk:[10,50,99999],co:[4,3,3],se:[7,6,5],tc:3};let DTF=[{label:'4" Sq & Under',cost:2.5,sell:4.5},{label:'Front Chest (12"x4")',cost:4.5,sell:7.5}];
@@ -2620,7 +2653,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const[rsmTo,setRsmTo]=useState('');const[rsmCustom,setRsmCustom]=useState('');const[rsmName,setRsmName]=useState('Coach');const[rsmSending,setRsmSending]=useState(false);const[rsmCopied,setRsmCopied]=useState(false);
     React.useEffect(()=>{if(rosterSendModal){const contacts=(cust?.contacts||[]).filter(c=>c.email);setRsmTo(contacts.length>0?contacts[0].email:'');setRsmCustom('');setRsmName(contacts.length>0?(contacts[0].name||'Coach'):'Coach');setRsmSending(false);setRsmCopied(false)}},[rosterSendModal]);
     const[preexistingPO,setPreexistingPO]=useState(false);const[preexistingPOId,setPreexistingPOId]=useState('');const[poExcluded,setPOExcluded]=useState({});
-    const DECO_VENDORS=['Silver Screen','Olympic Embroidery','WePrintIt','Pacific Screen Print','Other'];
+    const DECO_VENDORS=decoVendorNames.length>0?[...decoVendorNames,'Other']:['Silver Screen','Olympic Embroidery','WePrintIt','Pacific Screen Print','Other'];
   const[showFirmReq,setShowFirmReq]=useState(false);const[firmReqDate,setFirmReqDate]=useState('');const[firmReqNote,setFirmReqNote]=useState('');
   const[showInvCreate,setShowInvCreate]=useState(false);const[invSelItems,setInvSelItems]=useState([]);const[invMemo,setInvMemo]=useState('');const[invType,setInvType]=useState('final');const[invDepositPct,setInvDepositPct]=useState(50);const[invBilling,setInvBilling]=useState('');
   const[invReview,setInvReview]=useState(null);const[invSendModal,setInvSendModal]=useState(false);const[invSendMsg,setInvSendMsg]=useState('');const[invSendTo,setInvSendTo]=useState('');const[invSendCustomEmail,setInvSendCustomEmail]=useState('');
@@ -3723,6 +3756,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   :item.is_custom?<input className="form-input" value={item.color||''} onChange={e=>uI(idx,'color',e.target.value)} style={{fontSize:12,width:100}} placeholder="Color"/>
                   :<span className="badge badge-gray">{item.color}</span>}
                 {item.is_custom&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:600}}>Custom</span>}
+                {(item.po_lines||[]).filter(pl=>pl.po_type==='outside_deco').map(pl=><span key={pl.po_id} style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#ede9fe',color:'#7c3aed',fontWeight:700,cursor:'pointer'}} title={pl.deco_vendor+' — '+pl.deco_type?.replace(/_/g,' ')} onClick={()=>setTab('items')}>{pl.po_id}</span>)}
                 {isAU(item.brand)&&<span className="badge badge-blue">Tier {cust?.adidas_ua_tier}</span>}
                 {o.promo_applied&&<label style={{display:'inline-flex',alignItems:'center',gap:4,padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,cursor:'pointer',background:item.is_promo?'#fef3c7':'#f1f5f9',color:item.is_promo?'#92400e':'#94a3b8',border:item.is_promo?'1px solid #fde68a':'1px solid #e2e8f0'}}><input type="checkbox" checked={item.is_promo||false} onChange={e=>{const checked=e.target.checked;if(checked){uI(idx,'_pre_promo_sell',item.unit_sell);uI(idx,'unit_sell',safeNum(item.retail_price)||safeNum(item.nsa_cost)*2);uI(idx,'is_promo',true)}else{uI(idx,'unit_sell',item._pre_promo_sell!=null?item._pre_promo_sell:item.unit_sell);uI(idx,'_pre_promo_sell',undefined);uI(idx,'is_promo',false)}}} style={{width:12,height:12}}/> Promo{item.is_promo&&item.retail_price?' ($'+item.retail_price+')':''}</label>}</div>
               <div style={{display:'flex',alignItems:'center',gap:8,marginTop:4,flexWrap:'wrap'}}>
@@ -4001,10 +4035,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <div style={{marginLeft:'auto'}}><button onClick={()=>rmD(idx,di)} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626'}}><Icon name="x" size={14}/></button></div></div>
               <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:6,padding:'8px 10px',background:'#faf5ff',borderRadius:6,border:'1px solid #ede9fe'}}>
                 <div style={{display:'flex',flexDirection:'column',gap:2}}><span style={{fontSize:10,fontWeight:600,color:'#7c3aed'}}>Vendor</span>
-                  <select className="form-select" style={{width:160,fontSize:12}} value={deco.vendor||''} onChange={e=>uD(idx,di,'vendor',e.target.value)}>
+                  <select className="form-select" style={{width:160,fontSize:12}} value={deco.vendor||''} onChange={e=>{const vn=e.target.value;uD(idx,di,'vendor',vn);const dv=decoVendors.find(v=>v.name===vn);if(dv){const cost=_decoVendorPrice(decoVendorPricing,dv.id,deco.deco_type||'embroidery',{qty});if(cost!==null)uD(idx,di,'cost_each',cost)}}}>
                     <option value="">Select vendor...</option>{DECO_VENDORS.map(dv=><option key={dv} value={dv}>{dv}</option>)}</select></div>
                 <div style={{display:'flex',flexDirection:'column',gap:2}}><span style={{fontSize:10,fontWeight:600,color:'#7c3aed'}}>Deco Type</span>
-                  <select className="form-select" style={{width:120,fontSize:12}} value={deco.deco_type||'embroidery'} onChange={e=>uD(idx,di,'deco_type',e.target.value)}>
+                  <select className="form-select" style={{width:120,fontSize:12}} value={deco.deco_type||'embroidery'} onChange={e=>{const dt=e.target.value;uD(idx,di,'deco_type',dt);if(deco.vendor){const dv=decoVendors.find(v=>v.name===deco.vendor);if(dv){const cost=_decoVendorPrice(decoVendorPricing,dv.id,dt,{qty});if(cost!==null)uD(idx,di,'cost_each',cost)}}}}>
                     {['embroidery','screen_print','dtf','heat_transfer','sublimation','vinyl'].map(t=><option key={t} value={t}>{t.replace(/_/g,' ')}</option>)}</select></div>
                 <div style={{display:'flex',flexDirection:'column',gap:2}}><span style={{fontSize:10,fontWeight:600,color:'#dc2626'}}>Cost /ea</span><$In value={deco.cost_each||0} onChange={v=>uD(idx,di,'cost_each',v)} w={60}/></div>
                 <div style={{display:'flex',flexDirection:'column',gap:2}}><span style={{fontSize:10,fontWeight:600,color:'#166534'}}>Sell /ea{item.is_promo&&o.promo_applied?' +25%':''}</span><$In value={item.is_promo&&o.promo_applied?rQ((deco.sell_each||0)*1.25):(deco.sell_each||0)} onChange={v=>{const base=item.is_promo&&o.promo_applied?rQ(v/1.25):v;uDM(idx,di,{sell_each:base,sell_override:base})}} w={60}/></div>
@@ -5691,6 +5725,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const allItems=safeItems(o).map((it,i)=>({...it,_idx:i})).filter(it=>{
           const q=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return q>0});
         const poId='DPO-'+poCounter+(cust?.alpha_tag?'-'+cust.alpha_tag:'');
+        const dv=decoVendors.find(v=>v.name===decoVendor);
         return<div className="modal-overlay" onClick={()=>setShowPO(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:800,maxHeight:'90vh',overflow:'auto'}}>
           <div className="modal-header"><h2 style={{color:'#7c3aed'}}>🎨 Deco PO — {decoVendor}</h2><button className="modal-close" onClick={()=>setShowPO(null)}>x</button></div>
           <div className="modal-body">
@@ -5699,22 +5734,32 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             </div>
             <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:12,marginBottom:16}}>
               <div><label className="form-label">PO Number</label><input className="form-input" value={poId} readOnly style={{color:'#7c3aed',fontWeight:700}}/></div>
-              <div><label className="form-label">Deco Type</label><select className="form-select" id={'dpo-type-'+poId}>
+              <div><label className="form-label">Deco Type</label><select className="form-select" id={'dpo-type-'+poId} onChange={e=>{
+                if(!dv)return;const dt=e.target.value;allItems.forEach((_,vi)=>{const soQ=Object.values(safeSizes(allItems[vi])).reduce((a,v)=>a+safeNum(v),0);const cost=_decoVendorPrice(decoVendorPricing,dv.id,dt,{qty:soQ});const el=document.getElementById('dpo-cost-'+vi);if(el&&cost!==null)el.value=cost.toFixed(2)});
+              }}>
                 <option value="embroidery">Embroidery</option><option value="screen_print">Screen Print</option><option value="dtf">DTF</option><option value="heat_transfer">Heat Transfer</option><option value="sublimation">Sublimation</option></select></div>
               <div><label className="form-label">Expected Return</label><input className="form-input" type="date" id={'dpo-date-'+poId}/></div>
             </div>
             <div style={{marginBottom:12}}><label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,cursor:'pointer'}}><input type="checkbox" id={'dpo-dropship-'+poId}/><span style={{fontWeight:600,color:'#7c3aed'}}>📦 Drop Ship</span><span style={{fontSize:11,color:'#64748b'}}>— Ships direct to school, skip warehouse receive</span></label></div>
             {allItems.map((it,vi)=>{const szList=Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).sort((a,b)=>(SZ_ORD.indexOf(a[0])===-1?99:SZ_ORD.indexOf(a[0]))-(SZ_ORD.indexOf(b[0])===-1?99:SZ_ORD.indexOf(b[0])));
               const soQ=szList.reduce((a,[,v])=>a+v,0);
+              const prefilledCost=dv?_decoVendorPrice(decoVendorPricing,dv.id,'embroidery',{qty:soQ}):null;
               return<div key={vi} style={{padding:12,border:'1px solid #ede9fe',borderRadius:6,marginBottom:8,background:'#faf5ff'}}>
-                <div style={{display:'flex',justifyContent:'space-between',marginBottom:8}}><div><span style={{fontFamily:'monospace',fontWeight:800,color:'#7c3aed',marginRight:8}}>{it.sku}</span><strong>{it.name}</strong> — {it.color}</div><div style={{fontWeight:700}}>SO Qty: {soQ}</div></div>
+                <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:8}}>
+                  <label style={{display:'flex',alignItems:'center',gap:6,cursor:'pointer',flex:1}}>
+                    <input type="checkbox" id={'dpo-sel-'+vi} defaultChecked style={{width:16,height:16}}/>
+                    <span style={{fontFamily:'monospace',fontWeight:800,color:'#7c3aed'}}>{it.sku}</span>
+                    <strong>{it.name}</strong><span style={{color:'#64748b'}}>— {it.color}</span>
+                  </label>
+                  <span style={{fontWeight:700}}>SO Qty: {soQ}</span>
+                </div>
                 <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
                   <span style={{fontSize:12,fontWeight:600,color:'#64748b'}}>Send Qty:</span>
                   {szList.map(([sz,v])=><div key={sz} style={{textAlign:'center'}}><div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
                     <input id={'dpo-qty-'+vi+'-'+sz} style={{width:42,textAlign:'center',border:'1px solid #ddd6fe',borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700}} defaultValue={v}/></div>)}
                   <div style={{borderLeft:'2px solid #ede9fe',paddingLeft:8,marginLeft:4}}>
-                    <div style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Unit Cost</div>
-                    <input id={'dpo-cost-'+vi} style={{width:60,textAlign:'center',border:'1px solid #ddd6fe',borderRadius:4,padding:'4px 2px',fontSize:13,fontWeight:700}} defaultValue="0.00"/>
+                    <div style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Unit Cost{prefilledCost!==null&&<span style={{color:'#7c3aed',marginLeft:4}}>(auto)</span>}</div>
+                    <input id={'dpo-cost-'+vi} style={{width:60,textAlign:'center',border:'1px solid '+(prefilledCost!==null?'#7c3aed':'#ddd6fe'),borderRadius:4,padding:'4px 2px',fontSize:13,fontWeight:700}} defaultValue={prefilledCost!==null?prefilledCost.toFixed(2):'0.00'}/>
                   </div>
                 </div>
               </div>})}
@@ -5731,6 +5776,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const isDropShip=document.getElementById('dpo-dropship-'+poId)?.checked||false;
               let totalQty=0,totalCost=0;
               allItems.forEach((it,vi)=>{
+                const selected=document.getElementById('dpo-sel-'+vi)?.checked;
+                if(!selected)return;
                 const idx=it._idx;const poLine={po_id:poId,status:'waiting',po_type:'outside_deco',deco_vendor:decoVendor,deco_type:decoType,drop_ship:isDropShip||undefined,
                   expected_date:returnDate,created_at:new Date().toLocaleDateString(),memo:notes,received:{},shipments:[]};
                 const szList=Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0);
@@ -5744,7 +5791,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 poLine.unit_cost=unitCost;
                 if(itemQty>0){updatedItems[idx].po_lines=[...updatedItems[idx].po_lines,poLine];totalQty+=itemQty;totalCost+=itemQty*unitCost}
               });
-              if(totalQty===0){nf('No quantities entered','error');return}
+              if(totalQty===0){nf('No items selected or no quantities entered','error');return}
               const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};
               setO(updated);onSave(updated);
               setPOCounter(c=>c+1);setShowPO(null);
@@ -10402,6 +10449,9 @@ export default function App(){
   const[lastBackup,setLastBackup]=useState(null);
   const[autoBackupEnabled,setAutoBackupEnabled]=useState(true);
   const logChange=(action,entity,entityId,detail)=>{setChangeLog(prev=>[{ts:new Date().toLocaleString(),user:cu.name,action,entity,entityId,detail},...prev].slice(0,500))};
+  // Deco vendor management
+  const[decoVendors,setDecoVendors]=useState([]);const[decoVendorPricing,setDecoVendorPricing]=useState([]);
+  const decoVendorNames=useMemo(()=>decoVendors.filter(v=>v.is_active!==false).map(v=>v.name),[decoVendors]);
   // Issue logging system
   const[issues,setIssues]=useState(()=>loadState('issues',[]));
   const[issueModal,setIssueModal]=useState({open:false,desc:'',priority:'medium'});
@@ -10457,6 +10507,8 @@ export default function App(){
           if(d.issues?.length)setIssues(d.issues);
           if(d.repCsrAssignments?.length)setRepCsrAssignments(d.repCsrAssignments);
           if(d.assignedTodos?.length)setAssignedTodos(d.assignedTodos);
+          if(d.decoVendors?.length)setDecoVendors(d.decoVendors);
+          if(d.decoVendorPricing?.length)setDecoVendorPricing(d.decoVendorPricing);
           // Load app_state key-value data (batch POs, changelog, etc.)
           const as=d.appState||{};
           if(as.batch_pos)setBatchPOs(as.batch_pos);
@@ -10577,6 +10629,8 @@ export default function App(){
         if(d.vendors.length)setVend(prev=>_jsonEq(prev,d.vendors)?prev:d.vendors);
         if(d.omg_stores.length)setOmgStores(prev=>_jsonEq(prev,d.omg_stores)?prev:d.omg_stores);
         if(d.issues?.length)setIssues(prev=>_jsonEq(prev,d.issues)?prev:d.issues);
+        if(d.decoVendors?.length)setDecoVendors(prev=>_jsonEq(prev,d.decoVendors)?prev:d.decoVendors);
+        if(d.decoVendorPricing?.length)setDecoVendorPricing(prev=>_jsonEq(prev,d.decoVendorPricing)?prev:d.decoVendorPricing);
         // Refresh app_state keys
         const as=d.appState||{};
         if(as.inv_pos)setInvPOs(prev=>_jsonEq(prev,as.inv_pos)?prev:as.inv_pos);
@@ -10588,7 +10642,7 @@ export default function App(){
       };
       // Debounce realtime events — coalesce rapid-fire changes into a single reload
       const debouncedReload=()=>{if(_rtTimer)clearTimeout(_rtTimer);_rtTimer=setTimeout(reloadAll,2000)};
-      ['estimates','estimate_items','estimate_item_decorations','estimate_art_files','sales_orders','so_items','so_item_decorations','so_item_pick_lines','so_item_po_lines','so_art_files','so_jobs','so_firm_dates','invoices','invoice_items','invoice_payments','messages','message_reads','customers','customer_contacts','products','product_inventory','vendors','team_members','omg_stores','omg_store_products','issues','app_state'].forEach(table=>{
+      ['estimates','estimate_items','estimate_item_decorations','estimate_art_files','sales_orders','so_items','so_item_decorations','so_item_pick_lines','so_item_po_lines','so_art_files','so_jobs','so_firm_dates','invoices','invoice_items','invoice_payments','messages','message_reads','customers','customer_contacts','products','product_inventory','vendors','team_members','omg_stores','omg_store_products','issues','app_state','deco_vendors','deco_vendor_pricing'].forEach(table=>{
         const ch=supabase.channel('realtime_'+table).on('postgres_changes',{event:'*',schema:'public',table},()=>{debouncedReload()}).subscribe();
         channels.push(ch);
       });
@@ -23695,7 +23749,7 @@ export default function App(){
       if(key==='CATEGORIES')CATEGORIES=val;if(key==='POSITIONS')POSITIONS=val;if(key==='CONTACT_ROLES')CONTACT_ROLES=val;
       nf('Settings saved')}catch{nf('Error saving','warn')}};
   function rSettings(){
-    const tabs=[['company','Company Info'],['pricing','Decoration Pricing'],['tiers','Customer Tiers'],['lists','Lists & Options'],['terms','Terms & Policies'],['labor','Labor Rates'],['portal','Coach Portal'],['taxcloud','TaxCloud']];
+    const tabs=[['company','Company Info'],['pricing','Decoration Pricing'],['deco_vendors','Deco Vendors'],['tiers','Customer Tiers'],['lists','Lists & Options'],['terms','Terms & Policies'],['labor','Labor Rates'],['portal','Coach Portal'],['taxcloud','TaxCloud']];
     return(<>
       <div style={{display:'flex',gap:4,marginBottom:16,flexWrap:'wrap'}}>
         {tabs.map(([k,label])=><button key={k} className={`btn btn-sm ${settingsTab===k?'btn-primary':'btn-secondary'}`} onClick={()=>setSettingsTab(k)}>{label}</button>)}
@@ -23811,6 +23865,120 @@ export default function App(){
           <button className="btn btn-sm btn-secondary" style={{marginTop:8,fontSize:11}} onClick={()=>{DTF.push({label:'New Size',cost:0,sell:0});savSettings('DTF',[...DTF])}}>+ Add Size</button>
         </div></div>
       </>}
+
+      {/* DECO VENDORS */}
+      {settingsTab==='deco_vendors'&&<>{(()=>{
+        const[dvEdit,setDvEdit]=React.useState(null);// vendor id being edited for pricing
+        const[dvTab,setDvTab]=React.useState('embroidery');
+        const[dvNewName,setDvNewName]=React.useState('');
+        const saveDV=async(vendor)=>{if(!supabase)return;const{error}=await supabase.from('deco_vendors').upsert(vendor,{onConflict:'id'});if(error)nf('Error saving vendor: '+error.message,'error');else{setDecoVendors(prev=>{const idx=prev.findIndex(v=>v.id===vendor.id);return idx>=0?prev.map(v=>v.id===vendor.id?vendor:v):[...prev,vendor]});nf('Vendor saved')}};
+        const saveDVP=async(pricing)=>{if(!supabase)return;const{data,error}=await supabase.from('deco_vendor_pricing').upsert(pricing,{onConflict:'id'}).select();if(error)nf('Error saving pricing: '+error.message,'error');else{const saved=data?.[0]||pricing;setDecoVendorPricing(prev=>{const idx=prev.findIndex(p=>p.id===saved.id||(p.deco_vendor_id===saved.deco_vendor_id&&p.deco_type===saved.deco_type));return idx>=0?prev.map((p,i)=>i===idx?saved:p):[...prev,saved]});nf('Pricing saved')}};
+        const editVendor=dvEdit?decoVendors.find(v=>v.id===dvEdit):null;
+        const getPricing=(vendorId,decoType)=>decoVendorPricing.find(p=>p.deco_vendor_id===vendorId&&p.deco_type===decoType);
+        const ensurePricing=(vendorId,decoType)=>{
+          const existing=getPricing(vendorId,decoType);
+          if(existing)return existing;
+          const defaultTiers=decoType==='embroidery'?{tiers:[
+            {label:'0-5k',min_stitches:0,max_stitches:5000,qty_breaks:[{min_qty:1,max_qty:11,price:0},{min_qty:12,max_qty:23,price:0},{min_qty:24,max_qty:47,price:0},{min_qty:48,max_qty:null,price:0}]},
+            {label:'5k-10k',min_stitches:5001,max_stitches:10000,qty_breaks:[{min_qty:1,max_qty:11,price:0},{min_qty:12,max_qty:23,price:0},{min_qty:24,max_qty:47,price:0},{min_qty:48,max_qty:null,price:0}]},
+            {label:'10k-15k',min_stitches:10001,max_stitches:15000,qty_breaks:[{min_qty:1,max_qty:11,price:0},{min_qty:12,max_qty:23,price:0},{min_qty:24,max_qty:47,price:0},{min_qty:48,max_qty:null,price:0}]},
+            {label:'15k-20k',min_stitches:15001,max_stitches:20000,qty_breaks:[{min_qty:1,max_qty:11,price:0},{min_qty:12,max_qty:23,price:0},{min_qty:24,max_qty:47,price:0},{min_qty:48,max_qty:null,price:0}]},
+            {label:'20k+',min_stitches:20001,max_stitches:999999,qty_breaks:[{min_qty:1,max_qty:11,price:0},{min_qty:12,max_qty:23,price:0},{min_qty:24,max_qty:47,price:0},{min_qty:48,max_qty:null,price:0}]}
+          ]}:decoType==='screen_print'?{tiers:[
+            {label:'1 color',colors:1,qty_breaks:[{min_qty:1,max_qty:11,price:0},{min_qty:12,max_qty:23,price:0},{min_qty:24,max_qty:47,price:0},{min_qty:48,max_qty:null,price:0}]},
+            {label:'2 colors',colors:2,qty_breaks:[{min_qty:1,max_qty:11,price:0},{min_qty:12,max_qty:23,price:0},{min_qty:24,max_qty:47,price:0},{min_qty:48,max_qty:null,price:0}]},
+            {label:'3 colors',colors:3,qty_breaks:[{min_qty:1,max_qty:11,price:0},{min_qty:12,max_qty:23,price:0},{min_qty:24,max_qty:47,price:0},{min_qty:48,max_qty:null,price:0}]},
+            {label:'4 colors',colors:4,qty_breaks:[{min_qty:1,max_qty:11,price:0},{min_qty:12,max_qty:23,price:0},{min_qty:24,max_qty:47,price:0},{min_qty:48,max_qty:null,price:0}]},
+            {label:'5 colors',colors:5,qty_breaks:[{min_qty:1,max_qty:11,price:0},{min_qty:12,max_qty:23,price:0},{min_qty:24,max_qty:47,price:0},{min_qty:48,max_qty:null,price:0}]}
+          ]}:{tiers:[
+            {label:'Small',size_key:'small',qty_breaks:[{min_qty:1,max_qty:11,price:0},{min_qty:12,max_qty:23,price:0},{min_qty:24,max_qty:47,price:0},{min_qty:48,max_qty:null,price:0}]},
+            {label:'Medium',size_key:'medium',qty_breaks:[{min_qty:1,max_qty:11,price:0},{min_qty:12,max_qty:23,price:0},{min_qty:24,max_qty:47,price:0},{min_qty:48,max_qty:null,price:0}]},
+            {label:'Large',size_key:'large',qty_breaks:[{min_qty:1,max_qty:11,price:0},{min_qty:12,max_qty:23,price:0},{min_qty:24,max_qty:47,price:0},{min_qty:48,max_qty:null,price:0}]},
+            {label:'Gang Sheet',size_key:'gang_sheet',qty_breaks:[{min_qty:1,max_qty:11,price:0},{min_qty:12,max_qty:23,price:0},{min_qty:24,max_qty:47,price:0},{min_qty:48,max_qty:null,price:0}]}
+          ]};
+          return{deco_vendor_id:vendorId,deco_type:decoType,pricing_tiers:defaultTiers,upcharges:decoType==='screen_print'?{underbase:0.10,fleece:0.10,mesh:0.15}:{}};
+        };
+        return<>
+        <div className="card" style={{marginBottom:16}}><div className="card-header"><h3>Decoration Vendors</h3></div><div className="card-body">
+          <div style={{fontSize:12,color:'#64748b',marginBottom:12}}>Manage your outside decoration vendors and their pricing. Prices auto-fill on Deco POs and outside decoration line items.</div>
+          {decoVendors.map(v=><div key={v.id} style={{display:'flex',gap:8,alignItems:'center',padding:'8px 12px',borderRadius:6,marginBottom:4,background:v.is_active===false?'#f8f9fb':'#faf5ff',border:'1px solid '+(v.is_active===false?'#e2e8f0':'#ede9fe')}}>
+            <span style={{fontWeight:700,fontSize:13,color:v.is_active===false?'#94a3b8':'#7c3aed',flex:1}}>{v.name}{v.is_active===false&&<span style={{fontSize:10,color:'#94a3b8',marginLeft:8}}>(inactive)</span>}</span>
+            <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{setDvEdit(v.id);setDvTab('embroidery')}}>Edit Pricing</button>
+            <button className="btn btn-sm btn-secondary" style={{fontSize:10,color:v.is_active===false?'#166534':'#dc2626'}} onClick={()=>saveDV({...v,is_active:!v.is_active,updated_at:new Date().toISOString()})}>{v.is_active===false?'Activate':'Deactivate'}</button>
+          </div>)}
+          <div style={{display:'flex',gap:8,marginTop:8}}>
+            <input className="form-input" placeholder="New vendor name..." value={dvNewName} onChange={e=>setDvNewName(e.target.value)} style={{width:200,fontSize:12}}/>
+            <button className="btn btn-sm" style={{background:'#7c3aed',color:'white',border:'none',fontSize:11}} onClick={()=>{if(!dvNewName.trim())return;const id='dv_'+Date.now();saveDV({id,name:dvNewName.trim(),is_active:true,created_at:new Date().toISOString()});setDvNewName('')}}>+ Add Vendor</button>
+          </div>
+        </div></div>
+
+        {/* PRICING EDITOR */}
+        {editVendor&&<div className="card" style={{marginBottom:16}}><div className="card-header"><h3 style={{color:'#7c3aed'}}>Pricing — {editVendor.name}</h3></div><div className="card-body">
+          <div style={{display:'flex',gap:4,marginBottom:12}}>
+            {['embroidery','screen_print','dtf'].map(t=><button key={t} className={`btn btn-sm ${dvTab===t?'btn-primary':'btn-secondary'}`} style={dvTab===t?{background:'#7c3aed',borderColor:'#7c3aed'}:{}} onClick={()=>setDvTab(t)}>{t==='screen_print'?'Screen Print':t==='dtf'?'DTF':t.charAt(0).toUpperCase()+t.slice(1)}</button>)}
+          </div>
+          {(()=>{
+            const pr=ensurePricing(editVendor.id,dvTab);
+            const tiers=pr.pricing_tiers?.tiers||[];
+            const qbLabels=tiers[0]?.qty_breaks?.map(qb=>qb.max_qty?`${qb.min_qty}-${qb.max_qty}`:`${qb.min_qty}+`)||[];
+            const updateTierPrice=(ti,qi,val)=>{
+              const updated={...pr,pricing_tiers:{...pr.pricing_tiers,tiers:pr.pricing_tiers.tiers.map((t,i)=>i===ti?{...t,qty_breaks:t.qty_breaks.map((qb,j)=>j===qi?{...qb,price:val}:qb)}:t)},updated_at:new Date().toISOString()};
+              saveDVP(updated);
+            };
+            const addTier=()=>{
+              const qbs=tiers[0]?.qty_breaks?.map(qb=>({...qb,price:0}))||[{min_qty:1,max_qty:null,price:0}];
+              const newTier=dvTab==='embroidery'?{label:'New',min_stitches:0,max_stitches:0,qty_breaks:qbs}:dvTab==='screen_print'?{label:(tiers.length+1)+' colors',colors:tiers.length+1,qty_breaks:qbs}:{label:'New Size',size_key:'new_'+Date.now(),qty_breaks:qbs};
+              const updated={...pr,pricing_tiers:{...pr.pricing_tiers,tiers:[...tiers,newTier]},updated_at:new Date().toISOString()};
+              saveDVP(updated);
+            };
+            const addQtyBreak=()=>{
+              const lastMax=tiers[0]?.qty_breaks?.length?tiers[0].qty_breaks[tiers[0].qty_breaks.length-1]:null;
+              const newMin=lastMax?.max_qty?(lastMax.max_qty+1):1;
+              const updated={...pr,pricing_tiers:{...pr.pricing_tiers,tiers:tiers.map(t=>({...t,qty_breaks:[...t.qty_breaks,{min_qty:newMin,max_qty:null,price:0}]}))},updated_at:new Date().toISOString()};
+              saveDVP(updated);
+            };
+            return<>
+              <div style={{overflowX:'auto'}}><table style={{fontSize:12}}>
+                <thead><tr><th style={{fontSize:10}}>{dvTab==='embroidery'?'Stitches':dvTab==='screen_print'?'Colors':'Size'}</th>
+                  {qbLabels.map((l,i)=><th key={i} style={{fontSize:10,textAlign:'center'}}>{l}</th>)}</tr></thead>
+                <tbody>{tiers.map((t,ti)=><tr key={ti}>
+                  <td style={{fontWeight:700,fontSize:11,whiteSpace:'nowrap'}}>
+                    <input className="form-input" value={t.label} style={{width:80,fontSize:11,padding:'2px 4px'}} onChange={e=>{
+                      const updated={...pr,pricing_tiers:{...pr.pricing_tiers,tiers:tiers.map((tt,i)=>i===ti?{...tt,label:e.target.value}:tt)}};
+                      saveDVP(updated);
+                    }}/>
+                  </td>
+                  {t.qty_breaks.map((qb,qi)=><td key={qi} style={{padding:2}}>
+                    <input className="form-input" type="number" step="0.25" style={{width:60,fontSize:11,textAlign:'center',padding:'2px 4px'}}
+                      value={qb.price||''} onChange={e=>updateTierPrice(ti,qi,parseFloat(e.target.value)||0)}/>
+                  </td>)}
+                </tr>)}</tbody>
+              </table></div>
+              <div style={{display:'flex',gap:8,marginTop:8}}>
+                <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={addTier}>+ Add {dvTab==='embroidery'?'Stitch Tier':dvTab==='screen_print'?'Color Row':'Size'}</button>
+                <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={addQtyBreak}>+ Add Qty Break</button>
+              </div>
+              {dvTab==='screen_print'&&<div style={{marginTop:12,padding:10,background:'#faf5ff',borderRadius:6,border:'1px solid #ede9fe'}}>
+                <div style={{fontSize:11,fontWeight:700,color:'#7c3aed',marginBottom:6}}>Upcharges (% added to base price)</div>
+                <div style={{display:'flex',gap:16,flexWrap:'wrap'}}>
+                  {[['underbase','Underbase'],['fleece','Fleece'],['mesh','Mesh']].map(([k,label])=><div key={k}>
+                    <label className="form-label" style={{fontSize:10}}>{label}</label>
+                    <div style={{display:'flex',alignItems:'center',gap:4}}>
+                      <input className="form-input" type="number" step="1" style={{width:50,fontSize:11,textAlign:'center',padding:'2px 4px'}}
+                        value={Math.round((pr.upcharges?.[k]||0)*100)} onChange={e=>{
+                          const updated={...pr,upcharges:{...pr.upcharges,[k]:(parseFloat(e.target.value)||0)/100},updated_at:new Date().toISOString()};
+                          saveDVP(updated);
+                        }}/>
+                      <span style={{fontSize:10,color:'#64748b'}}>%</span>
+                    </div>
+                  </div>)}
+                </div>
+              </div>}
+            </>;
+          })()}
+        </div></div>}
+        </>;
+      })()}</>}
 
       {/* CUSTOMER TIERS */}
       {settingsTab==='tiers'&&<>
