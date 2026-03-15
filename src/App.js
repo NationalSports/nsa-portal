@@ -3084,14 +3084,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         return pn.includes(qLower)||nm.includes(qLower);
       });
       if(!entries.length){mtSearchCache.current[cacheKey]={length:0,_ts:Date.now()};if(gen===mtSearchGen.current)setMtResults([]);return}
-      // Helper: extract best price from an HCL Commerce entry
+      // Helper: extract best price from an HCL Commerce entry (handles both search and detail field names)
       const getPrice=(e)=>{
-        if(e.Price&&e.Price.length){for(const p of e.Price){const v=parseFloat(p.SKUPriceValue||p.priceValue);if(v>0)return v}}
+        if(e.Price&&e.Price.length){for(const p of e.Price){const v=parseFloat(p.SKUPriceValue||p.priceValue||0);if(v>0)return v}}
+        if(e.price&&e.price.length){for(const p of e.price){const v=parseFloat(p.SKUPriceValue||p.priceValue||0);if(v>0)return v}}
         const f=parseFloat(e.offerPrice||e.listPrice||e.salePrice||0);return f>0?f:0;
       };
-      // Helper: extract color name from attributes array
+      // Helper: extract color name from attributes array (handles both Attributes and attributes, HCL Commerce field casing)
       const getColor=(e)=>{
-        if(e.attributes){for(const a of e.attributes){const n=(a.name||a.identifier||'').toLowerCase();if(n==='color'||n==='colour'||n==='clr'){const vals=a.values||a.Values||[];if(vals.length)return vals.map(v=>v.value||v.Value||v.identifier||v).join('/')}}}
+        const attrs=e.Attributes||e.attributes||e.definingAttributes||[];
+        if(Array.isArray(attrs)){for(const a of attrs){const n=(a.name||a.identifier||'').toLowerCase();if(n==='color'||n==='colour'||n==='clr'||n==='asgswatchcolor'){const vals=a.values||a.Values||[];if(vals.length)return vals.map(v=>v.values||v.value||v.Value||v.identifier||v).join('/')}}}
         return '';
       };
       // Collect unique base part numbers from search results (limit to first 10)
@@ -3103,9 +3105,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         if(!seenBase.has(baseSku)){seenBase.add(baseSku);baseSkus.push({baseSku,entry:e})}
       }
       // Fetch full product details for each base SKU (prices, colors, child SKUs)
+      // Try byPartNumber first, fall back to byId using uniqueID from search result
       const detailPromises=baseSkus.slice(0,10).map(async({baseSku,entry})=>{
         try{const d=await momentecGetProductByPartNumber(baseSku);return{baseSku,entry,detail:d?.CatalogEntryView?.[0]||null}}
-        catch(e){return{baseSku,entry,detail:null}}
+        catch(e){
+          // byPartNumber often 404s — try byId using the uniqueID from search
+          const uid=entry.uniqueID;
+          if(uid){try{const d2=await momentecGetProductById(uid);return{baseSku,entry,detail:d2?.CatalogEntryView?.[0]||null}}catch(e2){}}
+          return{baseSku,entry,detail:null}
+        }
       });
       const details=await Promise.all(detailPromises);
       if(gen!==mtSearchGen.current)return;// stale
@@ -3115,20 +3123,20 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const src=detail||entry;// prefer detail if available
         const price=getPrice(src);
         const mtBackImg=src.fullImageBack||src.backImage||entry.fullImageBack||entry.backImage||'';
-        styleMap[baseSku]={sku:baseSku,styleName:src.name||entry.name||baseSku,brandName:src.manufacturer||entry.manufacturer||'Momentec',
+        styleMap[baseSku]={sku:baseSku,styleName:src.title||src.name||entry.name||baseSku,brandName:src.manufacturer||entry.manufacturer||'Momentec',
           styleImage:src.thumbnail||src.fullImage||entry.thumbnail||entry.fullImage||'',
           styleBackImage:mtBackImg,
           colors:{},_mtId:src.uniqueID||entry.uniqueID,_mtPrice:price>0?price:0};
         const style=styleMap[baseSku];
-        // Process child sKUs from detailed response for colors
-        const skus=src.sKUs||detail?.sKUs||[];
+        // Process child SKUs from detailed response for colors (HCL Commerce uses both SKUs and sKUs casing)
+        const skus=src.SKUs||src.sKUs||detail?.SKUs||detail?.sKUs||[];
         if(skus.length){
           for(const sk of skus){
             const skPrice=getPrice(sk);const skColor=getColor(sk)||'Default';
             const skImg=sk.thumbnail||sk.fullImage||'';
             const skBackImg=sk.fullImageBack||sk.backImage||'';
             if(!style.colors[skColor]){
-              style.colors[skColor]={colorName:skColor,sku:sk.partNumber||baseSku,piecePrice:skPrice,customerPrice:skPrice,
+              style.colors[skColor]={colorName:skColor,sku:sk.partNumber||sk.SKUPartNumber||baseSku,piecePrice:skPrice,customerPrice:skPrice,
                 colorFrontImage:skImg||style.styleImage,colorBackImage:skBackImg||style.styleBackImage||'',sizes:[],totalQty:0};
             }else{const c=style.colors[skColor];if(skPrice>0&&(c.customerPrice===0||skPrice<c.customerPrice)){c.customerPrice=skPrice;c.piecePrice=skPrice}if(skImg&&!c.colorFrontImage)c.colorFrontImage=skImg;if(skBackImg&&!c.colorBackImage)c.colorBackImage=skBackImg}
             if(skPrice>0&&(style._mtPrice===0||skPrice<style._mtPrice))style._mtPrice=skPrice;
