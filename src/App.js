@@ -11835,6 +11835,12 @@ export default function App(){
         if(j.art_status==='art_requested'&&j.coach_rejected){const lastRej=(j.rejections||[]).slice(-1)[0];todos.push({type:'art_rejected',priority:1,msg:'❌ Coach rejected art: '+j.art_name,detail:tag+' · '+so.id+(lastRej?' · "'+lastRej.reason.slice(0,60)+(lastRej.reason.length>60?'...':'')+'"':''),so,jobId:j.id,action:'Review feedback',role:'sales'})}
         const ready=isJobReady(j,so);const onBoard=safeJobs(so).some(ej=>ej.id===j.id);
         if(j.item_status==='partially_received'&&!j.split_from&&j.fulfilled_units>0)todos.push({type:'split',priority:3,msg:'✂️ Can split: '+j.art_name+' ('+j.fulfilled_units+'/'+j.total_units+')',detail:tag+' · '+j.id,so,action:'Review split',role:'production'});
+        // Notify rep when all items received for a job
+        if(j.item_status==='items_received'&&j.prod_status!=='completed'&&!j.split_from){
+          const needsArt=j.art_status!=='art_complete';
+          if(needsArt){todos.push({type:'items_received_needs_art',priority:1,msg:'📦 All items received — art needs attention: '+j.art_name,detail:tag+' · '+so.id+' · Art: '+(j.art_status||'needs_art').replace(/_/g,' '),so,jobId:j.id,action:'Review art',role:'sales'})}
+          else{todos.push({type:'items_received',priority:3,msg:'📦 All items received: '+j.art_name,detail:tag+' · '+so.id+' · '+j.total_units+' units ready',so,jobId:j.id,action:'View',role:'sales',isNotification:true})}
+        }
       });
       safeFirm(so).filter(f=>!f.approved).forEach(f=>{todos.push({type:'firm',priority:2,msg:'📌 Firm date request: '+(f.item_desc||'Full order'),detail:tag+' · '+so.id+' · '+f.date,so,action:'Approve',role:'gm'})});
       if(so.expected_date){const dOut=Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24));
@@ -12428,11 +12434,9 @@ export default function App(){
                 if(isAdminGm){return REPS.filter(r=>r.is_active!==false&&(r.role==='csr'||r.role==='rep'||r.role==='admin')).map(r=><option key={r.id} value={r.id}>{r.name} ({r.role}){getPrimaryCsrForRep(cu.id)===r.id?' ★':''}</option>)}
                 const myCsrIds=getCsrsForRep(cu.id);
                 const myCsrs=REPS.filter(r=>myCsrIds.includes(r.id)&&r.is_active!==false);
-                const otherReps=REPS.filter(r=>r.is_active!==false&&r.role==='rep'&&r.id!==cu.id);
                 const otherCsrs=REPS.filter(r=>r.is_active!==false&&r.role==='csr'&&!myCsrIds.includes(r.id));
                 return[
                   myCsrs.length>0&&<optgroup key="my-csrs" label="My CSRs">{myCsrs.map(r=><option key={r.id} value={r.id}>{r.name}{getPrimaryCsrForRep(cu.id)===r.id?' ★ Primary':''}</option>)}</optgroup>,
-                  otherReps.length>0&&<optgroup key="other-reps" label="Other Reps">{otherReps.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</optgroup>,
                   otherCsrs.length>0&&<optgroup key="other-csrs" label="Other CSRs">{otherCsrs.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</optgroup>
                 ];
               })()}
@@ -22620,20 +22624,28 @@ export default function App(){
     const allM=mHideClosed?allMRaw.filter(m=>{const so=sos.find(s=>s.id===m.so_id||s.id===m.entity_id);if(!so&&(m.entity_type||'so')==='so')return true;if(!so)return true;const cStatus=calcSOStatus(so);return!closedStatuses.has(cStatus)&&!closedStatuses.has(so.status)}):allMRaw;
     // Entity type filter
     const entityFiltered=mEntityF==='all'?allM:allM.filter(m=>(m.entity_type||'so')===mEntityF);
-    // Person-specific message filter: show messages for user's customers (rep) or assigned reps' customers (CSR)
+    // Person-specific message filter: role-based filtering
     const _isMsgForMe=(m)=>{
+      // Everyone sees messages they are tagged in or authored
       if((m.tagged_members||[]).includes(cu.id))return true;
       if(m.author_id===cu.id)return true;
-      if(cu.role==='admin'||cu.role==='gm')return true;
+      // Warehouse: see @warehouse dept messages or personally tagged (already handled above)
+      if(cu.role==='warehouse')return m.dept==='warehouse';
+      // For roles that care about customer/rep assignment:
       const so=sos.find(s=>s.id===m.so_id||s.id===m.entity_id);
       const est2=ests.find(e=>e.id===m.entity_id);
       const entity=so||est2;
-      if(!entity)return true;
+      if(!entity)return false;
       const c=cust.find(x=>x.id===entity.customer_id);
       const msgRepId=c?.primary_rep_id||(so?.created_by)||(est2?.created_by);
+      // Admin/GM: see their customer orders + tagged (tagged handled above)
+      if(cu.role==='admin'||cu.role==='gm')return msgRepId===cu.id;
+      // Rep: see messages on their customer orders
       if(cu.role==='rep')return msgRepId===cu.id;
+      // CSR: see messages on orders where their assigned rep is involved
       if(cu.role==='csr'){const myReps=getRepsForCsr(cu.id);return myReps.length===0||myReps.includes(msgRepId)}
-      return true;
+      // Other roles: only tagged/authored (already handled above)
+      return false;
     };
     const unread=entityFiltered.filter(m=>!(m.read_by||[]).includes(cu.id));
     const mentions=entityFiltered.filter(m=>(m.tagged_members||[]).includes(cu.id));
@@ -22746,7 +22758,7 @@ export default function App(){
                 <span style={{fontWeight:700,fontSize:13}}>{author?.name}</span>
                 <span style={{fontSize:9,fontWeight:700,padding:'2px 8px',borderRadius:10,background:entityBg(m),color:entityColor(m)}}>{entityLabel(m)}</span>
                 <span style={{fontSize:11,color:entityColor(m),fontWeight:600}}>{m.entity_id||m.so_id}</span>
-                {c2&&<span style={{fontSize:11,color:'#64748b'}}>{c2.alpha_tag}</span>}
+                {c2&&<span style={{fontSize:11,color:'#475569',fontWeight:600}}>{c2.name}</span>}
                 {entity?.memo&&<span style={{fontSize:10,color:'#94a3b8',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>— {entity.memo}</span>}
                 {isTagged&&<span style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:8,background:'#fef3c7',color:'#92400e'}}>Tagged you</span>}
                 <span style={{fontSize:10,color:'#94a3b8',marginLeft:'auto',whiteSpace:'nowrap'}}>{m.ts}</span>
