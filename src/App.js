@@ -6807,7 +6807,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       if(jobWizard)return<div className="card"><div className="card-header" style={{background:'linear-gradient(135deg,#7c3aed,#a78bfa)',color:'white'}}>
         <h2 style={{color:'white',margin:0}}>Job Setup Wizard</h2>
       </div><div className="card-body" style={{padding:16}}>
-        <div style={{fontSize:12,color:'#64748b',marginBottom:16}}>Organize items into production jobs. Items are grouped by decoration type. You can rename jobs, move items between groups, or create new groups.</div>
+        <div style={{fontSize:12,color:'#64748b',marginBottom:16}}>Organize items into production jobs. Items are grouped by decoration type. You can rename jobs, separate items into different groups, or create new groups.</div>
         {jobWizard.groups.map((g,gi)=><div key={gi} style={{padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0',marginBottom:12}}>
           <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}>
             <span style={{fontSize:10,fontWeight:700,color:'white',background:'#7c3aed',padding:'2px 8px',borderRadius:4,textTransform:'uppercase'}}>{g.deco_type.replace(/_/g,' ')}</span>
@@ -6823,15 +6823,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <th style={{padding:'3px 6px',textAlign:'left',fontSize:10,color:'#64748b'}}>SKU</th>
               <th style={{padding:'3px 6px',textAlign:'left',fontSize:10,color:'#64748b'}}>Item</th>
               <th style={{padding:'3px 6px',textAlign:'left',fontSize:10,color:'#64748b'}}>Art</th>
-              <th style={{padding:'3px 6px',textAlign:'left',fontSize:10,color:'#64748b'}}>Position</th>
+              <th style={{padding:'3px 6px',textAlign:'left',fontSize:10,color:'#64748b'}}>Art Location</th>
               <th style={{padding:'3px 6px',textAlign:'center',fontSize:10,color:'#64748b'}}>Units</th>
-              <th style={{padding:'3px 6px',textAlign:'right',fontSize:10,color:'#64748b'}}>Move to</th>
+              <th style={{padding:'3px 6px',textAlign:'right',fontSize:10,color:'#64748b'}}>Separate</th>
             </tr></thead>
             <tbody>{g.items.map((it,ii)=><tr key={ii} style={{borderBottom:'1px solid #f1f5f9'}}>
               <td style={{padding:'3px 6px',fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{it.sku}</td>
               <td style={{padding:'3px 6px'}}>{it.name} <span style={{color:'#94a3b8'}}>{it.color}</span></td>
-              <td style={{padding:'3px 6px',fontSize:10,color:'#64748b'}}>{it.art_name||'—'}</td>
-              <td style={{padding:'3px 6px',fontSize:10,color:'#64748b'}}>{it.position}</td>
+              <td style={{padding:'3px 6px',fontSize:10,color:it.art_name?'#1e40af':'#94a3b8',fontWeight:it.art_name?600:400}}>{it.art_name||'—'}</td>
+              <td style={{padding:'3px 6px',fontSize:10}}><span style={{background:'#ede9fe',color:'#6d28d9',padding:'1px 6px',borderRadius:3,fontWeight:600}}>{it.position}</span></td>
               <td style={{padding:'3px 6px',textAlign:'center',fontWeight:700}}>{it.units}</td>
               <td style={{padding:'3px 6px',textAlign:'right'}}>
                 <select style={{fontSize:10,padding:'1px 4px',border:'1px solid #d1d5db',borderRadius:3}} value="" onChange={e=>{
@@ -6847,7 +6847,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   gs[gi].items.splice(ii,1);gs[targetGi].items.push(it);
                   setJobWizard({...jobWizard,groups:gs});
                 }}>
-                  <option value="">Move...</option>
+                  <option value="">Separate...</option>
                   {jobWizard.groups.map((g2,g2i)=>g2i!==gi?<option key={g2i} value={g2i}>{g2.name}</option>:null)}
                   <option value="new">+ New Group</option>
                 </select>
