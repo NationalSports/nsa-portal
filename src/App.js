@@ -2681,6 +2681,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const[invSmsEnabled,setInvSmsEnabled]=useState(false);const[invSmsPhone,setInvSmsPhone]=useState('');const[invSmsMsg,setInvSmsMsg]=useState('');
   const[invFollowUpDays,setInvFollowUpDays]=useState(7);
   const[splitModal,setSplitModal]=useState(null);// {jIdx, mode:'received'|'sku'|null}
+  const[mergeMode,setMergeMode]=useState(null);// {selected:[jobIdx,...]} — select jobs to merge
   const[jobWizard,setJobWizard]=useState(null);// {groups: [{name,deco_type,items:[...]},...]} — Job Setup Wizard
   const[countDiscModal,setCountDiscModal]=useState(null);// {open,entries:[{sku,name,color,size,expected,actual}],notes}
   const[artReqModal,setArtReqModal]=useState(null);// {jIdx, artist:'', instructions:'', files:[]}
@@ -3370,7 +3371,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         art_status:existing?.art_status||j.art_status,item_status:itemSt,prod_status:prodSt,
         total_units:j.total_units,fulfilled_units:j.fulfilled_units,
         assigned_machine:existing?.assigned_machine||null,assigned_to:existing?.assigned_to||null,
-        ship_method:existing?.ship_method||null,
+        ship_method:existing?.ship_method||(so.ship_preference==='rep_delivery'?'rep_delivery':'ship_customer'),
         split_from:existing?.split_from||null,created_at:existing?.created_at||new Date().toLocaleDateString(),
         counted_at:existing?.counted_at||null,counted_by:existing?.counted_by||null,
         count_discrepancy:existing?.count_discrepancy||null,notes:existing?.notes||null,
@@ -6801,7 +6802,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const allApproved=artIds.every(aid=>{const af2=safeArt(o).find(f=>f.id===aid);return af2&&af2.status==='approved'});
           const allProdFiles=artIds.every(aid=>{const af2=safeArt(o).find(f=>f.id===aid);return af2&&(af2.prod_files||[]).length>0});
           const anyUploaded=artIds.some(aid=>{const af2=safeArt(o).find(f=>f.id===aid);return af2&&(af2.status==='uploaded'||af2.status==='needs_approval')});
-          const artStatus=allApproved&&allProdFiles?'art_complete':allApproved?'production_files_needed':anyUploaded?'waiting_approval':'needs_art';
+          let artStatus=allApproved&&allProdFiles?'art_complete':allApproved?'production_files_needed':anyUploaded?'waiting_approval':'needs_art';
+          // Auto-send to Art Dashboard when activating — artists see it immediately
+          const autoArtRequest=activateAll&&artStatus==='needs_art';
+          if(autoArtRequest)artStatus='art_requested';
           const totalUnits=g.items.reduce((a,it)=>a+it.units,0);
           const positions=[...new Set(g.items.map(it=>it.position))].join(', ');
           newJobs.push({
@@ -6811,14 +6815,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             art_name:g.name,deco_type:g.deco_type,positions,
             art_status:artStatus,item_status:'need_to_order',
             prod_status:activateAll?'hold':'draft',
+            ship_method:o.ship_preference==='rep_delivery'?'rep_delivery':'ship_customer',
             total_units:totalUnits,fulfilled_units:0,split_from:null,
             created_at:new Date().toLocaleDateString(),
+            ...(autoArtRequest?{art_requests:[{id:'AR-'+Date.now()+'-'+gi,artist:'',artist_name:'',instructions:'Auto-requested on send to production',files:[],status:'requested',created_at:new Date().toISOString(),created_by:cu?.name||'System',auto:true}]}:{}),
             items:g.items.map(({item_idx,deco_idx,sku,name,color,units,fulfilled})=>({item_idx,deco_idx,sku,name,color,units,fulfilled:fulfilled||0}))
           });
         });
         const updated={...o,jobs:newJobs,updated_at:new Date().toLocaleString()};
         setO(updated);onSave(updated);setDirty(false);setJobWizard(null);
-        nf(activateAll?'Jobs activated and sent to production!':'Draft jobs saved — activate when ready');
+        const artSent=activateAll?newJobs.filter(j=>j.art_status==='art_requested'&&(j.art_requests||[]).some(r=>r.auto)).length:0;
+        nf(activateAll?(artSent>0?'Jobs released! '+artSent+' art job'+(artSent!==1?'s':'')+' sent to Art Dashboard':'Jobs released for art!'):'Draft jobs saved — activate when ready');
       };
 
       // Job Setup Wizard Modal
@@ -6843,7 +6850,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <th style={{padding:'3px 6px',textAlign:'left',fontSize:10,color:'#64748b'}}>Art</th>
               <th style={{padding:'3px 6px',textAlign:'left',fontSize:10,color:'#64748b'}}>Art Location</th>
               <th style={{padding:'3px 6px',textAlign:'center',fontSize:10,color:'#64748b'}}>Units</th>
-              <th style={{padding:'3px 6px',textAlign:'right',fontSize:10,color:'#64748b'}}>Separate</th>
+              <th style={{padding:'3px 6px',textAlign:'right',fontSize:10,color:'#64748b'}}></th>
             </tr></thead>
             <tbody>{g.items.map((it,ii)=><tr key={ii} style={{borderBottom:'1px solid #f1f5f9'}}>
               <td style={{padding:'3px 6px',fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{it.sku}</td>
@@ -6852,23 +6859,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <td style={{padding:'3px 6px',fontSize:10}}><span style={{background:'#ede9fe',color:'#6d28d9',padding:'1px 6px',borderRadius:3,fontWeight:600}}>{it.position}</span></td>
               <td style={{padding:'3px 6px',textAlign:'center',fontWeight:700}}>{it.units}</td>
               <td style={{padding:'3px 6px',textAlign:'right'}}>
-                <select style={{fontSize:10,padding:'1px 4px',border:'1px solid #d1d5db',borderRadius:3}} value="" onChange={e=>{
-                  const val=e.target.value;
-                  if(val==='new'){
-                    const gs=jobWizard.groups.map(gg=>({...gg,items:[...gg.items]}));
-                    gs[gi].items.splice(ii,1);
-                    gs.push({name:'New Job',deco_type:g.deco_type,items:[it]});
-                    setJobWizard({...jobWizard,groups:gs});return;
-                  }
-                  const targetGi=parseInt(val);if(isNaN(targetGi))return;
+                {g.items.length>1?<button style={{fontSize:9,padding:'2px 8px',background:'#f1f5f9',border:'1px solid #d1d5db',borderRadius:4,cursor:'pointer',fontWeight:600,color:'#475569'}} onClick={()=>{
                   const gs=jobWizard.groups.map(gg=>({...gg,items:[...gg.items]}));
-                  gs[gi].items.splice(ii,1);gs[targetGi].items.push(it);
+                  gs[gi].items.splice(ii,1);
+                  gs.push({name:it.art_name||'New Job',deco_type:g.deco_type,items:[it],_split:true});
                   setJobWizard({...jobWizard,groups:gs});
-                }}>
-                  <option value="">Separate...</option>
-                  {jobWizard.groups.map((g2,g2i)=>g2i!==gi?<option key={g2i} value={g2i}>{g2.name}</option>:null)}
-                  <option value="new">+ New Group</option>
-                </select>
+                }}>Split</button>:g._split?<button style={{fontSize:9,padding:'2px 8px',background:'#ede9fe',border:'1px solid #c4b5fd',borderRadius:4,cursor:'pointer',fontWeight:600,color:'#6d28d9'}} onClick={()=>{
+                  const gs=jobWizard.groups.map(gg=>({...gg,items:[...gg.items]}));
+                  const mainGi=gs.findIndex(gg=>gg.deco_type===g.deco_type&&!gg._split);
+                  if(mainGi>=0){gs[mainGi].items.push(it);gs.splice(gi,1)}
+                  setJobWizard({...jobWizard,groups:gs});
+                }}>Merge Back</button>:null}
               </td>
             </tr>)}</tbody>
           </table>}
@@ -6881,7 +6882,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         </div>
         <div style={{display:'flex',gap:8,borderTop:'1px solid #e2e8f0',paddingTop:12}}>
           <button className="btn btn-primary" style={{background:'#166534',borderColor:'#166534',fontWeight:800}}
-            onClick={()=>wizActivate(jobWizard.groups,true)}>Activate All & Send to Production</button>
+            onClick={()=>wizActivate(jobWizard.groups,true)}>Release Jobs for Art</button>
           <button className="btn btn-secondary" style={{fontWeight:700}}
             onClick={()=>wizActivate(jobWizard.groups,false)}>Save as Drafts</button>
           <button className="btn btn-secondary" onClick={()=>setJobWizard(null)}>Cancel</button>
@@ -6895,25 +6896,41 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         <h2>Production Jobs ({activeJobs.length}{hasDrafts?' + '+draftJobs.length+' drafts':''})</h2>
         <div style={{display:'flex',gap:6}}>
           <button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 12px',fontWeight:700}} onClick={openJobWizard}>Set Up Jobs</button>
+          {jobs.length>1&&!mergeMode&&<button className="btn btn-sm" style={{fontSize:10,background:'#1e40af',color:'white',border:'none',padding:'4px 12px',fontWeight:700}} onClick={()=>setMergeMode({selected:[]})}>Merge Jobs</button>}
+          {mergeMode&&<><button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 12px',fontWeight:700}} disabled={mergeMode.selected.length<2} onClick={()=>{
+            const sel=mergeMode.selected.sort((a,b)=>a-b);const target=jobs[sel[0]];const mergeItems=[...target.items||[]];let mergeUnits=target.total_units;
+            sel.slice(1).forEach(ji=>{const mj=jobs[ji];mergeItems.push(...(mj.items||[]));mergeUnits+=(mj.total_units||0)});
+            const merged={...target,items:mergeItems,total_units:mergeUnits};
+            const removeIdxs=new Set(sel.slice(1));const newJobs=jobs.map((j,i)=>i===sel[0]?merged:j).filter((j,i)=>!removeIdxs.has(i));
+            const updated={...o,jobs:newJobs,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setMergeMode(null);
+            nf('Merged '+sel.length+' jobs into '+target.id);
+          }}>Merge {mergeMode.selected.length} Selected</button>
+          <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>setMergeMode(null)}>Cancel</button></>}
           <button className="btn btn-sm btn-secondary" onClick={refreshJobs}><Icon name="check" size={12}/> Sync Status</button>
         </div>
       </div><div className="card-body" style={{padding:0}}>
+        {mergeMode&&<div style={{padding:'8px 16px',background:'#dbeafe',borderBottom:'1px solid #93c5fd',fontSize:12,color:'#1e40af',fontWeight:600}}>Select 2 or more jobs of the same type to merge together. Items will be combined into the first selected job.</div>}
         {hasDrafts&&<div style={{padding:'10px 16px',background:'#fef9c3',borderBottom:'1px solid #fde68a',display:'flex',alignItems:'center',gap:8}}>
           <span style={{fontSize:12,fontWeight:700,color:'#a16207'}}>{draftJobs.length} draft job{draftJobs.length!==1?'s':''} need review</span>
           <span style={{fontSize:11,color:'#92400e'}}>— Draft jobs won't appear on the production board until activated</span>
           <button className="btn btn-sm" style={{marginLeft:'auto',fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 12px',fontWeight:700}}
-            onClick={()=>{const newJobs=jobs.map(j=>j.prod_status==='draft'||j._draft?{...j,prod_status:'hold',_draft:false}:j);
-              const updated={...o,jobs:newJobs,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);nf('All draft jobs activated!')}}>Activate All</button>
+            onClick={()=>{let artSent=0;const newJobs=jobs.map(j=>{if(j.prod_status!=='draft'&&!j._draft)return j;
+              const activated={...j,prod_status:'hold',_draft:false};
+              if(activated.art_status==='needs_art'){activated.art_status='art_requested';activated.art_requests=[...(activated.art_requests||[]),{id:'AR-'+Date.now()+'-'+j.id,artist:'',artist_name:'',instructions:'Auto-requested on activation',files:[],status:'requested',created_at:new Date().toISOString(),created_by:cu?.name||'System',auto:true}];artSent++}
+              return activated});
+              const updated={...o,jobs:newJobs,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);nf(artSent>0?'Draft jobs activated! '+artSent+' art job'+(artSent!==1?'s':'')+' sent to Art Dashboard':'All draft jobs activated!')}}>Activate All</button>
           <button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 10px',fontWeight:700}} onClick={openJobWizard}>Edit Jobs</button>
         </div>}
         {jobs.length===0&&<div style={{padding:24,textAlign:'center',color:'#94a3b8'}}>No decorations assigned yet. Add artwork to items, then click "Set Up Jobs" to create production jobs.</div>}
-        {jobs.length>0&&<table style={{fontSize:12}}><thead><tr><th>Job ID</th><th>Artwork / Decoration</th><th>Items</th><th>Units</th><th>Items Status</th><th>Art</th><th>Production</th><th></th></tr></thead><tbody>
+        {jobs.length>0&&<table style={{fontSize:12}}><thead><tr>{mergeMode&&<th style={{width:30}}></th>}<th>Job ID</th><th>Artwork / Decoration</th><th>Items</th><th>Units</th><th>Items Status</th><th>Art</th><th>Production</th><th></th></tr></thead><tbody>
           {jobs.map((j,ji)=>{
             const canProduce=j.item_status==='items_received'&&j.art_status==='art_complete';const canOverride2=cu.role==='admin'||cu.role==='production'||cu.role==='prod_manager'||cu.role==='gm';
             const canSplit=(j.items||[]).length>0&&j.total_units>1;
             const pct=j.total_units>0?Math.round(j.fulfilled_units/j.total_units*100):0;
+            const isMergeSel=mergeMode&&mergeMode.selected.includes(ji);
             return<React.Fragment key={j.id}>
-              <tr id={'so-job-'+ji} style={{background:j.prod_status==='completed'||j.prod_status==='shipped'?'#f0fdf4':undefined,cursor:'pointer',transition:'box-shadow 0.3s'}} onClick={()=>setSelJob(ji)}>
+              <tr id={'so-job-'+ji} style={{background:isMergeSel?'#dbeafe':j.prod_status==='completed'||j.prod_status==='shipped'?'#f0fdf4':undefined,cursor:'pointer',transition:'box-shadow 0.3s'}} onClick={()=>mergeMode?setMergeMode({selected:isMergeSel?mergeMode.selected.filter(x=>x!==ji):[...mergeMode.selected,ji]}):setSelJob(ji)}>
+              {mergeMode&&<td onClick={e=>e.stopPropagation()}><input type="checkbox" checked={!!isMergeSel} onChange={()=>setMergeMode({selected:isMergeSel?mergeMode.selected.filter(x=>x!==ji):[...mergeMode.selected,ji]})}/></td>}
               <td><span style={{fontWeight:700,color:'#1e40af'}}>{j.id}</span>
                 {j.split_from&&<div style={{fontSize:9,color:'#7c3aed'}}>split from {j.split_from}</div>}
                 {j.counted_at&&<div style={{fontSize:9,color:'#166534'}}>✅ counted</div>}</td>
