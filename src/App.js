@@ -3452,7 +3452,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     }
   },[syncJobs]);// eslint-disable-line
 
-  const fp=products.filter(p=>{if(!pS)return true;const q=pS.toLowerCase();return p.sku.toLowerCase().includes(q)||p.name.toLowerCase().includes(q)||p.brand?.toLowerCase().includes(q)||p.color?.toLowerCase().includes(q)});
+  const fp=products.filter(p=>{if(!pS||pS.length<2)return false;const q=pS.toLowerCase();return p.sku.toLowerCase().includes(q)||p.name.toLowerCase().includes(q)||p.brand?.toLowerCase().includes(q)||p.color?.toLowerCase().includes(q)});
   const statusFlow=['need_order','waiting_receive','needs_pull','items_received','in_production','ready_to_invoice','complete'];
 
   return(<div>
