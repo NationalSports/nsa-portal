@@ -11505,9 +11505,27 @@ export default function App(){
         }
       });
 
+      // Diagnostic: show what's linking and what's not
+      const storeIds = new Set(stores.map(s => s.id));
+      const orderSaleIds = new Set(Object.keys(ordersBySale));
+      const productSaleIds = new Set(allProducts.map(p => p.relationships?.sale?.data?.id).filter(Boolean));
+      const matchedViaOrders = [...storeIds].filter(id => orderSaleIds.has(id));
+      const matchedViaProducts = [...storeIds].filter(id => productSaleIds.has(id));
+      console.log('[OMG] DIAGNOSTIC:',
+        '| Stores:', storeIds.size, 'IDs:', [...storeIds].slice(0, 5),
+        '| Order sale IDs:', orderSaleIds.size, 'sample:', [...orderSaleIds].slice(0, 5),
+        '| Product sale IDs:', productSaleIds.size, 'sample:', [...productSaleIds].slice(0, 5),
+        '| Stores matched via orders:', matchedViaOrders.length,
+        '| Stores matched via products:', matchedViaProducts.length);
       console.log('[OMG] Sales with totals:', Object.keys(saleTotals).length,
         '| Orders by sale:', Object.keys(ordersBySale).length,
         '| Total orders:', allOrders.length, '| Total OPs:', allOrderProducts.length, '| Total products:', allProducts.length);
+      if (allOrderProducts.length > 0) {
+        const sampleOP = allOrderProducts[0];
+        const sampleProductId = sampleOP.relationships?.product?.data?.id;
+        const sampleProduct = sampleProductId ? productMap[sampleProductId] : null;
+        console.log('[OMG] Sample OP→product chain:', { op_id: sampleOP.id, product_id: sampleProductId, product_found: !!sampleProduct, product_sale_id: sampleProduct?.sale_id, base_price: sampleProduct?.base_price, qty: sampleOP.attributes?.quantity });
+      }
 
       // Convert store list data and populate with order + order_product data
       const convertedStores = stores.map(store => {
