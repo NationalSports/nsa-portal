@@ -60,7 +60,8 @@ const _dbLoad = async () => {
       rInv,rInvPay,rInvItems,rMsg,rMsgReads,rOMG,rOMGProd,rIssues,rAppState,
       rPromoProg,rPromoPeriods,rPromoUsage,
       rRepCsr,rAssignedTodos,rTodoComments,
-      rDecoVendors,rDecoVendorPricing] = await Promise.all([
+      rDecoVendors,rDecoVendorPricing,
+      rQuoteReqs,rQuoteReqItems] = await Promise.all([
       supabase.from('team_members').select('*').order('name').limit(10000),
       supabase.from('customers').select('*').order('name').limit(10000),
       supabase.from('customer_contacts').select('*').limit(10000),
@@ -96,6 +97,8 @@ const _dbLoad = async () => {
       supabase.from('todo_comments').select('*').limit(10000),
       supabase.from('deco_vendors').select('*').order('name').limit(10000),
       supabase.from('deco_vendor_pricing').select('*').limit(10000),
+      supabase.from('quote_requests').select('*').order('created_at',{ascending:false}).limit(10000),
+      supabase.from('quote_request_items').select('*').order('sort_order').limit(10000),
     ]);
     // Check for critical errors on core tables only (child tables may not exist yet — 404 is OK)
     const coreResults=[{n:'team_members',r:rTeam},{n:'customers',r:rCust},{n:'vendors',r:rVend},{n:'products',r:rProd},{n:'estimates',r:rEst},{n:'sales_orders',r:rSO},{n:'invoices',r:rInv},{n:'messages',r:rMsg},{n:'omg_stores',r:rOMG}];
@@ -115,6 +118,9 @@ const _dbLoad = async () => {
     const issues=d(rIssues);
     // Promo data
     const promoPrograms=d(rPromoProg);const promoPeriods=d(rPromoPeriods);const promoUsage=d(rPromoUsage);
+    // Quote requests: attach items
+    const quoteReqRaw=d(rQuoteReqs);const quoteReqItemsRaw=d(rQuoteReqItems);
+    const quote_requests=quoteReqRaw.map(qr=>({...qr,items:quoteReqItemsRaw.filter(i=>i.quote_request_id===qr.id).sort((a,b)=>a.sort_order-b.sort_order)}));
     const repCsrAssignments=d(rRepCsr);const assignedTodos=d(rAssignedTodos).map(t=>({...t,comments:d(rTodoComments).filter(c=>c.todo_id===t.id).sort((a,b)=>(a.created_at||'').localeCompare(b.created_at))}));
     const decoVendors=d(rDecoVendors);const decoVendorPricing=d(rDecoVendorPricing);
     // Parse app_state key-value pairs
@@ -163,7 +169,7 @@ const _dbLoad = async () => {
     // OMG Stores: attach products
     const omg_stores=omgRaw.map(s=>({...s,products:omgProd.filter(p=>p.store_id===s.id).map(p=>({sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:p.deco_type,deco_cost:p.deco_cost,sizes:p.sizes||{}}))}));
     const hasData=(customers.length>0)||(sales_orders.length>0);
-    return{team,customers,vendors,products,estimates,sales_orders,invoices,messages,omg_stores,issues,appState,hasData,repCsrAssignments,assignedTodos,decoVendors,decoVendorPricing};
+    return{team,customers,vendors,products,estimates,sales_orders,invoices,messages,omg_stores,issues,appState,hasData,repCsrAssignments,assignedTodos,decoVendors,decoVendorPricing,quote_requests};
   }catch(e){console.error('[DB] Load failed:',e);return null}
 };
 const _dbSeed = async (d) => {
@@ -9317,6 +9323,172 @@ function StripePaymentModal({invoices,customerName,customerEmail,alphaTag,onSucc
   </div>
 }
 
+// ─── PUBLIC QUOTE FORM — no auth required, accessed via ?quote=TOKEN ───
+function QuoteForm({token,supabaseClient}){
+  const[loading,setLoading]=useState(true);
+  const[qr,setQr]=useState(null);// quote request record
+  const[custName,setCustName]=useState('');
+  const[items,setItems]=useState([{item_type:'description',description:'',sku:'',color:'',sizes:{},total_qty:'',decoration_notes:'',notes:''}]);
+  const[contactName,setContactName]=useState('');
+  const[contactEmail,setContactEmail]=useState('');
+  const[globalNotes,setGlobalNotes]=useState('');
+  const[submitted,setSubmitted]=useState(false);
+  const[saving,setSaving]=useState(false);
+  const[error,setError]=useState('');
+  const SZS=['YXS','YS','YM','YL','YXL','XS','S','M','L','XL','2XL','3XL','4XL'];
+  const[showAllSizes,setShowAllSizes]=useState(false);
+  const BASIC_SZS=['S','M','L','XL','2XL'];
+
+  useEffect(()=>{
+    if(!supabaseClient||!token)return;
+    (async()=>{
+      const{data:qrData,error:qrErr}=await supabaseClient.from('quote_requests').select('*').eq('token',token).single();
+      if(qrErr||!qrData){setError('Quote form not found or has expired.');setLoading(false);return}
+      if(qrData.status==='submitted'||qrData.status==='reviewed'||qrData.status==='converted'){setSubmitted(true);setLoading(false);return}
+      setQr(qrData);
+      // Get customer name
+      const{data:cData}=await supabaseClient.from('customers').select('name').eq('id',qrData.customer_id).single();
+      if(cData)setCustName(cData.name);
+      // Load existing items if any
+      const{data:itemData}=await supabaseClient.from('quote_request_items').select('*').eq('quote_request_id',qrData.id).order('sort_order');
+      if(itemData?.length)setItems(itemData.map(i=>({item_type:i.item_type||'description',description:i.description||'',sku:i.sku||'',color:i.color||'',sizes:i.sizes||{},total_qty:i.total_qty||'',decoration_notes:i.decoration_notes||'',notes:i.notes||''})));
+      if(qrData.contact_name)setContactName(qrData.contact_name);
+      if(qrData.contact_email)setContactEmail(qrData.contact_email);
+      if(qrData.notes)setGlobalNotes(qrData.notes);
+      setLoading(false);
+    })();
+  },[token,supabaseClient]);
+
+  const addItem=()=>setItems(prev=>[...prev,{item_type:'description',description:'',sku:'',color:'',sizes:{},total_qty:'',decoration_notes:'',notes:''}]);
+  const removeItem=(idx)=>setItems(prev=>prev.filter((_,i)=>i!==idx));
+  const updateItem=(idx,field,val)=>setItems(prev=>prev.map((it,i)=>i===idx?{...it,[field]:val}:it));
+  const updateSize=(idx,sz,val)=>setItems(prev=>prev.map((it,i)=>i===idx?{...it,sizes:{...it.sizes,[sz]:parseInt(val)||0}}:it));
+
+  const handleSave=async(andSubmit=false)=>{
+    if(!supabaseClient||!qr)return;
+    setSaving(true);
+    try{
+      // Delete existing items then re-insert
+      await supabaseClient.from('quote_request_items').delete().eq('quote_request_id',qr.id);
+      const itemRows=items.filter(it=>it.sku||it.description).map((it,i)=>({
+        quote_request_id:qr.id,sort_order:i,item_type:it.sku?'sku':'description',
+        sku:it.sku||null,description:it.description||null,color:it.color||null,
+        sizes:it.sizes||{},total_qty:it.total_qty?parseInt(it.total_qty):null,
+        decoration_notes:it.decoration_notes||null,notes:it.notes||null
+      }));
+      if(itemRows.length)await supabaseClient.from('quote_request_items').insert(itemRows);
+      const updates={contact_name:contactName||null,contact_email:contactEmail||null,notes:globalNotes||null};
+      if(andSubmit){updates.status='submitted';updates.submitted_at=new Date().toISOString()}
+      await supabaseClient.from('quote_requests').update(updates).eq('id',qr.id);
+      if(andSubmit){
+        setSubmitted(true);
+        // Send notification email to rep
+        try{
+          const{data:repData}=await supabaseClient.from('team_members').select('email,name').eq('id',qr.created_by).single();
+          if(repData?.email){
+            const itemSummary=itemRows.map((it,i)=>`${i+1}. ${it.sku||it.description} - ${it.color||'no color'} - ${Object.entries(it.sizes||{}).filter(([,v])=>v>0).map(([s,v])=>s+':'+v).join(', ')||('Qty: '+(it.total_qty||'TBD'))}`).join('<br/>');
+            await fetch('https://api.brevo.com/v3/smtp/email',{method:'POST',headers:{'accept':'application/json','content-type':'application/json','api-key':window._brevoKeyPublic||''},
+              body:JSON.stringify({sender:{name:'NSA Quote System',email:'noreply@nationalsportsapparel.com'},to:[{email:repData.email}],
+                subject:'Quote Request Submitted — '+custName,
+                htmlContent:`<h2>Quote Request from ${custName}</h2><p><strong>${contactName||'Customer'}</strong> has submitted their quote request.</p><h3>Items:</h3><p>${itemSummary}</p><p>${globalNotes?'<strong>Notes:</strong> '+globalNotes:''}</p><p><a href="${window.location.origin}">Open NSA Portal to review</a></p>`})});
+          }
+        }catch(emailErr){console.warn('Email notification failed:',emailErr)}
+      }
+    }catch(e){setError('Save failed: '+e.message)}
+    setSaving(false);
+  };
+
+  if(loading)return<div style={{minHeight:'100vh',background:'#f8fafc',display:'flex',alignItems:'center',justifyContent:'center'}}>
+    <div style={{textAlign:'center'}}><div style={{fontSize:32,fontWeight:900,color:'#1e3a5f',marginBottom:8}}>NSA</div><div style={{color:'#64748b'}}>Loading quote form...</div></div></div>;
+  if(error)return<div style={{minHeight:'100vh',background:'#f8fafc',display:'flex',alignItems:'center',justifyContent:'center'}}>
+    <div style={{textAlign:'center',maxWidth:400}}><div style={{fontSize:32,fontWeight:900,color:'#1e3a5f',marginBottom:8}}>NSA</div><div style={{color:'#dc2626',fontSize:14}}>{error}</div></div></div>;
+  if(submitted)return<div style={{minHeight:'100vh',background:'#f8fafc',display:'flex',alignItems:'center',justifyContent:'center'}}>
+    <div style={{textAlign:'center',maxWidth:500,padding:32}}><div style={{fontSize:48,marginBottom:16}}>&#10003;</div>
+      <div style={{fontSize:24,fontWeight:700,color:'#166534',marginBottom:8}}>Quote Request Submitted!</div>
+      <div style={{color:'#64748b',fontSize:14}}>Thank you! Your NSA rep will review your items and get back to you with a quote.</div></div></div>;
+
+  const visibleSizes=showAllSizes?SZS:BASIC_SZS;
+  return<div style={{minHeight:'100vh',background:'#f8fafc'}}>
+    <div style={{background:'#1e3a5f',padding:'16px 24px',color:'white'}}>
+      <div style={{maxWidth:900,margin:'0 auto',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+        <div><div style={{fontSize:20,fontWeight:900}}>NSA</div><div style={{fontSize:11,opacity:.7}}>National Sports Apparel</div></div>
+        <div style={{textAlign:'right'}}><div style={{fontSize:14,fontWeight:600}}>Quote Request</div><div style={{fontSize:11,opacity:.7}}>{custName}</div></div>
+      </div>
+    </div>
+    <div style={{maxWidth:900,margin:'24px auto',padding:'0 16px'}}>
+      <div style={{background:'white',borderRadius:8,border:'1px solid #e2e8f0',padding:24,marginBottom:16}}>
+        <h2 style={{margin:'0 0 4px',fontSize:18,color:'#1e293b'}}>Your Information</h2>
+        <p style={{margin:'0 0 16px',fontSize:13,color:'#64748b'}}>Let us know who's filling this out so your rep knows who to follow up with.</p>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
+          <div><label style={{display:'block',fontSize:12,fontWeight:600,color:'#475569',marginBottom:4}}>Your Name</label>
+            <input className="form-input" value={contactName} onChange={e=>setContactName(e.target.value)} placeholder="Coach name" style={{width:'100%'}}/></div>
+          <div><label style={{display:'block',fontSize:12,fontWeight:600,color:'#475569',marginBottom:4}}>Email</label>
+            <input className="form-input" type="email" value={contactEmail} onChange={e=>setContactEmail(e.target.value)} placeholder="email@school.edu" style={{width:'100%'}}/></div>
+        </div>
+      </div>
+
+      <div style={{background:'white',borderRadius:8,border:'1px solid #e2e8f0',padding:24,marginBottom:16}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16}}>
+          <div><h2 style={{margin:0,fontSize:18,color:'#1e293b'}}>Items</h2>
+            <p style={{margin:'4px 0 0',fontSize:13,color:'#64748b'}}>Add items you'd like quoted. Use SKUs if you have them, or describe what you need.</p></div>
+          <label style={{fontSize:11,color:'#64748b',display:'flex',alignItems:'center',gap:4,cursor:'pointer'}}>
+            <input type="checkbox" checked={showAllSizes} onChange={e=>setShowAllSizes(e.target.checked)}/> Show all sizes (Youth, 3XL, 4XL)</label>
+        </div>
+        {items.map((item,idx)=><div key={idx} style={{border:'1px solid #e2e8f0',borderRadius:8,padding:16,marginBottom:12,background:'#fafbfc'}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
+            <div style={{fontSize:14,fontWeight:700,color:'#334155'}}>Item {idx+1}</div>
+            {items.length>1&&<button onClick={()=>removeItem(idx)} style={{background:'none',border:'none',color:'#ef4444',cursor:'pointer',fontSize:18,fontWeight:700}} title="Remove item">&times;</button>}
+          </div>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:10}}>
+            <div><label style={{display:'block',fontSize:11,fontWeight:600,color:'#475569',marginBottom:3}}>SKU <span style={{fontWeight:400,color:'#94a3b8'}}>(if known)</span></label>
+              <input className="form-input" value={item.sku} onChange={e=>updateItem(idx,'sku',e.target.value)} placeholder="e.g. PC61" style={{width:'100%',fontFamily:'monospace'}}/></div>
+            <div><label style={{display:'block',fontSize:11,fontWeight:600,color:'#475569',marginBottom:3}}>Or Describe Item</label>
+              <input className="form-input" value={item.description} onChange={e=>updateItem(idx,'description',e.target.value)} placeholder="e.g. Fleece hoodie, dri-fit polo" style={{width:'100%'}}/></div>
+          </div>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:10}}>
+            <div><label style={{display:'block',fontSize:11,fontWeight:600,color:'#475569',marginBottom:3}}>Color</label>
+              <input className="form-input" value={item.color} onChange={e=>updateItem(idx,'color',e.target.value)} placeholder="e.g. Navy, Black" style={{width:'100%'}}/></div>
+            <div><label style={{display:'block',fontSize:11,fontWeight:600,color:'#475569',marginBottom:3}}>Decoration Notes</label>
+              <input className="form-input" value={item.decoration_notes} onChange={e=>updateItem(idx,'decoration_notes',e.target.value)} placeholder="e.g. Screen print front, embroidered left chest" style={{width:'100%'}}/></div>
+          </div>
+          <div style={{marginBottom:10}}>
+            <label style={{display:'block',fontSize:11,fontWeight:600,color:'#475569',marginBottom:6}}>Sizes <span style={{fontWeight:400,color:'#94a3b8'}}>(enter quantity per size, or just total below)</span></label>
+            <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
+              {visibleSizes.map(sz=><div key={sz} style={{textAlign:'center'}}>
+                <div style={{fontSize:10,color:'#64748b',marginBottom:2}}>{sz}</div>
+                <input type="number" min="0" value={item.sizes[sz]||''} onChange={e=>updateSize(idx,sz,e.target.value)}
+                  style={{width:42,padding:'4px 2px',textAlign:'center',border:'1px solid #cbd5e1',borderRadius:4,fontSize:12}}/>
+              </div>)}
+              <div style={{textAlign:'center',borderLeft:'2px solid #cbd5e1',paddingLeft:8,marginLeft:4}}>
+                <div style={{fontSize:10,color:'#64748b',marginBottom:2}}>Total</div>
+                <input type="number" min="0" value={item.total_qty||''} onChange={e=>updateItem(idx,'total_qty',e.target.value)}
+                  style={{width:52,padding:'4px 2px',textAlign:'center',border:'1px solid #cbd5e1',borderRadius:4,fontSize:12,fontWeight:600}}/>
+              </div>
+            </div>
+          </div>
+          <div><label style={{display:'block',fontSize:11,fontWeight:600,color:'#475569',marginBottom:3}}>Notes</label>
+            <input className="form-input" value={item.notes} onChange={e=>updateItem(idx,'notes',e.target.value)} placeholder="Any other details for this item" style={{width:'100%'}}/></div>
+        </div>)}
+        <button onClick={addItem} style={{background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:6,padding:'8px 16px',color:'#1d4ed8',fontSize:13,fontWeight:600,cursor:'pointer',width:'100%'}}>+ Add Another Item</button>
+      </div>
+
+      <div style={{background:'white',borderRadius:8,border:'1px solid #e2e8f0',padding:24,marginBottom:16}}>
+        <label style={{display:'block',fontSize:12,fontWeight:600,color:'#475569',marginBottom:4}}>Additional Notes</label>
+        <textarea className="form-input" value={globalNotes} onChange={e=>setGlobalNotes(e.target.value)} placeholder="Anything else your rep should know — timeline, budget, special requests..." rows={3} style={{width:'100%',resize:'vertical'}}/>
+      </div>
+
+      <div style={{display:'flex',gap:12,justifyContent:'flex-end'}}>
+        <button onClick={()=>handleSave(false)} disabled={saving} style={{background:'white',border:'1px solid #cbd5e1',borderRadius:6,padding:'10px 24px',fontSize:14,fontWeight:600,cursor:'pointer',color:'#334155'}}>
+          {saving?'Saving...':'Save Draft'}</button>
+        <button onClick={()=>{if(window.confirm('Submit this quote request to your NSA rep? You won\'t be able to edit after submitting.'))handleSave(true)}} disabled={saving}
+          style={{background:'#1e40af',border:'none',borderRadius:6,padding:'10px 32px',fontSize:14,fontWeight:700,cursor:'pointer',color:'white'}}>
+          {saving?'Submitting...':'Submit to Rep'}</button>
+      </div>
+      <div style={{textAlign:'center',marginTop:24,fontSize:11,color:'#94a3b8'}}>Powered by National Sports Apparel</div>
+    </div>
+  </div>;
+}
+
 // ─── STANDALONE COACH PORTAL ───
 function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onUpdateInvs,onUpdateSOs,onUpdateEsts,savSOFn,portalSettings}){
   const _portalDisclaimer=portalSettings?.disclaimer||'';
@@ -10454,6 +10626,7 @@ export default function App(){
   const decoVendorNames=useMemo(()=>decoVendors.filter(v=>v.is_active!==false).map(v=>v.name),[decoVendors]);
   // Issue logging system
   const[issues,setIssues]=useState(()=>loadState('issues',[]));
+  const[quoteRequests,setQuoteRequests]=useState([]);
   const[issueModal,setIssueModal]=useState({open:false,desc:'',priority:'medium'});
   const[issueFilter,setIssueFilter]=useState('all');// all|open|resolved
   const[editMember,setEditMember]=useState(null);
@@ -10505,6 +10678,7 @@ export default function App(){
           }else{setEsts(prev=>d.estimates.map(e=>{const local=prev.find(p=>p.id===e.id);if(local?.items?.length&&(!e.items||!e.items.length))return{...e,items:local.items,art_files:local.art_files||e.art_files};return e}));setSOs(prev=>d.sales_orders.map(s=>{const local=prev.find(p=>p.id===s.id);if(!local)return s;const merged={...s};if(local.jobs?.length&&(!s.jobs||!s.jobs.length))merged.jobs=local.jobs;if(local.items?.length&&(!s.items||!s.items.length))merged.items=local.items;if(local.art_files?.length&&(!s.art_files||!s.art_files.length))merged.art_files=local.art_files;return merged.jobs!==s.jobs||merged.items!==s.items||merged.art_files!==s.art_files?merged:s}));setInvs(prev=>d.invoices.map(i=>{const local=prev.find(p=>p.id===i.id);if(local?.payments?.length&&(!i.payments||!i.payments.length))return{...i,payments:local.payments};return i}));setMsgs(d.messages.length?d.messages:msgs)}
           if(d.omg_stores.length)setOmgStores(d.omg_stores);
           if(d.issues?.length)setIssues(d.issues);
+          if(d.quote_requests?.length)setQuoteRequests(d.quote_requests);
           if(d.repCsrAssignments?.length)setRepCsrAssignments(d.repCsrAssignments);
           if(d.assignedTodos?.length)setAssignedTodos(d.assignedTodos);
           if(d.decoVendors?.length)setDecoVendors(d.decoVendors);
@@ -23532,11 +23706,12 @@ export default function App(){
       {id:'import',label:'Import / Upload'},
       {id:'qb',label:'QuickBooks'},
       {id:'backup',label:'Backup'},
+      {id:'sales_tools',label:'Sales Tools'},
     ];
     const DEFAULT_ACCESS={
       admin:ALL_PAGES.map(p=>p.id),
-      rep:['dashboard','estimates','orders','invoices','omg','customers','messages','commissions','reports','products','art'],
-      csr:['dashboard','estimates','orders','invoices','customers','messages','products','inventory'],
+      rep:['dashboard','estimates','orders','invoices','omg','customers','messages','commissions','reports','products','art','sales_tools'],
+      csr:['dashboard','estimates','orders','invoices','customers','messages','products','inventory','sales_tools'],
       accounting:['dashboard','invoices','customers','reports','qb'],
       warehouse:['dashboard','orders','warehouse','batch_pos','inventory','production'],
       prod_manager:['dashboard','orders','jobs','art','production','warehouse','inventory','batch_pos','reports'],
@@ -24199,9 +24374,402 @@ export default function App(){
       </>}
     </>)};
 
+  // ─── SALES TOOLS PAGE ───
+  function rSalesTools(){
+    const[stTab,setStTab]=useState('quotes');// quotes | size_sort | reorder | deco_calc
+    const[qrModal,setQrModal]=useState({open:false,customer_id:'',contact_id:''});
+    const[qrView,setQrView]=useState(null);// viewing a submitted quote request
+    const[qrSearch,setQrSearch]=useState('');
+    const[sizePaste,setSizePaste]=useState('');
+    const[sizeRows,setSizeRows]=useState([]);
+    const[reorderCust,setReorderCust]=useState('');
+    const[dcQty,setDcQty]=useState(48);
+    const[dcColors,setDcColors]=useState(2);
+    const[dcStitches,setDcStitches]=useState(8000);
+    const[dcTwoColor,setDcTwoColor]=useState(false);
+
+    const myQuoteRequests=quoteRequests.filter(qr=>{
+      if(cu.role==='admin')return true;
+      return qr.created_by===cu.id;
+    });
+    const filteredQR=myQuoteRequests.filter(qr=>{
+      if(!qrSearch)return true;
+      const s=qrSearch.toLowerCase();
+      const c=cust.find(x=>x.id===qr.customer_id);
+      return(c?.name||'').toLowerCase().includes(s)||(qr.contact_name||'').toLowerCase().includes(s)||(qr.token||'').toLowerCase().includes(s);
+    });
+
+    const createQuoteRequest=async()=>{
+      if(!qrModal.customer_id){nf('Please select a customer','error');return}
+      const token=Math.random().toString(36).substring(2,10)+Date.now().toString(36);
+      const newQR={id:crypto.randomUUID?crypto.randomUUID():('QR-'+Date.now()),token,customer_id:qrModal.customer_id,
+        contact_id:qrModal.contact_id||null,created_by:cu.id,status:'pending',created_at:new Date().toISOString(),items:[]};
+      if(supabase){
+        const{error:dbErr}=await supabase.from('quote_requests').insert({id:newQR.id,token:newQR.token,customer_id:newQR.customer_id,contact_id:newQR.contact_id,created_by:newQR.created_by,status:'pending'});
+        if(dbErr){nf('DB error: '+dbErr.message,'error');return}
+      }
+      setQuoteRequests(prev=>[newQR,...prev]);
+      setQrModal({open:false,customer_id:'',contact_id:''});
+      nf('Quote request created! Copy the link to send to your customer.');
+    };
+
+    const sendQuoteEmail=async(qr)=>{
+      const c=cust.find(x=>x.id===qr.customer_id);
+      const contact=qr.contact_id?(c?.contacts||[]).find(ct=>ct.id===qr.contact_id):((c?.contacts||[])[0]||null);
+      const email=contact?.email||c?.contact_email;
+      if(!email){nf('No email found for this customer contact','error');return}
+      const link=window.location.origin+'?quote='+qr.token;
+      const res=await sendBrevoEmail({to:{email,name:contact?.name||c?.contact_name||c?.name||''},subject:'Quote Request from National Sports Apparel',
+        htmlContent:`<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto">
+          <div style="background:#1e3a5f;padding:20px;color:white;text-align:center"><h1 style="margin:0;font-size:24px">NSA</h1><p style="margin:4px 0 0;font-size:12px;opacity:.7">National Sports Apparel</p></div>
+          <div style="padding:24px;background:#f8fafc;border:1px solid #e2e8f0">
+            <h2 style="color:#1e293b;margin:0 0 8px">Quote Request</h2>
+            <p style="color:#475569;font-size:14px">Hi ${contact?.name||'Coach'},</p>
+            <p style="color:#475569;font-size:14px">Your NSA rep <strong>${cu.name}</strong> has set up a quote form for you. Please fill in the items you need and we'll get you a quote ASAP.</p>
+            <div style="text-align:center;margin:24px 0"><a href="${link}" style="display:inline-block;background:#1e40af;color:white;padding:12px 32px;border-radius:6px;text-decoration:none;font-weight:700;font-size:16px">Fill Out Quote Form</a></div>
+            <p style="color:#94a3b8;font-size:12px">Or copy this link: ${link}</p>
+          </div>
+          <div style="padding:12px;text-align:center;font-size:11px;color:#94a3b8">National Sports Apparel</div></div>`,
+        replyTo:{email:cu.email||'info@nationalsportsapparel.com',name:cu.name}});
+      if(res.ok)nf('Quote form email sent to '+email);
+      else nf('Email failed: '+(res.error||'Unknown error'),'error');
+    };
+
+    const convertToEstimate=async(qr)=>{
+      const c=cust.find(x=>x.id===qr.customer_id);if(!c)return;
+      const estId=nextEstId(ests);
+      const newEst={id:estId,customer_id:c.id,status:'draft',default_markup:c.custom_multiplier||1.65,
+        shipping_type:'flat',shipping_value:0,items:(qr.items||[]).map((it,i)=>{
+          const matchProd=it.sku?prod.find(p=>(p.sku||'').toLowerCase()===it.sku.toLowerCase()):null;
+          return{sku:matchProd?.sku||it.sku||'',name:matchProd?.name||it.description||'',brand:matchProd?.brand||'',
+            color:matchProd?.color||it.color||'',nsa_cost:matchProd?.nsa_cost||0,unit_sell:0,
+            sizes:it.sizes&&Object.keys(it.sizes).length>0?it.sizes:(it.total_qty?{OSFA:parseInt(it.total_qty)}:{}),
+            no_deco:false,decorations:it.decoration_notes?[{kind:'art',art_file_id:'__tbd',art_tbd_type:'screen_print',tbd_colors:1,position:'Front Center'}]:[]}
+        }),art_files:[],created_at:new Date().toISOString()};
+      setEsts(prev=>[newEst,...prev]);
+      // Mark QR as converted
+      const updatedQR={...qr,status:'converted',estimate_id:estId};
+      setQuoteRequests(prev=>prev.map(q=>q.id===qr.id?updatedQR:q));
+      if(supabase){
+        await supabase.from('quote_requests').update({status:'converted',estimate_id:estId}).eq('id',qr.id);
+      }
+      nf('Created estimate '+estId+' from quote request');
+      setEEst(newEst);setPg('estimates');
+    };
+
+    // Size Sorter logic
+    const parseSizeData=(raw)=>{
+      if(!raw.trim())return[];
+      const lines=raw.trim().split('\n');
+      const parsed=[];
+      lines.forEach(line=>{
+        const parts=line.split(/[\t,]+/).map(s=>s.trim()).filter(Boolean);
+        if(parts.length<2)return;
+        const name=parts[0];const row={name,sizes:{}};
+        parts.slice(1).forEach(p=>{
+          const m=p.match(/^(YXS|YS|YM|YL|YXL|XS|S|M|L|XL|2XL|3XL|4XL|OSFA)\s*[:=]?\s*(\d+)$/i);
+          if(m){row.sizes[m[1].toUpperCase()]=parseInt(m[2])}
+          else{const sm=p.match(/^(\d+)\s*(YXS|YS|YM|YL|YXL|XS|S|M|L|XL|2XL|3XL|4XL|OSFA)$/i);
+            if(sm)row.sizes[sm[2].toUpperCase()]=parseInt(sm[1]);
+            else if(/^\d+$/.test(p)&&!row._assignedQty){row.sizes['OSFA']=parseInt(p);row._assignedQty=true}}
+        });
+        if(Object.keys(row.sizes).length>0)parsed.push(row);
+      });
+      return parsed;
+    };
+
+    const handleParseSizes=()=>{const rows=parseSizeData(sizePaste);setSizeRows(rows);if(rows.length)nf(rows.length+' rows parsed');else if(sizePaste.trim())nf('Could not parse size data. Try: Name, S:2, M:5, L:3','warn')};
+
+    // Deco calculator
+    const spSell=spP(dcQty,dcColors,true);const spCost=spP(dcQty,dcColors,false);
+    const emSell=emP(dcStitches,dcQty,true);const emCost=emP(dcStitches,dcQty,false);
+    const npSell=npP(dcQty,dcTwoColor,true);const npCost=npP(dcQty,dcTwoColor,false);
+
+    return(<>
+      {/* Tab bar */}
+      <div style={{display:'flex',gap:4,marginBottom:16,flexWrap:'wrap'}}>
+        {[{id:'quotes',label:'Quote Forms',icon:'send'},{id:'size_sort',label:'Size Sorter',icon:'grid'},{id:'reorder',label:'Quick Reorder',icon:'cart'},{id:'deco_calc',label:'Deco Calculator',icon:'dollar'}].map(t=>
+          <button key={t.id} className={`btn ${stTab===t.id?'btn-primary':'btn-secondary'}`} onClick={()=>setStTab(t.id)} style={{fontSize:13,padding:'8px 16px'}}>
+            <Icon name={t.icon} size={14}/> {t.label}</button>)}
+      </div>
+
+      {/* ═══ CUSTOMER QUOTE FORMS ═══ */}
+      {stTab==='quotes'&&<>
+        <div className="card" style={{marginBottom:16}}>
+          <div className="card-header">
+            <h2>Customer Quote Forms</h2>
+            <button className="btn btn-primary" onClick={()=>setQrModal({open:true,customer_id:'',contact_id:''})}><Icon name="plus" size={14}/> New Quote Form</button>
+          </div>
+          <div className="card-body" style={{padding:'12px 16px'}}>
+            <p style={{fontSize:13,color:'#64748b',margin:'0 0 12px'}}>Generate a quote form link for a customer. They fill in items (SKUs or descriptions), sizes, and decoration notes. You review and convert to an estimate.</p>
+            <input className="form-input" value={qrSearch} onChange={e=>setQrSearch(e.target.value)} placeholder="Search by customer, contact, or token..." style={{width:'100%',maxWidth:400,marginBottom:12}}/>
+            {filteredQR.length===0?<div style={{padding:24,textAlign:'center',color:'#94a3b8',fontSize:13}}>No quote requests yet. Create one to get started!</div>:
+            <table className="data-table" style={{fontSize:12}}><thead><tr><th>Customer</th><th>Contact</th><th>Status</th><th>Items</th><th>Created</th><th>Actions</th></tr></thead>
+              <tbody>{filteredQR.map(qr=>{const c=cust.find(x=>x.id===qr.customer_id);const link=window.location.origin+'?quote='+qr.token;
+                return<tr key={qr.id}>
+                  <td style={{fontWeight:600}}>{c?.name||'Unknown'}</td>
+                  <td>{qr.contact_name||'—'}</td>
+                  <td><span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,
+                    background:qr.status==='pending'?'#fef3c7':qr.status==='submitted'?'#dbeafe':qr.status==='reviewed'?'#e0e7ff':'#d1fae5',
+                    color:qr.status==='pending'?'#92400e':qr.status==='submitted'?'#1e40af':qr.status==='reviewed'?'#3730a3':'#065f46'}}>{qr.status}</span></td>
+                  <td>{(qr.items||[]).length}</td>
+                  <td style={{fontSize:11,color:'#64748b'}}>{new Date(qr.created_at).toLocaleDateString()}</td>
+                  <td style={{display:'flex',gap:4,flexWrap:'wrap'}}>
+                    <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{navigator.clipboard.writeText(link);nf('Link copied!')}}>Copy Link</button>
+                    <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>sendQuoteEmail(qr)}>Email</button>
+                    {qr.status==='submitted'&&<button className="btn btn-sm btn-primary" style={{fontSize:10}} onClick={()=>setQrView(qr)}>Review</button>}
+                    {qr.status==='submitted'&&<button className="btn btn-sm" style={{fontSize:10,background:'#065f46',color:'white',border:'none',borderRadius:4}} onClick={()=>convertToEstimate(qr)}>Convert to Estimate</button>}
+                  </td>
+                </tr>})}</tbody></table>}
+          </div>
+        </div>
+
+        {/* Review Modal */}
+        {qrView&&<div className="modal-overlay" onClick={()=>setQrView(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:700}}>
+          <div className="modal-header"><h2>Quote Request — {cust.find(x=>x.id===qrView.customer_id)?.name||'Customer'}</h2>
+            <button onClick={()=>setQrView(null)} style={{background:'none',border:'none',fontSize:20,cursor:'pointer'}}>&times;</button></div>
+          <div className="modal-body" style={{padding:16,maxHeight:'70vh',overflowY:'auto'}}>
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:16}}>
+              <div><strong style={{fontSize:11,color:'#475569'}}>Contact:</strong> {qrView.contact_name||'Not provided'}</div>
+              <div><strong style={{fontSize:11,color:'#475569'}}>Email:</strong> {qrView.contact_email||'Not provided'}</div>
+              <div><strong style={{fontSize:11,color:'#475569'}}>Submitted:</strong> {qrView.submitted_at?new Date(qrView.submitted_at).toLocaleString():'—'}</div>
+              <div><strong style={{fontSize:11,color:'#475569'}}>Status:</strong> {qrView.status}</div>
+            </div>
+            {qrView.notes&&<div style={{background:'#fef3c7',padding:10,borderRadius:6,fontSize:12,marginBottom:16}}>
+              <strong>Customer Notes:</strong> {qrView.notes}</div>}
+            <h3 style={{fontSize:14,marginBottom:8}}>Items ({(qrView.items||[]).length})</h3>
+            {(qrView.items||[]).map((it,i)=><div key={i} style={{border:'1px solid #e2e8f0',borderRadius:6,padding:12,marginBottom:8,background:'#fafbfc'}}>
+              <div style={{display:'flex',gap:16,marginBottom:6}}>
+                <div><strong style={{fontSize:11}}>#{i+1}</strong></div>
+                {it.sku&&<div style={{fontFamily:'monospace',fontSize:13,fontWeight:700,color:'#1e40af'}}>{it.sku}</div>}
+                {it.description&&<div style={{fontSize:13,color:'#334155'}}>{it.description}</div>}
+                {it.color&&<div style={{fontSize:12,color:'#64748b'}}>Color: {it.color}</div>}
+              </div>
+              {it.sizes&&Object.keys(it.sizes).filter(k=>it.sizes[k]>0).length>0&&
+                <div style={{fontSize:11,color:'#475569'}}>Sizes: {Object.entries(it.sizes).filter(([,v])=>v>0).map(([s,v])=>s+': '+v).join(', ')}</div>}
+              {it.total_qty&&<div style={{fontSize:11,color:'#475569'}}>Total Qty: {it.total_qty}</div>}
+              {it.decoration_notes&&<div style={{fontSize:11,color:'#7c3aed',marginTop:4}}>Deco: {it.decoration_notes}</div>}
+              {it.notes&&<div style={{fontSize:11,color:'#64748b',marginTop:2}}>Notes: {it.notes}</div>}
+            </div>)}
+            <div style={{display:'flex',gap:8,marginTop:16}}>
+              <button className="btn btn-primary" onClick={()=>{convertToEstimate(qrView);setQrView(null)}}>Convert to Estimate</button>
+              <button className="btn btn-secondary" onClick={()=>{
+                const updated={...qrView,status:'reviewed'};
+                setQuoteRequests(prev=>prev.map(q=>q.id===qrView.id?updated:q));
+                if(supabase)supabase.from('quote_requests').update({status:'reviewed',reviewed_at:new Date().toISOString()}).eq('id',qrView.id);
+                setQrView(null);nf('Marked as reviewed');
+              }}>Mark Reviewed</button>
+            </div>
+          </div>
+        </div></div>}
+
+        {/* Create Modal */}
+        {qrModal.open&&<div className="modal-overlay" onClick={()=>setQrModal({open:false,customer_id:'',contact_id:''})}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:500}}>
+          <div className="modal-header"><h2>New Quote Form</h2></div>
+          <div className="modal-body" style={{padding:16}}>
+            <div style={{marginBottom:12}}>
+              <label className="form-label">Customer *</label>
+              <select className="form-select" value={qrModal.customer_id} onChange={e=>setQrModal(x=>({...x,customer_id:e.target.value,contact_id:''}))}>
+                <option value="">Select customer...</option>
+                {cust.filter(c=>c.is_active!==false).sort((a,b)=>(a.name||'').localeCompare(b.name)).map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            </div>
+            {qrModal.customer_id&&(()=>{const c=cust.find(x=>x.id===qrModal.customer_id);const contacts=(c?.contacts||[]);
+              return contacts.length>0?<div style={{marginBottom:12}}>
+                <label className="form-label">Contact (optional)</label>
+                <select className="form-select" value={qrModal.contact_id} onChange={e=>setQrModal(x=>({...x,contact_id:e.target.value}))}>
+                  <option value="">Any / General</option>
+                  {contacts.map((ct,i)=><option key={i} value={ct.id||i}>{ct.name} {ct.role?'('+ct.role+')':''}</option>)}
+                </select>
+              </div>:null})()}
+            <div style={{display:'flex',gap:8,justifyContent:'flex-end',marginTop:16}}>
+              <button className="btn btn-secondary" onClick={()=>setQrModal({open:false,customer_id:'',contact_id:''})}>Cancel</button>
+              <button className="btn btn-primary" onClick={createQuoteRequest}>Create Quote Form</button>
+            </div>
+          </div>
+        </div></div>}
+      </>}
+
+      {/* ═══ SIZE SORTING TOOL ═══ */}
+      {stTab==='size_sort'&&<div className="card">
+        <div className="card-header"><h2>Size Sorting Tool</h2></div>
+        <div className="card-body" style={{padding:16}}>
+          <p style={{fontSize:13,color:'#64748b',margin:'0 0 12px'}}>Paste size data from coaches (emails, spreadsheets, etc.) and it will be sorted into a clean size grid. Accepts formats like "Name, S:2, M:5, L:3" or "Name  2  5  3".</p>
+          <textarea className="form-input" value={sizePaste} onChange={e=>setSizePaste(e.target.value)}
+            placeholder={"Paste size data here...\n\nExamples:\nJohn Smith, S:2, M:5, L:3, XL:1\nJane Doe\tS\t2\tM\t5\tL\t3\nTeam Order, 10 S, 20 M, 15 L, 8 XL, 4 2XL"}
+            rows={8} style={{width:'100%',fontFamily:'monospace',fontSize:12,resize:'vertical',marginBottom:12}}/>
+          <div style={{display:'flex',gap:8,marginBottom:16}}>
+            <button className="btn btn-primary" onClick={handleParseSizes}>Parse & Sort</button>
+            <button className="btn btn-secondary" onClick={()=>{setSizePaste('');setSizeRows([])}}>Clear</button>
+            {sizeRows.length>0&&<button className="btn btn-secondary" onClick={()=>{
+              const allSz=SZ_ORD.filter(s=>sizeRows.some(r=>r.sizes[s]>0));
+              const hdr=['Name',...allSz,'Total'].join('\t');
+              const rows=sizeRows.map(r=>[r.name,...allSz.map(s=>r.sizes[s]||0),allSz.reduce((a,s)=>a+(r.sizes[s]||0),0)].join('\t'));
+              const totals=['TOTALS',...allSz.map(s=>sizeRows.reduce((a,r)=>a+(r.sizes[s]||0),0)),sizeRows.reduce((a,r)=>a+Object.values(r.sizes).reduce((b,v)=>b+v,0),0)].join('\t');
+              navigator.clipboard.writeText([hdr,...rows,totals].join('\n'));nf('Copied to clipboard!');
+            }}>Copy Table</button>}
+          </div>
+          {sizeRows.length>0&&<div style={{overflowX:'auto'}}>
+            <table className="data-table" style={{fontSize:12}}><thead><tr><th>Name</th>
+              {SZ_ORD.filter(s=>sizeRows.some(r=>r.sizes[s]>0)).map(s=><th key={s} style={{textAlign:'center',minWidth:40}}>{s}</th>)}
+              <th style={{textAlign:'center',fontWeight:800}}>Total</th></tr></thead>
+              <tbody>
+                {sizeRows.map((r,i)=>{const activeSz=SZ_ORD.filter(s=>sizeRows.some(row=>row.sizes[s]>0));
+                  return<tr key={i}><td style={{fontWeight:600}}>{r.name}</td>
+                    {activeSz.map(s=><td key={s} style={{textAlign:'center',background:r.sizes[s]?'#eff6ff':''}}>{r.sizes[s]||''}</td>)}
+                    <td style={{textAlign:'center',fontWeight:700}}>{activeSz.reduce((a,s)=>a+(r.sizes[s]||0),0)}</td></tr>})}
+                <tr style={{background:'#f1f5f9',fontWeight:700}}><td>TOTALS</td>
+                  {SZ_ORD.filter(s=>sizeRows.some(r=>r.sizes[s]>0)).map(s=>
+                    <td key={s} style={{textAlign:'center'}}>{sizeRows.reduce((a,r)=>a+(r.sizes[s]||0),0)}</td>)}
+                  <td style={{textAlign:'center'}}>{sizeRows.reduce((a,r)=>a+Object.values(r.sizes).reduce((b,v)=>b+v,0),0)}</td>
+                </tr>
+              </tbody></table>
+          </div>}
+        </div>
+      </div>}
+
+      {/* ═══ QUICK REORDER ═══ */}
+      {stTab==='reorder'&&<div className="card">
+        <div className="card-header"><h2>Quick Reorder</h2></div>
+        <div className="card-body" style={{padding:16}}>
+          <p style={{fontSize:13,color:'#64748b',margin:'0 0 12px'}}>Select a customer to see their recent orders. Clone items into a new estimate with one click.</p>
+          <select className="form-select" value={reorderCust} onChange={e=>setReorderCust(e.target.value)} style={{maxWidth:400,marginBottom:16}}>
+            <option value="">Select customer...</option>
+            {cust.filter(c=>c.is_active!==false).sort((a,b)=>(a.name||'').localeCompare(b.name)).map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+          {reorderCust&&(()=>{
+            const custSOs=sos.filter(s=>s.customer_id===reorderCust).sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||''));
+            const custEsts=ests.filter(e=>e.customer_id===reorderCust).sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||''));
+            const c=cust.find(x=>x.id===reorderCust);
+            if(!custSOs.length&&!custEsts.length)return<div style={{padding:20,textAlign:'center',color:'#94a3b8'}}>No previous orders or estimates found for {c?.name}.</div>;
+            const cloneToEstimate=(source)=>{
+              const estId=nextEstId(ests);
+              const newEst={id:estId,customer_id:reorderCust,status:'draft',default_markup:c?.custom_multiplier||1.65,
+                shipping_type:source.shipping_type||'flat',shipping_value:source.shipping_value||0,
+                items:(source.items||[]).map(it=>({sku:it.sku||'',name:it.name||'',brand:it.brand||'',color:it.color||'',
+                  nsa_cost:it.nsa_cost||0,unit_sell:it.unit_sell||0,sizes:it.sizes||{},no_deco:it.no_deco||false,
+                  decorations:(it.decorations||[]).map(d=>({...d}))})),
+                art_files:(source.art_files||[]).map(a=>({...a})),created_at:new Date().toISOString()};
+              setEsts(prev=>[newEst,...prev]);nf('Created '+estId+' — cloned '+((source.items||[]).length)+' items');
+              setEEst(newEst);setPg('estimates');
+            };
+            return<div>
+              {custSOs.length>0&&<><h3 style={{fontSize:14,marginBottom:8}}>Recent Sales Orders ({custSOs.length})</h3>
+                <table className="data-table" style={{fontSize:12,marginBottom:16}}><thead><tr><th>SO #</th><th>Items</th><th>Date</th><th>Status</th><th></th></tr></thead>
+                  <tbody>{custSOs.slice(0,10).map(so=><tr key={so.id}>
+                    <td style={{fontWeight:600,cursor:'pointer',color:'#1e40af'}} onClick={()=>{setESO(so);setESOC(c);setPg('orders')}}>{so.id}</td>
+                    <td>{(so.items||[]).length} items — {(so.items||[]).map(it=>it.name||it.sku).filter(Boolean).slice(0,3).join(', ')}{(so.items||[]).length>3?'...':''}</td>
+                    <td style={{fontSize:11,color:'#64748b'}}>{new Date(so.created_at).toLocaleDateString()}</td>
+                    <td>{so.status}</td>
+                    <td><button className="btn btn-sm btn-primary" style={{fontSize:10}} onClick={()=>cloneToEstimate(so)}>Clone to Estimate</button></td>
+                  </tr>)}</tbody></table></>}
+              {custEsts.length>0&&<><h3 style={{fontSize:14,marginBottom:8}}>Recent Estimates ({custEsts.length})</h3>
+                <table className="data-table" style={{fontSize:12}}><thead><tr><th>EST #</th><th>Items</th><th>Date</th><th>Status</th><th></th></tr></thead>
+                  <tbody>{custEsts.slice(0,10).map(est=><tr key={est.id}>
+                    <td style={{fontWeight:600,cursor:'pointer',color:'#1e40af'}} onClick={()=>{setEEst(est);setPg('estimates')}}>{est.id}</td>
+                    <td>{(est.items||[]).length} items — {(est.items||[]).map(it=>it.name||it.sku).filter(Boolean).slice(0,3).join(', ')}{(est.items||[]).length>3?'...':''}</td>
+                    <td style={{fontSize:11,color:'#64748b'}}>{new Date(est.created_at).toLocaleDateString()}</td>
+                    <td>{est.status}</td>
+                    <td><button className="btn btn-sm btn-primary" style={{fontSize:10}} onClick={()=>cloneToEstimate(est)}>Clone to Estimate</button></td>
+                  </tr>)}</tbody></table></>}
+            </div>;
+          })()}
+        </div>
+      </div>}
+
+      {/* ═══ DECORATION COST CALCULATOR ═══ */}
+      {stTab==='deco_calc'&&<div className="card">
+        <div className="card-header"><h2>Decoration Cost Calculator</h2></div>
+        <div className="card-body" style={{padding:16}}>
+          <p style={{fontSize:13,color:'#64748b',margin:'0 0 16px'}}>Quick-check decoration pricing without creating an estimate. Shows both sell (customer) and cost (internal) pricing.</p>
+          <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',gap:12,marginBottom:20}}>
+            <div><label className="form-label">Quantity</label>
+              <input type="number" className="form-input" value={dcQty} onChange={e=>setDcQty(parseInt(e.target.value)||1)} min={1} style={{width:'100%'}}/></div>
+            <div><label className="form-label">Colors (Screen Print)</label>
+              <select className="form-select" value={dcColors} onChange={e=>setDcColors(parseInt(e.target.value))} style={{width:'100%'}}>
+                {[1,2,3,4,5].map(n=><option key={n} value={n}>{n} color{n>1?'s':''}</option>)}</select></div>
+            <div><label className="form-label">Stitches (Embroidery)</label>
+              <select className="form-select" value={dcStitches} onChange={e=>setDcStitches(parseInt(e.target.value))} style={{width:'100%'}}>
+                {[5000,8000,10000,15000,20000,30000].map(n=><option key={n} value={n}>{(n/1000).toFixed(0)}K stitches</option>)}</select></div>
+            <div><label className="form-label">Numbers</label>
+              <label style={{display:'flex',alignItems:'center',gap:6,fontSize:12,marginTop:8}}>
+                <input type="checkbox" checked={dcTwoColor} onChange={e=>setDcTwoColor(e.target.checked)}/> Two-color</label></div>
+          </div>
+
+          <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(250px,1fr))',gap:16}}>
+            {/* Screen Print */}
+            <div style={{border:'1px solid #e2e8f0',borderRadius:8,padding:16}}>
+              <h3 style={{fontSize:14,margin:'0 0 12px',color:'#1e293b'}}>Screen Print</h3>
+              <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}><span style={{fontSize:12,color:'#475569'}}>Sell (per piece):</span><span style={{fontSize:14,fontWeight:700,color:'#166534'}}>${spSell.toFixed(2)}</span></div>
+              <div style={{display:'flex',justifyContent:'space-between',marginBottom:8}}><span style={{fontSize:12,color:'#475569'}}>Cost (per piece):</span><span style={{fontSize:14,fontWeight:700,color:'#dc2626'}}>${spCost.toFixed(2)}</span></div>
+              <div style={{fontSize:11,color:'#94a3b8'}}>Margin: ${(spSell-spCost).toFixed(2)} ({spSell>0?((1-spCost/spSell)*100).toFixed(0):0}%)</div>
+              <div style={{borderTop:'1px solid #f1f5f9',marginTop:8,paddingTop:8}}>
+                <div style={{fontSize:11,fontWeight:600,color:'#475569',marginBottom:6}}>Full Price Grid — {dcColors} color{dcColors>1?'s':''}</div>
+                <table style={{width:'100%',fontSize:10,borderCollapse:'collapse'}}><thead><tr style={{borderBottom:'1px solid #e2e8f0'}}>
+                  <th style={{textAlign:'left',padding:'2px 4px'}}>Qty Range</th><th style={{textAlign:'right',padding:'2px 4px'}}>Sell</th><th style={{textAlign:'right',padding:'2px 4px'}}>Cost</th></tr></thead>
+                  <tbody>{SP.bk.map((b,i)=>{const s=spP(b.min,dcColors,true);const c=spP(b.min,dcColors,false);if(!s)return null;
+                    return<tr key={i} style={{background:dcQty>=b.min&&dcQty<=b.max?'#eff6ff':''}}>
+                      <td style={{padding:'2px 4px'}}>{b.min}-{b.max>9999?'+':b.max}</td>
+                      <td style={{textAlign:'right',padding:'2px 4px'}}>${s.toFixed(2)}</td>
+                      <td style={{textAlign:'right',padding:'2px 4px',color:'#dc2626'}}>${c.toFixed(2)}</td></tr>})}</tbody></table>
+              </div>
+            </div>
+
+            {/* Embroidery */}
+            <div style={{border:'1px solid #e2e8f0',borderRadius:8,padding:16}}>
+              <h3 style={{fontSize:14,margin:'0 0 12px',color:'#1e293b'}}>Embroidery</h3>
+              <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}><span style={{fontSize:12,color:'#475569'}}>Sell (per piece):</span><span style={{fontSize:14,fontWeight:700,color:'#166534'}}>${emSell.toFixed(2)}</span></div>
+              <div style={{display:'flex',justifyContent:'space-between',marginBottom:8}}><span style={{fontSize:12,color:'#475569'}}>Cost (per piece):</span><span style={{fontSize:14,fontWeight:700,color:'#dc2626'}}>${emCost.toFixed(2)}</span></div>
+              <div style={{fontSize:11,color:'#94a3b8'}}>Margin: ${(emSell-emCost).toFixed(2)} ({emSell>0?((1-emCost/emSell)*100).toFixed(0):0}%)</div>
+              <div style={{borderTop:'1px solid #f1f5f9',marginTop:8,paddingTop:8}}>
+                <div style={{fontSize:11,fontWeight:600,color:'#475569',marginBottom:6}}>Full Price Grid</div>
+                <table style={{width:'100%',fontSize:10,borderCollapse:'collapse'}}><thead><tr style={{borderBottom:'1px solid #e2e8f0'}}>
+                  <th style={{textAlign:'left',padding:'2px 4px'}}>Stitches</th>{EM.qb.map((b,i)=><th key={i} style={{textAlign:'right',padding:'2px 4px'}}>{b>999?'≤'+b:b}+</th>)}</tr></thead>
+                  <tbody>{EM.sb.map((sb,si)=><tr key={si} style={{background:dcStitches<=sb&&(si===0||dcStitches>EM.sb[si-1])?'#eff6ff':''}}>
+                    <td style={{padding:'2px 4px'}}>≤{(sb/1000).toFixed(0)}K</td>
+                    {EM.qb.map((qb,qi)=><td key={qi} style={{textAlign:'right',padding:'2px 4px'}}>${EM.pr[si][qi].toFixed(2)}</td>)}
+                  </tr>)}</tbody></table>
+              </div>
+            </div>
+
+            {/* Number Press */}
+            <div style={{border:'1px solid #e2e8f0',borderRadius:8,padding:16}}>
+              <h3 style={{fontSize:14,margin:'0 0 12px',color:'#1e293b'}}>Number Press</h3>
+              <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}><span style={{fontSize:12,color:'#475569'}}>Sell (per piece):</span><span style={{fontSize:14,fontWeight:700,color:'#166534'}}>${npSell.toFixed(2)}</span></div>
+              <div style={{display:'flex',justifyContent:'space-between',marginBottom:8}}><span style={{fontSize:12,color:'#475569'}}>Cost (per piece):</span><span style={{fontSize:14,fontWeight:700,color:'#dc2626'}}>${npCost.toFixed(2)}</span></div>
+              <div style={{fontSize:11,color:'#94a3b8'}}>Margin: ${(npSell-npCost).toFixed(2)} ({npSell>0?((1-npCost/npSell)*100).toFixed(0):0}%)</div>
+              <div style={{borderTop:'1px solid #f1f5f9',marginTop:8,paddingTop:8}}>
+                <div style={{fontSize:11,fontWeight:600,color:'#475569',marginBottom:6}}>Full Price Grid</div>
+                <table style={{width:'100%',fontSize:10,borderCollapse:'collapse'}}><thead><tr style={{borderBottom:'1px solid #e2e8f0'}}>
+                  <th style={{textAlign:'left',padding:'2px 4px'}}>Qty</th><th style={{textAlign:'right',padding:'2px 4px'}}>Sell</th><th style={{textAlign:'right',padding:'2px 4px'}}>Cost</th><th style={{textAlign:'right',padding:'2px 4px'}}>+2clr</th></tr></thead>
+                  <tbody>{NP.bk.map((b,i)=><tr key={i} style={{background:dcQty<=b&&(i===0||dcQty>NP.bk[i-1])?'#eff6ff':''}}>
+                    <td style={{padding:'2px 4px'}}>≤{b>9999?'Any':b}</td>
+                    <td style={{textAlign:'right',padding:'2px 4px'}}>${NP.se[i].toFixed(2)}</td>
+                    <td style={{textAlign:'right',padding:'2px 4px',color:'#dc2626'}}>${NP.co[i].toFixed(2)}</td>
+                    <td style={{textAlign:'right',padding:'2px 4px'}}>+${rQ(NP.tc*1.65).toFixed(2)}</td>
+                  </tr>)}</tbody></table>
+              </div>
+            </div>
+
+            {/* DTF */}
+            <div style={{border:'1px solid #e2e8f0',borderRadius:8,padding:16}}>
+              <h3 style={{fontSize:14,margin:'0 0 12px',color:'#1e293b'}}>DTF (Direct to Film)</h3>
+              <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}><thead><tr style={{borderBottom:'1px solid #e2e8f0'}}>
+                <th style={{textAlign:'left',padding:'4px'}}>Size</th><th style={{textAlign:'right',padding:'4px'}}>Sell</th><th style={{textAlign:'right',padding:'4px'}}>Cost</th></tr></thead>
+                <tbody>{DTF.map((d,i)=><tr key={i}>
+                  <td style={{padding:'4px'}}>{d.label}</td>
+                  <td style={{textAlign:'right',padding:'4px',fontWeight:700,color:'#166534'}}>${d.sell.toFixed(2)}</td>
+                  <td style={{textAlign:'right',padding:'4px',fontWeight:700,color:'#dc2626'}}>${d.cost.toFixed(2)}</td></tr>)}</tbody></table>
+            </div>
+          </div>
+        </div>
+      </div>}
+    </>)
+  }
+
     // NAV
-  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'messages',label:'Messages',icon:'mail'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'art',label:'Art Dashboard',icon:'image'},{id:'production',label:'Prod Board',icon:'package'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'purchase_orders',label:'Purchase Orders',icon:'cart'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{id:'team',label:'Team',icon:'users'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'Analytics'},{id:'reports',label:'Reports',icon:'dollar'},{id:'commissions',label:'Commissions',icon:'dollar',roles:['admin','rep']},{section:'System'},{id:'issues',label:'Issues',icon:'alert'},{id:'import',label:'Import / Upload',icon:'upload'},{id:'qb',label:'QuickBooks Sync',icon:'dollar'},{id:'backup',label:'Backup & Data',icon:'save'},{id:'settings',label:'Settings',icon:'grid',roles:['admin']}];
-  const titles={dashboard:'Dashboard',reports:'Reports & Analytics',commissions:'Commissions',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',omg:'OMG Team Stores',jobs:'Jobs',art:'Art Dashboard',production:'Production Board',warehouse:'Warehouse',purchase_orders:'Purchase Orders',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',team:'Team Directory',products:'Products',inventory:'Inventory',messages:'Messages',issues:'Issues',import:'Import / Upload',qb:'QuickBooks Online',backup:'Backup & Data',settings:'Settings'};
+  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'messages',label:'Messages',icon:'mail'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{id:'sales_tools',label:'Sales Tools',icon:'edit'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'art',label:'Art Dashboard',icon:'image'},{id:'production',label:'Prod Board',icon:'package'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'purchase_orders',label:'Purchase Orders',icon:'cart'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{id:'team',label:'Team',icon:'users'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'Analytics'},{id:'reports',label:'Reports',icon:'dollar'},{id:'commissions',label:'Commissions',icon:'dollar',roles:['admin','rep']},{section:'System'},{id:'issues',label:'Issues',icon:'alert'},{id:'import',label:'Import / Upload',icon:'upload'},{id:'qb',label:'QuickBooks Sync',icon:'dollar'},{id:'backup',label:'Backup & Data',icon:'save'},{id:'settings',label:'Settings',icon:'grid',roles:['admin']}];
+  const titles={dashboard:'Dashboard',reports:'Reports & Analytics',commissions:'Commissions',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',omg:'OMG Team Stores',jobs:'Jobs',art:'Art Dashboard',production:'Production Board',warehouse:'Warehouse',purchase_orders:'Purchase Orders',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',team:'Team Directory',products:'Products',inventory:'Inventory',messages:'Messages',issues:'Issues',import:'Import / Upload',qb:'QuickBooks Online',backup:'Backup & Data',settings:'Settings',sales_tools:'Sales Tools'};
   // ─── SCAN RESULT HANDLER ───
   function handleScanResult(val){
     if(!val)return;
@@ -24277,6 +24845,14 @@ export default function App(){
     try{const u=new URL(window.location);u.searchParams.delete('scan');window.history.replaceState({},'',u)}catch{}
     handleScanResult(val);
   },[_scanParam,dbLoading]);// eslint-disable-line
+
+  // ─── PUBLIC QUOTE FORM GATE — ?quote=TOKEN ───
+  const _quoteToken=useMemo(()=>{try{return new URLSearchParams(window.location.search).get('quote')}catch{return null}},[]);
+  if(_quoteToken){
+    if(dbLoading)return<div style={{minHeight:'100vh',background:'#f8fafc',display:'flex',alignItems:'center',justifyContent:'center'}}>
+      <div style={{textAlign:'center'}}><div style={{fontSize:32,fontWeight:900,color:'#1e3a5f',marginBottom:8}}>NSA</div><div style={{color:'#64748b'}}>Loading...</div></div></div>;
+    return<QuoteForm token={_quoteToken} supabaseClient={supabase}/>;
+  }
 
   // ─── COACH PORTAL GATE — public access via ?portal=<alpha_tag> ───
   const _portalTag=useMemo(()=>{try{return new URLSearchParams(window.location.search).get('portal')}catch{return null}},[]);
@@ -24391,7 +24967,7 @@ export default function App(){
         <span style={{fontSize:16}}>&#9888;</span><span style={{flex:1}}>{dbError}</span>
         <button onClick={()=>setDbError(null)} style={{background:'none',border:'none',color:'#991b1b',cursor:'pointer',fontWeight:800,fontSize:14}}>&#215;</button>
       </div>}
-      <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='art'&&rArtist()}{pg==='production'&&rProd2()}{pg==='warehouse'&&rWarehouse()}{pg==='purchase_orders'&&rPOs()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='team'&&rTeam()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='commissions'&&rCommissions()}{pg==='omg'&&rOMG()}{pg==='reports'&&rReports()}{pg==='issues'&&rIssues()}{pg==='import'&&rImport()}{pg==='qb'&&rQB()}{pg==='backup'&&rBackup()}{pg==='settings'&&rSettings()}</div></div>
+      <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='art'&&rArtist()}{pg==='production'&&rProd2()}{pg==='warehouse'&&rWarehouse()}{pg==='purchase_orders'&&rPOs()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='team'&&rTeam()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='commissions'&&rCommissions()}{pg==='omg'&&rOMG()}{pg==='reports'&&rReports()}{pg==='issues'&&rIssues()}{pg==='import'&&rImport()}{pg==='qb'&&rQB()}{pg==='backup'&&rBackup()}{pg==='settings'&&rSettings()}{pg==='sales_tools'&&rSalesTools()}</div></div>
     {/* Idle Warning — art timers only (global, not tied to any specific page) */}
     {idleWarning&&<div className="modal-overlay" style={{zIndex:10000}}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:380}}>
       <div className="modal-header" style={{background:'#fffbeb'}}><h2>⏱️ Still working?</h2></div>
