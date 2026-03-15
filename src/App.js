@@ -11993,11 +11993,13 @@ export default function App(){
       todos.push({type:'inv_followup',priority:1,msg:'⏰ Follow up on invoice '+inv2.id+' ('+daysSince+'d): $'+safeNum(inv2.total).toFixed(2),detail:tag2+' · Follow-up due '+new Date(inv2.follow_up_at).toLocaleDateString(),action:'Follow Up',role:'sales'});
     });
     // Recently paid invoices → notification
-    invs.filter(i=>i.status==='paid'&&i.payments?.length).forEach(inv2=>{
-      const lastPay=inv2.payments[inv2.payments.length-1];if(!lastPay?.date)return;
-      const payDate=parseDate(lastPay.date);const daysAgo=Math.floor((new Date()-payDate)/(1000*60*60*24));
+    invs.filter(i=>i.status==='paid').forEach(inv2=>{
+      const lastPay=inv2.payments?.length>0?inv2.payments[inv2.payments.length-1]:null;
+      const payDate=lastPay?.date?parseDate(lastPay.date):(inv2.updated_at?parseDate(inv2.updated_at):parseDate(inv2.date));
+      if(!payDate)return;
+      const daysAgo=Math.floor((new Date()-payDate)/(1000*60*60*24));
       if(daysAgo<=7){const c2=cust.find(x=>x.id===inv2.customer_id);const tag2=c2?.name||c2?.alpha_tag||inv2.id;
-        todos.push({type:'inv_paid',priority:3,msg:'💰 Invoice paid: '+inv2.id+' — $'+safeNum(inv2.total).toFixed(2),detail:tag2+(inv2.memo?' · '+inv2.memo:'')+' · '+lastPay.method+(daysAgo===0?' · Today':' · '+daysAgo+'d ago'),so:inv2.so_id?sos.find(s=>s.id===inv2.so_id):null,action:'View',role:'sales',isNotification:true})}
+        todos.push({type:'inv_paid',priority:3,msg:'💰 Invoice paid: '+inv2.id+' — $'+safeNum(inv2.total).toFixed(2),detail:tag2+(inv2.memo?' · '+inv2.memo:'')+' · '+(lastPay?.method||'payment')+(daysAgo===0?' · Today':' · '+daysAgo+'d ago'),so:inv2.so_id?sos.find(s=>s.id===inv2.so_id):null,action:'View',role:'sales',isNotification:true})}
     });
     // Open issues → show on to-do list for top admin (Steve) only
     if(cu?.id==='00000000-0000-0000-0000-000000000001')issues.filter(i=>i.status==='open').forEach(i=>{
@@ -16817,9 +16819,9 @@ export default function App(){
         const c=cust.find(x=>x.id===inv.customer_id);
         const rep=REPS.find(r=>r.id===so?.created_by);
         const gp=calcGP(inv);
-        const invDate=new Date(inv.date);
-        const paidDate=inv.payments?.length>0?parseDate(inv.payments[inv.payments.length-1].date):null;
-        const daysToPay=paidDate?Math.round((paidDate-invDate)/(1000*60*60*24)):null;
+        const invDate=parseDate(inv.date);
+        const paidDate=inv.payments?.length>0?parseDate(inv.payments[inv.payments.length-1].date):(inv.updated_at?parseDate(inv.updated_at):invDate);
+        const daysToPay=paidDate&&invDate?Math.round((paidDate-invDate)/(1000*60*60*24)):null;
         const isLate=daysToPay!==null&&daysToPay>90;
         const overridden=commOverrides[inv.id]||false;
         const commRate=isLate&&!overridden?0.15:0.30;
