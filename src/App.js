@@ -11822,8 +11822,9 @@ export default function App(){
       return true;
     };
     const unreadMsgs=allUnread.filter(isMyMsg);
-    const unreadMentions=unreadMsgs.filter(m=>(m.tagged_members||[]).includes(cu?.id));
-    const myUnread=unreadMsgs.sort((a,b)=>{const aTag=(a.tagged_members||[]).includes(cu?.id)?0:1;const bTag=(b.tagged_members||[]).includes(cu?.id)?0:1;if(aTag!==bTag)return aTag-bTag;return(b.ts||'').localeCompare(a.ts)}).slice(0,10);
+    const _dashMention=(m)=>{if((m.tagged_members||[]).includes(cu?.id))return true;if(m.text){const t=m.text.toLowerCase();const fn=(cu?.name||'').split(' ')[0].toLowerCase();const full=(cu?.name||'').toLowerCase();if(fn&&(t.includes('@'+fn)||t.includes('@'+full)))return true}return false};
+    const unreadMentions=unreadMsgs.filter(_dashMention);
+    const myUnread=unreadMsgs.sort((a,b)=>{const aTag=_dashMention(a)?0:1;const bTag=_dashMention(b)?0:1;if(aTag!==bTag)return aTag-bTag;return(b.ts||'').localeCompare(a.ts)}).slice(0,10);
     // Build to-do items from jobs and SOs
     const todos=[];
     sos.forEach(so=>{
@@ -25156,8 +25157,11 @@ export default function App(){
         if(item.roles&&!item.roles.includes(cu.role))return null;
         // Page access control: if employee has custom access list, enforce it (admins always see all)
         if(cu.role!=='admin'&&cu.access&&!cu.access.includes(item.id))return null;
-        const ubadge=item.id==='messages'?msgs.filter(m=>!(m.read_by||[]).includes(cu.id)).length:0;
-        const mentionBadge=item.id==='messages'?msgs.filter(m=>!(m.read_by||[]).includes(cu.id)&&(m.tagged_members||[]).includes(cu.id)).length:0;
+        const _closedSt=new Set(['complete','shipped','closed']);
+        const _sidebarMsgs=item.id==='messages'?msgs.filter(m=>{const so=sos.find(s=>s.id===m.so_id||s.id===m.entity_id);if(!so&&(m.entity_type||'so')==='so')return true;if(!so)return true;const cSt=calcSOStatus(so);return!_closedSt.has(cSt)&&!_closedSt.has(so.status)}):[];
+        const ubadge=_sidebarMsgs.filter(m=>!(m.read_by||[]).includes(cu.id)).length;
+        const _isSidebarMention=(m)=>{if((m.tagged_members||[]).includes(cu.id))return true;if(m.text){const t=m.text.toLowerCase();const fn=(cu.name||'').split(' ')[0].toLowerCase();const full=(cu.name||'').toLowerCase();if(fn&&(t.includes('@'+fn)||t.includes('@'+full)))return true}return false};
+        const mentionBadge=item.id==='messages'?_sidebarMsgs.filter(m=>!(m.read_by||[]).includes(cu.id)&&_isSidebarMention(m)).length:0;
         return<button key={item.id} className={`sidebar-link ${pg===item.id?'active':''}`}
           onClick={()=>{if(dirtyRef.current&&!window.confirm('You have unsaved changes. Leave without saving?'))return;dirtyRef.current=false;setPg(item.id);setQ('');setSelC(null);setSelV(null);setEEst(null);setESO(null);setMobileMenuOpen(false)}}><Icon name={item.icon}/>{item.label}{item.id==='messages'&&mentionBadge>0&&<span style={{background:'#f59e0b',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:4}}>@{mentionBadge}</span>}{item.id==='messages'&&ubadge>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{ubadge}</span>}{item.id==='purchase_orders'&&(()=>{let wc=0;sos.forEach(so=>safeItems(so).forEach(it=>safePOs(it).forEach(po=>{const szKeys=Object.keys(po).filter(k=>!k.startsWith('_')&&typeof po[k]==='number'&&!['status'].includes(k));const open=szKeys.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-((po.received||{})[sz]||0)-((po.cancelled||{})[sz]||0)),0);if(open>0)wc++})));return wc>0?<span style={{background:'#d97706',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{wc}</span>:null})()}{item.id==='batch_pos'&&batchPOs.length>0&&<span style={{background:'#7c3aed',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{batchPOs.length}</span>}{item.id==='issues'&&openIssueCount>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{openIssueCount}</span>}</button>})}</nav>
       <div className="sidebar-user"><div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}><div><div style={{fontWeight:600,color:'#e2e8f0'}}>{cu.name}</div><div>{cu.role}</div></div><div style={{display:'flex',gap:4}}><button onClick={()=>setMobileMode(true)} style={{background:'none',border:'1px solid #475569',borderRadius:6,padding:'3px 8px',color:'#94a3b8',cursor:'pointer',fontSize:10}} title="Switch to mobile view">📱 Mobile</button><button onClick={handleLogout} style={{background:'none',border:'1px solid #475569',borderRadius:6,padding:'3px 8px',color:'#94a3b8',cursor:'pointer',fontSize:10}} title="Log out">↪ Out</button></div></div></div></div>
