@@ -24140,7 +24140,7 @@ export default function App(){
   // LOGIN GATE
   if(!cu)return<LoginGate onLogin={handleLogin} reps={REPS}/>;
   // MOBILE PORTAL GATE
-  if(mobileMode)return<MobilePortal cu={cu} cust={cust} sos={sos} ests={ests} invs={invs} msgs={msgs} prod={prod} vend={vend} REPS={REPS} onLogout={handleLogout} onSwitchDesktop={()=>setMobileMode(false)} nf={nf}/>;
+  if(mobileMode)return<MobilePortal cu={cu} cust={cust} sos={sos} ests={ests} invs={invs} msgs={msgs} prod={prod} vend={vend} REPS={REPS} assignedTodos={assignedTodos} onLogout={handleLogout} onSwitchDesktop={()=>setMobileMode(false)} onNewEstimate={()=>{setMobileMode(false);newE(null)}} nf={nf}/>;
 
   return(<div className="app"><Toast msg={toast?.msg} type={toast?.type}/>
     {/* Mobile sidebar backdrop */}
