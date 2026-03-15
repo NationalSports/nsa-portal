@@ -10599,7 +10599,7 @@ export default function App(){
   const[pg,setPg]=useState('dashboard');const[toast,setToast]=useState(null);const[mobileMenuOpen,setMobileMenuOpen]=useState(false);
   const[dashView,setDashView]=useState(()=>{try{const u=JSON.parse(localStorage.getItem('nsa_user'));if(u?.role==='csr')return'csr';if(u?.role==='rep')return'sales';if(u?.role==='warehouse')return'warehouse';if(u?.role==='artist'||u?.role==='art')return'decorator';if(u?.role==='production')return'production'}catch{}return'admin'});// admin|sales|warehouse|decorator|production|csr
   const[prodDashFilter,setProdDashFilter]=useState(null);// null|'hold'|'ready'|'staging'|'in_process'|'completed'
-  const[qbConfig,setQBConfig]=useState({connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',
+  const[qbConfig,setQBConfig]=useState({connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'daily',syncInterval:'daily',
     access_token:'',refresh_token:'',realm_id:'',token_created_at:0,sandbox:false,
     mapping:{income_account:'Sales',cogs_account:'Cost of Goods Sold',deco_account:'Subcontractor - Decoration',ar_account:'Accounts Receivable',ap_account:'Accounts Payable',tax_account:'Sales Tax Payable'},
     syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}});
@@ -23061,6 +23061,124 @@ export default function App(){
       setQbSyncing(false);
     };
 
+    // ── SYNC: Pull bills FROM QB back to portal (bill costs → PO costs) ──
+    const syncBillsFromQB=async()=>{
+      setQbSyncing(true);
+      const log={ts:new Date().toLocaleString(),type:'bill_pull',status:'success',details:[]};
+      let updated=0;
+      try{
+        // Query all bills from QB
+        const res=await qbApi('query',{query:"SELECT * FROM Bill MAXRESULTS 500"});
+        const qbBills=res?.QueryResponse?.Bill||[];
+        if(!qbBills.length){log.details.push('No bills found in QB');setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));nf('No bills in QB');setQbSyncing(false);return}
+        // Build reverse map: QB PO Id → portal PO id
+        const poMap=qbConfig.qbPOMap||{};
+        const reversePoMap={};// qbPOId → portalPOId
+        Object.entries(poMap).forEach(([portalId,qbId])=>{reversePoMap[qbId]=portalId});
+        // Collect all portal PO numbers for matching by DocNumber
+        const allPortalPOIds=new Set();
+        sos.forEach(so=>{safeItems(so).forEach(it=>{(it.po_lines||[]).forEach(pl=>{if(pl.po_id)allPortalPOIds.add(pl.po_id)})})});
+        submittedBatches.forEach(b=>{if(b.po_number)allPortalPOIds.add(b.po_number)});
+        invPOs.forEach(p=>{if(p.po_number)allPortalPOIds.add(p.po_number)});
+        // Track already-synced bill IDs to avoid re-applying
+        const syncedBillIds=new Set(qbConfig._syncedBillIds||[]);
+        const newSyncedBillIds=[...syncedBillIds];
+        for(const qbBill of qbBills){
+          if(syncedBillIds.has(qbBill.Id))continue;
+          const billTotal=safeNum(qbBill.TotalAmt);
+          const billDate=qbBill.TxnDate||'';
+          const billDocNum=qbBill.DocNumber||'';
+          const billMemo=qbBill.PrivateNote||'';
+          const vendorName=qbBill.VendorRef?.name||'';
+          // Try to match to portal PO via LinkedTxn (PurchaseOrder reference)
+          let matchedPortalPOId=null;
+          const linkedTxns=qbBill.LinkedTxn||[];
+          for(const lt of linkedTxns){
+            if(lt.TxnType==='PurchaseOrder'&&reversePoMap[lt.TxnId]){
+              matchedPortalPOId=reversePoMap[lt.TxnId];break;
+            }
+          }
+          // Fallback: match by DocNumber against portal PO IDs
+          if(!matchedPortalPOId&&billDocNum){
+            const docLc=billDocNum.toLowerCase().replace(/\s+/g,'');
+            for(const pid of allPortalPOIds){
+              if(pid.toLowerCase().replace(/\s+/g,'')===docLc){matchedPortalPOId=pid;break}
+            }
+          }
+          // Fallback: check memo for PO reference
+          if(!matchedPortalPOId&&billMemo){
+            const poMatch=billMemo.match(/PO[:\s]*([A-Z0-9-]+)/i);
+            if(poMatch){
+              const poRef=poMatch[1].toLowerCase().replace(/\s+/g,'');
+              for(const pid of allPortalPOIds){
+                if(pid.toLowerCase().replace(/\s+/g,'')===poRef){matchedPortalPOId=pid;break}
+              }
+            }
+          }
+          if(!matchedPortalPOId){continue}
+          // Determine which PO source this matches and apply the bill cost
+          const billInfo={qb_bill_id:qbBill.Id,doc_number:billDocNum,vendor:vendorName,total:billTotal,date:billDate};
+          // Check SO item PO lines
+          let appliedToSO=false;
+          setSOs(prev=>{
+            let changed=false;
+            const next=prev.map(s=>{
+              const updatedItems=(s.items||[]).map(it=>{
+                const matchPO=it.po_lines?.find(po=>po.po_id===matchedPortalPOId);
+                if(!matchPO)return it;
+                changed=true;
+                return{...it,po_lines:it.po_lines.map(po=>{
+                  if(po.po_id!==matchedPortalPOId)return po;
+                  const prevCost=safeNum(po._bill_cost||0);
+                  return{...po,_bill_cost:Math.round((prevCost+billTotal)*100)/100,
+                    _bill_details:[...(po._bill_details||[]),billInfo]};
+                })};
+              });
+              if(!changed)return s;
+              const updatedSO={...s,items:updatedItems,updated_at:new Date().toLocaleString()};
+              _dbSaveSO(updatedSO);
+              return updatedSO;
+            });
+            if(changed)appliedToSO=true;
+            return changed?next:prev;
+          });
+          // Check batch POs
+          if(!appliedToSO){
+            const batchMatch=submittedBatches.find(b=>(b.po_number||b.id)===matchedPortalPOId);
+            if(batchMatch){
+              setSubmittedBatches(prev=>prev.map(sb=>{
+                if((sb.po_number||sb.id)!==matchedPortalPOId)return sb;
+                return{...sb,_bill_cost:Math.round((safeNum(sb._bill_cost||0)+billTotal)*100)/100,
+                  _bill_details:[...(sb._bill_details||[]),billInfo]};
+              }));
+              appliedToSO=true;
+            }
+          }
+          // Check inventory POs
+          if(!appliedToSO){
+            const invMatch=invPOs.find(p=>p.po_number===matchedPortalPOId);
+            if(invMatch){
+              setInvPOs(prev=>prev.map(po=>{
+                if(po.po_number!==matchedPortalPOId)return po;
+                return{...po,_bill_cost:Math.round((safeNum(po._bill_cost||0)+billTotal)*100)/100,
+                  _bill_details:[...(po._bill_details||[]),billInfo]};
+              }));
+              appliedToSO=true;
+            }
+          }
+          if(appliedToSO){
+            newSyncedBillIds.push(qbBill.Id);
+            log.details.push('Bill #'+billDocNum+' ('+vendorName+' $'+billTotal.toFixed(2)+') → PO '+matchedPortalPOId);
+            updated++;
+          }
+        }
+      }catch(e){log.status='error';log.details.push('QB query failed: '+e.message)}
+      log.details.unshift(updated+' bills pulled from QB');
+      setQBConfig(prev=>({...prev,_syncedBillIds:newSyncedBillIds,syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
+      nf(updated+' bill costs pulled from QB');
+      setQbSyncing(false);
+    };
+
     // ── SYNC: Inventory (totals per product as non-inventory items) ──
     const syncInventory=async()=>{
       setQbSyncing(true);
@@ -23388,6 +23506,7 @@ export default function App(){
       await syncSalesOrders(custQBMap,prodQBMap);
       await syncInvoices(custQBMap,prodQBMap);
       await syncPaidFromQB();
+      await syncBillsFromQB();
       await syncPurchaseOrders();
       setQbSyncing(false);
     };
@@ -23549,6 +23668,7 @@ export default function App(){
                 <button className="btn btn-secondary" disabled={qbSyncing} onClick={syncSalesOrders}>Sales Orders</button>
                 <button className="btn btn-secondary" disabled={qbSyncing} onClick={syncInvoices}>Invoices</button>
                 <button className="btn btn-secondary" disabled={qbSyncing} onClick={syncPaidFromQB}>Paid from QB</button>
+                <button className="btn btn-secondary" disabled={qbSyncing} onClick={syncBillsFromQB}>Bills from QB</button>
                 <button className="btn btn-secondary" disabled={qbSyncing} onClick={syncPurchaseOrders}>POs</button>
                 <button className="btn btn-secondary" disabled={qbSyncing} onClick={syncInventory}>Inventory</button>
               </div>
@@ -23559,9 +23679,10 @@ export default function App(){
             <div className="card-body" style={{fontSize:12,color:'#475569'}}>
               <div style={{marginBottom:4}}>&#8226; <strong>Customers</strong> — name, contact, address, order totals in notes</div>
               <div style={{marginBottom:4}}>&#8226; <strong>Sales Orders</strong> — line items + decoration as QB Estimates</div>
-              <div style={{marginBottom:4}}>&#8226; <strong>Invoices</strong> — invoice total as single line item, payments applied; paid status syncs back from QB</div>
+              <div style={{marginBottom:4}}>&#8226; <strong>Invoices</strong> — invoice total as single line item, payments applied; paid status syncs back from QB automatically</div>
               <div style={{marginBottom:4}}>&#8226; <strong>Purchase Orders</strong> — blank goods + outside deco POs to vendors</div>
-              <div style={{marginBottom:4}}>&#8226; <strong>Bills</strong> — upload vendor bills (PDF/image) directly to QB with amounts</div>
+              <div style={{marginBottom:4}}>&#8226; <strong>Bills</strong> — upload vendor bills (PDF/image) to QB; bill costs auto-pull from QB back to portal POs</div>
+              <div style={{marginBottom:4}}>&#8226; <strong>Bill Costs (QB → Portal)</strong> — bills received in QB matched to POs push costs back to portal daily</div>
               <div>&#8226; <strong>Inventory</strong> — product totals (qty + cost value) as non-inventory items</div>
             </div>
           </div>
