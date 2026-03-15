@@ -6842,7 +6842,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <th style={{padding:'3px 6px',textAlign:'left',fontSize:10,color:'#64748b'}}>Art</th>
               <th style={{padding:'3px 6px',textAlign:'left',fontSize:10,color:'#64748b'}}>Art Location</th>
               <th style={{padding:'3px 6px',textAlign:'center',fontSize:10,color:'#64748b'}}>Units</th>
-              <th style={{padding:'3px 6px',textAlign:'right',fontSize:10,color:'#64748b'}}>Separate</th>
+              <th style={{padding:'3px 6px',textAlign:'right',fontSize:10,color:'#64748b'}}></th>
             </tr></thead>
             <tbody>{g.items.map((it,ii)=><tr key={ii} style={{borderBottom:'1px solid #f1f5f9'}}>
               <td style={{padding:'3px 6px',fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{it.sku}</td>
@@ -6851,23 +6851,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <td style={{padding:'3px 6px',fontSize:10}}><span style={{background:'#ede9fe',color:'#6d28d9',padding:'1px 6px',borderRadius:3,fontWeight:600}}>{it.position}</span></td>
               <td style={{padding:'3px 6px',textAlign:'center',fontWeight:700}}>{it.units}</td>
               <td style={{padding:'3px 6px',textAlign:'right'}}>
-                <select style={{fontSize:10,padding:'1px 4px',border:'1px solid #d1d5db',borderRadius:3}} value="" onChange={e=>{
-                  const val=e.target.value;
-                  if(val==='new'){
-                    const gs=jobWizard.groups.map(gg=>({...gg,items:[...gg.items]}));
-                    gs[gi].items.splice(ii,1);
-                    gs.push({name:'New Job',deco_type:g.deco_type,items:[it]});
-                    setJobWizard({...jobWizard,groups:gs});return;
-                  }
-                  const targetGi=parseInt(val);if(isNaN(targetGi))return;
+                {g.items.length>1?<button style={{fontSize:9,padding:'2px 8px',background:'#f1f5f9',border:'1px solid #d1d5db',borderRadius:4,cursor:'pointer',fontWeight:600,color:'#475569'}} onClick={()=>{
                   const gs=jobWizard.groups.map(gg=>({...gg,items:[...gg.items]}));
-                  gs[gi].items.splice(ii,1);gs[targetGi].items.push(it);
+                  gs[gi].items.splice(ii,1);
+                  gs.push({name:it.art_name||'New Job',deco_type:g.deco_type,items:[it],_split:true});
                   setJobWizard({...jobWizard,groups:gs});
-                }}>
-                  <option value="">Separate...</option>
-                  {jobWizard.groups.map((g2,g2i)=>g2i!==gi?<option key={g2i} value={g2i}>{g2.name}</option>:null)}
-                  <option value="new">+ New Group</option>
-                </select>
+                }}>Split</button>:g._split?<button style={{fontSize:9,padding:'2px 8px',background:'#ede9fe',border:'1px solid #c4b5fd',borderRadius:4,cursor:'pointer',fontWeight:600,color:'#6d28d9'}} onClick={()=>{
+                  const gs=jobWizard.groups.map(gg=>({...gg,items:[...gg.items]}));
+                  const mainGi=gs.findIndex(gg=>gg.deco_type===g.deco_type&&!gg._split);
+                  if(mainGi>=0){gs[mainGi].items.push(it);gs.splice(gi,1)}
+                  setJobWizard({...jobWizard,groups:gs});
+                }}>Merge Back</button>:null}
               </td>
             </tr>)}</tbody>
           </table>}
