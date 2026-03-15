@@ -51,11 +51,24 @@ let supabase = null;
 try { if (_sbUrl && _sbKey && _sbUrl.startsWith('https://') && !_sbUrl.includes('your-project')) supabase = createClient(_sbUrl, _sbKey); }
 catch(e) { console.warn('[Supabase] Init failed:', e.message); }
 
+// Track tables that returned 404 so we skip them on future polls (avoids console spam)
+const _missing404Tables=new Set();
+const _safeQuery=(table,opts)=>{
+  if(_missing404Tables.has(table))return Promise.resolve({data:[],error:null,status:200});
+  let q=supabase.from(table).select('*');
+  if(opts?.order)q=q.order(opts.order,opts.orderOpts||{});
+  q=q.limit(opts?.limit||10000);
+  return q.then(r=>{
+    if(r.status===404||(r.error?.message||'').includes('does not exist')||(r.error?.code==='PGRST204')){
+      _missing404Tables.add(table);return{data:[],error:null,status:200}}
+    return r;
+  });
+};
 const _dbLoad = async () => {
   if (!supabase) return null;
   if (_dbSavingCount>0) { console.log('[DB] Skipping load — save in progress'); return null; }
   try {
-    // Load all tables in parallel
+    // Load all tables in parallel — _safeQuery skips tables that previously returned 404
     const [rTeam,rCust,rContacts,rVend,rProd,rProdInv,rEst,rEstArt,rEstItems,rEstDecos,
       rSO,rSOArt,rSOFirm,rSOItems,rSODecos,rSOPicks,rSOPOs,rSOJobs,
       rInv,rInvPay,rInvItems,rMsg,rMsgReads,rOMG,rOMGProd,rIssues,rAppState,
@@ -63,43 +76,43 @@ const _dbLoad = async () => {
       rRepCsr,rAssignedTodos,rTodoComments,
       rDecoVendors,rDecoVendorPricing,
       rQuoteReqs,rQuoteReqItems] = await Promise.all([
-      supabase.from('team_members').select('*').order('name').limit(10000),
-      supabase.from('customers').select('*').order('name').limit(10000),
-      supabase.from('customer_contacts').select('*').limit(10000),
-      supabase.from('vendors').select('*').order('name').limit(10000),
-      supabase.from('products').select('*').order('name').limit(10000),
-      supabase.from('product_inventory').select('*').limit(10000),
-      supabase.from('estimates').select('*').order('id').limit(10000),
-      supabase.from('estimate_art_files').select('*').limit(10000),
-      supabase.from('estimate_items').select('*').order('item_index').limit(10000),
-      supabase.from('estimate_item_decorations').select('*').order('deco_index').limit(10000),
-      supabase.from('sales_orders').select('*').order('id').limit(10000),
-      supabase.from('so_art_files').select('*').limit(10000),
-      supabase.from('so_firm_dates').select('*').limit(10000),
-      supabase.from('so_items').select('*').order('item_index').limit(10000),
-      supabase.from('so_item_decorations').select('*').order('deco_index').limit(10000),
-      supabase.from('so_item_pick_lines').select('*').limit(10000),
-      supabase.from('so_item_po_lines').select('*').limit(10000),
-      supabase.from('so_jobs').select('*').limit(10000),
-      supabase.from('invoices').select('*').order('id').limit(10000),
-      supabase.from('invoice_payments').select('*').limit(10000),
-      supabase.from('invoice_items').select('*').limit(10000),
-      supabase.from('messages').select('*').order('id').limit(10000),
-      supabase.from('message_reads').select('*').limit(10000),
-      supabase.from('omg_stores').select('*').order('id').limit(10000),
-      supabase.from('omg_store_products').select('*').limit(10000),
-      supabase.from('issues').select('*').limit(10000),
-      supabase.from('app_state').select('*').limit(10000),
-      supabase.from('customer_promo_programs').select('*').limit(10000),
-      supabase.from('customer_promo_periods').select('*').limit(10000),
-      supabase.from('customer_promo_usage').select('*').limit(10000),
-      supabase.from('rep_csr_assignments').select('*').limit(10000),
-      supabase.from('assigned_todos').select('*').limit(10000),
-      supabase.from('todo_comments').select('*').limit(10000),
-      supabase.from('deco_vendors').select('*').order('name').limit(10000),
-      supabase.from('deco_vendor_pricing').select('*').limit(10000),
-      supabase.from('quote_requests').select('*').order('created_at',{ascending:false}).limit(10000),
-      supabase.from('quote_request_items').select('*').order('sort_order').limit(10000),
+      _safeQuery('team_members',{order:'name'}),
+      _safeQuery('customers',{order:'name'}),
+      _safeQuery('customer_contacts'),
+      _safeQuery('vendors',{order:'name'}),
+      _safeQuery('products',{order:'name'}),
+      _safeQuery('product_inventory'),
+      _safeQuery('estimates',{order:'id'}),
+      _safeQuery('estimate_art_files'),
+      _safeQuery('estimate_items',{order:'item_index'}),
+      _safeQuery('estimate_item_decorations',{order:'deco_index'}),
+      _safeQuery('sales_orders',{order:'id'}),
+      _safeQuery('so_art_files'),
+      _safeQuery('so_firm_dates'),
+      _safeQuery('so_items',{order:'item_index'}),
+      _safeQuery('so_item_decorations',{order:'deco_index'}),
+      _safeQuery('so_item_pick_lines'),
+      _safeQuery('so_item_po_lines'),
+      _safeQuery('so_jobs'),
+      _safeQuery('invoices',{order:'id'}),
+      _safeQuery('invoice_payments'),
+      _safeQuery('invoice_items'),
+      _safeQuery('messages',{order:'id'}),
+      _safeQuery('message_reads'),
+      _safeQuery('omg_stores',{order:'id'}),
+      _safeQuery('omg_store_products'),
+      _safeQuery('issues'),
+      _safeQuery('app_state'),
+      _safeQuery('customer_promo_programs'),
+      _safeQuery('customer_promo_periods'),
+      _safeQuery('customer_promo_usage'),
+      _safeQuery('rep_csr_assignments'),
+      _safeQuery('assigned_todos'),
+      _safeQuery('todo_comments'),
+      _safeQuery('deco_vendors',{order:'name'}),
+      _safeQuery('deco_vendor_pricing'),
+      _safeQuery('quote_requests',{order:'created_at',orderOpts:{ascending:false}}),
+      _safeQuery('quote_request_items',{order:'sort_order'}),
     ]);
     // Check for critical errors on core tables only (child tables may not exist yet — 404 is OK)
     const coreResults=[{n:'team_members',r:rTeam},{n:'customers',r:rCust},{n:'vendors',r:rVend},{n:'products',r:rProd},{n:'estimates',r:rEst},{n:'sales_orders',r:rSO},{n:'invoices',r:rInv},{n:'messages',r:rMsg},{n:'omg_stores',r:rOMG}];
@@ -3638,11 +3651,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               });
             }} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}>🖨️ Print</button>
             {isE&&onCopyEstimate&&saved&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);if(!window.confirm('Create a copy of this estimate?'))return;onCopyEstimate(o)}} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="file" size={12}/> Copy</button>}
-            {isE&&saved&&o.status==='approved'&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#d97706',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);if(!window.confirm('Unapprove estimate '+o.id+'? Status will be set back to open.'))return;sv('status','open');const updated={...o,status:'open',approved_by:null,approved_at:null};setO(updated);onSave(updated);nf('Estimate unapproved')}} onMouseEnter={e=>e.currentTarget.style.background='#fffbeb'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="back" size={12}/> Unapprove</button>}
-            {isE&&onDelete&&saved&&<><div style={{borderTop:'1px solid #e2e8f0',margin:'2px 0'}}/><button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#dc2626',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);onDelete(o.id)}} onMouseEnter={e=>e.currentTarget.style.background='#fef2f2'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="trash" size={12}/> Delete</button></>}
+            {isE&&o.status==='approved'&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#d97706',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);if(!window.confirm('Unapprove estimate '+o.id+'? Status will be set back to open.'))return;sv('status','open');const updated={...o,status:'open',approved_by:null,approved_at:null};setO(updated);onSave(updated);nf('Estimate unapproved')}} onMouseEnter={e=>e.currentTarget.style.background='#fffbeb'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="back" size={12}/> Unapprove</button>}
             {isSO&&onRevertToEst&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);if(!window.confirm('Revert '+o.id+' back to estimate? The SO will be deleted and '+(o.estimate_id?'the original estimate reopened.':'a new estimate created.')))return;onRevertToEst(o)}} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="back" size={12}/> Revert to Estimate</button>}
             {isSO&&o.estimate_id&&onViewEstimate&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);onViewEstimate(o.estimate_id)}} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="dollar" size={12}/> View Estimate</button>}
-            {onDelete&&<><div style={{borderTop:'1px solid #e2e8f0',margin:'2px 0'}}/><button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#dc2626',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);onDelete(o.id)}} onMouseEnter={e=>e.currentTarget.style.background='#fef2f2'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="trash" size={12}/> Delete</button>}</>}
+            {(isE||onDelete)&&<><div style={{borderTop:'1px solid #e2e8f0',margin:'2px 0'}}/><button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#dc2626',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);if(onDelete){onDelete(o.id)}else{nf('Delete not available','error')}}} onMouseEnter={e=>e.currentTarget.style.background='#fef2f2'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="trash" size={12}/> Delete</button></>}
           </div></>}
         </div>
       </div>
