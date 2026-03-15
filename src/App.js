@@ -16929,6 +16929,14 @@ export default function App(){
     });
     const monthTotal=monthLines.reduce((a,l)=>a+l.commAmt,0);
     const monthGP=monthLines.reduce((a,l)=>a+l.gp.gp,0);
+    // Open invoices for the selected month (not yet paid)
+    const monthPipeline=allPipeline.filter(l=>{
+      if(l.type==='so')return false;// only invoices
+      if(!l.inv?.date)return false;
+      // Parse invoice date to match commMonth (YYYY-MM)
+      const d=new Date(l.inv.date);const ym=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
+      return ym===commMonth;
+    });
     // Net commission after promo costs deducted
     const monthNetComm=Math.round((monthTotal-monthPromoCost)*100)/100;
 
@@ -16990,7 +16998,7 @@ export default function App(){
           </div>
         </div>
         <div className="card-body" style={{padding:0}}>
-          {monthLines.length===0?<div style={{padding:40,textAlign:'center',color:'#94a3b8'}}>No paid invoices this month</div>:
+          {monthLines.length===0&&monthPipeline.length===0?<div style={{padding:40,textAlign:'center',color:'#94a3b8'}}>No invoices this month</div>:
           <table style={{fontSize:12}}><thead><tr>
             <th>Invoice</th><th>Customer</th>{isAdmin&&<th>Rep</th>}<th style={{textAlign:'right'}}>Revenue</th><th style={{textAlign:'right'}}>Cost</th><th style={{textAlign:'right'}}>Gross Profit</th><th style={{textAlign:'center'}}>Days</th><th style={{textAlign:'center'}}>Rate</th><th style={{textAlign:'right'}}>Commission</th>{isAdmin&&<th></th>}
           </tr></thead><tbody>
@@ -17009,15 +17017,15 @@ export default function App(){
                 {l.isLate&&l.overridden&&<span style={{fontSize:9,color:'#166534',fontWeight:700}}>Approved</span>}
               </td>}
             </tr>)}
-            <tr style={{fontWeight:800,background:'#f0f9ff',borderTop:'2px solid #1e40af'}}>
-              <td colSpan={isAdmin?3:2}>TOTAL</td>
+            {monthLines.length>0&&<tr style={{fontWeight:800,background:'#f0f9ff',borderTop:'2px solid #1e40af'}}>
+              <td colSpan={isAdmin?3:2}>EARNED</td>
               <td style={{textAlign:'right'}}>${monthLines.reduce((a,l)=>a+safeNum(l.inv.total),0).toLocaleString()}</td>
               <td style={{textAlign:'right',color:'#dc2626'}}>${monthLines.reduce((a,l)=>a+l.gp.cost,0).toLocaleString()}</td>
               <td style={{textAlign:'right',color:'#166534'}}>${monthGP.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
               <td colSpan={2}></td>
               <td style={{textAlign:'right',fontSize:16,color:'#166534'}}>${monthTotal.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
               {isAdmin&&<td/>}
-            </tr>
+            </tr>}
             {monthPromoCost>0&&<tr style={{fontWeight:700,background:'#fef2f2',borderTop:'1px dashed #dc2626'}}>
               <td colSpan={isAdmin?3:2} style={{color:'#dc2626'}}>PROMO COST DEDUCTION ({monthPromoLines.length} order{monthPromoLines.length!==1?'s':''})</td>
               <td colSpan={4}></td>
@@ -17028,6 +17036,28 @@ export default function App(){
               <td colSpan={isAdmin?3:2}>NET COMMISSION</td>
               <td colSpan={4}></td>
               <td style={{textAlign:'right',fontSize:16,color:monthNetComm>=0?'#166534':'#dc2626'}}>${monthNetComm.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
+              {isAdmin&&<td/>}
+            </tr>}
+            {monthPipeline.length>0&&<tr style={{background:'#f5f3ff'}}><td colSpan={isAdmin?10:8} style={{fontWeight:700,fontSize:11,color:'#7c3aed',padding:'8px 12px',borderTop:'2px solid #7c3aed'}}>OPEN INVOICES — Awaiting Payment</td></tr>}
+            {monthPipeline.map(l=><tr key={l.inv.id} style={{background:'#faf5ff'}}>
+              <td style={{fontWeight:700,color:'#7c3aed',cursor:'pointer'}} onClick={()=>{if(l.so){setESO(l.so);setESOC(l.customer);setPg('orders')}}}>{l.inv.id}<div style={{fontSize:10,color:'#94a3b8'}}>{l.inv.date}</div></td>
+              <td>{l.customer?.name||'\u2014'}<div style={{fontSize:10,color:'#94a3b8'}}>{l.inv.memo}</div></td>
+              {isAdmin&&<td style={{fontSize:11}}>{l.rep?.name||'\u2014'}</td>}
+              <td style={{textAlign:'right'}}>${l.balance.toLocaleString()}</td>
+              <td style={{textAlign:'right',color:'#dc2626'}}>${l.gp.cost.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+              <td style={{textAlign:'right',fontWeight:700,color:l.gp.gp>0?'#166534':'#dc2626'}}>${l.gp.gp.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+              <td style={{textAlign:'center'}}><span style={{padding:'2px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:l.willBeLate?'#fee2e2':l.daysOpen>60?'#fef3c7':'#dcfce7',color:l.willBeLate?'#dc2626':l.daysOpen>60?'#92400e':'#166534'}}>{l.daysOpen}d</span></td>
+              <td style={{textAlign:'center',fontWeight:600,color:l.expRate===0.30?'#166534':'#d97706'}}>{Math.round(l.expRate*100)}%</td>
+              <td style={{textAlign:'right',fontWeight:700,color:'#7c3aed'}}>${l.expComm.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
+              {isAdmin&&<td/>}
+            </tr>)}
+            {monthPipeline.length>0&&<tr style={{fontWeight:800,background:'#f5f3ff',borderTop:'2px solid #7c3aed'}}>
+              <td colSpan={isAdmin?3:2}>PIPELINE</td>
+              <td style={{textAlign:'right'}}>${monthPipeline.reduce((a,l)=>a+l.balance,0).toLocaleString()}</td>
+              <td style={{textAlign:'right',color:'#dc2626'}}>${monthPipeline.reduce((a,l)=>a+l.gp.cost,0).toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+              <td style={{textAlign:'right',color:'#166534'}}>${monthPipeline.reduce((a,l)=>a+l.gp.gp,0).toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+              <td colSpan={2}></td>
+              <td style={{textAlign:'right',fontSize:14,color:'#7c3aed'}}>${monthPipeline.reduce((a,l)=>a+l.expComm,0).toLocaleString(undefined,{maximumFractionDigits:2})}</td>
               {isAdmin&&<td/>}
             </tr>}
           </tbody></table>}
