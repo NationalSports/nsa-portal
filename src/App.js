@@ -1,6 +1,7 @@
 /* eslint-disable */
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import './portal.css';
+import MobilePortal from './MobilePortal';
 import { createClient } from '@supabase/supabase-js';
 import { loadStripe } from '@stripe/stripe-js';
 import { Elements, PaymentElement, useStripe, useElements } from '@stripe/react-stripe-js';
@@ -11156,6 +11157,11 @@ export default function App(){
   const[cu,setCu]=useState(()=>{try{const s=localStorage.getItem('nsa_user');return s?JSON.parse(s):null}catch{return null}});
   const handleLogin=(user)=>{setCu(user);try{localStorage.setItem('nsa_user',JSON.stringify(user))}catch{}};
   const handleLogout=()=>{setCu(null);try{localStorage.removeItem('nsa_user')}catch{}};
+
+  // ─── MOBILE PORTAL DETECTION & TOGGLE ───
+  const _isTouchDevice=()=>{try{return('ontouchstart'in window||navigator.maxTouchPoints>0)&&window.innerWidth<=1024}catch{return false}};
+  const[mobileMode,setMobileMode]=useState(()=>{try{const pref=localStorage.getItem('nsa_mobile_mode');if(pref==='desktop')return false;if(pref==='mobile')return true;return _isTouchDevice()}catch{return false}});
+  useEffect(()=>{try{localStorage.setItem('nsa_mobile_mode',mobileMode?'mobile':'desktop')}catch{}},[mobileMode]);
 
   const isA=cu?.role==='admin';
   const pars=useMemo(()=>cust.filter(c=>!c.parent_id),[cust]);const gK=useCallback(pid=>cust.filter(c=>c.parent_id===pid),[cust]);
@@ -24874,6 +24880,8 @@ export default function App(){
     <div style={{fontSize:13,color:'#94a3b8',letterSpacing:3}}>Loading...</div></div>;
   // LOGIN GATE
   if(!cu)return<LoginGate onLogin={handleLogin} reps={REPS}/>;
+  // MOBILE PORTAL GATE
+  if(mobileMode)return<MobilePortal cu={cu} cust={cust} sos={sos} ests={ests} invs={invs} msgs={msgs} prod={prod} vend={vend} REPS={REPS} assignedTodos={assignedTodos} onLogout={handleLogout} onSwitchDesktop={()=>setMobileMode(false)} onSaveEstimate={savE} nextEstId={()=>nextEstId(ests)} nf={nf}/>;
 
   return(<div className="app"><Toast msg={toast?.msg} type={toast?.type}/>
     {/* Mobile sidebar backdrop */}
@@ -24890,7 +24898,7 @@ export default function App(){
         const mentionBadge=item.id==='messages'?msgs.filter(m=>!(m.read_by||[]).includes(cu.id)&&(m.tagged_members||[]).includes(cu.id)).length:0;
         return<button key={item.id} className={`sidebar-link ${pg===item.id?'active':''}`}
           onClick={()=>{if(dirtyRef.current&&!window.confirm('You have unsaved changes. Leave without saving?'))return;dirtyRef.current=false;setPg(item.id);setQ('');setSelC(null);setSelV(null);setEEst(null);setESO(null);setMobileMenuOpen(false)}}><Icon name={item.icon}/>{item.label}{item.id==='messages'&&mentionBadge>0&&<span style={{background:'#f59e0b',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:4}}>@{mentionBadge}</span>}{item.id==='messages'&&ubadge>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{ubadge}</span>}{item.id==='purchase_orders'&&(()=>{let wc=0;sos.forEach(so=>safeItems(so).forEach(it=>safePOs(it).forEach(po=>{const szKeys=Object.keys(po).filter(k=>!k.startsWith('_')&&typeof po[k]==='number'&&!['status'].includes(k));const open=szKeys.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-((po.received||{})[sz]||0)-((po.cancelled||{})[sz]||0)),0);if(open>0)wc++})));return wc>0?<span style={{background:'#d97706',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{wc}</span>:null})()}{item.id==='batch_pos'&&batchPOs.length>0&&<span style={{background:'#7c3aed',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{batchPOs.length}</span>}{item.id==='issues'&&openIssueCount>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{openIssueCount}</span>}</button>})}</nav>
-      <div className="sidebar-user"><div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}><div><div style={{fontWeight:600,color:'#e2e8f0'}}>{cu.name}</div><div>{cu.role}</div></div><button onClick={handleLogout} style={{background:'none',border:'1px solid #475569',borderRadius:6,padding:'3px 8px',color:'#94a3b8',cursor:'pointer',fontSize:10}} title="Log out">↪ Out</button></div></div></div>
+      <div className="sidebar-user"><div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}><div><div style={{fontWeight:600,color:'#e2e8f0'}}>{cu.name}</div><div>{cu.role}</div></div><div style={{display:'flex',gap:4}}><button onClick={()=>setMobileMode(true)} style={{background:'none',border:'1px solid #475569',borderRadius:6,padding:'3px 8px',color:'#94a3b8',cursor:'pointer',fontSize:10}} title="Switch to mobile view">📱 Mobile</button><button onClick={handleLogout} style={{background:'none',border:'1px solid #475569',borderRadius:6,padding:'3px 8px',color:'#94a3b8',cursor:'pointer',fontSize:10}} title="Log out">↪ Out</button></div></div></div></div>
     <div className="main"><div className="topbar"><button className="mobile-menu-btn" onClick={()=>setMobileMenuOpen(true)}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button><h1>{eEst?eEst.id:eSO?eSO.id:selC?selC.name:selV?selV.name:(titles[pg]||'Dashboard')}</h1>
         <div style={{flex:1,maxWidth:400,margin:'0 20px',position:'relative'}}>
           <div className="search-bar" style={{margin:0}}><Icon name="search"/><input placeholder="Search everything... (orders, jobs, POs, invoices, customers)" value={gQ} onChange={e=>{setGQ(e.target.value);if(e.target.value.length>=2)setGOpen(true)}} onFocus={()=>{if(gQ.length>=2)setGOpen(true)}}/>{gQ&&<button onClick={()=>{setGQ('');setGOpen(false)}} style={{background:'none',border:'none',cursor:'pointer',padding:2}}><Icon name="x" size={14}/></button>}</div>
