@@ -3114,8 +3114,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       for(const{baseSku,entry,detail}of details){
         const src=detail||entry;// prefer detail if available
         const price=getPrice(src);
+        const mtBackImg=src.fullImageBack||src.backImage||entry.fullImageBack||entry.backImage||'';
         styleMap[baseSku]={sku:baseSku,styleName:src.name||entry.name||baseSku,brandName:src.manufacturer||entry.manufacturer||'Momentec',
           styleImage:src.thumbnail||src.fullImage||entry.thumbnail||entry.fullImage||'',
+          styleBackImage:mtBackImg,
           colors:{},_mtId:src.uniqueID||entry.uniqueID,_mtPrice:price>0?price:0};
         const style=styleMap[baseSku];
         // Process child sKUs from detailed response for colors
@@ -3124,10 +3126,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           for(const sk of skus){
             const skPrice=getPrice(sk);const skColor=getColor(sk)||'Default';
             const skImg=sk.thumbnail||sk.fullImage||'';
+            const skBackImg=sk.fullImageBack||sk.backImage||'';
             if(!style.colors[skColor]){
               style.colors[skColor]={colorName:skColor,sku:sk.partNumber||baseSku,piecePrice:skPrice,customerPrice:skPrice,
-                colorFrontImage:skImg||style.styleImage,sizes:[],totalQty:0};
-            }else{const c=style.colors[skColor];if(skPrice>0&&(c.customerPrice===0||skPrice<c.customerPrice)){c.customerPrice=skPrice;c.piecePrice=skPrice}if(skImg&&!c.colorFrontImage)c.colorFrontImage=skImg}
+                colorFrontImage:skImg||style.styleImage,colorBackImage:skBackImg||style.styleBackImage||'',sizes:[],totalQty:0};
+            }else{const c=style.colors[skColor];if(skPrice>0&&(c.customerPrice===0||skPrice<c.customerPrice)){c.customerPrice=skPrice;c.piecePrice=skPrice}if(skImg&&!c.colorFrontImage)c.colorFrontImage=skImg;if(skBackImg&&!c.colorBackImage)c.colorBackImage=skBackImg}
             if(skPrice>0&&(style._mtPrice===0||skPrice<style._mtPrice))style._mtPrice=skPrice;
           }
         }
@@ -3135,7 +3138,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         if(!Object.keys(style.colors).length){
           const colorName=getColor(src)||'Default';
           style.colors[colorName]={colorName,sku:baseSku,piecePrice:price,customerPrice:price,
-            colorFrontImage:style.styleImage,sizes:[],totalQty:0};
+            colorFrontImage:style.styleImage,colorBackImage:style.styleBackImage||'',sizes:[],totalQty:0};
         }
       }
       // Convert colors map to array
