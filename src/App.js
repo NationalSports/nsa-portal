@@ -1360,6 +1360,8 @@ const safe=(v,def)=>v!=null?v:def;
 const safeArr=(v)=>Array.isArray(v)?v:[];
 const safeObj=(v)=>v&&typeof v==='object'&&!Array.isArray(v)?v:{};
 const safeNum=(v)=>typeof v==='number'&&!isNaN(v)?v:0;
+// Parse date strings handling 2-digit years (MM/DD/YY → 20YY)
+const parseDate=(s)=>{if(!s)return null;const m=String(s).match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);if(m){let y=parseInt(m[3]);if(y<100)y+=2000;return new Date(y,parseInt(m[1])-1,parseInt(m[2]))}return new Date(s)};
 const safeStr=(v)=>typeof v==='string'?v:'';
 const safeSizes=(it)=>safeObj(it?.sizes);
 const safePicks=(it)=>safeArr(it?.pick_lines);
@@ -9663,7 +9665,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
       const bal=(inv.total||0)-(inv.paid||0);
       const newPaid=(inv.paid||0)+bal;
       const fee=Math.round(bal*CC_FEE_PORTAL*100)/100;
-      const payment={amount:bal,method:'cc',ref:'Stripe '+result.intentId,date:new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'2-digit'}),cc_fee:fee};
+      const payment={amount:bal,method:'cc',ref:'Stripe '+result.intentId,date:new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'}),cc_fee:fee};
       return{...inv,paid:newPaid,status:newPaid>=inv.total?'paid':'partial',cc_fee:(inv.cc_fee||0)+fee,payments:[...(inv.payments||[]),payment],updated_at:new Date().toLocaleString()};
     });
     setInvs(updater);
@@ -11993,7 +11995,7 @@ export default function App(){
     // Recently paid invoices → notification
     invs.filter(i=>i.status==='paid'&&i.payments?.length).forEach(inv2=>{
       const lastPay=inv2.payments[inv2.payments.length-1];if(!lastPay?.date)return;
-      const payDate=new Date(lastPay.date);const daysAgo=Math.floor((new Date()-payDate)/(1000*60*60*24));
+      const payDate=parseDate(lastPay.date);const daysAgo=Math.floor((new Date()-payDate)/(1000*60*60*24));
       if(daysAgo<=7){const c2=cust.find(x=>x.id===inv2.customer_id);const tag2=c2?.name||c2?.alpha_tag||inv2.id;
         todos.push({type:'inv_paid',priority:3,msg:'💰 Invoice paid: '+inv2.id+' — $'+safeNum(inv2.total).toFixed(2),detail:tag2+(inv2.memo?' · '+inv2.memo:'')+' · '+lastPay.method+(daysAgo===0?' · Today':' · '+daysAgo+'d ago'),so:inv2.so_id?sos.find(s=>s.id===inv2.so_id):null,action:'View',role:'sales',isNotification:true})}
     });
@@ -14986,7 +14988,7 @@ export default function App(){
       const fee=method==='cc'?Math.round(amount*CC_FEE_PCT*100)/100:0;
       const newPaid=inv.paid+amount;
       const newStatus=newPaid>=inv.total?'paid':newPaid>0?'partial':'open';
-      const payment={amount,method,ref,date:new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'2-digit'}),cc_fee:fee};
+      const payment={amount,method,ref,date:new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'}),cc_fee:fee};
       const updated={...inv,paid:newPaid,status:newStatus,cc_fee:(inv.cc_fee||0)+fee,payments:[...(inv.payments||[]),payment]};
       setInvs(prev=>prev.map(i=>i.id===inv.id?updated:i));
       setPayModal(null);
@@ -16816,7 +16818,7 @@ export default function App(){
         const rep=REPS.find(r=>r.id===so?.created_by);
         const gp=calcGP(inv);
         const invDate=new Date(inv.date);
-        const paidDate=inv.payments?.length>0?new Date(inv.payments[inv.payments.length-1].date):null;
+        const paidDate=inv.payments?.length>0?parseDate(inv.payments[inv.payments.length-1].date):null;
         const daysToPay=paidDate?Math.round((paidDate-invDate)/(1000*60*60*24)):null;
         const isLate=daysToPay!==null&&daysToPay>90;
         const overridden=commOverrides[inv.id]||false;
