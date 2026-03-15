@@ -1360,6 +1360,8 @@ const safe=(v,def)=>v!=null?v:def;
 const safeArr=(v)=>Array.isArray(v)?v:[];
 const safeObj=(v)=>v&&typeof v==='object'&&!Array.isArray(v)?v:{};
 const safeNum=(v)=>typeof v==='number'&&!isNaN(v)?v:0;
+// Parse date strings handling 2-digit years (MM/DD/YY → 20YY)
+const parseDate=(s)=>{if(!s)return null;const m=String(s).match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);if(m){let y=parseInt(m[3]);if(y<100)y+=2000;return new Date(y,parseInt(m[1])-1,parseInt(m[2]))}return new Date(s)};
 const safeStr=(v)=>typeof v==='string'?v:'';
 const safeSizes=(it)=>safeObj(it?.sizes);
 const safePicks=(it)=>safeArr(it?.pick_lines);
@@ -5147,8 +5149,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         // Expected shipping = what the rep quoted on the SO (% of rev or flat $)
         const quotedShipRev=costLines.filter(l=>l.category==='Blanks'||l.category==='Outside Deco'||l.category==='In-House Deco').reduce((a,l)=>a+l.expected,0);
         const quotedShip=o.shipping_type==='pct'?totals.rev*(o.shipping_value||0)/100:safeNum(o.shipping_value||0);
-        if(shipCostVal>0||quotedShip>0)costLines.push({category:'Shipping',sku:'—',name:'Outbound Shipping (ShipStation)',vendor:'ShipStation',qty:1,expected:quotedShip,actual:shipCostVal,poCount:0,poIds:'',allReceived:true});
-        if(freightVal>0)costLines.push({category:'Freight',sku:'—',name:'Inbound Freight (Supplier)',vendor:'Supplier',qty:1,expected:freightVal,actual:freightVal,poCount:0,poIds:'',allReceived:true});
+        if(shipCostVal>0||quotedShip>0||freightVal>0)costLines.push({category:'Shipping',sku:'—',name:'Outbound Shipping (ShipStation)',vendor:'ShipStation',qty:1,expected:quotedShip,actual:shipCostVal,poCount:0,poIds:'',allReceived:true,isShipping:true});
+        if(freightVal>0)costLines.push({category:'Shipping',sku:'—',name:'Inbound Freight (Supplier)',vendor:'Supplier',qty:1,expected:freightVal,actual:freightVal,poCount:0,poIds:'',allReceived:true,isShipping:true});
         const cats={};costLines.forEach(l=>{if(!cats[l.category])cats[l.category]={expected:0,actual:0};cats[l.category].expected+=l.expected;cats[l.category].actual+=l.actual});
 
         return<div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between'}}>
@@ -5186,8 +5188,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <td style={{fontSize:11,color:'#64748b'}}>{l.vendor}</td>
                 <td style={{textAlign:'right',fontWeight:600}}>{l.qty}</td>
                 <td style={{textAlign:'right'}}>${l.expected.toFixed(2)}</td>
-                <td style={{textAlign:'right',fontWeight:700,color:l.actual>0?'#0f172a':'#94a3b8'}}>{l.actual>0?'$'+l.actual.toFixed(2):'—'}</td>
-                <td style={{textAlign:'right',fontWeight:700,color:diff>0?'#dc2626':diff<0?'#166534':'#94a3b8'}}>{l.poCount>0?(diff>0?'+':diff<0?'-':'')+'$'+Math.abs(diff).toFixed(2):'—'}</td>
+                <td style={{textAlign:'right',fontWeight:700,color:l.actual>0?'#0f172a':'#94a3b8'}}>{l.actual>0?'$'+l.actual.toFixed(2):l.isShipping?'$0.00':'—'}</td>
+                <td style={{textAlign:'right',fontWeight:700,color:diff>0?'#dc2626':diff<0?'#166534':'#94a3b8'}}>{l.poCount>0||l.isShipping?(diff>0?'+':diff<0?'-':'')+'$'+Math.abs(diff).toFixed(2):'—'}</td>
                 <td style={{fontSize:11,color:'#7c3aed',fontWeight:600}}>{l.poIds||<span style={{color:'#94a3b8'}}>No PO</span>}</td>
               </tr>})}</tbody>
             <tfoot><tr style={{fontWeight:800}}>
@@ -9663,7 +9665,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
       const bal=(inv.total||0)-(inv.paid||0);
       const newPaid=(inv.paid||0)+bal;
       const fee=Math.round(bal*CC_FEE_PORTAL*100)/100;
-      const payment={amount:bal,method:'cc',ref:'Stripe '+result.intentId,date:new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'2-digit'}),cc_fee:fee};
+      const payment={amount:bal,method:'cc',ref:'Stripe '+result.intentId,date:new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'}),cc_fee:fee};
       return{...inv,paid:newPaid,status:newPaid>=inv.total?'paid':'partial',cc_fee:(inv.cc_fee||0)+fee,payments:[...(inv.payments||[]),payment],updated_at:new Date().toLocaleString()};
     });
     setInvs(updater);
@@ -11991,11 +11993,13 @@ export default function App(){
       todos.push({type:'inv_followup',priority:1,msg:'⏰ Follow up on invoice '+inv2.id+' ('+daysSince+'d): $'+safeNum(inv2.total).toFixed(2),detail:tag2+' · Follow-up due '+new Date(inv2.follow_up_at).toLocaleDateString(),action:'Follow Up',role:'sales'});
     });
     // Recently paid invoices → notification
-    invs.filter(i=>i.status==='paid'&&i.payments?.length).forEach(inv2=>{
-      const lastPay=inv2.payments[inv2.payments.length-1];if(!lastPay?.date)return;
-      const payDate=new Date(lastPay.date);const daysAgo=Math.floor((new Date()-payDate)/(1000*60*60*24));
+    invs.filter(i=>i.status==='paid').forEach(inv2=>{
+      const lastPay=inv2.payments?.length>0?inv2.payments[inv2.payments.length-1]:null;
+      const payDate=lastPay?.date?parseDate(lastPay.date):(inv2.updated_at?parseDate(inv2.updated_at):parseDate(inv2.date));
+      if(!payDate)return;
+      const daysAgo=Math.floor((new Date()-payDate)/(1000*60*60*24));
       if(daysAgo<=7){const c2=cust.find(x=>x.id===inv2.customer_id);const tag2=c2?.name||c2?.alpha_tag||inv2.id;
-        todos.push({type:'inv_paid',priority:3,msg:'💰 Invoice paid: '+inv2.id+' — $'+safeNum(inv2.total).toFixed(2),detail:tag2+(inv2.memo?' · '+inv2.memo:'')+' · '+lastPay.method+(daysAgo===0?' · Today':' · '+daysAgo+'d ago'),so:inv2.so_id?sos.find(s=>s.id===inv2.so_id):null,action:'View',role:'sales',isNotification:true})}
+        todos.push({type:'inv_paid',priority:3,msg:'💰 Invoice paid: '+inv2.id+' — $'+safeNum(inv2.total).toFixed(2),detail:tag2+(inv2.memo?' · '+inv2.memo:'')+' · '+(lastPay?.method||'payment')+(daysAgo===0?' · Today':' · '+daysAgo+'d ago'),so:inv2.so_id?sos.find(s=>s.id===inv2.so_id):null,action:'View',role:'sales',isNotification:true})}
     });
     // Open issues → show on to-do list for top admin (Steve) only
     if(cu?.id==='00000000-0000-0000-0000-000000000001')issues.filter(i=>i.status==='open').forEach(i=>{
@@ -14986,7 +14990,7 @@ export default function App(){
       const fee=method==='cc'?Math.round(amount*CC_FEE_PCT*100)/100:0;
       const newPaid=inv.paid+amount;
       const newStatus=newPaid>=inv.total?'paid':newPaid>0?'partial':'open';
-      const payment={amount,method,ref,date:new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'2-digit'}),cc_fee:fee};
+      const payment={amount,method,ref,date:new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'}),cc_fee:fee};
       const updated={...inv,paid:newPaid,status:newStatus,cc_fee:(inv.cc_fee||0)+fee,payments:[...(inv.payments||[]),payment]};
       setInvs(prev=>prev.map(i=>i.id===inv.id?updated:i));
       setPayModal(null);
@@ -15777,6 +15781,7 @@ export default function App(){
   const[commOverrides,setCommOverrides]=useState({});// {invoiceId: true} = admin approved full commission on late invoice
   const[commMonth,setCommMonth]=useState(()=>{const d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')});
   const[commTab,setCommTab]=useState('statement');// statement, pipeline, ytd, byCustomer
+  const[commRep,setCommRep]=useState(()=>cu?.id||'all');// default to logged-in rep
   const toggleWidget=(k)=>setRptWidgets(w=>({...w,[k]:!w[k]}));
 
   function rReports(){
@@ -16774,7 +16779,7 @@ export default function App(){
     const isAdmin=cu.role==='admin';
     const salesReps=REPS.filter(r=>r.role==='rep'||r.role==='admin');
     // Admin sees all reps or picks one; rep only sees themselves
-    const viewRepId=isAdmin?(commTab==='statement'||commTab==='pipeline'||commTab==='ytd'||commTab==='byCustomer'?q||'all':'all'):cu.id;
+    const viewRepId=isAdmin?commRep:cu.id;
 
     // Gross profit calculator for an invoice
     // GP = Invoice Revenue − Garment Cost − Deco Cost − Outbound Shipping (ShipStation) − Inbound Freight (Supplier Bills)
@@ -16814,9 +16819,9 @@ export default function App(){
         const c=cust.find(x=>x.id===inv.customer_id);
         const rep=REPS.find(r=>r.id===so?.created_by);
         const gp=calcGP(inv);
-        const invDate=new Date(inv.date);
-        const paidDate=inv.payments?.length>0?new Date(inv.payments[inv.payments.length-1].date):null;
-        const daysToPay=paidDate?Math.round((paidDate-invDate)/(1000*60*60*24)):null;
+        const invDate=parseDate(inv.date);
+        const paidDate=inv.payments?.length>0?parseDate(inv.payments[inv.payments.length-1].date):(inv.updated_at?parseDate(inv.updated_at):invDate);
+        const daysToPay=paidDate&&invDate?Math.round((paidDate-invDate)/(1000*60*60*24)):null;
         const isLate=daysToPay!==null&&daysToPay>90;
         const overridden=commOverrides[inv.id]||false;
         const commRate=isLate&&!overridden?0.15:0.30;
@@ -16828,9 +16833,10 @@ export default function App(){
       });
     };
 
-    // Build pipeline from open/unpaid invoices
+    // Build pipeline from open/unpaid invoices + uninvoiced open SOs
     const buildPipeline=(repFilter)=>{
-      return invs.filter(inv=>{
+      // Open invoices
+      const invLines=invs.filter(inv=>{
         if(inv.status==='paid')return false;
         const so=sos.find(s=>s.id===inv.so_id);
         if(repFilter&&repFilter!=='all')return so?.created_by===repFilter;
@@ -16846,8 +16852,39 @@ export default function App(){
         const expRate=willBeLate?0.15:0.30;
         const expComm=Math.round(gp.gp*expRate*100)/100;
         const balance=safeNum(inv.total)-safeNum(inv.paid);
-        return{inv,so,customer:c,rep,gp,daysOpen,willBeLate,expRate,expComm,balance,repId:so?.created_by};
+        return{inv,so,customer:c,rep,gp,daysOpen,willBeLate,expRate,expComm,balance,repId:so?.created_by,type:'invoice'};
       });
+      // IDs of SOs that already have invoices
+      const invoicedSOIds=new Set(invs.map(i=>i.so_id).filter(Boolean));
+      // Open SOs without any invoice (not yet invoiced)
+      const soLines=sos.filter(so=>{
+        if(so.status==='deleted'||so.status==='cancelled')return false;
+        const st=calcSOStatus(so);
+        if(st==='complete')return false;
+        if(invoicedSOIds.has(so.id))return false;
+        if(repFilter&&repFilter!=='all')return so.created_by===repFilter;
+        return true;
+      }).map(so=>{
+        const c=cust.find(x=>x.id===so.customer_id);
+        const rep=REPS.find(r=>r.id===so.created_by);
+        const _aq={};safeItems(so).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_aq[d.art_file_id]=(_aq[d.art_file_id]||0)+q2}})});
+        const af=safeArt(so);let rev=0,cost=0;
+        safeItems(so).forEach(it=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
+          rev+=qty*safeNum(it.unit_sell);cost+=qty*safeNum(it.nsa_cost);
+          safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);rev+=qty*dp2.sell;cost+=qty*dp2.cost});
+          (it.po_lines||[]).filter(pl=>pl.po_type==='outside_deco').forEach(pl=>{const poQty=Object.entries(pl).filter(([k,v])=>typeof v==='number'&&k!=='unit_cost').reduce((a,[,v])=>a+v,0);cost+=poQty*safeNum(pl.unit_cost)});
+        });
+        const shipRev=so.shipping_type==='pct'?rev*(safeNum(so.shipping_value)/100):safeNum(so.shipping_value);
+        const shipCost=safeNum(so._shipping_cost||so._shipstation_cost||0)||(so._shipments||[]).reduce((a,s)=>a+safeNum(s.shipping_cost||0),0);
+        const inboundFreight=safeNum(so._inbound_freight||0);
+        const totalRev=rev+shipRev;const totalCost=cost+shipCost+inboundFreight;
+        const gp={rev:totalRev,cost:totalCost,gp:Math.round((totalRev-totalCost)*100)/100};
+        const soStatus=calcSOStatus(so);
+        const expRate=0.30;// assume on-time since not yet invoiced
+        const expComm=Math.round(gp.gp*expRate*100)/100;
+        return{inv:null,so,customer:c,rep,gp,daysOpen:null,willBeLate:false,expRate,expComm,balance:totalRev,repId:so.created_by,type:'so',soStatus};
+      });
+      return[...invLines,...soLines];
     };
 
     // Build promo cost lines from SOs with promo_applied
@@ -16880,9 +16917,9 @@ export default function App(){
       });
     };
 
-    const allLines=buildCommLines(isAdmin?q||'all':cu.id);
-    const allPipeline=buildPipeline(isAdmin?q||'all':cu.id);
-    const allPromoLines=buildPromoLines(isAdmin?q||'all':cu.id);
+    const allLines=buildCommLines(viewRepId);
+    const allPipeline=buildPipeline(viewRepId);
+    const allPromoLines=buildPromoLines(viewRepId);
 
     // Filter promo lines by selected month
     const monthPromoLines=allPromoLines.filter(l=>l.soMonth===commMonth);
@@ -16896,6 +16933,14 @@ export default function App(){
     });
     const monthTotal=monthLines.reduce((a,l)=>a+l.commAmt,0);
     const monthGP=monthLines.reduce((a,l)=>a+l.gp.gp,0);
+    // Open invoices for the selected month (not yet paid)
+    const monthPipeline=allPipeline.filter(l=>{
+      if(l.type==='so')return false;// only invoices
+      if(!l.inv?.date)return false;
+      // Parse invoice date to match commMonth (YYYY-MM)
+      const d=new Date(l.inv.date);const ym=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
+      return ym===commMonth;
+    });
     // Net commission after promo costs deducted
     const monthNetComm=Math.round((monthTotal-monthPromoCost)*100)/100;
 
@@ -16910,8 +16955,9 @@ export default function App(){
     const ytdNetComm=Math.round((ytdComm-ytdPromoCost)*100)/100;
 
     // By customer
-    const byCust={};allLines.forEach(l=>{const cn=l.customer?.name||'Unknown';if(!byCust[cn])byCust[cn]={name:cn,gp:0,comm:0,invCount:0,rev:0};byCust[cn].gp+=l.gp.gp;byCust[cn].comm+=l.commAmt;byCust[cn].invCount++;byCust[cn].rev+=safeNum(l.inv.total)});
-    const custList=Object.values(byCust).sort((a,b)=>b.comm-a.comm);
+    const byCust={};allLines.forEach(l=>{const cn=l.customer?.name||'Unknown';if(!byCust[cn])byCust[cn]={name:cn,gp:0,comm:0,invCount:0,rev:0,pipeRev:0,pipeGP:0,pipeComm:0,pipeCount:0};byCust[cn].gp+=l.gp.gp;byCust[cn].comm+=l.commAmt;byCust[cn].invCount++;byCust[cn].rev+=safeNum(l.inv.total)});
+    allPipeline.forEach(l=>{const cn=l.customer?.name||'Unknown';if(!byCust[cn])byCust[cn]={name:cn,gp:0,comm:0,invCount:0,rev:0,pipeRev:0,pipeGP:0,pipeComm:0,pipeCount:0};byCust[cn].pipeRev+=l.balance;byCust[cn].pipeGP+=l.gp.gp;byCust[cn].pipeComm+=l.expComm;byCust[cn].pipeCount++});
+    const custList=Object.values(byCust).sort((a,b)=>(b.comm+b.pipeComm)-(a.comm+a.pipeComm));
 
     // Monthly breakdown for YTD chart
     const monthlyData={};ytdLines.forEach(l=>{const m=String(l.paidDate.getMonth()+1).padStart(2,'0');if(!monthlyData[m])monthlyData[m]={month:m,gp:0,comm:0,count:0};monthlyData[m].gp+=l.gp.gp;monthlyData[m].comm+=l.commAmt;monthlyData[m].count++});
@@ -16926,7 +16972,7 @@ export default function App(){
       {/* Header with rep selector (admin only) */}
       <div style={{display:'flex',gap:12,marginBottom:16,alignItems:'center',flexWrap:'wrap'}}>
         {isAdmin&&<><span style={{fontSize:12,fontWeight:600,color:'#64748b'}}>Rep:</span>
-          <select className="form-select" style={{width:180}} value={q} onChange={e=>setQ(e.target.value)}>
+          <select className="form-select" style={{width:180}} value={commRep} onChange={e=>setCommRep(e.target.value)}>
             <option value="all">All Reps</option>
             {salesReps.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
           </select></>}
@@ -16956,12 +17002,12 @@ export default function App(){
           </div>
         </div>
         <div className="card-body" style={{padding:0}}>
-          {monthLines.length===0?<div style={{padding:40,textAlign:'center',color:'#94a3b8'}}>No paid invoices this month</div>:
+          {monthLines.length===0&&monthPipeline.length===0?<div style={{padding:40,textAlign:'center',color:'#94a3b8'}}>No invoices this month</div>:
           <table style={{fontSize:12}}><thead><tr>
             <th>Invoice</th><th>Customer</th>{isAdmin&&<th>Rep</th>}<th style={{textAlign:'right'}}>Revenue</th><th style={{textAlign:'right'}}>Cost</th><th style={{textAlign:'right'}}>Gross Profit</th><th style={{textAlign:'center'}}>Days</th><th style={{textAlign:'center'}}>Rate</th><th style={{textAlign:'right'}}>Commission</th>{isAdmin&&<th></th>}
           </tr></thead><tbody>
             {monthLines.map(l=><tr key={l.inv.id} style={{background:l.isLate&&!l.overridden?'#fef2f2':''}}>
-              <td style={{fontWeight:700,color:'#1e40af'}}>{l.inv.id}<div style={{fontSize:10,color:'#94a3b8'}}>{l.inv.date}</div></td>
+              <td style={{fontWeight:700,color:'#1e40af',cursor:'pointer'}} onClick={()=>{if(l.so){setESO(l.so);setESOC(l.customer);setPg('orders')}}}>{l.inv.id}<div style={{fontSize:10,color:'#94a3b8'}}>{l.inv.date}</div></td>
               <td>{l.customer?.name||'\u2014'}<div style={{fontSize:10,color:'#94a3b8'}}>{l.inv.memo}</div></td>
               {isAdmin&&<td style={{fontSize:11}}>{l.rep?.name||'\u2014'}</td>}
               <td style={{textAlign:'right'}}>${safeNum(l.inv.total).toLocaleString()}</td>
@@ -16975,15 +17021,15 @@ export default function App(){
                 {l.isLate&&l.overridden&&<span style={{fontSize:9,color:'#166534',fontWeight:700}}>Approved</span>}
               </td>}
             </tr>)}
-            <tr style={{fontWeight:800,background:'#f0f9ff',borderTop:'2px solid #1e40af'}}>
-              <td colSpan={isAdmin?3:2}>TOTAL</td>
+            {monthLines.length>0&&<tr style={{fontWeight:800,background:'#f0f9ff',borderTop:'2px solid #1e40af'}}>
+              <td colSpan={isAdmin?3:2}>EARNED</td>
               <td style={{textAlign:'right'}}>${monthLines.reduce((a,l)=>a+safeNum(l.inv.total),0).toLocaleString()}</td>
               <td style={{textAlign:'right',color:'#dc2626'}}>${monthLines.reduce((a,l)=>a+l.gp.cost,0).toLocaleString()}</td>
               <td style={{textAlign:'right',color:'#166534'}}>${monthGP.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
               <td colSpan={2}></td>
               <td style={{textAlign:'right',fontSize:16,color:'#166534'}}>${monthTotal.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
               {isAdmin&&<td/>}
-            </tr>
+            </tr>}
             {monthPromoCost>0&&<tr style={{fontWeight:700,background:'#fef2f2',borderTop:'1px dashed #dc2626'}}>
               <td colSpan={isAdmin?3:2} style={{color:'#dc2626'}}>PROMO COST DEDUCTION ({monthPromoLines.length} order{monthPromoLines.length!==1?'s':''})</td>
               <td colSpan={4}></td>
@@ -16996,31 +17042,59 @@ export default function App(){
               <td style={{textAlign:'right',fontSize:16,color:monthNetComm>=0?'#166534':'#dc2626'}}>${monthNetComm.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
               {isAdmin&&<td/>}
             </tr>}
+            {monthPipeline.length>0&&<tr style={{background:'#f5f3ff'}}><td colSpan={isAdmin?10:8} style={{fontWeight:700,fontSize:11,color:'#7c3aed',padding:'8px 12px',borderTop:'2px solid #7c3aed'}}>OPEN INVOICES — Awaiting Payment</td></tr>}
+            {monthPipeline.map(l=><tr key={l.inv.id} style={{background:'#faf5ff'}}>
+              <td style={{fontWeight:700,color:'#7c3aed',cursor:'pointer'}} onClick={()=>{if(l.so){setESO(l.so);setESOC(l.customer);setPg('orders')}}}>{l.inv.id}<div style={{fontSize:10,color:'#94a3b8'}}>{l.inv.date}</div></td>
+              <td>{l.customer?.name||'\u2014'}<div style={{fontSize:10,color:'#94a3b8'}}>{l.inv.memo}</div></td>
+              {isAdmin&&<td style={{fontSize:11}}>{l.rep?.name||'\u2014'}</td>}
+              <td style={{textAlign:'right'}}>${l.balance.toLocaleString()}</td>
+              <td style={{textAlign:'right',color:'#dc2626'}}>${l.gp.cost.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+              <td style={{textAlign:'right',fontWeight:700,color:l.gp.gp>0?'#166534':'#dc2626'}}>${l.gp.gp.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+              <td style={{textAlign:'center'}}><span style={{padding:'2px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:l.willBeLate?'#fee2e2':l.daysOpen>60?'#fef3c7':'#dcfce7',color:l.willBeLate?'#dc2626':l.daysOpen>60?'#92400e':'#166534'}}>{l.daysOpen}d</span></td>
+              <td style={{textAlign:'center',fontWeight:600,color:l.expRate===0.30?'#166534':'#d97706'}}>{Math.round(l.expRate*100)}%</td>
+              <td style={{textAlign:'right',fontWeight:700,color:'#7c3aed'}}>${l.expComm.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
+              {isAdmin&&<td/>}
+            </tr>)}
+            {monthPipeline.length>0&&<tr style={{fontWeight:800,background:'#f5f3ff',borderTop:'2px solid #7c3aed'}}>
+              <td colSpan={isAdmin?3:2}>PIPELINE</td>
+              <td style={{textAlign:'right'}}>${monthPipeline.reduce((a,l)=>a+l.balance,0).toLocaleString()}</td>
+              <td style={{textAlign:'right',color:'#dc2626'}}>${monthPipeline.reduce((a,l)=>a+l.gp.cost,0).toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+              <td style={{textAlign:'right',color:'#166534'}}>${monthPipeline.reduce((a,l)=>a+l.gp.gp,0).toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+              <td colSpan={2}></td>
+              <td style={{textAlign:'right',fontSize:14,color:'#7c3aed'}}>${monthPipeline.reduce((a,l)=>a+l.expComm,0).toLocaleString(undefined,{maximumFractionDigits:2})}</td>
+              {isAdmin&&<td/>}
+            </tr>}
           </tbody></table>}
         </div>
       </div>}
 
       {/* PIPELINE TAB */}
       {commTab==='pipeline'&&<div className="card">
-        <div className="card-header"><h2>Expected Commissions — Open Invoices</h2><span style={{fontSize:12,color:'#64748b'}}>Outstanding: ${pipeBalance.toLocaleString()}</span></div>
+        <div className="card-header"><h2>Expected Commissions — Pipeline</h2><span style={{fontSize:12,color:'#64748b'}}>Outstanding: ${pipeBalance.toLocaleString()}</span></div>
         <div className="card-body" style={{padding:0}}>
-          {allPipeline.length===0?<div style={{padding:40,textAlign:'center',color:'#94a3b8'}}>No open invoices</div>:
+          {allPipeline.length===0?<div style={{padding:40,textAlign:'center',color:'#94a3b8'}}>No open orders or invoices</div>:
           <table style={{fontSize:12}}><thead><tr>
-            <th>Invoice</th><th>Customer</th>{isAdmin&&<th>Rep</th>}<th style={{textAlign:'right'}}>Balance</th><th style={{textAlign:'right'}}>Est. GP</th><th style={{textAlign:'center'}}>Days Open</th><th style={{textAlign:'center'}}>Est. Rate</th><th style={{textAlign:'right'}}>Expected Comm</th>
+            <th>Order</th><th>Customer</th>{isAdmin&&<th>Rep</th>}<th style={{textAlign:'center'}}>Status</th><th style={{textAlign:'right'}}>Revenue</th><th style={{textAlign:'right'}}>Cost</th><th style={{textAlign:'right'}}>Est. GP</th><th style={{textAlign:'center'}}>Days Open</th><th style={{textAlign:'center'}}>Est. Rate</th><th style={{textAlign:'right'}}>Expected Comm</th>
           </tr></thead><tbody>
-            {allPipeline.sort((a,b)=>b.daysOpen-a.daysOpen).map(l=><tr key={l.inv.id} style={{background:l.willBeLate?'#fef2f2':l.daysOpen>60?'#fffbeb':''}}>
-              <td style={{fontWeight:700,color:'#1e40af'}}>{l.inv.id}<div style={{fontSize:10,color:'#94a3b8'}}>{l.inv.date}</div></td>
-              <td>{l.customer?.name||'\u2014'}<div style={{fontSize:10,color:'#94a3b8'}}>{l.inv.memo}</div></td>
+            {allPipeline.sort((a,b)=>(b.type==='so'?1:0)-(a.type==='so'?1:0)||(b.daysOpen||0)-(a.daysOpen||0)).map(l=>{
+              const stLabel={need_order:'Need Order',waiting_receive:'Waiting',items_received:'Items In',needs_pull:'Needs Pull',in_production:'In Prod',ready_to_invoice:'Ready Inv',complete:'Complete',booking:'Booking'};
+              const isSOLine=l.type==='so';
+              return<tr key={isSOLine?l.so.id:l.inv.id} style={{background:l.willBeLate?'#fef2f2':!isSOLine&&l.daysOpen>60?'#fffbeb':''}}>
+              <td style={{fontWeight:700,color:isSOLine?'#7c3aed':'#1e40af',cursor:'pointer'}} onClick={()=>{if(l.so){setESO(l.so);setESOC(l.customer);setPg('orders')}}}>{isSOLine?l.so.id:l.inv.id}<div style={{fontSize:10,color:'#94a3b8'}}>{isSOLine?l.so.created_at:l.inv.date}</div></td>
+              <td>{l.customer?.name||'\u2014'}<div style={{fontSize:10,color:'#94a3b8'}}>{isSOLine?l.so.memo:l.inv.memo}</div></td>
               {isAdmin&&<td style={{fontSize:11}}>{l.rep?.name||'\u2014'}</td>}
+              <td style={{textAlign:'center'}}>{isSOLine?<span style={{padding:'2px 6px',borderRadius:8,fontSize:9,fontWeight:600,background:'#ede9fe',color:'#6d28d9'}}>{stLabel[l.soStatus]||l.soStatus}</span>:<span style={{padding:'2px 6px',borderRadius:8,fontSize:9,fontWeight:600,background:'#dbeafe',color:'#1e40af'}}>Invoiced</span>}</td>
               <td style={{textAlign:'right',fontWeight:600}}>${l.balance.toLocaleString()}</td>
+              <td style={{textAlign:'right',color:'#dc2626'}}>${l.gp.cost.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
               <td style={{textAlign:'right',color:l.gp.gp>0?'#166534':'#dc2626'}}>${l.gp.gp.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
-              <td style={{textAlign:'center'}}><span style={{padding:'2px 8px',borderRadius:8,fontSize:10,fontWeight:600,background:l.willBeLate?'#fee2e2':l.daysOpen>60?'#fef3c7':'#dcfce7',color:l.willBeLate?'#dc2626':l.daysOpen>60?'#92400e':'#166534'}}>{l.daysOpen}d</span></td>
+              <td style={{textAlign:'center'}}>{l.daysOpen!=null?<span style={{padding:'2px 8px',borderRadius:8,fontSize:10,fontWeight:600,background:l.willBeLate?'#fee2e2':l.daysOpen>60?'#fef3c7':'#dcfce7',color:l.willBeLate?'#dc2626':l.daysOpen>60?'#92400e':'#166534'}}>{l.daysOpen}d</span>:'\u2014'}</td>
               <td style={{textAlign:'center',fontWeight:600,color:l.expRate===0.30?'#166534':'#d97706'}}>{Math.round(l.expRate*100)}%</td>
               <td style={{textAlign:'right',fontWeight:700,color:'#7c3aed'}}>${l.expComm.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
-            </tr>)}
+            </tr>})}
             <tr style={{fontWeight:800,background:'#f5f3ff',borderTop:'2px solid #7c3aed'}}>
-              <td colSpan={isAdmin?3:2}>TOTAL PIPELINE</td>
+              <td colSpan={isAdmin?4:3}>TOTAL PIPELINE</td>
               <td style={{textAlign:'right'}}>${pipeBalance.toLocaleString()}</td>
+              <td style={{textAlign:'right',color:'#dc2626'}}>${allPipeline.reduce((a,l)=>a+l.gp.cost,0).toLocaleString(undefined,{maximumFractionDigits:0})}</td>
               <td style={{textAlign:'right'}}>${allPipeline.reduce((a,l)=>a+l.gp.gp,0).toLocaleString(undefined,{maximumFractionDigits:0})}</td>
               <td colSpan={2}></td>
               <td style={{textAlign:'right',fontSize:16,color:'#7c3aed'}}>${pipeTotal.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
@@ -17045,7 +17119,7 @@ export default function App(){
             <th>SO #</th><th>Customer</th>{isAdmin&&<th>Rep</th>}<th>Date</th><th style={{textAlign:'right'}}>Product Cost</th><th style={{textAlign:'right'}}>Deco Cost</th><th style={{textAlign:'right'}}>Shipping</th><th style={{textAlign:'right',fontWeight:800}}>Total Cost</th>
           </tr></thead><tbody>
             {monthPromoLines.map(l=><tr key={l.so.id}>
-              <td style={{fontWeight:700,color:'#1e40af'}}>{l.so.id}<div style={{fontSize:10,color:'#94a3b8'}}>{l.so.memo}</div></td>
+              <td style={{fontWeight:700,color:'#1e40af',cursor:'pointer'}} onClick={()=>{setESO(l.so);setESOC(l.customer);setPg('orders')}}>{l.so.id}<div style={{fontSize:10,color:'#94a3b8'}}>{l.so.memo}</div></td>
               <td>{l.customer?.name||'\u2014'}</td>
               {isAdmin&&<td style={{fontSize:11}}>{l.rep?.name||'\u2014'}</td>}
               <td style={{fontSize:11,color:'#64748b'}}>{l.soDate}</td>
@@ -17120,7 +17194,7 @@ export default function App(){
         <div className="card-body" style={{padding:0}}>
           {custList.length===0?<div style={{padding:40,textAlign:'center',color:'#94a3b8'}}>No commission data</div>:
           <table style={{fontSize:12}}><thead><tr>
-            <th>Customer</th><th style={{textAlign:'center'}}>Invoices</th><th style={{textAlign:'right'}}>Revenue</th><th style={{textAlign:'right'}}>Gross Profit</th><th style={{textAlign:'center'}}>GP%</th><th style={{textAlign:'right'}}>Commission</th>
+            <th>Customer</th><th style={{textAlign:'center'}}>Invoices</th><th style={{textAlign:'right'}}>Revenue</th><th style={{textAlign:'right'}}>Gross Profit</th><th style={{textAlign:'center'}}>GP%</th><th style={{textAlign:'right'}}>Earned</th><th style={{textAlign:'center'}}>Pipeline</th><th style={{textAlign:'right'}}>Pipe Rev</th><th style={{textAlign:'right'}}>Pipe Comm</th><th style={{textAlign:'right'}}>Total</th>
           </tr></thead><tbody>
             {custList.map(c=><tr key={c.name}>
               <td style={{fontWeight:700}}>{c.name}</td>
@@ -17129,6 +17203,10 @@ export default function App(){
               <td style={{textAlign:'right',color:'#166534'}}>${c.gp.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
               <td style={{textAlign:'center'}}><span style={{padding:'2px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:c.rev>0&&c.gp/c.rev>=0.3?'#dcfce7':'#fef3c7',color:c.rev>0&&c.gp/c.rev>=0.3?'#166534':'#92400e'}}>{c.rev>0?Math.round(c.gp/c.rev*100):0}%</span></td>
               <td style={{textAlign:'right',fontWeight:800,color:'#166534'}}>${c.comm.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
+              <td style={{textAlign:'center',color:'#7c3aed'}}>{c.pipeCount||'\u2014'}</td>
+              <td style={{textAlign:'right',color:'#7c3aed'}}>{c.pipeRev?'$'+c.pipeRev.toLocaleString():'\u2014'}</td>
+              <td style={{textAlign:'right',fontWeight:700,color:'#7c3aed'}}>{c.pipeComm?'$'+c.pipeComm.toLocaleString(undefined,{maximumFractionDigits:2}):'\u2014'}</td>
+              <td style={{textAlign:'right',fontWeight:800,color:'#1e40af'}}>${(c.comm+c.pipeComm).toLocaleString(undefined,{maximumFractionDigits:2})}</td>
             </tr>)}
             <tr style={{fontWeight:800,background:'#f0f9ff',borderTop:'2px solid #1e40af'}}>
               <td>TOTAL</td>
@@ -17136,7 +17214,11 @@ export default function App(){
               <td style={{textAlign:'right'}}>${custList.reduce((a,c)=>a+c.rev,0).toLocaleString()}</td>
               <td style={{textAlign:'right',color:'#166534'}}>${custList.reduce((a,c)=>a+c.gp,0).toLocaleString(undefined,{maximumFractionDigits:0})}</td>
               <td></td>
-              <td style={{textAlign:'right',fontSize:14,color:'#166534'}}>${custList.reduce((a,c)=>a+c.comm,0).toLocaleString(undefined,{maximumFractionDigits:2})}</td>
+              <td style={{textAlign:'right',color:'#166534'}}>${custList.reduce((a,c)=>a+c.comm,0).toLocaleString(undefined,{maximumFractionDigits:2})}</td>
+              <td style={{textAlign:'center',color:'#7c3aed'}}>{custList.reduce((a,c)=>a+c.pipeCount,0)}</td>
+              <td style={{textAlign:'right',color:'#7c3aed'}}>${custList.reduce((a,c)=>a+c.pipeRev,0).toLocaleString()}</td>
+              <td style={{textAlign:'right',color:'#7c3aed'}}>${custList.reduce((a,c)=>a+c.pipeComm,0).toLocaleString(undefined,{maximumFractionDigits:2})}</td>
+              <td style={{textAlign:'right',fontSize:14,color:'#1e40af'}}>${custList.reduce((a,c)=>a+c.comm+c.pipeComm,0).toLocaleString(undefined,{maximumFractionDigits:2})}</td>
             </tr>
           </tbody></table>}
         </div>
