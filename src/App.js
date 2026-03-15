@@ -11885,7 +11885,7 @@ export default function App(){
     // Open issues → show on to-do list for top admin (Steve) only
     if(cu?.id==='00000000-0000-0000-0000-000000000001')issues.filter(i=>i.status==='open').forEach(i=>{
       const pri=i.priority==='high'?0:i.priority==='medium'?1:2;
-      todos.push({type:'issue',priority:pri,msg:(i.priority==='high'?'🔴':'🟡')+' Issue: '+i.description.slice(0,80)+(i.description.length>80?'...':''),detail:(i.reported_by||i.reportedBy||'Unknown')+' · '+i.page+(i.viewing?' · '+i.viewing:''),action:'View Issue',role:'all',issueId:i.id});
+      todos.push({type:'issue',priority:pri,msg:(i.priority==='high'?'🔴':'🟡')+' Issue: '+i.description.slice(0,80)+(i.description.length>80?'...':''),detail:(i.reported_by||i.reportedBy||'Unknown')+' · '+i.page+(i.viewing?' · '+i.viewing:''),action:'View Issue',role:'admin',issueId:i.id});
     });
     todos.sort((a,b)=>a.priority-b.priority);
     // Attach repId to each todo based on customer's primary_rep_id
@@ -12020,23 +12020,25 @@ export default function App(){
               </div></div>})}
         </div></div>
     </div>
-    {myNotifs.length>0&&<div className="card" style={{marginBottom:16}}><div className="card-header"><h2>🔔 Notifications ({myNotifs.length})</h2></div>
+    {(()=>{const completedTaskNotifs=assignedTodos.filter(t=>t.status==='completed'&&t.created_by===cu.id&&t.completed_by&&t.completed_by!==cu.id&&t.completed_at&&Math.floor((new Date()-new Date(t.completed_at))/(1000*60*60*24))<=7);const allNotifs=[...myNotifs.map(t=>({...t,_key:'sys-'+t.msg})),...completedTaskNotifs.map(t=>{const completedBy=REPS.find(r=>r.id===t.completed_by);const daysAgo=Math.floor((new Date()-new Date(t.completed_at))/(1000*60*60*24));return{_key:'task-'+t.id,msg:'✅ Task completed: '+t.title,detail:(completedBy?.name||'Unknown')+(t.completion_note?' — '+t.completion_note:'')+(daysAgo===0?' · Today':' · '+daysAgo+'d ago'),action:'View',isTaskComplete:true,todoId:t.id}})];
+    return allNotifs.length>0&&<div className="card" style={{marginBottom:16}}><div className="card-header"><h2>🔔 Notifications ({allNotifs.length})</h2></div>
       <div className="card-body" style={{padding:0,maxHeight:260,overflow:'auto'}}>
-        {myNotifs.map((t,i)=><div key={i} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer',background:'#f0fdf4'}} onClick={()=>{if(t.so){if(t.jobId){const jIdx=safeJobs(t.so).findIndex(jj=>jj.id===t.jobId);setESOTab('jobs');setESOScrollJob(jIdx>=0?jIdx:null)}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
+        {allNotifs.map((t,i)=><div key={t._key||i} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer',background:'#f0fdf4'}} onClick={()=>{if(t.isTaskComplete){setTodoDetailId(t.todoId)}else if(t.so){if(t.jobId){const jIdx=safeJobs(t.so).findIndex(jj=>jj.id===t.jobId);setESOTab('jobs');setESOScrollJob(jIdx>=0?jIdx:null)}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
           <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}</div></div>
           <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#dcfce7',color:'#166534',fontWeight:600,whiteSpace:'nowrap'}}>{t.action}</span>
         </div>)}
       </div>
-    </div>}
+    </div>})()}
     </>})()}
-    {/* Assigned Todos Card */}
-    {myAssignedTodos.length>0&&<div className="card" style={{marginBottom:16}}>
+    {/* Assigned Todos Card — always visible for reps */}
+    {(()=>{const tasksIAssigned=myAssignedTodos.filter(t=>t.created_by===cu.id&&t.assigned_to!==cu.id);const tasksForMe=myAssignedTodos.filter(t=>t.assigned_to===cu.id);const recentlyCompleted=assignedTodos.filter(t=>t.status==='completed'&&t.created_by===cu.id&&t.completed_by&&t.completed_by!==cu.id&&t.completed_at&&Math.floor((new Date()-new Date(t.completed_at))/(1000*60*60*24))<=7);return<div className="card" style={{marginBottom:16}}>
       <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
         <h2>📌 Assigned Tasks ({myAssignedTodos.length})</h2>
         <button className="btn btn-sm btn-primary" onClick={()=>setTodoModal({open:true,title:'',description:'',assigned_to:getCsrsForRep(cu.id)[0]||'',so_id:'',customer_id:'',priority:2})}>+ New Task</button>
       </div>
       <div className="card-body" style={{padding:0,maxHeight:300,overflow:'auto'}}>
-        {myAssignedTodos.map(t=>{const assignee=REPS.find(r=>r.id===t.assigned_to);const creator=REPS.find(r=>r.id===t.created_by);const isAssignedToMe=t.assigned_to===cu.id;
+        {myAssignedTodos.length===0?<div className="empty" style={{padding:20}}>No open tasks</div>:
+        myAssignedTodos.map(t=>{const assignee=REPS.find(r=>r.id===t.assigned_to);const creator=REPS.find(r=>r.id===t.created_by);const isAssignedToMe=t.assigned_to===cu.id;
           return<div key={t.id} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',background:isAssignedToMe?'#fef3c7':'white',cursor:'pointer'}} onClick={()=>setTodoDetailId(t.id)}>
             <div style={{display:'flex',alignItems:'center',gap:8}}>
               <div style={{flex:1}}>
@@ -12049,7 +12051,19 @@ export default function App(){
             </div>
           </div>})}
       </div>
-    </div>}
+      {recentlyCompleted.length>0&&<div style={{borderTop:'1px solid #e2e8f0'}}>
+        <div style={{padding:'8px 14px',fontSize:11,fontWeight:700,color:'#166534',background:'#f0fdf4'}}>Recently Completed ({recentlyCompleted.length})</div>
+        {recentlyCompleted.map(t=>{const completedBy=REPS.find(r=>r.id===t.completed_by);const daysAgo=Math.floor((new Date()-new Date(t.completed_at))/(1000*60*60*24));
+          return<div key={t.id} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',background:'#f0fdf4',cursor:'pointer'}} onClick={()=>setTodoDetailId(t.id)}>
+            <div style={{display:'flex',alignItems:'center',gap:8}}>
+              <div style={{flex:1}}>
+                <div style={{fontSize:12,color:'#166534'}}>✅ {t.title}</div>
+                <div style={{fontSize:11,color:'#64748b'}}>Completed by {completedBy?.name}{t.completion_note?' — '+t.completion_note:''}{daysAgo===0?' · Today':' · '+daysAgo+'d ago'}</div>
+              </div>
+            </div>
+          </div>})}
+      </div>}
+    </div>})()}
     <div className="card" style={{marginBottom:16}}><div className="card-header"><h2>Quick Actions</h2></div><div className="card-body" style={{display:'flex',gap:8,flexWrap:'wrap'}}>
       <button className="btn btn-primary" onClick={()=>newE(null)}>📝 New Estimate</button>
       <button className="btn btn-secondary" onClick={()=>setPg('orders')}>📋 My Orders</button>
@@ -12313,10 +12327,10 @@ export default function App(){
       <div className="stat-card"><div className="stat-label">My Reps' SOs</div><div className="stat-value" style={{color:'#2563eb'}}>{(()=>{const myReps=getRepsForCsr(cu.id);return sos.filter(s=>{const c=cust.find(x=>x.id===s.customer_id);return calcSOStatus(s)!=='complete'&&(myReps.length===0||myReps.includes(c?.primary_rep_id||s.created_by))}).length})()}</div></div>
       <div className="stat-card"><div className="stat-label">Assigned Tasks</div><div className="stat-value" style={{color:'#0891b2'}}>{myAssignedTodos.length}</div></div>
       <div className="stat-card"><div className="stat-label">Due This Week</div><div className="stat-value" style={{color:'#dc2626'}}>{myTodos.filter(t=>t.type==='deadline').length}</div></div>
-      <div className="stat-card"><div className="stat-label">Action Items</div><div className="stat-value" style={{color:'#d97706'}}>{myTodos.filter(t=>(t.role==='csr'||t.role==='all')&&!t.isNotification).length}</div></div>
+      <div className="stat-card"><div className="stat-label">Action Items</div><div className="stat-value" style={{color:'#d97706'}}>{myTodos.filter(t=>!t.isNotification&&(t.role==='csr'||t.role==='all'||t.type==='order'||t.type==='est_update_request'||t.type==='est_approved'||t.type==='deposit_needed')).length}</div></div>
     </div>
-    {/* CSR Action Items — deposit collection, deadlines */}
-    {(()=>{const csrActions=myTodos.filter(t=>(t.role==='csr'||t.role==='all')&&!t.isNotification);return csrActions.length>0&&<div className="card" style={{marginBottom:16,borderLeft:'4px solid #d97706'}}>
+    {/* CSR Action Items — orders to place, estimate updates, deposits, deadlines */}
+    {(()=>{const csrActions=myTodos.filter(t=>!t.isNotification&&(t.role==='csr'||t.role==='all'||t.type==='order'||t.type==='est_update_request'||t.type==='est_approved'||t.type==='deposit_needed'));return csrActions.length>0&&<div className="card" style={{marginBottom:16,borderLeft:'4px solid #d97706'}}>
       <div className="card-header"><h2>🎯 Action Items ({csrActions.length})</h2></div>
       <div className="card-body" style={{padding:0,maxHeight:300,overflow:'auto'}}>
         {csrActions.map((t,i)=><div key={i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer'}} onClick={()=>{if(t.est){setEEst(t.est);setEEstC(t.estC);setPg('estimates')}else if(t.so){setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
