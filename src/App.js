@@ -3467,7 +3467,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         art_status:existing?.art_status||j.art_status,item_status:itemSt,prod_status:prodSt,
         total_units:j.total_units,fulfilled_units:j.fulfilled_units,
         assigned_machine:existing?.assigned_machine||null,assigned_to:existing?.assigned_to||null,
-        ship_method:existing?.ship_method||(so.ship_preference==='rep_delivery'?'rep_delivery':'ship_customer'),
+        ship_method:existing?.ship_method||(o.ship_preference==='rep_delivery'?'rep_delivery':'ship_customer'),
         split_from:existing?.split_from||null,created_at:existing?.created_at||new Date().toLocaleDateString(),
         counted_at:existing?.counted_at||null,counted_by:existing?.counted_by||null,
         count_discrepancy:existing?.count_discrepancy||null,notes:existing?.notes||null,
