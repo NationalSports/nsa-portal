@@ -24657,6 +24657,7 @@ export default function App(){
         const filled=numRows.filter(r=>r.number.toString().trim()&&r.size.trim());
         const summary={};SZS.forEach(s=>{summary[s]={count:0,numbers:[]}});
         filled.forEach(r=>{const sz=normSz(r.size);if(summary[sz]){summary[sz].count++;summary[sz].numbers.push(r.number.toString().trim())}});
+        SZS.forEach(s=>{summary[s].numbers.sort((a,b)=>(parseInt(a)||0)-(parseInt(b)||0))});
         const activeSizes=SZS.filter(s=>summary[s].count>0);
         const totalPieces=filled.length;
         const updateRow=(i,field,val)=>setNumRows(prev=>prev.map((r,ri)=>ri===i?{...r,[field]:val}:r));
