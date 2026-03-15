@@ -10705,12 +10705,12 @@ export default function App(){
             setMsgs(prev=>{const base=d.messages.length?d.messages:prev;return base.map(m=>_dbSaveFailedIds.has(m.id)?(prev.find(p=>p.id===m.id)||m):m)});
           }else{setEsts(prev=>d.estimates.map(e=>{const local=prev.find(p=>p.id===e.id);if(local?.items?.length&&(!e.items||!e.items.length))return{...e,items:local.items,art_files:local.art_files||e.art_files};return e}));setSOs(prev=>d.sales_orders.map(s=>{const local=prev.find(p=>p.id===s.id);if(!local)return s;const merged={...s};if(local.jobs?.length&&(!s.jobs||!s.jobs.length))merged.jobs=local.jobs;if(local.items?.length&&(!s.items||!s.items.length))merged.items=local.items;if(local.art_files?.length&&(!s.art_files||!s.art_files.length))merged.art_files=local.art_files;return merged.jobs!==s.jobs||merged.items!==s.items||merged.art_files!==s.art_files?merged:s}));setInvs(prev=>d.invoices.map(i=>{const local=prev.find(p=>p.id===i.id);if(local?.payments?.length&&(!i.payments||!i.payments.length))return{...i,payments:local.payments};return i}));setMsgs(d.messages.length?d.messages:msgs)}
           if(d.omg_stores.length)setOmgStores(d.omg_stores);
-          if(d.issues?.length)setIssues(d.issues);
-          if(d.quote_requests?.length)setQuoteRequests(d.quote_requests);
-          if(d.repCsrAssignments?.length)setRepCsrAssignments(d.repCsrAssignments);
-          if(d.assignedTodos?.length)setAssignedTodos(d.assignedTodos);
-          if(d.decoVendors?.length)setDecoVendors(d.decoVendors);
-          if(d.decoVendorPricing?.length)setDecoVendorPricing(d.decoVendorPricing);
+          setIssues(d.issues||[]);
+          if(d.quote_requests)setQuoteRequests(d.quote_requests);
+          if(d.repCsrAssignments)setRepCsrAssignments(d.repCsrAssignments);
+          if(d.assignedTodos)setAssignedTodos(d.assignedTodos);
+          if(d.decoVendors)setDecoVendors(d.decoVendors);
+          if(d.decoVendorPricing)setDecoVendorPricing(d.decoVendorPricing);
           // Load app_state key-value data (batch POs, changelog, etc.)
           const as=d.appState||{};
           if(as.batch_pos)setBatchPOs(as.batch_pos);
@@ -10764,7 +10764,7 @@ export default function App(){
               setEsts(d2.estimates);setSOs(d2.sales_orders);
               setInvs(d2.invoices);setMsgs(d2.messages.length?d2.messages:msgs);
               if(d2.omg_stores.length)setOmgStores(d2.omg_stores);
-              if(d2.issues?.length)setIssues(d2.issues);
+              setIssues(d2.issues||[]);
               const as2=d2.appState||{};
               if(as2.batch_pos)setBatchPOs(as2.batch_pos);if(as2.submitted_batches)setSubmittedBatches(as2.submitted_batches);
               if(as2.batch_counter)setBatchCounter(as2.batch_counter);if(as2.change_log)setChangeLog(as2.change_log);
@@ -10830,9 +10830,9 @@ export default function App(){
         if(d.products.length)setProd(prev=>{const base=prodMerge.apply(prev);if(_jsonEq(base,prev))return prev;const merged=base.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));return localOnly.length?[...merged,...localOnly]:merged});
         if(d.vendors.length)setVend(prev=>_jsonEq(prev,d.vendors)?prev:d.vendors);
         if(d.omg_stores.length)setOmgStores(prev=>_jsonEq(prev,d.omg_stores)?prev:d.omg_stores);
-        if(d.issues?.length)setIssues(prev=>_jsonEq(prev,d.issues)?prev:d.issues);
-        if(d.decoVendors?.length)setDecoVendors(prev=>_jsonEq(prev,d.decoVendors)?prev:d.decoVendors);
-        if(d.decoVendorPricing?.length)setDecoVendorPricing(prev=>_jsonEq(prev,d.decoVendorPricing)?prev:d.decoVendorPricing);
+        setIssues(prev=>{const v=d.issues||[];return _jsonEq(prev,v)?prev:v});
+        if(d.decoVendors)setDecoVendors(prev=>_jsonEq(prev,d.decoVendors)?prev:d.decoVendors);
+        if(d.decoVendorPricing)setDecoVendorPricing(prev=>_jsonEq(prev,d.decoVendorPricing)?prev:d.decoVendorPricing);
         // Refresh app_state keys
         const as=d.appState||{};
         if(as.inv_pos)setInvPOs(prev=>_jsonEq(prev,as.inv_pos)?prev:as.inv_pos);
