@@ -11664,6 +11664,13 @@ export default function App(){
       const daysSince=inv2.email_sent_at?Math.floor((new Date()-new Date(inv2.email_sent_at))/(1000*60*60*24)):0;
       todos.push({type:'inv_followup',priority:1,msg:'⏰ Follow up on invoice '+inv2.id+' ('+daysSince+'d): $'+safeNum(inv2.total).toFixed(2),detail:tag2+' · Follow-up due '+new Date(inv2.follow_up_at).toLocaleDateString(),action:'Follow Up',role:'sales'});
     });
+    // Recently paid invoices → notification
+    invs.filter(i=>i.status==='paid'&&i.payments?.length).forEach(inv2=>{
+      const lastPay=inv2.payments[inv2.payments.length-1];if(!lastPay?.date)return;
+      const payDate=new Date(lastPay.date);const daysAgo=Math.floor((new Date()-payDate)/(1000*60*60*24));
+      if(daysAgo<=7){const c2=cust.find(x=>x.id===inv2.customer_id);const tag2=c2?.alpha_tag||inv2.id;
+        todos.push({type:'inv_paid',priority:3,msg:'💰 Invoice paid: '+inv2.id+' — $'+safeNum(inv2.total).toFixed(2),detail:tag2+(inv2.memo?' · '+inv2.memo:'')+' · '+lastPay.method+(daysAgo===0?' · Today':' · '+daysAgo+'d ago'),so:inv2.so_id?sos.find(s=>s.id===inv2.so_id):null,action:'View',role:'sales',isNotification:true})}
+    });
     // Open issues → show on to-do list for all users
     issues.filter(i=>i.status==='open').forEach(i=>{
       const pri=i.priority==='high'?0:i.priority==='medium'?1:2;
