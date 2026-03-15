@@ -2681,6 +2681,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const[invSmsEnabled,setInvSmsEnabled]=useState(false);const[invSmsPhone,setInvSmsPhone]=useState('');const[invSmsMsg,setInvSmsMsg]=useState('');
   const[invFollowUpDays,setInvFollowUpDays]=useState(7);
   const[splitModal,setSplitModal]=useState(null);// {jIdx, mode:'received'|'sku'|null}
+  const[mergeMode,setMergeMode]=useState(null);// {selected:[jobIdx,...]} — select jobs to merge
   const[jobWizard,setJobWizard]=useState(null);// {groups: [{name,deco_type,items:[...]},...]} — Job Setup Wizard
   const[countDiscModal,setCountDiscModal]=useState(null);// {open,entries:[{sku,name,color,size,expected,actual}],notes}
   const[artReqModal,setArtReqModal]=useState(null);// {jIdx, artist:'', instructions:'', files:[]}
@@ -6817,7 +6818,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const updated={...o,jobs:newJobs,updated_at:new Date().toLocaleString()};
         setO(updated);onSave(updated);setDirty(false);setJobWizard(null);
         const artSent=activateAll?newJobs.filter(j=>j.art_status==='art_requested'&&(j.art_requests||[]).some(r=>r.auto)).length:0;
-        nf(activateAll?(artSent>0?'Jobs activated! '+artSent+' art job'+(artSent!==1?'s':'')+' sent to Art Dashboard':'Jobs activated and sent to production!'):'Draft jobs saved — activate when ready');
+        nf(activateAll?(artSent>0?'Jobs released! '+artSent+' art job'+(artSent!==1?'s':'')+' sent to Art Dashboard':'Jobs released for art!'):'Draft jobs saved — activate when ready');
       };
 
       // Job Setup Wizard Modal
@@ -6874,7 +6875,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         </div>
         <div style={{display:'flex',gap:8,borderTop:'1px solid #e2e8f0',paddingTop:12}}>
           <button className="btn btn-primary" style={{background:'#166534',borderColor:'#166534',fontWeight:800}}
-            onClick={()=>wizActivate(jobWizard.groups,true)}>Activate All & Send to Production</button>
+            onClick={()=>wizActivate(jobWizard.groups,true)}>Release Jobs for Art</button>
           <button className="btn btn-secondary" style={{fontWeight:700}}
             onClick={()=>wizActivate(jobWizard.groups,false)}>Save as Drafts</button>
           <button className="btn btn-secondary" onClick={()=>setJobWizard(null)}>Cancel</button>
@@ -6888,9 +6889,20 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         <h2>Production Jobs ({activeJobs.length}{hasDrafts?' + '+draftJobs.length+' drafts':''})</h2>
         <div style={{display:'flex',gap:6}}>
           <button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 12px',fontWeight:700}} onClick={openJobWizard}>Set Up Jobs</button>
+          {jobs.length>1&&!mergeMode&&<button className="btn btn-sm" style={{fontSize:10,background:'#1e40af',color:'white',border:'none',padding:'4px 12px',fontWeight:700}} onClick={()=>setMergeMode({selected:[]})}>Merge Jobs</button>}
+          {mergeMode&&<><button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 12px',fontWeight:700}} disabled={mergeMode.selected.length<2} onClick={()=>{
+            const sel=mergeMode.selected.sort((a,b)=>a-b);const target=jobs[sel[0]];const mergeItems=[...target.items||[]];let mergeUnits=target.total_units;
+            sel.slice(1).forEach(ji=>{const mj=jobs[ji];mergeItems.push(...(mj.items||[]));mergeUnits+=(mj.total_units||0)});
+            const merged={...target,items:mergeItems,total_units:mergeUnits};
+            const removeIdxs=new Set(sel.slice(1));const newJobs=jobs.map((j,i)=>i===sel[0]?merged:j).filter((j,i)=>!removeIdxs.has(i));
+            const updated={...o,jobs:newJobs,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setMergeMode(null);
+            nf('Merged '+sel.length+' jobs into '+target.id);
+          }}>Merge {mergeMode.selected.length} Selected</button>
+          <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>setMergeMode(null)}>Cancel</button></>}
           <button className="btn btn-sm btn-secondary" onClick={refreshJobs}><Icon name="check" size={12}/> Sync Status</button>
         </div>
       </div><div className="card-body" style={{padding:0}}>
+        {mergeMode&&<div style={{padding:'8px 16px',background:'#dbeafe',borderBottom:'1px solid #93c5fd',fontSize:12,color:'#1e40af',fontWeight:600}}>Select 2 or more jobs of the same type to merge together. Items will be combined into the first selected job.</div>}
         {hasDrafts&&<div style={{padding:'10px 16px',background:'#fef9c3',borderBottom:'1px solid #fde68a',display:'flex',alignItems:'center',gap:8}}>
           <span style={{fontSize:12,fontWeight:700,color:'#a16207'}}>{draftJobs.length} draft job{draftJobs.length!==1?'s':''} need review</span>
           <span style={{fontSize:11,color:'#92400e'}}>— Draft jobs won't appear on the production board until activated</span>
@@ -6903,13 +6915,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           <button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 10px',fontWeight:700}} onClick={openJobWizard}>Edit Jobs</button>
         </div>}
         {jobs.length===0&&<div style={{padding:24,textAlign:'center',color:'#94a3b8'}}>No decorations assigned yet. Add artwork to items, then click "Set Up Jobs" to create production jobs.</div>}
-        {jobs.length>0&&<table style={{fontSize:12}}><thead><tr><th>Job ID</th><th>Artwork / Decoration</th><th>Items</th><th>Units</th><th>Items Status</th><th>Art</th><th>Production</th><th></th></tr></thead><tbody>
+        {jobs.length>0&&<table style={{fontSize:12}}><thead><tr>{mergeMode&&<th style={{width:30}}></th>}<th>Job ID</th><th>Artwork / Decoration</th><th>Items</th><th>Units</th><th>Items Status</th><th>Art</th><th>Production</th><th></th></tr></thead><tbody>
           {jobs.map((j,ji)=>{
             const canProduce=j.item_status==='items_received'&&j.art_status==='art_complete';const canOverride2=cu.role==='admin'||cu.role==='production'||cu.role==='prod_manager'||cu.role==='gm';
             const canSplit=(j.items||[]).length>0&&j.total_units>1;
             const pct=j.total_units>0?Math.round(j.fulfilled_units/j.total_units*100):0;
+            const isMergeSel=mergeMode&&mergeMode.selected.includes(ji);
             return<React.Fragment key={j.id}>
-              <tr id={'so-job-'+ji} style={{background:j.prod_status==='completed'||j.prod_status==='shipped'?'#f0fdf4':undefined,cursor:'pointer',transition:'box-shadow 0.3s'}} onClick={()=>setSelJob(ji)}>
+              <tr id={'so-job-'+ji} style={{background:isMergeSel?'#dbeafe':j.prod_status==='completed'||j.prod_status==='shipped'?'#f0fdf4':undefined,cursor:'pointer',transition:'box-shadow 0.3s'}} onClick={()=>mergeMode?setMergeMode({selected:isMergeSel?mergeMode.selected.filter(x=>x!==ji):[...mergeMode.selected,ji]}):setSelJob(ji)}>
+              {mergeMode&&<td onClick={e=>e.stopPropagation()}><input type="checkbox" checked={!!isMergeSel} onChange={()=>setMergeMode({selected:isMergeSel?mergeMode.selected.filter(x=>x!==ji):[...mergeMode.selected,ji]})}/></td>}
               <td><span style={{fontWeight:700,color:'#1e40af'}}>{j.id}</span>
                 {j.split_from&&<div style={{fontSize:9,color:'#7c3aed'}}>split from {j.split_from}</div>}
                 {j.counted_at&&<div style={{fontSize:9,color:'#166534'}}>✅ counted</div>}</td>
