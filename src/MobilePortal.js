@@ -215,7 +215,14 @@ export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,
           <div className="mp-info-item"><div className="mp-info-label">Email</div><div className="mp-info-val" style={{fontSize:12,wordBreak:'break-all'}}>{cc.email||'—'}</div></div>
           <div className="mp-info-item"><div className="mp-info-label">Orders</div><div className="mp-info-val">{custSOs.length}</div></div>
         </div>
-        {cc.notes&&<div className="mp-memo">{cc.notes}</div>}
+        {/* Action buttons */}
+        <div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:12,marginBottom:12}}>
+          {(()=>{const acct=(cc.contacts||[]).find(c=>c.role==='Accounting')||(cc.contacts||[])[0];const email=acct?.email||cc.email;
+            return email?<a href={'mailto:'+email+'?subject=Account Statement — '+encodeURIComponent(cc.name)+'&body='+encodeURIComponent('Hi '+(acct?.name||'')+',\n\nPlease find your current account statement with all open invoices and aging details.\n\nPlease let us know if you have any questions.\n\nThank you,\nNSA Team')} style={{flex:1,minWidth:120,display:'flex',alignItems:'center',justifyContent:'center',gap:6,padding:'10px 12px',background:'#1e40af',color:'white',borderRadius:10,fontWeight:700,fontSize:13,textDecoration:'none',border:'none',cursor:'pointer'}}><MIcon name="mail" size={16}/> Email Statement</a>:null})()}
+          {cc.alpha_tag&&<button onClick={()=>window.open(window.location.origin+'/?portal='+cc.alpha_tag,'_blank')} style={{flex:1,minWidth:120,display:'flex',alignItems:'center',justifyContent:'center',gap:6,padding:'10px 12px',background:'#7c3aed',color:'white',borderRadius:10,fontWeight:700,fontSize:13,border:'none',cursor:'pointer'}}><MIcon name="monitor" size={16}/> Coaches Portal</button>}
+          {cc.phone&&<a href={'tel:'+cc.phone} style={{flex:1,minWidth:120,display:'flex',alignItems:'center',justifyContent:'center',gap:6,padding:'10px 12px',background:'#16a34a',color:'white',borderRadius:10,fontWeight:700,fontSize:13,textDecoration:'none',border:'none',cursor:'pointer'}}><MIcon name="phone" size={16}/> Call</a>}
+        </div>
+        {cc.notes&&<div className="mp-memo">{typeof cc.notes==='string'?cc.notes:JSON.stringify(cc.notes)}</div>}
         {custSOs.length>0&&<>
           <div className="mp-section-title">Recent Orders</div>
           {custSOs.slice(0,5).map(so=><div key={so.id} className="mp-list-card" onClick={()=>setDetail({type:'order',data:so})}>
