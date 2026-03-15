@@ -10629,6 +10629,20 @@ export default function App(){
   // Issue logging system
   const[issues,setIssues]=useState(()=>loadState('issues',[]));
   const[quoteRequests,setQuoteRequests]=useState([]);
+  // Sales Tools page state (must be at App level to avoid conditional hook calls)
+  const[stTab,setStTab]=useState('quotes');
+  const[qrModal,setQrModal]=useState({open:false,customer_id:'',contact_id:''});
+  const[qrView,setQrView]=useState(null);
+  const[qrSearch,setQrSearch]=useState('');
+  const[sizePaste,setSizePaste]=useState('');
+  const[sizeRows,setSizeRows]=useState([]);
+  const[reorderCust,setReorderCust]=useState('');
+  const[dcQty,setDcQty]=useState(48);
+  const[dcColors,setDcColors]=useState(2);
+  const[dcStitches,setDcStitches]=useState(8000);
+  const[dcTwoColor,setDcTwoColor]=useState(false);
+  const[numRows,setNumRows]=useState(()=>{const r=[];for(let i=0;i<30;i++)r.push({number:'',size:''});return r});
+  const[numPaste,setNumPaste]=useState('');
   const[issueModal,setIssueModal]=useState({open:false,desc:'',priority:'medium'});
   const[issueFilter,setIssueFilter]=useState('all');// all|open|resolved
   const[editMember,setEditMember]=useState(null);
@@ -24433,18 +24447,6 @@ export default function App(){
 
   // ─── SALES TOOLS PAGE ───
   function rSalesTools(){
-    const[stTab,setStTab]=useState('quotes');// quotes | size_sort | reorder | deco_calc
-    const[qrModal,setQrModal]=useState({open:false,customer_id:'',contact_id:''});
-    const[qrView,setQrView]=useState(null);// viewing a submitted quote request
-    const[qrSearch,setQrSearch]=useState('');
-    const[sizePaste,setSizePaste]=useState('');
-    const[sizeRows,setSizeRows]=useState([]);
-    const[reorderCust,setReorderCust]=useState('');
-    const[dcQty,setDcQty]=useState(48);
-    const[dcColors,setDcColors]=useState(2);
-    const[dcStitches,setDcStitches]=useState(8000);
-    const[dcTwoColor,setDcTwoColor]=useState(false);
-
     const myQuoteRequests=quoteRequests.filter(qr=>{
       if(cu.role==='admin')return true;
       return qr.created_by===cu.id;
@@ -24545,7 +24547,7 @@ export default function App(){
     return(<>
       {/* Tab bar */}
       <div style={{display:'flex',gap:4,marginBottom:16,flexWrap:'wrap'}}>
-        {[{id:'quotes',label:'Quote Forms',icon:'send'},{id:'size_sort',label:'Size Sorter',icon:'grid'},{id:'reorder',label:'Quick Reorder',icon:'cart'},{id:'deco_calc',label:'Deco Calculator',icon:'dollar'}].map(t=>
+        {[{id:'quotes',label:'Quote Forms',icon:'send'},{id:'numbers',label:'Numbers List',icon:'grid'},{id:'size_sort',label:'Size Sorter',icon:'grid'},{id:'reorder',label:'Quick Reorder',icon:'cart'},{id:'deco_calc',label:'Deco Calculator',icon:'dollar'}].map(t=>
           <button key={t.id} className={`btn ${stTab===t.id?'btn-primary':'btn-secondary'}`} onClick={()=>setStTab(t.id)} style={{fontSize:13,padding:'8px 16px'}}>
             <Icon name={t.icon} size={14}/> {t.label}</button>)}
       </div>
@@ -24646,6 +24648,140 @@ export default function App(){
           </div>
         </div></div>}
       </>}
+
+      {/* ═══ NUMBERS LIST ═══ */}
+      {stTab==='numbers'&&(()=>{
+        const SZS=['XS','S','M','L','XL','2XL','3XL','4XL','YXS','YS','YM','YL','YXL'];
+        const SZ_ALIAS={'2X':'2XL','3X':'3XL','4X':'4XL','XXL':'2XL','XXXL':'3XL'};
+        const normSz=(s)=>{const u=s.toUpperCase().trim();return SZ_ALIAS[u]||u};
+        const filled=numRows.filter(r=>r.number.toString().trim()&&r.size.trim());
+        const summary={};SZS.forEach(s=>{summary[s]={count:0,numbers:[]}});
+        filled.forEach(r=>{const sz=normSz(r.size);if(summary[sz]){summary[sz].count++;summary[sz].numbers.push(r.number.toString().trim())}});
+        SZS.forEach(s=>{summary[s].numbers.sort((a,b)=>(parseInt(a)||0)-(parseInt(b)||0))});
+        const activeSizes=SZS.filter(s=>summary[s].count>0);
+        const totalPieces=filled.length;
+        const updateRow=(i,field,val)=>setNumRows(prev=>prev.map((r,ri)=>ri===i?{...r,[field]:val}:r));
+        const addRows=()=>setNumRows(prev=>[...prev,...Array(10).fill(null).map(()=>({number:'',size:''}))]);
+        const clearAll=()=>{const r=[];for(let i=0;i<30;i++)r.push({number:'',size:''});setNumRows(r);setNumPaste('')};
+        const copyOutput=()=>{
+          const lines=[];
+          lines.push(totalPieces+' / Total : Numbers');
+          SZS.forEach(s=>{const d=summary[s];if(d.count>0)lines.push(s+'/'+d.count+' : '+d.numbers.join(', '));else lines.push(s+'/0 :')});
+          navigator.clipboard.writeText(lines.join('\n'));nf('Copied to clipboard!');
+        };
+        const copyGrid=()=>{
+          const hdr=['Number','Size'].join('\t');
+          const rows=filled.map(r=>r.number+'\t'+normSz(r.size));
+          navigator.clipboard.writeText([hdr,...rows].join('\n'));nf('Grid copied!');
+        };
+        // Parse pasted data — supports vertical (sizes as headers, numbers below) and horizontal (number,size pairs)
+        const parsePaste=()=>{
+          const raw=numPaste.trim();if(!raw){nf('Nothing to parse','warn');return}
+          const lines=raw.split('\n').map(l=>l.trim()).filter(Boolean);
+          const parsed=[];
+          // Detect vertical format: first line has size headers
+          const firstParts=lines[0].split(/[\t,]+/).map(s=>s.trim()).filter(Boolean);
+          const isSzHeader=firstParts.length>=2&&firstParts.every(p=>SZS.includes(normSz(p)));
+          if(isSzHeader){
+            // Vertical format: row 0 = size headers, subsequent rows = numbers under each column
+            const headers=firstParts.map(p=>normSz(p));
+            for(let li=1;li<lines.length;li++){
+              const parts=lines[li].split(/[\t,]+/).map(s=>s.trim());
+              for(let ci=0;ci<headers.length;ci++){
+                const v=parts[ci]||'';
+                if(v&&/^\d+$/.test(v))parsed.push({number:v,size:headers[ci]});
+              }
+            }
+          }else{
+            // Try horizontal: "number,size" or "number size" pairs, one per line or multiple per line
+            lines.forEach(line=>{
+              // Try "number,size" or "number\tsize" format
+              const parts=line.split(/[\t,]+/).map(s=>s.trim()).filter(Boolean);
+              if(parts.length===2){
+                const[a,b]=parts;
+                if(/^\d+$/.test(a)&&SZS.includes(normSz(b))){parsed.push({number:a,size:normSz(b)});return}
+                if(/^\d+$/.test(b)&&SZS.includes(normSz(a))){parsed.push({number:b,size:normSz(a)});return}
+              }
+              // Try space-separated "number size"
+              const sm=line.match(/^(\d+)\s+(YXS|YS|YM|YL|YXL|XS|S|M|L|XL|2XL?|3XL?|4XL?|XXL|XXXL)$/i);
+              if(sm){parsed.push({number:sm[1],size:normSz(sm[2])});return}
+              // Try "size number" format
+              const sm2=line.match(/^(YXS|YS|YM|YL|YXL|XS|S|M|L|XL|2XL?|3XL?|4XL?|XXL|XXXL)\s+(\d+)$/i);
+              if(sm2){parsed.push({number:sm2[2],size:normSz(sm2[1])});return}
+            });
+          }
+          if(!parsed.length){nf('Could not parse. Try vertical format (sizes as column headers with numbers below) or "number, size" pairs.','warn');return}
+          // Pad to at least 30 rows
+          while(parsed.length<30)parsed.push({number:'',size:''});
+          setNumRows(parsed);setNumPaste('');nf(parsed.filter(r=>r.number).length+' numbers parsed!');
+        };
+        return<div className="card">
+          <div className="card-header"><h2>Numbers List</h2></div>
+          <div className="card-body" style={{padding:16}}>
+            <p style={{fontSize:13,color:'#64748b',margin:'0 0 12px'}}>Enter player/jersey numbers and their sizes, or paste from a coach's email/spreadsheet. The summary shows how many of each size and which numbers are assigned.</p>
+            {/* Paste area */}
+            <div style={{background:'#fffbeb',border:'1px solid #fde68a',borderRadius:6,padding:12,marginBottom:16}}>
+              <div style={{fontSize:12,fontWeight:700,color:'#92400e',marginBottom:6}}>Paste from Coach</div>
+              <p style={{fontSize:11,color:'#78716c',margin:'0 0 8px'}}>Supports vertical format (sizes as column headers, numbers listed below) or horizontal pairs (e.g. "1,S" or "1 S" per line).</p>
+              <textarea className="form-input" value={numPaste} onChange={e=>setNumPaste(e.target.value)}
+                placeholder={"Vertical format:\nS\tM\tL\tXL\n1\t4\t14\t16\n2\t8\t28\t41\n3\t12\t37\t51\n\nOR horizontal:\n1,S\n4,M\n14,L\n16,XL"}
+                rows={5} style={{width:'100%',fontFamily:'monospace',fontSize:11,resize:'vertical',marginBottom:8}}/>
+              <div style={{display:'flex',gap:8}}>
+                <button className="btn btn-primary btn-sm" style={{fontSize:11}} onClick={parsePaste}>Parse & Load</button>
+                <button className="btn btn-secondary btn-sm" style={{fontSize:11}} onClick={()=>setNumPaste('')}>Clear</button>
+              </div>
+            </div>
+            <div style={{display:'flex',gap:24,flexWrap:'wrap'}}>
+              {/* Input Grid */}
+              <div style={{flex:'0 0 280px'}}>
+                <div style={{display:'flex',gap:8,marginBottom:8}}>
+                  <button className="btn btn-primary btn-sm" style={{fontSize:11}} onClick={addRows}>+ Add Rows</button>
+                  <button className="btn btn-secondary btn-sm" style={{fontSize:11}} onClick={clearAll}>Clear All</button>
+                  {filled.length>0&&<button className="btn btn-secondary btn-sm" style={{fontSize:11}} onClick={copyGrid}>Copy Grid</button>}
+                </div>
+                <div style={{maxHeight:500,overflowY:'auto',border:'1px solid #e2e8f0',borderRadius:6}}>
+                  <table className="data-table" style={{fontSize:12}}><thead><tr><th style={{width:40}}>#</th><th style={{width:80}}>Number</th><th style={{width:100}}>Size</th></tr></thead>
+                    <tbody>{numRows.map((r,i)=><tr key={i} style={{background:r.number.toString().trim()&&r.size.trim()?'#f0fdf4':''}}>
+                      <td style={{color:'#94a3b8',fontSize:10,textAlign:'center'}}>{i+1}</td>
+                      <td><input className="form-input" value={r.number} onChange={e=>updateRow(i,'number',e.target.value)} style={{width:'100%',padding:'2px 6px',fontSize:12,border:'1px solid #e2e8f0',borderRadius:4}} placeholder="#"/></td>
+                      <td><select className="form-select" value={r.size} onChange={e=>updateRow(i,'size',e.target.value)} style={{width:'100%',padding:'2px 6px',fontSize:12,border:'1px solid #e2e8f0',borderRadius:4}}>
+                        <option value="">—</option>{SZS.map(s=><option key={s} value={s}>{s}</option>)}
+                      </select></td>
+                    </tr>)}</tbody></table>
+                </div>
+              </div>
+              {/* Summary */}
+              <div style={{flex:1,minWidth:280}}>
+                <div style={{display:'flex',gap:8,marginBottom:8,alignItems:'center'}}>
+                  <h3 style={{fontSize:14,margin:0}}>Summary</h3>
+                  {filled.length>0&&<button className="btn btn-primary btn-sm" style={{fontSize:11}} onClick={copyOutput}>Copy Summary</button>}
+                </div>
+                {filled.length===0?<div style={{padding:24,textAlign:'center',color:'#94a3b8',fontSize:13}}>Enter numbers and sizes on the left or paste from a coach above.</div>:
+                <div>
+                  <div style={{background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:6,padding:12,marginBottom:12}}>
+                    <div style={{fontSize:16,fontWeight:800,color:'#166534'}}>{totalPieces} Total Pieces</div>
+                    <div style={{fontSize:12,color:'#15803d',marginTop:2}}>{activeSizes.length} size{activeSizes.length!==1?'s':''} used</div>
+                  </div>
+                  {/* Size breakdown table */}
+                  <table className="data-table" style={{fontSize:12}}><thead><tr><th>Size</th><th style={{textAlign:'center'}}>Qty</th><th>Numbers</th></tr></thead>
+                    <tbody>{SZS.map(s=>{const d=summary[s];if(!d.count)return null;
+                      return<tr key={s}>
+                        <td style={{fontWeight:700,width:60}}>{s}</td>
+                        <td style={{textAlign:'center',fontWeight:600,width:50}}>{d.count}</td>
+                        <td style={{fontSize:11,color:'#475569'}}>{d.numbers.join(', ')}</td>
+                      </tr>})}</tbody></table>
+                  {/* Text output preview */}
+                  <div style={{marginTop:12,background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:6,padding:12}}>
+                    <div style={{fontSize:11,fontWeight:600,color:'#475569',marginBottom:6}}>Output Preview</div>
+                    <pre style={{fontSize:11,margin:0,whiteSpace:'pre-wrap',fontFamily:'monospace',color:'#334155'}}>{
+                      totalPieces+' / Total : Numbers\n'+SZS.map(s=>{const d=summary[s];return d.count>0?s+'/'+d.count+' : '+d.numbers.join(', '):s+'/0 :'}).join('\n')
+                    }</pre>
+                  </div>
+                </div>}
+              </div>
+            </div>
+          </div>
+        </div>})()}
 
       {/* ═══ SIZE SORTING TOOL ═══ */}
       {stTab==='size_sort'&&<div className="card">
