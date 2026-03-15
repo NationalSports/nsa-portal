@@ -3913,7 +3913,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   </div></div>}
                   <select className="form-select" style={{width:200,fontSize:12,border:!deco.art_file_id?'2px solid #f59e0b':'1px solid #22c55e'}} value={deco.art_file_id||''} onChange={e=>{const v=e.target.value;if(v==='__tbd'){uDM(idx,di,{art_file_id:'__tbd',art_tbd_type:'screen_print',sell_override:0})}else{uD(idx,di,'art_file_id',v||null)}}}>
                     <option value="">⚠️ Select artwork...</option>
-                    <option value="__tbd">🎨 Art TBD (pricing only)</option>{af.map(f=><option key={f.id} value={f.id}>{f.name||'Untitled'}</option>)}</select>
+                    <option value="__tbd">🎨 Art TBD (pricing only)</option>{af.map(f=><option key={f.id} value={f.id}>{f.name||'Untitled'}{f.deco_type?' — '+(f.deco_type==='screen_print'?'SP':f.deco_type==='embroidery'?'EMB':f.deco_type==='dtf'?'DTF':f.deco_type==='heat_press'?'HP':f.deco_type.replace(/_/g,' ')):''}</option>)}</select>
                   {deco.art_file_id==='__tbd'&&<><select className="form-select" style={{width:130,fontSize:11,border:'1px solid #f59e0b'}} value={deco.art_tbd_type||'screen_print'} onChange={e=>uDM(idx,di,{art_tbd_type:e.target.value,sell_override:0})}>
                     <option value="screen_print">Screen Print</option><option value="embroidery">Embroidery</option><option value="heat_press">Heat Press</option><option value="dtf">DTF</option></select>
                   {(deco.art_tbd_type||'screen_print')==='screen_print'&&<select className="form-select" style={{width:90,fontSize:10}} value={deco.tbd_colors||1} onChange={e=>uDM(idx,di,{tbd_colors:parseInt(e.target.value),sell_override:0})}>
