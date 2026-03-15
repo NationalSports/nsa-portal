@@ -3096,6 +3096,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         if(Array.isArray(attrs)){for(const a of attrs){const n=(a.name||a.identifier||'').toLowerCase();if(n==='color'||n==='colour'||n==='clr'||n==='asgswatchcolor'){const vals=a.values||a.Values||[];if(vals.length)return vals.map(v=>v.values||v.value||v.Value||v.identifier||v).join('/')}}}
         return '';
       };
+      // Helper: extract size from SKU attributes
+      const getSize=(e)=>{
+        const attrs=e.Attributes||e.attributes||e.definingAttributes||[];
+        if(Array.isArray(attrs)){for(const a of attrs){const id=(a.identifier||'').toLowerCase();const n=(a.name||'').toLowerCase();if(id==='asgswatchsize'||n==='available sizes'||n==='size'){const vals=a.values||a.Values||[];if(vals.length)return(vals[0].values||vals[0].value||vals[0].identifier||'').trim()}}}
+        return '';
+      };
       // Collect unique base part numbers from search results (limit to first 10)
       const baseSkus=[];const seenBase=new Set();
       for(const e of entries){
@@ -3130,7 +3136,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         // Build color→swatch image map from top-level Attributes (per-color product images aren't available from API)
         const colorImgMap={};
         const topAttrs=src.Attributes||src.attributes||[];
-        if(Array.isArray(topAttrs)){for(const a of topAttrs){if((a.name||'').toLowerCase()==='color'||a.identifier==='asgswatchcolor'){const vals=a.values||a.Values||[];for(const v of vals){const cName=v.values||v.value||v.identifier||'';const ext=v.extendedValue||[];const imgEntry=ext.find(e=>e.key==='Image1Path')||ext.find(e=>e.key==='Image1');if(cName&&imgEntry){const imgPath=imgEntry.value||'';if(imgPath&&!imgPath.includes('color1.jpg'))colorImgMap[cName]='https://www.momentecbrands.com/wcsstore/'+imgPath}}}}}
+        if(Array.isArray(topAttrs)){for(const a of topAttrs){const aId=(a.identifier||'').toLowerCase();if(aId==='asgswatchcolor'||aId==='asgswatchcolorfamily'||(a.name||'').toLowerCase()==='color'||(a.name||'').toLowerCase()==='colorfamily'){const vals=a.values||a.Values||[];for(const v of vals){const cName=v.values||v.value||v.identifier||'';const ext=v.extendedValue||[];const imgEntry=ext.find(e=>e.key==='Image1Path')||ext.find(e=>e.key==='Image1');if(cName&&imgEntry){const imgPath=imgEntry.value||'';if(imgPath&&!imgPath.includes('color1.jpg'))colorImgMap[cName]='https://www.momentecbrands.com/wcsstore/'+imgPath}}}}}
         styleMap[baseSku]={sku:baseSku,styleName:src.title||src.name||entry.name||baseSku,brandName:src.manufacturer||entry.manufacturer||'Momentec',
           styleImage:src.thumbnail||src.fullImage||entry.thumbnail||entry.fullImage||'',
           styleBackImage:mtBackImg,
@@ -3140,13 +3146,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const skus=src.SKUs||src.sKUs||detail?.SKUs||detail?.sKUs||[];
         if(skus.length){
           for(const sk of skus){
-            const skPrice=mtCost(getPrice(sk));const skColor=getColor(sk)||'Default';
+            const skPrice=mtCost(getPrice(sk));const skColor=getColor(sk)||'Default';const skSize=getSize(sk);
             const skImg=sk.thumbnail||sk.fullImage||colorImgMap[skColor]||'';
             const skBackImg=sk.fullImageBack||sk.backImage||'';
             if(!style.colors[skColor]){
               style.colors[skColor]={colorName:skColor,sku:sk.partNumber||sk.SKUPartNumber||baseSku,piecePrice:skPrice,customerPrice:skPrice,
                 colorFrontImage:skImg||style.styleImage,colorBackImage:skBackImg||style.styleBackImage||'',sizes:[],totalQty:0};
             }else{const c=style.colors[skColor];if(skPrice>0&&(c.customerPrice===0||skPrice<c.customerPrice)){c.customerPrice=skPrice;c.piecePrice=skPrice}if(skImg&&!c.colorFrontImage)c.colorFrontImage=skImg;if(skBackImg&&!c.colorBackImage)c.colorBackImage=skBackImg}
+            // Add size entry with per-size price (sizes like 3XL+ are more expensive)
+            if(skSize){const c=style.colors[skColor];if(!c.sizes.find(s=>s.sizeName===skSize)){c.sizes.push({sizeName:skSize,qty:0,price:skPrice})}}
             if(skPrice>0&&(style._mtPrice===0||skPrice<style._mtPrice))style._mtPrice=skPrice;
           }
         }
