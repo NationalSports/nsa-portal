@@ -8111,7 +8111,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       // Find index in ownArt for editable items
       const ownIdx=art._src==='library'?ownArt.findIndex(a=>a.id===art.id):-1;
       return{...art,_st:st,_mockups:mockups,_imgUrl:imgUrl,_usedOnSOs:usedOnSOs,_allMockups:allMockups,_ownIdx:ownIdx};
-    }).filter(a=>a._src==='library'||a._st!=='waiting_for_art');
+    }).filter(a=>a._src==='library'||a._src==='parent'||a._st==='approved');
     // Status counts for filter tabs
     const counts={all:unified.length,waiting_for_art:0,needs_approval:0,approved:0};
     unified.forEach(a=>{if(counts[a._st]!=null)counts[a._st]++});
