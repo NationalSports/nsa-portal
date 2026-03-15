@@ -99,6 +99,21 @@ export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,
     return arr;
   };
 
+  // ─── FILTERED DATA (must be above early-return gates to satisfy Rules of Hooks) ───
+  const filteredOrders=useMemo(()=>{
+    let list=sos;
+    if(ordersFilter==='active')list=sos.filter(s=>!['completed','shipped','cancelled'].includes(s.status||''));
+    else if(ordersFilter==='completed')list=sos.filter(s=>['completed','shipped'].includes(s.status||''));
+    else if(ordersFilter==='hold')list=sos.filter(s=>(s.status||'')==='hold');
+    return sortList(list,ordersSort);
+  },[sos,ordersFilter,ordersSort]);
+
+  const filteredCust=useMemo(()=>{
+    let list=cust;
+    if(custQ.length>=2){const s=custQ.toLowerCase();list=list.filter(c=>(c.name+' '+(c.alpha_tag||'')+' '+(c.email||'')+' '+(c.phone||'')).toLowerCase().includes(s))}
+    return list.sort((a,b)=>a.name.localeCompare(b.name));
+  },[cust,custQ]);
+
   // ─── DETAIL VIEW (ORDER) ───
   const renderOrderDetail=(so)=>{
     const cc=custObj(so.customer_id);
@@ -493,13 +508,6 @@ export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,
   };
 
   // ─── ORDERS TAB ───
-  const filteredOrders=useMemo(()=>{
-    let list=sos;
-    if(ordersFilter==='active')list=sos.filter(s=>!['completed','shipped','cancelled'].includes(s.status||''));
-    else if(ordersFilter==='completed')list=sos.filter(s=>['completed','shipped'].includes(s.status||''));
-    else if(ordersFilter==='hold')list=sos.filter(s=>(s.status||'')==='hold');
-    return sortList(list,ordersSort);
-  },[sos,ordersFilter,ordersSort]);
   const renderOrders=()=>{
     return<div className="mp-page">
       <div className="mp-page-title">Sales Orders</div>
@@ -570,11 +578,6 @@ export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,
   };
 
   // ─── CUSTOMERS TAB ───
-  const filteredCust=useMemo(()=>{
-    let list=cust;
-    if(custQ.length>=2){const s=custQ.toLowerCase();list=list.filter(c=>(c.name+' '+(c.alpha_tag||'')+' '+(c.email||'')+' '+(c.phone||'')).toLowerCase().includes(s))}
-    return list.sort((a,b)=>a.name.localeCompare(b.name));
-  },[cust,custQ]);
   const renderCustomers=()=>{
     return<div className="mp-page">
       <div className="mp-page-title">Customers</div>
