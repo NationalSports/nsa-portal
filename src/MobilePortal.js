@@ -307,7 +307,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,
 
   // ─── DECORATION HELPERS ───
   const newDeco=(kind)=>{
-    if(kind==='art')return{kind:'art',position:'Front Center',art_file_id:null,art_tbd_type:'screen_print',tbd_colors:1,sell_override:null};
+    if(kind==='art')return{kind:'art',position:'Front Center',art_file_id:'__tbd',art_tbd_type:'screen_print',tbd_colors:1,sell_override:null};
     if(kind==='numbers')return{kind:'numbers',position:'Back Center',num_method:'heat_transfer',num_size:'4"',two_color:false,front_and_back:false,sell_override:null,roster:{}};
     if(kind==='names')return{kind:'names',position:'Back Center',sell_each:6,cost_each:3,sell_override:null,names:{}};
     return{kind:'outside_deco',position:'Front Center',vendor:'',deco_type:'embroidery',cost_each:0,sell_each:0,notes:'',sell_override:null};
