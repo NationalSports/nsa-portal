@@ -660,10 +660,10 @@ const _persistFailedIds=()=>{try{localStorage.setItem('nsa_save_failed_ids',JSON
 const _pick=(obj,cols)=>{const r={};cols.forEach(c=>{if(c in obj)r[c]=obj[c]});return r};
 const _estCols=['id','customer_id','memo','status','created_by','created_at','updated_at','default_markup','shipping_type','shipping_value','ship_to_id','email_status','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history','deleted_at','promo_applied','promo_amount','update_requests'];
 const _soCols=['id','customer_id','estimate_id','memo','status','created_by','created_at','updated_at','expected_date','production_notes','shipping_type','shipping_value','ship_to_id','default_markup','omg_store_id','_shipstation_order_id','_shipping_status','_tracking_number','_carrier','_ship_date','_tracking_url','_shipped','_shipments','_shipping_cost','_shipstation_cost','_inbound_freight','deleted_at','promo_applied','promo_amount','ship_preference','ship_on_date','order_type','expected_ship_date','booking_confirmed','booking_confirmed_at','booking_confirmed_by','booking_alert_days','po_number'];
-const _itemCols=['product_id','sku','name','brand','color','nsa_cost','retail_price','unit_sell','sizes','available_sizes','_colors','no_deco','is_custom','custom_desc','custom_cost','custom_sell','is_promo','_pre_promo_sell','est_qty','size_availability'];
+const _itemCols=['product_id','sku','name','brand','color','vendor_id','nsa_cost','retail_price','unit_sell','sizes','available_sizes','_colors','no_deco','is_custom','custom_desc','custom_cost','custom_sell','is_promo','_pre_promo_sell','est_qty','size_availability'];
 const _decoCols=['kind','position','type','art_file_id','art_tbd_type','tbd_colors','tbd_stitches','tbd_dtf_size','sell_override','sell_each','cost_each','underbase','two_color','colors','stitches','dtf_size','num_method','num_size','num_size_back','num_font','roster','names','names_list','vendor','deco_type','notes','custom_font_art_id','print_color','front_and_back','reversible','num_qty','name_qty','color_way_id'];
 // Columns that may not exist in production DB / schema cache — stripped on insert retry
-const _itemExtraCols=new Set(['is_promo','_pre_promo_sell','est_qty','size_availability']);
+const _itemExtraCols=new Set(['vendor_id','is_promo','_pre_promo_sell','est_qty','size_availability']);
 const _estExtraCols=new Set(['promo_applied','promo_amount','update_requests','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history']);
 const _soExtraCols=new Set(['_shipping_cost','_shipstation_cost','_inbound_freight','promo_applied','promo_amount','ship_preference','ship_on_date','order_type','expected_ship_date','booking_confirmed','booking_confirmed_at','booking_confirmed_by','booking_alert_days','po_number']);
 const _decoExtraCols=new Set(['print_color','front_and_back','reversible','num_qty','name_qty','num_font','num_size_back','custom_font_art_id','deco_type','notes','vendor','color_way_id']);
@@ -1271,6 +1271,11 @@ let CONTACT_ROLES=['Head Coach','Assistant','Accounting','Athletic Director','Pr
 let POSITIONS=['Front Center','Back Center','Left Chest','Right Chest','Left Sleeve','Right Sleeve','Left Leg','Right Leg','Nape','Other'];
 const EXTRA_SIZES=['XS','3XL','4XL','LT','XLT','2XLT','3XLT'];
 const SZ_ORD=['XS','S','M','L','XL','2XL','3XL','4XL','LT','XLT','2XLT','3XLT','OSFA'];
+const SZ_NORM={'SM':'S','SML':'S','SMALL':'S','MD':'M','MED':'M','MEDIUM':'M','LG':'L','LRG':'L','LARGE':'L',
+  'XLG':'XL','XLARGE':'XL','X-LARGE':'XL','XXL':'2XL','2X':'2XL','2XLARGE':'2XL','2X-LARGE':'2XL',
+  'XXXL':'3XL','3X':'3XL','3XLARGE':'3XL','3X-LARGE':'3XL','XXXXL':'4XL','4X':'4XL','4XLARGE':'4XL','4X-LARGE':'4XL',
+  '5X':'5XL','6X':'6XL','LT':'LT','XLT':'XLT','2XLT':'2XLT','3XLT':'3XLT'};
+const normSzName=s=>{if(!s)return s;const u=s.toUpperCase().trim();return SZ_NORM[u]||u};
 const rQ=v=>Math.round(v*4)/4;
 const rT=v=>Math.round(v*10)/10;
 const showSz=(s,inv)=>{const c=['S','M','L','XL','2XL'];if(c.includes(s))return true;return!EXTRA_SIZES.includes(s)||(inv||0)>0};
@@ -2744,7 +2749,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           // invData.items is array of inventory entries with warehouse quantities
           const invItems=invData?.items||[];
           invItems.forEach(it=>{
-            const sz=it.size||it.labelSize||'OSFA';
+            const sz=normSzName(it.size||it.labelSize||'OSFA');
             // SanMar returns quantities per warehouse; sum all warehouses
             const qty=parseInt(it.totalQty||it.qty||it.quantity||0)||0;
             // Also check individual warehouse fields
@@ -2764,7 +2769,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const prData=await sanmarGetPricing(sku,prodColor,'');
           const prItems=prData?.items||[];
           prItems.forEach(it=>{
-            const sz=it.size||it.labelSize||'OSFA';
+            const sz=normSzName(it.size||it.labelSize||'OSFA');
             const price=parseFloat(it.piecePrice||it.customerPrice||it.price||0);
             if(price>0)sizePrice[sz]=price;
           });
@@ -2777,7 +2782,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             prodItems.forEach(raw=>{
               const bi=raw.productBasicInfo||{};const pi=raw.productPriceInfo||{};
               const it={...bi,...pi,...raw};
-              const sz=it.size||it.labelSize||'OSFA';
+              const sz=normSzName(it.size||it.labelSize||'OSFA');
               const qty=parseInt(it.inventoryQty||it.qty||0)||0;
               if(qty>0)sizeQty[sz]=(sizeQty[sz]||0)+qty;
               const price=parseFloat(it.piecePrice||it.customerPrice||0);
@@ -2997,7 +3002,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       try{
         const inv=await sanmarGetInventory(q,'','');
         (inv?.items||[]).forEach(it=>{
-          const key=(it.color||it.colorName||'')+'|'+(it.size||it.labelSize||'');
+          const key=(it.color||it.colorName||'')+'|'+normSzName(it.size||it.labelSize||'');
           invData[key]=parseInt(it.totalQty||it.qty||it.quantity||0)||0;
         });
       }catch(e){/* inventory fetch optional */}
@@ -3030,7 +3035,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           sizes:[],totalQty:0
         };
         const cEntry=styleMap[sid].colors[cKey];
-        const sz=it.size||it.labelSize||it.sizeCode||'OSFA';
+        const sz=normSzName(it.size||it.labelSize||it.sizeCode||'OSFA');
         const invKey=color+'|'+sz;
         const qty=invData[invKey]||parseInt(it.inventoryQty||it.qty||0)||0;
         const price=parseFloat(it.piecePrice||it.price||it.customerPrice||0);
@@ -3171,7 +3176,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const catMatch=products.find(p=>p.sku===style.sku&&(!color.colorName||p.color===color.colorName))||products.find(p=>p.sku===style.sku);
     const catSizes=catMatch?.available_sizes||[];
     // SanMar provides availableSizes as comma-separated string
-    const smSizes=style._availSizes?style._availSizes.split(/[,;]\s*/).map(s=>s.trim()).filter(Boolean):[];
+    const smSizes=style._availSizes?style._availSizes.split(/[,;]\s*/).map(s=>normSzName(s.trim())).filter(Boolean):[];
     // Merge all sources; ensure standard sizes are always included for apparel
     const STD_SIZES=['S','M','L','XL','2XL'];
     let availSizes=[...new Set([...apiSizes,...catSizes,...smSizes,...STD_SIZES])];
