@@ -660,10 +660,10 @@ const _persistFailedIds=()=>{try{localStorage.setItem('nsa_save_failed_ids',JSON
 const _pick=(obj,cols)=>{const r={};cols.forEach(c=>{if(c in obj)r[c]=obj[c]});return r};
 const _estCols=['id','customer_id','memo','status','created_by','created_at','updated_at','default_markup','shipping_type','shipping_value','ship_to_id','email_status','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history','deleted_at','promo_applied','promo_amount','update_requests'];
 const _soCols=['id','customer_id','estimate_id','memo','status','created_by','created_at','updated_at','expected_date','production_notes','shipping_type','shipping_value','ship_to_id','default_markup','omg_store_id','_shipstation_order_id','_shipping_status','_tracking_number','_carrier','_ship_date','_tracking_url','_shipped','_shipments','_shipping_cost','_shipstation_cost','_inbound_freight','deleted_at','promo_applied','promo_amount','ship_preference','ship_on_date','order_type','expected_ship_date','booking_confirmed','booking_confirmed_at','booking_confirmed_by','booking_alert_days','po_number'];
-const _itemCols=['product_id','sku','name','brand','color','nsa_cost','retail_price','unit_sell','sizes','available_sizes','_colors','no_deco','is_custom','custom_desc','custom_cost','custom_sell','is_promo','_pre_promo_sell','est_qty','size_availability'];
+const _itemCols=['product_id','sku','name','brand','color','vendor_id','nsa_cost','retail_price','unit_sell','sizes','available_sizes','_colors','no_deco','is_custom','custom_desc','custom_cost','custom_sell','is_promo','_pre_promo_sell','est_qty','size_availability'];
 const _decoCols=['kind','position','type','art_file_id','art_tbd_type','tbd_colors','tbd_stitches','tbd_dtf_size','sell_override','sell_each','cost_each','underbase','two_color','colors','stitches','dtf_size','num_method','num_size','num_size_back','num_font','roster','names','names_list','vendor','deco_type','notes','custom_font_art_id','print_color','front_and_back','reversible','num_qty','name_qty','color_way_id'];
 // Columns that may not exist in production DB / schema cache — stripped on insert retry
-const _itemExtraCols=new Set(['is_promo','_pre_promo_sell','est_qty','size_availability']);
+const _itemExtraCols=new Set(['vendor_id','is_promo','_pre_promo_sell','est_qty','size_availability']);
 const _estExtraCols=new Set(['promo_applied','promo_amount','update_requests','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history']);
 const _soExtraCols=new Set(['_shipping_cost','_shipstation_cost','_inbound_freight','promo_applied','promo_amount','ship_preference','ship_on_date','order_type','expected_ship_date','booking_confirmed','booking_confirmed_at','booking_confirmed_by','booking_alert_days','po_number']);
 const _decoExtraCols=new Set(['print_color','front_and_back','reversible','num_qty','name_qty','num_font','num_size_back','custom_font_art_id','deco_type','notes','vendor','color_way_id']);
@@ -1271,6 +1271,11 @@ let CONTACT_ROLES=['Head Coach','Assistant','Accounting','Athletic Director','Pr
 let POSITIONS=['Front Center','Back Center','Left Chest','Right Chest','Left Sleeve','Right Sleeve','Left Leg','Right Leg','Nape','Other'];
 const EXTRA_SIZES=['XS','3XL','4XL','LT','XLT','2XLT','3XLT'];
 const SZ_ORD=['XS','S','M','L','XL','2XL','3XL','4XL','LT','XLT','2XLT','3XLT','OSFA'];
+const SZ_NORM={'SM':'S','SML':'S','SMALL':'S','MD':'M','MED':'M','MEDIUM':'M','LG':'L','LRG':'L','LARGE':'L',
+  'XLG':'XL','XLARGE':'XL','X-LARGE':'XL','XXL':'2XL','2X':'2XL','2XLARGE':'2XL','2X-LARGE':'2XL',
+  'XXXL':'3XL','3X':'3XL','3XLARGE':'3XL','3X-LARGE':'3XL','XXXXL':'4XL','4X':'4XL','4XLARGE':'4XL','4X-LARGE':'4XL',
+  '5X':'5XL','6X':'6XL','LT':'LT','XLT':'XLT','2XLT':'2XLT','3XLT':'3XLT'};
+const normSzName=s=>{if(!s)return s;const u=s.toUpperCase().trim();return SZ_NORM[u]||u};
 const rQ=v=>Math.round(v*4)/4;
 const rT=v=>Math.round(v*10)/10;
 const showSz=(s,inv)=>{const c=['S','M','L','XL','2XL'];if(c.includes(s))return true;return!EXTRA_SIZES.includes(s)||(inv||0)>0};
@@ -1491,7 +1496,7 @@ const D_V=[
 {id:'v5',name:'Richardson',vendor_type:'api',api_provider:'richardson',nsa_carries_inventory:false,is_active:true,contact_email:'orders@richardsonsports.com',payment_terms:'net30',_oi:0,_it:0,_ac:0,_a3:0,_a6:0,_a9:0},
 {id:'v6',name:'Rawlings',vendor_type:'upload',nsa_carries_inventory:false,is_active:true,payment_terms:'net30',_oi:0,_it:0,_ac:0,_a3:0,_a6:0,_a9:0},
 {id:'v7',name:'Badger',vendor_type:'upload',nsa_carries_inventory:false,is_active:true,payment_terms:'net30',_oi:0,_it:0,_ac:0,_a3:0,_a6:0,_a9:0},
-{id:'v8',name:'Momentec',vendor_type:'api',api_provider:'momentec',nsa_carries_inventory:false,is_active:true,contact_email:'orders@momentecbrands.com',payment_terms:'net30',_oi:0,_it:0,_ac:0,_a3:0,_a6:0,_a9:0},
+{id:'v8',name:'Momentec',vendor_type:'api',api_provider:'momentec',nsa_carries_inventory:false,is_active:true,contact_email:'orders@momentecbrands.com',payment_terms:'net30',api_price_discount:0.15,_oi:0,_it:0,_ac:0,_a3:0,_a6:0,_a9:0},
 ];
 const D_P=[
 {id:'p1',vendor_id:'v1',sku:'JX4453',name:'Adidas Unisex Pregame Tee',brand:'Adidas',color:'Team Power Red/White',category:'Tees',retail_price:55.5,nsa_cost:18.5,available_sizes:['XS','S','M','L','XL','2XL'],is_active:true,_inv:{XS:0,S:7,M:0,L:0,XL:0,'2XL':0},_alerts:{S:15,M:15,L:10,XL:8,'2XL':5,'3XL':1}},
@@ -2745,7 +2750,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           // invData.items is array of inventory entries with warehouse quantities
           const invItems=invData?.items||[];
           invItems.forEach(it=>{
-            const sz=it.size||it.labelSize||'OSFA';
+            const sz=normSzName(it.size||it.labelSize||'OSFA');
             // SanMar returns quantities per warehouse; sum all warehouses
             const qty=parseInt(it.totalQty||it.qty||it.quantity||0)||0;
             // Also check individual warehouse fields
@@ -2765,7 +2770,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const prData=await sanmarGetPricing(sku,prodColor,'');
           const prItems=prData?.items||[];
           prItems.forEach(it=>{
-            const sz=it.size||it.labelSize||'OSFA';
+            const sz=normSzName(it.size||it.labelSize||'OSFA');
             const price=parseFloat(it.piecePrice||it.customerPrice||it.price||0);
             if(price>0)sizePrice[sz]=price;
           });
@@ -2778,7 +2783,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             prodItems.forEach(raw=>{
               const bi=raw.productBasicInfo||{};const pi=raw.productPriceInfo||{};
               const it={...bi,...pi,...raw};
-              const sz=it.size||it.labelSize||'OSFA';
+              const sz=normSzName(it.size||it.labelSize||'OSFA');
               const qty=parseInt(it.inventoryQty||it.qty||0)||0;
               if(qty>0)sizeQty[sz]=(sizeQty[sz]||0)+qty;
               const price=parseFloat(it.piecePrice||it.customerPrice||0);
@@ -2924,6 +2929,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const sid=it.styleID||it.styleName||query;
         let imgUrl=it.colorFrontImage||it.colorSideImage||'';
         if(imgUrl&&imgUrl.startsWith('http://'))imgUrl=imgUrl.replace('http://','https://');
+        let backUrl=it.colorBackImage||'';
+        if(backUrl&&backUrl.startsWith('http://'))backUrl=backUrl.replace('http://','https://');
         if(!styleMap[sid]){
           const sInfo=styleMatches.find(s=>String(s.styleID)===String(sid))||styleInfo||{};
           styleMap[sid]={
@@ -2939,13 +2946,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const color=it.colorName||'';
         const cKey=sid+'|'+color;
         if(!styleMap[sid].colors[cKey])styleMap[sid].colors[cKey]={
-          colorName:color,colorFrontImage:imgUrl,
+          colorName:color,colorFrontImage:imgUrl,colorBackImage:backUrl,
           customerPrice:parseFloat(it.customerPrice)||0,
           piecePrice:parseFloat(it.piecePrice)||0,
           sizes:[],totalQty:0
         };
         const cEntry=styleMap[sid].colors[cKey];
         if(imgUrl&&!cEntry.colorFrontImage)cEntry.colorFrontImage=imgUrl;
+        if(backUrl&&!cEntry.colorBackImage)cEntry.colorBackImage=backUrl;
         const sz=it.sizeName||'OSFA';
         const qty=typeof it.qty==='number'?it.qty:parseInt(it.qty)||0;
         const p=parseFloat(it.customerPrice)||parseFloat(it.piecePrice)||0;
@@ -2998,7 +3006,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       try{
         const inv=await sanmarGetInventory(q,'','');
         (inv?.items||[]).forEach(it=>{
-          const key=(it.color||it.colorName||'')+'|'+(it.size||it.labelSize||'');
+          const key=(it.color||it.colorName||'')+'|'+normSzName(it.size||it.labelSize||'');
           invData[key]=parseInt(it.totalQty||it.qty||it.quantity||0)||0;
         });
       }catch(e){/* inventory fetch optional */}
@@ -3026,12 +3034,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         if(!styleMap[sid].colors[cKey])styleMap[sid].colors[cKey]={
           colorName:color,
           colorFrontImage:it.colorProductImageThumbnail||it.colorProductImage||it.colorSwatchImage||it.productImage||'',
+          colorBackImage:it.colorProductImageBackThumbnail||it.colorProductImageBack||it.colorProductBackImage||'',
           customerPrice:parseFloat(it.piecePrice||it.price||it.customerPrice||0),
           piecePrice:parseFloat(it.piecePrice||it.price||0),
           sizes:[],totalQty:0
         };
         const cEntry=styleMap[sid].colors[cKey];
-        const sz=it.size||it.labelSize||it.sizeCode||'OSFA';
+        const sz=normSzName(it.size||it.labelSize||it.sizeCode||'OSFA');
         const invKey=color+'|'+sz;
         const qty=invData[invKey]||parseInt(it.inventoryQty||it.qty||0)||0;
         const price=parseFloat(it.piecePrice||it.price||it.customerPrice||0);
@@ -3076,14 +3085,22 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         return pn.includes(qLower)||nm.includes(qLower);
       });
       if(!entries.length){mtSearchCache.current[cacheKey]={length:0,_ts:Date.now()};if(gen===mtSearchGen.current)setMtResults([]);return}
-      // Helper: extract best price from an HCL Commerce entry
+      // Helper: extract best price from an HCL Commerce entry (handles both search and detail field names)
       const getPrice=(e)=>{
-        if(e.Price&&e.Price.length){for(const p of e.Price){const v=parseFloat(p.SKUPriceValue||p.priceValue);if(v>0)return v}}
+        if(e.Price&&e.Price.length){for(const p of e.Price){const v=parseFloat(p.SKUPriceValue||p.priceValue||0);if(v>0)return v}}
+        if(e.price&&e.price.length){for(const p of e.price){const v=parseFloat(p.SKUPriceValue||p.priceValue||0);if(v>0)return v}}
         const f=parseFloat(e.offerPrice||e.listPrice||e.salePrice||0);return f>0?f:0;
       };
-      // Helper: extract color name from attributes array
+      // Helper: extract color name from attributes array (handles both Attributes and attributes, HCL Commerce field casing)
       const getColor=(e)=>{
-        if(e.attributes){for(const a of e.attributes){const n=(a.name||a.identifier||'').toLowerCase();if(n==='color'||n==='colour'||n==='clr'){const vals=a.values||a.Values||[];if(vals.length)return vals.map(v=>v.value||v.Value||v.identifier||v).join('/')}}}
+        const attrs=e.Attributes||e.attributes||e.definingAttributes||[];
+        if(Array.isArray(attrs)){for(const a of attrs){const n=(a.name||a.identifier||'').toLowerCase();if(n==='color'||n==='colour'||n==='clr'||n==='asgswatchcolor'){const vals=a.values||a.Values||[];if(vals.length)return vals.map(v=>v.values||v.value||v.Value||v.identifier||v).join('/')}}}
+        return '';
+      };
+      // Helper: extract size from SKU attributes
+      const getSize=(e)=>{
+        const attrs=e.Attributes||e.attributes||e.definingAttributes||[];
+        if(Array.isArray(attrs)){for(const a of attrs){const id=(a.identifier||'').toLowerCase();const n=(a.name||'').toLowerCase();if(id==='asgswatchsize'||n==='available sizes'||n==='size'){const vals=a.values||a.Values||[];if(vals.length)return(vals[0].values||vals[0].value||vals[0].identifier||'').trim()}}}
         return '';
       };
       // Collect unique base part numbers from search results (limit to first 10)
@@ -3095,31 +3112,50 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         if(!seenBase.has(baseSku)){seenBase.add(baseSku);baseSkus.push({baseSku,entry:e})}
       }
       // Fetch full product details for each base SKU (prices, colors, child SKUs)
+      // Try byPartNumber first, fall back to byId using uniqueID from search result
       const detailPromises=baseSkus.slice(0,10).map(async({baseSku,entry})=>{
         try{const d=await momentecGetProductByPartNumber(baseSku);return{baseSku,entry,detail:d?.CatalogEntryView?.[0]||null}}
-        catch(e){return{baseSku,entry,detail:null}}
+        catch(e){
+          // byPartNumber often 404s — try byId using the uniqueID from search
+          const uid=entry.uniqueID;
+          if(uid){try{const d2=await momentecGetProductById(uid);return{baseSku,entry,detail:d2?.CatalogEntryView?.[0]||null}}catch(e2){}}
+          return{baseSku,entry,detail:null}
+        }
       });
       const details=await Promise.all(detailPromises);
       if(gen!==mtSearchGen.current)return;// stale
+      // Momentec dealer discount (15% off wholesale)
+      const mtVendor=vendorList.find(v=>v.api_provider==='momentec'||v.name==='Momentec');
+      const mtDiscount=mtVendor?.api_price_discount||0.15;
+      const mtCost=p=>rQ(p*(1-mtDiscount));
       // Build style map from detailed results
       const styleMap={};
       for(const{baseSku,entry,detail}of details){
         const src=detail||entry;// prefer detail if available
-        const price=getPrice(src);
-        styleMap[baseSku]={sku:baseSku,styleName:src.name||entry.name||baseSku,brandName:src.manufacturer||entry.manufacturer||'Momentec',
+        const price=mtCost(getPrice(src));
+        const mtBackImg=src.fullImageBack||src.backImage||entry.fullImageBack||entry.backImage||'';
+        // Build color→swatch image map from top-level Attributes (per-color product images aren't available from API)
+        const colorImgMap={};
+        const topAttrs=src.Attributes||src.attributes||[];
+        if(Array.isArray(topAttrs)){for(const a of topAttrs){const aId=(a.identifier||'').toLowerCase();if(aId==='asgswatchcolor'||aId==='asgswatchcolorfamily'||(a.name||'').toLowerCase()==='color'||(a.name||'').toLowerCase()==='colorfamily'){const vals=a.values||a.Values||[];for(const v of vals){const cName=v.values||v.value||v.identifier||'';const ext=v.extendedValue||[];const imgEntry=ext.find(e=>e.key==='Image1Path')||ext.find(e=>e.key==='Image1');if(cName&&imgEntry){const imgPath=imgEntry.value||'';if(imgPath&&!imgPath.includes('color1.jpg'))colorImgMap[cName]='https://www.momentecbrands.com/wcsstore/'+imgPath}}}}}
+        styleMap[baseSku]={sku:baseSku,styleName:src.title||src.name||entry.name||baseSku,brandName:src.manufacturer||entry.manufacturer||'Momentec',
           styleImage:src.thumbnail||src.fullImage||entry.thumbnail||entry.fullImage||'',
+          styleBackImage:mtBackImg,
           colors:{},_mtId:src.uniqueID||entry.uniqueID,_mtPrice:price>0?price:0};
         const style=styleMap[baseSku];
-        // Process child sKUs from detailed response for colors
-        const skus=src.sKUs||detail?.sKUs||[];
+        // Process child SKUs from detailed response for colors (HCL Commerce uses both SKUs and sKUs casing)
+        const skus=src.SKUs||src.sKUs||detail?.SKUs||detail?.sKUs||[];
         if(skus.length){
           for(const sk of skus){
-            const skPrice=getPrice(sk);const skColor=getColor(sk)||'Default';
-            const skImg=sk.thumbnail||sk.fullImage||'';
+            const skPrice=mtCost(getPrice(sk));const skColor=getColor(sk)||'Default';const skSize=getSize(sk);
+            const skImg=sk.thumbnail||sk.fullImage||colorImgMap[skColor]||'';
+            const skBackImg=sk.fullImageBack||sk.backImage||'';
             if(!style.colors[skColor]){
-              style.colors[skColor]={colorName:skColor,sku:sk.partNumber||baseSku,piecePrice:skPrice,customerPrice:skPrice,
-                colorFrontImage:skImg||style.styleImage,sizes:[],totalQty:0};
-            }else{const c=style.colors[skColor];if(skPrice>0&&(c.customerPrice===0||skPrice<c.customerPrice)){c.customerPrice=skPrice;c.piecePrice=skPrice}if(skImg&&!c.colorFrontImage)c.colorFrontImage=skImg}
+              style.colors[skColor]={colorName:skColor,sku:sk.partNumber||sk.SKUPartNumber||baseSku,piecePrice:skPrice,customerPrice:skPrice,
+                colorFrontImage:skImg||style.styleImage,colorBackImage:skBackImg||style.styleBackImage||'',sizes:[],totalQty:0};
+            }else{const c=style.colors[skColor];if(skPrice>0&&(c.customerPrice===0||skPrice<c.customerPrice)){c.customerPrice=skPrice;c.piecePrice=skPrice}if(skImg&&!c.colorFrontImage)c.colorFrontImage=skImg;if(skBackImg&&!c.colorBackImage)c.colorBackImage=skBackImg}
+            // Add size entry with per-size price (sizes like 3XL+ are more expensive)
+            if(skSize){const c=style.colors[skColor];if(!c.sizes.find(s=>s.sizeName===skSize)){c.sizes.push({sizeName:skSize,qty:0,price:skPrice})}}
             if(skPrice>0&&(style._mtPrice===0||skPrice<style._mtPrice))style._mtPrice=skPrice;
           }
         }
@@ -3127,7 +3163,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         if(!Object.keys(style.colors).length){
           const colorName=getColor(src)||'Default';
           style.colors[colorName]={colorName,sku:baseSku,piecePrice:price,customerPrice:price,
-            colorFrontImage:style.styleImage,sizes:[],totalQty:0};
+            colorFrontImage:colorImgMap[colorName]||style.styleImage,colorBackImage:style.styleBackImage||'',sizes:[],totalQty:0};
         }
       }
       // Convert colors map to array
@@ -3172,7 +3208,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const catMatch=products.find(p=>p.sku===style.sku&&(!color.colorName||p.color===color.colorName))||products.find(p=>p.sku===style.sku);
     const catSizes=catMatch?.available_sizes||[];
     // SanMar provides availableSizes as comma-separated string
-    const smSizes=style._availSizes?style._availSizes.split(/[,;]\s*/).map(s=>s.trim()).filter(Boolean):[];
+    const smSizes=style._availSizes?style._availSizes.split(/[,;]\s*/).map(s=>normSzName(s.trim())).filter(Boolean):[];
     // Merge all sources; ensure standard sizes are always included for apparel
     const STD_SIZES=['S','M','L','XL','2XL'];
     let availSizes=[...new Set([...apiSizes,...catSizes,...smSizes,...STD_SIZES])];
@@ -3185,7 +3221,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       unit_sell:sell,available_sizes:availSizes.length?availSizes:['S','M','L','XL','2XL'],
       sizes:{},decorations:isE?[{kind:'art',art_file_id:'__tbd',art_tbd_type:'screen_print',position:'',sell_override:0}]:[],
       is_custom:false,[liveFlag]:true,
-      _colorImage:color.colorFrontImage||style.styleImage||''
+      _colorImage:color.colorFrontImage||style.styleImage||'',
+      _colorBackImage:color.colorBackImage||''
     };
     sv('items',[...o.items,newItem]);
     const sizePrice={};color.sizes.forEach(s=>{sizePrice[s.sizeName]=s.price||cost});
@@ -3416,7 +3453,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     }
   },[syncJobs]);// eslint-disable-line
 
-  const fp=products.filter(p=>{if(!pS)return true;const q=pS.toLowerCase();return p.sku.toLowerCase().includes(q)||p.name.toLowerCase().includes(q)||p.brand?.toLowerCase().includes(q)||p.color?.toLowerCase().includes(q)});
+  const fp=products.filter(p=>{if(!pS||pS.length<2)return false;const q=pS.toLowerCase();return p.sku.toLowerCase().includes(q)||p.name.toLowerCase().includes(q)||p.brand?.toLowerCase().includes(q)||p.color?.toLowerCase().includes(q)});
   const statusFlow=['need_order','waiting_receive','needs_pull','items_received','in_production','ready_to_invoice','complete'];
 
   return(<div>
@@ -6139,7 +6176,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             fulSizes[sz]=Math.min(v,pQ+rQ);
           });
           const prd=products.find(pp=>pp.id===it.product_id||pp.sku===it.sku);
-          return{...gi,sizes,fulSizes,color:safeStr(it.color),brand:safeStr(it.brand),product_id:prd?.id||null,image_url:prd?.image_url||(prd?.images&&prd.images[0])||'',images:prd?.images||[]};
+          return{...gi,sizes,fulSizes,color:safeStr(it.color),brand:safeStr(it.brand),product_id:prd?.id||null,image_url:prd?.image_url||(prd?.images&&prd.images[0])||it._colorImage||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||it._colorBackImage||'',images:prd?.images||[]};
         });
         const allSizes=[...new Set(itemDetails.flatMap(gi=>Object.keys(gi.sizes||{})))];
         const sizeOrder=['YXS','YS','YM','YL','YXL','XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL'];
@@ -8496,7 +8533,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       const j=portalJobView.job;const so=portalJobView.so;
       const af2=safeArt(so).find(a=>a.id===j.art_file_id);
       const mockupFiles2=_filterDisplayable(af2?.mockup_files||af2?.files||[]);
-      const items=(j.items||[]).map(gi=>{const it=safeItems(so)[gi.item_idx];const prd2=prod.find(pp=>pp.id===it?.product_id||pp.sku===it?.sku);return{...gi,brand:it?.brand||'',fullName:safeStr(it?.name)||gi.name,image_url:prd2?.image_url||'',back_image_url:prd2?.back_image_url||''}});
+      const items=(j.items||[]).map(gi=>{const it=safeItems(so)[gi.item_idx];const prd2=prod.find(pp=>pp.id===it?.product_id||pp.sku===it?.sku);return{...gi,brand:it?.brand||'',fullName:safeStr(it?.name)||gi.name,image_url:prd2?.image_url||it?._colorImage||'',back_image_url:prd2?.back_image_url||it?._colorBackImage||''}});
       return<div className="modal-overlay" onClick={()=>setShowPortal(false)}><div className="modal" style={{maxWidth:700,maxHeight:'90vh',overflow:'auto'}} onClick={e=>e.stopPropagation()}>
         <div style={{background:'linear-gradient(135deg,#1e3a5f,#2563eb)',color:'white',padding:'20px 24px',borderRadius:'12px 12px 0 0',position:'relative'}}>
           <button style={{position:'absolute',top:8,left:12,background:'rgba(255,255,255,0.15)',border:'none',color:'white',borderRadius:6,padding:'4px 10px',fontSize:12,cursor:'pointer'}} onClick={()=>setPortalJobView(null)}>← Back</button>
@@ -9847,7 +9884,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     const j=jobView.job;const so=jobView.so;
     const artFile=safeArt(so).find(a=>a.id===j.art_file_id);
     const mockups=_filterDisplayable(artFile?.mockup_files||artFile?.files||[]);
-    const items=(j.items||[]).map(gi=>{const it=safeItems(so)[gi.item_idx];const prd=it?prod.find(pp=>pp.id===it.product_id||pp.sku===it.sku):null;return{...gi,brand:it?.brand||'',fullName:safeStr(it?.name)||gi.name,image_url:prd?.image_url||(prd?.images&&prd.images[0])||''}});
+    const items=(j.items||[]).map(gi=>{const it=safeItems(so)[gi.item_idx];const prd=it?prod.find(pp=>pp.id===it.product_id||pp.sku===it.sku):null;return{...gi,brand:it?.brand||'',fullName:safeStr(it?.name)||gi.name,image_url:prd?.image_url||(prd?.images&&prd.images[0])||it?._colorImage||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||it?._colorBackImage||''}});
     return<div style={{minHeight:'100vh',background:'#f1f5f9',display:'flex',justifyContent:'center',padding:'40px 16px'}}>
       {/* ── Lightbox overlay ── */}
       {lightbox&&<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.85)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center',padding:16}} onClick={()=>setLightbox(null)}>
@@ -13930,7 +13967,7 @@ export default function App(){
             fulSizes[sz]=Math.min(v,picked+rcvd);
           });
           const prd=prod.find(pp=>pp.id===it.product_id||pp.sku===it.sku);
-          return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,fulSizes,product_id:prd?.id||null,image_url:prd?.image_url||(prd?.images&&prd.images[0])||'',images:prd?.images||[]};
+          return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,fulSizes,product_id:prd?.id||null,image_url:prd?.image_url||(prd?.images&&prd.images[0])||it._colorImage||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||it._colorBackImage||'',images:prd?.images||[]};
         }).filter(Boolean);
         const allSizes=SZ_ORD.filter(sz=>itemDetails.some(it=>it.sizes[sz]>0));
         // Parse colors for display — use job's deco_type for labels
@@ -19344,7 +19381,7 @@ export default function App(){
           const sizes={};
           Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{sizes[sz]=v});
           const prd=prod.find(pp=>pp.id===it.product_id||pp.sku===it.sku);
-          return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,image_url:prd?.image_url||(prd?.images&&prd.images[0])||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||'',images:prd?.images||[]};
+          return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,image_url:prd?.image_url||(prd?.images&&prd.images[0])||it._colorImage||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||it._colorBackImage||'',images:prd?.images||[]};
         }).filter(Boolean);
         const allSizes=SZ_ORD.filter(sz=>itemDetails.some(it=>it.sizes[sz]>0));
 
@@ -19545,7 +19582,7 @@ export default function App(){
           const sizes={};
           Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{sizes[sz]=v});
           const prd=prod.find(pp=>pp.id===it.product_id||pp.sku===it.sku);
-          return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,product_id:prd?.id||null,image_url:prd?.image_url||(prd?.images&&prd.images[0])||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||'',images:prd?.images||[]};
+          return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,product_id:prd?.id||null,image_url:prd?.image_url||(prd?.images&&prd.images[0])||it._colorImage||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||it._colorBackImage||'',images:prd?.images||[]};
         }).filter(Boolean);
         const allSizes=SZ_ORD.filter(sz=>itemDetails.some(it=>it.sizes[sz]>0));
 
