@@ -6795,7 +6795,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const allApproved=artIds.every(aid=>{const af2=safeArt(o).find(f=>f.id===aid);return af2&&af2.status==='approved'});
           const allProdFiles=artIds.every(aid=>{const af2=safeArt(o).find(f=>f.id===aid);return af2&&(af2.prod_files||[]).length>0});
           const anyUploaded=artIds.some(aid=>{const af2=safeArt(o).find(f=>f.id===aid);return af2&&(af2.status==='uploaded'||af2.status==='needs_approval')});
-          const artStatus=allApproved&&allProdFiles?'art_complete':allApproved?'production_files_needed':anyUploaded?'waiting_approval':'needs_art';
+          let artStatus=allApproved&&allProdFiles?'art_complete':allApproved?'production_files_needed':anyUploaded?'waiting_approval':'needs_art';
+          // Auto-send to Art Dashboard when activating — artists see it immediately
+          const autoArtRequest=activateAll&&artStatus==='needs_art';
+          if(autoArtRequest)artStatus='art_requested';
           const totalUnits=g.items.reduce((a,it)=>a+it.units,0);
           const positions=[...new Set(g.items.map(it=>it.position))].join(', ');
           newJobs.push({
@@ -6807,12 +6810,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             prod_status:activateAll?'hold':'draft',
             total_units:totalUnits,fulfilled_units:0,split_from:null,
             created_at:new Date().toLocaleDateString(),
+            ...(autoArtRequest?{art_requests:[{id:'AR-'+Date.now()+'-'+gi,artist:'',artist_name:'',instructions:'Auto-requested on send to production',files:[],status:'requested',created_at:new Date().toISOString(),created_by:cu?.name||'System',auto:true}]}:{}),
             items:g.items.map(({item_idx,deco_idx,sku,name,color,units,fulfilled})=>({item_idx,deco_idx,sku,name,color,units,fulfilled:fulfilled||0}))
           });
         });
         const updated={...o,jobs:newJobs,updated_at:new Date().toLocaleString()};
         setO(updated);onSave(updated);setDirty(false);setJobWizard(null);
-        nf(activateAll?'Jobs activated and sent to production!':'Draft jobs saved — activate when ready');
+        const artSent=activateAll?newJobs.filter(j=>j.art_status==='art_requested'&&(j.art_requests||[]).some(r=>r.auto)).length:0;
+        nf(activateAll?(artSent>0?'Jobs activated! '+artSent+' art job'+(artSent!==1?'s':'')+' sent to Art Dashboard':'Jobs activated and sent to production!'):'Draft jobs saved — activate when ready');
       };
 
       // Job Setup Wizard Modal
@@ -6896,8 +6901,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           <span style={{fontSize:12,fontWeight:700,color:'#a16207'}}>{draftJobs.length} draft job{draftJobs.length!==1?'s':''} need review</span>
           <span style={{fontSize:11,color:'#92400e'}}>— Draft jobs won't appear on the production board until activated</span>
           <button className="btn btn-sm" style={{marginLeft:'auto',fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 12px',fontWeight:700}}
-            onClick={()=>{const newJobs=jobs.map(j=>j.prod_status==='draft'||j._draft?{...j,prod_status:'hold',_draft:false}:j);
-              const updated={...o,jobs:newJobs,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);nf('All draft jobs activated!')}}>Activate All</button>
+            onClick={()=>{let artSent=0;const newJobs=jobs.map(j=>{if(j.prod_status!=='draft'&&!j._draft)return j;
+              const activated={...j,prod_status:'hold',_draft:false};
+              if(activated.art_status==='needs_art'){activated.art_status='art_requested';activated.art_requests=[...(activated.art_requests||[]),{id:'AR-'+Date.now()+'-'+j.id,artist:'',artist_name:'',instructions:'Auto-requested on activation',files:[],status:'requested',created_at:new Date().toISOString(),created_by:cu?.name||'System',auto:true}];artSent++}
+              return activated});
+              const updated={...o,jobs:newJobs,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);nf(artSent>0?'Draft jobs activated! '+artSent+' art job'+(artSent!==1?'s':'')+' sent to Art Dashboard':'All draft jobs activated!')}}>Activate All</button>
           <button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 10px',fontWeight:700}} onClick={openJobWizard}>Edit Jobs</button>
         </div>}
         {jobs.length===0&&<div style={{padding:24,textAlign:'center',color:'#94a3b8'}}>No decorations assigned yet. Add artwork to items, then click "Set Up Jobs" to create production jobs.</div>}
