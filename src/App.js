@@ -1842,6 +1842,44 @@ const fetchShipStationRates = async (customer, weight) => {
 };
 
 // ─── OrderMyGear API Integration (via Netlify proxy to avoid CORS) ───
+
+// Extract API path from a full OMG links.next URL (e.g. "https://app.ordermygear.com/v1/orders?page[after]=XYZ" → "/orders?page[after]=XYZ")
+const omgExtractPath = (url) => {
+  if (!url) return null;
+  try {
+    const u = new URL(url);
+    // Strip the /v1 prefix if present to get just the resource path + query
+    const path = u.pathname.replace(/^\/v1/, '') + u.search;
+    return path;
+  } catch {
+    // If not a valid URL, treat as a relative path already
+    return url.startsWith('/') ? url : '/' + url;
+  }
+};
+
+// Fetch all pages from a paginated OMG JSON:API endpoint using links.next
+const omgFetchAllPages = async (endpoint, maxPages = 50) => {
+  let allData = [];
+  let url = endpoint;
+  for (let page = 0; page < maxPages; page++) {
+    const resp = await omgApiCall(url);
+    const data = resp?.data || [];
+    if (data.length === 0) break;
+    allData = allData.concat(data);
+    // Use links.next for pagination (standard JSON:API)
+    const nextUrl = omgExtractPath(resp?.links?.next);
+    if (!nextUrl) break;
+    // Safety: check we're not getting duplicate data
+    if (page > 0 && data[0]?.id && allData.slice(0, -data.length).some(d => d.id === data[0].id)) {
+      console.warn(`[OMG] Duplicate data detected on page ${page + 1}, stopping pagination`);
+      allData = allData.slice(0, -data.length); // remove duplicates
+      break;
+    }
+    url = nextUrl;
+  }
+  return allData;
+};
+
 const omgApiCall = async (endpoint, options = {}, _retries = 0) => {
   try {
     const method = options.method || 'GET';
@@ -10940,43 +10978,37 @@ export default function App(){
       const saleResource = saleResp?.data || { id: omgId, attributes: {} };
       console.log('[OMG] Sale detail attributes:', Object.keys(saleResource.attributes || {}));
 
-      // Fetch all orders via cursor pagination, then filter to this sale
-      let allOrders = [];
+      // Fetch orders for this sale — try filtered endpoint first, fall back to fetching all
+      let orders = [];
       try {
-        let cursor = null;
-        for (let batch = 0; batch < 50; batch++) {
-          const url = cursor ? `/orders?page[after]=${cursor}` : '/orders';
-          const resp = await omgApiCall(url);
-          const data = resp?.data || [];
-          if (data.length === 0) break;
-          allOrders = allOrders.concat(data);
-          const lastItem = data[data.length - 1];
-          const nextCursor = lastItem?.meta?.page?.cursor;
-          if (!nextCursor || data.length < 100) break;
-          cursor = nextCursor;
+        // Try filtering by sale_id directly (avoids fetching all orders)
+        let filtered = false;
+        for (const filterParam of [`filter[sale_id]=${omgId}`, `filter[sale]=${omgId}`]) {
+          try {
+            const testResp = await omgApiCall(`/orders?${filterParam}`);
+            const testData = testResp?.data || [];
+            if (testData.length > 0 || !testResp?.error) {
+              orders = await omgFetchAllPages(`/orders?${filterParam}`);
+              filtered = true;
+              console.log(`[OMG] Fetched ${orders.length} orders for sale ${omgId} via ${filterParam}`);
+              break;
+            }
+          } catch { /* filter not supported, try next */ }
+        }
+        // Fallback: fetch all orders and filter client-side
+        if (!filtered) {
+          const allOrders = await omgFetchAllPages('/orders');
+          orders = allOrders.filter(o => o.relationships?.sale?.data?.id === omgId);
+          console.log(`[OMG] Found ${orders.length} orders for ${omgId} (from ${allOrders.length} total)`);
         }
       } catch (e) { console.warn('[OMG] Could not fetch orders:', e.message); }
-      const orders = allOrders.filter(o => o.relationships?.sale?.data?.id === omgId);
-      console.log(`[OMG] Found ${orders.length} orders for ${omgId} (from ${allOrders.length} total)`);
 
       // Fetch order_products for dollar amounts
       let orderProducts = [];
       if (orders.length > 0) {
         const orderIds = new Set(orders.map(o => o.id));
         try {
-          let cursor = null;
-          let allOPs = [];
-          for (let batch = 0; batch < 50; batch++) {
-            const url = cursor ? `/order_products?page[after]=${cursor}` : '/order_products';
-            const resp = await omgApiCall(url);
-            const data = resp?.data || [];
-            if (data.length === 0) break;
-            allOPs = allOPs.concat(data);
-            const lastItem = data[data.length - 1];
-            const nextCursor = lastItem?.meta?.page?.cursor;
-            if (!nextCursor || data.length < 100) break;
-            cursor = nextCursor;
-          }
+          const allOPs = await omgFetchAllPages('/order_products');
           orderProducts = allOPs.filter(op => orderIds.has(op.relationships?.order?.data?.id));
           console.log(`[OMG] Found ${orderProducts.length} order_products for this sale (from ${allOPs.length} total)`);
         } catch (e) { console.warn('[OMG] Could not fetch order_products:', e.message); }
@@ -11384,81 +11416,13 @@ export default function App(){
         const incTypes = [...new Set((omgStoresData.included || []).map(i => i.type))];
         console.log('[OMG] Included resource types:', incTypes);
       }
-      // Fetch ALL orders using cursor-based pagination
+      // Fetch ALL orders using links.next pagination (standard JSON:API)
       let allOrders = [];
       try {
-        // First batch — no cursor
-        const firstResp = await omgApiCall('/orders');
-        const firstBatch = firstResp?.data || [];
-        allOrders = firstBatch;
-        if (firstBatch.length > 0) {
-          console.log('[OMG] Sample order attrs:', Object.keys(firstBatch[0].attributes || {}));
-          console.log('[OMG] Sample order rels:', Object.keys(firstBatch[0].relationships || {}));
-          // Log top-level response keys for pagination clues
-          console.log('[OMG] Orders response keys:', Object.keys(firstResp || {}));
-          if (firstResp?.meta) console.log('[OMG] Orders response meta:', JSON.stringify(firstResp.meta));
-          if (firstResp?.links) console.log('[OMG] Orders response links:', JSON.stringify(firstResp.links));
-        }
-        // Try cursor pagination if first batch is full (100 records)
-        if (firstBatch.length >= 100) {
-          const lastCursor = firstBatch[firstBatch.length - 1]?.meta?.page?.cursor;
-          console.log('[OMG] Last cursor from batch 1:', lastCursor);
-          // Try multiple pagination formats
-          const paginationFormats = [
-            `/orders?page[after]=${lastCursor}`,
-            `/orders?cursor=${lastCursor}`,
-            `/orders?after=${lastCursor}`,
-            `/orders?page[cursor]=${lastCursor}`,
-            `/orders?offset=100`,
-            `/orders?page[offset]=100`,
-            `/orders?page[number]=2`,
-          ];
-          let workingFormat = null;
-          for (const url of paginationFormats) {
-            try {
-              const resp = await omgApiCall(url);
-              const data = resp?.data || [];
-              console.log(`[OMG] Pagination test ${url}: ${data.length} results`);
-              if (data.length > 0) {
-                // Check if these are actually different records
-                const firstId = data[0]?.id;
-                const isDuplicate = firstBatch.some(o => o.id === firstId);
-                if (!isDuplicate) {
-                  workingFormat = url.replace(lastCursor, 'CURSOR').replace('100', 'OFFSET');
-                  allOrders = allOrders.concat(data);
-                  console.log(`[OMG] Pagination works with: ${workingFormat}`);
-                  // Continue paginating with this format
-                  if (data.length >= 100) {
-                    let nextCursor = data[data.length - 1]?.meta?.page?.cursor;
-                    let offset = 200;
-                    for (let page = 2; page < 50; page++) {
-                      let nextUrl;
-                      if (workingFormat.includes('CURSOR') && nextCursor) {
-                        nextUrl = workingFormat.replace('CURSOR', nextCursor);
-                      } else if (workingFormat.includes('OFFSET')) {
-                        nextUrl = workingFormat.replace('OFFSET', String(offset));
-                        offset += 100;
-                      } else break;
-                      try {
-                        const nextResp = await omgApiCall(nextUrl);
-                        const nextData = nextResp?.data || [];
-                        if (nextData.length === 0) break;
-                        allOrders = allOrders.concat(nextData);
-                        nextCursor = nextData[nextData.length - 1]?.meta?.page?.cursor;
-                        if (nextData.length < 100) break;
-                      } catch { break; }
-                    }
-                  }
-                  break;
-                } else {
-                  console.log(`[OMG] ${url}: returned duplicate data`);
-                }
-              }
-            } catch (e) {
-              console.log(`[OMG] Pagination failed: ${url} — ${e.message}`);
-            }
-          }
-          if (!workingFormat) console.warn('[OMG] No pagination format worked — limited to 100 orders');
+        allOrders = await omgFetchAllPages('/orders');
+        if (allOrders.length > 0) {
+          console.log('[OMG] Sample order attrs:', Object.keys(allOrders[0].attributes || {}));
+          console.log('[OMG] Sample order rels:', Object.keys(allOrders[0].relationships || {}));
         }
         console.log(`[OMG] Fetched ${allOrders.length} total orders`);
       } catch (e) {
@@ -11468,53 +11432,11 @@ export default function App(){
       // Also fetch order_products for dollar amounts (orders have no price data)
       let allOrderProducts = [];
       try {
-        const firstResp = await omgApiCall('/order_products');
-        allOrderProducts = firstResp?.data || [];
+        allOrderProducts = await omgFetchAllPages('/order_products');
         if (allOrderProducts.length > 0) {
           console.log('[OMG] Sample order_product attrs:', Object.keys(allOrderProducts[0].attributes || {}));
           console.log('[OMG] Sample order_product attr values:', JSON.stringify(allOrderProducts[0].attributes));
           console.log('[OMG] Sample order_product rels:', Object.keys(allOrderProducts[0].relationships || {}));
-          if (firstResp?.links) console.log('[OMG] Order_products links:', JSON.stringify(firstResp.links));
-        }
-        // Paginate using same approach as orders
-        if (allOrderProducts.length >= 100) {
-          const lastCursor = allOrderProducts[allOrderProducts.length - 1]?.meta?.page?.cursor;
-          // Try formats that worked for orders, plus fallbacks
-          const formats = [
-            lastCursor && `/order_products?page[after]=${lastCursor}`,
-            `/order_products?offset=100`,
-            lastCursor && `/order_products?cursor=${lastCursor}`,
-          ].filter(Boolean);
-          for (const url of formats) {
-            try {
-              const resp = await omgApiCall(url);
-              const data = resp?.data || [];
-              if (data.length > 0 && !allOrderProducts.some(o => o.id === data[0].id)) {
-                allOrderProducts = allOrderProducts.concat(data);
-                console.log(`[OMG] Order_products page 2: ${data.length} via ${url}`);
-                // Continue paginating
-                let nextCursor = data[data.length - 1]?.meta?.page?.cursor;
-                let offset = 200;
-                for (let p = 2; p < 50 && data.length >= 100; p++) {
-                  const isOffset = url.includes('offset');
-                  const nextUrl = isOffset
-                    ? `/order_products?offset=${offset}`
-                    : nextCursor ? url.replace(lastCursor, nextCursor) : null;
-                  if (!nextUrl) break;
-                  try {
-                    const r = await omgApiCall(nextUrl);
-                    const d = r?.data || [];
-                    if (d.length === 0) break;
-                    allOrderProducts = allOrderProducts.concat(d);
-                    nextCursor = d[d.length - 1]?.meta?.page?.cursor;
-                    offset += 100;
-                    if (d.length < 100) break;
-                  } catch { break; }
-                }
-                break;
-              }
-            } catch (e) { console.log(`[OMG] order_products pagination: ${url} — ${e.message}`); }
-          }
         }
         console.log(`[OMG] Fetched ${allOrderProducts.length} total order_products`);
       } catch (e) {
