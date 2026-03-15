@@ -299,6 +299,29 @@ export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,
   // ─── HELPER: round to quarter ───
   const rQ=v=>Math.round(v*4)/4;
 
+  // ─── DECORATION CONSTANTS ───
+  const POSITIONS=['Front Center','Back Center','Left Chest','Right Chest','Left Sleeve','Right Sleeve','Left Leg','Right Leg','Nape','Other'];
+  const DECO_KINDS=[{k:'art',label:'Art / Print',color:'#3b82f6'},{k:'numbers',label:'Numbers',color:'#22c55e'},{k:'names',label:'Names',color:'#f59e0b'},{k:'outside_deco',label:'Outside Deco',color:'#7c3aed'}];
+  const NUM_METHODS=[{k:'heat_transfer',l:'Heat Transfer'},{k:'embroidery',l:'Embroidery'},{k:'screen_print',l:'Screen Print'}];
+  const OUTSIDE_TYPES=[{k:'embroidery',l:'Embroidery'},{k:'screen_print',l:'Screen Print'},{k:'dtf',l:'DTF'},{k:'heat_transfer',l:'Heat Transfer'},{k:'sublimation',l:'Sublimation'},{k:'vinyl',l:'Vinyl'}];
+
+  // ─── DECORATION HELPERS ───
+  const newDeco=(kind)=>{
+    if(kind==='art')return{kind:'art',position:'Front Center',art_file_id:null,art_tbd_type:'screen_print',tbd_colors:1,sell_override:null};
+    if(kind==='numbers')return{kind:'numbers',position:'Back Center',num_method:'heat_transfer',num_size:'4"',two_color:false,front_and_back:false,sell_override:null,roster:{}};
+    if(kind==='names')return{kind:'names',position:'Back Center',sell_each:6,cost_each:3,sell_override:null,names:{}};
+    return{kind:'outside_deco',position:'Front Center',vendor:'',deco_type:'embroidery',cost_each:0,sell_each:0,notes:'',sell_override:null};
+  };
+  const addDecoToItem=(idx,kind)=>{
+    setNewEst(e=>{const items=[...e.items];const it={...items[idx],decorations:[...(items[idx].decorations||[]),newDeco(kind)]};items[idx]=it;return{...e,items}});
+  };
+  const updateDeco=(itemIdx,decoIdx,key,val)=>{
+    setNewEst(e=>{const items=[...e.items];const decos=[...(items[itemIdx].decorations||[])];decos[decoIdx]={...decos[decoIdx],[key]:val};items[itemIdx]={...items[itemIdx],decorations:decos};return{...e,items}});
+  };
+  const removeDeco=(itemIdx,decoIdx)=>{
+    setNewEst(e=>{const items=[...e.items];items[itemIdx]={...items[itemIdx],decorations:(items[itemIdx].decorations||[]).filter((_,i)=>i!==decoIdx)};return{...e,items}});
+  };
+
   // ─── NEW ESTIMATE FORM ───
   const startNewEstimate=()=>{
     setNewEst({customer_id:null,memo:'',items:[]});
@@ -386,6 +409,9 @@ export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,
                         <div key={sz} className="mp-size-chip"><span className="mp-size-label">{sz}</span><span className="mp-size-qty">{v}</span></div>)}
                     </div>}
                     {qty===0&&<div style={{fontSize:12,color:'#d97706',marginTop:4}}>Tap to set sizes</div>}
+                    {(it.decorations||[]).length>0&&<div style={{display:'flex',gap:4,marginTop:4,flexWrap:'wrap'}}>
+                      {(it.decorations||[]).map((d,di)=>{const dk=DECO_KINDS.find(x=>x.k===d.kind);return<span key={di} style={{fontSize:10,fontWeight:700,padding:'2px 6px',borderRadius:6,background:dk?.color+'20',color:dk?.color}}>{d.position} · {dk?.label}</span>})}
+                    </div>}
                   </div>
                   <div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:4}}>
                     <div style={{fontWeight:700}}>{qty} pcs</div>
@@ -442,6 +468,104 @@ export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,
           <div style={{marginTop:16,display:'flex',justifyContent:'space-between',alignItems:'center'}}>
             <div style={{fontSize:14,fontWeight:700}}>Total: {totalQty} pcs</div>
             {item.unit_sell>0&&<div style={{fontSize:13,color:'#64748b'}}>{fmtMoney(item.unit_sell)} ea · {fmtMoney(totalQty*item.unit_sell)} total</div>}
+          </div>
+          {/* ─── DECORATIONS ─── */}
+          <div style={{marginTop:20,borderTop:'1px solid #e2e8f0',paddingTop:16}}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
+              <div style={{fontSize:14,fontWeight:700}}>Decorations ({(item.decorations||[]).length})</div>
+            </div>
+            {/* Existing decorations */}
+            {(item.decorations||[]).map((d,di)=>{
+              const dk=DECO_KINDS.find(x=>x.k===d.kind)||DECO_KINDS[0];
+              return<div key={di} style={{background:'white',border:'2px solid '+dk.color,borderRadius:12,padding:12,marginBottom:10}}>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
+                  <div style={{fontSize:13,fontWeight:800,color:dk.color}}>{dk.label}</div>
+                  <button onClick={()=>removeDeco(newEstEditItem,di)} style={{background:'none',border:'none',color:'#dc2626',fontSize:11,fontWeight:700,cursor:'pointer',padding:0}}>Remove</button>
+                </div>
+                {/* Position selector */}
+                <div style={{marginBottom:8}}>
+                  <div style={{fontSize:11,fontWeight:600,color:'#64748b',marginBottom:3}}>Position</div>
+                  <select value={d.position||''} onChange={e=>updateDeco(newEstEditItem,di,'position',e.target.value)} style={{width:'100%',padding:'8px 10px',border:'1px solid #e2e8f0',borderRadius:8,fontSize:14,background:'white'}}>
+                    {POSITIONS.map(p=><option key={p} value={p}>{p}</option>)}
+                  </select>
+                </div>
+                {/* ART decoration fields */}
+                {d.kind==='art'&&<>
+                  <div style={{marginBottom:8}}>
+                    <div style={{fontSize:11,fontWeight:600,color:'#64748b',marginBottom:3}}>Type (Art TBD)</div>
+                    <select value={d.art_tbd_type||'screen_print'} onChange={e=>updateDeco(newEstEditItem,di,'art_tbd_type',e.target.value)} style={{width:'100%',padding:'8px 10px',border:'1px solid #e2e8f0',borderRadius:8,fontSize:14,background:'white'}}>
+                      <option value="screen_print">Screen Print</option><option value="embroidery">Embroidery</option><option value="dtf">DTF</option><option value="heat_transfer">Heat Transfer</option>
+                    </select>
+                  </div>
+                  {(d.art_tbd_type==='screen_print'||!d.art_tbd_type)&&<div style={{marginBottom:8}}>
+                    <div style={{fontSize:11,fontWeight:600,color:'#64748b',marginBottom:3}}>Colors</div>
+                    <div style={{display:'flex',gap:6}}>{[1,2,3,4,5].map(n=><button key={n} onClick={()=>updateDeco(newEstEditItem,di,'tbd_colors',n)} style={{flex:1,padding:'8px 0',border:'1px solid '+(d.tbd_colors===n?'#3b82f6':'#e2e8f0'),borderRadius:8,background:d.tbd_colors===n?'#dbeafe':'white',fontWeight:700,fontSize:14,cursor:'pointer',color:d.tbd_colors===n?'#1e40af':'#334155'}}>{n}</button>)}</div>
+                  </div>}
+                </>}
+                {/* NUMBERS decoration fields */}
+                {d.kind==='numbers'&&<>
+                  <div style={{marginBottom:8}}>
+                    <div style={{fontSize:11,fontWeight:600,color:'#64748b',marginBottom:3}}>Method</div>
+                    <select value={d.num_method||'heat_transfer'} onChange={e=>updateDeco(newEstEditItem,di,'num_method',e.target.value)} style={{width:'100%',padding:'8px 10px',border:'1px solid #e2e8f0',borderRadius:8,fontSize:14,background:'white'}}>
+                      {NUM_METHODS.map(m=><option key={m.k} value={m.k}>{m.l}</option>)}
+                    </select>
+                  </div>
+                  <div style={{marginBottom:8}}>
+                    <div style={{fontSize:11,fontWeight:600,color:'#64748b',marginBottom:3}}>Size</div>
+                    <input value={d.num_size||''} onChange={e=>updateDeco(newEstEditItem,di,'num_size',e.target.value)} placeholder='e.g. 4"' style={{width:'100%',padding:'8px 10px',border:'1px solid #e2e8f0',borderRadius:8,fontSize:14,boxSizing:'border-box'}}/>
+                  </div>
+                  <div style={{display:'flex',gap:12}}>
+                    <label style={{display:'flex',alignItems:'center',gap:6,fontSize:13}}><input type="checkbox" checked={!!d.two_color} onChange={e=>updateDeco(newEstEditItem,di,'two_color',e.target.checked)}/> 2-Color</label>
+                    <label style={{display:'flex',alignItems:'center',gap:6,fontSize:13}}><input type="checkbox" checked={!!d.front_and_back} onChange={e=>updateDeco(newEstEditItem,di,'front_and_back',e.target.checked)}/> Front + Back</label>
+                  </div>
+                </>}
+                {/* NAMES decoration fields */}
+                {d.kind==='names'&&<>
+                  <div style={{display:'flex',gap:8,marginBottom:8}}>
+                    <div style={{flex:1}}>
+                      <div style={{fontSize:11,fontWeight:600,color:'#64748b',marginBottom:3}}>Sell /ea</div>
+                      <input type="number" inputMode="decimal" value={d.sell_each||''} onChange={e=>updateDeco(newEstEditItem,di,'sell_each',parseFloat(e.target.value)||0)} placeholder="6" style={{width:'100%',padding:'8px 10px',border:'1px solid #e2e8f0',borderRadius:8,fontSize:14,boxSizing:'border-box'}}/>
+                    </div>
+                    <div style={{flex:1}}>
+                      <div style={{fontSize:11,fontWeight:600,color:'#64748b',marginBottom:3}}>Cost /ea</div>
+                      <input type="number" inputMode="decimal" value={d.cost_each||''} onChange={e=>updateDeco(newEstEditItem,di,'cost_each',parseFloat(e.target.value)||0)} placeholder="3" style={{width:'100%',padding:'8px 10px',border:'1px solid #e2e8f0',borderRadius:8,fontSize:14,boxSizing:'border-box'}}/>
+                    </div>
+                  </div>
+                </>}
+                {/* OUTSIDE DECO decoration fields */}
+                {d.kind==='outside_deco'&&<>
+                  <div style={{marginBottom:8}}>
+                    <div style={{fontSize:11,fontWeight:600,color:'#64748b',marginBottom:3}}>Deco Type</div>
+                    <select value={d.deco_type||'embroidery'} onChange={e=>updateDeco(newEstEditItem,di,'deco_type',e.target.value)} style={{width:'100%',padding:'8px 10px',border:'1px solid #e2e8f0',borderRadius:8,fontSize:14,background:'white'}}>
+                      {OUTSIDE_TYPES.map(t=><option key={t.k} value={t.k}>{t.l}</option>)}
+                    </select>
+                  </div>
+                  <div style={{marginBottom:8}}>
+                    <div style={{fontSize:11,fontWeight:600,color:'#64748b',marginBottom:3}}>Vendor</div>
+                    <input value={d.vendor||''} onChange={e=>updateDeco(newEstEditItem,di,'vendor',e.target.value)} placeholder="e.g. Silver Screen" style={{width:'100%',padding:'8px 10px',border:'1px solid #e2e8f0',borderRadius:8,fontSize:14,boxSizing:'border-box'}}/>
+                  </div>
+                  <div style={{display:'flex',gap:8,marginBottom:8}}>
+                    <div style={{flex:1}}>
+                      <div style={{fontSize:11,fontWeight:600,color:'#64748b',marginBottom:3}}>Cost /ea</div>
+                      <input type="number" inputMode="decimal" value={d.cost_each||''} onChange={e=>updateDeco(newEstEditItem,di,'cost_each',parseFloat(e.target.value)||0)} style={{width:'100%',padding:'8px 10px',border:'1px solid #e2e8f0',borderRadius:8,fontSize:14,boxSizing:'border-box'}}/>
+                    </div>
+                    <div style={{flex:1}}>
+                      <div style={{fontSize:11,fontWeight:600,color:'#64748b',marginBottom:3}}>Sell /ea</div>
+                      <input type="number" inputMode="decimal" value={d.sell_each||''} onChange={e=>updateDeco(newEstEditItem,di,'sell_each',parseFloat(e.target.value)||0)} style={{width:'100%',padding:'8px 10px',border:'1px solid #e2e8f0',borderRadius:8,fontSize:14,boxSizing:'border-box'}}/>
+                    </div>
+                  </div>
+                  <div>
+                    <div style={{fontSize:11,fontWeight:600,color:'#64748b',marginBottom:3}}>Notes</div>
+                    <input value={d.notes||''} onChange={e=>updateDeco(newEstEditItem,di,'notes',e.target.value)} placeholder="Optional notes..." style={{width:'100%',padding:'8px 10px',border:'1px solid #e2e8f0',borderRadius:8,fontSize:14,boxSizing:'border-box'}}/>
+                  </div>
+                </>}
+              </div>})}
+            {/* Add decoration buttons */}
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
+              {DECO_KINDS.map(dk=><button key={dk.k} onClick={()=>addDecoToItem(newEstEditItem,dk.k)} style={{display:'flex',alignItems:'center',justifyContent:'center',gap:6,padding:'10px 8px',border:'2px dashed '+dk.color,borderRadius:10,background:'white',color:dk.color,fontWeight:700,fontSize:12,cursor:'pointer'}}>
+                <MIcon name="plus" size={14}/> {dk.label}
+              </button>)}
+            </div>
           </div>
         </div>
       </div>;
