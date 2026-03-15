@@ -5149,8 +5149,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         // Expected shipping = what the rep quoted on the SO (% of rev or flat $)
         const quotedShipRev=costLines.filter(l=>l.category==='Blanks'||l.category==='Outside Deco'||l.category==='In-House Deco').reduce((a,l)=>a+l.expected,0);
         const quotedShip=o.shipping_type==='pct'?totals.rev*(o.shipping_value||0)/100:safeNum(o.shipping_value||0);
-        if(shipCostVal>0||quotedShip>0)costLines.push({category:'Shipping',sku:'—',name:'Outbound Shipping (ShipStation)',vendor:'ShipStation',qty:1,expected:quotedShip,actual:shipCostVal,poCount:0,poIds:'',allReceived:true});
-        if(freightVal>0)costLines.push({category:'Freight',sku:'—',name:'Inbound Freight (Supplier)',vendor:'Supplier',qty:1,expected:freightVal,actual:freightVal,poCount:0,poIds:'',allReceived:true});
+        if(shipCostVal>0||quotedShip>0||freightVal>0)costLines.push({category:'Shipping',sku:'—',name:'Outbound Shipping (ShipStation)',vendor:'ShipStation',qty:1,expected:quotedShip,actual:shipCostVal,poCount:0,poIds:'',allReceived:true,isShipping:true});
+        if(freightVal>0)costLines.push({category:'Shipping',sku:'—',name:'Inbound Freight (Supplier)',vendor:'Supplier',qty:1,expected:freightVal,actual:freightVal,poCount:0,poIds:'',allReceived:true,isShipping:true});
         const cats={};costLines.forEach(l=>{if(!cats[l.category])cats[l.category]={expected:0,actual:0};cats[l.category].expected+=l.expected;cats[l.category].actual+=l.actual});
 
         return<div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between'}}>
@@ -5188,8 +5188,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <td style={{fontSize:11,color:'#64748b'}}>{l.vendor}</td>
                 <td style={{textAlign:'right',fontWeight:600}}>{l.qty}</td>
                 <td style={{textAlign:'right'}}>${l.expected.toFixed(2)}</td>
-                <td style={{textAlign:'right',fontWeight:700,color:l.actual>0?'#0f172a':'#94a3b8'}}>{l.actual>0?'$'+l.actual.toFixed(2):'—'}</td>
-                <td style={{textAlign:'right',fontWeight:700,color:diff>0?'#dc2626':diff<0?'#166534':'#94a3b8'}}>{l.poCount>0?(diff>0?'+':diff<0?'-':'')+'$'+Math.abs(diff).toFixed(2):'—'}</td>
+                <td style={{textAlign:'right',fontWeight:700,color:l.actual>0?'#0f172a':'#94a3b8'}}>{l.actual>0?'$'+l.actual.toFixed(2):l.isShipping?'$0.00':'—'}</td>
+                <td style={{textAlign:'right',fontWeight:700,color:diff>0?'#dc2626':diff<0?'#166534':'#94a3b8'}}>{l.poCount>0||l.isShipping?(diff>0?'+':diff<0?'-':'')+'$'+Math.abs(diff).toFixed(2):'—'}</td>
                 <td style={{fontSize:11,color:'#7c3aed',fontWeight:600}}>{l.poIds||<span style={{color:'#94a3b8'}}>No PO</span>}</td>
               </tr>})}</tbody>
             <tfoot><tr style={{fontWeight:800}}>
