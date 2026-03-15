@@ -128,14 +128,14 @@ const _dbLoad = async () => {
     const products=prodRaw.map(p=>{const invRows=prodInv.filter(pi=>pi.product_id===p.id);const _inv={};const _alerts={};invRows.forEach(r=>{_inv[r.size]=r.quantity;if(r.alert_threshold)_alerts[r.size]=r.alert_threshold});const _pimg=_pimgMap[p.id];return{...p,image_url:p.image_url||p.image_front_url||(_pimg&&_pimg.front)||'',back_image_url:p.back_image_url||p.image_back_url||(_pimg&&_pimg.back)||'',images:p.images||(_pimg&&_pimg.gallery)||[],_inv,_alerts}});
     // Estimates: attach items (with decorations) and art_files
     const estimates=estRaw.map(est=>{
-      const art_files=estArt.filter(a=>a.estimate_id===est.id).map(a=>({id:a.id,name:a.name,deco_type:a.deco_type,ink_colors:a.ink_colors,thread_colors:a.thread_colors,art_size:a.art_size,art_sizes:a.art_sizes||{},garment_colors:a.garment_colors||{},files:a.files||[],mockup_files:a.mockup_files||[],item_mockups:a.item_mockups||{},prod_files:a.prod_files||[],notes:a.notes,status:a.status,uploaded:a.uploaded}));
+      const art_files=estArt.filter(a=>a.estimate_id===est.id).map(a=>({id:a.id,name:a.name,deco_type:a.deco_type,ink_colors:a.ink_colors,thread_colors:a.thread_colors,art_size:a.art_size,art_sizes:a.art_sizes||{},garment_colors:a.garment_colors||{},color_ways:a.color_ways||[],files:a.files||[],mockup_files:a.mockup_files||[],item_mockups:a.item_mockups||{},prod_files:a.prod_files||[],notes:a.notes,status:a.status,uploaded:a.uploaded}));
       const items=estItems.filter(i=>i.estimate_id===est.id).sort((a,b)=>a.item_index-b.item_index).map(item=>{
         const decorations=estDecos.filter(d=>d.estimate_item_id===item.id).sort((a,b)=>a.deco_index-b.deco_index).map(d=>{const{id:_,estimate_item_id:__,deco_index:___,...rest}=d;if(!rest.art_file_id&&rest.art_tbd_type)rest.art_file_id='__tbd';return rest});
         const{id:_,estimate_id:__,item_index:___,...rest}=item;return{...rest,decorations}});
       return{...est,items,art_files}});
     // Sales Orders: attach items (with decorations, pick_lines, po_lines), art_files, firm_dates, jobs
     const sales_orders=soRaw.map(so=>{
-      const art_files=soArt.filter(a=>a.so_id===so.id).map(a=>({id:a.id,name:a.name,deco_type:a.deco_type,ink_colors:a.ink_colors,thread_colors:a.thread_colors,art_size:a.art_size,art_sizes:a.art_sizes||{},garment_colors:a.garment_colors||{},files:a.files||[],mockup_files:a.mockup_files||[],item_mockups:a.item_mockups||{},prod_files:a.prod_files||[],notes:a.notes,status:a.status,uploaded:a.uploaded}));
+      const art_files=soArt.filter(a=>a.so_id===so.id).map(a=>({id:a.id,name:a.name,deco_type:a.deco_type,ink_colors:a.ink_colors,thread_colors:a.thread_colors,art_size:a.art_size,art_sizes:a.art_sizes||{},garment_colors:a.garment_colors||{},color_ways:a.color_ways||[],files:a.files||[],mockup_files:a.mockup_files||[],item_mockups:a.item_mockups||{},prod_files:a.prod_files||[],notes:a.notes,status:a.status,uploaded:a.uploaded}));
       const firm_dates=soFirm.filter(f=>f.so_id===so.id).map(f=>({item_desc:f.item_desc,date:f.date,approved:f.approved}));
       const jobs=soJobs.filter(j=>j.so_id===so.id).map(j=>{const{so_id:_,...rest}=j;return rest});
       const items=soItems.filter(i=>i.so_id===so.id).sort((a,b)=>a.item_index-b.item_index).map(item=>{
@@ -637,19 +637,19 @@ const _pick=(obj,cols)=>{const r={};cols.forEach(c=>{if(c in obj)r[c]=obj[c]});r
 const _estCols=['id','customer_id','memo','status','created_by','created_at','updated_at','default_markup','shipping_type','shipping_value','ship_to_id','email_status','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history','deleted_at','promo_applied','promo_amount','update_requests'];
 const _soCols=['id','customer_id','estimate_id','memo','status','created_by','created_at','updated_at','expected_date','production_notes','shipping_type','shipping_value','ship_to_id','default_markup','omg_store_id','_shipstation_order_id','_shipping_status','_tracking_number','_carrier','_ship_date','_tracking_url','_shipped','_shipments','_shipping_cost','_shipstation_cost','_inbound_freight','deleted_at','promo_applied','promo_amount','ship_preference','ship_on_date','order_type','expected_ship_date','booking_confirmed','booking_confirmed_at','booking_confirmed_by','booking_alert_days','po_number'];
 const _itemCols=['product_id','sku','name','brand','color','nsa_cost','retail_price','unit_sell','sizes','available_sizes','_colors','no_deco','is_custom','custom_desc','custom_cost','custom_sell','is_promo','_pre_promo_sell','est_qty','size_availability'];
-const _decoCols=['kind','position','type','art_file_id','art_tbd_type','tbd_colors','tbd_stitches','tbd_dtf_size','sell_override','sell_each','cost_each','underbase','two_color','colors','stitches','dtf_size','num_method','num_size','num_size_back','num_font','roster','names','names_list','vendor','deco_type','notes','custom_font_art_id','print_color','front_and_back','reversible','num_qty','name_qty'];
+const _decoCols=['kind','position','type','art_file_id','art_tbd_type','tbd_colors','tbd_stitches','tbd_dtf_size','sell_override','sell_each','cost_each','underbase','two_color','colors','stitches','dtf_size','num_method','num_size','num_size_back','num_font','roster','names','names_list','vendor','deco_type','notes','custom_font_art_id','print_color','front_and_back','reversible','num_qty','name_qty','color_way_id'];
 // Columns that may not exist in production DB / schema cache — stripped on insert retry
 const _itemExtraCols=new Set(['is_promo','_pre_promo_sell','est_qty','size_availability']);
 const _estExtraCols=new Set(['promo_applied','promo_amount','update_requests','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history']);
 const _soExtraCols=new Set(['_shipping_cost','_shipstation_cost','_inbound_freight','promo_applied','promo_amount','ship_preference','ship_on_date','order_type','expected_ship_date','booking_confirmed','booking_confirmed_at','booking_confirmed_by','booking_alert_days','po_number']);
-const _decoExtraCols=new Set(['print_color','front_and_back','reversible','num_qty','name_qty','num_font','num_size_back','custom_font_art_id','deco_type','notes','vendor']);
+const _decoExtraCols=new Set(['print_color','front_and_back','reversible','num_qty','name_qty','num_font','num_size_back','custom_font_art_id','deco_type','notes','vendor','color_way_id']);
 // Sanitize decoration data before DB insert — strip UI-only placeholders that would violate constraints
 const _sanitizeDeco=(d)=>{const r={...d};if(r.custom_font_art_id&&r.custom_font_art_id==='pending')r.custom_font_art_id=null;if(r.art_file_id&&r.art_file_id==='__tbd')r.art_file_id=null;return r};
 const _msgCols=['id','so_id','author_id','text','ts','dept','tagged_members','entity_type','entity_id','thread_id'];
 const _msgExtraCols=new Set(['tagged_members','entity_type','entity_id','thread_id']);
-const _artCols=['id','name','deco_type','ink_colors','thread_colors','art_size','art_sizes','garment_colors','files','mockup_files','item_mockups','prod_files','notes','status','uploaded'];
+const _artCols=['id','name','deco_type','ink_colors','thread_colors','art_size','art_sizes','garment_colors','color_ways','files','mockup_files','item_mockups','prod_files','notes','status','uploaded'];
 // Columns that may not exist in art file tables — stripped on retry
-const _artExtraCols=new Set(['art_sizes','garment_colors','item_mockups']);
+const _artExtraCols=new Set(['art_sizes','garment_colors','item_mockups','color_ways']);
 // Columns that may not exist in so_jobs — stripped on retry
 const _jobExtraCols=new Set(['_art_ids','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at','coach_email_opened_at','follow_up_at','sent_history','run_order','run1_done','run2_done']);
 const _jobCols=['id','key','art_file_id','_art_ids','_draft','art_name','deco_type','positions','art_status','item_status','prod_status','total_units','fulfilled_units','split_from','created_at','assigned_machine','assigned_to','ship_method','items','_auto','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at','coach_email_opened_at','follow_up_at','sent_history','run_order','run1_done','run2_done'];
@@ -1268,7 +1268,8 @@ function dP(d,q,artFiles,cq){
       if(tType==='heat_press'||tType==='dtf'){const t=DTF[d.tbd_dtf_size||0];return{sell:d.sell_override||t.sell,cost:t.cost}};
       return{sell:d.sell_override||0,cost:0}}
     const art=artFiles.find(a=>a.id===d.art_file_id);if(art){
-    if(art.deco_type==='screen_print'){const nc=art.ink_colors?art.ink_colors.split('\n').filter(l=>l.trim()).length:1;const u=d.underbase?1+SP.ub:1;const c=rQ(spP(pq,nc,false)*u);return{sell:rT(c*SP.mk),cost:c}}
+    const _cwInkCount=(()=>{if(d.color_way_id&&art.color_ways){const cw=art.color_ways.find(c=>c.id===d.color_way_id);if(cw)return cw.inks.length}return null})();
+    if(art.deco_type==='screen_print'){const nc=_cwInkCount||(art.ink_colors?art.ink_colors.split('\n').filter(l=>l.trim()).length:1);const u=d.underbase?1+SP.ub:1;const c=rQ(spP(pq,nc,false)*u);return{sell:rT(c*SP.mk),cost:c}}
     if(art.deco_type==='embroidery'){const c=emP(art.stitches||8000,pq,false);return{sell:rT(c*EM.mk),cost:c}}
     if(art.deco_type==='dtf'){const t=DTF[art.dtf_size||0];return{sell:d.sell_override||t.sell,cost:t.cost}}}}
   // Legacy/fallback type-based
@@ -3173,7 +3174,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const rmD=(ii,di)=>{uI(ii,'decorations',o.items[ii].decorations.filter((_,i)=>i!==di))};
   // Art files (SO)
   const af=o.art_files||[];
-  const addArt=()=>sv('art_files',[...af,{id:'af'+Date.now(),name:'',deco_type:'screen_print',ink_colors:'',thread_colors:'',art_size:'',files:[],mockup_files:[],prod_files:[],notes:'',status:'waiting_for_art',uploaded:new Date().toLocaleDateString()}]);
+  const addArt=()=>sv('art_files',[...af,{id:'af'+Date.now(),name:'',deco_type:'screen_print',ink_colors:'',thread_colors:'',art_size:'',color_ways:[],files:[],mockup_files:[],prod_files:[],notes:'',status:'waiting_for_art',uploaded:new Date().toLocaleDateString()}]);
   const uArt=(i,k,v)=>sv('art_files',af.map((f,x)=>x===i?{...f,[k]:v}:f));
   const rmArt=i=>sv('art_files',af.filter((_,x)=>x!==i));
 
@@ -3849,8 +3850,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   <div style={{display:'none',position:'absolute',top:40,left:0,width:260,background:'white',border:'1px solid #e2e8f0',borderRadius:8,boxShadow:'0 8px 24px rgba(0,0,0,0.12)',zIndex:50,padding:12}}>
                     <div style={{fontWeight:700,fontSize:13,marginBottom:4}}>{artF.name||'Untitled'}</div>
                     <div style={{fontSize:11,color:'#64748b',marginBottom:4}}>{artF.deco_type?.replace('_',' ')} {artF.art_size&&`· ${artF.art_size}`}</div>
-                    {artF.ink_colors&&<div style={{fontSize:11,marginBottom:2}}><strong>Ink:</strong> {artF.ink_colors.split('\n').filter(l=>l.trim()).join(', ')}</div>}
-                    {artF.thread_colors&&<div style={{fontSize:11,marginBottom:2}}><strong>Thread:</strong> {artF.thread_colors}</div>}
+                    {(artF.color_ways||[]).length>0?<div style={{fontSize:11,marginBottom:2}}><strong>{artF.color_ways.length} Color Way{artF.color_ways.length>1?'s':''}:</strong> {artF.color_ways.map((cw,ci)=>'CW'+(ci+1)+(cw.garment_color?' '+cw.garment_color:'')+' ('+cw.inks.filter(c=>c.trim()).join(', ')+')').join(' · ')}</div>
+                    :artF.ink_colors?<div style={{fontSize:11,marginBottom:2}}><strong>Ink:</strong> {artF.ink_colors.split('\n').filter(l=>l.trim()).join(', ')}</div>
+                    :artF.thread_colors?<div style={{fontSize:11,marginBottom:2}}><strong>Thread:</strong> {artF.thread_colors}</div>:null}
                     <div style={{fontSize:10,color:'#94a3b8',marginBottom:4}}>Files: {artF.files?.join(', ')||'none'}</div>
                     {artF.notes&&<div style={{fontSize:10,color:'#7c3aed'}}>{artF.notes}</div>}
                     <div style={{fontSize:10,marginTop:4,padding:'2px 6px',display:'inline-block',borderRadius:4,background:artF.status==='approved'?'#dcfce7':'#fef3c7',color:artF.status==='approved'?'#166534':'#92400e'}}>{artF.status}</div>
@@ -3868,8 +3870,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   <span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:600}}>Art Needed</span></>}
                   <select className="form-select" style={{width:120,fontSize:12}} value={deco.position} onChange={e=>uD(idx,di,'position',e.target.value)}>{POSITIONS.map(p=><option key={p}>{p}</option>)}</select>
                   {artF&&<><span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:artF.deco_type==='screen_print'?'#dbeafe':artF.deco_type==='embroidery'?'#ede9fe':'#fef3c7',color:artF.deco_type==='screen_print'?'#1e40af':artF.deco_type==='embroidery'?'#6d28d9':'#92400e'}}>{artF.deco_type.replace('_',' ')}</span>
-                    {artF.ink_colors&&<span style={{fontSize:11,color:'#64748b'}}>{artF.ink_colors.split('\n').filter(l=>l.trim()).length} color(s)</span>}
-                    {artF.thread_colors&&<span style={{fontSize:11,color:'#64748b'}}>Thread: {artF.thread_colors}</span>}
+                    {(artF.color_ways||[]).length>0?<select className="form-select" style={{width:160,fontSize:11}} value={deco.color_way_id||''} onChange={e=>uD(idx,di,'color_way_id',e.target.value||null)}>
+                      <option value="">Select CW...</option>{artF.color_ways.map((cw,ci)=><option key={cw.id} value={cw.id}>CW {ci+1}{cw.garment_color?' - '+cw.garment_color:''} ({cw.inks.filter(c=>c.trim()).length}c)</option>)}</select>
+                    :artF.ink_colors?<span style={{fontSize:11,color:'#64748b'}}>{artF.ink_colors.split('\n').filter(l=>l.trim()).length} color(s)</span>
+                    :artF.thread_colors?<span style={{fontSize:11,color:'#64748b'}}>Thread: {artF.thread_colors}</span>:null}
                     {artF.art_size&&<span style={{fontSize:11,color:'#94a3b8'}}>{artF.art_size}</span>}
                     <span style={{fontSize:10,padding:'2px 6px',borderRadius:4,background:artF.status==='approved'?'#dcfce7':'#fef3c7',color:artF.status==='approved'?'#166534':'#92400e'}}>{artF.status}</span></>}
                   <div style={{marginLeft:'auto',display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
@@ -4435,11 +4439,33 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   {/* Decoration Type */}
                   <div style={{marginBottom:6}}><span style={{fontSize:11,fontWeight:600,color:'#64748b',marginRight:6}}>Type:</span>
                     <Bg options={[{value:'screen_print',label:'Screen Print'},{value:'embroidery',label:'Embroidery'},{value:'dtf',label:'DTF'}]} value={art.deco_type} onChange={v=>uArt(i,'deco_type',v)}/></div>
-                  {/* Colors / Thread */}
-                  <div style={{display:'flex',gap:8,marginBottom:6,flexWrap:'wrap'}}>
-                    {(art.deco_type==='screen_print'||art.deco_type==='dtf')&&<div style={{flex:1,minWidth:150}}><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Ink Colors (one per line = color count)</label><textarea className="form-input" rows={3} value={art.ink_colors||''} onChange={e=>uArt(i,'ink_colors',e.target.value)} placeholder={"Navy PMS 289\nGold PMS 124\nWhite"} style={{fontSize:12,fontFamily:'inherit',resize:'vertical'}}/>{art.ink_colors&&<div style={{fontSize:10,color:'#1e40af',marginTop:2}}>{art.ink_colors.split('\n').filter(l=>l.trim()).length} color(s)</div>}</div>}
-                    {art.deco_type==='embroidery'&&<div style={{flex:1,minWidth:150}}><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Thread Colors</label><input className="form-input" value={art.thread_colors||''} onChange={e=>uArt(i,'thread_colors',e.target.value)} placeholder="e.g. Navy 2767, White, Silver 877" style={{fontSize:12}}/></div>}
-                    <div style={{width:120}}><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Size (optional)</label><input className="form-input" value={art.art_size||''} onChange={e=>uArt(i,'art_size',e.target.value)} placeholder='e.g. 12" x 4"' style={{fontSize:12}}/></div>
+                  {/* Size */}
+                  <div style={{display:'flex',gap:8,marginBottom:6,alignItems:'flex-end'}}>
+                    <div style={{width:140}}><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Size (optional)</label><input className="form-input" value={art.art_size||''} onChange={e=>uArt(i,'art_size',e.target.value)} placeholder='e.g. 12" x 4"' style={{fontSize:12}}/></div>
+                  </div>
+                  {/* Color Ways */}
+                  <div style={{marginBottom:6}}>
+                    <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:6}}>
+                      <span style={{fontSize:10,fontWeight:700,color:'#475569'}}>COLOR WAYS</span>
+                      <span style={{fontSize:9,color:'#94a3b8'}}>{art.deco_type==='embroidery'?'Thread colors per garment':'Ink colors per garment'}</span>
+                    </div>
+                    {(art.color_ways||[]).length===0&&!art.ink_colors&&!art.thread_colors&&<div style={{fontSize:11,color:'#94a3b8',marginBottom:6}}>No color ways defined. Add one to specify ink/thread colors per garment color.</div>}
+                    <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:6}}>
+                      {(art.color_ways||[]).map((cw,ci)=><div key={cw.id} style={{flex:'1 1 220px',minWidth:220,maxWidth:360,background:'white',border:'1px solid #e2e8f0',borderRadius:8,padding:10}}>
+                        <div style={{display:'flex',gap:6,alignItems:'center',marginBottom:6}}>
+                          <span style={{fontSize:11,fontWeight:700,color:'#475569'}}>CW {ci+1}</span>
+                          <input className="form-input" value={cw.garment_color||''} onChange={e=>{const cws=[...(art.color_ways||[])];cws[ci]={...cw,garment_color:e.target.value};uArt(i,'color_ways',cws)}} placeholder="Garment color..." style={{fontSize:11,flex:1}}/>
+                          <button onClick={()=>{const cws=(art.color_ways||[]).filter((_,x)=>x!==ci);uArt(i,'color_ways',cws)}} style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',padding:2}} title="Remove CW"><Icon name="trash" size={12}/></button>
+                        </div>
+                        {cw.inks.map((ink,ii)=><div key={ii} style={{display:'flex',gap:4,alignItems:'center',marginBottom:3}}>
+                          <span style={{fontSize:10,color:'#94a3b8',width:14,textAlign:'right'}}>{ii+1}</span>
+                          <input className="form-input" value={ink} onChange={e=>{const cws=[...(art.color_ways||[])];const inks=[...cw.inks];inks[ii]=e.target.value;cws[ci]={...cw,inks};uArt(i,'color_ways',cws)}} placeholder={art.deco_type==='embroidery'?'Thread color...':'Ink color...'} style={{fontSize:11,flex:1}}/>
+                          <button onClick={()=>{const cws=[...(art.color_ways||[])];cws[ci]={...cw,inks:cw.inks.filter((_,x)=>x!==ii)};uArt(i,'color_ways',cws)}} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:2}}><Icon name="x" size={10}/></button>
+                        </div>)}
+                        <button onClick={()=>{const cws=[...(art.color_ways||[])];cws[ci]={...cw,inks:[...cw.inks,'']};uArt(i,'color_ways',cws)}} style={{background:'none',border:'none',cursor:'pointer',fontSize:10,color:'#2563eb',padding:'2px 0'}}>+ Add color</button>
+                      </div>)}
+                    </div>
+                    <button onClick={()=>{const cws=[...(art.color_ways||[]),{id:'cw'+Date.now(),garment_color:'',inks:['']}];uArt(i,'color_ways',cws)}} style={{background:'none',border:'1px dashed #cbd5e1',borderRadius:6,cursor:'pointer',fontSize:11,color:'#475569',padding:'6px 12px',fontWeight:600}}>+ Add Color Way</button>
                   </div>
                   {/* MOCKUP FILES — shared with customer */}
                   <div style={{marginBottom:6}}>
@@ -4516,7 +4542,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     <div style={{width:80,height:80,borderRadius:8,background:art.deco_type==='screen_print'?'#dbeafe':art.deco_type==='embroidery'?'#ede9fe':'#fef3c7',display:'flex',alignItems:'center',justifyContent:'center',fontSize:28,flexShrink:0}}>{art.deco_type==='screen_print'?'🎨':art.deco_type==='embroidery'?'🧵':'🔥'}</div>}
                   <div style={{flex:1}}>
                     <div style={{fontWeight:700,fontSize:14}}>{art.name||'Untitled'}</div>
-                    <div style={{fontSize:11,color:'#64748b'}}>{(art.deco_type||'').replace(/_/g,' ')}{art.ink_colors?' · '+art.ink_colors.split('\n').filter(l=>l.trim()).length+' color(s)':''}{art.thread_colors?' · '+art.thread_colors:''}{art.art_size?' · '+art.art_size:''}</div>
+                    <div style={{fontSize:11,color:'#64748b'}}>{(art.deco_type||'').replace(/_/g,' ')}{(art.color_ways||[]).length>0?' · '+art.color_ways.length+' CW'+(art.color_ways.length>1?'s':''):art.ink_colors?' · '+art.ink_colors.split('\n').filter(l=>l.trim()).length+' color(s)':art.thread_colors?' · '+art.thread_colors:''}{art.art_size?' · '+art.art_size:''}</div>
                     <div style={{fontSize:10,color:'#94a3b8',marginTop:2}}>{art._so_id} — {art._so_memo}</div>
                     {mockups.length>1&&<div style={{display:'flex',gap:4,flexWrap:'wrap',marginTop:6}}>
                       {mockups.slice(1,5).map((f,fi)=>{const fUrl=typeof f==='string'?f:(f?.url||'');return _isImgUrl(fUrl)?<img key={fi} src={fUrl} alt="" style={{width:48,height:48,borderRadius:4,objectFit:'contain',cursor:'pointer',background:'white',border:'1px solid #e2e8f0'}} onClick={e=>{e.stopPropagation();openFile(f)}}/>:null})}
@@ -8096,7 +8122,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     // Helper: save customer art
     const saveCustArt=(newArtFiles)=>{const newCust={...customer,art_files:newArtFiles};setCustLocal(newCust);onRefreshCustomer(newCust)};
     const ownArt=customer.art_files||[];
-    const addCustArt=()=>{const newId='caf'+Date.now();saveCustArt([...ownArt,{id:newId,name:'',deco_type:'screen_print',ink_colors:'',thread_colors:'',art_size:'',files:[],mockup_files:[],prod_files:[],notes:'',status:'waiting_for_art',uploaded:new Date().toLocaleDateString()}]);setCustArtExpanded(newId)};
+    const addCustArt=()=>{const newId='caf'+Date.now();saveCustArt([...ownArt,{id:newId,name:'',deco_type:'screen_print',ink_colors:'',thread_colors:'',art_size:'',color_ways:[],files:[],mockup_files:[],prod_files:[],notes:'',status:'waiting_for_art',uploaded:new Date().toLocaleDateString()}]);setCustArtExpanded(newId)};
     const uCustArt=(i,k,v)=>{saveCustArt(ownArt.map((a,x)=>x===i?{...a,[k]:v}:a))};
     const rmCustArt=(i)=>{saveCustArt(ownArt.filter((_,x)=>x!==i))};
     // Build unified list with source tags + compute usage
@@ -8137,7 +8163,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
                 <div style={{width:56,height:56,borderRadius:6,background:art.deco_type==='screen_print'?'#dbeafe':art.deco_type==='embroidery'?'#ede9fe':'#fef3c7',display:'flex',alignItems:'center',justifyContent:'center',fontSize:22,flexShrink:0}}>{art.deco_type==='screen_print'?'🎨':art.deco_type==='embroidery'?'🧵':'🔥'}</div>}
               <div style={{flex:1}}>
                 <div style={{fontWeight:700,fontSize:13}}>{art.name||'Untitled'}</div>
-                <div style={{fontSize:11,color:'#64748b'}}>{(art.deco_type||'').replace(/_/g,' ')}{art.ink_colors?' · '+art.ink_colors.split('\n').filter(l=>l.trim()).length+' color(s)':''}{art.thread_colors?' · '+art.thread_colors:''}{art.art_size?' · '+art.art_size:''}</div>
+                <div style={{fontSize:11,color:'#64748b'}}>{(art.deco_type||'').replace(/_/g,' ')}{(art.color_ways||[]).length>0?' · '+art.color_ways.length+' CW'+(art.color_ways.length>1?'s':''):art.ink_colors?' · '+art.ink_colors.split('\n').filter(l=>l.trim()).length+' color(s)':art.thread_colors?' · '+art.thread_colors:''}{art.art_size?' · '+art.art_size:''}</div>
                 <div style={{fontSize:10,color:'#94a3b8',marginTop:2}}>{art._src==='so'||art._src==='est'?art._srcLabel:art._src==='parent'?parentCust2?.alpha_tag||parentCust2?.name:''}</div>
               </div>
               <div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:3}}>
@@ -8159,10 +8185,31 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
               </div>
               <div style={{marginBottom:6}}><span style={{fontSize:11,fontWeight:600,color:'#64748b',marginRight:6}}>Type:</span>
                 <Bg options={[{value:'screen_print',label:'Screen Print'},{value:'embroidery',label:'Embroidery'},{value:'dtf',label:'DTF'}]} value={art.deco_type} onChange={v=>uCustArt(oi,'deco_type',v)}/></div>
-              <div style={{display:'flex',gap:8,marginBottom:6,flexWrap:'wrap'}}>
-                {(art.deco_type==='screen_print'||art.deco_type==='dtf')&&<div style={{flex:1,minWidth:150}}><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Ink Colors (one per line)</label><textarea className="form-input" rows={2} value={art.ink_colors||''} onChange={e=>uCustArt(oi,'ink_colors',e.target.value)} placeholder={"Navy PMS 289\nGold PMS 124\nWhite"} style={{fontSize:12,resize:'vertical'}}/>{art.ink_colors&&<div style={{fontSize:10,color:'#1e40af',marginTop:2}}>{art.ink_colors.split('\n').filter(l=>l.trim()).length} color(s)</div>}</div>}
-                {art.deco_type==='embroidery'&&<div style={{flex:1,minWidth:150}}><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Thread Colors</label><input className="form-input" value={art.thread_colors||''} onChange={e=>uCustArt(oi,'thread_colors',e.target.value)} placeholder="e.g. Navy 2767, White" style={{fontSize:12}}/></div>}
-                <div style={{width:120}}><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Size</label><input className="form-input" value={art.art_size||''} onChange={e=>uCustArt(oi,'art_size',e.target.value)} placeholder='e.g. 12" x 4"' style={{fontSize:12}}/></div>
+              <div style={{display:'flex',gap:8,marginBottom:6,alignItems:'flex-end'}}>
+                <div style={{width:140}}><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Size</label><input className="form-input" value={art.art_size||''} onChange={e=>uCustArt(oi,'art_size',e.target.value)} placeholder='e.g. 12" x 4"' style={{fontSize:12}}/></div>
+              </div>
+              {/* Color Ways */}
+              <div style={{marginBottom:6}}>
+                <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:6}}>
+                  <span style={{fontSize:10,fontWeight:700,color:'#475569'}}>COLOR WAYS</span>
+                  <span style={{fontSize:9,color:'#94a3b8'}}>{art.deco_type==='embroidery'?'Thread colors per garment':'Ink colors per garment'}</span>
+                </div>
+                <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:6}}>
+                  {(art.color_ways||[]).map((cw,ci)=><div key={cw.id} style={{flex:'1 1 220px',minWidth:220,maxWidth:360,background:'white',border:'1px solid #e2e8f0',borderRadius:8,padding:10}}>
+                    <div style={{display:'flex',gap:6,alignItems:'center',marginBottom:6}}>
+                      <span style={{fontSize:11,fontWeight:700,color:'#475569'}}>CW {ci+1}</span>
+                      <input className="form-input" value={cw.garment_color||''} onChange={e=>{const cws=[...(art.color_ways||[])];cws[ci]={...cw,garment_color:e.target.value};uCustArt(oi,'color_ways',cws)}} placeholder="Garment color..." style={{fontSize:11,flex:1}}/>
+                      <button onClick={()=>{const cws=(art.color_ways||[]).filter((_,x)=>x!==ci);uCustArt(oi,'color_ways',cws)}} style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',padding:2}} title="Remove CW"><Icon name="trash" size={12}/></button>
+                    </div>
+                    {cw.inks.map((ink,ii)=><div key={ii} style={{display:'flex',gap:4,alignItems:'center',marginBottom:3}}>
+                      <span style={{fontSize:10,color:'#94a3b8',width:14,textAlign:'right'}}>{ii+1}</span>
+                      <input className="form-input" value={ink} onChange={e=>{const cws=[...(art.color_ways||[])];const inks=[...cw.inks];inks[ii]=e.target.value;cws[ci]={...cw,inks};uCustArt(oi,'color_ways',cws)}} placeholder={art.deco_type==='embroidery'?'Thread color...':'Ink color...'} style={{fontSize:11,flex:1}}/>
+                      <button onClick={()=>{const cws=[...(art.color_ways||[])];cws[ci]={...cw,inks:cw.inks.filter((_,x)=>x!==ii)};uCustArt(oi,'color_ways',cws)}} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:2}}><Icon name="x" size={10}/></button>
+                    </div>)}
+                    <button onClick={()=>{const cws=[...(art.color_ways||[])];cws[ci]={...cw,inks:[...cw.inks,'']};uCustArt(oi,'color_ways',cws)}} style={{background:'none',border:'none',cursor:'pointer',fontSize:10,color:'#2563eb',padding:'2px 0'}}>+ Add color</button>
+                  </div>)}
+                </div>
+                <button onClick={()=>{const cws=[...(art.color_ways||[]),{id:'cw'+Date.now(),garment_color:'',inks:['']}];uCustArt(oi,'color_ways',cws)}} style={{background:'none',border:'1px dashed #cbd5e1',borderRadius:6,cursor:'pointer',fontSize:11,color:'#475569',padding:'6px 12px',fontWeight:600}}>+ Add Color Way</button>
               </div>
               <div style={{marginBottom:6}}>
                 <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:4}}><span style={{fontSize:10,fontWeight:700,color:'#2563eb'}}>MOCKUP FILES</span></div>
