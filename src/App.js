@@ -1496,7 +1496,7 @@ const D_V=[
 {id:'v5',name:'Richardson',vendor_type:'api',api_provider:'richardson',nsa_carries_inventory:false,is_active:true,contact_email:'orders@richardsonsports.com',payment_terms:'net30',_oi:0,_it:0,_ac:0,_a3:0,_a6:0,_a9:0},
 {id:'v6',name:'Rawlings',vendor_type:'upload',nsa_carries_inventory:false,is_active:true,payment_terms:'net30',_oi:0,_it:0,_ac:0,_a3:0,_a6:0,_a9:0},
 {id:'v7',name:'Badger',vendor_type:'upload',nsa_carries_inventory:false,is_active:true,payment_terms:'net30',_oi:0,_it:0,_ac:0,_a3:0,_a6:0,_a9:0},
-{id:'v8',name:'Momentec',vendor_type:'api',api_provider:'momentec',nsa_carries_inventory:false,is_active:true,contact_email:'orders@momentecbrands.com',payment_terms:'net30',_oi:0,_it:0,_ac:0,_a3:0,_a6:0,_a9:0},
+{id:'v8',name:'Momentec',vendor_type:'api',api_provider:'momentec',nsa_carries_inventory:false,is_active:true,contact_email:'orders@momentecbrands.com',payment_terms:'net30',api_price_discount:0.15,_oi:0,_it:0,_ac:0,_a3:0,_a6:0,_a9:0},
 ];
 const D_P=[
 {id:'p1',vendor_id:'v1',sku:'JX4453',name:'Adidas Unisex Pregame Tee',brand:'Adidas',color:'Team Power Red/White',category:'Tees',retail_price:55.5,nsa_cost:18.5,available_sizes:['XS','S','M','L','XL','2XL'],is_active:true,_inv:{XS:0,S:7,M:0,L:0,XL:0,'2XL':0},_alerts:{S:15,M:15,L:10,XL:8,'2XL':5,'3XL':1}},
@@ -3117,12 +3117,20 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       });
       const details=await Promise.all(detailPromises);
       if(gen!==mtSearchGen.current)return;// stale
+      // Momentec dealer discount (15% off wholesale)
+      const mtVendor=vendorList.find(v=>v.api_provider==='momentec'||v.name==='Momentec');
+      const mtDiscount=mtVendor?.api_price_discount||0.15;
+      const mtCost=p=>rQ(p*(1-mtDiscount));
       // Build style map from detailed results
       const styleMap={};
       for(const{baseSku,entry,detail}of details){
         const src=detail||entry;// prefer detail if available
-        const price=getPrice(src);
+        const price=mtCost(getPrice(src));
         const mtBackImg=src.fullImageBack||src.backImage||entry.fullImageBack||entry.backImage||'';
+        // Build color→swatch image map from top-level Attributes (per-color product images aren't available from API)
+        const colorImgMap={};
+        const topAttrs=src.Attributes||src.attributes||[];
+        if(Array.isArray(topAttrs)){for(const a of topAttrs){if((a.name||'').toLowerCase()==='color'||a.identifier==='asgswatchcolor'){const vals=a.values||a.Values||[];for(const v of vals){const cName=v.values||v.value||v.identifier||'';const ext=v.extendedValue||[];const imgEntry=ext.find(e=>e.key==='Image1Path')||ext.find(e=>e.key==='Image1');if(cName&&imgEntry){const imgPath=imgEntry.value||'';if(imgPath&&!imgPath.includes('color1.jpg'))colorImgMap[cName]='https://www.momentecbrands.com/wcsstore/'+imgPath}}}}}
         styleMap[baseSku]={sku:baseSku,styleName:src.title||src.name||entry.name||baseSku,brandName:src.manufacturer||entry.manufacturer||'Momentec',
           styleImage:src.thumbnail||src.fullImage||entry.thumbnail||entry.fullImage||'',
           styleBackImage:mtBackImg,
@@ -3132,8 +3140,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const skus=src.SKUs||src.sKUs||detail?.SKUs||detail?.sKUs||[];
         if(skus.length){
           for(const sk of skus){
-            const skPrice=getPrice(sk);const skColor=getColor(sk)||'Default';
-            const skImg=sk.thumbnail||sk.fullImage||'';
+            const skPrice=mtCost(getPrice(sk));const skColor=getColor(sk)||'Default';
+            const skImg=sk.thumbnail||sk.fullImage||colorImgMap[skColor]||'';
             const skBackImg=sk.fullImageBack||sk.backImage||'';
             if(!style.colors[skColor]){
               style.colors[skColor]={colorName:skColor,sku:sk.partNumber||sk.SKUPartNumber||baseSku,piecePrice:skPrice,customerPrice:skPrice,
@@ -3146,7 +3154,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         if(!Object.keys(style.colors).length){
           const colorName=getColor(src)||'Default';
           style.colors[colorName]={colorName,sku:baseSku,piecePrice:price,customerPrice:price,
-            colorFrontImage:style.styleImage,colorBackImage:style.styleBackImage||'',sizes:[],totalQty:0};
+            colorFrontImage:colorImgMap[colorName]||style.styleImage,colorBackImage:style.styleBackImage||'',sizes:[],totalQty:0};
         }
       }
       // Convert colors map to array
