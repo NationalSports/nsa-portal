@@ -7720,7 +7720,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
 }
 
 // CUSTOMER DETAIL
-function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,cu,onOpenSO,onOpenEst,ests,onSaveSO,REPS,prod,onCopy,onDelete,onSavePromoProgram,onDeletePromoProgram,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,onRefreshCustomer}){
+function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,cu,onOpenSO,onOpenEst,ests,onSaveSO,REPS,prod,onCopy,onDelete,onSavePromoProgram,onDeletePromoProgram,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,onRefreshCustomer,nf}){
   const[tab,setTab]=useState('activity');const[oF,setOF]=useState('all');const[sF,setSF]=useState('all');const[rR,setRR]=useState('thisyear');
   const[editContact,setEditContact]=useState(null);const[custLocal,setCustLocal]=useState(initCust);
   const[showInvEmail,setShowInvEmail]=useState(false);const[invEmailMsg,setInvEmailMsg]=useState('');const[showPortal,setShowPortal]=useState(false);
@@ -12264,6 +12264,7 @@ export default function App(){
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const updated={...selC,promo_usage:[...(selC.promo_usage||[]),usage]};setSelC(updated);setCust(prev=>prev.map(c=>c.id===updated.id?updated:c))}}
       onDeletePromoUsage={async(periodId,soId)=>{await _dbDeletePromoUsage(periodId,soId);const updated={...selC,promo_usage:(selC.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(!soId||u.so_id===soId)))};setSelC(updated);setCust(prev=>prev.map(c=>c.id===updated.id?updated:c))}}
       onRefreshCustomer={c=>{setSelC(c);setCust(prev=>prev.map(pp=>pp.id===c.id?c:pp))}}
+      nf={nf}
       onCopy={c=>{const copy={...c,id:'c'+Date.now(),name:c.name+' (Copy)',alpha_tag:'',contacts:(c.contacts||[]).map(ct=>({...ct})),_oe:0,_os:0,_oi:0,_ob:0};setCM({open:true,c:copy})}}
       onDelete={c=>{const hasOrders=aO.some(o=>o.customer_id===c.id);const kids=cust.filter(ch=>ch.parent_id===c.id);if(hasOrders){alert('Cannot delete — this customer has existing orders. Deactivate instead.');return}if(kids.length>0&&!window.confirm(c.name+' has '+kids.length+' sub-account(s) that will also be deleted. Continue?'))return;if(!window.confirm('Delete "'+c.name+'"? This cannot be undone.'))return;const idsToDelete=[c.id,...kids.map(k=>k.id)];setCust(prev=>prev.filter(x=>!idsToDelete.includes(x.id)));idsToDelete.forEach(id=>{if(supabase){supabase.from('customer_contacts').delete().eq('customer_id',id).then(()=>supabase.from('customers').delete().eq('id',id))}});setSelC(null);nf('Customer deleted')}}/>;
     const f=pars.filter(p=>{if(rF!=='all'&&p.primary_rep_id!==rF&&!gK(p.id).some(c=>c.primary_rep_id===rF))return false;if(q){const s=q.toLowerCase();return p.name.toLowerCase().includes(s)||p.alpha_tag?.toLowerCase().includes(s)||gK(p.id).some(c=>c.name.toLowerCase().includes(s))}return true});
