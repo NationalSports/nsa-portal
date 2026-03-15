@@ -15777,6 +15777,7 @@ export default function App(){
   const[commOverrides,setCommOverrides]=useState({});// {invoiceId: true} = admin approved full commission on late invoice
   const[commMonth,setCommMonth]=useState(()=>{const d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')});
   const[commTab,setCommTab]=useState('statement');// statement, pipeline, ytd, byCustomer
+  const[commRep,setCommRep]=useState(()=>cu?.id||'all');// default to logged-in rep
   const toggleWidget=(k)=>setRptWidgets(w=>({...w,[k]:!w[k]}));
 
   function rReports(){
@@ -16774,7 +16775,7 @@ export default function App(){
     const isAdmin=cu.role==='admin';
     const salesReps=REPS.filter(r=>r.role==='rep'||r.role==='admin');
     // Admin sees all reps or picks one; rep only sees themselves
-    const viewRepId=isAdmin?(commTab==='statement'||commTab==='pipeline'||commTab==='ytd'||commTab==='byCustomer'?q||'all':'all'):cu.id;
+    const viewRepId=isAdmin?commRep:cu.id;
 
     // Gross profit calculator for an invoice
     // GP = Invoice Revenue − Garment Cost − Deco Cost − Outbound Shipping (ShipStation) − Inbound Freight (Supplier Bills)
@@ -16828,9 +16829,10 @@ export default function App(){
       });
     };
 
-    // Build pipeline from open/unpaid invoices
+    // Build pipeline from open/unpaid invoices + uninvoiced open SOs
     const buildPipeline=(repFilter)=>{
-      return invs.filter(inv=>{
+      // Open invoices
+      const invLines=invs.filter(inv=>{
         if(inv.status==='paid')return false;
         const so=sos.find(s=>s.id===inv.so_id);
         if(repFilter&&repFilter!=='all')return so?.created_by===repFilter;
@@ -16846,8 +16848,39 @@ export default function App(){
         const expRate=willBeLate?0.15:0.30;
         const expComm=Math.round(gp.gp*expRate*100)/100;
         const balance=safeNum(inv.total)-safeNum(inv.paid);
-        return{inv,so,customer:c,rep,gp,daysOpen,willBeLate,expRate,expComm,balance,repId:so?.created_by};
+        return{inv,so,customer:c,rep,gp,daysOpen,willBeLate,expRate,expComm,balance,repId:so?.created_by,type:'invoice'};
       });
+      // IDs of SOs that already have invoices
+      const invoicedSOIds=new Set(invs.map(i=>i.so_id).filter(Boolean));
+      // Open SOs without any invoice (not yet invoiced)
+      const soLines=sos.filter(so=>{
+        if(so.status==='deleted'||so.status==='cancelled')return false;
+        const st=calcSOStatus(so);
+        if(st==='complete')return false;
+        if(invoicedSOIds.has(so.id))return false;
+        if(repFilter&&repFilter!=='all')return so.created_by===repFilter;
+        return true;
+      }).map(so=>{
+        const c=cust.find(x=>x.id===so.customer_id);
+        const rep=REPS.find(r=>r.id===so.created_by);
+        const _aq={};safeItems(so).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_aq[d.art_file_id]=(_aq[d.art_file_id]||0)+q2}})});
+        const af=safeArt(so);let rev=0,cost=0;
+        safeItems(so).forEach(it=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
+          rev+=qty*safeNum(it.unit_sell);cost+=qty*safeNum(it.nsa_cost);
+          safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);rev+=qty*dp2.sell;cost+=qty*dp2.cost});
+          (it.po_lines||[]).filter(pl=>pl.po_type==='outside_deco').forEach(pl=>{const poQty=Object.entries(pl).filter(([k,v])=>typeof v==='number'&&k!=='unit_cost').reduce((a,[,v])=>a+v,0);cost+=poQty*safeNum(pl.unit_cost)});
+        });
+        const shipRev=so.shipping_type==='pct'?rev*(safeNum(so.shipping_value)/100):safeNum(so.shipping_value);
+        const shipCost=safeNum(so._shipping_cost||so._shipstation_cost||0)||(so._shipments||[]).reduce((a,s)=>a+safeNum(s.shipping_cost||0),0);
+        const inboundFreight=safeNum(so._inbound_freight||0);
+        const totalRev=rev+shipRev;const totalCost=cost+shipCost+inboundFreight;
+        const gp={rev:totalRev,cost:totalCost,gp:Math.round((totalRev-totalCost)*100)/100};
+        const soStatus=calcSOStatus(so);
+        const expRate=0.30;// assume on-time since not yet invoiced
+        const expComm=Math.round(gp.gp*expRate*100)/100;
+        return{inv:null,so,customer:c,rep,gp,daysOpen:null,willBeLate:false,expRate,expComm,balance:totalRev,repId:so.created_by,type:'so',soStatus};
+      });
+      return[...invLines,...soLines];
     };
 
     // Build promo cost lines from SOs with promo_applied
@@ -16880,9 +16913,9 @@ export default function App(){
       });
     };
 
-    const allLines=buildCommLines(isAdmin?q||'all':cu.id);
-    const allPipeline=buildPipeline(isAdmin?q||'all':cu.id);
-    const allPromoLines=buildPromoLines(isAdmin?q||'all':cu.id);
+    const allLines=buildCommLines(viewRepId);
+    const allPipeline=buildPipeline(viewRepId);
+    const allPromoLines=buildPromoLines(viewRepId);
 
     // Filter promo lines by selected month
     const monthPromoLines=allPromoLines.filter(l=>l.soMonth===commMonth);
@@ -16926,7 +16959,7 @@ export default function App(){
       {/* Header with rep selector (admin only) */}
       <div style={{display:'flex',gap:12,marginBottom:16,alignItems:'center',flexWrap:'wrap'}}>
         {isAdmin&&<><span style={{fontSize:12,fontWeight:600,color:'#64748b'}}>Rep:</span>
-          <select className="form-select" style={{width:180}} value={q} onChange={e=>setQ(e.target.value)}>
+          <select className="form-select" style={{width:180}} value={commRep} onChange={e=>setCommRep(e.target.value)}>
             <option value="all">All Reps</option>
             {salesReps.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
           </select></>}
@@ -17002,24 +17035,28 @@ export default function App(){
 
       {/* PIPELINE TAB */}
       {commTab==='pipeline'&&<div className="card">
-        <div className="card-header"><h2>Expected Commissions — Open Invoices</h2><span style={{fontSize:12,color:'#64748b'}}>Outstanding: ${pipeBalance.toLocaleString()}</span></div>
+        <div className="card-header"><h2>Expected Commissions — Pipeline</h2><span style={{fontSize:12,color:'#64748b'}}>Outstanding: ${pipeBalance.toLocaleString()}</span></div>
         <div className="card-body" style={{padding:0}}>
-          {allPipeline.length===0?<div style={{padding:40,textAlign:'center',color:'#94a3b8'}}>No open invoices</div>:
+          {allPipeline.length===0?<div style={{padding:40,textAlign:'center',color:'#94a3b8'}}>No open orders or invoices</div>:
           <table style={{fontSize:12}}><thead><tr>
-            <th>Invoice</th><th>Customer</th>{isAdmin&&<th>Rep</th>}<th style={{textAlign:'right'}}>Balance</th><th style={{textAlign:'right'}}>Est. GP</th><th style={{textAlign:'center'}}>Days Open</th><th style={{textAlign:'center'}}>Est. Rate</th><th style={{textAlign:'right'}}>Expected Comm</th>
+            <th>Order</th><th>Customer</th>{isAdmin&&<th>Rep</th>}<th style={{textAlign:'center'}}>Status</th><th style={{textAlign:'right'}}>Revenue</th><th style={{textAlign:'right'}}>Est. GP</th><th style={{textAlign:'center'}}>Days Open</th><th style={{textAlign:'center'}}>Est. Rate</th><th style={{textAlign:'right'}}>Expected Comm</th>
           </tr></thead><tbody>
-            {allPipeline.sort((a,b)=>b.daysOpen-a.daysOpen).map(l=><tr key={l.inv.id} style={{background:l.willBeLate?'#fef2f2':l.daysOpen>60?'#fffbeb':''}}>
-              <td style={{fontWeight:700,color:'#1e40af'}}>{l.inv.id}<div style={{fontSize:10,color:'#94a3b8'}}>{l.inv.date}</div></td>
-              <td>{l.customer?.name||'\u2014'}<div style={{fontSize:10,color:'#94a3b8'}}>{l.inv.memo}</div></td>
+            {allPipeline.sort((a,b)=>(b.type==='so'?1:0)-(a.type==='so'?1:0)||(b.daysOpen||0)-(a.daysOpen||0)).map(l=>{
+              const stLabel={need_order:'Need Order',waiting_receive:'Waiting',items_received:'Items In',needs_pull:'Needs Pull',in_production:'In Prod',ready_to_invoice:'Ready Inv',complete:'Complete',booking:'Booking'};
+              const isSOLine=l.type==='so';
+              return<tr key={isSOLine?l.so.id:l.inv.id} style={{background:l.willBeLate?'#fef2f2':!isSOLine&&l.daysOpen>60?'#fffbeb':''}}>
+              <td style={{fontWeight:700,color:isSOLine?'#7c3aed':'#1e40af'}}>{isSOLine?l.so.id:l.inv.id}<div style={{fontSize:10,color:'#94a3b8'}}>{isSOLine?l.so.created_at:l.inv.date}</div></td>
+              <td>{l.customer?.name||'\u2014'}<div style={{fontSize:10,color:'#94a3b8'}}>{isSOLine?l.so.memo:l.inv.memo}</div></td>
               {isAdmin&&<td style={{fontSize:11}}>{l.rep?.name||'\u2014'}</td>}
+              <td style={{textAlign:'center'}}>{isSOLine?<span style={{padding:'2px 6px',borderRadius:8,fontSize:9,fontWeight:600,background:'#ede9fe',color:'#6d28d9'}}>{stLabel[l.soStatus]||l.soStatus}</span>:<span style={{padding:'2px 6px',borderRadius:8,fontSize:9,fontWeight:600,background:'#dbeafe',color:'#1e40af'}}>Invoiced</span>}</td>
               <td style={{textAlign:'right',fontWeight:600}}>${l.balance.toLocaleString()}</td>
               <td style={{textAlign:'right',color:l.gp.gp>0?'#166534':'#dc2626'}}>${l.gp.gp.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
-              <td style={{textAlign:'center'}}><span style={{padding:'2px 8px',borderRadius:8,fontSize:10,fontWeight:600,background:l.willBeLate?'#fee2e2':l.daysOpen>60?'#fef3c7':'#dcfce7',color:l.willBeLate?'#dc2626':l.daysOpen>60?'#92400e':'#166534'}}>{l.daysOpen}d</span></td>
+              <td style={{textAlign:'center'}}>{l.daysOpen!=null?<span style={{padding:'2px 8px',borderRadius:8,fontSize:10,fontWeight:600,background:l.willBeLate?'#fee2e2':l.daysOpen>60?'#fef3c7':'#dcfce7',color:l.willBeLate?'#dc2626':l.daysOpen>60?'#92400e':'#166534'}}>{l.daysOpen}d</span>:'\u2014'}</td>
               <td style={{textAlign:'center',fontWeight:600,color:l.expRate===0.30?'#166534':'#d97706'}}>{Math.round(l.expRate*100)}%</td>
               <td style={{textAlign:'right',fontWeight:700,color:'#7c3aed'}}>${l.expComm.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
-            </tr>)}
+            </tr>})}
             <tr style={{fontWeight:800,background:'#f5f3ff',borderTop:'2px solid #7c3aed'}}>
-              <td colSpan={isAdmin?3:2}>TOTAL PIPELINE</td>
+              <td colSpan={isAdmin?4:3}>TOTAL PIPELINE</td>
               <td style={{textAlign:'right'}}>${pipeBalance.toLocaleString()}</td>
               <td style={{textAlign:'right'}}>${allPipeline.reduce((a,l)=>a+l.gp.gp,0).toLocaleString(undefined,{maximumFractionDigits:0})}</td>
               <td colSpan={2}></td>
