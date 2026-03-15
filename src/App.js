@@ -4585,8 +4585,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           <div style={{display:'flex',flexDirection:'column',gap:8}}>
             {prevArtList.map((art,i)=>{
               const alreadyAdded=af.some(a=>a.name===art.name&&a.deco_type===art.deco_type);
-              const mockups=(art.mockup_files||art.files||[]).filter(f=>f);
-              const firstMockup=mockups[0];const imgUrl=firstMockup?(typeof firstMockup==='string'?firstMockup:firstMockup.url):'';
+              const mockups=[...(art.mockup_files||[]),...(art.files||[]),...(art.prod_files||[]),...Object.values(art.item_mockups||{}).flat()].filter(f=>f);
+              const firstMockup=mockups.find(f=>{const u=typeof f==='string'?f:(f?.url||'');return _isImgUrl(u,f)})||mockups[0];const imgUrl=firstMockup?(typeof firstMockup==='string'?firstMockup:firstMockup.url):'';
               return<div key={art.id+'-'+i} style={{padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0'}}>
                 <div style={{display:'flex',gap:12,alignItems:'flex-start'}}>
                   {imgUrl&&_isImgUrl(imgUrl)?<img src={imgUrl} alt="" style={{width:80,height:80,borderRadius:8,objectFit:'contain',flexShrink:0,cursor:'pointer',background:'white',border:'1px solid #e2e8f0'}} onClick={()=>openFile(firstMockup)}/>:
@@ -12571,10 +12571,11 @@ export default function App(){
         <span style={{fontSize:11,color:'#64748b'}}>{fe.length}{fe.length!==ests.length?' of '+ests.length:''} estimates</span>
         <button className="btn btn-primary" onClick={()=>newE(null)}><Icon name="plus" size={14}/> New Estimate</button>
       </div>
-      <div className="card"><div className="card-body" style={{padding:0}}><table><thead><tr><th>ID</th><th>Customer</th><th>Memo</th><th>Items</th><th>Rep</th><th>Status</th><th>SO</th><th>Email</th><th></th></tr></thead><tbody>
+      <div className="card"><div className="card-body" style={{padding:0}}><table><thead><tr><th>ID</th><th>Customer</th><th>Memo</th><th>Items</th><th style={{textAlign:'right'}}>Total</th><th>Rep</th><th>Status</th><th>SO</th><th>Email</th><th></th></tr></thead><tbody>
       {fe.map(e=>{const c=cust.find(x=>x.id===e.customer_id);const rep=REPS.find(r=>r.id===e.created_by);const linkedSO=e.status==='converted'?sos.find(s=>s.estimate_id===e.id):null;return(<tr key={e.id} style={{cursor:'pointer'}} onClick={()=>{setEEst(e);setEEstC(c)}}>
         <td style={{fontWeight:700,color:'#1e40af'}}>{e.id}</td><td>{c?<>{c.name} <span className="badge badge-gray">{c.alpha_tag}</span></>:'--'}</td>
         <td style={{fontSize:12}}>{e.memo}</td><td>{e.items?.length||0}</td>
+        <td style={{textAlign:'right',fontWeight:600,fontSize:12}}>{(()=>{const t=(e.items||[]).reduce((a,it)=>{const sqq=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);const qq=sqq>0?sqq:safeNum(it.est_qty);let r=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const dp2=dP(d,qq,[],qq);const eq2=dp2._nq!=null?dp2._nq:qq;r+=eq2*dp2.sell});return a+r},0);return t>0?'$'+t.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}):'--'})()}</td>
         <td><span style={{fontSize:11,color:'#64748b'}}>{rep?.name?.split(' ')[0]||'—'}</span></td>
         <td><span className={`badge ${e.status==='draft'||e.status==='open'?'badge-blue':e.status==='sent'?'badge-amber':e.status==='approved'?'badge-green':e.status==='converted'?'badge-purple':'badge-blue'}`}>{e.status}</span></td>
         <td onClick={ev=>ev.stopPropagation()}>{linkedSO?<span style={{color:'#1e40af',fontWeight:600,fontSize:11,cursor:'pointer',textDecoration:'underline'}} onClick={()=>{const cc=cust.find(x=>x.id===linkedSO.customer_id);setESO(linkedSO);setESOC(cc);setPg('orders')}}>{linkedSO.id}</span>:<span style={{color:'#94a3b8',fontSize:11}}>—</span>}</td>
@@ -12632,7 +12633,7 @@ export default function App(){
         <span style={{fontSize:11,color:'#64748b'}}>{fSOs.length}{fSOs.length!==sos.length?' of '+sos.length:''} orders</span>
       </div>
 
-    <div className="card"><div className="card-body" style={{padding:0}}><table><thead><tr><th>SO</th><th>Customer</th><th>Memo</th><th>Expected</th><th>Rep</th><th>Art</th><th>Items</th><th>Msgs</th><th>Ship</th><th>Status</th>{canDelete&&<th></th>}</tr></thead><tbody>
+    <div className="card"><div className="card-body" style={{padding:0}}><table><thead><tr><th>SO</th><th>Customer</th><th>Memo</th><th>Expected</th><th>Rep</th><th style={{textAlign:'right'}}>Total</th><th>Art</th><th>Items</th><th>Msgs</th><th>Ship</th><th>Status</th>{canDelete&&<th></th>}</tr></thead><tbody>
     {fSOs.map(so=>{const c=cust.find(x=>x.id===so.customer_id);const ac=(so.art_files||[]).length;const aa=(so.art_files||[]).filter(f=>f.status==='approved').length;const rep=REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by));
       // Item fulfillment progress (for Items column)
       const allItems=so.items||[];let totalSz=0,pickedSz=0,poSz=0,rcvdSz=0;
@@ -12648,6 +12649,7 @@ export default function App(){
       return(<tr key={so.id} style={{cursor:'pointer'}} onClick={()=>{setESO(so);setESOC(c)}}>
       <td style={{fontWeight:700,color:'#1e40af'}}>{so.id}{so.order_type==='booking'&&<span style={{fontSize:8,marginLeft:4,padding:'1px 4px',borderRadius:4,background:'#e0e7ff',color:'#4338ca',fontWeight:700,verticalAlign:'middle'}}>B</span>}</td><td>{c?.name} <span className="badge badge-gray">{c?.alpha_tag}</span></td><td style={{fontSize:12}}>{so.memo}{so.po_number&&<span style={{fontSize:9,marginLeft:6,padding:'1px 5px',borderRadius:4,background:'#dbeafe',color:'#1e40af',fontWeight:700,fontFamily:'monospace'}}>PO# {so.po_number}</span>}</td><td>{so.order_type==='booking'&&so.expected_ship_date?<span>{so.expected_ship_date}<div style={{fontSize:9,color:'#94a3b8'}}>ship date</div></span>:(so.expected_date||'--')}</td>
       <td><span style={{fontSize:11,color:'#64748b'}}>{rep?.name?.split(' ')[0]||'\u2014'}</span></td>
+      <td style={{textAlign:'right',fontWeight:600,fontSize:12}}>{(()=>{const t=safeItems(so).reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);let r=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const dp2=dP(d,qq,so.art_files||[],qq);const eq2=dp2._nq!=null?dp2._nq:qq;r+=eq2*dp2.sell});return a+r},0);return t>0?'$'+t.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}):'--'})()}</td>
       <td>{ac>0?<span style={{fontSize:11}}>{aa}/{ac} \u2713</span>:<span style={{fontSize:11,color:'#d97706'}}>\u2014</span>}</td>
       <td>{itemStatus&&<span style={{fontSize:10,fontWeight:600,padding:'2px 6px',borderRadius:4,
         background:itemStatus==='received'?'#dcfce7':itemStatus==='partial'?'#fef3c7':itemStatus==='on_order'?'#dbeafe':'#fef2f2',
