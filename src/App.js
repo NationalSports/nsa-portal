@@ -3211,7 +3211,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         if(skus.length){
           for(const sk of skus){
             const skPrice=mtCost(getPrice(sk));const skColor=getColor(sk)||'Default';const skSize=getSize(sk);
-            const skImg=sk.thumbnail||sk.fullImage||colorImgMap[skColor]||'';
+            const skImg=colorImgMap[skColor]||sk.thumbnail||sk.fullImage||'';
             const skBackImg=sk.fullImageBack||sk.backImage||'';
             if(!style.colors[skColor]){
               style.colors[skColor]={colorName:skColor,sku:sk.partNumber||sk.SKUPartNumber||baseSku,piecePrice:skPrice,customerPrice:skPrice,
@@ -25172,8 +25172,12 @@ export default function App(){
       const newQR={id:crypto.randomUUID?crypto.randomUUID():('QR-'+Date.now()),token,customer_id:qrModal.customer_id,
         contact_id:qrModal.contact_id||null,created_by:cu.id,status:'pending',created_at:new Date().toISOString(),items:[]};
       if(supabase){
-        const{error:dbErr}=await supabase.from('quote_requests').insert({id:newQR.id,token:newQR.token,customer_id:newQR.customer_id,contact_id:newQR.contact_id,created_by:newQR.created_by,status:'pending'});
-        if(dbErr){nf('DB error: '+dbErr.message,'error');return}
+        // Use Netlify function with service role to bypass RLS
+        try{
+          const resp=await fetch('/.netlify/functions/create-quote-request',{method:'POST',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({id:newQR.id,token:newQR.token,customer_id:newQR.customer_id,contact_id:newQR.contact_id,created_by:newQR.created_by})});
+          if(!resp.ok){const err=await resp.json().catch(()=>({error:'Unknown error'}));nf('DB error: '+(err.error||'Failed to create'),'error');return}
+        }catch(e){nf('Network error: '+e.message,'error');return}
       }
       setQuoteRequests(prev=>[newQR,...prev]);
       setQrModal({open:false,customer_id:'',contact_id:''});
@@ -25792,7 +25796,8 @@ export default function App(){
                         if(skus.length){for(const sk of skus){
                           const skColor=_gc(sk)||'Default';
                           if(seenColors.has(skColor))continue;seenColors.add(skColor);
-                          const skImg=sk.thumbnail||sk.fullImage||colorImgMap[skColor]||fg;
+                          // Prefer colorImgMap (per-color swatch from attributes) over generic SKU thumbnail
+                          const skImg=colorImgMap[skColor]||sk.thumbnail||sk.fullImage||fg;
                           const skBack=sk.fullImageBack||sk.backImage||bg;
                           grouped[base].colors.push({colorName:skColor,frontUrl:skImg,backUrl:skBack});
                         }}
