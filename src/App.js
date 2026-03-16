@@ -3753,12 +3753,27 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {isE&&o.status==='approved'&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#d97706',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);if(!window.confirm('Unapprove estimate '+o.id+'? Status will be set back to open.'))return;sv('status','open');const updated={...o,status:'open',approved_by:null,approved_at:null};setO(updated);onSave(updated);nf('Estimate unapproved')}} onMouseEnter={e=>e.currentTarget.style.background='#fffbeb'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="back" size={12}/> Unapprove</button>}
             {isSO&&onRevertToEst&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);if(!window.confirm('Revert '+o.id+' back to estimate? The SO will be deleted and '+(o.estimate_id?'the original estimate reopened.':'a new estimate created.')))return;onRevertToEst(o)}} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="back" size={12}/> Revert to Estimate</button>}
             {isSO&&o.estimate_id&&onViewEstimate&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);onViewEstimate(o.estimate_id)}} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="dollar" size={12}/> View Estimate</button>}
-            {/* Promo Funds — only show Apply when funds available */}
-            {isE&&cust&&(cust.promo_programs||[]).length>0&&!o.promo_applied&&(()=>{const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();const _ps=(cust.promo_periods||[]).filter(p=>p.period_start===(_m<6?_y+'-01-01':_y+'-07-01'));const _bal=_ps.reduce((a,p)=>a+(p.allocated||0)-(p.used||0),0);return _bal>0})()&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#92400e',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);
-              // Calculate available promo balance
+            {/* Promo Funds — show when customer has promo programs and funds available (auto-allocate period if needed) */}
+            {isE&&cust&&(cust.promo_programs||[]).length>0&&!o.promo_applied&&(()=>{const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();const _pStart=_m<6?_y+'-01-01':_y+'-07-01';const _ps=(cust.promo_periods||[]).filter(p=>p.period_start===_pStart);const _bal=_ps.reduce((a,p)=>a+(p.allocated||0)-(p.used||0),0);if(_bal>0)return true;const progs=(cust.promo_programs||[]).filter(p=>p.status!=='inactive');return progs.some(p=>p.type==='fixed'&&safeNum(p.fixed_amount)>0)})()&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#92400e',textAlign:'left'}} onClick={async()=>{setShowActionsDD(false);
+              // Calculate available promo balance, auto-allocate period if needed
               const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();
-              const _ps=(cust.promo_periods||[]).filter(p=>p.period_start===(_m<6?_y+'-01-01':_y+'-07-01'));
-              const promoBudget=_ps.reduce((a,p)=>a+(p.allocated||0)-(p.used||0),0);
+              const _pStart=_m<6?_y+'-01-01':_y+'-07-01';const _pEnd=_m<6?_y+'-06-30':_y+'-12-31';const _pLabel=_m<6?'H1 '+_y:'H2 '+_y;
+              let _ps=(cust.promo_periods||[]).filter(p=>p.period_start===_pStart);
+              let promoBudget=_ps.reduce((a,p)=>a+(p.allocated||0)-(p.used||0),0);
+              // Auto-allocate period from fixed programs if no period exists
+              if(_ps.length===0){
+                const progs=(cust.promo_programs||[]).filter(p=>p.status!=='inactive'&&p.type==='fixed'&&safeNum(p.fixed_amount)>0);
+                const totalFixed=progs.reduce((a,p)=>a+safeNum(p.fixed_amount),0);
+                if(totalFixed>0){
+                  const newPeriod={id:'pp_'+Date.now(),customer_id:cust.id,period_start:_pStart,period_end:_pEnd,period_label:_pLabel,allocated:totalFixed,used:0,created_at:new Date().toISOString()};
+                  await _dbSavePromoPeriod(newPeriod);
+                  const updatedCust={...cust,promo_periods:[...(cust.promo_periods||[]),newPeriod]};
+                  setCust(updatedCust);
+                  _ps=[newPeriod];promoBudget=totalFixed;
+                  nf('Auto-allocated $'+totalFixed.toLocaleString()+' promo for '+_pLabel);
+                }
+              }
+              if(promoBudget<=0){nf('No promo funds available','error');return}
               // Calculate promo cost per item (retail price + 25% deco markup)
               const items=safeItems(o);const _aq={};items.forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_aq[d.art_file_id]=(_aq[d.art_file_id]||0)+q2}})});
               let remaining=promoBudget;const newItems=[];let fullCount=0;let partialItem=false;
@@ -11465,7 +11480,10 @@ export default function App(){
     // Warn and block if promo funds are no longer sufficient (balance may have changed since promo was applied)
     if(est.promo_applied&&promoAmount>0){
       const _c2=cust.find(x=>x.id===est.customer_id);
-      if(_c2){const _now2=new Date(),_y2=_now2.getFullYear(),_m2=_now2.getMonth();const _ps2=(_c2.promo_periods||[]).filter(p=>p.period_start===(_m2<6?_y2+'-01-01':_y2+'-07-01'));const _bal2=_ps2.reduce((a,p)=>a+(p.allocated||0)-(p.used||0),0);
+      if(_c2){const _now2=new Date(),_y2=_now2.getFullYear(),_m2=_now2.getMonth();const _pStart2=_m2<6?_y2+'-01-01':_y2+'-07-01';const _ps2=(_c2.promo_periods||[]).filter(p=>p.period_start===_pStart2);
+        let _bal2=_ps2.reduce((a,p)=>a+(p.allocated||0)-(p.used||0),0);
+        // If no period exists, check if we can auto-allocate from fixed programs
+        if(_ps2.length===0){const progs2=(_c2.promo_programs||[]).filter(p=>p.status!=='inactive'&&p.type==='fixed'&&safeNum(p.fixed_amount)>0);_bal2=progs2.reduce((a,p)=>a+safeNum(p.fixed_amount),0)}
         if(promoAmount>_bal2){nf('Cannot convert — promo total $'+promoAmount.toLocaleString(undefined,{maximumFractionDigits:2})+' exceeds available funds ($'+_bal2.toLocaleString(undefined,{maximumFractionDigits:2})+' remaining). Remove promo and re-apply to adjust.','error');return}
       }
     }
@@ -11478,16 +11496,28 @@ export default function App(){
     if(est.promo_applied&&promoAmount>0&&c){
       const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();
       const _pStart=_m<6?_y+'-01-01':_y+'-07-01';
-      const periods=(c.promo_periods||[]).filter(p=>p.period_start===_pStart);
+      let periods=(c.promo_periods||[]).filter(p=>p.period_start===_pStart);
+      // Auto-allocate period from fixed programs if none exists
+      if(periods.length===0){
+        const progs=(c.promo_programs||[]).filter(p=>p.status!=='inactive'&&p.type==='fixed'&&safeNum(p.fixed_amount)>0);
+        const totalFixed=progs.reduce((a,p)=>a+safeNum(p.fixed_amount),0);
+        if(totalFixed>0){
+          const _pEnd=_m<6?_y+'-06-30':_y+'-12-31';const _pLabel=_m<6?'H1 '+_y:'H2 '+_y;
+          const newPd={id:'pp_'+Date.now(),customer_id:c.id,period_start:_pStart,period_end:_pEnd,period_label:_pLabel,allocated:totalFixed,used:0,created_at:new Date().toISOString()};
+          _dbSavePromoPeriod(newPd);periods=[newPd];
+          setCust(prev=>prev.map(cc=>cc.id===c.id?{...cc,promo_periods:[...(cc.promo_periods||[]),newPd]}:cc));
+        }
+      }
       if(periods.length>0){
         const pd=periods[0];
         const updatedPeriod={...pd,used:(pd.used||0)+promoAmount};
         _dbSavePromoPeriod(updatedPeriod);
         _dbSavePromoUsage({period_id:pd.id,amount:promoAmount,description:'Promo order '+so.id,created_by:cu?.name||'System',so_id:so.id,estimate_id:est.id,created_at:new Date().toISOString()});
         // Update customer in state
-        const updatedPeriods=(c.promo_periods||[]).map(p=>p.id===pd.id?updatedPeriod:p);
+        const updatedPeriods=(c.promo_periods||[]).map(p=>p.id===pd.id?updatedPeriod:p).concat(periods.length===1&&!(c.promo_periods||[]).some(p=>p.id===pd.id)?[updatedPeriod]:[]);
+        const finalPeriods=updatedPeriods.filter((p,i,arr)=>arr.findIndex(x=>x.id===p.id)===i);
         const updatedUsage=[...(c.promo_usage||[]),{period_id:pd.id,amount:promoAmount,description:'Promo order '+so.id,created_by:cu?.name||'System',so_id:so.id,estimate_id:est.id,created_at:new Date().toISOString()}];
-        setCust(prev=>prev.map(cc=>cc.id===c.id?{...cc,promo_periods:updatedPeriods,promo_usage:updatedUsage}:cc));
+        setCust(prev=>prev.map(cc=>cc.id===c.id?{...cc,promo_periods:finalPeriods,promo_usage:updatedUsage}:cc));
       }
     }
     setESO(so);setESOC(c);setPg('orders');nf(`${so.id} created from ${est.id}`)};
