@@ -8295,7 +8295,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
             {usage.filter(u=>curPeriods.some(p=>p.id===u.period_id)).length===0?<div style={{fontSize:12,color:'#94a3b8'}}>No promo used this period</div>:
             <table style={{fontSize:12}}><thead><tr><th>Date</th><th>Order</th><th>Description</th><th>Amount</th></tr></thead><tbody>
               {usage.filter(u=>curPeriods.some(p=>p.id===u.period_id)).sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||'')).map((u,i)=>
-                <tr key={i}><td style={{color:'#64748b'}}>{u.created_at?new Date(u.created_at).toLocaleDateString():'-'}</td><td style={{fontWeight:600,color:'#1e40af'}}>{u.so_id||u.estimate_id||'-'}</td><td>{u.description||'-'}</td><td style={{fontWeight:700,color:'#dc2626'}}>${(u.amount||0).toLocaleString()}</td></tr>)}
+                <tr key={i}><td style={{color:'#64748b'}}>{u.created_at?new Date(u.created_at).toLocaleDateString():'-'}</td><td style={{fontWeight:600,color:'#1e40af'}}>{u.so_id||'-'}{u.estimate_id&&<span style={{fontSize:10,color:'#94a3b8',marginLeft:4}}>({u.estimate_id})</span>}</td><td>{u.description||'-'}</td><td style={{fontWeight:700,color:'#dc2626'}}>${(u.amount||0).toLocaleString()}</td></tr>)}
             </tbody></table>}
           </div>}
           {/* Manual adjustment */}
