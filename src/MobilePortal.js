@@ -662,7 +662,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,
                 <span style={{fontWeight:800,color:'#1e40af',fontSize:14}}>{so.id}</span>
                 <span style={statusBadge(so.status||'new')}>{(so.status||'new').replace('_',' ')}</span>
               </div>
-              <div style={{fontSize:13,color:'#334155',marginTop:2}}>{cc?.alpha_tag||cc?.name||'—'}</div>
+              <div style={{fontSize:13,color:'#334155',marginTop:2}}>{cc?.name||cc?.alpha_tag||'—'}</div>
               {so.memo&&<div style={{fontSize:12,color:'#94a3b8',marginTop:1,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{so.memo}</div>}
             </div>
             <div style={{textAlign:'right',flexShrink:0}}>
@@ -768,7 +768,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,
                   <span style={{fontWeight:800,color:'#1e40af',fontSize:14}}>{est.id}</span>
                   <span style={statusBadge(est.status||'draft')}>{est.status||'draft'}</span>
                 </div>
-                <div style={{fontSize:13,color:'#334155',marginTop:2}}>{cc?.alpha_tag||cc?.name||'—'}</div>
+                <div style={{fontSize:13,color:'#334155',marginTop:2}}>{cc?.name||cc?.alpha_tag||'—'}</div>
                 {est.memo&&<div style={{fontSize:12,color:'#94a3b8',marginTop:1,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{est.memo}</div>}
               </div>
               <div style={{textAlign:'right',flexShrink:0}}>
@@ -809,7 +809,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,
                   <span style={{fontWeight:700,color:'#1e40af'}}>{inv.id}</span>
                   <span style={statusBadge(inv.status||'open')}>{inv.status||'open'}</span>
                 </div>
-                <div style={{fontSize:12,color:'#64748b'}}>{cc?.alpha_tag||cc?.name||'—'}</div>
+                <div style={{fontSize:12,color:'#64748b'}}>{cc?.name||cc?.alpha_tag||'—'}</div>
               </div>
               <div style={{textAlign:'right',flexShrink:0}}>
                 <div style={{fontWeight:700}}>{fmtMoney(inv.total)}</div>
@@ -852,7 +852,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,
     }
     if(subPage==='jobs'){
       const allJobs=[];
-      sos.forEach(so=>{const cc=custObj(so.customer_id);safeJobs(so).forEach((j,ji)=>{allJobs.push({...j,so,so_id:so.id,customer:cc?.alpha_tag||cc?.name||'—'})})});
+      sos.forEach(so=>{const cc=custObj(so.customer_id);safeJobs(so).forEach((j,ji)=>{allJobs.push({...j,so,so_id:so.id,customer:cc?.name||cc?.alpha_tag||'—'})})});
       const activeJobs=allJobs.filter(j=>j.status!=='completed'&&j.status!=='shipped').sort((a,b)=>(b.so?.created_at||'').localeCompare(a.so?.created_at||''));
       return<div className="mp-page">
         <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:12}}>
@@ -875,7 +875,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,
     }
     if(subPage==='production'){
       const allJobs=[];
-      sos.forEach(so=>{const cc=custObj(so.customer_id);safeJobs(so).forEach((j,ji)=>{allJobs.push({...j,so,so_id:so.id,customer:cc?.alpha_tag||cc?.name||'—'})})});
+      sos.forEach(so=>{const cc=custObj(so.customer_id);safeJobs(so).forEach((j,ji)=>{allJobs.push({...j,so,so_id:so.id,customer:cc?.name||cc?.alpha_tag||'—'})})});
       const prodStatuses=['ready','in_process','staging','hold'];
       const prodJobs=allJobs.filter(j=>prodStatuses.includes(j.status)).sort((a,b)=>{
         const ord={hold:0,ready:1,in_process:2,staging:3};return(ord[a.status]||9)-(ord[b.status]||9)});
@@ -924,7 +924,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,
                   <span style={{fontWeight:800,color:'#1e40af',fontSize:14}}>{so.id}</span>
                   <span style={{fontSize:11,background:'#fef3c7',color:'#92400e',padding:'2px 8px',borderRadius:10,fontWeight:700}}>{pickCount} to pull</span>
                 </div>
-                <div style={{fontSize:13,color:'#334155',marginTop:2}}>{cc?.alpha_tag||cc?.name||'—'}</div>
+                <div style={{fontSize:13,color:'#334155',marginTop:2}}>{cc?.name||cc?.alpha_tag||'—'}</div>
               </div>
               <div style={{textAlign:'right',flexShrink:0}}>
                 <div style={{fontSize:12,color:'#64748b'}}>{totalQty} pcs</div>
@@ -1014,7 +1014,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,
     {showSearch&&renderSearch()}
     {/* Header */}
     <div className="mp-header">
-      <div className="mp-header-logo">NSA</div>
+      <div className="mp-header-logo"><img src="/NEW NSA Logo on white.png" alt="NSA" style={{height:28,filter:'brightness(0) invert(1)'}}/></div>
       <button className="mp-header-btn" onClick={()=>setShowSearch(true)}><MIcon name="search" size={20}/></button>
     </div>
     {/* Page content */}
