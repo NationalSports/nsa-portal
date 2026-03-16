@@ -17481,7 +17481,7 @@ export default function App(){
       return true;
     });
     const fPull=filt(pullTasks);const fShip=filt(shipTasks);
-    const readyForDeco=decoTasks.filter(t=>t.isReady);const fDeco=filt(readyForDeco);
+    const readyForDeco=decoTasks.filter(t=>t.isReady&&(t.prodStatus==='hold'||t.prodStatus==='draft'));const fDeco=filt(readyForDeco);
     const openStockPOs=stockPOs.filter(p=>p.status!=='received');
     // Count awaiting pickup shipments for tab badge
     const awaitingPickupCount=(()=>{let c=0;sos.filter(so=>so._shipments&&so._shipments.length>0&&!so.deleted_at).forEach(so=>{(so._shipments||[]).forEach(shp=>{if(shp.tracking_number&&!shp.carrier_picked_up)c++})});return c})();
@@ -18286,8 +18286,6 @@ export default function App(){
             <th>Job</th><th>Customer</th><th>Art / Deco</th><th>Items</th><th style={{textAlign:'center'}}>Units</th><th style={{textAlign:'center'}}>Machine</th><th>Rep</th><th style={{textAlign:'center'}}>Due</th><th></th>
           </tr></thead><tbody>
             {fDeco.map((t,i)=>{
-              const SC2={hold:{bg:'#f1f5f9',c:'#64748b'},staging:{bg:'#fef3c7',c:'#92400e'},in_process:{bg:'#dbeafe',c:'#1e40af'},completed:{bg:'#dcfce7',c:'#166534'}};
-              const prodLabels={hold:'Ready',staging:'Staged',in_process:'In Process',completed:'Done'};
               return<tr key={t.job?.id||i} style={{background:t.urgent?'#fef2f2':'',cursor:'pointer'}} onClick={()=>{const so2=sos.find(s=>s.id===t.soId);if(so2){const c2=cust.find(cc=>cc.id===so2.customer_id);setESO(so2);setESOC(c2);setESOTab('jobs');setPg('orders')}}}>
                 <td style={{fontWeight:700,color:'#7c3aed'}}>{t.job?.id||'—'}</td>
                 <td><div style={{fontWeight:600}}>{t.cName}</div><div style={{fontSize:10,color:'#94a3b8'}}>{t.soId}</div></td>
@@ -18297,12 +18295,13 @@ export default function App(){
                 <td style={{textAlign:'center'}}>{t.machine?<span style={{fontSize:10,padding:'2px 6px',borderRadius:4,background:'#ede9fe',color:'#6d28d9'}}>{t.machine}</span>:<span style={{fontSize:10,color:'#94a3b8'}}>Unassigned</span>}</td>
                 <td style={{fontSize:11}}>{t.rep}</td>
                 <td style={{textAlign:'center'}}>{t.daysOut!=null?<span style={{padding:'2px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:t.urgent?'#fee2e2':t.daysOut<=7?'#fef3c7':'#dcfce7',color:t.urgent?'#dc2626':t.daysOut<=7?'#92400e':'#166534'}}>{t.daysOut}d</span>:'—'}</td>
-                <td><span style={{padding:'2px 6px',borderRadius:8,fontSize:9,fontWeight:600,background:SC2[t.prodStatus]?.bg||'#f1f5f9',color:SC2[t.prodStatus]?.c||'#64748b'}}>{prodLabels[t.prodStatus]||t.prodStatus}</span></td>
+                <td><button className="btn btn-sm" style={{fontSize:10,padding:'3px 10px',background:'#7c3aed',color:'white',border:'none',borderRadius:6,fontWeight:600,whiteSpace:'nowrap'}}
+                  onClick={e=>{e.stopPropagation();if(t.job)moveJobStatus(t.job,'staging')}}>Move to Deco →</button></td>
               </tr>})}
           </tbody></table>
         </div></div>
         <div style={{marginTop:8,padding:8,background:'#f5f3ff',borderRadius:6,fontSize:11,color:'#6d28d9'}}>
-          ✅ All items received + Art approved = Ready for decoration. Click a row to open the SO and assign to a machine.
+          ✅ All items received + Art approved = Ready for decoration. Click "Move to Deco" to send to the production board, or click a row to open the SO.
         </div>
         </>}
       </>}
@@ -19028,7 +19027,9 @@ export default function App(){
       {whTab==='recent'&&<>
         <div style={{fontSize:13,color:'#64748b',marginBottom:12}}>Recent warehouse actions — pulls, receives, and other activity</div>
         {whRecentActions.length===0&&<div style={{textAlign:'center',color:'#94a3b8',padding:40}}>No recent actions yet</div>}
-        {whRecentActions.map((a,i)=><div key={i} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 14px',background:i%2===0?'#fafbfc':'white',borderRadius:6,marginBottom:2,border:'1px solid #f1f5f9'}}>
+        {whRecentActions.map((a,i)=><div key={i} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 14px',background:i%2===0?'#fafbfc':'white',borderRadius:6,marginBottom:2,border:'1px solid #f1f5f9',cursor:a.soId?'pointer':'default',transition:'background 0.15s'}}
+          onClick={()=>{if(!a.soId)return;const so2=sos.find(s=>s.id===a.soId);if(so2){const c2=cust.find(cc=>cc.id===so2.customer_id);setESO(so2);setESOC(c2);setESOTab(null);setPg('orders')}}}
+          onMouseEnter={e=>{if(a.soId)e.currentTarget.style.background='#eef2ff'}} onMouseLeave={e=>{e.currentTarget.style.background=i%2===0?'#fafbfc':'white'}}>
           <div style={{width:32,height:32,borderRadius:8,display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,flexShrink:0,
             background:a.type==='pulled'?'#fef3c7':a.type==='received'?'#dbeafe':'#f1f5f9'}}>
             {a.type==='pulled'?'📦':a.type==='received'?'📱':'⚡'}</div>
@@ -19036,7 +19037,7 @@ export default function App(){
             <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
               <span style={{fontWeight:700,fontSize:12,color:a.type==='pulled'?'#92400e':'#1e40af'}}>{a.pickId||a.poId||'Action'}</span>
               <span style={{fontSize:11,color:'#475569'}}>{a.type==='pulled'?'Pulled':'Received'}</span>
-              <span style={{fontSize:11,fontWeight:600}}>{a.soId}</span>
+              <span style={{fontSize:11,fontWeight:600,color:'#2563eb',textDecoration:'underline'}}>{a.soId}</span>
               <span style={{fontSize:11,color:'#64748b'}}>{a.customer}</span>
             </div>
             <div style={{fontSize:11,color:'#64748b',marginTop:2}}>{a.sku} {a.name} {a.color?' ('+a.color+')':''} — {a.qty} units — {a.sizes}</div>
