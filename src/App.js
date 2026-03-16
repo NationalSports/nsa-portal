@@ -1676,7 +1676,11 @@ const shipStationCall = async (endpoint, options = {}) => {
     });
     if (!response.ok) {
       const errText = await response.text().catch(() => '');
-      throw new Error(`ShipStation API error: ${response.status} ${errText}`);
+      // Try to extract a clean error message from ShipStation JSON response
+      let cleanMsg = '';
+      try { const errJson = JSON.parse(errText); cleanMsg = errJson.ExceptionMessage || errJson.Message || errText.slice(0, 200); } catch { cleanMsg = errText.slice(0, 200); }
+      console.error('[ShipStation] API error:', response.status, errText);
+      throw new Error(`ShipStation error (${response.status}): ${cleanMsg}`);
     }
     const data = await response.json();
     console.log('[ShipStation] API response:', endpoint, data);
@@ -1778,13 +1782,18 @@ const fetchRecentShipments = async () => {
 // Create a ShipStation label for an order
 const _ssCarrierMap = { 'UPS': { carrierCode: 'ups', serviceCode: 'ups_ground' }, 'FedEx': { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, 'USPS': { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
 const createShipStationLabel = async (so, customer, packageItems, weight, carrier, service, dimensions) => {
+  // Validate customer address before calling API
+  const hasShipAddr = customer.shipping_address_line1 && customer.shipping_city && customer.shipping_state && customer.shipping_zip;
+  const hasBillAddr = customer.billing_address_line1 && customer.billing_city && customer.billing_state && customer.billing_zip;
+  if (!hasShipAddr && !hasBillAddr) throw new Error('Customer has no shipping or billing address. Please add an address to the customer record first.');
   // Ensure order exists in ShipStation first
   let ssOrderId = so._shipstation_order_id;
   if (!ssOrderId) {
     const ssOrder = await pushSOToShipStation(so, customer);
     ssOrderId = ssOrder.orderId;
   }
-  const shipTo = customer.shipping_address_line1 ? {
+  if (!ssOrderId) throw new Error('Could not create or find ShipStation order. Please check ShipStation connection.');
+  const shipTo = hasShipAddr ? {
     name: customer.name, company: customer.name,
     street1: customer.shipping_address_line1, street2: customer.shipping_address_line2 || '',
     city: customer.shipping_city, state: customer.shipping_state,
@@ -1795,19 +1804,23 @@ const createShipStationLabel = async (so, customer, packageItems, weight, carrie
     city: customer.billing_city, state: customer.billing_state,
     postalCode: customer.billing_zip, country: 'US', phone: customer.contacts?.[0]?.phone || ''
   };
-  const cm = _ssCarrierMap[carrier] || { carrierCode: carrier || 'fedex', serviceCode: service || 'fedex_ground' };
+  // Map carrier — dropdown values are lowercase ('fedex','ups','usps')
+  const carrierLower = (carrier || 'fedex').toLowerCase();
+  const carrierMap = { fedex: { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, ups: { carrierCode: 'ups', serviceCode: 'ups_ground' }, usps: { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
+  const cm = carrierMap[carrierLower] || { carrierCode: carrierLower, serviceCode: service || 'fedex_ground' };
   const labelPayload = {
     orderId: ssOrderId, carrierCode: cm.carrierCode, serviceCode: cm.serviceCode,
     packageCode: 'package', confirmation: 'none', shipDate: new Date().toISOString().split('T')[0],
     weight: { value: weight || 5, units: 'pounds' },
     dimensions: dimensions && dimensions.length && dimensions.width && dimensions.height
       ? { length: parseFloat(dimensions.length), width: parseFloat(dimensions.width), height: parseFloat(dimensions.height), units: 'inches' }
-      : null,
+      : undefined,
     shipFrom: { name: NSA.name, company: NSA.name, street1: NSA.addr, city: NSA.city, state: NSA.state, postalCode: NSA.zip, country: 'US', phone: NSA.phone },
     shipTo, insuranceOptions: { provider: null, insureShipment: false, insuredValue: 0 },
     internationalOptions: null, advancedOptions: { customField1: `NSA-SO-${so.id}` },
     testLabel: false
   };
+  console.log('[ShipStation] Label request payload:', JSON.stringify(labelPayload, null, 2));
   return await shipStationCall('/orders/createlabelfororder', { method: 'POST', body: JSON.stringify(labelPayload) });
 };
 
@@ -2614,8 +2627,14 @@ function calcSOStatus(ord){
   const hasAnyDeco=safeItems(ord).some(it=>!it.no_deco&&safeDecos(it).length>0);
   // Promo orders skip invoicing — go straight to complete when ready
   const isPromo=ord.promo_applied;
-  // If all jobs shipped → complete
-  if(allJobsShipped)return'complete';
+  // If all jobs shipped → check if all units actually shipped before marking complete
+  if(allJobsShipped){
+    const totalJobUnits=boardJobs.reduce((a,j)=>a+safeNum(j.total_units),0);
+    const shippedUnits=(ord._shipments||[]).reduce((a,shp)=>a+(shp.items||[]).reduce((a2,it)=>a2+Object.values(it.sizes||{}).reduce((a3,v)=>a3+safeNum(v),0),0),0);
+    if(shippedUnits>=totalJobUnits||!ord._shipments)return'complete';
+    // Partial shipment — jobs marked shipped but units remain
+    return isPromo?'complete':'ready_to_invoice';
+  }
   // No-deco orders: all items fulfilled → ready_to_invoice (or complete for promo)
   if(!hasAnyDeco&&!hasJobs&&fulfilledSz>=totalSz)return(ord.status==='complete'||isPromo)?'complete':'ready_to_invoice';
   // If all jobs completed → ready to invoice (or complete for promo)
@@ -4963,7 +4982,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     {shp.ship_date&&<span style={{fontSize:11,color:'#64748b'}}>Shipped {shp.ship_date}</span>}
                     {safeNum(shp.shipping_cost)>0&&<span style={{fontSize:10,fontWeight:700,color:'#166534',background:'#dcfce7',padding:'2px 8px',borderRadius:4}}>${safeNum(shp.shipping_cost).toFixed(2)}</span>}
                     {shp.label_url&&<button style={{fontSize:9,background:'#7c3aed',color:'white',border:'none',padding:'3px 8px',borderRadius:4,fontWeight:700,cursor:'pointer'}}
-                      onClick={()=>{const pw=window.open(shp.label_url,'_blank');if(pw)setTimeout(()=>{try{pw.print()}catch(e){}},1500)}}>Print Label</button>}
+                      onClick={()=>{
+                        if(shp.label_url.startsWith('data:application/pdf')){
+                          const iframe=document.createElement('iframe');iframe.style.display='none';document.body.appendChild(iframe);
+                          iframe.src=shp.label_url;iframe.onload=()=>{try{iframe.contentWindow.print()}catch(e){
+                            const a=document.createElement('a');a.href=shp.label_url;a.download='label.pdf';a.click()}
+                            setTimeout(()=>{try{document.body.removeChild(iframe)}catch{}},60000)};
+                        } else {const pw=window.open(shp.label_url,'_blank');if(pw)setTimeout(()=>{try{pw.print()}catch(e){}},1500)}
+                      }}>Print Label</button>}
                     {shpUnits>0&&<span style={{marginLeft:'auto',fontSize:11,fontWeight:700,color:'#166534'}}>{shpUnits} units</span>}
                     {/* Edit tracking for reps/admin */}
                     {canEditCost&&<button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px'}} onClick={()=>{
@@ -4973,6 +4999,28 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                       if(idx>=0){updated[idx]={...updated[idx],tracking_number:tn,carrier:carrier||'',tracking_url:trackUrl(tn),ship_date:updated[idx].ship_date||new Date().toLocaleDateString()};sv('_shipments',updated)}
                       else if(shp.id==='legacy'){sv('_tracking_number',tn);sv('_carrier',carrier||o._carrier);sv('_tracking_url',trackUrl(tn))}
                     }}>Edit</button>}
+                    {/* Delete shipment — only for non-legacy shipments */}
+                    {shp.id!=='legacy'&&canEditCost&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#fee2e2',color:'#dc2626',border:'1px solid #fecaca',fontWeight:700}} onClick={()=>{
+                      if(!window.confirm('Delete this shipment? This will remove the package and its tracking info.'))return;
+                      const updated=(o._shipments||[]).filter(s=>s.id!==shp.id);
+                      // Revert jobs from 'shipped' back to 'completed' if units no longer fully shipped
+                      const shippedByItem={};updated.forEach(s=>{(s.items||[]).forEach(it=>{
+                        const k=it.sku+'|'+(it.color||'');shippedByItem[k]=(shippedByItem[k]||0)+Object.values(it.sizes||{}).reduce((a,v)=>a+v,0);
+                      })});
+                      const revertedJobs=safeJobs(o).map(jj=>{
+                        if(jj.prod_status!=='shipped')return jj;
+                        const jobShipped=(jj.items||[]).reduce((a,gi)=>a+(shippedByItem[gi.sku+'|'+(gi.color||'')]||0),0);
+                        return jobShipped>=safeNum(jj.total_units)?jj:{...jj,prod_status:'completed'};
+                      });
+                      const hasShipments=updated.length>0;const firstShp2=updated[0];
+                      setO(e=>({...e,jobs:revertedJobs,_shipments:updated,_shipped:false,
+                        _shipping_status:hasShipments?'partial':null,
+                        _tracking_number:firstShp2?.tracking_number||'',_carrier:firstShp2?.carrier||'',
+                        _ship_date:firstShp2?.ship_date||'',_tracking_url:firstShp2?.tracking_url||'',
+                        _shipping_cost:updated.reduce((a,s)=>a+safeNum(s.shipping_cost||0),0)||null,
+                        updated_at:new Date().toLocaleString()}));setDirty(true);
+                      nf('Shipment deleted');
+                    }}>Delete</button>}
                   </div>
                   {/* Package contents */}
                   {(shp.items||[]).length>0&&<table style={{width:'100%',fontSize:11,borderCollapse:'collapse'}}>
@@ -4984,7 +5032,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                       <th style={{padding:'4px 6px',textAlign:'center',fontSize:10,color:'#64748b'}}>Qty</th>
                     </tr></thead>
                     <tbody>{(shp.items||[]).map((it,ii)=>{
-                      const szStr=Object.entries(it.sizes||{}).filter(([,v])=>v>0).map(([sz,v])=>sz+':'+v).join('  ');
+                      const szStr=Object.entries(it.sizes||{}).filter(([,v])=>v>0).sort((a,b)=>{const ai=SZ_ORD.indexOf(a[0].toUpperCase()),bi2=SZ_ORD.indexOf(b[0].toUpperCase());return(ai<0?99:ai)-(bi2<0?99:bi2)}).map(([sz,v])=>sz+':'+v).join('  ');
                       const itQty=Object.values(it.sizes||{}).reduce((a,v)=>a+v,0);
                       return<tr key={ii} style={{borderBottom:'1px solid #f1f5f9'}}>
                         <td style={{padding:'4px 6px',fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{it.sku}</td>
@@ -5176,16 +5224,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const freightVal=safeNum(o._inbound_freight||0);
         // Expected shipping = what the rep quoted on the SO (% of rev or flat $)
         const quotedShip=o.shipping_type==='pct'?totals.rev*(o.shipping_value||0)/100:safeNum(o.shipping_value||0);
-        // Both inbound + outbound under "Shipping" category; expected only on outbound (quoted covers both)
+        // Shipping: two detail lines + subtotal row; expected (quoted) only on subtotal
         if(shipCostVal>0||freightVal>0||quotedShip>0){
-          costLines.push({category:'Shipping',sku:'—',name:'Outbound Shipping (ShipStation)',vendor:'ShipStation',qty:1,expected:quotedShip,actual:shipCostVal,poCount:shipCostVal>0?1:0,poIds:'',allReceived:true});
-          costLines.push({category:'Shipping',sku:'—',name:'Inbound Freight (Supplier Bills)',vendor:'Supplier',qty:1,expected:0,actual:freightVal,poCount:freightVal>0?1:0,poIds:'',allReceived:true});
+          costLines.push({category:'Shipping',sku:'—',name:'Outbound Shipping (ShipStation)',vendor:'ShipStation',qty:1,expected:0,actual:shipCostVal,isShipping:true,isShippingDetail:true,poCount:shipCostVal>0?1:0,poIds:'',allReceived:true});
+          costLines.push({category:'Shipping',sku:'—',name:'Inbound Freight (Supplier Bills)',vendor:'Supplier',qty:1,expected:0,actual:freightVal,isShipping:true,isShippingDetail:true,poCount:freightVal>0?1:0,poIds:'',allReceived:true});
+          costLines.push({category:'Shipping',sku:'',name:'Shipping Total',vendor:'',qty:'',expected:quotedShip,actual:shipCostVal+freightVal,isShipping:true,isShippingSubtotal:true,poCount:1,poIds:'',allReceived:true});
         }
         // Totals computed AFTER shipping lines added
-        const totalExpected=costLines.reduce((a,l)=>a+l.expected,0);
-        const totalActual=costLines.reduce((a,l)=>a+l.actual,0);
+        const totalExpected=costLines.reduce((a,l)=>a+(l.isShippingSubtotal?0:l.expected),0)+quotedShip;
+        const totalActual=costLines.reduce((a,l)=>a+(l.isShippingSubtotal?0:l.actual),0);
         const variance=totalActual-totalExpected;
-        const cats={};costLines.forEach(l=>{if(!cats[l.category])cats[l.category]={expected:0,actual:0};cats[l.category].expected+=l.expected;cats[l.category].actual+=l.actual});
+        const cats={};costLines.forEach(l=>{if(l.isShippingSubtotal)return;if(!cats[l.category])cats[l.category]={expected:0,actual:0};cats[l.category].expected+=l.expected;cats[l.category].actual+=l.actual});if(cats['Shipping'])cats['Shipping'].expected=quotedShip;
 
         return<div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between'}}>
           <h2>💰 Cost Breakdown — Expected vs Actual</h2>
@@ -5214,16 +5263,23 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           </div>
           <table><thead><tr><th>Category</th><th>Item / Service</th><th>Vendor</th><th style={{textAlign:'right'}}>Qty</th><th style={{textAlign:'right'}}>Expected</th><th style={{textAlign:'right'}}>Actual</th><th style={{textAlign:'right'}}>Variance</th><th>PO(s)</th></tr></thead>
             <tbody>{costLines.map((l,i)=>{const diff=l.actual-l.expected;
-              return<tr key={i} style={{background:diff>0?'#fef2f210':''}}>
+              if(l.isShippingSubtotal){return<tr key={i} style={{background:'#f0fdf4',borderTop:'1px solid #bbf7d0'}}>
+                <td></td><td style={{fontWeight:700,fontSize:12,color:'#166534'}}>{l.name}</td><td></td><td></td>
+                <td style={{textAlign:'right',fontWeight:700,color:'#166534'}}>${l.expected.toFixed(2)}</td>
+                <td style={{textAlign:'right',fontWeight:700,color:'#166534'}}>${l.actual.toFixed(2)}</td>
+                <td style={{textAlign:'right',fontWeight:700,color:diff>0?'#dc2626':diff<0?'#166534':'#94a3b8'}}>{(diff>0?'+':diff<0?'-':'')+'$'+Math.abs(diff).toFixed(2)}</td>
+                <td></td>
+              </tr>}
+              return<tr key={i} style={{background:diff>0&&!l.isShippingDetail?'#fef2f210':''}}>
                 <td><span style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:600,
                   background:l.category==='Blanks'?'#dbeafe':l.category==='Outside Deco'?'#ede9fe':l.category==='Shipping'?'#dcfce7':'#fef3c7',
                   color:l.category==='Blanks'?'#1e40af':l.category==='Outside Deco'?'#7c3aed':l.category==='Shipping'?'#166534':'#92400e'}}>{l.category}</span></td>
                 <td><span style={{fontFamily:'monospace',fontWeight:700,color:'#475569',marginRight:6}}>{l.sku}</span>{l.name}</td>
                 <td style={{fontSize:11,color:'#64748b'}}>{l.vendor}</td>
                 <td style={{textAlign:'right',fontWeight:600}}>{l.qty}</td>
-                <td style={{textAlign:'right'}}>${l.expected.toFixed(2)}</td>
+                <td style={{textAlign:'right'}}>{l.isShippingDetail?'—':'$'+l.expected.toFixed(2)}</td>
                 <td style={{textAlign:'right',fontWeight:700,color:l.actual>0?'#0f172a':'#94a3b8'}}>{l.actual>0?'$'+l.actual.toFixed(2):l.isShipping?'$0.00':'—'}</td>
-                <td style={{textAlign:'right',fontWeight:700,color:diff>0?'#dc2626':diff<0?'#166534':'#94a3b8'}}>{l.poCount>0||l.isShipping?(diff>0?'+':diff<0?'-':'')+'$'+Math.abs(diff).toFixed(2):'—'}</td>
+                <td style={{textAlign:'right',fontWeight:700,color:diff>0?'#dc2626':diff<0?'#166534':'#94a3b8'}}>{l.isShippingDetail?'—':l.poCount>0||l.isShipping?(diff>0?'+':diff<0?'-':'')+'$'+Math.abs(diff).toFixed(2):'—'}</td>
                 <td style={{fontSize:11,color:'#7c3aed',fontWeight:600}}>{l.poIds||<span style={{color:'#94a3b8'}}>No PO</span>}</td>
               </tr>})}</tbody>
             <tfoot><tr style={{fontWeight:800}}>
@@ -8071,7 +8127,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   {tab==='activity'&&<>
     {/* Active SOs with fulfillment progress + nested jobs */}
     {custSOs.filter(s=>calcSOStatus(s)!=='complete').length>0&&<div className="card" style={{marginBottom:12}}><div className="card-header"><h2>Active Sales Orders</h2></div><div className="card-body" style={{padding:0}}>
-      <table style={{fontSize:12}}><thead><tr><th>SO</th><th>Memo</th>{isP&&<th>Customer</th>}{isP&&<th>Rep</th>}<th>Status</th><th>Items</th><th>Fulfillment</th><th>Expected</th></tr></thead><tbody>
+      <table style={{fontSize:12}}><thead><tr><th>SO</th><th>Memo</th>{isP&&<th>Customer</th>}{isP&&<th>Rep</th>}<th>Status</th><th>Items</th><th>Fulfillment</th><th style={{textAlign:'right'}}>Total</th><th>Expected</th></tr></thead><tbody>
       {custSOs.filter(s=>calcSOStatus(s)!=='complete').map(so=>{
         const st=calcSOStatus(so);const stL={need_order:'Need to Order',waiting_receive:'Waiting to Receive',needs_pull:'Needs Pull',items_received:'Items Received',in_production:'In Production',ready_to_invoice:'Ready to Invoice',complete:'Complete'};
         let totalU=0,fulU=0;
@@ -8081,6 +8137,9 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         const jobs=so.jobs||[];
         const subC=allCustomers.find(c=>c.id===so.customer_id);
         const rep=REPS.find(r=>r.id===(subC?.primary_rep_id||so.created_by));
+        const af=safeArt(so);const aq={};safeItems(so).forEach(it2=>{const q2=Object.values(safeSizes(it2)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it2).forEach(d=>{if(d.kind==='art'&&d.art_file_id){aq[d.art_file_id]=(aq[d.art_file_id]||0)+q2}})});
+        let soRev=0;safeItems(so).forEach(it2=>{const q2=Object.values(safeSizes(it2)).reduce((a,v)=>a+safeNum(v),0);if(!q2)return;soRev+=q2*safeNum(it2.unit_sell);safeDecos(it2).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?aq[d.art_file_id]:q2;const dp2=dP(d,q2,af,cq);const eq=dp2._nq!=null?dp2._nq:(d.reversible?q2*2:q2);soRev+=eq*dp2.sell})});
+        const soShip=so.shipping_type==='pct'?soRev*(so.shipping_value||0)/100:(so.shipping_value||0);const soTax=soRev*(subC?.tax_exempt?0:(subC?.tax_rate||0));const soGrand=soRev+soShip+soTax;
         const jobArtLabels={needs_art:'Needs Art',waiting_approval:'Wait Approval',art_complete:'Art ✓'};
         const jobProdLabels={hold:'Ready',staging:'In Line',in_process:'In Process',completed:'Done',shipped:'Shipped'};
         const jobItemLabels={need_to_order:'Need Order',partially_received:'Partial',items_received:'Received'};
@@ -8095,6 +8154,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
             <td><div style={{display:'flex',alignItems:'center',gap:6}}>
               <div style={{width:60,background:'#e2e8f0',borderRadius:3,height:5,overflow:'hidden'}}><div style={{height:5,borderRadius:3,background:pct>=100?'#22c55e':pct>50?'#3b82f6':'#f59e0b',width:pct+'%'}}/></div>
               <span style={{fontSize:11,fontWeight:600}}>{pct}% ({fulU}/{totalU})</span></div></td>
+            <td style={{textAlign:'right',fontWeight:700,color:'#1e293b'}}>${soGrand.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</td>
             <td style={{color:daysOut!=null&&daysOut<=7?'#dc2626':'#64748b',fontWeight:daysOut!=null&&daysOut<=7?700:400}}>{so.expected_date||'—'}{daysOut!=null&&daysOut>=0&&<span style={{fontSize:10,color:'#94a3b8',marginLeft:4}}>({daysOut}d)</span>}</td>
           </tr>
           {/* Nested jobs under this SO */}
@@ -8110,9 +8170,10 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
             <td><div style={{display:'flex',alignItems:'center',gap:4}}>
               <div style={{width:40,background:'#e2e8f0',borderRadius:3,height:4,overflow:'hidden'}}><div style={{height:4,borderRadius:3,background:j.fulfilled_units>=j.total_units?'#22c55e':j.fulfilled_units>0?'#f59e0b':'#e2e8f0',width:(j.total_units>0?j.fulfilled_units/j.total_units*100:0)+'%'}}/></div>
               <span style={{fontSize:10}}>{j.fulfilled_units}/{j.total_units}</span></div></td>
+            <td/>
             <td><span style={{padding:'1px 5px',borderRadius:8,fontSize:9,fontWeight:600,background:SC[j.prod_status]?.bg||'#f1f5f9',color:SC[j.prod_status]?.c||'#64748b'}}>{jobProdLabels[j.prod_status]||j.prod_status}</span></td>
           </tr>)}
-          {jobs.length===0&&<tr style={{background:'#f8fafc'}}><td colSpan={isP?8:6} style={{paddingLeft:28,fontSize:10,color:'#94a3b8',fontStyle:'italic'}}>No decorations assigned yet</td></tr>}
+          {jobs.length===0&&<tr style={{background:'#f8fafc'}}><td colSpan={isP?9:7} style={{paddingLeft:28,fontSize:10,color:'#94a3b8',fontStyle:'italic'}}>No decorations assigned yet</td></tr>}
         </React.Fragment>})}
       </tbody></table>
     </div></div>}
@@ -11404,6 +11465,8 @@ export default function App(){
   const[favSkus,setFavSkus]=useState(()=>{try{return JSON.parse(localStorage.getItem('nsa_fav_skus')||'[]')}catch{return[]}});
   const toggleFav=sku=>{setFavSkus(f=>{const n=f.includes(sku)?f.filter(s=>s!==sku):[...f,sku];try{localStorage.setItem('nsa_fav_skus',JSON.stringify(n))}catch{}return n})};
   const[iShowFav,setIShowFav]=useState(false);
+  const[dismissedNotifs,setDismissedNotifs]=useState(()=>{try{return JSON.parse(localStorage.getItem('nsa_dismissed_notifs')||'[]')}catch{return[]}});
+  const dismissNotif=(key)=>{setDismissedNotifs(prev=>{const n=[...prev,key];try{localStorage.setItem('nsa_dismissed_notifs',JSON.stringify(n))}catch{}return n})};
   const[cu,setCu]=useState(()=>{try{const s=localStorage.getItem('nsa_user');return s?JSON.parse(s):null}catch{return null}});
   const handleLogin=(user)=>{setCu(user);try{localStorage.setItem('nsa_user',JSON.stringify(user))}catch{}};
   const handleLogout=()=>{setCu(null);try{localStorage.removeItem('nsa_user')}catch{}};
@@ -11937,19 +12000,29 @@ export default function App(){
       const shipPref=so.ship_preference||'ship_as_ready';
       const shipDateReady=shipPref!=='ship_on_date'||!so.ship_on_date||(new Date(so.ship_on_date)<=new Date());
       const allJobs=safeJobs(so);
+      // Calculate already-shipped units for this SO
+      const soShippedByItem={};(so._shipments||[]).forEach(shp=>{(shp.items||[]).forEach(it=>{
+        const key=it.sku+'|'+(it.color||'');const szQty=Object.values(it.sizes||{}).reduce((a,v)=>a+safeNum(v),0);
+        soShippedByItem[key]=(soShippedByItem[key]||0)+szQty;
+      })});
       allJobs.forEach(j=>{
-        if(j.prod_status==='completed'){
-          // Check if all sibling jobs (sharing any item_idx) are also done
-          const jobItemIdxs=new Set((j.items||[]).map(it=>it.item_idx));
-          const siblingJobs=allJobs.filter(j2=>j2.id!==j.id&&j2.prod_status!=='draft'&&(j2.items||[]).some(it=>jobItemIdxs.has(it.item_idx)));
-          const allSiblingsDone=siblingJobs.every(j2=>j2.prod_status==='completed'||j2.prod_status==='shipped');
-          if(!allSiblingsDone){
-            // Sibling jobs still in progress — this item stays in production queue, not ready to ship
-            // But add to deco tasks so production knows it's waiting for the next job
-          } else if(shipPref!=='rep_delivery'&&shipPref!=='wait_complete'&&shipDateReady){
-            shipTasks.push({so,soId:so.id,type:'deco_done',job:j,cName,alpha,rep,daysOut,urgent,
-              desc:j.art_name+' ('+j.deco_type?.replace(/_/g,' ')+')',units:j.total_units,
-              shipMethod:j.ship_method||'pending',shipPref});
+        if(j.prod_status==='completed'||j.prod_status==='shipped'){
+          // Calculate remaining unshipped units for this job
+          const jobTotalShipped=(j.items||[]).reduce((a,gi)=>{const key=gi.sku+'|'+(gi.color||'');return a+(soShippedByItem[key]||0)},0);
+          const remainingUnits=j.total_units-jobTotalShipped;
+          if(remainingUnits<=0&&j.prod_status==='shipped'){}// Fully shipped — skip
+          else {
+            // Check if all sibling jobs (sharing any item_idx) are also done
+            const jobItemIdxs=new Set((j.items||[]).map(it=>it.item_idx));
+            const siblingJobs=allJobs.filter(j2=>j2.id!==j.id&&j2.prod_status!=='draft'&&(j2.items||[]).some(it=>jobItemIdxs.has(it.item_idx)));
+            const allSiblingsDone=siblingJobs.every(j2=>j2.prod_status==='completed'||j2.prod_status==='shipped');
+            if(!allSiblingsDone){
+              // Sibling jobs still in progress — this item stays in production queue, not ready to ship
+            } else if(shipPref!=='rep_delivery'&&shipPref!=='wait_complete'&&shipDateReady){
+              shipTasks.push({so,soId:so.id,type:'deco_done',job:j,cName,alpha,rep,daysOut,urgent,
+                desc:j.art_name+' ('+j.deco_type?.replace(/_/g,' ')+')',units:remainingUnits>0?remainingUnits:j.total_units,
+                shipMethod:j.ship_method||'pending',shipPref});
+            }
           }
         }
         // Deco tasks — include jobs waiting for sibling completion
@@ -12037,6 +12110,8 @@ export default function App(){
           if(needsArt){todos.push({type:'items_received_needs_art',priority:1,msg:'📦 All items received — art needs attention: '+j.art_name,detail:tag+' · '+so.id+' · Art: '+(j.art_status||'needs_art').replace(/_/g,' '),so,jobId:j.id,action:'Review art',role:'sales'})}
           else{todos.push({type:'items_received',priority:3,msg:'📦 All items received: '+j.art_name,detail:tag+' · '+so.id+' · '+j.total_units+' units ready',so,jobId:j.id,action:'View',role:'sales',isNotification:true})}
         }
+        // Notify rep when a job is completed (decoration done)
+        if(j.prod_status==='completed'){todos.push({type:'job_completed',priority:3,msg:'🏭 Job completed: '+j.art_name,detail:tag+' · '+so.id+' · '+j.total_units+' units — ready to ship',so,jobId:j.id,repId:_repId,action:'View',role:'sales',isNotification:true})}
       });
       safeFirm(so).filter(f=>!f.approved).forEach(f=>{todos.push({type:'firm',priority:2,msg:'📌 Firm date request: '+(f.item_desc||'Full order'),detail:tag+' · '+so.id+' · '+f.date,so,action:'Approve',role:'gm'})});
       if(so.expected_date){const dOut=Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24));
@@ -12187,14 +12262,15 @@ export default function App(){
             </div>})}
         </div></div>
     </div>
-    {notifs.length>0&&<div className="card" style={{marginBottom:16}}><div className="card-header"><h2>🔔 Notifications ({notifs.length})</h2></div>
+    {(()=>{const visNotifs=notifs.filter(t=>!dismissedNotifs.includes(t.msg+'||'+t.detail));return visNotifs.length>0&&<div className="card" style={{marginBottom:16}}><div className="card-header"><h2>🔔 Notifications ({visNotifs.length})</h2></div>
       <div className="card-body" style={{padding:0,maxHeight:260,overflow:'auto'}}>
-        {notifs.map((t,i)=><div key={i} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer',background:'#f0fdf4'}} onClick={()=>{if(t.so){if(t.jobId){const jIdx=safeJobs(t.so).findIndex(jj=>jj.id===t.jobId);setESOTab('jobs');setESOScrollJob(jIdx>=0?jIdx:null)}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
+        {visNotifs.map((t,i)=><div key={i} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer',background:'#f0fdf4'}} onClick={()=>{if(t.so){if(t.jobId){const jIdx=safeJobs(t.so).findIndex(jj=>jj.id===t.jobId);setESOTab('jobs');setESOScrollJob(jIdx>=0?jIdx:null)}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
           <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}</div></div>
+          <button title="Dismiss" style={{background:'none',border:'1px solid #bbf7d0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:14,color:'#16a34a',display:'flex',alignItems:'center'}} onClick={e=>{e.stopPropagation();dismissNotif(t.msg+'||'+t.detail)}}>✓</button>
           <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#dcfce7',color:'#166534',fontWeight:600,whiteSpace:'nowrap'}}>{t.action}</span>
         </div>)}
       </div>
-    </div>}
+    </div>})()}
     </>})()}
     {/* Assigned Tasks for Admin */}
     {myAssignedTodos.length>0&&<div className="card" style={{marginBottom:16}}>
@@ -12255,10 +12331,11 @@ export default function App(){
         </div></div>
     </div>
     {(()=>{const completedTaskNotifs=assignedTodos.filter(t=>t.status==='completed'&&t.created_by===cu.id&&t.completed_by&&t.completed_by!==cu.id&&t.completed_at&&Math.floor((new Date()-new Date(t.completed_at))/(1000*60*60*24))<=7);const allNotifs=[...myNotifs.map(t=>({...t,_key:'sys-'+t.msg})),...completedTaskNotifs.map(t=>{const completedBy=REPS.find(r=>r.id===t.completed_by);const daysAgo=Math.floor((new Date()-new Date(t.completed_at))/(1000*60*60*24));return{_key:'task-'+t.id,msg:'✅ Task completed: '+t.title,detail:(completedBy?.name||'Unknown')+(t.completion_note?' — '+t.completion_note:'')+(daysAgo===0?' · Today':' · '+daysAgo+'d ago'),action:'View',isTaskComplete:true,todoId:t.id}})];
-    return allNotifs.length>0&&<div className="card" style={{marginBottom:16}}><div className="card-header"><h2>🔔 Notifications ({allNotifs.length})</h2></div>
+    const visNotifs=allNotifs.filter(t=>!dismissedNotifs.includes(t.msg+'||'+t.detail));return visNotifs.length>0&&<div className="card" style={{marginBottom:16}}><div className="card-header"><h2>🔔 Notifications ({visNotifs.length})</h2></div>
       <div className="card-body" style={{padding:0,maxHeight:260,overflow:'auto'}}>
-        {allNotifs.map((t,i)=><div key={t._key||i} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer',background:'#f0fdf4'}} onClick={()=>{if(t.isTaskComplete){setTodoDetailId(t.todoId)}else if(t.so){if(t.jobId){const jIdx=safeJobs(t.so).findIndex(jj=>jj.id===t.jobId);setESOTab('jobs');setESOScrollJob(jIdx>=0?jIdx:null)}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
+        {visNotifs.map((t,i)=><div key={t._key||i} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer',background:'#f0fdf4'}} onClick={()=>{if(t.isTaskComplete){setTodoDetailId(t.todoId)}else if(t.so){if(t.jobId){const jIdx=safeJobs(t.so).findIndex(jj=>jj.id===t.jobId);setESOTab('jobs');setESOScrollJob(jIdx>=0?jIdx:null)}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
           <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}</div></div>
+          <button title="Dismiss" style={{background:'none',border:'1px solid #bbf7d0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:14,color:'#16a34a',display:'flex',alignItems:'center'}} onClick={e=>{e.stopPropagation();dismissNotif(t.msg+'||'+t.detail)}}>✓</button>
           <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#dcfce7',color:'#166534',fontWeight:600,whiteSpace:'nowrap'}}>{t.action}</span>
         </div>)}
       </div>
@@ -13699,7 +13776,13 @@ export default function App(){
   const applyJobMove=(j,newStatus,machine,person)=>{
     const so=sos.find(s=>s.id===j.soId);
     if(!so)return;
-    const updatedJobs=safeJobs(so).map(jj=>jj.id===j.id?{...jj,prod_status:newStatus,assigned_machine:machine||jj.assigned_machine,assigned_to:person||jj.assigned_to}:jj);
+    const updatedJobs=safeJobs(so).map(jj=>{
+      if(jj.id!==j.id)return jj;
+      const upd={...jj,prod_status:newStatus,assigned_machine:machine||jj.assigned_machine,assigned_to:person||jj.assigned_to};
+      // When completing a dual-run job, mark all runs as done
+      if(newStatus==='completed'&&jj.run_order){if(!jj.run1_done)upd.run1_done=true;if(!jj.run2_done)upd.run2_done=true}
+      return upd;
+    });
     savSO({...so,jobs:updatedJobs});
     // Auto-clock-in when moving to in_process
     if(newStatus==='in_process'){
@@ -13944,7 +14027,7 @@ export default function App(){
                       </div>
                       {/* Mark run done — reassign to another decorator and move back to In Line */}
                       {!j.run1_done&&<button className="btn btn-sm" style={{fontSize:9,padding:'3px 8px',marginTop:4,background:'#166534',color:'white',border:'none',width:'100%'}} onClick={e=>{e.stopPropagation();updateJobField(j,{run1_done:true});applyJobMove(j,'staging',j.assigned_machine||'',j.assigned_to||'');setAssignModal({job:j,soId:j.soId,targetStatus:'staging'});setAssignTo({machine:j.assigned_machine||'',person:''});nf(rl.run1+' done — reassign for '+rl.run2)}}>Mark {rl.run1} Done</button>}
-                      {j.run1_done&&!j.run2_done&&<button className="btn btn-sm" style={{fontSize:9,padding:'3px 8px',marginTop:4,background:'#166534',color:'white',border:'none',width:'100%'}} onClick={e=>{e.stopPropagation();updateJobField(j,{run2_done:true});nf(rl.run2+' run complete — job fully decorated')}}>Mark {rl.run2} Done</button>}
+                      {j.run1_done&&!j.run2_done&&<button className="btn btn-sm" style={{fontSize:9,padding:'3px 8px',marginTop:4,background:'#166534',color:'white',border:'none',width:'100%'}} onClick={e=>{e.stopPropagation();updateJobField(j,{run2_done:true});moveJobStatus(j,'completed')}}>Mark {rl.run2} Done</button>}
                     </div>})()}
                   </div>}
 
@@ -14335,7 +14418,7 @@ export default function App(){
                     <div style={{fontSize:11,fontWeight:700,color:j.run2_done?'#166534':j.run1_done?'#1e40af':'#94a3b8',textTransform:'uppercase',letterSpacing:1,marginBottom:4}}>Run 2</div>
                     <div style={{fontSize:20,fontWeight:800,color:j.run2_done?'#166534':j.run1_done?'#1e40af':'#94a3b8'}}>{rl.run2}</div>
                     <div style={{fontSize:12,fontWeight:700,color:j.run2_done?'#166534':j.run1_done?'#3b82f6':'#94a3b8',marginTop:4}}>{j.run2_done?'Completed':j.run1_done?'In Progress':'Pending'}</div>
-                    {j.run1_done&&!j.run2_done&&<button className="btn" style={{marginTop:8,padding:'8px 16px',fontSize:12,fontWeight:800,background:'#166534',color:'white',border:'none',borderRadius:6,width:'100%'}} onClick={()=>{updateJobField(j,{run2_done:true});nf(rl.run2+' run complete — job fully decorated')}}>Mark {rl.run2} Done</button>}
+                    {j.run1_done&&!j.run2_done&&<button className="btn" style={{marginTop:8,padding:'8px 16px',fontSize:12,fontWeight:800,background:'#166534',color:'white',border:'none',borderRadius:6,width:'100%'}} onClick={()=>{updateJobField(j,{run2_done:true});moveJobStatus(j,'completed')}}>Mark {rl.run2} Done</button>}
                   </div>
                 </div>
                 {!j.run1_done&&<button style={{fontSize:11,color:'#7c3aed',cursor:'pointer',background:'none',border:'none',padding:0,textDecoration:'underline',fontWeight:600}} onClick={()=>{updateJobField(j,{run_order:j.run_order==='art_first'?'numbers_first':'art_first'});nf('Switched to '+(j.run_order==='art_first'?'Numbers':'Artwork')+' first')}}>Switch run order</button>}
@@ -17592,7 +17675,7 @@ export default function App(){
       return true;
     });
     const fPull=filt(pullTasks);const fShip=filt(shipTasks);
-    const readyForDeco=decoTasks.filter(t=>t.isReady);const fDeco=filt(readyForDeco);
+    const readyForDeco=decoTasks.filter(t=>t.isReady&&(t.prodStatus==='hold'||t.prodStatus==='draft'));const fDeco=filt(readyForDeco);
     const openStockPOs=stockPOs.filter(p=>p.status!=='received');
     // Count awaiting pickup shipments for tab badge
     const awaitingPickupCount=(()=>{let c=0;sos.filter(so=>so._shipments&&so._shipments.length>0&&!so.deleted_at).forEach(so=>{(so._shipments||[]).forEach(shp=>{if(shp.tracking_number&&!shp.carrier_picked_up)c++})});return c})();
@@ -17787,8 +17870,9 @@ export default function App(){
                   <div style={{display:'flex',gap:12,marginBottom:10,flexWrap:'wrap',alignItems:'flex-end'}}>
                     <div>
                       <label style={{fontSize:10,color:'#64748b',fontWeight:600,display:'block',marginBottom:2}}>Weight (lbs)</label>
-                      <input className="form-input" type="number" min="0.1" step="0.5" value={box.weight||5} style={{width:70,fontSize:12,padding:'5px 8px'}}
-                        onChange={e=>{const b=[...boxes];b[bi]={...b[bi],weight:parseFloat(e.target.value)||5};setBoxes(b)}}/>
+                      <input className="form-input" type="number" min="0.1" step="0.5" value={box.weight===''||box.weight===undefined?'':box.weight} style={{width:70,fontSize:12,padding:'5px 8px'}}
+                        onChange={e=>{const b=[...boxes];b[bi]={...b[bi],weight:e.target.value===''?'':parseFloat(e.target.value)};setBoxes(b)}}
+                        onBlur={e=>{if(!e.target.value||isNaN(parseFloat(e.target.value))){const b=[...boxes];b[bi]={...b[bi],weight:5};setBoxes(b)}}}/>
                     </div>
                     <div>
                       <label style={{fontSize:10,color:'#64748b',fontWeight:600,display:'block',marginBottom:2}}>Dimensions (in)</label>
@@ -17841,14 +17925,26 @@ export default function App(){
                           const label=await createShipStationLabel(so,c,box.items,box.weight,box.carrier,null,box.dimensions);
                           const b=[...boxes];
                           const cost=label.shipmentCost||label.insuranceCost?parseFloat(label.shipmentCost||0)+parseFloat(label.insuranceCost||0):null;
-                          b[bi]={...b[bi],tracking_number:label.trackingNumber||'',carrier:label.carrierCode||box.carrier,label_url:label.labelData?.href||null,shipping_cost:cost};
+                          const labelUrl2=label.labelData?(typeof label.labelData==='string'&&label.labelData.length>200?'data:application/pdf;base64,'+label.labelData:label.labelData?.href||null):null;
+                          const labelDl2=label.labelDownload||labelUrl2||null;
+                          b[bi]={...b[bi],tracking_number:label.trackingNumber||'',carrier:label.carrierCode||box.carrier,label_url:labelDl2,shipstation_shipment_id:label.shipmentId||null,shipping_cost:cost};
                           setBoxes(b);
                           if(cost){setSOs(prev=>prev.map(s=>s.id===so.id?{...s,_shipping_cost:(safeNum(s._shipping_cost)||0)+cost}:s))}
                           nf('✅ Label created! Tracking: '+(label.trackingNumber||'pending')+(cost?' · Cost: $'+cost.toFixed(2):''));
+                          // Auto-open label for printing
+                          if(labelDl2){
+                            if(labelDl2.startsWith('data:application/pdf')){
+                              const iframe=document.createElement('iframe');iframe.style.display='none';document.body.appendChild(iframe);
+                              iframe.src=labelDl2;iframe.onload=()=>{try{iframe.contentWindow.print()}catch(e){const a2=document.createElement('a');a2.href=labelDl2;a2.download='label.pdf';a2.click()}
+                                setTimeout(()=>{try{document.body.removeChild(iframe)}catch{}},60000)};
+                            } else {const pw=window.open(labelDl2,'_blank');if(pw)setTimeout(()=>{try{pw.print()}catch(e){}},1500)}
+                          }
                         }catch(err){nf('Label creation failed: '+err.message,'error')}
                       }}>🏷️ Create Label</button>}
                   </div>
-                  {box.label_url&&<div style={{marginTop:6}}><a href={box.label_url} target="_blank" rel="noreferrer" className="btn btn-sm btn-secondary" style={{fontSize:11}}>📄 Download Label</a></div>}
+                  {box.label_url&&<div style={{marginTop:6}}><button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>{
+                    if(box.label_url.startsWith('data:')){const a=document.createElement('a');a.href=box.label_url;a.download='label.pdf';a.click()}
+                    else window.open(box.label_url,'_blank')}}>📄 Download Label</button></div>}
                   {box.shipping_cost&&<div style={{marginTop:4,fontSize:11,color:'#166534',fontWeight:600}}>Shipping cost: ${box.shipping_cost.toFixed(2)}</div>}
                 </div>})}
 
@@ -18294,7 +18390,11 @@ export default function App(){
                   }
 
                   setWhReceiving(false);
-                  if(anyReceived){nf('Received '+totalQtyReceived+' unit'+(totalQtyReceived!==1?'s':'')+' on '+poId);
+                  if(anyReceived){
+                    // Log receive to recent actions
+                    const soIds=[...new Set(poItems.filter(it=>it.soId).map(it=>it.soId))];const custNames=[...new Set(poItems.filter(it=>it.customer).map(it=>it.customer))];
+                    addWhAction({type:'received',poId,soId:soIds.join(', ')||'',customer:custNames.join(', ')||vendorName||'',sku:poItems.map(it=>it.sku).join(', '),name:poItems[0]?.name||'',color:poItems[0]?.color||'',qty:totalQtyReceived,sizes:'',by:cu?.id||'warehouse'});
+                    nf('Received '+totalQtyReceived+' unit'+(totalQtyReceived!==1?'s':'')+' on '+poId);
                     // Auto-print 4x6 label on receive (same as IF pull label)
                     const scanUrl=window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(poId);
                     const qrUrl='https://api.qrserver.com/v1/create-qr-code/?size=150x150&data='+encodeURIComponent(scanUrl);
@@ -18397,8 +18497,6 @@ export default function App(){
             <th>Job</th><th>Customer</th><th>Art / Deco</th><th>Items</th><th style={{textAlign:'center'}}>Units</th><th style={{textAlign:'center'}}>Machine</th><th>Rep</th><th style={{textAlign:'center'}}>Due</th><th></th>
           </tr></thead><tbody>
             {fDeco.map((t,i)=>{
-              const SC2={hold:{bg:'#f1f5f9',c:'#64748b'},staging:{bg:'#fef3c7',c:'#92400e'},in_process:{bg:'#dbeafe',c:'#1e40af'},completed:{bg:'#dcfce7',c:'#166534'}};
-              const prodLabels={hold:'Ready',staging:'Staged',in_process:'In Process',completed:'Done'};
               return<tr key={t.job?.id||i} style={{background:t.urgent?'#fef2f2':'',cursor:'pointer'}} onClick={()=>{const so2=sos.find(s=>s.id===t.soId);if(so2){const c2=cust.find(cc=>cc.id===so2.customer_id);setESO(so2);setESOC(c2);setESOTab('jobs');setPg('orders')}}}>
                 <td style={{fontWeight:700,color:'#7c3aed'}}>{t.job?.id||'—'}</td>
                 <td><div style={{fontWeight:600}}>{t.cName}</div><div style={{fontSize:10,color:'#94a3b8'}}>{t.soId}</div></td>
@@ -18408,12 +18506,13 @@ export default function App(){
                 <td style={{textAlign:'center'}}>{t.machine?<span style={{fontSize:10,padding:'2px 6px',borderRadius:4,background:'#ede9fe',color:'#6d28d9'}}>{t.machine}</span>:<span style={{fontSize:10,color:'#94a3b8'}}>Unassigned</span>}</td>
                 <td style={{fontSize:11}}>{t.rep}</td>
                 <td style={{textAlign:'center'}}>{t.daysOut!=null?<span style={{padding:'2px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:t.urgent?'#fee2e2':t.daysOut<=7?'#fef3c7':'#dcfce7',color:t.urgent?'#dc2626':t.daysOut<=7?'#92400e':'#166534'}}>{t.daysOut}d</span>:'—'}</td>
-                <td><span style={{padding:'2px 6px',borderRadius:8,fontSize:9,fontWeight:600,background:SC2[t.prodStatus]?.bg||'#f1f5f9',color:SC2[t.prodStatus]?.c||'#64748b'}}>{prodLabels[t.prodStatus]||t.prodStatus}</span></td>
+                <td><button className="btn btn-sm" style={{fontSize:10,padding:'3px 10px',background:'#7c3aed',color:'white',border:'none',borderRadius:6,fontWeight:600,whiteSpace:'nowrap'}}
+                  onClick={e=>{e.stopPropagation();if(t.job)moveJobStatus(t.job,'staging')}}>Move to Deco →</button></td>
               </tr>})}
           </tbody></table>
         </div></div>
         <div style={{marginTop:8,padding:8,background:'#f5f3ff',borderRadius:6,fontSize:11,color:'#6d28d9'}}>
-          ✅ All items received + Art approved = Ready for decoration. Click a row to open the SO and assign to a machine.
+          ✅ All items received + Art approved = Ready for decoration. Click "Move to Deco" to send to the production board, or click a row to open the SO.
         </div>
         </>}
       </>}
@@ -18455,33 +18554,47 @@ export default function App(){
                         onClick={()=>{setESOTab(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}}>{soId}</span>
                       {grp.items.find(t=>t.soId===soId)?.urgent&&<span style={{fontSize:10}}>🔥</span>}
                     </div>
-                    <table style={{fontSize:11,width:'100%',borderCollapse:'collapse'}}><tbody>
+                    {(()=>{
+                      // Calculate already-shipped quantities per SKU+color for this SO
+                      const shippedBySz={};(so._shipments||[]).forEach(shp=>{(shp.items||[]).forEach(it=>{
+                        const key=it.sku+'|'+(it.color||'');if(!shippedBySz[key])shippedBySz[key]={};
+                        Object.entries(it.sizes||{}).forEach(([sz,v])=>{shippedBySz[key][sz]=(shippedBySz[key][sz]||0)+safeNum(v)});
+                      })});
+                      return<table style={{fontSize:11,width:'100%',borderCollapse:'collapse'}}><tbody>
                       {safeItems(so).map((item,ii)=>{
-                        const szObj=safeSizes(item);
-                        const totalQty=Object.values(szObj).reduce((a,v)=>a+safeNum(v),0);
+                        const szObj=safeSizes(item);const key=item.sku+'|'+(item.color||'');const shipped=shippedBySz[key]||{};
+                        const remainSz={};Object.entries(szObj).forEach(([sz,v])=>{const rem=safeNum(v)-safeNum(shipped[sz]);if(rem>0)remainSz[sz]=rem});
+                        const totalQty=Object.values(remainSz).reduce((a,v)=>a+v,0);
                         if(totalQty<=0)return null;
-                        const szStr=Object.entries(szObj).filter(([,v])=>v>0).map(([sz,v])=>sz+':'+v).join('  ');
+                        const szStr=Object.entries(remainSz).filter(([,v])=>v>0).sort((a,b)=>{const ai=SZ_ORD.indexOf(a[0].toUpperCase()),bi2=SZ_ORD.indexOf(b[0].toUpperCase());return(ai<0?99:ai)-(bi2<0?99:bi2)}).map(([sz,v])=>sz+':'+v).join('  ');
                         return<tr key={ii} style={{borderBottom:'1px solid #f1f5f9'}}>
                           <td style={{padding:'3px 0',fontWeight:700,whiteSpace:'nowrap',width:80,color:'#334155'}}>{item.sku}</td>
                           <td style={{fontSize:10,color:'#475569'}}>{item.name}{item.color?' · '+item.color:''}</td>
                           <td style={{fontSize:9,color:'#64748b',fontFamily:'monospace'}}>{szStr}</td>
                           <td style={{textAlign:'center',fontWeight:700,width:40}}>{totalQty}</td>
                         </tr>})}
-                    </tbody></table>
+                    </tbody></table>})()}
                   </div>})}
                 <div style={{display:'flex',gap:6,marginTop:8,borderTop:'1px solid #e2e8f0',paddingTop:6}}>
                   <button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
                     onClick={()=>{
-                      // Build ship modal with all items from SOs in this ready-to-ship group
+                      // Build ship modal with remaining (unshipped) items from SOs
                       const allItems=[];const seen=new Set();
                       Object.entries(grp.soMap).forEach(([soId,so])=>{
+                        // Calculate already-shipped quantities per SKU+color for this SO
+                        const shippedBySz={};(so._shipments||[]).forEach(shp=>{(shp.items||[]).forEach(it=>{
+                          const key2=it.sku+'|'+(it.color||'');if(!shippedBySz[key2])shippedBySz[key2]={};
+                          Object.entries(it.sizes||{}).forEach(([sz,v])=>{shippedBySz[key2][sz]=(shippedBySz[key2][sz]||0)+safeNum(v)});
+                        })});
                         safeItems(so).forEach((item,iIdx)=>{
                           const key=soId+'|'+iIdx;
                           if(seen.has(key))return;
-                          const qty=Object.values(safeSizes(item)).reduce((a,v)=>a+safeNum(v),0);
+                          const szObj=safeSizes(item);const itemKey=item.sku+'|'+(item.color||'');const shipped=shippedBySz[itemKey]||{};
+                          const remainSz={};Object.entries(szObj).forEach(([sz,v])=>{const rem=safeNum(v)-safeNum(shipped[sz]);if(rem>0)remainSz[sz]=rem});
+                          const qty=Object.values(remainSz).reduce((a,v)=>a+v,0);
                           if(qty<=0)return;
                           seen.add(key);
-                          allItems.push({sku:item.sku,name:item.name,color:item.color||'',sizes:{...safeSizes(item)},soId,itemIdx:iIdx});
+                          allItems.push({sku:item.sku,name:item.name,color:item.color||'',sizes:remainSz,soId,itemIdx:iIdx});
                         });
                       });
                       setShipModal({grp,soMap:grp.soMap,availableItems:allItems,boxes:[{items:[],tracking_number:'',carrier:'fedex',weight:5,dimensions:{length:'',width:'',height:''},notes:''}]});
@@ -18572,11 +18685,50 @@ export default function App(){
                     <span style={{fontSize:9,color:'#94a3b8'}}>{shp.ship_date||shp.created_at||''}</span>
                     <div style={{marginLeft:'auto',display:'flex',gap:4}}>
                       {shp.label_url&&<button style={{fontSize:9,background:'#7c3aed',color:'white',border:'none',padding:'3px 8px',borderRadius:4,fontWeight:700,cursor:'pointer'}}
-                        onClick={()=>{const pw=window.open(shp.label_url,'_blank');if(pw)setTimeout(()=>{try{pw.print()}catch(e){}},1500)}}>Print Label</button>}
+                        onClick={()=>{
+                          if(shp.label_url.startsWith('data:application/pdf')){
+                            const iframe=document.createElement('iframe');iframe.style.display='none';document.body.appendChild(iframe);
+                            iframe.src=shp.label_url;iframe.onload=()=>{try{iframe.contentWindow.print()}catch(e){const a=document.createElement('a');a.href=shp.label_url;a.download='label.pdf';a.click()}
+                              setTimeout(()=>{try{document.body.removeChild(iframe)}catch{}},60000)};
+                          } else {const pw=window.open(shp.label_url,'_blank');if(pw)setTimeout(()=>{try{pw.print()}catch(e){}},1500)}
+                        }}>Print Label</button>}
+                      <button style={{fontSize:9,background:'#1e40af',color:'white',border:'none',padding:'3px 8px',borderRadius:4,fontWeight:700,cursor:'pointer'}}
+                        onClick={()=>{
+                          const tn=prompt('Tracking number:',shp.tracking_number||'');if(tn===null)return;
+                          const carrier=prompt('Carrier (ups/fedex/usps):',shp.carrier||'');if(carrier===null)return;
+                          const updatedShipments=(shp.so._shipments||[]).map(s=>s.id===shp.id?{...s,tracking_number:tn,carrier:carrier||s.carrier,tracking_url:tn?('https://www.fedex.com/fedextrack/?trknbr='+tn):''}:s);
+                          savSO({...shp.so,_shipments:updatedShipments});nf('Shipment updated');
+                        }}>Edit</button>
+                      <button style={{fontSize:9,background:'#fee2e2',color:'#dc2626',border:'1px solid #fca5a5',padding:'3px 8px',borderRadius:4,fontWeight:700,cursor:'pointer'}}
+                        onClick={()=>{
+                          if(!window.confirm('Delete this shipment?'))return;
+                          const updatedShipments=(shp.so._shipments||[]).filter(s=>s.id!==shp.id);
+                          // Revert jobs from 'shipped' back to 'completed' and recalc shipping fields
+                          const so2=shp.so;
+                          const revertedJobs=safeJobs(so2).map(jj=>{
+                            if(jj.prod_status!=='shipped')return jj;
+                            // Check if this job still has all units shipped after removing this shipment
+                            const shippedByItem={};updatedShipments.forEach(s=>{(s.items||[]).forEach(it=>{
+                              const k=it.sku+'|'+(it.color||'');shippedByItem[k]=(shippedByItem[k]||0)+Object.values(it.sizes||{}).reduce((a,v)=>a+v,0);
+                            })});
+                            const jobShipped=(jj.items||[]).reduce((a,gi)=>a+(shippedByItem[gi.sku+'|'+(gi.color||'')]||0),0);
+                            return jobShipped>=safeNum(jj.total_units)?jj:{...jj,prod_status:'completed'};
+                          });
+                          const hasShipments=updatedShipments.length>0;
+                          const firstShp=updatedShipments[0];
+                          savSO({...so2,jobs:revertedJobs,_shipments:updatedShipments,
+                            _shipped:false,_shipping_status:hasShipments?'partial':null,
+                            _tracking_number:firstShp?.tracking_number||'',_carrier:firstShp?.carrier||'',
+                            _ship_date:firstShp?.ship_date||'',_tracking_url:firstShp?.tracking_url||'',
+                            _shipping_cost:updatedShipments.reduce((a,s)=>a+safeNum(s.shipping_cost||0),0)||null});
+                          addWhAction({type:'deleted_shipment',soId:shp.soId,customer:shp.cName,tracking:shp.tracking_number||'none',by:cu?.id||'warehouse'});
+                          nf('Shipment deleted');
+                        }}>Delete</button>
                       <button style={{fontSize:9,background:'#166534',color:'white',border:'none',padding:'3px 8px',borderRadius:4,fontWeight:700,cursor:'pointer'}}
                         onClick={()=>{
                           const updatedShipments=(shp.so._shipments||[]).map(s=>s.id===shp.id?{...s,carrier_picked_up:true,pickup_date:new Date().toLocaleString()}:s);
                           savSO({...shp.so,_shipments:updatedShipments});
+                          addWhAction({type:'pickup_confirmed',soId:shp.soId,customer:shp.cName,tracking:shp.tracking_number||'',carrier:shp.carrier||'',by:cu?.id||'warehouse'});
                         }}>Confirm Picked Up</button>
                     </div>
                   </div>
@@ -18656,7 +18808,8 @@ export default function App(){
             <button className="modal-close" onClick={()=>setShipModal(null)} style={{color:'white'}}>×</button>
           </div>
           <div className="modal-body" style={{padding:16}}>
-            <div style={{fontSize:11,color:'#64748b',marginBottom:12}}>SOs: {[...shipModal.grp.soIds].join(', ')} · {shipModal.grp.totalUnits} total units</div>
+            <div style={{fontSize:11,color:'#64748b',marginBottom:8}}>SOs: {[...shipModal.grp.soIds].join(', ')} · {shipModal.grp.totalUnits} total units</div>
+            {(()=>{const soShipCosts=[...shipModal.grp.soIds].map(sid=>{const so2=shipModal.soMap[sid];if(!so2)return null;const c2=cust.find(cc=>cc.id===so2.customer_id);let rev=0;safeItems(so2).forEach(it2=>{const q2=Object.values(safeSizes(it2)).reduce((a,v)=>a+safeNum(v),0);if(!q2)return;rev+=q2*safeNum(it2.unit_sell);safeDecos(it2).forEach(d=>{const dp2=dP(d,q2,safeArt(so2),q2);const eq=dp2._nq!=null?dp2._nq:(d.reversible?q2*2:q2);rev+=eq*dp2.sell})});const ship=so2.shipping_type==='pct'?rev*(so2.shipping_value||0)/100:(so2.shipping_value||0);return{id:sid,ship,type:so2.shipping_type,value:so2.shipping_value}}).filter(Boolean);const totalShip=soShipCosts.reduce((a,s)=>a+s.ship,0);return totalShip>0?<div style={{fontSize:11,color:'#1e40af',fontWeight:600,marginBottom:12,padding:'4px 8px',background:'#eff6ff',borderRadius:4}}>Shipping on order: ${totalShip.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}{soShipCosts.length===1&&soShipCosts[0].type==='pct'?' ('+soShipCosts[0].value+'% of order)':''}</div>:null})()}
 
             {/* Boxes */}
             {shipModal.boxes.map((box,bi)=>{
@@ -18668,8 +18821,9 @@ export default function App(){
                   <div style={{marginLeft:'auto',display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
                     <div style={{display:'flex',alignItems:'center',gap:4}}>
                       <label style={{fontSize:10,color:'#64748b',fontWeight:600}}>Weight (lbs)</label>
-                      <input className="form-input" type="number" min="0.1" step="0.5" value={box.weight||5} style={{width:60,fontSize:11,padding:'3px 6px'}}
-                        onChange={e=>{const b=[...shipModal.boxes];b[bi]={...b[bi],weight:parseFloat(e.target.value)||5};setShipModal({...shipModal,boxes:b})}}/>
+                      <input className="form-input" type="number" min="0.1" step="0.5" value={box.weight===''||box.weight===undefined?'':box.weight} style={{width:60,fontSize:11,padding:'3px 6px'}}
+                        onChange={e=>{const b=[...shipModal.boxes];b[bi]={...b[bi],weight:e.target.value===''?'':parseFloat(e.target.value)};setShipModal({...shipModal,boxes:b})}}
+                        onBlur={e=>{if(!e.target.value||isNaN(parseFloat(e.target.value))){const b=[...shipModal.boxes];b[bi]={...b[bi],weight:5};setShipModal({...shipModal,boxes:b})}}}/>
                     </div>
                     <div style={{display:'flex',alignItems:'center',gap:3}}>
                       <label style={{fontSize:10,color:'#64748b',fontWeight:600}}>Box (in)</label>
@@ -18719,11 +18873,23 @@ export default function App(){
                           setSOs(prev=>prev.map(s=>s.id===soId?{...s,_shipping_cost:existingCost+cost,_shipstation_cost:existingCost+cost}:s));
                         }
                         nf('✅ Label created! Tracking: '+(label.trackingNumber||'pending')+(cost?' · Cost: $'+cost.toFixed(2):''));
+                        addWhAction({type:'label_created',soId:soId,customer:shipModal.grp?.cName||'',tracking:label.trackingNumber||'',carrier:label.carrierCode||box.carrier,cost:cost?'$'+cost.toFixed(2):'',by:cu?.id||'warehouse'});
                         // Auto-open label for printing
-                        if(labelDownload){const pw=window.open(labelDownload,'_blank');if(pw)setTimeout(()=>{try{pw.print()}catch(e){}},1500)}
+                        if(labelDownload){
+                          if(labelDownload.startsWith('data:application/pdf')){
+                            // Use iframe for base64 PDFs — window.open with data URIs shows blank in some browsers
+                            const iframe=document.createElement('iframe');iframe.style.display='none';document.body.appendChild(iframe);
+                            iframe.src=labelDownload;iframe.onload=()=>{try{iframe.contentWindow.print()}catch(e){window.open(labelDownload,'_blank')}
+                              setTimeout(()=>{try{document.body.removeChild(iframe)}catch{}},60000)};
+                          } else {const pw=window.open(labelDownload,'_blank');if(pw)setTimeout(()=>{try{pw.print()}catch(e){}},1500)}
+                        }
                       }catch(err){nf('Label creation failed: '+err.message,'error')}
                     }}>🏷️ Create Label</button>}
                 </div>}
+                {box.label_url&&<div style={{marginTop:6}}><button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>{
+                  if(box.label_url.startsWith('data:')){const a=document.createElement('a');a.href=box.label_url;a.download='label.pdf';a.click()}
+                  else window.open(box.label_url,'_blank')}}>📄 Download Label</button></div>}
+                {box.shipping_cost&&<div style={{marginTop:4,fontSize:11,color:'#166534',fontWeight:600}}>Shipping cost: ${box.shipping_cost.toFixed(2)}</div>}
 
                 {/* Items in this box */}
                 <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6}}>Items in this box</div>
@@ -18745,9 +18911,9 @@ export default function App(){
                       <td style={{padding:'3px 6px',fontSize:10,color:'#64748b'}}>{it.color||'—'}</td>
                       <td style={{padding:'3px 6px'}}>
                         <div style={{display:'flex',gap:3,flexWrap:'wrap'}}>
-                          {Object.entries(it.sizes||{}).filter(([,v])=>v>0).map(([sz,v])=><div key={sz} style={{display:'flex',alignItems:'center',gap:2}}>
-                            <span style={{fontSize:9,color:'#64748b',fontWeight:600}}>{sz}</span>
-                            <input type="number" min="0" value={v} style={{width:32,fontSize:10,textAlign:'center',padding:'1px 2px',border:'1px solid #d1d5db',borderRadius:3}}
+                          {Object.entries(it.sizes||{}).filter(([,v])=>v>0).sort((a,b)=>{const ai=SZ_ORD.indexOf(a[0].toUpperCase()),bi2=SZ_ORD.indexOf(b[0].toUpperCase());return(ai<0?99:ai)-(bi2<0?99:bi2)}).map(([sz,v])=><div key={sz} style={{display:'flex',alignItems:'center',gap:3,background:'#f1f5f9',borderRadius:4,padding:'2px 6px'}}>
+                            <span style={{fontSize:11,color:'#475569',fontWeight:700,minWidth:22}}>{sz}</span>
+                            <input type="number" min="0" value={v} style={{width:44,fontSize:12,textAlign:'center',padding:'3px 4px',border:'1px solid #cbd5e1',borderRadius:4,fontWeight:600}}
                               onChange={e=>{const nv=parseInt(e.target.value)||0;const b=[...shipModal.boxes];const newSizes={...b[bi].items[ii].sizes,[sz]:nv};
                                 b[bi]={...b[bi],items:b[bi].items.map((x,xi)=>xi===ii?{...x,sizes:newSizes}:x)};setShipModal({...shipModal,boxes:b})}}/>
                           </div>)}
@@ -18950,13 +19116,27 @@ export default function App(){
                     }));
                     if(soShipments.length>0){
                       const existing=so._shipments||[];
-                      // Auto-move completed jobs to shipped when warehouse confirms shipment
-                      const updatedJobs=safeJobs(so).map(jj=>jj.prod_status==='completed'?{...jj,prod_status:'shipped'}:jj);
+                      const allShipments=[...existing,...soShipments];
+                      // Calculate total shipped units per item across ALL shipments (existing + new)
+                      const shippedByItem={};allShipments.forEach(shp=>{(shp.items||[]).forEach(it=>{
+                        const key=it.sku+'|'+(it.color||'');const szQty=Object.values(it.sizes||{}).reduce((a,v)=>a+v,0);
+                        shippedByItem[key]=(shippedByItem[key]||0)+szQty;
+                      })});
+                      // Only move completed jobs to shipped if ALL their units have been shipped
+                      const updatedJobs=safeJobs(so).map(jj=>{
+                        if(jj.prod_status!=='completed')return jj;
+                        const jobShipped=(jj.items||[]).reduce((a,gi)=>{
+                          const key=gi.sku+'|'+(gi.color||'');return a+(shippedByItem[key]||0);
+                        },0);
+                        return jobShipped>=jj.total_units?{...jj,prod_status:'shipped'}:jj;
+                      });
+                      const allJobsShipped=updatedJobs.filter(jj=>jj.prod_status!=='draft').every(jj=>jj.prod_status==='shipped');
                       // Compute total shipping cost from all boxes for this SO
                       const boxShipCost=shipModal.boxes.reduce((a,bx)=>a+(bx.shipping_cost||0),0);
                       const existingShipCost=safeNum(so._shipping_cost||so._shipstation_cost||0);
                       const totalShipCost=existingShipCost+boxShipCost;
-                      const updated={...so,jobs:updatedJobs,_shipments:[...existing,...soShipments],_shipped:true,_shipping_status:'shipped',
+                      const updated={...so,jobs:updatedJobs,_shipments:allShipments,
+                        _shipped:allJobsShipped,_shipping_status:allJobsShipped?'shipped':'partial',
                         _tracking_number:soShipments[0].tracking_number||so._tracking_number||'',
                         _carrier:soShipments[0].carrier||so._carrier||'',
                         _ship_date:shipDate,
@@ -18967,6 +19147,11 @@ export default function App(){
                     }
                   });
                   nf('✅ Shipped! '+newShipments.length+' package'+(newShipments.length!==1?'s':'')+' for '+shipModal.grp.cName);
+                  // Log to recent actions
+                  newShipments.forEach(shp=>{
+                    const items=(shp.items||[]);const skus=items.map(it=>it.sku).join(', ');const totalQty=items.reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((a2,v)=>a2+v,0),0);
+                    addWhAction({type:'shipped',soId:[...shipModal.grp.soIds].join(', '),customer:shipModal.grp.cName,sku:skus,name:items[0]?.name||'',qty:totalQty,sizes:items.map(it=>{const szStr=Object.entries(it.sizes||{}).filter(([,v])=>v>0).map(([s,v])=>s+':'+v).join(' ');return szStr}).join('; '),tracking:shp.tracking_number||'',carrier:shp.carrier||'',by:cu?.id||'warehouse'});
+                  });
                   setShipModal(null);
                 }}>✓ Confirm Shipment ({shipModal.boxes.filter(b=>(b.items||[]).length>0).length} box{shipModal.boxes.filter(b=>(b.items||[]).length>0).length!==1?'es':''})</button>
               <button className="btn btn-secondary" onClick={()=>setShipModal(null)}>Cancel</button>
@@ -19003,11 +19188,47 @@ export default function App(){
                   <span style={{fontSize:9,color:'#94a3b8'}}>{shp.ship_date||shp.created_at||''}</span>
                   <div style={{marginLeft:'auto',display:'flex',gap:6}}>
                     {shp.label_url&&<button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
-                      onClick={()=>{const pw=window.open(shp.label_url,'_blank');if(pw)setTimeout(()=>{try{pw.print()}catch(e){}},1500)}}>Print Label</button>}
+                      onClick={()=>{
+                        if(shp.label_url.startsWith('data:application/pdf')){
+                          const iframe=document.createElement('iframe');iframe.style.display='none';document.body.appendChild(iframe);
+                          iframe.src=shp.label_url;iframe.onload=()=>{try{iframe.contentWindow.print()}catch(e){const a=document.createElement('a');a.href=shp.label_url;a.download='label.pdf';a.click()}
+                            setTimeout(()=>{try{document.body.removeChild(iframe)}catch{}},60000)};
+                        } else {const pw=window.open(shp.label_url,'_blank');if(pw)setTimeout(()=>{try{pw.print()}catch(e){}},1500)}
+                      }}>Print Label</button>}
+                    <button className="btn btn-sm" style={{fontSize:10,background:'#1e40af',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
+                      onClick={()=>{
+                        const tn=prompt('Tracking number:',shp.tracking_number||'');if(tn===null)return;
+                        const carrier=prompt('Carrier (ups/fedex/usps):',shp.carrier||'');if(carrier===null)return;
+                        const updatedShipments=(shp.so._shipments||[]).map(s=>s.id===shp.id?{...s,tracking_number:tn,carrier:carrier||s.carrier,tracking_url:tn?('https://www.fedex.com/fedextrack/?trknbr='+tn):''}:s);
+                        savSO({...shp.so,_shipments:updatedShipments});nf('Shipment updated');
+                      }}>Edit</button>
+                    <button className="btn btn-sm" style={{fontSize:10,background:'#fee2e2',color:'#dc2626',border:'1px solid #fca5a5',padding:'4px 10px',fontWeight:700}}
+                      onClick={()=>{
+                        if(!window.confirm('Delete this shipment?'))return;
+                        const updatedShipments=(shp.so._shipments||[]).filter(s=>s.id!==shp.id);
+                        const so2=shp.so;
+                        const revertedJobs=safeJobs(so2).map(jj=>{
+                          if(jj.prod_status!=='shipped')return jj;
+                          const shippedByItem={};updatedShipments.forEach(s=>{(s.items||[]).forEach(it=>{
+                            const k=it.sku+'|'+(it.color||'');shippedByItem[k]=(shippedByItem[k]||0)+Object.values(it.sizes||{}).reduce((a,v)=>a+v,0);
+                          })});
+                          const jobShipped=(jj.items||[]).reduce((a,gi)=>a+(shippedByItem[gi.sku+'|'+(gi.color||'')]||0),0);
+                          return jobShipped>=safeNum(jj.total_units)?jj:{...jj,prod_status:'completed'};
+                        });
+                        const hasShipments=updatedShipments.length>0;const firstShp=updatedShipments[0];
+                        savSO({...so2,jobs:revertedJobs,_shipments:updatedShipments,
+                          _shipped:false,_shipping_status:hasShipments?'partial':null,
+                          _tracking_number:firstShp?.tracking_number||'',_carrier:firstShp?.carrier||'',
+                          _ship_date:firstShp?.ship_date||'',_tracking_url:firstShp?.tracking_url||'',
+                          _shipping_cost:updatedShipments.reduce((a,s)=>a+safeNum(s.shipping_cost||0),0)||null});
+                        addWhAction({type:'deleted_shipment',soId:shp.soId,customer:shp.cName,tracking:shp.tracking_number||'none',by:cu?.id||'warehouse'});
+                        nf('Shipment deleted');
+                      }}>Delete</button>
                     <button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
                       onClick={()=>{
                         const updatedShipments=(shp.so._shipments||[]).map(s=>s.id===shp.id?{...s,carrier_picked_up:true,pickup_date:new Date().toLocaleString()}:s);
                         savSO({...shp.so,_shipments:updatedShipments});
+                        addWhAction({type:'pickup_confirmed',soId:shp.soId,customer:shp.cName,tracking:shp.tracking_number||'',carrier:shp.carrier||'',by:cu?.id||'warehouse'});
                         nf('Confirmed pickup for '+shp.cName);
                       }}>Confirm Picked Up</button>
                   </div>
@@ -19139,18 +19360,20 @@ export default function App(){
       {whTab==='recent'&&<>
         <div style={{fontSize:13,color:'#64748b',marginBottom:12}}>Recent warehouse actions — pulls, receives, and other activity</div>
         {whRecentActions.length===0&&<div style={{textAlign:'center',color:'#94a3b8',padding:40}}>No recent actions yet</div>}
-        {whRecentActions.map((a,i)=><div key={i} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 14px',background:i%2===0?'#fafbfc':'white',borderRadius:6,marginBottom:2,border:'1px solid #f1f5f9'}}>
+        {whRecentActions.map((a,i)=><div key={i} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 14px',background:i%2===0?'#fafbfc':'white',borderRadius:6,marginBottom:2,border:'1px solid #f1f5f9',cursor:a.soId?'pointer':'default',transition:'background 0.15s'}}
+          onClick={()=>{if(!a.soId)return;const firstSoId=(a.soId||'').split(',')[0].trim();const so2=sos.find(s=>s.id===firstSoId);if(so2){const c2=cust.find(cc=>cc.id===so2.customer_id);setESO(so2);setESOC(c2);setESOTab(null);setPg('orders')}}}
+          onMouseEnter={e=>{if(a.soId)e.currentTarget.style.background='#eef2ff'}} onMouseLeave={e=>{e.currentTarget.style.background=i%2===0?'#fafbfc':'white'}}>
           <div style={{width:32,height:32,borderRadius:8,display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,flexShrink:0,
-            background:a.type==='pulled'?'#fef3c7':a.type==='received'?'#dbeafe':'#f1f5f9'}}>
-            {a.type==='pulled'?'📦':a.type==='received'?'📱':'⚡'}</div>
+            background:a.type==='pulled'?'#fef3c7':a.type==='received'?'#dbeafe':a.type==='shipped'?'#dcfce7':a.type==='label_created'?'#f3e8ff':a.type==='pickup_confirmed'?'#d1fae5':a.type==='deleted_shipment'?'#fee2e2':'#f1f5f9'}}>
+            {a.type==='pulled'?'📦':a.type==='received'?'📱':a.type==='shipped'?'🚚':a.type==='label_created'?'🏷️':a.type==='pickup_confirmed'?'✅':a.type==='deleted_shipment'?'🗑️':'⚡'}</div>
           <div style={{flex:1,minWidth:0}}>
             <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
-              <span style={{fontWeight:700,fontSize:12,color:a.type==='pulled'?'#92400e':'#1e40af'}}>{a.pickId||a.poId||'Action'}</span>
-              <span style={{fontSize:11,color:'#475569'}}>{a.type==='pulled'?'Pulled':'Received'}</span>
-              <span style={{fontSize:11,fontWeight:600}}>{a.soId}</span>
+              <span style={{fontWeight:700,fontSize:12,color:a.type==='pulled'?'#92400e':a.type==='shipped'||a.type==='pickup_confirmed'?'#166534':a.type==='deleted_shipment'?'#dc2626':'#1e40af'}}>{a.pickId||a.poId||a.soId||'Action'}</span>
+              <span style={{fontSize:11,color:'#475569'}}>{{pulled:'Pulled',shipped:'Shipped',received:'Received',label_created:'Label Created',pickup_confirmed:'Pickup Confirmed',deleted_shipment:'Shipment Deleted'}[a.type]||'Action'}</span>
+              <span style={{fontSize:11,fontWeight:600,color:'#2563eb',textDecoration:'underline'}}>{a.soId}</span>
               <span style={{fontSize:11,color:'#64748b'}}>{a.customer}</span>
             </div>
-            <div style={{fontSize:11,color:'#64748b',marginTop:2}}>{a.sku} {a.name} {a.color?' ('+a.color+')':''} — {a.qty} units — {a.sizes}</div>
+            <div style={{fontSize:11,color:'#64748b',marginTop:2}}>{a.sku?a.sku+' ':''}{ a.name||''}{a.color?' ('+a.color+')':''}{a.qty?' — '+a.qty+' units':''}{a.sizes?' — '+a.sizes:''}{a.tracking?' · Tracking: '+a.tracking:''}{a.carrier?' · '+a.carrier.toUpperCase():''}{a.cost?' · '+a.cost:''}</div>
           </div>
           <div style={{textAlign:'right',flexShrink:0}}>
             <div style={{fontSize:10,color:'#94a3b8'}}>{a.at}</div>
