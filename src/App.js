@@ -3467,7 +3467,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         art_status:existing?.art_status||j.art_status,item_status:itemSt,prod_status:prodSt,
         total_units:j.total_units,fulfilled_units:j.fulfilled_units,
         assigned_machine:existing?.assigned_machine||null,assigned_to:existing?.assigned_to||null,
-        ship_method:existing?.ship_method||(so.ship_preference==='rep_delivery'?'rep_delivery':'ship_customer'),
+        ship_method:existing?.ship_method||(o.ship_preference==='rep_delivery'?'rep_delivery':'ship_customer'),
         split_from:existing?.split_from||null,created_at:existing?.created_at||new Date().toLocaleDateString(),
         counted_at:existing?.counted_at||null,counted_by:existing?.counted_by||null,
         count_discrepancy:existing?.count_discrepancy||null,notes:existing?.notes||null,
@@ -5138,19 +5138,22 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           });
         });
         if(costLines.length===0)return<div className="card"><div className="card-body"><div className="empty">No cost data — add items first</div></div></div>;
-        const totalExpected=costLines.reduce((a,l)=>a+l.expected,0);
-        const totalActual=costLines.reduce((a,l)=>a+l.actual,0);
-        const variance=totalActual-totalExpected;
         const hasActuals=costLines.some(l=>l.poCount>0);
         // Shipping & freight costs for GP calculation — fallback to summing shipment records
         const shipCostFromRecs=(o._shipments||[]).reduce((a,s)=>a+safeNum(s.shipping_cost||0),0);
         const shipCostVal=safeNum(o._shipping_cost||o._shipstation_cost||0)||shipCostFromRecs;
         const freightVal=safeNum(o._inbound_freight||0);
         // Expected shipping = what the rep quoted on the SO (% of rev or flat $)
-        const quotedShipRev=costLines.filter(l=>l.category==='Blanks'||l.category==='Outside Deco'||l.category==='In-House Deco').reduce((a,l)=>a+l.expected,0);
         const quotedShip=o.shipping_type==='pct'?totals.rev*(o.shipping_value||0)/100:safeNum(o.shipping_value||0);
-        if(shipCostVal>0||quotedShip>0||freightVal>0)costLines.push({category:'Shipping',sku:'—',name:'Outbound Shipping (ShipStation)',vendor:'ShipStation',qty:1,expected:quotedShip,actual:shipCostVal,poCount:0,poIds:'',allReceived:true,isShipping:true});
-        if(freightVal>0)costLines.push({category:'Shipping',sku:'—',name:'Inbound Freight (Supplier)',vendor:'Supplier',qty:1,expected:freightVal,actual:freightVal,poCount:0,poIds:'',allReceived:true,isShipping:true});
+        // Both inbound + outbound under "Shipping" category; expected only on outbound (quoted covers both)
+        if(shipCostVal>0||freightVal>0||quotedShip>0){
+          costLines.push({category:'Shipping',sku:'—',name:'Outbound Shipping (ShipStation)',vendor:'ShipStation',qty:1,expected:quotedShip,actual:shipCostVal,poCount:shipCostVal>0?1:0,poIds:'',allReceived:true});
+          costLines.push({category:'Shipping',sku:'—',name:'Inbound Freight (Supplier Bills)',vendor:'Supplier',qty:1,expected:0,actual:freightVal,poCount:freightVal>0?1:0,poIds:'',allReceived:true});
+        }
+        // Totals computed AFTER shipping lines added
+        const totalExpected=costLines.reduce((a,l)=>a+l.expected,0);
+        const totalActual=costLines.reduce((a,l)=>a+l.actual,0);
+        const variance=totalActual-totalExpected;
         const cats={};costLines.forEach(l=>{if(!cats[l.category])cats[l.category]={expected:0,actual:0};cats[l.category].expected+=l.expected;cats[l.category].actual+=l.actual});
 
         return<div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between'}}>
@@ -5182,8 +5185,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <tbody>{costLines.map((l,i)=>{const diff=l.actual-l.expected;
               return<tr key={i} style={{background:diff>0?'#fef2f210':''}}>
                 <td><span style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:600,
-                  background:l.category==='Blanks'?'#dbeafe':l.category==='Outside Deco'?'#ede9fe':'#fef3c7',
-                  color:l.category==='Blanks'?'#1e40af':l.category==='Outside Deco'?'#7c3aed':'#92400e'}}>{l.category}</span></td>
+                  background:l.category==='Blanks'?'#dbeafe':l.category==='Outside Deco'?'#ede9fe':l.category==='Shipping'?'#dcfce7':'#fef3c7',
+                  color:l.category==='Blanks'?'#1e40af':l.category==='Outside Deco'?'#7c3aed':l.category==='Shipping'?'#166534':'#92400e'}}>{l.category}</span></td>
                 <td><span style={{fontFamily:'monospace',fontWeight:700,color:'#475569',marginRight:6}}>{l.sku}</span>{l.name}</td>
                 <td style={{fontSize:11,color:'#64748b'}}>{l.vendor}</td>
                 <td style={{textAlign:'right',fontWeight:600}}>{l.qty}</td>
