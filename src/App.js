@@ -18377,33 +18377,47 @@ export default function App(){
                         onClick={()=>{setESOTab(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}}>{soId}</span>
                       {grp.items.find(t=>t.soId===soId)?.urgent&&<span style={{fontSize:10}}>🔥</span>}
                     </div>
-                    <table style={{fontSize:11,width:'100%',borderCollapse:'collapse'}}><tbody>
+                    {(()=>{
+                      // Calculate already-shipped quantities per SKU+color for this SO
+                      const shippedBySz={};(so._shipments||[]).forEach(shp=>{(shp.items||[]).forEach(it=>{
+                        const key=it.sku+'|'+(it.color||'');if(!shippedBySz[key])shippedBySz[key]={};
+                        Object.entries(it.sizes||{}).forEach(([sz,v])=>{shippedBySz[key][sz]=(shippedBySz[key][sz]||0)+safeNum(v)});
+                      })});
+                      return<table style={{fontSize:11,width:'100%',borderCollapse:'collapse'}}><tbody>
                       {safeItems(so).map((item,ii)=>{
-                        const szObj=safeSizes(item);
-                        const totalQty=Object.values(szObj).reduce((a,v)=>a+safeNum(v),0);
+                        const szObj=safeSizes(item);const key=item.sku+'|'+(item.color||'');const shipped=shippedBySz[key]||{};
+                        const remainSz={};Object.entries(szObj).forEach(([sz,v])=>{const rem=safeNum(v)-safeNum(shipped[sz]);if(rem>0)remainSz[sz]=rem});
+                        const totalQty=Object.values(remainSz).reduce((a,v)=>a+v,0);
                         if(totalQty<=0)return null;
-                        const szStr=Object.entries(szObj).filter(([,v])=>v>0).map(([sz,v])=>sz+':'+v).join('  ');
+                        const szStr=Object.entries(remainSz).filter(([,v])=>v>0).map(([sz,v])=>sz+':'+v).join('  ');
                         return<tr key={ii} style={{borderBottom:'1px solid #f1f5f9'}}>
                           <td style={{padding:'3px 0',fontWeight:700,whiteSpace:'nowrap',width:80,color:'#334155'}}>{item.sku}</td>
                           <td style={{fontSize:10,color:'#475569'}}>{item.name}{item.color?' · '+item.color:''}</td>
                           <td style={{fontSize:9,color:'#64748b',fontFamily:'monospace'}}>{szStr}</td>
                           <td style={{textAlign:'center',fontWeight:700,width:40}}>{totalQty}</td>
                         </tr>})}
-                    </tbody></table>
+                    </tbody></table>})()}
                   </div>})}
                 <div style={{display:'flex',gap:6,marginTop:8,borderTop:'1px solid #e2e8f0',paddingTop:6}}>
                   <button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
                     onClick={()=>{
-                      // Build ship modal with all items from SOs in this ready-to-ship group
+                      // Build ship modal with remaining (unshipped) items from SOs
                       const allItems=[];const seen=new Set();
                       Object.entries(grp.soMap).forEach(([soId,so])=>{
+                        // Calculate already-shipped quantities per SKU+color for this SO
+                        const shippedBySz={};(so._shipments||[]).forEach(shp=>{(shp.items||[]).forEach(it=>{
+                          const key2=it.sku+'|'+(it.color||'');if(!shippedBySz[key2])shippedBySz[key2]={};
+                          Object.entries(it.sizes||{}).forEach(([sz,v])=>{shippedBySz[key2][sz]=(shippedBySz[key2][sz]||0)+safeNum(v)});
+                        })});
                         safeItems(so).forEach((item,iIdx)=>{
                           const key=soId+'|'+iIdx;
                           if(seen.has(key))return;
-                          const qty=Object.values(safeSizes(item)).reduce((a,v)=>a+safeNum(v),0);
+                          const szObj=safeSizes(item);const itemKey=item.sku+'|'+(item.color||'');const shipped=shippedBySz[itemKey]||{};
+                          const remainSz={};Object.entries(szObj).forEach(([sz,v])=>{const rem=safeNum(v)-safeNum(shipped[sz]);if(rem>0)remainSz[sz]=rem});
+                          const qty=Object.values(remainSz).reduce((a,v)=>a+v,0);
                           if(qty<=0)return;
                           seen.add(key);
-                          allItems.push({sku:item.sku,name:item.name,color:item.color||'',sizes:{...safeSizes(item)},soId,itemIdx:iIdx});
+                          allItems.push({sku:item.sku,name:item.name,color:item.color||'',sizes:remainSz,soId,itemIdx:iIdx});
                         });
                       });
                       setShipModal({grp,soMap:grp.soMap,availableItems:allItems,boxes:[{items:[],tracking_number:'',carrier:'fedex',weight:5,dimensions:{length:'',width:'',height:''},notes:''}]});
