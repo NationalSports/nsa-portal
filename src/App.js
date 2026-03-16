@@ -2630,8 +2630,14 @@ function calcSOStatus(ord){
   const anyJobActive=hasJobs&&boardJobs.some(j=>j.prod_status==='staging'||j.prod_status==='in_process');
   // Check if SO has any deco at all
   const hasAnyDeco=safeItems(ord).some(it=>!it.no_deco&&safeDecos(it).length>0);
-  // If all jobs shipped → complete
-  if(allJobsShipped)return'complete';
+  // If all jobs shipped → check if all units actually shipped before marking complete
+  if(allJobsShipped){
+    const totalJobUnits=boardJobs.reduce((a,j)=>a+safeNum(j.total_units),0);
+    const shippedUnits=(ord._shipments||[]).reduce((a,shp)=>a+(shp.items||[]).reduce((a2,it)=>a2+Object.values(it.sizes||{}).reduce((a3,v)=>a3+safeNum(v),0),0),0);
+    if(shippedUnits>=totalJobUnits||!ord._shipments)return'complete';
+    // Partial shipment — jobs marked shipped but units remain
+    return'ready_to_invoice';
+  }
   // No-deco orders: all items fulfilled → ready_to_invoice (or complete if manually set)
   if(!hasAnyDeco&&!hasJobs&&fulfilledSz>=totalSz)return ord.status==='complete'?'complete':'ready_to_invoice';
   // If all jobs completed → ready to invoice
@@ -11831,19 +11837,29 @@ export default function App(){
       const shipPref=so.ship_preference||'ship_as_ready';
       const shipDateReady=shipPref!=='ship_on_date'||!so.ship_on_date||(new Date(so.ship_on_date)<=new Date());
       const allJobs=safeJobs(so);
+      // Calculate already-shipped units for this SO
+      const soShippedByItem={};(so._shipments||[]).forEach(shp=>{(shp.items||[]).forEach(it=>{
+        const key=it.sku+'|'+(it.color||'');const szQty=Object.values(it.sizes||{}).reduce((a,v)=>a+safeNum(v),0);
+        soShippedByItem[key]=(soShippedByItem[key]||0)+szQty;
+      })});
       allJobs.forEach(j=>{
-        if(j.prod_status==='completed'){
-          // Check if all sibling jobs (sharing any item_idx) are also done
-          const jobItemIdxs=new Set((j.items||[]).map(it=>it.item_idx));
-          const siblingJobs=allJobs.filter(j2=>j2.id!==j.id&&j2.prod_status!=='draft'&&(j2.items||[]).some(it=>jobItemIdxs.has(it.item_idx)));
-          const allSiblingsDone=siblingJobs.every(j2=>j2.prod_status==='completed'||j2.prod_status==='shipped');
-          if(!allSiblingsDone){
-            // Sibling jobs still in progress — this item stays in production queue, not ready to ship
-            // But add to deco tasks so production knows it's waiting for the next job
-          } else if(shipPref!=='rep_delivery'&&shipPref!=='wait_complete'&&shipDateReady){
-            shipTasks.push({so,soId:so.id,type:'deco_done',job:j,cName,alpha,rep,daysOut,urgent,
-              desc:j.art_name+' ('+j.deco_type?.replace(/_/g,' ')+')',units:j.total_units,
-              shipMethod:j.ship_method||'pending',shipPref});
+        if(j.prod_status==='completed'||j.prod_status==='shipped'){
+          // Calculate remaining unshipped units for this job
+          const jobTotalShipped=(j.items||[]).reduce((a,gi)=>{const key=gi.sku+'|'+(gi.color||'');return a+(soShippedByItem[key]||0)},0);
+          const remainingUnits=j.total_units-jobTotalShipped;
+          if(remainingUnits<=0&&j.prod_status==='shipped'){}// Fully shipped — skip
+          else {
+            // Check if all sibling jobs (sharing any item_idx) are also done
+            const jobItemIdxs=new Set((j.items||[]).map(it=>it.item_idx));
+            const siblingJobs=allJobs.filter(j2=>j2.id!==j.id&&j2.prod_status!=='draft'&&(j2.items||[]).some(it=>jobItemIdxs.has(it.item_idx)));
+            const allSiblingsDone=siblingJobs.every(j2=>j2.prod_status==='completed'||j2.prod_status==='shipped');
+            if(!allSiblingsDone){
+              // Sibling jobs still in progress — this item stays in production queue, not ready to ship
+            } else if(shipPref!=='rep_delivery'&&shipPref!=='wait_complete'&&shipDateReady){
+              shipTasks.push({so,soId:so.id,type:'deco_done',job:j,cName,alpha,rep,daysOut,urgent,
+                desc:j.art_name+' ('+j.deco_type?.replace(/_/g,' ')+')',units:remainingUnits>0?remainingUnits:j.total_units,
+                shipMethod:j.ship_method||'pending',shipPref});
+            }
           }
         }
         // Deco tasks — include jobs waiting for sibling completion
