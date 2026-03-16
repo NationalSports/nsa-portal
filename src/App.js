@@ -3366,7 +3366,20 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       if(remaining>=itemTotal){remaining-=itemTotal;newItems.push({...it,is_promo:true,_pre_promo_sell:it.unit_sell,unit_sell:promoSell})}
       else{const creditPerUnit=rQ(remaining/q);newItems.push({...it,is_promo:false,_pre_promo_sell:it.unit_sell,unit_sell:Math.max(0,safeNum(it.unit_sell)-creditPerUnit),_promo_credit:remaining});remaining=0}
     });
-    sv('items',newItems);
+    const promoUsed=promoBudget-remaining;
+    sv('items',newItems);sv('promo_amount',promoUsed);
+    // For SOs, record the promo usage and deduct from period
+    if(isSO&&promoUsed>0&&_ps.length>0){
+      const pd=_ps[0];
+      // Check if usage already recorded for this SO
+      const existingUsage=(cust.promo_usage||[]).find(u=>u.so_id===o.id);
+      if(!existingUsage){
+        const updatedPd={...pd,used:(pd.used||0)+promoUsed};
+        _dbSavePromoPeriod(updatedPd);
+        _dbSavePromoUsage({period_id:pd.id,amount:promoUsed,description:'Promo order '+o.id,created_by:cu?.name||'System',so_id:o.id,estimate_id:o.estimate_id||null,created_at:new Date().toISOString()});
+        setCust(prev=>({...prev,promo_periods:(prev.promo_periods||[]).map(p=>p.id===pd.id?updatedPd:p),promo_usage:[...(prev.promo_usage||[]),{period_id:pd.id,amount:promoUsed,description:'Promo order '+o.id,so_id:o.id,estimate_id:o.estimate_id||null,created_at:new Date().toISOString()}]}));
+      }
+    }
     nf('Promo auto-applied — items updated to retail pricing');
   },[]);// eslint-disable-line
 
@@ -8246,10 +8259,19 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   </div></div>}
   {/* PROMO DOLLARS TAB */}
   {tab==='promo'&&(()=>{
-    const programs=customer.promo_programs||[];const periods=customer.promo_periods||[];const usage=customer.promo_usage||[];
+    const programs=customer.promo_programs||[];let periods=customer.promo_periods||[];const usage=customer.promo_usage||[];
     const now=new Date();const y=now.getFullYear();const m=now.getMonth();
     const curPeriod=m<6?{start:y+'-01-01',end:y+'-06-30',label:'H1 '+y}:{start:y+'-07-01',end:y+'-12-31',label:'H2 '+y};
-    const curPeriods=periods.filter(p=>p.period_start===curPeriod.start);
+    let curPeriods=periods.filter(p=>p.period_start===curPeriod.start);
+    // Auto-allocate current period from fixed programs if none exists
+    if(curPeriods.length===0){
+      const fixedProgs=programs.filter(p=>p.status!=='inactive'&&p.type==='fixed'&&safeNum(p.fixed_amount)>0);
+      const totalFixed=fixedProgs.reduce((a,p)=>a+safeNum(p.fixed_amount),0);
+      if(totalFixed>0){
+        const newPd={id:'pp_'+Date.now(),customer_id:customer.id,period_start:curPeriod.start,period_end:curPeriod.end,period_label:curPeriod.label,allocated:totalFixed,used:0,created_at:new Date().toISOString()};
+        onSavePromoPeriod(newPd);curPeriods=[newPd];periods=[...periods,newPd];
+      }
+    }
     const curBalance=curPeriods.reduce((a,p)=>a+(p.allocated||0)-(p.used||0),0);
     const curAllocated=curPeriods.reduce((a,p)=>a+(p.allocated||0),0);
     const curUsed=curPeriods.reduce((a,p)=>a+(p.used||0),0);
