@@ -25961,14 +25961,13 @@ export default function App(){
 
   function handleMkArtUpload(file){
     const ext=file.name.split('.').pop().toLowerCase();
-    const isVector=ext==='ai'||ext==='eps';
-    const isImage=ext==='png'||ext==='svg'||ext==='jpg'||ext==='jpeg';
-    if(!isImage&&!isVector){nf('Please upload a PNG, SVG, AI, or EPS file','error');return}
-    if(isVector){
-      // AI/EPS can't render in browser — use placeholder with filename
-      setMkArtFile({name:file.name,url:null,isVector:true});
+    const isAiEps=ext==='ai'||ext==='eps';
+    const isSvg=ext==='svg';
+    const isImage=ext==='png'||ext==='jpg'||ext==='jpeg';
+    if(!isImage&&!isSvg&&!isAiEps){nf('Please upload a PNG, SVG, AI, or EPS file','error');return}
+    if(isAiEps){
+      setMkArtFile({name:file.name,url:null,isVector:true,svgString:null});
       if(mkCanvas){
-        // Remove old art objects
         const objs=mkCanvas.getObjects().filter(o=>o._isArt);
         objs.forEach(o=>mkCanvas.remove(o));
         const placeholder=new fabric.FabricText(file.name.toUpperCase().replace(/\.[^.]+$/,''),{
@@ -25982,25 +25981,62 @@ export default function App(){
       nf('AI/EPS file attached. Showing text placeholder — upload PNG/SVG for visual preview.');
       return;
     }
+    if(isSvg){
+      // Read SVG as text so Fabric can parse the SVG structure properly
+      const reader=new FileReader();
+      reader.onload=ev=>{
+        const svgString=ev.target.result;
+        const dataUrl='data:image/svg+xml;base64,'+btoa(unescape(encodeURIComponent(svgString)));
+        setMkArtFile({name:file.name,url:dataUrl,isVector:false,svgString});
+        if(mkCanvas)addArtToCanvas(mkCanvas,{url:dataUrl,name:file.name,svgString});
+      };
+      reader.readAsText(file);
+      return;
+    }
     const reader=new FileReader();
     reader.onload=ev=>{
       const url=ev.target.result;
-      setMkArtFile({name:file.name,url,isVector:false});
+      setMkArtFile({name:file.name,url,isVector:false,svgString:null});
       if(mkCanvas)addArtToCanvas(mkCanvas,{url,name:file.name});
     };
     reader.readAsDataURL(file);
   }
 
   function addArtToCanvas(canvas,artFile){
-    if(!canvas||!artFile?.url)return;
+    if(!canvas)return;
+    if(!artFile?.url&&!artFile?.svgString)return;
     // Remove old art objects
     const objs=canvas.getObjects().filter(o=>o._isArt);
     objs.forEach(o=>canvas.remove(o));
+    const _styleArt=(obj)=>{
+      obj.set({left:250,top:250,originX:'center',originY:'center',
+        cornerColor:'#3b82f6',cornerStyle:'circle',cornerSize:10,transparentCorners:false,borderColor:'#3b82f6'});
+      obj._isArt=true;
+    };
+    // SVG: use Fabric's SVG parser for proper viewBox handling
+    if(artFile.svgString){
+      fabric.loadSVGFromString(artFile.svgString).then(result=>{
+        if(!result||!result.objects||!result.objects.length)return;
+        const group=fabric.util.groupSVGElements(result.objects,result.options);
+        const targetW=180;
+        const scale=targetW/group.width;
+        group.set({scaleX:scale,scaleY:scale});
+        _styleArt(group);
+        canvas.add(group);canvas.setActiveObject(group);canvas.renderAll();
+      }).catch(()=>{
+        // Fallback: load as image
+        _addArtAsImage(canvas,artFile.url);
+      });
+      return;
+    }
+    _addArtAsImage(canvas,artFile.url);
+  }
+
+  function _addArtAsImage(canvas,url){
     const imgEl=new Image();
     imgEl.crossOrigin='anonymous';
     imgEl.onload=()=>{
       const artImg=new fabric.FabricImage(imgEl);
-      // Scale art to ~30% of canvas width initially
       const targetW=150;
       const scale=targetW/artImg.width;
       artImg.set({scaleX:scale,scaleY:scale,left:250,top:250,originX:'center',originY:'center',
@@ -26008,7 +26044,7 @@ export default function App(){
       artImg._isArt=true;
       canvas.add(artImg);canvas.setActiveObject(artImg);canvas.renderAll();
     };
-    imgEl.src=artFile.url;
+    imgEl.src=url;
   }
 
     // NAV
