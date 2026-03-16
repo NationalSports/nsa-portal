@@ -3331,6 +3331,45 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
 
   const addFileToArt=i=>{const a=af[i];if(!a)return;uArt(i,'files',[...(a.files||[]),'new_file_'+((a.files||[]).length+1)+'.ai'])};
 
+  // Auto-repair: if promo_applied but no items marked as promo, re-apply promo logic
+  React.useEffect(()=>{
+    if(!o.promo_applied||!cust)return;
+    const hasPromoItems=safeItems(o).some(it=>it.is_promo);
+    const hasPromoCredit=safeItems(o).some(it=>safeNum(it._promo_credit)>0);
+    if(hasPromoItems||hasPromoCredit)return; // promo is properly applied
+    // Broken state: promo_applied=true but no items marked — auto-fix
+    const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();
+    const _pStart=_m<6?_y+'-01-01':_y+'-07-01';const _pEnd=_m<6?_y+'-06-30':_y+'-12-31';const _pLabel=_m<6?'H1 '+_y:'H2 '+_y;
+    let _ps=(cust.promo_periods||[]).filter(p=>p.period_start===_pStart);
+    let promoBudget=_ps.reduce((a,p)=>a+(p.allocated||0)-(p.used||0),0);
+    // Auto-allocate period if needed
+    if(_ps.length===0){
+      const progs=(cust.promo_programs||[]).filter(p=>p.status!=='inactive'&&p.type==='fixed'&&safeNum(p.fixed_amount)>0);
+      const totalFixed=progs.reduce((a,p)=>a+safeNum(p.fixed_amount),0);
+      if(totalFixed>0){
+        const newPd={id:'pp_'+Date.now(),customer_id:cust.id,period_start:_pStart,period_end:_pEnd,period_label:_pLabel,allocated:totalFixed,used:0,created_at:new Date().toISOString()};
+        _dbSavePromoPeriod(newPd);_ps=[newPd];promoBudget=totalFixed;
+        setCust(prev=>({...prev,promo_periods:[...(prev.promo_periods||[]),newPd]}));
+      }
+    }
+    if(promoBudget<=0)return;
+    const items=safeItems(o);const _aq={};items.forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_aq[d.art_file_id]=(_aq[d.art_file_id]||0)+q2}})});
+    let remaining=promoBudget;const newItems=[];
+    items.forEach(it=>{
+      const q=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
+      if(!q||remaining<=0){newItems.push(it);return}
+      const promoSell=safeNum(it.retail_price)||safeNum(it.nsa_cost)*2;
+      let itemPromoCost=q*promoSell;
+      safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);itemPromoCost+=eq*rQ(dp.sell*1.25)});
+      const shipBase=o.shipping_type==='pct'?itemPromoCost*(o.shipping_value||0)/100:0;
+      const itemTotal=itemPromoCost+rQ(shipBase*1.25);
+      if(remaining>=itemTotal){remaining-=itemTotal;newItems.push({...it,is_promo:true,_pre_promo_sell:it.unit_sell,unit_sell:promoSell})}
+      else{const creditPerUnit=rQ(remaining/q);newItems.push({...it,is_promo:false,_pre_promo_sell:it.unit_sell,unit_sell:Math.max(0,safeNum(it.unit_sell)-creditPerUnit),_promo_credit:remaining});remaining=0}
+    });
+    sv('items',newItems);
+    nf('Promo auto-applied — items updated to retail pricing');
+  },[]);// eslint-disable-line
+
   const addrs=useMemo(()=>getAddrs(cust,allCustomers),[cust,allCustomers]);
   const artQty=useMemo(()=>{const m={};safeItems(o).forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){m[d.art_file_id]=(m[d.art_file_id]||0)+q}})});return m},[o]);
   const totals=useMemo(()=>{let rev=0,cost=0;safeItems(o).forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);if(!q)return;rev+=q*safeNum(it.unit_sell);cost+=q*safeNum(it.nsa_cost);
