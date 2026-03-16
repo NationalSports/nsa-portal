@@ -7,6 +7,7 @@
     "@stripe/stripe-js": "^8.8.0",
     "@supabase/supabase-js": "^2.39.0",
     "barcode-detector": "^3.1.0",
+    "fabric": "^6.9.1",
     "html2pdf.js": "^0.14.0",
     "lucide-react": "^0.263.1",
     "papaparse": "^5.4.1",
