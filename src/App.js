@@ -3867,8 +3867,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       {isSO&&<div style={{display:'flex',gap:6,marginTop:8}}>
         <button className="btn btn-secondary" onClick={()=>setShowPO('select')}><Icon name="cart" size={14}/> Create PO</button>
         <button className="btn btn-secondary" style={{color:'#dc2626',borderColor:'#fca5a5'}} onClick={()=>{
-          setInvSelItems(safeItems(o).map((_,i)=>i));setInvMemo(o.memo||'');setInvType('deposit');setInvDepositPct(50);setShowInvCreate(true);
-        }}><Icon name="dollar" size={14}/> Create Invoice</button>
+          setInvSelItems(safeItems(o).map((_,i)=>i));setInvMemo(o.memo||'');setInvType(o.promo_applied?'final':'deposit');setInvDepositPct(50);setShowInvCreate(true);
+        }}><Icon name="dollar" size={14}/> {o.promo_applied?'Close Promo Order':'Create Invoice'}</button>
       </div>}
       {/* SHIPPING */}
       <div style={{display:'flex',gap:12,marginTop:12,alignItems:'end',flexWrap:'wrap',borderTop:'1px solid #f1f5f9',paddingTop:12}}>
@@ -5500,9 +5500,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     {/* CREATE INVOICE MODAL */}
     {showInvCreate&&(()=>{
       const items=safeItems(o);
-      // Compute per-item totals
+      const isPromoOrder=o.promo_applied;
+      // Compute per-item totals — for promo orders, only non-promo items are invoiceable
       const itemTotals=items.map(it=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const rev=qty*safeNum(it.unit_sell);
-        let decoRev=0;safeDecos(it).forEach(d=>{const dp2=dP(d,qty,safeArt(o),qty);decoRev+=qty*dp2.sell});return{qty,rev,decoRev,total:rev+decoRev}});
+        let decoRev=0;safeDecos(it).forEach(d=>{const dp2=dP(d,qty,safeArt(o),qty);decoRev+=qty*dp2.sell});
+        // Promo items are covered by promo funds — $0 on invoice
+        if(isPromoOrder&&it.is_promo)return{qty,rev:0,decoRev:0,total:0,isPromo:true};
+        // Partially promo items: use _promo_credit to reduce
+        const promoCredit=isPromoOrder?safeNum(it._promo_credit):0;
+        return{qty,rev,decoRev,total:Math.max(0,rev+decoRev-promoCredit),isPromo:false}});
 
       // For deposit: use full order total * pct
       // For partial: use selected items total
@@ -5512,8 +5518,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // Prorate shipping & tax based on fraction of order being invoiced
       const orderSubtotal=itemTotals.reduce((a,t)=>a+t.total,0)||1;
       const selFraction=selTotals.subtotal/orderSubtotal;
-      const invShip=activeItems.length===items.length?totals.ship:Math.round(totals.ship*selFraction*100)/100;
-      const invTax=activeItems.length===items.length?totals.tax:Math.round(totals.tax*selFraction*100)/100;
+      // For promo orders: shipping/tax on promo portion is covered by promo, only charge for non-promo portion
+      const nonPromoShip=isPromoOrder?(promoTotals?totals.ship-promoTotals.promoShip:0):totals.ship;
+      const nonPromoTax=isPromoOrder?0:totals.tax;
+      const invShip=activeItems.length===items.length?nonPromoShip:Math.round(nonPromoShip*selFraction*100)/100;
+      const invTax=activeItems.length===items.length?nonPromoTax:Math.round(nonPromoTax*selFraction*100)/100;
       const fullTotal=selTotals.subtotal+invShip+invTax;
       const invTotal=invType==='deposit'?Math.round(fullTotal*invDepositPct/100*100)/100:fullTotal;
 
@@ -5522,16 +5531,22 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const soInvTotal=soInvs.reduce((a,i)=>a+(i.total||0),0);
 
       return<div className="modal-overlay" onClick={()=>setShowInvCreate(false)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:600}}>
-        <div className="modal-header"><h2>Create Invoice — {o.id}</h2><button className="modal-close" onClick={()=>setShowInvCreate(false)}>x</button></div>
+        <div className="modal-header"><h2>{isPromoOrder&&invTotal===0?'Close Promo Order':'Create Invoice'} — {o.id}</h2><button className="modal-close" onClick={()=>setShowInvCreate(false)}>x</button></div>
         <div className="modal-body">
           <div style={{padding:10,background:'#f8fafc',borderRadius:6,marginBottom:12}}>
             <div style={{fontWeight:700,color:'#1e40af'}}>{o.id}</div>
             <div style={{fontSize:12,color:'#64748b'}}>{cust?.name} — {o.memo}</div>
             <div style={{display:'flex',gap:16,marginTop:4,fontSize:11}}>
-              <span>Order total: <strong>${totals.grand.toLocaleString()}</strong></span>
+              <span>Order total: <strong>${totals.grand.toLocaleString()}</strong></span>{isPromoOrder&&<span style={{color:'#92400e',fontWeight:600}}>Promo covers: ${safeNum(o.promo_amount).toLocaleString()}</span>}
               {soInvTotal>0&&<span>Already invoiced: <strong style={{color:'#d97706'}}>${soInvTotal.toLocaleString()}</strong></span>}
             </div>
           </div>
+
+          {/* Promo order notice */}
+          {isPromoOrder&&<div style={{marginBottom:12,padding:12,background:'#fffbeb',border:'1px solid #fde68a',borderRadius:8}}>
+            <div style={{fontWeight:700,color:'#92400e',fontSize:13,marginBottom:4}}>Promo Order</div>
+            <div style={{fontSize:12,color:'#78350f'}}>{invTotal===0?'This order is fully covered by promo funds. No payment is due from the customer.':'Promo covers $'+safeNum(o.promo_amount).toLocaleString()+'. Customer pays $'+invTotal.toFixed(2)+' for the non-promo portion.'}</div>
+          </div>}
 
           {/* Invoice type */}
           <div style={{marginBottom:12}}>
@@ -5676,7 +5691,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             setInvSendMsg('Hi '+(contact?.name||'Coach')+',\n\nPlease find the attached invoice '+inv.id+' for $'+invTotal.toFixed(2)+'. Payment is due by '+dueDate+'.'+(invPortalUrl?'\n\nYou can also view your invoice through your portal:\n'+invPortalUrl:'')+'\n\nThank you,\nNSA Team');
             setInvSmsPhone(contact?.phone||'');setInvSmsEnabled(!!contact?.phone);setInvFollowUpDays(portalSettings?.invFollowUpDays||7);
             setInvSmsMsg('Hi '+(contact?.name||'Coach')+', your invoice '+inv.id+' for $'+invTotal.toFixed(2)+' is ready. Due by '+dueDate+'. View: https://nsa-portal.netlify.app/?portal='+(cust?.alpha_tag||''));
-          }}>{invType==='final'?'Create Final Invoice — Close SO':'Create '+invType.charAt(0).toUpperCase()+invType.slice(1)+' Invoice'} — ${invTotal.toFixed(2)}</button>
+          }}>{isPromoOrder&&invTotal===0?(invType==='final'?'Close Promo Order — $0 Invoice':'Create $0 Promo Invoice'):(invType==='final'?'Create Final Invoice — Close SO':'Create '+invType.charAt(0).toUpperCase()+invType.slice(1)+' Invoice')} — ${invTotal.toFixed(2)}</button>
         </div>
       </div></div>})()}
 
