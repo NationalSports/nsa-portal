@@ -272,33 +272,28 @@ const _dbSaveEstimateInner = async (est) => {
       await supabase.from('estimate_art_files').delete().eq('estimate_id',est.id);
     }
     if(!items?.length){_dbSaveFailedIds.delete(est.id);_persistFailedIds();return true}
-    for(let idx=0;idx<items.length;idx++){
-      const{decorations,...itemData}=items[idx];
-      let itemRow={..._pick(itemData,_itemCols),estimate_id:est.id,item_index:idx};
-      let{data:inserted,error:itemErr}=await supabase.from('estimate_items').insert(itemRow).select('id').single();
-      if(itemErr){
-        // Retry with core columns only (strip columns from later migrations)
-        const coreItemRow={};Object.keys(itemRow).forEach(k=>{if(!_itemExtraCols.has(k))coreItemRow[k]=itemRow[k]});
-        const retry=await supabase.from('estimate_items').insert(coreItemRow).select('id').single();
-        if(retry.error){console.error('[DB] estimate_items insert failed:',retry.error.message,retry.error.details);decoFailed=true;continue}
-        else{inserted=retry.data;console.warn('[DB] estimate item saved with core columns only (missing DB columns?)')}
-      }
-      if(!inserted){console.error('[DB] estimate_items insert returned no data for item',idx,'of',est.id);decoFailed=true;continue}
-      if(inserted&&decorations?.length){
-        const decoRows=decorations.map((d,di)=>({..._pick(_sanitizeDeco(d),_decoCols),estimate_item_id:inserted.id,deco_index:di}));
-        const{error:decoErr}=await supabase.from('estimate_item_decorations').insert(decoRows);
+    // Batch insert all items at once (much faster than one-by-one)
+    const allItemRows=items.map((item,idx)=>{const{decorations,...itemData}=item;return{..._pick(itemData,_itemCols),estimate_id:est.id,item_index:idx}});
+    let{data:insertedItems,error:itemErr}=await supabase.from('estimate_items').insert(allItemRows).select('id');
+    if(itemErr){
+      const coreRows=allItemRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_itemExtraCols.has(k))cr[k]=r[k]});return cr});
+      const retry=await supabase.from('estimate_items').insert(coreRows).select('id');
+      if(retry.error){console.error('[DB] estimate_items batch insert failed:',retry.error.message,retry.error.details);decoFailed=true}
+      else{insertedItems=retry.data;console.warn('[DB] estimate items saved with core columns only')}
+    }
+    if(insertedItems?.length){
+      const allDecoRows=[];
+      items.forEach((item,idx)=>{
+        const itemId=insertedItems[idx]?.id;if(!itemId)return;
+        if(item.decorations?.length)item.decorations.forEach((d,di)=>allDecoRows.push({..._pick(_sanitizeDeco(d),_decoCols),estimate_item_id:itemId,deco_index:di}));
+      });
+      if(allDecoRows.length){
+        const{error:decoErr}=await supabase.from('estimate_item_decorations').insert(allDecoRows);
         if(decoErr){
-          console.warn('[DB] estimate_item_decorations batch failed, retrying individually:',decoErr.message);
-          for(const row of decoRows){
-            const{error:rowErr}=await supabase.from('estimate_item_decorations').insert(row);
-            if(rowErr){
-              // Strip columns from later migrations that may not exist in production DB
-              const coreRow={};Object.keys(row).forEach(k=>{if(!_decoExtraCols.has(k))coreRow[k]=row[k]});
-              const{error:coreErr}=await supabase.from('estimate_item_decorations').insert(coreRow);
-              if(coreErr){decoFailed=true;console.error('[DB] estimate deco row failed:',coreErr.message,JSON.stringify(row))}
-              else console.warn('[DB] estimate deco saved with core columns only (missing DB columns?):',Object.keys(row).filter(k=>_decoExtraCols.has(k)&&row[k]!=null))
-            }
-          }
+          const coreRows=allDecoRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_decoExtraCols.has(k))cr[k]=r[k]});return cr});
+          const{error:coreErr}=await supabase.from('estimate_item_decorations').insert(coreRows);
+          if(coreErr){decoFailed=true;console.error('[DB] estimate_item_decorations batch failed:',coreErr.message)}
+          else console.warn('[DB] estimate decos saved with core columns only')
         }
       }
     }
@@ -375,68 +370,51 @@ const _dbSaveSOInner = async (so) => {
     }
     if(firm_dates?.length){const{error:fdErr}=await supabase.from('so_firm_dates').insert(firm_dates.map(f=>({..._pick(f,_firmDateCols),so_id:so.id})));if(fdErr){console.error('[DB] so_firm_dates insert failed:',fdErr.message);saveFailed=true}}
     if(!items?.length){if(saveFailed){_dbSaveFailedIds.add(so.id);_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save incomplete — some data may not have been saved to cloud','error');return false}_dbSaveFailedIds.delete(so.id);_persistFailedIds();return true}
-    for(let idx=0;idx<items.length;idx++){
-      const{decorations,pick_lines,po_lines,...itemData}=items[idx];
-      // Separate size fields from pick_lines/po_lines back into sizes JSONB
-      let soItemRow={..._pick(itemData,_itemCols),so_id:so.id,item_index:idx};
-      let{data:inserted,error:itemErr}=await supabase.from('so_items').insert(soItemRow).select('id').single();
-      if(itemErr){
-        const coreItemRow={};Object.keys(soItemRow).forEach(k=>{if(!_itemExtraCols.has(k))coreItemRow[k]=soItemRow[k]});
-        const retry=await supabase.from('so_items').insert(coreItemRow).select('id').single();
-        if(retry.error){console.error('[DB] so_items insert failed:',retry.error.message,retry.error.details);saveFailed=true;continue}
-        else{inserted=retry.data;console.warn('[DB] so item saved with core columns only')}
-      }
-      if(!inserted){console.error('[DB] so_items insert returned no data for item',idx,'of',so.id);saveFailed=true;continue}
-      if(decorations?.length){
-        const decoRows=decorations.map((d,di)=>({..._pick(_sanitizeDeco(d),_decoCols),so_item_id:inserted.id,deco_index:di}));
-        const{error:decoErr}=await supabase.from('so_item_decorations').insert(decoRows);
-        if(decoErr){
-          console.warn('[DB] so_item_decorations batch failed, retrying individually:',decoErr.message);
-          for(const row of decoRows){
-            const{error:rowErr}=await supabase.from('so_item_decorations').insert(row);
-            if(rowErr){
-              // Strip columns from later migrations that may not exist in production DB
-              const coreRow={};Object.keys(row).forEach(k=>{if(!_decoExtraCols.has(k))coreRow[k]=row[k]});
-              const{error:coreErr}=await supabase.from('so_item_decorations').insert(coreRow);
-              if(coreErr){saveFailed=true;console.error('[DB] so deco row failed:',coreErr.message,JSON.stringify(row))}
-              else console.warn('[DB] so deco saved with core columns only (missing DB columns?):',Object.keys(row).filter(k=>_decoExtraCols.has(k)&&row[k]!=null))
-            }
-          }
-        }
-      }
-      if(pick_lines?.length){
-        const pickRows=pick_lines.map(pk=>{const{pick_id,status,created_at,memo,ship_dest,ship_addr,deco_vendor,...sizes}=pk;
-          return{so_item_id:inserted.id,pick_id,status,created_at,memo,ship_dest,ship_addr,deco_vendor,sizes}});
-        const{error:pickErr}=await supabase.from('so_item_pick_lines').insert(pickRows);
-        if(pickErr){
-          console.warn('[DB] so_item_pick_lines batch failed, retrying individually:',pickErr.message);
-          for(const row of pickRows){
-            const{error:rowErr}=await supabase.from('so_item_pick_lines').insert(row);
-            if(rowErr){saveFailed=true;console.error('[DB] so_item_pick_lines row failed:',rowErr.message)}
-          }
-        }
-      }
-      if(po_lines?.length){
-        const poRows=po_lines.map(po=>{const{po_id,vendor,received,cancelled,shipments,status,created_at,expected_date,memo,po_type,deco_vendor,deco_type,unit_cost,drop_ship,billed,tracking_numbers,_bill_details,_bill_cost,...sizes}=po;
-          return{so_item_id:inserted.id,po_id,vendor,received:received||{},cancelled:cancelled||{},shipments:shipments||[],status,created_at,expected_date,memo,
+    // Batch insert all items at once (much faster than one-by-one)
+    const allItemRows=items.map((item,idx)=>{const{decorations,pick_lines,po_lines,...itemData}=item;return{..._pick(itemData,_itemCols),so_id:so.id,item_index:idx}});
+    let{data:insertedItems,error:itemErr}=await supabase.from('so_items').insert(allItemRows).select('id');
+    if(itemErr){
+      const coreRows=allItemRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_itemExtraCols.has(k))cr[k]=r[k]});return cr});
+      const retry=await supabase.from('so_items').insert(coreRows).select('id');
+      if(retry.error){console.error('[DB] so_items batch insert failed:',retry.error.message,retry.error.details);saveFailed=true}
+      else{insertedItems=retry.data;console.warn('[DB] so items saved with core columns only')}
+    }
+    if(insertedItems?.length){
+      // Build all child rows referencing their parent item IDs
+      const allDecoRows=[],allPickRows=[],allPoRows=[];
+      items.forEach((item,idx)=>{
+        const itemId=insertedItems[idx]?.id;if(!itemId)return;
+        const{decorations,pick_lines,po_lines}=item;
+        if(decorations?.length)decorations.forEach((d,di)=>allDecoRows.push({..._pick(_sanitizeDeco(d),_decoCols),so_item_id:itemId,deco_index:di}));
+        if(pick_lines?.length)pick_lines.forEach(pk=>{const{pick_id,status,created_at,memo,ship_dest,ship_addr,deco_vendor,...sizes}=pk;allPickRows.push({so_item_id:itemId,pick_id,status,created_at,memo,ship_dest,ship_addr,deco_vendor,sizes})});
+        if(po_lines?.length)po_lines.forEach(po=>{const{po_id,vendor,received,cancelled,shipments,status,created_at,expected_date,memo,po_type,deco_vendor,deco_type,unit_cost,drop_ship,billed,tracking_numbers,_bill_details,_bill_cost,...sizes}=po;
+          allPoRows.push({so_item_id:itemId,po_id,vendor,received:received||{},cancelled:cancelled||{},shipments:shipments||[],status,created_at,expected_date,memo,
             billed:billed||{},tracking_numbers:tracking_numbers||[],
-            sizes:{...sizes,po_type:po_type||undefined,deco_vendor:deco_vendor||undefined,deco_type:deco_type||undefined,unit_cost:unit_cost||undefined,drop_ship:drop_ship||undefined,_bill_details:_bill_details||undefined,_bill_cost:_bill_cost||undefined}}});
-        // Try with all columns first; if 'billed' column missing, retry with core columns only
-        const corePoRows=poRows.map(row=>{
-          const{billed:b,tracking_numbers:tn,...coreRow}=row;
-          return{...coreRow,sizes:{...(coreRow.sizes||{}),_billed:b||{},_tracking_numbers:tn||[]}}});
-        const{error:poErr}=await supabase.from('so_item_po_lines').insert(poRows);
+            sizes:{...sizes,po_type:po_type||undefined,deco_vendor:deco_vendor||undefined,deco_type:deco_type||undefined,unit_cost:unit_cost||undefined,drop_ship:drop_ship||undefined,_bill_details:_bill_details||undefined,_bill_cost:_bill_cost||undefined}})});
+      });
+      // Batch insert decorations
+      if(allDecoRows.length){
+        const{error:decoErr}=await supabase.from('so_item_decorations').insert(allDecoRows);
+        if(decoErr){
+          const coreRows=allDecoRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_decoExtraCols.has(k))cr[k]=r[k]});return cr});
+          const{error:coreErr}=await supabase.from('so_item_decorations').insert(coreRows);
+          if(coreErr){saveFailed=true;console.error('[DB] so_item_decorations batch failed:',coreErr.message)}
+          else console.warn('[DB] so decos saved with core columns only')
+        }
+      }
+      // Batch insert pick lines
+      if(allPickRows.length){
+        const{error:pickErr}=await supabase.from('so_item_pick_lines').insert(allPickRows);
+        if(pickErr){saveFailed=true;console.error('[DB] so_item_pick_lines batch failed:',pickErr.message)}
+      }
+      // Batch insert PO lines
+      if(allPoRows.length){
+        const corePoRows=allPoRows.map(row=>{const{billed:b,tracking_numbers:tn,...coreRow}=row;return{...coreRow,sizes:{...(coreRow.sizes||{}),_billed:b||{},_tracking_numbers:tn||[]}}});
+        const{error:poErr}=await supabase.from('so_item_po_lines').insert(allPoRows);
         if(poErr){
-          console.warn('[DB] so_item_po_lines insert failed ('+poErr.message+'), retrying without billed/tracking_numbers columns');
           const{error:coreErr}=await supabase.from('so_item_po_lines').insert(corePoRows);
-          if(coreErr){
-            // Last resort: insert individually
-            console.warn('[DB] so_item_po_lines core batch failed, retrying individually:',coreErr.message);
-            for(const row of corePoRows){
-              const{error:rowErr}=await supabase.from('so_item_po_lines').insert(row);
-              if(rowErr){saveFailed=true;console.error('[DB] so_item_po_lines row failed:',rowErr.message)}
-            }
-          } else console.warn('[DB] PO lines saved without billed/tracking_numbers columns (stored in sizes JSONB)')
+          if(coreErr){saveFailed=true;console.error('[DB] so_item_po_lines batch failed:',coreErr.message)}
+          else console.warn('[DB] PO lines saved without billed/tracking_numbers columns')
         }
       }
     }
@@ -11450,12 +11428,13 @@ export default function App(){
         return{...d,_cost_locked:dp.cost}});
       return{...item,decorations}});
     return{...order,items}};
-  const savE=e=>{const e2=lockPrices(e.status==='draft'?{...e,status:'open'}:e);setEsts(p=>{const ex=p.find(x=>x.id===e2.id);return ex?p.map(x=>x.id===e2.id?e2:x):[...p,e2]});logChange(ests.find(x=>x.id===e2.id)?'updated':'created','Estimate',e2.id,e2.memo||'');return e2};
+  const savE=e=>{const e2=lockPrices(e.status==='draft'?{...e,status:'open'}:e);setEsts(p=>{const ex=p.find(x=>x.id===e2.id);return ex?p.map(x=>x.id===e2.id?e2:x):[...p,e2]});_dbSaveEstimate(e2);logChange(ests.find(x=>x.id===e2.id)?'updated':'created','Estimate',e2.id,e2.memo||'');return e2};
   const savSO=s=>{const sl=lockPrices(s);
     // Save version history before overwriting
     const prev=sos.find(x=>x.id===sl.id);
     if(prev){setSOHistory(h=>{const existing=h[sl.id]||[];return{...h,[sl.id]:[{ts:new Date().toLocaleString(),user:cu.name,snapshot:JSON.parse(JSON.stringify(prev))},...existing].slice(0,20)}})}
     setSOs(p=>{const ex=p.find(x=>x.id===sl.id);return ex?p.map(x=>x.id===sl.id?sl:x):[...p,sl]});
+    _dbSaveSO(sl);
     logChange(prev?'updated':'created','SO',sl.id,sl.memo||'');
     // Promo usage is recorded in convertSO only — savSO does not duplicate it
     // Auto-invoice: when SO reaches ready_to_invoice, create draft invoice if none exists
