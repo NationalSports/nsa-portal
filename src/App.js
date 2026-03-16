@@ -643,10 +643,10 @@ const _persistFailedIds=()=>{try{localStorage.setItem('nsa_save_failed_ids',JSON
 const _pick=(obj,cols)=>{const r={};cols.forEach(c=>{if(c in obj)r[c]=obj[c]});return r};
 const _estCols=['id','customer_id','memo','status','created_by','created_at','updated_at','default_markup','shipping_type','shipping_value','ship_to_id','email_status','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history','deleted_at','promo_applied','promo_amount','update_requests'];
 const _soCols=['id','customer_id','estimate_id','memo','status','created_by','created_at','updated_at','expected_date','production_notes','shipping_type','shipping_value','ship_to_id','default_markup','omg_store_id','_shipstation_order_id','_shipping_status','_tracking_number','_carrier','_ship_date','_tracking_url','_shipped','_shipments','_shipping_cost','_shipstation_cost','_inbound_freight','deleted_at','promo_applied','promo_amount','ship_preference','ship_on_date','order_type','expected_ship_date','booking_confirmed','booking_confirmed_at','booking_confirmed_by','booking_alert_days','po_number'];
-const _itemCols=['product_id','sku','name','brand','color','vendor_id','nsa_cost','retail_price','unit_sell','sizes','available_sizes','_colors','no_deco','is_custom','custom_desc','custom_cost','custom_sell','is_promo','_pre_promo_sell','est_qty','size_availability'];
+const _itemCols=['product_id','sku','name','brand','color','vendor_id','nsa_cost','retail_price','unit_sell','sizes','available_sizes','_colors','no_deco','is_custom','custom_desc','custom_cost','custom_sell','is_promo','_pre_promo_sell','est_qty','size_availability','_colorImage','_colorBackImage'];
 const _decoCols=['kind','position','type','art_file_id','art_tbd_type','tbd_colors','tbd_stitches','tbd_dtf_size','sell_override','sell_each','cost_each','underbase','two_color','colors','stitches','dtf_size','num_method','num_size','num_size_back','num_font','roster','names','names_list','vendor','deco_type','notes','custom_font_art_id','print_color','front_and_back','reversible','num_qty','name_qty','color_way_id'];
 // Columns that may not exist in production DB / schema cache — stripped on insert retry
-const _itemExtraCols=new Set(['vendor_id','is_promo','_pre_promo_sell','est_qty','size_availability']);
+const _itemExtraCols=new Set(['vendor_id','is_promo','_pre_promo_sell','est_qty','size_availability','_colorImage','_colorBackImage']);
 const _estExtraCols=new Set(['promo_applied','promo_amount','update_requests','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history']);
 const _soExtraCols=new Set(['_shipping_cost','_shipstation_cost','_inbound_freight','promo_applied','promo_amount','ship_preference','ship_on_date','order_type','expected_ship_date','booking_confirmed','booking_confirmed_at','booking_confirmed_by','booking_alert_days','po_number']);
 const _decoExtraCols=new Set(['print_color','front_and_back','reversible','num_qty','name_qty','num_font','num_size_back','custom_font_art_id','deco_type','notes','vendor','color_way_id']);
@@ -3190,7 +3190,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // Momentec dealer discount (15% off wholesale)
       const mtVendor=vendorList.find(v=>v.api_provider==='momentec'||v.name==='Momentec');
       const mtDiscount=mtVendor?.api_price_discount||0.15;
-      const mtCost=p=>rQ(p*(1-mtDiscount));
+      const mtCost=p=>rQ(p*0.5*(1-mtDiscount));
       // Build style map from detailed results
       const styleMap={};
       for(const{baseSku,entry,detail}of details){
@@ -3200,7 +3200,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         // Build color→swatch image map from top-level Attributes (per-color product images aren't available from API)
         const colorImgMap={};
         const topAttrs=src.Attributes||src.attributes||[];
-        if(Array.isArray(topAttrs)){for(const a of topAttrs){const aId=(a.identifier||'').toLowerCase();if(aId==='asgswatchcolor'||aId==='asgswatchcolorfamily'||(a.name||'').toLowerCase()==='color'||(a.name||'').toLowerCase()==='colorfamily'){const vals=a.values||a.Values||[];for(const v of vals){const cName=v.values||v.value||v.identifier||'';const ext=v.extendedValue||[];const imgEntry=ext.find(e=>e.key==='Image1Path')||ext.find(e=>e.key==='Image1');if(cName&&imgEntry){const imgPath=imgEntry.value||'';if(imgPath&&!imgPath.includes('color1.jpg'))colorImgMap[cName]='https://www.momentecbrands.com/wcsstore/'+imgPath}}}}}
+        if(Array.isArray(topAttrs)){for(const a of topAttrs){const aId=(a.identifier||'').toLowerCase();if(aId==='asgswatchcolor'||aId==='asgswatchcolorfamily'||(a.name||'').toLowerCase()==='color'||(a.name||'').toLowerCase()==='colorfamily'){const vals=a.values||a.Values||[];for(const v of vals){const cName=v.values||v.value||v.identifier||'';const ext=v.extendedValue||[];const imgEntry=ext.find(e=>e.key==='Image1Path')||ext.find(e=>e.key==='Image1');if(cName&&imgEntry){const imgPath=imgEntry.value||'';if(imgPath)colorImgMap[cName]='https://www.momentecbrands.com/wcsstore/'+imgPath}}}}}
         styleMap[baseSku]={sku:baseSku,styleName:src.title||src.name||entry.name||baseSku,brandName:src.manufacturer||entry.manufacturer||'Momentec',
           styleImage:src.thumbnail||src.fullImage||entry.thumbnail||entry.fullImage||'',
           styleBackImage:mtBackImg,
@@ -25871,7 +25871,7 @@ export default function App(){
                         // Build color→image map from attributes
                         const colorImgMap={};
                         const topAttrs=src.Attributes||src.attributes||[];
-                        if(Array.isArray(topAttrs)){for(const a of topAttrs){const aId=(a.identifier||'').toLowerCase();if(aId==='asgswatchcolor'||aId==='asgswatchcolorfamily'||(a.name||'').toLowerCase()==='color'){const vals=a.values||a.Values||[];for(const vl of vals){const cName=vl.values||vl.value||vl.identifier||'';const ext=vl.extendedValue||[];const imgE=ext.find(x=>x.key==='Image1Path')||ext.find(x=>x.key==='Image1');if(cName&&imgE){const ip=imgE.value||'';if(ip&&!ip.includes('color1.jpg'))colorImgMap[cName]='https://www.momentecbrands.com/wcsstore/'+ip}}}}}
+                        if(Array.isArray(topAttrs)){for(const a of topAttrs){const aId=(a.identifier||'').toLowerCase();if(aId==='asgswatchcolor'||aId==='asgswatchcolorfamily'||(a.name||'').toLowerCase()==='color'){const vals=a.values||a.Values||[];for(const vl of vals){const cName=vl.values||vl.value||vl.identifier||'';const ext=vl.extendedValue||[];const imgE=ext.find(x=>x.key==='Image1Path')||ext.find(x=>x.key==='Image1');if(cName&&imgE){const ip=imgE.value||'';if(ip)colorImgMap[cName]='https://www.momentecbrands.com/wcsstore/'+ip}}}}}
                         grouped[base]={id:base,name:src.title||src.name||entry.name||base,sku:base,brand:src.manufacturer||'Momentec',color:'',frontUrl:fg,backUrl:bg,colors:[]};
                         // Process child SKUs for colors
                         const skus=src.SKUs||src.sKUs||detail?.SKUs||detail?.sKUs||[];
