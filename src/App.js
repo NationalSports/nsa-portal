@@ -3359,8 +3359,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const promoPct=origTotalRev>0?origPromoRev/origTotalRev:(promoRev>0?1:0);
     const promoShip=rQ(baseShip*promoPct*1.25);const normalShip=rQ(baseShip*(1-promoPct));
     const taxRate=cust?.tax_exempt?0:(cust?.tax_rate||0);const normalTax=normalRev*taxRate;
-    const promoAmount=promoRev+promoShip;const customerPays=normalRev+normalShip+normalTax;
-    return{promoRev,promoCost,promoShip,promoAmount,normalRev,normalCost,normalShip,normalTax,customerPays};
+    // Include _promo_credit from partially covered items
+    const promoCredit=safeItems(o).reduce((a,it)=>a+safeNum(it._promo_credit),0);
+    const promoAmount=promoRev+promoShip+promoCredit;const customerPays=normalRev+normalShip+normalTax;
+    return{promoRev,promoCost,promoShip,promoAmount,promoCredit,normalRev,normalCost,normalShip,normalTax,customerPays};
   },[o,artQty,cust,af]); // eslint-disable-line
 
   // AUTO-SYNC JOBS from decorations — one job per unique decoration combination per deco type
@@ -3759,9 +3761,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const promoBudget=_ps.reduce((a,p)=>a+(p.allocated||0)-(p.used||0),0);
               // Calculate promo cost per item (retail price + 25% deco markup)
               const items=safeItems(o);const _aq={};items.forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_aq[d.art_file_id]=(_aq[d.art_file_id]||0)+q2}})});
-              let remaining=promoBudget;const newItems=[];let promoCount=0;
+              let remaining=promoBudget;const newItems=[];let fullCount=0;let partialItem=false;
               items.forEach(it=>{
                 const q=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);if(!q){newItems.push(it);return}
+                if(remaining<=0){newItems.push(it);return}
                 const promoSell=safeNum(it.retail_price)||safeNum(it.nsa_cost)*2;
                 let itemPromoCost=q*promoSell;
                 safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);itemPromoCost+=eq*rQ(dp.sell*1.25)});
@@ -3769,16 +3772,25 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 const shipBase=o.shipping_type==='pct'?itemPromoCost*(o.shipping_value||0)/100:0;
                 const itemTotal=itemPromoCost+rQ(shipBase*1.25);
                 if(remaining>=itemTotal){
-                  remaining-=itemTotal;promoCount++;
+                  // Fully covered by promo
+                  remaining-=itemTotal;fullCount++;
                   newItems.push({...it,is_promo:true,_pre_promo_sell:it.unit_sell,unit_sell:promoSell});
-                }else{newItems.push(it)}
+                }else{
+                  // Partially covered — apply remaining promo as discount on this item's sell price
+                  const creditPerUnit=rQ(remaining/q);
+                  const discountedSell=Math.max(0,safeNum(it.unit_sell)-creditPerUnit);
+                  partialItem=true;
+                  newItems.push({...it,is_promo:false,_pre_promo_sell:it.unit_sell,unit_sell:discountedSell,_promo_credit:remaining});
+                  remaining=0;
+                }
               });
               sv('promo_applied',true);sv('items',newItems);
-              if(promoCount<items.filter(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0).length){
-                nf('Promo applied to '+promoCount+' of '+items.length+' items — $'+remaining.toFixed(2)+' promo remaining, customer pays for rest');
-              }else{nf('Promo mode enabled — all items set to retail pricing')}
+              const totalItems=items.filter(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0).length;
+              if(fullCount===totalItems){nf('Promo mode enabled — all items set to retail pricing')}
+              else if(partialItem){nf(fullCount+' item(s) fully covered, 1 partially discounted — customer pays the rest')}
+              else{nf('Promo applied to '+fullCount+' of '+totalItems+' items — customer pays for rest')}
             }} onMouseEnter={e=>e.currentTarget.style.background='#fffbeb'} onMouseLeave={e=>e.currentTarget.style.background='none'}>💰 Apply Promo Funds</button>}
-            {isE&&o.promo_applied&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#d97706',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);sv('promo_applied',false);sv('promo_amount',0);sv('items',safeItems(o).map(it=>({...it,is_promo:false,unit_sell:it._pre_promo_sell!=null?it._pre_promo_sell:it.unit_sell,_pre_promo_sell:undefined})));nf('Promo mode disabled')}} onMouseEnter={e=>e.currentTarget.style.background='#fffbeb'} onMouseLeave={e=>e.currentTarget.style.background='none'}>💰 Remove Promo</button>}
+            {isE&&o.promo_applied&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#d97706',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);sv('promo_applied',false);sv('promo_amount',0);sv('items',safeItems(o).map(it=>({...it,is_promo:false,unit_sell:it._pre_promo_sell!=null?it._pre_promo_sell:it.unit_sell,_pre_promo_sell:undefined,_promo_credit:undefined})));nf('Promo mode disabled')}} onMouseEnter={e=>e.currentTarget.style.background='#fffbeb'} onMouseLeave={e=>e.currentTarget.style.background='none'}>💰 Remove Promo</button>}
             {(isE||onDelete)&&<><div style={{borderTop:'1px solid #e2e8f0',margin:'2px 0'}}/><button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#dc2626',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);if(onDelete){onDelete(o.id)}else{nf('Delete not available','error')}}} onMouseEnter={e=>e.currentTarget.style.background='#fef2f2'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="trash" size={12}/> Delete</button></>}
           </div></>})()}
         </div>
@@ -3811,9 +3823,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         <span style={{fontSize:11,fontWeight:700,color:'#92400e'}}>💰 PROMO ORDER</span>
         <span style={{fontSize:12}}>Promo Items: <strong style={{color:'#92400e'}}>${promoTotals.promoRev.toLocaleString(undefined,{maximumFractionDigits:2})}</strong> (retail + 25% deco)</span>
         <span style={{fontSize:12}}>Promo Ship: <strong>${promoTotals.promoShip.toFixed(2)}</strong></span>
+        {promoTotals.promoCredit>0&&<span style={{fontSize:12}}>Promo Discount: <strong style={{color:'#92400e'}}>${promoTotals.promoCredit.toLocaleString(undefined,{maximumFractionDigits:2})}</strong></span>}
         <span style={{fontSize:12,fontWeight:700,color:'#92400e'}}>Promo Total: ${promoTotals.promoAmount.toLocaleString(undefined,{maximumFractionDigits:2})}</span>
         {promoTotals.normalRev>0&&<span style={{fontSize:12}}>Customer Pays: <strong style={{color:'#166534'}}>${promoTotals.customerPays.toFixed(2)}</strong></span>}
-        {promoTotals.normalRev===0&&<span style={{fontSize:12,fontWeight:700,color:'#166534'}}>$0.00 Order</span>}
+        {promoTotals.normalRev===0&&promoTotals.promoCredit===0&&<span style={{fontSize:12,fontWeight:700,color:'#166534'}}>$0.00 Order</span>}
         {(()=>{if(!cust)return null;const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();const _ps=(cust.promo_periods||[]).filter(p=>p.period_start===(_m<6?_y+'-01-01':_y+'-07-01'));const _bal=_ps.reduce((a,p)=>a+(p.allocated||0)-(p.used||0),0);if(promoTotals.promoAmount>_bal)return<span style={{fontSize:12,fontWeight:700,color:'#dc2626',background:'#fef2f2',padding:'2px 8px',borderRadius:6}}>⚠️ Exceeds available funds — ${_bal.toLocaleString(undefined,{maximumFractionDigits:2})} remaining</span>;return<span style={{fontSize:11,color:'#64748b'}}>Available: ${_bal.toLocaleString(undefined,{maximumFractionDigits:2})}</span>})()}
       </div>}
       {/* SO STATUS — fully auto-calculated from items/jobs */}
@@ -11445,7 +11458,9 @@ export default function App(){
       const nRev=safeItems(est).reduce((a,it)=>{if(it.is_promo)return a;const q2=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);let r=q2*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:q2;const dp=dP(d,q2,_af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q2*2:q2);r+=eq*dp.sell});return a+r},0);
       const origTotal=origPRev+nRev;const baseShip=est.shipping_type==='pct'?origTotal*(est.shipping_value||0)/100:(est.shipping_value||0);
       const pPct=origTotal>0?origPRev/origTotal:(pRev>0?1:0);const pShip=rQ(baseShip*pPct*1.25);
-      promoAmount=pRev+pShip;
+      // Include _promo_credit from partially covered items
+      const promoCredit=safeItems(est).reduce((a,it)=>a+safeNum(it._promo_credit),0);
+      promoAmount=pRev+pShip+promoCredit;
     }
     // Warn and block if promo funds are no longer sufficient (balance may have changed since promo was applied)
     if(est.promo_applied&&promoAmount>0){
