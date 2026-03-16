@@ -523,7 +523,9 @@ const _dbDeletePromoProgram = async (id) => {
 const _dbSavePromoPeriod = async (period) => {
   if(!supabase)return false;
   try{
-    const{error}=await supabase.from('customer_promo_periods').upsert(period,{onConflict:'id'});
+    // Strip non-schema fields before sending to Supabase
+    const{period_label,_label,...dbPeriod}=period;
+    const{error}=await supabase.from('customer_promo_periods').upsert(dbPeriod,{onConflict:'id'});
     if(error){console.error('[DB] save promo period:',error.message);return false}
     return true;
   }catch(e){console.error('[DB] save promo period:',e);return false}
