@@ -25755,8 +25755,10 @@ export default function App(){
                       items.forEach(raw=>{
                         const bi=raw.productBasicInfo||{};const ii=raw.productImageInfo||{};const it={...bi,...ii,...(raw.productPriceInfo||{}),...raw};
                         const sid=it.style||it.styleNumber||v;const color=it.catalogColor||it.color||it.colorName||'';
-                        const fg=it.colorProductImage||it.colorProductImageThumbnail||it.productImage||'';
-                        const bg=it.colorProductImageBack||it.colorProductImageBackThumbnail||'';
+                        let fg=it.colorProductImage||it.colorProductImageThumbnail||it.productImage||'';
+                        let bg=it.colorProductImageBack||it.colorProductImageBackThumbnail||'';
+                        if(fg&&fg.startsWith('http://'))fg=fg.replace('http://','https://');
+                        if(bg&&bg.startsWith('http://'))bg=bg.replace('http://','https://');
                         if(!grouped[sid])grouped[sid]={id:sid,name:(it.brandName||'')+' '+(it.productTitle||it.description||v),sku:sid,brand:it.brandName||'',color,frontUrl:fg,backUrl:bg,colors:[]};
                         if(!grouped[sid].colors.find(c=>c.colorName===color))grouped[sid].colors.push({colorName:color,frontUrl:fg,backUrl:bg});
                       });
@@ -25764,12 +25766,42 @@ export default function App(){
                     }else if(mkSource==='mt'){
                       const data=await momentecSearchProducts(v,50,1);
                       const entries=(data?.CatalogEntryView||[]).filter(e=>(e.partNumber||'').toLowerCase().includes(v.toLowerCase())||(e.name||'').toLowerCase().includes(v.toLowerCase()));
+                      // Collect base SKUs and fetch details for color variants
+                      const baseSkus=[];const seen=new Set();
+                      for(const e of entries){const pn=e.partNumber||'';const base=e.catalogEntryTypeCode==='ItemBean'&&pn.includes('-')?pn.split('-')[0]:pn;if(!seen.has(base)){seen.add(base);baseSkus.push({base,entry:e})}}
                       const grouped={};
-                      entries.forEach(e=>{
-                        const sid=e.partNumber||e.uniqueID||v;
-                        const fg=e.thumbnail||e.fullImage||'';
-                        if(!grouped[sid])grouped[sid]={id:sid,name:e.name||sid,sku:sid,brand:'Momentec',color:'',frontUrl:fg,backUrl:'',colors:[{colorName:'Default',frontUrl:fg,backUrl:''}]};
-                      });
+                      // Helper to extract color from attributes
+                      const _gc=e=>{const attrs=e.Attributes||e.attributes||e.definingAttributes||[];if(Array.isArray(attrs)){for(const a of attrs){const n=(a.name||a.identifier||'').toLowerCase();if(n==='color'||n==='colour'||n==='clr'||n==='asgswatchcolor'){const vals=a.values||a.Values||[];if(vals.length)return(vals[0].values||vals[0].value||vals[0].identifier||'').trim()}}}return ''};
+                      // Fetch details for each base SKU (up to 5)
+                      const details=await Promise.all(baseSkus.slice(0,5).map(async({base,entry})=>{
+                        try{const d=await momentecGetProductByPartNumber(base);return{base,entry,detail:d?.CatalogEntryView?.[0]||null}}
+                        catch{return{base,entry,detail:null}}
+                      }));
+                      for(const{base,entry,detail}of details){
+                        const src=detail||entry;
+                        const fg=src.thumbnail||src.fullImage||entry.thumbnail||entry.fullImage||'';
+                        const bg=src.fullImageBack||src.backImage||'';
+                        // Build color→image map from attributes
+                        const colorImgMap={};
+                        const topAttrs=src.Attributes||src.attributes||[];
+                        if(Array.isArray(topAttrs)){for(const a of topAttrs){const aId=(a.identifier||'').toLowerCase();if(aId==='asgswatchcolor'||aId==='asgswatchcolorfamily'||(a.name||'').toLowerCase()==='color'){const vals=a.values||a.Values||[];for(const vl of vals){const cName=vl.values||vl.value||vl.identifier||'';const ext=vl.extendedValue||[];const imgE=ext.find(x=>x.key==='Image1Path')||ext.find(x=>x.key==='Image1');if(cName&&imgE){const ip=imgE.value||'';if(ip&&!ip.includes('color1.jpg'))colorImgMap[cName]='https://www.momentecbrands.com/wcsstore/'+ip}}}}}
+                        grouped[base]={id:base,name:src.title||src.name||entry.name||base,sku:base,brand:src.manufacturer||'Momentec',color:'',frontUrl:fg,backUrl:bg,colors:[]};
+                        // Process child SKUs for colors
+                        const skus=src.SKUs||src.sKUs||detail?.SKUs||detail?.sKUs||[];
+                        const seenColors=new Set();
+                        if(skus.length){for(const sk of skus){
+                          const skColor=_gc(sk)||'Default';
+                          if(seenColors.has(skColor))continue;seenColors.add(skColor);
+                          const skImg=sk.thumbnail||sk.fullImage||colorImgMap[skColor]||fg;
+                          const skBack=sk.fullImageBack||sk.backImage||bg;
+                          grouped[base].colors.push({colorName:skColor,frontUrl:skImg,backUrl:skBack});
+                        }}
+                        if(!grouped[base].colors.length){
+                          const cn=_gc(src)||'Default';
+                          grouped[base].colors.push({colorName:cn,frontUrl:colorImgMap[cn]||fg,backUrl:bg});
+                        }
+                        if(grouped[base].colors.length)grouped[base].color=grouped[base].colors[0].colorName;
+                      }
                       setMkResults(Object.values(grouped));
                     }
                   }catch(err){console.error('[Mockup] Search error:',err);setMkResults([])}
@@ -25779,7 +25811,7 @@ export default function App(){
               {mkSearching&&<div style={{fontSize:12,color:'#64748b',padding:8}}>Searching...</div>}
               <div style={{maxHeight:300,overflow:'auto'}}>
                 {mkResults.map((r,i)=><div key={r.id||i} style={{display:'flex',gap:10,padding:'8px 4px',borderBottom:'1px solid #f1f5f9',cursor:'pointer',background:mkGarment?.sku===r.sku?'#eff6ff':''}}
-                  onClick={()=>{setMkGarment({name:r.name,sku:r.sku,brand:r.brand,color:r.color||r.colors?.[0]?.colorName||'',frontUrl:r.frontUrl||r.colors?.[0]?.frontUrl||'',backUrl:r.backUrl||r.colors?.[0]?.backUrl||'',colors:r.colors||[]});setMkSide('front');setMkArtFile(null);if(mkCanvas){mkCanvas.dispose();setMkCanvas(null)}}}>
+                  onClick={()=>{setMkGarment({name:r.name,sku:r.sku,brand:r.brand,color:r.color||r.colors?.[0]?.colorName||'',frontUrl:r.frontUrl||r.colors?.[0]?.frontUrl||'',backUrl:r.backUrl||r.colors?.[0]?.backUrl||'',colors:r.colors||[]});setMkSide('front');setMkArtFile(null);if(mkCanvas){if(mkCanvas._mkDelHandler)document.removeEventListener('keydown',mkCanvas._mkDelHandler);mkCanvas.dispose();setMkCanvas(null)}}}>
                   {r.frontUrl?<img src={r.frontUrl} alt="" style={{width:48,height:48,objectFit:'contain',borderRadius:6,border:'1px solid #e2e8f0',background:'#fff',flexShrink:0}}/>
                   :<div style={{width:48,height:48,background:'#f1f5f9',borderRadius:6,display:'flex',alignItems:'center',justifyContent:'center'}}><Icon name="image" size={20}/></div>}
                   <div style={{minWidth:0}}>
@@ -25799,7 +25831,7 @@ export default function App(){
               <div className="card-body" style={{padding:12}}>
                 <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
                   {mkGarment.colors.map((c,i)=><button key={i} className={`btn btn-sm ${mkGarment.color===c.colorName?'btn-primary':'btn-secondary'}`}
-                    onClick={()=>{setMkGarment(g=>({...g,color:c.colorName,frontUrl:c.frontUrl||g.frontUrl,backUrl:c.backUrl||g.backUrl}));if(mkCanvas){mkCanvas.dispose();setMkCanvas(null)}}}
+                    onClick={()=>{setMkGarment(g=>({...g,color:c.colorName,frontUrl:c.frontUrl||g.frontUrl,backUrl:c.backUrl||g.backUrl}));if(mkCanvas){if(mkCanvas._mkDelHandler)document.removeEventListener('keydown',mkCanvas._mkDelHandler);mkCanvas.dispose();setMkCanvas(null)}}}
                     style={{fontSize:11}}>{c.colorName||'Default'}</button>)}
                 </div>
               </div>
@@ -25827,11 +25859,28 @@ export default function App(){
         {mkGarment&&<div className="card">
           <div className="card-header">
             <h2>Mockup Preview</h2>
-            <div style={{display:'flex',gap:8,alignItems:'center'}}>
+            <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
               {mkGarment.backUrl&&<div style={{display:'flex',gap:2}}>
-                <button className={`btn btn-sm ${mkSide==='front'?'btn-primary':'btn-secondary'}`} onClick={()=>{setMkSide('front');if(mkCanvas){mkCanvas.dispose();setMkCanvas(null)}}}>Front</button>
-                <button className={`btn btn-sm ${mkSide==='back'?'btn-primary':'btn-secondary'}`} onClick={()=>{setMkSide('back');if(mkCanvas){mkCanvas.dispose();setMkCanvas(null)}}}>Back</button>
+                <button className={`btn btn-sm ${mkSide==='front'?'btn-primary':'btn-secondary'}`} onClick={()=>{setMkSide('front');if(mkCanvas){if(mkCanvas._mkDelHandler)document.removeEventListener('keydown',mkCanvas._mkDelHandler);mkCanvas.dispose();setMkCanvas(null)}}}>Front</button>
+                <button className={`btn btn-sm ${mkSide==='back'?'btn-primary':'btn-secondary'}`} onClick={()=>{setMkSide('back');if(mkCanvas){if(mkCanvas._mkDelHandler)document.removeEventListener('keydown',mkCanvas._mkDelHandler);mkCanvas.dispose();setMkCanvas(null)}}}>Back</button>
               </div>}
+              <button className="btn btn-sm btn-secondary" title="Add text (name/number)" onClick={()=>{
+                if(!mkCanvas)return;
+                const txt=prompt('Enter text (name, number, etc.):');
+                if(!txt)return;
+                const tObj=new fabric.FabricText(txt,{left:250,top:280,fontSize:42,fontWeight:'bold',fill:'#ffffff',fontFamily:'Arial Black, Arial, sans-serif',
+                  originX:'center',originY:'center',textAlign:'center',
+                  stroke:'#000000',strokeWidth:1,
+                  cornerColor:'#3b82f6',cornerStyle:'circle',cornerSize:10,transparentCorners:false,borderColor:'#3b82f6'});
+                tObj._isArt=true;
+                mkCanvas.add(tObj);mkCanvas.setActiveObject(tObj);mkCanvas.renderAll();
+              }}><Icon name="edit" size={14}/> Add Text</button>
+              <button className="btn btn-sm btn-secondary" title="Delete selected object" onClick={()=>{
+                if(!mkCanvas)return;
+                const sel=mkCanvas.getActiveObject();
+                if(sel&&sel._isArt){mkCanvas.remove(sel);mkCanvas.discardActiveObject();mkCanvas.renderAll()}
+                else nf('Select an art/text element to delete','error');
+              }}><Icon name="trash" size={14}/> Delete</button>
               <button className="btn btn-sm btn-primary" onClick={async()=>{
                 if(!mkCanvas)return;
                 const dataUrl=mkCanvas.toDataURL({format:'png',multiplier:2});
@@ -25840,21 +25889,26 @@ export default function App(){
               }}><Icon name="save" size={14}/> Download PNG</button>
             </div>
           </div>
-          <div className="card-body" style={{padding:16,display:'flex',justifyContent:'center',background:'#f8fafc'}}>
+          <div className="card-body" style={{padding:16,display:'flex',flexDirection:'column',alignItems:'center',background:'#f8fafc'}}>
+            <p style={{fontSize:11,color:'#94a3b8',margin:'0 0 8px'}}>Click art/text to select. Drag to move, corners to resize. Press Delete key or use trash button to remove.</p>
             <div style={{position:'relative'}}>
               <canvas ref={el=>{
                 if(!el||mkCanvas)return;
                 mkCanvasRef.current=el;
                 const garmentUrl=mkSide==='back'?mkGarment.backUrl:mkGarment.frontUrl;
                 if(!garmentUrl){
-                  // No garment image — show blank canvas
                   const c=new fabric.Canvas(el,{width:500,height:600,backgroundColor:'#ffffff'});
                   c.add(new fabric.FabricText('No garment image available',{left:250,top:300,fontSize:16,fill:'#94a3b8',originX:'center',originY:'center',selectable:false}));
-                  setMkCanvas(c);
-                  return;
+                  setMkCanvas(c);return;
                 }
                 const c=new fabric.Canvas(el,{width:500,height:600,backgroundColor:'#ffffff'});
                 setMkCanvas(c);
+                // Delete key handler
+                const _delHandler=e=>{if((e.key==='Delete'||e.key==='Backspace')&&e.target===document.body){const sel=c.getActiveObject();if(sel&&sel._isArt){c.remove(sel);c.discardActiveObject();c.renderAll()}}};
+                document.addEventListener('keydown',_delHandler);
+                c._mkDelHandler=_delHandler;
+                // Proxy garment image through image-proxy to avoid CORS on canvas
+                const proxyUrl='/.netlify/functions/image-proxy?url='+encodeURIComponent(garmentUrl);
                 const imgEl=new Image();
                 imgEl.crossOrigin='anonymous';
                 imgEl.onload=()=>{
@@ -25862,17 +25916,28 @@ export default function App(){
                   const scale=Math.min(500/garImg.width,600/garImg.height);
                   garImg.set({scaleX:scale,scaleY:scale,left:(500-garImg.width*scale)/2,top:(600-garImg.height*scale)/2});
                   c.add(garImg);c.sendObjectToBack(garImg);
-                  // If art file was already uploaded, add it
-                  if(mkArtFile?.url){
-                    addArtToCanvas(c,mkArtFile);
-                  }
+                  if(mkArtFile?.url)addArtToCanvas(c,mkArtFile);
                   c.renderAll();
                 };
                 imgEl.onerror=()=>{
-                  c.add(new fabric.FabricText('Could not load garment image',{left:250,top:300,fontSize:14,fill:'#ef4444',originX:'center',originY:'center',selectable:false}));
-                  c.renderAll();
+                  // Fallback: try direct URL (works for S&S/Momentec but not SanMar on canvas)
+                  const imgEl2=new Image();
+                  imgEl2.crossOrigin='anonymous';
+                  imgEl2.onload=()=>{
+                    const garImg=new fabric.FabricImage(imgEl2,{selectable:false,evented:false});
+                    const scale=Math.min(500/garImg.width,600/garImg.height);
+                    garImg.set({scaleX:scale,scaleY:scale,left:(500-garImg.width*scale)/2,top:(600-garImg.height*scale)/2});
+                    c.add(garImg);c.sendObjectToBack(garImg);
+                    if(mkArtFile?.url)addArtToCanvas(c,mkArtFile);
+                    c.renderAll();
+                  };
+                  imgEl2.onerror=()=>{
+                    c.add(new fabric.FabricText('Could not load garment image',{left:250,top:300,fontSize:14,fill:'#ef4444',originX:'center',originY:'center',selectable:false}));
+                    c.renderAll();
+                  };
+                  imgEl2.src=garmentUrl;
                 };
-                imgEl.src=garmentUrl;
+                imgEl.src=proxyUrl;
               }}/>
             </div>
           </div>
