@@ -4938,7 +4938,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     {shp.ship_date&&<span style={{fontSize:11,color:'#64748b'}}>Shipped {shp.ship_date}</span>}
                     {safeNum(shp.shipping_cost)>0&&<span style={{fontSize:10,fontWeight:700,color:'#166534',background:'#dcfce7',padding:'2px 8px',borderRadius:4}}>${safeNum(shp.shipping_cost).toFixed(2)}</span>}
                     {shp.label_url&&<button style={{fontSize:9,background:'#7c3aed',color:'white',border:'none',padding:'3px 8px',borderRadius:4,fontWeight:700,cursor:'pointer'}}
-                      onClick={()=>{const pw=window.open(shp.label_url,'_blank');if(pw)setTimeout(()=>{try{pw.print()}catch(e){}},1500)}}>Print Label</button>}
+                      onClick={()=>{
+                        if(shp.label_url.startsWith('data:application/pdf')){
+                          const iframe=document.createElement('iframe');iframe.style.display='none';document.body.appendChild(iframe);
+                          iframe.src=shp.label_url;iframe.onload=()=>{try{iframe.contentWindow.print()}catch(e){
+                            const a=document.createElement('a');a.href=shp.label_url;a.download='label.pdf';a.click()}
+                            setTimeout(()=>{try{document.body.removeChild(iframe)}catch{}},60000)};
+                        } else {const pw=window.open(shp.label_url,'_blank');if(pw)setTimeout(()=>{try{pw.print()}catch(e){}},1500)}
+                      }}>Print Label</button>}
                     {shpUnits>0&&<span style={{marginLeft:'auto',fontSize:11,fontWeight:700,color:'#166534'}}>{shpUnits} units</span>}
                     {/* Edit tracking for reps/admin */}
                     {canEditCost&&<button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px'}} onClick={()=>{
@@ -4948,6 +4955,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                       if(idx>=0){updated[idx]={...updated[idx],tracking_number:tn,carrier:carrier||'',tracking_url:trackUrl(tn),ship_date:updated[idx].ship_date||new Date().toLocaleDateString()};sv('_shipments',updated)}
                       else if(shp.id==='legacy'){sv('_tracking_number',tn);sv('_carrier',carrier||o._carrier);sv('_tracking_url',trackUrl(tn))}
                     }}>Edit</button>}
+                    {/* Delete shipment — only for non-legacy shipments */}
+                    {shp.id!=='legacy'&&canEditCost&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#fee2e2',color:'#dc2626',border:'1px solid #fecaca',fontWeight:700}} onClick={()=>{
+                      if(!window.confirm('Delete this shipment? This will remove the package and its tracking info.'))return;
+                      const updated=(o._shipments||[]).filter(s=>s.id!==shp.id);
+                      sv('_shipments',updated);
+                      // Recalculate shipping cost
+                      const newCost=updated.reduce((a,s)=>a+safeNum(s.shipping_cost||0),0);
+                      sv('_shipping_cost',newCost||safeNum(o._shipping_cost||0));
+                      nf('Shipment deleted');
+                    }}>Delete</button>}
                   </div>
                   {/* Package contents */}
                   {(shp.items||[]).length>0&&<table style={{width:'100%',fontSize:11,borderCollapse:'collapse'}}>
@@ -4959,7 +4976,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                       <th style={{padding:'4px 6px',textAlign:'center',fontSize:10,color:'#64748b'}}>Qty</th>
                     </tr></thead>
                     <tbody>{(shp.items||[]).map((it,ii)=>{
-                      const szStr=Object.entries(it.sizes||{}).filter(([,v])=>v>0).map(([sz,v])=>sz+':'+v).join('  ');
+                      const szStr=Object.entries(it.sizes||{}).filter(([,v])=>v>0).sort((a,b)=>{const ai=SZ_ORD.indexOf(a[0].toUpperCase()),bi2=SZ_ORD.indexOf(b[0].toUpperCase());return(ai<0?99:ai)-(bi2<0?99:bi2)}).map(([sz,v])=>sz+':'+v).join('  ');
                       const itQty=Object.values(it.sizes||{}).reduce((a,v)=>a+v,0);
                       return<tr key={ii} style={{borderBottom:'1px solid #f1f5f9'}}>
                         <td style={{padding:'4px 6px',fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{it.sku}</td>
@@ -17767,7 +17784,9 @@ export default function App(){
                         }catch(err){nf('Label creation failed: '+err.message,'error')}
                       }}>🏷️ Create Label</button>}
                   </div>
-                  {box.label_url&&<div style={{marginTop:6}}><a href={box.label_url} target="_blank" rel="noreferrer" className="btn btn-sm btn-secondary" style={{fontSize:11}}>📄 Download Label</a></div>}
+                  {box.label_url&&<div style={{marginTop:6}}><button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>{
+                    if(box.label_url.startsWith('data:')){const a=document.createElement('a');a.href=box.label_url;a.download='label.pdf';a.click()}
+                    else window.open(box.label_url,'_blank')}}>📄 Download Label</button></div>}
                   {box.shipping_cost&&<div style={{marginTop:4,fontSize:11,color:'#166534',fontWeight:600}}>Shipping cost: ${box.shipping_cost.toFixed(2)}</div>}
                 </div>})}
 
@@ -18389,7 +18408,7 @@ export default function App(){
                         const remainSz={};Object.entries(szObj).forEach(([sz,v])=>{const rem=safeNum(v)-safeNum(shipped[sz]);if(rem>0)remainSz[sz]=rem});
                         const totalQty=Object.values(remainSz).reduce((a,v)=>a+v,0);
                         if(totalQty<=0)return null;
-                        const szStr=Object.entries(remainSz).filter(([,v])=>v>0).map(([sz,v])=>sz+':'+v).join('  ');
+                        const szStr=Object.entries(remainSz).filter(([,v])=>v>0).sort((a,b)=>{const ai=SZ_ORD.indexOf(a[0].toUpperCase()),bi2=SZ_ORD.indexOf(b[0].toUpperCase());return(ai<0?99:ai)-(bi2<0?99:bi2)}).map(([sz,v])=>sz+':'+v).join('  ');
                         return<tr key={ii} style={{borderBottom:'1px solid #f1f5f9'}}>
                           <td style={{padding:'3px 0',fontWeight:700,whiteSpace:'nowrap',width:80,color:'#334155'}}>{item.sku}</td>
                           <td style={{fontSize:10,color:'#475569'}}>{item.name}{item.color?' · '+item.color:''}</td>
@@ -18669,7 +18688,9 @@ export default function App(){
                       }catch(err){nf('Label creation failed: '+err.message,'error')}
                     }}>🏷️ Create Label</button>}
                 </div>}
-                {box.label_url&&<div style={{marginTop:6}}><a href={box.label_url} target="_blank" rel="noreferrer" className="btn btn-sm btn-secondary" style={{fontSize:11}}>📄 Download Label</a></div>}
+                {box.label_url&&<div style={{marginTop:6}}><button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>{
+                  if(box.label_url.startsWith('data:')){const a=document.createElement('a');a.href=box.label_url;a.download='label.pdf';a.click()}
+                  else window.open(box.label_url,'_blank')}}>📄 Download Label</button></div>}
                 {box.shipping_cost&&<div style={{marginTop:4,fontSize:11,color:'#166534',fontWeight:600}}>Shipping cost: ${box.shipping_cost.toFixed(2)}</div>}
 
                 {/* Items in this box */}
@@ -18692,9 +18713,9 @@ export default function App(){
                       <td style={{padding:'3px 6px',fontSize:10,color:'#64748b'}}>{it.color||'—'}</td>
                       <td style={{padding:'3px 6px'}}>
                         <div style={{display:'flex',gap:3,flexWrap:'wrap'}}>
-                          {Object.entries(it.sizes||{}).filter(([,v])=>v>0).map(([sz,v])=><div key={sz} style={{display:'flex',alignItems:'center',gap:2}}>
-                            <span style={{fontSize:9,color:'#64748b',fontWeight:600}}>{sz}</span>
-                            <input type="number" min="0" value={v} style={{width:32,fontSize:10,textAlign:'center',padding:'1px 2px',border:'1px solid #d1d5db',borderRadius:3}}
+                          {Object.entries(it.sizes||{}).filter(([,v])=>v>0).sort((a,b)=>{const ai=SZ_ORD.indexOf(a[0].toUpperCase()),bi2=SZ_ORD.indexOf(b[0].toUpperCase());return(ai<0?99:ai)-(bi2<0?99:bi2)}).map(([sz,v])=><div key={sz} style={{display:'flex',alignItems:'center',gap:3,background:'#f1f5f9',borderRadius:4,padding:'2px 6px'}}>
+                            <span style={{fontSize:11,color:'#475569',fontWeight:700,minWidth:22}}>{sz}</span>
+                            <input type="number" min="0" value={v} style={{width:44,fontSize:12,textAlign:'center',padding:'3px 4px',border:'1px solid #cbd5e1',borderRadius:4,fontWeight:600}}
                               onChange={e=>{const nv=parseInt(e.target.value)||0;const b=[...shipModal.boxes];const newSizes={...b[bi].items[ii].sizes,[sz]:nv};
                                 b[bi]={...b[bi],items:b[bi].items.map((x,xi)=>xi===ii?{...x,sizes:newSizes}:x)};setShipModal({...shipModal,boxes:b})}}/>
                           </div>)}
