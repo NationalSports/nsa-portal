@@ -1694,7 +1694,11 @@ const shipStationCall = async (endpoint, options = {}) => {
     });
     if (!response.ok) {
       const errText = await response.text().catch(() => '');
-      throw new Error(`ShipStation API error: ${response.status} ${errText}`);
+      // Try to extract a clean error message from ShipStation JSON response
+      let cleanMsg = '';
+      try { const errJson = JSON.parse(errText); cleanMsg = errJson.ExceptionMessage || errJson.Message || errText.slice(0, 200); } catch { cleanMsg = errText.slice(0, 200); }
+      console.error('[ShipStation] API error:', response.status, errText);
+      throw new Error(`ShipStation error (${response.status}): ${cleanMsg}`);
     }
     const data = await response.json();
     console.log('[ShipStation] API response:', endpoint, data);
@@ -1796,13 +1800,18 @@ const fetchRecentShipments = async () => {
 // Create a ShipStation label for an order
 const _ssCarrierMap = { 'UPS': { carrierCode: 'ups', serviceCode: 'ups_ground' }, 'FedEx': { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, 'USPS': { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
 const createShipStationLabel = async (so, customer, packageItems, weight, carrier, service, dimensions) => {
+  // Validate customer address before calling API
+  const hasShipAddr = customer.shipping_address_line1 && customer.shipping_city && customer.shipping_state && customer.shipping_zip;
+  const hasBillAddr = customer.billing_address_line1 && customer.billing_city && customer.billing_state && customer.billing_zip;
+  if (!hasShipAddr && !hasBillAddr) throw new Error('Customer has no shipping or billing address. Please add an address to the customer record first.');
   // Ensure order exists in ShipStation first
   let ssOrderId = so._shipstation_order_id;
   if (!ssOrderId) {
     const ssOrder = await pushSOToShipStation(so, customer);
     ssOrderId = ssOrder.orderId;
   }
-  const shipTo = customer.shipping_address_line1 ? {
+  if (!ssOrderId) throw new Error('Could not create or find ShipStation order. Please check ShipStation connection.');
+  const shipTo = hasShipAddr ? {
     name: customer.name, company: customer.name,
     street1: customer.shipping_address_line1, street2: customer.shipping_address_line2 || '',
     city: customer.shipping_city, state: customer.shipping_state,
@@ -1813,19 +1822,23 @@ const createShipStationLabel = async (so, customer, packageItems, weight, carrie
     city: customer.billing_city, state: customer.billing_state,
     postalCode: customer.billing_zip, country: 'US', phone: customer.contacts?.[0]?.phone || ''
   };
-  const cm = _ssCarrierMap[carrier] || { carrierCode: carrier || 'fedex', serviceCode: service || 'fedex_ground' };
+  // Map carrier — dropdown values are lowercase ('fedex','ups','usps')
+  const carrierLower = (carrier || 'fedex').toLowerCase();
+  const carrierMap = { fedex: { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, ups: { carrierCode: 'ups', serviceCode: 'ups_ground' }, usps: { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
+  const cm = carrierMap[carrierLower] || { carrierCode: carrierLower, serviceCode: service || 'fedex_ground' };
   const labelPayload = {
     orderId: ssOrderId, carrierCode: cm.carrierCode, serviceCode: cm.serviceCode,
     packageCode: 'package', confirmation: 'none', shipDate: new Date().toISOString().split('T')[0],
     weight: { value: weight || 5, units: 'pounds' },
     dimensions: dimensions && dimensions.length && dimensions.width && dimensions.height
       ? { length: parseFloat(dimensions.length), width: parseFloat(dimensions.width), height: parseFloat(dimensions.height), units: 'inches' }
-      : null,
+      : undefined,
     shipFrom: { name: NSA.name, company: NSA.name, street1: NSA.addr, city: NSA.city, state: NSA.state, postalCode: NSA.zip, country: 'US', phone: NSA.phone },
     shipTo, insuranceOptions: { provider: null, insureShipment: false, insuredValue: 0 },
     internationalOptions: null, advancedOptions: { customField1: `NSA-SO-${so.id}` },
     testLabel: false
   };
+  console.log('[ShipStation] Label request payload:', JSON.stringify(labelPayload, null, 2));
   return await shipStationCall('/orders/createlabelfororder', { method: 'POST', body: JSON.stringify(labelPayload) });
 };
 
@@ -4959,10 +4972,22 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     {shp.id!=='legacy'&&canEditCost&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#fee2e2',color:'#dc2626',border:'1px solid #fecaca',fontWeight:700}} onClick={()=>{
                       if(!window.confirm('Delete this shipment? This will remove the package and its tracking info.'))return;
                       const updated=(o._shipments||[]).filter(s=>s.id!==shp.id);
-                      sv('_shipments',updated);
-                      // Recalculate shipping cost
-                      const newCost=updated.reduce((a,s)=>a+safeNum(s.shipping_cost||0),0);
-                      sv('_shipping_cost',newCost||safeNum(o._shipping_cost||0));
+                      // Revert jobs from 'shipped' back to 'completed' if units no longer fully shipped
+                      const shippedByItem={};updated.forEach(s=>{(s.items||[]).forEach(it=>{
+                        const k=it.sku+'|'+(it.color||'');shippedByItem[k]=(shippedByItem[k]||0)+Object.values(it.sizes||{}).reduce((a,v)=>a+v,0);
+                      })});
+                      const revertedJobs=safeJobs(o).map(jj=>{
+                        if(jj.prod_status!=='shipped')return jj;
+                        const jobShipped=(jj.items||[]).reduce((a,gi)=>a+(shippedByItem[gi.sku+'|'+(gi.color||'')]||0),0);
+                        return jobShipped>=safeNum(jj.total_units)?jj:{...jj,prod_status:'completed'};
+                      });
+                      const hasShipments=updated.length>0;const firstShp2=updated[0];
+                      setO(e=>({...e,jobs:revertedJobs,_shipments:updated,_shipped:false,
+                        _shipping_status:hasShipments?'partial':null,
+                        _tracking_number:firstShp2?.tracking_number||'',_carrier:firstShp2?.carrier||'',
+                        _ship_date:firstShp2?.ship_date||'',_tracking_url:firstShp2?.tracking_url||'',
+                        _shipping_cost:updated.reduce((a,s)=>a+safeNum(s.shipping_cost||0),0)||null,
+                        updated_at:new Date().toLocaleString()}));setDirty(true);
                       nf('Shipment deleted');
                     }}>Delete</button>}
                   </div>
@@ -18555,7 +18580,24 @@ export default function App(){
                         onClick={()=>{
                           if(!window.confirm('Delete this shipment?'))return;
                           const updatedShipments=(shp.so._shipments||[]).filter(s=>s.id!==shp.id);
-                          savSO({...shp.so,_shipments:updatedShipments});
+                          // Revert jobs from 'shipped' back to 'completed' and recalc shipping fields
+                          const so2=shp.so;
+                          const revertedJobs=safeJobs(so2).map(jj=>{
+                            if(jj.prod_status!=='shipped')return jj;
+                            // Check if this job still has all units shipped after removing this shipment
+                            const shippedByItem={};updatedShipments.forEach(s=>{(s.items||[]).forEach(it=>{
+                              const k=it.sku+'|'+(it.color||'');shippedByItem[k]=(shippedByItem[k]||0)+Object.values(it.sizes||{}).reduce((a,v)=>a+v,0);
+                            })});
+                            const jobShipped=(jj.items||[]).reduce((a,gi)=>a+(shippedByItem[gi.sku+'|'+(gi.color||'')]||0),0);
+                            return jobShipped>=safeNum(jj.total_units)?jj:{...jj,prod_status:'completed'};
+                          });
+                          const hasShipments=updatedShipments.length>0;
+                          const firstShp=updatedShipments[0];
+                          savSO({...so2,jobs:revertedJobs,_shipments:updatedShipments,
+                            _shipped:false,_shipping_status:hasShipments?'partial':null,
+                            _tracking_number:firstShp?.tracking_number||'',_carrier:firstShp?.carrier||'',
+                            _ship_date:firstShp?.ship_date||'',_tracking_url:firstShp?.tracking_url||'',
+                            _shipping_cost:updatedShipments.reduce((a,s)=>a+safeNum(s.shipping_cost||0),0)||null});
                           addWhAction({type:'deleted_shipment',soId:shp.soId,customer:shp.cName,tracking:shp.tracking_number||'none',by:cu?.id||'warehouse'});
                           nf('Shipment deleted');
                         }}>Delete</button>
@@ -19041,7 +19083,21 @@ export default function App(){
                       onClick={()=>{
                         if(!window.confirm('Delete this shipment?'))return;
                         const updatedShipments=(shp.so._shipments||[]).filter(s=>s.id!==shp.id);
-                        savSO({...shp.so,_shipments:updatedShipments});
+                        const so2=shp.so;
+                        const revertedJobs=safeJobs(so2).map(jj=>{
+                          if(jj.prod_status!=='shipped')return jj;
+                          const shippedByItem={};updatedShipments.forEach(s=>{(s.items||[]).forEach(it=>{
+                            const k=it.sku+'|'+(it.color||'');shippedByItem[k]=(shippedByItem[k]||0)+Object.values(it.sizes||{}).reduce((a,v)=>a+v,0);
+                          })});
+                          const jobShipped=(jj.items||[]).reduce((a,gi)=>a+(shippedByItem[gi.sku+'|'+(gi.color||'')]||0),0);
+                          return jobShipped>=safeNum(jj.total_units)?jj:{...jj,prod_status:'completed'};
+                        });
+                        const hasShipments=updatedShipments.length>0;const firstShp=updatedShipments[0];
+                        savSO({...so2,jobs:revertedJobs,_shipments:updatedShipments,
+                          _shipped:false,_shipping_status:hasShipments?'partial':null,
+                          _tracking_number:firstShp?.tracking_number||'',_carrier:firstShp?.carrier||'',
+                          _ship_date:firstShp?.ship_date||'',_tracking_url:firstShp?.tracking_url||'',
+                          _shipping_cost:updatedShipments.reduce((a,s)=>a+safeNum(s.shipping_cost||0),0)||null});
                         addWhAction({type:'deleted_shipment',soId:shp.soId,customer:shp.cName,tracking:shp.tracking_number||'none',by:cu?.id||'warehouse'});
                         nf('Shipment deleted');
                       }}>Delete</button>
