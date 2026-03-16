@@ -11589,7 +11589,7 @@ export default function App(){
       if(periods.length>0){
         const pd=periods[0];
         const updatedPeriod={...pd,used:(pd.used||0)+promoAmount};
-        const usageRec={period_id:pd.id,amount:promoAmount,description:'Promo order '+so.id,created_by:cu?.name||'System',so_id:so.id,estimate_id:est.id,created_at:new Date().toISOString()};
+        const usageRec={period_id:pd.id,amount:promoAmount,description:est.memo||so.memo||'Promo order '+so.id,created_by:cu?.name||'System',so_id:so.id,estimate_id:est.id,created_at:new Date().toISOString()};
         // Chain: save period first, THEN insert usage (FK constraint requires period to exist)
         _dbSavePromoPeriod(updatedPeriod).then(ok=>{if(ok)_dbSavePromoUsage(usageRec);else console.error('[Promo] period save failed, skipping usage insert')});
         // Update customer in state
