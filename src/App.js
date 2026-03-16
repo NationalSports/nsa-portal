@@ -163,7 +163,7 @@ const _dbLoad = async () => {
       const firm_dates=soFirm.filter(f=>f.so_id===so.id).map(f=>({item_desc:f.item_desc,date:f.date,approved:f.approved}));
       const jobs=soJobs.filter(j=>j.so_id===so.id).map(j=>{const{so_id:_,...rest}=j;return rest});
       const items=soItems.filter(i=>i.so_id===so.id).sort((a,b)=>a.item_index-b.item_index).map(item=>{
-        const decorations=soDecos.filter(d=>d.so_item_id===item.id).sort((a,b)=>a.deco_index-b.deco_index).map(d=>{const{id:_,so_item_id:__,deco_index:___,...rest}=d;return rest});
+        const decorations=soDecos.filter(d=>d.so_item_id===item.id).sort((a,b)=>a.deco_index-b.deco_index).map(d=>{const{id:_,so_item_id:__,deco_index:___,...rest}=d;if(!rest.art_file_id&&rest.art_tbd_type)rest.art_file_id='__tbd';return rest});
         const pick_lines=soPicks.filter(pk=>pk.so_item_id===item.id).map(pk=>{const{id:_,so_item_id:__,...rest}=pk;const sizes=rest.sizes||{};delete rest.sizes;return{...rest,...sizes}});
         const po_lines=soPOs.filter(po=>po.so_item_id===item.id).map(po=>{const{id:_,so_item_id:__,...rest}=po;const sizes=rest.sizes||{};delete rest.sizes;
           // Recover billed/tracking_numbers from sizes JSONB if they were stored as fallback
@@ -272,33 +272,28 @@ const _dbSaveEstimateInner = async (est) => {
       await supabase.from('estimate_art_files').delete().eq('estimate_id',est.id);
     }
     if(!items?.length){_dbSaveFailedIds.delete(est.id);_persistFailedIds();return true}
-    for(let idx=0;idx<items.length;idx++){
-      const{decorations,...itemData}=items[idx];
-      let itemRow={..._pick(itemData,_itemCols),estimate_id:est.id,item_index:idx};
-      let{data:inserted,error:itemErr}=await supabase.from('estimate_items').insert(itemRow).select('id').single();
-      if(itemErr){
-        // Retry with core columns only (strip columns from later migrations)
-        const coreItemRow={};Object.keys(itemRow).forEach(k=>{if(!_itemExtraCols.has(k))coreItemRow[k]=itemRow[k]});
-        const retry=await supabase.from('estimate_items').insert(coreItemRow).select('id').single();
-        if(retry.error){console.error('[DB] estimate_items insert failed:',retry.error.message,retry.error.details);decoFailed=true;continue}
-        else{inserted=retry.data;console.warn('[DB] estimate item saved with core columns only (missing DB columns?)')}
-      }
-      if(!inserted){console.error('[DB] estimate_items insert returned no data for item',idx,'of',est.id);decoFailed=true;continue}
-      if(inserted&&decorations?.length){
-        const decoRows=decorations.map((d,di)=>({..._pick(_sanitizeDeco(d),_decoCols),estimate_item_id:inserted.id,deco_index:di}));
-        const{error:decoErr}=await supabase.from('estimate_item_decorations').insert(decoRows);
+    // Batch insert all items at once (much faster than one-by-one)
+    const allItemRows=items.map((item,idx)=>{const{decorations,...itemData}=item;return{..._pick(itemData,_itemCols),estimate_id:est.id,item_index:idx}});
+    let{data:insertedItems,error:itemErr}=await supabase.from('estimate_items').insert(allItemRows).select('id');
+    if(itemErr){
+      const coreRows=allItemRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_itemExtraCols.has(k))cr[k]=r[k]});return cr});
+      const retry=await supabase.from('estimate_items').insert(coreRows).select('id');
+      if(retry.error){console.error('[DB] estimate_items batch insert failed:',retry.error.message,retry.error.details);decoFailed=true}
+      else{insertedItems=retry.data;console.warn('[DB] estimate items saved with core columns only')}
+    }
+    if(insertedItems?.length){
+      const allDecoRows=[];
+      items.forEach((item,idx)=>{
+        const itemId=insertedItems[idx]?.id;if(!itemId)return;
+        if(item.decorations?.length)item.decorations.forEach((d,di)=>allDecoRows.push({..._pick(_sanitizeDeco(d),_decoCols),estimate_item_id:itemId,deco_index:di}));
+      });
+      if(allDecoRows.length){
+        const{error:decoErr}=await supabase.from('estimate_item_decorations').insert(allDecoRows);
         if(decoErr){
-          console.warn('[DB] estimate_item_decorations batch failed, retrying individually:',decoErr.message);
-          for(const row of decoRows){
-            const{error:rowErr}=await supabase.from('estimate_item_decorations').insert(row);
-            if(rowErr){
-              // Strip columns from later migrations that may not exist in production DB
-              const coreRow={};Object.keys(row).forEach(k=>{if(!_decoExtraCols.has(k))coreRow[k]=row[k]});
-              const{error:coreErr}=await supabase.from('estimate_item_decorations').insert(coreRow);
-              if(coreErr){decoFailed=true;console.error('[DB] estimate deco row failed:',coreErr.message,JSON.stringify(row))}
-              else console.warn('[DB] estimate deco saved with core columns only (missing DB columns?):',Object.keys(row).filter(k=>_decoExtraCols.has(k)&&row[k]!=null))
-            }
-          }
+          const coreRows=allDecoRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_decoExtraCols.has(k))cr[k]=r[k]});return cr});
+          const{error:coreErr}=await supabase.from('estimate_item_decorations').insert(coreRows);
+          if(coreErr){decoFailed=true;console.error('[DB] estimate_item_decorations batch failed:',coreErr.message)}
+          else console.warn('[DB] estimate decos saved with core columns only')
         }
       }
     }
@@ -328,7 +323,9 @@ const _dbSaveSOInner = async (so) => {
     await supabase.from('so_items').delete().eq('so_id',so.id);
     // Sync jobs: upsert current jobs, delete removed ones (avoids DELETE+INSERT race condition)
     if(jobs?.length){
-      const jobRows=jobs.map(j=>({..._pick(j,_jobCols),so_id:so.id}));
+      // Deduplicate jobs by id to prevent "ON CONFLICT DO UPDATE cannot affect row a second time" error
+      const _seenJobIds=new Set();const dedupedJobs=jobs.filter(j=>{if(!j.id||_seenJobIds.has(j.id))return false;_seenJobIds.add(j.id);return true});
+      const jobRows=dedupedJobs.map(j=>({..._pick(j,_jobCols),so_id:so.id}));
       const{error:jobErr}=await supabase.from('so_jobs').upsert(jobRows,{onConflict:'so_id,id'});
       if(jobErr){
         if(jobErr.message?.includes('schema cache')||jobErr.message?.includes('column')||jobErr.code==='PGRST204'||jobErr.message?.includes('not found')){
@@ -373,68 +370,51 @@ const _dbSaveSOInner = async (so) => {
     }
     if(firm_dates?.length){const{error:fdErr}=await supabase.from('so_firm_dates').insert(firm_dates.map(f=>({..._pick(f,_firmDateCols),so_id:so.id})));if(fdErr){console.error('[DB] so_firm_dates insert failed:',fdErr.message);saveFailed=true}}
     if(!items?.length){if(saveFailed){_dbSaveFailedIds.add(so.id);_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save incomplete — some data may not have been saved to cloud','error');return false}_dbSaveFailedIds.delete(so.id);_persistFailedIds();return true}
-    for(let idx=0;idx<items.length;idx++){
-      const{decorations,pick_lines,po_lines,...itemData}=items[idx];
-      // Separate size fields from pick_lines/po_lines back into sizes JSONB
-      let soItemRow={..._pick(itemData,_itemCols),so_id:so.id,item_index:idx};
-      let{data:inserted,error:itemErr}=await supabase.from('so_items').insert(soItemRow).select('id').single();
-      if(itemErr){
-        const coreItemRow={};Object.keys(soItemRow).forEach(k=>{if(!_itemExtraCols.has(k))coreItemRow[k]=soItemRow[k]});
-        const retry=await supabase.from('so_items').insert(coreItemRow).select('id').single();
-        if(retry.error){console.error('[DB] so_items insert failed:',retry.error.message,retry.error.details);saveFailed=true;continue}
-        else{inserted=retry.data;console.warn('[DB] so item saved with core columns only')}
-      }
-      if(!inserted){console.error('[DB] so_items insert returned no data for item',idx,'of',so.id);saveFailed=true;continue}
-      if(decorations?.length){
-        const decoRows=decorations.map((d,di)=>({..._pick(_sanitizeDeco(d),_decoCols),so_item_id:inserted.id,deco_index:di}));
-        const{error:decoErr}=await supabase.from('so_item_decorations').insert(decoRows);
-        if(decoErr){
-          console.warn('[DB] so_item_decorations batch failed, retrying individually:',decoErr.message);
-          for(const row of decoRows){
-            const{error:rowErr}=await supabase.from('so_item_decorations').insert(row);
-            if(rowErr){
-              // Strip columns from later migrations that may not exist in production DB
-              const coreRow={};Object.keys(row).forEach(k=>{if(!_decoExtraCols.has(k))coreRow[k]=row[k]});
-              const{error:coreErr}=await supabase.from('so_item_decorations').insert(coreRow);
-              if(coreErr){saveFailed=true;console.error('[DB] so deco row failed:',coreErr.message,JSON.stringify(row))}
-              else console.warn('[DB] so deco saved with core columns only (missing DB columns?):',Object.keys(row).filter(k=>_decoExtraCols.has(k)&&row[k]!=null))
-            }
-          }
-        }
-      }
-      if(pick_lines?.length){
-        const pickRows=pick_lines.map(pk=>{const{pick_id,status,created_at,memo,ship_dest,ship_addr,deco_vendor,...sizes}=pk;
-          return{so_item_id:inserted.id,pick_id,status,created_at,memo,ship_dest,ship_addr,deco_vendor,sizes}});
-        const{error:pickErr}=await supabase.from('so_item_pick_lines').insert(pickRows);
-        if(pickErr){
-          console.warn('[DB] so_item_pick_lines batch failed, retrying individually:',pickErr.message);
-          for(const row of pickRows){
-            const{error:rowErr}=await supabase.from('so_item_pick_lines').insert(row);
-            if(rowErr){saveFailed=true;console.error('[DB] so_item_pick_lines row failed:',rowErr.message)}
-          }
-        }
-      }
-      if(po_lines?.length){
-        const poRows=po_lines.map(po=>{const{po_id,vendor,received,cancelled,shipments,status,created_at,expected_date,memo,po_type,deco_vendor,deco_type,unit_cost,drop_ship,billed,tracking_numbers,_bill_details,_bill_cost,...sizes}=po;
-          return{so_item_id:inserted.id,po_id,vendor,received:received||{},cancelled:cancelled||{},shipments:shipments||[],status,created_at,expected_date,memo,
+    // Batch insert all items at once (much faster than one-by-one)
+    const allItemRows=items.map((item,idx)=>{const{decorations,pick_lines,po_lines,...itemData}=item;return{..._pick(itemData,_itemCols),so_id:so.id,item_index:idx}});
+    let{data:insertedItems,error:itemErr}=await supabase.from('so_items').insert(allItemRows).select('id');
+    if(itemErr){
+      const coreRows=allItemRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_itemExtraCols.has(k))cr[k]=r[k]});return cr});
+      const retry=await supabase.from('so_items').insert(coreRows).select('id');
+      if(retry.error){console.error('[DB] so_items batch insert failed:',retry.error.message,retry.error.details);saveFailed=true}
+      else{insertedItems=retry.data;console.warn('[DB] so items saved with core columns only')}
+    }
+    if(insertedItems?.length){
+      // Build all child rows referencing their parent item IDs
+      const allDecoRows=[],allPickRows=[],allPoRows=[];
+      items.forEach((item,idx)=>{
+        const itemId=insertedItems[idx]?.id;if(!itemId)return;
+        const{decorations,pick_lines,po_lines}=item;
+        if(decorations?.length)decorations.forEach((d,di)=>allDecoRows.push({..._pick(_sanitizeDeco(d),_decoCols),so_item_id:itemId,deco_index:di}));
+        if(pick_lines?.length)pick_lines.forEach(pk=>{const{pick_id,status,created_at,memo,ship_dest,ship_addr,deco_vendor,...sizes}=pk;allPickRows.push({so_item_id:itemId,pick_id,status,created_at,memo,ship_dest,ship_addr,deco_vendor,sizes})});
+        if(po_lines?.length)po_lines.forEach(po=>{const{po_id,vendor,received,cancelled,shipments,status,created_at,expected_date,memo,po_type,deco_vendor,deco_type,unit_cost,drop_ship,billed,tracking_numbers,_bill_details,_bill_cost,...sizes}=po;
+          allPoRows.push({so_item_id:itemId,po_id,vendor,received:received||{},cancelled:cancelled||{},shipments:shipments||[],status,created_at,expected_date,memo,
             billed:billed||{},tracking_numbers:tracking_numbers||[],
-            sizes:{...sizes,po_type:po_type||undefined,deco_vendor:deco_vendor||undefined,deco_type:deco_type||undefined,unit_cost:unit_cost||undefined,drop_ship:drop_ship||undefined,_bill_details:_bill_details||undefined,_bill_cost:_bill_cost||undefined}}});
-        // Try with all columns first; if 'billed' column missing, retry with core columns only
-        const corePoRows=poRows.map(row=>{
-          const{billed:b,tracking_numbers:tn,...coreRow}=row;
-          return{...coreRow,sizes:{...(coreRow.sizes||{}),_billed:b||{},_tracking_numbers:tn||[]}}});
-        const{error:poErr}=await supabase.from('so_item_po_lines').insert(poRows);
+            sizes:{...sizes,po_type:po_type||undefined,deco_vendor:deco_vendor||undefined,deco_type:deco_type||undefined,unit_cost:unit_cost||undefined,drop_ship:drop_ship||undefined,_bill_details:_bill_details||undefined,_bill_cost:_bill_cost||undefined}})});
+      });
+      // Batch insert decorations
+      if(allDecoRows.length){
+        const{error:decoErr}=await supabase.from('so_item_decorations').insert(allDecoRows);
+        if(decoErr){
+          const coreRows=allDecoRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_decoExtraCols.has(k))cr[k]=r[k]});return cr});
+          const{error:coreErr}=await supabase.from('so_item_decorations').insert(coreRows);
+          if(coreErr){saveFailed=true;console.error('[DB] so_item_decorations batch failed:',coreErr.message)}
+          else console.warn('[DB] so decos saved with core columns only')
+        }
+      }
+      // Batch insert pick lines
+      if(allPickRows.length){
+        const{error:pickErr}=await supabase.from('so_item_pick_lines').insert(allPickRows);
+        if(pickErr){saveFailed=true;console.error('[DB] so_item_pick_lines batch failed:',pickErr.message)}
+      }
+      // Batch insert PO lines
+      if(allPoRows.length){
+        const corePoRows=allPoRows.map(row=>{const{billed:b,tracking_numbers:tn,...coreRow}=row;return{...coreRow,sizes:{...(coreRow.sizes||{}),_billed:b||{},_tracking_numbers:tn||[]}}});
+        const{error:poErr}=await supabase.from('so_item_po_lines').insert(allPoRows);
         if(poErr){
-          console.warn('[DB] so_item_po_lines insert failed ('+poErr.message+'), retrying without billed/tracking_numbers columns');
           const{error:coreErr}=await supabase.from('so_item_po_lines').insert(corePoRows);
-          if(coreErr){
-            // Last resort: insert individually
-            console.warn('[DB] so_item_po_lines core batch failed, retrying individually:',coreErr.message);
-            for(const row of corePoRows){
-              const{error:rowErr}=await supabase.from('so_item_po_lines').insert(row);
-              if(rowErr){saveFailed=true;console.error('[DB] so_item_po_lines row failed:',rowErr.message)}
-            }
-          } else console.warn('[DB] PO lines saved without billed/tracking_numbers columns (stored in sizes JSONB)')
+          if(coreErr){saveFailed=true;console.error('[DB] so_item_po_lines batch failed:',coreErr.message)}
+          else console.warn('[DB] PO lines saved without billed/tracking_numbers columns')
         }
       }
     }
@@ -523,7 +503,9 @@ const _dbDeletePromoProgram = async (id) => {
 const _dbSavePromoPeriod = async (period) => {
   if(!supabase)return false;
   try{
-    const{error}=await supabase.from('customer_promo_periods').upsert(period,{onConflict:'id'});
+    // Strip non-schema fields before sending to Supabase
+    const{period_label,_label,...dbPeriod}=period;
+    const{error}=await supabase.from('customer_promo_periods').upsert(dbPeriod,{onConflict:'id'});
     if(error){console.error('[DB] save promo period:',error.message);return false}
     return true;
   }catch(e){console.error('[DB] save promo period:',e);return false}
@@ -2643,18 +2625,20 @@ function calcSOStatus(ord){
   const anyJobActive=hasJobs&&boardJobs.some(j=>j.prod_status==='staging'||j.prod_status==='in_process');
   // Check if SO has any deco at all
   const hasAnyDeco=safeItems(ord).some(it=>!it.no_deco&&safeDecos(it).length>0);
+  // Promo orders skip invoicing — go straight to complete when ready
+  const isPromo=ord.promo_applied;
   // If all jobs shipped → check if all units actually shipped before marking complete
   if(allJobsShipped){
     const totalJobUnits=boardJobs.reduce((a,j)=>a+safeNum(j.total_units),0);
     const shippedUnits=(ord._shipments||[]).reduce((a,shp)=>a+(shp.items||[]).reduce((a2,it)=>a2+Object.values(it.sizes||{}).reduce((a3,v)=>a3+safeNum(v),0),0),0);
     if(shippedUnits>=totalJobUnits||!ord._shipments)return'complete';
     // Partial shipment — jobs marked shipped but units remain
-    return'ready_to_invoice';
+    return isPromo?'complete':'ready_to_invoice';
   }
-  // No-deco orders: all items fulfilled → ready_to_invoice (or complete if manually set)
-  if(!hasAnyDeco&&!hasJobs&&fulfilledSz>=totalSz)return ord.status==='complete'?'complete':'ready_to_invoice';
-  // If all jobs completed → ready to invoice
-  if(allJobsDone)return'ready_to_invoice';
+  // No-deco orders: all items fulfilled → ready_to_invoice (or complete for promo)
+  if(!hasAnyDeco&&!hasJobs&&fulfilledSz>=totalSz)return(ord.status==='complete'||isPromo)?'complete':'ready_to_invoice';
+  // If all jobs completed → ready to invoice (or complete for promo)
+  if(allJobsDone)return isPromo?'complete':'ready_to_invoice';
   // If any job in staging or in_process → in production
   if(anyJobActive)return'in_production';
   // If picks exist but not yet pulled → needs_pull
@@ -3350,57 +3334,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
 
   const addFileToArt=i=>{const a=af[i];if(!a)return;uArt(i,'files',[...(a.files||[]),'new_file_'+((a.files||[]).length+1)+'.ai'])};
 
-  // Auto-repair: if promo_applied but no items marked as promo, re-apply promo logic
-  React.useEffect(()=>{
-    if(!o.promo_applied||!cust)return;
-    const hasPromoItems=safeItems(o).some(it=>it.is_promo);
-    const hasPromoCredit=safeItems(o).some(it=>safeNum(it._promo_credit)>0);
-    if(hasPromoItems||hasPromoCredit)return; // promo is properly applied
-    // Broken state: promo_applied=true but no items marked — auto-fix
-    const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();
-    const _pStart=_m<6?_y+'-01-01':_y+'-07-01';const _pEnd=_m<6?_y+'-06-30':_y+'-12-31';const _pLabel=_m<6?'H1 '+_y:'H2 '+_y;
-    let _ps=(cust.promo_periods||[]).filter(p=>p.period_start===_pStart);
-    let promoBudget=_ps.reduce((a,p)=>a+(p.allocated||0)-(p.used||0),0);
-    // Auto-allocate period if needed
-    if(_ps.length===0){
-      const progs=(cust.promo_programs||[]).filter(p=>p.status!=='inactive'&&p.type==='fixed'&&safeNum(p.fixed_amount)>0);
-      const totalFixed=progs.reduce((a,p)=>a+safeNum(p.fixed_amount),0);
-      if(totalFixed>0){
-        const newPd={id:'pp_'+Date.now(),customer_id:cust.id,period_start:_pStart,period_end:_pEnd,period_label:_pLabel,allocated:totalFixed,used:0,created_at:new Date().toISOString()};
-        _dbSavePromoPeriod(newPd);_ps=[newPd];promoBudget=totalFixed;
-        setCust(prev=>({...prev,promo_periods:[...(prev.promo_periods||[]),newPd]}));
-      }
-    }
-    if(promoBudget<=0)return;
-    const items=safeItems(o);const _aq={};items.forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_aq[d.art_file_id]=(_aq[d.art_file_id]||0)+q2}})});
-    let remaining=promoBudget;const newItems=[];
-    items.forEach(it=>{
-      const q=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
-      if(!q||remaining<=0){newItems.push(it);return}
-      const promoSell=safeNum(it.retail_price)||safeNum(it.nsa_cost)*2;
-      let itemPromoCost=q*promoSell;
-      safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);itemPromoCost+=eq*rQ(dp.sell*1.25)});
-      const shipBase=o.shipping_type==='pct'?itemPromoCost*(o.shipping_value||0)/100:0;
-      const itemTotal=itemPromoCost+rQ(shipBase*1.25);
-      if(remaining>=itemTotal){remaining-=itemTotal;newItems.push({...it,is_promo:true,_pre_promo_sell:it.unit_sell,unit_sell:promoSell})}
-      else{const creditPerUnit=rQ(remaining/q);newItems.push({...it,is_promo:false,_pre_promo_sell:it.unit_sell,unit_sell:Math.max(0,safeNum(it.unit_sell)-creditPerUnit),_promo_credit:remaining});remaining=0}
-    });
-    const promoUsed=promoBudget-remaining;
-    sv('items',newItems);sv('promo_amount',promoUsed);
-    // For SOs, record the promo usage and deduct from period
-    if(isSO&&promoUsed>0&&_ps.length>0){
-      const pd=_ps[0];
-      // Check if usage already recorded for this SO
-      const existingUsage=(cust.promo_usage||[]).find(u=>u.so_id===o.id);
-      if(!existingUsage){
-        const updatedPd={...pd,used:(pd.used||0)+promoUsed};
-        _dbSavePromoPeriod(updatedPd);
-        _dbSavePromoUsage({period_id:pd.id,amount:promoUsed,description:'Promo order '+o.id,created_by:cu?.name||'System',so_id:o.id,estimate_id:o.estimate_id||null,created_at:new Date().toISOString()});
-        setCust(prev=>({...prev,promo_periods:(prev.promo_periods||[]).map(p=>p.id===pd.id?updatedPd:p),promo_usage:[...(prev.promo_usage||[]),{period_id:pd.id,amount:promoUsed,description:'Promo order '+o.id,so_id:o.id,estimate_id:o.estimate_id||null,created_at:new Date().toISOString()}]}));
-      }
-    }
-    nf('Promo auto-applied — items updated to retail pricing');
-  },[]);// eslint-disable-line
+  // Promo auto-repair removed — use "Apply Promo Funds" in Actions dropdown instead
 
   const addrs=useMemo(()=>getAddrs(cust,allCustomers),[cust,allCustomers]);
   const artQty=useMemo(()=>{const m={};safeItems(o).forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){m[d.art_file_id]=(m[d.art_file_id]||0)+q}})});return m},[o]);
@@ -3825,23 +3759,23 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {isSO&&onRevertToEst&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);if(!window.confirm('Revert '+o.id+' back to estimate? The SO will be deleted and '+(o.estimate_id?'the original estimate reopened.':'a new estimate created.')))return;onRevertToEst(o)}} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="back" size={12}/> Revert to Estimate</button>}
             {isSO&&o.estimate_id&&onViewEstimate&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);onViewEstimate(o.estimate_id)}} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="dollar" size={12}/> View Estimate</button>}
             {/* Promo Funds — show when customer has promo programs and funds available (auto-allocate period if needed) */}
-            {cust&&(cust.promo_programs||[]).length>0&&!o.promo_applied&&(()=>{const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();const _pStart=_m<6?_y+'-01-01':_y+'-07-01';const _ps=(cust.promo_periods||[]).filter(p=>p.period_start===_pStart);const _bal=_ps.reduce((a,p)=>a+(p.allocated||0)-(p.used||0),0);if(_bal>0)return true;const progs=(cust.promo_programs||[]).filter(p=>p.status!=='inactive');return progs.some(p=>p.type==='fixed'&&safeNum(p.fixed_amount)>0)})()&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#92400e',textAlign:'left'}} onClick={async()=>{setShowActionsDD(false);
+            {cust&&(cust.promo_programs||[]).length>0&&!o.promo_applied&&(()=>{const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();const _pStart=_m<6?_y+'-01-01':_y+'-07-01';const _ps=(cust.promo_periods||[]).filter(p=>p.period_start===_pStart);const _bal=_ps.reduce((a,p)=>a+(p.allocated||0)-(p.used||0),0);if(_bal>0)return true;const progs=(cust.promo_programs||[]).filter(p=>p.is_active!==false);return progs.some(p=>p.type==='fixed'&&safeNum(p.fixed_amount)>0)})()&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#92400e',textAlign:'left'}} onClick={async()=>{setShowActionsDD(false);
               // Calculate available promo balance, auto-allocate period if needed
               const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();
-              const _pStart=_m<6?_y+'-01-01':_y+'-07-01';const _pEnd=_m<6?_y+'-06-30':_y+'-12-31';const _pLabel=_m<6?'H1 '+_y:'H2 '+_y;
+              const _pStart=_m<6?_y+'-01-01':_y+'-07-01';const _pEnd=_m<6?_y+'-06-30':_y+'-12-31';
               let _ps=(cust.promo_periods||[]).filter(p=>p.period_start===_pStart);
               let promoBudget=_ps.reduce((a,p)=>a+(p.allocated||0)-(p.used||0),0);
               // Auto-allocate period from fixed programs if no period exists
               if(_ps.length===0){
-                const progs=(cust.promo_programs||[]).filter(p=>p.status!=='inactive'&&p.type==='fixed'&&safeNum(p.fixed_amount)>0);
+                const progs=(cust.promo_programs||[]).filter(p=>p.is_active!==false&&p.type==='fixed'&&safeNum(p.fixed_amount)>0);
                 const totalFixed=progs.reduce((a,p)=>a+safeNum(p.fixed_amount),0);
                 if(totalFixed>0){
-                  const newPeriod={id:'pp_'+Date.now(),customer_id:cust.id,period_start:_pStart,period_end:_pEnd,period_label:_pLabel,allocated:totalFixed,used:0,created_at:new Date().toISOString()};
+                  const newPeriod={id:'pp_'+Date.now(),customer_id:cust.id,period_start:_pStart,period_end:_pEnd,allocated:totalFixed,used:0,created_at:new Date().toISOString()};
                   await _dbSavePromoPeriod(newPeriod);
                   const updatedCust={...cust,promo_periods:[...(cust.promo_periods||[]),newPeriod]};
                   setCust(updatedCust);
                   _ps=[newPeriod];promoBudget=totalFixed;
-                  nf('Auto-allocated $'+totalFixed.toLocaleString()+' promo for '+_pLabel);
+                  nf('Auto-allocated $'+totalFixed.toLocaleString()+' promo for '+(_m<6?'H1 '+_y:'H2 '+_y));
                 }
               }
               if(promoBudget<=0){nf('No promo funds available','error');return}
@@ -3883,9 +3817,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       </div>
       {isSO&&<div style={{display:'flex',gap:6,marginTop:8}}>
         <button className="btn btn-secondary" onClick={()=>setShowPO('select')}><Icon name="cart" size={14}/> Create PO</button>
-        <button className="btn btn-secondary" style={{color:'#dc2626',borderColor:'#fca5a5'}} onClick={()=>{
+        {o.promo_applied?<button className="btn btn-secondary" style={{color:'#166534',borderColor:'#86efac'}} onClick={()=>{
+          if(!window.confirm('Mark promo order '+o.id+' as complete? No invoice needed — costs are tracked on the SO.'))return;
+          const updated={...o,status:'complete',updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);nf(o.id+' promo order closed');
+        }}><Icon name="check" size={14}/> Close Promo Order</button>
+        :<button className="btn btn-secondary" style={{color:'#dc2626',borderColor:'#fca5a5'}} onClick={()=>{
           setInvSelItems(safeItems(o).map((_,i)=>i));setInvMemo(o.memo||'');setInvType('deposit');setInvDepositPct(50);setShowInvCreate(true);
-        }}><Icon name="dollar" size={14}/> Create Invoice</button>
+        }}><Icon name="dollar" size={14}/> Create Invoice</button>}
       </div>}
       {/* SHIPPING */}
       <div style={{display:'flex',gap:12,marginTop:12,alignItems:'end',flexWrap:'wrap',borderTop:'1px solid #f1f5f9',paddingTop:12}}>
@@ -5554,9 +5492,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     {/* CREATE INVOICE MODAL */}
     {showInvCreate&&(()=>{
       const items=safeItems(o);
-      // Compute per-item totals
+      const isPromoOrder=o.promo_applied;
+      // Compute per-item totals — for promo orders, only non-promo items are invoiceable
       const itemTotals=items.map(it=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const rev=qty*safeNum(it.unit_sell);
-        let decoRev=0;safeDecos(it).forEach(d=>{const dp2=dP(d,qty,safeArt(o),qty);decoRev+=qty*dp2.sell});return{qty,rev,decoRev,total:rev+decoRev}});
+        let decoRev=0;safeDecos(it).forEach(d=>{const dp2=dP(d,qty,safeArt(o),qty);decoRev+=qty*dp2.sell});
+        // Promo items are covered by promo funds — $0 on invoice
+        if(isPromoOrder&&it.is_promo)return{qty,rev:0,decoRev:0,total:0,isPromo:true};
+        // Partially promo items: use _promo_credit to reduce
+        const promoCredit=isPromoOrder?safeNum(it._promo_credit):0;
+        return{qty,rev,decoRev,total:Math.max(0,rev+decoRev-promoCredit),isPromo:false}});
 
       // For deposit: use full order total * pct
       // For partial: use selected items total
@@ -5566,8 +5510,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // Prorate shipping & tax based on fraction of order being invoiced
       const orderSubtotal=itemTotals.reduce((a,t)=>a+t.total,0)||1;
       const selFraction=selTotals.subtotal/orderSubtotal;
-      const invShip=activeItems.length===items.length?totals.ship:Math.round(totals.ship*selFraction*100)/100;
-      const invTax=activeItems.length===items.length?totals.tax:Math.round(totals.tax*selFraction*100)/100;
+      // For promo orders: shipping/tax on promo portion is covered by promo, only charge for non-promo portion
+      const nonPromoShip=isPromoOrder?(promoTotals?totals.ship-promoTotals.promoShip:0):totals.ship;
+      const nonPromoTax=isPromoOrder?0:totals.tax;
+      const invShip=activeItems.length===items.length?nonPromoShip:Math.round(nonPromoShip*selFraction*100)/100;
+      const invTax=activeItems.length===items.length?nonPromoTax:Math.round(nonPromoTax*selFraction*100)/100;
       const fullTotal=selTotals.subtotal+invShip+invTax;
       const invTotal=invType==='deposit'?Math.round(fullTotal*invDepositPct/100*100)/100:fullTotal;
 
@@ -5576,16 +5523,22 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const soInvTotal=soInvs.reduce((a,i)=>a+(i.total||0),0);
 
       return<div className="modal-overlay" onClick={()=>setShowInvCreate(false)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:600}}>
-        <div className="modal-header"><h2>Create Invoice — {o.id}</h2><button className="modal-close" onClick={()=>setShowInvCreate(false)}>x</button></div>
+        <div className="modal-header"><h2>{isPromoOrder&&invTotal===0?'Close Promo Order':'Create Invoice'} — {o.id}</h2><button className="modal-close" onClick={()=>setShowInvCreate(false)}>x</button></div>
         <div className="modal-body">
           <div style={{padding:10,background:'#f8fafc',borderRadius:6,marginBottom:12}}>
             <div style={{fontWeight:700,color:'#1e40af'}}>{o.id}</div>
             <div style={{fontSize:12,color:'#64748b'}}>{cust?.name} — {o.memo}</div>
             <div style={{display:'flex',gap:16,marginTop:4,fontSize:11}}>
-              <span>Order total: <strong>${totals.grand.toLocaleString()}</strong></span>
+              <span>Order total: <strong>${totals.grand.toLocaleString()}</strong></span>{isPromoOrder&&<span style={{color:'#92400e',fontWeight:600}}>Promo covers: ${safeNum(o.promo_amount).toLocaleString()}</span>}
               {soInvTotal>0&&<span>Already invoiced: <strong style={{color:'#d97706'}}>${soInvTotal.toLocaleString()}</strong></span>}
             </div>
           </div>
+
+          {/* Promo order notice */}
+          {isPromoOrder&&<div style={{marginBottom:12,padding:12,background:'#fffbeb',border:'1px solid #fde68a',borderRadius:8}}>
+            <div style={{fontWeight:700,color:'#92400e',fontSize:13,marginBottom:4}}>Promo Order</div>
+            <div style={{fontSize:12,color:'#78350f'}}>{invTotal===0?'This order is fully covered by promo funds. No payment is due from the customer.':'Promo covers $'+safeNum(o.promo_amount).toLocaleString()+'. Customer pays $'+invTotal.toFixed(2)+' for the non-promo portion.'}</div>
+          </div>}
 
           {/* Invoice type */}
           <div style={{marginBottom:12}}>
@@ -5730,7 +5683,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             setInvSendMsg('Hi '+(contact?.name||'Coach')+',\n\nPlease find the attached invoice '+inv.id+' for $'+invTotal.toFixed(2)+'. Payment is due by '+dueDate+'.'+(invPortalUrl?'\n\nYou can also view your invoice through your portal:\n'+invPortalUrl:'')+'\n\nThank you,\nNSA Team');
             setInvSmsPhone(contact?.phone||'');setInvSmsEnabled(!!contact?.phone);setInvFollowUpDays(portalSettings?.invFollowUpDays||7);
             setInvSmsMsg('Hi '+(contact?.name||'Coach')+', your invoice '+inv.id+' for $'+invTotal.toFixed(2)+' is ready. Due by '+dueDate+'. View: https://nsa-portal.netlify.app/?portal='+(cust?.alpha_tag||''));
-          }}>{invType==='final'?'Create Final Invoice — Close SO':'Create '+invType.charAt(0).toUpperCase()+invType.slice(1)+' Invoice'} — ${invTotal.toFixed(2)}</button>
+          }}>{isPromoOrder&&invTotal===0?(invType==='final'?'Close Promo Order — $0 Invoice':'Create $0 Promo Invoice'):(invType==='final'?'Create Final Invoice — Close SO':'Create '+invType.charAt(0).toUpperCase()+invType.slice(1)+' Invoice')} — ${invTotal.toFixed(2)}</button>
         </div>
       </div></div>})()}
 
@@ -8326,10 +8279,10 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     let curPeriods=periods.filter(p=>p.period_start===curPeriod.start);
     // Auto-allocate current period from fixed programs if none exists
     if(curPeriods.length===0){
-      const fixedProgs=programs.filter(p=>p.status!=='inactive'&&p.type==='fixed'&&safeNum(p.fixed_amount)>0);
+      const fixedProgs=programs.filter(p=>p.is_active!==false&&p.type==='fixed'&&safeNum(p.fixed_amount)>0);
       const totalFixed=fixedProgs.reduce((a,p)=>a+safeNum(p.fixed_amount),0);
       if(totalFixed>0){
-        const newPd={id:'pp_'+Date.now(),customer_id:customer.id,period_start:curPeriod.start,period_end:curPeriod.end,period_label:curPeriod.label,allocated:totalFixed,used:0,created_at:new Date().toISOString()};
+        const newPd={id:'pp_'+Date.now(),customer_id:customer.id,period_start:curPeriod.start,period_end:curPeriod.end,allocated:totalFixed,used:0,created_at:new Date().toISOString()};
         onSavePromoPeriod(newPd);curPeriods=[newPd];periods=[...periods,newPd];
       }
     }
@@ -8354,7 +8307,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
             {usage.filter(u=>curPeriods.some(p=>p.id===u.period_id)).length===0?<div style={{fontSize:12,color:'#94a3b8'}}>No promo used this period</div>:
             <table style={{fontSize:12}}><thead><tr><th>Date</th><th>Order</th><th>Description</th><th>Amount</th></tr></thead><tbody>
               {usage.filter(u=>curPeriods.some(p=>p.id===u.period_id)).sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||'')).map((u,i)=>
-                <tr key={i}><td style={{color:'#64748b'}}>{u.created_at?new Date(u.created_at).toLocaleDateString():'-'}</td><td style={{fontWeight:600,color:'#1e40af'}}>{u.so_id||u.estimate_id||'-'}</td><td>{u.description||'-'}</td><td style={{fontWeight:700,color:'#dc2626'}}>${(u.amount||0).toLocaleString()}</td></tr>)}
+                <tr key={i}><td style={{color:'#64748b'}}>{u.created_at?new Date(u.created_at).toLocaleDateString():'-'}</td><td style={{fontWeight:600,color:'#1e40af'}}>{u.so_id||'-'}{u.estimate_id&&<span style={{fontSize:10,color:'#94a3b8',marginLeft:4}}>({u.estimate_id})</span>}</td><td>{u.description||'-'}</td><td style={{fontWeight:700,color:'#dc2626'}}>${(u.amount||0).toLocaleString()}</td></tr>)}
             </tbody></table>}
           </div>}
           {/* Manual adjustment */}
@@ -11538,13 +11491,15 @@ export default function App(){
         return{...d,_cost_locked:dp.cost}});
       return{...item,decorations}});
     return{...order,items}};
-  const savE=e=>{const e2=lockPrices(e.status==='draft'?{...e,status:'open'}:e);setEsts(p=>{const ex=p.find(x=>x.id===e2.id);return ex?p.map(x=>x.id===e2.id?e2:x):[...p,e2]});logChange(ests.find(x=>x.id===e2.id)?'updated':'created','Estimate',e2.id,e2.memo||'');return e2};
+  const savE=e=>{const e2=lockPrices(e.status==='draft'?{...e,status:'open'}:e);setEsts(p=>{const ex=p.find(x=>x.id===e2.id);return ex?p.map(x=>x.id===e2.id?e2:x):[...p,e2]});_dbSaveEstimate(e2);logChange(ests.find(x=>x.id===e2.id)?'updated':'created','Estimate',e2.id,e2.memo||'');return e2};
   const savSO=s=>{const sl=lockPrices(s);
     // Save version history before overwriting
     const prev=sos.find(x=>x.id===sl.id);
     if(prev){setSOHistory(h=>{const existing=h[sl.id]||[];return{...h,[sl.id]:[{ts:new Date().toLocaleString(),user:cu.name,snapshot:JSON.parse(JSON.stringify(prev))},...existing].slice(0,20)}})}
     setSOs(p=>{const ex=p.find(x=>x.id===sl.id);return ex?p.map(x=>x.id===sl.id?sl:x):[...p,sl]});
+    _dbSaveSO(sl);
     logChange(prev?'updated':'created','SO',sl.id,sl.memo||'');
+    // Promo usage is recorded in convertSO only — savSO does not duplicate it
     // Auto-invoice: when SO reaches ready_to_invoice, create draft invoice if none exists
     const newStatus=calcSOStatus(sl);
     const prevStatus=prev?calcSOStatus(prev):null;
@@ -11607,7 +11562,7 @@ export default function App(){
       if(_c2){const _now2=new Date(),_y2=_now2.getFullYear(),_m2=_now2.getMonth();const _pStart2=_m2<6?_y2+'-01-01':_y2+'-07-01';const _ps2=(_c2.promo_periods||[]).filter(p=>p.period_start===_pStart2);
         let _bal2=_ps2.reduce((a,p)=>a+(p.allocated||0)-(p.used||0),0);
         // If no period exists, check if we can auto-allocate from fixed programs
-        if(_ps2.length===0){const progs2=(_c2.promo_programs||[]).filter(p=>p.status!=='inactive'&&p.type==='fixed'&&safeNum(p.fixed_amount)>0);_bal2=progs2.reduce((a,p)=>a+safeNum(p.fixed_amount),0)}
+        if(_ps2.length===0){const progs2=(_c2.promo_programs||[]).filter(p=>p.is_active!==false&&p.type==='fixed'&&safeNum(p.fixed_amount)>0);_bal2=progs2.reduce((a,p)=>a+safeNum(p.fixed_amount),0)}
         if(promoAmount>_bal2){nf('Cannot convert — promo total $'+promoAmount.toLocaleString(undefined,{maximumFractionDigits:2})+' exceeds available funds ($'+_bal2.toLocaleString(undefined,{maximumFractionDigits:2})+' remaining). Remove promo and re-apply to adjust.','error');return}
       }
     }
@@ -11623,25 +11578,25 @@ export default function App(){
       let periods=(c.promo_periods||[]).filter(p=>p.period_start===_pStart);
       // Auto-allocate period from fixed programs if none exists
       if(periods.length===0){
-        const progs=(c.promo_programs||[]).filter(p=>p.status!=='inactive'&&p.type==='fixed'&&safeNum(p.fixed_amount)>0);
+        const progs=(c.promo_programs||[]).filter(p=>p.is_active!==false&&p.type==='fixed'&&safeNum(p.fixed_amount)>0);
         const totalFixed=progs.reduce((a,p)=>a+safeNum(p.fixed_amount),0);
         if(totalFixed>0){
-          const _pEnd=_m<6?_y+'-06-30':_y+'-12-31';const _pLabel=_m<6?'H1 '+_y:'H2 '+_y;
-          const newPd={id:'pp_'+Date.now(),customer_id:c.id,period_start:_pStart,period_end:_pEnd,period_label:_pLabel,allocated:totalFixed,used:0,created_at:new Date().toISOString()};
-          _dbSavePromoPeriod(newPd);periods=[newPd];
+          const _pEnd=_m<6?_y+'-06-30':_y+'-12-31';
+          const newPd={id:'pp_'+Date.now(),customer_id:c.id,period_start:_pStart,period_end:_pEnd,allocated:totalFixed,used:0,created_at:new Date().toISOString()};
+          periods=[newPd];
           setCust(prev=>prev.map(cc=>cc.id===c.id?{...cc,promo_periods:[...(cc.promo_periods||[]),newPd]}:cc));
         }
       }
       if(periods.length>0){
         const pd=periods[0];
         const updatedPeriod={...pd,used:(pd.used||0)+promoAmount};
-        _dbSavePromoPeriod(updatedPeriod);
-        _dbSavePromoUsage({period_id:pd.id,amount:promoAmount,description:'Promo order '+so.id,created_by:cu?.name||'System',so_id:so.id,estimate_id:est.id,created_at:new Date().toISOString()});
+        const usageRec={period_id:pd.id,amount:promoAmount,description:'Promo order '+so.id,created_by:cu?.name||'System',so_id:so.id,estimate_id:est.id,created_at:new Date().toISOString()};
+        // Chain: save period first, THEN insert usage (FK constraint requires period to exist)
+        _dbSavePromoPeriod(updatedPeriod).then(ok=>{if(ok)_dbSavePromoUsage(usageRec);else console.error('[Promo] period save failed, skipping usage insert')});
         // Update customer in state
         const updatedPeriods=(c.promo_periods||[]).map(p=>p.id===pd.id?updatedPeriod:p).concat(periods.length===1&&!(c.promo_periods||[]).some(p=>p.id===pd.id)?[updatedPeriod]:[]);
         const finalPeriods=updatedPeriods.filter((p,i,arr)=>arr.findIndex(x=>x.id===p.id)===i);
-        const updatedUsage=[...(c.promo_usage||[]),{period_id:pd.id,amount:promoAmount,description:'Promo order '+so.id,created_by:cu?.name||'System',so_id:so.id,estimate_id:est.id,created_at:new Date().toISOString()}];
-        setCust(prev=>prev.map(cc=>cc.id===c.id?{...cc,promo_periods:finalPeriods,promo_usage:updatedUsage}:cc));
+        setCust(prev=>prev.map(cc=>cc.id===c.id?{...cc,promo_periods:finalPeriods,promo_usage:[...(cc.promo_usage||[]),usageRec]}:cc));
       }
     }
     setESO(so);setESOC(c);setPg('orders');nf(`${so.id} created from ${est.id}`)};
