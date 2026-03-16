@@ -17689,8 +17689,9 @@ export default function App(){
                   <div style={{display:'flex',gap:12,marginBottom:10,flexWrap:'wrap',alignItems:'flex-end'}}>
                     <div>
                       <label style={{fontSize:10,color:'#64748b',fontWeight:600,display:'block',marginBottom:2}}>Weight (lbs)</label>
-                      <input className="form-input" type="number" min="0.1" step="0.5" value={box.weight||5} style={{width:70,fontSize:12,padding:'5px 8px'}}
-                        onChange={e=>{const b=[...boxes];b[bi]={...b[bi],weight:parseFloat(e.target.value)||5};setBoxes(b)}}/>
+                      <input className="form-input" type="number" min="0.1" step="0.5" value={box.weight===''||box.weight===undefined?'':box.weight} style={{width:70,fontSize:12,padding:'5px 8px'}}
+                        onChange={e=>{const b=[...boxes];b[bi]={...b[bi],weight:e.target.value===''?'':parseFloat(e.target.value)};setBoxes(b)}}
+                        onBlur={e=>{if(!e.target.value||isNaN(parseFloat(e.target.value))){const b=[...boxes];b[bi]={...b[bi],weight:5};setBoxes(b)}}}/>
                     </div>
                     <div>
                       <label style={{fontSize:10,color:'#64748b',fontWeight:600,display:'block',marginBottom:2}}>Dimensions (in)</label>
@@ -18196,7 +18197,11 @@ export default function App(){
                   }
 
                   setWhReceiving(false);
-                  if(anyReceived){nf('Received '+totalQtyReceived+' unit'+(totalQtyReceived!==1?'s':'')+' on '+poId);
+                  if(anyReceived){
+                    // Log receive to recent actions
+                    const soIds=[...new Set(poItems.filter(it=>it.soId).map(it=>it.soId))];const custNames=[...new Set(poItems.filter(it=>it.customer).map(it=>it.customer))];
+                    addWhAction({type:'received',poId,soId:soIds.join(', ')||'',customer:custNames.join(', ')||vendorName||'',sku:poItems.map(it=>it.sku).join(', '),name:poItems[0]?.name||'',color:poItems[0]?.color||'',qty:totalQtyReceived,sizes:'',by:cu?.id||'warehouse'});
+                    nf('Received '+totalQtyReceived+' unit'+(totalQtyReceived!==1?'s':'')+' on '+poId);
                     // Auto-print 4x6 label on receive (same as IF pull label)
                     const scanUrl=window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(poId);
                     const qrUrl='https://api.qrserver.com/v1/create-qr-code/?size=150x150&data='+encodeURIComponent(scanUrl);
@@ -18557,7 +18562,8 @@ export default function App(){
             <button className="modal-close" onClick={()=>setShipModal(null)} style={{color:'white'}}>×</button>
           </div>
           <div className="modal-body" style={{padding:16}}>
-            <div style={{fontSize:11,color:'#64748b',marginBottom:12}}>SOs: {[...shipModal.grp.soIds].join(', ')} · {shipModal.grp.totalUnits} total units</div>
+            <div style={{fontSize:11,color:'#64748b',marginBottom:8}}>SOs: {[...shipModal.grp.soIds].join(', ')} · {shipModal.grp.totalUnits} total units</div>
+            {(()=>{const soShipCosts=[...shipModal.grp.soIds].map(sid=>{const so2=shipModal.soMap[sid];if(!so2)return null;const c2=cust.find(cc=>cc.id===so2.customer_id);let rev=0;safeItems(so2).forEach(it2=>{const q2=Object.values(safeSizes(it2)).reduce((a,v)=>a+safeNum(v),0);if(!q2)return;rev+=q2*safeNum(it2.unit_sell);safeDecos(it2).forEach(d=>{const dp2=dP(d,q2,safeArt(so2),q2);const eq=dp2._nq!=null?dp2._nq:(d.reversible?q2*2:q2);rev+=eq*dp2.sell})});const ship=so2.shipping_type==='pct'?rev*(so2.shipping_value||0)/100:(so2.shipping_value||0);return{id:sid,ship,type:so2.shipping_type,value:so2.shipping_value}}).filter(Boolean);const totalShip=soShipCosts.reduce((a,s)=>a+s.ship,0);return totalShip>0?<div style={{fontSize:11,color:'#1e40af',fontWeight:600,marginBottom:12,padding:'4px 8px',background:'#eff6ff',borderRadius:4}}>Shipping on order: ${totalShip.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}{soShipCosts.length===1&&soShipCosts[0].type==='pct'?' ('+soShipCosts[0].value+'% of order)':''}</div>:null})()}
 
             {/* Boxes */}
             {shipModal.boxes.map((box,bi)=>{
@@ -18569,8 +18575,9 @@ export default function App(){
                   <div style={{marginLeft:'auto',display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
                     <div style={{display:'flex',alignItems:'center',gap:4}}>
                       <label style={{fontSize:10,color:'#64748b',fontWeight:600}}>Weight (lbs)</label>
-                      <input className="form-input" type="number" min="0.1" step="0.5" value={box.weight||5} style={{width:60,fontSize:11,padding:'3px 6px'}}
-                        onChange={e=>{const b=[...shipModal.boxes];b[bi]={...b[bi],weight:parseFloat(e.target.value)||5};setShipModal({...shipModal,boxes:b})}}/>
+                      <input className="form-input" type="number" min="0.1" step="0.5" value={box.weight===''||box.weight===undefined?'':box.weight} style={{width:60,fontSize:11,padding:'3px 6px'}}
+                        onChange={e=>{const b=[...shipModal.boxes];b[bi]={...b[bi],weight:e.target.value===''?'':parseFloat(e.target.value)};setShipModal({...shipModal,boxes:b})}}
+                        onBlur={e=>{if(!e.target.value||isNaN(parseFloat(e.target.value))){const b=[...shipModal.boxes];b[bi]={...b[bi],weight:5};setShipModal({...shipModal,boxes:b})}}}/>
                     </div>
                     <div style={{display:'flex',alignItems:'center',gap:3}}>
                       <label style={{fontSize:10,color:'#64748b',fontWeight:600}}>Box (in)</label>
@@ -18621,10 +18628,19 @@ export default function App(){
                         }
                         nf('✅ Label created! Tracking: '+(label.trackingNumber||'pending')+(cost?' · Cost: $'+cost.toFixed(2):''));
                         // Auto-open label for printing
-                        if(labelDownload){const pw=window.open(labelDownload,'_blank');if(pw)setTimeout(()=>{try{pw.print()}catch(e){}},1500)}
+                        if(labelDownload){
+                          if(labelDownload.startsWith('data:application/pdf')){
+                            // Use iframe for base64 PDFs — window.open with data URIs shows blank in some browsers
+                            const iframe=document.createElement('iframe');iframe.style.display='none';document.body.appendChild(iframe);
+                            iframe.src=labelDownload;iframe.onload=()=>{try{iframe.contentWindow.print()}catch(e){window.open(labelDownload,'_blank')}
+                              setTimeout(()=>{try{document.body.removeChild(iframe)}catch{}},60000)};
+                          } else {const pw=window.open(labelDownload,'_blank');if(pw)setTimeout(()=>{try{pw.print()}catch(e){}},1500)}
+                        }
                       }catch(err){nf('Label creation failed: '+err.message,'error')}
                     }}>🏷️ Create Label</button>}
                 </div>}
+                {box.label_url&&<div style={{marginTop:6}}><a href={box.label_url} target="_blank" rel="noreferrer" className="btn btn-sm btn-secondary" style={{fontSize:11}}>📄 Download Label</a></div>}
+                {box.shipping_cost&&<div style={{marginTop:4,fontSize:11,color:'#166534',fontWeight:600}}>Shipping cost: ${box.shipping_cost.toFixed(2)}</div>}
 
                 {/* Items in this box */}
                 <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6}}>Items in this box</div>
@@ -18868,6 +18884,11 @@ export default function App(){
                     }
                   });
                   nf('✅ Shipped! '+newShipments.length+' package'+(newShipments.length!==1?'s':'')+' for '+shipModal.grp.cName);
+                  // Log to recent actions
+                  newShipments.forEach(shp=>{
+                    const items=(shp.items||[]);const skus=items.map(it=>it.sku).join(', ');const totalQty=items.reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((a2,v)=>a2+v,0),0);
+                    addWhAction({type:'shipped',soId:[...shipModal.grp.soIds].join(', '),customer:shipModal.grp.cName,sku:skus,name:items[0]?.name||'',qty:totalQty,sizes:items.map(it=>{const szStr=Object.entries(it.sizes||{}).filter(([,v])=>v>0).map(([s,v])=>s+':'+v).join(' ');return szStr}).join('; '),tracking:shp.tracking_number||'',carrier:shp.carrier||'',by:cu?.id||'warehouse'});
+                  });
                   setShipModal(null);
                 }}>✓ Confirm Shipment ({shipModal.boxes.filter(b=>(b.items||[]).length>0).length} box{shipModal.boxes.filter(b=>(b.items||[]).length>0).length!==1?'es':''})</button>
               <button className="btn btn-secondary" onClick={()=>setShipModal(null)}>Cancel</button>
@@ -19041,15 +19062,15 @@ export default function App(){
         <div style={{fontSize:13,color:'#64748b',marginBottom:12}}>Recent warehouse actions — pulls, receives, and other activity</div>
         {whRecentActions.length===0&&<div style={{textAlign:'center',color:'#94a3b8',padding:40}}>No recent actions yet</div>}
         {whRecentActions.map((a,i)=><div key={i} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 14px',background:i%2===0?'#fafbfc':'white',borderRadius:6,marginBottom:2,border:'1px solid #f1f5f9',cursor:a.soId?'pointer':'default',transition:'background 0.15s'}}
-          onClick={()=>{if(!a.soId)return;const so2=sos.find(s=>s.id===a.soId);if(so2){const c2=cust.find(cc=>cc.id===so2.customer_id);setESO(so2);setESOC(c2);setESOTab(null);setPg('orders')}}}
+          onClick={()=>{if(!a.soId)return;const firstSoId=(a.soId||'').split(',')[0].trim();const so2=sos.find(s=>s.id===firstSoId);if(so2){const c2=cust.find(cc=>cc.id===so2.customer_id);setESO(so2);setESOC(c2);setESOTab(null);setPg('orders')}}}
           onMouseEnter={e=>{if(a.soId)e.currentTarget.style.background='#eef2ff'}} onMouseLeave={e=>{e.currentTarget.style.background=i%2===0?'#fafbfc':'white'}}>
           <div style={{width:32,height:32,borderRadius:8,display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,flexShrink:0,
-            background:a.type==='pulled'?'#fef3c7':a.type==='received'?'#dbeafe':'#f1f5f9'}}>
-            {a.type==='pulled'?'📦':a.type==='received'?'📱':'⚡'}</div>
+            background:a.type==='pulled'?'#fef3c7':a.type==='received'?'#dbeafe':a.type==='shipped'?'#dcfce7':'#f1f5f9'}}>
+            {a.type==='pulled'?'📦':a.type==='received'?'📱':a.type==='shipped'?'🚚':'⚡'}</div>
           <div style={{flex:1,minWidth:0}}>
             <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
-              <span style={{fontWeight:700,fontSize:12,color:a.type==='pulled'?'#92400e':'#1e40af'}}>{a.pickId||a.poId||'Action'}</span>
-              <span style={{fontSize:11,color:'#475569'}}>{a.type==='pulled'?'Pulled':'Received'}</span>
+              <span style={{fontWeight:700,fontSize:12,color:a.type==='pulled'?'#92400e':a.type==='shipped'?'#166534':'#1e40af'}}>{a.pickId||a.poId||a.soId||'Action'}</span>
+              <span style={{fontSize:11,color:'#475569'}}>{a.type==='pulled'?'Pulled':a.type==='shipped'?'Shipped':a.type==='received'?'Received':'Action'}</span>
               <span style={{fontSize:11,fontWeight:600,color:'#2563eb',textDecoration:'underline'}}>{a.soId}</span>
               <span style={{fontSize:11,color:'#64748b'}}>{a.customer}</span>
             </div>
