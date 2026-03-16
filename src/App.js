@@ -3752,7 +3752,32 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {isSO&&onRevertToEst&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);if(!window.confirm('Revert '+o.id+' back to estimate? The SO will be deleted and '+(o.estimate_id?'the original estimate reopened.':'a new estimate created.')))return;onRevertToEst(o)}} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="back" size={12}/> Revert to Estimate</button>}
             {isSO&&o.estimate_id&&onViewEstimate&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);onViewEstimate(o.estimate_id)}} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="dollar" size={12}/> View Estimate</button>}
             {/* Promo Funds — only show Apply when funds available */}
-            {isE&&cust&&(cust.promo_programs||[]).length>0&&!o.promo_applied&&(()=>{const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();const _ps=(cust.promo_periods||[]).filter(p=>p.period_start===(_m<6?_y+'-01-01':_y+'-07-01'));const _bal=_ps.reduce((a,p)=>a+(p.allocated||0)-(p.used||0),0);return _bal>0})()&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#92400e',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);sv('promo_applied',true);sv('items',safeItems(o).map(it=>({...it,is_promo:true,_pre_promo_sell:it.unit_sell,unit_sell:safeNum(it.retail_price)||safeNum(it.nsa_cost)*2})));nf('Promo mode enabled — all items set to retail pricing')}} onMouseEnter={e=>e.currentTarget.style.background='#fffbeb'} onMouseLeave={e=>e.currentTarget.style.background='none'}>💰 Apply Promo Funds</button>}
+            {isE&&cust&&(cust.promo_programs||[]).length>0&&!o.promo_applied&&(()=>{const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();const _ps=(cust.promo_periods||[]).filter(p=>p.period_start===(_m<6?_y+'-01-01':_y+'-07-01'));const _bal=_ps.reduce((a,p)=>a+(p.allocated||0)-(p.used||0),0);return _bal>0})()&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#92400e',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);
+              // Calculate available promo balance
+              const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();
+              const _ps=(cust.promo_periods||[]).filter(p=>p.period_start===(_m<6?_y+'-01-01':_y+'-07-01'));
+              const promoBudget=_ps.reduce((a,p)=>a+(p.allocated||0)-(p.used||0),0);
+              // Calculate promo cost per item (retail price + 25% deco markup)
+              const items=safeItems(o);const _aq={};items.forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_aq[d.art_file_id]=(_aq[d.art_file_id]||0)+q2}})});
+              let remaining=promoBudget;const newItems=[];let promoCount=0;
+              items.forEach(it=>{
+                const q=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);if(!q){newItems.push(it);return}
+                const promoSell=safeNum(it.retail_price)||safeNum(it.nsa_cost)*2;
+                let itemPromoCost=q*promoSell;
+                safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);itemPromoCost+=eq*rQ(dp.sell*1.25)});
+                // Add proportional shipping estimate (25% markup on promo portion)
+                const shipBase=o.shipping_type==='pct'?itemPromoCost*(o.shipping_value||0)/100:0;
+                const itemTotal=itemPromoCost+rQ(shipBase*1.25);
+                if(remaining>=itemTotal){
+                  remaining-=itemTotal;promoCount++;
+                  newItems.push({...it,is_promo:true,_pre_promo_sell:it.unit_sell,unit_sell:promoSell});
+                }else{newItems.push(it)}
+              });
+              sv('promo_applied',true);sv('items',newItems);
+              if(promoCount<items.filter(it=>Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)>0).length){
+                nf('Promo applied to '+promoCount+' of '+items.length+' items — $'+remaining.toFixed(2)+' promo remaining, customer pays for rest');
+              }else{nf('Promo mode enabled — all items set to retail pricing')}
+            }} onMouseEnter={e=>e.currentTarget.style.background='#fffbeb'} onMouseLeave={e=>e.currentTarget.style.background='none'}>💰 Apply Promo Funds</button>}
             {isE&&o.promo_applied&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#d97706',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);sv('promo_applied',false);sv('promo_amount',0);sv('items',safeItems(o).map(it=>({...it,is_promo:false,unit_sell:it._pre_promo_sell!=null?it._pre_promo_sell:it.unit_sell,_pre_promo_sell:undefined})));nf('Promo mode disabled')}} onMouseEnter={e=>e.currentTarget.style.background='#fffbeb'} onMouseLeave={e=>e.currentTarget.style.background='none'}>💰 Remove Promo</button>}
             {(isE||onDelete)&&<><div style={{borderTop:'1px solid #e2e8f0',margin:'2px 0'}}/><button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#dc2626',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);if(onDelete){onDelete(o.id)}else{nf('Delete not available','error')}}} onMouseEnter={e=>e.currentTarget.style.background='#fef2f2'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="trash" size={12}/> Delete</button></>}
           </div></>})()}
@@ -11422,11 +11447,11 @@ export default function App(){
       const pPct=origTotal>0?origPRev/origTotal:(pRev>0?1:0);const pShip=rQ(baseShip*pPct*1.25);
       promoAmount=pRev+pShip;
     }
-    // Block conversion if promo funds insufficient
+    // Warn and block if promo funds are no longer sufficient (balance may have changed since promo was applied)
     if(est.promo_applied&&promoAmount>0){
       const _c2=cust.find(x=>x.id===est.customer_id);
       if(_c2){const _now2=new Date(),_y2=_now2.getFullYear(),_m2=_now2.getMonth();const _ps2=(_c2.promo_periods||[]).filter(p=>p.period_start===(_m2<6?_y2+'-01-01':_y2+'-07-01'));const _bal2=_ps2.reduce((a,p)=>a+(p.allocated||0)-(p.used||0),0);
-        if(promoAmount>_bal2){nf('Cannot convert — promo total $'+promoAmount.toLocaleString(undefined,{maximumFractionDigits:2})+' exceeds available funds ($'+_bal2.toLocaleString(undefined,{maximumFractionDigits:2})+' remaining)','error');return}
+        if(promoAmount>_bal2){nf('Cannot convert — promo total $'+promoAmount.toLocaleString(undefined,{maximumFractionDigits:2})+' exceeds available funds ($'+_bal2.toLocaleString(undefined,{maximumFractionDigits:2})+' remaining). Remove promo and re-apply to adjust.','error');return}
       }
     }
     const so={id:nextSOId(sos),customer_id:est.customer_id,estimate_id:est.id,memo:est.memo,status:'need_order',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:est.default_markup,expected_date:defExp,production_notes:'',shipping_type:est.shipping_type,shipping_value:est.shipping_value,ship_to_id:est.ship_to_id,firm_dates:[],art_files:JSON.parse(JSON.stringify(est.art_files||[])),items:clonedItems,order_type:'at_once',expected_ship_date:null,booking_confirmed:false,booking_confirmed_at:null,booking_confirmed_by:null,booking_alert_days:100,promo_applied:est.promo_applied||false,promo_amount:promoAmount};
