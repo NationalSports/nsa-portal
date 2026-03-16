@@ -3211,7 +3211,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         if(skus.length){
           for(const sk of skus){
             const skPrice=mtCost(getPrice(sk));const skColor=getColor(sk)||'Default';const skSize=getSize(sk);
-            const skImg=sk.thumbnail||sk.fullImage||colorImgMap[skColor]||'';
+            const skImg=colorImgMap[skColor]||sk.thumbnail||sk.fullImage||'';
             const skBackImg=sk.fullImageBack||sk.backImage||'';
             if(!style.colors[skColor]){
               style.colors[skColor]={colorName:skColor,sku:sk.partNumber||sk.SKUPartNumber||baseSku,piecePrice:skPrice,customerPrice:skPrice,
@@ -25255,8 +25255,12 @@ export default function App(){
       const newQR={id:crypto.randomUUID?crypto.randomUUID():('QR-'+Date.now()),token,customer_id:qrModal.customer_id,
         contact_id:qrModal.contact_id||null,created_by:cu.id,status:'pending',created_at:new Date().toISOString(),items:[]};
       if(supabase){
-        const{error:dbErr}=await supabase.from('quote_requests').insert({id:newQR.id,token:newQR.token,customer_id:newQR.customer_id,contact_id:newQR.contact_id,created_by:newQR.created_by,status:'pending'});
-        if(dbErr){nf('DB error: '+dbErr.message,'error');return}
+        // Use Netlify function with service role to bypass RLS
+        try{
+          const resp=await fetch('/.netlify/functions/create-quote-request',{method:'POST',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({id:newQR.id,token:newQR.token,customer_id:newQR.customer_id,contact_id:newQR.contact_id,created_by:newQR.created_by})});
+          if(!resp.ok){const err=await resp.json().catch(()=>({error:'Unknown error'}));nf('DB error: '+(err.error||'Failed to create'),'error');return}
+        }catch(e){nf('Network error: '+e.message,'error');return}
       }
       setQuoteRequests(prev=>[newQR,...prev]);
       setQrModal({open:false,customer_id:'',contact_id:''});
@@ -25875,7 +25879,8 @@ export default function App(){
                         if(skus.length){for(const sk of skus){
                           const skColor=_gc(sk)||'Default';
                           if(seenColors.has(skColor))continue;seenColors.add(skColor);
-                          const skImg=sk.thumbnail||sk.fullImage||colorImgMap[skColor]||fg;
+                          // Prefer colorImgMap (per-color swatch from attributes) over generic SKU thumbnail
+                          const skImg=colorImgMap[skColor]||sk.thumbnail||sk.fullImage||fg;
                           const skBack=sk.fullImageBack||sk.backImage||bg;
                           grouped[base].colors.push({colorName:skColor,frontUrl:skImg,backUrl:skBack});
                         }}
@@ -26039,14 +26044,13 @@ export default function App(){
 
   function handleMkArtUpload(file){
     const ext=file.name.split('.').pop().toLowerCase();
-    const isVector=ext==='ai'||ext==='eps';
-    const isImage=ext==='png'||ext==='svg'||ext==='jpg'||ext==='jpeg';
-    if(!isImage&&!isVector){nf('Please upload a PNG, SVG, AI, or EPS file','error');return}
-    if(isVector){
-      // AI/EPS can't render in browser — use placeholder with filename
-      setMkArtFile({name:file.name,url:null,isVector:true});
+    const isAiEps=ext==='ai'||ext==='eps';
+    const isSvg=ext==='svg';
+    const isImage=ext==='png'||ext==='jpg'||ext==='jpeg';
+    if(!isImage&&!isSvg&&!isAiEps){nf('Please upload a PNG, SVG, AI, or EPS file','error');return}
+    if(isAiEps){
+      setMkArtFile({name:file.name,url:null,isVector:true,svgString:null});
       if(mkCanvas){
-        // Remove old art objects
         const objs=mkCanvas.getObjects().filter(o=>o._isArt);
         objs.forEach(o=>mkCanvas.remove(o));
         const placeholder=new fabric.FabricText(file.name.toUpperCase().replace(/\.[^.]+$/,''),{
@@ -26060,25 +26064,62 @@ export default function App(){
       nf('AI/EPS file attached. Showing text placeholder — upload PNG/SVG for visual preview.');
       return;
     }
+    if(isSvg){
+      // Read SVG as text so Fabric can parse the SVG structure properly
+      const reader=new FileReader();
+      reader.onload=ev=>{
+        const svgString=ev.target.result;
+        const dataUrl='data:image/svg+xml;base64,'+btoa(unescape(encodeURIComponent(svgString)));
+        setMkArtFile({name:file.name,url:dataUrl,isVector:false,svgString});
+        if(mkCanvas)addArtToCanvas(mkCanvas,{url:dataUrl,name:file.name,svgString});
+      };
+      reader.readAsText(file);
+      return;
+    }
     const reader=new FileReader();
     reader.onload=ev=>{
       const url=ev.target.result;
-      setMkArtFile({name:file.name,url,isVector:false});
+      setMkArtFile({name:file.name,url,isVector:false,svgString:null});
       if(mkCanvas)addArtToCanvas(mkCanvas,{url,name:file.name});
     };
     reader.readAsDataURL(file);
   }
 
   function addArtToCanvas(canvas,artFile){
-    if(!canvas||!artFile?.url)return;
+    if(!canvas)return;
+    if(!artFile?.url&&!artFile?.svgString)return;
     // Remove old art objects
     const objs=canvas.getObjects().filter(o=>o._isArt);
     objs.forEach(o=>canvas.remove(o));
+    const _styleArt=(obj)=>{
+      obj.set({left:250,top:250,originX:'center',originY:'center',
+        cornerColor:'#3b82f6',cornerStyle:'circle',cornerSize:10,transparentCorners:false,borderColor:'#3b82f6'});
+      obj._isArt=true;
+    };
+    // SVG: use Fabric's SVG parser for proper viewBox handling
+    if(artFile.svgString){
+      fabric.loadSVGFromString(artFile.svgString).then(result=>{
+        if(!result||!result.objects||!result.objects.length)return;
+        const group=fabric.util.groupSVGElements(result.objects,result.options);
+        const targetW=180;
+        const scale=targetW/group.width;
+        group.set({scaleX:scale,scaleY:scale});
+        _styleArt(group);
+        canvas.add(group);canvas.setActiveObject(group);canvas.renderAll();
+      }).catch(()=>{
+        // Fallback: load as image
+        _addArtAsImage(canvas,artFile.url);
+      });
+      return;
+    }
+    _addArtAsImage(canvas,artFile.url);
+  }
+
+  function _addArtAsImage(canvas,url){
     const imgEl=new Image();
     imgEl.crossOrigin='anonymous';
     imgEl.onload=()=>{
       const artImg=new fabric.FabricImage(imgEl);
-      // Scale art to ~30% of canvas width initially
       const targetW=150;
       const scale=targetW/artImg.width;
       artImg.set({scaleX:scale,scaleY:scale,left:250,top:250,originX:'center',originY:'center',
@@ -26086,7 +26127,7 @@ export default function App(){
       artImg._isArt=true;
       canvas.add(artImg);canvas.setActiveObject(artImg);canvas.renderAll();
     };
-    imgEl.src=artFile.url;
+    imgEl.src=url;
   }
 
     // NAV
