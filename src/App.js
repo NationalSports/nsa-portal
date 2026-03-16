@@ -2782,6 +2782,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     return false;
   },[products,vendorList]);
 
+  // Check if item is from Momentec
+  const isMomentecItem=useCallback((item)=>{
+    if(item._mt_live)return true;
+    const vId=item.vendor_id||products.find(p=>p.id===item.product_id||p.sku===item.sku)?.vendor_id;
+    if(!vId)return false;
+    const vRec=vendorList.find(v=>v.id===vId);
+    if(vRec)return vRec.api_provider==='momentec'||vRec.name==='Momentec';
+    return false;
+  },[products,vendorList]);
+
   // Keyed by style (sku base), stores {sizes:{S:qty,M:qty,...}, price:{S:cost,...}, fetchedAt:timestamp}
   const vendorInvCache=useRef({});
   const[vendorInv,setVendorInv]=useState({});// {sku: {sizes:{S:qty,...}, loading:bool, error:str}}
@@ -2791,7 +2801,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const itemRef=item||{vendor_id:vendorId,sku};
     const isSS=isSSItem(itemRef);
     const isSM=isSanMarItem(itemRef);
-    if(!isSS&&!isSM)return;
+    const isMT=isMomentecItem(itemRef);
+    if(!isSS&&!isSM&&!isMT)return;
     const cacheKey=sku;
     const cached=vendorInvCache.current[cacheKey];
     if(cached&&(Date.now()-cached.fetchedAt)<600000){
@@ -2800,9 +2811,55 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     }
     if(vendorInvFetching.current[cacheKey])return;
     vendorInvFetching.current[cacheKey]=true;
-    setVendorInv(prev=>({...prev,[sku]:{sizes:{},price:{},loading:true,error:null,source:isSM?'sm':'ss'}}));
+    setVendorInv(prev=>({...prev,[sku]:{sizes:{},price:{},loading:true,error:null,source:isMT?'mt':isSM?'sm':'ss'}}));
     try{
-      if(isSM){
+      if(isMT){
+        // Momentec: fetch product detail to get child SKUs with inventory from HCL Commerce
+        const sizeQty={};const sizePrice={};
+        try{
+          // Get product detail which includes child SKUs
+          const detail=await momentecGetProductByPartNumber(sku);
+          const entry=detail?.CatalogEntryView?.[0];
+          if(entry){
+            // Extract sizes and prices from child SKUs
+            const skus=entry.SKUs||entry.sKUs||[];
+            const getSkSize=(e)=>{const attrs=e.Attributes||e.attributes||e.definingAttributes||[];if(Array.isArray(attrs)){for(const a of attrs){const id=(a.identifier||'').toLowerCase();const n=(a.name||'').toLowerCase();if(id==='asgswatchsize'||n==='available sizes'||n==='size'){const vals=a.values||a.Values||[];if(vals.length)return(vals[0].values||vals[0].value||vals[0].identifier||'').trim()}}}return''};
+            const getSkColor=(e)=>{const attrs=e.Attributes||e.attributes||e.definingAttributes||[];if(Array.isArray(attrs)){for(const a of attrs){const n=(a.name||a.identifier||'').toLowerCase();if(n==='color'||n==='colour'||n==='clr'||n==='asgswatchcolor'){const vals=a.values||a.Values||[];if(vals.length)return vals.map(v=>v.values||v.value||v.Value||v.identifier||v).join('/')}}}return''};
+            const itemColor=(item?.color||'').toLowerCase();
+            for(const sk of skus){
+              const skColor=(getSkColor(sk)||'').toLowerCase();
+              // Filter by item color if set
+              if(itemColor&&skColor&&!skColor.includes(itemColor.split('/')[0].split(' ')[0].toLowerCase())&&!itemColor.includes(skColor.split('/')[0].split(' ')[0].toLowerCase()))continue;
+              const sz=normSzName(getSkSize(sk));
+              if(!sz)continue;
+              // Get inventory from buyQuantity or inventoryStatus fields
+              const qty=parseInt(sk.buyQuantity||sk.inventoryQuantity||sk.quantity||0)||0;
+              if(qty>0)sizeQty[sz]=(sizeQty[sz]||0)+qty;
+            }
+          }
+          // Also try HCL Commerce inventory availability endpoint
+          if(Object.keys(sizeQty).length===0){
+            try{
+              const invData=await momentecApiCall(`/inventoryavailability/byPartNumber/${encodeURIComponent(sku)}`);
+              const invItems=invData?.InventoryAvailability||[];
+              for(const inv of invItems){
+                // Each entry may have a partNumber for the child SKU; extract size from it
+                const pn=inv.partNumber||'';
+                const avail=parseInt(inv.availableQuantity||inv.inventoryQuantity||0)||0;
+                // Try to get size from the part number suffix or fetch the SKU detail
+                // HCL Commerce part numbers often encode size, e.g., "412000-WHI-S"
+                const parts=pn.split('-');
+                const lastPart=parts[parts.length-1]||'';
+                const sz=normSzName(lastPart);
+                if(sz&&avail>0)sizeQty[sz]=(sizeQty[sz]||0)+avail;
+              }
+            }catch(e){console.warn('[Momentec] Inventory availability fetch error for',sku,e.message)}
+          }
+        }catch(e){console.warn('[Momentec] Product detail fetch error for',sku,e.message)}
+        const result={sizes:sizeQty,price:sizePrice,fetchedAt:Date.now(),source:'mt'};
+        vendorInvCache.current[cacheKey]=result;
+        setVendorInv(prev=>({...prev,[sku]:{sizes:sizeQty,price:sizePrice,loading:false,error:null,source:'mt'}}));
+      }else if(isSM){
         // SanMar: fetch inventory + pricing via SOAP API (now returns JSON)
         const prod3=products.find(p=>p.sku===sku);
         const prodColor=prod3?.color||item?.color||'';
@@ -2898,7 +2955,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   React.useEffect(()=>{
     const items=safeItems(o);
     items.forEach(item=>{
-      if((isSSItem(item)||isSanMarItem(item))&&!vendorInv[item.sku]&&!vendorInvFetching.current[item.sku]){
+      if((isSSItem(item)||isSanMarItem(item)||isMomentecItem(item))&&!vendorInv[item.sku]&&!vendorInvFetching.current[item.sku]){
         fetchVendorInventory(item.sku,item.vendor_id,item);
       }
     });
@@ -3954,14 +4011,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <input value={item.sizes[sz]||''} onChange={e=>uSz(idx,sz,e.target.value)} placeholder="0"
                 style={{width:42,textAlign:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'5px 2px',fontSize:15,fontWeight:700,color:(item.sizes[sz]||0)>0?'#0f172a':'#cbd5e1'}}/>
               {(()=>{const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);const stk=p?._inv?.[sz];const need=item.sizes[sz]||0;return<div style={{fontSize:9,fontWeight:600,minHeight:13,color:stk==null?'transparent':stk<=0?'#dc2626':stk<need?'#ca8a04':'#166534'}}>{stk!=null?stk+' inv':'\u00A0'}</div>})()}
-              {(()=>{const vi=vendorInv[item.sku];if(!vi||vi.loading)return vi?.loading?<div style={{fontSize:8,color:'#a78bfa',minHeight:11}}>...</div>:null;const vStk=vi.sizes?.[sz];if(vStk==null)return null;const lbl=vi.source==='sm'?'sm':'ss';const clr=vi.source==='sm'?'#0891b2':'#7c3aed';return<div style={{fontSize:8,fontWeight:700,minHeight:11,color:vStk<=0?'#dc2626':vStk<20?clr:clr}} title={(vi.source==='sm'?'SanMar':'S&S Activewear')+' stock: '+vStk}>{vStk} {lbl}</div>})()}</div>)}
+              {(()=>{const vi=vendorInv[item.sku];if(!vi||vi.loading)return vi?.loading?<div style={{fontSize:8,color:'#a78bfa',minHeight:11}}>...</div>:null;const vStk=vi.sizes?.[sz];if(vStk==null)return null;const lbl=vi.source==='mt'?'mt':vi.source==='sm'?'sm':'ss';const clr=vi.source==='mt'?'#d97706':vi.source==='sm'?'#0891b2':'#7c3aed';return<div style={{fontSize:8,fontWeight:700,minHeight:11,color:vStk<=0?'#dc2626':vStk<20?clr:clr}} title={(vi.source==='mt'?'Momentec':vi.source==='sm'?'SanMar':'S&S Activewear')+' stock: '+vStk}>{vStk} {lbl}</div>})()}</div>)}
             <div style={{textAlign:'center',marginLeft:4,padding:'0 10px',borderLeft:'2px solid #e2e8f0'}}><div style={{fontSize:10,fontWeight:700,color:'#1e40af'}}>TOT</div>
               {isE&&szQty===0?<input value={item.est_qty||''} onChange={e=>uI(idx,'est_qty',e.target.value===''?0:parseInt(e.target.value)||0)} placeholder="0"
                 style={{width:48,textAlign:'center',fontSize:20,fontWeight:800,color:safeNum(item.est_qty)>0?'#1e40af':'#cbd5e1',border:'2px dashed #93c5fd',borderRadius:6,padding:'2px 0',background:'#eff6ff'}}/>
               :<div style={{fontSize:20,fontWeight:800,color:'#1e40af'}}>{qty}</div>}
             </div>
-            {(()=>{const vi=vendorInv[item.sku];const isSM=isSanMarItem(item);const isSS=isSSItem(item);
-              if(isSS||isSM){const lbl=isSM?'SM':'S&S';const clr=isSM?'#0891b2':'#7c3aed';const bdr=isSM?'#67e8f9':'#c4b5fd';return<button title={vi?.error?'Error: '+vi.error+' — click to retry':'Refresh '+(isSM?'SanMar':'S&S')+' inventory'} onClick={()=>{delete vendorInvCache.current[item.sku];delete vendorInvFetching.current[item.sku];setVendorInv(prev=>{const n={...prev};delete n[item.sku];return n});fetchVendorInventory(item.sku,item.vendor_id,item)}} style={{background:'none',border:'1px solid '+bdr,borderRadius:4,cursor:'pointer',color:vi?.error?'#dc2626':clr,padding:'2px 6px',fontSize:9,fontWeight:700,marginLeft:4,whiteSpace:'nowrap'}}>{vi?.loading?'...':vi?.error?'⚠ '+lbl:'↻ '+lbl}</button>}return null})()}
+            {(()=>{const vi=vendorInv[item.sku];const isSM=isSanMarItem(item);const isSS=isSSItem(item);const isMT=isMomentecItem(item);
+              if(isSS||isSM||isMT){const lbl=isMT?'MT':isSM?'SM':'S&S';const clr=isMT?'#d97706':isSM?'#0891b2':'#7c3aed';const bdr=isMT?'#fbbf24':isSM?'#67e8f9':'#c4b5fd';return<button title={vi?.error?'Error: '+vi.error+' — click to retry':'Refresh '+(isMT?'Momentec':isSM?'SanMar':'S&S')+' inventory'} onClick={()=>{delete vendorInvCache.current[item.sku];delete vendorInvFetching.current[item.sku];setVendorInv(prev=>{const n={...prev};delete n[item.sku];return n});fetchVendorInventory(item.sku,item.vendor_id,item)}} style={{background:'none',border:'1px solid '+bdr,borderRadius:4,cursor:'pointer',color:vi?.error?'#dc2626':clr,padding:'2px 6px',fontSize:9,fontWeight:700,marginLeft:4,whiteSpace:'nowrap'}}>{vi?.loading?'...':vi?.error?'⚠ '+lbl:'↻ '+lbl}</button>}return null})()}
             <div style={{position:'relative',marginLeft:4}}><button className="btn btn-sm btn-secondary" onClick={()=>setShowSzPicker(showSzPicker===idx?null:idx)} style={{fontSize:10}}>+ Size</button>
               {showSzPicker===idx&&addable.length>0&&<><div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:39}} onClick={()=>setShowSzPicker(null)}/><div style={{position:'absolute',top:'100%',left:0,background:'white',border:'1px solid #e2e8f0',borderRadius:6,boxShadow:'0 4px 12px rgba(0,0,0,0.1)',zIndex:40,padding:6,display:'flex',gap:3,flexWrap:'wrap',width:180}}>
                 {addable.map(sz=><button key={sz} className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 6px'}} onClick={()=>addSzToItem(idx,sz)}>{sz}</button>)}</div></>}
