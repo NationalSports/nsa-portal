@@ -9,6 +9,7 @@ import * as XLSX from 'xlsx';
 import { BarcodeDetector as BarcodeDetectorPolyfill } from 'barcode-detector';
 import { createWorker } from 'tesseract.js';
 import html2pdf from 'html2pdf.js';
+import * as fabric from 'fabric';
 
 // ─── Stripe Setup ───
 const _stripePk = process.env.REACT_APP_STRIPE_PK || '';
@@ -10975,6 +10976,17 @@ export default function App(){
   const[dcTwoColor,setDcTwoColor]=useState(false);
   const[numRows,setNumRows]=useState(()=>{const r=[];for(let i=0;i<30;i++)r.push({number:'',size:''});return r});
   const[numPaste,setNumPaste]=useState('');
+  // Mockup Helper state
+  const[mkSearch,setMkSearch]=useState('');
+  const[mkSource,setMkSource]=useState('catalog');
+  const[mkResults,setMkResults]=useState([]);
+  const[mkSearching,setMkSearching]=useState(false);
+  const[mkGarment,setMkGarment]=useState(null);// {name,sku,brand,color,frontUrl,backUrl,colors:[]}
+  const[mkSide,setMkSide]=useState('front');
+  const[mkArtFile,setMkArtFile]=useState(null);// {name,url,file}
+  const[mkCanvas,setMkCanvas]=useState(null);
+  const mkCanvasRef=useRef(null);
+  const mkSearchTimer=useRef(null);
   const[issueModal,setIssueModal]=useState({open:false,desc:'',priority:'medium'});
   const[issueFilter,setIssueFilter]=useState('all');// all|open|resolved
   const[editMember,setEditMember]=useState(null);
@@ -25326,7 +25338,7 @@ export default function App(){
     return(<>
       {/* Tab bar */}
       <div style={{display:'flex',gap:4,marginBottom:16,flexWrap:'wrap'}}>
-        {[{id:'quotes',label:'Quote Forms',icon:'send'},{id:'numbers',label:'Numbers List',icon:'grid'},{id:'size_sort',label:'Size Sorter',icon:'grid'},{id:'reorder',label:'Quick Reorder',icon:'cart'},{id:'deco_calc',label:'Deco Calculator',icon:'dollar'}].map(t=>
+        {[{id:'quotes',label:'Quote Forms',icon:'send'},{id:'numbers',label:'Numbers List',icon:'grid'},{id:'size_sort',label:'Size Sorter',icon:'grid'},{id:'reorder',label:'Quick Reorder',icon:'cart'},{id:'deco_calc',label:'Deco Calculator',icon:'dollar'},{id:'mockup',label:'Mockup Helper',icon:'image'}].map(t=>
           <button key={t.id} className={`btn ${stTab===t.id?'btn-primary':'btn-secondary'}`} onClick={()=>setStTab(t.id)} style={{fontSize:13,padding:'8px 16px'}}>
             <Icon name={t.icon} size={14}/> {t.label}</button>)}
       </div>
@@ -25734,9 +25746,347 @@ export default function App(){
                   <td style={{textAlign:'right',padding:'4px',fontWeight:700,color:'#dc2626'}}>${d.cost.toFixed(2)}</td></tr>)}</tbody></table>
             </div>
           </div>
+
+          {/* ─── Vendor Comparison ─── */}
+          {decoVendors.filter(v=>v.is_active!==false).length>0&&<>
+            <h3 style={{fontSize:15,fontWeight:700,margin:'24px 0 12px',color:'#1e293b',borderTop:'2px solid #e2e8f0',paddingTop:16}}>Vendor Cost Comparison</h3>
+            <p style={{fontSize:12,color:'#64748b',margin:'0 0 12px'}}>Compare decoration costs across your vendors for the quantity and specs above.</p>
+            <div style={{overflowX:'auto'}}>
+              <table style={{width:'100%',fontSize:12,borderCollapse:'collapse',border:'1px solid #e2e8f0',borderRadius:8}}>
+                <thead><tr style={{background:'#f8fafc',borderBottom:'2px solid #e2e8f0'}}>
+                  <th style={{textAlign:'left',padding:'10px 12px',fontWeight:700}}>Vendor</th>
+                  <th style={{textAlign:'right',padding:'10px 12px',fontWeight:700}}>Screen Print<br/><span style={{fontWeight:400,fontSize:10,color:'#64748b'}}>{dcColors} color{dcColors>1?'s':''}</span></th>
+                  <th style={{textAlign:'right',padding:'10px 12px',fontWeight:700}}>Embroidery<br/><span style={{fontWeight:400,fontSize:10,color:'#64748b'}}>{(dcStitches/1000).toFixed(0)}K st</span></th>
+                  <th style={{textAlign:'right',padding:'10px 12px',fontWeight:700}}>DTF</th>
+                </tr></thead>
+                <tbody>
+                  {/* Internal (NSA) row */}
+                  <tr style={{borderBottom:'1px solid #e2e8f0',background:'#eff6ff'}}>
+                    <td style={{padding:'8px 12px',fontWeight:600}}>NSA Internal</td>
+                    <td style={{textAlign:'right',padding:'8px 12px',fontWeight:700,color:'#166534'}}>${spCost.toFixed(2)}</td>
+                    <td style={{textAlign:'right',padding:'8px 12px',fontWeight:700,color:'#166534'}}>${emCost.toFixed(2)}</td>
+                    <td style={{textAlign:'right',padding:'8px 12px',fontWeight:700,color:'#166534'}}>{DTF[0]?'$'+DTF[0].cost.toFixed(2):'-'}</td>
+                  </tr>
+                  {decoVendors.filter(v=>v.is_active!==false).map(v=>{
+                    const spV=_decoVendorPrice(decoVendorPricing,v.id,'screen_print',{qty:dcQty,colors:dcColors});
+                    const emV=_decoVendorPrice(decoVendorPricing,v.id,'embroidery',{qty:dcQty,stitches:dcStitches});
+                    const dtfV=_decoVendorPrice(decoVendorPricing,v.id,'dtf',{qty:dcQty,dtf_size:'small'});
+                    const hasAny=spV!==null||emV!==null||dtfV!==null;
+                    if(!hasAny)return null;
+                    return<tr key={v.id} style={{borderBottom:'1px solid #f1f5f9'}}>
+                      <td style={{padding:'8px 12px',fontWeight:600}}>{v.name}</td>
+                      <td style={{textAlign:'right',padding:'8px 12px',fontWeight:700,color:spV!==null?(spV<=spCost?'#166534':'#dc2626'):'#94a3b8'}}>
+                        {spV!==null?'$'+spV.toFixed(2):'-'}</td>
+                      <td style={{textAlign:'right',padding:'8px 12px',fontWeight:700,color:emV!==null?(emV<=emCost?'#166534':'#dc2626'):'#94a3b8'}}>
+                        {emV!==null?'$'+emV.toFixed(2):'-'}</td>
+                      <td style={{textAlign:'right',padding:'8px 12px',fontWeight:700,color:dtfV!==null?(dtfV<=(DTF[0]?.cost||0)?'#166534':'#dc2626'):'#94a3b8'}}>
+                        {dtfV!==null?'$'+dtfV.toFixed(2):'-'}</td>
+                    </tr>})}
+                </tbody>
+              </table>
+            </div>
+            <p style={{fontSize:10,color:'#94a3b8',marginTop:8}}>Green = at or below NSA internal cost. Red = above internal cost. Configure vendor pricing in Settings &gt; Deco Vendors.</p>
+          </>}
         </div>
       </div>}
+
+      {/* ═══ MOCKUP HELPER ═══ */}
+      {stTab==='mockup'&&<div style={{display:'grid',gridTemplateColumns:mkGarment?'340px 1fr':'1fr',gap:16}}>
+        {/* Left panel: product search + art upload */}
+        <div>
+          <div className="card" style={{marginBottom:16}}>
+            <div className="card-header"><h2>1. Select Garment</h2></div>
+            <div className="card-body" style={{padding:16}}>
+              <div style={{display:'flex',gap:4,marginBottom:12}}>
+                {[{id:'catalog',label:'Catalog'},{id:'ss',label:'S&S'},{id:'sm',label:'SanMar'},{id:'mt',label:'Momentec'}].map(s=>
+                  <button key={s.id} className={`btn btn-sm ${mkSource===s.id?'btn-primary':'btn-secondary'}`} onClick={()=>{setMkSource(s.id);setMkResults([]);setMkSearch('')}}>{s.label}</button>)}
+              </div>
+              <input className="form-input" placeholder="Search by style # or keyword..." value={mkSearch} onChange={e=>{
+                const v=e.target.value;setMkSearch(v);
+                clearTimeout(mkSearchTimer.current);
+                if(v.length<2){setMkResults([]);return}
+                mkSearchTimer.current=setTimeout(async()=>{
+                  setMkSearching(true);
+                  try{
+                    if(mkSource==='catalog'){
+                      const q=v.toLowerCase();
+                      const r=prod.filter(p=>(p.sku||'').toLowerCase().includes(q)||(p.name||'').toLowerCase().includes(q)||(p.brand||'').toLowerCase().includes(q)).slice(0,20)
+                        .map(p=>({id:p.id,name:p.name,sku:p.sku,brand:p.brand,color:p.color,frontUrl:p.image_url||p.image_front_url||'',backUrl:p.back_image_url||'',colors:[{colorName:p.color,frontUrl:p.image_url||p.image_front_url||'',backUrl:p.back_image_url||''}]}));
+                      setMkResults(r);
+                    }else if(mkSource==='ss'){
+                      const styles=await ssApiCall('/Styles?search='+encodeURIComponent(v));
+                      const sArr=Array.isArray(styles)?styles:styles?[styles]:[];
+                      if(!sArr.length){setMkResults([]);return}
+                      const styleIDs=[...new Set(sArr.map(s=>s.styleID).filter(Boolean))].slice(0,5);
+                      let items=[];
+                      if(styleIDs.length){try{const data=await ssApiCall('/Products?style='+encodeURIComponent(styleIDs.join(',')));items=Array.isArray(data)?data:data?[data]:[];}catch(e){}}
+                      const grouped={};
+                      items.forEach(it=>{
+                        const sid=it.styleID||v;const color=it.colorName||'';
+                        let fg=it.colorFrontImage||it.colorSideImage||'';if(fg&&fg.startsWith('http://'))fg=fg.replace('http://','https://');
+                        let bg=it.colorBackImage||'';if(bg&&bg.startsWith('http://'))bg=bg.replace('http://','https://');
+                        if(!grouped[sid]){const sInfo=sArr.find(s=>String(s.styleID)===String(sid))||sArr[0]||{};
+                          grouped[sid]={id:sid,name:sInfo.title||(it.brandName+' '+(sInfo.partNumber||it.styleName||v)),sku:sInfo.partNumber||it.styleName||v,brand:it.brandName||'',color,frontUrl:fg,backUrl:bg,colors:[]}}
+                        if(!grouped[sid].colors.find(c=>c.colorName===color))grouped[sid].colors.push({colorName:color,frontUrl:fg,backUrl:bg});
+                      });
+                      setMkResults(Object.values(grouped));
+                    }else if(mkSource==='sm'){
+                      const q=v.toUpperCase().trim();
+                      const prodData=await sanmarGetProduct(q);
+                      const items=(prodData?.items||[]).filter(r2=>{const bi=r2.productBasicInfo||r2;const pi=r2.productPriceInfo||r2;return !!(bi.brandName)&&parseFloat(pi.piecePrice||pi.casePrice||0)>0});
+                      const grouped={};
+                      items.forEach(raw=>{
+                        const bi=raw.productBasicInfo||{};const ii=raw.productImageInfo||{};const it={...bi,...ii,...(raw.productPriceInfo||{}),...raw};
+                        const sid=it.style||it.styleNumber||v;const color=it.catalogColor||it.color||it.colorName||'';
+                        let fg=it.colorProductImage||it.colorProductImageThumbnail||it.productImage||'';
+                        let bg=it.colorProductImageBack||it.colorProductImageBackThumbnail||'';
+                        if(fg&&fg.startsWith('http://'))fg=fg.replace('http://','https://');
+                        if(bg&&bg.startsWith('http://'))bg=bg.replace('http://','https://');
+                        if(!grouped[sid])grouped[sid]={id:sid,name:(it.brandName||'')+' '+(it.productTitle||it.description||v),sku:sid,brand:it.brandName||'',color,frontUrl:fg,backUrl:bg,colors:[]};
+                        if(!grouped[sid].colors.find(c=>c.colorName===color))grouped[sid].colors.push({colorName:color,frontUrl:fg,backUrl:bg});
+                      });
+                      setMkResults(Object.values(grouped));
+                    }else if(mkSource==='mt'){
+                      const data=await momentecSearchProducts(v,50,1);
+                      const entries=(data?.CatalogEntryView||[]).filter(e=>(e.partNumber||'').toLowerCase().includes(v.toLowerCase())||(e.name||'').toLowerCase().includes(v.toLowerCase()));
+                      // Collect base SKUs and fetch details for color variants
+                      const baseSkus=[];const seen=new Set();
+                      for(const e of entries){const pn=e.partNumber||'';const base=e.catalogEntryTypeCode==='ItemBean'&&pn.includes('-')?pn.split('-')[0]:pn;if(!seen.has(base)){seen.add(base);baseSkus.push({base,entry:e})}}
+                      const grouped={};
+                      // Helper to extract color from attributes
+                      const _gc=e=>{const attrs=e.Attributes||e.attributes||e.definingAttributes||[];if(Array.isArray(attrs)){for(const a of attrs){const n=(a.name||a.identifier||'').toLowerCase();if(n==='color'||n==='colour'||n==='clr'||n==='asgswatchcolor'){const vals=a.values||a.Values||[];if(vals.length)return(vals[0].values||vals[0].value||vals[0].identifier||'').trim()}}}return ''};
+                      // Fetch details for each base SKU (up to 5)
+                      const details=await Promise.all(baseSkus.slice(0,5).map(async({base,entry})=>{
+                        try{const d=await momentecGetProductByPartNumber(base);return{base,entry,detail:d?.CatalogEntryView?.[0]||null}}
+                        catch{return{base,entry,detail:null}}
+                      }));
+                      for(const{base,entry,detail}of details){
+                        const src=detail||entry;
+                        const fg=src.thumbnail||src.fullImage||entry.thumbnail||entry.fullImage||'';
+                        const bg=src.fullImageBack||src.backImage||'';
+                        // Build color→image map from attributes
+                        const colorImgMap={};
+                        const topAttrs=src.Attributes||src.attributes||[];
+                        if(Array.isArray(topAttrs)){for(const a of topAttrs){const aId=(a.identifier||'').toLowerCase();if(aId==='asgswatchcolor'||aId==='asgswatchcolorfamily'||(a.name||'').toLowerCase()==='color'){const vals=a.values||a.Values||[];for(const vl of vals){const cName=vl.values||vl.value||vl.identifier||'';const ext=vl.extendedValue||[];const imgE=ext.find(x=>x.key==='Image1Path')||ext.find(x=>x.key==='Image1');if(cName&&imgE){const ip=imgE.value||'';if(ip&&!ip.includes('color1.jpg'))colorImgMap[cName]='https://www.momentecbrands.com/wcsstore/'+ip}}}}}
+                        grouped[base]={id:base,name:src.title||src.name||entry.name||base,sku:base,brand:src.manufacturer||'Momentec',color:'',frontUrl:fg,backUrl:bg,colors:[]};
+                        // Process child SKUs for colors
+                        const skus=src.SKUs||src.sKUs||detail?.SKUs||detail?.sKUs||[];
+                        const seenColors=new Set();
+                        if(skus.length){for(const sk of skus){
+                          const skColor=_gc(sk)||'Default';
+                          if(seenColors.has(skColor))continue;seenColors.add(skColor);
+                          const skImg=sk.thumbnail||sk.fullImage||colorImgMap[skColor]||fg;
+                          const skBack=sk.fullImageBack||sk.backImage||bg;
+                          grouped[base].colors.push({colorName:skColor,frontUrl:skImg,backUrl:skBack});
+                        }}
+                        if(!grouped[base].colors.length){
+                          const cn=_gc(src)||'Default';
+                          grouped[base].colors.push({colorName:cn,frontUrl:colorImgMap[cn]||fg,backUrl:bg});
+                        }
+                        if(grouped[base].colors.length)grouped[base].color=grouped[base].colors[0].colorName;
+                      }
+                      setMkResults(Object.values(grouped));
+                    }
+                  }catch(err){console.error('[Mockup] Search error:',err);setMkResults([])}
+                  finally{setMkSearching(false)}
+                },400);
+              }} style={{marginBottom:8}}/>
+              {mkSearching&&<div style={{fontSize:12,color:'#64748b',padding:8}}>Searching...</div>}
+              <div style={{maxHeight:300,overflow:'auto'}}>
+                {mkResults.map((r,i)=><div key={r.id||i} style={{display:'flex',gap:10,padding:'8px 4px',borderBottom:'1px solid #f1f5f9',cursor:'pointer',background:mkGarment?.sku===r.sku?'#eff6ff':''}}
+                  onClick={()=>{setMkGarment({name:r.name,sku:r.sku,brand:r.brand,color:r.color||r.colors?.[0]?.colorName||'',frontUrl:r.frontUrl||r.colors?.[0]?.frontUrl||'',backUrl:r.backUrl||r.colors?.[0]?.backUrl||'',colors:r.colors||[]});setMkSide('front');setMkArtFile(null);if(mkCanvas){if(mkCanvas._mkDelHandler)document.removeEventListener('keydown',mkCanvas._mkDelHandler);mkCanvas.dispose();setMkCanvas(null)}}}>
+                  {r.frontUrl?<img src={r.frontUrl} alt="" style={{width:48,height:48,objectFit:'contain',borderRadius:6,border:'1px solid #e2e8f0',background:'#fff',flexShrink:0}}/>
+                  :<div style={{width:48,height:48,background:'#f1f5f9',borderRadius:6,display:'flex',alignItems:'center',justifyContent:'center'}}><Icon name="image" size={20}/></div>}
+                  <div style={{minWidth:0}}>
+                    <div style={{fontSize:13,fontWeight:600,color:'#1e293b',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{r.name}</div>
+                    <div style={{fontSize:11,color:'#64748b'}}>{r.sku} {r.brand?'- '+r.brand:''}</div>
+                    {r.colors?.length>1&&<div style={{fontSize:10,color:'#94a3b8'}}>{r.colors.length} colors available</div>}
+                  </div>
+                </div>)}
+              </div>
+            </div>
+          </div>
+
+          {mkGarment&&<>
+            {/* Color picker */}
+            {mkGarment.colors?.length>1&&<div className="card" style={{marginBottom:16}}>
+              <div className="card-header"><h2>Color</h2></div>
+              <div className="card-body" style={{padding:12}}>
+                <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                  {mkGarment.colors.map((c,i)=><button key={i} className={`btn btn-sm ${mkGarment.color===c.colorName?'btn-primary':'btn-secondary'}`}
+                    onClick={()=>{setMkGarment(g=>({...g,color:c.colorName,frontUrl:c.frontUrl||g.frontUrl,backUrl:c.backUrl||g.backUrl}));if(mkCanvas){if(mkCanvas._mkDelHandler)document.removeEventListener('keydown',mkCanvas._mkDelHandler);mkCanvas.dispose();setMkCanvas(null)}}}
+                    style={{fontSize:11}}>{c.colorName||'Default'}</button>)}
+                </div>
+              </div>
+            </div>}
+
+            {/* Art upload */}
+            <div className="card" style={{marginBottom:16}}>
+              <div className="card-header"><h2>2. Upload Artwork</h2></div>
+              <div className="card-body" style={{padding:16}}>
+                <p style={{fontSize:12,color:'#64748b',margin:'0 0 12px'}}>Drop a PNG, SVG, AI, or EPS file. AI/EPS files show as a placeholder — use PNG or SVG for best results.</p>
+                <div style={{border:'2px dashed #cbd5e1',borderRadius:8,padding:24,textAlign:'center',cursor:'pointer',background:mkArtFile?'#f0fdf4':'#f8fafc',position:'relative'}}
+                  onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#3b82f6';e.currentTarget.style.background='#eff6ff'}}
+                  onDragLeave={e=>{e.preventDefault();e.currentTarget.style.borderColor='#cbd5e1';e.currentTarget.style.background=mkArtFile?'#f0fdf4':'#f8fafc'}}
+                  onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor='#cbd5e1';const f=e.dataTransfer.files[0];if(f)handleMkArtUpload(f)}}
+                  onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.png,.svg,.ai,.eps,image/png,image/svg+xml';inp.onchange=ev=>{if(ev.target.files[0])handleMkArtUpload(ev.target.files[0])};inp.click()}}>
+                  {mkArtFile?<div><Icon name="check" size={20}/><div style={{fontSize:13,fontWeight:600,marginTop:4}}>{mkArtFile.name}</div><div style={{fontSize:11,color:'#64748b'}}>Click or drop to replace</div></div>
+                  :<div><Icon name="upload" size={24}/><div style={{fontSize:13,marginTop:4}}>Drop artwork here or click to browse</div></div>}
+                </div>
+              </div>
+            </div>
+          </>}
+        </div>
+
+        {/* Right panel: Canvas mockup */}
+        {mkGarment&&<div className="card">
+          <div className="card-header">
+            <h2>Mockup Preview</h2>
+            <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+              {mkGarment.backUrl&&<div style={{display:'flex',gap:2}}>
+                <button className={`btn btn-sm ${mkSide==='front'?'btn-primary':'btn-secondary'}`} onClick={()=>{setMkSide('front');if(mkCanvas){if(mkCanvas._mkDelHandler)document.removeEventListener('keydown',mkCanvas._mkDelHandler);mkCanvas.dispose();setMkCanvas(null)}}}>Front</button>
+                <button className={`btn btn-sm ${mkSide==='back'?'btn-primary':'btn-secondary'}`} onClick={()=>{setMkSide('back');if(mkCanvas){if(mkCanvas._mkDelHandler)document.removeEventListener('keydown',mkCanvas._mkDelHandler);mkCanvas.dispose();setMkCanvas(null)}}}>Back</button>
+              </div>}
+              <button className="btn btn-sm btn-secondary" title="Add text (name/number)" onClick={()=>{
+                if(!mkCanvas)return;
+                const txt=prompt('Enter text (name, number, etc.):');
+                if(!txt)return;
+                const tObj=new fabric.FabricText(txt,{left:250,top:280,fontSize:42,fontWeight:'bold',fill:'#ffffff',fontFamily:'Arial Black, Arial, sans-serif',
+                  originX:'center',originY:'center',textAlign:'center',
+                  stroke:'#000000',strokeWidth:1,
+                  cornerColor:'#3b82f6',cornerStyle:'circle',cornerSize:10,transparentCorners:false,borderColor:'#3b82f6'});
+                tObj._isArt=true;
+                mkCanvas.add(tObj);mkCanvas.setActiveObject(tObj);mkCanvas.renderAll();
+              }}><Icon name="edit" size={14}/> Add Text</button>
+              <button className="btn btn-sm btn-secondary" title="Delete selected object" onClick={()=>{
+                if(!mkCanvas)return;
+                const sel=mkCanvas.getActiveObject();
+                if(sel&&sel._isArt){mkCanvas.remove(sel);mkCanvas.discardActiveObject();mkCanvas.renderAll()}
+                else nf('Select an art/text element to delete','error');
+              }}><Icon name="trash" size={14}/> Delete</button>
+              <button className="btn btn-sm btn-primary" onClick={async()=>{
+                if(!mkCanvas)return;
+                const dataUrl=mkCanvas.toDataURL({format:'png',multiplier:2});
+                const link=document.createElement('a');link.download=`mockup-${mkGarment.sku}-${mkGarment.color||'default'}-${mkSide}.png`;link.href=dataUrl;link.click();
+                nf('Mockup downloaded!');
+              }}><Icon name="save" size={14}/> Download PNG</button>
+            </div>
+          </div>
+          <div className="card-body" style={{padding:16,display:'flex',flexDirection:'column',alignItems:'center',background:'#f8fafc'}}>
+            <p style={{fontSize:11,color:'#94a3b8',margin:'0 0 8px'}}>Click art/text to select. Drag to move, corners to resize. Press Delete key or use trash button to remove.</p>
+            <div style={{position:'relative'}}>
+              <canvas ref={el=>{
+                if(!el||mkCanvas)return;
+                mkCanvasRef.current=el;
+                const garmentUrl=mkSide==='back'?mkGarment.backUrl:mkGarment.frontUrl;
+                if(!garmentUrl){
+                  const c=new fabric.Canvas(el,{width:500,height:600,backgroundColor:'#ffffff'});
+                  c.add(new fabric.FabricText('No garment image available',{left:250,top:300,fontSize:16,fill:'#94a3b8',originX:'center',originY:'center',selectable:false}));
+                  setMkCanvas(c);return;
+                }
+                const c=new fabric.Canvas(el,{width:500,height:600,backgroundColor:'#ffffff'});
+                setMkCanvas(c);
+                // Delete key handler
+                const _delHandler=e=>{if((e.key==='Delete'||e.key==='Backspace')&&e.target===document.body){const sel=c.getActiveObject();if(sel&&sel._isArt){c.remove(sel);c.discardActiveObject();c.renderAll()}}};
+                document.addEventListener('keydown',_delHandler);
+                c._mkDelHandler=_delHandler;
+                // Proxy garment image through image-proxy to avoid CORS on canvas
+                const proxyUrl='/.netlify/functions/image-proxy?url='+encodeURIComponent(garmentUrl);
+                const imgEl=new Image();
+                imgEl.crossOrigin='anonymous';
+                imgEl.onload=()=>{
+                  const garImg=new fabric.FabricImage(imgEl,{selectable:false,evented:false});
+                  const scale=Math.min(500/garImg.width,600/garImg.height);
+                  garImg.set({scaleX:scale,scaleY:scale,left:(500-garImg.width*scale)/2,top:(600-garImg.height*scale)/2});
+                  c.add(garImg);c.sendObjectToBack(garImg);
+                  if(mkArtFile?.url)addArtToCanvas(c,mkArtFile);
+                  c.renderAll();
+                };
+                imgEl.onerror=()=>{
+                  // Fallback: try direct URL (works for S&S/Momentec but not SanMar on canvas)
+                  const imgEl2=new Image();
+                  imgEl2.crossOrigin='anonymous';
+                  imgEl2.onload=()=>{
+                    const garImg=new fabric.FabricImage(imgEl2,{selectable:false,evented:false});
+                    const scale=Math.min(500/garImg.width,600/garImg.height);
+                    garImg.set({scaleX:scale,scaleY:scale,left:(500-garImg.width*scale)/2,top:(600-garImg.height*scale)/2});
+                    c.add(garImg);c.sendObjectToBack(garImg);
+                    if(mkArtFile?.url)addArtToCanvas(c,mkArtFile);
+                    c.renderAll();
+                  };
+                  imgEl2.onerror=()=>{
+                    c.add(new fabric.FabricText('Could not load garment image',{left:250,top:300,fontSize:14,fill:'#ef4444',originX:'center',originY:'center',selectable:false}));
+                    c.renderAll();
+                  };
+                  imgEl2.src=garmentUrl;
+                };
+                imgEl.src=proxyUrl;
+              }}/>
+            </div>
+          </div>
+        </div>}
+
+        {!mkGarment&&<div className="card">
+          <div className="card-body" style={{padding:40,textAlign:'center',color:'#94a3b8'}}>
+            <Icon name="image" size={48}/>
+            <p style={{margin:'16px 0 0',fontSize:15}}>Search and select a garment to start building your mockup</p>
+            <p style={{margin:'8px 0 0',fontSize:12}}>Search your catalog, S&S Activewear, SanMar, or Momentec Brands</p>
+          </div>
+        </div>}
+      </div>}
     </>)
+  }
+
+  function handleMkArtUpload(file){
+    const ext=file.name.split('.').pop().toLowerCase();
+    const isVector=ext==='ai'||ext==='eps';
+    const isImage=ext==='png'||ext==='svg'||ext==='jpg'||ext==='jpeg';
+    if(!isImage&&!isVector){nf('Please upload a PNG, SVG, AI, or EPS file','error');return}
+    if(isVector){
+      // AI/EPS can't render in browser — use placeholder with filename
+      setMkArtFile({name:file.name,url:null,isVector:true});
+      if(mkCanvas){
+        // Remove old art objects
+        const objs=mkCanvas.getObjects().filter(o=>o._isArt);
+        objs.forEach(o=>mkCanvas.remove(o));
+        const placeholder=new fabric.FabricText(file.name.toUpperCase().replace(/\.[^.]+$/,''),{
+          left:250,top:250,fontSize:36,fontWeight:'bold',fill:'rgba(0,0,0,0.6)',
+          originX:'center',originY:'center',textAlign:'center',
+          shadow:new fabric.Shadow({color:'rgba(255,255,255,0.8)',blur:4})
+        });
+        placeholder._isArt=true;
+        mkCanvas.add(placeholder);mkCanvas.setActiveObject(placeholder);mkCanvas.renderAll();
+      }
+      nf('AI/EPS file attached. Showing text placeholder — upload PNG/SVG for visual preview.');
+      return;
+    }
+    const reader=new FileReader();
+    reader.onload=ev=>{
+      const url=ev.target.result;
+      setMkArtFile({name:file.name,url,isVector:false});
+      if(mkCanvas)addArtToCanvas(mkCanvas,{url,name:file.name});
+    };
+    reader.readAsDataURL(file);
+  }
+
+  function addArtToCanvas(canvas,artFile){
+    if(!canvas||!artFile?.url)return;
+    // Remove old art objects
+    const objs=canvas.getObjects().filter(o=>o._isArt);
+    objs.forEach(o=>canvas.remove(o));
+    const imgEl=new Image();
+    imgEl.crossOrigin='anonymous';
+    imgEl.onload=()=>{
+      const artImg=new fabric.FabricImage(imgEl);
+      // Scale art to ~30% of canvas width initially
+      const targetW=150;
+      const scale=targetW/artImg.width;
+      artImg.set({scaleX:scale,scaleY:scale,left:250,top:250,originX:'center',originY:'center',
+        cornerColor:'#3b82f6',cornerStyle:'circle',cornerSize:10,transparentCorners:false,borderColor:'#3b82f6'});
+      artImg._isArt=true;
+      canvas.add(artImg);canvas.setActiveObject(artImg);canvas.renderAll();
+    };
+    imgEl.src=artFile.url;
   }
 
     // NAV
