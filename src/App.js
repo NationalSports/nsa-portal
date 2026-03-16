@@ -11121,8 +11121,9 @@ export default function App(){
         const pollProd=_pollMerge(d.products,'prod');
         // Update snapshot before state — auto-save effects will diff against this
         _dbSnap.current={ests:pollEsts,sos:pollSOs,invs:pollInvs,msgs:pollMsgs,cust:pollCust,prod:pollProd,vend:d.vendors,team:d.team,omg:d.omg_stores,issues:d.issues};
-        setEsts(prev=>{const mergeEst=e=>{const local=prev.find(p=>p.id===e.id);if(local?.items?.length&&(!e.items||!e.items.length))return{...e,items:local.items,art_files:local.art_files||e.art_files};return e};if(_dbSaveFailedIds.size){const merged=d.estimates.map(e=>_dbSaveFailedIds.has(e.id)?(prev.find(p=>p.id===e.id)||e):mergeEst(e));return changed(prev,merged)?merged:prev}const merged2=d.estimates.map(mergeEst);return changed(prev,merged2)?merged2:prev});
-        setSOs(prev=>{const mergeSO=s=>{const local=prev.find(p=>p.id===s.id);if(!local)return s;const m={...s};if(local.jobs?.length&&(!s.jobs||!s.jobs.length))m.jobs=local.jobs;if(local.items?.length&&(!s.items||!s.items.length))m.items=local.items;if(local.art_files?.length&&(!s.art_files||!s.art_files.length))m.art_files=local.art_files;return m.jobs!==s.jobs||m.items!==s.items||m.art_files!==s.art_files?m:s};if(_dbSaveFailedIds.size){const merged=d.sales_orders.map(s=>_dbSaveFailedIds.has(s.id)?(prev.find(p=>p.id===s.id)||s):mergeSO(s));return changed(prev,merged)?merged:prev}const merged2=d.sales_orders.map(mergeSO);return changed(prev,merged2)?merged2:prev});
+        setEsts(prev=>{const mergeEst=e=>{const local=prev.find(p=>p.id===e.id);if(local&&local.updated_at&&e.updated_at&&local.updated_at>e.updated_at)return local;if(local?.items?.length&&(!e.items||!e.items.length))return{...e,items:local.items,art_files:local.art_files||e.art_files};return e};if(_dbSaveFailedIds.size){const merged=d.estimates.map(e=>_dbSaveFailedIds.has(e.id)?(prev.find(p=>p.id===e.id)||e):mergeEst(e));return changed(prev,merged)?merged:prev}const merged2=d.estimates.map(mergeEst);return changed(prev,merged2)?merged2:prev});
+        setSOs(prev=>{const mergeSO=s=>{const local=prev.find(p=>p.id===s.id);if(!local)return s;// If local has a newer updated_at, keep local version (save may still be in-flight to DB)
+          if(local.updated_at&&s.updated_at&&local.updated_at>s.updated_at)return local;const m={...s};if(local.jobs?.length&&(!s.jobs||!s.jobs.length))m.jobs=local.jobs;if(local.items?.length&&(!s.items||!s.items.length))m.items=local.items;if(local.art_files?.length&&(!s.art_files||!s.art_files.length))m.art_files=local.art_files;return m.jobs!==s.jobs||m.items!==s.items||m.art_files!==s.art_files?m:s};if(_dbSaveFailedIds.size){const merged=d.sales_orders.map(s=>_dbSaveFailedIds.has(s.id)?(prev.find(p=>p.id===s.id)||s):mergeSO(s));return changed(prev,merged)?merged:prev}const merged2=d.sales_orders.map(mergeSO);return changed(prev,merged2)?merged2:prev});
         setInvs(prev=>{const mergeInv=i=>{const local=prev.find(p=>p.id===i.id);if(local?.payments?.length&&(!i.payments||!i.payments.length))return{...i,payments:local.payments};return i};if(_dbSaveFailedIds.size){const merged=d.invoices.map(i=>_dbSaveFailedIds.has(i.id)?(prev.find(p=>p.id===i.id)||i):mergeInv(i));return changed(prev,merged)?merged:prev}const merged2=d.invoices.map(mergeInv);return changed(prev,merged2)?merged2:prev});
         setCust(prev=>{if(_dbSaveFailedIds.size){const merged=d.customers.map(c=>_dbSaveFailedIds.has(c.id)?(prev.find(p=>p.id===c.id)||c):c);return changed(prev,merged)?merged:prev}return changed(prev,d.customers)?d.customers:prev});
         if(d.messages.length)setMsgs(prev=>{if(_dbSaveFailedIds.size){const merged=d.messages.map(m=>_dbSaveFailedIds.has(m.id)?(prev.find(p=>p.id===m.id)||m):m);return changed(prev,merged)?merged:prev}return changed(prev,d.messages)?d.messages:prev});
@@ -11490,13 +11491,12 @@ export default function App(){
         return{...d,_cost_locked:dp.cost}});
       return{...item,decorations}});
     return{...order,items}};
-  const savE=e=>{const e2=lockPrices(e.status==='draft'?{...e,status:'open'}:e);setEsts(p=>{const ex=p.find(x=>x.id===e2.id);return ex?p.map(x=>x.id===e2.id?e2:x):[...p,e2]});_dbSaveEstimate(e2);logChange(ests.find(x=>x.id===e2.id)?'updated':'created','Estimate',e2.id,e2.memo||'');return e2};
+  const savE=e=>{const e2=lockPrices(e.status==='draft'?{...e,status:'open'}:e);setEsts(p=>{const ex=p.find(x=>x.id===e2.id);return ex?p.map(x=>x.id===e2.id?e2:x):[...p,e2]});logChange(ests.find(x=>x.id===e2.id)?'updated':'created','Estimate',e2.id,e2.memo||'');return e2};
   const savSO=s=>{const sl=lockPrices(s);
     // Save version history before overwriting
     const prev=sos.find(x=>x.id===sl.id);
     if(prev){setSOHistory(h=>{const existing=h[sl.id]||[];return{...h,[sl.id]:[{ts:new Date().toLocaleString(),user:cu.name,snapshot:JSON.parse(JSON.stringify(prev))},...existing].slice(0,20)}})}
     setSOs(p=>{const ex=p.find(x=>x.id===sl.id);return ex?p.map(x=>x.id===sl.id?sl:x):[...p,sl]});
-    _dbSaveSO(sl);
     logChange(prev?'updated':'created','SO',sl.id,sl.memo||'');
     // Promo usage is recorded in convertSO only — savSO does not duplicate it
     // Auto-invoice: when SO reaches ready_to_invoice, create draft invoice if none exists
