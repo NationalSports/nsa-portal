@@ -11482,6 +11482,34 @@ export default function App(){
     if(prev){setSOHistory(h=>{const existing=h[sl.id]||[];return{...h,[sl.id]:[{ts:new Date().toLocaleString(),user:cu.name,snapshot:JSON.parse(JSON.stringify(prev))},...existing].slice(0,20)}})}
     setSOs(p=>{const ex=p.find(x=>x.id===sl.id);return ex?p.map(x=>x.id===sl.id?sl:x):[...p,sl]});
     logChange(prev?'updated':'created','SO',sl.id,sl.memo||'');
+    // Record promo usage if promo is applied and not yet tracked
+    if(sl.promo_applied&&safeNum(sl.promo_amount)>0){
+      const c=cust.find(x=>x.id===sl.customer_id);
+      if(c){
+        const existingUsage=(c.promo_usage||[]).find(u=>u.so_id===sl.id);
+        if(!existingUsage){
+          const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();
+          const _pStart=_m<6?_y+'-01-01':_y+'-07-01';const _pEnd=_m<6?_y+'-06-30':_y+'-12-31';const _pLabel=_m<6?'H1 '+_y:'H2 '+_y;
+          let periods=(c.promo_periods||[]).filter(p=>p.period_start===_pStart);
+          // Auto-allocate period if needed
+          if(periods.length===0){
+            const progs=(c.promo_programs||[]).filter(p=>p.status!=='inactive'&&p.type==='fixed'&&safeNum(p.fixed_amount)>0);
+            const totalFixed=progs.reduce((a,p)=>a+safeNum(p.fixed_amount),0);
+            if(totalFixed>0){const newPd={id:'pp_'+Date.now(),customer_id:c.id,period_start:_pStart,period_end:_pEnd,period_label:_pLabel,allocated:totalFixed,used:0,created_at:new Date().toISOString()};_dbSavePromoPeriod(newPd);periods=[newPd]}
+          }
+          if(periods.length>0){
+            const pd=periods[0];const promoAmt=safeNum(sl.promo_amount);
+            const updatedPd={...pd,used:(pd.used||0)+promoAmt};
+            _dbSavePromoPeriod(updatedPd);
+            const usageRec={period_id:pd.id,amount:promoAmt,description:'Promo order '+sl.id,created_by:cu?.name||'System',so_id:sl.id,estimate_id:sl.estimate_id||null,created_at:new Date().toISOString()};
+            _dbSavePromoUsage(usageRec);
+            // Update global customer state
+            const updatedPeriods=(c.promo_periods||[]).map(p=>p.id===pd.id?updatedPd:p).concat(periods.length===1&&!(c.promo_periods||[]).some(p=>p.id===pd.id)?[updatedPd]:[]);
+            setCust(prev=>prev.map(cc=>cc.id===c.id?{...cc,promo_periods:updatedPeriods.filter((p,i,arr)=>arr.findIndex(x=>x.id===p.id)===i),promo_usage:[...(cc.promo_usage||[]),usageRec]}:cc));
+          }
+        }
+      }
+    }
     // Auto-invoice: when SO reaches ready_to_invoice, create draft invoice if none exists
     const newStatus=calcSOStatus(sl);
     const prevStatus=prev?calcSOStatus(prev):null;
