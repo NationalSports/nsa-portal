@@ -18867,13 +18867,27 @@ export default function App(){
                     }));
                     if(soShipments.length>0){
                       const existing=so._shipments||[];
-                      // Auto-move completed jobs to shipped when warehouse confirms shipment
-                      const updatedJobs=safeJobs(so).map(jj=>jj.prod_status==='completed'?{...jj,prod_status:'shipped'}:jj);
+                      const allShipments=[...existing,...soShipments];
+                      // Calculate total shipped units per item across ALL shipments (existing + new)
+                      const shippedByItem={};allShipments.forEach(shp=>{(shp.items||[]).forEach(it=>{
+                        const key=it.sku+'|'+(it.color||'');const szQty=Object.values(it.sizes||{}).reduce((a,v)=>a+v,0);
+                        shippedByItem[key]=(shippedByItem[key]||0)+szQty;
+                      })});
+                      // Only move completed jobs to shipped if ALL their units have been shipped
+                      const updatedJobs=safeJobs(so).map(jj=>{
+                        if(jj.prod_status!=='completed')return jj;
+                        const jobShipped=(jj.items||[]).reduce((a,gi)=>{
+                          const key=gi.sku+'|'+(gi.color||'');return a+(shippedByItem[key]||0);
+                        },0);
+                        return jobShipped>=jj.total_units?{...jj,prod_status:'shipped'}:jj;
+                      });
+                      const allJobsShipped=updatedJobs.filter(jj=>jj.prod_status!=='draft').every(jj=>jj.prod_status==='shipped');
                       // Compute total shipping cost from all boxes for this SO
                       const boxShipCost=shipModal.boxes.reduce((a,bx)=>a+(bx.shipping_cost||0),0);
                       const existingShipCost=safeNum(so._shipping_cost||so._shipstation_cost||0);
                       const totalShipCost=existingShipCost+boxShipCost;
-                      const updated={...so,jobs:updatedJobs,_shipments:[...existing,...soShipments],_shipped:true,_shipping_status:'shipped',
+                      const updated={...so,jobs:updatedJobs,_shipments:allShipments,
+                        _shipped:allJobsShipped,_shipping_status:allJobsShipped?'shipped':'partial',
                         _tracking_number:soShipments[0].tracking_number||so._tracking_number||'',
                         _carrier:soShipments[0].carrier||so._carrier||'',
                         _ship_date:shipDate,
