@@ -2632,12 +2632,14 @@ function calcSOStatus(ord){
   const anyJobActive=hasJobs&&boardJobs.some(j=>j.prod_status==='staging'||j.prod_status==='in_process');
   // Check if SO has any deco at all
   const hasAnyDeco=safeItems(ord).some(it=>!it.no_deco&&safeDecos(it).length>0);
+  // Promo orders skip invoicing — go straight to complete when ready
+  const isPromo=ord.promo_applied;
   // If all jobs shipped → complete
   if(allJobsShipped)return'complete';
-  // No-deco orders: all items fulfilled → ready_to_invoice (or complete if manually set)
-  if(!hasAnyDeco&&!hasJobs&&fulfilledSz>=totalSz)return ord.status==='complete'?'complete':'ready_to_invoice';
-  // If all jobs completed → ready to invoice
-  if(allJobsDone)return'ready_to_invoice';
+  // No-deco orders: all items fulfilled → ready_to_invoice (or complete for promo)
+  if(!hasAnyDeco&&!hasJobs&&fulfilledSz>=totalSz)return(ord.status==='complete'||isPromo)?'complete':'ready_to_invoice';
+  // If all jobs completed → ready to invoice (or complete for promo)
+  if(allJobsDone)return isPromo?'complete':'ready_to_invoice';
   // If any job in staging or in_process → in production
   if(anyJobActive)return'in_production';
   // If picks exist but not yet pulled → needs_pull
@@ -3866,9 +3868,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       </div>
       {isSO&&<div style={{display:'flex',gap:6,marginTop:8}}>
         <button className="btn btn-secondary" onClick={()=>setShowPO('select')}><Icon name="cart" size={14}/> Create PO</button>
-        <button className="btn btn-secondary" style={{color:'#dc2626',borderColor:'#fca5a5'}} onClick={()=>{
-          setInvSelItems(safeItems(o).map((_,i)=>i));setInvMemo(o.memo||'');setInvType(o.promo_applied?'final':'deposit');setInvDepositPct(50);setShowInvCreate(true);
-        }}><Icon name="dollar" size={14}/> {o.promo_applied?'Close Promo Order':'Create Invoice'}</button>
+        {o.promo_applied?<button className="btn btn-secondary" style={{color:'#166534',borderColor:'#86efac'}} onClick={()=>{
+          if(!window.confirm('Mark promo order '+o.id+' as complete? No invoice needed — costs are tracked on the SO.'))return;
+          const updated={...o,status:'complete',updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);nf(o.id+' promo order closed');
+        }}><Icon name="check" size={14}/> Close Promo Order</button>
+        :<button className="btn btn-secondary" style={{color:'#dc2626',borderColor:'#fca5a5'}} onClick={()=>{
+          setInvSelItems(safeItems(o).map((_,i)=>i));setInvMemo(o.memo||'');setInvType('deposit');setInvDepositPct(50);setShowInvCreate(true);
+        }}><Icon name="dollar" size={14}/> Create Invoice</button>}
       </div>}
       {/* SHIPPING */}
       <div style={{display:'flex',gap:12,marginTop:12,alignItems:'end',flexWrap:'wrap',borderTop:'1px solid #f1f5f9',paddingTop:12}}>
