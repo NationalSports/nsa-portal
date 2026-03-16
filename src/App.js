@@ -3341,16 +3341,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     if(hasPromoItems||hasPromoCredit)return; // promo is properly applied
     // Broken state: promo_applied=true but no items marked — auto-fix
     const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();
-    const _pStart=_m<6?_y+'-01-01':_y+'-07-01';const _pEnd=_m<6?_y+'-06-30':_y+'-12-31';const _pLabel=_m<6?'H1 '+_y:'H2 '+_y;
+    const _pStart=_m<6?_y+'-01-01':_y+'-07-01';const _pEnd=_m<6?_y+'-06-30':_y+'-12-31';
     let _ps=(cust.promo_periods||[]).filter(p=>p.period_start===_pStart);
     let promoBudget=_ps.reduce((a,p)=>a+(p.allocated||0)-(p.used||0),0);
     // Auto-allocate period if needed
     if(_ps.length===0){
-      const progs=(cust.promo_programs||[]).filter(p=>p.status!=='inactive'&&p.type==='fixed'&&safeNum(p.fixed_amount)>0);
+      const progs=(cust.promo_programs||[]).filter(p=>p.is_active!==false&&p.type==='fixed'&&safeNum(p.fixed_amount)>0);
       const totalFixed=progs.reduce((a,p)=>a+safeNum(p.fixed_amount),0);
       if(totalFixed>0){
-        const newPd={id:'pp_'+Date.now(),customer_id:cust.id,period_start:_pStart,period_end:_pEnd,period_label:_pLabel,allocated:totalFixed,used:0,created_at:new Date().toISOString()};
-        _dbSavePromoPeriod(newPd);_ps=[newPd];promoBudget=totalFixed;
+        const newPd={id:'pp_'+Date.now(),customer_id:cust.id,period_start:_pStart,period_end:_pEnd,allocated:totalFixed,used:0,created_at:new Date().toISOString()};
+        _ps=[newPd];promoBudget=totalFixed;
         setCust(prev=>({...prev,promo_periods:[...(prev.promo_periods||[]),newPd]}));
       }
     }
@@ -3377,9 +3377,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const existingUsage=(cust.promo_usage||[]).find(u=>u.so_id===o.id);
       if(!existingUsage){
         const updatedPd={...pd,used:(pd.used||0)+promoUsed};
-        _dbSavePromoPeriod(updatedPd);
-        _dbSavePromoUsage({period_id:pd.id,amount:promoUsed,description:'Promo order '+o.id,created_by:cu?.name||'System',so_id:o.id,estimate_id:o.estimate_id||null,created_at:new Date().toISOString()});
-        setCust(prev=>({...prev,promo_periods:(prev.promo_periods||[]).map(p=>p.id===pd.id?updatedPd:p),promo_usage:[...(prev.promo_usage||[]),{period_id:pd.id,amount:promoUsed,description:'Promo order '+o.id,so_id:o.id,estimate_id:o.estimate_id||null,created_at:new Date().toISOString()}]}));
+        const usageRec={period_id:pd.id,amount:promoUsed,description:'Promo order '+o.id,created_by:cu?.name||'System',so_id:o.id,estimate_id:o.estimate_id||null,created_at:new Date().toISOString()};
+        _dbSavePromoPeriod(updatedPd).then(ok=>{if(ok)_dbSavePromoUsage(usageRec)});
+        setCust(prev=>({...prev,promo_periods:(prev.promo_periods||[]).map(p=>p.id===pd.id?updatedPd:p),promo_usage:[...(prev.promo_usage||[]),usageRec]}));
       }
     }
     nf('Promo auto-applied — items updated to retail pricing');
@@ -3808,23 +3808,23 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {isSO&&onRevertToEst&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);if(!window.confirm('Revert '+o.id+' back to estimate? The SO will be deleted and '+(o.estimate_id?'the original estimate reopened.':'a new estimate created.')))return;onRevertToEst(o)}} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="back" size={12}/> Revert to Estimate</button>}
             {isSO&&o.estimate_id&&onViewEstimate&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);onViewEstimate(o.estimate_id)}} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="dollar" size={12}/> View Estimate</button>}
             {/* Promo Funds — show when customer has promo programs and funds available (auto-allocate period if needed) */}
-            {cust&&(cust.promo_programs||[]).length>0&&!o.promo_applied&&(()=>{const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();const _pStart=_m<6?_y+'-01-01':_y+'-07-01';const _ps=(cust.promo_periods||[]).filter(p=>p.period_start===_pStart);const _bal=_ps.reduce((a,p)=>a+(p.allocated||0)-(p.used||0),0);if(_bal>0)return true;const progs=(cust.promo_programs||[]).filter(p=>p.status!=='inactive');return progs.some(p=>p.type==='fixed'&&safeNum(p.fixed_amount)>0)})()&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#92400e',textAlign:'left'}} onClick={async()=>{setShowActionsDD(false);
+            {cust&&(cust.promo_programs||[]).length>0&&!o.promo_applied&&(()=>{const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();const _pStart=_m<6?_y+'-01-01':_y+'-07-01';const _ps=(cust.promo_periods||[]).filter(p=>p.period_start===_pStart);const _bal=_ps.reduce((a,p)=>a+(p.allocated||0)-(p.used||0),0);if(_bal>0)return true;const progs=(cust.promo_programs||[]).filter(p=>p.is_active!==false);return progs.some(p=>p.type==='fixed'&&safeNum(p.fixed_amount)>0)})()&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#92400e',textAlign:'left'}} onClick={async()=>{setShowActionsDD(false);
               // Calculate available promo balance, auto-allocate period if needed
               const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();
-              const _pStart=_m<6?_y+'-01-01':_y+'-07-01';const _pEnd=_m<6?_y+'-06-30':_y+'-12-31';const _pLabel=_m<6?'H1 '+_y:'H2 '+_y;
+              const _pStart=_m<6?_y+'-01-01':_y+'-07-01';const _pEnd=_m<6?_y+'-06-30':_y+'-12-31';
               let _ps=(cust.promo_periods||[]).filter(p=>p.period_start===_pStart);
               let promoBudget=_ps.reduce((a,p)=>a+(p.allocated||0)-(p.used||0),0);
               // Auto-allocate period from fixed programs if no period exists
               if(_ps.length===0){
-                const progs=(cust.promo_programs||[]).filter(p=>p.status!=='inactive'&&p.type==='fixed'&&safeNum(p.fixed_amount)>0);
+                const progs=(cust.promo_programs||[]).filter(p=>p.is_active!==false&&p.type==='fixed'&&safeNum(p.fixed_amount)>0);
                 const totalFixed=progs.reduce((a,p)=>a+safeNum(p.fixed_amount),0);
                 if(totalFixed>0){
-                  const newPeriod={id:'pp_'+Date.now(),customer_id:cust.id,period_start:_pStart,period_end:_pEnd,period_label:_pLabel,allocated:totalFixed,used:0,created_at:new Date().toISOString()};
+                  const newPeriod={id:'pp_'+Date.now(),customer_id:cust.id,period_start:_pStart,period_end:_pEnd,allocated:totalFixed,used:0,created_at:new Date().toISOString()};
                   await _dbSavePromoPeriod(newPeriod);
                   const updatedCust={...cust,promo_periods:[...(cust.promo_periods||[]),newPeriod]};
                   setCust(updatedCust);
                   _ps=[newPeriod];promoBudget=totalFixed;
-                  nf('Auto-allocated $'+totalFixed.toLocaleString()+' promo for '+_pLabel);
+                  nf('Auto-allocated $'+totalFixed.toLocaleString()+' promo for '+(_m<6?'H1 '+_y:'H2 '+_y));
                 }
               }
               if(promoBudget<=0){nf('No promo funds available','error');return}
@@ -8267,10 +8267,10 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     let curPeriods=periods.filter(p=>p.period_start===curPeriod.start);
     // Auto-allocate current period from fixed programs if none exists
     if(curPeriods.length===0){
-      const fixedProgs=programs.filter(p=>p.status!=='inactive'&&p.type==='fixed'&&safeNum(p.fixed_amount)>0);
+      const fixedProgs=programs.filter(p=>p.is_active!==false&&p.type==='fixed'&&safeNum(p.fixed_amount)>0);
       const totalFixed=fixedProgs.reduce((a,p)=>a+safeNum(p.fixed_amount),0);
       if(totalFixed>0){
-        const newPd={id:'pp_'+Date.now(),customer_id:customer.id,period_start:curPeriod.start,period_end:curPeriod.end,period_label:curPeriod.label,allocated:totalFixed,used:0,created_at:new Date().toISOString()};
+        const newPd={id:'pp_'+Date.now(),customer_id:customer.id,period_start:curPeriod.start,period_end:curPeriod.end,allocated:totalFixed,used:0,created_at:new Date().toISOString()};
         onSavePromoPeriod(newPd);curPeriods=[newPd];periods=[...periods,newPd];
       }
     }
@@ -11491,20 +11491,20 @@ export default function App(){
         const existingUsage=(c.promo_usage||[]).find(u=>u.so_id===sl.id);
         if(!existingUsage){
           const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();
-          const _pStart=_m<6?_y+'-01-01':_y+'-07-01';const _pEnd=_m<6?_y+'-06-30':_y+'-12-31';const _pLabel=_m<6?'H1 '+_y:'H2 '+_y;
+          const _pStart=_m<6?_y+'-01-01':_y+'-07-01';const _pEnd=_m<6?_y+'-06-30':_y+'-12-31';
           let periods=(c.promo_periods||[]).filter(p=>p.period_start===_pStart);
           // Auto-allocate period if needed
           if(periods.length===0){
-            const progs=(c.promo_programs||[]).filter(p=>p.status!=='inactive'&&p.type==='fixed'&&safeNum(p.fixed_amount)>0);
+            const progs=(c.promo_programs||[]).filter(p=>p.is_active!==false&&p.type==='fixed'&&safeNum(p.fixed_amount)>0);
             const totalFixed=progs.reduce((a,p)=>a+safeNum(p.fixed_amount),0);
-            if(totalFixed>0){const newPd={id:'pp_'+Date.now(),customer_id:c.id,period_start:_pStart,period_end:_pEnd,period_label:_pLabel,allocated:totalFixed,used:0,created_at:new Date().toISOString()};_dbSavePromoPeriod(newPd);periods=[newPd]}
+            if(totalFixed>0){const newPd={id:'pp_'+Date.now(),customer_id:c.id,period_start:_pStart,period_end:_pEnd,allocated:totalFixed,used:0,created_at:new Date().toISOString()};periods=[newPd]}
           }
           if(periods.length>0){
             const pd=periods[0];const promoAmt=safeNum(sl.promo_amount);
             const updatedPd={...pd,used:(pd.used||0)+promoAmt};
-            _dbSavePromoPeriod(updatedPd);
             const usageRec={period_id:pd.id,amount:promoAmt,description:'Promo order '+sl.id,created_by:cu?.name||'System',so_id:sl.id,estimate_id:sl.estimate_id||null,created_at:new Date().toISOString()};
-            _dbSavePromoUsage(usageRec);
+            // Chain: save period first, THEN insert usage (FK constraint requires period to exist)
+            _dbSavePromoPeriod(updatedPd).then(ok=>{if(ok)_dbSavePromoUsage(usageRec);else console.error('[Promo] period save failed, skipping usage insert')});
             // Update global customer state
             const updatedPeriods=(c.promo_periods||[]).map(p=>p.id===pd.id?updatedPd:p).concat(periods.length===1&&!(c.promo_periods||[]).some(p=>p.id===pd.id)?[updatedPd]:[]);
             setCust(prev=>prev.map(cc=>cc.id===c.id?{...cc,promo_periods:updatedPeriods.filter((p,i,arr)=>arr.findIndex(x=>x.id===p.id)===i),promo_usage:[...(cc.promo_usage||[]),usageRec]}:cc));
@@ -11574,7 +11574,7 @@ export default function App(){
       if(_c2){const _now2=new Date(),_y2=_now2.getFullYear(),_m2=_now2.getMonth();const _pStart2=_m2<6?_y2+'-01-01':_y2+'-07-01';const _ps2=(_c2.promo_periods||[]).filter(p=>p.period_start===_pStart2);
         let _bal2=_ps2.reduce((a,p)=>a+(p.allocated||0)-(p.used||0),0);
         // If no period exists, check if we can auto-allocate from fixed programs
-        if(_ps2.length===0){const progs2=(_c2.promo_programs||[]).filter(p=>p.status!=='inactive'&&p.type==='fixed'&&safeNum(p.fixed_amount)>0);_bal2=progs2.reduce((a,p)=>a+safeNum(p.fixed_amount),0)}
+        if(_ps2.length===0){const progs2=(_c2.promo_programs||[]).filter(p=>p.is_active!==false&&p.type==='fixed'&&safeNum(p.fixed_amount)>0);_bal2=progs2.reduce((a,p)=>a+safeNum(p.fixed_amount),0)}
         if(promoAmount>_bal2){nf('Cannot convert — promo total $'+promoAmount.toLocaleString(undefined,{maximumFractionDigits:2})+' exceeds available funds ($'+_bal2.toLocaleString(undefined,{maximumFractionDigits:2})+' remaining). Remove promo and re-apply to adjust.','error');return}
       }
     }
@@ -11590,25 +11590,25 @@ export default function App(){
       let periods=(c.promo_periods||[]).filter(p=>p.period_start===_pStart);
       // Auto-allocate period from fixed programs if none exists
       if(periods.length===0){
-        const progs=(c.promo_programs||[]).filter(p=>p.status!=='inactive'&&p.type==='fixed'&&safeNum(p.fixed_amount)>0);
+        const progs=(c.promo_programs||[]).filter(p=>p.is_active!==false&&p.type==='fixed'&&safeNum(p.fixed_amount)>0);
         const totalFixed=progs.reduce((a,p)=>a+safeNum(p.fixed_amount),0);
         if(totalFixed>0){
-          const _pEnd=_m<6?_y+'-06-30':_y+'-12-31';const _pLabel=_m<6?'H1 '+_y:'H2 '+_y;
-          const newPd={id:'pp_'+Date.now(),customer_id:c.id,period_start:_pStart,period_end:_pEnd,period_label:_pLabel,allocated:totalFixed,used:0,created_at:new Date().toISOString()};
-          _dbSavePromoPeriod(newPd);periods=[newPd];
+          const _pEnd=_m<6?_y+'-06-30':_y+'-12-31';
+          const newPd={id:'pp_'+Date.now(),customer_id:c.id,period_start:_pStart,period_end:_pEnd,allocated:totalFixed,used:0,created_at:new Date().toISOString()};
+          periods=[newPd];
           setCust(prev=>prev.map(cc=>cc.id===c.id?{...cc,promo_periods:[...(cc.promo_periods||[]),newPd]}:cc));
         }
       }
       if(periods.length>0){
         const pd=periods[0];
         const updatedPeriod={...pd,used:(pd.used||0)+promoAmount};
-        _dbSavePromoPeriod(updatedPeriod);
-        _dbSavePromoUsage({period_id:pd.id,amount:promoAmount,description:'Promo order '+so.id,created_by:cu?.name||'System',so_id:so.id,estimate_id:est.id,created_at:new Date().toISOString()});
+        const usageRec={period_id:pd.id,amount:promoAmount,description:'Promo order '+so.id,created_by:cu?.name||'System',so_id:so.id,estimate_id:est.id,created_at:new Date().toISOString()};
+        // Chain: save period first, THEN insert usage (FK constraint requires period to exist)
+        _dbSavePromoPeriod(updatedPeriod).then(ok=>{if(ok)_dbSavePromoUsage(usageRec);else console.error('[Promo] period save failed, skipping usage insert')});
         // Update customer in state
         const updatedPeriods=(c.promo_periods||[]).map(p=>p.id===pd.id?updatedPeriod:p).concat(periods.length===1&&!(c.promo_periods||[]).some(p=>p.id===pd.id)?[updatedPeriod]:[]);
         const finalPeriods=updatedPeriods.filter((p,i,arr)=>arr.findIndex(x=>x.id===p.id)===i);
-        const updatedUsage=[...(c.promo_usage||[]),{period_id:pd.id,amount:promoAmount,description:'Promo order '+so.id,created_by:cu?.name||'System',so_id:so.id,estimate_id:est.id,created_at:new Date().toISOString()}];
-        setCust(prev=>prev.map(cc=>cc.id===c.id?{...cc,promo_periods:finalPeriods,promo_usage:updatedUsage}:cc));
+        setCust(prev=>prev.map(cc=>cc.id===c.id?{...cc,promo_periods:finalPeriods,promo_usage:[...(cc.promo_usage||[]),usageRec]}:cc));
       }
     }
     setESO(so);setESOC(c);setPg('orders');nf(`${so.id} created from ${est.id}`)};
