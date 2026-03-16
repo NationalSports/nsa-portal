@@ -3148,11 +3148,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         return pn.includes(qLower)||nm.includes(qLower);
       });
       if(!entries.length){mtSearchCache.current[cacheKey]={length:0,_ts:Date.now()};if(gen===mtSearchGen.current)setMtResults([]);return}
-      // Helper: extract best price from an HCL Commerce entry (handles both search and detail field names)
+      // Helper: extract retail/list price from an HCL Commerce entry (cost formula starts from retail)
       const getPrice=(e)=>{
-        if(e.Price&&e.Price.length){for(const p of e.Price){const v=parseFloat(p.SKUPriceValue||p.priceValue||0);if(v>0)return v}}
-        if(e.price&&e.price.length){for(const p of e.price){const v=parseFloat(p.SKUPriceValue||p.priceValue||0);if(v>0)return v}}
-        const f=parseFloat(e.offerPrice||e.listPrice||e.salePrice||0);return f>0?f:0;
+        const prices=e.Price||e.price||[];
+        // Prefer Display/List usage (retail/MSRP) over Offer (wholesale)
+        if(prices.length){for(const p of prices){const u=(p.usage||p.priceUsage||'').toLowerCase();if(u==='display'||u==='list'){const v=parseFloat(p.SKUPriceValue||p.priceValue||0);if(v>0)return v}}}
+        // Fall back to listPrice field
+        const lp=parseFloat(e.listPrice||0);if(lp>0)return lp;
+        // Last resort: highest price in array (most likely retail)
+        let max=0;if(prices.length){for(const p of prices){const v=parseFloat(p.SKUPriceValue||p.priceValue||0);if(v>max)max=v}}
+        if(max>0)return max;
+        const f=parseFloat(e.offerPrice||e.salePrice||0);return f>0?f:0;
       };
       // Helper: extract color name from attributes array (handles both Attributes and attributes, HCL Commerce field casing)
       const getColor=(e)=>{
