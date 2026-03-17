@@ -3205,17 +3205,21 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         return pn.includes(qLower)||nm.includes(qLower);
       });
       if(!entries.length){mtSearchCache.current[cacheKey]={length:0,_ts:Date.now()};if(gen===mtSearchGen.current)setMtResults([]);return}
-      // Helper: extract retail/list price from an HCL Commerce entry (cost formula starts from retail)
-      const getPrice=(e)=>{
+      // Helper: extract wholesale/offer price from an HCL Commerce entry
+      const getOfferPrice=(e)=>{
         const prices=e.Price||e.price||[];
-        // Prefer Display/List usage (retail/MSRP) over Offer (wholesale)
-        if(prices.length){for(const p of prices){const u=(p.usage||p.priceUsage||'').toLowerCase();if(u==='display'||u==='list'){const v=parseFloat(p.SKUPriceValue||p.priceValue||0);if(v>0)return v}}}
-        // Fall back to listPrice field
-        const lp=parseFloat(e.listPrice||0);if(lp>0)return lp;
-        // Last resort: highest price in array (most likely retail)
-        let max=0;if(prices.length){for(const p of prices){const v=parseFloat(p.SKUPriceValue||p.priceValue||0);if(v>max)max=v}}
-        if(max>0)return max;
-        const f=parseFloat(e.offerPrice||e.salePrice||0);return f>0?f:0;
+        // Prefer Offer usage (wholesale/dealer price)
+        let offer=0,display=0;
+        if(prices.length){for(const p of prices){const u=(p.usage||p.priceUsage||'').toLowerCase();const v=parseFloat(p.SKUPriceValue||p.priceValue||0);if(v>0){if(u==='offer'||u==='sale')offer=v;else if(u==='display'||u==='list')display=v}}}
+        if(offer>0)return offer;
+        // Try offerPrice/salePrice fields
+        const op=parseFloat(e.offerPrice||e.salePrice||0);if(op>0)return op;
+        // Fall back to Display/List * 0.5 (retail-to-wholesale estimate)
+        if(display>0)return display*0.5;
+        const lp=parseFloat(e.listPrice||0);if(lp>0)return lp*0.5;
+        // Last resort: lowest price in array
+        let min=Infinity;if(prices.length){for(const p of prices){const v=parseFloat(p.SKUPriceValue||p.priceValue||0);if(v>0&&v<min)min=v}}
+        return min<Infinity?min:0;
       };
       // Helper: extract color name from attributes array (handles both Attributes and attributes, HCL Commerce field casing)
       const getColor=(e)=>{
@@ -3253,12 +3257,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // Momentec dealer discount (15% off wholesale)
       const mtVendor=vendorList.find(v=>v.api_provider==='momentec'||v.name==='Momentec');
       const mtDiscount=mtVendor?.api_price_discount||0.15;
-      const mtCost=p=>rQ(p*0.5*(1-mtDiscount));
+      const mtCost=p=>{const v=p*(1-mtDiscount);return Math.round(v*100)/100};
       // Build style map from detailed results
       const styleMap={};
       for(const{baseSku,entry,detail}of details){
         const src=detail||entry;// prefer detail if available
-        const price=mtCost(getPrice(src));
+        const price=mtCost(getOfferPrice(src));
         const mtBackImg=src.fullImageBack||src.backImage||entry.fullImageBack||entry.backImage||'';
         // Build color→swatch image map from top-level Attributes (per-color product images aren't available from API)
         const colorImgMap={};
@@ -3273,7 +3277,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const skus=src.SKUs||src.sKUs||detail?.SKUs||detail?.sKUs||[];
         if(skus.length){
           for(const sk of skus){
-            const skPrice=mtCost(getPrice(sk));const skColor=getColor(sk)||'Default';const skSize=getSize(sk);
+            const skPrice=mtCost(getOfferPrice(sk));const skColor=getColor(sk)||'Default';const skSize=getSize(sk);
             const skImg=colorImgMap[skColor]||sk.thumbnail||sk.fullImage||'';
             const skBackImg=sk.fullImageBack||sk.backImage||'';
             if(!style.colors[skColor]){
@@ -4438,7 +4442,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             </div>
             {mtResults.slice(0,10).map((mt,mi)=>{const eKey='mt-'+mi;const isExp=expandedStyle===eKey;return<div key={'mt'+mi}>
               <div style={{padding:'8px 12px',borderBottom:'1px solid #fef3c7',cursor:'pointer',display:'flex',alignItems:'center',gap:10,background:isExp?'#fde68a':mi%2===0?'#fffbeb':'white'}} onClick={()=>setExpandedStyle(isExp?null:eKey)}>
-                {mt.styleImage?<img src={mt.styleImage} alt="" style={{width:32,height:32,objectFit:'contain',borderRadius:4,background:'#f8fafc'}} onError={e=>{e.target.style.display='none'}}/>:<div style={{width:32,height:32,borderRadius:4,background:'#fde68a',display:'flex',alignItems:'center',justifyContent:'center',fontSize:10,color:'#b45309',fontWeight:700,flexShrink:0}}>MT</div>}
+                <div style={{width:32,height:32,borderRadius:4,background:'#fde68a',display:'flex',alignItems:'center',justifyContent:'center',fontSize:10,color:'#b45309',fontWeight:700,flexShrink:0}}>MT</div>
                 <span style={{fontFamily:'monospace',fontWeight:700,color:'#b45309',background:'#fde68a',padding:'2px 6px',borderRadius:3,fontSize:12}}>{mt.sku}</span>
                 <span style={{fontWeight:600,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',flex:1}}>{mt.styleName}</span>
                 <span style={{fontSize:11,color:'#92400e',background:'#fef3c7',padding:'1px 6px',borderRadius:3}}>{mt.brandName}</span>
@@ -4448,7 +4452,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               </div>
               {isExp&&<div style={{background:'#fffbeb',borderBottom:'2px solid #fcd34d',padding:'6px 12px',display:'flex',flexWrap:'wrap',gap:4,maxHeight:200,overflowY:'auto'}}>
                 {mt.colors.map((c,ci)=><div key={ci} style={{padding:'4px 8px',borderRadius:4,border:'1px solid #fcd34d',background:'white',cursor:'pointer',fontSize:11,display:'flex',alignItems:'center',gap:4,minWidth:0}} onClick={()=>addSearchProduct(mt,c,'mt')} title={c.colorName+' — $'+c.customerPrice?.toFixed(2)}>
-                  {c.colorFrontImage&&<img src={c.colorFrontImage} alt="" style={{width:20,height:20,objectFit:'contain',borderRadius:2}} onError={e=>{e.target.style.display='none'}}/>}
                   <span style={{fontWeight:600,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',maxWidth:120}}>{c.colorName||'Default'}</span>
                   <span style={{fontSize:9,color:'#b45309',whiteSpace:'nowrap'}}>${c.customerPrice?.toFixed(2)}</span>
                 </div>)}
