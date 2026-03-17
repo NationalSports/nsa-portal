@@ -11850,31 +11850,8 @@ export default function App(){
     }
   };
 
-  // Auto-check for shipping updates every 10 minutes (supports multi-package)
-  React.useEffect(() => {
-    if (!ssConnected) return;
-    const checkUpdates = async () => {
-      try {
-        const recentShipments = await fetchRecentShipments();
-        const nsaShipments = recentShipments.filter(s => s.advancedOptions?.customField1?.startsWith('NSA-SO-'));
-        nsaShipments.forEach(shipment => {
-          const soId = shipment.advancedOptions.customField1.replace('NSA-SO-', '');
-          const existingSO = sos.find(s => s.id === soId);
-          if (!existingSO) return;
-          const existingPkgs = existingSO._shipments || [];
-          const alreadyTracked = existingPkgs.some(p => p.tracking_number === shipment.trackingNumber) || existingSO._tracking_number === shipment.trackingNumber;
-          if (!alreadyTracked && shipment.trackingNumber) {
-            // Add as new shipment package
-            const newPkg = { id: 'SHP-SS-' + (shipment.shipmentId || Date.now()), tracking_number: shipment.trackingNumber, carrier: shipment.carrierCode || '', ship_date: shipment.shipDate || new Date().toLocaleDateString(), tracking_url: shipment.trackingUrl || '', shipstation_shipment_id: shipment.shipmentId || null, items: [], notes: 'Auto-detected from ShipStation', created_by: 'system', created_at: new Date().toLocaleString() };
-            const updated = { ...existingSO, _shipments: [...existingPkgs, newPkg], _shipped: true, _shipping_status: 'shipped', _tracking_number: existingSO._tracking_number || shipment.trackingNumber, _carrier: existingSO._carrier || shipment.carrierCode, _ship_date: existingSO._ship_date || shipment.shipDate, _tracking_url: existingSO._tracking_url || shipment.trackingUrl, updated_at: new Date().toLocaleString() };
-            setSOs(prev => prev.map(s => s.id === soId ? updated : s));
-          }
-        });
-      } catch (error) { console.warn('[ShipStation] Auto-update failed:', error); }
-    };
-    const interval = setInterval(checkUpdates, 10 * 60 * 1000);
-    return () => clearInterval(interval);
-  }, [ssConnected, sos]);
+  // ShipStation auto-poll disabled — shipments are managed through the warehouse module.
+  // Manual "Check Shipping Status" button (fetchSOShippingStatus) still works on demand.
 
   // ─── OMG Sync Handler ───
   // Lightweight sync: fetches store list only (no order/product details).
