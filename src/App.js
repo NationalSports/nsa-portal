@@ -5076,12 +5076,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                         return jobShipped>=safeNum(jj.total_units)?jj:{...jj,prod_status:'completed'};
                       });
                       const hasShipments=updated.length>0;const firstShp2=updated[0];
-                      setO(e=>({...e,jobs:revertedJobs,_shipments:updated,_shipped:false,
+                      const updatedSO={...o,jobs:revertedJobs,_shipments:updated,_shipped:false,
                         _shipping_status:hasShipments?'partial':null,
                         _tracking_number:firstShp2?.tracking_number||'',_carrier:firstShp2?.carrier||'',
                         _ship_date:firstShp2?.ship_date||'',_tracking_url:firstShp2?.tracking_url||'',
                         _shipping_cost:updated.reduce((a,s)=>a+safeNum(s.shipping_cost||0),0)||null,
-                        updated_at:new Date().toLocaleString()}));setDirty(true);
+                        updated_at:new Date().toLocaleString()};
+                      setO(updatedSO);onSave(updatedSO);setDirty(false);
                       nf('Shipment deleted');
                     }}>Delete</button>}
                   </div>
