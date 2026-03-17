@@ -17823,6 +17823,33 @@ export default function App(){
     const openStockPOs=stockPOs.filter(p=>p.status!=='received');
     // Count awaiting pickup shipments for tab badge
     const awaitingPickupCount=(()=>{let c=0;sos.filter(so=>so._shipments&&so._shipments.length>0&&!so.deleted_at).forEach(so=>{(so._shipments||[]).forEach(shp=>{if(shp.tracking_number&&!shp.carrier_picked_up)c++})});return c})();
+    // Auto-check UPS pickup status every 30 minutes
+    React.useEffect(()=>{
+      if(!awaitingPickupCount)return;
+      const checkPickups=async()=>{
+        const pending=[];
+        sos.filter(so=>so._shipments&&so._shipments.length>0&&!so.deleted_at).forEach(so=>{
+          (so._shipments||[]).forEach(shp=>{
+            if(shp.tracking_number&&!shp.carrier_picked_up&&/^1Z/i.test(shp.tracking_number)){
+              pending.push({...shp,so});
+            }
+          });
+        });
+        for(const shp of pending){
+          try{
+            const resp=await fetch('/.netlify/functions/ups-tracking?tracking='+encodeURIComponent(shp.tracking_number));
+            const data=await resp.json();
+            if(data.pickedUp){
+              const updatedShipments=(shp.so._shipments||[]).map(s=>s.id===shp.id?{...s,carrier_picked_up:true,pickup_date:new Date().toLocaleString(),ups_status:data.status}:s);
+              savSO({...shp.so,_shipments:updatedShipments});
+            }
+          }catch(e){console.warn('[UPS] Auto-check failed for',shp.tracking_number,e)}
+        }
+      };
+      const interval=setInterval(checkPickups,30*60*1000);
+      checkPickups(); // Run once immediately on mount
+      return()=>clearInterval(interval);
+    },[awaitingPickupCount]); // eslint-disable-line react-hooks/exhaustive-deps
     const tabs=[
       {id:'receive',label:'📱 Scan to Receive',count:0,color:'#2563eb'},
       {id:'pull',label:'🏗️ Pull & Stage',count:fPull.length,color:'#d97706'},
@@ -18814,8 +18841,30 @@ export default function App(){
           });
           awaitingPickup.sort((a,b)=>(a.created_at||'').localeCompare(b.created_at||''));
           if(awaitingPickup.length===0)return null;
+          const checkUPSPickups=async()=>{
+            const upsShipments=awaitingPickup.filter(s=>/^1Z/i.test(s.tracking_number));
+            if(!upsShipments.length){nf('No UPS packages to check');return}
+            nf('Checking '+upsShipments.length+' UPS package'+(upsShipments.length!==1?'s':'')+'...');
+            let confirmed=0;
+            for(const shp of upsShipments){
+              try{
+                const resp=await fetch('/.netlify/functions/ups-tracking?tracking='+encodeURIComponent(shp.tracking_number));
+                const data=await resp.json();
+                if(data.pickedUp){
+                  const updatedShipments=(shp.so._shipments||[]).map(s=>s.id===shp.id?{...s,carrier_picked_up:true,pickup_date:new Date().toLocaleString(),ups_status:data.status}:s);
+                  savSO({...shp.so,_shipments:updatedShipments});
+                  addWhAction({type:'pickup_confirmed',soId:shp.soId,customer:shp.cName,tracking:shp.tracking_number,carrier:'ups',by:'auto-check'});
+                  confirmed++;
+                }
+              }catch(e){console.warn('[UPS] Check failed for',shp.tracking_number,e)}
+            }
+            nf(confirmed>0?confirmed+' package'+(confirmed!==1?'s':'')+' confirmed picked up':'No new pickups detected');
+          };
           return<div style={{marginTop:16}}>
-            <div style={{fontSize:12,fontWeight:800,color:'#d97706',marginBottom:8,textTransform:'uppercase'}}>Awaiting Carrier Pickup ({awaitingPickup.length})</div>
+            <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}>
+              <span style={{fontSize:12,fontWeight:800,color:'#d97706',textTransform:'uppercase'}}>Awaiting Carrier Pickup ({awaitingPickup.length})</span>
+              <button style={{fontSize:9,background:'#d97706',color:'white',border:'none',padding:'3px 10px',borderRadius:4,fontWeight:700,cursor:'pointer'}} onClick={checkUPSPickups}>Check UPS Pickups</button>
+            </div>
             <div style={{display:'grid',gap:6}}>
               {awaitingPickup.map((shp,si)=>{
                 const shpUnits=(shp.items||[]).reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((a2,v)=>a2+v,0),0);
