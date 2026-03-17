@@ -4135,8 +4135,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   <span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:600}}>Art Needed</span></>}
                   <select className="form-select" style={{width:120,fontSize:12}} value={deco.position} onChange={e=>uD(idx,di,'position',e.target.value)}>{POSITIONS.map(p=><option key={p}>{p}</option>)}</select>
                   {artF&&<><span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:artF.deco_type==='screen_print'?'#dbeafe':artF.deco_type==='embroidery'?'#ede9fe':'#fef3c7',color:artF.deco_type==='screen_print'?'#1e40af':artF.deco_type==='embroidery'?'#6d28d9':'#92400e'}}>{artF.deco_type.replace('_',' ')}</span>
-                    {(artF.color_ways||[]).length>0?<select className="form-select" style={{width:160,fontSize:11}} value={deco.color_way_id||''} onChange={e=>uD(idx,di,'color_way_id',e.target.value||null)}>
-                      <option value="">Select CW...</option>{artF.color_ways.map((cw,ci)=><option key={cw.id} value={cw.id}>CW {ci+1}{cw.garment_color?' - '+cw.garment_color:''} ({cw.inks.filter(c=>c.trim()).length}c)</option>)}</select>
+                    {(artF.color_ways||[]).length>0?(()=>{
+                      if(artF.color_ways.length===1&&!deco.color_way_id){setTimeout(()=>uD(idx,di,'color_way_id',artF.color_ways[0].id),0)}
+                      return<select className="form-select" style={{width:160,fontSize:11}} value={deco.color_way_id||(artF.color_ways.length===1?artF.color_ways[0].id:'')} onChange={e=>uD(idx,di,'color_way_id',e.target.value||null)}>
+                      {artF.color_ways.length>1&&<option value="">Select CW...</option>}{artF.color_ways.map((cw,ci)=><option key={cw.id} value={cw.id}>CW {ci+1}{cw.garment_color?' - '+cw.garment_color:''} ({cw.inks.filter(c=>c.trim()).length}c)</option>)}</select>})()
                     :artF.ink_colors?<span style={{fontSize:11,color:'#64748b'}}>{artF.ink_colors.split('\n').filter(l=>l.trim()).length} color(s)</span>
                     :artF.thread_colors?<span style={{fontSize:11,color:'#64748b'}}>Thread: {artF.thread_colors}</span>:null}
                     {artF.art_size&&<span style={{fontSize:11,color:'#94a3b8'}}>{artF.art_size}</span>}</>}
@@ -4715,7 +4717,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                       <span style={{fontSize:10,fontWeight:700,color:'#475569'}}>COLOR WAYS</span>
                       <span style={{fontSize:9,color:'#94a3b8'}}>{art.deco_type==='embroidery'?'Thread colors per garment':'Ink colors per garment'}</span>
                     </div>
-                    {(art.color_ways||[]).length===0&&!art.ink_colors&&!art.thread_colors&&<div style={{fontSize:11,color:'#94a3b8',marginBottom:6}}>No color ways defined. Add one to specify ink/thread colors per garment color.</div>}
+                    {(art.color_ways||[]).length===0&&!art.ink_colors&&!art.thread_colors&&<div style={{fontSize:11,color:'#dc2626',marginBottom:6,fontWeight:600}}>⚠ At least one color way is required. Add one to specify ink/thread colors per garment color.</div>}
                     <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:6}}>
                       {(art.color_ways||[]).map((cw,ci)=><div key={cw.id} style={{flex:'1 1 220px',minWidth:220,maxWidth:360,background:'white',border:'1px solid #e2e8f0',borderRadius:8,padding:10}}>
                         <div style={{display:'flex',gap:6,alignItems:'center',marginBottom:6}}>
@@ -4770,9 +4772,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   <div style={{display:'flex',gap:8,alignItems:'center',marginTop:6}}><span style={{fontSize:10,color:'#94a3b8'}}>Uploaded {art.uploaded} · Applied to {usedIn} decoration(s)</span></div>
                 </div>
                 <div style={{display:'flex',flexDirection:'column',gap:4,flexShrink:0}}>
-                  {(art.status==='waiting_for_art'||art.status==='uploaded')&&<button className="btn btn-sm btn-primary" style={{fontSize:10}} onClick={()=>{uArt(i,'status','needs_approval');nf('Art sent for approval')}}>Send for Approval</button>}
-                  {art.status==='needs_approval'&&<button className="btn btn-sm btn-primary" style={{fontSize:10,background:'#166534',borderColor:'#166534'}} onClick={()=>{uArt(i,'status','approved');nf('Art approved')}}>Approve</button>}
-                  {art.status==='approved'&&<button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{uArt(i,'status','needs_approval');nf('Art unapproved')}}>Unapprove</button>}
                   <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>rmArt(i)}><Icon name="trash" size={10}/></button>
                 </div>
               </div>
@@ -7056,7 +7055,25 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const activeJobs=jobs.filter(j=>j.prod_status!=='draft'&&!j._draft);
       const DECO_LABELS_W={screen_print:'Screen Print',embroidery:'Embroidery',heat_transfer:'Heat Transfer',dtg:'DTG',sublimation:'Sublimation',vinyl:'Vinyl',patch:'Patch'};
       const openJobWizard=()=>{
-        // Build groups from all decorated items, grouped by deco type
+        const existingJobs=safeJobs(o);
+        // If jobs already exist, rebuild wizard groups from existing job structure (respecting splits)
+        if(existingJobs.length>0){
+          const groups=existingJobs.map(j=>{
+            const items=(j.items||[]).map(ji=>{
+              const it=safeItems(o)[ji.item_idx];
+              const af2=safeArr(o?.art_files).find(f=>f.id===j.art_file_id);
+              return{item_idx:ji.item_idx,deco_idx:ji.deco_idx,sku:ji.sku||it?.sku||'',name:ji.name||safeStr(it?.name),color:ji.color||it?.color||'',
+                units:ji.units||Object.values(safeSizes(it||{})).reduce((a,v)=>a+v,0),fulfilled:ji.fulfilled||0,art_file_id:j.art_file_id,
+                art_name:af2?.name||j.art_name||'',position:j.positions||'Front Center'};
+            });
+            return{name:j.art_name||j.deco_type.replace(/_/g,' '),deco_type:j.deco_type,items,
+              artist:j.assigned_artist||'',notes:j.rep_notes||'',files:[],
+              _split:!!j.split_from,_existingJobId:j.id};
+          });
+          setJobWizard({groups});
+          return;
+        }
+        // No existing jobs — build groups from all decorated items, grouped by deco type
         const dtMap={};
         safeItems(o).forEach((it,idx)=>{
           if(it.no_deco)return;
