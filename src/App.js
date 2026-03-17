@@ -3961,7 +3961,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       {isSO&&<button className={`tab ${tab==='transactions'?'active':''}`} onClick={()=>setTab('transactions')}>Linked</button>}
       {isSO&&<button className={`tab ${tab==='jobs'?'active':''}`} onClick={()=>setTab('jobs')}>Jobs {(()=>{const jc=(o.jobs||[]).length;return jc>0?` (${jc})`:''})()}</button>}
       {isSO&&<button className={`tab ${tab==='firm_dates'?'active':''}`} onClick={()=>setTab('firm_dates')}>Firm Dates ({safeFirm(o).length})</button>}
-      {isSO&&<button className={`tab ${tab==='tracking'?'active':''}`} onClick={()=>setTab('tracking')}>Tracking {(()=>{const sc=(o._shipments||[]).length+(o._tracking_number?1:0);return sc>0?<span style={{background:'#166534',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:4}}>{sc}</span>:''})()}</button>}
+      {isSO&&<button className={`tab ${tab==='tracking'?'active':''}`} onClick={()=>setTab('tracking')}>Tracking {(()=>{const sc=(o._shipments||[]).length||(o._tracking_number?1:0);return sc>0?<span style={{background:'#166534',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:4}}>{sc}</span>:''})()}</button>}
       {isSO&&<button className={`tab ${tab==='costs'?'active':''}`} onClick={()=>setTab('costs')} style={tab==='costs'?{background:'#166534',color:'white'}:{}}>💰 Costs</button>}
     </div>
 
@@ -5059,8 +5059,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                       const tn=prompt('Tracking number:',shp.tracking_number||'');if(tn===null)return;
                       const carrier=prompt('Carrier (ups/fedex/usps):',shp.carrier||'');
                       const updated=[...(o._shipments||[])];const idx=updated.findIndex(s=>s.id===shp.id);
-                      if(idx>=0){updated[idx]={...updated[idx],tracking_number:tn,carrier:carrier||'',tracking_url:trackUrl(tn),ship_date:updated[idx].ship_date||new Date().toLocaleDateString()};sv('_shipments',updated)}
-                      else if(shp.id==='legacy'){sv('_tracking_number',tn);sv('_carrier',carrier||o._carrier);sv('_tracking_url',trackUrl(tn))}
+                      if(idx>=0){updated[idx]={...updated[idx],tracking_number:tn,carrier:carrier||'',tracking_url:trackUrl(tn),ship_date:updated[idx].ship_date||new Date().toLocaleDateString()};
+                        const updatedSO={...o,_shipments:updated,_tracking_number:updated[0]?.tracking_number||'',_carrier:updated[0]?.carrier||'',_tracking_url:updated[0]?.tracking_url||'',updated_at:new Date().toLocaleString()};
+                        setO(updatedSO);onSave(updatedSO);setDirty(false)}
+                      else if(shp.id==='legacy'){const updatedSO={...o,_tracking_number:tn,_carrier:carrier||o._carrier,_tracking_url:trackUrl(tn),updated_at:new Date().toLocaleString()};
+                        setO(updatedSO);onSave(updatedSO);setDirty(false)}
                     }}>Edit</button>}
                     {/* Delete shipment — only for non-legacy shipments */}
                     {shp.id!=='legacy'&&canEditCost&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#fee2e2',color:'#dc2626',border:'1px solid #fecaca',fontWeight:700}} onClick={()=>{
@@ -5076,8 +5079,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                         return jobShipped>=safeNum(jj.total_units)?jj:{...jj,prod_status:'completed'};
                       });
                       const hasShipments=updated.length>0;const firstShp2=updated[0];
-                      const updatedSO={...o,jobs:revertedJobs,_shipments:updated,_shipped:false,
-                        _shipping_status:hasShipments?'partial':null,
+                      const allStillShipped=hasShipments&&revertedJobs.filter(jj=>jj.prod_status!=='draft').every(jj=>jj.prod_status==='shipped');
+                      const updatedSO={...o,jobs:revertedJobs,_shipments:updated,_shipped:allStillShipped,
+                        _shipping_status:hasShipments?(allStillShipped?'shipped':'partial'):null,
                         _tracking_number:firstShp2?.tracking_number||'',_carrier:firstShp2?.carrier||'',
                         _ship_date:firstShp2?.ship_date||'',_tracking_url:firstShp2?.tracking_url||'',
                         _shipping_cost:updated.reduce((a,s)=>a+safeNum(s.shipping_cost||0),0)||null,
@@ -18874,8 +18878,9 @@ export default function App(){
                           });
                           const hasShipments=updatedShipments.length>0;
                           const firstShp=updatedShipments[0];
+                          const allStillShipped=hasShipments&&revertedJobs.filter(jj=>jj.prod_status!=='draft').every(jj=>jj.prod_status==='shipped');
                           savSO({...so2,jobs:revertedJobs,_shipments:updatedShipments,
-                            _shipped:false,_shipping_status:hasShipments?'partial':null,
+                            _shipped:allStillShipped,_shipping_status:hasShipments?(allStillShipped?'shipped':'partial'):null,
                             _tracking_number:firstShp?.tracking_number||'',_carrier:firstShp?.carrier||'',
                             _ship_date:firstShp?.ship_date||'',_tracking_url:firstShp?.tracking_url||'',
                             _shipping_cost:updatedShipments.reduce((a,s)=>a+safeNum(s.shipping_cost||0),0)||null});
@@ -19289,8 +19294,8 @@ export default function App(){
                         return jobShipped>=jj.total_units?{...jj,prod_status:'shipped'}:jj;
                       });
                       const allJobsShipped=updatedJobs.filter(jj=>jj.prod_status!=='draft').every(jj=>jj.prod_status==='shipped');
-                      // Compute total shipping cost from all boxes for this SO
-                      const boxShipCost=shipModal.boxes.reduce((a,bx)=>a+(bx.shipping_cost||0),0);
+                      // Compute total shipping cost from this SO's shipments only
+                      const boxShipCost=soShipments.reduce((a,s)=>a+safeNum(s.shipping_cost||0),0);
                       const existingShipCost=safeNum(so._shipping_cost||so._shipstation_cost||0);
                       const totalShipCost=existingShipCost+boxShipCost;
                       const updated={...so,jobs:updatedJobs,_shipments:allShipments,
