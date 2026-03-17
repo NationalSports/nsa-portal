@@ -17823,9 +17823,14 @@ export default function App(){
     const openStockPOs=stockPOs.filter(p=>p.status!=='received');
     // Count awaiting pickup shipments for tab badge
     const awaitingPickupCount=(()=>{let c=0;sos.filter(so=>so._shipments&&so._shipments.length>0&&!so.deleted_at).forEach(so=>{(so._shipments||[]).forEach(shp=>{if(shp.tracking_number&&!shp.carrier_picked_up)c++})});return c})();
-    // Auto-check UPS pickup status every 30 minutes
+    // Auto-check UPS pickup status once overnight (runs on first load after 6 AM if not checked today)
     React.useEffect(()=>{
       if(!awaitingPickupCount)return;
+      const lastCheck=localStorage.getItem('nsa_ups_pickup_check');
+      const today=new Date().toISOString().split('T')[0];
+      const hour=new Date().getHours();
+      if(lastCheck===today||hour<3)return; // Already checked today, or before 3 AM
+      localStorage.setItem('nsa_ups_pickup_check',today);
       const checkPickups=async()=>{
         const pending=[];
         sos.filter(so=>so._shipments&&so._shipments.length>0&&!so.deleted_at).forEach(so=>{
@@ -17835,6 +17840,8 @@ export default function App(){
             }
           });
         });
+        if(!pending.length)return;
+        console.log('[UPS] Auto-checking',pending.length,'packages for pickup status');
         for(const shp of pending){
           try{
             const resp=await fetch('/.netlify/functions/ups-tracking?tracking='+encodeURIComponent(shp.tracking_number));
@@ -17846,9 +17853,7 @@ export default function App(){
           }catch(e){console.warn('[UPS] Auto-check failed for',shp.tracking_number,e)}
         }
       };
-      const interval=setInterval(checkPickups,30*60*1000);
-      checkPickups(); // Run once immediately on mount
-      return()=>clearInterval(interval);
+      checkPickups();
     },[awaitingPickupCount]); // eslint-disable-line react-hooks/exhaustive-deps
     const tabs=[
       {id:'receive',label:'📱 Scan to Receive',count:0,color:'#2563eb'},
