@@ -642,14 +642,14 @@ const _persistFailedIds=()=>{try{localStorage.setItem('nsa_save_failed_ids',JSON
 // Column whitelists — strip unknown fields before sending to Supabase (localStorage may have extra UI fields like vendor_id)
 const _pick=(obj,cols)=>{const r={};cols.forEach(c=>{if(c in obj)r[c]=obj[c]});return r};
 const _estCols=['id','customer_id','memo','status','created_by','created_at','updated_at','default_markup','shipping_type','shipping_value','ship_to_id','email_status','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history','deleted_at','promo_applied','promo_amount','update_requests'];
-const _soCols=['id','customer_id','estimate_id','memo','status','created_by','created_at','updated_at','expected_date','production_notes','shipping_type','shipping_value','ship_to_id','default_markup','omg_store_id','_shipstation_order_id','_shipping_status','_tracking_number','_carrier','_ship_date','_tracking_url','_shipped','_shipments','_shipping_cost','_shipstation_cost','_inbound_freight','deleted_at','promo_applied','promo_amount','ship_preference','ship_on_date','order_type','expected_ship_date','booking_confirmed','booking_confirmed_at','booking_confirmed_by','booking_alert_days','po_number'];
+const _soCols=['id','customer_id','estimate_id','memo','status','created_by','created_at','updated_at','expected_date','production_notes','shipping_type','shipping_value','ship_to_id','default_markup','omg_store_id','_shipstation_order_id','_shipping_status','_tracking_number','_carrier','_ship_date','_tracking_url','_shipped','_shipments','_shipping_cost','_shipstation_cost','_inbound_freight','deleted_at','promo_applied','promo_amount','ship_preference','ship_on_date','order_type','expected_ship_date','booking_confirmed','booking_confirmed_at','booking_confirmed_by','booking_alert_days','po_number','tax_rate','tax_exempt'];
 const _itemCols=['product_id','sku','name','brand','color','vendor_id','nsa_cost','retail_price','unit_sell','sizes','available_sizes','_colors','no_deco','is_custom','custom_desc','custom_cost','custom_sell','is_promo','_pre_promo_sell','est_qty','size_availability','_colorImage','_colorBackImage'];
-const _decoCols=['kind','position','type','art_file_id','art_tbd_type','tbd_colors','tbd_stitches','tbd_dtf_size','sell_override','sell_each','cost_each','underbase','two_color','colors','stitches','dtf_size','num_method','num_size','num_size_back','num_font','roster','names','names_list','vendor','deco_type','notes','custom_font_art_id','print_color','front_and_back','reversible','num_qty','name_qty','color_way_id'];
+const _decoCols=['kind','position','type','art_file_id','art_tbd_type','tbd_colors','tbd_stitches','tbd_dtf_size','sell_override','sell_each','cost_each','underbase','two_color','colors','stitches','dtf_size','num_method','num_size','num_size_back','num_font','roster','names','names_list','vendor','deco_type','notes','custom_font_art_id','print_color','front_and_back','reversible','num_qty','name_qty','color_way_id','_cost_locked'];
 // Columns that may not exist in production DB / schema cache — stripped on insert retry
 const _itemExtraCols=new Set(['vendor_id','is_promo','_pre_promo_sell','est_qty','size_availability','_colorImage','_colorBackImage']);
 const _estExtraCols=new Set(['promo_applied','promo_amount','update_requests','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history']);
-const _soExtraCols=new Set(['_shipping_cost','_shipstation_cost','_inbound_freight','promo_applied','promo_amount','ship_preference','ship_on_date','order_type','expected_ship_date','booking_confirmed','booking_confirmed_at','booking_confirmed_by','booking_alert_days','po_number']);
-const _decoExtraCols=new Set(['print_color','front_and_back','reversible','num_qty','name_qty','num_font','num_size_back','custom_font_art_id','deco_type','notes','vendor','color_way_id']);
+const _soExtraCols=new Set(['_shipping_cost','_shipstation_cost','_inbound_freight','promo_applied','promo_amount','ship_preference','ship_on_date','order_type','expected_ship_date','booking_confirmed','booking_confirmed_at','booking_confirmed_by','booking_alert_days','po_number','tax_rate','tax_exempt']);
+const _decoExtraCols=new Set(['print_color','front_and_back','reversible','num_qty','name_qty','num_font','num_size_back','custom_font_art_id','deco_type','notes','vendor','color_way_id','_cost_locked']);
 // Sanitize decoration data before DB insert — strip UI-only placeholders that would violate constraints
 const _sanitizeDeco=(d)=>{const r={...d};if(r.custom_font_art_id&&r.custom_font_art_id==='pending')r.custom_font_art_id=null;if(r.art_file_id&&r.art_file_id==='__tbd')r.art_file_id=null;return r};
 const _msgCols=['id','so_id','author_id','text','ts','dept','tagged_members','entity_type','entity_id','thread_id'];
@@ -3394,7 +3394,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const af=o.art_files||[];
   const addArt=()=>sv('art_files',[...af,{id:'af'+Date.now(),name:'',deco_type:'screen_print',ink_colors:'',thread_colors:'',art_size:'',color_ways:[],files:[],mockup_files:[],preview_url:'',prod_files:[],notes:'',status:'waiting_for_art',uploaded:new Date().toLocaleDateString()}]);
   const uArt=(i,k,v)=>sv('art_files',af.map((f,x)=>x===i?{...f,[k]:v}:f));
-  const rmArt=i=>sv('art_files',af.filter((_,x)=>x!==i));
+  const rmArt=i=>{const removed=af[i];sv('art_files',af.filter((_,x)=>x!==i));if(removed?.id){sv('items',safeItems(o).map(it=>({...it,decorations:safeDecos(it).map(d=>d.art_file_id===removed.id?{...d,art_file_id:null}:d)})))}};
 
   const addFileToArt=i=>{const a=af[i];if(!a)return;uArt(i,'files',[...(a.files||[]),'new_file_'+((a.files||[]).length+1)+'.ai'])};
 
@@ -3405,7 +3405,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const totals=useMemo(()=>{let rev=0,cost=0;safeItems(o).forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);if(!q)return;rev+=q*safeNum(it.unit_sell);cost+=q*safeNum(it.nsa_cost);
     safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);rev+=eq*dp.sell;cost+=eq*dp.cost});
     (it.po_lines||[]).filter(pl=>pl.po_type==='outside_deco').forEach(pl=>{const poQty=Object.entries(pl).filter(([k,v])=>typeof v==='number'&&!['unit_cost'].includes(k)).reduce((a,[,v])=>a+v,0);cost+=poQty*safeNum(pl.unit_cost)})});
-    const ship=o.shipping_type==='pct'?rev*(o.shipping_value||0)/100:(o.shipping_value||0);const taxRate=cust?.tax_exempt?0:(cust?.tax_rate||0);const tax=rev*taxRate;
+    const ship=o.shipping_type==='pct'?rev*(o.shipping_value||0)/100:(o.shipping_value||0);const taxRate=o.tax_exempt?0:(o.tax_rate||cust?.tax_rate||0);const tax=rev*taxRate;
     return{rev,cost,ship,tax,taxRate,grand:rev+ship+tax,margin:rev-cost,pct:rev>0?((rev-cost)/rev*100):0}},[o,artQty,cust]); // eslint-disable-line
 
   // Promo totals — separate calc to not disturb existing totals
@@ -3427,7 +3427,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const baseShip=o.shipping_type==='pct'?origTotalRev*(o.shipping_value||0)/100:(o.shipping_value||0);
     const promoPct=origTotalRev>0?origPromoRev/origTotalRev:(promoRev>0?1:0);
     const promoShip=rQ(baseShip*promoPct*1.25);const normalShip=rQ(baseShip*(1-promoPct));
-    const taxRate=cust?.tax_exempt?0:(cust?.tax_rate||0);const normalTax=normalRev*taxRate;
+    const taxRate=o.tax_exempt?0:(o.tax_rate||cust?.tax_rate||0);const normalTax=normalRev*taxRate;
     // Include _promo_credit from partially covered items
     const promoCredit=safeItems(o).reduce((a,it)=>a+safeNum(it._promo_credit),0);
     const promoAmount=promoRev+promoShip+promoCredit;const customerPays=normalRev+normalShip+normalTax;
@@ -3662,7 +3662,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           {!cust?<div style={{marginBottom:8}}><label className="form-label">Select Customer *</label><SearchSelect options={allCustomers.map(c=>({value:c.id,label:`${c.name} (${c.alpha_tag})`}))} value={o.customer_id} onChange={selC} placeholder="Search customer..."/></div>
           :<div><div style={{display:'flex',alignItems:'center',gap:6}}><span style={{fontSize:18,fontWeight:800}}>{cust.name}</span> <span style={{fontSize:14,color:'#64748b'}}>({cust.alpha_tag})</span>
             <button style={{background:'none',border:'none',cursor:'pointer',color:'#64748b',fontSize:10,textDecoration:'underline',padding:0}} onClick={()=>{if(window.confirm('Change customer for '+o.id+'? This will update pricing tier.'))selC(null);setCust(null)}}>change</button></div>
-            <div style={{fontSize:13,color:'#64748b'}}>Tier {cust.adidas_ua_tier} | {o.default_markup||1.65}x | Tax: {cust.tax_rate?(cust.tax_rate*100).toFixed(3)+'%':'N/A'}</div></div>}
+            <div style={{fontSize:13,color:'#64748b'}}>Tier {cust.adidas_ua_tier} | {o.default_markup||1.65}x | Tax: {(isSO&&o.tax_rate!=null?o.tax_rate:cust.tax_rate)?(((isSO&&o.tax_rate!=null?o.tax_rate:cust.tax_rate))*100).toFixed(3)+'%':'N/A'}</div></div>}
           {isSO&&o.estimate_id&&onViewEstimate&&<div style={{fontSize:11,color:'#7c3aed'}}>From: <span style={{cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={()=>onViewEstimate(o.estimate_id)} title="Open source estimate">{o.estimate_id}</span></div>}
           {isE&&o.status==='converted'&&(()=>{const linkedSO=(allOrders||[]).find(s=>s.estimate_id===o.id);return linkedSO&&onViewSO?<div style={{fontSize:11,color:'#7c3aed'}}>Converted to: <span style={{cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={()=>onViewSO(linkedSO.id)} title="Open sales order">{linkedSO.id}</span></div>:null})()}
           <div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>By {REPS.find(r=>r.id===o.created_by)?.name} · {o.created_at}</div>
@@ -3759,7 +3759,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const items=safeItems(o).filter(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return sq>0||safeNum(it.est_qty)>0});
               const _pAQ={};items.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'){_pAQ[d.art_file_id]=(_pAQ[d.art_file_id]||0)+q2}})});
               const isRolled=(o.pricing_mode||'itemized')==='rolled_up';
-              const taxRate=cust?.tax_exempt?0:(cust?.tax_rate||0);
+              const taxRate=o.tax_exempt?0:(o.tax_rate||cust?.tax_rate||0);
               const rows=[];let subTotal=0;
               items.forEach(it=>{
                 const sqq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const qty=sqq>0?sqq:safeNum(it.est_qty);
@@ -3961,7 +3961,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       {isSO&&<button className={`tab ${tab==='transactions'?'active':''}`} onClick={()=>setTab('transactions')}>Linked</button>}
       {isSO&&<button className={`tab ${tab==='jobs'?'active':''}`} onClick={()=>setTab('jobs')}>Jobs {(()=>{const jc=(o.jobs||[]).length;return jc>0?` (${jc})`:''})()}</button>}
       {isSO&&<button className={`tab ${tab==='firm_dates'?'active':''}`} onClick={()=>setTab('firm_dates')}>Firm Dates ({safeFirm(o).length})</button>}
-      {isSO&&<button className={`tab ${tab==='tracking'?'active':''}`} onClick={()=>setTab('tracking')}>Tracking {(()=>{const sc=(o._shipments||[]).length+(o._tracking_number?1:0);return sc>0?<span style={{background:'#166534',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:4}}>{sc}</span>:''})()}</button>}
+      {isSO&&<button className={`tab ${tab==='tracking'?'active':''}`} onClick={()=>setTab('tracking')}>Tracking {(()=>{const sc=(o._shipments||[]).length||(o._tracking_number?1:0);return sc>0?<span style={{background:'#166534',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:4}}>{sc}</span>:''})()}</button>}
       {isSO&&<button className={`tab ${tab==='costs'?'active':''}`} onClick={()=>setTab('costs')} style={tab==='costs'?{background:'#166534',color:'white'}:{}}>💰 Costs</button>}
     </div>
 
@@ -5059,8 +5059,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                       const tn=prompt('Tracking number:',shp.tracking_number||'');if(tn===null)return;
                       const carrier=prompt('Carrier (ups/fedex/usps):',shp.carrier||'');
                       const updated=[...(o._shipments||[])];const idx=updated.findIndex(s=>s.id===shp.id);
-                      if(idx>=0){updated[idx]={...updated[idx],tracking_number:tn,carrier:carrier||'',tracking_url:trackUrl(tn),ship_date:updated[idx].ship_date||new Date().toLocaleDateString()};sv('_shipments',updated)}
-                      else if(shp.id==='legacy'){sv('_tracking_number',tn);sv('_carrier',carrier||o._carrier);sv('_tracking_url',trackUrl(tn))}
+                      if(idx>=0){updated[idx]={...updated[idx],tracking_number:tn,carrier:carrier||'',tracking_url:trackUrl(tn),ship_date:updated[idx].ship_date||new Date().toLocaleDateString()};
+                        const updatedSO={...o,_shipments:updated,_tracking_number:updated[0]?.tracking_number||'',_carrier:updated[0]?.carrier||'',_tracking_url:updated[0]?.tracking_url||'',updated_at:new Date().toLocaleString()};
+                        setO(updatedSO);onSave(updatedSO);setDirty(false)}
+                      else if(shp.id==='legacy'){const updatedSO={...o,_tracking_number:tn,_carrier:carrier||o._carrier,_tracking_url:trackUrl(tn),updated_at:new Date().toLocaleString()};
+                        setO(updatedSO);onSave(updatedSO);setDirty(false)}
                     }}>Edit</button>}
                     {/* Delete shipment — only for non-legacy shipments */}
                     {shp.id!=='legacy'&&canEditCost&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#fee2e2',color:'#dc2626',border:'1px solid #fecaca',fontWeight:700}} onClick={()=>{
@@ -5076,12 +5079,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                         return jobShipped>=safeNum(jj.total_units)?jj:{...jj,prod_status:'completed'};
                       });
                       const hasShipments=updated.length>0;const firstShp2=updated[0];
-                      setO(e=>({...e,jobs:revertedJobs,_shipments:updated,_shipped:false,
-                        _shipping_status:hasShipments?'partial':null,
+                      const allStillShipped=hasShipments&&revertedJobs.filter(jj=>jj.prod_status!=='draft').every(jj=>jj.prod_status==='shipped');
+                      const updatedSO={...o,jobs:revertedJobs,_shipments:updated,_shipped:allStillShipped,
+                        _shipping_status:hasShipments?(allStillShipped?'shipped':'partial'):null,
                         _tracking_number:firstShp2?.tracking_number||'',_carrier:firstShp2?.carrier||'',
                         _ship_date:firstShp2?.ship_date||'',_tracking_url:firstShp2?.tracking_url||'',
                         _shipping_cost:updated.reduce((a,s)=>a+safeNum(s.shipping_cost||0),0)||null,
-                        updated_at:new Date().toLocaleString()}));setDirty(true);
+                        updated_at:new Date().toLocaleString()};
+                      setO(updatedSO);onSave(updatedSO);setDirty(false);
                       nf('Shipment deleted');
                     }}>Delete</button>}
                   </div>
@@ -5382,7 +5387,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     <SendModal isOpen={showSend} onClose={()=>setShowSend(false)} estimate={o} customer={cust} docType={isE?'estimate':'so'} buildAttachmentHtml={()=>{
       const items=safeItems(o).filter(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return sq>0||safeNum(it.est_qty)>0});
       const _pAQ={};items.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'){_pAQ[d.art_file_id]=(_pAQ[d.art_file_id]||0)+q2}})});
-      const isRolled=(o.pricing_mode||'itemized')==='rolled_up';const taxRate=cust?.tax_exempt?0:(cust?.tax_rate||0);
+      const isRolled=(o.pricing_mode||'itemized')==='rolled_up';const taxRate=o.tax_exempt?0:(o.tax_rate||cust?.tax_rate||0);
       const rows=[];let subTotal=0;
       items.forEach(it=>{
         const sqq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const qty=sqq>0?sqq:safeNum(it.est_qty);
@@ -5728,7 +5733,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const inv={id:invId,type:'invoice',inv_type:invType,customer_id:o.customer_id,so_id:o.id,
               date:invDate,due_date:dueDate,total:Math.round(invTotal*100)/100,paid:0,
               memo:invMemo||defaultMemo,status:'open',_rep:o.created_by||cu.id,
-              tax:Math.round(invTaxAmt*100)/100,tax_rate:cust?.tax_exempt?0:(cust?.tax_rate||0),tax_exempt:cust?.tax_exempt||false,shipping:Math.round(invShipAmt*100)/100,
+              tax:Math.round(invTaxAmt*100)/100,tax_rate:o.tax_exempt?0:(o.tax_rate||cust?.tax_rate||0),tax_exempt:o.tax_exempt||cust?.tax_exempt||false,shipping:Math.round(invShipAmt*100)/100,
               ...(invType==='deposit'?{deposit_pct:invDepositPct}:{}),
               ...(billingOverride?{billing_name:billingOverride.label||'',billing_address:[billingOverride.street,billingOverride.city,billingOverride.state,billingOverride.zip].filter(Boolean).join(', ')}:{}),
               ...(o.po_number?{_po_number:o.po_number}:{}),
@@ -7860,7 +7865,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               if(overSizes.length>0&&!window.confirm('⚠️ MISSHIP WARNING — Receiving more than ordered:\n\n'+overSizes.join('\n')+'\n\nProceed anyway?'))return;
               const newShipments=[...shipments,shipment];
               const newTotalOpen=szKeys.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-(newReceived[sz]||0)-getCncl(sz)),0);
-              const newStatus=newTotalOpen<=0&&(totalReceived+Object.values(newReceived).reduce((a,v)=>a+v,0))>0?'received':newTotalOpen>0?'partial':'waiting';
+              const newStatus=newTotalOpen<=0&&Object.values(newReceived).some(v=>v>0)?'received':newTotalOpen>0?'partial':'waiting';
               const updatedPO={...po,received:newReceived,shipments:newShipments,status:newStatus};
               const updatedItems=[...o.items];updatedItems[activeLine.lineIdx].po_lines[activeLine.poIdx]=updatedPO;
               const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};
@@ -9928,10 +9933,11 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     const updater=prev=>prev.map(inv=>{
       if(!paidInvIds.includes(inv.id))return inv;
       const bal=(inv.total||0)-(inv.paid||0);
-      const newPaid=(inv.paid||0)+bal;
       const fee=Math.round(bal*CC_FEE_PORTAL*100)/100;
-      const payment={amount:bal,method:'cc',ref:'Stripe '+result.intentId,date:new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'}),cc_fee:fee};
-      return{...inv,paid:newPaid,status:newPaid>=inv.total?'paid':'partial',cc_fee:(inv.cc_fee||0)+fee,payments:[...(inv.payments||[]),payment],updated_at:new Date().toLocaleString()};
+      const newTotal=(inv.total||0)+fee; // CC surcharge added to invoice total
+      const newPaid=(inv.paid||0)+bal+fee; // Customer pays balance + fee
+      const payment={amount:bal+fee,method:'cc',ref:'Stripe '+result.intentId,date:new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'}),cc_fee:fee};
+      return{...inv,total:newTotal,paid:newPaid,status:newPaid>=newTotal?'paid':'partial',cc_fee:(inv.cc_fee||0)+fee,payments:[...(inv.payments||[]),payment],updated_at:new Date().toLocaleString()};
     });
     setInvs(updater);
     if(onUpdateInvs)onUpdateInvs(updater);// persist to parent → Supabase + localStorage + QB sync
@@ -11252,7 +11258,11 @@ export default function App(){
     if(dbLoading)return;
     const orphaned=ests.filter(e=>e.status==='converted'&&!sos.some(s=>s.estimate_id===e.id));
     if(orphaned.length){
-      orphaned.forEach(e=>console.warn('[DB] Auto-healing orphaned estimate',e.id,'— no linked SO found, reverting to approved'));
+      orphaned.forEach(e=>{
+        console.warn('[DB] Auto-healing orphaned estimate',e.id,'— no linked SO found, reverting to approved');
+        const healed={...e,status:'approved',updated_at:new Date().toLocaleString()};
+        _dbSaveEstimate(healed);
+      });
       setEsts(prev=>prev.map(e=>e.status==='converted'&&!sos.some(s=>s.estimate_id===e.id)?{...e,status:'approved',updated_at:new Date().toLocaleString()}:e));
     }
   },[dbLoading]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -11667,14 +11677,14 @@ export default function App(){
         const saf=safeArt(sl);let subtotal=0;
         safeItems(sl).forEach(it=>{const qq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);subtotal+=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qq;const dp2=dP(d,qq,saf,cq);const eq2=dp2._nq!=null?dp2._nq:qq;subtotal+=eq2*dp2.sell})});
         const autoShip=sl.shipping_type==='pct'?Math.round(subtotal*(safeNum(sl.shipping_value)/100)*100)/100:Math.round(safeNum(sl.shipping_value)*100)/100;
-        const autoCust=cust.find(c=>c.id===sl.customer_id);const autoTaxRate=autoCust?.tax_exempt?0:(autoCust?.tax_rate||0);
-        const autoTax=Math.round(subtotal*autoTaxRate/100*100)/100;
+        const autoCust=cust.find(c=>c.id===sl.customer_id);const autoTaxRate=sl.tax_exempt?0:(sl.tax_rate||autoCust?.tax_rate||0);
+        const autoTax=Math.round(subtotal*autoTaxRate*100)/100;
         const total=subtotal+autoShip+autoTax;
         const invId=nextInvId(invs);const today=new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'2-digit'});
         const dueDate=new Date();dueDate.setDate(dueDate.getDate()+30);const due=dueDate.toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'2-digit'});
-        const newInv={id:invId,type:'invoice',customer_id:sl.customer_id,so_id:sl.id,date:today,due_date:due,total:rQ(total),paid:0,memo:sl.memo||'',status:'open',payments:[],cc_fee:0,shipping:autoShip,tax:autoTax,tax_rate:autoTaxRate,tax_exempt:autoCust?.tax_exempt||false};
+        const newInv={id:invId,type:'invoice',customer_id:sl.customer_id,so_id:sl.id,date:today,due_date:due,total:Math.round(total*100)/100,paid:0,memo:sl.memo||'',status:'open',payments:[],cc_fee:0,shipping:autoShip,tax:autoTax,tax_rate:autoTaxRate,tax_exempt:sl.tax_exempt||autoCust?.tax_exempt||false};
         setInvs(prev2=>[newInv,...prev2]);
-        nf('Auto-generated invoice '+invId+' for $'+rQ(total).toLocaleString());
+        nf('Auto-generated invoice '+invId+' for $'+Math.round(total*100)/100);
       }
     }
     return sl;
@@ -11723,10 +11733,12 @@ export default function App(){
         if(promoAmount>_bal2){nf('Cannot convert — promo total $'+promoAmount.toLocaleString(undefined,{maximumFractionDigits:2})+' exceeds available funds ($'+_bal2.toLocaleString(undefined,{maximumFractionDigits:2})+' remaining). Remove promo and re-apply to adjust.','error');return}
       }
     }
-    const so={id:nextSOId(sos),customer_id:est.customer_id,estimate_id:est.id,memo:est.memo,status:'need_order',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:est.default_markup,expected_date:defExp,production_notes:'',shipping_type:est.shipping_type,shipping_value:est.shipping_value,ship_to_id:est.ship_to_id,firm_dates:[],art_files:JSON.parse(JSON.stringify(est.art_files||[])),items:clonedItems,order_type:'at_once',expected_ship_date:null,booking_confirmed:false,booking_confirmed_at:null,booking_confirmed_by:null,booking_alert_days:100,promo_applied:est.promo_applied||false,promo_amount:promoAmount};
-    setSOs(p=>[...p,so]);setEsts(p=>p.map(e=>e.id===est.id?{...e,status:'converted'}:e));setEEst(null);
+    const _convCust=cust.find(c=>c.id===est.customer_id);
+    const so={id:nextSOId(sos),customer_id:est.customer_id,estimate_id:est.id,memo:est.memo,status:'need_order',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:est.default_markup,expected_date:defExp,production_notes:'',shipping_type:est.shipping_type,shipping_value:est.shipping_value,ship_to_id:est.ship_to_id,firm_dates:[],art_files:JSON.parse(JSON.stringify(est.art_files||[])),items:clonedItems,order_type:'at_once',expected_ship_date:null,booking_confirmed:false,booking_confirmed_at:null,booking_confirmed_by:null,booking_alert_days:100,promo_applied:est.promo_applied||false,promo_amount:promoAmount,tax_rate:_convCust?.tax_rate||0,tax_exempt:_convCust?.tax_exempt||false};
+    const convertedEst={...est,status:'converted',updated_at:new Date().toLocaleString()};
+    setSOs(p=>[...p,so]);setEsts(p=>p.map(e=>e.id===est.id?convertedEst:e));setEEst(null);
     // Explicitly save to DB immediately — don't rely solely on useEffect chain
-    _dbSaveSO(so);
+    _dbSaveSO(so);_dbSaveEstimate(convertedEst);
     const c=cust.find(x=>x.id===so.customer_id);
     // Deduct promo funds from customer's current period
     if(est.promo_applied&&promoAmount>0&&c){
@@ -11840,31 +11852,8 @@ export default function App(){
     }
   };
 
-  // Auto-check for shipping updates every 10 minutes (supports multi-package)
-  React.useEffect(() => {
-    if (!ssConnected) return;
-    const checkUpdates = async () => {
-      try {
-        const recentShipments = await fetchRecentShipments();
-        const nsaShipments = recentShipments.filter(s => s.advancedOptions?.customField1?.startsWith('NSA-SO-'));
-        nsaShipments.forEach(shipment => {
-          const soId = shipment.advancedOptions.customField1.replace('NSA-SO-', '');
-          const existingSO = sos.find(s => s.id === soId);
-          if (!existingSO) return;
-          const existingPkgs = existingSO._shipments || [];
-          const alreadyTracked = existingPkgs.some(p => p.tracking_number === shipment.trackingNumber) || existingSO._tracking_number === shipment.trackingNumber;
-          if (!alreadyTracked && shipment.trackingNumber) {
-            // Add as new shipment package
-            const newPkg = { id: 'SHP-SS-' + (shipment.shipmentId || Date.now()), tracking_number: shipment.trackingNumber, carrier: shipment.carrierCode || '', ship_date: shipment.shipDate || new Date().toLocaleDateString(), tracking_url: shipment.trackingUrl || '', shipstation_shipment_id: shipment.shipmentId || null, items: [], notes: 'Auto-detected from ShipStation', created_by: 'system', created_at: new Date().toLocaleString() };
-            const updated = { ...existingSO, _shipments: [...existingPkgs, newPkg], _shipped: true, _shipping_status: 'shipped', _tracking_number: existingSO._tracking_number || shipment.trackingNumber, _carrier: existingSO._carrier || shipment.carrierCode, _ship_date: existingSO._ship_date || shipment.shipDate, _tracking_url: existingSO._tracking_url || shipment.trackingUrl, updated_at: new Date().toLocaleString() };
-            setSOs(prev => prev.map(s => s.id === soId ? updated : s));
-          }
-        });
-      } catch (error) { console.warn('[ShipStation] Auto-update failed:', error); }
-    };
-    const interval = setInterval(checkUpdates, 10 * 60 * 1000);
-    return () => clearInterval(interval);
-  }, [ssConnected, sos]);
+  // ShipStation auto-poll disabled — shipments are managed through the warehouse module.
+  // Manual "Check Shipping Status" button (fetchSOShippingStatus) still works on demand.
 
   // ─── OMG Sync Handler ───
   // Lightweight sync: fetches store list only (no order/product details).
@@ -15342,10 +15331,11 @@ export default function App(){
 
     const recordPayment=(inv,amount,method,ref)=>{
       const fee=method==='cc'?Math.round(amount*CC_FEE_PCT*100)/100:0;
-      const newPaid=inv.paid+amount;
-      const newStatus=newPaid>=inv.total?'paid':newPaid>0?'partial':'open';
-      const payment={amount,method,ref,date:new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'}),cc_fee:fee};
-      const updated={...inv,paid:newPaid,status:newStatus,cc_fee:(inv.cc_fee||0)+fee,payments:[...(inv.payments||[]),payment]};
+      const newTotal=inv.total+fee; // CC surcharge added to invoice total
+      const newPaid=inv.paid+amount+fee; // Customer pays amount + fee
+      const newStatus=newPaid>=newTotal?'paid':newPaid>0?'partial':'open';
+      const payment={amount:amount+fee,method,ref,date:new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'}),cc_fee:fee};
+      const updated={...inv,total:newTotal,paid:newPaid,status:newStatus,cc_fee:(inv.cc_fee||0)+fee,payments:[...(inv.payments||[]),payment]};
       setInvs(prev=>prev.map(i=>i.id===inv.id?updated:i));
       setPayModal(null);
       nf('$'+amount.toLocaleString()+' recorded on '+inv.id+(fee>0?' (+$'+fee.toFixed(2)+' CC fee)':''));
@@ -17836,6 +17826,38 @@ export default function App(){
     const openStockPOs=stockPOs.filter(p=>p.status!=='received');
     // Count awaiting pickup shipments for tab badge
     const awaitingPickupCount=(()=>{let c=0;sos.filter(so=>so._shipments&&so._shipments.length>0&&!so.deleted_at).forEach(so=>{(so._shipments||[]).forEach(shp=>{if(shp.tracking_number&&!shp.carrier_picked_up)c++})});return c})();
+    // Auto-check UPS pickup status once overnight (runs on first load after 6 AM if not checked today)
+    React.useEffect(()=>{
+      if(!awaitingPickupCount)return;
+      const lastCheck=localStorage.getItem('nsa_ups_pickup_check');
+      const today=new Date().toISOString().split('T')[0];
+      const hour=new Date().getHours();
+      if(lastCheck===today||hour<3)return; // Already checked today, or before 3 AM
+      localStorage.setItem('nsa_ups_pickup_check',today);
+      const checkPickups=async()=>{
+        const pending=[];
+        sos.filter(so=>so._shipments&&so._shipments.length>0&&!so.deleted_at).forEach(so=>{
+          (so._shipments||[]).forEach(shp=>{
+            if(shp.tracking_number&&!shp.carrier_picked_up&&/^1Z/i.test(shp.tracking_number)){
+              pending.push({...shp,so});
+            }
+          });
+        });
+        if(!pending.length)return;
+        console.log('[UPS] Auto-checking',pending.length,'packages for pickup status');
+        for(const shp of pending){
+          try{
+            const resp=await fetch('/.netlify/functions/ups-tracking?tracking='+encodeURIComponent(shp.tracking_number));
+            const data=await resp.json();
+            if(data.pickedUp){
+              const updatedShipments=(shp.so._shipments||[]).map(s=>s.id===shp.id?{...s,carrier_picked_up:true,pickup_date:new Date().toLocaleString(),ups_status:data.status}:s);
+              savSO({...shp.so,_shipments:updatedShipments});
+            }
+          }catch(e){console.warn('[UPS] Auto-check failed for',shp.tracking_number,e)}
+        }
+      };
+      checkPickups();
+    },[awaitingPickupCount]); // eslint-disable-line react-hooks/exhaustive-deps
     const tabs=[
       {id:'receive',label:'📱 Scan to Receive',count:0,color:'#2563eb'},
       {id:'pull',label:'🏗️ Pull & Stage',count:fPull.length,color:'#d97706'},
@@ -18827,8 +18849,30 @@ export default function App(){
           });
           awaitingPickup.sort((a,b)=>(a.created_at||'').localeCompare(b.created_at||''));
           if(awaitingPickup.length===0)return null;
+          const checkUPSPickups=async()=>{
+            const upsShipments=awaitingPickup.filter(s=>/^1Z/i.test(s.tracking_number));
+            if(!upsShipments.length){nf('No UPS packages to check');return}
+            nf('Checking '+upsShipments.length+' UPS package'+(upsShipments.length!==1?'s':'')+'...');
+            let confirmed=0;
+            for(const shp of upsShipments){
+              try{
+                const resp=await fetch('/.netlify/functions/ups-tracking?tracking='+encodeURIComponent(shp.tracking_number));
+                const data=await resp.json();
+                if(data.pickedUp){
+                  const updatedShipments=(shp.so._shipments||[]).map(s=>s.id===shp.id?{...s,carrier_picked_up:true,pickup_date:new Date().toLocaleString(),ups_status:data.status}:s);
+                  savSO({...shp.so,_shipments:updatedShipments});
+                  addWhAction({type:'pickup_confirmed',soId:shp.soId,customer:shp.cName,tracking:shp.tracking_number,carrier:'ups',by:'auto-check'});
+                  confirmed++;
+                }
+              }catch(e){console.warn('[UPS] Check failed for',shp.tracking_number,e)}
+            }
+            nf(confirmed>0?confirmed+' package'+(confirmed!==1?'s':'')+' confirmed picked up':'No new pickups detected');
+          };
           return<div style={{marginTop:16}}>
-            <div style={{fontSize:12,fontWeight:800,color:'#d97706',marginBottom:8,textTransform:'uppercase'}}>Awaiting Carrier Pickup ({awaitingPickup.length})</div>
+            <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}>
+              <span style={{fontSize:12,fontWeight:800,color:'#d97706',textTransform:'uppercase'}}>Awaiting Carrier Pickup ({awaitingPickup.length})</span>
+              <button style={{fontSize:9,background:'#d97706',color:'white',border:'none',padding:'3px 10px',borderRadius:4,fontWeight:700,cursor:'pointer'}} onClick={checkUPSPickups}>Check UPS Pickups</button>
+            </div>
             <div style={{display:'grid',gap:6}}>
               {awaitingPickup.map((shp,si)=>{
                 const shpUnits=(shp.items||[]).reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((a2,v)=>a2+v,0),0);
@@ -18853,7 +18897,7 @@ export default function App(){
                         onClick={()=>{
                           const tn=prompt('Tracking number:',shp.tracking_number||'');if(tn===null)return;
                           const carrier=prompt('Carrier (ups/fedex/usps):',shp.carrier||'');if(carrier===null)return;
-                          const updatedShipments=(shp.so._shipments||[]).map(s=>s.id===shp.id?{...s,tracking_number:tn,carrier:carrier||s.carrier,tracking_url:tn?('https://www.fedex.com/fedextrack/?trknbr='+tn):''}:s);
+                          const updatedShipments=(shp.so._shipments||[]).map(s=>s.id===shp.id?{...s,tracking_number:tn,carrier:carrier||s.carrier,tracking_url:tn?(/^1Z/i.test(tn)?'https://www.ups.com/track?tracknum='+tn:/^(94|93|92|91)\d{18,}/.test(tn)?'https://tools.usps.com/go/TrackConfirmAction?tLabels='+tn:'https://www.fedex.com/fedextrack/?trknbr='+tn):''}:s);
                           savSO({...shp.so,_shipments:updatedShipments});nf('Shipment updated');
                         }}>Edit</button>
                       <button style={{fontSize:9,background:'#fee2e2',color:'#dc2626',border:'1px solid #fca5a5',padding:'3px 8px',borderRadius:4,fontWeight:700,cursor:'pointer'}}
@@ -18873,8 +18917,9 @@ export default function App(){
                           });
                           const hasShipments=updatedShipments.length>0;
                           const firstShp=updatedShipments[0];
+                          const allStillShipped=hasShipments&&revertedJobs.filter(jj=>jj.prod_status!=='draft').every(jj=>jj.prod_status==='shipped');
                           savSO({...so2,jobs:revertedJobs,_shipments:updatedShipments,
-                            _shipped:false,_shipping_status:hasShipments?'partial':null,
+                            _shipped:allStillShipped,_shipping_status:hasShipments?(allStillShipped?'shipped':'partial'):null,
                             _tracking_number:firstShp?.tracking_number||'',_carrier:firstShp?.carrier||'',
                             _ship_date:firstShp?.ship_date||'',_tracking_url:firstShp?.tracking_url||'',
                             _shipping_cost:updatedShipments.reduce((a,s)=>a+safeNum(s.shipping_cost||0),0)||null});
@@ -19288,8 +19333,8 @@ export default function App(){
                         return jobShipped>=jj.total_units?{...jj,prod_status:'shipped'}:jj;
                       });
                       const allJobsShipped=updatedJobs.filter(jj=>jj.prod_status!=='draft').every(jj=>jj.prod_status==='shipped');
-                      // Compute total shipping cost from all boxes for this SO
-                      const boxShipCost=shipModal.boxes.reduce((a,bx)=>a+(bx.shipping_cost||0),0);
+                      // Compute total shipping cost from this SO's shipments only
+                      const boxShipCost=soShipments.reduce((a,s)=>a+safeNum(s.shipping_cost||0),0);
                       const existingShipCost=safeNum(so._shipping_cost||so._shipstation_cost||0);
                       const totalShipCost=existingShipCost+boxShipCost;
                       const updated={...so,jobs:updatedJobs,_shipments:allShipments,
@@ -23642,8 +23687,8 @@ export default function App(){
           const portalPaid=safeNum(inv.paid);
           if(qbPaid>portalPaid){
             const newStatus=qbBalance<=0?'paid':qbPaid>0?'partial':'open';
-            const pmt={amount:rQ(qbPaid-portalPaid),method:'qb_sync',ref:'QB Payment Sync',date:new Date().toLocaleDateString()};
-            setInvs(prev=>prev.map(ii=>ii.id===inv.id?{...ii,paid:rQ(qbPaid),status:newStatus,payments:[...(ii.payments||[]),pmt]}:ii));
+            const pmt={amount:Math.round((qbPaid-portalPaid)*100)/100,method:'qb_sync',ref:'QB Payment Sync',date:new Date().toLocaleDateString()};
+            setInvs(prev=>prev.map(ii=>ii.id===inv.id?{...ii,paid:Math.round(qbPaid*100)/100,status:newStatus,payments:[...(ii.payments||[]),pmt]}:ii));
             log.details.push((inv.display_id||inv.id)+' — marked '+newStatus+' (QB paid $'+qbPaid.toFixed(2)+')');updated++;
           }else{
             log.details.push((inv.display_id||inv.id)+' — already up to date');
