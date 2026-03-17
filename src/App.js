@@ -11682,9 +11682,9 @@ export default function App(){
         const total=subtotal+autoShip+autoTax;
         const invId=nextInvId(invs);const today=new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'2-digit'});
         const dueDate=new Date();dueDate.setDate(dueDate.getDate()+30);const due=dueDate.toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'2-digit'});
-        const newInv={id:invId,type:'invoice',customer_id:sl.customer_id,so_id:sl.id,date:today,due_date:due,total:rQ(total),paid:0,memo:sl.memo||'',status:'open',payments:[],cc_fee:0,shipping:autoShip,tax:autoTax,tax_rate:autoTaxRate,tax_exempt:sl.tax_exempt||autoCust?.tax_exempt||false};
+        const newInv={id:invId,type:'invoice',customer_id:sl.customer_id,so_id:sl.id,date:today,due_date:due,total:Math.round(total*100)/100,paid:0,memo:sl.memo||'',status:'open',payments:[],cc_fee:0,shipping:autoShip,tax:autoTax,tax_rate:autoTaxRate,tax_exempt:sl.tax_exempt||autoCust?.tax_exempt||false};
         setInvs(prev2=>[newInv,...prev2]);
-        nf('Auto-generated invoice '+invId+' for $'+rQ(total).toLocaleString());
+        nf('Auto-generated invoice '+invId+' for $'+Math.round(total*100)/100);
       }
     }
     return sl;
@@ -23687,8 +23687,8 @@ export default function App(){
           const portalPaid=safeNum(inv.paid);
           if(qbPaid>portalPaid){
             const newStatus=qbBalance<=0?'paid':qbPaid>0?'partial':'open';
-            const pmt={amount:rQ(qbPaid-portalPaid),method:'qb_sync',ref:'QB Payment Sync',date:new Date().toLocaleDateString()};
-            setInvs(prev=>prev.map(ii=>ii.id===inv.id?{...ii,paid:rQ(qbPaid),status:newStatus,payments:[...(ii.payments||[]),pmt]}:ii));
+            const pmt={amount:Math.round((qbPaid-portalPaid)*100)/100,method:'qb_sync',ref:'QB Payment Sync',date:new Date().toLocaleDateString()};
+            setInvs(prev=>prev.map(ii=>ii.id===inv.id?{...ii,paid:Math.round(qbPaid*100)/100,status:newStatus,payments:[...(ii.payments||[]),pmt]}:ii));
             log.details.push((inv.display_id||inv.id)+' — marked '+newStatus+' (QB paid $'+qbPaid.toFixed(2)+')');updated++;
           }else{
             log.details.push((inv.display_id||inv.id)+' — already up to date');
