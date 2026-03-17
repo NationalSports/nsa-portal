@@ -644,12 +644,12 @@ const _pick=(obj,cols)=>{const r={};cols.forEach(c=>{if(c in obj)r[c]=obj[c]});r
 const _estCols=['id','customer_id','memo','status','created_by','created_at','updated_at','default_markup','shipping_type','shipping_value','ship_to_id','email_status','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history','deleted_at','promo_applied','promo_amount','update_requests'];
 const _soCols=['id','customer_id','estimate_id','memo','status','created_by','created_at','updated_at','expected_date','production_notes','shipping_type','shipping_value','ship_to_id','default_markup','omg_store_id','_shipstation_order_id','_shipping_status','_tracking_number','_carrier','_ship_date','_tracking_url','_shipped','_shipments','_shipping_cost','_shipstation_cost','_inbound_freight','deleted_at','promo_applied','promo_amount','ship_preference','ship_on_date','order_type','expected_ship_date','booking_confirmed','booking_confirmed_at','booking_confirmed_by','booking_alert_days','po_number'];
 const _itemCols=['product_id','sku','name','brand','color','vendor_id','nsa_cost','retail_price','unit_sell','sizes','available_sizes','_colors','no_deco','is_custom','custom_desc','custom_cost','custom_sell','is_promo','_pre_promo_sell','est_qty','size_availability','_colorImage','_colorBackImage'];
-const _decoCols=['kind','position','type','art_file_id','art_tbd_type','tbd_colors','tbd_stitches','tbd_dtf_size','sell_override','sell_each','cost_each','underbase','two_color','colors','stitches','dtf_size','num_method','num_size','num_size_back','num_font','roster','names','names_list','vendor','deco_type','notes','custom_font_art_id','print_color','front_and_back','reversible','num_qty','name_qty','color_way_id'];
+const _decoCols=['kind','position','type','art_file_id','art_tbd_type','tbd_colors','tbd_stitches','tbd_dtf_size','sell_override','sell_each','cost_each','underbase','two_color','colors','stitches','dtf_size','num_method','num_size','num_size_back','num_font','roster','names','names_list','vendor','deco_type','notes','custom_font_art_id','print_color','front_and_back','reversible','num_qty','name_qty','color_way_id','_cost_locked'];
 // Columns that may not exist in production DB / schema cache — stripped on insert retry
 const _itemExtraCols=new Set(['vendor_id','is_promo','_pre_promo_sell','est_qty','size_availability','_colorImage','_colorBackImage']);
 const _estExtraCols=new Set(['promo_applied','promo_amount','update_requests','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history']);
 const _soExtraCols=new Set(['_shipping_cost','_shipstation_cost','_inbound_freight','promo_applied','promo_amount','ship_preference','ship_on_date','order_type','expected_ship_date','booking_confirmed','booking_confirmed_at','booking_confirmed_by','booking_alert_days','po_number']);
-const _decoExtraCols=new Set(['print_color','front_and_back','reversible','num_qty','name_qty','num_font','num_size_back','custom_font_art_id','deco_type','notes','vendor','color_way_id']);
+const _decoExtraCols=new Set(['print_color','front_and_back','reversible','num_qty','name_qty','num_font','num_size_back','custom_font_art_id','deco_type','notes','vendor','color_way_id','_cost_locked']);
 // Sanitize decoration data before DB insert — strip UI-only placeholders that would violate constraints
 const _sanitizeDeco=(d)=>{const r={...d};if(r.custom_font_art_id&&r.custom_font_art_id==='pending')r.custom_font_art_id=null;if(r.art_file_id&&r.art_file_id==='__tbd')r.art_file_id=null;return r};
 const _msgCols=['id','so_id','author_id','text','ts','dept','tagged_members','entity_type','entity_id','thread_id'];
@@ -7865,7 +7865,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               if(overSizes.length>0&&!window.confirm('⚠️ MISSHIP WARNING — Receiving more than ordered:\n\n'+overSizes.join('\n')+'\n\nProceed anyway?'))return;
               const newShipments=[...shipments,shipment];
               const newTotalOpen=szKeys.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-(newReceived[sz]||0)-getCncl(sz)),0);
-              const newStatus=newTotalOpen<=0&&(totalReceived+Object.values(newReceived).reduce((a,v)=>a+v,0))>0?'received':newTotalOpen>0?'partial':'waiting';
+              const newStatus=newTotalOpen<=0&&Object.values(newReceived).some(v=>v>0)?'received':newTotalOpen>0?'partial':'waiting';
               const updatedPO={...po,received:newReceived,shipments:newShipments,status:newStatus};
               const updatedItems=[...o.items];updatedItems[activeLine.lineIdx].po_lines[activeLine.poIdx]=updatedPO;
               const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};
@@ -11257,7 +11257,11 @@ export default function App(){
     if(dbLoading)return;
     const orphaned=ests.filter(e=>e.status==='converted'&&!sos.some(s=>s.estimate_id===e.id));
     if(orphaned.length){
-      orphaned.forEach(e=>console.warn('[DB] Auto-healing orphaned estimate',e.id,'— no linked SO found, reverting to approved'));
+      orphaned.forEach(e=>{
+        console.warn('[DB] Auto-healing orphaned estimate',e.id,'— no linked SO found, reverting to approved');
+        const healed={...e,status:'approved',updated_at:new Date().toLocaleString()};
+        _dbSaveEstimate(healed);
+      });
       setEsts(prev=>prev.map(e=>e.status==='converted'&&!sos.some(s=>s.estimate_id===e.id)?{...e,status:'approved',updated_at:new Date().toLocaleString()}:e));
     }
   },[dbLoading]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -11729,9 +11733,10 @@ export default function App(){
       }
     }
     const so={id:nextSOId(sos),customer_id:est.customer_id,estimate_id:est.id,memo:est.memo,status:'need_order',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:est.default_markup,expected_date:defExp,production_notes:'',shipping_type:est.shipping_type,shipping_value:est.shipping_value,ship_to_id:est.ship_to_id,firm_dates:[],art_files:JSON.parse(JSON.stringify(est.art_files||[])),items:clonedItems,order_type:'at_once',expected_ship_date:null,booking_confirmed:false,booking_confirmed_at:null,booking_confirmed_by:null,booking_alert_days:100,promo_applied:est.promo_applied||false,promo_amount:promoAmount};
-    setSOs(p=>[...p,so]);setEsts(p=>p.map(e=>e.id===est.id?{...e,status:'converted'}:e));setEEst(null);
+    const convertedEst={...est,status:'converted',updated_at:new Date().toLocaleString()};
+    setSOs(p=>[...p,so]);setEsts(p=>p.map(e=>e.id===est.id?convertedEst:e));setEEst(null);
     // Explicitly save to DB immediately — don't rely solely on useEffect chain
-    _dbSaveSO(so);
+    _dbSaveSO(so);_dbSaveEstimate(convertedEst);
     const c=cust.find(x=>x.id===so.customer_id);
     // Deduct promo funds from customer's current period
     if(est.promo_applied&&promoAmount>0&&c){
@@ -18858,7 +18863,7 @@ export default function App(){
                         onClick={()=>{
                           const tn=prompt('Tracking number:',shp.tracking_number||'');if(tn===null)return;
                           const carrier=prompt('Carrier (ups/fedex/usps):',shp.carrier||'');if(carrier===null)return;
-                          const updatedShipments=(shp.so._shipments||[]).map(s=>s.id===shp.id?{...s,tracking_number:tn,carrier:carrier||s.carrier,tracking_url:tn?('https://www.fedex.com/fedextrack/?trknbr='+tn):''}:s);
+                          const updatedShipments=(shp.so._shipments||[]).map(s=>s.id===shp.id?{...s,tracking_number:tn,carrier:carrier||s.carrier,tracking_url:tn?(/^1Z/i.test(tn)?'https://www.ups.com/track?tracknum='+tn:/^(94|93|92|91)\d{18,}/.test(tn)?'https://tools.usps.com/go/TrackConfirmAction?tLabels='+tn:'https://www.fedex.com/fedextrack/?trknbr='+tn):''}:s);
                           savSO({...shp.so,_shipments:updatedShipments});nf('Shipment updated');
                         }}>Edit</button>
                       <button style={{fontSize:9,background:'#fee2e2',color:'#dc2626',border:'1px solid #fca5a5',padding:'3px 8px',borderRadius:4,fontWeight:700,cursor:'pointer'}}
