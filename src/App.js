@@ -11677,7 +11677,7 @@ export default function App(){
         safeItems(sl).forEach(it=>{const qq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);subtotal+=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qq;const dp2=dP(d,qq,saf,cq);const eq2=dp2._nq!=null?dp2._nq:qq;subtotal+=eq2*dp2.sell})});
         const autoShip=sl.shipping_type==='pct'?Math.round(subtotal*(safeNum(sl.shipping_value)/100)*100)/100:Math.round(safeNum(sl.shipping_value)*100)/100;
         const autoCust=cust.find(c=>c.id===sl.customer_id);const autoTaxRate=autoCust?.tax_exempt?0:(autoCust?.tax_rate||0);
-        const autoTax=Math.round(subtotal*autoTaxRate/100*100)/100;
+        const autoTax=Math.round(subtotal*autoTaxRate*100)/100;
         const total=subtotal+autoShip+autoTax;
         const invId=nextInvId(invs);const today=new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'2-digit'});
         const dueDate=new Date();dueDate.setDate(dueDate.getDate()+30);const due=dueDate.toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'2-digit'});
