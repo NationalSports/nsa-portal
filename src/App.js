@@ -3394,7 +3394,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const af=o.art_files||[];
   const addArt=()=>sv('art_files',[...af,{id:'af'+Date.now(),name:'',deco_type:'screen_print',ink_colors:'',thread_colors:'',art_size:'',color_ways:[],files:[],mockup_files:[],preview_url:'',prod_files:[],notes:'',status:'waiting_for_art',uploaded:new Date().toLocaleDateString()}]);
   const uArt=(i,k,v)=>sv('art_files',af.map((f,x)=>x===i?{...f,[k]:v}:f));
-  const rmArt=i=>sv('art_files',af.filter((_,x)=>x!==i));
+  const rmArt=i=>{const removed=af[i];sv('art_files',af.filter((_,x)=>x!==i));if(removed?.id){sv('items',safeItems(o).map(it=>({...it,decorations:safeDecos(it).map(d=>d.art_file_id===removed.id?{...d,art_file_id:null}:d)})))}};
 
   const addFileToArt=i=>{const a=af[i];if(!a)return;uArt(i,'files',[...(a.files||[]),'new_file_'+((a.files||[]).length+1)+'.ai'])};
 
