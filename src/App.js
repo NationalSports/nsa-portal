@@ -9933,10 +9933,11 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     const updater=prev=>prev.map(inv=>{
       if(!paidInvIds.includes(inv.id))return inv;
       const bal=(inv.total||0)-(inv.paid||0);
-      const newPaid=(inv.paid||0)+bal;
       const fee=Math.round(bal*CC_FEE_PORTAL*100)/100;
-      const payment={amount:bal,method:'cc',ref:'Stripe '+result.intentId,date:new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'}),cc_fee:fee};
-      return{...inv,paid:newPaid,status:newPaid>=inv.total?'paid':'partial',cc_fee:(inv.cc_fee||0)+fee,payments:[...(inv.payments||[]),payment],updated_at:new Date().toLocaleString()};
+      const newTotal=(inv.total||0)+fee; // CC surcharge added to invoice total
+      const newPaid=(inv.paid||0)+bal+fee; // Customer pays balance + fee
+      const payment={amount:bal+fee,method:'cc',ref:'Stripe '+result.intentId,date:new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'}),cc_fee:fee};
+      return{...inv,total:newTotal,paid:newPaid,status:newPaid>=newTotal?'paid':'partial',cc_fee:(inv.cc_fee||0)+fee,payments:[...(inv.payments||[]),payment],updated_at:new Date().toLocaleString()};
     });
     setInvs(updater);
     if(onUpdateInvs)onUpdateInvs(updater);// persist to parent → Supabase + localStorage + QB sync
@@ -15329,10 +15330,11 @@ export default function App(){
 
     const recordPayment=(inv,amount,method,ref)=>{
       const fee=method==='cc'?Math.round(amount*CC_FEE_PCT*100)/100:0;
-      const newPaid=inv.paid+amount;
-      const newStatus=newPaid>=inv.total?'paid':newPaid>0?'partial':'open';
-      const payment={amount,method,ref,date:new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'}),cc_fee:fee};
-      const updated={...inv,paid:newPaid,status:newStatus,cc_fee:(inv.cc_fee||0)+fee,payments:[...(inv.payments||[]),payment]};
+      const newTotal=inv.total+fee; // CC surcharge added to invoice total
+      const newPaid=inv.paid+amount+fee; // Customer pays amount + fee
+      const newStatus=newPaid>=newTotal?'paid':newPaid>0?'partial':'open';
+      const payment={amount:amount+fee,method,ref,date:new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'}),cc_fee:fee};
+      const updated={...inv,total:newTotal,paid:newPaid,status:newStatus,cc_fee:(inv.cc_fee||0)+fee,payments:[...(inv.payments||[]),payment]};
       setInvs(prev=>prev.map(i=>i.id===inv.id?updated:i));
       setPayModal(null);
       nf('$'+amount.toLocaleString()+' recorded on '+inv.id+(fee>0?' (+$'+fee.toFixed(2)+' CC fee)':''));
