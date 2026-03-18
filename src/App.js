@@ -424,8 +424,8 @@ const _dbSaveSOInner = async (so) => {
   }catch(e){console.error('[DB] save SO:',e);_dbSaveFailedIds.add(so.id);_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save failed: '+e.message,'error');return false}});
 };
 const _dbSaveSO = (so) => _queuedEntitySave(so.id, so, _dbSaveSOInner);
-const _invCols=['id','customer_id','so_id','date','due_date','total','paid','memo','status','type','inv_type','deposit_pct','tax','tax_rate','tax_exempt','shipping','cc_fee','email_status','email_sent_at','email_opened_at','follow_up_at','sent_history','line_items','qb_invoice_id','tc_reported','tc_tax','created_at','updated_at','billing_name','billing_address'];
-const _invExtraCols=new Set(['qb_invoice_id','tc_reported','tc_tax','billing_name','billing_address','email_status','email_sent_at','email_opened_at','follow_up_at','sent_history']);
+const _invCols=['id','customer_id','so_id','date','due_date','total','paid','memo','status','type','inv_type','deposit_pct','tax','tax_rate','tax_exempt','shipping','cc_fee','email_status','email_sent_at','email_opened_at','follow_up_at','sent_history','print_history','line_items','qb_invoice_id','tc_reported','tc_tax','created_at','updated_at','billing_name','billing_address'];
+const _invExtraCols=new Set(['qb_invoice_id','tc_reported','tc_tax','billing_name','billing_address','email_status','email_sent_at','email_opened_at','follow_up_at','sent_history','print_history']);
 const _dbSaveInvoice = async (inv) => {
   if(!supabase)return;
   return _dbSavingGuard(async()=>{try{
@@ -641,14 +641,14 @@ const _dbSaveFailedIds=new Set(JSON.parse(localStorage.getItem('nsa_save_failed_
 const _persistFailedIds=()=>{try{localStorage.setItem('nsa_save_failed_ids',JSON.stringify([..._dbSaveFailedIds]))}catch{}};
 // Column whitelists — strip unknown fields before sending to Supabase (localStorage may have extra UI fields like vendor_id)
 const _pick=(obj,cols)=>{const r={};cols.forEach(c=>{if(c in obj)r[c]=obj[c]});return r};
-const _estCols=['id','customer_id','memo','status','created_by','created_at','updated_at','default_markup','shipping_type','shipping_value','ship_to_id','email_status','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history','deleted_at','promo_applied','promo_amount','update_requests','approved_by','approved_at'];
-const _soCols=['id','customer_id','estimate_id','memo','status','created_by','created_at','updated_at','expected_date','production_notes','shipping_type','shipping_value','ship_to_id','default_markup','omg_store_id','_shipstation_order_id','_shipping_status','_tracking_number','_carrier','_ship_date','_tracking_url','_shipped','_shipments','_shipping_cost','_shipstation_cost','_inbound_freight','deleted_at','promo_applied','promo_amount','ship_preference','ship_on_date','order_type','expected_ship_date','booking_confirmed','booking_confirmed_at','booking_confirmed_by','booking_alert_days','po_number','tax_rate','tax_exempt'];
+const _estCols=['id','customer_id','memo','status','created_by','created_at','updated_at','default_markup','shipping_type','shipping_value','ship_to_id','email_status','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history','print_history','deleted_at','promo_applied','promo_amount','update_requests','approved_by','approved_at'];
+const _soCols=['id','customer_id','estimate_id','memo','status','created_by','created_at','updated_at','expected_date','production_notes','shipping_type','shipping_value','ship_to_id','default_markup','omg_store_id','_shipstation_order_id','_shipping_status','_tracking_number','_carrier','_ship_date','_tracking_url','_shipped','_shipments','_shipping_cost','_shipstation_cost','_inbound_freight','deleted_at','promo_applied','promo_amount','ship_preference','ship_on_date','order_type','expected_ship_date','booking_confirmed','booking_confirmed_at','booking_confirmed_by','booking_alert_days','po_number','tax_rate','tax_exempt','email_status','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history','print_history'];
 const _itemCols=['product_id','sku','name','brand','color','vendor_id','nsa_cost','retail_price','unit_sell','sizes','available_sizes','_colors','no_deco','is_custom','custom_desc','custom_cost','custom_sell','is_promo','_pre_promo_sell','est_qty','size_availability','_colorImage','_colorBackImage'];
 const _decoCols=['kind','position','type','art_file_id','art_tbd_type','tbd_colors','tbd_stitches','tbd_dtf_size','sell_override','sell_each','cost_each','underbase','two_color','colors','stitches','dtf_size','num_method','num_size','num_size_back','num_font','roster','names','names_list','vendor','deco_type','notes','custom_font_art_id','print_color','front_and_back','reversible','num_qty','name_qty','color_way_id','_cost_locked'];
 // Columns that may not exist in production DB / schema cache — stripped on insert retry
 const _itemExtraCols=new Set(['vendor_id','is_promo','_pre_promo_sell','est_qty','size_availability','_colorImage','_colorBackImage']);
-const _estExtraCols=new Set(['promo_applied','promo_amount','update_requests','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history']);
-const _soExtraCols=new Set(['_shipping_cost','_shipstation_cost','_inbound_freight','promo_applied','promo_amount','ship_preference','ship_on_date','order_type','expected_ship_date','booking_confirmed','booking_confirmed_at','booking_confirmed_by','booking_alert_days','po_number','tax_rate','tax_exempt']);
+const _estExtraCols=new Set(['promo_applied','promo_amount','update_requests','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history','print_history','approved_by','approved_at']);
+const _soExtraCols=new Set(['_shipping_cost','_shipstation_cost','_inbound_freight','promo_applied','promo_amount','ship_preference','ship_on_date','order_type','expected_ship_date','booking_confirmed','booking_confirmed_at','booking_confirmed_by','booking_alert_days','po_number','tax_rate','tax_exempt','email_status','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history','print_history']);
 const _decoExtraCols=new Set(['print_color','front_and_back','reversible','num_qty','name_qty','num_font','num_size_back','custom_font_art_id','deco_type','notes','vendor','color_way_id','_cost_locked']);
 // Sanitize decoration data before DB insert — strip UI-only placeholders that would violate constraints
 const _sanitizeDeco=(d)=>{const r={...d};if(r.custom_font_art_id&&r.custom_font_art_id==='pending')r.custom_font_art_id=null;if(r.art_file_id&&r.art_file_id==='__tbd')r.art_file_id=null;return r};
@@ -2720,7 +2720,7 @@ function LoginGate({onLogin,reps}){
   );
 }
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onBack,onConvertSO,onCopyEstimate,onRevertToEst,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,allInvoices,batchPOs,onBatchPO,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onSaveProduct,onViewEstimate,onViewSO,returnToPage,onReturnToJob,onAssignTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onBack,onConvertSO,onCopyEstimate,onRevertToEst,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,allInvoices,batchPOs,onBatchPO,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onSaveProduct,onViewEstimate,onViewSO,returnToPage,onReturnToJob,onAssignTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp}){
   const vendorList=vendorsProp||D_V;// use DB-loaded vendors if available, fallback to defaults
   const cuEmail=(cu?.email)||(REPS||[]).find(r=>r.id===cu?.id)?.email||'';
   const isE=mode==='estimate';const isSO=mode==='so';
@@ -3890,6 +3890,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 footer:isE?'This estimate is valid for 30 days. Prices subject to change. '+NSA.depositTerms:NSA.terms,
                 portalLink:cust?.alpha_tag?(window.location.origin+'?portal='+cust.alpha_tag):undefined
               });
+              const ph=[...(o.print_history||[]),{printed_at:new Date().toLocaleString(),printed_by:cu.name||cu.id}];sv('print_history',ph);onSave({...o,print_history:ph});
             }} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}>🖨️ Print</button>
             {isE&&onCopyEstimate&&saved&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);if(!window.confirm('Create a copy of this estimate?'))return;onCopyEstimate(o)}} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="file" size={12}/> Copy</button>}
             {isE&&o.status==='approved'&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#d97706',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);if(!window.confirm('Unapprove estimate '+o.id+'? Status will be set back to open.'))return;sv('status','open');const updated={...o,status:'open',approved_by:null,approved_at:null};setO(updated);onSave(updated);nf('Estimate unapproved')}} onMouseEnter={e=>e.currentTarget.style.background='#fffbeb'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="back" size={12}/> Unapprove</button>}
@@ -4036,6 +4037,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       {isSO&&<button className={`tab ${tab==='firm_dates'?'active':''}`} onClick={()=>setTab('firm_dates')}>Firm Dates ({safeFirm(o).length})</button>}
       {isSO&&<button className={`tab ${tab==='tracking'?'active':''}`} onClick={()=>setTab('tracking')}>Tracking {(()=>{const sc=(o._shipments||[]).length||(o._tracking_number?1:0);return sc>0?<span style={{background:'#166534',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:4}}>{sc}</span>:''})()}</button>}
       {isSO&&<button className={`tab ${tab==='costs'?'active':''}`} onClick={()=>setTab('costs')} style={tab==='costs'?{background:'#166534',color:'white'}:{}}>💰 Costs</button>}
+      <button className={`tab ${tab==='history'?'active':''}`} onClick={()=>setTab('history')}>History</button>
     </div>
 
     {/* LINE ITEMS */}
@@ -5454,6 +5456,74 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             </div>
           </div>
         </div></div>})()}
+
+    {/* HISTORY TAB */}
+    {tab==='history'&&<div className="card" style={{marginBottom:16}}>
+      <div className="card-header"><h2 style={{margin:0,fontSize:14}}>Document History</h2></div>
+      <div className="card-body" style={{padding:'16px 20px'}}>
+        {/* Created */}
+        <div style={{marginBottom:16}}>
+          <div style={{fontSize:12,fontWeight:700,color:'#475569',marginBottom:6,textTransform:'uppercase',letterSpacing:0.5}}>Created</div>
+          <div style={{display:'flex',alignItems:'center',gap:8,padding:'8px 12px',background:'#f0fdf4',borderRadius:6,border:'1px solid #bbf7d0'}}>
+            <span style={{fontSize:16}}>📄</span>
+            <div><div style={{fontSize:13,fontWeight:600}}>{isE?'Estimate':'Sales Order'} created</div>
+            <div style={{fontSize:11,color:'#64748b'}}>by {REPS.find(r=>r.id===o.created_by)?.name||o.created_by} · {o.created_at}</div></div>
+          </div>
+        </div>
+        {/* Send History */}
+        <div style={{marginBottom:16}}>
+          <div style={{fontSize:12,fontWeight:700,color:'#475569',marginBottom:6,textTransform:'uppercase',letterSpacing:0.5}}>Send History</div>
+          {(o.sent_history||[]).length===0?<div style={{fontSize:12,color:'#94a3b8',padding:'8px 12px',background:'#f8fafc',borderRadius:6}}>Not yet sent</div>
+          :(o.sent_history||[]).map((h,hi)=><div key={hi} style={{display:'flex',alignItems:'center',gap:8,padding:'8px 12px',background:'#eff6ff',borderRadius:6,border:'1px solid #bfdbfe',marginBottom:4}}>
+            <span style={{fontSize:16}}>✉️</span>
+            <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600}}>Sent to coach</div>
+            <div style={{fontSize:11,color:'#64748b'}}>{new Date(h.sent_at).toLocaleDateString()} @ {new Date(h.sent_at).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true})} · by {h.sent_by}{h.to?' · → '+h.to:''}</div>
+            {h.methods&&<div style={{fontSize:10,color:'#1e40af',marginTop:2}}>{h.methods.join(', ')}</div>}</div>
+          </div>)}
+          {/* Email opened tracking */}
+          {o.email_status==='opened'&&<div style={{display:'flex',alignItems:'center',gap:8,padding:'8px 12px',background:'#dbeafe',borderRadius:6,border:'1px solid #93c5fd',marginTop:4}}>
+            <span style={{fontSize:16}}>👁️</span>
+            <div><div style={{fontSize:13,fontWeight:600,color:'#1e40af'}}>Coach opened document</div>
+            <div style={{fontSize:11,color:'#64748b'}}>{o.email_opened_at||'Timestamp not recorded'}</div></div>
+          </div>}
+          {o.email_viewed_at&&<div style={{display:'flex',alignItems:'center',gap:8,padding:'8px 12px',background:'#dbeafe',borderRadius:6,border:'1px solid #93c5fd',marginTop:4}}>
+            <span style={{fontSize:16}}>👁️</span>
+            <div><div style={{fontSize:13,fontWeight:600,color:'#1e40af'}}>Coach viewed in portal</div>
+            <div style={{fontSize:11,color:'#64748b'}}>{o.email_viewed_at}</div></div>
+          </div>}
+          {o.follow_up_at&&<div style={{display:'flex',alignItems:'center',gap:8,padding:'8px 12px',background:new Date(o.follow_up_at)<new Date()?'#fef2f2':'#fffbeb',borderRadius:6,border:'1px solid '+(new Date(o.follow_up_at)<new Date()?'#fecaca':'#fde68a'),marginTop:4}}>
+            <span style={{fontSize:16}}>⏰</span>
+            <div><div style={{fontSize:13,fontWeight:600,color:new Date(o.follow_up_at)<new Date()?'#dc2626':'#92400e'}}>Follow-up {new Date(o.follow_up_at)<new Date()?'overdue':'scheduled'}</div>
+            <div style={{fontSize:11,color:'#64748b'}}>{new Date(o.follow_up_at).toLocaleDateString()}</div></div>
+          </div>}
+        </div>
+        {/* Print History */}
+        <div style={{marginBottom:16}}>
+          <div style={{fontSize:12,fontWeight:700,color:'#475569',marginBottom:6,textTransform:'uppercase',letterSpacing:0.5}}>Print History</div>
+          {(o.print_history||[]).length===0?<div style={{fontSize:12,color:'#94a3b8',padding:'8px 12px',background:'#f8fafc',borderRadius:6}}>Not yet printed</div>
+          :(o.print_history||[]).map((h,hi)=><div key={hi} style={{display:'flex',alignItems:'center',gap:8,padding:'8px 12px',background:'#f5f3ff',borderRadius:6,border:'1px solid #ddd6fe',marginBottom:4}}>
+            <span style={{fontSize:16}}>🖨️</span>
+            <div><div style={{fontSize:13,fontWeight:600}}>Printed</div>
+            <div style={{fontSize:11,color:'#64748b'}}>{h.printed_at} · by {h.printed_by}</div></div>
+          </div>)}
+        </div>
+        {/* Change Log */}
+        <div>
+          <div style={{fontSize:12,fontWeight:700,color:'#475569',marginBottom:6,textTransform:'uppercase',letterSpacing:0.5}}>Changes</div>
+          {(()=>{const docLogs=(changeLogProp||[]).filter(c=>c.entityId===o.id);
+            return docLogs.length===0?<div style={{fontSize:12,color:'#94a3b8',padding:'8px 12px',background:'#f8fafc',borderRadius:6}}>No changes recorded</div>
+            :<div style={{border:'1px solid #e2e8f0',borderRadius:6,overflow:'hidden'}}>{docLogs.slice(0,50).map((c,ci)=><div key={ci} style={{display:'flex',alignItems:'center',gap:8,padding:'8px 12px',borderBottom:ci<docLogs.length-1&&ci<49?'1px solid #f1f5f9':'none',fontSize:12}}>
+              <span style={{padding:'1px 6px',borderRadius:6,fontSize:10,fontWeight:600,whiteSpace:'nowrap',
+                background:c.action==='created'?'#dcfce7':c.action==='updated'?'#dbeafe':c.action==='deleted'?'#fef2f2':c.action==='split'?'#f5f3ff':'#f1f5f9',
+                color:c.action==='created'?'#166534':c.action==='updated'?'#1e40af':c.action==='deleted'?'#dc2626':c.action==='split'?'#7c3aed':'#475569'
+              }}>{c.action}</span>
+              <span style={{fontWeight:600}}>{c.user?.split(' ')[0]}</span>
+              <span style={{color:'#94a3b8',fontSize:10,whiteSpace:'nowrap'}}>{c.ts}</span>
+              <span style={{color:'#64748b',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',flex:1}}>{c.detail}</span>
+            </div>)}</div>})()}
+        </div>
+      </div>
+    </div>}
 
     <SendModal isOpen={showSend} onClose={()=>setShowSend(false)} estimate={o} customer={cust} docType={isE?'estimate':'so'} buildAttachmentHtml={()=>{
       const items=safeItems(o).filter(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return sq>0||safeNum(it.est_qty)>0});
@@ -11397,10 +11467,10 @@ export default function App(){
         const pollProd=_pollMerge(d.products,'prod');
         // Update snapshot before state — auto-save effects will diff against this
         _dbSnap.current={ests:pollEsts,sos:pollSOs,invs:pollInvs,msgs:pollMsgs,cust:pollCust,prod:pollProd,vend:d.vendors,team:d.team,omg:d.omg_stores,issues:d.issues};
-        setEsts(prev=>{const mergeEst=e=>{const local=prev.find(p=>p.id===e.id);if(local&&local.updated_at&&e.updated_at&&local.updated_at>e.updated_at)return local;if(local?.items?.length&&(!e.items||!e.items.length))return{...e,items:local.items,art_files:local.art_files||e.art_files};return e};if(_dbSaveFailedIds.size){const merged=d.estimates.map(e=>_dbSaveFailedIds.has(e.id)?(prev.find(p=>p.id===e.id)||e):mergeEst(e));return changed(prev,merged)?merged:prev}const merged2=d.estimates.map(mergeEst);return changed(prev,merged2)?merged2:prev});
+        setEsts(prev=>{const mergeEst=e=>{const local=prev.find(p=>p.id===e.id);if(local&&local.updated_at&&e.updated_at&&local.updated_at>e.updated_at)return local;if(local?.items?.length&&(!e.items||!e.items.length)){e={...e,items:local.items,art_files:local.art_files||e.art_files}};if(local?.print_history?.length&&!e.print_history?.length)e={...e,print_history:local.print_history};if(local?.sent_history?.length&&!e.sent_history?.length)e={...e,sent_history:local.sent_history};if(local?.email_status&&!e.email_status)e={...e,email_status:local.email_status};if(local?.email_sent_at&&!e.email_sent_at)e={...e,email_sent_at:local.email_sent_at};if(local?.email_opened_at&&!e.email_opened_at)e={...e,email_opened_at:local.email_opened_at};if(local?.email_viewed_at&&!e.email_viewed_at)e={...e,email_viewed_at:local.email_viewed_at};if(local?.follow_up_at&&!e.follow_up_at)e={...e,follow_up_at:local.follow_up_at};return e};if(_dbSaveFailedIds.size){const merged=d.estimates.map(e=>_dbSaveFailedIds.has(e.id)?(prev.find(p=>p.id===e.id)||e):mergeEst(e));return changed(prev,merged)?merged:prev}const merged2=d.estimates.map(mergeEst);return changed(prev,merged2)?merged2:prev});
         setSOs(prev=>{const mergeSO=s=>{const local=prev.find(p=>p.id===s.id);if(!local)return s;// If local has a newer updated_at, keep local version (save may still be in-flight to DB)
-          if(local.updated_at&&s.updated_at&&local.updated_at>s.updated_at)return local;const m={...s};if(local.jobs?.length&&(!s.jobs||!s.jobs.length))m.jobs=local.jobs;if(local.items?.length&&(!s.items||!s.items.length))m.items=local.items;if(local.art_files?.length&&(!s.art_files||!s.art_files.length))m.art_files=local.art_files;return m.jobs!==s.jobs||m.items!==s.items||m.art_files!==s.art_files?m:s};if(_dbSaveFailedIds.size){const merged=d.sales_orders.map(s=>_dbSaveFailedIds.has(s.id)?(prev.find(p=>p.id===s.id)||s):mergeSO(s));return changed(prev,merged)?merged:prev}const merged2=d.sales_orders.map(mergeSO);return changed(prev,merged2)?merged2:prev});
-        setInvs(prev=>{const mergeInv=i=>{const local=prev.find(p=>p.id===i.id);if(local?.payments?.length&&(!i.payments||!i.payments.length))return{...i,payments:local.payments};return i};if(_dbSaveFailedIds.size){const merged=d.invoices.map(i=>_dbSaveFailedIds.has(i.id)?(prev.find(p=>p.id===i.id)||i):mergeInv(i));return changed(prev,merged)?merged:prev}const merged2=d.invoices.map(mergeInv);return changed(prev,merged2)?merged2:prev});
+          if(local.updated_at&&s.updated_at&&local.updated_at>s.updated_at)return local;const m={...s};if(local.jobs?.length&&(!s.jobs||!s.jobs.length))m.jobs=local.jobs;if(local.items?.length&&(!s.items||!s.items.length))m.items=local.items;if(local.art_files?.length&&(!s.art_files||!s.art_files.length))m.art_files=local.art_files;if(local.sent_history?.length&&!s.sent_history?.length)m.sent_history=local.sent_history;if(local.print_history?.length&&!s.print_history?.length)m.print_history=local.print_history;if(local.email_status&&!s.email_status)m.email_status=local.email_status;if(local.email_sent_at&&!s.email_sent_at)m.email_sent_at=local.email_sent_at;if(local.email_opened_at&&!s.email_opened_at)m.email_opened_at=local.email_opened_at;if(local.email_viewed_at&&!s.email_viewed_at)m.email_viewed_at=local.email_viewed_at;if(local.follow_up_at&&!s.follow_up_at)m.follow_up_at=local.follow_up_at;return m};if(_dbSaveFailedIds.size){const merged=d.sales_orders.map(s=>_dbSaveFailedIds.has(s.id)?(prev.find(p=>p.id===s.id)||s):mergeSO(s));return changed(prev,merged)?merged:prev}const merged2=d.sales_orders.map(mergeSO);return changed(prev,merged2)?merged2:prev});
+        setInvs(prev=>{const mergeInv=i=>{const local=prev.find(p=>p.id===i.id);if(!local)return i;const m={...i};if(local.payments?.length&&(!i.payments||!i.payments.length))m.payments=local.payments;if(local.print_history?.length&&!i.print_history?.length)m.print_history=local.print_history;if(local.sent_history?.length&&!i.sent_history?.length)m.sent_history=local.sent_history;if(local.email_status&&!i.email_status)m.email_status=local.email_status;if(local.email_opened_at&&!i.email_opened_at)m.email_opened_at=local.email_opened_at;return m};if(_dbSaveFailedIds.size){const merged=d.invoices.map(i=>_dbSaveFailedIds.has(i.id)?(prev.find(p=>p.id===i.id)||i):mergeInv(i));return changed(prev,merged)?merged:prev}const merged2=d.invoices.map(mergeInv);return changed(prev,merged2)?merged2:prev});
         setCust(prev=>{if(_dbSaveFailedIds.size){const merged=d.customers.map(c=>_dbSaveFailedIds.has(c.id)?(prev.find(p=>p.id===c.id)||c):c);return changed(prev,merged)?merged:prev}return changed(prev,d.customers)?d.customers:prev});
         if(d.messages.length)setMsgs(prev=>{if(_dbSaveFailedIds.size){const merged=d.messages.map(m=>_dbSaveFailedIds.has(m.id)?(prev.find(p=>p.id===m.id)||m):m);return changed(prev,merged)?merged:prev}return changed(prev,d.messages)?d.messages:prev});
         if(d.issues.length)setIssues(prev=>changed(prev,d.issues)?d.issues:prev);
@@ -13061,7 +13131,7 @@ export default function App(){
 
   // ESTIMATES LIST
   function rEst(){
-    if(eEst)return<OrderEditor key={eEst.id} order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} vendors={vend} onSave={e=>{const e2=savE(e);setEEst(e2)}} onBack={()=>{dirtyRef.current=false;setEEst(null);if(estBackPg){setPg(estBackPg);setEstBackPg(null)}}} onConvertSO={convertSO} onCopyEstimate={copyEstimate} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={deleteEstimate} onNavInvoice={inv=>{setEEst(null);setPg('invoices');setInvF(f=>({...f,search:inv.id}))}} onSaveProduct={p=>{setProd(prev=>prev.some(x=>x.id===p.id)?prev.map(x=>x.id===p.id?p:x):[...prev,p]);_dbSaveProduct(p)}} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setEEst(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}else{nf('SO '+soId+' not found','error')}}} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eEst?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:csrId,so_id:t.so_id||'',customer_id:t.customer_id||eEst?.customer_id||'',priority:t.priority||1})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing}/>
+    if(eEst)return<OrderEditor key={eEst.id} order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} vendors={vend} onSave={e=>{const e2=savE(e);setEEst(e2)}} onBack={()=>{dirtyRef.current=false;setEEst(null);if(estBackPg){setPg(estBackPg);setEstBackPg(null)}}} onConvertSO={convertSO} onCopyEstimate={copyEstimate} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={deleteEstimate} onNavInvoice={inv=>{setEEst(null);setPg('invoices');setInvF(f=>({...f,search:inv.id}))}} onSaveProduct={p=>{setProd(prev=>prev.some(x=>x.id===p.id)?prev.map(x=>x.id===p.id?p:x):[...prev,p]);_dbSaveProduct(p)}} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setEEst(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}else{nf('SO '+soId+' not found','error')}}} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eEst?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:csrId,so_id:t.so_id||'',customer_id:t.customer_id||eEst?.customer_id||'',priority:t.priority||1})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog}/>
     // Filter estimates
     let fe=[...ests];
     const estRepId=estF.rep==='_me_'?cu?.id:estF.rep;
@@ -13114,7 +13184,7 @@ export default function App(){
 
   // SALES ORDERS LIST
   function rSO(){
-    if(eSO)return<OrderEditor key={eSO.id} order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} vendors={vend} onSave={s=>{const locked=savSO(s);setESO(locked)}} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onNavInvoice={inv=>{setESO(null);setPg('invoices');setInvF(f=>({...f,search:inv.id}))}} onSaveProduct={p=>{setProd(prev=>prev.some(x=>x.id===p.id)?prev.map(x=>x.id===p.id?p:x):[...prev,p]);_dbSaveProduct(p)}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:csrId,so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing}/>
+    if(eSO)return<OrderEditor key={eSO.id} order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} vendors={vend} onSave={s=>{const locked=savSO(s);setESO(locked)}} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onNavInvoice={inv=>{setESO(null);setPg('invoices');setInvF(f=>({...f,search:inv.id}))}} onSaveProduct={p=>{setProd(prev=>prev.some(x=>x.id===p.id)?prev.map(x=>x.id===p.id?p:x):[...prev,p]);_dbSaveProduct(p)}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:csrId,so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog}/>
     // Filter SOs
     let fSOs=[...sos];
     if(soF.status!=='all')fSOs=fSOs.filter(s=>calcSOStatus(s)===soF.status);
@@ -15590,6 +15660,8 @@ export default function App(){
                     ...(inv.paid>0?[{cells:['','',{value:'Paid',style:'color:#166534'},'$'+inv.paid.toLocaleString()]}]:[]),
                     ...(bal>0?[{_style:'background:#fef2f2',cells:['','',{value:'<strong>Balance Due</strong>',style:'color:#dc2626'},'<strong style="color:#dc2626;font-size:14px">$'+bal.toLocaleString()+'</strong>']}]:[])
                   ]}],footer:inv.inv_type==='deposit'?NSA.depositTerms:NSA.terms});
+                const ph=[...(inv.print_history||[]),{printed_at:new Date().toLocaleString(),printed_by:cu.name||cu.id}];
+                setInvs(prev=>prev.map(i=>i.id===inv.id?{...i,print_history:ph}:i));setViewInvoice(v=>({...v,print_history:ph}));
               }}>Print</button>
             {lineItems.length>=2&&inv.status!=='paid'&&<button className="btn btn-sm" style={{fontSize:12,padding:'6px 14px',background:'#7c3aed',color:'white',border:'none'}}
               onClick={()=>{
@@ -15721,6 +15793,71 @@ export default function App(){
             Email sent: {inv.email_sent_at} · Status: <span style={{fontWeight:600,color:'#166534'}}>{inv.email_status||'sent'}</span>
           </div>
         </div>}
+
+        {/* Document History */}
+        <div className="card" style={{marginBottom:16}}>
+          <div className="card-header"><h2 style={{margin:0,fontSize:14}}>Document History</h2></div>
+          <div className="card-body" style={{padding:'16px 20px'}}>
+            {/* Created */}
+            <div style={{marginBottom:16}}>
+              <div style={{fontSize:12,fontWeight:700,color:'#475569',marginBottom:6,textTransform:'uppercase',letterSpacing:0.5}}>Created</div>
+              <div style={{display:'flex',alignItems:'center',gap:8,padding:'8px 12px',background:'#f0fdf4',borderRadius:6,border:'1px solid #bbf7d0'}}>
+                <span style={{fontSize:16}}>📄</span>
+                <div><div style={{fontSize:13,fontWeight:600}}>Invoice created</div>
+                <div style={{fontSize:11,color:'#64748b'}}>by {REPS.find(r=>r.id===inv.created_by)?.name||inv.created_by||'—'} · {inv.created_at||inv.date||'—'}</div></div>
+              </div>
+            </div>
+            {/* Send History */}
+            <div style={{marginBottom:16}}>
+              <div style={{fontSize:12,fontWeight:700,color:'#475569',marginBottom:6,textTransform:'uppercase',letterSpacing:0.5}}>Send History</div>
+              {(inv.sent_history||[]).length===0&&!inv.email_sent_at?<div style={{fontSize:12,color:'#94a3b8',padding:'8px 12px',background:'#f8fafc',borderRadius:6}}>Not yet sent</div>
+              :(inv.sent_history||[]).length>0?(inv.sent_history||[]).map((h,hi)=><div key={hi} style={{display:'flex',alignItems:'center',gap:8,padding:'8px 12px',background:'#eff6ff',borderRadius:6,border:'1px solid #bfdbfe',marginBottom:4}}>
+                <span style={{fontSize:16}}>✉️</span>
+                <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600}}>Sent to coach</div>
+                <div style={{fontSize:11,color:'#64748b'}}>{new Date(h.sent_at).toLocaleDateString()} @ {new Date(h.sent_at).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true})} · by {h.sent_by}{h.to?' · → '+h.to:''}</div>
+                {h.methods&&<div style={{fontSize:10,color:'#1e40af',marginTop:2}}>{h.methods.join(', ')}</div>}</div>
+              </div>):<div style={{display:'flex',alignItems:'center',gap:8,padding:'8px 12px',background:'#eff6ff',borderRadius:6,border:'1px solid #bfdbfe'}}>
+                <span style={{fontSize:16}}>✉️</span>
+                <div><div style={{fontSize:13,fontWeight:600}}>Sent</div><div style={{fontSize:11,color:'#64748b'}}>{inv.email_sent_at}</div></div>
+              </div>}
+              {inv.email_status==='opened'&&<div style={{display:'flex',alignItems:'center',gap:8,padding:'8px 12px',background:'#dbeafe',borderRadius:6,border:'1px solid #93c5fd',marginTop:4}}>
+                <span style={{fontSize:16}}>👁️</span>
+                <div><div style={{fontSize:13,fontWeight:600,color:'#1e40af'}}>Coach opened invoice</div>
+                <div style={{fontSize:11,color:'#64748b'}}>{inv.email_opened_at||'Timestamp not recorded'}</div></div>
+              </div>}
+              {inv.follow_up_at&&<div style={{display:'flex',alignItems:'center',gap:8,padding:'8px 12px',background:new Date(inv.follow_up_at)<new Date()?'#fef2f2':'#fffbeb',borderRadius:6,border:'1px solid '+(new Date(inv.follow_up_at)<new Date()?'#fecaca':'#fde68a'),marginTop:4}}>
+                <span style={{fontSize:16}}>⏰</span>
+                <div><div style={{fontSize:13,fontWeight:600,color:new Date(inv.follow_up_at)<new Date()?'#dc2626':'#92400e'}}>Follow-up {new Date(inv.follow_up_at)<new Date()?'overdue':'scheduled'}</div>
+                <div style={{fontSize:11,color:'#64748b'}}>{new Date(inv.follow_up_at).toLocaleDateString()}</div></div>
+              </div>}
+            </div>
+            {/* Print History */}
+            <div style={{marginBottom:16}}>
+              <div style={{fontSize:12,fontWeight:700,color:'#475569',marginBottom:6,textTransform:'uppercase',letterSpacing:0.5}}>Print History</div>
+              {(inv.print_history||[]).length===0?<div style={{fontSize:12,color:'#94a3b8',padding:'8px 12px',background:'#f8fafc',borderRadius:6}}>Not yet printed</div>
+              :(inv.print_history||[]).map((h,hi)=><div key={hi} style={{display:'flex',alignItems:'center',gap:8,padding:'8px 12px',background:'#f5f3ff',borderRadius:6,border:'1px solid #ddd6fe',marginBottom:4}}>
+                <span style={{fontSize:16}}>🖨️</span>
+                <div><div style={{fontSize:13,fontWeight:600}}>Printed</div>
+                <div style={{fontSize:11,color:'#64748b'}}>{h.printed_at} · by {h.printed_by}</div></div>
+              </div>)}
+            </div>
+            {/* Change Log */}
+            <div>
+              <div style={{fontSize:12,fontWeight:700,color:'#475569',marginBottom:6,textTransform:'uppercase',letterSpacing:0.5}}>Changes</div>
+              {(()=>{const docLogs=changeLog.filter(c=>c.entityId===inv.id);
+                return docLogs.length===0?<div style={{fontSize:12,color:'#94a3b8',padding:'8px 12px',background:'#f8fafc',borderRadius:6}}>No changes recorded</div>
+                :<div style={{border:'1px solid #e2e8f0',borderRadius:6,overflow:'hidden'}}>{docLogs.slice(0,50).map((c,ci)=><div key={ci} style={{display:'flex',alignItems:'center',gap:8,padding:'8px 12px',borderBottom:ci<docLogs.length-1&&ci<49?'1px solid #f1f5f9':'none',fontSize:12}}>
+                  <span style={{padding:'1px 6px',borderRadius:6,fontSize:10,fontWeight:600,whiteSpace:'nowrap',
+                    background:c.action==='created'?'#dcfce7':c.action==='updated'?'#dbeafe':c.action==='deleted'?'#fef2f2':c.action==='split'?'#f5f3ff':'#f1f5f9',
+                    color:c.action==='created'?'#166534':c.action==='updated'?'#1e40af':c.action==='deleted'?'#dc2626':c.action==='split'?'#7c3aed':'#475569'
+                  }}>{c.action}</span>
+                  <span style={{fontWeight:600}}>{c.user?.split(' ')[0]}</span>
+                  <span style={{color:'#94a3b8',fontSize:10,whiteSpace:'nowrap'}}>{c.ts}</span>
+                  <span style={{color:'#64748b',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',flex:1}}>{c.detail}</span>
+                </div>)}</div>})()}
+            </div>
+          </div>
+        </div>
 
         {/* ═══ SPLIT INVOICE MODAL ═══ */}
         {splitModal&&(()=>{

@@ -543,3 +543,16 @@ CREATE POLICY "Allow all" ON message_reads FOR ALL USING (true) WITH CHECK (true
 CREATE POLICY "Allow all" ON omg_stores FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow all" ON omg_store_products FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY "Allow all" ON issues FOR ALL USING (true) WITH CHECK (true);
+
+-- ═══════════════════════════════════════════════════════════════════
+-- Document History columns — add print_history and email tracking
+-- ═══════════════════════════════════════════════════════════════════
+ALTER TABLE estimates ADD COLUMN IF NOT EXISTS print_history JSONB DEFAULT '[]';
+ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS email_status TEXT;
+ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS email_sent_at TEXT;
+ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS email_opened_at TEXT;
+ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS email_viewed_at TEXT;
+ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS follow_up_at TEXT;
+ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS sent_history JSONB DEFAULT '[]';
+ALTER TABLE sales_orders ADD COLUMN IF NOT EXISTS print_history JSONB DEFAULT '[]';
+ALTER TABLE invoices ADD COLUMN IF NOT EXISTS print_history JSONB DEFAULT '[]';
