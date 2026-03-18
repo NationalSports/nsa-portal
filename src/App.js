@@ -8951,7 +8951,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       const j=portalJobView.job;const so=portalJobView.so;
       const af2=safeArt(so).find(a=>a.id===j.art_file_id);
       const mockupFiles2=_filterDisplayable(af2?.mockup_files||af2?.files||[]);
-      const items=(j.items||[]).map(gi=>{const it=safeItems(so)[gi.item_idx];const prd2=prod.find(pp=>pp.id===it?.product_id||pp.sku===it?.sku);return{...gi,brand:it?.brand||'',fullName:safeStr(it?.name)||gi.name,image_url:prd2?.image_url||it?._colorImage||_vImg(it,'front')||'',back_image_url:prd2?.back_image_url||it?._colorBackImage||_vImg(it,'back')||''}});
+      const items=(j.items||[]).map(gi=>{const it=safeItems(so)[gi.item_idx];const prd2=prod.find(pp=>pp.id===it?.product_id||pp.sku===it?.sku);return{...gi,brand:it?.brand||'',fullName:safeStr(it?.name)||gi.name,image_url:prd2?.image_url||it?._colorImage||'',back_image_url:prd2?.back_image_url||it?._colorBackImage||''}});
       return<div className="modal-overlay" onClick={()=>setShowPortal(false)}><div className="modal" style={{maxWidth:700,maxHeight:'90vh',overflow:'auto'}} onClick={e=>e.stopPropagation()}>
         <div style={{background:'linear-gradient(135deg,#1e3a5f,#2563eb)',color:'white',padding:'20px 24px',borderRadius:'12px 12px 0 0',position:'relative'}}>
           <button style={{position:'absolute',top:8,left:12,background:'rgba(255,255,255,0.15)',border:'none',color:'white',borderRadius:6,padding:'4px 10px',fontSize:12,cursor:'pointer'}} onClick={()=>setPortalJobView(null)}>← Back</button>
@@ -10303,7 +10303,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     const j=jobView.job;const so=jobView.so;
     const artFile=safeArt(so).find(a=>a.id===j.art_file_id);
     const mockups=_filterDisplayable(artFile?.mockup_files||artFile?.files||[]);
-    const items=(j.items||[]).map(gi=>{const it=safeItems(so)[gi.item_idx];const prd=it?prod.find(pp=>pp.id===it.product_id||pp.sku===it.sku):null;return{...gi,brand:it?.brand||'',fullName:safeStr(it?.name)||gi.name,image_url:prd?.image_url||(prd?.images&&prd.images[0])||it?._colorImage||_vImg(it,'front')||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||it?._colorBackImage||_vImg(it,'back')||''}});
+    const items=(j.items||[]).map(gi=>{const it=safeItems(so)[gi.item_idx];const prd=it?prod.find(pp=>pp.id===it.product_id||pp.sku===it.sku):null;return{...gi,brand:it?.brand||'',fullName:safeStr(it?.name)||gi.name,image_url:prd?.image_url||(prd?.images&&prd.images[0])||it?._colorImage||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||it?._colorBackImage||''}});
     return<div style={{minHeight:'100vh',background:'#f1f5f9',display:'flex',justifyContent:'center',padding:'40px 16px'}}>
       {/* ── Lightbox overlay ── */}
       {lightbox&&<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.85)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center',padding:16}} onClick={()=>setLightbox(null)}>
@@ -17870,6 +17870,39 @@ export default function App(){
   const[whTab,setWhTab]=useState('pull');const[whSearch,setWhSearch]=useState('');const[whRepF,setWhRepF]=useState('all');const[scanModalOpen,setScanModalOpen]=useState(false);const[whRecvPO,setWhRecvPO]=useState(null);const[whReceiving,setWhReceiving]=useState(false);const[whViewIF,setWhViewIF]=useState(null);const[whPulling,setWhPulling]=useState(false);
   const[shippedCustF,setShippedCustF]=useState('all');const[shippedDateF,setShippedDateF]=useState('all');
   const[whRecentActions,setWhRecentActions]=useState(()=>{try{return JSON.parse(localStorage.getItem('nsa_wh_recent')||'[]')}catch{return[]}});
+  // Auto-check UPS pickup status once daily after 3 AM (moved out of rWarehouse to avoid conditional hook call)
+  React.useEffect(()=>{
+    let count=0;sos.filter(so=>so._shipments&&so._shipments.length>0&&!so.deleted_at).forEach(so=>{(so._shipments||[]).forEach(shp=>{if(shp.tracking_number&&!shp.carrier_picked_up)count++})});
+    if(!count)return;
+    const lastCheck=localStorage.getItem('nsa_ups_pickup_check');
+    const today=new Date().toISOString().split('T')[0];
+    const hour=new Date().getHours();
+    if(lastCheck===today||hour<3)return;
+    localStorage.setItem('nsa_ups_pickup_check',today);
+    const checkPickups=async()=>{
+      const pending=[];
+      sos.filter(so=>so._shipments&&so._shipments.length>0&&!so.deleted_at).forEach(so=>{
+        (so._shipments||[]).forEach(shp=>{
+          if(shp.tracking_number&&!shp.carrier_picked_up&&/^1Z/i.test(shp.tracking_number)){
+            pending.push({...shp,so});
+          }
+        });
+      });
+      if(!pending.length)return;
+      console.log('[UPS] Auto-checking',pending.length,'packages for pickup status');
+      for(const shp of pending){
+        try{
+          const resp=await fetch('/.netlify/functions/ups-tracking?tracking='+encodeURIComponent(shp.tracking_number));
+          const data=await resp.json();
+          if(data.pickedUp){
+            const updatedShipments=(shp.so._shipments||[]).map(s=>s.id===shp.id?{...s,carrier_picked_up:true,pickup_date:new Date().toLocaleString(),ups_status:data.status}:s);
+            savSO({...shp.so,_shipments:updatedShipments});
+          }
+        }catch(e){console.warn('[UPS] Auto-check failed for',shp.tracking_number,e)}
+      }
+    };
+    checkPickups();
+  },[sos]); // eslint-disable-line react-hooks/exhaustive-deps
   const addWhAction=(action)=>{setWhRecentActions(prev=>{const next=[{...action,ts:Date.now(),at:new Date().toLocaleString()},...prev].slice(0,50);try{localStorage.setItem('nsa_wh_recent',JSON.stringify(next))}catch{}return next})};
   const[stockPOs,setStockPOs]=useState([
     {id:'PO-5001-NSA',vendor_id:'v1',vendor_name:'Adidas',status:'partial',created_at:'02/12/26',notes:'Restock pregame tees',items:[{sku:'JX4453',name:'Adidas Unisex Pregame Tee',color:'Team Power Red/White',sizes:{S:20,M:30,L:25,XL:15,'2XL':10},received:{S:20,M:30,L:0,XL:0,'2XL':0}}]},
@@ -17915,38 +17948,6 @@ export default function App(){
     const openStockPOs=stockPOs.filter(p=>p.status!=='received');
     // Count awaiting pickup shipments for tab badge
     const awaitingPickupCount=(()=>{let c=0;sos.filter(so=>so._shipments&&so._shipments.length>0&&!so.deleted_at).forEach(so=>{(so._shipments||[]).forEach(shp=>{if(shp.tracking_number&&!shp.carrier_picked_up)c++})});return c})();
-    // Auto-check UPS pickup status once overnight (runs on first load after 6 AM if not checked today)
-    React.useEffect(()=>{
-      if(!awaitingPickupCount)return;
-      const lastCheck=localStorage.getItem('nsa_ups_pickup_check');
-      const today=new Date().toISOString().split('T')[0];
-      const hour=new Date().getHours();
-      if(lastCheck===today||hour<3)return; // Already checked today, or before 3 AM
-      localStorage.setItem('nsa_ups_pickup_check',today);
-      const checkPickups=async()=>{
-        const pending=[];
-        sos.filter(so=>so._shipments&&so._shipments.length>0&&!so.deleted_at).forEach(so=>{
-          (so._shipments||[]).forEach(shp=>{
-            if(shp.tracking_number&&!shp.carrier_picked_up&&/^1Z/i.test(shp.tracking_number)){
-              pending.push({...shp,so});
-            }
-          });
-        });
-        if(!pending.length)return;
-        console.log('[UPS] Auto-checking',pending.length,'packages for pickup status');
-        for(const shp of pending){
-          try{
-            const resp=await fetch('/.netlify/functions/ups-tracking?tracking='+encodeURIComponent(shp.tracking_number));
-            const data=await resp.json();
-            if(data.pickedUp){
-              const updatedShipments=(shp.so._shipments||[]).map(s=>s.id===shp.id?{...s,carrier_picked_up:true,pickup_date:new Date().toLocaleString(),ups_status:data.status}:s);
-              savSO({...shp.so,_shipments:updatedShipments});
-            }
-          }catch(e){console.warn('[UPS] Auto-check failed for',shp.tracking_number,e)}
-        }
-      };
-      checkPickups();
-    },[awaitingPickupCount]); // eslint-disable-line react-hooks/exhaustive-deps
     const tabs=[
       {id:'receive',label:'📱 Scan to Receive',count:0,color:'#2563eb'},
       {id:'pull',label:'🏗️ Pull & Stage',count:fPull.length,color:'#d97706'},
