@@ -6655,6 +6655,22 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <span style={{fontWeight:700,fontSize:14,color:'#166534'}}>Art Complete — Ready for Production</span>
               </div>
             </div>}
+            {(j.art_status==='art_complete'||j.art_status==='production_files_needed')&&(()=>{const artFile3=safeArt(o).find(a=>a.id===j.art_file_id);const _mf3=_filterDisplayable(artFile3?.mockup_files||artFile3?.files||[]);const _im3=_filterDisplayable(Object.values(artFile3?.item_mockups||{}).flat());const _seen3=new Set();const mockups3=[..._mf3,..._im3].filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seen3.has(u))return false;_seen3.add(u);return true});if(mockups3.length===0)return null;return<div style={{margin:'8px 20px'}}>
+              <div style={{fontSize:11,fontWeight:700,color:'#166534',marginBottom:6}}>Approved mockup{mockups3.length>1?'s':''}:</div>
+              <div style={{display:'grid',gridTemplateColumns:mockups3.length>1?'1fr 1fr':'1fr',gap:8}}>
+                {mockups3.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);
+                  return<div key={fi} style={{borderRadius:10,border:'2px solid #86efac',overflow:'hidden',background:'white',cursor:'pointer'}} onClick={()=>setMockupLightbox(url)}>
+                    {_isImgUrl(url,f)?<img src={url} alt={name} style={{width:'100%',height:300,objectFit:'contain',display:'block',background:'#fafafa'}}/>
+                    :_isPdfUrl(url,f)?<div style={{position:'relative',height:300,display:'flex',alignItems:'center',justifyContent:'center',background:'#fafafa'}}>
+                      {_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:'100%',height:300,objectFit:'contain',display:'block'}} onError={e=>{e.target.style.display='none';e.target.nextSibling&&(e.target.nextSibling.style.display='flex')}}/>:null}
+                      <div style={{display:_cloudinaryPdfThumb(url)?'none':'flex',flexDirection:'column',alignItems:'center',gap:4}}>
+                        <span style={{fontSize:36}}>PDF</span><span style={{fontSize:13,color:'#1e40af'}}>{name}</span></div></div>
+                    :<div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:6,height:300,background:'#fafafa'}}>
+                      <span style={{fontSize:20}}>📄</span><span style={{fontSize:14,fontWeight:600,color:'#1e40af'}}>{name}</span></div>}
+                    <div style={{padding:'4px 10px',borderTop:'1px solid #bbf7d0',fontSize:11,color:'#166534',fontWeight:600,display:'flex',justifyContent:'space-between'}}><span>{name}</span><span style={{color:'#2563eb'}}>Click to enlarge</span></div>
+                  </div>})}
+              </div>
+            </div>})()}
             {/* Status controls */}
             <div style={{padding:'10px 20px',borderTop:'1px solid #f1f5f9',display:'flex',gap:12,alignItems:'center',flexWrap:'wrap'}}>
               <div style={{fontSize:11,fontWeight:600,color:'#64748b'}}>Art:</div>
@@ -19779,6 +19795,7 @@ export default function App(){
       if(j.art_status==='art_requested'||j.art_status==='art_in_progress')return'waiting_for_art';
       if(j.art_status==='waiting_approval')return'needs_approval';
       if(j.art_status==='production_files_needed')return'approved';
+      if(j.art_status==='art_complete')return'art_complete';
       // Fallback to art file status
       const s=j.artFile?.status;return s==='uploaded'?'needs_approval':(!s||s==='needs_art')?'waiting_for_art':s;
     };
