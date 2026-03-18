@@ -34,16 +34,16 @@ function dP(d, q, artFiles, cq) {
   const pq = cq || q;
   if (d.kind === 'art' && d.art_file_id && artFiles) {
     if (d.art_file_id === '__tbd') { const tType = d.art_tbd_type || 'screen_print';
-      if (tType === 'screen_print') { const nc = d.tbd_colors || 1; const u = d.underbase ? 1 + SP.ub : 1; const c = rQ(spP(pq, nc, false) * u); return { sell: rT(c * SP.mk), cost: c } }
-      if (tType === 'embroidery') { const c = emP(d.tbd_stitches || 8000, pq, false); return { sell: rT(c * EM.mk), cost: c } }
+      if (tType === 'screen_print') { const nc = d.tbd_colors || 1; const u = d.underbase ? 1 + SP.ub : 1; const c = rQ(spP(pq, nc, false) * u); return { sell: d.sell_override != null ? d.sell_override : rT(c * SP.mk), cost: c } }
+      if (tType === 'embroidery') { const c = emP(d.tbd_stitches || 8000, pq, false); return { sell: d.sell_override != null ? d.sell_override : rT(c * EM.mk), cost: c } }
       if (tType === 'heat_press' || tType === 'dtf') { const t = DTF[d.tbd_dtf_size || 0]; return { sell: d.sell_override || t.sell, cost: t.cost } };
       return { sell: d.sell_override || 0, cost: 0 } }
     const art = artFiles.find(a => a.id === d.art_file_id); if (art) {
-      if (art.deco_type === 'screen_print') { const nc = art.ink_colors ? art.ink_colors.split('\n').filter(l => l.trim()).length : 1; const u = d.underbase ? 1 + SP.ub : 1; const c = rQ(spP(pq, nc, false) * u); return { sell: rT(c * SP.mk), cost: c } }
-      if (art.deco_type === 'embroidery') { const c = emP(art.stitches || 8000, pq, false); return { sell: rT(c * EM.mk), cost: c } }
+      if (art.deco_type === 'screen_print') { const nc = art.ink_colors ? art.ink_colors.split('\n').filter(l => l.trim()).length : 1; const u = d.underbase ? 1 + SP.ub : 1; const c = rQ(spP(pq, nc, false) * u); return { sell: d.sell_override != null ? d.sell_override : rT(c * SP.mk), cost: c } }
+      if (art.deco_type === 'embroidery') { const c = emP(art.stitches || 8000, pq, false); return { sell: d.sell_override != null ? d.sell_override : rT(c * EM.mk), cost: c } }
       if (art.deco_type === 'dtf') { const t = DTF[art.dtf_size || 0]; return { sell: d.sell_override || t.sell, cost: t.cost } } } }
-  if (d.type === 'screen_print') { const u = d.underbase ? 1 + SP.ub : 1; const c = rQ(spP(q, d.colors || 1, false) * u); return { sell: rT(c * SP.mk), cost: c } }
-  if (d.type === 'embroidery') { const c = emP(d.stitches || 8000, q, false); return { sell: rT(c * EM.mk), cost: c } }
+  if (d.type === 'screen_print') { const u = d.underbase ? 1 + SP.ub : 1; const c = rQ(spP(q, d.colors || 1, false) * u); return { sell: d.sell_override != null ? d.sell_override : rT(c * SP.mk), cost: c } }
+  if (d.type === 'embroidery') { const c = emP(d.stitches || 8000, q, false); return { sell: d.sell_override != null ? d.sell_override : rT(c * EM.mk), cost: c } }
   if (d.kind === 'numbers' || d.type === 'number_press') { const nq = d.roster ? Object.values(d.roster).flat().filter(v => v && v.trim()).length : 0; const mult = (d.front_and_back ? 2 : 1) * (d.reversible ? 2 : 1); return { sell: d.sell_override || npP(nq || 1, d.two_color, true), cost: npP(nq || 1, d.two_color, false), _nq: nq * mult } };
   if (d.kind === 'names') { const nc = d.names ? Object.values(d.names).flat().filter(v => v && v.trim()).length : 0; const se = safeNum(d.sell_override || d.sell_each || 6); const co = safeNum(d.cost_each || 3); return { sell: nc > 0 ? rQ(nc * se / q) : se, cost: nc > 0 ? rQ(nc * co / q) : co } };
   if (d.type === 'dtf') { const t = DTF[d.dtf_size || 0]; return { sell: d.sell_override || t.sell, cost: t.cost } }
