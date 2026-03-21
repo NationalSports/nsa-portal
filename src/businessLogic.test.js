@@ -1315,16 +1315,21 @@ describe('Cross-Module Integration Scenarios', () => {
         jobs: [],
       });
       const jobs = buildJobs(so);
-      // SHIRT-1: art_af1@Front + art_af2@Back → one decoration signature
-      // SHIRT-2: art_af1@Front + numbers_ht@Back → different decoration signature
-      // = 2 separate jobs (different decoration combos)
-      expect(jobs).toHaveLength(2);
-      const shirt1Job = jobs.find(j => j.items.some(it => it.sku === 'SHIRT-1'));
-      const shirt2Job = jobs.find(j => j.items.some(it => it.sku === 'SHIRT-2'));
+      // buildJobs groups by deco TYPE then by decoration signature within each type:
+      // SHIRT-1: art_af1@Front + art_af2@Back (both screen_print) → 1 screen_print job
+      // SHIRT-2: art_af1@Front (screen_print) → 1 screen_print job (different sig from SHIRT-1)
+      // SHIRT-2: numbers@Back (heat_transfer) → 1 heat_transfer job
+      // = 3 separate jobs (different deco types go to different machines/vendors)
+      expect(jobs).toHaveLength(3);
+      const shirt1Job = jobs.find(j => j.key === 'screen_print::art_af1@Front|art_af2@Back');
+      const shirt2ScreenJob = jobs.find(j => j.key === 'screen_print::art_af1@Front');
+      const shirt2HeatJob = jobs.find(j => j.key.startsWith('heat_transfer::'));
       expect(shirt1Job.items).toHaveLength(1);
       expect(shirt1Job.total_units).toBe(20);
-      expect(shirt2Job.items).toHaveLength(1);
-      expect(shirt2Job.total_units).toBe(5);
+      expect(shirt2ScreenJob.items).toHaveLength(1);
+      expect(shirt2ScreenJob.total_units).toBe(5);
+      expect(shirt2HeatJob.items).toHaveLength(1);
+      expect(shirt2HeatJob.total_units).toBe(5);
     });
   });
 });
