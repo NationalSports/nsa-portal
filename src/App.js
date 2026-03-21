@@ -3088,6 +3088,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // Sync dirty state to parent dirtyRef
   React.useEffect(()=>{if(dirtyRef)dirtyRef.current=dirty},[dirty,dirtyRef]);
   // Auto-save: persist dirty changes every 30s to prevent data loss on timeout/crash
+  // NOTE: does NOT save on unmount — user may have chosen "Leave without saving" via Back button
   const oRef=React.useRef(o);React.useEffect(()=>{oRef.current=o},[o]);
   const dirtyRef2=React.useRef(dirty);React.useEffect(()=>{dirtyRef2.current=dirty},[dirty]);
   React.useEffect(()=>{
@@ -3095,7 +3096,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const iv=setInterval(doAutoSave,30000);
     const handleUnload=()=>doAutoSave();
     window.addEventListener('beforeunload',handleUnload);
-    return()=>{clearInterval(iv);window.removeEventListener('beforeunload',handleUnload);doAutoSave()};
+    return()=>{clearInterval(iv);window.removeEventListener('beforeunload',handleUnload)};
   },[onSave]);
   // Warn user before closing tab if there are unsaved order changes
   React.useEffect(()=>{
@@ -11966,6 +11967,9 @@ export default function App(){
     },60000);// check every 60s
     return()=>clearInterval(id);
   },[qbConfig.connected,qbConfig.autoSync,qbSyncing]);
+  // Ref for emergency flush — holds latest state for beforeunload and visibilitychange handlers
+  const _visFlushRefs=useRef({});
+  _visFlushRefs.current={cust,ests,sos,invs,msgs,prod,vend,REPS,omgStores,issues,batchPOs,submittedBatches,batchCounter,changeLog,soHistory,invAdjLog,invPOs,invPOCounter};
   // Warn user before closing/reloading if there are failed saves (data at risk of loss)
   // Also flush all current state to localStorage as a safety net before unload
   React.useEffect(()=>{const h=e=>{
@@ -11981,8 +11985,6 @@ export default function App(){
     if(window.location.search.includes('portal='))return;if(_dbSaveFailedIds.size>0){e.preventDefault();e.returnValue=''}};window.addEventListener('beforeunload',h);return()=>window.removeEventListener('beforeunload',h)},[]);
   // Flush all state to localStorage when tab is hidden (prevents data loss on mobile tab-kill/timeout)
   // Also retry failed saves immediately when tab regains visibility (don't wait 60s)
-  const _visFlushRefs=useRef({});
-  _visFlushRefs.current={cust,ests,sos,invs,msgs,prod,vend,REPS,omgStores,issues,batchPOs,submittedBatches,batchCounter,changeLog,soHistory,invAdjLog,invPOs,invPOCounter};
   React.useEffect(()=>{
     const onVis=()=>{
       if(document.hidden){
