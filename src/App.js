@@ -10131,6 +10131,28 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   const prodLabelsP={hold:'On Hold',staging:'In Line',in_process:'In Production',completed:'Done',shipped:'Shipped'};
   const contactEmail=(customer.contacts||[])[0]?.email||'';
 
+  // Track portal visit — mark sent documents as viewed by coach
+  const _portalTracked=useRef(false);
+  useEffect(()=>{
+    if(_portalTracked.current)return;_portalTracked.current=true;
+    const now=new Date().toLocaleString();
+    // Mark estimates with email_status='sent' as viewed
+    const sentEsts=custEsts.filter(e=>e.email_status==='sent'&&!e.email_viewed_at);
+    if(sentEsts.length&&onUpdateEsts)onUpdateEsts(prev=>prev.map(e=>sentEsts.some(se=>se.id===e.id)?{...e,email_status:'opened',email_viewed_at:now,updated_at:now}:e));
+    // Mark SOs with email_status='sent' as viewed
+    const sentSOs=custSOs.filter(s=>s.email_status==='sent'&&!s.email_viewed_at);
+    if(sentSOs.length&&onUpdateSOs)onUpdateSOs(prev=>prev.map(s=>sentSOs.some(ss=>ss.id===s.id)?{...s,email_status:'opened',email_viewed_at:now,updated_at:now}:s));
+    // Mark invoices with email_status='sent' as viewed
+    const sentInvs=custInvs.filter(i=>i.email_status==='sent'&&!i.email_viewed_at);
+    if(sentInvs.length){
+      const updater=prev=>prev.map(i=>sentInvs.some(si=>si.id===i.id)?{...i,email_status:'opened',email_viewed_at:now,updated_at:now}:i);
+      setInvs(updater);if(onUpdateInvs)onUpdateInvs(updater);
+    }
+    // Mark job art approvals as viewed when coach opens portal
+    const jobSOs=custSOs.filter(s=>safeJobs(s).some(j=>j.sent_to_coach_at&&!j.coach_email_opened_at));
+    if(jobSOs.length&&onUpdateSOs)onUpdateSOs(prev=>prev.map(s=>{if(!jobSOs.some(js=>js.id===s.id))return s;const updJobs=safeJobs(s).map(j=>j.sent_to_coach_at&&!j.coach_email_opened_at?{...j,coach_email_opened_at:new Date().toISOString()}:j);return{...s,jobs:updJobs,updated_at:now}}));
+  },[]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const handlePaymentSuccess=(result)=>{
     // Update invoices locally and in parent (persists to Supabase/localStorage/QB)
     const paidInvIds=result.invoices.map(i=>i.id);
