@@ -295,14 +295,12 @@ export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,
 
   // ─── DETAIL VIEW (MESSAGE) — full-screen thread ───
   const renderMsgDetail=(msg)=>{
-    // Find thread messages (same so_id or thread_id)
-    const threadMsgs=useMemo(()=>{
-      let thread=[];
-      if(msg.thread_id)thread=msgs.filter(m=>m.thread_id===msg.thread_id||m.id===msg.thread_id);
-      else if(msg.so_id)thread=msgs.filter(m=>m.so_id===msg.so_id);
-      if(!thread.find(m=>m.id===msg.id))thread=[msg];
-      return thread.sort((a,b)=>(a.created_at||a.ts||'').localeCompare(b.created_at||b.ts||''));
-    },[msg,msgs]);
+    // Find thread messages (same so_id or thread_id) — inline, no hooks in render functions
+    let thread=[];
+    if(msg.thread_id)thread=msgs.filter(m=>m.thread_id===msg.thread_id||m.id===msg.thread_id);
+    else if(msg.so_id)thread=msgs.filter(m=>m.so_id===msg.so_id);
+    if(!thread.find(m=>m.id===msg.id))thread=[msg];
+    const threadMsgs=thread.sort((a,b)=>(a.created_at||a.ts||'').localeCompare(b.created_at||b.ts||''));
     const author=REPS.find(r=>r.id===msg.author_id||r.id===msg.from);
     return<div className="mp-detail">
       <div className="mp-detail-header">
