@@ -8910,7 +8910,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
             <div style={{display:'flex',gap:6}}>
               <button className="btn btn-sm btn-primary" onClick={()=>{
                 if(!creditAdd.amount||creditAdd.amount<=0){nf('Enter a credit amount','error');return}
-                const credit={id:'cr_'+Date.now(),customer_id:customer.parent_id||customer.id,amount:creditAdd.amount,used:0,source:creditAdd.source||'',created_by:cu?.name||'System',created_at:new Date().toISOString()};
+                const credit={id:'cr_'+Date.now(),customer_id:customer.id,amount:creditAdd.amount,used:0,source:creditAdd.source||'',created_by:cu?.name||'System',created_at:new Date().toISOString()};
                 onSaveCredit(credit);setCreditAdd(null);nf('Credit of $'+creditAdd.amount.toLocaleString()+' added');
               }}>Add Credit</button>
               <button className="btn btn-sm btn-secondary" onClick={()=>setCreditAdd(null)}>Cancel</button>
@@ -11608,7 +11608,7 @@ export default function App(){
       };
       // Debounce realtime events — coalesce rapid-fire changes into a single reload
       const debouncedReload=()=>{if(_rtTimer)clearTimeout(_rtTimer);_rtTimer=setTimeout(reloadAll,2000)};
-      ['estimates','estimate_items','estimate_item_decorations','estimate_art_files','sales_orders','so_items','so_item_decorations','so_item_pick_lines','so_item_po_lines','so_art_files','so_jobs','so_firm_dates','invoices','invoice_items','invoice_payments','messages','message_reads','customers','customer_contacts','products','product_inventory','vendors','team_members','omg_stores','omg_store_products','issues','app_state','deco_vendors','deco_vendor_pricing'].forEach(table=>{
+      ['estimates','estimate_items','estimate_item_decorations','estimate_art_files','sales_orders','so_items','so_item_decorations','so_item_pick_lines','so_item_po_lines','so_art_files','so_jobs','so_firm_dates','invoices','invoice_items','invoice_payments','messages','message_reads','customers','customer_contacts','products','product_inventory','vendors','team_members','omg_stores','omg_store_products','issues','app_state','deco_vendors','deco_vendor_pricing','customer_credits','customer_credit_usage'].forEach(table=>{
         const ch=supabase.channel('realtime_'+table).on('postgres_changes',{event:'*',schema:'public',table},()=>{debouncedReload()}).subscribe();
         channels.push(ch);
       });
