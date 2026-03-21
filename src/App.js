@@ -73,7 +73,7 @@ const _dbLoad = async () => {
     const [rTeam,rCust,rContacts,rVend,rProd,rProdInv,rEst,rEstArt,rEstItems,rEstDecos,
       rSO,rSOArt,rSOFirm,rSOItems,rSODecos,rSOPicks,rSOPOs,rSOJobs,
       rInv,rInvPay,rInvItems,rMsg,rMsgReads,rOMG,rOMGProd,rIssues,rAppState,
-      rPromoProg,rPromoPeriods,rPromoUsage,
+      rPromoProg,rPromoPeriods,rPromoUsage,rCredits,rCreditUsage,
       rRepCsr,rAssignedTodos,rTodoComments,
       rDecoVendors,rDecoVendorPricing,
       rQuoteReqs,rQuoteReqItems] = await Promise.all([
@@ -107,6 +107,8 @@ const _dbLoad = async () => {
       _safeQuery('customer_promo_programs'),
       _safeQuery('customer_promo_periods'),
       _safeQuery('customer_promo_usage'),
+      _safeQuery('customer_credits'),
+      _safeQuery('customer_credit_usage'),
       _safeQuery('rep_csr_assignments'),
       _safeQuery('assigned_todos'),
       _safeQuery('todo_comments'),
@@ -133,6 +135,7 @@ const _dbLoad = async () => {
     const issues=d(rIssues);
     // Promo data
     const promoPrograms=d(rPromoProg);const promoPeriods=d(rPromoPeriods);const promoUsage=d(rPromoUsage);
+    const creditRecords=d(rCredits);const creditUsageRecords=d(rCreditUsage);
     // Quote requests: attach items
     const quoteReqRaw=d(rQuoteReqs);const quoteReqItemsRaw=d(rQuoteReqItems);
     const quote_requests=quoteReqRaw.map(qr=>({...qr,items:quoteReqItemsRaw.filter(i=>i.quote_request_id===qr.id).sort((a,b)=>a.sort_order-b.sort_order)}));
@@ -148,7 +151,9 @@ const _dbLoad = async () => {
     const customers=custRaw.map(c=>({...c,contacts:contacts.filter(ct=>ct.customer_id===c.id).sort((a,b)=>a.sort_order-b.sort_order).map(ct=>({name:ct.name,email:ct.email,phone:ct.phone,role:ct.role})),
       promo_programs:promoPrograms.filter(pp=>pp.customer_id===c.id),
       promo_periods:promoPeriods.filter(pp=>pp.customer_id===c.id),
-      promo_usage:promoUsage.filter(pu=>promoPeriods.filter(pp=>pp.customer_id===c.id).some(pp=>pp.id===pu.period_id))}));
+      promo_usage:promoUsage.filter(pu=>promoPeriods.filter(pp=>pp.customer_id===c.id).some(pp=>pp.id===pu.period_id)),
+      credits:creditRecords.filter(cr=>cr.customer_id===c.id),
+      credit_usage:creditUsageRecords.filter(cu2=>creditRecords.filter(cr=>cr.customer_id===c.id).some(cr=>cr.id===cu2.credit_id))}));
     // Products: attach _inv and _alerts from product_inventory
     const products=prodRaw.map(p=>{const invRows=prodInv.filter(pi=>pi.product_id===p.id);const _inv={};const _alerts={};invRows.forEach(r=>{_inv[r.size]=r.quantity;if(r.alert_threshold)_alerts[r.size]=r.alert_threshold});const _pimg=_pimgMap[p.id];return{...p,image_url:p.image_url||p.image_front_url||(_pimg&&_pimg.front)||'',back_image_url:p.back_image_url||p.image_back_url||(_pimg&&_pimg.back)||'',images:p.images||(_pimg&&_pimg.gallery)||[],_inv,_alerts}});
     // Estimates: attach items (with decorations) and art_files
@@ -529,6 +534,31 @@ const _dbDeletePromoUsage = async (periodId, soId) => {
     return true;
   }catch(e){console.error('[DB] delete promo usage:',e);return false}
 };
+// ── Credit DB functions ──
+const _dbSaveCredit = async (credit) => {
+  if(!supabase)return false;
+  try{
+    const{error}=await supabase.from('customer_credits').upsert(credit,{onConflict:'id'});
+    if(error){console.error('[DB] save credit:',error.message);return false}
+    return true;
+  }catch(e){console.error('[DB] save credit:',e);return false}
+};
+const _dbDeleteCredit = async (id) => {
+  if(!supabase)return false;
+  try{
+    const{error}=await supabase.from('customer_credits').delete().eq('id',id);
+    if(error){console.error('[DB] delete credit:',error.message);return false}
+    return true;
+  }catch(e){console.error('[DB] delete credit:',e);return false}
+};
+const _dbSaveCreditUsage = async (usage) => {
+  if(!supabase)return false;
+  try{
+    const{error}=await supabase.from('customer_credit_usage').insert(usage);
+    if(error){console.error('[DB] save credit usage:',error.message);return false}
+    return true;
+  }catch(e){console.error('[DB] save credit usage:',e);return false}
+};
 const _dbSaveProduct = async (p) => {
   if(!supabase)return;
   try{
@@ -641,14 +671,14 @@ const _dbSaveFailedIds=new Set(JSON.parse(localStorage.getItem('nsa_save_failed_
 const _persistFailedIds=()=>{try{localStorage.setItem('nsa_save_failed_ids',JSON.stringify([..._dbSaveFailedIds]))}catch{}};
 // Column whitelists — strip unknown fields before sending to Supabase (localStorage may have extra UI fields like vendor_id)
 const _pick=(obj,cols)=>{const r={};cols.forEach(c=>{if(c in obj)r[c]=obj[c]});return r};
-const _estCols=['id','customer_id','memo','status','created_by','created_at','updated_at','default_markup','shipping_type','shipping_value','ship_to_id','email_status','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history','print_history','deleted_at','promo_applied','promo_amount','update_requests','approved_by','approved_at'];
-const _soCols=['id','customer_id','estimate_id','memo','status','created_by','created_at','updated_at','expected_date','production_notes','shipping_type','shipping_value','ship_to_id','default_markup','omg_store_id','_shipstation_order_id','_shipping_status','_tracking_number','_carrier','_ship_date','_tracking_url','_shipped','_shipments','_shipping_cost','_shipstation_cost','_inbound_freight','deleted_at','promo_applied','promo_amount','ship_preference','ship_on_date','order_type','expected_ship_date','booking_confirmed','booking_confirmed_at','booking_confirmed_by','booking_alert_days','po_number','tax_rate','tax_exempt','email_status','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history','print_history'];
+const _estCols=['id','customer_id','memo','status','created_by','created_at','updated_at','default_markup','shipping_type','shipping_value','ship_to_id','email_status','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history','print_history','deleted_at','promo_applied','promo_amount','update_requests','approved_by','approved_at','credit_applied','credit_amount'];
+const _soCols=['id','customer_id','estimate_id','memo','status','created_by','created_at','updated_at','expected_date','production_notes','shipping_type','shipping_value','ship_to_id','default_markup','omg_store_id','_shipstation_order_id','_shipping_status','_tracking_number','_carrier','_ship_date','_tracking_url','_shipped','_shipments','_shipping_cost','_shipstation_cost','_inbound_freight','deleted_at','promo_applied','promo_amount','ship_preference','ship_on_date','order_type','expected_ship_date','booking_confirmed','booking_confirmed_at','booking_confirmed_by','booking_alert_days','po_number','tax_rate','tax_exempt','email_status','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history','print_history','credit_applied','credit_amount'];
 const _itemCols=['product_id','sku','name','brand','color','vendor_id','nsa_cost','retail_price','unit_sell','sizes','available_sizes','_colors','no_deco','is_custom','custom_desc','custom_cost','custom_sell','is_promo','_pre_promo_sell','est_qty','size_availability','_colorImage','_colorBackImage'];
 const _decoCols=['kind','position','type','art_file_id','art_tbd_type','tbd_colors','tbd_stitches','tbd_dtf_size','sell_override','sell_each','cost_each','underbase','two_color','colors','stitches','dtf_size','num_method','num_size','num_size_back','num_font','roster','names','names_list','vendor','deco_type','notes','custom_font_art_id','print_color','front_and_back','reversible','num_qty','name_qty','color_way_id','_cost_locked'];
 // Columns that may not exist in production DB / schema cache — stripped on insert retry
 const _itemExtraCols=new Set(['vendor_id','is_promo','_pre_promo_sell','est_qty','size_availability','_colorImage','_colorBackImage']);
-const _estExtraCols=new Set(['promo_applied','promo_amount','update_requests','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history','print_history','approved_by','approved_at']);
-const _soExtraCols=new Set(['_shipping_cost','_shipstation_cost','_inbound_freight','promo_applied','promo_amount','ship_preference','ship_on_date','order_type','expected_ship_date','booking_confirmed','booking_confirmed_at','booking_confirmed_by','booking_alert_days','po_number','tax_rate','tax_exempt','email_status','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history','print_history']);
+const _estExtraCols=new Set(['promo_applied','promo_amount','update_requests','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history','print_history','approved_by','approved_at','credit_applied','credit_amount']);
+const _soExtraCols=new Set(['_shipping_cost','_shipstation_cost','_inbound_freight','promo_applied','promo_amount','ship_preference','ship_on_date','order_type','expected_ship_date','booking_confirmed','booking_confirmed_at','booking_confirmed_by','booking_alert_days','po_number','tax_rate','tax_exempt','email_status','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history','print_history','credit_applied','credit_amount']);
 const _decoExtraCols=new Set(['print_color','front_and_back','reversible','num_qty','name_qty','num_font','num_size_back','custom_font_art_id','deco_type','notes','vendor','color_way_id','_cost_locked']);
 // Sanitize decoration data before DB insert — strip UI-only placeholders that would violate constraints
 const _sanitizeDeco=(d)=>{const r={...d};if(r.custom_font_art_id&&r.custom_font_art_id==='pending')r.custom_font_art_id=null;if(r.art_file_id&&r.art_file_id==='__tbd')r.art_file_id=null;return r};
@@ -3766,8 +3796,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             ...(totals.ship>0?[{l:'SHIP',v:totals.ship,bg:'#f0f9ff',c:'#0369a1'}]:[]),
             ...(totals.tax>0?[{l:'TAX',v:totals.tax,bg:'#fefce8',c:'#a16207',s:(totals.taxRate*100).toFixed(3)+'%'}]:[]),
             ...(cust?.tax_exempt?[{l:'TAX',v:0,bg:'#fef2f2',c:'#dc2626',s:'EXEMPT'}]:[]),
-            {l:'TOTAL',v:o.promo_applied&&promoTotals?promoTotals.customerPays:totals.grand,bg:o.promo_applied?'#dcfce7':'#faf5ff',c:o.promo_applied?'#166534':'#7c3aed'},
-            ...(o.promo_applied&&promoTotals?[{l:'PROMO $',v:promoTotals.promoAmount,bg:'#fef3c7',c:'#92400e',s:'deducted'}]:[])].map(x=>
+            {l:'TOTAL',v:(()=>{let t=o.promo_applied&&promoTotals?promoTotals.customerPays:totals.grand;if(o.credit_applied)t=Math.max(0,t-safeNum(o.credit_amount));return t})(),bg:o.promo_applied||o.credit_applied?'#dcfce7':'#faf5ff',c:o.promo_applied||o.credit_applied?'#166534':'#7c3aed'},
+            ...(o.promo_applied&&promoTotals?[{l:'PROMO $',v:promoTotals.promoAmount,bg:'#fef3c7',c:'#92400e',s:'deducted'}]:[]),
+            ...(o.credit_applied?[{l:'CREDIT',v:safeNum(o.credit_amount),bg:'#d1fae5',c:'#065f46',s:'deducted'}]:[])].map(x=>
             <div key={x.l} style={{textAlign:'center',padding:'8px 12px',background:x.bg,borderRadius:8,minWidth:72}}><div style={{fontSize:9,color:x.c,fontWeight:700}}>{x.l}</div><div style={{fontSize:17,fontWeight:800,color:x.c}}>${x.v.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div>{x.s&&<div style={{fontSize:9,color:'#94a3b8'}}>{x.s}</div>}</div>)}</div>
           {isSO&&(()=>{const actualShip=safeNum(o._shipping_cost||o._shipstation_cost||0)||(o._shipments||[]).reduce((a,s)=>a+safeNum(s.shipping_cost||0),0);const quotedShip=o.shipping_type==='pct'?totals.rev*(o.shipping_value||0)/100:safeNum(o.shipping_value||0);const overage=actualShip-quotedShip;
             return actualShip>0&&overage>0?<div style={{fontSize:10,padding:'4px 10px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:6,color:'#dc2626',fontWeight:600,marginTop:4}}>
@@ -3867,7 +3898,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 });
               });
               const shipAmt=o.shipping_type==='pct'?subTotal*(o.shipping_value||0)/100:(o.shipping_value||0);
-              const taxAmt=subTotal*taxRate;const total=subTotal+shipAmt+taxAmt;
+              // Credit: reduce tax on reduced subtotal, then subtract credit from total
+              const _pdfCredit=o.credit_applied?safeNum(o.credit_amount):0;
+              const _pdfCreditOnSub=Math.min(_pdfCredit,subTotal);
+              const _pdfReducedSub=Math.max(0,subTotal-_pdfCreditOnSub);
+              const taxAmt=_pdfCredit>0?_pdfReducedSub*taxRate:subTotal*taxRate;
+              const _pdfCreditApplied=Math.min(_pdfCredit,subTotal+shipAmt+taxAmt);
+              const total=subTotal+shipAmt+taxAmt-_pdfCreditApplied;
               if(shipAmt>0)rows.push({cells:[{value:1,style:'text-align:center'},{value:'<strong>Shipping</strong><br/><span style="font-size:10px;color:#555">Shipping</span>'},{value:'',style:'text-align:center'},{value:'No',style:'text-align:center'},{value:'$'+shipAmt.toFixed(2),style:'text-align:right'},{value:'$'+shipAmt.toFixed(2),style:'text-align:right'}]});
               const ddBillAddr=cust?.shipping_address_line1?cust.shipping_address_line1+(cust.shipping_city?'<br/>'+cust.shipping_city+(cust.shipping_state?' '+cust.shipping_state:'')+(cust.shipping_zip?' '+cust.shipping_zip:''):'')+'<br/>United States':(cust?.billing_address_line1?cust.billing_address_line1+(cust.billing_city?'<br/>'+cust.billing_city+(cust.billing_state?' '+cust.billing_state:'')+(cust.billing_zip?' '+cust.billing_zip:''):'')+'<br/>United States':'');
               printDoc({
@@ -3885,6 +3922,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   rows:[...rows,
                     {cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Subtotal</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'},{value:'<strong>$'+subTotal.toFixed(2)+'</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'}]},
                     ...(taxAmt>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Tax ('+(taxRate*100).toFixed(3)+'%)</strong>',style:'text-align:right;border:none'},{value:'$'+taxAmt.toFixed(2),style:'text-align:right;border:none'}]}]:[]),
+                    ...(_pdfCreditApplied>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Credit</strong>',style:'text-align:right;border:none;color:#065f46'},{value:'<strong style="color:#065f46">-$'+_pdfCreditApplied.toFixed(2)+'</strong>',style:'text-align:right;border:none'}]}]:[]),
                     {_class:'totals-row',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Total</strong>',style:'text-align:right'},{value:'<strong style="font-size:14px">$'+total.toFixed(2)+'</strong>',style:'text-align:right'}]},
                   ]}],
                 footer:isE?'This estimate is valid for 30 days. Prices subject to change. '+NSA.depositTerms:NSA.terms,
@@ -3949,6 +3987,20 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               else{nf('Promo applied to '+fullCount+' of '+totalItems+' items — customer pays for rest')}
             }} onMouseEnter={e=>e.currentTarget.style.background='#fffbeb'} onMouseLeave={e=>e.currentTarget.style.background='none'}>💰 Apply Promo Funds</button>}
             {o.promo_applied&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#d97706',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);sv('promo_applied',false);sv('promo_amount',0);sv('items',safeItems(o).map(it=>({...it,is_promo:false,unit_sell:it._pre_promo_sell!=null?it._pre_promo_sell:it.unit_sell,_pre_promo_sell:undefined,_promo_credit:undefined})));nf('Promo mode disabled')}} onMouseEnter={e=>e.currentTarget.style.background='#fffbeb'} onMouseLeave={e=>e.currentTarget.style.background='none'}>💰 Remove Promo</button>}
+            {/* Credit — show when customer has credits available */}
+            {cust&&!o.credit_applied&&(()=>{const _credits=(cust.credits||[]);const _bal=_credits.reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0);return _bal>0})()&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#065f46',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);
+              const credits=(cust.credits||[]).filter(cr=>(cr.amount||0)-(cr.used||0)>0);
+              const totalBal=credits.reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0);
+              if(totalBal<=0){nf('No credits available','error');return}
+              // Calculate order total (subtotal + shipping + tax) to determine credit to apply
+              const orderTotal=totals.grand;
+              const creditToApply=Math.min(totalBal,orderTotal);
+              // Calculate how credit reduces tax: credit reduces taxable subtotal proportionally
+              // Credit is applied to the invoice total (subtotal + ship + tax), but tax is recalculated on reduced amount
+              sv('credit_applied',true);sv('credit_amount',Math.round(creditToApply*100)/100);
+              nf('Credit of $'+creditToApply.toFixed(2)+' applied (available: $'+totalBal.toFixed(2)+')');
+            }} onMouseEnter={e=>e.currentTarget.style.background='#ecfdf5'} onMouseLeave={e=>e.currentTarget.style.background='none'}>🏷️ Apply Credit</button>}
+            {o.credit_applied&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#065f46',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);sv('credit_applied',false);sv('credit_amount',0);nf('Credit removed')}} onMouseEnter={e=>e.currentTarget.style.background='#ecfdf5'} onMouseLeave={e=>e.currentTarget.style.background='none'}>🏷️ Remove Credit</button>}
             {(isE||onDelete)&&<><div style={{borderTop:'1px solid #e2e8f0',margin:'2px 0'}}/><button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#dc2626',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);if(onDelete){onDelete(o.id)}else{nf('Delete not available','error')}}} onMouseEnter={e=>e.currentTarget.style.background='#fef2f2'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="trash" size={12}/> Delete</button></>}
           </div></>})()}
         </div>
@@ -3979,6 +4031,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         <div style={{fontSize:12,color:'#64748b'}}>Tax: <strong>${totals.tax.toFixed(2)}</strong></div>
         {/* Promo Active Badge (toggle moved to Actions dropdown) */}
         {o.promo_applied&&<span style={{padding:'3px 10px',borderRadius:10,fontSize:11,fontWeight:700,background:'#fef3c7',color:'#92400e'}}>💰 PROMO ACTIVE</span>}
+        {o.credit_applied&&<span style={{padding:'3px 10px',borderRadius:10,fontSize:11,fontWeight:700,background:'#d1fae5',color:'#065f46'}}>🏷️ CREDIT ${safeNum(o.credit_amount).toFixed(2)}</span>}
       </div>
       {/* Promo Summary */}
       {o.promo_applied&&promoTotals&&<div style={{margin:'8px 0',padding:'10px 16px',background:'#fffbeb',borderRadius:8,border:'1px solid #fde68a',display:'flex',gap:16,alignItems:'center',flexWrap:'wrap'}}>
@@ -3990,6 +4043,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         {promoTotals.normalRev>0&&<span style={{fontSize:12}}>Customer Pays: <strong style={{color:'#166534'}}>${promoTotals.customerPays.toFixed(2)}</strong></span>}
         {promoTotals.normalRev===0&&promoTotals.promoCredit===0&&<span style={{fontSize:12,fontWeight:700,color:'#166534'}}>$0.00 Order</span>}
         {(()=>{if(!cust)return null;const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();const _ps=(cust.promo_periods||[]).filter(p=>p.period_start===(_m<6?_y+'-01-01':_y+'-07-01'));const _bal=_ps.reduce((a,p)=>a+(p.allocated||0)-(p.used||0),0);if(promoTotals.promoAmount>_bal)return<span style={{fontSize:12,fontWeight:700,color:'#dc2626',background:'#fef2f2',padding:'2px 8px',borderRadius:6}}>⚠️ Exceeds available funds — ${_bal.toLocaleString(undefined,{maximumFractionDigits:2})} remaining</span>;return<span style={{fontSize:11,color:'#64748b'}}>Available: ${_bal.toLocaleString(undefined,{maximumFractionDigits:2})}</span>})()}
+      </div>}
+      {/* Credit Summary */}
+      {o.credit_applied&&safeNum(o.credit_amount)>0&&<div style={{margin:'8px 0',padding:'10px 16px',background:'#ecfdf5',borderRadius:8,border:'1px solid #a7f3d0',display:'flex',gap:16,alignItems:'center',flexWrap:'wrap'}}>
+        <span style={{fontSize:11,fontWeight:700,color:'#065f46'}}>🏷️ CREDIT APPLIED</span>
+        <span style={{fontSize:12}}>Credit: <strong style={{color:'#065f46'}}>${safeNum(o.credit_amount).toFixed(2)}</strong></span>
+        <span style={{fontSize:12}}>Order Total: <strong>${totals.grand.toFixed(2)}</strong></span>
+        <span style={{fontSize:12,fontWeight:700,color:'#065f46'}}>After Credit: ${Math.max(0,totals.grand-safeNum(o.credit_amount)).toFixed(2)}</span>
+        {(()=>{if(!cust)return null;const _bal=(cust.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0);return<span style={{fontSize:11,color:'#64748b'}}>Account Balance: ${_bal.toLocaleString(undefined,{maximumFractionDigits:2})}</span>})()}
       </div>}
       {/* SO STATUS — fully auto-calculated from items/jobs */}
       {isSO&&(()=>{
@@ -5574,7 +5635,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           rows.push({cells:[{value:qty,style:'text-align:center;color:#888;font-size:11px'},{value:'<span style="padding-left:20px;color:#666;font-size:11px">'+decoLabel+posLabel+'</span>'},{value:'',style:'text-align:center'},{value:'',style:'text-align:center'},{value:'$'+dp2.sell.toFixed(2),style:'text-align:right;color:#888;font-size:11px'},{value:'$'+decoAmt.toFixed(2),style:'text-align:right;color:#888;font-size:11px'}]});
         })}
       });
-      const shipAmt=o.shipping_type==='pct'?subTotal*(o.shipping_value||0)/100:(o.shipping_value||0);const taxAmt=subTotal*taxRate;const total=subTotal+shipAmt+taxAmt;
+      const shipAmt=o.shipping_type==='pct'?subTotal*(o.shipping_value||0)/100:(o.shipping_value||0);
+      const _ec=o.credit_applied?safeNum(o.credit_amount):0;const _ecSub=Math.min(_ec,subTotal);const _ecRed=Math.max(0,subTotal-_ecSub);
+      const taxAmt=_ec>0?_ecRed*taxRate:subTotal*taxRate;const _ecApp=Math.min(_ec,subTotal+shipAmt+taxAmt);
+      const total=subTotal+shipAmt+taxAmt-_ecApp;
       if(shipAmt>0)rows.push({cells:[{value:1,style:'text-align:center'},{value:'<strong>Shipping</strong><br/><span style="font-size:10px;color:#555">Shipping</span>'},{value:'',style:'text-align:center'},{value:'No',style:'text-align:center'},{value:'$'+shipAmt.toFixed(2),style:'text-align:right'},{value:'$'+shipAmt.toFixed(2),style:'text-align:right'}]});
       const billAddr=cust?.shipping_address_line1?cust.shipping_address_line1+(cust.shipping_city?'<br/>'+cust.shipping_city+(cust.shipping_state?' '+cust.shipping_state:'')+(cust.shipping_zip?' '+cust.shipping_zip:''):'')+'<br/>United States':(cust?.billing_address_line1?cust.billing_address_line1+(cust.billing_city?'<br/>'+cust.billing_city+(cust.billing_state?' '+cust.billing_state:'')+(cust.billing_zip?' '+cust.billing_zip:''):'')+'<br/>United States':'');
       return buildDocHtml({title:cust?.name||'Customer',docNum:o.id,docType:isE?'ESTIMATE':'SALES ORDER',
@@ -5583,6 +5647,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         tables:[{headers:['Quantity','Item','Options','Tax','Rate','Amount'],aligns:['center','left','center','center','right','right'],rows:[...rows,
           {cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Subtotal</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'},{value:'<strong>$'+subTotal.toFixed(2)+'</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'}]},
           ...(taxAmt>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Tax ('+(taxRate*100).toFixed(3)+'%)</strong>',style:'text-align:right;border:none'},{value:'$'+taxAmt.toFixed(2),style:'text-align:right;border:none'}]}]:[]),
+          ...(_ecApp>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Credit</strong>',style:'text-align:right;border:none;color:#065f46'},{value:'<strong style="color:#065f46">-$'+_ecApp.toFixed(2)+'</strong>',style:'text-align:right;border:none'}]}]:[]),
           {_class:'totals-row',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Total</strong>',style:'text-align:right'},{value:'<strong style="font-size:14px">$'+total.toFixed(2)+'</strong>',style:'text-align:right'}]}]}],
         footer:isE?'This estimate is valid for 30 days. Prices subject to change. '+NSA.depositTerms:NSA.terms});
     }} repUser={cu} defaultFollowUpDays={portalSettings?.estFollowUpDays||portalSettings?.followUpDays||7} onSend={({followUpDays:fuDays}={})=>{
@@ -5752,8 +5817,20 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const nonPromoShip=isPromoOrder?(promoTotals?totals.ship-promoTotals.promoShip:0):totals.ship;
       const nonPromoTax=isPromoOrder?0:totals.tax;
       const invShip=activeItems.length===items.length?nonPromoShip:Math.round(nonPromoShip*selFraction*100)/100;
-      const invTax=activeItems.length===items.length?nonPromoTax:Math.round(nonPromoTax*selFraction*100)/100;
-      const fullTotal=selTotals.subtotal+invShip+invTax;
+      let invTax=activeItems.length===items.length?nonPromoTax:Math.round(nonPromoTax*selFraction*100)/100;
+      // Credit: subtract from subtotal and recalculate tax on reduced amount
+      const creditAmt=o.credit_applied?safeNum(o.credit_amount):0;
+      let invCredit=0;
+      if(creditAmt>0){
+        invCredit=Math.min(creditAmt,selTotals.subtotal+invShip+invTax);
+        // Recalculate tax: credit reduces the taxable subtotal proportionally
+        const taxRate2=o.tax_exempt?0:(o.tax_rate||cust?.tax_rate||0);
+        const creditOnSubtotal=Math.min(creditAmt,selTotals.subtotal);
+        const reducedSubtotal=Math.max(0,selTotals.subtotal-creditOnSubtotal);
+        invTax=Math.round(reducedSubtotal*taxRate2*100)/100;
+        invCredit=Math.min(creditAmt,selTotals.subtotal+invShip+invTax);
+      }
+      const fullTotal=selTotals.subtotal+invShip+invTax-invCredit;
       const invTotal=invType==='deposit'?Math.round(fullTotal*invDepositPct/100*100)/100:fullTotal;
 
       // Existing invoices on this SO
@@ -5875,6 +5952,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <span style={{fontSize:12,color:'#64748b'}}>Tax</span>
               <span style={{fontSize:12}}>${(invType==='deposit'?invTax*invDepositPct/100:invTax).toFixed(2)}</span>
             </div>}
+            {invCredit>0&&<div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
+              <span style={{fontSize:12,color:'#065f46',fontWeight:600}}>Credit Applied</span>
+              <span style={{fontSize:12,fontWeight:700,color:'#065f46'}}>-${(invType==='deposit'?invCredit*invDepositPct/100:invCredit).toFixed(2)}</span>
+            </div>}
             {invType==='deposit'&&<div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
               <span style={{fontSize:12,color:'#1e40af',fontWeight:600}}>Deposit ({invDepositPct}%)</span>
               <span style={{fontSize:12,fontWeight:700,color:'#1e40af'}}>${invTotal.toFixed(2)}</span>
@@ -5907,6 +5988,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               ...(invType==='deposit'?{deposit_pct:invDepositPct}:{}),
               ...(billingOverride?{billing_name:billingOverride.label||'',billing_address:[billingOverride.street,billingOverride.city,billingOverride.state,billingOverride.zip].filter(Boolean).join(', ')}:{}),
               ...(o.po_number?{_po_number:o.po_number}:{}),
+              ...(invCredit>0?{credit_amount:Math.round((invType==='deposit'?invCredit*invDepositPct/100:invCredit)*100)/100}:{}),
               line_items:lineItems,
               items:activeItems.map(idx=>{const it=items[idx];return{sku:it.sku,name:it.name,qty:Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0),unit_sell:safeNum(it.unit_sell)}})};
             onInv(prev=>[...prev,inv]);
@@ -5950,6 +6032,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               ...lineItems.map(li=>({cells:[li.desc,li.qty,'$'+safeNum(li.rate).toFixed(2),'$'+safeNum(li.amount).toFixed(2)]})),
               ...(shipAmt>0?[{cells:[{value:'Shipping',style:'font-style:italic'},'','','$'+shipAmt.toFixed(2)]}]:[]),
               ...(taxAmt>0?[{cells:[{value:'Tax',style:'font-style:italic'},'','','$'+taxAmt.toFixed(2)]}]:[]),
+              ...(safeNum(ir.credit_amount)>0?[{cells:[{value:'Credit Applied',style:'font-style:italic;color:#065f46'},'','',{value:'-$'+safeNum(ir.credit_amount).toFixed(2),style:'color:#065f46'}]}]:[]),
               {_class:'totals-row',cells:['','','Total','$'+ir.total.toLocaleString()]}
             ]}],
           footer:ir.inv_type==='deposit'?NSA.depositTerms:NSA.terms});
@@ -6096,6 +6179,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   ...lineItems.map(li=>({cells:[li.desc,li.qty,'$'+safeNum(li.rate).toFixed(2),'$'+safeNum(li.amount).toFixed(2)]})),
                   ...(shipAmt>0?[{cells:[{value:'Shipping',style:'font-style:italic'},'','','$'+shipAmt.toFixed(2)]}]:[]),
                   ...(taxAmt>0?[{cells:[{value:'Tax',style:'font-style:italic'},'','','$'+taxAmt.toFixed(2)]}]:[]),
+                  ...(safeNum(ir.credit_amount)>0?[{cells:[{value:'Credit Applied',style:'font-style:italic;color:#065f46'},'','',{value:'-$'+safeNum(ir.credit_amount).toFixed(2),style:'color:#065f46'}]}]:[]),
                   {_class:'totals-row',cells:['','','Total','$'+ir.total.toLocaleString()]},
                   ...(ir.paid>0?[{cells:['','',{value:'Paid',style:'color:#166534'},'$'+ir.paid.toLocaleString()]}]:[]),
                   ...(irBal>0?[{_style:'background:#fef2f2',cells:['','',{value:'<strong>Balance Due</strong>',style:'color:#dc2626'},'<strong style="color:#dc2626;font-size:14px">$'+irBal.toLocaleString()+'</strong>']}]:[])
@@ -8396,7 +8480,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
 }
 
 // CUSTOMER DETAIL
-function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,cu,onOpenSO,onOpenEst,ests,onSaveSO,REPS,prod,onCopy,onDelete,onSavePromoProgram,onDeletePromoProgram,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,onRefreshCustomer,nf}){
+function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,cu,onOpenSO,onOpenEst,ests,onSaveSO,REPS,prod,onCopy,onDelete,onSavePromoProgram,onDeletePromoProgram,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,onSaveCredit,onDeleteCredit,onRefreshCustomer,nf}){
   const[tab,setTab]=useState('activity');const[oF,setOF]=useState('all');const[sF,setSF]=useState('all');const[rR,setRR]=useState('thisyear');
   const[editContact,setEditContact]=useState(null);const[custLocal,setCustLocal]=useState(initCust);
   const[showInvEmail,setShowInvEmail]=useState(false);const[invEmailMsg,setInvEmailMsg]=useState('');const[showPortal,setShowPortal]=useState(false);
@@ -8409,6 +8493,8 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   const[promoEdit,setPromoEdit]=useState(null);// null or {type,fixed_amount,spend_percentage,notes,id?}
   const[promoNewPeriod,setPromoNewPeriod]=useState(null);// null or {program_id,allocated,notes}
   const[promoAdj,setPromoAdj]=useState(null);// null or {period_id,amount,description}
+  // Credit state
+  const[creditAdd,setCreditAdd]=useState(null);// null or {amount,source}
   const[portalJobView,setPortalJobView]=useState(null);// {job,so} when viewing a job mockup
   const[portalComment,setPortalComment]=useState('');
   const[portalContactEdit,setPortalContactEdit]=useState(null);
@@ -8483,7 +8569,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   {subs.map(sub=><div key={sub.id} style={{padding:'10px 18px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:8,cursor:'pointer'}} onClick={()=>onSelCust(sub)}>
     <span style={{color:'#cbd5e1'}}>|_</span><span style={{fontWeight:600,color:'#1e40af'}}>{sub.name}</span><span className="badge badge-gray">{sub.alpha_tag}</span><div style={{flex:1}}/>
     {(sub._ob||0)>0&&<span style={{fontSize:12,fontWeight:700,color:'#dc2626'}}>${sub._ob.toLocaleString()}</span>}</div>)}</div>}</div>}
-  <div className="tabs">{['activity','contacts','overview','promo','artwork','reporting'].map(t=><button key={t} className={`tab ${tab===t?'active':''}`} onClick={()=>setTab(t)}>{t==='activity'?'Orders':t==='contacts'?'Contacts'+(customer.contacts?.length?' ('+customer.contacts.length+')':''):t==='promo'?'Promo $'+(customer.promo_programs?.length?' ('+customer.promo_programs.length+')':''):t[0].toUpperCase()+t.slice(1)}</button>)}</div>
+  <div className="tabs">{['activity','contacts','overview','promo','artwork','reporting'].map(t=><button key={t} className={`tab ${tab===t?'active':''}`} onClick={()=>setTab(t)}>{t==='activity'?'Orders':t==='contacts'?'Contacts'+(customer.contacts?.length?' ('+customer.contacts.length+')':''):t==='promo'?'Promo $'+(customer.promo_programs?.length||((customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)>0)?' ('+(customer.promo_programs?.length?customer.promo_programs.length+' promo':'')+(customer.promo_programs?.length&&(customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)>0?' · ':'')+(((customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)>0)?'$'+((customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)).toLocaleString()+' credit':'')+')':''):t[0].toUpperCase()+t.slice(1)}</button>)}</div>
 
   {/* ORDERS TAB — with live SO status */}
   {tab==='activity'&&<>
@@ -8768,6 +8854,69 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
           </tr>})}
         </tbody></table>
       </div></div>}
+
+      {/* ═══ CREDITS SECTION ═══ */}
+      <div style={{borderTop:'2px solid #e2e8f0',paddingTop:12,marginTop:4}}>
+        <div style={{fontSize:13,fontWeight:800,color:'#065f46',marginBottom:8}}>ACCOUNT CREDITS</div>
+      </div>
+
+      {/* Credit Balance */}
+      {(()=>{const credits=customer.credits||[];const creditUsage=customer.credit_usage||[];
+        const totalBalance=credits.reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0);
+        const totalAllocated=credits.reduce((a,cr)=>a+(cr.amount||0),0);
+        const totalUsed=credits.reduce((a,cr)=>a+(cr.used||0),0);
+        return<><div className="card"><div className="card-header"><h2>Credit Balance</h2></div>
+          <div className="card-body">
+            <div className="stats-row">
+              <div className="stat-card"><div className="stat-label">Total Credits</div><div className="stat-value" style={{color:'#2563eb'}}>${totalAllocated.toLocaleString()}</div></div>
+              <div className="stat-card"><div className="stat-label">Used</div><div className="stat-value" style={{color:'#dc2626'}}>${totalUsed.toLocaleString()}</div></div>
+              <div className="stat-card"><div className="stat-label">Available</div><div className="stat-value" style={{color:totalBalance>0?'#166534':'#94a3b8'}}>${totalBalance.toLocaleString()}</div></div>
+            </div>
+          </div>
+        </div>
+
+        {/* Credit Lines */}
+        <div className="card"><div className="card-header"><h2>Credit Lines</h2>
+          {!creditAdd&&<button className="btn btn-sm btn-primary" onClick={()=>setCreditAdd({amount:0,source:''})}>+ Add Credit</button>}
+        </div>
+        <div className="card-body">
+          {credits.length===0&&!creditAdd&&<div className="empty">No credits on this account</div>}
+          {credits.map(cr=>{const bal=(cr.amount||0)-(cr.used||0);const usages=creditUsage.filter(u=>u.credit_id===cr.id);
+            return<div key={cr.id} style={{padding:12,background:'#f8fafc',borderRadius:8,marginBottom:8,display:'flex',gap:12,alignItems:'center'}}>
+              <div style={{width:40,height:40,borderRadius:8,background:bal>0?'#d1fae5':'#f1f5f9',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0}}>{bal>0?'🏷️':'✓'}</div>
+              <div style={{flex:1}}>
+                <div style={{fontWeight:700,fontSize:14}}>${(cr.amount||0).toLocaleString()} {cr.source&&<span style={{fontWeight:400,color:'#64748b',fontSize:12}}>— {cr.source}</span>}</div>
+                <div style={{fontSize:11,color:'#64748b'}}>Used: ${(cr.used||0).toLocaleString()} · Remaining: ${bal.toLocaleString()}</div>
+                <div style={{fontSize:10,color:'#94a3b8'}}>Added {cr.created_at?new Date(cr.created_at).toLocaleDateString():'-'}{cr.created_by?' by '+cr.created_by:''}</div>
+                {usages.length>0&&<div style={{marginTop:6}}>
+                  <div style={{fontSize:10,fontWeight:700,color:'#64748b',marginBottom:2}}>USAGE</div>
+                  {usages.sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||'')).map((u,i)=>
+                    <div key={i} style={{fontSize:11,color:'#475569',display:'flex',gap:8}}>
+                      <span style={{color:'#94a3b8'}}>{u.created_at?new Date(u.created_at).toLocaleDateString():'-'}</span>
+                      <span style={{fontWeight:600,color:'#1e40af'}}>{u.so_id||u.estimate_id||'-'}</span>
+                      <span>{u.description||'-'}</span>
+                      <span style={{fontWeight:700,color:'#dc2626'}}>${(u.amount||0).toLocaleString()}</span>
+                    </div>)}
+                </div>}
+              </div>
+              <span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:bal>0?'#d1fae5':'#f1f5f9',color:bal>0?'#065f46':'#94a3b8'}}>{bal>0?'$'+bal.toLocaleString()+' avail':'Fully Used'}</span>
+              {bal>0&&<button className="btn btn-sm" style={{color:'#dc2626'}} onClick={()=>{if(window.confirm('Delete this credit of $'+cr.amount+'?'))onDeleteCredit(cr.id)}}>×</button>}
+            </div>})}
+          {creditAdd&&<div style={{padding:14,background:'#ecfdf5',borderRadius:8,border:'1px solid #a7f3d0',marginTop:8}}>
+            <div style={{display:'flex',gap:8,marginBottom:8,flexWrap:'wrap'}}>
+              <div><label className="form-label">Amount ($)</label><input className="form-input" type="number" style={{width:120}} value={creditAdd.amount||''} onChange={e=>setCreditAdd({...creditAdd,amount:parseFloat(e.target.value)||0})}/></div>
+              <div style={{flex:1}}><label className="form-label">Source / Reason</label><input className="form-input" value={creditAdd.source||''} onChange={e=>setCreditAdd({...creditAdd,source:e.target.value})} placeholder="e.g., Fundraising, Return credit, etc."/></div>
+            </div>
+            <div style={{display:'flex',gap:6}}>
+              <button className="btn btn-sm btn-primary" onClick={()=>{
+                if(!creditAdd.amount||creditAdd.amount<=0){nf('Enter a credit amount','error');return}
+                const credit={id:'cr_'+Date.now(),customer_id:customer.parent_id||customer.id,amount:creditAdd.amount,used:0,source:creditAdd.source||'',created_by:cu?.name||'System',created_at:new Date().toISOString()};
+                onSaveCredit(credit);setCreditAdd(null);nf('Credit of $'+creditAdd.amount.toLocaleString()+' added');
+              }}>Add Credit</button>
+              <button className="btn btn-sm btn-secondary" onClick={()=>setCreditAdd(null)}>Cancel</button>
+            </div>
+          </div>}
+        </div></div></>})()}
     </div>})()}
 
   {/* ARTWORK TAB — customer library + aggregated from SOs/Estimates */}
@@ -11948,7 +12097,7 @@ export default function App(){
       }
     }
     const _convCust=cust.find(c=>c.id===est.customer_id);
-    const so={id:nextSOId(sos),customer_id:est.customer_id,estimate_id:est.id,memo:est.memo,status:'need_order',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:est.default_markup,expected_date:defExp,production_notes:'',shipping_type:est.shipping_type,shipping_value:est.shipping_value,ship_to_id:est.ship_to_id,firm_dates:[],art_files:JSON.parse(JSON.stringify(est.art_files||[])),items:clonedItems,order_type:'at_once',expected_ship_date:null,booking_confirmed:false,booking_confirmed_at:null,booking_confirmed_by:null,booking_alert_days:100,promo_applied:est.promo_applied||false,promo_amount:promoAmount,tax_rate:_convCust?.tax_rate||0,tax_exempt:_convCust?.tax_exempt||false};
+    const so={id:nextSOId(sos),customer_id:est.customer_id,estimate_id:est.id,memo:est.memo,status:'need_order',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:est.default_markup,expected_date:defExp,production_notes:'',shipping_type:est.shipping_type,shipping_value:est.shipping_value,ship_to_id:est.ship_to_id,firm_dates:[],art_files:JSON.parse(JSON.stringify(est.art_files||[])),items:clonedItems,order_type:'at_once',expected_ship_date:null,booking_confirmed:false,booking_confirmed_at:null,booking_confirmed_by:null,booking_alert_days:100,promo_applied:est.promo_applied||false,promo_amount:promoAmount,credit_applied:est.credit_applied||false,credit_amount:safeNum(est.credit_amount),tax_rate:_convCust?.tax_rate||0,tax_exempt:_convCust?.tax_exempt||false};
     const convertedEst={...est,status:'converted',updated_at:new Date().toLocaleString()};
     setSOs(p=>[...p,so]);setEsts(p=>p.map(e=>e.id===est.id?convertedEst:e));setEEst(null);
     // Explicitly save to DB immediately — don't rely solely on useEffect chain
@@ -11981,6 +12130,23 @@ export default function App(){
         const finalPeriods=updatedPeriods.filter((p,i,arr)=>arr.findIndex(x=>x.id===p.id)===i);
         setCust(prev=>prev.map(cc=>cc.id===c.id?{...cc,promo_periods:finalPeriods,promo_usage:[...(cc.promo_usage||[]),usageRec]}:cc));
       }
+    }
+    // Deduct credit funds from customer's credits
+    if(est.credit_applied&&safeNum(est.credit_amount)>0&&c){
+      let creditRemaining=safeNum(est.credit_amount);
+      const updatedCredits=(c.credits||[]).map(cr=>{
+        if(creditRemaining<=0)return cr;
+        const bal=(cr.amount||0)-(cr.used||0);
+        if(bal<=0)return cr;
+        const deduct=Math.min(bal,creditRemaining);
+        creditRemaining-=deduct;
+        const usageRec={credit_id:cr.id,amount:deduct,description:est.memo||so.memo||'Credit on order '+so.id,created_by:cu?.name||'System',so_id:so.id,estimate_id:est.id,created_at:new Date().toISOString()};
+        _dbSaveCreditUsage(usageRec);
+        const updated={...cr,used:(cr.used||0)+deduct};
+        _dbSaveCredit(updated);
+        return updated;
+      });
+      setCust(prev=>prev.map(cc=>cc.id===c.id?{...cc,credits:updatedCredits}:cc));
     }
     setESO(so);setESOC(c);setPg('orders');nf(`${so.id} created from ${est.id}`)};
   const copyEstimate=est=>{
@@ -13303,6 +13469,8 @@ export default function App(){
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const updated={...selC,promo_periods:[...(selC.promo_periods||[]).filter(p=>p.id!==period.id),period]};setSelC(updated);setCust(prev=>prev.map(c=>c.id===updated.id?updated:c));nf('Promo period saved')}}
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const updated={...selC,promo_usage:[...(selC.promo_usage||[]),usage]};setSelC(updated);setCust(prev=>prev.map(c=>c.id===updated.id?updated:c))}}
       onDeletePromoUsage={async(periodId,soId)=>{await _dbDeletePromoUsage(periodId,soId);const updated={...selC,promo_usage:(selC.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(!soId||u.so_id===soId)))};setSelC(updated);setCust(prev=>prev.map(c=>c.id===updated.id?updated:c))}}
+      onSaveCredit={async(credit)=>{await _dbSaveCredit(credit);const updated={...selC,credits:[...(selC.credits||[]).filter(c=>c.id!==credit.id),credit]};setSelC(updated);setCust(prev=>prev.map(c=>c.id===updated.id?updated:c));nf('Credit saved')}}
+      onDeleteCredit={async(id)=>{await _dbDeleteCredit(id);const updated={...selC,credits:(selC.credits||[]).filter(c=>c.id!==id)};setSelC(updated);setCust(prev=>prev.map(c=>c.id===updated.id?updated:c));nf('Credit removed')}}
       onRefreshCustomer={c=>{setSelC(c);setCust(prev=>prev.map(pp=>pp.id===c.id?c:pp))}}
       nf={nf}
       onCopy={c=>{const copy={...c,id:'c'+Date.now(),name:c.name+' (Copy)',alpha_tag:'',contacts:(c.contacts||[]).map(ct=>({...ct})),_oe:0,_os:0,_oi:0,_ob:0};setCM({open:true,c:copy})}}
@@ -15785,6 +15953,7 @@ export default function App(){
                     ...invItems.map(li=>({cells:[li.desc,li.qty,'$'+safeNum(li.rate).toFixed(2),'$'+safeNum(li.amount).toFixed(2)]})),
                     ...(shipAmt>0?[{cells:[{value:'Shipping',style:'font-style:italic'},'','','$'+shipAmt.toFixed(2)]}]:[]),
                     ...(taxAmt>0?[{cells:[{value:'Tax',style:'font-style:italic'},'','','$'+taxAmt.toFixed(2)]}]:[]),
+                    ...(safeNum(inv.credit_amount)>0?[{cells:[{value:'Credit Applied',style:'font-style:italic;color:#065f46'},'','',{value:'-$'+safeNum(inv.credit_amount).toFixed(2),style:'color:#065f46'}]}]:[]),
                     {_class:'totals-row',cells:['','','Total','$'+inv.total.toLocaleString()]},
                     ...(inv.paid>0?[{cells:['','',{value:'Paid',style:'color:#166534'},'$'+inv.paid.toLocaleString()]}]:[]),
                     ...(bal>0?[{_style:'background:#fef2f2',cells:['','',{value:'<strong>Balance Due</strong>',style:'color:#dc2626'},'<strong style="color:#dc2626;font-size:14px">$'+bal.toLocaleString()+'</strong>']}]:[])
@@ -16381,6 +16550,7 @@ export default function App(){
                       ...invItems.map(li=>({cells:[li.desc,li.qty,'$'+safeNum(li.rate).toFixed(2),'$'+safeNum(li.amount).toFixed(2)]})),
                       ...(shipAmt>0?[{cells:[{value:'Shipping',style:'font-style:italic'},'','','$'+shipAmt.toFixed(2)]}]:[]),
                       ...(taxAmt>0?[{cells:[{value:'Tax',style:'font-style:italic'},'','','$'+taxAmt.toFixed(2)]}]:[]),
+                      ...(safeNum(inv.credit_amount)>0?[{cells:[{value:'Credit Applied',style:'font-style:italic;color:#065f46'},'','',{value:'-$'+safeNum(inv.credit_amount).toFixed(2),style:'color:#065f46'}]}]:[]),
                       {_class:'totals-row',cells:['','','Total','$'+inv.total.toLocaleString()]},
                       ...(inv.paid>0?[{cells:['','',{value:'Paid',style:'color:#166534'},'$'+inv.paid.toLocaleString()]}]:[]),
                       ...(inv._bal>0?[{_style:'background:#fef2f2',cells:['','',{value:'<strong>Balance Due</strong>',style:'color:#dc2626'},'<strong style="color:#dc2626;font-size:14px">$'+inv._bal.toLocaleString()+'</strong>']}]:[]),
