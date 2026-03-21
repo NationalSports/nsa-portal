@@ -45,6 +45,18 @@ const sendBrevoSms=async({to,content,sender})=>{
   catch(e){return{ok:false,error:e.message}}
 };
 
+// ─── Brevo Email Open Tracking ───
+// Check Brevo events API for email opens by messageId
+const checkBrevoEmailOpens=async(messageId)=>{
+  if(!_brevoKey||!messageId)return null;
+  try{
+    const r=await fetch('https://api.brevo.com/v3/smtp/statistics/events?messageId='+encodeURIComponent(messageId)+'&event=opened&limit=1',{headers:{'accept':'application/json','api-key':_brevoKey}});
+    if(!r.ok)return null;const d=await r.json();
+    if(d.events&&d.events.length>0){const ev=d.events[0];return{opened_at:ev.date,email:ev.email||null}}
+    return null;
+  }catch{return null}
+};
+
 // ─── Supabase Setup ───
 const _sbUrl = process.env.REACT_APP_SUPABASE_URL || '';
 const _sbKey = process.env.REACT_APP_SUPABASE_ANON_KEY || '';
@@ -2569,16 +2581,17 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
       for(const att of attachments){if(att.file){try{const b64=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result.split(',')[1]);reader.onerror=reject;reader.readAsDataURL(att.file)});brevoAttachments.push({name:att.name,content:b64})}catch(err){console.warn('Failed to read attachment:',att.name,err)}}}
       const res=await sendBrevoEmail({to:toList,subject,htmlContent:htmlBody,senderName:repUser?.name||'National Sports Apparel',senderEmail:'noreply@nationalsportsapparel.com',replyTo:repUser?.email?{email:repUser.email,name:repUser.name}:undefined,attachment:brevoAttachments.length>0?brevoAttachments:undefined});
       if(!res.ok){alert('Email send failed: '+(res.error||'Unknown error'));setSending(false);return}
+      // Send SMS notification if enabled
+      if(smsEnabled&&smsPhone){
+        const smsRes=await sendBrevoSms({to:smsPhone,content:smsMsg.substring(0,160)});
+        if(smsRes.ok){if(_notify)_notify('Text sent to '+smsPhone)}else{if(_notify)_notify('SMS failed: '+(smsRes.error||'Unknown'),'error');console.warn('SMS send failed:',smsRes.error)}
+      }
+      onSend({followUpDays,toEmails,messageId:res.messageId});onClose();
     }else{
       const mailTo='mailto:'+emails[0]+'?subject='+encodeURIComponent(subject)+'&body='+encodeURIComponent(body);
       window.open(mailTo,'_blank');
-    }
-    // Send SMS notification if enabled
-    if(smsEnabled&&smsPhone&&_brevoKey){
-      const smsRes=await sendBrevoSms({to:smsPhone,content:smsMsg.substring(0,160)});
-      if(smsRes.ok){if(_notify)_notify('Text sent to '+smsPhone)}else{if(_notify)_notify('SMS failed: '+(smsRes.error||'Unknown'),'error');console.warn('SMS send failed:',smsRes.error)}
-    }
-    onSend({followUpDays});onClose()};
+      onSend({followUpDays,toEmails});onClose();
+    }};
   if(!isOpen)return null;
   return(<div className="modal-overlay" onClick={onClose}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:650}}>
     <div className="modal-header"><h2>Send {label}</h2><button className="modal-close" onClick={onClose}>x</button></div>
@@ -5587,6 +5600,22 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <div style={{fontSize:11,color:'#64748b'}}>{new Date(o.follow_up_at).toLocaleDateString()}</div></div>
           </div>}
         </div>
+        {/* Coach Activity */}
+        {(()=>{const coachEvents=[];
+          // Document-level email tracking (estimates, SOs, invoices)
+          if(o.email_status==='opened'&&o.email_opened_at)coachEvents.push({ts:o.email_opened_at,type:'opened',detail:o._opened_by_email||(o.sent_history||[]).slice(-1)[0]?.to||''});
+          if(o.email_viewed_at)coachEvents.push({ts:o.email_viewed_at,type:'viewed',detail:''});
+          // Job-level coach tracking (SOs only)
+          if(!isE)safeJobs(o).forEach(j=>{if(j.sent_to_coach_at)coachEvents.push({ts:j.sent_to_coach_at,type:'sent',detail:j.art_name||j.key||j.id});if(j.coach_email_opened_at)coachEvents.push({ts:j.coach_email_opened_at,type:'opened',detail:j.art_name||j.key||j.id});if(j.coach_approved_at)coachEvents.push({ts:j.coach_approved_at,type:'approved',detail:j.art_name||j.key||j.id});if(j.coach_rejected)coachEvents.push({ts:j.coach_approved_at||j.sent_to_coach_at,type:'rejected',detail:j.art_name||j.key||j.id})});
+          coachEvents.sort((a,b)=>new Date(b.ts)-new Date(a.ts));
+          return coachEvents.length>0&&<div style={{marginBottom:16}}>
+          <div style={{fontSize:12,fontWeight:700,color:'#475569',marginBottom:6,textTransform:'uppercase',letterSpacing:0.5}}>Coach Activity</div>
+          {coachEvents.map((ev,ei)=><div key={ei} style={{display:'flex',alignItems:'center',gap:8,padding:'8px 12px',background:ev.type==='approved'?'#f0fdf4':ev.type==='rejected'?'#fef2f2':ev.type==='opened'||ev.type==='viewed'?'#dbeafe':'#eff6ff',borderRadius:6,border:'1px solid '+(ev.type==='approved'?'#bbf7d0':ev.type==='rejected'?'#fecaca':ev.type==='opened'||ev.type==='viewed'?'#93c5fd':'#bfdbfe'),marginBottom:4}}>
+            <span style={{fontSize:16}}>{ev.type==='sent'?'📨':ev.type==='opened'?'👁️':ev.type==='viewed'?'🔗':ev.type==='approved'?'✅':'❌'}</span>
+            <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600}}>{ev.type==='sent'?'Sent to coach':ev.type==='opened'?'Coach opened email':ev.type==='viewed'?'Coach viewed in portal':ev.type==='approved'?'Coach approved':'Coach rejected'}</div>
+            <div style={{fontSize:11,color:'#64748b'}}>{ev.detail?ev.detail+' · ':''}{new Date(ev.ts).toLocaleDateString()} @ {new Date(ev.ts).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true})}</div></div>
+          </div>)}
+        </div>})()}
         {/* Print History */}
         <div style={{marginBottom:16}}>
           <div style={{fontSize:12,fontWeight:700,color:'#475569',marginBottom:6,textTransform:'uppercase',letterSpacing:0.5}}>Print History</div>
@@ -5650,9 +5679,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           ...(_ecApp>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Credit</strong>',style:'text-align:right;border:none;color:#065f46'},{value:'<strong style="color:#065f46">-$'+_ecApp.toFixed(2)+'</strong>',style:'text-align:right;border:none'}]}]:[]),
           {_class:'totals-row',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Total</strong>',style:'text-align:right'},{value:'<strong style="font-size:14px">$'+total.toFixed(2)+'</strong>',style:'text-align:right'}]}]}],
         footer:isE?'This estimate is valid for 30 days. Prices subject to change. '+NSA.depositTerms:NSA.terms});
-    }} repUser={cu} defaultFollowUpDays={portalSettings?.estFollowUpDays||portalSettings?.followUpDays||7} onSend={({followUpDays:fuDays}={})=>{
+    }} repUser={cu} defaultFollowUpDays={portalSettings?.estFollowUpDays||portalSettings?.followUpDays||7} onSend={({followUpDays:fuDays,toEmails:_toEmails,messageId:_msgId}={})=>{
       const now=new Date().toLocaleString();const fuAt=fuDays?new Date(Date.now()+fuDays*86400000).toISOString():null;
-      const histEntry={sent_at:now,sent_by:cu.name||cu.id,type:isE?'estimate':'so'};
+      const histEntry={sent_at:now,sent_by:cu.name||cu.id,type:isE?'estimate':'so',to:_toEmails||'',messageId:_msgId||null};
       const updates={email_status:'sent',email_sent_at:now,follow_up_at:fuAt,sent_history:[...(o.sent_history||[]),histEntry]};
       if(isE&&o.status!=='approved'&&o.status!=='converted'){sv('status','sent');Object.entries(updates).forEach(([k,v])=>sv(k,v));onSave({...o,status:'sent',...updates});nf('Estimate sent!')}
       else{Object.entries(updates).forEach(([k,v])=>sv(k,v));onSave({...o,...updates});nf((isE?'Estimate':'Sales Order')+' sent!')}}}/>
@@ -6221,7 +6250,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             }
             // Update invoice email status with follow-up and history
             const invNow=new Date().toLocaleString();const invFuAt=invFollowUpDays?new Date(Date.now()+invFollowUpDays*86400000).toISOString():null;
-            const invHist={sent_at:invNow,sent_by:cu.name||cu.id,to:toEmail,type:'invoice',methods:['email',...(invSmsEnabled?['sms']:[])]};
+            const invHist={sent_at:invNow,sent_by:cu.name||cu.id,to:toEmail,type:'invoice',methods:['email',...(invSmsEnabled?['sms']:[])],messageId:res.messageId||null};
             onInv(prev=>prev.map(i=>i.id===ir.id?{...i,email_status:'sent',email_sent_at:invNow,follow_up_at:invFuAt,sent_history:[...(i.sent_history||[]),invHist]}:i));
             // Also post to messages
             const soMsg={id:'m'+Date.now(),so_id:ir.so_id,author_id:cu.id,text:'[Invoice '+ir.id+'] Sent to '+toName+' ('+toEmail+')'+(invSmsEnabled&&invSmsPhone?' + SMS to '+invSmsPhone:'')+'\n\n'+invSendMsg,ts:new Date().toLocaleString(),read_by:[cu.id],dept:'sales',tagged_members:[],entity_type:'so',entity_id:ir.so_id};
@@ -7221,7 +7250,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const htmlMsg=cam.message.replace(/\n/g,'<br/>');
               const toList=allTargets.map(em=>({email:em}));
               const res=await sendBrevoEmail({to:toList,subject:'Artwork ready for approval — '+j3.art_name,htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6">'+htmlMsg+'</div>',senderName:cu.name||'National Sports Apparel',senderEmail:cu?.email||'noreply@nationalsportsapparel.com',replyTo:cu?.email?{email:cu.email,name:cu.name}:undefined});
-              if(res.ok){actions.push('email sent to '+allTargets.join(', '))}else{nf('Email failed: '+res.error,'error');setCoachApprovalModal(m=>({...m,sending:false}));return}
+              if(res.ok){actions.push('email sent to '+allTargets.join(', '));actions._messageId=res.messageId}else{nf('Email failed: '+res.error,'error');setCoachApprovalModal(m=>({...m,sending:false}));return}
             }else{
               const subj=encodeURIComponent('Artwork ready for approval — '+j3.art_name);
               const body=encodeURIComponent(cam.message);
@@ -7241,7 +7270,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           }
           // Record sent_to_coach_at timestamp, follow-up, and history on the job
           const fuAt=cam.followUpDays?new Date(Date.now()+cam.followUpDays*86400000).toISOString():null;
-          const histEntry={sent_at:new Date().toISOString(),sent_by:cu.name||cu.id,type:'art_approval',methods:actions};
+          const histEntry={sent_at:new Date().toISOString(),sent_by:cu.name||cu.id,type:'art_approval',methods:actions,to:allTargets.join(', '),messageId:actions._messageId||null};
           const updJobs3=safeJobs(o).map((jj,i)=>i===coachApprovalModal.jIdx?{...jj,sent_to_coach_at:new Date().toISOString(),follow_up_at:fuAt,sent_history:[...(jj.sent_history||[]),histEntry]}:jj);
           const updated3={...o,jobs:updJobs3,updated_at:new Date().toLocaleString()};setO(updated3);onSave(updated3);setDirty(false);
           setCoachApprovalModal(null);
@@ -10287,6 +10316,28 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   const prodLabelsP={hold:'On Hold',staging:'In Line',in_process:'In Production',completed:'Done',shipped:'Shipped'};
   const contactEmail=(customer.contacts||[])[0]?.email||'';
 
+  // Track portal visit — mark sent documents as viewed by coach
+  const _portalTracked=useRef(false);
+  useEffect(()=>{
+    if(_portalTracked.current)return;_portalTracked.current=true;
+    const now=new Date().toLocaleString();
+    // Mark estimates with email_status='sent' as viewed
+    const sentEsts=custEsts.filter(e=>e.email_status==='sent'&&!e.email_viewed_at);
+    if(sentEsts.length&&onUpdateEsts)onUpdateEsts(prev=>prev.map(e=>sentEsts.some(se=>se.id===e.id)?{...e,email_status:'opened',email_viewed_at:now,updated_at:now}:e));
+    // Mark SOs with email_status='sent' as viewed
+    const sentSOs=custSOs.filter(s=>s.email_status==='sent'&&!s.email_viewed_at);
+    if(sentSOs.length&&onUpdateSOs)onUpdateSOs(prev=>prev.map(s=>sentSOs.some(ss=>ss.id===s.id)?{...s,email_status:'opened',email_viewed_at:now,updated_at:now}:s));
+    // Mark invoices with email_status='sent' as viewed
+    const sentInvs=custInvs.filter(i=>i.email_status==='sent'&&!i.email_viewed_at);
+    if(sentInvs.length){
+      const updater=prev=>prev.map(i=>sentInvs.some(si=>si.id===i.id)?{...i,email_status:'opened',email_viewed_at:now,updated_at:now}:i);
+      setInvs(updater);if(onUpdateInvs)onUpdateInvs(updater);
+    }
+    // Mark job art approvals as viewed when coach opens portal
+    const jobSOs=custSOs.filter(s=>safeJobs(s).some(j=>j.sent_to_coach_at&&!j.coach_email_opened_at));
+    if(jobSOs.length&&onUpdateSOs)onUpdateSOs(prev=>prev.map(s=>{if(!jobSOs.some(js=>js.id===s.id))return s;const updJobs=safeJobs(s).map(j=>j.sent_to_coach_at&&!j.coach_email_opened_at?{...j,coach_email_opened_at:new Date().toISOString()}:j);return{...s,jobs:updJobs,updated_at:now}}));
+  },[]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const handlePaymentSuccess=(result)=>{
     // Update invoices locally and in parent (persists to Supabase/localStorage/QB)
     const paidInvIds=result.invoices.map(i=>i.id);
@@ -11672,6 +11723,41 @@ export default function App(){
     },30000);
     return()=>clearInterval(poll);
   },[]);
+
+  // ─── Brevo email open tracking: poll for opens on recently sent documents ───
+  React.useEffect(()=>{
+    if(!_brevoKey)return;
+    const checkOpens=async()=>{
+      if(!_initialLoadDone.current)return;
+      // Check estimates with pending email_status='sent' and a messageId
+      const pendingEsts=ests.filter(e=>e.email_status==='sent'&&(e.sent_history||[]).some(h=>h.messageId));
+      for(const est of pendingEsts.slice(0,5)){
+        const lastSend=(est.sent_history||[]).filter(h=>h.messageId).slice(-1)[0];
+        if(!lastSend)continue;
+        const result=await checkBrevoEmailOpens(lastSend.messageId);
+        if(result){setEsts(prev=>prev.map(e=>e.id===est.id?{...e,email_status:'opened',email_opened_at:new Date(result.opened_at).toLocaleString(),_opened_by_email:result.email||lastSend.to||''}:e))}
+      }
+      // Check SOs
+      const pendingSOs=sos.filter(s=>s.email_status==='sent'&&(s.sent_history||[]).some(h=>h.messageId));
+      for(const so of pendingSOs.slice(0,5)){
+        const lastSend=(so.sent_history||[]).filter(h=>h.messageId).slice(-1)[0];
+        if(!lastSend)continue;
+        const result=await checkBrevoEmailOpens(lastSend.messageId);
+        if(result){setSOs(prev=>prev.map(s=>s.id===so.id?{...s,email_status:'opened',email_opened_at:new Date(result.opened_at).toLocaleString(),_opened_by_email:result.email||lastSend.to||''}:s))}
+      }
+      // Check invoices
+      const pendingInvs=invs.filter(i=>i.email_status==='sent'&&(i.sent_history||[]).some(h=>h.messageId));
+      for(const inv of pendingInvs.slice(0,5)){
+        const lastSend=(inv.sent_history||[]).filter(h=>h.messageId).slice(-1)[0];
+        if(!lastSend)continue;
+        const result=await checkBrevoEmailOpens(lastSend.messageId);
+        if(result){setInvs(prev=>prev.map(i=>i.id===inv.id?{...i,email_status:'opened',email_opened_at:new Date(result.opened_at).toLocaleString(),_opened_by_email:result.email||lastSend.to||''}:i))}
+      }
+    };
+    const timer=setInterval(checkOpens,60000);// check every 60s
+    checkOpens();// initial check
+    return()=>clearInterval(timer);
+  },[ests,sos,invs]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-save to localStorage + Supabase (normalized, only after initial load is complete)
   // IMPORTANT: Supabase writes are gated behind _dbLoadSuccess to prevent demo/stale data from overwriting real cloud data
@@ -16129,6 +16215,18 @@ export default function App(){
                 <div style={{fontSize:11,color:'#64748b'}}>{new Date(inv.follow_up_at).toLocaleDateString()}</div></div>
               </div>}
             </div>
+            {/* Coach Activity */}
+            {(()=>{const coachEvents=[];
+              if(inv.email_status==='opened'&&inv.email_opened_at)coachEvents.push({ts:inv.email_opened_at,type:'opened',detail:inv._opened_by_email||(inv.sent_history||[]).slice(-1)[0]?.to||''});
+              coachEvents.sort((a,b)=>new Date(b.ts)-new Date(a.ts));
+              return coachEvents.length>0&&<div style={{marginBottom:16}}>
+              <div style={{fontSize:12,fontWeight:700,color:'#475569',marginBottom:6,textTransform:'uppercase',letterSpacing:0.5}}>Coach Activity</div>
+              {coachEvents.map((ev,ei)=><div key={ei} style={{display:'flex',alignItems:'center',gap:8,padding:'8px 12px',background:'#dbeafe',borderRadius:6,border:'1px solid #93c5fd',marginBottom:4}}>
+                <span style={{fontSize:16}}>👁️</span>
+                <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600}}>Coach opened email</div>
+                <div style={{fontSize:11,color:'#64748b'}}>{ev.detail?ev.detail+' · ':''}{new Date(ev.ts).toLocaleDateString()} @ {new Date(ev.ts).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true})}</div></div>
+              </div>)}
+            </div>})()}
             {/* Print History */}
             <div style={{marginBottom:16}}>
               <div style={{fontSize:12,fontWeight:700,color:'#475569',marginBottom:6,textTransform:'uppercase',letterSpacing:0.5}}>Print History</div>
@@ -16345,7 +16443,7 @@ export default function App(){
                   if(smsRes.ok){nf('Text sent to '+si.smsPhone)}else{nf('SMS failed: '+(smsRes.error||'Unknown'),'error')}
                 }
                 const fuAt=si.followUpDays?new Date(Date.now()+si.followUpDays*86400000).toISOString():null;
-                const histEntry={sent_at:new Date().toISOString(),sent_by:cu.name||cu.id,type:'invoice',methods:['email',...(si.smsEnabled?['sms']:[])],to:toEmail};
+                const histEntry={sent_at:new Date().toISOString(),sent_by:cu.name||cu.id,type:'invoice',methods:['email',...(si.smsEnabled?['sms']:[])],to:toEmail,messageId:res.messageId||null};
                 setInvs(prev=>prev.map(i=>i.id===si.inv.id?{...i,email_status:'sent',email_sent_at:new Date().toLocaleString(),follow_up_at:fuAt,sent_history:[...(i.sent_history||[]),histEntry]}:i));
               }}>Send Invoice</button>
             </div>
