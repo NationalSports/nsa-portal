@@ -14053,6 +14053,99 @@ export default function App(){
   React.useEffect(()=>{_saveAppState('idle_settings',idleSettings)},[idleSettings]);
   const[portalSettings,setPortalSettings]=useState(()=>loadState('portal_settings',{followUpDays:7,estFollowUpDays:7,invFollowUpDays:7,disclaimer:'Please check all artwork, quantities, and personalization very closely. Once approved, this will be exactly what is printed.'}));
   React.useEffect(()=>{_saveAppState('portal_settings',portalSettings)},[portalSettings]);
+
+  // ─── COMPUTED TODOS (shared between desktop dashboard and mobile portal) ───
+  const computedTodos=useMemo(()=>{
+    if(!cu)return[];
+    const todos=[];
+    sos.forEach(so=>{
+      const c=cust.find(x=>x.id===so.customer_id);const tag=c?.name||c?.alpha_tag||so.id;const _repId=c?.primary_rep_id||so.created_by;
+      buildJobs(so).forEach(j=>{
+        if(j.art_status==='waiting_approval'){todos.push({type:'art',priority:2,msg:'Art awaiting approval: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,action:'Review art',role:'sales'});
+          if(j.sent_to_coach_at){const _fuDays=portalSettings?.followUpDays||7;const daysSinceSent=Math.floor((new Date()-new Date(j.sent_to_coach_at))/(1000*60*60*24));const _fuAt=j.follow_up_at?new Date(j.follow_up_at):null;const isDue=_fuAt?new Date()>=_fuAt:daysSinceSent>=_fuDays;if(isDue)todos.push({type:'coach_followup',priority:1,msg:'Follow up on art approval ('+daysSinceSent+'d): '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,action:'Follow Up',role:'sales'})}}
+        if(j.coach_approved_at&&(j.art_status==='production_files_needed'||j.art_status==='art_complete')){const daysAgo=Math.floor((new Date()-new Date(j.coach_approved_at))/(1000*60*60*24));if(daysAgo<=7)todos.push({type:'art_approved',priority:3,msg:'Coach approved art: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,action:'View',role:'sales',isNotification:true})}
+        if(j.art_status==='art_requested'&&j.coach_rejected){todos.push({type:'art_rejected',priority:1,msg:'Coach rejected art: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,action:'Review feedback',role:'sales'})}
+        if(j.item_status==='partially_received'&&!j.split_from&&j.fulfilled_units>0)todos.push({type:'split',priority:3,msg:'Can split: '+j.art_name+' ('+j.fulfilled_units+'/'+j.total_units+')',detail:tag+' · '+j.id,so,action:'Review split',role:'production'});
+        if(j.item_status==='items_received'&&j.prod_status!=='completed'&&!j.split_from){
+          const needsArt=j.art_status!=='art_complete';
+          if(needsArt){todos.push({type:'items_received_needs_art',priority:1,msg:'All items received — art needs attention: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,action:'Review art',role:'sales'})}
+          else{todos.push({type:'items_received',priority:3,msg:'All items received: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,action:'View',role:'sales',isNotification:true})}
+        }
+        if(j.prod_status==='completed'){todos.push({type:'job_completed',priority:3,msg:'Job completed: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,repId:_repId,action:'View',role:'sales',isNotification:true})}
+      });
+      safeFirm(so).filter(f=>!f.approved).forEach(f=>{todos.push({type:'firm',priority:2,msg:'Firm date request: '+(f.item_desc||'Full order'),detail:tag+' · '+so.id+' · '+f.date,so,action:'Approve',role:'gm'})});
+      if(so.expected_date){const dOut=Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24));
+        if(dOut<=3&&dOut>=0&&calcSOStatus(so)!=='complete')todos.push({type:'deadline',priority:0,msg:'Due in '+dOut+' day'+(dOut!==1?'s':'')+': '+(so.memo||so.id),detail:tag+' · '+so.expected_date,so,action:'Open SO',role:'all'});
+        if(dOut<=5&&dOut>3&&calcSOStatus(so)!=='complete')todos.push({type:'deadline',priority:1,msg:'Due in '+dOut+' days: '+(so.memo||so.id),detail:tag+' · '+so.expected_date,so,action:'Open SO',role:'production'})};
+      if(calcSOStatus(so)==='need_order')todos.push({type:'order',priority:2,msg:'Items need ordering: '+(so.memo||so.id),detail:tag,so,action:'Create PO',role:'sales'});
+      if(so.order_type==='booking'&&!so.booking_confirmed&&so.expected_ship_date){
+        const shipDaysOut=Math.ceil((new Date(so.expected_ship_date)-new Date())/(1000*60*60*24));
+        const alertThreshold=so.booking_alert_days||100;
+        if(shipDaysOut<=alertThreshold&&shipDaysOut>=0)todos.push({type:'booking_confirm',priority:1,msg:'Confirm booking order with coach: '+(so.memo||so.id),detail:tag+' · Ships '+so.expected_ship_date,so,action:'Confirm Order',role:'sales'})}
+      if(so.ship_preference==='rep_delivery'){
+        safeJobs(so).filter(j=>j.prod_status==='completed').forEach(j=>{
+          todos.push({type:'rep_delivery',priority:1,msg:'Ready for rep delivery: '+j.art_name,detail:tag+' · '+so.id,so,action:'Pick up & deliver',role:'sales'});
+        });
+        safeItems(so).forEach(it=>{
+          if((!it.decorations?.length||it.no_deco)){
+            const szKeys=Object.keys(it.sizes||{}).filter(k=>SZ_ORD.includes(k)||(it.sizes[k]>0));
+            const tot=szKeys.reduce((a,s)=>a+(it.sizes[s]||0),0);
+            const pulled=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>szKeys.reduce((a2,s)=>a2+(pk[s]||0),a),0);
+            if(pulled>=tot&&tot>0)todos.push({type:'rep_delivery',priority:1,msg:'Ready for rep delivery: '+it.sku+' · '+it.name,detail:tag+' · '+so.id,so,action:'Pick up & deliver',role:'sales'});
+          }
+        });
+      }
+    });
+    ests.filter(e=>e.status==='approved'&&e.approved_by==='Coach').forEach(e=>{
+      const c2=cust.find(x=>x.id===e.customer_id);const tag2=c2?.name||c2?.alpha_tag||e.id;
+      if(c2?.payment_terms==='prepay'){
+        todos.push({type:'deposit_needed',priority:1,msg:'Deposit required before ordering: '+(e.memo||e.id),detail:tag2+' · Prepay customer',action:'Collect Deposit',role:'sales',est:e,estC:c2});
+      } else {
+        todos.push({type:'est_approved',priority:1,msg:'Coach approved estimate: '+(e.memo||e.id),detail:tag2+' · Ready to convert',action:'Convert to SO',role:'sales',est:e,estC:c2});
+      }
+    });
+    ests.filter(e=>(e.update_requests||[]).some(r=>r.status==='pending')).forEach(e=>{
+      const c2=cust.find(x=>x.id===e.customer_id);const tag2=c2?.name||c2?.alpha_tag||e.id;
+      (e.update_requests||[]).filter(r=>r.status==='pending').forEach(req=>{
+        todos.push({type:'est_update_request',priority:1,msg:'Coach requested estimate update: '+(e.memo||e.id),detail:tag2+' · "'+req.text.slice(0,80)+'"',action:'Update Estimate',role:'sales',est:e,estC:c2});
+      });
+    });
+    ests.filter(e=>e.status==='sent').forEach(e=>{
+      const c2=cust.find(x=>x.id===e.customer_id);const tag2=c2?.name||c2?.alpha_tag||e.id;
+      if(e.follow_up_at&&new Date()>=new Date(e.follow_up_at)){
+        const sentDate=e.email_sent_at||e.updated_at||e.created_at;
+        const daysSince=sentDate?Math.floor((new Date()-new Date(sentDate))/(1000*60*60*24)):0;
+        todos.push({type:'follow_up',priority:1,msg:'Follow up on estimate ('+daysSince+'d): '+(e.memo||e.id),detail:tag2,action:'Follow Up',role:'sales',est:e,estC:c2});
+        return;
+      }
+      const sentDate=e.updated_at||e.created_at;if(!sentDate)return;
+      const m=sentDate.match(/(\d{2})\/(\d{2})\/(\d{2})/);
+      const d=m?new Date('20'+m[3],m[1]-1,m[2]):new Date(sentDate);
+      const days=Math.floor((new Date()-d)/(1000*60*60*24));
+      if(days>=3&&days<7)todos.push({type:'follow_up',priority:2,msg:'Follow up on estimate ('+days+'d): '+(e.memo||e.id),detail:tag2,action:'Follow Up',role:'sales',est:e,estC:c2});
+      else if(days>=7&&days<14)todos.push({type:'follow_up',priority:1,msg:'Estimate going cold ('+days+'d): '+(e.memo||e.id),detail:tag2,action:'Follow Up',role:'sales',est:e,estC:c2});
+      else if(days>=14)todos.push({type:'follow_up',priority:0,msg:'Stale estimate ('+days+'d): '+(e.memo||e.id),detail:tag2,action:'Close or Re-send',role:'sales',est:e,estC:c2});
+    });
+    invs.filter(i=>i.status!=='paid'&&i.follow_up_at&&new Date()>=new Date(i.follow_up_at)).forEach(inv2=>{
+      const c2=cust.find(x=>x.id===inv2.customer_id);const tag2=c2?.name||c2?.alpha_tag||inv2.id;
+      const daysSince=inv2.email_sent_at?Math.floor((new Date()-new Date(inv2.email_sent_at))/(1000*60*60*24)):0;
+      todos.push({type:'inv_followup',priority:1,msg:'Follow up on invoice '+inv2.id+' ('+daysSince+'d)',detail:tag2,action:'Follow Up',role:'sales'});
+    });
+    todos.sort((a,b)=>a.priority-b.priority);
+    todos.forEach(t=>{
+      if(t.so){const c=cust.find(x=>x.id===t.so.customer_id);t.repId=c?.primary_rep_id||t.so.created_by}
+      else if(t.est){const c=cust.find(x=>x.id===t.est.customer_id);t.repId=c?.primary_rep_id||t.est.created_by}
+    });
+    const filtered=todos.filter(t=>{
+      if(cu.role==='admin'||cu.role==='gm')return true;
+      if(t.role==='all')return true;
+      if(cu.role==='rep')return t.repId===cu.id;
+      if(cu.role==='csr'){const myReps=getRepsForCsr(cu.id);return myReps.length===0||myReps.includes(t.repId)}
+      return true;
+    });
+    return filtered;
+  },[cu,sos,ests,invs,cust,portalSettings,repCsrAssignments]);
+
   const[companyInfo,setCompanyInfo]=useState(()=>{const saved=loadState('company_info',null);if(saved){Object.assign(NSA,{...NSA_DEFAULTS,...saved,fullAddr:(saved.addr||NSA_DEFAULTS.addr)+', '+(saved.city||NSA_DEFAULTS.city)+', '+(saved.state||NSA_DEFAULTS.state)+' '+(saved.zip||NSA_DEFAULTS.zip)})}return{...NSA}});
   React.useEffect(()=>{Object.assign(NSA,{...companyInfo,fullAddr:companyInfo.addr+', '+companyInfo.city+', '+companyInfo.state+' '+companyInfo.zip});_saveAppState('company_info',companyInfo)},[companyInfo]);
   // ── Idle / activity tracking for timers ──
@@ -26614,7 +26707,7 @@ export default function App(){
   // LOGIN GATE
   if(!cu)return<LoginGate onLogin={handleLogin} reps={REPS}/>;
   // MOBILE PORTAL GATE
-  if(mobileMode)return<MobilePortal cu={cu} cust={cust} sos={sos} ests={ests} invs={invs} msgs={msgs} prod={prod} vend={vend} REPS={REPS} assignedTodos={assignedTodos} onLogout={handleLogout} onSwitchDesktop={()=>setMobileMode(false)} onSaveEstimate={savE} nextEstId={()=>nextEstId(ests)} nf={nf}/>;
+  if(mobileMode)return<MobilePortal cu={cu} cust={cust} sos={sos} ests={ests} invs={invs} msgs={msgs} prod={prod} vend={vend} REPS={REPS} assignedTodos={assignedTodos} computedTodos={computedTodos} onLogout={handleLogout} onSwitchDesktop={()=>setMobileMode(false)} onSaveEstimate={savE} nextEstId={()=>nextEstId(ests)} nf={nf} onMsg={setMsgs}/>;
 
   return(<div className="app"><Toast msg={toast?.msg} type={toast?.type}/>
     {/* Mobile sidebar backdrop */}
