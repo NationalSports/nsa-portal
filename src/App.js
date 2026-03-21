@@ -455,10 +455,21 @@ const _dbSaveInvoice = async (inv) => {
       const{error:invErr2}=await supabase.from('invoices').upsert(coreRow,{onConflict:'id'});
       if(invErr2){console.error('[DB] invoices upsert failed (core):',invErr2.message);_dbSaveFailedIds.add(inv.id);_persistFailedIds();return false}
     }
-    // Upsert payments instead of DELETE+INSERT to avoid race condition
+    // Sync payments: upsert current, then delete removed (avoids DELETE+INSERT race condition)
     if(payments?.length){
-      await supabase.from('invoice_payments').delete().eq('invoice_id',inv.id);
-      await supabase.from('invoice_payments').insert(payments.map(p=>({amount:p.amount,method:p.method,ref:p.ref,date:p.date,cc_fee:p.cc_fee,invoice_id:inv.id})));
+      const payRows=payments.map((p,i)=>({invoice_id:inv.id,amount:p.amount,method:p.method,ref:p.ref||('pay_'+i),date:p.date,cc_fee:p.cc_fee}));
+      const{error:payErr}=await supabase.from('invoice_payments').upsert(payRows,{onConflict:'invoice_id,ref'});
+      if(payErr){
+        // Fallback: DELETE+INSERT if upsert constraint doesn't exist
+        await supabase.from('invoice_payments').delete().eq('invoice_id',inv.id);
+        await supabase.from('invoice_payments').insert(payRows);
+      }else{
+        // Delete payments beyond current set
+        const{data:existingPays}=await supabase.from('invoice_payments').select('id,ref').eq('invoice_id',inv.id);
+        const currentRefs=new Set(payRows.map(p=>p.ref));
+        const toDelete=(existingPays||[]).filter(ep=>!currentRefs.has(ep.ref)).map(ep=>ep.id);
+        if(toDelete.length)await supabase.from('invoice_payments').delete().in('id',toDelete);
+      }
     }
     if(items?.length){
       await supabase.from('invoice_items').delete().eq('invoice_id',inv.id);
@@ -3076,6 +3087,22 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
 
   // Sync dirty state to parent dirtyRef
   React.useEffect(()=>{if(dirtyRef)dirtyRef.current=dirty},[dirty,dirtyRef]);
+  // Auto-save: persist dirty changes every 30s to prevent data loss on timeout/crash
+  const oRef=React.useRef(o);React.useEffect(()=>{oRef.current=o},[o]);
+  const dirtyRef2=React.useRef(dirty);React.useEffect(()=>{dirtyRef2.current=dirty},[dirty]);
+  React.useEffect(()=>{
+    const doAutoSave=()=>{if(dirtyRef2.current&&oRef.current){onSave(oRef.current);dirtyRef2.current=false;setDirty(false)}};
+    const iv=setInterval(doAutoSave,30000);
+    const handleUnload=()=>doAutoSave();
+    window.addEventListener('beforeunload',handleUnload);
+    return()=>{clearInterval(iv);window.removeEventListener('beforeunload',handleUnload);doAutoSave()};
+  },[onSave]);
+  // Warn user before closing tab if there are unsaved order changes
+  React.useEffect(()=>{
+    const h=e=>{if(dirty){e.preventDefault();e.returnValue=''}};
+    window.addEventListener('beforeunload',h);
+    return()=>window.removeEventListener('beforeunload',h);
+  },[dirty]);
   // Adjust inventory when pick is pulled or un-pulled
   const adjustInvForPick=(pick,item,direction)=>{
     // direction: -1 = pulling (decrement inv), +1 = un-pulling (restore inv)
@@ -11940,7 +11967,50 @@ export default function App(){
     return()=>clearInterval(id);
   },[qbConfig.connected,qbConfig.autoSync,qbSyncing]);
   // Warn user before closing/reloading if there are failed saves (data at risk of loss)
-  React.useEffect(()=>{const h=e=>{if(window.location.search.includes('portal='))return;if(_dbSaveFailedIds.size>0){e.preventDefault();e.returnValue=''}};window.addEventListener('beforeunload',h);return()=>window.removeEventListener('beforeunload',h)},[]);
+  // Also flush all current state to localStorage as a safety net before unload
+  React.useEffect(()=>{const h=e=>{
+    // Emergency flush to localStorage on unload — ensures latest state is persisted
+    try{const d=_visFlushRefs.current;
+      localStorage.setItem('nsa_cust',JSON.stringify(d.cust));
+      localStorage.setItem('nsa_ests',JSON.stringify(d.ests));
+      localStorage.setItem('nsa_sos',JSON.stringify(d.sos));
+      localStorage.setItem('nsa_invs',JSON.stringify(d.invs));
+      localStorage.setItem('nsa_msgs',JSON.stringify(d.msgs));
+      localStorage.setItem('nsa_prod',JSON.stringify(d.prod));
+    }catch(_){}
+    if(window.location.search.includes('portal='))return;if(_dbSaveFailedIds.size>0){e.preventDefault();e.returnValue=''}};window.addEventListener('beforeunload',h);return()=>window.removeEventListener('beforeunload',h)},[]);
+  // Flush all state to localStorage when tab is hidden (prevents data loss on mobile tab-kill/timeout)
+  // Also retry failed saves immediately when tab regains visibility (don't wait 60s)
+  const _visFlushRefs=useRef({});
+  _visFlushRefs.current={cust,ests,sos,invs,msgs,prod,vend,REPS,omgStores,issues,batchPOs,submittedBatches,batchCounter,changeLog,soHistory,invAdjLog,invPOs,invPOCounter};
+  React.useEffect(()=>{
+    const onVis=()=>{
+      if(document.hidden){
+        // Tab going hidden — emergency flush all state to localStorage
+        try{const d=_visFlushRefs.current;
+          localStorage.setItem('nsa_cust',JSON.stringify(d.cust));
+          localStorage.setItem('nsa_ests',JSON.stringify(d.ests));
+          localStorage.setItem('nsa_sos',JSON.stringify(d.sos));
+          localStorage.setItem('nsa_invs',JSON.stringify(d.invs));
+          localStorage.setItem('nsa_msgs',JSON.stringify(d.msgs));
+          localStorage.setItem('nsa_prod',JSON.stringify(d.prod));
+          localStorage.setItem('nsa_vend',JSON.stringify(d.vend));
+          localStorage.setItem('nsa_reps',JSON.stringify(d.REPS));
+          localStorage.setItem('nsa_omg_stores',JSON.stringify(d.omgStores));
+          localStorage.setItem('nsa_issues',JSON.stringify(d.issues));
+        }catch(e){console.warn('[Persistence] visibilitychange flush failed:',e.message)}
+      }else if(_dbSaveFailedIds.size>0&&_initialLoadDone.current&&_dbLoadSuccess.current){
+        // Tab returning — immediately retry failed saves instead of waiting 60s
+        console.log('[DB] Tab visible — retrying',_dbSaveFailedIds.size,'failed saves');
+        const snapKeys=['ests','sos','invs','cust','prod','msgs'];
+        snapKeys.forEach(key=>{const snap=_dbSnap.current[key];if(!snap)return;_dbSnap.current[key]=snap.map(s=>_dbSaveFailedIds.has(s.id)?{...s,_retry:Date.now()}:s)});
+        setEsts(prev=>[...prev]);setSOs(prev=>[...prev]);setInvs(prev=>[...prev]);
+        setCust(prev=>[...prev]);setProd(prev=>[...prev]);setMsgs(prev=>[...prev]);
+      }
+    };
+    document.addEventListener('visibilitychange',onVis);
+    return()=>document.removeEventListener('visibilitychange',onVis);
+  },[]);
   // Background retry — every 60s, re-trigger saves for any entities with failed IDs
   // Works by updating the snapshot to force _diffSave to detect a difference on the next state change
   // This is a lightweight approach: no new save calls, just nudges the existing auto-save system
@@ -15797,7 +15867,7 @@ export default function App(){
           inv_adj_log:invAdjLog,inv_pos:invPOs,inv_po_counter:invPOCounter});
         localStorage.setItem('nsa_auto_backup',data);
         localStorage.setItem('nsa_auto_backup_ts',new Date().toISOString());
-      }catch{}
+      }catch(e){console.warn('[Backup] Auto-backup failed:',e.message);if(e.name==='QuotaExceededError'||e.message?.includes('quota'))nf('Auto-backup failed — localStorage full. Export a manual backup.','error')}
     },300000);// 5 min
     return()=>clearInterval(interval);
   },[autoBackupEnabled,cust,ests,sos,prod,msgs,invs,batchPOs,submittedBatches,batchCounter,changeLog,soHistory,invAdjLog,invPOs,invPOCounter]);
