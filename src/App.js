@@ -2548,7 +2548,7 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
       const smsRes=await sendBrevoSms({to:smsPhone,content:smsMsg.substring(0,160)});
       if(smsRes.ok){if(_notify)_notify('Text sent to '+smsPhone)}else{if(_notify)_notify('SMS failed: '+(smsRes.error||'Unknown'),'error');console.warn('SMS send failed:',smsRes.error)}
     }
-    onSend({followUpDays});onClose()};
+    onSend({followUpDays,toEmails});onClose()};
   if(!isOpen)return null;
   return(<div className="modal-overlay" onClick={onClose}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:650}}>
     <div className="modal-header"><h2>Send {label}</h2><button className="modal-close" onClick={onClose}>x</button></div>
@@ -5497,13 +5497,20 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <div style={{fontSize:11,color:'#64748b'}}>{new Date(o.follow_up_at).toLocaleDateString()}</div></div>
           </div>}
         </div>
-        {/* Coach Activity (per-job) */}
-        {!isE&&(()=>{const coachEvents=[];safeJobs(o).forEach(j=>{if(j.sent_to_coach_at)coachEvents.push({ts:j.sent_to_coach_at,type:'sent',job:j.art_name||j.key||j.id});if(j.coach_email_opened_at)coachEvents.push({ts:j.coach_email_opened_at,type:'opened',job:j.art_name||j.key||j.id});if(j.coach_approved_at)coachEvents.push({ts:j.coach_approved_at,type:'approved',job:j.art_name||j.key||j.id});if(j.coach_rejected)coachEvents.push({ts:j.coach_approved_at||j.sent_to_coach_at,type:'rejected',job:j.art_name||j.key||j.id})});coachEvents.sort((a,b)=>new Date(b.ts)-new Date(a.ts));return coachEvents.length>0&&<div style={{marginBottom:16}}>
+        {/* Coach Activity */}
+        {(()=>{const coachEvents=[];
+          // Document-level email tracking (estimates, SOs, invoices)
+          if(o.email_status==='opened'&&o.email_opened_at)coachEvents.push({ts:o.email_opened_at,type:'opened',detail:(o.sent_history||[]).slice(-1)[0]?.to||''});
+          if(o.email_viewed_at)coachEvents.push({ts:o.email_viewed_at,type:'viewed',detail:''});
+          // Job-level coach tracking (SOs only)
+          if(!isE)safeJobs(o).forEach(j=>{if(j.sent_to_coach_at)coachEvents.push({ts:j.sent_to_coach_at,type:'sent',detail:j.art_name||j.key||j.id});if(j.coach_email_opened_at)coachEvents.push({ts:j.coach_email_opened_at,type:'opened',detail:j.art_name||j.key||j.id});if(j.coach_approved_at)coachEvents.push({ts:j.coach_approved_at,type:'approved',detail:j.art_name||j.key||j.id});if(j.coach_rejected)coachEvents.push({ts:j.coach_approved_at||j.sent_to_coach_at,type:'rejected',detail:j.art_name||j.key||j.id})});
+          coachEvents.sort((a,b)=>new Date(b.ts)-new Date(a.ts));
+          return coachEvents.length>0&&<div style={{marginBottom:16}}>
           <div style={{fontSize:12,fontWeight:700,color:'#475569',marginBottom:6,textTransform:'uppercase',letterSpacing:0.5}}>Coach Activity</div>
-          {coachEvents.map((ev,ei)=><div key={ei} style={{display:'flex',alignItems:'center',gap:8,padding:'8px 12px',background:ev.type==='approved'?'#f0fdf4':ev.type==='rejected'?'#fef2f2':ev.type==='opened'?'#dbeafe':'#eff6ff',borderRadius:6,border:'1px solid '+(ev.type==='approved'?'#bbf7d0':ev.type==='rejected'?'#fecaca':ev.type==='opened'?'#93c5fd':'#bfdbfe'),marginBottom:4}}>
-            <span style={{fontSize:16}}>{ev.type==='sent'?'📨':ev.type==='opened'?'👁️':ev.type==='approved'?'✅':'❌'}</span>
-            <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600}}>{ev.type==='sent'?'Sent to coach':ev.type==='opened'?'Coach opened email':ev.type==='approved'?'Coach approved':'Coach rejected'}</div>
-            <div style={{fontSize:11,color:'#64748b'}}>{ev.job} · {new Date(ev.ts).toLocaleDateString()} @ {new Date(ev.ts).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true})}</div></div>
+          {coachEvents.map((ev,ei)=><div key={ei} style={{display:'flex',alignItems:'center',gap:8,padding:'8px 12px',background:ev.type==='approved'?'#f0fdf4':ev.type==='rejected'?'#fef2f2':ev.type==='opened'||ev.type==='viewed'?'#dbeafe':'#eff6ff',borderRadius:6,border:'1px solid '+(ev.type==='approved'?'#bbf7d0':ev.type==='rejected'?'#fecaca':ev.type==='opened'||ev.type==='viewed'?'#93c5fd':'#bfdbfe'),marginBottom:4}}>
+            <span style={{fontSize:16}}>{ev.type==='sent'?'📨':ev.type==='opened'?'👁️':ev.type==='viewed'?'🔗':ev.type==='approved'?'✅':'❌'}</span>
+            <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600}}>{ev.type==='sent'?'Sent to coach':ev.type==='opened'?'Coach opened email':ev.type==='viewed'?'Coach viewed in portal':ev.type==='approved'?'Coach approved':'Coach rejected'}</div>
+            <div style={{fontSize:11,color:'#64748b'}}>{ev.detail?ev.detail+' · ':''}{new Date(ev.ts).toLocaleDateString()} @ {new Date(ev.ts).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true})}</div></div>
           </div>)}
         </div>})()}
         {/* Print History */}
@@ -5565,9 +5572,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           ...(taxAmt>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Tax ('+(taxRate*100).toFixed(3)+'%)</strong>',style:'text-align:right;border:none'},{value:'$'+taxAmt.toFixed(2),style:'text-align:right;border:none'}]}]:[]),
           {_class:'totals-row',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Total</strong>',style:'text-align:right'},{value:'<strong style="font-size:14px">$'+total.toFixed(2)+'</strong>',style:'text-align:right'}]}]}],
         footer:isE?'This estimate is valid for 30 days. Prices subject to change. '+NSA.depositTerms:NSA.terms});
-    }} repUser={cu} defaultFollowUpDays={portalSettings?.estFollowUpDays||portalSettings?.followUpDays||7} onSend={({followUpDays:fuDays}={})=>{
+    }} repUser={cu} defaultFollowUpDays={portalSettings?.estFollowUpDays||portalSettings?.followUpDays||7} onSend={({followUpDays:fuDays,toEmails:_toEmails}={})=>{
       const now=new Date().toLocaleString();const fuAt=fuDays?new Date(Date.now()+fuDays*86400000).toISOString():null;
-      const histEntry={sent_at:now,sent_by:cu.name||cu.id,type:isE?'estimate':'so'};
+      const histEntry={sent_at:now,sent_by:cu.name||cu.id,type:isE?'estimate':'so',to:_toEmails||''};
       const updates={email_status:'sent',email_sent_at:now,follow_up_at:fuAt,sent_history:[...(o.sent_history||[]),histEntry]};
       if(isE&&o.status!=='approved'&&o.status!=='converted'){sv('status','sent');Object.entries(updates).forEach(([k,v])=>sv(k,v));onSave({...o,status:'sent',...updates});nf('Estimate sent!')}
       else{Object.entries(updates).forEach(([k,v])=>sv(k,v));onSave({...o,...updates});nf((isE?'Estimate':'Sales Order')+' sent!')}}}/>
@@ -15840,6 +15847,18 @@ export default function App(){
                 <div style={{fontSize:11,color:'#64748b'}}>{new Date(inv.follow_up_at).toLocaleDateString()}</div></div>
               </div>}
             </div>
+            {/* Coach Activity */}
+            {(()=>{const coachEvents=[];
+              if(inv.email_status==='opened'&&inv.email_opened_at)coachEvents.push({ts:inv.email_opened_at,type:'opened',detail:(inv.sent_history||[]).slice(-1)[0]?.to||''});
+              coachEvents.sort((a,b)=>new Date(b.ts)-new Date(a.ts));
+              return coachEvents.length>0&&<div style={{marginBottom:16}}>
+              <div style={{fontSize:12,fontWeight:700,color:'#475569',marginBottom:6,textTransform:'uppercase',letterSpacing:0.5}}>Coach Activity</div>
+              {coachEvents.map((ev,ei)=><div key={ei} style={{display:'flex',alignItems:'center',gap:8,padding:'8px 12px',background:'#dbeafe',borderRadius:6,border:'1px solid #93c5fd',marginBottom:4}}>
+                <span style={{fontSize:16}}>👁️</span>
+                <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600}}>Coach opened email</div>
+                <div style={{fontSize:11,color:'#64748b'}}>{ev.detail?ev.detail+' · ':''}{new Date(ev.ts).toLocaleDateString()} @ {new Date(ev.ts).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true})}</div></div>
+              </div>)}
+            </div>})()}
             {/* Print History */}
             <div style={{marginBottom:16}}>
               <div style={{fontSize:12,fontWeight:700,color:'#475569',marginBottom:6,textTransform:'uppercase',letterSpacing:0.5}}>Print History</div>
