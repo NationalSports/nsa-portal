@@ -30,7 +30,7 @@ const timeAgo=(d)=>{if(!d)return'';const ms=Date.now()-new Date(d).getTime();con
 // ═══════════════════════════════════════════
 // MOBILE PORTAL COMPONENT
 // ═══════════════════════════════════════════
-export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,assignedTodos=[],computedTodos=[],onLogout,onSwitchDesktop,onSaveEstimate,nextEstId,nf}){
+export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,assignedTodos=[],computedTodos=[],onLogout,onSwitchDesktop,onSaveEstimate,nextEstId,nf,onMsg}){
   const[tab,setTab]=useState('home');
   const[q,setQ]=useState('');
   const[showSearch,setShowSearch]=useState(false);
@@ -57,6 +57,11 @@ export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,
   const[msgFilter,setMsgFilter]=useState('for_me');
   // Send estimate modal
   const[sendEstModal,setSendEstModal]=useState(null); // estimate object or null
+  // Compose message
+  const[composeMsg,setComposeMsg]=useState(null); // null | {so_id, entity_type, entity_id, replyTo}
+  const[composeTxt,setComposeTxt]=useState('');
+  const[composeDept,setComposeDept]=useState('all');
+  const[composeMentionQ,setComposeMentionQ]=useState(null); // null or string for @mention filter
 
   // Derived data
   const repName=(id)=>{const r=REPS.find(x=>x.id===id);return r?r.name:'—'};
@@ -168,6 +173,36 @@ export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,
             </div>
           </div>)}
         </>}
+        {/* Messages for this SO */}
+        {(()=>{
+          const soMsgs=msgs.filter(m=>m.so_id===so.id||m.entity_id===so.id).sort((a,b)=>(b.created_at||b.ts||'').localeCompare(a.created_at||a.ts||''));
+          return<>
+            <div className="mp-section-title" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+              <span>Messages ({soMsgs.length})</span>
+              <button onClick={()=>setComposeMsg({so_id:so.id,entity_type:'so',entity_id:so.id,replyTo:null})} style={{background:'#1e40af',color:'white',border:'none',borderRadius:8,padding:'4px 10px',fontSize:11,fontWeight:700,cursor:'pointer',minHeight:32}}>
+                <MIcon name="plus" size={12}/> Add
+              </button>
+            </div>
+            {soMsgs.length===0&&<div style={{padding:12,textAlign:'center',color:'#94a3b8',fontSize:12}}>No messages yet</div>}
+            {soMsgs.slice(0,5).map(m=>{
+              const a=REPS.find(r=>r.id===m.author_id||r.id===m.from);
+              const initials=(a?.name||'?').split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
+              return<div key={m.id} className="mp-item-card" style={{padding:'8px 10px',cursor:'pointer'}} onClick={()=>setComposeMsg({so_id:so.id,entity_type:'so',entity_id:so.id,replyTo:null})}>
+                <div style={{display:'flex',gap:8,alignItems:'flex-start'}}>
+                  <div style={{width:28,height:28,borderRadius:'50%',background:'#dbeafe',color:'#1e40af',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:700,fontSize:10,flexShrink:0}}>{initials}</div>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{display:'flex',gap:4,alignItems:'center',fontSize:11}}>
+                      <span style={{fontWeight:700}}>{a?.name||'Unknown'}</span>
+                      <span style={{color:'#94a3b8'}}>· {timeAgo(m.created_at||m.ts)}</span>
+                      {m.dept&&m.dept!=='all'&&<span style={{fontSize:9,padding:'1px 5px',borderRadius:6,background:'#f1f5f9',color:'#64748b',fontWeight:600}}>{m.dept}</span>}
+                    </div>
+                    <div style={{fontSize:12,color:'#475569',marginTop:2,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{(m.body||m.text||'').slice(0,80)}</div>
+                  </div>
+                </div>
+              </div>})}
+            {soMsgs.length>5&&<button onClick={()=>setComposeMsg({so_id:so.id,entity_type:'so',entity_id:so.id,replyTo:null})} style={{width:'100%',padding:8,background:'none',border:'none',color:'#2563eb',fontSize:12,fontWeight:600,cursor:'pointer'}}>View all {soMsgs.length} messages</button>}
+          </>;
+        })()}
       </div>
     </div>;
   };
@@ -746,11 +781,21 @@ export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,
           <button key={f.k} className={`mp-filter-btn${msgFilter===f.k?' active':''}`} onClick={()=>setMsgFilter(f.k)}>{f.l}</button>)}
       </div>
       <div className="mp-count">{filtered.length} message{filtered.length!==1?'s':''}</div>
+      {/* New Message button */}
+      <button onClick={()=>setComposeMsg({so_id:null,entity_type:null,entity_id:null,replyTo:null})} style={{width:'100%',display:'flex',alignItems:'center',justifyContent:'center',gap:8,padding:'10px 16px',background:'#1e40af',color:'white',border:'none',borderRadius:10,fontWeight:700,fontSize:14,cursor:'pointer',marginBottom:8,minHeight:44}}>
+        <MIcon name="plus" size={16}/> New Message
+      </button>
       {filtered.length===0&&<div style={{textAlign:'center',color:'#94a3b8',padding:30,fontSize:13}}>{msgFilter==='for_me'?'No unread messages for you':'No messages'}</div>}
       {filtered.map(m=>{const isUnread=!(m.read_by||[]).includes(cu.id);const isForMe=(m.tagged_members||[]).includes(cu.id);
         const author=REPS.find(r=>r.id===m.author_id||r.id===m.from);
         const initials=(author?.name||'?').split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
-        return<div key={m.id} className="mp-list-card" style={{borderLeft:isUnread?'3px solid '+(isForMe?'#dc2626':'#2563eb'):'3px solid transparent',padding:'10px 12px'}} onClick={()=>setDetail({type:'message',data:m})}>
+        return<div key={m.id} className="mp-list-card" style={{borderLeft:isUnread?'3px solid '+(isForMe?'#dc2626':'#2563eb'):'3px solid transparent',padding:'10px 12px'}} onClick={()=>{
+          // Mark as read
+          if(isUnread&&onMsg){onMsg(prev=>prev.map(x=>x.id===m.id?{...x,read_by:[...(x.read_by||[]),cu.id]}:x))}
+          // Open in compose view to see full thread and reply
+          if(m.so_id||m.entity_id){setComposeMsg({so_id:m.so_id,entity_type:m.entity_type||'so',entity_id:m.entity_id||m.so_id,replyTo:null})}
+          else{setDetail({type:'message',data:m})}
+        }}>
           <div style={{display:'flex',gap:10,alignItems:'flex-start'}}>
             {/* Avatar */}
             <div style={{width:36,height:36,borderRadius:'50%',background:isForMe?'#fee2e2':'#dbeafe',color:isForMe?'#dc2626':'#1e40af',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:800,fontSize:12,flexShrink:0}}>{initials}</div>
@@ -1101,6 +1146,98 @@ export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,
     </div>;
   };
 
+  // ─── COMPOSE MESSAGE ───
+  const DEPTS=[{id:'all',label:'All',color:'#64748b'},{id:'art',label:'Art',color:'#7c3aed'},{id:'prod',label:'Production',color:'#2563eb'},{id:'whse',label:'Warehouse',color:'#d97706'},{id:'sales',label:'Sales',color:'#166534'},{id:'acct',label:'Accounting',color:'#dc2626'}];
+  const activeMembers=(REPS||[]).filter(r=>r.is_active!==false);
+  const extractTaggedIds=(text)=>{const ids=[];const regex=/@(\w[\w\s]*?)(?=\s@|\s*$|[.,!?;:]|\s(?=[^@]))/g;let match;while((match=regex.exec(text))!==null){const name=match[1].trim();const member=activeMembers.find(r=>r.name.toLowerCase()===name.toLowerCase()||r.name.split(' ')[0].toLowerCase()===name.toLowerCase());if(member&&!ids.includes(member.id))ids.push(member.id)}return ids};
+
+  const sendMessage=()=>{
+    if(!composeTxt.trim()||!onMsg)return;
+    const tagged=extractTaggedIds(composeTxt);
+    const isSO=composeMsg?.entity_type==='so';
+    const nm={id:'m'+Date.now(),so_id:isSO?composeMsg.entity_id:null,author_id:cu.id,text:composeTxt.trim(),ts:new Date().toLocaleString(),created_at:new Date().toISOString(),read_by:[cu.id],dept:composeDept,tagged_members:tagged,entity_type:composeMsg?.entity_type||'so',entity_id:composeMsg?.entity_id||null,thread_id:composeMsg?.replyTo||null};
+    onMsg(prev=>Array.isArray(prev)?[...prev,nm]:[nm]);
+    if(nf)nf('Message sent');
+    setComposeTxt('');setComposeDept('all');setComposeMentionQ(null);
+    // Stay on compose if replying in thread, otherwise close
+    if(!composeMsg?.replyTo)setComposeMsg(null);
+  };
+
+  const handleComposeInput=(text)=>{
+    setComposeTxt(text);
+    // Detect @mention
+    const atIdx=text.lastIndexOf('@');
+    if(atIdx>=0){
+      const after=text.slice(atIdx+1);
+      if(!after.includes(' ')||after.split(' ').length<=2){setComposeMentionQ(after)}
+      else{setComposeMentionQ(null)}
+    }else{setComposeMentionQ(null)}
+  };
+
+  const insertMention=(member)=>{
+    const atIdx=composeTxt.lastIndexOf('@');
+    if(atIdx>=0){setComposeTxt(composeTxt.slice(0,atIdx)+'@'+member.name+' ')}
+    else{setComposeTxt(composeTxt+'@'+member.name+' ')}
+    setComposeMentionQ(null);
+  };
+
+  const renderComposeSheet=()=>{
+    if(!composeMsg)return null;
+    const soLabel=composeMsg.entity_id||'New Message';
+    const mentionResults=composeMentionQ!=null?activeMembers.filter(r=>{const q2=composeMentionQ.toLowerCase();return r.name.toLowerCase().includes(q2)||r.name.split(' ')[0].toLowerCase().startsWith(q2)}).slice(0,6):[];
+    // Show existing messages for this entity as thread context
+    const threadMsgs=composeMsg.entity_id?msgs.filter(m=>(m.entity_id===composeMsg.entity_id||m.so_id===composeMsg.entity_id)).sort((a,b)=>(a.created_at||a.ts||'').localeCompare(b.created_at||b.ts||'')):[];
+
+    return<div style={{position:'fixed',inset:0,zIndex:100,background:'white',display:'flex',flexDirection:'column'}}>
+      {/* Header */}
+      <div style={{display:'flex',alignItems:'center',gap:8,padding:'12px 16px',borderBottom:'1px solid #e2e8f0',background:'#f8fafc',flexShrink:0}}>
+        <button onClick={()=>{setComposeMsg(null);setComposeTxt('');setComposeDept('all');setComposeMentionQ(null)}} style={{background:'none',border:'none',color:'#64748b',cursor:'pointer',padding:4}}><MIcon name="back" size={22}/></button>
+        <div style={{flex:1}}><div style={{fontWeight:700,fontSize:15}}>{soLabel}</div><div style={{fontSize:11,color:'#94a3b8'}}>{composeMsg.replyTo?'Reply':'New message'}</div></div>
+      </div>
+      {/* Thread context — scrollable */}
+      <div style={{flex:1,overflowY:'auto',padding:'8px 12px'}}>
+        {threadMsgs.length>0&&<div style={{marginBottom:12}}>
+          <div style={{fontSize:11,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',marginBottom:8}}>Conversation ({threadMsgs.length})</div>
+          {threadMsgs.map(m=>{
+            const isMe=m.author_id===cu.id;
+            const a=REPS.find(r=>r.id===m.author_id||r.id===m.from);
+            const initials=(a?.name||'?').split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
+            return<div key={m.id} style={{display:'flex',gap:8,marginBottom:10,flexDirection:isMe?'row-reverse':'row',alignItems:'flex-start'}}>
+              <div style={{width:28,height:28,borderRadius:'50%',background:isMe?'#1e40af':'#e2e8f0',color:isMe?'white':'#475569',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:700,fontSize:10,flexShrink:0}}>{initials}</div>
+              <div style={{maxWidth:'80%'}}>
+                <div style={{fontSize:10,color:'#94a3b8',marginBottom:2}}>{a?.name||'Unknown'} · {timeAgo(m.created_at||m.ts)}{m.dept&&m.dept!=='all'?' · '+m.dept:''}</div>
+                <div style={{padding:'8px 12px',borderRadius:isMe?'12px 12px 2px 12px':'12px 12px 12px 2px',background:isMe?'#1e40af':'#f1f5f9',color:isMe?'white':'#1e293b',fontSize:13,lineHeight:1.5,whiteSpace:'pre-wrap'}}>{m.body||m.text||''}</div>
+              </div>
+            </div>})}
+        </div>}
+        {threadMsgs.length===0&&!composeMsg.entity_id&&<div style={{textAlign:'center',color:'#94a3b8',padding:30,fontSize:13}}>Start a new conversation</div>}
+      </div>
+      {/* Compose area — sticky bottom */}
+      <div style={{borderTop:'1px solid #e2e8f0',background:'white',padding:'8px 12px',paddingBottom:'max(8px, env(safe-area-inset-bottom))',flexShrink:0}}>
+        {/* Department chips */}
+        <div style={{display:'flex',gap:4,marginBottom:8,overflowX:'auto',WebkitOverflowScrolling:'touch'}}>
+          {DEPTS.map(d=><button key={d.id} onClick={()=>setComposeDept(d.id)} style={{padding:'4px 10px',borderRadius:12,border:'1px solid '+(composeDept===d.id?d.color:'#e2e8f0'),background:composeDept===d.id?d.color+'15':'white',color:composeDept===d.id?d.color:'#94a3b8',fontSize:11,fontWeight:600,cursor:'pointer',whiteSpace:'nowrap',minHeight:32}}>{d.label}</button>)}
+        </div>
+        {/* @mention suggestions */}
+        {mentionResults.length>0&&<div style={{background:'white',border:'1px solid #e2e8f0',borderRadius:10,marginBottom:6,maxHeight:160,overflowY:'auto',boxShadow:'0 -4px 12px rgba(0,0,0,0.08)'}}>
+          {mentionResults.map(r=><button key={r.id} onClick={()=>insertMention(r)} style={{display:'flex',alignItems:'center',gap:8,padding:'8px 12px',width:'100%',background:'none',border:'none',borderBottom:'1px solid #f1f5f9',cursor:'pointer',textAlign:'left',minHeight:40}}>
+            <div style={{width:24,height:24,borderRadius:'50%',background:'#dbeafe',color:'#1e40af',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:700,fontSize:10}}>{r.name.split(' ').map(w=>w[0]).join('').slice(0,2)}</div>
+            <div><div style={{fontSize:13,fontWeight:600}}>{r.name}</div><div style={{fontSize:10,color:'#94a3b8',textTransform:'capitalize'}}>{r.role}</div></div>
+          </button>)}
+        </div>}
+        {/* Input + send */}
+        <div style={{display:'flex',gap:8,alignItems:'flex-end'}}>
+          <textarea value={composeTxt} onChange={e=>handleComposeInput(e.target.value)} placeholder="Type a message... Use @ to mention" rows={2}
+            style={{flex:1,border:'1px solid #e2e8f0',borderRadius:12,padding:'10px 12px',fontSize:14,resize:'none',minHeight:44,maxHeight:120,fontFamily:'inherit'}}
+            onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMessage()}}}/>
+          <button onClick={sendMessage} disabled={!composeTxt.trim()} style={{width:44,height:44,borderRadius:12,background:composeTxt.trim()?'#1e40af':'#e2e8f0',color:composeTxt.trim()?'white':'#94a3b8',border:'none',cursor:composeTxt.trim()?'pointer':'default',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+          </button>
+        </div>
+      </div>
+    </div>;
+  };
+
   // ─── HAMBURGER DRAWER ───
   const renderDrawer=()=>{
     const navItems=[
@@ -1151,6 +1288,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,
     {renderDrawer()}
     {showSearch&&renderSearch()}
     {renderSendEstModal()}
+    {renderComposeSheet()}
     {/* Header */}
     <div className="mp-header">
       <button className="mp-header-btn" onClick={()=>setDrawerOpen(true)} style={{marginRight:8}}><MIcon name="menu" size={22}/></button>
