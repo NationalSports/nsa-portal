@@ -5497,6 +5497,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <div style={{fontSize:11,color:'#64748b'}}>{new Date(o.follow_up_at).toLocaleDateString()}</div></div>
           </div>}
         </div>
+        {/* Coach Activity (per-job) */}
+        {!isE&&(()=>{const coachEvents=[];safeJobs(o).forEach(j=>{if(j.sent_to_coach_at)coachEvents.push({ts:j.sent_to_coach_at,type:'sent',job:j.art_name||j.key||j.id});if(j.coach_email_opened_at)coachEvents.push({ts:j.coach_email_opened_at,type:'opened',job:j.art_name||j.key||j.id});if(j.coach_approved_at)coachEvents.push({ts:j.coach_approved_at,type:'approved',job:j.art_name||j.key||j.id});if(j.coach_rejected)coachEvents.push({ts:j.coach_approved_at||j.sent_to_coach_at,type:'rejected',job:j.art_name||j.key||j.id})});coachEvents.sort((a,b)=>new Date(b.ts)-new Date(a.ts));return coachEvents.length>0&&<div style={{marginBottom:16}}>
+          <div style={{fontSize:12,fontWeight:700,color:'#475569',marginBottom:6,textTransform:'uppercase',letterSpacing:0.5}}>Coach Activity</div>
+          {coachEvents.map((ev,ei)=><div key={ei} style={{display:'flex',alignItems:'center',gap:8,padding:'8px 12px',background:ev.type==='approved'?'#f0fdf4':ev.type==='rejected'?'#fef2f2':ev.type==='opened'?'#dbeafe':'#eff6ff',borderRadius:6,border:'1px solid '+(ev.type==='approved'?'#bbf7d0':ev.type==='rejected'?'#fecaca':ev.type==='opened'?'#93c5fd':'#bfdbfe'),marginBottom:4}}>
+            <span style={{fontSize:16}}>{ev.type==='sent'?'📨':ev.type==='opened'?'👁️':ev.type==='approved'?'✅':'❌'}</span>
+            <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600}}>{ev.type==='sent'?'Sent to coach':ev.type==='opened'?'Coach opened email':ev.type==='approved'?'Coach approved':'Coach rejected'}</div>
+            <div style={{fontSize:11,color:'#64748b'}}>{ev.job} · {new Date(ev.ts).toLocaleDateString()} @ {new Date(ev.ts).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true})}</div></div>
+          </div>)}
+        </div>})()}
         {/* Print History */}
         <div style={{marginBottom:16}}>
           <div style={{fontSize:12,fontWeight:700,color:'#475569',marginBottom:6,textTransform:'uppercase',letterSpacing:0.5}}>Print History</div>
