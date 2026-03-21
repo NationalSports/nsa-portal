@@ -3089,15 +3089,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   React.useEffect(()=>{if(dirtyRef)dirtyRef.current=dirty},[dirty,dirtyRef]);
   // Auto-save: persist dirty changes every 30s to prevent data loss on timeout/crash
   // NOTE: does NOT save on unmount — user may have chosen "Leave without saving" via Back button
+  // Uses refs for onSave/o/dirty because onSave is an inline arrow (recreated every parent render)
   const oRef=React.useRef(o);React.useEffect(()=>{oRef.current=o},[o]);
   const dirtyRef2=React.useRef(dirty);React.useEffect(()=>{dirtyRef2.current=dirty},[dirty]);
+  const onSaveRef=React.useRef(onSave);React.useEffect(()=>{onSaveRef.current=onSave},[onSave]);
   React.useEffect(()=>{
-    const doAutoSave=()=>{if(dirtyRef2.current&&oRef.current){onSave(oRef.current);dirtyRef2.current=false;setDirty(false)}};
+    const doAutoSave=()=>{if(dirtyRef2.current&&oRef.current){onSaveRef.current(oRef.current);dirtyRef2.current=false;setDirty(false)}};
     const iv=setInterval(doAutoSave,30000);
     const handleUnload=()=>doAutoSave();
     window.addEventListener('beforeunload',handleUnload);
     return()=>{clearInterval(iv);window.removeEventListener('beforeunload',handleUnload)};
-  },[onSave]);
+  },[]);
   // Warn user before closing tab if there are unsaved order changes
   React.useEffect(()=>{
     const h=e=>{if(dirty){e.preventDefault();e.returnValue=''}};
