@@ -711,8 +711,8 @@ const _artCols=['id','name','deco_type','ink_colors','thread_colors','art_size',
 // Columns that may not exist in art file tables — stripped on retry
 const _artExtraCols=new Set(['art_sizes','garment_colors','item_mockups','color_ways','preview_url']);
 // Columns that may not exist in so_jobs — stripped on retry
-const _jobExtraCols=new Set(['_art_ids','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at','coach_email_opened_at','follow_up_at','sent_history','run_order','run1_done','run2_done']);
-const _jobCols=['id','key','art_file_id','_art_ids','_draft','art_name','deco_type','positions','art_status','item_status','prod_status','total_units','fulfilled_units','split_from','created_at','assigned_machine','assigned_to','ship_method','items','_auto','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at','coach_email_opened_at','follow_up_at','sent_history','run_order','run1_done','run2_done'];
+const _jobExtraCols=new Set(['_art_ids','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at','coach_email_opened_at','follow_up_at','sent_history','run_order','run1_done','run2_done','_merged']);
+const _jobCols=['id','key','art_file_id','_art_ids','_draft','art_name','deco_type','positions','art_status','item_status','prod_status','total_units','fulfilled_units','split_from','created_at','assigned_machine','assigned_to','ship_method','items','_auto','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at','coach_email_opened_at','follow_up_at','sent_history','run_order','run1_done','run2_done','_merged'];
 const _custCols=['id','parent_id','name','alpha_tag','billing_address_line1','billing_address_line2','billing_city','billing_state','billing_zip','shipping_address_line1','shipping_address_line2','shipping_city','shipping_state','shipping_zip','adidas_ua_tier','catalog_markup','payment_terms','tax_rate','tax_exempt','primary_rep_id','notes','is_active','created_at','updated_at','alt_billing_addresses','art_files'];
 const _vendCols=['id','name','vendor_type','api_provider','nsa_carries_inventory','click_automation','is_active','contact_email','contact_phone','rep_name','payment_terms','notes'];
 const _firmDateCols=['item_desc','date','approved'];
@@ -3720,10 +3720,22 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // Auto-sync jobs whenever decorations or items change (does NOT mark dirty — auto-sync is not a user edit)
   React.useEffect(()=>{
     if(!isSO)return;
+    const currentJobs=safeJobs(o);
+    // If any jobs were manually merged, only recalculate their units — don't re-split them
+    if(currentJobs.some(j=>j._merged)){
+      const updatedJobs=currentJobs.map(j=>{
+        let total=0,fulfilled=0;
+        (j.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return;Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).forEach(([sz,v])=>{total+=v;const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);fulfilled+=Math.min(v,pQ+rQ)});});
+        if(j.total_units===total&&j.fulfilled_units===fulfilled)return j;
+        return{...j,total_units:total,fulfilled_units:fulfilled};
+      });
+      if(updatedJobs.some((j,i)=>j!==currentJobs[i]))setO(e=>({...e,jobs:updatedJobs}));
+      return;
+    }
     const synced=syncJobs();
-    const currentKeys=safeJobs(o).map(j=>j.key).sort().join(',');
+    const currentKeys=currentJobs.map(j=>j.key).sort().join(',');
     const newKeys=synced.map(j=>j.key).sort().join(',');
-    const currentUnits=safeJobs(o).map(j=>j.total_units+'-'+j.fulfilled_units).join(',');
+    const currentUnits=currentJobs.map(j=>j.total_units+'-'+j.fulfilled_units).join(',');
     const newUnits=synced.map(j=>j.total_units+'-'+j.fulfilled_units).join(',');
     if(currentKeys!==newKeys||currentUnits!==newUnits){
       setO(e=>({...e,jobs:synced,updated_at:new Date().toLocaleString()}));
@@ -7600,7 +7612,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           {mergeMode&&<><button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 12px',fontWeight:700}} disabled={mergeMode.selected.length<2} onClick={()=>{
             const sel=mergeMode.selected.sort((a,b)=>a-b);const target=jobs[sel[0]];const mergeItems=[...target.items||[]];let mergeUnits=target.total_units;
             sel.slice(1).forEach(ji=>{const mj=jobs[ji];mergeItems.push(...(mj.items||[]));mergeUnits+=(mj.total_units||0)});
-            const merged={...target,items:mergeItems,total_units:mergeUnits};
+            const merged={...target,items:mergeItems,total_units:mergeUnits,_merged:true};
             const removeIdxs=new Set(sel.slice(1));const newJobs=jobs.map((j,i)=>i===sel[0]?merged:j).filter((j,i)=>!removeIdxs.has(i));
             const updated={...o,jobs:newJobs,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setMergeMode(null);
             nf('Merged '+sel.length+' jobs into '+target.id);
