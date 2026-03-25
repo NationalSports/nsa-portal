@@ -7417,7 +7417,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             });
             return{name:j.art_name||j.deco_type.replace(/_/g,' '),deco_type:j.deco_type,items,
               artist:j.assigned_artist||'',notes:j.rep_notes||'',files:[],
-              _split:!!j.split_from,_existingJobId:j.id};
+              _split:!!j.split_from,_existingJobId:j.id,_merged:!!j._merged};
           });
           setJobWizard({groups});
           return;
@@ -7465,7 +7465,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             art_status:artStatus,item_status:'need_to_order',
             prod_status:activateAll?'hold':'draft',
             ship_method:o.ship_preference==='rep_delivery'?'rep_delivery':'ship_customer',
-            total_units:totalUnits,fulfilled_units:0,split_from:null,
+            total_units:totalUnits,fulfilled_units:0,split_from:null,...(g._merged?{_merged:true}:{}),
             created_at:new Date().toLocaleDateString(),
             assigned_artist:g.artist||'',
             rep_notes:g.notes||'',
