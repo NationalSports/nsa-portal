@@ -74,9 +74,11 @@ export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,
   const unreadAllCount=allUnreadMsgs.length;
 
   // My todos — merge assigned (manual) + computed (auto-generated from dashboard) so mobile matches desktop
+  const[dismissedTodos,setDismissedTodos]=useState(()=>{try{return JSON.parse(localStorage.getItem('nsa_dismissed_todos')||'[]')}catch{return[]}});
+  const dismissTodo=(key)=>{if(!key)return;setDismissedTodos(prev=>{const n=[...prev,key];try{localStorage.setItem('nsa_dismissed_todos',JSON.stringify(n))}catch{}return n})};
   const myAssignedTodos=useMemo(()=>(assignedTodos||[]).filter(t=>t.status==='open'&&(t.assigned_to===cu.id||t.created_by===cu.id)).sort((a,b)=>(a.priority||9)-(b.priority||9)),[assignedTodos,cu.id]);
-  const myComputedTodos=useMemo(()=>(computedTodos||[]).filter(t=>!t.isNotification).slice(0,15),[computedTodos]);
-  const myTodos=useMemo(()=>[...myComputedTodos.map((t,i)=>({id:'computed-'+i,title:t.msg,description:t.detail,priority:t.priority,_computed:true,_action:t.action,_type:t.type,so_id:t.so?.id})),...myAssignedTodos].sort((a,b)=>(a.priority||9)-(b.priority||9)),[myComputedTodos,myAssignedTodos]);
+  const myComputedTodos=useMemo(()=>(computedTodos||[]).filter(t=>!t.isNotification&&!dismissedTodos.includes(t.dismissKey)).slice(0,15),[computedTodos,dismissedTodos]);
+  const myTodos=useMemo(()=>[...myComputedTodos.map((t,i)=>({id:'computed-'+i,title:t.msg,description:t.detail,priority:t.priority,_computed:true,_action:t.action,_type:t.type,so_id:t.so?.id,_dismissKey:t.dismissKey,_date:t.date})),...myAssignedTodos].sort((a,b)=>(a.priority||9)-(b.priority||9)),[myComputedTodos,myAssignedTodos]);
 
   // ─── SEARCH ───
   const searchResults=useMemo(()=>{
@@ -704,6 +706,8 @@ export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,
       {myTodos.length===0&&<div style={{textAlign:'center',color:'#94a3b8',padding:20,fontSize:13}}>No open tasks</div>}
       {myTodos.slice(0,15).map(t=>{
         const isAssignedToMe=t.assigned_to===cu.id;
+        const _dateStr=t._date||t.created_at;
+        const _dateLabel=_dateStr?(()=>{try{const dt=new Date(_dateStr);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);return days<1?'Today':days===1?'Yesterday':days<14?days+'d ago':((dt.getMonth()+1)+'/'+dt.getDate())}catch{return''}})():'';
         return<div key={t.id} className="mp-list-card" style={{minHeight:44}}>
           <div style={{display:'flex',gap:10,alignItems:'flex-start'}}>
             <div style={{width:4,minHeight:36,borderRadius:2,background:priColors[t.priority]||'#94a3b8',flexShrink:0,marginTop:2}}/>
@@ -713,10 +717,11 @@ export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,
               <div style={{display:'flex',gap:8,marginTop:4,fontSize:11,color:'#94a3b8',alignItems:'center',flexWrap:'wrap'}}>
                 {t._computed?<span style={{fontSize:10,padding:'1px 6px',borderRadius:6,background:t._type==='art'?'#fef3c7':'#eff6ff',color:t._type==='art'?'#92400e':'#2563eb',fontWeight:600}}>{t._action}</span>
                   :<span>{isAssignedToMe?'Assigned to you':'Created by you'}</span>}
-                {t.created_at&&<span>· {timeAgo(t.created_at)}</span>}
+                {_dateLabel&&<span>· {_dateLabel}</span>}
                 {t.so_id&&<span>· {t.so_id}</span>}
               </div>
             </div>
+            {t._computed&&t._dismissKey&&<button onClick={e=>{e.stopPropagation();dismissTodo(t._dismissKey)}} style={{background:'none',border:'1px solid #e2e8f0',borderRadius:6,padding:'4px 8px',fontSize:12,color:'#94a3b8',cursor:'pointer',flexShrink:0,alignSelf:'center'}}>✕</button>}
           </div>
         </div>})}
     </div>;
