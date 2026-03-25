@@ -21254,6 +21254,73 @@ export default function App(){
         }).filter(Boolean);
         const allSizes=SZ_ORD.filter(sz=>itemDetails.some(it=>it.sizes[sz]>0));
 
+        // Pre-compute per-item decorations and position list (needed by item cards)
+        const posList3=(j.positions||'').split(',').map(p=>p.trim()).filter(Boolean);
+        const _artSizes=af?.art_sizes||{};
+        const _garmentColors=af?.garment_colors||{};
+        const _hasGarmentColors=Object.keys(_garmentColors).length>0;
+        const _perItemDecos={};
+        (j.items||[]).forEach(gi=>{
+          const it=safeItems(so)[gi.item_idx];if(!it)return;
+          const key=it.sku+'|'+(it.color||'');
+          if(!_perItemDecos[key])_perItemDecos[key]=[];
+          safeDecos(it).forEach(d=>{
+            if(d.kind==='art'){
+              const dAf=d.art_file_id?safeArt(so).find(a=>a.id===d.art_file_id):null;
+              const dType=d.type||dAf?.deco_type||j.deco_type||'screen_print';
+              const dColors=(dAf?(dAf.ink_colors||dAf.thread_colors||''):'').split(/[,\n]/).map(c=>c.trim()).filter(Boolean);
+              _perItemDecos[key].push({kind:'art',position:d.position||'Front Center',type:dType,reversible:d.reversible||false,underbase:d.underbase||false,artFile:dAf,colors:dColors,size:dAf?.art_size||'',artName:dAf?.name||dAf?.title||''});
+            }else if(d.kind==='numbers'){
+              _perItemDecos[key].push({kind:'numbers',position:d.position||'Back Center',method:(d.num_method||'heat_transfer').replace(/_/g,' '),
+                numSize:d.num_size||'—',numSizeBack:d.front_and_back?(d.num_size_back||d.num_size||'—'):null,
+                numFont:d.num_font||'block',twoColor:d.two_color||false,frontAndBack:d.front_and_back||false,reversible:d.reversible||false,
+                printColor:d.print_color||''});
+            }else if(d.kind==='names'){
+              _perItemDecos[key].push({kind:'names',position:d.position||'Back Center',frontAndBack:d.front_and_back||false,reversible:d.reversible||false});
+            }
+          });
+        });
+        // Color editing helpers (hoisted from deco IIFE)
+        const _isEditingColors=artJobDetailEditColors!==null&&typeof artJobDetailEditColors==='object'&&artJobDetailEditColors._perGarment;
+        const _startEditColors=()=>{
+          const init={_perGarment:true};
+          itemDetails.forEach(gi=>{const gk=gi.sku+'|'+gi.color;
+            init[gk]={};
+            posList3.forEach(pos=>{
+              init[gk][pos]=(_garmentColors[gk]&&_garmentColors[gk][pos])||colorList.map(c=>c)||[''];
+            });
+          });
+          setArtJobDetailEditColors(init);
+        };
+        const _saveColors=()=>{
+          const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
+          const gc={};const allColors=new Set();
+          Object.entries(artJobDetailEditColors).forEach(([gk,positions])=>{
+            if(gk==='_perGarment')return;
+            gc[gk]={};
+            Object.entries(positions).forEach(([pos,colors])=>{
+              gc[gk][pos]=colors.filter(c=>c.trim());
+              colors.filter(c=>c.trim()).forEach(c=>allColors.add(c.trim()));
+            });
+          });
+          const colorField=isEmb?'thread_colors':'ink_colors';
+          const updArt=safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,garment_colors:gc,[colorField]:[...allColors].join(', ')}:a);
+          savSO({...liveSO,art_files:updArt});
+          setArtJobDetailModal({...j,artFile:updArt.find(a=>a.id===j.art_file_id)});
+          setArtJobDetailEditColors(null);
+          nf('Colors updated');
+        };
+        // Copy mockup helper
+        const _copyMockup=(fromSku,toSku)=>{
+          const fromMocks=af?.item_mockups?.[fromSku]||[];
+          if(fromMocks.length===0)return;
+          const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
+          const updArt=safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,item_mockups:{...(a.item_mockups||{}),[toSku]:[...fromMocks]}}:a);
+          savSO({...liveSO,art_files:updArt});
+          setArtJobDetailModal({...j,artFile:updArt.find(a=>a.id===j.art_file_id)});
+          nf('Mockup copied from '+fromSku+' to '+toSku);
+        };
+
         // Art messages for this job (stored on the job) + SO message replies from rep
         const artMsgsRaw=j.art_messages||[];
         // Find SO messages related to this art job: art-tagged messages for this SO and their thread replies
