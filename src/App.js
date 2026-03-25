@@ -12900,10 +12900,16 @@ export default function App(){
       todos.push({type:'issue',priority:pri,msg:(i.priority==='high'?'🔴':'🟡')+' Issue: '+i.description.slice(0,80)+(i.description.length>80?'...':''),detail:(i.reported_by||i.reportedBy||'Unknown')+' · '+i.page+(i.viewing?' · '+i.viewing:''),action:'View Issue',role:'admin',issueId:i.id});
     });
     todos.sort((a,b)=>a.priority-b.priority);
-    // Attach repId to each todo based on customer's primary_rep_id
+    // Attach repId, dismissKey, and date to each todo
     todos.forEach(t=>{
       if(t.so){const c=cust.find(x=>x.id===t.so.customer_id);t.repId=c?.primary_rep_id||t.so.created_by}
       else if(t.est){const c=cust.find(x=>x.id===t.est.customer_id);t.repId=c?.primary_rep_id||t.est.created_by}
+      if(t.est)t.dismissKey=t.type+':'+(t.updateReqId||t.est.id);
+      else if(t.so&&t.jobId)t.dismissKey=t.type+':'+t.so.id+':'+t.jobId;
+      else if(t.so)t.dismissKey=t.type+':'+t.so.id;
+      else t.dismissKey=t.type+':'+t.msg.slice(0,40);
+      if(t.est)t.date=t.est.approved_at||t.est.updated_at||t.est.created_at;
+      else if(t.so)t.date=t.so.updated_at||t.so.created_at;
     });
     // Filter to person-specific: reps see their customers' todos, CSRs see their assigned reps' todos
     const myTodos=todos.filter(t=>{
