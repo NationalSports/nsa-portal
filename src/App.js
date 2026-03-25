@@ -77,6 +77,71 @@ const _safeQuery=(table,opts)=>{
     return r;
   });
 };
+
+// ─── Adidas B2B Inventory Fetch Helpers ───
+const fetchAdidasInventory = async (sku) => {
+  if (!supabase || !sku) return { sizes: {}, lastSynced: null };
+  try {
+    const { data, error } = await supabase.from('adidas_inventory').select('*').eq('sku', sku);
+    if (error) { console.warn('[Adidas B2B] Fetch error:', error.message); return { sizes: {}, lastSynced: null }; }
+    if (!data || data.length === 0) return { sizes: {}, lastSynced: null };
+    const sizes = {};
+    let lastSynced = null;
+    data.forEach(row => {
+      sizes[row.size] = { qty: row.stock_qty || 0, futureDate: row.future_delivery_date || null, futureQty: row.future_delivery_qty || null };
+      if (!lastSynced || new Date(row.last_synced) > new Date(lastSynced)) lastSynced = row.last_synced;
+    });
+    return { sizes, lastSynced };
+  } catch (e) { console.error('[Adidas B2B] Fetch failed:', e); return { sizes: {}, lastSynced: null }; }
+};
+
+const fetchAdidasInventoryBulk = async (skus) => {
+  if (!supabase || !skus || skus.length === 0) return {};
+  try {
+    const { data, error } = await supabase.from('adidas_inventory').select('*').in('sku', skus);
+    if (error) { console.warn('[Adidas B2B] Bulk fetch error:', error.message); return {}; }
+    if (!data || data.length === 0) return {};
+    const result = {};
+    data.forEach(row => {
+      if (!result[row.sku]) result[row.sku] = { sizes: {}, lastSynced: null };
+      result[row.sku].sizes[row.size] = { qty: row.stock_qty || 0, futureDate: row.future_delivery_date || null, futureQty: row.future_delivery_qty || null };
+      if (!result[row.sku].lastSynced || new Date(row.last_synced) > new Date(result[row.sku].lastSynced)) result[row.sku].lastSynced = row.last_synced;
+    });
+    return result;
+  } catch (e) { console.error('[Adidas B2B] Bulk fetch failed:', e); return {}; }
+};
+
+// Standalone Adidas B2B inventory row component (used in ProductDetail and other stable components)
+function AdidasB2BRow({sku, brand, sizes, showSz, inv}) {
+  const [ai, setAi] = React.useState(null);
+  const [loading, setLoading] = React.useState(false);
+  React.useEffect(() => {
+    if (brand !== 'Adidas' || !sku) return;
+    setLoading(true);
+    fetchAdidasInventory(sku).then(data => { setAi(data); setLoading(false); }).catch(() => setLoading(false));
+  }, [sku, brand]);
+  if (brand !== 'Adidas') return null;
+  if (loading) return <div style={{fontSize:10,color:'#059669',marginTop:4}}>Loading Adidas B2B stock...</div>;
+  if (!ai || Object.keys(ai.sizes || {}).length === 0) return <div style={{fontSize:10,color:'#94a3b8',marginTop:4,fontStyle:'italic'}}>No Adidas B2B data — run inventory sync</div>;
+  const b2bTotal = Object.values(ai.sizes).reduce((a, s) => a + (s.qty || 0), 0);
+  const ls = ai.lastSynced ? new Date(ai.lastSynced) : null;
+  const staleHrs = ls ? (Date.now() - ls.getTime()) / 3600000 : 999;
+  return (<div style={{marginTop:6}}>
+    <div style={{display:'flex',gap:2,flexWrap:'wrap',alignItems:'center',paddingLeft:2,borderLeft:'3px solid #059669'}}>
+      <span style={{fontSize:9,fontWeight:700,color:'#059669',marginRight:4}}>Adidas B2B:</span>
+      {(sizes||[]).filter(sz => showSz ? showSz(sz, inv?.[sz]) || (ai.sizes[sz]?.qty > 0) : true).map(sz => {
+        const v = ai.sizes[sz]?.qty || 0;
+        const ft = ai.sizes[sz]?.futureDate;
+        return <div key={sz} className={`size-cell ${v > 10 ? 'in-stock' : v > 0 ? 'low-stock' : 'no-stock'}`} title={ft ? 'Expected: ' + ft + ' (' + (ai.sizes[sz]?.futureQty || 0) + ' units)' : ''}>
+          <div className="size-label">{sz}</div><div className="size-qty">{v}</div>
+        </div>;
+      })}
+      <div className="size-cell total"><div className="size-label">TOT</div><div className="size-qty">{b2bTotal}</div></div>
+    </div>
+    {ls && <div style={{fontSize:9,color:staleHrs > 48 ? '#d97706' : '#94a3b8',marginTop:2}}>{staleHrs > 48 ? '⚠ ' : ''}Last synced: {ls.toLocaleDateString() + ' ' + ls.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})}</div>}
+  </div>);
+}
+
 const _dbLoad = async () => {
   if (!supabase) return null;
   if (_dbSavingCount>0) { console.log('[DB] Skipping load — save in progress'); return null; }
@@ -2847,10 +2912,44 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     return false;
   },[products,vendorList]);
 
+  // Check if item is from Adidas (for B2B inventory display)
+  const isAdidasItem=useCallback((item)=>{
+    if(item.brand==='Adidas')return true;
+    const vId=item.vendor_id||products.find(p=>p.id===item.product_id||p.sku===item.sku)?.vendor_id;
+    if(!vId)return false;
+    const vRec=vendorList.find(v=>v.id===vId);
+    if(vRec)return vRec.name==='Adidas';
+    return false;
+  },[products,vendorList]);
+
   // Keyed by style (sku base), stores {sizes:{S:qty,M:qty,...}, price:{S:cost,...}, fetchedAt:timestamp}
   const vendorInvCache=useRef({});
   const[vendorInv,setVendorInv]=useState({});// {sku: {sizes:{S:qty,...}, loading:bool, error:str}}
   const vendorInvFetching=useRef({});// track in-flight fetches
+
+  // ─── Adidas B2B Inventory Cache ───
+  const adidasInvCache=useRef({});// {sku: {sizes:{...}, lastSynced, fetchedAt}}
+  const[adidasInv,setAdidasInv]=useState({});// {sku: {sizes:{S:{qty,futureDate,futureQty},...}, lastSynced, loading, error}}
+  const adidasInvFetching=useRef({});
+
+  const fetchAdidasInv=useCallback(async(sku)=>{
+    if(!sku)return;
+    const cached=adidasInvCache.current[sku];
+    if(cached&&(Date.now()-cached.fetchedAt)<600000){
+      setAdidasInv(prev=>({...prev,[sku]:{sizes:cached.sizes,lastSynced:cached.lastSynced,loading:false,error:null}}));
+      return;
+    }
+    if(adidasInvFetching.current[sku])return;
+    adidasInvFetching.current[sku]=true;
+    setAdidasInv(prev=>({...prev,[sku]:{sizes:{},lastSynced:null,loading:true,error:null}}));
+    try{
+      const result=await fetchAdidasInventory(sku);
+      adidasInvCache.current[sku]={...result,fetchedAt:Date.now()};
+      setAdidasInv(prev=>({...prev,[sku]:{...result,loading:false,error:null}}));
+    }catch(e){
+      setAdidasInv(prev=>({...prev,[sku]:{sizes:{},lastSynced:null,loading:false,error:e.message}}));
+    }finally{delete adidasInvFetching.current[sku]}
+  },[]);
 
   // Vendor product image cache — {sku+color: {front:url, back:url}}
   const vendorImgCache=useRef({});
@@ -3067,6 +3166,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     items.forEach(item=>{
       if((isSSItem(item)||isSanMarItem(item)||isMomentecItem(item))&&!vendorInv[item.sku]&&!vendorInvFetching.current[item.sku]){
         fetchVendorInventory(item.sku,item.vendor_id,item);
+      }
+    });
+  },[o.items?.length]);// only re-run when items are added/removed
+
+  // Auto-fetch Adidas B2B inventory for Adidas items on the order
+  React.useEffect(()=>{
+    const items=safeItems(o);
+    items.forEach(item=>{
+      if(isAdidasItem(item)&&!adidasInv[item.sku]&&!adidasInvFetching.current[item.sku]){
+        fetchAdidasInv(item.sku);
       }
     });
   },[o.items?.length]);// only re-run when items are added/removed
@@ -4212,13 +4321,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <input value={item.sizes[sz]||''} onChange={e=>uSz(idx,sz,e.target.value)} placeholder="0"
                 style={{width:42,textAlign:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'5px 2px',fontSize:15,fontWeight:700,color:(item.sizes[sz]||0)>0?'#0f172a':'#cbd5e1'}}/>
               {(()=>{const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);const stk=p?._inv?.[sz];const need=item.sizes[sz]||0;return<div style={{fontSize:9,fontWeight:600,minHeight:13,color:stk==null?'transparent':stk<=0?'#dc2626':stk<need?'#ca8a04':'#166534'}}>{stk!=null?stk+' inv':'\u00A0'}</div>})()}
-              {(()=>{const vi=vendorInv[item.sku];if(!vi||vi.loading)return vi?.loading?<div style={{fontSize:8,color:'#a78bfa',minHeight:11}}>...</div>:null;const vStk=vi.sizes?.[sz];if(vStk==null)return null;const lbl=vi.source==='mt'?'mt':vi.source==='sm'?'sm':'ss';const clr=vi.source==='mt'?'#d97706':vi.source==='sm'?'#0891b2':'#7c3aed';return<div style={{fontSize:8,fontWeight:700,minHeight:11,color:vStk<=0?'#dc2626':vStk<20?clr:clr}} title={(vi.source==='mt'?'Momentec':vi.source==='sm'?'SanMar':'S&S Activewear')+' stock: '+vStk}>{vStk} {lbl}</div>})()}</div>)}
+              {(()=>{const vi=vendorInv[item.sku];if(!vi||vi.loading)return vi?.loading?<div style={{fontSize:8,color:'#a78bfa',minHeight:11}}>...</div>:null;const vStk=vi.sizes?.[sz];if(vStk==null)return null;const lbl=vi.source==='mt'?'mt':vi.source==='sm'?'sm':'ss';const clr=vi.source==='mt'?'#d97706':vi.source==='sm'?'#0891b2':'#7c3aed';return<div style={{fontSize:8,fontWeight:700,minHeight:11,color:vStk<=0?'#dc2626':vStk<20?clr:clr}} title={(vi.source==='mt'?'Momentec':vi.source==='sm'?'SanMar':'S&S Activewear')+' stock: '+vStk}>{vStk} {lbl}</div>})()}
+              {(()=>{if(!isAdidasItem(item))return null;const ai=adidasInv[item.sku];if(!ai||ai.loading)return ai?.loading?<div style={{fontSize:8,color:'#059669',minHeight:11}}>...</div>:null;const ad=ai.sizes?.[sz];const aQty=ad?.qty??0;const need=item.sizes[sz]||0;const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);const nsaStk=p?._inv?.[sz]||0;const totalAvail=nsaStk+aQty;const shortfall=need>totalAvail;return<div style={{fontSize:8,fontWeight:700,minHeight:11,color:aQty<=0?'#dc2626':aQty<=10?'#d97706':'#059669',background:shortfall&&need>0?'#fee2e2':'transparent',borderRadius:2,padding:shortfall?'0 2px':0}} title={'Adidas B2B: '+aQty+(ad?.futureDate?' | Expected: '+ad.futureDate+' ('+ad.futureQty+' units)':'')+(shortfall?' | SHORTFALL: need '+need+', avail '+(nsaStk+aQty):'')}>{aQty} b2b</div>})()}</div>)}
             <div style={{textAlign:'center',marginLeft:4,padding:'0 10px',borderLeft:'2px solid #e2e8f0'}}><div style={{fontSize:10,fontWeight:700,color:'#1e40af'}}>TOT</div>
               <div style={{fontSize:20,fontWeight:800,color:'#1e40af'}}>{qty}</div>
             </div>
             </>}
             {(()=>{const vi=vendorInv[item.sku];const isSM=isSanMarItem(item);const isSS=isSSItem(item);const isMT=isMomentecItem(item);
               if(isSS||isSM||isMT){const lbl=isMT?'MT':isSM?'SM':'S&S';const clr=isMT?'#d97706':isSM?'#0891b2':'#7c3aed';const bdr=isMT?'#fbbf24':isSM?'#67e8f9':'#c4b5fd';return<button title={vi?.error?'Error: '+vi.error+' — click to retry':'Refresh '+(isMT?'Momentec':isSM?'SanMar':'S&S')+' inventory'} onClick={()=>{delete vendorInvCache.current[item.sku];delete vendorInvFetching.current[item.sku];setVendorInv(prev=>{const n={...prev};delete n[item.sku];return n});fetchVendorInventory(item.sku,item.vendor_id,item)}} style={{background:'none',border:'1px solid '+bdr,borderRadius:4,cursor:'pointer',color:vi?.error?'#dc2626':clr,padding:'2px 6px',fontSize:9,fontWeight:700,marginLeft:4,whiteSpace:'nowrap'}}>{vi?.loading?'...':vi?.error?'⚠ '+lbl:'↻ '+lbl}</button>}return null})()}
+            {(()=>{if(!isAdidasItem(item))return null;const ai=adidasInv[item.sku];return<button title={ai?.error?'Error: '+ai.error+' — click to retry':'Refresh Adidas B2B inventory'} onClick={()=>{delete adidasInvCache.current[item.sku];delete adidasInvFetching.current[item.sku];setAdidasInv(prev=>{const n={...prev};delete n[item.sku];return n});fetchAdidasInv(item.sku)}} style={{background:'none',border:'1px solid #6ee7b7',borderRadius:4,cursor:'pointer',color:ai?.error?'#dc2626':'#059669',padding:'2px 6px',fontSize:9,fontWeight:700,marginLeft:4,whiteSpace:'nowrap'}}>{ai?.loading?'...':ai?.error?'⚠ B2B':'↻ B2B'}</button>})()}
             {!(isE&&item.qty_only)&&<div style={{position:'relative',marginLeft:4}}><button className="btn btn-sm btn-secondary" onClick={()=>setShowSzPicker(showSzPicker===idx?null:idx)} style={{fontSize:10}}>+ Size</button>
               {showSzPicker===idx&&<><div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:39}} onClick={()=>setShowSzPicker(null)}/><div style={{position:'absolute',top:'100%',left:0,background:'white',border:'1px solid #e2e8f0',borderRadius:6,boxShadow:'0 4px 12px rgba(0,0,0,0.1)',zIndex:40,padding:6,display:'flex',gap:3,flexWrap:'wrap',width:180}}>
                 {addable.map(sz=><button key={sz} className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 6px'}} onClick={()=>addSzToItem(idx,sz)}>{sz}</button>)}
@@ -4226,6 +4337,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 </div></>}
             </div>}
           </div>
+          {/* Adidas B2B last synced + shortfall indicators */}
+          {(()=>{if(!isAdidasItem(item))return null;const ai=adidasInv[item.sku];if(!ai||ai.loading)return null;
+            const hasSizes=Object.keys(ai.sizes||{}).length>0;
+            const ls=ai.lastSynced?new Date(ai.lastSynced):null;const staleHrs=ls?(Date.now()-ls.getTime())/3600000:999;
+            const shortfalls=[];
+            if(hasSizes){Object.entries(item.sizes||{}).forEach(([sz,need])=>{if(!need||need<=0)return;const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);const nsaStk=p?._inv?.[sz]||0;const b2bStk=ai.sizes[sz]?.qty||0;const total=nsaStk+b2bStk;if(need>total)shortfalls.push({sz,need,avail:total,short:need-total})})}
+            return<div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',padding:'0 18px 2px',fontSize:10}}>
+              {hasSizes&&ls&&<span style={{color:staleHrs>48?'#d97706':'#94a3b8',fontWeight:staleHrs>48?700:400}}>{staleHrs>48?'⚠ ':''}B2B synced: {ls.toLocaleDateString()+' '+ls.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</span>}
+              {!hasSizes&&<span style={{color:'#94a3b8',fontStyle:'italic'}}>No Adidas B2B data — run inventory sync</span>}
+              {shortfalls.length>0&&<span style={{color:'#dc2626',fontWeight:700}}>Shortfall: {shortfalls.map(s=>s.sz+' need '+s.short).join(', ')}</span>}
+            </div>})()}
           {/* Financial summary — right side of sizes row */}
           <div style={{marginLeft:'auto',display:'flex',alignItems:'center',gap:12}}>
             {isSO&&szQty===0&&safeNum(item.est_qty)>0&&<span style={{fontSize:11,color:'#dc2626',fontWeight:700}}>Enter sizes ({item.est_qty} total)</span>}
@@ -11457,6 +11579,9 @@ export default function App(){
   const[cust,setCust]=useState(()=>loadState('cust',D_C));const[vend,setVend]=useState(()=>loadState('vend',D_V));const[prod,setProd]=useState(()=>loadState('prod',D_P));
   const[ests,setEsts]=useState(()=>_migrated.ests);const[sos,setSOs]=useState(()=>_migrated.sos);const[invs,setInvs]=useState(()=>_migrated.invs);
   const[omgStores,setOmgStores]=useState(D_OMG);
+  // Adidas B2B bulk inventory for Products/Inventory pages
+  const[adidasInvBulk,setAdidasInvBulk]=useState({});// {sku: {sizes:{sz:{qty,futureDate,futureQty}}, lastSynced}}
+  const adidasBulkFetched=useRef(false);
   // ShipStation integration state
   const[ssConnected,setSSConnected]=useState(false);
   const[ssShipping,setSSShipping]=useState(false);
@@ -11813,6 +11938,14 @@ export default function App(){
   React.useEffect(()=>{try{localStorage.setItem('nsa_cust',JSON.stringify(cust))}catch{};_diffSave(cust,'cust',c=>_dbSaveCustomer(c))},[cust]);
   React.useEffect(()=>{try{localStorage.setItem('nsa_vend',JSON.stringify(vend))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.vend||[];const changed=vend.filter(v=>{const old=snap.find(p=>p.id===v.id);return!old||JSON.stringify(old)!==JSON.stringify(v)});if(changed.length)_dbSave('vendors',changed.map(v=>_pick(v,_vendCols)));_dbSnap.current.vend=vend}},[vend]);
   React.useEffect(()=>{try{localStorage.setItem('nsa_prod',JSON.stringify(prod))}catch{};_diffSave(prod,'prod',p=>_dbSaveProduct(p))},[prod]);
+  // Fetch Adidas B2B inventory for all Adidas products (bulk, once)
+  React.useEffect(()=>{
+    if(adidasBulkFetched.current||!prod||prod.length===0)return;
+    const adidasSkus=[...new Set(prod.filter(p=>p.brand==='Adidas').map(p=>p.sku).filter(Boolean))];
+    if(adidasSkus.length===0)return;
+    adidasBulkFetched.current=true;
+    fetchAdidasInventoryBulk(adidasSkus).then(data=>{if(data)setAdidasInvBulk(data)}).catch(e=>console.warn('[Adidas B2B] Bulk fetch error:',e));
+  },[prod]);
   React.useEffect(()=>{try{localStorage.setItem('nsa_ests',JSON.stringify(ests))}catch{};_diffSave(ests,'ests',e=>_dbSaveEstimate(e))},[ests]);
   React.useEffect(()=>{try{localStorage.setItem('nsa_sos',JSON.stringify(sos))}catch{};_diffSave(sos,'sos',s=>_dbSaveSO(s))},[sos]);
   React.useEffect(()=>{try{localStorage.setItem('nsa_invs',JSON.stringify(invs))}catch{};_diffSave(invs,'invs',i=>_dbSaveInvoice(i))},[invs]);
@@ -13788,6 +13921,7 @@ export default function App(){
                 {ep.available_sizes.filter(sz=>showSz(sz,ep._inv?.[sz])).map(sz=>{const val=ep._inv?.[sz]||0;return<div key={sz} className={`size-cell ${val>10?'in-stock':val>0?'low-stock':'no-stock'}`}><div className="size-label">{sz}</div><div className="size-qty">{val}</div></div>})}
                 <div className="size-cell total"><div className="size-label">TOT</div><div className="size-qty">{nt}</div></div>
               </div>
+              <AdidasB2BRow sku={ep.sku} brand={ep.brand} sizes={ep.available_sizes} showSz={showSz} inv={ep._inv}/>
             </>:<>
               <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:8}}>
                 <div><label className="form-label">SKU</label><input className="form-input" value={ep.sku} onChange={e=>setEp(x=>({...x,sku:e.target.value}))}/></div>
@@ -13992,7 +14126,16 @@ export default function App(){
         <div style={{fontSize:12,color:'#94a3b8',marginTop:2}}><span className="badge badge-blue" style={{marginRight:4}}>{p.brand}</span>{p.color} | ${p.nsa_cost?.toFixed(2)} | {au?'Tier':'$'+rQ(p.nsa_cost*1.65).toFixed(2)}</div>
         <div style={{display:'flex',gap:2,marginTop:6,flexWrap:'wrap'}}>
           {p.available_sizes.filter(sz=>showSz(sz,p._inv?.[sz])).map(sz=>{const v=p._inv?.[sz]||0;return<div key={sz} className={`size-cell ${v>10?'in-stock':v>0?'low-stock':'no-stock'}`}><div className="size-label">{sz}</div><div className="size-qty">{v}</div></div>})}
-          <div className="size-cell total"><div className="size-label">TOT</div><div className="size-qty">{nt}</div></div></div></div></div></div>)})}
+          <div className="size-cell total"><div className="size-label">TOT</div><div className="size-qty">{nt}</div></div></div>
+        {(()=>{if(p.brand!=='Adidas')return null;const ai=adidasInvBulk[p.sku];if(!ai)return null;const hasSz=Object.keys(ai.sizes||{}).length>0;if(!hasSz)return null;
+          const b2bTotal=Object.values(ai.sizes).reduce((a,s)=>a+(s.qty||0),0);const ls=ai.lastSynced?new Date(ai.lastSynced):null;const staleHrs=ls?(Date.now()-ls.getTime())/3600000:999;
+          return<div style={{display:'flex',gap:2,marginTop:3,flexWrap:'wrap',alignItems:'center',paddingLeft:2,borderLeft:'3px solid #059669'}}>
+            <span style={{fontSize:9,fontWeight:700,color:'#059669',marginRight:4,whiteSpace:'nowrap'}}>B2B:</span>
+            {p.available_sizes.filter(sz=>showSz(sz,p._inv?.[sz])||(ai.sizes[sz]?.qty>0)).map(sz=>{const v=ai.sizes[sz]?.qty||0;return<div key={sz} className={`size-cell ${v>10?'in-stock':v>0?'low-stock':'no-stock'}`} style={{opacity:0.85}}><div className="size-label">{sz}</div><div className="size-qty">{v}</div></div>})}
+            <div className="size-cell total" style={{opacity:0.85}}><div className="size-label">TOT</div><div className="size-qty">{b2bTotal}</div></div>
+            {ls&&<span style={{fontSize:9,color:staleHrs>48?'#d97706':'#94a3b8',marginLeft:6}}>{staleHrs>48?'⚠ ':''}Synced: {ls.toLocaleDateString()}</span>}
+          </div>})()}
+        </div></div></div>)})}
   {fP.length===0&&<div className="empty">No products</div>}</div></div></>);};
 
   // INVENTORY
@@ -14002,22 +14145,29 @@ export default function App(){
     <select className="form-select" style={{width:110}} value={iF.cat} onChange={e=>setIF(f=>({...f,cat:e.target.value}))}><option value="all">Category</option>{CATEGORIES.map(c=><option key={c}>{c}</option>)}</select>
     <select className="form-select" style={{width:110}} value={iF.vnd} onChange={e=>setIF(f=>({...f,vnd:e.target.value}))}><option value="all">Vendor</option>{vend.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}</select>
     <select className="form-select" style={{width:130}} value={iF.clr} onChange={e=>setIF(f=>({...f,clr:e.target.value}))}><option value="all">Color</option>{cols.map(c=><option key={c} value={c}>{c}</option>)}</select></div>
+  {(()=>{const anyB2B=Object.keys(adidasInvBulk).length>0;if(!anyB2B)return null;const firstSynced=Object.values(adidasInvBulk).find(v=>v.lastSynced);const ls=firstSynced?new Date(firstSynced.lastSynced):null;const staleHrs=ls?(Date.now()-ls.getTime())/3600000:999;
+    return<div style={{marginBottom:8,display:'flex',alignItems:'center',gap:8}}>
+      <span style={{fontSize:11,fontWeight:600,color:'#059669',background:'#ecfdf5',padding:'3px 8px',borderRadius:4}}>Adidas B2B Data Active</span>
+      {ls&&<span style={{fontSize:10,color:staleHrs>48?'#d97706':'#94a3b8'}}>{staleHrs>48?'⚠ ':''}Last synced: {ls.toLocaleDateString()+' '+ls.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</span>}
+    </div>})()}
   <div className="card"><div className="card-body" style={{padding:0}}><table><thead><tr>
     <SortHeader label="SKU" field="sku" sortField={iS.f} sortDir={iS.d} onSort={f=>setIS(s=>({f,d:s.f===f&&s.d==='asc'?'desc':'asc'}))}/>
     <SortHeader label="Product" field="name" sortField={iS.f} sortDir={iS.d} onSort={f=>setIS(s=>({f,d:s.f===f&&s.d==='asc'?'desc':'asc'}))}/>
     <th>Sizes</th>
     <SortHeader label="Qty" field="qty" sortField={iS.f} sortDir={iS.d} onSort={f=>setIS(s=>({f,d:s.f===f&&s.d==='asc'?'desc':'asc'}))}/>
+    <th style={{fontSize:10}}>B2B</th>
     <SortHeader label="Value" field="value" sortField={iS.f} sortDir={iS.d} onSort={f=>setIS(s=>({f,d:s.f===f&&s.d==='asc'?'desc':'asc'}))}/>
     <th>Actions</th></tr></thead>
-  <tbody>{iD.map(p=><tr key={p.id}>
+  <tbody>{iD.map(p=>{const ai=adidasInvBulk[p.sku];const b2bTotal=ai?Object.values(ai.sizes||{}).reduce((a,s)=>a+(s.qty||0),0):null;return<tr key={p.id}>
     <td><div style={{display:'flex',alignItems:'center',gap:4}}><button style={{background:'none',border:'none',cursor:'pointer',fontSize:14,padding:0,color:favSkus.includes(p.sku)?'#f59e0b':'#d1d5db'}} onClick={()=>toggleFav(p.sku)}>{favSkus.includes(p.sku)?'★':'☆'}</button><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{p.sku}</span></div></td>
     <td style={{fontSize:12}}>{p.name}{p.is_clearance&&<span style={{marginLeft:4,padding:'1px 6px',borderRadius:4,fontSize:9,fontWeight:700,background:'#fef3c7',color:'#92400e'}}>CLEARANCE</span>}<br/><span style={{color:'#94a3b8'}}>{p.color}</span></td>
     <td><div style={{display:'flex',gap:2}}>{p.available_sizes.filter(sz=>showSz(sz,p._inv?.[sz])).map(sz=>{const v=p._inv?.[sz]||0;return<div key={sz} className={`size-cell ${v>10?'in-stock':v>0?'low-stock':'no-stock'}`} style={{minWidth:30,padding:'1px 3px'}}><div className="size-label" style={{fontSize:8}}>{sz}</div><div className="size-qty" style={{fontSize:11}}>{v}</div></div>})}</div></td>
     <td style={{fontWeight:800,fontSize:15,color:p._tQ<=10?'#d97706':'#166534'}}>{p._tQ}</td>
+    <td style={{fontWeight:700,fontSize:13,color:b2bTotal!=null?(b2bTotal>0?'#059669':'#dc2626'):'#d1d5db'}}>{b2bTotal!=null?b2bTotal:'—'}</td>
     <td style={{fontWeight:700}}>${p._tV.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
     <td><div style={{display:'flex',gap:4}}><button className="btn btn-sm btn-secondary" onClick={()=>newE(null,p)}>+EST</button>
       {isA&&<button className="btn btn-sm btn-secondary" onClick={()=>setAM({open:true,p})}>INV</button>}</div></td>
-  </tr>)}</tbody></table></div></div></>);
+  </tr>})}</tbody></table></div></div></>);
 
   // CLEARANCE ITEMS
   const[clrSearch,setClrSearch]=useState('');
