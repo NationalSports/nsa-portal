@@ -10502,7 +10502,9 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             </div>
           </div>
           {canApprove&&<button style={{width:'100%',padding:'14px 20px',background:'#22c55e',color:'white',border:'none',borderRadius:10,fontSize:16,fontWeight:800,cursor:'pointer',marginBottom:10}} onClick={()=>{
-            if(onUpdateEsts){onUpdateEsts(prev=>prev.map(e=>e.id===est.id?{...e,status:'approved',approved_by:'Coach',approved_at:new Date().toISOString(),updated_at:new Date().toLocaleString()}:e))}
+            const _approvedEst={...est,status:'approved',approved_by:'Coach',approved_at:new Date().toISOString(),updated_at:new Date().toLocaleString()};
+            if(onUpdateEsts){onUpdateEsts(prev=>prev.map(e=>e.id===est.id?_approvedEst:e))}
+            _dbSaveEstimate(_approvedEst);
             setEstView({...est,status:'approved'});
             // Email the assigned rep when coach approves estimate
             const rep=REPS.find(r=>r.id===est.created_by);
@@ -10516,7 +10518,9 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
               <button style={{width:'100%',marginTop:8,padding:'12px 20px',background:updateRequestText.trim()?'#d97706':'#e5e7eb',color:updateRequestText.trim()?'white':'#9ca3af',border:'none',borderRadius:10,fontSize:14,fontWeight:700,cursor:updateRequestText.trim()?'pointer':'not-allowed'}} disabled={!updateRequestText.trim()} onClick={()=>{
                 if(!updateRequestText.trim())return;
                 const req={id:'UR-'+Date.now(),text:updateRequestText.trim(),from:'Coach',at:new Date().toISOString(),status:'pending'};
-                if(onUpdateEsts){onUpdateEsts(prev=>prev.map(e=>e.id===est.id?{...e,update_requests:[...(e.update_requests||[]),req],updated_at:new Date().toLocaleString()}:e))}
+                const _updatedEst={...est,update_requests:[...(est.update_requests||[]),req],updated_at:new Date().toLocaleString()};
+                if(onUpdateEsts){onUpdateEsts(prev=>prev.map(e=>e.id===est.id?_updatedEst:e))}
+                _dbSaveEstimate(_updatedEst);
                 setEstView({...est,update_requests:[...(est.update_requests||[]),req]});
                 setUpdateRequestText('');setUpdateRequestSent(true);
               }}>Request Updates</button>
@@ -12170,6 +12174,8 @@ export default function App(){
   const[iShowFav,setIShowFav]=useState(false);
   const[dismissedNotifs,setDismissedNotifs]=useState(()=>{try{return JSON.parse(localStorage.getItem('nsa_dismissed_notifs')||'[]')}catch{return[]}});
   const dismissNotif=(key)=>{setDismissedNotifs(prev=>{const n=[...prev,key];try{localStorage.setItem('nsa_dismissed_notifs',JSON.stringify(n))}catch{}return n})};
+  const[dismissedTodos,setDismissedTodos]=useState(()=>{try{return JSON.parse(localStorage.getItem('nsa_dismissed_todos')||'[]')}catch{return[]}});
+  const dismissTodo=(key)=>{setDismissedTodos(prev=>{const n=[...prev,key];try{localStorage.setItem('nsa_dismissed_todos',JSON.stringify(n))}catch{}return n})};
   const[cu,setCu]=useState(()=>{try{const s=localStorage.getItem('nsa_user');return s?JSON.parse(s):null}catch{return null}});
   const handleLogin=(user)=>{setCu(user);try{localStorage.setItem('nsa_user',JSON.stringify(user))}catch{}};
   const handleLogout=()=>{setCu(null);try{localStorage.removeItem('nsa_user')}catch{}};
@@ -12937,13 +12943,15 @@ export default function App(){
     <div className="stats-row"><div className="stat-card"><div className="stat-label">Open Estimates</div><div className="stat-value" style={{color:'#d97706'}}>{ests.filter(e=>e.status==='draft'||e.status==='sent').length}</div></div><div className="stat-card"><div className="stat-label">Active SOs</div><div className="stat-value" style={{color:'#2563eb'}}>{sos.filter(s=>calcSOStatus(s)!=='complete').length}</div></div><div className="stat-card"><div className="stat-label">Active Jobs</div><div className="stat-value" style={{color:'#7c3aed'}}>{activeJobs.length}</div></div><div className="stat-card"><div className="stat-label">Unread Msgs</div><div className="stat-value" style={{color:unreadMsgs.length>0?'#dc2626':''}}>{unreadMsgs.length}</div></div>{unreadMentions.length>0&&<div className="stat-card" style={{borderColor:'#f59e0b'}}><div className="stat-label">@ Mentions</div><div className="stat-value" style={{color:'#d97706'}}>{unreadMentions.length}</div></div>}
       {isA&&<div className="stat-card" style={{borderColor:'#fbbf24'}}><div className="stat-label">Stock Alerts</div><div className="stat-value" style={{color:'#d97706'}}>{al.length}</div></div>}
       <div className="stat-card" style={{borderColor:ssConnected?'#22c55e':'#ef4444'}}><div className="stat-label">ShipStation</div><div className="stat-value" style={{color:ssConnected?'#166534':'#dc2626',fontSize:16}}>{ssConnected?'Connected':'Offline'}</div></div></div>
-    {(()=>{const actionTodos=todos.filter(t=>!t.isNotification);const notifs=todos.filter(t=>t.isNotification);return<><div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
+    {(()=>{const _fmtTD=d=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);return days<1?'Today':days===1?'Yesterday':days<14?days+'d ago':((dt.getMonth()+1)+'/'+dt.getDate())}catch{return''}};const _allActionTodos=todos.filter(t=>!t.isNotification);const actionTodos=_allActionTodos.filter(t=>!dismissedTodos.includes(t.dismissKey));const notifs=todos.filter(t=>t.isNotification);return<><div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
       <div className="card"><div className="card-header"><h2>📋 To-Do ({actionTodos.length})</h2></div>
         <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
           {actionTodos.length===0?<div className="empty" style={{padding:20}}>All clear!</div>:
-          actionTodos.slice(0,12).map((t,i)=><div key={i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer'}} onClick={()=>{if(t.type==='issue'){setPg('settings')}else if(t.type==='est_update_request'||t.type==='est_approved'||t.type==='follow_up'){if(t.est){setEEst(t.est);setEEstC(t.estC);setPg('estimates')}}else if(t.so){if(t.type==='art'&&t.jobId){const jIdx=safeJobs(t.so).findIndex(jj=>jj.id===t.jobId);setESOTab('jobs');setESOScrollJob(jIdx>=0?jIdx:null)}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
-            <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}</div></div>
-            {(cu.role==='admin'||cu.role==='gm'||cu.role==='rep')&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#f0f9ff',color:'#0891b2',border:'1px solid #a5f3fc',borderRadius:8,whiteSpace:'nowrap',marginRight:4}} onClick={e=>{e.stopPropagation();setTodoModal({open:true,title:t.msg.replace(/^[^\w]*/,''),description:t.detail||'',assigned_to:getCsrsForRep(t.repId||cu.id)[0]||'',so_id:t.so?.id||'',customer_id:t.so?.customer_id||t.est?.customer_id||'',priority:t.priority<=1?1:2})}}>Assign</button>}
+          actionTodos.slice(0,12).map((t,i)=><div key={i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:8,cursor:'pointer'}} onClick={()=>{if(t.type==='issue'){setPg('settings')}else if(t.type==='est_update_request'||t.type==='est_approved'||t.type==='follow_up'||t.type==='deposit_needed'){if(t.est){setEEst(t.est);setEEstC(t.estC);setPg('estimates')}}else if(t.so){if(t.type==='art'&&t.jobId){const jIdx=safeJobs(t.so).findIndex(jj=>jj.id===t.jobId);setESOTab('jobs');setESOScrollJob(jIdx>=0?jIdx:null)}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
+            <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}{t.repId?<span style={{marginLeft:6,fontSize:10,color:'#2563eb'}}>({REPS.find(r=>r.id===t.repId)?.name?.split(' ')[0]||''})</span>:''}</div></div>
+            {_fmtTD(t.date)&&<span style={{fontSize:10,color:'#94a3b8',whiteSpace:'nowrap'}}>{_fmtTD(t.date)}</span>}
+            {(cu.role==='admin'||cu.role==='gm')&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#f0f9ff',color:'#0891b2',border:'1px solid #a5f3fc',borderRadius:8,whiteSpace:'nowrap'}} onClick={e=>{e.stopPropagation();setTodoModal({open:true,title:t.msg.replace(/^[^\w]*/,''),description:t.detail||'',assigned_to:getCsrsForRep(t.repId||cu.id)[0]||'',so_id:t.so?.id||'',customer_id:t.so?.customer_id||t.est?.customer_id||'',priority:t.priority<=1?1:2})}}>Assign</button>}
+            <button title="Dismiss" style={{background:'none',border:'1px solid #e2e8f0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:12,color:'#94a3b8',flexShrink:0}} onClick={e=>{e.stopPropagation();dismissTodo(t.dismissKey)}}>✕</button>
             <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:t.type==='art'?'#fef3c7':'#eff6ff',color:t.type==='art'?'#92400e':'#2563eb',fontWeight:600,whiteSpace:'nowrap'}}>{t.action}</span>
           </div>)}
         </div></div>
@@ -13008,15 +13016,17 @@ export default function App(){
       <div className="stat-card"><div className="stat-label">Due This Week</div><div className="stat-value" style={{color:'#dc2626'}}>{myTodos.filter(t=>t.type==='deadline').length}</div></div>
       <div className="stat-card"><div className="stat-label">Assigned Tasks</div><div className="stat-value" style={{color:'#0891b2'}}>{myAssignedTodos.length}</div></div>
     </div>
-    {(()=>{const myActionTodos=myTodos.filter(t=>(t.role==='sales'||t.role==='all')&&!t.isNotification);const myNotifs=myTodos.filter(t=>(t.role==='sales'||t.role==='all')&&t.isNotification);return<>
+    {(()=>{const _allActionTodos=myTodos.filter(t=>(t.role==='sales'||t.role==='all')&&!t.isNotification);const myActionTodos=_allActionTodos.filter(t=>!dismissedTodos.includes(t.dismissKey));const myNotifs=myTodos.filter(t=>(t.role==='sales'||t.role==='all')&&t.isNotification);const _fmtTD=d=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);return days<1?'Today':days===1?'Yesterday':days<14?days+'d ago':((dt.getMonth()+1)+'/'+dt.getDate())}catch{return''}};return<>
     <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
       <div className="card"><div className="card-header"><h2>🎯 My Action Items ({myActionTodos.length})</h2></div>
         <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
           {myActionTodos.length===0?<div className="empty" style={{padding:20}}>Nothing pending!</div>:
-          myActionTodos.slice(0,12).map((t,i)=><div key={i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer'}} onClick={()=>{if(t.type==='est_update_request'||t.type==='est_approved'||t.type==='follow_up'){if(t.est){setEEst(t.est);setEEstC(t.estC);setPg('estimates')}}else if(t.so){if(t.type==='art'&&t.jobId){const jIdx=safeJobs(t.so).findIndex(jj=>jj.id===t.jobId);setESOTab('jobs');setESOScrollJob(jIdx>=0?jIdx:null)}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
+          myActionTodos.slice(0,12).map((t,i)=><div key={i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:8,cursor:'pointer'}} onClick={()=>{if(t.type==='est_update_request'||t.type==='est_approved'||t.type==='follow_up'||t.type==='deposit_needed'){if(t.est){setEEst(t.est);setEEstC(t.estC);setPg('estimates')}}else if(t.so){if(t.type==='art'&&t.jobId){const jIdx=safeJobs(t.so).findIndex(jj=>jj.id===t.jobId);setESOTab('jobs');setESOScrollJob(jIdx>=0?jIdx:null)}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
             <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}{t.repId&&cu.role!=='rep'?<span style={{marginLeft:6,fontSize:10,color:'#2563eb'}}>({REPS.find(r=>r.id===t.repId)?.name?.split(' ')[0]||''})</span>:''}</div></div>
-            {(cu.role==='admin'||cu.role==='gm'||cu.role==='rep')&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#f0f9ff',color:'#0891b2',border:'1px solid #a5f3fc',borderRadius:8,whiteSpace:'nowrap',marginRight:4}} onClick={e=>{e.stopPropagation();setTodoModal({open:true,title:t.msg.replace(/^[^\w]*/,''),description:t.detail||'',assigned_to:getCsrsForRep(t.repId||cu.id)[0]||'',so_id:t.so?.id||'',customer_id:t.so?.customer_id||t.est?.customer_id||'',priority:t.priority<=1?1:2})}}>Assign</button>}
-            <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:t.type==='art'?'#fef3c7':'#eff6ff',color:t.type==='art'?'#92400e':'#2563eb',fontWeight:600}}>{t.action}</span>
+            {_fmtTD(t.date)&&<span style={{fontSize:10,color:'#94a3b8',whiteSpace:'nowrap'}}>{_fmtTD(t.date)}</span>}
+            {(cu.role==='admin'||cu.role==='gm'||cu.role==='rep')&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#f0f9ff',color:'#0891b2',border:'1px solid #a5f3fc',borderRadius:8,whiteSpace:'nowrap'}} onClick={e=>{e.stopPropagation();setTodoModal({open:true,title:t.msg.replace(/^[^\w]*/,''),description:t.detail||'',assigned_to:getCsrsForRep(t.repId||cu.id)[0]||'',so_id:t.so?.id||'',customer_id:t.so?.customer_id||t.est?.customer_id||'',priority:t.priority<=1?1:2})}}>Assign</button>}
+            <button title="Dismiss" style={{background:'none',border:'1px solid #e2e8f0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:12,color:'#94a3b8',flexShrink:0}} onClick={e=>{e.stopPropagation();dismissTodo(t.dismissKey)}}>✕</button>
+            <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:t.type==='art'?'#fef3c7':'#eff6ff',color:t.type==='art'?'#92400e':'#2563eb',fontWeight:600,whiteSpace:'nowrap'}}>{t.action}</span>
           </div>)}</div></div>
       <div className="card"><div className="card-header"><h2>📊 My Pipeline</h2></div>
         <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
@@ -13339,11 +13349,13 @@ export default function App(){
       <div className="stat-card"><div className="stat-label">Action Items</div><div className="stat-value" style={{color:'#d97706'}}>{myTodos.filter(t=>!t.isNotification&&(t.role==='csr'||t.role==='all'||t.type==='order'||t.type==='est_update_request'||t.type==='est_approved'||t.type==='deposit_needed')).length}</div></div>
     </div>
     {/* CSR Action Items — orders to place, estimate updates, deposits, deadlines */}
-    {(()=>{const csrActions=myTodos.filter(t=>!t.isNotification&&(t.role==='csr'||t.role==='all'||t.type==='order'||t.type==='est_update_request'||t.type==='est_approved'||t.type==='deposit_needed'));return csrActions.length>0&&<div className="card" style={{marginBottom:16,borderLeft:'4px solid #d97706'}}>
+    {(()=>{const _fmtTD=d=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);return days<1?'Today':days===1?'Yesterday':days<14?days+'d ago':((dt.getMonth()+1)+'/'+dt.getDate())}catch{return''}};const _allCsrActions=myTodos.filter(t=>!t.isNotification&&(t.role==='csr'||t.role==='all'||t.type==='order'||t.type==='est_update_request'||t.type==='est_approved'||t.type==='deposit_needed'));const csrActions=_allCsrActions.filter(t=>!dismissedTodos.includes(t.dismissKey));return csrActions.length>0&&<div className="card" style={{marginBottom:16,borderLeft:'4px solid #d97706'}}>
       <div className="card-header"><h2>🎯 Action Items ({csrActions.length})</h2></div>
       <div className="card-body" style={{padding:0,maxHeight:300,overflow:'auto'}}>
-        {csrActions.map((t,i)=><div key={i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer'}} onClick={()=>{if(t.est){setEEst(t.est);setEEstC(t.estC);setPg('estimates')}else if(t.so){setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
+        {csrActions.map((t,i)=><div key={i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:8,cursor:'pointer'}} onClick={()=>{if(t.est){setEEst(t.est);setEEstC(t.estC);setPg('estimates')}else if(t.so){setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
           <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}{t.repId&&<span style={{marginLeft:6,fontSize:10,color:'#2563eb'}}>({REPS.find(r=>r.id===t.repId)?.name?.split(' ')[0]||''})</span>}</div></div>
+          {_fmtTD(t.date)&&<span style={{fontSize:10,color:'#94a3b8',whiteSpace:'nowrap'}}>{_fmtTD(t.date)}</span>}
+          <button title="Dismiss" style={{background:'none',border:'1px solid #e2e8f0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:12,color:'#94a3b8',flexShrink:0}} onClick={e=>{e.stopPropagation();dismissTodo(t.dismissKey)}}>✕</button>
           <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#fef3c7',color:'#92400e',fontWeight:600,whiteSpace:'nowrap'}}>{t.action}</span>
         </div>)}
       </div></div>})()}
@@ -14490,6 +14502,12 @@ export default function App(){
     todos.forEach(t=>{
       if(t.so){const c=cust.find(x=>x.id===t.so.customer_id);t.repId=c?.primary_rep_id||t.so.created_by}
       else if(t.est){const c=cust.find(x=>x.id===t.est.customer_id);t.repId=c?.primary_rep_id||t.est.created_by}
+      if(t.est)t.dismissKey=t.type+':'+t.est.id;
+      else if(t.so&&t.jobId)t.dismissKey=t.type+':'+t.so.id+':'+t.jobId;
+      else if(t.so)t.dismissKey=t.type+':'+t.so.id;
+      else t.dismissKey=t.type+':'+t.msg.slice(0,40);
+      if(t.est)t.date=t.est.approved_at||t.est.updated_at||t.est.created_at;
+      else if(t.so)t.date=t.so.updated_at||t.so.created_at;
     });
     const filtered=todos.filter(t=>{
       if(cu.role==='admin'||cu.role==='gm')return true;
