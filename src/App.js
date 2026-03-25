@@ -11582,6 +11582,8 @@ export default function App(){
   // Adidas B2B bulk inventory for Products/Inventory pages
   const[adidasInvBulk,setAdidasInvBulk]=useState({});// {sku: {sizes:{sz:{qty,futureDate,futureQty}}, lastSynced}}
   const adidasBulkFetched=useRef(false);
+  const[adidasSyncUploading,setAdidasSyncUploading]=useState(false);
+  const[adidasSyncLog,setAdidasSyncLog]=useState([]);// [{ts,rows,skus,status,error}]
   // ShipStation integration state
   const[ssConnected,setSSConnected]=useState(false);
   const[ssShipping,setSSShipping]=useState(false);
@@ -11946,6 +11948,66 @@ export default function App(){
     adidasBulkFetched.current=true;
     fetchAdidasInventoryBulk(adidasSkus).then(data=>{if(data)setAdidasInvBulk(data)}).catch(e=>console.warn('[Adidas B2B] Bulk fetch error:',e));
   },[prod]);
+
+  // ─── Adidas B2B CSV Upload Handler ───
+  const handleAdidasCSVUpload=async(file)=>{
+    if(!supabase||!file){nf('No file selected','error');return}
+    setAdidasSyncUploading(true);
+    try{
+      const data=await file.arrayBuffer();
+      const wb=XLSX.read(data,{type:'array'});
+      const ws=wb.Sheets[wb.SheetNames[0]];
+      const rows=XLSX.utils.sheet_to_json(ws,{defval:''});
+      if(!rows||rows.length===0){nf('Empty file — no rows found','error');setAdidasSyncUploading(false);return}
+      // Detect column names (flexible mapping for Cowork exports)
+      const hdr=Object.keys(rows[0]).map(h=>h.trim());
+      const findCol=(names)=>hdr.find(h=>names.some(n=>h.toLowerCase().replace(/[_\s-]/g,'').includes(n.toLowerCase().replace(/[_\s-]/g,''))));
+      const skuCol=findCol(['article','sku','style','articlenumber','productnumber','articleno','item','partnumber','materialid','material'])||findCol(['article']);
+      const sizeCol=findCol(['size','sz','sizerange','sizecode','sizerun']);
+      const qtyCol=findCol(['qty','quantity','stock','avail','available','onhand','atp','atpqty','availableqty','stockqty','inventory']);
+      const futDateCol=findCol(['futuredate','deliverydate','expecteddate','nextdelivery','futuredeliverydate','eta','estdelivery']);
+      const futQtyCol=findCol(['futureqty','deliveryqty','futuredeliveryqty','expectedqty','incomingqty','incoming']);
+      if(!skuCol){nf('Could not find SKU/Article column in CSV. Expected: Article, SKU, Style, or similar.','error');setAdidasSyncUploading(false);return}
+      if(!qtyCol){nf('Could not find Quantity column in CSV. Expected: Qty, Quantity, Stock, Available, or similar.','error');setAdidasSyncUploading(false);return}
+      // Parse rows into upsert records
+      const records=[];const skuSet=new Set();
+      rows.forEach(row=>{
+        const sku=(row[skuCol]||'').toString().trim().toUpperCase();
+        const size=sizeCol?(row[sizeCol]||'').toString().trim():'ONE SIZE';
+        const qty=parseInt(row[qtyCol])||0;
+        const futDate=futDateCol?(row[futDateCol]||'').toString().trim()||null:null;
+        const futQty=futQtyCol?parseInt(row[futQtyCol])||null:null;
+        if(!sku)return;
+        skuSet.add(sku);
+        records.push({sku,size,stock_qty:qty,future_delivery_date:futDate,future_delivery_qty:futQty,last_synced:new Date().toISOString()});
+      });
+      if(records.length===0){nf('No valid inventory rows found in file','error');setAdidasSyncUploading(false);return}
+      // Upsert in batches of 500
+      let upserted=0;
+      for(let i=0;i<records.length;i+=500){
+        const batch=records.slice(i,i+500);
+        const{error}=await supabase.from('adidas_inventory').upsert(batch,{onConflict:'sku,size'});
+        if(error)throw error;
+        upserted+=batch.length;
+      }
+      // Refresh bulk cache
+      adidasBulkFetched.current=false;
+      const adidasSkus=[...new Set(prod.filter(p=>p.brand==='Adidas').map(p=>p.sku).filter(Boolean))];
+      if(adidasSkus.length>0){
+        const freshData=await fetchAdidasInventoryBulk(adidasSkus);
+        if(freshData)setAdidasInvBulk(freshData);
+      }
+      const logEntry={ts:new Date().toLocaleString(),rows:upserted,skus:skuSet.size,status:'success',file:file.name};
+      setAdidasSyncLog(prev=>[logEntry,...prev].slice(0,20));
+      nf(upserted+' rows synced for '+skuSet.size+' SKUs from '+file.name);
+    }catch(e){
+      console.error('[Adidas B2B] CSV upload error:',e);
+      const logEntry={ts:new Date().toLocaleString(),rows:0,skus:0,status:'error',error:e.message,file:file.name};
+      setAdidasSyncLog(prev=>[logEntry,...prev].slice(0,20));
+      nf('Adidas B2B upload failed: '+e.message,'error');
+    }finally{setAdidasSyncUploading(false)}
+  };
+
   React.useEffect(()=>{try{localStorage.setItem('nsa_ests',JSON.stringify(ests))}catch{};_diffSave(ests,'ests',e=>_dbSaveEstimate(e))},[ests]);
   React.useEffect(()=>{try{localStorage.setItem('nsa_sos',JSON.stringify(sos))}catch{};_diffSave(sos,'sos',s=>_dbSaveSO(s))},[sos]);
   React.useEffect(()=>{try{localStorage.setItem('nsa_invs',JSON.stringify(invs))}catch{};_diffSave(invs,'invs',i=>_dbSaveInvoice(i))},[invs]);
@@ -14406,11 +14468,71 @@ export default function App(){
       {isA&&<button className={`tab ${invTab==='clearance'?'active':''}`} onClick={()=>setInvTab('clearance')}>Clearance{prod.filter(p=>p.is_clearance).length>0?' ('+prod.filter(p=>p.is_clearance).length+')':''}</button>}
       <button className={`tab ${invTab==='log'?'active':''}`} onClick={()=>setInvTab('log')}>Change Log{invAdjLog.length>0?' ('+invAdjLog.length+')':''}</button>
       <button className={`tab ${invTab==='pos'?'active':''}`} onClick={()=>setInvTab('pos')}>Inventory POs{invPOs.length>0?' ('+invPOs.length+')':''}</button>
+      {isA&&<button className={`tab ${invTab==='b2b'?'active':''}`} onClick={()=>setInvTab('b2b')} style={invTab==='b2b'?{}:{color:'#059669'}}>Adidas B2B</button>}
     </div>
     {invTab==='stock'&&rInvStock()}
     {invTab==='clearance'&&isA&&rInvClearance()}
     {invTab==='log'&&rInvLog()}
     {invTab==='pos'&&rInvPOs()}
+    {invTab==='b2b'&&isA&&(()=>{
+      const adidasProds=prod.filter(p=>p.brand==='Adidas');
+      const synced=Object.keys(adidasInvBulk).length;
+      const totalB2B=Object.values(adidasInvBulk).reduce((a,v)=>a+Object.values(v.sizes||{}).reduce((b,s)=>b+(s.qty||0),0),0);
+      const firstSynced=Object.values(adidasInvBulk).find(v=>v.lastSynced);
+      const ls=firstSynced?new Date(firstSynced.lastSynced):null;
+      return<>
+        <div className="stats-row">
+          <div className="stat-card" style={{borderColor:'#059669'}}><div className="stat-label">Adidas Products</div><div className="stat-value" style={{color:'#059669'}}>{adidasProds.length}</div></div>
+          <div className="stat-card" style={{borderColor:'#059669'}}><div className="stat-label">SKUs w/ B2B Data</div><div className="stat-value" style={{color:'#059669'}}>{synced}</div></div>
+          <div className="stat-card" style={{borderColor:'#059669'}}><div className="stat-label">Total B2B Units</div><div className="stat-value" style={{color:'#059669'}}>{totalB2B.toLocaleString()}</div></div>
+          <div className="stat-card"><div className="stat-label">Last Synced</div><div className="stat-value" style={{fontSize:14}}>{ls?ls.toLocaleDateString()+' '+ls.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}):'Never'}</div></div>
+        </div>
+        {/* Upload area */}
+        <div className="card" style={{marginBottom:16}}>
+          <div className="card-body">
+            <h3 style={{margin:'0 0 8px',fontSize:15}}>Upload Adidas Cowork Inventory</h3>
+            <p style={{fontSize:12,color:'#64748b',margin:'0 0 12px'}}>Export inventory from Adidas Cowork portal as CSV or Excel, then upload here. The file should have columns for Article/SKU, Size, and Quantity. Future delivery date/qty columns are optional.</p>
+            <div style={{border:'2px dashed #d1d5db',borderRadius:8,padding:24,textAlign:'center',background:'#f8fafc',cursor:'pointer',position:'relative'}}
+              onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#059669';e.currentTarget.style.background='#ecfdf5'}}
+              onDragLeave={e=>{e.currentTarget.style.borderColor='#d1d5db';e.currentTarget.style.background='#f8fafc'}}
+              onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor='#d1d5db';e.currentTarget.style.background='#f8fafc';const f=e.dataTransfer.files[0];if(f)handleAdidasCSVUpload(f)}}
+              onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.csv,.xlsx,.xls';inp.onchange=e=>{const f=e.target.files[0];if(f)handleAdidasCSVUpload(f)};inp.click()}}>
+              {adidasSyncUploading?<div><div style={{fontSize:24,marginBottom:4}}>Uploading...</div><div style={{fontSize:12,color:'#059669'}}>Parsing and syncing to database</div></div>
+              :<div><div style={{fontSize:24,marginBottom:4}}>Drop CSV/Excel file here</div><div style={{fontSize:12,color:'#94a3b8'}}>or click to browse — accepts .csv, .xlsx, .xls</div></div>}
+            </div>
+            <div style={{marginTop:12,fontSize:11,color:'#94a3b8'}}>
+              <strong>Expected columns:</strong> Article/SKU (required), Size, Qty/Stock (required), Future Delivery Date (optional), Future Delivery Qty (optional)
+            </div>
+          </div>
+        </div>
+        {/* Sync log */}
+        {adidasSyncLog.length>0&&<div className="card" style={{marginBottom:16}}>
+          <div className="card-body">
+            <h3 style={{margin:'0 0 8px',fontSize:15}}>Upload History</h3>
+            <table><thead><tr><th>Time</th><th>File</th><th>Rows</th><th>SKUs</th><th>Status</th></tr></thead>
+            <tbody>{adidasSyncLog.map((l,i)=><tr key={i}>
+              <td style={{fontSize:11}}>{l.ts}</td>
+              <td style={{fontSize:11,fontFamily:'monospace'}}>{l.file}</td>
+              <td style={{fontWeight:700}}>{l.rows}</td>
+              <td style={{fontWeight:700}}>{l.skus}</td>
+              <td>{l.status==='success'?<span style={{color:'#166534',fontWeight:700}}>Success</span>:<span style={{color:'#dc2626',fontWeight:700}} title={l.error}>Failed</span>}</td>
+            </tr>)}</tbody></table>
+          </div>
+        </div>}
+        {/* How it works */}
+        <div className="card">
+          <div className="card-body">
+            <h3 style={{margin:'0 0 8px',fontSize:15}}>How Adidas B2B Inventory Works</h3>
+            <div style={{fontSize:12,color:'#475569',lineHeight:1.6}}>
+              <p style={{margin:'0 0 8px'}}><strong>1. Export from Cowork:</strong> Log into Adidas Cowork on your Mac Mini, navigate to inventory/catalog, and export the product availability as CSV or Excel.</p>
+              <p style={{margin:'0 0 8px'}}><strong>2. Upload here:</strong> Drag the exported file into the upload area above. The system will automatically match columns and sync all SKU/size inventory data.</p>
+              <p style={{margin:'0 0 8px'}}><strong>3. Auto-display:</strong> Once uploaded, B2B stock levels appear throughout the portal — on estimates, sales orders, product detail, and inventory pages with color-coded availability.</p>
+              <p style={{margin:'0 0 8px'}}><strong>4. Staleness warnings:</strong> If B2B data is older than 48 hours, a warning icon appears. Re-upload from Cowork to refresh.</p>
+              <p style={{margin:0,color:'#94a3b8'}}><em>Tip: Export and upload weekly (or before quoting large Adidas orders) to keep B2B stock current.</em></p>
+            </div>
+          </div>
+        </div>
+      </>})()}
   </>);
 
   // JOBS LIST
