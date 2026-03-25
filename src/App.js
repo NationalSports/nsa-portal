@@ -20626,7 +20626,7 @@ export default function App(){
         // Skip jobs that haven't been explicitly submitted for art — only show on art dashboard if:
         // 1) Art was requested (Request Art button clicked), or 2) artist assigned, or 3) in active artist workflow,
         // 4) or art is approved but needs prod files (repeat art scenario)
-        const hasArtRequest=(j.art_requests||[]).length>0;
+        const hasArtRequest=(j.art_requests||[]).some(r=>r.status!=='recalled');
         const hasArtist=!!j.assigned_artist;
         const inArtistWorkflow=j.art_status==='art_requested'||j.art_status==='art_in_progress';
         const needsProdFiles=j.art_status==='production_files_needed';
