@@ -7662,7 +7662,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <td style={{whiteSpace:'nowrap'}}>
                 {(()=>{const _artIds4=j._art_ids||[j.art_file_id].filter(Boolean);if(_artIds4.length===0||(_artIds4.length===1&&_artIds4[0]==='__tbd'))return null;const hasReqs=(j.art_requests||[]).length>0;const activeReq=(j.art_requests||[]).find(r=>r.status==='in_progress'||r.status==='requested');
                   return<>{hasReqs&&activeReq&&<span style={{fontSize:8,padding:'1px 5px',borderRadius:8,fontWeight:700,background:'#fef3c7',color:'#92400e',marginRight:3}}>{activeReq.status==='in_progress'?'In Progress':'Requested'}</span>}
-                  {hasReqs&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#dc2626',color:'white',borderRadius:4,marginRight:3}} onClick={e=>{e.stopPropagation();const updJobs=safeJobs(o).map((jj,i2)=>{if(i2!==ji)return jj;return{...jj,art_status:'needs_art',art_requests:(jj.art_requests||[]).map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'recalled'}:r),assigned_artist:''}});const updated={...o,jobs:updJobs,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);nf('Art recalled — you can re-request with new instructions')}} title="Recall art request and reset status">Recall Art</button>}
+                  {hasReqs&&activeReq&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#dc2626',color:'white',borderRadius:4,marginRight:3}} onClick={e=>{e.stopPropagation();const updJobs=safeJobs(o).map((jj,i2)=>{if(i2!==ji)return jj;return{...jj,art_status:'needs_art',art_requests:(jj.art_requests||[]).map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'recalled'}:r),assigned_artist:''}});const updated={...o,jobs:updJobs,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);nf('Art recalled — you can re-request with new instructions')}} title="Recall art request and reset status">Recall Art</button>}
                   {hasReqs&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#6d28d9',color:'white',borderRadius:4,marginRight:3}} onClick={e=>{e.stopPropagation();setArtReqModal({jIdx:ji,artist:j.assigned_artist||'',instructions:'',files:[]})}} title="Send updated instructions to artist">Update Art</button>}</>})()}
                 {canSplit&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#7c3aed',color:'white',borderRadius:4,marginRight:3}} onClick={e=>{e.stopPropagation();setSplitModal({jIdx:ji,mode:null,selectedSkus:[]})}} title="Split job">✂️ Split</button>}
                 {j.split_from&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#1e40af',color:'white',borderRadius:4}} onClick={e=>{e.stopPropagation();const parentIdx=jobs.findIndex(pj=>pj.id===j.split_from);if(parentIdx<0){nf('Parent job '+j.split_from+' not found','error');return}const parent=jobs[parentIdx];const existingKeys=new Set((parent.items||[]).map(gi=>gi.item_idx+'-'+gi.sku));const newItems=(j.items||[]).filter(gi=>!existingKeys.has(gi.item_idx+'-'+gi.sku));const mergedItems=[...(parent.items||[]),...newItems];const mergedUnits=mergedItems.reduce((a,gi)=>a+(gi.units||0),0);const mergedFulfilled=mergedItems.reduce((a,gi)=>a+(gi.fulfilled||0),0);const updJobs=jobs.map((jj,i2)=>i2===parentIdx?{...jj,items:mergedItems,total_units:mergedUnits,fulfilled_units:mergedFulfilled}:jj).filter((_,i2)=>i2!==ji);const updated={...o,jobs:updJobs,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);nf('Merged back into '+j.split_from)}} title="Merge back into parent job">Merge Back</button>}
@@ -20960,7 +20960,7 @@ export default function App(){
         const af=j.artFile||allArtFiles[0]||null;
         const additionalArtFiles=allArtFiles.slice(1);
         const mockupFiles=(af?.mockup_files||af?.files||[]);
-        const prodFilesL=(af?.prod_files||[]);
+        const prodFilesL=allArtFiles.flatMap(artF=>(artF?.prod_files||[]).map(f=>({...(typeof f==='string'?{url:f,name:f}:f),_artName:allArtFiles.length>1?(artF?.name||''):''})));
         const colorList=af?(af.ink_colors||af.thread_colors||'').split(/[,\n]/).map(c3=>c3.trim()).filter(Boolean):[];
         const isEmb=allArtFiles.some(a=>a.deco_type==='embroidery');
         const colorMap={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000',
@@ -21274,9 +21274,12 @@ export default function App(){
                     {gi.image_url?<img src={gi.image_url} alt="" style={{width:36,height:36,objectFit:'cover',borderRadius:4,border:'1px solid #e2e8f0'}}/>
                     :<div style={{width:36,height:36,borderRadius:4,background:'#e2e8f0',display:'flex',alignItems:'center',justifyContent:'center',fontSize:14,color:'#94a3b8'}}>👕</div>}
                     <div style={{flex:1}}>
-                      <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'1px 6px',borderRadius:3,fontSize:11}}>{gi.sku}</span>
-                      <span style={{fontSize:11,fontWeight:600,marginLeft:6}}>{gi.name}</span>
-                      {gi.color&&<span style={{fontSize:10,color:'#64748b',marginLeft:4}}>({gi.color})</span>}
+                      <div>
+                        <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'1px 6px',borderRadius:3,fontSize:11}}>{gi.sku}</span>
+                        <span style={{fontSize:11,fontWeight:600,marginLeft:6}}>{gi.name}</span>
+                        {gi.color&&<span style={{fontSize:10,color:'#64748b',marginLeft:4}}>({gi.color})</span>}
+                      </div>
+                      {(()=>{const it2=safeItems(so)[gi.item_idx];if(!it2)return null;const logos=safeDecos(it2).filter(d=>d.kind==='art'&&d.art_file_id).map(d=>{const a2=safeArt(so).find(a=>a.id===d.art_file_id);return a2?{name:a2.name||'',pos:d.position||''}:null}).filter(Boolean);if(logos.length===0)return null;return<div style={{marginTop:2,display:'flex',gap:3,flexWrap:'wrap'}}>{logos.map((lg,li)=><span key={li} style={{fontSize:9,fontWeight:700,color:'#6d28d9',background:'#f5f3ff',padding:'1px 5px',borderRadius:3,border:'1px solid #ddd6fe'}}>{lg.pos&&<span style={{color:'#94a3b8',fontWeight:600,marginRight:2}}>{lg.pos} →</span>}{lg.name}</span>)}</div>})()}
                     </div>
                     <span style={{fontSize:10,color:itemMocks.length>0?'#166534':mockupFiles.length>0?'#1e40af':'#94a3b8',fontWeight:700,padding:'2px 6px',borderRadius:4,background:itemMocks.length>0?'#dcfce7':mockupFiles.length>0?'#dbeafe':'#f1f5f9'}}>{itemMocks.length>0?itemMocks.length+' mockup'+(itemMocks.length>1?'s':''):mockupFiles.length>0?'See general mockup':'No mockup'}</span>
                   </div>
@@ -21331,9 +21334,9 @@ export default function App(){
               {/* Production files: visible to artists, admins, prod managers — NOT decorators (they see mockup only) */}
               {prodFilesL.length>0&&cu.role!=='production'&&cu.role!=='prod_assistant'&&<><div style={{fontSize:11,fontWeight:700,color:'#92400e',marginTop:8,marginBottom:4}}>Production Files ({prodFilesL.length})</div>
                 <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-                  {prodFilesL.map((f,i)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);
+                  {prodFilesL.map((f,i)=>{const url=f?.url||'';const name=f?.name||fileDisplayName(f);
                     return<div key={i} style={{padding:'6px 10px',background:'#fef3c7',border:'1px solid #fde68a',borderRadius:6,cursor:'pointer',fontSize:11,fontWeight:600,color:'#92400e',display:'flex',alignItems:'center',gap:4}}
-                    onClick={()=>openFile(url)}>📁 {name}</div>})}
+                    onClick={()=>openFile(url)}>📁 {name}{f._artName&&<span style={{fontSize:9,color:'#78350f',fontWeight:600,marginLeft:3,fontStyle:'italic'}}>({f._artName})</span>}</div>})}
                 </div></>}
 
               {/* ─── Per-SKU Decoration Spec ─── */}
