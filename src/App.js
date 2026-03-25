@@ -20718,7 +20718,9 @@ export default function App(){
       if(j.art_status==='waiting_approval')return'needs_approval';
       if(j.art_status==='production_files_needed')return'approved';
       if(j.art_status==='art_complete')return'art_complete';
-      // Fallback to art file status
+      // Fallback to art file status — but recalled jobs always go to waiting_for_art
+      const wasRecalled=(j.art_requests||[]).some(r=>r.status==='recalled')&&!(j.art_requests||[]).some(r=>r.status==='requested'||r.status==='in_progress');
+      if(wasRecalled)return'waiting_for_art';
       const s=j.artFile?.status;return s==='uploaded'?'needs_approval':(!s||s==='needs_art')?'waiting_for_art':s;
     };
     const artistJobs=filtered.filter(j=>j.art_status!=='art_complete');
