@@ -10490,7 +10490,9 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             </div>
           </div>
           {canApprove&&<button style={{width:'100%',padding:'14px 20px',background:'#22c55e',color:'white',border:'none',borderRadius:10,fontSize:16,fontWeight:800,cursor:'pointer',marginBottom:10}} onClick={()=>{
-            if(onUpdateEsts){onUpdateEsts(prev=>prev.map(e=>e.id===est.id?{...e,status:'approved',approved_by:'Coach',approved_at:new Date().toISOString(),updated_at:new Date().toLocaleString()}:e))}
+            const _approvedEst={...est,status:'approved',approved_by:'Coach',approved_at:new Date().toISOString(),updated_at:new Date().toLocaleString()};
+            if(onUpdateEsts){onUpdateEsts(prev=>prev.map(e=>e.id===est.id?_approvedEst:e))}
+            _dbSaveEstimate(_approvedEst);
             setEstView({...est,status:'approved'});
             // Email the assigned rep when coach approves estimate
             const rep=REPS.find(r=>r.id===est.created_by);
@@ -10504,7 +10506,9 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
               <button style={{width:'100%',marginTop:8,padding:'12px 20px',background:updateRequestText.trim()?'#d97706':'#e5e7eb',color:updateRequestText.trim()?'white':'#9ca3af',border:'none',borderRadius:10,fontSize:14,fontWeight:700,cursor:updateRequestText.trim()?'pointer':'not-allowed'}} disabled={!updateRequestText.trim()} onClick={()=>{
                 if(!updateRequestText.trim())return;
                 const req={id:'UR-'+Date.now(),text:updateRequestText.trim(),from:'Coach',at:new Date().toISOString(),status:'pending'};
-                if(onUpdateEsts){onUpdateEsts(prev=>prev.map(e=>e.id===est.id?{...e,update_requests:[...(e.update_requests||[]),req],updated_at:new Date().toLocaleString()}:e))}
+                const _updatedEst={...est,update_requests:[...(est.update_requests||[]),req],updated_at:new Date().toLocaleString()};
+                if(onUpdateEsts){onUpdateEsts(prev=>prev.map(e=>e.id===est.id?_updatedEst:e))}
+                _dbSaveEstimate(_updatedEst);
                 setEstView({...est,update_requests:[...(est.update_requests||[]),req]});
                 setUpdateRequestText('');setUpdateRequestSent(true);
               }}>Request Updates</button>
