@@ -1485,15 +1485,17 @@ const buildJobs=(o)=>{
         const allHaveProdFiles=artIds.every(aid=>{const af=safeArt(o).find(f=>f.id===aid);return af&&(af.prod_files||[]).length>0});
         const anyUploaded=artIds.some(aid=>{const af=safeArt(o).find(f=>f.id===aid);return af&&(af.status==='uploaded'||af.status==='needs_approval')});
         const inArtistWorkflow=j.art_status==='art_requested'||j.art_status==='art_in_progress';
+        const wasRecalled=(j.art_requests||[]).some(r=>r.status==='recalled')&&!(j.art_requests||[]).some(r=>r.status==='requested'||r.status==='in_progress');
         if(!inArtistWorkflow){
           if(allApproved&&allHaveProdFiles&&j.art_status!=='art_complete'){j={...j,art_status:'art_complete'};if(j.art_requests)j={...j,art_requests:j.art_requests.map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'completed'}:r)}}
           else if(allApproved&&!allHaveProdFiles){j={...j,art_status:'production_files_needed'};if(j.art_requests)j={...j,art_requests:j.art_requests.map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'completed'}:r)}}
-          else if(anyUploaded&&j.art_status==='needs_art')j={...j,art_status:'waiting_approval'};
+          else if(anyUploaded&&j.art_status==='needs_art'&&!wasRecalled)j={...j,art_status:'waiting_approval'};
         }
       } else {
         const af=safeArt(o).find(f=>f.id===j.art_file_id);if(!af)return j;
         const inArtistWorkflow=j.art_status==='art_requested'||j.art_status==='art_in_progress';
-        if((af.status==='uploaded'||af.status==='needs_approval')&&j.art_status==='needs_art')return{...j,art_status:'waiting_approval'};
+        const wasRecalled=(j.art_requests||[]).some(r=>r.status==='recalled')&&!(j.art_requests||[]).some(r=>r.status==='requested'||r.status==='in_progress');
+        if((af.status==='uploaded'||af.status==='needs_approval')&&j.art_status==='needs_art'&&!wasRecalled)return{...j,art_status:'waiting_approval'};
         if(af.status==='approved'&&!inArtistWorkflow&&(j.art_status==='needs_art'||j.art_status==='waiting_approval')){const newSt=(af.prod_files||[]).length?'art_complete':'production_files_needed';const updJ={...j,art_status:newSt};if(updJ.art_requests)updJ.art_requests=updJ.art_requests.map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'completed'}:r);return updJ}
       }
       return j;
