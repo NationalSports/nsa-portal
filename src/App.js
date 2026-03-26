@@ -22430,6 +22430,26 @@ export default function App(){
     }catch(e){nf('QB API error: '+e.message,'error');return null}
   };
 
+  // ── Connect to QB via OAuth (shared by rImport & rQB) ──
+  const connectQB=async()=>{
+    try{
+      const r=await fetch('/.netlify/functions/qb-auth',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({action:'connect'})});
+      const d=await r.json();
+      if(d.authUrl){window.location.href=d.authUrl}
+      else if(d.error){nf('QB connect error: '+d.error,'error')}
+    }catch(e){nf('Cannot reach QB auth service: '+e.message,'error')}
+  };
+
+  // ── Disconnect from QB (shared by rImport & rQB) ──
+  const disconnectQB=async()=>{
+    if(!window.confirm('Disconnect from QuickBooks? You can reconnect anytime.'))return;
+    try{await fetch('/.netlify/functions/qb-auth',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({action:'disconnect',refresh_token:qbConfig.refresh_token})});}catch{}
+    setQBConfig(prev=>({...prev,connected:false,access_token:'',refresh_token:'',realm_id:'',companyId:'',companyName:''}));
+    nf('Disconnected from QuickBooks');
+  };
+
   function rImport(){
 
     const applyAnswer=(qi,val)=>setImp(x=>({...x,questions:x.questions.map((q,i)=>i===qi?{...q,answer:val}:q)}));
@@ -24623,26 +24643,6 @@ export default function App(){
 
   // QUICKBOOKS ONLINE INTEGRATION
   function rQB(){
-
-    // ── Connect to QB via OAuth ──
-    const connectQB=async()=>{
-      try{
-        const r=await fetch('/.netlify/functions/qb-auth',{method:'POST',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({action:'connect'})});
-        const d=await r.json();
-        if(d.authUrl){window.location.href=d.authUrl}
-        else if(d.error){nf('QB connect error: '+d.error,'error')}
-      }catch(e){nf('Cannot reach QB auth service: '+e.message,'error')}
-    };
-
-    // ── Disconnect ──
-    const disconnectQB=async()=>{
-      if(!window.confirm('Disconnect from QuickBooks? You can reconnect anytime.'))return;
-      try{await fetch('/.netlify/functions/qb-auth',{method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({action:'disconnect',refresh_token:qbConfig.refresh_token})});}catch{}
-      setQBConfig(prev=>({...prev,connected:false,access_token:'',refresh_token:'',realm_id:'',companyId:'',companyName:''}));
-      nf('Disconnected from QuickBooks');
-    };
 
     // ── SYNC: Customers (name + totals) ──
     const syncCustomers=async()=>{
