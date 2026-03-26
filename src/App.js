@@ -15755,8 +15755,7 @@ export default function App(){
             fPOs.map((po,i)=>{const openPoPage=()=>{if(po.so){
               const soObj=po.so;const soIt=safeItems(soObj);const allLines=soIt.map((_,idx)=>({lineIdx:idx})).filter(ln=>soIt[ln.lineIdx]?.po_lines?.some(p=>p.po_id===po.po_id));
               const poLine=soIt[po.lineIdx]?.po_lines?.find(p=>p.po_id===po.po_id);
-              if(poLine){setPoFullPage({po:poLine,item:soIt[po.lineIdx],allLines,soId:soObj.id,soItems:soIt})}
-              else{const cc=cust.find(x=>x.id===soObj.customer_id);setESO(soObj);setESOC(cc);setPg('orders')}
+              {const cc=cust.find(x=>x.id===soObj.customer_id);setESO(soObj);setESOC(cc);setPg('orders')}
             }};return<tr key={po.po_id+'-'+i}>
               <td><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',cursor:'pointer',textDecoration:'underline'}} onClick={openPoPage}>{po.po_id}</span>{po.source==='batch'&&<span className="badge badge-purple" style={{marginLeft:4,fontSize:9}}>Batch</span>}</td>
               <td>{po.vendor}</td>
