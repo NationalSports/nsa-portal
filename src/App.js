@@ -21105,7 +21105,7 @@ export default function App(){
                   const key=(it.sku||gi.sku)+'|'+(it.color||gi.color||'');
                   if(!repPerItemDecos[key])repPerItemDecos[key]=[];
                   safeDecos(it).forEach(d=>{
-                    if(d.kind==='art'){const dAf=d.art_file_id?safeArt(so).find(a=>a.id===d.art_file_id):null;const dType=d.type||dAf?.deco_type||j.deco_type||'screen_print';const dColors=(dAf?(dAf.ink_colors||dAf.thread_colors||''):'').split(/[,\n]/).map(c=>c.trim()).filter(Boolean);repPerItemDecos[key].push({kind:'art',position:d.position||'Front Center',type:dType,underbase:d.underbase||false,reversible:d.reversible||false,artFile:dAf,colors:dColors,size:dAf?.art_size||'',artName:dAf?.name||''});}
+                    if(d.kind==='art'){const dAf=d.art_file_id?safeArt(so).find(a=>a.id===d.art_file_id):null;const dType=d.type||dAf?.deco_type||j.deco_type||'screen_print';const cwObj2=d.color_way_id&&dAf?.color_ways?dAf.color_ways.find(c=>c.id===d.color_way_id):null;const dColors=cwObj2?cwObj2.inks.filter(c=>c&&c.trim()):(dAf?(dAf.ink_colors||dAf.thread_colors||''):'').split(/[,\n]/).map(c=>c.trim()).filter(Boolean);repPerItemDecos[key].push({kind:'art',position:d.position||'Front Center',type:dType,underbase:d.underbase||false,reversible:d.reversible||false,artFile:dAf,colors:dColors,size:dAf?.art_size||'',artName:dAf?.name||'',cwLabel:cwObj2?.garment_color||''});}
                     else if(d.kind==='numbers')repPerItemDecos[key].push({kind:'numbers',position:d.position||'Back Center',method:(d.num_method||'heat_transfer').replace(/_/g,' '),numSize:d.num_size||'—',numFont:d.num_font||'block',twoColor:d.two_color||false,frontAndBack:d.front_and_back||false,numSizeBack:d.front_and_back?(d.num_size_back||d.num_size||'—'):null,printColor:d.print_color||''});
                     else if(d.kind==='names')repPerItemDecos[key].push({kind:'names',position:d.position||'Back Center',frontAndBack:d.front_and_back||false});
                   });
@@ -21118,7 +21118,8 @@ export default function App(){
                   const nameDecos=decos.filter(d=>d.kind==='names');
                   const gc=repGarmentColors[gk]||{};
                   const rowTotal=Object.values(gi.sizes).reduce((a,v)=>a+v,0);
-                  const effectiveArtDecos=artDecos.length>0?artDecos:repPosList.length>0?repPosList.map(pos=>({kind:'art',position:pos,type:j.deco_type||'screen_print',underbase:false,reversible:false,artFile:af,colors:colorList,size:af?.art_size||'',artName:''})):af?[{kind:'art',position:j.deco_type==='embroidery'?'Front Left Chest':'Front Center',type:j.deco_type||'screen_print',underbase:false,reversible:false,artFile:af,colors:colorList,size:af?.art_size||'',artName:af?.name||''}]:[];
+                  const repFallbackColors=colorList.length>0?colorList:(af?.color_ways||[]).length>0?(af.color_ways[0].inks||[]).filter(c=>c&&c.trim()):[];
+                  const effectiveArtDecos=artDecos.length>0?artDecos:repPosList.length>0?repPosList.map(pos=>({kind:'art',position:pos,type:j.deco_type||'screen_print',underbase:false,reversible:false,artFile:af,colors:repFallbackColors,size:af?.art_size||'',artName:'',cwLabel:''})):af?[{kind:'art',position:j.deco_type==='embroidery'?'Front Left Chest':'Front Center',type:j.deco_type||'screen_print',underbase:false,reversible:false,artFile:af,colors:repFallbackColors,size:af?.art_size||'',artName:af?.name||'',cwLabel:''}]:[];
                   // Per-item mockup for this item
                   const repItemMocks=af?.item_mockups?.[gi.sku]||[];
                   const repPrimary=repItemMocks[0]||null;
@@ -21160,15 +21161,16 @@ export default function App(){
                     {/* Decoration spec */}
                     {effectiveArtDecos.length>0&&<div style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',background:'#f8fafc'}}>
                       <div style={{fontSize:11,fontWeight:800,color:'#1e3a5f',textTransform:'uppercase',marginBottom:6}}>📋 Decoration</div>
-                      {effectiveArtDecos.map((deco,di)=>{const pos=deco.position;const method=(deco.type||'screen_print').replace(/_/g,' ');const size=repArtSizes[pos]||deco.size||'';const posColors=gc[pos]||(deco.colors?.length>0?deco.colors:colorList);
+                      {effectiveArtDecos.map((deco,di)=>{const pos=deco.position;const method=(deco.type||'screen_print').replace(/_/g,' ');const size=repArtSizes[pos]||deco.size||'';const posColors=gc[pos]||(Array.isArray(deco.colors)&&deco.colors.length>0?deco.colors:repFallbackColors);
                         return<div key={di} style={{display:'flex',alignItems:'baseline',gap:8,flexWrap:'wrap',padding:'4px 0',borderTop:di>0?'1px solid #e9ecef':'none'}}>
                           <span style={{fontSize:12,fontWeight:700,color:'#0f172a',minWidth:110}}>{pos}</span>
                           {deco.artFile&&<span style={{fontSize:10,fontWeight:700,color:'#7c3aed',background:'#f5f3ff',padding:'1px 6px',borderRadius:3}}>{deco.artFile.title||deco.artFile.name||'—'}</span>}
+                          {deco.cwLabel&&<span style={{fontSize:10,fontWeight:600,color:'#0369a1',background:'#e0f2fe',padding:'1px 6px',borderRadius:3}}>CW: {deco.cwLabel}</span>}
                           <span style={{fontSize:11,color:'#475569',fontWeight:600}}>{method}</span>
                           {deco.underbase&&<span style={{fontSize:10,fontWeight:700,color:'#92400e',background:'#fef3c7',padding:'1px 6px',borderRadius:3,border:'1px solid #fbbf24'}}>Underbase</span>}
                           {size&&<span style={{fontSize:11,color:'#64748b',fontWeight:600}}>{size}</span>}
                           <span style={{fontSize:11,color:'#94a3b8'}}>—</span>
-                          {posColors.length>0?<div style={{display:'flex',gap:3,flexWrap:'wrap'}}>{posColors.map((cl,ci)=>{const sw=colorMap[cl]||Object.entries(colorMap).find(([k])=>cl.toLowerCase().includes(k.toLowerCase()))?.[1]||null;return<span key={ci} style={{display:'inline-flex',alignItems:'center',gap:3,padding:'1px 7px',background:'white',border:'1px solid '+(sw||'#d1d5db'),borderRadius:4,fontSize:11,fontWeight:700}}><span style={{width:10,height:10,borderRadius:2,background:sw||'#e2e8f0',border:'1px solid #d1d5db',flexShrink:0}}/>{cl}</span>})}</div>
+                          {Array.isArray(posColors)&&posColors.length>0?<div style={{display:'flex',gap:3,flexWrap:'wrap'}}>{posColors.map((cl,ci)=>{const clStr=String(cl||'');const sw=colorMap[clStr]||Object.entries(colorMap).find(([k])=>clStr.toLowerCase().includes(k.toLowerCase()))?.[1]||null;return<span key={ci} style={{display:'inline-flex',alignItems:'center',gap:3,padding:'1px 7px',background:'white',border:'1px solid '+(sw||'#d1d5db'),borderRadius:4,fontSize:11,fontWeight:700}}><span style={{width:10,height:10,borderRadius:2,background:sw||'#e2e8f0',border:'1px solid #d1d5db',flexShrink:0}}/>{clStr}</span>})}</div>
                           :<span style={{fontSize:11,color:'#94a3b8',fontStyle:'italic'}}>No colors</span>}
                         </div>;})}
                       {numDecos.map((nd,ni)=><div key={'n'+ni} style={{padding:'5px 0',borderTop:'1px solid #e9ecef'}}>
@@ -21285,8 +21287,10 @@ export default function App(){
             if(d.kind==='art'){
               const dAf=d.art_file_id?safeArt(so).find(a=>a.id===d.art_file_id):null;
               const dType=d.type||dAf?.deco_type||j.deco_type||'screen_print';
-              const dColors=(dAf?(dAf.ink_colors||dAf.thread_colors||''):'').split(/[,\n]/).map(c=>c.trim()).filter(Boolean);
-              _perItemDecos[key].push({kind:'art',position:d.position||'Front Center',type:dType,reversible:d.reversible||false,underbase:d.underbase||false,artFile:dAf,colors:dColors,size:dAf?.art_size||'',artName:dAf?.name||dAf?.title||''});
+              const cwObj=d.color_way_id&&dAf?.color_ways?dAf.color_ways.find(c=>c.id===d.color_way_id):null;
+              const dColors=cwObj?cwObj.inks.filter(c=>c&&c.trim()):(dAf?(dAf.ink_colors||dAf.thread_colors||''):'').split(/[,\n]/).map(c=>c.trim()).filter(Boolean);
+              const cwLabel=cwObj?.garment_color||'';
+              _perItemDecos[key].push({kind:'art',position:d.position||'Front Center',type:dType,reversible:d.reversible||false,underbase:d.underbase||false,artFile:dAf,colors:dColors,size:dAf?.art_size||'',artName:dAf?.name||dAf?.title||'',cwLabel,colorWayId:d.color_way_id||null});
             }else if(d.kind==='numbers'){
               _perItemDecos[key].push({kind:'numbers',position:d.position||'Back Center',method:(d.num_method||'heat_transfer').replace(/_/g,' '),
                 numSize:d.num_size||'—',numSizeBack:d.front_and_back?(d.num_size_back||d.num_size||'—'):null,
@@ -21560,7 +21564,9 @@ export default function App(){
                 const _nameDecos=_decos.filter(d=>d.kind==='names');
                 const _gc=_garmentColors[_gk]||{};
                 const _editColors=_isEditingColors?(artJobDetailEditColors[_gk]||{}):{};
-                const _effectiveArtDecos=_artDecos.length>0?_artDecos:posList3.length>0?posList3.map(pos=>({kind:'art',position:pos,type:j.deco_type||'screen_print',reversible:false,underbase:false,artFile:af,colors:colorList,size:af?.art_size||'',artName:af?.name||''})):af?[{kind:'art',position:j.deco_type==='embroidery'?'Front Left Chest':'Front Center',type:j.deco_type||'screen_print',reversible:false,underbase:false,artFile:af,colors:colorList,size:af?.art_size||'',artName:af?.name||''}]:[];
+                // Resolve colors: prefer CW-specific inks, then art file colorList, then first CW inks
+                const _fallbackColors=colorList.length>0?colorList:(af?.color_ways||[]).length>0?(af.color_ways[0].inks||[]).filter(c=>c&&c.trim()):[];
+                const _effectiveArtDecos=_artDecos.length>0?_artDecos:posList3.length>0?posList3.map(pos=>({kind:'art',position:pos,type:j.deco_type||'screen_print',reversible:false,underbase:false,artFile:af,colors:_fallbackColors,size:af?.art_size||'',artName:af?.name||'',cwLabel:''})):af?[{kind:'art',position:j.deco_type==='embroidery'?'Front Left Chest':'Front Center',type:j.deco_type||'screen_print',reversible:false,underbase:false,artFile:af,colors:_fallbackColors,size:af?.art_size||'',artName:af?.name||'',cwLabel:''}]:[];
                 const _hasDecoData=_effectiveArtDecos.length>0||_numDecos.length>0||_nameDecos.length>0;
                 // Per-item size data
                 const _rowTotal=Object.values(gi.sizes).reduce((a,v)=>a+v,0);
@@ -21645,11 +21651,12 @@ export default function App(){
                       <div style={{fontSize:11,fontWeight:800,color:'#1e3a5f',textTransform:'uppercase',letterSpacing:0.5,marginBottom:4}}>Decoration Spec</div>
                     </div>
                     <div style={{padding:'0 14px 10px'}}>
-                      {_effectiveArtDecos.map((deco,di)=>{const pos=deco.position||'';const method=(deco.type||'screen_print').replace(/_/g,' ');const size=_artSizes[pos]||deco.size||'';const posColors=_gc[pos]||(Array.isArray(deco.colors)&&deco.colors.length>0?deco.colors:colorList);const editPosColors=_editColors[pos]||[''];
+                      {_effectiveArtDecos.map((deco,di)=>{const pos=deco.position||'';const method=(deco.type||'screen_print').replace(/_/g,' ');const size=_artSizes[pos]||deco.size||'';const posColors=_gc[pos]||(Array.isArray(deco.colors)&&deco.colors.length>0?deco.colors:_fallbackColors);const editPosColors=_editColors[pos]||[''];
                         return<div key={di} style={{display:'flex',alignItems:'flex-start',gap:8,flexWrap:'wrap',padding:'6px 0',borderTop:di>0?'1px solid #e9ecef':'none'}}>
                           <div style={{minWidth:120,paddingTop:2}}>
                             <div style={{fontSize:12,fontWeight:700,color:'#0f172a'}}>{pos||'—'}</div>
                             {deco.artFile&&<div style={{fontSize:10,fontWeight:700,color:'#7c3aed',background:'#f5f3ff',padding:'1px 6px',borderRadius:3,display:'inline-block',marginTop:2}}>{deco.artFile.title||deco.artFile.name||'—'}</div>}
+                            {deco.cwLabel&&<div style={{fontSize:10,fontWeight:600,color:'#0369a1',background:'#e0f2fe',padding:'1px 6px',borderRadius:3,display:'inline-block',marginTop:2}}>CW: {deco.cwLabel}</div>}
                           </div>
                           <div style={{flex:1,display:'flex',flexWrap:'wrap',gap:4,alignItems:'center'}}>
                             <span style={{fontSize:11,color:'#475569',fontWeight:600}}>{method}</span>
