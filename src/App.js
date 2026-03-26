@@ -10,6 +10,7 @@ import { BarcodeDetector as BarcodeDetectorPolyfill } from 'barcode-detector';
 import { createWorker } from 'tesseract.js';
 import html2pdf from 'html2pdf.js';
 import * as fabric from 'fabric';
+import ImageTracer from 'imagetracerjs';
 
 // ─── Stripe Setup ───
 const _stripePk = process.env.REACT_APP_STRIPE_PK || '';
@@ -11747,6 +11748,13 @@ export default function App(){
   const[mkCanvas,setMkCanvas]=useState(null);
   const mkCanvasRef=useRef(null);
   const mkSearchTimer=useRef(null);
+  // Image Vectorizer state
+  const[vecFile,setVecFile]=useState(null);// {name,url,file}
+  const[vecSvg,setVecSvg]=useState('');
+  const[vecProcessing,setVecProcessing]=useState(false);
+  const[vecPreset,setVecPreset]=useState('default');
+  const[vecColors,setVecColors]=useState(16);
+  const vecCanvasRef=useRef(null);
   const[issueModal,setIssueModal]=useState({open:false,desc:'',priority:'medium'});
   const[issueFilter,setIssueFilter]=useState('all');// all|open|resolved
   const[editMember,setEditMember]=useState(null);
@@ -26747,7 +26755,7 @@ export default function App(){
     return(<>
       {/* Tab bar */}
       <div style={{display:'flex',gap:4,marginBottom:16,flexWrap:'wrap'}}>
-        {[{id:'quotes',label:'Quote Forms',icon:'send'},{id:'numbers',label:'Numbers List',icon:'grid'},{id:'size_sort',label:'Size Sorter',icon:'grid'},{id:'reorder',label:'Quick Reorder',icon:'cart'},{id:'deco_calc',label:'Deco Calculator',icon:'dollar'},{id:'mockup',label:'Mockup Helper',icon:'image'}].map(t=>
+        {[{id:'quotes',label:'Quote Forms',icon:'send'},{id:'numbers',label:'Numbers List',icon:'grid'},{id:'size_sort',label:'Size Sorter',icon:'grid'},{id:'reorder',label:'Quick Reorder',icon:'cart'},{id:'deco_calc',label:'Deco Calculator',icon:'dollar'},{id:'mockup',label:'Mockup Helper',icon:'image'},{id:'vectorizer',label:'Image Vectorizer',icon:'pen-tool'}].map(t=>
           <button key={t.id} className={`btn ${stTab===t.id?'btn-primary':'btn-secondary'}`} onClick={()=>setStTab(t.id)} style={{fontSize:13,padding:'8px 16px'}}>
             <Icon name={t.icon} size={14}/> {t.label}</button>)}
       </div>
@@ -27444,7 +27452,140 @@ export default function App(){
           </div>
         </div>}
       </div>}
+
+      {/* ═══ IMAGE VECTORIZER ═══ */}
+      {stTab==='vectorizer'&&<div style={{display:'grid',gridTemplateColumns:vecSvg?'1fr 1fr':'1fr',gap:16}}>
+        <div>
+          <div className="card" style={{marginBottom:16}}>
+            <div className="card-header"><h2><Icon name="pen-tool" size={18}/> Image Vectorizer</h2></div>
+            <div className="card-body" style={{padding:16}}>
+              <p style={{fontSize:13,color:'#64748b',margin:'0 0 12px'}}>Upload a PNG or JPG image to convert it into a scalable SVG vector file. Great for converting logos, artwork, and graphics into print-ready vectors.</p>
+
+              {/* Upload area */}
+              <div style={{border:'2px dashed #cbd5e1',borderRadius:8,padding:32,textAlign:'center',cursor:'pointer',background:vecFile?'#f0fdf4':'#f8fafc',transition:'all 0.2s'}}
+                onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#3b82f6';e.currentTarget.style.background='#eff6ff'}}
+                onDragLeave={e=>{e.currentTarget.style.borderColor='#cbd5e1';e.currentTarget.style.background=vecFile?'#f0fdf4':'#f8fafc'}}
+                onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor='#cbd5e1';const f=e.dataTransfer.files[0];if(f)handleVecUpload(f)}}
+                onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.accept='image/png,image/jpeg,image/jpg';inp.onchange=ev=>{if(ev.target.files[0])handleVecUpload(ev.target.files[0])};inp.click()}}>
+                {vecFile?<>
+                  <img src={vecFile.url} alt="Source" style={{maxWidth:'100%',maxHeight:200,borderRadius:4,marginBottom:8}}/>
+                  <p style={{margin:0,fontSize:13,color:'#166534',fontWeight:600}}>{vecFile.name}</p>
+                  <p style={{margin:'4px 0 0',fontSize:11,color:'#64748b'}}>Click or drag to replace</p>
+                </>:<>
+                  <Icon name="upload" size={36} style={{color:'#94a3b8'}}/>
+                  <p style={{margin:'12px 0 4px',fontSize:14,fontWeight:600,color:'#475569'}}>Drop an image here or click to browse</p>
+                  <p style={{margin:0,fontSize:12,color:'#94a3b8'}}>Supports PNG and JPG files</p>
+                </>}
+              </div>
+
+              {/* Settings */}
+              {vecFile&&<div style={{marginTop:16,padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0'}}>
+                <p style={{margin:'0 0 8px',fontSize:12,fontWeight:600,color:'#475569'}}>Vectorization Settings</p>
+                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
+                  <label style={{fontSize:12,color:'#64748b'}}>Preset Style
+                    <select className="form-input" value={vecPreset} onChange={e=>{setVecPreset(e.target.value);if(e.target.value==='posterized1')setVecColors(2);else if(e.target.value==='posterized2')setVecColors(4);else if(e.target.value==='detailed')setVecColors(64);else if(e.target.value==='grayscale')setVecColors(7)}} style={{marginTop:2,fontSize:12}}>
+                      <option value="default">Default</option>
+                      <option value="posterized1">Black & White</option>
+                      <option value="posterized2">Posterized</option>
+                      <option value="detailed">Detailed</option>
+                      <option value="sharp">Sharp Edges</option>
+                      <option value="curvy">Smooth Curves</option>
+                      <option value="grayscale">Grayscale</option>
+                      <option value="artistic1">Artistic 1</option>
+                      <option value="artistic2">Artistic 2</option>
+                    </select>
+                  </label>
+                  <label style={{fontSize:12,color:'#64748b'}}>Number of Colors
+                    <input className="form-input" type="number" min={2} max={128} value={vecColors} onChange={e=>setVecColors(parseInt(e.target.value)||16)} style={{marginTop:2,fontSize:12}}/>
+                  </label>
+                </div>
+                <button className="btn btn-primary" disabled={vecProcessing} onClick={()=>runVectorizer()} style={{marginTop:12,width:'100%',fontSize:13}}>
+                  {vecProcessing?<><Icon name="loader" size={14} style={{animation:'spin 1s linear infinite'}}/> Processing...</>:<><Icon name="pen-tool" size={14}/> Vectorize Image</>}
+                </button>
+              </div>}
+            </div>
+          </div>
+        </div>
+
+        {/* SVG Preview & Download */}
+        {vecSvg&&<div>
+          <div className="card" style={{marginBottom:16}}>
+            <div className="card-header">
+              <h2>Vector Output</h2>
+              <div style={{display:'flex',gap:8}}>
+                <button className="btn btn-primary" onClick={()=>{
+                  const blob=new Blob([vecSvg],{type:'image/svg+xml'});const url=URL.createObjectURL(blob);
+                  const a=document.createElement('a');a.href=url;a.download=(vecFile?.name||'image').replace(/\.[^.]+$/,'')+'.svg';a.click();URL.revokeObjectURL(url);
+                  nf('SVG file downloaded!');
+                }}><Icon name="download" size={14}/> Download SVG</button>
+                <button className="btn btn-secondary" onClick={()=>{
+                  navigator.clipboard.writeText(vecSvg).then(()=>nf('SVG code copied to clipboard!')).catch(()=>nf('Failed to copy','error'));
+                }}><Icon name="copy" size={14}/> Copy SVG</button>
+              </div>
+            </div>
+            <div className="card-body" style={{padding:16}}>
+              <div style={{background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0',padding:16,textAlign:'center',minHeight:200,display:'flex',alignItems:'center',justifyContent:'center'}}>
+                <div dangerouslySetInnerHTML={{__html:vecSvg}} style={{maxWidth:'100%',maxHeight:400,overflow:'auto'}}/>
+              </div>
+              <div style={{marginTop:12,display:'flex',gap:12,fontSize:12,color:'#64748b'}}>
+                <span>Size: {(new Blob([vecSvg]).size/1024).toFixed(1)} KB</span>
+                <span>Format: SVG</span>
+              </div>
+              {/* SVG code preview */}
+              <details style={{marginTop:12}}>
+                <summary style={{fontSize:12,color:'#64748b',cursor:'pointer'}}>View SVG Code</summary>
+                <pre style={{marginTop:8,padding:12,background:'#1e293b',color:'#e2e8f0',borderRadius:6,fontSize:11,maxHeight:200,overflow:'auto',whiteSpace:'pre-wrap'}}>{vecSvg.substring(0,5000)}{vecSvg.length>5000?'\n... (truncated)':''}</pre>
+              </details>
+            </div>
+          </div>
+        </div>}
+      </div>}
     </>)
+  }
+
+  function handleVecUpload(file){
+    const ext=file.name.split('.').pop().toLowerCase();
+    if(ext!=='png'&&ext!=='jpg'&&ext!=='jpeg'){nf('Please upload a PNG or JPG file','error');return}
+    const reader=new FileReader();
+    reader.onload=ev=>{
+      setVecFile({name:file.name,url:ev.target.result,file});
+      setVecSvg('');
+    };
+    reader.readAsDataURL(file);
+  }
+
+  function runVectorizer(){
+    if(!vecFile)return;
+    setVecProcessing(true);
+    // Load image into a canvas to get ImageData
+    const img=new Image();
+    img.onload=()=>{
+      const canvas=document.createElement('canvas');
+      canvas.width=img.width;canvas.height=img.height;
+      const ctx=canvas.getContext('2d');
+      ctx.drawImage(img,0,0);
+      const imgData=ctx.getImageData(0,0,canvas.width,canvas.height);
+      // Build options from preset + custom color count
+      const presets=ImageTracer.optionpresets||{};
+      let opts={...(presets[vecPreset]||presets['default']||{})};
+      opts.numberofcolors=vecColors;
+      opts.viewbox=true;
+      opts.desc=false;
+      opts.scale=1;
+      // Use setTimeout to avoid blocking UI
+      setTimeout(()=>{
+        try{
+          const svgStr=ImageTracer.imagedataToSVG(imgData,opts);
+          setVecSvg(svgStr);
+          nf('Vectorization complete!');
+        }catch(e){
+          nf('Vectorization failed: '+e.message,'error');
+        }
+        setVecProcessing(false);
+      },50);
+    };
+    img.onerror=()=>{nf('Failed to load image','error');setVecProcessing(false)};
+    img.src=vecFile.url;
   }
 
   function handleMkArtUpload(file){
