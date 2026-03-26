@@ -16695,6 +16695,118 @@ export default function App(){
           </div>
         </div>
 
+        {/* ═══ COSTS BREAKDOWN ═══ */}
+        {so&&(()=>{
+          const af=safeArt(so);
+          const invSkus=lineItems.map(li=>li._sku||li.sku||(li.desc||'').split(' ')[0]).filter(Boolean);
+          const costLines=[];
+          safeItems(so).forEach((it,ii)=>{
+            const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
+            if(!qty)return;
+            // Only include items that appear on this invoice
+            const matchesInv=invSkus.length===0||invSkus.some(s=>s===it.sku||(it.sku+' '+it.name).includes(s));
+            if(!matchesInv)return;
+            const expectedBlank=qty*safeNum(it.nsa_cost);
+            const blankPOs=(it.po_lines||[]).filter(pl=>pl.po_type!=='outside_deco');
+            const poBlankQty=blankPOs.reduce((a,pl)=>a+Object.entries(pl).filter(([k,v])=>typeof v==='number'&&safeSizes(it)[k]!==undefined).reduce((a2,[,v])=>a2+v,0),0);
+            const pickQty=safePicks(it).reduce((a,pk)=>a+Object.entries(pk).filter(([k,v])=>typeof v==='number'&&safeSizes(it)[k]!==undefined).reduce((a2,[,v])=>a2+v,0),0);
+            const accountedQty=poBlankQty+pickQty;
+            const hasActual=blankPOs.length>0||pickQty>0;
+            const billedCostFromPOs=blankPOs.reduce((a,pl)=>a+safeNum(pl._bill_cost||0),0);
+            const actualBlank=billedCostFromPOs>0?billedCostFromPOs+(pickQty*safeNum(it.nsa_cost)):(hasActual?accountedQty*safeNum(it.nsa_cost):0);
+            costLines.push({category:'Blanks',sku:it.sku,name:it.name,vendor:D_V.find(v=>v.id===it.vendor_id)?.name||it.brand||'—',
+              qty,expected:expectedBlank,actual:actualBlank,poCount:blankPOs.length+(pickQty>0?1:0),
+              poIds:blankPOs.map(p=>p.po_id).filter(Boolean).join(', '),
+              allReceived:blankPOs.length>0&&blankPOs.every(p=>p.status==='received')});
+            const aqMap={};safeItems(so).forEach(sit=>{const sq2=Object.values(safeSizes(sit)).reduce((a2,v2)=>a2+safeNum(v2),0);safeDecos(sit).forEach(d2=>{if(d2.kind==='art'&&d2.art_file_id){aqMap[d2.art_file_id]=(aqMap[d2.art_file_id]||0)+sq2}})});
+            safeDecos(it).forEach(d=>{
+              const cq=d.kind==='art'&&d.art_file_id?aqMap[d.art_file_id]:qty;
+              const dp=dP(d,qty,af,cq);
+              const eqD=dp._nq!=null?dp._nq:(d.reversible?qty*2:qty);const expectedDeco=eqD*dp.cost;
+              const matchingDPOs=(it.po_lines||[]).filter(pl=>pl.po_type==='outside_deco');
+              const actualDeco=matchingDPOs.reduce((a,pl)=>{
+                const poQty=Object.entries(pl).filter(([k,v])=>typeof v==='number'&&!['unit_cost'].includes(k)&&safeSizes(it)[k]!==undefined).reduce((a2,[,v])=>a2+v,0);
+                return a+poQty*safeNum(pl.unit_cost)},0);
+              const artF=af.find(a=>a.id===d.art_file_id);
+              const isOutside=d.kind==='outside_deco'||matchingDPOs.length>0;
+              if(dp.cost>0||actualDeco>0){
+                costLines.push({category:isOutside?'Outside Deco':'In-House Deco',
+                  sku:it.sku,name:artF?.name||d.deco_type?.replace(/_/g,' ')||'Decoration',
+                  vendor:isOutside?(matchingDPOs[0]?.deco_vendor||d.vendor||'—'):'NSA In-House',
+                  qty,expected:expectedDeco,actual:isOutside?actualDeco:expectedDeco,
+                  poCount:matchingDPOs.length,poIds:matchingDPOs.map(p=>p.po_id).filter(Boolean).join(', '),
+                  allReceived:matchingDPOs.length>0&&matchingDPOs.every(p=>p.status==='received')});
+              }
+            });
+          });
+          if(costLines.length===0)return null;
+          const totalExpected=costLines.reduce((a,l)=>a+l.expected,0);
+          const totalActual=costLines.reduce((a,l)=>a+l.actual,0);
+          const hasActuals=costLines.some(l=>l.poCount>0);
+          const variance=totalActual-totalExpected;
+          const revenue=inv.total||0;
+          const gp=revenue-totalActual;
+          const gpPct=revenue>0?(gp/revenue*100):0;
+          const cats={};costLines.forEach(l=>{if(!cats[l.category])cats[l.category]={expected:0,actual:0};cats[l.category].expected+=l.expected;cats[l.category].actual+=l.actual});
+          return<div className="card" style={{marginBottom:16}}>
+            <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+              <h2 style={{margin:0,fontSize:14}}>Cost Breakdown</h2>
+              <div style={{display:'flex',gap:8,alignItems:'center'}}>
+                {hasActuals&&<span style={{fontSize:12,fontWeight:700,padding:'4px 12px',borderRadius:8,
+                  background:gpPct>=30?'#f0fdf4':gpPct>=20?'#fffbeb':'#fef2f2',
+                  color:gpPct>=30?'#166534':gpPct>=20?'#92400e':'#dc2626'}}>
+                  GP: ${gp.toFixed(2)} ({gpPct.toFixed(1)}%)</span>}
+                {hasActuals&&variance!==0&&<span style={{fontSize:11,fontWeight:700,padding:'3px 8px',borderRadius:6,
+                  background:variance>0?'#fef2f2':'#f0fdf4',color:variance>0?'#dc2626':'#166534'}}>
+                  {variance>0?'Over':'Under'} by ${Math.abs(variance).toFixed(2)}</span>}
+              </div>
+            </div>
+            <div className="card-body">
+              <div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap'}}>
+                {Object.entries(cats).map(([cat,v])=>{const diff=v.actual-v.expected;
+                  return<div key={cat} style={{padding:'10px 14px',background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0',minWidth:140,flex:1}}>
+                    <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:4}}>{cat}</div>
+                    <div style={{display:'flex',gap:12}}>
+                      <div><div style={{fontSize:9,color:'#94a3b8'}}>Expected</div><div style={{fontSize:14,fontWeight:700,color:'#475569'}}>${v.expected.toFixed(2)}</div></div>
+                      <div><div style={{fontSize:9,color:'#94a3b8'}}>Actual</div><div style={{fontSize:14,fontWeight:700,color:v.actual>0?'#0f172a':'#94a3b8'}}>{v.actual>0?'$'+v.actual.toFixed(2):'—'}</div></div>
+                      {v.actual>0&&diff!==0&&<div><div style={{fontSize:9,color:'#94a3b8'}}>Var</div><div style={{fontSize:14,fontWeight:700,color:diff>0?'#dc2626':'#166534'}}>{diff>0?'+':''}${diff.toFixed(2)}</div></div>}
+                    </div>
+                  </div>})}
+                <div style={{padding:'10px 14px',background:gpPct>=30?'#f0fdf4':'#fffbeb',borderRadius:8,border:'2px solid '+(gpPct>=30?'#86efac':'#fde68a'),minWidth:140}}>
+                  <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:4}}>Invoice Total vs Cost</div>
+                  <div style={{display:'flex',gap:12}}>
+                    <div><div style={{fontSize:9,color:'#94a3b8'}}>Revenue</div><div style={{fontSize:14,fontWeight:700}}>${revenue.toFixed(2)}</div></div>
+                    <div><div style={{fontSize:9,color:'#94a3b8'}}>Cost</div><div style={{fontSize:14,fontWeight:700,color:totalActual>0?'#0f172a':'#94a3b8'}}>{totalActual>0?'$'+totalActual.toFixed(2):'—'}</div></div>
+                    {totalActual>0&&<div><div style={{fontSize:9,color:'#94a3b8'}}>GP</div><div style={{fontSize:14,fontWeight:800,color:gpPct>=30?'#166534':gpPct>=20?'#92400e':'#dc2626'}}>{gpPct.toFixed(1)}%</div></div>}
+                  </div>
+                </div>
+              </div>
+              <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
+                <thead><tr style={{borderBottom:'2px solid #e2e8f0'}}><th style={{padding:'6px 8px',textAlign:'left',fontSize:10,color:'#64748b'}}>Category</th><th style={{padding:'6px 8px',textAlign:'left',fontSize:10,color:'#64748b'}}>Item / Service</th><th style={{padding:'6px 8px',textAlign:'left',fontSize:10,color:'#64748b'}}>Vendor</th><th style={{padding:'6px 8px',textAlign:'right',fontSize:10,color:'#64748b'}}>Qty</th><th style={{padding:'6px 8px',textAlign:'right',fontSize:10,color:'#64748b'}}>Expected</th><th style={{padding:'6px 8px',textAlign:'right',fontSize:10,color:'#64748b'}}>Actual</th><th style={{padding:'6px 8px',textAlign:'right',fontSize:10,color:'#64748b'}}>Variance</th><th style={{padding:'6px 8px',textAlign:'left',fontSize:10,color:'#64748b'}}>PO(s)</th></tr></thead>
+                <tbody>{costLines.map((l,i)=>{const diff=l.actual-l.expected;
+                  return<tr key={i} style={{borderBottom:'1px solid #f1f5f9'}}>
+                    <td style={{padding:'6px 8px'}}><span style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:600,
+                      background:l.category==='Blanks'?'#dbeafe':l.category==='Outside Deco'?'#ede9fe':'#fef3c7',
+                      color:l.category==='Blanks'?'#1e40af':l.category==='Outside Deco'?'#7c3aed':'#92400e'}}>{l.category}</span></td>
+                    <td style={{padding:'6px 8px'}}><span style={{fontFamily:'monospace',fontWeight:700,color:'#475569',marginRight:6}}>{l.sku}</span>{l.name}</td>
+                    <td style={{padding:'6px 8px',color:'#64748b'}}>{l.vendor}</td>
+                    <td style={{padding:'6px 8px',textAlign:'right',fontWeight:600}}>{l.qty}</td>
+                    <td style={{padding:'6px 8px',textAlign:'right'}}>${l.expected.toFixed(2)}</td>
+                    <td style={{padding:'6px 8px',textAlign:'right',fontWeight:700,color:l.actual>0?'#0f172a':'#94a3b8'}}>{l.actual>0?'$'+l.actual.toFixed(2):'—'}</td>
+                    <td style={{padding:'6px 8px',textAlign:'right',fontWeight:700,color:diff>0?'#dc2626':diff<0?'#166534':'#94a3b8'}}>{l.poCount>0?(diff>0?'+':'')+'$'+diff.toFixed(2):'—'}</td>
+                    <td style={{padding:'6px 8px',fontSize:11,color:'#7c3aed',fontWeight:600}}>{l.poIds||<span style={{color:'#94a3b8'}}>No PO</span>}</td>
+                  </tr>})}</tbody>
+                <tfoot><tr style={{fontWeight:800,borderTop:'2px solid #e2e8f0'}}>
+                  <td colSpan={4} style={{padding:'8px 8px',textAlign:'right'}}>TOTALS</td>
+                  <td style={{padding:'8px 8px',textAlign:'right'}}>${totalExpected.toFixed(2)}</td>
+                  <td style={{padding:'8px 8px',textAlign:'right'}}>{totalActual>0?'$'+totalActual.toFixed(2):'—'}</td>
+                  <td style={{padding:'8px 8px',textAlign:'right',color:variance>0?'#dc2626':variance<0?'#166534':'#94a3b8'}}>{hasActuals?(variance>0?'+':'')+'$'+variance.toFixed(2):'—'}</td>
+                  <td></td>
+                </tr></tfoot>
+              </table>
+            </div>
+          </div>})()}
+
         {/* ═══ SPLIT INVOICE MODAL ═══ */}
         {splitModal&&(()=>{
           const si=splitModal.inv;
