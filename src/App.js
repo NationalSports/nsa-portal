@@ -21102,7 +21102,7 @@ export default function App(){
                 const repPerItemDecos={};
                 (j.items||[]).forEach(gi=>{
                   const it=safeItems(so)[gi.item_idx];if(!it)return;
-                  const key=it.sku+'|'+(it.color||'');
+                  const key=(it.sku||gi.sku)+'|'+(it.color||gi.color||'');
                   if(!repPerItemDecos[key])repPerItemDecos[key]=[];
                   safeDecos(it).forEach(d=>{
                     if(d.kind==='art'){const dAf=d.art_file_id?safeArt(so).find(a=>a.id===d.art_file_id):null;const dType=d.type||dAf?.deco_type||j.deco_type||'screen_print';const dColors=(dAf?(dAf.ink_colors||dAf.thread_colors||''):'').split(/[,\n]/).map(c=>c.trim()).filter(Boolean);repPerItemDecos[key].push({kind:'art',position:d.position||'Front Center',type:dType,underbase:d.underbase||false,reversible:d.reversible||false,artFile:dAf,colors:dColors,size:dAf?.art_size||'',artName:dAf?.name||''});}
@@ -21118,7 +21118,7 @@ export default function App(){
                   const nameDecos=decos.filter(d=>d.kind==='names');
                   const gc=repGarmentColors[gk]||{};
                   const rowTotal=Object.values(gi.sizes).reduce((a,v)=>a+v,0);
-                  const effectiveArtDecos=artDecos.length>0?artDecos:repPosList.map(pos=>({kind:'art',position:pos,type:j.deco_type||'screen_print',underbase:false,reversible:false,artFile:af,colors:colorList,size:af?.art_size||'',artName:''}));
+                  const effectiveArtDecos=artDecos.length>0?artDecos:repPosList.length>0?repPosList.map(pos=>({kind:'art',position:pos,type:j.deco_type||'screen_print',underbase:false,reversible:false,artFile:af,colors:colorList,size:af?.art_size||'',artName:''})):af?[{kind:'art',position:j.deco_type==='embroidery'?'Front Left Chest':'Front Center',type:j.deco_type||'screen_print',underbase:false,reversible:false,artFile:af,colors:colorList,size:af?.art_size||'',artName:af?.name||''}]:[];
                   // Per-item mockup for this item
                   const repItemMocks=af?.item_mockups?.[gi.sku]||[];
                   const repPrimary=repItemMocks[0]||null;
@@ -21279,7 +21279,7 @@ export default function App(){
         const _perItemDecos={};
         (j.items||[]).forEach(gi=>{
           const it=safeItems(so)[gi.item_idx];if(!it)return;
-          const key=it.sku+'|'+(it.color||'');
+          const key=(it.sku||gi.sku)+'|'+(it.color||gi.color||'');
           if(!_perItemDecos[key])_perItemDecos[key]=[];
           safeDecos(it).forEach(d=>{
             if(d.kind==='art'){
@@ -21623,7 +21623,7 @@ export default function App(){
                   {/* ─── Copy Mockup From Another Item ─── */}
                   {itemMocks.length===0&&(()=>{const others=itemDetails.filter((oi,oii)=>oii!==gii&&(af?.item_mockups?.[oi.sku]||[]).length>0);if(others.length===0)return null;return<div style={{padding:'6px 14px',display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',borderTop:'1px solid #f1f5f9',background:'#fdfcff'}}><span style={{fontSize:10,color:'#64748b',fontWeight:600}}>Copy mock from:</span>{others.map((oi,oii)=><button key={oii} className="btn btn-sm" style={{fontSize:10,padding:'2px 8px',background:'#ede9fe',color:'#7c3aed',border:'1px solid #ddd6fe',borderRadius:4,fontWeight:700,cursor:'pointer'}} onClick={()=>_copyMockup(oi.sku,gi.sku)}>{oi.sku}{oi.color?' ('+oi.color+')':''}</button>)}</div>;})()}
                   {/* ─── Decoration Spec for this item ─── */}
-                  {(()=>{const gk=gi.sku+'|'+gi.color;const decos=_perItemDecos[gk]||[];const artDecos=decos.filter(d=>d.kind==='art');const numDecos=decos.filter(d=>d.kind==='numbers');const nameDecos=decos.filter(d=>d.kind==='names');const gc=_garmentColors[gk]||{};const editColors=_isEditingColors?(artJobDetailEditColors[gk]||{}):{};const effectiveArtDecos=artDecos.length>0?artDecos:posList3.map(pos=>({kind:'art',position:pos,type:j.deco_type||'screen_print',reversible:false,underbase:false,artFile:af,colors:colorList,size:af?.art_size||'',artName:af?.name||''}));if(effectiveArtDecos.length===0&&numDecos.length===0&&nameDecos.length===0)return null;
+                  {(()=>{const gk=gi.sku+'|'+gi.color;const decos=_perItemDecos[gk]||[];const artDecos=decos.filter(d=>d.kind==='art');const numDecos=decos.filter(d=>d.kind==='numbers');const nameDecos=decos.filter(d=>d.kind==='names');const gc=_garmentColors[gk]||{};const editColors=_isEditingColors?(artJobDetailEditColors[gk]||{}):{};const effectiveArtDecos=artDecos.length>0?artDecos:posList3.length>0?posList3.map(pos=>({kind:'art',position:pos,type:j.deco_type||'screen_print',reversible:false,underbase:false,artFile:af,colors:colorList,size:af?.art_size||'',artName:af?.name||''})):af?[{kind:'art',position:j.deco_type==='embroidery'?'Front Left Chest':'Front Center',type:j.deco_type||'screen_print',reversible:false,underbase:false,artFile:af,colors:colorList,size:af?.art_size||'',artName:af?.name||''}]:[];if(effectiveArtDecos.length===0&&numDecos.length===0&&nameDecos.length===0)return null;
                   return<div style={{borderTop:'2px solid #e2e8f0',background:'#f8fafc'}}>
                     <div style={{padding:'8px 14px 0'}}>
                       <div style={{fontSize:11,fontWeight:800,color:'#1e3a5f',textTransform:'uppercase',letterSpacing:0.5,marginBottom:4}}>📋 Decoration Spec</div>
