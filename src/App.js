@@ -24745,13 +24745,14 @@ export default function App(){
       setQbSyncing(false);
     };
 
-    // ── SYNC: Pull paid status FROM QB back to portal ──
+    // ── SYNC: Bidirectional paid status sync between QB and portal ──
     const syncPaidFromQB=async()=>{
       setQbSyncing(true);
       const log={ts:new Date().toLocaleString(),type:'paid_sync',status:'success',details:[]};
       let updated=0;
-      const linkedInvs=invs.filter(i=>i.qb_invoice_id&&i.status!=='paid');
-      if(linkedInvs.length===0){log.details.push('No open QB-linked invoices to check');setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));nf('No open invoices to sync');setQbSyncing(false);return}
+      // Include all QB-linked invoices (not just unpaid) so portal-paid invoices can push to QB
+      const linkedInvs=invs.filter(i=>i.qb_invoice_id);
+      if(linkedInvs.length===0){log.details.push('No QB-linked invoices to check');setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));nf('No invoices to sync');setQbSyncing(false);return}
       try{
         // Query QB for all invoices and their balance
         const qbIds=linkedInvs.map(i=>i.qb_invoice_id);
@@ -24766,18 +24767,33 @@ export default function App(){
           const qbPaid=qbTotal-qbBalance;
           const portalPaid=safeNum(inv.paid);
           if(qbPaid>portalPaid){
+            // QB has more paid — pull to portal
             const newStatus=qbBalance<=0?'paid':qbPaid>0?'partial':'open';
             const pmt={amount:Math.round((qbPaid-portalPaid)*100)/100,method:'qb_sync',ref:'QB Payment Sync',date:new Date().toLocaleDateString()};
             setInvs(prev=>prev.map(ii=>ii.id===inv.id?{...ii,paid:Math.round(qbPaid*100)/100,status:newStatus,payments:[...(ii.payments||[]),pmt]}:ii));
             log.details.push((inv.display_id||inv.id)+' — marked '+newStatus+' (QB paid $'+qbPaid.toFixed(2)+')');updated++;
+          }else if(portalPaid>qbPaid&&qbBalance>0){
+            // Portal has more paid — push payment to QB
+            const diff=Math.round((portalPaid-qbPaid)*100)/100;
+            const cQBId=inv.qb_customer_id||(qbConfig.custQBMap||{})[inv.customer_id];
+            if(cQBId){
+              try{
+                const qbPmt={CustomerRef:{value:cQBId},TotalAmt:diff,
+                  Line:[{Amount:diff,LinkedTxn:[{TxnId:inv.qb_invoice_id,TxnType:'Invoice'}]}]};
+                await qbApi('upsert_payment',{payment:qbPmt});
+                log.details.push((inv.display_id||inv.id)+' — pushed $'+diff.toFixed(2)+' payment to QB');updated++;
+              }catch(pe){log.details.push((inv.display_id||inv.id)+' — failed to push payment to QB: '+pe.message);log.status='partial'}
+            }else{
+              log.details.push((inv.display_id||inv.id)+' — skipped push: customer not synced to QB');
+            }
           }else{
             log.details.push((inv.display_id||inv.id)+' — already up to date');
           }
         }
       }catch(e){log.status='error';log.details.push('QB query failed: '+e.message)}
-      log.details.unshift(updated+'/'+linkedInvs.length+' invoices updated from QB');
+      log.details.unshift(updated+'/'+linkedInvs.length+' invoices synced');
       setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100),lastSync:new Date().toLocaleString()}));
-      nf(updated+' invoices updated from QB');
+      nf(updated+' invoices synced with QB');
       setQbSyncing(false);
     };
 
@@ -25386,7 +25402,7 @@ export default function App(){
                 <button className="btn btn-secondary" disabled={qbSyncing} onClick={syncCustomers}>Customers</button>
                 <button className="btn btn-secondary" disabled={qbSyncing} onClick={syncSalesOrders}>Sales Orders</button>
                 <button className="btn btn-secondary" disabled={qbSyncing} onClick={syncInvoices}>Invoices</button>
-                <button className="btn btn-secondary" disabled={qbSyncing} onClick={syncPaidFromQB}>Paid from QB</button>
+                <button className="btn btn-secondary" disabled={qbSyncing} onClick={syncPaidFromQB}>Sync Paid</button>
                 <button className="btn btn-secondary" disabled={qbSyncing} onClick={syncBillsFromQB}>Bills from QB</button>
                 <button className="btn btn-secondary" disabled={qbSyncing} onClick={syncPurchaseOrders}>POs</button>
                 <button className="btn btn-secondary" disabled={qbSyncing} onClick={syncInventory}>Inventory</button>
@@ -25398,7 +25414,7 @@ export default function App(){
             <div className="card-body" style={{fontSize:12,color:'#475569'}}>
               <div style={{marginBottom:4}}>&#8226; <strong>Customers</strong> — name, contact, address, order totals in notes</div>
               <div style={{marginBottom:4}}>&#8226; <strong>Sales Orders</strong> — line items + decoration as QB Estimates</div>
-              <div style={{marginBottom:4}}>&#8226; <strong>Invoices</strong> — invoice total as single line item, payments applied; paid status syncs back from QB automatically</div>
+              <div style={{marginBottom:4}}>&#8226; <strong>Invoices</strong> — invoice total as single line item, payments applied; paid status syncs bidirectionally (QB ↔ portal)</div>
               <div style={{marginBottom:4}}>&#8226; <strong>Purchase Orders</strong> — blank goods + outside deco POs to vendors</div>
               <div style={{marginBottom:4}}>&#8226; <strong>Bills</strong> — upload vendor bills (PDF/image) to QB; bill costs auto-pull from QB back to portal POs</div>
               <div style={{marginBottom:4}}>&#8226; <strong>Bill Costs (QB → Portal)</strong> — bills received in QB matched to POs push costs back to portal daily</div>
