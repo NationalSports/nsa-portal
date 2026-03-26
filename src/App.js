@@ -18796,6 +18796,7 @@ export default function App(){
       for(const shp of pending){
         try{
           const resp=await fetch('/.netlify/functions/ups-tracking?tracking='+encodeURIComponent(shp.tracking_number));
+          if(!resp.ok){console.warn('[UPS] Tracking API returned',resp.status,'for',shp.tracking_number);continue}
           const data=await resp.json();
           if(data.pickedUp){
             const updatedShipments=(shp.so._shipments||[]).map(s=>s.id===shp.id?{...s,carrier_picked_up:true,pickup_date:new Date().toLocaleString(),ups_status:data.status}:s);
@@ -22389,6 +22390,7 @@ export default function App(){
     try{
       const r=await fetch('/.netlify/functions/qb-api',{method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({action,access_token:payload.access_token||qbConfig.access_token,realm_id:qbConfig.realm_id,sandbox:qbConfig.sandbox,...payload})});
+      if(!r.ok&&r.status!==401){const txt=await r.text();console.warn('[QB] API returned',r.status,txt);nf('QB API error ('+r.status+')','error');return null}
       const d=await r.json();
       if(r.status===401){nf('QB session expired — please reconnect','error');return null}
       return d;
