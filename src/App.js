@@ -20629,9 +20629,8 @@ export default function App(){
         // 4) or art is approved but needs prod files (repeat art scenario)
         const hasArtRequest=(j.art_requests||[]).some(r=>r.status!=='recalled');
         const hasArtist=!!j.assigned_artist;
-        const inArtistWorkflow=j.art_status==='art_requested'||j.art_status==='art_in_progress';
-        const needsProdFiles=j.art_status==='production_files_needed';
-        if(!hasArtRequest&&!hasArtist&&!inArtistWorkflow&&!needsProdFiles)return;// skip — art not yet requested for this job
+        const hasArtActivity=j.art_status&&j.art_status!=='needs_art';
+        if(!hasArtRequest&&!hasArtist&&!hasArtActivity)return;// skip — art not yet requested for this job
         if(j.art_status==='art_complete'&&_af&&(_af.prod_files||[]).length===0)return;// handled in second pass as production_files_needed
         allArtJobs.push({...j,so,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',alpha:c?.alpha_tag||'',
           rep:REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name||'—',repId:c?.primary_rep_id||so.created_by,
