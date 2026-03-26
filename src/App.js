@@ -24821,6 +24821,8 @@ export default function App(){
       setQbSyncing(true);
       const log={ts:new Date().toLocaleString(),type:'bill_pull',status:'success',details:[]};
       let updated=0;
+      const syncedBillIds=new Set(qbConfig._syncedBillIds||[]);
+      const newSyncedBillIds=[...syncedBillIds];
       try{
         // Query all bills from QB
         const res=await qbApi('query',{query:"SELECT * FROM Bill MAXRESULTS 500"});
@@ -24835,9 +24837,6 @@ export default function App(){
         sos.forEach(so=>{safeItems(so).forEach(it=>{(it.po_lines||[]).forEach(pl=>{if(pl.po_id)allPortalPOIds.add(pl.po_id)})})});
         submittedBatches.forEach(b=>{if(b.po_number)allPortalPOIds.add(b.po_number)});
         invPOs.forEach(p=>{if(p.po_number)allPortalPOIds.add(p.po_number)});
-        // Track already-synced bill IDs to avoid re-applying
-        const syncedBillIds=new Set(qbConfig._syncedBillIds||[]);
-        const newSyncedBillIds=[...syncedBillIds];
         for(const qbBill of qbBills){
           if(syncedBillIds.has(qbBill.Id))continue;
           const billTotal=safeNum(qbBill.TotalAmt);
