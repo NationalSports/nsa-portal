@@ -19882,7 +19882,7 @@ export default function App(){
                 <td style={{fontSize:11}}>{t.rep}</td>
                 <td style={{textAlign:'center'}}>{t.daysOut!=null?<span style={{padding:'2px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:t.urgent?'#fee2e2':t.daysOut<=7?'#fef3c7':'#dcfce7',color:t.urgent?'#dc2626':t.daysOut<=7?'#92400e':'#166534'}}>{t.daysOut}d</span>:'—'}</td>
                 <td><button className="btn btn-sm" style={{fontSize:10,padding:'3px 10px',background:'#7c3aed',color:'white',border:'none',borderRadius:6,fontWeight:600,whiteSpace:'nowrap'}}
-                  onClick={e=>{e.stopPropagation();if(t.job)applyJobMove(t.job,'ready',t.job.assigned_machine||'',t.job.assigned_to||'')}}>Move to Deco →</button></td>
+                  onClick={e=>{e.stopPropagation();if(t.job)applyJobMove({...t.job,soId:t.soId},'ready',t.job.assigned_machine||'',t.job.assigned_to||'')}}>Move to Deco →</button></td>
               </tr>})}
           </tbody></table>
         </div></div>
