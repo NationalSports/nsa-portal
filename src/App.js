@@ -775,7 +775,7 @@ const _msgCols=['id','so_id','author_id','text','ts','dept','tagged_members','en
 const _msgExtraCols=new Set(['tagged_members','entity_type','entity_id','thread_id']);
 const _artCols=['id','name','deco_type','ink_colors','thread_colors','art_size','art_sizes','garment_colors','color_ways','files','mockup_files','item_mockups','sample_art','prod_files','preview_url','notes','status','uploaded'];
 // Columns that may not exist in art file tables — stripped on retry
-const _artExtraCols=new Set(['art_sizes','garment_colors','item_mockups','color_ways','preview_url']);
+const _artExtraCols=new Set(['art_sizes','garment_colors','item_mockups','color_ways','preview_url','sample_art']);
 // Columns that may not exist in so_jobs — stripped on retry
 const _jobExtraCols=new Set(['_art_ids','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at','coach_email_opened_at','follow_up_at','sent_history','run_order','run1_done','run2_done']);
 const _jobCols=['id','key','art_file_id','_art_ids','_draft','art_name','deco_type','positions','art_status','item_status','prod_status','total_units','fulfilled_units','split_from','created_at','assigned_machine','assigned_to','ship_method','items','_auto','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at','coach_email_opened_at','follow_up_at','sent_history','run_order','run1_done','run2_done','_merged'];
@@ -2842,7 +2842,7 @@ function LoginGate({onLogin,reps}){
   );
 }
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onBack,onConvertSO,onCopyEstimate,onRevertToEst,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,allInvoices,batchPOs,onBatchPO,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onSaveProduct,onViewEstimate,onViewSO,returnToPage,onReturnToJob,onAssignTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onBack,onConvertSO,onCopyEstimate,onRevertToEst,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,allInvoices,batchPOs,onBatchPO,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,openPOId,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onSaveProduct,onViewEstimate,onViewSO,returnToPage,onReturnToJob,onAssignTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp}){
   const vendorList=vendorsProp||D_V;// use DB-loaded vendors if available, fallback to defaults
   const cuEmail=(cu?.email)||(REPS||[]).find(r=>r.id===cu?.id)?.email||'';
   const isE=mode==='estimate';const isSO=mode==='so';
@@ -2854,6 +2854,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     React.useEffect(()=>{if(initTab)setTab(initTab)},[initTab]);
     React.useEffect(()=>{if(scrollToItem!=null){setTab('items');setTimeout(()=>{const el=document.getElementById('so-item-'+scrollToItem);if(el){el.scrollIntoView({behavior:'smooth',block:'center'});el.style.boxShadow='0 0 0 3px #3b82f6';setTimeout(()=>{el.style.boxShadow=''},2000)}},150)}},[scrollToItem]);
     React.useEffect(()=>{if(scrollToJob!=null){setTab('jobs');setSelJob(scrollToJob);setTimeout(()=>{const el=document.getElementById('so-job-'+scrollToJob);if(el){el.scrollIntoView({behavior:'smooth',block:'center'});el.style.boxShadow='0 0 0 3px #7c3aed';setTimeout(()=>{el.style.boxShadow=''},2000)}},200)}},[scrollToJob]);
+    React.useEffect(()=>{if(openPOId){const items=safeItems(o);for(let i=0;i<items.length;i++){const poIdx=(items[i].po_lines||[]).findIndex(p=>p.po_id===openPOId);if(poIdx>=0){const poLine=items[i].po_lines[poIdx];const allLines=items.map((_,idx)=>({lineIdx:idx})).filter(ln=>items[ln.lineIdx]?.po_lines?.some(p=>p.po_id===openPOId));setPoFullPage({po:poLine,item:items[i],allLines,soId:o.id,soItems:items});break}}}},[openPOId]);
     const origRef=React.useRef(JSON.stringify(o));
     const markDirty=()=>setDirty(true);const[saved,setSaved]=useState(!!order.customer_id);const[showSend,setShowSend]=useState(false);const[showActionsDD,setShowActionsDD]=useState(false);const actionsRef=useRef(null);const[showPick,setShowPick]=useState(false);const[pickId,setPickId]=useState(()=>{let max=4000;(allOrders||[]).concat([order]).forEach(so=>safeItems(so).forEach(it=>safePicks(it).forEach(pk=>{const m=parseInt((pk.pick_id||'').replace('IF-',''))||0;if(m>max)max=m})));return'IF-'+String(max+1)});const[showPO,setShowPO]=useState(null);const[poCounter,setPOCounter]=useState(()=>{let max=3000;(allOrders||[]).concat([order]).forEach(so=>safeItems(so).forEach(it=>safePOs(it).forEach(po=>{const m=parseInt((po.po_id||'').replace('PO-',''))||0;if(m>max)max=m})));return max+1});
     const[pickNotes,setPickNotes]=useState('');const[pickShipDest,setPickShipDest]=useState('in_house');const[pickDecoVendor,setPickDecoVendor]=useState('');const[pickShipAddr,setPickShipAddr]=useState('default');const[pickSel,setPickSel]=useState({});/* selected item indexes for IF multi-select */
@@ -12341,7 +12342,7 @@ export default function App(){
   // Keep selC/selV/selP in sync with their source arrays after saves/reloads
   React.useEffect(()=>{if(selC){const u=cust.find(c=>c.id===selC.id);if(u&&u!==selC)setSelC(u);else if(!u)setSelC(null)}},[cust]); // eslint-disable-line
   React.useEffect(()=>{if(selP){const u=prod.find(p=>p.id===selP.id);if(u&&u!==selP)setSelP(u);else if(!u)setSelP(null)}},[prod]); // eslint-disable-line
-  const[eEst,setEEst]=useState(null);const[eEstC,setEEstC]=useState(null);const[eSO,setESO]=useState(null);const[eSOC,setESOC]=useState(null);const[eSOTab,setESOTab]=useState(null);const[eSOScrollItem,setESOScrollItem]=useState(null);const[eSOScrollJob,setESOScrollJob]=useState(null);
+  const[eEst,setEEst]=useState(null);const[eEstC,setEEstC]=useState(null);const[eSO,setESO]=useState(null);const[eSOC,setESOC]=useState(null);const[eSOTab,setESOTab]=useState(null);const[eSOScrollItem,setESOScrollItem]=useState(null);const[eSOScrollJob,setESOScrollJob]=useState(null);const[eSOOpenPO,setESOOpenPO]=useState(null);
   // Sync eSO from sos when external updates occur (e.g., coach approval via portal)
   React.useEffect(()=>{if(eSO){const fresh=sos.find(s=>s.id===eSO.id);if(fresh&&fresh.updated_at!==eSO.updated_at){setESO(fresh)}}},[sos]);
   React.useEffect(()=>{if(eEst){const fresh=ests.find(e=>e.id===eEst.id);if(fresh&&fresh.updated_at!==eEst.updated_at){setEEst(fresh)}}},[ests]);
@@ -13785,7 +13786,7 @@ export default function App(){
 
   // SALES ORDERS LIST
   function rSO(){
-    if(eSO)return<OrderEditor key={eSO.id} order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} vendors={vend} onSave={s=>{const locked=savSO(s);setESO(locked)}} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onNavInvoice={inv=>{setESO(null);setPg('invoices');setInvF(f=>({...f,search:inv.id}))}} onSaveProduct={p=>{setProd(prev=>prev.some(x=>x.id===p.id)?prev.map(x=>x.id===p.id?p:x):[...prev,p]);_dbSaveProduct(p)}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:csrId,so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog}/>
+    if(eSO)return<OrderEditor key={eSO.id} order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} vendors={vend} onSave={s=>{const locked=savSO(s);setESO(locked)}} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} openPOId={eSOOpenPO} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onNavInvoice={inv=>{setESO(null);setPg('invoices');setInvF(f=>({...f,search:inv.id}))}} onSaveProduct={p=>{setProd(prev=>prev.some(x=>x.id===p.id)?prev.map(x=>x.id===p.id?p:x):[...prev,p]);_dbSaveProduct(p)}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:csrId,so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog}/>
     // Filter SOs
     let fSOs=[...sos];
     if(soF.status!=='all')fSOs=fSOs.filter(s=>calcSOStatus(s)===soF.status);
@@ -15753,10 +15754,7 @@ export default function App(){
           <thead><tr><th style={{cursor:'pointer'}} onClick={()=>setPOF(f=>({...f,sort:f.sort==='po_id'?'date_desc':'po_id'}))}>PO #</th><th style={{cursor:'pointer'}} onClick={()=>setPOF(f=>({...f,sort:f.sort==='vendor'?'date_desc':'vendor'}))}>Vendor</th><th style={{cursor:'pointer'}} onClick={()=>setPOF(f=>({...f,sort:f.sort==='customer'?'date_desc':'customer'}))}>Customer</th><th>SO</th><th>Item</th><th style={{textAlign:'right'}}>Ordered</th><th style={{textAlign:'right'}}>Received</th><th style={{textAlign:'right'}}>Open</th><th style={{textAlign:'right'}}>Total</th><th style={{cursor:'pointer'}} onClick={()=>setPOF(f=>({...f,sort:f.sort==='status'?'date_desc':'status'}))}>Status</th><th>Date</th><th>Expected</th></tr></thead>
           <tbody>{fPOs.length===0?<tr><td colSpan={12} style={{textAlign:'center',color:'#94a3b8',padding:32}}>No purchase orders{activeFilters?' match filters':' found'}</td></tr>:
             fPOs.map((po,i)=>{const openPoPage=()=>{if(po.so){
-              const soObj=po.so;const soIt=safeItems(soObj);const allLines=soIt.map((_,idx)=>({lineIdx:idx})).filter(ln=>soIt[ln.lineIdx]?.po_lines?.some(p=>p.po_id===po.po_id));
-              const poLine=soIt[po.lineIdx]?.po_lines?.find(p=>p.po_id===po.po_id);
-              if(poLine){setPoFullPage({po:poLine,item:soIt[po.lineIdx],allLines,soId:soObj.id,soItems:soIt})}
-              else{const cc=cust.find(x=>x.id===soObj.customer_id);setESO(soObj);setESOC(cc);setPg('orders')}
+              const cc=cust.find(x=>x.id===po.so.customer_id);setESOOpenPO(po.po_id);setESO(po.so);setESOC(cc);setPg('orders');
             }};return<tr key={po.po_id+'-'+i}>
               <td><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',cursor:'pointer',textDecoration:'underline'}} onClick={openPoPage}>{po.po_id}</span>{po.source==='batch'&&<span className="badge badge-purple" style={{marginLeft:4,fontSize:9}}>Batch</span>}</td>
               <td>{po.vendor}</td>
@@ -23062,8 +23060,6 @@ export default function App(){
         }
       }
       setBillImport(x=>({...x,parsed:results,step:'review',uploading:false}));
-      // Apply billed quantities, tracking, and freight to matched SOs immediately
-      results.forEach(r=>{if(r.parsed?.matchedPOSource)applyBillToSO(r.parsed)});
       // Auto-save to history
       const toSave=results.map(r=>({id:r.id,file:r.file,parsed:{...r.parsed,rawText:undefined},uploadedAt:r.uploadedAt,qbStatus:null}));
       setSavedBills(prev=>{const updated=[...toSave,...prev].slice(0,200);try{localStorage.setItem('nsa_saved_bills',JSON.stringify(updated))}catch{};return updated});
@@ -23168,6 +23164,26 @@ export default function App(){
         const soId=bill.matchedPO.so_id||bill.matchedPO.so?.id;
         if(soId)_applyFreightToSOs(bill,[soId]);
       }
+    };
+
+    // Push bills to Portal (apply to SOs)
+    const pushBillsToPortal=()=>{
+      const selected=billImport.parsed.filter(b=>b.selected&&!b.portalStatus&&b.parsed?.matchedPOSource);
+      if(!selected.length){nf('No matched bills selected to push','error');return}
+      let applied=0;
+      selected.forEach(b=>{
+        try{
+          applyBillToSO(b.parsed);
+          b.portalStatus='success';b.portalMsg='Applied to SO';
+          applied++;
+        }catch(e){
+          b.portalStatus='error';b.portalMsg='Failed: '+e.message;
+        }
+      });
+      setBillImport(x=>({...x,parsed:[...x.parsed]}));
+      // Update localStorage history
+      setSavedBills(prev=>{const updated=prev.map(sb=>{const match=selected.find(s=>s.id===sb.id);return match?{...sb,portalStatus:match.portalStatus}:sb});try{localStorage.setItem('nsa_saved_bills',JSON.stringify(updated))}catch{};return updated});
+      nf(applied+' bill(s) pushed to portal');
     };
 
     // Push bills to QuickBooks
@@ -24122,6 +24138,10 @@ export default function App(){
           <div style={{display:'flex',gap:8,marginBottom:12,alignItems:'center'}}>
             <button className="btn btn-secondary" onClick={()=>setBillImport({step:'upload',files:[],parsed:[],uploading:false,showRaw:{}})}>← Upload More</button>
             <span style={{fontSize:14,fontWeight:700,flex:1}}>{billImport.parsed.length} Bill(s) Parsed</span>
+            <button className="btn btn-primary" style={{background:'#7c3aed',borderColor:'#7c3aed'}} disabled={billImport.uploading||!billImport.parsed.some(b=>b.selected&&!b.portalStatus&&b.parsed?.matchedPOSource)}
+              onClick={pushBillsToPortal}>
+              Push {billImport.parsed.filter(b=>b.selected&&!b.portalStatus&&b.parsed?.matchedPOSource).length} to Portal
+            </button>
             <button className="btn btn-primary" style={{background:'#166534',borderColor:'#166534'}} disabled={billImport.uploading||!billImport.parsed.some(b=>b.selected&&!b.qbStatus)}
               onClick={pushBillsToQB}>
               {billImport.uploading?'Pushing to QB...':'Push '+billImport.parsed.filter(b=>b.selected&&!b.qbStatus).length+' to QuickBooks'}
@@ -24137,6 +24157,8 @@ export default function App(){
                 {b.qbStatus==='success'&&<span style={{fontSize:16,color:'#22c55e'}}>&#10003;</span>}
                 {b.qbStatus==='error'&&<span style={{fontSize:16,color:'#ef4444'}}>&#10007;</span>}
                 <h2 style={{margin:0,flex:1}}>{b.file}</h2>
+                {b.portalStatus==='success'&&<span style={{fontSize:11,fontWeight:600,color:'#7c3aed'}}>&#10003; Portal</span>}
+                {b.portalMsg&&b.portalStatus==='error'&&<span style={{fontSize:11,fontWeight:600,color:'#dc2626'}}>{b.portalMsg}</span>}
                 {b.qbMsg&&<span style={{fontSize:11,fontWeight:600,color:b.qbStatus==='success'?'#166534':'#dc2626'}}>{b.qbMsg}</span>}
                 {poMatch&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#dbeafe',color:'#1e40af',fontWeight:700}}>PO Matched</span>}
                 {bill.po_number&&!poMatch&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:700}}>PO Not Found</span>}
@@ -27472,7 +27494,7 @@ export default function App(){
             const allPicks=[];sos.forEach(so=>{safeItems(so).forEach(it=>{safePicks(it).forEach(pk=>{if(pk.pick_id&&pk.pick_id.toLowerCase().includes(s)&&!allPicks.find(x=>x.pick_id===pk.pick_id)){allPicks.push({pick_id:pk.pick_id,so_id:so.id,so,status:pk.status||'pick'})}})})});
             const rpk=allPicks.slice(0,4);
             // Build PO index from all SO po_lines + submitted batches
-            const allPOs=[];sos.forEach(so=>{const c2=cust.find(x=>x.id===so.customer_id);safeItems(so).forEach((it,itIdx)=>{safePOs(it).forEach(po=>{if((po.po_id||'').toLowerCase().includes(s)||(po.vendor||'').toLowerCase().includes(s)){if(!allPOs.find(x=>x.po_id===po.po_id))allPOs.push({po_id:po.po_id,vendor:po.vendor,status:po.status||'waiting',so_id:so.id,so,customer:c2?.alpha_tag||'',_item:it,_itIdx:itIdx,_po:po})}})})});
+            const allPOs=[];sos.forEach(so=>{const c2=cust.find(x=>x.id===so.customer_id);safeItems(so).forEach(it=>{safePOs(it).forEach(po=>{if((po.po_id||'').toLowerCase().includes(s)||(po.vendor||'').toLowerCase().includes(s)){if(!allPOs.find(x=>x.po_id===po.po_id))allPOs.push({po_id:po.po_id,vendor:po.vendor,status:po.status||'waiting',so_id:so.id,so,customer:c2?.alpha_tag||''})}})})});
             submittedBatches.forEach(sb=>{if((sb.po_number||'').toLowerCase().includes(s)||(sb.vendor_name||'').toLowerCase().includes(s)){if(!allPOs.find(x=>x.po_id===sb.po_number))allPOs.push({po_id:sb.po_number,vendor:sb.vendor_name,status:sb.status||'waiting',so_id:(sb.source_pos||[])[0]?.so_id||'',so:sos.find(x=>x.id===((sb.source_pos||[])[0]?.so_id)),customer:(sb.source_pos||[])[0]?.customer||'',isBatch:true})}});
             const rpo=allPOs.slice(0,4);
             // Build Jobs index from all SOs
@@ -27495,7 +27517,7 @@ export default function App(){
               {rpk.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Item Fulfillments</div>
                 {rpk.map(pk=>{const cc=cust.find(x=>x.id===pk.so?.customer_id);return<div key={pk.pick_id} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>{setESO(pk.so);setESOC(cc);setPg('orders');setGQ('');setGOpen(false)}}><Icon name="grid" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{pk.pick_id}</span><span>→ {pk.so_id}</span><span className={`badge ${pk.status==='pulled'?'badge-green':'badge-amber'}`}>{pk.status}</span></div>})}</>}
               {rpo.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Purchase Orders</div>
-                {rpo.map(po=><div key={po.po_id} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>{if(po.isBatch){setBatchScan(po.po_id);setPg('purchase_orders')}else if(po.so&&po._po){const soIt=safeItems(po.so);const allLines=soIt.map((_,idx)=>({lineIdx:idx})).filter(ln=>soIt[ln.lineIdx]?.po_lines?.some(p=>p.po_id===po.po_id));setPoFullPage({po:po._po,item:po._item,allLines,soId:po.so.id,soItems:soIt})}else{setPg('purchase_orders')};setGQ('');setGOpen(false)}}><Icon name="cart" size={14}/><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{po.po_id}</span><span>{po.vendor}</span>{po.so_id&&<span style={{color:'#64748b'}}>→ {po.so_id}</span>}<span className={`badge ${po.status==='received'?'badge-green':po.status==='partial'?'badge-amber':'badge-blue'}`}>{po.status}</span></div>)}</>}
+                {rpo.map(po=><div key={po.po_id} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>{if(po.isBatch){setBatchScan(po.po_id);setPg('purchase_orders')}else if(po.so){const cc=cust.find(x=>x.id===po.so.customer_id);setESOOpenPO(po.po_id);setESO(po.so);setESOC(cc);setPg('orders')}else{setPg('purchase_orders')};setGQ('');setGOpen(false)}}><Icon name="cart" size={14}/><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{po.po_id}</span><span>{po.vendor}</span>{po.so_id&&<span style={{color:'#64748b'}}>→ {po.so_id}</span>}<span className={`badge ${po.status==='received'?'badge-green':po.status==='partial'?'badge-amber':'badge-blue'}`}>{po.status}</span></div>)}</>}
               {rj.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Jobs</div>
                 {rj.map(j=><div key={j.id+j.so_id} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>{const ji2=safeJobs(j.so).findIndex(jj=>jj.id===j.id);setESOTab('jobs');setESOScrollJob(ji2>=0?ji2:null);setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so.customer_id));setPg('orders');setGQ('');setGOpen(false)}}><Icon name="grid" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{j.id}</span><span>{j.art_name||j.deco_type}</span><span style={{color:'#64748b'}}>→ {j.so_id}</span></div>)}</>}
               {ri.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Invoices</div>
