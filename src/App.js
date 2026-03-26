@@ -21620,6 +21620,7 @@ export default function App(){
                       :<><div style={{fontSize:20,marginBottom:2}}>📎</div><div style={{fontSize:11,fontWeight:600,color:'#7c3aed'}}>Drop mockup for {gi.sku} here or click to upload</div></>}
                     </div>}
                   </div>
+                  <div style={{background:'red',color:'white',padding:10,fontSize:14,fontWeight:700}}>DEBUG: If you see this, JSX structure is OK for {gi.sku}</div>
                   {/* ─── Copy Mockup From Another Item ─── */}
                   {itemMocks.length===0&&(()=>{const others=itemDetails.filter((oi,oii)=>oii!==gii&&(af?.item_mockups?.[oi.sku]||[]).length>0);if(others.length===0)return null;return<div style={{padding:'6px 14px',display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',borderTop:'1px solid #f1f5f9',background:'#fdfcff'}}><span style={{fontSize:10,color:'#64748b',fontWeight:600}}>Copy mock from:</span>{others.map((oi,oii)=><button key={oii} className="btn btn-sm" style={{fontSize:10,padding:'2px 8px',background:'#ede9fe',color:'#7c3aed',border:'1px solid #ddd6fe',borderRadius:4,fontWeight:700,cursor:'pointer'}} onClick={()=>_copyMockup(oi.sku,gi.sku)}>{oi.sku}{oi.color?' ('+oi.color+')':''}</button>)}</div>;})()}
                   {/* ─── Decoration Spec for this item ─── */}
