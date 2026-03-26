@@ -19882,7 +19882,7 @@ export default function App(){
                 <td style={{fontSize:11}}>{t.rep}</td>
                 <td style={{textAlign:'center'}}>{t.daysOut!=null?<span style={{padding:'2px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:t.urgent?'#fee2e2':t.daysOut<=7?'#fef3c7':'#dcfce7',color:t.urgent?'#dc2626':t.daysOut<=7?'#92400e':'#166534'}}>{t.daysOut}d</span>:'—'}</td>
                 <td><button className="btn btn-sm" style={{fontSize:10,padding:'3px 10px',background:'#7c3aed',color:'white',border:'none',borderRadius:6,fontWeight:600,whiteSpace:'nowrap'}}
-                  onClick={e=>{e.stopPropagation();if(t.job)applyJobMove({...t.job,soId:t.soId},'ready',t.job.assigned_machine||'',t.job.assigned_to||'')}}>Move to Deco →</button></td>
+                  onClick={e=>{e.stopPropagation();if(t.job){applyJobMove({...t.job,soId:t.soId},'ready',t.job.assigned_machine||'',t.job.assigned_to||'');addWhAction({type:'move_to_deco',soId:t.soId,customer:t.cName,jobId:t.job.id,artName:t.artName,decoType:t.decoType,qty:t.totalUnits,by:cu?.id||'warehouse'})}}}>Move to Deco →</button></td>
               </tr>})}
           </tbody></table>
         </div></div>
@@ -20762,16 +20762,16 @@ export default function App(){
           onClick={()=>{if(!a.soId)return;const firstSoId=(a.soId||'').split(',')[0].trim();const so2=sos.find(s=>s.id===firstSoId);if(so2){const c2=cust.find(cc=>cc.id===so2.customer_id);setESO(so2);setESOC(c2);setESOTab(null);setPg('orders')}}}
           onMouseEnter={e=>{if(a.soId)e.currentTarget.style.background='#eef2ff'}} onMouseLeave={e=>{e.currentTarget.style.background=i%2===0?'#fafbfc':'white'}}>
           <div style={{width:32,height:32,borderRadius:8,display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,flexShrink:0,
-            background:a.type==='pulled'?'#fef3c7':a.type==='received'?'#dbeafe':a.type==='shipped'?'#dcfce7':a.type==='label_created'?'#f3e8ff':a.type==='pickup_confirmed'?'#d1fae5':a.type==='deleted_shipment'?'#fee2e2':'#f1f5f9'}}>
-            {a.type==='pulled'?'📦':a.type==='received'?'📱':a.type==='shipped'?'🚚':a.type==='label_created'?'🏷️':a.type==='pickup_confirmed'?'✅':a.type==='deleted_shipment'?'🗑️':'⚡'}</div>
+            background:a.type==='pulled'?'#fef3c7':a.type==='received'?'#dbeafe':a.type==='shipped'?'#dcfce7':a.type==='label_created'?'#f3e8ff':a.type==='pickup_confirmed'?'#d1fae5':a.type==='deleted_shipment'?'#fee2e2':a.type==='move_to_deco'?'#ede9fe':'#f1f5f9'}}>
+            {a.type==='pulled'?'📦':a.type==='received'?'📱':a.type==='shipped'?'🚚':a.type==='label_created'?'🏷️':a.type==='pickup_confirmed'?'✅':a.type==='deleted_shipment'?'🗑️':a.type==='move_to_deco'?'🎨':'⚡'}</div>
           <div style={{flex:1,minWidth:0}}>
             <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
-              <span style={{fontWeight:700,fontSize:12,color:a.type==='pulled'?'#92400e':a.type==='shipped'||a.type==='pickup_confirmed'?'#166534':a.type==='deleted_shipment'?'#dc2626':'#1e40af'}}>{a.pickId||a.poId||a.soId||'Action'}</span>
-              <span style={{fontSize:11,color:'#475569'}}>{{pulled:'Pulled',shipped:'Shipped',received:'Received',label_created:'Label Created',pickup_confirmed:'Pickup Confirmed',deleted_shipment:'Shipment Deleted'}[a.type]||'Action'}</span>
+              <span style={{fontWeight:700,fontSize:12,color:a.type==='pulled'?'#92400e':a.type==='shipped'||a.type==='pickup_confirmed'?'#166534':a.type==='deleted_shipment'?'#dc2626':a.type==='move_to_deco'?'#6d28d9':'#1e40af'}}>{a.jobId||a.pickId||a.poId||a.soId||'Action'}</span>
+              <span style={{fontSize:11,color:'#475569'}}>{{pulled:'Pulled',shipped:'Shipped',received:'Received',label_created:'Label Created',pickup_confirmed:'Pickup Confirmed',deleted_shipment:'Shipment Deleted',move_to_deco:'Moved to Deco'}[a.type]||'Action'}</span>
               <span style={{fontSize:11,fontWeight:600,color:'#2563eb',textDecoration:'underline'}}>{a.soId}</span>
               <span style={{fontSize:11,color:'#64748b'}}>{a.customer}</span>
             </div>
-            <div style={{fontSize:11,color:'#64748b',marginTop:2}}>{a.sku?a.sku+' ':''}{ a.name||''}{a.color?' ('+a.color+')':''}{a.qty?' — '+a.qty+' units':''}{a.sizes?' — '+a.sizes:''}{a.tracking?' · Tracking: '+a.tracking:''}{a.carrier?' · '+a.carrier.toUpperCase():''}{a.cost?' · '+a.cost:''}</div>
+            <div style={{fontSize:11,color:'#64748b',marginTop:2}}>{a.artName?a.artName+' ':''}{a.decoType?' ('+a.decoType.replace(/_/g,' ')+') ':''}{a.sku?a.sku+' ':''}{ a.name||''}{a.color?' ('+a.color+')':''}{a.qty?' — '+a.qty+' units':''}{a.sizes?' — '+a.sizes:''}{a.tracking?' · Tracking: '+a.tracking:''}{a.carrier?' · '+a.carrier.toUpperCase():''}{a.cost?' · '+a.cost:''}</div>
           </div>
           <div style={{textAlign:'right',flexShrink:0}}>
             <div style={{fontSize:10,color:'#94a3b8'}}>{a.at}</div>
