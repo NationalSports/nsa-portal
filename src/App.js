@@ -19009,7 +19009,9 @@ export default function App(){
     };
     checkPickups();
   },[sos]); // eslint-disable-line react-hooks/exhaustive-deps
-  const addWhAction=(action)=>{setWhRecentActions(prev=>{const next=[{...action,ts:Date.now(),at:new Date().toLocaleString()},...prev].slice(0,50);try{localStorage.setItem('nsa_wh_recent',JSON.stringify(next))}catch{}return next})};
+  const addWhAction=(action)=>{setWhRecentActions(prev=>{const next=[{...action,ts:Date.now(),at:new Date().toLocaleString()},...prev].slice(0,500);try{localStorage.setItem('nsa_wh_recent',JSON.stringify(next))}catch{}return next})};
+  const[whActionRange,setWhActionRange]=useState('7d');
+  const[whActionSearch,setWhActionSearch]=useState('');
   const[stockPOs,setStockPOs]=useState([
     {id:'PO-5001-NSA',vendor_id:'v1',vendor_name:'Adidas',status:'partial',created_at:'02/12/26',notes:'Restock pregame tees',items:[{sku:'JX4453',name:'Adidas Unisex Pregame Tee',color:'Team Power Red/White',sizes:{S:20,M:30,L:25,XL:15,'2XL':10},received:{S:20,M:30,L:0,XL:0,'2XL':0}}]},
     {id:'PO-5002-NSA',vendor_id:'v2',vendor_name:'Under Armour',status:'waiting',created_at:'02/18/26',notes:'Stock up on polos for spring',items:[{sku:'1370399',name:'Under Armour Team Polo',color:'Cardinal/White',sizes:{S:10,M:20,L:20,XL:15,'2XL':8},received:{}}]},
@@ -19061,7 +19063,7 @@ export default function App(){
       {id:'ship',label:'📦 Ready to Ship',count:fShip.length,color:'#166534'},
       {id:'pickup',label:'🚚 Awaiting Pickup',count:awaitingPickupCount,color:'#d97706'},
       {id:'stockpo',label:'📋 Stock POs',count:openStockPOs.length,color:'#6366f1'},
-      {id:'recent',label:'🕐 Recent Actions',count:whRecentActions.length,color:'#475569'},
+      {id:'recent',label:'🕐 Recent Actions',count:whRecentActions.filter(a=>(a.ts||0)>=Date.now()-7*86400000).length,color:'#475569'},
     ];
 
     return(<>
@@ -20755,10 +20757,21 @@ export default function App(){
         </div></div>}
       </>}
 
-      {whTab==='recent'&&<>
-        <div style={{fontSize:13,color:'#64748b',marginBottom:12}}>Recent warehouse actions — pulls, receives, and other activity</div>
-        {whRecentActions.length===0&&<div style={{textAlign:'center',color:'#94a3b8',padding:40}}>No recent actions yet</div>}
-        {whRecentActions.map((a,i)=><div key={i} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 14px',background:i%2===0?'#fafbfc':'white',borderRadius:6,marginBottom:2,border:'1px solid #f1f5f9',cursor:a.soId?'pointer':'default',transition:'background 0.15s'}}
+      {whTab==='recent'&&(()=>{
+        const cutoff=whActionRange==='7d'?Date.now()-7*86400000:whActionRange==='30d'?Date.now()-30*86400000:0;
+        const sq=whActionSearch.toLowerCase();
+        const filteredActions=whRecentActions.filter(a=>(a.ts||0)>=cutoff).filter(a=>!sq||[a.customer,a.soId,a.jobId,a.pickId,a.poId,a.sku,a.name,a.artName,a.tracking,a.type].filter(Boolean).some(v=>v.toLowerCase().includes(sq)));
+        return<>
+        <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:12,flexWrap:'wrap'}}>
+          <div style={{fontSize:13,color:'#64748b',flex:1}}>Warehouse activity log</div>
+          <input type="text" placeholder="Search actions..." value={whActionSearch} onChange={e=>setWhActionSearch(e.target.value)} style={{fontSize:11,padding:'4px 8px',border:'1px solid #e2e8f0',borderRadius:6,width:180}}/>
+          <div style={{display:'flex',gap:2}}>
+            {[['7d','7 Days'],['30d','30 Days'],['all','All']].map(([v,l])=>
+              <button key={v} className={`btn btn-sm ${whActionRange===v?'btn-primary':'btn-secondary'}`} style={{fontSize:10,padding:'3px 8px'}} onClick={()=>setWhActionRange(v)}>{l}</button>)}
+          </div>
+        </div>
+        {filteredActions.length===0&&<div style={{textAlign:'center',color:'#94a3b8',padding:40}}>{whRecentActions.length===0?'No recent actions yet':'No actions match your filter'}</div>}
+        {filteredActions.map((a,i)=><div key={i} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 14px',background:i%2===0?'#fafbfc':'white',borderRadius:6,marginBottom:2,border:'1px solid #f1f5f9',cursor:a.soId?'pointer':'default',transition:'background 0.15s'}}
           onClick={()=>{if(!a.soId)return;const firstSoId=(a.soId||'').split(',')[0].trim();const so2=sos.find(s=>s.id===firstSoId);if(so2){const c2=cust.find(cc=>cc.id===so2.customer_id);setESO(so2);setESOC(c2);setESOTab(null);setPg('orders')}}}
           onMouseEnter={e=>{if(a.soId)e.currentTarget.style.background='#eef2ff'}} onMouseLeave={e=>{e.currentTarget.style.background=i%2===0?'#fafbfc':'white'}}>
           <div style={{width:32,height:32,borderRadius:8,display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,flexShrink:0,
@@ -20777,8 +20790,11 @@ export default function App(){
             <div style={{fontSize:10,color:'#94a3b8'}}>{a.at}</div>
           </div>
         </div>)}
-        {whRecentActions.length>0&&<button className="btn btn-sm btn-secondary" style={{marginTop:12,fontSize:11}} onClick={()=>{setWhRecentActions([]);try{localStorage.removeItem('nsa_wh_recent')}catch{}}}>Clear History</button>}
-      </>}
+        {whRecentActions.length>0&&<div style={{display:'flex',gap:8,alignItems:'center',marginTop:12}}>
+          <span style={{fontSize:10,color:'#94a3b8'}}>Showing {filteredActions.length} of {whRecentActions.length} actions</span>
+          <button className="btn btn-sm btn-secondary" style={{fontSize:11,marginLeft:'auto'}} onClick={()=>{setWhRecentActions([]);try{localStorage.removeItem('nsa_wh_recent')}catch{}}}>Clear History</button>
+        </div>}
+      </>})()}
     </>}
     </>);
   };
