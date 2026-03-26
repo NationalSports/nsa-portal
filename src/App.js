@@ -19325,6 +19325,9 @@ export default function App(){
                       onClick={async()=>{
                         try{
                           if(!c){nf('No customer found','error');return}
+                          if(!box.weight||box.weight<=0){nf('Please enter box weight before creating a label','error');return}
+                          if(!box.dimensions?.length||!box.dimensions?.width||!box.dimensions?.height){nf('Please enter box dimensions (L × W × H) before creating a label','error');return}
+                          if(!box.items||box.items.length===0||!box.items.some(it=>Object.values(it.sizes||{}).some(v=>v>0))){nf('Please add at least 1 item to the box before creating a label','error');return}
                           nf('Creating ShipStation label...');
                           const label=await createShipStationLabel(so,c,box.items,box.weight,box.carrier,null,box.dimensions);
                           const b=[...boxes];
@@ -20285,6 +20288,9 @@ export default function App(){
                         const soId=Object.keys(shipModal.soMap)[0];const so=shipModal.soMap[soId];
                         const c2=cust.find(cc=>cc.id===so?.customer_id);
                         if(!c2){nf('No customer found','error');return}
+                        if(!box.weight||box.weight<=0){nf('Please enter box weight before creating a label','error');return}
+                        if(!box.dimensions?.length||!box.dimensions?.width||!box.dimensions?.height){nf('Please enter box dimensions (L × W × H) before creating a label','error');return}
+                        if(!box.items||box.items.length===0||!box.items.some(it=>Object.values(it.sizes||{}).some(v=>v>0))){nf('Please add at least 1 item to the box before creating a label','error');return}
                         nf('Creating ShipStation label...');
                         const label=await createShipStationLabel(so,c2,box.items,box.weight,box.carrier,'fedex_ground',box.dimensions);
                         const b=[...shipModal.boxes];
