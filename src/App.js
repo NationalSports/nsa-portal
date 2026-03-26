@@ -24714,7 +24714,17 @@ export default function App(){
             SalesItemLineDetail:{Qty:1,UnitPrice:inv.total||0}}],
           ...(inv.qb_invoice_id?{Id:inv.qb_invoice_id,sparse:true}:{}),
         };
-        const res=await qbApi('upsert_invoice',{invoice:qbInvoice});
+        let res=await qbApi('upsert_invoice',{invoice:qbInvoice});
+        // Handle duplicate DocNumber — look up existing QB invoice and retry as update
+        if(!res?.Invoice?.Id&&(res?.Fault?.Error?.[0]?.code==='6140'||/duplicate/i.test(res?.Fault?.Error?.[0]?.Detail||''))){
+          const docNum=inv.display_id||inv.id;
+          const lookup=await qbApi('query',{query:"SELECT Id, SyncToken FROM Invoice WHERE DocNumber = '"+docNum+"'"});
+          const existing=lookup?.QueryResponse?.Invoice?.[0];
+          if(existing){
+            res=await qbApi('upsert_invoice',{invoice:{...qbInvoice,Id:existing.Id,SyncToken:existing.SyncToken,sparse:true}});
+            if(res?.Invoice?.Id)log.details.push(docNum+' — recovered from duplicate (linked to QB #'+res.Invoice.Id+')');
+          }
+        }
         if(res?.Invoice?.Id){
           setInvs(prev=>prev.map(ii=>ii.id===inv.id?{...ii,qb_invoice_id:res.Invoice.Id}:ii));
           log.details.push((inv.display_id||inv.id)+' → QB Invoice #'+res.Invoice.Id+' ($'+safeNum(inv.total).toFixed(2)+')');synced++;
