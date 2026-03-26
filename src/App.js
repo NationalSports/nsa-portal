@@ -8471,10 +8471,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:20}}>
             <div style={{display:'flex',alignItems:'center',gap:12}}>
               <button className="btn btn-secondary btn-sm" onClick={()=>setPoFullPage(null)}>&larr; Back</button>
-              <h1 style={{margin:0,fontSize:22}}>{po.po_id}</h1>
+              <h1 style={{margin:0,fontSize:22}}>{po.po_id} {poFullPage.customerTag||''}</h1>
               <span className={`badge ${poStatus==='received'||poStatus==='shipped'?'badge-green':poStatus==='partial'?'badge-amber':'badge-gray'}`} style={{fontSize:11}}>{poStatus==='shipped'?'Shipped':poStatus==='received'?'Fully Received':poStatus==='partial'?'Partial':'Waiting'}</span>
               {isDropShipFP&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,fontWeight:700,background:'#ede9fe',color:'#7c3aed'}}>Drop Ship</span>}
               {po.po_type==='outside_deco'&&<span className="badge badge-blue" style={{fontSize:10}}>Decoration PO</span>}
+              <button className="btn btn-sm btn-secondary" style={{marginLeft:8,fontSize:11}} onClick={()=>{setEditPO({lineIdx:allLines?.[0]?.lineIdx||0,poIdx:soItems?.[allLines?.[0]?.lineIdx]?.po_lines?.findIndex(p=>p.po_id===po.po_id)||0,po,allLines:allLines||[{lineIdx:0,poIdx:0}]});setPoFullPage(null)}}>Edit PO</button>
             </div>
             <div style={{textAlign:'right'}}>
               <div style={{fontSize:11,color:'#64748b'}}>SO: <span style={{fontWeight:700,color:'#1e40af',cursor:'pointer',textDecoration:'underline'}} onClick={()=>setPoFullPage(null)} title="Back to Sales Order">{soId}</span></div>
@@ -8605,6 +8606,94 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <div className="card-header"><h2>Notes</h2></div>
             <div className="card-body"><p style={{margin:0,fontSize:13,color:'#475569'}}>{po.memo}</p></div>
           </div>}
+
+          {/* Receive Shipment — inline on full page */}
+          {totalOpen>0&&!isDropShipFP&&<div className="card" style={{marginBottom:16,borderLeft:'3px solid #22c55e'}}>
+            <div className="card-header" style={{background:'#f0fdf4'}}><h2 style={{color:'#166534'}}>Receive Shipment</h2></div>
+            <div className="card-body">
+              <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:12}}>
+                <span style={{fontSize:12,fontWeight:600,color:'#64748b'}}>Date:</span>
+                <input type="date" id="po-fp-recv-date" className="form-input" style={{width:150,fontSize:12}} defaultValue={new Date().toISOString().split('T')[0]}/>
+              </div>
+              <div style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap',marginBottom:12}}>
+                <span style={{fontSize:12,fontWeight:600,color:'#64748b'}}>Qty:</span>
+                {szKeys.filter(sz=>getOpen(sz)>0).map(sz=><div key={sz} style={{textAlign:'center'}}>
+                  <div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
+                  <input id={'po-fp-recv-'+sz} style={{width:48,textAlign:'center',border:'1px solid #22c55e',borderRadius:4,padding:'5px 2px',fontSize:14,fontWeight:700,background:'white'}} defaultValue={getOpen(sz)}/>
+                  <div style={{fontSize:9,color:'#64748b'}}>{getOpen(sz)} open</div>
+                </div>)}
+              </div>
+              <button className="btn btn-primary" style={{fontSize:12}} onClick={()=>{
+                const dateEl=document.getElementById('po-fp-recv-date');
+                const date=dateEl?.value||new Date().toLocaleDateString();
+                const shipment={date};
+                const newReceived={...received};
+                szKeys.filter(sz=>getOpen(sz)>0).forEach(sz=>{
+                  const el=document.getElementById('po-fp-recv-'+sz);
+                  const qty=el?parseInt(el.value)||0:0;
+                  if(qty>0){shipment[sz]=qty;newReceived[sz]=(newReceived[sz]||0)+qty}
+                });
+                const hasShipQty=Object.entries(shipment).some(([k,v])=>k!=='date'&&v>0);
+                if(!hasShipQty){nf('Enter quantities to receive','error');return}
+                const newShipments=[...shipments,shipment];
+                const newTotalOpen=szKeys.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-(newReceived[sz]||0)-(cancelled[sz]||0)),0);
+                const newStatus=newTotalOpen<=0&&Object.values(newReceived).some(v=>v>0)?'received':Object.values(newReceived).some(v=>v>0)?'partial':'waiting';
+                const updatedPO={...po,received:newReceived,shipments:newShipments,status:newStatus};
+                const lineIdx=allLines?.[0]?.lineIdx||0;
+                const poIdx=soItems?.[lineIdx]?.po_lines?.findIndex(p=>p.po_id===po.po_id)||0;
+                const updatedItems=[...o.items];updatedItems[lineIdx].po_lines[poIdx]=updatedPO;
+                const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};
+                setO(updated);onSave(updated);setPoFullPage({...poFullPage,po:updatedPO});nf('Shipment received on '+po.po_id);
+              }}>Receive These Items</button>
+            </div>
+          </div>}
+
+          {/* Cancel sizes */}
+          {totalOpen>0&&!isDropShipFP&&<div className="card" style={{marginBottom:16,borderLeft:'3px solid #f59e0b'}}>
+            <div className="card-header" style={{background:'#fffbeb',cursor:'pointer'}} onClick={e=>{const el=e.currentTarget.nextSibling;if(el)el.style.display=el.style.display==='none'?'block':'none'}}><h2 style={{color:'#92400e',fontSize:14}}>Cancel Sizes from PO</h2></div>
+            <div className="card-body" style={{display:'none'}}>
+              <div style={{fontSize:12,color:'#92400e',marginBottom:8}}>Enter quantities to cancel (these sizes will become available for new picks/POs):</div>
+              <div style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap',marginBottom:12}}>
+                {szKeys.filter(sz=>getOpen(sz)>0).map(sz=><div key={sz} style={{textAlign:'center'}}>
+                  <div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
+                  <input id={'po-fp-cancel-'+sz} style={{width:48,textAlign:'center',border:'1px solid #f59e0b',borderRadius:4,padding:'5px 2px',fontSize:14,fontWeight:700,background:'white'}} defaultValue={0}/>
+                  <div style={{fontSize:9,color:'#64748b'}}>{getOpen(sz)} open</div>
+                </div>)}
+              </div>
+              <button className="btn btn-sm" style={{background:'#f59e0b',color:'white',fontSize:12}} onClick={()=>{
+                const newCancelled={...cancelled};let anyCancelled=false;
+                szKeys.filter(sz=>getOpen(sz)>0).forEach(sz=>{
+                  const el=document.getElementById('po-fp-cancel-'+sz);
+                  const qty=el?Math.min(parseInt(el.value)||0,getOpen(sz)):0;
+                  if(qty>0){newCancelled[sz]=(newCancelled[sz]||0)+qty;anyCancelled=true}
+                });
+                if(!anyCancelled){nf('Enter quantities to cancel','error');return}
+                const newTotalOpen=szKeys.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-(received[sz]||0)-(newCancelled[sz]||0)),0);
+                const newStatus=newTotalOpen<=0&&totalReceived>0?'received':totalReceived>0?'partial':'waiting';
+                const updatedPO={...po,cancelled:newCancelled,status:newStatus};
+                const lineIdx=allLines?.[0]?.lineIdx||0;
+                const poIdx=soItems?.[lineIdx]?.po_lines?.findIndex(p=>p.po_id===po.po_id)||0;
+                const updatedItems=[...o.items];updatedItems[lineIdx].po_lines[poIdx]=updatedPO;
+                const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};
+                setO(updated);onSave(updated);setPoFullPage({...poFullPage,po:updatedPO});nf('Sizes cancelled from '+po.po_id);
+              }}>Cancel These Sizes</button>
+            </div>
+          </div>}
+
+          {/* Delete PO */}
+          <div style={{display:'flex',justifyContent:'flex-end',marginBottom:24}}>
+            <button className="btn btn-sm btn-secondary" style={{fontSize:11,color:'#dc2626',borderColor:'#fca5a5'}} onClick={()=>{
+              if(!window.confirm('Delete entire PO? All sizes will go back to open.'))return;
+              const lineIdx=allLines?.[0]?.lineIdx||0;
+              const updatedItems=[...o.items];
+              (allLines||[{lineIdx}]).forEach(ln=>{
+                const pidx=updatedItems[ln.lineIdx]?.po_lines?.findIndex(p=>p.po_id===po.po_id);
+                if(pidx>=0)updatedItems[ln.lineIdx].po_lines.splice(pidx,1);
+              });
+              const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};
+              setO(updated);onSave(updated);setPoFullPage(null);nf('PO deleted');
+            }}>Delete PO</button>
+          </div>
         </div>
       </div>})()}
 
@@ -15707,9 +15796,9 @@ export default function App(){
         <table className="data-table">
           <thead><tr><th style={{cursor:'pointer'}} onClick={()=>setPOF(f=>({...f,sort:f.sort==='po_id'?'date_desc':'po_id'}))}>PO #</th><th style={{cursor:'pointer'}} onClick={()=>setPOF(f=>({...f,sort:f.sort==='vendor'?'date_desc':'vendor'}))}>Vendor</th><th style={{cursor:'pointer'}} onClick={()=>setPOF(f=>({...f,sort:f.sort==='customer'?'date_desc':'customer'}))}>Customer</th><th>SO</th><th>Item</th><th style={{textAlign:'right'}}>Ordered</th><th style={{textAlign:'right'}}>Received</th><th style={{textAlign:'right'}}>Open</th><th style={{textAlign:'right'}}>Total</th><th style={{cursor:'pointer'}} onClick={()=>setPOF(f=>({...f,sort:f.sort==='status'?'date_desc':'status'}))}>Status</th><th>Date</th><th>Expected</th></tr></thead>
           <tbody>{fPOs.length===0?<tr><td colSpan={12} style={{textAlign:'center',color:'#94a3b8',padding:32}}>No purchase orders{activeFilters?' match filters':' found'}</td></tr>:
-            fPOs.map((po,i)=>{const openPoPage=()=>{if(po.so){
+            fPOs.map((po,i)=>{const openPoPage=()=>{if(po.source==='batch'){setBatchScan(po.po_id);setPg('batch_pos')}else if(po.so){
               const cc=cust.find(x=>x.id===po.so.customer_id);setESOOpenPO(po.po_id);setESO(po.so);setESOC(cc);setPg('orders');
-            }};return<tr key={po.po_id+'-'+i}>
+            }};return<tr key={po.po_id+'-'+i} style={{cursor:'pointer'}} onClick={openPoPage}>
               <td><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',cursor:'pointer',textDecoration:'underline'}} onClick={openPoPage}>{po.po_id}</span>{po.source==='batch'&&<span className="badge badge-purple" style={{marginLeft:4,fontSize:9}}>Batch</span>}</td>
               <td>{po.vendor}</td>
               <td>{po.customer}</td>
@@ -27502,7 +27591,7 @@ export default function App(){
               {rj.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Jobs</div>
                 {rj.map(j=><div key={j.id+j.so_id} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>{const ji2=safeJobs(j.so).findIndex(jj=>jj.id===j.id);setESOTab('jobs');setESOScrollJob(ji2>=0?ji2:null);setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so.customer_id));setPg('orders');setGQ('');setGOpen(false)}}><Icon name="grid" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{j.id}</span><span>{j.art_name||j.deco_type}</span><span style={{color:'#64748b'}}>→ {j.so_id}</span></div>)}</>}
               {ri.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Invoices</div>
-                {ri.map(inv=><div key={inv.id} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>{setInvF(f=>({...f,search:inv.id}));setPg('invoices');setGQ('');setGOpen(false)}}><Icon name="file" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{inv.id}</span><span>{cust.find(c=>c.id===inv.customer_id)?.name||''}</span><span className={`badge ${inv.status==='paid'?'badge-green':inv.status==='partial'?'badge-amber':'badge-blue'}`}>{inv.status}</span></div>)}</>}
+                {ri.map(inv=><div key={inv.id} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>{setViewInvoice(inv);setPg('invoices');setGQ('');setGOpen(false)}}><Icon name="file" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{inv.id}</span><span>{cust.find(c=>c.id===inv.customer_id)?.name||''}</span><span className={`badge ${inv.status==='paid'?'badge-green':inv.status==='partial'?'badge-amber':'badge-blue'}`}>{inv.status}</span></div>)}</>}
               {rv.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Vendors</div>
                 {rv.map(v=><div key={v.id} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>{setSelV(v);setPg('vendors');setGQ('');setGOpen(false)}}><Icon name="building" size={14}/><span style={{fontWeight:600}}>{v.name}</span>{v.rep_name&&<span style={{color:'#64748b',fontSize:11}}>{v.rep_name}</span>}</div>)}</>}
             </div>})()}
