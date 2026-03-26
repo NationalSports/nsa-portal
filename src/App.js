@@ -6596,6 +6596,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <span style={{fontSize:12,fontWeight:600,color:'#64748b'}}>PO Qty:</span>
                 {it.openSizes.map(([sz,v])=><div key={sz} style={{textAlign:'center'}}><div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
                   <input id={'po-qty-'+vi+'-'+sz} style={{width:42,textAlign:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700}} defaultValue={v}/></div>)}</div>
+              <div style={{display:'flex',gap:8,alignItems:'center',marginTop:8}}>
+                <span style={{fontSize:12,fontWeight:600,color:'#64748b'}}>Price/Unit:</span>
+                <span style={{fontSize:12,color:'#94a3b8'}}>$</span>
+                <input id={'po-price-'+vi} style={{width:80,border:'1px solid #d1d5db',borderRadius:4,padding:'4px 6px',fontSize:14,fontWeight:700}} defaultValue={safeNum(it.nsa_cost).toFixed(2)}/>
+              </div>
             </div>})}
           <div style={{marginTop:8}}><label className="form-label">Notes</label><input className="form-input" placeholder="PO notes for vendor..." id={'po-notes-'+poId}/></div></>}
         </div>
@@ -6608,8 +6613,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const sizes={};
               pit.openSizes.forEach(([sz,v])=>{const el=document.getElementById('po-qty-'+vi+'-'+sz);sizes[sz]=el?parseInt(el.value)||0:v});
               const qty=Object.values(sizes).reduce((a,v)=>a+v,0);
-              totalCost+=qty*safeNum(pit.nsa_cost);
-              batchItems.push({sku:pit.sku,name:pit.name,color:pit.color,sizes,qty,unit_cost:safeNum(pit.nsa_cost),item_idx:pit._idx});
+              const batchPriceEl=document.getElementById('po-price-'+vi);
+              const batchUnitCost=batchPriceEl?parseFloat(batchPriceEl.value)||0:safeNum(pit.nsa_cost);
+              totalCost+=qty*batchUnitCost;
+              batchItems.push({sku:pit.sku,name:pit.name,color:pit.color,sizes,qty,unit_cost:batchUnitCost,item_idx:pit._idx});
             });
             const bp={id:'BPO-'+Date.now(),vendor_key:batchKey,vendor_name:batchConfig.name,so_id:o.id,so_memo:o.memo||'',customer:cust?.alpha_tag||cust?.name||'',
               items:batchItems,total_cost:totalCost,created_by:cu.id,created_by_name:cu.name,created_at:new Date().toLocaleString()};
@@ -6626,7 +6633,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             if(poExcluded[vi])return;
             const idx=pit._idx;if(idx==null)return;
             const isDropShip=document.getElementById(dropShipElId)?.checked||false;
-            const poLine={po_id:effectivePoId,vendor:vn,status:preexistingPO?'ordered':'waiting',created_at:new Date().toLocaleDateString(),memo:preexistingPO?'Preexisting PO (NetSuite)':'',received:{},shipments:[]};
+            const priceEl=document.getElementById('po-price-'+vi);
+            const unitCostVal=priceEl?parseFloat(priceEl.value)||0:safeNum(pit.nsa_cost);
+            const poLine={po_id:effectivePoId,vendor:vn,status:preexistingPO?'ordered':'waiting',created_at:new Date().toLocaleDateString(),memo:preexistingPO?'Preexisting PO (NetSuite)':'',received:{},shipments:[],unit_cost:unitCostVal};
             if(preexistingPO)poLine.preexisting=true;
             if(isDropShip)poLine.drop_ship=true;
             pit.openSizes.forEach(([sz,v])=>{
@@ -7999,7 +8008,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const qty=szKeysP.reduce((a,sz)=>a+(po[sz]||0),0);
           const rcvdQty=szKeysP.reduce((a,sz)=>a+((po.received||{})[sz]||0),0);
           const openQty=szKeysP.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-((po.received||{})[sz]||0)-((po.cancelled||{})[sz]||0)),0);
-          const costTotal=qty*it.nsa_cost;
+          const costTotal=qty*(po.unit_cost!=null?safeNum(po.unit_cost):safeNum(it.nsa_cost));
           const vk=it.vendor_id||it.brand;const vn=D_V.find(v=>v.id===vk)?.name||vk;
           const pst=openQty<=0&&rcvdQty>0?'received':rcvdQty>0?'partial':'waiting';
           const shipDates=(po.shipments||[]).map(s=>s.date);
@@ -8011,7 +8020,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             existing.lines.push({lineIdx:i,poIdx:pi});
             existing.skus.push({sku:it.sku,name:it.name,color:it.color});
           }else{
-            allPoIds.push({id:po.po_id,status:pst,qty,rcvdQty,openQty,vendor:vn,lineIdx:i,poIdx:pi,sku:it.sku,name:it.name,color:it.color,costTotal,shipDates,created_at:po.created_at,memo:po.memo,
+            const unitPrice=po.unit_cost!=null?safeNum(po.unit_cost):safeNum(it.nsa_cost);
+            allPoIds.push({id:po.po_id,status:pst,qty,rcvdQty,openQty,vendor:vn,lineIdx:i,poIdx:pi,sku:it.sku,name:it.name,color:it.color,costTotal,unitPrice,shipDates,created_at:po.created_at,memo:po.memo,
               lines:[{lineIdx:i,poIdx:pi}],skus:[{sku:it.sku,name:it.name,color:it.color}]})
           }
         }});
@@ -8042,7 +8052,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <Icon name="cart" size={14}/><span style={{fontWeight:800,color:'#1e40af',fontSize:14}}>{po.id}</span>
                 <span style={{fontSize:11,color:'#64748b'}}>{po.vendor}</span>
                 <span className={`badge ${po.status==='received'?'badge-green':po.status==='partial'?'badge-amber':'badge-gray'}`} style={{fontSize:9}}>{po.status==='received'?'✓ Received':po.status==='partial'?po.rcvdQty+'/'+po.qty+' Rcvd':'Waiting'}</span>
-                <span style={{marginLeft:'auto',fontWeight:700,fontSize:14,color:'#64748b'}}>${po.costTotal.toLocaleString(undefined,{maximumFractionDigits:0})} cost</span>
+                {po.unitPrice>0&&<span style={{fontSize:11,color:'#475569'}}>${po.unitPrice.toFixed(2)}/unit</span>}
+                <span style={{marginLeft:'auto',fontWeight:700,fontSize:14,color:'#64748b'}}>${po.costTotal.toLocaleString(undefined,{maximumFractionDigits:2})} cost</span>
               </div>
               <div style={{display:'flex',gap:12,fontSize:11,color:'#64748b',flexWrap:'wrap'}}>
                 {po.skus.map((s,si)=><span key={si}><strong style={{color:'#1e40af'}}>{s.sku}</strong> {s.name} <span style={{color:'#94a3b8'}}>{s.color}</span></span>)}
@@ -8446,14 +8457,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const totalCancelled=szKeys.reduce((a,sz)=>a+getCncl(sz),0);const totalOpen=szKeys.reduce((a,sz)=>a+getOpen(sz),0);
       const isDropShipFP=!!po.drop_ship;const totalBilledFP=szKeys.reduce((a,sz)=>a+((po.billed||{})[sz]||0),0);const trackNumsFP=po.tracking_numbers||[];
       const poStatus=isDropShipFP?(totalBilledFP>=totalOrdered&&totalOrdered>0?'shipped':totalBilledFP>0?'partial':'waiting'):(totalOpen<=0&&totalReceived>0?'received':totalReceived>0?'partial':'waiting');
-      const unitCost=po.po_type==='outside_deco'?safeNum(po.unit_cost):safeNum(item?.nsa_cost);
+      const unitCost=po.unit_cost!=null?safeNum(po.unit_cost):safeNum(item?.nsa_cost);
       const poTotal=totalOrdered*unitCost;
       const vendorName=po.deco_vendor||D_V.find(v=>v.id===(item?.vendor_id||item?.brand))?.name||item?.brand||'';
       // Gather all items on this PO from the SO
       const poItems=(allLines||[{lineIdx:0}]).map(ln=>({item:soItems?.[ln.lineIdx],po:soItems?.[ln.lineIdx]?.po_lines?.find(p=>p.po_id===po.po_id)||po})).filter(x=>x.item);
       const grandTotal=poItems.reduce((a,{item:it,po:p})=>{
         const sk=Object.keys(p).filter(k=>k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='po_type'&&k!=='deco_vendor'&&k!=='deco_type'&&k!=='created_at'&&k!=='memo'&&k!=='notes'&&k!=='expected_date'&&k!=='unit_cost'&&k!=='drop_ship'&&typeof p[k]==='number');
-        const qty=sk.reduce((s,sz)=>s+(p[sz]||0),0);const uc=p.po_type==='outside_deco'?safeNum(p.unit_cost):safeNum(it.nsa_cost);return a+qty*uc},0);
+        const qty=sk.reduce((s,sz)=>s+(p[sz]||0),0);const uc=p.unit_cost!=null?safeNum(p.unit_cost):safeNum(it.nsa_cost);return a+qty*uc},0);
       return<div style={{position:'fixed',top:0,left:0,right:0,bottom:0,background:'#f1f5f9',zIndex:9999,overflow:'auto'}}>
         <div style={{maxWidth:900,margin:'0 auto',padding:'24px 20px'}}>
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:20}}>
@@ -8500,7 +8511,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <tbody>
                   {poItems.map(({item:it,po:p},idx)=>{
                     const sk=Object.keys(p).filter(k=>k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='po_type'&&k!=='deco_vendor'&&k!=='deco_type'&&k!=='created_at'&&k!=='memo'&&k!=='notes'&&k!=='expected_date'&&k!=='unit_cost'&&k!=='drop_ship'&&typeof p[k]==='number');
-                    const qty=sk.reduce((s,sz)=>s+(p[sz]||0),0);const uc=p.po_type==='outside_deco'?safeNum(p.unit_cost):safeNum(it.nsa_cost);
+                    const qty=sk.reduce((s,sz)=>s+(p[sz]||0),0);const uc=p.unit_cost!=null?safeNum(p.unit_cost):safeNum(it.nsa_cost);
                     return<tr key={idx} style={{borderBottom:'1px solid #e2e8f0'}}>
                       <td style={{padding:'6px 8px',fontFamily:'monospace',fontWeight:800,color:'#1e40af'}}>{it.sku}</td>
                       <td style={{padding:'6px 8px',fontWeight:600}}>{it.name}</td>
