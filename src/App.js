@@ -1488,7 +1488,7 @@ const buildJobs=(o)=>{
         const inArtistWorkflow=j.art_status==='art_requested'||j.art_status==='art_in_progress';
         const wasRecalled=(j.art_requests||[]).some(r=>r.status==='recalled')&&!(j.art_requests||[]).some(r=>r.status==='requested'||r.status==='in_progress');
         if(!inArtistWorkflow){
-          if(allApproved&&allHaveProdFiles&&j.art_status!=='art_complete'){j={...j,art_status:'art_complete'};if(j.art_requests)j={...j,art_requests:j.art_requests.map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'completed'}:r)}}
+          if(allApproved&&allHaveProdFiles&&j.art_status!=='art_complete'&&j.art_status!=='production_files_needed'){j={...j,art_status:'art_complete'};if(j.art_requests)j={...j,art_requests:j.art_requests.map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'completed'}:r)}}
           else if(allApproved&&!allHaveProdFiles){j={...j,art_status:'production_files_needed'};if(j.art_requests)j={...j,art_requests:j.art_requests.map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'completed'}:r)}}
           else if(anyUploaded&&j.art_status==='needs_art'&&!wasRecalled)j={...j,art_status:'waiting_approval'};
         }
