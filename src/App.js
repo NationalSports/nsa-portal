@@ -15688,14 +15688,16 @@ export default function App(){
         const totalCncl=szKeys.reduce((a,sz)=>a+(cncl[sz]||0),0);
         const totalOpen=szKeys.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-(rcvd[sz]||0)-(cncl[sz]||0)),0);
         const st=totalOpen<=0&&totalRcvd>0?'received':totalRcvd>0?'partial':'waiting';
-        allPOs.push({po_id:po.po_id||`${so.id}-PO-${pli+1}`,vendor:po.vendor||'',status:st,so_id:so.id,so,customer:c2?.alpha_tag||c2?.name||'',soMemo:so.memo,itemSku:it.sku||'',itemName:it.name||'',totalOrd,totalRcvd,totalCncl,totalOpen,created_at:po.created_at||so.created_at||'',expected_date:po.expected_date||'',memo:po.memo||'',source:'so',lineIdx:idx})
+        const uc=po.unit_cost!=null?safeNum(po.unit_cost):safeNum(it.nsa_cost);const poTotal=totalOrd*uc;
+        allPOs.push({po_id:po.po_id||`${so.id}-PO-${pli+1}`,vendor:po.vendor||'',status:st,so_id:so.id,so,customer:c2?.alpha_tag||c2?.name||'',soMemo:so.memo,itemSku:it.sku||'',itemName:it.name||'',totalOrd,totalRcvd,totalCncl,totalOpen,created_at:po.created_at||so.created_at||'',expected_date:po.expected_date||'',memo:po.memo||'',source:'so',lineIdx:idx,unitCost:uc,poTotal,poLineIdx:pli})
       })})});
     // Add submitted batches
     submittedBatches.forEach(sb=>{
       const totalOrd=sb.total_units||0;const st=sb.status||'waiting';
       const soIds=(sb.source_pos||[]).map(sp=>sp.so_id).filter(Boolean);
       const customers=(sb.source_pos||[]).map(sp=>sp.customer).filter(Boolean);
-      allPOs.push({po_id:sb.po_number,vendor:sb.vendor_name||'',status:st,so_id:soIds.join(', '),so:sos.find(x=>x.id===soIds[0]),customer:customers.join(', '),soMemo:soIds.join(', '),itemSku:'',itemName:`Batch: ${sb.total_units||0} units`,totalOrd,totalRcvd:st==='received'?totalOrd:0,totalCncl:0,totalOpen:st==='received'?0:totalOrd,created_at:sb.submitted_at||'',expected_date:'',memo:'',source:'batch'})
+      const batchTotal=sb.total_cost||0;
+      allPOs.push({po_id:sb.po_number,vendor:sb.vendor_name||'',status:st,so_id:soIds.join(', '),so:sos.find(x=>x.id===soIds[0]),customer:customers.join(', '),soMemo:soIds.join(', '),itemSku:'',itemName:`Batch: ${sb.total_units||0} units`,totalOrd,totalRcvd:st==='received'?totalOrd:0,totalCncl:0,totalOpen:st==='received'?0:totalOrd,created_at:sb.submitted_at||'',expected_date:'',memo:'',source:'batch',unitCost:totalOrd>0?batchTotal/totalOrd:0,poTotal:batchTotal})
     });
     // Dedup by po_id (keep first occurrence)
     const seen=new Set();const dedupPOs=[];allPOs.forEach(po=>{if(!seen.has(po.po_id)){seen.add(po.po_id);dedupPOs.push(po)}});
@@ -15748,15 +15750,15 @@ export default function App(){
       {/* Table */}
       <div className="card"><div className="card-body" style={{padding:0,overflow:'auto'}}>
         <table className="data-table">
-          <thead><tr><th style={{cursor:'pointer'}} onClick={()=>setPOF(f=>({...f,sort:f.sort==='po_id'?'date_desc':'po_id'}))}>PO #</th><th style={{cursor:'pointer'}} onClick={()=>setPOF(f=>({...f,sort:f.sort==='vendor'?'date_desc':'vendor'}))}>Vendor</th><th style={{cursor:'pointer'}} onClick={()=>setPOF(f=>({...f,sort:f.sort==='customer'?'date_desc':'customer'}))}>Customer</th><th>SO</th><th>Item</th><th style={{textAlign:'right'}}>Ordered</th><th style={{textAlign:'right'}}>Received</th><th style={{textAlign:'right'}}>Open</th><th style={{cursor:'pointer'}} onClick={()=>setPOF(f=>({...f,sort:f.sort==='status'?'date_desc':'status'}))}>Status</th><th>Date</th><th>Expected</th></tr></thead>
-          <tbody>{fPOs.length===0?<tr><td colSpan={11} style={{textAlign:'center',color:'#94a3b8',padding:32}}>No purchase orders{activeFilters?' match filters':' found'}</td></tr>:
-            fPOs.map((po,i)=><tr key={po.po_id+'-'+i} style={{cursor:'pointer'}} onClick={()=>{if(po.so){
+          <thead><tr><th style={{cursor:'pointer'}} onClick={()=>setPOF(f=>({...f,sort:f.sort==='po_id'?'date_desc':'po_id'}))}>PO #</th><th style={{cursor:'pointer'}} onClick={()=>setPOF(f=>({...f,sort:f.sort==='vendor'?'date_desc':'vendor'}))}>Vendor</th><th style={{cursor:'pointer'}} onClick={()=>setPOF(f=>({...f,sort:f.sort==='customer'?'date_desc':'customer'}))}>Customer</th><th>SO</th><th>Item</th><th style={{textAlign:'right'}}>Ordered</th><th style={{textAlign:'right'}}>Received</th><th style={{textAlign:'right'}}>Open</th><th style={{textAlign:'right'}}>Total</th><th style={{cursor:'pointer'}} onClick={()=>setPOF(f=>({...f,sort:f.sort==='status'?'date_desc':'status'}))}>Status</th><th>Date</th><th>Expected</th></tr></thead>
+          <tbody>{fPOs.length===0?<tr><td colSpan={12} style={{textAlign:'center',color:'#94a3b8',padding:32}}>No purchase orders{activeFilters?' match filters':' found'}</td></tr>:
+            fPOs.map((po,i)=>{const openPoPage=()=>{if(po.so){
               const soObj=po.so;const soIt=safeItems(soObj);const allLines=soIt.map((_,idx)=>({lineIdx:idx})).filter(ln=>soIt[ln.lineIdx]?.po_lines?.some(p=>p.po_id===po.po_id));
               const poLine=soIt[po.lineIdx]?.po_lines?.find(p=>p.po_id===po.po_id);
               if(poLine){setPoFullPage({po:poLine,item:soIt[po.lineIdx],allLines,soId:soObj.id,soItems:soIt})}
               else{const cc=cust.find(x=>x.id===soObj.customer_id);setESO(soObj);setESOC(cc);setPg('orders')}
-            }}}>
-              <td><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{po.po_id}</span>{po.source==='batch'&&<span className="badge badge-purple" style={{marginLeft:4,fontSize:9}}>Batch</span>}</td>
+            }};return<tr key={po.po_id+'-'+i}>
+              <td><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',cursor:'pointer',textDecoration:'underline'}} onClick={openPoPage}>{po.po_id}</span>{po.source==='batch'&&<span className="badge badge-purple" style={{marginLeft:4,fontSize:9}}>Batch</span>}</td>
               <td>{po.vendor}</td>
               <td>{po.customer}</td>
               <td><span style={{color:'#1e40af',fontWeight:600}}>{po.so_id}</span></td>
@@ -15764,10 +15766,11 @@ export default function App(){
               <td style={{textAlign:'right',fontWeight:600}}>{po.totalOrd}</td>
               <td style={{textAlign:'right',fontWeight:600,color:po.totalRcvd>0?'#059669':'#94a3b8'}}>{po.totalRcvd}</td>
               <td style={{textAlign:'right',fontWeight:600,color:po.totalOpen>0?'#d97706':'#059669'}}>{po.totalOpen}</td>
+              <td style={{textAlign:'right',fontWeight:700,color:'#334155'}}>{po.poTotal>0?'$'+po.poTotal.toFixed(2):'—'}</td>
               <td><span className={`badge ${po.status==='received'?'badge-green':po.status==='partial'?'badge-amber':'badge-blue'}`}>{po.status==='received'?'Received':po.status==='partial'?'Partial':'Waiting'}</span></td>
               <td style={{fontSize:11,color:'#64748b'}}>{po.created_at}</td>
               <td style={{fontSize:11,color:'#64748b'}}>{po.expected_date||'—'}</td>
-            </tr>)}
+            </tr>})}
           </tbody>
         </table>
       </div></div>
@@ -27469,7 +27472,7 @@ export default function App(){
             const allPicks=[];sos.forEach(so=>{safeItems(so).forEach(it=>{safePicks(it).forEach(pk=>{if(pk.pick_id&&pk.pick_id.toLowerCase().includes(s)&&!allPicks.find(x=>x.pick_id===pk.pick_id)){allPicks.push({pick_id:pk.pick_id,so_id:so.id,so,status:pk.status||'pick'})}})})});
             const rpk=allPicks.slice(0,4);
             // Build PO index from all SO po_lines + submitted batches
-            const allPOs=[];sos.forEach(so=>{const c2=cust.find(x=>x.id===so.customer_id);safeItems(so).forEach(it=>{safePOs(it).forEach(po=>{if((po.po_id||'').toLowerCase().includes(s)||(po.vendor||'').toLowerCase().includes(s)){if(!allPOs.find(x=>x.po_id===po.po_id))allPOs.push({po_id:po.po_id,vendor:po.vendor,status:po.status||'waiting',so_id:so.id,so,customer:c2?.alpha_tag||''})}})})});
+            const allPOs=[];sos.forEach(so=>{const c2=cust.find(x=>x.id===so.customer_id);safeItems(so).forEach((it,itIdx)=>{safePOs(it).forEach(po=>{if((po.po_id||'').toLowerCase().includes(s)||(po.vendor||'').toLowerCase().includes(s)){if(!allPOs.find(x=>x.po_id===po.po_id))allPOs.push({po_id:po.po_id,vendor:po.vendor,status:po.status||'waiting',so_id:so.id,so,customer:c2?.alpha_tag||'',_item:it,_itIdx:itIdx,_po:po})}})})});
             submittedBatches.forEach(sb=>{if((sb.po_number||'').toLowerCase().includes(s)||(sb.vendor_name||'').toLowerCase().includes(s)){if(!allPOs.find(x=>x.po_id===sb.po_number))allPOs.push({po_id:sb.po_number,vendor:sb.vendor_name,status:sb.status||'waiting',so_id:(sb.source_pos||[])[0]?.so_id||'',so:sos.find(x=>x.id===((sb.source_pos||[])[0]?.so_id)),customer:(sb.source_pos||[])[0]?.customer||'',isBatch:true})}});
             const rpo=allPOs.slice(0,4);
             // Build Jobs index from all SOs
@@ -27492,7 +27495,7 @@ export default function App(){
               {rpk.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Item Fulfillments</div>
                 {rpk.map(pk=>{const cc=cust.find(x=>x.id===pk.so?.customer_id);return<div key={pk.pick_id} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>{setESO(pk.so);setESOC(cc);setPg('orders');setGQ('');setGOpen(false)}}><Icon name="grid" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{pk.pick_id}</span><span>→ {pk.so_id}</span><span className={`badge ${pk.status==='pulled'?'badge-green':'badge-amber'}`}>{pk.status}</span></div>})}</>}
               {rpo.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Purchase Orders</div>
-                {rpo.map(po=><div key={po.po_id} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>{if(po.isBatch){setBatchScan(po.po_id);setPg('purchase_orders')}else if(po.so){const cc=cust.find(x=>x.id===po.so.customer_id);setESO(po.so);setESOC(cc);setPg('orders')}else{setPg('purchase_orders')};setGQ('');setGOpen(false)}}><Icon name="cart" size={14}/><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{po.po_id}</span><span>{po.vendor}</span>{po.so_id&&<span style={{color:'#64748b'}}>→ {po.so_id}</span>}<span className={`badge ${po.status==='received'?'badge-green':po.status==='partial'?'badge-amber':'badge-blue'}`}>{po.status}</span></div>)}</>}
+                {rpo.map(po=><div key={po.po_id} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>{if(po.isBatch){setBatchScan(po.po_id);setPg('purchase_orders')}else if(po.so&&po._po){const soIt=safeItems(po.so);const allLines=soIt.map((_,idx)=>({lineIdx:idx})).filter(ln=>soIt[ln.lineIdx]?.po_lines?.some(p=>p.po_id===po.po_id));setPoFullPage({po:po._po,item:po._item,allLines,soId:po.so.id,soItems:soIt})}else{setPg('purchase_orders')};setGQ('');setGOpen(false)}}><Icon name="cart" size={14}/><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{po.po_id}</span><span>{po.vendor}</span>{po.so_id&&<span style={{color:'#64748b'}}>→ {po.so_id}</span>}<span className={`badge ${po.status==='received'?'badge-green':po.status==='partial'?'badge-amber':'badge-blue'}`}>{po.status}</span></div>)}</>}
               {rj.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Jobs</div>
                 {rj.map(j=><div key={j.id+j.so_id} style={{padding:'8px 12px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center'}} onClick={()=>{const ji2=safeJobs(j.so).findIndex(jj=>jj.id===j.id);setESOTab('jobs');setESOScrollJob(ji2>=0?ji2:null);setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so.customer_id));setPg('orders');setGQ('');setGOpen(false)}}><Icon name="grid" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{j.id}</span><span>{j.art_name||j.deco_type}</span><span style={{color:'#64748b'}}>→ {j.so_id}</span></div>)}</>}
               {ri.length>0&&<><div style={{padding:'6px 12px',fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',background:'#f8fafc'}}>Invoices</div>
