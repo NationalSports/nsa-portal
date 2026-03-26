@@ -21107,7 +21107,7 @@ export default function App(){
                   const key=(it.sku||gi.sku)+'|'+(it.color||gi.color||'');
                   if(!repPerItemDecos[key])repPerItemDecos[key]=[];
                   safeDecos(it).forEach(d=>{
-                    if(d.kind==='art'){const dAf=d.art_file_id?safeArt(so).find(a=>a.id===d.art_file_id):null;const dType=d.type||dAf?.deco_type||j.deco_type||'screen_print';const dColors=(dAf?(dAf.ink_colors||dAf.thread_colors||''):'').split(/[,\n]/).map(c=>c.trim()).filter(Boolean);repPerItemDecos[key].push({kind:'art',position:d.position||'Front Center',type:dType,underbase:d.underbase||false,reversible:d.reversible||false,artFile:dAf,colors:dColors,size:dAf?.art_size||'',artName:dAf?.name||''});}
+                    if(d.kind==='art'){const dAf=d.art_file_id?safeArt(so).find(a=>a.id===d.art_file_id):null;const dType=d.type||dAf?.deco_type||j.deco_type||'screen_print';const cwObj2=d.color_way_id&&dAf?.color_ways?dAf.color_ways.find(c=>c.id===d.color_way_id):null;const dColors=cwObj2?cwObj2.inks.filter(c=>c&&c.trim()):(dAf?(dAf.ink_colors||dAf.thread_colors||''):'').split(/[,\n]/).map(c=>c.trim()).filter(Boolean);repPerItemDecos[key].push({kind:'art',position:d.position||'Front Center',type:dType,underbase:d.underbase||false,reversible:d.reversible||false,artFile:dAf,colors:dColors,size:dAf?.art_size||'',artName:dAf?.name||'',cwLabel:cwObj2?.garment_color||''});}
                     else if(d.kind==='numbers')repPerItemDecos[key].push({kind:'numbers',position:d.position||'Back Center',method:(d.num_method||'heat_transfer').replace(/_/g,' '),numSize:d.num_size||'—',numFont:d.num_font||'block',twoColor:d.two_color||false,frontAndBack:d.front_and_back||false,numSizeBack:d.front_and_back?(d.num_size_back||d.num_size||'—'):null,printColor:d.print_color||''});
                     else if(d.kind==='names')repPerItemDecos[key].push({kind:'names',position:d.position||'Back Center',frontAndBack:d.front_and_back||false});
                   });
@@ -21120,7 +21120,8 @@ export default function App(){
                   const nameDecos=decos.filter(d=>d.kind==='names');
                   const gc=repGarmentColors[gk]||{};
                   const rowTotal=Object.values(gi.sizes).reduce((a,v)=>a+v,0);
-                  const effectiveArtDecos=artDecos.length>0?artDecos:repPosList.length>0?repPosList.map(pos=>({kind:'art',position:pos,type:j.deco_type||'screen_print',underbase:false,reversible:false,artFile:af,colors:colorList,size:af?.art_size||'',artName:''})):af?[{kind:'art',position:j.deco_type==='embroidery'?'Front Left Chest':'Front Center',type:j.deco_type||'screen_print',underbase:false,reversible:false,artFile:af,colors:colorList,size:af?.art_size||'',artName:af?.name||''}]:[];
+                  const repFallbackColors=colorList.length>0?colorList:(af?.color_ways||[]).length>0?(af.color_ways[0].inks||[]).filter(c=>c&&c.trim()):[];
+                  const effectiveArtDecos=artDecos.length>0?artDecos:repPosList.length>0?repPosList.map(pos=>({kind:'art',position:pos,type:j.deco_type||'screen_print',underbase:false,reversible:false,artFile:af,colors:repFallbackColors,size:af?.art_size||'',artName:'',cwLabel:''})):af?[{kind:'art',position:j.deco_type==='embroidery'?'Front Left Chest':'Front Center',type:j.deco_type||'screen_print',underbase:false,reversible:false,artFile:af,colors:repFallbackColors,size:af?.art_size||'',artName:af?.name||'',cwLabel:''}]:[];
                   // Per-item mockup for this item
                   const repItemMocks=af?.item_mockups?.[gi.sku]||[];
                   const repPrimary=repItemMocks[0]||null;
@@ -21162,15 +21163,16 @@ export default function App(){
                     {/* Decoration spec */}
                     {effectiveArtDecos.length>0&&<div style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',background:'#f8fafc'}}>
                       <div style={{fontSize:11,fontWeight:800,color:'#1e3a5f',textTransform:'uppercase',marginBottom:6}}>📋 Decoration</div>
-                      {effectiveArtDecos.map((deco,di)=>{const pos=deco.position;const method=(deco.type||'screen_print').replace(/_/g,' ');const size=repArtSizes[pos]||deco.size||'';const posColors=gc[pos]||(deco.colors?.length>0?deco.colors:colorList);
+                      {effectiveArtDecos.map((deco,di)=>{const pos=deco.position;const method=(deco.type||'screen_print').replace(/_/g,' ');const size=repArtSizes[pos]||deco.size||'';const posColors=gc[pos]||(Array.isArray(deco.colors)&&deco.colors.length>0?deco.colors:repFallbackColors);
                         return<div key={di} style={{display:'flex',alignItems:'baseline',gap:8,flexWrap:'wrap',padding:'4px 0',borderTop:di>0?'1px solid #e9ecef':'none'}}>
                           <span style={{fontSize:12,fontWeight:700,color:'#0f172a',minWidth:110}}>{pos}</span>
                           {deco.artFile&&<span style={{fontSize:10,fontWeight:700,color:'#7c3aed',background:'#f5f3ff',padding:'1px 6px',borderRadius:3}}>{deco.artFile.title||deco.artFile.name||'—'}</span>}
+                          {deco.cwLabel&&<span style={{fontSize:10,fontWeight:600,color:'#0369a1',background:'#e0f2fe',padding:'1px 6px',borderRadius:3}}>CW: {deco.cwLabel}</span>}
                           <span style={{fontSize:11,color:'#475569',fontWeight:600}}>{method}</span>
                           {deco.underbase&&<span style={{fontSize:10,fontWeight:700,color:'#92400e',background:'#fef3c7',padding:'1px 6px',borderRadius:3,border:'1px solid #fbbf24'}}>Underbase</span>}
                           {size&&<span style={{fontSize:11,color:'#64748b',fontWeight:600}}>{size}</span>}
                           <span style={{fontSize:11,color:'#94a3b8'}}>—</span>
-                          {posColors.length>0?<div style={{display:'flex',gap:3,flexWrap:'wrap'}}>{posColors.map((cl,ci)=>{const sw=colorMap[cl]||Object.entries(colorMap).find(([k])=>cl.toLowerCase().includes(k.toLowerCase()))?.[1]||null;return<span key={ci} style={{display:'inline-flex',alignItems:'center',gap:3,padding:'1px 7px',background:'white',border:'1px solid '+(sw||'#d1d5db'),borderRadius:4,fontSize:11,fontWeight:700}}><span style={{width:10,height:10,borderRadius:2,background:sw||'#e2e8f0',border:'1px solid #d1d5db',flexShrink:0}}/>{cl}</span>})}</div>
+                          {Array.isArray(posColors)&&posColors.length>0?<div style={{display:'flex',gap:3,flexWrap:'wrap'}}>{posColors.map((cl,ci)=>{const clStr=String(cl||'');const sw=colorMap[clStr]||Object.entries(colorMap).find(([k])=>clStr.toLowerCase().includes(k.toLowerCase()))?.[1]||null;return<span key={ci} style={{display:'inline-flex',alignItems:'center',gap:3,padding:'1px 7px',background:'white',border:'1px solid '+(sw||'#d1d5db'),borderRadius:4,fontSize:11,fontWeight:700}}><span style={{width:10,height:10,borderRadius:2,background:sw||'#e2e8f0',border:'1px solid #d1d5db',flexShrink:0}}/>{clStr}</span>})}</div>
                           :<span style={{fontSize:11,color:'#94a3b8',fontStyle:'italic'}}>No colors</span>}
                         </div>;})}
                       {numDecos.map((nd,ni)=><div key={'n'+ni} style={{padding:'5px 0',borderTop:'1px solid #e9ecef'}}>
@@ -21287,8 +21289,10 @@ export default function App(){
             if(d.kind==='art'){
               const dAf=d.art_file_id?safeArt(so).find(a=>a.id===d.art_file_id):null;
               const dType=d.type||dAf?.deco_type||j.deco_type||'screen_print';
-              const dColors=(dAf?(dAf.ink_colors||dAf.thread_colors||''):'').split(/[,\n]/).map(c=>c.trim()).filter(Boolean);
-              _perItemDecos[key].push({kind:'art',position:d.position||'Front Center',type:dType,reversible:d.reversible||false,underbase:d.underbase||false,artFile:dAf,colors:dColors,size:dAf?.art_size||'',artName:dAf?.name||dAf?.title||''});
+              const cwObj=d.color_way_id&&dAf?.color_ways?dAf.color_ways.find(c=>c.id===d.color_way_id):null;
+              const dColors=cwObj?cwObj.inks.filter(c=>c&&c.trim()):(dAf?(dAf.ink_colors||dAf.thread_colors||''):'').split(/[,\n]/).map(c=>c.trim()).filter(Boolean);
+              const cwLabel=cwObj?.garment_color||'';
+              _perItemDecos[key].push({kind:'art',position:d.position||'Front Center',type:dType,reversible:d.reversible||false,underbase:d.underbase||false,artFile:dAf,colors:dColors,size:dAf?.art_size||'',artName:dAf?.name||dAf?.title||'',cwLabel,colorWayId:d.color_way_id||null});
             }else if(d.kind==='numbers'){
               _perItemDecos[key].push({kind:'numbers',position:d.position||'Back Center',method:(d.num_method||'heat_transfer').replace(/_/g,' '),
                 numSize:d.num_size||'—',numSizeBack:d.front_and_back?(d.num_size_back||d.num_size||'—'):null,
@@ -21554,6 +21558,25 @@ export default function App(){
                 const itemMocks=(af?.item_mockups?.[gi.sku]||[]);
                 const primaryUrl=itemMocks[0]||null;
                 const extraMocks=itemMocks.slice(1);
+                // Per-item decoration data
+                const _gk=gi.sku+'|'+gi.color;
+                const _decos=_perItemDecos[_gk]||[];
+                const _artDecos=_decos.filter(d=>d.kind==='art');
+                const _numDecos=_decos.filter(d=>d.kind==='numbers');
+                const _nameDecos=_decos.filter(d=>d.kind==='names');
+                const _gc=_garmentColors[_gk]||{};
+                const _editColors=_isEditingColors?(artJobDetailEditColors[_gk]||{}):{};
+                // Resolve colors: prefer CW-specific inks, then art file colorList, then first CW inks
+                const _fallbackColors=colorList.length>0?colorList:(af?.color_ways||[]).length>0?(af.color_ways[0].inks||[]).filter(c=>c&&c.trim()):[];
+                const _effectiveArtDecos=_artDecos.length>0?_artDecos:posList3.length>0?posList3.map(pos=>({kind:'art',position:pos,type:j.deco_type||'screen_print',reversible:false,underbase:false,artFile:af,colors:_fallbackColors,size:af?.art_size||'',artName:af?.name||'',cwLabel:''})):af?[{kind:'art',position:j.deco_type==='embroidery'?'Front Left Chest':'Front Center',type:j.deco_type||'screen_print',reversible:false,underbase:false,artFile:af,colors:_fallbackColors,size:af?.art_size||'',artName:af?.name||'',cwLabel:''}]:[];
+                const _hasDecoData=_effectiveArtDecos.length>0||_numDecos.length>0||_nameDecos.length>0;
+                // Per-item size data
+                const _rowTotal=Object.values(gi.sizes).reduce((a,v)=>a+v,0);
+                const _itemSzs=allSizes.filter(sz=>gi.sizes[sz]>0);
+                // Per-item production files
+                const _itemPFs=(cu.role==='production'||cu.role==='prod_assistant')?[]:_decos.filter(d=>d.kind==='art'&&d.artFile).flatMap(d=>(d.artFile?.prod_files||[]).map(f=>({...(typeof f==='string'?{url:f,name:f}:f),_afName:_decos.filter(d2=>d2.kind==='art').length>1?d.artName:''})));
+                // Copy mockup candidates
+                const _copyFromOthers=itemMocks.length===0?itemDetails.filter((oi,oii)=>oii!==gii&&(af?.item_mockups?.[oi.sku]||[]).length>0):[];
                 return<div key={gii} style={{marginBottom:gii<itemDetails.length-1?14:0,border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden',background:'#fafbfc'}}>
                   {/* Item header */}
                   <div style={{display:'flex',alignItems:'center',gap:10,padding:'12px 14px',background:'linear-gradient(135deg,#f0f2f5,#e8ecf0)',borderBottom:'1px solid #e2e8f0'}}>
@@ -21623,19 +21646,19 @@ export default function App(){
                     </div>}
                   </div>
                   {/* ─── Copy Mockup From Another Item ─── */}
-                  {itemMocks.length===0&&(()=>{const others=itemDetails.filter((oi,oii)=>oii!==gii&&(af?.item_mockups?.[oi.sku]||[]).length>0);if(others.length===0)return null;return<div style={{padding:'6px 14px',display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',borderTop:'1px solid #f1f5f9',background:'#fdfcff'}}><span style={{fontSize:10,color:'#64748b',fontWeight:600}}>Copy mock from:</span>{others.map((oi,oii)=><button key={oii} className="btn btn-sm" style={{fontSize:10,padding:'2px 8px',background:'#ede9fe',color:'#7c3aed',border:'1px solid #ddd6fe',borderRadius:4,fontWeight:700,cursor:'pointer'}} onClick={()=>_copyMockup(oi.sku,gi.sku)}>{oi.sku}{oi.color?' ('+oi.color+')':''}</button>)}</div>;})()}
-                  {/* ─── Decoration Spec for this item ─── */}
-                  {(()=>{const gk=gi.sku+'|'+gi.color;const decos=_perItemDecos[gk]||[];const artDecos=decos.filter(d=>d.kind==='art');const numDecos=decos.filter(d=>d.kind==='numbers');const nameDecos=decos.filter(d=>d.kind==='names');const gc=_garmentColors[gk]||{};const editColors=_isEditingColors?(artJobDetailEditColors[gk]||{}):{};const effectiveArtDecos=artDecos.length>0?artDecos:posList3.length>0?posList3.map(pos=>({kind:'art',position:pos,type:j.deco_type||'screen_print',reversible:false,underbase:false,artFile:af,colors:colorList,size:af?.art_size||'',artName:af?.name||''})):af?[{kind:'art',position:j.deco_type==='embroidery'?'Front Left Chest':'Front Center',type:j.deco_type||'screen_print',reversible:false,underbase:false,artFile:af,colors:colorList,size:af?.art_size||'',artName:af?.name||''}]:[];if(effectiveArtDecos.length===0&&numDecos.length===0&&nameDecos.length===0)return null;
-                  return<div style={{borderTop:'2px solid #e2e8f0',background:'#f8fafc'}}>
+                  {_copyFromOthers.length>0&&<div style={{padding:'6px 14px',display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',borderTop:'1px solid #f1f5f9',background:'#fdfcff'}}><span style={{fontSize:10,color:'#64748b',fontWeight:600}}>Copy mock from:</span>{_copyFromOthers.map((oi,oii)=><button key={oii} className="btn btn-sm" style={{fontSize:10,padding:'2px 8px',background:'#ede9fe',color:'#7c3aed',border:'1px solid #ddd6fe',borderRadius:4,fontWeight:700,cursor:'pointer'}} onClick={()=>_copyMockup(oi.sku,gi.sku)}>{oi.sku}{oi.color?' ('+oi.color+')':''}</button>)}</div>}
+                  {/* ─── Decoration Spec ─── */}
+                  {_hasDecoData&&<div style={{borderTop:'2px solid #e2e8f0',background:'#f8fafc'}}>
                     <div style={{padding:'8px 14px 0'}}>
-                      <div style={{fontSize:11,fontWeight:800,color:'#1e3a5f',textTransform:'uppercase',letterSpacing:0.5,marginBottom:4}}>📋 Decoration Spec</div>
+                      <div style={{fontSize:11,fontWeight:800,color:'#1e3a5f',textTransform:'uppercase',letterSpacing:0.5,marginBottom:4}}>Decoration Spec</div>
                     </div>
                     <div style={{padding:'0 14px 10px'}}>
-                      {effectiveArtDecos.map((deco,di)=>{const pos=deco.position;const method=(deco.type||'screen_print').replace(/_/g,' ');const size=_artSizes[pos]||deco.size||'';const posColors=gc[pos]||(deco.colors?.length>0?deco.colors:colorList);const editPosColors=editColors[pos]||[''];
+                      {_effectiveArtDecos.map((deco,di)=>{const pos=deco.position||'';const method=(deco.type||'screen_print').replace(/_/g,' ');const size=_artSizes[pos]||deco.size||'';const posColors=_gc[pos]||(Array.isArray(deco.colors)&&deco.colors.length>0?deco.colors:_fallbackColors);const editPosColors=_editColors[pos]||[''];
                         return<div key={di} style={{display:'flex',alignItems:'flex-start',gap:8,flexWrap:'wrap',padding:'6px 0',borderTop:di>0?'1px solid #e9ecef':'none'}}>
                           <div style={{minWidth:120,paddingTop:2}}>
-                            <div style={{fontSize:12,fontWeight:700,color:'#0f172a'}}>{pos}</div>
+                            <div style={{fontSize:12,fontWeight:700,color:'#0f172a'}}>{pos||'—'}</div>
                             {deco.artFile&&<div style={{fontSize:10,fontWeight:700,color:'#7c3aed',background:'#f5f3ff',padding:'1px 6px',borderRadius:3,display:'inline-block',marginTop:2}}>{deco.artFile.title||deco.artFile.name||'—'}</div>}
+                            {deco.cwLabel&&<div style={{fontSize:10,fontWeight:600,color:'#0369a1',background:'#e0f2fe',padding:'1px 6px',borderRadius:3,display:'inline-block',marginTop:2}}>CW: {deco.cwLabel}</div>}
                           </div>
                           <div style={{flex:1,display:'flex',flexWrap:'wrap',gap:4,alignItems:'center'}}>
                             <span style={{fontSize:11,color:'#475569',fontWeight:600}}>{method}</span>
@@ -21645,19 +21668,19 @@ export default function App(){
                             :<span style={{fontSize:11,color:'#64748b',fontWeight:600}}>{size||'—'}</span>}
                             <span style={{fontSize:11,color:'#94a3b8'}}>—</span>
                             {_isEditingColors?<div style={{display:'flex',gap:3,flexWrap:'wrap',alignItems:'center'}}>
-                              {editPosColors.map((c,ci)=><input key={ci} className="form-input" value={c} onChange={e=>{const upd={...artJobDetailEditColors};upd[gk]={...upd[gk]};upd[gk][pos]=[...editPosColors];upd[gk][pos][ci]=e.target.value;setArtJobDetailEditColors(upd);}} placeholder="Color" style={{fontSize:11,width:90,padding:'2px 6px'}}/>)}
-                              <button style={{background:'none',border:'1px dashed #a78bfa',color:'#7c3aed',borderRadius:3,padding:'1px 5px',fontSize:10,cursor:'pointer',fontWeight:700}} onClick={()=>{const upd={...artJobDetailEditColors};upd[gk]={...upd[gk]};upd[gk][pos]=[...editPosColors,''];setArtJobDetailEditColors(upd);}}>+</button>
-                              {editPosColors.length>1&&<button style={{background:'none',border:'none',color:'#dc2626',fontSize:12,cursor:'pointer',padding:'0 2px'}} onClick={()=>{const upd={...artJobDetailEditColors};upd[gk]={...upd[gk]};upd[gk][pos]=editPosColors.slice(0,-1);setArtJobDetailEditColors(upd);}}>×</button>}
+                              {editPosColors.map((c,ci)=><input key={ci} className="form-input" value={c} onChange={e=>{const upd={...artJobDetailEditColors};upd[_gk]={...upd[_gk]};upd[_gk][pos]=[...editPosColors];upd[_gk][pos][ci]=e.target.value;setArtJobDetailEditColors(upd);}} placeholder="Color" style={{fontSize:11,width:90,padding:'2px 6px'}}/>)}
+                              <button style={{background:'none',border:'1px dashed #a78bfa',color:'#7c3aed',borderRadius:3,padding:'1px 5px',fontSize:10,cursor:'pointer',fontWeight:700}} onClick={()=>{const upd={...artJobDetailEditColors};upd[_gk]={...upd[_gk]};upd[_gk][pos]=[...editPosColors,''];setArtJobDetailEditColors(upd);}}>+</button>
+                              {editPosColors.length>1&&<button style={{background:'none',border:'none',color:'#dc2626',fontSize:12,cursor:'pointer',padding:'0 2px'}} onClick={()=>{const upd={...artJobDetailEditColors};upd[_gk]={...upd[_gk]};upd[_gk][pos]=editPosColors.slice(0,-1);setArtJobDetailEditColors(upd);}}>x</button>}
                             </div>
-                            :posColors.length>0?<div style={{display:'flex',gap:3,flexWrap:'wrap'}}>
-                              {posColors.map((cl,ci)=>{const sw=colorMap[cl]||Object.entries(colorMap).find(([k])=>cl.toLowerCase().includes(k.toLowerCase()))?.[1]||null;return<span key={ci} style={{display:'inline-flex',alignItems:'center',gap:3,padding:'1px 7px',background:'white',border:'1px solid '+(sw||'#d1d5db'),borderRadius:4,fontSize:11,fontWeight:700}}><span style={{width:11,height:11,borderRadius:2,background:sw||'#e2e8f0',border:'1px solid #d1d5db',flexShrink:0}}/>{cl}</span>;})}
+                            :Array.isArray(posColors)&&posColors.length>0?<div style={{display:'flex',gap:3,flexWrap:'wrap'}}>
+                              {posColors.map((cl,ci)=>{const clStr=String(cl||'');const sw=colorMap[clStr]||Object.entries(colorMap).find(([k])=>clStr.toLowerCase().includes(k.toLowerCase()))?.[1]||null;return<span key={ci} style={{display:'inline-flex',alignItems:'center',gap:3,padding:'1px 7px',background:'white',border:'1px solid '+(sw||'#d1d5db'),borderRadius:4,fontSize:11,fontWeight:700}}><span style={{width:11,height:11,borderRadius:2,background:sw||'#e2e8f0',border:'1px solid #d1d5db',flexShrink:0}}/>{clStr}</span>;})}
                             </div>
                             :<span style={{fontSize:11,color:'#94a3b8',fontStyle:'italic'}}>No colors</span>}
                           </div>
                         </div>;})}
-                      {numDecos.map((nd,ni)=><div key={'n'+ni} style={{padding:'6px 0',borderTop:'1px solid #e9ecef'}}>
+                      {_numDecos.map((nd,ni)=><div key={'n'+ni} style={{padding:'6px 0',borderTop:'1px solid #e9ecef'}}>
                         <div style={{display:'flex',alignItems:'baseline',gap:8,flexWrap:'wrap'}}>
-                          <span style={{fontSize:12,fontWeight:700,color:'#166534',background:'#dcfce7',padding:'1px 8px',borderRadius:4}}>#️⃣ Numbers{nd.frontAndBack?' — Front + Back':''}</span>
+                          <span style={{fontSize:12,fontWeight:700,color:'#166534',background:'#dcfce7',padding:'1px 8px',borderRadius:4}}>Numbers{nd.frontAndBack?' — Front + Back':''}</span>
                         </div>
                         {nd.frontAndBack?<div style={{paddingLeft:12,marginTop:4}}>
                           <div style={{fontSize:11,color:'#1e293b',marginBottom:2}}><span style={{fontWeight:700}}>Front</span> — {nd.numSize} — {nd.numFont} font{nd.printColor?' — '+nd.printColor:''}</div>
@@ -21665,34 +21688,34 @@ export default function App(){
                         </div>:<div style={{paddingLeft:12,marginTop:4,fontSize:11,color:'#1e293b'}}>{nd.position} — {nd.numSize} — {nd.numFont} font — {nd.method}{nd.printColor?' — '+nd.printColor:''}</div>}
                         {nd.twoColor&&<div style={{paddingLeft:12,marginTop:2}}><span style={{fontSize:10,padding:'1px 6px',background:'#fef2f2',borderRadius:3,color:'#dc2626',fontWeight:600}}>2-Color</span></div>}
                       </div>)}
-                      {nameDecos.map((nd,ni)=><div key={'nm'+ni} style={{display:'flex',alignItems:'baseline',gap:8,padding:'5px 0',borderTop:'1px solid #e9ecef'}}>
+                      {_nameDecos.map((nd,ni)=><div key={'nm'+ni} style={{display:'flex',alignItems:'baseline',gap:8,padding:'5px 0',borderTop:'1px solid #e9ecef'}}>
                         <span style={{fontSize:12,fontWeight:700,color:'#92400e',background:'#fef3c7',padding:'1px 8px',borderRadius:4}}>ABC Names</span>
                         {nd.frontAndBack&&<span style={{fontSize:10,color:'#6d28d9',fontWeight:600}}>Front + Back</span>}
                       </div>)}
-                      {latestReq?.instructions&&<div style={{marginTop:8,padding:'6px 10px',background:'#faf5ff',borderRadius:6,border:'1px solid #e9d5ff',fontSize:11}}><span style={{fontWeight:700,color:'#6d28d9'}}>📋 Instructions: </span><span style={{color:'#1e293b',whiteSpace:'pre-wrap'}}>{latestReq.instructions}</span></div>}
+                      {latestReq?.instructions&&<div style={{marginTop:8,padding:'6px 10px',background:'#faf5ff',borderRadius:6,border:'1px solid #e9d5ff',fontSize:11}}><span style={{fontWeight:700,color:'#6d28d9'}}>Instructions: </span><span style={{color:'#1e293b',whiteSpace:'pre-wrap'}}>{latestReq.instructions}</span></div>}
                       {j.rep_notes&&<div style={{marginTop:4,padding:'5px 10px',background:'#fffbeb',borderRadius:4,border:'1px solid #fde68a',fontSize:11,color:'#92400e'}}><strong>Notes:</strong> {j.rep_notes}</div>}
                       {_isEditingColors&&gii===itemDetails.length-1&&<button className="btn btn-sm" style={{fontSize:11,padding:'5px 14px',background:'#7c3aed',color:'white',border:'none',borderRadius:6,fontWeight:700,marginTop:6}} onClick={_saveColors}>Save Colors</button>}
                       {artJobDetailEditSize!==null&&gii===itemDetails.length-1&&<button className="btn btn-sm" style={{fontSize:11,padding:'5px 14px',background:'#7c3aed',color:'white',border:'none',borderRadius:6,fontWeight:700,marginTop:6,marginLeft:6}} onClick={()=>{const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;const sizeObj={};posList3.forEach(p=>{if(artJobDetailEditSize[p]?.trim())sizeObj[p]=artJobDetailEditSize[p].trim()});const updArt=safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,art_sizes:sizeObj,art_size:Object.values(sizeObj).join(' / ')}:a);savSO({...liveSO,art_files:updArt});setArtJobDetailModal({...j,artFile:updArt.find(a=>a.id===j.art_file_id)});setArtJobDetailEditSize(null);nf('Art sizes updated');}}>Save Sizes</button>}
                     </div>
-                  </div>;})}
+                  </div>}
                   {/* ─── Size Grid ─── */}
-                  {(()=>{const rowTotal=Object.values(gi.sizes).reduce((a,v)=>a+v,0);const itemSzs=allSizes.filter(sz=>gi.sizes[sz]>0);if(itemSzs.length===0)return null;return<div style={{borderTop:'2px solid #e2e8f0',padding:'10px 14px'}}>
+                  {_itemSzs.length>0&&<div style={{borderTop:'2px solid #e2e8f0',padding:'10px 14px'}}>
                     <div style={{overflowX:'auto'}}><table style={{fontSize:12,minWidth:280,width:'100%'}}><thead><tr style={{background:'#f0f2f5'}}>
                       <th style={{textAlign:'left',padding:'4px 8px',fontSize:10,fontWeight:700}}>SIZE</th>
                       {allSizes.map(sz=><th key={sz} style={{textAlign:'center',padding:'4px 8px',fontSize:10,fontWeight:700,minWidth:32}}>{sz}</th>)}
                       <th style={{textAlign:'center',padding:'4px 8px',fontSize:10,fontWeight:800}}>TOTAL</th>
                     </tr></thead><tbody>
-                      <tr>{['QTY',...allSizes.map(sz=>gi.sizes[sz]||'—'),rowTotal].map((v,i)=>
+                      <tr>{['QTY',...allSizes.map(sz=>gi.sizes[sz]||'—'),_rowTotal].map((v,i)=>
                         <td key={i} style={{textAlign:i===0?'left':'center',padding:'4px 8px',fontWeight:typeof v==='number'?800:i===0?700:400,color:typeof v==='number'?'#1e40af':i===0?'#475569':'#cbd5e1',background:typeof v==='number'&&i>0?'#eef2ff':i===allSizes.length+1?'#f0f2f5':''}}>{v}</td>)}
                       </tr>
                     </tbody></table></div>
-                  </div>;})}
-                  {/* ─── Production Files (for this item's art) ─── */}
-                  {(()=>{if(cu.role==='production'||cu.role==='prod_assistant')return null;const gk=gi.sku+'|'+gi.color;const decos=_perItemDecos[gk]||[];const itemPFs=decos.filter(d=>d.kind==='art'&&d.artFile).flatMap(d=>(d.artFile?.prod_files||[]).map(f=>({...(typeof f==='string'?{url:f,name:f}:f),_afName:decos.filter(d2=>d2.kind==='art').length>1?d.artName:''})));if(itemPFs.length===0)return null;return<div style={{borderTop:'2px solid #e2e8f0',padding:'8px 14px'}}>
-                    <div style={{fontSize:10,fontWeight:700,color:'#92400e',marginBottom:4}}>Production Files ({itemPFs.length})</div>
-                    <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>{itemPFs.map((f,fi)=>{const url=f?.url||'';const name=f?.name||fileDisplayName(f);return<div key={fi} style={{padding:'4px 8px',background:'#fef3c7',border:'1px solid #fde68a',borderRadius:4,cursor:'pointer',fontSize:10,fontWeight:600,color:'#92400e',display:'flex',alignItems:'center',gap:3}} onClick={()=>openFile(url)}>📁 {name}{f._afName&&<span style={{fontSize:9,fontStyle:'italic',marginLeft:2}}>({f._afName})</span>}</div>;})}
+                  </div>}
+                  {/* ─── Production Files ─── */}
+                  {_itemPFs.length>0&&<div style={{borderTop:'2px solid #e2e8f0',padding:'8px 14px'}}>
+                    <div style={{fontSize:10,fontWeight:700,color:'#92400e',marginBottom:4}}>Production Files ({_itemPFs.length})</div>
+                    <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>{_itemPFs.map((f,fi)=>{const url=f?.url||'';const name=f?.name||fileDisplayName(f);return<div key={fi} style={{padding:'4px 8px',background:'#fef3c7',border:'1px solid #fde68a',borderRadius:4,cursor:'pointer',fontSize:10,fontWeight:600,color:'#92400e',display:'flex',alignItems:'center',gap:3}} onClick={()=>openFile(url)}>📁 {name}{f._afName&&<span style={{fontSize:9,fontStyle:'italic',marginLeft:2}}>({f._afName})</span>}</div>;})}
                     </div>
-                  </div>;})}
+                  </div>}
                 </div>})}
 
               {/* ─── Per-SKU Decoration Spec (legacy — now rendered inside each item card above) ─── */}
