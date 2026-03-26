@@ -23048,8 +23048,6 @@ export default function App(){
         }
       }
       setBillImport(x=>({...x,parsed:results,step:'review',uploading:false}));
-      // Apply billed quantities, tracking, and freight to matched SOs immediately
-      results.forEach(r=>{if(r.parsed?.matchedPOSource)applyBillToSO(r.parsed)});
       // Auto-save to history
       const toSave=results.map(r=>({id:r.id,file:r.file,parsed:{...r.parsed,rawText:undefined},uploadedAt:r.uploadedAt,qbStatus:null}));
       setSavedBills(prev=>{const updated=[...toSave,...prev].slice(0,200);try{localStorage.setItem('nsa_saved_bills',JSON.stringify(updated))}catch{};return updated});
@@ -23154,6 +23152,26 @@ export default function App(){
         const soId=bill.matchedPO.so_id||bill.matchedPO.so?.id;
         if(soId)_applyFreightToSOs(bill,[soId]);
       }
+    };
+
+    // Push bills to Portal (apply to SOs)
+    const pushBillsToPortal=()=>{
+      const selected=billImport.parsed.filter(b=>b.selected&&!b.portalStatus&&b.parsed?.matchedPOSource);
+      if(!selected.length){nf('No matched bills selected to push','error');return}
+      let applied=0;
+      selected.forEach(b=>{
+        try{
+          applyBillToSO(b.parsed);
+          b.portalStatus='success';b.portalMsg='Applied to SO';
+          applied++;
+        }catch(e){
+          b.portalStatus='error';b.portalMsg='Failed: '+e.message;
+        }
+      });
+      setBillImport(x=>({...x,parsed:[...x.parsed]}));
+      // Update localStorage history
+      setSavedBills(prev=>{const updated=prev.map(sb=>{const match=selected.find(s=>s.id===sb.id);return match?{...sb,portalStatus:match.portalStatus}:sb});try{localStorage.setItem('nsa_saved_bills',JSON.stringify(updated))}catch{};return updated});
+      nf(applied+' bill(s) pushed to portal');
     };
 
     // Push bills to QuickBooks
@@ -24108,6 +24126,10 @@ export default function App(){
           <div style={{display:'flex',gap:8,marginBottom:12,alignItems:'center'}}>
             <button className="btn btn-secondary" onClick={()=>setBillImport({step:'upload',files:[],parsed:[],uploading:false,showRaw:{}})}>← Upload More</button>
             <span style={{fontSize:14,fontWeight:700,flex:1}}>{billImport.parsed.length} Bill(s) Parsed</span>
+            <button className="btn btn-primary" style={{background:'#7c3aed',borderColor:'#7c3aed'}} disabled={billImport.uploading||!billImport.parsed.some(b=>b.selected&&!b.portalStatus&&b.parsed?.matchedPOSource)}
+              onClick={pushBillsToPortal}>
+              Push {billImport.parsed.filter(b=>b.selected&&!b.portalStatus&&b.parsed?.matchedPOSource).length} to Portal
+            </button>
             <button className="btn btn-primary" style={{background:'#166534',borderColor:'#166534'}} disabled={billImport.uploading||!billImport.parsed.some(b=>b.selected&&!b.qbStatus)}
               onClick={pushBillsToQB}>
               {billImport.uploading?'Pushing to QB...':'Push '+billImport.parsed.filter(b=>b.selected&&!b.qbStatus).length+' to QuickBooks'}
@@ -24123,6 +24145,8 @@ export default function App(){
                 {b.qbStatus==='success'&&<span style={{fontSize:16,color:'#22c55e'}}>&#10003;</span>}
                 {b.qbStatus==='error'&&<span style={{fontSize:16,color:'#ef4444'}}>&#10007;</span>}
                 <h2 style={{margin:0,flex:1}}>{b.file}</h2>
+                {b.portalStatus==='success'&&<span style={{fontSize:11,fontWeight:600,color:'#7c3aed'}}>&#10003; Portal</span>}
+                {b.portalMsg&&b.portalStatus==='error'&&<span style={{fontSize:11,fontWeight:600,color:'#dc2626'}}>{b.portalMsg}</span>}
                 {b.qbMsg&&<span style={{fontSize:11,fontWeight:600,color:b.qbStatus==='success'?'#166534':'#dc2626'}}>{b.qbMsg}</span>}
                 {poMatch&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#dbeafe',color:'#1e40af',fontWeight:700}}>PO Matched</span>}
                 {bill.po_number&&!poMatch&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:700}}>PO Not Found</span>}
