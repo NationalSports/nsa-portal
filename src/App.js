@@ -15216,53 +15216,6 @@ export default function App(){
         </tbody></table>
       </div></div>}
 
-      {/* Assignment Modal — appears when moving to In Line */}
-      {assignModal&&<div className="modal-overlay" onClick={()=>setAssignModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:420}}>
-        <div className="modal-header" style={{background:'#fffbeb'}}><h2>📋 Assign to Machine / Person</h2><button className="modal-close" onClick={()=>setAssignModal(null)}>×</button></div>
-        <div className="modal-body">
-          <div style={{padding:10,background:'#f8fafc',borderRadius:8,marginBottom:12}}>
-            <div style={{fontWeight:700,color:'#1e40af'}}>{assignModal.job.id}</div>
-            <div style={{fontSize:13,fontWeight:600}}>{assignModal.job.customer} — {assignModal.job.art_name}</div>
-            <div style={{fontSize:11,color:'#64748b'}}>{assignModal.job.deco_type?.replace(/_/g,' ')} · {(assignModal.job.items||[]).length} garment(s) · {assignModal.job.total_units} units</div>
-          </div>
-          <div style={{marginBottom:12}}>
-            <label className="form-label">Machine / Station</label>
-            <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-              {MACHINES.filter(m=>!assignModal.job.deco_type||m.type===assignModal.job.deco_type||assignTo.machine===m.id).map(m=>
-                <button key={m.id} className={`btn btn-sm ${assignTo.machine===m.id?'btn-primary':'btn-secondary'}`}
-                  onClick={()=>setAssignTo(a=>({...a,machine:a.machine===m.id?'':m.id}))} style={{fontSize:11}}>
-                  🖨️ {m.name}
-                </button>)}
-              {MACHINES.filter(m=>!assignModal.job.deco_type||m.type!==assignModal.job.deco_type).length>0&&
-                <button className="btn btn-sm btn-secondary" style={{fontSize:10,color:'#94a3b8'}}
-                  onClick={()=>setAssignTo(a=>({...a,machine:''}))}
-                  title="Show all machines">Other...</button>}
-            </div>
-            {assignTo.machine===''&&<div style={{marginTop:6}}>
-              <select className="form-select" style={{fontSize:12}} value="" onChange={e=>setAssignTo(a=>({...a,machine:e.target.value}))}>
-                <option value="">All machines...</option>
-                {MACHINES.map(m=><option key={m.id} value={m.id}>{m.name} ({m.type.replace(/_/g,' ')})</option>)}
-              </select>
-            </div>}
-          </div>
-          <div style={{marginBottom:12}}>
-            <label className="form-label">Assign to Decorator</label>
-            <select className="form-select" value={assignTo.person} onChange={e=>setAssignTo(a=>({...a,person:e.target.value}))}>
-              <option value="">Select decorator...</option>
-              {REPS.filter(r=>r.role==='production').map(r=><option key={r.id} value={r.name}>{r.name}</option>)}
-            </select>
-          </div>
-        </div>
-        <div className="modal-footer">
-          <button className="btn btn-secondary" onClick={()=>setAssignModal(null)}>Cancel</button>
-          <button className="btn btn-primary" disabled={!assignTo.person} onClick={()=>{
-            applyJobMove(assignModal.job,assignModal.targetStatus,assignTo.machine,assignTo.person);
-            setAssignModal(null);
-          }}>✓ Assign & Move</button>
-        </div>
-        {!assignTo.person&&<div style={{padding:'4px 14px 8px',fontSize:11,color:'#dc2626',fontWeight:600}}>A decorator must be assigned to move to In Line.</div>}
-      </div></div>}
-
       {/* ═══ PRODUCTION MOCKUP VIEW — full job detail for decorators ═══ */}
       {prodJobModal&&(()=>{
         const j=prodJobModal;
@@ -27558,6 +27511,52 @@ export default function App(){
         <button onClick={()=>setDbError(null)} style={{background:'none',border:'none',color:'#991b1b',cursor:'pointer',fontWeight:800,fontSize:14}}>&#215;</button>
       </div>}
       <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='art'&&rArtist()}{pg==='production'&&rProd2()}{pg==='warehouse'&&rWarehouse()}{pg==='purchase_orders'&&rPOs()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='team'&&rTeam()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='commissions'&&rCommissions()}{pg==='omg'&&rOMG()}{pg==='reports'&&rReports()}{pg==='issues'&&rIssues()}{pg==='import'&&rImport()}{pg==='qb'&&rQB()}{pg==='backup'&&rBackup()}{pg==='settings'&&rSettings()}{pg==='sales_tools'&&rSalesTools()}</div></div>
+    {/* Assignment Modal — global, triggered from warehouse or production board */}
+    {assignModal&&<div className="modal-overlay" onClick={()=>setAssignModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:420}}>
+        <div className="modal-header" style={{background:'#fffbeb'}}><h2>📋 Assign to Machine / Person</h2><button className="modal-close" onClick={()=>setAssignModal(null)}>×</button></div>
+        <div className="modal-body">
+          <div style={{padding:10,background:'#f8fafc',borderRadius:8,marginBottom:12}}>
+            <div style={{fontWeight:700,color:'#1e40af'}}>{assignModal.job.id}</div>
+            <div style={{fontSize:13,fontWeight:600}}>{assignModal.job.customer} — {assignModal.job.art_name}</div>
+            <div style={{fontSize:11,color:'#64748b'}}>{assignModal.job.deco_type?.replace(/_/g,' ')} · {(assignModal.job.items||[]).length} garment(s) · {assignModal.job.total_units} units</div>
+          </div>
+          <div style={{marginBottom:12}}>
+            <label className="form-label">Machine / Station</label>
+            <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+              {MACHINES.filter(m=>!assignModal.job.deco_type||m.type===assignModal.job.deco_type||assignTo.machine===m.id).map(m=>
+                <button key={m.id} className={`btn btn-sm ${assignTo.machine===m.id?'btn-primary':'btn-secondary'}`}
+                  onClick={()=>setAssignTo(a=>({...a,machine:a.machine===m.id?'':m.id}))} style={{fontSize:11}}>
+                  🖨️ {m.name}
+                </button>)}
+              {MACHINES.filter(m=>!assignModal.job.deco_type||m.type!==assignModal.job.deco_type).length>0&&
+                <button className="btn btn-sm btn-secondary" style={{fontSize:10,color:'#94a3b8'}}
+                  onClick={()=>setAssignTo(a=>({...a,machine:''}))}
+                  title="Show all machines">Other...</button>}
+            </div>
+            {assignTo.machine===''&&<div style={{marginTop:6}}>
+              <select className="form-select" style={{fontSize:12}} value="" onChange={e=>setAssignTo(a=>({...a,machine:e.target.value}))}>
+                <option value="">All machines...</option>
+                {MACHINES.map(m=><option key={m.id} value={m.id}>{m.name} ({m.type.replace(/_/g,' ')})</option>)}
+              </select>
+            </div>}
+          </div>
+          <div style={{marginBottom:12}}>
+            <label className="form-label">Assign to Decorator</label>
+            <select className="form-select" value={assignTo.person} onChange={e=>setAssignTo(a=>({...a,person:e.target.value}))}>
+              <option value="">Select decorator...</option>
+              {REPS.filter(r=>r.role==='production').map(r=><option key={r.id} value={r.name}>{r.name}</option>)}
+            </select>
+          </div>
+        </div>
+        <div className="modal-footer">
+          <button className="btn btn-secondary" onClick={()=>setAssignModal(null)}>Cancel</button>
+          <button className="btn btn-primary" disabled={!assignTo.person} onClick={()=>{
+            applyJobMove(assignModal.job,assignModal.targetStatus,assignTo.machine,assignTo.person);
+            setAssignModal(null);
+          }}>✓ Assign & Move</button>
+        </div>
+        {!assignTo.person&&<div style={{padding:'4px 14px 8px',fontSize:11,color:'#dc2626',fontWeight:600}}>A decorator must be assigned to move to In Line.</div>}
+      </div></div>}
     {/* Idle Warning — art timers only (global, not tied to any specific page) */}
     {idleWarning&&<div className="modal-overlay" style={{zIndex:10000}}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:380}}>
       <div className="modal-header" style={{background:'#fffbeb'}}><h2>⏱️ Still working?</h2></div>
