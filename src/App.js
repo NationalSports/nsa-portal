@@ -4308,7 +4308,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         {(()=>{const isQtyOnly=isE&&item.qty_only;
         return<div style={{padding:'10px 18px',display:'flex',alignItems:'center',borderBottom:'1px solid #f1f5f9',...(isSO&&szQty===0&&safeNum(item.est_qty)>0?{border:'2px solid #dc2626',borderRadius:8,background:'#fef2f2'}:{})}}>
           <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
-            <span style={{fontSize:12,fontWeight:600,color:isSO&&szQty===0&&safeNum(item.est_qty)>0?'#dc2626':'#64748b',width:46}}>{isSO&&szQty===0&&safeNum(item.est_qty)>0?'⚠️ Sizes:':isQtyOnly?'Qty:':'Sizes:'}</span>
+            <span style={{fontSize:12,fontWeight:600,color:isSO&&szQty===0&&safeNum(item.est_qty)>0?'#dc2626':isAdidasItem(item)?'#059669':'#64748b',width:46}}>{isSO&&szQty===0&&safeNum(item.est_qty)>0?'⚠️ Sizes:':isQtyOnly?'Qty:':isAdidasItem(item)?'ADIDAS':'Sizes:'}</span>
             {/* In estimate qty-only mode: show just the total input, no size grid */}
             {isQtyOnly?<>
               <div style={{textAlign:'center',padding:'0 10px'}}><div style={{fontSize:10,fontWeight:700,color:'#1e40af'}}>TOTAL QTY</div>
@@ -4322,7 +4322,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 style={{width:42,textAlign:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'5px 2px',fontSize:15,fontWeight:700,color:(item.sizes[sz]||0)>0?'#0f172a':'#cbd5e1'}}/>
               {(()=>{const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);const stk=p?._inv?.[sz];const need=item.sizes[sz]||0;return<div style={{fontSize:9,fontWeight:600,minHeight:13,color:stk==null?'transparent':stk<=0?'#dc2626':stk<need?'#ca8a04':'#166534'}}>{stk!=null?stk+' inv':'\u00A0'}</div>})()}
               {(()=>{const vi=vendorInv[item.sku];if(!vi||vi.loading)return vi?.loading?<div style={{fontSize:8,color:'#a78bfa',minHeight:11}}>...</div>:null;const vStk=vi.sizes?.[sz];if(vStk==null)return null;const lbl=vi.source==='mt'?'mt':vi.source==='sm'?'sm':'ss';const clr=vi.source==='mt'?'#d97706':vi.source==='sm'?'#0891b2':'#7c3aed';return<div style={{fontSize:8,fontWeight:700,minHeight:11,color:vStk<=0?'#dc2626':vStk<20?clr:clr}} title={(vi.source==='mt'?'Momentec':vi.source==='sm'?'SanMar':'S&S Activewear')+' stock: '+vStk}>{vStk} {lbl}</div>})()}
-              {(()=>{if(!isAdidasItem(item))return null;const ai=adidasInv[item.sku];if(!ai||ai.loading)return ai?.loading?<div style={{fontSize:8,color:'#059669',minHeight:11}}>...</div>:null;const ad=ai.sizes?.[sz];const aQty=ad?.qty??0;const need=item.sizes[sz]||0;const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);const nsaStk=p?._inv?.[sz]||0;const totalAvail=nsaStk+aQty;const shortfall=need>totalAvail;return<div style={{fontSize:8,fontWeight:700,minHeight:11,color:aQty<=0?'#dc2626':aQty<=10?'#d97706':'#059669',background:shortfall&&need>0?'#fee2e2':'transparent',borderRadius:2,padding:shortfall?'0 2px':0}} title={'Adidas B2B: '+aQty+(ad?.futureDate?' | Expected: '+ad.futureDate+' ('+ad.futureQty+' units)':'')+(shortfall?' | SHORTFALL: need '+need+', avail '+(nsaStk+aQty):'')}>{aQty} b2b</div>})()}</div>)}
+              </div>)}
             <div style={{textAlign:'center',marginLeft:4,padding:'0 10px',borderLeft:'2px solid #e2e8f0'}}><div style={{fontSize:10,fontWeight:700,color:'#1e40af'}}>TOT</div>
               <div style={{fontSize:20,fontWeight:800,color:'#1e40af'}}>{qty}</div>
             </div>
