@@ -8863,27 +8863,22 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
 
 // PANTONE COLOR ADDER — search + add Pantone colors with swatch preview
 function PantoneAdder({onAdd,existingCodes=[]}){
-  const[q,setQ]=useState('');const[results,setResults]=useState([]);const[name,setName]=useState('');const[showCustom,setShowCustom]=useState(false);
+  const[q,setQ]=useState('');const[results,setResults]=useState([]);
   const onChange=(v)=>{setQ(v);if(v.length>=1){setResults(pantoneSearch(v))}else{setResults([])}};
-  const add=(code,hex)=>{if(existingCodes.some(c=>c.toUpperCase()===code.toUpperCase()))return;onAdd({code,hex,name:name||null});setQ('');setName('');setResults([]);setShowCustom(false)};
-  return<div>
-    <div style={{display:'flex',gap:6,alignItems:'center'}}>
-      <div style={{position:'relative',flex:1,maxWidth:280}}>
-        <input className="form-input" value={q} onChange={e=>onChange(e.target.value)} placeholder="Search Pantone... e.g. 281, Red, Cool Gray" style={{fontSize:12}}/>
-        {results.length>0&&<div style={{position:'absolute',top:'100%',left:0,right:0,zIndex:50,background:'white',border:'1px solid #e2e8f0',borderRadius:8,boxShadow:'0 4px 12px rgba(0,0,0,0.1)',maxHeight:240,overflowY:'auto',marginTop:2}}>
-          {results.map(r=><button key={r.code} onClick={()=>add(r.code,r.hex)} disabled={existingCodes.some(c=>c.toUpperCase()===r.code.toUpperCase())}
-            style={{display:'flex',gap:8,alignItems:'center',padding:'8px 12px',width:'100%',border:'none',background:existingCodes.some(c=>c.toUpperCase()===r.code.toUpperCase())?'#f1f5f9':'white',cursor:existingCodes.some(c=>c.toUpperCase()===r.code.toUpperCase())?'default':'pointer',fontSize:12,textAlign:'left',opacity:existingCodes.some(c=>c.toUpperCase()===r.code.toUpperCase())?0.5:1}}
-            onMouseOver={e=>{if(!existingCodes.some(c=>c.toUpperCase()===r.code.toUpperCase()))e.currentTarget.style.background='#f1f5f9'}} onMouseOut={e=>{if(!existingCodes.some(c=>c.toUpperCase()===r.code.toUpperCase()))e.currentTarget.style.background='white'}}>
-            <div style={{width:22,height:22,borderRadius:4,background:r.hex,border:'1px solid #d1d5db',flexShrink:0}}/>
-            <span style={{fontWeight:600}}>PMS {r.code}</span>
-            {existingCodes.some(c=>c.toUpperCase()===r.code.toUpperCase())&&<span style={{fontSize:10,color:'#94a3b8',marginLeft:'auto'}}>already added</span>}
-          </button>)}
-        </div>}
-      </div>
-      <input className="form-input" value={name} onChange={e=>setName(e.target.value)} placeholder="Nickname (optional)" style={{fontSize:12,width:140}}/>
-      {q&&!results.some(r=>r.code.toUpperCase()===q.toUpperCase().replace(/^PMS\s*/,''))&&<button onClick={()=>{const code=q.replace(/^PMS\s*/i,'').trim();if(code)add(code,pantoneHex(code)||'#cccccc')}} className="btn btn-sm btn-primary" style={{fontSize:11,flexShrink:0}}>Add PMS {q.replace(/^PMS\s*/i,'').trim()}</button>}
+  const add=(code,hex)=>{if(existingCodes.some(c=>c.toUpperCase()===code.toUpperCase()))return;onAdd({code,hex});setQ('');setResults([])};
+  return<div style={{display:'flex',gap:6,alignItems:'center'}}>
+    <div style={{position:'relative',flex:1,maxWidth:220}}>
+      <input className="form-input" value={q} onChange={e=>onChange(e.target.value)} placeholder="PMS number or color name..." style={{fontSize:12}}/>
+      {results.length>0&&<div style={{position:'absolute',top:'100%',left:0,right:0,zIndex:50,background:'white',border:'1px solid #e2e8f0',borderRadius:8,boxShadow:'0 4px 12px rgba(0,0,0,0.1)',maxHeight:240,overflowY:'auto',marginTop:2}}>
+        {results.map(r=>{const exists=existingCodes.some(c=>c.toUpperCase()===r.code.toUpperCase());return<button key={r.code} onClick={()=>add(r.code,r.hex)} disabled={exists}
+          style={{display:'flex',gap:8,alignItems:'center',padding:'6px 10px',width:'100%',border:'none',background:'white',cursor:exists?'default':'pointer',fontSize:12,textAlign:'left',opacity:exists?0.4:1}}
+          onMouseOver={e=>{if(!exists)e.currentTarget.style.background='#f1f5f9'}} onMouseOut={e=>e.currentTarget.style.background='white'}>
+          <div style={{width:18,height:18,borderRadius:3,background:r.hex,border:'1px solid #d1d5db',flexShrink:0}}/>
+          <span style={{fontWeight:600}}>PMS {r.code}</span>
+        </button>})}
+      </div>}
     </div>
-    <div style={{fontSize:10,color:'#94a3b8',marginTop:4}}>Type a PMS number or color name to search. Colors will appear as quick-pick options when adding inks to color ways.</div>
+    <button onClick={()=>{const code=q.replace(/^PMS\s*/i,'').trim();if(code&&!existingCodes.some(c=>c.toUpperCase()===code.toUpperCase()))add(code,pantoneHex(code)||'#cccccc')}} className="btn btn-sm btn-secondary" style={{fontSize:11,flexShrink:0}}>+ Add</button>
   </div>}
 
 // Pantone quick-pick chips — reusable inline component for CW ink inputs
@@ -9158,7 +9153,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     const colors=customer.pantone_colors||[];
     const savePantones=(newColors)=>{const newCust={...customer,pantone_colors:newColors};setCustLocal(newCust);onRefreshCustomer(newCust)};
     return<div className="card" style={{marginTop:12}}><div className="card-header"><h2>School Colors (Pantone)</h2></div><div className="card-body">
-      {colors.length===0&&<div style={{fontSize:12,color:'#94a3b8',marginBottom:8}}>No school colors set. Add Pantone colors so they appear as quick-pick options when building color ways.</div>}
+      {colors.length===0&&<div style={{fontSize:12,color:'#94a3b8',marginBottom:8}}>No Pantone colors added yet.</div>}
       <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:10}}>
         {colors.map((pc,i)=>{const hex=pantoneHex(pc.code)||pc.hex||'#ccc';const isDark=(hex)=>{const r=parseInt(hex.slice(1,3),16),g=parseInt(hex.slice(3,5),16),b=parseInt(hex.slice(5,7),16);return(r*299+g*587+b*114)/1000<140};
           return<div key={i} style={{display:'flex',alignItems:'center',gap:8,background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8,padding:'6px 10px'}}>
@@ -9175,7 +9170,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     const saveThreads=(newColors)=>{const newCust={...customer,thread_colors:newColors};setCustLocal(newCust);onRefreshCustomer(newCust)};
     const TC_COLORS={'Cardinal':'#8C1515','Navy':'#001f3f','Gold':'#FFD700','White':'#FFFFFF','Black':'#000000','Red':'#dc2626','Royal':'#4169e1','Silver':'#C0C0C0','Green':'#166534','Orange':'#EA580C','Maroon':'#800000','Purple':'#6B21A8','Kelly Green':'#4CBB17','Scarlet':'#FF2400','Columbia Blue':'#9BDDFF','Vegas Gold':'#C5B358','Old Gold':'#CFB53B','Charcoal':'#36454F','Pink':'#FF69B4','Brown':'#8B4513','Teal':'#008080','Athletic Gold':'#FFB81C'};
     return<div className="card" style={{marginTop:12}}><div className="card-header"><h2 style={{color:'#7c3aed'}}>Thread Colors (Embroidery)</h2></div><div className="card-body">
-      {threads.length===0&&<div style={{fontSize:12,color:'#94a3b8',marginBottom:8}}>No thread colors set. Add thread colors so they appear as quick-pick options for embroidery color ways.</div>}
+      {threads.length===0&&<div style={{fontSize:12,color:'#94a3b8',marginBottom:8}}>No thread colors added yet.</div>}
       <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:10}}>
         {threads.map((tc,i)=>{const hex=TC_COLORS[tc.name]||tc.hex||'#ccc';
           return<div key={i} style={{display:'flex',alignItems:'center',gap:8,background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8,padding:'6px 10px'}}>
@@ -9185,10 +9180,9 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
           </div>})}
       </div>
       <div style={{display:'flex',gap:6,alignItems:'center'}}>
-        <input className="form-input" id="overview-thread-input" placeholder='e.g. Cardinal, Madeira 1728, Navy...' style={{fontSize:12,flex:1,maxWidth:300}} onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();const v=e.target.value.trim();if(v&&!threads.some(t=>t.name.toLowerCase()===v.toLowerCase())){saveThreads([...threads,{name:v}]);e.target.value=''}}}}/>
+        <input className="form-input" id="overview-thread-input" placeholder='e.g. Cardinal, Madeira 1728...' style={{fontSize:12,flex:1,maxWidth:220}} onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();const v=e.target.value.trim();if(v&&!threads.some(t=>t.name.toLowerCase()===v.toLowerCase())){saveThreads([...threads,{name:v}]);e.target.value=''}}}}/>
         <button className="btn btn-sm btn-secondary" style={{fontSize:11,flexShrink:0}} onClick={()=>{const inp=document.getElementById('overview-thread-input');const v=inp?.value?.trim();if(v&&!threads.some(t=>t.name.toLowerCase()===v.toLowerCase())){saveThreads([...threads,{name:v}]);inp.value=''}}}>+ Add</button>
       </div>
-      <div style={{fontSize:10,color:'#94a3b8',marginTop:4}}>Thread colors appear as quick-pick options when adding embroidery color ways.</div>
     </div></div>})()}
   {/* PROMO DOLLARS TAB */}
   {tab==='promo'&&(()=>{
@@ -10462,10 +10456,9 @@ function CustModal({isOpen,onClose,onSave,customer,parents,reps}){
         </div>})}
     </div>
     <div style={{display:'flex',gap:6,alignItems:'center'}}>
-      <input className="form-input" id="thread-color-input" placeholder='e.g. Cardinal, Madeira 1728, Navy...' style={{fontSize:12,flex:1,maxWidth:300}} onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();const v=e.target.value.trim();if(v&&!(f.thread_colors||[]).some(t=>t.name.toLowerCase()===v.toLowerCase())){sv('thread_colors',[...(f.thread_colors||[]),{name:v}]);e.target.value=''}}}}/>
+      <input className="form-input" id="thread-color-input" placeholder='e.g. Cardinal, Madeira 1728...' style={{fontSize:12,flex:1,maxWidth:220}} onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();const v=e.target.value.trim();if(v&&!(f.thread_colors||[]).some(t=>t.name.toLowerCase()===v.toLowerCase())){sv('thread_colors',[...(f.thread_colors||[]),{name:v}]);e.target.value=''}}}}/>
       <button className="btn btn-sm btn-secondary" style={{fontSize:11,flexShrink:0}} onClick={()=>{const inp=document.getElementById('thread-color-input');const v=inp?.value?.trim();if(v&&!(f.thread_colors||[]).some(t=>t.name.toLowerCase()===v.toLowerCase())){sv('thread_colors',[...(f.thread_colors||[]),{name:v}]);inp.value=''}}}>+ Add</button>
     </div>
-    <div style={{fontSize:10,color:'#94a3b8',marginTop:4}}>Thread colors appear as quick-pick options when adding embroidery color ways.</div>
   </div>
   {valMsg&&<div style={{padding:'6px 12px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:6,fontSize:11,color:'#dc2626',margin:'0 16px 8px'}}>{valMsg}</div>}
   <div className="modal-footer"><button className="btn btn-secondary" onClick={onClose}>Cancel</button><button className="btn btn-primary" disabled={tcLook.loading} onClick={async()=>{if(!ok())return;const dat={...f,id:f.id||'c'+Date.now(),parent_id:ct==='sub'?f.parent_id:null,is_active:true,_oe:f._oe||0,_os:f._os||0,_oi:f._oi||0,_ob:f._ob||0};
