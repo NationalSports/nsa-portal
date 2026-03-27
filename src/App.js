@@ -780,7 +780,7 @@ const _artExtraCols=new Set(['art_sizes','garment_colors','item_mockups','color_
 // Columns that may not exist in so_jobs — stripped on retry
 const _jobExtraCols=new Set(['_art_ids','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at','coach_email_opened_at','follow_up_at','sent_history','run_order','run1_done','run2_done']);
 const _jobCols=['id','key','art_file_id','_art_ids','_draft','art_name','deco_type','positions','art_status','item_status','prod_status','total_units','fulfilled_units','split_from','created_at','assigned_machine','assigned_to','ship_method','items','_auto','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at','coach_email_opened_at','follow_up_at','sent_history','run_order','run1_done','run2_done','_merged'];
-const _custCols=['id','parent_id','name','alpha_tag','billing_address_line1','billing_address_line2','billing_city','billing_state','billing_zip','shipping_address_line1','shipping_address_line2','shipping_city','shipping_state','shipping_zip','adidas_ua_tier','catalog_markup','payment_terms','tax_rate','tax_exempt','primary_rep_id','notes','is_active','created_at','updated_at','alt_billing_addresses','art_files','pantone_colors'];
+const _custCols=['id','parent_id','name','alpha_tag','billing_address_line1','billing_address_line2','billing_city','billing_state','billing_zip','shipping_address_line1','shipping_address_line2','shipping_city','shipping_state','shipping_zip','adidas_ua_tier','catalog_markup','payment_terms','tax_rate','tax_exempt','primary_rep_id','notes','is_active','created_at','updated_at','alt_billing_addresses','art_files','pantone_colors','thread_colors'];
 // Pantone color lookup — common sports/apparel PMS colors with approximate hex values
 const PANTONE_MAP={
 '100':'#F4ED7C','101':'#F4ED47','102':'#FAE600','103':'#C6AD0F','104':'#AD9B0E','105':'#82750F',
@@ -5156,7 +5156,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                           <input className="form-input" value={ink} onChange={e=>{const cws=[...(art.color_ways||[])];const inks=[...cw.inks];inks[ii]=e.target.value;cws[ci]={...cw,inks};uArt(i,'color_ways',cws)}} placeholder={art.deco_type==='embroidery'?'Thread color...':'Ink color...'} style={{fontSize:11,flex:1}}/>
                           <button onClick={()=>{const cws=[...(art.color_ways||[])];cws[ci]={...cw,inks:cw.inks.filter((_,x)=>x!==ii)};uArt(i,'color_ways',cws)}} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:2}}><Icon name="x" size={10}/></button>
                         </div>)}
-                        <PantoneQuickPicks colors={cust?.pantone_colors} onPick={(v)=>{const cws=[...(art.color_ways||[])];const inks=[...cw.inks];const emptyIdx=inks.findIndex(x=>!x);if(emptyIdx>=0)inks[emptyIdx]=v;else inks.push(v);cws[ci]={...cw,inks};uArt(i,'color_ways',cws)}}/>
+                        {art.deco_type==='embroidery'?<ThreadQuickPicks colors={cust?.thread_colors} onPick={(v)=>{const cws=[...(art.color_ways||[])];const inks=[...cw.inks];const emptyIdx=inks.findIndex(x=>!x);if(emptyIdx>=0)inks[emptyIdx]=v;else inks.push(v);cws[ci]={...cw,inks};uArt(i,'color_ways',cws)}}/>
+                        :<PantoneQuickPicks colors={cust?.pantone_colors} onPick={(v)=>{const cws=[...(art.color_ways||[])];const inks=[...cw.inks];const emptyIdx=inks.findIndex(x=>!x);if(emptyIdx>=0)inks[emptyIdx]=v;else inks.push(v);cws[ci]={...cw,inks};uArt(i,'color_ways',cws)}}/>}
                         <button onClick={()=>{const cws=[...(art.color_ways||[])];cws[ci]={...cw,inks:[...cw.inks,'']};uArt(i,'color_ways',cws)}} style={{background:'none',border:'none',cursor:'pointer',fontSize:10,color:'#2563eb',padding:'2px 0'}}>+ Add color</button>
                       </div>)}
                     </div>
@@ -8898,6 +8899,20 @@ function PantoneQuickPicks({colors,onPick}){
       </button>})}
   </div>}
 
+// Thread color quick-pick chips for embroidery CW inputs
+function ThreadQuickPicks({colors,onPick}){
+  if(!colors||colors.length===0)return null;
+  const TC_COLORS={'Cardinal':'#8C1515','Navy':'#001f3f','Gold':'#FFD700','White':'#FFFFFF','Black':'#000000','Red':'#dc2626','Royal':'#4169e1','Silver':'#C0C0C0','Green':'#166534','Orange':'#EA580C','Maroon':'#800000','Purple':'#6B21A8','Kelly Green':'#4CBB17','Scarlet':'#FF2400','Columbia Blue':'#9BDDFF','Vegas Gold':'#C5B358','Old Gold':'#CFB53B','Charcoal':'#36454F','Pink':'#FF69B4','Brown':'#8B4513','Cream':'#FFFDD0','Tan':'#D2B48C','Teal':'#008080','Yellow':'#FFD700','Athletic Gold':'#FFB81C'};
+  return<div style={{display:'flex',gap:4,flexWrap:'wrap',marginTop:3,marginBottom:2}}>
+    {colors.map((tc,i)=>{const hex=TC_COLORS[tc.name]||tc.hex||'#ccc';
+      return<button key={i} onClick={()=>onPick(tc.name)} title={tc.name}
+        style={{display:'inline-flex',alignItems:'center',gap:3,padding:'1px 6px',background:'white',border:'1px solid #e2e8f0',borderRadius:4,cursor:'pointer',fontSize:10,color:'#475569',fontWeight:500}}
+        onMouseOver={e=>{e.currentTarget.style.background='#f1f5f9';e.currentTarget.style.borderColor='#7c3aed'}} onMouseOut={e=>{e.currentTarget.style.background='white';e.currentTarget.style.borderColor='#e2e8f0'}}>
+        <span style={{width:10,height:10,borderRadius:2,background:hex,border:'1px solid #d1d5db',flexShrink:0}}/>
+        {tc.name}
+      </button>})}
+  </div>}
+
 // CUSTOMER DETAIL
 function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,cu,onOpenSO,onOpenEst,ests,onSaveSO,REPS,prod,onCopy,onDelete,onSavePromoProgram,onDeletePromoProgram,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,onSaveCredit,onDeleteCredit,onRefreshCustomer,nf}){
   const[tab,setTab]=useState('activity');const[oF,setOF]=useState('all');const[sF,setSF]=useState('all');const[rR,setRR]=useState('thisyear');
@@ -9153,6 +9168,27 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
           </div>})}
       </div>
       <PantoneAdder onAdd={(pc)=>savePantones([...colors,pc])} existingCodes={colors.map(c=>c.code)}/>
+    </div></div>})()}
+  {/* THREAD COLORS — Embroidery thread color management on overview tab */}
+  {tab==='overview'&&(()=>{
+    const threads=customer.thread_colors||[];
+    const saveThreads=(newColors)=>{const newCust={...customer,thread_colors:newColors};setCustLocal(newCust);onRefreshCustomer(newCust)};
+    const TC_COLORS={'Cardinal':'#8C1515','Navy':'#001f3f','Gold':'#FFD700','White':'#FFFFFF','Black':'#000000','Red':'#dc2626','Royal':'#4169e1','Silver':'#C0C0C0','Green':'#166534','Orange':'#EA580C','Maroon':'#800000','Purple':'#6B21A8','Kelly Green':'#4CBB17','Scarlet':'#FF2400','Columbia Blue':'#9BDDFF','Vegas Gold':'#C5B358','Old Gold':'#CFB53B','Charcoal':'#36454F','Pink':'#FF69B4','Brown':'#8B4513','Teal':'#008080','Athletic Gold':'#FFB81C'};
+    return<div className="card" style={{marginTop:12}}><div className="card-header"><h2 style={{color:'#7c3aed'}}>Thread Colors (Embroidery)</h2></div><div className="card-body">
+      {threads.length===0&&<div style={{fontSize:12,color:'#94a3b8',marginBottom:8}}>No thread colors set. Add thread colors so they appear as quick-pick options for embroidery color ways.</div>}
+      <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:10}}>
+        {threads.map((tc,i)=>{const hex=TC_COLORS[tc.name]||tc.hex||'#ccc';
+          return<div key={i} style={{display:'flex',alignItems:'center',gap:8,background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8,padding:'6px 10px'}}>
+            <div style={{width:28,height:28,borderRadius:6,background:hex,border:'1px solid #d1d5db',flexShrink:0}}/>
+            <div style={{fontSize:12,fontWeight:700,color:'#1e293b'}}>{tc.name}</div>
+            <button onClick={()=>saveThreads(threads.filter((_,x)=>x!==i))} style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',padding:2,marginLeft:4}} title="Remove"><Icon name="x" size={12}/></button>
+          </div>})}
+      </div>
+      <div style={{display:'flex',gap:6,alignItems:'center'}}>
+        <input className="form-input" id="overview-thread-input" placeholder='e.g. Cardinal, Madeira 1728, Navy...' style={{fontSize:12,flex:1,maxWidth:300}} onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();const v=e.target.value.trim();if(v&&!threads.some(t=>t.name.toLowerCase()===v.toLowerCase())){saveThreads([...threads,{name:v}]);e.target.value=''}}}}/>
+        <button className="btn btn-sm btn-secondary" style={{fontSize:11,flexShrink:0}} onClick={()=>{const inp=document.getElementById('overview-thread-input');const v=inp?.value?.trim();if(v&&!threads.some(t=>t.name.toLowerCase()===v.toLowerCase())){saveThreads([...threads,{name:v}]);inp.value=''}}}>+ Add</button>
+      </div>
+      <div style={{fontSize:10,color:'#94a3b8',marginTop:4}}>Thread colors appear as quick-pick options when adding embroidery color ways.</div>
     </div></div>})()}
   {/* PROMO DOLLARS TAB */}
   {tab==='promo'&&(()=>{
@@ -9455,7 +9491,8 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
                       <input className="form-input" value={ink} onChange={e=>{const cws=[...(art.color_ways||[])];const inks=[...cw.inks];inks[ii]=e.target.value;cws[ci]={...cw,inks};uCustArt(oi,'color_ways',cws)}} placeholder={art.deco_type==='embroidery'?'Thread color...':'Ink color...'} style={{fontSize:11,flex:1}}/>
                       <button onClick={()=>{const cws=[...(art.color_ways||[])];cws[ci]={...cw,inks:cw.inks.filter((_,x)=>x!==ii)};uCustArt(oi,'color_ways',cws)}} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:2}}><Icon name="x" size={10}/></button>
                     </div>)}
-                    <PantoneQuickPicks colors={customer.pantone_colors} onPick={(v)=>{const cws=[...(art.color_ways||[])];const inks=[...cw.inks];const emptyIdx=inks.findIndex(x=>!x);if(emptyIdx>=0)inks[emptyIdx]=v;else inks.push(v);cws[ci]={...cw,inks};uCustArt(oi,'color_ways',cws)}}/>
+                    {art.deco_type==='embroidery'?<ThreadQuickPicks colors={customer.thread_colors} onPick={(v)=>{const cws=[...(art.color_ways||[])];const inks=[...cw.inks];const emptyIdx=inks.findIndex(x=>!x);if(emptyIdx>=0)inks[emptyIdx]=v;else inks.push(v);cws[ci]={...cw,inks};uCustArt(oi,'color_ways',cws)}}/>
+                    :<PantoneQuickPicks colors={customer.pantone_colors} onPick={(v)=>{const cws=[...(art.color_ways||[])];const inks=[...cw.inks];const emptyIdx=inks.findIndex(x=>!x);if(emptyIdx>=0)inks[emptyIdx]=v;else inks.push(v);cws[ci]={...cw,inks};uCustArt(oi,'color_ways',cws)}}/>}
                     <button onClick={()=>{const cws=[...(art.color_ways||[])];cws[ci]={...cw,inks:[...cw.inks,'']};uCustArt(oi,'color_ways',cws)}} style={{background:'none',border:'none',cursor:'pointer',fontSize:10,color:'#2563eb',padding:'2px 0'}}>+ Add color</button>
                   </div>)}
                 </div>
@@ -10415,6 +10452,20 @@ function CustModal({isOpen,onClose,onSave,customer,parents,reps}){
         </div>})}
     </div>
     <PantoneAdder onAdd={(pc)=>sv('pantone_colors',[...(f.pantone_colors||[]),pc])} existingCodes={(f.pantone_colors||[]).map(c=>c.code)}/>
+    <div style={{fontSize:11,fontWeight:700,color:'#7c3aed',marginTop:12,marginBottom:6,textTransform:'uppercase'}}>Thread Colors (Embroidery)</div>
+    <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:8}}>
+      {(f.thread_colors||[]).map((tc,i)=>{const TC_COLORS={'Cardinal':'#8C1515','Navy':'#001f3f','Gold':'#FFD700','White':'#FFFFFF','Black':'#000000','Red':'#dc2626','Royal':'#4169e1','Silver':'#C0C0C0','Green':'#166534','Orange':'#EA580C','Maroon':'#800000','Purple':'#6B21A8','Kelly Green':'#4CBB17','Scarlet':'#FF2400','Columbia Blue':'#9BDDFF','Vegas Gold':'#C5B358','Old Gold':'#CFB53B','Charcoal':'#36454F','Pink':'#FF69B4','Brown':'#8B4513','Teal':'#008080','Athletic Gold':'#FFB81C'};const hex=TC_COLORS[tc.name]||tc.hex||'#ccc';
+        return<div key={i} style={{display:'inline-flex',alignItems:'center',gap:6,background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:6,padding:'4px 8px'}}>
+          <div style={{width:18,height:18,borderRadius:4,background:hex,border:'1px solid #d1d5db',flexShrink:0}}/>
+          <span style={{fontSize:11,fontWeight:600}}>{tc.name}</span>
+          <button onClick={()=>sv('thread_colors',(f.thread_colors||[]).filter((_,x)=>x!==i))} style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',padding:0,marginLeft:2}}><Icon name="x" size={10}/></button>
+        </div>})}
+    </div>
+    <div style={{display:'flex',gap:6,alignItems:'center'}}>
+      <input className="form-input" id="thread-color-input" placeholder='e.g. Cardinal, Madeira 1728, Navy...' style={{fontSize:12,flex:1,maxWidth:300}} onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();const v=e.target.value.trim();if(v&&!(f.thread_colors||[]).some(t=>t.name.toLowerCase()===v.toLowerCase())){sv('thread_colors',[...(f.thread_colors||[]),{name:v}]);e.target.value=''}}}}/>
+      <button className="btn btn-sm btn-secondary" style={{fontSize:11,flexShrink:0}} onClick={()=>{const inp=document.getElementById('thread-color-input');const v=inp?.value?.trim();if(v&&!(f.thread_colors||[]).some(t=>t.name.toLowerCase()===v.toLowerCase())){sv('thread_colors',[...(f.thread_colors||[]),{name:v}]);inp.value=''}}}>+ Add</button>
+    </div>
+    <div style={{fontSize:10,color:'#94a3b8',marginTop:4}}>Thread colors appear as quick-pick options when adding embroidery color ways.</div>
   </div>
   {valMsg&&<div style={{padding:'6px 12px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:6,fontSize:11,color:'#dc2626',margin:'0 16px 8px'}}>{valMsg}</div>}
   <div className="modal-footer"><button className="btn btn-secondary" onClick={onClose}>Cancel</button><button className="btn btn-primary" disabled={tcLook.loading} onClick={async()=>{if(!ok())return;const dat={...f,id:f.id||'c'+Date.now(),parent_id:ct==='sub'?f.parent_id:null,is_active:true,_oe:f._oe||0,_os:f._os||0,_oi:f._oi||0,_ob:f._ob||0};
