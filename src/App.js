@@ -780,7 +780,87 @@ const _artExtraCols=new Set(['art_sizes','garment_colors','item_mockups','color_
 // Columns that may not exist in so_jobs — stripped on retry
 const _jobExtraCols=new Set(['_art_ids','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at','coach_email_opened_at','follow_up_at','sent_history','run_order','run1_done','run2_done']);
 const _jobCols=['id','key','art_file_id','_art_ids','_draft','art_name','deco_type','positions','art_status','item_status','prod_status','total_units','fulfilled_units','split_from','created_at','assigned_machine','assigned_to','ship_method','items','_auto','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at','coach_email_opened_at','follow_up_at','sent_history','run_order','run1_done','run2_done','_merged'];
-const _custCols=['id','parent_id','name','alpha_tag','billing_address_line1','billing_address_line2','billing_city','billing_state','billing_zip','shipping_address_line1','shipping_address_line2','shipping_city','shipping_state','shipping_zip','adidas_ua_tier','catalog_markup','payment_terms','tax_rate','tax_exempt','primary_rep_id','notes','is_active','created_at','updated_at','alt_billing_addresses','art_files'];
+const _custCols=['id','parent_id','name','alpha_tag','billing_address_line1','billing_address_line2','billing_city','billing_state','billing_zip','shipping_address_line1','shipping_address_line2','shipping_city','shipping_state','shipping_zip','adidas_ua_tier','catalog_markup','payment_terms','tax_rate','tax_exempt','primary_rep_id','notes','is_active','created_at','updated_at','alt_billing_addresses','art_files','pantone_colors'];
+// Pantone color lookup — common sports/apparel PMS colors with approximate hex values
+const PANTONE_MAP={
+'100':'#F4ED7C','101':'#F4ED47','102':'#FAE600','103':'#C6AD0F','104':'#AD9B0E','105':'#82750F',
+'106':'#F7E859','107':'#F9E526','108':'#FEDB00','109':'#FFD100','110':'#D8A600','111':'#AA8A00','112':'#9C8412',
+'113':'#FAE053','114':'#F9DD16','115':'#FBDB0F','116':'#FFCD00','117':'#C6960C','118':'#AA7D03','119':'#895F00',
+'120':'#FBDB65','121':'#F8D54B','122':'#FED100','123':'#FFC72C','124':'#EAAA00','125':'#B58500','126':'#9A7611',
+'127':'#F3DD6D','128':'#F5D752','129':'#F8CE46','130':'#F2A900','131':'#CC8A00','132':'#A17400',
+'133':'#6E4B00','134':'#FFD87F','135':'#FCC861','136':'#FCBA52','137':'#FCA311','138':'#E57200','139':'#AF6D04',
+'140':'#7A5A11','141':'#F4CE79','142':'#F1C75D','143':'#F0BF47','144':'#ED8B00','145':'#CF7F00','146':'#A06E13',
+'148':'#FFD691','149':'#FCC97D','150':'#FCAE5A','151':'#FF8200','152':'#E66E00','153':'#BC5F00',
+'155':'#F4CB8D','156':'#F4B76A','157':'#EE7624','158':'#E35205','159':'#CB4600','160':'#9B4D1E',
+'161':'#612D12','162':'#F7AA7B','163':'#F68B52','164':'#F56600','165':'#FF5F00','166':'#E35205','167':'#BE4D00',
+'168':'#6E3219','169':'#F8A3A0','170':'#F48078','171':'#F35B53','172':'#F74902','173':'#CF4520','174':'#963821',
+'175':'#6E302A','176':'#F5A5B8','177':'#F48CA6','178':'#F26A7E','179':'#E03C31','180':'#C13828','181':'#81312F',
+'182':'#F7B5CC','183':'#F472B2','184':'#F04D98','185':'#E4002B','186':'#CE0037','187':'#AF272F','188':'#7C2B3B',
+'189':'#FFA5C8','190':'#F6699A','191':'#F04880','192':'#E40046','193':'#BF0D3E','194':'#992135',
+'196':'#F2D1D6','197':'#EC7FA6','198':'#DF1F71','199':'#D50032','200':'#BA0C2F','201':'#9B2335','202':'#862633',
+'203':'#ECABBE','204':'#E96FA0','205':'#E54C82','206':'#D6004D','207':'#A50040','208':'#862041',
+'209':'#6F2840','210':'#FFA1CB','211':'#FF7CB9','212':'#F75DA8','213':'#E94F8A','214':'#CC0066','215':'#AC145A',
+'216':'#7E2D4D','217':'#EABECD','218':'#E54C93','219':'#DA1884','220':'#A70050','221':'#890043',
+'222':'#6E273D','223':'#F27CB7','224':'#F04DA1','225':'#E10086','226':'#D60080','227':'#AA0061','228':'#830051',
+'229':'#6E2B57','230':'#FFA0D0','231':'#F269B1','232':'#F04DA1','233':'#CE0078','234':'#A00054',
+'235':'#82004F','236':'#F580C4','237':'#F25CAE','238':'#E440A0','239':'#CC0088','240':'#AA0070',
+'241':'#8F0056','242':'#790049','243':'#F5A9D0','244':'#EB80B5','245':'#DD63A7','246':'#CC00A0',
+'247':'#B30090','248':'#990082','249':'#750060','250':'#E8A3C3','251':'#DD80B8','252':'#C44DA0',
+'253':'#AF23A5','254':'#A0209D','255':'#78175A',
+'256':'#D6A8CA','257':'#C280A7','258':'#8B3D8F','259':'#6D2077','260':'#5C1F64','261':'#55175E',
+'262':'#4E1A5F','263':'#CCA8D0','264':'#A870B6','265':'#7B2D8E','266':'#6B1F7C','267':'#5F1D78',
+'268':'#4F1A70','269':'#431F60','270':'#B0A1CF','271':'#9485BC','272':'#7566A0','273':'#2E1A6E',
+'274':'#281560','275':'#201450','276':'#1A103E','277':'#B4CBE8','278':'#91B2DC','279':'#418FDE',
+'280':'#012169','281':'#002868','282':'#002554','283':'#6EAADE','284':'#5B99D6','285':'#0072CE',
+'286':'#0033A0','287':'#003DA5','288':'#002D72','289':'#0C2340','290':'#B5D4E8','291':'#A0C8E2',
+'292':'#69B3E7','293':'#003DA5','294':'#002F6C','295':'#002244','296':'#041C3C',
+'297':'#71C5E8','298':'#41B6E6','299':'#00A3E0','300':'#005EB8','301':'#004C97','302':'#003B5C','303':'#002A3A',
+'304':'#A1DAE8','305':'#70CFE9','306':'#00BCE4','307':'#006BA6','308':'#00587C','309':'#003946',
+'310':'#6AD1E3','311':'#00B5D6','312':'#00A9CE','313':'#0092BC','314':'#007FA3','315':'#005F7F','316':'#004851',
+'317':'#C5E8DB','318':'#8AD9C8','319':'#3CC9AD','320':'#009B8D','321':'#008675','322':'#006F62',
+'323':'#005E56','324':'#A5DFD3','325':'#64CDB4','326':'#00B189','327':'#009B77','328':'#007B5F',
+'329':'#006747','330':'#00503E','331':'#ADDFCE','332':'#91DCBA','333':'#3CC9A7','334':'#009A63',
+'335':'#007A53','336':'#00614B','337':'#8FD5B2','338':'#6EC9A0','339':'#00B27A','340':'#00965E',
+'341':'#007A4D','342':'#006B3F','343':'#005436','344':'#A3DDBB','345':'#7FD2A0','346':'#60C882',
+'347':'#009B48','348':'#008542','349':'#006B38','350':'#254E2E',
+'351':'#86E6B0','352':'#62E098','353':'#3DD68F','354':'#00B140','355':'#009639','356':'#007A33','357':'#215732',
+'358':'#A4D867','359':'#A0D44E','360':'#6CC24A','361':'#43B02A','362':'#339E35','363':'#2C8C34',
+'364':'#3A7D44','365':'#C0E66E','366':'#B7DB3B','367':'#A4D233','368':'#78BE20','369':'#64A70B',
+'370':'#5B8F22','371':'#4C6A2D','372':'#D4EB8E','373':'#CEDC00','374':'#C5D600','375':'#97D700',
+'376':'#84BD00','377':'#6E9B2D','378':'#4E5E2F',
+'379':'#E0E84E','380':'#D2D755','381':'#CEDC00','382':'#C1D100','383':'#A3AA00','384':'#8A8D00',
+'385':'#707219','386':'#E6EB58','387':'#E1E733','388':'#D3D800','389':'#C9CF22','390':'#9EA700',
+'391':'#808600','392':'#767100',
+'393':'#F2EA74','394':'#EDEA00','395':'#F0EC1F','396':'#E3E935','397':'#BCC600','398':'#ADB300',
+'399':'#9B9A09',
+'400':'#C4B9A7','401':'#B0A696','402':'#A39B8B','403':'#948777','404':'#857362','405':'#696158',
+'406':'#C9BEB5','407':'#B2A497','408':'#A39283','409':'#92817A','410':'#7A6B63','411':'#5E514D',
+'412':'#382F2C',
+'413':'#C7C2B5','414':'#B5AFA3','415':'#A39E92','416':'#908B80','417':'#7A756A','418':'#5E5E57',
+'419':'#212721',
+'420':'#C9C6C0','421':'#B3B0AB','422':'#A1A09E','423':'#8D8C8C','424':'#747678','425':'#55585A',
+'426':'#25282A',
+'427':'#CDD5D8','428':'#BBC4C9','429':'#A1ADB3','430':'#7D8B92','431':'#5B6770','432':'#333F48',
+'433':'#1D252D',
+'434':'#D5C5BD','435':'#C2A8A0','436':'#A88583','437':'#7B4D51','438':'#593536','439':'#463034',
+'440':'#3E3135',
+'441':'#BCC6C0','442':'#A3B2AD','443':'#8B9D96','444':'#717C7D','445':'#505759','446':'#3D4244',
+'447':'#373A36',
+'Black':'#2D2926','Black 2':'#332F21','Black 3':'#212721','Black 4':'#31261D','Black 5':'#3E3135',
+'Black 6':'#101820','Black 7':'#3D3935',
+'White':'#FFFFFF','Cool Gray 1':'#D9D9D6','Cool Gray 2':'#D0D0CE','Cool Gray 3':'#C8C9C7',
+'Cool Gray 4':'#BBBCBC','Cool Gray 5':'#B1B3B3','Cool Gray 6':'#A7A8AA','Cool Gray 7':'#97999B',
+'Cool Gray 8':'#888B8D','Cool Gray 9':'#75787B','Cool Gray 10':'#63666A','Cool Gray 11':'#53565A',
+'Warm Gray 1':'#D7D2CB','Warm Gray 2':'#CBC4BC','Warm Gray 3':'#BFB8AF','Warm Gray 4':'#B6ADA5',
+'Warm Gray 5':'#ACA39A','Warm Gray 6':'#A59C94','Warm Gray 7':'#968C83','Warm Gray 8':'#8C8279',
+'Warm Gray 9':'#83786F','Warm Gray 10':'#796E65','Warm Gray 11':'#6E6259',
+'Reflex Blue':'#001489','Process Blue':'#0085CA','Rubine Red':'#CE0058','Rhodamine Red':'#E10098',
+'Purple':'#BB29BB','Green':'#00AB84','Orange 021':'#FE5000','Red 032':'#EF3340',
+'Yellow':'#FEDD00','Warm Red':'#F9423A','Violet':'#440099',
+'871':'#84754E','872':'#85714D','873':'#866D4B','874':'#8B6F4E','875':'#87714D','876':'#8B6E4E','877':'#8A8D8F'
+};
+const pantoneHex=(code)=>{if(!code)return null;const s=code.toString().toUpperCase().replace(/\s*(C|U|CP|UP|TCX|TPX|TPG|TN)\s*$/,'').replace(/^PMS\s*/,'').replace(/^PANTONE\s*/,'').trim();return PANTONE_MAP[s]||PANTONE_MAP[s.replace(/\s+/g,' ')]||null};
+const pantoneSearch=(query)=>{if(!query||query.length<1)return[];const q=query.toUpperCase().replace(/^PMS\s*/,'').replace(/^PANTONE\s*/,'').trim();return Object.entries(PANTONE_MAP).filter(([k])=>k.toUpperCase().includes(q)).slice(0,12).map(([code,hex])=>({code,hex}))};
 const _vendCols=['id','name','vendor_type','api_provider','nsa_carries_inventory','click_automation','is_active','contact_email','contact_phone','rep_name','payment_terms','notes'];
 const _firmDateCols=['item_desc','date','approved'];
 const _issueCols=['id','status','description','priority','page','viewing','reported_by','role','timestamp','resolved_at','resolution'];
@@ -5072,9 +5152,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                         </div>
                         {cw.inks.map((ink,ii)=><div key={ii} style={{display:'flex',gap:4,alignItems:'center',marginBottom:3}}>
                           <span style={{fontSize:10,color:'#94a3b8',width:14,textAlign:'right'}}>{ii+1}</span>
+                          {pantoneHex(ink)&&<span style={{width:12,height:12,borderRadius:2,background:pantoneHex(ink),border:'1px solid #d1d5db',flexShrink:0}}/>}
                           <input className="form-input" value={ink} onChange={e=>{const cws=[...(art.color_ways||[])];const inks=[...cw.inks];inks[ii]=e.target.value;cws[ci]={...cw,inks};uArt(i,'color_ways',cws)}} placeholder={art.deco_type==='embroidery'?'Thread color...':'Ink color...'} style={{fontSize:11,flex:1}}/>
                           <button onClick={()=>{const cws=[...(art.color_ways||[])];cws[ci]={...cw,inks:cw.inks.filter((_,x)=>x!==ii)};uArt(i,'color_ways',cws)}} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:2}}><Icon name="x" size={10}/></button>
                         </div>)}
+                        <PantoneQuickPicks colors={cust?.pantone_colors} onPick={(v)=>{const cws=[...(art.color_ways||[])];const inks=[...cw.inks];const emptyIdx=inks.findIndex(x=>!x);if(emptyIdx>=0)inks[emptyIdx]=v;else inks.push(v);cws[ci]={...cw,inks};uArt(i,'color_ways',cws)}}/>
                         <button onClick={()=>{const cws=[...(art.color_ways||[])];cws[ci]={...cw,inks:[...cw.inks,'']};uArt(i,'color_ways',cws)}} style={{background:'none',border:'none',cursor:'pointer',fontSize:10,color:'#2563eb',padding:'2px 0'}}>+ Add color</button>
                       </div>)}
                     </div>
@@ -6995,7 +7077,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                       {_cl3.length>0&&<div>
                         <div style={{fontSize:10,fontWeight:600,color:'#94a3b8',marginBottom:4}}>{_isE3?'Thread Colors':'Ink Colors / Pantones'} ({_cl3.length})</div>
                         <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-                          {_cl3.map((cl,i)=>{const clL=cl.toLowerCase();const sw=_colorMap2[cl]||Object.entries(_colorMap2).find(([k])=>clL.includes(k.toLowerCase()))?.[1]||null;
+                          {_cl3.map((cl,i)=>{const clL=cl.toLowerCase();const sw=_colorMap2[cl]||Object.entries(_colorMap2).find(([k])=>clL.includes(k.toLowerCase()))?.[1]||pantoneHex(cl)||null;
                             return<div key={i} style={{display:'flex',alignItems:'center',gap:5,padding:'3px 10px',background:'white',border:'1px solid #e2e8f0',borderRadius:6}}>
                               <div style={{width:14,height:14,borderRadius:3,border:'1px solid #d1d5db',background:sw||'linear-gradient(135deg,#f1f5f9,#e2e8f0)'}}/>
                               <span style={{fontSize:11,fontWeight:600}}>{cl}</span></div>})}
@@ -8778,6 +8860,44 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   </div>);
 }
 
+// PANTONE COLOR ADDER — search + add Pantone colors with swatch preview
+function PantoneAdder({onAdd,existingCodes=[]}){
+  const[q,setQ]=useState('');const[results,setResults]=useState([]);const[name,setName]=useState('');const[showCustom,setShowCustom]=useState(false);
+  const onChange=(v)=>{setQ(v);if(v.length>=1){setResults(pantoneSearch(v))}else{setResults([])}};
+  const add=(code,hex)=>{if(existingCodes.some(c=>c.toUpperCase()===code.toUpperCase()))return;onAdd({code,hex,name:name||null});setQ('');setName('');setResults([]);setShowCustom(false)};
+  return<div>
+    <div style={{display:'flex',gap:6,alignItems:'center'}}>
+      <div style={{position:'relative',flex:1,maxWidth:280}}>
+        <input className="form-input" value={q} onChange={e=>onChange(e.target.value)} placeholder="Search Pantone... e.g. 281, Red, Cool Gray" style={{fontSize:12}}/>
+        {results.length>0&&<div style={{position:'absolute',top:'100%',left:0,right:0,zIndex:50,background:'white',border:'1px solid #e2e8f0',borderRadius:8,boxShadow:'0 4px 12px rgba(0,0,0,0.1)',maxHeight:240,overflowY:'auto',marginTop:2}}>
+          {results.map(r=><button key={r.code} onClick={()=>add(r.code,r.hex)} disabled={existingCodes.some(c=>c.toUpperCase()===r.code.toUpperCase())}
+            style={{display:'flex',gap:8,alignItems:'center',padding:'8px 12px',width:'100%',border:'none',background:existingCodes.some(c=>c.toUpperCase()===r.code.toUpperCase())?'#f1f5f9':'white',cursor:existingCodes.some(c=>c.toUpperCase()===r.code.toUpperCase())?'default':'pointer',fontSize:12,textAlign:'left',opacity:existingCodes.some(c=>c.toUpperCase()===r.code.toUpperCase())?0.5:1}}
+            onMouseOver={e=>{if(!existingCodes.some(c=>c.toUpperCase()===r.code.toUpperCase()))e.currentTarget.style.background='#f1f5f9'}} onMouseOut={e=>{if(!existingCodes.some(c=>c.toUpperCase()===r.code.toUpperCase()))e.currentTarget.style.background='white'}}>
+            <div style={{width:22,height:22,borderRadius:4,background:r.hex,border:'1px solid #d1d5db',flexShrink:0}}/>
+            <span style={{fontWeight:600}}>PMS {r.code}</span>
+            {existingCodes.some(c=>c.toUpperCase()===r.code.toUpperCase())&&<span style={{fontSize:10,color:'#94a3b8',marginLeft:'auto'}}>already added</span>}
+          </button>)}
+        </div>}
+      </div>
+      <input className="form-input" value={name} onChange={e=>setName(e.target.value)} placeholder="Nickname (optional)" style={{fontSize:12,width:140}}/>
+      {q&&!results.some(r=>r.code.toUpperCase()===q.toUpperCase().replace(/^PMS\s*/,''))&&<button onClick={()=>{const code=q.replace(/^PMS\s*/i,'').trim();if(code)add(code,pantoneHex(code)||'#cccccc')}} className="btn btn-sm btn-primary" style={{fontSize:11,flexShrink:0}}>Add PMS {q.replace(/^PMS\s*/i,'').trim()}</button>}
+    </div>
+    <div style={{fontSize:10,color:'#94a3b8',marginTop:4}}>Type a PMS number or color name to search. Colors will appear as quick-pick options when adding inks to color ways.</div>
+  </div>}
+
+// Pantone quick-pick chips — reusable inline component for CW ink inputs
+function PantoneQuickPicks({colors,onPick}){
+  if(!colors||colors.length===0)return null;
+  return<div style={{display:'flex',gap:4,flexWrap:'wrap',marginTop:3,marginBottom:2}}>
+    {colors.map((pc,i)=>{const hex=pantoneHex(pc.code)||pc.hex||'#ccc';
+      return<button key={i} onClick={()=>onPick('PMS '+pc.code)} title={(pc.name?pc.name+' — ':'')+'PMS '+pc.code}
+        style={{display:'inline-flex',alignItems:'center',gap:3,padding:'1px 6px',background:'white',border:'1px solid #e2e8f0',borderRadius:4,cursor:'pointer',fontSize:10,color:'#475569',fontWeight:500}}
+        onMouseOver={e=>{e.currentTarget.style.background='#f1f5f9';e.currentTarget.style.borderColor='#2563eb'}} onMouseOut={e=>{e.currentTarget.style.background='white';e.currentTarget.style.borderColor='#e2e8f0'}}>
+        <span style={{width:10,height:10,borderRadius:2,background:hex,border:'1px solid #d1d5db',flexShrink:0}}/>
+        {pc.name||('PMS '+pc.code)}
+      </button>})}
+  </div>}
+
 // CUSTOMER DETAIL
 function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,cu,onOpenSO,onOpenEst,ests,onSaveSO,REPS,prod,onCopy,onDelete,onSavePromoProgram,onDeletePromoProgram,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,onSaveCredit,onDeleteCredit,onRefreshCustomer,nf}){
   const[tab,setTab]=useState('activity');const[oF,setOF]=useState('all');const[sF,setSF]=useState('all');const[rR,setRR]=useState('thisyear');
@@ -9018,6 +9138,22 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     <div><div className="form-label">Tax</div><div style={{fontSize:13}}>{customer.tax_exempt?<span style={{color:'#dc2626',fontWeight:700}}>TAX EXEMPT</span>:customer.tax_rate?(customer.tax_rate*100).toFixed(3)+'%':'No rate set'}</div></div>
     <div><div className="form-label">Sales Rep</div><div style={{fontSize:13,fontWeight:600}}>{customer.primary_rep_id?REPS.find(r=>r.id===customer.primary_rep_id)?.name||'Unknown':'— Not assigned —'}</div></div></div>
   </div></div>}
+  {/* SCHOOL COLORS — Pantone color management on overview tab */}
+  {tab==='overview'&&(()=>{
+    const colors=customer.pantone_colors||[];
+    const savePantones=(newColors)=>{const newCust={...customer,pantone_colors:newColors};setCustLocal(newCust);onRefreshCustomer(newCust)};
+    return<div className="card" style={{marginTop:12}}><div className="card-header"><h2>School Colors (Pantone)</h2></div><div className="card-body">
+      {colors.length===0&&<div style={{fontSize:12,color:'#94a3b8',marginBottom:8}}>No school colors set. Add Pantone colors so they appear as quick-pick options when building color ways.</div>}
+      <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:10}}>
+        {colors.map((pc,i)=>{const hex=pantoneHex(pc.code)||pc.hex||'#ccc';const isDark=(hex)=>{const r=parseInt(hex.slice(1,3),16),g=parseInt(hex.slice(3,5),16),b=parseInt(hex.slice(5,7),16);return(r*299+g*587+b*114)/1000<140};
+          return<div key={i} style={{display:'flex',alignItems:'center',gap:8,background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8,padding:'6px 10px'}}>
+            <div style={{width:28,height:28,borderRadius:6,background:hex,border:'1px solid #d1d5db',flexShrink:0}}/>
+            <div><div style={{fontSize:12,fontWeight:700,color:'#1e293b'}}>PMS {pc.code}</div>{pc.name&&<div style={{fontSize:10,color:'#64748b'}}>{pc.name}</div>}</div>
+            <button onClick={()=>savePantones(colors.filter((_,x)=>x!==i))} style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',padding:2,marginLeft:4}} title="Remove"><Icon name="x" size={12}/></button>
+          </div>})}
+      </div>
+      <PantoneAdder onAdd={(pc)=>savePantones([...colors,pc])} existingCodes={colors.map(c=>c.code)}/>
+    </div></div>})()}
   {/* PROMO DOLLARS TAB */}
   {tab==='promo'&&(()=>{
     const programs=customer.promo_programs||[];let periods=customer.promo_periods||[];const usage=customer.promo_usage||[];
@@ -9315,9 +9451,11 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
                     </div>
                     {cw.inks.map((ink,ii)=><div key={ii} style={{display:'flex',gap:4,alignItems:'center',marginBottom:3}}>
                       <span style={{fontSize:10,color:'#94a3b8',width:14,textAlign:'right'}}>{ii+1}</span>
+                      {pantoneHex(ink)&&<span style={{width:12,height:12,borderRadius:2,background:pantoneHex(ink),border:'1px solid #d1d5db',flexShrink:0}}/>}
                       <input className="form-input" value={ink} onChange={e=>{const cws=[...(art.color_ways||[])];const inks=[...cw.inks];inks[ii]=e.target.value;cws[ci]={...cw,inks};uCustArt(oi,'color_ways',cws)}} placeholder={art.deco_type==='embroidery'?'Thread color...':'Ink color...'} style={{fontSize:11,flex:1}}/>
                       <button onClick={()=>{const cws=[...(art.color_ways||[])];cws[ci]={...cw,inks:cw.inks.filter((_,x)=>x!==ii)};uCustArt(oi,'color_ways',cws)}} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',padding:2}}><Icon name="x" size={10}/></button>
                     </div>)}
+                    <PantoneQuickPicks colors={customer.pantone_colors} onPick={(v)=>{const cws=[...(art.color_ways||[])];const inks=[...cw.inks];const emptyIdx=inks.findIndex(x=>!x);if(emptyIdx>=0)inks[emptyIdx]=v;else inks.push(v);cws[ci]={...cw,inks};uCustArt(oi,'color_ways',cws)}}/>
                     <button onClick={()=>{const cws=[...(art.color_ways||[])];cws[ci]={...cw,inks:[...cw.inks,'']};uCustArt(oi,'color_ways',cws)}} style={{background:'none',border:'none',cursor:'pointer',fontSize:10,color:'#2563eb',padding:'2px 0'}}>+ Add color</button>
                   </div>)}
                 </div>
@@ -9575,7 +9713,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
               {_cl2.length>0&&<div style={{marginBottom:nd?10:0}}>
                 <div style={{fontSize:10,fontWeight:600,color:'#94a3b8',marginBottom:4}}>{_isE2?'Thread Colors':'Ink Colors / Pantones'} ({_cl2.length})</div>
                 <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-                  {_cl2.map((cl,i)=>{const clL=cl.toLowerCase();const sw=_cm2[cl]||Object.entries(_cm2).find(([k])=>clL.includes(k.toLowerCase()))?.[1]||null;
+                  {_cl2.map((cl,i)=>{const clL=cl.toLowerCase();const sw=_cm2[cl]||Object.entries(_cm2).find(([k])=>clL.includes(k.toLowerCase()))?.[1]||pantoneHex(cl)||null;
                     return<div key={i} style={{display:'flex',alignItems:'center',gap:5,padding:'3px 10px',background:'white',border:'1px solid #e2e8f0',borderRadius:6}}>
                       <div style={{width:14,height:14,borderRadius:3,border:'1px solid #d1d5db',background:sw||'linear-gradient(135deg,#f1f5f9,#e2e8f0)'}}/>
                       <span style={{fontSize:11,fontWeight:600}}>{cl}</span></div>})}
@@ -10986,7 +11124,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                 {itemColors.length>0&&<div style={{marginBottom:nd?8:0}}>
                   <div style={{fontSize:9,fontWeight:600,color:'#94a3b8',marginBottom:3}}>{_isEmb?'Thread Colors':'Ink Colors / Pantones'} ({itemColors.length})</div>
                   <div style={{display:'flex',gap:4,flexWrap:'wrap'}}>
-                    {itemColors.map((cl,ci)=>{const clL=cl.toLowerCase();const sw=_cm3[cl]||Object.entries(_cm3).find(([k])=>clL.includes(k.toLowerCase()))?.[1]||null;
+                    {itemColors.map((cl,ci)=>{const clL=cl.toLowerCase();const sw=_cm3[cl]||Object.entries(_cm3).find(([k])=>clL.includes(k.toLowerCase()))?.[1]||pantoneHex(cl)||null;
                       return<div key={ci} style={{display:'flex',alignItems:'center',gap:4,padding:'2px 8px',background:'white',border:'1px solid #e2e8f0',borderRadius:5,fontSize:10,fontWeight:600}}>
                         <div style={{width:12,height:12,borderRadius:2,border:'1px solid #d1d5db',background:sw||'linear-gradient(135deg,#f1f5f9,#e2e8f0)'}}/>
                         {cl}</div>})}
