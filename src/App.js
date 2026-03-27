@@ -10404,6 +10404,17 @@ function CustModal({isOpen,onClose,onSave,customer,parents,reps}){
     {f.shipping_state&&APPAREL_EXEMPT.includes(f.shipping_state.toUpperCase())&&<div style={{fontSize:10,marginTop:3,color:'#7c3aed'}}>{f.shipping_state.toUpperCase()} does not tax apparel</div>}
     {f.shipping_state&&APPAREL_THRESHOLD.includes(f.shipping_state.toUpperCase())&&<div style={{fontSize:10,marginTop:3,color:'#b45309'}}>{f.shipping_state.toUpperCase()} exempts apparel under threshold</div>}</div>
       <div style={{paddingTop:8}}><label className="form-label">Tax Status</label><div style={{display:'flex',gap:0,borderRadius:6,overflow:'hidden',border:'1px solid #d1d5db'}}><button type="button" style={{flex:1,padding:'8px 12px',fontSize:12,fontWeight:700,border:'none',cursor:'pointer',background:!f.tax_exempt?'#166534':'#f8fafc',color:!f.tax_exempt?'#fff':'#64748b',transition:'all 0.15s'}} onClick={()=>sv('tax_exempt',false)}>Taxable</button><button type="button" style={{flex:1,padding:'8px 12px',fontSize:12,fontWeight:700,border:'none',borderLeft:'1px solid #d1d5db',cursor:'pointer',background:f.tax_exempt?'#dc2626':'#f8fafc',color:f.tax_exempt?'#fff':'#64748b',transition:'all 0.15s'}} onClick={()=>sv('tax_exempt',true)}>Tax Exempt</button></div><div style={{fontSize:10,color:f.tax_exempt?'#dc2626':'#64748b',marginTop:4}}>{f.tax_exempt?'No sales tax will be charged for this customer.':'Standard — sales tax will apply based on rate above.'}</div></div></div>
+    <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginTop:12,marginBottom:6,textTransform:'uppercase'}}>School Colors (Pantone)</div>
+    <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:8}}>
+      {(f.pantone_colors||[]).map((pc,i)=>{const hex=pantoneHex(pc.code)||pc.hex||'#ccc';
+        return<div key={i} style={{display:'inline-flex',alignItems:'center',gap:6,background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:6,padding:'4px 8px'}}>
+          <div style={{width:18,height:18,borderRadius:4,background:hex,border:'1px solid #d1d5db',flexShrink:0}}/>
+          <span style={{fontSize:11,fontWeight:600}}>PMS {pc.code}</span>
+          {pc.name&&<span style={{fontSize:10,color:'#64748b'}}>{pc.name}</span>}
+          <button onClick={()=>sv('pantone_colors',(f.pantone_colors||[]).filter((_,x)=>x!==i))} style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',padding:0,marginLeft:2}}><Icon name="x" size={10}/></button>
+        </div>})}
+    </div>
+    <PantoneAdder onAdd={(pc)=>sv('pantone_colors',[...(f.pantone_colors||[]),pc])} existingCodes={(f.pantone_colors||[]).map(c=>c.code)}/>
   </div>
   {valMsg&&<div style={{padding:'6px 12px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:6,fontSize:11,color:'#dc2626',margin:'0 16px 8px'}}>{valMsg}</div>}
   <div className="modal-footer"><button className="btn btn-secondary" onClick={onClose}>Cancel</button><button className="btn btn-primary" disabled={tcLook.loading} onClick={async()=>{if(!ok())return;const dat={...f,id:f.id||'c'+Date.now(),parent_id:ct==='sub'?f.parent_id:null,is_active:true,_oe:f._oe||0,_os:f._os||0,_oi:f._oi||0,_ob:f._ob||0};
