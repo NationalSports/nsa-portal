@@ -11773,6 +11773,8 @@ export default function App(){
   const[vecProcessing,setVecProcessing]=useState(false);
   const[vecPreset,setVecPreset]=useState('default');
   const[vecColors,setVecColors]=useState(16);
+  const[vecEngine,setVecEngine]=useState('api');// 'api' = Vectorizer.AI, 'local' = imagetracerjs
+  const[vecCredits,setVecCredits]=useState(null);
   const vecCanvasRef=useRef(null);
   const[issueModal,setIssueModal]=useState({open:false,desc:'',priority:'medium'});
   const[issueFilter,setIssueFilter]=useState('all');// all|open|resolved
@@ -27502,6 +27504,22 @@ export default function App(){
             <div className="card-body" style={{padding:16}}>
               <p style={{fontSize:13,color:'#64748b',margin:'0 0 12px'}}>Upload a PNG or JPG image to convert it into a scalable SVG vector file. Great for converting logos, artwork, and graphics into print-ready vectors.</p>
 
+              {/* Engine selector */}
+              <div style={{display:'flex',gap:4,marginBottom:12}}>
+                <button className={`btn btn-sm ${vecEngine==='api'?'btn-primary':'btn-secondary'}`} onClick={()=>setVecEngine('api')} style={{fontSize:12}}>
+                  <Icon name="zap" size={12}/> Vectorizer.AI (Production)
+                </button>
+                <button className={`btn btn-sm ${vecEngine==='local'?'btn-primary':'btn-secondary'}`} onClick={()=>setVecEngine('local')} style={{fontSize:12}}>
+                  <Icon name="cpu" size={12}/> Local (Basic)
+                </button>
+              </div>
+              {vecEngine==='api'&&<div style={{padding:8,background:'#eff6ff',borderRadius:6,marginBottom:12,fontSize:11,color:'#1e40af'}}>
+                <Icon name="info" size={12}/> AI-powered vectorization via Vectorizer.AI. Produces production-quality, print-ready SVG files. ~$0.10/image.
+              </div>}
+              {vecEngine==='local'&&<div style={{padding:8,background:'#fefce8',borderRadius:6,marginBottom:12,fontSize:11,color:'#854d0e'}}>
+                <Icon name="info" size={12}/> Basic browser-based tracing. Good for simple logos with flat colors. Free but lower quality.
+              </div>}
+
               {/* Upload area */}
               <div style={{border:'2px dashed #cbd5e1',borderRadius:8,padding:32,textAlign:'center',cursor:'pointer',background:vecFile?'#f0fdf4':'#f8fafc',transition:'all 0.2s'}}
                 onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#3b82f6';e.currentTarget.style.background='#eff6ff'}}
@@ -27522,7 +27540,7 @@ export default function App(){
               {/* Settings */}
               {vecFile&&<div style={{marginTop:16,padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0'}}>
                 <p style={{margin:'0 0 8px',fontSize:12,fontWeight:600,color:'#475569'}}>Vectorization Settings</p>
-                <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
+                {vecEngine==='local'&&<div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
                   <label style={{fontSize:12,color:'#64748b'}}>Preset Style
                     <select className="form-input" value={vecPreset} onChange={e=>{setVecPreset(e.target.value);if(e.target.value==='posterized1')setVecColors(2);else if(e.target.value==='posterized2')setVecColors(4);else if(e.target.value==='detailed')setVecColors(64);else if(e.target.value==='grayscale')setVecColors(7)}} style={{marginTop:2,fontSize:12}}>
                       <option value="default">Default</option>
@@ -27539,9 +27557,14 @@ export default function App(){
                   <label style={{fontSize:12,color:'#64748b'}}>Number of Colors
                     <input className="form-input" type="number" min={2} max={128} value={vecColors} onChange={e=>setVecColors(parseInt(e.target.value)||16)} style={{marginTop:2,fontSize:12}}/>
                   </label>
-                </div>
+                </div>}
+                {vecEngine==='api'&&<div style={{display:'grid',gridTemplateColumns:'1fr',gap:8}}>
+                  <label style={{fontSize:12,color:'#64748b'}}>Max Colors (0 = automatic)
+                    <input className="form-input" type="number" min={0} max={256} value={vecColors} onChange={e=>setVecColors(parseInt(e.target.value)||0)} style={{marginTop:2,fontSize:12}}/>
+                  </label>
+                </div>}
                 <button className="btn btn-primary" disabled={vecProcessing} onClick={()=>runVectorizer()} style={{marginTop:12,width:'100%',fontSize:13}}>
-                  {vecProcessing?<><Icon name="loader" size={14} style={{animation:'spin 1s linear infinite'}}/> Processing...</>:<><Icon name="pen-tool" size={14}/> Vectorize Image</>}
+                  {vecProcessing?<><Icon name="loader" size={14} style={{animation:'spin 1s linear infinite'}}/> {vecEngine==='api'?'Vectorizing via AI...':'Processing...'}</>:<><Icon name="pen-tool" size={14}/> Vectorize Image</>}
                 </button>
               </div>}
             </div>
@@ -27571,6 +27594,7 @@ export default function App(){
               <div style={{marginTop:12,display:'flex',gap:12,fontSize:12,color:'#64748b'}}>
                 <span>Size: {(new Blob([vecSvg]).size/1024).toFixed(1)} KB</span>
                 <span>Format: SVG</span>
+                {vecCredits&&<span>Credits used: {vecCredits}</span>}
               </div>
               {/* SVG code preview */}
               <details style={{marginTop:12}}>
@@ -27595,38 +27619,51 @@ export default function App(){
     reader.readAsDataURL(file);
   }
 
-  function runVectorizer(){
+  async function runVectorizer(){
     if(!vecFile)return;
-    setVecProcessing(true);
-    // Load image into a canvas to get ImageData
-    const img=new Image();
-    img.onload=()=>{
-      const canvas=document.createElement('canvas');
-      canvas.width=img.width;canvas.height=img.height;
-      const ctx=canvas.getContext('2d');
-      ctx.drawImage(img,0,0);
-      const imgData=ctx.getImageData(0,0,canvas.width,canvas.height);
-      // Build options from preset + custom color count
-      const presets=ImageTracer.optionpresets||{};
-      let opts={...(presets[vecPreset]||presets['default']||{})};
-      opts.numberofcolors=vecColors;
-      opts.viewbox=true;
-      opts.desc=false;
-      opts.scale=1;
-      // Use setTimeout to avoid blocking UI
-      setTimeout(()=>{
-        try{
-          const svgStr=ImageTracer.imagedataToSVG(imgData,opts);
-          setVecSvg(svgStr);
-          nf('Vectorization complete!');
-        }catch(e){
-          nf('Vectorization failed: '+e.message,'error');
-        }
-        setVecProcessing(false);
-      },50);
-    };
-    img.onerror=()=>{nf('Failed to load image','error');setVecProcessing(false)};
-    img.src=vecFile.url;
+    setVecProcessing(true);setVecCredits(null);
+    if(vecEngine==='api'){
+      // Vectorizer.AI API via Netlify proxy
+      try{
+        // Extract base64 from data URL
+        const base64=vecFile.url.split(',')[1];
+        if(!base64){nf('Failed to read image data','error');setVecProcessing(false);return}
+        const resp=await fetch('/.netlify/functions/vectorizer-proxy',{
+          method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({imageBase64:base64,mode:'production',outputFormat:'svg'})
+        });
+        const data=await resp.json();
+        if(!resp.ok||data.error){nf('Vectorizer.AI error: '+(data.error||'Unknown error'),'error');setVecProcessing(false);return}
+        setVecSvg(data.svg);
+        if(data.creditsCharged)setVecCredits(data.creditsCharged);
+        nf('Vectorization complete (Vectorizer.AI)!');
+      }catch(e){
+        nf('API call failed: '+e.message+'. Try the Local engine as fallback.','error');
+      }
+      setVecProcessing(false);
+    }else{
+      // Local imagetracerjs fallback
+      const img=new Image();
+      img.onload=()=>{
+        const canvas=document.createElement('canvas');
+        canvas.width=img.width;canvas.height=img.height;
+        const ctx=canvas.getContext('2d');
+        ctx.drawImage(img,0,0);
+        const imgData=ctx.getImageData(0,0,canvas.width,canvas.height);
+        const presets=ImageTracer.optionpresets||{};
+        let opts={...(presets[vecPreset]||presets['default']||{})};
+        opts.numberofcolors=vecColors;opts.viewbox=true;opts.desc=false;opts.scale=1;
+        setTimeout(()=>{
+          try{
+            const svgStr=ImageTracer.imagedataToSVG(imgData,opts);
+            setVecSvg(svgStr);nf('Vectorization complete (local)!');
+          }catch(e){nf('Vectorization failed: '+e.message,'error')}
+          setVecProcessing(false);
+        },50);
+      };
+      img.onerror=()=>{nf('Failed to load image','error');setVecProcessing(false)};
+      img.src=vecFile.url;
+    }
   }
 
   function handleMkArtUpload(file){
