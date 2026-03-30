@@ -950,6 +950,24 @@ const PANTONE_MAP={
 };
 const pantoneHex=(code)=>{if(!code)return null;const s=code.toString().toUpperCase().replace(/\s*(C|U|CP|UP|TCX|TPX|TPG|TN)\s*$/,'').replace(/^PMS\s*/,'').replace(/^PANTONE\s*/,'').trim();return PANTONE_MAP[s]||PANTONE_MAP[s.replace(/\s+/g,' ')]||null};
 const pantoneSearch=(query)=>{if(!query||query.length<1)return[];const q=query.toUpperCase().replace(/^PMS\s*/,'').replace(/^PANTONE\s*/,'').trim();return Object.entries(PANTONE_MAP).filter(([k])=>k.toUpperCase().includes(q)).slice(0,12).map(([code,hex])=>({code,hex}))};
+// Thread color name-to-hex lookup for common embroidery thread colors
+const THREAD_COLORS={'cardinal':'#8C1515','navy':'#001f3f','gold':'#FFD700','white':'#FFFFFF','black':'#000000',
+'red':'#dc2626','royal':'#4169e1','royal blue':'#4169e1','silver':'#C0C0C0','green':'#166534','dark green':'#006400',
+'orange':'#EA580C','maroon':'#800000','purple':'#6B21A8','kelly green':'#4CBB17','scarlet':'#FF2400',
+'columbia blue':'#9BDDFF','light blue':'#ADD8E6','vegas gold':'#C5B358','old gold':'#CFB53B',
+'athletic gold':'#FFB81C','charcoal':'#36454F','grey':'#808080','gray':'#808080','light gray':'#C0C0C0',
+'pink':'#FF69B4','hot pink':'#FF1493','brown':'#8B4513','cream':'#FFFDD0','tan':'#D2B48C','khaki':'#C3B091',
+'teal':'#008080','yellow':'#FFD700','bright yellow':'#FFFF00','powder blue':'#B0E0E6','sky blue':'#87CEEB',
+'forest green':'#228B22','lime':'#32CD32','coral':'#FF7F50','wine':'#722F37','burgundy':'#800020',
+'rust':'#B7410E','copper':'#B87333','sand':'#C2B280','ivory':'#FFFFF0','slate':'#708090',
+'pewter':'#8E8E8E','graphite':'#383838','midnight':'#191970','cobalt':'#0047AB','cyan':'#00FFFF',
+'turquoise':'#40E0D0','aqua':'#00FFFF','magenta':'#FF00FF','lavender':'#E6E6FA','lilac':'#C8A2C8',
+'violet':'#7F00FF','maize':'#FBEC5D','lemon':'#FFF44F','peach':'#FFCBA4','salmon':'#FA8072',
+'brick':'#CB4154','crimson':'#DC143C','berry':'#8E4585','plum':'#DDA0DD','sage':'#BCB88A',
+'olive':'#808000','hunter green':'#355E3B','emerald':'#50C878','jade':'#00A86B','mint':'#98FF98',
+'seafoam':'#93E9BE','ice blue':'#D6ECEF','baby blue':'#89CFF0','steel blue':'#4682B4',
+'denim':'#1560BD','indigo':'#4B0082','eggplant':'#614051','heather':'#B7A99A'};
+const threadHex=(name)=>{if(!name)return null;const n=name.toLowerCase().trim();if(THREAD_COLORS[n])return THREAD_COLORS[n];const match=Object.entries(THREAD_COLORS).find(([k])=>n.includes(k)||k.includes(n));return match?match[1]:null};
 // Merge customer + parent colors (pantone or thread), deduplicating by code/name
 const mergeColors=(cust,allCustomers,field)=>{const own=cust?.[field]||[];if(!cust?.parent_id)return own;const parent=allCustomers?.find(c=>c.id===cust.parent_id);const parentColors=parent?.[field]||[];if(!parentColors.length)return own;const key=field==='pantone_colors'?'code':'name';const seen=new Set(own.map(c=>(c[key]||'').toUpperCase()));return[...own,...parentColors.filter(c=>!seen.has((c[key]||'').toUpperCase()))]};
 const _vendCols=['id','name','vendor_type','api_provider','nsa_carries_inventory','click_automation','is_active','contact_email','contact_phone','rep_name','payment_terms','notes'];
@@ -8988,9 +9006,8 @@ function PantoneQuickPicks({colors,onPick}){
 // Thread color quick-pick chips for embroidery CW inputs
 function ThreadQuickPicks({colors,onPick}){
   if(!colors||colors.length===0)return null;
-  const TC_COLORS={'Cardinal':'#8C1515','Navy':'#001f3f','Gold':'#FFD700','White':'#FFFFFF','Black':'#000000','Red':'#dc2626','Royal':'#4169e1','Silver':'#C0C0C0','Green':'#166534','Orange':'#EA580C','Maroon':'#800000','Purple':'#6B21A8','Kelly Green':'#4CBB17','Scarlet':'#FF2400','Columbia Blue':'#9BDDFF','Vegas Gold':'#C5B358','Old Gold':'#CFB53B','Charcoal':'#36454F','Pink':'#FF69B4','Brown':'#8B4513','Cream':'#FFFDD0','Tan':'#D2B48C','Teal':'#008080','Yellow':'#FFD700','Athletic Gold':'#FFB81C'};
   return<div style={{display:'flex',gap:4,flexWrap:'wrap',marginTop:3,marginBottom:2}}>
-    {colors.map((tc,i)=>{const hex=TC_COLORS[tc.name]||tc.hex||'#ccc';
+    {colors.map((tc,i)=>{const hex=threadHex(tc.name)||tc.hex||'#ccc';
       return<button key={i} onClick={()=>onPick(tc.name)} title={tc.name}
         style={{display:'inline-flex',alignItems:'center',gap:3,padding:'1px 6px',background:'white',border:'1px solid #e2e8f0',borderRadius:4,cursor:'pointer',fontSize:10,color:'#475569',fontWeight:500}}
         onMouseOver={e=>{e.currentTarget.style.background='#f1f5f9';e.currentTarget.style.borderColor='#7c3aed'}} onMouseOut={e=>{e.currentTarget.style.background='white';e.currentTarget.style.borderColor='#e2e8f0'}}>
@@ -9259,11 +9276,10 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   {tab==='overview'&&(()=>{
     const threads=customer.thread_colors||[];
     const saveThreads=(newColors)=>{const newCust={...customer,thread_colors:newColors};setCustLocal(newCust);onRefreshCustomer(newCust)};
-    const TC_COLORS={'Cardinal':'#8C1515','Navy':'#001f3f','Gold':'#FFD700','White':'#FFFFFF','Black':'#000000','Red':'#dc2626','Royal':'#4169e1','Silver':'#C0C0C0','Green':'#166534','Orange':'#EA580C','Maroon':'#800000','Purple':'#6B21A8','Kelly Green':'#4CBB17','Scarlet':'#FF2400','Columbia Blue':'#9BDDFF','Vegas Gold':'#C5B358','Old Gold':'#CFB53B','Charcoal':'#36454F','Pink':'#FF69B4','Brown':'#8B4513','Teal':'#008080','Athletic Gold':'#FFB81C'};
     return<div className="card" style={{marginTop:12}}><div className="card-header"><h2 style={{color:'#7c3aed'}}>Thread Colors (Embroidery)</h2></div><div className="card-body">
       {threads.length===0&&<div style={{fontSize:12,color:'#94a3b8',marginBottom:8}}>No thread colors added yet.</div>}
       <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:10}}>
-        {threads.map((tc,i)=>{const hex=TC_COLORS[tc.name]||tc.hex||'#ccc';
+        {threads.map((tc,i)=>{const hex=threadHex(tc.name)||tc.hex||'#ccc';
           return<div key={i} style={{display:'flex',alignItems:'center',gap:8,background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8,padding:'6px 10px'}}>
             <div style={{width:28,height:28,borderRadius:6,background:hex,border:'1px solid #d1d5db',flexShrink:0}}/>
             <div style={{fontSize:12,fontWeight:700,color:'#1e293b'}}>{tc.name}</div>
@@ -10539,7 +10555,7 @@ function CustModal({isOpen,onClose,onSave,customer,parents,reps}){
     <PantoneAdder onAdd={(pc)=>sv('pantone_colors',[...(f.pantone_colors||[]),pc])} existingCodes={(f.pantone_colors||[]).map(c=>c.code)}/>
     <div style={{fontSize:11,fontWeight:700,color:'#7c3aed',marginTop:12,marginBottom:6,textTransform:'uppercase'}}>Thread Colors (Embroidery)</div>
     <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:8}}>
-      {(f.thread_colors||[]).map((tc,i)=>{const TC_COLORS={'Cardinal':'#8C1515','Navy':'#001f3f','Gold':'#FFD700','White':'#FFFFFF','Black':'#000000','Red':'#dc2626','Royal':'#4169e1','Silver':'#C0C0C0','Green':'#166534','Orange':'#EA580C','Maroon':'#800000','Purple':'#6B21A8','Kelly Green':'#4CBB17','Scarlet':'#FF2400','Columbia Blue':'#9BDDFF','Vegas Gold':'#C5B358','Old Gold':'#CFB53B','Charcoal':'#36454F','Pink':'#FF69B4','Brown':'#8B4513','Teal':'#008080','Athletic Gold':'#FFB81C'};const hex=TC_COLORS[tc.name]||tc.hex||'#ccc';
+      {(f.thread_colors||[]).map((tc,i)=>{const hex=threadHex(tc.name)||tc.hex||'#ccc';
         return<div key={i} style={{display:'inline-flex',alignItems:'center',gap:6,background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:6,padding:'4px 8px'}}>
           <div style={{width:18,height:18,borderRadius:4,background:hex,border:'1px solid #d1d5db',flexShrink:0}}/>
           <span style={{fontSize:11,fontWeight:600}}>{tc.name}</span>
