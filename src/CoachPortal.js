@@ -1,6 +1,6 @@
 /* eslint-disable */
 import React, { useState, useEffect, useRef } from 'react';
-import { SZ_ORD, pantoneHex } from './constants';
+import { SZ_ORD, pantoneHex, NSA } from './constants';
 import { safeNum, safeItems, safeSizes, safeDecos, safeArr, safeJobs } from './safeHelpers';
 import { calcSOStatus } from './components';
 import { dP, rQ, SP } from './pricing';
