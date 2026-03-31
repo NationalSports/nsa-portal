@@ -1,0 +1,75 @@
+/* eslint-disable */
+
+// ── Brevo Email ──
+export const _brevoKey = process.env.REACT_APP_BREVO_API_KEY || '';
+export const sendBrevoEmail=async({to,subject,htmlContent,textContent,senderName,senderEmail,replyTo,attachment})=>{
+  if(!_brevoKey){return{ok:false,error:'Brevo API key not configured (set REACT_APP_BREVO_API_KEY)'}}
+  try{const payload={sender:{name:senderName||'National Sports Apparel',email:senderEmail||'noreply@nationalsportsapparel.com'},to:Array.isArray(to)?to:[{email:to}],subject,htmlContent:htmlContent||undefined,textContent:textContent||undefined};
+    if(replyTo)payload.replyTo={email:replyTo.email,name:replyTo.name||senderName||'National Sports Apparel'};
+    if(attachment&&attachment.length>0)payload.attachment=attachment;
+    const r=await fetch('https://api.brevo.com/v3/smtp/email',{method:'POST',headers:{'accept':'application/json','content-type':'application/json','api-key':_brevoKey},
+    body:JSON.stringify(payload)});
+    const d=await r.json();if(!r.ok)return{ok:false,error:d.message||'Send failed'};return{ok:true,messageId:d.messageId}}
+  catch(e){return{ok:false,error:e.message}}
+};
+
+// ── Cloudinary Upload ──
+const CLOUDINARY_CLOUD='dwlyljyuz';
+const CLOUDINARY_PRESET='ml_default_nsaportal';
+export const cloudUpload=async(file,folder='nsa-products')=>{const fd=new FormData();fd.append('file',file);fd.append('upload_preset',CLOUDINARY_PRESET);fd.append('folder',folder);const resType=file.type?.startsWith('image/')?'image':'auto';const r=await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/${resType}/upload`,{method:'POST',body:fd});const d=await r.json();if(d.error)throw new Error(d.error.message);return d.secure_url};
+export const fileUpload=async(file,folder='nsa-art-files')=>{const fd=new FormData();fd.append('file',file);fd.append('upload_preset',CLOUDINARY_PRESET);fd.append('folder',folder);fd.append('filename_override',file.name);const r=await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/auto/upload`,{method:'POST',body:fd});const d=await r.json();if(d.error)throw new Error(d.error.message);return d.secure_url};
+
+// ── File helpers ──
+export const isUrl=s=>typeof s==='string'&&(s.startsWith('http://')||s.startsWith('https://'));
+export const fileDisplayName=f=>{if(typeof f==='object'&&f?.name)return f.name;const s=typeof f==='string'?f:(f?.url||'');return isUrl(s)?decodeURIComponent(s.split('/').pop().split('?')[0]):s};
+export const _urlExt=u=>{if(!u||typeof u!=='string')return '';const clean=u.split('?')[0].split('#')[0];const m=clean.match(/\.(\w+)$/);return m?m[1].toLowerCase():''};
+export const _isDownloadOnly=u=>{const e=_urlExt(u);return['ai','eps','dst','psd','tiff','tif','cdr'].includes(e)};
+export const _isImgUrl=(u,f)=>{if(_isPdfUrl(u,f))return false;const e=_urlExt(u);if(_isDownloadOnly(u))return false;if(['png','jpg','jpeg','gif','webp','svg','bmp'].includes(e))return true;if(typeof f==='object'&&f?.type?.startsWith('image/'))return true;if(u&&typeof u==='string'&&u.includes('cloudinary.com')&&u.includes('/image/upload/'))return true;return false};
+export const _isPdfUrl=(u,f)=>{if(_urlExt(u)==='pdf')return true;if(typeof f==='object'&&f?.type==='application/pdf')return true;if(typeof f==='string'&&f.endsWith('.pdf'))return true;return false};
+export const _isDisplayableFile=(u,f)=>_isImgUrl(u,f)||_isPdfUrl(u,f);
+
+// ── File open helper ──
+export const openFile=f=>{const u=typeof f==='string'?f:(f?.url||'');if(isUrl(u)){if(_isPdfUrl(u,f)){window.open(u,'_blank')}else if(_isDownloadOnly(u)){const a=document.createElement('a');a.href=u;a.download=typeof f==='object'&&f?.name?f.name:decodeURIComponent(u.split('/').pop().split('?')[0]);a.target='_blank';a.rel='noopener';document.body.appendChild(a);a.click();document.body.removeChild(a)}else{window.open(u,'_blank')}}};
+
+// ── File filtering helpers ──
+export const _filterDisplayable=files=>(files||[]).filter(f=>{const u=typeof f==='string'?f:(f?.url||'');return u&&_isDisplayableFile(u,f)});
+export const _cloudinaryPdfThumb=u=>{if(!u||!u.includes('cloudinary.com'))return null;
+  let t=u.replace('/raw/upload/','/image/upload/').replace('/video/upload/','/image/upload/');
+  return t.replace('/image/upload/','/image/upload/pg_1,f_png/')};
+
+// ── Brevo SMS ──
+export const _brevoSmsSender='NSA';
+export const sendBrevoSms=async({to,content,sender})=>{
+  const _brevoKey2=process.env.REACT_APP_BREVO_API_KEY||'';
+  if(!_brevoKey2){return{ok:false,error:'Brevo API key not configured'}}
+  try{
+    const phone=to.replace(/[^\d+]/g,'');
+    if(phone.length<10)return{ok:false,error:'Invalid phone number'};
+    const formatted=phone.startsWith('+')?phone:(phone.startsWith('1')&&phone.length===11?'+'+phone:'+1'+phone);
+    const payload={type:'transactional',unicodeEnabled:false,sender:sender||_brevoSmsSender,recipient:formatted,content:content.substring(0,160),tag:'invoice'};
+    const r=await fetch('https://api.brevo.com/v3/transactionalSMS/send',{method:'POST',headers:{'accept':'application/json','content-type':'application/json','api-key':_brevoKey2},
+    body:JSON.stringify(payload)});
+    const d=await r.json();if(!r.ok)return{ok:false,error:d.message||d.code||'SMS send failed ('+r.status+')'};return{ok:true,messageId:d.messageId,reference:d.reference}}
+  catch(e){return{ok:false,error:e.message}}
+};
+
+// ── Document/print helpers ──
+export const buildDocHtml=({title,docNum,docType,date,billTo,shipTo,lineItems,summary,notes,footer})=>{let h='<div style="max-width:800px;margin:0 auto;font-family:Arial,sans-serif;font-size:12px">';h+='<div style="display:flex;justify-content:space-between;margin-bottom:20px"><div><h1 style="margin:0;font-size:20px">'+docType+'</h1><div style="color:#666">#'+docNum+'</div></div><div style="text-align:right"><div>'+title+'</div><div>'+(date||new Date().toLocaleDateString())+'</div></div></div>';if(billTo)h+='<div style="margin-bottom:10px"><strong>Bill To:</strong> '+(typeof billTo==='string'?billTo:billTo.map(l=>'<div>'+l+'</div>').join(''))+'</div>';if(shipTo)h+='<div style="margin-bottom:10px"><strong>Ship To:</strong> '+(typeof shipTo==='string'?shipTo:shipTo.map(l=>'<div>'+l+'</div>').join(''))+'</div>';if(lineItems){lineItems.forEach(section=>{if(section.title)h+='<h3 style="margin:10px 0 5px">'+section.title+'</h3>';h+='<table style="width:100%;border-collapse:collapse;margin-bottom:10px"><thead><tr>'+section.headers.map(hd=>'<th style="border-bottom:2px solid #333;padding:4px;text-align:left">'+hd+'</th>').join('')+'</tr></thead><tbody>';section.rows.forEach(row=>{h+='<tr>'+row.map(cell=>'<td style="border-bottom:1px solid #eee;padding:4px">'+cell+'</td>').join('')+'</tr>'});h+='</tbody></table>'})}if(summary)h+='<div style="text-align:right;margin-top:10px">'+summary.map(s=>'<div><strong>'+s.label+':</strong> '+s.value+'</div>').join('')+'</div>';if(notes)h+='<div style="margin-top:15px;padding:8px;background:#f5f5f5;border-radius:4px"><strong>Notes:</strong> '+notes+'</div>';if(footer)h+='<div style="margin-top:20px;padding-top:10px;border-top:1px solid #ccc;font-size:10px;color:#666">'+footer+'</div>';h+='</div>';return h};
+export const printDoc=opts=>{const w=window.open('','_blank');if(!w)return;w.document.write('<html><head><style>'+(opts.css||'')+'</style></head><body>');w.document.write(buildDocHtml(opts));w.document.write('</body></html>');w.document.close();setTimeout(()=>w.print(),300)};
+export const nextInvId=invs=>{const nums=(invs||[]).map(i=>{const m=String(i.id).match(/(\d+)$/);return m?parseInt(m[1]):0});return'INV-'+(Math.max(0,...nums)+1)};
+
+// ── Supabase Edge Function helper ──
+export async function invokeEdgeFn(supabase,fnName,body){
+  const r=await supabase.functions.invoke(fnName,{body});
+  let d=r.data;
+  console.log('[invokeEdgeFn]',fnName,'raw response:',{data:d,error:r.error,dataType:typeof d});
+  if(d&&typeof d==='object'&&typeof d.getReader==='function'){d=await new Response(d).json()}
+  else if(d&&typeof d==='object'&&typeof d.text==='function'){
+    try{const txt=await d.text();d=JSON.parse(txt)}catch(e){console.error('[invokeEdgeFn] parse error:',e);d=null}
+  }
+  else if(typeof d==='string'){try{d=JSON.parse(d)}catch(e){d=null}}
+  if(!d&&r.error){const ctx=r.error?.context;if(ctx&&typeof ctx.json==='function'){try{d=await ctx.json()}catch(e){}}if(!d)d={ok:false,error:r.error?.message||String(r.error)}}
+  console.log('[invokeEdgeFn]',fnName,'parsed:',d);
+  if(d&&d.error&&typeof d.error!=='string'){d.error=d.error?.message||JSON.stringify(d.error)}
+  return d||{ok:false,error:'No response from edge function'};
+}
