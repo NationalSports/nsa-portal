@@ -4,7 +4,7 @@ import { _pick, ART_FILE_SC, SZ_ORD, SC, pantoneHex, threadHex } from './constan
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs } from './safeHelpers';
 import { Icon, Bg, calcSOStatus, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks } from './components';
 import { dP, rQ, DTF, mergeColors } from './pricing';
-import { fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl } from './utils';
+import { fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable } from './utils';
 
 // CUSTOMER DETAIL
 
