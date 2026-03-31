@@ -17,9 +17,11 @@ import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, c
 import { buildJobs, isJobReady, buildQBSalesOrder, buildQBInvoice } from './businessLogic';
 import { invokeEdgeFn } from './utils';
 const parseDate=d=>{if(!d)return null;try{return new Date(d)}catch{return null}};
-const nextEstId=ests=>{const nums=ests.map(e=>{const m=String(e.id).match(/(\d+)$/);return m?parseInt(m[1]):0});return'EST-'+(Math.max(0,...nums)+1)};
-const nextSOId=sos=>{const nums=sos.map(s=>{const m=String(s.id).match(/(\d+)$/);return m?parseInt(m[1]):0});return'SO-'+(Math.max(0,...nums)+1)};
-const nextInvId=invs=>{const nums=invs.map(i=>{const m=String(i.id).match(/(\d+)$/);return m?parseInt(m[1]):0});return'INV-'+(Math.max(0,...nums)+1)};
+const _maxLocalNum=(arr,prefix)=>{const nums=arr.map(e=>{const m=String(e.id).match(/(\d+)$/);return m?parseInt(m[1]):0});return Math.max(0,...nums)};
+const _nextIdFromDb=async(table,prefix,localArr)=>{const localMax=_maxLocalNum(localArr,prefix);if(!supabase)return prefix+(localMax+1);try{const{data}=await supabase.from(table).select('id').order('id',{ascending:false}).limit(50);const dbMax=Math.max(0,...(data||[]).map(r=>{const m=String(r.id).match(/(\d+)$/);return m?parseInt(m[1]):0}));return prefix+(Math.max(localMax,dbMax)+1)}catch(e){console.warn('[DB] Failed to query max ID from',table,e);return prefix+(localMax+1)}};
+const nextEstId=ests=>_nextIdFromDb('estimates','EST-',ests);
+const nextSOId=sos=>_nextIdFromDb('sales_orders','SO-',sos);
+const nextInvId=invs=>_nextIdFromDb('invoices','INV-',invs);
 const isDualRunJob=(j)=>j&&j.items&&j.items.length>1&&j.items.some(gi=>gi.run_order);
 const mapColorCategory=color=>{if(!color)return'';const c=color.toLowerCase();if(/white|natural|cream|ivory/.test(c))return'White';if(/black|charcoal/.test(c))return'Black';if(/navy|blue|royal|columbia|carolina/.test(c))return'Blue';if(/red|cardinal|scarlet|crimson/.test(c))return'Red';if(/green|forest|kelly|lime|hunter/.test(c))return'Green';if(/grey|gray|heather|silver|graphite/.test(c))return'Grey';if(/gold|yellow|vegas|athletic/.test(c))return'Gold';if(/orange|texas/.test(c))return'Orange';if(/purple|maroon|wine|burgundy/.test(c))return'Purple';if(/pink|fuchsia/.test(c))return'Pink';if(/brown|tan|khaki|sand|coyote/.test(c))return'Brown';return''};
 const printDoc=opts=>{const w=window.open('','_blank');if(!w)return;w.document.write('<html><head><style>'+opts.css+'</style></head><body>');w.document.write(buildDocHtml(opts));w.document.write('</body></html>');w.document.close();setTimeout(()=>w.print(),300)};
@@ -58,13 +60,12 @@ catch(e) { console.warn('[Stripe] Init failed:', e.message); }
 // ─── Brevo Email Setup ───
 const _brevoKey = process.env.REACT_APP_BREVO_API_KEY || '';
 const sendBrevoEmail=async({to,subject,htmlContent,textContent,senderName,senderEmail,replyTo,attachment})=>{
-  if(!_brevoKey){return{ok:false,error:'Brevo API key not configured (set REACT_APP_BREVO_API_KEY)'}}
   try{const payload={sender:{name:senderName||'National Sports Apparel',email:senderEmail||'noreply@nationalsportsapparel.com'},to:Array.isArray(to)?to:[{email:to}],subject,htmlContent:htmlContent||undefined,textContent:textContent||undefined};
     if(replyTo)payload.replyTo={email:replyTo.email,name:replyTo.name||senderName||'National Sports Apparel'};
     if(attachment&&attachment.length>0)payload.attachment=attachment;
-    const r=await fetch('https://api.brevo.com/v3/smtp/email',{method:'POST',headers:{'accept':'application/json','content-type':'application/json','api-key':_brevoKey},
+    const r=await fetch('/.netlify/functions/brevo-proxy',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify(payload)});
-    const d=await r.json();if(!r.ok)return{ok:false,error:d.message||'Send failed'};return{ok:true,messageId:d.messageId}}
+    const d=await r.json();if(!r.ok)return{ok:false,error:d.message||d.error||'Send failed'};return{ok:true,messageId:d.messageId}}
   catch(e){return{ok:false,error:e.message}}
 };
 
@@ -429,7 +430,7 @@ const _checkVersion=async(table,id,localVersion)=>{
       return false;
     }
     return true;
-  }catch{return true}// if check fails, allow save (graceful degradation)
+  }catch(e){console.error('[DB] version check failed:',e);if(_dbNotify)_dbNotify('Save blocked — unable to verify data version. Check your connection and try again.','error');return false}// if check fails, block save to prevent overwriting newer data
 };
 
 // ─── Normalized Save Helpers ───
