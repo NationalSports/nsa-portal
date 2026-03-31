@@ -271,7 +271,8 @@ const _dbLoad = async () => {
       rPromoProg,rPromoPeriods,rPromoUsage,rCredits,rCreditUsage,
       rRepCsr,rAssignedTodos,rTodoComments,
       rDecoVendors,rDecoVendorPricing,
-      rQuoteReqs,rQuoteReqItems] = await Promise.all([
+      rQuoteReqs,rQuoteReqItems,
+      rDismissedTodos,rDismissedNotifs] = await Promise.all([
       _safeQuery('team_members',{order:'name'}),
       _safeQuery('customers',{order:'name'}),
       _safeQuery('customer_contacts'),
@@ -311,6 +312,8 @@ const _dbLoad = async () => {
       _safeQuery('deco_vendor_pricing'),
       _safeQuery('quote_requests',{order:'created_at',orderOpts:{ascending:false}}),
       _safeQuery('quote_request_items',{order:'sort_order'}),
+      _safeQuery('dismissed_todos'),
+      _safeQuery('dismissed_notifs'),
     ]);
     // Check for critical errors on core tables only (child tables may not exist yet — 404 is OK)
     const coreResults=[{n:'team_members',r:rTeam},{n:'customers',r:rCust},{n:'vendors',r:rVend},{n:'products',r:rProd},{n:'estimates',r:rEst},{n:'sales_orders',r:rSO},{n:'invoices',r:rInv},{n:'messages',r:rMsg},{n:'omg_stores',r:rOMG}];
@@ -384,7 +387,8 @@ const _dbLoad = async () => {
     // OMG Stores: attach products
     const omg_stores=omgRaw.map(s=>({...s,products:omgProd.filter(p=>p.store_id===s.id).map(p=>({sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:p.deco_type,deco_cost:p.deco_cost,sizes:p.sizes||{}}))}));
     const hasData=(customers.length>0)||(sales_orders.length>0);
-    return{team,customers,vendors,products,estimates,sales_orders,invoices,messages,omg_stores,issues,appState,hasData,repCsrAssignments,assignedTodos,decoVendors,decoVendorPricing,quote_requests};
+    const dismissedTodosDb=d(rDismissedTodos);const dismissedNotifsDb=d(rDismissedNotifs);
+    return{team,customers,vendors,products,estimates,sales_orders,invoices,messages,omg_stores,issues,appState,hasData,repCsrAssignments,assignedTodos,decoVendors,decoVendorPricing,quote_requests,dismissedTodosDb,dismissedNotifsDb};
   }catch(e){console.error('[DB] Load failed:',e);return null}
 };
 const _dbSeed = async (d) => {
@@ -1600,6 +1604,9 @@ export default function App(){
           if(d.assignedTodos)setAssignedTodos(d.assignedTodos);
           if(d.decoVendors)setDecoVendors(d.decoVendors);
           if(d.decoVendorPricing)setDecoVendorPricing(d.decoVendorPricing);
+          // Merge server-side dismissed todos/notifs into localStorage-based state
+          if(d.dismissedTodosDb?.length){const dbKeys=d.dismissedTodosDb.map(r=>r.dismiss_key);setDismissedTodos(prev=>{const merged=[...new Set([...prev,...dbKeys])];try{localStorage.setItem('nsa_dismissed_todos',JSON.stringify(merged))}catch{}return merged})}
+          if(d.dismissedNotifsDb?.length){const dbKeys=d.dismissedNotifsDb.map(r=>r.dismiss_key);setDismissedNotifs(prev=>{const merged=[...new Set([...prev,...dbKeys])];try{localStorage.setItem('nsa_dismissed_notifs',JSON.stringify(merged))}catch{}return merged})}
           // Load app_state key-value data (batch POs, changelog, etc.)
           const as=d.appState||{};
           if(as.batch_pos)setBatchPOs(as.batch_pos);
@@ -2419,9 +2426,10 @@ export default function App(){
   const toggleFav=sku=>{setFavSkus(f=>{const n=f.includes(sku)?f.filter(s=>s!==sku):[...f,sku];try{localStorage.setItem('nsa_fav_skus',JSON.stringify(n))}catch{}return n})};
   const[iShowFav,setIShowFav]=useState(false);
   const[dismissedNotifs,setDismissedNotifs]=useState(()=>{try{return JSON.parse(localStorage.getItem('nsa_dismissed_notifs')||'[]')}catch{return[]}});
-  const dismissNotif=(key)=>{setDismissedNotifs(prev=>{const n=[...prev,key];try{localStorage.setItem('nsa_dismissed_notifs',JSON.stringify(n))}catch{}return n})};
+  const dismissNotif=(key)=>{setDismissedNotifs(prev=>{if(prev.includes(key))return prev;const n=[...prev,key];try{localStorage.setItem('nsa_dismissed_notifs',JSON.stringify(n))}catch{}if(supabase&&cu?.id)supabase.from('dismissed_notifs').upsert({id:cu.id+':'+key.slice(0,80),user_id:cu.id,dismiss_key:key},{onConflict:'user_id,dismiss_key'}).then(r=>{if(r.error)console.error('[DB] dismiss notif:',r.error.message)});return n})};
   const[dismissedTodos,setDismissedTodos]=useState(()=>{try{return JSON.parse(localStorage.getItem('nsa_dismissed_todos')||'[]')}catch{return[]}});
-  const dismissTodo=(key)=>{setDismissedTodos(prev=>{const n=[...prev,key];try{localStorage.setItem('nsa_dismissed_todos',JSON.stringify(n))}catch{}return n})};
+  const dismissTodo=(key)=>{setDismissedTodos(prev=>{if(prev.includes(key))return prev;const n=[...prev,key];try{localStorage.setItem('nsa_dismissed_todos',JSON.stringify(n))}catch{}if(supabase&&cu?.id)supabase.from('dismissed_todos').upsert({id:cu.id+':'+key.slice(0,80),user_id:cu.id,dismiss_key:key},{onConflict:'user_id,dismiss_key'}).then(r=>{if(r.error)console.error('[DB] dismiss todo:',r.error.message)});return n})};
+  const[todoFilter,setTodoFilter]=useState('all');// all|art|follow_up|order|deadline|booking|delivery|issue|est
   const[cu,setCu]=useState(()=>{try{const s=localStorage.getItem('nsa_user');return s?JSON.parse(s):null}catch{return null}});
   const handleLogin=(user)=>{setCu(user);try{localStorage.setItem('nsa_user',JSON.stringify(user))}catch{}};
   const handleLogout=async()=>{setCu(null);try{localStorage.removeItem('nsa_user')}catch{};await _sbSignOut()};
@@ -3052,35 +3060,35 @@ export default function App(){
     sos.forEach(so=>{
       const c=cust.find(x=>x.id===so.customer_id);const tag=c?.name||c?.alpha_tag||so.id;const _repId=c?.primary_rep_id||so.created_by;
       buildJobs(so).forEach(j=>{
-        if(j.art_status==='waiting_approval'){todos.push({type:'art',priority:2,msg:'⏳ Art awaiting approval: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,action:'Review art',role:'sales'});
-          if(j.sent_to_coach_at){const _fuAt=j.follow_up_at?new Date(j.follow_up_at):null;const _fuDays=portalSettings?.followUpDays||7;const daysSinceSent=Math.floor((new Date()-new Date(j.sent_to_coach_at))/(1000*60*60*24));const isDue=_fuAt?new Date()>=_fuAt:daysSinceSent>=_fuDays;if(isDue)todos.push({type:'coach_followup',priority:1,msg:'📞 Follow up on art approval ('+daysSinceSent+'d): '+j.art_name,detail:tag+' · '+so.id+' · Sent to coach '+daysSinceSent+' days ago',so,jobId:j.id,action:'Follow Up',role:'sales'})}}
-        if(j.coach_approved_at&&(j.art_status==='production_files_needed'||j.art_status==='art_complete')){const daysAgo=Math.floor((new Date()-new Date(j.coach_approved_at))/(1000*60*60*24));if(daysAgo<=7)todos.push({type:'art_approved',priority:3,msg:'✅ Coach approved art: '+j.art_name,detail:tag+' · '+so.id+' · '+(daysAgo===0?'Today':daysAgo+' day'+(daysAgo!==1?'s':'')+' ago'),so,jobId:j.id,action:'View',role:'sales',isNotification:true})}
-        if(j.art_status==='art_requested'&&j.coach_rejected){const lastRej=(j.rejections||[]).slice(-1)[0];todos.push({type:'art_rejected',priority:1,msg:'❌ Coach rejected art: '+j.art_name,detail:tag+' · '+so.id+(lastRej?' · "'+lastRej.reason.slice(0,60)+(lastRej.reason.length>60?'...':'')+'"':''),so,jobId:j.id,action:'Review feedback',role:'sales'})}
+        if(j.art_status==='waiting_approval'){
+          if(j.sent_to_coach_at){const _fuAt=j.follow_up_at?new Date(j.follow_up_at):null;const _fuDays=portalSettings?.followUpDays||7;const daysSinceSent=Math.floor((new Date()-new Date(j.sent_to_coach_at))/(1000*60*60*24));const isDue=_fuAt?new Date()>=_fuAt:daysSinceSent>=_fuDays;if(isDue)todos.push({type:'coach_followup',priority:1,msg:'📞 Follow up on art approval ('+daysSinceSent+'d): '+j.art_name,detail:tag+' · '+so.id+' · Sent to coach '+daysSinceSent+' days ago',so,jobId:j.id,action:'Follow Up',role:'sales',date:j.sent_to_coach_at})}}
+        if(j.coach_approved_at&&(j.art_status==='production_files_needed'||j.art_status==='art_complete')){const daysAgo=Math.floor((new Date()-new Date(j.coach_approved_at))/(1000*60*60*24));if(daysAgo<=7)todos.push({type:'art_approved',priority:3,msg:'✅ Coach approved art: '+j.art_name,detail:tag+' · '+so.id+' · '+(daysAgo===0?'Today':daysAgo+' day'+(daysAgo!==1?'s':'')+' ago'),so,jobId:j.id,action:'View',role:'sales',isNotification:true,date:j.coach_approved_at})}
+        if(j.art_status==='art_requested'&&j.coach_rejected){const lastRej=(j.rejections||[]).slice(-1)[0];todos.push({type:'art_rejected',priority:1,msg:'❌ Coach rejected art: '+j.art_name,detail:tag+' · '+so.id+(lastRej?' · "'+lastRej.reason.slice(0,60)+(lastRej.reason.length>60?'...':'')+'"':''),so,jobId:j.id,action:'Review feedback',role:'sales',date:lastRej?.rejected_at||j.updated_at||so.updated_at})}
         const ready=isJobReady(j,so);const onBoard=safeJobs(so).some(ej=>ej.id===j.id);
-        if(j.item_status==='partially_received'&&!j.split_from&&j.fulfilled_units>0)todos.push({type:'split',priority:3,msg:'✂️ Can split: '+j.art_name+' ('+j.fulfilled_units+'/'+j.total_units+')',detail:tag+' · '+j.id,so,action:'Review split',role:'production'});
+        if(j.item_status==='partially_received'&&!j.split_from&&j.fulfilled_units>0)todos.push({type:'split',priority:3,msg:'✂️ Can split: '+j.art_name+' ('+j.fulfilled_units+'/'+j.total_units+')',detail:tag+' · '+j.id,so,action:'Review split',role:'production',date:j.updated_at||so.updated_at});
         // Notify rep when all items received for a job
         if(j.item_status==='items_received'&&j.prod_status!=='completed'&&!j.split_from){
           const needsArt=j.art_status!=='art_complete';
-          if(needsArt){todos.push({type:'items_received_needs_art',priority:1,msg:'📦 All items received — art needs attention: '+j.art_name,detail:tag+' · '+so.id+' · Art: '+(j.art_status||'needs_art').replace(/_/g,' '),so,jobId:j.id,action:'Review art',role:'sales'})}
-          else{todos.push({type:'items_received',priority:3,msg:'📦 All items received: '+j.art_name,detail:tag+' · '+so.id+' · '+j.total_units+' units ready',so,jobId:j.id,action:'View',role:'sales',isNotification:true})}
+          if(needsArt){todos.push({type:'items_received_needs_art',priority:1,msg:'📦 All items received — art needs attention: '+j.art_name,detail:tag+' · '+so.id+' · Art: '+(j.art_status||'needs_art').replace(/_/g,' '),so,jobId:j.id,action:'Review art',role:'sales',date:j.items_received_at||j.updated_at||so.updated_at})}
+          else{todos.push({type:'items_received',priority:3,msg:'📦 All items received: '+j.art_name,detail:tag+' · '+so.id+' · '+j.total_units+' units ready',so,jobId:j.id,action:'View',role:'sales',isNotification:true,date:j.items_received_at||j.updated_at||so.updated_at})}
         }
         // Notify rep when a job is completed (decoration done)
-        if(j.prod_status==='completed'){todos.push({type:'job_completed',priority:3,msg:'🏭 Job completed: '+j.art_name,detail:tag+' · '+so.id+' · '+j.total_units+' units — ready to ship',so,jobId:j.id,repId:_repId,action:'View',role:'sales',isNotification:true})}
+        if(j.prod_status==='completed'){todos.push({type:'job_completed',priority:3,msg:'🏭 Job completed: '+j.art_name,detail:tag+' · '+so.id+' · '+j.total_units+' units — ready to ship',so,jobId:j.id,repId:_repId,action:'View',role:'sales',isNotification:true,date:j.completed_at||j.updated_at||so.updated_at})}
       });
-      safeFirm(so).filter(f=>!f.approved).forEach(f=>{todos.push({type:'firm',priority:2,msg:'📌 Firm date request: '+(f.item_desc||'Full order'),detail:tag+' · '+so.id+' · '+f.date,so,action:'Approve',role:'gm'})});
+      safeFirm(so).filter(f=>!f.approved).forEach(f=>{todos.push({type:'firm',priority:2,msg:'📌 Firm date request: '+(f.item_desc||'Full order'),detail:tag+' · '+so.id+' · '+f.date,so,action:'Approve',role:'gm',date:f.created_at||so.created_at})});
       if(so.expected_date){const dOut=Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24));
-        if(dOut<=3&&dOut>=0&&calcSOStatus(so)!=='complete')todos.push({type:'deadline',priority:0,msg:'⚠️ Due in '+dOut+' day'+(dOut!==1?'s':'')+': '+(so.memo||so.id),detail:tag+' · '+so.expected_date,so,action:'Open SO',role:'all'});
-        if(dOut<=5&&dOut>3&&calcSOStatus(so)!=='complete')todos.push({type:'deadline',priority:1,msg:'📅 Due in '+dOut+' days: '+(so.memo||so.id),detail:tag+' · '+so.expected_date,so,action:'Open SO',role:'production'})};
-      if(calcSOStatus(so)==='need_order')todos.push({type:'order',priority:2,msg:'🛒 Items need ordering: '+(so.memo||so.id),detail:tag,so,action:'Create PO',role:'sales'});
+        if(dOut<=3&&dOut>=0&&calcSOStatus(so)!=='complete')todos.push({type:'deadline',priority:0,msg:'⚠️ Due in '+dOut+' day'+(dOut!==1?'s':'')+': '+(so.memo||so.id),detail:tag+' · '+so.expected_date,so,action:'Open SO',role:'all',date:so.expected_date});
+        if(dOut<=5&&dOut>3&&calcSOStatus(so)!=='complete')todos.push({type:'deadline',priority:1,msg:'📅 Due in '+dOut+' days: '+(so.memo||so.id),detail:tag+' · '+so.expected_date,so,action:'Open SO',role:'production',date:so.expected_date})};
+      if(calcSOStatus(so)==='need_order')todos.push({type:'order',priority:2,msg:'🛒 Items need ordering: '+(so.memo||so.id),detail:tag,so,action:'Create PO',role:'sales',date:so.created_at});
       // Booking order confirmation todo — fires when within alert threshold of expected ship date
       if(so.order_type==='booking'&&!so.booking_confirmed&&so.expected_ship_date){
         const shipDaysOut=Math.ceil((new Date(so.expected_ship_date)-new Date())/(1000*60*60*24));
         const alertThreshold=so.booking_alert_days||100;
-        if(shipDaysOut<=alertThreshold&&shipDaysOut>=0)todos.push({type:'booking_confirm',priority:1,msg:'📋 Confirm booking order with coach: '+(so.memo||so.id),detail:tag+' · Ships '+so.expected_ship_date+' ('+shipDaysOut+' days out)',so,action:'Confirm Order',role:'sales'})}
+        if(shipDaysOut<=alertThreshold&&shipDaysOut>=0)todos.push({type:'booking_confirm',priority:1,msg:'📋 Confirm booking order with coach: '+(so.memo||so.id),detail:tag+' · Ships '+so.expected_ship_date+' ('+shipDaysOut+' days out)',so,action:'Confirm Order',role:'sales',date:so.created_at})}
       // Rep delivery todos — notify rep when jobs complete
       if(so.ship_preference==='rep_delivery'){
         safeJobs(so).filter(j=>j.prod_status==='completed').forEach(j=>{
-          todos.push({type:'rep_delivery',priority:1,msg:'🚗 Ready for rep delivery: '+j.art_name,detail:tag+' · '+so.id+' · '+j.total_units+' units',so,action:'Pick up & deliver',role:'sales'});
+          todos.push({type:'rep_delivery',priority:1,msg:'🚗 Ready for rep delivery: '+j.art_name,detail:tag+' · '+so.id+' · '+j.total_units+' units',so,action:'Pick up & deliver',role:'sales',date:j.completed_at||j.updated_at||so.updated_at});
         });
         // No-deco items fully pulled
         safeItems(so).forEach(it=>{
@@ -3088,7 +3096,7 @@ export default function App(){
             const szKeys=Object.keys(it.sizes||{}).filter(k=>SZ_ORD.includes(k)||(it.sizes[k]>0));
             const tot=szKeys.reduce((a,s)=>a+(it.sizes[s]||0),0);
             const pulled=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>szKeys.reduce((a2,s)=>a2+(pk[s]||0),a),0);
-            if(pulled>=tot&&tot>0)todos.push({type:'rep_delivery',priority:1,msg:'🚗 Ready for rep delivery: '+it.sku+' · '+it.name,detail:tag+' · '+so.id+' · '+tot+' units',so,action:'Pick up & deliver',role:'sales'});
+            if(pulled>=tot&&tot>0)todos.push({type:'rep_delivery',priority:1,msg:'🚗 Ready for rep delivery: '+it.sku+' · '+it.name,detail:tag+' · '+so.id+' · '+tot+' units',so,action:'Pick up & deliver',role:'sales',date:so.updated_at});
           }
         });
       }
@@ -3097,10 +3105,10 @@ export default function App(){
     ests.filter(e=>e.status==='approved'&&e.approved_by==='Coach').forEach(e=>{
       const c2=cust.find(x=>x.id===e.customer_id);const tag2=c2?.name||c2?.alpha_tag||e.id;
       if(c2?.payment_terms==='prepay'){
-        todos.push({type:'deposit_needed',priority:1,msg:'💳 Deposit required before ordering: '+(e.memo||e.id),detail:tag2+' · Prepay customer — collect deposit to convert to SO',action:'Collect Deposit',role:'csr',est:e,estC:c2});
-        todos.push({type:'deposit_needed',priority:1,msg:'💳 Deposit required before ordering: '+(e.memo||e.id),detail:tag2+' · Prepay customer — collect deposit to convert to SO',action:'Collect Deposit',role:'sales',est:e,estC:c2});
+        todos.push({type:'deposit_needed',priority:1,msg:'💳 Deposit required before ordering: '+(e.memo||e.id),detail:tag2+' · Prepay customer — collect deposit to convert to SO',action:'Collect Deposit',role:'csr',est:e,estC:c2,date:e.approved_at||e.updated_at||e.created_at});
+        todos.push({type:'deposit_needed',priority:1,msg:'💳 Deposit required before ordering: '+(e.memo||e.id),detail:tag2+' · Prepay customer — collect deposit to convert to SO',action:'Collect Deposit',role:'sales',est:e,estC:c2,date:e.approved_at||e.updated_at||e.created_at});
       } else {
-        todos.push({type:'est_approved',priority:1,msg:'✅ Coach approved estimate: '+(e.memo||e.id),detail:tag2+' · Ready to convert to order',action:'Convert to SO',role:'sales',est:e,estC:c2});
+        todos.push({type:'est_approved',priority:1,msg:'✅ Coach approved estimate: '+(e.memo||e.id),detail:tag2+' · Ready to convert to order',action:'Convert to SO',role:'sales',est:e,estC:c2,date:e.approved_at||e.updated_at||e.created_at});
       }
     });
     // Coach requested estimate updates → rep needs to review and update
@@ -3108,7 +3116,7 @@ export default function App(){
       const c2=cust.find(x=>x.id===e.customer_id);const tag2=c2?.name||c2?.alpha_tag||e.id;
       const pendingReqs=(e.update_requests||[]).filter(r=>r.status==='pending');
       pendingReqs.forEach(req=>{
-        todos.push({type:'est_update_request',priority:1,msg:'📝 Coach requested estimate update: '+(e.memo||e.id),detail:tag2+' · "'+req.text.slice(0,80)+(req.text.length>80?'...':'')+'"',action:'Update Estimate',role:'sales',est:e,estC:c2,updateReqId:req.id});
+        todos.push({type:'est_update_request',priority:1,msg:'📝 Coach requested estimate update: '+(e.memo||e.id),detail:tag2+' · "'+req.text.slice(0,80)+(req.text.length>80?'...':'')+'"',action:'Update Estimate',role:'sales',est:e,estC:c2,updateReqId:req.id,date:req.created_at||e.updated_at||e.created_at});
       });
     });
     // Stale estimate follow-up alerts (uses follow_up_at when set, falls back to days-since-sent)
@@ -3118,22 +3126,22 @@ export default function App(){
       if(e.follow_up_at&&new Date()>=new Date(e.follow_up_at)){
         const sentDate=e.email_sent_at||e.updated_at||e.created_at;
         const daysSince=sentDate?Math.floor((new Date()-new Date(sentDate))/(1000*60*60*24)):0;
-        todos.push({type:'follow_up',priority:1,msg:'⏰ Follow up on estimate ('+daysSince+'d): '+(e.memo||e.id),detail:tag2+' · Follow-up due '+new Date(e.follow_up_at).toLocaleDateString(),action:'Follow Up',role:'sales',est:e,estC:c2});
+        todos.push({type:'follow_up',priority:1,msg:'⏰ Follow up on estimate ('+daysSince+'d): '+(e.memo||e.id),detail:tag2+' · Follow-up due '+new Date(e.follow_up_at).toLocaleDateString(),action:'Follow Up',role:'sales',est:e,estC:c2,date:e.email_sent_at||e.updated_at||e.created_at});
         return;
       }
       const sentDate=e.updated_at||e.created_at;if(!sentDate)return;
       const m=sentDate.match(/(\d{2})\/(\d{2})\/(\d{2})/);
       const d=m?new Date('20'+m[3],m[1]-1,m[2]):new Date(sentDate);
       const days=Math.floor((new Date()-d)/(1000*60*60*24));
-      if(days>=3&&days<7)todos.push({type:'follow_up',priority:2,msg:'📧 Follow up on estimate ('+days+'d): '+(e.memo||e.id),detail:tag2+' · Sent '+days+' days ago',action:'Follow Up',role:'sales',est:e,estC:c2});
-      else if(days>=7&&days<14)todos.push({type:'follow_up',priority:1,msg:'⚠️ Estimate going cold ('+days+'d): '+(e.memo||e.id),detail:tag2+' · No response in '+days+' days',action:'Follow Up',role:'sales',est:e,estC:c2});
-      else if(days>=14)todos.push({type:'follow_up',priority:0,msg:'🔴 Stale estimate ('+days+'d): '+(e.memo||e.id),detail:tag2+' · '+days+' days with no response',action:'Close or Re-send',role:'sales',est:e,estC:c2});
+      if(days>=3&&days<7)todos.push({type:'follow_up',priority:2,msg:'📧 Follow up on estimate ('+days+'d): '+(e.memo||e.id),detail:tag2+' · Sent '+days+' days ago',action:'Follow Up',role:'sales',est:e,estC:c2,date:sentDate});
+      else if(days>=7&&days<14)todos.push({type:'follow_up',priority:1,msg:'⚠️ Estimate going cold ('+days+'d): '+(e.memo||e.id),detail:tag2+' · No response in '+days+' days',action:'Follow Up',role:'sales',est:e,estC:c2,date:sentDate});
+      else if(days>=14)todos.push({type:'follow_up',priority:0,msg:'🔴 Stale estimate ('+days+'d): '+(e.memo||e.id),detail:tag2+' · '+days+' days with no response',action:'Close or Re-send',role:'sales',est:e,estC:c2,date:sentDate});
     });
     // Invoice follow-up alerts (uses follow_up_at when set)
     invs.filter(i=>i.status!=='paid'&&i.follow_up_at&&new Date()>=new Date(i.follow_up_at)).forEach(inv2=>{
       const c2=cust.find(x=>x.id===inv2.customer_id);const tag2=c2?.name||c2?.alpha_tag||inv2.id;
       const daysSince=inv2.email_sent_at?Math.floor((new Date()-new Date(inv2.email_sent_at))/(1000*60*60*24)):0;
-      todos.push({type:'inv_followup',priority:1,msg:'⏰ Follow up on invoice '+inv2.id+' ('+daysSince+'d): $'+safeNum(inv2.total).toFixed(2),detail:tag2+' · Follow-up due '+new Date(inv2.follow_up_at).toLocaleDateString(),action:'Follow Up',role:'sales'});
+      todos.push({type:'inv_followup',priority:1,msg:'⏰ Follow up on invoice '+inv2.id+' ('+daysSince+'d): $'+safeNum(inv2.total).toFixed(2),detail:tag2+' · Follow-up due '+new Date(inv2.follow_up_at).toLocaleDateString(),action:'Follow Up',role:'sales',date:inv2.email_sent_at||inv2.created_at});
     });
     // Recently paid invoices → notification
     invs.filter(i=>i.status==='paid').forEach(inv2=>{
@@ -3142,15 +3150,14 @@ export default function App(){
       if(!payDate)return;
       const daysAgo=Math.floor((new Date()-payDate)/(1000*60*60*24));
       if(daysAgo<=7){const c2=cust.find(x=>x.id===inv2.customer_id);const tag2=c2?.name||c2?.alpha_tag||inv2.id;
-        todos.push({type:'inv_paid',priority:3,msg:'💰 Invoice paid: '+inv2.id+' — $'+safeNum(inv2.total).toFixed(2),detail:tag2+(inv2.memo?' · '+inv2.memo:'')+' · '+(lastPay?.method||'payment')+(daysAgo===0?' · Today':' · '+daysAgo+'d ago'),so:inv2.so_id?sos.find(s=>s.id===inv2.so_id):null,action:'View',role:'sales',isNotification:true})}
+        todos.push({type:'inv_paid',priority:3,msg:'💰 Invoice paid: '+inv2.id+' — $'+safeNum(inv2.total).toFixed(2),detail:tag2+(inv2.memo?' · '+inv2.memo:'')+' · '+(lastPay?.method||'payment')+(daysAgo===0?' · Today':' · '+daysAgo+'d ago'),so:inv2.so_id?sos.find(s=>s.id===inv2.so_id):null,action:'View',role:'sales',isNotification:true,date:lastPay?.date||inv2.updated_at})}
     });
     // Open issues → show on to-do list for top admin (Steve) only
     if(cu?.id==='00000000-0000-0000-0000-000000000001')issues.filter(i=>i.status==='open').forEach(i=>{
       const pri=i.priority==='high'?0:i.priority==='medium'?1:2;
-      todos.push({type:'issue',priority:pri,msg:(i.priority==='high'?'🔴':'🟡')+' Issue: '+i.description.slice(0,80)+(i.description.length>80?'...':''),detail:(i.reported_by||i.reportedBy||'Unknown')+' · '+i.page+(i.viewing?' · '+i.viewing:''),action:'View Issue',role:'admin',issueId:i.id});
+      todos.push({type:'issue',priority:pri,msg:(i.priority==='high'?'🔴':'🟡')+' Issue: '+i.description.slice(0,80)+(i.description.length>80?'...':''),detail:(i.reported_by||i.reportedBy||'Unknown')+' · '+i.page+(i.viewing?' · '+i.viewing:''),action:'View Issue',role:'admin',issueId:i.id,date:i.timestamp||i.created_at});
     });
-    todos.sort((a,b)=>a.priority-b.priority);
-    // Attach repId, dismissKey, and date to each todo
+    // Attach repId, dismissKey, and fallback date to each todo
     todos.forEach(t=>{
       if(t.so){const c=cust.find(x=>x.id===t.so.customer_id);t.repId=c?.primary_rep_id||t.so.created_by}
       else if(t.est){const c=cust.find(x=>x.id===t.est.customer_id);t.repId=c?.primary_rep_id||t.est.created_by}
@@ -3158,9 +3165,12 @@ export default function App(){
       else if(t.so&&t.jobId)t.dismissKey=t.type+':'+t.so.id+':'+t.jobId;
       else if(t.so)t.dismissKey=t.type+':'+t.so.id;
       else t.dismissKey=t.type+':'+t.msg.slice(0,40);
-      if(t.est)t.date=t.est.approved_at||t.est.updated_at||t.est.created_at;
-      else if(t.so)t.date=t.so.updated_at||t.so.created_at;
+      // Fallback date only if not already set at creation time
+      if(!t.date){if(t.est)t.date=t.est.approved_at||t.est.updated_at||t.est.created_at;
+      else if(t.so)t.date=t.so.created_at}
     });
+    // Sort by date (newest first)
+    todos.sort((a,b)=>{const da=a.date?new Date(a.date).getTime():0;const db=b.date?new Date(b.date).getTime():0;return db-da});
     // Filter to person-specific: reps see their customers' todos, CSRs see their assigned reps' todos
     const myTodos=todos.filter(t=>{
       if(cu.role==='admin'||cu.role==='gm')return true;
@@ -3199,11 +3209,14 @@ export default function App(){
     <div className="stats-row"><div className="stat-card"><div className="stat-label">Open Estimates</div><div className="stat-value" style={{color:'#d97706'}}>{ests.filter(e=>e.status==='draft'||e.status==='sent').length}</div></div><div className="stat-card"><div className="stat-label">Active SOs</div><div className="stat-value" style={{color:'#2563eb'}}>{sos.filter(s=>calcSOStatus(s)!=='complete').length}</div></div><div className="stat-card"><div className="stat-label">Active Jobs</div><div className="stat-value" style={{color:'#7c3aed'}}>{activeJobs.length}</div></div><div className="stat-card"><div className="stat-label">Unread Msgs</div><div className="stat-value" style={{color:unreadMsgs.length>0?'#dc2626':''}}>{unreadMsgs.length}</div></div>{unreadMentions.length>0&&<div className="stat-card" style={{borderColor:'#f59e0b'}}><div className="stat-label">@ Mentions</div><div className="stat-value" style={{color:'#d97706'}}>{unreadMentions.length}</div></div>}
       {isA&&<div className="stat-card" style={{borderColor:'#fbbf24'}}><div className="stat-label">Stock Alerts</div><div className="stat-value" style={{color:'#d97706'}}>{al.length}</div></div>}
       <div className="stat-card" style={{borderColor:ssConnected?'#22c55e':'#ef4444'}}><div className="stat-label">ShipStation</div><div className="stat-value" style={{color:ssConnected?'#166534':'#dc2626',fontSize:16}}>{ssConnected?'Connected':'Offline'}</div></div></div>
-    {(()=>{const _fmtTD=d=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);return days<1?'Today':days===1?'Yesterday':days<14?days+'d ago':((dt.getMonth()+1)+'/'+dt.getDate())}catch{return''}};const _allActionTodos=todos.filter(t=>!t.isNotification);const actionTodos=_allActionTodos.filter(t=>!dismissedTodos.includes(t.dismissKey));const notifs=todos.filter(t=>t.isNotification);return<><div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
-      <div className="card"><div className="card-header"><h2>📋 To-Do ({actionTodos.length})</h2></div>
+    {(()=>{const _fmtTD=d=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);return days<1?'Today':days===1?'Yesterday':days<14?days+'d ago':((dt.getMonth()+1)+'/'+dt.getDate())}catch{return''}};const _allActionTodos=todos.filter(t=>!t.isNotification);const _undismissed=_allActionTodos.filter(t=>!dismissedTodos.includes(t.dismissKey));const _todoTypeMatch=t=>{if(todoFilter==='all')return true;if(todoFilter==='art')return t.type==='art'||t.type==='coach_followup'||t.type==='art_rejected'||t.type==='art_approved';if(todoFilter==='follow_up')return t.type==='follow_up'||t.type==='inv_followup';if(todoFilter==='order')return t.type==='order'||t.type==='deposit_needed';if(todoFilter==='deadline')return t.type==='deadline';if(todoFilter==='est')return t.type==='est_approved'||t.type==='est_update_request';if(todoFilter==='delivery')return t.type==='rep_delivery';if(todoFilter==='issue')return t.type==='issue';return true};const actionTodos=_undismissed.filter(_todoTypeMatch);const notifs=todos.filter(t=>t.isNotification);return<><div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
+      <div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><h2>📋 To-Do ({actionTodos.length})</h2>
+        <select value={todoFilter} onChange={e=>setTodoFilter(e.target.value)} style={{fontSize:11,padding:'3px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:'#475569',cursor:'pointer'}}>
+          <option value="all">All Types</option><option value="art">Art / Approvals</option><option value="follow_up">Follow-ups</option><option value="est">Estimates</option><option value="order">Orders / Deposits</option><option value="deadline">Deadlines</option><option value="delivery">Delivery</option><option value="issue">Issues</option>
+        </select></div>
         <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
-          {actionTodos.length===0?<div className="empty" style={{padding:20}}>All clear!</div>:
-          actionTodos.slice(0,12).map((t,i)=><div key={i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:8,cursor:'pointer'}} onClick={()=>{if(t.type==='issue'){setPg('settings')}else if(t.type==='est_update_request'||t.type==='est_approved'||t.type==='follow_up'||t.type==='deposit_needed'){if(t.est){setEEst(t.est);setEEstC(t.estC);setPg('estimates')}}else if(t.so){if(t.type==='art'&&t.jobId){const jIdx=safeJobs(t.so).findIndex(jj=>jj.id===t.jobId);setESOTab('jobs');setESOScrollJob(jIdx>=0?jIdx:null)}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
+          {actionTodos.length===0?<div className="empty" style={{padding:20}}>{todoFilter==='all'?'All clear!':'No '+todoFilter.replace(/_/g,' ')+' items'}</div>:
+          actionTodos.slice(0,20).map((t,i)=><div key={i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:8,cursor:'pointer'}} onClick={()=>{if(t.type==='issue'){setPg('settings')}else if(t.type==='est_update_request'||t.type==='est_approved'||t.type==='follow_up'||t.type==='deposit_needed'){if(t.est){setEEst(t.est);setEEstC(t.estC);setPg('estimates')}}else if(t.so){if(t.type==='art'&&t.jobId){const jIdx=safeJobs(t.so).findIndex(jj=>jj.id===t.jobId);setESOTab('jobs');setESOScrollJob(jIdx>=0?jIdx:null)}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
             <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}{t.repId?<span style={{marginLeft:6,fontSize:10,color:'#2563eb'}}>({REPS.find(r=>r.id===t.repId)?.name?.split(' ')[0]||''})</span>:''}</div></div>
             {_fmtTD(t.date)&&<span style={{fontSize:10,color:'#94a3b8',whiteSpace:'nowrap'}}>{_fmtTD(t.date)}</span>}
             {(cu.role==='admin'||cu.role==='gm')&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#f0f9ff',color:'#0891b2',border:'1px solid #a5f3fc',borderRadius:8,whiteSpace:'nowrap'}} onClick={e=>{e.stopPropagation();setTodoModal({open:true,title:t.msg.replace(/^[^\w]*/,''),description:t.detail||'',assigned_to:getCsrsForRep(t.repId||cu.id)[0]||'',so_id:t.so?.id||'',customer_id:t.so?.customer_id||t.est?.customer_id||'',priority:t.priority<=1?1:2})}}>Assign</button>}
@@ -3272,12 +3285,15 @@ export default function App(){
       <div className="stat-card"><div className="stat-label">Due This Week</div><div className="stat-value" style={{color:'#dc2626'}}>{myTodos.filter(t=>t.type==='deadline').length}</div></div>
       <div className="stat-card"><div className="stat-label">Assigned Tasks</div><div className="stat-value" style={{color:'#0891b2'}}>{myAssignedTodos.length}</div></div>
     </div>
-    {(()=>{const _allActionTodos=myTodos.filter(t=>(t.role==='sales'||t.role==='all')&&!t.isNotification);const myActionTodos=_allActionTodos.filter(t=>!dismissedTodos.includes(t.dismissKey));const myNotifs=myTodos.filter(t=>(t.role==='sales'||t.role==='all')&&t.isNotification);const _fmtTD=d=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);return days<1?'Today':days===1?'Yesterday':days<14?days+'d ago':((dt.getMonth()+1)+'/'+dt.getDate())}catch{return''}};return<>
+    {(()=>{const _allActionTodos=myTodos.filter(t=>(t.role==='sales'||t.role==='all')&&!t.isNotification);const _undismissedSales=_allActionTodos.filter(t=>!dismissedTodos.includes(t.dismissKey));const _salesTypeMatch=t=>{if(todoFilter==='all')return true;if(todoFilter==='art')return t.type==='art'||t.type==='coach_followup'||t.type==='art_rejected';if(todoFilter==='follow_up')return t.type==='follow_up'||t.type==='inv_followup';if(todoFilter==='order')return t.type==='order'||t.type==='deposit_needed';if(todoFilter==='deadline')return t.type==='deadline';if(todoFilter==='est')return t.type==='est_approved'||t.type==='est_update_request';if(todoFilter==='delivery')return t.type==='rep_delivery';return true};const myActionTodos=_undismissedSales.filter(_salesTypeMatch);const myNotifs=myTodos.filter(t=>(t.role==='sales'||t.role==='all')&&t.isNotification);const _fmtTD=d=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);return days<1?'Today':days===1?'Yesterday':days<14?days+'d ago':((dt.getMonth()+1)+'/'+dt.getDate())}catch{return''}};return<>
     <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
-      <div className="card"><div className="card-header"><h2>🎯 My Action Items ({myActionTodos.length})</h2></div>
+      <div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><h2>🎯 My Action Items ({myActionTodos.length})</h2>
+        <select value={todoFilter} onChange={e=>setTodoFilter(e.target.value)} style={{fontSize:11,padding:'3px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:'#475569',cursor:'pointer'}}>
+          <option value="all">All Types</option><option value="art">Art / Approvals</option><option value="follow_up">Follow-ups</option><option value="est">Estimates</option><option value="order">Orders / Deposits</option><option value="deadline">Deadlines</option><option value="delivery">Delivery</option>
+        </select></div>
         <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
-          {myActionTodos.length===0?<div className="empty" style={{padding:20}}>Nothing pending!</div>:
-          myActionTodos.slice(0,12).map((t,i)=><div key={i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:8,cursor:'pointer'}} onClick={()=>{if(t.type==='est_update_request'||t.type==='est_approved'||t.type==='follow_up'||t.type==='deposit_needed'){if(t.est){setEEst(t.est);setEEstC(t.estC);setPg('estimates')}}else if(t.so){if(t.type==='art'&&t.jobId){const jIdx=safeJobs(t.so).findIndex(jj=>jj.id===t.jobId);setESOTab('jobs');setESOScrollJob(jIdx>=0?jIdx:null)}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
+          {myActionTodos.length===0?<div className="empty" style={{padding:20}}>{todoFilter==='all'?'Nothing pending!':'No '+todoFilter.replace(/_/g,' ')+' items'}</div>:
+          myActionTodos.slice(0,20).map((t,i)=><div key={i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:8,cursor:'pointer'}} onClick={()=>{if(t.type==='est_update_request'||t.type==='est_approved'||t.type==='follow_up'||t.type==='deposit_needed'){if(t.est){setEEst(t.est);setEEstC(t.estC);setPg('estimates')}}else if(t.so){if(t.type==='art'&&t.jobId){const jIdx=safeJobs(t.so).findIndex(jj=>jj.id===t.jobId);setESOTab('jobs');setESOScrollJob(jIdx>=0?jIdx:null)}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
             <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}{t.repId&&cu.role!=='rep'?<span style={{marginLeft:6,fontSize:10,color:'#2563eb'}}>({REPS.find(r=>r.id===t.repId)?.name?.split(' ')[0]||''})</span>:''}</div></div>
             {_fmtTD(t.date)&&<span style={{fontSize:10,color:'#94a3b8',whiteSpace:'nowrap'}}>{_fmtTD(t.date)}</span>}
             {(cu.role==='admin'||cu.role==='gm'||cu.role==='rep')&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#f0f9ff',color:'#0891b2',border:'1px solid #a5f3fc',borderRadius:8,whiteSpace:'nowrap'}} onClick={e=>{e.stopPropagation();setTodoModal({open:true,title:t.msg.replace(/^[^\w]*/,''),description:t.detail||'',assigned_to:getCsrsForRep(t.repId||cu.id)[0]||'',so_id:t.so?.id||'',customer_id:t.so?.customer_id||t.est?.customer_id||'',priority:t.priority<=1?1:2})}}>Assign</button>}
@@ -4779,37 +4795,37 @@ export default function App(){
     sos.forEach(so=>{
       const c=cust.find(x=>x.id===so.customer_id);const tag=c?.name||c?.alpha_tag||so.id;const _repId=c?.primary_rep_id||so.created_by;
       buildJobs(so).forEach(j=>{
-        if(j.art_status==='waiting_approval'){todos.push({type:'art',priority:2,msg:'Art awaiting approval: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,action:'Review art',role:'sales'});
-          if(j.sent_to_coach_at){const _fuDays=portalSettings?.followUpDays||7;const daysSinceSent=Math.floor((new Date()-new Date(j.sent_to_coach_at))/(1000*60*60*24));const _fuAt=j.follow_up_at?new Date(j.follow_up_at):null;const isDue=_fuAt?new Date()>=_fuAt:daysSinceSent>=_fuDays;if(isDue)todos.push({type:'coach_followup',priority:1,msg:'Follow up on art approval ('+daysSinceSent+'d): '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,action:'Follow Up',role:'sales'})}}
-        if(j.coach_approved_at&&(j.art_status==='production_files_needed'||j.art_status==='art_complete')){const daysAgo=Math.floor((new Date()-new Date(j.coach_approved_at))/(1000*60*60*24));if(daysAgo<=7)todos.push({type:'art_approved',priority:3,msg:'Coach approved art: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,action:'View',role:'sales',isNotification:true})}
-        if(j.art_status==='art_requested'&&j.coach_rejected){todos.push({type:'art_rejected',priority:1,msg:'Coach rejected art: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,action:'Review feedback',role:'sales'})}
-        if(j.item_status==='partially_received'&&!j.split_from&&j.fulfilled_units>0)todos.push({type:'split',priority:3,msg:'Can split: '+j.art_name+' ('+j.fulfilled_units+'/'+j.total_units+')',detail:tag+' · '+j.id,so,action:'Review split',role:'production'});
+        if(j.art_status==='waiting_approval'){
+          if(j.sent_to_coach_at){const _fuDays=portalSettings?.followUpDays||7;const daysSinceSent=Math.floor((new Date()-new Date(j.sent_to_coach_at))/(1000*60*60*24));const _fuAt=j.follow_up_at?new Date(j.follow_up_at):null;const isDue=_fuAt?new Date()>=_fuAt:daysSinceSent>=_fuDays;if(isDue)todos.push({type:'coach_followup',priority:1,msg:'Follow up on art approval ('+daysSinceSent+'d): '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,action:'Follow Up',role:'sales',date:j.sent_to_coach_at})}}
+        if(j.coach_approved_at&&(j.art_status==='production_files_needed'||j.art_status==='art_complete')){const daysAgo=Math.floor((new Date()-new Date(j.coach_approved_at))/(1000*60*60*24));if(daysAgo<=7)todos.push({type:'art_approved',priority:3,msg:'Coach approved art: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,action:'View',role:'sales',isNotification:true,date:j.coach_approved_at})}
+        if(j.art_status==='art_requested'&&j.coach_rejected){todos.push({type:'art_rejected',priority:1,msg:'Coach rejected art: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,action:'Review feedback',role:'sales',date:j.updated_at||so.updated_at})}
+        if(j.item_status==='partially_received'&&!j.split_from&&j.fulfilled_units>0)todos.push({type:'split',priority:3,msg:'Can split: '+j.art_name+' ('+j.fulfilled_units+'/'+j.total_units+')',detail:tag+' · '+j.id,so,action:'Review split',role:'production',date:j.updated_at||so.updated_at});
         if(j.item_status==='items_received'&&j.prod_status!=='completed'&&!j.split_from){
           const needsArt=j.art_status!=='art_complete';
-          if(needsArt){todos.push({type:'items_received_needs_art',priority:1,msg:'All items received — art needs attention: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,action:'Review art',role:'sales'})}
-          else{todos.push({type:'items_received',priority:3,msg:'All items received: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,action:'View',role:'sales',isNotification:true})}
+          if(needsArt){todos.push({type:'items_received_needs_art',priority:1,msg:'All items received — art needs attention: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,action:'Review art',role:'sales',date:j.items_received_at||j.updated_at||so.updated_at})}
+          else{todos.push({type:'items_received',priority:3,msg:'All items received: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,action:'View',role:'sales',isNotification:true,date:j.items_received_at||j.updated_at||so.updated_at})}
         }
-        if(j.prod_status==='completed'){todos.push({type:'job_completed',priority:3,msg:'Job completed: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,repId:_repId,action:'View',role:'sales',isNotification:true})}
+        if(j.prod_status==='completed'){todos.push({type:'job_completed',priority:3,msg:'Job completed: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,repId:_repId,action:'View',role:'sales',isNotification:true,date:j.completed_at||j.updated_at||so.updated_at})}
       });
-      safeFirm(so).filter(f=>!f.approved).forEach(f=>{todos.push({type:'firm',priority:2,msg:'Firm date request: '+(f.item_desc||'Full order'),detail:tag+' · '+so.id+' · '+f.date,so,action:'Approve',role:'gm'})});
+      safeFirm(so).filter(f=>!f.approved).forEach(f=>{todos.push({type:'firm',priority:2,msg:'Firm date request: '+(f.item_desc||'Full order'),detail:tag+' · '+so.id+' · '+f.date,so,action:'Approve',role:'gm',date:f.created_at||so.created_at})});
       if(so.expected_date){const dOut=Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24));
-        if(dOut<=3&&dOut>=0&&calcSOStatus(so)!=='complete')todos.push({type:'deadline',priority:0,msg:'Due in '+dOut+' day'+(dOut!==1?'s':'')+': '+(so.memo||so.id),detail:tag+' · '+so.expected_date,so,action:'Open SO',role:'all'});
-        if(dOut<=5&&dOut>3&&calcSOStatus(so)!=='complete')todos.push({type:'deadline',priority:1,msg:'Due in '+dOut+' days: '+(so.memo||so.id),detail:tag+' · '+so.expected_date,so,action:'Open SO',role:'production'})};
-      if(calcSOStatus(so)==='need_order')todos.push({type:'order',priority:2,msg:'Items need ordering: '+(so.memo||so.id),detail:tag,so,action:'Create PO',role:'sales'});
+        if(dOut<=3&&dOut>=0&&calcSOStatus(so)!=='complete')todos.push({type:'deadline',priority:0,msg:'Due in '+dOut+' day'+(dOut!==1?'s':'')+': '+(so.memo||so.id),detail:tag+' · '+so.expected_date,so,action:'Open SO',role:'all',date:so.expected_date});
+        if(dOut<=5&&dOut>3&&calcSOStatus(so)!=='complete')todos.push({type:'deadline',priority:1,msg:'Due in '+dOut+' days: '+(so.memo||so.id),detail:tag+' · '+so.expected_date,so,action:'Open SO',role:'production',date:so.expected_date})};
+      if(calcSOStatus(so)==='need_order')todos.push({type:'order',priority:2,msg:'Items need ordering: '+(so.memo||so.id),detail:tag,so,action:'Create PO',role:'sales',date:so.created_at});
       if(so.order_type==='booking'&&!so.booking_confirmed&&so.expected_ship_date){
         const shipDaysOut=Math.ceil((new Date(so.expected_ship_date)-new Date())/(1000*60*60*24));
         const alertThreshold=so.booking_alert_days||100;
-        if(shipDaysOut<=alertThreshold&&shipDaysOut>=0)todos.push({type:'booking_confirm',priority:1,msg:'Confirm booking order with coach: '+(so.memo||so.id),detail:tag+' · Ships '+so.expected_ship_date,so,action:'Confirm Order',role:'sales'})}
+        if(shipDaysOut<=alertThreshold&&shipDaysOut>=0)todos.push({type:'booking_confirm',priority:1,msg:'Confirm booking order with coach: '+(so.memo||so.id),detail:tag+' · Ships '+so.expected_ship_date,so,action:'Confirm Order',role:'sales',date:so.created_at})}
       if(so.ship_preference==='rep_delivery'){
         safeJobs(so).filter(j=>j.prod_status==='completed').forEach(j=>{
-          todos.push({type:'rep_delivery',priority:1,msg:'Ready for rep delivery: '+j.art_name,detail:tag+' · '+so.id,so,action:'Pick up & deliver',role:'sales'});
+          todos.push({type:'rep_delivery',priority:1,msg:'Ready for rep delivery: '+j.art_name,detail:tag+' · '+so.id,so,action:'Pick up & deliver',role:'sales',date:j.completed_at||j.updated_at||so.updated_at});
         });
         safeItems(so).forEach(it=>{
           if((!it.decorations?.length||it.no_deco)){
             const szKeys=Object.keys(it.sizes||{}).filter(k=>SZ_ORD.includes(k)||(it.sizes[k]>0));
             const tot=szKeys.reduce((a,s)=>a+(it.sizes[s]||0),0);
             const pulled=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>szKeys.reduce((a2,s)=>a2+(pk[s]||0),a),0);
-            if(pulled>=tot&&tot>0)todos.push({type:'rep_delivery',priority:1,msg:'Ready for rep delivery: '+it.sku+' · '+it.name,detail:tag+' · '+so.id,so,action:'Pick up & deliver',role:'sales'});
+            if(pulled>=tot&&tot>0)todos.push({type:'rep_delivery',priority:1,msg:'Ready for rep delivery: '+it.sku+' · '+it.name,detail:tag+' · '+so.id,so,action:'Pick up & deliver',role:'sales',date:so.updated_at});
           }
         });
       }
@@ -4817,15 +4833,15 @@ export default function App(){
     ests.filter(e=>e.status==='approved'&&e.approved_by==='Coach').forEach(e=>{
       const c2=cust.find(x=>x.id===e.customer_id);const tag2=c2?.name||c2?.alpha_tag||e.id;
       if(c2?.payment_terms==='prepay'){
-        todos.push({type:'deposit_needed',priority:1,msg:'Deposit required before ordering: '+(e.memo||e.id),detail:tag2+' · Prepay customer',action:'Collect Deposit',role:'sales',est:e,estC:c2});
+        todos.push({type:'deposit_needed',priority:1,msg:'Deposit required before ordering: '+(e.memo||e.id),detail:tag2+' · Prepay customer',action:'Collect Deposit',role:'sales',est:e,estC:c2,date:e.approved_at||e.updated_at||e.created_at});
       } else {
-        todos.push({type:'est_approved',priority:1,msg:'Coach approved estimate: '+(e.memo||e.id),detail:tag2+' · Ready to convert',action:'Convert to SO',role:'sales',est:e,estC:c2});
+        todos.push({type:'est_approved',priority:1,msg:'Coach approved estimate: '+(e.memo||e.id),detail:tag2+' · Ready to convert',action:'Convert to SO',role:'sales',est:e,estC:c2,date:e.approved_at||e.updated_at||e.created_at});
       }
     });
     ests.filter(e=>(e.update_requests||[]).some(r=>r.status==='pending')).forEach(e=>{
       const c2=cust.find(x=>x.id===e.customer_id);const tag2=c2?.name||c2?.alpha_tag||e.id;
       (e.update_requests||[]).filter(r=>r.status==='pending').forEach(req=>{
-        todos.push({type:'est_update_request',priority:1,msg:'Coach requested estimate update: '+(e.memo||e.id),detail:tag2+' · "'+req.text.slice(0,80)+'"',action:'Update Estimate',role:'sales',est:e,estC:c2});
+        todos.push({type:'est_update_request',priority:1,msg:'Coach requested estimate update: '+(e.memo||e.id),detail:tag2+' · "'+req.text.slice(0,80)+'"',action:'Update Estimate',role:'sales',est:e,estC:c2,date:req.created_at||e.updated_at||e.created_at});
       });
     });
     ests.filter(e=>e.status==='sent').forEach(e=>{
@@ -4833,23 +4849,23 @@ export default function App(){
       if(e.follow_up_at&&new Date()>=new Date(e.follow_up_at)){
         const sentDate=e.email_sent_at||e.updated_at||e.created_at;
         const daysSince=sentDate?Math.floor((new Date()-new Date(sentDate))/(1000*60*60*24)):0;
-        todos.push({type:'follow_up',priority:1,msg:'Follow up on estimate ('+daysSince+'d): '+(e.memo||e.id),detail:tag2,action:'Follow Up',role:'sales',est:e,estC:c2});
+        todos.push({type:'follow_up',priority:1,msg:'Follow up on estimate ('+daysSince+'d): '+(e.memo||e.id),detail:tag2,action:'Follow Up',role:'sales',est:e,estC:c2,date:sentDate});
         return;
       }
       const sentDate=e.updated_at||e.created_at;if(!sentDate)return;
       const m=sentDate.match(/(\d{2})\/(\d{2})\/(\d{2})/);
       const d=m?new Date('20'+m[3],m[1]-1,m[2]):new Date(sentDate);
       const days=Math.floor((new Date()-d)/(1000*60*60*24));
-      if(days>=3&&days<7)todos.push({type:'follow_up',priority:2,msg:'Follow up on estimate ('+days+'d): '+(e.memo||e.id),detail:tag2,action:'Follow Up',role:'sales',est:e,estC:c2});
-      else if(days>=7&&days<14)todos.push({type:'follow_up',priority:1,msg:'Estimate going cold ('+days+'d): '+(e.memo||e.id),detail:tag2,action:'Follow Up',role:'sales',est:e,estC:c2});
-      else if(days>=14)todos.push({type:'follow_up',priority:0,msg:'Stale estimate ('+days+'d): '+(e.memo||e.id),detail:tag2,action:'Close or Re-send',role:'sales',est:e,estC:c2});
+      if(days>=3&&days<7)todos.push({type:'follow_up',priority:2,msg:'Follow up on estimate ('+days+'d): '+(e.memo||e.id),detail:tag2,action:'Follow Up',role:'sales',est:e,estC:c2,date:sentDate});
+      else if(days>=7&&days<14)todos.push({type:'follow_up',priority:1,msg:'Estimate going cold ('+days+'d): '+(e.memo||e.id),detail:tag2,action:'Follow Up',role:'sales',est:e,estC:c2,date:sentDate});
+      else if(days>=14)todos.push({type:'follow_up',priority:0,msg:'Stale estimate ('+days+'d): '+(e.memo||e.id),detail:tag2,action:'Close or Re-send',role:'sales',est:e,estC:c2,date:sentDate});
     });
     invs.filter(i=>i.status!=='paid'&&i.follow_up_at&&new Date()>=new Date(i.follow_up_at)).forEach(inv2=>{
       const c2=cust.find(x=>x.id===inv2.customer_id);const tag2=c2?.name||c2?.alpha_tag||inv2.id;
       const daysSince=inv2.email_sent_at?Math.floor((new Date()-new Date(inv2.email_sent_at))/(1000*60*60*24)):0;
-      todos.push({type:'inv_followup',priority:1,msg:'Follow up on invoice '+inv2.id+' ('+daysSince+'d)',detail:tag2,action:'Follow Up',role:'sales'});
+      todos.push({type:'inv_followup',priority:1,msg:'Follow up on invoice '+inv2.id+' ('+daysSince+'d)',detail:tag2,action:'Follow Up',role:'sales',date:inv2.email_sent_at||inv2.created_at});
     });
-    todos.sort((a,b)=>a.priority-b.priority);
+    // Attach repId, dismissKey, and fallback date
     todos.forEach(t=>{
       if(t.so){const c=cust.find(x=>x.id===t.so.customer_id);t.repId=c?.primary_rep_id||t.so.created_by}
       else if(t.est){const c=cust.find(x=>x.id===t.est.customer_id);t.repId=c?.primary_rep_id||t.est.created_by}
@@ -4857,9 +4873,11 @@ export default function App(){
       else if(t.so&&t.jobId)t.dismissKey=t.type+':'+t.so.id+':'+t.jobId;
       else if(t.so)t.dismissKey=t.type+':'+t.so.id;
       else t.dismissKey=t.type+':'+t.msg.slice(0,40);
-      if(t.est)t.date=t.est.approved_at||t.est.updated_at||t.est.created_at;
-      else if(t.so)t.date=t.so.updated_at||t.so.created_at;
+      if(!t.date){if(t.est)t.date=t.est.approved_at||t.est.updated_at||t.est.created_at;
+      else if(t.so)t.date=t.so.created_at}
     });
+    // Sort by date (newest first)
+    todos.sort((a,b)=>{const da=a.date?new Date(a.date).getTime():0;const db=b.date?new Date(b.date).getTime():0;return db-da});
     const filtered=todos.filter(t=>{
       if(cu.role==='admin'||cu.role==='gm')return true;
       if(t.role==='all')return true;
@@ -17843,7 +17861,7 @@ export default function App(){
   // LOGIN GATE
   if(!cu)return<ComponentErrorBoundary name="LoginGate"><React.Suspense fallback={<LazyFallback/>}><LoginGate onLogin={handleLogin} reps={REPS} supabase={supabase} sbSignIn={_sbSignIn} sbSignUp={_sbSignUp} sbGetSession={_sbGetSession} sbLinkTeamAuth={_sbLinkTeamAuth} sbGetMyProfile={_sbGetMyProfile}/></React.Suspense></ComponentErrorBoundary>;
   // MOBILE PORTAL GATE
-  if(mobileMode)return<MobilePortal cu={cu} cust={cust} sos={sos} ests={ests} invs={invs} msgs={msgs} prod={prod} vend={vend} REPS={REPS} assignedTodos={assignedTodos} computedTodos={computedTodos} onLogout={handleLogout} onSwitchDesktop={()=>setMobileMode(false)} onSaveEstimate={savE} nextEstId={()=>nextEstId(ests)} nf={nf} onMsg={setMsgs}/>;
+  if(mobileMode)return<MobilePortal cu={cu} cust={cust} sos={sos} ests={ests} invs={invs} msgs={msgs} prod={prod} vend={vend} REPS={REPS} assignedTodos={assignedTodos} computedTodos={computedTodos} dismissedTodos={dismissedTodos} onDismissTodo={dismissTodo} onLogout={handleLogout} onSwitchDesktop={()=>setMobileMode(false)} onSaveEstimate={savE} nextEstId={()=>nextEstId(ests)} nf={nf} onMsg={setMsgs}/>;
 
   return(<div className="app"><Toast msg={toast?.msg} type={toast?.type}/>
     {/* Mobile sidebar backdrop */}

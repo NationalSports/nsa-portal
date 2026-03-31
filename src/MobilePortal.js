@@ -30,7 +30,7 @@ const timeAgo=(d)=>{if(!d)return'';const ms=Date.now()-new Date(d).getTime();con
 // ═══════════════════════════════════════════
 // MOBILE PORTAL COMPONENT
 // ═══════════════════════════════════════════
-export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,assignedTodos=[],computedTodos=[],onLogout,onSwitchDesktop,onSaveEstimate,nextEstId,nf,onMsg}){
+export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,assignedTodos=[],computedTodos=[],dismissedTodos:parentDismissed,onDismissTodo,onLogout,onSwitchDesktop,onSaveEstimate,nextEstId,nf,onMsg}){
   const[tab,setTab]=useState('home');
   const[q,setQ]=useState('');
   const[showSearch,setShowSearch]=useState(false);
@@ -74,11 +74,11 @@ export default function MobilePortal({cu,cust,sos,ests,invs,msgs,prod,vend,REPS,
   const unreadAllCount=allUnreadMsgs.length;
 
   // My todos — merge assigned (manual) + computed (auto-generated from dashboard) so mobile matches desktop
-  const[dismissedTodos,setDismissedTodos]=useState(()=>{try{return JSON.parse(localStorage.getItem('nsa_dismissed_todos')||'[]')}catch{return[]}});
-  const dismissTodo=(key)=>{if(!key)return;setDismissedTodos(prev=>{const n=[...prev,key];try{localStorage.setItem('nsa_dismissed_todos',JSON.stringify(n))}catch{}return n})};
+  const _dismissed=parentDismissed||[];
+  const dismissTodo=onDismissTodo||(()=>{});
   const myAssignedTodos=useMemo(()=>(assignedTodos||[]).filter(t=>t.status==='open'&&(t.assigned_to===cu.id||t.created_by===cu.id)).sort((a,b)=>(a.priority||9)-(b.priority||9)),[assignedTodos,cu.id]);
-  const myComputedTodos=useMemo(()=>(computedTodos||[]).filter(t=>!t.isNotification&&!dismissedTodos.includes(t.dismissKey)).slice(0,15),[computedTodos,dismissedTodos]);
-  const myTodos=useMemo(()=>[...myComputedTodos.map((t,i)=>({id:'computed-'+i,title:t.msg,description:t.detail,priority:t.priority,_computed:true,_action:t.action,_type:t.type,so_id:t.so?.id,_dismissKey:t.dismissKey,_date:t.date})),...myAssignedTodos].sort((a,b)=>(a.priority||9)-(b.priority||9)),[myComputedTodos,myAssignedTodos]);
+  const myComputedTodos=useMemo(()=>(computedTodos||[]).filter(t=>!t.isNotification&&!_dismissed.includes(t.dismissKey)).slice(0,15),[computedTodos,_dismissed]);
+  const myTodos=useMemo(()=>[...myComputedTodos.map((t,i)=>({id:'computed-'+i,title:t.msg,description:t.detail,priority:t.priority,_computed:true,_action:t.action,_type:t.type,so_id:t.so?.id,_dismissKey:t.dismissKey,_date:t.date})),...myAssignedTodos].sort((a,b)=>{const da=(a._date||a.created_at)?new Date(a._date||a.created_at).getTime():0;const db=(b._date||b.created_at)?new Date(b._date||b.created_at).getTime():0;return db-da}),[myComputedTodos,myAssignedTodos]);
 
   // ─── SEARCH ───
   const searchResults=useMemo(()=>{
