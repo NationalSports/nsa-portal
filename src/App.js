@@ -422,6 +422,8 @@ const _dbSeed = async (d) => {
 // ─── Optimistic Locking: version conflict detection ───
 const _checkVersion=async(table,id,localVersion)=>{
   if(!supabase||!localVersion)return true;// skip check if no version tracked
+  // Skip version check for records this client recently saved (prevents false conflicts from own realtime echo)
+  if(_dbRecentSaves[id]&&Date.now()-_dbRecentSaves[id]<15000)return true;
   try{
     const{data}=await supabase.from(table).select('_version').eq('id',id).single();
     if(!data)return true;// new record
@@ -503,7 +505,7 @@ const _dbSaveEstimateInner = async (est) => {
       }
     }
     if(decoFailed){_dbSaveFailedIds.add(est.id);_persistFailedIds();if(_dbNotify)_dbNotify('Estimate save incomplete — some data may not have been saved to cloud','error');return false}
-    _dbSaveFailedIds.delete(est.id);_persistFailedIds();return true;
+    _dbSaveFailedIds.delete(est.id);_persistFailedIds();_dbRecentSaves[est.id]=Date.now();return true;
   }catch(e){console.error('[DB] save estimate:',e);_dbSaveFailedIds.add(est.id);_persistFailedIds();if(_dbNotify)_dbNotify('Estimate save failed: '+e.message,'error');return false}});
 };
 const _dbSaveEstimate = (est) => _queuedEntitySave(est.id, est, _dbSaveEstimateInner);
@@ -626,7 +628,7 @@ const _dbSaveSOInner = async (so) => {
       }
     }
     if(saveFailed){_dbSaveFailedIds.add(so.id);_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save incomplete — some data may not have been saved to cloud','error');return false}
-    _dbSaveFailedIds.delete(so.id);_persistFailedIds();return true;
+    _dbSaveFailedIds.delete(so.id);_persistFailedIds();_dbRecentSaves[so.id]=Date.now();return true;
   }catch(e){console.error('[DB] save SO:',e);_dbSaveFailedIds.add(so.id);_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save failed: '+e.message,'error');return false}});
 };
 const _dbSaveSO = (so) => _queuedEntitySave(so.id, so, _dbSaveSOInner);
@@ -701,7 +703,7 @@ const _dbSaveCustomer = async (c) => {
     }else{
       await supabase.from('customer_contacts').delete().eq('customer_id',c.id);
     }
-    _dbSaveFailedIds.delete(c.id);_persistFailedIds();console.log('[DB] Customer saved:',c.id,c.name);return true;
+    _dbSaveFailedIds.delete(c.id);_persistFailedIds();_dbRecentSaves[c.id]=Date.now();console.log('[DB] Customer saved:',c.id,c.name);return true;
   }catch(e){console.error('[DB] save customer:',e);_dbSaveFailedIds.add(c.id);_persistFailedIds();if(_dbNotify)_dbNotify('Customer save failed: '+e.message,'error');return false}
 };
 const _dbSavePromoProgram = async (prog) => {
@@ -883,6 +885,8 @@ const _queuedEntitySave=async(id,data,saveFn)=>{
 // Persisted to localStorage so protection survives page refresh
 const _dbSaveFailedIds=new Set(JSON.parse(localStorage.getItem('nsa_save_failed_ids')||'[]'));
 const _persistFailedIds=()=>{try{localStorage.setItem('nsa_save_failed_ids',JSON.stringify([..._dbSaveFailedIds]))}catch{}};
+// Track recent saves by this client — prevents false "modified by another user" conflicts from own realtime echo
+const _dbRecentSaves={};// {id: timestamp}
 // Legacy compat — keep old _dbSave for team_members and other simple tables
 const _dbSave = (table, data) => { if(supabase && data) supabase.from(table).upsert(Array.isArray(data)?data:[data], {onConflict:'id'}).then(r=>{if(r.error)console.error('[DB] save '+table+':', r.error.message)}) };
 // ─── Cloudinary Config ───
@@ -1793,7 +1797,7 @@ export default function App(){
           const d=await _dbLoad();
           if(!d||!d.hasData)return;
           // Use same merge logic as polling — only update if data actually changed
-          const changed=(prev,next)=>{if(prev.length!==next.length)return true;const pIds=prev.map(e=>e.id+':'+(e.updated_at||'')).sort().join(',');const nIds=next.map(e=>e.id+':'+(e.updated_at||'')).sort().join(',');return pIds!==nIds};
+          const changed=(prev,next)=>{if(prev.length!==next.length)return true;const pIds=prev.map(e=>e.id+':'+(e.updated_at||'')+':'+(e._version||0)).sort().join(',');const nIds=next.map(e=>e.id+':'+(e.updated_at||'')+':'+(e._version||0)).sort().join(',');return pIds!==nIds};
           setEsts(prev=>changed(prev,d.estimates)?d.estimates:prev);
           setSOs(prev=>changed(prev,d.sales_orders)?d.sales_orders:prev);
           setInvs(prev=>changed(prev,d.invoices)?d.invoices:prev);
@@ -2283,8 +2287,8 @@ export default function App(){
   React.useEffect(()=>{if(selP){const u=prod.find(p=>p.id===selP.id);if(u&&u!==selP)setSelP(u);else if(!u)setSelP(null)}},[prod]); // eslint-disable-line
   const[eEst,setEEst]=useState(null);const[eEstC,setEEstC]=useState(null);const[eSO,setESO]=useState(null);const[eSOC,setESOC]=useState(null);const[eSOTab,setESOTab]=useState(null);const[eSOScrollItem,setESOScrollItem]=useState(null);const[eSOScrollJob,setESOScrollJob]=useState(null);const[eSOOpenPO,setESOOpenPO]=useState(null);
   // Sync eSO from sos when external updates occur (e.g., coach approval via portal)
-  React.useEffect(()=>{if(eSO){const fresh=sos.find(s=>s.id===eSO.id);if(fresh&&fresh.updated_at!==eSO.updated_at){setESO(fresh)}}},[sos]);
-  React.useEffect(()=>{if(eEst){const fresh=ests.find(e=>e.id===eEst.id);if(fresh&&fresh.updated_at!==eEst.updated_at){setEEst(fresh)}}},[ests]);
+  React.useEffect(()=>{if(eSO){const fresh=sos.find(s=>s.id===eSO.id);if(fresh&&(fresh.updated_at!==eSO.updated_at||fresh._version!==eSO._version)){setESO(fresh)}}},[sos]);
+  React.useEffect(()=>{if(eEst){const fresh=ests.find(e=>e.id===eEst.id);if(fresh&&(fresh.updated_at!==eEst.updated_at||fresh._version!==eEst._version)){setEEst(fresh)}}},[ests]);
   const[returnToPage,setReturnToPage]=useState(null);// {page:'production',jobData:obj} — for "Return to Job" nav
   const[estBackPg,setEstBackPg]=useState(null);// page to return to when closing estimate editor
   const[soBackPg,setSoBackPg]=useState(null);// page to return to when closing SO editor
@@ -3742,7 +3746,7 @@ export default function App(){
 
   // ESTIMATES LIST
   function rEst(){
-    if(eEst)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eEst.id} order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} vendors={vend} onSave={e=>{const e2=savE(e);setEEst(e2)}} onBack={()=>{dirtyRef.current=false;setEEst(null);if(estBackPg){setPg(estBackPg);setEstBackPg(null)}}} onConvertSO={convertSO} onCopyEstimate={copyEstimate} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={deleteEstimate} onNavInvoice={inv=>{setEEst(null);setPg('invoices');setInvF(f=>({...f,search:inv.id}))}} onSaveProduct={p=>{setProd(prev=>prev.some(x=>x.id===p.id)?prev.map(x=>x.id===p.id?p:x):[...prev,p]);_dbSaveProduct(p)}} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setEEst(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}else{nf('SO '+soId+' not found','error')}}} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eEst?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:csrId,so_id:t.so_id||'',customer_id:t.customer_id||eEst?.customer_id||'',priority:t.priority||1})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}/></React.Suspense></ComponentErrorBoundary>
+    if(eEst)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eEst.id} order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} vendors={vend} onSave={e=>{const e2=savE(e);setEEst(e2)}} onBack={()=>{dirtyRef.current=false;setEEst(null);if(estBackPg){setPg(estBackPg);setEstBackPg(null)}}} onConvertSO={convertSO} onCopyEstimate={copyEstimate} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={deleteEstimate} onNavInvoice={inv=>{setEEst(null);setPg('invoices');setInvF(f=>({...f,search:inv.id}))}} onSaveProduct={p=>{setProd(prev=>prev.some(x=>x.id===p.id)?prev.map(x=>x.id===p.id?p:x):[...prev,p]);_dbSaveProduct(p)}} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setEEst(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}else{nf('SO '+soId+' not found','error')}}} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eEst?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:csrId,so_id:t.so_id||'',customer_id:t.customer_id||eEst?.customer_id||'',priority:t.priority||1})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod} companyInfo={companyInfo}/></React.Suspense></ComponentErrorBoundary>
     // Filter estimates
     let fe=[...ests];
     const estRepId=estF.rep==='_me_'?cu?.id:estF.rep;
@@ -3795,7 +3799,7 @@ export default function App(){
 
   // SALES ORDERS LIST
   function rSO(){
-    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eSO.id} order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} vendors={vend} onSave={s=>{const locked=savSO(s);setESO(locked)}} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} openPOId={eSOOpenPO} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onNavInvoice={inv=>{setESO(null);setPg('invoices');setInvF(f=>({...f,search:inv.id}))}} onSaveProduct={p=>{setProd(prev=>prev.some(x=>x.id===p.id)?prev.map(x=>x.id===p.id?p:x):[...prev,p]);_dbSaveProduct(p)}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:csrId,so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}/></React.Suspense></ComponentErrorBoundary>
+    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eSO.id} order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} vendors={vend} onSave={s=>{const locked=savSO(s);setESO(locked)}} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} openPOId={eSOOpenPO} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onNavInvoice={inv=>{setESO(null);setPg('invoices');setInvF(f=>({...f,search:inv.id}))}} onSaveProduct={p=>{setProd(prev=>prev.some(x=>x.id===p.id)?prev.map(x=>x.id===p.id?p:x):[...prev,p]);_dbSaveProduct(p)}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:csrId,so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod} companyInfo={companyInfo}/></React.Suspense></ComponentErrorBoundary>
     // Filter SOs
     let fSOs=[...sos];
     if(soF.status!=='all')fSOs=fSOs.filter(s=>calcSOStatus(s)===soF.status);
@@ -6421,7 +6425,7 @@ export default function App(){
                     {_class:'totals-row',cells:['','','Total','$'+inv.total.toLocaleString()]},
                     ...(inv.paid>0?[{cells:['','',{value:'Paid',style:'color:#166534'},'$'+inv.paid.toLocaleString()]}]:[]),
                     ...(bal>0?[{_style:'background:#fef2f2',cells:['','',{value:'<strong>Balance Due</strong>',style:'color:#dc2626'},'<strong style="color:#dc2626;font-size:14px">$'+bal.toLocaleString()+'</strong>']}]:[])
-                  ]}],footer:inv.inv_type==='deposit'?NSA.depositTerms:NSA.terms});
+                  ]}],footer:inv.inv_type==='deposit'?companyInfo.depositTerms:companyInfo.terms});
                 const ph=[...(inv.print_history||[]),{printed_at:new Date().toLocaleString(),printed_by:cu.name||cu.id}];
                 setInvs(prev=>prev.map(i=>i.id===inv.id?{...i,print_history:ph}:i));setViewInvoice(v=>({...v,print_history:ph}));
               }}>Print</button>
@@ -6906,7 +6910,7 @@ export default function App(){
                       {_class:'totals-row',cells:['','','Total','$'+siInv.total.toLocaleString()]},
                       ...(siInv.paid>0?[{cells:['','',{value:'Paid',style:'color:#166534'},'$'+siInv.paid.toLocaleString()]}]:[]),
                       ...(siBal>0?[{_style:'background:#fef2f2',cells:['','',{value:'<strong>Balance Due</strong>',style:'color:#dc2626'},'<strong style="color:#dc2626;font-size:14px">$'+siBal.toLocaleString()+'</strong>']}]:[])
-                    ]}],footer:siInv.inv_type==='deposit'?NSA.depositTerms:NSA.terms});
+                    ]}],footer:siInv.inv_type==='deposit'?companyInfo.depositTerms:companyInfo.terms});
                   const styleMatch=docHtml.match(/<style>([\s\S]*?)<\/style>/);const bodyMatch=docHtml.match(/<body>([\s\S]*?)<\/body>/);
                   const pdfFixCss='.header{display:table!important;width:100%!important;table-layout:fixed}.header>*{display:table-cell!important;vertical-align:top!important}.logo{width:55%!important}.logo img{height:50px;vertical-align:middle;margin-right:8px;float:left}.doc-id{width:45%!important;text-align:right!important}.bill-total{display:table!important;width:100%!important;table-layout:fixed}.bill-total>*{display:table-cell!important;vertical-align:top!important}.total-box{width:200px!important;text-align:left!important}.info-row{display:table!important;width:100%!important;table-layout:fixed}.info-cell{display:table-cell!important;vertical-align:top!important}.footer{display:table!important;width:100%!important}.footer>*{display:table-cell!important}.footer>*:last-child{text-align:right!important}';
                   const container=document.createElement('div');container.style.cssText='position:absolute;left:-9999px;top:0;width:800px;background:white;font-family:Segoe UI,Helvetica,Arial,sans-serif;font-size:11px;color:#1a1a1a;padding:20px 28px;line-height:1.4';
@@ -7144,7 +7148,7 @@ export default function App(){
                       ...(inv._bal>0?[{_style:'background:#fef2f2',cells:['','',{value:'<strong>Balance Due</strong>',style:'color:#dc2626'},'<strong style="color:#dc2626;font-size:14px">$'+inv._bal.toLocaleString()+'</strong>']}]:[]),
                     ]
                   }],
-                  footer:inv.inv_type==='deposit'?NSA.depositTerms:NSA.terms
+                  footer:inv.inv_type==='deposit'?companyInfo.depositTerms:companyInfo.terms
                 });
               }}>🖨️</button>{canDelete&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',color:'#dc2626',border:'1px solid #fca5a5',marginLeft:4,background:'white'}} onClick={()=>deleteInvoice(inv.id)}><Icon name="trash" size={10}/></button>}</td>
           </tr>})}</tbody></table>}
@@ -16020,9 +16024,9 @@ export default function App(){
         </div>
         <div className="card-body">
           <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:16}}>
-            <div><div style={{fontSize:11,color:'#64748b',fontWeight:600,textTransform:'uppercase',marginBottom:4}}>Company</div><div style={{fontSize:14,fontWeight:700}}>{NSA.name}</div><div style={{fontSize:12,color:'#64748b'}}>{NSA.legal}</div></div>
-            <div><div style={{fontSize:11,color:'#64748b',fontWeight:600,textTransform:'uppercase',marginBottom:4}}>Address</div><div style={{fontSize:13}}>{NSA.addr}</div><div style={{fontSize:12,color:'#64748b'}}>{NSA.city}, {NSA.state} {NSA.zip}</div></div>
-            <div><div style={{fontSize:11,color:'#64748b',fontWeight:600,textTransform:'uppercase',marginBottom:4}}>Contact</div><div style={{fontSize:13}}>{NSA.phone}</div><div style={{fontSize:12,color:'#64748b'}}>{NSA.email}</div></div>
+            <div><div style={{fontSize:11,color:'#64748b',fontWeight:600,textTransform:'uppercase',marginBottom:4}}>Company</div><div style={{fontSize:14,fontWeight:700}}>{companyInfo.name}</div><div style={{fontSize:12,color:'#64748b'}}>{companyInfo.legal}</div></div>
+            <div><div style={{fontSize:11,color:'#64748b',fontWeight:600,textTransform:'uppercase',marginBottom:4}}>Address</div><div style={{fontSize:13}}>{companyInfo.addr}</div><div style={{fontSize:12,color:'#64748b'}}>{companyInfo.city}, {companyInfo.state} {companyInfo.zip}</div></div>
+            <div><div style={{fontSize:11,color:'#64748b',fontWeight:600,textTransform:'uppercase',marginBottom:4}}>Contact</div><div style={{fontSize:13}}>{companyInfo.phone}</div><div style={{fontSize:12,color:'#64748b'}}>{companyInfo.email}</div></div>
           </div>
         </div>
       </div>
