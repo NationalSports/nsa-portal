@@ -11,6 +11,9 @@ import { createWorker } from 'tesseract.js';
 import html2pdf from 'html2pdf.js';
 import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
+import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, _custCols, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, NSA_DEFAULTS, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, COLOR_CATEGORIES, EXTRA_SIZES, SZ_ORD, SZ_NORM, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
+// Merge customer + parent colors (pantone or thread), deduplicating by code/name
+const mergeColors=(cust,allCustomers,field)=>{const own=cust?.[field]||[];if(!cust?.parent_id)return own;const parent=allCustomers?.find(c=>c.id===cust.parent_id);const parentColors=parent?.[field]||[];if(!parentColors.length)return own;const key=field==='pantone_colors'?'code':'name';const seen=new Set(own.map(c=>(c[key]||'').toUpperCase()));return[...own,...parentColors.filter(c=>!seen.has((c[key]||'').toUpperCase()))]};
 
 // ─── Stripe Setup ───
 const _stripePk = process.env.REACT_APP_STRIPE_PK || '';
@@ -96,6 +99,23 @@ const _searchProductsServer=async(query,filters={},page=0,pageSize=50)=>{
     const total=data?.[0]?.total_count||0;
     return{products:data||[],total};
   }catch(e){console.warn('[DB] search_products RPC error:',e.message);return null}
+};
+
+// ─── Server-side customer search (paginated, leverages DB trigram indexes) ───
+const _searchCustomersServer=async(query,repId,page=0,pageSize=50)=>{
+  if(!supabase)return null;
+  try{
+    const{data,error}=await supabase.rpc('search_customers',{
+      p_query:query||null,
+      p_rep_id:repId||null,
+      p_active_only:true,
+      p_limit:pageSize,
+      p_offset:page*pageSize
+    });
+    if(error){console.warn('[DB] search_customers RPC failed, falling back to client-side:',error.message);return null}
+    const total=data?.[0]?.total_count||0;
+    return{customers:data||[],total};
+  }catch(e){console.warn('[DB] search_customers RPC error:',e.message);return null}
 };
 
 // ─── Supabase Auth helpers ───
@@ -827,222 +847,6 @@ const _queuedEntitySave=async(id,data,saveFn)=>{
 // Persisted to localStorage so protection survives page refresh
 const _dbSaveFailedIds=new Set(JSON.parse(localStorage.getItem('nsa_save_failed_ids')||'[]'));
 const _persistFailedIds=()=>{try{localStorage.setItem('nsa_save_failed_ids',JSON.stringify([..._dbSaveFailedIds]))}catch{}};
-// Column whitelists — strip unknown fields before sending to Supabase (localStorage may have extra UI fields like vendor_id)
-const _pick=(obj,cols)=>{const r={};cols.forEach(c=>{if(c in obj)r[c]=obj[c]});return r};
-const _estCols=['id','customer_id','memo','status','created_by','created_at','updated_at','default_markup','shipping_type','shipping_value','ship_to_id','email_status','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history','print_history','deleted_at','promo_applied','promo_amount','update_requests','approved_by','approved_at','credit_applied','credit_amount'];
-const _soCols=['id','customer_id','estimate_id','memo','status','created_by','created_at','updated_at','expected_date','production_notes','shipping_type','shipping_value','ship_to_id','default_markup','omg_store_id','_shipstation_order_id','_shipping_status','_tracking_number','_carrier','_ship_date','_tracking_url','_shipped','_shipments','_shipping_cost','_shipstation_cost','_inbound_freight','deleted_at','promo_applied','promo_amount','ship_preference','ship_on_date','order_type','expected_ship_date','booking_confirmed','booking_confirmed_at','booking_confirmed_by','booking_alert_days','po_number','tax_rate','tax_exempt','email_status','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history','print_history','credit_applied','credit_amount'];
-const _itemCols=['product_id','sku','name','brand','color','vendor_id','nsa_cost','retail_price','unit_sell','sizes','available_sizes','_colors','no_deco','is_custom','custom_desc','custom_cost','custom_sell','is_promo','_pre_promo_sell','est_qty','size_availability','_colorImage','_colorBackImage'];
-const _decoCols=['kind','position','type','art_file_id','art_tbd_type','tbd_colors','tbd_stitches','tbd_dtf_size','sell_override','sell_each','cost_each','underbase','two_color','colors','stitches','dtf_size','num_method','num_size','num_size_back','num_font','roster','names','vendor','deco_type','notes','custom_font_art_id','print_color','front_and_back','reversible','num_qty','name_qty','color_way_id'];
-// NOTE: names_list (jsonb) and _cost_locked (boolean) exist in DB but PostgREST schema cache hasn't picked them up yet — add back here once Supabase refreshes
-// Columns that may not exist in production DB / schema cache — stripped on insert retry
-const _itemExtraCols=new Set(['vendor_id','is_promo','_pre_promo_sell','est_qty','size_availability','_colorImage','_colorBackImage']);
-const _estExtraCols=new Set(['promo_applied','promo_amount','update_requests','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history','print_history','approved_by','approved_at','credit_applied','credit_amount']);
-const _soExtraCols=new Set(['_shipping_cost','_shipstation_cost','_inbound_freight','promo_applied','promo_amount','ship_preference','ship_on_date','order_type','expected_ship_date','booking_confirmed','booking_confirmed_at','booking_confirmed_by','booking_alert_days','po_number','tax_rate','tax_exempt','email_status','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history','print_history','credit_applied','credit_amount']);
-const _decoExtraCols=new Set(['print_color','front_and_back','reversible','num_qty','name_qty','num_font','num_size_back','custom_font_art_id','deco_type','notes','vendor','color_way_id','_cost_locked','names_list']);
-// Sanitize decoration data before DB insert — strip UI-only placeholders that would violate constraints
-const _sanitizeDeco=(d)=>{const r={...d};if(r.custom_font_art_id&&r.custom_font_art_id==='pending')r.custom_font_art_id=null;if(r.art_file_id&&r.art_file_id==='__tbd')r.art_file_id=null;return r};
-const _msgCols=['id','so_id','author_id','text','ts','dept','tagged_members','entity_type','entity_id','thread_id'];
-const _msgExtraCols=new Set(['tagged_members','entity_type','entity_id','thread_id']);
-const _artCols=['id','name','deco_type','ink_colors','thread_colors','art_size','art_sizes','garment_colors','color_ways','files','mockup_files','item_mockups','sample_art','prod_files','preview_url','notes','status','uploaded'];
-// Columns that may not exist in art file tables — stripped on retry
-const _artExtraCols=new Set(['art_sizes','garment_colors','item_mockups','color_ways','preview_url','sample_art']);
-// Columns that may not exist in so_jobs — stripped on retry
-const _jobExtraCols=new Set(['_art_ids','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at','coach_email_opened_at','follow_up_at','sent_history','run_order','run1_done','run2_done']);
-const _jobCols=['id','key','art_file_id','_art_ids','_draft','art_name','deco_type','positions','art_status','item_status','prod_status','total_units','fulfilled_units','split_from','created_at','assigned_machine','assigned_to','ship_method','items','_auto','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at','coach_email_opened_at','follow_up_at','sent_history','run_order','run1_done','run2_done','_merged'];
-const _custCols=['id','parent_id','name','alpha_tag','billing_address_line1','billing_address_line2','billing_city','billing_state','billing_zip','shipping_address_line1','shipping_address_line2','shipping_city','shipping_state','shipping_zip','adidas_ua_tier','catalog_markup','payment_terms','tax_rate','tax_exempt','primary_rep_id','notes','is_active','created_at','updated_at','alt_billing_addresses','art_files','pantone_colors','thread_colors'];
-// Pantone color lookup — common sports/apparel PMS colors with approximate hex values
-const PANTONE_MAP={
-'100':'#F4ED7C','101':'#F4ED47','102':'#FAE600','103':'#C6AD0F','104':'#AD9B0E','105':'#82750F',
-'106':'#F7E859','107':'#F9E526','108':'#FEDB00','109':'#FFD100','110':'#D8A600','111':'#AA8A00','112':'#9C8412',
-'113':'#FAE053','114':'#F9DD16','115':'#FBDB0F','116':'#FFCD00','117':'#C6960C','118':'#AA7D03','119':'#895F00',
-'120':'#FBDB65','121':'#F8D54B','122':'#FED100','123':'#FFC72C','124':'#EAAA00','125':'#B58500','126':'#9A7611',
-'127':'#F3DD6D','128':'#F5D752','129':'#F8CE46','130':'#F2A900','131':'#CC8A00','132':'#A17400',
-'133':'#6E4B00','134':'#FFD87F','135':'#FCC861','136':'#FCBA52','137':'#FCA311','138':'#E57200','139':'#AF6D04',
-'140':'#7A5A11','141':'#F4CE79','142':'#F1C75D','143':'#F0BF47','144':'#ED8B00','145':'#CF7F00','146':'#A06E13',
-'148':'#FFD691','149':'#FCC97D','150':'#FCAE5A','151':'#FF8200','152':'#E66E00','153':'#BC5F00',
-'155':'#F4CB8D','156':'#F4B76A','157':'#EE7624','158':'#E35205','159':'#CB4600','160':'#9B4D1E',
-'161':'#612D12','162':'#F7AA7B','163':'#F68B52','164':'#F56600','165':'#FF5F00','166':'#E35205','167':'#BE4D00',
-'168':'#6E3219','169':'#F8A3A0','170':'#F48078','171':'#F35B53','172':'#F74902','173':'#CF4520','174':'#963821',
-'175':'#6E302A','176':'#F5A5B8','177':'#F48CA6','178':'#F26A7E','179':'#E03C31','180':'#C13828','181':'#81312F',
-'182':'#F7B5CC','183':'#F472B2','184':'#F04D98','185':'#E4002B','186':'#CE0037','187':'#AF272F','188':'#7C2B3B',
-'189':'#FFA5C8','190':'#F6699A','191':'#F04880','192':'#E40046','193':'#BF0D3E','194':'#992135',
-'196':'#F2D1D6','197':'#EC7FA6','198':'#DF1F71','199':'#D50032','200':'#BA0C2F','201':'#9B2335','202':'#862633',
-'203':'#ECABBE','204':'#E96FA0','205':'#E54C82','206':'#D6004D','207':'#A50040','208':'#862041',
-'209':'#6F2840','210':'#FFA1CB','211':'#FF7CB9','212':'#F75DA8','213':'#E94F8A','214':'#CC0066','215':'#AC145A',
-'216':'#7E2D4D','217':'#EABECD','218':'#E54C93','219':'#DA1884','220':'#A70050','221':'#890043',
-'222':'#6E273D','223':'#F27CB7','224':'#F04DA1','225':'#E10086','226':'#D60080','227':'#AA0061','228':'#830051',
-'229':'#6E2B57','230':'#FFA0D0','231':'#F269B1','232':'#F04DA1','233':'#CE0078','234':'#A00054',
-'235':'#82004F','236':'#F580C4','237':'#F25CAE','238':'#E440A0','239':'#CC0088','240':'#AA0070',
-'241':'#8F0056','242':'#790049','243':'#F5A9D0','244':'#EB80B5','245':'#DD63A7','246':'#CC00A0',
-'247':'#B30090','248':'#990082','249':'#750060','250':'#E8A3C3','251':'#DD80B8','252':'#C44DA0',
-'253':'#AF23A5','254':'#A0209D','255':'#78175A',
-'256':'#D6A8CA','257':'#C280A7','258':'#8B3D8F','259':'#6D2077','260':'#5C1F64','261':'#55175E',
-'262':'#4E1A5F','263':'#CCA8D0','264':'#A870B6','265':'#7B2D8E','266':'#6B1F7C','267':'#5F1D78',
-'268':'#4F1A70','269':'#431F60','270':'#B0A1CF','271':'#9485BC','272':'#7566A0','273':'#2E1A6E',
-'274':'#281560','275':'#201450','276':'#1A103E','277':'#B4CBE8','278':'#91B2DC','279':'#418FDE',
-'280':'#012169','281':'#002868','282':'#002554','283':'#6EAADE','284':'#5B99D6','285':'#0072CE',
-'286':'#0033A0','287':'#003DA5','288':'#002D72','289':'#0C2340','290':'#B5D4E8','291':'#A0C8E2',
-'292':'#69B3E7','293':'#003DA5','294':'#002F6C','295':'#002244','296':'#041C3C',
-'297':'#71C5E8','298':'#41B6E6','299':'#00A3E0','300':'#005EB8','301':'#004C97','302':'#003B5C','303':'#002A3A',
-'304':'#A1DAE8','305':'#70CFE9','306':'#00BCE4','307':'#006BA6','308':'#00587C','309':'#003946',
-'310':'#6AD1E3','311':'#00B5D6','312':'#00A9CE','313':'#0092BC','314':'#007FA3','315':'#005F7F','316':'#004851',
-'317':'#C5E8DB','318':'#8AD9C8','319':'#3CC9AD','320':'#009B8D','321':'#008675','322':'#006F62',
-'323':'#005E56','324':'#A5DFD3','325':'#64CDB4','326':'#00B189','327':'#009B77','328':'#007B5F',
-'329':'#006747','330':'#00503E','331':'#ADDFCE','332':'#91DCBA','333':'#3CC9A7','334':'#009A63',
-'335':'#007A53','336':'#00614B','337':'#8FD5B2','338':'#6EC9A0','339':'#00B27A','340':'#00965E',
-'341':'#007A4D','342':'#006B3F','343':'#005436','344':'#A3DDBB','345':'#7FD2A0','346':'#60C882',
-'347':'#009B48','348':'#008542','349':'#006B38','350':'#254E2E',
-'351':'#86E6B0','352':'#62E098','353':'#3DD68F','354':'#00B140','355':'#009639','356':'#007A33','357':'#215732',
-'358':'#A4D867','359':'#A0D44E','360':'#6CC24A','361':'#43B02A','362':'#339E35','363':'#2C8C34',
-'364':'#3A7D44','365':'#C0E66E','366':'#B7DB3B','367':'#A4D233','368':'#78BE20','369':'#64A70B',
-'370':'#5B8F22','371':'#4C6A2D','372':'#D4EB8E','373':'#CEDC00','374':'#C5D600','375':'#97D700',
-'376':'#84BD00','377':'#6E9B2D','378':'#4E5E2F',
-'379':'#E0E84E','380':'#D2D755','381':'#CEDC00','382':'#C1D100','383':'#A3AA00','384':'#8A8D00',
-'385':'#707219','386':'#E6EB58','387':'#E1E733','388':'#D3D800','389':'#C9CF22','390':'#9EA700',
-'391':'#808600','392':'#767100',
-'393':'#F2EA74','394':'#EDEA00','395':'#F0EC1F','396':'#E3E935','397':'#BCC600','398':'#ADB300',
-'399':'#9B9A09',
-'400':'#C4B9A7','401':'#B0A696','402':'#A39B8B','403':'#948777','404':'#857362','405':'#696158',
-'406':'#C9BEB5','407':'#B2A497','408':'#A39283','409':'#92817A','410':'#7A6B63','411':'#5E514D',
-'412':'#382F2C',
-'413':'#C7C2B5','414':'#B5AFA3','415':'#A39E92','416':'#908B80','417':'#7A756A','418':'#5E5E57',
-'419':'#212721',
-'420':'#C9C6C0','421':'#B3B0AB','422':'#A1A09E','423':'#8D8C8C','424':'#747678','425':'#55585A',
-'426':'#25282A',
-'427':'#CDD5D8','428':'#BBC4C9','429':'#A1ADB3','430':'#7D8B92','431':'#5B6770','432':'#333F48',
-'433':'#1D252D',
-'434':'#D5C5BD','435':'#C2A8A0','436':'#A88583','437':'#7B4D51','438':'#593536','439':'#463034',
-'440':'#3E3135',
-'441':'#BCC6C0','442':'#A3B2AD','443':'#8B9D96','444':'#717C7D','445':'#505759','446':'#3D4244',
-'447':'#373A36',
-'Black':'#2D2926','Black 2':'#332F21','Black 3':'#212721','Black 4':'#31261D','Black 5':'#3E3135',
-'Black 6':'#101820','Black 7':'#3D3935',
-'White':'#FFFFFF','Cool Gray 1':'#D9D9D6','Cool Gray 2':'#D0D0CE','Cool Gray 3':'#C8C9C7',
-'Cool Gray 4':'#BBBCBC','Cool Gray 5':'#B1B3B3','Cool Gray 6':'#A7A8AA','Cool Gray 7':'#97999B',
-'Cool Gray 8':'#888B8D','Cool Gray 9':'#75787B','Cool Gray 10':'#63666A','Cool Gray 11':'#53565A',
-'Warm Gray 1':'#D7D2CB','Warm Gray 2':'#CBC4BC','Warm Gray 3':'#BFB8AF','Warm Gray 4':'#B6ADA5',
-'Warm Gray 5':'#ACA39A','Warm Gray 6':'#A59C94','Warm Gray 7':'#968C83','Warm Gray 8':'#8C8279',
-'Warm Gray 9':'#83786F','Warm Gray 10':'#796E65','Warm Gray 11':'#6E6259',
-'Reflex Blue':'#001489','Process Blue':'#0085CA','Rubine Red':'#CE0058','Rhodamine Red':'#E10098',
-'Purple':'#BB29BB','Green':'#00AB84','Orange 021':'#FE5000','Red 032':'#EF3340',
-'Yellow':'#FEDD00','Warm Red':'#F9423A','Violet':'#440099',
-'448':'#4A412A','449':'#524727','450':'#594A25','451':'#9B8E55','452':'#B5A679','453':'#BFB68A','454':'#C9BA8C',
-'455':'#6B5C27','456':'#998542','457':'#B58B00','458':'#DCCA6A','459':'#E0CB73','460':'#C4AD68','461':'#C1A64D',
-'462':'#5B4723','463':'#6C4F27','464':'#7A5A2D','465':'#C1A367','466':'#C9B27C','467':'#C6AA76','468':'#DDCDA5',
-'469':'#6E4827','470':'#A05E3A','471':'#B56631','472':'#EAA566','473':'#F0BA8D','474':'#EDAC73','475':'#D9874E',
-'476':'#5A3E35','477':'#633F2F','478':'#6B3D2E','479':'#AA7C60','480':'#C49E81','481':'#C9A282','482':'#CDA97F',
-'483':'#6B3028','484':'#9B3325','485':'#DA291C','486':'#ED7B68','487':'#F0887D','488':'#EC9181','489':'#EDB5A0',
-'490':'#5D2837','491':'#7C2D3D','492':'#8E2A44','493':'#DC7E8D','494':'#F0A0AE','495':'#F4ACB8','496':'#F5B5BD',
-'497':'#512E3A',
-'500':'#6D2C45','501':'#D094A8','502':'#E4ADB9','503':'#E8B4C0','504':'#6E253C',
-'505':'#7E2242','506':'#8C2548','507':'#D697A8','508':'#E8B3C0','509':'#E6B0BE',
-'510':'#C87FA3','511':'#6E2367','512':'#82288E','513':'#993CA1','514':'#C377B5','515':'#D9A8C9',
-'516':'#E5BFD6','517':'#D1A3C0','518':'#563357','519':'#612D6D','520':'#632D6C',
-'521':'#A877B0','522':'#9561A8','523':'#8E50A0','524':'#C8A2D2','525':'#802F8D','526':'#7D1E8E',
-'527':'#7C1E8F','528':'#A87BBD','529':'#C1A0D0','530':'#BE93CC',
-'531':'#C9AAD7','532':'#2A2E38','533':'#263147','534':'#253659','535':'#9CADC4','536':'#A5B4C6',
-'537':'#C0CDDB','538':'#8AA1B4','539':'#003F5F','540':'#00364A','541':'#003C71',
-'542':'#5B9ECF','543':'#A2C5E0','544':'#B4D0E2','545':'#C1D7E2',
-'546':'#00383C','547':'#00424A','548':'#004B58','549':'#6FA5B4','550':'#83ACBB','551':'#A3C0C0',
-'552':'#B2C9C4','553':'#1F5C4C','554':'#28635B','555':'#337366','556':'#7DA894','557':'#99BBA4',
-'558':'#A5C5B0','559':'#B6D1C1','560':'#1C5E4D','561':'#00685F','562':'#007B6C','563':'#80C0A0',
-'564':'#86C8B0','565':'#A8DAC4','566':'#C2E4D3','567':'#1B5E4F',
-'568':'#00756F','569':'#008C7E','570':'#7FC4B8','571':'#A0D4C8','572':'#B2DDD1','573':'#BFE1D6',
-'574':'#4A652C','575':'#527A3D','576':'#5A8240','577':'#B0CC8E','578':'#B8D28E','579':'#AEC886',
-'580':'#C1D470','581':'#6A7E1F','582':'#758E14','583':'#8FA01A','584':'#C9D850','585':'#D5E05C',
-'586':'#D8E36E','587':'#DCE678',
-'598':'#73C6C0','599':'#4BC3C6',
-'600':'#CAE0E0','601':'#D3E5A0','602':'#D9E860','603':'#E0EC3F','604':'#E3ED27','605':'#D7E318','606':'#CDDB00',
-'607':'#E4EB9A','608':'#E1EB70','609':'#DDEA3C','610':'#D5E100','611':'#C4D600','612':'#B0C400',
-'613':'#9AAE07','614':'#D5D972','615':'#C7CC67','616':'#BCBE56','617':'#ACA73A','618':'#918B24','619':'#747014',
-'620':'#BAC0B3','621':'#BCC9BB','622':'#9DB4A2','623':'#7B9D8B','624':'#5A8272','625':'#2E6552','626':'#134533',
-'627':'#0A2A1D','628':'#99D1D9','629':'#76C1D0','630':'#3FB1C5','631':'#0099B4','632':'#007EA3','633':'#005C7E',
-'634':'#003D56','635':'#A4DAE2','636':'#87CEDB','637':'#4CB8D4','638':'#00A0C6','639':'#0087AC',
-'640':'#006E8E','641':'#003B5C','642':'#C7D4E2','643':'#AFBDD1','644':'#8DA3BE','645':'#6F88A4',
-'646':'#6082A5','647':'#24496B','648':'#002A4E','649':'#CDD2DC','650':'#B9BFD0','651':'#97A4BC',
-'652':'#6C7FA8','653':'#33558D','654':'#003070','655':'#002359',
-'656':'#D1D8E5','657':'#BCC3DD','658':'#A5ADD2','659':'#7D8BC1','660':'#5468A5','661':'#233B87',
-'662':'#152561','663':'#D9B9C5','664':'#D6B3BF','665':'#BE91A8','666':'#9E6B8A','667':'#7A4F76',
-'668':'#5E3968','669':'#3E2152',
-'670':'#E8B7BD','671':'#EBA1B0','672':'#E685A0','673':'#DD6189','674':'#C74375','675':'#A21850',
-'676':'#810040','677':'#E8C3C3','678':'#F0C9C7','679':'#EBB2B7','680':'#C67885','681':'#A9526B',
-'682':'#903458','683':'#752043',
-'684':'#E6B7BC','685':'#DC96A0','686':'#D4808F','687':'#C25B73','688':'#A34066','689':'#852150',
-'690':'#6E1D40',
-'691':'#EBC7C0','692':'#E2A9A1','693':'#CE7D7C','694':'#D3818E','695':'#A8445B','696':'#8B2E4B',
-'697':'#7E2742',
-'698':'#F2C4C2','699':'#F2AAAC','700':'#EF6266','701':'#CC3340','702':'#BD1F36','703':'#A31A32',
-'704':'#8D1B3D',
-'705':'#F9D7D2','706':'#F9ADAF','707':'#EF5C7A','708':'#E93465','709':'#D70047','710':'#BE0040',
-'711':'#A10038',
-'712':'#FDCC8A','713':'#F9B668','714':'#F8A050','715':'#F0883E','716':'#EA7125','717':'#D56800',
-'718':'#CF4F00','719':'#EDCE9E','720':'#E5BD86','721':'#C6946B','722':'#A36E47','723':'#8B5930',
-'724':'#704320','725':'#5C3617',
-'726':'#D1B89C','727':'#C19971','728':'#B17F4D','729':'#A06A32',
-'730':'#D4A168','731':'#A76F3B','732':'#6E4524',
-'733':'#C5902C','734':'#D09E38','735':'#DCAE4C',
-// 7400-7547 extended gamut
-'7400':'#E0C968','7401':'#F0DC82','7402':'#E5C64A','7403':'#E8C64A','7404':'#F2D000','7405':'#F2CA00','7406':'#F0C800',
-'7407':'#C59E5E','7408':'#E89C28','7409':'#E89220','7410':'#E8975B','7411':'#D08845','7412':'#C07428',
-'7413':'#C06028','7414':'#B87040',
-'7415':'#E0A89E','7416':'#D04030','7417':'#C83C28','7418':'#B84060','7419':'#A83858','7420':'#A02848',
-'7421':'#601828','7422':'#F08888','7423':'#D83060','7424':'#C82050','7425':'#B02048','7426':'#A01838',
-'7427':'#881828','7428':'#C8B0A8','7429':'#C89898','7430':'#C88090','7431':'#C06878','7432':'#A85068',
-'7433':'#982050','7434':'#881848',
-'7435':'#D8A0B8','7436':'#E8B0C8','7437':'#C088A8','7438':'#D878A8','7439':'#B090A0','7440':'#C0A0B8',
-'7441':'#C080E0','7442':'#A848D0','7443':'#C0B8D0','7444':'#A0A0C8','7445':'#B0A0C0','7446':'#8880B8',
-'7447':'#504078',
-'7448':'#404828','7449':'#503820','7450':'#A0B0C0','7451':'#80B0E0','7452':'#8098E0','7453':'#80C0E8',
-'7454':'#68A8C0','7455':'#3860B0','7456':'#7880C0','7457':'#E0E8A0','7458':'#60A8B8','7459':'#287898',
-'7460':'#0080A0','7461':'#1888B8','7462':'#185078','7463':'#103048','7464':'#80C0A8','7465':'#30B898',
-'7466':'#00B0C0','7467':'#00A0A8','7468':'#007098','7469':'#185068',
-'7470':'#409090','7471':'#70D0B8','7472':'#58B0A0','7473':'#288070','7474':'#006860','7475':'#487878',
-'7476':'#184040','7477':'#3A6870','7478':'#80E0A0','7479':'#48D858','7480':'#00C060','7481':'#00B84C',
-'7482':'#00A048','7483':'#304828','7484':'#006848','7485':'#C8E0B8','7486':'#A0E080','7487':'#70D068',
-'7488':'#48C848','7489':'#609850','7490':'#789850','7491':'#A0B870',
-'7492':'#C0CC70','7493':'#D0D8A8','7494':'#A8C890','7495':'#788838','7496':'#488018','7497':'#A89878',
-'7498':'#C0B898','7499':'#F0E8C0','7500':'#E0D8C0','7501':'#E8D8B8','7502':'#D8C498','7503':'#B8A070',
-'7504':'#C09880','7505':'#A87858','7506':'#F0D8B0','7507':'#F8C880','7508':'#E8A858','7509':'#D89048',
-'7510':'#C87838','7511':'#B86828','7512':'#A85828','7513':'#E0A888','7514':'#D09878','7515':'#C08868',
-'7516':'#885030','7517':'#804028','7518':'#785048','7519':'#604038','7520':'#E8B8A8','7521':'#C09890',
-'7522':'#B06860','7523':'#A84848','7524':'#A85058','7525':'#B07050','7526':'#904028',
-'7527':'#D8D0C0','7528':'#C8B8A8','7529':'#B0A090','7530':'#A09080','7531':'#887870','7532':'#685848',
-'7533':'#403028','7534':'#D0C0A8','7535':'#B8A890','7536':'#A89878','7537':'#A8B8B0','7538':'#98A8A0',
-'7539':'#889890','7540':'#485058','7541':'#D8E0E0','7542':'#A0B8C8','7543':'#98A8B0','7544':'#7890A0',
-'7545':'#405060','7546':'#283840','7547':'#182028',
-'871':'#84754E','872':'#85714D','873':'#866D4B','874':'#8B6F4E','875':'#87714D','876':'#8B6E4E','877':'#8A8D8F',
-// Common TCX/TPX 4-digit colors used in sportswear
-'4525':'#8E7961','4515':'#B09E8A','4505':'#C7B9A1','4495':'#D2C4A8','4485':'#DDD0B5',
-'4625':'#5C3A1E','4635':'#8B6038','4645':'#A37B4F','4655':'#C4A06E','4665':'#D8BA8A',
-'4695':'#3E2415','4705':'#7B4931','4715':'#9E6B47','4725':'#B8895E','4735':'#CCAB82',
-'4745':'#DDC5A0','4755':'#E8D4B2'
-};
-const pantoneHex=(code)=>{if(!code)return null;const s=code.toString().toUpperCase().replace(/\s*(C|U|CP|UP|TCX|TPX|TPG|TN)\s*$/,'').replace(/^PMS\s*/,'').replace(/^PANTONE\s*/,'').trim();return PANTONE_MAP[s]||PANTONE_MAP[s.replace(/\s+/g,' ')]||null};
-const pantoneSearch=(query)=>{if(!query||query.length<1)return[];const q=query.toUpperCase().replace(/^PMS\s*/,'').replace(/^PANTONE\s*/,'').trim();return Object.entries(PANTONE_MAP).filter(([k])=>k.toUpperCase().includes(q)).slice(0,12).map(([code,hex])=>({code,hex}))};
-// Thread color name-to-hex lookup for common embroidery thread colors
-const THREAD_COLORS={'cardinal':'#8C1515','navy':'#001f3f','gold':'#FFD700','white':'#FFFFFF','black':'#000000',
-'red':'#dc2626','royal':'#4169e1','royal blue':'#4169e1','silver':'#C0C0C0','green':'#166534','dark green':'#006400',
-'orange':'#EA580C','maroon':'#800000','purple':'#6B21A8','kelly green':'#4CBB17','scarlet':'#FF2400',
-'columbia blue':'#9BDDFF','light blue':'#ADD8E6','vegas gold':'#C5B358','old gold':'#CFB53B',
-'athletic gold':'#FFB81C','charcoal':'#36454F','grey':'#808080','gray':'#808080','light gray':'#C0C0C0',
-'pink':'#FF69B4','hot pink':'#FF1493','brown':'#8B4513','cream':'#FFFDD0','tan':'#D2B48C','khaki':'#C3B091',
-'teal':'#008080','yellow':'#FFD700','bright yellow':'#FFFF00','powder blue':'#B0E0E6','sky blue':'#87CEEB',
-'forest green':'#228B22','lime':'#32CD32','coral':'#FF7F50','wine':'#722F37','burgundy':'#800020',
-'rust':'#B7410E','copper':'#B87333','sand':'#C2B280','ivory':'#FFFFF0','slate':'#708090',
-'pewter':'#8E8E8E','graphite':'#383838','midnight':'#191970','cobalt':'#0047AB','cyan':'#00FFFF',
-'turquoise':'#40E0D0','aqua':'#00FFFF','magenta':'#FF00FF','lavender':'#E6E6FA','lilac':'#C8A2C8',
-'violet':'#7F00FF','maize':'#FBEC5D','lemon':'#FFF44F','peach':'#FFCBA4','salmon':'#FA8072',
-'brick':'#CB4154','crimson':'#DC143C','berry':'#8E4585','plum':'#DDA0DD','sage':'#BCB88A',
-'olive':'#808000','hunter green':'#355E3B','emerald':'#50C878','jade':'#00A86B','mint':'#98FF98',
-'seafoam':'#93E9BE','ice blue':'#D6ECEF','baby blue':'#89CFF0','steel blue':'#4682B4',
-'denim':'#1560BD','indigo':'#4B0082','eggplant':'#614051','heather':'#B7A99A'};
-const threadHex=(name)=>{if(!name)return null;const n=name.toLowerCase().trim();if(THREAD_COLORS[n])return THREAD_COLORS[n];const match=Object.entries(THREAD_COLORS).find(([k])=>n.includes(k)||k.includes(n));return match?match[1]:null};
-// Merge customer + parent colors (pantone or thread), deduplicating by code/name
-const mergeColors=(cust,allCustomers,field)=>{const own=cust?.[field]||[];if(!cust?.parent_id)return own;const parent=allCustomers?.find(c=>c.id===cust.parent_id);const parentColors=parent?.[field]||[];if(!parentColors.length)return own;const key=field==='pantone_colors'?'code':'name';const seen=new Set(own.map(c=>(c[key]||'').toUpperCase()));return[...own,...parentColors.filter(c=>!seen.has((c[key]||'').toUpperCase()))]};
-const _vendCols=['id','name','vendor_type','api_provider','nsa_carries_inventory','click_automation','is_active','contact_email','contact_phone','rep_name','payment_terms','notes'];
-const _firmDateCols=['item_desc','date','approved'];
-const _issueCols=['id','status','description','priority','page','viewing','reported_by','role','timestamp','resolved_at','resolution'];
-const _omgStoreCols=['id','store_name','customer_id','rep_id','status','open_date','close_date','orders','total_sales','fundraise_total','items_sold','unique_buyers'];
 // Legacy compat — keep old _dbSave for team_members and other simple tables
 const _dbSave = (table, data) => { if(supabase && data) supabase.from(table).upsert(Array.isArray(data)?data:[data], {onConflict:'id'}).then(r=>{if(r.error)console.error('[DB] save '+table+':', r.error.message)}) };
 // ─── Cloudinary Config ───
@@ -1477,165 +1281,6 @@ const parseNetSuitePdfMulti=(pages,docType,products)=>{
   });
 };
 const Icon=({name,size=18})=>{const p={home:<path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>,users:<><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></>,building:<><path d="M6 22V4a2 2 0 012-2h8a2 2 0 012 2v18z"/><path d="M6 12H4a2 2 0 00-2 2v6a2 2 0 002 2h2"/><path d="M18 9h2a2 2 0 012 2v9a2 2 0 01-2 2h-2"/><path d="M10 6h4M10 10h4M10 14h4M10 18h4"/></>,package:<><path d="M16.5 9.4l-9-5.19M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/><path d="M3.27 6.96L12 12.01l8.73-5.05M12 22.08V12"/></>,box:<path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/>,search:<><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></>,plus:<path d="M12 5v14M5 12h14"/>,edit:<><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></>,upload:<><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></>,back:<polyline points="15 18 9 12 15 6"/>,mail:<><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></>,file:<><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></>,sortUp:<path d="M7 14l5-5 5 5"/>,sort:<><path d="M7 15l5 5 5-5"/><path d="M7 9l5-5 5 5"/></>,image:<><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></>,cart:<><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 002 1.61h9.72a2 2 0 002-1.61L23 6H6"/></>,dollar:<><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></>,grid:<><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></>,warehouse:<><path d="M22 8.35V20a2 2 0 01-2 2H4a2 2 0 01-2-2V8.35A2 2 0 013.26 6.5l8-3.2a2 2 0 011.48 0l8 3.2A2 2 0 0122 8.35z"/><path d="M6 18h12M6 14h12"/></>,trash:<><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></>,eye:<><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></>,alert:<><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></>,x:<><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>,check:<polyline points="20 6 9 17 4 12"/>,camera:<><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/><circle cx="12" cy="13" r="4"/></>,scan:<><path d="M3 7V5a2 2 0 012-2h2"/><path d="M17 3h2a2 2 0 012 2v2"/><path d="M21 17v2a2 2 0 01-2 2h-2"/><path d="M7 21H5a2 2 0 01-2-2v-2"/><line x1="7" y1="12" x2="17" y2="12"/></>,save:<><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></>,send:<><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></>,clock:<><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></>};return<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{p[name]}</svg>};
-const DEFAULT_REPS=[
-  // Admins
-  {id:'00000000-0000-0000-0000-000000000001',name:'Steve Peterson',role:'admin'},
-  {id:'00000000-0000-0000-0000-000000000010',name:'Gayle Peterson',role:'admin'},
-  {id:'00000000-0000-0000-0000-000000000011',name:'Mike Peterson',role:'admin'},
-  // Sales Reps
-  {id:'00000000-0000-0000-0000-000000000020',name:'Chase Koissian',role:'rep'},
-  {id:'00000000-0000-0000-0000-000000000021',name:'Jered Hunt',role:'rep'},
-  {id:'00000000-0000-0000-0000-000000000022',name:'Mike Mercuriali',role:'rep'},
-  {id:'00000000-0000-0000-0000-000000000023',name:'Kevin McCormack',role:'rep'},
-  {id:'00000000-0000-0000-0000-000000000024',name:'Jeff Bianchini',role:'rep'},
-  {id:'00000000-0000-0000-0000-000000000025',name:'Kelly Bean',role:'rep'},
-  // CSR
-  {id:'00000000-0000-0000-0000-000000000030',name:'Sharon Day-Monroe',role:'csr'},
-  {id:'00000000-0000-0000-0000-000000000031',name:'Rachel Najara',role:'csr'},
-  {id:'00000000-0000-0000-0000-000000000032',name:'Tegan Peterson',role:'csr'},
-  {id:'00000000-0000-0000-0000-000000000033',name:'Tamara Rodriguez',role:'csr'},
-  // Accounting
-  {id:'00000000-0000-0000-0000-000000000040',name:'Andrea Jung',role:'accounting'},
-  {id:'00000000-0000-0000-0000-000000000041',name:'Ellie Calzada',role:'accounting'},
-  // Warehouse
-  {id:'00000000-0000-0000-0000-000000000050',name:'Kellen Coates',role:'warehouse'},
-  {id:'00000000-0000-0000-0000-000000000051',name:'Noah Corral',role:'warehouse'},
-  {id:'00000000-0000-0000-0000-000000000052',name:'Marcel Salceda',role:'warehouse'},
-  {id:'00000000-0000-0000-0000-000000000053',name:'Irving Santos',role:'warehouse'},
-  // Production managers
-  {id:'00000000-0000-0000-0000-000000000058',name:'Dylan Aassness',role:'prod_manager'},
-  // Production
-  {id:'00000000-0000-0000-0000-000000000060',name:'Paco Salceda',role:'production'},
-  {id:'00000000-0000-0000-0000-000000000061',name:'Liliana Moreno',role:'prod_manager'},
-  {id:'00000000-0000-0000-0000-000000000062',name:'Fransisco Moreno',role:'production'},
-  {id:'00000000-0000-0000-0000-000000000063',name:'Griselda Franco',role:'production'},
-  {id:'00000000-0000-0000-0000-000000000064',name:'Luiz Acosta',role:'production'},
-  // Production assistants (check-in / count — not assigned jobs directly)
-  {id:'00000000-0000-0000-0000-000000000065',name:'Claudia Hernandez',role:'prod_assistant'},
-  {id:'00000000-0000-0000-0000-000000000066',name:'Roberto Rivas',role:'prod_assistant'},
-  // Artists
-  {id:'00000000-0000-0000-0000-000000000070',name:'Mo',role:'art'},
-  {id:'00000000-0000-0000-0000-000000000071',name:'Erik',role:'art'},
-];
-const NSA_DEFAULTS={name:'National Sports Apparel',legal:'National Sports Apparel LLC',phone:'(619) 555-0127',email:'team@nsa-teamwear.com',
-  addr:'9340 Cabot Dr, Suite A',city:'San Diego',state:'CA',zip:'91941',
-  fullAddr:'9340 Cabot Dr, Suite A, San Diego, CA 91941',
-  logo:'NSA',logoUrl:'/nsa-logo.svg',terms:'Net 30 from invoice date unless otherwise agreed.',
-  depositTerms:'50% deposit required to begin production. Balance due upon completion.'};
-let NSA={...NSA_DEFAULTS};
-const ART_LABELS={needs_art:'Needs Art',art_requested:'Art Requested',art_in_progress:'In Progress',waiting_approval:'Waiting Approval',production_files_needed:'Prod Files Needed',art_complete:'Art Complete'};
-const ART_FILE_LABELS={waiting_for_art:'Waiting for Art',needs_approval:'Needs Approval',approved:'Approved / Needs Files'};
-const ART_FILE_SC={waiting_for_art:{bg:'#fef2f2',c:'#dc2626'},needs_approval:{bg:'#fef3c7',c:'#92400e'},approved:{bg:'#dcfce7',c:'#166534'}};
-
-// ═══════════════════════════════════════════════
-// PRINT DOCUMENT HELPER — generates professional print-ready HTML
-// ═══════════════════════════════════════════════
-const PRINT_CSS=`
-*{margin:0;padding:0;box-sizing:border-box}
-body{font-family:'Segoe UI',Helvetica,Arial,sans-serif;font-size:11px;color:#1a1a1a;padding:20px 28px;line-height:1.4}
-.header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;padding-bottom:10px;border-bottom:2px solid #ccc}
-.logo{display:flex;align-items:center;gap:8px}
-.logo img{height:50px}
-.co-addr{font-size:11px;color:#333;line-height:1.4}
-.co-addr strong{display:block;font-size:12px}
-.doc-id{text-align:right}
-.doc-id .doc-type{font-size:28px;font-weight:800;color:#333}
-.doc-id .doc-num{font-size:14px;color:#333;font-weight:700}
-.doc-id .doc-date{font-size:11px;color:#666}
-.bill-total{display:flex;justify-content:space-between;align-items:flex-start;margin:12px 0;gap:20px}
-.bill-to{flex:1}
-.bill-to .label{font-size:10px;font-weight:700;color:#333;background:#e8e8e8;padding:3px 6px;display:inline-block;margin-bottom:4px}
-.bill-to .value{font-size:12px;color:#1a1a1a;line-height:1.5}
-.total-box{background:#e8e8e8;padding:12px 20px;min-width:200px}
-.total-box .tl{font-size:13px;font-weight:800;color:#333}
-.total-box .ta{font-size:36px;font-weight:900;color:#1a1a1a;margin:4px 0}
-.total-box .ts{font-size:11px;color:#666}
-.info-row{display:flex;border:1px solid #ccc;margin-bottom:10px}
-.info-cell{flex:1;padding:4px 8px;border-right:1px solid #ccc}
-.info-cell:last-child{border-right:none}
-.info-cell .label{font-size:9px;font-weight:700;color:#333;background:#e8e8e8;padding:1px 4px;display:inline-block;margin-bottom:2px}
-.info-cell .value{font-size:11px;color:#1a1a1a}
-table{width:100%;border-collapse:collapse;margin:8px 0}
-th{background:#e8e8e8;padding:5px 8px;text-align:left;font-size:10px;font-weight:700;color:#333;border:1px solid #ccc}
-td{padding:5px 8px;border-bottom:1px solid #ddd;font-size:11px}
-.sz-table th,.sz-table td{text-align:center;padding:3px 5px;font-size:10px;min-width:30px}
-.sz-table td.has-qty{font-weight:800;color:#1e3a5f;background:#eef2ff}
-.totals-row td{font-weight:800;border-top:2px solid #333;font-size:12px}
-.notes{margin-top:8px;padding:8px 10px;background:#fffbe6;border:1px solid #f0e6b8;font-size:10px}
-.notes .label{font-weight:700;color:#8b6914;margin-bottom:2px}
-.footer{margin-top:14px;padding-top:8px;border-top:1px solid #ddd;font-size:8px;color:#999;display:flex;justify-content:space-between}
-.amount{text-align:right;font-weight:700}
-.highlight{background:#e8e8e8;color:#166534}
-.badge{display:inline-block;padding:2px 6px;border-radius:10px;font-size:9px;font-weight:700}
-.no-price td:nth-child(n+5){display:none}.no-price th:nth-child(n+5){display:none}
-.sep-line{border-top:2px solid #c00;margin:2px 0}
-@media print{body{padding:14px 20px}th{background:#e8e8e8!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}.total-box{background:#e8e8e8!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}.info-cell .label,.bill-to .label{background:#e8e8e8!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}}
-@page{margin:0.4in;size:letter}
-`;
-
-const buildDocHtml=({title,docNum,docType,headerRight,infoBoxes,tables,notes,footer,showPricing=true})=>{
-  let html='<!DOCTYPE html><html><head><title>'+docNum+' — '+title+'</title><style>'+PRINT_CSS+'</style></head><body>';
-  html+='<div class="header"><div class="logo"><img src="'+window.location.origin+NSA.logoUrl+'" alt="NSA"/><div class="co-addr"><strong>'+NSA.legal+'</strong>'+NSA.fullAddr+'<br/>United States</div></div>';
-  html+='<div class="doc-id"><div class="doc-type">'+docType+'</div><div class="doc-num">#'+docNum+'</div><div class="doc-date">'+new Date().toLocaleDateString()+'</div></div></div>';
-  const billTo=infoBoxes?.find(b=>b.label==='Bill To'||b.label==='Vendor');
-  html+='<div class="bill-total">';
-  if(billTo){html+='<div class="bill-to"><div class="label">'+billTo.label+'</div><div class="value"><strong>'+billTo.value+'</strong>'+(billTo.sub?'<br/>'+billTo.sub:'')+'</div></div>';}
-  if(headerRight){html+='<div class="total-box"><div class="tl">TOTAL</div>'+headerRight+'</div>';}
-  html+='</div>';
-  const otherBoxes=(infoBoxes||[]).filter(b=>b!==billTo);
-  if(otherBoxes.length){
-    html+='<div class="info-row">';
-    otherBoxes.forEach(b=>{
-      html+='<div class="info-cell"><div class="label">'+b.label+'</div><div class="value">'+b.value+(b.sub?'<br/><span style="font-size:10px;color:#666">'+b.sub+'</span>':'')+'</div></div>';
-    });
-    html+='</div>';
-  }
-  if(tables){tables.forEach(t=>{
-    if(t.title)html+='<div style="font-weight:700;font-size:11px;color:#333;margin:8px 0 3px;border-bottom:1px solid #ddd;padding-bottom:2px">'+t.title+'</div>';
-    html+='<table class="'+(t.className||'')+'">';
-    if(t.headers){html+='<thead><tr>';t.headers.forEach((h,i)=>{
-      const align=t.aligns?.[i]||'left';html+='<th style="text-align:'+align+'">'+h+'</th>'});
-      html+='</tr></thead>';}
-    html+='<tbody>';
-    (t.rows||[]).forEach(r=>{
-      html+='<tr'+(r._class?' class="'+r._class+'"':'')+(r._style?' style="'+r._style+'"':'')+'>';
-      r.cells.forEach((c,i)=>{
-        const align=t.aligns?.[i]||'left';
-        html+='<td style="text-align:'+align+';'+(c.style||'')+'">'+(c.value!==undefined?c.value:c)+'</td>'});
-      html+='</tr>'});
-    html+='</tbody></table>';
-    html+='<div class="sep-line"></div>';
-  })}
-  if(notes)html+='<div class="notes"><div class="label">Notes</div>'+notes+'</div>';
-  if(footer)html+='<div style="font-size:9px;color:#888;margin-top:8px">'+footer+'</div>';
-  html+='<div class="footer"><span>'+NSA.name+' · '+NSA.fullAddr+'</span><span>Printed '+(new Date().toLocaleString())+'</span></div>';
-  html+='</body></html>';
-  return html;
-};
-const printDoc=(opts)=>{
-  const html=buildDocHtml(opts);
-  const w=window.open('','_blank','width=800,height=1000');
-  if(!w)return;
-  w.document.write(html);w.document.close();
-  setTimeout(()=>w.print(),350);
-};
-let _estSeq=2101;let _soSeq=1042;let _invSeq=1061;
-// Collision-safe ID generation: random gap of 10-99 between IDs so two browsers creating simultaneously won't collide (~1% chance vs 100% before)
-const _gap=()=>1;
-const nextEstId=(ests)=>{const nums=(ests||[]).map(e=>{const m=(e.id||'').match(/EST-(\d+)/);return m?parseInt(m[1]):0});const next=Math.max(_estSeq,...nums)+_gap();_estSeq=next;return'EST-'+next};
-const nextSOId=(sos)=>{const nums=(sos||[]).map(s=>{const m=(s.id||'').match(/SO-(\d+)/);return m?parseInt(m[1]):0});const next=Math.max(_soSeq,...nums)+_gap();_soSeq=next;return'SO-'+next};
-const nextInvId=(invs)=>{const nums=(invs||[]).map(i=>{const m=(i.id||'').match(/INV-(\d+)/);return m?parseInt(m[1]):0});const next=Math.max(_invSeq,...nums)+_gap();_invSeq=next;return'INV-'+next};
-let CATEGORIES=['Tees','Hoodies','Polos','Shorts','1/4 Zips','Hats','Footwear','Jersey Tops','Jersey Bottoms','Balls'];
-const COLOR_CATEGORIES=['Black','White','Red','Navy','Royal','Dark Green','Cardinal','Maroon','Light Grey','Dark Grey','Vegas Gold','Athletic Gold','Orange'];
-const mapColorCategory=(color)=>{if(!color)return'';const c=color.toLowerCase();const m=[['black','Black'],['white','White'],['cardinal','Cardinal'],['maroon','Maroon'],['navy','Navy'],['royal','Royal'],['dark green','Dark Green'],['vegas gold','Vegas Gold'],['athletic gold','Athletic Gold'],['gold','Vegas Gold'],['light grey','Light Grey'],['light gray','Light Grey'],['heather','Light Grey'],['dark grey','Dark Grey'],['dark gray','Dark Grey'],['charcoal','Dark Grey'],['orange','Orange'],['red','Red']];for(const[k,v]of m){if(c.includes(k))return v}return'';};
-let CONTACT_ROLES=['Head Coach','Assistant','Accounting','Athletic Director','Primary','Other'];
-let POSITIONS=['Front Center','Back Center','Left Chest','Right Chest','Left Sleeve','Right Sleeve','Left Leg','Right Leg','Nape','Other'];
-const EXTRA_SIZES=['XS','3XL','4XL','LT','XLT','2XLT','3XLT'];
-const SZ_ORD=['XS','S','M','L','XL','2XL','3XL','4XL','LT','XLT','2XLT','3XLT','OSFA'];
-const SZ_NORM={'SM':'S','SML':'S','SMALL':'S','MD':'M','MED':'M','MEDIUM':'M','LG':'L','LRG':'L','LARGE':'L',
-  'XLG':'XL','XLARGE':'XL','X-LARGE':'XL','XXL':'2XL','2X':'2XL','2XLARGE':'2XL','2X-LARGE':'2XL',
-  'XXXL':'3XL','3X':'3XL','3XLARGE':'3XL','3X-LARGE':'3XL','XXXXL':'4XL','4X':'4XL','4XLARGE':'4XL','4X-LARGE':'4XL',
-  '5X':'5XL','6X':'6XL','LT':'LT','XLT':'XLT','2XLT':'2XLT','3XLT':'3XLT'};
 const normSzName=s=>{if(!s)return s;const u=s.toUpperCase().trim();return SZ_NORM[u]||u};
 const rQ=v=>Math.round(v*4)/4;
 const rT=v=>Math.round(v*10)/10;
@@ -1701,350 +1346,6 @@ function dP(d,q,artFiles,cq){
   // Outside decoration — user-entered cost/sell
   if(d.kind==='outside_deco')return{sell:d.sell_override||safeNum(d.sell_each),cost:safeNum(d.cost_each)};
   return{sell:0,cost:0}}
-const SC={
-  // SO statuses (5)
-  booking:{bg:'#e0e7ff',c:'#4338ca'},need_order:{bg:'#fef3c7',c:'#92400e'},waiting_receive:{bg:'#dbeafe',c:'#1e40af'},needs_pull:{bg:'#fef9c3',c:'#a16207'},items_received:{bg:'#d1fae5',c:'#065f46'},complete:{bg:'#dcfce7',c:'#166534'},in_production:{bg:'#ede9fe',c:'#6d28d9'},ready_to_invoice:{bg:'#fef0c7',c:'#c2410c'},reverted:{bg:'#fef3c7',c:'#d97706'},
-  // Job item statuses
-  need_to_order:{bg:'#fef3c7',c:'#92400e'},partially_received:{bg:'#fef9c3',c:'#854d0e'},items_received:{bg:'#d1fae5',c:'#065f46'},
-  // Job production statuses
-  draft:{bg:'#fef9c3',c:'#a16207'},ready:{bg:'#dcfce7',c:'#166534'},staging:{bg:'#fef3c7',c:'#92400e'},in_process:{bg:'#dbeafe',c:'#1e40af'},completed:{bg:'#dcfce7',c:'#166534'},shipped:{bg:'#ede9fe',c:'#6d28d9'},
-  // Job art statuses
-  needs_art:{bg:'#fef2f2',c:'#dc2626'},art_requested:{bg:'#fce7f3',c:'#be185d'},art_in_progress:{bg:'#dbeafe',c:'#1e40af'},waiting_approval:{bg:'#fef3c7',c:'#92400e'},production_files_needed:{bg:'#fef9c3',c:'#854d0e'},art_complete:{bg:'#dcfce7',c:'#166534'},
-  // Art file statuses
-  waiting_for_art:{bg:'#fef2f2',c:'#dc2626'},needs_approval:{bg:'#fef3c7',c:'#92400e'},
-  // Legacy
-  uploaded:{bg:'#fef3c7',c:'#92400e'},waiting_art:{bg:'#fef3c7',c:'#92400e'},in_production:{bg:'#dbeafe',c:'#1e40af'},ready_ship:{bg:'#dcfce7',c:'#166534'},
-};
-
-// SAFE ACCESSORS — defensive helpers to prevent crashes from missing/null data
-const safe=(v,def)=>v!=null?v:def;
-const safeArr=(v)=>Array.isArray(v)?v:[];
-const safeObj=(v)=>v&&typeof v==='object'&&!Array.isArray(v)?v:{};
-const safeNum=(v)=>typeof v==='number'&&!isNaN(v)?v:0;
-// Parse date strings handling 2-digit years (MM/DD/YY → 20YY)
-const parseDate=(s)=>{if(!s)return null;const m=String(s).match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);if(m){let y=parseInt(m[3]);if(y<100)y+=2000;return new Date(y,parseInt(m[1])-1,parseInt(m[2]))}return new Date(s)};
-const safeStr=(v)=>typeof v==='string'?v:'';
-const safeSizes=(it)=>safeObj(it?.sizes);
-const safePicks=(it)=>safeArr(it?.pick_lines);
-const safePOs=(it)=>safeArr(it?.po_lines);
-const safeDecos=(it)=>safeArr(it?.decorations);
-const safeItems=(o)=>safeArr(o?.items);
-const safeArt=(o)=>safeArr(o?.art_files);
-const safeJobs=(o)=>safeArr(o?.jobs);
-// Build jobs from SO — uses existing jobs array, or auto-generates drafts from decorations
-const buildJobs=(o)=>{
-  if(o?.jobs&&o.jobs.length>0){
-    // Sync job art_status with art file status to prevent mismatches
-    return o.jobs.map(j=>{
-      // Reconstruct _art_ids from item decorations if not present
-      if(!j._art_ids&&j.items){const ids=new Set();j.items.forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(it)safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id)ids.add(d.art_file_id)})});if(ids.size>0)j={...j,_art_ids:[...ids]}}
-      // For multi-art jobs, check ALL art files
-      const artIds=j._art_ids||[j.art_file_id].filter(Boolean);
-      if(artIds.length>0){
-        const allApproved=artIds.every(aid=>{const af=safeArt(o).find(f=>f.id===aid);return af&&af.status==='approved'});
-        const allHaveProdFiles=artIds.every(aid=>{const af=safeArt(o).find(f=>f.id===aid);return af&&(af.prod_files||[]).length>0});
-        const anyUploaded=artIds.some(aid=>{const af=safeArt(o).find(f=>f.id===aid);return af&&(af.status==='uploaded'||af.status==='needs_approval')});
-        const inArtistWorkflow=j.art_status==='art_requested'||j.art_status==='art_in_progress';
-        const wasRecalled=(j.art_requests||[]).some(r=>r.status==='recalled')&&!(j.art_requests||[]).some(r=>r.status==='requested'||r.status==='in_progress');
-        if(!inArtistWorkflow){
-          if(allApproved&&allHaveProdFiles&&j.art_status!=='art_complete'&&j.art_status!=='production_files_needed'){j={...j,art_status:'art_complete'};if(j.art_requests)j={...j,art_requests:j.art_requests.map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'completed'}:r)}}
-          else if(allApproved&&!allHaveProdFiles){j={...j,art_status:'production_files_needed'};if(j.art_requests)j={...j,art_requests:j.art_requests.map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'completed'}:r)}}
-          else if(anyUploaded&&j.art_status==='needs_art'&&!wasRecalled)j={...j,art_status:'waiting_approval'};
-        }
-      } else {
-        const af=safeArt(o).find(f=>f.id===j.art_file_id);if(!af)return j;
-        const inArtistWorkflow=j.art_status==='art_requested'||j.art_status==='art_in_progress';
-        const wasRecalled=(j.art_requests||[]).some(r=>r.status==='recalled')&&!(j.art_requests||[]).some(r=>r.status==='requested'||r.status==='in_progress');
-        if((af.status==='uploaded'||af.status==='needs_approval')&&j.art_status==='needs_art'&&!wasRecalled)return{...j,art_status:'waiting_approval'};
-        if(af.status==='approved'&&!inArtistWorkflow&&(j.art_status==='needs_art'||j.art_status==='waiting_approval')){const newSt=(af.prod_files||[]).length?'art_complete':'production_files_needed';const updJ={...j,art_status:newSt};if(updJ.art_requests)updJ.art_requests=updJ.art_requests.map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'completed'}:r);return updJ}
-      }
-      return j;
-    });
-  }
-  // Auto-generate DRAFT jobs grouped by decoration type
-  const decoTypeMap={};
-  safeItems(o).forEach((it,idx)=>{
-    if(it.no_deco)return;
-    safeDecos(it).forEach((d,di)=>{
-      if(d.kind!=='art'||!d.art_file_id)return;
-      const af=safeArr(o?.art_files).find(f=>f.id===d.art_file_id);
-      const decoType=af?.deco_type||d.deco_type||'screen_print';
-      if(!decoTypeMap[decoType])decoTypeMap[decoType]={deco_type:decoType,items:[],art_ids:new Set(),positions:new Set()};
-      decoTypeMap[decoType].items.push({item_idx:idx,deco_idx:di,sku:it.sku,name:safeStr(it.name),color:it.color||'',units:Object.values(safeSizes(it)).reduce((a,v)=>a+v,0),fulfilled:0,art_file_id:d.art_file_id});
-      decoTypeMap[decoType].art_ids.add(d.art_file_id);
-      decoTypeMap[decoType].positions.add(d.position||'Front Center');
-    });
-  });
-  const DECO_LABELS={screen_print:'Screen Print',embroidery:'Embroidery',heat_transfer:'Heat Transfer',dtg:'DTG',sublimation:'Sublimation',vinyl:'Vinyl',patch:'Patch'};
-  const jobs=Object.entries(decoTypeMap).map(([dt,v],idx)=>{
-    const totalUnits=v.items.reduce((a,it)=>a+it.units,0);
-    const artIds=[...v.art_ids];
-    // Compute art status from all referenced art files
-    const allApproved=artIds.every(aid=>{const af=safeArt(o).find(f=>f.id===aid);return af&&af.status==='approved'});
-    const allHaveProdFiles=artIds.every(aid=>{const af=safeArt(o).find(f=>f.id===aid);return af&&(af.prod_files||[]).length>0});
-    const anyUploaded=artIds.some(aid=>{const af=safeArt(o).find(f=>f.id===aid);return af&&(af.status==='uploaded'||af.status==='needs_approval')});
-    const artStatus=allApproved&&allHaveProdFiles?'art_complete':allApproved?'production_files_needed':anyUploaded?'waiting_approval':'needs_art';
-    return{id:o.id.replace('SO-','JOB-')+'-'+(idx+1<10?'0':'')+(idx+1),key:'deco_'+dt,
-      art_file_id:artIds[0]||null,_art_ids:artIds,
-      art_name:DECO_LABELS[dt]||dt.replace(/_/g,' '),deco_type:dt,positions:[...v.positions].join(', '),
-      art_status:artStatus,item_status:'need_to_order',prod_status:'draft',
-      total_units:totalUnits,fulfilled_units:0,split_from:null,created_at:o.created_at?.split(' ')[0]||'',
-      items:v.items,_auto:true,_draft:true};
-  });
-  return jobs;
-};
-// Check if a job is ready for production: art approved, prod files exist, items received
-const isJobReady=(j,o)=>{
-  // Art must be approved
-  if(j.art_status!=='art_complete')return false;
-  // Check prod files exist for all art files in this job
-  const artIds=j._art_ids||[j.art_file_id].filter(Boolean);
-  for(const aid of artIds){const af=safeArr(o?.art_files).find(f=>f.id===aid);if(af&&(af.prod_files||[]).length===0)return false;}
-  // Check items are received (picked or PO received) for this job's items
-  let totalSz=0,fulfilledSz=0;
-  (j.items||[]).forEach(gi=>{
-    const it=safeItems(o)[gi.item_idx];if(!it)return;
-    Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{
-      totalSz+=v;
-      const picked=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
-      const rcvd=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
-      fulfilledSz+=Math.min(v,picked+rcvd);
-    });
-  });
-  return totalSz>0&&fulfilledSz>=totalSz;
-};
-// Check if a job is dual-run (has both art/screen/emb AND numbers decorations)
-const isDualRunJob=(j,o)=>{
-  const firstGi=(j.items||[])[0];if(!firstGi)return false;
-  const it=safeItems(o)[firstGi.item_idx];if(!it)return false;
-  const decoIdxs=firstGi.deco_idxs||[firstGi.deco_idx];
-  const decos=safeDecos(it).filter((d,di)=>decoIdxs.includes(di));
-  const hasArt=decos.some(d=>d.kind==='art');
-  const hasNums=decos.some(d=>d.kind==='numbers');
-  return hasArt&&hasNums;
-};
-// Get run labels for a dual-run job based on run_order
-const getRunLabels=(j)=>{
-  const ro=j.run_order; // 'art_first' or 'numbers_first'
-  if(ro==='numbers_first')return{run1:'Numbers',run2:'Artwork'};
-  if(ro==='art_first')return{run1:'Artwork',run2:'Numbers'};
-  return null; // not yet chosen
-};
-const safeFirm=(o)=>safeArr(o?.firm_dates);
-
-// DATA
-const D_C=[
-{id:'c1',parent_id:null,name:'Orange Lutheran High School',alpha_tag:'OLu',contacts:[{name:'Athletic Director',email:'athletics@orangelutheran.org',phone:'714-555-0100',role:'Athletic Director'},{name:'Janet Wu',email:'jwu@orangelutheran.org',phone:'714-555-0109',role:'Accounting'}],billing_address_line1:'2222 N Santiago Blvd',billing_city:'Orange',billing_state:'CA',billing_zip:'92867',shipping_address_line1:'2222 N Santiago Blvd',shipping_city:'Orange',shipping_state:'CA',shipping_zip:'92867',adidas_ua_tier:'A',catalog_markup:1.65,payment_terms:'net30',tax_rate:0.0775,primary_rep_id:'r1',is_active:true,_oe:1,_os:2,_oi:1,_ob:4200},
-{id:'c1a',parent_id:'c1',name:'OLu Baseball',alpha_tag:'OLuB',contacts:[{name:'Coach Martinez',email:'martinez@orangelutheran.org',phone:'',role:'Head Coach'}],shipping_address_line1:'2222 N Santiago Blvd - Field House',shipping_city:'Orange',shipping_state:'CA',adidas_ua_tier:'A',catalog_markup:1.65,payment_terms:'net30',primary_rep_id:'r1',is_active:true,_oe:0,_os:1,_oi:1,_ob:4200},
-{id:'c1b',parent_id:'c1',name:'OLu Football',alpha_tag:'OLuF',contacts:[{name:'Coach Davis',email:'davis@orangelutheran.org',phone:'',role:'Head Coach'}],shipping_address_line1:'2222 N Santiago Blvd - Athletics',shipping_city:'Orange',shipping_state:'CA',adidas_ua_tier:'A',catalog_markup:1.65,payment_terms:'net30',primary_rep_id:'r1',is_active:true,_oe:1,_os:1,_oi:0,_ob:0},
-{id:'c1c',parent_id:'c1',name:'OLu Track & Field',alpha_tag:'OLuT',contacts:[{name:'Coach Chen',email:'chen@orangelutheran.org',phone:'',role:'Head Coach'}],shipping_city:'Orange',shipping_state:'CA',adidas_ua_tier:'A',catalog_markup:1.65,payment_terms:'net30',primary_rep_id:'r1',is_active:true,_oe:0,_os:0,_oi:0,_ob:0},
-{id:'c2',parent_id:null,name:'St. Francis High School',alpha_tag:'SF',contacts:[{name:'AD Office',email:'ad@stfrancis.edu',phone:'818-555-0200',role:'Athletic Director'}],billing_city:'La Canada',billing_state:'CA',shipping_city:'La Canada',shipping_state:'CA',adidas_ua_tier:'B',catalog_markup:1.65,payment_terms:'net30',tax_rate:0.095,primary_rep_id:'r4',is_active:true,_oe:0,_os:1,_oi:2,_ob:6800},
-{id:'c2a',parent_id:'c2',name:'St. Francis Lacrosse',alpha_tag:'SFL',contacts:[{name:'Coach Resch',email:'resch@stfrancis.edu',phone:'',role:'Head Coach'}],shipping_city:'La Canada',shipping_state:'CA',adidas_ua_tier:'B',catalog_markup:1.65,payment_terms:'net30',primary_rep_id:'r4',is_active:true,_oe:0,_os:1,_oi:2,_ob:6800},
-{id:'c3',parent_id:null,name:'Clovis Unified School District',alpha_tag:'CUSD',contacts:[{name:'District Office',email:'purchasing@clovisusd.k12.ca.us',phone:'559-555-0300',role:'Primary'}],billing_city:'Clovis',billing_state:'CA',shipping_city:'Clovis',shipping_state:'CA',adidas_ua_tier:'B',catalog_markup:1.65,payment_terms:'prepay',tax_rate:0.0863,primary_rep_id:'r5',is_active:true,_oe:2,_os:0,_oi:0,_ob:0},
-{id:'c3a',parent_id:'c3',name:'Clovis High Badminton',alpha_tag:'CHBad',contacts:[{name:'Coach Kim',email:'kim@clovisusd.k12.ca.us',phone:'',role:'Head Coach'}],shipping_city:'Clovis',shipping_state:'CA',adidas_ua_tier:'B',catalog_markup:1.65,payment_terms:'prepay',primary_rep_id:'r5',is_active:true,_oe:2,_os:0,_oi:0,_ob:0},
-];
-const BATCH_VENDORS={'sss':{name:'S&S Activewear',threshold:200},'sanmar':{name:'SanMar',threshold:200},'richardson':{name:'Richardson',threshold:200},'momentec':{name:'Momentec',threshold:200},'a4':{name:'A4',threshold:200},'adidas':{name:'Adidas',threshold:0},'under armour':{name:'Under Armour',threshold:0}};
-const MACHINES=[
-  {id:'auto_press',name:'Auto Press',type:'screen_print'},
-  {id:'manual_press',name:'Manual Press',type:'screen_print'},
-  {id:'dtf_printer',name:'DTF Printer',type:'dtf'},
-  {id:'heat_press_1',name:'Heat Press 1',type:'heat_transfer'},
-  {id:'heat_press_2',name:'Heat Press 2',type:'heat_transfer'},
-  {id:'emb_1',name:'Embroidery Head 1',type:'embroidery'},
-  {id:'emb_2',name:'Embroidery Head 2',type:'embroidery'},
-];
-const D_V=[
-{id:'v1',name:'Adidas',vendor_type:'upload',nsa_carries_inventory:true,click_automation:true,is_active:true,contact_email:'teamorders@adidas.com',contact_phone:'800-448-1796',rep_name:'Sarah Johnson',payment_terms:'net60',notes:'Team dealer program.',_oi:3,_it:12450,_ac:4200,_a3:5250,_a6:3000,_a9:0},
-{id:'v2',name:'Under Armour',vendor_type:'upload',nsa_carries_inventory:true,click_automation:true,is_active:true,contact_email:'teamdealer@underarmour.com',rep_name:'Mike Daniels',payment_terms:'net60',_oi:2,_it:8200,_ac:5200,_a3:3000,_a6:0,_a9:0},
-{id:'v3',name:'SanMar',vendor_type:'api',api_provider:'sanmar',nsa_carries_inventory:false,is_active:true,contact_email:'orders@sanmar.com',payment_terms:'net30',_oi:1,_it:2100,_ac:2100,_a3:0,_a6:0,_a9:0},
-{id:'v4',name:'S&S Activewear',vendor_type:'api',api_provider:'ss_activewear',nsa_carries_inventory:false,is_active:true,contact_email:'service@ssactivewear.com',payment_terms:'net30',_oi:0,_it:0,_ac:0,_a3:0,_a6:0,_a9:0},
-{id:'v5',name:'Richardson',vendor_type:'api',api_provider:'richardson',nsa_carries_inventory:false,is_active:true,contact_email:'orders@richardsonsports.com',payment_terms:'net30',_oi:0,_it:0,_ac:0,_a3:0,_a6:0,_a9:0},
-{id:'v6',name:'Rawlings',vendor_type:'upload',nsa_carries_inventory:false,is_active:true,payment_terms:'net30',_oi:0,_it:0,_ac:0,_a3:0,_a6:0,_a9:0},
-{id:'v7',name:'Badger',vendor_type:'upload',nsa_carries_inventory:false,is_active:true,payment_terms:'net30',_oi:0,_it:0,_ac:0,_a3:0,_a6:0,_a9:0},
-{id:'v8',name:'Momentec',vendor_type:'api',api_provider:'momentec',nsa_carries_inventory:false,is_active:true,contact_email:'orders@momentecbrands.com',payment_terms:'net30',api_price_discount:0.15,_oi:0,_it:0,_ac:0,_a3:0,_a6:0,_a9:0},
-];
-const D_P=[
-{id:'p1',vendor_id:'v1',sku:'JX4453',name:'Adidas Unisex Pregame Tee',brand:'Adidas',color:'Team Power Red/White',category:'Tees',retail_price:55.5,nsa_cost:18.5,available_sizes:['XS','S','M','L','XL','2XL'],is_active:true,_inv:{XS:0,S:7,M:0,L:0,XL:0,'2XL':0},_alerts:{S:15,M:15,L:10,XL:8,'2XL':5,'3XL':1}},
-{id:'p2',vendor_id:'v1',sku:'HF7245',name:'Adidas Team Issue Hoodie',brand:'Adidas',color:'Team Power Red/White',category:'Hoodies',retail_price:85,nsa_cost:28.5,available_sizes:['S','M','L','XL','2XL'],is_active:true,_inv:{S:3,M:6,L:4,XL:2,'2XL':0},_alerts:{S:5,M:8,L:6,XL:4}},
-{id:'p4',vendor_id:'v2',sku:'1370399',name:'Under Armour Team Polo',brand:'Under Armour',color:'Cardinal/White',category:'Polos',retail_price:65,nsa_cost:22,available_sizes:['S','M','L','XL','2XL'],is_active:true,_inv:{S:0,M:10,L:15,XL:12,'2XL':8}},
-{id:'p5',vendor_id:'v3',sku:'PC61',name:'Port & Company Essential Tee',brand:'Port & Company',color:'Jet Black',category:'Tees',retail_price:8.98,nsa_cost:2.85,available_sizes:['S','M','L','XL','2XL','3XL'],is_active:true,_inv:{S:20,M:15,L:10,XL:5,'2XL':0,'3XL':0},_alerts:{'2XL':5},_colors:['Jet Black','Navy','Red','White','Athletic Heather','Royal','Forest Green','Charcoal']},
-{id:'p6',vendor_id:'v3',sku:'K500',name:'Port Authority Silk Touch Polo',brand:'Port Authority',color:'Navy',category:'Polos',retail_price:22.98,nsa_cost:8.2,available_sizes:['XS','S','M','L','XL','2XL','3XL','4XL'],is_active:true,_inv:{},_colors:['Navy','Black','White','Red','Royal','Dark Green']},
-{id:'p7',vendor_id:'v5',sku:'112',name:'Richardson Trucker Cap',brand:'Richardson',color:'Black/White',category:'Hats',retail_price:12,nsa_cost:4.5,available_sizes:['OSFA'],is_active:true,_inv:{OSFA:30},_colors:['Black/White','Navy/White','Red/White']},
-{id:'p8',vendor_id:'v1',sku:'EK0100',name:'Adidas Team 1/4 Zip',brand:'Adidas',color:'Team Navy/White',category:'1/4 Zips',retail_price:75,nsa_cost:25,available_sizes:['S','M','L','XL','2XL'],is_active:true,_inv:{S:2,M:7,L:9,XL:5,'2XL':1}},
-{id:'p9',vendor_id:'v2',sku:'1376844',name:'Under Armour Tech Short',brand:'Under Armour',color:'Black/White',category:'Shorts',retail_price:45,nsa_cost:15.5,available_sizes:['S','M','L','XL','2XL'],is_active:true,_inv:{S:0,M:4,L:6,XL:3,'2XL':0}},
-];
-const D_E=[
-{id:'EST-2089',customer_id:'c1b',memo:'Spring 2026 Football Camp Tees',status:'sent',created_by:'r1',created_at:'02/10/26 9:15 AM',updated_at:'02/10/26 2:30 PM',default_markup:1.65,shipping_type:'pct',shipping_value:8,ship_to_id:'default',email_status:'opened',email_opened_at:'02/10/26 3:45 PM',art_files:[],items:[{product_id:'p5',sku:'PC61',name:'Port & Company Essential Tee',brand:'Port & Company',color:'Jet Black',nsa_cost:2.85,retail_price:8.98,unit_sell:4.75,sizes:{S:8,M:15,L:20,XL:12,'2XL':5},available_sizes:['S','M','L','XL','2XL','3XL'],_colors:['Jet Black','Navy','Red','White'],decorations:[{kind:'art',position:'Front Center',art_file_id:null,sell_override:null},{kind:'art',position:'Back Center',art_file_id:null,sell_override:null}]}]},
-{id:'EST-2094',customer_id:'c1b',memo:'Football Coaches Polos',status:'approved',created_by:'r1',created_at:'02/16/26 10:00 AM',updated_at:'02/16/26 10:00 AM',default_markup:1.65,shipping_type:'flat',shipping_value:25,ship_to_id:'default',email_status:'viewed',email_opened_at:'02/16/26 11:30 AM',email_viewed_at:'02/16/26 11:32 AM',art_files:[],items:[{product_id:'p4',sku:'1370399',name:'Under Armour Team Polo',brand:'Under Armour',color:'Cardinal/White',nsa_cost:22,retail_price:65,unit_sell:39,sizes:{M:2,L:3,XL:2,'2XL':1},available_sizes:['S','M','L','XL','2XL'],decorations:[{kind:'art',position:'Left Chest',art_file_id:null,sell_override:null}]}]},
-{id:'EST-2101',customer_id:'c3a',memo:'Badminton Team Uniforms',status:'open',created_by:'r5',created_at:'02/12/26 3:00 PM',updated_at:'02/12/26 3:00 PM',default_markup:1.65,shipping_type:'pct',shipping_value:0,ship_to_id:'default',email_status:null,art_files:[],items:[]},
-];
-const D_SO=[
-// SO-1042: Baseball — FULLY IN PRODUCTION. All items ordered/received, art approved, prod files done, jobs on board in process
-{id:'SO-1042',customer_id:'c1a',estimate_id:'EST-2088',memo:'Baseball Spring Season Full Package',status:'in_production',created_by:'r1',created_at:'02/10/26 11:00 AM',updated_at:'02/14/26',expected_date:'2026-03-15',production_notes:'Rush - coach needs by spring break',shipping_type:'flat',shipping_value:45,ship_to_id:'default',firm_dates:[{item_desc:'JX4453 - Adidas Pregame Tee',date:'03/01/26',approved:true}],
-  art_files:[{id:'af1',name:'OLu Baseball Front Logo',deco_type:'screen_print',ink_colors:'Navy, Gold, White',thread_colors:'',art_size:'12" x 4"',files:[],mockup_files:['OLu_Baseball_Logo_v3.pdf','OLu_Baseball_Mockup_Jersey.png'],prod_files:['OLu_Baseball_Logo_v3.ai','OLu_Baseball_Seps_3color.ai'],notes:'Final approved - navy/gold',status:'approved',uploaded:'02/10/26'},
-    {id:'af2',name:'Sleeve Logo Small',deco_type:'embroidery',ink_colors:'',thread_colors:'Navy 2767, Gold',art_size:'2" wide',files:[],mockup_files:['OLu_Sleeve_Logo.pdf'],prod_files:['OLu_Sleeve_Logo.dst','OLu_Sleeve_ThreadChart.pdf'],notes:'Small sleeve crest',status:'approved',uploaded:'02/11/26'}],
-  items:[
-    {sku:'JX4453',name:'Adidas Unisex Pregame Tee',brand:'Adidas',color:'Team Power Red/White',nsa_cost:18.5,retail_price:55.5,unit_sell:33.3,product_id:'p1',
-      sizes:{S:5,M:20,L:15,XL:8,'2XL':3},available_sizes:['S','M','L','XL','2XL'],
-      pick_lines:[
-        {pick_id:'IF-4100',S:5,M:8,L:5,XL:3,status:'pulled',created_at:'02/10/26',memo:'First pull — in-stock sizes',ship_dest:'in_house'},
-        {pick_id:'IF-4192',S:0,M:4,L:10,XL:5,'2XL':0,status:'pulled',created_at:'02/14/26',memo:'Second pull',ship_dest:'in_house'}
-      ],
-      po_lines:[
-        {po_id:'PO-3001',S:0,M:0,L:0,XL:0,'2XL':3,received:{'2XL':3},shipments:[{date:'2026-02-19','2XL':3}],status:'received',created_at:'02/11/26',memo:'2XL from Adidas'},
-        {po_id:'PO-3088',S:0,M:8,L:0,XL:0,'2XL':0,received:{M:8},shipments:[{date:'2026-02-18',M:8}],status:'received',created_at:'02/12/26',memo:'Rush restock M sizes'}
-      ],
-      decorations:[{kind:'art',position:'Front Center',art_file_id:'af1',sell_override:null},{kind:'numbers',position:'Back Center',num_method:'heat_transfer',num_size:'4"',two_color:false,sell_override:null,roster:[]}]},
-    {sku:'HF7245',name:'Adidas Team Issue Hoodie',brand:'Adidas',color:'Team Power Red/White',nsa_cost:28.5,retail_price:85,unit_sell:51,product_id:'p2',
-      sizes:{S:2,M:4,L:3,XL:2},available_sizes:['S','M','L','XL','2XL'],
-      pick_lines:[{pick_id:'IF-4699',S:2,M:4,L:3,XL:2,status:'pulled',created_at:'02/16/26',memo:'Hoodies — blank ship to customer',ship_dest:'ship_customer',ship_addr:'default'}],
-      po_lines:[],no_deco:true,
-      decorations:[]},
-    {sku:'PC61',name:'Port & Company Essential Tee',brand:'Port & Company',color:'Jet Black',nsa_cost:2.85,retail_price:8.98,unit_sell:4.75,product_id:'p5',
-      sizes:{S:10,M:15,L:10,XL:5},available_sizes:['S','M','L','XL','2XL','3XL'],
-      pick_lines:[{pick_id:'IF-4327',S:10,M:15,L:10,XL:5,status:'pulled',created_at:'02/17/26',memo:'All PC61 in stock',ship_dest:'in_house'}],
-      po_lines:[],
-      decorations:[{kind:'art',position:'Front Center',art_file_id:'af1',sell_override:3.25}]}
-  ],
-  jobs:[
-    {id:'JOB-1042-01',key:'art_af1_Front Center',art_file_id:'af1',art_name:'OLu Baseball Front Logo',deco_type:'screen_print',
-      positions:'Front Center',art_status:'art_complete',item_status:'items_received',prod_status:'in_process',
-      total_units:91,fulfilled_units:91,split_from:null,created_at:'02/10/26',
-      assigned_machine:'auto_press',assigned_to:'Carlos',ship_method:'rep_delivery',
-      items:[
-        {item_idx:0,deco_idx:0,sku:'JX4453',name:'Adidas Unisex Pregame Tee',color:'Team Power Red/White',units:51,fulfilled:51},
-        {item_idx:2,deco_idx:0,sku:'PC61',name:'Port & Company Essential Tee',color:'Jet Black',units:40,fulfilled:40},
-      ]},
-  ]},
-// SO-1045: Football — WAITING TO RECEIVE. All items covered by POs/picks but not all received yet. Art not approved.
-{id:'SO-1045',customer_id:'c1b',memo:'Football Spring Practice Gear',status:'waiting_receive',created_by:'r1',created_at:'02/12/26 2:00 PM',updated_at:'02/12/26',expected_date:'2026-03-20',production_notes:'Need sizes confirmed by coach',shipping_type:'pct',shipping_value:8,ship_to_id:'default',firm_dates:[],
-  art_files:[{id:'af4',name:'OLu Football Helmet Logo',deco_type:'screen_print',ink_colors:'Red, White',thread_colors:'',art_size:'10" x 8"',files:['OLu_Football.ai'],mockup_files:['OLu_Football_Mockup.pdf'],prod_files:[],notes:'Waiting coach approval',status:'needs_approval',uploaded:'02/13/26'}],
-  items:[
-    {sku:'JX4453',name:'Adidas Unisex Pregame Tee',brand:'Adidas',color:'Team Power Red/White',nsa_cost:18.5,retail_price:55.5,unit_sell:33.3,product_id:'p1',
-      sizes:{S:3,M:5,L:4,XL:2},available_sizes:['S','M','L','XL','2XL'],
-      pick_lines:[{pick_id:'IF-4200',S:3,M:5,L:4,XL:2,status:'pick',created_at:'02/15/26',memo:'Football pregame tees — stock pull'}],
-      po_lines:[],
-      decorations:[{kind:'art',position:'Front Center',art_file_id:'af4',sell_override:null}]},
-    {sku:'EK0100',name:'Adidas Team 1/4 Zip',brand:'Adidas',color:'Team Navy/White',nsa_cost:25,retail_price:75,unit_sell:45,product_id:'p8',
-      sizes:{S:2,M:6,L:8,XL:4,'2XL':2},available_sizes:['S','M','L','XL','2XL'],
-      pick_lines:[],
-      po_lines:[{po_id:'PO-3055',S:2,M:6,L:8,XL:4,'2XL':2,
-        received:{S:2,M:6,L:8},
-        cancelled:{XL:2},
-        shipments:[{date:'2026-02-15',S:2,M:6,L:8}],
-        status:'partial',created_at:'02/13/26',memo:'1/4 Zips order — Adidas direct'}],
-      decorations:[{kind:'art',position:'Left Chest',art_file_id:'af4',sell_override:null}]},
-    {sku:'112',name:'Richardson Trucker Cap',brand:'Richardson',color:'Black/White',nsa_cost:4.5,retail_price:12,unit_sell:8,product_id:'p7',
-      sizes:{OSFA:20},available_sizes:['OSFA'],
-      pick_lines:[{pick_id:'IF-4150',OSFA:20,status:'pulled',created_at:'02/14/26',memo:'Trucker caps — blank, no deco'}],
-      po_lines:[],no_deco:true,
-      decorations:[]}
-  ]},
-// SO-1051: Lacrosse — NEED TO ORDER. Nothing ordered yet. Art waiting approval.
-{id:'SO-1051',customer_id:'c2a',memo:'Lacrosse Team Store',status:'need_order',created_by:'r4',created_at:'02/14/26 10:30 AM',updated_at:'02/15/26',expected_date:'2026-03-10',production_notes:'Coach wants navy/silver colorway',shipping_type:'flat',shipping_value:0,ship_to_id:'default',firm_dates:[],
-  art_files:[{id:'af3',name:'SFL Lacrosse Crest',deco_type:'embroidery',ink_colors:'',thread_colors:'Navy 2767, White, Silver 877',art_size:'3.5" wide',files:['SFL_Crest.eps','SFL_Crest_preview.png'],mockup_files:['SFL_Crest_Preview.pdf'],prod_files:[],notes:'',status:'needs_approval',uploaded:'02/15/26'}],
-  items:[
-    {sku:'1370399',name:'Under Armour Team Polo',brand:'Under Armour',color:'Cardinal/White',nsa_cost:22,retail_price:65,unit_sell:39,product_id:'p4',
-      sizes:{M:4,L:6,XL:4,'2XL':2},available_sizes:['S','M','L','XL','2XL'],
-      pick_lines:[],po_lines:[],
-      decorations:[{kind:'art',position:'Left Chest',art_file_id:'af3',sell_override:null},{kind:'numbers',position:'Upper Back',num_method:'heat_transfer',num_size:'3"',two_color:false,sell_override:null,roster:[]}]},
-    {sku:'1376844',name:'Under Armour Tech Short',brand:'Under Armour',color:'Black/White',nsa_cost:15.5,retail_price:45,unit_sell:27,product_id:'p9',
-      sizes:{S:4,M:6,L:8,XL:4},available_sizes:['S','M','L','XL','2XL'],
-      pick_lines:[],po_lines:[],
-      decorations:[]}
-  ]},
-// SO-1060: Badminton — empty order, NEED TO ORDER
-{id:'SO-1060',customer_id:'c3a',memo:'Badminton Warm-ups',status:'need_order',created_by:'r5',created_at:'02/16/26 9:00 AM',updated_at:'02/16/26',expected_date:null,production_notes:'',shipping_type:'flat',shipping_value:0,ship_to_id:'default',firm_dates:null,
-  art_files:null,items:[]},
-// SO-1061: Rush order — stress test, empty sizes
-{id:'SO-1061',customer_id:'c1a',memo:'Rush Order - Coach Martinez',status:'need_order',created_by:'r4',created_at:'02/17/26 8:00 AM',updated_at:null,expected_date:'2026-02-28',production_notes:null,shipping_type:null,shipping_value:null,ship_to_id:null,firm_dates:[],
-  art_files:[],items:[
-    {sku:'JX4453',name:'Adidas Pregame Tee',brand:'Adidas',color:null,nsa_cost:null,retail_price:null,unit_sell:28,product_id:'p1',
-      sizes:{},available_sizes:null,pick_lines:null,po_lines:null,decorations:null},
-    {sku:'UNKNOWN_SKU',name:null,brand:null,color:'Red',nsa_cost:0,retail_price:0,unit_sell:0,product_id:null,
-      sizes:{S:3,M:5},available_sizes:['S','M','L'],pick_lines:[],po_lines:[],decorations:[]},
-  ]},
-// SO-1062: Ghost customer — all items pulled → ITEMS RECEIVED (but no jobs, so will be items_received)
-{id:'SO-1062',customer_id:'c_deleted',memo:'Ghost Customer Order',status:'items_received',created_by:'r99',created_at:'',updated_at:'',expected_date:'',production_notes:'',shipping_type:'pct',shipping_value:0,ship_to_id:'default',firm_dates:[],
-  art_files:[],items:[
-    {sku:'PC61',name:'Port Company Tee',brand:'Port Company',color:'White',nsa_cost:3.80,retail_price:null,unit_sell:12,product_id:'p3',
-      sizes:{S:10,M:10,L:10},available_sizes:['S','M','L','XL'],
-      pick_lines:[{pick_id:'IF-9999',status:'pulled',S:10,M:10,L:10,created_at:'02/17/26',memo:'Pulled all'}],
-      po_lines:[],decorations:[{kind:'art',position:'Front Center',art_file_id:'af_missing',sell_override:null}]}
-  ]},
-// SO-1063: Track & Field — READY TO INVOICE. Jobs on board all completed. Partially received items but jobs done.
-{id:'SO-1063',customer_id:'c2',memo:'Track & Field Gear',status:'ready_to_invoice',created_by:'r1',created_at:'02/15/26 4:00 PM',updated_at:'02/15/26',expected_date:'2026-04-01',production_notes:'Long lead time on custom colors',shipping_type:'flat',shipping_value:25,ship_to_id:'default',firm_dates:[{item_desc:'Full Order',date:'03/20/26',approved:false,requested_by:'r1',requested_at:'02/16/26',note:'Meet is April 5'}],
-  art_files:[{id:'af_tf1',name:'SFL Track Logo',deco_type:'screen_print',ink_colors:'Navy, Gold',thread_colors:'',art_size:'10" wide',files:[],mockup_files:['SFL_Track_Mockup.pdf'],prod_files:['SFL_Track_Seps.ai'],notes:'',status:'approved',uploaded:'02/15/26'}],
-  items:[
-    {sku:'1370399',name:'Under Armour Team Polo',brand:'Under Armour',color:'Navy/Gold',nsa_cost:22,retail_price:65,unit_sell:42,product_id:'p4',
-      sizes:{S:5,M:8,L:10,XL:6,'2XL':3},available_sizes:['S','M','L','XL','2XL'],
-      pick_lines:[{pick_id:'IF-4500',S:5,M:8,L:10,XL:6,'2XL':3,status:'pulled',created_at:'02/18/26',memo:'All polos pulled'}],
-      po_lines:[],
-      decorations:[{kind:'art',position:'Left Chest',art_file_id:'af_tf1',sell_override:null}]},
-    {sku:'1376844',name:'Under Armour Tech Short',brand:'Under Armour',color:'Navy',nsa_cost:15.5,retail_price:45,unit_sell:29,product_id:'p9',
-      sizes:{S:5,M:8,L:10,XL:6,'2XL':3},available_sizes:['S','M','L','XL','2XL'],
-      pick_lines:[{pick_id:'IF-4501',S:5,M:8,L:10,XL:6,'2XL':3,status:'pulled',created_at:'02/18/26',memo:'All shorts pulled'}],
-      po_lines:[],
-      decorations:[{kind:'art',position:'Left Leg',art_file_id:'af_tf1',sell_override:3}]}
-  ],
-  jobs:[
-    {id:'JOB-1063-01',key:'art_af_tf1',art_file_id:'af_tf1',art_name:'SFL Track Logo',deco_type:'screen_print',
-      positions:'Left Chest, Left Leg',art_status:'art_complete',item_status:'items_received',prod_status:'completed',
-      total_units:64,fulfilled_units:64,split_from:null,created_at:'02/16/26',
-      assigned_machine:'auto_press',assigned_to:'Mike',ship_method:'ship_customer',
-      items:[
-        {item_idx:0,deco_idx:0,sku:'1370399',name:'Under Armour Team Polo',color:'Navy/Gold',units:32,fulfilled:32},
-        {item_idx:1,deco_idx:0,sku:'1376844',name:'Under Armour Tech Short',color:'Navy',units:32,fulfilled:32},
-      ]},
-  ]},
-// SO-1070: BOOKING ORDER — Fall 2026 Football. 6+ months out, not yet in pipeline.
-{id:'SO-1070',customer_id:'c1a',memo:'Fall 2026 Football Full Package — Adidas',status:'need_order',created_by:'r1',created_at:'03/01/26 9:00 AM',updated_at:'03/01/26',expected_date:null,production_notes:'Booking order — Adidas Fall 2026 line. Coach wants full package.',shipping_type:'flat',shipping_value:65,ship_to_id:'default',firm_dates:[],
-  order_type:'booking',expected_ship_date:'2026-08-15',booking_confirmed:false,booking_confirmed_at:null,booking_confirmed_by:null,booking_alert_days:100,
-  art_files:[],items:[
-    {sku:'JX4453',name:'Adidas Unisex Pregame Tee',brand:'Adidas',color:'Team Navy/White',nsa_cost:18.5,retail_price:55.5,unit_sell:33.3,product_id:'p1',
-      sizes:{S:10,M:25,L:20,XL:12,'2XL':5},available_sizes:['S','M','L','XL','2XL'],
-      pick_lines:[],po_lines:[],decorations:[{kind:'art',position:'Front Center',art_file_id:null,sell_override:null}]},
-    {sku:'HF7245',name:'Adidas Team Issue Hoodie',brand:'Adidas',color:'Team Navy/White',nsa_cost:28.5,retail_price:85,unit_sell:51,product_id:'p2',
-      sizes:{S:5,M:12,L:10,XL:8,'2XL':3},available_sizes:['S','M','L','XL','2XL'],
-      pick_lines:[],po_lines:[],decorations:[{kind:'art',position:'Left Chest',art_file_id:null,sell_override:null}]},
-  ]},
-// SO-1071: BOOKING ORDER — close to threshold, should trigger confirmation todo
-{id:'SO-1071',customer_id:'c2a',memo:'UA Fall Lacrosse Booking — Under Armour',status:'need_order',created_by:'r4',created_at:'02/20/26 2:00 PM',updated_at:'02/20/26',expected_date:null,production_notes:'Under Armour booking for fall season.',shipping_type:'pct',shipping_value:5,ship_to_id:'default',firm_dates:[],
-  order_type:'booking',expected_ship_date:'2026-06-10',booking_confirmed:false,booking_confirmed_at:null,booking_confirmed_by:null,booking_alert_days:100,
-  art_files:[],items:[
-    {sku:'1370399',name:'Under Armour Team Polo',brand:'Under Armour',color:'Red/White',nsa_cost:22,retail_price:65,unit_sell:42,product_id:'p4',
-      sizes:{M:6,L:8,XL:4,'2XL':2},available_sizes:['S','M','L','XL','2XL'],
-      pick_lines:[],po_lines:[],decorations:[{kind:'art',position:'Left Chest',art_file_id:null,sell_override:null}]},
-  ]},
-];
-const D_MSG=[
-{id:'m1',so_id:'SO-1042',author_id:'r1',text:'Coach Martinez confirmed navy/gold for front logo. Approved the proof.',ts:'02/10/26 11:30 AM',read_by:['r1','r2'],tagged_members:[]},
-{id:'m2',so_id:'SO-1042',author_id:'r5',text:'Warehouse: we have 30 of JX4453 in stock, rest need to be ordered from Adidas.',ts:'02/11/26 9:15 AM',read_by:['r5'],tagged_members:[]},
-{id:'m3',so_id:'SO-1042',author_id:'r1',text:'PO placed with Adidas for remaining sizes. Expected 02/20.',ts:'02/11/26 2:00 PM',read_by:['r1'],tagged_members:[]},
-{id:'m4',so_id:'SO-1042',author_id:'r4',text:'@Steve Peterson - coach called, needs jerseys by 3/10 not 3/15. Can we rush?',ts:'02/14/26 10:00 AM',read_by:['r4'],tagged_members:['r1']},
-{id:'m5',so_id:'SO-1042',author_id:'r1',text:'Updated expected date. Adidas confirmed they can expedite.',ts:'02/14/26 11:30 AM',read_by:['r1'],tagged_members:[]},
-{id:'m6',so_id:'SO-1045',author_id:'r1',text:'Waiting on Coach Davis for logo approval. Sent follow-up email.',ts:'02/13/26 3:00 PM',read_by:['r1'],tagged_members:[]},
-{id:'m7',so_id:'SO-1051',author_id:'r4',text:'@Mo - Crest file from coach is low-res. Need vector version.',ts:'02/15/26 11:00 AM',read_by:['r4'],tagged_members:['r7']},
-{id:'m8',so_id:'SO-1063',author_id:'r1',text:'UA says custom navy/gold will ship 3/1. Backordered on XL and 2XL. @Kellen Coates check warehouse stock.',ts:'02/16/26 4:30 PM',read_by:['r1'],tagged_members:['r5']},
-{id:'m9',so_id:'SO-1062',author_id:'r99',text:'This message is from a deleted rep — should still render.',ts:'02/17/26 9:00 AM',read_by:[],tagged_members:[],entity_type:'so',entity_id:'SO-1062'},
-{id:'m10',so_id:null,author_id:'r1',text:'Need coach to confirm sleeve logo placement before we convert to SO.',ts:'02/18/26 10:00 AM',read_by:['r1'],tagged_members:[],entity_type:'estimate',entity_id:'EST-2101'},
-{id:'m11',so_id:null,author_id:'r4',text:'@Steve Peterson pricing approved by AD, ready to convert whenever.',ts:'02/19/26 2:30 PM',read_by:['r4'],tagged_members:['r1'],entity_type:'estimate',entity_id:'EST-2101'},
-{id:'m12',so_id:'SO-1042',author_id:'r5',text:'Got it, will check bin locations today.',ts:'02/11/26 10:00 AM',read_by:['r5'],tagged_members:[],entity_type:'so',entity_id:'SO-1042',thread_id:'m2'},
-{id:'m13',so_id:'SO-1042',author_id:'r1',text:'Thanks Kellen, let me know the count.',ts:'02/11/26 10:30 AM',read_by:['r1'],tagged_members:[],entity_type:'so',entity_id:'SO-1042',thread_id:'m2'},
-];
-const D_INV=[
-  {id:'INV-1042',type:'invoice',customer_id:'c1a',so_id:'SO-1042',date:'02/10/26',due_date:'03/12/26',total:2765,paid:0,memo:'Baseball Spring Season Full Package',status:'open',payments:[],cc_fee:0},
-  {id:'INV-1038',type:'invoice',customer_id:'c2a',so_id:'SO-1051',date:'01/28/26',due_date:'02/27/26',total:3400,paid:0,memo:'Lacrosse Preseason',status:'open',payments:[],cc_fee:0},
-  {id:'INV-1039',type:'invoice',customer_id:'c2a',so_id:null,date:'02/01/26',due_date:'03/03/26',total:3400,paid:3400,memo:'Lacrosse Batch 1',status:'paid',payments:[{amount:3400,method:'check',ref:'Check #4521',date:'02/15/26'}],cc_fee:0},
-  {id:'INV-1050',type:'invoice',customer_id:'c1a',so_id:'SO-1042',date:'01/15/26',due_date:'02/14/26',total:1500,paid:1500,memo:'Baseball Deposit — 50%',status:'paid',payments:[{amount:1500,method:'cc',ref:'Visa ending 4242',date:'01/20/26'}],cc_fee:43.50},
-  {id:'INV-1055',type:'invoice',customer_id:'c2',so_id:'SO-1063',date:'02/15/26',due_date:'03/17/26',total:2856,paid:0,memo:'Track & Field Gear',status:'open',payments:[],cc_fee:0},
-  {id:'INV-1060',type:'invoice',customer_id:'c3a',so_id:null,date:'12/15/25',due_date:'01/14/26',total:980,paid:0,memo:'Badminton Fall Order — OVERDUE',status:'open',payments:[],cc_fee:0},
-  {id:'INV-1061',type:'invoice',customer_id:'c1b',so_id:'SO-1045',date:'02/12/26',due_date:'03/14/26',total:1890,paid:945,memo:'Football Practice Gear — Partial',status:'partial',payments:[{amount:945,method:'venmo',ref:'@OLu-Athletics',date:'02/20/26'}],cc_fee:0},
-];
-
-// OMG TEAM STORES — no demo data, populated by OMG API sync
-const D_OMG=[];
-
 // ─── ShipStation API Integration (via Netlify proxy to avoid CORS) ───
 const shipStationCall = async (endpoint, options = {}) => {
   try {
@@ -9180,6 +8481,34 @@ function PantoneQuickPicks({colors,onPick}){
       </button>})}
   </div>}
 
+// Thread color adder — searchable dropdown with swatch preview (like PantoneAdder but for threads)
+function ThreadAdder({onAdd,existingNames=[]}){
+  const[q,setQ]=useState('');const[results,setResults]=useState([]);const[focused,setFocused]=useState(false);
+  const onChange=(v)=>{setQ(v);if(v.length>=1){
+    const s=v.toLowerCase();
+    const matches=Object.entries(THREAD_COLORS).filter(([k])=>k.includes(s)).slice(0,15).map(([name,hex])=>({name:name.charAt(0).toUpperCase()+name.slice(1),hex}));
+    setResults(matches);
+  }else{
+    // Show all colors when empty and focused
+    setResults(Object.entries(THREAD_COLORS).slice(0,20).map(([name,hex])=>({name:name.charAt(0).toUpperCase()+name.slice(1),hex})));
+  }};
+  const add=(name,hex)=>{if(existingNames.some(n=>n.toLowerCase()===name.toLowerCase()))return;onAdd({name,hex});setQ('');setResults([])};
+  return<div style={{position:'relative',display:'flex',gap:6,alignItems:'center'}}>
+    <div style={{position:'relative',flex:1,maxWidth:220}}>
+      <input className="form-input" value={q} onChange={e=>onChange(e.target.value)} onFocus={()=>{setFocused(true);if(!q)onChange('')}} onBlur={()=>setTimeout(()=>setFocused(false),200)} placeholder="Search thread color..." style={{fontSize:12}}/>
+      {(results.length>0&&focused)&&<div style={{position:'absolute',top:'100%',left:0,right:0,zIndex:50,background:'white',border:'1px solid #e2e8f0',borderRadius:8,boxShadow:'0 4px 12px rgba(0,0,0,0.1)',maxHeight:240,overflowY:'auto',marginTop:2}}>
+        {results.map(r=>{const exists=existingNames.some(n=>n.toLowerCase()===r.name.toLowerCase());return<button key={r.name} onClick={()=>add(r.name,r.hex)} disabled={exists}
+          style={{display:'flex',gap:8,alignItems:'center',padding:'6px 10px',width:'100%',border:'none',background:'white',cursor:exists?'default':'pointer',fontSize:12,textAlign:'left',opacity:exists?0.4:1}}
+          onMouseOver={e=>{if(!exists)e.currentTarget.style.background='#f5f3ff'}} onMouseOut={e=>e.currentTarget.style.background='white'}>
+          <div style={{width:18,height:18,borderRadius:3,background:r.hex,border:'1px solid #d1d5db',flexShrink:0}}/>
+          <span style={{fontWeight:600}}>{r.name}</span>
+          {exists&&<span style={{fontSize:9,color:'#94a3b8'}}>added</span>}
+        </button>})}
+      </div>}
+    </div>
+    <button onClick={()=>{const name=q.trim();if(name&&!existingNames.some(n=>n.toLowerCase()===name.toLowerCase()))add(name,threadHex(name)||'#cccccc')}} className="btn btn-sm btn-secondary" style={{fontSize:11,flexShrink:0}}>+ Add</button>
+  </div>}
+
 // Thread color quick-pick chips for embroidery CW inputs
 function ThreadQuickPicks({colors,onPick}){
   if(!colors||colors.length===0)return null;
@@ -9463,10 +8792,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
             <button onClick={()=>saveThreads(threads.filter((_,x)=>x!==i))} style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',padding:2,marginLeft:4}} title="Remove"><Icon name="x" size={12}/></button>
           </div>})}
       </div>
-      <div style={{display:'flex',gap:6,alignItems:'center'}}>
-        <input className="form-input" id="overview-thread-input" placeholder='e.g. Cardinal, Madeira 1728...' style={{fontSize:12,flex:1,maxWidth:220}} onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();const v=e.target.value.trim();if(v&&!threads.some(t=>t.name.toLowerCase()===v.toLowerCase())){saveThreads([...threads,{name:v}]);e.target.value=''}}}}/>
-        <button className="btn btn-sm btn-secondary" style={{fontSize:11,flexShrink:0}} onClick={()=>{const inp=document.getElementById('overview-thread-input');const v=inp?.value?.trim();if(v&&!threads.some(t=>t.name.toLowerCase()===v.toLowerCase())){saveThreads([...threads,{name:v}]);inp.value=''}}}>+ Add</button>
-      </div>
+      <ThreadAdder onAdd={(tc)=>saveThreads([...threads,tc])} existingNames={threads.map(t=>t.name)}/>
     </div></div>})()}
   {/* PROMO DOLLARS TAB */}
   {tab==='promo'&&(()=>{
@@ -12991,6 +12317,38 @@ export default function App(){
   },[q,pF,prodPage,pg]);// eslint-disable-line
   // Reset page when filters change
   useEffect(()=>{setProdPage(0)},[q,pF.cat,pF.vnd,pF.stk,pF.clr]);
+  // ─── Server-side customer search state (paginated) ───
+  const[custPage,setCustPage]=useState(0);const CUST_PAGE_SIZE=50;
+  const[custServerResults,setCustServerResults]=useState(null);
+  const[custSearching,setCustSearching]=useState(false);
+  const _custSearchTimer=useRef(null);
+  const _custSearchRPC=useCallback((query,repId,page)=>{
+    if(_custSearchTimer.current)clearTimeout(_custSearchTimer.current);
+    _custSearchTimer.current=setTimeout(async()=>{
+      setCustSearching(true);
+      const res=await _searchCustomersServer(query,repId==='all'?null:repId,page,CUST_PAGE_SIZE);
+      if(res){
+        // Enrich with contacts and computed fields from local cust data
+        const enriched=res.customers.map(sc=>{
+          const local=cust.find(c=>c.id===sc.id);
+          return{...sc,contacts:local?.contacts||[],promo_programs:local?.promo_programs||[],
+            promo_periods:local?.promo_periods||[],promo_usage:local?.promo_usage||[],
+            credits:local?.credits||[],credit_usage:local?.credit_usage||[],
+            _oe:local?._oe||0,_os:local?._os||0,_oi:local?._oi||0,_ob:local?._ob||0}
+        });
+        setCustServerResults({customers:enriched,total:res.total});
+      }
+      setCustSearching(false);
+    },300);
+  },[cust]);// eslint-disable-line
+  useEffect(()=>{
+    if(pg==='customers'&&supabase&&(q||rF!=='all')){
+      _custSearchRPC(q,rF,custPage);
+    }else{
+      setCustServerResults(null);
+    }
+  },[q,rF,custPage,pg]);// eslint-disable-line
+  useEffect(()=>{setCustPage(0)},[q,rF]);
   const[qPC,setQPC]=useState({open:false,mode:'single',items:[],bulkRaw:''});
   const[poF,setPOF]=useState({status:'all',vendor:'all',rep:'all',search:'',sort:'date_desc'});
   // OMG Team Stores
@@ -14508,10 +13866,12 @@ export default function App(){
       nf={nf}
       onCopy={c=>{const copy={...c,id:'c'+Date.now(),name:c.name+' (Copy)',alpha_tag:'',contacts:(c.contacts||[]).map(ct=>({...ct})),_oe:0,_os:0,_oi:0,_ob:0};setCM({open:true,c:copy})}}
       onDelete={c=>{const hasOrders=aO.some(o=>o.customer_id===c.id);const kids=cust.filter(ch=>ch.parent_id===c.id);if(hasOrders){alert('Cannot delete — this customer has existing orders. Deactivate instead.');return}if(kids.length>0&&!window.confirm(c.name+' has '+kids.length+' sub-account(s) that will also be deleted. Continue?'))return;if(!window.confirm('Delete "'+c.name+'"? This cannot be undone.'))return;const idsToDelete=[c.id,...kids.map(k=>k.id)];setCust(prev=>prev.filter(x=>!idsToDelete.includes(x.id)));idsToDelete.forEach(id=>{if(supabase){supabase.from('customer_contacts').delete().eq('customer_id',id).then(()=>supabase.from('customers').delete().eq('id',id))}});setSelC(null);nf('Customer deleted')}}/>;
-    const f=pars.filter(p=>{if(rF!=='all'&&p.primary_rep_id!==rF&&!gK(p.id).some(c=>c.primary_rep_id===rF))return false;if(q){const s=q.toLowerCase();return p.name.toLowerCase().includes(s)||p.alpha_tag?.toLowerCase().includes(s)||gK(p.id).some(c=>c.name.toLowerCase().includes(s))}return true});
+    // Use server-side results when searching/filtering, fall back to client-side
+    const f=custServerResults&&(q||rF!=='all')?custServerResults.customers.filter(c=>!c.parent_id):pars.filter(p=>{if(rF!=='all'&&p.primary_rep_id!==rF&&!gK(p.id).some(c=>c.primary_rep_id===rF))return false;if(q){const s=q.toLowerCase();return p.name.toLowerCase().includes(s)||p.alpha_tag?.toLowerCase().includes(s)||gK(p.id).some(c=>c.name.toLowerCase().includes(s))}return true});
     return(<><div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap'}}><div className="search-bar" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search..." value={q} onChange={e=>setQ(e.target.value)}/></div>
       <select className="form-select" style={{width:150}} value={rF} onChange={e=>setRF(e.target.value)}><option value="all">All Reps</option>{REPS.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
       <button className="btn btn-primary" onClick={()=>setCM({open:true,c:null})}><Icon name="plus" size={14}/> New</button></div>
+    {custSearching&&<div style={{textAlign:'center',padding:12,color:'#64748b',fontSize:13}}>Searching...</div>}
     {f.map(p=>{const kids=gK(p.id);const bal=kids.reduce((a,c)=>a+(c._ob||0),p._ob||0);
       return(<div key={p.id} className="card" style={{marginBottom:10}}>
         <div style={{padding:'12px 16px',display:'flex',alignItems:'center',gap:12}}>
@@ -14526,6 +13886,12 @@ export default function App(){
           <span style={{color:'#cbd5e1'}}>|_</span><span style={{fontSize:13,fontWeight:600}}>{ch.name}</span><span className="badge badge-gray">{ch.alpha_tag}</span>{ch.primary_rep_id&&ch.primary_rep_id!==p.primary_rep_id&&<span style={{fontSize:10,color:'#6d28d9',fontWeight:600}}>{REPS.find(r=>r.id===ch.primary_rep_id)?.name||''}</span>}<div style={{flex:1}}/>
           {(ch._ob||0)>0&&<span style={{fontSize:12,fontWeight:700,color:'#dc2626'}}>${ch._ob.toLocaleString()}</span>}</div>)}</div>}
       </div>)})}
+    {/* Customer pagination */}
+    {custServerResults&&custServerResults.total>CUST_PAGE_SIZE&&<div style={{display:'flex',justifyContent:'center',alignItems:'center',gap:12,marginTop:12}}>
+      <button className="btn btn-sm btn-secondary" disabled={custPage===0} onClick={()=>setCustPage(p=>p-1)}>Prev</button>
+      <span style={{fontSize:12,color:'#64748b'}}>Page {custPage+1} of {Math.ceil(custServerResults.total/CUST_PAGE_SIZE)} ({custServerResults.total} customers)</span>
+      <button className="btn btn-sm btn-secondary" disabled={(custPage+1)*CUST_PAGE_SIZE>=custServerResults.total} onClick={()=>setCustPage(p=>p+1)}>Next</button>
+    </div>}
     </>);};
 
   // VENDORS
