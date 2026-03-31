@@ -5,6 +5,7 @@ import { _pick, SZ_ORD, SC, pantoneHex, CATEGORIES, COLOR_CATEGORIES } from './c
 import { safeNum, safeItems, safeSizes, safeArr, safeStr, safeDecos } from './safeHelpers';
 import { Icon, Bg, calcSOStatus, SortHeader } from './components';
 import { CONTACT_ROLES } from './pricing';
+import { invokeEdgeFn } from './utils';
 
 function VendDetail({vendor,products,onUpdateProducts,onBack}){
   const[syncing,setSyncing]=React.useState(false);
@@ -98,24 +99,6 @@ function VendDetail({vendor,products,onUpdateProducts,onBack}){
   <div className="stats-row"><div className="stat-card"><div className="stat-label">Invoices</div><div className="stat-value">{vendor._oi||0}</div></div><div className="stat-card"><div className="stat-label">Current</div><div className="stat-value" style={{color:'#166534'}}>${(vendor._ac||0).toLocaleString()}</div></div><div className="stat-card"><div className="stat-label">30 Day</div><div className="stat-value" style={{color:(vendor._a3||0)>0?'#d97706':''}}>${(vendor._a3||0).toLocaleString()}</div></div><div className="stat-card"><div className="stat-label">60+</div><div className="stat-value" style={{color:(vendor._a6||0)>0?'#dc2626':''}}>${((vendor._a6||0)+(vendor._a9||0)).toLocaleString()}</div></div></div>
   <div className="card"><div className="card-header"><h2>Purchase Orders</h2></div><div className="card-body"><div className="empty">PO tracking — Phase 4</div></div></div></div>)}
 
-// Helper: Supabase functions.invoke can return ReadableStream instead of parsed JSON in v2.39+
-async function invokeEdgeFn(supabase,fnName,body){
-  const r=await supabase.functions.invoke(fnName,{body});
-  let d=r.data;
-  console.log('[invokeEdgeFn]',fnName,'raw response:',{data:d,error:r.error,dataType:typeof d});
-  // If data is a ReadableStream or Response, read and parse it
-  if(d&&typeof d==='object'&&typeof d.getReader==='function'){d=await new Response(d).json()}
-  else if(d&&typeof d==='object'&&typeof d.text==='function'){
-    try{const txt=await d.text();d=JSON.parse(txt)}catch(e){console.error('[invokeEdgeFn] parse error:',e);d=null}
-  }
-  else if(typeof d==='string'){try{d=JSON.parse(d)}catch(e){d=null}}
-  // Also check error for body content
-  if(!d&&r.error){const ctx=r.error?.context;if(ctx&&typeof ctx.json==='function'){try{d=await ctx.json()}catch(e){}}if(!d)d={ok:false,error:r.error?.message||String(r.error)}}
-  console.log('[invokeEdgeFn]',fnName,'parsed:',d);
-  // Ensure error is always a string
-  if(d&&d.error&&typeof d.error!=='string'){d.error=d.error?.message||JSON.stringify(d.error)}
-  return d||{ok:false,error:'No response from edge function'};
-}
 
 // ─── TAXCLOUD SETTINGS COMPONENT ───
 
