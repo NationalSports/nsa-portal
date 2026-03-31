@@ -4,9 +4,9 @@ import { SZ_ORD, pantoneHex, NSA } from './constants';
 import { safeNum, safeItems, safeSizes, safeDecos, safeArr, safeJobs } from './safeHelpers';
 import { calcSOStatus } from './components';
 import { dP, rQ, SP } from './pricing';
-import { sendBrevoEmail, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl } from './utils';
+import { sendBrevoEmail, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable } from './utils';
 
-function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onUpdateInvs,onUpdateSOs,onUpdateEsts,savSOFn,portalSettings}){
+function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onUpdateInvs,onUpdateSOs,onUpdateEsts,savSOFn,portalSettings,dbSaveEstimate:_dbSaveEstimate}){
   const _portalDisclaimer=portalSettings?.disclaimer||'';
   const[jobView,setJobView]=useState(null);
   const[invView,setInvView]=useState(null);

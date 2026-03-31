@@ -28,6 +28,28 @@ export const _isImgUrl=(u,f)=>{if(_isPdfUrl(u,f))return false;const e=_urlExt(u)
 export const _isPdfUrl=(u,f)=>{if(_urlExt(u)==='pdf')return true;if(typeof f==='object'&&f?.type==='application/pdf')return true;if(typeof f==='string'&&f.endsWith('.pdf'))return true;return false};
 export const _isDisplayableFile=(u,f)=>_isImgUrl(u,f)||_isPdfUrl(u,f);
 
+// ── File filtering helpers ──
+export const _filterDisplayable=files=>(files||[]).filter(f=>{const u=typeof f==='string'?f:(f?.url||'');return u&&_isDisplayableFile(u,f)});
+export const _cloudinaryPdfThumb=u=>{if(!u||!u.includes('cloudinary.com'))return null;
+  let t=u.replace('/raw/upload/','/image/upload/').replace('/video/upload/','/image/upload/');
+  return t.replace('/image/upload/','/image/upload/pg_1,f_png/')};
+
+// ── Brevo SMS ──
+export const _brevoSmsSender='NSA';
+export const sendBrevoSms=async({to,content,sender})=>{
+  const _brevoKey2=process.env.REACT_APP_BREVO_API_KEY||'';
+  if(!_brevoKey2){return{ok:false,error:'Brevo API key not configured'}}
+  try{
+    const phone=to.replace(/[^\d+]/g,'');
+    if(phone.length<10)return{ok:false,error:'Invalid phone number'};
+    const formatted=phone.startsWith('+')?phone:(phone.startsWith('1')&&phone.length===11?'+'+phone:'+1'+phone);
+    const payload={type:'transactional',unicodeEnabled:false,sender:sender||_brevoSmsSender,recipient:formatted,content:content.substring(0,160),tag:'invoice'};
+    const r=await fetch('https://api.brevo.com/v3/transactionalSMS/send',{method:'POST',headers:{'accept':'application/json','content-type':'application/json','api-key':_brevoKey2},
+    body:JSON.stringify(payload)});
+    const d=await r.json();if(!r.ok)return{ok:false,error:d.message||d.code||'SMS send failed ('+r.status+')'};return{ok:true,messageId:d.messageId,reference:d.reference}}
+  catch(e){return{ok:false,error:e.message}}
+};
+
 // ── Supabase Edge Function helper ──
 export async function invokeEdgeFn(supabase,fnName,body){
   const r=await supabase.functions.invoke(fnName,{body});

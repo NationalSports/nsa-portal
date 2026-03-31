@@ -3,6 +3,7 @@
 // Vendor API integrations — all use Netlify proxy functions
 // ═══════════════════════════════════════════
 import { NSA } from './constants';
+import { calcSOStatus } from './components';
 
 // ─── ShipStation API Integration (via Netlify proxy to avoid CORS) ───
 const shipStationCall = async (endpoint, options = {}) => {
