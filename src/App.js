@@ -79,6 +79,54 @@ const _safeQuery=(table,opts)=>{
   });
 };
 
+// ─── Server-side product search (paginated, leverages DB trigram indexes) ───
+const _searchProductsServer=async(query,filters={},page=0,pageSize=50)=>{
+  if(!supabase)return{products:[],total:0};
+  try{
+    const{data,error}=await supabase.rpc('search_products',{
+      p_query:query||null,
+      p_category:filters.cat||null,
+      p_vendor_id:filters.vnd||null,
+      p_color_category:filters.clr||null,
+      p_in_stock:filters.stk==='instock',
+      p_limit:pageSize,
+      p_offset:page*pageSize
+    });
+    if(error){console.warn('[DB] search_products RPC failed, falling back to client-side:',error.message);return null}
+    const total=data?.[0]?.total_count||0;
+    return{products:data||[],total};
+  }catch(e){console.warn('[DB] search_products RPC error:',e.message);return null}
+};
+
+// ─── Supabase Auth helpers ───
+const _sbSignIn=async(email,password)=>{
+  if(!supabase)return{error:'Supabase not configured'};
+  const{data,error}=await supabase.auth.signInWithPassword({email,password});
+  if(error)return{error:error.message};
+  return{user:data.user,session:data.session};
+};
+const _sbSignUp=async(email,password)=>{
+  if(!supabase)return{error:'Supabase not configured'};
+  const{data,error}=await supabase.auth.signUp({email,password});
+  if(error)return{error:error.message};
+  return{user:data.user};
+};
+const _sbSignOut=async()=>{if(supabase)await supabase.auth.signOut()};
+const _sbGetSession=async()=>{
+  if(!supabase)return null;
+  const{data}=await supabase.auth.getSession();
+  return data?.session||null;
+};
+const _sbLinkTeamAuth=async(teamId,authId)=>{
+  if(!supabase)return;
+  await supabase.rpc('link_team_auth',{p_team_id:teamId,p_auth_id:authId});
+};
+const _sbGetMyProfile=async()=>{
+  if(!supabase)return null;
+  const{data}=await supabase.rpc('get_my_profile');
+  return data?.[0]||null;
+};
+
 // ─── Adidas B2B Inventory Fetch Helpers ───
 const fetchAdidasInventory = async (sku) => {
   if (!supabase || !sku) return { sizes: {}, lastSynced: null };
@@ -315,9 +363,26 @@ const _dbSeed = async (d) => {
     if(allProds.length) await supabase.from('omg_store_products').upsert(allProds,{onConflict:'store_id,sku'});
   }
 };
+// ─── Optimistic Locking: version conflict detection ───
+const _checkVersion=async(table,id,localVersion)=>{
+  if(!supabase||!localVersion)return true;// skip check if no version tracked
+  try{
+    const{data}=await supabase.from(table).select('_version').eq('id',id).single();
+    if(!data)return true;// new record
+    if(data._version>localVersion){
+      console.warn(`[DB] Version conflict on ${table}/${id}: local v${localVersion}, server v${data._version}`);
+      if(_dbNotify)_dbNotify(`This ${table.replace('_',' ')} was modified by another user. Please refresh to see the latest changes.`,'warn');
+      return false;
+    }
+    return true;
+  }catch{return true}// if check fails, allow save (graceful degradation)
+};
+
 // ─── Normalized Save Helpers ───
 const _dbSaveEstimateInner = async (est) => {
   if(!supabase)return;
+  // Optimistic locking: check version before saving
+  if(est._version&&!await _checkVersion('estimates',est.id,est._version))return;
   return _dbSavingGuard(async()=>{let decoFailed=false;try{
     const{items,art_files,...estRow}=est;
     let{error:estErr}=await supabase.from('estimates').upsert(_pick(estRow,_estCols),{onConflict:'id'});
@@ -388,6 +453,8 @@ const _dbSaveEstimateInner = async (est) => {
 const _dbSaveEstimate = (est) => _queuedEntitySave(est.id, est, _dbSaveEstimateInner);
 const _dbSaveSOInner = async (so) => {
   if(!supabase)return;
+  // Optimistic locking: check version before saving
+  if(so._version&&!await _checkVersion('sales_orders',so.id,so._version))return;
   return _dbSavingGuard(async()=>{let saveFailed=false;try{
     const{items,art_files,firm_dates,jobs,...soRow}=so;
     let{error:soErr}=await supabase.from('sales_orders').upsert(_pick(soRow,_soCols),{onConflict:'id'});
@@ -547,6 +614,8 @@ const _dbSaveInvoice = async (inv) => {
 let _dbNotify=null; // set by App component for visible error toasts
 const _dbSaveCustomer = async (c) => {
   if(!supabase){console.warn('[DB] save customer skipped — no supabase');return false}
+  // Optimistic locking: check version before saving
+  if(c._version&&!await _checkVersion('customers',c.id,c._version))return false;
   try{
     const{contacts,_oe,_os,_oi,_ob,...custRow}=c;
     custRow.updated_at=new Date().toISOString();
@@ -2976,6 +3045,72 @@ function LoginGate({onLogin,reps}){
   const deptOrder=['admin','rep','csr','accounting','warehouse','prod_manager','production','prod_assistant','art'];
   const grouped=deptOrder.map(role=>({role,label:roleLabels[role]||role,color:roleColors[role]||'#475569',members:REPS.filter(r=>r.role===role)})).filter(g=>g.members.length>0);
   const[selDept,setSelDept]=React.useState(null);
+  // Auth mode: 'pick' (legacy click-to-login) or 'password' (Supabase Auth)
+  const[authMode,setAuthMode]=React.useState('pick');
+  const[authUser,setAuthUser]=React.useState(null);// selected user for password login
+  const[authEmail,setAuthEmail]=React.useState('');
+  const[authPass,setAuthPass]=React.useState('');
+  const[authErr,setAuthErr]=React.useState('');
+  const[authLoading,setAuthLoading]=React.useState(false);
+  const[authSetup,setAuthSetup]=React.useState(false);// true = creating password for first time
+  const[authPass2,setAuthPass2]=React.useState('');
+
+  // Check for existing Supabase session on mount
+  React.useEffect(()=>{
+    (async()=>{
+      const session=await _sbGetSession();
+      if(session?.user){
+        const profile=await _sbGetMyProfile();
+        if(profile){onLogin({...profile,_authSession:true});return}
+      }
+    })();
+  },[]);// eslint-disable-line
+
+  // Handle password-based login
+  const handleAuthSubmit=async(e)=>{
+    e.preventDefault();setAuthErr('');setAuthLoading(true);
+    const email=authEmail||(authUser?.email);
+    if(!email){setAuthErr('No email address on file for this user');setAuthLoading(false);return}
+    if(authSetup){
+      // First-time password setup
+      if(authPass.length<8){setAuthErr('Password must be at least 8 characters');setAuthLoading(false);return}
+      if(authPass!==authPass2){setAuthErr('Passwords do not match');setAuthLoading(false);return}
+      const res=await _sbSignUp(email,authPass);
+      if(res.error){setAuthErr(res.error);setAuthLoading(false);return}
+      // Link auth account to team member
+      if(res.user&&authUser)await _sbLinkTeamAuth(authUser.id,res.user.id);
+      // Auto sign-in after setup
+      const signIn=await _sbSignIn(email,authPass);
+      if(signIn.error){setAuthErr('Account created. Please sign in.');setAuthSetup(false);setAuthLoading(false);return}
+      onLogin({...authUser,_authSession:true});
+    }else{
+      // Normal sign-in
+      const res=await _sbSignIn(email,authPass);
+      if(res.error){setAuthErr(res.error);setAuthLoading(false);return}
+      // Look up team member profile
+      const profile=await _sbGetMyProfile();
+      if(profile){onLogin({...profile,_authSession:true})}
+      else if(authUser){
+        // Link if not yet linked
+        if(res.user)await _sbLinkTeamAuth(authUser.id,res.user.id);
+        onLogin({...authUser,_authSession:true});
+      }else{setAuthErr('No team member profile found for this account');setAuthLoading(false);return}
+    }
+    setAuthLoading(false);
+  };
+
+  // Handle click-to-login (legacy) — when user has password_set, require it
+  const handleUserClick=(r)=>{
+    if(r.password_set&&supabase){
+      setAuthMode('password');setAuthUser(r);setAuthEmail(r.email||'');setAuthErr('');
+    }else if(supabase&&r.email){
+      // Offer to set up password, but allow skip for now
+      setAuthMode('password');setAuthUser(r);setAuthEmail(r.email||'');setAuthSetup(!r.password_set);setAuthErr('');
+    }else{
+      onLogin(r);// fallback: no Supabase or no email → legacy click login
+    }
+  };
+
   return(
     <div style={{minHeight:'100vh',background:'linear-gradient(135deg,#0f172a 0%,#1e3a5f 50%,#0f172a 100%)',display:'flex',alignItems:'center',justifyContent:'center',fontFamily:"'Inter','Segoe UI',sans-serif"}}>
       <div style={{width:480,padding:0}}>
@@ -2987,40 +3122,82 @@ function LoginGate({onLogin,reps}){
 
         {/* Login Card */}
         <div style={{background:'white',borderRadius:16,padding:28,boxShadow:'0 20px 60px rgba(0,0,0,0.3)'}}>
-          <div style={{fontSize:14,fontWeight:700,color:'#1e293b',marginBottom:4}}>Who's logging in?</div>
-          <div style={{fontSize:11,color:'#94a3b8',marginBottom:14}}>Select your department, then your name</div>
-
-          {/* Department pills */}
-          <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:16}}>
-            {grouped.map(g=><button key={g.role} onClick={()=>setSelDept(selDept===g.role?null:g.role)}
-              style={{display:'flex',alignItems:'center',gap:6,padding:'8px 14px',borderRadius:10,
-                border:selDept===g.role?'2px solid '+g.color:'1px solid #e2e8f0',
-                background:selDept===g.role?g.color+'12':'white',cursor:'pointer',transition:'all 0.15s'}}
-              onMouseEnter={e=>{if(selDept!==g.role)e.currentTarget.style.borderColor=g.color}}
-              onMouseLeave={e=>{if(selDept!==g.role)e.currentTarget.style.borderColor='#e2e8f0'}}>
-              <div style={{width:8,height:8,borderRadius:4,background:g.color,flexShrink:0}}/>
-              <span style={{fontSize:12,fontWeight:600,color:selDept===g.role?g.color:'#475569'}}>{g.label}</span>
-              <span style={{fontSize:10,color:'#94a3b8'}}>{g.members.length}</span>
-            </button>)}
-          </div>
-
-          {/* Members grid - show selected department or all */}
-          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6,maxHeight:340,overflow:'auto'}}>
-            {(selDept?grouped.find(g=>g.role===selDept)?.members||[]:REPS).map(r=>
-              <button key={r.id} onClick={()=>onLogin(r)}
-                style={{display:'flex',alignItems:'center',gap:10,padding:'10px 12px',border:'1px solid #e2e8f0',
-                  borderRadius:10,background:'white',cursor:'pointer',transition:'all 0.15s',textAlign:'left'}}
-                onMouseEnter={e=>{e.currentTarget.style.background='#f8fafc';e.currentTarget.style.borderColor='#3b82f6';e.currentTarget.style.transform='translateY(-1px)'}}
-                onMouseLeave={e=>{e.currentTarget.style.background='white';e.currentTarget.style.borderColor='#e2e8f0';e.currentTarget.style.transform='none'}}>
-                <div style={{width:34,height:34,borderRadius:17,background:roleColors[r.role]||'#475569',color:'white',
-                  display:'flex',alignItems:'center',justifyContent:'center',fontSize:14,fontWeight:800,flexShrink:0}}>
-                  {r.name[0]}</div>
-                <div style={{minWidth:0}}>
-                  <div style={{fontWeight:700,fontSize:13,color:'#0f172a',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{r.name}</div>
-                  <div style={{fontSize:10,color:roleColors[r.role]||'#64748b',fontWeight:600}}>{roleLabels[r.role]||r.role}</div>
+          {authMode==='password'&&authUser?(
+            /* Password login form */
+            <form onSubmit={handleAuthSubmit}>
+              <button type="button" onClick={()=>{setAuthMode('pick');setAuthUser(null);setAuthErr('');setAuthSetup(false)}}
+                style={{background:'none',border:'none',cursor:'pointer',fontSize:12,color:'#3b82f6',marginBottom:12,padding:0}}>
+                &larr; Back to team list
+              </button>
+              <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:16}}>
+                <div style={{width:40,height:40,borderRadius:20,background:roleColors[authUser.role]||'#475569',color:'white',
+                  display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,fontWeight:800}}>
+                  {authUser.name[0]}</div>
+                <div>
+                  <div style={{fontWeight:700,fontSize:14,color:'#0f172a'}}>{authUser.name}</div>
+                  <div style={{fontSize:11,color:'#64748b'}}>{roleLabels[authUser.role]||authUser.role}</div>
                 </div>
-              </button>)}
-          </div>
+              </div>
+              {authSetup&&<div style={{fontSize:12,color:'#059669',background:'#ecfdf5',padding:'8px 12px',borderRadius:8,marginBottom:12}}>
+                Set up your password to secure your account. You'll use this to sign in going forward.
+              </div>}
+              <input type="email" value={authEmail} onChange={e=>setAuthEmail(e.target.value)} placeholder="Email"
+                style={{width:'100%',padding:'10px 12px',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:8,fontSize:13,boxSizing:'border-box'}}/>
+              <input type="password" value={authPass} onChange={e=>setAuthPass(e.target.value)} placeholder={authSetup?'Create password (min 8 chars)':'Password'} autoFocus
+                style={{width:'100%',padding:'10px 12px',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:8,fontSize:13,boxSizing:'border-box'}}/>
+              {authSetup&&<input type="password" value={authPass2} onChange={e=>setAuthPass2(e.target.value)} placeholder="Confirm password"
+                style={{width:'100%',padding:'10px 12px',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:8,fontSize:13,boxSizing:'border-box'}}/>}
+              {authErr&&<div style={{color:'#dc2626',fontSize:12,marginBottom:8,animation:'shake 0.3s'}}>{authErr}</div>}
+              <button type="submit" disabled={authLoading}
+                style={{width:'100%',padding:'10px',background:'#1e40af',color:'white',border:'none',borderRadius:8,fontWeight:700,fontSize:13,cursor:'pointer',opacity:authLoading?0.6:1}}>
+                {authLoading?'Signing in...':authSetup?'Create Account & Sign In':'Sign In'}
+              </button>
+              {authSetup&&<button type="button" onClick={()=>onLogin(authUser)}
+                style={{width:'100%',padding:'8px',background:'none',border:'1px solid #e2e8f0',borderRadius:8,fontSize:12,color:'#64748b',cursor:'pointer',marginTop:6}}>
+                Skip for now (less secure)
+              </button>}
+            </form>
+          ):(
+            /* Team member selection (legacy + enhanced) */
+            <>
+              <div style={{fontSize:14,fontWeight:700,color:'#1e293b',marginBottom:4}}>Who's logging in?</div>
+              <div style={{fontSize:11,color:'#94a3b8',marginBottom:14}}>Select your department, then your name</div>
+
+              {/* Department pills */}
+              <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:16}}>
+                {grouped.map(g=><button key={g.role} onClick={()=>setSelDept(selDept===g.role?null:g.role)}
+                  style={{display:'flex',alignItems:'center',gap:6,padding:'8px 14px',borderRadius:10,
+                    border:selDept===g.role?'2px solid '+g.color:'1px solid #e2e8f0',
+                    background:selDept===g.role?g.color+'12':'white',cursor:'pointer',transition:'all 0.15s'}}
+                  onMouseEnter={e=>{if(selDept!==g.role)e.currentTarget.style.borderColor=g.color}}
+                  onMouseLeave={e=>{if(selDept!==g.role)e.currentTarget.style.borderColor='#e2e8f0'}}>
+                  <div style={{width:8,height:8,borderRadius:4,background:g.color,flexShrink:0}}/>
+                  <span style={{fontSize:12,fontWeight:600,color:selDept===g.role?g.color:'#475569'}}>{g.label}</span>
+                  <span style={{fontSize:10,color:'#94a3b8'}}>{g.members.length}</span>
+                </button>)}
+              </div>
+
+              {/* Members grid - show selected department or all */}
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6,maxHeight:340,overflow:'auto'}}>
+                {(selDept?grouped.find(g=>g.role===selDept)?.members||[]:REPS).map(r=>
+                  <button key={r.id} onClick={()=>handleUserClick(r)}
+                    style={{display:'flex',alignItems:'center',gap:10,padding:'10px 12px',border:'1px solid #e2e8f0',
+                      borderRadius:10,background:'white',cursor:'pointer',transition:'all 0.15s',textAlign:'left'}}
+                    onMouseEnter={e=>{e.currentTarget.style.background='#f8fafc';e.currentTarget.style.borderColor='#3b82f6';e.currentTarget.style.transform='translateY(-1px)'}}
+                    onMouseLeave={e=>{e.currentTarget.style.background='white';e.currentTarget.style.borderColor='#e2e8f0';e.currentTarget.style.transform='none'}}>
+                    <div style={{width:34,height:34,borderRadius:17,background:roleColors[r.role]||'#475569',color:'white',
+                      display:'flex',alignItems:'center',justifyContent:'center',fontSize:14,fontWeight:800,flexShrink:0}}>
+                      {r.name[0]}</div>
+                    <div style={{minWidth:0}}>
+                      <div style={{fontWeight:700,fontSize:13,color:'#0f172a',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{r.name}</div>
+                      <div style={{fontSize:10,color:roleColors[r.role]||'#64748b',fontWeight:600}}>
+                        {roleLabels[r.role]||r.role}{r.password_set?' \u{1F512}':''}
+                      </div>
+                    </div>
+                  </button>)}
+              </div>
+            </>
+          )}
         </div>
 
         <div style={{textAlign:'center',marginTop:20,fontSize:10,color:'#475569'}}>
@@ -12780,6 +12957,40 @@ export default function App(){
   React.useEffect(()=>{if(selP)addRecent('product',selP.id,(selP.sku||'')+' — '+selP.name)},[selP?.id]); // eslint-disable-line
 
   const[gQ,setGQ]=useState('');const[gOpen,setGOpen]=useState(false);const[mF,setMF]=useState('mine');const[mHideClosed,setMHideClosed]=useState(true);const[mEntityF,setMEntityF]=useState('all');const[mThread,setMThread]=useState(null);const mThreadInputRef=useRef(null);const[mThreadMentionQuery,setMThreadMentionQuery]=useState(null);const[mThreadMentionIdx,setMThreadMentionIdx]=useState(0);const[mThreadDept,setMThreadDept]=useState('all');const[rF,setRF]=useState('all');const[pF,setPF]=useState({cat:'all',vnd:'all',stk:'all',clr:'all'});
+  // ─── Server-side product search state (paginated) ───
+  const[prodPage,setProdPage]=useState(0);const PROD_PAGE_SIZE=50;
+  const[prodServerResults,setProdServerResults]=useState(null);// {products:[], total:0} or null=use client
+  const[prodSearching,setProdSearching]=useState(false);
+  const _prodSearchTimer=useRef(null);
+  const _prodSearchRPC=useCallback((query,filters,page)=>{
+    if(_prodSearchTimer.current)clearTimeout(_prodSearchTimer.current);
+    _prodSearchTimer.current=setTimeout(async()=>{
+      setProdSearching(true);
+      const res=await _searchProductsServer(query,filters,page,PROD_PAGE_SIZE);
+      if(res){
+        // Enrich with _inv and _alerts from local prod data for display
+        const enriched=res.products.map(sp=>{
+          const local=prod.find(p=>p.id===sp.id);
+          return{...sp,_inv:local?._inv||{},_alerts:local?._alerts||{},
+            image_url:sp.image_url||local?.image_url||'',
+            back_image_url:sp.image_back_url||local?.back_image_url||'',
+            images:sp.images||local?.images||[]}
+        });
+        setProdServerResults({products:enriched,total:res.total});
+      }
+      setProdSearching(false);
+    },300);
+  },[prod]);// eslint-disable-line
+  // Trigger server search when query/filters/page change on products page
+  useEffect(()=>{
+    if(pg==='products'&&supabase){
+      _prodSearchRPC(q,pF,prodPage);
+    }else{
+      setProdServerResults(null);// clear server results when leaving products page
+    }
+  },[q,pF,prodPage,pg]);// eslint-disable-line
+  // Reset page when filters change
+  useEffect(()=>{setProdPage(0)},[q,pF.cat,pF.vnd,pF.stk,pF.clr]);
   const[qPC,setQPC]=useState({open:false,mode:'single',items:[],bulkRaw:''});
   const[poF,setPOF]=useState({status:'all',vendor:'all',rep:'all',search:'',sort:'date_desc'});
   // OMG Team Stores
@@ -12806,7 +13017,7 @@ export default function App(){
   const dismissTodo=(key)=>{setDismissedTodos(prev=>{const n=[...prev,key];try{localStorage.setItem('nsa_dismissed_todos',JSON.stringify(n))}catch{}return n})};
   const[cu,setCu]=useState(()=>{try{const s=localStorage.getItem('nsa_user');return s?JSON.parse(s):null}catch{return null}});
   const handleLogin=(user)=>{setCu(user);try{localStorage.setItem('nsa_user',JSON.stringify(user))}catch{}};
-  const handleLogout=()=>{setCu(null);try{localStorage.removeItem('nsa_user')}catch{}};
+  const handleLogout=async()=>{setCu(null);try{localStorage.removeItem('nsa_user')}catch{};await _sbSignOut()};
 
   // ─── MOBILE PORTAL DETECTION & TOGGLE ───
   const _isTouchDevice=()=>{try{return('ontouchstart'in window||navigator.maxTouchPoints>0)&&window.innerWidth<=1024}catch{return false}};
@@ -12989,8 +13200,12 @@ export default function App(){
     ...ests.map(e=>{const _eAQ={};safeItems(e).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_eAQ[d.art_file_id]=(_eAQ[d.art_file_id]||0)+q2}})});const eaf=safeArt(e);const t=e.items?.reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((s,v)=>s+v,0);let r=qq*it.unit_sell;it.decorations?.forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_eAQ[d.art_file_id]:qq;const dp=dP(d,qq,eaf,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?qq*2:qq);r+=eq*dp.sell});return a+r},0)||0;return{id:e.id,type:'estimate',customer_id:e.customer_id,date:e.created_at?.split(' ')[0],total:t,memo:e.memo,status:e.status}}),
     ...sos.map(s=>{const _sAQ={};safeItems(s).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((ss,v)=>ss+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_sAQ[d.art_file_id]=(_sAQ[d.art_file_id]||0)+q2}})});const saf=safeArt(s);const t=s.items?.reduce((a,it)=>{const qq=Object.values(safeSizes(it)).reduce((ss,v)=>ss+v,0);let r=qq*(it.unit_sell||0);(it.decorations||[]).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_sAQ[d.art_file_id]:qq;const dp=dP(d,qq,saf,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?qq*2:qq);r+=eq*dp.sell});return a+r},0)||0;return{id:s.id,type:'sales_order',customer_id:s.customer_id,date:s.created_at?.split(' ')[0],total:t,memo:s.memo,status:s.status}}),
     ...invs.map(i=>({...i,type:'invoice'}))],[ests,sos,invs]);
-  const fP=useMemo(()=>{let l=prod;if(q&&pg==='products'){const s=q.toLowerCase();l=l.filter(p=>p.sku.toLowerCase().includes(s)||p.name.toLowerCase().includes(s)||p.brand?.toLowerCase().includes(s)||p.color?.toLowerCase().includes(s))}
-    if(pF.cat!=='all')l=l.filter(p=>p.category===pF.cat);if(pF.vnd!=='all')l=l.filter(p=>p.vendor_id===pF.vnd);if(pF.stk==='instock')l=l.filter(p=>Object.values(p._inv||{}).some(v=>v>0));if(pF.clr!=='all')l=l.filter(p=>p.color_category===pF.clr);return l},[prod,q,pF,pg]);
+  const fP=useMemo(()=>{
+    // Use server-side results if available (paginated, indexed search)
+    if(prodServerResults&&pg==='products')return prodServerResults.products;
+    // Fallback: client-side filter (used when RPC unavailable or on other pages)
+    let l=prod;if(q&&pg==='products'){const s=q.toLowerCase();l=l.filter(p=>p.sku.toLowerCase().includes(s)||p.name.toLowerCase().includes(s)||p.brand?.toLowerCase().includes(s)||p.color?.toLowerCase().includes(s))}
+    if(pF.cat!=='all')l=l.filter(p=>p.category===pF.cat);if(pF.vnd!=='all')l=l.filter(p=>p.vendor_id===pF.vnd);if(pF.stk==='instock')l=l.filter(p=>Object.values(p._inv||{}).some(v=>v>0));if(pF.clr!=='all')l=l.filter(p=>p.color_category===pF.clr);return l},[prod,q,pF,pg,prodServerResults]);
   const iD=useMemo(()=>{let l=prod.filter(p=>Object.values(p._inv||{}).some(v=>v>0));if(iF.cat!=='all')l=l.filter(p=>p.category===iF.cat);if(iF.vnd!=='all')l=l.filter(p=>p.vendor_id===iF.vnd);if(iF.clr!=='all')l=l.filter(p=>p.color_category===iF.clr);
     if(iShowFav&&favSkus.length>0)l=l.filter(p=>favSkus.includes(p.sku));
     if(q&&pg==='inventory'){const s=q.toLowerCase();l=l.filter(p=>p.sku.toLowerCase().includes(s)||p.name.toLowerCase().includes(s))}
@@ -14637,7 +14852,17 @@ export default function App(){
             {ls&&<span style={{fontSize:9,color:staleHrs>48?'#d97706':'#94a3b8',marginLeft:6}}>{staleHrs>48?'⚠ ':''}Synced: {ls.toLocaleDateString()}</span>}
           </div>})()}
         </div></div></div>)})}
-  {fP.length===0&&<div className="empty">No products</div>}</div></div></>);};
+  {fP.length===0&&!prodSearching&&<div className="empty">No products</div>}
+  {prodSearching&&<div style={{textAlign:'center',padding:20,color:'#64748b',fontSize:13}}>Searching...</div>}
+  </div></div>
+  {/* Pagination controls */}
+  {prodServerResults&&prodServerResults.total>PROD_PAGE_SIZE&&<div style={{display:'flex',justifyContent:'center',alignItems:'center',gap:12,marginTop:12}}>
+    <button className="btn btn-sm btn-secondary" disabled={prodPage===0} onClick={()=>setProdPage(p=>p-1)}>Prev</button>
+    <span style={{fontSize:12,color:'#64748b'}}>Page {prodPage+1} of {Math.ceil(prodServerResults.total/PROD_PAGE_SIZE)} ({prodServerResults.total} products)</span>
+    <button className="btn btn-sm btn-secondary" disabled={(prodPage+1)*PROD_PAGE_SIZE>=prodServerResults.total} onClick={()=>setProdPage(p=>p+1)}>Next</button>
+  </div>}
+  {!prodServerResults&&fP.length>100&&<div style={{fontSize:11,color:'#94a3b8',textAlign:'center',marginTop:8}}>Showing {fP.length} products</div>}
+  </>);};
 
   // INVENTORY
   const rInvStock=()=>(<>
