@@ -12,3 +12,4 @@ export const safeDecos = (it) => safeArr(it?.decorations);
 export const safeItems = (o) => safeArr(o?.items);
 export const safeArt = (o) => safeArr(o?.art_files);
 export const safeJobs = (o) => safeArr(o?.jobs);
+export const safeFirm = (o) => safeArr(o?.firm_dates);
