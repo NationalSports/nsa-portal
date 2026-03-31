@@ -1,7 +1,7 @@
 /* eslint-disable */
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { _pick, ART_FILE_SC, SZ_ORD, SC, pantoneHex, threadHex } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm } from './safeHelpers';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt } from './safeHelpers';
 import { Icon, Bg, calcSOStatus, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks } from './components';
 import { dP, rQ, DTF, mergeColors } from './pricing';
 import { fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile } from './utils';
