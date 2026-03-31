@@ -1,6 +1,6 @@
 /* eslint-disable */
 import React, { useState, useEffect } from 'react';
-import { DEFAULT_REPS } from './constants';
+import { DEFAULT_REPS, NSA } from './constants';
 
 function LoginGate({onLogin,reps,supabase,sbSignIn:_sbSignIn,sbSignUp:_sbSignUp,sbGetSession:_sbGetSession,sbLinkTeamAuth:_sbLinkTeamAuth,sbGetMyProfile:_sbGetMyProfile}){
   const REPS=(reps||DEFAULT_REPS).filter(r=>r.is_active!==false);

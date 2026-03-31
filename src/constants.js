@@ -263,6 +263,7 @@ export const NSA_DEFAULTS={name:'National Sports Apparel',legal:'National Sports
   fullAddr:'9340 Cabot Dr, Suite A, San Diego, CA 91941',
   logo:'NSA',logoUrl:'/nsa-logo.svg',terms:'Net 30 from invoice date unless otherwise agreed.',
   depositTerms:'50% deposit required to begin production. Balance due upon completion.'};
+export const NSA={...NSA_DEFAULTS};
 
 export const ART_LABELS={needs_art:'Needs Art',art_requested:'Art Requested',art_in_progress:'In Progress',waiting_approval:'Waiting Approval',production_files_needed:'Prod Files Needed',art_complete:'Art Complete'};
 export const ART_FILE_LABELS={waiting_for_art:'Waiting for Art',needs_approval:'Needs Approval',approved:'Approved / Needs Files'};
