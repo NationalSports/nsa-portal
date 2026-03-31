@@ -12881,6 +12881,10 @@ export default function App(){
           return next;
         });
       }
+      // Auto-add any new categories from import to the CATEGORIES list
+      const allCats=[...added,...updated].map(p=>p.category).filter(c=>c&&c.trim());
+      const newCats=[...new Set(allCats)].filter(c=>!CATEGORIES.includes(c));
+      if(newCats.length>0){const merged=[...CATEGORIES,...newCats];CATEGORIES.length=0;CATEGORIES.push(...merged);try{const s=JSON.parse(localStorage.getItem('nsa_settings')||'{}');s.CATEGORIES=merged;localStorage.setItem('nsa_settings',JSON.stringify(s))}catch{}}
       setBulkImp(x=>({...x,step:'done',added:added.length,updated:updated.length,skipped}));
       nf('✅ Imported '+added.length+' new, updated '+updated.length+' existing'+(skipped.length?' ('+skipped.length+' skipped)':''));
     };
