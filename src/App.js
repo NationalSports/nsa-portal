@@ -7,7 +7,6 @@ import { loadStripe } from '@stripe/stripe-js';
 import { Elements, PaymentElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import * as XLSX from 'xlsx';
 import { BarcodeDetector as BarcodeDetectorPolyfill } from 'barcode-detector';
-import { List as VirtualList } from 'react-window';
 import { createWorker } from 'tesseract.js';
 import html2pdf from 'html2pdf.js';
 import * as fabric from 'fabric';
@@ -4179,18 +4178,7 @@ export default function App(){
     <select className="form-select" style={{width:110}} value={pF.vnd} onChange={e=>setPF(f=>({...f,vnd:e.target.value}))}><option value="all">Vendor</option>{vend.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}</select>
     <select className="form-select" style={{width:130}} value={pF.clr} onChange={e=>setPF(f=>({...f,clr:e.target.value}))}><option value="all">Color</option>{cols.map(c=><option key={c}>{c}</option>)}</select></div>
   <div className="card"><div className="card-body" style={{padding:0}}>
-  {fP.length>50?(()=>{const VProdRow=React.memo(({index,style})=>{const p=fP[index];const nt=Object.values(p._inv||{}).reduce((a,v)=>a+v,0);const au=p.brand==='Adidas'||p.brand==='Under Armour';
-    return(<div style={{...style,padding:'14px 16px',borderBottom:'1px solid #f1f5f9',cursor:'pointer',boxSizing:'border-box'}} onClick={()=>setSelP(p)}><div style={{display:'flex',gap:14,alignItems:'flex-start'}}>
-      <div style={{display:'flex',gap:4,alignItems:'center'}}>
-        {(()=>{const img=p.image_url||(p.images&&p.images[0])||null;return img?<img src={img} alt="" style={{width:48,height:48,objectFit:'cover',borderRadius:6,border:'1px solid #e2e8f0',flexShrink:0}}/>
-        :<div style={{width:48,height:48,borderRadius:6,border:'1px solid #e2e8f0',display:'flex',alignItems:'center',justifyContent:'center',background:'#f8fafc',flexShrink:0}}><span style={{fontSize:14,opacity:0.3}}>📷</span></div>})()}
-      </div>
-      <div style={{flex:1,overflow:'hidden'}}>
-        <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'nowrap'}}><span style={{fontFamily:'monospace',fontWeight:800,background:'#dbeafe',padding:'2px 8px',borderRadius:3,color:'#1e40af'}}>{p.sku}</span><span style={{fontWeight:700,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{p.name}</span>{p._colors&&<span style={{fontSize:10,color:'#7c3aed'}}>{p._colors.length} clr</span>}</div>
-        <div style={{fontSize:12,color:'#94a3b8',marginTop:2}}><span className="badge badge-blue" style={{marginRight:4}}>{p.brand}</span>{p.color} | ${p.nsa_cost?.toFixed(2)} | {au?'Tier':'$'+rQ(p.nsa_cost*1.65).toFixed(2)} | <b>{nt}</b> in stock</div>
-        </div></div></div>)});
-    return <VirtualList rowComponent={VProdRow} rowCount={fP.length} rowHeight={90} overscanCount={5} style={{height:Math.min(fP.length*90,600),width:'100%'}}/>;
-  })():fP.map(p=>{const nt=Object.values(p._inv||{}).reduce((a,v)=>a+v,0);const au=p.brand==='Adidas'||p.brand==='Under Armour';
+  {fP.map(p=>{const nt=Object.values(p._inv||{}).reduce((a,v)=>a+v,0);const au=p.brand==='Adidas'||p.brand==='Under Armour';
     return(<div key={p.id} style={{padding:'14px 16px',borderBottom:'1px solid #f1f5f9',cursor:'pointer'}} onClick={()=>setSelP(p)}><div style={{display:'flex',gap:14,alignItems:'flex-start'}}>
       <div style={{display:'flex',gap:4,alignItems:'center'}}>
         {(()=>{const img=p.image_url||(p.images&&p.images[0])||null;return img?<img src={img} alt="" style={{width:48,height:48,objectFit:'cover',borderRadius:6,border:'1px solid #e2e8f0',flexShrink:0}}/>
