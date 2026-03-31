@@ -27,3 +27,19 @@ export const _isDownloadOnly=u=>{const e=_urlExt(u);return['ai','eps','dst','psd
 export const _isImgUrl=(u,f)=>{if(_isPdfUrl(u,f))return false;const e=_urlExt(u);if(_isDownloadOnly(u))return false;if(['png','jpg','jpeg','gif','webp','svg','bmp'].includes(e))return true;if(typeof f==='object'&&f?.type?.startsWith('image/'))return true;if(u&&typeof u==='string'&&u.includes('cloudinary.com')&&u.includes('/image/upload/'))return true;return false};
 export const _isPdfUrl=(u,f)=>{if(_urlExt(u)==='pdf')return true;if(typeof f==='object'&&f?.type==='application/pdf')return true;if(typeof f==='string'&&f.endsWith('.pdf'))return true;return false};
 export const _isDisplayableFile=(u,f)=>_isImgUrl(u,f)||_isPdfUrl(u,f);
+
+// ── Supabase Edge Function helper ──
+export async function invokeEdgeFn(supabase,fnName,body){
+  const r=await supabase.functions.invoke(fnName,{body});
+  let d=r.data;
+  console.log('[invokeEdgeFn]',fnName,'raw response:',{data:d,error:r.error,dataType:typeof d});
+  if(d&&typeof d==='object'&&typeof d.getReader==='function'){d=await new Response(d).json()}
+  else if(d&&typeof d==='object'&&typeof d.text==='function'){
+    try{const txt=await d.text();d=JSON.parse(txt)}catch(e){console.error('[invokeEdgeFn] parse error:',e);d=null}
+  }
+  else if(typeof d==='string'){try{d=JSON.parse(d)}catch(e){d=null}}
+  if(!d&&r.error){const ctx=r.error?.context;if(ctx&&typeof ctx.json==='function'){try{d=await ctx.json()}catch(e){}}if(!d)d={ok:false,error:r.error?.message||String(r.error)}}
+  console.log('[invokeEdgeFn]',fnName,'parsed:',d);
+  if(d&&d.error&&typeof d.error!=='string'){d.error=d.error?.message||JSON.stringify(d.error)}
+  return d||{ok:false,error:'No response from edge function'};
+}
