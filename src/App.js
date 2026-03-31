@@ -27,11 +27,24 @@ const isDualRunJob=(j)=>j&&j.items&&j.items.length>1&&j.items.some(gi=>gi.run_or
 const mapColorCategory=color=>{if(!color)return'';const c=color.toLowerCase();if(/white|natural|cream|ivory/.test(c))return'White';if(/black|charcoal/.test(c))return'Black';if(/navy|blue|royal|columbia|carolina/.test(c))return'Blue';if(/red|cardinal|scarlet|crimson/.test(c))return'Red';if(/green|forest|kelly|lime|hunter/.test(c))return'Green';if(/grey|gray|heather|silver|graphite/.test(c))return'Grey';if(/gold|yellow|vegas|athletic/.test(c))return'Gold';if(/orange|texas/.test(c))return'Orange';if(/purple|maroon|wine|burgundy/.test(c))return'Purple';if(/pink|fuchsia/.test(c))return'Pink';if(/brown|tan|khaki|sand|coyote/.test(c))return'Brown';return''};
 const printDoc=opts=>{const w=window.open('','_blank');if(!w)return;w.document.write('<html><head><style>'+opts.css+'</style></head><body>');w.document.write(buildDocHtml(opts));w.document.write('</body></html>');w.document.close();setTimeout(()=>w.print(),300)};
 const buildDocHtml=({title,docNum,docType,date,billTo,shipTo,lineItems,summary,notes,footer})=>{let h='<div style="max-width:800px;margin:0 auto;font-family:Arial,sans-serif;font-size:12px">';h+='<div style="display:flex;justify-content:space-between;margin-bottom:20px"><div><h1 style="margin:0;font-size:20px">'+docType+'</h1><div style="color:#666">#'+docNum+'</div></div><div style="text-align:right"><div>'+title+'</div><div>'+(date||new Date().toLocaleDateString())+'</div></div></div>';if(billTo)h+='<div style="margin-bottom:10px"><strong>Bill To:</strong> '+(typeof billTo==='string'?billTo:billTo.map(l=>'<div>'+l+'</div>').join(''))+'</div>';if(shipTo)h+='<div style="margin-bottom:10px"><strong>Ship To:</strong> '+(typeof shipTo==='string'?shipTo:shipTo.map(l=>'<div>'+l+'</div>').join(''))+'</div>';if(lineItems){lineItems.forEach(section=>{if(section.title)h+='<h3 style="margin:10px 0 5px">'+section.title+'</h3>';h+='<table style="width:100%;border-collapse:collapse;margin-bottom:10px"><thead><tr>'+section.headers.map(hd=>'<th style="border-bottom:2px solid #333;padding:4px;text-align:left">'+hd+'</th>').join('')+'</tr></thead><tbody>';section.rows.forEach(row=>{h+='<tr>'+row.map(cell=>'<td style="border-bottom:1px solid #eee;padding:4px">'+cell+'</td>').join('')+'</tr>'});h+='</tbody></table>'})}if(summary)h+='<div style="text-align:right;margin-top:10px">'+summary.map(s=>'<div><strong>'+s.label+':</strong> '+s.value+'</div>').join('')+'</div>';if(notes)h+='<div style="margin-top:15px;padding:8px;background:#f5f5f5;border-radius:4px"><strong>Notes:</strong> '+notes+'</div>';if(footer)h+='<div style="margin-top:20px;padding-top:10px;border-top:1px solid #ccc;font-size:10px;color:#666">'+footer+'</div>';h+='</div>';return h};
-// Lazy-loaded heavy components (code-split into separate chunks)
-const OrderEditor = React.lazy(() => import('./OrderEditor'));
-const CustDetail = React.lazy(() => import('./CustDetail'));
-const CoachPortal = React.lazy(() => import('./CoachPortal'));
-const LoginGate = React.lazy(() => import('./LoginGate'));
+// Retry wrapper for lazy imports – handles ChunkLoadError after deploys
+const lazyRetry = (importFn) => React.lazy(() =>
+  importFn().catch(() => {
+    // Chunk likely missing after a new deploy; reload once to get fresh assets
+    const key = 'chunk_reload';
+    if (!sessionStorage.getItem(key)) {
+      sessionStorage.setItem(key, '1');
+      window.location.reload();
+      return new Promise(() => {}); // never resolves; page is reloading
+    }
+    sessionStorage.removeItem(key);
+    return importFn(); // second attempt after reload failed – surface the error
+  })
+);
+const OrderEditor = lazyRetry(() => import('./OrderEditor'));
+const CustDetail = lazyRetry(() => import('./CustDetail'));
+const CoachPortal = lazyRetry(() => import('./CoachPortal'));
+const LoginGate = lazyRetry(() => import('./LoginGate'));
 import { VendDetail, TaxCloudSettings, CustModal, AdjModal, StripeCheckoutForm, StripePaymentModal, QuoteForm } from './modals';
 import { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, testSanMarConnection, ssApiCall, ssGetProducts, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection } from './vendorApis';
 // ── Loading fallback for lazy components ──
