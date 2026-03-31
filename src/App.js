@@ -7,6 +7,7 @@ import { loadStripe } from '@stripe/stripe-js';
 import { Elements, PaymentElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import * as XLSX from 'xlsx';
 import { BarcodeDetector as BarcodeDetectorPolyfill } from 'barcode-detector';
+import { List as VirtualList } from 'react-window';
 import { createWorker } from 'tesseract.js';
 import html2pdf from 'html2pdf.js';
 import * as fabric from 'fabric';
@@ -14,11 +15,28 @@ import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, _custCols, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, NSA_DEFAULTS, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, COLOR_CATEGORIES, EXTRA_SIZES, SZ_ORD, SZ_NORM, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks } from './components';
-import OrderEditor from './OrderEditor';
-import CustDetail from './CustDetail';
-import CoachPortal from './CoachPortal';
-import LoginGate from './LoginGate';
+// Lazy-loaded heavy components (code-split into separate chunks)
+const OrderEditor = React.lazy(() => import('./OrderEditor'));
+const CustDetail = React.lazy(() => import('./CustDetail'));
+const CoachPortal = React.lazy(() => import('./CoachPortal'));
+const LoginGate = React.lazy(() => import('./LoginGate'));
 import { VendDetail, TaxCloudSettings, CustModal, AdjModal, StripeCheckoutForm, StripePaymentModal, QuoteForm } from './modals';
+import { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, testSanMarConnection, ssApiCall, ssGetProducts, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection } from './vendorApis';
+// ── Loading fallback for lazy components ──
+const LazyFallback=()=><div style={{display:'flex',alignItems:'center',justifyContent:'center',padding:40,color:'#64748b',fontSize:14}}>Loading...</div>;
+
+// ── Error boundary for isolated component crashes ──
+class ComponentErrorBoundary extends React.Component{
+  constructor(props){super(props);this.state={hasError:false,error:null}}
+  static getDerivedStateFromError(error){return{hasError:true,error}}
+  componentDidCatch(error,info){console.error('[NSA Component Error]',this.props.name||'Unknown',error,info)}
+  render(){if(this.state.hasError){return<div style={{padding:24,margin:16,background:'#fef2f2',border:'1px solid #fca5a5',borderRadius:8}}>
+    <div style={{fontWeight:700,color:'#dc2626',marginBottom:8}}>Something went wrong{this.props.name?' in '+this.props.name:''}</div>
+    <div style={{fontSize:12,color:'#991b1b',marginBottom:12}}>{this.state.error?.message||'Unknown error'}</div>
+    <button className="btn btn-sm btn-secondary" onClick={()=>this.setState({hasError:false,error:null})}>Try Again</button>
+  </div>}return this.props.children}
+}
+
 // Merge customer + parent colors (pantone or thread), deduplicating by code/name
 const mergeColors=(cust,allCustomers,field)=>{const own=cust?.[field]||[];if(!cust?.parent_id)return own;const parent=allCustomers?.find(c=>c.id===cust.parent_id);const parentColors=parent?.[field]||[];if(!parentColors.length)return own;const key=field==='pantone_colors'?'code':'name';const seen=new Set(own.map(c=>(c[key]||'').toUpperCase()));return[...own,...parentColors.filter(c=>!seen.has((c[key]||'').toUpperCase()))]};
 
@@ -1352,798 +1370,6 @@ function dP(d,q,artFiles,cq){
   // Outside decoration — user-entered cost/sell
   if(d.kind==='outside_deco')return{sell:d.sell_override||safeNum(d.sell_each),cost:safeNum(d.cost_each)};
   return{sell:0,cost:0}}
-// ─── ShipStation API Integration (via Netlify proxy to avoid CORS) ───
-const shipStationCall = async (endpoint, options = {}) => {
-  try {
-    const method = options.method || 'GET';
-    const proxyUrl = `/.netlify/functions/shipstation-proxy?path=${encodeURIComponent(endpoint)}`;
-    const response = await fetch(proxyUrl, {
-      method,
-      headers: { 'Content-Type': 'application/json' },
-      ...(options.body ? { body: options.body } : {})
-    });
-    if (!response.ok) {
-      const errText = await response.text().catch(() => '');
-      // Try to extract a clean error message from ShipStation JSON response
-      let cleanMsg = '';
-      try { const errJson = JSON.parse(errText); cleanMsg = errJson.ExceptionMessage || errJson.Message || errText.slice(0, 200); } catch { cleanMsg = errText.slice(0, 200); }
-      console.error('[ShipStation] API error:', response.status, errText);
-      throw new Error(`ShipStation error (${response.status}): ${cleanMsg}`);
-    }
-    const data = await response.json();
-    console.log('[ShipStation] API response:', endpoint, data);
-    return data;
-  } catch (error) {
-    console.error('[ShipStation] API call failed:', endpoint, error);
-    throw error;
-  }
-};
-
-const testShipStationConnection = async () => {
-  try {
-    const stores = await shipStationCall('/stores');
-    console.log('[ShipStation] Connection test successful:', stores);
-    return true;
-  } catch (error) {
-    console.error('[ShipStation] Connection test failed:', error);
-    return false;
-  }
-};
-
-const convertSOToShipStation = (so, customer) => {
-  const shipToAddress = customer.shipping_address_line1 ? {
-    name: customer.name, company: customer.name,
-    street1: customer.shipping_address_line1, street2: customer.shipping_address_line2 || '',
-    city: customer.shipping_city, state: customer.shipping_state,
-    postalCode: customer.shipping_zip, country: 'US',
-    phone: customer.contacts?.[0]?.phone || '', residential: true
-  } : {
-    name: customer.name, company: customer.name,
-    street1: customer.billing_address_line1, street2: customer.billing_address_line2 || '',
-    city: customer.billing_city, state: customer.billing_state,
-    postalCode: customer.billing_zip, country: 'US',
-    phone: customer.contacts?.[0]?.phone || '', residential: true
-  };
-  const items = so.items.map(item => {
-    const totalQty = Object.values(item.sizes).reduce((sum, qty) => sum + qty, 0);
-    return {
-      lineItemKey: `${so.id}-${item.sku}`, sku: item.sku, name: item.name, imageUrl: null,
-      weight: { value: 1, units: 'pounds' }, quantity: totalQty, unitPrice: item.unit_sell,
-      taxAmount: null, shippingAmount: null, warehouseLocation: null,
-      options: Object.entries(item.sizes).filter(([, qty]) => qty > 0)
-        .map(([size, qty]) => ({ name: 'Size', value: `${size} (${qty})` })),
-      productId: item.product_id ? (() => { const id = parseInt(item.product_id.replace(/\D/g, ''), 10); return id && id <= 2147483647 ? id : null; })() : null, fulfillmentSku: item.sku, adjustment: false, upc: null
-    };
-  });
-  return {
-    orderNumber: so.id, orderKey: so.id, orderDate: so.created_at, paymentDate: so.created_at,
-    shipByDate: so.expected_date, orderStatus: 'awaiting_shipment',
-    customerUsername: customer.alpha_tag, customerEmail: customer.contacts?.[0]?.email || '',
-    billTo: {
-      name: customer.name, company: customer.name,
-      street1: customer.billing_address_line1, street2: customer.billing_address_line2 || '',
-      city: customer.billing_city, state: customer.billing_state,
-      postalCode: customer.billing_zip, country: 'US',
-      phone: customer.contacts?.[0]?.phone || '', residential: true
-    },
-    shipTo: shipToAddress, items,
-    orderTotal: so.items.reduce((sum, item) => sum + (item.unit_sell * Object.values(item.sizes).reduce((a, b) => a + b, 0)), 0),
-    amountPaid: 0, taxAmount: 0, shippingAmount: so.shipping_value || 0,
-    customerNotes: so.memo || '', internalNotes: so.production_notes || '',
-    gift: false, giftMessage: null, paymentMethod: null,
-    requestedShippingService: 'Ground', carrierCode: null, serviceCode: null, packageCode: null,
-    confirmation: 'none', shipDate: null, holdUntilDate: null,
-    weight: { value: items.length, units: 'pounds' }, dimensions: null,
-    insuranceOptions: { provider: null, insureShipment: false, insuredValue: 0 },
-    internationalOptions: null,
-    advancedOptions: {
-      warehouseId: null, nonMachinable: false, saturdayDelivery: false, containsAlcohol: false,
-      storeId: null, customField1: `NSA-SO-${so.id}`, customField2: customer.alpha_tag,
-      customField3: so.created_by, source: 'NSA Portal',
-      mergedOrSplit: false, mergedIds: [], parentId: null,
-      billToParty: null, billToAccount: null, billToPostalCode: null, billToCountryCode: null
-    }
-  };
-};
-
-const pushSOToShipStation = async (so, customer) => {
-  const shippableStatuses = ['in_production', 'ready_to_invoice', 'items_received', 'waiting_receive', 'needs_pull', 'need_order', 'partial_received'];
-  const soStatus = calcSOStatus(so);
-  if (!shippableStatuses.includes(so.status) && !shippableStatuses.includes(soStatus) && so.status !== 'complete') {
-    throw new Error('Only active Sales Orders can be shipped');
-  }
-  const ssOrder = convertSOToShipStation(so, customer);
-  return await shipStationCall('/orders/createorder', { method: 'POST', body: JSON.stringify(ssOrder) });
-};
-
-const fetchShipStationUpdates = async (orderNumber) => {
-  const orders = await shipStationCall(`/orders?orderNumber=${orderNumber}`);
-  return orders?.orders?.[0] || null;
-};
-
-const fetchRecentShipments = async () => {
-  const shipments = await shipStationCall('/shipments?createDateStart=' +
-    new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]);
-  return shipments?.shipments || [];
-};
-
-// Create a ShipStation label for an order
-const _ssCarrierMap = { 'UPS': { carrierCode: 'ups', serviceCode: 'ups_ground' }, 'FedEx': { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, 'USPS': { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
-const createShipStationLabel = async (so, customer, packageItems, weight, carrier, service, dimensions) => {
-  // Validate customer address before calling API
-  const hasShipAddr = customer.shipping_address_line1 && customer.shipping_city && customer.shipping_state && customer.shipping_zip;
-  const hasBillAddr = customer.billing_address_line1 && customer.billing_city && customer.billing_state && customer.billing_zip;
-  if (!hasShipAddr && !hasBillAddr) throw new Error('Customer has no shipping or billing address. Please add an address to the customer record first.');
-  // Ensure order exists in ShipStation first
-  let ssOrderId = so._shipstation_order_id;
-  if (!ssOrderId) {
-    const ssOrder = await pushSOToShipStation(so, customer);
-    ssOrderId = ssOrder.orderId;
-  }
-  if (!ssOrderId) throw new Error('Could not create or find ShipStation order. Please check ShipStation connection.');
-  const shipTo = hasShipAddr ? {
-    name: customer.name, company: customer.name,
-    street1: customer.shipping_address_line1, street2: customer.shipping_address_line2 || '',
-    city: customer.shipping_city, state: customer.shipping_state,
-    postalCode: customer.shipping_zip, country: 'US', phone: customer.contacts?.[0]?.phone || ''
-  } : {
-    name: customer.name, company: customer.name,
-    street1: customer.billing_address_line1, street2: customer.billing_address_line2 || '',
-    city: customer.billing_city, state: customer.billing_state,
-    postalCode: customer.billing_zip, country: 'US', phone: customer.contacts?.[0]?.phone || ''
-  };
-  // Map carrier — dropdown values are lowercase ('fedex','ups','usps')
-  const carrierLower = (carrier || 'fedex').toLowerCase();
-  const carrierMap = { fedex: { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, ups: { carrierCode: 'ups', serviceCode: 'ups_ground' }, usps: { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
-  const cm = carrierMap[carrierLower] || { carrierCode: carrierLower, serviceCode: service || 'fedex_ground' };
-  const labelPayload = {
-    orderId: ssOrderId, carrierCode: cm.carrierCode, serviceCode: cm.serviceCode,
-    packageCode: 'package', confirmation: 'none', shipDate: new Date().toISOString().split('T')[0],
-    weight: { value: weight || 5, units: 'pounds' },
-    dimensions: dimensions && dimensions.length && dimensions.width && dimensions.height
-      ? { length: parseFloat(dimensions.length), width: parseFloat(dimensions.width), height: parseFloat(dimensions.height), units: 'inches' }
-      : undefined,
-    shipFrom: { name: NSA.name, company: NSA.name, street1: NSA.addr, city: NSA.city, state: NSA.state, postalCode: NSA.zip, country: 'US', phone: NSA.phone },
-    shipTo, insuranceOptions: { provider: null, insureShipment: false, insuredValue: 0 },
-    internationalOptions: null, advancedOptions: { customField1: `NSA-SO-${so.id}` },
-    testLabel: false
-  };
-  console.log('[ShipStation] Label request payload:', JSON.stringify(labelPayload, null, 2));
-  return await shipStationCall('/orders/createlabelfororder', { method: 'POST', body: JSON.stringify(labelPayload) });
-};
-
-// Fetch ShipStation rates for an order
-const fetchShipStationRates = async (customer, weight) => {
-  const shipTo = customer.shipping_address_line1 ? {
-    city: customer.shipping_city, state: customer.shipping_state,
-    postalCode: customer.shipping_zip, country: 'US'
-  } : {
-    city: customer.billing_city, state: customer.billing_state,
-    postalCode: customer.billing_zip, country: 'US'
-  };
-  const ratePayload = {
-    carrierCode: 'fedex', fromPostalCode: '90001',
-    toState: shipTo.state, toCountry: 'US', toPostalCode: shipTo.postalCode, toCity: shipTo.city,
-    weight: { value: weight || 5, units: 'pounds' }, confirmation: 'none', residential: true
-  };
-  try {
-    return await shipStationCall('/shipments/getrates', { method: 'POST', body: JSON.stringify(ratePayload) });
-  } catch { return []; }
-};
-
-// ─── OrderMyGear API Integration (via Netlify proxy to avoid CORS) ───
-
-// Fetch all pages from a paginated OMG JSON:API endpoint.
-// Pagination strategy (in priority order):
-//   1. links.next from response (standard JSON:API)
-//   2. meta.page.cursor on last record with page[after] (works for order_products)
-//   3. Construct cursor from last record ID: btoa(JSON.stringify({id})) (fallback for orders)
-const omgFetchAllPages = async (endpoint, maxPages = 50) => {
-  let allData = [];
-  const seenIds = new Set();
-  // Extract base path without query for building pagination URLs
-  const basePath = endpoint.split('?')[0];
-  const baseQuery = endpoint.includes('?') ? '&' + endpoint.split('?')[1] : '';
-  let nextUrl = endpoint;
-  for (let page = 0; page < maxPages; page++) {
-    const resp = await omgApiCall(nextUrl);
-    const data = resp?.data || [];
-    if (data.length === 0) break;
-    // Deduplicate: constructed cursors can be inclusive (first record = last of prev page)
-    const newRecords = data.filter(d => !seenIds.has(d.id));
-    if (newRecords.length === 0) {
-      console.warn(`[OMG] All records on page ${page + 1} are duplicates, stopping`);
-      break;
-    }
-    newRecords.forEach(d => seenIds.add(d.id));
-    allData = allData.concat(newRecords);
-    if (data.length < 100) break; // last page
-    // Determine next page URL
-    // Strategy 1: links.next from response
-    if (resp?.links?.next) {
-      try {
-        const u = new URL(resp.links.next);
-        nextUrl = u.pathname.replace(/^\/v1/, '') + u.search;
-        continue;
-      } catch {
-        nextUrl = resp.links.next.startsWith('/') ? resp.links.next : '/' + resp.links.next;
-        continue;
-      }
-    }
-    // Strategy 2: cursor from last record's meta
-    const lastRecord = data[data.length - 1];
-    const cursor = lastRecord?.meta?.page?.cursor;
-    if (cursor) {
-      nextUrl = `${basePath}?page[after]=${cursor}${baseQuery}`;
-      continue;
-    }
-    // Strategy 3: construct cursor from last record ID
-    if (lastRecord?.id) {
-      const constructedCursor = btoa(JSON.stringify({ id: lastRecord.id }));
-      nextUrl = `${basePath}?page[after]=${constructedCursor}${baseQuery}`;
-      continue;
-    }
-    break; // no way to paginate
-  }
-  console.log(`[OMG] Fetched ${allData.length} total from ${basePath}`);
-  return allData;
-};
-
-const omgApiCall = async (endpoint, options = {}, _retries = 0) => {
-  try {
-    const method = options.method || 'GET';
-    const proxyUrl = `/.netlify/functions/omg-proxy?path=${encodeURIComponent(endpoint)}`;
-    const response = await fetch(proxyUrl, {
-      method,
-      headers: { 'Content-Type': 'application/json' },
-      ...(options.body ? { body: options.body } : {})
-    });
-    if (!response.ok) {
-      // Retry on 409 (conflict/rate limit) and 429 (too many requests) with backoff
-      if ((response.status === 409 || response.status === 429) && _retries < 3) {
-        const delay = (2 ** _retries) * 1000;
-        console.warn(`[OMG] ${response.status} on ${endpoint}, retrying in ${delay}ms (attempt ${_retries + 1}/3)`);
-        await new Promise(r => setTimeout(r, delay));
-        return omgApiCall(endpoint, options, _retries + 1);
-      }
-      const errText = await response.text().catch(() => '');
-      let msg;
-      try { msg = JSON.parse(errText)?.error; } catch {}
-      throw new Error(msg || `OMG API error: ${response.status}`);
-    }
-    const data = await response.json();
-    console.log('[OMG] API response:', endpoint, data);
-    return data;
-  } catch (error) { console.error('[OMG] API call failed:', endpoint, error); throw error; }
-};
-
-// ─── Temporary API Probe (diagnostic) ───
-const probeOMGEndpoints = async () => {
-  const endpoints = [
-    '/orders',
-    '/orders?limit=1',
-    '/order_products',
-    '/order_products?limit=1',
-    '/line_items',
-    '/products',
-    '/products?limit=1',
-    '/customers',
-    '/customer_infos',
-    '/invoices',
-    '/shipments',
-    '/reports',
-    '/sale_products',
-    '/sale_items',
-  ];
-  const results = {};
-  for (const ep of endpoints) {
-    try {
-      const data = await omgApiCall(ep);
-      results[ep] = { status: 'ok', keys: Object.keys(data || {}), meta: data?.meta, recordCount: Array.isArray(data?.data) ? data.data.length : (data?.data ? 1 : 0) };
-      if (data?.data?.[0]) {
-        results[ep].sampleType = data.data[0].type;
-        results[ep].sampleId = data.data[0].id;
-      }
-      if (data?.data?.[0]?.attributes) results[ep].sampleAttrs = Object.keys(data.data[0].attributes);
-      if (data?.data?.[0]?.relationships) {
-        results[ep].sampleRels = Object.keys(data.data[0].relationships);
-        // For orders, log relationship values to see how they link to sales
-        if (ep.startsWith('/orders')) {
-          const rels = data.data[0].relationships;
-          results[ep].sampleRelValues = {};
-          for (const [k, v] of Object.entries(rels)) {
-            results[ep].sampleRelValues[k] = v?.data ? { type: v.data.type, id: v.data.id } : v;
-          }
-        }
-      }
-    } catch (err) {
-      results[ep] = { status: 'error', message: err.message };
-    }
-  }
-  // Now probe include params on a known sale
-  let saleId = null;
-  try {
-    const salesResp = await omgApiCall('/sales?limit=1');
-    if (salesResp?.data?.length > 0) saleId = salesResp.data[0].id;
-  } catch (err) {
-    results['sale lookup'] = { status: 'error', message: err.message };
-  }
-  if (saleId) {
-    const includeEndpoints = [
-      `/sales/${saleId}?include=orders`,
-      `/sales/${saleId}?include=line_items`,
-      `/sales/${saleId}?include=order_items`,
-      `/sales/${saleId}?include=products`,
-      `/sales/${saleId}?include=sale_products`,
-      `/sales/${saleId}?include=orders,line_items,products`,
-    ];
-    for (const ep of includeEndpoints) {
-      try {
-        const data = await omgApiCall(ep);
-        const incTypes = data?.included ? [...new Set(data.included.map(i => i.type))] : [];
-        results[ep] = { status: 'ok', includedTypes: incTypes, includedCount: data?.included?.length || 0 };
-      } catch (err) {
-        results[ep] = { status: 'error', message: err.message };
-      }
-    }
-  }
-  console.log('=== OMG API PROBE RESULTS ===');
-  for (const [ep, res] of Object.entries(results)) {
-    console.log(`[PROBE] ${ep}:`, JSON.stringify(res));
-  }
-  console.log('=== END PROBE ===');
-  alert('Probe complete — check browser console for results.');
-};
-
-const fetchOMGStores = async () => {
-  // Strategy: try multiple approaches to get recent/open stores without
-  // paginating through thousands of old ones.
-  const thirtyDaysAgo = new Date(Date.now() - 30 * 86400000);
-  const now = new Date();
-
-  const isRelevant = (s) => {
-    const status = (s.attributes?.status || '').toLowerCase();
-    const expiresAt = s.attributes?.expires_at;
-    const opensAt = s.attributes?.opens_at;
-    if (status === 'pending' || status === 'scheduled') return true;
-    if (status === 'open') return !expiresAt || new Date(expiresAt) >= now;
-    if (['closed', 'finalized', 'fulfilled', 'archived'].includes(status)) {
-      const closedAt = expiresAt || s.attributes?.closed_at || s.attributes?.updated_at;
-      return closedAt && new Date(closedAt) >= thirtyDaysAgo;
-    }
-    const anyDate = expiresAt || opensAt || s.attributes?.updated_at;
-    return anyDate && new Date(anyDate) >= thirtyDaysAgo;
-  };
-
-  // Helper: fetch one page
-  const fetchPage = async (endpoint) => {
-    const resp = await omgApiCall(endpoint);
-    return { data: resp?.data || [], included: resp?.included || [] };
-  };
-
-  let allData = [], allIncluded = [];
-
-  // Approach 1: Try sorting newest-first (avoids paginating through old stores)
-  const sortFormats = [
-    '/sales?include=organization&sort=-expires_at',
-    '/sales?include=organization&sort=-created_at',
-    '/sales?include=organization&sort=-id',
-  ];
-  for (const url of sortFormats) {
-    try {
-      const resp = await fetchPage(url);
-      if (resp.data.length > 0) {
-        // Check if it's actually sorted differently than default (oldest-first)
-        const firstExpires = resp.data[0]?.attributes?.expires_at;
-        const isRecent = firstExpires && new Date(firstExpires) > thirtyDaysAgo;
-        if (isRecent) {
-          console.log(`[OMG] Sort worked (${url}): ${resp.data.length} stores, first expires: ${firstExpires}`);
-          allData = resp.data;
-          allIncluded = resp.included;
-          // Paginate a few more pages to be safe
-          if (resp.data.length >= 25) {
-            let offset = resp.data.length;
-            for (let p = 0; p < 5; p++) {
-              try {
-                const next = await fetchPage(`${url}&offset=${offset}&limit=${resp.data.length}`);
-                if (!next.data.length) break;
-                allData = allData.concat(next.data);
-                allIncluded = allIncluded.concat(next.included);
-                // Stop if all stores on this page are old
-                const anyRelevant = next.data.some(isRelevant);
-                if (!anyRelevant) { console.log(`[OMG] Page ${p + 3}: all old, stopping`); break; }
-                if (next.data.length < resp.data.length) break;
-                offset += next.data.length;
-              } catch { break; }
-            }
-          }
-          break;
-        }
-      }
-    } catch (e) {
-      console.log(`[OMG] Sort format failed: ${url} — ${e.message}`);
-    }
-  }
-
-  // Approach 2: If sorting didn't work, try filter[status]=open
-  if (allData.length === 0) {
-    console.log('[OMG] Sort approaches failed, trying filter[status]');
-    for (const status of ['open', 'pending', 'scheduled']) {
-      try {
-        const resp = await fetchPage(`/sales?include=organization&filter[status]=${status}`);
-        if (resp.data.length > 0) {
-          console.log(`[OMG] filter[status]=${status}: ${resp.data.length} stores`);
-          allData = allData.concat(resp.data);
-          allIncluded = allIncluded.concat(resp.included);
-        }
-      } catch { /* skip */ }
-    }
-    // Also try recently closed
-    try {
-      const resp = await fetchPage('/sales?include=organization&filter[status]=closed');
-      if (resp.data.length > 0) {
-        const recent = resp.data.filter(isRelevant);
-        console.log(`[OMG] filter[status]=closed: ${resp.data.length} total, ${recent.length} recent`);
-        allData = allData.concat(recent);
-        allIncluded = allIncluded.concat(resp.included);
-      }
-    } catch { /* skip */ }
-  }
-
-  // Approach 3: Last resort — paginate unfiltered but cap at 10 pages
-  if (allData.length === 0) {
-    console.log('[OMG] Filter approaches failed, paginating unfiltered (max 10 pages)');
-    const first = await fetchPage('/sales?include=organization');
-    allData = first.data;
-    allIncluded = first.included;
-    const pageSize = first.data.length;
-    if (pageSize >= 25) {
-      let offset = pageSize;
-      for (let p = 0; p < 9; p++) {
-        try {
-          const resp = await fetchPage(`/sales?include=organization&offset=${offset}&limit=${pageSize}`);
-          if (!resp.data.length) break;
-          allData = allData.concat(resp.data);
-          allIncluded = allIncluded.concat(resp.included);
-          // Stop early if we found relevant stores
-          if (allData.some(isRelevant)) {
-            console.log(`[OMG] Found relevant stores on page ${p + 2}, stopping pagination`);
-            break;
-          }
-          if (resp.data.length < pageSize) break;
-          offset += resp.data.length;
-        } catch { break; }
-      }
-    }
-  }
-
-  // Deduplicate
-  const seen = new Map();
-  allData.forEach(s => { if (!seen.has(s.id)) seen.set(s.id, s); });
-  allData = [...seen.values()];
-
-  // Filter to relevant stores only
-  const total = allData.length;
-  allData = allData.filter(isRelevant);
-  console.log(`[OMG] Result: ${allData.length} relevant stores from ${total} fetched. Statuses:`, [...new Set(allData.map(s => s.attributes?.status))]);
-  return { data: allData, included: allIncluded };
-};
-
-// Fetch order/product details for a single OMG store
-const fetchOMGStoreDetail = async (saleResource, allIncluded) => {
-  const saleId = saleResource.id;
-  const saleCode = saleResource.attributes?.sale_code || '';
-  const saleData = { data: saleResource, included: allIncluded };
-
-  // Try multiple endpoint patterns for orders
-  const orderEndpoints = [
-    `/sales/${saleId}/orders`,
-    `/sales/${saleId}/orders?include=customer_info`,
-    `/orders?filter[sale_id]=${saleId}`,
-    `/orders?filter[sale_id]=${saleId}&include=customer_info`,
-    `/orders?sale_id=${saleId}`,
-    ...(saleCode ? [`/orders?filter[sale_code]=${saleCode}`] : []),
-  ];
-  let orders = null;
-  for (const ep of orderEndpoints) {
-    try {
-      orders = await omgApiCall(ep);
-      if (orders?.data) {
-        console.log(`[OMG] Sale ${saleId} (${saleCode}): ${orders.data.length} orders via ${ep}`);
-        break;
-      }
-    } catch (e) {
-      console.log(`[OMG] Orders endpoint failed: ${ep} — ${e.message}`);
-    }
-  }
-  const orderList = orders?.data || [];
-
-  // Try to get order products for each order
-  const orderProducts = await Promise.all(
-    orderList.map(async (o) => {
-      const productEndpoints = [
-        `/orders/${o.id}/order_products?include=product`,
-        `/orders/${o.id}/order_products`,
-        `/order_products?filter[order_id]=${o.id}&include=product`,
-        `/order_products?filter[order_id]=${o.id}`,
-      ];
-      for (const ep of productEndpoints) {
-        try {
-          const resp = await omgApiCall(ep);
-          if (resp?.data) return resp;
-        } catch { /* try next */ }
-      }
-      return { data: [], included: [] };
-    })
-  );
-  return { ...saleData, orders: orderList, orderProducts };
-};
-
-// Convert OMG JSON:API response to NSA store format
-// OMG API v1 returns: { data: { id, type, attributes: {...}, relationships: {...} }, included: [...] }
-const convertOMGStore = (omgResponse, nsaCustomers) => {
-  // Handle both single resource and already-unwrapped formats
-  const resource = omgResponse.data || omgResponse;
-  const attrs = resource.attributes || resource;
-  const rels = resource.relationships || {};
-  const included = omgResponse.included || [];
-
-  // Find organization name from included resources
-  const orgRel = rels.organization?.data;
-  const orgIncluded = orgRel ? included.find(i => i.id === orgRel.id && i.type === orgRel.type) : null;
-  const orgName = orgIncluded?.attributes?.name || '';
-
-  const matchedCustomer = nsaCustomers.find(c =>
-    (orgName && c.name.toLowerCase().includes(orgName.toLowerCase())) ||
-    (attrs.name && c.name.toLowerCase().includes(attrs.name.toLowerCase()))
-  );
-
-  // Map OMG status to NSA status (OMG: open, closed, pending, ordered, fulfilled, scheduled, finalized, archived)
-  const statusMap = { open: 'open', closed: 'closed', finalized: 'closed', archived: 'closed', fulfilled: 'closed' };
-  const nsaStatus = statusMap[attrs.status] || 'draft';
-
-  // Aggregate order product data across all orders
-  const allOrderProducts = (omgResponse.orderProducts || []).flatMap(resp => resp?.data || []);
-  const allIncluded = (omgResponse.orderProducts || []).flatMap(resp => resp?.included || []);
-
-  // Build product map and image map from included resources
-  const productMap = {};
-  const productRels = {};
-  const imageMap = {};
-  allIncluded.forEach(i => {
-    if (i.type === 'product' || i.type === 'products') {
-      productMap[i.id] = i.attributes;
-      productRels[i.id] = i.relationships || {};
-    } else if (i.type === 'image' || i.type === 'images') {
-      imageMap[i.id] = i.attributes?.asset_url || '';
-    }
-  });
-
-  // Calculate totals from order products
-  let totalItems = 0;
-  let totalSales = 0;
-  let fundraiseTotal = 0;
-  const productSummary = {};
-
-  allOrderProducts.forEach(op => {
-    const opAttrs = op.attributes || {};
-    const qty = opAttrs.quantity || 0;
-    totalItems += qty;
-
-    // Look up product details from included resources
-    const productRel = op.relationships?.product?.data;
-    const product = productRel ? productMap[productRel.id] : null;
-    const basePrice = product?.base_price || 0;
-    totalSales += basePrice * qty;
-
-    // Get product image URL from sideloaded images
-    let imageUrl = '';
-    if (productRel) {
-      const imgRels = productRels[productRel.id]?.images?.data || productRels[productRel.id]?.image?.data;
-      if (Array.isArray(imgRels) && imgRels.length > 0) {
-        imageUrl = imageMap[imgRels[0].id] || '';
-      } else if (imgRels?.id) {
-        imageUrl = imageMap[imgRels.id] || '';
-      }
-    }
-
-    // Track unique products by SKU
-    const sku = opAttrs.sku || product?.style || op.id;
-    if (!productSummary[sku]) {
-      productSummary[sku] = {
-        sku, name: product?.name || '', style: product?.style || '',
-        retail: basePrice, cost: product?.cogs || 0,
-        deco_type: '', deco_cost: 0, qty: 0, image_url: imageUrl
-      };
-    }
-    productSummary[sku].qty += qty;
-  });
-
-  // Count unique buyers from customer_info on orders
-  const buyerIds = new Set((omgResponse.orders || []).map(o => o.relationships?.customer_info?.data?.id).filter(Boolean));
-
-  return {
-    id: `OMG-${resource.id}`, store_name: attrs.name || attrs.sale_code,
-    customer_id: matchedCustomer?.id || null, rep_id: matchedCustomer?.primary_rep_id || null,
-    status: nsaStatus,
-    open_date: attrs.opens_at ? new Date(attrs.opens_at).toLocaleDateString() : '',
-    close_date: attrs.expires_at ? new Date(attrs.expires_at).toLocaleDateString() : '',
-    orders: omgResponse.orders?.length || 0, total_sales: totalSales,
-    fundraise_total: fundraiseTotal, items_sold: totalItems,
-    unique_buyers: buyerIds.size,
-    products: Object.values(productSummary).map(p => ({
-      sku: p.sku, name: p.name, color: '', retail: p.retail, cost: p.cost,
-      deco_type: p.deco_type, deco_cost: p.deco_cost, sizes: {},
-      image_url: p.image_url || ''
-    })),
-    subdomain: attrs.subdomain || '',
-    channel_type: attrs.channel_type || 'pop-up',
-    _omg_source: true, _omg_id: resource.id, _omg_sale_code: attrs.sale_code,
-    _last_synced: new Date().toISOString()
-  };
-};
-
-// ─── SanMar API Integration (via Netlify proxy — SOAP/XML → JSON) ───
-// Requires SANMAR_USERNAME + SANMAR_PASSWORD in Netlify env vars
-// Contact sanmarintegrations@sanmar.com for access
-const sanmarApiCall = async (service, action, params = {}) => {
-  try {
-    const qs = `service=${encodeURIComponent(service)}&action=${encodeURIComponent(action)}`;
-    const proxyUrl = `/.netlify/functions/sanmar-proxy?${qs}`;
-    const response = await fetch(proxyUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(params),
-    });
-    const data = await response.json();
-    if (!response.ok || data.error) {
-      console.error('[SanMar] API error details:', data.raw || data);
-      throw new Error(data.error || `SanMar API error: ${response.status}`);
-    }
-    console.log('[SanMar] API response:', action, data);
-    return data;
-  } catch (error) { console.error('[SanMar] API call failed:', action, error); throw error; }
-};
-
-const sanmarGetProduct = async (style, color, size) => {
-  const params = { style };
-  if (color) params.color = color;
-  if (size) params.size = size;
-  return await sanmarApiCall('product', 'getProductInfoByStyleColorSize', params);
-};
-
-const sanmarGetProductByBrand = async (brand) =>
-  await sanmarApiCall('product', 'getProductInfoByBrand', { brand });
-
-const sanmarGetInventory = async (style, color, size) =>
-  await sanmarApiCall('inventory', 'getInventoryQtyForStyleColorSize', { style, color: color || '', size: size || '' });
-
-const sanmarGetPricing = async (style, color, size) =>
-  await sanmarApiCall('pricing', 'getPricing', { style, color: color || '', size: size || '' });
-
-const testSanMarConnection = async () => {
-  try { await sanmarGetProduct('PC61'); console.log('[SanMar] Connection test successful'); return true; }
-  catch (error) { console.error('[SanMar] Connection test failed:', error); return false; }
-};
-
-// ─── S&S Activewear API Integration (via Netlify proxy — REST/JSON) ───
-// Requires SS_ACCOUNT_NUMBER + SS_API_KEY in Netlify env vars
-// Docs: https://api.ssactivewear.com/V2/Default.aspx
-const ssApiCall = async (endpoint, options = {}) => {
-  try {
-    const method = options.method || 'GET';
-    const proxyUrl = `/.netlify/functions/ss-proxy?path=${encodeURIComponent(endpoint)}`;
-    const response = await fetch(proxyUrl, {
-      method,
-      headers: { 'Content-Type': 'application/json' },
-      ...(options.body ? { body: options.body } : {})
-    });
-    if (!response.ok) {
-      const errText = await response.text().catch(() => '');
-      let msg; try { msg = JSON.parse(errText)?.error; } catch {}
-      throw new Error(msg || `S&S API error: ${response.status}`);
-    }
-    const data = await response.json();
-    console.log('[S&S] API response:', endpoint, Array.isArray(data) ? `${data.length} items` : data);
-    return data;
-  } catch (error) { console.error('[S&S] API call failed:', endpoint, error); throw error; }
-};
-
-const ssGetProducts = async (filter) => {
-  let endpoint = '/Products';
-  if (filter?.sku) endpoint = `/Products/${encodeURIComponent(filter.sku)}`;
-  else if (filter?.style) endpoint = `/Products?style=${encodeURIComponent(filter.style)}`;
-  else if (filter?.brand) endpoint = `/Products?style=${encodeURIComponent(filter.brand)}`;
-  return await ssApiCall(endpoint);
-};
-
-const ssGetInventory = async () => await ssApiCall('/Inventory');
-const ssGetStyles = async () => await ssApiCall('/Styles');
-const ssGetBrands = async () => await ssApiCall('/Brands');
-const ssGetCategories = async () => await ssApiCall('/Categories');
-
-const testSSConnection = async () => {
-  try { await ssGetBrands(); console.log('[S&S] Connection test successful'); return true; }
-  catch (error) { console.error('[S&S] Connection test failed:', error); return false; }
-};
-
-// ─── Richardson API Integration (via Netlify proxy) ───
-// Requires RICHARDSON_API_KEY + RICHARDSON_API_BASE_URL in Netlify env vars
-// May also be accessible through S&S Activewear API (Richardson products carried by S&S)
-const richardsonApiCall = async (endpoint, options = {}) => {
-  try {
-    const method = options.method || 'GET';
-    const proxyUrl = `/.netlify/functions/richardson-proxy?path=${encodeURIComponent(endpoint)}`;
-    const response = await fetch(proxyUrl, {
-      method,
-      headers: { 'Content-Type': 'application/json' },
-      ...(options.body ? { body: options.body } : {})
-    });
-    if (!response.ok) {
-      const errText = await response.text().catch(() => '');
-      let msg; try { msg = JSON.parse(errText)?.error; } catch {}
-      throw new Error(msg || `Richardson API error: ${response.status}`);
-    }
-    const data = await response.json();
-    console.log('[Richardson] API response:', endpoint, data);
-    return data;
-  } catch (error) { console.error('[Richardson] API call failed:', endpoint, error); throw error; }
-};
-
-const richardsonGetProducts = async () => await richardsonApiCall('/products');
-const richardsonGetInventory = async () => await richardsonApiCall('/inventory');
-
-const testRichardsonConnection = async () => {
-  try { await richardsonApiCall('/products?limit=1'); console.log('[Richardson] Connection test successful'); return true; }
-  catch (error) { console.error('[Richardson] Connection test failed:', error); return false; }
-};
-
-// ─── Momentec Brands API Integration (via Netlify proxy) ───
-// HCL Commerce REST API — catalog endpoints are public, no auth required
-// Proxy rewrites paths under /wcs/resources/store/{storeId}/
-const momentecApiCall = async (endpoint, options = {}) => {
-  try {
-    const method = options.method || 'GET';
-    const proxyUrl = `/.netlify/functions/momentec-proxy?path=${encodeURIComponent(endpoint)}`;
-    const response = await fetch(proxyUrl, {
-      method,
-      headers: { 'Content-Type': 'application/json' },
-      ...(options.body ? { body: options.body } : {})
-    });
-    if (!response.ok) {
-      const errText = await response.text().catch(() => '');
-      let msg; try { msg = JSON.parse(errText)?.error; } catch {}
-      throw new Error(msg || `Momentec API error: ${response.status}`);
-    }
-    const data = await response.json();
-    console.log('[Momentec] API response:', endpoint, data);
-    return data;
-  } catch (error) { console.error('[Momentec] API call failed:', endpoint, error); throw error; }
-};
-
-const momentecGetProducts = async (pageSize = 50, pageNumber = 1) =>
-  await momentecApiCall(`/productview/bySearchTerm/*?pageSize=${pageSize}&pageNumber=${pageNumber}`);
-
-const momentecGetProductById = async (productId) =>
-  await momentecApiCall(`/productview/byId/${productId}`);
-
-const momentecGetProductByPartNumber = async (partNumber) =>
-  await momentecApiCall(`/productview/byPartNumber/${encodeURIComponent(partNumber)}`);
-
-const momentecGetProductsByCategory = async (categoryId, pageSize = 50, pageNumber = 1) =>
-  await momentecApiCall(`/productview/byCategory/${categoryId}?pageSize=${pageSize}&pageNumber=${pageNumber}`);
-
-const momentecSearchProducts = async (term, pageSize = 50, pageNumber = 1) =>
-  await momentecApiCall(`/productview/bySearchTerm/${encodeURIComponent(term)}*?pageSize=${pageSize}&pageNumber=${pageNumber}`);
-
-const momentecGetCategories = async () =>
-  await momentecApiCall('/categoryview/@top?depthAndLimit=11,11');
-
-const testMomentecConnection = async () => {
-  try { await momentecApiCall('/productview/bySearchTerm/*?pageSize=1'); console.log('[Momentec] Connection test successful'); return true; }
-  catch (error) { console.error('[Momentec] Connection test failed:', error); return false; }
-};
-
 
 export default function App(){
   const[pg,setPg]=useState('dashboard');const[toast,setToast]=useState(null);const[mobileMenuOpen,setMobileMenuOpen]=useState(false);
@@ -2542,6 +1768,43 @@ export default function App(){
       }catch(e){console.warn('[DB] Poll failed:',e.message)}
     },30000);
     return()=>clearInterval(poll);
+  },[]);
+
+  // ─── Supabase Realtime: instant sync when another rep changes data ───
+  React.useEffect(()=>{
+    if(!supabase||!_dbReady.current)return;
+    let _realtimeDebounce=null;
+    const triggerSync=()=>{
+      if(_realtimeDebounce)clearTimeout(_realtimeDebounce);
+      _realtimeDebounce=setTimeout(async()=>{
+        if(_dbSavingCount>0)return;// don't reload while saving
+        try{
+          const d=await _dbLoad();
+          if(!d||!d.hasData)return;
+          // Use same merge logic as polling — only update if data actually changed
+          const changed=(prev,next)=>{if(prev.length!==next.length)return true;const pIds=prev.map(e=>e.id+':'+(e.updated_at||'')).sort().join(',');const nIds=next.map(e=>e.id+':'+(e.updated_at||'')).sort().join(',');return pIds!==nIds};
+          setEsts(prev=>changed(prev,d.estimates)?d.estimates:prev);
+          setSOs(prev=>changed(prev,d.sales_orders)?d.sales_orders:prev);
+          setInvs(prev=>changed(prev,d.invoices)?d.invoices:prev);
+          setCust(prev=>changed(prev,d.customers)?d.customers:prev);
+          if(d.messages.length)setMsgs(prev=>changed(prev,d.messages)?d.messages:prev);
+          if(d.products.length)setProd(prev=>changed(prev,d.products)?d.products:prev);
+          _dbSnap.current={ests:d.estimates,sos:d.sales_orders,invs:d.invoices,msgs:d.messages,cust:d.customers,prod:d.products,vend:d.vendors,team:d.team,omg:d.omg_stores,issues:d.issues};
+        }catch(e){console.warn('[Realtime] Sync failed:',e.message)}
+      },500);// debounce 500ms to batch rapid changes
+    };
+    const channel=supabase.channel('nsa-realtime')
+      .on('postgres_changes',{event:'*',schema:'public',table:'sales_orders'},triggerSync)
+      .on('postgres_changes',{event:'*',schema:'public',table:'estimates'},triggerSync)
+      .on('postgres_changes',{event:'*',schema:'public',table:'customers'},triggerSync)
+      .on('postgres_changes',{event:'*',schema:'public',table:'invoices'},triggerSync)
+      .on('postgres_changes',{event:'*',schema:'public',table:'products'},triggerSync)
+      .on('postgres_changes',{event:'*',schema:'public',table:'messages'},triggerSync)
+      .subscribe((status)=>{
+        if(status==='SUBSCRIBED')console.log('[Realtime] Connected — live sync active');
+        if(status==='CHANNEL_ERROR')console.warn('[Realtime] Channel error — falling back to polling');
+      });
+    return()=>{if(_realtimeDebounce)clearTimeout(_realtimeDebounce);supabase.removeChannel(channel)};
   },[]);
 
   // ─── Brevo email open tracking: poll for opens on recently sent documents ───
@@ -4435,7 +3698,7 @@ export default function App(){
 
   // ESTIMATES LIST
   function rEst(){
-    if(eEst)return<OrderEditor key={eEst.id} order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} vendors={vend} onSave={e=>{const e2=savE(e);setEEst(e2)}} onBack={()=>{dirtyRef.current=false;setEEst(null);if(estBackPg){setPg(estBackPg);setEstBackPg(null)}}} onConvertSO={convertSO} onCopyEstimate={copyEstimate} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={deleteEstimate} onNavInvoice={inv=>{setEEst(null);setPg('invoices');setInvF(f=>({...f,search:inv.id}))}} onSaveProduct={p=>{setProd(prev=>prev.some(x=>x.id===p.id)?prev.map(x=>x.id===p.id?p:x):[...prev,p]);_dbSaveProduct(p)}} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setEEst(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}else{nf('SO '+soId+' not found','error')}}} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eEst?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:csrId,so_id:t.so_id||'',customer_id:t.customer_id||eEst?.customer_id||'',priority:t.priority||1})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog}/>
+    if(eEst)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eEst.id} order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} vendors={vend} onSave={e=>{const e2=savE(e);setEEst(e2)}} onBack={()=>{dirtyRef.current=false;setEEst(null);if(estBackPg){setPg(estBackPg);setEstBackPg(null)}}} onConvertSO={convertSO} onCopyEstimate={copyEstimate} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={deleteEstimate} onNavInvoice={inv=>{setEEst(null);setPg('invoices');setInvF(f=>({...f,search:inv.id}))}} onSaveProduct={p=>{setProd(prev=>prev.some(x=>x.id===p.id)?prev.map(x=>x.id===p.id?p:x):[...prev,p]);_dbSaveProduct(p)}} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setEEst(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}else{nf('SO '+soId+' not found','error')}}} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eEst?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:csrId,so_id:t.so_id||'',customer_id:t.customer_id||eEst?.customer_id||'',priority:t.priority||1})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog}/></React.Suspense></ComponentErrorBoundary>
     // Filter estimates
     let fe=[...ests];
     const estRepId=estF.rep==='_me_'?cu?.id:estF.rep;
@@ -4488,7 +3751,7 @@ export default function App(){
 
   // SALES ORDERS LIST
   function rSO(){
-    if(eSO)return<OrderEditor key={eSO.id} order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} vendors={vend} onSave={s=>{const locked=savSO(s);setESO(locked)}} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} openPOId={eSOOpenPO} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onNavInvoice={inv=>{setESO(null);setPg('invoices');setInvF(f=>({...f,search:inv.id}))}} onSaveProduct={p=>{setProd(prev=>prev.some(x=>x.id===p.id)?prev.map(x=>x.id===p.id?p:x):[...prev,p]);_dbSaveProduct(p)}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:csrId,so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog}/>
+    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eSO.id} order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} vendors={vend} onSave={s=>{const locked=savSO(s);setESO(locked)}} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} openPOId={eSOOpenPO} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onNavInvoice={inv=>{setESO(null);setPg('invoices');setInvF(f=>({...f,search:inv.id}))}} onSaveProduct={p=>{setProd(prev=>prev.some(x=>x.id===p.id)?prev.map(x=>x.id===p.id?p:x):[...prev,p]);_dbSaveProduct(p)}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:csrId,so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog}/></React.Suspense></ComponentErrorBoundary>
     // Filter SOs
     let fSOs=[...sos];
     if(soF.status!=='all')fSOs=fSOs.filter(s=>calcSOStatus(s)===soF.status);
@@ -4565,7 +3828,7 @@ export default function App(){
   };
   // CUSTOMERS
   function rCust(){
-    if(selC)return<CustDetail customer={selC} allCustomers={cust} allOrders={aO} onBack={()=>setSelC(null)} onEdit={c=>{setCM({open:true,c});setCust(prev=>prev.map(pp=>pp.id===c.id?c:pp))}} onSelCust={c=>setSelC(c)} onNewEst={c=>newE(c)} sos={sos} msgs={msgs} cu={cu} onOpenSO={so=>{const c3=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c3);setPg('orders')}} onOpenEst={est=>{const c3=cust.find(cc=>cc.id===est.customer_id);setEEst(est);setEEstC(c3);setPg('estimates')}} ests={ests} onSaveSO={savSO} REPS={REPS} prod={prod}
+    if(selC)return<ComponentErrorBoundary name="CustDetail"><React.Suspense fallback={<LazyFallback/>}><CustDetail customer={selC} allCustomers={cust} allOrders={aO} onBack={()=>setSelC(null)} onEdit={c=>{setCM({open:true,c});setCust(prev=>prev.map(pp=>pp.id===c.id?c:pp))}} onSelCust={c=>setSelC(c)} onNewEst={c=>newE(c)} sos={sos} msgs={msgs} cu={cu} onOpenSO={so=>{const c3=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c3);setPg('orders')}} onOpenEst={est=>{const c3=cust.find(cc=>cc.id===est.customer_id);setEEst(est);setEEstC(c3);setPg('estimates')}} ests={ests} onSaveSO={savSO} REPS={REPS} prod={prod}
       onSavePromoProgram={async(prog)=>{await _dbSavePromoProgram(prog);const updated={...selC,promo_programs:[...(selC.promo_programs||[]).filter(p=>p.id!==prog.id),prog]};setSelC(updated);setCust(prev=>prev.map(c=>c.id===updated.id?updated:c));nf('Promo program saved')}}
       onDeletePromoProgram={async(id)=>{await _dbDeletePromoProgram(id);const updated={...selC,promo_programs:(selC.promo_programs||[]).filter(p=>p.id!==id)};setSelC(updated);setCust(prev=>prev.map(c=>c.id===updated.id?updated:c));nf('Promo program removed')}}
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const updated={...selC,promo_periods:[...(selC.promo_periods||[]).filter(p=>p.id!==period.id),period]};setSelC(updated);setCust(prev=>prev.map(c=>c.id===updated.id?updated:c));nf('Promo period saved')}}
@@ -4576,7 +3839,7 @@ export default function App(){
       onRefreshCustomer={c=>{setSelC(c);setCust(prev=>prev.map(pp=>pp.id===c.id?c:pp))}}
       nf={nf}
       onCopy={c=>{const copy={...c,id:'c'+Date.now(),name:c.name+' (Copy)',alpha_tag:'',contacts:(c.contacts||[]).map(ct=>({...ct})),_oe:0,_os:0,_oi:0,_ob:0};setCM({open:true,c:copy})}}
-      onDelete={c=>{const hasOrders=aO.some(o=>o.customer_id===c.id);const kids=cust.filter(ch=>ch.parent_id===c.id);if(hasOrders){alert('Cannot delete — this customer has existing orders. Deactivate instead.');return}if(kids.length>0&&!window.confirm(c.name+' has '+kids.length+' sub-account(s) that will also be deleted. Continue?'))return;if(!window.confirm('Delete "'+c.name+'"? This cannot be undone.'))return;const idsToDelete=[c.id,...kids.map(k=>k.id)];setCust(prev=>prev.filter(x=>!idsToDelete.includes(x.id)));idsToDelete.forEach(id=>{if(supabase){supabase.from('customer_contacts').delete().eq('customer_id',id).then(()=>supabase.from('customers').delete().eq('id',id))}});setSelC(null);nf('Customer deleted')}}/>;
+      onDelete={c=>{const hasOrders=aO.some(o=>o.customer_id===c.id);const kids=cust.filter(ch=>ch.parent_id===c.id);if(hasOrders){alert('Cannot delete — this customer has existing orders. Deactivate instead.');return}if(kids.length>0&&!window.confirm(c.name+' has '+kids.length+' sub-account(s) that will also be deleted. Continue?'))return;if(!window.confirm('Delete "'+c.name+'"? This cannot be undone.'))return;const idsToDelete=[c.id,...kids.map(k=>k.id)];setCust(prev=>prev.filter(x=>!idsToDelete.includes(x.id)));idsToDelete.forEach(id=>{if(supabase){supabase.from('customer_contacts').delete().eq('customer_id',id).then(()=>supabase.from('customers').delete().eq('id',id))}});setSelC(null);nf('Customer deleted')}}/></React.Suspense></ComponentErrorBoundary>;
     // Use server-side results when searching/filtering, fall back to client-side
     const f=custServerResults&&(q||rF!=='all')?custServerResults.customers.filter(c=>!c.parent_id):pars.filter(p=>{if(rF!=='all'&&p.primary_rep_id!==rF&&!gK(p.id).some(c=>c.primary_rep_id===rF))return false;if(q){const s=q.toLowerCase();return p.name.toLowerCase().includes(s)||p.alpha_tag?.toLowerCase().includes(s)||gK(p.id).some(c=>c.name.toLowerCase().includes(s))}return true});
     return(<><div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap'}}><div className="search-bar" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search..." value={q} onChange={e=>setQ(e.target.value)}/></div>
@@ -4906,7 +4169,18 @@ export default function App(){
     <select className="form-select" style={{width:110}} value={pF.vnd} onChange={e=>setPF(f=>({...f,vnd:e.target.value}))}><option value="all">Vendor</option>{vend.map(v=><option key={v.id} value={v.id}>{v.name}</option>)}</select>
     <select className="form-select" style={{width:130}} value={pF.clr} onChange={e=>setPF(f=>({...f,clr:e.target.value}))}><option value="all">Color</option>{cols.map(c=><option key={c}>{c}</option>)}</select></div>
   <div className="card"><div className="card-body" style={{padding:0}}>
-  {fP.map(p=>{const nt=Object.values(p._inv||{}).reduce((a,v)=>a+v,0);const au=p.brand==='Adidas'||p.brand==='Under Armour';
+  {fP.length>50?(()=>{const VProdRow=React.memo(({index,style})=>{const p=fP[index];const nt=Object.values(p._inv||{}).reduce((a,v)=>a+v,0);const au=p.brand==='Adidas'||p.brand==='Under Armour';
+    return(<div style={{...style,padding:'14px 16px',borderBottom:'1px solid #f1f5f9',cursor:'pointer',boxSizing:'border-box'}} onClick={()=>setSelP(p)}><div style={{display:'flex',gap:14,alignItems:'flex-start'}}>
+      <div style={{display:'flex',gap:4,alignItems:'center'}}>
+        {(()=>{const img=p.image_url||(p.images&&p.images[0])||null;return img?<img src={img} alt="" style={{width:48,height:48,objectFit:'cover',borderRadius:6,border:'1px solid #e2e8f0',flexShrink:0}}/>
+        :<div style={{width:48,height:48,borderRadius:6,border:'1px solid #e2e8f0',display:'flex',alignItems:'center',justifyContent:'center',background:'#f8fafc',flexShrink:0}}><span style={{fontSize:14,opacity:0.3}}>📷</span></div>})()}
+      </div>
+      <div style={{flex:1,overflow:'hidden'}}>
+        <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'nowrap'}}><span style={{fontFamily:'monospace',fontWeight:800,background:'#dbeafe',padding:'2px 8px',borderRadius:3,color:'#1e40af'}}>{p.sku}</span><span style={{fontWeight:700,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{p.name}</span>{p._colors&&<span style={{fontSize:10,color:'#7c3aed'}}>{p._colors.length} clr</span>}</div>
+        <div style={{fontSize:12,color:'#94a3b8',marginTop:2}}><span className="badge badge-blue" style={{marginRight:4}}>{p.brand}</span>{p.color} | ${p.nsa_cost?.toFixed(2)} | {au?'Tier':'$'+rQ(p.nsa_cost*1.65).toFixed(2)} | <b>{nt}</b> in stock</div>
+        </div></div></div>)});
+    return <VirtualList rowComponent={VProdRow} rowCount={fP.length} rowHeight={90} overscanCount={5} style={{height:Math.min(fP.length*90,600),width:'100%'}}/>;
+  })():fP.map(p=>{const nt=Object.values(p._inv||{}).reduce((a,v)=>a+v,0);const au=p.brand==='Adidas'||p.brand==='Under Armour';
     return(<div key={p.id} style={{padding:'14px 16px',borderBottom:'1px solid #f1f5f9',cursor:'pointer'}} onClick={()=>setSelP(p)}><div style={{display:'flex',gap:14,alignItems:'flex-start'}}>
       <div style={{display:'flex',gap:4,alignItems:'center'}}>
         {(()=>{const img=p.image_url||(p.images&&p.images[0])||null;return img?<img src={img} alt="" style={{width:48,height:48,objectFit:'cover',borderRadius:6,border:'1px solid #e2e8f0',flexShrink:0}}/>
@@ -18454,7 +17728,7 @@ export default function App(){
       <div style={{fontSize:48,fontWeight:900,color:'#1e3a5f'}}>NSA</div>
       <div style={{fontSize:16,color:'#64748b'}}>Portal not found for "<strong>{_portalTag}</strong>"</div>
       <div style={{fontSize:13,color:'#94a3b8'}}>Please check the link with your NSA rep.</div></div>;
-    return<CoachPortal customer={_portalCust} allCustomers={cust} sos={sos} ests={ests} invs={invs} REPS={REPS} prod={prod} onUpdateInvs={setInvs} onUpdateSOs={setSOs} onUpdateEsts={setEsts} savSOFn={savSO} portalSettings={portalSettings}/>;
+    return<ComponentErrorBoundary name="CoachPortal"><React.Suspense fallback={<LazyFallback/>}><CoachPortal customer={_portalCust} allCustomers={cust} sos={sos} ests={ests} invs={invs} REPS={REPS} prod={prod} onUpdateInvs={setInvs} onUpdateSOs={setSOs} onUpdateEsts={setEsts} savSOFn={savSO} portalSettings={portalSettings}/></React.Suspense></ComponentErrorBoundary>;
   }
 
   // LOADING GATE
@@ -18462,7 +17736,7 @@ export default function App(){
     <img src={NSA.logoUrl} alt="NSA" style={{height:70,filter:'brightness(0) invert(1)'}}/>
     <div style={{fontSize:13,color:'#94a3b8',letterSpacing:3}}>Loading...</div></div>;
   // LOGIN GATE
-  if(!cu)return<LoginGate onLogin={handleLogin} reps={REPS} supabase={supabase} sbSignIn={_sbSignIn} sbSignUp={_sbSignUp} sbGetSession={_sbGetSession} sbLinkTeamAuth={_sbLinkTeamAuth} sbGetMyProfile={_sbGetMyProfile}/>;
+  if(!cu)return<ComponentErrorBoundary name="LoginGate"><React.Suspense fallback={<LazyFallback/>}><LoginGate onLogin={handleLogin} reps={REPS} supabase={supabase} sbSignIn={_sbSignIn} sbSignUp={_sbSignUp} sbGetSession={_sbGetSession} sbLinkTeamAuth={_sbLinkTeamAuth} sbGetMyProfile={_sbGetMyProfile}/></React.Suspense></ComponentErrorBoundary>;
   // MOBILE PORTAL GATE
   if(mobileMode)return<MobilePortal cu={cu} cust={cust} sos={sos} ests={ests} invs={invs} msgs={msgs} prod={prod} vend={vend} REPS={REPS} assignedTodos={assignedTodos} computedTodos={computedTodos} onLogout={handleLogout} onSwitchDesktop={()=>setMobileMode(false)} onSaveEstimate={savE} nextEstId={()=>nextEstId(ests)} nf={nf} onMsg={setMsgs}/>;
 
