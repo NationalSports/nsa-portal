@@ -12841,26 +12841,48 @@ export default function App(){
 
     // Import products
     const importProducts=()=>{
-      const{parsed,colMap}=bulkImp;const added=[];const skipped=[];
+      const{parsed,colMap}=bulkImp;const added=[];const updated=[];const skipped=[];
       parsed.forEach((row,i)=>{
         const sku=(row[colMap.sku]||'').trim();const name=(row[colMap.name]||'').trim();
         if(!sku||!name){skipped.push('Row '+(i+2)+': missing SKU or name');return}
-        if(prod.find(p=>p.sku.toLowerCase()===sku.toLowerCase())){skipped.push(sku+' — already exists');return}
+        const existing=prod.find(p=>p.sku.toLowerCase()===sku.toLowerCase());
         const vendorName=(row[colMap.vendor_name]||row[colMap.brand]||'').trim();
         const vendor=D_V.find(v=>v.name.toLowerCase()===vendorName.toLowerCase());
-        const sizes=(row[colMap.available_sizes]||'S,M,L,XL,2XL').split(',').map(s=>s.trim()).filter(Boolean);
+        const sizes=(row[colMap.available_sizes]||'').trim();
+        const parsedSizes=sizes?sizes.split(',').map(s=>s.trim()).filter(Boolean):null;
+        if(existing){
+          // Update existing product with any non-empty fields from the row
+          const updates={};
+          if(name&&name!==existing.name)updates.name=name;
+          if(row[colMap.brand]&&row[colMap.brand].trim())updates.brand=row[colMap.brand].trim();
+          if(row[colMap.color]&&row[colMap.color].trim())updates.color=row[colMap.color].trim();
+          if(row[colMap.category]&&row[colMap.category].trim())updates.category=row[colMap.category].trim();
+          if(row[colMap.retail_price]&&parseFloat(row[colMap.retail_price]))updates.retail_price=parseFloat(row[colMap.retail_price]);
+          if(row[colMap.nsa_cost]&&parseFloat(row[colMap.nsa_cost]))updates.nsa_cost=parseFloat(row[colMap.nsa_cost]);
+          if(parsedSizes&&parsedSizes.length>0)updates.available_sizes=parsedSizes;
+          if(vendor)updates.vendor_id=vendor.id;
+          if(Object.keys(updates).length>0){updated.push({id:existing.id,...updates})}
+          else{skipped.push(sku+' — no changes')}
+          return;
+        }
         added.push({
           id:'p-'+Date.now()+'-'+i,vendor_id:vendor?.id||null,sku,name,
           brand:row[colMap.brand]||'',color:row[colMap.color]||'',
           category:row[colMap.category]||'',
           retail_price:parseFloat(row[colMap.retail_price])||0,
           nsa_cost:parseFloat(row[colMap.nsa_cost])||0,
-          available_sizes:sizes,is_active:true,_inv:{},_alerts:{}
+          available_sizes:parsedSizes||['S','M','L','XL','2XL'],is_active:true,_inv:{},_alerts:{}
         });
       });
-      if(added.length>0)setProd(prev=>[...prev,...added]);
-      setBulkImp(x=>({...x,step:'done',added:added.length,skipped}));
-      nf('✅ Imported '+added.length+' products'+(skipped.length?' ('+skipped.length+' skipped)':''));
+      if(added.length>0||updated.length>0){
+        setProd(prev=>{
+          let next=added.length>0?[...prev,...added]:[...prev];
+          if(updated.length>0){const upMap=new Map(updated.map(u=>[u.id,u]));next=next.map(p=>upMap.has(p.id)?{...p,...upMap.get(p.id)}:p)}
+          return next;
+        });
+      }
+      setBulkImp(x=>({...x,step:'done',added:added.length,updated:updated.length,skipped}));
+      nf('✅ Imported '+added.length+' new, updated '+updated.length+' existing'+(skipped.length?' ('+skipped.length+' skipped)':''));
     };
 
     const doImport=()=>{if(impTab==='customers')importCustomers();else if(impTab==='vendors')importVendors();else importProducts()};
@@ -14143,7 +14165,7 @@ export default function App(){
               <div style={{textAlign:'center',padding:24}}>
                 <div style={{fontSize:48,marginBottom:8}}>🎉</div>
                 <div style={{fontSize:18,fontWeight:800,color:'#166534',marginBottom:4}}>Import Complete!</div>
-                <div style={{fontSize:14,color:'#475569'}}>{bulkImp.added} {impTab} imported successfully</div>
+                <div style={{fontSize:14,color:'#475569'}}>{bulkImp.added} {impTab} imported successfully{bulkImp.updated>0&&<span> · {bulkImp.updated} updated</span>}</div>
                 {impTab==='customers'&&bulkImp.added>0&&<div style={{fontSize:12,color:'#64748b',marginTop:4}}>
                   {bulkImp.parentCount||0} parent accounts · {bulkImp.subCount||0} sub-accounts
                 </div>}
