@@ -9365,7 +9365,7 @@ export default function App(){
               submittedBatches.filter(sb=>sb.status!=='received').forEach(sb=>{
                 openPOs.push({id:sb.po_number,vendor:sb.vendor_name,units:sb.total_units,date:sb.submitted_at,type:'batch'})});
               sos.forEach(so=>{safeItems(so).forEach(it=>{safePOs(it).filter(po=>!po.drop_ship).forEach(po=>{
-                const szKeys=Object.keys(po).filter(k=>!k.startsWith('_')&&typeof po[k]==='number'&&!['status'].includes(k));
+                const szKeys=Object.keys(po).filter(k=>!k.startsWith('_')&&!['status','po_id','received','shipments','cancelled','vendor','created_at','expected_date','memo','po_type','unit_cost','drop_ship','billed','tracking_numbers','deco_vendor','deco_type'].includes(k)&&typeof po[k]==='number');
                 const open=szKeys.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-((po.received||{})[sz]||0)-((po.cancelled||{})[sz]||0)),0);
                 if(open>0&&!openPOs.find(x=>x.id===po.po_id))openPOs.push({id:po.po_id||'—',vendor:po.vendor||po.deco_vendor||D_V.find(v=>v.id===it.vendor_id)?.name||it.brand||'',units:open,date:po.created_at||'',type:'so'})
               })})});
@@ -9410,7 +9410,7 @@ export default function App(){
             poDate=soPOLines[0]?.poLine?.created_at||'';
             soPOLines.forEach((pl,pli)=>{
               const po=pl.poLine;
-              const szKeys=Object.keys(po).filter(k=>!k.startsWith('_')&&typeof po[k]==='number'&&!['status'].includes(k));
+              const szKeys=Object.keys(po).filter(k=>!k.startsWith('_')&&!['status','po_id','received','shipments','cancelled','vendor','created_at','expected_date','memo','po_type','unit_cost','drop_ship','billed','tracking_numbers','deco_vendor','deco_type'].includes(k)&&typeof po[k]==='number');
               poItems.push({_idx:pli,sku:pl.item.sku,name:safeStr(pl.item.name),color:pl.item.color||'',
                 soId:pl.soId,customer:pl.customer,szKeys,
                 ordered:Object.fromEntries(szKeys.map(sz=>[sz,po[sz]||0])),
@@ -9627,7 +9627,7 @@ export default function App(){
                       const updItems=[...safeItems(grpSO)];
                       lines.forEach(pl=>{
                         const po=updItems[pl.itemIdx]?.po_lines?.[pl.poLineIdx];if(!po)return;
-                        const szKeys=Object.keys(po).filter(k=>!k.startsWith('_')&&typeof po[k]==='number'&&!['status'].includes(k));
+                        const szKeys=Object.keys(po).filter(k=>!k.startsWith('_')&&!['status','po_id','received','shipments','cancelled','vendor','created_at','expected_date','memo','po_type','unit_cost','drop_ship','billed','tracking_numbers','deco_vendor','deco_type'].includes(k)&&typeof po[k]==='number');
                         const shipment={date};const newReceived={...(po.received||{})};
                         szKeys.forEach(sz=>{
                           const open=Math.max(0,(po[sz]||0)-((po.received||{})[sz]||0)-((po.cancelled||{})[sz]||0));
@@ -9643,7 +9643,22 @@ export default function App(){
                         pls[pl.poLineIdx]={...po,received:newReceived,shipments:newShipments,status:newStatus};
                         updItems[pl.itemIdx]={...updItems[pl.itemIdx],po_lines:pls};
                       });
-                      savSO({...grpSO,items:updItems,updated_at:new Date().toLocaleString()});
+                      // Recalculate job item_status after receiving items
+                      const updJobs=safeJobs(grpSO).map(j=>{
+                        let total=0,fulfilled=0;
+                        (j.items||[]).forEach(gi=>{const it=updItems[gi.item_idx];if(!it)return;
+                          Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0).forEach(([sz,v])=>{
+                            total+=v;
+                            const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
+                            const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
+                            fulfilled+=Math.min(v,pQ+rQ);
+                          });
+                        });
+                        const itemSt=fulfilled>=total&&total>0?'items_received':fulfilled>0?'partially_received':'need_to_order';
+                        if(j.item_status===itemSt&&j.fulfilled_units===fulfilled&&j.total_units===total)return j;
+                        return{...j,item_status:itemSt,fulfilled_units:fulfilled,total_units:total};
+                      });
+                      savSO({...grpSO,items:updItems,jobs:updJobs,updated_at:new Date().toLocaleString()});
                     });
                   }
 
