@@ -1740,7 +1740,8 @@ export default function App(){
       };
       // Debounce realtime events — coalesce rapid-fire changes into a single reload
       const debouncedReload=()=>{if(_rtTimer)clearTimeout(_rtTimer);_rtTimer=setTimeout(reloadAll,2000)};
-      ['estimates','estimate_items','estimate_item_decorations','estimate_art_files','sales_orders','so_items','so_item_decorations','so_item_pick_lines','so_item_po_lines','so_art_files','so_jobs','so_firm_dates','invoices','invoice_items','invoice_payments','messages','message_reads','customers','customer_contacts','products','product_inventory','vendors','team_members','omg_stores','omg_store_products','issues','app_state','deco_vendors','deco_vendor_pricing','customer_credits','customer_credit_usage'].forEach(table=>{
+      // Only subscribe to core tables that need instant sync — child tables are loaded with parents during poll/reload
+      ['estimates','sales_orders','invoices','messages','customers','products'].forEach(table=>{
         const ch=supabase.channel('realtime_'+table).on('postgres_changes',{event:'*',schema:'public',table},()=>{debouncedReload()}).subscribe();
         channels.push(ch);
       });
@@ -1761,7 +1762,7 @@ export default function App(){
       setEsts(prev=>prev.map(e=>e.status==='converted'&&!sos.some(s=>s.estimate_id===e.id)?{...e,status:'approved',updated_at:new Date().toLocaleString()}:e));
     }
   },[dbLoading]); // eslint-disable-line react-hooks/exhaustive-deps
-  // ─── Supabase polling: refresh from DB every 30 seconds so all users stay in sync ───
+  // ─── Supabase polling: safety-net refresh every 2 minutes (realtime handles instant sync) ───
   React.useEffect(()=>{
     if(!supabase)return;
     const poll=setInterval(async()=>{
@@ -1801,46 +1802,10 @@ export default function App(){
         if(as.batch_pos)setBatchPOs(prev=>JSON.stringify(prev)!==JSON.stringify(as.batch_pos)?as.batch_pos:prev);
         if(as.company_info)setCompanyInfo(prev=>{const ci={...NSA_DEFAULTS,...as.company_info};ci.fullAddr=ci.addr+', '+ci.city+', '+ci.state+' '+ci.zip;if(JSON.stringify(prev)===JSON.stringify(ci))return prev;Object.assign(NSA,ci);return ci});
       }catch(e){console.warn('[DB] Poll failed:',e.message)}
-    },30000);
+    },120000);
     return()=>clearInterval(poll);
   },[]);
 
-  // ─── Supabase Realtime: instant sync when another rep changes data ───
-  React.useEffect(()=>{
-    if(!supabase||!_dbReady.current)return;
-    let _realtimeDebounce=null;
-    const triggerSync=()=>{
-      if(_realtimeDebounce)clearTimeout(_realtimeDebounce);
-      _realtimeDebounce=setTimeout(async()=>{
-        if(_dbSavingCount>0)return;// don't reload while saving
-        try{
-          const d=await _dbLoad();
-          if(!d||!d.hasData)return;
-          // Use same merge logic as polling — only update if data actually changed
-          const changed=(prev,next)=>{if(prev.length!==next.length)return true;const pIds=prev.map(e=>e.id+':'+(e.updated_at||'')+':'+(e._version||0)).sort().join(',');const nIds=next.map(e=>e.id+':'+(e.updated_at||'')+':'+(e._version||0)).sort().join(',');return pIds!==nIds};
-          setEsts(prev=>changed(prev,d.estimates)?d.estimates:prev);
-          setSOs(prev=>changed(prev,d.sales_orders)?d.sales_orders:prev);
-          setInvs(prev=>changed(prev,d.invoices)?d.invoices:prev);
-          setCust(prev=>changed(prev,d.customers)?d.customers:prev);
-          if(d.messages.length)setMsgs(prev=>changed(prev,d.messages)?d.messages:prev);
-          if(d.products.length)setProd(prev=>changed(prev,d.products)?d.products:prev);
-          _dbSnap.current={ests:d.estimates,sos:d.sales_orders,invs:d.invoices,msgs:d.messages,cust:d.customers,prod:d.products,vend:d.vendors,team:d.team,omg:d.omg_stores,issues:d.issues};
-        }catch(e){console.warn('[Realtime] Sync failed:',e.message)}
-      },500);// debounce 500ms to batch rapid changes
-    };
-    const channel=supabase.channel('nsa-realtime')
-      .on('postgres_changes',{event:'*',schema:'public',table:'sales_orders'},triggerSync)
-      .on('postgres_changes',{event:'*',schema:'public',table:'estimates'},triggerSync)
-      .on('postgres_changes',{event:'*',schema:'public',table:'customers'},triggerSync)
-      .on('postgres_changes',{event:'*',schema:'public',table:'invoices'},triggerSync)
-      .on('postgres_changes',{event:'*',schema:'public',table:'products'},triggerSync)
-      .on('postgres_changes',{event:'*',schema:'public',table:'messages'},triggerSync)
-      .subscribe((status)=>{
-        if(status==='SUBSCRIBED')console.log('[Realtime] Connected — live sync active');
-        if(status==='CHANNEL_ERROR')console.warn('[Realtime] Channel error — falling back to polling');
-      });
-    return()=>{if(_realtimeDebounce)clearTimeout(_realtimeDebounce);supabase.removeChannel(channel)};
-  },[]);
 
   // ─── Brevo email open tracking: poll for opens on recently sent documents ───
   React.useEffect(()=>{
