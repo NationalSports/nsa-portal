@@ -48,11 +48,11 @@ END $$;
 -- These columns are used in JOINs/filters during every poll cycle
 CREATE INDEX IF NOT EXISTS idx_estimate_items_estimate_id ON estimate_items(estimate_id);
 CREATE INDEX IF NOT EXISTS idx_estimate_item_decorations_item_id ON estimate_item_decorations(estimate_item_id);
-CREATE INDEX IF NOT EXISTS idx_so_items_so_id ON so_items(sales_order_id);
+CREATE INDEX IF NOT EXISTS idx_so_items_so_id ON so_items(so_id);
 CREATE INDEX IF NOT EXISTS idx_so_item_decorations_item_id ON so_item_decorations(so_item_id);
 CREATE INDEX IF NOT EXISTS idx_so_item_pick_lines_item_id ON so_item_pick_lines(so_item_id);
 CREATE INDEX IF NOT EXISTS idx_so_item_po_lines_item_id ON so_item_po_lines(so_item_id);
-CREATE INDEX IF NOT EXISTS idx_so_jobs_so_id ON so_jobs(sales_order_id);
+CREATE INDEX IF NOT EXISTS idx_so_jobs_so_id ON so_jobs(so_id);
 CREATE INDEX IF NOT EXISTS idx_omg_store_products_store_id ON omg_store_products(store_id);
 CREATE INDEX IF NOT EXISTS idx_customer_contacts_customer_id ON customer_contacts(customer_id);
 
