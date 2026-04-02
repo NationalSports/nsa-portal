@@ -899,10 +899,14 @@ const _queuedEntitySave=async(id,data,saveFn)=>{
   }finally{delete _dbSaveInFlight[id]}
   return lastResult;
 };
+// Safe localStorage write — catches QuotaExceededError and notifies user instead of silently failing
+let _lsQuotaWarned=false;// prevent spamming quota warnings
+const _lsSet=(key,value)=>{try{localStorage.setItem(key,value);return true}catch(e){if((e.name==='QuotaExceededError'||e.message?.includes('quota'))&&!_lsQuotaWarned){_lsQuotaWarned=true;if(_dbNotify)_dbNotify('Local cache full — data is still saved to cloud. Clear browser data if issues persist.','error');console.error('[Storage] localStorage quota exceeded writing key:',key)}return false}};
 // Track IDs of estimates/SOs whose save failed — prevents reload/poll from overwriting local state
 // Persisted to localStorage so protection survives page refresh
 const _dbSaveFailedIds=new Set(JSON.parse(localStorage.getItem('nsa_save_failed_ids')||'[]'));
-const _persistFailedIds=()=>{try{localStorage.setItem('nsa_save_failed_ids',JSON.stringify([..._dbSaveFailedIds]))}catch{}};
+let _onFailedIdsChange=null;// set by App component to trigger UI updates
+const _persistFailedIds=()=>{_lsSet('nsa_save_failed_ids',JSON.stringify([..._dbSaveFailedIds]));if(_onFailedIdsChange)_onFailedIdsChange(_dbSaveFailedIds.size)};
 // Track recent saves by this client — prevents false "modified by another user" conflicts from own realtime echo
 const _dbRecentSaves={};// {id: timestamp}
 // Legacy compat — keep old _dbSave for team_members and other simple tables
@@ -1463,10 +1467,10 @@ export default function App(){
       // Fix so_id refs on messages
       msgList.forEach(m=>{if(m.so_id&&idMap[m.so_id])m.so_id=idMap[m.so_id]});
       // Save migrated data back to localStorage
-      try{localStorage.setItem('nsa_sos',JSON.stringify(soList))}catch{}
-      try{localStorage.setItem('nsa_invs',JSON.stringify(invList))}catch{}
-      try{localStorage.setItem('nsa_msgs',JSON.stringify(msgList))}catch{}
-      try{localStorage.setItem('nsa_ests',JSON.stringify(estList))}catch{}
+      _lsSet('nsa_sos',JSON.stringify(soList));
+      _lsSet('nsa_invs',JSON.stringify(invList));
+      _lsSet('nsa_msgs',JSON.stringify(msgList));
+      _lsSet('nsa_ests',JSON.stringify(estList));
       console.log('NSA: Migrated bad IDs →',idMap);
     }
     return{sos:soList,invs:invList,msgs:msgList,ests:estList};
@@ -1488,6 +1492,7 @@ export default function App(){
   const[omgSyncing,setOmgSyncing]=useState(false);
   const[omgLastSync,setOmgLastSync]=useState(null);
   const[dbLoading,setDbLoading]=useState(!!supabase);const[dbError,setDbError]=useState(null);const _dbReady=useRef(false);const _dbLoadSuccess=useRef(false);
+  const[failedSaveCount,setFailedSaveCount]=useState(_dbSaveFailedIds.size);_onFailedIdsChange=setFailedSaveCount;
   // Snapshot of last DB-loaded data — used to diff auto-save and only write changed records
   const _dbSnap=useRef({});
   // Batch PO system
@@ -1606,8 +1611,8 @@ export default function App(){
           if(d.decoVendors)setDecoVendors(d.decoVendors);
           if(d.decoVendorPricing)setDecoVendorPricing(d.decoVendorPricing);
           // Merge server-side dismissed todos/notifs into localStorage-based state
-          if(d.dismissedTodosDb?.length){const dbKeys=d.dismissedTodosDb.map(r=>r.dismiss_key);setDismissedTodos(prev=>{const merged=[...new Set([...prev,...dbKeys])];try{localStorage.setItem('nsa_dismissed_todos',JSON.stringify(merged))}catch{}return merged})}
-          if(d.dismissedNotifsDb?.length){const dbKeys=d.dismissedNotifsDb.map(r=>r.dismiss_key);setDismissedNotifs(prev=>{const merged=[...new Set([...prev,...dbKeys])];try{localStorage.setItem('nsa_dismissed_notifs',JSON.stringify(merged))}catch{}return merged})}
+          if(d.dismissedTodosDb?.length){const dbKeys=d.dismissedTodosDb.map(r=>r.dismiss_key);setDismissedTodos(prev=>{const merged=[...new Set([...prev,...dbKeys])];_lsSet('nsa_dismissed_todos',JSON.stringify(merged));return merged})}
+          if(d.dismissedNotifsDb?.length){const dbKeys=d.dismissedNotifsDb.map(r=>r.dismiss_key);setDismissedNotifs(prev=>{const merged=[...new Set([...prev,...dbKeys])];_lsSet('nsa_dismissed_notifs',JSON.stringify(merged));return merged})}
           // Load app_state key-value data (batch POs, changelog, etc.)
           const as=d.appState||{};
           if(as.batch_pos)setBatchPOs(as.batch_pos);
@@ -1847,10 +1852,10 @@ export default function App(){
   // IMPORTANT: Supabase writes are gated behind _dbLoadSuccess to prevent demo/stale data from overwriting real cloud data
   // Uses _dbSnap to diff against last DB state — only saves records that actually changed (prevents cross-browser feedback loops)
   const _diffSave=(arr,snapKey,saveFn)=>{if(!_initialLoadDone.current||!_dbLoadSuccess.current){console.warn('[DB] _diffSave skipped for',snapKey,'— initialLoad:',_initialLoadDone.current,'dbSuccess:',_dbLoadSuccess.current);return}const snap=_dbSnap.current[snapKey]||[];const changed=[];arr.forEach(item=>{const old=snap.find(p=>p.id===item.id);if(!old||JSON.stringify(old)!==JSON.stringify(item))changed.push(item)});_dbSnap.current[snapKey]=arr;if(changed.length===0)return;const BATCH=10;const processBatch=async(idx)=>{const batch=changed.slice(idx,idx+BATCH);if(!batch.length)return;await Promise.all(batch.map(async item=>{const result=saveFn(item);if(result&&typeof result.then==='function'){const ok=await result;if(ok===false){const oldSnap=_dbSnap.current[snapKey]||[];_dbSnap.current[snapKey]=oldSnap.map(s=>s.id===item.id?(snap.find(p=>p.id===item.id)||s):s)}}}));if(idx+BATCH<changed.length)await processBatch(idx+BATCH)};processBatch(0)};
-  React.useEffect(()=>{try{localStorage.setItem('nsa_reps',JSON.stringify(REPS))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.team||[];const changed=REPS.filter(r=>{const old=snap.find(p=>p.id===r.id);return!old||JSON.stringify(old)!==JSON.stringify(r)});if(changed.length)_dbSave('team_members',changed.map(r=>({id:r.id,name:r.name,role:r.role,email:r.email,phone:r.phone,is_active:r.is_active!==false})));_dbSnap.current.team=REPS}},[REPS]);
-  React.useEffect(()=>{try{localStorage.setItem('nsa_cust',JSON.stringify(cust))}catch{};_diffSave(cust,'cust',c=>_dbSaveCustomer(c))},[cust]);
-  React.useEffect(()=>{try{localStorage.setItem('nsa_vend',JSON.stringify(vend))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.vend||[];const changed=vend.filter(v=>{const old=snap.find(p=>p.id===v.id);return!old||JSON.stringify(old)!==JSON.stringify(v)});if(changed.length)_dbSave('vendors',changed.map(v=>_pick(v,_vendCols)));_dbSnap.current.vend=vend}},[vend]);
-  React.useEffect(()=>{try{localStorage.setItem('nsa_prod',JSON.stringify(prod))}catch{};_diffSave(prod,'prod',p=>_dbSaveProduct(p))},[prod]);
+  React.useEffect(()=>{if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.team||[];const changed=REPS.filter(r=>{const old=snap.find(p=>p.id===r.id);return!old||JSON.stringify(old)!==JSON.stringify(r)});if(changed.length)_dbSave('team_members',changed.map(r=>({id:r.id,name:r.name,role:r.role,email:r.email,phone:r.phone,is_active:r.is_active!==false})));_dbSnap.current.team=REPS}},[REPS]);
+  React.useEffect(()=>{_diffSave(cust,'cust',c=>_dbSaveCustomer(c))},[cust]);
+  React.useEffect(()=>{if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.vend||[];const changed=vend.filter(v=>{const old=snap.find(p=>p.id===v.id);return!old||JSON.stringify(old)!==JSON.stringify(v)});if(changed.length)_dbSave('vendors',changed.map(v=>_pick(v,_vendCols)));_dbSnap.current.vend=vend}},[vend]);
+  React.useEffect(()=>{_diffSave(prod,'prod',p=>_dbSaveProduct(p))},[prod]);
   // Fetch Adidas B2B inventory for all Adidas products (bulk, once)
   React.useEffect(()=>{
     if(adidasBulkFetched.current||!prod||prod.length===0)return;
@@ -1919,11 +1924,11 @@ export default function App(){
     }finally{setAdidasSyncUploading(false)}
   };
 
-  React.useEffect(()=>{try{localStorage.setItem('nsa_ests',JSON.stringify(ests))}catch{};_diffSave(ests,'ests',e=>_dbSaveEstimate(e))},[ests]);
-  React.useEffect(()=>{try{localStorage.setItem('nsa_sos',JSON.stringify(sos))}catch{};_diffSave(sos,'sos',s=>_dbSaveSO(s))},[sos]);
-  React.useEffect(()=>{try{localStorage.setItem('nsa_invs',JSON.stringify(invs))}catch{};_diffSave(invs,'invs',i=>_dbSaveInvoice(i))},[invs]);
-  React.useEffect(()=>{try{localStorage.setItem('nsa_msgs',JSON.stringify(msgs))}catch{};_diffSave(msgs,'msgs',m=>_dbSaveMessage(m))},[msgs]);
-  React.useEffect(()=>{try{localStorage.setItem('nsa_omg_stores',JSON.stringify(omgStores))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.omg||[];omgStores.forEach(s=>{const old=snap.find(p=>p.id===s.id);if(!old||JSON.stringify(old)!==JSON.stringify(s)){_dbSave('omg_stores',[_pick(s,_omgStoreCols)])}});_dbSnap.current.omg=omgStores}},[omgStores]);
+  React.useEffect(()=>{_diffSave(ests,'ests',e=>_dbSaveEstimate(e))},[ests]);
+  React.useEffect(()=>{_diffSave(sos,'sos',s=>_dbSaveSO(s))},[sos]);
+  React.useEffect(()=>{_diffSave(invs,'invs',i=>_dbSaveInvoice(i))},[invs]);
+  React.useEffect(()=>{_diffSave(msgs,'msgs',m=>_dbSaveMessage(m))},[msgs]);
+  React.useEffect(()=>{if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.omg||[];omgStores.forEach(s=>{const old=snap.find(p=>p.id===s.id);if(!old||JSON.stringify(old)!==JSON.stringify(s)){_dbSave('omg_stores',[_pick(s,_omgStoreCols)])}});_dbSnap.current.omg=omgStores}},[omgStores]);
 
   // ─── Automatic retry for failed saves (every 30s) ───
   React.useEffect(()=>{
@@ -2069,7 +2074,7 @@ export default function App(){
     }
   };
 
-  React.useEffect(()=>{try{localStorage.setItem('nsa_issues',JSON.stringify(issues))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.issues||[];const changed=issues.filter(i=>{const old=snap.find(p=>p.id===i.id);return!old||JSON.stringify(old)!==JSON.stringify(i)});if(changed.length)_dbSave('issues',changed.map(i=>_pick(i,_issueCols)));_dbSnap.current.issues=issues}},[issues]);
+  React.useEffect(()=>{if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.issues||[];const changed=issues.filter(i=>{const old=snap.find(p=>p.id===i.id);return!old||JSON.stringify(old)!==JSON.stringify(i)});if(changed.length)_dbSave('issues',changed.map(i=>_pick(i,_issueCols)));_dbSnap.current.issues=issues}},[issues]);
   // Rep-CSR assignments auto-save
   React.useEffect(()=>{if(!_initialLoadDone.current||!_dbLoadSuccess.current)return;const snap=_dbSnap.current.repCsr||[];const changed=repCsrAssignments.filter(a=>{const old=snap.find(p=>p.id===a.id);return!old||JSON.stringify(old)!==JSON.stringify(a)});if(changed.length)_dbSave('rep_csr_assignments',changed);_dbSnap.current.repCsr=repCsrAssignments},[repCsrAssignments]);
   // Assigned todos auto-save
@@ -2104,7 +2109,7 @@ export default function App(){
     }));
   },[sos,ests]);
   // Batch POs, submitted batches, changelog, SO history — sync to localStorage + Supabase app_state table
-  const _saveAppState=(key,val)=>{try{localStorage.setItem('nsa_'+key,JSON.stringify(val))}catch{};if(_initialLoadDone.current&&_dbLoadSuccess.current)_dbSave('app_state',[{id:key,value:JSON.stringify(val),updated_at:new Date().toISOString()}])};
+  const _saveAppState=(key,val)=>{_lsSet('nsa_'+key,JSON.stringify(val));if(_initialLoadDone.current&&_dbLoadSuccess.current)_dbSave('app_state',[{id:key,value:JSON.stringify(val),updated_at:new Date().toISOString()}])};
   React.useEffect(()=>{_saveAppState('batch_pos',batchPOs)},[batchPOs]);
   React.useEffect(()=>{_saveAppState('submitted_batches',submittedBatches)},[submittedBatches]);
   React.useEffect(()=>{_saveAppState('batch_counter',batchCounter)},[batchCounter]);
@@ -2130,34 +2135,32 @@ export default function App(){
   // Warn user before closing/reloading if there are failed saves (data at risk of loss)
   // Also flush all current state to localStorage as a safety net before unload
   React.useEffect(()=>{const h=e=>{
-    // Emergency flush to localStorage on unload — ensures latest state is persisted
-    try{const d=_visFlushRefs.current;
-      localStorage.setItem('nsa_cust',JSON.stringify(d.cust));
-      localStorage.setItem('nsa_ests',JSON.stringify(d.ests));
-      localStorage.setItem('nsa_sos',JSON.stringify(d.sos));
-      localStorage.setItem('nsa_invs',JSON.stringify(d.invs));
-      localStorage.setItem('nsa_msgs',JSON.stringify(d.msgs));
-      localStorage.setItem('nsa_prod',JSON.stringify(d.prod));
-    }catch(_){}
+    // Emergency flush to localStorage on unload — ensures latest state is persisted as cache for next load
+    const d=_visFlushRefs.current;
+    _lsSet('nsa_cust',JSON.stringify(d.cust));
+    _lsSet('nsa_ests',JSON.stringify(d.ests));
+    _lsSet('nsa_sos',JSON.stringify(d.sos));
+    _lsSet('nsa_invs',JSON.stringify(d.invs));
+    _lsSet('nsa_msgs',JSON.stringify(d.msgs));
+    _lsSet('nsa_prod',JSON.stringify(d.prod));
     if(window.location.search.includes('portal='))return;if(_dbSaveFailedIds.size>0){e.preventDefault();e.returnValue=''}};window.addEventListener('beforeunload',h);return()=>window.removeEventListener('beforeunload',h)},[]);
   // Flush all state to localStorage when tab is hidden (prevents data loss on mobile tab-kill/timeout)
   // Also retry failed saves immediately when tab regains visibility (don't wait 60s)
   React.useEffect(()=>{
     const onVis=()=>{
       if(document.hidden){
-        // Tab going hidden — emergency flush all state to localStorage
-        try{const d=_visFlushRefs.current;
-          localStorage.setItem('nsa_cust',JSON.stringify(d.cust));
-          localStorage.setItem('nsa_ests',JSON.stringify(d.ests));
-          localStorage.setItem('nsa_sos',JSON.stringify(d.sos));
-          localStorage.setItem('nsa_invs',JSON.stringify(d.invs));
-          localStorage.setItem('nsa_msgs',JSON.stringify(d.msgs));
-          localStorage.setItem('nsa_prod',JSON.stringify(d.prod));
-          localStorage.setItem('nsa_vend',JSON.stringify(d.vend));
-          localStorage.setItem('nsa_reps',JSON.stringify(d.REPS));
-          localStorage.setItem('nsa_omg_stores',JSON.stringify(d.omgStores));
-          localStorage.setItem('nsa_issues',JSON.stringify(d.issues));
-        }catch(e){console.warn('[Persistence] visibilitychange flush failed:',e.message)}
+        // Tab going hidden — emergency flush all state to localStorage as cache for next load
+        const d=_visFlushRefs.current;
+        _lsSet('nsa_cust',JSON.stringify(d.cust));
+        _lsSet('nsa_ests',JSON.stringify(d.ests));
+        _lsSet('nsa_sos',JSON.stringify(d.sos));
+        _lsSet('nsa_invs',JSON.stringify(d.invs));
+        _lsSet('nsa_msgs',JSON.stringify(d.msgs));
+        _lsSet('nsa_prod',JSON.stringify(d.prod));
+        _lsSet('nsa_vend',JSON.stringify(d.vend));
+        _lsSet('nsa_reps',JSON.stringify(d.REPS));
+        _lsSet('nsa_omg_stores',JSON.stringify(d.omgStores));
+        _lsSet('nsa_issues',JSON.stringify(d.issues));
       }else if(_dbSaveFailedIds.size>0&&_initialLoadDone.current&&_dbLoadSuccess.current){
         // Tab returning — immediately retry failed saves instead of waiting 60s
         console.log('[DB] Tab visible — retrying',_dbSaveFailedIds.size,'failed saves');
@@ -2283,7 +2286,7 @@ export default function App(){
   // Recently viewed records
   const[recentlyViewed,setRecentlyViewed]=useState(()=>{try{return JSON.parse(localStorage.getItem('nsa_recent')||'[]')}catch{return[]}});
   const[recentOpen,setRecentOpen]=useState(false);
-  const addRecent=(kind,id,label,custId)=>{setRecentlyViewed(prev=>{const filtered=prev.filter(r=>!(r.kind===kind&&r.id===id));const next=[{kind,id,label,custId,ts:Date.now()},...filtered].slice(0,10);try{localStorage.setItem('nsa_recent',JSON.stringify(next))}catch{}return next})};
+  const addRecent=(kind,id,label,custId)=>{setRecentlyViewed(prev=>{const filtered=prev.filter(r=>!(r.kind===kind&&r.id===id));const next=[{kind,id,label,custId,ts:Date.now()},...filtered].slice(0,10);_lsSet('nsa_recent',JSON.stringify(next));return next}};
   React.useEffect(()=>{if(eSO){const c=cust.find(x=>x.id===eSO.customer_id);addRecent('order',eSO.id,eSO.id+(eSO.memo?' — '+eSO.memo:'')+(c?' ('+( c.alpha_tag||c.name)+')':''),eSO.customer_id)}},[eSO?.id]); // eslint-disable-line
   React.useEffect(()=>{if(eEst){const c=cust.find(x=>x.id===eEst.customer_id);addRecent('estimate',eEst.id,eEst.id+(eEst.memo?' — '+eEst.memo:'')+(c?' ('+(c.alpha_tag||c.name)+')':''),eEst.customer_id)}},[eEst?.id]); // eslint-disable-line
   React.useEffect(()=>{if(selC)addRecent('customer',selC.id,selC.name+(selC.alpha_tag?' ('+selC.alpha_tag+')':''))},[selC?.id]); // eslint-disable-line
@@ -2389,21 +2392,21 @@ export default function App(){
   const[iS,setIS]=useState({f:'value',d:'desc'});const[iF,setIF]=useState({cat:'all',vnd:'all',clr:'all'});
   const dirtyRef=React.useRef(false);
   const[favSkus,setFavSkus]=useState(()=>{try{return JSON.parse(localStorage.getItem('nsa_fav_skus')||'[]')}catch{return[]}});
-  const toggleFav=sku=>{setFavSkus(f=>{const n=f.includes(sku)?f.filter(s=>s!==sku):[...f,sku];try{localStorage.setItem('nsa_fav_skus',JSON.stringify(n))}catch{}return n})};
+  const toggleFav=sku=>{setFavSkus(f=>{const n=f.includes(sku)?f.filter(s=>s!==sku):[...f,sku];_lsSet('nsa_fav_skus',JSON.stringify(n));return n})};
   const[iShowFav,setIShowFav]=useState(false);
   const[dismissedNotifs,setDismissedNotifs]=useState(()=>{try{return JSON.parse(localStorage.getItem('nsa_dismissed_notifs')||'[]')}catch{return[]}});
-  const dismissNotif=(key)=>{setDismissedNotifs(prev=>{if(prev.includes(key))return prev;const n=[...prev,key];try{localStorage.setItem('nsa_dismissed_notifs',JSON.stringify(n))}catch{}if(supabase&&cu?.id)supabase.from('dismissed_notifs').upsert({id:cu.id+':'+key.slice(0,80),user_id:cu.id,dismiss_key:key},{onConflict:'user_id,dismiss_key'}).then(r=>{if(r.error)console.error('[DB] dismiss notif:',r.error.message)});return n})};
+  const dismissNotif=(key)=>{setDismissedNotifs(prev=>{if(prev.includes(key))return prev;const n=[...prev,key];_lsSet('nsa_dismissed_notifs',JSON.stringify(n));if(supabase&&cu?.id)supabase.from('dismissed_notifs').upsert({id:cu.id+':'+key.slice(0,80),user_id:cu.id,dismiss_key:key},{onConflict:'user_id,dismiss_key'}).then(r=>{if(r.error)console.error('[DB] dismiss notif:',r.error.message)});return n})};
   const[dismissedTodos,setDismissedTodos]=useState(()=>{try{return JSON.parse(localStorage.getItem('nsa_dismissed_todos')||'[]')}catch{return[]}});
-  const dismissTodo=(key)=>{setDismissedTodos(prev=>{if(prev.includes(key))return prev;const n=[...prev,key];try{localStorage.setItem('nsa_dismissed_todos',JSON.stringify(n))}catch{}if(supabase&&cu?.id)supabase.from('dismissed_todos').upsert({id:cu.id+':'+key.slice(0,80),user_id:cu.id,dismiss_key:key},{onConflict:'user_id,dismiss_key'}).then(r=>{if(r.error)console.error('[DB] dismiss todo:',r.error.message)});return n})};
+  const dismissTodo=(key)=>{setDismissedTodos(prev=>{if(prev.includes(key))return prev;const n=[...prev,key];_lsSet('nsa_dismissed_todos',JSON.stringify(n));if(supabase&&cu?.id)supabase.from('dismissed_todos').upsert({id:cu.id+':'+key.slice(0,80),user_id:cu.id,dismiss_key:key},{onConflict:'user_id,dismiss_key'}).then(r=>{if(r.error)console.error('[DB] dismiss todo:',r.error.message)});return n})};
   const[todoFilter,setTodoFilter]=useState('all');// all|art|follow_up|order|deadline|booking|delivery|issue|est
   const[cu,setCu]=useState(()=>{try{const s=localStorage.getItem('nsa_user');return s?JSON.parse(s):null}catch{return null}});
-  const handleLogin=(user)=>{setCu(user);try{localStorage.setItem('nsa_user',JSON.stringify(user))}catch{}};
+  const handleLogin=(user)=>{setCu(user);_lsSet('nsa_user',JSON.stringify(user))};
   const handleLogout=async()=>{setCu(null);try{localStorage.removeItem('nsa_user')}catch{};await _sbSignOut()};
 
   // ─── MOBILE PORTAL DETECTION & TOGGLE ───
   const _isTouchDevice=()=>{try{return('ontouchstart'in window||navigator.maxTouchPoints>0)&&window.innerWidth<=1024}catch{return false}};
   const[mobileMode,setMobileMode]=useState(()=>{try{const pref=localStorage.getItem('nsa_mobile_mode');if(pref==='desktop')return false;if(pref==='mobile')return true;return _isTouchDevice()}catch{return false}});
-  useEffect(()=>{try{localStorage.setItem('nsa_mobile_mode',mobileMode?'mobile':'desktop')}catch{}},[mobileMode]);
+  useEffect(()=>{_lsSet('nsa_mobile_mode',mobileMode?'mobile':'desktop')},[mobileMode]);
 
   const isA=cu?.role==='admin';
   const pars=useMemo(()=>cust.filter(c=>!c.parent_id),[cust]);const gK=useCallback(pid=>cust.filter(c=>c.parent_id===pid),[cust]);
@@ -4992,10 +4995,10 @@ export default function App(){
   ];
   const defaultCols=ALL_PROD_COLS.filter(c=>c.default).map(c=>c.id);
   const[prodCols,setProdCols]=useState(()=>{try{const s=localStorage.getItem('nsa_prod_cols');return s?JSON.parse(s):defaultCols}catch{return defaultCols}});
-  const toggleCol=id=>{setProdCols(prev=>{const n=prev.includes(id)?prev.filter(c=>c!==id):[...prev,id];try{localStorage.setItem('nsa_prod_cols',JSON.stringify(n))}catch{}return n})};
-  const resetCols=()=>{setProdCols(defaultCols);try{localStorage.setItem('nsa_prod_cols',JSON.stringify(defaultCols))}catch{}};
+  const toggleCol=id=>{setProdCols(prev=>{const n=prev.includes(id)?prev.filter(c=>c!==id):[...prev,id];_lsSet('nsa_prod_cols',JSON.stringify(n));return n})};
+  const resetCols=()=>{setProdCols(defaultCols);_lsSet('nsa_prod_cols',JSON.stringify(defaultCols))};
   const[roleView,setRoleView]=useState(()=>{try{return localStorage.getItem('nsa_role_view')||'sales'}catch{return'sales'}});
-  const changeRoleView=v=>{setRoleView(v);try{localStorage.setItem('nsa_role_view',v)}catch{}};
+  const changeRoleView=v=>{setRoleView(v);_lsSet('nsa_role_view',v)};
   function rProd2(){
     const isAdmin=cu?.role==='admin'||cu?.role==='prod_manager'||cu?.role==='gm';
     const isDecorator=cu?.role==='production'||cu?.role==='prod_assistant';
@@ -6182,15 +6185,13 @@ export default function App(){
   React.useEffect(()=>{
     if(!autoBackupEnabled)return;
     const interval=setInterval(()=>{
-      try{
-        const data=JSON.stringify({_meta:{version:'1.0',auto_backup:true,saved_at:new Date().toISOString()},
+      const data=JSON.stringify({_meta:{version:'1.0',auto_backup:true,saved_at:new Date().toISOString()},
           customers:cust,estimates:ests,sales_orders:sos,products:prod,messages:msgs,invoices:invs,
           batch_queue:batchPOs,submitted_batches:submittedBatches,batch_counter:batchCounter,
           change_log:changeLog,so_history:soHistory,
           inv_adj_log:invAdjLog,inv_pos:invPOs,inv_po_counter:invPOCounter});
-        localStorage.setItem('nsa_auto_backup',data);
-        localStorage.setItem('nsa_auto_backup_ts',new Date().toISOString());
-      }catch(e){console.warn('[Backup] Auto-backup failed:',e.message);if(e.name==='QuotaExceededError'||e.message?.includes('quota'))nf('Auto-backup failed — localStorage full. Export a manual backup.','error')}
+      if(!_lsSet('nsa_auto_backup',data)){nf('Auto-backup failed — localStorage full. Export a manual backup.','error')}
+      else{_lsSet('nsa_auto_backup_ts',new Date().toISOString())}
     },300000);// 5 min
     return()=>clearInterval(interval);
   },[autoBackupEnabled,cust,ests,sos,prod,msgs,invs,batchPOs,submittedBatches,batchCounter,changeLog,soHistory,invAdjLog,invPOs,invPOCounter]);
@@ -8936,7 +8937,7 @@ export default function App(){
     const today=new Date().toISOString().split('T')[0];
     const hour=new Date().getHours();
     if(lastCheck===today||hour<3)return;
-    localStorage.setItem('nsa_ups_pickup_check',today);
+    _lsSet('nsa_ups_pickup_check',today);
     const checkPickups=async()=>{
       const pending=[];
       sos.filter(so=>so._shipments&&so._shipments.length>0&&!so.deleted_at).forEach(so=>{
@@ -8962,7 +8963,7 @@ export default function App(){
     };
     checkPickups();
   },[sos]); // eslint-disable-line react-hooks/exhaustive-deps
-  const addWhAction=(action)=>{setWhRecentActions(prev=>{const next=[{...action,ts:Date.now(),at:new Date().toLocaleString()},...prev].slice(0,500);try{localStorage.setItem('nsa_wh_recent',JSON.stringify(next))}catch{}return next})};
+  const addWhAction=(action)=>{setWhRecentActions(prev=>{const next=[{...action,ts:Date.now(),at:new Date().toLocaleString()},...prev].slice(0,500);_lsSet('nsa_wh_recent',JSON.stringify(next));return next}};
   const[whActionRange,setWhActionRange]=useState('7d');
   const[whActionSearch,setWhActionSearch]=useState('');
   const[stockPOs,setStockPOs]=useState([
@@ -12934,7 +12935,7 @@ export default function App(){
       // Auto-add any new categories from import to the CATEGORIES list
       const allCats=[...added,...updated].map(p=>p.category).filter(c=>c&&c.trim());
       const newCats=[...new Set(allCats)].filter(c=>!CATEGORIES.includes(c));
-      if(newCats.length>0){const merged=[...CATEGORIES,...newCats];CATEGORIES.length=0;CATEGORIES.push(...merged);try{const s=JSON.parse(localStorage.getItem('nsa_settings')||'{}');s.CATEGORIES=merged;localStorage.setItem('nsa_settings',JSON.stringify(s))}catch{}}
+      if(newCats.length>0){const merged=[...CATEGORIES,...newCats];CATEGORIES.length=0;CATEGORIES.push(...merged);try{const s=JSON.parse(localStorage.getItem('nsa_settings')||'{}');s.CATEGORIES=merged;_lsSet('nsa_settings',JSON.stringify(s))}catch{}}
       setBulkImp(x=>({...x,step:'done',added:added.length,updated:updated.length,skipped}));
       nf('✅ Imported '+added.length+' new, updated '+updated.length+' existing'+(skipped.length?' ('+skipped.length+' skipped)':''));
     };
@@ -13235,7 +13236,7 @@ export default function App(){
       setBillImport(x=>({...x,parsed:results,step:'review',uploading:false}));
       // Auto-save to history
       const toSave=results.map(r=>({id:r.id,file:r.file,parsed:{...r.parsed,rawText:undefined},uploadedAt:r.uploadedAt,qbStatus:null}));
-      setSavedBills(prev=>{const updated=[...toSave,...prev].slice(0,200);try{localStorage.setItem('nsa_saved_bills',JSON.stringify(updated))}catch{};return updated});
+      setSavedBills(prev=>{const updated=[...toSave,...prev].slice(0,200);_lsSet('nsa_saved_bills',JSON.stringify(updated));return updated});
       nf(results.length+' bill(s) parsed from '+files.length+' PDF(s)');
     };
 
@@ -13355,7 +13356,7 @@ export default function App(){
       });
       setBillImport(x=>({...x,parsed:[...x.parsed]}));
       // Update localStorage history
-      setSavedBills(prev=>{const updated=prev.map(sb=>{const match=selected.find(s=>s.id===sb.id);return match?{...sb,portalStatus:match.portalStatus}:sb});try{localStorage.setItem('nsa_saved_bills',JSON.stringify(updated))}catch{};return updated});
+      setSavedBills(prev=>{const updated=prev.map(sb=>{const match=selected.find(s=>s.id===sb.id);return match?{...sb,portalStatus:match.portalStatus}:sb});_lsSet('nsa_saved_bills',JSON.stringify(updated));return updated});
       nf(applied+' bill(s) pushed to portal');
     };
 
@@ -13469,7 +13470,7 @@ export default function App(){
           if(result)return{...sb,qbStatus:result.qbStatus,qbMsg:result.qbMsg||''};
           return sb;
         });
-        try{localStorage.setItem('nsa_saved_bills',JSON.stringify(updated))}catch{};
+        _lsSet('nsa_saved_bills',JSON.stringify(updated));
         return updated;
       });
       nf(success+' bill(s) pushed to QB'+(failed?' ('+failed+' failed)':''));
@@ -16202,7 +16203,7 @@ export default function App(){
   React.useEffect(()=>{_saveAppState('labor_rates',laborRates)},[laborRates]);
   const[settingsTab,setSettingsTab]=useState('pricing');
   const savSettings=(key,val)=>{
-    try{const s=JSON.parse(localStorage.getItem('nsa_settings')||'{}');s[key]=val;localStorage.setItem('nsa_settings',JSON.stringify(s));
+    try{const s=JSON.parse(localStorage.getItem('nsa_settings')||'{}');s[key]=val;_lsSet('nsa_settings',JSON.stringify(s));
       if(key==='SP')SP=val;if(key==='EM')EM=val;if(key==='NP')NP=val;if(key==='DTF')DTF=val;
       if(key==='CATEGORIES')CATEGORIES=val;if(key==='POSITIONS')POSITIONS=val;if(key==='CONTACT_ROLES')CONTACT_ROLES=val;
       nf('Settings saved')}catch{nf('Error saving','warn')}};
@@ -17923,6 +17924,10 @@ export default function App(){
       {dbError&&<div style={{padding:'10px 16px',background:'#fef2f2',border:'1px solid #fecaca',color:'#991b1b',fontSize:12,fontWeight:600,display:'flex',alignItems:'center',gap:8}}>
         <span style={{fontSize:16}}>&#9888;</span><span style={{flex:1}}>{dbError}</span>
         <button onClick={()=>setDbError(null)} style={{background:'none',border:'none',color:'#991b1b',cursor:'pointer',fontWeight:800,fontSize:14}}>&#215;</button>
+      </div>}
+      {failedSaveCount>0&&<div style={{padding:'8px 16px',background:'#fefce8',border:'1px solid #fde68a',color:'#92400e',fontSize:12,fontWeight:600,display:'flex',alignItems:'center',gap:8}}>
+        <span style={{fontSize:14}}>&#9888;</span><span style={{flex:1}}>{failedSaveCount} item{failedSaveCount>1?'s':''} failed to save to cloud. Auto-retrying every 30s. Your data is safe locally.</span>
+        <span style={{fontSize:11,color:'#b45309'}}>{[..._dbSaveFailedIds].join(', ')}</span>
       </div>}
       <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='art'&&rArtist()}{pg==='production'&&rProd2()}{pg==='warehouse'&&rWarehouse()}{pg==='purchase_orders'&&rPOs()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='team'&&rTeam()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='commissions'&&rCommissions()}{pg==='omg'&&rOMG()}{pg==='reports'&&rReports()}{pg==='issues'&&rIssues()}{pg==='import'&&rImport()}{pg==='qb'&&rQB()}{pg==='backup'&&rBackup()}{pg==='settings'&&rSettings()}{pg==='sales_tools'&&rSalesTools()}</div></div>
     {/* Assignment Modal — global, triggered from warehouse or production board */}
