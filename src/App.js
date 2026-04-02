@@ -118,15 +118,19 @@ try { if (_sbUrl && _sbKey && _sbUrl.startsWith('https://') && !_sbUrl.includes(
 catch(e) { console.warn('[Supabase] Init failed:', e.message); }
 
 // Track tables that returned 404 so we skip them on future polls (avoids console spam)
-const _missing404Tables=new Set();
+// Uses timestamps so entries expire after 5 minutes and are retried (prevents permanent data loss from transient 404s)
+const _missing404Tables=new Map();// table → timestamp
+const _MISSING_TABLE_TTL=5*60*1000;// 5 minutes
 const _safeQuery=(table,opts)=>{
-  if(_missing404Tables.has(table))return Promise.resolve({data:[],error:null,status:200});
+  const cachedAt=_missing404Tables.get(table);
+  if(cachedAt&&(Date.now()-cachedAt)<_MISSING_TABLE_TTL)return Promise.resolve({data:[],error:null,status:200});
+  if(cachedAt)_missing404Tables.delete(table);// expired — retry
   let q=supabase.from(table).select('*');
   if(opts?.order)q=q.order(opts.order,opts.orderOpts||{});
   q=q.limit(opts?.limit||10000);
   return q.then(r=>{
     if(r.status===404||(r.error?.message||'').includes('does not exist')||(r.error?.code==='PGRST204')){
-      _missing404Tables.add(table);return{data:[],error:null,status:200}}
+      _missing404Tables.set(table,Date.now());return{data:[],error:null,status:200}}
     return r;
   });
 };
@@ -492,9 +496,8 @@ const _dbSaveEstimateInner = async (est) => {
         const toDeleteAf=(existingAfs||[]).filter(ea=>!currentAfIds.includes(ea.id)).map(ea=>ea.id);
         if(toDeleteAf.length)await supabase.from('estimate_art_files').delete().in('id',toDeleteAf);
       }
-    }else{
-      await supabase.from('estimate_art_files').delete().eq('estimate_id',est.id);
     }
+    // If art_files is empty/undefined, leave existing DB art files untouched to prevent accidental data loss
     if(!items?.length){_dbSaveFailedIds.delete(est.id);_persistFailedIds();return true}
     // Batch insert all items at once (much faster than one-by-one)
     const allItemRows=items.map((item,idx)=>{const{decorations,...itemData}=item;return{..._pick(itemData,_itemCols),estimate_id:est.id,item_index:idx}});
@@ -567,9 +570,9 @@ const _dbSaveSOInner = async (so) => {
         const toDelete=(existingJobs||[]).filter(ej=>!currentJobIds.includes(ej.id)).map(ej=>ej.id);
         if(toDelete.length)await supabase.from('so_jobs').delete().in('id',toDelete);
       }
-    }else{
-      await supabase.from('so_jobs').delete().eq('so_id',so.id);
     }
+    // If jobs is empty/undefined, leave existing DB jobs untouched to prevent accidental data loss
+    // (e.g. from transient 404 on so_jobs table causing empty reload)
     await supabase.from('so_firm_dates').delete().eq('so_id',so.id);
     // Sync art_files: upsert current, delete removed (avoids DELETE+INSERT race condition)
     if(art_files?.length){
@@ -591,9 +594,8 @@ const _dbSaveSOInner = async (so) => {
         const toDeleteAf=(existingAfs||[]).filter(ea=>!currentAfIds.includes(ea.id)).map(ea=>ea.id);
         if(toDeleteAf.length)await supabase.from('so_art_files').delete().in('id',toDeleteAf);
       }
-    }else{
-      await supabase.from('so_art_files').delete().eq('so_id',so.id);
     }
+    // If art_files is empty/undefined, leave existing DB art files untouched to prevent accidental data loss
     if(firm_dates?.length){const{error:fdErr}=await supabase.from('so_firm_dates').insert(firm_dates.map(f=>({..._pick(f,_firmDateCols),so_id:so.id})));if(fdErr){console.error('[DB] so_firm_dates insert failed:',fdErr.message);saveFailed=true}}
     if(!items?.length){if(saveFailed){_dbSaveFailedIds.add(so.id);_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save incomplete — some data may not have been saved to cloud','error');return false}_dbSaveFailedIds.delete(so.id);_persistFailedIds();return true}
     // Batch insert all items at once (much faster than one-by-one)
@@ -717,9 +719,8 @@ const _dbSaveCustomer = async (c) => {
         const toDelete=(existingCts||[]).filter(ec=>ec.sort_order>=contacts.length);
         if(toDelete.length)await supabase.from('customer_contacts').delete().eq('customer_id',c.id).gte('sort_order',contacts.length);
       }
-    }else{
-      await supabase.from('customer_contacts').delete().eq('customer_id',c.id);
     }
+    // If contacts is empty/undefined, leave existing DB contacts untouched to prevent accidental data loss
     _dbSaveFailedIds.delete(c.id);_persistFailedIds();_dbRecentSaves[c.id]=Date.now();console.log('[DB] Customer saved:',c.id,c.name);return true;
   }catch(e){console.error('[DB] save customer:',e);_dbSaveFailedIds.add(c.id);_persistFailedIds();if(_dbNotify)_dbNotify('Customer save failed: '+e.message,'error');return false}
 };
