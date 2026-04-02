@@ -118,15 +118,19 @@ try { if (_sbUrl && _sbKey && _sbUrl.startsWith('https://') && !_sbUrl.includes(
 catch(e) { console.warn('[Supabase] Init failed:', e.message); }
 
 // Track tables that returned 404 so we skip them on future polls (avoids console spam)
-const _missing404Tables=new Set();
+// Uses timestamps so entries expire after 5 minutes and are retried (prevents permanent data loss from transient 404s)
+const _missing404Tables=new Map();// table → timestamp
+const _MISSING_TABLE_TTL=5*60*1000;// 5 minutes
 const _safeQuery=(table,opts)=>{
-  if(_missing404Tables.has(table))return Promise.resolve({data:[],error:null,status:200});
+  const cachedAt=_missing404Tables.get(table);
+  if(cachedAt&&(Date.now()-cachedAt)<_MISSING_TABLE_TTL)return Promise.resolve({data:[],error:null,status:200});
+  if(cachedAt)_missing404Tables.delete(table);// expired — retry
   let q=supabase.from(table).select('*');
   if(opts?.order)q=q.order(opts.order,opts.orderOpts||{});
   q=q.limit(opts?.limit||10000);
   return q.then(r=>{
     if(r.status===404||(r.error?.message||'').includes('does not exist')||(r.error?.code==='PGRST204')){
-      _missing404Tables.add(table);return{data:[],error:null,status:200}}
+      _missing404Tables.set(table,Date.now());return{data:[],error:null,status:200}}
     return r;
   });
 };
@@ -567,9 +571,9 @@ const _dbSaveSOInner = async (so) => {
         const toDelete=(existingJobs||[]).filter(ej=>!currentJobIds.includes(ej.id)).map(ej=>ej.id);
         if(toDelete.length)await supabase.from('so_jobs').delete().in('id',toDelete);
       }
-    }else{
-      await supabase.from('so_jobs').delete().eq('so_id',so.id);
     }
+    // If jobs is empty/undefined, leave existing DB jobs untouched to prevent accidental data loss
+    // (e.g. from transient 404 on so_jobs table causing empty reload)
     await supabase.from('so_firm_dates').delete().eq('so_id',so.id);
     // Sync art_files: upsert current, delete removed (avoids DELETE+INSERT race condition)
     if(art_files?.length){
