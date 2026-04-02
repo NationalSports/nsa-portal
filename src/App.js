@@ -496,9 +496,8 @@ const _dbSaveEstimateInner = async (est) => {
         const toDeleteAf=(existingAfs||[]).filter(ea=>!currentAfIds.includes(ea.id)).map(ea=>ea.id);
         if(toDeleteAf.length)await supabase.from('estimate_art_files').delete().in('id',toDeleteAf);
       }
-    }else{
-      await supabase.from('estimate_art_files').delete().eq('estimate_id',est.id);
     }
+    // If art_files is empty/undefined, leave existing DB art files untouched to prevent accidental data loss
     if(!items?.length){_dbSaveFailedIds.delete(est.id);_persistFailedIds();return true}
     // Batch insert all items at once (much faster than one-by-one)
     const allItemRows=items.map((item,idx)=>{const{decorations,...itemData}=item;return{..._pick(itemData,_itemCols),estimate_id:est.id,item_index:idx}});
@@ -595,9 +594,8 @@ const _dbSaveSOInner = async (so) => {
         const toDeleteAf=(existingAfs||[]).filter(ea=>!currentAfIds.includes(ea.id)).map(ea=>ea.id);
         if(toDeleteAf.length)await supabase.from('so_art_files').delete().in('id',toDeleteAf);
       }
-    }else{
-      await supabase.from('so_art_files').delete().eq('so_id',so.id);
     }
+    // If art_files is empty/undefined, leave existing DB art files untouched to prevent accidental data loss
     if(firm_dates?.length){const{error:fdErr}=await supabase.from('so_firm_dates').insert(firm_dates.map(f=>({..._pick(f,_firmDateCols),so_id:so.id})));if(fdErr){console.error('[DB] so_firm_dates insert failed:',fdErr.message);saveFailed=true}}
     if(!items?.length){if(saveFailed){_dbSaveFailedIds.add(so.id);_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save incomplete — some data may not have been saved to cloud','error');return false}_dbSaveFailedIds.delete(so.id);_persistFailedIds();return true}
     // Batch insert all items at once (much faster than one-by-one)
@@ -721,9 +719,8 @@ const _dbSaveCustomer = async (c) => {
         const toDelete=(existingCts||[]).filter(ec=>ec.sort_order>=contacts.length);
         if(toDelete.length)await supabase.from('customer_contacts').delete().eq('customer_id',c.id).gte('sort_order',contacts.length);
       }
-    }else{
-      await supabase.from('customer_contacts').delete().eq('customer_id',c.id);
     }
+    // If contacts is empty/undefined, leave existing DB contacts untouched to prevent accidental data loss
     _dbSaveFailedIds.delete(c.id);_persistFailedIds();_dbRecentSaves[c.id]=Date.now();console.log('[DB] Customer saved:',c.id,c.name);return true;
   }catch(e){console.error('[DB] save customer:',e);_dbSaveFailedIds.add(c.id);_persistFailedIds();if(_dbNotify)_dbNotify('Customer save failed: '+e.message,'error');return false}
 };
