@@ -441,6 +441,7 @@ const _dbSeed = async (d) => {
   }
 };
 // ─── Optimistic Locking: version conflict detection ───
+let _bgSync=false;// true during background sync saves (poll/realtime _diffSave) — suppresses user-facing conflict banners
 const _checkVersion=async(table,id,localVersion)=>{
   if(!supabase||!localVersion)return true;// skip check if no version tracked
   // Skip version check for records this client recently saved (prevents false conflicts from own realtime echo)
@@ -450,11 +451,12 @@ const _checkVersion=async(table,id,localVersion)=>{
     if(!data)return true;// new record
     if(data._version>localVersion){
       console.warn(`[DB] Version conflict on ${table}/${id}: local v${localVersion}, server v${data._version}`);
-      if(_dbNotify)_dbNotify(`This ${table.replace('_',' ')} was modified by another user. Please refresh to see the latest changes.`,'warn');
+      // Only show banner for user-initiated saves, not background sync from poll/realtime
+      if(_dbNotify&&!_bgSync)_dbNotify(`This ${table.replace('_',' ')} was modified by another user. Please refresh to see the latest changes.`,'warn');
       return false;
     }
     return true;
-  }catch(e){console.error('[DB] version check failed:',e);if(_dbNotify)_dbNotify('Save blocked — unable to verify data version. Check your connection and try again.','error');return false}// if check fails, block save to prevent overwriting newer data
+  }catch(e){console.error('[DB] version check failed:',e);if(!_bgSync&&_dbNotify)_dbNotify('Save blocked — unable to verify data version. Check your connection and try again.','error');return false}// if check fails, block save to prevent overwriting newer data
 };
 
 // ─── Normalized Save Helpers ───
@@ -1851,7 +1853,7 @@ export default function App(){
   // Auto-save to localStorage + Supabase (normalized, only after initial load is complete)
   // IMPORTANT: Supabase writes are gated behind _dbLoadSuccess to prevent demo/stale data from overwriting real cloud data
   // Uses _dbSnap to diff against last DB state — only saves records that actually changed (prevents cross-browser feedback loops)
-  const _diffSave=(arr,snapKey,saveFn)=>{if(!_initialLoadDone.current||!_dbLoadSuccess.current){console.warn('[DB] _diffSave skipped for',snapKey,'— initialLoad:',_initialLoadDone.current,'dbSuccess:',_dbLoadSuccess.current);return}const snap=_dbSnap.current[snapKey]||[];const changed=[];arr.forEach(item=>{const old=snap.find(p=>p.id===item.id);if(!old||JSON.stringify(old)!==JSON.stringify(item))changed.push(item)});_dbSnap.current[snapKey]=arr;if(changed.length===0)return;const BATCH=10;const processBatch=async(idx)=>{const batch=changed.slice(idx,idx+BATCH);if(!batch.length)return;await Promise.all(batch.map(async item=>{const result=saveFn(item);if(result&&typeof result.then==='function'){const ok=await result;if(ok===false){const oldSnap=_dbSnap.current[snapKey]||[];_dbSnap.current[snapKey]=oldSnap.map(s=>s.id===item.id?(snap.find(p=>p.id===item.id)||s):s)}}}));if(idx+BATCH<changed.length)await processBatch(idx+BATCH)};processBatch(0)};
+  const _diffSave=(arr,snapKey,saveFn)=>{if(!_initialLoadDone.current||!_dbLoadSuccess.current){console.warn('[DB] _diffSave skipped for',snapKey,'— initialLoad:',_initialLoadDone.current,'dbSuccess:',_dbLoadSuccess.current);return}const snap=_dbSnap.current[snapKey]||[];const changed=[];arr.forEach(item=>{const old=snap.find(p=>p.id===item.id);if(!old||JSON.stringify(old)!==JSON.stringify(item))changed.push(item)});_dbSnap.current[snapKey]=arr;if(changed.length===0)return;const BATCH=10;const processBatch=async(idx)=>{const batch=changed.slice(idx,idx+BATCH);if(!batch.length)return;_bgSync=true;await Promise.all(batch.map(async item=>{const result=saveFn(item);if(result&&typeof result.then==='function'){const ok=await result;if(ok===false){const oldSnap=_dbSnap.current[snapKey]||[];_dbSnap.current[snapKey]=oldSnap.map(s=>s.id===item.id?(snap.find(p=>p.id===item.id)||s):s)}}}));_bgSync=false;if(idx+BATCH<changed.length)await processBatch(idx+BATCH)};processBatch(0)};
   React.useEffect(()=>{if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.team||[];const changed=REPS.filter(r=>{const old=snap.find(p=>p.id===r.id);return!old||JSON.stringify(old)!==JSON.stringify(r)});if(changed.length)_dbSave('team_members',changed.map(r=>({id:r.id,name:r.name,role:r.role,email:r.email,phone:r.phone,is_active:r.is_active!==false})));_dbSnap.current.team=REPS}},[REPS]);
   React.useEffect(()=>{_diffSave(cust,'cust',c=>_dbSaveCustomer(c))},[cust]);
   React.useEffect(()=>{if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.vend||[];const changed=vend.filter(v=>{const old=snap.find(p=>p.id===v.id);return!old||JSON.stringify(old)!==JSON.stringify(v)});if(changed.length)_dbSave('vendors',changed.map(v=>_pick(v,_vendCols)));_dbSnap.current.vend=vend}},[vend]);
