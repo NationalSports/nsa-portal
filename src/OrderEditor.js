@@ -19,7 +19,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const[tab,setTab]=useState(initTab||'items');const[dirty,setDirty]=useState(false);const[selJob,setSelJob]=useState(null);const[jobNote,setJobNote]=useState('');const[msgDept,setMsgDept]=useState('all');const[replyTo,setReplyTo]=useState(null);
   const[mentionQuery,setMentionQuery]=useState(null);const[mentionIdx,setMentionIdx]=useState(0);const mentionRef=useRef(null);const msgInputRef=useRef(null);
     // Sync from external updates (e.g., coach approval from portal) — merge job art_status + art_files
-    React.useEffect(()=>{if(order.updated_at&&order.updated_at!==o.updated_at){setO(prev=>{const extJobs=safeJobs(order);const mergedJobs=safeJobs(prev).map(j=>{const ext=extJobs.find(ej=>ej.id===j.id);if(ext&&(ext.art_status!==j.art_status||ext.coach_approved_at!==j.coach_approved_at||ext.coach_rejected!==j.coach_rejected)){return{...j,art_status:ext.art_status,coach_approved_at:ext.coach_approved_at,coach_rejected:ext.coach_rejected,rejections:ext.rejections,sent_to_coach_at:ext.sent_to_coach_at}}return j});return{...prev,jobs:mergedJobs,art_files:order.art_files,updated_at:order.updated_at}})}},[order.updated_at]);
+    // Use a ref to track the last order we synced from, to avoid re-triggering on format differences
+    const lastSyncRef=React.useRef(order.id+':'+(order.updated_at||''));
+    React.useEffect(()=>{
+      const key=order.id+':'+(order.updated_at||'');
+      if(key===lastSyncRef.current)return;
+      lastSyncRef.current=key;
+      const extJobs=safeJobs(order);
+      const hasExternalJobChange=extJobs.some(ej=>{const lj=safeJobs(o).find(j=>j.id===ej.id);return lj&&(ej.art_status!==lj.art_status||ej.coach_approved_at!==lj.coach_approved_at||ej.coach_rejected!==lj.coach_rejected)});
+      const hasExternalArtChange=JSON.stringify(order.art_files||[])!==JSON.stringify(o.art_files||[])&&!dirty;
+      if(!hasExternalJobChange&&!hasExternalArtChange)return;
+      setO(prev=>{const mergedJobs=safeJobs(prev).map(j=>{const ext=extJobs.find(ej=>ej.id===j.id);if(ext&&(ext.art_status!==j.art_status||ext.coach_approved_at!==j.coach_approved_at||ext.coach_rejected!==j.coach_rejected)){return{...j,art_status:ext.art_status,coach_approved_at:ext.coach_approved_at,coach_rejected:ext.coach_rejected,rejections:ext.rejections,sent_to_coach_at:ext.sent_to_coach_at}}return j});return{...prev,jobs:mergedJobs,art_files:hasExternalArtChange?order.art_files:prev.art_files,updated_at:order.updated_at}})
+    },[order.updated_at]);
     React.useEffect(()=>{if(initTab)setTab(initTab)},[initTab]);
     React.useEffect(()=>{if(scrollToItem!=null){setTab('items');setTimeout(()=>{const el=document.getElementById('so-item-'+scrollToItem);if(el){el.scrollIntoView({behavior:'smooth',block:'center'});el.style.boxShadow='0 0 0 3px #3b82f6';setTimeout(()=>{el.style.boxShadow=''},2000)}},150)}},[scrollToItem]);
     React.useEffect(()=>{if(scrollToJob!=null){setTab('jobs');setSelJob(scrollToJob);setTimeout(()=>{const el=document.getElementById('so-job-'+scrollToJob);if(el){el.scrollIntoView({behavior:'smooth',block:'center'});el.style.boxShadow='0 0 0 3px #7c3aed';setTimeout(()=>{el.style.boxShadow=''},2000)}},200)}},[scrollToJob]);
@@ -1020,7 +1031,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const currentUnits=currentJobs.map(j=>j.total_units+'-'+j.fulfilled_units).join(',');
     const newUnits=synced.map(j=>j.total_units+'-'+j.fulfilled_units).join(',');
     if(currentKeys!==newKeys||currentUnits!==newUnits){
-      setO(e=>({...e,jobs:synced,updated_at:new Date().toLocaleString()}));
+      setO(e=>({...e,jobs:synced}));// don't bump updated_at for auto-sync — avoids false dirty/conflict detection
     }
   },[syncJobs]);// eslint-disable-line
 

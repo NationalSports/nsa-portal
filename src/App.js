@@ -2276,8 +2276,23 @@ export default function App(){
   React.useEffect(()=>{if(selP){const u=prod.find(p=>p.id===selP.id);if(u&&u!==selP)setSelP(u);else if(!u)setSelP(null)}},[prod]); // eslint-disable-line
   const[eEst,setEEst]=useState(null);const[eEstC,setEEstC]=useState(null);const[eSO,setESO]=useState(null);const[eSOC,setESOC]=useState(null);const[eSOTab,setESOTab]=useState(null);const[eSOScrollItem,setESOScrollItem]=useState(null);const[eSOScrollJob,setESOScrollJob]=useState(null);const[eSOOpenPO,setESOOpenPO]=useState(null);
   // Sync eSO from sos when external updates occur (e.g., coach approval via portal)
-  React.useEffect(()=>{if(eSO){const fresh=sos.find(s=>s.id===eSO.id);if(fresh&&(fresh.updated_at!==eSO.updated_at||fresh._version!==eSO._version)){setESO(fresh)}}},[sos]);
-  React.useEffect(()=>{if(eEst){const fresh=ests.find(e=>e.id===eEst.id);if(fresh&&(fresh.updated_at!==eEst.updated_at||fresh._version!==eEst._version)){setEEst(fresh)}}},[ests]);
+  // Only sync if actual content changed (not just updated_at formatting differences from DB poll)
+  const _eSOSnapRef=React.useRef(null);
+  React.useEffect(()=>{if(eSO){
+    const fresh=sos.find(s=>s.id===eSO.id);if(!fresh)return;
+    const snapKey=fresh.id+':'+(fresh.memo||'')+':'+(fresh.status||'')+':'+safeJobs(fresh).map(j=>j.id+j.art_status+(j.coach_approved_at||'')).join(',')+':'+(fresh.art_files||[]).map(a=>a.id+(a.status||'')).join(',');
+    if(snapKey===_eSOSnapRef.current)return;
+    _eSOSnapRef.current=snapKey;
+    if(fresh!==eSO&&(JSON.stringify(safeJobs(fresh))!==JSON.stringify(safeJobs(eSO))||JSON.stringify(fresh.art_files||[])!==JSON.stringify(eSO.art_files||[])||fresh.status!==eSO.status||fresh.memo!==eSO.memo)){setESO(fresh)}
+  }},[sos]);
+  const _eEstSnapRef=React.useRef(null);
+  React.useEffect(()=>{if(eEst){
+    const fresh=ests.find(e=>e.id===eEst.id);if(!fresh)return;
+    const snapKey=fresh.id+':'+(fresh.memo||'')+':'+(fresh.status||'')+':'+(fresh.art_files||[]).map(a=>a.id+(a.status||'')).join(',');
+    if(snapKey===_eEstSnapRef.current)return;
+    _eEstSnapRef.current=snapKey;
+    if(fresh!==eEst&&(JSON.stringify(fresh.art_files||[])!==JSON.stringify(eEst.art_files||[])||fresh.status!==eEst.status||fresh.memo!==eEst.memo)){setEEst(fresh)}
+  }},[ests]);
   const[returnToPage,setReturnToPage]=useState(null);// {page:'production',jobData:obj} — for "Return to Job" nav
   const[estBackPg,setEstBackPg]=useState(null);// page to return to when closing estimate editor
   const[soBackPg,setSoBackPg]=useState(null);// page to return to when closing SO editor
@@ -2286,7 +2301,7 @@ export default function App(){
   // Recently viewed records
   const[recentlyViewed,setRecentlyViewed]=useState(()=>{try{return JSON.parse(localStorage.getItem('nsa_recent')||'[]')}catch{return[]}});
   const[recentOpen,setRecentOpen]=useState(false);
-  const addRecent=(kind,id,label,custId)=>{setRecentlyViewed(prev=>{const filtered=prev.filter(r=>!(r.kind===kind&&r.id===id));const next=[{kind,id,label,custId,ts:Date.now()},...filtered].slice(0,10);_lsSet('nsa_recent',JSON.stringify(next));return next}};
+  const addRecent=(kind,id,label,custId)=>{setRecentlyViewed(prev=>{const filtered=prev.filter(r=>!(r.kind===kind&&r.id===id));const next=[{kind,id,label,custId,ts:Date.now()},...filtered].slice(0,10);_lsSet('nsa_recent',JSON.stringify(next));return next})};
   React.useEffect(()=>{if(eSO){const c=cust.find(x=>x.id===eSO.customer_id);addRecent('order',eSO.id,eSO.id+(eSO.memo?' — '+eSO.memo:'')+(c?' ('+( c.alpha_tag||c.name)+')':''),eSO.customer_id)}},[eSO?.id]); // eslint-disable-line
   React.useEffect(()=>{if(eEst){const c=cust.find(x=>x.id===eEst.customer_id);addRecent('estimate',eEst.id,eEst.id+(eEst.memo?' — '+eEst.memo:'')+(c?' ('+(c.alpha_tag||c.name)+')':''),eEst.customer_id)}},[eEst?.id]); // eslint-disable-line
   React.useEffect(()=>{if(selC)addRecent('customer',selC.id,selC.name+(selC.alpha_tag?' ('+selC.alpha_tag+')':''))},[selC?.id]); // eslint-disable-line
@@ -8963,7 +8978,7 @@ export default function App(){
     };
     checkPickups();
   },[sos]); // eslint-disable-line react-hooks/exhaustive-deps
-  const addWhAction=(action)=>{setWhRecentActions(prev=>{const next=[{...action,ts:Date.now(),at:new Date().toLocaleString()},...prev].slice(0,500);_lsSet('nsa_wh_recent',JSON.stringify(next));return next}};
+  const addWhAction=(action)=>{setWhRecentActions(prev=>{const next=[{...action,ts:Date.now(),at:new Date().toLocaleString()},...prev].slice(0,500);_lsSet('nsa_wh_recent',JSON.stringify(next));return next})};
   const[whActionRange,setWhActionRange]=useState('7d');
   const[whActionSearch,setWhActionSearch]=useState('');
   const[stockPOs,setStockPOs]=useState([
