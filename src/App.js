@@ -9,6 +9,7 @@ import * as XLSX from 'xlsx';
 import { BarcodeDetector as BarcodeDetectorPolyfill } from 'barcode-detector';
 import { createWorker } from 'tesseract.js';
 import html2pdf from 'html2pdf.js';
+import JsBarcode from 'jsbarcode';
 import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, _custCols, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, NSA_DEFAULTS, NSA, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, COLOR_CATEGORIES, EXTRA_SIZES, SZ_ORD, SZ_NORM, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
@@ -5387,10 +5388,17 @@ export default function App(){
             if(urls.length===0){const fallback=itemDetails.find(gi=>gi.image_url&&_isImgUrl(gi.image_url))?.image_url;if(fallback)urls.push(fallback)}
             return urls})();
           const _pdfMockHtml=_pdfMockUrls.length>0?'<div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin:8px 0 12px;padding:12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px">'+_pdfMockUrls.map(u=>'<img src="'+u+'" style="max-width:'+(_pdfMockUrls.length>1?'48%':'100%')+';max-height:300px;object-fit:contain;border-radius:6px"/>').join('')+'<div style="font-size:9px;color:#666;margin-top:4px;width:100%;text-align:center">Mockup Preview</div></div>':'';
+          // Generate barcode for embroidery jobs with DST files (for Barudan BECS scanner)
+          let _bcHtml='';
+          if(isEmb){const _dstF=prodFiles.find(f=>{const n=fileDisplayName(f).toLowerCase();return n.endsWith('.dst')});
+            if(_dstF){const _dstName=fileDisplayName(_dstF);
+              try{const _bcC=document.createElement('canvas');JsBarcode(_bcC,_dstName,{format:'CODE128',width:2,height:80,displayValue:true,fontSize:14,font:'sans-serif',textMargin:6,margin:10});
+                _bcHtml='<div style="text-align:center;margin:16px 0;padding:16px;border:2px dashed #7c3aed;border-radius:8px;background:#faf5ff"><div style="font-size:11px;font-weight:700;color:#7c3aed;margin-bottom:8px;text-transform:uppercase">Scan to load on Barudan</div><img src="'+_bcC.toDataURL('image/png')+'" style="max-width:100%"/><div style="font-size:10px;color:#666;margin-top:6px">DST File: '+_dstName+'</div></div>';
+              }catch(e){/* barcode generation failed */}}}
           printDoc({title:j.customer||'Job',docNum:j.id,docType:'Production Job Sheet',
             headerRight:'<div class="ta" style="font-size:20px">'+j.total_units+' UNITS</div><div class="ts">'+j.deco_type?.replace(/_/g,' ')+'</div>',
             infoBoxes,tables,
-            notes:(_pdfMockHtml||'')+(j.notes||(so.production_notes?'SO Notes: '+so.production_notes:'')||''),
+            notes:_bcHtml+(_pdfMockHtml||'')+(j.notes||(so.production_notes?'SO Notes: '+so.production_notes:'')||''),
             showPricing:false});
         };
 
