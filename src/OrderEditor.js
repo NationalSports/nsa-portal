@@ -4274,8 +4274,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   const _dstFile=_jsProdFiles2.find(f=>{const n=fileDisplayName(f).toLowerCase();return n.endsWith('.dst')});
                   if(j.deco_type==='embroidery'&&_dstFile){
                     const _dstName=fileDisplayName(_dstFile);
-                    const _dstBase=_dstName.replace(/\.dst$/i,'');
-                    try{const _bcCanvas=document.createElement('canvas');JsBarcode(_bcCanvas,_dstBase,{format:'CODE128',width:2,height:80,displayValue:true,fontSize:14,font:'sans-serif',textMargin:6,margin:10});const _bcDataUrl=_bcCanvas.toDataURL('image/png');
+                    try{const _bcCanvas=document.createElement('canvas');JsBarcode(_bcCanvas,_dstName,{format:'CODE128',width:2,height:80,displayValue:true,fontSize:14,font:'sans-serif',textMargin:6,margin:10});const _bcDataUrl=_bcCanvas.toDataURL('image/png');
                     w.document.write('<div class="barcode-section"><div style="font-size:11px;font-weight:700;color:#7c3aed;margin-bottom:8px;text-transform:uppercase">Scan to load on Barudan</div><img src="'+_bcDataUrl+'" style="max-width:100%"/><div style="font-size:10px;color:#666;margin-top:6px">DST File: '+_dstName+'</div></div>')}catch(e){/* barcode generation failed — skip silently */}
                   }
                   // Mockup image at top

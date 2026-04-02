@@ -5391,8 +5391,8 @@ export default function App(){
           // Generate barcode for embroidery jobs with DST files (for Barudan BECS scanner)
           let _bcHtml='';
           if(isEmb){const _dstF=prodFiles.find(f=>{const n=fileDisplayName(f).toLowerCase();return n.endsWith('.dst')});
-            if(_dstF){const _dstName=fileDisplayName(_dstF);const _dstBase=_dstName.replace(/\.dst$/i,'');
-              try{const _bcC=document.createElement('canvas');JsBarcode(_bcC,_dstBase,{format:'CODE128',width:2,height:80,displayValue:true,fontSize:14,font:'sans-serif',textMargin:6,margin:10});
+            if(_dstF){const _dstName=fileDisplayName(_dstF);
+              try{const _bcC=document.createElement('canvas');JsBarcode(_bcC,_dstName,{format:'CODE128',width:2,height:80,displayValue:true,fontSize:14,font:'sans-serif',textMargin:6,margin:10});
                 _bcHtml='<div style="text-align:center;margin:16px 0;padding:16px;border:2px dashed #7c3aed;border-radius:8px;background:#faf5ff"><div style="font-size:11px;font-weight:700;color:#7c3aed;margin-bottom:8px;text-transform:uppercase">Scan to load on Barudan</div><img src="'+_bcC.toDataURL('image/png')+'" style="max-width:100%"/><div style="font-size:10px;color:#666;margin-top:6px">DST File: '+_dstName+'</div></div>';
               }catch(e){/* barcode generation failed */}}}
           printDoc({title:j.customer||'Job',docNum:j.id,docType:'Production Job Sheet',
