@@ -39,8 +39,9 @@ exports.handler = async (event) => {
   }
 
   try {
-    // Query all embroidery art files that have prod_files
-    let queryUrl = `${sbUrl}/rest/v1/so_art_files?select=id,so_id,name,deco_type,prod_files,updated_at&deco_type=eq.embroidery&prod_files=neq.[]`;
+    // Query only APPROVED embroidery art files that have prod_files
+    // DST files only appear on the Barudan when artwork is approved
+    let queryUrl = `${sbUrl}/rest/v1/so_art_files?select=id,so_id,name,deco_type,prod_files,status,updated_at&deco_type=eq.embroidery&prod_files=neq.[]&status=eq.approved`;
     const since = event.queryStringParameters?.since;
     if (since) {
       queryUrl += `&updated_at=gte.${since}`;
