@@ -17639,7 +17639,7 @@ export default function App(){
         });
         const base64=await resizeImage(vecFile.url);
         if(!base64){nf('Failed to read image data','error');setVecProcessing(false);return}
-        const resp=await fetch('/.netlify/functions/vectorizer-proxy',{
+        const resp=await fetch('/api/vectorizer-proxy',{
           method:'POST',headers:{'Content-Type':'application/json'},
           body:JSON.stringify({imageBase64:base64,mode:vecTestMode?'test':'production',outputFormat:'svg',maxColors:vecColors||0})
         });
