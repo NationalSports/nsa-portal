@@ -1,11 +1,13 @@
 // Netlify serverless function to proxy Vectorizer.AI API calls
 // Keeps API credentials server-side, accepts base64 image from frontend
+const zlib = require('zlib');
+
 exports.handler = async (event) => {
   const start = Date.now();
   const log = (msg) => console.log(`[vectorizer-proxy] ${msg} (${Date.now() - start}ms)`);
 
   if (event.httpMethod === 'OPTIONS') {
-    return { statusCode: 200, headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Content-Type', 'Access-Control-Allow-Methods': 'POST' }, body: '' };
+    return { statusCode: 200, headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Content-Type,Accept-Encoding', 'Access-Control-Allow-Methods': 'POST' }, body: '' };
   }
   if (event.httpMethod !== 'POST') {
     return { statusCode: 405, body: 'Method not allowed' };
@@ -28,11 +30,10 @@ exports.handler = async (event) => {
   log(`Received image: ${Math.round(imageBase64.length / 1024)}KB base64, mode=${mode}, colors=${maxColors}`);
 
   try {
-    // Convert base64 to binary buffer for multipart upload
     const imageBuffer = Buffer.from(imageBase64, 'base64');
     log(`Decoded to ${Math.round(imageBuffer.length / 1024)}KB binary`);
 
-    // Build multipart form data manually
+    // Build multipart form data
     const boundary = '----VectorizerBoundary' + Date.now();
     const parts = [];
 
@@ -94,10 +95,29 @@ exports.handler = async (event) => {
     log(`Got result: ${Math.round(resultBuffer.length / 1024)}KB, credits=${creditsCharged}`);
 
     if ((outputFormat || 'svg') === 'svg') {
+      const svg = resultBuffer.toString('utf-8');
+      const responseBody = JSON.stringify({ svg, creditsCharged });
+
+      // If response is too large, return gzipped with isBase64Encoded
+      if (responseBody.length > 5 * 1024 * 1024) {
+        log(`Response too large (${Math.round(responseBody.length / 1024)}KB), compressing`);
+        const compressed = zlib.gzipSync(Buffer.from(responseBody));
+        return {
+          statusCode: 200,
+          isBase64Encoded: true,
+          headers: {
+            'Access-Control-Allow-Origin': '*',
+            'Content-Type': 'application/json',
+            'Content-Encoding': 'gzip',
+          },
+          body: compressed.toString('base64'),
+        };
+      }
+
       return {
         statusCode: 200,
         headers: { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ svg: resultBuffer.toString('utf-8'), creditsCharged }),
+        body: responseBody,
       };
     } else {
       return {

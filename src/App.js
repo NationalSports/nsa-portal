@@ -17614,14 +17614,9 @@ export default function App(){
     if(!vecFile)return;
     setVecProcessing(true);setVecCredits(null);
     if(vecEngine==='api'){
-      // Vectorizer.AI — call API directly from browser to avoid function timeout
+      // Vectorizer.AI API via Netlify proxy
       try{
-        // Step 1: Get auth token from lightweight Netlify function
-        const authResp=await fetch('/.netlify/functions/vectorizer-auth',{method:'POST'});
-        const authData=await authResp.json();
-        if(!authResp.ok||!authData.auth){nf('Failed to get API credentials','error');setVecProcessing(false);return}
-
-        // Step 2: Resize image if needed
+        // Resize/compress image client-side
         const resizeImage=(dataUrl,maxDim=1500)=>new Promise(resolve=>{
           const img=new Image();
           img.onload=()=>{
@@ -17643,28 +17638,14 @@ export default function App(){
         });
         const base64=await resizeImage(vecFile.url);
         if(!base64){nf('Failed to read image data','error');setVecProcessing(false);return}
-
-        // Step 3: Call Vectorizer.AI directly from browser (no timeout limit)
-        const imageBytes=Uint8Array.from(atob(base64),c=>c.charCodeAt(0));
-        const formData=new FormData();
-        formData.append('image',new Blob([imageBytes],{type:'image/png'}),'image.png');
-        formData.append('mode',vecTestMode?'test':'production');
-        formData.append('output.file_format','svg');
-        if(vecColors&&vecColors>0)formData.append('output.color_count',String(vecColors));
-
-        const resp=await fetch('https://api.vectorizer.ai/api/v1/vectorize',{
-          method:'POST',
-          headers:{'Authorization':authData.auth},
-          body:formData
+        const resp=await fetch('/.netlify/functions/vectorizer-proxy',{
+          method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({imageBase64:base64,mode:vecTestMode?'test':'production',outputFormat:'svg',maxColors:vecColors||0})
         });
-
-        if(!resp.ok){
-          const errText=await resp.text();
-          let errMsg;try{errMsg=JSON.parse(errText).error?.message||errText}catch{errMsg=errText}
-          nf('Vectorizer.AI error: '+errMsg,'error');setVecProcessing(false);return;
-        }
-        const svgText=await resp.text();
-        setVecSvg(svgText);
+        const data=await resp.json();
+        if(!resp.ok||data.error){nf('Vectorizer.AI error: '+(data.error||'Unknown error'),'error');setVecProcessing(false);return}
+        setVecSvg(data.svg);
+        if(data.creditsCharged)setVecCredits(data.creditsCharged);
         const creditsCharged=resp.headers.get('x-credits-charged')||'';
         if(creditsCharged)setVecCredits(creditsCharged);
         nf('Vectorization complete (Vectorizer.AI)!');
