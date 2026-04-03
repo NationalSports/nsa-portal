@@ -17618,7 +17618,7 @@ export default function App(){
         if(!base64){nf('Failed to read image data','error');setVecProcessing(false);return}
         const resp=await fetch('/.netlify/functions/vectorizer-proxy',{
           method:'POST',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({imageBase64:base64,mode:vecTestMode?'test':'production',outputFormat:'svg'})
+          body:JSON.stringify({imageBase64:base64,mode:vecTestMode?'test':'production',outputFormat:'svg',maxColors:vecColors||0})
         });
         const data=await resp.json();
         if(!resp.ok||data.error){nf('Vectorizer.AI error: '+(data.error||'Unknown error'),'error');setVecProcessing(false);return}

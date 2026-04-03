@@ -17,7 +17,7 @@ exports.handler = async (event) => {
   let body;
   try { body = JSON.parse(event.body); } catch { return { statusCode: 400, headers: { 'Access-Control-Allow-Origin': '*' }, body: JSON.stringify({ error: 'Invalid JSON body' }) }; }
 
-  const { imageBase64, mode, outputFormat } = body;
+  const { imageBase64, mode, outputFormat, maxColors } = body;
   if (!imageBase64) {
     return { statusCode: 400, headers: { 'Access-Control-Allow-Origin': '*' }, body: JSON.stringify({ error: 'Missing imageBase64' }) };
   }
@@ -52,6 +52,15 @@ exports.handler = async (event) => {
       `Content-Disposition: form-data; name="output.file_format"\r\n\r\n` +
       `${outputFormat || 'svg'}\r\n`
     );
+
+    // Add max colors if specified
+    if (maxColors && maxColors > 0) {
+      parts.push(
+        `--${boundary}\r\n` +
+        `Content-Disposition: form-data; name="output.color_count"\r\n\r\n` +
+        `${maxColors}\r\n`
+      );
+    }
 
     parts.push(`--${boundary}--\r\n`);
 

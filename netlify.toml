@@ -5,6 +5,10 @@
 
 [functions]
   directory = "netlify/functions"
+  external_node_modules = ["node-fetch"]
+
+[functions."vectorizer-proxy"]
+  timeout = 26
 
 # S&S Activewear pricing sync — daily at 5:00 AM CT (11:00 UTC)
 [functions."ss-pricing-sync"]
