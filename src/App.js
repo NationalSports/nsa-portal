@@ -17616,8 +17616,20 @@ export default function App(){
     if(vecEngine==='api'){
       // Vectorizer.AI API via Netlify proxy
       try{
-        // Extract base64 from data URL
-        const base64=vecFile.url.split(',')[1];
+        // Resize image client-side to stay within Netlify's 6MB function payload limit
+        const resizeImage=(dataUrl,maxDim=2048)=>new Promise(resolve=>{
+          const img=new Image();
+          img.onload=()=>{
+            if(img.width<=maxDim&&img.height<=maxDim){resolve(dataUrl.split(',')[1]);return}
+            const scale=Math.min(maxDim/img.width,maxDim/img.height);
+            const c=document.createElement('canvas');
+            c.width=Math.round(img.width*scale);c.height=Math.round(img.height*scale);
+            const ctx=c.getContext('2d');ctx.drawImage(img,0,0,c.width,c.height);
+            resolve(c.toDataURL('image/png').split(',')[1]);
+          };
+          img.src=dataUrl;
+        });
+        const base64=await resizeImage(vecFile.url);
         if(!base64){nf('Failed to read image data','error');setVecProcessing(false);return}
         const resp=await fetch('/.netlify/functions/vectorizer-proxy',{
           method:'POST',headers:{'Content-Type':'application/json'},
