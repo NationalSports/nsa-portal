@@ -1,4 +1,5 @@
 /* eslint-disable */
+import { NSA as _NSA_CONST } from './constants';
 
 // ── Brevo Email ──
 export const _brevoKey = process.env.REACT_APP_BREVO_API_KEY || '';
@@ -54,8 +55,71 @@ export const sendBrevoSms=async({to,content,sender})=>{
 };
 
 // ── Document/print helpers ──
-export const buildDocHtml=({title,docNum,docType,date,billTo,shipTo,lineItems,summary,notes,footer})=>{let h='<div style="max-width:800px;margin:0 auto;font-family:Arial,sans-serif;font-size:12px">';h+='<div style="display:flex;justify-content:space-between;margin-bottom:20px"><div><h1 style="margin:0;font-size:20px">'+docType+'</h1><div style="color:#666">#'+docNum+'</div></div><div style="text-align:right"><div>'+title+'</div><div>'+(date||new Date().toLocaleDateString())+'</div></div></div>';if(billTo)h+='<div style="margin-bottom:10px"><strong>Bill To:</strong> '+(typeof billTo==='string'?billTo:billTo.map(l=>'<div>'+l+'</div>').join(''))+'</div>';if(shipTo)h+='<div style="margin-bottom:10px"><strong>Ship To:</strong> '+(typeof shipTo==='string'?shipTo:shipTo.map(l=>'<div>'+l+'</div>').join(''))+'</div>';if(lineItems){lineItems.forEach(section=>{if(section.title)h+='<h3 style="margin:10px 0 5px">'+section.title+'</h3>';h+='<table style="width:100%;border-collapse:collapse;margin-bottom:10px"><thead><tr>'+section.headers.map(hd=>'<th style="border-bottom:2px solid #333;padding:4px;text-align:left">'+hd+'</th>').join('')+'</tr></thead><tbody>';section.rows.forEach(row=>{h+='<tr>'+row.map(cell=>'<td style="border-bottom:1px solid #eee;padding:4px">'+cell+'</td>').join('')+'</tr>'});h+='</tbody></table>'})}if(summary)h+='<div style="text-align:right;margin-top:10px">'+summary.map(s=>'<div><strong>'+s.label+':</strong> '+s.value+'</div>').join('')+'</div>';if(notes)h+='<div style="margin-top:15px;padding:8px;background:#f5f5f5;border-radius:4px"><strong>Notes:</strong> '+notes+'</div>';if(footer)h+='<div style="margin-top:20px;padding-top:10px;border-top:1px solid #ccc;font-size:10px;color:#666">'+footer+'</div>';h+='</div>';return h};
-export const printDoc=opts=>{const w=window.open('','_blank');if(!w)return;w.document.write('<html><head><style>'+(opts.css||'')+'</style></head><body>');w.document.write(buildDocHtml(opts));w.document.write('</body></html>');w.document.close();setTimeout(()=>w.print(),300)};
+export const buildDocHtml=({title,docNum,docType,date,headerRight,infoBoxes,tables,notes,footer,showPricing,portalLink,css,companyInfo})=>{
+  const _NSA=companyInfo||_NSA_CONST||{name:'National Sports Apparel',addr:'9340 Cabot Dr, Suite A',city:'San Diego',state:'CA',zip:'91941',logoUrl:'/nsa-logo.svg'};
+  let h='';
+  // Header: logo/address left, doc type/number right
+  h+='<div class="header"><div class="logo"><img src="'+_NSA.logoUrl+'" alt="NSA"/><div class="co-addr"><strong>'+_NSA.name+'</strong>'+_NSA.addr+'<br/>'+_NSA.city+', '+_NSA.state+' '+_NSA.zip+'</div></div>';
+  h+='<div class="doc-id"><div class="doc-type">'+docType+'</div><div class="doc-num">#'+docNum+'</div><div class="doc-date">'+(date||new Date().toLocaleDateString())+'</div></div></div>';
+  // Bill-to & total box
+  if(infoBoxes||headerRight){
+    const billBox=(infoBoxes||[]).find(b=>b.label==='Bill To');
+    h+='<div class="bill-total">';
+    if(billBox){h+='<div class="bill-to"><div class="label">'+billBox.label+'</div><div class="value"><strong>'+billBox.value+'</strong>'+(billBox.sub?'<br/>'+billBox.sub:'')+'</div></div>'}
+    if(headerRight){h+='<div class="total-box">'+headerRight+'</div>'}
+    h+='</div>';
+  }
+  // Info row
+  if(infoBoxes&&infoBoxes.length>0){
+    const boxes=infoBoxes.filter(b=>b.label!=='Bill To');
+    if(boxes.length>0){
+      h+='<div class="info-row">';
+      boxes.forEach(b=>{h+='<div class="info-cell"><div class="label">'+b.label+'</div><div class="value">'+b.value+(b.sub?'<br/><span style="font-size:10px;color:#666">'+b.sub+'</span>':'')+'</div></div>'});
+      h+='</div>';
+    }
+  }
+  // Tables
+  if(tables&&tables.length>0){
+    tables.forEach(tbl=>{
+      if(tbl.title)h+='<div style="font-weight:700;font-size:12px;margin:10px 0 4px;color:#333">'+tbl.title+'</div>';
+      h+='<table><thead><tr>';
+      const aligns=tbl.aligns||[];
+      tbl.headers.forEach((hd,i)=>{h+='<th style="'+(aligns[i]?'text-align:'+aligns[i]:'')+'">'+hd+'</th>'});
+      h+='</tr></thead><tbody>';
+      (tbl.rows||[]).forEach(row=>{
+        const cls=row._class?' class="'+row._class+'"':'';
+        const sty=row._style?' style="'+row._style+'"':'';
+        h+='<tr'+cls+sty+'>';
+        const cells=row.cells||row;
+        (Array.isArray(cells)?cells:[]).forEach((cell,i)=>{
+          const isObj=cell&&typeof cell==='object'&&!Array.isArray(cell);
+          const val=isObj?cell.value:cell;
+          const cellStyle=isObj&&cell.style?cell.style:(aligns[i]?'text-align:'+aligns[i]:'');
+          h+='<td style="'+cellStyle+'">'+(val!=null?val:'')+'</td>';
+        });
+        h+='</tr>';
+      });
+      h+='</tbody></table>';
+    });
+  }
+  // Notes
+  if(notes)h+='<div class="notes"><div class="label">Notes</div>'+notes+'</div>';
+  // Footer
+  if(footer||portalLink){
+    h+='<div class="footer"><div>'+(footer||'')+'</div>';
+    if(portalLink)h+='<div style="text-align:right"><a href="'+portalLink+'" style="color:#2563eb;text-decoration:none">View Online Portal</a></div>';
+    h+='</div>';
+  }
+  // Wrap with full page HTML for email attachment use
+  const _css=css||'';
+  return'<html><head><style>'+_css+'</style></head><body>'+h+'</body></html>';
+};
+export const printDoc=opts=>{
+  const _PRINT_CSS=`*{margin:0;padding:0;box-sizing:border-box}body{font-family:'Segoe UI',Helvetica,Arial,sans-serif;font-size:11px;color:#1a1a1a;padding:20px 28px;line-height:1.4}.header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;padding-bottom:10px;border-bottom:2px solid #ccc}.logo{display:flex;align-items:center;gap:8px}.logo img{height:50px}.co-addr{font-size:11px;color:#333;line-height:1.4}.co-addr strong{display:block;font-size:12px}.doc-id{text-align:right}.doc-id .doc-type{font-size:28px;font-weight:800;color:#333}.doc-id .doc-num{font-size:14px;color:#333;font-weight:700}.doc-id .doc-date{font-size:11px;color:#666}.bill-total{display:flex;justify-content:space-between;align-items:flex-start;margin:12px 0;gap:20px}.bill-to{flex:1}.bill-to .label{font-size:10px;font-weight:700;color:#333;background:#e8e8e8;padding:3px 6px;display:inline-block;margin-bottom:4px}.bill-to .value{font-size:12px;color:#1a1a1a;line-height:1.5}.total-box{background:#e8e8e8;padding:12px 20px;min-width:200px}.total-box .tl{font-size:13px;font-weight:800;color:#333}.total-box .ta{font-size:36px;font-weight:900;color:#1a1a1a;margin:4px 0}.total-box .ts{font-size:11px;color:#666}.info-row{display:flex;border:1px solid #ccc;margin-bottom:10px}.info-cell{flex:1;padding:4px 8px;border-right:1px solid #ccc}.info-cell:last-child{border-right:none}.info-cell .label{font-size:9px;font-weight:700;color:#333;background:#e8e8e8;padding:1px 4px;display:inline-block;margin-bottom:2px}.info-cell .value{font-size:11px;color:#1a1a1a}table{width:100%;border-collapse:collapse;margin:8px 0}th{background:#e8e8e8;padding:5px 8px;text-align:left;font-size:10px;font-weight:700;color:#333;border:1px solid #ccc}td{padding:5px 8px;border-bottom:1px solid #ddd;font-size:11px}.sz-table th,.sz-table td{text-align:center;padding:3px 5px;font-size:10px;min-width:30px}.sz-table td.has-qty{font-weight:800;color:#1e3a5f;background:#eef2ff}.totals-row td{font-weight:800;border-top:2px solid #333;font-size:12px}.notes{margin-top:8px;padding:8px 10px;background:#fffbe6;border:1px solid #f0e6b8;font-size:10px}.notes .label{font-weight:700;color:#8b6914;margin-bottom:2px}.footer{margin-top:14px;padding-top:8px;border-top:1px solid #ddd;font-size:8px;color:#999;display:flex;justify-content:space-between}.amount{text-align:right;font-weight:700}.highlight{background:#e8e8e8;color:#166534}.badge{display:inline-block;padding:2px 6px;border-radius:10px;font-size:9px;font-weight:700}.no-price td:nth-child(n+5){display:none}.no-price th:nth-child(n+5){display:none}.sep-line{border-top:2px solid #c00;margin:2px 0}@media print{body{padding:14px 20px}th{background:#e8e8e8!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}.total-box{background:#e8e8e8!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}.info-cell .label,.bill-to .label{background:#e8e8e8!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}}@page{margin:0.4in;size:letter}`;
+  const docHtml=buildDocHtml({...opts,css:opts.css||_PRINT_CSS});
+  const w=window.open('','_blank');if(!w)return;
+  w.document.write(docHtml);w.document.close();setTimeout(()=>w.print(),300);
+};
 export const nextInvId=invs=>{const nums=(invs||[]).map(i=>{const m=String(i.id).match(/(\d+)$/);return m?parseInt(m[1]):0});return'INV-'+(Math.max(0,...nums)+1)};
 
 // ── Supabase Edge Function helper ──

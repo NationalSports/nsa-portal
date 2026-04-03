@@ -15,7 +15,7 @@ import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExt
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks } from './components';
 import { buildJobs, isJobReady, buildQBSalesOrder, buildQBInvoice } from './businessLogic';
-import { invokeEdgeFn } from './utils';
+import { invokeEdgeFn, buildDocHtml, printDoc } from './utils';
 const parseDate=d=>{if(!d)return null;try{return new Date(d)}catch{return null}};
 const _maxNum=(arr)=>{const nums=arr.map(e=>{const m=String(e.id).match(/(\d+)/);return m?parseInt(m[1]):0});return Math.max(0,...nums)};
 const _dbMaxIds={est:0,so:0,inv:0};// synced from DB on load to prevent cross-user collisions
@@ -25,8 +25,6 @@ const nextSOId=sos=>'SO-'+(Math.max(_maxNum(sos),_dbMaxIds.so)+1);
 const nextInvId=invs=>'INV-'+(Math.max(_maxNum(invs),_dbMaxIds.inv)+1);
 const isDualRunJob=(j)=>j&&j.items&&j.items.length>1&&j.items.some(gi=>gi.run_order);
 const mapColorCategory=color=>{if(!color)return'';const c=color.toLowerCase();if(/white|natural|cream|ivory/.test(c))return'White';if(/black|charcoal/.test(c))return'Black';if(/navy|blue|royal|columbia|carolina/.test(c))return'Blue';if(/red|cardinal|scarlet|crimson/.test(c))return'Red';if(/green|forest|kelly|lime|hunter/.test(c))return'Green';if(/grey|gray|heather|silver|graphite/.test(c))return'Grey';if(/gold|yellow|vegas|athletic/.test(c))return'Gold';if(/orange|texas/.test(c))return'Orange';if(/purple|maroon|wine|burgundy/.test(c))return'Purple';if(/pink|fuchsia/.test(c))return'Pink';if(/brown|tan|khaki|sand|coyote/.test(c))return'Brown';return''};
-const printDoc=opts=>{const w=window.open('','_blank');if(!w)return;w.document.write('<html><head><style>'+opts.css+'</style></head><body>');w.document.write(buildDocHtml(opts));w.document.write('</body></html>');w.document.close();setTimeout(()=>w.print(),300)};
-const buildDocHtml=({title,docNum,docType,date,billTo,shipTo,lineItems,summary,notes,footer})=>{let h='<div style="max-width:800px;margin:0 auto;font-family:Arial,sans-serif;font-size:12px">';h+='<div style="display:flex;justify-content:space-between;margin-bottom:20px"><div><h1 style="margin:0;font-size:20px">'+docType+'</h1><div style="color:#666">#'+docNum+'</div></div><div style="text-align:right"><div>'+title+'</div><div>'+(date||new Date().toLocaleDateString())+'</div></div></div>';if(billTo)h+='<div style="margin-bottom:10px"><strong>Bill To:</strong> '+(typeof billTo==='string'?billTo:billTo.map(l=>'<div>'+l+'</div>').join(''))+'</div>';if(shipTo)h+='<div style="margin-bottom:10px"><strong>Ship To:</strong> '+(typeof shipTo==='string'?shipTo:shipTo.map(l=>'<div>'+l+'</div>').join(''))+'</div>';if(lineItems){lineItems.forEach(section=>{if(section.title)h+='<h3 style="margin:10px 0 5px">'+section.title+'</h3>';h+='<table style="width:100%;border-collapse:collapse;margin-bottom:10px"><thead><tr>'+section.headers.map(hd=>'<th style="border-bottom:2px solid #333;padding:4px;text-align:left">'+hd+'</th>').join('')+'</tr></thead><tbody>';section.rows.forEach(row=>{h+='<tr>'+row.map(cell=>'<td style="border-bottom:1px solid #eee;padding:4px">'+cell+'</td>').join('')+'</tr>'});h+='</tbody></table>'})}if(summary)h+='<div style="text-align:right;margin-top:10px">'+summary.map(s=>'<div><strong>'+s.label+':</strong> '+s.value+'</div>').join('')+'</div>';if(notes)h+='<div style="margin-top:15px;padding:8px;background:#f5f5f5;border-radius:4px"><strong>Notes:</strong> '+notes+'</div>';if(footer)h+='<div style="margin-top:20px;padding-top:10px;border-top:1px solid #ccc;font-size:10px;color:#666">'+footer+'</div>';h+='</div>';return h};
 // Retry wrapper for lazy imports – handles ChunkLoadError after deploys
 const lazyRetry = (importFn) => React.lazy(() =>
   importFn().catch(() => {
@@ -504,7 +502,7 @@ const _dbSaveEstimateInner = async (est) => {
       }
     }
     // If art_files is empty/undefined, leave existing DB art files untouched to prevent accidental data loss
-    if(!items?.length){_dbSaveFailedIds.delete(est.id);_persistFailedIds();return true}
+    if(!items?.length){_dbSaveFailedIds.delete(est.id);_persistFailedIds();if(est._version)est._version=est._version+1;return true}
     // Batch insert all items at once (much faster than one-by-one)
     const allItemRows=items.map((item,idx)=>{const{decorations,...itemData}=item;return{..._pick(itemData,_itemCols),estimate_id:est.id,item_index:idx}});
     let{data:insertedItems,error:itemErr}=await supabase.from('estimate_items').insert(allItemRows).select('id');
@@ -531,7 +529,10 @@ const _dbSaveEstimateInner = async (est) => {
       }
     }
     if(decoFailed){_dbSaveFailedIds.add(est.id);_persistFailedIds();if(_dbNotify)_dbNotify('Estimate save incomplete — some data may not have been saved to cloud','error');return false}
-    _dbSaveFailedIds.delete(est.id);_persistFailedIds();_dbRecentSaves[est.id]=Date.now();return true;
+    _dbSaveFailedIds.delete(est.id);_persistFailedIds();_dbRecentSaves[est.id]=Date.now();
+    // Bump local version to match server (DB trigger increments on UPDATE)
+    if(est._version)est._version=est._version+1;
+    return true;
   }catch(e){console.error('[DB] save estimate:',e);_dbSaveFailedIds.add(est.id);_persistFailedIds();if(_dbNotify)_dbNotify('Estimate save failed: '+e.message,'error');return false}});
 };
 const _dbSaveEstimate = (est) => _queuedEntitySave(est.id, est, _dbSaveEstimateInner);
@@ -603,7 +604,7 @@ const _dbSaveSOInner = async (so) => {
     }
     // If art_files is empty/undefined, leave existing DB art files untouched to prevent accidental data loss
     if(firm_dates?.length){const{error:fdErr}=await supabase.from('so_firm_dates').insert(firm_dates.map(f=>({..._pick(f,_firmDateCols),so_id:so.id})));if(fdErr){console.error('[DB] so_firm_dates insert failed:',fdErr.message);saveFailed=true}}
-    if(!items?.length){if(saveFailed){_dbSaveFailedIds.add(so.id);_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save incomplete — some data may not have been saved to cloud','error');return false}_dbSaveFailedIds.delete(so.id);_persistFailedIds();return true}
+    if(!items?.length){if(saveFailed){_dbSaveFailedIds.add(so.id);_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save incomplete — some data may not have been saved to cloud','error');return false}_dbSaveFailedIds.delete(so.id);_persistFailedIds();if(so._version)so._version=so._version+1;return true}
     // Batch insert all items at once (much faster than one-by-one)
     const allItemRows=items.map((item,idx)=>{const{decorations,pick_lines,po_lines,...itemData}=item;return{..._pick(itemData,_itemCols),so_id:so.id,item_index:idx}});
     let{data:insertedItems,error:itemErr}=await supabase.from('so_items').insert(allItemRows).select('id');
@@ -653,7 +654,10 @@ const _dbSaveSOInner = async (so) => {
       }
     }
     if(saveFailed){_dbSaveFailedIds.add(so.id);_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save incomplete — some data may not have been saved to cloud','error');return false}
-    _dbSaveFailedIds.delete(so.id);_persistFailedIds();_dbRecentSaves[so.id]=Date.now();return true;
+    _dbSaveFailedIds.delete(so.id);_persistFailedIds();_dbRecentSaves[so.id]=Date.now();
+    // Bump local version to match server (DB trigger increments on UPDATE)
+    if(so._version)so._version=so._version+1;
+    return true;
   }catch(e){console.error('[DB] save SO:',e);_dbSaveFailedIds.add(so.id);_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save failed: '+e.message,'error');return false}});
 };
 const _dbSaveSO = (so) => _queuedEntitySave(so.id, so, _dbSaveSOInner);
@@ -727,7 +731,10 @@ const _dbSaveCustomer = async (c) => {
       }
     }
     // If contacts is empty/undefined, leave existing DB contacts untouched to prevent accidental data loss
-    _dbSaveFailedIds.delete(c.id);_persistFailedIds();_dbRecentSaves[c.id]=Date.now();console.log('[DB] Customer saved:',c.id,c.name);return true;
+    _dbSaveFailedIds.delete(c.id);_persistFailedIds();_dbRecentSaves[c.id]=Date.now();
+    // Bump local version to match server (DB trigger increments on UPDATE)
+    if(c._version)c._version=c._version+1;
+    console.log('[DB] Customer saved:',c.id,c.name);return true;
   }catch(e){console.error('[DB] save customer:',e);_dbSaveFailedIds.add(c.id);_persistFailedIds();if(_dbNotify)_dbNotify('Customer save failed: '+e.message,'error');return false}
 };
 const _dbSavePromoProgram = async (prog) => {
