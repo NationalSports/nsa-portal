@@ -202,6 +202,9 @@ const _sbGetMyProfile=async()=>{
 };
 
 // ─── Adidas B2B Inventory Fetch Helpers ───
+// Normalize size names so DB values like 'SM','MD','LG' match item keys 'S','M','L'
+const _normSz = s => { if (!s) return s; const u = s.toUpperCase().trim(); return SZ_NORM[u] || u; };
+
 const fetchAdidasInventory = async (sku) => {
   if (!supabase || !sku) return { sizes: {}, lastSynced: null };
   try {
@@ -211,7 +214,8 @@ const fetchAdidasInventory = async (sku) => {
     const sizes = {};
     let lastSynced = null;
     data.forEach(row => {
-      sizes[row.size] = { qty: row.stock_qty || 0, futureDate: row.future_delivery_date || null, futureQty: row.future_delivery_qty || null };
+      const sz = _normSz(row.size);
+      sizes[sz] = { qty: row.stock_qty || 0, futureDate: row.future_delivery_date || null, futureQty: row.future_delivery_qty || null };
       if (!lastSynced || new Date(row.last_synced) > new Date(lastSynced)) lastSynced = row.last_synced;
     });
     return { sizes, lastSynced };
@@ -227,7 +231,8 @@ const fetchAdidasInventoryBulk = async (skus) => {
     const result = {};
     data.forEach(row => {
       if (!result[row.sku]) result[row.sku] = { sizes: {}, lastSynced: null };
-      result[row.sku].sizes[row.size] = { qty: row.stock_qty || 0, futureDate: row.future_delivery_date || null, futureQty: row.future_delivery_qty || null };
+      const sz = _normSz(row.size);
+      result[row.sku].sizes[sz] = { qty: row.stock_qty || 0, futureDate: row.future_delivery_date || null, futureQty: row.future_delivery_qty || null };
       if (!result[row.sku].lastSynced || new Date(row.last_synced) > new Date(result[row.sku].lastSynced)) result[row.sku].lastSynced = row.last_synced;
     });
     return result;
@@ -1904,7 +1909,7 @@ export default function App(){
       const records=[];const skuSet=new Set();
       rows.forEach(row=>{
         const sku=(row[skuCol]||'').toString().trim().toUpperCase();
-        const size=sizeCol?(row[sizeCol]||'').toString().trim():'ONE SIZE';
+        const rawSize=sizeCol?(row[sizeCol]||'').toString().trim():'ONE SIZE';const size=_normSz(rawSize);
         const qty=parseInt(row[qtyCol])||0;
         const futDate=futDateCol?(row[futDateCol]||'').toString().trim()||null:null;
         const futQty=futQtyCol?parseInt(row[futQtyCol])||null:null;
