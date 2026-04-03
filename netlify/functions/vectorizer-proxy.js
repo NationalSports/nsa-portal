@@ -1,6 +1,9 @@
 // Netlify serverless function to proxy Vectorizer.AI API calls
 // Keeps API credentials server-side, accepts base64 image from frontend
 exports.handler = async (event) => {
+  const start = Date.now();
+  const log = (msg) => console.log(`[vectorizer-proxy] ${msg} (${Date.now() - start}ms)`);
+
   if (event.httpMethod === 'OPTIONS') {
     return { statusCode: 200, headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Content-Type', 'Access-Control-Allow-Methods': 'POST' }, body: '' };
   }
@@ -11,7 +14,7 @@ exports.handler = async (event) => {
   const apiId = process.env.VECTORIZER_AI_API_ID;
   const apiSecret = process.env.VECTORIZER_AI_API_SECRET;
   if (!apiId || !apiSecret) {
-    return { statusCode: 500, headers: { 'Access-Control-Allow-Origin': '*' }, body: JSON.stringify({ error: 'Vectorizer.AI API credentials not configured. Set VECTORIZER_AI_API_ID and VECTORIZER_AI_API_SECRET in Netlify env vars.' }) };
+    return { statusCode: 500, headers: { 'Access-Control-Allow-Origin': '*' }, body: JSON.stringify({ error: 'Vectorizer.AI API credentials not configured.' }) };
   }
 
   let body;
@@ -22,15 +25,17 @@ exports.handler = async (event) => {
     return { statusCode: 400, headers: { 'Access-Control-Allow-Origin': '*' }, body: JSON.stringify({ error: 'Missing imageBase64' }) };
   }
 
+  log(`Received image: ${Math.round(imageBase64.length / 1024)}KB base64, mode=${mode}, colors=${maxColors}`);
+
   try {
     // Convert base64 to binary buffer for multipart upload
     const imageBuffer = Buffer.from(imageBase64, 'base64');
+    log(`Decoded to ${Math.round(imageBuffer.length / 1024)}KB binary`);
 
     // Build multipart form data manually
     const boundary = '----VectorizerBoundary' + Date.now();
     const parts = [];
 
-    // Add image as binary file
     parts.push(
       `--${boundary}\r\n` +
       `Content-Disposition: form-data; name="image"; filename="image.png"\r\n` +
@@ -39,21 +44,18 @@ exports.handler = async (event) => {
     parts.push(imageBuffer);
     parts.push('\r\n');
 
-    // Add mode
     parts.push(
       `--${boundary}\r\n` +
       `Content-Disposition: form-data; name="mode"\r\n\r\n` +
       `${mode || 'production'}\r\n`
     );
 
-    // Add output format
     parts.push(
       `--${boundary}\r\n` +
       `Content-Disposition: form-data; name="output.file_format"\r\n\r\n` +
       `${outputFormat || 'svg'}\r\n`
     );
 
-    // Add max colors if specified
     if (maxColors && maxColors > 0) {
       parts.push(
         `--${boundary}\r\n` +
@@ -62,18 +64,11 @@ exports.handler = async (event) => {
       );
     }
 
-    // Limit processing resolution to speed up API response
-    parts.push(
-      `--${boundary}\r\n` +
-      `Content-Disposition: form-data; name="processing.max_resolution"\r\n\r\n` +
-      `1024\r\n`
-    );
-
     parts.push(`--${boundary}--\r\n`);
 
-    // Combine parts into a single buffer
     const bodyParts = parts.map(p => typeof p === 'string' ? Buffer.from(p) : p);
     const formBody = Buffer.concat(bodyParts);
+    log(`Sending ${Math.round(formBody.length / 1024)}KB to Vectorizer.AI API`);
 
     const resp = await fetch('https://api.vectorizer.ai/api/v1/vectorize', {
       method: 'POST',
@@ -84,18 +79,20 @@ exports.handler = async (event) => {
       body: formBody,
     });
 
+    log(`API responded: ${resp.status} ${resp.statusText}`);
+
     if (!resp.ok) {
       const errText = await resp.text();
+      log(`API error: ${errText.substring(0, 500)}`);
       let errMsg;
       try { errMsg = JSON.parse(errText).error?.message || errText; } catch { errMsg = errText; }
       return { statusCode: resp.status, headers: { 'Access-Control-Allow-Origin': '*' }, body: JSON.stringify({ error: errMsg }) };
     }
 
     const resultBuffer = Buffer.from(await resp.arrayBuffer());
-    const contentType = resp.headers.get('content-type') || 'image/svg+xml';
     const creditsCharged = resp.headers.get('x-credits-charged') || '';
+    log(`Got result: ${Math.round(resultBuffer.length / 1024)}KB, credits=${creditsCharged}`);
 
-    // SVG is text, return as-is; other formats return as base64
     if ((outputFormat || 'svg') === 'svg') {
       return {
         statusCode: 200,
@@ -106,10 +103,11 @@ exports.handler = async (event) => {
       return {
         statusCode: 200,
         headers: { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ data: resultBuffer.toString('base64'), contentType, creditsCharged }),
+        body: JSON.stringify({ data: resultBuffer.toString('base64'), contentType: resp.headers.get('content-type') || 'application/octet-stream', creditsCharged }),
       };
     }
   } catch (error) {
+    log(`CRASH: ${error.message}\n${error.stack}`);
     return { statusCode: 500, headers: { 'Access-Control-Allow-Origin': '*' }, body: JSON.stringify({ error: 'Proxy error: ' + error.message }) };
   }
 };
