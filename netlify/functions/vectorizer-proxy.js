@@ -62,6 +62,13 @@ exports.handler = async (event) => {
       );
     }
 
+    // Limit processing resolution to speed up API response
+    parts.push(
+      `--${boundary}\r\n` +
+      `Content-Disposition: form-data; name="processing.max_resolution"\r\n\r\n` +
+      `1024\r\n`
+    );
+
     parts.push(`--${boundary}--\r\n`);
 
     // Combine parts into a single buffer
