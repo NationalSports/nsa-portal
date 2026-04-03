@@ -17620,12 +17620,22 @@ export default function App(){
         const resizeImage=(dataUrl,maxDim=2048)=>new Promise(resolve=>{
           const img=new Image();
           img.onload=()=>{
-            if(img.width<=maxDim&&img.height<=maxDim){resolve(dataUrl.split(',')[1]);return}
-            const scale=Math.min(maxDim/img.width,maxDim/img.height);
+            const needsResize=img.width>maxDim||img.height>maxDim;
+            if(!needsResize){
+              // Check if original base64 is under ~4MB (safe for 6MB payload with JSON overhead)
+              const raw=dataUrl.split(',')[1];
+              if(raw.length<4*1024*1024){resolve(raw);return}
+            }
+            // Determine output format — use JPEG for photos to avoid PNG bloat
+            const isJpeg=dataUrl.startsWith('data:image/jpeg')||dataUrl.startsWith('data:image/jpg');
+            const mime=isJpeg?'image/jpeg':'image/png';
+            const scale=needsResize?Math.min(maxDim/img.width,maxDim/img.height):1;
             const c=document.createElement('canvas');
             c.width=Math.round(img.width*scale);c.height=Math.round(img.height*scale);
             const ctx=c.getContext('2d');ctx.drawImage(img,0,0,c.width,c.height);
-            resolve(c.toDataURL('image/png').split(',')[1]);
+            // JPEG quality 0.85 keeps detail while staying well under payload limit
+            const out=c.toDataURL(mime,0.85).split(',')[1];
+            resolve(out);
           };
           img.src=dataUrl;
         });
