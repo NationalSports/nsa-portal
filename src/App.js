@@ -17616,16 +17616,18 @@ export default function App(){
     if(vecEngine==='api'){
       // Vectorizer.AI API via Netlify proxy
       try{
-        // Resize image client-side to stay within Netlify's 6MB function payload limit
-        const resizeImage=(dataUrl,maxDim=2048)=>new Promise(resolve=>{
+        // Resize/compress image client-side to stay within Netlify's 6MB function payload limit
+        const resizeImage=(dataUrl,maxDim=1500)=>new Promise(resolve=>{
           const img=new Image();
           img.onload=()=>{
-            if(img.width<=maxDim&&img.height<=maxDim){resolve(dataUrl.split(',')[1]);return}
-            const scale=Math.min(maxDim/img.width,maxDim/img.height);
+            const scale=Math.min(1,maxDim/Math.max(img.width,img.height));
             const c=document.createElement('canvas');
             c.width=Math.round(img.width*scale);c.height=Math.round(img.height*scale);
             const ctx=c.getContext('2d');ctx.drawImage(img,0,0,c.width,c.height);
-            resolve(c.toDataURL('image/png').split(',')[1]);
+            // Use JPEG for photos (much smaller), PNG for images with transparency
+            const useJpeg=!dataUrl.includes('image/png')||c.width*c.height>500000;
+            const out=useJpeg?c.toDataURL('image/jpeg',0.85):c.toDataURL('image/png');
+            resolve(out.split(',')[1]);
           };
           img.src=dataUrl;
         });
