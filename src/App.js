@@ -1554,6 +1554,7 @@ export default function App(){
   const[vecPreset,setVecPreset]=useState('default');
   const[vecColors,setVecColors]=useState(16);
   const[vecEngine,setVecEngine]=useState('api');// 'api' = Vectorizer.AI, 'local' = imagetracerjs
+  const[vecTestMode,setVecTestMode]=useState(false);// test mode = watermarked but no API subscription needed
   const[vecCredits,setVecCredits]=useState(null);
   const vecCanvasRef=useRef(null);
   const[issueModal,setIssueModal]=useState({open:false,desc:'',priority:'medium'});
@@ -17545,6 +17546,10 @@ export default function App(){
                   <label style={{fontSize:12,color:'#64748b'}}>Max Colors (0 = automatic)
                     <input className="form-input" type="number" min={0} max={256} value={vecColors} onChange={e=>setVecColors(parseInt(e.target.value)||0)} style={{marginTop:2,fontSize:12}}/>
                   </label>
+                  <label style={{fontSize:12,color:'#64748b',display:'flex',alignItems:'center',gap:6,cursor:'pointer'}}>
+                    <input type="checkbox" checked={vecTestMode} onChange={e=>setVecTestMode(e.target.checked)}/>
+                    Test Mode {vecTestMode&&<span style={{color:'#d97706',fontWeight:600}}>(watermarked output)</span>}
+                  </label>
                 </div>}
                 <button className="btn btn-primary" disabled={vecProcessing} onClick={()=>runVectorizer()} style={{marginTop:12,width:'100%',fontSize:13}}>
                   {vecProcessing?<><Icon name="loader" size={14} style={{animation:'spin 1s linear infinite'}}/> {vecEngine==='api'?'Vectorizing via AI...':'Processing...'}</>:<><Icon name="pen-tool" size={14}/> Vectorize Image</>}
@@ -17613,7 +17618,7 @@ export default function App(){
         if(!base64){nf('Failed to read image data','error');setVecProcessing(false);return}
         const resp=await fetch('/.netlify/functions/vectorizer-proxy',{
           method:'POST',headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({imageBase64:base64,mode:'production',outputFormat:'svg'})
+          body:JSON.stringify({imageBase64:base64,mode:vecTestMode?'test':'production',outputFormat:'svg'})
         });
         const data=await resp.json();
         if(!resp.ok||data.error){nf('Vectorizer.AI error: '+(data.error||'Unknown error'),'error');setVecProcessing(false);return}
