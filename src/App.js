@@ -272,7 +272,7 @@ const _dbLoad = async () => {
   if (_dbSavingCount>0) { console.log('[DB] Skipping load — save in progress'); return null; }
   try {
     // Load tables in batches to avoid overwhelming Supabase connection pool
-    const _batch=async(queries,size=8)=>{const results=[];for(let i=0;i<queries.length;i+=size){results.push(...await Promise.all(queries.slice(i,i+size).map(q=>q())));} return results};
+    const _batch=async(queries,size=5)=>{const results=[];for(let i=0;i<queries.length;i+=size){results.push(...await Promise.all(queries.slice(i,i+size).map(q=>q())));} return results};
     const [rTeam,rCust,rContacts,rVend,rProd,rProdInv,rEst,rEstArt,rEstItems,rEstDecos,
       rSO,rSOArt,rSOFirm,rSOItems,rSODecos,rSOPicks,rSOPOs,rSOJobs,
       rInv,rInvPay,rInvItems,rMsg,rMsgReads,rOMG,rOMGProd,rIssues,rAppState,
@@ -1816,7 +1816,7 @@ export default function App(){
         if(as.batch_pos)setBatchPOs(prev=>JSON.stringify(prev)!==JSON.stringify(as.batch_pos)?as.batch_pos:prev);
         if(as.company_info)setCompanyInfo(prev=>{const ci={...NSA_DEFAULTS,...as.company_info};ci.fullAddr=ci.addr+', '+ci.city+', '+ci.state+' '+ci.zip;if(JSON.stringify(prev)===JSON.stringify(ci))return prev;Object.assign(NSA,ci);return ci});
       }catch(e){console.warn('[DB] Poll failed:',e.message)}
-    },120000);
+    },300000);// poll every 5 min (realtime handles instant sync)
     return()=>clearInterval(poll);
   },[]);
 
@@ -1938,24 +1938,24 @@ export default function App(){
   React.useEffect(()=>{_diffSave(msgs,'msgs',m=>_dbSaveMessage(m))},[msgs]);
   React.useEffect(()=>{if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.omg||[];omgStores.forEach(s=>{const old=snap.find(p=>p.id===s.id);if(!old||JSON.stringify(old)!==JSON.stringify(s)){_dbSave('omg_stores',[_pick(s,_omgStoreCols)])}});_dbSnap.current.omg=omgStores}},[omgStores]);
 
-  // ─── Automatic retry for failed saves (every 30s) ───
+  // ─── Automatic retry for failed saves (every 60s, sequential to avoid overwhelming Supabase) ───
   React.useEffect(()=>{
-    const retryInterval=setInterval(()=>{
+    const retryInterval=setInterval(async()=>{
       if(_dbSaveFailedIds.size===0||!_initialLoadDone.current||!_dbLoadSuccess.current)return;
       console.log('[DB] Retrying failed saves:',[ ..._dbSaveFailedIds]);
       const ids=[..._dbSaveFailedIds];
-      ids.forEach(id=>{
+      for(const id of ids){
         const sid=String(id);
-        if(sid.startsWith('EST-')){const item=ests.find(e=>e.id===id);if(item)_dbSaveEstimate(item)}
-        else if(sid.startsWith('SO-')){const item=sos.find(s=>s.id===id);if(item)_dbSaveSO(item)}
-        else if(sid.startsWith('INV-')){const item=invs.find(i=>i.id===id);if(item)_dbSaveInvoice(item)}
-        else if(sid.startsWith('MSG-')){const item=msgs.find(m=>m.id===id);if(item)_dbSaveMessage(item)}
+        if(sid.startsWith('EST-')){const item=ests.find(e=>e.id===id);if(item)await _dbSaveEstimate(item)}
+        else if(sid.startsWith('SO-')){const item=sos.find(s=>s.id===id);if(item)await _dbSaveSO(item)}
+        else if(sid.startsWith('INV-')){const item=invs.find(i=>i.id===id);if(item)await _dbSaveInvoice(item)}
+        else if(sid.startsWith('MSG-')){const item=msgs.find(m=>m.id===id);if(item)await _dbSaveMessage(item)}
         else{
-          const c=cust.find(x=>x.id===id);if(c){_dbSaveCustomer(c);return}
-          const p=prod.find(x=>x.id===id);if(p){_dbSaveProduct(p)}
+          const c=cust.find(x=>x.id===id);if(c){await _dbSaveCustomer(c);continue}
+          const p=prod.find(x=>x.id===id);if(p)await _dbSaveProduct(p)
         }
-      });
-    },30000);
+      }
+    },60000);
     return()=>clearInterval(retryInterval);
   },[ests,sos,invs,msgs,cust,prod]); // eslint-disable-line react-hooks/exhaustive-deps
 
