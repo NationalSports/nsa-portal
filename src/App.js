@@ -17624,9 +17624,15 @@ export default function App(){
             const c=document.createElement('canvas');
             c.width=Math.round(img.width*scale);c.height=Math.round(img.height*scale);
             const ctx=c.getContext('2d');ctx.drawImage(img,0,0,c.width,c.height);
-            // Try PNG first (best for logos/flat graphics); fall back to JPEG if too large
+            // Try PNG first; fall back to JPEG with decreasing quality until under 3.5MB
             let out=c.toDataURL('image/png');
-            if(out.length>3*1024*1024)out=c.toDataURL('image/jpeg',0.92);
+            if(out.length>3.5*1024*1024){
+              for(const q of [0.9,0.8,0.7,0.6]){
+                out=c.toDataURL('image/jpeg',q);
+                if(out.length<3.5*1024*1024)break;
+              }
+            }
+            console.log('[Vectorizer] Image prepared:',c.width+'x'+c.height,'payload:',Math.round(out.length/1024)+'KB');
             resolve(out.split(',')[1]);
           };
           img.src=dataUrl;
