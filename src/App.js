@@ -17616,16 +17616,23 @@ export default function App(){
     if(vecEngine==='api'){
       // Vectorizer.AI API via Netlify proxy
       try{
-        // Resize image client-side to stay within Netlify's 6MB function payload limit
-        const resizeImage=(dataUrl,maxDim=2048)=>new Promise(resolve=>{
+        // Resize/compress image client-side
+        const resizeImage=(dataUrl,maxDim=1500)=>new Promise(resolve=>{
           const img=new Image();
           img.onload=()=>{
-            if(img.width<=maxDim&&img.height<=maxDim){resolve(dataUrl.split(',')[1]);return}
-            const scale=Math.min(maxDim/img.width,maxDim/img.height);
+            const scale=Math.min(1,maxDim/Math.max(img.width,img.height));
             const c=document.createElement('canvas');
             c.width=Math.round(img.width*scale);c.height=Math.round(img.height*scale);
             const ctx=c.getContext('2d');ctx.drawImage(img,0,0,c.width,c.height);
-            resolve(c.toDataURL('image/png').split(',')[1]);
+            let out=c.toDataURL('image/png');
+            if(out.length>3.5*1024*1024){
+              for(const q of [0.9,0.8,0.7,0.6]){
+                out=c.toDataURL('image/jpeg',q);
+                if(out.length<3.5*1024*1024)break;
+              }
+            }
+            console.log('[Vectorizer] Image prepared:',c.width+'x'+c.height,'payload:',Math.round(out.length/1024)+'KB');
+            resolve(out.split(',')[1]);
           };
           img.src=dataUrl;
         });
@@ -17639,6 +17646,8 @@ export default function App(){
         if(!resp.ok||data.error){nf('Vectorizer.AI error: '+(data.error||'Unknown error'),'error');setVecProcessing(false);return}
         setVecSvg(data.svg);
         if(data.creditsCharged)setVecCredits(data.creditsCharged);
+        const creditsCharged=resp.headers.get('x-credits-charged')||'';
+        if(creditsCharged)setVecCredits(creditsCharged);
         nf('Vectorization complete (Vectorizer.AI)!');
       }catch(e){
         nf('API call failed: '+e.message+'. Try the Local engine as fallback.','error');

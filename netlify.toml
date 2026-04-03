@@ -5,7 +5,6 @@
 
 [functions]
   directory = "netlify/functions"
-  external_node_modules = ["node-fetch"]
 
 [functions."vectorizer-proxy"]
   timeout = 26
