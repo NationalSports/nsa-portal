@@ -502,7 +502,7 @@ const _dbSaveEstimateInner = async (est) => {
       }
     }
     // If art_files is empty/undefined, leave existing DB art files untouched to prevent accidental data loss
-    if(!items?.length){_dbSaveFailedIds.delete(est.id);_persistFailedIds();return true}
+    if(!items?.length){_dbSaveFailedIds.delete(est.id);_persistFailedIds();if(est._version)est._version=est._version+1;return true}
     // Batch insert all items at once (much faster than one-by-one)
     const allItemRows=items.map((item,idx)=>{const{decorations,...itemData}=item;return{..._pick(itemData,_itemCols),estimate_id:est.id,item_index:idx}});
     let{data:insertedItems,error:itemErr}=await supabase.from('estimate_items').insert(allItemRows).select('id');
@@ -529,7 +529,10 @@ const _dbSaveEstimateInner = async (est) => {
       }
     }
     if(decoFailed){_dbSaveFailedIds.add(est.id);_persistFailedIds();if(_dbNotify)_dbNotify('Estimate save incomplete — some data may not have been saved to cloud','error');return false}
-    _dbSaveFailedIds.delete(est.id);_persistFailedIds();_dbRecentSaves[est.id]=Date.now();return true;
+    _dbSaveFailedIds.delete(est.id);_persistFailedIds();_dbRecentSaves[est.id]=Date.now();
+    // Bump local version to match server (DB trigger increments on UPDATE)
+    if(est._version)est._version=est._version+1;
+    return true;
   }catch(e){console.error('[DB] save estimate:',e);_dbSaveFailedIds.add(est.id);_persistFailedIds();if(_dbNotify)_dbNotify('Estimate save failed: '+e.message,'error');return false}});
 };
 const _dbSaveEstimate = (est) => _queuedEntitySave(est.id, est, _dbSaveEstimateInner);
@@ -601,7 +604,7 @@ const _dbSaveSOInner = async (so) => {
     }
     // If art_files is empty/undefined, leave existing DB art files untouched to prevent accidental data loss
     if(firm_dates?.length){const{error:fdErr}=await supabase.from('so_firm_dates').insert(firm_dates.map(f=>({..._pick(f,_firmDateCols),so_id:so.id})));if(fdErr){console.error('[DB] so_firm_dates insert failed:',fdErr.message);saveFailed=true}}
-    if(!items?.length){if(saveFailed){_dbSaveFailedIds.add(so.id);_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save incomplete — some data may not have been saved to cloud','error');return false}_dbSaveFailedIds.delete(so.id);_persistFailedIds();return true}
+    if(!items?.length){if(saveFailed){_dbSaveFailedIds.add(so.id);_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save incomplete — some data may not have been saved to cloud','error');return false}_dbSaveFailedIds.delete(so.id);_persistFailedIds();if(so._version)so._version=so._version+1;return true}
     // Batch insert all items at once (much faster than one-by-one)
     const allItemRows=items.map((item,idx)=>{const{decorations,pick_lines,po_lines,...itemData}=item;return{..._pick(itemData,_itemCols),so_id:so.id,item_index:idx}});
     let{data:insertedItems,error:itemErr}=await supabase.from('so_items').insert(allItemRows).select('id');
@@ -651,7 +654,10 @@ const _dbSaveSOInner = async (so) => {
       }
     }
     if(saveFailed){_dbSaveFailedIds.add(so.id);_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save incomplete — some data may not have been saved to cloud','error');return false}
-    _dbSaveFailedIds.delete(so.id);_persistFailedIds();_dbRecentSaves[so.id]=Date.now();return true;
+    _dbSaveFailedIds.delete(so.id);_persistFailedIds();_dbRecentSaves[so.id]=Date.now();
+    // Bump local version to match server (DB trigger increments on UPDATE)
+    if(so._version)so._version=so._version+1;
+    return true;
   }catch(e){console.error('[DB] save SO:',e);_dbSaveFailedIds.add(so.id);_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save failed: '+e.message,'error');return false}});
 };
 const _dbSaveSO = (so) => _queuedEntitySave(so.id, so, _dbSaveSOInner);
@@ -725,7 +731,10 @@ const _dbSaveCustomer = async (c) => {
       }
     }
     // If contacts is empty/undefined, leave existing DB contacts untouched to prevent accidental data loss
-    _dbSaveFailedIds.delete(c.id);_persistFailedIds();_dbRecentSaves[c.id]=Date.now();console.log('[DB] Customer saved:',c.id,c.name);return true;
+    _dbSaveFailedIds.delete(c.id);_persistFailedIds();_dbRecentSaves[c.id]=Date.now();
+    // Bump local version to match server (DB trigger increments on UPDATE)
+    if(c._version)c._version=c._version+1;
+    console.log('[DB] Customer saved:',c.id,c.name);return true;
   }catch(e){console.error('[DB] save customer:',e);_dbSaveFailedIds.add(c.id);_persistFailedIds();if(_dbNotify)_dbNotify('Customer save failed: '+e.message,'error');return false}
 };
 const _dbSavePromoProgram = async (prog) => {

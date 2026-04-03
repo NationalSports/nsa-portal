@@ -1,4 +1,5 @@
 /* eslint-disable */
+import { NSA as _NSA_CONST } from './constants';
 
 // ── Brevo Email ──
 export const _brevoKey = process.env.REACT_APP_BREVO_API_KEY || '';
@@ -54,8 +55,8 @@ export const sendBrevoSms=async({to,content,sender})=>{
 };
 
 // ── Document/print helpers ──
-export const buildDocHtml=({title,docNum,docType,date,headerRight,infoBoxes,tables,notes,footer,showPricing,portalLink,css})=>{
-  const _NSA={name:'National Sports Apparel',addr:'9340 Cabot Dr, Suite A',city:'San Diego',state:'CA',zip:'91941',logoUrl:'/nsa-logo.svg'};
+export const buildDocHtml=({title,docNum,docType,date,headerRight,infoBoxes,tables,notes,footer,showPricing,portalLink,css,companyInfo})=>{
+  const _NSA=companyInfo||_NSA_CONST||{name:'National Sports Apparel',addr:'9340 Cabot Dr, Suite A',city:'San Diego',state:'CA',zip:'91941',logoUrl:'/nsa-logo.svg'};
   let h='';
   // Header: logo/address left, doc type/number right
   h+='<div class="header"><div class="logo"><img src="'+_NSA.logoUrl+'" alt="NSA"/><div class="co-addr"><strong>'+_NSA.name+'</strong>'+_NSA.addr+'<br/>'+_NSA.city+', '+_NSA.state+' '+_NSA.zip+'</div></div>';
