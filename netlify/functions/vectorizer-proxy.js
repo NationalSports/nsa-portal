@@ -23,17 +23,49 @@ exports.handler = async (event) => {
   }
 
   try {
-    const formData = new URLSearchParams();
-    formData.append('image.base64', imageBase64);
-    formData.append('output.file_format', outputFormat || 'svg');
-    formData.append('mode', mode || 'production');
+    // Convert base64 to binary buffer for multipart upload
+    const imageBuffer = Buffer.from(imageBase64, 'base64');
+
+    // Build multipart form data manually
+    const boundary = '----VectorizerBoundary' + Date.now();
+    const parts = [];
+
+    // Add image as binary file
+    parts.push(
+      `--${boundary}\r\n` +
+      `Content-Disposition: form-data; name="image"; filename="image.png"\r\n` +
+      `Content-Type: application/octet-stream\r\n\r\n`
+    );
+    parts.push(imageBuffer);
+    parts.push('\r\n');
+
+    // Add mode
+    parts.push(
+      `--${boundary}\r\n` +
+      `Content-Disposition: form-data; name="mode"\r\n\r\n` +
+      `${mode || 'production'}\r\n`
+    );
+
+    // Add output format
+    parts.push(
+      `--${boundary}\r\n` +
+      `Content-Disposition: form-data; name="output.file_format"\r\n\r\n` +
+      `${outputFormat || 'svg'}\r\n`
+    );
+
+    parts.push(`--${boundary}--\r\n`);
+
+    // Combine parts into a single buffer
+    const bodyParts = parts.map(p => typeof p === 'string' ? Buffer.from(p) : p);
+    const formBody = Buffer.concat(bodyParts);
 
     const resp = await fetch('https://api.vectorizer.ai/api/v1/vectorize', {
       method: 'POST',
       headers: {
         'Authorization': 'Basic ' + Buffer.from(apiId + ':' + apiSecret).toString('base64'),
+        'Content-Type': `multipart/form-data; boundary=${boundary}`,
       },
-      body: formData,
+      body: formBody,
     });
 
     if (!resp.ok) {
