@@ -17554,6 +17554,9 @@ export default function App(){
                 <button className="btn btn-primary" disabled={vecProcessing} onClick={()=>runVectorizer()} style={{marginTop:12,width:'100%',fontSize:13}}>
                   {vecProcessing?<><Icon name="loader" size={14} style={{animation:'spin 1s linear infinite'}}/> {vecEngine==='api'?'Vectorizing via AI...':'Processing...'}</>:<><Icon name="pen-tool" size={14}/> Vectorize Image</>}
                 </button>
+                {vecSvg&&<button className="btn btn-secondary" onClick={()=>{setVecFile(null);setVecSvg('');setVecCredits(null)}} style={{marginTop:8,width:'100%',fontSize:13}}>
+                  <Icon name="plus" size={14}/> New Image
+                </button>}
               </div>}
             </div>
           </div>
