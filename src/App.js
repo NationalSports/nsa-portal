@@ -17624,9 +17624,9 @@ export default function App(){
             const c=document.createElement('canvas');
             c.width=Math.round(img.width*scale);c.height=Math.round(img.height*scale);
             const ctx=c.getContext('2d');ctx.drawImage(img,0,0,c.width,c.height);
-            // Use JPEG for photos (much smaller), PNG for images with transparency
-            const useJpeg=!dataUrl.includes('image/png')||c.width*c.height>500000;
-            const out=useJpeg?c.toDataURL('image/jpeg',0.85):c.toDataURL('image/png');
+            // Try PNG first (best for logos/flat graphics); fall back to JPEG if too large
+            let out=c.toDataURL('image/png');
+            if(out.length>3*1024*1024)out=c.toDataURL('image/jpeg',0.92);
             resolve(out.split(',')[1]);
           };
           img.src=dataUrl;
