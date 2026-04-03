@@ -17617,7 +17617,7 @@ export default function App(){
       // Vectorizer.AI API via Netlify proxy
       try{
         // Resize/compress image client-side to stay within Netlify's 6MB function payload limit
-        const resizeImage=(dataUrl,maxDim=800)=>new Promise(resolve=>{
+        const resizeImage=(dataUrl,maxDim=1500)=>new Promise(resolve=>{
           const img=new Image();
           img.onload=()=>{
             const scale=Math.min(1,maxDim/Math.max(img.width,img.height));
