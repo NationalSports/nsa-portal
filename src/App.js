@@ -128,9 +128,12 @@ const _safeQuery=(table,opts)=>{
   let q=supabase.from(table).select('*');
   if(opts?.order)q=q.order(opts.order,opts.orderOpts||{});
   q=q.limit(opts?.limit||10000);
-  return q.then(r=>{
+  // Add per-query timeout to prevent individual queries from hanging forever
+  const timeout=new Promise(resolve=>setTimeout(()=>resolve({data:[],error:{message:'Query timeout for '+table},status:408}),15000));
+  return Promise.race([q,timeout]).then(r=>{
     if(r.status===404||(r.error?.message||'').includes('does not exist')||(r.error?.code==='PGRST204')){
       _missing404Tables.set(table,Date.now());return{data:[],error:null,status:200}}
+    if(r.status===408)console.warn('[DB] Query timeout for table:',table);
     return r;
   });
 };
@@ -1584,7 +1587,8 @@ export default function App(){
     let cancelled=false;
     (async()=>{
       try{
-        const d=await _dbLoad();
+        const _loadTimeout=new Promise(resolve=>setTimeout(()=>{console.error('[DB] Overall load timed out after 20s');resolve(null)},20000));
+        const d=await Promise.race([_dbLoad(),_loadTimeout]);
         if(cancelled)return;
         if(!d){
           // Supabase connected but query failed — do NOT allow writes that could overwrite real data
