@@ -12976,19 +12976,20 @@ export default function App(){
           const updates={};
           if(name&&name!==existing.name)updates.name=name;
           if(row[colMap.brand]&&row[colMap.brand].trim())updates.brand=row[colMap.brand].trim();
-          // If this row has a different color than the existing product, add it to _colors instead of overwriting
+          // Update color: first row for this SKU sets/overwrites the primary color,
+          // subsequent rows with different colors add to _colors
           if(rowColor){
-            const existingColor=(existing.color||'').trim();
-            const existingColors=existing._colors||[];
-            // Find any pending updates for this product (from earlier rows in this import)
             const pendingUpdate=updated.find(u=>u.id===existing.id);
-            const currentColor=pendingUpdate?.color||existingColor;
-            const currentColors=pendingUpdate?._colors||existingColors;
-            if(!currentColor){
+            if(pendingUpdate&&pendingUpdate.color){
+              // Already updated color from an earlier row in this import — add to _colors if different
+              const currentColors=pendingUpdate._colors||existing._colors||[];
+              if(rowColor.toLowerCase()!==pendingUpdate.color.toLowerCase()&&!currentColors.some(c=>c.toLowerCase()===rowColor.toLowerCase())){
+                updates._colors=[...currentColors,rowColor];
+              }
+            }else{
+              // First row for this SKU — overwrite the primary color
               updates.color=rowColor;
               updates.color_category=mapColorCategory(rowColor);
-            }else if(rowColor.toLowerCase()!==currentColor.toLowerCase()&&!currentColors.some(c=>c.toLowerCase()===rowColor.toLowerCase())){
-              updates._colors=[...currentColors,rowColor];
             }
           }
           if(row[colMap.category]&&row[colMap.category].trim())updates.category=row[colMap.category].trim();
