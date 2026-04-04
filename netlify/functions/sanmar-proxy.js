@@ -68,16 +68,16 @@ function buildFlatArgSoapEnvelope(action, args) {
 // Namespace: http://www.promostandards.org/WSDL/InventoryService/1.0.0/
 function buildPromoStandardsSoapEnvelope(action, params) {
   const paramXml = Object.entries(params)
-    .map(([k, v]) => `<shar:${k}>${escapeXml(String(v ?? ''))}</shar:${k}>`)
+    .map(([k, v]) => `<ns:${k}>${escapeXml(String(v ?? ''))}</ns:${k}>`)
     .join('\n      ');
   return `<?xml version="1.0" encoding="UTF-8"?>
 <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
-                  xmlns:shar="http://www.promostandards.org/WSDL/InventoryService/1.0.0/SharedObjects/">
+                  xmlns:ns="http://www.promostandards.org/WSDL/InventoryService/1.0.0/">
   <soapenv:Header/>
   <soapenv:Body>
-    <shar:GetInventoryLevelsRequest>
+    <ns:Request>
       ${paramXml}
-    </shar:GetInventoryLevelsRequest>
+    </ns:Request>
   </soapenv:Body>
 </soapenv:Envelope>`;
 }
