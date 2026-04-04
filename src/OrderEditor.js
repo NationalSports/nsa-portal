@@ -215,19 +215,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           // Get product detail which includes child SKUs
           const detail=await momentecGetProductByPartNumber(sku);
           const entry=detail?.CatalogEntryView?.[0];
+          console.log('[Momentec] Product detail for',sku,': SKUs count=',entry?.SKUs?.length||0);
           if(entry){
-            // Extract sizes and prices from child SKUs
             const skus=entry.SKUs||entry.sKUs||[];
+            if(skus.length>0)console.log('[Momentec] Sample SKU keys:',Object.keys(skus[0]).join(','));
             const getSkSize=(e)=>{const attrs=e.Attributes||e.attributes||e.definingAttributes||[];if(Array.isArray(attrs)){for(const a of attrs){const id=(a.identifier||'').toLowerCase();const n=(a.name||'').toLowerCase();if(id==='asgswatchsize'||n==='available sizes'||n==='size'){const vals=a.values||a.Values||[];if(vals.length)return(vals[0].values||vals[0].value||vals[0].identifier||'').trim()}}}return''};
             const getSkColor=(e)=>{const attrs=e.Attributes||e.attributes||e.definingAttributes||[];if(Array.isArray(attrs)){for(const a of attrs){const n=(a.name||a.identifier||'').toLowerCase();if(n==='color'||n==='colour'||n==='clr'||n==='asgswatchcolor'){const vals=a.values||a.Values||[];if(vals.length)return vals.map(v=>v.values||v.value||v.Value||v.identifier||v).join('/')}}}return''};
             const itemColor=(item?.color||'').toLowerCase();
             for(const sk of skus){
               const skColor=(getSkColor(sk)||'').toLowerCase();
-              // Filter by item color if set
               if(itemColor&&skColor&&!skColor.includes(itemColor.split('/')[0].split(' ')[0].toLowerCase())&&!itemColor.includes(skColor.split('/')[0].split(' ')[0].toLowerCase()))continue;
               const sz=normSzName(getSkSize(sk));
               if(!sz)continue;
-              // Get inventory from buyQuantity or inventoryStatus fields
               const qty=parseInt(sk.buyQuantity||sk.inventoryQuantity||sk.quantity||0)||0;
               if(qty>0)sizeQty[sz]=(sizeQty[sz]||0)+qty;
             }
@@ -236,7 +235,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           if(Object.keys(sizeQty).length===0){
             try{
               const invData=await momentecApiCall(`/inventoryavailability/byPartNumber/${encodeURIComponent(sku)}`);
+              console.log('[Momentec] Inventory availability response keys:',Object.keys(invData||{}));
               const invItems=invData?.InventoryAvailability||[];
+              console.log('[Momentec] Inventory items:',invItems.length,invItems.length>0?JSON.stringify(invItems[0]).slice(0,300):'');
               for(const inv of invItems){
                 // Each entry may have a partNumber for the child SKU; extract size from it
                 const pn=inv.partNumber||'';
@@ -264,13 +265,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const invData=await sanmarGetInventory(sku,prodColor,'');
           // invData.items is array of inventory entries with warehouse quantities
           const invItems=invData?.items||[];
-          if(invItems.length>0)console.log('[SanMar] Inventory sample item:',JSON.stringify(invItems[0]).slice(0,500));
+          if(invItems.length>0)console.log('[SanMar] Inventory sample item:',JSON.stringify(invItems[0]).slice(0,800));
           invItems.forEach(it=>{
             const sz=normSzName(it.size||it.labelSize||'OSFA');
-            // SanMar returns quantities per warehouse; try totalQty first, then sum all numeric string values
             let qty=parseInt(it.totalQty||it.qty||it.quantity||0)||0;
+            // SanMar returns nested warehouse info: warehouseInfo.inventoryDetail[].quantity
+            if(qty<=0&&it.warehouseInfo){
+              const details=it.warehouseInfo.inventoryDetail||it.warehouseInfo;
+              const arr=Array.isArray(details)?details:[details];
+              arr.forEach(d=>{if(d&&d.quantity)qty+=parseInt(d.quantity)||0});
+            }
+            // Fallback: sum all numeric string values (warehouse names as keys)
             if(qty<=0){
-              // Sum all numeric-looking values (warehouse quantities like "Dallas": "1784", "Reno": "770")
               Object.entries(it).forEach(([k,v])=>{
                 if(typeof v==='string'&&!['size','labelSize','color','catalogColor','colorName','style','styleNumber','piecePrice','salePrice','programPrice','casePrice','caseQty','customerPrice'].includes(k)){
                   const n=parseInt(v)||0;if(n>0)qty+=n;
@@ -306,7 +312,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             });
           }catch(e){console.warn('[SanMar] Product info fetch error for',sku,e.message)}
         }
-        console.log('[SanMar] Inventory result for',sku,':',JSON.stringify(sizeQty));
+        console.log('[SanMar] Inventory result for',sku,':',JSON.stringify(sizeQty),'price:',JSON.stringify(sizePrice));
         const result={sizes:sizeQty,price:sizePrice,fetchedAt:Date.now(),source:'sm'};
         vendorInvCache.current[cacheKey]=result;
         setVendorInv(prev=>({...prev,[sku]:{sizes:sizeQty,price:sizePrice,loading:false,error:null,source:'sm'}}));
