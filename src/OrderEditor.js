@@ -264,20 +264,20 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const invData=await sanmarGetInventory(sku,prodColor,'');
           // invData.items is array of inventory entries with warehouse quantities
           const invItems=invData?.items||[];
+          if(invItems.length>0)console.log('[SanMar] Inventory sample item:',JSON.stringify(invItems[0]).slice(0,500));
           invItems.forEach(it=>{
             const sz=normSzName(it.size||it.labelSize||'OSFA');
-            // SanMar returns quantities per warehouse; sum all warehouses
-            const qty=parseInt(it.totalQty||it.qty||it.quantity||0)||0;
-            // Also check individual warehouse fields
-            if(qty>0){sizeQty[sz]=(sizeQty[sz]||0)+qty}
-            else{
-              // Sum warehouse-level quantities if totalQty not present
-              let whTotal=0;
+            // SanMar returns quantities per warehouse; try totalQty first, then sum all numeric string values
+            let qty=parseInt(it.totalQty||it.qty||it.quantity||0)||0;
+            if(qty<=0){
+              // Sum all numeric-looking values (warehouse quantities like "Dallas": "1784", "Reno": "770")
               Object.entries(it).forEach(([k,v])=>{
-                if(/^(qty|warehouse|wh)/i.test(k)&&typeof v==='string'){const n=parseInt(v)||0;if(n>0)whTotal+=n}
+                if(typeof v==='string'&&!['size','labelSize','color','catalogColor','colorName','style','styleNumber','piecePrice','salePrice','programPrice','casePrice','caseQty','customerPrice'].includes(k)){
+                  const n=parseInt(v)||0;if(n>0)qty+=n;
+                }
               });
-              if(whTotal>0)sizeQty[sz]=(sizeQty[sz]||0)+whTotal;
             }
+            if(qty>0)sizeQty[sz]=(sizeQty[sz]||0)+qty;
           });
         }catch(e){console.warn('[SanMar] Inventory fetch error for',sku,e.message)}
         // Fetch pricing
@@ -306,6 +306,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             });
           }catch(e){console.warn('[SanMar] Product info fetch error for',sku,e.message)}
         }
+        console.log('[SanMar] Inventory result for',sku,':',JSON.stringify(sizeQty));
         const result={sizes:sizeQty,price:sizePrice,fetchedAt:Date.now(),source:'sm'};
         vendorInvCache.current[cacheKey]=result;
         setVendorInv(prev=>({...prev,[sku]:{sizes:sizeQty,price:sizePrice,loading:false,error:null,source:'sm'}}));
@@ -322,9 +323,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           catch(e2){throw e}
         }
         const items=Array.isArray(data)?data:data?[data]:[];
+        if(items.length>0)console.log('[S&S] Products sample item:',JSON.stringify(items[0]).slice(0,500));
         const sizeQty={};const sizePrice={};
         const prod3=products.find(p=>p.sku===sku);
-        const prodColor=prod3?.color?.toLowerCase()||'';
+        const itemColor=(item?.color||'').toLowerCase();
+        const prodColor=prod3?.color?.toLowerCase()||itemColor;
+        console.log('[S&S] Inventory for',sku,'color filter:',prodColor,'total items:',items.length);
         items.forEach(it=>{
           const itColor=(it.colorName||'').toLowerCase();
           if(prodColor&&itColor&&!itColor.includes(prodColor.split('/')[0].split(' ')[0].toLowerCase())&&!prodColor.includes(itColor.split('/')[0].split(' ')[0].toLowerCase()))return;
@@ -334,6 +338,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           if(it.customerPrice!=null)sizePrice[sz]=parseFloat(it.customerPrice)||parseFloat(it.piecePrice)||0;
           else if(it.piecePrice!=null)sizePrice[sz]=parseFloat(it.piecePrice)||0;
         });
+        console.log('[S&S] Inventory result for',sku,':',JSON.stringify(sizeQty));
         const result={sizes:sizeQty,price:sizePrice,fetchedAt:Date.now(),source:'ss'};
         vendorInvCache.current[cacheKey]=result;
         setVendorInv(prev=>({...prev,[sku]:{sizes:sizeQty,price:sizePrice,loading:false,error:null,source:'ss'}}));
@@ -1502,7 +1507,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const pCost=(()=>{if(item._sizeCosts&&szQty>0){let c=0;Object.entries(safeSizes(item)).forEach(([sz,v])=>{const n=safeNum(v);if(n>0)c+=n*(item._sizeCosts[sz]||item.nsa_cost)});return c}return qty*item.nsa_cost})();
       const pMg=pRev-pCost;
       const iR=pRev+dR;const iC=pCost+dC;const mg=iR-iC;
-      const szs=(item.available_sizes||['S','M','L','XL','2XL']).slice().sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
+      const szs=(item.available_sizes||['S','M','L','XL','2XL']).filter(s=>SZ_ORD.includes(s)).sort((a,b)=>SZ_ORD.indexOf(a)-SZ_ORD.indexOf(b));
       const addable=EXTRA_SIZES.filter(s=>!(item.available_sizes||[]).includes(s));
       return(<div key={idx} id={'so-item-'+idx} className="card" style={{marginBottom:12,transition:'box-shadow 0.3s'}}>
         <div style={{padding:'12px 18px',borderBottom:'1px solid #f1f5f9'}}>
