@@ -220,6 +220,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             catch(e){console.warn('[Momentec] byId failed for',mtId)}
           }
           if(!entry){
+            try{const d=await momentecGetProductByPartNumber(sku);entry=d?.CatalogEntryView?.[0]}
+            catch(e){console.warn('[Momentec] byPartNumber failed for',sku)}
+          }
+          if(!entry){
             try{const sr=await momentecSearchProducts(sku,5,1);
               const entries=sr?.CatalogEntryView||sr?.catalogEntryView||[];
               const match=entries.find(e=>(e.partNumber||'')===sku)||entries[0];
@@ -275,6 +279,25 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             }
           }
         }catch(e){console.warn('[Momentec] Product detail fetch error for',sku,e.message)}
+        // Fallback: if no child SKUs found, try direct inventory check on the parent style
+        if(Object.keys(sizeQty).length===0){
+          try{
+            const invData=await momentecApiCall(`/inventoryavailability/${encodeURIComponent(sku)}`);
+            const invItems=invData?.InventoryAvailability||[];
+            console.log('[Momentec] Direct inventory for',sku,':',invItems.length,'items');
+            for(const inv of invItems){
+              const status=(inv.inventoryStatus||'').toLowerCase();
+              const isAvail=status==='available'||status==='instock'||status==='in stock';
+              const rawQty=parseFloat(inv.availableQuantity||0);
+              if(isAvail||rawQty>0){
+                // No size breakdown available — mark all sizes as available
+                const itemSizes=Object.keys(item?.sizes||{}).filter(s=>s);
+                const displaySizes=itemSizes.length>0?itemSizes:(item?.available_sizes||['S','M','L','XL','2XL']);
+                displaySizes.forEach(sz=>{sizeQty[normSzName(sz)]=999});
+              }
+            }
+          }catch(e){console.warn('[Momentec] Direct inventory error for',sku,e.message)}
+        }
         console.log('[Momentec] Inventory result for',sku,':',JSON.stringify(sizeQty));
         const hasMtInv=Object.values(sizeQty).some(v=>v>0);
         const result={sizes:hasMtInv?sizeQty:{},price:sizePrice,fetchedAt:Date.now(),source:'mt'};
@@ -288,12 +311,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         // Primary: PromoStandards getInventoryLevels (more reliable than legacy SOAP)
         let invSuccess=false;
         try{
+          console.log('[SanMar] Trying PromoStandards inventory for',sku);
           const promoData=await sanmarGetPromoInventory(sku);
-          console.log('[SanMar] PromoStandards response:',JSON.stringify(promoData).slice(0,600));
-          // PromoStandards returns inventory in ProductVariationInventoryArray > ProductVariationInventory
+          console.log('[SanMar] PromoStandards response keys:',Object.keys(promoData||{}),'full:',JSON.stringify(promoData).slice(0,800));
+          // PromoStandards returns inventory in various nested structures
           const invArr=promoData?.ProductVariationInventoryArray?.ProductVariationInventory
             ||promoData?.productVariationInventoryArray?.productVariationInventory
-            ||promoData?.items||[];
+            ||promoData?.Inventory?.ProductVariationInventoryArray?.ProductVariationInventory
+            ||promoData?.inventory?.productVariationInventoryArray?.productVariationInventory
+            // Also check for direct array of items
+            ||promoData?.items||promoData?.Inventory||promoData?.inventory||[];
           const variations=Array.isArray(invArr)?invArr:[invArr];
           variations.forEach(v=>{
             const sz=normSzName(v?.attributeSize||v?.size||v?.labelSize||'OSFA');
