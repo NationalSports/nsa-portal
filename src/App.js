@@ -25,15 +25,18 @@ const nextSOId=sos=>'SO-'+(Math.max(_maxNum(sos),_dbMaxIds.so)+1);
 const nextInvId=invs=>'INV-'+(Math.max(_maxNum(invs),_dbMaxIds.inv)+1);
 const isDualRunJob=(j)=>j&&j.items&&j.items.length>1&&j.items.some(gi=>gi.run_order);
 const mapColorCategory=color=>{if(!color)return'';const c=color.toLowerCase();if(/white|natural|cream|ivory/.test(c))return'White';if(/black|charcoal/.test(c))return'Black';if(/navy|blue|royal|columbia|carolina/.test(c))return'Blue';if(/red|cardinal|scarlet|crimson/.test(c))return'Red';if(/green|forest|kelly|lime|hunter/.test(c))return'Green';if(/grey|gray|heather|silver|graphite/.test(c))return'Grey';if(/gold|yellow|vegas|athletic/.test(c))return'Gold';if(/orange|texas/.test(c))return'Orange';if(/purple|maroon|wine|burgundy/.test(c))return'Purple';if(/pink|fuchsia/.test(c))return'Pink';if(/brown|tan|khaki|sand|coyote/.test(c))return'Brown';return''};
-// Dedup products by SKU — merges duplicates into the first occurrence, collects extra colors into _colors
+// Dedup products by SKU — merges duplicates, prefers the copy with images
 const _dedupProducts=(products,onRemove)=>{
   const skuMap=new Map();const dupeIds=[];
+  const _hasImg=p=>!!(p.image_url||p.back_image_url||(p.images&&p.images.length));
   products.forEach(p=>{
     const sk=(p.sku||'').toLowerCase();if(!sk)return;
     if(skuMap.has(sk)){
-      const primary=skuMap.get(sk);
-      // Merge color from duplicate into primary's _colors
-      const dupeColor=(p.color||'').trim();
+      let primary=skuMap.get(sk);let dupe=p;
+      // If the new copy has images but the current primary doesn't, swap them
+      if(_hasImg(p)&&!_hasImg(primary)){skuMap.set(sk,p);dupe=primary;primary=p}
+      // Merge color from dupe into primary's _colors
+      const dupeColor=(dupe.color||'').trim();
       if(dupeColor){
         const pColors=primary._colors||[];
         const pColor=(primary.color||'').trim();
@@ -42,21 +45,22 @@ const _dedupProducts=(products,onRemove)=>{
         }
       }
       // Merge _colors arrays
-      (p._colors||[]).forEach(c=>{
+      (dupe._colors||[]).forEach(c=>{
         if(!primary._colors)primary._colors=[];
         if(!primary._colors.some(pc=>pc.toLowerCase()===c.toLowerCase()))primary._colors.push(c);
       });
       // Merge inventory: keep higher qty for each size
-      if(p._inv){Object.entries(p._inv).forEach(([sz,qty])=>{if(!primary._inv)primary._inv={};if((primary._inv[sz]||0)<qty)primary._inv[sz]=qty})}
-      // Merge images
-      if(p.image_url&&!primary.image_url)primary.image_url=p.image_url;
-      if(p.back_image_url&&!primary.back_image_url)primary.back_image_url=p.back_image_url;
-      dupeIds.push(p.id);
+      if(dupe._inv){Object.entries(dupe._inv).forEach(([sz,qty])=>{if(!primary._inv)primary._inv={};if((primary._inv[sz]||0)<qty)primary._inv[sz]=qty})}
+      // Merge images from dupe if primary is missing any
+      if(dupe.image_url&&!primary.image_url)primary.image_url=dupe.image_url;
+      if(dupe.back_image_url&&!primary.back_image_url)primary.back_image_url=dupe.back_image_url;
+      dupeIds.push(dupe.id);
     }else{skuMap.set(sk,p)}
   });
   if(dupeIds.length===0)return products;
+  const primaries=[...skuMap.values()].filter(p=>p._colors&&p._colors.length>0);
   console.log('[Products] Deduped '+dupeIds.length+' duplicate SKUs:',dupeIds);
-  if(onRemove)onRemove(dupeIds);
+  if(onRemove)onRemove(dupeIds,primaries);
   return products.filter(p=>!dupeIds.includes(p.id));
 };
 // Retry wrapper for lazy imports – handles ChunkLoadError after deploys
@@ -1643,7 +1647,7 @@ export default function App(){
           if(_dbSaveFailedIds.size){
             setCust(prev=>d.customers.map(c=>_dbSaveFailedIds.has(c.id)?(prev.find(p=>p.id===c.id)||c):c));
           }else{setCust(d.customers)}
-          if(d.vendors.length)setVend(d.vendors);setProd(prev=>{if(!d.products.length)return prev;const base=_dbSaveFailedIds.size?d.products.map(dp=>_dbSaveFailedIds.has(dp.id)?(prev.find(p=>p.id===dp.id)||dp):dp):d.products;const merged=base.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));const all=localOnly.length?[...merged,...localOnly]:merged;return _dedupProducts(all,dupeIds=>{dupeIds.forEach(id=>{try{supabase?.from('products').delete().eq('id',id).then(()=>console.log('[DB] Deleted duplicate product:',id))}catch(e){console.warn('[DB] Failed to delete dupe:',id,e)}});dupeIds.forEach(id=>{try{supabase?.from('product_inventory').delete().eq('product_id',id)}catch{}})})});
+          if(d.vendors.length)setVend(d.vendors);setProd(prev=>{if(!d.products.length)return prev;const base=_dbSaveFailedIds.size?d.products.map(dp=>_dbSaveFailedIds.has(dp.id)?(prev.find(p=>p.id===dp.id)||dp):dp):d.products;const merged=base.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));const all=localOnly.length?[...merged,...localOnly]:merged;return _dedupProducts(all,(dupeIds,primaries)=>{dupeIds.forEach(id=>{try{supabase?.from('products').delete().eq('id',id).then(()=>console.log('[DB] Deleted duplicate product:',id))}catch(e){console.warn('[DB] Failed to delete dupe:',id,e)}});dupeIds.forEach(id=>{try{supabase?.from('product_inventory').delete().eq('product_id',id)}catch{}});primaries.forEach(p=>_dbSaveProduct(p))})});
           if(_dbSaveFailedIds.size){
             setEsts(prev=>d.estimates.map(e=>{if(_dbSaveFailedIds.has(e.id))return prev.find(p=>p.id===e.id)||e;const local=prev.find(p=>p.id===e.id);if(local?.items?.length&&(!e.items||!e.items.length))return{...e,items:local.items,art_files:local.art_files||e.art_files};return e}));
             setSOs(prev=>d.sales_orders.map(s=>{if(_dbSaveFailedIds.has(s.id))return prev.find(p=>p.id===s.id)||s;const local=prev.find(p=>p.id===s.id);if(!local)return s;const merged={...s};if(local.jobs?.length&&(!s.jobs||!s.jobs.length))merged.jobs=local.jobs;if(local.items?.length&&(!s.items||!s.items.length))merged.items=local.items;if(local.art_files?.length&&(!s.art_files||!s.art_files.length))merged.art_files=local.art_files;return merged.jobs!==s.jobs||merged.items!==s.items||merged.art_files!==s.art_files?merged:s}));
