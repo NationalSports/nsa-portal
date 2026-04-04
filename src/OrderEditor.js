@@ -631,6 +631,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // Helper: extract wholesale/offer price from an HCL Commerce entry
       const getOfferPrice=(e)=>{
         const prices=e.Price||e.price||[];
+        if(!prices.length)console.warn('[Momentec] No Price array on',e.partNumber||e.name,{keys:Object.keys(e),offerPrice:e.offerPrice,salePrice:e.salePrice,listPrice:e.listPrice});
         // Prefer Offer usage (wholesale/dealer price)
         let offer=0,display=0;
         if(prices.length){for(const p of prices){const u=(p.usage||p.priceUsage||'').toLowerCase();const v=parseFloat(p.SKUPriceValue||p.priceValue||0);if(v>0){if(u==='offer'||u==='sale')offer=v;else if(u==='display'||u==='list')display=v}}}
