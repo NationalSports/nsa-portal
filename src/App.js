@@ -25,6 +25,44 @@ const nextSOId=sos=>'SO-'+(Math.max(_maxNum(sos),_dbMaxIds.so)+1);
 const nextInvId=invs=>'INV-'+(Math.max(_maxNum(invs),_dbMaxIds.inv)+1);
 const isDualRunJob=(j)=>j&&j.items&&j.items.length>1&&j.items.some(gi=>gi.run_order);
 const mapColorCategory=color=>{if(!color)return'';const c=color.toLowerCase();if(/white|natural|cream|ivory/.test(c))return'White';if(/black|charcoal/.test(c))return'Black';if(/navy|blue|royal|columbia|carolina/.test(c))return'Blue';if(/red|cardinal|scarlet|crimson/.test(c))return'Red';if(/green|forest|kelly|lime|hunter/.test(c))return'Green';if(/grey|gray|heather|silver|graphite/.test(c))return'Grey';if(/gold|yellow|vegas|athletic/.test(c))return'Gold';if(/orange|texas/.test(c))return'Orange';if(/purple|maroon|wine|burgundy/.test(c))return'Purple';if(/pink|fuchsia/.test(c))return'Pink';if(/brown|tan|khaki|sand|coyote/.test(c))return'Brown';return''};
+// Dedup products by SKU — merges duplicates, prefers the copy with images
+const _dedupProducts=(products,onRemove)=>{
+  const skuMap=new Map();const dupeIds=[];
+  const _hasImg=p=>!!(p.image_url||p.back_image_url||(p.images&&p.images.length));
+  products.forEach(p=>{
+    const sk=(p.sku||'').toLowerCase();if(!sk)return;
+    if(skuMap.has(sk)){
+      let primary=skuMap.get(sk);let dupe=p;
+      // If the new copy has images but the current primary doesn't, swap them
+      if(_hasImg(p)&&!_hasImg(primary)){skuMap.set(sk,p);dupe=primary;primary=p}
+      // Merge color from dupe into primary's _colors
+      const dupeColor=(dupe.color||'').trim();
+      if(dupeColor){
+        const pColors=primary._colors||[];
+        const pColor=(primary.color||'').trim();
+        if(dupeColor.toLowerCase()!==pColor.toLowerCase()&&!pColors.some(c=>c.toLowerCase()===dupeColor.toLowerCase())){
+          primary._colors=[...pColors,dupeColor];
+        }
+      }
+      // Merge _colors arrays
+      (dupe._colors||[]).forEach(c=>{
+        if(!primary._colors)primary._colors=[];
+        if(!primary._colors.some(pc=>pc.toLowerCase()===c.toLowerCase()))primary._colors.push(c);
+      });
+      // Merge inventory: keep higher qty for each size
+      if(dupe._inv){Object.entries(dupe._inv).forEach(([sz,qty])=>{if(!primary._inv)primary._inv={};if((primary._inv[sz]||0)<qty)primary._inv[sz]=qty})}
+      // Merge images from dupe if primary is missing any
+      if(dupe.image_url&&!primary.image_url)primary.image_url=dupe.image_url;
+      if(dupe.back_image_url&&!primary.back_image_url)primary.back_image_url=dupe.back_image_url;
+      dupeIds.push(dupe.id);
+    }else{skuMap.set(sk,p)}
+  });
+  if(dupeIds.length===0)return products;
+  const primaries=[...skuMap.values()].filter(p=>p._colors&&p._colors.length>0);
+  console.log('[Products] Deduped '+dupeIds.length+' duplicate SKUs:',dupeIds);
+  if(onRemove)onRemove(dupeIds,primaries);
+  return products.filter(p=>!dupeIds.includes(p.id));
+};
 // Retry wrapper for lazy imports – handles ChunkLoadError after deploys
 const lazyRetry = (importFn) => React.lazy(() =>
   importFn().catch(() => {
@@ -452,10 +490,8 @@ const _checkVersion=async(table,id,localVersion)=>{
     const{data}=await supabase.from(table).select('_version').eq('id',id).single();
     if(!data)return true;// new record
     if(data._version>localVersion){
-      console.warn(`[DB] Version conflict on ${table}/${id}: local v${localVersion}, server v${data._version}`);
-      // Only show banner for user-initiated saves, not background sync from poll/realtime
-      if(_dbNotify&&!_bgSync)_dbNotify(`This ${table.replace('_',' ')} was modified by another user. Please refresh to see the latest changes.`,'warn');
-      return false;
+      console.warn(`[DB] Version conflict on ${table}/${id}: local v${localVersion}, server v${data._version} — auto-healing`);
+      return data._version;// return server version so callers can auto-heal
     }
     return true;
   }catch(e){console.error('[DB] version check failed:',e);if(!_bgSync&&_dbNotify)_dbNotify('Save blocked — unable to verify data version. Check your connection and try again.','error');return false}// if check fails, block save to prevent overwriting newer data
@@ -464,8 +500,8 @@ const _checkVersion=async(table,id,localVersion)=>{
 // ─── Normalized Save Helpers ───
 const _dbSaveEstimateInner = async (est) => {
   if(!supabase)return;
-  // Optimistic locking: check version before saving
-  if(est._version&&!await _checkVersion('estimates',est.id,est._version))return;
+  // Optimistic locking: check version before saving (auto-heal on conflict)
+  if(est._version){const vc=await _checkVersion('estimates',est.id,est._version);if(vc!==true&&typeof vc==='number')est._version=vc}
   return _dbSavingGuard(async()=>{let decoFailed=false;try{
     const{items,art_files,...estRow}=est;
     let{error:estErr}=await supabase.from('estimates').upsert(_pick(estRow,_estCols),{onConflict:'id'});
@@ -538,8 +574,8 @@ const _dbSaveEstimateInner = async (est) => {
 const _dbSaveEstimate = (est) => _queuedEntitySave(est.id, est, _dbSaveEstimateInner);
 const _dbSaveSOInner = async (so) => {
   if(!supabase)return;
-  // Optimistic locking: check version before saving
-  if(so._version&&!await _checkVersion('sales_orders',so.id,so._version))return;
+  // Optimistic locking: check version before saving (auto-heal on conflict)
+  if(so._version){const vc=await _checkVersion('sales_orders',so.id,so._version);if(vc!==true&&typeof vc==='number')so._version=vc}
   return _dbSavingGuard(async()=>{let saveFailed=false;try{
     const{items,art_files,firm_dates,jobs,...soRow}=so;
     let{error:soErr}=await supabase.from('sales_orders').upsert(_pick(soRow,_soCols),{onConflict:'id'});
@@ -702,7 +738,7 @@ let _dbNotify=null; // set by App component for visible error toasts
 const _dbSaveCustomer = async (c) => {
   if(!supabase){console.warn('[DB] save customer skipped — no supabase');return false}
   // Optimistic locking: check version before saving
-  if(c._version&&!await _checkVersion('customers',c.id,c._version))return false;
+  if(c._version){const vc=await _checkVersion('customers',c.id,c._version);if(vc!==true){if(typeof vc==='number')c._version=vc;return false}}
   try{
     const{contacts,_oe,_os,_oi,_ob,...custRow}=c;
     custRow.updated_at=new Date().toISOString();
@@ -817,8 +853,8 @@ const _dbSaveProduct = async (p) => {
       image_front_url:p.image_url||p.image_front_url||null,image_back_url:p.back_image_url||p.image_back_url||null};
     const{error}=await supabase.from('products').upsert(row,{onConflict:'id'});
     if(error){
-      // Handle duplicate SKU: another product already owns this SKU — suppress all future saves for this ID
-      if(error.message?.includes('products_sku_unique')){
+      // Duplicate SKU: another product already owns this SKU — suppress all future saves for this ID
+      if(error.message?.includes('products_sku_unique')||error.message?.includes('duplicate key value')){
         console.warn('[DB] Duplicate SKU',p.sku,'for id',p.id,'— suppressing future saves');
         _dbDuplicateSkuIds.add(p.id);_dbSaveFailedIds.delete(p.id);_persistFailedIds();return true;
       }
@@ -826,7 +862,7 @@ const _dbSaveProduct = async (p) => {
       if(error.message?.includes('image_front_url')||error.message?.includes('image_back_url')||error.message?.includes('color_category')){
         const{image_front_url,image_back_url,color_category,...rowNoExtra}=row;
         const{error:e2}=await supabase.from('products').upsert(rowNoExtra,{onConflict:'id'});
-        if(e2){console.error('[DB] save product (no extra cols):',e2.message);_dbSaveFailedIds.add(p.id);_persistFailedIds();if(_dbNotify)_dbNotify('Product save failed: '+e2.message,'error');return false}
+        if(e2){if(e2.message?.includes('products_sku_unique')||e2.message?.includes('duplicate key value')){console.warn('[DB] Skipping duplicate SKU:',p.sku);return false}console.error('[DB] save product (no extra cols):',e2.message);_dbSaveFailedIds.add(p.id);_persistFailedIds();if(_dbNotify)_dbNotify('Product save failed: '+e2.message,'error');return false}
       }else{console.error('[DB] save product:',error.message);_dbSaveFailedIds.add(p.id);_persistFailedIds();if(_dbNotify)_dbNotify('Product save failed: '+error.message,'error');return false}
     }
     // Always save product images to app_state as reliable backup (works even without image columns)
@@ -1416,7 +1452,7 @@ function dP(d,q,artFiles,cq){
     const _cwInkCount=(()=>{if(d.color_way_id&&art.color_ways){const cw=art.color_ways.find(c=>c.id===d.color_way_id);if(cw)return cw.inks.length}return null})();
     if(art.deco_type==='screen_print'){const nc=_cwInkCount||(art.ink_colors?art.ink_colors.split('\n').filter(l=>l.trim()).length:1);const u=d.underbase?1+SP.ub:1;const c=rQ(spP(pq,nc,false)*u);return{sell:d.sell_override!=null?d.sell_override:rT(c*SP.mk),cost:c}}
     if(art.deco_type==='embroidery'){const c=emP(art.stitches||8000,pq,false);return{sell:d.sell_override!=null?d.sell_override:rT(c*EM.mk),cost:c}}
-    if(art.deco_type==='dtf'){const t=DTF[art.dtf_size||0];return{sell:d.sell_override||t.sell,cost:t.cost}}}}
+    if(art.deco_type==='dtf'||art.deco_type==='heat_press'){const t=DTF[art.dtf_size||0];return{sell:d.sell_override||t.sell,cost:t.cost}}}}
   // Legacy/fallback type-based
   if(d.type==='screen_print'){const u=d.underbase?1+SP.ub:1;const c=rQ(spP(q,d.colors||1,false)*u);return{sell:d.sell_override!=null?d.sell_override:rT(c*SP.mk),cost:c}}
   if(d.type==='embroidery'){const c=emP(d.stitches||8000,q,false);return{sell:d.sell_override!=null?d.sell_override:rT(c*EM.mk),cost:c}}
@@ -1618,7 +1654,7 @@ export default function App(){
           if(_dbSaveFailedIds.size){
             setCust(prev=>d.customers.map(c=>_dbSaveFailedIds.has(c.id)?(prev.find(p=>p.id===c.id)||c):c));
           }else{setCust(d.customers)}
-          if(d.vendors.length)setVend(d.vendors);setProd(prev=>{if(!d.products.length)return prev;const base=_dbSaveFailedIds.size?d.products.map(dp=>_dbSaveFailedIds.has(dp.id)?(prev.find(p=>p.id===dp.id)||dp):dp):d.products;const merged=base.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));return localOnly.length?[...merged,...localOnly]:merged});
+          if(d.vendors.length)setVend(d.vendors);setProd(prev=>{if(!d.products.length)return prev;const base=_dbSaveFailedIds.size?d.products.map(dp=>_dbSaveFailedIds.has(dp.id)?(prev.find(p=>p.id===dp.id)||dp):dp):d.products;const merged=base.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));const all=localOnly.length?[...merged,...localOnly]:merged;return _dedupProducts(all,(dupeIds,primaries)=>{dupeIds.forEach(id=>{try{supabase?.from('products').delete().eq('id',id).then(()=>console.log('[DB] Deleted duplicate product:',id))}catch(e){console.warn('[DB] Failed to delete dupe:',id,e)}});dupeIds.forEach(id=>{try{supabase?.from('product_inventory').delete().eq('product_id',id)}catch{}});primaries.forEach(p=>_dbSaveProduct(p))})});
           if(_dbSaveFailedIds.size){
             setEsts(prev=>d.estimates.map(e=>{if(_dbSaveFailedIds.has(e.id))return prev.find(p=>p.id===e.id)||e;const local=prev.find(p=>p.id===e.id);if(local?.items?.length&&(!e.items||!e.items.length))return{...e,items:local.items,art_files:local.art_files||e.art_files};return e}));
             setSOs(prev=>d.sales_orders.map(s=>{if(_dbSaveFailedIds.has(s.id))return prev.find(p=>p.id===s.id)||s;const local=prev.find(p=>p.id===s.id);if(!local)return s;const merged={...s};if(local.jobs?.length&&(!s.jobs||!s.jobs.length))merged.jobs=local.jobs;if(local.items?.length&&(!s.items||!s.items.length))merged.items=local.items;if(local.art_files?.length&&(!s.art_files||!s.art_files.length))merged.art_files=local.art_files;return merged.jobs!==s.jobs||merged.items!==s.items||merged.art_files!==s.art_files?merged:s}));
@@ -1751,7 +1787,7 @@ export default function App(){
         setInvs(invMerge.apply);
         if(d.messages.length)setMsgs(msgMerge.apply);
         setCust(custMerge.apply);
-        if(d.products.length)setProd(prev=>{const base=prodMerge.apply(prev);if(_jsonEq(base,prev))return prev;const merged=base.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));return localOnly.length?[...merged,...localOnly]:merged});
+        if(d.products.length)setProd(prev=>{const base=prodMerge.apply(prev);if(_jsonEq(base,prev))return prev;const merged=base.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));const all=localOnly.length?[...merged,...localOnly]:merged;return _dedupProducts(all,dupeIds=>{dupeIds.forEach(id=>{try{supabase?.from('products').delete().eq('id',id).then(()=>console.log('[DB] Deleted duplicate product:',id))}catch(e){}});dupeIds.forEach(id=>{try{supabase?.from('product_inventory').delete().eq('product_id',id)}catch{}})})});
         if(d.vendors.length)setVend(prev=>_jsonEq(prev,d.vendors)?prev:d.vendors);
         if(d.omg_stores.length)setOmgStores(prev=>_jsonEq(prev,d.omg_stores)?prev:d.omg_stores);
         setIssues(prev=>{const v=d.issues||[];return _jsonEq(prev,v)?prev:v});
@@ -1820,7 +1856,7 @@ export default function App(){
         setCust(prev=>{if(_dbSaveFailedIds.size){const merged=d.customers.map(c=>_dbSaveFailedIds.has(c.id)?(prev.find(p=>p.id===c.id)||c):c);return changed(prev,merged)?merged:prev}return changed(prev,d.customers)?d.customers:prev});
         if(d.messages.length)setMsgs(prev=>{if(_dbSaveFailedIds.size){const merged=d.messages.map(m=>_dbSaveFailedIds.has(m.id)?(prev.find(p=>p.id===m.id)||m):m);return changed(prev,merged)?merged:prev}return changed(prev,d.messages)?d.messages:prev});
         if(d.issues.length)setIssues(prev=>changed(prev,d.issues)?d.issues:prev);
-        if(d.products.length)setProd(prev=>{const base=_dbSaveFailedIds.size?d.products.map(dp=>_dbSaveFailedIds.has(dp.id)?(prev.find(p=>p.id===dp.id)||dp):dp):d.products;if(!changed(prev,base))return prev;const merged=base.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));return localOnly.length?[...merged,...localOnly]:merged});
+        if(d.products.length)setProd(prev=>{const base=_dbSaveFailedIds.size?d.products.map(dp=>_dbSaveFailedIds.has(dp.id)?(prev.find(p=>p.id===dp.id)||dp):dp):d.products;if(!changed(prev,base))return prev;const merged=base.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));const all=localOnly.length?[...merged,...localOnly]:merged;return _dedupProducts(all,dupeIds=>{dupeIds.forEach(id=>{try{supabase?.from('products').delete().eq('id',id).then(()=>console.log('[DB] Deleted duplicate product:',id))}catch(e){}});dupeIds.forEach(id=>{try{supabase?.from('product_inventory').delete().eq('product_id',id)}catch{}})})});
         // Refresh app_state keys (batch POs, inventory POs, etc.)
         const as=d.appState||{};
         if(as.inv_pos)setInvPOs(prev=>JSON.stringify(prev)!==JSON.stringify(as.inv_pos)?as.inv_pos:prev);
@@ -2295,7 +2331,7 @@ export default function App(){
   const[q,setQ]=useState('');const[selC,setSelC]=useState(null);const[selV,setSelV]=useState(null);const[selP,setSelP]=useState(null);
   // Keep selC/selV/selP in sync with their source arrays after saves/reloads
   React.useEffect(()=>{if(selC){const u=cust.find(c=>c.id===selC.id);if(u&&u!==selC)setSelC(u);else if(!u)setSelC(null)}},[cust]); // eslint-disable-line
-  React.useEffect(()=>{if(selP){const u=prod.find(p=>p.id===selP.id);if(u&&u!==selP)setSelP(u);else if(!u)setSelP(null)}},[prod]); // eslint-disable-line
+  React.useEffect(()=>{if(selP){const u=prod.find(p=>p.id===selP.id);if(u&&u!==selP)setSelP(u)}},[prod]); // eslint-disable-line
   const[eEst,setEEst]=useState(null);const[eEstC,setEEstC]=useState(null);const[eSO,setESO]=useState(null);const[eSOC,setESOC]=useState(null);const[eSOTab,setESOTab]=useState(null);const[eSOScrollItem,setESOScrollItem]=useState(null);const[eSOScrollJob,setESOScrollJob]=useState(null);const[eSOOpenPO,setESOOpenPO]=useState(null);
   // Sync eSO from sos when external updates occur (e.g., coach approval via portal)
   // Only sync if actual content changed (not just updated_at formatting differences from DB poll)
@@ -12746,12 +12782,12 @@ export default function App(){
         primary_rep_id:['rep','rep_id','sales_rep','rep_name','sales_rep_name'],
         account_type:['account_type','type','acct_type','parent_sub','parent_or_sub'],
         parent_name:['parent','parent_name','parent_account','parent_company','parent_school'],
-        sku:['sku','item_number','style','item','part_number','style_number'],
+        sku:['sku','item_number','style','item','part_number','style_number','article','articlenumber','styleno','material','materialid'],
         brand:['brand','manufacturer','vendor'],
-        color:['color','colour'],
+        color:['color','colour','colorname','colordescription','colorway','colordesc','colour_name'],
         category:['category','type','product_type'],
-        retail_price:['retail','retail_price','msrp','list_price','price'],
-        nsa_cost:['cost','nsa_cost','unit_cost','our_cost','dealer_cost'],
+        retail_price:['retail','retail_price','msrp','list_price','price','srp','suggested_retail'],
+        nsa_cost:['cost','nsa_cost','unit_cost','our_cost','dealer_cost','wholesale','net_cost','net_price'],
         available_sizes:['sizes','available_sizes','size_range'],
         vendor_name:['vendor','vendor_name','supplier'],
         vendor_type:['type','vendor_type'],
@@ -12939,24 +12975,55 @@ export default function App(){
         const vendor=D_V.find(v=>v.name.toLowerCase()===vendorName.toLowerCase());
         const sizes=(row[colMap.available_sizes]||'').trim();
         const parsedSizes=sizes?sizes.split(',').map(s=>s.trim()).filter(Boolean):null;
+        const rowColor=(row[colMap.color]||'').trim();
         if(existing){
           // Update existing product with any non-empty fields from the row
           const updates={};
           if(name&&name!==existing.name)updates.name=name;
           if(row[colMap.brand]&&row[colMap.brand].trim())updates.brand=row[colMap.brand].trim();
-          if(row[colMap.color]&&row[colMap.color].trim())updates.color=row[colMap.color].trim();
+          // Update color: first row for this SKU sets/overwrites the primary color,
+          // subsequent rows with different colors add to _colors
+          if(rowColor){
+            const pendingUpdate=updated.find(u=>u.id===existing.id);
+            if(pendingUpdate&&pendingUpdate.color){
+              // Already updated color from an earlier row in this import — add to _colors if different
+              const currentColors=pendingUpdate._colors||existing._colors||[];
+              if(rowColor.toLowerCase()!==pendingUpdate.color.toLowerCase()&&!currentColors.some(c=>c.toLowerCase()===rowColor.toLowerCase())){
+                updates._colors=[...currentColors,rowColor];
+              }
+            }else{
+              // First row for this SKU — overwrite the primary color
+              updates.color=rowColor;
+              updates.color_category=mapColorCategory(rowColor);
+            }
+          }
           if(row[colMap.category]&&row[colMap.category].trim())updates.category=row[colMap.category].trim();
           if(row[colMap.retail_price]&&parseFloat(row[colMap.retail_price]))updates.retail_price=parseFloat(row[colMap.retail_price]);
           if(row[colMap.nsa_cost]&&parseFloat(row[colMap.nsa_cost]))updates.nsa_cost=parseFloat(row[colMap.nsa_cost]);
           if(parsedSizes&&parsedSizes.length>0)updates.available_sizes=parsedSizes;
           if(vendor)updates.vendor_id=vendor.id;
-          if(Object.keys(updates).length>0){updated.push({id:existing.id,...updates})}
+          if(Object.keys(updates).length>0){
+            // Merge with any previous pending update for the same product
+            const prevIdx=updated.findIndex(u=>u.id===existing.id);
+            if(prevIdx>=0){updated[prevIdx]={...updated[prevIdx],...updates}}
+            else{updated.push({id:existing.id,...updates})}
+          }
           else{skipped.push(sku+' — no changes')}
+          return;
+        }
+        // Check if we already added this SKU from an earlier row in this import
+        const alreadyAdded=added.find(a=>a.sku.toLowerCase()===sku.toLowerCase());
+        if(alreadyAdded){
+          // Same SKU, different color — add to _colors
+          if(rowColor&&rowColor.toLowerCase()!==alreadyAdded.color.toLowerCase()&&!(alreadyAdded._colors||[]).some(c=>c.toLowerCase()===rowColor.toLowerCase())){
+            alreadyAdded._colors=[...(alreadyAdded._colors||[]),rowColor];
+          }
           return;
         }
         added.push({
           id:'p-'+Date.now()+'-'+i,vendor_id:vendor?.id||null,sku,name,
-          brand:row[colMap.brand]||'',color:row[colMap.color]||'',
+          brand:row[colMap.brand]||'',color:rowColor,
+          color_category:mapColorCategory(rowColor),
           category:row[colMap.category]||'',
           retail_price:parseFloat(row[colMap.retail_price])||0,
           nsa_cost:parseFloat(row[colMap.nsa_cost])||0,
@@ -14169,7 +14236,8 @@ export default function App(){
                 </div>
                 <button className="btn btn-sm btn-secondary" style={{marginTop:8,fontSize:10}} onClick={()=>{
                   const headers=fieldMap.map(f=>f.key).join(',');
-                  const example=fieldMap.map(f=>f.key==='name'?'Example School':f.key==='sku'?'ABC123':f.key==='alpha_tag'?'EXS':'').join(',');
+                  const exMap={sku:'ABC123',name:'Example Product',brand:'Adidas',color:'Black/White',category:'Tees',retail_price:'30.00',nsa_cost:'11.25',available_sizes:'S,M,L,XL,2XL',vendor_name:'Adidas',alpha_tag:'EXS'};
+                  const example=fieldMap.map(f=>exMap[f.key]||'').join(',');
                   const blob=new Blob([headers+'\n'+example],{type:'text/csv'});
                   const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=impTab+'_template.csv';a.click();URL.revokeObjectURL(url);
                 }}>⬇️ Download CSV Template</button>
@@ -17993,7 +18061,7 @@ export default function App(){
       </div>}
       {failedSaveCount>0&&<div style={{padding:'8px 16px',background:'#fefce8',border:'1px solid #fde68a',color:'#92400e',fontSize:12,fontWeight:600,display:'flex',alignItems:'center',gap:8}}>
         <span style={{fontSize:14}}>&#9888;</span><span style={{flex:1}}>{failedSaveCount} item{failedSaveCount>1?'s':''} failed to save to cloud. Auto-retrying every 30s. Your data is safe locally.</span>
-        <span style={{fontSize:11,color:'#b45309'}}>{[..._dbSaveFailedIds].join(', ')}</span>
+        <span style={{fontSize:11,color:'#b45309',maxWidth:200,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{(()=>{const ids=[..._dbSaveFailedIds];return ids.length<=3?ids.join(', '):ids.slice(0,3).join(', ')+' +' +(ids.length-3)+' more'})()}</span>
       </div>}
       <div className="content">{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='art'&&rArtist()}{pg==='production'&&rProd2()}{pg==='warehouse'&&rWarehouse()}{pg==='purchase_orders'&&rPOs()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='team'&&rTeam()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&rInvoices()}{pg==='commissions'&&rCommissions()}{pg==='omg'&&rOMG()}{pg==='reports'&&rReports()}{pg==='issues'&&rIssues()}{pg==='import'&&rImport()}{pg==='qb'&&rQB()}{pg==='backup'&&rBackup()}{pg==='settings'&&rSettings()}{pg==='sales_tools'&&rSalesTools()}</div></div>
     {/* Assignment Modal — global, triggered from warehouse or production board */}
