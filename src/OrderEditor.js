@@ -9,7 +9,7 @@ import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, 
 import { Icon, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneQuickPicks, ThreadQuickPicks } from './components';
 import { dP, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP, DTF, POSITIONS, _decoVendorPrice, mergeColors } from './pricing';
 import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, nextInvId } from './utils';
-import { sanmarGetProduct, momentecSearchProducts } from './vendorApis';
+import { sanmarGetProduct, ssApiCall, momentecSearchProducts, momentecGetProductByPartNumber, momentecGetProductById } from './vendorApis';
 
 function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onBack,onConvertSO,onCopyEstimate,onRevertToEst,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,allInvoices,batchPOs,onBatchPO,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,openPOId,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onSaveProduct,onViewEstimate,onViewSO,returnToPage,onReturnToJob,onAssignTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp}){
   const fetchAdidasInventory=fetchAdidasInventoryProp||(async()=>({sizes:{},lastSynced:null}));
@@ -455,24 +455,22 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const gen=ssSearchGen.current;// track this search generation
     setSsSearching(true);
     try{
-      // Search Styles using keyword search (most reliable — finds "1717", "A230", brand names, etc.)
-      let styleInfo=null;
+      // Search S&S Styles by keyword, then fetch products for matched styles
+      let items=[];
       let styleMatches=[];
       try{
         const styles=await ssApiCall('/Styles?search='+encodeURIComponent(query));
-        const sArr=Array.isArray(styles)?styles:styles?[styles]:[];
-        if(sArr.length>0){styleInfo=sArr[0];styleMatches=sArr}
-      }catch(e){/* search returned no results */}
-
-      // Get Products for matched styles
-      let items=[];
+        styleMatches=Array.isArray(styles)?styles:styles?[styles]:[];
+        console.log('[S&S] Styles search for "'+query+'" →',styleMatches.length,'matches');
+      }catch(e){console.warn('[S&S] Styles search failed:',e.message)}
       if(styleMatches.length>0){
         const styleIDs=[...new Set(styleMatches.map(s=>s.styleID).filter(Boolean))].slice(0,5);
         if(styleIDs.length){
           try{
-            const data=await ssApiCall('/Products?style='+encodeURIComponent(styleIDs.join(',')));
+            const data=await ssApiCall('/Products/?style='+encodeURIComponent(styleIDs.join(',')));
             items=Array.isArray(data)?data:data?[data]:[];
-          }catch(e){/* style lookup failed */}
+            console.log('[S&S] Got',items.length,'products for styles',styleIDs);
+          }catch(e){console.warn('[S&S] Products fetch failed:',e.message)}
         }
       }
       if(!items.length){
@@ -490,12 +488,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         let backUrl=it.colorBackImage||'';
         if(backUrl&&backUrl.startsWith('http://'))backUrl=backUrl.replace('http://','https://');
         if(!styleMap[sid]){
-          const sInfo=styleMatches.find(s=>String(s.styleID)===String(sid))||styleInfo||{};
+          const sInfo=styleMatches.find(s=>String(s.styleID)===String(sid))||{};
           styleMap[sid]={
             styleID:sid,
-            styleName:sInfo.title||(it.brandName?(it.brandName+' '+(sInfo.partNumber||it.styleName||query)):it.styleName||query),
+            styleName:sInfo.title||(it.brandName?(it.brandName+' '+(it.styleName||query)):it.styleName||query),
             brandName:it.brandName||sInfo.brandName||'',
-            sku:query.toUpperCase(),
+            sku:(sInfo.partNumber||it.styleName||query).toUpperCase(),
             styleImage:sInfo.styleImage||imgUrl||'',
             customerPrice:0,piecePrice:0,totalQty:0,
             colors:{},_source:'ss'
@@ -646,6 +644,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // Helper: extract wholesale/offer price from an HCL Commerce entry
       const getOfferPrice=(e)=>{
         const prices=e.Price||e.price||[];
+        if(!prices.length)console.warn('[Momentec] No Price array on',e.partNumber||e.name,{keys:Object.keys(e),offerPrice:e.offerPrice,salePrice:e.salePrice,listPrice:e.listPrice});
         // Prefer Offer usage (wholesale/dealer price)
         let offer=0,display=0;
         if(prices.length){for(const p of prices){const u=(p.usage||p.priceUsage||'').toLowerCase();const v=parseFloat(p.SKUPriceValue||p.priceValue||0);if(v>0){if(u==='offer'||u==='sale')offer=v;else if(u==='display'||u==='list')display=v}}}
@@ -1961,13 +1960,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <span style={{fontWeight:600,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',flex:1}}>{mt.styleName}</span>
                 <span style={{fontSize:11,color:'#92400e',background:'#fef3c7',padding:'1px 6px',borderRadius:3}}>{mt.brandName}</span>
                 {mt.colors.length>0&&<span style={{fontSize:10,color:'#b45309'}}>{mt.colors.length} color{mt.colors.length!==1?'s':''}</span>}
-                <span style={{fontWeight:700,color:'#b45309',fontSize:13,marginLeft:'auto'}}>from ${mt._mtPrice?.toFixed(2)}</span>
+                <span style={{fontWeight:700,color:'#b45309',fontSize:13,marginLeft:'auto'}}>{mt._mtPrice>0?`from $${mt._mtPrice.toFixed(2)}`:'Price TBD'}</span>
                 <span style={{fontSize:14,color:'#d97706'}}>{isExp?'▲':'▼'}</span>
               </div>
               {isExp&&<div style={{background:'#fffbeb',borderBottom:'2px solid #fcd34d',padding:'6px 12px',display:'flex',flexWrap:'wrap',gap:4,maxHeight:200,overflowY:'auto'}}>
                 {mt.colors.map((c,ci)=><div key={ci} style={{padding:'4px 8px',borderRadius:4,border:'1px solid #fcd34d',background:'white',cursor:'pointer',fontSize:11,display:'flex',alignItems:'center',gap:4,minWidth:0}} onClick={()=>addSearchProduct(mt,c,'mt')} title={c.colorName+' — $'+c.customerPrice?.toFixed(2)}>
                   <span style={{fontWeight:600,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',maxWidth:120}}>{c.colorName||'Default'}</span>
-                  <span style={{fontSize:9,color:'#b45309',whiteSpace:'nowrap'}}>${c.customerPrice?.toFixed(2)}</span>
+                  <span style={{fontSize:9,color:'#b45309',whiteSpace:'nowrap'}}>{c.customerPrice>0?`$${c.customerPrice.toFixed(2)}`:'TBD'}</span>
                 </div>)}
               </div>}
             </div>})}
