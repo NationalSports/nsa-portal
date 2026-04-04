@@ -452,10 +452,8 @@ const _checkVersion=async(table,id,localVersion)=>{
     const{data}=await supabase.from(table).select('_version').eq('id',id).single();
     if(!data)return true;// new record
     if(data._version>localVersion){
-      console.warn(`[DB] Version conflict on ${table}/${id}: local v${localVersion}, server v${data._version}`);
-      // Only show banner for user-initiated saves, not background sync from poll/realtime
-      if(_dbNotify&&!_bgSync)_dbNotify(`This ${table.replace('_',' ')} was modified by another user. Please refresh to see the latest changes.`,'warn');
-      return false;
+      console.warn(`[DB] Version conflict on ${table}/${id}: local v${localVersion}, server v${data._version} — auto-healing`);
+      return data._version;// return server version so callers can auto-heal
     }
     return true;
   }catch(e){console.error('[DB] version check failed:',e);if(!_bgSync&&_dbNotify)_dbNotify('Save blocked — unable to verify data version. Check your connection and try again.','error');return false}// if check fails, block save to prevent overwriting newer data
@@ -464,8 +462,8 @@ const _checkVersion=async(table,id,localVersion)=>{
 // ─── Normalized Save Helpers ───
 const _dbSaveEstimateInner = async (est) => {
   if(!supabase)return;
-  // Optimistic locking: check version before saving
-  if(est._version&&!await _checkVersion('estimates',est.id,est._version))return;
+  // Optimistic locking: check version before saving (auto-heal on conflict)
+  if(est._version){const vc=await _checkVersion('estimates',est.id,est._version);if(vc!==true){if(typeof vc==='number')est._version=vc;return false}}
   return _dbSavingGuard(async()=>{let decoFailed=false;try{
     const{items,art_files,...estRow}=est;
     let{error:estErr}=await supabase.from('estimates').upsert(_pick(estRow,_estCols),{onConflict:'id'});
@@ -538,8 +536,8 @@ const _dbSaveEstimateInner = async (est) => {
 const _dbSaveEstimate = (est) => _queuedEntitySave(est.id, est, _dbSaveEstimateInner);
 const _dbSaveSOInner = async (so) => {
   if(!supabase)return;
-  // Optimistic locking: check version before saving
-  if(so._version&&!await _checkVersion('sales_orders',so.id,so._version))return;
+  // Optimistic locking: check version before saving (auto-heal on conflict)
+  if(so._version){const vc=await _checkVersion('sales_orders',so.id,so._version);if(vc!==true){if(typeof vc==='number')so._version=vc;return false}}
   return _dbSavingGuard(async()=>{let saveFailed=false;try{
     const{items,art_files,firm_dates,jobs,...soRow}=so;
     let{error:soErr}=await supabase.from('sales_orders').upsert(_pick(soRow,_soCols),{onConflict:'id'});
@@ -702,7 +700,7 @@ let _dbNotify=null; // set by App component for visible error toasts
 const _dbSaveCustomer = async (c) => {
   if(!supabase){console.warn('[DB] save customer skipped — no supabase');return false}
   // Optimistic locking: check version before saving
-  if(c._version&&!await _checkVersion('customers',c.id,c._version))return false;
+  if(c._version){const vc=await _checkVersion('customers',c.id,c._version);if(vc!==true){if(typeof vc==='number')c._version=vc;return false}}
   try{
     const{contacts,_oe,_os,_oi,_ob,...custRow}=c;
     custRow.updated_at=new Date().toISOString();
