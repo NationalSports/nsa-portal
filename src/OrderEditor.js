@@ -9,9 +9,9 @@ import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, 
 import { Icon, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneQuickPicks, ThreadQuickPicks } from './components';
 import { dP, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP, DTF, POSITIONS, _decoVendorPrice, mergeColors } from './pricing';
 import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, nextInvId } from './utils';
-import { sanmarGetProduct, ssApiCall, momentecSearchProducts, momentecGetProductByPartNumber, momentecGetProductById } from './vendorApis';
+import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecApiCall, momentecSearchProducts, momentecGetProductByPartNumber, momentecGetProductById } from './vendorApis';
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onBack,onConvertSO,onCopyEstimate,onRevertToEst,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,allInvoices,batchPOs,onBatchPO,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,openPOId,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onSaveProduct,onViewEstimate,onViewSO,returnToPage,onReturnToJob,onAssignTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onBack,onConvertSO,onCopyEstimate,onRevertToEst,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,allInvoices,batchPOs,onBatchPO,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,openPOId,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onSaveProduct,onViewEstimate,onViewSO,returnToPage,onReturnToJob,onAssignTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp}){
   const fetchAdidasInventory=fetchAdidasInventoryProp||(async()=>({sizes:{},lastSynced:null}));
   const _ci=companyInfoProp||NSA;// use company info from state (reacts to Supabase loads) with fallback to mutable NSA
   const vendorList=vendorsProp||D_V;// use DB-loaded vendors if available, fallback to defaults
@@ -100,11 +100,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
 
   // Check if item is from Adidas (for B2B inventory display)
   const isAdidasItem=useCallback((item)=>{
-    if(item.brand==='Adidas')return true;
+    if((item.brand||'').toLowerCase()==='adidas')return true;
     const vId=item.vendor_id||products.find(p=>p.id===item.product_id||p.sku===item.sku)?.vendor_id;
     if(!vId)return false;
     const vRec=vendorList.find(v=>v.id===vId);
-    if(vRec)return vRec.name==='Adidas';
+    if(vRec)return(vRec.name||'').toLowerCase()==='adidas';
     return false;
   },[products,vendorList]);
 
@@ -209,84 +209,177 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     setVendorInv(prev=>({...prev,[sku]:{sizes:{},price:{},loading:true,error:null,source:isMT?'mt':isSM?'sm':'ss'}}));
     try{
       if(isMT){
-        // Momentec: fetch product detail to get child SKUs with inventory from HCL Commerce
+        // Momentec: fetch product detail via HCL Commerce to get child SKUs + inventory
         const sizeQty={};const sizePrice={};
+        const mtId=item?._mtId;
         try{
-          // Get product detail which includes child SKUs
-          const detail=await momentecGetProductByPartNumber(sku);
-          const entry=detail?.CatalogEntryView?.[0];
+          // Get product detail — prefer byId (fast), fall back to search
+          let entry=null;
+          if(mtId){
+            try{const d=await momentecGetProductById(mtId);entry=d?.CatalogEntryView?.[0]}
+            catch(e){console.warn('[Momentec] byId failed for',mtId)}
+          }
+          if(!entry){
+            try{const d=await momentecGetProductByPartNumber(sku);entry=d?.CatalogEntryView?.[0]}
+            catch(e){console.warn('[Momentec] byPartNumber failed for',sku)}
+          }
+          if(!entry){
+            try{const sr=await momentecSearchProducts(sku,5,1);
+              const entries=sr?.CatalogEntryView||sr?.catalogEntryView||[];
+              const match=entries.find(e=>(e.partNumber||'')===sku)||entries[0];
+              if(match){
+                const uid=match.uniqueID;
+                if(uid){try{const d2=await momentecGetProductById(uid);entry=d2?.CatalogEntryView?.[0]}catch(e){}}
+                if(!entry)entry=match;
+              }
+            }catch(e){console.warn('[Momentec] Search failed for',sku)}
+          }
           if(entry){
-            // Extract sizes and prices from child SKUs
             const skus=entry.SKUs||entry.sKUs||[];
+            console.log('[Momentec] Product',sku,': SKUs=',skus.length,skus.length>0?'sample:'+JSON.stringify(skus[0]).slice(0,300):'');
             const getSkSize=(e)=>{const attrs=e.Attributes||e.attributes||e.definingAttributes||[];if(Array.isArray(attrs)){for(const a of attrs){const id=(a.identifier||'').toLowerCase();const n=(a.name||'').toLowerCase();if(id==='asgswatchsize'||n==='available sizes'||n==='size'){const vals=a.values||a.Values||[];if(vals.length)return(vals[0].values||vals[0].value||vals[0].identifier||'').trim()}}}return''};
             const getSkColor=(e)=>{const attrs=e.Attributes||e.attributes||e.definingAttributes||[];if(Array.isArray(attrs)){for(const a of attrs){const n=(a.name||a.identifier||'').toLowerCase();if(n==='color'||n==='colour'||n==='clr'||n==='asgswatchcolor'){const vals=a.values||a.Values||[];if(vals.length)return vals.map(v=>v.values||v.value||v.Value||v.identifier||v).join('/')}}}return''};
             const itemColor=(item?.color||'').toLowerCase();
+            // Map child SKUs to sizes and extract any inventory data
+            const childParts=[];
             for(const sk of skus){
               const skColor=(getSkColor(sk)||'').toLowerCase();
-              // Filter by item color if set
               if(itemColor&&skColor&&!skColor.includes(itemColor.split('/')[0].split(' ')[0].toLowerCase())&&!itemColor.includes(skColor.split('/')[0].split(' ')[0].toLowerCase()))continue;
               const sz=normSzName(getSkSize(sk));
               if(!sz)continue;
-              // Get inventory from buyQuantity or inventoryStatus fields
               const qty=parseInt(sk.buyQuantity||sk.inventoryQuantity||sk.quantity||0)||0;
               if(qty>0)sizeQty[sz]=(sizeQty[sz]||0)+qty;
+              const pn=sk.partNumber||sk.SKUPartNumber||'';
+              const uid=sk.uniqueID||'';
+              const skuUid=sk.SKUUniqueID||sk.skuUniqueID||uid;
+              if(pn||skuUid)childParts.push({pn,uid,skuUid,sz});
+            }
+            // Try HCL Commerce inventory availability endpoint for child SKUs
+            // Correct endpoint: /inventoryavailability/{id} (not /byProductId/ or /byPartNumber/)
+            if(Object.keys(sizeQty).length===0&&childParts.length>0){
+              // Use SKUUniqueID for child SKU inventory lookups
+              const skuIds=childParts.filter(x=>x.skuUid||x.uid).map(x=>x.skuUid||x.uid);
+              if(skuIds.length>0){
+                try{
+                  const invData=await momentecApiCall(`/inventoryavailability/${skuIds.join(',')}`);
+                  const invItems=invData?.InventoryAvailability||[];
+                  console.log('[Momentec] Inventory:',invItems.length,'items');
+                  for(const inv of invItems){
+                    const pid=inv.productId||inv.inventoryAvailabilityByProductId||'';
+                    const status=(inv.inventoryStatus||'').toLowerCase();
+                    const isAvail=status==='available'||status==='instock'||status==='in stock';
+                    // Momentec returns MAX_DOUBLE for availableQuantity — treat as "in stock" flag
+                    const rawQty=parseFloat(inv.availableQuantity||0);
+                    const qty=(rawQty>999999||isAvail)?999:parseInt(rawQty)||0;
+                    const match=childParts.find(x=>(x.skuUid||x.uid)===pid);
+                    if(match&&qty>0)sizeQty[match.sz]=(sizeQty[match.sz]||0)+qty;
+                  }
+                }catch(e){console.warn('[Momentec] Inventory error:',e.message)}
+              }
             }
           }
-          // Also try HCL Commerce inventory availability endpoint
-          if(Object.keys(sizeQty).length===0){
-            try{
-              const invData=await momentecApiCall(`/inventoryavailability/byPartNumber/${encodeURIComponent(sku)}`);
-              const invItems=invData?.InventoryAvailability||[];
-              for(const inv of invItems){
-                // Each entry may have a partNumber for the child SKU; extract size from it
-                const pn=inv.partNumber||'';
-                const avail=parseInt(inv.availableQuantity||inv.inventoryQuantity||0)||0;
-                // Try to get size from the part number suffix or fetch the SKU detail
-                // HCL Commerce part numbers often encode size, e.g., "412000-WHI-S"
-                const parts=pn.split('-');
-                const lastPart=parts[parts.length-1]||'';
-                const sz=normSzName(lastPart);
-                if(sz&&avail>0)sizeQty[sz]=(sizeQty[sz]||0)+avail;
-              }
-            }catch(e){console.warn('[Momentec] Inventory availability fetch error for',sku,e.message)}
-          }
         }catch(e){console.warn('[Momentec] Product detail fetch error for',sku,e.message)}
-        const result={sizes:sizeQty,price:sizePrice,fetchedAt:Date.now(),source:'mt'};
+        // Fallback: if no child SKUs found, try direct inventory check on the parent style
+        if(Object.keys(sizeQty).length===0){
+          try{
+            const invData=await momentecApiCall(`/inventoryavailability/${encodeURIComponent(sku)}`);
+            const invItems=invData?.InventoryAvailability||[];
+            console.log('[Momentec] Direct inventory for',sku,':',invItems.length,'items');
+            for(const inv of invItems){
+              const status=(inv.inventoryStatus||'').toLowerCase();
+              const isAvail=status==='available'||status==='instock'||status==='in stock';
+              const rawQty=parseFloat(inv.availableQuantity||0);
+              if(isAvail||rawQty>0){
+                // No size breakdown available — mark all sizes as available
+                const itemSizes=Object.keys(item?.sizes||{}).filter(s=>s);
+                const displaySizes=itemSizes.length>0?itemSizes:(item?.available_sizes||['S','M','L','XL','2XL']);
+                displaySizes.forEach(sz=>{sizeQty[normSzName(sz)]=999});
+              }
+            }
+          }catch(e){console.warn('[Momentec] Direct inventory error for',sku,e.message)}
+        }
+        console.log('[Momentec] Inventory result for',sku,':',JSON.stringify(sizeQty));
+        const hasMtInv=Object.values(sizeQty).some(v=>v>0);
+        const result={sizes:hasMtInv?sizeQty:{},price:sizePrice,fetchedAt:Date.now(),source:'mt'};
         vendorInvCache.current[cacheKey]=result;
-        setVendorInv(prev=>({...prev,[sku]:{sizes:sizeQty,price:sizePrice,loading:false,error:null,source:'mt'}}));
+        setVendorInv(prev=>({...prev,[sku]:{sizes:hasMtInv?sizeQty:{},price:sizePrice,loading:false,error:null,source:'mt'}}));
       }else if(isSM){
         // SanMar: fetch inventory + pricing via SOAP API (now returns JSON)
         const prod3=products.find(p=>p.sku===sku);
         const prodColor=prod3?.color||item?.color||'';
         const sizeQty={};const sizePrice={};
-        // Fetch inventory — returns warehouse quantities
+        // Primary: PromoStandards getInventoryLevels (more reliable than legacy SOAP)
+        let invSuccess=false;
         try{
-          const invData=await sanmarGetInventory(sku,prodColor,'');
-          // invData.items is array of inventory entries with warehouse quantities
-          const invItems=invData?.items||[];
-          invItems.forEach(it=>{
-            const sz=normSzName(it.size||it.labelSize||'OSFA');
-            // SanMar returns quantities per warehouse; sum all warehouses
-            const qty=parseInt(it.totalQty||it.qty||it.quantity||0)||0;
-            // Also check individual warehouse fields
-            if(qty>0){sizeQty[sz]=(sizeQty[sz]||0)+qty}
-            else{
-              // Sum warehouse-level quantities if totalQty not present
-              let whTotal=0;
-              Object.entries(it).forEach(([k,v])=>{
-                if(/^(qty|warehouse|wh)/i.test(k)&&typeof v==='string'){const n=parseInt(v)||0;if(n>0)whTotal+=n}
-              });
-              if(whTotal>0)sizeQty[sz]=(sizeQty[sz]||0)+whTotal;
+          console.log('[SanMar] Trying PromoStandards inventory for',sku);
+          const promoData=await sanmarGetPromoInventory(sku);
+          console.log('[SanMar] PromoStandards response keys:',Object.keys(promoData||{}),'full:',JSON.stringify(promoData).slice(0,800));
+          // PromoStandards returns inventory in various nested structures
+          const invArr=promoData?.ProductVariationInventoryArray?.ProductVariationInventory
+            ||promoData?.productVariationInventoryArray?.productVariationInventory
+            ||promoData?.Inventory?.ProductVariationInventoryArray?.ProductVariationInventory
+            ||promoData?.inventory?.productVariationInventoryArray?.productVariationInventory
+            // Also check for direct array of items
+            ||promoData?.items||promoData?.Inventory||promoData?.inventory||[];
+          const variations=Array.isArray(invArr)?invArr:[invArr];
+          variations.forEach(v=>{
+            const sz=normSzName(v?.attributeSize||v?.size||v?.labelSize||'OSFA');
+            const color=v?.attributeColor||v?.color||'';
+            // Filter by color if we have one
+            if(prodColor&&color){
+              const pc=prodColor.toLowerCase().split('/')[0].split(' ')[0];
+              const vc=color.toLowerCase().split('/')[0].split(' ')[0];
+              if(pc&&vc&&!vc.includes(pc)&&!pc.includes(vc))return;
             }
+            // QuantityAvailable in partInventoryArray > partInventory
+            let qty=0;
+            const partArr=v?.partInventoryArray?.partInventory||v?.PartInventoryArray?.PartInventory;
+            if(partArr){
+              const parts=Array.isArray(partArr)?partArr:[partArr];
+              parts.forEach(p=>{
+                const q=parseInt(p?.quantityAvailable?.Quantity||p?.quantityAvailable?.quantity||p?.quantityAvailable||0)||0;
+                if(q>0)qty+=q;
+              });
+            }
+            if(qty<=0)qty=parseInt(v?.quantityAvailable||v?.totalQty||v?.qty||0)||0;
+            if(qty>0){sizeQty[sz]=(sizeQty[sz]||0)+qty;invSuccess=true}
           });
-        }catch(e){console.warn('[SanMar] Inventory fetch error for',sku,e.message)}
+        }catch(e){console.warn('[SanMar] PromoStandards inventory error:',e.message)}
+        // Fallback: legacy getInventoryQtyForStyleColorSize
+        if(!invSuccess){
+          for(const tryColor of [prodColor,'']){
+            if(invSuccess)break;
+            try{
+              const invData=await sanmarGetInventory(sku,tryColor,'');
+              const firstItem=(invData?.items||[])[0];
+              if(firstItem?.errorOccurred==='true'||firstItem?.errorOccured==='true')continue;
+              if(invData?.errorOccurred==='true'||invData?.errorOccured==='true')continue;
+              let invItems=invData?.items||[];
+              if(!invItems.length&&invData?.listResponse){invItems=Array.isArray(invData.listResponse)?invData.listResponse:[invData.listResponse]}
+              if(!invItems.length&&invData?.return){invItems=Array.isArray(invData.return)?invData.return:[invData.return]}
+              if(!invItems.length&&(invData?.size||invData?.totalQty||invData?.warehouseInfo)){invItems=[invData]}
+              invItems.forEach(it=>{
+                if(it.errorOccurred==='true'||it.errorOccured==='true')return;
+                const sz=normSzName(it.size||it.labelSize||'OSFA');
+                let qty=parseInt(it.totalQty||it.qty||it.quantity||0)||0;
+                if(qty<=0&&it.warehouseInfo){
+                  const details=it.warehouseInfo.inventoryDetail||it.warehouseInfo;
+                  const arr=Array.isArray(details)?details:[details];
+                  arr.forEach(d=>{if(d&&d.quantity)qty+=parseInt(d.quantity)||0});
+                }
+                if(qty>0){sizeQty[sz]=(sizeQty[sz]||0)+qty;invSuccess=true}
+              });
+            }catch(e){console.warn('[SanMar] Legacy inventory error for',sku,'color='+tryColor,e.message)}
+          }
+        }
         // Fetch pricing
         try{
           const prData=await sanmarGetPricing(sku,prodColor,'');
           const prItems=prData?.items||[];
           prItems.forEach(it=>{
             const sz=normSzName(it.size||it.labelSize||'OSFA');
-            const price=parseFloat(it.piecePrice||it.customerPrice||it.price||0);
+            const mp=parseFloat(it.myPrice||0);const sp=parseFloat(it.salePrice||0);const pp=parseFloat(it.piecePrice||0);
+            const price=mp>0?mp:sp>0?sp:pp>0?pp:0;
             if(price>0)sizePrice[sz]=price;
           });
         }catch(e){console.warn('[SanMar] Pricing fetch error for',sku,e.message)}
@@ -301,11 +394,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const sz=normSzName(it.size||it.labelSize||'OSFA');
               const qty=parseInt(it.inventoryQty||it.qty||0)||0;
               if(qty>0)sizeQty[sz]=(sizeQty[sz]||0)+qty;
-              const price=parseFloat(it.piecePrice||it.customerPrice||0);
+              const price=parseFloat(it.pieceSalePrice||it.piecePrice||it.customerPrice||0);
               if(price>0&&!sizePrice[sz])sizePrice[sz]=price;
             });
           }catch(e){console.warn('[SanMar] Product info fetch error for',sku,e.message)}
         }
+        console.log('[SanMar] Inventory result for',sku,':',JSON.stringify(sizeQty),'price:',JSON.stringify(sizePrice));
         const result={sizes:sizeQty,price:sizePrice,fetchedAt:Date.now(),source:'sm'};
         vendorInvCache.current[cacheKey]=result;
         setVendorInv(prev=>({...prev,[sku]:{sizes:sizeQty,price:sizePrice,loading:false,error:null,source:'sm'}}));
@@ -322,9 +416,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           catch(e2){throw e}
         }
         const items=Array.isArray(data)?data:data?[data]:[];
+        if(items.length>0)console.log('[S&S] Products sample item:',JSON.stringify(items[0]).slice(0,500));
         const sizeQty={};const sizePrice={};
         const prod3=products.find(p=>p.sku===sku);
-        const prodColor=prod3?.color?.toLowerCase()||'';
+        const itemColor=(item?.color||'').toLowerCase();
+        const prodColor=prod3?.color?.toLowerCase()||itemColor;
+        console.log('[S&S] Inventory for',sku,'color filter:',prodColor,'total items:',items.length);
         items.forEach(it=>{
           const itColor=(it.colorName||'').toLowerCase();
           if(prodColor&&itColor&&!itColor.includes(prodColor.split('/')[0].split(' ')[0].toLowerCase())&&!prodColor.includes(itColor.split('/')[0].split(' ')[0].toLowerCase()))return;
@@ -334,6 +431,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           if(it.customerPrice!=null)sizePrice[sz]=parseFloat(it.customerPrice)||parseFloat(it.piecePrice)||0;
           else if(it.piecePrice!=null)sizePrice[sz]=parseFloat(it.piecePrice)||0;
         });
+        console.log('[S&S] Inventory result for',sku,':',JSON.stringify(sizeQty));
         const result={sizes:sizeQty,price:sizePrice,fetchedAt:Date.now(),source:'ss'};
         vendorInvCache.current[cacheKey]=result;
         setVendorInv(prev=>({...prev,[sku]:{sizes:sizeQty,price:sizePrice,loading:false,error:null,source:'ss'}}));
@@ -493,7 +591,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             styleID:sid,
             styleName:sInfo.title||(it.brandName?(it.brandName+' '+(it.styleName||query)):it.styleName||query),
             brandName:it.brandName||sInfo.brandName||'',
-            sku:(sInfo.partNumber||it.styleName||query).toUpperCase(),
+            sku:(it.styleName||sInfo.partNumber||query).toUpperCase(),
             styleImage:sInfo.styleImage||imgUrl||'',
             customerPrice:0,piecePrice:0,totalQty:0,
             colors:{},_source:'ss'
@@ -557,15 +655,45 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         return !!(bi.brandName)&&parseFloat(pi.piecePrice||pi.casePrice||0)>0;
       });
       if(!items.length){smSearchCache.current[cacheKey]={length:0,_ts:Date.now()};if(gen===smSearchGen.current)setSmResults([]);return}
-      // Also fetch inventory for these items
+      // Fetch inventory and program pricing in parallel
       let invData={};
+      let pricingMap={};// key: color|size → program price
       try{
-        const inv=await sanmarGetInventory(q,'','');
-        (inv?.items||[]).forEach(it=>{
+        const [invRes,priceRes]=await Promise.all([
+          sanmarGetInventory(q,'','').catch(e=>{console.warn('[SanMar] Inventory fetch failed:',e);return null}),
+          sanmarGetPricing(q,'','').catch(e=>{console.warn('[SanMar] Pricing fetch failed:',e);return null})
+        ]);
+        if(priceRes)console.log('[SanMar] Raw pricing response keys:',Object.keys(priceRes),priceRes.items?'items:'+priceRes.items.length:'no items');
+        // Parse inventory response — try multiple paths (items, listResponse, return, or root-level)
+        if(invRes)console.log('[SanMar] Inventory response keys:',Object.keys(invRes));
+        let smInvItems=invRes?.items||[];
+        if(!smInvItems.length&&invRes?.listResponse){smInvItems=Array.isArray(invRes.listResponse)?invRes.listResponse:[invRes.listResponse]}
+        if(!smInvItems.length&&invRes?.return){smInvItems=Array.isArray(invRes.return)?invRes.return:[invRes.return]}
+        if(!smInvItems.length&&invRes&&(invRes.size||invRes.totalQty||invRes.warehouseInfo)){smInvItems=[invRes]}
+        // Filter out error items
+        smInvItems=smInvItems.filter(it=>it.errorOccurred!=='true'&&it.errorOccured!=='true');
+        if(smInvItems.length>0)console.log('[SanMar] Inventory sample:',JSON.stringify(smInvItems[0]).slice(0,400));
+        smInvItems.forEach(it=>{
           const key=(it.color||it.colorName||'')+'|'+normSzName(it.size||it.labelSize||'');
-          invData[key]=parseInt(it.totalQty||it.qty||it.quantity||0)||0;
+          let qty=parseInt(it.totalQty||it.qty||it.quantity||0)||0;
+          if(qty<=0&&it.warehouseInfo){const d=it.warehouseInfo.inventoryDetail||it.warehouseInfo;const arr=Array.isArray(d)?d:[d];arr.forEach(w=>{if(w&&w.quantity)qty+=parseInt(w.quantity)||0})}
+          if(qty<=0){Object.entries(it).forEach(([k,v])=>{if(typeof v==='string'&&!['size','labelSize','color','catalogColor','colorName','style','piecePrice','salePrice','programPrice','casePrice','caseQty','customerPrice','myPrice'].includes(k)){const n=parseInt(v)||0;if(n>0)qty+=n}})}
+          invData[key]=qty;
         });
-      }catch(e){/* inventory fetch optional */}
+        const priceItems=priceRes?.items||[];
+        if(priceItems.length>0)console.log('[SanMar] Pricing sample item:',JSON.stringify(priceItems[0]));
+        priceItems.forEach(it=>{
+          const color=it.catalogColor||it.color||it.colorName||'';
+          const sz=normSzName(it.size||it.labelSize||'');
+          // myPrice = customer/program price, salePrice = sale price, piecePrice = list price
+          const mp=parseFloat(it.myPrice||0);
+          const sp=parseFloat(it.salePrice||0);
+          const pp=parseFloat(it.piecePrice||0);
+          const price=mp>0?mp:sp>0?sp:pp>0?pp:0;
+          if(price>0)pricingMap[color+'|'+sz]=price;
+        });
+        console.log('[SanMar] Pricing loaded:',Object.keys(pricingMap).length,'entries, sample prices:', Object.entries(pricingMap).slice(0,3));
+      }catch(e){/* inventory/pricing fetch optional */}
       // Group by style → one entry per style, with colors array inside
       // SanMar items have nested sub-objects: productBasicInfo, productImageInfo, productPriceInfo
       const styleMap={};
@@ -574,6 +702,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const bi=raw.productBasicInfo||{};
         const ii=raw.productImageInfo||{};
         const pi=raw.productPriceInfo||{};
+        if(!styleMap[query]&&Object.keys(styleMap).length===0)console.log('[SanMar] Product priceInfo fields:',Object.keys(pi),'values:',JSON.stringify(pi));
         const it={...bi,...ii,...pi,...raw};
         const sid=it.style||it.styleNumber||query;
         const color=it.catalogColor||it.color||it.colorName||it.productColor||'';
@@ -591,15 +720,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           colorName:color,
           colorFrontImage:it.colorProductImageThumbnail||it.colorProductImage||it.colorSwatchImage||it.productImage||'',
           colorBackImage:it.colorProductImageBackThumbnail||it.colorProductImageBack||it.colorProductBackImage||'',
-          customerPrice:parseFloat(it.piecePrice||it.price||it.customerPrice||0),
-          piecePrice:parseFloat(it.piecePrice||it.price||0),
+          customerPrice:0,
+          piecePrice:0,
           sizes:[],totalQty:0
         };
         const cEntry=styleMap[sid].colors[cKey];
         const sz=normSzName(it.size||it.labelSize||it.sizeCode||'OSFA');
         const invKey=color+'|'+sz;
         const qty=invData[invKey]||parseInt(it.inventoryQty||it.qty||0)||0;
-        const price=parseFloat(it.piecePrice||it.price||it.customerPrice||0);
+        // Prefer program price from pricing API, fall back to product info price
+        const progPrice=pricingMap[color+'|'+sz]||0;
+        const price=progPrice>0?progPrice:parseFloat(it.pieceSalePrice||it.piecePrice||it.price||it.customerPrice||0);
         cEntry.sizes.push({sizeName:sz,qty,price});
         cEntry.totalQty+=qty;
         if(price>0&&(cEntry.customerPrice===0||price<cEntry.customerPrice))cEntry.customerPrice=price;
@@ -752,7 +883,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     if(!showAdd||!pS||pS.length<2){setSsResults([]);setSmResults([]);setMtResults([]);ssSearchGen.current++;smSearchGen.current++;mtSearchGen.current++;setExpandedStyle(null);return}
     // Bump generation to discard in-flight results from previous keystrokes
     ssSearchGen.current++;smSearchGen.current++;mtSearchGen.current++;setExpandedStyle(null);
-    const localCount=fp.length;
+    const localCount=allFp.length;
     const delay=localCount>5?800:400;
     ssSearchTimer.current=setTimeout(()=>ssLiveSearch(pS),delay);
     smSearchTimer.current=setTimeout(()=>smLiveSearch(pS),delay+100);
@@ -770,12 +901,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const cost=color.customerPrice||color.piecePrice||0;
     const sell=rQ(cost*(o.default_markup||1.65));
     // Build available sizes: start with sizes from API, merge with catalog product sizes and standard sizes
-    const apiSizes=color.sizes.map(s=>s.sizeName);
+    const apiSizes=color.sizes.map(s=>s.sizeName).filter(s=>s&&SZ_ORD.includes(s));
     // Try to match a catalog product for this SKU to get its full available_sizes
     const catMatch=products.find(p=>p.sku===style.sku&&(!color.colorName||p.color===color.colorName))||products.find(p=>p.sku===style.sku);
-    const catSizes=catMatch?.available_sizes||[];
+    const catSizes=(catMatch?.available_sizes||[]).filter(s=>SZ_ORD.includes(s));
     // SanMar provides availableSizes as comma-separated string
-    const smSizes=style._availSizes?style._availSizes.split(/[,;]\s*/).map(s=>normSzName(s.trim())).filter(Boolean):[];
+    const smSizes=style._availSizes?style._availSizes.split(/[,;]\s*/).map(s=>normSzName(s.trim())).filter(s=>s&&SZ_ORD.includes(s)):[];
     // Merge all sources; ensure standard sizes are always included for apparel
     const STD_SIZES=['S','M','L','XL','2XL'];
     let availSizes=[...new Set([...apiSizes,...catSizes,...smSizes,...STD_SIZES])];
@@ -789,10 +920,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       sizes:{},qty_only:false,decorations:isE?[{kind:'art',art_file_id:'__tbd',art_tbd_type:'screen_print',position:'',sell_override:null}]:[],
       is_custom:false,[liveFlag]:true,
       _colorImage:color.colorFrontImage||style.styleImage||'',
-      _colorBackImage:color.colorBackImage||''
+      _colorBackImage:color.colorBackImage||'',
+      ...(isMT&&style._mtId?{_mtId:style._mtId}:{})
     };
-    sv('items',[...o.items,newItem]);
+    // Build per-size cost map (e.g. 2XL+ costs more than S-XL)
     const sizePrice={};color.sizes.forEach(s=>{sizePrice[s.sizeName]=s.price||cost});
+    newItem._sizeCosts=sizePrice;
+    // Build per-size sell map (apply markup to each size's cost)
+    const mk=o.default_markup||1.65;
+    const sizeSell={};Object.entries(sizePrice).forEach(([sz,c])=>{sizeSell[sz]=rQ(c*mk)});
+    newItem._sizeSells=sizeSell;
+    sv('items',[...o.items,newItem]);
     vendorInvCache.current[style.sku]={sizes:vInv,price:sizePrice,fetchedAt:Date.now(),source};
     setVendorInv(prev=>({...prev,[style.sku]:{sizes:vInv,price:sizePrice,loading:false,error:null,source}}));
     setShowAdd(false);setPS('');setSsResults([]);setSmResults([]);setMtResults([]);setMtResults([]);setExpandedStyle(null);
@@ -800,7 +938,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // State for expanded style in search results (shows color picker)
   const[expandedStyle,setExpandedStyle]=useState(null);// {key:'ss-0', style:{...}}
   const sv=(k,v)=>{setO(e=>({...e,[k]:v,updated_at:new Date().toLocaleString()}));setDirty(true)};
-  const isAU=b=>b==='Adidas'||b==='Under Armour'||b==='New Balance';const tD={A:0.4,B:0.35,C:0.3};
+  const isAU=b=>{const l=(b||'').toLowerCase();return l==='adidas'||l==='under armour'||l==='new balance'};const tD={A:0.4,B:0.35,C:0.3};
   const selC=id=>{const c=allCustomers.find(x=>x.id===id);if(c){setCust(c);sv('customer_id',id);sv('default_markup',c.catalog_markup||1.65)}};
   const addP=p=>{const au=isAU(p.brand);const sell=au?rQ(p.retail_price*(1-(tD[cust?.adidas_ua_tier||'B']||0.35))):rQ(p.nsa_cost*(o.default_markup||1.65));
     sv('items',[...o.items,{product_id:p.id,sku:p.sku,name:p.name,brand:p.brand,vendor_id:p.vendor_id||null,color:p.color,nsa_cost:p.nsa_cost,retail_price:p.retail_price,unit_sell:sell,available_sizes:[...p.available_sizes],_colors:p._colors||null,sizes:{},qty_only:false,decorations:isE?[{kind:'art',art_file_id:'__tbd',art_tbd_type:'screen_print',position:'',sell_override:null}]:[]}]);setShowAdd(false);setPS('')};
@@ -843,7 +981,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
 
   const addrs=useMemo(()=>getAddrs(cust,allCustomers),[cust,allCustomers]);
   const artQty=useMemo(()=>{const m={};safeItems(o).forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){m[d.art_file_id]=(m[d.art_file_id]||0)+q}})});return m},[o]);
-  const totals=useMemo(()=>{let rev=0,cost=0;safeItems(o).forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);if(!q)return;rev+=q*safeNum(it.unit_sell);cost+=q*safeNum(it.nsa_cost);
+  const totals=useMemo(()=>{let rev=0,cost=0;safeItems(o).forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);if(!q)return;
+    // Use per-size sells/costs when available (vendor items have _sizeCosts/_sizeSells for 2XL+ upcharges)
+    if(it._sizeCosts&&sq>0){const sizes=safeSizes(it);Object.entries(sizes).forEach(([sz,v])=>{const n=safeNum(v);if(n>0){rev+=n*(it._sizeSells?.[sz]||safeNum(it.unit_sell));cost+=n*(it._sizeCosts[sz]||safeNum(it.nsa_cost))}})}else{rev+=q*safeNum(it.unit_sell);cost+=q*safeNum(it.nsa_cost)}
     safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);rev+=eq*dp.sell;cost+=eq*dp.cost});
     (it.po_lines||[]).filter(pl=>pl.po_type==='outside_deco').forEach(pl=>{const poQty=Object.entries(pl).filter(([k,v])=>typeof v==='number'&&!['unit_cost'].includes(k)).reduce((a,[,v])=>a+v,0);cost+=poQty*safeNum(pl.unit_cost)})});
     const ship=o.shipping_type==='pct'?rev*(o.shipping_value||0)/100:(o.shipping_value||0);const taxRate=o.tax_exempt?0:(o.tax_rate||cust?.tax_rate||0);const tax=rev*taxRate;
@@ -1037,6 +1177,22 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   },[syncJobs]);// eslint-disable-line
 
   const fp=products.filter(p=>{if(!pS||pS.length<2)return false;const q=pS.toLowerCase();return p.sku.toLowerCase().includes(q)||p.name.toLowerCase().includes(q)||p.brand?.toLowerCase().includes(q)||p.color?.toLowerCase().includes(q)});
+  // Server-side product search fallback when local products don't match
+  const[serverProducts,setServerProducts]=useState([]);
+  const serverSearchTimer=useRef(null);
+  React.useEffect(()=>{
+    if(serverSearchTimer.current)clearTimeout(serverSearchTimer.current);
+    if(!showAdd||!pS||pS.length<2||fp.length>0||!searchProductsProp){setServerProducts([]);return}
+    serverSearchTimer.current=setTimeout(async()=>{
+      try{
+        const res=await searchProductsProp(pS,{},0,12);
+        if(res?.products?.length)setServerProducts(res.products);
+        else setServerProducts([]);
+      }catch(e){setServerProducts([])}
+    },300);
+    return()=>{if(serverSearchTimer.current)clearTimeout(serverSearchTimer.current)};
+  },[pS,showAdd,fp.length]);
+  const allFp=fp.length>0?fp:serverProducts;
   const statusFlow=['need_order','waiting_receive','needs_pull','items_received','in_production','ready_to_invoice','complete'];
 
   return(<div>
@@ -1455,9 +1611,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       let dR=0,dC=0;const decoBreak=[];safeDecos(item).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:qty;const dp=dP(d,qty,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?qty*2:qty);const pds=item.is_promo&&o.promo_applied?rQ(dp.sell*1.25):dp.sell;const dr=eq*pds;const dc=eq*dp.cost;dR+=dr;dC+=dc;
         const artF=d.kind==='art'?af.find(f=>f.id===d.art_file_id):null;const label=d.kind==='art'?(artF?artF.deco_type?.replace('_',' '):d.position)+(d.reversible?' (Rev)':''):'Numbers @ '+d.position+(d.front_and_back?' (F+B)':'')+(d.reversible?' (Rev)':'');
         decoBreak.push({label,sell:pds,cost:dp.cost,rev:dr,costTot:dc,margin:dr-dc,pct:dr>0?((dr-dc)/dr*100):0})});
-      const pRev=qty*item.unit_sell;const pCost=qty*item.nsa_cost;const pMg=pRev-pCost;
+      const pRev=(()=>{if(item._sizeSells&&szQty>0){let r=0;Object.entries(safeSizes(item)).forEach(([sz,v])=>{const n=safeNum(v);if(n>0)r+=n*(item._sizeSells[sz]||item.unit_sell)});return r}return qty*item.unit_sell})();
+      const pCost=(()=>{if(item._sizeCosts&&szQty>0){let c=0;Object.entries(safeSizes(item)).forEach(([sz,v])=>{const n=safeNum(v);if(n>0)c+=n*(item._sizeCosts[sz]||item.nsa_cost)});return c}return qty*item.nsa_cost})();
+      const pMg=pRev-pCost;
       const iR=pRev+dR;const iC=pCost+dC;const mg=iR-iC;
-      const szs=(item.available_sizes||['S','M','L','XL','2XL']).slice().sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
+      const szs=(item.available_sizes||['S','M','L','XL','2XL']).filter(s=>SZ_ORD.includes(s)).sort((a,b)=>SZ_ORD.indexOf(a)-SZ_ORD.indexOf(b));
       const addable=EXTRA_SIZES.filter(s=>!(item.available_sizes||[]).includes(s));
       return(<div key={idx} id={'so-item-'+idx} className="card" style={{marginBottom:12,transition:'box-shadow 0.3s'}}>
         <div style={{padding:'12px 18px',borderBottom:'1px solid #f1f5f9'}}>
@@ -1476,10 +1634,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 {isAU(item.brand)&&<span className="badge badge-blue">Tier {cust?.adidas_ua_tier}</span>}
                 {o.promo_applied&&<label style={{display:'inline-flex',alignItems:'center',gap:4,padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,cursor:'pointer',background:item.is_promo?'#fef3c7':'#f1f5f9',color:item.is_promo?'#92400e':'#94a3b8',border:item.is_promo?'1px solid #fde68a':'1px solid #e2e8f0'}}><input type="checkbox" checked={item.is_promo||false} onChange={e=>{const checked=e.target.checked;if(checked){uI(idx,'_pre_promo_sell',item.unit_sell);uI(idx,'unit_sell',safeNum(item.retail_price)||safeNum(item.nsa_cost)*2);uI(idx,'is_promo',true)}else{uI(idx,'unit_sell',item._pre_promo_sell!=null?item._pre_promo_sell:item.unit_sell);uI(idx,'_pre_promo_sell',undefined);uI(idx,'is_promo',false)}}} style={{width:12,height:12}}/> Promo{item.is_promo&&item.retail_price?' ($'+item.retail_price+')':''}</label>}</div>
               <div style={{display:'flex',alignItems:'center',gap:8,marginTop:4,flexWrap:'wrap'}}>
-                <span style={{fontSize:13,fontWeight:600}}>Sell: <$In value={item.unit_sell} onChange={v=>uI(idx,'unit_sell',v)}/>/ea</span>
+                <span style={{fontSize:13,fontWeight:600}}>Sell: <$In value={item._sizeSells&&szQty>0?rQ(pRev/szQty):item.unit_sell} onChange={v=>{if(item._sizeSells&&item._sizeCosts){const ratio=item.nsa_cost>0?v/rQ(item.nsa_cost*(o.default_markup||1.65)):1;const ns={};Object.entries(item._sizeCosts).forEach(([sz,c])=>{ns[sz]=rQ(c*(o.default_markup||1.65)*ratio)});uI(idx,'_sizeSells',ns)}uI(idx,'unit_sell',v)}}/>/ea</span>
+                {item._sizeSells&&szQty>0&&Object.keys(item._sizeSells).length>1&&<span style={{fontSize:9,color:'#94a3b8'}}>(avg)</span>}
                 {item.is_custom&&<span style={{fontSize:12,color:'#64748b'}}>Cost: <$In value={item.nsa_cost} onChange={v=>{uI(idx,'nsa_cost',v);if(!isAU(item.brand)&&v>0){uI(idx,'unit_sell',rQ(v*(o.default_markup||1.65)))}}}/></span>}
                 {item.is_custom&&isAU(item.brand)&&<span style={{fontSize:12,color:'#64748b'}}>Retail: <$In value={item.retail_price||0} onChange={v=>{uI(idx,'retail_price',v);if(isAU(item.brand)&&v>0){const costMult=item.brand==='Adidas'?0.375:0.425;const tier=tD[cust?.adidas_ua_tier||'B']||0.35;uI(idx,'nsa_cost',Math.floor(v*costMult*100)/100);uI(idx,'unit_sell',rQ(v*(1-tier)))}}}/></span>}
-                {!isAU(item.brand)&&item.nsa_cost>0&&<span style={{fontSize:11,color:'#64748b'}}>({(item.unit_sell/item.nsa_cost).toFixed(2)}x)</span>}
+                {!isAU(item.brand)&&item.nsa_cost>0&&<span style={{fontSize:11,color:'#64748b'}}>({((item._sizeSells&&szQty>0?pRev/szQty:item.unit_sell)/(item._sizeCosts&&szQty>0?pCost/szQty:item.nsa_cost)).toFixed(2)}x)</span>}
                 {isAU(item.brand)&&item.nsa_cost>0&&<span style={{fontSize:11,color:item.unit_sell>item.nsa_cost?'#166534':'#dc2626'}}>({Math.round((item.unit_sell-item.nsa_cost)/item.unit_sell*100)}% margin)</span>}
               </div></div>
             <div style={{display:'flex',flexDirection:'column',gap:4}}>
@@ -1506,8 +1665,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <input value={item.sizes[sz]||''} onChange={e=>uSz(idx,sz,e.target.value)} placeholder="0"
                 style={{width:42,textAlign:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'5px 2px',fontSize:15,fontWeight:700,color:(item.sizes[sz]||0)>0?'#0f172a':'#cbd5e1'}}/>
               {(()=>{const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);const stk=p?._inv?.[sz];const need=item.sizes[sz]||0;return<div style={{fontSize:9,fontWeight:600,minHeight:13,color:stk==null?'transparent':stk<=0?'#dc2626':stk<need?'#ca8a04':'#166534'}}>{stk!=null?stk+' inv':'\u00A0'}</div>})()}
-              {(()=>{const vi=vendorInv[item.sku];if(!vi||vi.loading)return vi?.loading?<div style={{fontSize:8,color:'#a78bfa',minHeight:11}}>...</div>:null;const vStk=vi.sizes?.[sz];if(vStk==null)return null;const lbl=vi.source==='mt'?'mt':vi.source==='sm'?'sm':'ss';const clr=vi.source==='mt'?'#d97706':vi.source==='sm'?'#0891b2':'#7c3aed';return<div style={{fontSize:8,fontWeight:700,minHeight:11,color:vStk<=0?'#dc2626':vStk<20?clr:clr}} title={(vi.source==='mt'?'Momentec':vi.source==='sm'?'SanMar':'S&S Activewear')+' stock: '+vStk}>{vStk} {lbl}</div>})()}
+              {(()=>{const vi=vendorInv[item.sku];if(!vi||vi.loading)return vi?.loading?<div style={{fontSize:8,color:'#a78bfa',minHeight:11}}>...</div>:null;const vStk=vi.sizes?.[sz];if(vStk==null)return null;const lbl=vi.source==='mt'?'mt':vi.source==='sm'?'sm':'ss';const clr=vi.source==='mt'?'#d97706':vi.source==='sm'?'#0891b2':'#7c3aed';const displayQty=vi.source==='mt'&&vStk>=999?'✓':vStk;return<div style={{fontSize:8,fontWeight:700,minHeight:11,color:vStk<=0?'#dc2626':clr}} title={(vi.source==='mt'?'Momentec':vi.source==='sm'?'SanMar':'S&S Activewear')+' stock: '+(vStk>=999?'Available':vStk)}>{displayQty} {lbl}</div>})()}
               {(()=>{if(!isAdidasItem(item))return null;const ai=adidasInv[item.sku];if(!ai||ai.loading)return ai?.loading?<div style={{fontSize:8,color:'#059669',minHeight:11}}>...</div>:null;const b2bStk=ai.sizes?.[sz]?.qty;if(b2bStk==null)return<div style={{fontSize:8,color:'transparent',minHeight:11}}>&nbsp;</div>;const need=item.sizes[sz]||0;const color=b2bStk<=0?'#dc2626':(need>0&&b2bStk<need)?'#ca8a04':'#166534';return<div style={{fontSize:8,fontWeight:700,minHeight:11,color:color}} title={'Adidas B2B stock: '+b2bStk+(ai.sizes[sz]?.futureDate?' (restock '+ai.sizes[sz].futureDate+')':'')}>{b2bStk} b2b</div>})()}
+              {item._sizeCosts&&<div style={{fontSize:7,fontWeight:700,minHeight:10,color:'#b45309'}}>{(()=>{const sc=item._sizeCosts[sz];if(!sc||Math.abs(sc-item.nsa_cost)<0.01)return'\u00A0';return'$'+sc.toFixed(2)})()}</div>}
               </div>)}
             <div style={{textAlign:'center',marginLeft:4,padding:'0 10px',borderLeft:'2px solid #e2e8f0'}}><div style={{fontSize:10,fontWeight:700,color:'#1e40af'}}>TOT</div>
               <div style={{fontSize:20,fontWeight:800,color:'#1e40af'}}>{qty}</div>
@@ -1840,18 +2000,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   </div>})}</div>}
               </div></div>)}
             return null})}
-          {safeDecos(item).length>0&&<div style={{display:'flex',justifyContent:'space-between',padding:'6px 12px',background:'#f0f9ff',borderRadius:6,marginTop:4,alignItems:'center',flexWrap:'wrap',gap:8}}>
+          <div style={{display:'flex',justifyContent:'space-between',padding:'6px 12px',background:'#f0f9ff',borderRadius:6,marginTop:4,alignItems:'center',flexWrap:'wrap',gap:8}}>
             <div style={{display:'flex',gap:12,alignItems:'center',flexWrap:'wrap'}}>
-              <span style={{fontSize:11,color:'#64748b'}}>Cost: <strong>${item.nsa_cost?.toFixed(2)}</strong>/ea</span>
-              <span style={{fontSize:11,color:'#64748b'}}>Sell: <strong>${item.unit_sell?.toFixed(2)}</strong>/ea</span>
+              <span style={{fontSize:11,color:'#64748b'}}>Cost: <strong>${(()=>{if(item._sizeCosts&&szQty>0){return(pCost/szQty).toFixed(2)}return item.nsa_cost?.toFixed(2)})()}</strong>/ea{item._sizeCosts&&Object.keys(item._sizeCosts).length>1&&<span style={{fontSize:9,color:'#94a3b8'}}> (avg)</span>}</span>
+              <span style={{fontSize:11,color:'#64748b'}}>Sell: <strong>${(()=>{if(item._sizeSells&&szQty>0){return(pRev/szQty).toFixed(2)}return item.unit_sell?.toFixed(2)})()}</strong>/ea{item._sizeSells&&Object.keys(item._sizeSells).length>1&&<span style={{fontSize:9,color:'#94a3b8'}}> (avg)</span>}</span>
               {(isAU(item.brand)||item.retail_price>0)&&<span style={{fontSize:11,color:'#64748b'}}>Retail: ${item.retail_price?.toFixed(2)}</span>}
             </div>
             <div style={{display:'flex',gap:12,alignItems:'center'}}>
-              <span style={{fontSize:11,color:'#64748b'}}>Garment: ${(qty*safeNum(item.unit_sell)).toFixed(2)}</span>
-              <span style={{fontSize:11,color:'#64748b'}}>Deco: ${(()=>{let d=0;safeDecos(item).forEach(dd=>{const cq2=dd.kind==='art'&&dd.art_file_id?artQty[dd.art_file_id]:qty;const dp2=dP(dd,qty,af,cq2);const eq2=dp2._nq!=null?dp2._nq:qty;d+=eq2*dp2.sell});return d.toFixed(2)})()}</span>
+              <span style={{fontSize:11,color:'#64748b'}}>Garment: ${pRev.toFixed(2)}</span>
+              {safeDecos(item).length>0&&<span style={{fontSize:11,color:'#64748b'}}>Deco: ${(()=>{let d=0;safeDecos(item).forEach(dd=>{const cq2=dd.kind==='art'&&dd.art_file_id?artQty[dd.art_file_id]:qty;const dp2=dP(dd,qty,af,cq2);const eq2=dp2._nq!=null?dp2._nq:qty;d+=eq2*dp2.sell});return d.toFixed(2)})()}</span>}
               <span style={{fontSize:12,fontWeight:800,color:'#1e40af'}}>All-In: ${iR.toFixed(2)}</span>
             </div>
-          </div>}
+          </div>
           <div style={{display:'flex',gap:6,marginTop:8,alignItems:'center',flexWrap:'wrap'}}>
             <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>addArtDeco(idx)}><Icon name="image" size={12}/> + Add Art</button>
             <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>addNumDeco(idx)}>#️⃣ + Numbers</button>
@@ -1885,7 +2045,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       <button className="btn btn-secondary" style={{marginLeft:'auto'}} onClick={()=>setNsImport({step:'paste',raw:'',parsed:[],decoLines:[],issues:[]})} disabled={!cust}>📥 Import from NetSuite</button></div>
       :<div><div className="search-bar" style={{marginBottom:8}}><Icon name="search"/><input placeholder="Search SKU, name, brand... (searches S&S + SanMar live)" value={pS} onChange={e=>setPS(e.target.value)} autoFocus/></div>
         <div style={{maxHeight:350,overflow:'auto'}}>
-          {fp.slice(0,12).map(p=><div key={p.id} style={{padding:'10px 12px',borderBottom:'1px solid #f8fafc',cursor:'pointer',display:'flex',alignItems:'center',gap:10}} onClick={()=>addP(p)}>
+          {allFp.slice(0,12).map(p=><div key={p.id} style={{padding:'10px 12px',borderBottom:'1px solid #f8fafc',cursor:'pointer',display:'flex',alignItems:'center',gap:10}} onClick={()=>addP(p)}>
           <span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',background:'#dbeafe',padding:'2px 6px',borderRadius:3}}>{p.sku}</span><span style={{fontWeight:600}}>{p.name}</span>{p.color&&<span style={{fontSize:11,color:'#64748b'}}>— {p.color}</span>}<span className="badge badge-blue">{p.brand}</span>
           {p._colors&&<span style={{fontSize:10,color:'#7c3aed'}}>{p._colors.length} clr</span>}
           <span style={{marginLeft:'auto',fontSize:12,color:'#64748b'}}>${p.nsa_cost?.toFixed(2)}</span></div>)}
