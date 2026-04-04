@@ -252,9 +252,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             }catch(e){console.warn('[Momentec] Inventory availability fetch error for',sku,e.message)}
           }
         }catch(e){console.warn('[Momentec] Product detail fetch error for',sku,e.message)}
-        const result={sizes:sizeQty,price:sizePrice,fetchedAt:Date.now(),source:'mt'};
+        console.log('[Momentec] Inventory result for',sku,':',JSON.stringify(sizeQty));
+        // Momentec public API doesn't reliably expose inventory — if no data, show empty instead of 0
+        const hasMtInv=Object.values(sizeQty).some(v=>v>0);
+        const result={sizes:hasMtInv?sizeQty:{},price:sizePrice,fetchedAt:Date.now(),source:'mt'};
         vendorInvCache.current[cacheKey]=result;
-        setVendorInv(prev=>({...prev,[sku]:{sizes:sizeQty,price:sizePrice,loading:false,error:null,source:'mt'}}));
+        setVendorInv(prev=>({...prev,[sku]:{sizes:hasMtInv?sizeQty:{},price:sizePrice,loading:false,error:null,source:'mt'}}));
       }else if(isSM){
         // SanMar: fetch inventory + pricing via SOAP API (now returns JSON)
         const prod3=products.find(p=>p.sku===sku);
