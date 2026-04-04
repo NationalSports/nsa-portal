@@ -218,7 +218,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           console.log('[Momentec] Product detail for',sku,': SKUs count=',entry?.SKUs?.length||0);
           if(entry){
             const skus=entry.SKUs||entry.sKUs||[];
-            if(skus.length>0)console.log('[Momentec] Sample SKU keys:',Object.keys(skus[0]).join(','));
+            if(skus.length>0)console.log('[Momentec] Sample SKU:',JSON.stringify(skus[0]).slice(0,600));
             const getSkSize=(e)=>{const attrs=e.Attributes||e.attributes||e.definingAttributes||[];if(Array.isArray(attrs)){for(const a of attrs){const id=(a.identifier||'').toLowerCase();const n=(a.name||'').toLowerCase();if(id==='asgswatchsize'||n==='available sizes'||n==='size'){const vals=a.values||a.Values||[];if(vals.length)return(vals[0].values||vals[0].value||vals[0].identifier||'').trim()}}}return''};
             const getSkColor=(e)=>{const attrs=e.Attributes||e.attributes||e.definingAttributes||[];if(Array.isArray(attrs)){for(const a of attrs){const n=(a.name||a.identifier||'').toLowerCase();if(n==='color'||n==='colour'||n==='clr'||n==='asgswatchcolor'){const vals=a.values||a.Values||[];if(vals.length)return vals.map(v=>v.values||v.value||v.Value||v.identifier||v).join('/')}}}return''};
             const itemColor=(item?.color||'').toLowerCase();
@@ -292,7 +292,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const prItems=prData?.items||[];
           prItems.forEach(it=>{
             const sz=normSzName(it.size||it.labelSize||'OSFA');
-            const price=parseFloat(it.piecePrice||it.customerPrice||it.price||0);
+            const mp=parseFloat(it.myPrice||0);const sp=parseFloat(it.salePrice||0);const pp=parseFloat(it.piecePrice||0);
+            const price=mp>0?mp:sp>0?sp:pp>0?pp:0;
             if(price>0)sizePrice[sz]=price;
           });
         }catch(e){console.warn('[SanMar] Pricing fetch error for',sku,e.message)}
@@ -307,7 +308,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const sz=normSzName(it.size||it.labelSize||'OSFA');
               const qty=parseInt(it.inventoryQty||it.qty||0)||0;
               if(qty>0)sizeQty[sz]=(sizeQty[sz]||0)+qty;
-              const price=parseFloat(it.piecePrice||it.customerPrice||0);
+              const price=parseFloat(it.pieceSalePrice||it.piecePrice||it.customerPrice||0);
               if(price>0&&!sizePrice[sz])sizePrice[sz]=price;
             });
           }catch(e){console.warn('[SanMar] Product info fetch error for',sku,e.message)}
@@ -586,9 +587,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         priceItems.forEach(it=>{
           const color=it.catalogColor||it.color||it.colorName||'';
           const sz=normSzName(it.size||it.labelSize||'');
-          const pp=parseFloat(it.programPrice||it.customerNetPrice||0);
+          // myPrice = customer/program price, salePrice = sale price, piecePrice = list price
+          const mp=parseFloat(it.myPrice||0);
           const sp=parseFloat(it.salePrice||0);
-          const price=pp>0?pp:sp>0?sp:0;
+          const pp=parseFloat(it.piecePrice||0);
+          const price=mp>0?mp:sp>0?sp:pp>0?pp:0;
           if(price>0)pricingMap[color+'|'+sz]=price;
         });
         console.log('[SanMar] Pricing loaded:',Object.keys(pricingMap).length,'entries, sample prices:', Object.entries(pricingMap).slice(0,3));
@@ -629,7 +632,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const qty=invData[invKey]||parseInt(it.inventoryQty||it.qty||0)||0;
         // Prefer program price from pricing API, fall back to product info price
         const progPrice=pricingMap[color+'|'+sz]||0;
-        const price=progPrice>0?progPrice:parseFloat(it.piecePrice||it.price||it.customerPrice||0);
+        const price=progPrice>0?progPrice:parseFloat(it.pieceSalePrice||it.piecePrice||it.price||it.customerPrice||0);
         cEntry.sizes.push({sizeName:sz,qty,price});
         cEntry.totalQty+=qty;
         if(price>0&&(cEntry.customerPrice===0||price<cEntry.customerPrice))cEntry.customerPrice=price;

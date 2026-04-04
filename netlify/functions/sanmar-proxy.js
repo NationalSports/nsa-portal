@@ -49,16 +49,17 @@ function buildSoapEnvelope(action, params, customerNumber, username, password) {
 
 // Build a SOAP envelope for SanMar methods that use flat string args (e.g. inventory)
 // Inventory service: arg0=customerNumber, arg1=username, arg2=password, arg3=style, arg4=color, arg5=size
+// Note: Inventory service (SanMarWebServicePort) uses a different namespace than product/pricing
 function buildFlatArgSoapEnvelope(action, args) {
   const argXml = args.map((val, i) => `<arg${i}>${escapeXml(String(val ?? ''))}</arg${i}>`).join('\n      ');
   return `<?xml version="1.0" encoding="UTF-8"?>
 <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
-                  xmlns:impl="http://impl.webservice.integration.sanmar.com/">
+                  xmlns:web="http://webservice.integration.sanmar.com/">
   <soapenv:Header/>
   <soapenv:Body>
-    <impl:${action}>
+    <web:${action}>
       ${argXml}
-    </impl:${action}>
+    </web:${action}>
   </soapenv:Body>
 </soapenv:Envelope>`;
 }
