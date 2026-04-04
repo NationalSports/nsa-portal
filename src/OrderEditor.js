@@ -446,7 +446,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const ssSearchTimer=useRef(null);
   const ssSearchCache=useRef({});// cache search results by query
   const ssSearchGen=useRef(0);// generation counter to discard stale results
-  const ssStylesCache=useRef(null);// cache all S&S styles for local filtering
 
   const ssLiveSearch=useCallback(async(query)=>{
     if(!query||query.length<2){setSsResults([]);return}
@@ -456,34 +455,24 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const gen=ssSearchGen.current;// track this search generation
     setSsSearching(true);
     try{
-      // S&S API has no keyword search — fetch all styles once, filter locally, then get products for matches
+      // Search S&S Styles by keyword, then fetch products for matched styles
       let items=[];
+      let styleMatches=[];
       try{
-        // Fetch & cache all S&S styles (typically ~2K entries, cached for session)
-        if(!ssStylesCache.current){
-          console.log('[S&S] Fetching all styles (first search)...');
-          const allStyles=await ssApiCall('/Styles');
-          ssStylesCache.current=Array.isArray(allStyles)?allStyles:[];
-          console.log('[S&S] Cached',ssStylesCache.current.length,'styles');
+        const styles=await ssApiCall('/Styles?search='+encodeURIComponent(query));
+        styleMatches=Array.isArray(styles)?styles:styles?[styles]:[];
+        console.log('[S&S] Styles search for "'+query+'" →',styleMatches.length,'matches');
+      }catch(e){console.warn('[S&S] Styles search failed:',e.message)}
+      if(styleMatches.length>0){
+        const styleIDs=[...new Set(styleMatches.map(s=>s.styleID).filter(Boolean))].slice(0,5);
+        if(styleIDs.length){
+          try{
+            const data=await ssApiCall('/Products/?style='+encodeURIComponent(styleIDs.join(',')));
+            items=Array.isArray(data)?data:data?[data]:[];
+            console.log('[S&S] Got',items.length,'products for styles',styleIDs);
+          }catch(e){console.warn('[S&S] Products fetch failed:',e.message)}
         }
-        // Filter styles locally by query (match styleID, partNumber, title, brandName)
-        const q=query.toLowerCase().trim();
-        const matched=ssStylesCache.current.filter(s=>{
-          const sid=String(s.styleID||'').toLowerCase();
-          const pn=(s.partNumber||s.styleNumber||'').toLowerCase();
-          const title=(s.title||'').toLowerCase();
-          const brand=(s.brandName||'').toLowerCase();
-          return sid===q||pn===q||pn.startsWith(q)||sid.startsWith(q)||title.includes(q)||brand.includes(q);
-        }).slice(0,5);
-        if(matched.length){
-          // Fetch products for matched style IDs
-          const styleIDs=matched.map(s=>s.styleID).filter(Boolean).join(',');
-          console.log('[S&S] Matched styles:',matched.map(s=>s.partNumber||s.styleID),'→ fetching products for',styleIDs);
-          const data=await ssApiCall('/Products/?style='+encodeURIComponent(styleIDs));
-          items=Array.isArray(data)?data:data?[data]:[];
-          console.log('[S&S] Got',items.length,'products');
-        }else{console.log('[S&S] No style matches for "'+query+'"')}
-      }catch(e){console.warn('[S&S] search failed for',query,e.message)}
+      }
       if(!items.length){
         // Cache empty result with TTL so we can retry after 30s
         ssSearchCache.current[cacheKey]={length:0,_ts:Date.now()};
@@ -499,12 +488,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         let backUrl=it.colorBackImage||'';
         if(backUrl&&backUrl.startsWith('http://'))backUrl=backUrl.replace('http://','https://');
         if(!styleMap[sid]){
+          const sInfo=styleMatches.find(s=>String(s.styleID)===String(sid))||{};
           styleMap[sid]={
             styleID:sid,
-            styleName:it.brandName?(it.brandName+' '+(it.styleName||query)):it.styleName||query,
-            brandName:it.brandName||'',
-            sku:query.toUpperCase(),
-            styleImage:imgUrl||'',
+            styleName:sInfo.title||(it.brandName?(it.brandName+' '+(it.styleName||query)):it.styleName||query),
+            brandName:it.brandName||sInfo.brandName||'',
+            sku:(sInfo.partNumber||it.styleName||query).toUpperCase(),
+            styleImage:sInfo.styleImage||imgUrl||'',
             customerPrice:0,piecePrice:0,totalQty:0,
             colors:{},_source:'ss'
           };
