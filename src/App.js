@@ -463,7 +463,7 @@ const _checkVersion=async(table,id,localVersion)=>{
 const _dbSaveEstimateInner = async (est) => {
   if(!supabase)return;
   // Optimistic locking: check version before saving (auto-heal on conflict)
-  if(est._version){const vc=await _checkVersion('estimates',est.id,est._version);if(vc!==true){if(typeof vc==='number')est._version=vc;return false}}
+  if(est._version){const vc=await _checkVersion('estimates',est.id,est._version);if(vc!==true&&typeof vc==='number')est._version=vc}
   return _dbSavingGuard(async()=>{let decoFailed=false;try{
     const{items,art_files,...estRow}=est;
     let{error:estErr}=await supabase.from('estimates').upsert(_pick(estRow,_estCols),{onConflict:'id'});
@@ -537,7 +537,7 @@ const _dbSaveEstimate = (est) => _queuedEntitySave(est.id, est, _dbSaveEstimateI
 const _dbSaveSOInner = async (so) => {
   if(!supabase)return;
   // Optimistic locking: check version before saving (auto-heal on conflict)
-  if(so._version){const vc=await _checkVersion('sales_orders',so.id,so._version);if(vc!==true){if(typeof vc==='number')so._version=vc;return false}}
+  if(so._version){const vc=await _checkVersion('sales_orders',so.id,so._version);if(vc!==true&&typeof vc==='number')so._version=vc}
   return _dbSavingGuard(async()=>{let saveFailed=false;try{
     const{items,art_files,firm_dates,jobs,...soRow}=so;
     let{error:soErr}=await supabase.from('sales_orders').upsert(_pick(soRow,_soCols),{onConflict:'id'});
@@ -1407,7 +1407,7 @@ function dP(d,q,artFiles,cq){
     const _cwInkCount=(()=>{if(d.color_way_id&&art.color_ways){const cw=art.color_ways.find(c=>c.id===d.color_way_id);if(cw)return cw.inks.length}return null})();
     if(art.deco_type==='screen_print'){const nc=_cwInkCount||(art.ink_colors?art.ink_colors.split('\n').filter(l=>l.trim()).length:1);const u=d.underbase?1+SP.ub:1;const c=rQ(spP(pq,nc,false)*u);return{sell:d.sell_override!=null?d.sell_override:rT(c*SP.mk),cost:c}}
     if(art.deco_type==='embroidery'){const c=emP(art.stitches||8000,pq,false);return{sell:d.sell_override!=null?d.sell_override:rT(c*EM.mk),cost:c}}
-    if(art.deco_type==='dtf'){const t=DTF[art.dtf_size||0];return{sell:d.sell_override||t.sell,cost:t.cost}}}}
+    if(art.deco_type==='dtf'||art.deco_type==='heat_press'){const t=DTF[art.dtf_size||0];return{sell:d.sell_override||t.sell,cost:t.cost}}}}
   // Legacy/fallback type-based
   if(d.type==='screen_print'){const u=d.underbase?1+SP.ub:1;const c=rQ(spP(q,d.colors||1,false)*u);return{sell:d.sell_override!=null?d.sell_override:rT(c*SP.mk),cost:c}}
   if(d.type==='embroidery'){const c=emP(d.stitches||8000,q,false);return{sell:d.sell_override!=null?d.sell_override:rT(c*EM.mk),cost:c}}
