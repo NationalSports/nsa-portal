@@ -543,10 +543,25 @@ const _dbSaveEstimateInner = async (est) => {
     const allItemRows=items.map((item,idx)=>{const{decorations,...itemData}=item;return{..._pick(itemData,_itemCols),estimate_id:est.id,item_index:idx}});
     let{data:insertedItems,error:itemErr}=await supabase.from('estimate_items').insert(allItemRows).select('id');
     if(itemErr){
-      const coreRows=allItemRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_itemExtraCols.has(k))cr[k]=r[k]});return cr});
-      const retry=await supabase.from('estimate_items').insert(coreRows).select('id');
-      if(retry.error){console.error('[DB] estimate_items batch insert failed:',retry.error.message,retry.error.details);decoFailed=true}
-      else{insertedItems=retry.data;console.warn('[DB] estimate items saved with core columns only')}
+      // If FK constraint on product_id fails, retry with product_id nulled out
+      if(itemErr.message?.includes('product_id')||itemErr.code==='23503'){
+        const fkRows=allItemRows.map(r=>({...r,product_id:null}));
+        const fkRetry=await supabase.from('estimate_items').insert(fkRows).select('id');
+        if(!fkRetry.error){insertedItems=fkRetry.data;console.warn('[DB] estimate items saved with product_id nulled (FK constraint)')}
+        else{itemErr=fkRetry.error}
+      }
+      if(!insertedItems){
+        const coreRows=allItemRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_itemExtraCols.has(k))cr[k]=r[k]});return cr});
+        const retry=await supabase.from('estimate_items').insert(coreRows).select('id');
+        if(retry.error){
+          // Also try core rows with product_id nulled
+          const coreNullPid=coreRows.map(r=>({...r,product_id:null}));
+          const retry2=await supabase.from('estimate_items').insert(coreNullPid).select('id');
+          if(retry2.error){console.error('[DB] estimate_items batch insert failed:',retry2.error.message,retry2.error.details);decoFailed=true}
+          else{insertedItems=retry2.data;console.warn('[DB] estimate items saved with core columns + product_id nulled')}
+        }
+        else{insertedItems=retry.data;console.warn('[DB] estimate items saved with core columns only')}
+      }
     }
     if(insertedItems?.length){
       const allDecoRows=[];
@@ -645,10 +660,23 @@ const _dbSaveSOInner = async (so) => {
     const allItemRows=items.map((item,idx)=>{const{decorations,pick_lines,po_lines,...itemData}=item;return{..._pick(itemData,_itemCols),so_id:so.id,item_index:idx}});
     let{data:insertedItems,error:itemErr}=await supabase.from('so_items').insert(allItemRows).select('id');
     if(itemErr){
-      const coreRows=allItemRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_itemExtraCols.has(k))cr[k]=r[k]});return cr});
-      const retry=await supabase.from('so_items').insert(coreRows).select('id');
-      if(retry.error){console.error('[DB] so_items batch insert failed:',retry.error.message,retry.error.details);saveFailed=true}
-      else{insertedItems=retry.data;console.warn('[DB] so items saved with core columns only')}
+      if(itemErr.message?.includes('product_id')||itemErr.code==='23503'){
+        const fkRows=allItemRows.map(r=>({...r,product_id:null}));
+        const fkRetry=await supabase.from('so_items').insert(fkRows).select('id');
+        if(!fkRetry.error){insertedItems=fkRetry.data;console.warn('[DB] so items saved with product_id nulled (FK constraint)')}
+        else{itemErr=fkRetry.error}
+      }
+      if(!insertedItems){
+        const coreRows=allItemRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_itemExtraCols.has(k))cr[k]=r[k]});return cr});
+        const retry=await supabase.from('so_items').insert(coreRows).select('id');
+        if(retry.error){
+          const coreNullPid=coreRows.map(r=>({...r,product_id:null}));
+          const retry2=await supabase.from('so_items').insert(coreNullPid).select('id');
+          if(retry2.error){console.error('[DB] so_items batch insert failed:',retry2.error.message,retry2.error.details);saveFailed=true}
+          else{insertedItems=retry2.data;console.warn('[DB] so items saved with core columns + product_id nulled')}
+        }
+        else{insertedItems=retry.data;console.warn('[DB] so items saved with core columns only')}
+      }
     }
     if(insertedItems?.length){
       // Build all child rows referencing their parent item IDs
