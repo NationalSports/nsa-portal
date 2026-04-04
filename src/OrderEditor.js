@@ -9,7 +9,7 @@ import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, 
 import { Icon, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneQuickPicks, ThreadQuickPicks } from './components';
 import { dP, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP, DTF, POSITIONS, _decoVendorPrice, mergeColors } from './pricing';
 import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, nextInvId } from './utils';
-import { sanmarGetProduct, ssApiCall, momentecSearchProducts, momentecGetProductByPartNumber, momentecGetProductById } from './vendorApis';
+import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, ssApiCall, momentecSearchProducts, momentecGetProductByPartNumber, momentecGetProductById } from './vendorApis';
 
 function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onBack,onConvertSO,onCopyEstimate,onRevertToEst,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,allInvoices,batchPOs,onBatchPO,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,openPOId,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onSaveProduct,onViewEstimate,onViewSO,returnToPage,onReturnToJob,onAssignTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp}){
   const fetchAdidasInventory=fetchAdidasInventoryProp||(async()=>({sizes:{},lastSynced:null}));
@@ -557,15 +557,28 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         return !!(bi.brandName)&&parseFloat(pi.piecePrice||pi.casePrice||0)>0;
       });
       if(!items.length){smSearchCache.current[cacheKey]={length:0,_ts:Date.now()};if(gen===smSearchGen.current)setSmResults([]);return}
-      // Also fetch inventory for these items
+      // Fetch inventory and program pricing in parallel
       let invData={};
+      let pricingMap={};// key: color|size → program price
       try{
-        const inv=await sanmarGetInventory(q,'','');
-        (inv?.items||[]).forEach(it=>{
+        const [invRes,priceRes]=await Promise.all([
+          sanmarGetInventory(q,'','').catch(()=>null),
+          sanmarGetPricing(q,'','').catch(()=>null)
+        ]);
+        (invRes?.items||[]).forEach(it=>{
           const key=(it.color||it.colorName||'')+'|'+normSzName(it.size||it.labelSize||'');
           invData[key]=parseInt(it.totalQty||it.qty||it.quantity||0)||0;
         });
-      }catch(e){/* inventory fetch optional */}
+        (priceRes?.items||[]).forEach(it=>{
+          const color=it.catalogColor||it.color||it.colorName||'';
+          const sz=normSzName(it.size||it.labelSize||'');
+          const pp=parseFloat(it.programPrice||it.customerNetPrice||0);
+          const sp=parseFloat(it.salePrice||0);
+          const price=pp>0?pp:sp>0?sp:0;
+          if(price>0)pricingMap[color+'|'+sz]=price;
+        });
+        console.log('[SanMar] Pricing loaded:',Object.keys(pricingMap).length,'entries');
+      }catch(e){/* inventory/pricing fetch optional */}
       // Group by style → one entry per style, with colors array inside
       // SanMar items have nested sub-objects: productBasicInfo, productImageInfo, productPriceInfo
       const styleMap={};
@@ -591,15 +604,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           colorName:color,
           colorFrontImage:it.colorProductImageThumbnail||it.colorProductImage||it.colorSwatchImage||it.productImage||'',
           colorBackImage:it.colorProductImageBackThumbnail||it.colorProductImageBack||it.colorProductBackImage||'',
-          customerPrice:parseFloat(it.piecePrice||it.price||it.customerPrice||0),
-          piecePrice:parseFloat(it.piecePrice||it.price||0),
+          customerPrice:0,
+          piecePrice:0,
           sizes:[],totalQty:0
         };
         const cEntry=styleMap[sid].colors[cKey];
         const sz=normSzName(it.size||it.labelSize||it.sizeCode||'OSFA');
         const invKey=color+'|'+sz;
         const qty=invData[invKey]||parseInt(it.inventoryQty||it.qty||0)||0;
-        const price=parseFloat(it.piecePrice||it.price||it.customerPrice||0);
+        // Prefer program price from pricing API, fall back to product info price
+        const progPrice=pricingMap[color+'|'+sz]||0;
+        const price=progPrice>0?progPrice:parseFloat(it.piecePrice||it.price||it.customerPrice||0);
         cEntry.sizes.push({sizeName:sz,qty,price});
         cEntry.totalQty+=qty;
         if(price>0&&(cEntry.customerPrice===0||price<cEntry.customerPrice))cEntry.customerPrice=price;
