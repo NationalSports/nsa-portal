@@ -851,15 +851,13 @@ const _dbSaveProduct = async (p) => {
       image_front_url:p.image_url||p.image_front_url||null,image_back_url:p.back_image_url||p.image_back_url||null};
     const{error}=await supabase.from('products').upsert(row,{onConflict:'id'});
     if(error){
+      // Duplicate SKU — this product is a dupe that should be cleaned up, skip silently
+      if(error.message?.includes('products_sku_unique')||error.message?.includes('duplicate key value')){console.warn('[DB] Skipping duplicate SKU:',p.sku);return false}
       // If image columns don't exist yet, retry without them (product data still saves)
       if(error.message?.includes('image_front_url')||error.message?.includes('image_back_url')||error.message?.includes('color_category')){
         const{image_front_url,image_back_url,color_category,...rowNoExtra}=row;
         const{error:e2}=await supabase.from('products').upsert(rowNoExtra,{onConflict:'id'});
-        if(e2){console.error('[DB] save product (no extra cols):',e2.message);_dbSaveFailedIds.add(p.id);_persistFailedIds();if(_dbNotify)_dbNotify('Product save failed: '+e2.message,'error');return false}
-      }else if(error.message?.includes('products_sku_unique')){
-        // SKU conflict — another product already has this SKU; don't keep retrying
-        console.warn('[DB] save product skipped — duplicate SKU:',p.sku,p.id);
-        _dbSaveFailedIds.delete(p.id);_persistFailedIds();return true;
+        if(e2){if(e2.message?.includes('products_sku_unique')||e2.message?.includes('duplicate key value')){console.warn('[DB] Skipping duplicate SKU:',p.sku);return false}console.error('[DB] save product (no extra cols):',e2.message);_dbSaveFailedIds.add(p.id);_persistFailedIds();if(_dbNotify)_dbNotify('Product save failed: '+e2.message,'error');return false}
       }else{console.error('[DB] save product:',error.message);_dbSaveFailedIds.add(p.id);_persistFailedIds();if(_dbNotify)_dbNotify('Product save failed: '+error.message,'error');return false}
     }
     // Always save product images to app_state as reliable backup (works even without image columns)
@@ -12779,12 +12777,12 @@ export default function App(){
         primary_rep_id:['rep','rep_id','sales_rep','rep_name','sales_rep_name'],
         account_type:['account_type','type','acct_type','parent_sub','parent_or_sub'],
         parent_name:['parent','parent_name','parent_account','parent_company','parent_school'],
-        sku:['sku','item_number','style','item','part_number','style_number'],
+        sku:['sku','item_number','style','item','part_number','style_number','article','articlenumber','styleno','material','materialid'],
         brand:['brand','manufacturer','vendor'],
-        color:['color','colour'],
+        color:['color','colour','colorname','colordescription','colorway','colordesc','colour_name'],
         category:['category','type','product_type'],
-        retail_price:['retail','retail_price','msrp','list_price','price'],
-        nsa_cost:['cost','nsa_cost','unit_cost','our_cost','dealer_cost'],
+        retail_price:['retail','retail_price','msrp','list_price','price','srp','suggested_retail'],
+        nsa_cost:['cost','nsa_cost','unit_cost','our_cost','dealer_cost','wholesale','net_cost','net_price'],
         available_sizes:['sizes','available_sizes','size_range'],
         vendor_name:['vendor','vendor_name','supplier'],
         vendor_type:['type','vendor_type'],
@@ -12978,19 +12976,20 @@ export default function App(){
           const updates={};
           if(name&&name!==existing.name)updates.name=name;
           if(row[colMap.brand]&&row[colMap.brand].trim())updates.brand=row[colMap.brand].trim();
-          // If this row has a different color than the existing product, add it to _colors instead of overwriting
+          // Update color: first row for this SKU sets/overwrites the primary color,
+          // subsequent rows with different colors add to _colors
           if(rowColor){
-            const existingColor=(existing.color||'').trim();
-            const existingColors=existing._colors||[];
-            // Find any pending updates for this product (from earlier rows in this import)
             const pendingUpdate=updated.find(u=>u.id===existing.id);
-            const currentColor=pendingUpdate?.color||existingColor;
-            const currentColors=pendingUpdate?._colors||existingColors;
-            if(!currentColor){
+            if(pendingUpdate&&pendingUpdate.color){
+              // Already updated color from an earlier row in this import — add to _colors if different
+              const currentColors=pendingUpdate._colors||existing._colors||[];
+              if(rowColor.toLowerCase()!==pendingUpdate.color.toLowerCase()&&!currentColors.some(c=>c.toLowerCase()===rowColor.toLowerCase())){
+                updates._colors=[...currentColors,rowColor];
+              }
+            }else{
+              // First row for this SKU — overwrite the primary color
               updates.color=rowColor;
               updates.color_category=mapColorCategory(rowColor);
-            }else if(rowColor.toLowerCase()!==currentColor.toLowerCase()&&!currentColors.some(c=>c.toLowerCase()===rowColor.toLowerCase())){
-              updates._colors=[...currentColors,rowColor];
             }
           }
           if(row[colMap.category]&&row[colMap.category].trim())updates.category=row[colMap.category].trim();
@@ -14232,7 +14231,8 @@ export default function App(){
                 </div>
                 <button className="btn btn-sm btn-secondary" style={{marginTop:8,fontSize:10}} onClick={()=>{
                   const headers=fieldMap.map(f=>f.key).join(',');
-                  const example=fieldMap.map(f=>f.key==='name'?'Example School':f.key==='sku'?'ABC123':f.key==='alpha_tag'?'EXS':'').join(',');
+                  const exMap={sku:'ABC123',name:'Example Product',brand:'Adidas',color:'Black/White',category:'Tees',retail_price:'30.00',nsa_cost:'11.25',available_sizes:'S,M,L,XL,2XL',vendor_name:'Adidas',alpha_tag:'EXS'};
+                  const example=fieldMap.map(f=>exMap[f.key]||'').join(',');
                   const blob=new Blob([headers+'\n'+example],{type:'text/csv'});
                   const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=impTab+'_template.csv';a.click();URL.revokeObjectURL(url);
                 }}>⬇️ Download CSV Template</button>
