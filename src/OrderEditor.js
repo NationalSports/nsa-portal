@@ -455,13 +455,22 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const gen=ssSearchGen.current;// track this search generation
     setSsSearching(true);
     try{
-      // Search Products directly by style number (S&S API supports style filter, not keyword search on Styles)
+      // Search S&S Products — try style filter first (accepts styleID, partNumber, or brandName)
+      // then fall back to partnumber filter if style returns 404
       let items=[];
       try{
-        const data=await ssApiCall('/Products?style='+encodeURIComponent(query));
+        const data=await ssApiCall('/Products/?style='+encodeURIComponent(query));
         items=Array.isArray(data)?data:data?[data]:[];
-        console.log('[S&S] Products?style='+query,items.length,'items');
-      }catch(e){console.warn('[S&S] style search failed for',query,e.message);/* style lookup failed */}
+        console.log('[S&S] Products style='+query,items.length,'items');
+      }catch(e){
+        console.warn('[S&S] style search failed for',query,e.message);
+        // Fall back to partnumber filter
+        try{
+          const data2=await ssApiCall('/Products/?partnumber='+encodeURIComponent(query));
+          items=Array.isArray(data2)?data2:data2?[data2]:[];
+          console.log('[S&S] Products partnumber='+query,items.length,'items');
+        }catch(e2){console.warn('[S&S] partnumber search also failed for',query,e2.message)}
+      }
       if(!items.length){
         // Cache empty result with TTL so we can retry after 30s
         ssSearchCache.current[cacheKey]={length:0,_ts:Date.now()};
