@@ -851,11 +851,13 @@ const _dbSaveProduct = async (p) => {
       image_front_url:p.image_url||p.image_front_url||null,image_back_url:p.back_image_url||p.image_back_url||null};
     const{error}=await supabase.from('products').upsert(row,{onConflict:'id'});
     if(error){
+      // Duplicate SKU — this product is a dupe that should be cleaned up, skip silently
+      if(error.message?.includes('products_sku_unique')||error.message?.includes('duplicate key value')){console.warn('[DB] Skipping duplicate SKU:',p.sku);return false}
       // If image columns don't exist yet, retry without them (product data still saves)
       if(error.message?.includes('image_front_url')||error.message?.includes('image_back_url')||error.message?.includes('color_category')){
         const{image_front_url,image_back_url,color_category,...rowNoExtra}=row;
         const{error:e2}=await supabase.from('products').upsert(rowNoExtra,{onConflict:'id'});
-        if(e2){console.error('[DB] save product (no extra cols):',e2.message);_dbSaveFailedIds.add(p.id);_persistFailedIds();if(_dbNotify)_dbNotify('Product save failed: '+e2.message,'error');return false}
+        if(e2){if(e2.message?.includes('products_sku_unique')||e2.message?.includes('duplicate key value')){console.warn('[DB] Skipping duplicate SKU:',p.sku);return false}console.error('[DB] save product (no extra cols):',e2.message);_dbSaveFailedIds.add(p.id);_persistFailedIds();if(_dbNotify)_dbNotify('Product save failed: '+e2.message,'error');return false}
       }else{console.error('[DB] save product:',error.message);_dbSaveFailedIds.add(p.id);_persistFailedIds();if(_dbNotify)_dbNotify('Product save failed: '+error.message,'error');return false}
     }
     // Always save product images to app_state as reliable backup (works even without image columns)
