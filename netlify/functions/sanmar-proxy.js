@@ -63,6 +63,25 @@ function buildFlatArgSoapEnvelope(action, args) {
 </soapenv:Envelope>`;
 }
 
+// Build a SOAP envelope for PromoStandards services (e.g. getInventoryLevels)
+// PromoStandards uses document/literal style with named parameters (no arg0/arg1)
+// Namespace: http://www.promostandards.org/WSDL/InventoryService/1.0.0/
+function buildPromoStandardsSoapEnvelope(action, params) {
+  const paramXml = Object.entries(params)
+    .map(([k, v]) => `<shar:${k}>${escapeXml(String(v ?? ''))}</shar:${k}>`)
+    .join('\n      ');
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
+                  xmlns:shar="http://www.promostandards.org/WSDL/InventoryService/1.0.0/SharedObjects/">
+  <soapenv:Header/>
+  <soapenv:Body>
+    <shar:GetInventoryLevelsRequest>
+      ${paramXml}
+    </shar:GetInventoryLevelsRequest>
+  </soapenv:Body>
+</soapenv:Envelope>`;
+}
+
 function escapeXml(s) {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
@@ -175,7 +194,11 @@ exports.handler = async (event) => {
   if (event.body) {
     try {
       const parsed = JSON.parse(event.body);
-      if (service === 'inventory') {
+      if (service === 'promostandards') {
+        // PromoStandards uses document/literal with named params — inject credentials
+        const promoParams = { ...parsed, id: parsed.id || customerNumber, password: parsed.password || password };
+        soapBody = buildPromoStandardsSoapEnvelope(action, promoParams);
+      } else if (service === 'inventory') {
         // Inventory service uses flat string args: arg0=custNum, arg1=user, arg2=pass, arg3=style, arg4=color, arg5=size
         soapBody = buildFlatArgSoapEnvelope(action, [
           customerNumber, username, password,
@@ -188,7 +211,9 @@ exports.handler = async (event) => {
       soapBody = event.body;
     }
   } else {
-    if (service === 'inventory') {
+    if (service === 'promostandards') {
+      soapBody = buildPromoStandardsSoapEnvelope(action, { id: customerNumber, password });
+    } else if (service === 'inventory') {
       soapBody = buildFlatArgSoapEnvelope(action, [customerNumber, username, password, '', '', '']);
     } else {
       soapBody = buildSoapEnvelope(action, {}, customerNumber, username, password);

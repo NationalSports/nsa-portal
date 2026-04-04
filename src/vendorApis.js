@@ -674,6 +674,12 @@ const sanmarGetInventory = async (style, color, size) =>
 const sanmarGetPricing = async (style, color, size) =>
   await sanmarApiCall('pricing', 'getPricing', { style, color: color || '', size: size || '' });
 
+// PromoStandards inventory — uses getInventoryLevels via InventoryServiceBinding
+const sanmarGetPromoInventory = async (productID) =>
+  await sanmarApiCall('promostandards', 'getInventoryLevels', {
+    wsVersion: '1.2.1', productID, productIDtype: 'Supplier'
+  });
+
 const testSanMarConnection = async () => {
   try { await sanmarGetProduct('PC61'); console.log('[SanMar] Connection test successful'); return true; }
   catch (error) { console.error('[SanMar] Connection test failed:', error); return false; }
@@ -798,4 +804,4 @@ const testMomentecConnection = async () => {
 };
 
 
-export { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, testSanMarConnection, ssApiCall, ssGetProducts, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection };
+export { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, sanmarGetPromoInventory, testSanMarConnection, ssApiCall, ssGetProducts, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection };
