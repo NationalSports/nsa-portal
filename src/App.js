@@ -842,7 +842,10 @@ const _dbSaveCreditUsage = async (usage) => {
     return true;
   }catch(e){console.error('[DB] save credit usage:',e);return false}
 };
-const _dbDuplicateSkuIds=new Set();// product IDs with duplicate SKU — skip saves entirely
+const _dbDuplicateSkuIds=new Set(JSON.parse(localStorage.getItem('nsa_duplicate_sku_ids')||'[]'));// product IDs with duplicate SKU — skip saves entirely
+// On startup, clear any duplicate-SKU product IDs from failed saves (they'll never succeed)
+_dbDuplicateSkuIds.forEach(id=>{_dbSaveFailedIds.delete(id)});if(_dbDuplicateSkuIds.size)_persistFailedIds();
+const _persistDuplicateSkuIds=()=>{_lsSet('nsa_duplicate_sku_ids',JSON.stringify([..._dbDuplicateSkuIds]))};
 const _dbSaveProduct = async (p) => {
   if(!supabase)return;
   if(_dbDuplicateSkuIds.has(p.id))return true;// skip — this ID has a duplicate SKU in DB
@@ -856,7 +859,7 @@ const _dbSaveProduct = async (p) => {
       // Duplicate SKU: another product already owns this SKU — suppress all future saves for this ID
       if(error.message?.includes('products_sku_unique')||error.message?.includes('duplicate key value')){
         console.warn('[DB] Duplicate SKU',p.sku,'for id',p.id,'— suppressing future saves');
-        _dbDuplicateSkuIds.add(p.id);_dbSaveFailedIds.delete(p.id);_persistFailedIds();return true;
+        _dbDuplicateSkuIds.add(p.id);_persistDuplicateSkuIds();_dbSaveFailedIds.delete(p.id);_persistFailedIds();return true;
       }
       // If image columns don't exist yet, retry without them (product data still saves)
       if(error.message?.includes('image_front_url')||error.message?.includes('image_back_url')||error.message?.includes('color_category')){
