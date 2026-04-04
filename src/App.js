@@ -2933,9 +2933,10 @@ export default function App(){
         const picks=safePicks(item);
         const pulled={};picks.filter(pk=>pk.status==='pulled').forEach(pk=>{szKeys.forEach(s=>{pulled[s]=(pulled[s]||0)+(pk[s]||0)})});
         const totalPulled=Object.values(pulled).reduce((a,v)=>a+v,0);
-        // Only show in Pull & Stage if there's an active pick ticket (IF not yet pulled)
+        // Show in Pull & Stage if there's an active pick ticket OR a job on hold needing this item
         const hasActivePick=picks.some(pk=>pk.status!=='pulled');
-        if(hasActivePick){
+        const hasHoldJob=safeJobs(so).some(j=>j.prod_status==='hold'&&(j.items||[]).some(gi=>gi.item_idx===ii));
+        if(hasActivePick||hasHoldJob){
           const needsPull=totalOrdered-totalPulled;
           if(needsPull>0){
             pullTasks.push({so,soId:so.id,item,itemIdx:ii,cName,alpha,rep,daysOut,urgent,
