@@ -562,14 +562,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       let pricingMap={};// key: color|size → program price
       try{
         const [invRes,priceRes]=await Promise.all([
-          sanmarGetInventory(q,'','').catch(()=>null),
-          sanmarGetPricing(q,'','').catch(()=>null)
+          sanmarGetInventory(q,'','').catch(e=>{console.warn('[SanMar] Inventory fetch failed:',e);return null}),
+          sanmarGetPricing(q,'','').catch(e=>{console.warn('[SanMar] Pricing fetch failed:',e);return null})
         ]);
+        if(priceRes)console.log('[SanMar] Raw pricing response keys:',Object.keys(priceRes),priceRes.items?'items:'+priceRes.items.length:'no items');
         (invRes?.items||[]).forEach(it=>{
           const key=(it.color||it.colorName||'')+'|'+normSzName(it.size||it.labelSize||'');
           invData[key]=parseInt(it.totalQty||it.qty||it.quantity||0)||0;
         });
-        (priceRes?.items||[]).forEach(it=>{
+        const priceItems=priceRes?.items||[];
+        if(priceItems.length>0)console.log('[SanMar] Pricing sample item:',JSON.stringify(priceItems[0]));
+        priceItems.forEach(it=>{
           const color=it.catalogColor||it.color||it.colorName||'';
           const sz=normSzName(it.size||it.labelSize||'');
           const pp=parseFloat(it.programPrice||it.customerNetPrice||0);
@@ -577,7 +580,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const price=pp>0?pp:sp>0?sp:0;
           if(price>0)pricingMap[color+'|'+sz]=price;
         });
-        console.log('[SanMar] Pricing loaded:',Object.keys(pricingMap).length,'entries');
+        console.log('[SanMar] Pricing loaded:',Object.keys(pricingMap).length,'entries, sample prices:', Object.entries(pricingMap).slice(0,3));
       }catch(e){/* inventory/pricing fetch optional */}
       // Group by style → one entry per style, with colors array inside
       // SanMar items have nested sub-objects: productBasicInfo, productImageInfo, productPriceInfo
@@ -587,6 +590,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const bi=raw.productBasicInfo||{};
         const ii=raw.productImageInfo||{};
         const pi=raw.productPriceInfo||{};
+        if(!styleMap[query])console.log('[SanMar] Product priceInfo fields:',Object.keys(pi),'values:',JSON.stringify(pi));
         const it={...bi,...ii,...pi,...raw};
         const sid=it.style||it.styleNumber||query;
         const color=it.catalogColor||it.color||it.colorName||it.productColor||'';
@@ -785,12 +789,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const cost=color.customerPrice||color.piecePrice||0;
     const sell=rQ(cost*(o.default_markup||1.65));
     // Build available sizes: start with sizes from API, merge with catalog product sizes and standard sizes
-    const apiSizes=color.sizes.map(s=>s.sizeName);
+    const apiSizes=color.sizes.map(s=>s.sizeName).filter(s=>s&&SZ_ORD.includes(s));
     // Try to match a catalog product for this SKU to get its full available_sizes
     const catMatch=products.find(p=>p.sku===style.sku&&(!color.colorName||p.color===color.colorName))||products.find(p=>p.sku===style.sku);
-    const catSizes=catMatch?.available_sizes||[];
+    const catSizes=(catMatch?.available_sizes||[]).filter(s=>SZ_ORD.includes(s));
     // SanMar provides availableSizes as comma-separated string
-    const smSizes=style._availSizes?style._availSizes.split(/[,;]\s*/).map(s=>normSzName(s.trim())).filter(Boolean):[];
+    const smSizes=style._availSizes?style._availSizes.split(/[,;]\s*/).map(s=>normSzName(s.trim())).filter(s=>s&&SZ_ORD.includes(s)):[];
     // Merge all sources; ensure standard sizes are always included for apparel
     const STD_SIZES=['S','M','L','XL','2XL'];
     let availSizes=[...new Set([...apiSizes,...catSizes,...smSizes,...STD_SIZES])];
@@ -1549,7 +1553,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               {(()=>{const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);const stk=p?._inv?.[sz];const need=item.sizes[sz]||0;return<div style={{fontSize:9,fontWeight:600,minHeight:13,color:stk==null?'transparent':stk<=0?'#dc2626':stk<need?'#ca8a04':'#166534'}}>{stk!=null?stk+' inv':'\u00A0'}</div>})()}
               {(()=>{const vi=vendorInv[item.sku];if(!vi||vi.loading)return vi?.loading?<div style={{fontSize:8,color:'#a78bfa',minHeight:11}}>...</div>:null;const vStk=vi.sizes?.[sz];if(vStk==null)return null;const lbl=vi.source==='mt'?'mt':vi.source==='sm'?'sm':'ss';const clr=vi.source==='mt'?'#d97706':vi.source==='sm'?'#0891b2':'#7c3aed';return<div style={{fontSize:8,fontWeight:700,minHeight:11,color:vStk<=0?'#dc2626':vStk<20?clr:clr}} title={(vi.source==='mt'?'Momentec':vi.source==='sm'?'SanMar':'S&S Activewear')+' stock: '+vStk}>{vStk} {lbl}</div>})()}
               {(()=>{if(!isAdidasItem(item))return null;const ai=adidasInv[item.sku];if(!ai||ai.loading)return ai?.loading?<div style={{fontSize:8,color:'#059669',minHeight:11}}>...</div>:null;const b2bStk=ai.sizes?.[sz]?.qty;if(b2bStk==null)return<div style={{fontSize:8,color:'transparent',minHeight:11}}>&nbsp;</div>;const need=item.sizes[sz]||0;const color=b2bStk<=0?'#dc2626':(need>0&&b2bStk<need)?'#ca8a04':'#166534';return<div style={{fontSize:8,fontWeight:700,minHeight:11,color:color}} title={'Adidas B2B stock: '+b2bStk+(ai.sizes[sz]?.futureDate?' (restock '+ai.sizes[sz].futureDate+')':'')}>{b2bStk} b2b</div>})()}
-              {(()=>{const sc=item._sizeCosts?.[sz];if(!sc||Math.abs(sc-item.nsa_cost)<0.01)return null;return<div style={{fontSize:7,fontWeight:700,minHeight:10,color:'#b45309'}} title={'Per-size cost: $'+sc.toFixed(2)+' / sell: $'+(item._sizeSells?.[sz]||item.unit_sell).toFixed(2)}>${sc.toFixed(2)}</div>})()}
+              {item._sizeCosts&&<div style={{fontSize:7,fontWeight:700,minHeight:10,color:'#b45309'}}>{(()=>{const sc=item._sizeCosts[sz];if(!sc||Math.abs(sc-item.nsa_cost)<0.01)return'\u00A0';return'$'+sc.toFixed(2)})()}</div>}
               </div>)}
             <div style={{textAlign:'center',marginLeft:4,padding:'0 10px',borderLeft:'2px solid #e2e8f0'}}><div style={{fontSize:10,fontWeight:700,color:'#1e40af'}}>TOT</div>
               <div style={{fontSize:20,fontWeight:800,color:'#1e40af'}}>{qty}</div>
