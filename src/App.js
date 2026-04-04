@@ -2286,7 +2286,7 @@ export default function App(){
   const[q,setQ]=useState('');const[selC,setSelC]=useState(null);const[selV,setSelV]=useState(null);const[selP,setSelP]=useState(null);
   // Keep selC/selV/selP in sync with their source arrays after saves/reloads
   React.useEffect(()=>{if(selC){const u=cust.find(c=>c.id===selC.id);if(u&&u!==selC)setSelC(u);else if(!u)setSelC(null)}},[cust]); // eslint-disable-line
-  React.useEffect(()=>{if(selP){const u=prod.find(p=>p.id===selP.id);if(u&&u!==selP)setSelP(u);else if(!u)setSelP(null)}},[prod]); // eslint-disable-line
+  React.useEffect(()=>{if(selP){const u=prod.find(p=>p.id===selP.id);if(u&&u!==selP)setSelP(u)}},[prod]); // eslint-disable-line
   const[eEst,setEEst]=useState(null);const[eEstC,setEEstC]=useState(null);const[eSO,setESO]=useState(null);const[eSOC,setESOC]=useState(null);const[eSOTab,setESOTab]=useState(null);const[eSOScrollItem,setESOScrollItem]=useState(null);const[eSOScrollJob,setESOScrollJob]=useState(null);const[eSOOpenPO,setESOOpenPO]=useState(null);
   // Sync eSO from sos when external updates occur (e.g., coach approval via portal)
   // Only sync if actual content changed (not just updated_at formatting differences from DB poll)
@@ -12930,24 +12930,54 @@ export default function App(){
         const vendor=D_V.find(v=>v.name.toLowerCase()===vendorName.toLowerCase());
         const sizes=(row[colMap.available_sizes]||'').trim();
         const parsedSizes=sizes?sizes.split(',').map(s=>s.trim()).filter(Boolean):null;
+        const rowColor=(row[colMap.color]||'').trim();
         if(existing){
           // Update existing product with any non-empty fields from the row
           const updates={};
           if(name&&name!==existing.name)updates.name=name;
           if(row[colMap.brand]&&row[colMap.brand].trim())updates.brand=row[colMap.brand].trim();
-          if(row[colMap.color]&&row[colMap.color].trim())updates.color=row[colMap.color].trim();
+          // If this row has a different color than the existing product, add it to _colors instead of overwriting
+          if(rowColor){
+            const existingColor=(existing.color||'').trim();
+            const existingColors=existing._colors||[];
+            // Find any pending updates for this product (from earlier rows in this import)
+            const pendingUpdate=updated.find(u=>u.id===existing.id);
+            const currentColor=pendingUpdate?.color||existingColor;
+            const currentColors=pendingUpdate?._colors||existingColors;
+            if(!currentColor){
+              updates.color=rowColor;
+              updates.color_category=mapColorCategory(rowColor);
+            }else if(rowColor.toLowerCase()!==currentColor.toLowerCase()&&!currentColors.some(c=>c.toLowerCase()===rowColor.toLowerCase())){
+              updates._colors=[...currentColors,rowColor];
+            }
+          }
           if(row[colMap.category]&&row[colMap.category].trim())updates.category=row[colMap.category].trim();
           if(row[colMap.retail_price]&&parseFloat(row[colMap.retail_price]))updates.retail_price=parseFloat(row[colMap.retail_price]);
           if(row[colMap.nsa_cost]&&parseFloat(row[colMap.nsa_cost]))updates.nsa_cost=parseFloat(row[colMap.nsa_cost]);
           if(parsedSizes&&parsedSizes.length>0)updates.available_sizes=parsedSizes;
           if(vendor)updates.vendor_id=vendor.id;
-          if(Object.keys(updates).length>0){updated.push({id:existing.id,...updates})}
+          if(Object.keys(updates).length>0){
+            // Merge with any previous pending update for the same product
+            const prevIdx=updated.findIndex(u=>u.id===existing.id);
+            if(prevIdx>=0){updated[prevIdx]={...updated[prevIdx],...updates}}
+            else{updated.push({id:existing.id,...updates})}
+          }
           else{skipped.push(sku+' — no changes')}
+          return;
+        }
+        // Check if we already added this SKU from an earlier row in this import
+        const alreadyAdded=added.find(a=>a.sku.toLowerCase()===sku.toLowerCase());
+        if(alreadyAdded){
+          // Same SKU, different color — add to _colors
+          if(rowColor&&rowColor.toLowerCase()!==alreadyAdded.color.toLowerCase()&&!(alreadyAdded._colors||[]).some(c=>c.toLowerCase()===rowColor.toLowerCase())){
+            alreadyAdded._colors=[...(alreadyAdded._colors||[]),rowColor];
+          }
           return;
         }
         added.push({
           id:'p-'+Date.now()+'-'+i,vendor_id:vendor?.id||null,sku,name,
-          brand:row[colMap.brand]||'',color:row[colMap.color]||'',
+          brand:row[colMap.brand]||'',color:rowColor,
+          color_category:mapColorCategory(rowColor),
           category:row[colMap.category]||'',
           retail_price:parseFloat(row[colMap.retail_price])||0,
           nsa_cost:parseFloat(row[colMap.nsa_cost])||0,
