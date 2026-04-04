@@ -815,6 +815,11 @@ const _dbSaveProduct = async (p) => {
       image_front_url:p.image_url||p.image_front_url||null,image_back_url:p.back_image_url||p.image_back_url||null};
     const{error}=await supabase.from('products').upsert(row,{onConflict:'id'});
     if(error){
+      // Handle duplicate SKU: if a different product already has this SKU, update by SKU instead
+      if(error.message?.includes('products_sku_unique')){
+        console.warn('[DB] Duplicate SKU',p.sku,'for id',p.id,'— skipping save (existing product owns this SKU)');
+        _dbSaveFailedIds.delete(p.id);_persistFailedIds();return true;
+      }
       // If image columns don't exist yet, retry without them (product data still saves)
       if(error.message?.includes('image_front_url')||error.message?.includes('image_back_url')||error.message?.includes('color_category')){
         const{image_front_url,image_back_url,color_category,...rowNoExtra}=row;
