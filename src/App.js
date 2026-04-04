@@ -12777,12 +12777,12 @@ export default function App(){
         primary_rep_id:['rep','rep_id','sales_rep','rep_name','sales_rep_name'],
         account_type:['account_type','type','acct_type','parent_sub','parent_or_sub'],
         parent_name:['parent','parent_name','parent_account','parent_company','parent_school'],
-        sku:['sku','item_number','style','item','part_number','style_number'],
+        sku:['sku','item_number','style','item','part_number','style_number','article','articlenumber','styleno','material','materialid'],
         brand:['brand','manufacturer','vendor'],
-        color:['color','colour'],
+        color:['color','colour','colorname','colordescription','colorway','colordesc','colour_name'],
         category:['category','type','product_type'],
-        retail_price:['retail','retail_price','msrp','list_price','price'],
-        nsa_cost:['cost','nsa_cost','unit_cost','our_cost','dealer_cost'],
+        retail_price:['retail','retail_price','msrp','list_price','price','srp','suggested_retail'],
+        nsa_cost:['cost','nsa_cost','unit_cost','our_cost','dealer_cost','wholesale','net_cost','net_price'],
         available_sizes:['sizes','available_sizes','size_range'],
         vendor_name:['vendor','vendor_name','supplier'],
         vendor_type:['type','vendor_type'],
@@ -14231,7 +14231,8 @@ export default function App(){
                 </div>
                 <button className="btn btn-sm btn-secondary" style={{marginTop:8,fontSize:10}} onClick={()=>{
                   const headers=fieldMap.map(f=>f.key).join(',');
-                  const example=fieldMap.map(f=>f.key==='name'?'Example School':f.key==='sku'?'ABC123':f.key==='alpha_tag'?'EXS':'').join(',');
+                  const exMap={sku:'ABC123',name:'Example Product',brand:'Adidas',color:'Black/White',category:'Tees',retail_price:'30.00',nsa_cost:'11.25',available_sizes:'S,M,L,XL,2XL',vendor_name:'Adidas',alpha_tag:'EXS'};
+                  const example=fieldMap.map(f=>exMap[f.key]||'').join(',');
                   const blob=new Blob([headers+'\n'+example],{type:'text/csv'});
                   const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=impTab+'_template.csv';a.click();URL.revokeObjectURL(url);
                 }}>⬇️ Download CSV Template</button>
