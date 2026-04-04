@@ -290,7 +290,7 @@ function AdidasB2BRow({sku, brand, sizes, showSz, inv}) {
   return (<div style={{marginTop:6}}>
     <div style={{display:'flex',gap:2,flexWrap:'wrap',alignItems:'center',paddingLeft:2,borderLeft:'3px solid #059669'}}>
       <span style={{fontSize:9,fontWeight:700,color:'#059669',marginRight:4}}>Adidas B2B:</span>
-      {(sizes||[]).filter(sz => showSz ? showSz(sz, inv?.[sz]) || (ai.sizes[sz]?.qty > 0) : true).map(sz => {
+      {[...new Set(sizes||[])].filter(sz => showSz ? showSz(sz, inv?.[sz]) || (ai.sizes[sz]?.qty > 0) : true).map(sz => {
         const v = ai.sizes[sz]?.qty || 0;
         const ft = ai.sizes[sz]?.futureDate;
         return <div key={sz} className={`size-cell ${v > 10 ? 'in-stock' : v > 0 ? 'low-stock' : 'no-stock'}`} title={ft ? 'Expected: ' + ft + ' (' + (ai.sizes[sz]?.futureQty || 0) + ' units)' : ''}>
@@ -4111,7 +4111,7 @@ export default function App(){
                 <span>Sell: <strong>${rQ(ep.nsa_cost*1.65).toFixed(2)}</strong></span>
               </div>
               <div style={{display:'flex',gap:2,flexWrap:'wrap'}}>
-                {ep.available_sizes.filter(sz=>showSz(sz,ep._inv?.[sz])).map(sz=>{const val=ep._inv?.[sz]||0;return<div key={sz} className={`size-cell ${val>10?'in-stock':val>0?'low-stock':'no-stock'}`}><div className="size-label">{sz}</div><div className="size-qty">{val}</div></div>})}
+                {[...new Set(ep.available_sizes)].filter(sz=>showSz(sz,ep._inv?.[sz])).map(sz=>{const val=ep._inv?.[sz]||0;return<div key={sz} className={`size-cell ${val>10?'in-stock':val>0?'low-stock':'no-stock'}`}><div className="size-label">{sz}</div><div className="size-qty">{val}</div></div>})}
                 <div className="size-cell total"><div className="size-label">TOT</div><div className="size-qty">{nt}</div></div>
               </div>
               <AdidasB2BRow sku={ep.sku} brand={ep.brand} sizes={ep.available_sizes} showSz={showSz} inv={ep._inv}/>
@@ -4318,13 +4318,13 @@ export default function App(){
         <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}><span style={{fontFamily:'monospace',fontWeight:800,background:'#dbeafe',padding:'2px 8px',borderRadius:3,color:'#1e40af'}}>{p.sku}</span><span style={{fontWeight:700}}>{p.name}</span>{p._colors&&<span style={{fontSize:10,color:'#7c3aed'}}>{p._colors.length} clr</span>}</div>
         <div style={{fontSize:12,color:'#94a3b8',marginTop:2}}><span className="badge badge-blue" style={{marginRight:4}}>{p.brand}</span>{p.color} | ${p.nsa_cost?.toFixed(2)} | {au?'Tier':'$'+rQ(p.nsa_cost*1.65).toFixed(2)}</div>
         <div style={{display:'flex',gap:2,marginTop:6,flexWrap:'wrap'}}>
-          {p.available_sizes.filter(sz=>showSz(sz,p._inv?.[sz])).map(sz=>{const v=p._inv?.[sz]||0;return<div key={sz} className={`size-cell ${v>10?'in-stock':v>0?'low-stock':'no-stock'}`}><div className="size-label">{sz}</div><div className="size-qty">{v}</div></div>})}
+          {[...new Set(p.available_sizes)].filter(sz=>showSz(sz,p._inv?.[sz])).map(sz=>{const v=p._inv?.[sz]||0;return<div key={sz} className={`size-cell ${v>10?'in-stock':v>0?'low-stock':'no-stock'}`}><div className="size-label">{sz}</div><div className="size-qty">{v}</div></div>})}
           <div className="size-cell total"><div className="size-label">TOT</div><div className="size-qty">{nt}</div></div></div>
         {(()=>{if(p.brand!=='Adidas')return null;const ai=adidasInvBulk[p.sku];if(!ai)return null;const hasSz=Object.keys(ai.sizes||{}).length>0;if(!hasSz)return null;
           const b2bTotal=Object.values(ai.sizes).reduce((a,s)=>a+(s.qty||0),0);const ls=ai.lastSynced?new Date(ai.lastSynced):null;const staleHrs=ls?(Date.now()-ls.getTime())/3600000:999;
           return<div style={{display:'flex',gap:2,marginTop:3,flexWrap:'wrap',alignItems:'center',paddingLeft:2,borderLeft:'3px solid #059669'}}>
             <span style={{fontSize:9,fontWeight:700,color:'#059669',marginRight:4,whiteSpace:'nowrap'}}>B2B:</span>
-            {p.available_sizes.filter(sz=>showSz(sz,p._inv?.[sz])||(ai.sizes[sz]?.qty>0)).map(sz=>{const v=ai.sizes[sz]?.qty||0;return<div key={sz} className={`size-cell ${v>10?'in-stock':v>0?'low-stock':'no-stock'}`} style={{opacity:0.85}}><div className="size-label">{sz}</div><div className="size-qty">{v}</div></div>})}
+            {[...new Set(p.available_sizes)].filter(sz=>showSz(sz,p._inv?.[sz])||(ai.sizes[sz]?.qty>0)).map(sz=>{const v=ai.sizes[sz]?.qty||0;return<div key={sz} className={`size-cell ${v>10?'in-stock':v>0?'low-stock':'no-stock'}`} style={{opacity:0.85}}><div className="size-label">{sz}</div><div className="size-qty">{v}</div></div>})}
             <div className="size-cell total" style={{opacity:0.85}}><div className="size-label">TOT</div><div className="size-qty">{b2bTotal}</div></div>
             {ls&&<span style={{fontSize:9,color:staleHrs>48?'#d97706':'#94a3b8',marginLeft:6}}>{staleHrs>48?'⚠ ':''}Synced: {ls.toLocaleDateString()}</span>}
           </div>})()}
@@ -4364,7 +4364,7 @@ export default function App(){
   <tbody>{iD.map(p=>{const ai=adidasInvBulk[p.sku];const b2bTotal=ai?Object.values(ai.sizes||{}).reduce((a,s)=>a+(s.qty||0),0):null;return<tr key={p.id}>
     <td><div style={{display:'flex',alignItems:'center',gap:4}}><button style={{background:'none',border:'none',cursor:'pointer',fontSize:14,padding:0,color:favSkus.includes(p.sku)?'#f59e0b':'#d1d5db'}} onClick={()=>toggleFav(p.sku)}>{favSkus.includes(p.sku)?'★':'☆'}</button><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{p.sku}</span></div></td>
     <td style={{fontSize:12}}>{p.name}{p.is_clearance&&<span style={{marginLeft:4,padding:'1px 6px',borderRadius:4,fontSize:9,fontWeight:700,background:'#fef3c7',color:'#92400e'}}>CLEARANCE</span>}<br/><span style={{color:'#94a3b8'}}>{p.color}</span></td>
-    <td><div style={{display:'flex',gap:2}}>{p.available_sizes.filter(sz=>showSz(sz,p._inv?.[sz])).map(sz=>{const v=p._inv?.[sz]||0;return<div key={sz} className={`size-cell ${v>10?'in-stock':v>0?'low-stock':'no-stock'}`} style={{minWidth:30,padding:'1px 3px'}}><div className="size-label" style={{fontSize:8}}>{sz}</div><div className="size-qty" style={{fontSize:11}}>{v}</div></div>})}</div></td>
+    <td><div style={{display:'flex',gap:2}}>{[...new Set(p.available_sizes)].filter(sz=>showSz(sz,p._inv?.[sz])).map(sz=>{const v=p._inv?.[sz]||0;return<div key={sz} className={`size-cell ${v>10?'in-stock':v>0?'low-stock':'no-stock'}`} style={{minWidth:30,padding:'1px 3px'}}><div className="size-label" style={{fontSize:8}}>{sz}</div><div className="size-qty" style={{fontSize:11}}>{v}</div></div>})}</div></td>
     <td style={{fontWeight:800,fontSize:15,color:p._tQ<=10?'#d97706':'#166534'}}>{p._tQ}</td>
     <td style={{fontWeight:700,fontSize:13,color:b2bTotal!=null?(b2bTotal>0?'#059669':'#dc2626'):'#d1d5db'}}>{b2bTotal!=null?b2bTotal:'—'}</td>
     <td style={{fontWeight:700}}>${p._tV.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
