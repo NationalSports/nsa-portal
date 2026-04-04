@@ -283,9 +283,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         // Fetch inventory — returns warehouse quantities
         try{
           const invData=await sanmarGetInventory(sku,prodColor,'');
-          // invData.items is array of inventory entries with warehouse quantities
-          const invItems=invData?.items||[];
-          if(invItems.length>0)console.log('[SanMar] Inventory sample item:',JSON.stringify(invItems[0]).slice(0,800));
+          console.log('[SanMar] Inventory raw response:',JSON.stringify(invData).slice(0,1000));
+          // Try multiple paths to find inventory items — SanMar response structure varies
+          let invItems=invData?.items||[];
+          // If no items array, the response itself might be the inventory data or wrapped differently
+          if(!invItems.length&&invData?.listResponse){invItems=Array.isArray(invData.listResponse)?invData.listResponse:[invData.listResponse]}
+          if(!invItems.length&&invData?.return){invItems=Array.isArray(invData.return)?invData.return:[invData.return]}
+          // If still no items, check if invData itself has size/quantity fields (single item response)
+          if(!invItems.length&&(invData?.size||invData?.totalQty||invData?.warehouseInfo)){invItems=[invData]}
+          if(invItems.length>0)console.log('[SanMar] Inventory items:',invItems.length,'sample:',JSON.stringify(invItems[0]).slice(0,500));
           invItems.forEach(it=>{
             const sz=normSzName(it.size||it.labelSize||'OSFA');
             let qty=parseInt(it.totalQty||it.qty||it.quantity||0)||0;
@@ -598,9 +604,19 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           sanmarGetPricing(q,'','').catch(e=>{console.warn('[SanMar] Pricing fetch failed:',e);return null})
         ]);
         if(priceRes)console.log('[SanMar] Raw pricing response keys:',Object.keys(priceRes),priceRes.items?'items:'+priceRes.items.length:'no items');
-        (invRes?.items||[]).forEach(it=>{
+        // Parse inventory response — try multiple paths (items, listResponse, return, or root-level)
+        if(invRes)console.log('[SanMar] Inventory response keys:',Object.keys(invRes));
+        let smInvItems=invRes?.items||[];
+        if(!smInvItems.length&&invRes?.listResponse){smInvItems=Array.isArray(invRes.listResponse)?invRes.listResponse:[invRes.listResponse]}
+        if(!smInvItems.length&&invRes?.return){smInvItems=Array.isArray(invRes.return)?invRes.return:[invRes.return]}
+        if(!smInvItems.length&&invRes&&(invRes.size||invRes.totalQty||invRes.warehouseInfo)){smInvItems=[invRes]}
+        if(smInvItems.length>0)console.log('[SanMar] Inventory sample:',JSON.stringify(smInvItems[0]).slice(0,400));
+        smInvItems.forEach(it=>{
           const key=(it.color||it.colorName||'')+'|'+normSzName(it.size||it.labelSize||'');
-          invData[key]=parseInt(it.totalQty||it.qty||it.quantity||0)||0;
+          let qty=parseInt(it.totalQty||it.qty||it.quantity||0)||0;
+          if(qty<=0&&it.warehouseInfo){const d=it.warehouseInfo.inventoryDetail||it.warehouseInfo;const arr=Array.isArray(d)?d:[d];arr.forEach(w=>{if(w&&w.quantity)qty+=parseInt(w.quantity)||0})}
+          if(qty<=0){Object.entries(it).forEach(([k,v])=>{if(typeof v==='string'&&!['size','labelSize','color','catalogColor','colorName','style','piecePrice','salePrice','programPrice','casePrice','caseQty','customerPrice','myPrice'].includes(k)){const n=parseInt(v)||0;if(n>0)qty+=n}})}
+          invData[key]=qty;
         });
         const priceItems=priceRes?.items||[];
         if(priceItems.length>0)console.log('[SanMar] Pricing sample item:',JSON.stringify(priceItems[0]));
@@ -624,7 +640,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const bi=raw.productBasicInfo||{};
         const ii=raw.productImageInfo||{};
         const pi=raw.productPriceInfo||{};
-        if(!styleMap[query])console.log('[SanMar] Product priceInfo fields:',Object.keys(pi),'values:',JSON.stringify(pi));
+        if(!styleMap[query]&&Object.keys(styleMap).length===0)console.log('[SanMar] Product priceInfo fields:',Object.keys(pi),'values:',JSON.stringify(pi));
         const it={...bi,...ii,...pi,...raw};
         const sid=it.style||it.styleNumber||query;
         const color=it.catalogColor||it.color||it.colorName||it.productColor||'';
