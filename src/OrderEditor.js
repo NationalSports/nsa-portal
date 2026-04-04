@@ -9,7 +9,7 @@ import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, 
 import { Icon, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneQuickPicks, ThreadQuickPicks } from './components';
 import { dP, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP, DTF, POSITIONS, _decoVendorPrice, mergeColors } from './pricing';
 import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, nextInvId } from './utils';
-import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, ssApiCall, momentecSearchProducts, momentecGetProductByPartNumber, momentecGetProductById } from './vendorApis';
+import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, ssApiCall, momentecApiCall, momentecSearchProducts, momentecGetProductByPartNumber, momentecGetProductById } from './vendorApis';
 
 function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onBack,onConvertSO,onCopyEstimate,onRevertToEst,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,allInvoices,batchPOs,onBatchPO,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,openPOId,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onSaveProduct,onViewEstimate,onViewSO,returnToPage,onReturnToJob,onAssignTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp}){
   const fetchAdidasInventory=fetchAdidasInventoryProp||(async()=>({sizes:{},lastSynced:null}));
@@ -209,13 +209,31 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     setVendorInv(prev=>({...prev,[sku]:{sizes:{},price:{},loading:true,error:null,source:isMT?'mt':isSM?'sm':'ss'}}));
     try{
       if(isMT){
-        // Momentec: fetch product detail to get child SKUs with inventory from HCL Commerce
+        // Momentec: fetch product detail via HCL Commerce to get child SKUs + inventory
         const sizeQty={};const sizePrice={};
+        const mtId=item?._mtId;
         try{
-          // Get product detail which includes child SKUs
-          const detail=await momentecGetProductByPartNumber(sku);
-          const entry=detail?.CatalogEntryView?.[0];
-          console.log('[Momentec] Product detail for',sku,': SKUs count=',entry?.SKUs?.length||0);
+          // Try byPartNumber first, fall back to byId if we have the product ID
+          let entry=null;
+          try{const d=await momentecGetProductByPartNumber(sku);entry=d?.CatalogEntryView?.[0]}
+          catch(e){console.log('[Momentec] byPartNumber 404 for',sku,', trying byId...')}
+          if(!entry&&mtId){
+            try{const d2=await momentecGetProductById(mtId);entry=d2?.CatalogEntryView?.[0]}
+            catch(e){console.warn('[Momentec] byId also failed for',mtId,e.message)}
+          }
+          // If still no entry, try search and use first result
+          if(!entry){
+            try{const sr=await momentecSearchProducts(sku,5,1);
+              const entries=sr?.CatalogEntryView||sr?.catalogEntryView||[];
+              if(entries.length>0){
+                const match=entries.find(e=>(e.partNumber||'')===sku)||entries[0];
+                const uid=match.uniqueID;
+                if(uid){try{const d3=await momentecGetProductById(uid);entry=d3?.CatalogEntryView?.[0]}catch(e){}}
+                if(!entry)entry=match;
+              }
+            }catch(e){console.warn('[Momentec] Search fallback failed for',sku,e.message)}
+          }
+          console.log('[Momentec] Product detail for',sku,': entry?',!!entry,'SKUs count=',entry?.SKUs?.length||entry?.sKUs?.length||0);
           if(entry){
             const skus=entry.SKUs||entry.sKUs||[];
             if(skus.length>0)console.log('[Momentec] Sample SKU:',JSON.stringify(skus[0]).slice(0,600));
@@ -230,30 +248,29 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const qty=parseInt(sk.buyQuantity||sk.inventoryQuantity||sk.quantity||0)||0;
               if(qty>0)sizeQty[sz]=(sizeQty[sz]||0)+qty;
             }
-          }
-          // Also try HCL Commerce inventory availability endpoint
-          if(Object.keys(sizeQty).length===0){
-            try{
-              const invData=await momentecApiCall(`/inventoryavailability/byPartNumber/${encodeURIComponent(sku)}`);
-              console.log('[Momentec] Inventory availability response keys:',Object.keys(invData||{}));
-              const invItems=invData?.InventoryAvailability||[];
-              console.log('[Momentec] Inventory items:',invItems.length,invItems.length>0?JSON.stringify(invItems[0]).slice(0,300):'');
-              for(const inv of invItems){
-                // Each entry may have a partNumber for the child SKU; extract size from it
-                const pn=inv.partNumber||'';
-                const avail=parseInt(inv.availableQuantity||inv.inventoryQuantity||0)||0;
-                // Try to get size from the part number suffix or fetch the SKU detail
-                // HCL Commerce part numbers often encode size, e.g., "412000-WHI-S"
-                const parts=pn.split('-');
-                const lastPart=parts[parts.length-1]||'';
-                const sz=normSzName(lastPart);
-                if(sz&&avail>0)sizeQty[sz]=(sizeQty[sz]||0)+avail;
+            // Try inventory availability by child SKU part numbers
+            if(Object.keys(sizeQty).length===0&&skus.length>0){
+              // Get child part numbers and fetch inventory for each
+              const childParts=skus.filter(sk=>{const sc=(getSkColor(sk)||'').toLowerCase();return!itemColor||!sc||sc.includes(itemColor.split('/')[0].split(' ')[0].toLowerCase())||itemColor.includes(sc.split('/')[0].split(' ')[0].toLowerCase())}).map(sk=>({pn:sk.partNumber||sk.SKUPartNumber||'',sz:normSzName(getSkSize(sk))})).filter(x=>x.pn&&x.sz);
+              if(childParts.length>0){
+                try{
+                  // Batch inventory check — HCL Commerce supports comma-separated part numbers
+                  const pns=childParts.map(x=>x.pn).join(',');
+                  const invData=await momentecApiCall(`/inventoryavailability/byPartNumber/${encodeURIComponent(pns)}`);
+                  console.log('[Momentec] Inventory availability:',JSON.stringify(invData).slice(0,400));
+                  const invItems=invData?.InventoryAvailability||[];
+                  for(const inv of invItems){
+                    const pn=inv.partNumber||inv.productId||'';
+                    const avail=parseInt(inv.availableQuantity||inv.inventoryQuantity||0)||0;
+                    const match=childParts.find(x=>x.pn===pn);
+                    if(match&&avail>0)sizeQty[match.sz]=(sizeQty[match.sz]||0)+avail;
+                  }
+                }catch(e){console.warn('[Momentec] Batch inventory fetch error:',e.message)}
               }
-            }catch(e){console.warn('[Momentec] Inventory availability fetch error for',sku,e.message)}
+            }
           }
         }catch(e){console.warn('[Momentec] Product detail fetch error for',sku,e.message)}
         console.log('[Momentec] Inventory result for',sku,':',JSON.stringify(sizeQty));
-        // Momentec public API doesn't reliably expose inventory — if no data, show empty instead of 0
         const hasMtInv=Object.values(sizeQty).some(v=>v>0);
         const result={sizes:hasMtInv?sizeQty:{},price:sizePrice,fetchedAt:Date.now(),source:'mt'};
         vendorInvCache.current[cacheKey]=result;
@@ -825,7 +842,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       sizes:{},qty_only:false,decorations:isE?[{kind:'art',art_file_id:'__tbd',art_tbd_type:'screen_print',position:'',sell_override:null}]:[],
       is_custom:false,[liveFlag]:true,
       _colorImage:color.colorFrontImage||style.styleImage||'',
-      _colorBackImage:color.colorBackImage||''
+      _colorBackImage:color.colorBackImage||'',
+      ...(isMT&&style._mtId?{_mtId:style._mtId}:{})
     };
     // Build per-size cost map (e.g. 2XL+ costs more than S-XL)
     const sizePrice={};color.sizes.forEach(s=>{sizePrice[s.sizeName]=s.price||cost});
