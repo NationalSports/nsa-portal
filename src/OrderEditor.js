@@ -213,33 +213,31 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const sizeQty={};const sizePrice={};
         const mtId=item?._mtId;
         try{
-          // Try byPartNumber first, fall back to byId if we have the product ID
+          // Get product detail — prefer byId (fast), fall back to search
           let entry=null;
-          try{const d=await momentecGetProductByPartNumber(sku);entry=d?.CatalogEntryView?.[0]}
-          catch(e){console.log('[Momentec] byPartNumber 404 for',sku,', trying byId...')}
-          if(!entry&&mtId){
-            try{const d2=await momentecGetProductById(mtId);entry=d2?.CatalogEntryView?.[0]}
-            catch(e){console.warn('[Momentec] byId also failed for',mtId,e.message)}
+          if(mtId){
+            try{const d=await momentecGetProductById(mtId);entry=d?.CatalogEntryView?.[0]}
+            catch(e){console.warn('[Momentec] byId failed for',mtId)}
           }
-          // If still no entry, try search and use first result
           if(!entry){
             try{const sr=await momentecSearchProducts(sku,5,1);
               const entries=sr?.CatalogEntryView||sr?.catalogEntryView||[];
-              if(entries.length>0){
-                const match=entries.find(e=>(e.partNumber||'')===sku)||entries[0];
+              const match=entries.find(e=>(e.partNumber||'')===sku)||entries[0];
+              if(match){
                 const uid=match.uniqueID;
-                if(uid){try{const d3=await momentecGetProductById(uid);entry=d3?.CatalogEntryView?.[0]}catch(e){}}
+                if(uid){try{const d2=await momentecGetProductById(uid);entry=d2?.CatalogEntryView?.[0]}catch(e){}}
                 if(!entry)entry=match;
               }
-            }catch(e){console.warn('[Momentec] Search fallback failed for',sku,e.message)}
+            }catch(e){console.warn('[Momentec] Search failed for',sku)}
           }
-          console.log('[Momentec] Product detail for',sku,': entry?',!!entry,'SKUs count=',entry?.SKUs?.length||entry?.sKUs?.length||0);
           if(entry){
             const skus=entry.SKUs||entry.sKUs||[];
-            if(skus.length>0)console.log('[Momentec] Sample SKU:',JSON.stringify(skus[0]).slice(0,600));
+            console.log('[Momentec] Product',sku,': SKUs=',skus.length,skus.length>0?'sample:'+JSON.stringify(skus[0]).slice(0,300):'');
             const getSkSize=(e)=>{const attrs=e.Attributes||e.attributes||e.definingAttributes||[];if(Array.isArray(attrs)){for(const a of attrs){const id=(a.identifier||'').toLowerCase();const n=(a.name||'').toLowerCase();if(id==='asgswatchsize'||n==='available sizes'||n==='size'){const vals=a.values||a.Values||[];if(vals.length)return(vals[0].values||vals[0].value||vals[0].identifier||'').trim()}}}return''};
             const getSkColor=(e)=>{const attrs=e.Attributes||e.attributes||e.definingAttributes||[];if(Array.isArray(attrs)){for(const a of attrs){const n=(a.name||a.identifier||'').toLowerCase();if(n==='color'||n==='colour'||n==='clr'||n==='asgswatchcolor'){const vals=a.values||a.Values||[];if(vals.length)return vals.map(v=>v.values||v.value||v.Value||v.identifier||v).join('/')}}}return''};
             const itemColor=(item?.color||'').toLowerCase();
+            // Map child SKUs to sizes and extract any inventory data
+            const childParts=[];
             for(const sk of skus){
               const skColor=(getSkColor(sk)||'').toLowerCase();
               if(itemColor&&skColor&&!skColor.includes(itemColor.split('/')[0].split(' ')[0].toLowerCase())&&!itemColor.includes(skColor.split('/')[0].split(' ')[0].toLowerCase()))continue;
@@ -247,25 +245,43 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               if(!sz)continue;
               const qty=parseInt(sk.buyQuantity||sk.inventoryQuantity||sk.quantity||0)||0;
               if(qty>0)sizeQty[sz]=(sizeQty[sz]||0)+qty;
+              const pn=sk.partNumber||sk.SKUPartNumber||'';
+              const uid=sk.uniqueID||'';
+              if(pn||uid)childParts.push({pn,uid,sz});
             }
-            // Try inventory availability by child SKU part numbers
-            if(Object.keys(sizeQty).length===0&&skus.length>0){
-              // Get child part numbers and fetch inventory for each
-              const childParts=skus.filter(sk=>{const sc=(getSkColor(sk)||'').toLowerCase();return!itemColor||!sc||sc.includes(itemColor.split('/')[0].split(' ')[0].toLowerCase())||itemColor.includes(sc.split('/')[0].split(' ')[0].toLowerCase())}).map(sk=>({pn:sk.partNumber||sk.SKUPartNumber||'',sz:normSzName(getSkSize(sk))})).filter(x=>x.pn&&x.sz);
-              if(childParts.length>0){
+            // Try HCL Commerce inventory availability endpoint for child SKUs
+            if(Object.keys(sizeQty).length===0&&childParts.length>0){
+              // Try by product IDs first (more reliable than part numbers)
+              const uids=childParts.filter(x=>x.uid).map(x=>x.uid);
+              if(uids.length>0){
                 try{
-                  // Batch inventory check — HCL Commerce supports comma-separated part numbers
-                  const pns=childParts.map(x=>x.pn).join(',');
-                  const invData=await momentecApiCall(`/inventoryavailability/byPartNumber/${encodeURIComponent(pns)}`);
-                  console.log('[Momentec] Inventory availability:',JSON.stringify(invData).slice(0,400));
+                  const invData=await momentecApiCall(`/inventoryavailability/byProductId/${uids.join(',')}`);
                   const invItems=invData?.InventoryAvailability||[];
+                  console.log('[Momentec] Inventory by productId:',invItems.length,'items');
                   for(const inv of invItems){
-                    const pn=inv.partNumber||inv.productId||'';
+                    const pid=inv.productId||inv.inventoryAvailabilityByProductId||'';
                     const avail=parseInt(inv.availableQuantity||inv.inventoryQuantity||0)||0;
-                    const match=childParts.find(x=>x.pn===pn);
+                    const match=childParts.find(x=>x.uid===pid);
                     if(match&&avail>0)sizeQty[match.sz]=(sizeQty[match.sz]||0)+avail;
                   }
-                }catch(e){console.warn('[Momentec] Batch inventory fetch error:',e.message)}
+                }catch(e){console.warn('[Momentec] Inventory by productId error:',e.message)}
+              }
+              // If still no inventory, try by part numbers
+              if(Object.keys(sizeQty).length===0){
+                const pns=childParts.filter(x=>x.pn).map(x=>x.pn);
+                if(pns.length>0){
+                  try{
+                    const invData=await momentecApiCall(`/inventoryavailability/byPartNumber/${encodeURIComponent(pns.join(','))}`);
+                    const invItems=invData?.InventoryAvailability||[];
+                    console.log('[Momentec] Inventory by partNumber:',invItems.length,'items');
+                    for(const inv of invItems){
+                      const pn=inv.partNumber||'';
+                      const avail=parseInt(inv.availableQuantity||inv.inventoryQuantity||0)||0;
+                      const match=childParts.find(x=>x.pn===pn);
+                      if(match&&avail>0)sizeQty[match.sz]=(sizeQty[match.sz]||0)+avail;
+                    }
+                  }catch(e){console.warn('[Momentec] Inventory by partNumber error:',e.message)}
+                }
               }
             }
           }
@@ -280,38 +296,41 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const prod3=products.find(p=>p.sku===sku);
         const prodColor=prod3?.color||item?.color||'';
         const sizeQty={};const sizePrice={};
-        // Fetch inventory — returns warehouse quantities
-        try{
-          const invData=await sanmarGetInventory(sku,prodColor,'');
-          console.log('[SanMar] Inventory raw response:',JSON.stringify(invData).slice(0,1000));
-          // Try multiple paths to find inventory items — SanMar response structure varies
-          let invItems=invData?.items||[];
-          // If no items array, the response itself might be the inventory data or wrapped differently
-          if(!invItems.length&&invData?.listResponse){invItems=Array.isArray(invData.listResponse)?invData.listResponse:[invData.listResponse]}
-          if(!invItems.length&&invData?.return){invItems=Array.isArray(invData.return)?invData.return:[invData.return]}
-          // If still no items, check if invData itself has size/quantity fields (single item response)
-          if(!invItems.length&&(invData?.size||invData?.totalQty||invData?.warehouseInfo)){invItems=[invData]}
-          if(invItems.length>0)console.log('[SanMar] Inventory items:',invItems.length,'sample:',JSON.stringify(invItems[0]).slice(0,500));
-          invItems.forEach(it=>{
-            const sz=normSzName(it.size||it.labelSize||'OSFA');
-            let qty=parseInt(it.totalQty||it.qty||it.quantity||0)||0;
-            // SanMar returns nested warehouse info: warehouseInfo.inventoryDetail[].quantity
-            if(qty<=0&&it.warehouseInfo){
-              const details=it.warehouseInfo.inventoryDetail||it.warehouseInfo;
-              const arr=Array.isArray(details)?details:[details];
-              arr.forEach(d=>{if(d&&d.quantity)qty+=parseInt(d.quantity)||0});
+        // Fetch inventory — try with color first, then without if error
+        let invSuccess=false;
+        for(const tryColor of [prodColor,'']){
+          if(invSuccess)break;
+          try{
+            const invData=await sanmarGetInventory(sku,tryColor,'');
+            // Check for error response (SanMar wraps errors inside items array)
+            const firstItem=(invData?.items||[])[0];
+            if(firstItem?.errorOccurred==='true'||firstItem?.errorOccured==='true'){
+              console.warn('[SanMar] Inventory error for',sku,'color='+tryColor+':',firstItem.message);
+              continue;
             }
-            // Fallback: sum all numeric string values (warehouse names as keys)
-            if(qty<=0){
-              Object.entries(it).forEach(([k,v])=>{
-                if(typeof v==='string'&&!['size','labelSize','color','catalogColor','colorName','style','styleNumber','piecePrice','salePrice','programPrice','casePrice','caseQty','customerPrice'].includes(k)){
-                  const n=parseInt(v)||0;if(n>0)qty+=n;
-                }
-              });
+            if(invData?.errorOccurred==='true'||invData?.errorOccured==='true'){
+              console.warn('[SanMar] Inventory error for',sku,':',invData.message);
+              continue;
             }
-            if(qty>0)sizeQty[sz]=(sizeQty[sz]||0)+qty;
-          });
-        }catch(e){console.warn('[SanMar] Inventory fetch error for',sku,e.message)}
+            let invItems=invData?.items||[];
+            if(!invItems.length&&invData?.listResponse){invItems=Array.isArray(invData.listResponse)?invData.listResponse:[invData.listResponse]}
+            if(!invItems.length&&invData?.return){invItems=Array.isArray(invData.return)?invData.return:[invData.return]}
+            if(!invItems.length&&(invData?.size||invData?.totalQty||invData?.warehouseInfo)){invItems=[invData]}
+            if(invItems.length>0)console.log('[SanMar] Inventory items:',invItems.length,'color='+tryColor,'sample:',JSON.stringify(invItems[0]).slice(0,400));
+            invItems.forEach(it=>{
+              if(it.errorOccurred==='true'||it.errorOccured==='true')return;
+              const sz=normSzName(it.size||it.labelSize||'OSFA');
+              let qty=parseInt(it.totalQty||it.qty||it.quantity||0)||0;
+              if(qty<=0&&it.warehouseInfo){
+                const details=it.warehouseInfo.inventoryDetail||it.warehouseInfo;
+                const arr=Array.isArray(details)?details:[details];
+                arr.forEach(d=>{if(d&&d.quantity)qty+=parseInt(d.quantity)||0});
+              }
+              if(qty<=0){Object.entries(it).forEach(([k,v])=>{if(typeof v==='string'&&!['size','labelSize','color','catalogColor','colorName','style','styleNumber','piecePrice','salePrice','programPrice','casePrice','caseQty','customerPrice','errorOccurred','errorOccured','message'].includes(k)){const n=parseInt(v)||0;if(n>0)qty+=n}})}
+              if(qty>0){sizeQty[sz]=(sizeQty[sz]||0)+qty;invSuccess=true}
+            });
+          }catch(e){console.warn('[SanMar] Inventory fetch error for',sku,'color='+tryColor,e.message)}
+        }
         // Fetch pricing
         try{
           const prData=await sanmarGetPricing(sku,prodColor,'');
@@ -610,6 +629,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         if(!smInvItems.length&&invRes?.listResponse){smInvItems=Array.isArray(invRes.listResponse)?invRes.listResponse:[invRes.listResponse]}
         if(!smInvItems.length&&invRes?.return){smInvItems=Array.isArray(invRes.return)?invRes.return:[invRes.return]}
         if(!smInvItems.length&&invRes&&(invRes.size||invRes.totalQty||invRes.warehouseInfo)){smInvItems=[invRes]}
+        // Filter out error items
+        smInvItems=smInvItems.filter(it=>it.errorOccurred!=='true'&&it.errorOccured!=='true');
         if(smInvItems.length>0)console.log('[SanMar] Inventory sample:',JSON.stringify(smInvItems[0]).slice(0,400));
         smInvItems.forEach(it=>{
           const key=(it.color||it.colorName||'')+'|'+normSzName(it.size||it.labelSize||'');
