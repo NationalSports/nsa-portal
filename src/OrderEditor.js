@@ -493,7 +493,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             styleID:sid,
             styleName:sInfo.title||(it.brandName?(it.brandName+' '+(it.styleName||query)):it.styleName||query),
             brandName:it.brandName||sInfo.brandName||'',
-            sku:(sInfo.partNumber||it.styleName||query).toUpperCase(),
+            sku:(it.styleName||sInfo.partNumber||query).toUpperCase(),
             styleImage:sInfo.styleImage||imgUrl||'',
             customerPrice:0,piecePrice:0,totalQty:0,
             colors:{},_source:'ss'
