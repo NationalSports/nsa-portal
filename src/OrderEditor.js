@@ -4943,7 +4943,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           if(g.skipArtist&&activateAll){artStatus='art_complete'}
           // When releasing for art with an assigned artist, create a proper art request
           const hasArtist=activateAll&&g.artist&&!g.skipArtist;
-          const autoArtRequest=activateAll&&!g.skipArtist&&artStatus==='needs_art';
+          const allArtTbd=artIds.length===0||artIds.every(aid=>aid==='__tbd');
+          const autoArtRequest=activateAll&&!g.skipArtist&&artStatus==='needs_art'&&!allArtTbd;
           if(autoArtRequest)artStatus='art_requested';
           const totalUnits=g.items.reduce((a,it)=>a+it.units,0);
           const positions=[...new Set(g.items.map(it=>it.position))].join(', ');
