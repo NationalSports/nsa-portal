@@ -10909,10 +10909,13 @@ export default function App(){
         // Skip jobs that haven't been explicitly submitted for art — only show on art dashboard if:
         // 1) Art was requested (Request Art button clicked), or 2) artist assigned, or 3) in active artist workflow,
         // 4) or art is approved but needs prod files (repeat art scenario)
-        const hasArtRequest=(j.art_requests||[]).some(r=>r.status!=='recalled');
+        const hasActiveArtReq=(j.art_requests||[]).some(r=>r.status==='requested'||r.status==='in_progress');
+        const hasNonRecalledReq=(j.art_requests||[]).some(r=>r.status!=='recalled');
         const hasArtist=!!j.assigned_artist;
         const hasArtActivity=j.art_status&&j.art_status!=='needs_art';
-        if(!hasArtRequest&&!hasArtist&&!hasArtActivity)return;// skip — art not yet requested for this job
+        // If art_status is 'needs_art', only show if there's an actively pending request (not just completed/recalled)
+        if(j.art_status==='needs_art'&&!hasActiveArtReq&&!hasArtist)return;// skip — recalled or not yet requested
+        if(!hasNonRecalledReq&&!hasArtist&&!hasArtActivity)return;// skip — art not yet requested for this job
         if(j.art_status==='art_complete'&&_af&&(_af.prod_files||[]).length===0)return;// handled in second pass as production_files_needed
         allArtJobs.push({...j,so,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',alpha:c?.alpha_tag||'',
           rep:REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name||'—',repId:c?.primary_rep_id||so.created_by,
