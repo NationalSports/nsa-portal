@@ -2716,7 +2716,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const shipCostFromShipments=allOutbound.reduce((a,s)=>a+safeNum(s.shipping_cost||0),0);
       const shipCost=safeNum(o._shipping_cost||o._shipstation_cost||0)||shipCostFromShipments;
       const freightCost=safeNum(o._inbound_freight||0);
-      const canEditCost=cu?.role==='admin'||cu?.role==='accounting'||cu?.role==='rep';
+      const canEditCost=cu?.role==='admin'||cu?.role==='super_admin'||cu?.role==='accounting'||cu?.role==='rep';
 
       return<div style={{display:'grid',gap:16}}>
         {/* ── OUTBOUND SHIPMENTS ── */}
@@ -5126,7 +5126,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         {jobs.length===0&&<div style={{padding:24,textAlign:'center',color:'#94a3b8'}}>No decorations assigned yet. Add artwork to items, then click "Set Up Jobs" to create production jobs.</div>}
         {jobs.length>0&&<table style={{fontSize:12}}><thead><tr>{mergeMode&&<th style={{width:30}}></th>}<th>Job ID</th><th>Artwork / Decoration</th><th>Items</th><th>Units</th><th>Items Status</th><th>Art</th><th>Production</th><th></th></tr></thead><tbody>
           {jobs.map((j,ji)=>{
-            const canProduce=j.item_status==='items_received'&&j.art_status==='art_complete';const canOverride2=cu.role==='admin'||cu.role==='production'||cu.role==='prod_manager'||cu.role==='gm';
+            const canProduce=j.item_status==='items_received'&&j.art_status==='art_complete';const canOverride2=cu.role==='admin'||cu.role==='super_admin'||cu.role==='production'||cu.role==='prod_manager'||cu.role==='gm';
             const canSplit=(j.items||[]).length>0&&j.total_units>1;
             const pct=j.total_units>0?Math.round(j.fulfilled_units/j.total_units*100):0;
             const isMergeSel=mergeMode&&mergeMode.selected.includes(ji);
