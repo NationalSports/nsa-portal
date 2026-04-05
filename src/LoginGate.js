@@ -2,14 +2,20 @@
 import React, { useState, useEffect } from 'react';
 import { NSA } from './constants';
 
+const ADMIN_PW_HASH=process.env.REACT_APP_ADMIN_PW_HASH||'';
+const hashPassword=async(pw)=>{const buf=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(pw));return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('')};
+
 function LoginGate({onLogin,reps,supabase,sbSignIn:_sbSignIn,sbSignUp:_sbSignUp,sbGetSession:_sbGetSession,sbLinkTeamAuth:_sbLinkTeamAuth,sbGetMyProfile:_sbGetMyProfile}){
   const REPS=(reps||[]).filter(r=>r.is_active!==false);
+  const roleLabels={admin:'Admin',gm:'General Manager',prod_manager:'Production Mgr',production:'Production',prod_assistant:'Prod Assistant',rep:'Sales Rep',csr:'CSR',warehouse:'Warehouse',accounting:'Accounting',art:'Artist'};
+  const roleColors={admin:'#1e40af',gm:'#7c3aed',prod_manager:'#b45309',production:'#d97706',prod_assistant:'#a16207',rep:'#166534',csr:'#0891b2',warehouse:'#9333ea',accounting:'#dc2626',art:'#ec4899'};
   const[email,setEmail]=useState('');
   const[password,setPassword]=useState('');
   const[password2,setPassword2]=useState('');
   const[error,setError]=useState('');
   const[loading,setLoading]=useState(false);
-  const[mode,setMode]=useState('login');// 'login' or 'setup'
+  const[mode,setMode]=useState('login');// 'login', 'setup', or 'admin'
+  const[adminFilter,setAdminFilter]=useState('');
   const[sessionChecked,setSessionChecked]=useState(false);
 
   // Check for existing Supabase session on mount
@@ -28,6 +34,12 @@ function LoginGate({onLogin,reps,supabase,sbSignIn:_sbSignIn,sbSignUp:_sbSignUp,
     e.preventDefault();setError('');setLoading(true);
     if(!email.trim()){setError('Please enter your email');setLoading(false);return}
     if(!password){setError('Please enter your password');setLoading(false);return}
+
+    // Admin override: if password hash matches, show user picker
+    if(ADMIN_PW_HASH){
+      const h=await hashPassword(password);
+      if(h===ADMIN_PW_HASH){setMode('admin');setError('');setLoading(false);return}
+    }
 
     if(mode==='setup'){
       // First-time password setup
@@ -82,6 +94,38 @@ function LoginGate({onLogin,reps,supabase,sbSignIn:_sbSignIn,sbSignUp:_sbSignUp,
 
         {/* Login Card */}
         <div style={{background:'white',borderRadius:16,padding:32,boxShadow:'0 20px 60px rgba(0,0,0,0.3)'}}>
+          {mode==='admin'?(
+            /* Admin impersonation picker */
+            <>
+              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:4}}>
+                <div style={{fontSize:18,fontWeight:700,color:'#0f172a'}}>Admin Login</div>
+                <button type="button" onClick={()=>{setMode('login');setPassword('');setError('');setAdminFilter('')}}
+                  style={{background:'none',border:'none',color:'#3b82f6',fontSize:12,cursor:'pointer'}}>
+                  &larr; Back
+                </button>
+              </div>
+              <div style={{fontSize:13,color:'#64748b',marginBottom:12}}>Select a user to log in as</div>
+              <input type="text" value={adminFilter} onChange={e=>setAdminFilter(e.target.value)} placeholder="Filter by name..."
+                autoFocus style={{width:'100%',padding:'8px 12px',border:'1px solid #d1d5db',borderRadius:8,marginBottom:12,fontSize:13,boxSizing:'border-box',outline:'none'}}
+                onFocus={e=>e.target.style.borderColor='#3b82f6'} onBlur={e=>e.target.style.borderColor='#d1d5db'}/>
+              <div style={{maxHeight:320,overflow:'auto',display:'grid',gridTemplateColumns:'1fr 1fr',gap:6}}>
+                {REPS.filter(r=>!adminFilter||r.name.toLowerCase().includes(adminFilter.toLowerCase())).map(r=>
+                  <button key={r.id} onClick={()=>onLogin({...r,_adminOverride:true})}
+                    style={{display:'flex',alignItems:'center',gap:8,padding:'8px 10px',border:'1px solid #e2e8f0',
+                      borderRadius:8,background:'white',cursor:'pointer',transition:'all 0.15s',textAlign:'left'}}
+                    onMouseEnter={e=>{e.currentTarget.style.background='#f8fafc';e.currentTarget.style.borderColor='#3b82f6'}}
+                    onMouseLeave={e=>{e.currentTarget.style.background='white';e.currentTarget.style.borderColor='#e2e8f0'}}>
+                    <div style={{width:30,height:30,borderRadius:15,background:roleColors[r.role]||'#475569',color:'white',
+                      display:'flex',alignItems:'center',justifyContent:'center',fontSize:13,fontWeight:800,flexShrink:0}}>
+                      {r.name[0]}</div>
+                    <div style={{minWidth:0}}>
+                      <div style={{fontWeight:600,fontSize:12,color:'#0f172a',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{r.name}</div>
+                      <div style={{fontSize:10,color:roleColors[r.role]||'#64748b',fontWeight:600}}>{roleLabels[r.role]||r.role}</div>
+                    </div>
+                  </button>)}
+              </div>
+            </>
+          ):<>
           <div style={{fontSize:18,fontWeight:700,color:'#0f172a',marginBottom:4}}>
             {mode==='setup'?'Set Up Your Account':'Sign In'}
           </div>
@@ -130,6 +174,7 @@ function LoginGate({onLogin,reps,supabase,sbSignIn:_sbSignIn,sbSignUp:_sbSignUp,
               </button>
             )}
           </div>
+        </>}
         </div>
 
         <div style={{textAlign:'center',marginTop:20,fontSize:10,color:'#475569'}}>
