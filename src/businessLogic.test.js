@@ -232,12 +232,13 @@ describe('Pricing Functions', () => {
       expect(result.sell).toBe(15);
     });
 
-    test('numbers decoration pricing with no roster', () => {
+    test('numbers decoration pricing with no roster assumes all items get numbers', () => {
       const d = { kind: 'numbers', two_color: false };
       const result = dP(d, 24, [], 24);
-      expect(result.sell).toBe(npP(1, false, true));
-      expect(result.cost).toBe(npP(1, false, false));
-      expect(result._nq).toBe(0);
+      // No roster = assume all 24 items need numbers (estimate behavior)
+      expect(result.sell).toBe(npP(24, false, true));
+      expect(result.cost).toBe(npP(24, false, false));
+      expect(result._nq).toBe(24);
     });
 
     test('numbers decoration pricing uses only assigned count', () => {
@@ -680,7 +681,7 @@ describe('Invoice Creation', () => {
     expect(result.selTotals.subtotal).toBe(24 * 20 + numP._nq * numP.sell);
   });
 
-  test('invoice numbers revenue is zero when no numbers assigned', () => {
+  test('invoice numbers revenue assumes all items when no roster assigned', () => {
     const so = makeSO({
       items: [makeSOItem({
         sizes: { M: 24 }, unit_sell: 20,
@@ -689,8 +690,9 @@ describe('Invoice Creation', () => {
       shipping_type: 'flat', shipping_value: 0,
     });
     const result = createInvoice(so, [0], {}, {});
-    // No roster = no numbers assigned, so numbers should contribute $0
-    expect(result.selTotals.subtotal).toBe(24 * 20);
+    // No roster = assume all 24 items get numbers (estimate behavior)
+    const numP = dP({ kind: 'numbers', two_color: false }, 24, [], 24);
+    expect(result.selTotals.subtotal).toBe(24 * 20 + numP._nq * numP.sell);
   });
 
   test('invoice includes names decoration revenue (BUG FIX VERIFICATION)', () => {

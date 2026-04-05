@@ -17,7 +17,7 @@ function VendDetail({vendor,products,onUpdateProducts,onBack}){
       const vendProds=products.filter(p=>p.vendor_id===vendor.id);
       if(!vendProds.length){alert('No products found for this vendor in catalog.\n\nS&S items added via live search get pricing automatically — no sync needed.');setSyncing(false);return}
       const uniqueSkus=[...new Set(vendProds.map(p=>p.sku))];
-      let updated=0;const changes=[];const errors=[];
+      let updated=0;const changes=[];const errors=[];const _costUpdates=new Map();
       for(let i=0;i<uniqueSkus.length;i++){
         const sku=uniqueSkus[i];
         try{
@@ -40,14 +40,14 @@ function VendDetail({vendor,products,onUpdateProducts,onBack}){
           vendProds.filter(p=>p.sku===sku).forEach(prod=>{
             if(Math.abs((prod.nsa_cost||0)-newCost)>0.005){
               changes.push(sku+': $'+(prod.nsa_cost||0).toFixed(2)+' → $'+newCost.toFixed(2));
-              prod.nsa_cost=newCost;updated++;
+              _costUpdates.set(prod.id,newCost);updated++;
             }
           });
         }catch(err){errors.push(sku+': '+err.message)}
       }
-      // Update products state
+      // Update products state immutably
       if(updated>0&&onUpdateProducts){
-        onUpdateProducts(prev=>prev.map(p=>{const match=vendProds.find(vp=>vp.id===p.id);return match?{...p,nsa_cost:match.nsa_cost}:p}));
+        onUpdateProducts(prev=>prev.map(p=>_costUpdates.has(p.id)?{...p,nsa_cost:_costUpdates.get(p.id)}:p));
       }
       alert('S&S Pricing Sync Complete\n\nSKUs checked: '+uniqueSkus.length+'\nPrices updated: '+updated+(changes.length?'\n\nChanges:\n'+changes.join('\n'):'')+(errors.length?'\n\nErrors:\n'+errors.join('\n'):''));
     }catch(e){alert('Sync failed: '+e.message)}finally{setSyncing(false)}
@@ -69,7 +69,7 @@ function VendDetail({vendor,products,onUpdateProducts,onBack}){
       try{
         const vendProds=products.filter(p=>p.vendor_id===vendor.id);
         const uniqueSkus=[...new Set(vendProds.map(p=>p.sku))];
-        let updated=0;const changes=[];const errors=[];
+        let updated=0;const changes=[];const errors=[];const _costUpdates=new Map();
         for(let i=0;i<uniqueSkus.length;i++){
           const sku=uniqueSkus[i];
           try{
@@ -83,13 +83,13 @@ function VendDetail({vendor,products,onUpdateProducts,onBack}){
             for(const prod of matching){
               if(Math.abs((prod.nsa_cost||0)-newCost)>0.005){
                 changes.push(sku+': $'+(prod.nsa_cost||0).toFixed(2)+' → $'+newCost.toFixed(2));
-                prod.nsa_cost=newCost;updated++;
+                _costUpdates.set(prod.id,newCost);updated++;
               }
             }
           }catch(e){errors.push(sku+': '+e.message)}
         }
         if(updated>0&&onUpdateProducts){
-          onUpdateProducts(prev=>prev.map(p=>{const match=vendProds.find(vp=>vp.id===p.id);return match?{...p,nsa_cost:match.nsa_cost}:p}));
+          onUpdateProducts(prev=>prev.map(p=>_costUpdates.has(p.id)?{...p,nsa_cost:_costUpdates.get(p.id)}:p));
         }
         alert('SanMar Pricing Sync Complete\n\nSKUs checked: '+uniqueSkus.length+'\nPrices updated: '+updated+(changes.length?'\n\nChanges:\n'+changes.join('\n'):'')+(errors.length?'\n\nErrors:\n'+errors.join('\n'):''));
       }catch(e){alert('Sync failed: '+e.message)}finally{setSyncing(false)}
@@ -252,6 +252,7 @@ function CustModal({isOpen,onClose,onSave,customer,parents,reps}){
   const[f,setF]=useState(customer||b);const[ct,setCt]=useState(customer?.parent_id?'sub':'parent');const[err,setErr]=useState({});const[tcLook,setTcLook]=useState({loading:false,msg:''});
   const doTcLookup=async(fields)=>{if(!supabase||!fields.shipping_state||!fields.shipping_zip)return null;try{return await invokeEdgeFn(supabase,'taxcloud-lookup',{address1:fields.shipping_address_line1||'',city:fields.shipping_city||'',state:fields.shipping_state,zip5:fields.shipping_zip})}catch(e){return{ok:false,error:'Error: '+e.message}}};
   const APPAREL_EXEMPT=['MN','NJ','PA','VT','AK','DE','MT','NH','OR'];const APPAREL_THRESHOLD=['MA','NY','RI'];
+  const _initRef=React.useRef(null);
   const sv=(k,v)=>setF(x=>({...x,[k]:v}));React.useEffect(()=>{const c=customer?{...customer}:b;if(c.id&&!c.alpha_tag&&c.name)c.alpha_tag=c.name.replace(/[^a-zA-Z0-9 ]/g,'').trim().split(/\s+/).slice(0,2).join(' ').toUpperCase().slice(0,12);if(c.id&&(!c.contacts||!c.contacts.length))c.contacts=[{name:'',email:'',phone:'',role:'Head Coach'}];
     // Migrate existing alt_billing_addresses to have type field
     if(c.alt_billing_addresses){c.alt_billing_addresses=c.alt_billing_addresses.map(a=>a.type?a:{...a,type:'billing'})}
@@ -259,14 +260,16 @@ function CustModal({isOpen,onClose,onSave,customer,parents,reps}){
     if(c.id&&c.billing_address_line1&&(c.billing_address_line1!==c.shipping_address_line1||c.billing_city!==c.shipping_city||c.billing_state!==c.shipping_state||c.billing_zip!==c.shipping_zip)){
       const alts=c.alt_billing_addresses||[];const hasBill=alts.some(a=>a.type==='billing');
       if(!hasBill){c.alt_billing_addresses=[{type:'billing',label:'Billing',street:c.billing_address_line1||'',city:c.billing_city||'',state:c.billing_state||'',zip:c.billing_zip||''},...alts]}}
-    setF(c);setCt(customer?.parent_id?'sub':'parent');setErr({});setTcLook({loading:false,msg:''})},[customer,isOpen]); // eslint-disable-line
+    setF(c);setCt(customer?.parent_id?'sub':'parent');setErr({});setTcLook({loading:false,msg:''});_initRef.current=isOpen?JSON.stringify(c):null},[customer,isOpen]); // eslint-disable-line
   const addC=()=>sv('contacts',[...(f.contacts||[]),{name:'',email:'',phone:'',role:'Head Coach'}]);const rmC=i=>sv('contacts',(f.contacts||[]).filter((_,x)=>x!==i));
   const upC=(i,k,v)=>sv('contacts',(f.contacts||[]).map((c,x)=>x===i?{...c,[k]:v}:c));
   const[valMsg,setValMsg]=useState('');
   const ok=()=>{const e={};if(!f.name)e.n=1;if(!f.alpha_tag)e.a=1;if(!f.shipping_city)e.c=1;if(!f.shipping_state)e.s=1;if(ct==='sub'&&!f.parent_id)e.p=1;if(!(f.contacts||[])[0]?.name)e.cn=1;if(!(f.contacts||[])[0]?.email)e.ce=1;setErr(e);const missing=[];if(e.n)missing.push('Name');if(e.a)missing.push('Alpha Tag');if(e.c)missing.push('City');if(e.s)missing.push('State');if(e.p)missing.push('Parent');if(e.cn)missing.push('Contact Name');if(e.ce)missing.push('Contact Email');if(missing.length)setValMsg('Missing: '+missing.join(', '));else setValMsg('');return!missing.length};
+  const _isDirty=()=>_initRef.current!==null&&JSON.stringify(f)!==_initRef.current;
+  const safeClose=()=>{if(_isDirty()){if(!window.confirm('You have unsaved changes. Discard?'))return}onClose()};
   if(!isOpen)return null;
-  return(<div className="modal-overlay" onClick={onClose}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:700}}>
-  <div className="modal-header"><h2>{customer?.id?'Edit':'New'} Customer</h2><button className="modal-close" onClick={onClose}>x</button></div>
+  return(<div className="modal-overlay" onClick={safeClose}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:700}}>
+  <div className="modal-header"><h2>{customer?.id?'Edit':'New'} Customer</h2><button className="modal-close" onClick={safeClose}>x</button></div>
   <div className="modal-body">
     <div style={{display:'flex',gap:8,marginBottom:16}}>{['parent','sub'].map(t=><button key={t} className={`btn btn-sm ${ct===t?'btn-primary':'btn-secondary'}`} onClick={()=>{setCt(t);if(t==='parent')sv('parent_id',null)}}>{t==='parent'?'Parent':'Sub'}</button>)}</div>
     {ct==='sub'&&<div style={{marginBottom:12}}><label className="form-label">Parent *</label><SearchSelect options={parents.map(p=>({value:p.id,label:`${p.name} (${p.alpha_tag})`}))} value={f.parent_id} onChange={v=>sv('parent_id',v)} placeholder="Search parent..."/></div>}
