@@ -2522,6 +2522,19 @@ export default function App(){
   const handleLogin=(user)=>{setCu(user);_lsSet('nsa_user',JSON.stringify(user))};
   const handleLogout=async()=>{setCu(null);try{localStorage.removeItem('nsa_user')}catch{};await _sbSignOut()};
 
+  // Sync current user's access/role from REPS when team data changes (e.g. admin updated page access)
+  React.useEffect(()=>{
+    if(!cu||!REPS.length)return;
+    const me=REPS.find(r=>r.id===cu.id);
+    if(!me)return;
+    const newAccess=me.access||null;
+    const oldAccess=cu.access||null;
+    if(JSON.stringify(newAccess)!==JSON.stringify(oldAccess)||me.role!==cu.role){
+      const updated={...cu,access:newAccess,role:me.role};
+      setCu(updated);_lsSet('nsa_user',JSON.stringify(updated));
+    }
+  },[REPS]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // ─── MOBILE PORTAL DETECTION & TOGGLE ───
   const _isTouchDevice=()=>{try{return('ontouchstart'in window||navigator.maxTouchPoints>0)&&window.innerWidth<=1024}catch{return false}};
   const[mobileMode,setMobileMode]=useState(()=>{try{const pref=localStorage.getItem('nsa_mobile_mode');if(pref==='desktop')return false;if(pref==='mobile')return true;return _isTouchDevice()}catch{return false}});
