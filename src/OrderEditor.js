@@ -2173,7 +2173,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         <div style={{display:'flex',gap:12,alignItems:'flex-start'}}>
           <div style={{flexShrink:0}}>
             <div style={{fontSize:9,fontWeight:600,color:'#64748b',marginBottom:2}}>Front Image</div>
-            <ImgUpload url={custItem.image_url} onUpload={u=>setCustItem(x=>({...x,image_url:u}))} onError={e=>nf(e,'error')} size={72}/>
+            {custItem.image_url?<img src={custItem.image_url} alt="" style={{width:72,height:72,objectFit:'contain',borderRadius:6,border:'1px solid #e2e8f0',background:'white'}}/>
+            :<div style={{width:72,height:72,borderRadius:6,background:'#f1f5f9',border:'2px dashed #cbd5e1',display:'flex',alignItems:'center',justifyContent:'center',fontSize:10,color:'#94a3b8',cursor:'pointer',textAlign:'center'}} onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.accept='image/*';inp.onchange=async()=>{if(inp.files[0]){try{const u=await fileUpload(inp.files[0],'nsa-products');setCustItem(x=>({...x,image_url:u}))}catch(e){nf('Upload failed: '+e.message,'error')}}};inp.click()}}>Click to upload</div>}
           </div>
           <div style={{flex:1,minWidth:0}}>
             <div style={{fontSize:9,fontWeight:600,color:'#64748b',marginBottom:2}}>Additional Images</div>
@@ -4525,7 +4526,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 return<div key={gii} style={{padding:'12px 16px',borderBottom:gii<itemDetails.length-1?'1px solid #f1f5f9':'none'}}>
                   <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:8}}>
                     {gi.image_url?<img src={gi.image_url} alt="" style={{width:44,height:44,objectFit:'cover',borderRadius:6,border:'1px solid #e2e8f0',flexShrink:0}}/>
-                    :<ImgUpload url="" onUpload={u=>{if(gi.product_id&&onSaveProduct){const up=products.find(p=>p.id===gi.product_id);if(up)onSaveProduct({...up,image_url:u});nf('Product image saved')}}} onError={e=>nf(e,'error')} size={44}/>}
+                    :<div style={{width:44,height:44,borderRadius:6,background:'#e2e8f0',display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,color:'#94a3b8',flexShrink:0}}>👕</div>}
                     <div style={{flex:1}}>
                       <div><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',background:'#dbeafe',padding:'2px 6px',borderRadius:3,marginRight:6}}>{gi.sku}</span>
                       <span style={{fontWeight:600}}>{gi.name||'Unknown'}</span>
