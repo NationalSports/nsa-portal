@@ -219,7 +219,7 @@ const _sbSignIn=async(email,password)=>{
 };
 const _sbSignUp=async(email,password)=>{
   if(!supabase)return{error:'Supabase not configured'};
-  const{data,error}=await supabase.auth.signUp({email,password});
+  const{data,error}=await supabase.auth.signUp({email,password,options:{emailRedirectTo:window.location.origin}});
   if(error)return{error:error.message};
   return{user:data.user};
 };
@@ -439,7 +439,7 @@ const _dbSeed = async (d) => {
   if (!supabase) return;
   // Seed core tables — team_members MUST succeed first (customers FK to team_members)
   const teamIds=new Set((d.team||[]).map(t=>t.id));
-  if(d.team?.length){const{error:tErr}=await supabase.from('team_members').upsert(d.team.map(t=>({id:t.id,name:t.name,role:t.role,email:t.email,phone:t.phone,is_active:t.is_active!==false})),{onConflict:'id'});if(tErr)console.error('[DB] seed team_members:',tErr.message)}
+  if(d.team?.length){const{error:tErr}=await supabase.from('team_members').upsert(d.team.map(t=>({id:t.id,name:t.name,role:t.role,email:t.email,phone:t.phone,is_active:t.is_active!==false,access:t.access||null})),{onConflict:'id'});if(tErr)console.error('[DB] seed team_members:',tErr.message)}
   if(d.vendors?.length){const{error:vErr}=await supabase.from('vendors').upsert(d.vendors.map(v=>_pick(v,_vendCols)),{onConflict:'id'});if(vErr)console.error('[DB] seed vendors:',vErr.message)}
   // Customers + contacts — use _pick to strip unknown cols, null out invalid FKs
   const custIds=new Set((d.customers||[]).map(c=>c.id));
@@ -1948,7 +1948,7 @@ export default function App(){
   // IMPORTANT: Supabase writes are gated behind _dbLoadSuccess to prevent demo/stale data from overwriting real cloud data
   // Uses _dbSnap to diff against last DB state — only saves records that actually changed (prevents cross-browser feedback loops)
   const _diffSave=(arr,snapKey,saveFn)=>{if(!_initialLoadDone.current||!_dbLoadSuccess.current){console.warn('[DB] _diffSave skipped for',snapKey,'— initialLoad:',_initialLoadDone.current,'dbSuccess:',_dbLoadSuccess.current);return}const snap=_dbSnap.current[snapKey]||[];const changed=[];arr.forEach(item=>{const old=snap.find(p=>p.id===item.id);if(!old||JSON.stringify(old)!==JSON.stringify(item))changed.push(item)});_dbSnap.current[snapKey]=arr;if(changed.length===0)return;const BATCH=10;const processBatch=async(idx)=>{const batch=changed.slice(idx,idx+BATCH);if(!batch.length)return;_bgSync=true;await Promise.all(batch.map(async item=>{const result=saveFn(item);if(result&&typeof result.then==='function'){const ok=await result;if(ok===false){const oldSnap=_dbSnap.current[snapKey]||[];_dbSnap.current[snapKey]=oldSnap.map(s=>s.id===item.id?(snap.find(p=>p.id===item.id)||s):s)}}}));_bgSync=false;if(idx+BATCH<changed.length)await processBatch(idx+BATCH)};processBatch(0)};
-  React.useEffect(()=>{if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.team||[];const changed=REPS.filter(r=>{const old=snap.find(p=>p.id===r.id);return!old||JSON.stringify(old)!==JSON.stringify(r)});if(changed.length)_dbSave('team_members',changed.map(r=>({id:r.id,name:r.name,role:r.role,email:r.email,phone:r.phone,is_active:r.is_active!==false})));_dbSnap.current.team=REPS}},[REPS]);
+  React.useEffect(()=>{if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.team||[];const changed=REPS.filter(r=>{const old=snap.find(p=>p.id===r.id);return!old||JSON.stringify(old)!==JSON.stringify(r)});if(changed.length)_dbSave('team_members',changed.map(r=>({id:r.id,name:r.name,role:r.role,email:r.email,phone:r.phone,is_active:r.is_active!==false,access:r.access||null})));_dbSnap.current.team=REPS}},[REPS]);
   React.useEffect(()=>{_diffSave(cust,'cust',c=>_dbSaveCustomer(c))},[cust]);
   React.useEffect(()=>{if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.vend||[];const changed=vend.filter(v=>{const old=snap.find(p=>p.id===v.id);return!old||JSON.stringify(old)!==JSON.stringify(v)});if(changed.length)_dbSave('vendors',changed.map(v=>_pick(v,_vendCols)));_dbSnap.current.vend=vend}},[vend]);
   React.useEffect(()=>{_diffSave(prod,'prod',p=>_dbSaveProduct(p))},[prod]);
@@ -2527,7 +2527,10 @@ export default function App(){
   const[mobileMode,setMobileMode]=useState(()=>{try{const pref=localStorage.getItem('nsa_mobile_mode');if(pref==='desktop')return false;if(pref==='mobile')return true;return _isTouchDevice()}catch{return false}});
   useEffect(()=>{_lsSet('nsa_mobile_mode',mobileMode?'mobile':'desktop')},[mobileMode]);
 
-  const isA=cu?.role==='admin';
+  const isA=cu?.role==='admin'||cu?.role==='super_admin';
+  const isSA=cu?.role==='super_admin';
+  // Normalize: super_admin is treated as admin everywhere via _r helper
+  const _r=cu?.role==='super_admin'?'admin':cu?.role;
   const pars=useMemo(()=>cust.filter(c=>!c.parent_id),[cust]);const gK=useCallback(pid=>cust.filter(c=>c.parent_id===pid),[cust]);
   const cols=useMemo(()=>COLOR_CATEGORIES,[]);
   const savC=c=>{console.log('[SAVE] Customer save triggered:',c.id,c.name,{tax_rate:c.tax_rate,contacts:c.contacts?.length,shipping_state:c.shipping_state});setCust(p=>{const e=p.find(x=>x.id===c.id);return e?p.map(x=>x.id===c.id?c:x):[...p,c]});nf('Saved')};
@@ -2932,7 +2935,7 @@ export default function App(){
   // which we fetch during sync to populate order counts and totals per store.
 
   // ─── Delete Handlers (with cascade status updates) ───
-  const canDelete = cu && (cu.role==='admin'||cu.role==='rep'||cu.role==='csr');
+  const canDelete = cu && (cu.role==='admin'||cu.role==='super_admin'||cu.role==='rep'||cu.role==='csr');
 
   const deleteEstimate = (estId) => {
     if(!canDelete)return nf('You do not have permission to delete','error');
@@ -3119,7 +3122,7 @@ export default function App(){
   // Helper: check if current user should see a todo for a given customer/SO
   const isMyTodo=(repId)=>{
     if(!cu)return true;
-    if(cu.role==='admin'||cu.role==='gm')return true;
+    if(cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm')return true;
     if(cu.role==='rep')return repId===cu.id;
     if(cu.role==='csr'){const myReps=getRepsForCsr(cu.id);return myReps.includes(repId)}
     return true;
@@ -3133,9 +3136,9 @@ export default function App(){
     const isMyMsg=(m)=>{
       if((m.tagged_members||[]).includes(cu?.id))return true;// directly tagged
       if(m.author_id===cu?.id)return true;// own messages
-      if(cu.role==='admin'||cu.role==='gm')return true;
+      if(cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm')return true;
       const so=sos.find(s=>s.id===m.so_id||s.id===m.entity_id);
-      if(!so)return cu.role==='admin'||cu.role==='gm';
+      if(!so)return cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm';
       const c=cust.find(x=>x.id===so.customer_id);
       const msgRepId=c?.primary_rep_id||so.created_by;
       if(cu.role==='rep')return msgRepId===cu.id;
@@ -3265,7 +3268,7 @@ export default function App(){
     todos.sort((a,b)=>{const da=a.date?new Date(a.date).getTime():0;const db=b.date?new Date(b.date).getTime():0;return db-da});
     // Filter to person-specific: reps see their customers' todos, CSRs see their assigned reps' todos
     const myTodos=todos.filter(t=>{
-      if(cu.role==='admin'||cu.role==='gm')return true;
+      if(cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm')return true;
       if(t.role==='all')return true;
       if(cu.role==='rep')return t.repId===cu.id;
       if(cu.role==='csr'){const myReps=getRepsForCsr(cu.id);return myReps.length===0||myReps.includes(t.repId)}
@@ -3311,7 +3314,7 @@ export default function App(){
           actionTodos.slice(0,20).map((t,i)=><div key={i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:8,cursor:'pointer'}} onClick={()=>{if(t.type==='issue'){setPg('settings')}else if(t.type==='est_update_request'||t.type==='est_approved'||t.type==='follow_up'||t.type==='deposit_needed'){if(t.est){setEEst(t.est);setEEstC(t.estC);setPg('estimates')}}else if(t.so){if(t.type==='art'&&t.jobId){const jIdx=safeJobs(t.so).findIndex(jj=>jj.id===t.jobId);setESOTab('jobs');setESOScrollJob(jIdx>=0?jIdx:null)}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
             <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}{t.repId?<span style={{marginLeft:6,fontSize:10,color:'#2563eb'}}>({REPS.find(r=>r.id===t.repId)?.name?.split(' ')[0]||''})</span>:''}</div></div>
             {_fmtTD(t.date)&&<span style={{fontSize:10,color:'#94a3b8',whiteSpace:'nowrap'}}>{_fmtTD(t.date)}</span>}
-            {(cu.role==='admin'||cu.role==='gm')&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#f0f9ff',color:'#0891b2',border:'1px solid #a5f3fc',borderRadius:8,whiteSpace:'nowrap'}} onClick={e=>{e.stopPropagation();setTodoModal({open:true,title:t.msg.replace(/^[^\w]*/,''),description:t.detail||'',assigned_to:getCsrsForRep(t.repId||cu.id)[0]||'',so_id:t.so?.id||'',customer_id:t.so?.customer_id||t.est?.customer_id||'',priority:t.priority<=1?1:2})}}>Assign</button>}
+            {(cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm')&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#f0f9ff',color:'#0891b2',border:'1px solid #a5f3fc',borderRadius:8,whiteSpace:'nowrap'}} onClick={e=>{e.stopPropagation();setTodoModal({open:true,title:t.msg.replace(/^[^\w]*/,''),description:t.detail||'',assigned_to:getCsrsForRep(t.repId||cu.id)[0]||'',so_id:t.so?.id||'',customer_id:t.so?.customer_id||t.est?.customer_id||'',priority:t.priority<=1?1:2})}}>Assign</button>}
             <button title="Dismiss" style={{background:'none',border:'1px solid #e2e8f0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:12,color:'#94a3b8',flexShrink:0}} onClick={e=>{e.stopPropagation();dismissTodo(t.dismissKey)}}>✕</button>
             <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:t.type==='art'?'#fef3c7':'#eff6ff',color:t.type==='art'?'#92400e':'#2563eb',fontWeight:600,whiteSpace:'nowrap'}}>{t.action}</span>
           </div>)}
@@ -3388,7 +3391,7 @@ export default function App(){
           myActionTodos.slice(0,20).map((t,i)=><div key={i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:8,cursor:'pointer'}} onClick={()=>{if(t.type==='est_update_request'||t.type==='est_approved'||t.type==='follow_up'||t.type==='deposit_needed'){if(t.est){setEEst(t.est);setEEstC(t.estC);setPg('estimates')}}else if(t.so){if(t.type==='art'&&t.jobId){const jIdx=safeJobs(t.so).findIndex(jj=>jj.id===t.jobId);setESOTab('jobs');setESOScrollJob(jIdx>=0?jIdx:null)}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
             <div style={{flex:1}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}{t.repId&&cu.role!=='rep'?<span style={{marginLeft:6,fontSize:10,color:'#2563eb'}}>({REPS.find(r=>r.id===t.repId)?.name?.split(' ')[0]||''})</span>:''}</div></div>
             {_fmtTD(t.date)&&<span style={{fontSize:10,color:'#94a3b8',whiteSpace:'nowrap'}}>{_fmtTD(t.date)}</span>}
-            {(cu.role==='admin'||cu.role==='gm'||cu.role==='rep')&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#f0f9ff',color:'#0891b2',border:'1px solid #a5f3fc',borderRadius:8,whiteSpace:'nowrap'}} onClick={e=>{e.stopPropagation();setTodoModal({open:true,title:t.msg.replace(/^[^\w]*/,''),description:t.detail||'',assigned_to:getCsrsForRep(t.repId||cu.id)[0]||'',so_id:t.so?.id||'',customer_id:t.so?.customer_id||t.est?.customer_id||'',priority:t.priority<=1?1:2})}}>Assign</button>}
+            {(cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm'||cu.role==='rep')&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#f0f9ff',color:'#0891b2',border:'1px solid #a5f3fc',borderRadius:8,whiteSpace:'nowrap'}} onClick={e=>{e.stopPropagation();setTodoModal({open:true,title:t.msg.replace(/^[^\w]*/,''),description:t.detail||'',assigned_to:getCsrsForRep(t.repId||cu.id)[0]||'',so_id:t.so?.id||'',customer_id:t.so?.customer_id||t.est?.customer_id||'',priority:t.priority<=1?1:2})}}>Assign</button>}
             <button title="Dismiss" style={{background:'none',border:'1px solid #e2e8f0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:12,color:'#94a3b8',flexShrink:0}} onClick={e=>{e.stopPropagation();dismissTodo(t.dismissKey)}}>✕</button>
             <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:t.type==='art'?'#fef3c7':'#eff6ff',color:t.type==='art'?'#92400e':'#2563eb',fontWeight:600,whiteSpace:'nowrap'}}>{t.action}</span>
           </div>)}</div></div>
@@ -3453,7 +3456,7 @@ export default function App(){
       <button className="btn btn-secondary" onClick={()=>setPg('omg')}>🏪 OMG Stores</button>
       <button className="btn btn-secondary" onClick={()=>setPg('invoices')}>💰 Invoices</button>
       <button className="btn btn-secondary" onClick={()=>setPg('commissions')}>💵 My Commissions</button>
-      {(cu.role==='rep'||cu.role==='admin')&&<button className="btn btn-secondary" onClick={()=>setTodoModal({open:true,title:'',description:'',assigned_to:getCsrsForRep(cu.id)[0]||'',so_id:'',customer_id:'',priority:2})}>📌 Assign Task to CSR</button>}
+      {(cu.role==='rep'||cu.role==='admin'||cu.role==='super_admin')&&<button className="btn btn-secondary" onClick={()=>setTodoModal({open:true,title:'',description:'',assigned_to:getCsrsForRep(cu.id)[0]||'',so_id:'',customer_id:'',priority:2})}>📌 Assign Task to CSR</button>}
     </div></div>
     </>}
 
@@ -3779,7 +3782,7 @@ export default function App(){
             <select className="form-select" value={todoModal.assigned_to} onChange={e=>setTodoModal(m=>({...m,assigned_to:e.target.value}))}>
               <option value="">Select person...</option>
               {(()=>{
-                const isAdminGm=cu.role==='admin'||cu.role==='gm';
+                const isAdminGm=cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm';
                 if(isAdminGm){return REPS.filter(r=>r.is_active!==false&&(r.role==='csr'||r.role==='rep'||r.role==='admin')).map(r=><option key={r.id} value={r.id}>{r.name} ({r.role}){getPrimaryCsrForRep(cu.id)===r.id?' ★':''}</option>)}
                 const myCsrIds=getCsrsForRep(cu.id);
                 const myCsrs=REPS.filter(r=>myCsrIds.includes(r.id)&&r.is_active!==false);
@@ -4974,7 +4977,7 @@ export default function App(){
     // Sort by date (newest first)
     todos.sort((a,b)=>{const da=a.date?new Date(a.date).getTime():0;const db=b.date?new Date(b.date).getTime():0;return db-da});
     const filtered=todos.filter(t=>{
-      if(cu.role==='admin'||cu.role==='gm')return true;
+      if(cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm')return true;
       if(t.role==='all')return true;
       if(cu.role==='rep')return t.repId===cu.id;
       if(cu.role==='csr'){const myReps=getRepsForCsr(cu.id);return myReps.length===0||myReps.includes(t.repId)}
@@ -5126,7 +5129,7 @@ export default function App(){
   const[roleView,setRoleView]=useState(()=>{try{return localStorage.getItem('nsa_role_view')||'sales'}catch{return'sales'}});
   const changeRoleView=v=>{setRoleView(v);_lsSet('nsa_role_view',v)};
   function rProd2(){
-    const isAdmin=cu?.role==='admin'||cu?.role==='prod_manager'||cu?.role==='gm';
+    const isAdmin=cu?.role==='admin'||cu?.role==='super_admin'||cu?.role==='prod_manager'||cu?.role==='gm';
     const isDecorator=cu?.role==='production'||cu?.role==='prod_assistant';
     const decorators=REPS.filter(r=>r.role==='production').filter(r=>r.is_active!==false);
     // Build flat list of SAVED jobs only (must be explicitly on SO.jobs[])
@@ -7841,7 +7844,7 @@ export default function App(){
 
       {/* ═══ DECORATOR TAB ═══ */}
       {(rptTab==='decorator')&&(()=>{
-        const isAdminRpt=cu?.role==='admin'||cu?.role==='prod_manager'||cu?.role==='gm';
+        const isAdminRpt=cu?.role==='admin'||cu?.role==='super_admin'||cu?.role==='prod_manager'||cu?.role==='gm';
         const isDecoratorRpt=cu?.role==='production'||cu?.role==='prod_assistant';
         const allDecorators=REPS.filter(r=>r.role==='production').filter(r=>r.is_active!==false);
         const{decoTasks}=buildWarehouseData();
@@ -8395,7 +8398,7 @@ export default function App(){
 
   // COMMISSIONS PAGE — visible only to admin and the logged-in rep
   function rCommissions(){
-    const isAdmin=cu.role==='admin';
+    const isAdmin=cu.role==='admin'||cu.role==='super_admin';
     const salesReps=REPS.filter(r=>r.role==='rep'||r.role==='admin');
     // Admin sees all reps or picks one; rep only sees themselves
     const viewRepId=isAdmin?commRep:cu.id;
@@ -11020,7 +11023,7 @@ export default function App(){
     const artistCounts={};artistCols.forEach(c=>{artistCounts[c.id]=artistJobs.filter(j=>getArtFileStatus(j)===c.id).length});
 
     // ─── Rep view data — all jobs grouped by rep ───
-    const repJobs=filtered.filter(j=>artDashView==='rep'?(cu.role==='admin'||j.repId===cu.id||artFilter!=='all'):true);
+    const repJobs=filtered.filter(j=>artDashView==='rep'?(cu.role==='admin'||cu.role==='super_admin'||j.repId===cu.id||artFilter!=='all'):true);
     // Note: rep filtering by artFilter is now handled in filtered above
 
     // Card renderer shared between both views
@@ -12325,7 +12328,7 @@ export default function App(){
   // DECORATION DASHBOARD (separate from warehouse)
   function rDeco(){
     const{decoTasks}=buildWarehouseData();
-    const isAdmin=cu?.role==='admin'||cu?.role==='prod_manager'||cu?.role==='gm';
+    const isAdmin=cu?.role==='admin'||cu?.role==='super_admin'||cu?.role==='prod_manager'||cu?.role==='gm';
     const isDecorator=cu?.role==='production'||cu?.role==='prod_assistant';
     const decorators=REPS.filter(r=>r.role==='production').filter(r=>r.is_active!==false);
 
@@ -14813,7 +14816,7 @@ export default function App(){
       const c=cust.find(x=>x.id===entity.customer_id);
       const msgRepId=c?.primary_rep_id||(so?.created_by)||(est2?.created_by);
       // Admin/GM: see their customer orders + tagged (tagged handled above)
-      if(cu.role==='admin'||cu.role==='gm')return msgRepId===cu.id;
+      if(cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm')return msgRepId===cu.id;
       // Rep: see messages on their customer orders
       if(cu.role==='rep')return msgRepId===cu.id;
       // CSR: see messages on orders where their assigned rep is involved
@@ -16123,11 +16126,11 @@ export default function App(){
 
   // TEAM MANAGEMENT
   function rTeam(){
-    const roles={admin:'Admin',rep:'Sales Rep',csr:'Customer Service',accounting:'Accounting',warehouse:'Warehouse',prod_manager:'Production Mgr',production:'Production',prod_assistant:'Prod Assistant',artist:'Artist'};
-    const roleBadge={admin:'badge-purple',rep:'badge-blue',csr:'badge-green',accounting:'badge-amber',warehouse:'badge-gray',prod_manager:'badge-amber',production:'badge-gray',prod_assistant:'badge-gray',artist:'badge-purple'};
-    const isAdmin=cu.role==='admin';
+    const roles={super_admin:'Super Admin',admin:'Admin',rep:'Sales Rep',csr:'Customer Service',accounting:'Accounting',warehouse:'Warehouse',prod_manager:'Production Mgr',production:'Production',prod_assistant:'Prod Assistant',artist:'Artist'};
+    const roleBadge={super_admin:'badge-purple',admin:'badge-purple',rep:'badge-blue',csr:'badge-green',accounting:'badge-amber',warehouse:'badge-gray',prod_manager:'badge-amber',production:'badge-gray',prod_assistant:'badge-gray',artist:'badge-purple'};
+    const isAdmin=cu.role==='admin'||cu.role==='super_admin';
     const initials=n=>{const p=(n||'').split(' ');return p.length>=2?(p[0][0]+p[p.length-1][0]).toUpperCase():(n||'??').slice(0,2).toUpperCase()};
-    const avatarColors={admin:'#7c3aed',rep:'#2563eb',csr:'#16a34a',accounting:'#d97706',warehouse:'#475569',prod_manager:'#b45309',production:'#0891b2',prod_assistant:'#a16207'};
+    const avatarColors={super_admin:'#dc2626',admin:'#7c3aed',rep:'#2563eb',csr:'#16a34a',accounting:'#d97706',warehouse:'#475569',prod_manager:'#b45309',production:'#0891b2',prod_assistant:'#a16207'};
 
     // Default page access by role
     const ALL_PAGES=[
@@ -16155,6 +16158,7 @@ export default function App(){
       {id:'sales_tools',label:'Sales Tools'},
     ];
     const DEFAULT_ACCESS={
+      super_admin:ALL_PAGES.map(p=>p.id),
       admin:ALL_PAGES.map(p=>p.id),
       rep:['dashboard','estimates','orders','invoices','omg','customers','messages','commissions','reports','products','art','sales_tools'],
       csr:['dashboard','estimates','orders','invoices','customers','messages','products','inventory','sales_tools'],
@@ -16825,7 +16829,7 @@ export default function App(){
   // ─── SALES TOOLS PAGE ───
   function rSalesTools(){
     const myQuoteRequests=quoteRequests.filter(qr=>{
-      if(cu.role==='admin')return true;
+      if(cu.role==='admin'||cu.role==='super_admin')return true;
       return qr.created_by===cu.id;
     });
     const filteredQR=myQuoteRequests.filter(qr=>{
@@ -18030,9 +18034,9 @@ export default function App(){
       <button className="mobile-menu-btn" onClick={()=>setMobileMenuOpen(false)} style={{color:'#94a3b8',fontSize:20,background:'none',border:'none',cursor:'pointer',padding:4}}>x</button>
     </div>
       <nav className="sidebar-nav">{nav.map((item,i)=>{if(item.section)return<div key={i} className="sidebar-section">{item.section}</div>;
-        if(item.roles&&!item.roles.includes(cu.role))return null;
-        // Page access control: if employee has custom access list, enforce it (admins always see all)
-        if(cu.role!=='admin'&&cu.access&&!cu.access.includes(item.id))return null;
+        if(item.roles&&!item.roles.includes(cu.role)&&cu.role!=='super_admin')return null;
+        // Page access control: if employee has custom access list, enforce it (admins/super_admins always see all)
+        if(cu.role!=='admin'&&cu.role!=='super_admin'&&cu.access&&!cu.access.includes(item.id))return null;
         const _closedSt=new Set(['complete','shipped','closed']);
         const _sidebarMsgs=item.id==='messages'?msgs.filter(m=>{const so=sos.find(s=>s.id===m.so_id||s.id===m.entity_id);if(!so&&(m.entity_type||'so')==='so')return true;if(!so)return true;const cSt=calcSOStatus(so);return!_closedSt.has(cSt)&&!_closedSt.has(so.status)}):[];
         const ubadge=_sidebarMsgs.filter(m=>!(m.read_by||[]).includes(cu.id)).length;

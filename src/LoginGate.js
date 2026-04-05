@@ -2,19 +2,19 @@
 import React, { useState, useEffect } from 'react';
 import { NSA } from './constants';
 
-const ADMIN_PW_HASH=process.env.REACT_APP_ADMIN_PW_HASH||'';
+const ADMIN_PW_HASH=(process.env.REACT_APP_ADMIN_PW_HASH||'').trim();
 const hashPassword=async(pw)=>{const buf=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(pw));return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('')};
 
 function LoginGate({onLogin,reps,supabase,sbSignIn:_sbSignIn,sbSignUp:_sbSignUp,sbGetSession:_sbGetSession,sbLinkTeamAuth:_sbLinkTeamAuth,sbGetMyProfile:_sbGetMyProfile}){
   const REPS=(reps||[]).filter(r=>r.is_active!==false);
-  const roleLabels={admin:'Admin',gm:'General Manager',prod_manager:'Production Mgr',production:'Production',prod_assistant:'Prod Assistant',rep:'Sales Rep',csr:'CSR',warehouse:'Warehouse',accounting:'Accounting',art:'Artist'};
-  const roleColors={admin:'#1e40af',gm:'#7c3aed',prod_manager:'#b45309',production:'#d97706',prod_assistant:'#a16207',rep:'#166534',csr:'#0891b2',warehouse:'#9333ea',accounting:'#dc2626',art:'#ec4899'};
+  const roleLabels={super_admin:'Super Admin',admin:'Admin',gm:'General Manager',prod_manager:'Production Mgr',production:'Production',prod_assistant:'Prod Assistant',rep:'Sales Rep',csr:'CSR',warehouse:'Warehouse',accounting:'Accounting',art:'Artist'};
+  const roleColors={super_admin:'#dc2626',admin:'#1e40af',gm:'#7c3aed',prod_manager:'#b45309',production:'#d97706',prod_assistant:'#a16207',rep:'#166534',csr:'#0891b2',warehouse:'#9333ea',accounting:'#dc2626',art:'#ec4899'};
   const[email,setEmail]=useState('');
   const[password,setPassword]=useState('');
   const[password2,setPassword2]=useState('');
   const[error,setError]=useState('');
   const[loading,setLoading]=useState(false);
-  const[mode,setMode]=useState('login');// 'login', 'setup', or 'admin'
+  const[mode,setMode]=useState('login');// 'login', 'setup', 'admin', or 'confirm'
   const[adminFilter,setAdminFilter]=useState('');
   const[sessionChecked,setSessionChecked]=useState(false);
 
@@ -52,14 +52,14 @@ function LoginGate({onLogin,reps,supabase,sbSignIn:_sbSignIn,sbSignUp:_sbSignUp,
       if(res.error){setError(res.error);setLoading(false);return}
       // Link auth account to team member
       if(res.user&&member)await _sbLinkTeamAuth(member.id,res.user.id);
-      // Auto sign-in after setup
+      // Try auto sign-in; if email confirmation required, show confirm screen
       const signIn=await _sbSignIn(email.trim(),password);
-      if(signIn.error){setError('Account created! Please sign in.');setMode('login');setPassword('');setPassword2('');setLoading(false);return}
+      if(signIn.error){setMode('confirm');setLoading(false);return}
       onLogin({...member,_authSession:true});
     }else{
       // Normal sign-in
       const res=await _sbSignIn(email.trim(),password);
-      if(res.error){setError('Invalid email or password');setLoading(false);return}
+      if(res.error){setError(res.error.includes('Email not confirmed')?'Please check your email to confirm your account before signing in.':res.error);setLoading(false);return}
       // Look up team member profile
       const profile=await _sbGetMyProfile();
       if(profile){onLogin({...profile,_authSession:true})}
@@ -94,7 +94,22 @@ function LoginGate({onLogin,reps,supabase,sbSignIn:_sbSignIn,sbSignUp:_sbSignUp,
 
         {/* Login Card */}
         <div style={{background:'white',borderRadius:16,padding:32,boxShadow:'0 20px 60px rgba(0,0,0,0.3)'}}>
-          {mode==='admin'?(
+          {mode==='confirm'?(
+            /* Email confirmation notice */
+            <>
+              <div style={{textAlign:'center',padding:'16px 0'}}>
+                <div style={{fontSize:40,marginBottom:12}}>&#9993;</div>
+                <div style={{fontSize:18,fontWeight:700,color:'#0f172a',marginBottom:8}}>Check Your Email</div>
+                <div style={{fontSize:13,color:'#64748b',marginBottom:16,lineHeight:1.5}}>
+                  We sent a confirmation link to <strong>{email}</strong>. Click the link in the email to verify your account, then come back here to sign in.
+                </div>
+                <button type="button" onClick={()=>{setMode('login');setPassword('');setPassword2('');setError('')}}
+                  style={{padding:'10px 24px',background:'#1e40af',color:'white',border:'none',borderRadius:8,fontWeight:700,fontSize:14,cursor:'pointer'}}>
+                  Back to Sign In
+                </button>
+              </div>
+            </>
+          ):mode==='admin'?(
             /* Admin impersonation picker */
             <>
               <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:4}}>
@@ -130,18 +145,20 @@ function LoginGate({onLogin,reps,supabase,sbSignIn:_sbSignIn,sbSignUp:_sbSignUp,
             {mode==='setup'?'Set Up Your Account':'Sign In'}
           </div>
           <div style={{fontSize:13,color:'#64748b',marginBottom:20}}>
-            {mode==='setup'?'Create a password to get started':'Enter your email and password'}
+            {mode==='setup'?'Create a password to get started. You\'ll need to confirm your email before signing in.':'Enter your email and password'}
           </div>
 
           <form onSubmit={handleLogin}>
             <label style={{display:'block',fontSize:12,fontWeight:600,color:'#374151',marginBottom:4}}>Email</label>
             <input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@example.com" autoFocus
+              autoComplete="email" name="email"
               style={{width:'100%',padding:'10px 12px',border:'1px solid #d1d5db',borderRadius:8,marginBottom:12,fontSize:14,boxSizing:'border-box',outline:'none'}}
               onFocus={e=>e.target.style.borderColor='#3b82f6'} onBlur={e=>e.target.style.borderColor='#d1d5db'}/>
 
             <label style={{display:'block',fontSize:12,fontWeight:600,color:'#374151',marginBottom:4}}>Password</label>
             <input type="password" value={password} onChange={e=>setPassword(e.target.value)}
               placeholder={mode==='setup'?'Create password (min 8 characters)':'Enter password'}
+              autoComplete={mode==='setup'?'new-password':'current-password'} name="password"
               style={{width:'100%',padding:'10px 12px',border:'1px solid #d1d5db',borderRadius:8,marginBottom:mode==='setup'?12:4,fontSize:14,boxSizing:'border-box',outline:'none'}}
               onFocus={e=>e.target.style.borderColor='#3b82f6'} onBlur={e=>e.target.style.borderColor='#d1d5db'}/>
 
