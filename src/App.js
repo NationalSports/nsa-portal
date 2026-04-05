@@ -2374,6 +2374,9 @@ export default function App(){
   React.useEffect(()=>{_saveAppState('inv_pos',invPOs)},[invPOs]);
   React.useEffect(()=>{_saveAppState('inv_adj_log',invAdjLog)},[invAdjLog]);
   React.useEffect(()=>{_saveAppState('inv_po_counter',invPOCounter)},[invPOCounter]);
+  React.useEffect(()=>{_saveAppState('stock_pos',stockPOs)},[stockPOs]);
+  React.useEffect(()=>{_saveAppState('stock_po_counter',stockPOCounter)},[stockPOCounter]);
+  React.useEffect(()=>{_saveAppState('comm_overrides',commOverrides)},[commOverrides]);
   const[q,setQ]=useState('');const[selC,setSelC]=useState(null);const[selV,setSelV]=useState(null);const[selP,setSelP]=useState(null);
   // Keep selC/selV/selP in sync with their source arrays after saves/reloads
   React.useEffect(()=>{if(selC){const u=cust.find(c=>c.id===selC.id);if(u&&u!==selC)setSelC(u);else if(!u)setSelC(null)}},[cust]); // eslint-disable-line
@@ -2554,8 +2557,10 @@ export default function App(){
     const newStatus=calcSOStatus(sl);
     const prevStatus=prev?calcSOStatus(prev):null;
     if(newStatus==='ready_to_invoice'&&prevStatus!=='ready_to_invoice'&&prevStatus!=='complete'){
-      const hasInv=invs.some(iv=>iv.so_id===sl.id);
-      if(!hasInv){
+      // Use functional updater to check latest invs state — prevents duplicate invoice from stale closure
+      setInvs(prev2=>{
+        const hasInv=prev2.some(iv=>iv.so_id===sl.id);
+        if(hasInv)return prev2;
         const _aq={};safeItems(sl).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_aq[d.art_file_id]=(_aq[d.art_file_id]||0)+q2}})});
         const saf=safeArt(sl);let subtotal=0;
         safeItems(sl).forEach(it=>{const qq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);subtotal+=qq*safeNum(it.unit_sell);safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qq;const dp2=dP(d,qq,saf,cq);const eq2=dp2._nq!=null?dp2._nq:qq;subtotal+=eq2*dp2.sell})});
@@ -2563,12 +2568,12 @@ export default function App(){
         const autoCust=cust.find(c=>c.id===sl.customer_id);const autoTaxRate=sl.tax_exempt?0:(sl.tax_rate||autoCust?.tax_rate||0);
         const autoTax=Math.round(subtotal*autoTaxRate*100)/100;
         const total=subtotal+autoShip+autoTax;
-        const invId=nextInvId(invs);const today=new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'2-digit'});
+        const invId=nextInvId(prev2);const today=new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'2-digit'});
         const dueDate=new Date();dueDate.setDate(dueDate.getDate()+30);const due=dueDate.toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'2-digit'});
         const newInv={id:invId,type:'invoice',customer_id:sl.customer_id,so_id:sl.id,date:today,due_date:due,total:Math.round(total*100)/100,paid:0,memo:sl.memo||'',status:'open',payments:[],cc_fee:0,shipping:autoShip,tax:autoTax,tax_rate:autoTaxRate,tax_exempt:sl.tax_exempt||autoCust?.tax_exempt||false};
-        setInvs(prev2=>[newInv,...prev2]);
         nf('Auto-generated invoice '+invId+' for $'+Math.round(total*100)/100);
-      }
+        return[newInv,...prev2];
+      });
     }
     return sl;
   };
@@ -4874,7 +4879,8 @@ export default function App(){
   // Art time tracking — separate logs for artist work
   const[artTimeLogs,setArtTimeLogs]=useState(()=>loadState('art_time_logs',[]));// [{jobId,soId,person,clockIn,clockOut,minutes,artName,customer}]
   React.useEffect(()=>{_saveAppState('art_time_logs',artTimeLogs)},[artTimeLogs]);
-  const[activeArtTimers,setActiveArtTimers]=useState({});// {soId|jobId:{person,clockIn,soId,artName,customer}}
+  const[activeArtTimers,setActiveArtTimers]=useState(()=>loadState('active_art_timers',{}));// {soId|jobId:{person,clockIn,soId,artName,customer}}
+  React.useEffect(()=>{_saveAppState('active_art_timers',activeArtTimers)},[activeArtTimers]);
   const[idleSettings,setIdleSettings]=useState(()=>loadState('idle_settings',{warnMin:5,autoOutMin:10}));
   React.useEffect(()=>{_saveAppState('idle_settings',idleSettings)},[idleSettings]);
   const[portalSettings,setPortalSettings]=useState(()=>loadState('portal_settings',{followUpDays:7,estFollowUpDays:7,invFollowUpDays:7,disclaimer:'Please check all artwork, quantities, and personalization very closely. Once approved, this will be exactly what is printed.'}));
@@ -7393,7 +7399,7 @@ export default function App(){
   const[rptTab,setRptTab]=useState('overview');
   const[rptRep,setRptRep]=useState('all');
   const[rptWidgets,setRptWidgets]=useState({pipeline:true,repLeaderboard:true,custHealth:true,productMix:true,convFunnel:true,margins:true,seasonality:true,retention:true,omgStores:true,atRisk:true,lowMargin:true,prodThroughput:true,decoWorkload:true,artTime:true,decoTime:true,laborSummary:true});
-  const[commOverrides,setCommOverrides]=useState({});// {invoiceId: true} = admin approved full commission on late invoice
+  const[commOverrides,setCommOverrides]=useState(()=>loadState('comm_overrides',{}));// {invoiceId: true} = admin approved full commission on late invoice
   const[commMonth,setCommMonth]=useState(()=>{const d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')});
   const[commTab,setCommTab]=useState('statement');// statement, pipeline, ytd, byCustomer
   const[commRep,setCommRep]=useState(()=>cu?.id||'all');// default to logged-in rep
@@ -9089,10 +9095,8 @@ export default function App(){
   const addWhAction=(action)=>{setWhRecentActions(prev=>{const next=[{...action,ts:Date.now(),at:new Date().toLocaleString()},...prev].slice(0,500);_lsSet('nsa_wh_recent',JSON.stringify(next));return next})};
   const[whActionRange,setWhActionRange]=useState('7d');
   const[whActionSearch,setWhActionSearch]=useState('');
-  const[stockPOs,setStockPOs]=useState([
-    {id:'PO-5001-NSA',vendor_id:'v1',vendor_name:'Adidas',status:'partial',created_at:'02/12/26',notes:'Restock pregame tees',items:[{sku:'JX4453',name:'Adidas Unisex Pregame Tee',color:'Team Power Red/White',sizes:{S:20,M:30,L:25,XL:15,'2XL':10},received:{S:20,M:30,L:0,XL:0,'2XL':0}}]},
-    {id:'PO-5002-NSA',vendor_id:'v2',vendor_name:'Under Armour',status:'waiting',created_at:'02/18/26',notes:'Stock up on polos for spring',items:[{sku:'1370399',name:'Under Armour Team Polo',color:'Cardinal/White',sizes:{S:10,M:20,L:20,XL:15,'2XL':8},received:{}}]},
-  ]);const[showStockPO,setShowStockPO]=useState(null);const[stockPOCounter,setStockPOCounter]=useState(5003);
+  const[stockPOs,setStockPOs]=useState(()=>loadState('stock_pos',[]));
+  const[showStockPO,setShowStockPO]=useState(null);const[stockPOCounter,setStockPOCounter]=useState(()=>loadState('stock_po_counter',5001));
   // Populate ProductDetail context ref — must be after setWhTab and stockPOs are declared
   _pdCtx.current={vend,cust,ests,sos,invPOs,stockPOs,invs,setProd,_dbSaveProduct,buildJobs,nf,setAM,setEEst,setEEstC,setESO,setESOC,setPg,setSelP,calcSOStatus,setWhTab,safeSizes,showSz,rQ,D_V,CATEGORIES,COLOR_CATEGORIES};
   // Ship package modal: {grp, soMap:{soId:so}, boxes:[{items:[{sku,name,color,sizes:{}}],tracking_number:'',carrier:'',weight:5,notes:''}]}
@@ -9437,8 +9441,7 @@ export default function App(){
                 szKeys.forEach(sz=>{const v=actualQtys[sz]||0;if(v>0){newInv[sz]=Math.max(0,(newInv[sz]||0)-v)}});
                 setProd(pp=>pp.map(x=>x.id===p.id?{...x,_inv:newInv}:x));
               }
-              savSO(updatedSO);
-              // Save shipment data if shipping boxes were configured
+              // Add shipment data if shipping boxes were configured — single save to avoid race
               if(showShipping&&boxes.some(bx=>bx.tracking_number)){
                 const shipments=[...(updatedSO._shipments||[])];
                 boxes.filter(bx=>bx.tracking_number).forEach(bx=>{
@@ -9446,9 +9449,9 @@ export default function App(){
                     ship_date:new Date().toLocaleDateString(),items:bx.items||[],weight:bx.weight,dimensions:bx.dimensions,
                     created_by:cu?.id,created_at:new Date().toLocaleString()});
                 });
-                const withShipment={...updatedSO,_shipments:shipments};
-                savSO(withShipment);
+                updatedSO._shipments=shipments;
               }
+              savSO(updatedSO);
               // Log recent action
               const pulledSizes=szKeys.filter(sz=>(actualQtys[sz]||0)>0).map(sz=>sz+':'+actualQtys[sz]).join(' ');
               const totalPulling=szKeys.reduce((a,sz)=>a+(actualQtys[sz]||0),0);
@@ -14179,6 +14182,8 @@ export default function App(){
                     total:totalRev+(imp.pdfParsed?.tax||0)+shipAmt,
                     _ns_ref:imp.externalDocNum,_import_source:'netsuite'};
                   setInvs(prev=>[newInv,...prev]);setPg('invoices');
+                  // Explicitly save to DB immediately
+                  _dbSaveInvoice(newInv);
                   nf('✅ Imported Invoice with '+newItems.length+' items'+(imp.externalDocNum?' (NS #'+imp.externalDocNum+')':''));
                 } else if(imp.docType==='po'){
                   const poMemo=importMemo+(imp.linkedSoId?'\nLinked SO: '+imp.linkedSoId:'');
@@ -14187,6 +14192,7 @@ export default function App(){
                     if(so){
                       const updated={...so,production_notes:(so.production_notes||'')+(so.production_notes?'\n':'')+nsRef+' | PO imported with '+newItems.length+' items',updated_at:now};
                       setSOs(prev=>prev.map(s=>s.id===so.id?updated:s));
+                      _dbSaveSO(updated);
                       nf('✅ PO imported and linked to '+imp.linkedSoId);
                     }
                   } else {
@@ -16511,7 +16517,9 @@ export default function App(){
             {label:'Large',size_key:'large',qty_breaks:[{min_qty:1,max_qty:11,price:0},{min_qty:12,max_qty:23,price:0},{min_qty:24,max_qty:47,price:0},{min_qty:48,max_qty:null,price:0}]},
             {label:'Gang Sheet',size_key:'gang_sheet',qty_breaks:[{min_qty:1,max_qty:11,price:0},{min_qty:12,max_qty:23,price:0},{min_qty:24,max_qty:47,price:0},{min_qty:48,max_qty:null,price:0}]}
           ]};
-          return{deco_vendor_id:vendorId,deco_type:decoType,pricing_tiers:defaultTiers,upcharges:decoType==='screen_print'?{underbase:0.10,fleece:0.10,mesh:0.15}:{}};
+          const newPricing={id:crypto.randomUUID(),deco_vendor_id:vendorId,deco_type:decoType,pricing_tiers:defaultTiers,upcharges:decoType==='screen_print'?{underbase:0.10,fleece:0.10,mesh:0.15}:{}};
+          setDecoVendorPricing(prev=>[...prev,newPricing]);
+          return newPricing;
         };
         return<>
         <div className="card" style={{marginBottom:16}}><div className="card-header"><h3>Decoration Vendors</h3></div><div className="card-body">

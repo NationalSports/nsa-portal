@@ -259,14 +259,17 @@ function CustModal({isOpen,onClose,onSave,customer,parents,reps}){
     if(c.id&&c.billing_address_line1&&(c.billing_address_line1!==c.shipping_address_line1||c.billing_city!==c.shipping_city||c.billing_state!==c.shipping_state||c.billing_zip!==c.shipping_zip)){
       const alts=c.alt_billing_addresses||[];const hasBill=alts.some(a=>a.type==='billing');
       if(!hasBill){c.alt_billing_addresses=[{type:'billing',label:'Billing',street:c.billing_address_line1||'',city:c.billing_city||'',state:c.billing_state||'',zip:c.billing_zip||''},...alts]}}
-    setF(c);setCt(customer?.parent_id?'sub':'parent');setErr({});setTcLook({loading:false,msg:''})},[customer,isOpen]); // eslint-disable-line
+    setF(c);setCt(customer?.parent_id?'sub':'parent');setErr({});setTcLook({loading:false,msg:''});_initRef.current=isOpen?JSON.stringify(c):null},[customer,isOpen]); // eslint-disable-line
   const addC=()=>sv('contacts',[...(f.contacts||[]),{name:'',email:'',phone:'',role:'Head Coach'}]);const rmC=i=>sv('contacts',(f.contacts||[]).filter((_,x)=>x!==i));
   const upC=(i,k,v)=>sv('contacts',(f.contacts||[]).map((c,x)=>x===i?{...c,[k]:v}:c));
+  const _initRef=React.useRef(null);
   const[valMsg,setValMsg]=useState('');
   const ok=()=>{const e={};if(!f.name)e.n=1;if(!f.alpha_tag)e.a=1;if(!f.shipping_city)e.c=1;if(!f.shipping_state)e.s=1;if(ct==='sub'&&!f.parent_id)e.p=1;if(!(f.contacts||[])[0]?.name)e.cn=1;if(!(f.contacts||[])[0]?.email)e.ce=1;setErr(e);const missing=[];if(e.n)missing.push('Name');if(e.a)missing.push('Alpha Tag');if(e.c)missing.push('City');if(e.s)missing.push('State');if(e.p)missing.push('Parent');if(e.cn)missing.push('Contact Name');if(e.ce)missing.push('Contact Email');if(missing.length)setValMsg('Missing: '+missing.join(', '));else setValMsg('');return!missing.length};
+  const _isDirty=()=>_initRef.current!==null&&JSON.stringify(f)!==_initRef.current;
+  const safeClose=()=>{if(_isDirty()){if(!window.confirm('You have unsaved changes. Discard?'))return}onClose()};
   if(!isOpen)return null;
-  return(<div className="modal-overlay" onClick={onClose}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:700}}>
-  <div className="modal-header"><h2>{customer?.id?'Edit':'New'} Customer</h2><button className="modal-close" onClick={onClose}>x</button></div>
+  return(<div className="modal-overlay" onClick={safeClose}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:700}}>
+  <div className="modal-header"><h2>{customer?.id?'Edit':'New'} Customer</h2><button className="modal-close" onClick={safeClose}>x</button></div>
   <div className="modal-body">
     <div style={{display:'flex',gap:8,marginBottom:16}}>{['parent','sub'].map(t=><button key={t} className={`btn btn-sm ${ct===t?'btn-primary':'btn-secondary'}`} onClick={()=>{setCt(t);if(t==='parent')sv('parent_id',null)}}>{t==='parent'?'Parent':'Sub'}</button>)}</div>
     {ct==='sub'&&<div style={{marginBottom:12}}><label className="form-label">Parent *</label><SearchSelect options={parents.map(p=>({value:p.id,label:`${p.name} (${p.alpha_tag})`}))} value={f.parent_id} onChange={v=>sv('parent_id',v)} placeholder="Search parent..."/></div>}
