@@ -871,8 +871,6 @@ const _dbSaveCreditUsage = async (usage) => {
   }catch(e){console.error('[DB] save credit usage:',e);return false}
 };
 const _dbDuplicateSkuIds=new Set(JSON.parse(localStorage.getItem('nsa_duplicate_sku_ids')||'[]'));// product IDs with duplicate SKU — skip saves entirely
-// On startup, clear any duplicate-SKU product IDs from failed saves (they'll never succeed)
-_dbDuplicateSkuIds.forEach(id=>{_dbSaveFailedIds.delete(id)});if(_dbDuplicateSkuIds.size)_persistFailedIds();
 const _persistDuplicateSkuIds=()=>{_lsSet('nsa_duplicate_sku_ids',JSON.stringify([..._dbDuplicateSkuIds]))};
 const _dbSaveProduct = async (p) => {
   if(!supabase)return;
@@ -994,6 +992,8 @@ const _lsSet=(key,value)=>{try{localStorage.setItem(key,value);return true}catch
 const _dbSaveFailedIds=new Set(JSON.parse(localStorage.getItem('nsa_save_failed_ids')||'[]'));
 let _onFailedIdsChange=null;// set by App component to trigger UI updates
 const _persistFailedIds=()=>{_lsSet('nsa_save_failed_ids',JSON.stringify([..._dbSaveFailedIds]));if(_onFailedIdsChange)_onFailedIdsChange(_dbSaveFailedIds.size)};
+// On startup, clear any duplicate-SKU product IDs from failed saves (they'll never succeed)
+_dbDuplicateSkuIds.forEach(id=>{_dbSaveFailedIds.delete(id)});if(_dbDuplicateSkuIds.size)_persistFailedIds();
 // Track recent saves by this client — prevents false "modified by another user" conflicts from own realtime echo
 const _dbRecentSaves={};// {id: timestamp}
 // Legacy compat — keep old _dbSave for team_members and other simple tables
