@@ -1786,7 +1786,12 @@ export default function App(){
       }
       finally{if(!cancelled){_dbReady.current=true;setDbLoading(false);
         // Mark initial load done after a tick so auto-save effects don't fire from the setState calls above
-        setTimeout(()=>{_initialLoadDone.current=true},100);
+        setTimeout(()=>{_initialLoadDone.current=true;
+          // Clean up failed IDs for entities that were deleted — prevents permanent error banner
+          if(_dbSaveFailedIds.size){const d2=_visFlushRefs.current;const allIds2=new Set([...d2.ests,...d2.sos,...d2.invs,...d2.cust,...d2.prod,...d2.msgs].map(e=>e.id));
+          const orphaned2=[..._dbSaveFailedIds].filter(id=>!allIds2.has(id));
+          if(orphaned2.length){orphaned2.forEach(id=>{_dbSaveFailedIds.delete(id);console.log('[DB] Startup cleanup — cleared orphaned failed ID:',id)});_persistFailedIds()}}
+        },100);
       }}
     })();
     // ─── Supabase Realtime subscriptions ───
@@ -2271,6 +2276,10 @@ export default function App(){
     if(!supabase)return;
     const retry=setInterval(()=>{
       if(!_dbSaveFailedIds.size||!_initialLoadDone.current||!_dbLoadSuccess.current)return;
+      // Clean up failed IDs for entities that no longer exist in state (deleted by user)
+      const d=_visFlushRefs.current;const allIds=new Set([...d.ests,...d.sos,...d.invs,...d.cust,...d.prod,...d.msgs].map(e=>e.id));
+      const orphaned=[..._dbSaveFailedIds].filter(id=>!allIds.has(id));
+      if(orphaned.length){orphaned.forEach(id=>{_dbSaveFailedIds.delete(id);console.log('[DB] Cleared orphaned failed ID:',id)});_persistFailedIds();if(!_dbSaveFailedIds.size)return}
       // Skip IDs that were recently saved (prevents rapid re-conflict loops)
       const retryIds=[..._dbSaveFailedIds].filter(id=>!(_dbRecentSaves[id]&&Date.now()-_dbRecentSaves[id]<60000));
       if(!retryIds.length)return;
