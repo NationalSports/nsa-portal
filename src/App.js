@@ -2374,9 +2374,6 @@ export default function App(){
   React.useEffect(()=>{_saveAppState('inv_pos',invPOs)},[invPOs]);
   React.useEffect(()=>{_saveAppState('inv_adj_log',invAdjLog)},[invAdjLog]);
   React.useEffect(()=>{_saveAppState('inv_po_counter',invPOCounter)},[invPOCounter]);
-  React.useEffect(()=>{_saveAppState('stock_pos',stockPOs)},[stockPOs]);
-  React.useEffect(()=>{_saveAppState('stock_po_counter',stockPOCounter)},[stockPOCounter]);
-  React.useEffect(()=>{_saveAppState('comm_overrides',commOverrides)},[commOverrides]);
   const[q,setQ]=useState('');const[selC,setSelC]=useState(null);const[selV,setSelV]=useState(null);const[selP,setSelP]=useState(null);
   // Keep selC/selV/selP in sync with their source arrays after saves/reloads
   React.useEffect(()=>{if(selC){const u=cust.find(c=>c.id===selC.id);if(u&&u!==selC)setSelC(u);else if(!u)setSelC(null)}},[cust]); // eslint-disable-line
@@ -7400,6 +7397,7 @@ export default function App(){
   const[rptRep,setRptRep]=useState('all');
   const[rptWidgets,setRptWidgets]=useState({pipeline:true,repLeaderboard:true,custHealth:true,productMix:true,convFunnel:true,margins:true,seasonality:true,retention:true,omgStores:true,atRisk:true,lowMargin:true,prodThroughput:true,decoWorkload:true,artTime:true,decoTime:true,laborSummary:true});
   const[commOverrides,setCommOverrides]=useState(()=>loadState('comm_overrides',{}));// {invoiceId: true} = admin approved full commission on late invoice
+  React.useEffect(()=>{_saveAppState('comm_overrides',commOverrides)},[commOverrides]);
   const[commMonth,setCommMonth]=useState(()=>{const d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')});
   const[commTab,setCommTab]=useState('statement');// statement, pipeline, ytd, byCustomer
   const[commRep,setCommRep]=useState(()=>cu?.id||'all');// default to logged-in rep
@@ -9096,7 +9094,9 @@ export default function App(){
   const[whActionRange,setWhActionRange]=useState('7d');
   const[whActionSearch,setWhActionSearch]=useState('');
   const[stockPOs,setStockPOs]=useState(()=>loadState('stock_pos',[]));
+  React.useEffect(()=>{_saveAppState('stock_pos',stockPOs)},[stockPOs]);
   const[showStockPO,setShowStockPO]=useState(null);const[stockPOCounter,setStockPOCounter]=useState(()=>loadState('stock_po_counter',5001));
+  React.useEffect(()=>{_saveAppState('stock_po_counter',stockPOCounter)},[stockPOCounter]);
   // Populate ProductDetail context ref — must be after setWhTab and stockPOs are declared
   _pdCtx.current={vend,cust,ests,sos,invPOs,stockPOs,invs,setProd,_dbSaveProduct,buildJobs,nf,setAM,setEEst,setEEstC,setESO,setESOC,setPg,setSelP,calcSOStatus,setWhTab,safeSizes,showSz,rQ,D_V,CATEGORIES,COLOR_CATEGORIES};
   // Ship package modal: {grp, soMap:{soId:so}, boxes:[{items:[{sku,name,color,sizes:{}}],tracking_number:'',carrier:'',weight:5,notes:''}]}

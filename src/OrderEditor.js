@@ -2759,8 +2759,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     {canEditCost&&<button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px'}} onClick={()=>{
                       const tn=prompt('Tracking number:',shp.tracking_number||'');if(tn===null)return;
                       const carrier=prompt('Carrier (ups/fedex/usps):',shp.carrier||'');
-                      const updated=[...(o._shipments||[])];const idx=updated.findIndex(s=>s.id===shp.id);
-                      if(idx>=0){updated[idx]={...updated[idx],tracking_number:tn,carrier:carrier||'',tracking_url:trackUrl(tn),ship_date:updated[idx].ship_date||new Date().toLocaleDateString()};
+                      const idx=(o._shipments||[]).findIndex(s=>s.id===shp.id);
+                      if(idx>=0){const updated=(o._shipments||[]).map((s,i)=>i===idx?{...s,tracking_number:tn,carrier:carrier||'',tracking_url:trackUrl(tn),ship_date:s.ship_date||new Date().toLocaleDateString()}:s);
                         const updatedSO={...o,_shipments:updated,_tracking_number:updated[0]?.tracking_number||'',_carrier:updated[0]?.carrier||'',_tracking_url:updated[0]?.tracking_url||'',updated_at:new Date().toLocaleString()};
                         setO(updatedSO);onSave(updatedSO);setDirty(false)}
                       else if(shp.id==='legacy'){const updatedSO={...o,_tracking_number:tn,_carrier:carrier||o._carrier,_tracking_url:trackUrl(tn),updated_at:new Date().toLocaleString()};
@@ -5663,7 +5663,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   const updatedSh={date:dateEl?.value||sh.date};
                   szKeys.forEach(sz=>{const el=document.getElementById('sh-edit-'+si+'-'+sz);if(el){const v=parseInt(el.value)||0;if(v>0)updatedSh[sz]=v}else if(sh[sz])updatedSh[sz]=sh[sz]});
                   // Recalculate received totals from all shipments
-                  const newShipments=[...shipments];newShipments[si]=updatedSh;
+                  const newShipments=shipments.map((s,i)=>i===si?updatedSh:s);
                   const newReceived={};newShipments.forEach(s=>{szKeys.forEach(sz=>{if(s[sz])newReceived[sz]=(newReceived[sz]||0)+s[sz]})});
                   const newTotalOpen=szKeys.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-(newReceived[sz]||0)-getCncl(sz)),0);
                   const newStatus=newTotalOpen<=0&&Object.values(newReceived).some(v=>v>0)?'received':Object.values(newReceived).some(v=>v>0)?'partial':'waiting';
