@@ -2522,6 +2522,19 @@ export default function App(){
   const handleLogin=(user)=>{setCu(user);_lsSet('nsa_user',JSON.stringify(user))};
   const handleLogout=async()=>{setCu(null);try{localStorage.removeItem('nsa_user')}catch{};await _sbSignOut()};
 
+  // Sync current user's access/role from REPS when team data changes (e.g. admin updated page access)
+  React.useEffect(()=>{
+    if(!cu||!REPS.length)return;
+    const me=REPS.find(r=>r.id===cu.id);
+    if(!me)return;
+    const newAccess=me.access||null;
+    const oldAccess=cu.access||null;
+    if(JSON.stringify(newAccess)!==JSON.stringify(oldAccess)||me.role!==cu.role){
+      const updated={...cu,access:newAccess,role:me.role};
+      setCu(updated);_lsSet('nsa_user',JSON.stringify(updated));
+    }
+  },[REPS]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // ─── MOBILE PORTAL DETECTION & TOGGLE ───
   const _isTouchDevice=()=>{try{return('ontouchstart'in window||navigator.maxTouchPoints>0)&&window.innerWidth<=1024}catch{return false}};
   const[mobileMode,setMobileMode]=useState(()=>{try{const pref=localStorage.getItem('nsa_mobile_mode');if(pref==='desktop')return false;if(pref==='mobile')return true;return _isTouchDevice()}catch{return false}});
@@ -16229,7 +16242,7 @@ export default function App(){
             <td style={{fontSize:11,color:'#64748b'}}>{m.phone||'—'}</td>
             <td style={{fontSize:10,color:'#94a3b8'}}>{(m.access||DEFAULT_ACCESS[m.role]||[]).length} pages</td>
             {isAdmin&&<td style={{textAlign:'right'}}>
-              <button className="btn btn-sm btn-secondary" style={{fontSize:9,marginRight:4}} onClick={()=>setEditMember({...m,access:m.access||DEFAULT_ACCESS[m.role]||[]})}>✏️ Edit</button>
+              {(isSA||m.id!==cu.id)&&<button className="btn btn-sm btn-secondary" style={{fontSize:9,marginRight:4}} onClick={()=>setEditMember({...m,access:m.access||DEFAULT_ACCESS[m.role]||[]})}>✏️ Edit</button>}
               {m.id!==cu.id&&<button className="btn btn-sm" style={{fontSize:9,color:'#dc2626',background:'#fef2f2',border:'1px solid #fecaca'}} onClick={()=>deactivateMember(m.id)}>Deactivate</button>}
             </td>}
           </tr>})}</tbody></table>
