@@ -2,7 +2,8 @@
 import React, { useState, useEffect } from 'react';
 import { NSA } from './constants';
 
-const ADMIN_PW=process.env.REACT_APP_ADMIN_PASSWORD||'';
+const ADMIN_PW_HASH=process.env.REACT_APP_ADMIN_PW_HASH||'';
+const hashPassword=async(pw)=>{const buf=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(pw));return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('')};
 
 function LoginGate({onLogin,reps,supabase,sbSignIn:_sbSignIn,sbSignUp:_sbSignUp,sbGetSession:_sbGetSession,sbLinkTeamAuth:_sbLinkTeamAuth,sbGetMyProfile:_sbGetMyProfile}){
   const REPS=(reps||[]).filter(r=>r.is_active!==false);
@@ -34,9 +35,10 @@ function LoginGate({onLogin,reps,supabase,sbSignIn:_sbSignIn,sbSignUp:_sbSignUp,
     if(!email.trim()){setError('Please enter your email');setLoading(false);return}
     if(!password){setError('Please enter your password');setLoading(false);return}
 
-    // Admin override: if password matches admin password, show user picker
-    if(ADMIN_PW&&password===ADMIN_PW){
-      setMode('admin');setError('');setLoading(false);return;
+    // Admin override: if password hash matches, show user picker
+    if(ADMIN_PW_HASH){
+      const h=await hashPassword(password);
+      if(h===ADMIN_PW_HASH){setMode('admin');setError('');setLoading(false);return}
     }
 
     if(mode==='setup'){
