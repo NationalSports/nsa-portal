@@ -16242,7 +16242,7 @@ export default function App(){
             <td style={{fontSize:11,color:'#64748b'}}>{m.phone||'—'}</td>
             <td style={{fontSize:10,color:'#94a3b8'}}>{(m.access||DEFAULT_ACCESS[m.role]||[]).length} pages</td>
             {isAdmin&&<td style={{textAlign:'right'}}>
-              <button className="btn btn-sm btn-secondary" style={{fontSize:9,marginRight:4}} onClick={()=>setEditMember({...m,access:m.access||DEFAULT_ACCESS[m.role]||[]})}>✏️ Edit</button>
+              {(isSA||m.id!==cu.id)&&<button className="btn btn-sm btn-secondary" style={{fontSize:9,marginRight:4}} onClick={()=>setEditMember({...m,access:m.access||DEFAULT_ACCESS[m.role]||[]})}>✏️ Edit</button>}
               {m.id!==cu.id&&<button className="btn btn-sm" style={{fontSize:9,color:'#dc2626',background:'#fef2f2',border:'1px solid #fecaca'}} onClick={()=>deactivateMember(m.id)}>Deactivate</button>}
             </td>}
           </tr>})}</tbody></table>
