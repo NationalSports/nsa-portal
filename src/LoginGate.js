@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { NSA } from './constants';
 
-const ADMIN_PW_HASH=process.env.REACT_APP_ADMIN_PW_HASH||'';
+const ADMIN_PW_HASH=(process.env.REACT_APP_ADMIN_PW_HASH||'').trim();
 const hashPassword=async(pw)=>{const buf=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(pw));return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,'0')).join('')};
 
 function LoginGate({onLogin,reps,supabase,sbSignIn:_sbSignIn,sbSignUp:_sbSignUp,sbGetSession:_sbGetSession,sbLinkTeamAuth:_sbLinkTeamAuth,sbGetMyProfile:_sbGetMyProfile}){
@@ -59,7 +59,7 @@ function LoginGate({onLogin,reps,supabase,sbSignIn:_sbSignIn,sbSignUp:_sbSignUp,
     }else{
       // Normal sign-in
       const res=await _sbSignIn(email.trim(),password);
-      if(res.error){setError('Invalid email or password');setLoading(false);return}
+      if(res.error){setError(res.error.includes('Email not confirmed')?'Please check your email to confirm your account before signing in.':res.error);setLoading(false);return}
       // Look up team member profile
       const profile=await _sbGetMyProfile();
       if(profile){onLogin({...profile,_authSession:true})}
@@ -136,12 +136,14 @@ function LoginGate({onLogin,reps,supabase,sbSignIn:_sbSignIn,sbSignUp:_sbSignUp,
           <form onSubmit={handleLogin}>
             <label style={{display:'block',fontSize:12,fontWeight:600,color:'#374151',marginBottom:4}}>Email</label>
             <input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@example.com" autoFocus
+              autoComplete="email" name="email"
               style={{width:'100%',padding:'10px 12px',border:'1px solid #d1d5db',borderRadius:8,marginBottom:12,fontSize:14,boxSizing:'border-box',outline:'none'}}
               onFocus={e=>e.target.style.borderColor='#3b82f6'} onBlur={e=>e.target.style.borderColor='#d1d5db'}/>
 
             <label style={{display:'block',fontSize:12,fontWeight:600,color:'#374151',marginBottom:4}}>Password</label>
             <input type="password" value={password} onChange={e=>setPassword(e.target.value)}
               placeholder={mode==='setup'?'Create password (min 8 characters)':'Enter password'}
+              autoComplete={mode==='setup'?'new-password':'current-password'} name="password"
               style={{width:'100%',padding:'10px 12px',border:'1px solid #d1d5db',borderRadius:8,marginBottom:mode==='setup'?12:4,fontSize:14,boxSizing:'border-box',outline:'none'}}
               onFocus={e=>e.target.style.borderColor='#3b82f6'} onBlur={e=>e.target.style.borderColor='#d1d5db'}/>
 
