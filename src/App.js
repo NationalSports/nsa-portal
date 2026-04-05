@@ -964,8 +964,8 @@ const _dbDeleteInvoice = async (id) => {
   }catch(e){console.error('[DB] delete invoice:',e)}});
 };
 // Save-in-progress guard — prevents poll/realtime from loading partial data during delete-and-reinsert
-let _dbSavingCount=0;
-const _dbSavingGuard=async(fn)=>{_dbSavingCount++;try{return await fn()}finally{_dbSavingCount--}};
+let _dbSavingCount=0;let _dbLastSaveAt=0;
+const _dbSavingGuard=async(fn)=>{_dbSavingCount++;try{return await fn()}finally{_dbSavingCount--;_dbLastSaveAt=Date.now()}};
 // Per-entity save queue — prevents concurrent saves for the same estimate/SO from racing.
 // When a save is in-progress and a newer version arrives, the newer version is queued.
 // After the current save finishes, only the LATEST queued version is saved (intermediate versions are skipped).
@@ -1800,8 +1800,9 @@ export default function App(){
       let _rtTimer=null;
       const _jsonEq=(a,b)=>{try{return JSON.stringify(a)===JSON.stringify(b)}catch{return false}};
       const reloadAll=async()=>{
-        // Skip reload if saves are in-flight to prevent overwriting unsaved local changes
+        // Skip reload if saves are in-flight or just finished — prevents stale data from overwriting local changes
         if(_dbSavingCount>0){console.log('[DB] Reload deferred — save in progress');_rtTimer=setTimeout(reloadAll,1000);return}
+        if(Date.now()-_dbLastSaveAt<5000){console.log('[DB] Reload deferred — save just finished');_rtTimer=setTimeout(reloadAll,3000);return}
         const d=await _dbLoad();if(!d||!d.hasData)return;
         // Preserve local versions of estimates/SOs whose decoration saves failed — don't let DB data overwrite them
         const _mergeProtected=(dbArr,snapKey,setter)=>{
