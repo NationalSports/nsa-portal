@@ -252,6 +252,7 @@ function CustModal({isOpen,onClose,onSave,customer,parents,reps}){
   const[f,setF]=useState(customer||b);const[ct,setCt]=useState(customer?.parent_id?'sub':'parent');const[err,setErr]=useState({});const[tcLook,setTcLook]=useState({loading:false,msg:''});
   const doTcLookup=async(fields)=>{if(!supabase||!fields.shipping_state||!fields.shipping_zip)return null;try{return await invokeEdgeFn(supabase,'taxcloud-lookup',{address1:fields.shipping_address_line1||'',city:fields.shipping_city||'',state:fields.shipping_state,zip5:fields.shipping_zip})}catch(e){return{ok:false,error:'Error: '+e.message}}};
   const APPAREL_EXEMPT=['MN','NJ','PA','VT','AK','DE','MT','NH','OR'];const APPAREL_THRESHOLD=['MA','NY','RI'];
+  const _initRef=React.useRef(null);
   const sv=(k,v)=>setF(x=>({...x,[k]:v}));React.useEffect(()=>{const c=customer?{...customer}:b;if(c.id&&!c.alpha_tag&&c.name)c.alpha_tag=c.name.replace(/[^a-zA-Z0-9 ]/g,'').trim().split(/\s+/).slice(0,2).join(' ').toUpperCase().slice(0,12);if(c.id&&(!c.contacts||!c.contacts.length))c.contacts=[{name:'',email:'',phone:'',role:'Head Coach'}];
     // Migrate existing alt_billing_addresses to have type field
     if(c.alt_billing_addresses){c.alt_billing_addresses=c.alt_billing_addresses.map(a=>a.type?a:{...a,type:'billing'})}
@@ -262,7 +263,6 @@ function CustModal({isOpen,onClose,onSave,customer,parents,reps}){
     setF(c);setCt(customer?.parent_id?'sub':'parent');setErr({});setTcLook({loading:false,msg:''});_initRef.current=isOpen?JSON.stringify(c):null},[customer,isOpen]); // eslint-disable-line
   const addC=()=>sv('contacts',[...(f.contacts||[]),{name:'',email:'',phone:'',role:'Head Coach'}]);const rmC=i=>sv('contacts',(f.contacts||[]).filter((_,x)=>x!==i));
   const upC=(i,k,v)=>sv('contacts',(f.contacts||[]).map((c,x)=>x===i?{...c,[k]:v}:c));
-  const _initRef=React.useRef(null);
   const[valMsg,setValMsg]=useState('');
   const ok=()=>{const e={};if(!f.name)e.n=1;if(!f.alpha_tag)e.a=1;if(!f.shipping_city)e.c=1;if(!f.shipping_state)e.s=1;if(ct==='sub'&&!f.parent_id)e.p=1;if(!(f.contacts||[])[0]?.name)e.cn=1;if(!(f.contacts||[])[0]?.email)e.ce=1;setErr(e);const missing=[];if(e.n)missing.push('Name');if(e.a)missing.push('Alpha Tag');if(e.c)missing.push('City');if(e.s)missing.push('State');if(e.p)missing.push('Parent');if(e.cn)missing.push('Contact Name');if(e.ce)missing.push('Contact Email');if(missing.length)setValMsg('Missing: '+missing.join(', '));else setValMsg('');return!missing.length};
   const _isDirty=()=>_initRef.current!==null&&JSON.stringify(f)!==_initRef.current;
