@@ -485,12 +485,13 @@ let _bgSync=false;// true during background sync saves (poll/realtime _diffSave)
 const _checkVersion=async(table,id,localVersion)=>{
   if(!supabase||!localVersion)return true;// skip check if no version tracked
   // Skip version check for records this client recently saved (prevents false conflicts from own realtime echo)
-  if(_dbRecentSaves[id]&&Date.now()-_dbRecentSaves[id]<15000)return true;
+  if(_dbRecentSaves[id]&&Date.now()-_dbRecentSaves[id]<60000)return true;
   try{
     const{data}=await supabase.from(table).select('_version').eq('id',id).single();
     if(!data)return true;// new record
     if(data._version>localVersion){
       console.warn(`[DB] Version conflict on ${table}/${id}: local v${localVersion}, server v${data._version} — auto-healing`);
+      _dbRecentSaves[id]=Date.now();// prevent rapid re-conflict from polls during save
       return data._version;// return server version so callers can auto-heal
     }
     return true;
@@ -2254,7 +2255,8 @@ export default function App(){
         // Tab returning — immediately retry failed saves instead of waiting 60s
         console.log('[DB] Tab visible — retrying',_dbSaveFailedIds.size,'failed saves');
         const snapKeys=['ests','sos','invs','cust','prod','msgs'];
-        snapKeys.forEach(key=>{const snap=_dbSnap.current[key];if(!snap)return;_dbSnap.current[key]=snap.map(s=>_dbSaveFailedIds.has(s.id)?{...s,_retry:Date.now()}:s)});
+        const shouldRetry=id=>_dbSaveFailedIds.has(id)&&!(_dbRecentSaves[id]&&Date.now()-_dbRecentSaves[id]<60000);
+        snapKeys.forEach(key=>{const snap=_dbSnap.current[key];if(!snap)return;_dbSnap.current[key]=snap.map(s=>shouldRetry(s.id)?{...s,_retry:Date.now()}:s)});
         setEsts(prev=>[...prev]);setSOs(prev=>[...prev]);setInvs(prev=>[...prev]);
         setCust(prev=>[...prev]);setProd(prev=>[...prev]);setMsgs(prev=>[...prev]);
       }
@@ -2269,12 +2271,15 @@ export default function App(){
     if(!supabase)return;
     const retry=setInterval(()=>{
       if(!_dbSaveFailedIds.size||!_initialLoadDone.current||!_dbLoadSuccess.current)return;
-      console.log('[DB] Retry: attempting re-save for',_dbSaveFailedIds.size,'failed IDs:',[ ..._dbSaveFailedIds]);
+      // Skip IDs that were recently saved (prevents rapid re-conflict loops)
+      const retryIds=[..._dbSaveFailedIds].filter(id=>!(_dbRecentSaves[id]&&Date.now()-_dbRecentSaves[id]<60000));
+      if(!retryIds.length)return;
+      console.log('[DB] Retry: attempting re-save for',retryIds.length,'failed IDs:',retryIds);
       // For each failed ID, clear its snapshot entry so _diffSave will re-detect and re-save it
       const snapKeys=['ests','sos','invs','cust','prod','msgs'];
       snapKeys.forEach(key=>{
         const snap=_dbSnap.current[key];if(!snap)return;
-        _dbSnap.current[key]=snap.map(s=>_dbSaveFailedIds.has(s.id)?{...s,_retry:Date.now()}:s);
+        _dbSnap.current[key]=snap.map(s=>retryIds.includes(s.id)?{...s,_retry:Date.now()}:s);
       });
       // Trigger a minimal state update to kick off _diffSave effects
       setEsts(prev=>[...prev]);setSOs(prev=>[...prev]);setInvs(prev=>[...prev]);
