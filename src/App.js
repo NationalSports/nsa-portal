@@ -1786,7 +1786,12 @@ export default function App(){
       }
       finally{if(!cancelled){_dbReady.current=true;setDbLoading(false);
         // Mark initial load done after a tick so auto-save effects don't fire from the setState calls above
-        setTimeout(()=>{_initialLoadDone.current=true},100);
+        setTimeout(()=>{_initialLoadDone.current=true;
+          // Clean up failed IDs for entities that were deleted — prevents permanent error banner
+          if(_dbSaveFailedIds.size){const d2=_visFlushRefs.current;const allIds2=new Set([...d2.ests,...d2.sos,...d2.invs,...d2.cust,...d2.prod,...d2.msgs].map(e=>e.id));
+          const orphaned2=[..._dbSaveFailedIds].filter(id=>!allIds2.has(id));
+          if(orphaned2.length){orphaned2.forEach(id=>{_dbSaveFailedIds.delete(id);console.log('[DB] Startup cleanup — cleared orphaned failed ID:',id)});_persistFailedIds()}}
+        },100);
       }}
     })();
     // ─── Supabase Realtime subscriptions ───
@@ -2271,6 +2276,10 @@ export default function App(){
     if(!supabase)return;
     const retry=setInterval(()=>{
       if(!_dbSaveFailedIds.size||!_initialLoadDone.current||!_dbLoadSuccess.current)return;
+      // Clean up failed IDs for entities that no longer exist in state (deleted by user)
+      const d=_visFlushRefs.current;const allIds=new Set([...d.ests,...d.sos,...d.invs,...d.cust,...d.prod,...d.msgs].map(e=>e.id));
+      const orphaned=[..._dbSaveFailedIds].filter(id=>!allIds.has(id));
+      if(orphaned.length){orphaned.forEach(id=>{_dbSaveFailedIds.delete(id);console.log('[DB] Cleared orphaned failed ID:',id)});_persistFailedIds();if(!_dbSaveFailedIds.size)return}
       // Skip IDs that were recently saved (prevents rapid re-conflict loops)
       const retryIds=[..._dbSaveFailedIds].filter(id=>!(_dbRecentSaves[id]&&Date.now()-_dbRecentSaves[id]<60000));
       if(!retryIds.length)return;
@@ -4846,6 +4855,49 @@ export default function App(){
   const[artJobDetailUploading,setArtJobDetailUploading]=useState(false);// upload in-progress flag
   const[artJobDetailEditColors,setArtJobDetailEditColors]=useState(null);// editing color string or null
   const[artJobDetailEditSize,setArtJobDetailEditSize]=useState(null);// editing art size string or null
+  // Vendor image cache for art dashboard — fetches product images from S&S/SanMar/Momentec APIs
+  const _artVendorImgCache=useRef({});const[artVendorImgs,setArtVendorImgs]=useState({});
+  // Fetch vendor images when art job detail modal opens (for items without local images)
+  const _artVendorImgFetching=useRef({});
+  React.useEffect(()=>{if(!artJobDetailModal)return;const so=artJobDetailModal.so;if(!so)return;
+    const items=(artJobDetailModal.items||[]).map(gi=>safeItems(so)[gi.item_idx]).filter(Boolean);
+    items.forEach(async it=>{
+      const prd=prod.find(pp=>pp.id===it.product_id||pp.sku===it.sku);
+      if(prd?.image_url||(prd?.images&&prd.images[0])||it._colorImage)return;// already has image
+      const sku=it.sku;const color=it.color||'';const cacheKey=sku+'|'+color.toLowerCase();
+      if(_artVendorImgCache.current[cacheKey]){setArtVendorImgs(prev=>({...prev,[cacheKey]:_artVendorImgCache.current[cacheKey]}));return}
+      if(_artVendorImgFetching.current[cacheKey])return;_artVendorImgFetching.current[cacheKey]=true;
+      let front='',back='';
+      try{
+        // Determine vendor API — check vendor_id first, then try S&S/SanMar as fallback for any blank
+        const vId=it.vendor_id||prd?.vendor_id;
+        const vRec=vId?vend.find(v=>v.id===vId):null;
+        const api=vRec?.api_provider||'';
+        if(api==='ss_activewear'){
+          const r=await _fetchSSImage(sku,color);front=r.front;back=r.back;
+        }else if(api==='sanmar'){
+          const r=await _fetchSMImage(sku,color);front=r.front;back=r.back;
+        }else if(api==='momentec'){
+          const r=await _fetchMTImage(sku);front=r.front;back=r.back;
+        }else{
+          // No API vendor — try S&S first (most blanks), then SanMar as fallback
+          const ss=await _fetchSSImage(sku,color);front=ss.front;back=ss.back;
+          if(!front){const sm=await _fetchSMImage(sku,color);front=sm.front;back=sm.back}
+        }
+      }catch(e){console.warn('[Art] Vendor image fetch failed for',sku,e.message)}
+      finally{delete _artVendorImgFetching.current[cacheKey]}
+      if(front||back){const result={front,back};_artVendorImgCache.current[cacheKey]=result;setArtVendorImgs(prev=>({...prev,[cacheKey]:result}))}
+    })},[artJobDetailModal]);// eslint-disable-line react-hooks/exhaustive-deps
+  // Vendor image fetch helpers
+  // Helper: build product search URL — uses Google Images to find the product
+  const _vendorProductUrl=(sku,color,brand)=>'https://www.google.com/search?tbm=isch&q='+encodeURIComponent((sku||'')+' '+(brand||'')+' '+(color||''));
+  const _fetchSSImage=async(sku,color)=>{let front='',back='';try{let data;try{let sid=null;try{const st=await ssApiCall('/Styles?style='+encodeURIComponent(sku));const sa=Array.isArray(st)?st:st?[st]:[];if(sa.length>0)sid=sa[0].styleID}catch(e){}
+    if(sid){data=await ssApiCall('/Products?styleID='+encodeURIComponent(sid))}else{data=await ssApiCall('/Products?style='+encodeURIComponent(sku))}}catch(e){data=[]}
+    const arr=Array.isArray(data)?data:data?[data]:[];const match=arr.find(p2=>(p2.colorName||'').toLowerCase()===color.toLowerCase())||arr[0];
+    if(match){front=match.colorFrontImage||match.colorSideImage||'';back=match.colorBackImage||'';if(front?.startsWith('http://'))front=front.replace('http://','https://');if(back?.startsWith('http://'))back=back.replace('http://','https://')}
+  }catch(e){}return{front,back}};
+  const _fetchSMImage=async(sku,color)=>{let front='',back='';try{const pd=await sanmarGetProduct(sku,color,'');const pi=pd?.items||[];if(pi.length){const bi=pi[0].productBasicInfo||pi[0];front=bi.thumbImageUrl||bi.imageUrl||bi.colorProductImage||'';back=bi.backImageUrl||bi.colorProductBackImage||''}}catch(e){}return{front,back}};
+  const _fetchMTImage=async(sku)=>{let front='',back='';try{const d=await momentecGetProductByPartNumber(sku);const entry=d?.CatalogEntryView?.[0];if(entry){front=entry.thumbnail||entry.fullImage||'';back=entry.fullImageBack||entry.backImage||''}}catch(e){}return{front,back}};
   const[artJobDetailApprovalMsg,setArtJobDetailApprovalMsg]=useState('');// message to include with approval send
   const[approvalNotifyModal,setApprovalNotifyModal]=useState(null);// {job,so,contact,method,message} for send-for-approval popup
   const[prodJobModal,setProdJobModal]=useState(null);// job object for production mockup view
@@ -5401,7 +5453,8 @@ export default function App(){
             fulSizes[sz]=Math.min(v,picked+rcvd);
           });
           const prd=prod.find(pp=>pp.id===it.product_id||pp.sku===it.sku);
-          return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,fulSizes,product_id:prd?.id||null,image_url:prd?.image_url||(prd?.images&&prd.images[0])||it._colorImage||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||it._colorBackImage||'',images:prd?.images||[]};
+          const _vik=(it.sku||'')+'|'+(it.color||'').toLowerCase();
+          return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,fulSizes,product_id:prd?.id||null,image_url:prd?.image_url||(prd?.images&&prd.images[0])||it._colorImage||artVendorImgs[_vik]?.front||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||it._colorBackImage||artVendorImgs[_vik]?.back||'',images:prd?.images||[]};
         }).filter(Boolean);
         const allSizes=SZ_ORD.filter(sz=>itemDetails.some(it=>it.sizes[sz]>0));
         // Parse colors for display — use job's deco_type for labels
@@ -11320,8 +11373,8 @@ export default function App(){
           const it=safeItems(so)[gi.item_idx];if(!it)return null;
           const sizes={};
           Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{sizes[sz]=v});
-          const prd=prod.find(pp=>pp.id===it.product_id||pp.sku===it.sku);
-          return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,image_url:prd?.image_url||(prd?.images&&prd.images[0])||it._colorImage||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||it._colorBackImage||'',images:prd?.images||[]};
+          const prd=prod.find(pp=>pp.id===it.product_id||pp.sku===it.sku);const _vik2=(it.sku||'')+'|'+(it.color||'').toLowerCase();
+          return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,image_url:prd?.image_url||(prd?.images&&prd.images[0])||it._colorImage||artVendorImgs[_vik2]?.front||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||it._colorBackImage||artVendorImgs[_vik2]?.back||'',images:prd?.images||[]};
         }).filter(Boolean);
         const allSizes=SZ_ORD.filter(sz=>itemDetails.some(it=>it.sizes[sz]>0));
 
@@ -11402,7 +11455,7 @@ export default function App(){
                     <div style={{display:'flex',alignItems:'center',gap:10,padding:'10px 14px',background:'linear-gradient(135deg,#f0f2f5,#e8ecf0)',borderBottom:'1px solid #e2e8f0'}}>
                       <div style={{display:'flex',gap:4,flexShrink:0}}>
                         {gi.image_url?<img src={gi.image_url} alt="Front" style={{width:48,height:48,objectFit:'contain',borderRadius:6,border:'1px solid #e2e8f0',background:'white',cursor:'pointer'}} onClick={()=>openFile(gi.image_url)}/>
-                        :<div style={{width:48,height:48,borderRadius:6,background:'#e2e8f0',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,color:'#94a3b8'}}>👕</div>}
+                        :<a href={_vendorProductUrl(gi.sku,gi.color,gi.brand)} target="_blank" rel="noopener noreferrer" title={'Search '+gi.sku+' images'} style={{width:48,height:48,borderRadius:6,background:'#e2e8f0',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,color:'#94a3b8',textDecoration:'none'}}>👕</a>}
                         {gi.back_image_url&&<img src={gi.back_image_url} alt="Back" style={{width:48,height:48,objectFit:'contain',borderRadius:6,border:'1px solid #e2e8f0',background:'white',cursor:'pointer'}} onClick={()=>openFile(gi.back_image_url)}/>}
                       </div>
                       <div style={{flex:1,minWidth:0}}>
@@ -11540,8 +11593,8 @@ export default function App(){
           const it=safeItems(so)[gi.item_idx];if(!it)return null;
           const sizes={};
           Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{sizes[sz]=v});
-          const prd=prod.find(pp=>pp.id===it.product_id||pp.sku===it.sku);
-          return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,product_id:prd?.id||null,image_url:prd?.image_url||(prd?.images&&prd.images[0])||it._colorImage||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||it._colorBackImage||'',images:prd?.images||[]};
+          const prd=prod.find(pp=>pp.id===it.product_id||pp.sku===it.sku);const _vik3=(it.sku||'')+'|'+(it.color||'').toLowerCase();
+          return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,product_id:prd?.id||null,image_url:prd?.image_url||(prd?.images&&prd.images[0])||it._colorImage||artVendorImgs[_vik3]?.front||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||it._colorBackImage||artVendorImgs[_vik3]?.back||'',images:prd?.images||[]};
         }).filter(Boolean);
         const allSizes=SZ_ORD.filter(sz=>itemDetails.some(it=>it.sizes[sz]>0));
 
@@ -11852,12 +11905,12 @@ export default function App(){
                   <div style={{display:'flex',alignItems:'center',gap:10,padding:'12px 14px',background:'linear-gradient(135deg,#f0f2f5,#e8ecf0)',borderBottom:'1px solid #e2e8f0'}}>
                     <div style={{display:'flex',gap:4,flexShrink:0}}>
                       {gi.image_url?<img src={gi.image_url} alt="Front" style={{width:52,height:52,objectFit:'contain',borderRadius:6,border:'1px solid #e2e8f0',background:'white',cursor:'pointer'}} onClick={()=>openFile(gi.image_url)}/>
-                      :<div style={{width:52,height:52,borderRadius:6,background:'#e2e8f0',display:'flex',alignItems:'center',justifyContent:'center',fontSize:20,color:'#94a3b8'}}>👕</div>}
+                      :<a href={_vendorProductUrl(gi.sku,gi.color,gi.brand)} target="_blank" rel="noopener noreferrer" title={'Search '+gi.sku+' images'} style={{width:52,height:52,borderRadius:6,background:'#e2e8f0',display:'flex',alignItems:'center',justifyContent:'center',fontSize:20,color:'#94a3b8',textDecoration:'none',cursor:'pointer'}}>👕</a>}
                       {gi.back_image_url&&<img src={gi.back_image_url} alt="Back" style={{width:52,height:52,objectFit:'contain',borderRadius:6,border:'1px solid #e2e8f0',background:'white',cursor:'pointer'}} onClick={()=>openFile(gi.back_image_url)}/>}
                     </div>
                     <div style={{flex:1,minWidth:0}}>
                       <div style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}>
-                        <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:13}}>{gi.sku}</span>
+                        <a href={_vendorProductUrl(gi.sku,gi.color,gi.brand)} target="_blank" rel="noopener noreferrer" style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:13,textDecoration:'none',cursor:'pointer'}} title={'Search '+gi.sku+' images'}>{gi.sku}</a>
                         <span style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{gi.name}</span>
                         {gi.color&&<span style={{color:'#6d28d9',fontWeight:700}}>— {gi.color}</span>}
                         {gi.brand&&<span style={{fontSize:10,padding:'1px 6px',background:'#f1f5f9',borderRadius:4,color:'#64748b',border:'1px solid #e2e8f0'}}>{gi.brand}</span>}
