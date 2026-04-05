@@ -5506,7 +5506,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           // Adjust inventory if status changed
           if(oldPick.status!=='pulled'&&newPick.status==='pulled'){adjustInvForPick(newPick,item,-1)}
           else if(oldPick.status==='pulled'&&newPick.status!=='pulled'){adjustInvForPick(oldPick,item,1)}
-          const updatedItems=[...o.items];updatedItems[editPick.lineIdx].pick_lines[editPick.pickIdx]=newPick;
+          const updatedItems=o.items.map((it,i)=>i===editPick.lineIdx?{...it,pick_lines:it.pick_lines.map((p,j)=>j===editPick.pickIdx?newPick:p)}:it);
           const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setEditPick(null);nf('Pick updated');
         }}>Save Changes</button>
       </div>
@@ -5619,7 +5619,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 const newTotalOpen=szKeys.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-(received[sz]||0)-(newCancelled[sz]||0)),0);
                 const newStatus=newTotalOpen<=0&&totalReceived>0?'received':totalReceived>0?'partial':'waiting';
                 const updatedPO={...po,cancelled:newCancelled,status:newStatus};
-                const updatedItems=[...o.items];updatedItems[activeLine.lineIdx].po_lines[activeLine.poIdx]=updatedPO;
+                const updatedItems=o.items.map((it,i)=>i===activeLine.lineIdx?{...it,po_lines:it.po_lines.map((p,j)=>j===activeLine.poIdx?updatedPO:p)}:it);
                 const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};
                 setO(updated);onSave(updated);setEditPO({...editPO,po:updatedPO});nf('Sizes cancelled from '+po.po_id);
               }}>⚠️ Cancel These Sizes</button>
@@ -5668,7 +5668,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   const newTotalOpen=szKeys.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-(newReceived[sz]||0)-getCncl(sz)),0);
                   const newStatus=newTotalOpen<=0&&Object.values(newReceived).some(v=>v>0)?'received':Object.values(newReceived).some(v=>v>0)?'partial':'waiting';
                   const updatedPO={...po,received:newReceived,shipments:newShipments,status:newStatus};
-                  const updatedItems=[...o.items];updatedItems[activeLine.lineIdx].po_lines[activeLine.poIdx]=updatedPO;
+                  const updatedItems=o.items.map((it,i)=>i===activeLine.lineIdx?{...it,po_lines:it.po_lines.map((p,j)=>j===activeLine.poIdx?updatedPO:p)}:it);
                   const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};
                   setO(updated);onSave(updated);setEditPO({...editPO,po:updatedPO,_editShipIdx:null});nf('Shipment #'+(si+1)+' updated');
                 }}>Save</button>
@@ -5679,7 +5679,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   const newTotalOpen=szKeys.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-(newReceived[sz]||0)-getCncl(sz)),0);
                   const newStatus=newTotalOpen<=0&&Object.values(newReceived).some(v=>v>0)?'received':Object.values(newReceived).some(v=>v>0)?'partial':'waiting';
                   const updatedPO={...po,received:newReceived,shipments:newShipments,status:newStatus};
-                  const updatedItems=[...o.items];updatedItems[activeLine.lineIdx].po_lines[activeLine.poIdx]=updatedPO;
+                  const updatedItems=o.items.map((it,i)=>i===activeLine.lineIdx?{...it,po_lines:it.po_lines.map((p,j)=>j===activeLine.poIdx?updatedPO:p)}:it);
                   const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};
                   setO(updated);onSave(updated);setEditPO({...editPO,po:updatedPO,_editShipIdx:null});nf('Shipment deleted');
                 }}><Icon name="trash" size={10}/> Delete</button>
@@ -5728,7 +5728,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const newTotalOpen=szKeys.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-(newReceived[sz]||0)-getCncl(sz)),0);
               const newStatus=newTotalOpen<=0&&Object.values(newReceived).some(v=>v>0)?'received':newTotalOpen>0?'partial':'waiting';
               const updatedPO={...po,received:newReceived,shipments:newShipments,status:newStatus};
-              const updatedItems=[...o.items];updatedItems[activeLine.lineIdx].po_lines[activeLine.poIdx]=updatedPO;
+              const updatedItems=o.items.map((it,i)=>i===activeLine.lineIdx?{...it,po_lines:it.po_lines.map((p,j)=>j===activeLine.poIdx?updatedPO:p)}:it);
               const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};
               setO(updated);onSave(updated);setEditPO({...editPO,po:updatedPO});nf('Shipment received on '+po.po_id);
             }}>✓ Receive These Items</button>
@@ -5999,7 +5999,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 const updatedPO={...po,received:newReceived,shipments:newShipments,status:newStatus};
                 const lineIdx=allLines?.[0]?.lineIdx||0;
                 const poIdx=soItems?.[lineIdx]?.po_lines?.findIndex(p=>p.po_id===po.po_id)||0;
-                const updatedItems=[...o.items];updatedItems[lineIdx].po_lines[poIdx]=updatedPO;
+                const updatedItems=o.items.map((it,i)=>i===lineIdx?{...it,po_lines:it.po_lines.map((p,j)=>j===poIdx?updatedPO:p)}:it);
                 const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};
                 setO(updated);onSave(updated);setPoFullPage({...poFullPage,po:updatedPO});nf('Shipment received on '+po.po_id);
               }}>Receive These Items</button>
@@ -6031,7 +6031,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 const updatedPO={...po,cancelled:newCancelled,status:newStatus};
                 const lineIdx=allLines?.[0]?.lineIdx||0;
                 const poIdx=soItems?.[lineIdx]?.po_lines?.findIndex(p=>p.po_id===po.po_id)||0;
-                const updatedItems=[...o.items];updatedItems[lineIdx].po_lines[poIdx]=updatedPO;
+                const updatedItems=o.items.map((it,i)=>i===lineIdx?{...it,po_lines:it.po_lines.map((p,j)=>j===poIdx?updatedPO:p)}:it);
                 const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};
                 setO(updated);onSave(updated);setPoFullPage({...poFullPage,po:updatedPO});nf('Sizes cancelled from '+po.po_id);
               }}>Cancel These Sizes</button>
@@ -6043,11 +6043,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <button className="btn btn-sm btn-secondary" style={{fontSize:11,color:'#dc2626',borderColor:'#fca5a5'}} onClick={()=>{
               if(!window.confirm('Delete entire PO? All sizes will go back to open.'))return;
               const lineIdx=allLines?.[0]?.lineIdx||0;
-              const updatedItems=[...o.items];
-              (allLines||[{lineIdx}]).forEach(ln=>{
-                const pidx=updatedItems[ln.lineIdx]?.po_lines?.findIndex(p=>p.po_id===po.po_id);
-                if(pidx>=0)updatedItems[ln.lineIdx].po_lines.splice(pidx,1);
-              });
+              const affectedIdxs=new Set((allLines||[{lineIdx}]).map(ln=>ln.lineIdx));
+              const updatedItems=o.items.map((it,i)=>affectedIdxs.has(i)?{...it,po_lines:(it.po_lines||[]).filter(p=>p.po_id!==po.po_id)}:it);
               const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};
               setO(updated);onSave(updated);setPoFullPage(null);nf('PO deleted');
             }}>Delete PO</button>

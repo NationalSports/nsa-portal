@@ -17,7 +17,7 @@ function VendDetail({vendor,products,onUpdateProducts,onBack}){
       const vendProds=products.filter(p=>p.vendor_id===vendor.id);
       if(!vendProds.length){alert('No products found for this vendor in catalog.\n\nS&S items added via live search get pricing automatically — no sync needed.');setSyncing(false);return}
       const uniqueSkus=[...new Set(vendProds.map(p=>p.sku))];
-      let updated=0;const changes=[];const errors=[];
+      let updated=0;const changes=[];const errors=[];const _costUpdates=new Map();
       for(let i=0;i<uniqueSkus.length;i++){
         const sku=uniqueSkus[i];
         try{
@@ -40,14 +40,14 @@ function VendDetail({vendor,products,onUpdateProducts,onBack}){
           vendProds.filter(p=>p.sku===sku).forEach(prod=>{
             if(Math.abs((prod.nsa_cost||0)-newCost)>0.005){
               changes.push(sku+': $'+(prod.nsa_cost||0).toFixed(2)+' → $'+newCost.toFixed(2));
-              prod.nsa_cost=newCost;updated++;
+              _costUpdates.set(prod.id,newCost);updated++;
             }
           });
         }catch(err){errors.push(sku+': '+err.message)}
       }
-      // Update products state
+      // Update products state immutably
       if(updated>0&&onUpdateProducts){
-        onUpdateProducts(prev=>prev.map(p=>{const match=vendProds.find(vp=>vp.id===p.id);return match?{...p,nsa_cost:match.nsa_cost}:p}));
+        onUpdateProducts(prev=>prev.map(p=>_costUpdates.has(p.id)?{...p,nsa_cost:_costUpdates.get(p.id)}:p));
       }
       alert('S&S Pricing Sync Complete\n\nSKUs checked: '+uniqueSkus.length+'\nPrices updated: '+updated+(changes.length?'\n\nChanges:\n'+changes.join('\n'):'')+(errors.length?'\n\nErrors:\n'+errors.join('\n'):''));
     }catch(e){alert('Sync failed: '+e.message)}finally{setSyncing(false)}
@@ -69,7 +69,7 @@ function VendDetail({vendor,products,onUpdateProducts,onBack}){
       try{
         const vendProds=products.filter(p=>p.vendor_id===vendor.id);
         const uniqueSkus=[...new Set(vendProds.map(p=>p.sku))];
-        let updated=0;const changes=[];const errors=[];
+        let updated=0;const changes=[];const errors=[];const _costUpdates=new Map();
         for(let i=0;i<uniqueSkus.length;i++){
           const sku=uniqueSkus[i];
           try{
@@ -83,13 +83,13 @@ function VendDetail({vendor,products,onUpdateProducts,onBack}){
             for(const prod of matching){
               if(Math.abs((prod.nsa_cost||0)-newCost)>0.005){
                 changes.push(sku+': $'+(prod.nsa_cost||0).toFixed(2)+' → $'+newCost.toFixed(2));
-                prod.nsa_cost=newCost;updated++;
+                _costUpdates.set(prod.id,newCost);updated++;
               }
             }
           }catch(e){errors.push(sku+': '+e.message)}
         }
         if(updated>0&&onUpdateProducts){
-          onUpdateProducts(prev=>prev.map(p=>{const match=vendProds.find(vp=>vp.id===p.id);return match?{...p,nsa_cost:match.nsa_cost}:p}));
+          onUpdateProducts(prev=>prev.map(p=>_costUpdates.has(p.id)?{...p,nsa_cost:_costUpdates.get(p.id)}:p));
         }
         alert('SanMar Pricing Sync Complete\n\nSKUs checked: '+uniqueSkus.length+'\nPrices updated: '+updated+(changes.length?'\n\nChanges:\n'+changes.join('\n'):'')+(errors.length?'\n\nErrors:\n'+errors.join('\n'):''));
       }catch(e){alert('Sync failed: '+e.message)}finally{setSyncing(false)}

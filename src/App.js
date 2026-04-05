@@ -6444,7 +6444,7 @@ export default function App(){
       const ic=cust.find(c=>c.id===inv.customer_id);
       const so=sos.find(s=>s.id===inv.so_id);
       const repObj=so?REPS.find(r=>r.id===so.created_by):null;
-      const bal=inv.total-(inv.paid||0);
+      const bal=inv.total-(inv.paid??0);
       const storedLineItems=inv.line_items||[];
       // Fallback: compute line items from SO when not stored on invoice
       const soComputedItems=(!storedLineItems.length&&so)?safeItems(so).map(it=>{
@@ -6827,7 +6827,7 @@ export default function App(){
           const totalActual=costLines.reduce((a,l)=>a+l.actual,0);
           const hasActuals=costLines.some(l=>l.poCount>0);
           const variance=totalActual-totalExpected;
-          const revenue=inv.total||0;
+          const revenue=inv.total??0;
           const gp=revenue-totalActual;
           const gpPct=revenue>0?(gp/revenue*100):0;
           const cats={};costLines.forEach(l=>{if(!cats[l.category])cats[l.category]={expected:0,actual:0};cats[l.category].expected+=l.expected;cats[l.category].actual+=l.actual});
@@ -8406,7 +8406,7 @@ export default function App(){
     // GP = Invoice Revenue − Garment Cost − Deco Cost − Outbound Shipping (ShipStation) − Inbound Freight (Supplier Bills)
     const calcGP=(inv)=>{
       const so=sos.find(s=>s.id===inv.so_id);
-      if(!so)return{rev:inv.total||0,cost:0,gp:inv.total||0,shipRev:0,shipCost:0,inboundFreight:0};
+      if(!so)return{rev:inv.total??0,cost:0,gp:inv.total??0,shipRev:0,shipCost:0,inboundFreight:0};
       const _aq={};safeItems(so).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_aq[d.art_file_id]=(_aq[d.art_file_id]||0)+q2}})});
       const af=safeArt(so);let rev=0,cost=0;
       safeItems(so).forEach(it=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
@@ -15031,8 +15031,8 @@ export default function App(){
       for(const c of cust.filter(c=>c.is_active!==false&&!c.deleted_at)){
         // Calculate totals
         const custSOs=sos.filter(s=>s.customer_id===c.id);
-        const totalRevenue=invs.filter(i=>i.customer_id===c.id).reduce((a,i)=>a+(i.total||0),0);
-        const totalPaid=invs.filter(i=>i.customer_id===c.id).reduce((a,i)=>a+(i.paid||0),0);
+        const totalRevenue=invs.filter(i=>i.customer_id===c.id).reduce((a,i)=>a+(i.total??0),0);
+        const totalPaid=invs.filter(i=>i.customer_id===c.id).reduce((a,i)=>a+(i.paid??0),0);
         const openBalance=totalRevenue-totalPaid;
         const displayName=c.name+(c.alpha_tag?' ('+c.alpha_tag+')':'');
         // Match existing QB customer by name if we don't already have a QB ID
@@ -15091,8 +15091,8 @@ export default function App(){
           DocNumber:inv.display_id||inv.id,
           TxnDate:inv.invoice_date||new Date().toISOString().slice(0,10),
           CustomerRef:{value:cQBId},
-          Line:[{DetailType:'SalesItemLineDetail',Amount:inv.total||0,Description:'Invoice '+(inv.display_id||inv.id)+(so?' for '+so.id:'')+(so?.memo?' — '+so.memo:''),
-            SalesItemLineDetail:{Qty:1,UnitPrice:inv.total||0}}],
+          Line:[{DetailType:'SalesItemLineDetail',Amount:inv.total??0,Description:'Invoice '+(inv.display_id||inv.id)+(so?' for '+so.id:'')+(so?.memo?' — '+so.memo:''),
+            SalesItemLineDetail:{Qty:1,UnitPrice:inv.total??0}}],
           ...(inv.qb_invoice_id?{Id:inv.qb_invoice_id,sparse:true}:{}),
         };
         let res=await qbApi('upsert_invoice',{invoice:qbInvoice});
@@ -15892,8 +15892,8 @@ export default function App(){
               <tbody>
                 {cust.filter(c=>c.is_active!==false).map(c=>{
                   const custInvs=invs.filter(i=>i.customer_id===c.id);
-                  const rev=custInvs.reduce((a,i)=>a+(i.total||0),0);
-                  const paid=custInvs.reduce((a,i)=>a+(i.paid||0),0);
+                  const rev=custInvs.reduce((a,i)=>a+(i.total??0),0);
+                  const paid=custInvs.reduce((a,i)=>a+(i.paid??0),0);
                   const orders=sos.filter(s=>s.customer_id===c.id).length;
                   return<tr key={c.id} style={{borderBottom:'1px solid #f1f5f9'}}>
                     <td style={{fontWeight:600}}>{c.name}</td>
@@ -16430,15 +16430,15 @@ export default function App(){
         {/* Screen Print Matrix */}
         <div className="card" style={{marginBottom:16}}><div className="card-header"><h3>Screen Print Pricing</h3></div><div className="card-body">
           <div style={{display:'flex',gap:16,marginBottom:12,flexWrap:'wrap'}}>
-            <div><label className="form-label">Markup (cost-to-sell)</label><input className="form-input" type="number" step="0.05" style={{width:80}} value={SP.mk} onChange={e=>{SP.mk=parseFloat(e.target.value)||1.5;savSettings('SP',{...SP})}}/></div>
-            <div><label className="form-label">Underbase Upcharge</label><input className="form-input" type="number" step="0.01" style={{width:80}} value={SP.ub} onChange={e=>{SP.ub=parseFloat(e.target.value)||0;savSettings('SP',{...SP})}}/></div>
+            <div><label className="form-label">Markup (cost-to-sell)</label><input className="form-input" type="number" step="0.05" style={{width:80}} value={SP.mk} onChange={e=>{savSettings('SP',{...SP,mk:parseFloat(e.target.value)||1.5})}}/></div>
+            <div><label className="form-label">Underbase Upcharge</label><input className="form-input" type="number" step="0.01" style={{width:80}} value={SP.ub} onChange={e=>{savSettings('SP',{...SP,ub:parseFloat(e.target.value)||0})}}/></div>
           </div>
           <div style={{overflowX:'auto'}}><table style={{fontSize:12}}>
             <thead><tr><th style={{fontSize:10}}>Qty Range</th>{[1,2,3,4,5].map(c=><th key={c} style={{fontSize:10,textAlign:'center'}}>{c} Color{c>1?'s':''}</th>)}</tr></thead>
             <tbody>{SP.bk.map((b,bi)=><tr key={bi}>
               <td style={{fontWeight:700,fontSize:11,whiteSpace:'nowrap'}}>{b.min}-{b.max>=99999?'+':b.max}</td>
               {[0,1,2,3,4].map(ci=><td key={ci} style={{padding:2}}><input className="form-input" type="number" step="0.05" style={{width:60,fontSize:11,textAlign:'center',padding:'2px 4px'}}
-                value={SP.pr[bi]?.[ci]??''} onChange={e=>{const v=e.target.value===''?null:parseFloat(e.target.value);const pr={...SP.pr};if(!pr[bi])pr[bi]=[null,null,null,null,null];pr[bi]=[...pr[bi]];pr[bi][ci]=v;SP.pr=pr;savSettings('SP',{...SP})}}/></td>)}
+                value={SP.pr[bi]?.[ci]??''} onChange={e=>{const v=e.target.value===''?null:parseFloat(e.target.value);const pr={...SP.pr};if(!pr[bi])pr[bi]=[null,null,null,null,null];pr[bi]=[...pr[bi]];pr[bi][ci]=v;savSettings('SP',{...SP,pr})}}/></td>)}
             </tr>)}</tbody>
           </table></div>
           <div style={{fontSize:10,color:'#64748b',marginTop:8}}>Sell prices shown. Cost = Sell / Markup ({SP.mk}x). Underbase adds {Math.round(SP.ub*100)}% to both.</div>
@@ -16447,14 +16447,14 @@ export default function App(){
         {/* Embroidery Matrix */}
         <div className="card" style={{marginBottom:16}}><div className="card-header"><h3>Embroidery Pricing</h3></div><div className="card-body">
           <div style={{marginBottom:12}}>
-            <label className="form-label">Markup (cost-to-sell)</label><input className="form-input" type="number" step="0.05" style={{width:80}} value={EM.mk} onChange={e=>{EM.mk=parseFloat(e.target.value)||1.6;savSettings('EM',{...EM})}}/>
+            <label className="form-label">Markup (cost-to-sell)</label><input className="form-input" type="number" step="0.05" style={{width:80}} value={EM.mk} onChange={e=>{savSettings('EM',{...EM,mk:parseFloat(e.target.value)||1.6})}}/>
           </div>
           <div style={{overflowX:'auto'}}><table style={{fontSize:12}}>
             <thead><tr><th style={{fontSize:10}}>Stitches</th>{EM.qb.map((q,i)=><th key={i} style={{fontSize:10,textAlign:'center'}}>{i===0?'1':EM.qb[i-1]+1}-{q>=99999?'+':q}</th>)}</tr></thead>
             <tbody>{EM.sb.map((s,si)=><tr key={si}>
               <td style={{fontWeight:700,fontSize:11,whiteSpace:'nowrap'}}>{si===0?'0':(EM.sb[si-1]+1).toLocaleString()}-{s>=99999?'+':s.toLocaleString()}</td>
               {EM.qb.map((_,qi)=><td key={qi} style={{padding:2}}><input className="form-input" type="number" step="0.25" style={{width:60,fontSize:11,textAlign:'center',padding:'2px 4px'}}
-                value={EM.pr[si]?.[qi]??0} onChange={e=>{const v=parseFloat(e.target.value)||0;const pr=EM.pr.map(r=>[...r]);pr[si][qi]=v;EM.pr=pr;savSettings('EM',{...EM})}}/></td>)}
+                value={EM.pr[si]?.[qi]??0} onChange={e=>{const v=parseFloat(e.target.value)||0;const pr=EM.pr.map(r=>[...r]);pr[si][qi]=v;savSettings('EM',{...EM,pr})}}/></td>)}
             </tr>)}</tbody>
           </table></div>
           <div style={{fontSize:10,color:'#64748b',marginTop:8}}>Sell prices shown. Cost = Sell / Markup ({EM.mk}x).</div>
@@ -16466,11 +16466,11 @@ export default function App(){
             <thead><tr><th style={{fontSize:10}}>Qty Range</th><th style={{fontSize:10,textAlign:'center'}}>Cost</th><th style={{fontSize:10,textAlign:'center'}}>Sell</th></tr></thead>
             <tbody>{NP.bk.map((b,i)=><tr key={i}>
               <td style={{fontWeight:700,fontSize:11}}>{i===0?'1':(NP.bk[i-1]+1)}-{b>=99999?'+':b}</td>
-              <td style={{padding:2}}><input className="form-input" type="number" step="0.25" style={{width:60,fontSize:11,textAlign:'center',padding:'2px 4px'}} value={NP.co[i]} onChange={e=>{NP.co=[...NP.co];NP.co[i]=parseFloat(e.target.value)||0;savSettings('NP',{...NP})}}/></td>
-              <td style={{padding:2}}><input className="form-input" type="number" step="0.25" style={{width:60,fontSize:11,textAlign:'center',padding:'2px 4px'}} value={NP.se[i]} onChange={e=>{NP.se=[...NP.se];NP.se[i]=parseFloat(e.target.value)||0;savSettings('NP',{...NP})}}/></td>
+              <td style={{padding:2}}><input className="form-input" type="number" step="0.25" style={{width:60,fontSize:11,textAlign:'center',padding:'2px 4px'}} value={NP.co[i]} onChange={e=>{const co=[...NP.co];co[i]=parseFloat(e.target.value)||0;savSettings('NP',{...NP,co})}}/></td>
+              <td style={{padding:2}}><input className="form-input" type="number" step="0.25" style={{width:60,fontSize:11,textAlign:'center',padding:'2px 4px'}} value={NP.se[i]} onChange={e=>{const se=[...NP.se];se[i]=parseFloat(e.target.value)||0;savSettings('NP',{...NP,se})}}/></td>
             </tr>)}</tbody>
           </table></div>
-          <div style={{marginTop:8}}><label className="form-label">Two-Color Upcharge</label><input className="form-input" type="number" step="0.5" style={{width:80}} value={NP.tc} onChange={e=>{NP.tc=parseFloat(e.target.value)||0;savSettings('NP',{...NP})}}/></div>
+          <div style={{marginTop:8}}><label className="form-label">Two-Color Upcharge</label><input className="form-input" type="number" step="0.5" style={{width:80}} value={NP.tc} onChange={e=>{savSettings('NP',{...NP,tc:parseFloat(e.target.value)||0})}}/></div>
         </div></div>
 
         {/* DTF Pricing */}
@@ -16478,12 +16478,12 @@ export default function App(){
           <table style={{fontSize:12}}>
             <thead><tr><th style={{fontSize:10}}>Size</th><th style={{fontSize:10,textAlign:'center'}}>Cost</th><th style={{fontSize:10,textAlign:'center'}}>Sell</th></tr></thead>
             <tbody>{DTF.map((d,i)=><tr key={i}>
-              <td style={{fontWeight:700,fontSize:11}}><input className="form-input" style={{width:160,fontSize:11,padding:'2px 6px'}} value={d.label} onChange={e=>{DTF[i]={...DTF[i],label:e.target.value};savSettings('DTF',[...DTF])}}/></td>
-              <td style={{padding:2}}><input className="form-input" type="number" step="0.25" style={{width:60,fontSize:11,textAlign:'center',padding:'2px 4px'}} value={d.cost} onChange={e=>{DTF[i]={...DTF[i],cost:parseFloat(e.target.value)||0};savSettings('DTF',[...DTF])}}/></td>
-              <td style={{padding:2}}><input className="form-input" type="number" step="0.25" style={{width:60,fontSize:11,textAlign:'center',padding:'2px 4px'}} value={d.sell} onChange={e=>{DTF[i]={...DTF[i],sell:parseFloat(e.target.value)||0};savSettings('DTF',[...DTF])}}/></td>
+              <td style={{fontWeight:700,fontSize:11}}><input className="form-input" style={{width:160,fontSize:11,padding:'2px 6px'}} value={d.label} onChange={e=>{savSettings('DTF',DTF.map((x,j)=>j===i?{...x,label:e.target.value}:x))}}/></td>
+              <td style={{padding:2}}><input className="form-input" type="number" step="0.25" style={{width:60,fontSize:11,textAlign:'center',padding:'2px 4px'}} value={d.cost} onChange={e=>{savSettings('DTF',DTF.map((x,j)=>j===i?{...x,cost:parseFloat(e.target.value)||0}:x))}}/></td>
+              <td style={{padding:2}}><input className="form-input" type="number" step="0.25" style={{width:60,fontSize:11,textAlign:'center',padding:'2px 4px'}} value={d.sell} onChange={e=>{savSettings('DTF',DTF.map((x,j)=>j===i?{...x,sell:parseFloat(e.target.value)||0}:x))}}/></td>
             </tr>)}</tbody>
           </table>
-          <button className="btn btn-sm btn-secondary" style={{marginTop:8,fontSize:11}} onClick={()=>{DTF.push({label:'New Size',cost:0,sell:0});savSettings('DTF',[...DTF])}}>+ Add Size</button>
+          <button className="btn btn-sm btn-secondary" style={{marginTop:8,fontSize:11}} onClick={()=>{savSettings('DTF',[...DTF,{label:'New Size',cost:0,sell:0}])}}>+ Add Size</button>
         </div></div>
       </>}
 
