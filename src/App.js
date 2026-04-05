@@ -4855,49 +4855,8 @@ export default function App(){
   const[artJobDetailUploading,setArtJobDetailUploading]=useState(false);// upload in-progress flag
   const[artJobDetailEditColors,setArtJobDetailEditColors]=useState(null);// editing color string or null
   const[artJobDetailEditSize,setArtJobDetailEditSize]=useState(null);// editing art size string or null
-  // Vendor image cache for art dashboard — fetches product images from S&S/SanMar/Momentec APIs
-  const _artVendorImgCache=useRef({});const[artVendorImgs,setArtVendorImgs]=useState({});
-  // Fetch vendor images when art job detail modal opens (for items without local images)
-  const _artVendorImgFetching=useRef({});
-  React.useEffect(()=>{if(!artJobDetailModal)return;const so=artJobDetailModal.so;if(!so)return;
-    const items=(artJobDetailModal.items||[]).map(gi=>safeItems(so)[gi.item_idx]).filter(Boolean);
-    items.forEach(async it=>{
-      const prd=prod.find(pp=>pp.id===it.product_id||pp.sku===it.sku);
-      if(prd?.image_url||(prd?.images&&prd.images[0])||it._colorImage)return;// already has image
-      const sku=it.sku;const color=it.color||'';const cacheKey=sku+'|'+color.toLowerCase();
-      if(_artVendorImgCache.current[cacheKey]){setArtVendorImgs(prev=>({...prev,[cacheKey]:_artVendorImgCache.current[cacheKey]}));return}
-      if(_artVendorImgFetching.current[cacheKey])return;_artVendorImgFetching.current[cacheKey]=true;
-      let front='',back='';
-      try{
-        // Determine vendor API — check vendor_id first, then try S&S/SanMar as fallback for any blank
-        const vId=it.vendor_id||prd?.vendor_id;
-        const vRec=vId?vend.find(v=>v.id===vId):null;
-        const api=vRec?.api_provider||'';
-        if(api==='ss_activewear'){
-          const r=await _fetchSSImage(sku,color);front=r.front;back=r.back;
-        }else if(api==='sanmar'){
-          const r=await _fetchSMImage(sku,color);front=r.front;back=r.back;
-        }else if(api==='momentec'){
-          const r=await _fetchMTImage(sku);front=r.front;back=r.back;
-        }else{
-          // No API vendor — try S&S first (most blanks), then SanMar as fallback
-          const ss=await _fetchSSImage(sku,color);front=ss.front;back=ss.back;
-          if(!front){const sm=await _fetchSMImage(sku,color);front=sm.front;back=sm.back}
-        }
-      }catch(e){console.warn('[Art] Vendor image fetch failed for',sku,e.message)}
-      finally{delete _artVendorImgFetching.current[cacheKey]}
-      if(front||back){const result={front,back};_artVendorImgCache.current[cacheKey]=result;setArtVendorImgs(prev=>({...prev,[cacheKey]:result}))}
-    })},[artJobDetailModal]);// eslint-disable-line react-hooks/exhaustive-deps
-  // Vendor image fetch helpers
   // Helper: build product search URL — uses Google Images to find the product
   const _vendorProductUrl=(sku,color,brand)=>'https://www.google.com/search?tbm=isch&q='+encodeURIComponent((sku||'')+' '+(brand||'')+' '+(color||''));
-  const _fetchSSImage=async(sku,color)=>{let front='',back='';try{let data;try{let sid=null;try{const st=await ssApiCall('/Styles?style='+encodeURIComponent(sku));const sa=Array.isArray(st)?st:st?[st]:[];if(sa.length>0)sid=sa[0].styleID}catch(e){}
-    if(sid){data=await ssApiCall('/Products?styleID='+encodeURIComponent(sid))}else{data=await ssApiCall('/Products?style='+encodeURIComponent(sku))}}catch(e){data=[]}
-    const arr=Array.isArray(data)?data:data?[data]:[];const match=arr.find(p2=>(p2.colorName||'').toLowerCase()===color.toLowerCase())||arr[0];
-    if(match){front=match.colorFrontImage||match.colorSideImage||'';back=match.colorBackImage||'';if(front?.startsWith('http://'))front=front.replace('http://','https://');if(back?.startsWith('http://'))back=back.replace('http://','https://')}
-  }catch(e){}return{front,back}};
-  const _fetchSMImage=async(sku,color)=>{let front='',back='';try{const pd=await sanmarGetProduct(sku,color,'');const pi=pd?.items||[];if(pi.length){const bi=pi[0].productBasicInfo||pi[0];front=bi.thumbImageUrl||bi.imageUrl||bi.colorProductImage||'';back=bi.backImageUrl||bi.colorProductBackImage||''}}catch(e){}return{front,back}};
-  const _fetchMTImage=async(sku)=>{let front='',back='';try{const d=await momentecGetProductByPartNumber(sku);const entry=d?.CatalogEntryView?.[0];if(entry){front=entry.thumbnail||entry.fullImage||'';back=entry.fullImageBack||entry.backImage||''}}catch(e){}return{front,back}};
   const[artJobDetailApprovalMsg,setArtJobDetailApprovalMsg]=useState('');// message to include with approval send
   const[approvalNotifyModal,setApprovalNotifyModal]=useState(null);// {job,so,contact,method,message} for send-for-approval popup
   const[prodJobModal,setProdJobModal]=useState(null);// job object for production mockup view
@@ -5453,8 +5412,7 @@ export default function App(){
             fulSizes[sz]=Math.min(v,picked+rcvd);
           });
           const prd=prod.find(pp=>pp.id===it.product_id||pp.sku===it.sku);
-          const _vik=(it.sku||'')+'|'+(it.color||'').toLowerCase();
-          return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,fulSizes,product_id:prd?.id||null,image_url:prd?.image_url||(prd?.images&&prd.images[0])||it._colorImage||artVendorImgs[_vik]?.front||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||it._colorBackImage||artVendorImgs[_vik]?.back||'',images:prd?.images||[]};
+          return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,fulSizes,product_id:prd?.id||null,image_url:prd?.image_url||(prd?.images&&prd.images[0])||it._colorImage||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||it._colorBackImage||'',images:prd?.images||[]};
         }).filter(Boolean);
         const allSizes=SZ_ORD.filter(sz=>itemDetails.some(it=>it.sizes[sz]>0));
         // Parse colors for display — use job's deco_type for labels
@@ -11373,8 +11331,7 @@ export default function App(){
           const it=safeItems(so)[gi.item_idx];if(!it)return null;
           const sizes={};
           Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{sizes[sz]=v});
-          const prd=prod.find(pp=>pp.id===it.product_id||pp.sku===it.sku);const _vik2=(it.sku||'')+'|'+(it.color||'').toLowerCase();
-          return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,image_url:prd?.image_url||(prd?.images&&prd.images[0])||it._colorImage||artVendorImgs[_vik2]?.front||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||it._colorBackImage||artVendorImgs[_vik2]?.back||'',images:prd?.images||[]};
+          const prd=prod.find(pp=>pp.id===it.product_id||pp.sku===it.sku);return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,image_url:prd?.image_url||(prd?.images&&prd.images[0])||it._colorImage||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||it._colorBackImage||'',images:prd?.images||[]};
         }).filter(Boolean);
         const allSizes=SZ_ORD.filter(sz=>itemDetails.some(it=>it.sizes[sz]>0));
 
@@ -11593,8 +11550,7 @@ export default function App(){
           const it=safeItems(so)[gi.item_idx];if(!it)return null;
           const sizes={};
           Object.entries(safeSizes(it)).filter(([,v])=>v>0).forEach(([sz,v])=>{sizes[sz]=v});
-          const prd=prod.find(pp=>pp.id===it.product_id||pp.sku===it.sku);const _vik3=(it.sku||'')+'|'+(it.color||'').toLowerCase();
-          return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,product_id:prd?.id||null,image_url:prd?.image_url||(prd?.images&&prd.images[0])||it._colorImage||artVendorImgs[_vik3]?.front||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||it._colorBackImage||artVendorImgs[_vik3]?.back||'',images:prd?.images||[]};
+          const prd=prod.find(pp=>pp.id===it.product_id||pp.sku===it.sku);return{sku:it.sku||gi.sku,name:it.name||gi.name,brand:it.brand||'',color:it.color||gi.color||'',sizes,product_id:prd?.id||null,image_url:prd?.image_url||(prd?.images&&prd.images[0])||it._colorImage||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||it._colorBackImage||'',images:prd?.images||[]};
         }).filter(Boolean);
         const allSizes=SZ_ORD.filter(sz=>itemDetails.some(it=>it.sizes[sz]>0));
 
