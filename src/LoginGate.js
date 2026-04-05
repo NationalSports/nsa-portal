@@ -14,7 +14,7 @@ function LoginGate({onLogin,reps,supabase,sbSignIn:_sbSignIn,sbSignUp:_sbSignUp,
   const[password2,setPassword2]=useState('');
   const[error,setError]=useState('');
   const[loading,setLoading]=useState(false);
-  const[mode,setMode]=useState('login');// 'login', 'setup', or 'admin'
+  const[mode,setMode]=useState('login');// 'login', 'setup', 'admin', or 'confirm'
   const[adminFilter,setAdminFilter]=useState('');
   const[sessionChecked,setSessionChecked]=useState(false);
 
@@ -52,9 +52,9 @@ function LoginGate({onLogin,reps,supabase,sbSignIn:_sbSignIn,sbSignUp:_sbSignUp,
       if(res.error){setError(res.error);setLoading(false);return}
       // Link auth account to team member
       if(res.user&&member)await _sbLinkTeamAuth(member.id,res.user.id);
-      // Auto sign-in after setup
+      // Try auto sign-in; if email confirmation required, show confirm screen
       const signIn=await _sbSignIn(email.trim(),password);
-      if(signIn.error){setError('Account created! Please sign in.');setMode('login');setPassword('');setPassword2('');setLoading(false);return}
+      if(signIn.error){setMode('confirm');setLoading(false);return}
       onLogin({...member,_authSession:true});
     }else{
       // Normal sign-in
@@ -94,7 +94,22 @@ function LoginGate({onLogin,reps,supabase,sbSignIn:_sbSignIn,sbSignUp:_sbSignUp,
 
         {/* Login Card */}
         <div style={{background:'white',borderRadius:16,padding:32,boxShadow:'0 20px 60px rgba(0,0,0,0.3)'}}>
-          {mode==='admin'?(
+          {mode==='confirm'?(
+            /* Email confirmation notice */
+            <>
+              <div style={{textAlign:'center',padding:'16px 0'}}>
+                <div style={{fontSize:40,marginBottom:12}}>&#9993;</div>
+                <div style={{fontSize:18,fontWeight:700,color:'#0f172a',marginBottom:8}}>Check Your Email</div>
+                <div style={{fontSize:13,color:'#64748b',marginBottom:16,lineHeight:1.5}}>
+                  We sent a confirmation link to <strong>{email}</strong>. Click the link in the email to verify your account, then come back here to sign in.
+                </div>
+                <button type="button" onClick={()=>{setMode('login');setPassword('');setPassword2('');setError('')}}
+                  style={{padding:'10px 24px',background:'#1e40af',color:'white',border:'none',borderRadius:8,fontWeight:700,fontSize:14,cursor:'pointer'}}>
+                  Back to Sign In
+                </button>
+              </div>
+            </>
+          ):mode==='admin'?(
             /* Admin impersonation picker */
             <>
               <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:4}}>
@@ -130,7 +145,7 @@ function LoginGate({onLogin,reps,supabase,sbSignIn:_sbSignIn,sbSignUp:_sbSignUp,
             {mode==='setup'?'Set Up Your Account':'Sign In'}
           </div>
           <div style={{fontSize:13,color:'#64748b',marginBottom:20}}>
-            {mode==='setup'?'Create a password to get started':'Enter your email and password'}
+            {mode==='setup'?'Create a password to get started. You\'ll need to confirm your email before signing in.':'Enter your email and password'}
           </div>
 
           <form onSubmit={handleLogin}>

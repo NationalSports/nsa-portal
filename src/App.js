@@ -219,7 +219,7 @@ const _sbSignIn=async(email,password)=>{
 };
 const _sbSignUp=async(email,password)=>{
   if(!supabase)return{error:'Supabase not configured'};
-  const{data,error}=await supabase.auth.signUp({email,password});
+  const{data,error}=await supabase.auth.signUp({email,password,options:{emailRedirectTo:window.location.origin}});
   if(error)return{error:error.message};
   return{user:data.user};
 };
