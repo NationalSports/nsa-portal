@@ -37,16 +37,24 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
   const[followUpDays,setFollowUpDays]=useState(defaultFollowUpDays||7);
   const label=docType==='so'?'Sales Order':'Estimate';
   const prevOpenRef=React.useRef(false);const sendingRef=React.useRef(false);
-  React.useEffect(()=>{if(isOpen&&!prevOpenRef.current&&customer){
-    const emails=(customer?.contacts||[]).map(c=>c.email).filter(Boolean);
-    const primaryContact=(customer.contacts||[])[0];
+  // Use refs so the init effect doesn't re-run when parent re-renders (auto-save, realtime, polls)
+  const customerRef=React.useRef(customer);customerRef.current=customer;
+  const estimateRef=React.useRef(estimate);estimateRef.current=estimate;
+  const docTypeRef=React.useRef(docType);docTypeRef.current=docType;
+  const defaultFollowUpRef=React.useRef(defaultFollowUpDays);defaultFollowUpRef.current=defaultFollowUpDays;
+  React.useEffect(()=>{if(isOpen&&!prevOpenRef.current){
+    const cust2=customerRef.current;const est2=estimateRef.current;const dt=docTypeRef.current;
+    const lbl=dt==='so'?'Sales Order':'Estimate';
+    if(cust2){
+    const emails=(cust2?.contacts||[]).map(c=>c.email).filter(Boolean);
+    const primaryContact=(cust2.contacts||[])[0];
     setToEmails(emails.join(', '));
-    setBody(`Hi ${primaryContact?.name||'Coach'},\n\nPlease find the attached ${label.toLowerCase()} for ${estimate?.memo||'your order'}. You can view ${docType==='so'?'it':'and approve it'} through your portal.\n\nPortal link: https://nsa-portal.netlify.app/?portal=${customer.alpha_tag}\n\nLet me know if you have any questions!\n\nSteve Peterson\nNational Sports Apparel`);
+    setBody(`Hi ${primaryContact?.name||'Coach'},\n\nPlease find the attached ${lbl.toLowerCase()} for ${est2?.memo||'your order'}. You can view ${dt==='so'?'it':'and approve it'} through your portal.\n\nPortal link: https://nsa-portal.netlify.app/?portal=${cust2.alpha_tag}\n\nLet me know if you have any questions!\n\nSteve Peterson\nNational Sports Apparel`);
     setSmsPhone(primaryContact?.phone||'');
-    const portalUrl2=customer?.alpha_tag?'https://nsa-portal.netlify.app/?portal='+customer.alpha_tag:'';
-    setSmsMsg('Hi '+(primaryContact?.name||'Coach')+', your '+label.toLowerCase()+' for '+(estimate?.memo||'your order')+' is ready. View it here: '+portalUrl2);
-    setSmsEnabled(!!primaryContact?.phone);setFollowUpDays(defaultFollowUpDays||7);
-    setAttachments([]);setSending(false);sendingRef.current=false}prevOpenRef.current=isOpen},[isOpen,customer,estimate,docType,label]);
+    const portalUrl2=cust2?.alpha_tag?'https://nsa-portal.netlify.app/?portal='+cust2.alpha_tag:'';
+    setSmsMsg('Hi '+(primaryContact?.name||'Coach')+', your '+lbl.toLowerCase()+' for '+(est2?.memo||'your order')+' is ready. View it here: '+portalUrl2);
+    setSmsEnabled(!!primaryContact?.phone);setFollowUpDays(defaultFollowUpRef.current||7);
+    setAttachments([]);setSending(false);sendingRef.current=false}}prevOpenRef.current=isOpen},[isOpen]);
   const handleFiles=(files)=>{const newFiles=Array.from(files).map(f=>({name:f.name,size:(f.size/1024).toFixed(0)+' KB',file:f}));setAttachments(a=>[...a,...newFiles])};
   const doSend=async()=>{
     if(sendingRef.current)return;// prevent double send

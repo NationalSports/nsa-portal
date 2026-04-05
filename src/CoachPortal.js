@@ -99,7 +99,10 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         rows.push({cells:[{value:qty,style:'text-align:center'},{value:'<strong>'+(it.sku||'')+'</strong><br/>'+(safeStr(it.name)||'Item')+(it.color?' - '+it.color:'')+(szText?'<br/><span style="font-size:10px;color:#555">'+szText+'</span>':'')},{value:'',style:'text-align:center'},{value:eTaxRate>0?'Yes':'No',style:'text-align:center'},{value:'$'+safeNum(it.unit_sell).toFixed(2),style:'text-align:right'},{value:'$'+lineTotal.toFixed(2),style:'text-align:right;font-weight:600'}]});
         safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_eAQ[d.art_file_id]:qty;const dp2=dP(d,qty,eaf,cq);const eq2=dp2._nq!=null?dp2._nq:qty;const decoAmt=eq2*dp2.sell;
           const artF2=d.art_file_id?eaf.find(a2=>a2.id===d.art_file_id):null;const artColors2=artF2?.ink_colors?artF2.ink_colors.split('\n').filter(l=>l.trim()).length:0;
-          const label=d.kind==='numbers'?'Numbers — '+(d.position||'')+(d.front_and_back?' (Front + Back)':''):d.kind==='names'?'Names — '+(d.position||'')+(d.front_and_back?' (Front + Back)':''):(d.position||'Decoration')+(artColors2?' — '+artColors2+' Color'+(artColors2>1?'s':''):'')+(artF2?.deco_type?' — '+(artF2.deco_type||'').replace(/_/g,' '):'');
+          const decoType2=d.deco_type||artF2?.deco_type||d.art_tbd_type||'';const decoTypeLabel2=decoType2?decoType2.replace(/_/g,' '):'';
+          const colorCount2=safeNum(d.colors)||safeNum(d.tbd_colors)||artColors2;const stitchCount2=safeNum(d.stitches)||safeNum(d.tbd_stitches);
+          const decoDetail2=decoType2==='embroidery'&&stitchCount2?stitchCount2.toLocaleString()+' stitches':colorCount2?colorCount2+' color'+(colorCount2>1?'s':''):'';
+          const label=d.kind==='numbers'?'Numbers — '+(d.position||'')+(d.front_and_back?' (Front + Back)':''):d.kind==='names'?'Names — '+(d.position||'')+(d.front_and_back?' (Front + Back)':''):(decoTypeLabel2||d.position||'Decoration')+(decoDetail2?' — '+decoDetail2:'')+(decoTypeLabel2&&d.position?' — '+d.position:'');
           rows.push({cells:[{value:eq2,style:'text-align:center;color:#888;font-size:11px'},{value:'<span style="padding-left:16px;color:#666;font-size:10px">'+label+'</span>'},{value:'',style:'text-align:center'},{value:'',style:'text-align:center'},{value:'$'+dp2.sell.toFixed(2),style:'text-align:right;color:#888;font-size:11px'},{value:'$'+decoAmt.toFixed(2),style:'text-align:right;color:#888;font-size:11px'}]});
         });
       });
@@ -171,7 +174,10 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
               {safeDecos(it).length>0&&<div style={{fontSize:11,color:'#64748b',borderTop:'1px solid #f1f5f9',paddingTop:4}}>
                 {safeDecos(it).map((d,di)=>{const cq=d.kind==='art'&&d.art_file_id?_eAQ[d.art_file_id]:qty;const dp2=dP(d,qty,eaf,cq);const eq2=dp2._nq!=null?dp2._nq:qty;const decoLine=eq2*dp2.sell;
                   const artF2=d.art_file_id?eaf.find(a2=>a2.id===d.art_file_id):null;const artColors=artF2?.ink_colors?artF2.ink_colors.split('\n').filter(l=>l.trim()).length:0;
-                  const decoLabel=d.kind==='numbers'?'Numbers · '+(d.position||'')+(d.front_and_back?' (Front + Back)':''):d.kind==='names'?'Names · '+(d.position||'')+(d.front_and_back?' (Front + Back)':''):(d.position||'Decoration')+(artColors?' · '+artColors+' Color'+(artColors>1?'s':''):'')+(artF2?.deco_type?' · '+(artF2.deco_type||'').replace(/_/g,' '):'');
+                  const decoType=d.deco_type||artF2?.deco_type||d.art_tbd_type||'';const decoTypeLabel=decoType?decoType.replace(/_/g,' '):'';
+                  const colorCount=safeNum(d.colors)||safeNum(d.tbd_colors)||artColors;const stitchCount=safeNum(d.stitches)||safeNum(d.tbd_stitches);
+                  const decoDetail=decoType==='embroidery'&&stitchCount?stitchCount.toLocaleString()+' stitches':colorCount?colorCount+' color'+(colorCount>1?'s':''):'';
+                  const decoLabel=d.kind==='numbers'?'Numbers · '+(d.position||'')+(d.front_and_back?' (Front + Back)':''):d.kind==='names'?'Names · '+(d.position||'')+(d.front_and_back?' (Front + Back)':''):(decoTypeLabel||d.position||'Decoration')+(decoDetail?' · '+decoDetail:'')+(decoTypeLabel&&d.position?' · '+d.position:'');
                   return<div key={di} style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><span>{d.kind==='numbers'?'#️⃣':d.kind==='names'?'🏷️':'🎨'} {decoLabel}</span>{decoLine>0&&<span style={{fontWeight:600}}>{eq2} × ${dp2.sell.toFixed(2)}/ea = +${decoLine.toFixed(2)}</span>}</div>})}
               </div>}
             </div>})}
