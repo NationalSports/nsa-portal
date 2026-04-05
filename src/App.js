@@ -4889,6 +4889,8 @@ export default function App(){
       if(front||back){const result={front,back};_artVendorImgCache.current[cacheKey]=result;setArtVendorImgs(prev=>({...prev,[cacheKey]:result}))}
     })},[artJobDetailModal]);// eslint-disable-line react-hooks/exhaustive-deps
   // Vendor image fetch helpers
+  // Helper: build product search URL — uses Google Images to find the product
+  const _vendorProductUrl=(sku,color,brand)=>'https://www.google.com/search?tbm=isch&q='+encodeURIComponent((sku||'')+' '+(brand||'')+' '+(color||''));
   const _fetchSSImage=async(sku,color)=>{let front='',back='';try{let data;try{let sid=null;try{const st=await ssApiCall('/Styles?style='+encodeURIComponent(sku));const sa=Array.isArray(st)?st:st?[st]:[];if(sa.length>0)sid=sa[0].styleID}catch(e){}
     if(sid){data=await ssApiCall('/Products?styleID='+encodeURIComponent(sid))}else{data=await ssApiCall('/Products?style='+encodeURIComponent(sku))}}catch(e){data=[]}
     const arr=Array.isArray(data)?data:data?[data]:[];const match=arr.find(p2=>(p2.colorName||'').toLowerCase()===color.toLowerCase())||arr[0];
@@ -11453,7 +11455,7 @@ export default function App(){
                     <div style={{display:'flex',alignItems:'center',gap:10,padding:'10px 14px',background:'linear-gradient(135deg,#f0f2f5,#e8ecf0)',borderBottom:'1px solid #e2e8f0'}}>
                       <div style={{display:'flex',gap:4,flexShrink:0}}>
                         {gi.image_url?<img src={gi.image_url} alt="Front" style={{width:48,height:48,objectFit:'contain',borderRadius:6,border:'1px solid #e2e8f0',background:'white',cursor:'pointer'}} onClick={()=>openFile(gi.image_url)}/>
-                        :<div style={{width:48,height:48,borderRadius:6,background:'#e2e8f0',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,color:'#94a3b8'}}>👕</div>}
+                        :<a href={_vendorProductUrl(gi.sku,gi.color,gi.brand)} target="_blank" rel="noopener noreferrer" title={'Search '+gi.sku+' images'} style={{width:48,height:48,borderRadius:6,background:'#e2e8f0',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,color:'#94a3b8',textDecoration:'none'}}>👕</a>}
                         {gi.back_image_url&&<img src={gi.back_image_url} alt="Back" style={{width:48,height:48,objectFit:'contain',borderRadius:6,border:'1px solid #e2e8f0',background:'white',cursor:'pointer'}} onClick={()=>openFile(gi.back_image_url)}/>}
                       </div>
                       <div style={{flex:1,minWidth:0}}>
@@ -11903,12 +11905,12 @@ export default function App(){
                   <div style={{display:'flex',alignItems:'center',gap:10,padding:'12px 14px',background:'linear-gradient(135deg,#f0f2f5,#e8ecf0)',borderBottom:'1px solid #e2e8f0'}}>
                     <div style={{display:'flex',gap:4,flexShrink:0}}>
                       {gi.image_url?<img src={gi.image_url} alt="Front" style={{width:52,height:52,objectFit:'contain',borderRadius:6,border:'1px solid #e2e8f0',background:'white',cursor:'pointer'}} onClick={()=>openFile(gi.image_url)}/>
-                      :<div style={{width:52,height:52,borderRadius:6,background:'#e2e8f0',display:'flex',alignItems:'center',justifyContent:'center',fontSize:20,color:'#94a3b8'}}>👕</div>}
+                      :<a href={_vendorProductUrl(gi.sku,gi.color,gi.brand)} target="_blank" rel="noopener noreferrer" title={'Search '+gi.sku+' images'} style={{width:52,height:52,borderRadius:6,background:'#e2e8f0',display:'flex',alignItems:'center',justifyContent:'center',fontSize:20,color:'#94a3b8',textDecoration:'none',cursor:'pointer'}}>👕</a>}
                       {gi.back_image_url&&<img src={gi.back_image_url} alt="Back" style={{width:52,height:52,objectFit:'contain',borderRadius:6,border:'1px solid #e2e8f0',background:'white',cursor:'pointer'}} onClick={()=>openFile(gi.back_image_url)}/>}
                     </div>
                     <div style={{flex:1,minWidth:0}}>
                       <div style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}>
-                        <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:13}}>{gi.sku}</span>
+                        <a href={_vendorProductUrl(gi.sku,gi.color,gi.brand)} target="_blank" rel="noopener noreferrer" style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:13,textDecoration:'none',cursor:'pointer'}} title={'Search '+gi.sku+' images'}>{gi.sku}</a>
                         <span style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{gi.name}</span>
                         {gi.color&&<span style={{color:'#6d28d9',fontWeight:700}}>— {gi.color}</span>}
                         {gi.brand&&<span style={{fontSize:10,padding:'1px 6px',background:'#f1f5f9',borderRadius:4,color:'#64748b',border:'1px solid #e2e8f0'}}>{gi.brand}</span>}
