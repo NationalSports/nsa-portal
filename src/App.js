@@ -3072,15 +3072,19 @@ export default function App(){
         const pulled={};picks.filter(pk=>pk.status==='pulled').forEach(pk=>{szKeys.forEach(s=>{pulled[s]=(pulled[s]||0)+(pk[s]||0)})});
         const totalPulled=Object.values(pulled).reduce((a,v)=>a+v,0);
         // Show in Item Fulfillment only if there's an active pick ticket (IF request)
-        const hasActivePick=picks.some(pk=>pk.status!=='pulled');
-        if(hasActivePick){
-          const needsPull=totalOrdered-totalPulled;
-          if(needsPull>0){
+        const activePicks=picks.filter(pk=>pk.status!=='pulled');
+        if(activePicks.length>0){
+          // Use pick ticket quantities, not full item quantities
+          const pickSizes={};const pickSzKeys=[];
+          activePicks.forEach(pk=>{szKeys.forEach(s=>{const v=pk[s]||0;if(v>0){pickSizes[s]=(pickSizes[s]||0)+v;if(!pickSzKeys.includes(s))pickSzKeys.push(s)}})});
+          const pickTotal=Object.values(pickSizes).reduce((a,v)=>a+v,0);
+          if(pickTotal>0){
             pullTasks.push({so,soId:so.id,item,itemIdx:ii,cName,alpha,rep,daysOut,urgent,
               sku:item.sku,name:item.name,brand:item.brand||'',color:item.color||'',
-              sizes:item.sizes,pulled,needsPull,totalOrdered,totalPulled,szKeys,
+              sizes:pickSizes,pulled,needsPull:pickTotal,totalOrdered:pickTotal,totalPulled:0,szKeys:pickSzKeys,
               noDeco:item.no_deco||!item.decorations?.length,
-              shipDest:picks.find(p=>p.ship_dest)?.ship_dest||'in_house'});
+              shipDest:activePicks.find(p=>p.ship_dest)?.ship_dest||'in_house',
+              _activePicks:activePicks});
           }
         }
         // No-deco items fully pulled → ready to ship (respecting ship preference)
@@ -9352,7 +9356,7 @@ export default function App(){
         const allPicks=safePicks(item);
         const activePick=picks[0];
         const pickId=activePick?.pick_id||'IF';
-        const szKeys=Object.keys(item.sizes||{}).filter(k=>SZ_ORD.includes(k)||(item.sizes[k]>0)).sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
+        const szKeys=t.szKeys||Object.keys(t.sizes||{}).filter(k=>SZ_ORD.includes(k)||(t.sizes[k]>0)).sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
         const p=prod.find(pp=>pp.sku===t.sku||pp.id===item.product_id);
         const addrs2=c?getAddrs(c,cust):[];
         const qrData=window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(pickId);
@@ -9417,7 +9421,7 @@ export default function App(){
               <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6}}>Sizes to Pull</div>
               <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:12}}>
                 {szKeys.map(sz=>{
-                  const ordered=item.sizes[sz]||0;const pulled=t.pulled[sz]||0;const need=Math.max(0,ordered-pulled);
+                  const ordered=t.sizes[sz]||0;const pulled=t.pulled[sz]||0;const need=Math.max(0,ordered-pulled);
                   const inv=p?._inv?.[sz]||0;const pq=pullQtys[sz]||0;
                   if(ordered===0)return null;
                   return<div key={sz} style={{textAlign:'center',minWidth:62,padding:'8px 6px',borderRadius:8,border:need>0?'2px solid #d97706':'1px solid #e2e8f0',background:need>0?'#fffbeb':'#f0fdf4'}}>
@@ -9534,7 +9538,7 @@ export default function App(){
                   <div style={{color:'#64748b'}}>{t.soId} — {t.cName}</div>
                   <div style={{fontWeight:600}}>{t.sku} {t.name}</div>
                   <div>{t.color} — {t.needsPull} units</div>
-                  <div style={{marginTop:4,fontFamily:'monospace',fontSize:11}}>{szKeys.filter(sz=>(item.sizes[sz]||0)-(t.pulled[sz]||0)>0).map(sz=>sz+':'+(Math.max(0,(item.sizes[sz]||0)-(t.pulled[sz]||0)))).join('  ')}</div>
+                  <div style={{marginTop:4,fontFamily:'monospace',fontSize:11}}>{szKeys.filter(sz=>(t.sizes[sz]||0)-(t.pulled[sz]||0)>0).map(sz=>sz+':'+(Math.max(0,(t.sizes[sz]||0)-(t.pulled[sz]||0)))).join('  ')}</div>
                 </div>
               </div>
               <button className="btn btn-sm btn-secondary" style={{marginTop:8,fontSize:11}} onClick={()=>{
@@ -9544,7 +9548,7 @@ export default function App(){
                 w.document.write('<h1>'+pickId+'</h1><p>'+t.soId+' — '+t.cName+'</p>');
                 if(shipDest!=='in_house'){const destLabel=shipDest==='ship_customer'?'SHIP TO CUSTOMER':'SHIP TO DECO'+(activePick?.deco_vendor?' — '+activePick.deco_vendor:'');w.document.write('<p style="background:#fffbeb;padding:8px;border:2px solid '+(shipDest==='ship_customer'?'#3b82f6':'#d97706')+';border-radius:6px;font-weight:bold;font-size:16px">'+destLabel+'</p>')}
                 w.document.write('<p><strong>'+t.sku+' '+t.name+'</strong></p><p>'+(t.color||'')+' — '+t.needsPull+' units</p>');
-                w.document.write('<p style="font-size:16px;font-weight:bold">'+szKeys.filter(sz=>(item.sizes[sz]||0)-(t.pulled[sz]||0)>0).map(sz=>sz+': '+Math.max(0,(item.sizes[sz]||0)-(t.pulled[sz]||0))).join(' &nbsp; ')+'</p>');
+                w.document.write('<p style="font-size:16px;font-weight:bold">'+szKeys.filter(sz=>(t.sizes[sz]||0)-(t.pulled[sz]||0)>0).map(sz=>sz+': '+Math.max(0,(t.sizes[sz]||0)-(t.pulled[sz]||0))).join(' &nbsp; ')+'</p>');
                 w.document.write('</div></div></body></html>');w.document.close();w.print();
               }}>🖨️ Print Pick Label</button>
             </div>
@@ -11144,7 +11148,31 @@ export default function App(){
               <button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
                 onClick={()=>setWhEditActionIdx(null)}>Done</button>
               <button className="btn btn-sm" style={{fontSize:10,background:'#fee2e2',color:'#dc2626',border:'1px solid #fca5a5',padding:'4px 10px',fontWeight:700}}
-                onClick={()=>{if(!window.confirm('Delete this action?'))return;const next=whRecentActions.filter((_,idx)=>idx!==origIdx);setWhRecentActions(next);_lsSet('nsa_wh_recent',JSON.stringify(next));setWhEditActionIdx(null)}}>Delete</button>
+                onClick={()=>{if(!window.confirm('Delete this action?'))return;
+                  /* Restore inventory & revert pick_line when deleting a pulled IF */
+                  if(a.type==='pulled'&&a.soId&&a.pickId){
+                    const parsedSizes={};if(a.sizes)(a.sizes+'').split(/\s+/).forEach(p=>{const[sz,v]=p.split(':');if(sz&&v)parsedSizes[sz]=parseInt(v)||0});
+                    const so2=sos.find(s=>s.id===a.soId);
+                    if(so2){
+                      const updItems=safeItems(so2).map(it2=>{
+                        const picks=it2.pick_lines||[];
+                        const match=picks.find(pk=>pk.pick_id===a.pickId);
+                        if(!match)return it2;
+                        const newPicks=picks.map(pk=>pk.pick_id===a.pickId?{...pk,status:'pending',pulled_at:undefined}:pk);
+                        return{...it2,pick_lines:newPicks};
+                      });
+                      savSO({...so2,items:updItems,updated_at:new Date().toLocaleString()});
+                    }
+                    /* Restore inventory */
+                    if(a.sku&&Object.keys(parsedSizes).length>0){
+                      setProd(pp=>pp.map(x=>{
+                        if(x.sku!==a.sku||(a.color&&x.color!==a.color))return x;
+                        const newInv={...(x._inv||{})};Object.entries(parsedSizes).forEach(([sz,v])=>{if(v>0)newInv[sz]=(newInv[sz]||0)+v});
+                        return{...x,_inv:newInv};
+                      }));
+                    }
+                  }
+                  const next=whRecentActions.filter((_,idx)=>idx!==origIdx);setWhRecentActions(next);_lsSet('nsa_wh_recent',JSON.stringify(next));setWhEditActionIdx(null)}}>Delete</button>
             </div>
           </div>
           :<div style={{display:'flex',alignItems:'center',gap:10,cursor:a.soId?'pointer':'default'}}
