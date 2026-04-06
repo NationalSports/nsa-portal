@@ -359,7 +359,9 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
 
   // Job detail view
   if(jobView){
-    const j=jobView.job;const so=jobView.so;
+    const _liveSO=sos.find(s=>s.id===jobView.so.id)||jobView.so;
+    const _liveJob=(safeJobs(_liveSO)).find(jj=>jj.id===jobView.job.id)||jobView.job;
+    const j=_liveJob;const so=_liveSO;
     const artFile=safeArt(so).find(a=>a.id===j.art_file_id);
     const mockups=_filterDisplayable(artFile?.mockup_files||artFile?.files||[]);
     const items=(j.items||[]).map(gi=>{const it=safeItems(so)[gi.item_idx];const prd=it?prod.find(pp=>pp.id===it.product_id||pp.sku===it.sku):null;return{...gi,brand:it?.brand||'',fullName:safeStr(it?.name)||gi.name,image_url:prd?.image_url||(prd?.images&&prd.images[0])||it?._colorImage||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||it?._colorBackImage||''}});
