@@ -4733,7 +4733,7 @@ export default function App(){
   </>);
 
   // JOBS LIST
-  const[jobFilters,setJobFilters]=useState({statuses:['hold','staging','in_process'],rep:'all',deco:'all',artSt:'all',dueBefore:'',search:''});
+  const[jobFilters,setJobFilters]=useState({statuses:[],rep:'all',deco:'all',artSt:'all',dueBefore:'',search:''});
   const[jobSortField,setJobSortField]=useState('expected');const[jobSortDir,setJobSortDir]=useState('asc');
   const[savedJobFilters,setSavedJobFilters]=useState([
     {name:'Ready to Print',filters:{statuses:['staging'],rep:'all',deco:'screen_print',artSt:'art_complete',dueBefore:'',search:''}},
