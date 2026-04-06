@@ -2569,12 +2569,13 @@ export default function App(){
       return{...item,decorations}});
     return{...order,items}};
   const savE=e=>{const e2=lockPrices(e.status==='draft'?{...e,status:'open'}:e);setEsts(p=>{const ex=p.find(x=>x.id===e2.id);return ex?p.map(x=>x.id===e2.id?e2:x):[...p,e2]});logChange(ests.find(x=>x.id===e2.id)?'updated':'created','Estimate',e2.id,e2.memo||'');return e2};
-  const savSO=s=>{const sl=lockPrices(s);
+  const savSO=(s,opts)=>{const sl=lockPrices(s);const skipMerge=opts?.skipMerge;
     // Save version history before overwriting
     const prev=sos.find(x=>x.id===sl.id);
     if(prev){setSOHistory(h=>{const existing=h[sl.id]||[];return{...h,[sl.id]:[{ts:new Date().toLocaleString(),user:cu.name,snapshot:JSON.parse(JSON.stringify(prev))},...existing].slice(0,20)}})}
     // Merge pick_line statuses — preserve 'pulled' status from current state so warehouse pulls aren't lost
-    if(prev&&sl.items&&prev.items){
+    // Skip merge when warehouse is intentionally editing/reverting pick_line statuses
+    if(!skipMerge&&prev&&sl.items&&prev.items){
       sl.items.forEach((item,ii)=>{
         const prevItem=prev.items[ii];if(!prevItem)return;
         const prevPicks=prevItem.pick_lines||[];
@@ -11182,17 +11183,17 @@ export default function App(){
                     const parseSz=str=>{const o={};if(str)(str+'').split(/\s+/).forEach(p=>{const[sz,v]=p.split(':');if(sz&&v)o[sz]=parseInt(v)||0});return o};
                     const oldSz=parseSz(whEditOrigSizes);const newSz=parseSz(a.sizes);
                     const allKeys=[...new Set([...Object.keys(oldSz),...Object.keys(newSz)])];
-                    /* Update pick_line on SO directly via setSOs to bypass savSO merge logic */
-                    setSOs(prev=>prev.map(so2=>{
-                      if(so2.id!==a.soId)return so2;
+                    /* Update pick_line on SO — skipMerge to prevent re-applying pulled status */
+                    const so2=sos.find(s=>s.id===a.soId);
+                    if(so2){
                       const updItems=safeItems(so2).map(it2=>{
                         const picks=it2.pick_lines||[];
                         if(!picks.find(pk=>pk.pick_id===a.pickId))return it2;
                         const newPicks=picks.map(pk=>{if(pk.pick_id!==a.pickId)return pk;const u={...pk};allKeys.forEach(sz=>{u[sz]=newSz[sz]||0});return u});
                         return{...it2,pick_lines:newPicks};
                       });
-                      return{...so2,items:updItems,updated_at:new Date().toLocaleString()};
-                    }));
+                      savSO({...so2,items:updItems,updated_at:new Date().toLocaleString()},{skipMerge:true});
+                    }
                     /* Adjust inventory by diff (old - new = returned, new - old = additional pull) */
                     const diff={};allKeys.forEach(sz=>{const d=(oldSz[sz]||0)-(newSz[sz]||0);if(d!==0)diff[sz]=d});
                     if(Object.keys(diff).length>0){
@@ -11211,17 +11212,17 @@ export default function App(){
                   /* Restore inventory & revert pick_line when deleting a pulled IF */
                   if(a.type==='pulled'&&a.soId&&a.pickId){
                     const parsedSizes={};if(a.sizes)(a.sizes+'').split(/\s+/).forEach(p=>{const[sz,v]=p.split(':');if(sz&&v)parsedSizes[sz]=parseInt(v)||0});
-                    /* Update SO directly via setSOs to bypass savSO merge logic (which would re-apply 'pulled' status) */
-                    setSOs(prev=>prev.map(so2=>{
-                      if(so2.id!==a.soId)return so2;
+                    /* Revert pick_line status — skipMerge to prevent re-applying 'pulled' */
+                    const so2=sos.find(s=>s.id===a.soId);
+                    if(so2){
                       const updItems=safeItems(so2).map(it2=>{
                         const picks=it2.pick_lines||[];
                         if(!picks.find(pk=>pk.pick_id===a.pickId))return it2;
                         const newPicks=picks.map(pk=>pk.pick_id===a.pickId?{...pk,status:'pick',pulled_at:undefined}:pk);
                         return{...it2,pick_lines:newPicks};
                       });
-                      return{...so2,items:updItems,updated_at:new Date().toLocaleString()};
-                    }));
+                      savSO({...so2,items:updItems,updated_at:new Date().toLocaleString()},{skipMerge:true});
+                    }
                     /* Restore inventory */
                     if((a.productId||a.sku)&&Object.keys(parsedSizes).length>0){
                       setProd(pp=>pp.map(x=>{
