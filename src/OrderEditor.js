@@ -7,11 +7,12 @@ import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, BATCH_VENDORS, EXTRA_SIZES, SZ_ORD, SC, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm } from './safeHelpers';
 import { Icon, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, calcSOStatus, SendModal, PantoneQuickPicks, ThreadQuickPicks } from './components';
+import { CustModal } from './modals';
 import { dP, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP, DTF, POSITIONS, _decoVendorPrice, mergeColors } from './pricing';
 import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, nextInvId, _brevoKey } from './utils';
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecApiCall, momentecSearchProducts, momentecGetProductByPartNumber, momentecGetProductById } from './vendorApis';
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onBack,onConvertSO,onCopyEstimate,onRevertToEst,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,allInvoices,batchPOs,onBatchPO,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,openPOId,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onSaveProduct,onViewEstimate,onViewSO,returnToPage,onReturnToJob,onAssignTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onBack,onConvertSO,onCopyEstimate,onRevertToEst,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,allInvoices,batchPOs,onBatchPO,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,openPOId,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onSaveProduct,onViewEstimate,onViewSO,returnToPage,onReturnToJob,onAssignTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer}){
   const fetchAdidasInventory=fetchAdidasInventoryProp||(async()=>({sizes:{},lastSynced:null}));
   const _ci=companyInfoProp||NSA;// use company info from state (reacts to Supabase loads) with fallback to mutable NSA
   const vendorList=vendorsProp||D_V;// use DB-loaded vendors if available, fallback to defaults
@@ -535,7 +536,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const[editPick,setEditPick]=useState(null);const[editPO,setEditPO]=useState(null);const[editBatchPO,setEditBatchPO]=useState(null);const[poFullPage,setPoFullPage]=useState(null);
   // Helper: effective PO committed qty for a size (ordered minus cancelled)
   const poCommitted=(poLines,sz)=>(poLines||[]).reduce((a,pk)=>{const ordered=pk[sz]||0;const cancelled=(pk.cancelled||{})[sz]||0;return a+(ordered-cancelled)},0);
-  const[newAddr,setNewAddr]=useState('');const[showNA,setShowNA]=useState(false);const[showSzPicker,setShowSzPicker]=useState(null);const[showCustom,setShowCustom]=useState(false);const[custItem,setCustItem]=useState({vendor_id:'',name:'',sku:'CUSTOM',nsa_cost:0,unit_sell:0,retail_price:0,color:'',brand:'',saveToCatalog:false,image_url:'',images:[]});
+  const[newAddr,setNewAddr]=useState('');const[showNA,setShowNA]=useState(false);const[showCustEdit,setShowCustEdit]=useState(false);const[showSzPicker,setShowSzPicker]=useState(null);const[showCustom,setShowCustom]=useState(false);const[custItem,setCustItem]=useState({vendor_id:'',name:'',sku:'CUSTOM',nsa_cost:0,unit_sell:0,retail_price:0,color:'',brand:'',saveToCatalog:false,image_url:'',images:[]});
   const[nsImport,setNsImport]=useState(null);// {step:'paste'|'review'|'confirm', raw:'', parsed:[], decoMap:[], issues:[]}
 
   // ─── Live S&S Product Search ───
@@ -1529,9 +1530,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           <span style={{fontSize:12,color:'#64748b'}}>= ${totals.ship.toFixed(2)}</span>
         </div></div>
         <div style={{flex:1,minWidth:180}}><label className="form-label">Ship To</label>
-          {!showNA?<select className="form-select" value={o.ship_to_id||'default'} onChange={e=>{if(e.target.value==='new')setShowNA(true);else sv('ship_to_id',e.target.value)}}>
+          <select className="form-select" value={o.ship_to_id||'default'} onChange={e=>{if(e.target.value==='new')setShowCustEdit(true);else sv('ship_to_id',e.target.value)}}>
             {addrs.map(a=><option key={a.id} value={a.id}>{a.label}</option>)}<option value="new">+ New Address</option></select>
-          :<div style={{display:'flex',gap:4}}><input className="form-input" placeholder="New address..." value={newAddr} onChange={e=>setNewAddr(e.target.value)} autoFocus style={{flex:1}}/><button className="btn btn-sm btn-primary" onClick={()=>{sv('ship_to_custom',newAddr);sv('ship_to_id','custom');setShowNA(false)}}>OK</button><button className="btn btn-sm btn-secondary" onClick={()=>setShowNA(false)}>×</button></div>}
         </div>
         <div style={{fontSize:12,color:'#64748b'}}>Tax: <strong>${totals.tax.toFixed(2)}</strong></div>
         {/* Promo Active Badge (toggle moved to Actions dropdown) */}
@@ -6324,6 +6324,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           </div>
         </div></div>})()}
 
+    <CustModal isOpen={showCustEdit} onClose={()=>setShowCustEdit(false)} onSave={(updated)=>{if(onSaveCustomer)onSaveCustomer(updated);setCust(updated);setShowCustEdit(false)}} customer={cust} parents={allCustomers.filter(c=>!c.parent_id)} reps={REPS}/>
   </div>);
 }
 
