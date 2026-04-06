@@ -393,8 +393,9 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             const nd=numDecos[0];const _isEmb=artFile?.deco_type==='embroidery';
             const gk=gi.sku+'|'+(gi.color||'');const gc=artFile?.garment_colors?.[gk]||{};
             const gcColors=Object.values(gc).flat().filter((v,idx,arr)=>v&&arr.indexOf(v)===idx);
+            const cwColors2=[];artDecos.forEach(d=>{if(d.color_way_id&&artFile?.color_ways){const cw=artFile.color_ways.find(c=>c.id===d.color_way_id);if(cw)cw.inks?.forEach(c=>{if(c&&c.trim()&&!cwColors2.includes(c.trim()))cwColors2.push(c.trim())})}});
             const fallbackColors=(artFile?.ink_colors||artFile?.thread_colors||'').split(/[,\n]/).map(c=>c.trim()).filter(Boolean);
-            const itemColors=gcColors.length>0?gcColors:fallbackColors;
+            const itemColors=gcColors.length>0?gcColors:cwColors2.length>0?cwColors2:fallbackColors;
             const _cm3={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000','Silver':'#C0C0C0','Royal':'#4169e1','Cardinal':'#8C1515','Green':'#166534','Orange':'#EA580C','Navy 2767':'#001f3f','PMS 286':'#0033A0','PMS 032':'#EF3340','PMS 877':'#C0C0C0','Maroon':'#800000'};
             const sizes=srcItem?Object.entries(safeSizes(srcItem)).filter(([,v])=>v>0).sort((a,b)=>{const o2=SZ_ORD;return(o2.indexOf(a[0])<0?99:o2.indexOf(a[0]))-(o2.indexOf(b[0])<0?99:o2.indexOf(b[0]))}):[];
             const roster=numDecos.length>0?numDecos[0].roster:null;
