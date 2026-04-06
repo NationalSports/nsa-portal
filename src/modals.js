@@ -164,6 +164,23 @@ function VendDetail({vendor,products,onUpdateProducts,onBack,catalogItems=[],onS
           <input className="form-input" placeholder="Category" value={catEdit.category||''} onChange={e=>setCatEdit({...catEdit,category:e.target.value})} style={{fontSize:12}}/>
           <input className="form-input" placeholder="Sizes (comma-separated)" value={(catEdit.available_sizes||[]).join(', ')} onChange={e=>setCatEdit({...catEdit,available_sizes:e.target.value.split(',').map(s=>s.trim()).filter(Boolean)})} style={{fontSize:12}}/>
         </div>
+        <div style={{marginBottom:8}}>
+          <label style={{fontSize:12,display:'flex',alignItems:'center',gap:6,cursor:'pointer',padding:'6px 8px',background:catEdit.track_inventory?'#f0fdf4':'#f8fafc',borderRadius:6,border:'1px solid '+(catEdit.track_inventory?'#86efac':'#e2e8f0')}}>
+            <input type="checkbox" checked={catEdit.track_inventory||false} onChange={e=>setCatEdit({...catEdit,track_inventory:e.target.checked,_inv:catEdit._inv||{},_alerts:catEdit._alerts||{}})}/>
+            <span style={{fontWeight:600}}>Track Inventory</span>
+            <span style={{fontSize:11,color:'#64748b'}}>— keep count of on-hand stock for this item</span>
+          </label>
+        </div>
+        {catEdit.track_inventory&&<div style={{padding:8,background:'#f0fdf4',borderRadius:6,border:'1px solid #bbf7d0',marginBottom:8}}>
+          <div style={{fontSize:11,fontWeight:700,color:'#166534',marginBottom:6}}>On-Hand Inventory</div>
+          <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+            {(catEdit.available_sizes||['S','M','L','XL','2XL']).map(sz=><div key={sz} style={{display:'flex',flexDirection:'column',alignItems:'center',gap:2}}>
+              <span style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</span>
+              <input type="number" min="0" value={(catEdit._inv||{})[sz]||''} onChange={e=>setCatEdit({...catEdit,_inv:{...(catEdit._inv||{}),[sz]:parseInt(e.target.value)||0}})}
+                style={{width:48,fontSize:11,textAlign:'center',padding:'2px 4px',border:'1px solid #86efac',borderRadius:4}}/>
+            </div>)}
+          </div>
+        </div>}
         <div style={{display:'flex',gap:6}}>
           <button className="btn btn-sm btn-primary" disabled={!catEdit.sku||!catEdit.name} onClick={async()=>{
             const saved=await onSaveCatalogItem(catEdit);
@@ -175,19 +192,21 @@ function VendDetail({vendor,products,onUpdateProducts,onBack,catalogItems=[],onS
       </div>}
       {/* Catalog items table */}
       {catalogItems.length>0?<div style={{maxHeight:400,overflow:'auto'}}>
-        <table style={{fontSize:12}}><thead><tr><th>SKU</th><th>Name</th><th>Color</th><th>Cost</th><th>Retail</th><th>Category</th><th style={{width:60}}></th></tr></thead><tbody>
-        {catalogItems.filter(ci=>{if(!catSearch)return true;const q=catSearch.toLowerCase();return ci.sku.toLowerCase().includes(q)||ci.name.toLowerCase().includes(q)||(ci.color||'').toLowerCase().includes(q)||(ci.brand||'').toLowerCase().includes(q)}).map(ci=><tr key={ci.id}>
+        <table style={{fontSize:12}}><thead><tr><th>SKU</th><th>Name</th><th>Color</th><th>Cost</th><th>Retail</th><th>Inventory</th><th style={{width:60}}></th></tr></thead><tbody>
+        {catalogItems.filter(ci=>{if(!catSearch)return true;const q=catSearch.toLowerCase();return ci.sku.toLowerCase().includes(q)||ci.name.toLowerCase().includes(q)||(ci.color||'').toLowerCase().includes(q)||(ci.brand||'').toLowerCase().includes(q)}).map(ci=>{
+          const invTotal=ci.track_inventory?Object.values(ci._inv||{}).reduce((a,v)=>a+v,0):0;
+          return<tr key={ci.id}>
           <td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{ci.sku}</td>
           <td>{ci.name}</td>
           <td style={{color:'#64748b'}}>{ci.color||'—'}</td>
           <td>${(ci.nsa_cost||0).toFixed(2)}</td>
           <td style={{color:'#64748b'}}>{ci.retail_price?'$'+ci.retail_price.toFixed(2):'—'}</td>
-          <td style={{color:'#64748b'}}>{ci.category||'—'}</td>
+          <td>{ci.track_inventory?<span style={{padding:'1px 6px',borderRadius:3,background:'#dcfce7',color:'#166534',fontWeight:600,fontSize:11}}>{invTotal} pcs</span>:<span style={{color:'#94a3b8',fontSize:11}}>—</span>}</td>
           <td><div style={{display:'flex',gap:4}}>
-            <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 6px'}} onClick={()=>setCatEdit({...ci})}>Edit</button>
+            <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 6px'}} onClick={()=>setCatEdit({...ci,_inv:ci._inv||{},_alerts:ci._alerts||{}})}>Edit</button>
             <button className="btn btn-sm" style={{fontSize:10,padding:'2px 6px',background:'#fef2f2',color:'#dc2626',border:'1px solid #fecaca'}} onClick={async()=>{if(!window.confirm('Delete '+ci.sku+'?'))return;const ok=await onDeleteCatalogItem(ci.id);if(ok)nf&&nf('Deleted '+ci.sku);else nf&&nf('Delete failed','error')}}>X</button>
           </div></td>
-        </tr>)}</tbody></table>
+        </tr>})}</tbody></table>
       </div>:<div className="empty" style={{padding:16}}>No catalog items yet. Add items manually or import a CSV with columns: sku, name, brand, color, cost, retail, category</div>}
     </div>
   </div>

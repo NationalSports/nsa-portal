@@ -317,7 +317,7 @@ const _dbLoad = async () => {
       rDecoVendors,rDecoVendorPricing,
       rQuoteReqs,rQuoteReqItems,
       rDismissedTodos,rDismissedNotifs,
-      rVendCatalog] = await _batch([
+      rVendCatalog,rVendCatalogInv] = await _batch([
       ()=>_safeQuery('team_members',{order:'name'}),
       ()=>_safeQuery('customers',{order:'name'}),
       ()=>_safeQuery('customer_contacts'),
@@ -360,6 +360,7 @@ const _dbLoad = async () => {
       ()=>_safeQuery('dismissed_todos'),
       ()=>_safeQuery('dismissed_notifs'),
       ()=>_safeQuery('vendor_catalog_items',{order:'name'}),
+      ()=>_safeQuery('vendor_catalog_inventory'),
     ]);
     // Check for critical errors on core tables only (child tables may not exist yet — 404 is OK)
     const coreResults=[{n:'team_members',r:rTeam},{n:'customers',r:rCust},{n:'vendors',r:rVend},{n:'products',r:rProd},{n:'estimates',r:rEst},{n:'sales_orders',r:rSO},{n:'invoices',r:rInv},{n:'messages',r:rMsg},{n:'omg_stores',r:rOMG}];
@@ -385,7 +386,12 @@ const _dbLoad = async () => {
     const quote_requests=quoteReqRaw.map(qr=>({...qr,items:quoteReqItemsRaw.filter(i=>i.quote_request_id===qr.id).sort((a,b)=>a.sort_order-b.sort_order)}));
     const repCsrAssignments=d(rRepCsr);const assignedTodos=d(rAssignedTodos).map(t=>({...t,comments:d(rTodoComments).filter(c=>c.todo_id===t.id).sort((a,b)=>(a.created_at||'').localeCompare(b.created_at))}));
     const decoVendors=d(rDecoVendors);const decoVendorPricing=d(rDecoVendorPricing);
-    const vendorCatalogItems=d(rVendCatalog);
+    const vendCatalogInv=d(rVendCatalogInv);
+    const vendorCatalogItems=d(rVendCatalog).map(ci=>{
+      const invRows=vendCatalogInv.filter(r=>r.catalog_item_id===ci.id);
+      const _inv={};const _alerts={};invRows.forEach(r=>{_inv[r.size]=r.quantity;if(r.alert_threshold)_alerts[r.size]=r.alert_threshold});
+      return{...ci,_inv,_alerts};
+    });
     // Parse app_state key-value pairs
     const appStateRaw=d(rAppState);
     const appState={};appStateRaw.forEach(r=>{try{appState[r.id]=JSON.parse(r.value)}catch{appState[r.id]=r.value}});
@@ -920,9 +926,27 @@ const _dbSaveVendCatalogItem = async (item) => {
       color:item.color||null,category:item.category||null,nsa_cost:item.nsa_cost||0,
       retail_price:item.retail_price||0,available_sizes:item.available_sizes||['S','M','L','XL','2XL'],
       image_url:item.image_url||null,notes:item.notes||null,is_active:item.is_active!==false,
+      track_inventory:item.track_inventory||false,
       updated_at:new Date().toISOString()};
-    if(item.id){row.id=item.id;const{data,error}=await supabase.from('vendor_catalog_items').upsert(row,{onConflict:'id'}).select();if(error)throw error;return data?.[0]||row}
-    else{const{data,error}=await supabase.from('vendor_catalog_items').insert(row).select();if(error)throw error;return data?.[0]}
+    let saved;
+    if(item.id){row.id=item.id;const{data,error}=await supabase.from('vendor_catalog_items').upsert(row,{onConflict:'id'}).select();if(error)throw error;saved=data?.[0]||row}
+    else{const{data,error}=await supabase.from('vendor_catalog_items').insert(row).select();if(error)throw error;saved=data?.[0]}
+    // Save inventory if tracking is enabled
+    if(saved&&saved.track_inventory&&item._inv){
+      const _inv=item._inv||{};const _alerts=item._alerts||{};
+      const allSizes=new Set([...Object.keys(_inv),...Object.keys(_alerts)]);
+      if(allSizes.size>0){
+        const invRows=[...allSizes].map(sz=>({catalog_item_id:saved.id,size:sz,quantity:_inv[sz]||0,alert_threshold:_alerts[sz]||null}));
+        await supabase.from('vendor_catalog_inventory').upsert(invRows,{onConflict:'catalog_item_id,size'});
+      }
+      saved._inv=_inv;saved._alerts=_alerts;
+    }
+    // If tracking was turned off, clean up inventory rows
+    if(saved&&!saved.track_inventory&&item.id){
+      await supabase.from('vendor_catalog_inventory').delete().eq('catalog_item_id',item.id);
+      saved._inv={};saved._alerts={};
+    }
+    return saved;
   }catch(e){console.error('[DB] save vendor catalog item:',e);return null}
 };
 const _dbDeleteVendCatalogItem = async (id) => {
