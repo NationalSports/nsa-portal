@@ -2569,6 +2569,31 @@ export default function App(){
     // Save version history before overwriting
     const prev=sos.find(x=>x.id===sl.id);
     if(prev){setSOHistory(h=>{const existing=h[sl.id]||[];return{...h,[sl.id]:[{ts:new Date().toLocaleString(),user:cu.name,snapshot:JSON.parse(JSON.stringify(prev))},...existing].slice(0,20)}})}
+    // Merge pick_line statuses — preserve 'pulled' status from current state so warehouse pulls aren't lost
+    if(prev&&sl.items&&prev.items){
+      sl.items.forEach((item,ii)=>{
+        const prevItem=prev.items[ii];if(!prevItem)return;
+        const prevPicks=prevItem.pick_lines||[];
+        if(prevPicks.length>0&&item.pick_lines){
+          item.pick_lines=item.pick_lines.map(pk=>{
+            const match=prevPicks.find(pp=>pp.pick_id===pk.pick_id);
+            if(match&&match.status==='pulled'&&pk.status!=='pulled'){
+              return{...pk,status:'pulled',pulled_at:match.pulled_at,...Object.fromEntries(Object.entries(match).filter(([k])=>SZ_ORD.includes(k.toUpperCase())||SZ_ORD.includes(k)))};
+            }
+            return pk;
+          });
+        } else if(prevPicks.length>0&&!item.pick_lines){
+          // Preserve pick_lines if they were removed
+          item.pick_lines=prevPicks;
+        }
+      });
+    }
+    // Preserve shipment data from current state if not included in save
+    if(prev&&prev._shipments&&prev._shipments.length>0&&(!sl._shipments||sl._shipments.length===0)){
+      sl._shipments=prev._shipments;sl._shipped=prev._shipped;sl._shipping_status=prev._shipping_status;
+      sl._tracking_number=prev._tracking_number;sl._carrier=prev._carrier;sl._ship_date=prev._ship_date;
+      sl._tracking_url=prev._tracking_url;sl._shipping_cost=prev._shipping_cost;
+    }
     setSOs(p=>{const ex=p.find(x=>x.id===sl.id);return ex?p.map(x=>x.id===sl.id?sl:x):[...p,sl]});
     logChange(prev?'updated':'created','SO',sl.id,sl.memo||'');
     // Promo usage is recorded in convertSO only — savSO does not duplicate it
