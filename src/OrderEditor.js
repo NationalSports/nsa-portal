@@ -4413,7 +4413,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                           {_nd2.print_color&&<span>Color: <strong>{_nd2.print_color}</strong></span>}
                           {_nd2.front_and_back&&<span style={{padding:'1px 6px',borderRadius:4,background:'#7c3aed',color:'white',fontSize:10,fontWeight:700}}>Front + Back</span>}
                         </div>
-                  </div>}
+                      </div>}
+                    </div>})}
                 </div>})()}
               {/* Artist notes / messages */}
               {(()=>{const artMsgs=(j.art_messages||[]).filter(m=>!m.is_system);const artFileNotes=artFile2?.notes;
