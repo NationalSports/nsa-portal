@@ -176,14 +176,15 @@ async function main() {
         const inventory = await page.evaluate((targetSku) => {
           const results = [];
 
-          // Strategy 1: Look for a size/availability table or grid
-          // Common patterns on B2B portals:
-          const sizeElements = document.querySelectorAll(
-            '[class*="size"], [class*="variant"], [data-size], [class*="availability"], ' +
-            'table tr, [class*="inventory"], [class*="stock"]'
-          );
+          // Known apparel sizes for reliable detection
+          const APPAREL_SIZES = new Set([
+            'XXS','XS','S','M','L','XL','2XL','3XL','4XL','5XL','6XL',
+            'LT','XLT','2XLT','3XLT','OSFA',
+            'XS/S','S/M','M/L','L/XL','XL/2XL',
+            '2XS','2XS/XS','3XS',
+          ]);
 
-          // Strategy 2: Look for structured data in tables
+          // Strategy 1: Look for structured data in tables with explicit headers
           const tables = document.querySelectorAll('table');
           for (const table of tables) {
             const headers = [...table.querySelectorAll('th, thead td')].map(th => th.textContent.trim().toLowerCase());
@@ -199,6 +200,61 @@ async function main() {
                   const qty = parseInt(cells[qtyIdx].textContent.trim()) || 0;
                   if (size) results.push({ size, qty });
                 }
+              }
+            }
+          }
+
+          // Strategy 2: Headerless tables — find size row by content, next row = quantities.
+          // Uses two-pass scan: apparel sizes (S/M/L/XL) take priority over footwear (3-digit numbers)
+          // to avoid misidentifying pricing/product-info rows as size rows.
+          if (results.length === 0) {
+            const allRows = [];
+            tables.forEach(tbl => {
+              tbl.querySelectorAll('tr').forEach(tr => {
+                const cells = Array.from(tr.querySelectorAll('td,th')).map(c => c.textContent.trim());
+                if (cells.length > 1) allRows.push(cells);
+              });
+            });
+
+            // Two-pass scan: apparel match always wins over footwear
+            function findSizeRow(rows) {
+              let apparelIdx = -1;
+              let footwearIdx = -1;
+
+              for (let i = 0; i < rows.length; i++) {
+                const row = rows[i];
+
+                // Apparel match — stop immediately (high confidence)
+                if (row.some(cell => APPAREL_SIZES.has(cell.trim()))) {
+                  apparelIdx = i;
+                  break;
+                }
+
+                // Footwear match (3+ cells with 3-digit numbers) — save but keep scanning
+                if (footwearIdx === -1 && row.filter(cell => /^\d{3}$/.test(cell.trim())).length >= 3) {
+                  footwearIdx = i;
+                  // Don't break — keep looking for apparel
+                }
+
+                // Pants with inseam — treat like apparel (high confidence)
+                if (apparelIdx === -1 && row.filter(cell => /^[XSML0-9]+\s*\d+"?$/.test(cell.trim())).length >= 2) {
+                  apparelIdx = i;
+                  break;
+                }
+              }
+
+              return apparelIdx !== -1 ? apparelIdx : footwearIdx;
+            }
+
+            const sizeRowIdx = findSizeRow(allRows);
+            if (sizeRowIdx !== -1 && sizeRowIdx + 1 < allRows.length) {
+              const sizeRow = allRows[sizeRowIdx];
+              const stockRow = allRows[sizeRowIdx + 1];
+              for (let c = 0; c < sizeRow.length; c++) {
+                const size = sizeRow[c].trim();
+                if (!size) continue;
+                const qty = parseInt(stockRow[c]?.trim()) || 0;
+                results.push({ size, qty });
               }
             }
           }
