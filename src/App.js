@@ -1874,11 +1874,11 @@ export default function App(){
       setEsts(prev=>prev.map(e=>e.status==='converted'&&!sos.some(s=>s.estimate_id===e.id)?{...e,status:'approved',updated_at:new Date().toLocaleString()}:e));
     }
   },[dbLoading]); // eslint-disable-line react-hooks/exhaustive-deps
-  // ─── Supabase polling: safety-net refresh every 2 minutes (realtime handles instant sync) ───
+  // ─── Supabase polling: safety-net refresh every 15 seconds for cross-tab/cross-device sync ───
   React.useEffect(()=>{
     if(!supabase)return;
     const poll=setInterval(async()=>{
-      if(!_dbReady.current||!_initialLoadDone.current)return;
+      if(!_dbReady.current)return;
       // Skip poll if saves are in-flight to prevent overwriting unsaved local changes
       if(_dbSavingCount>0){console.log('[DB] Poll deferred — save in progress');return}
       try{
@@ -1914,7 +1914,7 @@ export default function App(){
         if(as.batch_pos)setBatchPOs(prev=>JSON.stringify(prev)!==JSON.stringify(as.batch_pos)?as.batch_pos:prev);
         if(as.company_info)setCompanyInfo(prev=>{const ci={...NSA_DEFAULTS,...as.company_info};ci.fullAddr=ci.addr+', '+ci.city+', '+ci.state+' '+ci.zip;if(JSON.stringify(prev)===JSON.stringify(ci))return prev;Object.assign(NSA,ci);return ci});
       }catch(e){console.warn('[DB] Poll failed:',e.message)}
-    },300000);// poll every 5 min (realtime handles instant sync)
+    },15000);// poll every 15s — ensures cross-tab/cross-device sync when realtime fails
     return()=>clearInterval(poll);
   },[]);
 
