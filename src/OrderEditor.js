@@ -3788,21 +3788,22 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     {showPO&&(()=>{
       // Vendor selection or PO form
       const resolveVendor=it=>{
-        // 1. Direct vendor_id
+        // 1. Direct vendor_id (if set and valid)
         if(it.vendor_id){const vRec=vendorList.find(v=>v.id===it.vendor_id);if(vRec)return vRec.id}
-        // 2. API source flags (_sm_live, _ss_live, _mt_live)
+        // 2. API source flags (_sm_live, _ss_live, _mt_live) — session-only, lost on reload
         if(it._sm_live){const v=vendorList.find(v=>v.api_provider==='sanmar'||v.name==='SanMar');if(v)return v.id}
         if(it._ss_live){const v=vendorList.find(v=>v.api_provider==='ss_activewear'||v.name==='S&S Activewear');if(v)return v.id}
         if(it._mt_live){const v=vendorList.find(v=>v.api_provider==='momentec'||v.name==='Momentec');if(v)return v.id}
-        // 3. Brand name matches a vendor name directly
-        const brandMatch=vendorList.find(v=>v.name===it.brand);
-        if(brandMatch)return brandMatch.id;
-        // 4. Look up vendor via product catalog (brand carried by which vendor)
+        // 3. Product catalog by product_id
         if(it.product_id){const pVid=products.find(p=>p.id===it.product_id)?.vendor_id;if(pVid)return pVid}
-        // 5. Find vendor by matching brand in product catalog (e.g. "Gildan" → SanMar)
-        if(it.brand){const catMatch=products.find(p=>p.brand===it.brand&&p.vendor_id);if(catMatch)return catMatch.vendor_id}
-        // 6. Match SKU prefix in product catalog to find vendor
+        // 4. Product catalog by SKU (e.g. A230 → S&S Activewear)
         if(it.sku){const skuMatch=products.find(p=>p.sku===it.sku&&p.vendor_id);if(skuMatch)return skuMatch.vendor_id}
+        // 5. Product catalog by brand (e.g. "Gildan" → SanMar)
+        if(it.brand){const catMatch=products.find(p=>p.brand===it.brand&&p.vendor_id);if(catMatch)return catMatch.vendor_id}
+        // 6. Brand name matches vendor name exactly (e.g. "Adidas" → Adidas, "Under Armour" → Under Armour)
+        if(it.brand){const brandMatch=vendorList.find(v=>v.name===it.brand);if(brandMatch)return brandMatch.id}
+        // 7. Fuzzy brand match (e.g. "Badger Sport" → "Badger" vendor)
+        if(it.brand){const bl=it.brand.toLowerCase();const fuzzy=vendorList.find(v=>bl.startsWith(v.name.toLowerCase())||v.name.toLowerCase().startsWith(bl));if(fuzzy)return fuzzy.id}
         return null;
       };
       const vendorMap={};safeItems(o).forEach((it,i)=>{const vk=resolveVendor(it);if(!vk)return;if(!vendorMap[vk])vendorMap[vk]=[];vendorMap[vk].push({...it,_idx:i})});
