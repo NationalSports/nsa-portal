@@ -2787,14 +2787,21 @@ export default function App(){
     // Fallback: client-side filter (used when RPC unavailable or on other pages)
     let l=prod;if(q&&pg==='products'){const s=q.toLowerCase();l=l.filter(p=>p.sku.toLowerCase().includes(s)||p.name.toLowerCase().includes(s)||p.brand?.toLowerCase().includes(s)||p.color?.toLowerCase().includes(s))}
     if(pF.cat!=='all')l=l.filter(p=>p.category===pF.cat);if(pF.vnd!=='all')l=l.filter(p=>p.vendor_id===pF.vnd);if(pF.stk==='instock')l=l.filter(p=>Object.values(p._inv||{}).some(v=>v>0));if(pF.clr!=='all')l=l.filter(p=>p.color_category===pF.clr);return l},[prod,q,pF,pg,prodServerResults]);
-  const iD=useMemo(()=>{let l=prod.filter(p=>Object.values(p._inv||{}).some(v=>v>0));if(iF.cat!=='all')l=l.filter(p=>p.category===iF.cat);if(iF.vnd!=='all')l=l.filter(p=>p.vendor_id===iF.vnd);if(iF.clr!=='all')l=l.filter(p=>p.color_category===iF.clr);
+  const iD=useMemo(()=>{let l=prod.filter(p=>Object.values(p._inv||{}).some(v=>v>0));
+    // Merge tracked vendor catalog items into inventory list
+    const vcTracked=vendCatalog.filter(ci=>ci.track_inventory&&Object.values(ci._inv||{}).some(v=>v>0)).map(ci=>({
+      ...ci,id:'vc_'+ci.id,_isVendCatalog:true,available_sizes:ci.available_sizes||['S','M','L','XL','2XL'],
+      color_category:null,is_clearance:false
+    }));
+    l=[...l,...vcTracked];
+    if(iF.cat!=='all')l=l.filter(p=>p.category===iF.cat);if(iF.vnd!=='all')l=l.filter(p=>p.vendor_id===iF.vnd);if(iF.clr!=='all')l=l.filter(p=>!p._isVendCatalog&&p.color_category===iF.clr);
     if(iShowFav&&favSkus.length>0)l=l.filter(p=>favSkus.includes(p.sku));
     if(q&&pg==='inventory'){const s=q.toLowerCase();l=l.filter(p=>p.sku.toLowerCase().includes(s)||p.name.toLowerCase().includes(s))}
     const m=l.map(p=>{const t=Object.values(p._inv||{}).reduce((a,v)=>a+v,0);return{...p,_tQ:t,_tV:t*(p.nsa_cost||0)}});
     m.sort((a,b)=>{const f=iS.f;let va,vb;if(f==='sku'){va=a.sku;vb=b.sku}else if(f==='name'){va=a.name;vb=b.name}else if(f==='qty'){va=a._tQ;vb=b._tQ}else{va=a._tV;vb=b._tV}
-    if(typeof va==='string')return iS.d==='asc'?va.localeCompare(vb):vb.localeCompare(va);return iS.d==='asc'?va-vb:vb-va});return m},[prod,iS,iF,q,pg,iShowFav,favSkus]);
+    if(typeof va==='string')return iS.d==='asc'?va.localeCompare(vb):vb.localeCompare(va);return iS.d==='asc'?va-vb:vb-va});return m},[prod,vendCatalog,iS,iF,q,pg,iShowFav,favSkus]);
   const tV=useMemo(()=>iD.reduce((a,p)=>a+p._tV,0),[iD]);const tU=useMemo(()=>iD.reduce((a,p)=>a+p._tQ,0),[iD]);
-  const al=useMemo(()=>{const r=[];prod.forEach(p=>{if(!p._alerts)return;Object.entries(p._alerts).forEach(([sz,min])=>{const c=p._inv?.[sz]||0;if(c<min)r.push({p,sz,c,min,need:min-c})})});return r},[prod]);
+  const al=useMemo(()=>{const r=[];[...prod,...vendCatalog.filter(ci=>ci.track_inventory)].forEach(p=>{if(!p._alerts)return;Object.entries(p._alerts).forEach(([sz,min])=>{const c=p._inv?.[sz]||0;if(c<min)r.push({p,sz,c,min,need:min-c})})});return r},[prod,vendCatalog]);
 
   // ─── ShipStation Handlers ───
   React.useEffect(() => {
@@ -4484,14 +4491,14 @@ export default function App(){
     <SortHeader label="Value" field="value" sortField={iS.f} sortDir={iS.d} onSort={f=>setIS(s=>({f,d:s.f===f&&s.d==='asc'?'desc':'asc'}))}/>
     <th>Actions</th></tr></thead>
   <tbody>{iD.map(p=>{const ai=adidasInvBulk[p.sku];const b2bTotal=ai?Object.values(ai.sizes||{}).reduce((a,s)=>a+(s.qty||0),0):null;return<tr key={p.id}>
-    <td><div style={{display:'flex',alignItems:'center',gap:4}}><button style={{background:'none',border:'none',cursor:'pointer',fontSize:14,padding:0,color:favSkus.includes(p.sku)?'#f59e0b':'#d1d5db'}} onClick={()=>toggleFav(p.sku)}>{favSkus.includes(p.sku)?'★':'☆'}</button><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{p.sku}</span></div></td>
-    <td style={{fontSize:12}}>{p.name}{p.is_clearance&&<span style={{marginLeft:4,padding:'1px 6px',borderRadius:4,fontSize:9,fontWeight:700,background:'#fef3c7',color:'#92400e'}}>CLEARANCE</span>}<br/><span style={{color:'#94a3b8'}}>{p.color}</span></td>
+    <td><div style={{display:'flex',alignItems:'center',gap:4}}>{!p._isVendCatalog&&<button style={{background:'none',border:'none',cursor:'pointer',fontSize:14,padding:0,color:favSkus.includes(p.sku)?'#f59e0b':'#d1d5db'}} onClick={()=>toggleFav(p.sku)}>{favSkus.includes(p.sku)?'★':'☆'}</button>}<span style={{fontFamily:'monospace',fontWeight:700,color:p._isVendCatalog?'#166534':'#1e40af'}}>{p.sku}</span>{p._isVendCatalog&&<span style={{marginLeft:4,padding:'1px 4px',borderRadius:3,fontSize:8,fontWeight:800,background:'#dcfce7',color:'#166534'}}>VC</span>}</div></td>
+    <td style={{fontSize:12}}>{p.name}{p.is_clearance&&<span style={{marginLeft:4,padding:'1px 6px',borderRadius:4,fontSize:9,fontWeight:700,background:'#fef3c7',color:'#92400e'}}>CLEARANCE</span>}{p._isVendCatalog&&<span style={{marginLeft:4,padding:'1px 6px',borderRadius:4,fontSize:9,fontWeight:700,background:'#dcfce7',color:'#166534'}}>{p.brand||'Vendor'}</span>}<br/><span style={{color:'#94a3b8'}}>{p.color}</span></td>
     <td><div style={{display:'flex',gap:2}}>{[...new Set(p.available_sizes)].filter(sz=>showSz(sz,p._inv?.[sz])).map(sz=>{const v=p._inv?.[sz]||0;return<div key={sz} className={`size-cell ${v>10?'in-stock':v>0?'low-stock':'no-stock'}`} style={{minWidth:30,padding:'1px 3px'}}><div className="size-label" style={{fontSize:8}}>{sz}</div><div className="size-qty" style={{fontSize:11}}>{v}</div></div>})}</div></td>
     <td style={{fontWeight:800,fontSize:15,color:p._tQ<=10?'#d97706':'#166534'}}>{p._tQ}</td>
     <td style={{fontWeight:700,fontSize:13,color:b2bTotal!=null?(b2bTotal>0?'#059669':'#dc2626'):'#d1d5db'}}>{b2bTotal!=null?b2bTotal:'—'}</td>
     <td style={{fontWeight:700}}>${p._tV.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
-    <td><div style={{display:'flex',gap:4}}><button className="btn btn-sm btn-secondary" onClick={()=>newE(null,p)}>+EST</button>
-      {isA&&<button className="btn btn-sm btn-secondary" onClick={()=>setAM({open:true,p})}>INV</button>}</div></td>
+    <td><div style={{display:'flex',gap:4}}>{!p._isVendCatalog&&<button className="btn btn-sm btn-secondary" onClick={()=>newE(null,p)}>+EST</button>}
+      {isA&&!p._isVendCatalog&&<button className="btn btn-sm btn-secondary" onClick={()=>setAM({open:true,p})}>INV</button>}</div></td>
   </tr>})}</tbody></table></div></div></>);
 
   // CLEARANCE ITEMS
