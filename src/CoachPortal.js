@@ -114,7 +114,6 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         infoBoxes:[
           {label:'Bill To',value:customer?.name||'—',sub:(customer?.alpha_tag?customer.alpha_tag+'<br/>':'')+(eBillAddr||'')},
           {label:'Expires',value:new Date(Date.now()+30*86400000).toLocaleDateString()},
-          {label:'Exp. Close',value:est.created_at?.split(' ')[0]||new Date().toLocaleDateString()},
           {label:'Sales Rep',value:rep?.name||'—'},
           {label:'Estimate',value:est.id},
           {label:'Memo',value:est.memo||'—'},

@@ -284,7 +284,7 @@ body{font-family:'Segoe UI',Helvetica,Arial,sans-serif;font-size:11px;color:#1a1
 .doc-id .doc-type{font-size:28px;font-weight:800;color:#333}
 .doc-id .doc-num{font-size:14px;color:#333;font-weight:700}
 .doc-id .doc-date{font-size:11px;color:#666}
-.bill-total{display:flex;justify-content:space-between;align-items:flex-start;margin:12px 0;gap:20px}
+.bill-total{display:flex;justify-content:space-between;align-items:flex-start;margin:8px 0;gap:20px}
 .bill-to{flex:1}
 .bill-to .label{font-size:10px;font-weight:700;color:#333;background:#e8e8e8;padding:3px 6px;display:inline-block;margin-bottom:4px}
 .bill-to .value{font-size:12px;color:#1a1a1a;line-height:1.5}
@@ -292,20 +292,20 @@ body{font-family:'Segoe UI',Helvetica,Arial,sans-serif;font-size:11px;color:#1a1
 .total-box .tl{font-size:13px;font-weight:800;color:#333}
 .total-box .ta{font-size:36px;font-weight:900;color:#1a1a1a;margin:4px 0}
 .total-box .ts{font-size:11px;color:#666}
-.info-row{display:flex;border:1px solid #ccc;margin-bottom:10px}
-.info-cell{flex:1;padding:4px 8px;border-right:1px solid #ccc}
+.info-row{display:flex;border:1px solid #ccc;margin-bottom:6px}
+.info-cell{flex:1;padding:3px 6px;border-right:1px solid #ccc}
 .info-cell:last-child{border-right:none}
 .info-cell .label{font-size:9px;font-weight:700;color:#333;background:#e8e8e8;padding:1px 4px;display:inline-block;margin-bottom:2px}
 .info-cell .value{font-size:11px;color:#1a1a1a}
-table{width:100%;border-collapse:collapse;margin:8px 0}
-th{background:#e8e8e8;padding:5px 8px;text-align:left;font-size:10px;font-weight:700;color:#333;border:1px solid #ccc}
-td{padding:5px 8px;border-bottom:1px solid #ddd;font-size:11px}
+table{width:100%;border-collapse:collapse;margin:4px 0}
+th{background:#e8e8e8;padding:3px 6px;text-align:left;font-size:10px;font-weight:700;color:#333;border:1px solid #ccc}
+td{padding:2px 6px;border-bottom:1px solid #ddd;font-size:10px;line-height:1.3}
 .sz-table th,.sz-table td{text-align:center;padding:3px 5px;font-size:10px;min-width:30px}
 .sz-table td.has-qty{font-weight:800;color:#1e3a5f;background:#eef2ff}
-.totals-row td{font-weight:800;border-top:2px solid #333;font-size:12px}
+.totals-row td{font-weight:800;border-top:2px solid #333;font-size:11px}
 .notes{margin-top:8px;padding:8px 10px;background:#fffbe6;border:1px solid #f0e6b8;font-size:10px}
 .notes .label{font-weight:700;color:#8b6914;margin-bottom:2px}
-.footer{margin-top:14px;padding-top:8px;border-top:1px solid #ddd;font-size:8px;color:#999;display:flex;justify-content:space-between}
+.footer{margin-top:10px;padding-top:6px;border-top:1px solid #ddd;font-size:8px;color:#999;display:flex;justify-content:space-between}
 .amount{text-align:right;font-weight:700}
 .highlight{background:#e8e8e8;color:#166534}
 .badge{display:inline-block;padding:2px 6px;border-radius:10px;font-size:9px;font-weight:700}

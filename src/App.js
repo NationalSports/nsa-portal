@@ -7110,10 +7110,11 @@ export default function App(){
                   const styleEl=document.createElement('style');styleEl.textContent=(styleMatch?styleMatch[1]:'')+pdfFixCss;container.appendChild(styleEl);
                   const bodyDiv=document.createElement('div');bodyDiv.innerHTML=bodyMatch?bodyMatch[1]:docHtml;container.appendChild(bodyDiv);
                   document.body.appendChild(container);await new Promise(r=>setTimeout(r,500));
-                  const pdfBlob=await html2pdf().set({margin:[0.4,0.4,0.4,0.4],filename:siInv.id+'.pdf',image:{type:'jpeg',quality:0.98},html2canvas:{scale:2,useCORS:true,logging:false,backgroundColor:'#ffffff'},jsPDF:{unit:'in',format:'letter',orientation:'portrait'}}).from(bodyDiv).outputPdf('blob');
+                  const _siPdfName=siInv.id+(siBillName&&siBillName!=='—'?' - '+siBillName:'')+'.pdf';
+                  const pdfBlob=await html2pdf().set({margin:[0.4,0.4,0.4,0.4],filename:_siPdfName,image:{type:'jpeg',quality:0.98},html2canvas:{scale:2,useCORS:true,logging:false,backgroundColor:'#ffffff'},jsPDF:{unit:'in',format:'letter',orientation:'portrait'}}).from(bodyDiv).outputPdf('blob');
                   document.body.removeChild(container);
                   const pdfB64=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result.split(',')[1]);reader.onerror=reject;reader.readAsDataURL(pdfBlob)});
-                  brevoAttachments.push({name:siInv.id+'.pdf',content:pdfB64});
+                  brevoAttachments.push({name:_siPdfName,content:pdfB64});
                 }catch(err){console.warn('Failed to build invoice PDF:',err)}
                 // Build email with portal link
                 const portalUrl=siCust?.alpha_tag?'https://nsa-portal.netlify.app/?portal='+siCust.alpha_tag:'';

@@ -3197,7 +3197,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const billAddr=cust?.shipping_address_line1?cust.shipping_address_line1+(cust.shipping_city?'<br/>'+cust.shipping_city+(cust.shipping_state?' '+cust.shipping_state:'')+(cust.shipping_zip?' '+cust.shipping_zip:''):'')+'<br/>United States':(cust?.billing_address_line1?cust.billing_address_line1+(cust.billing_city?'<br/>'+cust.billing_city+(cust.billing_state?' '+cust.billing_state:'')+(cust.billing_zip?' '+cust.billing_zip:''):'')+'<br/>United States':'');
       return buildDocHtml({title:cust?.name||'Customer',docNum:o.id,docType:isE?'ESTIMATE':'SALES ORDER',
         headerRight:'<div class="ta">$'+total.toFixed(2)+'</div>'+(isE?'<div class="ts">Expires: '+new Date(Date.now()+30*86400000).toLocaleDateString()+'</div>':''),
-        infoBoxes:[{label:'Bill To',value:cust?.name||'—',sub:(cust?.alpha_tag?cust.alpha_tag+'<br/>':'')+(billAddr||'')},{label:isE?'Expires':'Expected',value:isE?new Date(Date.now()+30*86400000).toLocaleDateString():(o.expected_date||'TBD')},{label:'Exp. Close',value:new Date().toLocaleDateString()},{label:'Sales Rep',value:REPS.find(r=>r.id===o.created_by)?.name||'—'},{label:isE?'Estimate':'Sales Order',value:o.id},{label:'Memo',value:o.memo||'—'}],
+        infoBoxes:[{label:'Bill To',value:cust?.name||'—',sub:(cust?.alpha_tag?cust.alpha_tag+'<br/>':'')+(billAddr||'')},{label:isE?'Expires':'Expected',value:isE?new Date(Date.now()+30*86400000).toLocaleDateString():(o.expected_date||'TBD')},{label:'Sales Rep',value:REPS.find(r=>r.id===o.created_by)?.name||'—'},{label:isE?'Estimate':'Sales Order',value:o.id},{label:'Memo',value:o.memo||'—'}],
         tables:[{headers:['Quantity','Item','Options','Tax','Rate','Amount'],aligns:['center','left','center','center','right','right'],rows:[...rows,
           {cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Subtotal</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'},{value:'<strong>$'+subTotal.toFixed(2)+'</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'}]},
           ...(taxAmt>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Tax ('+(taxRate*100).toFixed(3)+'%)</strong>',style:'text-align:right;border:none'},{value:'$'+taxAmt.toFixed(2),style:'text-align:right;border:none'}]}]:[]),
@@ -3744,10 +3744,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const styleEl=document.createElement('style');styleEl.textContent=(styleMatch?styleMatch[1]:'')+pdfFixCss;container.appendChild(styleEl);
               const bodyDiv=document.createElement('div');bodyDiv.innerHTML=bodyMatch?bodyMatch[1]:docHtml;container.appendChild(bodyDiv);
               document.body.appendChild(container);await new Promise(r=>setTimeout(r,500));
-              const pdfBlob=await html2pdf().set({margin:[0.4,0.4,0.4,0.4],filename:ir.id+'.pdf',image:{type:'jpeg',quality:0.98},html2canvas:{scale:2,useCORS:true,logging:false,backgroundColor:'#ffffff'},jsPDF:{unit:'in',format:'letter',orientation:'portrait'}}).from(bodyDiv).outputPdf('blob');
+              const _invPdfName=ir.id+(ic?.name?' - '+ic.name:'')+'.pdf';
+              const pdfBlob=await html2pdf().set({margin:[0.4,0.4,0.4,0.4],filename:_invPdfName,image:{type:'jpeg',quality:0.98},html2canvas:{scale:2,useCORS:true,logging:false,backgroundColor:'#ffffff'},jsPDF:{unit:'in',format:'letter',orientation:'portrait'}}).from(bodyDiv).outputPdf('blob');
               document.body.removeChild(container);
               const pdfB64=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result.split(',')[1]);reader.onerror=reject;reader.readAsDataURL(pdfBlob)});
-              brevoAttachments.push({name:ir.id+'.pdf',content:pdfB64});
+              brevoAttachments.push({name:_invPdfName,content:pdfB64});
             }catch(err){console.warn('Failed to build invoice PDF:',err)}
             // Build email with portal link
             const portalUrl=ic?.alpha_tag?'https://nsa-portal.netlify.app/?portal='+ic.alpha_tag:'';
