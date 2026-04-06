@@ -169,7 +169,7 @@ const _safeQuery=(table,opts)=>{
   return Promise.race([q,timeout]).then(r=>{
     if(r.status===404||(r.error?.message||'').includes('does not exist')||(r.error?.code==='PGRST204')){
       _missing404Tables.set(table,Date.now());return{data:[],error:null,status:200}}
-    if(r.status===408)console.warn('[DB] Query timeout for table:',table);
+    if(r.status===408){console.warn('[DB] Query timeout for table:',table);return{data:[],error:null,status:408}}
     return r;
   });
 };
