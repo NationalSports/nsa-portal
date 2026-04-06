@@ -4363,9 +4363,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 if(_allArt2.length===0)return null;
                 return<div style={{marginBottom:12}}>
                   {_allArt2.map((af3,afi)=>{
-                    const _dp3=new Set();(j.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(it)safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id===af3.id)_dp3.add(d.position||'Front Center')})});
+                    const _dp3=new Set();const _cwColors3=new Set();(j.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(it)safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id===af3.id){_dp3.add(d.position||'Front Center');if(d.color_way_id&&af3.color_ways){const cw=af3.color_ways.find(c=>c.id===d.color_way_id);if(cw)cw.inks?.forEach(c=>{if(c&&c.trim())_cwColors3.add(c.trim())})}}})});
+                    const _gcColors3=new Set();(j.items||[]).forEach(gi=>{const gk2=gi.sku+'|'+(gi.color||'');const gc2=af3.garment_colors?.[gk2]||{};Object.values(gc2).flat().forEach(c=>{if(c&&c.trim())_gcColors3.add(c.trim())})});
                     const _pl3=_dp3.size>0?[..._dp3]:[];const _as3=af3.art_sizes||{};
-                    const _cl3=(af3.ink_colors||af3.thread_colors||'').split(/[,\n]/).map(c3=>c3.trim()).filter(Boolean);const _isE3=af3.deco_type==='embroidery';
+                    const _fallback3=(af3.ink_colors||af3.thread_colors||'').split(/[,\n]/).map(c3=>c3.trim()).filter(Boolean);
+                    const _cl3=_gcColors3.size>0?[..._gcColors3]:_cwColors3.size>0?[..._cwColors3]:_fallback3;const _isE3=af3.deco_type==='embroidery';
                     return<div key={afi} style={{marginBottom:afi<_allArt2.length-1?8:0,padding:'12px 14px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8}}>
                       <div style={{fontSize:11,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:8,letterSpacing:0.5}}>{af3.name||'Art '+(afi+1)}</div>
                       <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10,marginBottom:_cl3.length>0?10:0}}>
@@ -4459,9 +4461,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 if(_allArt3.length===0)return null;
                 return<div style={{margin:'8px 20px'}}>
                   {_allArt3.map((af3,afi)=>{
-                    const _dp3=new Set();(j.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(it)safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id===af3.id)_dp3.add(d.position||'Front Center')})});
+                    const _dp3=new Set();const _cwColors3=new Set();(j.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(it)safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id===af3.id){_dp3.add(d.position||'Front Center');if(d.color_way_id&&af3.color_ways){const cw=af3.color_ways.find(c=>c.id===d.color_way_id);if(cw)cw.inks?.forEach(c=>{if(c&&c.trim())_cwColors3.add(c.trim())})}}})});
+                    const _gcColors3=new Set();(j.items||[]).forEach(gi=>{const gk2=gi.sku+'|'+(gi.color||'');const gc2=af3.garment_colors?.[gk2]||{};Object.values(gc2).flat().forEach(c=>{if(c&&c.trim())_gcColors3.add(c.trim())})});
                     const _pl3=_dp3.size>0?[..._dp3]:[];const _as3=af3.art_sizes||{};
-                    const _cl3=(af3.ink_colors||af3.thread_colors||'').split(/[,\n]/).map(c3=>c3.trim()).filter(Boolean);const _isE3=af3.deco_type==='embroidery';
+                    const _fallback3=(af3.ink_colors||af3.thread_colors||'').split(/[,\n]/).map(c3=>c3.trim()).filter(Boolean);
+                    const _cl3=_gcColors3.size>0?[..._gcColors3]:_cwColors3.size>0?[..._cwColors3]:_fallback3;const _isE3=af3.deco_type==='embroidery';
                     return<div key={afi} style={{marginBottom:afi<_allArt3.length-1?8:0,padding:'12px 14px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8}}>
                       <div style={{fontSize:11,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:8,letterSpacing:0.5}}>{af3.name||'Art '+(afi+1)}</div>
                       <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10,marginBottom:_cl3.length>0?10:0}}>
