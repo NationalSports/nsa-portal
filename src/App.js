@@ -3060,7 +3060,9 @@ export default function App(){
           }
         }
         // No-deco items fully pulled → ready to ship (respecting ship preference)
-        if((!item.decorations?.length||item.no_deco)&&totalPulled>=totalOrdered&&totalOrdered>0){
+        // Skip if this item has completed/shipped deco jobs (those are handled in the job loop below)
+        const itemHasCompletedJob=safeJobs(so).some(j=>(j.prod_status==='completed'||j.prod_status==='shipped')&&(j.items||[]).some(gi=>gi.item_idx===ii));
+        if((!item.decorations?.length||item.no_deco)&&!itemHasCompletedJob&&totalPulled>=totalOrdered&&totalOrdered>0){
           const dest=picks.find(p=>p.ship_dest)?.ship_dest||'in_house';
           const pref=so.ship_preference||'ship_as_ready';
           const shipDateOk=pref!=='ship_on_date'||!so.ship_on_date||(new Date(so.ship_on_date)<=new Date());
@@ -10189,10 +10191,17 @@ export default function App(){
                         const key=it.sku+'|'+(it.color||'');if(!shippedBySz[key])shippedBySz[key]={};
                         Object.entries(it.sizes||{}).forEach(([sz,v])=>{shippedBySz[key][sz]=(shippedBySz[key][sz]||0)+safeNum(v)});
                       })});
+                      // Merge duplicate items by SKU+color before rendering
+                      const mergedItems=[];const seenItems={};
+                      safeItems(so).forEach(item=>{
+                        const key=item.sku+'|'+(item.color||'');
+                        if(seenItems[key]){const m=seenItems[key];Object.entries(safeSizes(item)).forEach(([sz,v])=>{m.sizes[sz]=(m.sizes[sz]||0)+safeNum(v)})}
+                        else{const m={sku:item.sku,name:item.name,color:item.color,sizes:{}};Object.entries(safeSizes(item)).forEach(([sz,v])=>{m.sizes[sz]=safeNum(v)});seenItems[key]=m;mergedItems.push(m)}
+                      });
                       return<table style={{fontSize:11,width:'100%',borderCollapse:'collapse'}}><tbody>
-                      {safeItems(so).map((item,ii)=>{
-                        const szObj=safeSizes(item);const key=item.sku+'|'+(item.color||'');const shipped=shippedBySz[key]||{};
-                        const remainSz={};Object.entries(szObj).forEach(([sz,v])=>{const rem=safeNum(v)-safeNum(shipped[sz]);if(rem>0)remainSz[sz]=rem});
+                      {mergedItems.map((item,ii)=>{
+                        const key=item.sku+'|'+(item.color||'');const shipped=shippedBySz[key]||{};
+                        const remainSz={};Object.entries(item.sizes).forEach(([sz,v])=>{const rem=v-safeNum(shipped[sz]);if(rem>0)remainSz[sz]=rem});
                         const totalQty=Object.values(remainSz).reduce((a,v)=>a+v,0);
                         if(totalQty<=0)return null;
                         const szStr=Object.entries(remainSz).filter(([,v])=>v>0).sort((a,b)=>{const ai=SZ_ORD.indexOf(a[0].toUpperCase()),bi2=SZ_ORD.indexOf(b[0].toUpperCase());return(ai<0?99:ai)-(bi2<0?99:bi2)}).map(([sz,v])=>sz+':'+v).join('  ');
@@ -10215,15 +10224,22 @@ export default function App(){
                           const key2=it.sku+'|'+(it.color||'');if(!shippedBySz[key2])shippedBySz[key2]={};
                           Object.entries(it.sizes||{}).forEach(([sz,v])=>{shippedBySz[key2][sz]=(shippedBySz[key2][sz]||0)+safeNum(v)});
                         })});
+                        // Merge duplicate items by SKU+color before building available items
+                        const mergedByKey={};const mergedOrder=[];
                         safeItems(so).forEach((item,iIdx)=>{
-                          const key=soId+'|'+iIdx;
+                          const itemKey=soId+'|'+item.sku+'|'+(item.color||'');
+                          if(mergedByKey[itemKey]){const m=mergedByKey[itemKey];Object.entries(safeSizes(item)).forEach(([sz,v])=>{m.sizes[sz]=(m.sizes[sz]||0)+safeNum(v)})}
+                          else{const m={sku:item.sku,name:item.name,color:item.color||'',sizes:{...safeSizes(item)},iIdx};mergedByKey[itemKey]=m;mergedOrder.push(m)}
+                        });
+                        mergedOrder.forEach(m=>{
+                          const key=soId+'|'+m.sku+'|'+(m.color||'');
                           if(seen.has(key))return;
-                          const szObj=safeSizes(item);const itemKey=item.sku+'|'+(item.color||'');const shipped=shippedBySz[itemKey]||{};
-                          const remainSz={};Object.entries(szObj).forEach(([sz,v])=>{const rem=safeNum(v)-safeNum(shipped[sz]);if(rem>0)remainSz[sz]=rem});
+                          const itemKey=m.sku+'|'+(m.color||'');const shipped=shippedBySz[itemKey]||{};
+                          const remainSz={};Object.entries(m.sizes).forEach(([sz,v])=>{const rem=safeNum(v)-safeNum(shipped[sz]);if(rem>0)remainSz[sz]=rem});
                           const qty=Object.values(remainSz).reduce((a,v)=>a+v,0);
                           if(qty<=0)return;
                           seen.add(key);
-                          allItems.push({sku:item.sku,name:item.name,color:item.color||'',sizes:remainSz,soId,itemIdx:iIdx});
+                          allItems.push({sku:m.sku,name:m.name,color:m.color,sizes:remainSz,soId,itemIdx:m.iIdx});
                         });
                       });
                       setShipModal({grp,soMap:grp.soMap,availableItems:allItems,boxes:[{items:[],tracking_number:'',carrier:'fedex',weight:5,dimensions:{length:'',width:'',height:''},notes:''}]});
@@ -10377,10 +10393,12 @@ export default function App(){
                           nf('Shipment deleted');
                         }}>Delete</button>
                       <button style={{fontSize:9,background:'#166534',color:'white',border:'none',padding:'3px 8px',borderRadius:4,fontWeight:700,cursor:'pointer'}}
-                        onClick={()=>{
+                        onClick={(e)=>{
+                          const btn=e.currentTarget;if(btn.disabled)return;btn.disabled=true;btn.style.opacity='0.5';
                           const updatedShipments=(shp.so._shipments||[]).map(s=>s.id===shp.id?{...s,carrier_picked_up:true,pickup_date:new Date().toLocaleString()}:s);
                           savSO({...shp.so,_shipments:updatedShipments});
                           addWhAction({type:'pickup_confirmed',soId:shp.soId,customer:shp.cName,tracking:shp.tracking_number||'',carrier:shp.carrier||'',by:cu?.id||'warehouse'});
+                          nf('Confirmed pickup for '+shp.cName);
                         }}>Confirm Picked Up</button>
                     </div>
                   </div>
@@ -10711,7 +10729,13 @@ export default function App(){
                   }}>🖨️ Pack Slip</button>
                   {box.shipping_cost!=null&&<span style={{fontSize:10,fontWeight:700,color:'#166534',padding:'4px 8px',background:'#dcfce7',borderRadius:4}}>Ship cost: ${(box.shipping_cost||0).toFixed(2)}</span>}
                   {box.label_url&&<button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
-                    onClick={()=>{const pw=window.open(box.label_url,'_blank');if(pw)setTimeout(()=>{try{pw.print()}catch(e){}},1500)}}>🏷️ Print Label</button>}
+                    onClick={()=>{
+                      if(box.label_url.startsWith('data:application/pdf')){
+                        const iframe=document.createElement('iframe');iframe.style.display='none';document.body.appendChild(iframe);
+                        iframe.src=box.label_url;iframe.onload=()=>{try{iframe.contentWindow.print()}catch(e){const a=document.createElement('a');a.href=box.label_url;a.download='label.pdf';a.click()}
+                          setTimeout(()=>{try{document.body.removeChild(iframe)}catch{}},60000)};
+                      } else {const pw=window.open(box.label_url,'_blank');if(pw)setTimeout(()=>{try{pw.print()}catch(e){}},1500)}
+                    }}>🏷️ Print Label</button>}
                   {!box.label_url&&box.shipstation_shipment_id&&ssConnected&&<button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 10px'}}
                     onClick={async()=>{
                       try{
@@ -10721,7 +10745,11 @@ export default function App(){
                         const lUrl=shp?.labelDownload||shp?.labelData||(typeof shp?.labelData==='string'&&shp.labelData.length>200?'data:application/pdf;base64,'+shp.labelData:null);
                         if(lUrl){
                           const b=[...shipModal.boxes];b[bi]={...b[bi],label_url:lUrl};setShipModal({...shipModal,boxes:b});
-                          const pw=window.open(lUrl,'_blank');if(pw)setTimeout(()=>{try{pw.print()}catch(e){}},1500);
+                          if(lUrl.startsWith('data:application/pdf')){
+                            const iframe=document.createElement('iframe');iframe.style.display='none';document.body.appendChild(iframe);
+                            iframe.src=lUrl;iframe.onload=()=>{try{iframe.contentWindow.print()}catch(e){const a=document.createElement('a');a.href=lUrl;a.download='label.pdf';a.click()}
+                              setTimeout(()=>{try{document.body.removeChild(iframe)}catch{}},60000)};
+                          } else {const pw=window.open(lUrl,'_blank');if(pw)setTimeout(()=>{try{pw.print()}catch(e){}},1500)}
                         } else {nf('Label not available from ShipStation','error')}
                       }catch(err){nf('Failed to fetch label: '+err.message,'error')}
                     }}>🏷️ Fetch & Print Label</button>}
@@ -10880,7 +10908,8 @@ export default function App(){
                         nf('Shipment deleted');
                       }}>Delete</button>
                     <button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
-                      onClick={()=>{
+                      onClick={(e)=>{
+                        const btn=e.currentTarget;if(btn.disabled)return;btn.disabled=true;btn.style.opacity='0.5';
                         const updatedShipments=(shp.so._shipments||[]).map(s=>s.id===shp.id?{...s,carrier_picked_up:true,pickup_date:new Date().toLocaleString()}:s);
                         savSO({...shp.so,_shipments:updatedShipments});
                         addWhAction({type:'pickup_confirmed',soId:shp.soId,customer:shp.cName,tracking:shp.tracking_number||'',carrier:shp.carrier||'',by:cu?.id||'warehouse'});
