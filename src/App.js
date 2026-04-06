@@ -1502,6 +1502,7 @@ function dP(d,q,artFiles,cq){
 export default function App(){
   const[pg,setPg]=useState('dashboard');const[toast,setToast]=useState(null);const[mobileMenuOpen,setMobileMenuOpen]=useState(false);
   const[dashView,setDashView]=useState(()=>{try{const u=JSON.parse(localStorage.getItem('nsa_user'));if(u?.role==='csr')return'csr';if(u?.role==='rep')return'sales';if(u?.role==='warehouse')return'warehouse';if(u?.role==='artist'||u?.role==='art')return'decorator';if(u?.role==='production')return'production'}catch{}return'admin'});// admin|sales|warehouse|decorator|production|csr
+  const[adminRepFilter,setAdminRepFilter]=useState('me');// 'me'|'all'|repId
   const[prodDashFilter,setProdDashFilter]=useState(null);// null|'hold'|'ready'|'staging'|'in_process'|'completed'
   const[qbConfig,setQBConfig]=useState({connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'daily',syncInterval:'daily',
     access_token:'',refresh_token:'',realm_id:'',token_created_at:0,sandbox:false,
@@ -3334,12 +3335,19 @@ export default function App(){
     todos.sort((a,b)=>{const da=a.date?new Date(a.date).getTime():0;const db=b.date?new Date(b.date).getTime():0;return db-da});
     // Filter to person-specific: reps see their customers' todos, CSRs see their assigned reps' todos
     const myTodos=todos.filter(t=>{
-      if(cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm')return true;
       if(t.role==='all')return true;
-      if(cu.role==='rep')return t.repId===cu.id;
+      if(cu.role==='rep'||cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm')return t.repId===cu.id;
       if(cu.role==='csr'){const myReps=getRepsForCsr(cu.id);return myReps.length===0||myReps.includes(t.repId)}
       return true;
     });
+    // Admin-view todos: filterable by rep selector
+    const isAdmin=cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm';
+    const adminTodos=isAdmin?todos.filter(t=>{
+      if(adminRepFilter==='all')return true;
+      if(t.role==='all')return true;
+      const targetId=adminRepFilter==='me'?cu.id:adminRepFilter;
+      return t.repId===targetId;
+    }):myTodos;
     // Get assigned todos for this user (manually created)
     const myAssignedTodos=assignedTodos.filter(t=>t.status==='open'&&(t.assigned_to===cu.id||t.created_by===cu.id));
 
@@ -3370,11 +3378,15 @@ export default function App(){
     <div className="stats-row"><div className="stat-card"><div className="stat-label">Open Estimates</div><div className="stat-value" style={{color:'#d97706'}}>{ests.filter(e=>e.status==='draft'||e.status==='sent').length}</div></div><div className="stat-card"><div className="stat-label">Active SOs</div><div className="stat-value" style={{color:'#2563eb'}}>{sos.filter(s=>calcSOStatus(s)!=='complete').length}</div></div><div className="stat-card"><div className="stat-label">Active Jobs</div><div className="stat-value" style={{color:'#7c3aed'}}>{activeJobs.length}</div></div><div className="stat-card"><div className="stat-label">Unread Msgs</div><div className="stat-value" style={{color:unreadMsgs.length>0?'#dc2626':''}}>{unreadMsgs.length}</div></div>{unreadMentions.length>0&&<div className="stat-card" style={{borderColor:'#f59e0b'}}><div className="stat-label">@ Mentions</div><div className="stat-value" style={{color:'#d97706'}}>{unreadMentions.length}</div></div>}
       {isA&&<div className="stat-card" style={{borderColor:'#fbbf24'}}><div className="stat-label">Stock Alerts</div><div className="stat-value" style={{color:'#d97706'}}>{al.length}</div></div>}
       <div className="stat-card" style={{borderColor:ssConnected?'#22c55e':'#ef4444'}}><div className="stat-label">ShipStation</div><div className="stat-value" style={{color:ssConnected?'#166534':'#dc2626',fontSize:16}}>{ssConnected?'Connected':'Offline'}</div></div></div>
-    {(()=>{const _fmtTD=d=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);return days<1?'Today':days===1?'Yesterday':days<14?days+'d ago':((dt.getMonth()+1)+'/'+dt.getDate())}catch{return''}};const _allActionTodos=todos.filter(t=>!t.isNotification);const _undismissed=_allActionTodos.filter(t=>!dismissedTodos.includes(t.dismissKey));const _todoTypeMatch=t=>{if(todoFilter==='all')return true;if(todoFilter==='art')return t.type==='art'||t.type==='coach_followup'||t.type==='art_rejected'||t.type==='art_approved';if(todoFilter==='follow_up')return t.type==='follow_up'||t.type==='inv_followup';if(todoFilter==='order')return t.type==='order'||t.type==='deposit_needed';if(todoFilter==='deadline')return t.type==='deadline';if(todoFilter==='est')return t.type==='est_approved'||t.type==='est_update_request';if(todoFilter==='delivery')return t.type==='rep_delivery';if(todoFilter==='issue')return t.type==='issue';return true};const actionTodos=_undismissed.filter(_todoTypeMatch);const notifs=todos.filter(t=>t.isNotification);return<><div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
+    {(()=>{const _fmtTD=d=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);return days<1?'Today':days===1?'Yesterday':days<14?days+'d ago':((dt.getMonth()+1)+'/'+dt.getDate())}catch{return''}};const _allActionTodos=adminTodos.filter(t=>!t.isNotification);const _undismissed=_allActionTodos.filter(t=>!dismissedTodos.includes(t.dismissKey));const _todoTypeMatch=t=>{if(todoFilter==='all')return true;if(todoFilter==='art')return t.type==='art'||t.type==='coach_followup'||t.type==='art_rejected'||t.type==='art_approved';if(todoFilter==='follow_up')return t.type==='follow_up'||t.type==='inv_followup';if(todoFilter==='order')return t.type==='order'||t.type==='deposit_needed';if(todoFilter==='deadline')return t.type==='deadline';if(todoFilter==='est')return t.type==='est_approved'||t.type==='est_update_request';if(todoFilter==='delivery')return t.type==='rep_delivery';if(todoFilter==='issue')return t.type==='issue';return true};const actionTodos=_undismissed.filter(_todoTypeMatch);const notifs=adminTodos.filter(t=>t.isNotification);return<><div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
       <div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><h2>📋 To-Do ({actionTodos.length})</h2>
+        <div style={{display:'flex',gap:6,alignItems:'center'}}>
+        <select value={adminRepFilter} onChange={e=>setAdminRepFilter(e.target.value)} style={{fontSize:11,padding:'3px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:'#475569',cursor:'pointer'}}>
+          <option value="me">My Items</option><option value="all">All Reps</option>{REPS.filter(r=>r.id!==cu.id&&(r.role==='rep'||r.role==='admin'||r.role==='gm')).map(r=><option key={r.id} value={r.id}>{r.name?.split(' ')[0]}</option>)}
+        </select>
         <select value={todoFilter} onChange={e=>setTodoFilter(e.target.value)} style={{fontSize:11,padding:'3px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:'#475569',cursor:'pointer'}}>
           <option value="all">All Types</option><option value="art">Art / Approvals</option><option value="follow_up">Follow-ups</option><option value="est">Estimates</option><option value="order">Orders / Deposits</option><option value="deadline">Deadlines</option><option value="delivery">Delivery</option><option value="issue">Issues</option>
-        </select></div>
+        </select></div></div>
         <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
           {actionTodos.length===0?<div className="empty" style={{padding:20}}>{todoFilter==='all'?'All clear!':'No '+todoFilter.replace(/_/g,' ')+' items'}</div>:
           actionTodos.slice(0,20).map((t,i)=><div key={i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:8,cursor:'pointer'}} onClick={()=>{if(t.type==='issue'){setPg('settings')}else if(t.type==='est_update_request'||t.type==='est_approved'||t.type==='follow_up'||t.type==='deposit_needed'){if(t.est){setEEst(t.est);setEEstC(t.estC);setPg('estimates')}}else if(t.so){if(t.type==='art'&&t.jobId){const jIdx=safeJobs(t.so).findIndex(jj=>jj.id===t.jobId);setESOTab('jobs');setESOScrollJob(jIdx>=0?jIdx:null)}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
@@ -5078,9 +5090,8 @@ export default function App(){
     // Sort by date (newest first)
     todos.sort((a,b)=>{const da=a.date?new Date(a.date).getTime():0;const db=b.date?new Date(b.date).getTime():0;return db-da});
     const filtered=todos.filter(t=>{
-      if(cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm')return true;
       if(t.role==='all')return true;
-      if(cu.role==='rep')return t.repId===cu.id;
+      if(cu.role==='rep'||cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm')return t.repId===cu.id;
       if(cu.role==='csr'){const myReps=getRepsForCsr(cu.id);return myReps.length===0||myReps.includes(t.repId)}
       return true;
     });
