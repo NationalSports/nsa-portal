@@ -9336,7 +9336,7 @@ export default function App(){
         const showShipping=shipDest==='ship_customer'||shipDest==='ship_deco';
 
         // Local shipping state stored on whViewIF
-        const boxes=t._boxes||[{weight:5,dimensions:{},carrier:'fedex',tracking_number:'',items:[{sku:item.sku,name:item.name,color:item.color||'',sizes:Object.fromEntries(szKeys.map(sz=>[(sz),Math.max(0,(item.sizes[sz]||0)-(t.pulled[sz]||0))]))}]}];
+        const boxes=t._boxes||[{weight:5,dimensions:{},carrier:'ups',tracking_number:'',items:[{sku:item.sku,name:item.name,color:item.color||'',sizes:Object.fromEntries(szKeys.map(sz=>[(sz),Math.max(0,(item.sizes[sz]||0)-(t.pulled[sz]||0))]))}]}];
         const setBoxes=newBoxes=>setWhViewIF(prev=>({...prev,_boxes:newBoxes}));
         // Editable pull quantities — default to the pick line quantities (what was requested)
         const pullQtys=t._pullQtys||(activePick?Object.fromEntries(szKeys.map(sz=>[sz,activePick[sz]||0])):{});
@@ -9582,7 +9582,7 @@ export default function App(){
                 </div>})}
 
               <button className="btn btn-sm btn-secondary" style={{fontSize:11,marginTop:4}} onClick={()=>{
-                setBoxes([...boxes,{weight:5,dimensions:{},carrier:'fedex',tracking_number:'',items:[{sku:item.sku,name:item.name,color:item.color||'',sizes:Object.fromEntries(szKeys.map(sz=>[sz,0]))}]}])}}>
+                setBoxes([...boxes,{weight:5,dimensions:{},carrier:'ups',tracking_number:'',items:[{sku:item.sku,name:item.name,color:item.color||'',sizes:Object.fromEntries(szKeys.map(sz=>[sz,0]))}]}])}}>
                 + Add Box</button>
             </div>
           </div>}
@@ -10258,7 +10258,7 @@ export default function App(){
                           allItems.push({sku:m.sku,name:m.name,color:m.color,sizes:remainSz,soId,itemIdx:m.iIdx});
                         });
                       });
-                      setShipModal({grp,soMap:grp.soMap,availableItems:allItems,boxes:[{items:[],tracking_number:'',carrier:'fedex',weight:5,dimensions:{length:'',width:'',height:''},notes:''}]});
+                      setShipModal({grp,soMap:grp.soMap,availableItems:allItems,boxes:[{items:[],tracking_number:'',carrier:'ups',weight:5,dimensions:{length:'',width:'',height:''},notes:''}]});
                     }}>📦 Create Shipment</button>
                   <button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 10px'}}
                     onClick={()=>{
@@ -10375,7 +10375,7 @@ export default function App(){
                             const so2=shp.so;const c2=cust.find(cc=>cc.id===so2?.customer_id);
                             if(!c2){nf('No customer found','error');btn.disabled=false;btn.textContent='Create Label';return}
                             const weight=parseFloat(prompt('Box weight (lbs):','5'));if(!weight||isNaN(weight)){btn.disabled=false;btn.textContent='Create Label';return}
-                            const carrier2=prompt('Carrier (fedex/ups/usps):',shp.carrier||'fedex');if(!carrier2){btn.disabled=false;btn.textContent='Create Label';return}
+                            const carrier2=prompt('Carrier (ups/fedex/usps):',shp.carrier||'ups');if(!carrier2){btn.disabled=false;btn.textContent='Create Label';return}
                             nf('Creating ShipStation label...');
                             const label=await createShipStationLabel(so2,c2,shp.items||[],weight,carrier2,'fedex_ground',{length:12,width:12,height:6});
                             const cost=label.shipmentCost||label.insuranceCost?parseFloat(label.shipmentCost||0)+parseFloat(label.insuranceCost||0):null;
@@ -10803,7 +10803,7 @@ export default function App(){
 
             {/* Add box button */}
             <button className="btn btn-sm btn-secondary" style={{marginBottom:16}}
-              onClick={()=>setShipModal({...shipModal,boxes:[...shipModal.boxes,{items:[],tracking_number:'',carrier:'fedex',weight:5,dimensions:{length:'',width:'',height:''},notes:''}]})}>+ Add Box</button>
+              onClick={()=>setShipModal({...shipModal,boxes:[...shipModal.boxes,{items:[],tracking_number:'',carrier:'ups',weight:5,dimensions:{length:'',width:'',height:''},notes:''}]})}>+ Add Box</button>
 
             {/* Actions */}
             <div style={{display:'flex',gap:8,borderTop:'1px solid #e2e8f0',paddingTop:12}}>
