@@ -2238,13 +2238,16 @@ export default function App(){
   // Also flush all current state to localStorage as a safety net before unload
   React.useEffect(()=>{const h=e=>{
     // Emergency flush to localStorage on unload — ensures latest state is persisted as cache for next load
-    const d=_visFlushRefs.current;
-    _lsSet('nsa_cust',JSON.stringify(d.cust));
-    _lsSet('nsa_ests',JSON.stringify(d.ests));
-    _lsSet('nsa_sos',JSON.stringify(d.sos));
-    _lsSet('nsa_invs',JSON.stringify(d.invs));
-    _lsSet('nsa_msgs',JSON.stringify(d.msgs));
-    _lsSet('nsa_prod',JSON.stringify(d.prod));
+    // Skip if quota already exceeded — these will reload from Supabase anyway
+    if(!_lsQuotaWarned){
+      const d=_visFlushRefs.current;
+      _lsSet('nsa_cust',JSON.stringify(d.cust));
+      _lsSet('nsa_ests',JSON.stringify(d.ests));
+      _lsSet('nsa_sos',JSON.stringify(d.sos));
+      _lsSet('nsa_invs',JSON.stringify(d.invs));
+      _lsSet('nsa_msgs',JSON.stringify(d.msgs));
+      _lsSet('nsa_prod',JSON.stringify(d.prod));
+    }
     if(window.location.search.includes('portal='))return;if(_dbSaveFailedIds.size>0){e.preventDefault();e.returnValue=''}};window.addEventListener('beforeunload',h);return()=>window.removeEventListener('beforeunload',h)},[]);
   // Flush all state to localStorage when tab is hidden (prevents data loss on mobile tab-kill/timeout)
   // Also retry failed saves immediately when tab regains visibility (don't wait 60s)
@@ -2252,17 +2255,20 @@ export default function App(){
     const onVis=()=>{
       if(document.hidden){
         // Tab going hidden — emergency flush all state to localStorage as cache for next load
-        const d=_visFlushRefs.current;
-        _lsSet('nsa_cust',JSON.stringify(d.cust));
-        _lsSet('nsa_ests',JSON.stringify(d.ests));
-        _lsSet('nsa_sos',JSON.stringify(d.sos));
-        _lsSet('nsa_invs',JSON.stringify(d.invs));
-        _lsSet('nsa_msgs',JSON.stringify(d.msgs));
-        _lsSet('nsa_prod',JSON.stringify(d.prod));
-        _lsSet('nsa_vend',JSON.stringify(d.vend));
-        _lsSet('nsa_reps',JSON.stringify(d.REPS));
-        _lsSet('nsa_omg_stores',JSON.stringify(d.omgStores));
-        _lsSet('nsa_issues',JSON.stringify(d.issues));
+        // Skip if quota already exceeded — data will reload from Supabase
+        if(!_lsQuotaWarned){
+          const d=_visFlushRefs.current;
+          _lsSet('nsa_cust',JSON.stringify(d.cust));
+          _lsSet('nsa_ests',JSON.stringify(d.ests));
+          _lsSet('nsa_sos',JSON.stringify(d.sos));
+          _lsSet('nsa_invs',JSON.stringify(d.invs));
+          _lsSet('nsa_msgs',JSON.stringify(d.msgs));
+          _lsSet('nsa_prod',JSON.stringify(d.prod));
+          _lsSet('nsa_vend',JSON.stringify(d.vend));
+          _lsSet('nsa_reps',JSON.stringify(d.REPS));
+          _lsSet('nsa_omg_stores',JSON.stringify(d.omgStores));
+          _lsSet('nsa_issues',JSON.stringify(d.issues));
+        }
       }else if(_dbSaveFailedIds.size>0&&_initialLoadDone.current&&_dbLoadSuccess.current){
         // Tab returning — immediately retry failed saves instead of waiting 60s
         console.log('[DB] Tab visible — retrying',_dbSaveFailedIds.size,'failed saves');
@@ -6368,19 +6374,21 @@ export default function App(){
     reader.readAsText(file);
   };
   // Auto-backup to localStorage every 5 minutes
+  // Only stores lightweight metadata — full data is in Supabase cloud + individual nsa_* keys
   React.useEffect(()=>{
     if(!autoBackupEnabled)return;
+    // Clean up legacy full-snapshot backup that was filling localStorage
+    try{localStorage.removeItem('nsa_auto_backup')}catch{}
     const interval=setInterval(()=>{
-      const data=JSON.stringify({_meta:{version:'1.0',auto_backup:true,saved_at:new Date().toISOString()},
-          customers:cust,estimates:ests,sales_orders:sos,products:prod,messages:msgs,invoices:invs,
+      const data=JSON.stringify({_meta:{version:'2.0',auto_backup:true,saved_at:new Date().toISOString()},
           batch_queue:batchPOs,submitted_batches:submittedBatches,batch_counter:batchCounter,
-          change_log:changeLog,so_history:soHistory,
-          inv_adj_log:invAdjLog,inv_pos:invPOs,inv_po_counter:invPOCounter});
+          change_log:(changeLog||[]).slice(0,100),
+          inv_adj_log:(invAdjLog||[]).slice(0,100),inv_pos:invPOs,inv_po_counter:invPOCounter});
       if(!_lsSet('nsa_auto_backup',data)){nf('Auto-backup failed — localStorage full. Export a manual backup.','error')}
       else{_lsSet('nsa_auto_backup_ts',new Date().toISOString())}
     },300000);// 5 min
     return()=>clearInterval(interval);
-  },[autoBackupEnabled,cust,ests,sos,prod,msgs,invs,batchPOs,submittedBatches,batchCounter,changeLog,soHistory,invAdjLog,invPOs,invPOCounter]);
+  },[autoBackupEnabled,batchPOs,submittedBatches,batchCounter,changeLog,invAdjLog,invPOs,invPOCounter]);
 
   const restoreAutoBackup=()=>{
     try{
@@ -6388,7 +6396,8 @@ export default function App(){
       if(!raw){nf('No auto-backup found');return}
       const data=JSON.parse(raw);
       const ts=localStorage.getItem('nsa_auto_backup_ts')||'unknown';
-      if(window.confirm('Restore auto-backup from '+new Date(ts).toLocaleString()+'?')){
+      if(window.confirm('Restore auto-backup from '+new Date(ts).toLocaleString()+'?\n\n'+(data._meta?.version==='2.0'?'(Lightweight backup — restores batch POs, changelog, inventory data. Main data loads from cloud.)':'(Full backup — restores all data.)'))){
+        // Support both legacy v1 full backups and new v2 lightweight backups
         if(data.customers)setCust(data.customers);
         if(data.estimates)setEsts(data.estimates);
         if(data.sales_orders)setSOs(data.sales_orders);
@@ -18311,7 +18320,7 @@ export default function App(){
       </div>}
       {cacheFull&&<div style={{padding:'8px 16px',background:'#eff6ff',border:'1px solid #bfdbfe',color:'#1e40af',fontSize:12,fontWeight:600,display:'flex',alignItems:'center',gap:8}}>
         <span style={{fontSize:14}}>&#128230;</span><span style={{flex:1}}>Local cache full &mdash; data is still saved to cloud. Clear browser data if issues persist.</span>
-        <button onClick={()=>{try{const keys=[];for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(k&&k.startsWith('nsa_snap_'))keys.push(k)}keys.forEach(k=>localStorage.removeItem(k));_lsQuotaWarned=false;setCacheFull(false)}catch(e){console.error('[Storage] cache clear failed:',e)}}} style={{background:'#1e40af',border:'none',color:'#fff',cursor:'pointer',fontWeight:600,fontSize:11,padding:'3px 10px',borderRadius:4,whiteSpace:'nowrap'}}>Clear Cache</button>
+        <button onClick={()=>{try{const heavyKeys=['nsa_auto_backup','nsa_cust','nsa_ests','nsa_sos','nsa_invs','nsa_msgs','nsa_prod','nsa_vend','nsa_change_log','nsa_wh_recent'];heavyKeys.forEach(k=>{try{localStorage.removeItem(k)}catch{}});const keys=[];for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(k&&k.startsWith('nsa_snap_'))keys.push(k)}keys.forEach(k=>localStorage.removeItem(k));_lsQuotaWarned=false;setCacheFull(false);console.log('[Storage] Cleared heavy cache keys + snap keys')}catch(e){console.error('[Storage] cache clear failed:',e)}}} style={{background:'#1e40af',border:'none',color:'#fff',cursor:'pointer',fontWeight:600,fontSize:11,padding:'3px 10px',borderRadius:4,whiteSpace:'nowrap'}}>Clear Cache</button>
         <button onClick={()=>setCacheFull(false)} style={{background:'none',border:'none',color:'#1e40af',cursor:'pointer',fontWeight:800,fontSize:14}}>&#215;</button>
       </div>}
       {failedSaveCount>0&&<div style={{padding:'8px 16px',background:'#fefce8',border:'1px solid #fde68a',color:'#92400e',fontSize:12,fontWeight:600,display:'flex',alignItems:'center',gap:8}}>
