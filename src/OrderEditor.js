@@ -5882,50 +5882,86 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             </div>})}
           </>}
 
-          {/* Receive shipment form — not for drop ship POs */}
-          {hasOpen&&!isDropShip&&<div key={'recv-'+activeLineIdx} style={{marginTop:12,padding:12,border:'2px solid #22c55e',borderRadius:8,background:'#f0fdf4'}}>
-            <div style={{fontSize:12,fontWeight:700,color:'#166534',marginBottom:8}}>Receive Shipment</div>
+          {/* Receive shipment form — not for drop ship POs, click-to-add multi-item */}
+          {hasOpen&&!isDropShip&&(()=>{
+            // Build all receivable lines
+            const allRecvLines=allLines.map((ln,li)=>{
+              const it=o.items[ln.lineIdx];const p=it?.po_lines?.[ln.poIdx];if(!it||!p)return null;
+              const sk=Object.keys(p).filter(k=>!k.startsWith('_')&&k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='po_type'&&k!=='deco_vendor'&&k!=='deco_type'&&k!=='created_at'&&k!=='memo'&&k!=='notes'&&k!=='expected_date'&&k!=='billed'&&k!=='tracking_numbers'&&k!=='unit_cost'&&k!=='vendor'&&k!=='drop_ship'&&typeof p[k]==='number').sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
+              const rcvd=p.received||{};const cncl=p.cancelled||{};
+              const getOp=sz=>Math.max(0,(p[sz]||0)-(rcvd[sz]||0)-(cncl[sz]||0));
+              const hasOp=sk.some(sz=>getOp(sz)>0);
+              return hasOp?{li,ln,item:it,po:p,szKeys:sk,rcvd,cncl,getOp}:null;
+            }).filter(Boolean);
+            if(!allRecvLines.length)return null;
+            // For single-item POs, auto-select that item
+            const selectedIdxs=allLines.length<=1?[activeLineIdx]:(editPO._selectedRecvLines||[]);
+            const recvLines=allRecvLines.filter(r=>selectedIdxs.includes(r.li));
+            const unselectedLines=allRecvLines.filter(r=>!selectedIdxs.includes(r.li));
+            return<div key={'recv-multi'} style={{marginTop:12,padding:12,border:'2px solid #22c55e',borderRadius:8,background:'#f0fdf4'}}>
+            <div style={{fontSize:12,fontWeight:700,color:'#166534',marginBottom:8}}>Receive Shipment{recvLines.length>1?' ('+recvLines.length+' items)':''}</div>
+            {/* Clickable item pills to add/remove from receive */}
+            {allLines.length>1&&<div style={{marginBottom:10}}>
+              <div style={{fontSize:10,fontWeight:600,color:'#64748b',marginBottom:4}}>Click items to add to this shipment:</div>
+              <div style={{display:'flex',gap:5,flexWrap:'wrap'}}>
+                {allRecvLines.map(r=>{const isSel=selectedIdxs.includes(r.li);return<div key={r.li} style={{padding:'4px 8px',borderRadius:5,cursor:'pointer',border:isSel?'2px solid #22c55e':'1px dashed #94a3b8',background:isSel?'#dcfce7':'white',fontSize:11,display:'flex',gap:4,alignItems:'center',transition:'all 0.15s'}} onClick={()=>setEditPO(p=>{const prev=p._selectedRecvLines||[];return{...p,_selectedRecvLines:isSel?prev.filter(x=>x!==r.li):[...prev,r.li]}})}>
+                  {isSel?<span style={{color:'#16a34a',fontWeight:800,fontSize:13}}>✓</span>:<span style={{color:'#94a3b8',fontSize:13}}>+</span>}
+                  <span style={{fontFamily:'monospace',fontWeight:700,color:isSel?'#1e40af':'#64748b'}}>{r.item.sku}</span>
+                  <span style={{fontWeight:600,color:isSel?'#0f172a':'#94a3b8'}}>{r.item.name}</span>
+                  <span style={{color:isSel?'#64748b':'#cbd5e1'}}>{r.item.color}</span>
+                </div>})}
+              </div>
+            </div>}
+            {recvLines.length>0&&<>
             <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:8}}>
               <span style={{fontSize:11,fontWeight:600,color:'#64748b'}}>Date:</span>
               <input type="date" id="po-recv-date" className="form-input" style={{width:140,fontSize:12}} defaultValue={new Date().toISOString().split('T')[0]}/>
             </div>
-            <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:8}}>
-              <span style={{fontSize:11,fontWeight:600,color:'#64748b',width:40}}>Qty:</span>
-              {szKeys.filter(sz=>getOpen(sz)>0).map(sz=><div key={sz} style={{textAlign:'center'}}>
-                <div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
-                <input id={'po-recv-'+sz} style={{width:42,textAlign:'center',border:'1px solid #22c55e',borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700,background:'white'}} defaultValue={getOpen(sz)} onChange={e=>{const v=parseInt(e.target.value)||0;e.target.style.borderColor=v>getOpen(sz)?'#dc2626':'#22c55e';e.target.style.background=v>getOpen(sz)?'#fef2f2':'white'}}/>
-                <div style={{fontSize:9,color:'#64748b'}}>{getOpen(sz)} open</div>
-              </div>)}
-            </div>
+            {recvLines.map(({ln,item:rit,po:rpo,szKeys:rsk,rcvd:rrcvd,cncl:rcncl,getOp},ri)=><div key={ln.lineIdx+'-'+ln.poIdx} style={{marginBottom:8,padding:recvLines.length>1?'8px':'0',background:recvLines.length>1?'rgba(255,255,255,0.6)':'transparent',borderRadius:6}}>
+              {recvLines.length>1&&<div style={{display:'flex',gap:6,alignItems:'center',marginBottom:4}}>
+                <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',fontSize:11}}>{rit.sku}</span>
+                <span style={{fontWeight:600,fontSize:11}}>{rit.name}</span>
+                <span style={{fontSize:11,color:'#64748b'}}>{rit.color}</span>
+              </div>}
+              <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                <span style={{fontSize:11,fontWeight:600,color:'#64748b',width:40}}>Qty:</span>
+                {rsk.filter(sz=>getOp(sz)>0).map(sz=><div key={sz} style={{textAlign:'center'}}>
+                  <div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
+                  <input id={'po-recv-'+ln.lineIdx+'-'+ln.poIdx+'-'+sz} style={{width:42,textAlign:'center',border:'1px solid #22c55e',borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700,background:'white'}} defaultValue={getOp(sz)} onChange={e=>{const v=parseInt(e.target.value)||0;e.target.style.borderColor=v>getOp(sz)?'#dc2626':'#22c55e';e.target.style.background=v>getOp(sz)?'#fef2f2':'white'}}/>
+                  <div style={{fontSize:9,color:'#64748b'}}>{getOp(sz)} open</div>
+                </div>)}
+              </div>
+            </div>)}
             <button className="btn btn-primary" style={{fontSize:12}} onClick={()=>{
               const dateEl=document.getElementById('po-recv-date');
               const date=dateEl?.value||new Date().toLocaleDateString();
-              const shipment={date};
-              const newReceived={...received};
-              szKeys.filter(sz=>getOpen(sz)>0).forEach(sz=>{
-                const el=document.getElementById('po-recv-'+sz);
-                const qty=el?parseInt(el.value)||0:0;
-                if(qty>0){shipment[sz]=qty;newReceived[sz]=(newReceived[sz]||0)+qty}
+              let anyQty=false;const overSizes=[];
+              const updates=recvLines.map(({ln,po:rpo,szKeys:rsk,rcvd:rrcvd,cncl:rcncl,getOp})=>{
+                const shipment={date};const newReceived={...(rpo.received||{})};
+                rsk.filter(sz=>getOp(sz)>0).forEach(sz=>{
+                  const el=document.getElementById('po-recv-'+ln.lineIdx+'-'+ln.poIdx+'-'+sz);
+                  const qty=el?parseInt(el.value)||0:0;
+                  if(qty>0){shipment[sz]=qty;newReceived[sz]=(newReceived[sz]||0)+qty;anyQty=true}
+                  if(qty>getOp(sz))overSizes.push((o.items[ln.lineIdx]?.sku||'')+' '+sz+': receiving '+qty+' but only '+getOp(sz)+' open');
+                });
+                const newShipments=[...(rpo.shipments||[]),shipment];
+                const newTotalOpen=rsk.reduce((a,sz)=>a+Math.max(0,(rpo[sz]||0)-(newReceived[sz]||0)-((rpo.cancelled||{})[sz]||0)),0);
+                const newStatus=newTotalOpen<=0&&Object.values(newReceived).some(v=>v>0)?'received':newTotalOpen>0?'partial':'waiting';
+                return{ln,updatedPO:{...rpo,received:newReceived,shipments:newShipments,status:newStatus}};
               });
-              const hasShipQty=Object.entries(shipment).some(([k,v])=>k!=='date'&&v>0);
-              if(!hasShipQty){nf('Enter quantities to receive','error');return}
-              // Check for over-receive (misship warning)
-              const overSizes=[];
-              szKeys.filter(sz=>getOpen(sz)>0).forEach(sz=>{
-                const el=document.getElementById('po-recv-'+sz);
-                const qty=el?parseInt(el.value)||0:0;
-                if(qty>getOpen(sz))overSizes.push(sz+': receiving '+qty+' but only '+getOpen(sz)+' open');
-              });
+              if(!anyQty){nf('Enter quantities to receive','error');return}
               if(overSizes.length>0&&!window.confirm('⚠️ MISSHIP WARNING — Receiving more than ordered:\n\n'+overSizes.join('\n')+'\n\nProceed anyway?'))return;
-              const newShipments=[...shipments,shipment];
-              const newTotalOpen=szKeys.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-(newReceived[sz]||0)-getCncl(sz)),0);
-              const newStatus=newTotalOpen<=0&&Object.values(newReceived).some(v=>v>0)?'received':newTotalOpen>0?'partial':'waiting';
-              const updatedPO={...po,received:newReceived,shipments:newShipments,status:newStatus};
-              const updatedItems=o.items.map((it,i)=>i===activeLine.lineIdx?{...it,po_lines:it.po_lines.map((p,j)=>j===activeLine.poIdx?updatedPO:p)}:it);
+              let updatedItems=[...o.items];
+              updates.forEach(({ln,updatedPO})=>{updatedItems=updatedItems.map((it,i)=>i===ln.lineIdx?{...it,po_lines:it.po_lines.map((p,j)=>j===ln.poIdx?updatedPO:p)}:it)});
               const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};
-              setO(updated);onSave(updated);setEditPO({...editPO,po:updatedPO});nf('Shipment received on '+po.po_id);
+              setO(updated);onSave(updated);
+              const activeLnUpdate=updates.find(u=>u.ln.lineIdx===activeLine.lineIdx&&u.ln.poIdx===activeLine.poIdx);
+              setEditPO({...editPO,po:activeLnUpdate?activeLnUpdate.updatedPO:editPO.po,_selectedRecvLines:[]});
+              nf('Shipment received on '+po.po_id+(recvLines.length>1?' ('+recvLines.length+' items)':''));
             }}>✓ Receive These Items</button>
-          </div>}
+            </>}
+            {recvLines.length===0&&<div style={{fontSize:12,color:'#64748b',fontStyle:'italic'}}>Select items above to receive</div>}
+          </div>})()}
 
           {/* QR / Print Label for full PO */}
           <div style={{marginTop:16,padding:12,border:'1px dashed #d1d5db',borderRadius:8,background:'#fafafa'}}>
@@ -6158,46 +6194,89 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <div className="card-body"><p style={{margin:0,fontSize:13,color:'#475569'}}>{po.memo}</p></div>
           </div>}
 
-          {/* Receive Shipment — inline on full page */}
-          {totalOpen>0&&!isDropShipFP&&<div className="card" style={{marginBottom:16,borderLeft:'3px solid #22c55e'}}>
-            <div className="card-header" style={{background:'#f0fdf4'}}><h2 style={{color:'#166534'}}>Receive Shipment</h2></div>
+          {/* Receive Shipment — inline on full page, click-to-add multi-item */}
+          {totalOpen>0&&!isDropShipFP&&(()=>{
+            const allFpRecvLines=(allLines||[{lineIdx:0}]).map((ln,li)=>{
+              const it=soItems?.[ln.lineIdx];const p=it?.po_lines?.find(pl=>pl.po_id===po.po_id);if(!it||!p)return null;
+              const sk=Object.keys(p).filter(k=>!k.startsWith('_')&&k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='po_type'&&k!=='deco_vendor'&&k!=='deco_type'&&k!=='created_at'&&k!=='memo'&&k!=='notes'&&k!=='expected_date'&&k!=='billed'&&k!=='tracking_numbers'&&k!=='unit_cost'&&k!=='vendor'&&k!=='drop_ship'&&typeof p[k]==='number').sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
+              const rcvd=p.received||{};const cncl=p.cancelled||{};
+              const getOp=sz=>Math.max(0,(p[sz]||0)-(rcvd[sz]||0)-(cncl[sz]||0));
+              const hasOp=sk.some(sz=>getOp(sz)>0);
+              const poIdx=it.po_lines.findIndex(pl=>pl.po_id===po.po_id);
+              return hasOp?{li,ln:{lineIdx:ln.lineIdx,poIdx},item:it,po:p,szKeys:sk,rcvd,cncl,getOp}:null;
+            }).filter(Boolean);
+            if(!allFpRecvLines.length)return null;
+            // For single-item POs auto-select; multi-item starts empty
+            const fpSelectedIdxs=allFpRecvLines.length<=1?[0]:(poFullPage._selectedFpRecvLines||[]);
+            const fpRecvLines=allFpRecvLines.filter(r=>fpSelectedIdxs.includes(r.li));
+            return<div className="card" style={{marginBottom:16,borderLeft:'3px solid #22c55e'}}>
+            <div className="card-header" style={{background:'#f0fdf4'}}><h2 style={{color:'#166534'}}>Receive Shipment{fpRecvLines.length>0&&fpRecvLines.length>1?' ('+fpRecvLines.length+' items)':''}</h2></div>
             <div className="card-body">
+              {/* Clickable item pills */}
+              {allFpRecvLines.length>1&&<div style={{marginBottom:12}}>
+                <div style={{fontSize:11,fontWeight:600,color:'#64748b',marginBottom:6}}>Click items that arrived in this shipment:</div>
+                <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                  {allFpRecvLines.map(r=>{const isSel=fpSelectedIdxs.includes(r.li);return<div key={r.li} style={{padding:'5px 10px',borderRadius:6,cursor:'pointer',border:isSel?'2px solid #22c55e':'1px dashed #94a3b8',background:isSel?'#dcfce7':'white',fontSize:12,display:'flex',gap:5,alignItems:'center',transition:'all 0.15s'}} onClick={()=>setPoFullPage(p=>{const prev=p._selectedFpRecvLines||[];return{...p,_selectedFpRecvLines:isSel?prev.filter(x=>x!==r.li):[...prev,r.li]}})}>
+                    {isSel?<span style={{color:'#16a34a',fontWeight:800,fontSize:14}}>✓</span>:<span style={{color:'#94a3b8',fontSize:14}}>+</span>}
+                    <span style={{fontFamily:'monospace',fontWeight:700,color:isSel?'#1e40af':'#64748b'}}>{r.item.sku}</span>
+                    <span style={{fontWeight:600,color:isSel?'#0f172a':'#94a3b8'}}>{r.item.name}</span>
+                    <span style={{color:isSel?'#64748b':'#cbd5e1'}}>{r.item.color}</span>
+                  </div>})}
+                </div>
+                {allFpRecvLines.length>2&&<div style={{marginTop:6}}>
+                  <button style={{background:'none',border:'none',cursor:'pointer',fontSize:11,color:'#16a34a',textDecoration:'underline',padding:0}} onClick={()=>setPoFullPage(p=>({...p,_selectedFpRecvLines:allFpRecvLines.map(r=>r.li)}))}>Select all</button>
+                  {fpSelectedIdxs.length>0&&<button style={{background:'none',border:'none',cursor:'pointer',fontSize:11,color:'#64748b',textDecoration:'underline',padding:0,marginLeft:12}} onClick={()=>setPoFullPage(p=>({...p,_selectedFpRecvLines:[]}))}>Clear</button>}
+                </div>}
+              </div>}
+              {fpRecvLines.length>0&&<>
               <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:12}}>
                 <span style={{fontSize:12,fontWeight:600,color:'#64748b'}}>Date:</span>
                 <input type="date" id="po-fp-recv-date" className="form-input" style={{width:150,fontSize:12}} defaultValue={new Date().toISOString().split('T')[0]}/>
               </div>
-              <div style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap',marginBottom:12}}>
-                <span style={{fontSize:12,fontWeight:600,color:'#64748b'}}>Qty:</span>
-                {szKeys.filter(sz=>getOpen(sz)>0).map(sz=><div key={sz} style={{textAlign:'center'}}>
-                  <div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
-                  <input id={'po-fp-recv-'+sz} style={{width:48,textAlign:'center',border:'1px solid #22c55e',borderRadius:4,padding:'5px 2px',fontSize:14,fontWeight:700,background:'white'}} defaultValue={getOpen(sz)}/>
-                  <div style={{fontSize:9,color:'#64748b'}}>{getOpen(sz)} open</div>
-                </div>)}
-              </div>
+              {fpRecvLines.map(({ln,item:rit,szKeys:rsk,getOp})=><div key={ln.lineIdx+'-'+ln.poIdx} style={{marginBottom:10,padding:fpRecvLines.length>1?'8px 10px':'0',background:fpRecvLines.length>1?'#f8fafc':'transparent',borderRadius:6,border:fpRecvLines.length>1?'1px solid #e2e8f0':'none'}}>
+                {fpRecvLines.length>1&&<div style={{display:'flex',gap:6,alignItems:'center',marginBottom:6}}>
+                  <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',fontSize:12}}>{rit.sku}</span>
+                  <span style={{fontWeight:600,fontSize:12}}>{rit.name}</span>
+                  <span style={{fontSize:11,color:'#64748b'}}>{rit.color}</span>
+                </div>}
+                <div style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap'}}>
+                  <span style={{fontSize:12,fontWeight:600,color:'#64748b'}}>Qty:</span>
+                  {rsk.filter(sz=>getOp(sz)>0).map(sz=><div key={sz} style={{textAlign:'center'}}>
+                    <div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
+                    <input id={'po-fp-recv-'+ln.lineIdx+'-'+ln.poIdx+'-'+sz} style={{width:48,textAlign:'center',border:'1px solid #22c55e',borderRadius:4,padding:'5px 2px',fontSize:14,fontWeight:700,background:'white'}} defaultValue={getOp(sz)}/>
+                    <div style={{fontSize:9,color:'#64748b'}}>{getOp(sz)} open</div>
+                  </div>)}
+                </div>
+              </div>)}
               <button className="btn btn-primary" style={{fontSize:12}} onClick={()=>{
                 const dateEl=document.getElementById('po-fp-recv-date');
                 const date=dateEl?.value||new Date().toLocaleDateString();
-                const shipment={date};
-                const newReceived={...received};
-                szKeys.filter(sz=>getOpen(sz)>0).forEach(sz=>{
-                  const el=document.getElementById('po-fp-recv-'+sz);
-                  const qty=el?parseInt(el.value)||0:0;
-                  if(qty>0){shipment[sz]=qty;newReceived[sz]=(newReceived[sz]||0)+qty}
+                let anyQty=false;
+                const updates=fpRecvLines.map(({ln,po:rpo,szKeys:rsk,getOp})=>{
+                  const shipment={date};const newReceived={...(rpo.received||{})};
+                  rsk.filter(sz=>getOp(sz)>0).forEach(sz=>{
+                    const el=document.getElementById('po-fp-recv-'+ln.lineIdx+'-'+ln.poIdx+'-'+sz);
+                    const qty=el?parseInt(el.value)||0:0;
+                    if(qty>0){shipment[sz]=qty;newReceived[sz]=(newReceived[sz]||0)+qty;anyQty=true}
+                  });
+                  const newShipments=[...(rpo.shipments||[]),shipment];
+                  const newTotalOpen=rsk.reduce((a,sz)=>a+Math.max(0,(rpo[sz]||0)-(newReceived[sz]||0)-((rpo.cancelled||{})[sz]||0)),0);
+                  const newStatus=newTotalOpen<=0&&Object.values(newReceived).some(v=>v>0)?'received':Object.values(newReceived).some(v=>v>0)?'partial':'waiting';
+                  return{ln,updatedPO:{...rpo,received:newReceived,shipments:newShipments,status:newStatus}};
                 });
-                const hasShipQty=Object.entries(shipment).some(([k,v])=>k!=='date'&&v>0);
-                if(!hasShipQty){nf('Enter quantities to receive','error');return}
-                const newShipments=[...shipments,shipment];
-                const newTotalOpen=szKeys.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-(newReceived[sz]||0)-(cancelled[sz]||0)),0);
-                const newStatus=newTotalOpen<=0&&Object.values(newReceived).some(v=>v>0)?'received':Object.values(newReceived).some(v=>v>0)?'partial':'waiting';
-                const updatedPO={...po,received:newReceived,shipments:newShipments,status:newStatus};
-                const lineIdx=allLines?.[0]?.lineIdx||0;
-                const poIdx=soItems?.[lineIdx]?.po_lines?.findIndex(p=>p.po_id===po.po_id)||0;
-                const updatedItems=o.items.map((it,i)=>i===lineIdx?{...it,po_lines:it.po_lines.map((p,j)=>j===poIdx?updatedPO:p)}:it);
+                if(!anyQty){nf('Enter quantities to receive','error');return}
+                let updatedItems=[...o.items];
+                updates.forEach(({ln,updatedPO})=>{updatedItems=updatedItems.map((it,i)=>i===ln.lineIdx?{...it,po_lines:it.po_lines.map((p,j)=>j===ln.poIdx?updatedPO:p)}:it)});
                 const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};
-                setO(updated);onSave(updated);setPoFullPage({...poFullPage,po:updatedPO});nf('Shipment received on '+po.po_id);
+                setO(updated);onSave(updated);
+                const firstUpdate=updates[0];
+                setPoFullPage({...poFullPage,po:firstUpdate?firstUpdate.updatedPO:po,_selectedFpRecvLines:[]});
+                nf('Shipment received on '+po.po_id+(fpRecvLines.length>1?' ('+fpRecvLines.length+' items)':''));
               }}>Receive These Items</button>
+              </>}
+              {fpRecvLines.length===0&&allFpRecvLines.length>1&&<div style={{fontSize:12,color:'#64748b',fontStyle:'italic'}}>Select items above to receive</div>}
             </div>
-          </div>}
+          </div>})()}
 
           {/* Cancel sizes */}
           {totalOpen>0&&!isDropShipFP&&<div className="card" style={{marginBottom:16,borderLeft:'3px solid #f59e0b'}}>
@@ -6222,9 +6301,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 const newTotalOpen=szKeys.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-(received[sz]||0)-(newCancelled[sz]||0)),0);
                 const newStatus=newTotalOpen<=0&&totalReceived>0?'received':totalReceived>0?'partial':'waiting';
                 const updatedPO={...po,cancelled:newCancelled,status:newStatus};
-                const lineIdx=allLines?.[0]?.lineIdx||0;
-                const poIdx=soItems?.[lineIdx]?.po_lines?.findIndex(p=>p.po_id===po.po_id)||0;
-                const updatedItems=o.items.map((it,i)=>i===lineIdx?{...it,po_lines:it.po_lines.map((p,j)=>j===poIdx?updatedPO:p)}:it);
+                // Update all items on this PO
+                const affectedIdxs=new Set((allLines||[{lineIdx:0}]).map(ln=>ln.lineIdx));
+                let updatedItems=[...o.items];
+                affectedIdxs.forEach(idx=>{updatedItems=updatedItems.map((it,i)=>i===idx?{...it,po_lines:it.po_lines.map(p=>p.po_id===po.po_id?{...p,cancelled:newCancelled,status:newStatus}:p)}:it)});
                 const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};
                 setO(updated);onSave(updated);setPoFullPage({...poFullPage,po:updatedPO});nf('Sizes cancelled from '+po.po_id);
               }}>Cancel These Sizes</button>
