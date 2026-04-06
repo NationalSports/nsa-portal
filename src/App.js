@@ -6610,7 +6610,7 @@ export default function App(){
                   (so?safeItems(so).map(it=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);if(!qty)return null;
                     const decoSell=safeDecos(it).reduce((a,d)=>{const dp=dP(d,qty,safeArt(so),qty);return a+dp.sell},0);
                     return{desc:it.sku+' '+it.name+(it.color?' — '+it.color:''),qty,rate:safeNum(it.unit_sell)+decoSell,amount:qty*(safeNum(it.unit_sell)+decoSell)}}).filter(Boolean):[]);
-                const billToName=inv.billing_name||ic?.name||'—';const billToSub=inv.billing_name?(inv.billing_address||'')+'<br/><span style="font-size:9px;color:#94a3b8">on behalf of '+ic?.name+'</span>':(ic?.billing_address_line1?ic.billing_address_line1+(ic.billing_city?', '+ic.billing_city:'')+(ic.billing_state?' '+ic.billing_state:'')+(ic.billing_zip?' '+ic.billing_zip:''):ic?.alpha_tag||'');
+                const billToName=inv.billing_name||ic?.name||'—';const billToSub=inv.billing_name?(inv.billing_address||'')+'<br/><span style="font-size:9px;color:#94a3b8">on behalf of '+ic?.name+'</span>':(ic?.billing_address_line1?ic.billing_address_line1+(ic.billing_city?', '+ic.billing_city:'')+(ic.billing_state?' '+ic.billing_state:'')+(ic.billing_zip?' '+ic.billing_zip:''):'');
                 const poNum=inv._po_number||so?.po_number;
                 printDoc({title:billToName,docNum:inv.id,docType:'INVOICE',
                   headerRight:'<div class="ta">$'+inv.total.toLocaleString()+'</div><div class="ts">Balance Due: <strong>$'+bal.toLocaleString()+'</strong></div>'+(poNum?'<div style="font-size:11px;margin-top:4px;font-family:monospace;font-weight:700;color:#1e40af">PO# '+poNum+'</div>':''),
@@ -7098,7 +7098,7 @@ export default function App(){
                 // Build PDF attachment
                 const brevoAttachments=[];
                 try{
-                  const docHtml=buildDocHtml({title:siBillName,docNum:siInv.id,docType:'INVOICE',
+                  const docHtml=buildDocHtml({title:siBillName,docNum:siInv.id,docType:'INVOICE',css:PRINT_CSS,
                     headerRight:'<div class="ta">$'+siInv.total.toLocaleString()+'</div><div class="ts">Balance Due: <strong>$'+siBal.toLocaleString()+'</strong></div>'+(siPoNum?'<div style="font-size:11px;margin-top:4px;font-family:monospace;font-weight:700;color:#1e40af">PO# '+siPoNum+'</div>':''),
                     infoBoxes:[{label:'Bill To',value:siBillName},{label:'Invoice Date',value:siInv.date||'—',sub:siInv.due_date?'Due: '+siInv.due_date:''},{label:'Sales Order',value:siInv.so_id||'—',sub:siInv.memo||''},{label:'Payment Terms',value:siInv.inv_type==='deposit'?(siInv.deposit_pct||50)+'% Deposit':'Final Invoice',sub:'Rep: '+(siRepObj?.name||'—')}],
                     tables:[{headers:['Description','Qty','Rate','Amount'],aligns:['left','center','right','right'],rows:[
@@ -7115,10 +7115,11 @@ export default function App(){
                   const styleEl=document.createElement('style');styleEl.textContent=(styleMatch?styleMatch[1]:'')+pdfFixCss;container.appendChild(styleEl);
                   const bodyDiv=document.createElement('div');bodyDiv.innerHTML=bodyMatch?bodyMatch[1]:docHtml;container.appendChild(bodyDiv);
                   document.body.appendChild(container);await new Promise(r=>setTimeout(r,500));
-                  const pdfBlob=await html2pdf().set({margin:[0.4,0.4,0.4,0.4],filename:siInv.id+'.pdf',image:{type:'jpeg',quality:0.98},html2canvas:{scale:2,useCORS:true,logging:false,backgroundColor:'#ffffff'},jsPDF:{unit:'in',format:'letter',orientation:'portrait'}}).from(bodyDiv).outputPdf('blob');
+                  const _siPdfName=siInv.id+(siBillName&&siBillName!=='—'?' - '+siBillName:'')+'.pdf';
+                  const pdfBlob=await html2pdf().set({margin:[0.4,0.4,0.4,0.4],filename:_siPdfName,image:{type:'jpeg',quality:0.98},html2canvas:{scale:2,useCORS:true,logging:false,backgroundColor:'#ffffff'},jsPDF:{unit:'in',format:'letter',orientation:'portrait'}}).from(bodyDiv).outputPdf('blob');
                   document.body.removeChild(container);
                   const pdfB64=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result.split(',')[1]);reader.onerror=reject;reader.readAsDataURL(pdfBlob)});
-                  brevoAttachments.push({name:siInv.id+'.pdf',content:pdfB64});
+                  brevoAttachments.push({name:_siPdfName,content:pdfB64});
                 }catch(err){console.warn('Failed to build invoice PDF:',err)}
                 // Build email with portal link
                 const portalUrl=siCust?.alpha_tag?'https://nsa-portal.netlify.app/?portal='+siCust.alpha_tag:'';
@@ -7328,7 +7329,7 @@ export default function App(){
                   headerRight:'<div class="ta">$'+inv.total.toLocaleString()+'</div>'
                     +'<div class="ts">Balance Due: <strong>$'+inv._bal.toLocaleString()+'</strong></div>',
                   infoBoxes:[
-                    {label:'Bill To',value:ic?.name||'—',sub:ic?.alpha_tag},
+                    {label:'Bill To',value:ic?.name||'—'},
                     {label:'Invoice Date',value:inv.date||new Date().toLocaleDateString(),sub:inv.due_date?'Due: '+inv.due_date:''},
                     {label:'Sales Order',value:inv.so_id||'—',sub:inv.memo||so?.memo||''},
                     {label:'Payment Terms',value:inv.inv_type==='deposit'?(inv.deposit_pct||50)+'% Deposit':inv.inv_type==='partial'?'Partial Invoice':'Final Invoice',sub:'Rep: '+(REPS.find(r=>r.id===inv._rep)?.name||'—')},

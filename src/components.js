@@ -96,10 +96,11 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
         const bodyDiv=document.createElement('div');bodyDiv.innerHTML=bodyMatch?bodyMatch[1]:docHtml;container.appendChild(bodyDiv);
         document.body.appendChild(container);
         await new Promise(r=>setTimeout(r,500));// allow images/fonts to load
-        const pdfBlob=await html2pdf().set({margin:[0.4,0.4,0.4,0.4],filename:(estimate?.id||'document')+'.pdf',image:{type:'jpeg',quality:0.98},html2canvas:{scale:2,useCORS:true,logging:false,backgroundColor:'#ffffff'},jsPDF:{unit:'in',format:'letter',orientation:'portrait'}}).from(bodyDiv).outputPdf('blob');
+        const _pdfName=(estimate?.id||'document')+(customer?.name?' - '+customer.name:'')+'.pdf';
+        const pdfBlob=await html2pdf().set({margin:[0.4,0.4,0.4,0.4],filename:_pdfName,image:{type:'jpeg',quality:0.98},html2canvas:{scale:2,useCORS:true,logging:false,backgroundColor:'#ffffff'},jsPDF:{unit:'in',format:'letter',orientation:'portrait'}}).from(bodyDiv).outputPdf('blob');
         document.body.removeChild(container);
         const pdfB64=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result.split(',')[1]);reader.onerror=reject;reader.readAsDataURL(pdfBlob)});
-        brevoAttachments.push({name:(estimate?.id||'document')+'.pdf',content:pdfB64});
+        brevoAttachments.push({name:_pdfName,content:pdfB64});
       }catch(err){console.warn('Failed to build PDF attachment:',err)}}
       // Convert file attachments to base64 for Brevo
       for(const att of attachments){if(att.file){try{const b64=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result.split(',')[1]);reader.onerror=reject;reader.readAsDataURL(att.file)});brevoAttachments.push({name:att.name,content:b64})}catch(err){console.warn('Failed to read attachment:',att.name,err)}}}
