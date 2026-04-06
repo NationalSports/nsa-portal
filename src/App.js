@@ -11165,17 +11165,17 @@ export default function App(){
                     const parseSz=str=>{const o={};if(str)(str+'').split(/\s+/).forEach(p=>{const[sz,v]=p.split(':');if(sz&&v)o[sz]=parseInt(v)||0});return o};
                     const oldSz=parseSz(whEditOrigSizes);const newSz=parseSz(a.sizes);
                     const allKeys=[...new Set([...Object.keys(oldSz),...Object.keys(newSz)])];
-                    /* Update pick_line on SO with new sizes */
-                    const so2=sos.find(s=>s.id===a.soId);
-                    if(so2){
+                    /* Update pick_line on SO directly via setSOs to bypass savSO merge logic */
+                    setSOs(prev=>prev.map(so2=>{
+                      if(so2.id!==a.soId)return so2;
                       const updItems=safeItems(so2).map(it2=>{
                         const picks=it2.pick_lines||[];
                         if(!picks.find(pk=>pk.pick_id===a.pickId))return it2;
                         const newPicks=picks.map(pk=>{if(pk.pick_id!==a.pickId)return pk;const u={...pk};allKeys.forEach(sz=>{u[sz]=newSz[sz]||0});return u});
                         return{...it2,pick_lines:newPicks};
                       });
-                      savSO({...so2,items:updItems,updated_at:new Date().toLocaleString()});
-                    }
+                      return{...so2,items:updItems,updated_at:new Date().toLocaleString()};
+                    }));
                     /* Adjust inventory by diff (old - new = returned, new - old = additional pull) */
                     const diff={};allKeys.forEach(sz=>{const d=(oldSz[sz]||0)-(newSz[sz]||0);if(d!==0)diff[sz]=d});
                     if(Object.keys(diff).length>0){
@@ -11194,17 +11194,17 @@ export default function App(){
                   /* Restore inventory & revert pick_line when deleting a pulled IF */
                   if(a.type==='pulled'&&a.soId&&a.pickId){
                     const parsedSizes={};if(a.sizes)(a.sizes+'').split(/\s+/).forEach(p=>{const[sz,v]=p.split(':');if(sz&&v)parsedSizes[sz]=parseInt(v)||0});
-                    const so2=sos.find(s=>s.id===a.soId);
-                    if(so2){
+                    /* Update SO directly via setSOs to bypass savSO merge logic (which would re-apply 'pulled' status) */
+                    setSOs(prev=>prev.map(so2=>{
+                      if(so2.id!==a.soId)return so2;
                       const updItems=safeItems(so2).map(it2=>{
                         const picks=it2.pick_lines||[];
-                        const match=picks.find(pk=>pk.pick_id===a.pickId);
-                        if(!match)return it2;
-                        const newPicks=picks.map(pk=>pk.pick_id===a.pickId?{...pk,status:'pending',pulled_at:undefined}:pk);
+                        if(!picks.find(pk=>pk.pick_id===a.pickId))return it2;
+                        const newPicks=picks.map(pk=>pk.pick_id===a.pickId?{...pk,status:'pick',pulled_at:undefined}:pk);
                         return{...it2,pick_lines:newPicks};
                       });
-                      savSO({...so2,items:updItems,updated_at:new Date().toLocaleString()});
-                    }
+                      return{...so2,items:updItems,updated_at:new Date().toLocaleString()};
+                    }));
                     /* Restore inventory */
                     if((a.productId||a.sku)&&Object.keys(parsedSizes).length>0){
                       setProd(pp=>pp.map(x=>{
