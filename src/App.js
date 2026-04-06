@@ -3046,7 +3046,7 @@ export default function App(){
         const picks=safePicks(item);
         const pulled={};picks.filter(pk=>pk.status==='pulled').forEach(pk=>{szKeys.forEach(s=>{pulled[s]=(pulled[s]||0)+(pk[s]||0)})});
         const totalPulled=Object.values(pulled).reduce((a,v)=>a+v,0);
-        // Show in Pull & Stage if there's an active pick ticket OR a job on hold needing this item
+        // Show in Item Fulfillment if there's an active pick ticket OR a job on hold needing this item
         const hasActivePick=picks.some(pk=>pk.status!=='pulled');
         const hasHoldJob=safeJobs(so).some(j=>j.prod_status==='hold'&&(j.items||[]).some(gi=>gi.item_idx===ii));
         if(hasActivePick||hasHoldJob){
@@ -3128,9 +3128,24 @@ export default function App(){
           desc:'Full order ready',units:totalUnits,shipMethod:'pending',shipPref:'wait_complete'});
       }
     });
+    // Deduplicate pullTasks by SO+SKU+color (handles duplicate items in SO data)
+    const dedupPull=[];const pullSeen={};
+    pullTasks.forEach(t=>{
+      const key=t.soId+'|'+t.sku+'|'+(t.color||'');
+      if(pullSeen[key]){
+        const m=pullSeen[key];
+        // Merge sizes and pulled quantities
+        t.szKeys.forEach(s=>{m.sizes[s]=(m.sizes[s]||0)+(t.sizes[s]||0);m.pulled[s]=(m.pulled[s]||0)+(t.pulled[s]||0)});
+        m.szKeys=[...new Set([...m.szKeys,...t.szKeys])];
+        m.totalOrdered+=t.totalOrdered;m.totalPulled+=t.totalPulled;m.needsPull=m.totalOrdered-m.totalPulled;
+      } else {
+        const clone={...t,sizes:{...t.sizes},pulled:{...t.pulled},szKeys:[...t.szKeys]};
+        pullSeen[key]=clone;dedupPull.push(clone);
+      }
+    });
     const sortU=(a,b)=>{if(a.urgent&&!b.urgent)return -1;if(!a.urgent&&b.urgent)return 1;return(a.daysOut||999)-(b.daysOut||999)};
-    pullTasks.sort(sortU);shipTasks.sort(sortU);decoTasks.sort(sortU);
-    return{pullTasks,shipTasks,decoTasks};
+    dedupPull.sort(sortU);shipTasks.sort(sortU);decoTasks.sort(sortU);
+    return{pullTasks:dedupPull,shipTasks,decoTasks};
   };
 
   // Helper: get rep ID for a customer (from customer.primary_rep_id or SO created_by)
@@ -3484,7 +3499,7 @@ export default function App(){
     {/* ═══ WAREHOUSE VIEW ═══ */}
     {dashView==='warehouse'&&<>
     <div className="stats-row">
-      <div className="stat-card" style={{borderLeft:'3px solid #d97706'}}><div className="stat-label">To Pull</div><div className="stat-value" style={{color:'#d97706'}}>{pullTasks.length}</div><div style={{fontSize:10,color:'#94a3b8'}}>{pullTasks.reduce((a,t)=>a+t.needsPull,0)} units</div></div>
+      <div className="stat-card" style={{borderLeft:'3px solid #d97706'}}><div className="stat-label">Open IFs</div><div className="stat-value" style={{color:'#d97706'}}>{pullTasks.length}</div><div style={{fontSize:10,color:'#94a3b8'}}>{pullTasks.reduce((a,t)=>a+t.needsPull,0)} units</div></div>
       <div className="stat-card" style={{borderLeft:'3px solid #166534'}}><div className="stat-label">Ship Today</div><div className="stat-value" style={{color:'#166534'}}>{shipTasks.length}</div><div style={{fontSize:10,color:'#94a3b8'}}>{shipTasks.reduce((a,t)=>a+t.units,0)} units</div></div>
       <div className="stat-card" style={{borderLeft:'3px solid #dc2626'}}><div className="stat-label">Rush Orders</div><div className="stat-value" style={{color:'#dc2626'}}>{pullTasks.filter(t=>t.urgent).length}</div></div>
       <div className="stat-card" style={{borderLeft:'3px solid #2563eb'}}><div className="stat-label">Active Timers</div><div className="stat-value" style={{color:'#2563eb'}}>{Object.keys(activeTimers).length}</div></div>
@@ -9249,6 +9264,7 @@ export default function App(){
   const addWhAction=(action)=>{setWhRecentActions(prev=>{const next=[{...action,ts:Date.now(),at:new Date().toLocaleString()},...prev].slice(0,500);_lsSet('nsa_wh_recent',JSON.stringify(next));return next})};
   const[whActionRange,setWhActionRange]=useState('7d');
   const[whActionSearch,setWhActionSearch]=useState('');
+  const[whEditActionIdx,setWhEditActionIdx]=useState(null);
   const[stockPOs,setStockPOs]=useState(()=>loadState('stock_pos',[]));
   React.useEffect(()=>{_saveAppState('stock_pos',stockPOs)},[stockPOs]);
   const[showStockPO,setShowStockPO]=useState(null);const[stockPOCounter,setStockPOCounter]=useState(()=>loadState('stock_po_counter',5001));
@@ -9295,7 +9311,7 @@ export default function App(){
     const awaitingPickupCount=(()=>{let c=0;sos.filter(so=>so._shipments&&so._shipments.length>0&&!so.deleted_at).forEach(so=>{(so._shipments||[]).forEach(shp=>{if(shp.tracking_number&&!shp.carrier_picked_up)c++})});return c})();
     const tabs=[
       {id:'receive',label:'📱 Scan to Receive',count:0,color:'#2563eb'},
-      {id:'pull',label:'🏗️ Pull & Stage',count:fPull.length,color:'#d97706'},
+      {id:'pull',label:'📋 Item Fulfillment',count:fPull.length,color:'#d97706'},
       {id:'deco',label:'🎨 Ready for Deco',count:fDeco.length,color:'#7c3aed'},
       {id:'ship',label:'📦 Ready to Ship',count:fShip.length,color:'#166534'},
       {id:'pickup',label:'🚚 Awaiting Pickup',count:awaitingPickupCount,color:'#d97706'},
@@ -9330,7 +9346,7 @@ export default function App(){
           {/* Back button */}
           <div style={{marginBottom:12}}>
             <button className="btn btn-sm btn-secondary" onClick={()=>setWhViewIF(null)} style={{fontSize:12,padding:'6px 14px'}}>
-              ← Back to Pull & Stage</button>
+              ← Back to Item Fulfillment</button>
           </div>
 
           {/* Header */}
@@ -9637,7 +9653,7 @@ export default function App(){
       {/* Stats */}
       <div className="stats-row" style={{marginBottom:12}}>
         <div className="stat-card" style={{borderLeft:'3px solid #d97706'}}>
-          <div className="stat-label">To Pull</div>
+          <div className="stat-label">Open IFs</div>
           <div className="stat-value" style={{color:'#d97706'}}>{pullTasks.length}</div>
           <div style={{fontSize:10,color:'#94a3b8'}}>{pullTasks.reduce((a,t)=>a+t.needsPull,0)} units</div>
         </div>
@@ -10088,7 +10104,7 @@ export default function App(){
 
       {/* ── PULL & STAGE ── */}
       {whTab==='pull'&&<>
-        {fPull.length===0?<div className="empty" style={{padding:32,textAlign:'center'}}>Nothing to pull right now 👍</div>:
+        {fPull.length===0?<div className="empty" style={{padding:32,textAlign:'center'}}>No open item fulfillment requests</div>:
         <div className="card"><div className="card-body" style={{padding:0}}>
           <table style={{fontSize:11}}><thead><tr>
             <th style={{width:20}}></th><th>SO#</th><th>Customer</th><th>SKU</th><th>Item</th>
@@ -11055,25 +11071,54 @@ export default function App(){
           </div>
         </div>
         {filteredActions.length===0&&<div style={{textAlign:'center',color:'#94a3b8',padding:40}}>{whRecentActions.length===0?'No recent actions yet':'No actions match your filter'}</div>}
-        {filteredActions.map((a,i)=><div key={i} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 14px',background:i%2===0?'#fafbfc':'white',borderRadius:6,marginBottom:2,border:'1px solid #f1f5f9',cursor:a.soId?'pointer':'default',transition:'background 0.15s'}}
-          onClick={()=>{if(!a.soId)return;const firstSoId=(a.soId||'').split(',')[0].trim();const so2=sos.find(s=>s.id===firstSoId);if(so2){const c2=cust.find(cc=>cc.id===so2.customer_id);setESO(so2);setESOC(c2);setESOTab(null);setPg('orders')}}}
-          onMouseEnter={e=>{if(a.soId)e.currentTarget.style.background='#eef2ff'}} onMouseLeave={e=>{e.currentTarget.style.background=i%2===0?'#fafbfc':'white'}}>
-          <div style={{width:32,height:32,borderRadius:8,display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,flexShrink:0,
-            background:a.type==='pulled'?'#fef3c7':a.type==='received'?'#dbeafe':a.type==='shipped'?'#dcfce7':a.type==='label_created'?'#f3e8ff':a.type==='pickup_confirmed'?'#d1fae5':a.type==='deleted_shipment'?'#fee2e2':a.type==='move_to_deco'?'#ede9fe':'#f1f5f9'}}>
-            {a.type==='pulled'?'📦':a.type==='received'?'📱':a.type==='shipped'?'🚚':a.type==='label_created'?'🏷️':a.type==='pickup_confirmed'?'✅':a.type==='deleted_shipment'?'🗑️':a.type==='move_to_deco'?'🎨':'⚡'}</div>
-          <div style={{flex:1,minWidth:0}}>
-            <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
-              <span style={{fontWeight:700,fontSize:12,color:a.type==='pulled'?'#92400e':a.type==='shipped'||a.type==='pickup_confirmed'?'#166534':a.type==='deleted_shipment'?'#dc2626':a.type==='move_to_deco'?'#6d28d9':'#1e40af'}}>{a.jobId||a.pickId||a.poId||a.soId||'Action'}</span>
-              <span style={{fontSize:11,color:'#475569'}}>{{pulled:'Pulled',shipped:'Shipped',received:'Received',label_created:'Label Created',pickup_confirmed:'Pickup Confirmed',deleted_shipment:'Shipment Deleted',move_to_deco:'Moved to Deco'}[a.type]||'Action'}</span>
-              <span style={{fontSize:11,fontWeight:600,color:'#2563eb',textDecoration:'underline'}}>{a.soId}</span>
-              <span style={{fontSize:11,color:'#64748b'}}>{a.customer}</span>
+        {filteredActions.map((a,i)=>{
+          const origIdx=whRecentActions.indexOf(a);
+          const isEditing=whEditActionIdx===origIdx;
+          return<div key={i} style={{padding:'10px 14px',background:isEditing?'#fffbeb':i%2===0?'#fafbfc':'white',borderRadius:6,marginBottom:2,border:isEditing?'2px solid #d97706':'1px solid #f1f5f9',transition:'background 0.15s'}}>
+          {isEditing?<div>
+            <div style={{display:'flex',gap:6,alignItems:'center',marginBottom:8,flexWrap:'wrap'}}>
+              <span style={{fontSize:11,fontWeight:700,color:'#92400e'}}>Editing Action</span>
+              <select style={{fontSize:11,padding:'2px 6px',border:'1px solid #e2e8f0',borderRadius:4}} defaultValue={a.type}
+                onChange={e=>{const next=[...whRecentActions];next[origIdx]={...next[origIdx],type:e.target.value};setWhRecentActions(next);_lsSet('nsa_wh_recent',JSON.stringify(next))}}>
+                {['pulled','shipped','received','label_created','pickup_confirmed','deleted_shipment','move_to_deco'].map(t=>
+                  <option key={t} value={t}>{{pulled:'Pulled',shipped:'Shipped',received:'Received',label_created:'Label Created',pickup_confirmed:'Pickup Confirmed',deleted_shipment:'Shipment Deleted',move_to_deco:'Moved to Deco'}[t]}</option>)}
+              </select>
             </div>
-            <div style={{fontSize:11,color:'#64748b',marginTop:2}}>{a.artName?a.artName+' ':''}{a.decoType?' ('+a.decoType.replace(/_/g,' ')+') ':''}{a.sku?a.sku+' ':''}{ a.name||''}{a.color?' ('+a.color+')':''}{a.qty?' — '+a.qty+' units':''}{a.sizes?' — '+a.sizes:''}{a.tracking?' · Tracking: '+a.tracking:''}{a.carrier?' · '+a.carrier.toUpperCase():''}{a.cost?' · '+a.cost:''}</div>
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:6,marginBottom:8}}>
+              {[['soId','SO#'],['customer','Customer'],['tracking','Tracking'],['carrier','Carrier'],['sku','SKU'],['qty','Qty']].map(([field,label])=>
+                <div key={field}><div style={{fontSize:9,color:'#64748b',marginBottom:1}}>{label}</div>
+                <input style={{fontSize:11,padding:'3px 6px',border:'1px solid #e2e8f0',borderRadius:4,width:'100%'}} value={a[field]||''}
+                  onChange={e=>{const next=[...whRecentActions];next[origIdx]={...next[origIdx],[field]:e.target.value};setWhRecentActions(next);_lsSet('nsa_wh_recent',JSON.stringify(next))}}/></div>)}
+            </div>
+            <div style={{display:'flex',gap:6}}>
+              <button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
+                onClick={()=>setWhEditActionIdx(null)}>Done</button>
+              <button className="btn btn-sm" style={{fontSize:10,background:'#fee2e2',color:'#dc2626',border:'1px solid #fca5a5',padding:'4px 10px',fontWeight:700}}
+                onClick={()=>{if(!window.confirm('Delete this action?'))return;const next=whRecentActions.filter((_,idx)=>idx!==origIdx);setWhRecentActions(next);_lsSet('nsa_wh_recent',JSON.stringify(next));setWhEditActionIdx(null)}}>Delete</button>
+            </div>
           </div>
-          <div style={{textAlign:'right',flexShrink:0}}>
-            <div style={{fontSize:10,color:'#94a3b8'}}>{a.at}</div>
-          </div>
-        </div>)}
+          :<div style={{display:'flex',alignItems:'center',gap:10,cursor:a.soId?'pointer':'default'}}
+            onClick={()=>{if(!a.soId)return;const firstSoId=(a.soId||'').split(',')[0].trim();const so2=sos.find(s=>s.id===firstSoId);if(so2){const c2=cust.find(cc=>cc.id===so2.customer_id);setESO(so2);setESOC(c2);setESOTab(null);setPg('orders')}}}
+            onMouseEnter={e=>{if(a.soId)e.currentTarget.style.background='#eef2ff'}} onMouseLeave={e=>{e.currentTarget.style.background=isEditing?'#fffbeb':i%2===0?'#fafbfc':'white'}}>
+            <div style={{width:32,height:32,borderRadius:8,display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,flexShrink:0,
+              background:a.type==='pulled'?'#fef3c7':a.type==='received'?'#dbeafe':a.type==='shipped'?'#dcfce7':a.type==='label_created'?'#f3e8ff':a.type==='pickup_confirmed'?'#d1fae5':a.type==='deleted_shipment'?'#fee2e2':a.type==='move_to_deco'?'#ede9fe':'#f1f5f9'}}>
+              {a.type==='pulled'?'📦':a.type==='received'?'📱':a.type==='shipped'?'🚚':a.type==='label_created'?'🏷️':a.type==='pickup_confirmed'?'✅':a.type==='deleted_shipment'?'🗑️':a.type==='move_to_deco'?'🎨':'⚡'}</div>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
+                <span style={{fontWeight:700,fontSize:12,color:a.type==='pulled'?'#92400e':a.type==='shipped'||a.type==='pickup_confirmed'?'#166534':a.type==='deleted_shipment'?'#dc2626':a.type==='move_to_deco'?'#6d28d9':'#1e40af'}}>{a.jobId||a.pickId||a.poId||a.soId||'Action'}</span>
+                <span style={{fontSize:11,color:'#475569'}}>{{pulled:'Pulled',shipped:'Shipped',received:'Received',label_created:'Label Created',pickup_confirmed:'Pickup Confirmed',deleted_shipment:'Shipment Deleted',move_to_deco:'Moved to Deco'}[a.type]||'Action'}</span>
+                <span style={{fontSize:11,fontWeight:600,color:'#2563eb',textDecoration:'underline'}}>{a.soId}</span>
+                <span style={{fontSize:11,color:'#64748b'}}>{a.customer}</span>
+              </div>
+              <div style={{fontSize:11,color:'#64748b',marginTop:2}}>{a.artName?a.artName+' ':''}{a.decoType?' ('+a.decoType.replace(/_/g,' ')+') ':''}{a.sku?a.sku+' ':''}{ a.name||''}{a.color?' ('+a.color+')':''}{a.qty?' — '+a.qty+' units':''}{a.sizes?' — '+a.sizes:''}{a.tracking?' · Tracking: '+a.tracking:''}{a.carrier?' · '+a.carrier.toUpperCase():''}{a.cost?' · '+a.cost:''}</div>
+            </div>
+            <div style={{textAlign:'right',flexShrink:0,display:'flex',flexDirection:'column',gap:2,alignItems:'flex-end'}}>
+              <div style={{fontSize:10,color:'#94a3b8'}}>{a.at}</div>
+              <button style={{fontSize:9,color:'#64748b',background:'none',border:'1px solid #e2e8f0',borderRadius:4,padding:'1px 6px',cursor:'pointer'}}
+                onClick={e=>{e.stopPropagation();setWhEditActionIdx(origIdx)}}>Edit</button>
+            </div>
+          </div>}
+        </div>})}
         {whRecentActions.length>0&&<div style={{display:'flex',gap:8,alignItems:'center',marginTop:12}}>
           <span style={{fontSize:10,color:'#94a3b8'}}>Showing {filteredActions.length} of {whRecentActions.length} actions</span>
           <button className="btn btn-sm btn-secondary" style={{fontSize:11,marginLeft:'auto'}} onClick={()=>{setWhRecentActions([]);try{localStorage.removeItem('nsa_wh_recent')}catch{}}}>Clear History</button>
