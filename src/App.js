@@ -1901,13 +1901,15 @@ export default function App(){
         setSOs(prev=>{const mergeSO=s=>{const local=prev.find(p=>p.id===s.id);if(!local)return s;
           // If DB has empty items/jobs (mid-save transient state), keep local entirely
           if(local.items?.length&&(!s.items||!s.items.length))return local;
+          // Fast path: if updated_at and item count match, data is unchanged — return same ref
+          if(local.updated_at===s.updated_at&&(local.items?.length||0)===(s.items?.length||0))return local;
           // Accept DB data — don't compare updated_at (string comparison of locale dates is unreliable)
           const m={...s};
           if(local.jobs?.length&&(!s.jobs||!s.jobs.length))m.jobs=local.jobs;
           if(local.art_files?.length&&(!s.art_files||!s.art_files.length))m.art_files=local.art_files;
           return m};
-          if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.sales_orders.map(s=>(_dbSaveFailedIds.has(s.id)||_dbSavePendingIds.has(s.id))?(prev.find(p=>p.id===s.id)||s):mergeSO(s));_dbSnap.current.sos=merged;return JSON.stringify(prev)===JSON.stringify(merged)?prev:merged}
-          const merged2=d.sales_orders.map(mergeSO);_dbSnap.current.sos=merged2;return JSON.stringify(prev)===JSON.stringify(merged2)?prev:merged2});
+          if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.sales_orders.map(s=>(_dbSaveFailedIds.has(s.id)||_dbSavePendingIds.has(s.id))?(prev.find(p=>p.id===s.id)||s):mergeSO(s));_dbSnap.current.sos=merged;if(prev.length===merged.length&&merged.every((m,i)=>m===prev[i]))return prev;return merged}
+          const merged2=d.sales_orders.map(mergeSO);_dbSnap.current.sos=merged2;if(prev.length===merged2.length&&merged2.every((m,i)=>m===prev[i]))return prev;return merged2});
         setInvs(prev=>{const mergeInv=i=>{const local=prev.find(p=>p.id===i.id);if(!local)return i;const m={...i};if(local.payments?.length&&(!i.payments||!i.payments.length))m.payments=local.payments;if(local.print_history?.length&&!i.print_history?.length)m.print_history=local.print_history;if(local.sent_history?.length&&!i.sent_history?.length)m.sent_history=local.sent_history;if(local.email_status&&!i.email_status)m.email_status=local.email_status;if(local.email_opened_at&&!i.email_opened_at)m.email_opened_at=local.email_opened_at;return m};if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.invoices.map(i=>(_dbSaveFailedIds.has(i.id)||_dbSavePendingIds.has(i.id))?(prev.find(p=>p.id===i.id)||i):mergeInv(i));return changed(prev,merged)?merged:prev}const merged2=d.invoices.map(mergeInv);return changed(prev,merged2)?merged2:prev});
         setCust(prev=>{if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.customers.map(c=>(_dbSaveFailedIds.has(c.id)||_dbSavePendingIds.has(c.id))?(prev.find(p=>p.id===c.id)||c):c);return changed(prev,merged)?merged:prev}return changed(prev,d.customers)?d.customers:prev});
         if(d.messages.length)setMsgs(prev=>{if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.messages.map(m=>(_dbSaveFailedIds.has(m.id)||_dbSavePendingIds.has(m.id))?(prev.find(p=>p.id===m.id)||m):m);return changed(prev,merged)?merged:prev}return changed(prev,d.messages)?d.messages:prev});
