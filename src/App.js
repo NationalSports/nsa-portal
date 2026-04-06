@@ -11145,18 +11145,31 @@ export default function App(){
                 <input style={{fontSize:11,padding:'3px 6px',border:'1px solid #e2e8f0',borderRadius:4,width:'100%'}} value={a[field]||''}
                   onChange={e=>{const next=[...whRecentActions];next[origIdx]={...next[origIdx],[field]:e.target.value};setWhRecentActions(next);_lsSet('nsa_wh_recent',JSON.stringify(next))}}/></div>)}
             </div>
-            {a.type==='pulled'&&a.sizes&&<div style={{marginBottom:8}}>
-              <div style={{fontSize:9,color:'#64748b',marginBottom:2}}>Sizes (e.g. S:5 M:3 XL:10)</div>
-              <input style={{fontSize:11,padding:'3px 6px',border:'1px solid #e2e8f0',borderRadius:4,width:'100%',fontFamily:'monospace'}} value={a.sizes||''}
-                onChange={e=>{
-                  const val=e.target.value;
-                  const next=[...whRecentActions];next[origIdx]={...next[origIdx],sizes:val};
-                  /* Recalculate qty from sizes */
-                  let total=0;(val+'').split(/\s+/).forEach(p=>{const[,v]=p.split(':');if(v)total+=parseInt(v)||0});
-                  next[origIdx].qty=total||next[origIdx].qty;
-                  setWhRecentActions(next);_lsSet('nsa_wh_recent',JSON.stringify(next));
-                }}/>
-            </div>}
+            {a.type==='pulled'&&a.sizes&&(()=>{
+              const parsedPairs=(a.sizes+'').split(/\s+/).filter(p=>p.includes(':')).map(p=>{const[sz,v]=p.split(':');return[sz,parseInt(v)||0]});
+              const so2=sos.find(s=>s.id===a.soId);const item2=so2?safeItems(so2).find(it=>it.sku===a.sku):null;
+              const p2=prod.find(pp=>pp.sku===a.sku&&(!a.color||pp.color===a.color));
+              return<div style={{marginBottom:8}}>
+                <div style={{fontSize:9,fontWeight:700,color:'#64748b',marginBottom:4}}>Pulled Sizes</div>
+                <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:6}}>
+                  {parsedPairs.map(([sz,qty],si)=>{
+                    const inv=p2?._inv?.[sz]||0;
+                    return<div key={sz} style={{textAlign:'center',minWidth:56,padding:'6px 4px',borderRadius:6,border:'1px solid #e2e8f0',background:'white'}}>
+                      <div style={{fontSize:10,fontWeight:700,color:'#475569',marginBottom:2}}>{sz}</div>
+                      <input type="number" min={0} value={qty} style={{width:40,textAlign:'center',fontSize:13,fontWeight:800,border:'1px solid #cbd5e1',borderRadius:4,padding:'2px 0'}}
+                        onChange={e=>{
+                          const v=Math.max(0,parseInt(e.target.value)||0);
+                          const newPairs=[...parsedPairs];newPairs[si]=[sz,v];
+                          const newSizesStr=newPairs.filter(([,val])=>val>0).map(([s,val])=>s+':'+val).join(' ');
+                          const newQty=newPairs.reduce((sum,[,val])=>sum+val,0);
+                          const next=[...whRecentActions];next[origIdx]={...next[origIdx],sizes:newSizesStr,qty:newQty};
+                          setWhRecentActions(next);_lsSet('nsa_wh_recent',JSON.stringify(next));
+                        }}/>
+                      <div style={{fontSize:8,color:inv>0?'#94a3b8':'#dc2626',marginTop:2}}>{inv} inv</div>
+                      {item2&&<div style={{fontSize:8,color:'#94a3b8'}}>{item2.sizes?.[sz]||0} ord</div>}
+                    </div>})}
+                </div>
+              </div>})()}
             <div style={{display:'flex',gap:6}}>
               <button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
                 onClick={()=>{
