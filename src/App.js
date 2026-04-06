@@ -3081,7 +3081,7 @@ export default function App(){
           if(pickTotal>0){
             pullTasks.push({so,soId:so.id,item,itemIdx:ii,cName,alpha,rep,daysOut,urgent,
               sku:item.sku,name:item.name,brand:item.brand||'',color:item.color||'',
-              sizes:pickSizes,pulled,needsPull:pickTotal,totalOrdered:pickTotal,totalPulled:0,szKeys:pickSzKeys,
+              sizes:pickSizes,pulled:{},needsPull:pickTotal,totalOrdered:pickTotal,totalPulled:0,szKeys:pickSzKeys,
               noDeco:item.no_deco||!item.decorations?.length,
               shipDest:activePicks.find(p=>p.ship_dest)?.ship_dest||'in_house',
               _activePicks:activePicks});
@@ -9486,11 +9486,11 @@ export default function App(){
                       savSO(updatedSO);
                       const pulledSizes2=szKeys.filter(sz=>(actualQtys2[sz]||0)>0).map(sz=>sz+':'+actualQtys2[sz]).join(' ');
                       const totalPulling2=szKeys.reduce((a,sz)=>a+(actualQtys2[sz]||0),0);
-                      addWhAction({type:'pulled',pickId:pickIdToUse,soId:t.soId,customer:t.cName,sku:t.sku,name:t.name,color:t.color,sizes:pulledSizes2,qty:totalPulling2,by:cu?.id||'warehouse'});
+                      addWhAction({type:'pulled',pickId:pickIdToUse,soId:t.soId,customer:t.cName,sku:t.sku,name:t.name,color:t.color,productId:p?.id||item.product_id,sizes:pulledSizes2,qty:totalPulling2,by:cu?.id||'warehouse'});
                       nf('✅ '+pickIdToUse+(isPartial?' partially':'')+' pulled — '+totalPulling2+' units');setWhPulling(false);setWhViewIF(null);
                     }}>{whPulling?'Saving...':(isFull?'✓ Mark as Pulled ('+totPulling2+' units)':isPartial?'✓ Mark Partial Pull ('+totPulling2+' of '+t.needsPull+')':'✓ Mark as Pulled')}</button>
                     {!isFull&&<button className="btn btn-sm" style={{fontSize:11,background:'#d97706',color:'white',border:'none',padding:'6px 14px',fontWeight:700}} onClick={()=>{
-                      const filled={};szKeys.forEach(sz=>{filled[sz]=Math.max(0,(item.sizes[sz]||0)-(t.pulled[sz]||0))});setPullQtys(filled);
+                      const filled={};szKeys.forEach(sz=>{filled[sz]=Math.max(0,(t.sizes[sz]||0)-(t.pulled[sz]||0))});setPullQtys(filled);
                     }}>Fill All</button>}
                     {totPulling2>0&&<button className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'6px 14px'}} onClick={()=>{
                       const empty={};szKeys.forEach(sz=>{empty[sz]=0});setPullQtys(empty);
@@ -11164,9 +11164,10 @@ export default function App(){
                       savSO({...so2,items:updItems,updated_at:new Date().toLocaleString()});
                     }
                     /* Restore inventory */
-                    if(a.sku&&Object.keys(parsedSizes).length>0){
+                    if((a.productId||a.sku)&&Object.keys(parsedSizes).length>0){
                       setProd(pp=>pp.map(x=>{
-                        if(x.sku!==a.sku||(a.color&&x.color!==a.color))return x;
+                        const match=a.productId?x.id===a.productId:(x.sku===a.sku&&(!a.color||x.color===a.color));
+                        if(!match)return x;
                         const newInv={...(x._inv||{})};Object.entries(parsedSizes).forEach(([sz,v])=>{if(v>0)newInv[sz]=(newInv[sz]||0)+v});
                         return{...x,_inv:newInv};
                       }));
