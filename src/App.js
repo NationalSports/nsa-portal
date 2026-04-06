@@ -9229,7 +9229,7 @@ export default function App(){
   const[whRecentActions,setWhRecentActions]=useState(()=>{try{return JSON.parse(localStorage.getItem('nsa_wh_recent')||'[]')}catch{return[]}});
   // Auto-check UPS pickup status once daily after 3 AM (moved out of rWarehouse to avoid conditional hook call)
   React.useEffect(()=>{
-    let count=0;sos.filter(so=>so._shipments&&so._shipments.length>0&&!so.deleted_at).forEach(so=>{(so._shipments||[]).forEach(shp=>{if(shp.tracking_number&&!shp.carrier_picked_up)count++})});
+    let count=0;sos.filter(so=>so._shipments&&so._shipments.length>0&&!so.deleted_at).forEach(so=>{(so._shipments||[]).forEach(shp=>{if(!shp.carrier_picked_up)count++})});
     if(!count)return;
     const lastCheck=localStorage.getItem('nsa_ups_pickup_check');
     const today=new Date().toISOString().split('T')[0];
@@ -9308,7 +9308,7 @@ export default function App(){
     const readyForDeco=decoTasks.filter(t=>t.isReady&&(t.prodStatus==='hold'||t.prodStatus==='draft')&&t.prodStatus!=='ready');const fDeco=filt(readyForDeco);
     const openStockPOs=stockPOs.filter(p=>p.status!=='received');
     // Count awaiting pickup shipments for tab badge
-    const awaitingPickupCount=(()=>{let c=0;sos.filter(so=>so._shipments&&so._shipments.length>0&&!so.deleted_at).forEach(so=>{(so._shipments||[]).forEach(shp=>{if(shp.tracking_number&&!shp.carrier_picked_up)c++})});return c})();
+    const awaitingPickupCount=(()=>{let c=0;sos.filter(so=>so._shipments&&so._shipments.length>0&&!so.deleted_at).forEach(so=>{(so._shipments||[]).forEach(shp=>{if(!shp.carrier_picked_up)c++})});return c})();
     const tabs=[
       {id:'receive',label:'📱 Scan to Receive',count:0,color:'#2563eb'},
       {id:'pull',label:'📋 Item Fulfillment',count:fPull.length,color:'#d97706'},
@@ -10324,7 +10324,7 @@ export default function App(){
           sos.filter(so=>so._shipments&&so._shipments.length>0&&!so.deleted_at).forEach(so=>{
             const c2=cust.find(cc=>cc.id===so.customer_id);
             (so._shipments||[]).forEach((shp,si)=>{
-              if(shp.tracking_number&&!shp.carrier_picked_up){
+              if(!shp.carrier_picked_up){
                 awaitingPickup.push({...shp,soId:so.id,so,cName:c2?.name||'Unknown',boxIdx:si});
               }
             });
@@ -10367,6 +10367,30 @@ export default function App(){
                     {shpUnits>0&&<span style={{fontSize:10,fontWeight:700,color:'#475569'}}>{shpUnits} units</span>}
                     <span style={{fontSize:9,color:'#94a3b8'}}>{shp.ship_date||shp.created_at||''}</span>
                     <div style={{marginLeft:'auto',display:'flex',gap:4}}>
+                      {!shp.tracking_number&&!shp.label_url&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:600,background:'#fef3c7',color:'#92400e'}}>No label</span>}
+                      {!shp.label_url&&ssConnected&&<button style={{fontSize:9,background:'#7c3aed',color:'white',border:'none',padding:'3px 8px',borderRadius:4,fontWeight:700,cursor:'pointer'}}
+                        onClick={async(e)=>{
+                          const btn=e.currentTarget;if(btn.disabled)return;btn.disabled=true;btn.textContent='Creating...';
+                          try{
+                            const so2=shp.so;const c2=cust.find(cc=>cc.id===so2?.customer_id);
+                            if(!c2){nf('No customer found','error');btn.disabled=false;btn.textContent='Create Label';return}
+                            const weight=parseFloat(prompt('Box weight (lbs):','5'));if(!weight||isNaN(weight)){btn.disabled=false;btn.textContent='Create Label';return}
+                            const carrier2=prompt('Carrier (fedex/ups/usps):',shp.carrier||'fedex');if(!carrier2){btn.disabled=false;btn.textContent='Create Label';return}
+                            nf('Creating ShipStation label...');
+                            const label=await createShipStationLabel(so2,c2,shp.items||[],weight,carrier2,'fedex_ground',{length:12,width:12,height:6});
+                            const cost=label.shipmentCost||label.insuranceCost?parseFloat(label.shipmentCost||0)+parseFloat(label.insuranceCost||0):null;
+                            const labelUrl2=label.labelData?(typeof label.labelData==='string'&&label.labelData.length>200?'data:application/pdf;base64,'+label.labelData:label.labelData?.href||null):null;
+                            const labelDl=label.labelDownload||labelUrl2||null;
+                            const updatedShipments=(so2._shipments||[]).map(s=>s.id===shp.id?{...s,tracking_number:label.trackingNumber||'',carrier:label.carrierCode||carrier2,label_url:labelDl,shipstation_shipment_id:label.shipmentId||null,shipping_cost:cost||0,tracking_url:label.trackingNumber?(/^1Z/i.test(label.trackingNumber)?'https://www.ups.com/track?tracknum='+label.trackingNumber:'https://www.fedex.com/fedextrack/?trknbr='+label.trackingNumber):''}:s);
+                            savSO({...so2,_shipments:updatedShipments,_tracking_number:label.trackingNumber||so2._tracking_number||'',_carrier:label.carrierCode||carrier2||so2._carrier||'',_shipping_cost:(safeNum(so2._shipping_cost||0)+(cost||0))||null});
+                            nf('✅ Label created! Tracking: '+(label.trackingNumber||'pending')+(cost?' · $'+cost.toFixed(2):''));
+                            addWhAction({type:'label_created',soId:shp.soId,customer:shp.cName,tracking:label.trackingNumber||'',carrier:label.carrierCode||carrier2,cost:cost?'$'+cost.toFixed(2):'',by:cu?.id||'warehouse'});
+                            if(labelDl){
+                              if(labelDl.startsWith('data:application/pdf')){const iframe=document.createElement('iframe');iframe.style.display='none';document.body.appendChild(iframe);iframe.src=labelDl;iframe.onload=()=>{try{iframe.contentWindow.print()}catch(e2){const a2=document.createElement('a');a2.href=labelDl;a2.download='label.pdf';a2.click()}setTimeout(()=>{try{document.body.removeChild(iframe)}catch{}},60000)}}
+                              else{const pw=window.open(labelDl,'_blank');if(pw)setTimeout(()=>{try{pw.print()}catch(e2){}},1500)}
+                            }
+                          }catch(err){nf('Label creation failed: '+err.message,'error');btn.disabled=false;btn.textContent='Create Label'}
+                        }}>Create Label</button>}
                       {shp.label_url&&<button style={{fontSize:9,background:'#7c3aed',color:'white',border:'none',padding:'3px 8px',borderRadius:4,fontWeight:700,cursor:'pointer'}}
                         onClick={()=>{
                           if(shp.label_url.startsWith('data:application/pdf')){
@@ -10851,6 +10875,12 @@ export default function App(){
                     const items=(shp.items||[]);const skus=items.map(it=>it.sku).join(', ');const totalQty=items.reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((a2,v)=>a2+v,0),0);
                     addWhAction({type:'shipped',soId:[...shipModal.grp.soIds].join(', '),customer:shipModal.grp.cName,sku:skus,name:items[0]?.name||'',qty:totalQty,sizes:items.map(it=>{const szStr=Object.entries(it.sizes||{}).filter(([,v])=>v>0).map(([s,v])=>s+':'+v).join(' ');return szStr}).join('; '),tracking:shp.tracking_number||'',carrier:shp.carrier||'',by:cu?.id||'warehouse'});
                   });
+                  // Prompt to create labels if any boxes are missing tracking numbers
+                  const boxesMissingLabels=shipModal.boxes.filter(b=>(b.items||[]).length>0&&!b.tracking_number&&!b.label_url);
+                  if(boxesMissingLabels.length>0&&ssConnected){
+                    const wantLabel=window.confirm(boxesMissingLabels.length+' box'+(boxesMissingLabels.length>1?'es have':' has')+' no shipping label. Would you like to create labels now?\n\nYou can also create labels from the Awaiting Pickup tab.');
+                    if(wantLabel){setWhTab('pickup');setShipModal(null);return}
+                  }
                   setShipModal(null);
                 }}>✓ Confirm Shipment ({shipModal.boxes.filter(b=>(b.items||[]).length>0).length} box{shipModal.boxes.filter(b=>(b.items||[]).length>0).length!==1?'es':''})</button>
               <button className="btn btn-secondary" onClick={()=>setShipModal(null)}>Cancel</button>
@@ -10866,7 +10896,7 @@ export default function App(){
           sos.filter(so=>so._shipments&&so._shipments.length>0&&!so.deleted_at).forEach(so=>{
             const c2=cust.find(cc=>cc.id===so.customer_id);
             (so._shipments||[]).forEach((shp,si)=>{
-              if(shp.tracking_number&&!shp.carrier_picked_up){
+              if(!shp.carrier_picked_up){
                 awaitingPickup.push({...shp,soId:so.id,so,cName:c2?.name||'Unknown',boxIdx:si});
               }
             });
