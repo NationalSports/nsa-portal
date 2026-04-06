@@ -2575,6 +2575,31 @@ export default function App(){
     // Save version history before overwriting
     const prev=sos.find(x=>x.id===sl.id);
     if(prev){setSOHistory(h=>{const existing=h[sl.id]||[];return{...h,[sl.id]:[{ts:new Date().toLocaleString(),user:cu.name,snapshot:JSON.parse(JSON.stringify(prev))},...existing].slice(0,20)}})}
+    // Merge pick_line statuses — preserve 'pulled' status from current state so warehouse pulls aren't lost
+    if(prev&&sl.items&&prev.items){
+      sl.items.forEach((item,ii)=>{
+        const prevItem=prev.items[ii];if(!prevItem)return;
+        const prevPicks=prevItem.pick_lines||[];
+        if(prevPicks.length>0&&item.pick_lines){
+          item.pick_lines=item.pick_lines.map(pk=>{
+            const match=prevPicks.find(pp=>pp.pick_id===pk.pick_id);
+            if(match&&match.status==='pulled'&&pk.status!=='pulled'){
+              return{...pk,status:'pulled',pulled_at:match.pulled_at,...Object.fromEntries(Object.entries(match).filter(([k])=>SZ_ORD.includes(k.toUpperCase())||SZ_ORD.includes(k)))};
+            }
+            return pk;
+          });
+        } else if(prevPicks.length>0&&!item.pick_lines){
+          // Preserve pick_lines if they were removed
+          item.pick_lines=prevPicks;
+        }
+      });
+    }
+    // Preserve shipment data from current state if not included in save
+    if(prev&&prev._shipments&&prev._shipments.length>0&&(!sl._shipments||sl._shipments.length===0)){
+      sl._shipments=prev._shipments;sl._shipped=prev._shipped;sl._shipping_status=prev._shipping_status;
+      sl._tracking_number=prev._tracking_number;sl._carrier=prev._carrier;sl._ship_date=prev._ship_date;
+      sl._tracking_url=prev._tracking_url;sl._shipping_cost=prev._shipping_cost;
+    }
     setSOs(p=>{const ex=p.find(x=>x.id===sl.id);return ex?p.map(x=>x.id===sl.id?sl:x):[...p,sl]});
     logChange(prev?'updated':'created','SO',sl.id,sl.memo||'');
     // Promo usage is recorded in convertSO only — savSO does not duplicate it
@@ -3052,10 +3077,9 @@ export default function App(){
         const picks=safePicks(item);
         const pulled={};picks.filter(pk=>pk.status==='pulled').forEach(pk=>{szKeys.forEach(s=>{pulled[s]=(pulled[s]||0)+(pk[s]||0)})});
         const totalPulled=Object.values(pulled).reduce((a,v)=>a+v,0);
-        // Show in Pull & Stage if there's an active pick ticket OR a job on hold needing this item
+        // Show in Item Fulfillment only if there's an active pick ticket (IF request)
         const hasActivePick=picks.some(pk=>pk.status!=='pulled');
-        const hasHoldJob=safeJobs(so).some(j=>j.prod_status==='hold'&&(j.items||[]).some(gi=>gi.item_idx===ii));
-        if(hasActivePick||hasHoldJob){
+        if(hasActivePick){
           const needsPull=totalOrdered-totalPulled;
           if(needsPull>0){
             pullTasks.push({so,soId:so.id,item,itemIdx:ii,cName,alpha,rep,daysOut,urgent,
@@ -3066,7 +3090,9 @@ export default function App(){
           }
         }
         // No-deco items fully pulled → ready to ship (respecting ship preference)
-        if((!item.decorations?.length||item.no_deco)&&totalPulled>=totalOrdered&&totalOrdered>0){
+        // Skip if this item has completed/shipped deco jobs (those are handled in the job loop below)
+        const itemHasCompletedJob=safeJobs(so).some(j=>(j.prod_status==='completed'||j.prod_status==='shipped')&&(j.items||[]).some(gi=>gi.item_idx===ii));
+        if((!item.decorations?.length||item.no_deco)&&!itemHasCompletedJob&&totalPulled>=totalOrdered&&totalOrdered>0){
           const dest=picks.find(p=>p.ship_dest)?.ship_dest||'in_house';
           const pref=so.ship_preference||'ship_as_ready';
           const shipDateOk=pref!=='ship_on_date'||!so.ship_on_date||(new Date(so.ship_on_date)<=new Date());
@@ -3132,9 +3158,24 @@ export default function App(){
           desc:'Full order ready',units:totalUnits,shipMethod:'pending',shipPref:'wait_complete'});
       }
     });
+    // Deduplicate pullTasks by SO+SKU+color (handles duplicate items in SO data)
+    const dedupPull=[];const pullSeen={};
+    pullTasks.forEach(t=>{
+      const key=t.soId+'|'+t.sku+'|'+(t.color||'');
+      if(pullSeen[key]){
+        const m=pullSeen[key];
+        // Merge sizes and pulled quantities
+        t.szKeys.forEach(s=>{m.sizes[s]=(m.sizes[s]||0)+(t.sizes[s]||0);m.pulled[s]=(m.pulled[s]||0)+(t.pulled[s]||0)});
+        m.szKeys=[...new Set([...m.szKeys,...t.szKeys])];
+        m.totalOrdered+=t.totalOrdered;m.totalPulled+=t.totalPulled;m.needsPull=m.totalOrdered-m.totalPulled;
+      } else {
+        const clone={...t,sizes:{...t.sizes},pulled:{...t.pulled},szKeys:[...t.szKeys]};
+        pullSeen[key]=clone;dedupPull.push(clone);
+      }
+    });
     const sortU=(a,b)=>{if(a.urgent&&!b.urgent)return -1;if(!a.urgent&&b.urgent)return 1;return(a.daysOut||999)-(b.daysOut||999)};
-    pullTasks.sort(sortU);shipTasks.sort(sortU);decoTasks.sort(sortU);
-    return{pullTasks,shipTasks,decoTasks};
+    dedupPull.sort(sortU);shipTasks.sort(sortU);decoTasks.sort(sortU);
+    return{pullTasks:dedupPull,shipTasks,decoTasks};
   };
 
   // Helper: get rep ID for a customer (from customer.primary_rep_id or SO created_by)
@@ -3488,7 +3529,7 @@ export default function App(){
     {/* ═══ WAREHOUSE VIEW ═══ */}
     {dashView==='warehouse'&&<>
     <div className="stats-row">
-      <div className="stat-card" style={{borderLeft:'3px solid #d97706'}}><div className="stat-label">To Pull</div><div className="stat-value" style={{color:'#d97706'}}>{pullTasks.length}</div><div style={{fontSize:10,color:'#94a3b8'}}>{pullTasks.reduce((a,t)=>a+t.needsPull,0)} units</div></div>
+      <div className="stat-card" style={{borderLeft:'3px solid #d97706'}}><div className="stat-label">Open IFs</div><div className="stat-value" style={{color:'#d97706'}}>{pullTasks.length}</div><div style={{fontSize:10,color:'#94a3b8'}}>{pullTasks.reduce((a,t)=>a+t.needsPull,0)} units</div></div>
       <div className="stat-card" style={{borderLeft:'3px solid #166534'}}><div className="stat-label">Ship Today</div><div className="stat-value" style={{color:'#166534'}}>{shipTasks.length}</div><div style={{fontSize:10,color:'#94a3b8'}}>{shipTasks.reduce((a,t)=>a+t.units,0)} units</div></div>
       <div className="stat-card" style={{borderLeft:'3px solid #dc2626'}}><div className="stat-label">Rush Orders</div><div className="stat-value" style={{color:'#dc2626'}}>{pullTasks.filter(t=>t.urgent).length}</div></div>
       <div className="stat-card" style={{borderLeft:'3px solid #2563eb'}}><div className="stat-label">Active Timers</div><div className="stat-value" style={{color:'#2563eb'}}>{Object.keys(activeTimers).length}</div></div>
@@ -9221,7 +9262,7 @@ export default function App(){
   const[whRecentActions,setWhRecentActions]=useState(()=>{try{return JSON.parse(localStorage.getItem('nsa_wh_recent')||'[]')}catch{return[]}});
   // Auto-check UPS pickup status once daily after 3 AM (moved out of rWarehouse to avoid conditional hook call)
   React.useEffect(()=>{
-    let count=0;sos.filter(so=>so._shipments&&so._shipments.length>0&&!so.deleted_at).forEach(so=>{(so._shipments||[]).forEach(shp=>{if(shp.tracking_number&&!shp.carrier_picked_up)count++})});
+    let count=0;sos.filter(so=>so._shipments&&so._shipments.length>0&&!so.deleted_at).forEach(so=>{(so._shipments||[]).forEach(shp=>{if(!shp.carrier_picked_up)count++})});
     if(!count)return;
     const lastCheck=localStorage.getItem('nsa_ups_pickup_check');
     const today=new Date().toISOString().split('T')[0];
@@ -9256,6 +9297,7 @@ export default function App(){
   const addWhAction=(action)=>{setWhRecentActions(prev=>{const next=[{...action,ts:Date.now(),at:new Date().toLocaleString()},...prev].slice(0,500);_lsSet('nsa_wh_recent',JSON.stringify(next));return next})};
   const[whActionRange,setWhActionRange]=useState('7d');
   const[whActionSearch,setWhActionSearch]=useState('');
+  const[whEditActionIdx,setWhEditActionIdx]=useState(null);
   const[stockPOs,setStockPOs]=useState(()=>loadState('stock_pos',[]));
   React.useEffect(()=>{_saveAppState('stock_pos',stockPOs)},[stockPOs]);
   const[showStockPO,setShowStockPO]=useState(null);const[stockPOCounter,setStockPOCounter]=useState(()=>loadState('stock_po_counter',5001));
@@ -9299,10 +9341,10 @@ export default function App(){
     const readyForDeco=decoTasks.filter(t=>t.isReady&&(t.prodStatus==='hold'||t.prodStatus==='draft')&&t.prodStatus!=='ready');const fDeco=filt(readyForDeco);
     const openStockPOs=stockPOs.filter(p=>p.status!=='received');
     // Count awaiting pickup shipments for tab badge
-    const awaitingPickupCount=(()=>{let c=0;sos.filter(so=>so._shipments&&so._shipments.length>0&&!so.deleted_at).forEach(so=>{(so._shipments||[]).forEach(shp=>{if(shp.tracking_number&&!shp.carrier_picked_up)c++})});return c})();
+    const awaitingPickupCount=(()=>{let c=0;sos.filter(so=>so._shipments&&so._shipments.length>0&&!so.deleted_at).forEach(so=>{(so._shipments||[]).forEach(shp=>{if(!shp.carrier_picked_up)c++})});return c})();
     const tabs=[
       {id:'receive',label:'📱 Scan to Receive',count:0,color:'#2563eb'},
-      {id:'pull',label:'🏗️ Pull & Stage',count:fPull.length,color:'#d97706'},
+      {id:'pull',label:'📋 Item Fulfillment',count:fPull.length,color:'#d97706'},
       {id:'deco',label:'🎨 Ready for Deco',count:fDeco.length,color:'#7c3aed'},
       {id:'ship',label:'📦 Ready to Ship',count:fShip.length,color:'#166534'},
       {id:'pickup',label:'🚚 Awaiting Pickup',count:awaitingPickupCount,color:'#d97706'},
@@ -9327,7 +9369,7 @@ export default function App(){
         const showShipping=shipDest==='ship_customer'||shipDest==='ship_deco';
 
         // Local shipping state stored on whViewIF
-        const boxes=t._boxes||[{weight:5,dimensions:{},carrier:'fedex',tracking_number:'',items:[{sku:item.sku,name:item.name,color:item.color||'',sizes:Object.fromEntries(szKeys.map(sz=>[(sz),Math.max(0,(item.sizes[sz]||0)-(t.pulled[sz]||0))]))}]}];
+        const boxes=t._boxes||[{weight:5,dimensions:{},carrier:'ups',tracking_number:'',items:[{sku:item.sku,name:item.name,color:item.color||'',sizes:Object.fromEntries(szKeys.map(sz=>[(sz),Math.max(0,(item.sizes[sz]||0)-(t.pulled[sz]||0))]))}]}];
         const setBoxes=newBoxes=>setWhViewIF(prev=>({...prev,_boxes:newBoxes}));
         // Editable pull quantities — default to the pick line quantities (what was requested)
         const pullQtys=t._pullQtys||(activePick?Object.fromEntries(szKeys.map(sz=>[sz,activePick[sz]||0])):{});
@@ -9337,7 +9379,7 @@ export default function App(){
           {/* Back button */}
           <div style={{marginBottom:12}}>
             <button className="btn btn-sm btn-secondary" onClick={()=>setWhViewIF(null)} style={{fontSize:12,padding:'6px 14px'}}>
-              ← Back to Pull & Stage</button>
+              ← Back to Item Fulfillment</button>
           </div>
 
           {/* Header */}
@@ -9391,7 +9433,7 @@ export default function App(){
                     <div style={{fontSize:11,fontWeight:800,color:'#475569',marginBottom:2}}>{sz}</div>
                     <div style={{fontSize:22,fontWeight:900,color:need>0?'#92400e':'#166534',lineHeight:1}}>{need>0?need:'✓'}</div>
                     <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>need of {ordered}</div>
-                    {need>0&&activePick&&activePick.status!=='pulled'&&<>
+                    {need>0&&<>
                       <div style={{borderTop:'1px solid #e2e8f0',margin:'6px 0 4px'}}/>
                       <div style={{fontSize:9,fontWeight:600,color:'#64748b',marginBottom:2}}>Pulling</div>
                       <input type="number" min={0} max={need} value={pq} style={{width:40,textAlign:'center',fontSize:14,fontWeight:800,border:'1px solid #cbd5e1',borderRadius:4,padding:'2px 0',color:pq<need?'#dc2626':'#166534'}}
@@ -9404,13 +9446,64 @@ export default function App(){
                     <div style={{fontSize:11,fontWeight:800,color:'#64748b',marginBottom:2}}>TOT</div>
                     <div style={{fontSize:22,fontWeight:900,color:'#d97706',lineHeight:1}}>{t.needsPull}</div>
                     <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>of {t.totalOrdered}</div>
-                    {activePick&&activePick.status!=='pulled'&&<>
+                    {t.needsPull>0&&<>
                       <div style={{borderTop:'1px solid #e2e8f0',margin:'6px 0 4px'}}/>
                       <div style={{fontSize:9,fontWeight:600,color:'#64748b',marginBottom:2}}>Pulling</div>
                       <div style={{fontSize:14,fontWeight:800,color:totPulling<t.needsPull?'#dc2626':'#166534'}}>{totPulling}</div>
                     </>}
                   </div>})()}
               </div>
+
+              {/* Pull Action Buttons */}
+              {t.needsPull>0&&<div style={{marginTop:12,padding:'12px 16px',background:'#f0fdf4',borderRadius:8,border:'2px solid #166534'}}>
+                <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                  {(()=>{const totPulling2=szKeys.reduce((a,sz)=>a+(pullQtys[sz]||0),0);const isPartial=totPulling2>0&&totPulling2<t.needsPull;const isFull=totPulling2>=t.needsPull;
+                    return<>
+                    <button className="btn btn-primary" disabled={whPulling||totPulling2===0} style={{fontSize:13,padding:'10px 20px',fontWeight:800,background:'#166534',borderColor:'#166534',opacity:whPulling||totPulling2===0?0.5:1}} onClick={()=>{
+                      if(whPulling)return;setWhPulling(true);
+                      const actualQtys2=pullQtys;
+                      // Create pick line if none exists
+                      const pickIdToUse=activePick?.pick_id||('IF-'+Date.now().toString(36).toUpperCase().slice(-4));
+                      const updatedItems=safeItems(so).map((it2,ii)=>{
+                        if(ii!==t.itemIdx)return it2;
+                        const existingPicks=it2.pick_lines||[];
+                        if(activePick){
+                          // Update existing pick
+                          const newPicks=existingPicks.map(pk=>{
+                            if(pk.pick_id===activePick.pick_id&&pk.status!=='pulled'){
+                              const updated={...pk,status:'pulled',pulled_at:new Date().toLocaleString()};
+                              szKeys.forEach(sz=>{updated[sz]=actualQtys2[sz]||0});return updated;}return pk});
+                          return{...it2,pick_lines:newPicks};
+                        } else {
+                          // Create new pick line marked as pulled
+                          const newPick={pick_id:pickIdToUse,status:'pulled',pulled_at:new Date().toLocaleString(),ship_dest:t.shipDest||'in_house'};
+                          szKeys.forEach(sz=>{newPick[sz]=actualQtys2[sz]||0});
+                          return{...it2,pick_lines:[...existingPicks,newPick]};
+                        }
+                      });
+                      const updatedSO={...so,items:updatedItems,updated_at:new Date().toLocaleString()};
+                      if(p){const newInv={...p._inv};szKeys.forEach(sz=>{const v=actualQtys2[sz]||0;if(v>0){newInv[sz]=Math.max(0,(newInv[sz]||0)-v)}});setProd(pp=>pp.map(x=>x.id===p.id?{...x,_inv:newInv}:x))}
+                      if(showShipping&&boxes.some(bx=>bx.tracking_number)){
+                        const shipments=[...(updatedSO._shipments||[])];
+                        boxes.filter(bx=>bx.tracking_number).forEach(bx=>{shipments.push({id:'SHP-'+Date.now()+'-'+Math.random().toString(36).slice(2,6),tracking_number:bx.tracking_number,carrier:bx.carrier||'ups',ship_date:new Date().toLocaleDateString(),items:bx.items||[],weight:bx.weight,dimensions:bx.dimensions,created_by:cu?.id,created_at:new Date().toLocaleString()})});
+                        updatedSO._shipments=shipments;
+                      }
+                      savSO(updatedSO);
+                      const pulledSizes2=szKeys.filter(sz=>(actualQtys2[sz]||0)>0).map(sz=>sz+':'+actualQtys2[sz]).join(' ');
+                      const totalPulling2=szKeys.reduce((a,sz)=>a+(actualQtys2[sz]||0),0);
+                      addWhAction({type:'pulled',pickId:pickIdToUse,soId:t.soId,customer:t.cName,sku:t.sku,name:t.name,color:t.color,sizes:pulledSizes2,qty:totalPulling2,by:cu?.id||'warehouse'});
+                      nf('✅ '+pickIdToUse+(isPartial?' partially':'')+' pulled — '+totalPulling2+' units');setWhPulling(false);setWhViewIF(null);
+                    }}>{whPulling?'Saving...':(isFull?'✓ Mark as Pulled ('+totPulling2+' units)':isPartial?'✓ Mark Partial Pull ('+totPulling2+' of '+t.needsPull+')':'✓ Mark as Pulled')}</button>
+                    {!isFull&&<button className="btn btn-sm" style={{fontSize:11,background:'#d97706',color:'white',border:'none',padding:'6px 14px',fontWeight:700}} onClick={()=>{
+                      const filled={};szKeys.forEach(sz=>{filled[sz]=Math.max(0,(item.sizes[sz]||0)-(t.pulled[sz]||0))});setPullQtys(filled);
+                    }}>Fill All</button>}
+                    {totPulling2>0&&<button className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'6px 14px'}} onClick={()=>{
+                      const empty={};szKeys.forEach(sz=>{empty[sz]=0});setPullQtys(empty);
+                    }}>Clear</button>}
+                  </>})()}
+                </div>
+                <div style={{fontSize:10,color:'#64748b',marginTop:6}}>Adjust quantities above then click to confirm. Partial pulls will keep the IF open for remaining units.</div>
+              </div>}
 
               {/* All pick lines for this item */}
               {allPicks.length>0&&<div style={{marginTop:8}}>
@@ -9573,68 +9666,13 @@ export default function App(){
                 </div>})}
 
               <button className="btn btn-sm btn-secondary" style={{fontSize:11,marginTop:4}} onClick={()=>{
-                setBoxes([...boxes,{weight:5,dimensions:{},carrier:'fedex',tracking_number:'',items:[{sku:item.sku,name:item.name,color:item.color||'',sizes:Object.fromEntries(szKeys.map(sz=>[sz,0]))}]}])}}>
+                setBoxes([...boxes,{weight:5,dimensions:{},carrier:'ups',tracking_number:'',items:[{sku:item.sku,name:item.name,color:item.color||'',sizes:Object.fromEntries(szKeys.map(sz=>[sz,0]))}]}])}}>
                 + Add Box</button>
             </div>
           </div>}
 
           {/* Actions */}
           <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-            {activePick&&activePick.status!=='pulled'&&<button className="btn btn-primary" disabled={whPulling} style={{fontSize:13,padding:'10px 24px',fontWeight:700,opacity:whPulling?0.6:1}} onClick={()=>{
-              if(whPulling)return;setWhPulling(true);
-              // Mark the active pick as pulled with actual quantities, update SO, adjust inventory
-              const actualQtys=pullQtys;
-              const updatedItems=safeItems(so).map((it2,ii)=>{
-                if(ii!==t.itemIdx)return it2;
-                const newPicks=(it2.pick_lines||[]).map(pk=>{
-                  if(pk.pick_id===activePick.pick_id&&pk.status!=='pulled'){
-                    const updated={...pk,status:'pulled',pulled_at:new Date().toLocaleString()};
-                    // Update pick line with actual pulled quantities
-                    szKeys.forEach(sz=>{updated[sz]=actualQtys[sz]||0});
-                    return updated;
-                  }
-                  return pk;
-                });
-                return{...it2,pick_lines:newPicks};
-              });
-              const updatedSO={...so,items:updatedItems,updated_at:new Date().toLocaleString()};
-              // Adjust inventory (decrement using actual pulled quantities)
-              if(p){
-                const newInv={...p._inv};
-                szKeys.forEach(sz=>{const v=actualQtys[sz]||0;if(v>0){newInv[sz]=Math.max(0,(newInv[sz]||0)-v)}});
-                setProd(pp=>pp.map(x=>x.id===p.id?{...x,_inv:newInv}:x));
-              }
-              // Add shipment data if shipping boxes were configured — single save to avoid race
-              if(showShipping&&boxes.some(bx=>bx.tracking_number)){
-                const shipments=[...(updatedSO._shipments||[])];
-                boxes.filter(bx=>bx.tracking_number).forEach(bx=>{
-                  shipments.push({id:'SHP-'+Date.now()+'-'+Math.random().toString(36).slice(2,6),tracking_number:bx.tracking_number,carrier:bx.carrier||'fedex',
-                    ship_date:new Date().toLocaleDateString(),items:bx.items||[],weight:bx.weight,dimensions:bx.dimensions,
-                    created_by:cu?.id,created_at:new Date().toLocaleString()});
-                });
-                updatedSO._shipments=shipments;
-              }
-              savSO(updatedSO);
-              // Log recent action
-              const pulledSizes=szKeys.filter(sz=>(actualQtys[sz]||0)>0).map(sz=>sz+':'+actualQtys[sz]).join(' ');
-              const totalPulling=szKeys.reduce((a,sz)=>a+(actualQtys[sz]||0),0);
-              addWhAction({type:'pulled',pickId,soId:t.soId,customer:t.cName,sku:t.sku,name:t.name,color:t.color,sizes:pulledSizes,qty:totalPulling,by:cu?.id||'warehouse'});
-              // Auto-print 4x6 box label
-              const labelQr=encodeURIComponent(window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(pickId));
-              const w=window.open('','_blank','width=400,height=600');
-              if(w){w.document.write('<html><head><title>'+pickId+'</title><style>@page{size:4in 6in;margin:0}body{font-family:sans-serif;padding:12px 16px;width:4in;height:6in;box-sizing:border-box;margin:0;display:flex;flex-direction:column}.top{display:flex;justify-content:space-between;align-items:flex-start}.cname{font-size:32px;font-weight:900;margin:8px 0 4px;line-height:1.1}.sizes{font-size:24px;font-weight:900;margin:8px 0;letter-spacing:1px}.sep{border-top:3px dashed #999;margin:8px 0}.bot{margin-top:auto}</style></head><body>');
-              w.document.write('<div class="top"><div><div style="font-size:36px;font-weight:900;margin:0;line-height:1">'+pickId+'</div><div style="font-size:16px;font-weight:700;margin:4px 0">'+t.soId+'</div></div><img src="https://api.qrserver.com/v1/create-qr-code/?size=150x150&data='+labelQr+'" width="100" height="100"/></div>');
-              w.document.write('<div class="cname">'+t.cName+'</div>');
-              if(shipDest!=='in_house'){w.document.write('<div style="background:#fffbeb;padding:8px;border:3px solid '+(shipDest==='ship_customer'?'#3b82f6':'#d97706')+';border-radius:6px;font-weight:900;font-size:18px;margin:6px 0">'+(shipDest==='ship_customer'?'SHIP TO CUSTOMER':'SHIP TO DECO'+(activePick?.deco_vendor?' — '+activePick.deco_vendor:''))+'</div>')}
-              w.document.write('<div class="sep"></div>');
-              w.document.write('<div style="font-size:20px;font-weight:900;margin:0 0 4px">'+t.sku+' '+t.name+'</div>');
-              w.document.write('<div style="font-size:16px;font-weight:700">'+(t.color||'')+' — '+totalPulling+' units</div>');
-              w.document.write('<div class="sizes">'+szKeys.filter(sz=>(actualQtys[sz]||0)>0).map(sz=>sz+': '+actualQtys[sz]).join(' &nbsp;&nbsp; ')+'</div>');
-              w.document.write('<div class="sep"></div>');
-              w.document.write('<div class="bot"><p style="font-size:11px;color:#666;margin:0">Pulled: '+new Date().toLocaleString()+'</p></div>');
-              w.document.write('</body></html>');w.document.close();w.print()}
-              nf('✅ '+pickId+' marked as pulled');setWhPulling(false);setWhViewIF(null);
-            }}>{whPulling?'Saving...':'✓ Mark as Pulled'}</button>}
             <button className="btn btn-secondary" style={{fontSize:12,padding:'8px 16px'}} onClick={()=>{setESOTab('items');setESOScrollItem(t.itemIdx);setESO(so);setESOC(c);setPg('orders')}}>
               Open Sales Order</button>
           </div>
@@ -9644,7 +9682,7 @@ export default function App(){
       {/* Stats */}
       <div className="stats-row" style={{marginBottom:12}}>
         <div className="stat-card" style={{borderLeft:'3px solid #d97706'}}>
-          <div className="stat-label">To Pull</div>
+          <div className="stat-label">Open IFs</div>
           <div className="stat-value" style={{color:'#d97706'}}>{pullTasks.length}</div>
           <div style={{fontSize:10,color:'#94a3b8'}}>{pullTasks.reduce((a,t)=>a+t.needsPull,0)} units</div>
         </div>
@@ -10095,7 +10133,7 @@ export default function App(){
 
       {/* ── PULL & STAGE ── */}
       {whTab==='pull'&&<>
-        {fPull.length===0?<div className="empty" style={{padding:32,textAlign:'center'}}>Nothing to pull right now 👍</div>:
+        {fPull.length===0?<div className="empty" style={{padding:32,textAlign:'center'}}>No open item fulfillment requests</div>:
         <div className="card"><div className="card-body" style={{padding:0}}>
           <table style={{fontSize:11}}><thead><tr>
             <th style={{width:20}}></th><th>SO#</th><th>Customer</th><th>SKU</th><th>Item</th>
@@ -10198,10 +10236,17 @@ export default function App(){
                         const key=it.sku+'|'+(it.color||'');if(!shippedBySz[key])shippedBySz[key]={};
                         Object.entries(it.sizes||{}).forEach(([sz,v])=>{shippedBySz[key][sz]=(shippedBySz[key][sz]||0)+safeNum(v)});
                       })});
+                      // Merge duplicate items by SKU+color before rendering
+                      const mergedItems=[];const seenItems={};
+                      safeItems(so).forEach(item=>{
+                        const key=item.sku+'|'+(item.color||'');
+                        if(seenItems[key]){const m=seenItems[key];Object.entries(safeSizes(item)).forEach(([sz,v])=>{m.sizes[sz]=(m.sizes[sz]||0)+safeNum(v)})}
+                        else{const m={sku:item.sku,name:item.name,color:item.color,sizes:{}};Object.entries(safeSizes(item)).forEach(([sz,v])=>{m.sizes[sz]=safeNum(v)});seenItems[key]=m;mergedItems.push(m)}
+                      });
                       return<table style={{fontSize:11,width:'100%',borderCollapse:'collapse'}}><tbody>
-                      {safeItems(so).map((item,ii)=>{
-                        const szObj=safeSizes(item);const key=item.sku+'|'+(item.color||'');const shipped=shippedBySz[key]||{};
-                        const remainSz={};Object.entries(szObj).forEach(([sz,v])=>{const rem=safeNum(v)-safeNum(shipped[sz]);if(rem>0)remainSz[sz]=rem});
+                      {mergedItems.map((item,ii)=>{
+                        const key=item.sku+'|'+(item.color||'');const shipped=shippedBySz[key]||{};
+                        const remainSz={};Object.entries(item.sizes).forEach(([sz,v])=>{const rem=v-safeNum(shipped[sz]);if(rem>0)remainSz[sz]=rem});
                         const totalQty=Object.values(remainSz).reduce((a,v)=>a+v,0);
                         if(totalQty<=0)return null;
                         const szStr=Object.entries(remainSz).filter(([,v])=>v>0).sort((a,b)=>{const ai=SZ_ORD.indexOf(a[0].toUpperCase()),bi2=SZ_ORD.indexOf(b[0].toUpperCase());return(ai<0?99:ai)-(bi2<0?99:bi2)}).map(([sz,v])=>sz+':'+v).join('  ');
@@ -10224,18 +10269,25 @@ export default function App(){
                           const key2=it.sku+'|'+(it.color||'');if(!shippedBySz[key2])shippedBySz[key2]={};
                           Object.entries(it.sizes||{}).forEach(([sz,v])=>{shippedBySz[key2][sz]=(shippedBySz[key2][sz]||0)+safeNum(v)});
                         })});
+                        // Merge duplicate items by SKU+color before building available items
+                        const mergedByKey={};const mergedOrder=[];
                         safeItems(so).forEach((item,iIdx)=>{
-                          const key=soId+'|'+iIdx;
+                          const itemKey=soId+'|'+item.sku+'|'+(item.color||'');
+                          if(mergedByKey[itemKey]){const m=mergedByKey[itemKey];Object.entries(safeSizes(item)).forEach(([sz,v])=>{m.sizes[sz]=(m.sizes[sz]||0)+safeNum(v)})}
+                          else{const m={sku:item.sku,name:item.name,color:item.color||'',sizes:{...safeSizes(item)},iIdx};mergedByKey[itemKey]=m;mergedOrder.push(m)}
+                        });
+                        mergedOrder.forEach(m=>{
+                          const key=soId+'|'+m.sku+'|'+(m.color||'');
                           if(seen.has(key))return;
-                          const szObj=safeSizes(item);const itemKey=item.sku+'|'+(item.color||'');const shipped=shippedBySz[itemKey]||{};
-                          const remainSz={};Object.entries(szObj).forEach(([sz,v])=>{const rem=safeNum(v)-safeNum(shipped[sz]);if(rem>0)remainSz[sz]=rem});
+                          const itemKey=m.sku+'|'+(m.color||'');const shipped=shippedBySz[itemKey]||{};
+                          const remainSz={};Object.entries(m.sizes).forEach(([sz,v])=>{const rem=safeNum(v)-safeNum(shipped[sz]);if(rem>0)remainSz[sz]=rem});
                           const qty=Object.values(remainSz).reduce((a,v)=>a+v,0);
                           if(qty<=0)return;
                           seen.add(key);
-                          allItems.push({sku:item.sku,name:item.name,color:item.color||'',sizes:remainSz,soId,itemIdx:iIdx});
+                          allItems.push({sku:m.sku,name:m.name,color:m.color,sizes:remainSz,soId,itemIdx:m.iIdx});
                         });
                       });
-                      setShipModal({grp,soMap:grp.soMap,availableItems:allItems,boxes:[{items:[],tracking_number:'',carrier:'fedex',weight:5,dimensions:{length:'',width:'',height:''},notes:''}]});
+                      setShipModal({grp,soMap:grp.soMap,availableItems:allItems,boxes:[{items:[],tracking_number:'',carrier:'ups',weight:5,dimensions:{length:'',width:'',height:''},notes:''}]});
                     }}>📦 Create Shipment</button>
                   <button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 10px'}}
                     onClick={()=>{
@@ -10301,7 +10353,7 @@ export default function App(){
           sos.filter(so=>so._shipments&&so._shipments.length>0&&!so.deleted_at).forEach(so=>{
             const c2=cust.find(cc=>cc.id===so.customer_id);
             (so._shipments||[]).forEach((shp,si)=>{
-              if(shp.tracking_number&&!shp.carrier_picked_up){
+              if(!shp.carrier_picked_up){
                 awaitingPickup.push({...shp,soId:so.id,so,cName:c2?.name||'Unknown',boxIdx:si});
               }
             });
@@ -10344,6 +10396,30 @@ export default function App(){
                     {shpUnits>0&&<span style={{fontSize:10,fontWeight:700,color:'#475569'}}>{shpUnits} units</span>}
                     <span style={{fontSize:9,color:'#94a3b8'}}>{shp.ship_date||shp.created_at||''}</span>
                     <div style={{marginLeft:'auto',display:'flex',gap:4}}>
+                      {!shp.tracking_number&&!shp.label_url&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:600,background:'#fef3c7',color:'#92400e'}}>No label</span>}
+                      {!shp.label_url&&ssConnected&&<button style={{fontSize:9,background:'#7c3aed',color:'white',border:'none',padding:'3px 8px',borderRadius:4,fontWeight:700,cursor:'pointer'}}
+                        onClick={async(e)=>{
+                          const btn=e.currentTarget;if(btn.disabled)return;btn.disabled=true;btn.textContent='Creating...';
+                          try{
+                            const so2=shp.so;const c2=cust.find(cc=>cc.id===so2?.customer_id);
+                            if(!c2){nf('No customer found','error');btn.disabled=false;btn.textContent='Create Label';return}
+                            const weight=parseFloat(prompt('Box weight (lbs):','5'));if(!weight||isNaN(weight)){btn.disabled=false;btn.textContent='Create Label';return}
+                            const carrier2=prompt('Carrier (ups/fedex/usps):',shp.carrier||'ups');if(!carrier2){btn.disabled=false;btn.textContent='Create Label';return}
+                            nf('Creating ShipStation label...');
+                            const label=await createShipStationLabel(so2,c2,shp.items||[],weight,carrier2,'fedex_ground',{length:12,width:12,height:6});
+                            const cost=label.shipmentCost||label.insuranceCost?parseFloat(label.shipmentCost||0)+parseFloat(label.insuranceCost||0):null;
+                            const labelUrl2=label.labelData?(typeof label.labelData==='string'&&label.labelData.length>200?'data:application/pdf;base64,'+label.labelData:label.labelData?.href||null):null;
+                            const labelDl=label.labelDownload||labelUrl2||null;
+                            const updatedShipments=(so2._shipments||[]).map(s=>s.id===shp.id?{...s,tracking_number:label.trackingNumber||'',carrier:label.carrierCode||carrier2,label_url:labelDl,shipstation_shipment_id:label.shipmentId||null,shipping_cost:cost||0,tracking_url:label.trackingNumber?(/^1Z/i.test(label.trackingNumber)?'https://www.ups.com/track?tracknum='+label.trackingNumber:'https://www.fedex.com/fedextrack/?trknbr='+label.trackingNumber):''}:s);
+                            savSO({...so2,_shipments:updatedShipments,_tracking_number:label.trackingNumber||so2._tracking_number||'',_carrier:label.carrierCode||carrier2||so2._carrier||'',_shipping_cost:(safeNum(so2._shipping_cost||0)+(cost||0))||null});
+                            nf('✅ Label created! Tracking: '+(label.trackingNumber||'pending')+(cost?' · $'+cost.toFixed(2):''));
+                            addWhAction({type:'label_created',soId:shp.soId,customer:shp.cName,tracking:label.trackingNumber||'',carrier:label.carrierCode||carrier2,cost:cost?'$'+cost.toFixed(2):'',by:cu?.id||'warehouse'});
+                            if(labelDl){
+                              if(labelDl.startsWith('data:application/pdf')){const iframe=document.createElement('iframe');iframe.style.display='none';document.body.appendChild(iframe);iframe.src=labelDl;iframe.onload=()=>{try{iframe.contentWindow.print()}catch(e2){const a2=document.createElement('a');a2.href=labelDl;a2.download='label.pdf';a2.click()}setTimeout(()=>{try{document.body.removeChild(iframe)}catch{}},60000)}}
+                              else{const pw=window.open(labelDl,'_blank');if(pw)setTimeout(()=>{try{pw.print()}catch(e2){}},1500)}
+                            }
+                          }catch(err){nf('Label creation failed: '+err.message,'error');btn.disabled=false;btn.textContent='Create Label'}
+                        }}>Create Label</button>}
                       {shp.label_url&&<button style={{fontSize:9,background:'#7c3aed',color:'white',border:'none',padding:'3px 8px',borderRadius:4,fontWeight:700,cursor:'pointer'}}
                         onClick={()=>{
                           if(shp.label_url.startsWith('data:application/pdf')){
@@ -10386,10 +10462,12 @@ export default function App(){
                           nf('Shipment deleted');
                         }}>Delete</button>
                       <button style={{fontSize:9,background:'#166534',color:'white',border:'none',padding:'3px 8px',borderRadius:4,fontWeight:700,cursor:'pointer'}}
-                        onClick={()=>{
+                        onClick={(e)=>{
+                          const btn=e.currentTarget;if(btn.disabled)return;btn.disabled=true;btn.style.opacity='0.5';
                           const updatedShipments=(shp.so._shipments||[]).map(s=>s.id===shp.id?{...s,carrier_picked_up:true,pickup_date:new Date().toLocaleString()}:s);
                           savSO({...shp.so,_shipments:updatedShipments});
                           addWhAction({type:'pickup_confirmed',soId:shp.soId,customer:shp.cName,tracking:shp.tracking_number||'',carrier:shp.carrier||'',by:cu?.id||'warehouse'});
+                          nf('Confirmed pickup for '+shp.cName);
                         }}>Confirm Picked Up</button>
                     </div>
                   </div>
@@ -10720,7 +10798,13 @@ export default function App(){
                   }}>🖨️ Pack Slip</button>
                   {box.shipping_cost!=null&&<span style={{fontSize:10,fontWeight:700,color:'#166534',padding:'4px 8px',background:'#dcfce7',borderRadius:4}}>Ship cost: ${(box.shipping_cost||0).toFixed(2)}</span>}
                   {box.label_url&&<button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
-                    onClick={()=>{const pw=window.open(box.label_url,'_blank');if(pw)setTimeout(()=>{try{pw.print()}catch(e){}},1500)}}>🏷️ Print Label</button>}
+                    onClick={()=>{
+                      if(box.label_url.startsWith('data:application/pdf')){
+                        const iframe=document.createElement('iframe');iframe.style.display='none';document.body.appendChild(iframe);
+                        iframe.src=box.label_url;iframe.onload=()=>{try{iframe.contentWindow.print()}catch(e){const a=document.createElement('a');a.href=box.label_url;a.download='label.pdf';a.click()}
+                          setTimeout(()=>{try{document.body.removeChild(iframe)}catch{}},60000)};
+                      } else {const pw=window.open(box.label_url,'_blank');if(pw)setTimeout(()=>{try{pw.print()}catch(e){}},1500)}
+                    }}>🏷️ Print Label</button>}
                   {!box.label_url&&box.shipstation_shipment_id&&ssConnected&&<button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 10px'}}
                     onClick={async()=>{
                       try{
@@ -10730,7 +10814,11 @@ export default function App(){
                         const lUrl=shp?.labelDownload||shp?.labelData||(typeof shp?.labelData==='string'&&shp.labelData.length>200?'data:application/pdf;base64,'+shp.labelData:null);
                         if(lUrl){
                           const b=[...shipModal.boxes];b[bi]={...b[bi],label_url:lUrl};setShipModal({...shipModal,boxes:b});
-                          const pw=window.open(lUrl,'_blank');if(pw)setTimeout(()=>{try{pw.print()}catch(e){}},1500);
+                          if(lUrl.startsWith('data:application/pdf')){
+                            const iframe=document.createElement('iframe');iframe.style.display='none';document.body.appendChild(iframe);
+                            iframe.src=lUrl;iframe.onload=()=>{try{iframe.contentWindow.print()}catch(e){const a=document.createElement('a');a.href=lUrl;a.download='label.pdf';a.click()}
+                              setTimeout(()=>{try{document.body.removeChild(iframe)}catch{}},60000)};
+                          } else {const pw=window.open(lUrl,'_blank');if(pw)setTimeout(()=>{try{pw.print()}catch(e){}},1500)}
                         } else {nf('Label not available from ShipStation','error')}
                       }catch(err){nf('Failed to fetch label: '+err.message,'error')}
                     }}>🏷️ Fetch & Print Label</button>}
@@ -10744,7 +10832,7 @@ export default function App(){
 
             {/* Add box button */}
             <button className="btn btn-sm btn-secondary" style={{marginBottom:16}}
-              onClick={()=>setShipModal({...shipModal,boxes:[...shipModal.boxes,{items:[],tracking_number:'',carrier:'fedex',weight:5,dimensions:{length:'',width:'',height:''},notes:''}]})}>+ Add Box</button>
+              onClick={()=>setShipModal({...shipModal,boxes:[...shipModal.boxes,{items:[],tracking_number:'',carrier:'ups',weight:5,dimensions:{length:'',width:'',height:''},notes:''}]})}>+ Add Box</button>
 
             {/* Actions */}
             <div style={{display:'flex',gap:8,borderTop:'1px solid #e2e8f0',paddingTop:12}}>
@@ -10816,6 +10904,12 @@ export default function App(){
                     const items=(shp.items||[]);const skus=items.map(it=>it.sku).join(', ');const totalQty=items.reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((a2,v)=>a2+v,0),0);
                     addWhAction({type:'shipped',soId:[...shipModal.grp.soIds].join(', '),customer:shipModal.grp.cName,sku:skus,name:items[0]?.name||'',qty:totalQty,sizes:items.map(it=>{const szStr=Object.entries(it.sizes||{}).filter(([,v])=>v>0).map(([s,v])=>s+':'+v).join(' ');return szStr}).join('; '),tracking:shp.tracking_number||'',carrier:shp.carrier||'',by:cu?.id||'warehouse'});
                   });
+                  // Prompt to create labels if any boxes are missing tracking numbers
+                  const boxesMissingLabels=shipModal.boxes.filter(b=>(b.items||[]).length>0&&!b.tracking_number&&!b.label_url);
+                  if(boxesMissingLabels.length>0&&ssConnected){
+                    const wantLabel=window.confirm(boxesMissingLabels.length+' box'+(boxesMissingLabels.length>1?'es have':' has')+' no shipping label. Would you like to create labels now?\n\nYou can also create labels from the Awaiting Pickup tab.');
+                    if(wantLabel){setWhTab('pickup');setShipModal(null);return}
+                  }
                   setShipModal(null);
                 }}>✓ Confirm Shipment ({shipModal.boxes.filter(b=>(b.items||[]).length>0).length} box{shipModal.boxes.filter(b=>(b.items||[]).length>0).length!==1?'es':''})</button>
               <button className="btn btn-secondary" onClick={()=>setShipModal(null)}>Cancel</button>
@@ -10831,7 +10925,7 @@ export default function App(){
           sos.filter(so=>so._shipments&&so._shipments.length>0&&!so.deleted_at).forEach(so=>{
             const c2=cust.find(cc=>cc.id===so.customer_id);
             (so._shipments||[]).forEach((shp,si)=>{
-              if(shp.tracking_number&&!shp.carrier_picked_up){
+              if(!shp.carrier_picked_up){
                 awaitingPickup.push({...shp,soId:so.id,so,cName:c2?.name||'Unknown',boxIdx:si});
               }
             });
@@ -10889,7 +10983,8 @@ export default function App(){
                         nf('Shipment deleted');
                       }}>Delete</button>
                     <button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
-                      onClick={()=>{
+                      onClick={(e)=>{
+                        const btn=e.currentTarget;if(btn.disabled)return;btn.disabled=true;btn.style.opacity='0.5';
                         const updatedShipments=(shp.so._shipments||[]).map(s=>s.id===shp.id?{...s,carrier_picked_up:true,pickup_date:new Date().toLocaleString()}:s);
                         savSO({...shp.so,_shipments:updatedShipments});
                         addWhAction({type:'pickup_confirmed',soId:shp.soId,customer:shp.cName,tracking:shp.tracking_number||'',carrier:shp.carrier||'',by:cu?.id||'warehouse'});
@@ -11035,25 +11130,54 @@ export default function App(){
           </div>
         </div>
         {filteredActions.length===0&&<div style={{textAlign:'center',color:'#94a3b8',padding:40}}>{whRecentActions.length===0?'No recent actions yet':'No actions match your filter'}</div>}
-        {filteredActions.map((a,i)=><div key={i} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 14px',background:i%2===0?'#fafbfc':'white',borderRadius:6,marginBottom:2,border:'1px solid #f1f5f9',cursor:a.soId?'pointer':'default',transition:'background 0.15s'}}
-          onClick={()=>{if(!a.soId)return;const firstSoId=(a.soId||'').split(',')[0].trim();const so2=sos.find(s=>s.id===firstSoId);if(so2){const c2=cust.find(cc=>cc.id===so2.customer_id);setESO(so2);setESOC(c2);setESOTab(null);setPg('orders')}}}
-          onMouseEnter={e=>{if(a.soId)e.currentTarget.style.background='#eef2ff'}} onMouseLeave={e=>{e.currentTarget.style.background=i%2===0?'#fafbfc':'white'}}>
-          <div style={{width:32,height:32,borderRadius:8,display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,flexShrink:0,
-            background:a.type==='pulled'?'#fef3c7':a.type==='received'?'#dbeafe':a.type==='shipped'?'#dcfce7':a.type==='label_created'?'#f3e8ff':a.type==='pickup_confirmed'?'#d1fae5':a.type==='deleted_shipment'?'#fee2e2':a.type==='move_to_deco'?'#ede9fe':'#f1f5f9'}}>
-            {a.type==='pulled'?'📦':a.type==='received'?'📱':a.type==='shipped'?'🚚':a.type==='label_created'?'🏷️':a.type==='pickup_confirmed'?'✅':a.type==='deleted_shipment'?'🗑️':a.type==='move_to_deco'?'🎨':'⚡'}</div>
-          <div style={{flex:1,minWidth:0}}>
-            <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
-              <span style={{fontWeight:700,fontSize:12,color:a.type==='pulled'?'#92400e':a.type==='shipped'||a.type==='pickup_confirmed'?'#166534':a.type==='deleted_shipment'?'#dc2626':a.type==='move_to_deco'?'#6d28d9':'#1e40af'}}>{a.jobId||a.pickId||a.poId||a.soId||'Action'}</span>
-              <span style={{fontSize:11,color:'#475569'}}>{{pulled:'Pulled',shipped:'Shipped',received:'Received',label_created:'Label Created',pickup_confirmed:'Pickup Confirmed',deleted_shipment:'Shipment Deleted',move_to_deco:'Moved to Deco'}[a.type]||'Action'}</span>
-              <span style={{fontSize:11,fontWeight:600,color:'#2563eb',textDecoration:'underline'}}>{a.soId}</span>
-              <span style={{fontSize:11,color:'#64748b'}}>{a.customer}</span>
+        {filteredActions.map((a,i)=>{
+          const origIdx=whRecentActions.indexOf(a);
+          const isEditing=whEditActionIdx===origIdx;
+          return<div key={i} style={{padding:'10px 14px',background:isEditing?'#fffbeb':i%2===0?'#fafbfc':'white',borderRadius:6,marginBottom:2,border:isEditing?'2px solid #d97706':'1px solid #f1f5f9',transition:'background 0.15s'}}>
+          {isEditing?<div>
+            <div style={{display:'flex',gap:6,alignItems:'center',marginBottom:8,flexWrap:'wrap'}}>
+              <span style={{fontSize:11,fontWeight:700,color:'#92400e'}}>Editing Action</span>
+              <select style={{fontSize:11,padding:'2px 6px',border:'1px solid #e2e8f0',borderRadius:4}} defaultValue={a.type}
+                onChange={e=>{const next=[...whRecentActions];next[origIdx]={...next[origIdx],type:e.target.value};setWhRecentActions(next);_lsSet('nsa_wh_recent',JSON.stringify(next))}}>
+                {['pulled','shipped','received','label_created','pickup_confirmed','deleted_shipment','move_to_deco'].map(t=>
+                  <option key={t} value={t}>{{pulled:'Pulled',shipped:'Shipped',received:'Received',label_created:'Label Created',pickup_confirmed:'Pickup Confirmed',deleted_shipment:'Shipment Deleted',move_to_deco:'Moved to Deco'}[t]}</option>)}
+              </select>
             </div>
-            <div style={{fontSize:11,color:'#64748b',marginTop:2}}>{a.artName?a.artName+' ':''}{a.decoType?' ('+a.decoType.replace(/_/g,' ')+') ':''}{a.sku?a.sku+' ':''}{ a.name||''}{a.color?' ('+a.color+')':''}{a.qty?' — '+a.qty+' units':''}{a.sizes?' — '+a.sizes:''}{a.tracking?' · Tracking: '+a.tracking:''}{a.carrier?' · '+a.carrier.toUpperCase():''}{a.cost?' · '+a.cost:''}</div>
+            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:6,marginBottom:8}}>
+              {[['soId','SO#'],['customer','Customer'],['tracking','Tracking'],['carrier','Carrier'],['sku','SKU'],['qty','Qty']].map(([field,label])=>
+                <div key={field}><div style={{fontSize:9,color:'#64748b',marginBottom:1}}>{label}</div>
+                <input style={{fontSize:11,padding:'3px 6px',border:'1px solid #e2e8f0',borderRadius:4,width:'100%'}} value={a[field]||''}
+                  onChange={e=>{const next=[...whRecentActions];next[origIdx]={...next[origIdx],[field]:e.target.value};setWhRecentActions(next);_lsSet('nsa_wh_recent',JSON.stringify(next))}}/></div>)}
+            </div>
+            <div style={{display:'flex',gap:6}}>
+              <button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
+                onClick={()=>setWhEditActionIdx(null)}>Done</button>
+              <button className="btn btn-sm" style={{fontSize:10,background:'#fee2e2',color:'#dc2626',border:'1px solid #fca5a5',padding:'4px 10px',fontWeight:700}}
+                onClick={()=>{if(!window.confirm('Delete this action?'))return;const next=whRecentActions.filter((_,idx)=>idx!==origIdx);setWhRecentActions(next);_lsSet('nsa_wh_recent',JSON.stringify(next));setWhEditActionIdx(null)}}>Delete</button>
+            </div>
           </div>
-          <div style={{textAlign:'right',flexShrink:0}}>
-            <div style={{fontSize:10,color:'#94a3b8'}}>{a.at}</div>
-          </div>
-        </div>)}
+          :<div style={{display:'flex',alignItems:'center',gap:10,cursor:a.soId?'pointer':'default'}}
+            onClick={()=>{if(!a.soId)return;const firstSoId=(a.soId||'').split(',')[0].trim();const so2=sos.find(s=>s.id===firstSoId);if(so2){const c2=cust.find(cc=>cc.id===so2.customer_id);setESO(so2);setESOC(c2);setESOTab(null);setPg('orders')}}}
+            onMouseEnter={e=>{if(a.soId)e.currentTarget.style.background='#eef2ff'}} onMouseLeave={e=>{e.currentTarget.style.background=isEditing?'#fffbeb':i%2===0?'#fafbfc':'white'}}>
+            <div style={{width:32,height:32,borderRadius:8,display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,flexShrink:0,
+              background:a.type==='pulled'?'#fef3c7':a.type==='received'?'#dbeafe':a.type==='shipped'?'#dcfce7':a.type==='label_created'?'#f3e8ff':a.type==='pickup_confirmed'?'#d1fae5':a.type==='deleted_shipment'?'#fee2e2':a.type==='move_to_deco'?'#ede9fe':'#f1f5f9'}}>
+              {a.type==='pulled'?'📦':a.type==='received'?'📱':a.type==='shipped'?'🚚':a.type==='label_created'?'🏷️':a.type==='pickup_confirmed'?'✅':a.type==='deleted_shipment'?'🗑️':a.type==='move_to_deco'?'🎨':'⚡'}</div>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
+                <span style={{fontWeight:700,fontSize:12,color:a.type==='pulled'?'#92400e':a.type==='shipped'||a.type==='pickup_confirmed'?'#166534':a.type==='deleted_shipment'?'#dc2626':a.type==='move_to_deco'?'#6d28d9':'#1e40af'}}>{a.jobId||a.pickId||a.poId||a.soId||'Action'}</span>
+                <span style={{fontSize:11,color:'#475569'}}>{{pulled:'Pulled',shipped:'Shipped',received:'Received',label_created:'Label Created',pickup_confirmed:'Pickup Confirmed',deleted_shipment:'Shipment Deleted',move_to_deco:'Moved to Deco'}[a.type]||'Action'}</span>
+                <span style={{fontSize:11,fontWeight:600,color:'#2563eb',textDecoration:'underline'}}>{a.soId}</span>
+                <span style={{fontSize:11,color:'#64748b'}}>{a.customer}</span>
+              </div>
+              <div style={{fontSize:11,color:'#64748b',marginTop:2}}>{a.artName?a.artName+' ':''}{a.decoType?' ('+a.decoType.replace(/_/g,' ')+') ':''}{a.sku?a.sku+' ':''}{ a.name||''}{a.color?' ('+a.color+')':''}{a.qty?' — '+a.qty+' units':''}{a.sizes?' — '+a.sizes:''}{a.tracking?' · Tracking: '+a.tracking:''}{a.carrier?' · '+a.carrier.toUpperCase():''}{a.cost?' · '+a.cost:''}</div>
+            </div>
+            <div style={{textAlign:'right',flexShrink:0,display:'flex',flexDirection:'column',gap:2,alignItems:'flex-end'}}>
+              <div style={{fontSize:10,color:'#94a3b8'}}>{a.at}</div>
+              <button style={{fontSize:9,color:'#64748b',background:'none',border:'1px solid #e2e8f0',borderRadius:4,padding:'1px 6px',cursor:'pointer'}}
+                onClick={e=>{e.stopPropagation();setWhEditActionIdx(origIdx)}}>Edit</button>
+            </div>
+          </div>}
+        </div>})}
         {whRecentActions.length>0&&<div style={{display:'flex',gap:8,alignItems:'center',marginTop:12}}>
           <span style={{fontSize:10,color:'#94a3b8'}}>Showing {filteredActions.length} of {whRecentActions.length} actions</span>
           <button className="btn btn-sm btn-secondary" style={{fontSize:11,marginLeft:'auto'}} onClick={()=>{setWhRecentActions([]);try{localStorage.removeItem('nsa_wh_recent')}catch{}}}>Clear History</button>
