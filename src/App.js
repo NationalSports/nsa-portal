@@ -9293,6 +9293,7 @@ export default function App(){
   const[whActionRange,setWhActionRange]=useState('7d');
   const[whActionSearch,setWhActionSearch]=useState('');
   const[whEditActionIdx,setWhEditActionIdx]=useState(null);
+  const[whEditOrigSizes,setWhEditOrigSizes]=useState(null);
   const[stockPOs,setStockPOs]=useState(()=>loadState('stock_pos',[]));
   React.useEffect(()=>{_saveAppState('stock_pos',stockPOs)},[stockPOs]);
   const[showStockPO,setShowStockPO]=useState(null);const[stockPOCounter,setStockPOCounter]=useState(()=>loadState('stock_po_counter',5001));
@@ -11144,9 +11145,50 @@ export default function App(){
                 <input style={{fontSize:11,padding:'3px 6px',border:'1px solid #e2e8f0',borderRadius:4,width:'100%'}} value={a[field]||''}
                   onChange={e=>{const next=[...whRecentActions];next[origIdx]={...next[origIdx],[field]:e.target.value};setWhRecentActions(next);_lsSet('nsa_wh_recent',JSON.stringify(next))}}/></div>)}
             </div>
+            {a.type==='pulled'&&a.sizes&&<div style={{marginBottom:8}}>
+              <div style={{fontSize:9,color:'#64748b',marginBottom:2}}>Sizes (e.g. S:5 M:3 XL:10)</div>
+              <input style={{fontSize:11,padding:'3px 6px',border:'1px solid #e2e8f0',borderRadius:4,width:'100%',fontFamily:'monospace'}} value={a.sizes||''}
+                onChange={e=>{
+                  const val=e.target.value;
+                  const next=[...whRecentActions];next[origIdx]={...next[origIdx],sizes:val};
+                  /* Recalculate qty from sizes */
+                  let total=0;(val+'').split(/\s+/).forEach(p=>{const[,v]=p.split(':');if(v)total+=parseInt(v)||0});
+                  next[origIdx].qty=total||next[origIdx].qty;
+                  setWhRecentActions(next);_lsSet('nsa_wh_recent',JSON.stringify(next));
+                }}/>
+            </div>}
             <div style={{display:'flex',gap:6}}>
               <button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
-                onClick={()=>setWhEditActionIdx(null)}>Done</button>
+                onClick={()=>{
+                  /* Sync pick_line + inventory if sizes were edited on a pulled IF */
+                  if(a.type==='pulled'&&a.pickId&&a.soId&&whEditOrigSizes!==null&&a.sizes!==whEditOrigSizes){
+                    const parseSz=str=>{const o={};if(str)(str+'').split(/\s+/).forEach(p=>{const[sz,v]=p.split(':');if(sz&&v)o[sz]=parseInt(v)||0});return o};
+                    const oldSz=parseSz(whEditOrigSizes);const newSz=parseSz(a.sizes);
+                    const allKeys=[...new Set([...Object.keys(oldSz),...Object.keys(newSz)])];
+                    /* Update pick_line on SO with new sizes */
+                    const so2=sos.find(s=>s.id===a.soId);
+                    if(so2){
+                      const updItems=safeItems(so2).map(it2=>{
+                        const picks=it2.pick_lines||[];
+                        if(!picks.find(pk=>pk.pick_id===a.pickId))return it2;
+                        const newPicks=picks.map(pk=>{if(pk.pick_id!==a.pickId)return pk;const u={...pk};allKeys.forEach(sz=>{u[sz]=newSz[sz]||0});return u});
+                        return{...it2,pick_lines:newPicks};
+                      });
+                      savSO({...so2,items:updItems,updated_at:new Date().toLocaleString()});
+                    }
+                    /* Adjust inventory by diff (old - new = returned, new - old = additional pull) */
+                    const diff={};allKeys.forEach(sz=>{const d=(oldSz[sz]||0)-(newSz[sz]||0);if(d!==0)diff[sz]=d});
+                    if(Object.keys(diff).length>0){
+                      setProd(pp=>pp.map(x=>{
+                        const match=a.productId?x.id===a.productId:(x.sku===a.sku&&(!a.color||x.color===a.color));
+                        if(!match)return x;
+                        const newInv={...(x._inv||{})};Object.entries(diff).forEach(([sz,d])=>{newInv[sz]=Math.max(0,(newInv[sz]||0)+d)});
+                        return{...x,_inv:newInv};
+                      }));
+                    }
+                  }
+                  setWhEditActionIdx(null);setWhEditOrigSizes(null);
+                }}>Done</button>
               <button className="btn btn-sm" style={{fontSize:10,background:'#fee2e2',color:'#dc2626',border:'1px solid #fca5a5',padding:'4px 10px',fontWeight:700}}
                 onClick={()=>{if(!window.confirm('Delete this action?'))return;
                   /* Restore inventory & revert pick_line when deleting a pulled IF */
@@ -11194,7 +11236,7 @@ export default function App(){
             <div style={{textAlign:'right',flexShrink:0,display:'flex',flexDirection:'column',gap:2,alignItems:'flex-end'}}>
               <div style={{fontSize:10,color:'#94a3b8'}}>{a.at}</div>
               <button style={{fontSize:9,color:'#64748b',background:'none',border:'1px solid #e2e8f0',borderRadius:4,padding:'1px 6px',cursor:'pointer'}}
-                onClick={e=>{e.stopPropagation();setWhEditActionIdx(origIdx)}}>Edit</button>
+                onClick={e=>{e.stopPropagation();setWhEditActionIdx(origIdx);setWhEditOrigSizes(a.sizes||null)}}>Edit</button>
             </div>
           </div>}
         </div>})}
