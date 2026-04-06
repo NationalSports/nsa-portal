@@ -4451,6 +4451,46 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   </div>})}
               </div>
             </div>})()}
+            {/* Artwork details — colors, positions, sizes (shown when art approved) */}
+            {(j.art_status==='art_complete'||j.art_status==='production_files_needed')&&(()=>{const _allArt3=(j._art_ids||[j.art_file_id].filter(Boolean)).map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);
+                const _numDecos3=[];(j.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(it)safeDecos(it).forEach(d=>{if(d.kind==='numbers')_numDecos3.push(d)})});
+                const _nd3=_numDecos3[0];
+                const _colorMap3={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000','Silver':'#C0C0C0','Royal':'#4169e1','Cardinal':'#8C1515','Green':'#166534','Orange':'#EA580C','Navy 2767':'#001f3f','PMS 286':'#0033A0','PMS 032':'#EF3340','PMS 877':'#C0C0C0','Maroon':'#800000'};
+                if(_allArt3.length===0)return null;
+                return<div style={{margin:'8px 20px'}}>
+                  {_allArt3.map((af3,afi)=>{
+                    const _dp3=new Set();(j.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(it)safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id===af3.id)_dp3.add(d.position||'Front Center')})});
+                    const _pl3=_dp3.size>0?[..._dp3]:[];const _as3=af3.art_sizes||{};
+                    const _cl3=(af3.ink_colors||af3.thread_colors||'').split(/[,\n]/).map(c3=>c3.trim()).filter(Boolean);const _isE3=af3.deco_type==='embroidery';
+                    return<div key={afi} style={{marginBottom:afi<_allArt3.length-1?8:0,padding:'12px 14px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8}}>
+                      <div style={{fontSize:11,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:8,letterSpacing:0.5}}>{af3.name||'Art '+(afi+1)}</div>
+                      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10,marginBottom:_cl3.length>0?10:0}}>
+                        <div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8'}}>Method</div><div style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{af3.deco_type?.replace(/_/g,' ')||'—'}</div></div>
+                        <div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8'}}>Location{_pl3.length>1?'s':''}</div><div style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{_pl3.join(', ')||'—'}</div></div>
+                        {_pl3.length<=1?<div><div style={{fontSize:10,fontWeight:600,color:'#94a3b8'}}>Art Size</div><div style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{af3.art_size||'—'}</div></div>
+                        :_pl3.map((pos,pi)=><div key={pi}><div style={{fontSize:10,fontWeight:600,color:'#94a3b8'}}>Size — {pos}</div><div style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{_as3[pos]||(pi===0?af3.art_size:'')||'—'}</div></div>)}
+                      </div>
+                      {_cl3.length>0&&<div>
+                        <div style={{fontSize:10,fontWeight:600,color:'#94a3b8',marginBottom:4}}>{_isE3?'Thread Colors':'Ink Colors / Pantones'} ({_cl3.length})</div>
+                        <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                          {_cl3.map((cl,i)=>{const clL=cl.toLowerCase();const sw=_colorMap3[cl]||Object.entries(_colorMap3).find(([k])=>clL.includes(k.toLowerCase()))?.[1]||pantoneHex(cl)||null;
+                            return<div key={i} style={{display:'flex',alignItems:'center',gap:5,padding:'3px 10px',background:'white',border:'1px solid #e2e8f0',borderRadius:6}}>
+                              <div style={{width:14,height:14,borderRadius:3,border:'1px solid #d1d5db',background:sw||'linear-gradient(135deg,#f1f5f9,#e2e8f0)'}}/>
+                              <span style={{fontSize:11,fontWeight:600}}>{cl}</span></div>})}
+                        </div>
+                      </div>}
+                    </div>})}
+                  {_nd3&&<div style={{padding:'12px 14px',background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:8,marginTop:8}}>
+                    <div style={{fontSize:10,fontWeight:600,color:'#94a3b8',marginBottom:4}}>Numbers</div>
+                    <div style={{display:'flex',gap:12,flexWrap:'wrap',fontSize:12}}>
+                      <span><strong>{(_nd3.num_method||'heat_transfer').replace(/_/g,' ')}</strong></span>
+                      <span>Size: <strong>{_nd3.num_size||'—'}</strong></span>
+                      {_nd3.front_and_back&&<span>Back: <strong>{_nd3.num_size_back||_nd3.num_size||'—'}</strong></span>}
+                      {_nd3.print_color&&<span>Color: <strong>{_nd3.print_color}</strong></span>}
+                      {_nd3.front_and_back&&<span style={{padding:'1px 6px',borderRadius:4,background:'#7c3aed',color:'white',fontSize:10,fontWeight:700}}>Front + Back</span>}
+                    </div>
+                  </div>}
+                </div>})()}
             {/* Status controls */}
             <div style={{padding:'10px 20px',borderTop:'1px solid #f1f5f9',display:'flex',gap:12,alignItems:'center',flexWrap:'wrap'}}>
               <div style={{fontSize:11,fontWeight:600,color:'#64748b'}}>Art:</div>
