@@ -3046,10 +3046,9 @@ export default function App(){
         const picks=safePicks(item);
         const pulled={};picks.filter(pk=>pk.status==='pulled').forEach(pk=>{szKeys.forEach(s=>{pulled[s]=(pulled[s]||0)+(pk[s]||0)})});
         const totalPulled=Object.values(pulled).reduce((a,v)=>a+v,0);
-        // Show in Item Fulfillment if there's an active pick ticket OR a job on hold needing this item
+        // Show in Item Fulfillment only if there's an active pick ticket (IF request)
         const hasActivePick=picks.some(pk=>pk.status!=='pulled');
-        const hasHoldJob=safeJobs(so).some(j=>j.prod_status==='hold'&&(j.items||[]).some(gi=>gi.item_idx===ii));
-        if(hasActivePick||hasHoldJob){
+        if(hasActivePick){
           const needsPull=totalOrdered-totalPulled;
           if(needsPull>0){
             pullTasks.push({so,soId:so.id,item,itemIdx:ii,cName,alpha,rep,daysOut,urgent,
@@ -9400,7 +9399,7 @@ export default function App(){
                     <div style={{fontSize:11,fontWeight:800,color:'#475569',marginBottom:2}}>{sz}</div>
                     <div style={{fontSize:22,fontWeight:900,color:need>0?'#92400e':'#166534',lineHeight:1}}>{need>0?need:'✓'}</div>
                     <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>need of {ordered}</div>
-                    {need>0&&activePick&&activePick.status!=='pulled'&&<>
+                    {need>0&&<>
                       <div style={{borderTop:'1px solid #e2e8f0',margin:'6px 0 4px'}}/>
                       <div style={{fontSize:9,fontWeight:600,color:'#64748b',marginBottom:2}}>Pulling</div>
                       <input type="number" min={0} max={need} value={pq} style={{width:40,textAlign:'center',fontSize:14,fontWeight:800,border:'1px solid #cbd5e1',borderRadius:4,padding:'2px 0',color:pq<need?'#dc2626':'#166534'}}
@@ -9413,13 +9412,64 @@ export default function App(){
                     <div style={{fontSize:11,fontWeight:800,color:'#64748b',marginBottom:2}}>TOT</div>
                     <div style={{fontSize:22,fontWeight:900,color:'#d97706',lineHeight:1}}>{t.needsPull}</div>
                     <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>of {t.totalOrdered}</div>
-                    {activePick&&activePick.status!=='pulled'&&<>
+                    {t.needsPull>0&&<>
                       <div style={{borderTop:'1px solid #e2e8f0',margin:'6px 0 4px'}}/>
                       <div style={{fontSize:9,fontWeight:600,color:'#64748b',marginBottom:2}}>Pulling</div>
                       <div style={{fontSize:14,fontWeight:800,color:totPulling<t.needsPull?'#dc2626':'#166534'}}>{totPulling}</div>
                     </>}
                   </div>})()}
               </div>
+
+              {/* Pull Action Buttons */}
+              {t.needsPull>0&&<div style={{marginTop:12,padding:'12px 16px',background:'#f0fdf4',borderRadius:8,border:'2px solid #166534'}}>
+                <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                  {(()=>{const totPulling2=szKeys.reduce((a,sz)=>a+(pullQtys[sz]||0),0);const isPartial=totPulling2>0&&totPulling2<t.needsPull;const isFull=totPulling2>=t.needsPull;
+                    return<>
+                    <button className="btn btn-primary" disabled={whPulling||totPulling2===0} style={{fontSize:13,padding:'10px 20px',fontWeight:800,background:'#166534',borderColor:'#166534',opacity:whPulling||totPulling2===0?0.5:1}} onClick={()=>{
+                      if(whPulling)return;setWhPulling(true);
+                      const actualQtys2=pullQtys;
+                      // Create pick line if none exists
+                      const pickIdToUse=activePick?.pick_id||('IF-'+Date.now().toString(36).toUpperCase().slice(-4));
+                      const updatedItems=safeItems(so).map((it2,ii)=>{
+                        if(ii!==t.itemIdx)return it2;
+                        const existingPicks=it2.pick_lines||[];
+                        if(activePick){
+                          // Update existing pick
+                          const newPicks=existingPicks.map(pk=>{
+                            if(pk.pick_id===activePick.pick_id&&pk.status!=='pulled'){
+                              const updated={...pk,status:'pulled',pulled_at:new Date().toLocaleString()};
+                              szKeys.forEach(sz=>{updated[sz]=actualQtys2[sz]||0});return updated;}return pk});
+                          return{...it2,pick_lines:newPicks};
+                        } else {
+                          // Create new pick line marked as pulled
+                          const newPick={pick_id:pickIdToUse,status:'pulled',pulled_at:new Date().toLocaleString(),ship_dest:t.shipDest||'in_house'};
+                          szKeys.forEach(sz=>{newPick[sz]=actualQtys2[sz]||0});
+                          return{...it2,pick_lines:[...existingPicks,newPick]};
+                        }
+                      });
+                      const updatedSO={...so,items:updatedItems,updated_at:new Date().toLocaleString()};
+                      if(p){const newInv={...p._inv};szKeys.forEach(sz=>{const v=actualQtys2[sz]||0;if(v>0){newInv[sz]=Math.max(0,(newInv[sz]||0)-v)}});setProd(pp=>pp.map(x=>x.id===p.id?{...x,_inv:newInv}:x))}
+                      if(showShipping&&boxes.some(bx=>bx.tracking_number)){
+                        const shipments=[...(updatedSO._shipments||[])];
+                        boxes.filter(bx=>bx.tracking_number).forEach(bx=>{shipments.push({id:'SHP-'+Date.now()+'-'+Math.random().toString(36).slice(2,6),tracking_number:bx.tracking_number,carrier:bx.carrier||'ups',ship_date:new Date().toLocaleDateString(),items:bx.items||[],weight:bx.weight,dimensions:bx.dimensions,created_by:cu?.id,created_at:new Date().toLocaleString()})});
+                        updatedSO._shipments=shipments;
+                      }
+                      savSO(updatedSO);
+                      const pulledSizes2=szKeys.filter(sz=>(actualQtys2[sz]||0)>0).map(sz=>sz+':'+actualQtys2[sz]).join(' ');
+                      const totalPulling2=szKeys.reduce((a,sz)=>a+(actualQtys2[sz]||0),0);
+                      addWhAction({type:'pulled',pickId:pickIdToUse,soId:t.soId,customer:t.cName,sku:t.sku,name:t.name,color:t.color,sizes:pulledSizes2,qty:totalPulling2,by:cu?.id||'warehouse'});
+                      nf('✅ '+pickIdToUse+(isPartial?' partially':'')+' pulled — '+totalPulling2+' units');setWhPulling(false);setWhViewIF(null);
+                    }}>{whPulling?'Saving...':(isFull?'✓ Mark as Pulled ('+totPulling2+' units)':isPartial?'✓ Mark Partial Pull ('+totPulling2+' of '+t.needsPull+')':'✓ Mark as Pulled')}</button>
+                    {!isFull&&<button className="btn btn-sm" style={{fontSize:11,background:'#d97706',color:'white',border:'none',padding:'6px 14px',fontWeight:700}} onClick={()=>{
+                      const filled={};szKeys.forEach(sz=>{filled[sz]=Math.max(0,(item.sizes[sz]||0)-(t.pulled[sz]||0))});setPullQtys(filled);
+                    }}>Fill All</button>}
+                    {totPulling2>0&&<button className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'6px 14px'}} onClick={()=>{
+                      const empty={};szKeys.forEach(sz=>{empty[sz]=0});setPullQtys(empty);
+                    }}>Clear</button>}
+                  </>})()}
+                </div>
+                <div style={{fontSize:10,color:'#64748b',marginTop:6}}>Adjust quantities above then click to confirm. Partial pulls will keep the IF open for remaining units.</div>
+              </div>}
 
               {/* All pick lines for this item */}
               {allPicks.length>0&&<div style={{marginTop:8}}>
@@ -9589,61 +9639,6 @@ export default function App(){
 
           {/* Actions */}
           <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-            {activePick&&activePick.status!=='pulled'&&<button className="btn btn-primary" disabled={whPulling} style={{fontSize:13,padding:'10px 24px',fontWeight:700,opacity:whPulling?0.6:1}} onClick={()=>{
-              if(whPulling)return;setWhPulling(true);
-              // Mark the active pick as pulled with actual quantities, update SO, adjust inventory
-              const actualQtys=pullQtys;
-              const updatedItems=safeItems(so).map((it2,ii)=>{
-                if(ii!==t.itemIdx)return it2;
-                const newPicks=(it2.pick_lines||[]).map(pk=>{
-                  if(pk.pick_id===activePick.pick_id&&pk.status!=='pulled'){
-                    const updated={...pk,status:'pulled',pulled_at:new Date().toLocaleString()};
-                    // Update pick line with actual pulled quantities
-                    szKeys.forEach(sz=>{updated[sz]=actualQtys[sz]||0});
-                    return updated;
-                  }
-                  return pk;
-                });
-                return{...it2,pick_lines:newPicks};
-              });
-              const updatedSO={...so,items:updatedItems,updated_at:new Date().toLocaleString()};
-              // Adjust inventory (decrement using actual pulled quantities)
-              if(p){
-                const newInv={...p._inv};
-                szKeys.forEach(sz=>{const v=actualQtys[sz]||0;if(v>0){newInv[sz]=Math.max(0,(newInv[sz]||0)-v)}});
-                setProd(pp=>pp.map(x=>x.id===p.id?{...x,_inv:newInv}:x));
-              }
-              // Add shipment data if shipping boxes were configured — single save to avoid race
-              if(showShipping&&boxes.some(bx=>bx.tracking_number)){
-                const shipments=[...(updatedSO._shipments||[])];
-                boxes.filter(bx=>bx.tracking_number).forEach(bx=>{
-                  shipments.push({id:'SHP-'+Date.now()+'-'+Math.random().toString(36).slice(2,6),tracking_number:bx.tracking_number,carrier:bx.carrier||'fedex',
-                    ship_date:new Date().toLocaleDateString(),items:bx.items||[],weight:bx.weight,dimensions:bx.dimensions,
-                    created_by:cu?.id,created_at:new Date().toLocaleString()});
-                });
-                updatedSO._shipments=shipments;
-              }
-              savSO(updatedSO);
-              // Log recent action
-              const pulledSizes=szKeys.filter(sz=>(actualQtys[sz]||0)>0).map(sz=>sz+':'+actualQtys[sz]).join(' ');
-              const totalPulling=szKeys.reduce((a,sz)=>a+(actualQtys[sz]||0),0);
-              addWhAction({type:'pulled',pickId,soId:t.soId,customer:t.cName,sku:t.sku,name:t.name,color:t.color,sizes:pulledSizes,qty:totalPulling,by:cu?.id||'warehouse'});
-              // Auto-print 4x6 box label
-              const labelQr=encodeURIComponent(window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(pickId));
-              const w=window.open('','_blank','width=400,height=600');
-              if(w){w.document.write('<html><head><title>'+pickId+'</title><style>@page{size:4in 6in;margin:0}body{font-family:sans-serif;padding:12px 16px;width:4in;height:6in;box-sizing:border-box;margin:0;display:flex;flex-direction:column}.top{display:flex;justify-content:space-between;align-items:flex-start}.cname{font-size:32px;font-weight:900;margin:8px 0 4px;line-height:1.1}.sizes{font-size:24px;font-weight:900;margin:8px 0;letter-spacing:1px}.sep{border-top:3px dashed #999;margin:8px 0}.bot{margin-top:auto}</style></head><body>');
-              w.document.write('<div class="top"><div><div style="font-size:36px;font-weight:900;margin:0;line-height:1">'+pickId+'</div><div style="font-size:16px;font-weight:700;margin:4px 0">'+t.soId+'</div></div><img src="https://api.qrserver.com/v1/create-qr-code/?size=150x150&data='+labelQr+'" width="100" height="100"/></div>');
-              w.document.write('<div class="cname">'+t.cName+'</div>');
-              if(shipDest!=='in_house'){w.document.write('<div style="background:#fffbeb;padding:8px;border:3px solid '+(shipDest==='ship_customer'?'#3b82f6':'#d97706')+';border-radius:6px;font-weight:900;font-size:18px;margin:6px 0">'+(shipDest==='ship_customer'?'SHIP TO CUSTOMER':'SHIP TO DECO'+(activePick?.deco_vendor?' — '+activePick.deco_vendor:''))+'</div>')}
-              w.document.write('<div class="sep"></div>');
-              w.document.write('<div style="font-size:20px;font-weight:900;margin:0 0 4px">'+t.sku+' '+t.name+'</div>');
-              w.document.write('<div style="font-size:16px;font-weight:700">'+(t.color||'')+' — '+totalPulling+' units</div>');
-              w.document.write('<div class="sizes">'+szKeys.filter(sz=>(actualQtys[sz]||0)>0).map(sz=>sz+': '+actualQtys[sz]).join(' &nbsp;&nbsp; ')+'</div>');
-              w.document.write('<div class="sep"></div>');
-              w.document.write('<div class="bot"><p style="font-size:11px;color:#666;margin:0">Pulled: '+new Date().toLocaleString()+'</p></div>');
-              w.document.write('</body></html>');w.document.close();w.print()}
-              nf('✅ '+pickId+' marked as pulled');setWhPulling(false);setWhViewIF(null);
-            }}>{whPulling?'Saving...':'✓ Mark as Pulled'}</button>}
             <button className="btn btn-secondary" style={{fontSize:12,padding:'8px 16px'}} onClick={()=>{setESOTab('items');setESOScrollItem(t.itemIdx);setESO(so);setESOC(c);setPg('orders')}}>
               Open Sales Order</button>
           </div>
