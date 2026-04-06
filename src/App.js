@@ -4733,7 +4733,9 @@ export default function App(){
   </>);
 
   // JOBS LIST
-  const[jobFilters,setJobFilters]=useState({statuses:[],rep:'all',deco:'all',artSt:'all',itemSt:'all',dueBefore:'',search:''});
+  const[jobFilters,_setJobFilters]=useState({statuses:[],rep:'all',deco:'all',artSt:'all',itemSt:'all',dueBefore:'',search:''});
+  const[activeSavedFilterIdx,setActiveSavedFilterIdx]=useState(null);
+  const setJobFilters=(v)=>{setActiveSavedFilterIdx(null);_setJobFilters(v)};
   const[jobSortField,setJobSortField]=useState('expected');const[jobSortDir,setJobSortDir]=useState('asc');
   const _defaultSavedFilters=[
     {name:'Ready to Print',filters:{statuses:['staging'],rep:'all',deco:'screen_print',artSt:'art_complete',itemSt:'all',dueBefore:'',search:''}},
@@ -4789,34 +4791,56 @@ export default function App(){
       nf('🏭 '+j.id+' added to Production Board');
     };
 
+    const ART_STATUSES=[['needs_art','Needs Art'],['art_requested','Art Requested'],['art_in_progress','In Progress'],['waiting_approval','Waiting Approval'],['production_files_needed','Prod Files Needed'],['art_complete','Art Complete']];
+    const ITEM_STATUSES=[['need_to_order','Need to Order'],['partially_received','Partially Received'],['items_received','Items Received']];
+    const chipStyle=(active,sc)=>({fontSize:10,padding:'3px 10px',borderRadius:12,border:'1px solid '+(active?sc?.c||'#2563eb':'#e2e8f0'),
+      background:active?(sc?.bg||'#eff6ff'):'white',color:active?(sc?.c||'#2563eb'):'#94a3b8',cursor:'pointer',fontWeight:600,display:'inline-flex',alignItems:'center',gap:4});
+    const toggleArt=id=>setJF('artSt',jf.artSt===id?'all':id);
+    const toggleItem=id=>setJF('itemSt',jf.itemSt===id?'all':id);
+
     return(<>
       {/* Filter bar */}
       <div className="card" style={{marginBottom:12}}><div className="card-body" style={{padding:'12px 16px'}}>
+        {/* Row 1: Search + dropdowns */}
         <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center',marginBottom:10}}>
           <div className="search-bar" style={{flex:1,minWidth:200,maxWidth:300}}><Icon name="search"/><input placeholder="Search jobs, SKUs, customers..." value={jf.search} onChange={e=>setJF('search',e.target.value)}/></div>
           <select className="form-select" style={{width:130,fontSize:11}} value={jf.rep} onChange={e=>setJF('rep',e.target.value)}>
             <option value="all">All Reps</option>{REPS.filter(r=>r.role==='rep'||r.role==='admin').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
           <select className="form-select" style={{width:140,fontSize:11}} value={jf.deco} onChange={e=>setJF('deco',e.target.value)}>
             <option value="all">All Deco Types</option>{decoTypes.map(d=><option key={d} value={d}>{d.replace(/_/g,' ')}</option>)}</select>
-          <select className="form-select" style={{width:140,fontSize:11}} value={jf.artSt} onChange={e=>setJF('artSt',e.target.value)}>
-            <option value="all">All Art Status</option><option value="needs_art">Needs Art</option><option value="art_requested">Art Requested</option><option value="art_in_progress">Art In Progress</option><option value="waiting_approval">Waiting Approval</option><option value="production_files_needed">Prod Files Needed</option><option value="art_complete">Art Complete</option></select>
-          <select className="form-select" style={{width:150,fontSize:11}} value={jf.itemSt||'all'} onChange={e=>setJF('itemSt',e.target.value)}>
-            <option value="all">All Product Status</option><option value="need_to_order">Need to Order</option><option value="partially_received">Partially Received</option><option value="items_received">Items Received</option></select>
           <div style={{display:'flex',alignItems:'center',gap:4,fontSize:11,color:'#64748b'}}><span>Due by:</span><input type="date" className="form-input" style={{width:130,padding:'3px 6px',fontSize:11}} value={jf.dueBefore} onChange={e=>setJF('dueBefore',e.target.value)}/></div>
-          {(jf.search||jf.rep!=='all'||jf.deco!=='all'||jf.artSt!=='all'||jf.itemSt!=='all'||jf.dueBefore)&&<button className="btn btn-sm btn-secondary" onClick={()=>setJobFilters({statuses:jf.statuses,rep:'all',deco:'all',artSt:'all',itemSt:'all',dueBefore:'',search:''})}>Clear</button>}
+          {(jf.search||jf.rep!=='all'||jf.deco!=='all'||jf.artSt!=='all'||(jf.itemSt||'all')!=='all'||jf.dueBefore)&&<button className="btn btn-sm btn-secondary" onClick={()=>setJobFilters({statuses:jf.statuses,rep:'all',deco:'all',artSt:'all',itemSt:'all',dueBefore:'',search:''})}>Clear</button>}
         </div>
-        {/* Status toggle chips */}
-        <div style={{display:'flex',gap:4,flexWrap:'wrap',alignItems:'center'}}>
-          <span style={{fontSize:10,fontWeight:700,color:'#64748b',marginRight:4}}>STATUS:</span>
+        {/* Row 2: Production Status chips */}
+        <div style={{display:'flex',gap:4,flexWrap:'wrap',alignItems:'center',marginBottom:6}}>
+          <span style={{fontSize:10,fontWeight:700,color:'#64748b',marginRight:4,minWidth:48}}>PROD:</span>
           {STATUSES.map(([id,label])=>{const active=jf.statuses.includes(id);const ct=allJobs.filter(j=>j.prod_status===id).length;
-            return<button key={id} style={{fontSize:10,padding:'3px 10px',borderRadius:12,border:'1px solid '+(active?SC[id]?.c||'#2563eb':'#e2e8f0'),
-              background:active?(SC[id]?.bg||'#eff6ff'):'white',color:active?(SC[id]?.c||'#2563eb'):'#94a3b8',cursor:'pointer',fontWeight:600,display:'flex',alignItems:'center',gap:4}}
+            return<button key={id} style={chipStyle(active,SC[id])}
               onClick={()=>toggleStatus(id)}>{label} <span style={{fontSize:9,opacity:0.7}}>({ct})</span></button>})}
-          <span style={{fontSize:10,color:'#cbd5e1',margin:'0 6px'}}>|</span>
-          <span style={{fontSize:10,fontWeight:700,color:'#64748b',marginRight:4}}>SAVED:</span>
-          {savedJobFilters.map((sf,i)=><span key={i} style={{display:'inline-flex',alignItems:'center',gap:2}}><button style={{fontSize:10,padding:'2px 8px',borderRadius:'10px 0 0 10px',border:'1px solid #ddd6fe',borderRight:'none',background:'#f5f3ff',color:'#7c3aed',cursor:'pointer',fontWeight:600}}
-            onClick={()=>setJobFilters({...sf.filters,itemSt:sf.filters.itemSt||'all'})}>{sf.name}</button><button style={{fontSize:9,padding:'2px 4px',borderRadius:'0 10px 10px 0',border:'1px solid #ddd6fe',background:'#f5f3ff',color:'#c4b5fd',cursor:'pointer',lineHeight:1}}
-            onClick={()=>{if(window.confirm('Remove saved filter "'+sf.name+'"?'))_saveSavedFilters(prev=>prev.filter((_,j)=>j!==i))}}>×</button></span>)}
+        </div>
+        {/* Row 3: Art Status chips */}
+        <div style={{display:'flex',gap:4,flexWrap:'wrap',alignItems:'center',marginBottom:6}}>
+          <span style={{fontSize:10,fontWeight:700,color:'#64748b',marginRight:4,minWidth:48}}>ART:</span>
+          {ART_STATUSES.map(([id,label])=>{const active=jf.artSt===id;const ct=allJobs.filter(j=>j.art_status===id).length;
+            return<button key={id} style={chipStyle(active,SC[id])}
+              onClick={()=>toggleArt(id)}>{label} <span style={{fontSize:9,opacity:0.7}}>({ct})</span></button>})}
+        </div>
+        {/* Row 4: Product/Item Status chips */}
+        <div style={{display:'flex',gap:4,flexWrap:'wrap',alignItems:'center',marginBottom:6}}>
+          <span style={{fontSize:10,fontWeight:700,color:'#64748b',marginRight:4,minWidth:48}}>PRODUCT:</span>
+          {ITEM_STATUSES.map(([id,label])=>{const active=(jf.itemSt||'all')===id;const ct=allJobs.filter(j=>j.item_status===id).length;
+            return<button key={id} style={chipStyle(active,SC[id])}
+              onClick={()=>toggleItem(id)}>{label} <span style={{fontSize:9,opacity:0.7}}>({ct})</span></button>})}
+        </div>
+        {/* Row 5: Saved filters */}
+        <div style={{display:'flex',gap:4,flexWrap:'wrap',alignItems:'center'}}>
+          <span style={{fontSize:10,fontWeight:700,color:'#64748b',marginRight:4,minWidth:48}}>SAVED:</span>
+          {savedJobFilters.map((sf,i)=>{const isActive=activeSavedFilterIdx===i;
+            return<span key={i} style={{display:'inline-flex',alignItems:'center',gap:0}}><button style={{fontSize:10,padding:'2px 8px',borderRadius:'10px 0 0 10px',border:'1px solid '+(isActive?'#7c3aed':'#ddd6fe'),borderRight:'none',
+              background:isActive?'#7c3aed':'#f5f3ff',color:isActive?'#fff':'#7c3aed',cursor:'pointer',fontWeight:600}}
+              onClick={()=>{setActiveSavedFilterIdx(i);_setJobFilters({...sf.filters,itemSt:sf.filters.itemSt||'all'})}}>{sf.name}</button><button style={{fontSize:9,padding:'2px 4px',borderRadius:'0 10px 10px 0',border:'1px solid '+(isActive?'#7c3aed':'#ddd6fe'),
+              background:isActive?'#7c3aed':'#f5f3ff',color:isActive?'#c4b5fd':'#c4b5fd',cursor:'pointer',lineHeight:1}}
+              onClick={()=>{if(window.confirm('Remove saved filter "'+sf.name+'"?'))_saveSavedFilters(prev=>prev.filter((_,j)=>j!==i))}}>×</button></span>})}
           <button style={{fontSize:10,padding:'2px 8px',borderRadius:10,border:'1px solid #e2e8f0',background:'white',color:'#94a3b8',cursor:'pointer'}}
             onClick={()=>{const name=prompt('Save current filter as:');if(name)_saveSavedFilters(prev=>[...prev,{name,filters:{...jf}}])}}>+ Save Filter</button>
         </div>
