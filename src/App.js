@@ -316,7 +316,8 @@ const _dbLoad = async () => {
       rRepCsr,rAssignedTodos,rTodoComments,
       rDecoVendors,rDecoVendorPricing,
       rQuoteReqs,rQuoteReqItems,
-      rDismissedTodos,rDismissedNotifs] = await _batch([
+      rDismissedTodos,rDismissedNotifs,
+      rVendCatalog] = await _batch([
       ()=>_safeQuery('team_members',{order:'name'}),
       ()=>_safeQuery('customers',{order:'name'}),
       ()=>_safeQuery('customer_contacts'),
@@ -358,6 +359,7 @@ const _dbLoad = async () => {
       ()=>_safeQuery('quote_request_items',{order:'sort_order'}),
       ()=>_safeQuery('dismissed_todos'),
       ()=>_safeQuery('dismissed_notifs'),
+      ()=>_safeQuery('vendor_catalog_items',{order:'name'}),
     ]);
     // Check for critical errors on core tables only (child tables may not exist yet — 404 is OK)
     const coreResults=[{n:'team_members',r:rTeam},{n:'customers',r:rCust},{n:'vendors',r:rVend},{n:'products',r:rProd},{n:'estimates',r:rEst},{n:'sales_orders',r:rSO},{n:'invoices',r:rInv},{n:'messages',r:rMsg},{n:'omg_stores',r:rOMG}];
@@ -383,6 +385,7 @@ const _dbLoad = async () => {
     const quote_requests=quoteReqRaw.map(qr=>({...qr,items:quoteReqItemsRaw.filter(i=>i.quote_request_id===qr.id).sort((a,b)=>a.sort_order-b.sort_order)}));
     const repCsrAssignments=d(rRepCsr);const assignedTodos=d(rAssignedTodos).map(t=>({...t,comments:d(rTodoComments).filter(c=>c.todo_id===t.id).sort((a,b)=>(a.created_at||'').localeCompare(b.created_at))}));
     const decoVendors=d(rDecoVendors);const decoVendorPricing=d(rDecoVendorPricing);
+    const vendorCatalogItems=d(rVendCatalog);
     // Parse app_state key-value pairs
     const appStateRaw=d(rAppState);
     const appState={};appStateRaw.forEach(r=>{try{appState[r.id]=JSON.parse(r.value)}catch{appState[r.id]=r.value}});
@@ -432,7 +435,7 @@ const _dbLoad = async () => {
     const omg_stores=omgRaw.map(s=>({...s,products:omgProd.filter(p=>p.store_id===s.id).map(p=>({sku:p.sku,name:p.name,color:p.color,retail:p.retail,cost:p.cost,deco_type:p.deco_type,deco_cost:p.deco_cost,sizes:p.sizes||{}}))}));
     const hasData=(customers.length>0)||(sales_orders.length>0);
     const dismissedTodosDb=d(rDismissedTodos);const dismissedNotifsDb=d(rDismissedNotifs);
-    return{team,customers,vendors,products,estimates,sales_orders,invoices,messages,omg_stores,issues,appState,hasData,repCsrAssignments,assignedTodos,decoVendors,decoVendorPricing,quote_requests,dismissedTodosDb,dismissedNotifsDb};
+    return{team,customers,vendors,products,estimates,sales_orders,invoices,messages,omg_stores,issues,appState,hasData,repCsrAssignments,assignedTodos,decoVendors,decoVendorPricing,quote_requests,dismissedTodosDb,dismissedNotifsDb,vendorCatalogItems};
   }catch(e){console.error('[DB] Load failed:',e);return null}
 };
 const _dbSeed = async (d) => {
@@ -909,6 +912,36 @@ const _dbSaveProduct = async (p) => {
     _dbSaveFailedIds.delete(p.id);_persistFailedIds();return true;
   }catch(e){console.error('[DB] save product:',e);_dbSaveFailedIds.add(p.id);_persistFailedIds();return false}
 };
+// ─── Vendor catalog item CRUD (lightweight vendor favorites) ───
+const _dbSaveVendCatalogItem = async (item) => {
+  if(!supabase)return null;
+  try{
+    const row={vendor_id:item.vendor_id,sku:item.sku,name:item.name,brand:item.brand||null,
+      color:item.color||null,category:item.category||null,nsa_cost:item.nsa_cost||0,
+      retail_price:item.retail_price||0,available_sizes:item.available_sizes||['S','M','L','XL','2XL'],
+      image_url:item.image_url||null,notes:item.notes||null,is_active:item.is_active!==false,
+      updated_at:new Date().toISOString()};
+    if(item.id){row.id=item.id;const{data,error}=await supabase.from('vendor_catalog_items').upsert(row,{onConflict:'id'}).select();if(error)throw error;return data?.[0]||row}
+    else{const{data,error}=await supabase.from('vendor_catalog_items').insert(row).select();if(error)throw error;return data?.[0]}
+  }catch(e){console.error('[DB] save vendor catalog item:',e);return null}
+};
+const _dbDeleteVendCatalogItem = async (id) => {
+  if(!supabase)return false;
+  try{const{error}=await supabase.from('vendor_catalog_items').delete().eq('id',id);return !error}catch(e){console.error('[DB] delete vendor catalog item:',e);return false}
+};
+const _dbBulkInsertVendCatalog = async (items) => {
+  if(!supabase||!items.length)return[];
+  try{
+    const rows=items.map(item=>({vendor_id:item.vendor_id,sku:item.sku,name:item.name,brand:item.brand||null,
+      color:item.color||null,category:item.category||null,nsa_cost:item.nsa_cost||0,
+      retail_price:item.retail_price||0,available_sizes:item.available_sizes||['S','M','L','XL','2XL'],
+      image_url:item.image_url||null,notes:item.notes||null,is_active:true,
+      updated_at:new Date().toISOString()}));
+    const{data,error}=await supabase.from('vendor_catalog_items').upsert(rows,{onConflict:'vendor_id,sku,color'}).select();
+    if(error)throw error;return data||[];
+  }catch(e){console.error('[DB] bulk insert vendor catalog:',e);return[]}
+};
+
 const _dbSaveMessage = async (m) => {
   if(!supabase)return;
   try{
@@ -1566,6 +1599,7 @@ export default function App(){
   const _migrated=useMemo(()=>migrateState(),[]);
   const[REPS,setREPS]=useState(()=>loadState('reps',DEFAULT_REPS));
   const[cust,setCust]=useState(()=>loadState('cust',D_C));const[vend,setVend]=useState(()=>loadState('vend',D_V));const[prod,setProd]=useState(()=>loadState('prod',D_P));
+  const[vendCatalog,setVendCatalog]=useState([]);
   const[ests,setEsts]=useState(()=>_migrated.ests);const[sos,setSOs]=useState(()=>_migrated.sos);const[invs,setInvs]=useState(()=>_migrated.invs);
   const[omgStores,setOmgStores]=useState(D_OMG);
   // Adidas B2B bulk inventory for Products/Inventory pages
@@ -1700,6 +1734,7 @@ export default function App(){
           if(d.assignedTodos)setAssignedTodos(d.assignedTodos);
           if(d.decoVendors)setDecoVendors(d.decoVendors);
           if(d.decoVendorPricing)setDecoVendorPricing(d.decoVendorPricing);
+          if(d.vendorCatalogItems)setVendCatalog(d.vendorCatalogItems);
           // Merge server-side dismissed todos/notifs into localStorage-based state
           if(d.dismissedTodosDb?.length){const dbKeys=d.dismissedTodosDb.map(r=>r.dismiss_key);setDismissedTodos(prev=>{const merged=[...new Set([...prev,...dbKeys])];_lsSet('nsa_dismissed_todos',JSON.stringify(merged));return merged})}
           if(d.dismissedNotifsDb?.length){const dbKeys=d.dismissedNotifsDb.map(r=>r.dismiss_key);setDismissedNotifs(prev=>{const merged=[...new Set([...prev,...dbKeys])];_lsSet('nsa_dismissed_notifs',JSON.stringify(merged));return merged})}
@@ -1831,6 +1866,7 @@ export default function App(){
         setIssues(prev=>{const v=d.issues||[];return _jsonEq(prev,v)?prev:v});
         if(d.decoVendors)setDecoVendors(prev=>_jsonEq(prev,d.decoVendors)?prev:d.decoVendors);
         if(d.decoVendorPricing)setDecoVendorPricing(prev=>_jsonEq(prev,d.decoVendorPricing)?prev:d.decoVendorPricing);
+        if(d.vendorCatalogItems)setVendCatalog(prev=>_jsonEq(prev,d.vendorCatalogItems)?prev:d.vendorCatalogItems);
         // Refresh app_state keys
         const as=d.appState||{};
         if(as.inv_pos)setInvPOs(prev=>_jsonEq(prev,as.inv_pos)?prev:as.inv_pos);
@@ -3897,7 +3933,7 @@ export default function App(){
 
   // ESTIMATES LIST
   function rEst(){
-    if(eEst)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eEst.id} order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} vendors={vend} onSave={e=>{const e2=savE(e);setEEst(e2)}} onBack={()=>{dirtyRef.current=false;setEEst(null);if(estBackPg){setPg(estBackPg);setEstBackPg(null)}}} onConvertSO={convertSO} onCopyEstimate={copyEstimate} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={deleteEstimate} onNavInvoice={inv=>{setEEst(null);setPg('invoices');setInvF(f=>({...f,search:inv.id}))}} onSaveProduct={p=>{setProd(prev=>prev.some(x=>x.id===p.id)?prev.map(x=>x.id===p.id?p:x):[...prev,p]);_dbSaveProduct(p)}} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setEEst(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}else{nf('SO '+soId+' not found','error')}}} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eEst?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:csrId,so_id:t.so_id||'',customer_id:t.customer_id||eEst?.customer_id||'',priority:t.priority||1})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod} companyInfo={companyInfo} fetchAdidasInventory={fetchAdidasInventory} searchProducts={_searchProductsServer}/></React.Suspense></ComponentErrorBoundary>
+    if(eEst)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eEst.id} order={eEst} mode="estimate" customer={eEstC} allCustomers={cust} products={prod} vendors={vend} onSave={e=>{const e2=savE(e);setEEst(e2)}} onBack={()=>{dirtyRef.current=false;setEEst(null);if(estBackPg){setPg(estBackPg);setEstBackPg(null)}}} onConvertSO={convertSO} onCopyEstimate={copyEstimate} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onNavCustomer={c2=>{setEEst(null);setSelC(c2);setPg('customers')}} onNewEstimate={()=>{setEEst(null);setTimeout(()=>newE(null),50)}} reps={REPS} onDelete={deleteEstimate} onNavInvoice={inv=>{setEEst(null);setPg('invoices');setInvF(f=>({...f,search:inv.id}))}} onSaveProduct={p=>{setProd(prev=>prev.some(x=>x.id===p.id)?prev.map(x=>x.id===p.id?p:x):[...prev,p]);_dbSaveProduct(p)}} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setEEst(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setPg('orders')}else{nf('SO '+soId+' not found','error')}}} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eEst?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:csrId,so_id:t.so_id||'',customer_id:t.customer_id||eEst?.customer_id||'',priority:t.priority||1})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod} companyInfo={companyInfo} fetchAdidasInventory={fetchAdidasInventory} searchProducts={_searchProductsServer} vendorCatalog={vendCatalog}/></React.Suspense></ComponentErrorBoundary>
     // Filter estimates
     let fe=[...ests];
     const estRepId=estF.rep==='_me_'?cu?.id:estF.rep;
@@ -3950,7 +3986,7 @@ export default function App(){
 
   // SALES ORDERS LIST
   function rSO(){
-    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eSO.id} order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} vendors={vend} onSave={s=>{const locked=savSO(s);setESO(locked)}} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} openPOId={eSOOpenPO} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onNavInvoice={inv=>{setESO(null);setPg('invoices');setInvF(f=>({...f,search:inv.id}))}} onSaveProduct={p=>{setProd(prev=>prev.some(x=>x.id===p.id)?prev.map(x=>x.id===p.id?p:x):[...prev,p]);_dbSaveProduct(p)}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:csrId,so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod} companyInfo={companyInfo} fetchAdidasInventory={fetchAdidasInventory} searchProducts={_searchProductsServer}/></React.Suspense></ComponentErrorBoundary>
+    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eSO.id} order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} vendors={vend} onSave={s=>{const locked=savSO(s);setESO(locked)}} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} openPOId={eSOOpenPO} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onNavInvoice={inv=>{setESO(null);setPg('invoices');setInvF(f=>({...f,search:inv.id}))}} onSaveProduct={p=>{setProd(prev=>prev.some(x=>x.id===p.id)?prev.map(x=>x.id===p.id?p:x):[...prev,p]);_dbSaveProduct(p)}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:csrId,so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1})}} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod} companyInfo={companyInfo} fetchAdidasInventory={fetchAdidasInventory} searchProducts={_searchProductsServer} vendorCatalog={vendCatalog}/></React.Suspense></ComponentErrorBoundary>
     // Filter SOs
     let fSOs=[...sos];
     if(soF.status!=='all')fSOs=fSOs.filter(s=>calcSOStatus(s)===soF.status);
@@ -4068,7 +4104,7 @@ export default function App(){
     </>);};
 
   // VENDORS
-  function rVend(){if(selV)return<VendDetail vendor={selV} products={prod} onUpdateProducts={setProd} onBack={()=>setSelV(null)}/>;
+  function rVend(){if(selV)return<VendDetail vendor={selV} products={prod} onUpdateProducts={setProd} onBack={()=>setSelV(null)} catalogItems={vendCatalog.filter(ci=>ci.vendor_id===selV.id)} onSaveCatalogItem={async(item)=>{const saved=await _dbSaveVendCatalogItem(item);if(saved)setVendCatalog(prev=>{const idx=prev.findIndex(c=>c.id===saved.id);return idx>=0?prev.map(c=>c.id===saved.id?saved:c):[...prev,saved]});return saved}} onDeleteCatalogItem={async(id)=>{const ok=await _dbDeleteVendCatalogItem(id);if(ok)setVendCatalog(prev=>prev.filter(c=>c.id!==id));return ok}} onBulkImportCatalog={async(items)=>{const saved=await _dbBulkInsertVendCatalog(items);if(saved.length)setVendCatalog(prev=>{const newMap=new Map(prev.map(c=>[c.id,c]));saved.forEach(s=>newMap.set(s.id,s));return[...newMap.values()]});return saved}} nf={nf}/>;
     return(<><div className="stats-row"><div className="stat-card"><div className="stat-label">Vendors</div><div className="stat-value">{vend.length}</div></div><div className="stat-card"><div className="stat-label">API</div><div className="stat-value">{vend.filter(v=>v.vendor_type==='api').length}</div></div>
       {isA&&<div className="stat-card"><div className="stat-label">Open AP</div><div className="stat-value" style={{color:'#dc2626'}}>${vend.reduce((a,v)=>a+(v._it||0),0).toLocaleString()}</div></div>}</div>
     <div className="card"><div className="card-body" style={{padding:0}}><table><thead><tr><th>Vendor</th><th>Type</th><th>Contact</th><th>Terms</th>{isA&&<th>Owed</th>}<th>Status</th></tr></thead><tbody>

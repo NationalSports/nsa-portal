@@ -11,7 +11,7 @@ import { dP, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP, DTF, POSITIO
 import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, nextInvId, _brevoKey } from './utils';
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecApiCall, momentecSearchProducts, momentecGetProductByPartNumber, momentecGetProductById } from './vendorApis';
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onBack,onConvertSO,onCopyEstimate,onRevertToEst,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,allInvoices,batchPOs,onBatchPO,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,openPOId,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onSaveProduct,onViewEstimate,onViewSO,returnToPage,onReturnToJob,onAssignTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onBack,onConvertSO,onCopyEstimate,onRevertToEst,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,onInv,allInvoices,batchPOs,onBatchPO,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,openPOId,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onSaveProduct,onViewEstimate,onViewSO,returnToPage,onReturnToJob,onAssignTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,vendorCatalog:vendorCatalogProp}){
   const fetchAdidasInventory=fetchAdidasInventoryProp||(async()=>({sizes:{},lastSynced:null}));
   const _ci=companyInfoProp||NSA;// use company info from state (reacts to Supabase loads) with fallback to mutable NSA
   const vendorList=vendorsProp||D_V;// use DB-loaded vendors if available, fallback to defaults
@@ -1193,6 +1193,20 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     return()=>{if(serverSearchTimer.current)clearTimeout(serverSearchTimer.current)};
   },[pS,showAdd,fp.length]);
   const allFp=fp.length>0?fp:serverProducts;
+  // Vendor catalog search (lightweight favorites from vendors without APIs)
+  const vcItems=useMemo(()=>{if(!pS||pS.length<2||!vendorCatalogProp?.length)return[];const q=pS.toLowerCase();return vendorCatalogProp.filter(ci=>ci.is_active!==false&&(ci.sku.toLowerCase().includes(q)||ci.name.toLowerCase().includes(q)||(ci.brand||'').toLowerCase().includes(q)||(ci.color||'').toLowerCase().includes(q)))},[pS,vendorCatalogProp]);
+  const addCatalogItem=(ci)=>{
+    const vId=ci.vendor_id||null;
+    const cost=ci.nsa_cost||0;
+    const sell=rQ(cost*(o.default_markup||1.65));
+    const newItem={product_id:null,sku:ci.sku,name:ci.name,brand:ci.brand||'',vendor_id:vId,color:ci.color||'',
+      nsa_cost:cost,retail_price:ci.retail_price||0,unit_sell:sell,
+      available_sizes:ci.available_sizes||['S','M','L','XL','2XL'],sizes:{},qty_only:false,
+      decorations:isE?[{kind:'art',art_file_id:'__tbd',art_tbd_type:'screen_print',position:'',sell_override:null}]:[],
+      is_custom:false,_colorImage:ci.image_url||''};
+    sv('items',[...o.items,newItem]);
+    setShowAdd(false);setPS('');
+  };
   const statusFlow=['need_order','waiting_receive','needs_pull','items_received','in_production','ready_to_invoice','complete'];
 
   return(<div>
@@ -2136,6 +2150,21 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               </div>}
             </div>})}
             {!mtSearching&&mtResults.length===0&&pS.length>=2&&<div style={{padding:'10px 12px',color:'#94a3b8',fontSize:12,fontStyle:'italic'}}>No Momentec results for "{pS}"</div>}
+          </>}
+          {/* Vendor Catalog Items (Richardson, New Balance, etc.) */}
+          {pS.length>=2&&vcItems.length>0&&<>
+            <div style={{padding:'6px 12px',background:'#f0fdf4',borderTop:'2px solid #86efac',borderBottom:'1px solid #bbf7d0',display:'flex',alignItems:'center',gap:6}}>
+              <span style={{fontSize:10,fontWeight:800,color:'#166534',textTransform:'uppercase',letterSpacing:1}}>Vendor Catalog</span>
+              <span style={{fontSize:10,color:'#16a34a'}}>{vcItems.length} item{vcItems.length!==1?'s':''}</span>
+            </div>
+            {vcItems.slice(0,15).map((ci,i)=><div key={'vc'+ci.id} style={{padding:'8px 12px',borderBottom:'1px solid #f0fdf4',cursor:'pointer',display:'flex',alignItems:'center',gap:10,background:i%2===0?'#f0fdf4':'white'}} onClick={()=>addCatalogItem(ci)}>
+              {ci.image_url?<img src={ci.image_url} alt="" style={{width:32,height:32,objectFit:'contain',borderRadius:4,background:'#f8fafc'}} onError={e=>{e.target.style.display='none'}}/>:<div style={{width:32,height:32,borderRadius:4,background:'#dcfce7',display:'flex',alignItems:'center',justifyContent:'center',fontSize:10,color:'#166534',fontWeight:700,flexShrink:0}}>VC</div>}
+              <span style={{fontFamily:'monospace',fontWeight:700,color:'#166534',background:'#dcfce7',padding:'2px 6px',borderRadius:3,fontSize:12}}>{ci.sku}</span>
+              <span style={{fontWeight:600,fontSize:13}}>{ci.name}</span>
+              {ci.color&&<span style={{fontSize:11,color:'#64748b'}}>— {ci.color}</span>}
+              <span style={{fontSize:10,padding:'1px 6px',borderRadius:3,background:'#dcfce7',color:'#166534',fontWeight:600}}>{ci.brand}</span>
+              <span style={{marginLeft:'auto',fontSize:12,color:'#166534',fontWeight:700}}>${(ci.nsa_cost||0).toFixed(2)}</span>
+            </div>)}
           </>}
         </div>
         <button className="btn btn-sm btn-secondary" onClick={()=>{setShowAdd(false);setPS('');setSsResults([]);setSmResults([]);setMtResults([])}} style={{marginTop:8}}>Cancel</button>

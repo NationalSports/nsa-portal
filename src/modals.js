@@ -7,8 +7,11 @@ import { Icon, Bg, calcSOStatus, SortHeader, PantoneAdder, SearchSelect } from '
 import { CONTACT_ROLES } from './pricing';
 import { invokeEdgeFn } from './utils';
 
-function VendDetail({vendor,products,onUpdateProducts,onBack}){
+function VendDetail({vendor,products,onUpdateProducts,onBack,catalogItems=[],onSaveCatalogItem,onDeleteCatalogItem,onBulkImportCatalog,nf}){
   const[syncing,setSyncing]=React.useState(false);
+  const[catSearch,setCatSearch]=useState('');
+  const[catEdit,setCatEdit]=useState(null);// null or item being edited/added
+  const[catImporting,setCatImporting]=useState(false);
   const syncSSPricing=async()=>{
     if(!products||syncing)return;
     setSyncing(true);
@@ -97,6 +100,97 @@ function VendDetail({vendor,products,onUpdateProducts,onBack}){
   </div>}
   </div></div>
   <div className="stats-row"><div className="stat-card"><div className="stat-label">Invoices</div><div className="stat-value">{vendor._oi||0}</div></div><div className="stat-card"><div className="stat-label">Current</div><div className="stat-value" style={{color:'#166534'}}>${(vendor._ac||0).toLocaleString()}</div></div><div className="stat-card"><div className="stat-label">30 Day</div><div className="stat-value" style={{color:(vendor._a3||0)>0?'#d97706':''}}>${(vendor._a3||0).toLocaleString()}</div></div><div className="stat-card"><div className="stat-label">60+</div><div className="stat-value" style={{color:(vendor._a6||0)>0?'#dc2626':''}}>${((vendor._a6||0)+(vendor._a9||0)).toLocaleString()}</div></div></div>
+  {/* ── Vendor Catalog Items ── */}
+  <div className="card" style={{marginBottom:16}}>
+    <div className="card-header" style={{display:'flex',alignItems:'center',gap:8}}>
+      <h2>Catalog Items</h2>
+      <span style={{fontSize:11,color:'#64748b',fontWeight:400}}>Quick-add items for estimates (no inventory)</span>
+      <span className="badge badge-blue" style={{marginLeft:'auto'}}>{catalogItems.length}</span>
+    </div>
+    <div className="card-body">
+      <div style={{display:'flex',gap:6,marginBottom:12,flexWrap:'wrap'}}>
+        <div className="search-bar" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search catalog items..." value={catSearch} onChange={e=>setCatSearch(e.target.value)}/></div>
+        <button className="btn btn-sm btn-primary" onClick={()=>setCatEdit({vendor_id:vendor.id,sku:'',name:'',brand:vendor.name,color:'',category:'',nsa_cost:0,retail_price:0,available_sizes:['S','M','L','XL','2XL'],image_url:'',notes:''})}><Icon name="plus" size={12}/> Add Item</button>
+        <label className="btn btn-sm btn-secondary" style={{cursor:'pointer',display:'flex',alignItems:'center',gap:4}}>
+          <Icon name="upload" size={12}/> Import CSV
+          <input type="file" accept=".csv,.tsv,.txt" hidden onChange={async e=>{
+            const file=e.target.files?.[0];if(!file)return;
+            setCatImporting(true);
+            try{
+              const text=await file.text();
+              const lines=text.split('\n').map(l=>l.trim()).filter(Boolean);
+              if(lines.length<2){nf&&nf('CSV must have a header row + data','error');setCatImporting(false);return}
+              const sep=lines[0].includes('\t')?'\t':',';
+              const headers=lines[0].split(sep).map(h=>h.replace(/^"|"$/g,'').trim().toLowerCase());
+              const skuIdx=headers.findIndex(h=>h==='sku'||h==='style'||h==='style#'||h==='item');
+              const nameIdx=headers.findIndex(h=>h==='name'||h==='description'||h==='style name'||h==='product');
+              const brandIdx=headers.findIndex(h=>h==='brand'||h==='vendor');
+              const colorIdx=headers.findIndex(h=>h==='color'||h==='color name');
+              const costIdx=headers.findIndex(h=>h==='cost'||h==='nsa_cost'||h==='price'||h==='wholesale');
+              const retailIdx=headers.findIndex(h=>h==='retail'||h==='retail_price'||h==='msrp');
+              const catIdx=headers.findIndex(h=>h==='category'||h==='cat');
+              if(skuIdx<0||nameIdx<0){nf&&nf('CSV must have "sku" and "name" columns','error');setCatImporting(false);return}
+              const items=[];
+              for(let i=1;i<lines.length;i++){
+                const cols=lines[i].split(sep).map(c=>c.replace(/^"|"$/g,'').trim());
+                const sku=cols[skuIdx];const name=cols[nameIdx];
+                if(!sku||!name)continue;
+                items.push({vendor_id:vendor.id,sku,name,brand:brandIdx>=0?cols[brandIdx]:vendor.name,
+                  color:colorIdx>=0?cols[colorIdx]:'',nsa_cost:costIdx>=0?parseFloat(cols[costIdx])||0:0,
+                  retail_price:retailIdx>=0?parseFloat(cols[retailIdx])||0:0,
+                  category:catIdx>=0?cols[catIdx]:'',available_sizes:['S','M','L','XL','2XL']});
+              }
+              if(!items.length){nf&&nf('No valid rows found in CSV','error');setCatImporting(false);return}
+              const saved=await onBulkImportCatalog(items);
+              nf&&nf(saved.length+' item'+(saved.length!==1?'s':'')+' imported to '+vendor.name+' catalog');
+            }catch(err){nf&&nf('Import failed: '+err.message,'error')}
+            finally{setCatImporting(false);e.target.value=''}
+          }}/>
+          {catImporting&&<span style={{fontSize:10}}>...</span>}
+        </label>
+      </div>
+      {/* Edit/Add form */}
+      {catEdit&&<div style={{padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0',marginBottom:12}}>
+        <div style={{fontSize:12,fontWeight:700,marginBottom:8}}>{catEdit.id?'Edit':'Add'} Catalog Item</div>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 2fr 1fr 1fr',gap:8,marginBottom:8}}>
+          <input className="form-input" placeholder="SKU *" value={catEdit.sku} onChange={e=>setCatEdit({...catEdit,sku:e.target.value})} style={{fontSize:12}}/>
+          <input className="form-input" placeholder="Name *" value={catEdit.name} onChange={e=>setCatEdit({...catEdit,name:e.target.value})} style={{fontSize:12}}/>
+          <input className="form-input" placeholder="Brand" value={catEdit.brand||''} onChange={e=>setCatEdit({...catEdit,brand:e.target.value})} style={{fontSize:12}}/>
+          <input className="form-input" placeholder="Color" value={catEdit.color||''} onChange={e=>setCatEdit({...catEdit,color:e.target.value})} style={{fontSize:12}}/>
+        </div>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 2fr',gap:8,marginBottom:8}}>
+          <input className="form-input" placeholder="Cost" type="number" step="0.01" value={catEdit.nsa_cost||''} onChange={e=>setCatEdit({...catEdit,nsa_cost:parseFloat(e.target.value)||0})} style={{fontSize:12}}/>
+          <input className="form-input" placeholder="Retail" type="number" step="0.01" value={catEdit.retail_price||''} onChange={e=>setCatEdit({...catEdit,retail_price:parseFloat(e.target.value)||0})} style={{fontSize:12}}/>
+          <input className="form-input" placeholder="Category" value={catEdit.category||''} onChange={e=>setCatEdit({...catEdit,category:e.target.value})} style={{fontSize:12}}/>
+          <input className="form-input" placeholder="Sizes (comma-separated)" value={(catEdit.available_sizes||[]).join(', ')} onChange={e=>setCatEdit({...catEdit,available_sizes:e.target.value.split(',').map(s=>s.trim()).filter(Boolean)})} style={{fontSize:12}}/>
+        </div>
+        <div style={{display:'flex',gap:6}}>
+          <button className="btn btn-sm btn-primary" disabled={!catEdit.sku||!catEdit.name} onClick={async()=>{
+            const saved=await onSaveCatalogItem(catEdit);
+            if(saved){nf&&nf((catEdit.id?'Updated':'Added')+' '+catEdit.sku);setCatEdit(null)}
+            else{nf&&nf('Save failed','error')}
+          }}>{catEdit.id?'Update':'Add'}</button>
+          <button className="btn btn-sm btn-secondary" onClick={()=>setCatEdit(null)}>Cancel</button>
+        </div>
+      </div>}
+      {/* Catalog items table */}
+      {catalogItems.length>0?<div style={{maxHeight:400,overflow:'auto'}}>
+        <table style={{fontSize:12}}><thead><tr><th>SKU</th><th>Name</th><th>Color</th><th>Cost</th><th>Retail</th><th>Category</th><th style={{width:60}}></th></tr></thead><tbody>
+        {catalogItems.filter(ci=>{if(!catSearch)return true;const q=catSearch.toLowerCase();return ci.sku.toLowerCase().includes(q)||ci.name.toLowerCase().includes(q)||(ci.color||'').toLowerCase().includes(q)||(ci.brand||'').toLowerCase().includes(q)}).map(ci=><tr key={ci.id}>
+          <td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{ci.sku}</td>
+          <td>{ci.name}</td>
+          <td style={{color:'#64748b'}}>{ci.color||'—'}</td>
+          <td>${(ci.nsa_cost||0).toFixed(2)}</td>
+          <td style={{color:'#64748b'}}>{ci.retail_price?'$'+ci.retail_price.toFixed(2):'—'}</td>
+          <td style={{color:'#64748b'}}>{ci.category||'—'}</td>
+          <td><div style={{display:'flex',gap:4}}>
+            <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 6px'}} onClick={()=>setCatEdit({...ci})}>Edit</button>
+            <button className="btn btn-sm" style={{fontSize:10,padding:'2px 6px',background:'#fef2f2',color:'#dc2626',border:'1px solid #fecaca'}} onClick={async()=>{if(!window.confirm('Delete '+ci.sku+'?'))return;const ok=await onDeleteCatalogItem(ci.id);if(ok)nf&&nf('Deleted '+ci.sku);else nf&&nf('Delete failed','error')}}>X</button>
+          </div></td>
+        </tr>)}</tbody></table>
+      </div>:<div className="empty" style={{padding:16}}>No catalog items yet. Add items manually or import a CSV with columns: sku, name, brand, color, cost, retail, category</div>}
+    </div>
+  </div>
   <div className="card"><div className="card-header"><h2>Purchase Orders</h2></div><div className="card-body"><div className="empty">PO tracking — Phase 4</div></div></div></div>)}
 
 
