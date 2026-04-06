@@ -3787,12 +3787,29 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
 
     {showPO&&(()=>{
       // Vendor selection or PO form
-      const resolveVendor=it=>it.vendor_id||D_V.find(v=>v.name===it.brand)?.id||(it.product_id&&products.find(p=>p.id===it.product_id)?.vendor_id)||null;
+      const resolveVendor=it=>{
+        // 1. Direct vendor_id
+        if(it.vendor_id){const vRec=vendorList.find(v=>v.id===it.vendor_id);if(vRec)return vRec.id}
+        // 2. API source flags (_sm_live, _ss_live, _mt_live)
+        if(it._sm_live){const v=vendorList.find(v=>v.api_provider==='sanmar'||v.name==='SanMar');if(v)return v.id}
+        if(it._ss_live){const v=vendorList.find(v=>v.api_provider==='ss_activewear'||v.name==='S&S Activewear');if(v)return v.id}
+        if(it._mt_live){const v=vendorList.find(v=>v.api_provider==='momentec'||v.name==='Momentec');if(v)return v.id}
+        // 3. Brand name matches a vendor name directly
+        const brandMatch=vendorList.find(v=>v.name===it.brand);
+        if(brandMatch)return brandMatch.id;
+        // 4. Look up vendor via product catalog (brand carried by which vendor)
+        if(it.product_id){const pVid=products.find(p=>p.id===it.product_id)?.vendor_id;if(pVid)return pVid}
+        // 5. Find vendor by matching brand in product catalog (e.g. "Gildan" → SanMar)
+        if(it.brand){const catMatch=products.find(p=>p.brand===it.brand&&p.vendor_id);if(catMatch)return catMatch.vendor_id}
+        // 6. Match SKU prefix in product catalog to find vendor
+        if(it.sku){const skuMatch=products.find(p=>p.sku===it.sku&&p.vendor_id);if(skuMatch)return skuMatch.vendor_id}
+        return null;
+      };
       const vendorMap={};safeItems(o).forEach((it,i)=>{const vk=resolveVendor(it);if(!vk)return;if(!vendorMap[vk])vendorMap[vk]=[];vendorMap[vk].push({...it,_idx:i})});
       const unlinkedItems=safeItems(o).filter(it=>{const vk=resolveVendor(it);return!vk&&Object.values(safeSizes(it)).some(v=>safeNum(v)>0)});
       if(showPO==='select')return<div className="modal-overlay" onClick={()=>setShowPO(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:500}}>
         <div className="modal-header"><h2>Create PO — Select Vendor</h2><button className="modal-close" onClick={()=>setShowPO(null)}>x</button></div>
-        <div className="modal-body">{Object.entries(vendorMap).map(([vk,items])=>{const vn=D_V.find(v=>v.id===vk)?.name||vk;
+        <div className="modal-body">{Object.entries(vendorMap).map(([vk,items])=>{const vn=vendorList.find(v=>v.id===vk)?.name||D_V.find(v=>v.id===vk)?.name||vk;
           const openCount=items.reduce((tot,it)=>{return tot+Object.entries(it.sizes).filter(([,v])=>v>0).reduce((a,[sz,v])=>{const picked=safePicks(it).reduce((a2,pk)=>a2+(pk[sz]||0),0);const po=poCommitted(it.po_lines,sz);return a+Math.max(0,v-picked-po)},0)},0);
           if(openCount===0)return<div key={vk} style={{padding:'12px 16px',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:8,opacity:0.5,display:'flex',alignItems:'center',gap:12}}>
             <div style={{width:40,height:40,borderRadius:8,background:'#dcfce7',display:'flex',alignItems:'center',justifyContent:'center'}}><Icon name="check" size={20}/></div>
@@ -3802,11 +3819,21 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <div style={{flex:1}}><div style={{fontWeight:700}}>{vn}</div><div style={{fontSize:12,color:'#64748b'}}>{items.length} item(s) — <span style={{color:'#dc2626',fontWeight:600}}>{openCount} units open</span></div></div>
             <Icon name="back" size={16} style={{transform:'rotate(180deg)'}}/></div>})}
           {unlinkedItems.length>0&&<div style={{borderTop:'2px solid #fca5a5',marginTop:8,paddingTop:8}}>
-            <div style={{fontSize:10,fontWeight:700,color:'#dc2626',textTransform:'uppercase',marginBottom:6}}>⚠️ Items Without Vendor — Cannot Order</div>
-            {unlinkedItems.map((it,i)=><div key={i} style={{padding:'8px 12px',border:'1px solid #fca5a5',borderRadius:8,marginBottom:4,background:'#fef2f2'}}>
+            <div style={{fontSize:10,fontWeight:700,color:'#dc2626',textTransform:'uppercase',marginBottom:6}}>⚠️ Items Without Vendor</div>
+            {unlinkedItems.map((it,i)=>{const idx=safeItems(o).findIndex(x=>x.sku===it.sku&&x.color===it.color&&x.name===it.name);return<div key={i} style={{padding:'8px 12px',border:'1px solid #fca5a5',borderRadius:8,marginBottom:4,background:'#fef2f2'}}>
               <div style={{fontSize:12,fontWeight:700,color:'#dc2626'}}>{it.sku||'No SKU'} — {it.name||'Unnamed'}</div>
-              <div style={{fontSize:10,color:'#92400e'}}>Assign a vendor/brand to this item before creating a PO</div>
-            </div>)}
+              <div style={{display:'flex',gap:6,alignItems:'center',marginTop:4}}>
+                <select className="form-select" style={{flex:1,fontSize:11,padding:'3px 6px'}} defaultValue="" onChange={e=>{
+                  const vid=e.target.value;if(!vid||idx<0)return;
+                  const vn=vendorList.find(v=>v.id===vid)?.name||'';
+                  uI(idx,'vendor_id',vid);uI(idx,'brand',vn||it.brand);
+                  nf('Assigned '+vn+' to '+it.sku);setShowPO(null);setTimeout(()=>setShowPO('select'),100);
+                }}>
+                  <option value="" disabled>Assign vendor...</option>
+                  {vendorList.filter(v=>v.is_active!==false).map(v=><option key={v.id} value={v.id}>{v.name}</option>)}
+                </select>
+              </div>
+            </div>})}
           </div>}}
           {/* Outside Decoration PO section */}
           <div style={{borderTop:'2px solid #e2e8f0',marginTop:8,paddingTop:8}}>
