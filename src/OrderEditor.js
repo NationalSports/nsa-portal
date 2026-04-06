@@ -5745,8 +5745,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           {allLines.length>1&&<div style={{marginBottom:12}}>
             <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6}}>Items on this PO ({allLines.length})</div>
             <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-              {allLines.map((ln,li)=>{const it=o.items[ln.lineIdx];const selectedForRecv=editPO._selectedRecvLines||(allLines.map((_,i)=>i));const isSelected=selectedForRecv.includes(li);return<div key={li} style={{padding:'6px 10px',borderRadius:6,cursor:'pointer',border:li===activeLineIdx?'2px solid #2563eb':isSelected?'2px solid #22c55e':'1px solid #e2e8f0',background:li===activeLineIdx?'#dbeafe':isSelected?'#f0fdf4':'#f8fafc',fontSize:12,display:'flex',gap:6,alignItems:'center'}} onClick={()=>setEditPO(p=>({...p,_activeLineIdx:li}))}>
-                <input type="checkbox" checked={isSelected} onChange={e=>{e.stopPropagation();setEditPO(p=>{const prev=p._selectedRecvLines||(allLines.map((_,i)=>i));return{...p,_selectedRecvLines:e.target.checked?[...prev,li]:prev.filter(x=>x!==li)}})}} onClick={e=>e.stopPropagation()} style={{margin:0,accentColor:'#22c55e'}}/>
+              {allLines.map((ln,li)=>{const it=o.items[ln.lineIdx];return<div key={li} style={{padding:'6px 10px',borderRadius:6,cursor:'pointer',border:li===activeLineIdx?'2px solid #2563eb':'1px solid #e2e8f0',background:li===activeLineIdx?'#dbeafe':'#f8fafc',fontSize:12,display:'flex',gap:6,alignItems:'center'}} onClick={()=>setEditPO(p=>({...p,_activeLineIdx:li}))}>
                 <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af'}}>{it?.sku}</span>
                 <span style={{fontWeight:600}}>{it?.name}</span>
                 <span style={{color:'#64748b'}}>{it?.color}</span>
@@ -5883,25 +5882,42 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             </div>})}
           </>}
 
-          {/* Receive shipment form — not for drop ship POs, supports multi-item */}
+          {/* Receive shipment form — not for drop ship POs, click-to-add multi-item */}
           {hasOpen&&!isDropShip&&(()=>{
-            const selectedIdxs=allLines.length>1?(editPO._selectedRecvLines||(allLines.map((_,i)=>i))):[ activeLineIdx ];
-            const recvLines=selectedIdxs.map(li=>allLines[li]).filter(Boolean).map(ln=>{
+            // Build all receivable lines
+            const allRecvLines=allLines.map((ln,li)=>{
               const it=o.items[ln.lineIdx];const p=it?.po_lines?.[ln.poIdx];if(!it||!p)return null;
               const sk=Object.keys(p).filter(k=>!k.startsWith('_')&&k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='po_type'&&k!=='deco_vendor'&&k!=='deco_type'&&k!=='created_at'&&k!=='memo'&&k!=='notes'&&k!=='expected_date'&&k!=='billed'&&k!=='tracking_numbers'&&k!=='unit_cost'&&k!=='vendor'&&k!=='drop_ship'&&typeof p[k]==='number').sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
               const rcvd=p.received||{};const cncl=p.cancelled||{};
               const getOp=sz=>Math.max(0,(p[sz]||0)-(rcvd[sz]||0)-(cncl[sz]||0));
               const hasOp=sk.some(sz=>getOp(sz)>0);
-              return hasOp?{ln,item:it,po:p,szKeys:sk,rcvd,cncl,getOp}:null;
+              return hasOp?{li,ln,item:it,po:p,szKeys:sk,rcvd,cncl,getOp}:null;
             }).filter(Boolean);
-            if(!recvLines.length)return null;
+            if(!allRecvLines.length)return null;
+            // For single-item POs, auto-select that item
+            const selectedIdxs=allLines.length<=1?[activeLineIdx]:(editPO._selectedRecvLines||[]);
+            const recvLines=allRecvLines.filter(r=>selectedIdxs.includes(r.li));
+            const unselectedLines=allRecvLines.filter(r=>!selectedIdxs.includes(r.li));
             return<div key={'recv-multi'} style={{marginTop:12,padding:12,border:'2px solid #22c55e',borderRadius:8,background:'#f0fdf4'}}>
             <div style={{fontSize:12,fontWeight:700,color:'#166534',marginBottom:8}}>Receive Shipment{recvLines.length>1?' ('+recvLines.length+' items)':''}</div>
+            {/* Clickable item pills to add/remove from receive */}
+            {allLines.length>1&&<div style={{marginBottom:10}}>
+              <div style={{fontSize:10,fontWeight:600,color:'#64748b',marginBottom:4}}>Click items to add to this shipment:</div>
+              <div style={{display:'flex',gap:5,flexWrap:'wrap'}}>
+                {allRecvLines.map(r=>{const isSel=selectedIdxs.includes(r.li);return<div key={r.li} style={{padding:'4px 8px',borderRadius:5,cursor:'pointer',border:isSel?'2px solid #22c55e':'1px dashed #94a3b8',background:isSel?'#dcfce7':'white',fontSize:11,display:'flex',gap:4,alignItems:'center',transition:'all 0.15s'}} onClick={()=>setEditPO(p=>{const prev=p._selectedRecvLines||[];return{...p,_selectedRecvLines:isSel?prev.filter(x=>x!==r.li):[...prev,r.li]}})}>
+                  {isSel?<span style={{color:'#16a34a',fontWeight:800,fontSize:13}}>✓</span>:<span style={{color:'#94a3b8',fontSize:13}}>+</span>}
+                  <span style={{fontFamily:'monospace',fontWeight:700,color:isSel?'#1e40af':'#64748b'}}>{r.item.sku}</span>
+                  <span style={{fontWeight:600,color:isSel?'#0f172a':'#94a3b8'}}>{r.item.name}</span>
+                  <span style={{color:isSel?'#64748b':'#cbd5e1'}}>{r.item.color}</span>
+                </div>})}
+              </div>
+            </div>}
+            {recvLines.length>0&&<>
             <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:8}}>
               <span style={{fontSize:11,fontWeight:600,color:'#64748b'}}>Date:</span>
               <input type="date" id="po-recv-date" className="form-input" style={{width:140,fontSize:12}} defaultValue={new Date().toISOString().split('T')[0]}/>
             </div>
-            {recvLines.map(({ln,item:rit,po:rpo,szKeys:rsk,rcvd:rrcvd,cncl:rcncl,getOp},ri)=><div key={ri} style={{marginBottom:8,padding:recvLines.length>1?'8px':'0',background:recvLines.length>1?'rgba(255,255,255,0.6)':'transparent',borderRadius:6}}>
+            {recvLines.map(({ln,item:rit,po:rpo,szKeys:rsk,rcvd:rrcvd,cncl:rcncl,getOp},ri)=><div key={ln.lineIdx+'-'+ln.poIdx} style={{marginBottom:8,padding:recvLines.length>1?'8px':'0',background:recvLines.length>1?'rgba(255,255,255,0.6)':'transparent',borderRadius:6}}>
               {recvLines.length>1&&<div style={{display:'flex',gap:6,alignItems:'center',marginBottom:4}}>
                 <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',fontSize:11}}>{rit.sku}</span>
                 <span style={{fontWeight:600,fontSize:11}}>{rit.name}</span>
@@ -5939,11 +5955,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               updates.forEach(({ln,updatedPO})=>{updatedItems=updatedItems.map((it,i)=>i===ln.lineIdx?{...it,po_lines:it.po_lines.map((p,j)=>j===ln.poIdx?updatedPO:p)}:it)});
               const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};
               setO(updated);onSave(updated);
-              // Update editPO with the active line's updated PO
               const activeLnUpdate=updates.find(u=>u.ln.lineIdx===activeLine.lineIdx&&u.ln.poIdx===activeLine.poIdx);
-              setEditPO({...editPO,po:activeLnUpdate?activeLnUpdate.updatedPO:editPO.po});
+              setEditPO({...editPO,po:activeLnUpdate?activeLnUpdate.updatedPO:editPO.po,_selectedRecvLines:[]});
               nf('Shipment received on '+po.po_id+(recvLines.length>1?' ('+recvLines.length+' items)':''));
             }}>✓ Receive These Items</button>
+            </>}
+            {recvLines.length===0&&<div style={{fontSize:12,color:'#64748b',fontStyle:'italic'}}>Select items above to receive</div>}
           </div>})()}
 
           {/* QR / Print Label for full PO */}
@@ -6177,26 +6194,46 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <div className="card-body"><p style={{margin:0,fontSize:13,color:'#475569'}}>{po.memo}</p></div>
           </div>}
 
-          {/* Receive Shipment — inline on full page, supports multi-item */}
+          {/* Receive Shipment — inline on full page, click-to-add multi-item */}
           {totalOpen>0&&!isDropShipFP&&(()=>{
-            const fpRecvLines=(allLines||[{lineIdx:0}]).map(ln=>{
+            const allFpRecvLines=(allLines||[{lineIdx:0}]).map((ln,li)=>{
               const it=soItems?.[ln.lineIdx];const p=it?.po_lines?.find(pl=>pl.po_id===po.po_id);if(!it||!p)return null;
               const sk=Object.keys(p).filter(k=>!k.startsWith('_')&&k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='po_type'&&k!=='deco_vendor'&&k!=='deco_type'&&k!=='created_at'&&k!=='memo'&&k!=='notes'&&k!=='expected_date'&&k!=='billed'&&k!=='tracking_numbers'&&k!=='unit_cost'&&k!=='vendor'&&k!=='drop_ship'&&typeof p[k]==='number').sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
               const rcvd=p.received||{};const cncl=p.cancelled||{};
               const getOp=sz=>Math.max(0,(p[sz]||0)-(rcvd[sz]||0)-(cncl[sz]||0));
               const hasOp=sk.some(sz=>getOp(sz)>0);
               const poIdx=it.po_lines.findIndex(pl=>pl.po_id===po.po_id);
-              return hasOp?{ln:{lineIdx:ln.lineIdx,poIdx},item:it,po:p,szKeys:sk,rcvd,cncl,getOp}:null;
+              return hasOp?{li,ln:{lineIdx:ln.lineIdx,poIdx},item:it,po:p,szKeys:sk,rcvd,cncl,getOp}:null;
             }).filter(Boolean);
-            if(!fpRecvLines.length)return null;
+            if(!allFpRecvLines.length)return null;
+            // For single-item POs auto-select; multi-item starts empty
+            const fpSelectedIdxs=allFpRecvLines.length<=1?[0]:(poFullPage._selectedFpRecvLines||[]);
+            const fpRecvLines=allFpRecvLines.filter(r=>fpSelectedIdxs.includes(r.li));
             return<div className="card" style={{marginBottom:16,borderLeft:'3px solid #22c55e'}}>
-            <div className="card-header" style={{background:'#f0fdf4'}}><h2 style={{color:'#166534'}}>Receive Shipment{fpRecvLines.length>1?' ('+fpRecvLines.length+' items)':''}</h2></div>
+            <div className="card-header" style={{background:'#f0fdf4'}}><h2 style={{color:'#166534'}}>Receive Shipment{fpRecvLines.length>0&&fpRecvLines.length>1?' ('+fpRecvLines.length+' items)':''}</h2></div>
             <div className="card-body">
+              {/* Clickable item pills */}
+              {allFpRecvLines.length>1&&<div style={{marginBottom:12}}>
+                <div style={{fontSize:11,fontWeight:600,color:'#64748b',marginBottom:6}}>Click items that arrived in this shipment:</div>
+                <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                  {allFpRecvLines.map(r=>{const isSel=fpSelectedIdxs.includes(r.li);return<div key={r.li} style={{padding:'5px 10px',borderRadius:6,cursor:'pointer',border:isSel?'2px solid #22c55e':'1px dashed #94a3b8',background:isSel?'#dcfce7':'white',fontSize:12,display:'flex',gap:5,alignItems:'center',transition:'all 0.15s'}} onClick={()=>setPoFullPage(p=>{const prev=p._selectedFpRecvLines||[];return{...p,_selectedFpRecvLines:isSel?prev.filter(x=>x!==r.li):[...prev,r.li]}})}>
+                    {isSel?<span style={{color:'#16a34a',fontWeight:800,fontSize:14}}>✓</span>:<span style={{color:'#94a3b8',fontSize:14}}>+</span>}
+                    <span style={{fontFamily:'monospace',fontWeight:700,color:isSel?'#1e40af':'#64748b'}}>{r.item.sku}</span>
+                    <span style={{fontWeight:600,color:isSel?'#0f172a':'#94a3b8'}}>{r.item.name}</span>
+                    <span style={{color:isSel?'#64748b':'#cbd5e1'}}>{r.item.color}</span>
+                  </div>})}
+                </div>
+                {allFpRecvLines.length>2&&<div style={{marginTop:6}}>
+                  <button style={{background:'none',border:'none',cursor:'pointer',fontSize:11,color:'#16a34a',textDecoration:'underline',padding:0}} onClick={()=>setPoFullPage(p=>({...p,_selectedFpRecvLines:allFpRecvLines.map(r=>r.li)}))}>Select all</button>
+                  {fpSelectedIdxs.length>0&&<button style={{background:'none',border:'none',cursor:'pointer',fontSize:11,color:'#64748b',textDecoration:'underline',padding:0,marginLeft:12}} onClick={()=>setPoFullPage(p=>({...p,_selectedFpRecvLines:[]}))}>Clear</button>}
+                </div>}
+              </div>}
+              {fpRecvLines.length>0&&<>
               <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:12}}>
                 <span style={{fontSize:12,fontWeight:600,color:'#64748b'}}>Date:</span>
                 <input type="date" id="po-fp-recv-date" className="form-input" style={{width:150,fontSize:12}} defaultValue={new Date().toISOString().split('T')[0]}/>
               </div>
-              {fpRecvLines.map(({ln,item:rit,szKeys:rsk,getOp},ri)=><div key={ri} style={{marginBottom:10,padding:fpRecvLines.length>1?'8px 10px':'0',background:fpRecvLines.length>1?'#f8fafc':'transparent',borderRadius:6,border:fpRecvLines.length>1?'1px solid #e2e8f0':'none'}}>
+              {fpRecvLines.map(({ln,item:rit,szKeys:rsk,getOp})=><div key={ln.lineIdx+'-'+ln.poIdx} style={{marginBottom:10,padding:fpRecvLines.length>1?'8px 10px':'0',background:fpRecvLines.length>1?'#f8fafc':'transparent',borderRadius:6,border:fpRecvLines.length>1?'1px solid #e2e8f0':'none'}}>
                 {fpRecvLines.length>1&&<div style={{display:'flex',gap:6,alignItems:'center',marginBottom:6}}>
                   <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',fontSize:12}}>{rit.sku}</span>
                   <span style={{fontWeight:600,fontSize:12}}>{rit.name}</span>
@@ -6233,9 +6270,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};
                 setO(updated);onSave(updated);
                 const firstUpdate=updates[0];
-                setPoFullPage({...poFullPage,po:firstUpdate?firstUpdate.updatedPO:po});
+                setPoFullPage({...poFullPage,po:firstUpdate?firstUpdate.updatedPO:po,_selectedFpRecvLines:[]});
                 nf('Shipment received on '+po.po_id+(fpRecvLines.length>1?' ('+fpRecvLines.length+' items)':''));
               }}>Receive These Items</button>
+              </>}
+              {fpRecvLines.length===0&&allFpRecvLines.length>1&&<div style={{fontSize:12,color:'#64748b',fontStyle:'italic'}}>Select items above to receive</div>}
             </div>
           </div>})()}
 
