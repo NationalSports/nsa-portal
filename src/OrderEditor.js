@@ -3571,7 +3571,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const bal=ir.total-(ir.paid||0);
       const contact=(ic?.contacts||[])[0];
       const printInvoice=()=>{
-        const rBillName=ir.billing_name||ic?.name||'—';const rBillSub=ir.billing_name?(ir.billing_address||'')+'<br/><span style="font-size:9px;color:#94a3b8">on behalf of '+ic?.name+'</span>':(ic?.alpha_tag||'');
+        const rBillName=ir.billing_name||ic?.name||'—';const rBillSub=ir.billing_name?(ir.billing_address||'')+'<br/><span style="font-size:9px;color:#94a3b8">on behalf of '+ic?.name+'</span>':'';
         const rPoNum=ir._po_number||irSO?.po_number;
         printDoc({title:rBillName,docNum:ir.id,docType:'INVOICE',
           headerRight:'<div class="ta">$'+ir.total.toLocaleString()+'</div>'
@@ -3727,7 +3727,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const irPoNum=ir._po_number||irSO?.po_number;
             const brevoAttachments=[];
             try{
-              const docHtml=buildDocHtml({title:irBillName,docNum:ir.id,docType:'INVOICE',
+              const docHtml=buildDocHtml({title:irBillName,docNum:ir.id,docType:'INVOICE',css:PRINT_CSS,
                 headerRight:'<div class="ta">$'+ir.total.toLocaleString()+'</div><div class="ts">Balance Due: <strong>$'+irBal.toLocaleString()+'</strong></div>'+(irPoNum?'<div style="font-size:11px;margin-top:4px;font-family:monospace;font-weight:700;color:#1e40af">PO# '+irPoNum+'</div>':''),
                 infoBoxes:[{label:'Bill To',value:irBillName},{label:'Invoice Date',value:ir.date||'—',sub:ir.due_date?'Due: '+ir.due_date:''},{label:'Sales Order',value:ir.so_id||'—',sub:ir.memo||''},{label:'Payment Terms',value:ir.inv_type==='deposit'?(ir.deposit_pct||50)+'% Deposit':'Final Invoice',sub:''}],
                 tables:[{headers:['Description','Qty','Rate','Amount'],aligns:['left','center','right','right'],rows:[
