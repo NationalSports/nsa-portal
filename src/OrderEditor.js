@@ -3571,24 +3571,54 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const bal=ir.total-(ir.paid||0);
       const contact=(ic?.contacts||[])[0];
       const printInvoice=()=>{
+        const _$=n=>'$'+n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
         const rBillName=ir.billing_name||ic?.name||'—';const rBillSub=ir.billing_name?(ir.billing_address||'')+'<br/><span style="font-size:9px;color:#94a3b8">on behalf of '+ic?.name+'</span>':'';
+        const rBillAddr=rBillSub||(ic?.billing_address_line1?ic.billing_address_line1+(ic.billing_city?'<br/>'+ic.billing_city+(ic.billing_state?' '+ic.billing_state:'')+(ic.billing_zip?' '+ic.billing_zip:''):'')+'<br/>United States':'');
+        const rShipAddr=ic?.shipping_address_line1?ic.shipping_address_line1+(ic.shipping_city?'<br/>'+ic.shipping_city+(ic.shipping_state?' '+ic.shipping_state:'')+(ic.shipping_zip?' '+ic.shipping_zip:''):'')+'<br/>United States':'';
         const rPoNum=ir._po_number||irSO?.po_number;
+        // Build rows with decoration detail from SO items
+        const rows=[];let subTotal=0;
+        const soItems=irSO?safeItems(irSO):[];const soArt=irSO?safeArt(irSO):[];
+        const _pAQ={};soItems.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'){_pAQ[d.art_file_id]=(_pAQ[d.art_file_id]||0)+q2}})});
+        const isDeposit=ir.inv_type==='deposit';const depPct=isDeposit?(ir.deposit_pct||50)/100:1;
+        if(soItems.length>0){
+          soItems.forEach(it=>{
+            const sqq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const qty=sqq>0?sqq:safeNum(it.est_qty);if(!qty)return;
+            const szStr=SZ_ORD.filter(sz=>safeSizes(it)[sz]>0).map(sz=>safeSizes(it)[sz]+' '+sz).join(', ');
+            const unitPrice=safeNum(it.unit_sell);const lineAmt=Math.round(qty*unitPrice*depPct*100)/100;subTotal+=lineAmt;
+            let itemName=(it.name||'')+(it.color?' - '+it.color:'');
+            if(szStr)itemName+='<br/><span style="color:#555">'+szStr+'</span>';
+            rows.push({cells:[{value:qty,style:'text-align:center'},{value:it.sku||'',style:'font-weight:700'},{value:itemName},{value:_$(unitPrice),style:'text-align:right'},{value:_$(lineAmt),style:'text-align:right;font-weight:600'}]});
+            safeDecos(it).forEach(d=>{
+              const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:qty;const dp2=dP(d,qty,soArt,cq);
+              const artF=soArt.find(a2=>a2.id===d.art_file_id);
+              const decoLabel=(d.kind==='art'?(artF?.deco_type||d.art_tbd_type||'decoration'):d.kind==='numbers'?'Numbers ('+(d.num_method||'heat transfer').replace(/_/g,' ')+' '+(d.front_and_back?'F:'+(d.num_size||'4"')+' B:'+(d.num_size_back||d.num_size||'4"'):(d.num_size||'4"'))+(d.print_color?' — '+d.print_color:'')+')'+(d.front_and_back?' F+B':''):d.kind==='names'?'Names'+(d.print_color?' ('+d.print_color+')':''):d.kind==='outside_deco'?(d.deco_type||'Decoration'):'Decoration').replace(/_/g,' ');
+              const posLabel=d.position?' — '+d.position:'';const decoAmt=Math.round(qty*dp2.sell*depPct*100)/100;subTotal+=decoAmt;
+              rows.push({cells:[{value:qty,style:'text-align:center;color:#888'},{value:'',style:''},{value:'<span style="padding-left:16px;color:#666">'+decoLabel+posLabel+'</span>'},{value:_$(dp2.sell),style:'text-align:right;color:#888'},{value:_$(decoAmt),style:'text-align:right;color:#888'}]});
+            });
+          });
+        }else{
+          lineItems.forEach(li=>{subTotal+=safeNum(li.amount);rows.push({cells:[li.qty,{value:(li.desc||'').split(' ')[0],style:'font-weight:700'},{value:(li.desc||'').split(' ').slice(1).join(' ')},{value:_$(safeNum(li.rate)),style:'text-align:right'},{value:_$(safeNum(li.amount)),style:'text-align:right;font-weight:600'}]})});
+        }
         printDoc({title:rBillName,docNum:ir.id,docType:'INVOICE',
-          headerRight:'<div class="ta">$'+ir.total.toLocaleString()+'</div>'
-            +'<div class="ts">Balance Due: <strong>$'+bal.toLocaleString()+'</strong></div>'+(rPoNum?'<div style="font-size:11px;margin-top:4px;font-family:monospace;font-weight:700;color:#1e40af">PO# '+rPoNum+'</div>':''),
+          headerRight:'<div class="ta">'+_$(ir.total)+'</div>'
+            +'<div class="ts">Balance Due: <strong>'+_$(bal)+'</strong></div>'+(rPoNum?'<div style="font-size:11px;margin-top:4px;font-family:monospace;font-weight:700;color:#1e40af">PO# '+rPoNum+'</div>':''),
           infoBoxes:[
-            {label:'Bill To',value:rBillName,sub:rBillSub},
+            {label:'Bill To',value:rBillName,sub:rBillAddr},
+            ...(rShipAddr?[{label:'Ship To',value:ic?.name||'—',sub:rShipAddr}]:[]),
             {label:'Invoice Date',value:ir.date||new Date().toLocaleDateString(),sub:ir.due_date?'Due: '+ir.due_date:''},
             {label:'Sales Order',value:ir.so_id||'—',sub:ir.memo||''+(rPoNum?'<br/><strong>PO# '+rPoNum+'</strong>':'')},
             {label:'Payment Terms',value:ir.inv_type==='deposit'?(ir.deposit_pct||50)+'% Deposit':ir.inv_type==='partial'?'Partial Invoice':'Final Invoice',sub:''}
           ],
-          tables:[{headers:['Description','Qty','Rate','Amount'],aligns:['left','center','right','right'],
-            rows:[
-              ...lineItems.map(li=>({cells:[li.desc,li.qty,'$'+safeNum(li.rate).toFixed(2),'$'+safeNum(li.amount).toFixed(2)]})),
-              ...(shipAmt>0?[{cells:[{value:'Shipping',style:'font-style:italic'},'','','$'+shipAmt.toFixed(2)]}]:[]),
-              ...(taxAmt>0?[{cells:[{value:'Tax',style:'font-style:italic'},'','','$'+taxAmt.toFixed(2)]}]:[]),
-              ...(safeNum(ir.credit_amount)>0?[{cells:[{value:'Credit Applied',style:'font-style:italic;color:#065f46'},'','',{value:'-$'+safeNum(ir.credit_amount).toFixed(2),style:'color:#065f46'}]}]:[]),
-              {_class:'totals-row',cells:['','','Total','$'+ir.total.toLocaleString()]}
+          tables:[{headers:['Quantity','SKU','Item','Rate','Amount'],aligns:['center','left','left','right','right'],
+            rows:[...rows,
+              {cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Subtotal</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'},{value:'<strong>'+_$(subTotal)+'</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'}]},
+              ...(shipAmt>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Shipping</strong>',style:'text-align:right;border:none'},{value:_$(shipAmt),style:'text-align:right;border:none'}]}]:[]),
+              ...(taxAmt>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Tax</strong>',style:'text-align:right;border:none'},{value:_$(taxAmt),style:'text-align:right;border:none'}]}]:[]),
+              ...(safeNum(ir.credit_amount)>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Credit</strong>',style:'text-align:right;border:none;color:#065f46'},{value:'<strong style="color:#065f46">-'+_$(safeNum(ir.credit_amount))+'</strong>',style:'text-align:right;border:none'}]}]:[]),
+              {_class:'totals-row',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Total</strong>',style:'text-align:right'},{value:'<strong style="font-size:14px">'+_$(ir.total)+'</strong>',style:'text-align:right'}]},
+              ...(ir.paid>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<span style="color:#166534">Paid</span>',style:'text-align:right;border:none'},{value:'<span style="color:#166534">'+_$(ir.paid)+'</span>',style:'text-align:right;border:none'}]}]:[]),
+              ...(bal>0?[{_style:'background:#fef2f2',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong style="color:#dc2626">Balance Due</strong>',style:'text-align:right'},{value:'<strong style="color:#dc2626;font-size:14px">'+_$(bal)+'</strong>',style:'text-align:right'}]}]:[]),
             ]}],
           footer:ir.inv_type==='deposit'?_ci.depositTerms:_ci.terms});
       };
@@ -3723,22 +3753,57 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const toEmail=resolvedEmail;
             const toName=resolvedName;
             // Build PDF attachment
+            const _$e=n=>'$'+n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
             const irBillName=ir.billing_name||ic?.name||'—';const irBal=ir.total-(ir.paid||0);
             const irPoNum=ir._po_number||irSO?.po_number;
+            const eBillSub=ir.billing_name?(ir.billing_address||'')+'<br/><span style="font-size:9px;color:#94a3b8">on behalf of '+ic?.name+'</span>':'';
+            const eBillAddr=eBillSub||(ic?.billing_address_line1?ic.billing_address_line1+(ic.billing_city?'<br/>'+ic.billing_city+(ic.billing_state?' '+ic.billing_state:'')+(ic.billing_zip?' '+ic.billing_zip:''):'')+'<br/>United States':'');
+            const eShipAddr=ic?.shipping_address_line1?ic.shipping_address_line1+(ic.shipping_city?'<br/>'+ic.shipping_city+(ic.shipping_state?' '+ic.shipping_state:'')+(ic.shipping_zip?' '+ic.shipping_zip:''):'')+'<br/>United States':'';
+            // Build rows with decoration detail from SO items
+            const eRows=[];let eSubTotal=0;
+            const eSoItems=irSO?safeItems(irSO):[];const eSoArt=irSO?safeArt(irSO):[];
+            const _eAQ={};eSoItems.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'){_eAQ[d.art_file_id]=(_eAQ[d.art_file_id]||0)+q2}})});
+            const eIsDeposit=ir.inv_type==='deposit';const eDepPct=eIsDeposit?(ir.deposit_pct||50)/100:1;
+            if(eSoItems.length>0){
+              eSoItems.forEach(it=>{
+                const sqq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const qty=sqq>0?sqq:safeNum(it.est_qty);if(!qty)return;
+                const szStr=SZ_ORD.filter(sz=>safeSizes(it)[sz]>0).map(sz=>safeSizes(it)[sz]+' '+sz).join(', ');
+                const unitPrice=safeNum(it.unit_sell);const lineAmt=Math.round(qty*unitPrice*eDepPct*100)/100;eSubTotal+=lineAmt;
+                let itemName=(it.name||'')+(it.color?' - '+it.color:'');
+                if(szStr)itemName+='<br/><span style="color:#555">'+szStr+'</span>';
+                eRows.push({cells:[{value:qty,style:'text-align:center'},{value:it.sku||'',style:'font-weight:700'},{value:itemName},{value:_$e(unitPrice),style:'text-align:right'},{value:_$e(lineAmt),style:'text-align:right;font-weight:600'}]});
+                safeDecos(it).forEach(d=>{
+                  const cq=d.kind==='art'&&d.art_file_id?_eAQ[d.art_file_id]:qty;const dp2=dP(d,qty,eSoArt,cq);
+                  const artF=eSoArt.find(a2=>a2.id===d.art_file_id);
+                  const decoLabel=(d.kind==='art'?(artF?.deco_type||d.art_tbd_type||'decoration'):d.kind==='numbers'?'Numbers ('+(d.num_method||'heat transfer').replace(/_/g,' ')+' '+(d.front_and_back?'F:'+(d.num_size||'4"')+' B:'+(d.num_size_back||d.num_size||'4"'):(d.num_size||'4"'))+(d.print_color?' — '+d.print_color:'')+')'+(d.front_and_back?' F+B':''):d.kind==='names'?'Names'+(d.print_color?' ('+d.print_color+')':''):d.kind==='outside_deco'?(d.deco_type||'Decoration'):'Decoration').replace(/_/g,' ');
+                  const posLabel=d.position?' — '+d.position:'';const decoAmt=Math.round(qty*dp2.sell*eDepPct*100)/100;eSubTotal+=decoAmt;
+                  eRows.push({cells:[{value:qty,style:'text-align:center;color:#888'},{value:'',style:''},{value:'<span style="padding-left:16px;color:#666">'+decoLabel+posLabel+'</span>'},{value:_$e(dp2.sell),style:'text-align:right;color:#888'},{value:_$e(decoAmt),style:'text-align:right;color:#888'}]});
+                });
+              });
+            }else{
+              lineItems.forEach(li=>{eSubTotal+=safeNum(li.amount);eRows.push({cells:[li.qty,{value:(li.desc||'').split(' ')[0],style:'font-weight:700'},{value:(li.desc||'').split(' ').slice(1).join(' ')},{value:_$e(safeNum(li.rate)),style:'text-align:right'},{value:_$e(safeNum(li.amount)),style:'text-align:right;font-weight:600'}]})});
+            }
             const brevoAttachments=[];
             try{
               const docHtml=buildDocHtml({title:irBillName,docNum:ir.id,docType:'INVOICE',css:PRINT_CSS,
-                headerRight:'<div class="ta">$'+ir.total.toLocaleString()+'</div><div class="ts">Balance Due: <strong>$'+irBal.toLocaleString()+'</strong></div>'+(irPoNum?'<div style="font-size:11px;margin-top:4px;font-family:monospace;font-weight:700;color:#1e40af">PO# '+irPoNum+'</div>':''),
-                infoBoxes:[{label:'Bill To',value:irBillName},{label:'Invoice Date',value:ir.date||'—',sub:ir.due_date?'Due: '+ir.due_date:''},{label:'Sales Order',value:ir.so_id||'—',sub:ir.memo||''},{label:'Payment Terms',value:ir.inv_type==='deposit'?(ir.deposit_pct||50)+'% Deposit':'Final Invoice',sub:''}],
-                tables:[{headers:['Description','Qty','Rate','Amount'],aligns:['left','center','right','right'],rows:[
-                  ...lineItems.map(li=>({cells:[li.desc,li.qty,'$'+safeNum(li.rate).toFixed(2),'$'+safeNum(li.amount).toFixed(2)]})),
-                  ...(shipAmt>0?[{cells:[{value:'Shipping',style:'font-style:italic'},'','','$'+shipAmt.toFixed(2)]}]:[]),
-                  ...(taxAmt>0?[{cells:[{value:'Tax',style:'font-style:italic'},'','','$'+taxAmt.toFixed(2)]}]:[]),
-                  ...(safeNum(ir.credit_amount)>0?[{cells:[{value:'Credit Applied',style:'font-style:italic;color:#065f46'},'','',{value:'-$'+safeNum(ir.credit_amount).toFixed(2),style:'color:#065f46'}]}]:[]),
-                  {_class:'totals-row',cells:['','','Total','$'+ir.total.toLocaleString()]},
-                  ...(ir.paid>0?[{cells:['','',{value:'Paid',style:'color:#166534'},'$'+ir.paid.toLocaleString()]}]:[]),
-                  ...(irBal>0?[{_style:'background:#fef2f2',cells:['','',{value:'<strong>Balance Due</strong>',style:'color:#dc2626'},'<strong style="color:#dc2626;font-size:14px">$'+irBal.toLocaleString()+'</strong>']}]:[])
-                ]}],footer:ir.inv_type==='deposit'?_ci.depositTerms:_ci.terms});
+                headerRight:'<div class="ta">'+_$e(ir.total)+'</div><div class="ts">Balance Due: <strong>'+_$e(irBal)+'</strong></div>'+(irPoNum?'<div style="font-size:11px;margin-top:4px;font-family:monospace;font-weight:700;color:#1e40af">PO# '+irPoNum+'</div>':''),
+                infoBoxes:[
+                  {label:'Bill To',value:irBillName,sub:eBillAddr},
+                  ...(eShipAddr?[{label:'Ship To',value:ic?.name||'—',sub:eShipAddr}]:[]),
+                  {label:'Invoice Date',value:ir.date||'—',sub:ir.due_date?'Due: '+ir.due_date:''},
+                  {label:'Sales Order',value:ir.so_id||'—',sub:ir.memo||''+(irPoNum?'<br/><strong>PO# '+irPoNum+'</strong>':'')},
+                  {label:'Payment Terms',value:ir.inv_type==='deposit'?(ir.deposit_pct||50)+'% Deposit':ir.inv_type==='partial'?'Partial Invoice':'Final Invoice',sub:''}
+                ],
+                tables:[{headers:['Quantity','SKU','Item','Rate','Amount'],aligns:['center','left','left','right','right'],
+                  rows:[...eRows,
+                    {cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Subtotal</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'},{value:'<strong>'+_$e(eSubTotal)+'</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'}]},
+                    ...(shipAmt>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Shipping</strong>',style:'text-align:right;border:none'},{value:_$e(shipAmt),style:'text-align:right;border:none'}]}]:[]),
+                    ...(taxAmt>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Tax</strong>',style:'text-align:right;border:none'},{value:_$e(taxAmt),style:'text-align:right;border:none'}]}]:[]),
+                    ...(safeNum(ir.credit_amount)>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Credit</strong>',style:'text-align:right;border:none;color:#065f46'},{value:'<strong style="color:#065f46">-'+_$e(safeNum(ir.credit_amount))+'</strong>',style:'text-align:right;border:none'}]}]:[]),
+                    {_class:'totals-row',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Total</strong>',style:'text-align:right'},{value:'<strong style="font-size:14px">'+_$e(ir.total)+'</strong>',style:'text-align:right'}]},
+                    ...(ir.paid>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<span style="color:#166534">Paid</span>',style:'text-align:right;border:none'},{value:'<span style="color:#166534">'+_$e(ir.paid)+'</span>',style:'text-align:right;border:none'}]}]:[]),
+                    ...(irBal>0?[{_style:'background:#fef2f2',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong style="color:#dc2626">Balance Due</strong>',style:'text-align:right'},{value:'<strong style="color:#dc2626;font-size:14px">'+_$e(irBal)+'</strong>',style:'text-align:right'}]}]:[]),
+                  ]}],footer:ir.inv_type==='deposit'?_ci.depositTerms:_ci.terms});
               const styleMatch=docHtml.match(/<style>([\s\S]*?)<\/style>/);const bodyMatch=docHtml.match(/<body>([\s\S]*?)<\/body>/);
               const pdfFixCss='.header{display:table!important;width:100%!important;table-layout:fixed}.header>*{display:table-cell!important;vertical-align:top!important}.logo{width:55%!important}.logo img{height:50px;vertical-align:middle;margin-right:8px;float:left}.doc-id{width:45%!important;text-align:right!important}.bill-total{display:table!important;width:100%!important;table-layout:fixed}.bill-total>*{display:table-cell!important;vertical-align:top!important}.total-box{width:200px!important;text-align:left!important}.info-row{display:table!important;width:100%!important;table-layout:fixed}.info-cell{display:table-cell!important;vertical-align:top!important}.footer{display:table!important;width:100%!important}.footer>*{display:table-cell!important}.footer>*:last-child{text-align:right!important}';
               const container=document.createElement('div');container.style.cssText='position:absolute;left:-9999px;top:0;width:800px;background:white;font-family:Segoe UI,Helvetica,Arial,sans-serif;font-size:11px;color:#1a1a1a;padding:20px 28px;line-height:1.4';

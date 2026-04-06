@@ -6601,24 +6601,55 @@ export default function App(){
               }}>Send Invoice</button>
             <button className="btn btn-sm btn-secondary" style={{fontSize:12,padding:'6px 14px'}}
               onClick={()=>{
-                const invItems=lineItems.length>0?lineItems:
-                  (so?safeItems(so).map(it=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);if(!qty)return null;
-                    const decoSell=safeDecos(it).reduce((a,d)=>{const dp=dP(d,qty,safeArt(so),qty);return a+dp.sell},0);
-                    return{desc:it.sku+' '+it.name+(it.color?' — '+it.color:''),qty,rate:safeNum(it.unit_sell)+decoSell,amount:qty*(safeNum(it.unit_sell)+decoSell)}}).filter(Boolean):[]);
-                const billToName=inv.billing_name||ic?.name||'—';const billToSub=inv.billing_name?(inv.billing_address||'')+'<br/><span style="font-size:9px;color:#94a3b8">on behalf of '+ic?.name+'</span>':(ic?.billing_address_line1?ic.billing_address_line1+(ic.billing_city?', '+ic.billing_city:'')+(ic.billing_state?' '+ic.billing_state:'')+(ic.billing_zip?' '+ic.billing_zip:''):'');
+                const _$=n=>'$'+n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+                const billToName=inv.billing_name||ic?.name||'—';
+                const billToSub=inv.billing_name?(inv.billing_address||'')+'<br/><span style="font-size:9px;color:#94a3b8">on behalf of '+ic?.name+'</span>':'';
+                const billAddr=billToSub||(ic?.billing_address_line1?ic.billing_address_line1+(ic.billing_city?'<br/>'+ic.billing_city+(ic.billing_state?' '+ic.billing_state:'')+(ic.billing_zip?' '+ic.billing_zip:''):'')+'<br/>United States':'');
+                const shipAddr=ic?.shipping_address_line1?ic.shipping_address_line1+(ic.shipping_city?'<br/>'+ic.shipping_city+(ic.shipping_state?' '+ic.shipping_state:'')+(ic.shipping_zip?' '+ic.shipping_zip:''):'')+'<br/>United States':'';
                 const poNum=inv._po_number||so?.po_number;
+                // Build rows with decoration detail from SO items
+                const pRows=[];let pSubTotal=0;
+                const pSoItems=so?safeItems(so):[];const pSoArt=so?safeArt(so):[];
+                const _pAQ2={};pSoItems.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'){_pAQ2[d.art_file_id]=(_pAQ2[d.art_file_id]||0)+q2}})});
+                const pIsDeposit=inv.inv_type==='deposit';const pDepPct=pIsDeposit?(inv.deposit_pct||50)/100:1;
+                if(pSoItems.length>0){
+                  pSoItems.forEach(it=>{
+                    const sqq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const qty=sqq>0?sqq:safeNum(it.est_qty);if(!qty)return;
+                    const szStr=SZ_ORD.filter(sz=>safeSizes(it)[sz]>0).map(sz=>safeSizes(it)[sz]+' '+sz).join(', ');
+                    const unitPrice=safeNum(it.unit_sell);const lineAmt=Math.round(qty*unitPrice*pDepPct*100)/100;pSubTotal+=lineAmt;
+                    let itemName=(it.name||'')+(it.color?' - '+it.color:'');
+                    if(szStr)itemName+='<br/><span style="color:#555">'+szStr+'</span>';
+                    pRows.push({cells:[{value:qty,style:'text-align:center'},{value:it.sku||'',style:'font-weight:700'},{value:itemName},{value:_$(unitPrice),style:'text-align:right'},{value:_$(lineAmt),style:'text-align:right;font-weight:600'}]});
+                    safeDecos(it).forEach(d=>{
+                      const cq=d.kind==='art'&&d.art_file_id?_pAQ2[d.art_file_id]:qty;const dp2=dP(d,qty,pSoArt,cq);
+                      const artF=pSoArt.find(a2=>a2.id===d.art_file_id);
+                      const decoLabel=(d.kind==='art'?(artF?.deco_type||d.art_tbd_type||'decoration'):d.kind==='numbers'?'Numbers ('+(d.num_method||'heat transfer').replace(/_/g,' ')+' '+(d.front_and_back?'F:'+(d.num_size||'4"')+' B:'+(d.num_size_back||d.num_size||'4"'):(d.num_size||'4"'))+(d.print_color?' — '+d.print_color:'')+')'+(d.front_and_back?' F+B':''):d.kind==='names'?'Names'+(d.print_color?' ('+d.print_color+')':''):d.kind==='outside_deco'?(d.deco_type||'Decoration'):'Decoration').replace(/_/g,' ');
+                      const posLabel=d.position?' — '+d.position:'';const decoAmt=Math.round(qty*dp2.sell*pDepPct*100)/100;pSubTotal+=decoAmt;
+                      pRows.push({cells:[{value:qty,style:'text-align:center;color:#888'},{value:'',style:''},{value:'<span style="padding-left:16px;color:#666">'+decoLabel+posLabel+'</span>'},{value:_$(dp2.sell),style:'text-align:right;color:#888'},{value:_$(decoAmt),style:'text-align:right;color:#888'}]});
+                    });
+                  });
+                }else{
+                  lineItems.forEach(li=>{pSubTotal+=safeNum(li.amount);pRows.push({cells:[li.qty,{value:(li.desc||'').split(' ')[0],style:'font-weight:700'},{value:(li.desc||'').split(' ').slice(1).join(' ')},{value:_$(safeNum(li.rate)),style:'text-align:right'},{value:_$(safeNum(li.amount)),style:'text-align:right;font-weight:600'}]})});
+                }
                 printDoc({title:billToName,docNum:inv.id,docType:'INVOICE',
-                  headerRight:'<div class="ta">$'+inv.total.toLocaleString()+'</div><div class="ts">Balance Due: <strong>$'+bal.toLocaleString()+'</strong></div>'+(poNum?'<div style="font-size:11px;margin-top:4px;font-family:monospace;font-weight:700;color:#1e40af">PO# '+poNum+'</div>':''),
-                  infoBoxes:[{label:'Bill To',value:billToName,sub:billToSub},{label:'Invoice Date',value:inv.date||'—',sub:inv.due_date?'Due: '+inv.due_date:''},{label:'Sales Order',value:inv.so_id||'—',sub:inv.memo||''+(poNum?'<br/><strong>PO# '+poNum+'</strong>':'')},{label:'Payment Terms',value:inv.inv_type==='deposit'?(inv.deposit_pct||50)+'% Deposit':inv.inv_type==='partial'?'Partial Invoice':'Final Invoice',sub:'Rep: '+(repObj?.name||'—')}],
-                  tables:[{headers:['Description','Qty','Rate','Amount'],aligns:['left','center','right','right'],rows:[
-                    ...invItems.map(li=>({cells:[li.desc,li.qty,'$'+safeNum(li.rate).toFixed(2),'$'+safeNum(li.amount).toFixed(2)]})),
-                    ...(shipAmt>0?[{cells:[{value:'Shipping',style:'font-style:italic'},'','','$'+shipAmt.toFixed(2)]}]:[]),
-                    ...(taxAmt>0?[{cells:[{value:'Tax',style:'font-style:italic'},'','','$'+taxAmt.toFixed(2)]}]:[]),
-                    ...(safeNum(inv.credit_amount)>0?[{cells:[{value:'Credit Applied',style:'font-style:italic;color:#065f46'},'','',{value:'-$'+safeNum(inv.credit_amount).toFixed(2),style:'color:#065f46'}]}]:[]),
-                    {_class:'totals-row',cells:['','','Total','$'+inv.total.toLocaleString()]},
-                    ...(inv.paid>0?[{cells:['','',{value:'Paid',style:'color:#166534'},'$'+inv.paid.toLocaleString()]}]:[]),
-                    ...(bal>0?[{_style:'background:#fef2f2',cells:['','',{value:'<strong>Balance Due</strong>',style:'color:#dc2626'},'<strong style="color:#dc2626;font-size:14px">$'+bal.toLocaleString()+'</strong>']}]:[])
-                  ]}],footer:inv.inv_type==='deposit'?companyInfo.depositTerms:companyInfo.terms});
+                  headerRight:'<div class="ta">'+_$(inv.total)+'</div><div class="ts">Balance Due: <strong>'+_$(bal)+'</strong></div>'+(poNum?'<div style="font-size:11px;margin-top:4px;font-family:monospace;font-weight:700;color:#1e40af">PO# '+poNum+'</div>':''),
+                  infoBoxes:[
+                    {label:'Bill To',value:billToName,sub:billAddr},
+                    ...(shipAddr?[{label:'Ship To',value:ic?.name||'—',sub:shipAddr}]:[]),
+                    {label:'Invoice Date',value:inv.date||'—',sub:inv.due_date?'Due: '+inv.due_date:''},
+                    {label:'Sales Order',value:inv.so_id||'—',sub:inv.memo||''+(poNum?'<br/><strong>PO# '+poNum+'</strong>':'')},
+                    {label:'Payment Terms',value:inv.inv_type==='deposit'?(inv.deposit_pct||50)+'% Deposit':inv.inv_type==='partial'?'Partial Invoice':'Final Invoice',sub:'Rep: '+(repObj?.name||'—')}
+                  ],
+                  tables:[{headers:['Quantity','SKU','Item','Rate','Amount'],aligns:['center','left','left','right','right'],
+                    rows:[...pRows,
+                      {cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Subtotal</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'},{value:'<strong>'+_$(pSubTotal)+'</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'}]},
+                      ...(shipAmt>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Shipping</strong>',style:'text-align:right;border:none'},{value:_$(shipAmt),style:'text-align:right;border:none'}]}]:[]),
+                      ...(taxAmt>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Tax</strong>',style:'text-align:right;border:none'},{value:_$(taxAmt),style:'text-align:right;border:none'}]}]:[]),
+                      ...(safeNum(inv.credit_amount)>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Credit</strong>',style:'text-align:right;border:none;color:#065f46'},{value:'<strong style="color:#065f46">-'+_$(safeNum(inv.credit_amount))+'</strong>',style:'text-align:right;border:none'}]}]:[]),
+                      {_class:'totals-row',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Total</strong>',style:'text-align:right'},{value:'<strong style="font-size:14px">'+_$(inv.total)+'</strong>',style:'text-align:right'}]},
+                      ...(inv.paid>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<span style="color:#166534">Paid</span>',style:'text-align:right;border:none'},{value:'<span style="color:#166534">'+_$(inv.paid)+'</span>',style:'text-align:right;border:none'}]}]:[]),
+                      ...(bal>0?[{_style:'background:#fef2f2',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong style="color:#dc2626">Balance Due</strong>',style:'text-align:right'},{value:'<strong style="color:#dc2626;font-size:14px">'+_$(bal)+'</strong>',style:'text-align:right'}]}]:[]),
+                    ]}],footer:inv.inv_type==='deposit'?companyInfo.depositTerms:companyInfo.terms});
                 const ph=[...(inv.print_history||[]),{printed_at:new Date().toLocaleString(),printed_by:cu.name||cu.id}];
                 setInvs(prev=>prev.map(i=>i.id===inv.id?{...i,print_history:ph}:i));setViewInvoice(v=>({...v,print_history:ph}));
               }}>Print</button>
@@ -7082,28 +7113,62 @@ export default function App(){
                 setInvSendModalDirect(null);
                 const toEmail=resolvedEmail;
                 const siInv=si.inv;const siSo=sos.find(s=>s.id===siInv.so_id);const siCust=cust.find(c=>c.id===siInv.customer_id);
+                const _$si=n=>'$'+n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
                 const siBillName=siInv.billing_name||siCust?.name||'—';
                 const siBal=siInv.total-(siInv.paid||0);
                 const siShip=siInv.shipping||0;const siTax=siInv.tax||0;
                 const siRepObj=siSo?REPS.find(r=>r.id===siSo.created_by):null;
                 const siPoNum=siInv._po_number||siSo?.po_number;
-                // Compute line items for PDF
+                const siBillSub=siInv.billing_name?(siInv.billing_address||'')+'<br/><span style="font-size:9px;color:#94a3b8">on behalf of '+siCust?.name+'</span>':'';
+                const siBillAddr=siBillSub||(siCust?.billing_address_line1?siCust.billing_address_line1+(siCust.billing_city?'<br/>'+siCust.billing_city+(siCust.billing_state?' '+siCust.billing_state:'')+(siCust.billing_zip?' '+siCust.billing_zip:''):'')+'<br/>United States':'');
+                const siShipAddr=siCust?.shipping_address_line1?siCust.shipping_address_line1+(siCust.shipping_city?'<br/>'+siCust.shipping_city+(siCust.shipping_state?' '+siCust.shipping_state:'')+(siCust.shipping_zip?' '+siCust.shipping_zip:''):'')+'<br/>United States':'';
+                // Build rows with decoration detail from SO items
+                const siRows=[];let siSubTotal=0;
+                const siSoItems=siSo?safeItems(siSo):[];const siSoArt=siSo?safeArt(siSo):[];
+                const _siAQ={};siSoItems.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'){_siAQ[d.art_file_id]=(_siAQ[d.art_file_id]||0)+q2}})});
+                const siIsDeposit=siInv.inv_type==='deposit';const siDepPct=siIsDeposit?(siInv.deposit_pct||50)/100:1;
                 const siStoredLi=siInv.line_items||[];
-                const siLi=siStoredLi.length>0?siStoredLi:(siSo?safeItems(siSo).map(it=>{const qq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);if(!qq)return null;const aq2={};safeItems(siSo).forEach(sit=>{const sq2=Object.values(safeSizes(sit)).reduce((a2,v2)=>a2+safeNum(v2),0);safeDecos(sit).forEach(d2=>{if(d2.kind==='art'&&d2.art_file_id){aq2[d2.art_file_id]=(aq2[d2.art_file_id]||0)+sq2}})});const ds=safeDecos(it).reduce((a,d)=>{const cq=d.kind==='art'&&d.art_file_id?aq2[d.art_file_id]:qq;return a+dP(d,qq,safeArt(siSo),cq).sell},0);return{desc:it.sku+' '+it.name+(it.color?' — '+it.color:''),qty:qq,rate:safeNum(it.unit_sell)+ds,amount:qq*(safeNum(it.unit_sell)+ds)}}).filter(Boolean):[]);
+                if(siSoItems.length>0){
+                  siSoItems.forEach(it=>{
+                    const sqq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const qty=sqq>0?sqq:safeNum(it.est_qty);if(!qty)return;
+                    const szStr=SZ_ORD.filter(sz=>safeSizes(it)[sz]>0).map(sz=>safeSizes(it)[sz]+' '+sz).join(', ');
+                    const unitPrice=safeNum(it.unit_sell);const lineAmt=Math.round(qty*unitPrice*siDepPct*100)/100;siSubTotal+=lineAmt;
+                    let itemName=(it.name||'')+(it.color?' - '+it.color:'');
+                    if(szStr)itemName+='<br/><span style="color:#555">'+szStr+'</span>';
+                    siRows.push({cells:[{value:qty,style:'text-align:center'},{value:it.sku||'',style:'font-weight:700'},{value:itemName},{value:_$si(unitPrice),style:'text-align:right'},{value:_$si(lineAmt),style:'text-align:right;font-weight:600'}]});
+                    safeDecos(it).forEach(d=>{
+                      const cq=d.kind==='art'&&d.art_file_id?_siAQ[d.art_file_id]:qty;const dp2=dP(d,qty,siSoArt,cq);
+                      const artF=siSoArt.find(a2=>a2.id===d.art_file_id);
+                      const decoLabel=(d.kind==='art'?(artF?.deco_type||d.art_tbd_type||'decoration'):d.kind==='numbers'?'Numbers ('+(d.num_method||'heat transfer').replace(/_/g,' ')+' '+(d.front_and_back?'F:'+(d.num_size||'4"')+' B:'+(d.num_size_back||d.num_size||'4"'):(d.num_size||'4"'))+(d.print_color?' — '+d.print_color:'')+')'+(d.front_and_back?' F+B':''):d.kind==='names'?'Names'+(d.print_color?' ('+d.print_color+')':''):d.kind==='outside_deco'?(d.deco_type||'Decoration'):'Decoration').replace(/_/g,' ');
+                      const posLabel=d.position?' — '+d.position:'';const decoAmt=Math.round(qty*dp2.sell*siDepPct*100)/100;siSubTotal+=decoAmt;
+                      siRows.push({cells:[{value:qty,style:'text-align:center;color:#888'},{value:'',style:''},{value:'<span style="padding-left:16px;color:#666">'+decoLabel+posLabel+'</span>'},{value:_$si(dp2.sell),style:'text-align:right;color:#888'},{value:_$si(decoAmt),style:'text-align:right;color:#888'}]});
+                    });
+                  });
+                }else{
+                  (siStoredLi).forEach(li=>{siSubTotal+=safeNum(li.amount);siRows.push({cells:[li.qty,{value:(li.desc||'').split(' ')[0],style:'font-weight:700'},{value:(li.desc||'').split(' ').slice(1).join(' ')},{value:_$si(safeNum(li.rate)),style:'text-align:right'},{value:_$si(safeNum(li.amount)),style:'text-align:right;font-weight:600'}]})});
+                }
                 // Build PDF attachment
                 const brevoAttachments=[];
                 try{
                   const docHtml=buildDocHtml({title:siBillName,docNum:siInv.id,docType:'INVOICE',css:PRINT_CSS,
-                    headerRight:'<div class="ta">$'+siInv.total.toLocaleString()+'</div><div class="ts">Balance Due: <strong>$'+siBal.toLocaleString()+'</strong></div>'+(siPoNum?'<div style="font-size:11px;margin-top:4px;font-family:monospace;font-weight:700;color:#1e40af">PO# '+siPoNum+'</div>':''),
-                    infoBoxes:[{label:'Bill To',value:siBillName},{label:'Invoice Date',value:siInv.date||'—',sub:siInv.due_date?'Due: '+siInv.due_date:''},{label:'Sales Order',value:siInv.so_id||'—',sub:siInv.memo||''},{label:'Payment Terms',value:siInv.inv_type==='deposit'?(siInv.deposit_pct||50)+'% Deposit':'Final Invoice',sub:'Rep: '+(siRepObj?.name||'—')}],
-                    tables:[{headers:['Description','Qty','Rate','Amount'],aligns:['left','center','right','right'],rows:[
-                      ...siLi.map(li=>({cells:[li.desc,li.qty,'$'+safeNum(li.rate).toFixed(2),'$'+safeNum(li.amount).toFixed(2)]})),
-                      ...(siShip>0?[{cells:[{value:'Shipping',style:'font-style:italic'},'','','$'+siShip.toFixed(2)]}]:[]),
-                      ...(siTax>0?[{cells:[{value:'Tax',style:'font-style:italic'},'','','$'+siTax.toFixed(2)]}]:[]),
-                      {_class:'totals-row',cells:['','','Total','$'+siInv.total.toLocaleString()]},
-                      ...(siInv.paid>0?[{cells:['','',{value:'Paid',style:'color:#166534'},'$'+siInv.paid.toLocaleString()]}]:[]),
-                      ...(siBal>0?[{_style:'background:#fef2f2',cells:['','',{value:'<strong>Balance Due</strong>',style:'color:#dc2626'},'<strong style="color:#dc2626;font-size:14px">$'+siBal.toLocaleString()+'</strong>']}]:[])
-                    ]}],footer:siInv.inv_type==='deposit'?companyInfo.depositTerms:companyInfo.terms});
+                    headerRight:'<div class="ta">'+_$si(siInv.total)+'</div><div class="ts">Balance Due: <strong>'+_$si(siBal)+'</strong></div>'+(siPoNum?'<div style="font-size:11px;margin-top:4px;font-family:monospace;font-weight:700;color:#1e40af">PO# '+siPoNum+'</div>':''),
+                    infoBoxes:[
+                      {label:'Bill To',value:siBillName,sub:siBillAddr},
+                      ...(siShipAddr?[{label:'Ship To',value:siCust?.name||'—',sub:siShipAddr}]:[]),
+                      {label:'Invoice Date',value:siInv.date||'—',sub:siInv.due_date?'Due: '+siInv.due_date:''},
+                      {label:'Sales Order',value:siInv.so_id||'—',sub:siInv.memo||''+(siPoNum?'<br/><strong>PO# '+siPoNum+'</strong>':'')},
+                      {label:'Payment Terms',value:siInv.inv_type==='deposit'?(siInv.deposit_pct||50)+'% Deposit':siInv.inv_type==='partial'?'Partial Invoice':'Final Invoice',sub:'Rep: '+(siRepObj?.name||'—')}
+                    ],
+                    tables:[{headers:['Quantity','SKU','Item','Rate','Amount'],aligns:['center','left','left','right','right'],
+                      rows:[...siRows,
+                        {cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Subtotal</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'},{value:'<strong>'+_$si(siSubTotal)+'</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'}]},
+                        ...(siShip>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Shipping</strong>',style:'text-align:right;border:none'},{value:_$si(siShip),style:'text-align:right;border:none'}]}]:[]),
+                        ...(siTax>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Tax</strong>',style:'text-align:right;border:none'},{value:_$si(siTax),style:'text-align:right;border:none'}]}]:[]),
+                        ...(safeNum(siInv.credit_amount)>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Credit</strong>',style:'text-align:right;border:none;color:#065f46'},{value:'<strong style="color:#065f46">-'+_$si(safeNum(siInv.credit_amount))+'</strong>',style:'text-align:right;border:none'}]}]:[]),
+                        {_class:'totals-row',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Total</strong>',style:'text-align:right'},{value:'<strong style="font-size:14px">'+_$si(siInv.total)+'</strong>',style:'text-align:right'}]},
+                        ...(siInv.paid>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<span style="color:#166534">Paid</span>',style:'text-align:right;border:none'},{value:'<span style="color:#166534">'+_$si(siInv.paid)+'</span>',style:'text-align:right;border:none'}]}]:[]),
+                        ...(siBal>0?[{_style:'background:#fef2f2',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong style="color:#dc2626">Balance Due</strong>',style:'text-align:right'},{value:'<strong style="color:#dc2626;font-size:14px">'+_$si(siBal)+'</strong>',style:'text-align:right'}]}]:[]),
+                      ]}],footer:siInv.inv_type==='deposit'?companyInfo.depositTerms:companyInfo.terms});
                   const styleMatch=docHtml.match(/<style>([\s\S]*?)<\/style>/);const bodyMatch=docHtml.match(/<body>([\s\S]*?)<\/body>/);
                   const pdfFixCss='.header{display:table!important;width:100%!important;table-layout:fixed}.header>*{display:table-cell!important;vertical-align:top!important}.logo{width:55%!important}.logo img{height:50px;vertical-align:middle;margin-right:8px;float:left}.doc-id{width:45%!important;text-align:right!important}.bill-total{display:table!important;width:100%!important;table-layout:fixed}.bill-total>*{display:table-cell!important;vertical-align:top!important}.total-box{width:200px!important;text-align:left!important}.info-row{display:table!important;width:100%!important;table-layout:fixed}.info-cell{display:table-cell!important;vertical-align:top!important}.footer{display:table!important;width:100%!important}.footer>*{display:table-cell!important}.footer>*:last-child{text-align:right!important}';
                   const container=document.createElement('div');container.style.cssText='position:absolute;left:-9999px;top:0;width:800px;background:white;font-family:Segoe UI,Helvetica,Arial,sans-serif;font-size:11px;color:#1a1a1a;padding:20px 28px;line-height:1.4';
@@ -7312,34 +7377,62 @@ export default function App(){
               onClick={()=>setPayModal({inv,amount:inv._bal,method:'check',ref:''})}>💰 Pay</button>}
               {inv.status==='paid'&&!inv.tc_reported&&inv.tax>0&&<button className="btn btn-sm" style={{fontSize:8,padding:'2px 6px',background:'#1e40af',color:'white',border:'none'}} title="Report this invoice to TaxCloud for state tax filing" onClick={async()=>{const c=cust.find(x=>x.id===inv.customer_id);if(!c)return;if(!supabase){nf('Supabase not configured','error');return}try{const d=await invokeEdgeFn(supabase,'taxcloud-capture',{action:'capture',customer_id:inv.customer_id,invoice_id:inv.id,so_id:inv.so_id||inv.id,items:(inv.items||inv.line_items||[]).map(it=>({sku:it.sku||it.desc||'ITEM',name:it.name||it.desc||'Item',price:it.rate||it.unit_sell||0,qty:it.qty||1})),destination:{state:c.shipping_state||c.billing_state||'',zip5:c.shipping_zip||c.billing_zip||''}});if(d?.ok){setInvs(prev=>prev.map(i=>i.id===inv.id?{...i,tc_reported:true,tc_tax:d.total_tax}:i));nf('Reported to TaxCloud — $'+d.total_tax+' tax filed')}else{nf(d?.error||'TaxCloud capture failed','error')}}catch(e){nf('Error: '+e.message,'error')}}}>TC File</button>}
               <button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',marginLeft:2}} onClick={()=>{
+                const _$f=n=>'$'+n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
                 const so=sos.find(s=>s.id===inv.so_id);const ic=cust.find(c=>c.id===inv.customer_id);
-                const invItems=(inv.line_items||[]).length>0?inv.line_items:
-                  (so?safeItems(so).map(it=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);if(!qty)return null;
-                    const decoSell=safeDecos(it).reduce((a,d)=>{const dp=dP(d,qty,af,qty);return a+dp.sell},0);
-                    return{desc:it.sku+' '+it.name+(it.color?' — '+it.color:''),qty,rate:safeNum(it.unit_sell)+decoSell,amount:qty*(safeNum(it.unit_sell)+decoSell)}}).filter(Boolean):[]);
-                const shipAmt=inv.shipping!=null?inv.shipping:so?(()=>{const sub=invItems.reduce((a,l)=>a+l.amount,0);return(so.shipping_type==='pct'?sub*(so.shipping_value||0)/100:so.shipping_value||0)})():0;
+                const billToName=inv.billing_name||ic?.name||'—';
+                const fBillSub=inv.billing_name?(inv.billing_address||'')+'<br/><span style="font-size:9px;color:#94a3b8">on behalf of '+ic?.name+'</span>':'';
+                const fBillAddr=fBillSub||(ic?.billing_address_line1?ic.billing_address_line1+(ic.billing_city?'<br/>'+ic.billing_city+(ic.billing_state?' '+ic.billing_state:'')+(ic.billing_zip?' '+ic.billing_zip:''):'')+'<br/>United States':'');
+                const fShipAddr=ic?.shipping_address_line1?ic.shipping_address_line1+(ic.shipping_city?'<br/>'+ic.shipping_city+(ic.shipping_state?' '+ic.shipping_state:'')+(ic.shipping_zip?' '+ic.shipping_zip:''):'')+'<br/>United States':'';
+                const fPoNum=inv._po_number||so?.po_number;
+                // Build rows with decoration detail from SO items
+                const fRows=[];let fSubTotal=0;
+                const fSoItems=so?safeItems(so):[];const fSoArt=so?safeArt(so):[];
+                const _fAQ={};fSoItems.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'){_fAQ[d.art_file_id]=(_fAQ[d.art_file_id]||0)+q2}})});
+                const fIsDeposit=inv.inv_type==='deposit';const fDepPct=fIsDeposit?(inv.deposit_pct||50)/100:1;
+                const fStoredLi=inv.line_items||[];
+                const shipAmt=inv.shipping!=null?inv.shipping:so?(()=>{const fLi2=fStoredLi.length>0?fStoredLi:fSoItems.map(it=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return{amount:qty*safeNum(it.unit_sell)}});const sub=fLi2.reduce((a,l)=>a+(l.amount||0),0);return(so.shipping_type==='pct'?sub*(so.shipping_value||0)/100:so.shipping_value||0)})():0;
                 const taxAmt=inv.tax||0;
+                if(fSoItems.length>0){
+                  fSoItems.forEach(it=>{
+                    const sqq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const qty=sqq>0?sqq:safeNum(it.est_qty);if(!qty)return;
+                    const szStr=SZ_ORD.filter(sz=>safeSizes(it)[sz]>0).map(sz=>safeSizes(it)[sz]+' '+sz).join(', ');
+                    const unitPrice=safeNum(it.unit_sell);const lineAmt=Math.round(qty*unitPrice*fDepPct*100)/100;fSubTotal+=lineAmt;
+                    let itemName=(it.name||'')+(it.color?' - '+it.color:'');
+                    if(szStr)itemName+='<br/><span style="color:#555">'+szStr+'</span>';
+                    fRows.push({cells:[{value:qty,style:'text-align:center'},{value:it.sku||'',style:'font-weight:700'},{value:itemName},{value:_$f(unitPrice),style:'text-align:right'},{value:_$f(lineAmt),style:'text-align:right;font-weight:600'}]});
+                    safeDecos(it).forEach(d=>{
+                      const cq=d.kind==='art'&&d.art_file_id?_fAQ[d.art_file_id]:qty;const dp2=dP(d,qty,fSoArt,cq);
+                      const artF=fSoArt.find(a2=>a2.id===d.art_file_id);
+                      const decoLabel=(d.kind==='art'?(artF?.deco_type||d.art_tbd_type||'decoration'):d.kind==='numbers'?'Numbers ('+(d.num_method||'heat transfer').replace(/_/g,' ')+' '+(d.front_and_back?'F:'+(d.num_size||'4"')+' B:'+(d.num_size_back||d.num_size||'4"'):(d.num_size||'4"'))+(d.print_color?' — '+d.print_color:'')+')'+(d.front_and_back?' F+B':''):d.kind==='names'?'Names'+(d.print_color?' ('+d.print_color+')':''):d.kind==='outside_deco'?(d.deco_type||'Decoration'):'Decoration').replace(/_/g,' ');
+                      const posLabel=d.position?' — '+d.position:'';const decoAmt=Math.round(qty*dp2.sell*fDepPct*100)/100;fSubTotal+=decoAmt;
+                      fRows.push({cells:[{value:qty,style:'text-align:center;color:#888'},{value:'',style:''},{value:'<span style="padding-left:16px;color:#666">'+decoLabel+posLabel+'</span>'},{value:_$f(dp2.sell),style:'text-align:right;color:#888'},{value:_$f(decoAmt),style:'text-align:right;color:#888'}]});
+                    });
+                  });
+                }else{
+                  fStoredLi.forEach(li=>{fSubTotal+=safeNum(li.amount);fRows.push({cells:[li.qty,{value:(li.desc||'').split(' ')[0],style:'font-weight:700'},{value:(li.desc||'').split(' ').slice(1).join(' ')},{value:_$f(safeNum(li.rate)),style:'text-align:right'},{value:_$f(safeNum(li.amount)),style:'text-align:right;font-weight:600'}]})});
+                }
                 printDoc({
-                  title:ic?.name||'Customer',docNum:inv.id,docType:'INVOICE',
-                  headerRight:'<div class="ta">$'+inv.total.toLocaleString()+'</div>'
-                    +'<div class="ts">Balance Due: <strong>$'+inv._bal.toLocaleString()+'</strong></div>',
+                  title:billToName,docNum:inv.id,docType:'INVOICE',
+                  headerRight:'<div class="ta">'+_$f(inv.total)+'</div>'
+                    +'<div class="ts">Balance Due: <strong>'+_$f(inv._bal)+'</strong></div>'+(fPoNum?'<div style="font-size:11px;margin-top:4px;font-family:monospace;font-weight:700;color:#1e40af">PO# '+fPoNum+'</div>':''),
                   infoBoxes:[
-                    {label:'Bill To',value:ic?.name||'—'},
+                    {label:'Bill To',value:billToName,sub:fBillAddr},
+                    ...(fShipAddr?[{label:'Ship To',value:ic?.name||'—',sub:fShipAddr}]:[]),
                     {label:'Invoice Date',value:inv.date||new Date().toLocaleDateString(),sub:inv.due_date?'Due: '+inv.due_date:''},
-                    {label:'Sales Order',value:inv.so_id||'—',sub:inv.memo||so?.memo||''},
+                    {label:'Sales Order',value:inv.so_id||'—',sub:inv.memo||so?.memo||''+(fPoNum?'<br/><strong>PO# '+fPoNum+'</strong>':'')},
                     {label:'Payment Terms',value:inv.inv_type==='deposit'?(inv.deposit_pct||50)+'% Deposit':inv.inv_type==='partial'?'Partial Invoice':'Final Invoice',sub:'Rep: '+(REPS.find(r=>r.id===inv._rep)?.name||'—')},
                   ],
                   tables:[{
-                    headers:['Description','Qty','Rate','Amount'],
-                    aligns:['left','center','right','right'],
-                    rows:[
-                      ...invItems.map(li=>({cells:[li.desc,li.qty,'$'+safeNum(li.rate).toFixed(2),'$'+safeNum(li.amount).toFixed(2)]})),
-                      ...(shipAmt>0?[{cells:[{value:'Shipping',style:'font-style:italic'},'','','$'+shipAmt.toFixed(2)]}]:[]),
-                      ...(taxAmt>0?[{cells:[{value:'Tax',style:'font-style:italic'},'','','$'+taxAmt.toFixed(2)]}]:[]),
-                      ...(safeNum(inv.credit_amount)>0?[{cells:[{value:'Credit Applied',style:'font-style:italic;color:#065f46'},'','',{value:'-$'+safeNum(inv.credit_amount).toFixed(2),style:'color:#065f46'}]}]:[]),
-                      {_class:'totals-row',cells:['','','Total','$'+inv.total.toLocaleString()]},
-                      ...(inv.paid>0?[{cells:['','',{value:'Paid',style:'color:#166534'},'$'+inv.paid.toLocaleString()]}]:[]),
-                      ...(inv._bal>0?[{_style:'background:#fef2f2',cells:['','',{value:'<strong>Balance Due</strong>',style:'color:#dc2626'},'<strong style="color:#dc2626;font-size:14px">$'+inv._bal.toLocaleString()+'</strong>']}]:[]),
+                    headers:['Quantity','SKU','Item','Rate','Amount'],
+                    aligns:['center','left','left','right','right'],
+                    rows:[...fRows,
+                      {cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Subtotal</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'},{value:'<strong>'+_$f(fSubTotal)+'</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'}]},
+                      ...(shipAmt>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Shipping</strong>',style:'text-align:right;border:none'},{value:_$f(shipAmt),style:'text-align:right;border:none'}]}]:[]),
+                      ...(taxAmt>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Tax</strong>',style:'text-align:right;border:none'},{value:_$f(taxAmt),style:'text-align:right;border:none'}]}]:[]),
+                      ...(safeNum(inv.credit_amount)>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Credit</strong>',style:'text-align:right;border:none;color:#065f46'},{value:'<strong style="color:#065f46">-'+_$f(safeNum(inv.credit_amount))+'</strong>',style:'text-align:right;border:none'}]}]:[]),
+                      {_class:'totals-row',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Total</strong>',style:'text-align:right'},{value:'<strong style="font-size:14px">'+_$f(inv.total)+'</strong>',style:'text-align:right'}]},
+                      ...(inv.paid>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<span style="color:#166534">Paid</span>',style:'text-align:right;border:none'},{value:'<span style="color:#166534">'+_$f(inv.paid)+'</span>',style:'text-align:right;border:none'}]}]:[]),
+                      ...(inv._bal>0?[{_style:'background:#fef2f2',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong style="color:#dc2626">Balance Due</strong>',style:'text-align:right'},{value:'<strong style="color:#dc2626;font-size:14px">'+_$f(inv._bal)+'</strong>',style:'text-align:right'}]}]:[]),
                     ]
                   }],
                   footer:inv.inv_type==='deposit'?companyInfo.depositTerms:companyInfo.terms
