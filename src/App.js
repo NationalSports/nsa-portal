@@ -1807,7 +1807,7 @@ export default function App(){
       const reloadAll=async()=>{
         // Skip reload if saves are in-flight or just finished — prevents stale data from overwriting local changes
         if(_dbSavingCount>0){console.log('[DB] Reload deferred — save in progress');_rtTimer=setTimeout(reloadAll,1000);return}
-        if(Date.now()-_dbLastSaveAt<5000){console.log('[DB] Reload deferred — save just finished');_rtTimer=setTimeout(reloadAll,3000);return}
+        if(Date.now()-_dbLastSaveAt<1500){console.log('[DB] Reload deferred — save just finished');_rtTimer=setTimeout(reloadAll,1500);return}
         const d=await _dbLoad();if(!d||!d.hasData)return;
         // Preserve local versions of estimates/SOs whose decoration saves failed — don't let DB data overwrite them
         const _shouldProtect=id=>_dbSaveFailedIds.has(id)||_dbSavePendingIds.has(id);
@@ -1849,13 +1849,17 @@ export default function App(){
       };
       // Debounce realtime events — coalesce rapid-fire changes into a single reload
       const debouncedReload=()=>{if(_rtTimer)clearTimeout(_rtTimer);_rtTimer=setTimeout(reloadAll,2000)};
-      // Only subscribe to core tables that need instant sync — child tables are loaded with parents during poll/reload
-      ['estimates','sales_orders','invoices','messages','customers','products'].forEach(table=>{
+      // Subscribe to core tables + pick_lines for instant warehouse sync
+      ['estimates','sales_orders','invoices','messages','customers','products','so_item_pick_lines'].forEach(table=>{
         const ch=supabase.channel('realtime_'+table).on('postgres_changes',{event:'*',schema:'public',table},()=>{debouncedReload()}).subscribe();
         channels.push(ch);
       });
+      // Reload when tab becomes visible (user switches back to this tab)
+      const onVis=()=>{if(!document.hidden&&_dbReady.current)debouncedReload()};
+      document.addEventListener('visibilitychange',onVis);
+      channels._onVis=onVis;
     }
-    return()=>{cancelled=true;channels.forEach(ch=>supabase?.removeChannel(ch))};
+    return()=>{cancelled=true;channels.forEach(ch=>supabase?.removeChannel(ch));if(channels._onVis)document.removeEventListener('visibilitychange',channels._onVis)};
   },[]);
 
   // ─── Auto-heal orphaned "converted" estimates (no matching SO exists) ───
@@ -1871,11 +1875,11 @@ export default function App(){
       setEsts(prev=>prev.map(e=>e.status==='converted'&&!sos.some(s=>s.estimate_id===e.id)?{...e,status:'approved',updated_at:new Date().toLocaleString()}:e));
     }
   },[dbLoading]); // eslint-disable-line react-hooks/exhaustive-deps
-  // ─── Supabase polling: safety-net refresh every 2 minutes (realtime handles instant sync) ───
+  // ─── Supabase polling: safety-net refresh every 15 seconds for cross-tab/cross-device sync ───
   React.useEffect(()=>{
     if(!supabase)return;
     const poll=setInterval(async()=>{
-      if(!_dbReady.current||!_initialLoadDone.current)return;
+      if(!_dbReady.current)return;
       // Skip poll if saves are in-flight to prevent overwriting unsaved local changes
       if(_dbSavingCount>0){console.log('[DB] Poll deferred — save in progress');return}
       try{
@@ -1896,7 +1900,7 @@ export default function App(){
         _dbSnap.current={ests:pollEsts,sos:pollSOs,invs:pollInvs,msgs:pollMsgs,cust:pollCust,prod:pollProd,vend:d.vendors,team:d.team,omg:d.omg_stores,issues:d.issues};
         setEsts(prev=>{const mergeEst=e=>{const local=prev.find(p=>p.id===e.id);if(local&&local.updated_at&&e.updated_at&&local.updated_at>e.updated_at)return local;if(local?.items?.length&&(!e.items||!e.items.length)){e={...e,items:local.items,art_files:local.art_files||e.art_files}};if(local?.print_history?.length&&!e.print_history?.length)e={...e,print_history:local.print_history};if(local?.sent_history?.length&&!e.sent_history?.length)e={...e,sent_history:local.sent_history};if(local?.email_status&&!e.email_status)e={...e,email_status:local.email_status};if(local?.email_sent_at&&!e.email_sent_at)e={...e,email_sent_at:local.email_sent_at};if(local?.email_opened_at&&!e.email_opened_at)e={...e,email_opened_at:local.email_opened_at};if(local?.email_viewed_at&&!e.email_viewed_at)e={...e,email_viewed_at:local.email_viewed_at};if(local?.follow_up_at&&!e.follow_up_at)e={...e,follow_up_at:local.follow_up_at};return e};if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.estimates.map(e=>(_dbSaveFailedIds.has(e.id)||_dbSavePendingIds.has(e.id))?(prev.find(p=>p.id===e.id)||e):mergeEst(e));return changed(prev,merged)?merged:prev}const merged2=d.estimates.map(mergeEst);return changed(prev,merged2)?merged2:prev});
         setSOs(prev=>{const mergeSO=s=>{const local=prev.find(p=>p.id===s.id);if(!local)return s;// If local has a newer updated_at, keep local version (save may still be in-flight to DB)
-          if(local.updated_at&&s.updated_at&&local.updated_at>s.updated_at)return local;const m={...s};if(local.jobs?.length&&(!s.jobs||!s.jobs.length))m.jobs=local.jobs;if(local.items?.length&&(!s.items||!s.items.length))m.items=local.items;if(local.art_files?.length&&(!s.art_files||!s.art_files.length))m.art_files=local.art_files;if(local.sent_history?.length&&!s.sent_history?.length)m.sent_history=local.sent_history;if(local.print_history?.length&&!s.print_history?.length)m.print_history=local.print_history;if(local.email_status&&!s.email_status)m.email_status=local.email_status;if(local.email_sent_at&&!s.email_sent_at)m.email_sent_at=local.email_sent_at;if(local.email_opened_at&&!s.email_opened_at)m.email_opened_at=local.email_opened_at;if(local.email_viewed_at&&!s.email_viewed_at)m.email_viewed_at=local.email_viewed_at;if(local.follow_up_at&&!s.follow_up_at)m.follow_up_at=local.follow_up_at;return m};if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.sales_orders.map(s=>(_dbSaveFailedIds.has(s.id)||_dbSavePendingIds.has(s.id))?(prev.find(p=>p.id===s.id)||s):mergeSO(s));return changed(prev,merged)?merged:prev}const merged2=d.sales_orders.map(mergeSO);return changed(prev,merged2)?merged2:prev});
+          if(local.updated_at&&s.updated_at&&local.updated_at>s.updated_at)return local;const m={...s};let _keptLocal=false;if(local.jobs?.length&&(!s.jobs||!s.jobs.length)){m.jobs=local.jobs;_keptLocal=true}if(local.items?.length&&(!s.items||!s.items.length)){m.items=local.items;_keptLocal=true}if(local.art_files?.length&&(!s.art_files||!s.art_files.length)){m.art_files=local.art_files;_keptLocal=true}if(_keptLocal&&local.updated_at)m.updated_at=local.updated_at;if(local.sent_history?.length&&!s.sent_history?.length)m.sent_history=local.sent_history;if(local.print_history?.length&&!s.print_history?.length)m.print_history=local.print_history;if(local.email_status&&!s.email_status)m.email_status=local.email_status;if(local.email_sent_at&&!s.email_sent_at)m.email_sent_at=local.email_sent_at;if(local.email_opened_at&&!s.email_opened_at)m.email_opened_at=local.email_opened_at;if(local.email_viewed_at&&!s.email_viewed_at)m.email_viewed_at=local.email_viewed_at;if(local.follow_up_at&&!s.follow_up_at)m.follow_up_at=local.follow_up_at;return m};if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.sales_orders.map(s=>(_dbSaveFailedIds.has(s.id)||_dbSavePendingIds.has(s.id))?(prev.find(p=>p.id===s.id)||s):mergeSO(s));return changed(prev,merged)?merged:prev}const merged2=d.sales_orders.map(mergeSO);return changed(prev,merged2)?merged2:prev});
         setInvs(prev=>{const mergeInv=i=>{const local=prev.find(p=>p.id===i.id);if(!local)return i;const m={...i};if(local.payments?.length&&(!i.payments||!i.payments.length))m.payments=local.payments;if(local.print_history?.length&&!i.print_history?.length)m.print_history=local.print_history;if(local.sent_history?.length&&!i.sent_history?.length)m.sent_history=local.sent_history;if(local.email_status&&!i.email_status)m.email_status=local.email_status;if(local.email_opened_at&&!i.email_opened_at)m.email_opened_at=local.email_opened_at;return m};if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.invoices.map(i=>(_dbSaveFailedIds.has(i.id)||_dbSavePendingIds.has(i.id))?(prev.find(p=>p.id===i.id)||i):mergeInv(i));return changed(prev,merged)?merged:prev}const merged2=d.invoices.map(mergeInv);return changed(prev,merged2)?merged2:prev});
         setCust(prev=>{if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.customers.map(c=>(_dbSaveFailedIds.has(c.id)||_dbSavePendingIds.has(c.id))?(prev.find(p=>p.id===c.id)||c):c);return changed(prev,merged)?merged:prev}return changed(prev,d.customers)?d.customers:prev});
         if(d.messages.length)setMsgs(prev=>{if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.messages.map(m=>(_dbSaveFailedIds.has(m.id)||_dbSavePendingIds.has(m.id))?(prev.find(p=>p.id===m.id)||m):m);return changed(prev,merged)?merged:prev}return changed(prev,d.messages)?d.messages:prev});
@@ -1911,7 +1915,7 @@ export default function App(){
         if(as.batch_pos)setBatchPOs(prev=>JSON.stringify(prev)!==JSON.stringify(as.batch_pos)?as.batch_pos:prev);
         if(as.company_info)setCompanyInfo(prev=>{const ci={...NSA_DEFAULTS,...as.company_info};ci.fullAddr=ci.addr+', '+ci.city+', '+ci.state+' '+ci.zip;if(JSON.stringify(prev)===JSON.stringify(ci))return prev;Object.assign(NSA,ci);return ci});
       }catch(e){console.warn('[DB] Poll failed:',e.message)}
-    },300000);// poll every 5 min (realtime handles instant sync)
+    },15000);// poll every 15s — ensures cross-tab/cross-device sync when realtime fails
     return()=>clearInterval(poll);
   },[]);
 
@@ -1954,7 +1958,7 @@ export default function App(){
   // Auto-save to localStorage + Supabase (normalized, only after initial load is complete)
   // IMPORTANT: Supabase writes are gated behind _dbLoadSuccess to prevent demo/stale data from overwriting real cloud data
   // Uses _dbSnap to diff against last DB state — only saves records that actually changed (prevents cross-browser feedback loops)
-  const _diffSave=(arr,snapKey,saveFn)=>{if(!_initialLoadDone.current||!_dbLoadSuccess.current){console.warn('[DB] _diffSave skipped for',snapKey,'— initialLoad:',_initialLoadDone.current,'dbSuccess:',_dbLoadSuccess.current);const snap=_dbSnap.current[snapKey]||[];arr.forEach(item=>{const old=snap.find(p=>p.id===item.id);if(!old||JSON.stringify(old)!==JSON.stringify(item))_dbSavePendingIds.add(item.id)});return}const snap=_dbSnap.current[snapKey]||[];const changed=[];arr.forEach(item=>{const old=snap.find(p=>p.id===item.id);if(!old||JSON.stringify(old)!==JSON.stringify(item))changed.push(item)});_dbSnap.current[snapKey]=arr;if(changed.length===0)return;const BATCH=10;const processBatch=async(idx)=>{const batch=changed.slice(idx,idx+BATCH);if(!batch.length)return;_bgSync=true;await Promise.all(batch.map(async item=>{const result=saveFn(item);if(result&&typeof result.then==='function'){const ok=await result;if(ok!==false){_dbSavePendingIds.delete(item.id)}else{const oldSnap=_dbSnap.current[snapKey]||[];_dbSnap.current[snapKey]=oldSnap.map(s=>s.id===item.id?(snap.find(p=>p.id===item.id)||s):s)}}}));_bgSync=false;if(idx+BATCH<changed.length)await processBatch(idx+BATCH)};processBatch(0)};
+  const _diffSave=(arr,snapKey,saveFn)=>{if(!_initialLoadDone.current||!_dbLoadSuccess.current){console.warn('[DB] _diffSave skipped for',snapKey,'— initialLoad:',_initialLoadDone.current,'dbSuccess:',_dbLoadSuccess.current);const snap=_dbSnap.current[snapKey]||[];arr.forEach(item=>{const old=snap.find(p=>p.id===item.id);if(!old||JSON.stringify(old)!==JSON.stringify(item))_dbSavePendingIds.add(item.id)});return}const snap=_dbSnap.current[snapKey]||[];const changed=[];arr.forEach(item=>{const old=snap.find(p=>p.id===item.id);if(!old||JSON.stringify(old)!==JSON.stringify(item))changed.push(item)});_dbSnap.current[snapKey]=arr;if(changed.length===0)return;changed.forEach(item=>_dbSavePendingIds.add(item.id));const BATCH=10;const processBatch=async(idx)=>{const batch=changed.slice(idx,idx+BATCH);if(!batch.length)return;_bgSync=true;await Promise.all(batch.map(async item=>{const result=saveFn(item);if(result&&typeof result.then==='function'){const ok=await result;if(ok!==false){_dbSavePendingIds.delete(item.id)}else{const oldSnap=_dbSnap.current[snapKey]||[];_dbSnap.current[snapKey]=oldSnap.map(s=>s.id===item.id?(snap.find(p=>p.id===item.id)||s):s)}}}));_bgSync=false;if(idx+BATCH<changed.length)await processBatch(idx+BATCH)};processBatch(0)};
   React.useEffect(()=>{if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.team||[];const changed=REPS.filter(r=>{const old=snap.find(p=>p.id===r.id);return!old||JSON.stringify(old)!==JSON.stringify(r)});if(changed.length)_dbSave('team_members',changed.map(r=>({id:r.id,name:r.name,role:r.role,email:r.email,phone:r.phone,is_active:r.is_active!==false,access:r.access||null})));_dbSnap.current.team=REPS}},[REPS]);
   React.useEffect(()=>{_diffSave(cust,'cust',c=>_dbSaveCustomer(c))},[cust]);
   React.useEffect(()=>{if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.vend||[];const changed=vend.filter(v=>{const old=snap.find(p=>p.id===v.id);return!old||JSON.stringify(old)!==JSON.stringify(v)});if(changed.length)_dbSave('vendors',changed.map(v=>_pick(v,_vendCols)));_dbSnap.current.vend=vend}},[vend]);
@@ -2572,12 +2576,13 @@ export default function App(){
       return{...item,decorations}});
     return{...order,items}};
   const savE=e=>{const e2=lockPrices(e.status==='draft'?{...e,status:'open'}:e);setEsts(p=>{const ex=p.find(x=>x.id===e2.id);return ex?p.map(x=>x.id===e2.id?e2:x):[...p,e2]});logChange(ests.find(x=>x.id===e2.id)?'updated':'created','Estimate',e2.id,e2.memo||'');return e2};
-  const savSO=s=>{const sl=lockPrices(s);
+  const savSO=(s,opts)=>{const sl=lockPrices(s);const skipMerge=opts?.skipMerge;
     // Save version history before overwriting
     const prev=sos.find(x=>x.id===sl.id);
     if(prev){setSOHistory(h=>{const existing=h[sl.id]||[];return{...h,[sl.id]:[{ts:new Date().toLocaleString(),user:cu.name,snapshot:JSON.parse(JSON.stringify(prev))},...existing].slice(0,20)}})}
     // Merge pick_line statuses — preserve 'pulled' status from current state so warehouse pulls aren't lost
-    if(prev&&sl.items&&prev.items){
+    // Skip merge when warehouse is intentionally editing/reverting pick_line statuses
+    if(!skipMerge&&prev&&sl.items&&prev.items){
       sl.items.forEach((item,ii)=>{
         const prevItem=prev.items[ii];if(!prevItem)return;
         const prevPicks=prevItem.pick_lines||[];
@@ -3079,15 +3084,19 @@ export default function App(){
         const pulled={};picks.filter(pk=>pk.status==='pulled').forEach(pk=>{szKeys.forEach(s=>{pulled[s]=(pulled[s]||0)+(pk[s]||0)})});
         const totalPulled=Object.values(pulled).reduce((a,v)=>a+v,0);
         // Show in Item Fulfillment only if there's an active pick ticket (IF request)
-        const hasActivePick=picks.some(pk=>pk.status!=='pulled');
-        if(hasActivePick){
-          const needsPull=totalOrdered-totalPulled;
-          if(needsPull>0){
+        const activePicks=picks.filter(pk=>pk.status!=='pulled');
+        if(activePicks.length>0){
+          // Use pick ticket quantities, not full item quantities
+          const pickSizes={};const pickSzKeys=[];
+          activePicks.forEach(pk=>{szKeys.forEach(s=>{const v=pk[s]||0;if(v>0){pickSizes[s]=(pickSizes[s]||0)+v;if(!pickSzKeys.includes(s))pickSzKeys.push(s)}})});
+          const pickTotal=Object.values(pickSizes).reduce((a,v)=>a+v,0);
+          if(pickTotal>0){
             pullTasks.push({so,soId:so.id,item,itemIdx:ii,cName,alpha,rep,daysOut,urgent,
               sku:item.sku,name:item.name,brand:item.brand||'',color:item.color||'',
-              sizes:item.sizes,pulled,needsPull,totalOrdered,totalPulled,szKeys,
+              sizes:pickSizes,pulled:{},needsPull:pickTotal,totalOrdered:pickTotal,totalPulled:0,szKeys:pickSzKeys,
               noDeco:item.no_deco||!item.decorations?.length,
-              shipDest:picks.find(p=>p.ship_dest)?.ship_dest||'in_house'});
+              shipDest:activePicks.find(p=>p.ship_dest)?.ship_dest||'in_house',
+              _activePicks:activePicks});
           }
         }
         // No-deco items fully pulled → ready to ship (respecting ship preference)
@@ -9309,6 +9318,7 @@ export default function App(){
   const[whActionRange,setWhActionRange]=useState('7d');
   const[whActionSearch,setWhActionSearch]=useState('');
   const[whEditActionIdx,setWhEditActionIdx]=useState(null);
+  const[whEditOrigSizes,setWhEditOrigSizes]=useState(null);
   const[stockPOs,setStockPOs]=useState(()=>loadState('stock_pos',[]));
   React.useEffect(()=>{_saveAppState('stock_pos',stockPOs)},[stockPOs]);
   const[showStockPO,setShowStockPO]=useState(null);const[stockPOCounter,setStockPOCounter]=useState(()=>loadState('stock_po_counter',5001));
@@ -9372,7 +9382,7 @@ export default function App(){
         const allPicks=safePicks(item);
         const activePick=picks[0];
         const pickId=activePick?.pick_id||'IF';
-        const szKeys=Object.keys(item.sizes||{}).filter(k=>SZ_ORD.includes(k)||(item.sizes[k]>0)).sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
+        const szKeys=t.szKeys||Object.keys(t.sizes||{}).filter(k=>SZ_ORD.includes(k)||(t.sizes[k]>0)).sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
         const p=prod.find(pp=>pp.sku===t.sku||pp.id===item.product_id);
         const addrs2=c?getAddrs(c,cust):[];
         const qrData=window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(pickId);
@@ -9437,7 +9447,7 @@ export default function App(){
               <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6}}>Sizes to Pull</div>
               <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:12}}>
                 {szKeys.map(sz=>{
-                  const ordered=item.sizes[sz]||0;const pulled=t.pulled[sz]||0;const need=Math.max(0,ordered-pulled);
+                  const ordered=t.sizes[sz]||0;const pulled=t.pulled[sz]||0;const need=Math.max(0,ordered-pulled);
                   const inv=p?._inv?.[sz]||0;const pq=pullQtys[sz]||0;
                   if(ordered===0)return null;
                   return<div key={sz} style={{textAlign:'center',minWidth:62,padding:'8px 6px',borderRadius:8,border:need>0?'2px solid #d97706':'1px solid #e2e8f0',background:need>0?'#fffbeb':'#f0fdf4'}}>
@@ -9502,11 +9512,11 @@ export default function App(){
                       savSO(updatedSO);
                       const pulledSizes2=szKeys.filter(sz=>(actualQtys2[sz]||0)>0).map(sz=>sz+':'+actualQtys2[sz]).join(' ');
                       const totalPulling2=szKeys.reduce((a,sz)=>a+(actualQtys2[sz]||0),0);
-                      addWhAction({type:'pulled',pickId:pickIdToUse,soId:t.soId,customer:t.cName,sku:t.sku,name:t.name,color:t.color,sizes:pulledSizes2,qty:totalPulling2,by:cu?.id||'warehouse'});
+                      addWhAction({type:'pulled',pickId:pickIdToUse,soId:t.soId,customer:t.cName,sku:t.sku,name:t.name,color:t.color,productId:p?.id||item.product_id,sizes:pulledSizes2,qty:totalPulling2,by:cu?.id||'warehouse'});
                       nf('✅ '+pickIdToUse+(isPartial?' partially':'')+' pulled — '+totalPulling2+' units');setWhPulling(false);setWhViewIF(null);
                     }}>{whPulling?'Saving...':(isFull?'✓ Mark as Pulled ('+totPulling2+' units)':isPartial?'✓ Mark Partial Pull ('+totPulling2+' of '+t.needsPull+')':'✓ Mark as Pulled')}</button>
                     {!isFull&&<button className="btn btn-sm" style={{fontSize:11,background:'#d97706',color:'white',border:'none',padding:'6px 14px',fontWeight:700}} onClick={()=>{
-                      const filled={};szKeys.forEach(sz=>{filled[sz]=Math.max(0,(item.sizes[sz]||0)-(t.pulled[sz]||0))});setPullQtys(filled);
+                      const filled={};szKeys.forEach(sz=>{filled[sz]=Math.max(0,(t.sizes[sz]||0)-(t.pulled[sz]||0))});setPullQtys(filled);
                     }}>Fill All</button>}
                     {totPulling2>0&&<button className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'6px 14px'}} onClick={()=>{
                       const empty={};szKeys.forEach(sz=>{empty[sz]=0});setPullQtys(empty);
@@ -9554,7 +9564,7 @@ export default function App(){
                   <div style={{color:'#64748b'}}>{t.soId} — {t.cName}</div>
                   <div style={{fontWeight:600}}>{t.sku} {t.name}</div>
                   <div>{t.color} — {t.needsPull} units</div>
-                  <div style={{marginTop:4,fontFamily:'monospace',fontSize:11}}>{szKeys.filter(sz=>(item.sizes[sz]||0)-(t.pulled[sz]||0)>0).map(sz=>sz+':'+(Math.max(0,(item.sizes[sz]||0)-(t.pulled[sz]||0)))).join('  ')}</div>
+                  <div style={{marginTop:4,fontFamily:'monospace',fontSize:11}}>{szKeys.filter(sz=>(t.sizes[sz]||0)-(t.pulled[sz]||0)>0).map(sz=>sz+':'+(Math.max(0,(t.sizes[sz]||0)-(t.pulled[sz]||0)))).join('  ')}</div>
                 </div>
               </div>
               <button className="btn btn-sm btn-secondary" style={{marginTop:8,fontSize:11}} onClick={()=>{
@@ -9564,7 +9574,7 @@ export default function App(){
                 w.document.write('<h1>'+pickId+'</h1><p>'+t.soId+' — '+t.cName+'</p>');
                 if(shipDest!=='in_house'){const destLabel=shipDest==='ship_customer'?'SHIP TO CUSTOMER':'SHIP TO DECO'+(activePick?.deco_vendor?' — '+activePick.deco_vendor:'');w.document.write('<p style="background:#fffbeb;padding:8px;border:2px solid '+(shipDest==='ship_customer'?'#3b82f6':'#d97706')+';border-radius:6px;font-weight:bold;font-size:16px">'+destLabel+'</p>')}
                 w.document.write('<p><strong>'+t.sku+' '+t.name+'</strong></p><p>'+(t.color||'')+' — '+t.needsPull+' units</p>');
-                w.document.write('<p style="font-size:16px;font-weight:bold">'+szKeys.filter(sz=>(item.sizes[sz]||0)-(t.pulled[sz]||0)>0).map(sz=>sz+': '+Math.max(0,(item.sizes[sz]||0)-(t.pulled[sz]||0))).join(' &nbsp; ')+'</p>');
+                w.document.write('<p style="font-size:16px;font-weight:bold">'+szKeys.filter(sz=>(t.sizes[sz]||0)-(t.pulled[sz]||0)>0).map(sz=>sz+': '+Math.max(0,(t.sizes[sz]||0)-(t.pulled[sz]||0))).join(' &nbsp; ')+'</p>');
                 w.document.write('</div></div></body></html>');w.document.close();w.print();
               }}>🖨️ Print Pick Label</button>
             </div>
@@ -11160,11 +11170,90 @@ export default function App(){
                 <input style={{fontSize:11,padding:'3px 6px',border:'1px solid #e2e8f0',borderRadius:4,width:'100%'}} value={a[field]||''}
                   onChange={e=>{const next=[...whRecentActions];next[origIdx]={...next[origIdx],[field]:e.target.value};setWhRecentActions(next);_lsSet('nsa_wh_recent',JSON.stringify(next))}}/></div>)}
             </div>
+            {a.type==='pulled'&&a.sizes&&(()=>{
+              const parsedPairs=(a.sizes+'').split(/\s+/).filter(p=>p.includes(':')).map(p=>{const[sz,v]=p.split(':');return[sz,parseInt(v)||0]});
+              const so2=sos.find(s=>s.id===a.soId);const item2=so2?safeItems(so2).find(it=>it.sku===a.sku):null;
+              const p2=prod.find(pp=>pp.sku===a.sku&&(!a.color||pp.color===a.color));
+              return<div style={{marginBottom:8}}>
+                <div style={{fontSize:9,fontWeight:700,color:'#64748b',marginBottom:4}}>Pulled Sizes</div>
+                <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:6}}>
+                  {parsedPairs.map(([sz,qty],si)=>{
+                    const inv=p2?._inv?.[sz]||0;
+                    return<div key={sz} style={{textAlign:'center',minWidth:56,padding:'6px 4px',borderRadius:6,border:'1px solid #e2e8f0',background:'white'}}>
+                      <div style={{fontSize:10,fontWeight:700,color:'#475569',marginBottom:2}}>{sz}</div>
+                      <input type="number" min={0} value={qty} style={{width:40,textAlign:'center',fontSize:13,fontWeight:800,border:'1px solid #cbd5e1',borderRadius:4,padding:'2px 0'}}
+                        onChange={e=>{
+                          const v=Math.max(0,parseInt(e.target.value)||0);
+                          const newPairs=[...parsedPairs];newPairs[si]=[sz,v];
+                          const newSizesStr=newPairs.filter(([,val])=>val>0).map(([s,val])=>s+':'+val).join(' ');
+                          const newQty=newPairs.reduce((sum,[,val])=>sum+val,0);
+                          const next=[...whRecentActions];next[origIdx]={...next[origIdx],sizes:newSizesStr,qty:newQty};
+                          setWhRecentActions(next);_lsSet('nsa_wh_recent',JSON.stringify(next));
+                        }}/>
+                      <div style={{fontSize:8,color:inv>0?'#94a3b8':'#dc2626',marginTop:2}}>{inv} inv</div>
+                      {item2&&<div style={{fontSize:8,color:'#94a3b8'}}>{item2.sizes?.[sz]||0} ord</div>}
+                    </div>})}
+                </div>
+              </div>})()}
             <div style={{display:'flex',gap:6}}>
               <button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
-                onClick={()=>setWhEditActionIdx(null)}>Done</button>
+                onClick={()=>{
+                  /* Sync pick_line + inventory if sizes were edited on a pulled IF */
+                  if(a.type==='pulled'&&a.pickId&&a.soId&&whEditOrigSizes!==null&&a.sizes!==whEditOrigSizes){
+                    const parseSz=str=>{const o={};if(str)(str+'').split(/\s+/).forEach(p=>{const[sz,v]=p.split(':');if(sz&&v)o[sz]=parseInt(v)||0});return o};
+                    const oldSz=parseSz(whEditOrigSizes);const newSz=parseSz(a.sizes);
+                    const allKeys=[...new Set([...Object.keys(oldSz),...Object.keys(newSz)])];
+                    /* Update pick_line on SO — skipMerge to prevent re-applying pulled status */
+                    const so2=sos.find(s=>s.id===a.soId);
+                    if(so2){
+                      const updItems=safeItems(so2).map(it2=>{
+                        const picks=it2.pick_lines||[];
+                        if(!picks.find(pk=>pk.pick_id===a.pickId))return it2;
+                        const newPicks=picks.map(pk=>{if(pk.pick_id!==a.pickId)return pk;const u={...pk};allKeys.forEach(sz=>{u[sz]=newSz[sz]||0});return u});
+                        return{...it2,pick_lines:newPicks};
+                      });
+                      savSO({...so2,items:updItems,updated_at:new Date().toLocaleString()},{skipMerge:true});
+                    }
+                    /* Adjust inventory by diff (old - new = returned, new - old = additional pull) */
+                    const diff={};allKeys.forEach(sz=>{const d=(oldSz[sz]||0)-(newSz[sz]||0);if(d!==0)diff[sz]=d});
+                    if(Object.keys(diff).length>0){
+                      setProd(pp=>pp.map(x=>{
+                        const match=a.productId?x.id===a.productId:(x.sku===a.sku&&(!a.color||x.color===a.color));
+                        if(!match)return x;
+                        const newInv={...(x._inv||{})};Object.entries(diff).forEach(([sz,d])=>{newInv[sz]=Math.max(0,(newInv[sz]||0)+d)});
+                        return{...x,_inv:newInv};
+                      }));
+                    }
+                  }
+                  setWhEditActionIdx(null);setWhEditOrigSizes(null);
+                }}>Done</button>
               <button className="btn btn-sm" style={{fontSize:10,background:'#fee2e2',color:'#dc2626',border:'1px solid #fca5a5',padding:'4px 10px',fontWeight:700}}
-                onClick={()=>{if(!window.confirm('Delete this action?'))return;const next=whRecentActions.filter((_,idx)=>idx!==origIdx);setWhRecentActions(next);_lsSet('nsa_wh_recent',JSON.stringify(next));setWhEditActionIdx(null)}}>Delete</button>
+                onClick={()=>{if(!window.confirm('Delete this action?'))return;
+                  /* Restore inventory & revert pick_line when deleting a pulled IF */
+                  if(a.type==='pulled'&&a.soId&&a.pickId){
+                    const parsedSizes={};if(a.sizes)(a.sizes+'').split(/\s+/).forEach(p=>{const[sz,v]=p.split(':');if(sz&&v)parsedSizes[sz]=parseInt(v)||0});
+                    /* Revert pick_line status — skipMerge to prevent re-applying 'pulled' */
+                    const so2=sos.find(s=>s.id===a.soId);
+                    if(so2){
+                      const updItems=safeItems(so2).map(it2=>{
+                        const picks=it2.pick_lines||[];
+                        if(!picks.find(pk=>pk.pick_id===a.pickId))return it2;
+                        const newPicks=picks.map(pk=>pk.pick_id===a.pickId?{...pk,status:'pick',pulled_at:undefined}:pk);
+                        return{...it2,pick_lines:newPicks};
+                      });
+                      savSO({...so2,items:updItems,updated_at:new Date().toLocaleString()},{skipMerge:true});
+                    }
+                    /* Restore inventory */
+                    if((a.productId||a.sku)&&Object.keys(parsedSizes).length>0){
+                      setProd(pp=>pp.map(x=>{
+                        const match=a.productId?x.id===a.productId:(x.sku===a.sku&&(!a.color||x.color===a.color));
+                        if(!match)return x;
+                        const newInv={...(x._inv||{})};Object.entries(parsedSizes).forEach(([sz,v])=>{if(v>0)newInv[sz]=(newInv[sz]||0)+v});
+                        return{...x,_inv:newInv};
+                      }));
+                    }
+                  }
+                  const next=whRecentActions.filter((_,idx)=>idx!==origIdx);setWhRecentActions(next);_lsSet('nsa_wh_recent',JSON.stringify(next));setWhEditActionIdx(null)}}>Delete</button>
             </div>
           </div>
           :<div style={{display:'flex',alignItems:'center',gap:10,cursor:a.soId?'pointer':'default'}}
@@ -11185,7 +11274,7 @@ export default function App(){
             <div style={{textAlign:'right',flexShrink:0,display:'flex',flexDirection:'column',gap:2,alignItems:'flex-end'}}>
               <div style={{fontSize:10,color:'#94a3b8'}}>{a.at}</div>
               <button style={{fontSize:9,color:'#64748b',background:'none',border:'1px solid #e2e8f0',borderRadius:4,padding:'1px 6px',cursor:'pointer'}}
-                onClick={e=>{e.stopPropagation();setWhEditActionIdx(origIdx)}}>Edit</button>
+                onClick={e=>{e.stopPropagation();setWhEditActionIdx(origIdx);setWhEditOrigSizes(a.sizes||null)}}>Edit</button>
             </div>
           </div>}
         </div>})}
