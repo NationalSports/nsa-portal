@@ -92,25 +92,26 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     const canApprove=est.status==='sent'||est.status==='open';
     // Generate printable estimate PDF — uses shared printDoc for consistent style
     const downloadEstPdf=()=>{
+      const _$=n=>'$'+n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
       const rows=[];const eTaxRate=customer?.tax_exempt?0:(customer?.tax_rate||0);
       (est.items||[]).forEach((it,i)=>{
         const qty=Object.values(safeSizes(it)).reduce((s,v)=>s+safeNum(v),0);const lineTotal=qty*safeNum(it.unit_sell);
         const szText=Object.entries(safeSizes(it)).filter(([,v])=>v>0).map(([sz,q])=>sz+':'+q).join(' ');
-        rows.push({cells:[{value:qty,style:'text-align:center'},{value:'<strong>'+(it.sku||'')+'</strong><br/>'+(safeStr(it.name)||'Item')+(it.color?' - '+it.color:'')+(szText?'<br/><span style="font-size:10px;color:#555">'+szText+'</span>':'')},{value:'',style:'text-align:center'},{value:eTaxRate>0?'Yes':'No',style:'text-align:center'},{value:'$'+safeNum(it.unit_sell).toFixed(2),style:'text-align:right'},{value:'$'+lineTotal.toFixed(2),style:'text-align:right;font-weight:600'}]});
+        let itemName=(safeStr(it.name)||'Item')+(it.color?' - '+it.color:'')+(szText?'<br/><span style="color:#555">'+szText+'</span>':'');
+        rows.push({cells:[{value:qty,style:'text-align:center'},{value:it.sku||'',style:'font-weight:700'},{value:itemName},{value:_$(safeNum(it.unit_sell)),style:'text-align:right'},{value:_$(lineTotal),style:'text-align:right;font-weight:600'}]});
         safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_eAQ[d.art_file_id]:qty;const dp2=dP(d,qty,eaf,cq);const eq2=dp2._nq!=null?dp2._nq:qty;const decoAmt=eq2*dp2.sell;
           const artF2=d.art_file_id?eaf.find(a2=>a2.id===d.art_file_id):null;const artColors2=artF2?.ink_colors?artF2.ink_colors.split('\n').filter(l=>l.trim()).length:0;
           const decoType2=d.deco_type||artF2?.deco_type||d.art_tbd_type||'';const decoTypeLabel2=decoType2?decoType2.replace(/_/g,' '):'';
           const colorCount2=safeNum(d.colors)||safeNum(d.tbd_colors)||artColors2;const stitchCount2=safeNum(d.stitches)||safeNum(d.tbd_stitches);
           const decoDetail2=decoType2==='embroidery'&&stitchCount2?stitchCount2.toLocaleString()+' stitches':colorCount2?colorCount2+' color'+(colorCount2>1?'s':''):'';
           const label=d.kind==='numbers'?'Numbers — '+(d.position||'')+(d.front_and_back?' (Front + Back)':''):d.kind==='names'?'Names — '+(d.position||'')+(d.front_and_back?' (Front + Back)':''):(decoTypeLabel2||d.position||'Decoration')+(decoDetail2?' — '+decoDetail2:'')+(decoTypeLabel2&&d.position?' — '+d.position:'');
-          rows.push({cells:[{value:eq2,style:'text-align:center;color:#888;font-size:11px'},{value:'<span style="padding-left:16px;color:#666;font-size:10px">'+label+'</span>'},{value:'',style:'text-align:center'},{value:'',style:'text-align:center'},{value:'$'+dp2.sell.toFixed(2),style:'text-align:right;color:#888;font-size:11px'},{value:'$'+decoAmt.toFixed(2),style:'text-align:right;color:#888;font-size:11px'}]});
+          rows.push({cells:[{value:eq2,style:'text-align:center;color:#888'},{value:'',style:''},{value:'<span style="padding-left:16px;color:#666">'+label+'</span>'},{value:_$(dp2.sell),style:'text-align:right;color:#888'},{value:_$(decoAmt),style:'text-align:right;color:#888'}]});
         });
       });
-      if(estShip>0)rows.push({cells:[{value:1,style:'text-align:center'},{value:'<strong>Shipping</strong><br/><span style="font-size:10px;color:#555">Shipping</span>'},{value:'',style:'text-align:center'},{value:'No',style:'text-align:center'},{value:'$'+estShip.toFixed(2),style:'text-align:right'},{value:'$'+estShip.toFixed(2),style:'text-align:right'}]});
       const eBillAddr=customer?.shipping_address_line1?customer.shipping_address_line1+(customer.shipping_city?'<br/>'+customer.shipping_city+(customer.shipping_state?' '+customer.shipping_state:'')+(customer.shipping_zip?' '+customer.shipping_zip:''):'')+'<br/>United States':(customer?.billing_address_line1?customer.billing_address_line1+(customer.billing_city?'<br/>'+customer.billing_city+(customer.billing_state?' '+customer.billing_state:'')+(customer.billing_zip?' '+customer.billing_zip:''):'')+'<br/>United States':'');
       printDoc({
         title:customer?.name||'Customer',docNum:est.id,docType:'ESTIMATE',
-        headerRight:'<div class="ta">$'+estTotal.toFixed(2)+'</div><div class="ts">Expires: '+new Date(Date.now()+30*86400000).toLocaleDateString()+'</div>',
+        headerRight:'<div class="ta">'+_$(estTotal)+'</div><div class="ts">Expires: '+new Date(Date.now()+30*86400000).toLocaleDateString()+'</div>',
         infoBoxes:[
           {label:'Bill To',value:customer?.name||'—',sub:(customer?.alpha_tag?customer.alpha_tag+'<br/>':'')+(eBillAddr||'')},
           {label:'Expires',value:new Date(Date.now()+30*86400000).toLocaleDateString()},
@@ -118,11 +119,12 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           {label:'Estimate',value:est.id},
           {label:'Memo',value:est.memo||'—'},
         ],
-        tables:[{headers:['Quantity','Item','Options','Tax','Rate','Amount'],aligns:['center','left','center','center','right','right'],
+        tables:[{headers:['Quantity','SKU','Item','Rate','Amount'],aligns:['center','left','left','right','right'],
           rows:[...rows,
-            {cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Subtotal</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:6px'},{value:'<strong>$'+estSubtotal.toFixed(2)+'</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:6px'}]},
-            ...(estTax>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Tax ('+(estTaxRate*100).toFixed(2)+'%)</strong>',style:'text-align:right;border:none'},{value:'$'+estTax.toFixed(2),style:'text-align:right;border:none'}]}]:[]),
-            {_class:'totals-row',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Total</strong>',style:'text-align:right'},{value:'<strong>$'+estTotal.toFixed(2)+'</strong>',style:'text-align:right'}]},
+            {cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Subtotal</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:6px'},{value:'<strong>'+_$(estSubtotal)+'</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:6px'}]},
+            ...(estShip>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Shipping</strong>',style:'text-align:right;border:none'},{value:_$(estShip),style:'text-align:right;border:none'}]}]:[]),
+            ...(estTax>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Tax ('+(estTaxRate*100).toFixed(2)+'%)</strong>',style:'text-align:right;border:none'},{value:_$(estTax),style:'text-align:right;border:none'}]}]:[]),
+            {_class:'totals-row',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Total</strong>',style:'text-align:right'},{value:'<strong>'+_$(estTotal)+'</strong>',style:'text-align:right'}]},
           ]}],
         footer:'This estimate is valid for 30 days. Prices subject to change. '+NSA.depositTerms
       });
