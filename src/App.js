@@ -1806,7 +1806,7 @@ export default function App(){
       const reloadAll=async()=>{
         // Skip reload if saves are in-flight or just finished — prevents stale data from overwriting local changes
         if(_dbSavingCount>0){console.log('[DB] Reload deferred — save in progress');_rtTimer=setTimeout(reloadAll,1000);return}
-        if(Date.now()-_dbLastSaveAt<5000){console.log('[DB] Reload deferred — save just finished');_rtTimer=setTimeout(reloadAll,3000);return}
+        if(Date.now()-_dbLastSaveAt<1500){console.log('[DB] Reload deferred — save just finished');_rtTimer=setTimeout(reloadAll,1500);return}
         const d=await _dbLoad();if(!d||!d.hasData)return;
         // Preserve local versions of estimates/SOs whose decoration saves failed — don't let DB data overwrite them
         const _shouldProtect=id=>_dbSaveFailedIds.has(id)||_dbSavePendingIds.has(id);
@@ -1848,13 +1848,17 @@ export default function App(){
       };
       // Debounce realtime events — coalesce rapid-fire changes into a single reload
       const debouncedReload=()=>{if(_rtTimer)clearTimeout(_rtTimer);_rtTimer=setTimeout(reloadAll,2000)};
-      // Only subscribe to core tables that need instant sync — child tables are loaded with parents during poll/reload
-      ['estimates','sales_orders','invoices','messages','customers','products'].forEach(table=>{
+      // Subscribe to core tables + pick_lines for instant warehouse sync
+      ['estimates','sales_orders','invoices','messages','customers','products','so_item_pick_lines'].forEach(table=>{
         const ch=supabase.channel('realtime_'+table).on('postgres_changes',{event:'*',schema:'public',table},()=>{debouncedReload()}).subscribe();
         channels.push(ch);
       });
+      // Reload when tab becomes visible (user switches back to this tab)
+      const onVis=()=>{if(!document.hidden&&_dbReady.current)debouncedReload()};
+      document.addEventListener('visibilitychange',onVis);
+      channels._onVis=onVis;
     }
-    return()=>{cancelled=true;channels.forEach(ch=>supabase?.removeChannel(ch))};
+    return()=>{cancelled=true;channels.forEach(ch=>supabase?.removeChannel(ch));if(channels._onVis)document.removeEventListener('visibilitychange',channels._onVis)};
   },[]);
 
   // ─── Auto-heal orphaned "converted" estimates (no matching SO exists) ───
