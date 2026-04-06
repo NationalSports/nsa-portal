@@ -113,7 +113,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         title:customer?.name||'Customer',docNum:est.id,docType:'ESTIMATE',
         headerRight:'<div class="ta">'+_$(estTotal)+'</div><div class="ts">Expires: '+new Date(Date.now()+30*86400000).toLocaleDateString()+'</div>',
         infoBoxes:[
-          {label:'Bill To',value:customer?.name||'—',sub:(customer?.alpha_tag?customer.alpha_tag+'<br/>':'')+(eBillAddr||'')},
+          {label:'Bill To',value:customer?.name||'—',sub:eBillAddr||''},
           {label:'Expires',value:new Date(Date.now()+30*86400000).toLocaleDateString()},
           {label:'Sales Rep',value:rep?.name||'—'},
           {label:'Estimate',value:est.id},
