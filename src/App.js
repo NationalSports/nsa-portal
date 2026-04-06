@@ -3086,22 +3086,21 @@ export default function App(){
         const picks=safePicks(item);
         const pulled={};picks.filter(pk=>pk.status==='pulled').forEach(pk=>{szKeys.forEach(s=>{pulled[s]=(pulled[s]||0)+(pk[s]||0)})});
         const totalPulled=Object.values(pulled).reduce((a,v)=>a+v,0);
-        // Show in Item Fulfillment only if there's an active pick ticket (IF request)
+        // Show in Item Fulfillment — one task per active pick ticket (IF)
         const activePicks=picks.filter(pk=>pk.status!=='pulled');
-        if(activePicks.length>0){
-          // Use pick ticket quantities, not full item quantities
+        activePicks.forEach(pk=>{
           const pickSizes={};const pickSzKeys=[];
-          activePicks.forEach(pk=>{szKeys.forEach(s=>{const v=pk[s]||0;if(v>0){pickSizes[s]=(pickSizes[s]||0)+v;if(!pickSzKeys.includes(s))pickSzKeys.push(s)}})});
+          szKeys.forEach(s=>{const v=pk[s]||0;if(v>0){pickSizes[s]=v;if(!pickSzKeys.includes(s))pickSzKeys.push(s)}});
           const pickTotal=Object.values(pickSizes).reduce((a,v)=>a+v,0);
           if(pickTotal>0){
             pullTasks.push({so,soId:so.id,item,itemIdx:ii,cName,alpha,rep,daysOut,urgent,
               sku:item.sku,name:item.name,brand:item.brand||'',color:item.color||'',
               sizes:pickSizes,pulled:{},needsPull:pickTotal,totalOrdered:pickTotal,totalPulled:0,szKeys:pickSzKeys,
               noDeco:item.no_deco||!item.decorations?.length,
-              shipDest:activePicks.find(p=>p.ship_dest)?.ship_dest||'in_house',
-              _activePicks:activePicks});
+              shipDest:pk.ship_dest||'in_house',
+              _activePicks:[pk],_pickId:pk.pick_id});
           }
-        }
+        });
         // No-deco items fully pulled → ready to ship (respecting ship preference)
         // Skip if this item has completed/shipped deco jobs (those are handled in the job loop below)
         const itemHasCompletedJob=safeJobs(so).some(j=>(j.prod_status==='completed'||j.prod_status==='shipped')&&(j.items||[]).some(gi=>gi.item_idx===ii));
@@ -9368,10 +9367,10 @@ export default function App(){
       {whViewIF&&(()=>{
         const t=whViewIF;const so=t.so;const item=t.item;
         const c=cust.find(x=>x.id===so.customer_id);
-        const picks=safePicks(item).filter(pk=>pk.status!=='pulled');
         const allPicks=safePicks(item);
-        const activePick=picks[0];
-        const pickId=activePick?.pick_id||'IF';
+        // Use the specific pick for this task (from _pickId), not just the first active pick
+        const activePick=t._pickId?allPicks.find(pk=>pk.pick_id===t._pickId&&pk.status!=='pulled'):allPicks.find(pk=>pk.status!=='pulled');
+        const pickId=activePick?.pick_id||t._pickId||'IF';
         const szKeys=t.szKeys||Object.keys(t.sizes||{}).filter(k=>SZ_ORD.includes(k)||(t.sizes[k]>0)).sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
         const p=prod.find(pp=>pp.sku===t.sku||pp.id===item.product_id);
         const addrs2=c?getAddrs(c,cust):[];
@@ -9519,13 +9518,13 @@ export default function App(){
               {/* All pick lines for this item */}
               {allPicks.length>0&&<div style={{marginTop:8}}>
                 <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:4}}>Pick History</div>
-                {allPicks.map((pk,pi)=>{const st=pk.status||'pick';
+                {(()=>{const allSzKeys=[...new Set(allPicks.flatMap(pk=>Object.keys(pk).filter(k=>SZ_ORD.includes(k)&&pk[k]>0)))].sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));return allPicks.map((pk,pi)=>{const st=pk.status||'pick';
                   return<div key={pi} style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',marginBottom:4,padding:'4px 8px',borderRadius:4,background:st==='pulled'?'#f0fdf4':'#fffbeb'}}>
                     <span style={{fontSize:11,fontWeight:700,color:st==='pulled'?'#166534':'#92400e',minWidth:56}}>{pk.pick_id||'PICK'}</span>
-                    {szKeys.map(sz=>{const v=pk[sz]||0;return<span key={sz} style={{minWidth:36,textAlign:'center',fontSize:11,fontWeight:v?700:400,color:v?'#0f172a':'#d1d5db'}}>{v||'—'}</span>})}
+                    {allSzKeys.map(sz=>{const v=pk[sz]||0;return<span key={sz} style={{minWidth:36,textAlign:'center',fontSize:11,fontWeight:v?700:400,color:v?'#0f172a':'#d1d5db'}}>{v||'—'}</span>})}
                     <span style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:600,background:st==='pulled'?'#dcfce7':'#fef3c7',color:st==='pulled'?'#166534':'#92400e'}}>{st==='pulled'?'✓ Pulled':'Needs Pull'}</span>
                     {pk.memo&&<span style={{fontSize:10,color:'#64748b',fontStyle:'italic'}}>{pk.memo}</span>}
-                  </div>})}
+                  </div>})})()}
               </div>}
             </div>
           </div>
