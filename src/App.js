@@ -4865,6 +4865,8 @@ export default function App(){
   // Artist Dashboard state
   const[artFilter,setArtFilter]=useState('all');const[artSearch,setArtSearch]=useState('');
   const[artDashView,setArtDashView]=useState('artist');// 'artist' | 'rep'
+  const[artCompletedOpen,setArtCompletedOpen]=useState(false);// toggle completed jobs dropdown
+  const[artCompletedSearch,setArtCompletedSearch]=useState('');// search within completed jobs
   const[artRejectModal,setArtRejectModal]=useState(null);// {job, reason:''}
   const[artEditModal,setArtEditModal]=useState(null);// {job, instructions:'', notes:''}
   const[artMockupModal,setArtMockupModal]=useState(null);// job object for art mockup popup
@@ -11028,12 +11030,23 @@ export default function App(){
       const s=j.artFile?.status;return s==='uploaded'?'needs_approval':(!s||s==='needs_art')?'waiting_for_art':s;
     };
     const artistJobs=filtered.filter(j=>j.art_status!=='art_complete');
+    // In Production: art complete but decoration not finished yet
+    const inProductionJobs=filtered.filter(j=>j.art_status==='art_complete'&&!['completed','shipped'].includes(j.prod_status));
+    // Completed: art complete AND decoration done (completed/shipped) — reference for artists
+    const completedArtJobs=allArtJobs.filter(j=>{
+      if(j.art_status!=='art_complete'||!['completed','shipped'].includes(j.prod_status))return false;
+      if(artCompletedSearch){const s=artCompletedSearch.toLowerCase();
+        if(!(j.customer||'').toLowerCase().includes(s)&&!(j.art_name||'').toLowerCase().includes(s)&&
+          !(j.soId||'').toLowerCase().includes(s)&&!(j.id||'').toLowerCase().includes(s))return false}
+      return true;
+    });
     const artistCols=[
       {id:'waiting_for_art',label:'Waiting for Art',color:'#dc2626',bg:'#fef2f2',desc:'Needs artist attention'},
       {id:'needs_approval',label:'Needs Approval',color:'#92400e',bg:'#fef3c7',desc:'Waiting for rep/customer approval'},
       {id:'approved',label:'Approved / Needs Files',color:'#166534',bg:'#dcfce7',desc:'Approved — upload production files'},
+      {id:'in_production',label:'In Production',color:'#2563eb',bg:'#eff6ff',desc:'Art done — being decorated'},
     ];
-    const artistCounts={};artistCols.forEach(c=>{artistCounts[c.id]=artistJobs.filter(j=>getArtFileStatus(j)===c.id).length});
+    const artistCounts={};artistCols.forEach(c=>{artistCounts[c.id]=c.id==='in_production'?inProductionJobs.length:artistJobs.filter(j=>getArtFileStatus(j)===c.id).length});
 
     // ─── Rep view data — all jobs grouped by rep ───
     const repJobs=filtered.filter(j=>artDashView==='rep'?(cu.role==='admin'||cu.role==='super_admin'||j.repId===cu.id||artFilter!=='all'):true);
@@ -11221,11 +11234,14 @@ export default function App(){
       {artDashView==='artist'&&<>
         <div className="stats-row">
           {artistCols.map(c=><div key={c.id} className="stat-card"><div className="stat-label">{c.label}</div><div className="stat-value" style={{color:c.color}}>{artistCounts[c.id]}</div></div>)}
-          <div className="stat-card"><div className="stat-label">Active</div><div className="stat-value">{artistJobs.length}</div></div>
+          <div className="stat-card"><div className="stat-label">Active</div><div className="stat-value">{artistJobs.length+inProductionJobs.length}</div></div>
         </div>
-        <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:10,alignItems:'flex-start'}}>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:10,alignItems:'flex-start'}}>
           {artistCols.map(col=>{
-            const colJobs=artistJobs.filter(j=>getArtFileStatus(j)===col.id).sort((a,b)=>{
+            const colJobs=col.id==='in_production'?inProductionJobs.sort((a,b)=>{
+              if(a.daysOut!=null&&b.daysOut!=null)return a.daysOut-b.daysOut;
+              if(a.daysOut!=null)return -1;if(b.daysOut!=null)return 1;return 0})
+              :artistJobs.filter(j=>getArtFileStatus(j)===col.id).sort((a,b)=>{
               if(a.daysOut!=null&&b.daysOut!=null)return a.daysOut-b.daysOut;
               if(a.daysOut!=null)return -1;if(b.daysOut!=null)return 1;return 0});
             return<div key={col.id} style={{background:col.bg,borderRadius:10,padding:8,minHeight:200}}>
@@ -11237,6 +11253,23 @@ export default function App(){
               {colJobs.length===0&&<div style={{textAlign:'center',padding:20,color:'#94a3b8',fontSize:11}}>No jobs</div>}
               {colJobs.map(j=>renderArtCard(j,'artist',col))}
             </div>})}
+        </div>
+
+        {/* ═══ COMPLETED JOBS — collapsible reference section ═══ */}
+        <div style={{marginTop:16}}>
+          <div style={{display:'flex',alignItems:'center',gap:8,padding:'10px 14px',background:'#f8fafc',borderRadius:artCompletedOpen?'10px 10px 0 0':'10px',border:'1px solid #e2e8f0',cursor:'pointer'}} onClick={()=>setArtCompletedOpen(v=>!v)}>
+            <span style={{fontSize:16,transform:artCompletedOpen?'rotate(90deg)':'rotate(0deg)',transition:'transform 0.2s'}}>&#9654;</span>
+            <span style={{fontSize:13,fontWeight:800,color:'#475569'}}>Completed Jobs</span>
+            <span style={{fontSize:11,fontWeight:600,color:'#64748b',background:'#e2e8f0',borderRadius:10,padding:'1px 8px'}}>{completedArtJobs.length}</span>
+            <span style={{fontSize:10,color:'#94a3b8',marginLeft:4}}>Art & decoration complete — reference & edit</span>
+          </div>
+          {artCompletedOpen&&<div style={{border:'1px solid #e2e8f0',borderTop:'none',borderRadius:'0 0 10px 10px',padding:12,background:'white'}}>
+            <input className="form-input" style={{width:300,fontSize:12,marginBottom:12}} placeholder="Search by customer, SO, or art name..." value={artCompletedSearch} onChange={e=>setArtCompletedSearch(e.target.value)}/>
+            {completedArtJobs.length===0&&<div style={{textAlign:'center',padding:20,color:'#94a3b8',fontSize:11}}>{artCompletedSearch?'No matching completed jobs':'No completed jobs yet'}</div>}
+            {completedArtJobs.length>0&&<div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(260px,1fr))',gap:8}}>
+              {completedArtJobs.map(j=>renderArtCard(j,'artist',{id:'completed',label:'Completed',color:'#475569',bg:'#f8fafc'}))}
+            </div>}
+          </div>}
         </div>
       </>}
 
