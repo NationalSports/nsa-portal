@@ -1683,17 +1683,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 </div></>}
             </div>}
           </div>
-          {/* Adidas B2B last synced + shortfall indicators */}
-          {(()=>{if(!isAdidasItem(item))return null;const ai=adidasInv[item.sku];if(!ai||ai.loading)return null;
-            const hasSizes=Object.keys(ai.sizes||{}).length>0;
-            const ls=ai.lastSynced?new Date(ai.lastSynced):null;const staleHrs=ls?(Date.now()-ls.getTime())/3600000:999;
-            const shortfalls=[];
-            if(hasSizes){Object.entries(item.sizes||{}).forEach(([sz,need])=>{if(!need||need<=0)return;const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);const nsaStk=p?._inv?.[sz]||0;const b2bStk=ai.sizes[sz]?.qty||0;const total=nsaStk+b2bStk;if(need>total)shortfalls.push({sz,need,avail:total,short:need-total})})}
-            return<div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',padding:'0 18px 2px',fontSize:10}}>
-              {hasSizes&&ls&&<span style={{color:staleHrs>48?'#d97706':'#94a3b8',fontWeight:staleHrs>48?700:400}}>{staleHrs>48?'⚠ ':''}B2B synced: {ls.toLocaleDateString()+' '+ls.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</span>}
-              {!hasSizes&&<span style={{color:'#cbd5e1',fontSize:9}}>B2B: not synced</span>}
-              {shortfalls.length>0&&<span style={{color:'#dc2626',fontWeight:700}}>Shortfall: {shortfalls.map(s=>s.sz+' need '+s.short).join(', ')}</span>}
-            </div>})()}
+          {/* Adidas B2B sync details moved to bottom of page */}
           {/* Financial summary — right side of sizes row */}
           <div style={{marginLeft:'auto',display:'flex',alignItems:'center',gap:12}}>
             {isSO&&szQty===0&&safeNum(item.est_qty)>0&&<span style={{fontSize:11,color:'#dc2626',fontWeight:700}}>Enter sizes ({item.est_qty} total)</span>}
@@ -2655,6 +2645,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             </div>
           </div>
         </div></div>})()}
+
+        {/* Adidas B2B last sync summary */}
+    {isSO&&tab==='transactions'&&(()=>{
+      let latestSync=null;
+      safeItems(o).forEach(it=>{if(!isAdidasItem(it))return;const ai=adidasInv[it.sku];if(!ai||!ai.lastSynced)return;const d=new Date(ai.lastSynced);if(!latestSync||d>latestSync)latestSync=d});
+      if(!latestSync)return null;
+      const staleHrs=(Date.now()-latestSync.getTime())/3600000;
+      return<div style={{padding:'8px 16px',fontSize:11,color:staleHrs>48?'#d97706':'#94a3b8',fontWeight:staleHrs>48?700:400,marginBottom:4}}>
+        {staleHrs>48?'⚠ ':''}Last Adidas B2B sync: {latestSync.toLocaleDateString()+' '+latestSync.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}
+      </div>})()}
 
         {/* LINKED TRANSACTIONS TAB */}
     {isSO&&tab==='transactions'&&(()=>{
