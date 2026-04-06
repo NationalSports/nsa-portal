@@ -11069,6 +11069,11 @@ export default function App(){
             <div style={{fontSize:9,color:'#7f1d1d'}}>{j.rejections[j.rejections.length-1].reason}</div>
             <div style={{fontSize:8,color:'#94a3b8'}}>by {j.rejections[j.rejections.length-1].by} · {new Date(j.rejections[j.rejections.length-1].at).toLocaleDateString()}</div>
           </div>}
+          {/* Coach approval comment */}
+          {j.coach_approval_comment&&<div style={{marginBottom:4,padding:'3px 6px',background:'#f0fdf4',borderRadius:4,border:'1px solid #bbf7d0'}}>
+            <div style={{fontSize:9,fontWeight:700,color:'#166534'}}>Coach's note:</div>
+            <div style={{fontSize:9,color:'#15803d'}}>{j.coach_approval_comment}</div>
+          </div>}
           {/* Art request notes if any */}
           {(j.art_requests||[]).length>0&&(()=>{const lr=j.art_requests[j.art_requests.length-1];return<div style={{marginBottom:4,padding:'3px 6px',background:'#f8fafc',borderRadius:4}}>
             {lr.instructions&&<div style={{fontSize:9,color:'#475569'}}>📝 {lr.instructions.slice(0,80)}{lr.instructions.length>80?'...':''}</div>}
@@ -12188,6 +12193,7 @@ export default function App(){
               <div style={{padding:'10px 14px',background:'linear-gradient(135deg,#dcfce7,#f0fdf4)',borderRadius:8,border:'2px solid #86efac',marginBottom:12}}>
                 <div style={{fontSize:13,fontWeight:700,color:'#166534'}}>✅ Art Approved — Upload Production Files</div>
                 <div style={{fontSize:11,color:'#15803d',marginTop:2}}>Mockups have been approved. Upload final production files (DST, AI, EPS, etc.) for this job.</div>
+                {j.coach_approval_comment&&<div style={{fontSize:11,color:'#166534',marginTop:6,padding:'6px 10px',background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:6}}><strong>Coach's note:</strong> {j.coach_approval_comment}</div>}
               </div>
               {prodFilesL.length>0&&<div style={{marginBottom:10}}>
                 <div style={{fontSize:11,fontWeight:700,color:'#92400e',marginBottom:4}}>Production Files ({prodFilesL.length})</div>
