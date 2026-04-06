@@ -5457,7 +5457,10 @@ export default function App(){
           return safeDecos(it).filter((d,di)=>(d.kind==='art'||d.kind==='numbers')&&jobDecoIdxs.includes(di)).map(d=>{
             const artF=d.art_file_id?safeArt(so).find(f=>f.id===d.art_file_id):null;
             const dt=artF?.deco_type||d.deco_type||'screen_print';
-            const colors=(artF?(artF.ink_colors||artF.thread_colors||''):'').split(/[,\n]/).map(c2=>c2.trim()).filter(Boolean);
+            const cwObj=d.color_way_id&&artF?.color_ways?artF.color_ways.find(c2=>c2.id===d.color_way_id):null;
+            const _direct=(artF?(artF.ink_colors||artF.thread_colors||''):'').split(/[,\n]/).map(c2=>c2.trim()).filter(Boolean);
+            const _cwAll=artF?.color_ways?.length?[...new Set(artF.color_ways.flatMap(cw=>(cw.inks||[]).filter(c2=>c2&&c2.trim())))]:[];
+            const colors=cwObj?(cwObj.inks||[]).filter(c2=>c2&&c2.trim()):_direct.length>0?_direct:_cwAll;
             return{position:d.position||'—',deco_type:dt,art_name:artF?.name||d.art_name||'Unnamed',art_size:artF?.art_size||'—',colors,isEmb:dt==='embroidery'};
           })})();
         const machine=MACHINES.find(m=>m.id===j.assigned_machine);
@@ -5475,7 +5478,7 @@ export default function App(){
         }).filter(Boolean);
         const allSizes=SZ_ORD.filter(sz=>itemDetails.some(it=>it.sizes[sz]>0));
         // Parse colors for display — use job's deco_type for labels
-        const colorList=allArtFiles.flatMap(a=>(a.ink_colors||a.thread_colors||'').split(/[,\n]/).map(c2=>c2.trim()).filter(Boolean));
+        const colorList=(()=>{const d2=allArtFiles.flatMap(a=>(a.ink_colors||a.thread_colors||'').split(/[,\n]/).map(c2=>c2.trim()).filter(Boolean));if(d2.length>0)return d2;return[...new Set(allArtFiles.flatMap(a=>(a.color_ways||[]).flatMap(cw=>(cw.inks||[]).filter(c2=>c2&&c2.trim()))))];})();
         const isEmb=j.deco_type==='embroidery';
         const isSP=j.deco_type==='screen_print';
         // Mockup files — aggregate from all art files in this job
