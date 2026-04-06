@@ -962,6 +962,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     if(newTotal>0&&item.est_qty)uI(i,'est_qty',0);
   };
   const addSzToItem=(i,sz)=>{const it=o.items[i];if(!it.available_sizes.includes(sz))uI(i,'available_sizes',[...it.available_sizes,sz]);setShowSzPicker(null)};
+  const removeSzFromItem=(i,sz)=>{const it=o.items[i];if(safeNum(it.sizes[sz])>0){nf('Cannot remove '+sz+' — it has quantity. Set to 0 first.','error');return}const newSizes={...it.sizes};delete newSizes[sz];uI(i,'sizes',newSizes);uI(i,'available_sizes',it.available_sizes.filter(s=>s!==sz));setShowSzPicker(null)};
   const NUM_SZ={heat_transfer:['1"','1.5"','2"','3"','4"','5"','6"','8"','10"'],embroidery:['0.5"','0.75"','1"','1.5"','2"'],screen_print:['4"','6"','8"','10"']};
   const addArtDeco=i=>{const it=o.items[i];sv('items',safeItems(o).map((x,xi)=>xi===i?{...x,no_deco:false,decorations:[...x.decorations,{kind:'art',position:'Front Center',art_file_id:null,sell_override:null}]}:x))};
   const addNumDeco=i=>{const it=o.items[i];sv('items',safeItems(o).map((x,xi)=>xi===i?{...x,no_deco:false,decorations:[...x.decorations,{kind:'numbers',position:'Back Center',num_method:'screen_print',num_size:'6"',two_color:false,sell_override:null,custom_font_art_id:null,roster:{}}]}:x))};
@@ -1617,6 +1618,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const iR=pRev+dR;const iC=pCost+dC;const mg=iR-iC;
       const szs=(item.available_sizes||['S','M','L','XL','2XL']).filter(s=>SZ_ORD.includes(s)).sort((a,b)=>SZ_ORD.indexOf(a)-SZ_ORD.indexOf(b));
       const addable=EXTRA_SIZES.filter(s=>!(item.available_sizes||[]).includes(s));
+      const removable=EXTRA_SIZES.filter(s=>(item.available_sizes||[]).includes(s));
       return(<div key={idx} id={'so-item-'+idx} className="card" style={{marginBottom:12,transition:'box-shadow 0.3s'}}>
         <div style={{padding:'12px 18px',borderBottom:'1px solid #f1f5f9'}}>
           <div style={{display:'flex',gap:12,alignItems:'center'}}>
@@ -1678,6 +1680,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {(()=>{if(!isAdidasItem(item))return null;const ai=adidasInv[item.sku];return<button title={ai?.error?'Error: '+ai.error+' — click to retry':'Refresh Adidas B2B inventory'} onClick={()=>{delete adidasInvCache.current[item.sku];delete adidasInvFetching.current[item.sku];setAdidasInv(prev=>{const n={...prev};delete n[item.sku];return n});fetchAdidasInv(item.sku)}} style={{background:'none',border:'1px solid #6ee7b7',borderRadius:4,cursor:'pointer',color:ai?.error?'#dc2626':'#059669',padding:'2px 6px',fontSize:9,fontWeight:700,marginLeft:4,whiteSpace:'nowrap'}}>{ai?.loading?'...':ai?.error?'⚠ B2B':'↻ B2B'}</button>})()}
             {!(isE&&item.qty_only)&&<div style={{position:'relative',marginLeft:4}}><button className="btn btn-sm btn-secondary" onClick={()=>setShowSzPicker(showSzPicker===idx?null:idx)} style={{fontSize:10}}>+ Size</button>
               {showSzPicker===idx&&<><div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:39}} onClick={()=>setShowSzPicker(null)}/><div style={{position:'absolute',top:'100%',left:0,background:'white',border:'1px solid #e2e8f0',borderRadius:6,boxShadow:'0 4px 12px rgba(0,0,0,0.1)',zIndex:40,padding:6,display:'flex',gap:3,flexWrap:'wrap',width:180}}>
+                {removable.length>0&&<><div style={{width:'100%',fontSize:9,fontWeight:700,color:'#dc2626',marginBottom:2}}>Remove</div>{removable.map(sz=><button key={'rm-'+sz} className="btn btn-sm" style={{fontSize:10,padding:'2px 6px',color:'#dc2626',border:'1px solid #fca5a5',background:'#fef2f2'}} onClick={()=>removeSzFromItem(idx,sz)}>−{sz}</button>)}<div style={{width:'100%',borderTop:'1px solid #e2e8f0',margin:'3px 0'}}/></>}
                 {addable.map(sz=><button key={sz} className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 6px'}} onClick={()=>addSzToItem(idx,sz)}>{sz}</button>)}
                 {isE&&<button className="btn btn-sm" style={{fontSize:10,padding:'2px 6px',color:'#dc2626',border:'1px solid #fca5a5',width:'100%',marginTop:3}} onClick={()=>{uI(idx,'qty_only',true);uI(idx,'est_qty',szQty||0);uI(idx,'sizes',{});setShowSzPicker(null)}}>No Sizes (Qty Only)</button>}
                 </div></>}
