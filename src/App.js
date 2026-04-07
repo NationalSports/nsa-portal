@@ -13571,34 +13571,41 @@ export default function App(){
           if(p)matched.push({...row,product:p});
           else pendingUnmatched.push(row);
         });
-        // DB fallback: query Supabase for any SKUs not found in memory
+        // DB fallback: query Supabase for any SKUs not found in memory (handles DB load timeout)
         let unmatched=[];
         if(pendingUnmatched.length>0&&supabase){
           try{
-            const skuList=pendingUnmatched.map(r=>r.sku);
-            // Query products table with case-insensitive SKU matching
-            const{data:dbProds}=await supabase.from('products').select('*').filter('sku','in','('+skuList.join(',')+')');
-            // Also try ilike for each SKU if exact match returned nothing
-            let dbMap={};
-            if(dbProds&&dbProds.length>0)dbProds.forEach(p=>{dbMap[p.sku.toUpperCase()]=p});
-            // For any still not found, try individual ilike queries in batch
+            const dbMap={};
+            // Query in batches of 50 (Supabase .in() has limits) — try both original and uppercase
+            const allSkus=[...new Set(pendingUnmatched.flatMap(r=>[r.sku,r.sku.toLowerCase()]))];
+            for(let i=0;i<allSkus.length;i+=50){
+              const batch=allSkus.slice(i,i+50);
+              const{data,error}=await supabase.from('products').select('*').in('sku',batch);
+              if(error)console.warn('[InvCSV] DB query error:',error.message);
+              if(data)data.forEach(p=>{dbMap[p.sku.toUpperCase()]=p});
+            }
+            // Also try ilike for any still not found (catches partial/fuzzy matches in DB)
             const stillMissing=pendingUnmatched.filter(r=>!dbMap[r.sku]);
             if(stillMissing.length>0){
-              const patterns=stillMissing.map(r=>r.sku);
-              const{data:dbProds2}=await supabase.from('products').select('*');
-              if(dbProds2)dbProds2.forEach(p=>{if(!dbMap[p.sku.toUpperCase()])dbMap[p.sku.toUpperCase()]=p});
+              // Query with or/ilike filters in batches of 10
+              for(let i=0;i<stillMissing.length&&i<100;i+=10){
+                const batch=stillMissing.slice(i,i+10);
+                const orFilter=batch.map(r=>'sku.ilike.%'+r.sku+'%').join(',');
+                const{data}=await supabase.from('products').select('*').or(orFilter);
+                if(data)data.forEach(p=>{if(!dbMap[p.sku.toUpperCase()])dbMap[p.sku.toUpperCase()]=p});
+              }
             }
+            console.log('[InvCSV] DB fallback found',Object.keys(dbMap).length,'products for',pendingUnmatched.length,'unmatched SKUs');
             pendingUnmatched.forEach(row=>{
-              const dbP=dbMap[row.sku];
+              const dbP=dbMap[row.sku]||dbMap[row.sku.toLowerCase()];
               if(dbP){
-                // Found in DB — add to prod state and match
                 const enriched={...dbP,_inv:dbP._inv||{},_alerts:dbP._alerts||{}};
                 matched.push({...row,product:enriched});
               }else unmatched.push({...row,name:'',retail_price:'',category:'Tees',brand:'Adidas'});
             });
-            // Merge any DB-found products into prod state
+            // Merge DB-found products into local prod state so rest of app can use them
             const dbFound=matched.filter(m=>!prod.find(p=>p.id===m.product.id)).map(m=>m.product);
-            if(dbFound.length>0)setProd(prev=>[...prev,...dbFound]);
+            if(dbFound.length>0){setProd(prev=>[...prev,...dbFound]);console.log('[InvCSV] Merged',dbFound.length,'products from DB into local state')}
           }catch(e){
             console.warn('[InvCSV] DB fallback failed:',e);
             unmatched=pendingUnmatched.map(r=>({...r,name:'',retail_price:'',category:'Tees',brand:'Adidas'}));
