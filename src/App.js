@@ -13557,10 +13557,15 @@ export default function App(){
           if(Object.keys(sizes).length>0)parsed.push({sku,sizes,total});
         });
         if(parsed.length===0){nf('No valid rows found in file','error');setInvUpload(x=>({...x,uploading:false}));return}
-        // Match against existing products
+        // Match against existing products — try exact match first, then prefix/contains
         const matched=[];const unmatched=[];
         parsed.forEach(row=>{
-          const p=prod.find(x=>x.sku.toUpperCase()===row.sku);
+          const s=row.sku;
+          let p=prod.find(x=>x.sku.toUpperCase()===s);
+          // Fallback: CSV SKU starts with product SKU or vice versa (handles color-code suffixes like JX4452 vs JX4452-001)
+          if(!p)p=prod.find(x=>s.startsWith(x.sku.toUpperCase())||x.sku.toUpperCase().startsWith(s));
+          // Fallback: strip dashes/spaces and compare
+          if(!p){const stripped=s.replace(/[-\s]/g,'');p=prod.find(x=>x.sku.toUpperCase().replace(/[-\s]/g,'')===stripped)}
           if(p)matched.push({...row,product:p});
           else unmatched.push({...row,name:'',retail_price:'',category:'Tees',brand:'Adidas'});
         });
