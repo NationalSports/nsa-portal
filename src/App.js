@@ -169,7 +169,7 @@ const _safeQuery=(table,opts)=>{
   return Promise.race([q,timeout]).then(r=>{
     if(r.status===404||(r.error?.message||'').includes('does not exist')||(r.error?.code==='PGRST204')){
       _missing404Tables.set(table,Date.now());return{data:[],error:null,status:200}}
-    if(r.status===408)console.warn('[DB] Query timeout for table:',table);
+    if(r.status===408){console.warn('[DB] Query timeout for table:',table);return{data:[],error:null,status:408}}
     return r;
   });
 };
@@ -594,9 +594,16 @@ const _dbSaveSOInner = async (so) => {
   if(so._version){const vc=await _checkVersion('sales_orders',so.id,so._version);if(vc!==true&&typeof vc==='number')so._version=vc}
   return _dbSavingGuard(async()=>{let saveFailed=false;try{
     const{items,art_files,firm_dates,jobs,...soRow}=so;
-    let{error:soErr}=await supabase.from('sales_orders').upsert(_pick(soRow,_soCols),{onConflict:'id'});
+    // Save SO row FIRST (FK constraint requires it before items), but with OLD updated_at
+    // We'll bump updated_at LAST so cross-tab polls don't see stale items
+    const finalUpdatedAt=soRow.updated_at;
+    const soRowInitial={..._pick(soRow,_soCols)};
+    // Try to preserve existing updated_at for the initial upsert (only bump it after children are saved)
+    const{data:existingSO}=await supabase.from('sales_orders').select('updated_at').eq('id',so.id).single();
+    if(existingSO)soRowInitial.updated_at=existingSO.updated_at;
+    let{error:soErr}=await supabase.from('sales_orders').upsert(soRowInitial,{onConflict:'id'});
     if(soErr){
-      const coreSoRow={};Object.keys(_pick(soRow,_soCols)).forEach(k=>{if(!_soExtraCols.has(k))coreSoRow[k]=_pick(soRow,_soCols)[k]});
+      const coreSoRow={};Object.keys(soRowInitial).forEach(k=>{if(!_soExtraCols.has(k))coreSoRow[k]=soRowInitial[k]});
       const retry=await supabase.from('sales_orders').upsert(coreSoRow,{onConflict:'id'});
       if(retry.error){console.error('[DB] sales_orders upsert failed:',retry.error.message);saveFailed=true}
       else console.warn('[DB] SO saved with core columns only')
@@ -717,6 +724,10 @@ const _dbSaveSOInner = async (so) => {
           else console.warn('[DB] PO lines saved without billed/tracking_numbers columns')
         }
       }
+    }
+    // Bump updated_at LAST — so cross-tab polls only see the new timestamp after all children are in place
+    if(finalUpdatedAt!==existingSO?.updated_at){
+      await supabase.from('sales_orders').update({updated_at:finalUpdatedAt}).eq('id',so.id);
     }
     if(saveFailed){_dbSaveFailedIds.add(so.id);_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save incomplete — some data may not have been saved to cloud','error');return false}
     _dbSaveFailedIds.delete(so.id);_persistFailedIds();_dbRecentSaves[so.id]=Date.now();
@@ -966,6 +977,23 @@ const _dbDeleteInvoice = async (id) => {
 // Save-in-progress guard — prevents poll/realtime from loading partial data during delete-and-reinsert
 let _dbSavingCount=0;let _dbLastSaveAt=0;
 const _dbSavingGuard=async(fn)=>{_dbSavingCount++;try{return await fn()}finally{_dbSavingCount--;_dbLastSaveAt=Date.now()}};
+// Direct pick_line status update — atomic, bypasses SO delete-and-reinsert for fast cross-tab sync
+const _dbUpdatePickLineStatus=async(soId,itemIdx,pickId,status,pulledQtys)=>{
+  if(!supabase)return;
+  try{
+    // Find the so_item_id for this item index
+    const{data:items}=await supabase.from('so_items').select('id').eq('so_id',soId).order('item_index');
+    const itemRow=items?.[itemIdx];if(!itemRow)return;
+    // Update the pick_line status and sizes — pulled_at goes into sizes JSONB (not a top-level column)
+    const sizes={...pulledQtys,pulled_at:status==='pulled'?new Date().toLocaleString():undefined};
+    const{error}=await supabase.from('so_item_pick_lines').update({status,sizes}).eq('so_item_id',itemRow.id).eq('pick_id',pickId);
+    if(error)console.error('[DB] Direct pick_line update failed:',error.message);
+    else{console.log('[DB] Direct pick_line update:',pickId,'→',status);
+      // Bump SO updated_at so other tabs detect the change
+      await supabase.from('sales_orders').update({updated_at:new Date().toLocaleString()}).eq('id',soId);
+    }
+  }catch(e){console.error('[DB] Direct pick_line update error:',e)}
+};
 // Per-entity save queue — prevents concurrent saves for the same estimate/SO from racing.
 // When a save is in-progress and a newer version arrives, the newer version is queued.
 // After the current save finishes, only the LATEST queued version is saved (intermediate versions are skipped).
@@ -985,6 +1013,11 @@ const _queuedEntitySave=async(id,data,saveFn)=>{
   }finally{delete _dbSaveInFlight[id]}
   return lastResult;
 };
+// Track recently-pulled SOs — prevents poll/realtime from reverting pulls for 30s after a warehouse pull
+// This is a safety net for slow connections where the full SO save might not complete before the next poll
+const _recentlyPulledSOs=new Map();// soId → timestamp
+const _markRecentlyPulled=(soId)=>{_recentlyPulledSOs.set(soId,Date.now())};
+const _isRecentlyPulled=(soId)=>{const t=_recentlyPulledSOs.get(soId);if(!t)return false;if(Date.now()-t>30000){_recentlyPulledSOs.delete(soId);return false}return true};
 // Safe localStorage write — catches QuotaExceededError and notifies user instead of silently failing
 let _lsQuotaWarned=false;// prevent spamming quota warnings
 let _onCacheFullChange=null;// set by App component to show persistent banner
@@ -1675,8 +1708,9 @@ export default function App(){
     let cancelled=false;
     (async()=>{
       try{
-        const _loadTimeout=new Promise(resolve=>setTimeout(()=>{console.error('[DB] Overall load timed out after 45s');resolve(null)},45000));
-        const d=await Promise.race([_dbLoad(),_loadTimeout]);
+        let _loadTimerId;
+        const _loadTimeout=new Promise(resolve=>{_loadTimerId=setTimeout(()=>{console.error('[DB] Overall load timed out after 45s');resolve(null)},45000)});
+        const d=await Promise.race([_dbLoad().then(r=>{clearTimeout(_loadTimerId);return r}),_loadTimeout]);
         if(cancelled)return;
         if(!d){
           // Supabase connected but query failed — do NOT allow writes that could overwrite real data
@@ -1810,8 +1844,8 @@ export default function App(){
         if(Date.now()-_dbLastSaveAt<1500){console.log('[DB] Reload deferred — save just finished');_rtTimer=setTimeout(reloadAll,1500);return}
         const d=await _dbLoad();if(!d||!d.hasData)return;
         // Preserve local versions of estimates/SOs whose decoration saves failed — don't let DB data overwrite them
-        const _shouldProtect=id=>_dbSaveFailedIds.has(id)||_dbSavePendingIds.has(id);
-        const _hasProtected=_dbSaveFailedIds.size>0||_dbSavePendingIds.size>0;
+        const _shouldProtect=id=>_dbSaveFailedIds.has(id)||_dbSavePendingIds.has(id)||_isRecentlyPulled(id);
+        const _hasProtected=_dbSaveFailedIds.size>0||_dbSavePendingIds.size>0||_recentlyPulledSOs.size>0;
         const _mergeProtected=(dbArr,snapKey,setter)=>{
           if(!_hasProtected)return{snap:dbArr,apply:prev=>{const r=_jsonEq(prev,dbArr)?prev:dbArr;return r}};
           return{snap:dbArr.map(e=>_shouldProtect(e.id)?(_dbSnap.current[snapKey]?.find(s=>s.id===e.id)||e):e),
@@ -1899,8 +1933,26 @@ export default function App(){
         // Update snapshot before state — auto-save effects will diff against this
         _dbSnap.current={ests:pollEsts,sos:pollSOs,invs:pollInvs,msgs:pollMsgs,cust:pollCust,prod:pollProd,vend:d.vendors,team:d.team,omg:d.omg_stores,issues:d.issues};
         setEsts(prev=>{const mergeEst=e=>{const local=prev.find(p=>p.id===e.id);if(local&&local.updated_at&&e.updated_at&&local.updated_at>e.updated_at)return local;if(local?.items?.length&&(!e.items||!e.items.length)){e={...e,items:local.items,art_files:local.art_files||e.art_files}};if(local?.print_history?.length&&!e.print_history?.length)e={...e,print_history:local.print_history};if(local?.sent_history?.length&&!e.sent_history?.length)e={...e,sent_history:local.sent_history};if(local?.email_status&&!e.email_status)e={...e,email_status:local.email_status};if(local?.email_sent_at&&!e.email_sent_at)e={...e,email_sent_at:local.email_sent_at};if(local?.email_opened_at&&!e.email_opened_at)e={...e,email_opened_at:local.email_opened_at};if(local?.email_viewed_at&&!e.email_viewed_at)e={...e,email_viewed_at:local.email_viewed_at};if(local?.follow_up_at&&!e.follow_up_at)e={...e,follow_up_at:local.follow_up_at};return e};if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.estimates.map(e=>(_dbSaveFailedIds.has(e.id)||_dbSavePendingIds.has(e.id))?(prev.find(p=>p.id===e.id)||e):mergeEst(e));return changed(prev,merged)?merged:prev}const merged2=d.estimates.map(mergeEst);return changed(prev,merged2)?merged2:prev});
-        setSOs(prev=>{const mergeSO=s=>{const local=prev.find(p=>p.id===s.id);if(!local)return s;// If local has a newer updated_at, keep local version (save may still be in-flight to DB)
-          if(local.updated_at&&s.updated_at&&local.updated_at>s.updated_at)return local;const m={...s};let _keptLocal=false;if(local.jobs?.length&&(!s.jobs||!s.jobs.length)){m.jobs=local.jobs;_keptLocal=true}if(local.items?.length&&(!s.items||!s.items.length)){m.items=local.items;_keptLocal=true}if(local.art_files?.length&&(!s.art_files||!s.art_files.length)){m.art_files=local.art_files;_keptLocal=true}if(_keptLocal&&local.updated_at)m.updated_at=local.updated_at;if(local.sent_history?.length&&!s.sent_history?.length)m.sent_history=local.sent_history;if(local.print_history?.length&&!s.print_history?.length)m.print_history=local.print_history;if(local.email_status&&!s.email_status)m.email_status=local.email_status;if(local.email_sent_at&&!s.email_sent_at)m.email_sent_at=local.email_sent_at;if(local.email_opened_at&&!s.email_opened_at)m.email_opened_at=local.email_opened_at;if(local.email_viewed_at&&!s.email_viewed_at)m.email_viewed_at=local.email_viewed_at;if(local.follow_up_at&&!s.follow_up_at)m.follow_up_at=local.follow_up_at;return m};if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.sales_orders.map(s=>(_dbSaveFailedIds.has(s.id)||_dbSavePendingIds.has(s.id))?(prev.find(p=>p.id===s.id)||s):mergeSO(s));return changed(prev,merged)?merged:prev}const merged2=d.sales_orders.map(mergeSO);return changed(prev,merged2)?merged2:prev});
+        setSOs(prev=>{const mergeSO=s=>{const local=prev.find(p=>p.id===s.id);if(!local)return s;
+          // If DB has empty items/jobs (mid-save transient state), keep local entirely
+          if(local.items?.length&&(!s.items||!s.items.length))return local;
+          // Count pick_lines across all items for change detection
+          const localPickCount=(local.items||[]).reduce((a,it)=>(it.pick_lines?.length||0)+a,0);
+          const dbPickCount=(s.items||[]).reduce((a,it)=>(it.pick_lines?.length||0)+a,0);
+          // Fast path: only skip if updated_at, item count, AND pick_line count all match
+          if(local.updated_at===s.updated_at&&(local.items?.length||0)===(s.items?.length||0)&&localPickCount===dbPickCount)return local;
+          // Accept DB data — don't compare updated_at (string comparison of locale dates is unreliable)
+          const m={...s};
+          if(local.jobs?.length&&(!s.jobs||!s.jobs.length))m.jobs=local.jobs;
+          if(local.art_files?.length&&(!s.art_files||!s.art_files.length))m.art_files=local.art_files;
+          // Protect against mid-save transient state: if local has pick_lines but DB doesn't, preserve them
+          if(localPickCount>0&&dbPickCount===0&&m.items?.length){
+            m.items=m.items.map((si,idx)=>{const li=local.items?.[idx];if(li?.pick_lines?.length&&(!si.pick_lines||!si.pick_lines.length))return{...si,pick_lines:li.pick_lines};return si});
+          }
+          return m};
+          const _protect=id=>_dbSaveFailedIds.has(id)||_dbSavePendingIds.has(id)||_isRecentlyPulled(id);
+          if(_dbSaveFailedIds.size||_dbSavePendingIds.size||_recentlyPulledSOs.size){const merged=d.sales_orders.map(s=>_protect(s.id)?(prev.find(p=>p.id===s.id)||s):mergeSO(s));_dbSnap.current.sos=merged;if(prev.length===merged.length&&merged.every((m,i)=>m===prev[i]))return prev;return merged}
+          const merged2=d.sales_orders.map(mergeSO);_dbSnap.current.sos=merged2;if(prev.length===merged2.length&&merged2.every((m,i)=>m===prev[i]))return prev;return merged2});
         setInvs(prev=>{const mergeInv=i=>{const local=prev.find(p=>p.id===i.id);if(!local)return i;const m={...i};if(local.payments?.length&&(!i.payments||!i.payments.length))m.payments=local.payments;if(local.print_history?.length&&!i.print_history?.length)m.print_history=local.print_history;if(local.sent_history?.length&&!i.sent_history?.length)m.sent_history=local.sent_history;if(local.email_status&&!i.email_status)m.email_status=local.email_status;if(local.email_opened_at&&!i.email_opened_at)m.email_opened_at=local.email_opened_at;return m};if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.invoices.map(i=>(_dbSaveFailedIds.has(i.id)||_dbSavePendingIds.has(i.id))?(prev.find(p=>p.id===i.id)||i):mergeInv(i));return changed(prev,merged)?merged:prev}const merged2=d.invoices.map(mergeInv);return changed(prev,merged2)?merged2:prev});
         setCust(prev=>{if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.customers.map(c=>(_dbSaveFailedIds.has(c.id)||_dbSavePendingIds.has(c.id))?(prev.find(p=>p.id===c.id)||c):c);return changed(prev,merged)?merged:prev}return changed(prev,d.customers)?d.customers:prev});
         if(d.messages.length)setMsgs(prev=>{if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.messages.map(m=>(_dbSaveFailedIds.has(m.id)||_dbSavePendingIds.has(m.id))?(prev.find(p=>p.id===m.id)||m):m);return changed(prev,merged)?merged:prev}return changed(prev,d.messages)?d.messages:prev});
@@ -1958,7 +2010,7 @@ export default function App(){
   // Auto-save to localStorage + Supabase (normalized, only after initial load is complete)
   // IMPORTANT: Supabase writes are gated behind _dbLoadSuccess to prevent demo/stale data from overwriting real cloud data
   // Uses _dbSnap to diff against last DB state — only saves records that actually changed (prevents cross-browser feedback loops)
-  const _diffSave=(arr,snapKey,saveFn)=>{if(!_initialLoadDone.current||!_dbLoadSuccess.current){console.warn('[DB] _diffSave skipped for',snapKey,'— initialLoad:',_initialLoadDone.current,'dbSuccess:',_dbLoadSuccess.current);const snap=_dbSnap.current[snapKey]||[];arr.forEach(item=>{const old=snap.find(p=>p.id===item.id);if(!old||JSON.stringify(old)!==JSON.stringify(item))_dbSavePendingIds.add(item.id)});return}const snap=_dbSnap.current[snapKey]||[];const changed=[];arr.forEach(item=>{const old=snap.find(p=>p.id===item.id);if(!old||JSON.stringify(old)!==JSON.stringify(item))changed.push(item)});_dbSnap.current[snapKey]=arr;if(changed.length===0)return;changed.forEach(item=>_dbSavePendingIds.add(item.id));const BATCH=10;const processBatch=async(idx)=>{const batch=changed.slice(idx,idx+BATCH);if(!batch.length)return;_bgSync=true;await Promise.all(batch.map(async item=>{const result=saveFn(item);if(result&&typeof result.then==='function'){const ok=await result;if(ok!==false){_dbSavePendingIds.delete(item.id)}else{const oldSnap=_dbSnap.current[snapKey]||[];_dbSnap.current[snapKey]=oldSnap.map(s=>s.id===item.id?(snap.find(p=>p.id===item.id)||s):s)}}}));_bgSync=false;if(idx+BATCH<changed.length)await processBatch(idx+BATCH)};processBatch(0)};
+  const _diffSave=(arr,snapKey,saveFn)=>{if(!_initialLoadDone.current||!_dbLoadSuccess.current){console.warn('[DB] _diffSave skipped for',snapKey,'— initialLoad:',_initialLoadDone.current,'dbSuccess:',_dbLoadSuccess.current);if(_initialLoadDone.current){const snap=_dbSnap.current[snapKey]||[];arr.forEach(item=>{const old=snap.find(p=>p.id===item.id);if(!old||JSON.stringify(old)!==JSON.stringify(item))_dbSavePendingIds.add(item.id)})}return}const snap=_dbSnap.current[snapKey]||[];const changed=[];arr.forEach(item=>{const old=snap.find(p=>p.id===item.id);if(!old||JSON.stringify(old)!==JSON.stringify(item))changed.push(item)});_dbSnap.current[snapKey]=arr;if(changed.length===0)return;changed.forEach(item=>_dbSavePendingIds.add(item.id));const BATCH=10;const processBatch=async(idx)=>{const batch=changed.slice(idx,idx+BATCH);if(!batch.length)return;_bgSync=true;await Promise.all(batch.map(async item=>{const result=saveFn(item);if(result&&typeof result.then==='function'){const ok=await result;if(ok!==false){_dbSavePendingIds.delete(item.id)}else{const oldSnap=_dbSnap.current[snapKey]||[];_dbSnap.current[snapKey]=oldSnap.map(s=>s.id===item.id?(snap.find(p=>p.id===item.id)||s):s)}}}));_bgSync=false;if(idx+BATCH<changed.length)await processBatch(idx+BATCH)};processBatch(0)};
   React.useEffect(()=>{if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.team||[];const changed=REPS.filter(r=>{const old=snap.find(p=>p.id===r.id);return!old||JSON.stringify(old)!==JSON.stringify(r)});if(changed.length)_dbSave('team_members',changed.map(r=>({id:r.id,name:r.name,role:r.role,email:r.email,phone:r.phone,is_active:r.is_active!==false,access:r.access||null})));_dbSnap.current.team=REPS}},[REPS]);
   React.useEffect(()=>{_diffSave(cust,'cust',c=>_dbSaveCustomer(c))},[cust]);
   React.useEffect(()=>{if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.vend||[];const changed=vend.filter(v=>{const old=snap.find(p=>p.id===v.id);return!old||JSON.stringify(old)!==JSON.stringify(v)});if(changed.length)_dbSave('vendors',changed.map(v=>_pick(v,_vendCols)));_dbSnap.current.vend=vend}},[vend]);
@@ -3083,22 +3135,21 @@ export default function App(){
         const picks=safePicks(item);
         const pulled={};picks.filter(pk=>pk.status==='pulled').forEach(pk=>{szKeys.forEach(s=>{pulled[s]=(pulled[s]||0)+(pk[s]||0)})});
         const totalPulled=Object.values(pulled).reduce((a,v)=>a+v,0);
-        // Show in Item Fulfillment only if there's an active pick ticket (IF request)
+        // Show in Item Fulfillment — one task per active pick ticket (IF)
         const activePicks=picks.filter(pk=>pk.status!=='pulled');
-        if(activePicks.length>0){
-          // Use pick ticket quantities, not full item quantities
+        activePicks.forEach(pk=>{
           const pickSizes={};const pickSzKeys=[];
-          activePicks.forEach(pk=>{szKeys.forEach(s=>{const v=pk[s]||0;if(v>0){pickSizes[s]=(pickSizes[s]||0)+v;if(!pickSzKeys.includes(s))pickSzKeys.push(s)}})});
+          szKeys.forEach(s=>{const v=pk[s]||0;if(v>0){pickSizes[s]=v;if(!pickSzKeys.includes(s))pickSzKeys.push(s)}});
           const pickTotal=Object.values(pickSizes).reduce((a,v)=>a+v,0);
           if(pickTotal>0){
             pullTasks.push({so,soId:so.id,item,itemIdx:ii,cName,alpha,rep,daysOut,urgent,
               sku:item.sku,name:item.name,brand:item.brand||'',color:item.color||'',
               sizes:pickSizes,pulled:{},needsPull:pickTotal,totalOrdered:pickTotal,totalPulled:0,szKeys:pickSzKeys,
               noDeco:item.no_deco||!item.decorations?.length,
-              shipDest:activePicks.find(p=>p.ship_dest)?.ship_dest||'in_house',
-              _activePicks:activePicks});
+              shipDest:pk.ship_dest||'in_house',
+              _activePicks:[pk],_pickId:pk.pick_id});
           }
-        }
+        });
         // No-deco items fully pulled → ready to ship (respecting ship preference)
         // Skip if this item has completed/shipped deco jobs (those are handled in the job loop below)
         const itemHasCompletedJob=safeJobs(so).some(j=>(j.prod_status==='completed'||j.prod_status==='shipped')&&(j.items||[]).some(gi=>gi.item_idx===ii));
@@ -9380,10 +9431,10 @@ export default function App(){
       {whViewIF&&(()=>{
         const t=whViewIF;const so=t.so;const item=t.item;
         const c=cust.find(x=>x.id===so.customer_id);
-        const picks=safePicks(item).filter(pk=>pk.status!=='pulled');
         const allPicks=safePicks(item);
-        const activePick=picks[0];
-        const pickId=activePick?.pick_id||'IF';
+        // Use the specific pick for this task (from _pickId), not just the first active pick
+        const activePick=t._pickId?allPicks.find(pk=>pk.pick_id===t._pickId&&pk.status!=='pulled'):allPicks.find(pk=>pk.status!=='pulled');
+        const pickId=activePick?.pick_id||t._pickId||'IF';
         const szKeys=t.szKeys||Object.keys(t.sizes||{}).filter(k=>SZ_ORD.includes(k)||(t.sizes[k]>0)).sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
         const p=prod.find(pp=>pp.sku===t.sku||pp.id===item.product_id);
         const addrs2=c?getAddrs(c,cust):[];
@@ -9511,7 +9562,10 @@ export default function App(){
                         boxes.filter(bx=>bx.tracking_number).forEach(bx=>{shipments.push({id:'SHP-'+Date.now()+'-'+Math.random().toString(36).slice(2,6),tracking_number:bx.tracking_number,carrier:bx.carrier||'ups',ship_date:new Date().toLocaleDateString(),items:bx.items||[],weight:bx.weight,dimensions:bx.dimensions,created_by:cu?.id,created_at:new Date().toLocaleString()})});
                         updatedSO._shipments=shipments;
                       }
-                      savSO(updatedSO);
+                      _markRecentlyPulled(t.soId);
+                      savSO(updatedSO,{skipMerge:true});
+                      // Also do a direct atomic pick_line update to DB — fast cross-tab sync without waiting for full SO save
+                      if(activePick){const pq={};szKeys.forEach(sz=>{pq[sz]=actualQtys2[sz]||0});_dbUpdatePickLineStatus(t.soId,t.itemIdx,activePick.pick_id,'pulled',pq)}
                       const pulledSizes2=szKeys.filter(sz=>(actualQtys2[sz]||0)>0).map(sz=>sz+':'+actualQtys2[sz]).join(' ');
                       const totalPulling2=szKeys.reduce((a,sz)=>a+(actualQtys2[sz]||0),0);
                       addWhAction({type:'pulled',pickId:pickIdToUse,soId:t.soId,customer:t.cName,sku:t.sku,name:t.name,color:t.color,productId:p?.id||item.product_id,sizes:pulledSizes2,qty:totalPulling2,by:cu?.id||'warehouse'});
@@ -9531,13 +9585,13 @@ export default function App(){
               {/* All pick lines for this item */}
               {allPicks.length>0&&<div style={{marginTop:8}}>
                 <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:4}}>Pick History</div>
-                {allPicks.map((pk,pi)=>{const st=pk.status||'pick';
+                {(()=>{const allSzKeys=[...new Set(allPicks.flatMap(pk=>Object.keys(pk).filter(k=>SZ_ORD.includes(k)&&pk[k]>0)))].sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));return allPicks.map((pk,pi)=>{const st=pk.status||'pick';
                   return<div key={pi} style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',marginBottom:4,padding:'4px 8px',borderRadius:4,background:st==='pulled'?'#f0fdf4':'#fffbeb'}}>
                     <span style={{fontSize:11,fontWeight:700,color:st==='pulled'?'#166534':'#92400e',minWidth:56}}>{pk.pick_id||'PICK'}</span>
-                    {szKeys.map(sz=>{const v=pk[sz]||0;return<span key={sz} style={{minWidth:36,textAlign:'center',fontSize:11,fontWeight:v?700:400,color:v?'#0f172a':'#d1d5db'}}>{v||'—'}</span>})}
+                    {allSzKeys.map(sz=>{const v=pk[sz]||0;return<span key={sz} style={{minWidth:36,textAlign:'center',fontSize:11,fontWeight:v?700:400,color:v?'#0f172a':'#d1d5db'}}>{v||'—'}</span>})}
                     <span style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:600,background:st==='pulled'?'#dcfce7':'#fef3c7',color:st==='pulled'?'#166534':'#92400e'}}>{st==='pulled'?'✓ Pulled':'Needs Pull'}</span>
                     {pk.memo&&<span style={{fontSize:10,color:'#64748b',fontStyle:'italic'}}>{pk.memo}</span>}
-                  </div>})}
+                  </div>})})()}
               </div>}
             </div>
           </div>
