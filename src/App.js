@@ -13082,6 +13082,7 @@ export default function App(){
   const[bulkImp,setBulkImp]=useState({raw:'',parsed:[],issues:[],step:'paste'});// paste|review|done
   const[billImport,setBillImport]=useState({step:'upload',files:[],parsed:[],uploading:false,showRaw:{}});
   const[savedBills,setSavedBills]=useState(()=>{try{const s=localStorage.getItem('nsa_saved_bills');return s?JSON.parse(s):[]}catch{return[]}});
+  const[invUpload,setInvUpload]=useState({step:'upload',parsed:[],matched:[],unmatched:[],fileName:'',uploading:false});
   const SZ_ORD_I=['XXS','XS','YXS','YS','YM','YL','YXL','S','M','L','XL','2XL','3XL','4XL','5XL','OSFA'];
 
   const parseNSData=(raw)=>{
@@ -13594,6 +13595,137 @@ export default function App(){
     const doImport=()=>{if(impTab==='customers')importCustomers();else if(impTab==='vendors')importVendors();else importProducts()};
 
     const resetBulk=()=>setBulkImp({raw:'',parsed:[],issues:[],step:'paste'});
+
+    // ── INVENTORY CSV UPLOAD ──
+    const SZ_NAMES=new Set(['XXS','XS','YXS','YS','YM','YL','YXL','S','M','L','XL','2XL','3XL','4XL','5XL','OSFA']);
+    const normSz=(s)=>{const u=s.toString().trim().toUpperCase().replace(/[-\s]/g,'');return u};
+    const handleInvCSVUpload=async(file)=>{
+      setInvUpload(x=>({...x,uploading:true,fileName:file.name}));
+      try{
+        const data=await file.arrayBuffer();
+        const wb=XLSX.read(data,{type:'array'});
+        const ws=wb.Sheets[wb.SheetNames[0]];
+        const rows=XLSX.utils.sheet_to_json(ws,{defval:''});
+        if(!rows||rows.length===0){nf('Empty file — no rows found','error');setInvUpload(x=>({...x,uploading:false}));return}
+        const hdrs=Object.keys(rows[0]);
+        // Find SKU column
+        const skuCol=hdrs.find(h=>/^(sku|article|style|item|partnumber|articlenumber|product.?number|material)/i.test(h.replace(/[_\s-]/g,'')))||hdrs[0];
+        // Find size columns — any header that matches a known size name
+        const sizeCols=[];
+        hdrs.forEach(h=>{if(h===skuCol)return;const n=normSz(h);if(SZ_NAMES.has(n)||/^\d{1,2}(\.\d)?$/.test(h.trim()))sizeCols.push({hdr:h,size:SZ_NAMES.has(n)?n:h.trim()})});
+        if(sizeCols.length===0){nf('No size columns found. Expected column headers like XS, S, M, L, XL, 2XL, etc.','error');setInvUpload(x=>({...x,uploading:false}));return}
+        // Parse rows
+        const parsed=[];
+        rows.forEach(row=>{
+          const sku=(row[skuCol]||'').toString().trim().toUpperCase();
+          if(!sku)return;
+          const sizes={};let total=0;
+          sizeCols.forEach(({hdr,size})=>{const v=parseInt(row[hdr])||0;if(v>0||row[hdr]!==''){sizes[size]=v;total+=v}});
+          if(Object.keys(sizes).length>0)parsed.push({sku,sizes,total});
+        });
+        if(parsed.length===0){nf('No valid rows found in file','error');setInvUpload(x=>({...x,uploading:false}));return}
+        // Match against existing products — try in-memory first, then DB fallback
+        const matched=[];let pendingUnmatched=[];
+        const matchInMem=(s)=>{
+          let p=prod.find(x=>x.sku.toUpperCase()===s);
+          if(!p)p=prod.find(x=>s.startsWith(x.sku.toUpperCase())||x.sku.toUpperCase().startsWith(s));
+          if(!p){const stripped=s.replace(/[-\s]/g,'');p=prod.find(x=>x.sku.toUpperCase().replace(/[-\s]/g,'')===stripped)}
+          if(!p)p=prod.find(x=>{const xs=x.sku.toUpperCase();return xs.includes(s)||s.includes(xs)});
+          return p;
+        };
+        parsed.forEach(row=>{
+          const p=matchInMem(row.sku);
+          if(p)matched.push({...row,product:p});
+          else pendingUnmatched.push(row);
+        });
+        // DB fallback: query Supabase for any SKUs not found in memory (handles DB load timeout)
+        let unmatched=[];
+        if(pendingUnmatched.length>0&&supabase){
+          try{
+            const dbMap={};
+            // Query in batches of 50 (Supabase .in() has limits) — try both original and uppercase
+            const allSkus=[...new Set(pendingUnmatched.flatMap(r=>[r.sku,r.sku.toLowerCase()]))];
+            for(let i=0;i<allSkus.length;i+=50){
+              const batch=allSkus.slice(i,i+50);
+              const{data,error}=await supabase.from('products').select('*').in('sku',batch);
+              if(error)console.warn('[InvCSV] DB query error:',error.message);
+              if(data)data.forEach(p=>{dbMap[p.sku.toUpperCase()]=p});
+            }
+            // Also try ilike for any still not found (catches partial/fuzzy matches in DB)
+            const stillMissing=pendingUnmatched.filter(r=>!dbMap[r.sku]);
+            if(stillMissing.length>0){
+              // Query with or/ilike filters in batches of 10
+              for(let i=0;i<stillMissing.length&&i<100;i+=10){
+                const batch=stillMissing.slice(i,i+10);
+                const orFilter=batch.map(r=>'sku.ilike.%'+r.sku+'%').join(',');
+                const{data}=await supabase.from('products').select('*').or(orFilter);
+                if(data)data.forEach(p=>{if(!dbMap[p.sku.toUpperCase()])dbMap[p.sku.toUpperCase()]=p});
+              }
+            }
+            console.log('[InvCSV] DB fallback found',Object.keys(dbMap).length,'products for',pendingUnmatched.length,'unmatched SKUs');
+            pendingUnmatched.forEach(row=>{
+              const dbP=dbMap[row.sku]||dbMap[row.sku.toLowerCase()];
+              if(dbP){
+                const enriched={...dbP,_inv:dbP._inv||{},_alerts:dbP._alerts||{}};
+                matched.push({...row,product:enriched});
+              }else unmatched.push({...row,name:'',retail_price:'',category:'Tees',brand:'Adidas'});
+            });
+            // Merge DB-found products into local prod state so rest of app can use them
+            const dbFound=matched.filter(m=>!prod.find(p=>p.id===m.product.id)).map(m=>m.product);
+            if(dbFound.length>0){setProd(prev=>[...prev,...dbFound]);console.log('[InvCSV] Merged',dbFound.length,'products from DB into local state')}
+          }catch(e){
+            console.warn('[InvCSV] DB fallback failed:',e);
+            unmatched=pendingUnmatched.map(r=>({...r,name:'',retail_price:'',category:'Tees',brand:'Adidas'}));
+          }
+        }else{
+          unmatched=pendingUnmatched.map(r=>({...r,name:'',retail_price:'',category:'Tees',brand:'Adidas'}));
+        }
+        if(unmatched.length>0)console.log('[InvCSV] Unmatched SKUs:',unmatched.map(u=>u.sku),'| prod count:',prod.length);
+        setInvUpload({step:'review',parsed,matched,unmatched,fileName:file.name,uploading:false});
+        nf(parsed.length+' SKUs parsed — '+matched.length+' matched, '+unmatched.length+' new');
+      }catch(e){console.error('[InvCSV]',e);nf('Failed to parse file: '+e.message,'error');setInvUpload(x=>({...x,uploading:false}))}
+    };
+    const applyInvUpdates=()=>{
+      const{matched}=invUpload;let count=0;
+      matched.forEach(({product,sizes})=>{
+        const newInv={...(product._inv||{})};const deltas={};
+        Object.entries(sizes).forEach(([sz,qty])=>{
+          const prev=newInv[sz]||0;deltas[sz]=qty-prev;newInv[sz]=qty;
+        });
+        savI(product.id,newInv,deltas,'Inventory CSV upload','manual');count++;
+      });
+      nf(count+' product inventories updated from CSV');
+      if(invUpload.unmatched.length>0)setInvUpload(x=>({...x,step:'newProducts',matched:[]}));
+      else setInvUpload({step:'upload',parsed:[],matched:[],unmatched:[],fileName:'',uploading:false});
+    };
+    const saveNewInvProducts=(items)=>{
+      const newProds=[];const invUpdates=[];
+      items.forEach((it,i)=>{
+        if(!it.name||!it.sku)return;
+        const retail=parseFloat(it.retail_price)||0;
+        const cat=it.category||'Tees';const brand=it.brand||'Adidas';
+        const costMult=brand==='Adidas'?(cat==='Custom'?0.4125:0.375):(brand==='Under Armour'||brand==='New Balance')?0.425:0;
+        const cost=retail>0&&costMult>0?Math.floor(retail*costMult*100)/100:0;
+        const allSizes=Object.keys(it.sizes);
+        const p={id:'p-inv-'+Date.now()+'-'+i,vendor_id:D_V.find(v=>v.name.toLowerCase()===brand.toLowerCase())?.id||null,sku:it.sku,name:it.name,
+          brand,color:'',color_category:null,category:cat,
+          retail_price:retail,nsa_cost:cost,
+          available_sizes:allSizes.length>0?SZ_ORD_I.filter(s=>allSizes.includes(s)).concat(allSizes.filter(s=>!SZ_ORD_I.includes(s))):['S','M','L','XL','2XL'],
+          is_active:true,_inv:{},_alerts:{}};
+        newProds.push(p);
+        invUpdates.push({product:p,sizes:it.sizes});
+      });
+      if(newProds.length>0){
+        setProd(prev=>{
+          const next=[...prev,...newProds];
+          // Apply inventory to new products
+          return next.map(p=>{const upd=invUpdates.find(u=>u.product.id===p.id);return upd?{...p,_inv:upd.sizes}:p});
+        });
+        newProds.forEach(p=>{const upd=invUpdates.find(u=>u.product.id===p.id);if(upd)p._inv=upd.sizes;_dbSaveProduct(p)});
+        nf(newProds.length+' new products added to catalog with inventory');
+      }
+      setInvUpload({step:'upload',parsed:[],matched:[],unmatched:[],fileName:'',uploading:false});
+    };
 
     // ── BILL PDF PARSER ──
     // Sports Inc / Adidas / UA supplier bill format parser
@@ -14130,9 +14262,9 @@ export default function App(){
     return(<>
       {/* Import type tabs */}
       <div style={{display:'flex',gap:4,marginBottom:16}}>
-        {[['orders','📋 Orders / NetSuite'],['customers','👥 Customers'],['vendors','🏭 Vendors'],['products','📦 Products'],['bills','📄 Supplier Bills']].map(([id,label])=>
+        {[['orders','📋 Orders / NetSuite'],['customers','👥 Customers'],['vendors','🏭 Vendors'],['products','📦 Products'],['inventory','📊 Inventory'],['bills','📄 Supplier Bills']].map(([id,label])=>
           <button key={id} className={`btn btn-sm ${impTab===id?'btn-primary':'btn-secondary'}`}
-            onClick={()=>{setImpTab(id);resetBulk()}}>{label}</button>)}
+            onClick={()=>{setImpTab(id);resetBulk();if(id==='inventory')setInvUpload({step:'upload',parsed:[],matched:[],unmatched:[],fileName:'',uploading:false})}}>{label}</button>)}
       </div>
 
       {/* ORDERS TAB — NetSuite PDF Import */}
@@ -14784,7 +14916,7 @@ export default function App(){
     </>}
 
       {/* BULK IMPORT — Customers, Vendors, Products */}
-      {impTab!=='orders'&&<>
+      {impTab!=='orders'&&impTab!=='bills'&&impTab!=='inventory'&&<>
         <div className="card" style={{marginBottom:12}}>
           <div className="card-header"><h2>{impTab==='customers'?'👥 Bulk Import Customers':impTab==='vendors'?'🏭 Bulk Import Vendors':'📦 Bulk Import Products'}</h2></div>
           <div className="card-body">
@@ -15144,6 +15276,130 @@ export default function App(){
           </div>
         </div>}
       </>}
+
+      {/* INVENTORY CSV UPLOAD TAB */}
+      {impTab==='inventory'&&<>
+        <div className="card" style={{marginBottom:12}}>
+          <div className="card-header"><h2>📊 Upload Inventory Positions</h2></div>
+          <div className="card-body">
+            <p style={{fontSize:12,color:'#64748b',margin:'0 0 12px'}}>Upload a CSV or Excel file with inventory quantities by size. First column should be SKU, remaining columns should be size headers (XS, S, M, L, XL, 2XL, etc.) with quantities as values.</p>
+
+            {invUpload.step==='upload'&&<>
+              {/* Example format */}
+              <div style={{marginBottom:12,padding:10,background:'#eff6ff',borderRadius:6}}>
+                <div style={{fontSize:11,fontWeight:700,color:'#1e40af',marginBottom:6}}>Expected format:</div>
+                <table style={{fontSize:10,fontFamily:'monospace',borderCollapse:'collapse',width:'auto'}}>
+                  <thead><tr style={{background:'#dbeafe'}}><th style={{padding:'3px 10px',border:'1px solid #bfdbfe'}}>SKU</th><th style={{padding:'3px 10px',border:'1px solid #bfdbfe'}}>XS</th><th style={{padding:'3px 10px',border:'1px solid #bfdbfe'}}>S</th><th style={{padding:'3px 10px',border:'1px solid #bfdbfe'}}>M</th><th style={{padding:'3px 10px',border:'1px solid #bfdbfe'}}>L</th><th style={{padding:'3px 10px',border:'1px solid #bfdbfe'}}>XL</th><th style={{padding:'3px 10px',border:'1px solid #bfdbfe'}}>2XL</th></tr></thead>
+                  <tbody><tr><td style={{padding:'3px 10px',border:'1px solid #bfdbfe'}}>JX4453</td><td style={{padding:'3px 10px',border:'1px solid #bfdbfe'}}>5</td><td style={{padding:'3px 10px',border:'1px solid #bfdbfe'}}>12</td><td style={{padding:'3px 10px',border:'1px solid #bfdbfe'}}>20</td><td style={{padding:'3px 10px',border:'1px solid #bfdbfe'}}>18</td><td style={{padding:'3px 10px',border:'1px solid #bfdbfe'}}>10</td><td style={{padding:'3px 10px',border:'1px solid #bfdbfe'}}>4</td></tr>
+                  <tr><td style={{padding:'3px 10px',border:'1px solid #bfdbfe'}}>AB1234</td><td style={{padding:'3px 10px',border:'1px solid #bfdbfe'}}>0</td><td style={{padding:'3px 10px',border:'1px solid #bfdbfe'}}>8</td><td style={{padding:'3px 10px',border:'1px solid #bfdbfe'}}>15</td><td style={{padding:'3px 10px',border:'1px solid #bfdbfe'}}>12</td><td style={{padding:'3px 10px',border:'1px solid #bfdbfe'}}>6</td><td style={{padding:'3px 10px',border:'1px solid #bfdbfe'}}>2</td></tr></tbody>
+                </table>
+                <button className="btn btn-sm btn-secondary" style={{marginTop:8,fontSize:10}} onClick={()=>{
+                  const csv='SKU,XS,S,M,L,XL,2XL\nJX4453,5,12,20,18,10,4';
+                  const blob=new Blob([csv],{type:'text/csv'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='inventory_template.csv';a.click();URL.revokeObjectURL(url);
+                }}>Download Template</button>
+              </div>
+
+              {/* Drop zone */}
+              <div style={{border:'2px dashed #d1d5db',borderRadius:8,padding:24,textAlign:'center',background:'#f8fafc',cursor:'pointer',position:'relative'}}
+                onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#3b82f6';e.currentTarget.style.background='#eff6ff'}}
+                onDragLeave={e=>{e.currentTarget.style.borderColor='#d1d5db';e.currentTarget.style.background='#f8fafc'}}
+                onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor='#d1d5db';e.currentTarget.style.background='#f8fafc';const f=e.dataTransfer.files[0];if(f)handleInvCSVUpload(f)}}
+                onClick={()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.csv,.xlsx,.xls';inp.onchange=ev=>{const f=ev.target.files[0];if(f)handleInvCSVUpload(f)};inp.click()}}>
+                {invUpload.uploading
+                  ?<div><div style={{fontSize:24,marginBottom:4}}>Parsing...</div><div style={{fontSize:12,color:'#3b82f6'}}>Reading file and matching SKUs</div></div>
+                  :<div><div style={{fontSize:24,marginBottom:4}}>Drop CSV/Excel file here</div><div style={{fontSize:12,color:'#94a3b8'}}>or click to browse — accepts .csv, .xlsx, .xls</div></div>}
+              </div>
+            </>}
+
+            {/* STEP 2: Review matched + unmatched */}
+            {invUpload.step==='review'&&<>
+              <div className="stats-row" style={{marginBottom:12}}>
+                <div className="stat-card"><div className="stat-label">File</div><div className="stat-value" style={{fontSize:13,fontFamily:'monospace'}}>{invUpload.fileName}</div></div>
+                <div className="stat-card"><div className="stat-label">Total SKUs</div><div className="stat-value" style={{color:'#1e40af'}}>{invUpload.parsed.length}</div></div>
+                <div className="stat-card" style={{borderColor:'#22c55e'}}><div className="stat-label">Matched</div><div className="stat-value" style={{color:'#166534'}}>{invUpload.matched.length}</div></div>
+                {invUpload.unmatched.length>0&&<div className="stat-card" style={{borderColor:'#f59e0b'}}><div className="stat-label">New SKUs</div><div className="stat-value" style={{color:'#d97706'}}>{invUpload.unmatched.length}</div></div>}
+              </div>
+
+              {/* Matched products preview */}
+              {invUpload.matched.length>0&&<>
+                <h3 style={{fontSize:14,marginBottom:8}}>Inventory Updates ({invUpload.matched.length} products)</h3>
+                <div className="card" style={{marginBottom:12}}><div className="card-body" style={{padding:0,maxHeight:300,overflowY:'auto'}}>
+                  <table><thead><tr><th>SKU</th><th>Product</th>{SZ_ORD_I.filter(sz=>invUpload.matched.some(m=>m.sizes[sz]!==undefined)).map(sz=><th key={sz} style={{fontSize:10,textAlign:'center',minWidth:36}}>{sz}</th>)}<th style={{textAlign:'right'}}>Total</th></tr></thead>
+                  <tbody>{invUpload.matched.map((m,i)=>{const activeSizes=SZ_ORD_I.filter(sz=>invUpload.matched.some(r=>r.sizes[sz]!==undefined));return<tr key={i}>
+                    <td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',fontSize:11}}>{m.sku}</td>
+                    <td style={{fontSize:11}}>{m.product.name}<br/><span style={{color:'#94a3b8',fontSize:10}}>{m.product.color}</span></td>
+                    {activeSizes.map(sz=>{const newV=m.sizes[sz];const oldV=m.product._inv?.[sz]||0;const diff=newV!==undefined?newV-oldV:null;
+                      return<td key={sz} style={{textAlign:'center',fontSize:11,background:diff>0?'#f0fdf4':diff<0?'#fef2f2':'transparent'}}>
+                        {newV!==undefined?<><span style={{fontWeight:700}}>{newV}</span>{diff!==0&&<div style={{fontSize:8,color:diff>0?'#166534':'#dc2626'}}>{diff>0?'+':''}{diff}</div>}</>:''}
+                      </td>})}
+                    <td style={{textAlign:'right',fontWeight:800}}>{m.total}</td>
+                  </tr>})}</tbody></table>
+                </div></div>
+                <button className="btn btn-primary" style={{marginRight:8}} onClick={applyInvUpdates}>Apply Inventory Updates ({invUpload.matched.length})</button>
+              </>}
+
+              {/* Unmatched SKUs notice */}
+              {invUpload.unmatched.length>0&&invUpload.matched.length>0&&<div style={{marginTop:12,padding:10,background:'#fffbeb',borderRadius:6,border:'1px solid #fde68a',fontSize:12,color:'#92400e'}}>
+                <strong>{invUpload.unmatched.length} SKU{invUpload.unmatched.length!==1?'s':''} not found</strong> in the product catalog. After applying inventory updates above, you'll be able to add these as new products.
+              </div>}
+
+              {/* If no matched, go straight to new products */}
+              {invUpload.matched.length===0&&invUpload.unmatched.length>0&&<>
+                <div style={{padding:10,background:'#fffbeb',borderRadius:6,border:'1px solid #fde68a',fontSize:12,color:'#92400e',marginBottom:12}}>
+                  <strong>All {invUpload.unmatched.length} SKU{invUpload.unmatched.length!==1?'s':''} are new</strong> — none matched existing products. Add names and retail pricing below to import them.
+                </div>
+                <button className="btn btn-primary" onClick={()=>setInvUpload(x=>({...x,step:'newProducts'}))}>Set Up New Products</button>
+              </>}
+
+              <button className="btn btn-secondary" style={{marginLeft:8}} onClick={()=>setInvUpload({step:'upload',parsed:[],matched:[],unmatched:[],fileName:'',uploading:false})}>Cancel</button>
+            </>}
+
+            {/* STEP 3: New products — bulk add names & retail for unmatched SKUs */}
+            {invUpload.step==='newProducts'&&<>
+              <h3 style={{fontSize:14,marginBottom:4}}>New Products — Add to Catalog</h3>
+              <p style={{fontSize:12,color:'#64748b',margin:'0 0 12px'}}>These SKUs weren't found in the system. Add a name, brand, and retail price for each. Cost is auto-calculated (Adidas 37.5%/41.25% Custom, UA/NB 42.5%).</p>
+              <div className="card" style={{marginBottom:12}}><div className="card-body" style={{padding:0,maxHeight:400,overflowY:'auto'}}>
+                <table><thead><tr><th style={{width:100}}>SKU</th><th style={{width:180}}>Name *</th><th style={{width:110}}>Brand</th><th style={{width:90}}>Retail *</th><th style={{width:80}}>Cost</th><th style={{width:100}}>Category</th><th>Sizes</th></tr></thead>
+                <tbody>{invUpload.unmatched.map((u,i)=>{
+                  const retail=parseFloat(u.retail_price)||0;const cat=u.category||'Tees';const brand=u.brand||'Adidas';
+                  const costMult=brand==='Adidas'?(cat==='Custom'?0.4125:0.375):(brand==='Under Armour'||brand==='New Balance')?0.425:0;
+                  const cost=retail>0&&costMult>0?Math.floor(retail*costMult*100)/100:0;
+                  const sizeSummary=SZ_ORD_I.filter(sz=>u.sizes[sz]>0).map(sz=>sz+':'+u.sizes[sz]).join(', ')||Object.entries(u.sizes).filter(([,v])=>v>0).map(([k,v])=>k+':'+v).join(', ');
+                  return<tr key={i}>
+                    <td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',fontSize:11}}>{u.sku}</td>
+                    <td><input className="form-input" style={{fontSize:11,padding:'4px 6px'}} value={u.name} placeholder="Product name..."
+                      onChange={e=>{const v=e.target.value;setInvUpload(x=>({...x,unmatched:x.unmatched.map((r,j)=>j===i?{...r,name:v}:r)}))}}/></td>
+                    <td><select className="form-select" style={{fontSize:10,padding:'3px 4px'}} value={brand}
+                      onChange={e=>{const v=e.target.value;setInvUpload(x=>({...x,unmatched:x.unmatched.map((r,j)=>j===i?{...r,brand:v}:r)}))}}>
+                      {['Adidas','Under Armour','New Balance','Nike','Other'].map(b=><option key={b}>{b}</option>)}
+                    </select></td>
+                    <td><input className="form-input" style={{fontSize:11,padding:'4px 6px',width:70}} type="number" step="0.01" value={u.retail_price} placeholder="0.00"
+                      onChange={e=>{const v=e.target.value;setInvUpload(x=>({...x,unmatched:x.unmatched.map((r,j)=>j===i?{...r,retail_price:v}:r)}))}}/></td>
+                    <td style={{fontSize:11,color:'#64748b'}}>{cost>0?'$'+cost.toFixed(2):(costMult>0?<span style={{color:'#d1d5db'}}>auto</span>:<span style={{color:'#d97706',fontSize:10}}>manual</span>)}</td>
+                    <td><select className="form-select" style={{fontSize:10,padding:'3px 4px'}} value={u.category||'Tees'}
+                      onChange={e=>{const v=e.target.value;setInvUpload(x=>({...x,unmatched:x.unmatched.map((r,j)=>j===i?{...r,category:v}:r)}))}}>
+                      {CATEGORIES.map(c=><option key={c}>{c}</option>)}
+                    </select></td>
+                    <td style={{fontSize:10,color:'#475569'}}>{sizeSummary}</td>
+                  </tr>})}</tbody></table>
+              </div></div>
+
+              <div style={{display:'flex',gap:8,alignItems:'center'}}>
+                <button className="btn btn-primary" disabled={!invUpload.unmatched.some(u=>u.name&&u.retail_price)}
+                  onClick={()=>saveNewInvProducts(invUpload.unmatched.filter(u=>u.name&&u.retail_price))}>
+                  Save {invUpload.unmatched.filter(u=>u.name&&u.retail_price).length} Product{invUpload.unmatched.filter(u=>u.name&&u.retail_price).length!==1?'s':''} to Catalog
+                </button>
+                <button className="btn btn-secondary" onClick={()=>setInvUpload({step:'upload',parsed:[],matched:[],unmatched:[],fileName:'',uploading:false})}>Cancel</button>
+                {invUpload.unmatched.some(u=>!u.name||!u.retail_price)&&<span style={{fontSize:11,color:'#d97706'}}>
+                  {invUpload.unmatched.filter(u=>!u.name||!u.retail_price).length} SKU{invUpload.unmatched.filter(u=>!u.name||!u.retail_price).length!==1?'s':''} missing name or retail — will be skipped
+                </span>}
+              </div>
+            </>}
+
+          </div>
+        </div>
+      </>}
+
     </>);
   };
 
